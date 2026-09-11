@@ -8,6 +8,8 @@
 
 Program GEODUMP;
 
+Uses Dos;
+
 {$A-}
 {$I-}
 
@@ -27,6 +29,16 @@ Const
 
 Type
  TCodeMap = Array[0..8191] of Byte;
+ PEntry = ^TEntry;
+ TEntry = Record Next:PEntry; Seg,Ofs:Word; IsCode:Boolean; Name:String[63]; End;
+ PLibrary = ^TLibrary;
+ TLibrary = Record Next:PLibrary; Ordinal:Word; Name:String[8]; End;
+ PFixup = ^TFixup;
+ TFixup = Record Next:PFixup; FType,Ofs:Word; End;
+ PSymbol = ^TSymbol;
+ TSymbol = Record Next:PSymbol; Lib:String[8]; Ordinal:Word; Name:String[63]; End;
+ PJumpTable = ^TJumpTable;
+ TJumpTable = Record Next:PJumpTable; Seg,Ofs,Len:Word; Kind:Byte; End;
  TSegment = Record
   Len, FixLen, Flags : Word;
   Pos : LongInt;
@@ -40,10 +52,15 @@ Var
  DoDump, DoList, OnePass : Boolean;
  OneResource : Integer;
  HadError : Boolean;
- CodeMap, LabelMap : TCodeMap;
- DisBase, DisSize : LongInt;
+ CodeMap, DataMap, LabelMap, InstMap : TCodeMap;
+ DisBase, DisSize : LongInt; DisSeg:Word;
+ FirstEntry:PEntry; FirstLibrary:PLibrary; FirstFixup:PFixup;
+ FirstSymbol:PSymbol; FirstJumpTable:PJumpTable; SelfLibrary:String[8];
 
 Function IfThenString(Test:Boolean;Const A,B:String):String; Forward;
+Procedure Fail(Const S:String); Forward;
+Function WordAt(Posn:LongInt):Word; Forward;
+Procedure AddEntry(Seg,Ofs:Word;IsCode:Boolean;Const Name:String); Forward;
 
 Function HexDigit(N: Byte): Char;
 Begin If N < 10 Then HexDigit := Chr(Ord('0') + N) Else HexDigit := Chr(Ord('A') + N - 10); End;
@@ -58,6 +75,85 @@ End;
 Function DecStr(V: LongInt): String;
 Var S: String;
 Begin Str(V, S); DecStr := S; End;
+Function IfThenLong(Test:Boolean;A,B:LongInt):LongInt;
+Begin If Test Then IfThenLong:=A Else IfThenLong:=B;End;
+
+Function NextToken(Const S:String;Var P:Integer):String;
+Var B:Integer;T:String;
+Begin While (P<=Length(S))and(S[P] in [' ',#9])do Inc(P);B:=P;While(P<=Length(S))and not(S[P]in[' ',#9,#13,#10,';'])do Inc(P);
+ T:=Copy(S,B,P-B);NextToken:=T;End;
+
+Function NumberValue(Const S:String;HexDefault:Boolean;Var Ok:Boolean):Word;
+Var I,D:Integer;V:LongInt;C:Char;
+Begin V:=0;Ok:=S<>'';For I:=1 to Length(S) do Begin C:=UpCase(S[I]);If C in ['0'..'9']Then D:=Ord(C)-48 Else If HexDefault and(C in['A'..'F'])Then D:=Ord(C)-55 Else Begin Ok:=False;D:=0;End;
+ If HexDefault Then V:=V*16+D Else V:=V*10+D;If V>65535 Then Ok:=False;End;NumberValue:=Word(V);End;
+
+Function SupportPath(Const N:String):String;
+Var P:String;
+Begin P:=GetEnv('GEODUMP');If P=''Then P:='.';If not(P[Length(P)]in['\','/'])Then P:=P+'\';SupportPath:=P+N;End;
+
+Procedure LoadSymbols(Const LibName:String);
+Var T:Text;Line,A,B,C:String;P,IO:Integer;Ord:Word;Ok:Boolean;S:PSymbol;
+Begin Assign(T,SupportPath(LibName+'.sls'));Reset(T);IO:=IOResult;If IO<>0 Then Exit;
+ While not Eof(T)do Begin ReadLn(T,Line);If IOResult<>0 Then Break;P:=1;A:=NextToken(Line,P);B:=NextToken(Line,P);C:=NextToken(Line,P);
+  If(A<>'')and(A[1]<>';')and(B<>'')and(C<>'')Then Begin Ord:=NumberValue(B,False,Ok);If Ok Then Begin New(S);If S=Nil Then Begin Fail('memoire insuffisante pour les symboles SLS');Break;End;
+   S^.Lib:=A;S^.Ordinal:=Ord;S^.Name:=C;S^.Next:=FirstSymbol;FirstSymbol:=S;End;End;End;Close(T);IO:=IOResult;
+End;
+
+Function LibrarySymbol(Const LibName:String;Ord:Word):String;
+Var S:PSymbol;
+Begin S:=FirstSymbol;While S<>Nil do Begin If(S^.Lib=LibName)and(S^.Ordinal=Ord)Then Begin LibrarySymbol:=S^.Name;Exit;End;S:=S^.Next;End;LibrarySymbol:=LibName+'_'+DecStr(Ord);End;
+
+Procedure LoadDisInfo(Const LibName:String);
+Var T:Text;Line,A,B,C,D:String;P,IO:Integer;Seg,Ofs,L:Word;Ok1,Ok2,Ok3:Boolean;E:PJumpTable;K:Char;
+Begin Assign(T,SupportPath(LibName+'.dis'));Reset(T);IO:=IOResult;If IO<>0 Then Exit;
+ While not Eof(T)do Begin ReadLn(T,Line);If IOResult<>0 Then Break;P:=1;A:=NextToken(Line,P);If A=''Then Continue;K:=UpCase(A[1]);B:=NextToken(Line,P);C:=NextToken(Line,P);D:=NextToken(Line,P);
+  Seg:=NumberValue(B,False,Ok1);Ofs:=NumberValue(C,True,Ok2);If(K in['C','D'])and Ok1 and Ok2 Then AddEntry(Seg,Ofs,K='C',D)
+  Else If(K='J')and Ok1 and Ok2 Then Begin L:=NumberValue(D,True,Ok3);A:=NextToken(Line,P);If Ok3 and(A<>'')Then Begin New(E);If E<>Nil Then Begin E^.Seg:=Seg;E^.Ofs:=Ofs;E^.Len:=L;K:=UpCase(A[1]);If K='2'Then E^.Kind:=2 Else If K='4'Then E^.Kind:=4 Else If K='S'Then E^.Kind:=16 Else E^.Kind:=17;E^.Next:=FirstJumpTable;FirstJumpTable:=E;End;End;End;
+ End;Close(T);IO:=IOResult;
+End;
+
+Procedure AddEntry(Seg,Ofs:Word;IsCode:Boolean;Const Name:String);
+Var P:PEntry;
+Begin
+ P:=FirstEntry;While P<>Nil do Begin If (P^.Seg=Seg) and (P^.Ofs=Ofs) Then Begin
+  If (P^.Name='') and (Name<>'') Then P^.Name:=Name;If IsCode Then P^.IsCode:=True;Exit;End;P:=P^.Next;End;
+ New(P);If P=Nil Then Begin Fail('memoire insuffisante pour les symboles');Exit;End;
+ P^.Seg:=Seg;P^.Ofs:=Ofs;P^.IsCode:=IsCode;P^.Name:=Name;P^.Next:=FirstEntry;FirstEntry:=P;
+End;
+
+Function LabelName(Seg,Ofs:Word;Kind:Char):String;
+Var P:PEntry;
+Begin P:=FirstEntry;While P<>Nil do Begin If (P^.Seg=Seg)and(P^.Ofs=Ofs)and(P^.Name<>'') Then Begin LabelName:=P^.Name;Exit;End;P:=P^.Next;End;
+ LabelName:=Kind+DecStr(Seg)+'_'+HexN(Ofs,4);
+End;
+
+Procedure ClearFixups;
+Var P,Q:PFixup;
+Begin P:=FirstFixup;While P<>Nil do Begin Q:=P^.Next;Dispose(P);P:=Q;End;FirstFixup:=Nil;End;
+
+Procedure LoadFixups(Posn:LongInt;Count:Word);
+Var I:Word;P:PFixup;
+Begin ClearFixups;If Count=0 Then Exit;For I:=0 to Count-1 do Begin New(P);If P=Nil Then Begin Fail('memoire insuffisante pour les relogements');Exit;End;
+ P^.FType:=WordAt(Posn+LongInt(I)*4);P^.Ofs:=WordAt(Posn+LongInt(I)*4+2);P^.Next:=FirstFixup;FirstFixup:=P;End;End;
+
+Function LibraryName(N:Word):String;
+Var P:PLibrary;
+Begin P:=FirstLibrary;While P<>Nil do Begin If P^.Ordinal=N Then Begin LibraryName:=P^.Name;Exit;End;P:=P^.Next;End;LibraryName:='LIB'+DecStr(N);End;
+
+Function FixupSymbol(Ofs:Word):String;
+Var P:PFixup;T,V,S,O:Word;
+Begin FixupSymbol:='';P:=FirstFixup;While (P<>Nil)and(P^.Ofs<>Ofs)do P:=P^.Next;If P=Nil Then Exit;T:=P^.FType;V:=WordAt(DisBase+Ofs);
+ Case T and $00FF of
+  $00:FixupSymbol:='geos_'+DecStr(V);
+  $11,$14:FixupSymbol:=LibrarySymbol(LibraryName(T shr 8),V);
+  $12:FixupSymbol:='segment '+LibrarySymbol(LibraryName(T shr 8),V);
+  $13:FixupSymbol:='handle '+LibraryName(T shr 8);
+  $22:If V=1 Then FixupSymbol:='dgroup' Else FixupSymbol:='SEG'+DecStr(V);
+  $23:FixupSymbol:='handle SEG'+DecStr(V);
+  $24:Begin S:=V;O:=WordAt(DisBase+Ofs+2);FixupSymbol:=LabelName(S,O,'H');AddEntry(S,O,True,'');End;
+ End;
+End;
 
 Procedure Fail(Const S: String);
 Begin WriteLn('GeoDump: ', S); HadError := True; End;
@@ -156,6 +252,8 @@ Function MapTest(Const M:TCodeMap; P:Word):Boolean;
 Begin MapTest := (M[P shr 3] and (1 shl (P and 7)))<>0; End;
 Procedure MapSet(Var M:TCodeMap; P:Word);
 Begin M[P shr 3] := M[P shr 3] or (1 shl (P and 7)); End;
+Procedure MapClear(Var M:TCodeMap;P:Word);
+Begin M[P shr 3]:=M[P shr 3] and not(1 shl(P and 7));End;
 
 Function SignedByte(B:Byte):Integer;
 Begin If B<128 Then SignedByte:=B Else SignedByte:=Integer(B)-256; End;
@@ -169,71 +267,148 @@ Const R8:Array[0..7] of String[2]=('al','cl','dl','bl','ah','ch','dh','bh');
 Begin If Size=1 Then RegName:=R8[N and 7] Else If Size=4 Then RegName:=R32[N and 7] Else RegName:=R16[N and 7]; End;
 
 Function DecodeRM(Ofs:Word; Size:Integer; Var Used:Integer; Addr32:Boolean):String;
-Const EA16:Array[0..7] of String[7]=('[bx+si]','[bx+di]','[bp+si]','[bp+di]','[si]','[di]','[bp]','[bx]');
-Var M,ModV,RM:Byte; D:LongInt; S:String;
+Const EA16:Array[0..7] of String[7]=('[bx+si','[bx+di','[bp+si','[bp+di','[si','[di','[bp','[bx');
+Var M,ModV,RM,Sib,Scale,Idx,Base:Byte; D:LongInt; S:String;
 Begin
  M:=ByteAt(DisBase+Ofs); Used:=1; ModV:=M shr 6; RM:=M and 7;
  If ModV=3 Then Begin DecodeRM:=RegName(RM,Size);Exit;End;
- If Addr32 Then Begin S:='['+RegName(RM,4); If RM=4 Then Begin S:=S+'+sib';Inc(Used);End;
+ If Addr32 Then Begin
+  If RM=4 Then Begin Sib:=ByteAt(DisBase+Ofs+Used);Inc(Used);Scale:=Sib shr 6;Idx:=(Sib shr 3)and 7;Base:=Sib and 7;S:='[';
+   If not((ModV=0)and(Base=5)) Then S:=S+RegName(Base,4);
+   If Idx<>4 Then Begin If Length(S)>1 Then S:=S+'+';S:=S+RegName(Idx,4);If Scale<>0 Then S:=S+'*'+DecStr(1 shl Scale);End;
+   If (ModV=0)and(Base=5) Then Begin D:=LongAt(DisBase+Ofs+Used);Inc(Used,4);If Length(S)>1 Then S:=S+'+';S:=S+HexN(LongWord(D),8);End;
+  End Else S:='['+RegName(RM,4);
   If (ModV=0) and (RM=5) Then Begin D:=LongAt(DisBase+Ofs+Used);Inc(Used,4);S:='['+HexN(LongWord(D),8);End
   Else If ModV=1 Then Begin D:=SignedByte(ByteAt(DisBase+Ofs+Used));Inc(Used);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End
   Else If ModV=2 Then Begin D:=LongAt(DisBase+Ofs+Used);Inc(Used,4);S:=S+'+'+HexN(LongWord(D),8);End;
  End Else Begin S:=EA16[RM];
   If (ModV=0) and (RM=6) Then Begin D:=WordAt(DisBase+Ofs+Used);Inc(Used,2);S:='['+HexN(D,4);End
-  Else If ModV=1 Then Begin D:=SignedByte(ByteAt(DisBase+Ofs+Used));Inc(Used);Delete(S,Length(S),1);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End
-  Else If ModV=2 Then Begin D:=SignedWord(WordAt(DisBase+Ofs+Used));Inc(Used,2);Delete(S,Length(S),1);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End;
+  Else If ModV=1 Then Begin D:=SignedByte(ByteAt(DisBase+Ofs+Used));Inc(Used);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End
+  Else If ModV=2 Then Begin D:=SignedWord(WordAt(DisBase+Ofs+Used));Inc(Used,2);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End;
  End; DecodeRM:=S+']';
 End;
 
 Function DecodeInstruction(Ofs:Word; Var Text:String; Var Target:LongInt; Var Stops:Boolean):Integer;
 Const Jcc:Array[0..15] of String[3]=('jo','jno','jb','jnb','je','jne','jbe','ja','js','jns','jp','jnp','jl','jge','jle','jg');
       Alu:Array[0..7] of String[3]=('add','or','adc','sbb','and','sub','xor','cmp');
-Var P,Used,Size,OpSize:Integer; Op,M,RegV:Byte; Addr32,Prefix:Boolean; Imm:LongInt; A,B:String;
+      Shift:Array[0..7] of String[3]=('rol','ror','rcl','rcr','shl','shr','sal','sar');
+Var P,Used,Size,OpSize:Integer; Op,Op2,M,RegV,Grp:Byte; Addr32,Prefix:Boolean; Imm:LongInt; A,B,Mn,Sym,PrefixText:String;
 Begin
- P:=Ofs;Target:=-1;Stops:=False;Addr32:=False;OpSize:=2;Prefix:=True;
+ P:=Ofs;Target:=-1;Stops:=False;Addr32:=False;OpSize:=2;Prefix:=True;PrefixText:='';
  While Prefix do Begin Op:=ByteAt(DisBase+P);Prefix:=False;
   Case Op of $66:Begin OpSize:=4;Prefix:=True;Inc(P);End;$67:Begin Addr32:=True;Prefix:=True;Inc(P);End;
-   $26,$2E,$36,$3E,$64,$65,$F0,$F2,$F3:Begin Prefix:=True;Inc(P);End;End;
+   $26:Begin PrefixText:='es:';Prefix:=True;Inc(P);End;$2E:Begin PrefixText:='cs:';Prefix:=True;Inc(P);End;
+   $36:Begin PrefixText:='ss:';Prefix:=True;Inc(P);End;$3E:Begin PrefixText:='ds:';Prefix:=True;Inc(P);End;
+   $64:Begin PrefixText:='fs:';Prefix:=True;Inc(P);End;$65:Begin PrefixText:='gs:';Prefix:=True;Inc(P);End;
+   $F0:Begin PrefixText:='lock ';Prefix:=True;Inc(P);End;$F2:Begin PrefixText:='repne ';Prefix:=True;Inc(P);End;$F3:Begin PrefixText:='rep ';Prefix:=True;Inc(P);End;End;
  End; Op:=ByteAt(DisBase+P);Inc(P);Text:='';
  If (Op>=$40) and (Op<=$47) Then Text:='inc '+RegName(Op-$40,OpSize)
  Else If (Op>=$48) and (Op<=$4F) Then Text:='dec '+RegName(Op-$48,OpSize)
  Else If (Op>=$50) and (Op<=$57) Then Text:='push '+RegName(Op-$50,OpSize)
  Else If (Op>=$58) and (Op<=$5F) Then Text:='pop '+RegName(Op-$58,OpSize)
- Else If (Op>=$70) and (Op<=$7F) Then Begin Target:=P+SignedByte(ByteAt(DisBase+P));Inc(P);Text:=Jcc[Op and 15]+' L'+HexN(Target,4);End
+ Else If (Op>=$70) and (Op<=$7F) Then Begin Target:=P+SignedByte(ByteAt(DisBase+P));Inc(P);Text:=Jcc[Op and 15]+' '+LabelName(DisSeg,Target,'L');End
  Else If (Op>=$B0) and (Op<=$B7) Then Begin Text:='mov '+RegName(Op-$B0,1)+',0'+HexN(ByteAt(DisBase+P),2)+'h';Inc(P);End
  Else If (Op>=$B8) and (Op<=$BF) Then Begin If OpSize=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;Text:='mov '+RegName(Op-$B8,OpSize)+',0'+HexN(LongWord(Imm),OpSize*2)+'h';End
+ Else If (Op<=$3D) and ((Op and 7)<=5) Then Begin Mn:=Alu[(Op shr 3) and 7];Size:=Op and 1;If Size=0 Then Size:=1 Else Size:=OpSize;
+  If (Op and 7)<4 Then Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);B:=RegName(RegV,Size);
+   If (Op and 2)<>0 Then Text:=Mn+' '+B+','+A Else Text:=Mn+' '+A+','+B;
+  End Else Begin If Size=1 Then Begin Imm:=ByteAt(DisBase+P);Inc(P);End Else If Size=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;
+   Text:=Mn+' '+RegName(0,Size)+',0'+HexN(LongWord(Imm),Size*2)+'h';End;
+ End
  Else Case Op of
+  $06:Text:='push es';$07:Text:='pop es';$0E:Text:='push cs';$16:Text:='push ss';$17:Text:='pop ss';$1E:Text:='push ds';$1F:Text:='pop ds';
+  $27:Text:='daa';$2F:Text:='das';$37:Text:='aaa';$3F:Text:='aas';
+  $60:Text:='pusha';$61:Text:='popa';$62:Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);Text:='bound '+RegName(RegV,OpSize)+','+A;End;
+  $63:Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,2,Used,Addr32);Inc(P,Used);Text:='arpl '+A+','+RegName(RegV,2);End;
+  $6C:Text:='insb';$6D:Text:='insw';$6E:Text:='outsb';$6F:Text:='outsw';
   $90:Text:='nop';$C3:Begin Text:='ret';Stops:=True;End;$CB:Begin Text:='retf';Stops:=True;End;
+  $91,$92,$93,$94,$95,$96,$97:Text:='xchg '+RegName(0,OpSize)+','+RegName(Op-$90,OpSize);
+  $98:If OpSize=4 Then Text:='cwde' Else Text:='cbw';$99:If OpSize=4 Then Text:='cdq' Else Text:='cwd';
+  $9B:Text:='wait';$9C:Text:='pushf';$9D:Text:='popf';$9E:Text:='sahf';$9F:Text:='lahf';
   $CC:Text:='int 3';$CD:Begin Text:='int 0'+HexN(ByteAt(DisBase+P),2)+'h';Inc(P);End;$CF:Begin Text:='iret';Stops:=True;End;
-  $E8:Begin Target:=P+2+SignedWord(WordAt(DisBase+P));Inc(P,2);Text:='call L'+HexN(Target,4);End;
-  $E9:Begin Target:=P+2+SignedWord(WordAt(DisBase+P));Inc(P,2);Text:='jmp L'+HexN(Target,4);Stops:=True;End;
-  $EB:Begin Target:=P+1+SignedByte(ByteAt(DisBase+P));Inc(P);Text:='jmp short L'+HexN(Target,4);Stops:=True;End;
+  $E8:Begin If OpSize=4 Then Begin Target:=P+4+LongAt(DisBase+P);Inc(P,4);End Else Begin Target:=P+2+SignedWord(WordAt(DisBase+P));Inc(P,2);End;Text:='call '+LabelName(DisSeg,Target,'L');End;
+  $E9:Begin If OpSize=4 Then Begin Target:=P+4+LongAt(DisBase+P);Inc(P,4);End Else Begin Target:=P+2+SignedWord(WordAt(DisBase+P));Inc(P,2);End;Text:='jmp '+LabelName(DisSeg,Target,'L');Stops:=True;End;
+  $EB:Begin Target:=P+1+SignedByte(ByteAt(DisBase+P));Inc(P);Text:='jmp short '+LabelName(DisSeg,Target,'L');Stops:=True;End;
   $68:Begin Text:='push 0'+HexN(WordAt(DisBase+P),4)+'h';Inc(P,2);End;$6A:Begin Text:='push '+DecStr(SignedByte(ByteAt(DisBase+P)));Inc(P);End;
+  $69,$6B:Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);
+   If Op=$6B Then Begin Imm:=SignedByte(ByteAt(DisBase+P));Inc(P);End Else If OpSize=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;Text:='imul '+RegName(RegV,OpSize)+','+A+','+DecStr(Imm);End;
+  $80,$81,$82,$83:Begin M:=ByteAt(DisBase+P);Grp:=(M shr 3) and 7;If Op in [$80,$82] Then Size:=1 Else Size:=OpSize;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);
+   If Op in [$80,$82,$83] Then Begin Imm:=SignedByte(ByteAt(DisBase+P));Inc(P);End Else If Size=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;
+   Text:=Alu[Grp]+' '+A+','+DecStr(Imm);End;
+  $86,$87:Begin If Op=$86 Then Size:=1 Else Size:=OpSize;M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);Text:='xchg '+A+','+RegName(RegV,Size);End;
+  $8C,$8E:Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,2,Used,Addr32);Inc(P,Used);If Op=$8C Then Text:='mov '+A+',s'+DecStr(RegV) Else Text:='mov s'+DecStr(RegV)+','+A;End;
+  $8D:Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);Text:='lea '+RegName(RegV,OpSize)+','+A;End;
+  $8F:Begin A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);Text:='pop '+A;End;
+  $9A:Begin Sym:=FixupSymbol(P);Imm:=WordAt(DisBase+P);If Sym<>'' Then Text:='call far '+Sym Else Text:='call far '+HexN(WordAt(DisBase+P+2),4)+':'+HexN(Imm,4);Inc(P,4);End;
+  $A0,$A1,$A2,$A3:Begin If (Op and 1)=0 Then Size:=1 Else Size:=OpSize;If Addr32 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;If (Op and 2)=0 Then Text:='mov '+RegName(0,Size)+',['+HexN(Imm,IfThenLong(Addr32,8,4))+']' Else Text:='mov ['+HexN(Imm,IfThenLong(Addr32,8,4))+'],'+RegName(0,Size);End;
+  $A4:Text:='movsb';$A5:Text:='movsw';$A6:Text:='cmpsb';$A7:Text:='cmpsw';$AA:Text:='stosb';$AB:Text:='stosw';$AC:Text:='lodsb';$AD:Text:='lodsw';$AE:Text:='scasb';$AF:Text:='scasw';
+  $A8:Begin Text:='test al,0'+HexN(ByteAt(DisBase+P),2)+'h';Inc(P);End;
+  $A9:Begin If OpSize=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;Text:='test '+RegName(0,OpSize)+',0'+HexN(Imm,OpSize*2)+'h';End;
+  $C0,$C1,$D0,$D1,$D2,$D3:Begin If Op in [$C0,$D0,$D2] Then Size:=1 Else Size:=OpSize;M:=ByteAt(DisBase+P);Grp:=(M shr 3) and 7;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);
+   If Op in [$D0,$D1] Then B:='1' Else If Op in [$D2,$D3] Then B:='cl' Else Begin B:=DecStr(ByteAt(DisBase+P));Inc(P);End;Text:=Shift[Grp]+' '+A+','+B;End;
+  $C4,$C5:Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);If Op=$C4 Then Mn:='les' Else Mn:='lds';Text:=Mn+' '+RegName(RegV,OpSize)+','+A;End;
+  $C2:Begin Text:='ret '+DecStr(WordAt(DisBase+P));Inc(P,2);Stops:=True;End;$CA:Begin Text:='retf '+DecStr(WordAt(DisBase+P));Inc(P,2);Stops:=True;End;
+  $C8:Begin Text:='enter '+DecStr(WordAt(DisBase+P))+','+DecStr(ByteAt(DisBase+P+2));Inc(P,3);End;$C9:Text:='leave';
+  $C6,$C7:Begin If Op=$C6 Then Size:=1 Else Size:=OpSize;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);If Size=1 Then Begin Imm:=ByteAt(DisBase+P);Inc(P);End Else If Size=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;Text:='mov '+A+',0'+HexN(Imm,Size*2)+'h';End;
+  $E0,$E1,$E2,$E3:Begin Target:=P+1+SignedByte(ByteAt(DisBase+P));Inc(P);Case Op of$E0:Mn:='loopne';$E1:Mn:='loope';$E2:Mn:='loop';Else Mn:='jcxz';End;Text:=Mn+' '+LabelName(DisSeg,Target,'L');End;
+  $EA:Begin Text:='jmp far '+HexN(WordAt(DisBase+P+2),4)+':'+HexN(WordAt(DisBase+P),4);Inc(P,4);Stops:=True;End;
+  $D4:Begin Text:='aam '+DecStr(ByteAt(DisBase+P));Inc(P);End;$D5:Begin Text:='aad '+DecStr(ByteAt(DisBase+P));Inc(P);End;$D7:Text:='xlat';
+  $D8,$D9,$DA,$DB,$DC,$DD,$DE,$DF:Begin A:=DecodeRM(P,2,Used,Addr32);Inc(P,Used);Text:='esc '+DecStr(Op-$D8)+','+A;End;
+  $E4:Begin Text:='in al,0'+HexN(ByteAt(DisBase+P),2)+'h';Inc(P);End;$E5:Begin Text:='in '+RegName(0,OpSize)+',0'+HexN(ByteAt(DisBase+P),2)+'h';Inc(P);End;
+  $E6:Begin Text:='out 0'+HexN(ByteAt(DisBase+P),2)+'h,al';Inc(P);End;$E7:Begin Text:='out 0'+HexN(ByteAt(DisBase+P),2)+'h,'+RegName(0,OpSize);Inc(P);End;
+  $EC:Text:='in al,dx';$ED:Text:='in '+RegName(0,OpSize)+',dx';$EE:Text:='out dx,al';$EF:Text:='out dx,'+RegName(0,OpSize);
+  $F5:Text:='cmc';$F6,$F7:Begin If Op=$F6 Then Size:=1 Else Size:=OpSize;M:=ByteAt(DisBase+P);Grp:=(M shr 3) and 7;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);
+   Case Grp of 0,1:Begin If Size=1 Then Begin Imm:=ByteAt(DisBase+P);Inc(P);End Else If Size=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;Text:='test '+A+',0'+HexN(Imm,Size*2)+'h';End;
+    2:Text:='not '+A;3:Text:='neg '+A;4:Text:='mul '+A;5:Text:='imul '+A;6:Text:='div '+A;7:Text:='idiv '+A;End;End;
+  $FE,$FF:Begin If Op=$FE Then Size:=1 Else Size:=OpSize;M:=ByteAt(DisBase+P);Grp:=(M shr 3) and 7;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);Case Grp of 0:Mn:='inc';1:Mn:='dec';2:Mn:='call';3:Mn:='call far';4:Begin Mn:='jmp';Stops:=True;End;5:Begin Mn:='jmp far';Stops:=True;End;6:Mn:='push';Else Mn:='???';End;Text:=Mn+' '+A;End;
+  $0F:Begin Op2:=ByteAt(DisBase+P);Inc(P);If (Op2>=$80) and (Op2<=$8F) Then Begin If OpSize=4 Then Begin Target:=P+4+LongAt(DisBase+P);Inc(P,4);End Else Begin Target:=P+2+SignedWord(WordAt(DisBase+P));Inc(P,2);End;Text:=Jcc[Op2 and 15]+' '+LabelName(DisSeg,Target,'L');End
+   Else If (Op2>=$90) and (Op2<=$9F) Then Begin A:=DecodeRM(P,1,Used,Addr32);Inc(P,Used);Text:='set'+Copy(Jcc[Op2 and 15],2,3)+' '+A;End
+   Else If (Op2>=$C8)and(Op2<=$CF) Then Text:='bswap '+RegName(Op2-$C8,4)
+   Else If Op2 in [$B6,$B7,$BE,$BF] Then Begin If (Op2 and 1)=0 Then Size:=1 Else Size:=2;M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);If (Op2 and 8)=0 Then Mn:='movzx' Else Mn:='movsx';Text:=Mn+' '+RegName(RegV,OpSize)+','+A;End
+   Else If Op2 in [$A0,$A1,$A8,$A9] Then Begin If Op2 in [$A0,$A8] Then Mn:='push ' Else Mn:='pop ';If Op2<$A8 Then Mn:=Mn+'fs' Else Mn:=Mn+'gs';Text:=Mn;End
+   Else If Op2 in [$A3,$AB,$B3,$BB] Then Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);Case Op2 of $A3:Mn:='bt';$AB:Mn:='bts';$B3:Mn:='btr';Else Mn:='btc';End;Text:=Mn+' '+A+','+RegName(RegV,OpSize);End
+   Else If Op2 in [$A4,$A5,$AC,$AD] Then Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);If Op2<$AC Then Mn:='shld' Else Mn:='shrd';If (Op2 and 1)=0 Then Begin B:=DecStr(ByteAt(DisBase+P));Inc(P);End Else B:='cl';Text:=Mn+' '+A+','+RegName(RegV,OpSize)+','+B;End
+   Else If Op2 in [$AF,$B0,$B1,$BC,$BD,$C0,$C1] Then Begin If Op2 in [$B0,$C0] Then Size:=1 Else Size:=OpSize;M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);
+    Case Op2 of $AF:Mn:='imul';$B0,$B1:Mn:='cmpxchg';$BC:Mn:='bsf';$BD:Mn:='bsr';Else Mn:='xadd';End;Text:=Mn+' '+RegName(RegV,Size)+','+A;End
+   Else If Op2 in [$B2,$B4,$B5] Then Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);If Op2=$B2 Then Mn:='lss' Else If Op2=$B4 Then Mn:='lfs' Else Mn:='lgs';Text:=Mn+' '+RegName(RegV,OpSize)+','+A;End
+   Else If Op2=$BA Then Begin M:=ByteAt(DisBase+P);Grp:=(M shr 3) and 7;A:=DecodeRM(P,OpSize,Used,Addr32);Inc(P,Used);Case Grp of 4:Mn:='bt';5:Mn:='bts';6:Mn:='btr';Else Mn:='btc';End;Text:=Mn+' '+A+','+DecStr(ByteAt(DisBase+P));Inc(P);End
+   Else Text:='db 00Fh,0'+HexN(Op2,2)+'h';End;
   $88,$89,$8A,$8B,$01,$03,$29,$2B,$31,$33,$39,$3B,$84,$85:
    Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;If Op in [$88,$8A,$84] Then Size:=1 Else Size:=OpSize;
     A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);B:=RegName(RegV,Size);
     Case Op of $88,$89:Text:='mov '+A+','+B;$8A,$8B:Text:='mov '+B+','+A;$01,$03:Text:='add ';$29,$2B:Text:='sub ';$31,$33:Text:='xor ';$39,$3B:Text:='cmp ';Else Text:='test ';End;
     If Text[Length(Text)]=' ' Then If Op in [$03,$2B,$33,$3B] Then Text:=Text+B+','+A Else Text:=Text+A+','+B;
    End;
-  $9C:Text:='pushf';$9D:Text:='popf';$FA:Text:='cli';$FB:Text:='sti';$FC:Text:='cld';$FD:Text:='std';$F4:Begin Text:='hlt';Stops:=True;End;
+  $F8:Text:='clc';$F9:Text:='stc';$FA:Text:='cli';$FB:Text:='sti';$FC:Text:='cld';$FD:Text:='std';$F4:Begin Text:='hlt';Stops:=True;End;
  Else Text:='db 0'+HexN(Op,2)+'h'; End;
- DecodeInstruction:=P-Ofs;
+ If P>DisSize Then Begin Text:='db 0'+HexN(ByteAt(DisBase+Ofs),2)+'h';P:=Ofs+1;Target:=-1;Stops:=False;End;
+ If (PrefixText<>'')and(Text<>'') Then Text:=PrefixText+Text;DecodeInstruction:=P-Ofs;
 End;
 
-Procedure ListBytes(Posn, Count: LongInt; StartOffset: Word);
-Var Pass,Len,I,J,N:Integer; Target:LongInt; Changed,Stops:Boolean; T:String;
+Procedure ListBytes(Posn, Count: LongInt; StartOffset,Segment: Word;DefaultCode:Boolean);
+Var Pass,Len,I,J,N,Scan:Integer; Target:LongInt; Changed,Stops:Boolean; T:String;E:PEntry;JT:PJumpTable;TSeg,TOfs:Word;
 Begin
  If not ValidRange(Posn, Count) Then Begin Fail('la ressource depasse la fin du fichier'); Exit; End;
- DisBase:=Posn;DisSize:=Count;FillChar(CodeMap,SizeOf(CodeMap),0);FillChar(LabelMap,SizeOf(LabelMap),0);MapSet(LabelMap,StartOffset);
+ DisBase:=Posn;DisSize:=Count;DisSeg:=Segment;FillChar(CodeMap,SizeOf(CodeMap),0);FillChar(DataMap,SizeOf(DataMap),0);FillChar(LabelMap,SizeOf(LabelMap),0);FillChar(InstMap,SizeOf(InstMap),0);
+ If DefaultCode Then MapSet(LabelMap,StartOffset);
+ E:=FirstEntry;While E<>Nil do Begin If(E^.Seg=Segment)and(E^.Ofs>=StartOffset)and(E^.Ofs<StartOffset+Count)Then Begin MapSet(LabelMap,E^.Ofs);If E^.IsCode Then MapClear(DataMap,E^.Ofs)Else MapSet(DataMap,E^.Ofs);End;E:=E^.Next;End;
+ JT:=FirstJumpTable;While JT<>Nil do Begin If(JT^.Seg=Segment)and(JT^.Ofs<Count)Then Begin
+  For J:=0 to JT^.Len-1 do If JT^.Ofs+J<Count Then MapSet(DataMap,JT^.Ofs+J);
+  If JT^.Kind=2 Then Begin J:=0;While J+1<JT^.Len do Begin TOfs:=WordAt(Posn+JT^.Ofs+J);If TOfs<Count Then Begin AddEntry(Segment,TOfs,True,'');MapSet(LabelMap,TOfs);MapClear(DataMap,TOfs);End;Inc(J,2);End;End
+  Else If JT^.Kind=4 Then Begin J:=0;While J+3<JT^.Len do Begin TSeg:=WordAt(Posn+JT^.Ofs+J);TOfs:=WordAt(Posn+JT^.Ofs+J+2);AddEntry(TSeg,TOfs,True,'');If(TSeg=Segment)and(TOfs<Count)Then Begin MapSet(LabelMap,TOfs);MapClear(DataMap,TOfs);End;Inc(J,4);End;End;
+ End;JT:=JT^.Next;End;
  Pass:=0;Repeat Inc(Pass);Changed:=False;I:=0;
-  While I<Count do Begin If MapTest(LabelMap,StartOffset+I) or ((I>0) and MapTest(CodeMap,StartOffset+I-1)) Then Begin
-   Len:=DecodeInstruction(StartOffset+I,T,Target,Stops);For J:=0 to Len-1 do If I+J<Count Then MapSet(CodeMap,StartOffset+I+J);
-   If (Target>=StartOffset) and (Target<StartOffset+Count) and not MapTest(LabelMap,Target) Then Begin MapSet(LabelMap,Target);Changed:=True;End;
-   If Stops Then Inc(I,Len) Else Inc(I,Len);
-  End Else Inc(I);End;
+  While I<Count do Begin If MapTest(LabelMap,StartOffset+I) Then Begin Scan:=I;
+   While (Scan<Count) and not MapTest(InstMap,StartOffset+Scan) and not MapTest(DataMap,StartOffset+Scan) do Begin
+    Len:=DecodeInstruction(StartOffset+Scan,T,Target,Stops);If Len<1 Then Len:=1;MapSet(InstMap,StartOffset+Scan);
+    For J:=0 to Len-1 do If Scan+J<Count Then MapSet(CodeMap,StartOffset+Scan+J);
+    If (Target>=StartOffset) and (Target<StartOffset+Count) and not MapTest(LabelMap,Target) Then Begin MapSet(LabelMap,Target);MapClear(DataMap,Target);AddEntry(Segment,Target,True,'');Changed:=True;End;
+    Inc(Scan,Len);If Stops Then Break;
+   End;
+  End;Inc(I);End;
  Until (not Changed) or OnePass or (Pass>=10);
  WriteLn('; Passes de desassemblage necessaires: ',Pass);I:=0;
- While I<Count do Begin If MapTest(LabelMap,StartOffset+I) Then WriteLn('L',HexN(StartOffset+I,4),':');
+ While I<Count do Begin If MapTest(LabelMap,StartOffset+I) Then If MapTest(DataMap,StartOffset+I)Then WriteLn(LabelName(Segment,StartOffset+I,'D'),':')Else WriteLn(LabelName(Segment,StartOffset+I,'L'),':');
   If MapTest(CodeMap,StartOffset+I) Then Begin Len:=DecodeInstruction(StartOffset+I,T,Target,Stops);WriteLn(#9,T);Inc(I,Len);End
   Else Begin N:=1;While (I+N<Count) and (N<8) and not MapTest(CodeMap,StartOffset+I+N) and not MapTest(LabelMap,StartOffset+I+N) do Inc(N);
    Write(#9,'db',#9);For J:=0 to N-1 do Begin If J<>0 Then Write(',');Write('0',HexN(ByteAt(Posn+I+J),2),'h');End;WriteLn;Inc(I,N);End;
@@ -314,8 +489,9 @@ Begin
  WriteLn(Prefix,' Position fichier: @ 0x0',HexN(LongWord(DataPos),8),' Taille: 0x0',HexN(S.Len,4),'     Relogements: ',FixCount);
  WriteLn(Prefix,' ',SegmentFlags(S.Flags));
  If DoDump Then Begin
+  If ValidRange(FixPos,S.FixLen) Then LoadFixups(FixPos,FixCount) Else ClearFixups;
   If (S.Flags and 8) <> 0 Then DisplayHeap(DataPos, S.Len)
-  Else Begin WriteLn; If DoList Then ListBytes(DataPos,S.Len,0) Else DumpBytes(DataPos, S.Len, 0, -2); End;
+  Else Begin WriteLn; If DoList Then ListBytes(DataPos,S.Len,0,Index,(S.Flags and $0200)<>0) Else DumpBytes(DataPos, S.Len, 0, -2); End;
   If S.FixLen = 0 Then Begin End
   Else If ValidRange(FixPos, S.FixLen) Then DisplayFixup(DataPos, FixPos, FixCount)
   Else Fail('table de relogements tronquee dans la ressource ' + DecStr(Index));
@@ -325,13 +501,14 @@ End;
 
 Procedure DisplayApplication;
 Var P, D, LibPos, ExpPos, SegTable: LongInt; Attr, AppType, NumLib, NumExp, NumSeg, StackSize, I: Word;
-    N, E, T: String;
+    N, E, T,SelfName: String; LP:PLibrary;
 Begin
  If GeosVersion = 1 Then P := APP1_HEADER_POS Else P := APP2_HEADER_POS; D := 0;
  If not ValidRange(P, APP1_HEADER_SIZE) Then Begin Fail('en-tete d''application tronque'); Exit; End;
  Attr := WordAt(P+34+D); AppType := WordAt(P+36+D); StackSize := WordAt(P+22+D);
  NumExp := WordAt(P+82+D); NumLib := WordAt(P+84+D); NumSeg := WordAt(P+88+D);
- N := FixedString(P+52+D,8,False); E := FixedString(P+60+D,4,False);
+ N := FixedString(P+52+D,8,False); E := FixedString(P+60+D,4,False);SelfName:=N;SelfLibrary:=N;
+ If DoList Then Begin LoadSymbols(SelfLibrary);LoadDisInfo(SelfLibrary);End;
  WriteLn; WriteLn('    Nom permanent: ',N,E);
  Case AppType of 1:T:='[Application]'; 2:T:='[Bibliotheque]'; 3:T:='[Pilote]'; Else T:='???'; End;
  WriteLn('            Type: ',HexN(AppType,2),' ',T); WriteLn('       Attributs: ',HexN(Attr,4));
@@ -339,7 +516,9 @@ Begin
  WriteLn(' Pile/non-init.: ',StackSize,' octets');
  LibPos := P+APP1_HEADER_SIZE;
  If NumLib > 0 Then For I := 0 to NumLib-1 do Begin
-  N := FixedString(LibPos+LongInt(I)*14,8,False); AppType := WordAt(LibPos+LongInt(I)*14+8);
+ N := FixedString(LibPos+LongInt(I)*14,8,False); AppType := WordAt(LibPos+LongInt(I)*14+8);
+  New(LP);If LP<>Nil Then Begin LP^.Ordinal:=I;LP^.Name:=N;LP^.Next:=FirstLibrary;FirstLibrary:=LP;End Else Fail('memoire insuffisante pour les bibliotheques');
+  If DoList Then LoadSymbols(N);
   If AppType=$2000 Then T:='Pilote' Else If AppType=$4000 Then T:='Bibliotheque' Else T:='???';
   WriteLn('  Bibliotheques: ',I:2,': ',N,' ',T,' (protocole ',ProtocolAt(LibPos+LongInt(I)*14+10),')');
  End;
@@ -348,6 +527,10 @@ Begin
  If (Attr and $4000)<>0 Then WriteLn('  Initialisation: Ress:0x',HexN(WordAt(P+78+D),4),' Dep:0x',HexN(WordAt(P+76+D),4));
  If (Attr and $2000)<>0 Then WriteLn('  Table du pilote: Ress:0x',HexN(WordAt(P+74+D),4),' Dep:0x',HexN(WordAt(P+72+D),4));
  ExpPos := LibPos + LongInt(NumLib)*14;
+ If NumExp>0 Then For I:=0 to NumExp-1 do AddEntry(WordAt(ExpPos+LongInt(I)*4+2),WordAt(ExpPos+LongInt(I)*4),True,LibrarySymbol(SelfName,I));
+ If (Attr and $8000)<>0 Then AddEntry(WordAt(P+26+D),WordAt(P+24+D),False,'ProcessClass');
+ If (Attr and $4000)<>0 Then AddEntry(WordAt(P+78+D),WordAt(P+76+D),True,'LibraryEntry');
+ If (Attr and $2000)<>0 Then AddEntry(WordAt(P+74+D),WordAt(P+72+D),False,'DriverTable');
  If DoDump and (NumExp > 0) Then For I := 0 to NumExp-1 do Begin If (I mod 4)=0 Then Write('    Exportations: ');
   Write(I:5,'=',HexN(WordAt(ExpPos+LongInt(I)*4+2),4),':',HexN(WordAt(ExpPos+LongInt(I)*4),4),' ');
   If ((I mod 4)=3) or (I=NumExp-1) Then WriteLn; End
