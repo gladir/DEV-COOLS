@@ -9950,7 +9950,11 @@ Var
  M6809_ExitCode: Integer;
  M6809_Cycles : LongInt;
  M6809_Panel  : ^TEmulatorPanel;
- M6809_Variant: Integer;     { 0=CoCo3 1=Dragon32 2=Dragon64 3=TO7 4=TO8 5=MO5 }
+ M6809_Variant: Integer;     { 0=CoCo3 1=Dragon32 2=Dragon64 3=TO7 4=TO8 5=MO5 6=OS9 }
+ { --- Etat emulateur OS-9/6809 (module charge via SWI2 comme trappe        }
+ { systeme, voir M6809_DoOS9Syscall) - pas de materiel CoCo3 (Coco3_Active   }
+ { reste False), juste le coeur 6809 + une couche d appels systeme minimale.}
+ OS9_Active     : Boolean;
  { --- Etat emulateur CoCo 3 (jalon 1 : VDG alpha 32x16) --- }
  Coco3_Active   : Boolean;
  Coco3_FB       : Array[0..199, 0..255] Of Byte;  { framebuffer 256x200 idx couleur EGA }
@@ -71539,6 +71543,32 @@ Begin
  CreateEmulatorTab(RomPath, '-CNES', '');
 End;
 
+{ Start-OS9Program (meme motif exact que Start-NesProgram ci-dessus) -      }
+{ lance un module OS-9/6809 (en-tete standard, voir M6809_LoadOS9Module)    }
+{ dans l emulateur -COS9. }
+Procedure TermCmd_StartOS9Program(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-OS9Program fichier.os9');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-OS9Program : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ RomPath := TermFindRomByExt(Dir, CurrParam, 'OS9');
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-COS9', '');
+End;
+
 { Start-LinuxProgram (2026-08-31, demande explicite de l'utilisateur,      }
 { exemples donnes avec un nom SANS extension (".\hello") ET un ELF nomme    }
 { explicitement (".elf")) - meme motif exact que les Start-*Program        }
@@ -100511,6 +100541,8 @@ Begin
   TermAddLine(TP,
    '  Start-NesProgram fichier[.nes]           Emulateur NES');
   TermAddLine(TP,
+   '  Start-OS9Program fichier[.os9]           Emulateur OS-9/6809');
+  TermAddLine(TP,
    '  Start-LinuxProgram fichier               Emulateur Linux x86-64 (ELF)');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
@@ -110016,7 +110048,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 246;
+ PS_CMD_ALIASES = 247;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -110242,7 +110274,8 @@ Const
   'GRANT-ORACLEPRIVILEGE',
   'REVOKE-ORACLEPRIVILEGE',
   'BACKUP-ORACLEDATABASE',
-  'RESTORE-ORACLEDATABASE'
+  'RESTORE-ORACLEDATABASE',
+  'START-OS9PROGRAM'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -110468,7 +110501,8 @@ Const
   222,
   223,
   224,
-  225
+  225,
+  226
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -111204,6 +111238,7 @@ Begin
     77: TermCmd_StartAtari2600Program(TP, ParamStr); { START-ATARI2600PROGRAM }
     78: TermCmd_StartNesProgram(TP, ParamStr);       { START-NESPROGRAM }
     79: TermCmd_StartLinuxProgram(TP, ParamStr);      { START-LINUXPROGRAM }
+    226: TermCmd_StartOS9Program(TP, ParamStr);       { START-OS9PROGRAM }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -158181,6 +158216,49 @@ Begin
   End;
 End;
 
+{ Appels systeme OS-9/6809 (SWI2 suivi d un octet de service inline,        }
+{ convention "OS9 servicecode" des assembleurs OS-9 reels) - seul un sous-  }
+{ ensemble minimal est implemente (F$Exit, I$Write, I$WritLn) ; tout autre  }
+{ code de service retourne une erreur generique (Carry positionne, B=$FF)  }
+{ plutot que d inventer un resultat, meme principe que les autres backends  }
+{ "trap systeme" de ce fichier (GEMDOS/AES/BIOS/XBIOS Atari ST). }
+Procedure M6809_DoOS9Syscall(SvcCode: Byte);
+Var
+  Ch: Byte;
+  Cnt, I: Word;
+Begin
+  M6809_CC := M6809_CC And Not $01; { Carry clair = succes par defaut }
+  Case SvcCode Of
+    $06: Begin { F$Exit(cc=B) }
+           M6809_Halted := True;
+           M6809_ExitCode := M6809_B;
+         End;
+    $8A: Begin { I$Write(path=A, buf=X, count=Y) }
+           Cnt := M6809_Y;
+           For I := 0 To Cnt - 1 Do
+             EmuVScr_PutChar(M6809_Panel^, Chr(M6809_Rd(Word(M6809_X + I))));
+         End;
+    $8C: Begin { I$WritLn(path=A, buf=X, maxcount=Y) - jusqu au CR inclus }
+           Cnt := M6809_Y;
+           I := 0;
+           While I < Cnt Do Begin
+             Ch := M6809_Rd(Word(M6809_X + I));
+             Inc(I);
+             If Ch = 13 Then Begin
+               EmuVScr_PutChar(M6809_Panel^, #13);
+               EmuVScr_PutChar(M6809_Panel^, #10);
+               Break;
+             End Else
+               EmuVScr_PutChar(M6809_Panel^, Chr(Ch));
+           End;
+           M6809_Y := I;
+         End;
+  Else
+    M6809_CC := M6809_CC Or $01;
+    M6809_B := $FF;
+  End;
+End;
+
 { Page 2 ($10) : LBcc, CMPD/CMPY, LDY/STY, LDS/STS, SWI2 }
 Procedure M6809_StepPage2;
 Var
@@ -158219,7 +158297,13 @@ Begin
     $DF: Begin EA := M6809_AmDirect; M6809_Wr16(EA, M6809_S); M6809_SetNZ16(M6809_S); End;
     $EF: Begin EA := M6809_AmIndexed; M6809_Wr16(EA, M6809_S); M6809_SetNZ16(M6809_S); End;
     $FF: Begin EA := M6809_AmExtended; M6809_Wr16(EA, M6809_S); M6809_SetNZ16(M6809_S); End;
-    $3F: Begin { SWI2 } M6809_Halted := True; M6809_ExitCode := 0; End;
+    $3F: Begin { SWI2 - trappe OS9 si OS9_Active, sinon fin de programme }
+           If OS9_Active Then
+             M6809_DoOS9Syscall(M6809_FetchByte)
+           Else Begin
+             M6809_Halted := True; M6809_ExitCode := 0;
+           End;
+         End;
   End;
 End;
 
@@ -159648,6 +159732,46 @@ Begin
     EntryAddr := $6100;
   End;
   M6809_LoadThomsonBin := True;
+End;
+
+{ Charge un module OS-9/6809 : en-tete standard (sync $87CD, taille,        }
+{ offset nom, type/langage, attributs/revision, parite, offset execution,   }
+{ taille memoire permanente, nom, code/donnees, CRC 3 octets - voir tete    }
+{ de fichier pour le detail complet des offsets). Le module ENTIER          }
+{ (en-tete inclus) est charge tel quel a l adresse 0, car M$EXEC (l offset  }
+{ d execution) est TOUJOURS relatif au debut du module lui-meme, exactement }
+{ comme un vrai chargeur OS-9. Le CRC final n est pas verifie (aucune        }
+{ consequence sur l execution, meme choix que l absence de controle de      }
+{ parite EXE DOS ailleurs dans ce fichier). }
+Function M6809_LoadOS9Module(Const FileName: String;
+                             Var EntryAddr: Word): Boolean;
+Var
+  F: File;
+  Hdr: Array[0..12] Of Byte;
+  BytesRead: Word;
+  Sync, ExecOfs: Word;
+  B: Byte;
+  I: LongInt;
+Begin
+  M6809_LoadOS9Module := False;
+  Assign(F, FileName);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Exit;
+  BlockRead(F, Hdr, SizeOf(Hdr), BytesRead);
+  If BytesRead < SizeOf(Hdr) Then Begin Close(F); Exit; End;
+  Sync := (Word(Hdr[0]) Shl 8) Or Hdr[1];
+  If Sync <> $87CD Then Begin Close(F); Exit; End;
+  ExecOfs := (Word(Hdr[9]) Shl 8) Or Hdr[10];
+  Seek(F, 0);
+  I := 0;
+  While (Not Eof(F)) And (I <= $FFFF) Do Begin
+    BlockRead(F, B, 1);
+    M6809_Mem[I] := B;
+    Inc(I);
+  End;
+  Close(F);
+  EntryAddr := ExecOfs;
+  M6809_LoadOS9Module := True;
 End;
 
 Procedure M6809_Reset(EntryAddr: Word);
@@ -162387,7 +162511,8 @@ Begin NesActive := False;
           (TargetCPU = '-CADAM');
  Is6809 := (TargetCPU = '-CCOCO3') Or (TargetCPU = '-CDRAGON32') Or
            (TargetCPU = '-CDRAGON64') Or (TargetCPU = '-CTO7') Or
-           (TargetCPU = '-CTO8') Or (TargetCPU = '-CMO5');
+           (TargetCPU = '-CTO8') Or (TargetCPU = '-CMO5') Or
+           (TargetCPU = '-COS9');
  If TargetCPU = '-CZ80'    Then CPUName := 'Zilog Z80'
  Else If TargetCPU = '-C6502'   Then CPUName := 'MOS 6502'
  Else If TargetCPU = '-C6809'   Then CPUName := 'Motorola 6809'
@@ -162417,6 +162542,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CTO7'     Then CPUName := 'Thomson TO7 (6809)'
  Else If TargetCPU = '-CTO8'     Then CPUName := 'Thomson TO8 (6809)'
  Else If TargetCPU = '-CMO5'     Then CPUName := 'Thomson MO5 (6809)'
+ Else If TargetCPU = '-COS9'     Then CPUName := 'OS-9/6809 (module)'
  Else CPUName := TargetCPU;
  OldFg := P.CurFg; OldBg := P.CurBg;
  P.CurFg := 14; P.CurBg := OldBg;
@@ -163109,6 +163235,7 @@ Begin NesActive := False;
   M6809_Panel := @P;
   EntryAddr16 := $4000;
   Loaded := False;
+  OS9_Active := False;
   If TargetCPU = '-CCOCO3' Then Begin
    M6809_Variant := 0;
    { Reset etat ROM avant chargement }
@@ -163140,6 +163267,11 @@ Begin NesActive := False;
   Else If TargetCPU = '-CMO5' Then Begin
    M6809_Variant := 5;
    Loaded := M6809_LoadThomsonBin(BinaryPath, EntryAddr16);
+  End
+  Else If TargetCPU = '-COS9' Then Begin
+   M6809_Variant := 6;
+   Loaded := M6809_LoadOS9Module(BinaryPath, EntryAddr16);
+   OS9_Active := Loaded;
   End;
   If Not Loaded Then Begin
    P.CurFg := 12;
@@ -163904,7 +164036,7 @@ Begin
  If P.Loaded And (((P.TargetCPU = '-CCOCO3') And Not Coco3_Active) Or
                    (P.TargetCPU = '-CDRAGON32') Or (P.TargetCPU = '-CDRAGON64') Or
                    (P.TargetCPU = '-CTO7') Or (P.TargetCPU = '-CTO8') Or
-                   (P.TargetCPU = '-CMO5')) Then Begin
+                   (P.TargetCPU = '-CMO5') Or (P.TargetCPU = '-COS9')) Then Begin
   If Not P.Running Then Exit;
   { Mode texte 6809 (voir M6809Text_RunOneChunk) - meme motif qu AppleII/    }
   { Atari8bit : pas de pacage temps-reel, juste des lots d instructions. }
