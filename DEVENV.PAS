@@ -3508,6 +3508,12 @@ Type
   HPFSRootFNode  : LongInt;        { FNode racine, partition-relatif        }
   HPFSPartSize   : LongInt;        { taille de la partition en secteurs     }
                                     { (bornes pour HPFS_ScanForDirBlk)       }
+  IsOS9          : Boolean;        { image de disque OS-9/6809 RBF (ex.     }
+                                    { OS9SDC.OS9), secteurs logiques (LSN)   }
+                                    { de 256 octets - voir OS9_TryMount,     }
+                                    { lecture seule                          }
+  OS9RootFD      : LongInt;        { LSN du descripteur de fichier (FD) du  }
+                                    { repertoire racine (DD.DIR de LSN 0)    }
   FATType        : Byte;           { 12, 16 ou 32                   }
   BytesPerSector : Word;
   SectorsPerCluster: Byte;
@@ -40159,6 +40165,338 @@ Begin
   T In [$01, $04, $06, $0B, $0C, $0E, $11, $14, $16, $1B, $1C, $1E];
 End;
 
+{ ==========================================================================
+  Format image OS-9/6809 (RBF - Random Block File), ex. "OS9SDC.OS9" :
+  secteurs logiques (LSN) de 256 octets, LSN 0 = secteur d identification
+  (DD.TOT/DD.DIR/etc, reference "OS-9 Technical Reference"/NitrOS9 rbf.d),
+  repertoires = fichiers dont les donnees sont des enregistrements de 32
+  octets (29 octets de nom termine par un octet a bit 7 positionne + 3
+  octets de LSN du descripteur de fichier - FD - de l entree), fichiers
+  et repertoires alloues par liste de segments (LSN de depart sur 3
+  octets + nombre de secteurs sur 2 octets, jusqu a 48 entrees a partir
+  de l octet 16 du secteur FD) plutot qu une chaine facon FAT/D64.
+  Lecture seule - aucune ecriture n est implementee (meme perimetre que
+  HPFS ci-dessus). Les offsets du secteur d identification (LSN 0) et du
+  secteur FD ci-dessous proviennent de la documentation OS-9 standard ;
+  a verifier/ajuster si une vraie image ne se monte pas correctement
+  (meme reserve deja exprimee pour le discriminant D0=200 AES/VDI Atari
+  ST plus haut dans ce fichier). ========================================= }
+
+Const
+ OS9_SECSIZE = 256;
+ OS9_ID_TOT  = 0;   { 3 octets : nombre total de secteurs }
+ OS9_ID_TKS  = 3;   { 1 octet  : secteurs par piste }
+ OS9_ID_MAP  = 4;   { 2 octets : taille en octets de la table d allocation }
+ OS9_ID_DIR  = 8;   { 3 octets : LSN du FD du repertoire racine }
+ OS9_ID_NAM  = 31;  { nom de volume, termine par un octet a bit 7 positionne }
+
+Function OS9_ReadSector(Idx: Byte; LSN: LongInt; Var Buf: Array Of Byte): Boolean;
+Var
+ Ofs: LongInt;
+ BR: Word;
+Begin
+ OS9_ReadSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If LSN < 0 Then Exit;
+ Ofs := LSN * LongInt(OS9_SECSIZE);
+ If Ofs + OS9_SECSIZE > EmuFloppySize[Idx] Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], Ofs);
+ If IOResult <> 0 Then Exit;
+ BR := 0;
+ BlockRead(EmuFloppyFile[Idx], Buf, OS9_SECSIZE, BR);
+ {$I+} If IOResult <> 0 Then Exit;
+ OS9_ReadSector := (BR = OS9_SECSIZE);
+End;
+
+Function OS9_BE16(Var Buf: Array Of Byte; Off: Integer): Word;
+Begin
+ OS9_BE16 := (Word(Buf[Off]) Shl 8) Or Buf[Off + 1];
+End;
+
+Function OS9_BE24(Var Buf: Array Of Byte; Off: Integer): LongInt;
+Begin
+ OS9_BE24 := (LongInt(Buf[Off]) Shl 16) Or (LongInt(Buf[Off + 1]) Shl 8) Or
+  LongInt(Buf[Off + 2]);
+End;
+
+Function OS9_BE32(Var Buf: Array Of Byte; Off: Integer): LongInt;
+Begin
+ OS9_BE32 := (LongInt(Buf[Off]) Shl 24) Or (LongInt(Buf[Off + 1]) Shl 16) Or
+  (LongInt(Buf[Off + 2]) Shl 8) Or LongInt(Buf[Off + 3]);
+End;
+
+{ Nom termine par un octet a bit 7 positionne (bit haut inclus dans le
+  dernier caractere) - meme convention que les noms de module OS-9 deja
+  geree par M6809_ReadOS9Name pour l emulateur 6809. }
+Function OS9_ReadName(Var Buf: Array Of Byte; Off, MaxLen: Integer): String;
+Var
+ S: String;
+ I: Integer;
+ B: Byte;
+Begin
+ S := '';
+ For I := 0 To MaxLen - 1 Do Begin
+  B := Buf[Off + I];
+  If B = 0 Then Break;
+  If (B And $80) <> 0 Then Begin
+   S := S + Chr(B And $7F);
+   Break;
+  End Else
+   S := S + Chr(B);
+ End;
+ OS9_ReadName := S;
+End;
+
+Function OS9_TryMount(Idx: Byte; Var V: TFatVol): Boolean;
+Var
+ Buf0, BufFD: Array[0..255] Of Byte;
+ Tot, DirFD: LongInt;
+ Tks: Byte;
+Begin
+ OS9_TryMount := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If Not OS9_ReadSector(Idx, 0, Buf0) Then Exit;
+ Tot   := OS9_BE24(Buf0, OS9_ID_TOT);
+ Tks   := Buf0[OS9_ID_TKS];
+ DirFD := OS9_BE24(Buf0, OS9_ID_DIR);
+ { Sondes de plausibilite - evite de confondre une image FAT/D64/HPFS   }
+ { avec OS-9 (aucune signature magique fixe en LSN 0, contrairement a   }
+ { FAT/D64/HPFS ci-dessus). }
+ If (Tot <= 0) Or (Tks = 0) Then Exit;
+ If LongInt(Tot) * OS9_SECSIZE > EmuFloppySize[Idx] + OS9_SECSIZE Then Exit;
+ If (DirFD <= 0) Or (DirFD >= Tot) Then Exit;
+ { Le FD racine doit lui-meme ressembler a un FD de repertoire (bit $80 }
+ { de l octet d attributs) - derniere sonde avant d accepter le format. }
+ If Not OS9_ReadSector(Idx, DirFD, BufFD) Then Exit;
+ If (BufFD[0] And $80) = 0 Then Exit;
+ V.IsOS9     := True;
+ V.Mounted   := True;
+ V.OS9RootFD := DirFD;
+ V.VolLabel  := OS9_ReadName(Buf0, OS9_ID_NAM, 32);
+ OS9_TryMount := True;
+End;
+
+{ Charge le descripteur de fichier (FD) situe au LSN FDLsn : attributs,
+  taille et liste de segments (LSN de depart + nombre de secteurs,
+  jusqu a 48 entrees). Utilise pour lister un repertoire (les segments
+  pointent alors vers des enregistrements de 32 octets) comme pour lire
+  un fichier ordinaire (les segments pointent vers les donnees). }
+Function OS9_ReadFD(Idx: Byte; FDLsn: LongInt; Var Att: Byte; Var Siz: LongInt;
+ Var SegLsn: Array Of LongInt; Var SegCnt: Array Of Word;
+ Var NSegs: Integer): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ I, Off: Integer;
+ L: LongInt;
+ C: Word;
+Begin
+ OS9_ReadFD := False;
+ NSegs := 0;
+ If Not OS9_ReadSector(Idx, FDLsn, Buf) Then Exit;
+ Att := Buf[0];
+ Siz := OS9_BE32(Buf, 9);
+ Off := 16;
+ For I := 0 To 47 Do Begin
+  If Off + 5 > 256 Then Break;
+  L := OS9_BE24(Buf, Off);
+  C := OS9_BE16(Buf, Off + 3);
+  If (L = 0) And (C = 0) Then Break;
+  SegLsn[I] := L;
+  SegCnt[I] := C;
+  NSegs := I + 1;
+  Inc(Off, 5);
+ End;
+ OS9_ReadFD := True;
+End;
+
+{ Cherche NameUp (deja majuscule) parmi les entrees de repertoire (32
+  octets : nom + LSN du FD enfant) du repertoire dont le FD est DirFD.
+  "." et ".." sont des entrees ordinaires (contrairement a FAT) : aucun
+  traitement special n est necessaire, la recherche generique les trouve
+  comme n importe quel autre nom. }
+Function OS9_FindInDir(Idx: Byte; DirFD: LongInt; NameUp: String;
+ Var Attr: Byte; Var ChildFD: LongInt; Var Size: LongInt): Boolean;
+Var
+ SegLsn: Array[0..47] Of LongInt;
+ SegCnt: Array[0..47] Of Word;
+ NSegs, SI, S, E: Integer;
+ DAtt: Byte;
+ DSize: LongInt;
+ Buf, FDBuf: Array[0..255] Of Byte;
+ Remain: LongInt;
+ Nm: String;
+ ChFD: LongInt;
+Begin
+ OS9_FindInDir := False;
+ If Not OS9_ReadFD(Idx, DirFD, DAtt, DSize, SegLsn, SegCnt, NSegs) Then Exit;
+ Remain := DSize;
+ For SI := 0 To NSegs - 1 Do Begin
+  If Remain <= 0 Then Break;
+  For S := 0 To Integer(SegCnt[SI]) - 1 Do Begin
+   If Remain <= 0 Then Break;
+   If Not OS9_ReadSector(Idx, SegLsn[SI] + S, Buf) Then Exit;
+   For E := 0 To 7 Do Begin
+    If Remain <= 0 Then Break;
+    Nm   := OS9_ReadName(Buf, E * 32, 29);
+    ChFD := OS9_BE24(Buf, E * 32 + 29);
+    Dec(Remain, 32);
+    If (Nm <> '') And (ChFD <> 0) And (UpCaseStr(Nm) = NameUp) Then Begin
+     If Not OS9_ReadSector(Idx, ChFD, FDBuf) Then Exit;
+     Attr    := FDBuf[0];
+     Size    := OS9_BE32(FDBuf, 9);
+     ChildFD := ChFD;
+     OS9_FindInDir := True;
+     Exit;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Liste le contenu du repertoire dont le FD est DirFD (appelee depuis le
+  branchement IsOS9 de Fat_ListDir, donc par toutes les variantes
+  DIR/LS/GET-CHILDITEM du terminal integre). }
+Procedure OS9_ListDir(Idx: Byte; DirFD: LongInt; Var TP: TTerminalPanel);
+Var
+ SegLsn: Array[0..47] Of LongInt;
+ SegCnt: Array[0..47] Of Word;
+ NSegs, SI, S, E: Integer;
+ DAtt: Byte;
+ DSize: LongInt;
+ Buf, FDBuf: Array[0..255] Of Byte;
+ Remain: LongInt;
+ Nm, Line, Sz: String;
+ ChFD: LongInt;
+ ChAtt: Byte;
+ ChSize: LongInt;
+ TotalFiles, TotalDirs: LongInt;
+Begin
+ TotalFiles := 0;
+ TotalDirs  := 0;
+ If Not OS9_ReadFD(Idx, DirFD, DAtt, DSize, SegLsn, SegCnt, NSegs) Then Exit;
+ Remain := DSize;
+ For SI := 0 To NSegs - 1 Do Begin
+  If Remain <= 0 Then Break;
+  For S := 0 To Integer(SegCnt[SI]) - 1 Do Begin
+   If Remain <= 0 Then Break;
+   If Not OS9_ReadSector(Idx, SegLsn[SI] + S, Buf) Then Begin Remain := 0; Break; End;
+   For E := 0 To 7 Do Begin
+    If Remain <= 0 Then Break;
+    Nm   := OS9_ReadName(Buf, E * 32, 29);
+    ChFD := OS9_BE24(Buf, E * 32 + 29);
+    Dec(Remain, 32);
+    If (Nm = '') Or (ChFD = 0) Then Continue;
+    If (Nm = '.') Or (Nm = '..') Then Continue;
+    ChAtt := 0;
+    ChSize := 0;
+    If OS9_ReadSector(Idx, ChFD, FDBuf) Then Begin
+     ChAtt  := FDBuf[0];
+     ChSize := OS9_BE32(FDBuf, 9);
+    End;
+    If (ChAtt And $80) <> 0 Then Begin
+     Line := '<DIR>          ' + Nm;
+     Inc(TotalDirs);
+    End Else Begin
+     Str(ChSize, Sz);
+     While Length(Sz) < 14 Do Sz := ' ' + Sz;
+     Line := Sz + ' ' + Nm;
+     Inc(TotalFiles);
+    End;
+    TermAddLine(TP, Line);
+   End;
+  End;
+ End;
+ Str(TotalFiles, Sz);
+ TermAddLine(TP, Sz + ' File(s)');
+ Str(TotalDirs, Sz);
+ TermAddLine(TP, Sz + ' Dir(s)');
+End;
+
+{ Affiche un fichier OS-9 ordinaire (dont le FD est FileFD) ligne par
+  ligne, meme convention que Fat_TypeFile (coupe sur LF, tabulation
+  etendue, arret au premier octet de controle hors TAB/CR/LF). }
+Procedure OS9_TypeFile(Idx: Byte; FileFD: LongInt; Var TP: TTerminalPanel);
+Var
+ SegLsn: Array[0..47] Of LongInt;
+ SegCnt: Array[0..47] Of Word;
+ NSegs, SI, S, J: Integer;
+ Att: Byte;
+ Size: LongInt;
+ Buf: Array[0..255] Of Byte;
+ Remain: LongInt;
+ ToRead: Integer;
+ B: Byte;
+ Line: String;
+ IsBin: Boolean;
+Begin
+ If Not OS9_ReadFD(Idx, FileFD, Att, Size, SegLsn, SegCnt, NSegs) Then Exit;
+ Remain := Size;
+ Line := '';
+ IsBin := False;
+ For SI := 0 To NSegs - 1 Do Begin
+  If (Remain <= 0) Or IsBin Then Break;
+  For S := 0 To Integer(SegCnt[SI]) - 1 Do Begin
+   If (Remain <= 0) Or IsBin Then Break;
+   If Not OS9_ReadSector(Idx, SegLsn[SI] + S, Buf) Then Begin
+    TermAddLine(TP, 'Erreur de lecture sur l image');
+    Exit;
+   End;
+   If Remain > OS9_SECSIZE Then ToRead := OS9_SECSIZE Else ToRead := Integer(Remain);
+   For J := 0 To ToRead - 1 Do Begin
+    B := Buf[J];
+    Case B Of
+     10: Begin TermAddLine(TP, Line); Line := ''; End;
+     13: ;
+      9: Line := Line + '    ';
+    Else
+     If B < 32 Then Begin IsBin := True; Break; End;
+     If Length(Line) >= 250 Then Begin TermAddLine(TP, Line); Line := ''; End;
+     Line := Line + Chr(B);
+    End;
+   End;
+   Dec(Remain, ToRead);
+  End;
+ End;
+ If Line <> '' Then TermAddLine(TP, Line);
+ If IsBin Then TermAddLine(TP, '(fichier binaire : affichage interrompu)');
+End;
+
+{ Octets libres approximatifs : 1 bit de la table d allocation (a partir
+  du LSN 1) = 1 secteur libre. Approximation qui ignore un eventuel
+  regroupement en clusters de plusieurs secteurs par bit (peu courant
+  sur les images pour petits volumes comme OS9SDC.OS9) - documente ici
+  plutot que fabriquer une valeur de cluster non verifiee. }
+Function OS9_FreeBytes(Idx: Byte): LongInt;
+Var
+ Buf0, Buf: Array[0..255] Of Byte;
+ MapBytes: Word;
+ B, Bit: Integer;
+ Ofs: LongInt;
+ Sec: LongInt;
+ FreeSectors: LongInt;
+Begin
+ OS9_FreeBytes := 0;
+ If Not OS9_ReadSector(Idx, 0, Buf0) Then Exit;
+ MapBytes := OS9_BE16(Buf0, OS9_ID_MAP);
+ If MapBytes = 0 Then Exit;
+ FreeSectors := 0;
+ Ofs := 0;
+ Sec := 1;
+ While Ofs < MapBytes Do Begin
+  If Not OS9_ReadSector(Idx, Sec, Buf) Then Break;
+  B := 0;
+  While (B < 256) And (Ofs < MapBytes) Do Begin
+   For Bit := 0 To 7 Do
+    If (Buf[B] And ($80 Shr Bit)) = 0 Then Inc(FreeSectors);
+   Inc(Ofs);
+   Inc(B);
+  End;
+  Inc(Sec);
+ End;
+ OS9_FreeBytes := FreeSectors * LongInt(OS9_SECSIZE);
+End;
+
 Procedure Fat_TryMount(Idx: Byte);
 Var
  Buf: Array[0..511] Of Byte;
@@ -40190,6 +40528,10 @@ Begin
   Exit;
  End;
  If H8D_TryMount(Idx, V) Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ If OS9_TryMount(Idx, V) Then Begin
   FatVol[Idx] := V;
   Exit;
  End;
@@ -40692,6 +41034,10 @@ Var
  LBA: LongInt;
 Begin
  Fat_FindInDir := False;
+ If FatVol[Idx].IsOS9 Then Begin
+  Fat_FindInDir := OS9_FindInDir(Idx, StartCl, Fat_UpStr(NameUp), Attr, Cluster, Size);
+  Exit;
+ End;
  If IsRoot Then Begin
   RootCnt := 0;
   For S := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
@@ -40744,6 +41090,11 @@ End;
   n importe quel autre repertoire. }
 Procedure Fat_SetRootRef(Idx: Byte; Var IsRoot: Boolean; Var StartCl: LongInt);
 Begin
+ If FatVol[Idx].IsOS9 Then Begin
+  IsRoot  := False;
+  StartCl := FatVol[Idx].OS9RootFD;
+  Exit;
+ End;
  If FatVol[Idx].FATType = 32 Then Begin
   IsRoot  := False;
   StartCl := FatVol[Idx].RootCluster;
@@ -41030,6 +41381,10 @@ Begin
  TotalDirs  := 0;
  TotalSize  := 0;
  Done := False;
+ If FatVol[Idx].IsOS9 Then Begin
+  OS9_ListDir(Idx, StartCl, TP);
+  Exit;
+ End;
  If IsRoot Then Begin
   RootCnt := 0;
   For S2 := 0 To FatVol[Idx].RootDirSectors - 1 Do Begin
@@ -41147,6 +41502,10 @@ Var
  Line: String;
  IsBin: Boolean;
 Begin
+ If FatVol[Idx].IsOS9 Then Begin
+  OS9_TypeFile(Idx, StartCl, TP);
+  Exit;
+ End;
  Cur := StartCl;
  Remain := Size;
  Line := '';
@@ -41211,6 +41570,10 @@ Var
 Begin
  Fat_FreeBytes := 0;
  If Not FatVol[Idx].Mounted Then Exit;
+ If FatVol[Idx].IsOS9 Then Begin
+  Fat_FreeBytes := OS9_FreeBytes(Idx);
+  Exit;
+ End;
  Free := 0;
  MaxCl := FatVol[Idx].ClusterCount + 1;
  For Cl := 2 To MaxCl Do Begin
@@ -138480,6 +138843,9 @@ Begin
   { laissant croire a un echec. }
   WriteLn(' -> HPFS monte (', FatVol[Idx].HPFSPartSize,
    ' secteurs, partition LBA=', FatVol[Idx].PartitionStart, ')')
+ Else If FatVol[Idx].IsOS9 Then
+  WriteLn(' -> OS-9/6809 RBF monte (racine FD LSN=', FatVol[Idx].OS9RootFD,
+   ', volume "', FatVol[Idx].VolLabel, '")')
  Else If FatVol[Idx].Mounted Then
   WriteLn(' -> FAT', FatVol[Idx].FATType, ' monte (',
    FatVol[Idx].TotalSectors, ' secteurs, partition LBA=',
