@@ -114113,7 +114113,7 @@ Begin
     CreateEmulatorTab(FullPath, '-CC64', '');
    NCActionOpenAssociated := True;
   End
-  Else If Ext = 'CODE' Then Begin
+  Else If (Ext = 'CODE') Or (Ext = 'PC') Or (Ext = 'P') Or (Ext = 'PCF') Then Begin
    { p-code UCSD p-System brut mono-segment (convention DISPCODE/ASMPCODE.PAS }
    { de C:\SOURCE\PCODE) - voir PCode_Step. }
    CreateEmulatorTab(FullPath, '-CPCODE', '');
