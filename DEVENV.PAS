@@ -114680,6 +114680,27 @@ Begin
   End;
   Exit;
  End;
+ If (NCState.PaneSlot[Side] >= 0) And FatVol[NCState.PaneSlot[Side]].IsOS9 Then Begin
+  { Module OS-9/6809 (BOGUE REEL 2026-09-11, signale par l utilisateur -    }
+  { Entree sur un fichier OS-9 dans NC ne faisait rien) : jamais d          }
+  { extension (voir Start-OS9Program) - extrait vers un fichier hote        }
+  { temporaire (Fat_ExtractToTempFile, deja adapte OS-9) puis lance dans    }
+  { l emulateur -COS9. Un fichier qui n est pas un vrai module (en-tete     }
+  { $87CD absent, ex. sdc.hlp/ReadMe) ouvre quand meme l onglet mais avec   }
+  { le message d erreur standard "impossible de charger" (M6809_           }
+  { LoadOS9Module renvoie False proprement, voir ShowEmulatorPanel) - meme  }
+  { comportement que les autres formats de ce fichier face a un fichier     }
+  { invalide, jamais un blocage silencieux. }
+  If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+     NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+     ((Attr And $10) = 0) Then Begin
+   If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-COS9', '');
+    NCActionOpenAssociated := True;
+   End;
+  End;
+  Exit;
+ End;
  If (NCState.PaneSlot[Side] >= 0) And (Not FatVol[NCState.PaneSlot[Side]].IsHPFS) Then Begin
   { Disquette/disque virtuel FAT "ordinaire" (le cas general - /DISK0..     }
   { /DISK81 sans format special D64/H8D/HPFS ci-dessus, ex. un vrai .vhd    }
