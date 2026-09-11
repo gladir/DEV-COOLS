@@ -1,6 +1,11 @@
 { @author: Sylvain Maltais (support@gladir.com), d'apres GeoDump 0.5 de Marcus Groeber
   @created: 2026
-  @abstract: Clone Turbo Pascal / Free Pascal de GEODUMP 0.5. }
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal / Free Pascal 3.2)
+  @abstract: Clone Turbo Pascal / Free Pascal de GEODUMP 0.5.
+  @license: MIT
+}
+
 Program GEODUMP;
 
 {$A-}
@@ -21,6 +26,7 @@ Const
  VM_DIR_RECORD_SIZE = 12;
 
 Type
+ TCodeMap = Array[0..8191] of Byte;
  TSegment = Record
   Len, FixLen, Flags : Word;
   Pos : LongInt;
@@ -34,6 +40,8 @@ Var
  DoDump, DoList, OnePass : Boolean;
  OneResource : Integer;
  HadError : Boolean;
+ CodeMap, LabelMap : TCodeMap;
+ DisBase, DisSize : LongInt;
 
 Function IfThenString(Test:Boolean;Const A,B:String):String; Forward;
 
@@ -144,14 +152,91 @@ Begin
  End;
 End;
 
+Function MapTest(Const M:TCodeMap; P:Word):Boolean;
+Begin MapTest := (M[P shr 3] and (1 shl (P and 7)))<>0; End;
+Procedure MapSet(Var M:TCodeMap; P:Word);
+Begin M[P shr 3] := M[P shr 3] or (1 shl (P and 7)); End;
+
+Function SignedByte(B:Byte):Integer;
+Begin If B<128 Then SignedByte:=B Else SignedByte:=Integer(B)-256; End;
+Function SignedWord(W:Word):LongInt;
+Begin If W<$8000 Then SignedWord:=W Else SignedWord:=LongInt(W)-65536; End;
+
+Function RegName(N,Size:Integer):String;
+Const R8:Array[0..7] of String[2]=('al','cl','dl','bl','ah','ch','dh','bh');
+      R16:Array[0..7] of String[2]=('ax','cx','dx','bx','sp','bp','si','di');
+      R32:Array[0..7] of String[3]=('eax','ecx','edx','ebx','esp','ebp','esi','edi');
+Begin If Size=1 Then RegName:=R8[N and 7] Else If Size=4 Then RegName:=R32[N and 7] Else RegName:=R16[N and 7]; End;
+
+Function DecodeRM(Ofs:Word; Size:Integer; Var Used:Integer; Addr32:Boolean):String;
+Const EA16:Array[0..7] of String[7]=('[bx+si]','[bx+di]','[bp+si]','[bp+di]','[si]','[di]','[bp]','[bx]');
+Var M,ModV,RM:Byte; D:LongInt; S:String;
+Begin
+ M:=ByteAt(DisBase+Ofs); Used:=1; ModV:=M shr 6; RM:=M and 7;
+ If ModV=3 Then Begin DecodeRM:=RegName(RM,Size);Exit;End;
+ If Addr32 Then Begin S:='['+RegName(RM,4); If RM=4 Then Begin S:=S+'+sib';Inc(Used);End;
+  If (ModV=0) and (RM=5) Then Begin D:=LongAt(DisBase+Ofs+Used);Inc(Used,4);S:='['+HexN(LongWord(D),8);End
+  Else If ModV=1 Then Begin D:=SignedByte(ByteAt(DisBase+Ofs+Used));Inc(Used);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End
+  Else If ModV=2 Then Begin D:=LongAt(DisBase+Ofs+Used);Inc(Used,4);S:=S+'+'+HexN(LongWord(D),8);End;
+ End Else Begin S:=EA16[RM];
+  If (ModV=0) and (RM=6) Then Begin D:=WordAt(DisBase+Ofs+Used);Inc(Used,2);S:='['+HexN(D,4);End
+  Else If ModV=1 Then Begin D:=SignedByte(ByteAt(DisBase+Ofs+Used));Inc(Used);Delete(S,Length(S),1);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End
+  Else If ModV=2 Then Begin D:=SignedWord(WordAt(DisBase+Ofs+Used));Inc(Used,2);Delete(S,Length(S),1);If D>=0 Then S:=S+'+';S:=S+DecStr(D);End;
+ End; DecodeRM:=S+']';
+End;
+
+Function DecodeInstruction(Ofs:Word; Var Text:String; Var Target:LongInt; Var Stops:Boolean):Integer;
+Const Jcc:Array[0..15] of String[3]=('jo','jno','jb','jnb','je','jne','jbe','ja','js','jns','jp','jnp','jl','jge','jle','jg');
+      Alu:Array[0..7] of String[3]=('add','or','adc','sbb','and','sub','xor','cmp');
+Var P,Used,Size,OpSize:Integer; Op,M,RegV:Byte; Addr32,Prefix:Boolean; Imm:LongInt; A,B:String;
+Begin
+ P:=Ofs;Target:=-1;Stops:=False;Addr32:=False;OpSize:=2;Prefix:=True;
+ While Prefix do Begin Op:=ByteAt(DisBase+P);Prefix:=False;
+  Case Op of $66:Begin OpSize:=4;Prefix:=True;Inc(P);End;$67:Begin Addr32:=True;Prefix:=True;Inc(P);End;
+   $26,$2E,$36,$3E,$64,$65,$F0,$F2,$F3:Begin Prefix:=True;Inc(P);End;End;
+ End; Op:=ByteAt(DisBase+P);Inc(P);Text:='';
+ If (Op>=$40) and (Op<=$47) Then Text:='inc '+RegName(Op-$40,OpSize)
+ Else If (Op>=$48) and (Op<=$4F) Then Text:='dec '+RegName(Op-$48,OpSize)
+ Else If (Op>=$50) and (Op<=$57) Then Text:='push '+RegName(Op-$50,OpSize)
+ Else If (Op>=$58) and (Op<=$5F) Then Text:='pop '+RegName(Op-$58,OpSize)
+ Else If (Op>=$70) and (Op<=$7F) Then Begin Target:=P+SignedByte(ByteAt(DisBase+P));Inc(P);Text:=Jcc[Op and 15]+' L'+HexN(Target,4);End
+ Else If (Op>=$B0) and (Op<=$B7) Then Begin Text:='mov '+RegName(Op-$B0,1)+',0'+HexN(ByteAt(DisBase+P),2)+'h';Inc(P);End
+ Else If (Op>=$B8) and (Op<=$BF) Then Begin If OpSize=4 Then Begin Imm:=LongAt(DisBase+P);Inc(P,4);End Else Begin Imm:=WordAt(DisBase+P);Inc(P,2);End;Text:='mov '+RegName(Op-$B8,OpSize)+',0'+HexN(LongWord(Imm),OpSize*2)+'h';End
+ Else Case Op of
+  $90:Text:='nop';$C3:Begin Text:='ret';Stops:=True;End;$CB:Begin Text:='retf';Stops:=True;End;
+  $CC:Text:='int 3';$CD:Begin Text:='int 0'+HexN(ByteAt(DisBase+P),2)+'h';Inc(P);End;$CF:Begin Text:='iret';Stops:=True;End;
+  $E8:Begin Target:=P+2+SignedWord(WordAt(DisBase+P));Inc(P,2);Text:='call L'+HexN(Target,4);End;
+  $E9:Begin Target:=P+2+SignedWord(WordAt(DisBase+P));Inc(P,2);Text:='jmp L'+HexN(Target,4);Stops:=True;End;
+  $EB:Begin Target:=P+1+SignedByte(ByteAt(DisBase+P));Inc(P);Text:='jmp short L'+HexN(Target,4);Stops:=True;End;
+  $68:Begin Text:='push 0'+HexN(WordAt(DisBase+P),4)+'h';Inc(P,2);End;$6A:Begin Text:='push '+DecStr(SignedByte(ByteAt(DisBase+P)));Inc(P);End;
+  $88,$89,$8A,$8B,$01,$03,$29,$2B,$31,$33,$39,$3B,$84,$85:
+   Begin M:=ByteAt(DisBase+P);RegV:=(M shr 3) and 7;If Op in [$88,$8A,$84] Then Size:=1 Else Size:=OpSize;
+    A:=DecodeRM(P,Size,Used,Addr32);Inc(P,Used);B:=RegName(RegV,Size);
+    Case Op of $88,$89:Text:='mov '+A+','+B;$8A,$8B:Text:='mov '+B+','+A;$01,$03:Text:='add ';$29,$2B:Text:='sub ';$31,$33:Text:='xor ';$39,$3B:Text:='cmp ';Else Text:='test ';End;
+    If Text[Length(Text)]=' ' Then If Op in [$03,$2B,$33,$3B] Then Text:=Text+B+','+A Else Text:=Text+A+','+B;
+   End;
+  $9C:Text:='pushf';$9D:Text:='popf';$FA:Text:='cli';$FB:Text:='sti';$FC:Text:='cld';$FD:Text:='std';$F4:Begin Text:='hlt';Stops:=True;End;
+ Else Text:='db 0'+HexN(Op,2)+'h'; End;
+ DecodeInstruction:=P-Ofs;
+End;
+
 Procedure ListBytes(Posn, Count: LongInt; StartOffset: Word);
-Var I, J, N: LongInt;
+Var Pass,Len,I,J,N:Integer; Target:LongInt; Changed,Stops:Boolean; T:String;
 Begin
  If not ValidRange(Posn, Count) Then Begin Fail('la ressource depasse la fin du fichier'); Exit; End;
- I := 0; While I < Count do Begin N := Count-I; If N>8 Then N:=8;
-  Write('L',HexN(StartOffset+I,4),':',#9,'db',#9);
-  For J:=0 to N-1 do Begin If J<>0 Then Write(','); Write('0',HexN(ByteAt(Posn+I+J),2),'h'); End;
-  WriteLn; Inc(I,N);
+ DisBase:=Posn;DisSize:=Count;FillChar(CodeMap,SizeOf(CodeMap),0);FillChar(LabelMap,SizeOf(LabelMap),0);MapSet(LabelMap,StartOffset);
+ Pass:=0;Repeat Inc(Pass);Changed:=False;I:=0;
+  While I<Count do Begin If MapTest(LabelMap,StartOffset+I) or ((I>0) and MapTest(CodeMap,StartOffset+I-1)) Then Begin
+   Len:=DecodeInstruction(StartOffset+I,T,Target,Stops);For J:=0 to Len-1 do If I+J<Count Then MapSet(CodeMap,StartOffset+I+J);
+   If (Target>=StartOffset) and (Target<StartOffset+Count) and not MapTest(LabelMap,Target) Then Begin MapSet(LabelMap,Target);Changed:=True;End;
+   If Stops Then Inc(I,Len) Else Inc(I,Len);
+  End Else Inc(I);End;
+ Until (not Changed) or OnePass or (Pass>=10);
+ WriteLn('; Passes de desassemblage necessaires: ',Pass);I:=0;
+ While I<Count do Begin If MapTest(LabelMap,StartOffset+I) Then WriteLn('L',HexN(StartOffset+I,4),':');
+  If MapTest(CodeMap,StartOffset+I) Then Begin Len:=DecodeInstruction(StartOffset+I,T,Target,Stops);WriteLn(#9,T);Inc(I,Len);End
+  Else Begin N:=1;While (I+N<Count) and (N<8) and not MapTest(CodeMap,StartOffset+I+N) and not MapTest(LabelMap,StartOffset+I+N) do Inc(N);
+   Write(#9,'db',#9);For J:=0 to N-1 do Begin If J<>0 Then Write(',');Write('0',HexN(ByteAt(Posn+I+J),2),'h');End;WriteLn;Inc(I,N);End;
  End;
 End;
 
@@ -269,7 +354,7 @@ Begin
  Else If NumExp<>0 Then WriteLn('    Exportations: ',NumExp,' emplacements');
  SegTable := ExpPos + LongInt(NumExp)*4; WriteLn;
  If DoList Then Begin WriteLn('%',#10,#10,'include stdapp.def',#10);
-  If OnePass Then WriteLn('; Passes de desassemblage necessaires: 1 (/1)') Else WriteLn('; Passes de desassemblage necessaires: 1'); WriteLn;
+  If OnePass Then WriteLn('; Mode une passe demande (/1)'); WriteLn;
  End;
  If NumSeg > 0 Then For I := 0 to NumSeg-1 do If (OneResource<0) or (I=OneResource) Then DisplaySegment(I,NumSeg,SegTable);
 End;
@@ -344,7 +429,7 @@ Function IfThenString(Test:Boolean;Const A,B:String):String;
 Begin If Test Then IfThenString:=A Else IfThenString:=B; End;
 Procedure Usage;
 Begin
-  WriteLn('GEODUMP - Cette commande permet d''analyser des formats de fichiers PC/GEOS.'); 
+  WriteLn('GEODUMP - Cette commande permet d''analyser des formats de fichiers PC/GEOS.');
  WriteLn;
  WriteLn('Syntaxe : GEODUMP [/D|/L] [/Rnn] [/1] fichier');
  WriteLn(#9,'  /D      Affiche le contenu des blocs et des ressources');

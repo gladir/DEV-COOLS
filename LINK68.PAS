@@ -176,12 +176,19 @@ Var
  LinkOutputOpen : Boolean;
  TempSerial : Integer;
 
-Function UpCaseStr(Const S: String): String;
-Var I: Integer; R: String;
-Begin R := S; For I := 1 to Length(R) do R[I] := UpCase(R[I]); UpCaseStr := R; End;
+Function UpCaseStr(Const S:String):String;
+Var
+ I:Integer;
+ R:String;
+Begin
+ R := S;
+ For I := 1 to Length(R) do R[I] := UpCase(R[I]);
+ UpCaseStr := R;
+End;
 
 Function TrimStr(Const S: String): String;
-Var A, B: Integer;
+Var
+ A, B: Integer;
 Begin
  A := 1; While (A <= Length(S)) and (S[A] <= ' ') do Inc(A);
  B := Length(S); While (B >= A) and (S[B] <= ' ') do Dec(B);
@@ -189,154 +196,296 @@ Begin
 End;
 
 Function DecimalStr(V: LongInt): String;
-Var S: String;
-Begin Str(V, S); DecimalStr := TrimStr(S); End;
-
-Function IsAbbrev(Const S, FullName: String; MinLen: Integer): Boolean;
-Begin IsAbbrev := (Length(S) >= MinLen) and (Length(S) <= Length(FullName)) and
-                  (Copy(FullName, 1, Length(S)) = S); End;
-
-Procedure Error(Const S: String);
-Begin Inc(ErrorCount); WriteLn('LINK68: ', S); End;
-
-Procedure Warning(Const S: String);
-Begin Inc(WarningCount); WriteLn('LINK68: WARNING: ', S); End;
-
-Procedure RemovePartialOutput;
-Var F: File;
+Var
+ S: String;
 Begin
- If LinkOutputOpen Then Begin Close(LinkOutputFile); If IOResult <> 0 Then Begin End; LinkOutputOpen := False; End;
- If PartialOutputName <> '' Then Begin Assign(F, PartialOutputName); Erase(F); If IOResult <> 0 Then Begin End; PartialOutputName := ''; End;
+ Str(V, S);
+ DecimalStr := TrimStr(S);
 End;
 
-Procedure Fatal(Const S: String);
-Begin Error(S); RemovePartialOutput; Halt(2); End;
+Function IsAbbrev(Const S,FullName:String;MinLen:Integer):Boolean;Begin
+ IsAbbrev := (Length(S) >= MinLen) and (Length(S) <= Length(FullName)) and
+                  (Copy(FullName, 1, Length(S)) = S);
+End;
 
-Function CheckedAdd(A, B: LongInt; Const Context: String): LongInt;
+Procedure Error(Const S: String);Begin
+ Inc(ErrorCount);
+ WriteLn('LINK68: ', S);
+End;
+
+Procedure Warning(Const S: String);Begin
+ Inc(WarningCount);
+ WriteLn('LINK68: WARNING: ', S);
+End;
+
+Procedure RemovePartialOutput;
+Var
+ F: File;
 Begin
+ If LinkOutputOpen Then Begin
+  Close(LinkOutputFile);
+  If IOResult <> 0 Then Begin
+  End;
+  LinkOutputOpen := False;
+ End;
+ If PartialOutputName <> '' Then Begin
+  Assign(F, PartialOutputName);
+  Erase(F);
+  If IOResult <> 0 Then Begin
+  End;
+  PartialOutputName := '';
+ End;
+End;
+
+Procedure Fatal(Const S: String);Begin
+ Error(S);
+ RemovePartialOutput;
+ Halt(2);
+End;
+
+Function CheckedAdd(A, B: LongInt; Const Context: String): LongInt;Begin
  If ((B > 0) and (A > $7FFFFFFF - B)) or ((B < 0) and (A < LongInt($80000000) - B)) Then
   Fatal('32-bit overflow: ' + Context);
  CheckedAdd := A + B;
 End;
 
-Function CheckedSub(A, B: LongInt; Const Context: String): LongInt;
-Begin
+Function CheckedSub(A, B: LongInt; Const Context: String): LongInt;Begin
  If B = LongInt($80000000) Then Fatal('32-bit overflow: ' + Context);
  CheckedSub := CheckedAdd(A, -B, Context);
 End;
 
-Function CheckedMul(A, B: LongInt; Const Context: String): LongInt;
-Begin
+Function CheckedMul(A, B: LongInt; Const Context: String): LongInt;Begin
  If (A < 0) or (B < 0) Then Fatal('multiplication negative interne: ' + Context);
  If (A <> 0) and (B > $7FFFFFFF div A) Then Fatal('32-bit overflow: ' + Context);
  CheckedMul := A * B;
 End;
 
-Function NewByteBuffer(Size: LongInt): PByteBuffer;
-Var B: PByteBuffer; P: PBytePage; Left: LongInt;
+Function NewByteBuffer(Size:LongInt):PByteBuffer;
+Var
+ B:PByteBuffer;
+ P:PBytePage;
+ Left:LongInt;
 Begin
  If Size < 0 Then Fatal('taille de tampon negative');
  New(B); B^.FirstPage := Nil; B^.LastPage := Nil; B^.CachePage := Nil;
  B^.Size := Size; B^.CacheNumber := -1; Left := Size;
  While Left > 0 do Begin
   New(P); P^.Next := Nil; FillChar(P^.Data, SizeOf(P^.Data), 0);
-  If B^.FirstPage = Nil Then B^.FirstPage := P Else B^.LastPage^.Next := P;
+  If B^.FirstPage = Nil Then B^.FirstPage := P
+                        Else B^.LastPage^.Next := P;
   B^.LastPage := P; Dec(Left, BUFFER_PAGE_SIZE);
  End;
  NewByteBuffer := B;
 End;
 
 Procedure FreeByteBuffer(Var B: PByteBuffer);
-Var P, N: PBytePage;
+Var
+ P, N: PBytePage;
 Begin
- If B = Nil Then Exit; P := B^.FirstPage;
- While P <> Nil do Begin N := P^.Next; Dispose(P); P := N; End;
- Dispose(B); B := Nil;
+ If B = Nil Then Exit;
+ P := B^.FirstPage;
+ While P <> Nil do Begin
+  N := P^.Next;
+  Dispose(P);
+  P := N;
+ End;
+ Dispose(B);
+ B := Nil;
 End;
 
 Function BufferPage(B: PByteBuffer; Posn: LongInt): PBytePage;
-Var P: PBytePage; PageNo, N: LongInt;
+Var
+ P: PBytePage;
+ PageNo, N: LongInt;
 Begin
  If (B = Nil) or (Posn < 0) or (Posn >= B^.Size) Then Fatal('index de tampon interne invalide');
  PageNo := Posn div BUFFER_PAGE_SIZE;
- If (B^.CachePage <> Nil) and (PageNo >= B^.CacheNumber) Then Begin P := B^.CachePage; N := B^.CacheNumber; End
- Else Begin P := B^.FirstPage; N := 0; End;
- While N < PageNo do Begin P := P^.Next; Inc(N); End;
- B^.CachePage := P; B^.CacheNumber := PageNo; BufferPage := P;
+ If (B^.CachePage <> Nil) and (PageNo >= B^.CacheNumber) Then Begin
+  P := B^.CachePage;
+  N := B^.CacheNumber;
+ End
+  Else
+ Begin
+  P := B^.FirstPage;
+  N := 0;
+ End;
+ While N < PageNo do Begin
+  P := P^.Next;
+  Inc(N);
+ End;
+ B^.CachePage := P;
+ B^.CacheNumber := PageNo;
+ BufferPage := P;
 End;
 
-Function BufferByte(B: PByteBuffer; Posn: LongInt): Byte;
-Begin BufferByte := BufferPage(B, Posn)^.Data[Posn mod BUFFER_PAGE_SIZE]; End;
+Function BufferByte(B: PByteBuffer; Posn: LongInt): Byte;Begin
+ BufferByte := BufferPage(B, Posn)^.Data[Posn mod BUFFER_PAGE_SIZE];
+End;
 
-Procedure StoreBufferByte(B: PByteBuffer; Posn: LongInt; V: Byte);
-Begin BufferPage(B, Posn)^.Data[Posn mod BUFFER_PAGE_SIZE] := V; End;
+Procedure StoreBufferByte(B: PByteBuffer; Posn: LongInt; V: Byte);Begin
+ BufferPage(B, Posn)^.Data[Posn mod BUFFER_PAGE_SIZE] := V;
+End;
 
 Function BufferWord(B: PWordBuffer; Index: LongInt): Word;
-Var P: LongInt;
-Begin P := CheckedMul(Index, 2, 'word buffer index'); BufferWord := Word(BufferByte(B, P)) shl 8 or BufferByte(B, CheckedAdd(P, 1, 'word buffer index')); End;
+Var
+ P: LongInt;
+Begin
+ P := CheckedMul(Index, 2, 'word buffer index');
+ BufferWord := Word(BufferByte(B, P)) shl 8 or BufferByte(B, CheckedAdd(P, 1, 'word buffer index'));
+End;
 
 Procedure StoreBufferWord(B: PWordBuffer; Index: LongInt; V: Word);
-Var P: LongInt;
-Begin P := CheckedMul(Index, 2, 'word buffer index'); StoreBufferByte(B, P, Byte(V shr 8)); StoreBufferByte(B, CheckedAdd(P, 1, 'word buffer index'), Byte(V)); End;
+Var
+ P: LongInt;
+Begin
+ P := CheckedMul(Index, 2, 'word buffer index');
+ StoreBufferByte(B, P, Byte(V shr 8));
+ StoreBufferByte(B, CheckedAdd(P, 1, 'word buffer index'), Byte(V));
+End;
 
 Function AppendSymbol(M: PModule): PSymbol;
-Var S: PSymbol;
+Var
+ S: PSymbol;
 Begin
  New(S); S^.Next := Nil; S^.Name := ''; S^.SType := 0; S^.Value := 0;
- If M^.FirstSymbol = Nil Then M^.FirstSymbol := S Else M^.LastSymbol^.Next := S;
- M^.LastSymbol := S; Inc(M^.SymCount); AppendSymbol := S;
+ If M^.FirstSymbol = Nil Then M^.FirstSymbol := S
+                         Else M^.LastSymbol^.Next := S;
+ M^.LastSymbol := S;
+ Inc(M^.SymCount);
+ AppendSymbol := S;
 End;
 
 Function ModuleSymbolAt(M: PModule; Index: LongInt): PSymbol;
-Var S: PSymbol; N: LongInt;
+Var
+ S: PSymbol;
+ N: LongInt;
 Begin
  If (Index < 0) or (Index >= M^.SymCount) Then Fatal('index de symbole objet invalide');
  If (M^.SymbolCache <> Nil) and (Index >= M^.SymbolCacheIndex) Then Begin
   S := M^.SymbolCache; N := M^.SymbolCacheIndex;
- End Else Begin S := M^.FirstSymbol; N := 0; End;
- While N < Index do Begin S := S^.Next; Inc(N); End;
- M^.SymbolCache := S; M^.SymbolCacheIndex := N; ModuleSymbolAt := S;
+ End
+  Else
+ Begin
+  S := M^.FirstSymbol;
+  N := 0;
+ End;
+ While N < Index do Begin
+  S := S^.Next;
+  Inc(N);
+ End;
+ M^.SymbolCache := S;
+ M^.SymbolCacheIndex := N;
+ ModuleSymbolAt := S;
 End;
 
 Function ModuleAt(Index: Integer): PModule;
-Var P: PModule; I: Integer;
-Begin P := FirstModule; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
- If P = Nil Then Fatal('index de module interne invalide'); ModuleAt := P; End;
+Var
+ P: PModule;
+ I: Integer;
+Begin
+ P := FirstModule;
+ I := 1;
+ While (P <> Nil) and (I < Index) do Begin
+  P := P^.Next;
+  Inc(I);
+ End;
+ If P = Nil Then Fatal('index de module interne invalide');
+ ModuleAt := P;
+End;
 
 Function GlobalAt(Index: Integer): PGlobal;
-Var P: PGlobal; I: Integer;
-Begin P := FirstGlobal; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
- If P = Nil Then Fatal('index de symbole global interne invalide'); GlobalAt := P; End;
+Var
+ P: PGlobal;
+ I: Integer;
+Begin
+ P := FirstGlobal;
+ I := 1;
+ While (P <> Nil) and (I < Index) do Begin
+  P := P^.Next;
+  Inc(I);
+ End;
+ If P = Nil Then Fatal('index de symbole global interne invalide');
+ GlobalAt := P;
+End;
 
 Function InputAt(Index: Integer): PInput;
 Var P: PInput; I: Integer;
-Begin P := FirstInput; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
- If P = Nil Then Fatal('index d''entree interne invalide'); InputAt := P; End;
+Begin
+ P := FirstInput; I := 1;
+ While (P <> Nil) and (I < Index) do Begin
+  P := P^.Next;
+  Inc(I);
+ End;
+ If P = Nil Then Fatal('index d''entree interne invalide');
+ InputAt := P;
+End;
 
 Function MemberAt(Index: Integer): PMember;
-Var P: PMember; I: Integer;
-Begin P := FirstMember; I := 1; While (P <> Nil) and (I < Index) do Begin P := P^.Next; Inc(I); End;
- If P = Nil Then Fatal('index de membre interne invalide'); MemberAt := P; End;
+Var
+ P: PMember;
+ I: Integer;
+Begin
+ P := FirstMember;
+ I := 1;
+ While (P <> Nil) and (I < Index) do Begin
+  P := P^.Next;
+  Inc(I);
+ End;
+ If P = Nil Then Fatal('index de membre interne invalide');
+ MemberAt := P;
+End;
 
 Function AppendModule: PModule;
-Var P: PModule;
-Begin New(P); FillChar(P^, SizeOf(TModule), 0); If FirstModule = Nil Then FirstModule := P Else LastModule^.Next := P;
- LastModule := P; Inc(ModuleCount); AppendModule := P; End;
+Var
+ P: PModule;
+Begin
+ New(P);
+ FillChar(P^, SizeOf(TModule), 0);
+ If FirstModule = Nil Then FirstModule := P
+                      Else LastModule^.Next := P;
+ LastModule := P;
+ Inc(ModuleCount);
+ AppendModule := P;
+End;
 
 Function AppendGlobal: PGlobal;
-Var P: PGlobal;
-Begin New(P); FillChar(P^, SizeOf(TGlobal), 0); If FirstGlobal = Nil Then FirstGlobal := P Else LastGlobal^.Next := P;
- LastGlobal := P; Inc(GlobalCount); AppendGlobal := P; End;
+Var
+ P: PGlobal;
+Begin
+ New(P);
+ FillChar(P^, SizeOf(TGlobal), 0);
+ If FirstGlobal = Nil Then FirstGlobal := P
+                      Else LastGlobal^.Next := P;
+ LastGlobal := P;
+ Inc(GlobalCount);
+ AppendGlobal := P;
+End;
 
 Function AppendInput: PInput;
-Var P: PInput;
-Begin New(P); FillChar(P^, SizeOf(TInput), 0); If FirstInput = Nil Then FirstInput := P Else LastInput^.Next := P;
- LastInput := P; Inc(InputCount); AppendInput := P; End;
+Var
+ P: PInput;
+Begin
+ New(P);
+ FillChar(P^, SizeOf(TInput), 0);
+ If FirstInput = Nil Then FirstInput := P
+                     Else LastInput^.Next := P;
+ LastInput := P;
+ Inc(InputCount);
+ AppendInput := P;
+End;
 
 Function AppendMember: PMember;
-Var P: PMember;
-Begin New(P); FillChar(P^, SizeOf(TMember), 0); If FirstMember = Nil Then FirstMember := P Else LastMember^.Next := P;
- LastMember := P; Inc(MemberCount); AppendMember := P; End;
+Var
+ P: PMember;
+Begin
+ New(P);
+ FillChar(P^, SizeOf(TMember), 0);
+ If FirstMember = Nil Then FirstMember := P
+                      Else LastMember^.Next := P;
+ LastMember := P;
+ Inc(MemberCount);
+ AppendMember := P;
+End;
 
 Function AppendOverlay(Parent: POverlay): POverlay;
 Var P: POverlay;
@@ -351,99 +500,154 @@ Begin
   If Parent^.FirstChild = Nil Then Parent^.FirstChild := P Else Parent^.LastChild^.NextSibling := P;
   Parent^.LastChild := P; Inc(OverlayCount);
  End;
- If FirstOverlay = Nil Then FirstOverlay := P Else LastOverlay^.NextAll := P;
+ If FirstOverlay = Nil Then FirstOverlay := P
+                       Else LastOverlay^.NextAll := P;
  LastOverlay := P; AppendOverlay := P;
 End;
 
 Procedure ClearGlobals;
-Var P, N: PGlobal;
-Begin P := FirstGlobal; While P <> Nil do Begin N := P^.Next; Dispose(P); P := N; End;
- FirstGlobal := Nil; LastGlobal := Nil; GlobalCount := 0; End;
+Var
+ P, N: PGlobal;
+Begin
+ P := FirstGlobal;
+ While P <> Nil do Begin
+  N := P^.Next;
+  Dispose(P);
+  P := N;
+ End;
+ FirstGlobal := Nil;
+ LastGlobal := Nil;
+ GlobalCount := 0;
+End;
 
 Function FileExists68(Const Name: String): Boolean;
-Var F: File; Exists: Boolean;
+Var
+ F: File;
+ Exists: Boolean;
 Begin
- Assign(F, Name); Reset(F, 1); Exists := IOResult = 0;
- If Exists Then Close(F); FileExists68 := Exists;
+ Assign(F, Name);
+ Reset(F, 1);
+ Exists := IOResult = 0;
+ If Exists Then Close(F);
+ FileExists68 := Exists;
 End;
 
 Function HasExtension(Const Name: String): Boolean;
-Var I: Integer;
+Var
+ I: Integer;
 Begin
  HasExtension := False;
- For I := Length(Name) DownTo 1 do
- Begin
+ For I := Length(Name) DownTo 1 do Begin
   If Name[I] = '.' Then Begin HasExtension := True; Exit; End;
   If (Name[I] = '\') or (Name[I] = '/') or (Name[I] = ':') Then Exit;
  End;
 End;
 
-Function DefaultExtension(Const Name, Ext: String): String;
-Begin If HasExtension(Name) Then DefaultExtension := Name Else DefaultExtension := Name + Ext; End;
+Function DefaultExtension(Const Name, Ext: String): String;Begin
+ If HasExtension(Name) Then DefaultExtension := Name
+                       Else DefaultExtension := Name + Ext;
+End;
 
 Function AlignLong(Value, Boundary: LongInt): LongInt;
-Var R: LongInt;
+Var
+ R: LongInt;
 Begin
  If (Value < 0) or (Boundary <= 0) Then Fatal('alignement 32 bits invalide');
  R := Value mod Boundary;
- If R = 0 Then AlignLong := Value Else AlignLong := CheckedAdd(Value, Boundary - R, 'alignement');
+ If R = 0 Then AlignLong := Value
+          Else AlignLong := CheckedAdd(Value, Boundary - R, 'alignement');
 End;
 
 Function BaseName68(Const Name: String): String;
-Var I, P: Integer; R: String;
+Var
+ I, P: Integer;
+ R: String;
 Begin
  P := 0;
- For I := Length(Name) DownTo 1 do If Name[I] = '.' Then Begin P := I; Break; End;
- If P > 0 Then R := Copy(Name, 1, P - 1) Else R := Name;
+ For I := Length(Name) DownTo 1 do If Name[I] = '.' Then Begin
+  P := I;
+  Break;
+ End;
+ If P > 0 Then R := Copy(Name, 1, P - 1)
+          Else R := Name;
  BaseName68 := R;
 End;
 
-Function HexDigit(C: Char): Integer;
-Begin
- If C in ['0'..'9'] Then HexDigit := Ord(C) - Ord('0')
- Else If UpCase(C) in ['A'..'F'] Then HexDigit := Ord(UpCase(C)) - Ord('A') + 10
- Else HexDigit := -1;
+Function HexDigit(C: Char): Integer;Begin
+ If C in ['0'..'9'] Then HexDigit := Ord(C) - Ord('0') Else
+ If UpCase(C) in ['A'..'F'] Then HexDigit := Ord(UpCase(C)) - Ord('A') + 10
+                            Else HexDigit := -1;
 End;
 
 Function ParseAddress(S: String; Var V: LongInt): Boolean;
-Var I, D: Integer; X: LongWord;
+Var
+ I, D: Integer;
+ X: LongWord;
 Begin
  S := TrimStr(S);
- If (Length(S) > 0) and (S[1] = '$') Then Delete(S, 1, 1)
- Else If (Length(S) > 1) and (S[1] = '0') and (UpCase(S[2]) = 'X') Then Delete(S, 1, 2);
+ If (Length(S) > 0) and (S[1] = '$') Then Delete(S, 1, 1) Else
+ If (Length(S) > 1) and (S[1] = '0') and (UpCase(S[2]) = 'X') Then Delete(S, 1, 2);
  If (Length(S) > 0) and (UpCase(S[Length(S)]) = 'H') Then Delete(S, Length(S), 1);
  X := 0; ParseAddress := False; If S = '' Then Exit;
- For I := 1 to Length(S) do
- Begin D := HexDigit(S[I]); If D < 0 Then Exit; X := X * 16 + LongWord(D); End;
- V := LongInt(X); ParseAddress := True;
+ For I := 1 to Length(S) do Begin
+  D := HexDigit(S[I]); If D < 0 Then Exit;
+  X := X * 16 + LongWord(D);
+ End;
+ V := LongInt(X);
+ ParseAddress := True;
 End;
 
 Procedure PutByte(Var F: File; B: Byte);
-Var N: Word;
-Begin BlockWrite(F, B, 1, N); If (IOResult <> 0) or (N <> 1) Then Fatal('output write error'); End;
+Var
+ N: Word;
+Begin
+ BlockWrite(F, B, 1, N);
+ If (IOResult <> 0) or (N <> 1) Then Fatal('output write error');
+End;
 
-Procedure PutWord(Var F: File; W: Word);
-Begin PutByte(F, Byte(W shr 8)); PutByte(F, Byte(W)); End;
+Procedure PutWord(Var F: File; W: Word);Begin
+ PutByte(F, Byte(W shr 8));
+ PutByte(F, Byte(W));
+End;
 
-Procedure PutLong(Var F: File; L: LongInt);
-Begin PutWord(F, Word(LongWord(L) shr 16)); PutWord(F, Word(L)); End;
+Procedure PutLong(Var F: File; L: LongInt);Begin
+ PutWord(F, Word(LongWord(L) shr 16));
+ PutWord(F, Word(L));
+End;
 
 Function GetByte(Var F: File): Byte;
-Var B: Byte; N: Integer;
-Begin BlockRead(F, B, 1, N); If N <> 1 Then Fatal('fin de fichier inattendue'); GetByte := B; End;
+Var
+ B: Byte;
+ N: Integer;
+Begin
+ BlockRead(F, B, 1, N);
+ If N <> 1 Then Fatal('fin de fichier inattendue');
+ GetByte := B;
+End;
 
-Function GetWord(Var F: File): Word;
-Begin GetWord := Word(GetByte(F)) shl 8 or GetByte(F); End;
+Function GetWord(Var F: File): Word;Begin
+ GetWord := Word(GetByte(F)) shl 8 or GetByte(F);
+End;
 
 Function GetLong(Var F: File): LongInt;
-Var A, B: Word;
-Begin A := GetWord(F); B := GetWord(F); GetLong := LongInt((LongWord(A) shl 16) or B); End;
+Var
+ A, B: Word;
+Begin
+ A := GetWord(F);
+ B := GetWord(F);
+ GetLong := LongInt((LongWord(A) shl 16) or B);
+End;
 
-Procedure SeekFile(Var F: File; Posn: LongInt);
-Begin Seek(F, Posn); If IOResult <> 0 Then Fatal('position invalide dans un objet'); End;
+Procedure SeekFile(Var F: File; Posn: LongInt);Begin
+ Seek(F, Posn);
+ If IOResult <> 0 Then Fatal('position invalide dans un objet');
+End;
 
 Procedure ReadBufferBytes(Var F: File; B: PByteBuffer; Count: LongInt);
-Var P: PBytePage; N, Got: Word; Left: LongInt;
+Var
+ P: PBytePage;
+ N, Got: Word;
+ Left: LongInt;
 Begin
  If (Count < 0) or (Count > B^.Size) Then Fatal('taille de lecture de tampon invalide');
  P := B^.FirstPage; Left := Count;
@@ -454,18 +658,27 @@ Begin
 End;
 
 Procedure WriteBufferBytes(Var F: File; B: PByteBuffer; Count: LongInt);
-Var P: PBytePage; N, PutCount: Word; Left: LongInt;
+Var
+ P: PBytePage;
+ N, PutCount: Word;
+ Left: LongInt;
 Begin
  If (Count < 0) or (Count > B^.Size) Then Fatal('taille d''ecriture de tampon invalide');
  P := B^.FirstPage; Left := Count;
- While Left > 0 do Begin N := BUFFER_PAGE_SIZE; If Left < N Then N := Left;
-  BlockWrite(F, P^.Data, N, PutCount); If (IOResult <> 0) or (PutCount <> N) Then Fatal('erreur d''ecriture fichier');
-  Dec(Left, N); P := P^.Next;
+ While Left > 0 do Begin
+  N := BUFFER_PAGE_SIZE;
+  If Left < N Then N := Left;
+  BlockWrite(F, P^.Data, N, PutCount);
+  If (IOResult <> 0) or (PutCount <> N) Then Fatal('erreur d''ecriture fichier');
+  Dec(Left, N);
+  P := P^.Next;
  End;
 End;
 
 Procedure CopyBufferRange(Src: PByteBuffer; SrcPos: LongInt; Dst: PByteBuffer; DstPos, Count: LongInt);
-Var SP, DP: PBytePage; SO, DOff, N: LongInt;
+Var
+ SP, DP: PBytePage;
+ SO, DOff, N: LongInt;
 Begin
  If (Count < 0) or (SrcPos < 0) or (DstPos < 0) or (Count > Src^.Size - SrcPos) or
     (Count > Dst^.Size - DstPos) Then Fatal('copie de tampon interne invalide');
@@ -473,27 +686,45 @@ Begin
   SP := BufferPage(Src, SrcPos); DP := BufferPage(Dst, DstPos);
   SO := SrcPos mod BUFFER_PAGE_SIZE; DOff := DstPos mod BUFFER_PAGE_SIZE;
   N := BUFFER_PAGE_SIZE - SO; If BUFFER_PAGE_SIZE - DOff < N Then N := BUFFER_PAGE_SIZE - DOff;
-  If Count < N Then N := Count; Move(SP^.Data[SO], DP^.Data[DOff], N);
-  Inc(SrcPos, N); Inc(DstPos, N); Dec(Count, N);
+  If Count < N Then N := Count;
+  Move(SP^.Data[SO], DP^.Data[DOff], N);
+  Inc(SrcPos, N); Inc(DstPos, N);
+  Dec(Count, N);
  End;
 End;
 
 Function FindGlobal(Const Name: String): Integer;
-Var I: Integer; P: PGlobal;
+Var
+ I: Integer;
+ P: PGlobal;
 Begin
- I := 1; P := FirstGlobal;
- While P <> Nil do Begin If P^.Name = Name Then Begin FindGlobal := I; Exit; End; P := P^.Next; Inc(I); End;
+ I := 1;
+ P := FirstGlobal;
+ While P <> Nil do Begin
+  If P^.Name = Name Then Begin
+   FindGlobal := I;
+   Exit;
+  End;
+  P := P^.Next;
+  Inc(I);
+ End;
  FindGlobal := 0;
 End;
 
 Function AddGlobal(Const Name: String): Integer;
-Var P: PGlobal;
+Var
+ P: PGlobal;
 Begin
- P := AppendGlobal; P^.Name := Name; AddGlobal := GlobalCount;
+ P := AppendGlobal;
+ P^.Name := Name;
+ AddGlobal := GlobalCount;
 End;
 
-Function FindGlobalForModule(Const Name: String; M: Integer): Integer;
-Var P: PGlobal; I, RootMatch, UndefinedMatch: Integer; O: POverlay;
+Function FindGlobalForModule(Const Name:String;M:Integer):Integer;
+Var
+ P: PGlobal;
+ I, RootMatch, UndefinedMatch: Integer;
+ O: POverlay;
 Begin
  If not Opt.Chained Then Begin FindGlobalForModule := FindGlobal(Name); Exit; End;
  O := ModuleAt(M)^.Overlay; P := FirstGlobal; I := 1; RootMatch := 0; UndefinedMatch := 0;
@@ -508,23 +739,20 @@ Begin
  If RootMatch <> 0 Then FindGlobalForModule := RootMatch Else FindGlobalForModule := UndefinedMatch;
 End;
 
-Function SegmentOf(T: Word): Integer;
-Begin
- If (T and SYM_TEXT) <> 0 Then SegmentOf := REL_TEXT
- Else If (T and SYM_DATA) <> 0 Then SegmentOf := REL_DATA
- Else If (T and SYM_BSS) <> 0 Then SegmentOf := REL_BSS
- Else SegmentOf := REL_ABS;
+Function SegmentOf(T:Word):Integer;Begin
+ If (T and SYM_TEXT) <> 0 Then SegmentOf := REL_TEXT Else
+ If (T and SYM_DATA) <> 0 Then SegmentOf := REL_DATA Else
+ If (T and SYM_BSS) <> 0 Then SegmentOf := REL_BSS
+                         Else SegmentOf := REL_ABS;
 End;
 
-Function IsCommonSymbol(Const S: TSymbol): Boolean;
-Begin
+Function IsCommonSymbol(Const S: TSymbol): Boolean;Begin
  { Une reference externe DRI ordinaire porte aussi SYM_DEFINED, mais vaut zero.
    Seule une taille non nulle demande une allocation COMMON. }
  IsCommonSymbol := ((S.SType and (SYM_DEFINED or SYM_EXTERN)) = (SYM_DEFINED or SYM_EXTERN)) and (S.Value > 0);
 End;
 
-Procedure ShowHelp;
-Begin
+Procedure ShowHelp;Begin
  WriteLn('LINK68 - Cette commande permet de lancer un clone du linker Digital Research/Alcyon pour Atari ST.');
  WriteLn;
  WriteLn('Syntaxe : LINK68 [options] sortie = objet1,objet2,...');
@@ -555,19 +783,24 @@ Begin
 End;
 
 Procedure ParseOneOption(S: String);
-Var U, A: String; P: Integer; V: LongInt;
+Var
+ U, A: String;
+ P: Integer;
+ V: LongInt;
 Begin
- S := TrimStr(S); U := UpCaseStr(S);
+ S := TrimStr(S);
+ U := UpCaseStr(S);
  If U = '' Then Exit;
- If IsAbbrev(U, 'UNDEFINED', 1) Then Opt.AllowUndefined := True
- Else If IsAbbrev(U, 'SYMBOLS', 1) Then Opt.EmitSymbols := True
- Else If IsAbbrev(U, 'LOCALS', 2) Then Opt.EmitLocals := True
- Else If IsAbbrev(U, 'NOLOCALS', 2) Then Opt.EmitLocals := False
- Else If IsAbbrev(U, 'ABSOLUTE', 2) Then Opt.Absolute := True
- Else If IsAbbrev(U, 'ALLMODS', 2) Then Opt.AllMods := True
- Else If IsAbbrev(U, 'IGNORE', 2) Then Opt.IgnoreOverflow := True
- Else If IsAbbrev(U, 'CHAINED', 2) Then Opt.Chained := True
- Else Begin
+ If IsAbbrev(U, 'UNDEFINED', 1) Then Opt.AllowUndefined := True Else
+ If IsAbbrev(U, 'SYMBOLS', 1) Then Opt.EmitSymbols := True Else
+ If IsAbbrev(U, 'LOCALS', 2) Then Opt.EmitLocals := True Else
+ If IsAbbrev(U, 'NOLOCALS', 2) Then Opt.EmitLocals := False Else
+ If IsAbbrev(U, 'ABSOLUTE', 2) Then Opt.Absolute := True Else
+ If IsAbbrev(U, 'ALLMODS', 2) Then Opt.AllMods := True Else
+ If IsAbbrev(U, 'IGNORE', 2) Then Opt.IgnoreOverflow := True Else
+ If IsAbbrev(U, 'CHAINED', 2) Then Opt.Chained := True
+  Else
+ Begin
   P := Pos('[', U);
   If P > 0 Then
   Begin
@@ -587,15 +820,17 @@ Begin
 End;
 
 Function StripComment(Const S: String): String;
-Var I: Integer;
+Var
+ I: Integer;
 Begin
- For I := 1 to Length(S) do If S[I] = '\' Then
- Begin StripComment := Copy(S, 1, I - 1); Exit; End;
+ For I := 1 to Length(S) do If S[I] = '\' Then Begin
+  StripComment := Copy(S, 1, I - 1);
+  Exit;
+ End;
  StripComment := S;
 End;
 
-Function IsGlobalOnlyOption(Const U: String): Boolean;
-Begin
+Function IsGlobalOnlyOption(Const U: String): Boolean;Begin
  IsGlobalOnlyOption := IsAbbrev(U, 'UNDEFINED', 1) or IsAbbrev(U, 'SYMBOLS', 1) or
   IsAbbrev(U, 'ABSOLUTE', 2) or IsAbbrev(U, 'IGNORE', 2) or IsAbbrev(U, 'TEMPFILES', 3) or
   IsAbbrev(U, 'TEXTBASE', 3) or IsAbbrev(U, 'DATABASE', 1) or IsAbbrev(U, 'BSSBASE', 1) or
@@ -603,36 +838,41 @@ Begin
 End;
 
 Procedure ParseOptionList(Const S: String);
-Var I, Start, Depth: Integer; Part: String;
+Var
+ I, Start, Depth: Integer;
+ Part: String;
 Begin
  Start := 1; Depth := 0;
- For I := 1 to Length(S) + 1 do
- Begin
+ For I := 1 to Length(S) + 1 do Begin
   If (I <= Length(S)) and (S[I] = '[') Then Inc(Depth)
   Else If (I <= Length(S)) and (S[I] = ']') Then Dec(Depth);
-  If (I > Length(S)) or ((S[I] = ',') and (Depth = 0)) Then
-  Begin Part := Copy(S, Start, I - Start); ParseOneOption(Part); Start := I + 1; End;
+  If (I > Length(S)) or ((S[I] = ',') and (Depth = 0)) Then Begin
+   Part := Copy(S, Start, I - Start);
+   ParseOneOption(Part);
+   Start := I + 1;
+  End;
  End;
 End;
 
 Procedure ParseGlobalOptions(Const S: String; Var CommandName: String);
-Var I, Start, Depth, P: Integer; Part, U, A: String;
+Var
+ I, Start, Depth, P: Integer;
+ Part, U, A: String;
 Begin
  CommandName := ''; Start := 1; Depth := 0;
- For I := 1 to Length(S) + 1 do
- Begin
-  If (I <= Length(S)) and (S[I] = '[') Then Inc(Depth)
-  Else If (I <= Length(S)) and (S[I] = ']') Then Dec(Depth);
-  If (I > Length(S)) or ((S[I] = ',') and (Depth = 0)) Then
-  Begin
+ For I := 1 to Length(S) + 1 do Begin
+  If (I <= Length(S)) and (S[I] = '[') Then Inc(Depth) Else
+  If (I <= Length(S)) and (S[I] = ']') Then Dec(Depth);
+  If (I > Length(S)) or ((S[I] = ',') and (Depth = 0)) Then Begin
    Part := TrimStr(Copy(S, Start, I - Start)); U := UpCaseStr(Part); P := Pos('[', U);
    If P > 0 Then Begin
     If Part[Length(Part)] = ']' Then A := TrimStr(Copy(Part, P + 1, Length(Part) - P - 1))
     Else A := TrimStr(Copy(Part, P + 1, Length(Part) - P));
     U := TrimStr(Copy(U, 1, P - 1));
-   End Else A := '';
-   If IsAbbrev(U, 'COMMAND', 1) Then
-   Begin
+   End
+    Else
+   A := '';
+   If IsAbbrev(U, 'COMMAND', 1) Then Begin
     If (P = 0) or (A = '') Then Fatal('syntaxe COMMAND[nom] invalide');
     CommandName := A; Exit;
    End;
@@ -644,9 +884,13 @@ Begin
 End;
 
 Function ReadCommandFile(Const FileName: String): String;
-Var F: Text; Line, R: String;
+Var
+ F: Text;
+ Line, R: String;
 Begin
- Assign(F, FileName); Reset(F); If IOResult <> 0 Then Fatal('impossible de lire le fichier de commandes ' + FileName);
+ Assign(F, FileName);
+ Reset(F);
+ If IOResult <> 0 Then Fatal('impossible de lire le fichier de commandes ' + FileName);
  R := '';
  While not EOF(F) do Begin
   ReadLn(F, Line); If IOResult <> 0 Then Begin Close(F); Fatal('erreur de lecture du fichier de commandes ' + FileName); End;
@@ -660,7 +904,10 @@ Begin
 End;
 
 Procedure AddInputToOverlay(S: String; O: POverlay);
-Var P, Q, I, Start, Depth: Integer; LocalOpt, U, Part, NamePart, Arg: String; IP: PInput;
+Var
+ P, Q, I, Start, Depth: Integer;
+ LocalOpt, U, Part, NamePart, Arg: String;
+ IP: PInput;
 Begin
  S := TrimStr(S); If S = '' Then Exit;
  P := Pos('[', S);
@@ -677,48 +924,62 @@ Begin
   Else If (I <= Length(LocalOpt)) and (LocalOpt[I] = ']') Then Dec(Depth);
   If (I > Length(LocalOpt)) or ((LocalOpt[I] = ',') and (Depth = 0)) Then Begin
    Part := TrimStr(Copy(LocalOpt, Start, I - Start)); U := UpCaseStr(Part); P := Pos('[', U);
-   If P > 0 Then Begin NamePart := TrimStr(Copy(U, 1, P - 1)); Q := Pos(']', U);
-    If Q = 0 Then Q := Length(U) + 1; Arg := TrimStr(Copy(Part, P + 1, Q - P - 1)); End
-   Else Begin NamePart := U; Arg := ''; End;
-   If IsAbbrev(NamePart, 'LOCALS', 2) Then IP^.IncludeLocals := True
-   Else If IsAbbrev(NamePart, 'NOLOCALS', 2) Then IP^.IncludeLocals := False
-   Else If IsAbbrev(NamePart, 'ALLMODS', 2) Then IP^.AllMods := True
-   Else If IsAbbrev(NamePart, 'INCLUDE', 2) Then Begin
+   If P > 0 Then Begin
+    NamePart := TrimStr(Copy(U, 1, P - 1));
+    Q := Pos(']', U);
+    If Q = 0 Then Q := Length(U) + 1;
+    Arg := TrimStr(Copy(Part, P + 1, Q - P - 1));
+   End
+    Else
+   Begin
+    NamePart := U;
+    Arg := '';
+   End;
+   If IsAbbrev(NamePart, 'LOCALS', 2) Then IP^.IncludeLocals := True Else
+   If IsAbbrev(NamePart, 'NOLOCALS', 2) Then IP^.IncludeLocals := False Else
+   If IsAbbrev(NamePart, 'ALLMODS', 2) Then IP^.AllMods := True Else
+   If IsAbbrev(NamePart, 'INCLUDE', 2) Then Begin
     If Arg = '' Then Error('INCLUDE exige un nom de module apres ' + S) Else IP^.IncludeName := Arg;
    End
-   Else If IsAbbrev(NamePart, 'COMMAND', 1) Then Error('COMMAND local n''est admis que comme relais de commande historique')
-   Else If IsGlobalOnlyOption(NamePart) Then Error('option globale ' + Part + ' placee apres l''entree ' + S)
-   Else If Part <> '' Then Error('option locale inconnue apres ' + S + ': ' + Part);
+    Else
+   If IsAbbrev(NamePart, 'COMMAND', 1) Then Error('COMMAND local n''est admis que comme relais de commande historique') Else
+   If IsGlobalOnlyOption(NamePart) Then Error('option globale ' + Part + ' placee apres l''entree ' + S) Else
+   If Part <> '' Then Error('option locale inconnue apres ' + S + ': ' + Part);
    Start := I + 1;
   End;
  End;
 End;
 
 Function FindTopLevelChar(Const S: String; Wanted: Char): Integer;
-Var I, ParenDepth, BracketDepth: Integer;
+Var
+ I, ParenDepth, BracketDepth: Integer;
 Begin
  FindTopLevelChar := 0; ParenDepth := 0; BracketDepth := 0;
- For I := 1 to Length(S) do
- Begin
-  If S[I] = '[' Then Inc(BracketDepth) Else If S[I] = ']' Then Dec(BracketDepth)
-  Else If BracketDepth = 0 Then Begin
-   If S[I] = '(' Then Inc(ParenDepth) Else If S[I] = ')' Then Dec(ParenDepth)
-   Else If (S[I] = Wanted) and (ParenDepth = 0) Then Begin FindTopLevelChar := I; Exit; End;
+ For I := 1 to Length(S) do Begin
+  If S[I] = '[' Then Inc(BracketDepth) Else
+  If S[I] = ']' Then Dec(BracketDepth) Else
+  If BracketDepth = 0 Then Begin
+   If S[I] = '(' Then Inc(ParenDepth) Else
+   If S[I] = ')' Then Dec(ParenDepth) Else
+   If (S[I] = Wanted) and (ParenDepth = 0) Then Begin
+    FindTopLevelChar := I;
+    Exit;
+   End;
   End;
  End;
 End;
 
 Procedure ParseNodeItems(Const S: String; O: POverlay);
-Var I, Start, Depth, BracketDepth, EqPos, ClosePos: Integer; Part, Body: String; Child: POverlay;
+Var
+ I, Start, Depth, BracketDepth, EqPos, ClosePos: Integer; Part, Body: String;
+ Child: POverlay;
 Begin
  I := 1; Start := 1; BracketDepth := 0;
- While I <= Length(S) + 1 do
- Begin
+ While I <= Length(S) + 1 do Begin
   If I <= Length(S) Then Begin
    If S[I] = '[' Then Inc(BracketDepth) Else If S[I] = ']' Then Dec(BracketDepth);
   End;
-  If (I <= Length(S)) and (BracketDepth = 0) and (S[I] = '(') Then
-  Begin
+  If (I <= Length(S)) and (BracketDepth = 0) and (S[I] = '(') Then Begin
    If TrimStr(Copy(S, Start, I - Start)) <> '' Then AddInputToOverlay(Copy(S, Start, I - Start), O);
    Depth := 1; ClosePos := I + 1;
    While (ClosePos <= Length(S)) and (Depth > 0) do Begin
@@ -727,26 +988,37 @@ Begin
    If Depth <> 0 Then Fatal('parenthese fermante manquante');
    Body := TrimStr(Copy(S, I + 1, ClosePos - I - 2)); Child := AppendOverlay(O);
    EqPos := FindTopLevelChar(Body, '=');
-   If EqPos > 0 Then Begin Child^.OutputName := TrimStr(Copy(Body, 1, EqPos - 1)); Delete(Body, 1, EqPos); End;
+   If EqPos > 0 Then Begin
+    Child^.OutputName := TrimStr(Copy(Body, 1, EqPos - 1));
+    Delete(Body, 1, EqPos);
+   End;
    ParseNodeItems(Body, Child);
    I := ClosePos; Start := I + 1;
-   If (I <= Length(S)) and (S[I] = ',') Then Begin Inc(I); Start := I; End;
+   If (I <= Length(S)) and (S[I] = ',') Then Begin
+    Inc(I);
+    Start := I;
+   End;
    Continue;
   End;
   If (I > Length(S)) or ((S[I] = ',') and (BracketDepth = 0)) Then Begin
-   Part := TrimStr(Copy(S, Start, I - Start)); If Part <> '' Then AddInputToOverlay(Part, O); Start := I + 1;
+   Part := TrimStr(Copy(S, Start, I - Start));
+   If Part <> '' Then AddInputToOverlay(Part, O);
+   Start := I + 1;
   End;
   Inc(I);
  End;
 End;
 
 Procedure SetDefaultOverlayNames;
-Var O: POverlay; IP: PInput;
+Var
+ O: POverlay;
+ IP: PInput;
 Begin
  O := FirstOverlay;
  While O <> Nil do Begin
   If (O <> RootOverlay) and (O^.OutputName = '') Then Begin
-   IP := FirstInput; While (IP <> Nil) and (IP^.Overlay <> O) do IP := IP^.Next;
+   IP := FirstInput;
+   While (IP <> Nil) and (IP^.Overlay <> O) do IP := IP^.Next;
    If IP = Nil Then Fatal('overlay vide');
    O^.OutputName := BaseName68(IP^.FileName) + '.068';
   End;
@@ -756,39 +1028,71 @@ Begin
 End;
 
 Procedure ParseCommandLine;
-Var Cmd, Rest, OptText, CommandName, RedirectName: String; I, P, Depth, ClosePos, SplitPos: Integer;
-    CommandUsed: Boolean;
+Var
+ Cmd, Rest, OptText, CommandName, RedirectName: String;
+ I, P, Depth, ClosePos, SplitPos: Integer;
+ CommandUsed: Boolean;
 Begin
  FillChar(Opt, SizeOf(Opt), 0); InputCount := 0; Cmd := '';
  For I := 1 to ParamCount do Begin If Cmd <> '' Then Cmd := Cmd + ' '; Cmd := Cmd + ParamStr(I); End;
  Cmd := TrimStr(Cmd);
- If (Cmd = '') or (Cmd = '/?') or (Cmd = '-?') or (Cmd = '--help') Then Begin ShowHelp; Halt(Ord(Cmd = '')); End;
+ If (Cmd = '') or (Cmd = '/?') or (Cmd = '-?') or (Cmd = '--help') Then Begin
+  ShowHelp;
+  Halt(Ord(Cmd = ''));
+ End;
  CommandUsed := False;
  Repeat
   Cmd := TrimStr(StripComment(Cmd)); RedirectName := ''; Depth := 0;
   For I := 1 to Length(Cmd) do Begin
-   If Cmd[I] = '[' Then Inc(Depth) Else If Cmd[I] = ']' Then Begin If Depth > 0 Then Dec(Depth); End
-   Else If (Cmd[I] = '>') and (Depth = 0) Then Begin RedirectName := TrimStr(Copy(Cmd, I + 1, Length(Cmd)));
-    Cmd := TrimStr(Copy(Cmd, 1, I - 1)); Break; End;
+   If Cmd[I] = '[' Then Inc(Depth) Else
+   If Cmd[I] = ']' Then Begin
+    If Depth > 0 Then Dec(Depth);
+   End
+    Else
+   If (Cmd[I] = '>') and (Depth = 0) Then Begin
+    RedirectName := TrimStr(Copy(Cmd, I + 1, Length(Cmd)));
+    Cmd := TrimStr(Copy(Cmd, 1, I - 1));
+    Break;
+   End;
   End;
   If RedirectName <> '' Then Begin
    If OutputRedirected Then Fatal('une seule redirection > est permise');
-   Assign(Output, RedirectName); Rewrite(Output); If IOResult <> 0 Then Halt(2); OutputRedirected := True;
+   Assign(Output, RedirectName); Rewrite(Output);
+   If IOResult <> 0 Then Halt(2);
+   OutputRedirected := True;
   End;
   Rest := TrimStr(Cmd); CommandName := '';
   If Rest = '' Then Fatal('commande vide');
-  If Rest[1] = '[' Then
-  Begin
+  If Rest[1] = '[' Then Begin
    Depth := 0; ClosePos := 0; SplitPos := 0;
-   For I := 1 to Length(Rest) do
-   Begin
-    If Rest[I] = '[' Then Inc(Depth) Else If Rest[I] = ']' Then Begin Dec(Depth); If Depth = 0 Then Begin ClosePos := I; Break; End; End
-    Else If (Depth = 1) and (Rest[I] <= ' ') and (SplitPos = 0) Then SplitPos := I;
+   For I := 1 to Length(Rest) do Begin
+    If Rest[I] = '[' Then Inc(Depth) Else
+    If Rest[I] = ']' Then Begin
+     Dec(Depth);
+     If Depth = 0 Then Begin
+      ClosePos := I;
+      Break;
+     End;
+    End
+     Else
+    If (Depth = 1) and (Rest[I] <= ' ') and (SplitPos = 0) Then SplitPos := I;
    End;
    If ClosePos = 0 Then Begin
-    If SplitPos > 0 Then Begin OptText := Copy(Rest, 2, SplitPos - 2); Rest := TrimStr(Copy(Rest, SplitPos + 1, Length(Rest))); End
-    Else Begin OptText := Copy(Rest, 2, Length(Rest) - 1); Rest := ''; End;
-   End Else Begin OptText := Copy(Rest, 2, ClosePos - 2); Rest := TrimStr(Copy(Rest, ClosePos + 1, Length(Rest))); End;
+    If SplitPos > 0 Then Begin
+     OptText := Copy(Rest, 2, SplitPos - 2);
+     Rest := TrimStr(Copy(Rest, SplitPos + 1, Length(Rest)));
+    End
+     Else
+    Begin
+     OptText := Copy(Rest, 2, Length(Rest) - 1);
+     Rest := '';
+    End;
+   End
+    Else
+   Begin
+    OptText := Copy(Rest, 2, ClosePos - 2);
+    Rest := TrimStr(Copy(Rest, ClosePos + 1, Length(Rest)));
+   End;
    ParseGlobalOptions(OptText, CommandName);
   End;
   If CommandName <> '' Then Begin
@@ -797,9 +1101,15 @@ Begin
   End;
  Until CommandName = '';
  P := FindTopLevelChar(Rest, '=');
- If P > 0 Then
- Begin Opt.OutputName := TrimStr(Copy(Rest, 1, P - 1)); ParseNodeItems(Copy(Rest, P + 1, Length(Rest)), RootOverlay); End
- Else Begin ParseNodeItems(Rest, RootOverlay); If InputCount > 0 Then Opt.OutputName := BaseName68(FirstInput^.FileName) + '.68K'; End;
+ If P > 0 Then Begin
+  Opt.OutputName := TrimStr(Copy(Rest, 1, P - 1));
+  ParseNodeItems(Copy(Rest, P + 1, Length(Rest)), RootOverlay);
+ End
+  Else
+ Begin
+  ParseNodeItems(Rest, RootOverlay);
+  If InputCount > 0 Then Opt.OutputName := BaseName68(FirstInput^.FileName) + '.68K';
+ End;
  If Opt.OutputName = '' Then Fatal('nom du fichier de sortie manquant');
  If InputCount = 0 Then Fatal('aucun fichier objet');
  Opt.OutputName := DefaultExtension(Opt.OutputName, '.68K');
@@ -809,7 +1119,8 @@ Begin
 End;
 
 Procedure AllocateModuleBuffers(M: Integer);
-Var MP: PModule;
+Var
+ MP: PModule;
 Begin
  MP := ModuleAt(M);
  MP^.TextData := NewByteBuffer(CheckedAdd(MP^.TextSize, 1, 'tampon TEXT'));
@@ -818,49 +1129,82 @@ Begin
  MP^.DataRel := NewByteBuffer(CheckedAdd(CheckedMul((CheckedAdd(MP^.DataSize, 1, 'relogements DATA') div 2), 2, 'relogements DATA'), 2, 'relogements DATA'));
 End;
 
-Function BufferLong(B: PByteBuffer; P: LongInt): LongInt;
-Begin BufferLong := LongInt((LongWord(BufferByte(B, P)) shl 24) or (LongWord(BufferByte(B, P+1)) shl 16) or
+Function BufferLong(B: PByteBuffer; P: LongInt): LongInt;Begin
+ BufferLong := LongInt((LongWord(BufferByte(B, P)) shl 24) or (LongWord(BufferByte(B, P+1)) shl 16) or
  (LongWord(BufferByte(B, P+2)) shl 8) or BufferByte(B, P+3)); End;
 
-Procedure StoreBufferLong(B: PByteBuffer; P: LongInt; V: LongInt);
-Begin StoreBufferByte(B, P, Byte(LongWord(V) shr 24)); StoreBufferByte(B, P+1, Byte(LongWord(V) shr 16));
- StoreBufferByte(B, P+2, Byte(LongWord(V) shr 8)); StoreBufferByte(B, P+3, Byte(V)); End;
+Procedure StoreBufferLong(B: PByteBuffer; P: LongInt; V: LongInt);Begin
+ StoreBufferByte(B, P, Byte(LongWord(V) shr 24)); StoreBufferByte(B, P+1, Byte(LongWord(V) shr 16));
+ StoreBufferByte(B, P+2, Byte(LongWord(V) shr 8)); StoreBufferByte(B, P+3, Byte(V));
+End;
 
 Procedure NormalizeRelocBuffer(B: PByteBuffer; R: PWordBuffer; Size, SrcText, SrcData, SrcBss: LongInt);
-Var I, Words: LongInt; T: Integer; P, Base, V: LongInt; W: Word;
+Var
+ I, Words: LongInt;
+ T: Integer;
+ P, Base,
+ V: LongInt;
+ W: Word;
 Begin
  Words := CheckedAdd(Size, 1, 'relocation word count') div 2; I := 0;
  While I < Words do Begin
   P := I * 2; T := BufferWord(R, I) and 7;
   If T = REL_UPPER Then Begin
-   If I + 1 >= Words Then Exit; T := BufferWord(R, I+1) and 7; Base := 0;
-   Case T of REL_TEXT: Base := SrcText; REL_DATA: Base := SrcData; REL_BSS: Base := SrcBss; End;
-   If (Base <> 0) and (P + 3 < Size) Then Begin V := BufferLong(B, P) - Base; StoreBufferLong(B, P, V); End;
+   If I + 1 >= Words Then Exit;
+   T := BufferWord(R, I+1) and 7; Base := 0;
+   Case T of
+    REL_TEXT: Base := SrcText;
+    REL_DATA: Base := SrcData;
+    REL_BSS: Base := SrcBss;
+   End;
+   If (Base <> 0) and (P + 3 < Size) Then Begin
+    V := BufferLong(B, P) - Base;
+    StoreBufferLong(B, P, V);
+   End;
    Inc(I, 2); Continue;
   End;
-  Base := 0; Case T of REL_TEXT: Base := SrcText; REL_DATA: Base := SrcData; REL_BSS: Base := SrcBss; End;
-  If (Base <> 0) and (P + 1 < Size) Then Begin W := Word(BufferByte(B, P)) shl 8 or BufferByte(B, P+1);
-   W := Word(LongInt(SmallInt(W)) - Base); StoreBufferByte(B, P, Byte(W shr 8)); StoreBufferByte(B, P+1, Byte(W)); End;
+  Base := 0;
+  Case T of
+   REL_TEXT: Base := SrcText;
+   REL_DATA: Base := SrcData;
+   REL_BSS: Base := SrcBss;
+  End;
+  If (Base <> 0) and (P + 1 < Size) Then Begin
+   W := Word(BufferByte(B, P)) shl 8 or BufferByte(B, P+1);
+   W := Word(LongInt(SmallInt(W)) - Base);
+   StoreBufferByte(B, P, Byte(W shr 8));
+   StoreBufferByte(B, P+1, Byte(W));
+  End;
   Inc(I);
  End;
 End;
 
 Procedure NormalizeLoadedModule(M: PModule; SrcText, SrcData, SrcBss: LongInt);
-Var I: LongInt; Seg: Integer; S: PSymbol;
+Var
+ I: LongInt;
+ Seg: Integer;
+ S: PSymbol;
 Begin
- For I := 0 to M^.SymCount - 1 do Begin S := ModuleSymbolAt(M, I); Seg := SegmentOf(S^.SType);
-  Case Seg of REL_TEXT: Dec(S^.Value, SrcText); REL_DATA: Dec(S^.Value, SrcData);
-   REL_BSS: Dec(S^.Value, SrcBss); End;
+ For I := 0 to M^.SymCount - 1 do Begin
+  S := ModuleSymbolAt(M, I);
+  Seg := SegmentOf(S^.SType);
+  Case Seg of
+   REL_TEXT: Dec(S^.Value, SrcText);
+   REL_DATA: Dec(S^.Value, SrcData);
+   REL_BSS: Dec(S^.Value, SrcBss);
+  End;
  End;
  NormalizeRelocBuffer(M^.TextData, M^.TextRel, M^.TextSize, SrcText, SrcData, SrcBss);
  NormalizeRelocBuffer(M^.DataData, M^.DataRel, M^.DataSize, SrcText, SrcData, SrcBss);
 End;
 
 Procedure ValidateExternalIndex(M: PModule; Index: LongInt; Const SegmentName: String; Offset: LongInt);
-Var S: PSymbol;
+Var
+ S: PSymbol;
 Begin
  If (Index < 0) or (Index >= M^.SymCount) Then Begin
-  Error(M^.FileName + ': bad external index in ' + SegmentName + ' relocation at ' + DecimalStr(Offset)); Exit;
+  Error(M^.FileName + ': bad external index in ' + SegmentName + ' relocation at ' + DecimalStr(Offset));
+  Exit;
  End;
  S := ModuleSymbolAt(M, Index);
  If (S^.SType and SYM_EXTERN) = 0 Then
@@ -868,20 +1212,27 @@ Begin
 End;
 
 Procedure ValidateRelocationBuffer(M: PModule; R: PWordBuffer; Size: LongInt; Const SegmentName: String);
-Var I, Words, P: LongInt; W, W2: Word; T, T2: Integer;
+Var
+ I, Words, P: LongInt;
+ W, W2: Word;
+ T, T2: Integer;
 Begin
  Words := CheckedAdd(Size, 1, 'relocation validation') div 2; I := 0;
  While I < Words do Begin
-  P := I * 2; W := BufferWord(R, I); T := W and 7;
+  P := I * 2;
+  W := BufferWord(R, I);
+  T := W and 7;
   If T = REL_UPPER Then Begin
    If (I + 1 >= Words) or (P + 3 >= Size) Then Begin
-    Error(M^.FileName + ': truncated long relocation in ' + SegmentName); Exit;
+    Error(M^.FileName + ': truncated long relocation in ' + SegmentName);
+    Exit;
    End;
    W2 := BufferWord(R, I + 1); T2 := W2 and 7;
    If not (T2 in [REL_ABS, REL_DATA, REL_TEXT, REL_BSS, REL_EXTERN]) Then
     Error(M^.FileName + ': invalid long relocation type in ' + SegmentName);
    If T2 = REL_EXTERN Then ValidateExternalIndex(M, W2 shr 3, SegmentName, P);
-   Inc(I, 2); Continue;
+   Inc(I, 2);
+   Continue;
   End;
   If not (T in [REL_ABS, REL_DATA, REL_TEXT, REL_BSS, REL_EXTERN, REL_PCREL, REL_INSTR]) Then
    Error(M^.FileName + ': invalid relocation type in ' + SegmentName);
@@ -893,7 +1244,10 @@ Begin
 End;
 
 Procedure ValidateObjects;
-Var M: PModule; S: PSymbol; SegBits: Word;
+Var
+ M: PModule;
+ S: PSymbol;
+ SegBits: Word;
 Begin
  M := FirstModule;
  While M <> Nil do Begin
@@ -913,47 +1267,100 @@ Begin
 End;
 
 Function ResolveInputName(Const RequestedName: String): String;
-Var N: String;
+Var
+ N: String;
 Begin
  N := RequestedName;
- If FileExists68(N) Then Begin ResolveInputName := N; Exit; End;
- If Not HasExtension(N) Then
- Begin
-  If FileExists68(N + '.O') Then Begin ResolveInputName := N + '.O'; Exit; End;
-  If FileExists68(N + '.L68') Then Begin ResolveInputName := N + '.L68'; Exit; End;
-  If FileExists68(N + '.A') Then Begin ResolveInputName := N + '.A'; Exit; End;
+ If FileExists68(N) Then Begin
+  ResolveInputName := N;
+  Exit;
+ End;
+ If Not HasExtension(N) Then Begin
+  If FileExists68(N + '.O') Then Begin
+   ResolveInputName := N + '.O';
+   Exit;
+  End;
+  If FileExists68(N + '.L68') Then Begin
+   ResolveInputName := N + '.L68';
+   Exit;
+  End;
+  If FileExists68(N + '.A') Then Begin
+   ResolveInputName := N + '.A';
+   Exit;
+  End;
  End;
  N := UpCaseStr(RequestedName);
- If FileExists68(N) Then Begin ResolveInputName := N; Exit; End;
- If Not HasExtension(N) Then
- Begin
-  If FileExists68(N + '.O') Then Begin ResolveInputName := N + '.O'; Exit; End;
-  If FileExists68(N + '.L68') Then Begin ResolveInputName := N + '.L68'; Exit; End;
-  If FileExists68(N + '.A') Then Begin ResolveInputName := N + '.A'; Exit; End;
+ If FileExists68(N) Then Begin
+  ResolveInputName := N;
+  Exit;
+ End;
+ If Not HasExtension(N) Then Begin
+  If FileExists68(N + '.O') Then Begin
+   ResolveInputName := N + '.O';
+   Exit;
+  End;
+  If FileExists68(N + '.L68') Then Begin
+   ResolveInputName := N + '.L68';
+   Exit;
+  End;
+  If FileExists68(N + '.A') Then Begin
+   ResolveInputName := N + '.A';
+   Exit;
+  End;
  End;
  ResolveInputName := '';
 End;
 
 Procedure ReadObjectAt(Const FN, DisplayName: String; BasePos, MemberSize, OrderKey: LongInt;
                        IncludeLocals: Boolean; O: POverlay);
-Var F: File; Magic, AbsFlag: Word; SymBytes, InputStack, Entry: LongInt;
-    I, N, ExpectedSymbols: LongInt; J: Integer; C: Byte;
-    HeaderSize, RelPos, SrcText, SrcData, SrcBss, Required, RelBytes: LongInt; MP: PModule; S: PSymbol;
+Var
+ F: File;
+ Magic, AbsFlag: Word;
+ SymBytes, InputStack, Entry: LongInt;
+ I, N, ExpectedSymbols: LongInt;
+ J: Integer;
+ C: Byte;
+ HeaderSize, RelPos, SrcText, SrcData, SrcBss, Required, RelBytes: LongInt;
+ MP: PModule;
+ S: PSymbol;
 Begin
- MP := AppendModule; MP^.FileName := DisplayName; MP^.OrderKey := OrderKey; MP^.IncludeLocals := IncludeLocals; MP^.Overlay := O;
- Assign(F, FN); Reset(F, 1); If IOResult <> 0 Then Fatal('impossible de lire ' + FN);
+ MP := AppendModule;
+ MP^.FileName := DisplayName;
+ MP^.OrderKey := OrderKey;
+ MP^.IncludeLocals := IncludeLocals;
+ MP^.Overlay := O;
+ Assign(F, FN); Reset(F, 1);
+ If IOResult <> 0 Then Fatal('impossible de lire ' + FN);
  SeekFile(F, BasePos);
  Magic := GetWord(F);
  If (Magic < DRI_MAGIC_NORMAL) or (Magic > DRI_MAGIC_4K) Then Fatal(DisplayName + ': format DRI invalide');
  MP^.SourceMagic := Magic;
- MP^.TextSize := GetLong(F); MP^.DataSize := GetLong(F); MP^.BssSize := GetLong(F); SymBytes := GetLong(F);
- InputStack := GetLong(F); Entry := GetLong(F); AbsFlag := GetWord(F);
+ MP^.TextSize := GetLong(F);
+ MP^.DataSize := GetLong(F);
+ MP^.BssSize := GetLong(F);
+ SymBytes := GetLong(F);
+ InputStack := GetLong(F);
+ Entry := GetLong(F);
+ AbsFlag := GetWord(F);
  MP^.SourceAbsolute := AbsFlag <> 0;
  HeaderSize := 28; SrcText := Entry;
- If Magic = DRI_MAGIC_BASES Then Begin SrcData := GetLong(F); SrcBss := GetLong(F); HeaderSize := 36; End
- Else If Magic = DRI_MAGIC_2K Then Begin SrcData := AlignLong(CheckedAdd(Entry, MP^.TextSize, DisplayName + ' base DATA'), 2048); SrcBss := CheckedAdd(SrcData, MP^.DataSize, DisplayName + ' base BSS'); End
- Else If Magic = DRI_MAGIC_ID Then Begin SrcData := 0; SrcBss := MP^.DataSize; End
- Else If Magic = DRI_MAGIC_4K Then Begin SrcData := AlignLong(CheckedAdd(Entry, MP^.TextSize, DisplayName + ' base DATA'), 4096); SrcBss := CheckedAdd(SrcData, MP^.DataSize, DisplayName + ' base BSS'); End
+ If Magic = DRI_MAGIC_BASES Then Begin
+  SrcData := GetLong(F);
+  SrcBss := GetLong(F);
+  HeaderSize := 36;
+ End
+  Else
+ If Magic = DRI_MAGIC_2K Then Begin
+  SrcData := AlignLong(CheckedAdd(Entry, MP^.TextSize, DisplayName + ' base DATA'), 2048);
+  SrcBss := CheckedAdd(SrcData, MP^.DataSize, DisplayName + ' base BSS');
+ End
+  Else
+ If Magic = DRI_MAGIC_ID Then Begin
+  SrcData := 0;
+  SrcBss := MP^.DataSize;
+ End
+  Else
+ If Magic = DRI_MAGIC_4K Then Begin SrcData := AlignLong(CheckedAdd(Entry, MP^.TextSize, DisplayName + ' base DATA'), 4096); SrcBss := CheckedAdd(SrcData, MP^.DataSize, DisplayName + ' base BSS'); End
  Else Begin SrcData := 0; SrcBss := 0; End;
  If (MP^.TextSize < 0) or (MP^.DataSize < 0) or (MP^.BssSize < 0) or (SymBytes < 0) Then
   Fatal(DisplayName + ': taille de segment negative');
