@@ -6130,6 +6130,21 @@ Type
   Characteristics     : LongInt;
  End;
 
+ { IMAGE_IMPORT_DESCRIPTOR (20 octets), un par DLL importee, table          }
+ { terminee par une entree entierement a zero - voir Pe_ParseImports.       }
+ { OriginalFirstThunk (l ILT, souvent presente et jamais patchee par le      }
+ { vrai loader Windows) est prefere a FirstThunk (l IAT, celle que le CPU    }
+ { lit reellement au moment du CALL) pour DECOUVRIR le nom de chaque         }
+ { fonction - c est FirstThunk qui est ensuite PATCHEE vers la zone de        }
+ { trappe (voir PE_TRAP_BASE). }
+ TPEImportDescriptor = Record
+  OriginalFirstThunk: LongInt;
+  TimeDateStamp     : LongInt;
+  ForwarderChain    : LongInt;
+  NameRVA           : LongInt;
+  FirstThunk        : LongInt;
+ End;
+
 Const
  { Chantier Windows 16 bits, Stage 2 : limites du chargeur NE - segments   }
  { et emplacements de trappe d'import, mêmes constantes utilisees par      }
@@ -6197,6 +6212,27 @@ Const
  { en-dessous d une limite genereuse pour un PE "normal" (rarement plus de  }
  { 10-15 sections). }
  MAX_PE_SECTIONS = 64;
+ { Chantier Windows NT/Win32 (PE), Stage 2 (2026-09-11) : zone de trappe    }
+ { d imports Win32, meme motif exact que LX_TRAP_BASE/LX_TRAP_SLOT_SIZE/     }
+ { LX_MAX_TRAP_SLOTS (voir leurs commentaires ci-dessus pour le detail) -    }
+ { les 2 derniers Mo de PE_Mem (32 Mo), largement au-dela de toute image PE  }
+ { console raisonnable (abap86.exe, le plus gros binaire teste ici, culmine  }
+ { a peine a $34000 = 208 Ko). Pe_ParseImports (Stage 2, appelee par         }
+ { Emu_LoadPE) patche chaque entree IAT reelle pour qu elle pointe ici        }
+ { plutot que vers le RVA hint/nom brut lu sur disque (jamais une adresse    }
+ { executable valide tel quel) - Pe_Step reconnait EIP y entrant et appelle   }
+ { Pe_DoWin32Call(slot), pour l instant un simple arret propre "Stage 3 pas  }
+ { encore implementee" (voir Pe_DoWin32Call) plutot que le vrai dispatch Win32}
+ { qui sera ecrit a l Etape 3. }
+ PE_TRAP_BASE      = $1E00000;
+ PE_TRAP_SLOT_SIZE = 16;
+ PE_MAX_TRAP_SLOTS = 512;
+ { Prefixe de segment FS (0x64) - reprise a l identique du precedent LX      }
+ { (LX_FS_BASE) pour la meme couverture d opcodes des le depart, meme si      }
+ { aucun binaire de test Win32 ne l a encore reellement exerce (a la          }
+ { difference de LOGDAEM.EXE pour LX) - simple zone lineaire plate            }
+ { zero-initialisee, AUCUNE pretention de representer un vrai TEB Win32. }
+ PE_FS_BASE = PE_TRAP_BASE - $1000;
 
 Type
  { Entree table des pages objet LX (e32_objmap), 8 octets - format        }
@@ -8315,6 +8351,33 @@ Var
  PE_SectionVAddr: Array[0..MAX_PE_SECTIONS - 1] Of LongInt;
  PE_SectionVSize: Array[0..MAX_PE_SECTIONS - 1] Of LongInt;
  PE_SectionRSize: Array[0..MAX_PE_SECTIONS - 1] Of LongInt;
+ { Chantier Windows NT/Win32 (PE), Stage 2 (2026-09-11) : coeur d execution  }
+ { - fork de Lx_Step/LX_Reg (voir project_devenv_win32pe.md), meme repartition}
+ { registres generaux/indicateurs/EIP separee que LX (TEmuRegs/TEmuFlags,     }
+ { types generiques deja partages par DOS/DPMI/LX, aucune dependance de       }
+ { segment). }
+ PE_Reg          : TEmuRegs;
+ PE_Flags        : TEmuFlags;
+ PE_EIP          : LongInt;
+ PE_Halted       : Boolean;
+ PE_HaltReason   : String;
+ PE_LastBadEIP   : LongInt;
+ PE_InstrCount   : LongInt;
+ PE_TraceEIP     : Array[0..255] Of LongInt;
+ PE_TraceESP     : Array[0..255] Of LongInt;
+ PE_TraceCount   : LongInt;
+ PE_FSPrefixActive: Boolean;
+ PE_AsyncKeyEsc  : Boolean;
+ { Table des emplacements de trappe d import Win32 (voir PE_TRAP_BASE) -     }
+ { remplie une fois par Pe_ParseImports (appelee par Emu_LoadPE), consultee  }
+ { par Pe_DoWin32Call des que Pe_Step detecte EIP dans la zone de trappe.    }
+ { IsOrd/Ordinal geres pour un import PAR ORDINAL (FuncName reste vide dans  }
+ { ce cas - rejet propre par Pe_DoWin32Call plutot qu un nom invente). }
+ PE_ImportSlotCount: Integer;
+ PE_ImportDllName  : Array[0..PE_MAX_TRAP_SLOTS - 1] Of String;
+ PE_ImportFuncName : Array[0..PE_MAX_TRAP_SLOTS - 1] Of String;
+ PE_ImportIsOrd    : Array[0..PE_MAX_TRAP_SLOTS - 1] Of Boolean;
+ PE_ImportOrdinal  : Array[0..PE_MAX_TRAP_SLOTS - 1] Of LongInt;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : T6502MemArr;
  CPU6502_A      : Byte;
@@ -79908,6 +79971,138 @@ End;
 { section (VirtualSize > SizeOfRawData, ex. .bss qui a SizeOfRawData=0) est }
 { deja correctement zero-remplie sans code special, contrairement au         }
 { traitement page-par-page necessaire pour LX. }
+{ Chantier Windows NT/Win32 (PE), Stage 2 : acces bas niveau a PE_Mem -     }
+{ mirroir exact de Lx_ReadByte/WriteByte/../WriteDWord (bornes verifiees,   }
+{ hors-limites = 0 en lecture / ignore en ecriture, meme convention que LX). }
+Function Pe_ReadByte(Addr: LongInt): Byte;
+Begin
+ If (Addr >= 0) And (Addr <= High(PE_Mem)) Then Pe_ReadByte := PE_Mem[Addr]
+ Else Pe_ReadByte := 0;
+End;
+
+Procedure Pe_WriteByte(Addr: LongInt; V: Byte);
+Begin
+ If (Addr >= 0) And (Addr <= High(PE_Mem)) Then PE_Mem[Addr] := V;
+End;
+
+Function Pe_ReadWord(Addr: LongInt): Word;
+Begin
+ Pe_ReadWord := Word(Pe_ReadByte(Addr)) Or (Word(Pe_ReadByte(Addr + 1)) Shl 8);
+End;
+
+Procedure Pe_WriteWord(Addr: LongInt; V: Word);
+Begin
+ Pe_WriteByte(Addr, Byte(V And $FF));
+ Pe_WriteByte(Addr + 1, Byte(V Shr 8));
+End;
+
+Function Pe_ReadDWord(Addr: LongInt): LongInt;
+Begin
+ Pe_ReadDWord := LongInt(LongWord(Pe_ReadWord(Addr)) Or
+  (LongWord(Pe_ReadWord(Addr + 2)) Shl 16));
+End;
+
+Procedure Pe_WriteDWord(Addr: LongInt; V: LongInt);
+Begin
+ Pe_WriteWord(Addr, Word(LongWord(V) And $FFFF));
+ Pe_WriteWord(Addr + 2, Word(LongWord(V) Shr 16));
+End;
+
+{ Lit une chaine ASCIIZ depuis PE_Mem (noms de DLL/fonctions importees) -   }
+{ plafonnee a 255 caracteres (limite ShortString) par prudence, largement   }
+{ suffisant pour un nom d API Win32 reel. }
+Function Pe_ReadAsciiZ(Addr: LongInt): String;
+Var
+ S: String;
+ C: Byte;
+Begin
+ S := '';
+ While Length(S) < 255 Do Begin
+  C := Pe_ReadByte(Addr + Length(S));
+  If C = 0 Then Break;
+  S := S + Chr(C);
+ End;
+ Pe_ReadAsciiZ := S;
+End;
+
+{ Chantier Windows NT/Win32 (PE), Stage 2 (suite) : table d imports reelle  }
+{ - parcourt IMAGE_IMPORT_DESCRIPTOR (terminee par une entree a zero),       }
+{ decouvre chaque nom de fonction via l ILT (OriginalFirstThunk, jamais      }
+{ patchee par un vrai loader Windows) puis PATCHE l IAT reelle              }
+{ (FirstThunk - celle que le CPU lit au moment du CALL) pour qu elle          }
+{ pointe vers un thunk de trappe reconnaissable dans PE_TRAP_BASE, exact     }
+{ miroir de Lx_ResolveImportSlot pour LX_TRAP_BASE. Import par ordinal       }
+{ (bit de poids fort de l entree de thunk positionne) : FuncName reste vide, }
+{ Pe_DoWin32Call le refusera proprement plutot que d inventer un nom.        }
+{ Portee Stage 2 : DECOUVRE et PATCHE les imports, ne les EXECUTE PAS        }
+{ encore (Pe_DoWin32Call n est qu un arret propre "Stage 3 pas encore        }
+{ implementee" pour l instant, voir plus bas).                              }
+{ BOGUE REEL corrige (2026-09-12, trouve en verifiant ce Stage sur           }
+{ test01_hello.exe - voir project_devenv_win32pe.md) : PE_Mem etait indexe   }
+{ PAR RVA NU (RVA 0 = PE_Mem[0]), mais le code compile REEL utilise des       }
+{ ADRESSES VIRTUELLES ABSOLUES (ImageBase+RVA) pour toute reference          }
+{ memoire directe (confirme en desassemblant a la main test01_hello.exe :    }
+{ le premier CALL saute vers un thunk d import "JMP [ImageBase+RVA_IAT]",    }
+{ PAS "JMP [RVA_IAT]") - PE_Mem[RVA] restait donc TOUJOURS a zero a l         }
+{ adresse que le JMP indirect lisait reellement, EIP sautait alors a 0 et     }
+{ derivait dans les octets de l en-tete DOS decodes comme des opcodes         }
+{ plausibles au lieu d atteindre la trappe. Corrige en indexant PE_Mem par    }
+{ VA partout (sections chargees a PE_Mem[ImageBase+RVA], voir Emu_LoadPE ;   }
+{ ici, chaque RVA lu dans la table d imports est additionne de PE_ImageBase   }
+{ AVANT toute lecture/ecriture dans PE_Mem) - convention coherente avec les   }
+{ adresses absolues deja poussees telles quelles par PUSH OFFSET (elles       }
+{ pointeront correctement une fois Stage 3 ecrit). }
+Procedure Pe_ParseImports(ImportRVA, ImportSize: LongInt);
+Var
+ DescOfs: LongInt;
+ OrigFirstThunk, NameRVA, FirstThunk: LongInt;
+ ThunkOfs, ThunkVal, ThunkAddr: LongInt;
+ DllName, FuncName: String;
+ J, Slot: Integer;
+ IsOrd: Boolean;
+Begin
+ PE_ImportSlotCount := 0;
+ If (ImportRVA <= 0) Or (ImportRVA >= LongInt(SizeOf(PE_Mem))) Then Exit;
+ DescOfs := PE_ImageBase + ImportRVA;
+ While True Do Begin
+  OrigFirstThunk := Pe_ReadDWord(DescOfs);
+  NameRVA := Pe_ReadDWord(DescOfs + 12);
+  FirstThunk := Pe_ReadDWord(DescOfs + 16);
+  If (OrigFirstThunk = 0) And (NameRVA = 0) And (FirstThunk = 0) Then Break;
+  DllName := Pe_ReadAsciiZ(PE_ImageBase + NameRVA);
+  If OrigFirstThunk <> 0 Then ThunkOfs := PE_ImageBase + OrigFirstThunk
+  Else ThunkOfs := PE_ImageBase + FirstThunk;
+  J := 0;
+  While True Do Begin
+   ThunkVal := Pe_ReadDWord(ThunkOfs + J * 4);
+   If ThunkVal = 0 Then Break;
+   IsOrd := (LongWord(ThunkVal) And $80000000) <> 0;
+   If IsOrd Then FuncName := '' Else FuncName := Pe_ReadAsciiZ(PE_ImageBase + ThunkVal + 2);
+   If PE_ImportSlotCount < PE_MAX_TRAP_SLOTS Then Begin
+    Slot := PE_ImportSlotCount;
+    PE_ImportDllName[Slot] := DllName;
+    PE_ImportFuncName[Slot] := FuncName;
+    PE_ImportIsOrd[Slot] := IsOrd;
+    If IsOrd Then PE_ImportOrdinal[Slot] := LongInt(LongWord(ThunkVal) And $7FFFFFFF)
+    Else PE_ImportOrdinal[Slot] := 0;
+    Inc(PE_ImportSlotCount);
+    ThunkAddr := PE_TRAP_BASE + Slot * PE_TRAP_SLOT_SIZE;
+    Pe_WriteDWord(PE_ImageBase + FirstThunk + J * 4, ThunkAddr);
+    If ThunkAddr + 6 <= High(PE_Mem) Then Begin
+     PE_Mem[ThunkAddr]     := $0F; PE_Mem[ThunkAddr + 1] := $0B; { UD2, filet de securite }
+     PE_Mem[ThunkAddr + 2] := Byte(Slot And $FF);
+     PE_Mem[ThunkAddr + 3] := Byte((Slot Shr 8) And $FF);
+     PE_Mem[ThunkAddr + 4] := 0;
+     PE_Mem[ThunkAddr + 5] := 0;
+     PE_Mem[ThunkAddr + 6] := $C3;
+    End;
+   End;
+   Inc(J);
+  End;
+  Inc(DescOfs, SizeOf(TPEImportDescriptor));
+ End;
+End;
+
 Function Emu_LoadPE(Const FileName: String): Boolean;
 Var
  FileHdr: TPEFileHeader;
@@ -79925,6 +80120,11 @@ Begin
  If Not Pe_ReadHeaders(FileName, FileHdr, OptHdr, HdrOfs, FSize) Then Exit;
  If (FileHdr.NumberOfSections <= 0) Or
     (FileHdr.NumberOfSections > MAX_PE_SECTIONS) Then Exit;
+ { BOGUE REEL corrige (2026-09-12) : PE_ImageBase doit etre connu AVANT de   }
+ { charger les sections - voir le commentaire de tete de Pe_ParseImports    }
+ { plus haut pour le contexte complet (PE_Mem est indexe par ADRESSE         }
+ { VIRTUELLE ABSOLUE, pas par RVA nu). }
+ PE_ImageBase := OptHdr.ImageBase;
  FillChar(PE_Mem, SizeOf(PE_Mem), 0);
  {$I-}
  Assign(F, FileName);
@@ -79943,14 +80143,14 @@ Begin
   Inc(PE_SectionCount);
   If (Sect.SizeOfRawData > 0) And (Sect.VirtualAddress >= 0) Then Begin
    CopyLen := Sect.SizeOfRawData;
-   If Sect.VirtualAddress + CopyLen > LongInt(SizeOf(PE_Mem)) Then Begin
+   If PE_ImageBase + Sect.VirtualAddress + CopyLen > LongInt(SizeOf(PE_Mem)) Then Begin
     Close(F); Exit; { section hors de l espace lineaire emule }
    End;
    {$I-}
    Seek(F, Sect.PointerToRawData);
    {$I+}
    If IOResult <> 0 Then Begin Close(F); Exit; End;
-   BlockRead(F, PE_Mem[Sect.VirtualAddress], CopyLen, BytesRead);
+   BlockRead(F, PE_Mem[PE_ImageBase + Sect.VirtualAddress], CopyLen, BytesRead);
    If BytesRead <> Word(CopyLen) Then Begin Close(F); Exit; End;
   End;
   { Repositionner sur la table des sections pour l iteration suivante -    }
@@ -79959,24 +80159,939 @@ Begin
    LongInt(I + 1) * SizeOf(TPESectionHeader));
  End;
  Close(F);
- PE_EntryPoint := OptHdr.AddressOfEntryPoint;
- PE_ImageBase := OptHdr.ImageBase;
+ { PE_EntryPoint est une ADRESSE VIRTUELLE ABSOLUE (ImageBase+RVA), coherente}
+ { avec l indexation de PE_Mem ci-dessus - voir le commentaire de tete de    }
+ { Pe_ParseImports. }
+ PE_EntryPoint := PE_ImageBase + OptHdr.AddressOfEntryPoint;
  PE_BinaryPath := FileName;
+ { Table d imports (Stage 2) : DataDirectory[1] = repertoire des imports    }
+ { standard (IMAGE_DIRECTORY_ENTRY_IMPORT), verifie present sur abap86.exe   }
+ { (numRVA=16 >= 2) ET sur test01_hello.exe (verifie via PEDIAG temporaire). }
+ If OptHdr.NumberOfRvaAndSizes >= 2 Then
+  Pe_ParseImports(OptHdr.DataDirectory[1].VirtualAddress,
+   OptHdr.DataDirectory[1].DirSize)
+ Else
+  PE_ImportSlotCount := 0;
+ { Chantier Windows NT/Win32 (PE), Stage 2 : etat pret a executer - meme     }
+ { role que la fin de Emu_LoadLX (LX_EntryPoint/LX_EIP/LX_Reg.ESP). Aucune    }
+ { section "pile" n existe dans un PE (contrairement aux objets LX) - la      }
+ { pile Windows reelle est allouee separement par le loader OS a partir de   }
+ { SizeOfStackReserve/Commit de l en-tete optionnel ; ici, un simple sommet   }
+ { de pile fixe (PE_TRAP_BASE - 64 Ko) suffit, confortablement au-dessus de   }
+ { toute image console testee (abap86.exe, le plus gros binaire teste ici,   }
+ { culmine a $34000 = 208 Ko) et au-dessous de la zone de trappe/FS (voir     }
+ { PE_TRAP_BASE/PE_FS_BASE). }
+ PE_EIP := PE_EntryPoint;
+ FillChar(PE_Reg, SizeOf(PE_Reg), 0);
+ PE_Reg.ESP := PE_TRAP_BASE - $10000;
+ FillChar(PE_Flags, SizeOf(PE_Flags), 0);
+ PE_Halted := False;
+ PE_HaltReason := '';
+ PE_LastBadEIP := 0;
+ PE_InstrCount := 0;
+ PE_TraceCount := 0;
+ PE_AsyncKeyEsc := False;
  PE_Loaded := True;
  Emu_LoadPE := True;
 End;
 
-{ Forward - les aides registre generiques (Dpmi_Get/SetReg8/16/32, aucune  }
-{ dependance LDT/DPMI dans leur corps, juste un mappage numero->champ       }
-{ TEmuRegs) ne sont definies que plus loin dans le fichier (pres de         }
-{ Dpmi_Step, ~ligne 62920) - reutilisees telles quelles par Lx_Step plutot  }
-{ que dupliquees, d ou ce Forward pour permettre l ordre d ecriture actuel. }
+{ Forward - memes aides registre generiques que celles avancees plus bas   }
+{ pour Lx_Step (voir le commentaire jumeau pres de leur 2e Forward,          }
+{ inchange) - avancees ICI EN PLUS puisque Pe_Step (Stage 2 Win32/PE) en a   }
+{ besoin des ce point du fichier, avant meme leur 1er Forward existant.     }
 Function Dpmi_GetReg8(Var R: TEmuRegs; Num: Byte): Byte; Forward;
 Procedure Dpmi_SetReg8(Var R: TEmuRegs; Num: Byte; V: Byte); Forward;
 Function Dpmi_GetReg16(Var R: TEmuRegs; Num: Byte): Word; Forward;
 Procedure Dpmi_SetReg16(Var R: TEmuRegs; Num: Byte; V: Word); Forward;
 Function Dpmi_GetReg32(Var R: TEmuRegs; Num: Byte): LongInt; Forward;
 Procedure Dpmi_SetReg32(Var R: TEmuRegs; Num: Byte; V: LongInt); Forward;
+
+{ Chantier Windows NT/Win32 (PE), Stage 2 : coeur d execution 32 bits -    }
+{ FORK DELIBERE de Lx_Step et de ses aides (Lx_FetchByte/DecodeModRM/       }
+{ GetOp/PutOp/Alu/TestCond/Push/Pop/AluForm/Shift/StringOp/MulDiv), meme    }
+{ patron que LX pour Dpmi_Step (voir le commentaire de tete de Lx_Step) :   }
+{ meme couverture d opcodes de depart, reprise a l identique en retargetant }
+{ juste LX_Mem/LX_Reg/LX_Flags/LX_EIP vers PE_Mem/PE_Reg/PE_Flags/PE_EIP.    }
+{ Pe_ParityEven est une copie triviale (6 lignes) de Lx_ParityEven plutot    }
+{ qu une reutilisation directe, UNIQUEMENT pour eviter un probleme d ordre   }
+{ de declaration (Lx_ParityEven n est definie que plus bas, au milieu du     }
+{ bloc Lx_Step) - aucune autre duplication de logique dans ce fichier. }
+Function Pe_ParityEven(B: Byte): Boolean;
+Var I: Integer; Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 0 To 7 Do If (B And (1 Shl I)) <> 0 Then Inc(Cnt);
+ Pe_ParityEven := (Cnt And 1) = 0;
+End;
+
+Procedure Pe_Halt(Const Reason: String);
+Begin
+ PE_Halted := True;
+ PE_LastBadEIP := PE_EIP;
+ PE_HaltReason := Reason;
+End;
+
+Function Pe_FetchByte(Step: Integer): Byte;
+Begin
+ Pe_FetchByte := Pe_ReadByte(PE_EIP + Step);
+End;
+
+Function Pe_FetchWord(Step: Integer): Word;
+Begin
+ Pe_FetchWord := Pe_ReadWord(PE_EIP + Step);
+End;
+
+Function Pe_FetchDWord(Step: Integer): LongInt;
+Begin
+ Pe_FetchDWord := Pe_ReadDWord(PE_EIP + Step);
+End;
+
+{ Decode un octet ModR/M (+ eventuel SIB + deplacement), adressage 32 bits }
+{ uniquement - Op.LinAddr EST l adresse lineaire finale directement, meme   }
+{ principe que Lx_DecodeModRM (modele plat, pas de base de selecteur). }
+Procedure Pe_DecodeModRM(ModRM: Byte; Var Op: TDpmiOperand);
+Var
+ Mode, RM, Sib, Scale, SIdx, SBase: Byte;
+ Disp, EA: LongInt;
+ ExtraLen: Integer;
+Begin
+ Op.IsReg := False; Op.RegNum := 0; Op.LinAddr := 0; Op.Len := 1;
+ Mode := (ModRM Shr 6) And 3;
+ RM := ModRM And 7;
+ If Mode = 3 Then Begin Op.IsReg := True; Op.RegNum := RM; Exit; End;
+ ExtraLen := 0;
+ EA := 0;
+ If RM = 4 Then Begin
+  Sib := Pe_FetchByte(1);
+  Inc(ExtraLen);
+  Scale := (Sib Shr 6) And 3;
+  SIdx := (Sib Shr 3) And 7;
+  SBase := Sib And 7;
+  If SIdx <> 4 Then
+   EA := Dpmi_GetReg32(PE_Reg, SIdx) Shl Scale;
+  If (SBase = 5) And (Mode = 0) Then Begin
+   Disp := Pe_FetchDWord(1 + ExtraLen);
+   Inc(ExtraLen, 4);
+   EA := EA + Disp;
+  End Else
+   EA := EA + Dpmi_GetReg32(PE_Reg, SBase);
+ End Else If (RM = 5) And (Mode = 0) Then Begin
+  Disp := Pe_FetchDWord(1);
+  Inc(ExtraLen, 4);
+  EA := Disp;
+ End Else
+  EA := Dpmi_GetReg32(PE_Reg, RM);
+ Case Mode Of
+  1: Begin
+   Disp := Pe_FetchByte(1 + ExtraLen);
+   If (Disp And $80) <> 0 Then Disp := Disp Or LongInt($FFFFFF00);
+   EA := EA + Disp;
+   Inc(ExtraLen);
+  End;
+  2: Begin
+   Disp := Pe_FetchDWord(1 + ExtraLen);
+   EA := EA + Disp;
+   Inc(ExtraLen, 4);
+  End;
+ End;
+ If PE_FSPrefixActive Then EA := EA + PE_FS_BASE;
+ Op.LinAddr := EA;
+ Op.Len := 1 + ExtraLen;
+End;
+
+Function Pe_GetOp(Var Op: TDpmiOperand; Size: Byte): LongInt;
+Begin
+ Case Size Of
+  1: If Op.IsReg Then Pe_GetOp := Dpmi_GetReg8(PE_Reg, Op.RegNum)
+     Else Pe_GetOp := Pe_ReadByte(Op.LinAddr);
+  2: If Op.IsReg Then Pe_GetOp := Dpmi_GetReg16(PE_Reg, Op.RegNum)
+     Else Pe_GetOp := Pe_ReadWord(Op.LinAddr);
+ Else If Op.IsReg Then Pe_GetOp := Dpmi_GetReg32(PE_Reg, Op.RegNum)
+      Else Pe_GetOp := Pe_ReadDWord(Op.LinAddr);
+ End;
+End;
+
+Procedure Pe_PutOp(Var Op: TDpmiOperand; Size: Byte; V: LongInt);
+Begin
+ Case Size Of
+  1: If Op.IsReg Then Dpmi_SetReg8(PE_Reg, Op.RegNum, Byte(V))
+     Else Pe_WriteByte(Op.LinAddr, Byte(V));
+  2: If Op.IsReg Then Dpmi_SetReg16(PE_Reg, Op.RegNum, Word(V))
+     Else Pe_WriteWord(Op.LinAddr, Word(V));
+ Else If Op.IsReg Then Dpmi_SetReg32(PE_Reg, Op.RegNum, V)
+      Else Pe_WriteDWord(Op.LinAddr, V);
+ End;
+End;
+
+Function Pe_Alu(AluOp: Byte; A, B: LongInt; Size: Byte): LongInt;
+Var
+ UA, UB: LongWord;
+ R, MaxU: Int64;
+ Res: LongInt;
+ SignBit: LongWord;
+ OldCF: Integer;
+Begin
+ Case Size Of
+  1: Begin UA := Byte(A); UB := Byte(B); SignBit := $80; MaxU := $FF; End;
+  2: Begin UA := Word(A); UB := Word(B); SignBit := $8000; MaxU := $FFFF; End;
+ Else Begin
+   UA := LongWord(A); UB := LongWord(B);
+   SignBit := $80000000; MaxU := $FFFFFFFF;
+  End;
+ End;
+ OldCF := 0;
+ If EFG_CF In PE_Flags.s Then OldCF := 1;
+ Case AluOp Of
+  0: R := Int64(UA) + UB;
+  1: R := Int64(UA) Or UB;
+  2: R := Int64(UA) + UB + OldCF;
+  3: R := Int64(UA) - UB - OldCF;
+  4: R := Int64(UA) And UB;
+  5, 7: R := Int64(UA) - UB;
+  6: R := Int64(UA) Xor UB;
+ Else R := 0;
+ End;
+ Case Size Of
+  1: Res := LongInt(Byte(R And $FF));
+  2: Res := LongInt(Word(R And $FFFF));
+ Else Res := LongInt(LongWord(R And $FFFFFFFF));
+ End;
+ Case AluOp Of
+  0, 2: Begin
+   If R > MaxU Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+   If ((UA Xor LongWord(Res)) And (UB Xor LongWord(Res)) And SignBit) <> 0
+    Then Include(PE_Flags.s, EFG_OF) Else Exclude(PE_Flags.s, EFG_OF);
+  End;
+  3, 5, 7: Begin
+   If R < 0 Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+   If ((UA Xor UB) And (UA Xor LongWord(Res)) And SignBit) <> 0
+    Then Include(PE_Flags.s, EFG_OF) Else Exclude(PE_Flags.s, EFG_OF);
+  End;
+  1, 4, 6: Begin
+   Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF);
+  End;
+ End;
+ If (LongWord(Res) And SignBit) <> 0 Then Include(PE_Flags.s, EFG_SF)
+ Else Exclude(PE_Flags.s, EFG_SF);
+ If Res = 0 Then Include(PE_Flags.s, EFG_ZF) Else Exclude(PE_Flags.s, EFG_ZF);
+ If Pe_ParityEven(Byte(Res And $FF)) Then Include(PE_Flags.s, EFG_PF)
+ Else Exclude(PE_Flags.s, EFG_PF);
+ Pe_Alu := Res;
+End;
+
+Function Pe_TestCond(CC: Byte): Boolean;
+Var Res: Boolean;
+Begin
+ Res := False;
+ Case CC And $E Of
+  $0: Res := EFG_OF In PE_Flags.s;
+  $2: Res := EFG_CF In PE_Flags.s;
+  $4: Res := EFG_ZF In PE_Flags.s;
+  $6: Res := (EFG_CF In PE_Flags.s) Or (EFG_ZF In PE_Flags.s);
+  $8: Res := EFG_SF In PE_Flags.s;
+  $A: Res := EFG_PF In PE_Flags.s;
+  $C: Res := (EFG_SF In PE_Flags.s) <> (EFG_OF In PE_Flags.s);
+  $E: Res := ((EFG_SF In PE_Flags.s) <> (EFG_OF In PE_Flags.s))
+          Or (EFG_ZF In PE_Flags.s);
+ End;
+ If (CC And 1) <> 0 Then Res := Not Res;
+ Pe_TestCond := Res;
+End;
+
+Procedure Pe_Push32(V: LongInt);
+Begin
+ PE_Reg.ESP := PE_Reg.ESP - 4;
+ Pe_WriteDWord(PE_Reg.ESP, V);
+End;
+
+Function Pe_Pop32: LongInt;
+Begin
+ Pe_Pop32 := Pe_ReadDWord(PE_Reg.ESP);
+ PE_Reg.ESP := PE_Reg.ESP + 4;
+End;
+
+Procedure Pe_Push16(V: Word);
+Begin
+ PE_Reg.ESP := PE_Reg.ESP - 2;
+ Pe_WriteWord(PE_Reg.ESP, V);
+End;
+
+Function Pe_Pop16: Word;
+Begin
+ Pe_Pop16 := Pe_ReadWord(PE_Reg.ESP);
+ PE_Reg.ESP := PE_Reg.ESP + 2;
+End;
+
+Procedure Pe_AluForm(AluOp, Form, OpSize: Byte);
+Var
+ ModRM, Reg: Byte;
+ Op: TDpmiOperand;
+ A, B, Res, Imm: LongInt;
+Begin
+ Case Form Of
+  0, 1: Begin
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If Form = 0 Then Begin
+    A := Pe_GetOp(Op, 1); B := Dpmi_GetReg8(PE_Reg, Reg);
+    Res := Pe_Alu(AluOp, A, B, 1);
+    If AluOp <> 7 Then Pe_PutOp(Op, 1, Res);
+   End Else Begin
+    A := Pe_GetOp(Op, OpSize);
+    If OpSize = 2 Then B := Dpmi_GetReg16(PE_Reg, Reg) Else B := Dpmi_GetReg32(PE_Reg, Reg);
+    Res := Pe_Alu(AluOp, A, B, OpSize);
+    If AluOp <> 7 Then Pe_PutOp(Op, OpSize, Res);
+   End;
+  End;
+  2, 3: Begin
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If Form = 2 Then Begin
+    A := Dpmi_GetReg8(PE_Reg, Reg); B := Pe_GetOp(Op, 1);
+    Res := Pe_Alu(AluOp, A, B, 1);
+    If AluOp <> 7 Then Dpmi_SetReg8(PE_Reg, Reg, Byte(Res));
+   End Else Begin
+    If OpSize = 2 Then A := Dpmi_GetReg16(PE_Reg, Reg) Else A := Dpmi_GetReg32(PE_Reg, Reg);
+    B := Pe_GetOp(Op, OpSize);
+    Res := Pe_Alu(AluOp, A, B, OpSize);
+    If AluOp <> 7 Then Begin
+     If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, Reg, Word(Res))
+     Else Dpmi_SetReg32(PE_Reg, Reg, Res);
+    End;
+   End;
+  End;
+  4: Begin
+   Imm := Pe_FetchByte(0); Inc(PE_EIP);
+   Res := Pe_Alu(AluOp, PE_Reg.AL, Imm, 1);
+   If AluOp <> 7 Then PE_Reg.AL := Byte(Res);
+  End;
+  5: Begin
+   If OpSize = 2 Then Begin
+    Imm := Pe_FetchWord(0); Inc(PE_EIP, 2);
+    Res := Pe_Alu(AluOp, PE_Reg.AX, Imm, 2);
+    If AluOp <> 7 Then PE_Reg.AX := Word(Res);
+   End Else Begin
+    Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4);
+    Res := Pe_Alu(AluOp, PE_Reg.EAX, Imm, 4);
+    If AluOp <> 7 Then PE_Reg.EAX := Res;
+   End;
+  End;
+ End;
+End;
+
+Function Pe_Shift(SubOp: Byte; Val: LongInt; Count: Byte; Size: Byte): LongInt;
+Var
+ Bits: Byte;
+ UV: LongWord;
+ CF, OFBit, TopBit, NewCF: Boolean;
+ I: Integer;
+ SignBit: LongWord;
+Begin
+ Case Size Of 1: Bits := 8; 2: Bits := 16; Else Bits := 32; End;
+ Case Size Of
+  1: Begin UV := Byte(Val); SignBit := $80; End;
+  2: Begin UV := Word(Val); SignBit := $8000; End;
+ Else Begin UV := LongWord(Val); SignBit := $80000000; End;
+ End;
+ CF := EFG_CF In PE_Flags.s;
+ Count := Count Mod 32;
+ For I := 1 To Count Do Begin
+  Case SubOp Of
+   0: Begin { ROL }
+    TopBit := (UV And SignBit) <> 0;
+    UV := ((UV Shl 1) Or Ord(TopBit)) And ((LongWord(1) Shl Bits) - 1);
+    CF := TopBit;
+   End;
+   1: Begin { ROR }
+    NewCF := (UV And 1) <> 0;
+    UV := (UV Shr 1) Or (LongWord(Ord(NewCF)) Shl (Bits - 1));
+    CF := NewCF;
+   End;
+   2: Begin { RCL }
+    TopBit := (UV And SignBit) <> 0;
+    UV := ((UV Shl 1) Or Ord(CF)) And ((LongWord(1) Shl Bits) - 1);
+    CF := TopBit;
+   End;
+   3: Begin { RCR }
+    NewCF := (UV And 1) <> 0;
+    UV := (UV Shr 1) Or (LongWord(Ord(CF)) Shl (Bits - 1));
+    CF := NewCF;
+   End;
+   4, 6: Begin { SHL/SAL }
+    CF := (UV And SignBit) <> 0;
+    UV := (UV Shl 1) And ((LongWord(1) Shl Bits) - 1);
+   End;
+   5: Begin { SHR }
+    CF := (UV And 1) <> 0;
+    UV := UV Shr 1;
+   End;
+   7: Begin { SAR }
+    CF := (UV And 1) <> 0;
+    TopBit := (UV And SignBit) <> 0;
+    UV := UV Shr 1;
+    If TopBit Then UV := UV Or SignBit;
+   End;
+  End;
+ End;
+ If Count > 0 Then Begin
+  If CF Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+  If Count = 1 Then Begin
+   Case SubOp Of
+    4, 6: OFBit := ((UV And SignBit) <> 0) <> CF;
+    5:    OFBit := (LongWord(Val) And SignBit) <> 0;
+    7:    OFBit := False;
+   Else OFBit := False;
+   End;
+   If OFBit Then Include(PE_Flags.s, EFG_OF) Else Exclude(PE_Flags.s, EFG_OF);
+  End;
+  If SubOp In [4, 5, 6, 7] Then Begin
+   If (UV And SignBit) <> 0 Then Include(PE_Flags.s, EFG_SF) Else Exclude(PE_Flags.s, EFG_SF);
+   If UV = 0 Then Include(PE_Flags.s, EFG_ZF) Else Exclude(PE_Flags.s, EFG_ZF);
+   If Pe_ParityEven(Byte(UV And $FF)) Then Include(PE_Flags.s, EFG_PF)
+   Else Exclude(PE_Flags.s, EFG_PF);
+  End;
+ End;
+ Case Size Of
+  1: Pe_Shift := LongInt(Byte(UV));
+  2: Pe_Shift := LongInt(Word(UV));
+ Else Pe_Shift := LongInt(UV);
+ End;
+End;
+
+Function Pe_GetOp2Mem(Addr: LongInt; Sz: Byte): LongInt;
+Begin
+ Case Sz Of
+  1: Pe_GetOp2Mem := Pe_ReadByte(Addr);
+  2: Pe_GetOp2Mem := Pe_ReadWord(Addr);
+ Else Pe_GetOp2Mem := Pe_ReadDWord(Addr);
+ End;
+End;
+
+Procedure Pe_PutOp2Mem(Addr: LongInt; Sz: Byte; V: LongInt);
+Begin
+ Case Sz Of
+  1: Pe_WriteByte(Addr, Byte(V));
+  2: Pe_WriteWord(Addr, Word(V));
+ Else Pe_WriteDWord(Addr, V);
+ End;
+End;
+
+Procedure Pe_StringOp(Op2: Byte; OpSize: Byte; RepMode: Byte);
+Var
+ Sz: Byte;
+ SrcV, DstV: LongInt;
+ Dir: Integer;
+ Cont: Boolean;
+Begin
+ If Op2 In [$A4, $A6, $AA, $AC, $AE] Then Sz := 1 Else Sz := OpSize;
+ If EFG_DF In PE_Flags.s Then Dir := -1 Else Dir := 1;
+ Case Op2 Of
+  $A4, $A5: Begin { MOVS }
+   SrcV := Pe_GetOp2Mem(PE_Reg.ESI, Sz);
+   Pe_PutOp2Mem(PE_Reg.EDI, Sz, SrcV);
+   PE_Reg.ESI := PE_Reg.ESI + Dir * Sz;
+   PE_Reg.EDI := PE_Reg.EDI + Dir * Sz;
+  End;
+  $AA, $AB: Begin { STOS }
+   Pe_PutOp2Mem(PE_Reg.EDI, Sz, PE_Reg.EAX);
+   PE_Reg.EDI := PE_Reg.EDI + Dir * Sz;
+  End;
+  $AC, $AD: Begin { LODS }
+   SrcV := Pe_GetOp2Mem(PE_Reg.ESI, Sz);
+   If Sz = 1 Then PE_Reg.AL := Byte(SrcV)
+   Else If Sz = 2 Then PE_Reg.AX := Word(SrcV)
+   Else PE_Reg.EAX := SrcV;
+   PE_Reg.ESI := PE_Reg.ESI + Dir * Sz;
+  End;
+  $A6, $A7: Begin { CMPS }
+   SrcV := Pe_GetOp2Mem(PE_Reg.ESI, Sz);
+   DstV := Pe_GetOp2Mem(PE_Reg.EDI, Sz);
+   Pe_Alu(7, SrcV, DstV, Sz);
+   PE_Reg.ESI := PE_Reg.ESI + Dir * Sz;
+   PE_Reg.EDI := PE_Reg.EDI + Dir * Sz;
+  End;
+  $AE, $AF: Begin { SCAS }
+   DstV := Pe_GetOp2Mem(PE_Reg.EDI, Sz);
+   If Sz = 1 Then SrcV := PE_Reg.AL Else If Sz = 2 Then SrcV := PE_Reg.AX Else SrcV := PE_Reg.EAX;
+   Pe_Alu(7, SrcV, DstV, Sz);
+   PE_Reg.EDI := PE_Reg.EDI + Dir * Sz;
+  End;
+ End;
+ If RepMode <> 0 Then Begin
+  PE_Reg.ECX := PE_Reg.ECX - 1;
+  Cont := PE_Reg.ECX <> 0;
+  If (Op2 In [$A6, $A7, $AE, $AF]) And Cont Then Begin
+   If RepMode = 1 Then Cont := EFG_ZF In PE_Flags.s
+   Else Cont := Not (EFG_ZF In PE_Flags.s);
+  End;
+  If Cont Then Dec(PE_EIP, 2);
+ End;
+End;
+
+Procedure Pe_MulDiv(SubOp: Byte; Size: Byte; RVal: LongInt);
+Var
+ UR: LongWord;
+ P64: Int64;
+ SR: LongInt;
+ Q, Rm: Int64;
+Begin
+ Case SubOp Of
+  4: Begin { MUL }
+   Case Size Of
+    1: Begin
+     UR := LongWord(Byte(PE_Reg.AL)) * LongWord(Byte(RVal));
+     PE_Reg.AX := Word(UR);
+     If Hi(Word(UR)) <> 0 Then Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+     Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+    End;
+    2: Begin
+     UR := LongWord(Word(PE_Reg.AX)) * LongWord(Word(RVal));
+     PE_Reg.AX := Word(UR); PE_Reg.DX := Word(UR Shr 16);
+     If Word(UR Shr 16) <> 0 Then Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+     Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+    End;
+   Else Begin
+     P64 := Int64(LongWord(PE_Reg.EAX)) * Int64(LongWord(RVal));
+     PE_Reg.EAX := LongInt(LongWord(P64 And $FFFFFFFF));
+     PE_Reg.EDX := LongInt(LongWord(P64 Shr 32));
+     If LongWord(P64 Shr 32) <> 0 Then Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+     Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+    End;
+   End;
+  End;
+  5: Begin { IMUL (1 operande) }
+   Case Size Of
+    1: Begin
+     SR := ShortInt(PE_Reg.AL) * ShortInt(RVal);
+     PE_Reg.AX := Word(SR);
+     If (SR < -128) Or (SR > 127) Then Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+     Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+    End;
+    2: Begin
+     SR := SmallInt(PE_Reg.AX) * SmallInt(RVal);
+     PE_Reg.AX := Word(SR); PE_Reg.DX := Word(SR Shr 16);
+     If (SR < -32768) Or (SR > 32767) Then Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+     Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+    End;
+   Else Begin
+     P64 := Int64(PE_Reg.EAX) * Int64(RVal);
+     PE_Reg.EAX := LongInt(LongWord(P64 And $FFFFFFFF));
+     PE_Reg.EDX := LongInt(LongWord(P64 Shr 32));
+     If (P64 < -2147483648) Or (P64 > 2147483647) Then
+      Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+     Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+    End;
+   End;
+  End;
+  6: Begin { DIV }
+   If RVal = 0 Then Begin Pe_Halt('Division par zero (DIV)'); Exit; End;
+   Case Size Of
+    1: Begin
+     UR := Word(PE_Reg.AX) Div LongWord(Byte(RVal));
+     If UR > 255 Then Begin Pe_Halt('Depassement de quotient (DIV 8 bits)'); Exit; End;
+     PE_Reg.AH := Byte(Word(PE_Reg.AX) Mod LongWord(Byte(RVal)));
+     PE_Reg.AL := Byte(UR);
+    End;
+    2: Begin
+     UR := (LongWord(Word(PE_Reg.DX)) Shl 16) Or LongWord(Word(PE_Reg.AX));
+     If (UR Div LongWord(Word(RVal))) > 65535 Then Begin Pe_Halt('Depassement de quotient (DIV 16 bits)'); Exit; End;
+     PE_Reg.DX := Word(UR Mod LongWord(Word(RVal)));
+     PE_Reg.AX := Word(UR Div LongWord(Word(RVal)));
+    End;
+   Else Begin
+     P64 := (Int64(LongWord(PE_Reg.EDX)) Shl 32) Or Int64(LongWord(PE_Reg.EAX));
+     Q := P64 Div Int64(LongWord(RVal));
+     If Q > 4294967295 Then Begin Pe_Halt('Depassement de quotient (DIV 32 bits)'); Exit; End;
+     Rm := P64 Mod Int64(LongWord(RVal));
+     PE_Reg.EAX := LongInt(LongWord(Q)); PE_Reg.EDX := LongInt(LongWord(Rm));
+    End;
+   End;
+  End;
+  7: Begin { IDIV }
+   If RVal = 0 Then Begin Pe_Halt('Division par zero (IDIV)'); Exit; End;
+   Case Size Of
+    1: Begin
+     SR := SmallInt(PE_Reg.AX) Div ShortInt(RVal);
+     If (SR < -128) Or (SR > 127) Then Begin Pe_Halt('Depassement de quotient (IDIV 8 bits)'); Exit; End;
+     PE_Reg.AH := Byte(SmallInt(PE_Reg.AX) Mod ShortInt(RVal));
+     PE_Reg.AL := Byte(SR);
+    End;
+    2: Begin
+     P64 := (Int64(SmallInt(PE_Reg.DX)) Shl 16) Or Int64(Word(PE_Reg.AX));
+     Q := P64 Div Int64(SmallInt(RVal));
+     If (Q < -32768) Or (Q > 32767) Then Begin Pe_Halt('Depassement de quotient (IDIV 16 bits)'); Exit; End;
+     Rm := P64 Mod Int64(SmallInt(RVal));
+     PE_Reg.AX := Word(Q); PE_Reg.DX := Word(Rm);
+    End;
+   Else Begin
+     P64 := (Int64(PE_Reg.EDX) Shl 32) Or Int64(LongWord(PE_Reg.EAX));
+     Q := P64 Div Int64(RVal);
+     If (Q < -2147483648) Or (Q > 2147483647) Then Begin Pe_Halt('Depassement de quotient (IDIV 32 bits)'); Exit; End;
+     Rm := P64 Mod Int64(RVal);
+     PE_Reg.EAX := LongInt(LongWord(Q)); PE_Reg.EDX := LongInt(LongWord(Rm));
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Chantier Windows NT/Win32 (PE), Stage 2 (placeholder) / Stage 3 (reel) :  }
+{ appelee par Pe_Step des que EIP entre dans la zone de trappe -            }
+{ PLACEHOLDER volontaire pour l instant (arret propre et informatif,        }
+{ jamais un crash ni un comportement invente) - la vraie table de dispatch   }
+{ Win32 (GetStdHandle/WriteFile/ExitProcess d abord, voir                    }
+{ project_devenv_win32pe.md) sera ecrite a l Etape 3, EN PLACE de ce corps,  }
+{ sans toucher a Pe_Step ni a Pe_ParseImports qui restent valables tels      }
+{ quels. }
+Procedure Pe_DoWin32Call(SlotIndex: Integer);
+Var
+ Desc: String;
+Begin
+ If (SlotIndex < 0) Or (SlotIndex >= PE_ImportSlotCount) Then Begin
+  Pe_Halt('Appel vers un emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
+  Exit;
+ End;
+ If PE_ImportIsOrd[SlotIndex] Then
+  Desc := PE_ImportDllName[SlotIndex] + '!ordinal#' + IntToStr(PE_ImportOrdinal[SlotIndex])
+ Else
+  Desc := PE_ImportDllName[SlotIndex] + '!' + PE_ImportFuncName[SlotIndex];
+ Pe_Halt('Appel d''import ' + Desc + ' (emplacement ' + IntToStr(SlotIndex) +
+  ') - dispatch Win32 pas encore implemente (Etape 3)');
+End;
+
+{ Execute UNE instruction a PE_EIP (ou service un appel d import si EIP     }
+{ vient d entrer dans la zone de trappe, voir Pe_DoWin32Call). Voir le       }
+{ commentaire de tete plus haut (avant Pe_Halt) pour le contexte complet du  }
+{ fork depuis Lx_Step. }
+Procedure Pe_Step;
+Var
+ B, ModRM, Reg, Sub: Byte;
+ OpSize: Byte;
+ RepMode: Byte;
+ Op: TDpmiOperand;
+ A, Imm, Res, Target, OldCF: LongInt;
+ Op2: Byte;
+ TraceIdx: LongInt;
+Begin
+ If PE_Halted Then Exit;
+ TraceIdx := PE_TraceCount Mod 256;
+ PE_TraceEIP[TraceIdx] := PE_EIP;
+ PE_TraceESP[TraceIdx] := PE_Reg.ESP;
+ Inc(PE_TraceCount);
+ Inc(PE_InstrCount);
+ If (PE_EIP >= PE_TRAP_BASE) And
+    (PE_EIP < PE_TRAP_BASE + PE_MAX_TRAP_SLOTS * PE_TRAP_SLOT_SIZE) Then Begin
+  Pe_DoWin32Call((PE_EIP - PE_TRAP_BASE) Div PE_TRAP_SLOT_SIZE);
+  Exit;
+ End;
+ OpSize := 4;
+ RepMode := 0;
+ PE_FSPrefixActive := False;
+ Repeat
+  B := Pe_FetchByte(0);
+  Case B Of
+   $66: Begin If OpSize = 2 Then OpSize := 4 Else OpSize := 2; Inc(PE_EIP); End;
+   $F0: Inc(PE_EIP);
+   $F2: Begin RepMode := 2; Inc(PE_EIP); End;
+   $F3: Begin RepMode := 1; Inc(PE_EIP); End;
+   $64: Begin PE_FSPrefixActive := True; Inc(PE_EIP); End;
+  Else Break;
+  End;
+ Until False;
+ B := Pe_FetchByte(0);
+ Inc(PE_EIP);
+ If (B < $40) And ((B And 7) <= 5) And (B <> $0F) Then
+  Pe_AluForm(B Shr 3, B And 7, OpSize)
+ Else Case B Of
+  $0F: Begin
+   Op2 := Pe_FetchByte(0);
+   Inc(PE_EIP);
+   Case Op2 Of
+    $80..$8F: Begin
+     Target := Pe_FetchDWord(0);
+     Inc(PE_EIP, 4);
+     If Pe_TestCond(Op2 And $F) Then PE_EIP := PE_EIP + Target;
+    End;
+   Else Pe_Halt('Opcode 0F ' + HexByte(Op2) + ' non reconnu (Stage 2)');
+   End;
+  End;
+  $40..$47: Begin { INC reg32/16 }
+   OldCF := 0; If EFG_CF In PE_Flags.s Then OldCF := 1;
+   If OpSize = 2 Then Res := Pe_Alu(0, Dpmi_GetReg16(PE_Reg, B And 7), 1, 2)
+   Else Res := Pe_Alu(0, Dpmi_GetReg32(PE_Reg, B And 7), 1, 4);
+   If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, B And 7, Word(Res))
+   Else Dpmi_SetReg32(PE_Reg, B And 7, Res);
+   If OldCF <> 0 Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+  End;
+  $48..$4F: Begin { DEC reg32/16 }
+   OldCF := 0; If EFG_CF In PE_Flags.s Then OldCF := 1;
+   If OpSize = 2 Then Res := Pe_Alu(5, Dpmi_GetReg16(PE_Reg, B And 7), 1, 2)
+   Else Res := Pe_Alu(5, Dpmi_GetReg32(PE_Reg, B And 7), 1, 4);
+   If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, B And 7, Word(Res))
+   Else Dpmi_SetReg32(PE_Reg, B And 7, Res);
+   If OldCF <> 0 Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+  End;
+  $50..$57: If OpSize = 2 Then Pe_Push16(Dpmi_GetReg16(PE_Reg, B And 7))
+            Else Pe_Push32(Dpmi_GetReg32(PE_Reg, B And 7)); { PUSH reg }
+  $58..$5F: If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, B And 7, Pe_Pop16)
+            Else Dpmi_SetReg32(PE_Reg, B And 7, Pe_Pop32); { POP reg }
+  $68: Begin { PUSH Iz }
+   If OpSize = 2 Then Begin Imm := Pe_FetchWord(0); Inc(PE_EIP, 2); Pe_Push16(Word(Imm)); End
+   Else Begin Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4); Pe_Push32(Imm); End;
+  End;
+  $6A: Begin { PUSH Ib (signe) }
+   Imm := Pe_FetchByte(0); Inc(PE_EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   If OpSize = 2 Then Pe_Push16(Word(Imm)) Else Pe_Push32(Imm);
+  End;
+  $70..$7F: Begin { Jcc rel8 }
+   Imm := Pe_FetchByte(0); Inc(PE_EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   If Pe_TestCond(B And $F) Then PE_EIP := PE_EIP + Imm;
+  End;
+  $80, $81, $83: Begin { groupe ALU immediat }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If B = $80 Then Begin
+    A := Pe_GetOp(Op, 1);
+    Imm := Pe_FetchByte(0); Inc(PE_EIP);
+    Res := Pe_Alu(Reg, A, Imm, 1);
+    If Reg <> 7 Then Pe_PutOp(Op, 1, Res);
+   End Else Begin
+    A := Pe_GetOp(Op, OpSize);
+    If B = $81 Then Begin
+     If OpSize = 2 Then Begin Imm := Pe_FetchWord(0); Inc(PE_EIP, 2); End
+     Else Begin Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4); End;
+    End Else Begin
+     Imm := Pe_FetchByte(0); Inc(PE_EIP);
+     If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+    End;
+    Res := Pe_Alu(Reg, A, Imm, OpSize);
+    If Reg <> 7 Then Pe_PutOp(Op, OpSize, Res);
+   End;
+  End;
+  $84, $85: Begin { TEST Eb,Gb / Ev,Gv }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If B = $84 Then Pe_Alu(4, Pe_GetOp(Op, 1), Dpmi_GetReg8(PE_Reg, Reg), 1)
+   Else If OpSize = 2 Then Pe_Alu(4, Pe_GetOp(Op, 2), Dpmi_GetReg16(PE_Reg, Reg), 2)
+   Else Pe_Alu(4, Pe_GetOp(Op, 4), Dpmi_GetReg32(PE_Reg, Reg), 4);
+  End;
+  $88, $89, $8A, $8B: Begin { MOV }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   Case B Of
+    $88: Pe_PutOp(Op, 1, Dpmi_GetReg8(PE_Reg, Reg));
+    $89: If OpSize = 2 Then Pe_PutOp(Op, 2, Dpmi_GetReg16(PE_Reg, Reg))
+         Else Pe_PutOp(Op, 4, Dpmi_GetReg32(PE_Reg, Reg));
+    $8A: Dpmi_SetReg8(PE_Reg, Reg, Byte(Pe_GetOp(Op, 1)));
+    $8B: If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, Reg, Word(Pe_GetOp(Op, 2)))
+         Else Dpmi_SetReg32(PE_Reg, Reg, Pe_GetOp(Op, 4));
+   End;
+  End;
+  $8D: Begin { LEA Gv,M }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, Reg, Word(Op.LinAddr))
+   Else Dpmi_SetReg32(PE_Reg, Reg, Op.LinAddr);
+  End;
+  $90: ; { NOP }
+  $91..$97: Begin { XCHG eAX,reg }
+   If OpSize = 2 Then Begin
+    Res := Dpmi_GetReg16(PE_Reg, B And 7);
+    Dpmi_SetReg16(PE_Reg, B And 7, PE_Reg.AX);
+    PE_Reg.AX := Word(Res);
+   End Else Begin
+    Res := Dpmi_GetReg32(PE_Reg, B And 7);
+    Dpmi_SetReg32(PE_Reg, B And 7, PE_Reg.EAX);
+    PE_Reg.EAX := Res;
+   End;
+  End;
+  $A4, $A5, $A6, $A7, $AA, $AB, $AC, $AD, $AE, $AF: Begin
+   If B In [$A4, $A6, $AA, $AC, $AE] Then Pe_StringOp(B, 1, RepMode)
+   Else Pe_StringOp(B, OpSize, RepMode);
+  End;
+  $A8: Begin { TEST AL,Ib }
+   Imm := Pe_FetchByte(0); Inc(PE_EIP);
+   Pe_Alu(4, PE_Reg.AL, Imm, 1);
+  End;
+  $A9: Begin { TEST eAX,Iz }
+   If OpSize = 2 Then Begin
+    Imm := Pe_FetchWord(0); Inc(PE_EIP, 2); Pe_Alu(4, PE_Reg.AX, Imm, 2);
+   End Else Begin
+    Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4); Pe_Alu(4, PE_Reg.EAX, Imm, 4);
+   End;
+  End;
+  $B0..$B7: Begin { MOV reg8,Ib }
+   Imm := Pe_FetchByte(0); Inc(PE_EIP);
+   Dpmi_SetReg8(PE_Reg, B And 7, Byte(Imm));
+  End;
+  $B8..$BF: Begin { MOV reg32/16,Iz/Iw }
+   If OpSize = 2 Then Begin
+    Imm := Pe_FetchWord(0); Inc(PE_EIP, 2); Dpmi_SetReg16(PE_Reg, B And 7, Word(Imm));
+   End Else Begin
+    Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4); Dpmi_SetReg32(PE_Reg, B And 7, Imm);
+   End;
+  End;
+  $C0, $C1: Begin { groupe decalages/rotations, compte immediat }
+   ModRM := Pe_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If B = $C0 Then Begin
+    Imm := Pe_FetchByte(0); Inc(PE_EIP);
+    Pe_PutOp(Op, 1, Pe_Shift(Sub, Pe_GetOp(Op, 1), Byte(Imm), 1));
+   End Else Begin
+    Imm := Pe_FetchByte(0); Inc(PE_EIP);
+    Pe_PutOp(Op, OpSize, Pe_Shift(Sub, Pe_GetOp(Op, OpSize), Byte(Imm), OpSize));
+   End;
+  End;
+  $C2: Begin { RET Iw (proche) }
+   Imm := Pe_FetchWord(0); Inc(PE_EIP, 2);
+   If OpSize = 2 Then PE_EIP := Pe_Pop16 Else PE_EIP := Pe_Pop32;
+   PE_Reg.ESP := PE_Reg.ESP + Imm;
+  End;
+  $C3: If OpSize = 2 Then PE_EIP := Pe_Pop16 Else PE_EIP := Pe_Pop32; { RET }
+  $C6: Begin { MOV Eb,Ib }
+   ModRM := Pe_FetchByte(0);
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   Imm := Pe_FetchByte(0); Inc(PE_EIP);
+   Pe_PutOp(Op, 1, Imm);
+  End;
+  $C7: Begin { MOV Ev,Iz }
+   ModRM := Pe_FetchByte(0);
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If OpSize = 2 Then Begin Imm := Pe_FetchWord(0); Inc(PE_EIP, 2); Pe_PutOp(Op, 2, Imm); End
+   Else Begin Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4); Pe_PutOp(Op, 4, Imm); End;
+  End;
+  $C9: Begin { LEAVE }
+   PE_Reg.ESP := PE_Reg.EBP;
+   PE_Reg.EBP := Pe_Pop32;
+  End;
+  $D0, $D1: Begin { decalages/rotations, compte=1 }
+   ModRM := Pe_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If B = $D0 Then Pe_PutOp(Op, 1, Pe_Shift(Sub, Pe_GetOp(Op, 1), 1, 1))
+   Else Pe_PutOp(Op, OpSize, Pe_Shift(Sub, Pe_GetOp(Op, OpSize), 1, OpSize));
+  End;
+  $D2, $D3: Begin { decalages/rotations, compte=CL }
+   ModRM := Pe_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If B = $D2 Then Pe_PutOp(Op, 1, Pe_Shift(Sub, Pe_GetOp(Op, 1), PE_Reg.CL, 1))
+   Else Pe_PutOp(Op, OpSize, Pe_Shift(Sub, Pe_GetOp(Op, OpSize), PE_Reg.CL, OpSize));
+  End;
+  $E8: Begin { CALL rel32/rel16 (proche) }
+   If OpSize = 2 Then Begin
+    Imm := Pe_FetchWord(0);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+    Inc(PE_EIP, 2); Pe_Push16(Word(PE_EIP));
+   End Else Begin
+    Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4); Pe_Push32(PE_EIP);
+   End;
+   PE_EIP := PE_EIP + Imm;
+  End;
+  $E9: Begin { JMP rel32/rel16 (proche) }
+   If OpSize = 2 Then Begin
+    Imm := Pe_FetchWord(0);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+    Inc(PE_EIP, 2);
+   End Else Begin
+    Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4);
+   End;
+   PE_EIP := PE_EIP + Imm;
+  End;
+  $EB: Begin { JMP rel8 }
+   Imm := Pe_FetchByte(0); Inc(PE_EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   PE_EIP := PE_EIP + Imm;
+  End;
+  $F6, $F7: Begin { groupe TEST/NOT/NEG/MUL/IMUL/DIV/IDIV }
+   ModRM := Pe_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   If B = $F6 Then Begin
+    Pe_DecodeModRM(ModRM, Op);
+    Inc(PE_EIP, Op.Len);
+    Case Sub Of
+     0, 1: Begin Imm := Pe_FetchByte(0); Inc(PE_EIP); Pe_Alu(4, Pe_GetOp(Op, 1), Imm, 1); End;
+     2: Pe_PutOp(Op, 1, Not Pe_GetOp(Op, 1));
+     3: Pe_PutOp(Op, 1, Pe_Alu(5, 0, Pe_GetOp(Op, 1), 1));
+     4, 5, 6, 7: Pe_MulDiv(Sub, 1, Pe_GetOp(Op, 1));
+    End;
+   End Else Begin
+    Pe_DecodeModRM(ModRM, Op);
+    Inc(PE_EIP, Op.Len);
+    Case Sub Of
+     0, 1: Begin
+      If OpSize = 2 Then Begin Imm := Pe_FetchWord(0); Inc(PE_EIP, 2); Pe_Alu(4, Pe_GetOp(Op, 2), Imm, 2); End
+      Else Begin Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4); Pe_Alu(4, Pe_GetOp(Op, 4), Imm, 4); End;
+     End;
+     2: Pe_PutOp(Op, OpSize, Not Pe_GetOp(Op, OpSize));
+     3: Pe_PutOp(Op, OpSize, Pe_Alu(5, 0, Pe_GetOp(Op, OpSize), OpSize));
+     4, 5, 6, 7: Pe_MulDiv(Sub, OpSize, Pe_GetOp(Op, OpSize));
+    End;
+   End;
+  End;
+  $F8: Exclude(PE_Flags.s, EFG_CF); { CLC }
+  $F9: Include(PE_Flags.s, EFG_CF); { STC }
+  $FC: Exclude(PE_Flags.s, EFG_DF); { CLD }
+  $FD: Include(PE_Flags.s, EFG_DF); { STD }
+  $FE, $FF: Begin { groupe INC/DEC/CALL/JMP indirects/PUSH }
+   ModRM := Pe_FetchByte(0);
+   Sub := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If B = $FE Then Begin
+    OldCF := 0; If EFG_CF In PE_Flags.s Then OldCF := 1;
+    If Sub = 0 Then Pe_PutOp(Op, 1, Pe_Alu(0, Pe_GetOp(Op, 1), 1, 1))
+    Else If Sub = 1 Then Pe_PutOp(Op, 1, Pe_Alu(5, Pe_GetOp(Op, 1), 1, 1))
+    Else Pe_Halt('Groupe FE /' + IntToStr(Sub) + ' non reconnu');
+    If OldCF <> 0 Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+   End Else Case Sub Of
+    0: Begin
+     OldCF := 0; If EFG_CF In PE_Flags.s Then OldCF := 1;
+     Pe_PutOp(Op, OpSize, Pe_Alu(0, Pe_GetOp(Op, OpSize), 1, OpSize));
+     If OldCF <> 0 Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+    End;
+    1: Begin
+     OldCF := 0; If EFG_CF In PE_Flags.s Then OldCF := 1;
+     Pe_PutOp(Op, OpSize, Pe_Alu(5, Pe_GetOp(Op, OpSize), 1, OpSize));
+     If OldCF <> 0 Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+    End;
+    2: Begin { CALL near indirect }
+     Target := Pe_GetOp(Op, OpSize);
+     If OpSize = 2 Then Pe_Push16(Word(PE_EIP)) Else Pe_Push32(PE_EIP);
+     PE_EIP := Target;
+    End;
+    4: PE_EIP := Pe_GetOp(Op, OpSize); { JMP near indirect }
+    6: If OpSize = 2 Then Pe_Push16(Word(Pe_GetOp(Op, 2))) Else Pe_Push32(Pe_GetOp(Op, 4)); { PUSH Ev }
+   Else Pe_Halt('Groupe FF /' + IntToStr(Sub) + ' non reconnu');
+   End;
+  End;
+ Else Pe_Halt('Opcode ' + HexByte(B) + ' non reconnu (Stage 2)');
+ End;
+End;
+
+{ Dpmi_Get/SetReg8/16/32 : deja avancees plus haut (voir juste avant         }
+{ Pe_ParityEven) pour le benefice de Pe_Step - Lx_Step ci-dessus en           }
+{ beneficie aussi, un seul Forward suffit pour les deux. }
 
 { Forward - meme raison : NCExtractExt/NCFindExeKind (aides generiques du   }
 { panneau NC, aucune dependance sur l etat LX) ne sont definies que plus     }
