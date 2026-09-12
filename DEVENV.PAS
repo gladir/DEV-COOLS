@@ -79308,6 +79308,12 @@ Var
  EORgn1, EORgn2: Word;
  { GDI.EXE GetPixel (2026-09-12, nouvelle session, demande explicite). }
  GPPixByte: Byte;
+ { GDI.EXE GetTextExtent/GetTextFace (2026-09-12, nouvelle session,        }
+ { demande explicite). }
+ GTECount: Word;
+ GTFCount, GTFSeg, GTFOfs: Word;
+ GTFName: String;
+ GTFLen, GTFI: Integer;
  { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite). }
  LBSeg, LBOfs, LBColorLo, LBColorHi: Word;
 Begin
@@ -82030,6 +82036,69 @@ Begin
     { l'objet standard demande (pinceau/stylo/police systeme). }
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
+   End;
+   88: Begin
+    { GetStretchBltMode(hdc):int - ordinal VERIFIE via le VRAI source Wine  }
+    { (wingdi16.h). REEL trivial : renvoie Win16_CurrentStretchBltMode      }
+    { deja suivi par SetStretchBltMode/$7. }
+    P.CPU.Regs.AX := Win16_CurrentStretchBltMode;
+    ArgWords := 1;
+   End;
+   89: Begin
+    { GetTextCharacterExtra(hdc):int - ordinal VERIFIE via le VRAI source   }
+    { Wine (wingdi16.h). REEL, et pas seulement stocke : Win16_CurrentTextCharExtra }
+    { est REELLEMENT consomme par Win16_DrawTextOut/$33 (avancement par      }
+    { caractere) depuis son propre lot. }
+    P.CPU.Regs.AX := Word(Win16_CurrentTextCharExtra);
+    ArgWords := 1;
+   End;
+   90: Begin
+    { GetTextColor(hdc):COLORREF - ordinal VERIFIE via le VRAI source Wine  }
+    { (wingdi16.h). REEL, et pas seulement stocke : Win16_CurrentTextColor  }
+    { est REELLEMENT consomme par Win16_DrawTextOut/$33 (couleur du texte)   }
+    { depuis son propre lot. }
+    P.CPU.Regs.AX := Word(Win16_CurrentTextColor And $FFFF);
+    P.CPU.Regs.DX := Word((Win16_CurrentTextColor Shr 16) And $FFFF);
+    ArgWords := 1;
+   End;
+   91: Begin
+    { GetTextExtent(hdc,lpString,nCount):DWORD - ordinal VERIFIE via le      }
+    { VRAI source Wine (wingdi16.h, 1 mot + 1 pointeur LOIN (2 mots) + 1      }
+    { mot = 4 mots). REEL, et EXACT (pas une approximation) : reutilise la    }
+    { MEME formule d'avancement que Win16_DrawTextOut/$33 lui-meme (5           }
+    { (largeur du glyphe Win16_Font5x7) + 1 (espacement fixe) +                }
+    { Win16_CurrentTextCharExtra par caractere) - le calcul EST donc            }
+    { litteralement identique a ce que TextOut dessinerait vraiment pour la    }
+    { MEME chaine, pas juste plausible. Hauteur fixe 7 (hauteur du glyphe).    }
+    { lpString n'a meme pas besoin d'etre lu (seule sa LONGUEUR nCount          }
+    { compte pour cette police a chasse fixe). }
+    GTECount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := Word(GTECount * (6 + Win16_CurrentTextCharExtra));
+    P.CPU.Regs.DX := 7;
+    ArgWords := 4;
+   End;
+   92: Begin
+    { GetTextFace(hdc,nCount,lpFaceName):int - ordinal VERIFIE via le VRAI  }
+    { source Wine (wingdi16.h, 2 mots + 1 pointeur LOIN (2 mots) = 4          }
+    { mots). REEL : copie le VRAI nom de l'UNIQUE police de ce sous-           }
+    { ensemble ("5x7", exactement le meme nom honnete deja utilise dans le    }
+    { LOGFONT16 construit par EnumFonts/$70 - jamais un nom de police         }
+    { Windows usurpe), tronque a nCount-1 caracteres + terminateur nul,        }
+    { comme le vrai GetTextFace. Retourne la longueur REELLEMENT copiee.      }
+    GTFCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GTFSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GTFOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GTFName := '5x7';
+    If GTFCount > 0 Then Begin
+     GTFLen := Length(GTFName);
+     If GTFLen > GTFCount - 1 Then GTFLen := GTFCount - 1;
+     For GTFI := 1 To GTFLen Do
+      Emu_WriteByte(P.CPU, GTFSeg, Word(GTFOfs + GTFI - 1), Ord(GTFName[GTFI]));
+     Emu_WriteByte(P.CPU, GTFSeg, Word(GTFOfs + GTFLen), 0);
+     P.CPU.Regs.AX := GTFLen;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);

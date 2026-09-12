@@ -115,19 +115,28 @@ Begin
  For I:=Length(S)downto 1 do Begin
   If S[I]='.'Then Begin
    Dot:=I;Break;
-  End;If S[I]in['\','/',':']Then Break;
+  End;
+  If S[I]in['\','/',':']Then Break;
  End;
  If Dot=0 Then ReplaceExtension:=S+Ext Else ReplaceExtension:=Copy(S,1,Dot-1)+Ext;
 End;
 
 Procedure Error(Const S:String);Begin
- WriteLn('REPASCAL: ',S);HadError:=True;
+ WriteLn('REPASCAL: ',S);
+ HadError:=True;
 End;
 
 Procedure Usage;Begin
- WriteLn('REPASCAL - Reformate un fichier source Pascal.');WriteLn;
+ WriteLn('REPASCAL - Cette commande permet de reformater un ',
+         'fichier source Pascal.');
+ WriteLn;
  WriteLn('Syntaxe : REPASCAL fichier.pas');
+ WriteLn('          REPASCAL /?');
+ WriteLn;
+ WriteLn('Le fichier est reformate sur place et l''original est conserve avec');
+ WriteLn('l''extension .BAK. Les commentaires et les chaines sont preserves.');
 End;
+
 Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;
 {$IFDEF FPC}
  Begin
@@ -619,6 +628,9 @@ End;
 
 BEGIN
  HadError:=False;
+ If(ParamCount=1)and((ParamStr(1)='/?')or(ParamStr(1)='-?'))Then Begin
+  Usage;Halt(0);
+ End;
  If ParamCount<>1 Then Begin
   Usage;Halt(1);
  End;
