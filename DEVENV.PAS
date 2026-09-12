@@ -72776,6 +72776,36 @@ Begin
  CreateEmulatorTab(RomPath, '-COS9', RestParam);
 End;
 
+{ Start-Cray1Program (2026-09-12, demande explicite de l'utilisateur -      }
+{ "il n'existe actuellement aucune commande terminal ni association NC     }
+{ pour lancer directement un .abs") - meme motif exact que                  }
+{ Start-NesProgram ci-dessus : `.abs` (COS Absolute Binary, avec ou sans    }
+{ PDT - voir CRAY1_LoadAbs) est le seul format reel de ce backend, systeme  }
+{ hote uniquement (comme Start-NesProgram, pas de support disque virtuel    }
+{ demande ici). }
+Procedure TermCmd_StartCray1Program(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-Cray1Program fichier.abs');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-Cray1Program : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ RomPath := TermFindRomByExt(Dir, CurrParam, 'ABS');
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CCRAY1', '');
+End;
+
 { Start-LinuxProgram (2026-08-31, demande explicite de l'utilisateur,      }
 { exemples donnes avec un nom SANS extension (".\hello") ET un ELF nomme    }
 { explicitement (".elf")) - meme motif exact que les Start-*Program        }
@@ -106589,6 +106619,8 @@ Begin
   TermAddLine(TP,
    '  Start-OS9Program fichier[.os9]           Emulateur OS-9/6809');
   TermAddLine(TP,
+   '  Start-Cray1Program fichier[.abs]         Emulateur Cray-1 (COS)');
+  TermAddLine(TP,
    '  Start-LinuxProgram fichier               Emulateur Linux x86-64 (ELF)');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
@@ -116094,7 +116126,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 249;
+ PS_CMD_ALIASES = 250;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -116322,7 +116354,8 @@ Const
   'BACKUP-ORACLEDATABASE',
   'RESTORE-ORACLEDATABASE',
   'START-OS9PROGRAM',
-  'START-WIN32PROGRAM','START-WIN32APPLICATION'
+  'START-WIN32PROGRAM','START-WIN32APPLICATION',
+  'START-CRAY1PROGRAM'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -116550,7 +116583,8 @@ Const
   224,
   225,
   226,
-  227,227
+  227,227,
+  228
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -117307,6 +117341,7 @@ Begin
     { Start-Win32Program/Start-Win32Application (2026-09-11, demande        }
     { explicite) - meme handler TermCmd_Win32Launch pour les 2 alias. }
     227: TermCmd_Win32Launch(TP, ParamStr);      { START-WIN32PROGRAM/APPLICATION }
+    228: TermCmd_StartCray1Program(TP, ParamStr); { START-CRAY1PROGRAM }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -120334,6 +120369,12 @@ Begin
   End
   Else If Ext = 'PAK' Then Begin
    CreateEmulatorTab(FullPath, '-CCOCO3', '');
+   NCActionOpenAssociated := True;
+  End
+  Else If Ext = 'ABS' Then Begin
+   { COS Absolute Binary (avec ou sans PDT - voir CRAY1_LoadAbs), meme     }
+   { motif que .PAK/.NES ci-dessus - demande explicite de l'utilisateur.   }
+   CreateEmulatorTab(FullPath, '-CCRAY1', '');
    NCActionOpenAssociated := True;
   End
     Else If Ext = 'A26' Then Begin
