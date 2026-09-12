@@ -7776,6 +7776,12 @@ Var
  { limites disclosees d'ExcludeClipRect. }
  Win16_ClipActive: Boolean;
  Win16_ClipX1, Win16_ClipY1, Win16_ClipX2, Win16_ClipY2: Integer;
+ { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite) - couleur    }
+ { REELLEMENT lue depuis la structure LOGBRUSH, mais AUCUN consommateur     }
+ { actuel (meme disclosure que SetTextColor/$9 avant TextOut/$33) : les     }
+ { appels de remplissage existants (FillRgn/PatBlt/etc.) continuent          }
+ { d'utiliser leur noir fixe deja etabli. }
+ Win16_LastBrushColor: LongInt;
  { GDI.EXE FloodFill (2026-09-12, demande explicite) - pile de travail       }
  { GLOBALE (pas locale a la procedure) pour l'algorithme de remplissage      }
  { par propagation : bornee a la taille du framebuffer $13 entier           }
@@ -77717,6 +77723,7 @@ Begin
  Win16_ClipActive := False;
  Win16_ClipX1 := 0; Win16_ClipY1 := 0; Win16_ClipX2 := 0; Win16_ClipY2 := 0;
  Win16_DCSaveLevel := 0;
+ Win16_LastBrushColor := 0;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -79201,6 +79208,8 @@ Var
  POLCount, POLI: Integer;
  POLPtX, POLPtY: Array[0..255] Of Integer;
  RDCLevel: Integer;
+ { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite). }
+ LBSeg, LBOfs, LBColorLo, LBColorHi: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -81228,6 +81237,66 @@ Begin
     { seulement pour le re-selectionner plus tard en fin de dessin). }
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
+   End;
+   47: Begin
+    { CombineRgn(hDestRgn,hSrcRgn1,hSrcRgn2,nCombineMode):int - ordinal     }
+    { VERIFIE via gdi.exe16.spec (4 mots). Contrairement a FillRgn/          }
+    { InvertRgn/PaintRgn/SelectClipRgn (ordinaux 40/42/43/44, qui traitent   }
+    { tous hRgn comme faisant reference au SEUL rectangle "region" reel de  }
+    { ce sous-ensemble, le clip mono-DC), CombineRgn manipule TROIS          }
+    { handles de region DISTINCTS (destination + 2 sources) et doit          }
+    { produire une VRAIE combinaison ensembliste (AND/OR/XOR/DIFF) - ceci    }
+    { necessiterait une vraie table d'objets region avec des limites         }
+    { propres a CHAQUE handle, qui n'existe pas dans ce sous-ensemble        }
+    { (aucun CreateRectRgn/CreateRectRgnIndirect n'a ete demande ni           }
+    { implante). Echec honnete (ERROR=0) plutot que d'inventer une            }
+    { combinaison de regions qui n'existent pas reellement. }
+    P.CPU.Regs.AX := 0; { ERROR }
+    ArgWords := 4;
+   End;
+   48: Begin
+    { CreateBitmap(nWidth,nHeight,nPlanes,nBitCount,lpBits):HBITMAP -        }
+    { ordinal VERIFIE via gdi.exe16.spec (4 mots + 1 pointeur LOIN (2        }
+    { mots) = 6 mots). Rendu GDI reel HORS DE PORTEE (comme CreatePen/        }
+    { CreateSolidBrush/GetStockObject deja etablis) : handle synthetique     }
+    { non-nul, aucun VRAI bitmap stocke (pas de table d'objets bitmap/DC     }
+    { memoire dans ce sous-ensemble). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   49: Begin
+    { CreateBitmapIndirect(lpBitmap):HBITMAP - ordinal VERIFIE via           }
+    { gdi.exe16.spec (1 pointeur LOIN = 2 mots). Meme simplification que      }
+    { CreateBitmap/$48 juste au-dessus : handle synthetique non-nul. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   50: Begin
+    { CreateBrushIndirect(lpLogBrush):HBRUSH - ordinal VERIFIE via           }
+    { gdi.exe16.spec (1 pointeur LOIN = 2 mots, structure LOGBRUSH :          }
+    { lbStyle:mot, lbColor:LONG, lbHatch:mot). Meme simplification de          }
+    { rendu que CreateSolidBrush/$66 (handle synthetique non-nul, aucun       }
+    { VRAI pinceau dessinable) - mais lit et conserve REELLEMENT lbColor      }
+    { dans un nouveau global `Win16_LastBrushColor` (aucun consommateur       }
+    { actuel, comme SetTextColor/$9 avant que TextOut/$33 n'existe -          }
+    { disclose honnetement, pas encore branche a FillRgn/PatBlt/etc. qui      }
+    { continuent d'utiliser leur noir fixe deja etabli). }
+    LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    { LOGBRUSH : lbStyle (mot, offset 0), lbColor (LONG, offset 2), lbHatch }
+    { (mot, offset 6) - layout standard verifie (WORD+DWORD+short). }
+    LBColorLo := Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 2));
+    LBColorHi := Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 4));
+    Win16_LastBrushColor := (LongInt(LBColorHi) Shl 16) Or LongInt(LBColorLo);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   51: Begin
+    { CreateCompatibleBitmap(hdc,nWidth,nHeight):HBITMAP - ordinal VERIFIE  }
+    { via gdi.exe16.spec (3 mots). Meme simplification de rendu que          }
+    { CreateBitmap/$48 : handle synthetique non-nul. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
    End;
    61: Begin
     { CreatePen(nStyle, nWidth, crColor):HPEN - ordinal VERIFIE via         }
