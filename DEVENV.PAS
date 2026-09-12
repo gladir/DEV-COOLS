@@ -78912,6 +78912,39 @@ Begin
  Win16_PatBlt(X1, Y1, X2 - X1, Y2 - Y1, $00F00021); { PATCOPY }
 End;
 
+{ Trace une BORDURE (cadre) autour du rectangle (X1,Y1)-(X2,Y2), d'epaisseur }
+{ FW (horizontale) / FH (verticale) - utilise par FrameRgn (GDI ordinal 41, }
+{ 2026-09-12, demande explicite). Reutilise Win16_PatBlt/PATCOPY pour        }
+{ chaque des 4 bandes (meme "noir fixe" deja etabli, aucun pinceau REEL      }
+{ trace nulle part dans ce sous-ensemble) - contrairement a Win16_FillRgn,   }
+{ l'INTERIEUR du rectangle reste intact (seule la bordure est peinte). }
+Procedure Win16_FrameRgn(X1, Y1, X2, Y2, FW, FH: Integer);
+Begin
+ If (X2 <= X1) Or (Y2 <= Y1) Or (FW <= 0) Or (FH <= 0) Then Exit;
+ If 2 * FH > (Y2 - Y1) Then FH := (Y2 - Y1) Div 2;
+ If 2 * FW > (X2 - X1) Then FW := (X2 - X1) Div 2;
+ Win16_PatBlt(X1, Y1, X2 - X1, FH, $00F00021);              { bande du haut }
+ Win16_PatBlt(X1, Y2 - FH, X2 - X1, FH, $00F00021);         { bande du bas }
+ Win16_PatBlt(X1, Y1 + FH, FW, Y2 - Y1 - 2 * FH, $00F00021);       { bande gauche }
+ Win16_PatBlt(X2 - FW, Y1 + FH, FW, Y2 - Y1 - 2 * FH, $00F00021);  { bande droite }
+End;
+
+{ Inverse REELLEMENT les pixels du rectangle (X1,Y1)-(X2,Y2) - utilise par   }
+{ InvertRgn (GDI ordinal 42, 2026-09-12, demande explicite). Contrairement   }
+{ a FrameRgn/PaintRgn/FillRgn, cet appel n'a besoin d'AUCUN pinceau (une     }
+{ vraie inversion de pixel ne depend d'aucune couleur) - donc entierement    }
+{ REEL, sans la moindre approximation, meme mecanisme XOR $FF que            }
+{ DSTINVERT deja etabli pour PatBlt/BitBlt/StretchBlt. }
+Procedure Win16_InvertRgn(X1, Y1, X2, Y2: Integer);
+Var
+ PX, PY: Integer;
+Begin
+ If (X2 <= X1) Or (Y2 <= Y1) Then Exit;
+ For PY := Y1 To Y2 - 1 Do
+  For PX := X1 To X2 - 1 Do
+   Emu_VidSetPixel(PX, PY, Emu_VidGetPixel(PX, PY) Xor $FF);
+End;
+
 { Appelle SYNCHRONE la VRAIE WNDPROC 16 bits du programme (dispatchee par   }
 { DispatchMessage) - reutilise Dpmi_RunRealProc TEL QUEL (meme motif exact  }
 { que les rappels DPMI mode reel : empiler les arguments convention Pascal, }
@@ -81112,6 +81145,80 @@ Begin
     End Else
      P.CPU.Regs.AX := 0;
     ArgWords := 3;
+   End;
+   41: Begin
+    { FrameRgn(hdc,hRgn,hBrush,nWidth,nHeight):bool - ordinal VERIFIE via   }
+    { gdi.exe16.spec (5 mots). hRgn/hBrush IGNORES, meme convention          }
+    { disclosee qu'FillRgn/$40 (hRgn traite comme faisant reference au SEUL }
+    { rectangle "region" reellement suivi ici, le clip mono-DC) - REEL       }
+    { pour le trace de la bordure elle-meme (Win16_FrameRgn, 4 bandes        }
+    { PATCOPY, epaisseur nWidth/nHeight REELLEMENT appliquee, contrairement  }
+    { a FillRgn/$40 l'interieur reste intact). Echoue si aucun clip actif. }
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));  { nWidth }
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));  { nHeight }
+    If Win16_ClipActive And (Win16_ActiveDCWindow >= 0) Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY2);
+     Win16_FrameRgn(GdiX1, GdiY1, GdiX2, GdiY2, ArcX3, ArcY3);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   42: Begin
+    { InvertRgn(hdc,hRgn):bool - ordinal VERIFIE via gdi.exe16.spec (2       }
+    { mots). hRgn traite comme le clip mono-DC (meme convention              }
+    { qu'FillRgn/$40). REEL SANS approximation (voir Win16_InvertRgn -        }
+    { aucun pinceau requis pour une vraie inversion de pixels). Echoue si     }
+    { aucun clip actif. }
+    If Win16_ClipActive And (Win16_ActiveDCWindow >= 0) Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY2);
+     Win16_InvertRgn(GdiX1, GdiY1, GdiX2, GdiY2);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   43: Begin
+    { PaintRgn(hdc,hRgn):bool - ordinal VERIFIE via gdi.exe16.spec (2        }
+    { mots). Meme convention hRgn=clip mono-DC qu'FillRgn/$40, et            }
+    { EXACTEMENT la meme implementation reelle (Win16_FillRgn) - la seule    }
+    { vraie difference documentee entre les deux (pinceau EXPLICITE pour     }
+    { FillRgn vs pinceau COURANT du DC pour PaintRgn) ne peut pas etre         }
+    { modelisee ici puisqu'aucun VRAI pinceau n'est trace nulle part dans     }
+    { ce sous-ensemble - les deux retombent honnetement sur le meme noir      }
+    { fixe deja etabli. }
+    If Win16_ClipActive And (Win16_ActiveDCWindow >= 0) Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY2);
+     Win16_FillRgn(GdiX1, GdiY1, GdiX2, GdiY2);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   44: Begin
+    { SelectClipRgn(hdc,hRgn):int - ordinal VERIFIE via gdi.exe16.spec (2   }
+    { mots). REEL pour le cas hRgn=NULL(0), le seul VRAIMENT documente de     }
+    { facon universelle ("annule tout clip, tout le DC redevient visible") : }
+    { desactive Win16_ClipActive pour de vrai. hRgn non-nul est honnetement   }
+    { hors de portee (aucune vraie table d'objets region nommes n'existe -    }
+    { impossible de resoudre un handle de region ARBITRAIRE vers des          }
+    { limites reelles sans inventer une forme) : le clip reste alors          }
+    { INCHANGE, disclose plutot qu'un resultat invente. Retourne toujours     }
+    { SIMPLEREGION(2), meme discipline honnete que Exclude/IntersectClipRect  }
+    { ($21/$22). }
+    ArcX4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4))); { hRgn }
+    If ArcX4 = 0 Then Win16_ClipActive := False;
+    P.CPU.Regs.AX := 2; { SIMPLEREGION }
+    ArgWords := 2;
    End;
    45: Begin
     { SelectObject(hdc, hObj):hObj - ordinal VERIFIE via gdi.exe16.spec.    }
