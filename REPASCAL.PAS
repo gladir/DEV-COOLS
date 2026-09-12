@@ -1,6 +1,8 @@
 Program REPASCAL;
 { REPASCAL - Reformateur Pascal compatible Turbo Pascal / Free Pascal. }
+
 Uses Dos;
+
 {$I-}
 Const
  MaxLineLength = 255;
@@ -431,7 +433,8 @@ Begin
   Close(InputFile);Error('impossible de creer le fichier temporaire');Exit;
  End;
  OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;RoutineHeader:=False;
- AwaitingRoutineBegin:=False;DeclarationSection:=False;UsesSection:=False;ParenthesisLevel:=0;
+ AwaitingRoutineBegin:=False;DeclarationSection:=False;UsesSection:=False;
+ ParenthesisLevel:=0;
  IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;
  SkipProgram:=HasProgram and not IsUnit;
  If not IsUnit Then WriteLn(OutputFile,'Program ',ProgramName,';');
