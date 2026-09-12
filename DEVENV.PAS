@@ -79306,6 +79306,8 @@ Var
  EFFaceName: String;
  EOType: Word;
  EORgn1, EORgn2: Word;
+ { GDI.EXE GetPixel (2026-09-12, nouvelle session, demande explicite). }
+ GPPixByte: Byte;
  { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite). }
  LBSeg, LBOfs, LBColorLo, LBColorHi: Word;
 Begin
@@ -81974,6 +81976,53 @@ Begin
     { que de deviner un type d'objet au hasard. }
     P.CPU.Regs.AX := 0;
     ArgWords := 4;
+   End;
+   83: Begin
+    { GetPixel(hdc,X,Y):COLORREF - ordinal VERIFIE via le VRAI source       }
+    { Wine (wingdi16.h). REEL : lit VRAIMENT le pixel (octet $13, converti   }
+    { en COLORREF gris N,N,N - meme convention de conversion palette->       }
+    { couleur que partout ailleurs dans ce sous-ensemble, aucune vraie        }
+    { table de palette RVB par index suivie), coordonnees CLIENT converties }
+    { en pixels ABSOLUS comme SetPixel/$31 et toutes les autres primitives.  }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     GPPixByte := Emu_VidGetPixel(GdiX1, GdiY1);
+     P.CPU.Regs.AX := Word(GPPixByte) Or (Word(GPPixByte) Shl 8);
+     P.CPU.Regs.DX := GPPixByte;
+    End Else Begin
+     P.CPU.Regs.AX := $FFFF; { CLR_INVALID, aucune fenetre active }
+     P.CPU.Regs.DX := $FFFF;
+    End;
+    ArgWords := 3;
+   End;
+   84: Begin
+    { GetPolyFillMode(hdc):int - ordinal VERIFIE via le VRAI source Wine    }
+    { (wingdi16.h). REEL trivial : renvoie Win16_CurrentPolyFillMode deja    }
+    { suivi par SetPolyFillMode/$6. }
+    P.CPU.Regs.AX := Win16_CurrentPolyFillMode;
+    ArgWords := 1;
+   End;
+   85: Begin
+    { GetROP2(hdc):int - ordinal VERIFIE via le VRAI source Wine             }
+    { (wingdi16.h). REEL, et pas seulement stocke : Win16_CurrentROP2 est     }
+    { REELLEMENT applique par Win16_DrawLine/DrawEllipseBox (bogue corrige   }
+    { Stage 6b) - le seul des "Get" de ce lot a refleter une valeur qui       }
+    { affecte deja vraiment le rendu. }
+    P.CPU.Regs.AX := Win16_CurrentROP2;
+    ArgWords := 1;
+   End;
+   86: Begin
+    { GetRelAbs(hdc):int - ordinal VERIFIE via le VRAI source Wine           }
+    { (wingdi16.h). Contrepartie de SetRelAbs/$5 (deja disclose : le mode     }
+    { de coordonnees RELATIF a disparu depuis Windows 1.x, aucun vrai VRAI   }
+    { mode a suivre sous Windows 2.x/3.x) - renvoie toujours ABSOLUTE (1),    }
+    { fidele au meme comportement reel de cette version, coherent avec        }
+    { SetRelAbs. }
+    P.CPU.Regs.AX := 1; { ABSOLUTE }
+    ArgWords := 1;
    End;
    87: Begin
     { GetStockObject(nIndex):handle - ordinal VERIFIE via gdi.exe16.spec.  }

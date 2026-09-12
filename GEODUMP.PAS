@@ -1,4 +1,9 @@
-{ @author: Sylvain Maltais (support@gladir.com), d'apres GeoDump 0.5 de Marcus Groeber @created: 2026 @website(https://www.gladir.com/dev-cools) @abstract(Target: Turbo Pascal / Free Pascal 3.2) @abstract: Clone Turbo Pascal / Free Pascal de GEODUMP 0.5. @license: MIT }
+{ @author: Sylvain Maltais (support@gladir.com), d'apres GeoDump 0.5 de Marcus Groeber
+ @created: 2026
+ @website(https://www.gladir.com/dev-cools)
+ @abstract(Target: Turbo Pascal / Free Pascal 3.2)
+ @abstract: Clone Turbo Pascal / Free Pascal de GEODUMP 0.5.
+ @license: MIT }
 
 Program GEODUMP;
 
