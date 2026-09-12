@@ -10,9 +10,9 @@ Const
 Type
  TCommentState = (csNone,csBrace,csParen);
  {$IFDEF FPC}
- TSourceString = AnsiString;
+  TSourceString = AnsiString;
  {$ELSE}
- TSourceString = String;
+  TSourceString = String;
  {$ENDIF}
 Var
  SourceName,TempName,BackupName,ProgramName:String;
@@ -82,35 +82,36 @@ Procedure Usage;Begin
  WriteLn('REPASCAL - Reformate un fichier source Pascal.');WriteLn;
  WriteLn('Syntaxe : REPASCAL fichier.pas');
 End;
-Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;{$IFDEF FPC}
-Begin
- ReadSourceLine:=False;If Eof(T)Then Exit;ReadLn(T,L);
- If IOResult<>0 Then Begin
-  Error('erreur de lecture');Exit;
- End;ReadSourceLine:=True;
-End;
-{$ELSE}
-Var
- C:Char;
- TooLong:Boolean;
-Begin
- ReadSourceLine:=False;If Eof(T)Then Exit;L:='';TooLong:=False;
- While not Eoln(T)do
+Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;
+{$IFDEF FPC}
  Begin
-  Read(T,C);If IOResult<>0 Then Begin
+  ReadSourceLine:=False;If Eof(T)Then Exit;ReadLn(T,L);
+  If IOResult<>0 Then Begin
+   Error('erreur de lecture');Exit;
+  End;ReadSourceLine:=True;
+ End;
+{$ELSE}
+ Var
+  C:Char;
+  TooLong:Boolean;
+ Begin
+  ReadSourceLine:=False;If Eof(T)Then Exit;L:='';TooLong:=False;
+  While not Eoln(T)do
+  Begin
+   Read(T,C);If IOResult<>0 Then Begin
+    Error('erreur de lecture');Exit;
+   End;
+   If Length(L)<255 Then L:=L+C Else TooLong:=True;
+  End;ReadLn(T);If IOResult<>0 Then Begin
    Error('erreur de lecture');Exit;
   End;
-  If Length(L)<255 Then L:=L+C Else TooLong:=True;
- End;ReadLn(T);If IOResult<>0 Then Begin
-  Error('erreur de lecture');Exit;
+  If TooLong Then Begin
+   Error(
+   'ligne de plus de 255 caracteres: Turbo Pascal ne peut pas la reformater sans perte');
+   Exit;
+  End;
+  ReadSourceLine:=True;
  End;
- If TooLong Then Begin
-  Error(
-  'ligne de plus de 255 caracteres: Turbo Pascal ne peut pas la reformater sans perte');
-  Exit;
- End;
- ReadSourceLine:=True;
-End;
 {$ENDIF}
 
 Procedure CountLine(Const L:TSourceString;Var State:TCommentState;Var FirstFound:Boolean);
@@ -204,21 +205,21 @@ Var
 Begin
  T:=S;For I:=1 to Length(T)do If T[I]=#9 Then T[I]:=' ';
  {$IFNDEF FPC}
- If Length(OutLine)+Length(T)>MaxLineLength Then Begin
-  Error('ligne produite trop longue');Exit;
- End;OutLine:=OutLine+T;
+  If Length(OutLine)+Length(T)>MaxLineLength Then Begin
+   Error('ligne produite trop longue');Exit;
+  End;OutLine:=OutLine+T;
  {$ELSE}
- OutLine:=OutLine+T;
+  OutLine:=OutLine+T;
  {$ENDIF}
 End;
 
 Procedure AppendComment(Const S:TSourceString);Begin
  {$IFNDEF FPC}
- If Length(OutLine)+Length(S)>MaxLineLength Then Begin
-  Error('ligne de commentaire trop longue');Exit;
- End;OutLine:=OutLine+S;
+  If Length(OutLine)+Length(S)>MaxLineLength Then Begin
+   Error('ligne de commentaire trop longue');Exit;
+  End;OutLine:=OutLine+S;
  {$ELSE}
- OutLine:=OutLine+S;
+  OutLine:=OutLine+S;
  {$ENDIF}
 End;
 
@@ -264,21 +265,22 @@ Begin
  End;
  If LastSemi<>0 Then FindLineBreak:=LastSemi Else FindLineBreak:=LastOperator;
 End;
-
 Procedure EmitPending;Forward;
 
 Function ConditionalDirectiveKind(Const S:TSourceString):Integer;
-Var U:TSourceString;
+Var
+ U:TSourceString;
 Begin
  U:=UpperString(TrimLine(S));ConditionalDirectiveKind:=0;
  If(Copy(U,1,7)='{$IFDEF')or(Copy(U,1,8)='{$IFNDEF')or
-   (Copy(U,1,4)='{$IF')or(Copy(U,1,7)='{$IFOPT')Then ConditionalDirectiveKind:=1
+ (Copy(U,1,4)='{$IF')or(Copy(U,1,7)='{$IFOPT')Then ConditionalDirectiveKind:=1
  Else If(Copy(U,1,6)='{$ELSE')or(Copy(U,1,8)='{$ELSEIF')Then ConditionalDirectiveKind:=2
  Else If(Copy(U,1,7)='{$ENDIF')or(Copy(U,1,7)='{$IFEND')Then ConditionalDirectiveKind:=3;
 End;
 
 Procedure EmitConditionalDirective(Const S:TSourceString;Kind:Integer);
-Var I,Level:Integer;
+Var
+ I,Level:Integer;
 Begin
  EmitPending;If Kind in[2,3]Then If ConditionalLevel>0 Then Dec(ConditionalLevel);
  Level:=IndentLevel+ConditionalLevel;For I:=1 to Level do Write(OutputFile,' ');
