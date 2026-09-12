@@ -17,7 +17,9 @@ IsUnit,HasProgram,HadError:Boolean;
 BeginTotal,EndTotal,BeginNumber,EndNumber,IndentLevel,MainBeginNumber,MainEndNumber:LongInt;
 BlockTop:Integer;BlockKind:Array[1..255]of Char;BlockBegin:Array[1..255]of LongInt;
 CommentState:TCommentState;
-OutLine:TSourceString;PreserveCommentIndent,AwaitingThenBegin:Boolean;
+ OutLine:TSourceString;PreserveCommentIndent,AwaitingThenBegin:Boolean;
+ RoutineHeader,AwaitingRoutineBegin,DeclarationSection:Boolean;
+ ParenthesisLevel:Integer;
 Function UpperString(Const S:String):String;
 Var R:String;I:Integer;
 Begin
@@ -206,12 +208,12 @@ Begin
  Begin
   C:=L[I];
   If State=csBrace Then Begin
-   AwaitingThenBegin:=False;J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
+   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
     Inc(I);State:=csNone;
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If State=csParen Then Begin
-   AwaitingThenBegin:=False;J:=I;While I<=Length(L)do
+   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;J:=I;While I<=Length(L)do
    Begin
     If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin
      Inc(I,2);State:=csNone;Break;
@@ -219,12 +221,12 @@ Begin
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If C='{'Then Begin
-   AwaitingThenBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csBrace;J:=I;Inc(I);While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
+   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csBrace;J:=I;Inc(I);While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
     Inc(I);State:=csNone;
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If(C='(')and(I<Length(L))and(L[I+1]='*')Then Begin
-   AwaitingThenBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csParen;J:=I;Inc(I,2);While I<=Length(L)do
+   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csParen;J:=I;Inc(I,2);While I<=Length(L)do
    Begin
     If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin
      Inc(I,2);State:=csNone;Break;
@@ -232,7 +234,7 @@ Begin
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If(C='/')and(I<Length(L))and(L[I+1]='/')Then Begin
-   AwaitingThenBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;AppendComment(Copy(L,I,Length(L)-I+1));Break;
+   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;AppendComment(Copy(L,I,Length(L)-I+1));Break;
   End;
   If C=''''Then Begin
    J:=I;Inc(I);While I<=Length(L)do
@@ -248,8 +250,21 @@ Begin
   If IsIdentStart(C)Then Begin
    J:=I;While(I<=Length(L))and IsIdentChar(L[I])do Inc(I);W:=Copy(L,J,I-J);U:=UpperString(W);
    If SkipProgram Then Continue;
-   If U='BEGIN'Then Begin
-    Inc(BeginNumber);If not AwaitingThenBegin Then EmitPending;If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';AppendText(S);EmitLine;Inc(IndentLevel);
+   If(U='PROCEDURE')or(U='FUNCTION')Then Begin
+    If DeclarationSection Then Begin If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;End;
+    EmitPending;If U='PROCEDURE'Then AppendText('Procedure')Else AppendText('Function');RoutineHeader:=True;AwaitingRoutineBegin:=False;ParenthesisLevel:=0;AwaitingThenBegin:=False;
+   End
+   Else If(U='CONST')or(U='TYPE')or(U='VAR')Then Begin
+    If(ParenthesisLevel=0)and((TrimLine(OutLine)='')or AwaitingRoutineBegin)Then Begin
+     If AwaitingRoutineBegin Then Begin EmitPending;AwaitingRoutineBegin:=False;End;
+     If DeclarationSection Then Begin If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;End;
+     EmitPending;If U='CONST'Then AppendText('Const')Else If U='TYPE'Then AppendText('Type')Else AppendText('Var');EmitLine;Inc(IndentLevel);DeclarationSection:=True;
+    End Else Begin AppendText(W);AwaitingThenBegin:=False;End;
+   End
+   Else If U='BEGIN'Then Begin
+    Inc(BeginNumber);If DeclarationSection Then Begin If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;End;
+    If not(AwaitingThenBegin or AwaitingRoutineBegin)Then EmitPending;
+    If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';AppendText(S);AwaitingRoutineBegin:=False;RoutineHeader:=False;EmitLine;Inc(IndentLevel);
    End
    Else If U='END'Then Begin
     Inc(EndNumber);EmitPending;If IndentLevel>0 Then Dec(IndentLevel);If(not IsUnit)and(EndNumber=MainEndNumber)Then S:='END'Else S:='End';AppendText(S);
@@ -259,15 +274,20 @@ Begin
    End
    Else
    Begin
+    If AwaitingRoutineBegin Then Begin EmitPending;AwaitingRoutineBegin:=False;End;
     AppendText(W);AwaitingThenBegin:=False;
    End;Continue;
   End;
   If SkipProgram Then Begin
    If C=';'Then SkipProgram:=False;Inc(I);Continue;
   End;
-  AppendText(C);If not(C in[' ',#9])Then AwaitingThenBegin:=False;Inc(I);
+  If RoutineHeader Then Begin If C='('Then Inc(ParenthesisLevel)Else If(C=')')and(ParenthesisLevel>0)Then Dec(ParenthesisLevel);End;
+  If RoutineHeader and(C=';')and(ParenthesisLevel=0)Then Begin AppendText(C);RoutineHeader:=False;AwaitingRoutineBegin:=True;Inc(I);Continue;End;
+  If DeclarationSection and(C=';')Then Begin AppendText(C);EmitLine;Inc(I);Continue;End;
+  If AwaitingRoutineBegin and(C in[' ',#9])Then Begin Inc(I);Continue;End;
+  AppendText(C);If not(C in[' ',#9])Then Begin AwaitingThenBegin:=False;If AwaitingRoutineBegin Then AwaitingRoutineBegin:=False;End;Inc(I);
  End;
- If(TrimLine(OutLine)<>'')and not AwaitingThenBegin Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram Then OutLine:='';
+ If(TrimLine(OutLine)<>'')and not(AwaitingThenBegin or AwaitingRoutineBegin)Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram Then OutLine:='';
 End;
 Procedure SecondPass;
 Var L:TSourceString;SkipProgram:Boolean;
@@ -278,7 +298,7 @@ Begin
  Assign(OutputFile,TempName);Rewrite(OutputFile);If IOResult<>0 Then Begin
   Close(InputFile);Error('impossible de creer le fichier temporaire');Exit;
  End;
- OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;SkipProgram:=HasProgram and not IsUnit;
+ OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;RoutineHeader:=False;AwaitingRoutineBegin:=False;DeclarationSection:=False;ParenthesisLevel:=0;IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;SkipProgram:=HasProgram and not IsUnit;
  If not IsUnit Then WriteLn(OutputFile,'Program ',ProgramName,';');
  While not HadError and ReadSourceLine(InputFile,L)do FormatLine(L,CommentState,SkipProgram);
  Close(InputFile);Close(OutputFile);If IOResult<>0 Then Error('erreur de fermeture du fichier temporaire');
