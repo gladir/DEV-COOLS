@@ -27,7 +27,7 @@ Var
  OutLine:TSourceString;
  PreserveCommentIndent,AwaitingThenBegin,AwaitingDoBegin:Boolean;
  RoutineHeader,AwaitingRoutineBegin,RoutineNeedsBlank,DeclarationSection,
- UsesSection:Boolean;
+ DeclarationIsLocal,UsesSection,AfterUsesBlank:Boolean;
  ParenthesisLevel,ConditionalLevel:Integer;
 
 Function UpperString(Const S:String):String;
@@ -342,7 +342,7 @@ Var
  I,J:LongInt;
  DirectiveKind:Integer;
  W,U,S:String;
- C:Char;
+ C:Char;ThisDeclarationIsLocal:Boolean;
 Begin
  I:=1;PreserveCommentIndent:=State<>csNone;
  While(I<=Length(L))and not HadError do Begin
@@ -427,6 +427,8 @@ Begin
    End
    Else If(U='CONST')or(U='TYPE')or(U='VAR')Then Begin
     If(ParenthesisLevel=0)and((TrimLine(OutLine)='')or AwaitingRoutineBegin)Then Begin
+     ThisDeclarationIsLocal:=AwaitingRoutineBegin;
+     If DeclarationSection Then ThisDeclarationIsLocal:=DeclarationIsLocal;
      If AwaitingRoutineBegin Then Begin
       If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;
       AwaitingRoutineBegin:=False;
@@ -436,8 +438,11 @@ Begin
       If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;
      End;
      EmitPending;
+     If not ThisDeclarationIsLocal and not AfterUsesBlank Then WriteLn(OutputFile);
+     AfterUsesBlank:=False;
      If U='CONST'Then AppendText('Const')Else If U='TYPE'Then AppendText('Type')
      Else AppendText('Var');EmitLine;Inc(IndentLevel);DeclarationSection:=True;
+     DeclarationIsLocal:=ThisDeclarationIsLocal;
     End Else
     Begin
      AppendText(W);AwaitingThenBegin:=False;AwaitingDoBegin:=False;
@@ -494,7 +499,8 @@ Begin
    AppendText(C);RoutineHeader:=False;AwaitingRoutineBegin:=True;Inc(I);Continue;
   End;
   If UsesSection and(C=';')Then Begin
-   AppendText(C);EmitLine;WriteLn(OutputFile);UsesSection:=False;Inc(I);Continue;
+   AppendText(C);EmitLine;WriteLn(OutputFile);UsesSection:=False;AfterUsesBlank:=True;
+   Inc(I);Continue;
   End;
   If DeclarationSection and(C=';')Then Begin
    AppendText(C);EmitLine;Inc(I);Continue;
@@ -526,6 +532,7 @@ Begin
  OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;
  AwaitingDoBegin:=False;RoutineHeader:=False;
  AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;DeclarationSection:=False;
+ DeclarationIsLocal:=False;AfterUsesBlank:=False;
  UsesSection:=False;
  ParenthesisLevel:=0;ConditionalLevel:=0;
  IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;
