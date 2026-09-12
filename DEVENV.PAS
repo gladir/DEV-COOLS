@@ -81298,6 +81298,83 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 3;
    End;
+   52: Begin
+    { CreateCompatibleDC(hdc):HDC - ordinal VERIFIE via gdi.exe16.spec (1   }
+    { mot). Meme simplification de rendu que GetDC/GetWindowDC (ordinaux    }
+    { 66/67, Stage 5) : handle de DC synthetique non-nul - ce sous-ensemble  }
+    { mono-DC n'a qu'UN SEUL contexte de peripherique reel                   }
+    { (Win16_ActiveDCWindow), aucune vraie surface memoire additionnelle    }
+    { n'est creee. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   53: Begin
+    { CreateDC(lpDriverName,lpDeviceName,lpOutput,lpInitData):HDC - ordinal }
+    { VERIFIE via gdi.exe16.spec (4 pointeurs LOIN = 8 mots). Meme            }
+    { simplification que CreateCompatibleDC/$52 : handle synthetique         }
+    { non-nul, aucun VRAI pilote de peripherique nomme (imprimante, etc.)     }
+    { n'est modelise dans ce sous-ensemble. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 8;
+   End;
+   54: Begin
+    { CreateEllipticRgn(nLeftRect,nTopRect,nRightRect,nBottomRect):HRGN -    }
+    { ordinal VERIFIE via gdi.exe16.spec (4 mots SIGNES). REEL EN PARTIE :   }
+    { ce sous-ensemble n'a qu'UN SEUL "objet region" reellement suivi (le    }
+    { rectangle de clip mono-DC, deja consomme par FillRgn/InvertRgn/         }
+    { PaintRgn/SelectClipRgn - ordinaux 40/42/43/44) - "creer" une region     }
+    { ici l'active DIRECTEMENT comme candidate (Win16_ClipX1/Y1/X2/Y2/        }
+    { ClipActive, coordonnees CLIENT comme Exclude/IntersectClipRect)         }
+    { plutot que de fabriquer un handle totalement inerte. Disclose            }
+    { honnetement : seul le RECTANGLE ENGLOBANT est retenu, jamais la          }
+    { vraie forme elliptique (aucune geometrie de region courbe n'est          }
+    { modelisee dans ce sous-ensemble a un seul rectangle). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    Win16_ClipX1 := GdiX1; Win16_ClipY1 := GdiY1;
+    Win16_ClipX2 := GdiX2; Win16_ClipY2 := GdiY2;
+    Win16_ClipActive := True;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   55: Begin
+    { CreateEllipticRgnIndirect(lpRect):HRGN - ordinal VERIFIE via           }
+    { gdi.exe16.spec (1 pointeur LOIN = 2 mots, structure RECT standard       }
+    { left/top/right/bottom, 4 mots). REEL EN PARTIE, meme discipline que     }
+    { CreateEllipticRgn/$54 juste au-dessus (rectangle englobant retenu,      }
+    { jamais la vraie forme elliptique) - simple variante "structure en       }
+    { memoire" du meme appel. }
+    LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_ClipX1 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, LBOfs));
+    Win16_ClipY1 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 2)));
+    Win16_ClipX2 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 4)));
+    Win16_ClipY2 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 6)));
+    Win16_ClipActive := True;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   56: Begin
+    { CreateFont(nHeight,nWidth,nEscapement,nOrientation,nWeight,bItalic,    }
+    { bUnderline,bStrikeOut,nCharSet,nOutPrecision,nClipPrecision,           }
+    { nQuality,nPitchAndFamily,lpFaceName):HFONT - ordinal VERIFIE via       }
+    { gdi.exe16.spec (13 mots + 1 pointeur LOIN (2 mots) = 15 mots... en     }
+    { pratique 16 mots, chaque parametre BYTE de la signature C occupant     }
+    { neanmoins un mot entier sur la pile en convention Pascal comme          }
+    { partout ailleurs dans ce chantier). Rendu GDI reel HORS DE PORTEE :    }
+    { ce sous-ensemble n'a qu'UNE SEULE police, la police bitmap 5x7           }
+    { MAISON cablee en dur dans TextOut/$33 (Win16_Font5x7, ni mise a          }
+    { l'echelle ni chargement dynamique) - handle synthetique non-nul,        }
+    { meme simplification que CreatePen/CreateSolidBrush/GetStockObject.      }
+    { AUCUNE valeur (hauteur, style...) n'est conservee : contrairement a      }
+    { CreateBrushIndirect/$50, il n'existe aucun mecanisme de mise a           }
+    { l'echelle de police auquel la brancher un jour, donc rien d'utile a      }
+    { stocker pour l'instant - disclose plutot qu'une donnee inerte de plus.  }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 16;
+   End;
    61: Begin
     { CreatePen(nStyle, nWidth, crColor):HPEN - ordinal VERIFIE via         }
     { gdi.exe16.spec (2 mots signes + 1 LONG = 4 mots). Meme               }
