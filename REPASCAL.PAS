@@ -26,7 +26,7 @@ Var
  CommentState:TCommentState;
  OutLine:TSourceString;
  PreserveCommentIndent,AwaitingThenBegin:Boolean;
- RoutineHeader,AwaitingRoutineBegin,DeclarationSection,UsesSection:Boolean;
+ RoutineHeader,AwaitingRoutineBegin,RoutineNeedsBlank,DeclarationSection,UsesSection:Boolean;
  ParenthesisLevel:Integer;
 Function UpperString(Const S:String):String;
 Var
@@ -344,12 +344,16 @@ Begin
    U:=UpperString(W);
    If SkipProgram Then Continue;
    If(U='PROCEDURE')or(U='FUNCTION')Then Begin
+    If AwaitingRoutineBegin Then Begin
+     If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;AwaitingRoutineBegin:=False;
+     RoutineNeedsBlank:=False;
+    End;
     If DeclarationSection Then Begin
      If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;
     End;
     EmitPending;If U='PROCEDURE'Then AppendText('Procedure')Else AppendText('Function');
     RoutineHeader:=True;AwaitingRoutineBegin:=False;ParenthesisLevel:=0;
-    AwaitingThenBegin:=False;
+    AwaitingThenBegin:=False;RoutineNeedsBlank:=True;
    End
    Else If U='USES'Then Begin
     EmitPending;WriteLn(OutputFile);AppendText('Uses');UsesSection:=True;
@@ -358,7 +362,8 @@ Begin
    Else If(U='CONST')or(U='TYPE')or(U='VAR')Then Begin
     If(ParenthesisLevel=0)and((TrimLine(OutLine)='')or AwaitingRoutineBegin)Then Begin
      If AwaitingRoutineBegin Then Begin
-      EmitPending;AwaitingRoutineBegin:=False;
+      If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;AwaitingRoutineBegin:=False;
+      RoutineNeedsBlank:=False;
      End;
      If DeclarationSection Then Begin
       If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;
@@ -375,9 +380,11 @@ Begin
     Inc(BeginNumber);If DeclarationSection Then Begin
      If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;
     End;
+    If AwaitingRoutineBegin and RoutineNeedsBlank Then WriteLn(OutputFile);
     If not(AwaitingThenBegin or AwaitingRoutineBegin)Then EmitPending;
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';
-    AppendText(S);AwaitingRoutineBegin:=False;RoutineHeader:=False;EmitLine;
+    AppendText(S);AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
+    RoutineHeader:=False;EmitLine;
     Inc(IndentLevel);
    End
    Else If U='END'Then Begin
@@ -387,10 +394,15 @@ Begin
    Else If U='THEN'Then Begin
     AppendText('Then');AwaitingThenBegin:=True;
    End
+   Else If U='FORWARD'Then Begin
+    AppendText('Forward');AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
+    AwaitingThenBegin:=False;
+   End
    Else
    Begin
     If AwaitingRoutineBegin Then Begin
-     EmitPending;AwaitingRoutineBegin:=False;
+     If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;
+     AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
     End;
     AppendText(W);AwaitingThenBegin:=False;
    End;Continue;
@@ -433,7 +445,8 @@ Begin
   Close(InputFile);Error('impossible de creer le fichier temporaire');Exit;
  End;
  OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;RoutineHeader:=False;
- AwaitingRoutineBegin:=False;DeclarationSection:=False;UsesSection:=False;
+ AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;DeclarationSection:=False;
+ UsesSection:=False;
  ParenthesisLevel:=0;
  IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;
  SkipProgram:=HasProgram and not IsUnit;
