@@ -120171,7 +120171,22 @@ Begin
    TP.HScrollOffset := MaxHScrollOffset;
   DrawTerminalSelection(TP);
   { Afficher VisLines lignes en avant }
-  If IsGulamPanel Then SetColor(7) Else SetColor(15);
+  { BOGUE REEL corrige (2026-09-12, demande explicite) : le texte de         }
+  { l historique (message d accueil inclus) utilisait la couleur 7 (gris    }
+  { clair) au lieu d un noir aussi fonce que possible - le fond blanc etait  }
+  { deja correct (voir IsGulamPanel plus haut) mais le texte ne l etait pas, }
+  { contrairement a l ecran monochrome ST reel que Gulam imite (fond blanc, }
+  { texte NOIR partout, ligne de saisie comprise). Une PREMIERE tentative   }
+  { (SetColor(0) + SetBkColor(0)) a ete essayee puis infirmee EN DIRECT par  }
+  { l utilisateur (toujours gris) : la vraie couleur 0 de ce moteur de       }
+  { rendu n est fiablement noire NULLE PART dans ce fichier, precisement     }
+  { pourquoi CLR_EDITOR_TEXT (le texte de l editeur de code, 1994) vaut 8    }
+  { et NON 0, avec ce commentaire explicite present depuis longtemps :       }
+  { "gris fonce : texte de l editeur (pas 0 car SetBkColor remappe 0)". La   }
+  { CLR_EDITOR_TEXT en usage (8, gris fonce) EST donc le "noir" etabli et    }
+  { deja eprouve de tout ce fichier - reutilise ici a l identique plutot     }
+  { que de re-tenter la couleur 0 deja infirmee. }
+  If IsGulamPanel Then SetColor(CLR_EDITOR_TEXT) Else SetColor(15);
   YPos := PY + TERM_TAB_HEIGHT + 2;
   TextLines := 0;
   For I := 0 To VisLines - 1 Do Begin
@@ -120193,7 +120208,9 @@ Begin
   { Ligne de saisie : visible uniquement si on n est pas remonte
     dans l historique (ScrollOffset = 0). Sinon on conserve la
     ligne pour le prochain affichage. }
-  If IsGulamPanel Then SetColor(16) Else SetColor(10);
+  { Meme correctif que ci-dessus (CLR_EDITOR_TEXT, voir le commentaire       }
+  { complet plus haut) pour la ligne de saisie. }
+  If IsGulamPanel Then SetColor(CLR_EDITOR_TEXT) Else SetColor(10);
   If TextLines < VisLines Then
    YPos := PY + TERM_TAB_HEIGHT + 2
     + TextLines * TERM_LINE_HEIGHT
@@ -120338,103 +120355,120 @@ Begin
  End;
  { Dessiner la liste deroulante PAR-DESSUS le texte }
  If TermSelectOpen Then Begin
+  { BOGUE REEL corrige (2026-09-12, demande explicite) : le fond des items  }
+  { NON selectionnes utilisait la couleur 8 (gris fonce) - EXACTEMENT la    }
+  { meme couleur que le fond par defaut du panneau Terminal lui-meme (voir  }
+  { "Else SetFillStyle(SolidFill, 8)" tout en haut de cette procedure) ET   }
+  { que CLR_BORDER (= 8 aussi) utilisee pour la bordure de la liste - la     }
+  { liste deroulante se fondait donc entierement dans le contenu du         }
+  { Terminal derriere elle, aucune limite visible. Corrige (precision       }
+  { supplementaire de l utilisateur : cadre NOIR, fond BLANC) : fond des     }
+  { items NON selectionnes en blanc reel (15, distinct du fond de N         }
+  { IMPORTE quel shell), texte/bordure en CLR_EDITOR_TEXT (8) - PAS la       }
+  { couleur 0 (essayee d abord, infirmee EN DIRECT par l utilisateur :        }
+  { jamais fiablement noire dans ce moteur de rendu, voir le commentaire     }
+  { complet pres du correctif Gulam ci-dessus qui explique pourquoi          }
+  { CLR_EDITOR_TEXT=8 existe precisement pour cette raison). L item          }
+  { survole/selectionne garde son fond bleu (CLR_TITLEBAR_ACTIVE) avec       }
+  { texte blanc, deja bien contraste. }
   { Item 1 : Invite de commandes }
-  If TermSelectIdx = 0 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 0 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4, SBY + TERM_SELECT_HEIGHT + 3,
    'Invite de commandes');
   { Item 2 : PowerShell dev }
-  If TermSelectIdx = 1 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 1 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H + 3,
    'PowerShell dev');
   { Item 3 : Bash }
-  If TermSelectIdx = 2 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 2 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H + 3,
    'Bash');
   { Item 4 : Gulam }
-  If TermSelectIdx = 3 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 3 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H + 3,
    'Gul'+#132+'m');
   { Item 5 : AmigaDOS }
-  If TermSelectIdx = 4 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 4 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H + 3,
    'AmigaDOS');
   { Item 6 : Norton Commander }
-  If TermSelectIdx = 5 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 5 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H + 3,
    'Norton Commander');
   { Item 7 : OS/2 & REXX }
-  If TermSelectIdx = 6 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 6 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H + 3,
    'OS/2 & REXX');
   { Item 8 : COS (Cray-1) }
-  If TermSelectIdx = 7 Then
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
-  Else
-   SetFillStyle(SolidFill, 8);
+  If TermSelectIdx = 7 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
   Bar(SBX, SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H - 1);
-  SetColor(15);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H + 3,
    'COS (Cray-1)');
-  { Bordure de la liste }
-  SetColor(CLR_BORDER);
+  { Bordure de la liste - CLR_EDITOR_TEXT (8), voir le commentaire de tete   }
+  { ci-dessus. }
+  SetColor(CLR_EDITOR_TEXT);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
    SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H - 1);
