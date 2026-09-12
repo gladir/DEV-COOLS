@@ -7746,6 +7746,13 @@ Var
  { fonctionnait donc jamais, laissant une trainee de chaque position        }
  { passee. }
  Win16_CurrentROP2: Word;
+ { GDI.EXE SetBkColor/SetMapMode (2026-09-12, demande explicite) - meme     }
+ { modele "mono-DC" que Win16_CurrentROP2 juste au-dessus : une seule       }
+ { valeur globale reelle (pas de vraie table de DC), stockage/retour        }
+ { REELS mais AUCUN chemin de rendu ne consomme encore ces deux valeurs     }
+ { (meme limitation deja disclosee pour SetBkMode). }
+ Win16_CurrentBkColor: LongInt;
+ Win16_CurrentMapMode: Word;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -10306,6 +10313,10 @@ Var
  OS9_ClockSet   : Boolean;
  OS9_ClockYear, OS9_ClockMonth, OS9_ClockDay: Byte;
  OS9_ClockHour, OS9_ClockMin, OS9_ClockSec: Byte;
+ { F$XTime (septieme lot, 2026-09-12, demande explicite) : centiemes de     }
+ { seconde reels de l hote, deja recuperes via GetTime au demarrage -COS9   }
+ { mais jamais exposes avant cet appel. }
+ OS9_ClockHsec  : Byte;
  { F$SUser/F$ID : UID REEL stocke (F$ID/$0C plus haut a ete mis a jour      }
  { pour le lire au lieu de renvoyer 0 fixe). }
  OS9_UserID     : Word;
@@ -77657,6 +77668,8 @@ Begin
  Win16_GdiTraceCount := 0;
  Win16_GdiTraceMax := 80;
  Win16_CurrentROP2 := 13; { R2_COPYPEN, defaut reel d'un DC neuf }
+ Win16_CurrentBkColor := $00FFFFFF; { blanc (COLORREF 0x00BBGGRR), defaut reel d'un DC neuf }
+ Win16_CurrentMapMode := 1; { MM_TEXT, defaut reel d'un DC neuf }
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -78574,6 +78587,10 @@ Var
  { meme raison exacte que ClipStr dans Lx_DoDosCall/PMWIN (ligne ~82839) : }
  { un texte de presse-papiers reel depasse tres facilement 255 caracteres. }
  CBStr: AnsiString;
+ { GDI.EXE SetBkColor/SetMapMode/SetRelAbs (2026-09-12, demande explicite). }
+ GBKOld: LongInt;
+ GBKLo, GBKHi: Word;
+ GMMOld: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -79731,6 +79748,51 @@ Begin
   End;
  End Else If ModIdx = 2 Then Begin { GDI }
   Case Ordinal Of
+   1: Begin
+    { SetBkColor(hdc, crColor):COLORREF - ordinal VERIFIE via gdi.exe16.spec }
+    { (1 mot + 1 LONG = 3 mots, LONG pousse poids-fort d'abord comme          }
+    { CreatePen/CreateSolidBrush ci-dessous). Meme discipline REELLE que       }
+    { SetBkMode/$2 et SetROP2/$4 : stocke et retourne VRAIMENT l'ancienne     }
+    { valeur (mono-DC, Win16_CurrentBkColor) - mais AUCUN chemin de rendu ne  }
+    { consomme encore la couleur de fond (le fond est deja pose une fois par }
+    { Win16_DrawWindowFrame - meme limitation deja disclosee pour             }
+    { SetBkMode). }
+    GBKOld := Win16_CurrentBkColor;
+    GBKLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GBKHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Win16_CurrentBkColor := (LongInt(GBKHi) Shl 16) Or LongInt(GBKLo);
+    P.CPU.Regs.AX := Word(GBKOld And $FFFF);
+    P.CPU.Regs.DX := Word((GBKOld Shr 16) And $FFFF);
+    ArgWords := 3;
+   End;
+   3: Begin
+    { SetMapMode(hdc, nMapMode):int (mode precedent) - ordinal VERIFIE via   }
+    { gdi.exe16.spec (2 mots). Stocke et retourne VRAIMENT l'ancien mode      }
+    { (mono-DC, Win16_CurrentMapMode) - mais seul MM_TEXT (mapping 1:1        }
+    { logique/peripherique) est REELLEMENT honore par le pipeline de          }
+    { coordonnees existant (MoveTo/LineTo/Rectangle...), qui a toujours       }
+    { suppose des pixels directs (voir GetDeviceCaps/$80 plus haut, deja       }
+    { concu pour le mode $13 sans mise a l'echelle) : demander un autre mode  }
+    { (MM_LOENGLISH/MM_TWIPS/MM_ISOTROPIC/...) est accepte et retourne         }
+    { fidelement par CET appel, mais les coordonnees resteront interpretees   }
+    { comme MM_TEXT en aval - simplification DOCUMENTEE, pas une valeur       }
+    { inventee. }
+    GMMOld := Win16_CurrentMapMode;
+    Win16_CurrentMapMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := GMMOld;
+    ArgWords := 2;
+   End;
+   5: Begin
+    { SetRelAbs(hdc, nRelAbs):int (mode precedent) - ordinal VERIFIE via     }
+    { gdi.exe16.spec (2 mots). Appel DEJA OBSOLETE sous le vrai Windows       }
+    { 2.x/3.x (le mode de coordonnees RELATIF n'existait que sous Windows     }
+    { 1.x - conserve uniquement pour compatibilite binaire) : un vrai         }
+    { GDI.EXE 3.x n'a plus de vrai mode relatif a modeliser non plus -        }
+    { renvoie donc toujours ABSOLUTE (1), fidele au comportement reel de      }
+    { cette version, pas une simplification de fonctionnalite manquante. }
+    P.CPU.Regs.AX := 1; { ABSOLUTE }
+    ArgWords := 2;
+   End;
    80: Begin
     { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }
     { gdi.exe16.spec ; les constantes nIndex (HORZRES=8, VERTRES=10,        }
@@ -163062,6 +163124,37 @@ Begin
   M6809_CRC24Step := Acc;
 End;
 
+{ Verifie un module OS-9 DEJA RESIDENT en memoire emulee (F$VModul/$2E,     }
+{ demande explicite, septieme lot) : MEME validation sync/CRC-24 que         }
+{ M6809_LoadOS9ModuleAt plus bas (memes constantes verifiees, meme          }
+{ M6809_CRC24Step partage - aucune logique dupliquee/divergente), mais lue  }
+{ directement depuis M6809_Mem (via M6809_Rd) plutot que depuis un fichier  }
+{ hote puisque le module est deja charge en memoire emulee. }
+Function M6809_VerifyOS9ModuleHeader(Addr: Word; Var ModName: String): Boolean;
+Var
+  Sync, NameOfs, ModSize: Word;
+  CrcAcc, CrcExpect: LongInt;
+  I: LongInt;
+Begin
+  M6809_VerifyOS9ModuleHeader := False;
+  ModName := '';
+  Sync := (Word(M6809_Rd(Addr)) Shl 8) Or M6809_Rd(Word(Addr + 1));
+  If Sync <> $87CD Then Exit;
+  ModSize := (Word(M6809_Rd(Word(Addr + 2))) Shl 8) Or M6809_Rd(Word(Addr + 3));
+  NameOfs := (Word(M6809_Rd(Word(Addr + 4))) Shl 8) Or M6809_Rd(Word(Addr + 5));
+  If (ModSize < 4) Or (LongInt(Addr) + LongInt(ModSize) > $10000) Then Exit;
+  CrcAcc := $FFFFFF;
+  For I := 0 To LongInt(ModSize) - 4 Do
+    CrcAcc := M6809_CRC24Step(CrcAcc, M6809_Rd(Word(Addr + I)));
+  CrcAcc := CrcAcc Xor $FFFFFF;
+  CrcExpect := (LongInt(M6809_Rd(Word(Addr + LongInt(ModSize) - 3))) Shl 16) Or
+               (LongInt(M6809_Rd(Word(Addr + LongInt(ModSize) - 2))) Shl 8) Or
+               LongInt(M6809_Rd(Word(Addr + LongInt(ModSize) - 1)));
+  If CrcAcc <> CrcExpect Then Exit;
+  ModName := M6809_ReadOS9Name(Word(Addr + NameOfs));
+  M6809_VerifyOS9ModuleHeader := True;
+End;
+
 { Empile une VRAIE trame SWI/SWI2/SWI3 complete (2026-09-12, troisieme lot  }
 { de F$, demande explicite) - ordre reel 6809 (E=1 impose avant             }
 { l empilement, PC empile en premier donc le plus profond, CC en dernier    }
@@ -163124,7 +163217,15 @@ End;
 { processus reveillable - la simuler bloquerait cet emulateur POUR            }
 { TOUJOURS -, aucun descripteur resident pour le processus "auto", aucun     }
 { materiel MMU de registres de tache, meme chose pour le mappage physique    }
-{ de blocs). }
+{ de blocs). Septieme lot (meme session) : F$Ret64, F$SRqMem, F$SRtMem,      }
+{ F$VModul, F$SLink, F$Move, F$SetImg, F$STABX, F$NProc, F$ReBoot, F$XTime   }
+{ sont REELS (miroirs de calls deja etablis, ou degenerescence correcte      }
+{ d un seul espace d adresses plat pour les familles "inter-taches" LD*/     }
+{ ST*/Move/SLink/VModul) ; F$VIRQ, F$SSvc, F$SetTsk, F$ResTsk, F$RelTsk,     }
+{ F$VBlock echouent honnetement (respectivement : aucune table de             }
+{ scrutation d IRQ virtuelles, un dispatcheur statique qu il serait dangereux }
+{ de rendre extensible a la volee, aucun registre materiel DAT/MMU, un        }
+{ repertoire de modules a taille fixe). }
 Procedure M6809_DoOS9Syscall(SvcCode: Byte);
 Var
   Ch: Byte;
@@ -163186,6 +163287,15 @@ Var
   FMName: String;
   FMSlot, FMLen, FMI: Integer;
   FMDirAddr: Word;
+  { Septieme lot de F$ (2026-09-12, demande explicite). }
+  VMAddr, VMDirAddr: Word;
+  VMName: String;
+  VMSlot: Integer;
+  SLName: String;
+  SLSlot: Integer;
+  SLYOrig: Word;
+  MVI: LongInt;
+  SetImgI: Integer;
 Begin
   M6809_CC := M6809_CC And Not $01; { Carry clair = succes par defaut }
   Case SvcCode Of
@@ -163877,6 +163987,44 @@ Begin
     { "indefinie" documentee bloquerait cet emulateur POUR TOUJOURS, un      }
     { vrai risque, pas juste une simplification) - echec honnete pour les    }
     { deux, meme discipline que F$AProc/F$Boot juste apres. }
+    { Septieme lot de F$ (2026-09-12, demande explicite). }
+    $27: Begin { F$VIRQ(A=octet a stocker, B=numero de tache, X=adresse) -   }
+           { PAGE WIKI CASSEE : sourceforge.net/p/nitros9/wiki/F%24VIRQ/     }
+           { renvoie systematiquement (confirme apres nouvelle tentative     }
+           { explicite) le contenu de la page F$STABX au lieu de la sienne -  }
+           { probleme cote serveur wiki, pas une erreur de notre cote (meme  }
+           { categorie que F$LDAXYP/F$LDDDXY/I$Seek precedemment). D apres    }
+           { la propre description de l utilisateur ("ajoute une entree dans }
+           { une table de scrutation des IRQ VIRTUELLES"), c est le miroir   }
+           { "logiciel" de F$IRQ/$2A juste apres - MEME absence de vraie      }
+           { table de scrutation d interruptions, meme echec honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $28: Begin { F$SRqMem(D=nb d octets) -> D=octets accordes, U=pointeur -  }
+           { convention registre VERIFIEE (wiki F$SRqMem, qui precise elle-  }
+           { meme etre "fonctionnellement equivalent" a F$BtMem/$36 deja      }
+           { implemente - meme code REEL, meme allocateur "bump" OS9_MemSize }
+           { partage, meme arrondi au paragraphe de 16 octets). }
+           BTBytes := (M6809_GetD + 15) And Not 15;
+           If LongInt(OS9_MemSize) + BTBytes > OS9_MEM_MAX Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+             M6809_SetD(0);
+           End Else Begin
+             M6809_U := OS9_MEM_BASE + OS9_MemSize;
+             OS9_MemSize := OS9_MemSize + BTBytes;
+             M6809_SetD(BTBytes);
+           End;
+         End;
+    $29: Begin { F$SRtMem(D=nb d octets, U=adresse de depart) - convention   }
+           { registre VERIFIEE (wiki F$SRtMem). REEL en partie : l allocateur }
+           { "bump" OS9_MemSize (F$Mem/F$BtMem/F$SRqMem) ne recycle JAMAIS    }
+           { vraiment (meme simplification deja disclosee pour F$Mem/$07) -  }
+           { mais efface REELLEMENT la plage rendue (meme effet reel partiel  }
+           { que F$ClrBlk/$50), plutot que de pretendre la recycler dans le   }
+           { pool sans rien faire. }
+           For CBZI := 0 To LongInt(M6809_GetD) - 1 Do
+             M6809_Wr(Word(M6809_U + CBZI), 0);
+         End;
     $2A: Begin { F$IRQ(D=adresse registre d etat, X=0 ou adresse paquet,     }
            { Y=routine de service, U=zone memoire) - convention registre     }
            { VERIFIEE (wiki F$IRQ). }
@@ -163895,6 +164043,50 @@ Begin
            { ne se produira jamais - echec honnete plutot qu un mensonge,    }
            { convention registre verifiee (wiki F$AProc). }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $2D: Begin { F$NProc() - "demarre le processus suivant" - convention     }
+           { registre VERIFIEE (wiki F$NProc : "aucune entree, le controle   }
+           { NE REVIENT JAMAIS a l appelant" dans un vrai OS-9 multi-         }
+           { processus). REEL, mais honnetement different de la doc pour la   }
+           { raison exacte inverse de F$IOQu/$2B : ce sous-ensemble n a       }
+           { qu UN SEUL processus pret a s executer (lui-meme), donc "passer  }
+           { au processus suivant" n a litteralement personne d autre a qui   }
+           { ceder - contrairement a F$IOQu (qui bloquerait pour toujours     }
+           { s il etait honore), ici accepter et rendre la main IMMEDIATEMENT }
+           { est la consequence directe et correcte d avoir un seul            }
+           { processus, pas un mensonge sur un vrai changement de contexte    }
+           { qui n a jamais eu lieu. }
+         End;
+    $2E: Begin { F$VModul(D=pointeur image DAT, X=deplacement de nouveau     }
+           { bloc de module) -> U=adresse d entree de repertoire -            }
+           { convention registre VERIFIEE (wiki F$VModul : "valide l en-tete  }
+           { et le CRC, puis cherche un module de meme nom dans le            }
+           { repertoire - conserve celui de plus haute revision, ou celui     }
+           { deja resident en cas d egalite"). REEL : "D=pointeur image DAT"   }
+           { traite comme une base additionnee a X (meme degenerescence       }
+           { correcte que F$LDAXY/$46 - un seul espace d adresses plat ici),  }
+           { en-tete/CRC-24 verifies avec le MEME code que                    }
+           { M6809_LoadOS9ModuleAt (aucune logique dupliquee/divergente).      }
+           { Ce sous-ensemble ne suit ni revision ni "meilleure copie" -      }
+           { simplifie honnetement : si un module de meme nom est DEJA        }
+           { resident, renvoie son entree existante (equivalent au cas        }
+           { "egalite de revision -> garder celui deja charge" documente) ;   }
+           { si valide mais AUCUN module de ce nom n est deja resident,        }
+           { echec honnete plutot que d inventer une nouvelle inscription de  }
+           { repertoire pour un module jamais realement charge par F$Link/    }
+           { F$Load (meme discipline que F$NMLoad/$22, "verifier sans          }
+           { charger" deja etabli). }
+           VMAddr := Word(LongInt(M6809_GetD) + M6809_X);
+           If Not M6809_VerifyOS9ModuleHeader(VMAddr, VMName) Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $D3; { CRC/en-tete invalide }
+           End Else Begin
+             VMSlot := OS9_FindModuleSlot(VMName);
+             VMDirAddr := OS9_ModDirEntryAddr(VMSlot);
+             If (VMSlot = -1) Or (VMDirAddr = 0) Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+             End Else
+               M6809_U := VMDirAddr;
+           End;
          End;
     $2F: Begin { F$Find64(A=numero de bloc, X=adresse de la table de pages) }
            { -> Y=adresse du bloc ; Carry positionne si bloc interdit/         }
@@ -163950,6 +164142,32 @@ Begin
              End;
            End;
          End;
+    $31: Begin { F$Ret64(A=numero de bloc, X=adresse de la table de pages) - }
+           { convention registre VERIFIEE (wiki F$Ret64). REEL : miroir       }
+           { exact de F$All64/$30 (libere le bloc dans le MEME format de      }
+           { table auto-coherent, decremente le compteur en octet 0). }
+           If (M6809_A < 1) Or (M6809_A > OS9_ALL64_BPP) Or
+              (M6809_Rd(Word(M6809_X + M6809_A)) = 0) Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else Begin
+             M6809_Wr(Word(M6809_X + M6809_A), 0);
+             M6809_Wr(M6809_X, M6809_Rd(M6809_X) - 1);
+           End;
+         End;
+    $32: Begin { F$SSvc(Y=adresse d une table d initialisation d appels       }
+           { systeme) - convention registre VERIFIEE (wiki F$SSvc : "ajoute/  }
+           { remplace des appels systeme personnalises dans les tables         }
+           { d appel de NitrOS-9 - les routines de gestion doivent resider    }
+           { en memoire systeme privilegiee et s executer en etat systeme").  }
+           { Le dispatcheur de CE sous-ensemble (le Case ci-dessous) est un   }
+           { bloc Pascal STATIQUE, pas une table de sauts modifiable a         }
+           { l execution - le rendre reellement extensible risquerait de       }
+           { rediriger des codes de service fondamentaux (F$Exit, I$Open...)  }
+           { vers du code utilisateur non verifie, une vraie instabilite du    }
+           { dispatcheur entier, pas une simple simplification. Echec         }
+           { honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
     $33: Begin { F$IODel(X=adresse d un module d E/S) - convention registre  }
            { VERIFIEE (wiki F$IODel). REEL : reverse-lookup dans la MEME     }
            { table de modules que F$UnLink (OS9_ModBase) - ce sous-ensemble  }
@@ -163965,6 +164183,34 @@ Begin
              M6809_CC := M6809_CC Or $01; M6809_B := $F0;
            End Else
              OS9_ModUsed[Slot] := False;
+         End;
+    $34: Begin { F$SLink(A=type de module, X=pointeur chaine de nom,          }
+           { Y=pointeur image DAT du nom) -> A=type, B=revision, X=chaine     }
+           { mise a jour, Y=point d entree, U=pointeur de module -             }
+           { convention registre VERIFIEE (wiki F$SLink : "permet au           }
+           { systeme d E/S d incorporer des modules externes dans l espace     }
+           { d adresses courant d un processus" - le pilote de peripherique   }
+           { est charge pour devenir accessible dans la memoire du processus  }
+           { actif). REEL : ce sous-ensemble n a JAMAIS distingue "lien        }
+           { systeme" de "lien utilisateur" (un seul espace d adresses plat,  }
+           { pas de separation systeme/utilisateur reelle - deja le cas pour  }
+           { F$Debug/F$ID qui traitent toujours l appelant comme               }
+           { superutilisateur) : reutilise donc EXACTEMENT la meme recherche  }
+           { que F$Link/$00 (OS9_FindModuleSlot), "Y=pointeur image DAT du     }
+           { nom" traite comme une base additionnee a X (meme degenerescence  }
+           { correcte que F$LDAXY/F$VModul). }
+           SLYOrig := M6809_Y;
+           SLName := M6809_ReadOS9Name(Word(LongInt(SLYOrig) + M6809_X));
+           SLSlot := OS9_FindModuleSlot(SLName);
+           M6809_X := Word(LongInt(SLYOrig) + M6809_X + Length(SLName));
+           If SLSlot = -2 Then Begin
+             M6809_U := 0; M6809_Y := 0;
+           End Else If SLSlot >= 0 Then Begin
+             M6809_U := OS9_ModBase[SLSlot];
+             M6809_Y := OS9_ModExec[SLSlot];
+           End Else Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+           End;
          End;
     $35: Begin { F$Boot() - amorcage systeme (lie le module Boot/celui de     }
            { l en-tete INIT depuis un peripherique physique de demarrage) -   }
@@ -164001,6 +164247,24 @@ Begin
            { associes en retour a un PID - meme raison que F$DelPrc/$4C) -   }
            { rien de reel a renvoyer. Echec honnete. }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $38: Begin { F$Move(A=numero de tache source, B=numero de tache dest.,   }
+           { X=pointeur source, Y=nb d octets, U=pointeur destination) -      }
+           { convention registre VERIFIEE (wiki F$Move : "deplace des         }
+           { octets entre espaces d adresses differents, memoire systeme      }
+           { <-> espace utilisateur ou l inverse"). REEL, meme raisonnement    }
+           { degenere-mais-correct que F$LDAXY/F$LDABX/$46/$49 : un seul       }
+           { espace d adresses plat existe ici, donc "deplacer entre           }
+           { taches" EST un deplacement dans cet espace unique (A/B, les       }
+           { numeros de tache, acceptes sans effet). Copie a la maniere        }
+           { d un vrai memmove (sens ajuste si les plages se chevauchent,      }
+           { destination apres source), pas une simple boucle naive. }
+           If M6809_U > M6809_X Then
+             For MVI := LongInt(M6809_Y) - 1 Downto 0 Do
+               M6809_Wr(Word(M6809_U + MVI), M6809_Rd(Word(M6809_X + MVI)))
+           Else
+             For MVI := 0 To LongInt(M6809_Y) - 1 Do
+               M6809_Wr(Word(M6809_U + MVI), M6809_Rd(Word(M6809_X + MVI)));
          End;
     $39: Begin { F$AllRAM(B=nb de blocs) - AUCUN pool general de blocs de     }
            { RAM physique independant de OS9_MemSize/du chargeur de modules   }
@@ -164042,6 +164306,25 @@ Begin
            End Else
              For AII := AIStart To AIStart + AICount - 1 Do
                M6809_Wr(Word(M6809_X + OS9_PDIMG_OFS + AII), 0);
+         End;
+    $3C: Begin { F$SetImg(A=bloc de depart, B=nb de blocs, X=descripteur de  }
+           { processus, U=nouveau pointeur d image) - convention registre     }
+           { VERIFIEE (wiki F$SetImg : "copie les blocs indiques dans          }
+           { l image DAT du descripteur et active un indicateur de             }
+           { changement d image, applique au materiel au retour"). REEL en    }
+           { partie, meme discipline que F$ClrBlk/$50 : copie REELLEMENT B     }
+           { octets depuis U dans la table "image DAT" simplifiee du           }
+           { descripteur (OS9_PDIMG_OFS/LEN, la MEME table que F$AllImg/       }
+           { F$DelImg/F$FreeLB/F$FreeHB) - donnee reellement utile pour ces    }
+           { appels ; "active l indicateur materiel" n a pas d effet reel      }
+           { ici (aucun materiel MMU, meme raison que F$SetTsk/F$MapBlk),      }
+           { disclose. }
+           If LongInt(M6809_A) + M6809_B > OS9_PDIMG_LEN Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else
+             For SetImgI := 0 To M6809_B - 1 Do
+               M6809_Wr(Word(M6809_X + OS9_PDIMG_OFS + M6809_A + SetImgI),
+                        M6809_Rd(Word(M6809_U + SetImgI)));
          End;
     $3D: Begin { F$FreeLB(B=nb de blocs, Y=pointeur image DAT) -> A=numero   }
            { de bloc de depart - convention registre VERIFIEE (wiki           }
@@ -164089,6 +164372,25 @@ Begin
            { aucun effet materiel reel correspondant, une vraie tromperie.    }
            { Echec honnete, convention registre verifiee (wiki F$AllTsk,      }
            { sortie normale non documentee non plus sur cette page). }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $41: Begin { F$SetTsk(X=descripteur de processus) - convention registre  }
+           { VERIFIEE (wiki F$SetTsk : "configure les registres materiels     }
+           { DAT pour un processus... ecrit les infos de segment en RAM       }
+           { DAT"). Meme raison que F$AllTsk/$3F/F$DelTsk/$40/F$MapBlk/$4F :  }
+           { aucun registre materiel DAT/MMU n existe dans ce coeur 6809 a     }
+           { memoire plate - echec honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $42: Begin { F$ResTsk() -> B=numero de tache reserve - convention         }
+           { registre VERIFIEE (wiki F$ResTsk). Meme raison que F$SetTsk/$41  }
+           { juste au-dessus : aucun registre de tache materiel a reserver.    }
+           { Echec honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $43: Begin { F$RelTsk(B=numero de tache) - convention registre VERIFIEE  }
+           { (wiki F$RelTsk). Miroir de F$ResTsk/$42 : meme echec honnete,     }
+           { meme raison. }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
          End;
     $44: Begin { F$DATLog(B=numero de bloc image DAT, X=deplacement dans le  }
@@ -164155,6 +164457,14 @@ Begin
            { la tache B" EST cet espace unique - B (numero de tache) est      }
            { accepte mais sans effet, il n y a rien d autre a distinguer. }
            M6809_A := M6809_Rd(M6809_X);
+         End;
+    $4A: Begin { F$STABX(A=octet a stocker, B=numero de tache, X=adresse     }
+           { logique de destination) - convention registre VERIFIEE (wiki    }
+           { F$STABX). REEL, miroir exact (ecriture au lieu de lecture) de    }
+           { F$LDABX/$49 juste au-dessus : un seul espace d adresses plat      }
+           { existe ici, donc "l espace de la tache B" EST cet espace          }
+           { unique - B accepte sans effet. }
+           M6809_Wr(M6809_X, M6809_A);
          End;
     $4B: Begin { F$AllPrc() -> U=pointeur vers un descripteur de processus   }
            { - convention registre VERIFIEE (wiki F$AllPrc : "alloue et       }
@@ -164277,6 +164587,16 @@ Begin
            { honnete pour la meme raison exacte. }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
          End;
+    $54: Begin { F$ReBoot() - redemarre la machine (recharge OS9Boot ou       }
+           { revient a RS-DOS) - PAGE WIKI NitrOS-9 INTROUVABLE (404, malgre  }
+           { la description fournie par l utilisateur lui-meme confirmant     }
+           { l intention reelle de l appel). Aucun redemarrage MATERIEL reel   }
+           { n est invente (meme discipline que F$Debug/A=255 deja etabli     }
+           { plus haut, "arret propre plutot qu une simulation") : traite      }
+           { comme une fin de processus honnete. }
+           M6809_Halted := True;
+           M6809_ExitCode := 0;
+         End;
     $55: Begin { F$CRCMod(A=0 desactive / <>0 active la verification CRC des }
            { modules au chargement, krnp2 - voir OS9_CRCModEnabled et son     }
            { utilisation reelle dans M6809_LoadOS9ModuleAt). CONVENTION       }
@@ -164293,6 +164613,40 @@ Begin
            OS9OldCRCMod := OS9_CRCModEnabled;
            OS9_CRCModEnabled := (M6809_A <> 0);
            M6809_A := Ord(OS9OldCRCMod);
+         End;
+    $56: Begin { F$XTime(X=tampon 7 octets) - PAGE WIKI NitrOS-9 INTROUVABLE }
+           { (404) - convention registre RECONSTRUITE par analogie DIRECTE    }
+           { avec F$Time/$15 deja verifie (meme registre X=tampon), etendu     }
+           { d un 7e octet pour les "fractions de seconde" documentees par     }
+           { l utilisateur - inference raisonnee, pas une invention pure       }
+           { (F$Time/F$STime existent deja reellement, voir plus haut ; les    }
+           { centiemes de seconde reels de l hote (OS9ClkHsec) sont deja        }
+           { recuperes via GetTime au demarrage -COS9 mais jusqu ici jamais     }
+           { exposes - reellement cable maintenant). }
+           If Not OS9_ClockSet Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $8D;
+           End Else Begin
+             M6809_Wr(M6809_X, OS9_ClockYear);
+             M6809_Wr(Word(M6809_X + 1), OS9_ClockMonth);
+             M6809_Wr(Word(M6809_X + 2), OS9_ClockDay);
+             M6809_Wr(Word(M6809_X + 3), OS9_ClockHour);
+             M6809_Wr(Word(M6809_X + 4), OS9_ClockMin);
+             M6809_Wr(Word(M6809_X + 5), OS9_ClockSec);
+             M6809_Wr(Word(M6809_X + 6), OS9_ClockHsec);
+           End;
+         End;
+    $57: Begin { F$VBlock(?) - "verifie les modules presents dans un bloc de }
+           { memoire et les ajoute au repertoire (krn)" - PAGE WIKI            }
+           { NitrOS-9 INTROUVABLE (404). Reserve aux operations internes du    }
+           { noyau (comme F$GCMDir/$52, meme famille "krn") : scanner un       }
+           { bloc a la recherche de PLUSIEURS modules et creer autant de        }
+           { NOUVELLES entrees de repertoire que necessaire depasse la          }
+           { capacite du repertoire FIXE a 5 emplacements de ce sous-ensemble  }
+           { (OS9_PrimaryDirAddr/OS9_ModDirAddr, voir F$FModul/$4E) - le        }
+           { rendre reellement extensible a la volee serait une refonte         }
+           { disproportionnee pour un appel deja documente comme reserve au    }
+           { noyau. Echec honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
          End;
     $80: Begin { I$Attach(mode=A, nom peripherique=X) - convention REGISTRE   }
            { verifiee (sourceforge.net/p/nitros9/wiki/I$Attach) : X avance    }
@@ -169785,6 +170139,7 @@ Begin NesActive := False;
    OS9_ClockHour := Byte(OS9ClkH);
    OS9_ClockMin := Byte(OS9ClkMi);
    OS9_ClockSec := Byte(OS9ClkS);
+   OS9_ClockHsec := Byte(OS9ClkHs);
    OS9_ClockSet := True;
    { F$FModul/$4E doit renvoyer une VRAIE adresse d entree de repertoire -   }
    { carve 5 entrees fixes (principal + 4 emplacements F$Load/F$Fork) une   }
