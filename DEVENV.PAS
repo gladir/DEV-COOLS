@@ -10249,6 +10249,10 @@ Var
  { stdin/stdout/stderr, mappes sur l ecran virtuel). }
  OS9_FileH      : Array[0..7] Of File;
  OS9_FileOpen   : Array[0..7] Of Boolean;
+ { F$CRCMod (krnp2, 2026-09-12) : bascule la verification CRC-24 reelle des }
+ { modules au chargement (voir M6809_CRC24Step/M6809_LoadOS9ModuleAt) -     }
+ { active par defaut, comme le vrai OS-9. }
+ OS9_CRCModEnabled: Boolean;
  { --- Etat emulateur CoCo 3 (jalon 1 : VDG alpha 32x16) --- }
  Coco3_Active   : Boolean;
  Coco3_FB       : Array[0..199, 0..255] Of Byte;  { framebuffer 256x200 idx couleur EGA }
@@ -120189,7 +120193,7 @@ Begin
   { Ligne de saisie : visible uniquement si on n est pas remonte
     dans l historique (ScrollOffset = 0). Sinon on conserve la
     ligne pour le prochain affichage. }
-  If IsGulamPanel Then SetColor(7) Else SetColor(10);
+  If IsGulamPanel Then SetColor(16) Else SetColor(10);
   If TextLines < VisLines Then
    YPos := PY + TERM_TAB_HEIGHT + 2
     + TextLines * TERM_LINE_HEIGHT
@@ -162913,14 +162917,37 @@ Begin
     End;
 End;
 
+{ CRC-24/OS-9 reel (2026-09-12, F$CRC/F$CRCMod - demande explicite) :       }
+{ poly=$800063, init=$FFFFFF, non reflechi, xorout=$FFFFFF - parametres    }
+{ VERIFIES via le catalogue de reference reveng.sourceforge.io/crc-        }
+{ catalogue (entree "CRC-24/OS-9", valeur de controle $200FA5 pour la      }
+{ chaine "123456789"), PAS invente. Traite un octet a la fois (algorithme  }
+{ bit-a-bit standard pour un CRC non reflechi) - reutilise par F$CRC        }
+{ (accumulateur explicite en memoire, ~ligne suivante) ET par                }
+{ M6809_LoadOS9ModuleAt (verification reelle du CRC de fin de module,       }
+{ voir F$CRCMod/OS9_CRCModEnabled). }
+Function M6809_CRC24Step(Acc: LongInt; B: Byte): LongInt;
+Var
+  K: Integer;
+Begin
+  Acc := Acc Xor (LongInt(B) Shl 16);
+  For K := 1 To 8 Do Begin
+    If (Acc And $800000) <> 0 Then Acc := ((Acc Shl 1) And $FFFFFF) Xor $800063
+    Else Acc := (Acc Shl 1) And $FFFFFF;
+  End;
+  M6809_CRC24Step := Acc;
+End;
+
 { Appels systeme OS-9/6809 (SWI2 suivi d un octet de service inline,        }
 { convention "OS9 servicecode" des assembleurs OS-9 reels). Sous-ensemble    }
-{ implemente : F$Link, F$Load, F$UnLink, F$Fork (synchrone - pas de vrai    }
-{ multitache), F$Wait, F$Exit, F$Mem, F$Sleep, I$Open, I$Close, I$Read,     }
-{ I$Write, I$GetStt/I$SetStt (acceptes sans donnees reelles). Tout autre    }
-{ code de service retourne une erreur generique (Carry positionne, B=$FF)  }
-{ plutot que d inventer un resultat, meme principe que les autres backends  }
-{ "trap systeme" de ce fichier (GEMDOS/AES/BIOS/XBIOS Atari ST). }
+{ implemente : F$Link, F$Load, F$UnLink, F$Chain, F$Fork (synchrone - pas   }
+{ de vrai multitache), F$Wait, F$Exit, F$Mem, F$Sleep, F$CmpNam, F$AllBit,  }
+{ F$DelBit, F$CRC, F$CRCMod, F$CpyMem, F$GPrDsc, F$GBlkMp, F$GModDr,        }
+{ F$Alarm, F$Debug, I$Open, I$Close, I$Read, I$Write, I$GetStt/I$SetStt     }
+{ (acceptes sans donnees reelles). Tout autre code de service retourne une }
+{ erreur generique (Carry positionne, B=$FF) plutot que d inventer un       }
+{ resultat, meme principe que les autres backends "trap systeme" de ce      }
+{ fichier (GEMDOS/AES/BIOS/XBIOS Atari ST). }
 Procedure M6809_DoOS9Syscall(SvcCode: Byte);
 Var
   Ch: Byte;
@@ -162928,6 +162955,25 @@ Var
   ModName, LoadedName, HostDir, HostPath: String;
   Slot, FreeSlot, J, Path, PIdx: Integer;
   ChildEntry, SavedS, SavedPC: Word;
+  { Nouveaux appels F$ (2026-09-12, demande explicite) - prefixes courts    }
+  { par appel pour eviter toute collision de nom avec les variables         }
+  { existantes ci-dessus. }
+  ABFirst, ABAddr, ABCount, ABI, ABBitNum, ABByteOfs, ABBitInByte: LongInt;
+  ABByteVal: Byte;
+  CNLen, CNI: Integer;
+  CNC1, CNC2: Byte;
+  CNMatch, CNLast: Boolean;
+  CMCount, CMI: LongInt;
+  CRAcc: LongInt;
+  CRI: Word;
+  GBBlockSize, GBNBlocks, GBNBytes, GBI, GBByteOfs, GBBitInByte: LongInt;
+  GBByteVal: Byte;
+  GDOfs, GDI, GDJ: Integer;
+  GDName: String;
+  GDByteVal: Byte;
+  GPPid, GPI, GPJ: Integer;
+  CHParamBytes: Word;
+  OS9OldCRCMod: Boolean;
   OK: Boolean;
   Guard: LongInt;
   DeltaW: Word;
@@ -162984,6 +163030,53 @@ Begin
            If Slot >= 0 Then OS9_ModUsed[Slot] := False;
            { Slot=-2 (module principal) ou -1 (deja absent) : succes quand meme, }
            { rien de plus a faire de facon honnete ici. }
+         End;
+    $05: Begin { F$Chain(A=lang/type, B=taille en pages, X=nom module,      }
+           { Y=taille zone param en pages, U=adresse zone param) - VERIFIE   }
+           { via la documentation NitrOS-9 (sourceforge.net/p/nitros9/wiki/ }
+           { F$Chain). Contrairement a F$Fork, AUCUN retour au niveau        }
+           { d appel : en cas de succes, PC saute directement au point       }
+           { d entree du nouveau module et l execution continue depuis la    }
+           { boucle M6809_Step externe (remplace le module courant, ne       }
+           { l empile pas). Reutilise la meme recherche/chargement de        }
+           { module que F$Fork/F$Load juste au-dessus (table a 4              }
+           { emplacements OS9_Mod*). Taille de zone de parametres en          }
+           { "pages" = 256 octets, granularite reelle d OS-9 Niveau Un (pas   }
+           { de MMU materielle) - non verifiee independamment mais           }
+           { connaissance retro-informatique bien etablie. }
+           ModName := M6809_ReadOS9Name(M6809_X);
+           Slot := OS9_FindModuleSlot(ModName);
+           OK := False;
+           If Slot = -2 Then Begin
+             ChildEntry := 0; { module principal : rare en pratique, non gere }
+           End Else If Slot >= 0 Then Begin
+             ChildEntry := OS9_ModExec[Slot];
+             OK := True;
+           End Else Begin
+             FreeSlot := -1;
+             For J := 0 To 3 Do
+               If Not OS9_ModUsed[J] Then Begin FreeSlot := J; Break; End;
+             If FreeSlot >= 0 Then Begin
+               GetDir(0, HostDir);
+               HostPath := HostDir + '\' + ModName;
+               OK := M6809_LoadOS9ModuleAt(HostPath,
+                Word($A000 + FreeSlot * $1000), ChildEntry, LoadedName);
+               If OK Then Begin
+                 OS9_ModName[FreeSlot] := ModName;
+                 OS9_ModBase[FreeSlot] := Word($A000 + FreeSlot * $1000);
+                 OS9_ModExec[FreeSlot] := ChildEntry;
+                 OS9_ModUsed[FreeSlot] := True;
+               End;
+             End;
+           End;
+           If Not OK Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0; { E$MNF, module introuvable }
+           End Else Begin
+             CHParamBytes := Word(M6809_Y) * 256;
+             M6809_SetD(CHParamBytes);
+             M6809_PC := ChildEntry;
+             M6809_CC := M6809_CC And Not ($40 Or $10); { F=0, I=0 : interruptions autorisees }
+           End;
          End;
     $03: Begin { F$Fork(name=Y) : execution SYNCHRONE (pas de vrai multitache) }
            ModName := M6809_ReadOS9Name(M6809_Y);
@@ -163056,6 +163149,228 @@ Begin
            M6809_Y := OS9_MEM_BASE;
          End;
     $0A: ; { F$Sleep(D=ticks) : ne bloque jamais }
+    $11: Begin { F$CmpNam(B=longueur chaine1, X=chaine1, Y=chaine2) : Carry }
+           { clair si egales, positionne sinon - VERIFIE via la doc          }
+           { NitrOS-9 (sourceforge.net/p/nitros9/wiki/F$CmpNam). Le dernier   }
+           { caractere de chaine2 doit avoir son bit 7 positionne             }
+           { (terminateur, vraie convention OS-9 de nom de module/fichier) ; }
+           { chaine1 n a pas ce terminateur, sa longueur est donnee par B.    }
+           { Les deux longueurs (B et la position du terminateur dans        }
+           { chaine2) doivent coincider pour un match. }
+           CNLen := M6809_B;
+           CNMatch := True;
+           CNI := 0;
+           Repeat
+             If CNI < CNLen Then CNC1 := M6809_Rd(Word(M6809_X + CNI)) And $7F
+             Else CNC1 := 0;
+             CNC2 := M6809_Rd(Word(M6809_Y + CNI));
+             CNLast := (CNC2 And $80) <> 0;
+             CNC2 := CNC2 And $7F;
+             If (CNI >= CNLen) Or (CNC1 <> CNC2) Then CNMatch := False;
+             Inc(CNI);
+           Until CNLast Or (Not CNMatch) Or (CNI > 255);
+           If CNMatch And (CNI <> CNLen) Then CNMatch := False;
+           If CNMatch Then M6809_CC := M6809_CC And Not $01
+           Else M6809_CC := M6809_CC Or $01;
+         End;
+    $13: Begin { F$AllBit(D=1er bit, X=adresse table, Y=nb bits) : positionne}
+           { Y bits a partir du bit D - VERIFIE via la doc NitrOS-9           }
+           { (sourceforge.net/p/nitros9/wiki/F$AllBit). Convention de         }
+           { numerotation des bits NON confirmee de facon independante        }
+           { (page muette sur ce point) : bit 0 = octet de poids fort (MSB)   }
+           { du premier octet de la table, convention OS-9 usuelle la plus    }
+           { repandue - simplification honnetement disclosee si un vrai      }
+           { programme revele l inverse. La doc interdit explicitement Y=0.  }
+           ABFirst := M6809_GetD;
+           ABAddr := M6809_X;
+           ABCount := M6809_Y;
+           If ABCount = 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF; { Y=0 est invalide par la vraie doc }
+           End Else Begin
+             For ABI := 0 To ABCount - 1 Do Begin
+               ABBitNum := ABFirst + ABI;
+               ABByteOfs := ABBitNum Div 8;
+               ABBitInByte := 7 - (ABBitNum Mod 8);
+               ABByteVal := M6809_Rd(Word(ABAddr + ABByteOfs));
+               ABByteVal := ABByteVal Or (1 Shl ABBitInByte);
+               M6809_Wr(Word(ABAddr + ABByteOfs), ABByteVal);
+             End;
+           End;
+         End;
+    $14: Begin { F$DelBit(D=1er bit, X=adresse table, Y=nb bits) : libere Y  }
+           { bits a partir du bit D - meme convention que F$AllBit (ordinal   }
+           { $13) juste au-dessus, VERIFIE via la doc NitrOS-9                }
+           { (sourceforge.net/p/nitros9/wiki/F$DelBit). La doc n indique       }
+           { aucun code d erreur en sortie ; Y=0 est deconseille cote appelant}
+           { mais traite ici comme un no-op honnete plutot qu une erreur      }
+           { inventee, faute de precision documentaire. }
+           ABFirst := M6809_GetD;
+           ABAddr := M6809_X;
+           ABCount := M6809_Y;
+           For ABI := 0 To ABCount - 1 Do Begin
+             ABBitNum := ABFirst + ABI;
+             ABByteOfs := ABBitNum Div 8;
+             ABBitInByte := 7 - (ABBitNum Mod 8);
+             ABByteVal := M6809_Rd(Word(ABAddr + ABByteOfs));
+             ABByteVal := ABByteVal And Not (1 Shl ABBitInByte);
+             M6809_Wr(Word(ABAddr + ABByteOfs), ABByteVal);
+           End;
+         End;
+    $17: Begin { F$CRC(X=adresse depart, Y=nb octets, U=accumulateur 3       }
+           { octets) : met a jour l accumulateur - VERIFIE via la doc         }
+           { NitrOS-9 (sourceforge.net/p/nitros9/wiki/F$CRC) pour la          }
+           { convention registre, ET via le catalogue de reference CRC        }
+           { reveng.sourceforge.io/crc-catalogue (entree "CRC-24/OS-9") pour  }
+           { l algorithme reel (voir M6809_CRC24Step ci-dessus) - PAS         }
+           { invente. L appelant doit avoir initialise l accumulateur a       }
+           { $FFFFFF avant le tout premier appel, comme l exige la vraie      }
+           { convention. }
+           CRAcc := (LongInt(M6809_Rd(M6809_U)) Shl 16) Or
+                    (LongInt(M6809_Rd(Word(M6809_U + 1))) Shl 8) Or
+                    LongInt(M6809_Rd(Word(M6809_U + 2)));
+           For CRI := 0 To M6809_Y - 1 Do
+             CRAcc := M6809_CRC24Step(CRAcc, M6809_Rd(Word(M6809_X + CRI)));
+           M6809_Wr(M6809_U, Byte((CRAcc Shr 16) And $FF));
+           M6809_Wr(Word(M6809_U + 1), Byte((CRAcc Shr 8) And $FF));
+           M6809_Wr(Word(M6809_U + 2), Byte(CRAcc And $FF));
+         End;
+    $18: Begin { F$GPrDsc(A=PID demande, X=tampon 512 octets) : copie un     }
+           { descripteur de processus - convention registre VERIFIEE          }
+           { (sourceforge.net/p/nitros9/wiki/F$GPrDsc, avec B=code erreur     }
+           { comme documente sur la page d index System_Calls plutot que le  }
+           { "X=code erreur" incoherent trouve sur la page individuelle).     }
+           { Ce chantier ne modelise qu UN SEUL "processus" logique (le        }
+           { module principal, plus au maximum un niveau de F$Fork            }
+           { synchrone imbrique) : PID=1 EST ce processus, toute autre        }
+           { valeur est une erreur honnete plutot qu un descripteur invente.  }
+           { Le contenu du tampon est un format SIMPLIFIE et auto-coherent     }
+           { (PID/profondeur de fork/taille memoire F$Mem/nom du module       }
+           { principal), PAS le format binaire exact du vrai descripteur de   }
+           { processus Microware (non documente publiquement de facon         }
+           { exploitable malgre plusieurs recherches) - simplification        }
+           { honnetement disclosee, meme discipline que le reste de ce sous-  }
+           { ensemble OS-9. }
+           GPPid := M6809_A;
+           If GPPid <> 1 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else Begin
+             For GPI := 0 To 511 Do M6809_Wr(Word(M6809_X + GPI), 0);
+             M6809_Wr(M6809_X, 1); { PID }
+             M6809_Wr(Word(M6809_X + 1), Byte(OS9_ForkDepth)); { a defaut d age reel }
+             M6809_Wr16(Word(M6809_X + 2), OS9_MemSize); { taille memoire courante (F$Mem) }
+             For GPJ := 1 To Length(OS9_PrimaryName) Do
+               If GPJ <= 32 Then M6809_Wr(Word(M6809_X + 4 + GPJ - 1), Ord(OS9_PrimaryName[GPJ]));
+           End;
+         End;
+    $19: Begin { F$GBlkMp(X=tampon 1024 octets) -> D=taille de bloc, Y=taille}
+           { de la table utilisee - convention registre VERIFIEE               }
+           { (sourceforge.net/p/nitros9/wiki/F$GBlkMp), taille de bloc $2000   }
+           { confirmee par la meme page. Simplification honnetement            }
+           { disclosee : ce coeur n a pas de vraie table de blocs systeme       }
+           { (allocateur "bump" unique OS9_MemSize, voir F$Mem/$07 plus haut)  }
+           { - une table de bits COHERENTE est construite a la volee           }
+           { refletant cet etat reel (1=bloc utilise, 0=bloc libre, meme       }
+           { convention que F$AllBit/F$DelBit ci-dessus DANS ce chantier - la  }
+           { polarite exacte du vrai noyau Microware n a pas pu etre confirmee }
+           { de facon independante), PAS une simulation figee/inventee. }
+           GBBlockSize := $2000;
+           GBNBlocks := (LongInt(OS9_MEM_MAX) + GBBlockSize - 1) Div GBBlockSize;
+           GBNBytes := (GBNBlocks + 7) Div 8;
+           If GBNBytes > 1024 Then GBNBytes := 1024;
+           For GBI := 0 To GBNBytes - 1 Do M6809_Wr(Word(M6809_X + GBI), 0);
+           For GBI := 0 To GBNBlocks - 1 Do
+             If GBI * GBBlockSize < LongInt(OS9_MemSize) Then Begin
+               GBByteOfs := GBI Div 8;
+               GBBitInByte := 7 - (GBI Mod 8);
+               GBByteVal := M6809_Rd(Word(M6809_X + GBByteOfs));
+               GBByteVal := GBByteVal Or (1 Shl GBBitInByte);
+               M6809_Wr(Word(M6809_X + GBByteOfs), GBByteVal);
+             End;
+           M6809_SetD(GBBlockSize);
+           M6809_Y := GBNBytes;
+         End;
+    $1A: Begin { F$GModDr(X=tampon 2048 octets) -> Y=fin des donnees         }
+           { copiees, U=adresse de depart - convention registre VERIFIEE      }
+           { (sourceforge.net/p/nitros9/wiki/F$GModDr). Copie la table de      }
+           { repertoire de modules DEJA existante dans ce chantier            }
+           { (OS9_ModName/Base/Exec/Used, 4 emplacements, voir F$Link/$00     }
+           { plus haut) dans un format simple et auto-coherent (nom sur 32    }
+           { octets + adresse de base sur 2 octets par emplacement utilise) - }
+           { PAS le format binaire exact du vrai noyau Microware (non         }
+           { documente publiquement de facon exploitable) - simplification    }
+           { honnetement disclosee comme le reste de ce sous-ensemble OS-9.   }
+           GDOfs := 0;
+           For GDI := 0 To 3 Do
+             If OS9_ModUsed[GDI] Then Begin
+               GDName := OS9_ModName[GDI];
+               For GDJ := 1 To 32 Do Begin
+                 If GDJ <= Length(GDName) Then GDByteVal := Ord(GDName[GDJ]) Else GDByteVal := 0;
+                 M6809_Wr(Word(M6809_X + GDOfs), GDByteVal);
+                 Inc(GDOfs);
+               End;
+               M6809_Wr16(Word(M6809_X + GDOfs), OS9_ModBase[GDI]);
+               Inc(GDOfs, 2);
+             End;
+           M6809_Y := Word(LongInt(M6809_X) + GDOfs);
+           M6809_U := M6809_X;
+         End;
+    $1B: Begin { F$CpyMem(D=pointeur d image DAT, X=offset/adresse, Y=nb     }
+           { octets, U=tampon destination de l appelant) - convention          }
+           { registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$CpyMem).     }
+           { Simplification honnetement disclosee : ce coeur n a pas de MMU/  }
+           { DAT reel (memoire plate unique M6809_Mem) - D (pointeur d image  }
+           { DAT) est donc ignore et X traite comme une adresse directe dans  }
+           { M6809_Mem, suffisant puisque ce chantier ne modelise qu un seul   }
+           { espace d adressage. }
+           CMCount := M6809_Y;
+           For CMI := 0 To CMCount - 1 Do
+             M6809_Wr(Word(M6809_U + CMI), M6809_Rd(Word(M6809_X + CMI)));
+         End;
+    $1E: Begin { F$Alarm(X=paquet horaire) - convention registre VERIFIEE     }
+           { (sourceforge.net/p/nitros9/wiki/F$Alarm : "sonne la cloche       }
+           { pendant 15 secondes", "un seul alarme a la fois"). Aucune        }
+           { horloge temps reel ni "cloche" materielle n est cablee dans ce    }
+           { coeur texte (contrairement au minuteur SetTimer de Win16, aucune }
+           { notion de tic recurrent livrant un callback differe n existe ici)}
+           { - echec honnete plutot qu un succes simule qui ne sonnerait       }
+           { jamais reellement, meme discipline que le reste de ce fichier.   }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $23: Begin { F$Debug(A=code fonction, 255=demande de redemarrage) -       }
+           { convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/    }
+           { F$Debug : "si A differe de 255, retour sans traitement           }
+           { supplementaire" ; reserve au superutilisateur UserID=0 sur un    }
+           { vrai OS-9). Aucune notion d utilisateur n est modelisee dans cet }
+           { environnement OS-9 "logique" mono-processus (toujours traite     }
+           { comme superutilisateur, faute d alternative). Aucun debogueur    }
+           { interactif n est cable ici (meme discipline "arret propre        }
+           { plutot qu une simulation" que Pe_Halt/Win16_Halt) : A=255 est     }
+           { traite comme une fin de processus honnete, PAS un vrai            }
+           { redemarrage systeme invente. }
+           If M6809_A = 255 Then Begin
+             M6809_Halted := True;
+             M6809_ExitCode := 0;
+           End;
+           { toute autre valeur : retour sans erreur, sans effet - conforme   }
+           { a la vraie specification F$Debug citee ci-dessus. }
+         End;
+    $55: Begin { F$CRCMod(A=0 desactive / <>0 active la verification CRC des }
+           { modules au chargement, krnp2 - voir OS9_CRCModEnabled et son     }
+           { utilisation reelle dans M6809_LoadOS9ModuleAt). CONVENTION       }
+           { REGISTRE NON CONFIRMEE de facon independante contre une source   }
+           { NitrOS-9 authentique malgre plusieurs recherches (aucune page de }
+           { documentation exploitable trouvee pour cet appel krnp2 precis) - }
+           { best-effort raisonnable base sur le style habituel des appels     }
+           { "bascule" de cette famille (registre A=indicateur, ancien etat    }
+           { renvoye en A) - a corriger si un vrai programme revele une        }
+           { convention differente. Contrairement a F$Alarm/F$Debug ci-       }
+           { dessus, l EFFET reel (verification CRC-24 reelle au chargement,   }
+           { pas un simple indicateur cosmetique) est lui bel et bien reel,    }
+           { voir M6809_LoadOS9ModuleAt. }
+           OS9OldCRCMod := OS9_CRCModEnabled;
+           OS9_CRCModEnabled := (M6809_A <> 0);
+           M6809_A := Ord(OS9OldCRCMod);
+         End;
     $84: Begin { I$Open(mode=A, pathlist=X) }
            HostPath := M6809_ReadOS9Name(M6809_X);
            FreeSlot := -1;
@@ -164666,9 +164981,11 @@ Var
   F: File;
   Hdr: Array[0..12] Of Byte;
   BytesRead: Word;
-  Sync, ExecOfs, NameOfs: Word;
+  Sync, ExecOfs, NameOfs, ModSize: Word;
   B: Byte;
   I: LongInt;
+  CrcAcc: LongInt;
+  CrcExpect: LongInt;
 Begin
   M6809_LoadOS9ModuleAt := False;
   ModName := '';
@@ -164679,6 +164996,7 @@ Begin
   If BytesRead < SizeOf(Hdr) Then Begin Close(F); Exit; End;
   Sync := (Word(Hdr[0]) Shl 8) Or Hdr[1];
   If Sync <> $87CD Then Begin Close(F); Exit; End;
+  ModSize := (Word(Hdr[2]) Shl 8) Or Hdr[3];
   NameOfs := (Word(Hdr[4]) Shl 8) Or Hdr[5];
   ExecOfs := (Word(Hdr[9]) Shl 8) Or Hdr[10];
   Seek(F, 0);
@@ -164689,6 +165007,30 @@ Begin
     Inc(I);
   End;
   Close(F);
+  { F$CRCMod/OS9_CRCModEnabled (2026-09-12, demande explicite) : verifie     }
+  { REELLEMENT le CRC-24/OS-9 de fin de module (voir M6809_CRC24Step, meme   }
+  { algorithme que F$CRC, parametres VERIFIES via reveng.sourceforge.io/    }
+  { crc-catalogue) plutot que de se contenter d ignorer les 3 derniers       }
+  { octets comme avant ce chantier. ModSize (champ reel de l en-tete OS-9,   }
+  { offset 2-3) couvre l en-tete + le corps + les 3 octets de CRC ; le CRC   }
+  { porte sur tout SAUF ces 3 derniers octets (meme convention que F$CRC,    }
+  { "l accumulateur mis a jour n inclut pas les 3 derniers octets du         }
+  { module"), le resultat final etant l accumulateur XOR $FFFFFF (xorout    }
+  { reel du CRC-24/OS-9). Desactivable via F$CRCMod (A=0) - actif par        }
+  { defaut, comme le vrai OS-9. Un module dont la taille declaree deborde    }
+  { hors de M6809_Mem ne peut pas etre verifie honnetement : refuse plutot   }
+  { que de risquer une lecture hors bornes. }
+  If OS9_CRCModEnabled And (ModSize >= 4) And
+     (LongInt(Base) + LongInt(ModSize) <= $10000) Then Begin
+    CrcAcc := $FFFFFF;
+    For I := 0 To LongInt(ModSize) - 4 Do
+      CrcAcc := M6809_CRC24Step(CrcAcc, M6809_Mem[Base + I]);
+    CrcAcc := CrcAcc Xor $FFFFFF;
+    CrcExpect := (LongInt(M6809_Mem[Base + LongInt(ModSize) - 3]) Shl 16) Or
+                 (LongInt(M6809_Mem[Base + LongInt(ModSize) - 2]) Shl 8) Or
+                 LongInt(M6809_Mem[Base + LongInt(ModSize) - 1]);
+    If CrcAcc <> CrcExpect Then Exit; { CRC invalide : refus honnete, deja mis a False plus haut }
+  End;
   EntryAddr := Word(Base + ExecOfs);
   ModName := M6809_ReadOS9Name(Word(Base + NameOfs));
   M6809_LoadOS9ModuleAt := True;
@@ -168298,6 +168640,7 @@ Begin NesActive := False;
    OS9_ForkDepth := 0;
    OS9_ForkExitCode := 0;
    OS9_MemSize := 0;
+   OS9_CRCModEnabled := True; { verification CRC-24 active par defaut, comme le vrai OS-9 }
    Loaded := M6809_LoadOS9Module(BinaryPath, EntryAddr16);
    OS9_Active := Loaded;
   End;
