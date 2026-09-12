@@ -7783,6 +7783,10 @@ Var
  { risquerait un debordement de pile reel, une globale est en zone de        }
  { donnees statique, sans risque. }
  Win16_FFStackX, Win16_FFStackY: Array[0..64099] Of Integer;
+ { GDI.EXE SaveDC (2026-09-12, demande explicite) - compteur REEL de          }
+ { niveau d'empilement, voir le commentaire au site d'appel : aucun           }
+ { instantane d'etat n'est reellement sauvegarde (RestoreDC non implante). }
+ Win16_DCSaveLevel: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -77712,6 +77716,7 @@ Begin
  Win16_CurrentViewportExtX := 1; Win16_CurrentViewportExtY := 1; { defaut reel d'un DC neuf }
  Win16_ClipActive := False;
  Win16_ClipX1 := 0; Win16_ClipY1 := 0; Win16_ClipX2 := 0; Win16_ClipY2 := 0;
+ Win16_DCSaveLevel := 0;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -78565,6 +78570,348 @@ Begin
  End;
 End;
 
+{ Trace une "pointe de tarte" (arc elliptique + 2 lignes droites du centre  }
+{ vers chacun des 2 points de l'arc) - utilise par Pie (GDI ordinal 26,     }
+{ 2026-09-12, demande explicite). REEL : reutilise Win16_DrawArc TEL QUEL   }
+{ pour la portion elliptique (composition, pas duplication - contrairement }
+{ a Win16_DrawArc lui-meme qui avait duplique Win16_DrawEllipseBox par       }
+{ prudence ; ici Win16_DrawArc est deja une brique independante sure a       }
+{ appeler), calcule en plus les 2 points REELS du contour aux angles de      }
+{ (X3,Y3)/(X4,Y4) (projection parametrique sur l'ellipse, memes formules    }
+{ que le filtre d'angle de Win16_DrawArc) pour tracer les 2 rayons avec       }
+{ Win16_DrawLine. }
+Procedure Win16_DrawPie(X1, Y1, X2, Y2, X3, Y3, X4, Y4: Integer; Color: Byte);
+Var
+ CX, CY, RX, RY: Integer;
+ A3, A4: Real;
+ BX3, BY3, BX4, BY4: Integer;
+Begin
+ CX := (X1 + X2) Div 2;
+ CY := (Y1 + Y2) Div 2;
+ RX := Abs(X2 - X1) Div 2;
+ RY := Abs(Y2 - Y1) Div 2;
+ If (RX <= 0) Or (RY <= 0) Then Exit;
+ A3 := Win16_ArcTan2(-(Y3 - CY) / RY, (X3 - CX) / RX);
+ A4 := Win16_ArcTan2(-(Y4 - CY) / RY, (X4 - CX) / RX);
+ BX3 := CX + Round(RX * Cos(A3));
+ BY3 := CY - Round(RY * Sin(A3));
+ BX4 := CX + Round(RX * Cos(A4));
+ BY4 := CY - Round(RY * Sin(A4));
+ Win16_DrawArc(X1, Y1, X2, Y2, X3, Y3, X4, Y4, Color);
+ Win16_DrawLine(CX, CY, BX3, BY3, Color);
+ Win16_DrawLine(CX, CY, BX4, BY4, Color);
+End;
+
+{ Trace un rectangle aux coins arrondis (4 segments droits + 4 quarts        }
+{ d'ellipse aux coins, largeur/hauteur d'ellipse X3/Y3) - utilise par         }
+{ RoundRect (GDI ordinal 28, 2026-09-12, demande explicite). REEL :          }
+{ composition de Win16_DrawLine (4 aretes) et Win16_DrawArc (4 coins,        }
+{ chacun sa propre petite boite englobante centree sur le coin reel) - le    }
+{ sens anti-horaire de chaque quart est choisi pour boucler correctement     }
+{ autour de la forme entiere (haut-droit 0->90, haut-gauche 90->180,         }
+{ bas-gauche 180->270, bas-droit 270->360), coherent avec le sens par         }
+{ defaut deja etabli par Win16_DrawArc/Pie ci-dessus. Rayons bornes           }
+{ (clampes) a la moitie du rectangle si l'ellipse de coin demandee est       }
+{ plus grande que le rectangle lui-meme - defensif, un vrai GDI fait aussi   }
+{ implicitement quelque chose d'equivalent plutot que de produire une        }
+{ forme degenere/qui se chevauche. }
+Procedure Win16_DrawRoundRect(X1, Y1, X2, Y2, EllW, EllH: Integer; Color: Byte);
+Var
+ RX, RY: Integer;
+Begin
+ If X1 > X2 Then Begin RX := X1; X1 := X2; X2 := RX; End;
+ If Y1 > Y2 Then Begin RX := Y1; Y1 := Y2; Y2 := RX; End;
+ RX := Abs(EllW) Div 2;
+ RY := Abs(EllH) Div 2;
+ If 2 * RX > (X2 - X1) Then RX := (X2 - X1) Div 2;
+ If 2 * RY > (Y2 - Y1) Then RY := (Y2 - Y1) Div 2;
+ If (RX <= 0) Or (RY <= 0) Then Begin
+  Win16_DrawLine(X1, Y1, X2, Y1, Color); Win16_DrawLine(X2, Y1, X2, Y2, Color);
+  Win16_DrawLine(X2, Y2, X1, Y2, Color); Win16_DrawLine(X1, Y2, X1, Y1, Color);
+  Exit;
+ End;
+ { Aretes droites, entre les coins arrondis. }
+ Win16_DrawLine(X1 + RX, Y1, X2 - RX, Y1, Color);           { haut }
+ Win16_DrawLine(X2, Y1 + RY, X2, Y2 - RY, Color);           { droite }
+ Win16_DrawLine(X2 - RX, Y2, X1 + RX, Y2, Color);           { bas }
+ Win16_DrawLine(X1, Y2 - RY, X1, Y1 + RY, Color);           { gauche }
+ { Coin haut-droit : angle 0 (point droit) -> 90 (point haut). }
+ Win16_DrawArc(X2 - 2*RX, Y1, X2, Y1 + 2*RY,
+  X2, Y1 + RY, X2 - RX, Y1, Color);
+ { Coin haut-gauche : angle 90 (point haut) -> 180 (point gauche). }
+ Win16_DrawArc(X1, Y1, X1 + 2*RX, Y1 + 2*RY,
+  X1 + RX, Y1, X1, Y1 + RY, Color);
+ { Coin bas-gauche : angle 180 (point gauche) -> 270 (point bas). }
+ Win16_DrawArc(X1, Y2 - 2*RY, X1 + 2*RX, Y2,
+  X1, Y2 - RY, X1 + RX, Y2, Color);
+ { Coin bas-droit : angle 270 (point bas) -> 360/0 (point droit). }
+ Win16_DrawArc(X2 - 2*RX, Y2 - 2*RY, X2, Y2,
+  X2 - RX, Y2, X2, Y2 - RY, Color);
+End;
+
+{ Remplit un rectangle avec un "raster operation" (ROP3) - utilise par       }
+{ PatBlt (GDI ordinal 29, 2026-09-12, demande explicite). REEL pour les      }
+{ 3 codes qui ne dependent d'AUCUNE couleur de brosse (BLACKNESS/            }
+{ WHITENESS/DSTINVERT sont des VRAIES operations independantes du            }
+{ pinceau, constantes ROP3 verifiees, valeurs Windows bien connues) ;        }
+{ PATCOPY/PATINVERT necessiteraient la VRAIE couleur du pinceau courant,     }
+{ qui n'est suivie NULLE PART dans ce sous-ensemble (CreateSolidBrush/       }
+{ SelectObject restent des handles synthetiques, Stage 5/6 - meme            }
+{ limitation deja disclosee partout ailleurs) : PATCOPY retombe sur le        }
+{ noir fixe (0) deja utilise par LineTo/Ellipse/Rectangle/FloodFill (meme     }
+{ convention, pas une regression) ; PATINVERT est approxime comme            }
+{ DSTINVERT (inversion reelle des pixels) plutot qu'un XOR avec un pinceau   }
+{ absent qui ne ferait litteralement rien - une approximation honnetement    }
+{ disclosee vaut mieux qu'un "succes" silencieux sans aucun effet visible.   }
+Procedure Win16_PatBlt(X, Y, W, H: Integer; Rop: LongInt);
+Var
+ PX, PY: Integer;
+Begin
+ If W < 0 Then Begin X := X + W + 1; W := -W; End;
+ If H < 0 Then Begin Y := Y + H + 1; H := -H; End;
+ For PY := Y To Y + H - 1 Do
+  For PX := X To X + W - 1 Do
+   Case Rop Of
+    $00000042: Emu_VidSetPixel(PX, PY, 0);                              { BLACKNESS }
+    $00FF0062: Emu_VidSetPixel(PX, PY, 15);                             { WHITENESS }
+    $00550009, $005A0049: Emu_VidSetPixel(PX, PY, Emu_VidGetPixel(PX, PY) Xor $FF); { DSTINVERT, PATINVERT (approxime) }
+    Else Emu_VidSetPixel(PX, PY, 0);                                    { PATCOPY et tout le reste : noir fixe, disclose }
+   End;
+End;
+
+{ Police bitmap 5x7 MAISON (2026-09-12, TextOut/GDI ordinal 33, demande     }
+{ explicite) - PAS une reproduction de la vraie police "MS Sans Serif"      }
+{ ou "System" de Windows 3.x (dont ce projet n'a aucune copie authentique   }
+{ a reproduire fidelement) : un dessin ORIGINAL, simple et lisible, de ce   }
+{ sous-ensemble, disclose comme tel plutot que pretendu authentique - une   }
+{ police est une donnee cosmetique arbitraire, pas un fait verifiable       }
+{ contre une source (contrairement aux ordinaux/conventions de registre     }
+{ eux-memes, qui restent verifies separement). Couvre A-Z (les minuscules   }
+{ sont RAMENEES aux memes glyphes majuscules, simplification disclosee),    }
+{ 0-9 et l'espace - tout autre caractere est rendu comme un espace (blanc). }
+{ 5 bits utiles par octet (bit 4 = colonne la plus a gauche), 7 octets      }
+{ (lignes) par glyphe, 37 glyphes (0..25=A-Z, 26..35=0-9, 36=espace). }
+Const
+ Win16_Font5x7: Array[0..36, 0..6] Of Byte = (
+  (14,17,17,31,17,17,17),  { A }
+  (30,17,17,30,17,17,30),  { B }
+  (15,16,16,16,16,16,15),  { C }
+  (30,17,17,17,17,17,30),  { D }
+  (31,16,16,30,16,16,31),  { E }
+  (31,16,16,30,16,16,16),  { F }
+  (15,16,16,23,17,17,15),  { G }
+  (17,17,17,31,17,17,17),  { H }
+  (31,4,4,4,4,4,31),       { I }
+  (7,2,2,2,2,18,12),       { J }
+  (17,18,20,24,20,18,17),  { K }
+  (16,16,16,16,16,16,31),  { L }
+  (17,27,21,17,17,17,17),  { M }
+  (17,25,21,19,17,17,17),  { N }
+  (14,17,17,17,17,17,14),  { O }
+  (30,17,17,30,16,16,16),  { P }
+  (14,17,17,17,21,18,13),  { Q }
+  (30,17,17,30,20,18,17),  { R }
+  (15,16,16,14,1,1,30),    { S }
+  (31,4,4,4,4,4,4),        { T }
+  (17,17,17,17,17,17,14),  { U }
+  (17,17,17,17,17,10,4),   { V }
+  (17,17,17,21,21,27,17),  { W }
+  (17,17,10,4,10,17,17),   { X }
+  (17,17,10,4,4,4,4),      { Y }
+  (31,1,2,4,8,16,31),      { Z }
+  (14,17,19,21,25,17,14),  { 0 }
+  (4,12,4,4,4,4,14),       { 1 }
+  (14,17,1,2,4,8,31),      { 2 }
+  (30,1,2,14,1,1,30),      { 3 }
+  (2,6,10,18,31,2,2),      { 4 }
+  (31,16,30,1,1,17,14),    { 5 }
+  (6,8,16,30,17,17,14),    { 6 }
+  (31,1,2,4,4,4,4),        { 7 }
+  (14,17,17,14,17,17,14),  { 8 }
+  (14,17,17,15,1,2,12),    { 9 }
+  (0,0,0,0,0,0,0)          { espace / tout caractere non couvert }
+ );
+
+{ Traduit un caractere ASCII vers un index dans Win16_Font5x7 (36=espace,   }
+{ y compris pour tout caractere non couvert - jamais d'index hors bornes). }
+Function Win16_Font5x7Index(Ch: Char): Integer;
+Begin
+ Ch := UpCase(Ch);
+ If (Ch >= 'A') And (Ch <= 'Z') Then Win16_Font5x7Index := Ord(Ch) - Ord('A')
+ Else If (Ch >= '0') And (Ch <= '9') Then Win16_Font5x7Index := 26 + Ord(Ch) - Ord('0')
+ Else Win16_Font5x7Index := 36;
+End;
+
+{ Trace UN caractere avec Win16_Font5x7 - utilise par Win16_DrawTextOut      }
+{ ci-dessous. Fond REELLEMENT peint en premier avec BkColor (mode OPAQUE,   }
+{ le seul mode reellement modelise, voir SetBkMode/$2) avant le texte en    }
+{ FgColor - meme convention de conversion COLORREF->octet $13 (seul        }
+{ l'octet bas compte) que FloodFill/PatBlt. }
+Procedure Win16_DrawChar5x7(X, Y: Integer; Ch: Char; FgColor, BgColor: Byte);
+Var
+ Idx, Row, Col, Bits: Integer;
+Begin
+ Idx := Win16_Font5x7Index(Ch);
+ For Row := 0 To 6 Do Begin
+  Bits := Win16_Font5x7[Idx, Row];
+  For Col := 0 To 4 Do Begin
+   If (Bits And (16 Shr Col)) <> 0 Then
+    Emu_VidSetPixel(X + Col, Y + Row, FgColor)
+   Else
+    Emu_VidSetPixel(X + Col, Y + Row, BgColor);
+  End;
+ End;
+End;
+
+{ Trace une CHAINE via Win16_DrawChar5x7 - utilise par TextOut (GDI          }
+{ ordinal 33, 2026-09-12, demande explicite). Avancement par caractere =    }
+{ 5 (largeur du glyphe) + 1 (espacement fixe) + CharExtra - REUTILISE       }
+{ REELLEMENT Win16_CurrentTextCharExtra/SetTextCharacterExtra (SetTextColor }
+{ ordinal 9, precedemment stockees mais jamais consommees faute de tout     }
+{ chemin de rendu textuel - maintenant reellement consommees ici, ce qui    }
+{ rend ces deux appels plus fonctionnels retroactivement, sans changer      }
+{ leur propre code). }
+Procedure Win16_DrawTextOut(X, Y: Integer; Const S: String);
+Var
+ I, PenX: Integer;
+ FgColor, BgColor: Byte;
+Begin
+ FgColor := Byte(Win16_CurrentTextColor And $FF);
+ BgColor := Byte(Win16_CurrentBkColor And $FF);
+ PenX := X;
+ For I := 1 To Length(S) Do Begin
+  Win16_DrawChar5x7(PenX, Y, S[I], FgColor, BgColor);
+  PenX := PenX + 5 + 1 + Win16_CurrentTextCharExtra;
+ End;
+End;
+
+{ Tampon de travail GLOBAL (pas local) partage par BitBlt/StretchBlt         }
+{ (GDI ordinaux 34/35, 2026-09-12, demande explicite) - lit TOUJOURS la      }
+{ source ENTIERE dans ce tampon avant d'ecrire quoi que ce soit dans la      }
+{ destination, ce qui evite toute corruption si source et destination se    }
+{ chevauchent (meme framebuffer EmuVideo partage - ce sous-ensemble n'a      }
+{ qu'UN SEUL contexte de peripherique reel, voir plus bas) quel que soit    }
+{ le sens du chevauchement, exactement comme un vrai memmove 2D. Meme        }
+{ raison de taille (320x200=64000, marge incluse) et meme choix "globale    }
+{ plutot que locale" que Win16_FFStackX/Y (evite tout risque de              }
+{ depassement de pile d'appel reelle). }
+Var
+ Win16_BlitBuf: Array[0..64099] Of Byte;
+
+{ Copie un rectangle de pixels (BitBlt, GDI ordinal 34, 2026-09-12,          }
+{ demande explicite). CE SOUS-ENSEMBLE N'A QU'UN SEUL VRAI CONTEXTE DE       }
+{ PERIPHERIQUE (Win16_ActiveDCWindow, mono-DC - hdc/hdcSrc sont deja des     }
+{ handles synthetiques non distingues nulle part ailleurs dans ce fichier,  }
+{ voir GetDC/$66 Stage 5) : source et destination sont donc TOUJOURS le      }
+{ MEME framebuffer EmuVideo - pas une simplification supplementaire, c'est  }
+{ la consequence directe et deja etablie du modele mono-DC de ce chantier.  }
+{ ROP3 verifies (constantes Windows bien connues, SRCCOPY/SRCAND/SRCPAINT/  }
+{ SRCINVERT/NOTSRCCOPY sont tous independants de toute couleur de pinceau,  }
+{ REELLEMENT corrects) - BLACKNESS/WHITENESS/DSTINVERT reutilisent la       }
+{ meme logique que PatBlt/$29 (memes constantes). }
+Procedure Win16_BitBlt(DestX, DestY, W, H, SrcX, SrcY: Integer; Rop: LongInt);
+Var
+ PX, PY: Integer;
+ Idx: LongInt;
+Begin
+ If (W <= 0) Or (H <= 0) Then Exit;
+ If LongInt(W) * LongInt(H) > 64100 Then Exit; { garde-fou memoire, jamais atteint pour une seule fenetre }
+ Idx := 0;
+ For PY := 0 To H - 1 Do
+  For PX := 0 To W - 1 Do Begin
+   Win16_BlitBuf[Idx] := Emu_VidGetPixel(SrcX + PX, SrcY + PY);
+   Inc(Idx);
+  End;
+ Idx := 0;
+ For PY := 0 To H - 1 Do
+  For PX := 0 To W - 1 Do Begin
+   Case Rop Of
+    $00000042: Emu_VidSetPixel(DestX + PX, DestY + PY, 0);                          { BLACKNESS }
+    $00FF0062: Emu_VidSetPixel(DestX + PX, DestY + PY, 15);                         { WHITENESS }
+    $00550009: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) Xor $FF); { DSTINVERT }
+    $00660046: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) Xor Win16_BlitBuf[Idx]); { SRCINVERT }
+    $008800C6: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) And Win16_BlitBuf[Idx]); { SRCAND }
+    $00EE0086: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) Or Win16_BlitBuf[Idx]);  { SRCPAINT }
+    $00330008: Emu_VidSetPixel(DestX + PX, DestY + PY, Win16_BlitBuf[Idx] Xor $FF); { NOTSRCCOPY }
+    Else Emu_VidSetPixel(DestX + PX, DestY + PY, Win16_BlitBuf[Idx]);               { SRCCOPY et par defaut }
+   End;
+   Inc(Idx);
+  End;
+End;
+
+{ Copie un rectangle de pixels avec mise a l'echelle (StretchBlt, GDI        }
+{ ordinal 35, 2026-09-12, demande explicite) - echantillonnage au plus       }
+{ proche voisin (pas d'interpolation, une simplification honnetement         }
+{ raisonnable pour un mode $13 a 256 couleurs indexees ou interpoler des     }
+{ INDICES de palette n'aurait de toute facon aucun sens colorimetrique).     }
+{ Meme raisonnement mono-DC/tampon-avant-ecriture que Win16_BitBlt           }
+{ ci-dessus (source lue ENTIEREMENT dans Win16_BlitBuf avant toute           }
+{ ecriture). }
+Procedure Win16_StretchBlt(DestX, DestY, DestW, DestH, SrcX, SrcY, SrcW, SrcH: Integer; Rop: LongInt);
+Var
+ PX, PY, SX, SY: Integer;
+ Idx: LongInt;
+Begin
+ If (DestW <= 0) Or (DestH <= 0) Or (SrcW <= 0) Or (SrcH <= 0) Then Exit;
+ If LongInt(SrcW) * LongInt(SrcH) > 64100 Then Exit; { garde-fou memoire }
+ Idx := 0;
+ For PY := 0 To SrcH - 1 Do
+  For PX := 0 To SrcW - 1 Do Begin
+   Win16_BlitBuf[Idx] := Emu_VidGetPixel(SrcX + PX, SrcY + PY);
+   Inc(Idx);
+  End;
+ For PY := 0 To DestH - 1 Do Begin
+  SY := (PY * SrcH) Div DestH;
+  For PX := 0 To DestW - 1 Do Begin
+   SX := (PX * SrcW) Div DestW;
+   Idx := LongInt(SY) * SrcW + SX;
+   Case Rop Of
+    $00000042: Emu_VidSetPixel(DestX + PX, DestY + PY, 0);
+    $00FF0062: Emu_VidSetPixel(DestX + PX, DestY + PY, 15);
+    $00550009: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) Xor $FF);
+    $00660046: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) Xor Win16_BlitBuf[Idx]);
+    $008800C6: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) And Win16_BlitBuf[Idx]);
+    $00EE0086: Emu_VidSetPixel(DestX + PX, DestY + PY, Emu_VidGetPixel(DestX + PX, DestY + PY) Or Win16_BlitBuf[Idx]);
+    $00330008: Emu_VidSetPixel(DestX + PX, DestY + PY, Win16_BlitBuf[Idx] Xor $FF);
+    Else Emu_VidSetPixel(DestX + PX, DestY + PY, Win16_BlitBuf[Idx]);
+   End;
+  End;
+ End;
+End;
+
+{ Trace une ligne brisee ouverte (Polyline) ou fermee (Polygon, ajoute un   }
+{ segment de retour au point 0) via N appels a Win16_DrawLine - utilise    }
+{ par Polygon/Polyline (GDI ordinaux 36/37, 2026-09-12, demande explicite).}
+{ REEL, mais SANS remplissage pour Polygon (le BRUSH reste synthetique,     }
+{ meme limitation deja disclosee pour Rectangle/Ellipse/RoundRect - un      }
+{ contour ferme suffit a distinguer la forme). Points deja en pixels        }
+{ ABSOLUS (conversion CLIENT->ABSOLUS faite au site d'appel, comme les      }
+{ autres primitives de dessin). }
+Procedure Win16_DrawPolyLine(Const PtX, PtY: Array Of Integer; Count: Integer;
+                              Closed: Boolean; Color: Byte);
+Var
+ I: Integer;
+Begin
+ If Count < 2 Then Exit;
+ For I := 0 To Count - 2 Do
+  Win16_DrawLine(PtX[I], PtY[I], PtX[I + 1], PtY[I + 1], Color);
+ If Closed Then
+  Win16_DrawLine(PtX[Count - 1], PtY[Count - 1], PtX[0], PtY[0], Color);
+End;
+
+{ Remplit un rectangle avec la couleur noire fixe (FillRgn, GDI ordinal 40, }
+{ 2026-09-12, demande explicite) - reutilise Win16_PatBlt/PATCOPY tel        }
+{ quel (meme convention "noir fixe" deja etablie, aucun pinceau REEL         }
+{ trace nulle part dans ce sous-ensemble). Voir le commentaire au site       }
+{ d'appel pour la limite disclosee sur hRgn (aucune vraie table de           }
+{ regions nommees n'existe - seul le rectangle de clip mono-DC est           }
+{ resolvable). }
+Procedure Win16_FillRgn(X1, Y1, X2, Y2: Integer);
+Begin
+ If (X2 <= X1) Or (Y2 <= Y1) Then Exit;
+ Win16_PatBlt(X1, Y1, X2 - X1, Y2 - Y1, $00F00021); { PATCOPY }
+End;
+
 { Appelle SYNCHRONE la VRAIE WNDPROC 16 bits du programme (dispatchee par   }
 { DispatchMessage) - reutilise Dpmi_RunRealProc TEL QUEL (meme motif exact  }
 { que les rappels DPMI mode reel : empiler les arguments convention Pascal, }
@@ -78807,6 +79154,20 @@ Var
  ArcX3, ArcY3, ArcX4, ArcY4: SmallInt;
  FFLo, FFHi: Word;
  FFColor: LongInt;
+ { GDI.EXE Pie/RoundRect/PatBlt/SaveDC (2026-09-12, demande explicite). }
+ PBMinX, PBMinY, PBMaxX, PBMaxY, PBEndX, PBEndY: Integer;
+ { GDI.EXE SetPixel/OffsetClipRgn/TextOut/BitBlt/StretchBlt (2026-09-12,    }
+ { demande explicite). }
+ TOStrSeg, TOStrOfs, TOCount: Word;
+ TOStr: String;
+ TOI: Integer;
+ SBWSrc, SBHSrc: SmallInt;
+ { GDI.EXE Polygon/Polyline/Escape/RestoreDC/FillRgn (2026-09-12, demande   }
+ { explicite). }
+ POLPtsSeg, POLPtsOfs: Word;
+ POLCount, POLI: Integer;
+ POLPtX, POLPtY: Array[0..255] Of Integer;
+ RDCLevel: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -79981,6 +80342,16 @@ Begin
     P.CPU.Regs.DX := Word((GBKOld Shr 16) And $FFFF);
     ArgWords := 3;
    End;
+   2: Begin
+    { SetBkMode(hdc, nBkMode):int (mode precedent) - ordinal VERIFIE via    }
+    { gdi.exe16.spec (2 mots). Rendu GDI reel HORS DE PORTEE (mode de       }
+    { fond non modelise, le fond blanc est deja pose une fois par           }
+    { Win16_DrawWindowFrame a la creation) - simplification DOCUMENTEE :    }
+    { rapporte toujours OPAQUE (2) comme mode precedent, jamais verifie par }
+    { un code de dessin normal (valeur de retour rarement exploitee). }
+    P.CPU.Regs.AX := 2;
+    ArgWords := 2;
+   End;
    3: Begin
     { SetMapMode(hdc, nMapMode):int (mode precedent) - ordinal VERIFIE via   }
     { gdi.exe16.spec (2 mots). Stocke et retourne VRAIMENT l'ancien mode      }
@@ -79996,6 +80367,19 @@ Begin
     GMMOld := Win16_CurrentMapMode;
     Win16_CurrentMapMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     P.CPU.Regs.AX := GMMOld;
+    ArgWords := 2;
+   End;
+   4: Begin
+    { SetROP2(hdc, nDrawMode):int (mode precedent) - ordinal VERIFIE via    }
+    { gdi.exe16.spec (2 mots). BOGUE REEL corrige (2026-08-30, voir          }
+    { Win16_CurrentROP2 ci-dessus) : stocke desormais REELLEMENT le mode     }
+    { demande (mono-DC) - Win16_DrawLine/DrawEllipseBox l'appliquent         }
+    { reellement (R2_NOT/R2_XORPEN inversent le pixel au lieu de l'ecraser, }
+    { permettant a une appli de retracer le MEME trait pour l'effacer sans  }
+    { connaitre la couleur de fond - le mecanisme reel utilise par les       }
+    { aiguilles d'horloge sans scintillement). }
+    P.CPU.Regs.AX := Win16_CurrentROP2;
+    Win16_CurrentROP2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     ArgWords := 2;
    End;
    5: Begin
@@ -80220,124 +80604,6 @@ Begin
     P.CPU.Regs.DX := Word(SVEOldY);
     ArgWords := 5;
    End;
-   80: Begin
-    { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }
-    { gdi.exe16.spec ; les constantes nIndex (HORZRES=8, VERTRES=10,        }
-    { BITSPIXEL=12, PLANES=14, NUMCOLORS=24, LOGPIXELSX=88,                 }
-    { LOGPIXELSY=90, TECHNOLOGY=2) verifiees via wingdi.h (Wine, source     }
-    { publique). Chantier Stage 6 (2026-08-29, sur demande explicite de     }
-    { l'utilisateur - "mode graphique par defaut") : ces valeurs           }
-    { correspondent maintenant au VRAI mode video reellement active         }
-    { (Emu_VidSetMode($13,P) au demarrage - 320x200x256 couleurs, voir      }
-    { ShowEmulatorPanel) plutot qu'a une resolution choisie pour la grille  }
-    { de texte - les coordonnees GDI (TextOut/Rectangle/LineTo/...) que le  }
-    { programme calcule a partir de ces valeurs correspondent ainsi         }
-    { DIRECTEMENT aux pixels reels du framebuffer, sans mise a l'echelle.   }
-    { Index non couvert -> 0 (honnete, non modelise) - SAUF HORZSIZE/       }
-    { VERTSIZE (dimensions PHYSIQUES en mm) : un VRAI pilote ne retourne    }
-    { JAMAIS 0 pour ces 2 index (bogue reel trouve au Stage 5 - WIN16RUN a  }
-    { montre CLOCK.EXE diviser par cette valeur dans son calcul d'echelle,  }
-    { plantant sur une VRAIE division par zero cote 8086 des que le 0 par   }
-    { defaut etait utilise comme denominateur). }
-    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    Case GDIIdx Of
-     2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
-     4:  P.CPU.Regs.AX := 210;  { HORZSIZE (mm) }
-     6:  P.CPU.Regs.AX := 160;  { VERTSIZE (mm) }
-     8:  P.CPU.Regs.AX := 320;  { HORZRES - mode $13 reel }
-     10: P.CPU.Regs.AX := 200;  { VERTRES - mode $13 reel }
-     12: P.CPU.Regs.AX := 8;    { BITSPIXEL - mode $13 = 8 bits/pixel }
-     14: P.CPU.Regs.AX := 1;    { PLANES }
-     24: P.CPU.Regs.AX := 256;  { NUMCOLORS - mode $13 = 256 couleurs }
-     88: P.CPU.Regs.AX := 96;   { LOGPIXELSX }
-     90: P.CPU.Regs.AX := 96;   { LOGPIXELSY }
-     Else P.CPU.Regs.AX := 0;
-    End;
-    ArgWords := 2;
-   End;
-   2: Begin
-    { SetBkMode(hdc, nBkMode):int (mode precedent) - ordinal VERIFIE via    }
-    { gdi.exe16.spec (2 mots). Rendu GDI reel HORS DE PORTEE (mode de       }
-    { fond non modelise, le fond blanc est deja pose une fois par           }
-    { Win16_DrawWindowFrame a la creation) - simplification DOCUMENTEE :    }
-    { rapporte toujours OPAQUE (2) comme mode precedent, jamais verifie par }
-    { un code de dessin normal (valeur de retour rarement exploitee). }
-    P.CPU.Regs.AX := 2;
-    ArgWords := 2;
-   End;
-   4: Begin
-    { SetROP2(hdc, nDrawMode):int (mode precedent) - ordinal VERIFIE via    }
-    { gdi.exe16.spec (2 mots). BOGUE REEL corrige (2026-08-30, voir          }
-    { Win16_CurrentROP2 ci-dessus) : stocke desormais REELLEMENT le mode     }
-    { demande (mono-DC) - Win16_DrawLine/DrawEllipseBox l'appliquent         }
-    { reellement (R2_NOT/R2_XORPEN inversent le pixel au lieu de l'ecraser, }
-    { permettant a une appli de retracer le MEME trait pour l'effacer sans  }
-    { connaitre la couleur de fond - le mecanisme reel utilise par les       }
-    { aiguilles d'horloge sans scintillement). }
-    P.CPU.Regs.AX := Win16_CurrentROP2;
-    Win16_CurrentROP2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    ArgWords := 2;
-   End;
-   45: Begin
-    { SelectObject(hdc, hObj):hObj - ordinal VERIFIE via gdi.exe16.spec.    }
-    { Rendu GDI reel HORS DE PORTEE (Stage 6) - simplification DOCUMENTEE :}
-    { retourne juste un handle synthetique non-nul (l'objet "precedemment  }
-    { selectionne" reel importe rarement au code appelant, qui l'utilise   }
-    { seulement pour le re-selectionner plus tard en fin de dessin). }
-    P.CPU.Regs.AX := 1;
-    ArgWords := 2;
-   End;
-   61: Begin
-    { CreatePen(nStyle, nWidth, crColor):HPEN - ordinal VERIFIE via         }
-    { gdi.exe16.spec (2 mots signes + 1 LONG = 4 mots). Meme               }
-    { simplification que CreateSolidBrush ci-dessous : handle synthetique  }
-    { non-nul, aucun VRAI stylo dessinable. }
-    P.CPU.Regs.AX := 1;
-    ArgWords := 4;
-   End;
-   66: Begin
-    { CreateSolidBrush(crColor):HBRUSH - ordinal VERIFIE via                }
-    { gdi.exe16.spec (prend un LONG = 2 mots). Rendu GDI reel HORS DE       }
-    { PORTEE (Stage 6) - simplification DOCUMENTEE : handle synthetique     }
-    { non-nul, aucun VRAI pinceau dessinable. }
-    P.CPU.Regs.AX := 1;
-    ArgWords := 2;
-   End;
-   69: Begin
-    { DeleteObject(hObj):bool - ordinal VERIFIE via gdi.exe16.spec. Meme    }
-    { simplification que les autres "objets GDI synthetiques" ci-dessus :  }
-    { rapporte toujours un succes, aucun VRAI objet a liberer. }
-    P.CPU.Regs.AX := 1;
-    ArgWords := 1;
-   End;
-   87: Begin
-    { GetStockObject(nIndex):handle - ordinal VERIFIE via gdi.exe16.spec.  }
-    { Meme simplification : handle synthetique non-nul quel que soit       }
-    { l'objet standard demande (pinceau/stylo/police systeme). }
-    P.CPU.Regs.AX := 1;
-    ArgWords := 1;
-   End;
-   20: Begin
-    { MoveTo(hdc,X,Y):DWORD - ordinal VERIFIE via gdi.exe16.spec (2 mots     }
-    { SIGNES). Stage 6c (2026-08-30) : pose la position "stylo" courante     }
-    { (Win16_PenX/Y, mono-DC - voir BeginPaint) - coordonnees CLIENT          }
-    { converties en pixels ABSOLUS du framebuffer via Win16_ActiveDCWindow    }
-    { (+1 pour sauter le cadre 1px deja dessine par Win16_DrawWindowFrame).   }
-    { Retour (position precedente packee) non modelise = 0, jamais verifie   }
-    { par un code de dessin normal. }
-    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
-    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
-    If Win16_ActiveDCWindow >= 0 Then Begin
-     Win16_PenX := Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1;
-     Win16_PenY := Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1;
-    End;
-    Win16_GdiTraceLog('MoveTo client=(' + IntToStr(GdiX1) + ',' +
-     IntToStr(GdiY1) + ') -> pen=(' + IntToStr(Win16_PenX) + ',' +
-     IntToStr(Win16_PenY) + ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
-    P.CPU.Regs.DX := 0;
-    P.CPU.Regs.AX := 0;
-    ArgWords := 3;
-   End;
    19: Begin
     { LineTo(hdc,X,Y):bool - ordinal VERIFIE via gdi.exe16.spec (2 mots      }
     { SIGNES). Stage 6c : trace un VRAI segment de droite (Win16_DrawLine,   }
@@ -80363,6 +80629,27 @@ Begin
      Win16_GdiTraceLog('LineTo IGNORE (ActiveDCWindow<0) client=(' +
       IntToStr(GdiX1) + ',' + IntToStr(GdiY1) + ')');
     P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   20: Begin
+    { MoveTo(hdc,X,Y):DWORD - ordinal VERIFIE via gdi.exe16.spec (2 mots     }
+    { SIGNES). Stage 6c (2026-08-30) : pose la position "stylo" courante     }
+    { (Win16_PenX/Y, mono-DC - voir BeginPaint) - coordonnees CLIENT          }
+    { converties en pixels ABSOLUS du framebuffer via Win16_ActiveDCWindow    }
+    { (+1 pour sauter le cadre 1px deja dessine par Win16_DrawWindowFrame).   }
+    { Retour (position precedente packee) non modelise = 0, jamais verifie   }
+    { par un code de dessin normal. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     Win16_PenX := Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1;
+     Win16_PenY := Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1;
+    End;
+    Win16_GdiTraceLog('MoveTo client=(' + IntToStr(GdiX1) + ',' +
+     IntToStr(GdiY1) + ') -> pen=(' + IntToStr(Win16_PenX) + ',' +
+     IntToStr(Win16_PenY) + ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
+    P.CPU.Regs.DX := 0;
+    P.CPU.Regs.AX := 0;
     ArgWords := 3;
    End;
    21, 22: Begin
@@ -80445,6 +80732,39 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 9;
    End;
+   24, 27: Begin
+    { Ellipse(hdc,X1,Y1,X2,Y2):bool / Rectangle(hdc,X1,Y1,X2,Y2):bool -      }
+    { ordinaux VERIFIES via gdi.exe16.spec (4 mots SIGNES chacun, meme        }
+    { signature). Stage 6c : trace un VRAI contour (Win16_DrawEllipseBox     }
+    { ou 4 Win16_DrawLine pour Rectangle), coordonnees CLIENT converties en   }
+    { pixels ABSOLUS comme MoveTo/LineTo ci-dessus. Couleur fixe noire (0),   }
+    { meme rationale que LineTo. Aucun remplissage (le BRUSH reste            }
+    { synthetique, Stage 5) - un contour suffit a distinguer un cadran        }
+    { d'horloge circulaire. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    Win16_GdiTraceLog('Ellipse/Rect ord=' + IntToStr(Ordinal) + ' client=(' +
+     IntToStr(GdiX1) + ',' + IntToStr(GdiY1) + ')-(' + IntToStr(GdiX2) + ',' +
+     IntToStr(GdiY2) + ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY2);
+     If Ordinal = 24 Then
+      Win16_DrawEllipseBox(GdiX1, GdiY1, GdiX2, GdiY2, 0)
+     Else Begin
+      Win16_DrawLine(GdiX1, GdiY1, GdiX2, GdiY1, 0);
+      Win16_DrawLine(GdiX2, GdiY1, GdiX2, GdiY2, 0);
+      Win16_DrawLine(GdiX2, GdiY2, GdiX1, GdiY2, 0);
+      Win16_DrawLine(GdiX1, GdiY2, GdiX1, GdiY1, 0);
+     End;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
    25: Begin
     { FloodFill(hdc,X,Y,crColor):bool - ordinal VERIFIE via gdi.exe16.spec   }
     { (1 mot + 1 mot + 1 mot + 1 LONG = 5 mots, LONG poids-fort d'abord       }
@@ -80481,38 +80801,391 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 5;
    End;
-   24, 27: Begin
-    { Ellipse(hdc,X1,Y1,X2,Y2):bool / Rectangle(hdc,X1,Y1,X2,Y2):bool -      }
-    { ordinaux VERIFIES via gdi.exe16.spec (4 mots SIGNES chacun, meme        }
-    { signature). Stage 6c : trace un VRAI contour (Win16_DrawEllipseBox     }
-    { ou 4 Win16_DrawLine pour Rectangle), coordonnees CLIENT converties en   }
-    { pixels ABSOLUS comme MoveTo/LineTo ci-dessus. Couleur fixe noire (0),   }
-    { meme rationale que LineTo. Aucun remplissage (le BRUSH reste            }
-    { synthetique, Stage 5) - un contour suffit a distinguer un cadran        }
-    { d'horloge circulaire. }
-    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
-    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
-    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
-    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
-    Win16_GdiTraceLog('Ellipse/Rect ord=' + IntToStr(Ordinal) + ' client=(' +
-     IntToStr(GdiX1) + ',' + IntToStr(GdiY1) + ')-(' + IntToStr(GdiX2) + ',' +
-     IntToStr(GdiY2) + ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
+   26: Begin
+    { Pie(hdc,X1,Y1,X2,Y2,X3,Y3,X4,Y4):bool - ordinal VERIFIE via            }
+    { gdi.exe16.spec (8 mots SIGNES = 9 mots avec hdc, meme signature        }
+    { qu'Arc/$23). REEL : voir Win16_DrawPie ci-dessus (arc + 2 rayons).      }
+    { Memes conventions que Arc (coordonnees CLIENT->ABSOLUES, couleur        }
+    { noire fixe, sens anti-horaire par defaut). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    ArcX4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    ArcY4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
     If Win16_ActiveDCWindow >= 0 Then Begin
      GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
      GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
      GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX2);
      GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY2);
-     If Ordinal = 24 Then
-      Win16_DrawEllipseBox(GdiX1, GdiY1, GdiX2, GdiY2, 0)
-     Else Begin
-      Win16_DrawLine(GdiX1, GdiY1, GdiX2, GdiY1, 0);
-      Win16_DrawLine(GdiX2, GdiY1, GdiX2, GdiY2, 0);
-      Win16_DrawLine(GdiX2, GdiY2, GdiX1, GdiY2, 0);
-      Win16_DrawLine(GdiX1, GdiY2, GdiX1, GdiY1, 0);
-     End;
+     ArcX3 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX3);
+     ArcY3 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY3);
+     ArcX4 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX4);
+     ArcY4 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY4);
+     Win16_DrawPie(GdiX1, GdiY1, GdiX2, GdiY2, ArcX3, ArcY3, ArcX4, ArcY4, 0);
     End;
     P.CPU.Regs.AX := 1;
+    ArgWords := 9;
+   End;
+   28: Begin
+    { RoundRect(hdc,X1,Y1,X2,Y2,X3,Y3):bool - ordinal VERIFIE via            }
+    { gdi.exe16.spec (6 mots SIGNES = 7 mots avec hdc). REEL : voir           }
+    { Win16_DrawRoundRect ci-dessus (4 aretes + 4 coins elliptiques). X3,Y3   }
+    { = largeur/hauteur PLEINES de l'ellipse de coin (pas le rayon), meme     }
+    { convention reelle documentee. Couleur noire fixe, meme rationale que    }
+    { Rectangle/Ellipse. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY2);
+     Win16_DrawRoundRect(GdiX1, GdiY1, GdiX2, GdiY2, ArcX3, ArcY3, 0);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 7;
+   End;
+   29: Begin
+    { PatBlt(hdc,X,Y,nWidth,nHeight,dwRop):bool - ordinal VERIFIE via         }
+    { gdi.exe16.spec (1 mot hdc + 4 mots SIGNES + 1 LONG = 7 mots, LONG       }
+    { poids-fort d'abord comme SetBkColor/$1). REEL pour BLACKNESS/           }
+    { WHITENESS/DSTINVERT (voir Win16_PatBlt ci-dessus - independants du      }
+    { pinceau), approxime honnetement pour PATCOPY/PATINVERT (aucun           }
+    { pinceau REEL trace nulle part dans ce sous-ensemble). Borne              }
+    { DEFENSIVEMENT au rectangle de la fenetre active, meme discipline que    }
+    { FloodFill/$25 (jamais tout l'ecran partage EmuVideo). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10))); { largeur }
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));  { hauteur }
+    FFHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FFLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FFColor := (LongInt(FFHi) Shl 16) Or LongInt(FFLo); { dwRop }
+    { Normalise un nWidth/nHeight NEGATIF (rare mais legal cote API reelle)  }
+    { AVANT le bornage defensif ci-dessous, pour que celui-ci opere toujours }
+    { sur un rectangle bien ordonne. }
+    If ArcX3 < 0 Then Begin GdiX1 := SmallInt(GdiX1 + ArcX3 + 1); ArcX3 := -ArcX3; End;
+    If ArcY3 < 0 Then Begin GdiY1 := SmallInt(GdiY1 + ArcY3 + 1); ArcY3 := -ArcY3; End;
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     PBMinX := Win16_WindowX[Win16_ActiveDCWindow] + 1;
+     PBMinY := Win16_WindowY[Win16_ActiveDCWindow] + 1;
+     PBMaxX := Win16_WindowX[Win16_ActiveDCWindow] + Win16_WindowW[Win16_ActiveDCWindow] - 2;
+     PBMaxY := Win16_WindowY[Win16_ActiveDCWindow] + Win16_WindowH[Win16_ActiveDCWindow] - 2;
+     If GdiX1 < PBMinX Then GdiX1 := PBMinX;
+     If GdiY1 < PBMinY Then GdiY1 := PBMinY;
+     PBEndX := GdiX1 + ArcX3 - 1; If PBEndX > PBMaxX Then PBEndX := PBMaxX;
+     PBEndY := GdiY1 + ArcY3 - 1; If PBEndY > PBMaxY Then PBEndY := PBMaxY;
+     If (PBEndX >= GdiX1) And (PBEndY >= GdiY1) Then
+      Win16_PatBlt(GdiX1, GdiY1, PBEndX - GdiX1 + 1, PBEndY - GdiY1 + 1, FFColor);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 7;
+   End;
+   30: Begin
+    { SaveDC(hdc):int - ordinal VERIFIE via gdi.exe16.spec (1 mot). REEL     }
+    { pour le CONTRAT de valeur de retour (un vrai SaveDC renvoie un niveau  }
+    { d'empilement croissant, >0) - Win16_DCSaveLevel incremente et renvoye   }
+    { fidelement. En revanche, AUCUN instantane d'etat n'est reellement       }
+    { sauvegarde (clip/objets selectionnes/MapMode/etc.) puisque             }
+    { RestoreDC/$31 n'a pas ete demande dans ce lot et ne peut donc rien       }
+    { restaurer de toute facon - disclose honnetement : ce compteur "compte   }
+    { les sauvegardes" reellement, mais ne peut encore rien "restaurer". }
+    Inc(Win16_DCSaveLevel);
+    P.CPU.Regs.AX := Word(Win16_DCSaveLevel);
+    ArgWords := 1;
+   End;
+   31: Begin
+    { SetPixel(hdc,X,Y,crColor):COLORREF - ordinal VERIFIE via                }
+    { gdi.exe16.spec (1 mot + 1 mot + 1 LONG = 5 mots, LONG poids-fort         }
+    { d'abord comme SetBkColor/$1). REEL : pose VRAIMENT le pixel (seul       }
+    { l'octet bas de crColor compte, mode $13 a 256 couleurs indexees, meme   }
+    { convention que FloodFill/PatBlt), coordonnees CLIENT converties en      }
+    { pixels ABSOLUS comme LineTo/Ellipse. Retourne la couleur REELLEMENT     }
+    { ecrite (identique a crColor ici, aucun repli de palette modelise). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    FFHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FFLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FFColor := (LongInt(FFHi) Shl 16) Or LongInt(FFLo);
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     Emu_VidSetPixel(GdiX1, GdiY1, Byte(FFColor And $FF));
+    End;
+    P.CPU.Regs.AX := Word(FFColor And $FFFF);
+    P.CPU.Regs.DX := Word((FFColor Shr 16) And $FFFF);
     ArgWords := 5;
+   End;
+   32: Begin
+    { OffsetClipRgn(hdc,X,Y):int - ordinal VERIFIE via gdi.exe16.spec (3      }
+    { mots). REEL quand un clip est actif (deplace VRAIMENT              }
+    { Win16_ClipX1/Y1/X2/Y2 - meme rectangle mono-DC qu'Exclude/               }
+    { IntersectClipRect, $21/$22) ; sans effet si aucun clip n'est encore     }
+    { actif (rien a deplacer). Retourne toujours SIMPLEREGION(2), meme        }
+    { discipline honnete que $21/$22 (ce sous-ensemble ne suit jamais une     }
+    { vraie region complexe). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ClipActive Then Begin
+     Win16_ClipX1 := Win16_ClipX1 + GdiX1; Win16_ClipX2 := Win16_ClipX2 + GdiX1;
+     Win16_ClipY1 := Win16_ClipY1 + GdiY1; Win16_ClipY2 := Win16_ClipY2 + GdiY1;
+    End;
+    P.CPU.Regs.AX := 2; { SIMPLEREGION }
+    ArgWords := 3;
+   End;
+   33: Begin
+    { TextOut(hdc,X,Y,lpString,nCount):bool - ordinal VERIFIE via             }
+    { gdi.exe16.spec (1 mot + 1 mot + 1 pointeur LOIN (2 mots) + 1 mot = 6    }
+    { mots, pointeur LOIN pousse segment-d'abord comme tout LONG dans ce      }
+    { fichier). REEL : voir Win16_DrawTextOut/Win16_Font5x7 ci-dessus - la    }
+    { PREMIERE vraie sortie de texte de tout ce sous-ensemble GDI/Win16,      }
+    { qui rend enfin reellement utiles SetTextColor/$9 et                    }
+    { SetTextCharacterExtra/$8 (stockees depuis leur propre lot mais          }
+    { jamais consommees jusqu'ici, faute de tout chemin de rendu textuel).    }
+    { Police MAISON disclosee (voir Win16_Font5x7), pas une reproduction      }
+    { de la vraie police Windows 3.x. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    TOStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    TOStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    TOCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If TOCount > 255 Then TOCount := 255;
+    TOStr := '';
+    For TOI := 0 To TOCount - 1 Do
+     TOStr := TOStr + Chr(Emu_ReadByte(P.CPU, TOStrSeg, Word(TOStrOfs + TOI)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     Win16_DrawTextOut(GdiX1, GdiY1, TOStr);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   34: Begin
+    { BitBlt(hdc,X,Y,nWidth,nHeight,hdcSrc,XSrc,YSrc,dwRop):bool - ordinal   }
+    { VERIFIE via gdi.exe16.spec (7 mots + 1 LONG = 9 mots avec hdc = 10      }
+    { mots au total, LONG poids-fort d'abord). REEL : voir Win16_BitBlt       }
+    { ci-dessus - hdc/hdcSrc sont IGNORES (ce sous-ensemble mono-DC n'a       }
+    { qu'un seul contexte de peripherique reel, Win16_ActiveDCWindow -        }
+    { source et destination sont donc TOUJOURS le meme framebuffer, la        }
+    { consequence directe et deja etablie de ce modele, pas une                }
+    { simplification supplementaire). Coordonnees CLIENT converties en        }
+    { pixels ABSOLUS comme les autres appels de dessin. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18)));
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16))); { largeur }
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14))); { hauteur }
+    { hdcSrc a SP+12, ignore (mono-DC, voir commentaire ci-dessus). }
+    ArcX4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10))); { XSrc }
+    ArcY4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));  { YSrc }
+    FFHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FFLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FFColor := (LongInt(FFHi) Shl 16) Or LongInt(FFLo); { dwRop }
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     ArcX4 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX4);
+     ArcY4 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY4);
+     Win16_BitBlt(GdiX1, GdiY1, ArcX3, ArcY3, ArcX4, ArcY4, FFColor);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 10;
+   End;
+   35: Begin
+    { StretchBlt(hdc,XDest,YDest,WDest,HDest,hdcSrc,XSrc,YSrc,WSrc,HSrc,      }
+    { dwRop):bool - ordinal VERIFIE via gdi.exe16.spec (9 mots + 1 LONG =     }
+    { 11 mots avec hdc = 12 mots au total). REEL : voir Win16_StretchBlt      }
+    { ci-dessus - meme raisonnement mono-DC que BitBlt/$34 (hdc/hdcSrc        }
+    { ignores). Echantillonnage au plus proche voisin (disclose, voir la      }
+    { procedure). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 24)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 22)));
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20))); { WDest }
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18))); { HDest }
+    { hdcSrc a SP+16, ignore (mono-DC, voir commentaire ci-dessus). }
+    ArcX4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14))); { XSrc }
+    ArcY4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12))); { YSrc }
+    SBWSrc := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    SBHSrc := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    FFHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FFLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FFColor := (LongInt(FFHi) Shl 16) Or LongInt(FFLo); { dwRop }
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     ArcX4 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX4);
+     ArcY4 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY4);
+     Win16_StretchBlt(GdiX1, GdiY1, ArcX3, ArcY3, ArcX4, ArcY4, SBWSrc, SBHSrc, FFColor);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 12;
+   End;
+   36, 37: Begin
+    { Polygon(hdc,lpPoints,nCount):bool (36) / Polyline(hdc,lpPoints,        }
+    { nCount):bool (37) - ordinaux VERIFIES via gdi.exe16.spec (1 mot + 1     }
+    { pointeur LOIN (2 mots, segment pousse d'abord comme tout LONG dans      }
+    { ce fichier) + 1 mot = 4 mots chacun, meme signature). REEL : lit les    }
+    { nCount points (structure POINT standard, x puis y, 2 mots chacun) au   }
+    { pointeur LOIN fourni, coordonnees CLIENT converties en pixels           }
+    { ABSOLUS comme les autres primitives, puis trace via                    }
+    { Win16_DrawPolyLine - Polygon/36 ferme la forme (segment de retour au    }
+    { point 0), Polyline/37 ne la ferme PAS, la seule vraie difference        }
+    { documentee entre les deux. Nombre de points plafonne a 256 (garde-fou   }
+    { memoire raisonnable, disclose - un polygone d'interface classique en    }
+    { compte tres peu). }
+    POLPtsSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    POLPtsOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    POLCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If POLCount > 256 Then POLCount := 256;
+    If (POLCount > 0) And (Win16_ActiveDCWindow >= 0) Then Begin
+     For POLI := 0 To POLCount - 1 Do Begin
+      POLPtX[POLI] := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg, Word(POLPtsOfs + POLI * 4)));
+      POLPtY[POLI] := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg, Word(POLPtsOfs + POLI * 4 + 2)));
+      POLPtX[POLI] := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + POLPtX[POLI]);
+      POLPtY[POLI] := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + POLPtY[POLI]);
+     End;
+     Win16_DrawPolyLine(POLPtX, POLPtY, POLCount, Ordinal = 36, 0);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   38: Begin
+    { Escape(hdc,nEscape,nCount,lpInData,lpOutData):int - ordinal VERIFIE    }
+    { via gdi.exe16.spec (3 mots + 2 pointeurs LOIN = 7 mots). Aucun code     }
+    { d'echappement specifique a un peripherique n'est reellement implante   }
+    { ici (framebuffer VGA synthetique, pas un vrai pilote d'imprimante/      }
+    { peripherique special) - retourne 0, exactement le comportement REEL     }
+    { documente d'un pilote qui ne supporte PAS le code demande (0 est la     }
+    { reponse standard documentee pour un escape non supporte, pas une        }
+    { valeur inventee - un vrai pilote GDI fait de meme). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 7;
+   End;
+   39: Begin
+    { RestoreDC(hdc,nSavedDC):bool - ordinal VERIFIE via gdi.exe16.spec (2   }
+    { mots SIGNES). Contrepartie de SaveDC/$30 : puisqu'aucun instantane      }
+    { d'etat n'est reellement sauvegarde (deja disclose pour SaveDC), rien    }
+    { ne peut etre reellement restaure - mais le CONTRAT de niveau            }
+    { d'empilement, lui, est suivi pour de vrai (Win16_DCSaveLevel            }
+    { decremente correctement selon la convention documentee : nSavedDC=-1   }
+    { restaure le dernier niveau, nSavedDC positif restaure un niveau         }
+    { ABSOLU specifique et retire tout ce qui est au-dessus) - echoue          }
+    { proprement si le niveau demande est invalide. }
+    RDCLevel := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If RDCLevel < 0 Then RDCLevel := Win16_DCSaveLevel + RDCLevel + 1
+    Else If RDCLevel = 0 Then RDCLevel := -1; { 0 : jamais valide, force l echec }
+    If (RDCLevel < 1) Or (RDCLevel > Win16_DCSaveLevel) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     Win16_DCSaveLevel := RDCLevel - 1;
+     P.CPU.Regs.AX := 1;
+    End;
+    ArgWords := 2;
+   End;
+   40: Begin
+    { FillRgn(hdc,hRgn,hBrush):bool - ordinal VERIFIE via gdi.exe16.spec (3  }
+    { mots). hRgn/hBrush sont IGNORES : ce sous-ensemble n'a AUCUNE vraie     }
+    { table d'objets region nommes (CreateRectRgn et consorts non             }
+    { implantes) - seul le rectangle de clip mono-DC (Win16_ClipX1/Y1/X2/     }
+    { Y2, Exclude/IntersectClipRect $21/$22) est une forme de "region"         }
+    { reellement representee dans ce chantier, donc hRgn est traite comme     }
+    { y faisant reference par convention disclosee - remplit ce rectangle     }
+    { (Win16_FillRgn, reutilise PatBlt/PATCOPY, meme "noir fixe" deja           }
+    { etabli faute de VRAIE couleur de pinceau suivie). Echoue si aucun        }
+    { clip n'est actif (rien a remplir). }
+    If Win16_ClipActive And (Win16_ActiveDCWindow >= 0) Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + Win16_ClipX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + Win16_ClipY2);
+     Win16_FillRgn(GdiX1, GdiY1, GdiX2, GdiY2);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   45: Begin
+    { SelectObject(hdc, hObj):hObj - ordinal VERIFIE via gdi.exe16.spec.    }
+    { Rendu GDI reel HORS DE PORTEE (Stage 6) - simplification DOCUMENTEE :}
+    { retourne juste un handle synthetique non-nul (l'objet "precedemment  }
+    { selectionne" reel importe rarement au code appelant, qui l'utilise   }
+    { seulement pour le re-selectionner plus tard en fin de dessin). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   61: Begin
+    { CreatePen(nStyle, nWidth, crColor):HPEN - ordinal VERIFIE via         }
+    { gdi.exe16.spec (2 mots signes + 1 LONG = 4 mots). Meme               }
+    { simplification que CreateSolidBrush ci-dessous : handle synthetique  }
+    { non-nul, aucun VRAI stylo dessinable. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   66: Begin
+    { CreateSolidBrush(crColor):HBRUSH - ordinal VERIFIE via                }
+    { gdi.exe16.spec (prend un LONG = 2 mots). Rendu GDI reel HORS DE       }
+    { PORTEE (Stage 6) - simplification DOCUMENTEE : handle synthetique     }
+    { non-nul, aucun VRAI pinceau dessinable. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   69: Begin
+    { DeleteObject(hObj):bool - ordinal VERIFIE via gdi.exe16.spec. Meme    }
+    { simplification que les autres "objets GDI synthetiques" ci-dessus :  }
+    { rapporte toujours un succes, aucun VRAI objet a liberer. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   80: Begin
+    { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }
+    { gdi.exe16.spec ; les constantes nIndex (HORZRES=8, VERTRES=10,        }
+    { BITSPIXEL=12, PLANES=14, NUMCOLORS=24, LOGPIXELSX=88,                 }
+    { LOGPIXELSY=90, TECHNOLOGY=2) verifiees via wingdi.h (Wine, source     }
+    { publique). Chantier Stage 6 (2026-08-29, sur demande explicite de     }
+    { l'utilisateur - "mode graphique par defaut") : ces valeurs           }
+    { correspondent maintenant au VRAI mode video reellement active         }
+    { (Emu_VidSetMode($13,P) au demarrage - 320x200x256 couleurs, voir      }
+    { ShowEmulatorPanel) plutot qu'a une resolution choisie pour la grille  }
+    { de texte - les coordonnees GDI (TextOut/Rectangle/LineTo/...) que le  }
+    { programme calcule a partir de ces valeurs correspondent ainsi         }
+    { DIRECTEMENT aux pixels reels du framebuffer, sans mise a l'echelle.   }
+    { Index non couvert -> 0 (honnete, non modelise) - SAUF HORZSIZE/       }
+    { VERTSIZE (dimensions PHYSIQUES en mm) : un VRAI pilote ne retourne    }
+    { JAMAIS 0 pour ces 2 index (bogue reel trouve au Stage 5 - WIN16RUN a  }
+    { montre CLOCK.EXE diviser par cette valeur dans son calcul d'echelle,  }
+    { plantant sur une VRAIE division par zero cote 8086 des que le 0 par   }
+    { defaut etait utilise comme denominateur). }
+    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Case GDIIdx Of
+     2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
+     4:  P.CPU.Regs.AX := 210;  { HORZSIZE (mm) }
+     6:  P.CPU.Regs.AX := 160;  { VERTSIZE (mm) }
+     8:  P.CPU.Regs.AX := 320;  { HORZRES - mode $13 reel }
+     10: P.CPU.Regs.AX := 200;  { VERTRES - mode $13 reel }
+     12: P.CPU.Regs.AX := 8;    { BITSPIXEL - mode $13 = 8 bits/pixel }
+     14: P.CPU.Regs.AX := 1;    { PLANES }
+     24: P.CPU.Regs.AX := 256;  { NUMCOLORS - mode $13 = 256 couleurs }
+     88: P.CPU.Regs.AX := 96;   { LOGPIXELSX }
+     90: P.CPU.Regs.AX := 96;   { LOGPIXELSY }
+     Else P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 2;
+   End;
+   87: Begin
+    { GetStockObject(nIndex):handle - ordinal VERIFIE via gdi.exe16.spec.  }
+    { Meme simplification : handle synthetique non-nul quel que soit       }
+    { l'objet standard demande (pinceau/stylo/police systeme). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
