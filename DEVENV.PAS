@@ -7747,6 +7747,23 @@ Var
  { Dpmi_LastRunRealProcIter ci-dessus). }
  Win16_DefWindowProcPaintCount: LongInt;
  Win16_BeginPaintCount: LongInt;
+ { API Presse-papiers Windows 3.x (USER.EXE, 2026-09-12, demande explicite) }
+ { - reutilise le VRAI presse-papiers de l hote (Win_OpenClipboard/etc.,     }
+ { deja declares pour le pont WINOLDAP DOS et PMWIN.DLL OS/2 LX - voir       }
+ { project_devenv_win32pe.md/project_devenv_os2lx.md), memes principes.      }
+ { Win16_ClipOpenHwnd = fenetre qui a le presse-papiers ouvert (OpenClipboard}
+ { /CloseClipboard) ; Win16_ClipOwnerHwnd = proprietaire REEL (mis a jour    }
+ { seulement par EmptyClipboard, comme le vrai Windows - PAS par             }
+ { OpenClipboard) ; Win16_ClipViewerHwnd = premiere fenetre de la chaine de  }
+ { visualisation (SetClipboardViewer/ChangeClipboardChain). Contrairement a  }
+ { l emulateur OS/2 LX (console pur, sans fenetre reelle), Win16 a une VRAIE }
+ { file de messages (Win16_PostMessage) : SetClipboardData poste un vrai     }
+ { WM_DRAWCLIPBOARD (0x0308) au visualiseur enregistre, ChangeClipboardChain }
+ { un vrai WM_CHANGECBCHAIN (0x030D) - pas une simulation, PMWIN ne pouvait  }
+ { pas le faire faute d infrastructure de fenetre. }
+ Win16_ClipOpenHwnd    : Word;
+ Win16_ClipOwnerHwnd   : Word;
+ Win16_ClipViewerHwnd  : Word;
  { Diagnostic temporaire (2026-08-30) : trace pas-a-pas des instructions   }
  { REELLES executees a l'interieur d'un appel Win16_CallWndProc - invisible}
  { autrement (voir Dpmi_LastRunRealProcIter) puisque WIN16RUN.LOG n'avance }
@@ -77558,6 +77575,9 @@ Begin
  Win16_PenY := 0;
  Win16_DefWindowProcPaintCount := 0;
  Win16_BeginPaintCount := 0;
+ Win16_ClipOpenHwnd := 0;
+ Win16_ClipOwnerHwnd := 0;
+ Win16_ClipViewerHwnd := 0;
  Win16_WndProcTraceOn := False;
  Win16_WndProcTraceDone := False;
  Win16_GdiTraceOn := False;
@@ -78473,6 +78493,14 @@ Var
  IFDx, IFDy: SmallInt;
  SWHWndArg: Word;
  SWWIdx: Integer;
+ { API Presse-papiers Windows 3.x (2026-09-12, demande explicite). }
+ CBHWndArg, CBFormat, CBHMem, CBOldViewer, CBRemoveHwnd, CBNewNextHwnd: Word;
+ CBSize, CBI, CBHostMem: LongInt;
+ CBPtr: PClipByteArr;
+ { AnsiString, PAS le String[255] par defaut de ce fichier (mode $H-) -     }
+ { meme raison exacte que ClipStr dans Lx_DoDosCall/PMWIN (ligne ~82839) : }
+ { un texte de presse-papiers reel depasse tres facilement 255 caracteres. }
+ CBStr: AnsiString;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -79451,6 +79479,177 @@ Begin
     { structure de menu reellement modifiee. }
     P.CPU.Regs.AX := 1;
     ArgWords := 6;
+   End;
+   { API Presse-papiers Windows 3.x (2026-09-12, demande explicite) -        }
+   { ordinaux VERIFIES via user.exe16.spec. Reutilise le VRAI presse-papiers }
+   { de l hote (Win_OpenClipboard/etc., deja declares pour le pont WINOLDAP  }
+   { DOS et PMWIN.DLL OS/2 LX - voir project_devenv_os2lx.md) - seul         }
+   { CF_TEXT(1) est pris en charge (meme portee honnetement disclosee que    }
+   { PMWIN), le "handle" Win16 restant un decalage direct dans le segment    }
+   { automatique (meme convention que GlobalAlloc/GlobalLock, ordinaux       }
+   { 15/18 plus haut). Contrairement a PMWIN (console OS/2 LX pure, sans     }
+   { fenetre reelle), Win16 a une VRAIE file de messages (Win16_PostMessage) }
+   { : SetClipboardData/ChangeClipboardChain postent de VRAIS               }
+   { WM_DRAWCLIPBOARD (0x0308)/WM_CHANGECBCHAIN (0x030D) au visualiseur       }
+   { enregistre, pas une simulation. }
+   137: Begin { OpenClipboard(HWND hWndNewOwner):BOOL - 1 mot. Ouvre le VRAI  }
+    { presse-papiers de l hote - meme approche exacte que PMWIN.WinOpenClipbrd}
+    { /ordinal 111 pour OS/2 LX (reste ouvert jusqu au CloseClipboard/         }
+    { WinCloseClipbrd correspondant ; Empty/Set/Get suivants exigent qu il     }
+    { le soit deja, comme le vrai Windows). }
+    CBHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If Win_OpenClipboard(0) Then Begin
+     P.CPU.Regs.AX := 1;
+     Win16_ClipOpenHwnd := CBHWndArg;
+    End;
+    {$ENDIF}
+    ArgWords := 1;
+   End;
+   138: Begin { CloseClipboard():BOOL - sans argument. }
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If Win_CloseClipboard Then P.CPU.Regs.AX := 1;
+    {$ENDIF}
+    Win16_ClipOpenHwnd := 0;
+   End;
+   139: Begin { EmptyClipboard():BOOL - sans argument. Rend le presse-papiers }
+    { "proprietaire" a la fenetre qui l a ouvert - SEUL EmptyClipboard change }
+    { le proprietaire, PAS OpenClipboard (comportement reel de l API, voir   }
+    { Win16_ClipOwnerHwnd/Win16_ClipOpenHwnd ci-dessus). }
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If Win_EmptyClipboard Then Begin
+     P.CPU.Regs.AX := 1;
+     Win16_ClipOwnerHwnd := Win16_ClipOpenHwnd;
+    End;
+    {$ENDIF}
+   End;
+   140: P.CPU.Regs.AX := Win16_ClipOwnerHwnd; { GetClipboardOwner():HWND, sans argument }
+   141: Begin { SetClipboardData(UINT wFormat, HANDLE hMem):HANDLE - 2 mots.  }
+    { Retourne le VRAI hMem passe en entree en cas de succes (comportement   }
+    { reel de l API, PAS un simple booleen), 0 sinon. La chaine est lue      }
+    { octet par octet depuis le "handle" Win16 (decalage direct dans le      }
+    { segment automatique) jusqu au terminateur nul, puis copiee dans un      }
+    { VRAI bloc GlobalAlloc de l hote avant d etre placee sur le VRAI         }
+    { presse-papiers Windows - meme technique exacte que le pont WINOLDAP    }
+    { DOS et PMWIN.WinSetClipbrdData (OS/2 LX). }
+    CBFormat := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CBHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If CBFormat = 1 Then Begin
+     CBStr := '';
+     CBI := CBHMem;
+     While (Emu_ReadByte(P.CPU, Win16_StackSeg, Word(CBI)) <> 0) And (Length(CBStr) < 32768) Do Begin
+      CBStr := CBStr + Chr(Emu_ReadByte(P.CPU, Win16_StackSeg, Word(CBI)));
+      Inc(CBI);
+     End;
+     CBHostMem := Win_GlobalAlloc(GMEM_MOVEABLE_WINOLDAP, Length(CBStr) + 1);
+     If CBHostMem <> 0 Then Begin
+      CBPtr := PClipByteArr(Win_GlobalLock(CBHostMem));
+      If CBPtr <> Nil Then Begin
+       For CBI := 1 To Length(CBStr) Do CBPtr^[CBI - 1] := Ord(CBStr[CBI]);
+       CBPtr^[Length(CBStr)] := 0;
+       Win_GlobalUnlock(CBHostMem);
+       If Win_SetClipboardData(CF_TEXT_WINOLDAP, CBHostMem) <> 0 Then P.CPU.Regs.AX := CBHMem;
+      End;
+     End;
+    End;
+    {$ENDIF}
+    If (P.CPU.Regs.AX <> 0) And (Win16_ClipViewerHwnd <> 0) Then
+     Win16_PostMessage(Win16_ClipViewerHwnd, $0308, 0, 0, 0);
+    ArgWords := 2;
+   End;
+   142: Begin { GetClipboardData(UINT wFormat):HANDLE - 1 mot. Seul CF_TEXT(1)}
+    { est pris en charge - la VRAIE donnee texte de l hote est copiee dans   }
+    { un bloc FRAICHEMENT alloue du tas Win16 (meme allocateur bump que      }
+    { GlobalAlloc/ordinal 15 plus haut), ce decalage etant le "handle"        }
+    { renvoye (meme convention que partout ailleurs dans ce chantier). }
+    CBFormat := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If CBFormat = 1 Then Begin
+     CBHostMem := Win_GetClipboardData(CF_TEXT_WINOLDAP);
+     If CBHostMem <> 0 Then Begin
+      CBSize := Win_GlobalSize(CBHostMem);
+      If CBSize > 32768 Then CBSize := 32768;
+      CBPtr := PClipByteArr(Win_GlobalLock(CBHostMem));
+      If CBPtr <> Nil Then Begin
+       If (LongInt(Win16_HeapNext) + CBSize + 1) <= LongInt(Win16_HeapLimit) Then Begin
+        CBHMem := Win16_HeapNext;
+        For CBI := 0 To CBSize - 1 Do Emu_WriteByte(P.CPU, Win16_StackSeg, Word(CBHMem + CBI), CBPtr^[CBI]);
+        Emu_WriteByte(P.CPU, Win16_StackSeg, Word(LongInt(CBHMem) + CBSize), 0);
+        Win16_HeapNext := Win16_HeapNext + Word(CBSize) + 1;
+        P.CPU.Regs.AX := CBHMem;
+       End;
+       Win_GlobalUnlock(CBHostMem);
+      End;
+     End;
+    End;
+    {$ENDIF}
+    ArgWords := 1;
+   End;
+   143: Begin { CountClipboardFormats():int - sans argument. Seul CF_TEXT est }
+    { modelise - 1 si present sur le presse-papiers reel de l hote, 0 sinon  }
+    { (reponse honnete plutot qu un decompte invente). }
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If Win_GetClipboardData(CF_TEXT_WINOLDAP) <> 0 Then P.CPU.Regs.AX := 1;
+    {$ENDIF}
+   End;
+   144: Begin { EnumClipboardFormats(UINT wFormat):UINT - 1 mot. Semantique   }
+    { reelle : wFormat=0 demande le PREMIER format, une valeur non nulle     }
+    { demande le format SUIVANT (0 si plus aucun) - seul CF_TEXT(1) existe    }
+    { jamais ici, donc 0->1 si disponible, toute autre valeur->0. }
+    CBFormat := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If CBFormat = 0 Then Begin
+     If Win_GetClipboardData(CF_TEXT_WINOLDAP) <> 0 Then P.CPU.Regs.AX := 1;
+    End;
+    {$ENDIF}
+    ArgWords := 1;
+   End;
+   147: Begin { SetClipboardViewer(HWND hWndNewViewer):HWND - 1 mot. Renvoie  }
+    { l ANCIEN visualiseur (comportement reel de l API, PAS un booleen) -     }
+    { chaine a un seul maillon ici (meme simplification que PMWIN/OS2 LX,     }
+    { LX_ClipViewerHwnd), suffisant puisqu aucun programme reel observe n a    }
+    { jamais eu besoin de plus d un visualiseur enregistre a la fois. }
+    CBHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CBOldViewer := Win16_ClipViewerHwnd;
+    Win16_ClipViewerHwnd := CBHWndArg;
+    P.CPU.Regs.AX := CBOldViewer;
+    ArgWords := 1;
+   End;
+   148: P.CPU.Regs.AX := Win16_ClipViewerHwnd; { GetClipboardViewer():HWND, sans argument }
+   149: Begin { ChangeClipboardChain(HWND hWndRemove, HWND hWndNewNext):BOOL  }
+    { - 2 mots. Chaine a un seul maillon (voir SetClipboardViewer/ordinal    }
+    { 147 ci-dessus) : si la fenetre a retirer EST le visualiseur enregistre,}
+    { le "maillon suivant" (potentiellement 0) le remplace ; sinon rien a    }
+    { faire (elle n etait pas dans la chaine que nous suivons) - renvoie      }
+    { toujours succes, comme le fait reellement Windows meme si la fenetre   }
+    { n etait pas trouvee. Notifie le nouveau premier maillon d un vrai       }
+    { WM_CHANGECBCHAIN (0x030D). }
+    CBRemoveHwnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CBNewNextHwnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_ClipViewerHwnd = CBRemoveHwnd Then Begin
+     Win16_ClipViewerHwnd := CBNewNextHwnd;
+     If Win16_ClipViewerHwnd <> 0 Then
+      Win16_PostMessage(Win16_ClipViewerHwnd, $030D, CBRemoveHwnd, CBNewNextHwnd, 0);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   193: Begin { IsClipboardFormatAvailable(UINT wFormat):BOOL - 1 mot. Seul   }
+    { CF_TEXT(1) est modelise. }
+    CBFormat := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := 0;
+    {$IFDEF WINDOWS}
+    If (CBFormat = 1) And (Win_GetClipboardData(CF_TEXT_WINOLDAP) <> 0) Then P.CPU.Regs.AX := 1;
+    {$ENDIF}
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
@@ -81069,60 +81268,76 @@ End;
 { longue chaine "If DllName=X Then If FuncName=Y Then..." par une recherche  }
 { dans cette table suivie d un Case ApiId Of. Cle = "DLLNAME!FuncName"        }
 { (DLL en MAJUSCULES - UpCaseStr deja applique cote appelant - fonction      }
-{ SENSIBLE a la casse, comme le vrai GetProcAddress). }
+{ SENSIBLE a la casse, comme le vrai GetProcAddress). Table TRIEE par ordre  }
+{ ordinal de chaine (2026-09-12, demande explicite - avec plusieurs          }
+{ milliers d API prevues a terme, une recherche lineaire deviendrait un      }
+{ vrai cout) + recherche dichotomique dans Pe_LookupApi - AJOUTER UNE        }
+{ NOUVELLE ENTREE EXIGE DE LA REINSERER A SA PLACE ALPHABETIQUE (par DLL     }
+{ d abord puisque "KERNEL32.DLL!" &lt; "OLEAUT32.DLL!" &lt; "USER32.DLL!" trie      }
+{ deja les groupes correctement, puis par nom de fonction), PAS en fin de    }
+{ tableau, sous peine de casser la recherche dichotomique silencieusement. }
 Const
  PE_API_COUNT = 41;
  PE_ApiNames: Array[1..PE_API_COUNT] Of String[48] = (
-  'KERNEL32.DLL!ExitProcess',              { 1 }
-  'KERNEL32.DLL!GetStdHandle',             { 2 }
-  'KERNEL32.DLL!WriteFile',                { 3 }
-  'KERNEL32.DLL!GetLastError',             { 4 }
-  'KERNEL32.DLL!SetLastError',             { 5 }
-  'KERNEL32.DLL!GetCurrentProcessId',      { 6 }
-  'KERNEL32.DLL!GetCurrentThreadId',       { 7 }
-  'KERNEL32.DLL!GetCurrentProcess',        { 8 }
-  'KERNEL32.DLL!GetConsoleMode',           { 9 }
-  'KERNEL32.DLL!GetConsoleOutputCP',       { 10 }
-  'KERNEL32.DLL!GetConsoleCP',             { 11 }
-  'KERNEL32.DLL!GetOEMCP',                 { 12 }
-  'KERNEL32.DLL!GetACP',                   { 13 }
-  'KERNEL32.DLL!GetModuleHandleA',         { 14 }
-  'KERNEL32.DLL!GetModuleFileNameA',       { 15 }
-  'KERNEL32.DLL!GetStartupInfoA',          { 16 }
-  'KERNEL32.DLL!GetCommandLineA',          { 17 }
-  'KERNEL32.DLL!ReadProcessMemory',        { 18 }
-  'KERNEL32.DLL!GetProcessHeap',           { 19 }
+  'KERNEL32.DLL!CloseHandle',              { 1 }
+  'KERNEL32.DLL!DeleteCriticalSection',    { 2 }
+  'KERNEL32.DLL!EnterCriticalSection',     { 3 }
+  'KERNEL32.DLL!ExitProcess',              { 4 }
+  'KERNEL32.DLL!GetACP',                   { 5 }
+  'KERNEL32.DLL!GetCommandLineA',          { 6 }
+  'KERNEL32.DLL!GetConsoleCP',             { 7 }
+  'KERNEL32.DLL!GetConsoleMode',           { 8 }
+  'KERNEL32.DLL!GetConsoleOutputCP',       { 9 }
+  'KERNEL32.DLL!GetCurrentProcess',        { 10 }
+  'KERNEL32.DLL!GetCurrentProcessId',      { 11 }
+  'KERNEL32.DLL!GetCurrentThreadId',       { 12 }
+  'KERNEL32.DLL!GetLastError',             { 13 }
+  'KERNEL32.DLL!GetModuleFileNameA',       { 14 }
+  'KERNEL32.DLL!GetModuleHandleA',         { 15 }
+  'KERNEL32.DLL!GetOEMCP',                 { 16 }
+  'KERNEL32.DLL!GetProcessHeap',           { 17 }
+  'KERNEL32.DLL!GetStartupInfoA',          { 18 }
+  'KERNEL32.DLL!GetStdHandle',             { 19 }
   'KERNEL32.DLL!HeapAlloc',                { 20 }
   'KERNEL32.DLL!HeapFree',                 { 21 }
-  'KERNEL32.DLL!LocalAlloc',               { 22 }
-  'KERNEL32.DLL!LocalFree',                { 23 }
-  'KERNEL32.DLL!TlsAlloc',                 { 24 }
-  'KERNEL32.DLL!TlsGetValue',              { 25 }
-  'KERNEL32.DLL!TlsSetValue',              { 26 }
-  'KERNEL32.DLL!InitializeCriticalSection',{ 27 }
-  'KERNEL32.DLL!DeleteCriticalSection',    { 28 }
-  'KERNEL32.DLL!EnterCriticalSection',     { 29 }
-  'KERNEL32.DLL!LeaveCriticalSection',     { 30 }
-  'KERNEL32.DLL!TryEnterCriticalSection',  { 31 }
-  'KERNEL32.DLL!Sleep',                    { 32 }
-  'KERNEL32.DLL!CloseHandle',              { 33 }
-  'KERNEL32.DLL!MultiByteToWideChar',      { 34 }
-  'KERNEL32.DLL!WideCharToMultiByte',      { 35 }
+  'KERNEL32.DLL!InitializeCriticalSection',{ 22 }
+  'KERNEL32.DLL!LeaveCriticalSection',     { 23 }
+  'KERNEL32.DLL!LocalAlloc',               { 24 }
+  'KERNEL32.DLL!LocalFree',                { 25 }
+  'KERNEL32.DLL!MultiByteToWideChar',      { 26 }
+  'KERNEL32.DLL!ReadProcessMemory',        { 27 }
+  'KERNEL32.DLL!SetLastError',             { 28 }
+  'KERNEL32.DLL!Sleep',                    { 29 }
+  'KERNEL32.DLL!TlsAlloc',                 { 30 }
+  'KERNEL32.DLL!TlsGetValue',              { 31 }
+  'KERNEL32.DLL!TlsSetValue',              { 32 }
+  'KERNEL32.DLL!TryEnterCriticalSection',  { 33 }
+  'KERNEL32.DLL!WideCharToMultiByte',      { 34 }
+  'KERNEL32.DLL!WriteFile',                { 35 }
   'OLEAUT32.DLL!SysAllocStringLen',        { 36 }
   'OLEAUT32.DLL!SysFreeString',            { 37 }
   'OLEAUT32.DLL!SysReAllocStringLen',      { 38 }
-  'USER32.DLL!MessageBoxA',                { 39 }
+  'USER32.DLL!CharLowerBuffW',             { 39 }
   'USER32.DLL!CharUpperBuffW',             { 40 }
-  'USER32.DLL!CharLowerBuffW'              { 41 }
+  'USER32.DLL!MessageBoxA'                 { 41 }
  );
 
+{ Recherche dichotomique (2026-09-12, demande explicite - O(log2 N) au lieu  }
+{ de O(N), necessaire pour rester rapide une fois plusieurs milliers d API   }
+{ ajoutees) - suppose PE_ApiNames trie par ordre ordinal de chaine, voir le   }
+{ commentaire ci-dessus. }
 Function Pe_LookupApi(Const Key: String): Integer;
 Var
- I: Integer;
+ Lo, Hi, Mid: Integer;
 Begin
  Pe_LookupApi := 0;
- For I := 1 To PE_API_COUNT Do
-  If PE_ApiNames[I] = Key Then Begin Pe_LookupApi := I; Exit; End;
+ Lo := 1; Hi := PE_API_COUNT;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If PE_ApiNames[Mid] = Key Then Begin Pe_LookupApi := Mid; Exit; End
+  Else If PE_ApiNames[Mid] < Key Then Lo := Mid + 1
+  Else Hi := Mid - 1;
+ End;
 End;
 
 { Chantier Windows NT/Win32 (PE), Stage 3 (2026-09-12) : dispatch Win32     }
@@ -81181,68 +81396,55 @@ Begin
  { approximation) ; l allocateur bump unique (Pe_HeapAllocBytes) ne libere   }
  { jamais reellement (HeapFree/LocalFree/SysFreeString sans effet), meme    }
  { motif que LX_HeapNext/DosFreeMem. }
+ { Ordre des Case ci-dessous : IDENTIQUE a l ordre alphabetique de           }
+ { PE_ApiNames (2026-09-12, demande explicite) - retrouver le code d une     }
+ { entree de la table ou l inverse reste direct meme avec plusieurs           }
+ { milliers d entrees, plutot que de devoir chercher un numero au hasard     }
+ { dans le fichier. }
  Case ApiId Of
-  1: Begin { KERNEL32.DLL!ExitProcess }
+  1: Begin { KERNEL32.DLL!CloseHandle }
+   PE_Reg.EAX := 1; { TRUE - aucune vraie table de handles a nettoyer }
+   NArgsPopped := 1;
+  End;
+  2, 3, 22, 23: Begin { KERNEL32.DLL - Delete/Enter/Initialize/LeaveCriticalSection }
+   { Sans effet : un seul "thread" d execution reel ici, donc une section     }
+   { critique ne peut jamais etre reellement contestee - comportement         }
+   { correct, pas une simulation. }
+   NArgsPopped := 1;
+  End;
+  4: Begin { KERNEL32.DLL!ExitProcess }
    ExitCode := Pe_ReadDWord(PE_Reg.ESP + 4);
    PE_Halted := True;
    PE_LastBadEIP := PE_EIP;
    PE_HaltReason := 'ExitProcess(' + IntToStr(ExitCode) + ')';
    Exit;
   End;
-  2: Begin { KERNEL32.DLL!GetStdHandle - UINT nStdHandle }
-   NStdHandle := Pe_ReadDWord(PE_Reg.ESP + 4);
-   Case NStdHandle Of
-    -10: PE_Reg.EAX := 0; { STD_INPUT_HANDLE -> handle synthetique (jamais lu, aucun ReadFile implante) }
-    -11: PE_Reg.EAX := 1; { STD_OUTPUT_HANDLE -> handle synthetique }
-    -12: PE_Reg.EAX := 2; { STD_ERROR_HANDLE -> handle synthetique }
-   Else PE_Reg.EAX := -1; { INVALID_HANDLE_VALUE - valeur inconnue }
-   End;
-   NArgsPopped := 1;
+  5: PE_Reg.EAX := 1252; { KERNEL32.DLL!GetACP - Windows-1252, fixe }
+  6: Begin { KERNEL32.DLL!GetCommandLineA }
+   { Aucune emulation d argv : la ligne de commande synthetique se limite au }
+   { chemin du programme entre guillemets, sans arguments - portee            }
+   { honnetement disclosee (voir project_devenv_win32pe.md). }
+   CmdLine := '"' + PE_BinaryPath + '"';
+   Addr := Pe_HeapAllocBytes(Length(CmdLine) + 1);
+   If Addr <> 0 Then Pe_WriteAsciiZ(Addr, CmdLine);
+   PE_Reg.EAX := Addr;
   End;
-  3: Begin { KERNEL32.DLL!WriteFile - HANDLE hFile, LPCVOID lpBuffer,
-   DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped }
-   HFile := Pe_ReadDWord(PE_Reg.ESP + 4);
-   PBuf := Pe_ReadDWord(PE_Reg.ESP + 8);
-   CbWrite := Pe_ReadDWord(PE_Reg.ESP + 12);
-   PcbActual := Pe_ReadDWord(PE_Reg.ESP + 16);
-   If (HFile = 1) Or (HFile = 2) Then Begin
-    S := '';
-    For I := 0 To CbWrite - 1 Do
-     If Length(S) < 255 Then S := S + Chr(Pe_ReadByte(PBuf + I));
-    If PE_Panel <> Nil Then EmuVScr_WriteStr(PE_Panel^, S);
-   End;
-   If (PcbActual >= 0) And (PcbActual + 4 <= High(PE_Mem)) Then Pe_WriteDWord(PcbActual, CbWrite);
-   PE_Reg.EAX := 1; { TRUE - succes }
-   NArgsPopped := 5;
-  End;
-  4: Begin { KERNEL32.DLL!GetLastError }
-   PE_Reg.EAX := PE_LastError;
-  End;
-  5: Begin { KERNEL32.DLL!SetLastError }
-   PE_LastError := Pe_ReadDWord(PE_Reg.ESP + 4);
-   NArgsPopped := 1;
-  End;
-  6: PE_Reg.EAX := 1000; { KERNEL32.DLL!GetCurrentProcessId - PID synthetique }
-  7: PE_Reg.EAX := 1001; { KERNEL32.DLL!GetCurrentThreadId - TID synthetique }
-  8: PE_Reg.EAX := -1;   { KERNEL32.DLL!GetCurrentProcess - pseudo-handle reel Windows }
-  9: Begin { KERNEL32.DLL!GetConsoleMode - HANDLE hConsoleHandle, LPDWORD lpMode }
+  7: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetConsoleCP }
+  8: Begin { KERNEL32.DLL!GetConsoleMode - HANDLE hConsoleHandle, LPDWORD lpMode }
    ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
    If (ArgB >= 0) And (ArgB + 4 <= High(PE_Mem)) Then
     Pe_WriteDWord(ArgB, $1F7); { jeu de drapeaux plausible, aucun suivi reel du mode console }
    PE_Reg.EAX := 1;
    NArgsPopped := 2;
   End;
-  10: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetConsoleOutputCP - fixe, pas de vraie locale systeme }
-  11: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetConsoleCP }
-  12: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetOEMCP }
-  13: PE_Reg.EAX := 1252; { KERNEL32.DLL!GetACP - Windows-1252, fixe }
-  14: Begin { KERNEL32.DLL!GetModuleHandleA - LPCSTR lpModuleName }
-   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
-   If ArgA = 0 Then PE_Reg.EAX := PE_ImageBase { NULL -> module courant, HMODULE=ImageBase, un vrai comportement Windows }
-   Else PE_Reg.EAX := 0; { pas de table de DLL chargees - toute autre demande echoue proprement }
-   NArgsPopped := 1;
+  9: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetConsoleOutputCP - fixe, pas de vraie locale systeme }
+  10: PE_Reg.EAX := -1;  { KERNEL32.DLL!GetCurrentProcess - pseudo-handle reel Windows }
+  11: PE_Reg.EAX := 1000; { KERNEL32.DLL!GetCurrentProcessId - PID synthetique }
+  12: PE_Reg.EAX := 1001; { KERNEL32.DLL!GetCurrentThreadId - TID synthetique }
+  13: Begin { KERNEL32.DLL!GetLastError }
+   PE_Reg.EAX := PE_LastError;
   End;
-  15: Begin { KERNEL32.DLL!GetModuleFileNameA - HMODULE hModule, LPSTR lpFilename, DWORD nSize }
+  14: Begin { KERNEL32.DLL!GetModuleFileNameA - HMODULE hModule, LPSTR lpFilename, DWORD nSize }
    ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
    ArgC := Pe_ReadDWord(PE_Reg.ESP + 12);
    S := PE_BinaryPath;
@@ -81259,7 +81461,15 @@ Begin
    End;
    NArgsPopped := 3;
   End;
-  16: Begin { KERNEL32.DLL!GetStartupInfoA - LPSTARTUPINFOA lpStartupInfo }
+  15: Begin { KERNEL32.DLL!GetModuleHandleA - LPCSTR lpModuleName }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   If ArgA = 0 Then PE_Reg.EAX := PE_ImageBase { NULL -> module courant, HMODULE=ImageBase, un vrai comportement Windows }
+   Else PE_Reg.EAX := 0; { pas de table de DLL chargees - toute autre demande echoue proprement }
+   NArgsPopped := 1;
+  End;
+  16: PE_Reg.EAX := 437; { KERNEL32.DLL!GetOEMCP }
+  17: PE_Reg.EAX := 1; { KERNEL32.DLL!GetProcessHeap - handle de tas synthetique unique }
+  18: Begin { KERNEL32.DLL!GetStartupInfoA - LPSTARTUPINFOA lpStartupInfo }
    ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
    If (ArgA >= 0) And (ArgA + 68 <= High(PE_Mem)) Then Begin
     For I := 0 To 67 Do Pe_WriteByte(ArgA + I, 0); { STARTUPINFOA = 68 octets, tout a zero par defaut }
@@ -81271,30 +81481,16 @@ Begin
    End;
    NArgsPopped := 1;
   End;
-  17: Begin { KERNEL32.DLL!GetCommandLineA }
-   { Aucune emulation d argv : la ligne de commande synthetique se limite au }
-   { chemin du programme entre guillemets, sans arguments - portee            }
-   { honnetement disclosee (voir project_devenv_win32pe.md). }
-   CmdLine := '"' + PE_BinaryPath + '"';
-   Addr := Pe_HeapAllocBytes(Length(CmdLine) + 1);
-   If Addr <> 0 Then Pe_WriteAsciiZ(Addr, CmdLine);
-   PE_Reg.EAX := Addr;
+  19: Begin { KERNEL32.DLL!GetStdHandle - UINT nStdHandle }
+   NStdHandle := Pe_ReadDWord(PE_Reg.ESP + 4);
+   Case NStdHandle Of
+    -10: PE_Reg.EAX := 0; { STD_INPUT_HANDLE -> handle synthetique (jamais lu, aucun ReadFile implante) }
+    -11: PE_Reg.EAX := 1; { STD_OUTPUT_HANDLE -> handle synthetique }
+    -12: PE_Reg.EAX := 2; { STD_ERROR_HANDLE -> handle synthetique }
+   Else PE_Reg.EAX := -1; { INVALID_HANDLE_VALUE - valeur inconnue }
+   End;
+   NArgsPopped := 1;
   End;
-  18: Begin { KERNEL32.DLL!ReadProcessMemory - HANDLE hProcess, LPCVOID lpBaseAddress,
-   LPVOID lpBuffer, SIZE_T nSize, SIZE_T *lpNumberOfBytesRead }
-   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
-   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12);
-   ArgD := Pe_ReadDWord(PE_Reg.ESP + 16);
-   ArgE := Pe_ReadDWord(PE_Reg.ESP + 20);
-   { hProcess ignore : ce processus emule n en voit jamais qu un seul (le     }
-   { sien) - une copie intra-memoire est donc le comportement REEL correct   }
-   { pour le seul cas qui puisse se presenter ici (auto-lecture). }
-   For I := 0 To ArgD - 1 Do Pe_WriteByte(ArgC + I, Pe_ReadByte(ArgB + I));
-   If (ArgE >= 0) And (ArgE + 4 <= High(PE_Mem)) Then Pe_WriteDWord(ArgE, ArgD);
-   PE_Reg.EAX := 1;
-   NArgsPopped := 5;
-  End;
-  19: PE_Reg.EAX := 1; { KERNEL32.DLL!GetProcessHeap - handle de tas synthetique unique }
   20: Begin { KERNEL32.DLL!HeapAlloc - HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes }
    ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
    ArgC := Pe_ReadDWord(PE_Reg.ESP + 12);
@@ -81308,7 +81504,7 @@ Begin
    PE_Reg.EAX := 1; { TRUE - allocateur bump, jamais reellement libere }
    NArgsPopped := 3;
   End;
-  22: Begin { KERNEL32.DLL!LocalAlloc - UINT uFlags, SIZE_T uBytes }
+  24: Begin { KERNEL32.DLL!LocalAlloc - UINT uFlags, SIZE_T uBytes }
    ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
    ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
    Addr := Pe_HeapAllocBytes(ArgB);
@@ -81317,51 +81513,11 @@ Begin
    PE_Reg.EAX := Addr;
    NArgsPopped := 2;
   End;
-  23: Begin { KERNEL32.DLL!LocalFree }
+  25: Begin { KERNEL32.DLL!LocalFree }
    PE_Reg.EAX := 0; { NULL = succes pour LocalFree }
    NArgsPopped := 1;
   End;
-  24: Begin { KERNEL32.DLL!TlsAlloc }
-   If PE_TlsNextSlot < 64 Then Begin
-    PE_Reg.EAX := PE_TlsNextSlot;
-    Inc(PE_TlsNextSlot);
-   End Else
-    PE_Reg.EAX := -1; { TLS_OUT_OF_INDEXES }
-  End;
-  25: Begin { KERNEL32.DLL!TlsGetValue - DWORD dwTlsIndex }
-   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
-   If (ArgA >= 0) And (ArgA < 64) Then PE_Reg.EAX := PE_TlsSlots[ArgA]
-   Else PE_Reg.EAX := 0;
-   NArgsPopped := 1;
-  End;
-  26: Begin { KERNEL32.DLL!TlsSetValue - DWORD dwTlsIndex, LPVOID lpTlsValue }
-   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
-   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
-   If (ArgA >= 0) And (ArgA < 64) Then Begin
-    PE_TlsSlots[ArgA] := ArgB;
-    PE_Reg.EAX := 1;
-   End Else PE_Reg.EAX := 0;
-   NArgsPopped := 2;
-  End;
-  27, 28, 29, 30: Begin { KERNEL32.DLL - Initialize/Delete/Enter/LeaveCriticalSection }
-   { Sans effet : un seul "thread" d execution reel ici, donc une section     }
-   { critique ne peut jamais etre reellement contestee - comportement         }
-   { correct, pas une simulation. }
-   NArgsPopped := 1;
-  End;
-  31: Begin { KERNEL32.DLL!TryEnterCriticalSection }
-   PE_Reg.EAX := 1; { reussit toujours, meme raison que ci-dessus }
-   NArgsPopped := 1;
-  End;
-  32: Begin { KERNEL32.DLL!Sleep }
-   { Sans effet : aucune notion de temps reel dans cet emulateur pas a pas. }
-   NArgsPopped := 1;
-  End;
-  33: Begin { KERNEL32.DLL!CloseHandle }
-   PE_Reg.EAX := 1; { TRUE - aucune vraie table de handles a nettoyer }
-   NArgsPopped := 1;
-  End;
-  34: Begin { KERNEL32.DLL!MultiByteToWideChar - UINT CodePage, DWORD dwFlags,
+  26: Begin { KERNEL32.DLL!MultiByteToWideChar - UINT CodePage, DWORD dwFlags,
    LPCSTR lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar }
    ArgC := Pe_ReadDWord(PE_Reg.ESP + 12); { lpMultiByteStr }
    ArgD := Pe_ReadDWord(PE_Reg.ESP + 16); { cbMultiByte }
@@ -81382,7 +81538,55 @@ Begin
    PE_Reg.EAX := J;
    NArgsPopped := 6;
   End;
-  35: Begin { KERNEL32.DLL!WideCharToMultiByte - UINT CodePage, DWORD dwFlags,
+  27: Begin { KERNEL32.DLL!ReadProcessMemory - HANDLE hProcess, LPCVOID lpBaseAddress,
+   LPVOID lpBuffer, SIZE_T nSize, SIZE_T *lpNumberOfBytesRead }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12);
+   ArgD := Pe_ReadDWord(PE_Reg.ESP + 16);
+   ArgE := Pe_ReadDWord(PE_Reg.ESP + 20);
+   { hProcess ignore : ce processus emule n en voit jamais qu un seul (le     }
+   { sien) - une copie intra-memoire est donc le comportement REEL correct   }
+   { pour le seul cas qui puisse se presenter ici (auto-lecture). }
+   For I := 0 To ArgD - 1 Do Pe_WriteByte(ArgC + I, Pe_ReadByte(ArgB + I));
+   If (ArgE >= 0) And (ArgE + 4 <= High(PE_Mem)) Then Pe_WriteDWord(ArgE, ArgD);
+   PE_Reg.EAX := 1;
+   NArgsPopped := 5;
+  End;
+  28: Begin { KERNEL32.DLL!SetLastError }
+   PE_LastError := Pe_ReadDWord(PE_Reg.ESP + 4);
+   NArgsPopped := 1;
+  End;
+  29: Begin { KERNEL32.DLL!Sleep }
+   { Sans effet : aucune notion de temps reel dans cet emulateur pas a pas. }
+   NArgsPopped := 1;
+  End;
+  30: Begin { KERNEL32.DLL!TlsAlloc }
+   If PE_TlsNextSlot < 64 Then Begin
+    PE_Reg.EAX := PE_TlsNextSlot;
+    Inc(PE_TlsNextSlot);
+   End Else
+    PE_Reg.EAX := -1; { TLS_OUT_OF_INDEXES }
+  End;
+  31: Begin { KERNEL32.DLL!TlsGetValue - DWORD dwTlsIndex }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   If (ArgA >= 0) And (ArgA < 64) Then PE_Reg.EAX := PE_TlsSlots[ArgA]
+   Else PE_Reg.EAX := 0;
+   NArgsPopped := 1;
+  End;
+  32: Begin { KERNEL32.DLL!TlsSetValue - DWORD dwTlsIndex, LPVOID lpTlsValue }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   If (ArgA >= 0) And (ArgA < 64) Then Begin
+    PE_TlsSlots[ArgA] := ArgB;
+    PE_Reg.EAX := 1;
+   End Else PE_Reg.EAX := 0;
+   NArgsPopped := 2;
+  End;
+  33: Begin { KERNEL32.DLL!TryEnterCriticalSection }
+   PE_Reg.EAX := 1; { reussit toujours, meme raison que ci-dessus }
+   NArgsPopped := 1;
+  End;
+  34: Begin { KERNEL32.DLL!WideCharToMultiByte - UINT CodePage, DWORD dwFlags,
    LPCWSTR lpWideCharStr, int cchWideChar, LPSTR lpMultiByteStr, int cbMultiByte,
    LPCSTR lpDefaultChar, LPBOOL lpUsedDefaultChar }
    ArgC := Pe_ReadDWord(PE_Reg.ESP + 12); { lpWideCharStr }
@@ -81400,6 +81604,22 @@ Begin
    End;
    PE_Reg.EAX := J;
    NArgsPopped := 8;
+  End;
+  35: Begin { KERNEL32.DLL!WriteFile - HANDLE hFile, LPCVOID lpBuffer,
+   DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped }
+   HFile := Pe_ReadDWord(PE_Reg.ESP + 4);
+   PBuf := Pe_ReadDWord(PE_Reg.ESP + 8);
+   CbWrite := Pe_ReadDWord(PE_Reg.ESP + 12);
+   PcbActual := Pe_ReadDWord(PE_Reg.ESP + 16);
+   If (HFile = 1) Or (HFile = 2) Then Begin
+    S := '';
+    For I := 0 To CbWrite - 1 Do
+     If Length(S) < 255 Then S := S + Chr(Pe_ReadByte(PBuf + I));
+    If PE_Panel <> Nil Then EmuVScr_WriteStr(PE_Panel^, S);
+   End;
+   If (PcbActual >= 0) And (PcbActual + 4 <= High(PE_Mem)) Then Pe_WriteDWord(PcbActual, CbWrite);
+   PE_Reg.EAX := 1; { TRUE - succes }
+   NArgsPopped := 5;
   End;
   36: Begin { OLEAUT32.DLL!SysAllocStringLen - OLECHAR *psz, UINT len }
    ArgA := Pe_ReadDWord(PE_Reg.ESP + 4); { psz, peut etre NULL }
@@ -81440,7 +81660,24 @@ Begin
    End Else PE_Reg.EAX := 0;
    NArgsPopped := 3;
   End;
-  39: Begin { USER32.DLL!MessageBoxA - HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType }
+  39, 40: Begin { USER32.DLL!CharLowerBuffW / CharUpperBuffW - LPWSTR lpsz, DWORD cchLength }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   { Conversion ASCII uniquement (A-Z/a-z) - aucune vraie table Unicode de   }
+   { casse, portee honnetement disclosee. }
+   For I := 0 To ArgB - 1 Do Begin
+    W := Pe_ReadWord(ArgA + I * 2);
+    If ApiId = 40 Then Begin { CharUpperBuffW }
+     If (W >= Ord('a')) And (W <= Ord('z')) Then W := W - 32;
+    End Else Begin { CharLowerBuffW }
+     If (W >= Ord('A')) And (W <= Ord('Z')) Then W := W + 32;
+    End;
+    Pe_WriteWord(ArgA + I * 2, W);
+   End;
+   PE_Reg.EAX := ArgB;
+   NArgsPopped := 2;
+  End;
+  41: Begin { USER32.DLL!MessageBoxA - HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType }
    ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);  { lpText }
    ArgC := Pe_ReadDWord(PE_Reg.ESP + 12); { lpCaption }
    { Pas de vraie fenetre GUI (emulateur console uniquement, voir            }
@@ -81456,23 +81693,6 @@ Begin
    End;
    PE_Reg.EAX := 1; { IDOK }
    NArgsPopped := 4;
-  End;
-  40, 41: Begin { USER32.DLL!CharUpperBuffW / CharLowerBuffW - LPWSTR lpsz, DWORD cchLength }
-   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
-   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
-   { Conversion ASCII uniquement (A-Z/a-z) - aucune vraie table Unicode de   }
-   { casse, portee honnetement disclosee. }
-   For I := 0 To ArgB - 1 Do Begin
-    W := Pe_ReadWord(ArgA + I * 2);
-    If ApiId = 40 Then Begin
-     If (W >= Ord('a')) And (W <= Ord('z')) Then W := W - 32;
-    End Else Begin
-     If (W >= Ord('A')) And (W <= Ord('Z')) Then W := W + 32;
-    End;
-    Pe_WriteWord(ArgA + I * 2, W);
-   End;
-   PE_Reg.EAX := ArgB;
-   NArgsPopped := 2;
   End;
   Else Handled := False;
  End;
