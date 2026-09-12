@@ -404,6 +404,7 @@ Begin
     End;
     If AwaitingRoutineBegin and RoutineNeedsBlank Then WriteLn(OutputFile);
     If not(AwaitingThenBegin or AwaitingRoutineBegin)Then EmitPending;
+    If(not IsUnit)and(BeginNumber=MainBeginNumber)Then WriteLn(OutputFile);
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';
     AppendText(S);AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
     RoutineHeader:=False;EmitLine;
