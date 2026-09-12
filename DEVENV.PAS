@@ -116212,8 +116212,14 @@ Const
  NCEXE_NONE   = 0;  { pas un executable MZ reconnaissable                }
  NCEXE_DOS16  = 1;  { DOS 16 bits classique - lancable par -CD           }
  NCEXE_OS2LX  = 2;  { OS/2 LX (32 bits, "Linear Executable")             }
- NCEXE_OTHER  = 3;  { PE (Win32/64) - non supporte                       }
+ NCEXE_OTHER  = 3;  { PE non-i386 (Win64/ARM/...) - non supporte           }
  NCEXE_WIN16  = 4;  { NE (Windows 1.x/2.x/3.x 16 bits) - chantier en cours }
+ { Chantier Windows NT/Win32 (PE), Stage 4 (2026-09-12) : PE existait deja  }
+ { comme NCEXE_OTHER (detecte, jamais route nulle part) - desormais         }
+ { distingue du reste des PE non supportes (Win64/ARM/etc, qui restent      }
+ { NCEXE_OTHER) le seul sous-ensemble reellement pris en charge : PE32       }
+ { (Machine=$014C, i386), voir NCFindExeKind. }
+ NCEXE_PE32   = 5;  { PE32 i386 - emulateur Windows NT/Win32 (voir -CPE)   }
 
 { Chantier OS/2 LX (2026-08-22, Stage 0) : NCIsDos16Exe se contentait de }
 { rejeter silencieusement PE/NE/LE/LX (un seul Boolean, aucune           }
@@ -116229,6 +116235,7 @@ Var
  CrlcBuf: Array[0..1] Of Byte;
  LfanewBuf: Array[0..3] Of Byte;
  HdrSig: Array[0..3] Of Char;
+ MachineBuf: Array[0..1] Of Byte;
  Lfanew: LongInt;
  FSize: LongInt;
  BytesRead: Word;
@@ -116275,16 +116282,27 @@ Begin
  End;
  Seek(F, Lfanew);
  BlockRead(F, HdrSig, 4, BytesRead);
- Close(F);
  If BytesRead <> 4 Then Begin
+  Close(F);
   NCFindExeKind := NCEXE_DOS16;
   Exit;
  End;
  If (HdrSig[0] = 'P') And (HdrSig[1] = 'E') And (HdrSig[2] = #0) And
     (HdrSig[3] = #0) Then Begin
-  NCFindExeKind := NCEXE_OTHER;
+  { Chantier Windows NT/Win32 (PE), Stage 4 : Machine (Word LE, juste       }
+  { apres la signature 'PE'#0#0, offset Lfanew+4) decide entre le seul       }
+  { sous-ensemble reellement emule (PE32/i386, $014C) et le reste            }
+  { (Win64/ARM/etc., NCEXE_OTHER, inchange - jamais pretendre supporter ce   }
+  { qui ne l est pas). }
+  BlockRead(F, MachineBuf, 2, BytesRead);
+  Close(F);
+  If (BytesRead = 2) And (MachineBuf[0] = $4C) And (MachineBuf[1] = $01) Then
+   NCFindExeKind := NCEXE_PE32
+  Else
+   NCFindExeKind := NCEXE_OTHER;
   Exit;
  End;
+ Close(F);
  If (HdrSig[0] = 'N') And (HdrSig[1] = 'E') Then Begin
   NCFindExeKind := NCEXE_WIN16;
   Exit;
@@ -116430,15 +116448,20 @@ Begin
      CreateEmulatorTab(TempPath, '-CWIN16', '');
      NCActionOpenAssociated := True;
     End
-    { Chantier Windows NT/Win32 (PE), Stage 0 (2026-09-11, demande explicite }
-    { de l utilisateur : "clic sur WIN32\abap86.exe... presentement il ne   }
-    { fait rien") - meme motif que les Stage 0 OS/2 LX/Win16 ci-dessus :    }
-    { NCEXE_OTHER (PE) n avait AUCUNE branche Else, Entree ne faisait donc  }
-    { litteralement rien. Simple message pour l instant - voir              }
-    { project_devenv_win32pe.md pour le plan complet par etapes. }
+    { Chantier Windows NT/Win32 (PE), Stage 4 (2026-09-12) : Entree lance     }
+    { desormais reellement l emulateur PE32/i386 (mode console uniquement -   }
+    { voir project_devenv_win32pe.md pour le perimetre) - remplace le simple  }
+    { message du Stage 0. }
+    Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_PE32) Then Begin
+     CreateEmulatorTab(TempPath, '-CPE', '');
+     NCActionOpenAssociated := True;
+    End
+    { NCEXE_OTHER (PE non-i386 : Win64/ARM/...) reste hors de portee - simple }
+    { message plutot qu un echec silencieux, meme motif que les Stage 0        }
+    { OS/2 LX/Win16 d origine. }
     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OTHER) Then Begin
-     NCShowMessage('Executable Win32 (PE) detecte - emulateur en ' +
-      'developpement (voir project_devenv_win32pe.md).', ncBrowse);
+     NCShowMessage('Executable Win32 (PE) detecte mais non supporte ' +
+      '(seul PE32/i386 est emule pour l instant).', ncBrowse);
      NCActionOpenAssociated := True;
     End;
    End;
@@ -116495,11 +116518,15 @@ Begin
       CreateEmulatorTab(TempPath, '-CWIN16', '');
       NCActionOpenAssociated := True;
      End
-     { Chantier Windows NT/Win32 (PE), Stage 0 - voir le commentaire jumeau }
+     { Chantier Windows NT/Win32 (PE), Stage 4 - voir le commentaire jumeau }
      { au site HPFS ci-dessus pour le contexte complet. }
+     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_PE32) Then Begin
+      CreateEmulatorTab(TempPath, '-CPE', '');
+      NCActionOpenAssociated := True;
+     End
      Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OTHER) Then Begin
-      NCShowMessage('Executable Win32 (PE) detecte - emulateur en ' +
-       'developpement (voir project_devenv_win32pe.md).', ncBrowse);
+      NCShowMessage('Executable Win32 (PE) detecte mais non supporte ' +
+       '(seul PE32/i386 est emule pour l instant).', ncBrowse);
       NCActionOpenAssociated := True;
      End;
     End;
@@ -116566,11 +116593,15 @@ Begin
     CreateEmulatorTab(FullPath, '-CWIN16', '');
     NCActionOpenAssociated := True;
    End
-   { Chantier Windows NT/Win32 (PE), Stage 0 - voir le commentaire jumeau   }
+   { Chantier Windows NT/Win32 (PE), Stage 4 - voir le commentaire jumeau   }
    { au site HPFS plus haut pour le contexte complet. }
+   Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_PE32) Then Begin
+    CreateEmulatorTab(FullPath, '-CPE', '');
+    NCActionOpenAssociated := True;
+   End
    Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_OTHER) Then Begin
-    NCShowMessage('Executable Win32 (PE) detecte - emulateur en ' +
-     'developpement (voir project_devenv_win32pe.md).', ncBrowse);
+    NCShowMessage('Executable Win32 (PE) detecte mais non supporte ' +
+     '(seul PE32/i386 est emule pour l instant).', ncBrowse);
     NCActionOpenAssociated := True;
    End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
@@ -164221,6 +164252,87 @@ Begin
  P.StatusMsg := LX_HaltReason;
 End;
 
+{ Chantier Windows NT/Win32 (PE), Stage 4 (2026-09-12) : meme motif exact   }
+{ que Lx_RunOneChunk/Lx_PrintEndMessage juste au-dessus, retargete vers      }
+{ Pe_Step/PE_*. }
+Procedure Pe_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+ K: LongInt;
+Begin
+ If EmuHasFocus Then Begin
+  While KeyPressed Do Begin
+   K := Ord(ReadKey);
+   If K = 27 Then PE_AsyncKeyEsc := True;
+  End;
+  If PE_AsyncKeyEsc Then Exit;
+ End;
+ For ChunkI := 0 To 19999 Do Begin
+  If PE_Halted Then Break;
+  If P.TotalSteps >= 5000000 Then Break;
+  Pe_Step;
+  Inc(P.TotalSteps);
+ End;
+End;
+
+Procedure Pe_PrintEndMessage(Var P: TEmulatorPanel);
+Var
+ TraceN, TraceI: LongInt;
+ TraceLine: String;
+Begin
+ If PE_Halted Then Begin
+  P.CurFg := 11;
+  EmuVScr_WriteStr(P, '[' + PE_HaltReason + ']');
+ End Else Begin
+  P.CurFg := 12;
+  EmuVScr_WriteStr(P, '[Limite de ' + IntToStr(P.TotalSteps) + ' instructions atteinte]');
+ End;
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+ If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+  P.CurFg := 7;
+  EmuVScr_WriteStr(P, IntToStr(P.TotalSteps) + ' instruction(s) executee(s).');
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'EIP : $' + HexLong(PE_EIP) +
+   '   EAX : $' + HexLong(PE_Reg.EAX));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'ESP : $' + HexLong(PE_Reg.ESP) +
+   '   EDI : $' + HexLong(PE_Reg.EDI));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'ECX : $' + HexLong(PE_Reg.ECX) +
+   '   EDX : $' + HexLong(PE_Reg.EDX));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'ESI : $' + HexLong(PE_Reg.ESI) +
+   '   EBX : $' + HexLong(PE_Reg.EBX));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  EmuVScr_WriteStr(P, 'EBP : $' + HexLong(PE_Reg.EBP));
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If PE_LastBadEIP <> 0 Then Begin
+   EmuVScr_WriteStr(P, 'Adresse de l''instruction en cause : $' + HexLong(PE_LastBadEIP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  If (PE_LastBadEIP <> 0) Or (Not PE_Halted) Then Begin
+   EmuVScr_WriteStr(P, 'Historique EIP / ESP (plus ancien -> plus recent) :');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   If PE_TraceCount < 60 Then TraceN := PE_TraceCount Else TraceN := 60;
+   For TraceI := TraceN - 1 DownTo 0 Do Begin
+    TraceLine := 'EIP=$' +
+     HexLong(PE_TraceEIP[(PE_TraceCount - 1 - TraceI) And 255]) +
+     '  ESP=$' +
+     HexLong(PE_TraceESP[(PE_TraceCount - 1 - TraceI) And 255]);
+    EmuVScr_WriteStr(P, TraceLine);
+    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   End;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+ End;
+ P.CurFg := 7;
+ EmuVScr_WriteStr(P, 'Appuyez sur Echap pour fermer.');
+ P.Running := False;
+ P.Fault := sfEndProgram;
+ P.StatusMsg := PE_HaltReason;
+End;
+
 { ========================================================================== }
 { Stage 1 SEUL (2026-08-15, suite immediate) - backend DOS/8086 (-CD/-CP).   }
 { Meme decision de portee qu ELF64 (voir ELF64_RunOneChunk) : l etat          }
@@ -164991,6 +165103,7 @@ Var
  IsOS2LX: Boolean;
  IsWin16: Boolean;
  IsARM64: Boolean;
+ IsPE32: Boolean;
  TraceI, TraceN: LongInt;
  TraceLine: String;
  CPUName: String;
@@ -165160,12 +165273,24 @@ Begin NesActive := False;
   P.CurFg := 7;   { gris clair }
   P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CPE' Then
+ Begin
+  { Chantier Windows NT/Win32 (PE), Stage 4 (2026-09-12) - console 80x25,    }
+  { meme convention que DOS/ELF64/OS2LX (mode console uniquement, aucune     }
+  { fenetre/GDI - voir project_devenv_win32pe.md pour le perimetre disclose).}
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsELF64 := (TargetCPU = '-CELF64');
  IsARM64 := (TargetCPU = '-CARM64');
  IsOS2LX := (TargetCPU = '-COS2LX');
  IsWin16 := (TargetCPU = '-CWIN16');
+ IsPE32 := (TargetCPU = '-CPE');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
@@ -165190,6 +165315,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CELF64'  Then CPUName := 'Linux x86-64 (ELF statique)'
  Else If TargetCPU = '-COS2LX'  Then CPUName := 'OS/2 LX 32 bits (console)'
  Else If TargetCPU = '-CWIN16'  Then CPUName := 'Windows 2.x/3.x 16 bits (NE, console texte)'
+ Else If TargetCPU = '-CPE'     Then CPUName := 'Windows NT/Win32 PE32 (console texte)'
  Else If TargetCPU = '-CARM64'  Then CPUName := 'ARM64 (AArch64) systeme'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else If TargetCPU = '-CPCODE'  Then CPUName := 'UCSD p-System (p-machine)'
@@ -166110,6 +166236,48 @@ Begin NesActive := False;
   P.Loaded := True;
   Exit;
  End;
+ If IsPE32 Then Begin
+  { ----- Chantier Windows NT/Win32 (PE), Stage 4 (2026-09-12) : emulateur   }
+  { PE32/i386 (console) - meme motif Stage 1 exact que OS/2 LX juste         }
+  { au-dessus (charge puis rend la main immediatement, execution reelle      }
+  { pilotee par l idle-tick via Pe_RunOneChunk). }
+  PE_Panel := @P;
+  Loaded := Emu_LoadPE(BinaryPath);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, 'Erreur : binaire PE32/Win32 invalide ou illisible.');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P,
+    'Seuls les executables PE32 i386 (Machine=$014C) sont pris en charge -');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P,
+    'PE32+ (64 bits) et les autres architectures restent hors de portee.');
+   P.CurFg := OldFg; P.CurBg := OldBg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec de chargement PE32/Win32';
+   Exit;
+  End;
+  If OptionsDlg.Data.EmuShowDebugMessages Then Begin
+   P.CurFg := 10;
+   EmuVScr_WriteStr(P, 'Binaire PE32 charge : ' +
+    IntToStr(PE_ImportSlotCount) + ' import(s) resolu(s).');
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 7;
+   EmuVScr_WriteStr(P, 'Point d''entree   : $' + HexLong(PE_EIP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_WriteStr(P, 'Pile initiale ESP: $' + HexLong(PE_Reg.ESP));
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
+  PE_AsyncKeyEsc := False;
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
+  DrawEmulatorPanel(P);
+  P.Loaded := True;
+  Exit;
+ End;
  If IsARM64 Then Begin
   { Chantier ARM64 - Etape 2 : chargeur brut (Emu_LoadARM64Raw, commande    }
   { terminal ARM64) pour les programmes de test nus. Etape 5 : BOOT         }
@@ -167013,6 +167181,33 @@ Begin
   If Finished Then Begin
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    Lx_PrintEndMessage(P);
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CPE') Then Begin
+  { Chantier Windows NT/Win32 (PE), Stage 4 - meme motif exact que le bloc  }
+  { -COS2LX juste au-dessus. }
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  Pe_RunOneChunk(P);
+  Finished := PE_Halted Or (P.TotalSteps >= 5000000) Or PE_AsyncKeyEsc;
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   Pe_PrintEndMessage(P);
    DrawEmulatorPanel(P);
   End;
   Exit;
