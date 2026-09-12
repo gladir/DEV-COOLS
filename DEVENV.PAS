@@ -8337,6 +8337,13 @@ Var
  LX_ImportIsOrd   : Array[0..LX_MAX_TRAP_SLOTS - 1] Of Boolean;
  LX_ImportOrdinal : Array[0..LX_MAX_TRAP_SLOTS - 1] Of LongInt;
  LX_ImportNameOfs : Array[0..LX_MAX_TRAP_SLOTS - 1] Of LongInt;
+ { Nom REEL resolu (une seule fois, voir Lx_ReadImportProcName) pour les    }
+ { imports PAR NOM (IMPORTNAME, TgtType=2) - NetBiosOpen/NetBiosSubmit/     }
+ { etc. (ACSNETB.DLL/NETAPI.DLL) n ont pas d ordinal verifie contre une     }
+ { source primaire (contrairement a DOSCALLS/PMWIN), donc Lx_DoDosCall les  }
+ { distingue par CE nom plutot que par un ordinal devine. Vide pour un      }
+ { import par ORDINAL (LX_ImportIsOrd[slot]=True). }
+ LX_ImportNameStr : Array[0..LX_MAX_TRAP_SLOTS - 1] Of String;
  LX_ImportSlotCount: Integer;
  { Chantier OS/2 LX, PMWIN Clipboard (2026-09-09) : noms REELS des modules  }
  { importes (table e32_impmod, chaines prefixees d 1 octet de longueur -    }
@@ -79931,6 +79938,46 @@ End;
 { INTERNAL_VIA_ENTRY_TABLE (type 3) et le bit ALIAS/CHAINING non supportes  }
 { (meme traitement : arret propre pour cette page). }
 Procedure Lx_ApplyPageFixups(Var F: File; HdrOfs: LongInt; Const Hdr: TLXHeader;
+ GlobalPageNo, DestAddr: LongInt; Const ObjBase: TLXObjBaseArr); Forward;
+
+{ Lit le nom (chaine prefixee d'1 octet de longueur, meme convention que    }
+{ e32_impmod/LX_ImportModNames) d'une entree IMPORTNAME de la table         }
+{ e32_impproc, a l'offset NameOfs fourni PAR LE FIXUP lui-meme (contrairement}
+{ a e32_impmod, cette table est indexee directement par offset - pas besoin}
+{ de sommer des longueurs cumulees). Sauvegarde/restaure la position         }
+{ courante de F : appelee AU MILIEU de la boucle de Lx_ApplyPageFixups qui  }
+{ continue a lire des octets de fixup juste apres. }
+Function Lx_ReadImportProcName(Var F: File; HdrOfs: LongInt;
+ Const Hdr: TLXHeader; NameOfs: LongInt): String;
+Var
+ SavedPos: LongInt;
+ NameLen: Byte;
+ BytesRead: Word;
+ S: String;
+Begin
+ Lx_ReadImportProcName := '';
+ SavedPos := FilePos(F);
+ {$I-}
+ Seek(F, HdrOfs + Hdr.e32_impproc + NameOfs);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  {$I-} Seek(F, SavedPos); {$I+} If IOResult <> 0 Then ;
+  Exit;
+ End;
+ BlockRead(F, NameLen, 1, BytesRead);
+ If BytesRead = 1 Then Begin
+  S := '';
+  If NameLen > 0 Then Begin
+   SetLength(S, NameLen);
+   BlockRead(F, S[1], NameLen, BytesRead);
+   If BytesRead <> NameLen Then S := '';
+  End;
+  Lx_ReadImportProcName := S;
+ End;
+ {$I-} Seek(F, SavedPos); {$I+} If IOResult <> 0 Then ;
+End;
+
+Procedure Lx_ApplyPageFixups(Var F: File; HdrOfs: LongInt; Const Hdr: TLXHeader;
  GlobalPageNo, DestAddr: LongInt; Const ObjBase: TLXObjBaseArr);
 Var
  FStartBuf, FEndBuf: LongInt;
@@ -80011,6 +80058,11 @@ Begin
     If (ModOrd < 1) Or (ModOrd > Hdr.e32_impmodcnt) Then Begin Stop := True; Break; End;
     SlotIdx := Lx_ResolveImportSlot(Byte(ModOrd), TgtType = 1, ImportVal);
     If SlotIdx < 0 Then Begin Stop := True; Break; End;
+    { IMPORTNAME (TgtType=2) : resoudre le vrai nom UNE SEULE fois (slot    }
+    { neuf) - necessaire pour distinguer NetBiosOpen/NetBiosSubmit/etc.     }
+    { (ACSNETB.DLL/NETAPI.DLL), importees par nom et sans ordinal verifie.  }
+    If (TgtType = 2) And (LX_ImportNameStr[SlotIdx] = '') Then
+     LX_ImportNameStr[SlotIdx] := Lx_ReadImportProcName(F, HdrOfs, Hdr, ImportVal);
     TargetVal := LX_TRAP_BASE + SlotIdx * LX_TRAP_SLOT_SIZE;
    End;
   End;
@@ -80062,6 +80114,7 @@ Begin
  LX_InstrCount := 0;
  LX_TraceCount := 0;
  LX_ImportSlotCount := 0;
+ FillChar(LX_ImportNameStr, SizeOf(LX_ImportNameStr), 0);
  FillChar(LX_Flags, SizeOf(LX_Flags), 0);
  If Not Lx_ReadHeader(FileName, Hdr, HdrOfs, FSize) Then Exit;
  If (Hdr.e32_objcnt <= 0) Or (Hdr.e32_objcnt > MAX_LX_OBJECTS) Then Exit;
@@ -82998,6 +83051,713 @@ Begin
  End;
 End;
 
+{ ==========================================================================
+  Chantier OS/2 LX : NetBIOS (ACSNETB.DLL/NETAPI.DLL - NetBios/NetBiosOpen/
+  NetBiosSubmit/NetBiosEnum/NetBiosClose), demande explicite de
+  l'utilisateur. Reutilise EXACTEMENT le meme modele NCB/"boucle locale"
+  que la pile NetBIOS DOS (INT 5Ch, voir Emu_DoInt5C/TEmuNetBiosState plus
+  haut dans ce fichier) - memes codes de commande/retour, meme structure
+  NCB de 64 octets (TEmuNbNcb), meme limite documentee (jamais de vrai
+  blocage : NRC_PENDING/$FF, a charge de l'appelant de re-soumettre plus
+  tard) - MAIS avec un etat totalement INDEPENDANT (LxNetBios, PAS
+  EmuNetBios) et des acces memoire PLATS 32 bits (Lx_ReadByte/Lx_WriteByte
+  sur LX_Mem) plutot que segment:offset 8086 (Emu_ReadByte(P.CPU,...)) :
+  les deux moteurs ne peuvent PAS s'interconnecter (perimetre honnetement
+  disclosee, pas une limitation cachee) - un programme OS/2 LX ne peut
+  faire du NetBIOS qu'avec un AUTRE "appel" NetBIOS soumis dans CE MEME
+  onglet emulateur (ex: deux threads logiques du meme programme, ou un
+  ADD NAME + LISTEN suivi d'un CALL vers soi-meme), jamais avec un
+  programme DOS d'un autre onglet. Ordinaux NON verifies contre une
+  source primaire pour ACSNETB.DLL/NETAPI.DLL (contrairement a DOSCALLS/
+  PMWIN plus haut) - dispatch par NOM REEL (LX_ImportNameStr, voir
+  Lx_ReadImportProcName) plutot que par un ordinal devine.
+  Seg/Ofs des enregistrements TEmuNbPending*.NcbSeg/NcbOfs (types deja
+  partages avec le moteur DOS) sont ici reutilises comme les 2 moities
+  (haute/basse) d'une adresse LINEAIRE 32 bits plutot qu'un vrai
+  segment:offset - voir Lx_NbPackAddr/Lx_NbUnpackAddr. ========================================================================== }
+
+{ Forward : ces 4 fonctions ne sont definies "pour de vrai" qu'avec le      }
+{ reste du moteur NetBIOS DOS (INT 5Ch), bien plus loin dans ce fichier -   }
+{ entierement generiques (aucune reference a EmuNetBios), donc partagees    }
+{ telles quelles avec le moteur OS/2 LX ci-dessous plutot que dupliquees. }
+Function Emu_NbNameEq(Const A, B: TEmuNb16): Boolean; Forward;
+Function Emu_NbPatternMatch(Const Pattern, Actual: TEmuNb16): Boolean; Forward;
+Procedure Emu_NbQueuePush(Var Q: TEmuNbDgQueue; Var Dg: TEmuNbDgram); Forward;
+Function Emu_NbQueuePopInto(Var Q: TEmuNbDgQueue; Var Dg: TEmuNbDgram): Boolean; Forward;
+
+Var
+ LxNetBios: TEmuNetBiosState;
+ LxNetBiosOpen: Boolean;
+
+Procedure Lx_NbPackAddr(Addr: LongInt; Var Seg, Ofs: Word);
+Begin
+ Seg := Word((Addr Shr 16) And $FFFF);
+ Ofs := Word(Addr And $FFFF);
+End;
+
+Function Lx_NbUnpackAddr(Seg, Ofs: Word): LongInt;
+Begin
+ Lx_NbUnpackAddr := (LongInt(Seg) Shl 16) Or LongInt(Ofs);
+End;
+
+Function Lx_NbFindNameText(Const Nom: TEmuNb16): Integer;
+Var I: Integer;
+Begin
+ Lx_NbFindNameText := -1;
+ For I := 0 To 31 Do
+  If LxNetBios.Names[I].InUse And Emu_NbNameEq(LxNetBios.Names[I].Nom, Nom) Then Begin
+   Lx_NbFindNameText := I; Exit;
+  End;
+End;
+
+Function Lx_NbFindNameByNum(Num: Byte): Integer;
+Var I: Integer;
+Begin
+ Lx_NbFindNameByNum := -1;
+ For I := 0 To 31 Do
+  If LxNetBios.Names[I].InUse And (LxNetBios.Names[I].Num = Num) Then Begin
+   Lx_NbFindNameByNum := I; Exit;
+  End;
+End;
+
+Function Lx_NbNextNameNum: Byte;
+Var N, I: Integer; Used: Boolean;
+Begin
+ For N := 1 To 254 Do Begin
+  Used := False;
+  For I := 0 To 31 Do
+   If LxNetBios.Names[I].InUse And (LxNetBios.Names[I].Num = N) Then Used := True;
+  If Not Used Then Begin Lx_NbNextNameNum := N; Exit; End;
+ End;
+ Lx_NbNextNameNum := 1;
+End;
+
+Function Lx_NbFindFreePending: Integer;
+Var I: Integer;
+Begin
+ Lx_NbFindFreePending := -1;
+ For I := 0 To 31 Do
+  If Not LxNetBios.Pending[I].InUse Then Begin Lx_NbFindFreePending := I; Exit; End;
+End;
+
+Function Lx_NbFindFreePendingRecv: Integer;
+Var I: Integer;
+Begin
+ Lx_NbFindFreePendingRecv := -1;
+ For I := 0 To 31 Do
+  If Not LxNetBios.PendingRecv[I].InUse Then Begin Lx_NbFindFreePendingRecv := I; Exit; End;
+End;
+
+Function Lx_NbFindFreePendingDgRecv: Integer;
+Var I: Integer;
+Begin
+ Lx_NbFindFreePendingDgRecv := -1;
+ For I := 0 To 31 Do
+  If Not LxNetBios.PendingDgRecv[I].InUse Then Begin Lx_NbFindFreePendingDgRecv := I; Exit; End;
+End;
+
+Function Lx_NbFindSessionByLsn(Lsn: Byte): Integer;
+Var I: Integer;
+Begin
+ Lx_NbFindSessionByLsn := -1;
+ For I := 0 To 31 Do
+  If LxNetBios.Sessions[I].InUse And (LxNetBios.Sessions[I].Lsn = Lsn) Then Begin
+   Lx_NbFindSessionByLsn := I; Exit;
+  End;
+End;
+
+Function Lx_NbAllocSession: Integer;
+Var I: Integer;
+Begin
+ Lx_NbAllocSession := -1;
+ For I := 0 To 31 Do
+  If Not LxNetBios.Sessions[I].InUse Then Begin
+   LxNetBios.Sessions[I].InUse := True;
+   Lx_NbAllocSession := I;
+   Exit;
+  End;
+End;
+
+Function Lx_NbAllocLsn: Byte;
+Var N, I: Integer; Used: Boolean;
+Begin
+ For N := 1 To 254 Do Begin
+  Used := False;
+  For I := 0 To 31 Do
+   If LxNetBios.Sessions[I].InUse And (LxNetBios.Sessions[I].Lsn = N) Then Used := True;
+  If Not Used Then Begin Lx_NbAllocLsn := N; Exit; End;
+ End;
+ Lx_NbAllocLsn := 1;
+End;
+
+Function Lx_NbFindOrAllocDgQueue(Const Nom: TEmuNb16): Integer;
+Var I, Free: Integer;
+Begin
+ Free := -1;
+ For I := 0 To 31 Do Begin
+  If LxNetBios.DgQueues[I].NameUsed Then Begin
+   If Emu_NbNameEq(LxNetBios.DgQueues[I].Name, Nom) Then Begin
+    Lx_NbFindOrAllocDgQueue := I; Exit;
+   End;
+  End Else If Free < 0 Then Free := I;
+ End;
+ If Free >= 0 Then Begin
+  LxNetBios.DgQueues[Free].NameUsed := True;
+  LxNetBios.DgQueues[Free].Name := Nom;
+  LxNetBios.DgQueues[Free].Count := 0;
+  LxNetBios.DgQueues[Free].Head := 0;
+ End;
+ Lx_NbFindOrAllocDgQueue := Free;
+End;
+
+Function Lx_NbReadNcb(Addr: LongInt): TEmuNbNcb;
+Var I: Integer; R: TEmuNbNcb;
+Begin
+ For I := 0 To 63 Do R.Buf[I] := Lx_ReadByte(Addr + I);
+ Lx_NbReadNcb := R;
+End;
+
+Procedure Lx_NbWriteNcb(Addr: LongInt; Var N: TEmuNbNcb);
+Var I: Integer;
+Begin
+ For I := 0 To 63 Do Lx_WriteByte(Addr + I, N.Buf[I]);
+End;
+
+Procedure Lx_NbCmdReset(Var Ncb: TEmuNbNcb);
+Begin
+ FillChar(LxNetBios.Names, SizeOf(LxNetBios.Names), 0);
+ FillChar(LxNetBios.Sessions, SizeOf(LxNetBios.Sessions), 0);
+ FillChar(LxNetBios.Pending, SizeOf(LxNetBios.Pending), 0);
+ FillChar(LxNetBios.PendingRecv, SizeOf(LxNetBios.PendingRecv), 0);
+ FillChar(LxNetBios.DgQueues, SizeOf(LxNetBios.DgQueues), 0);
+ FillChar(LxNetBios.BcastDg, SizeOf(LxNetBios.BcastDg), 0);
+ FillChar(LxNetBios.PendingDgRecv, SizeOf(LxNetBios.PendingDgRecv), 0);
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Lx_NbCmdAddName(Var Ncb: TEmuNbNcb; IsGroup: Boolean);
+Var I, Free, Dup: Integer;
+Begin
+ Dup := -1; Free := -1;
+ For I := 0 To 31 Do
+  If LxNetBios.Names[I].InUse Then Begin
+   If Emu_NbNameEq(LxNetBios.Names[I].Nom, Ncb.F.Name) Then
+    If (Not IsGroup) Or (Not LxNetBios.Names[I].IsGroup) Then Dup := I;
+  End Else If Free < 0 Then Free := I;
+ If Dup >= 0 Then Begin Ncb.F.RetCode := $0D; Exit; End;
+ If Free < 0 Then Begin Ncb.F.RetCode := $0E; Exit; End;
+ LxNetBios.Names[Free].InUse := True;
+ LxNetBios.Names[Free].Nom := Ncb.F.Name;
+ LxNetBios.Names[Free].IsGroup := IsGroup;
+ LxNetBios.Names[Free].Num := Lx_NbNextNameNum;
+ Ncb.F.Num := LxNetBios.Names[Free].Num;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Lx_NbCmdDelName(Var Ncb: TEmuNbNcb);
+Var I, Idx: Integer; HasSession: Boolean;
+Begin
+ Idx := Lx_NbFindNameText(Ncb.F.Name);
+ If Idx < 0 Then Begin Ncb.F.RetCode := $17; Exit; End;
+ HasSession := False;
+ For I := 0 To 31 Do
+  If LxNetBios.Sessions[I].InUse And
+     (LxNetBios.Sessions[I].LocalNum = LxNetBios.Names[Idx].Num) Then
+   HasSession := True;
+ If HasSession Then Begin Ncb.F.RetCode := $0F; Exit; End;
+ LxNetBios.Names[Idx].InUse := False;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Lx_NbCmdCall(Var Ncb: TEmuNbNcb; Addr: LongInt);
+Var
+ I, PIdx, S1, S2, MyNameIdx: Integer;
+ OtherNcb: TEmuNbNcb;
+ Seg, Ofs: Word;
+Begin
+ MyNameIdx := Lx_NbFindNameText(Ncb.F.Name);
+ If MyNameIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End;
+ PIdx := -1;
+ For I := 0 To 31 Do
+  If LxNetBios.Pending[I].InUse And LxNetBios.Pending[I].IsListen And
+     Emu_NbNameEq(LxNetBios.Pending[I].LocalName, Ncb.F.CallName) And
+     Emu_NbPatternMatch(LxNetBios.Pending[I].CallName, Ncb.F.Name) Then
+   PIdx := I;
+ If PIdx < 0 Then Begin
+  PIdx := Lx_NbFindFreePending;
+  If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End;
+  Lx_NbPackAddr(Addr, Seg, Ofs);
+  LxNetBios.Pending[PIdx].InUse := True;
+  LxNetBios.Pending[PIdx].IsListen := False;
+  LxNetBios.Pending[PIdx].LocalNum := LxNetBios.Names[MyNameIdx].Num;
+  LxNetBios.Pending[PIdx].LocalName := Ncb.F.Name;
+  LxNetBios.Pending[PIdx].CallName := Ncb.F.CallName;
+  LxNetBios.Pending[PIdx].NcbSeg := Seg;
+  LxNetBios.Pending[PIdx].NcbOfs := Ofs;
+  Ncb.F.RetCode := $FF;
+  Exit;
+ End;
+ S1 := Lx_NbAllocSession;
+ If S1 < 0 Then Begin Ncb.F.RetCode := $11; Exit; End;
+ S2 := Lx_NbAllocSession;
+ If S2 < 0 Then Begin
+  LxNetBios.Sessions[S1].InUse := False;
+  Ncb.F.RetCode := $11; Exit;
+ End;
+ LxNetBios.Sessions[S1].Lsn := Lx_NbAllocLsn;
+ LxNetBios.Sessions[S2].Lsn := Lx_NbAllocLsn;
+ LxNetBios.Sessions[S1].LocalNum := LxNetBios.Names[MyNameIdx].Num;
+ LxNetBios.Sessions[S1].LocalName := Ncb.F.Name;
+ LxNetBios.Sessions[S1].RemoteName := Ncb.F.CallName;
+ LxNetBios.Sessions[S1].PeerLsn := LxNetBios.Sessions[S2].Lsn;
+ LxNetBios.Sessions[S1].RecvLen := 0;
+ LxNetBios.Sessions[S1].Aborted := False;
+ LxNetBios.Sessions[S2].LocalNum := LxNetBios.Pending[PIdx].LocalNum;
+ LxNetBios.Sessions[S2].LocalName := LxNetBios.Pending[PIdx].LocalName;
+ LxNetBios.Sessions[S2].RemoteName := Ncb.F.Name;
+ LxNetBios.Sessions[S2].PeerLsn := LxNetBios.Sessions[S1].Lsn;
+ LxNetBios.Sessions[S2].RecvLen := 0;
+ LxNetBios.Sessions[S2].Aborted := False;
+ OtherNcb := Lx_NbReadNcb(Lx_NbUnpackAddr(LxNetBios.Pending[PIdx].NcbSeg, LxNetBios.Pending[PIdx].NcbOfs));
+ OtherNcb.F.RetCode := 0;
+ OtherNcb.F.Lsn := LxNetBios.Sessions[S2].Lsn;
+ OtherNcb.F.CallName := Ncb.F.Name;
+ Lx_NbWriteNcb(Lx_NbUnpackAddr(LxNetBios.Pending[PIdx].NcbSeg, LxNetBios.Pending[PIdx].NcbOfs), OtherNcb);
+ LxNetBios.Pending[PIdx].InUse := False;
+ Ncb.F.RetCode := 0;
+ Ncb.F.Lsn := LxNetBios.Sessions[S1].Lsn;
+End;
+
+Procedure Lx_NbCmdListen(Var Ncb: TEmuNbNcb; Addr: LongInt);
+Var
+ I, PIdx, S1, S2, MyNameIdx: Integer;
+ OtherNcb: TEmuNbNcb;
+ Seg, Ofs: Word;
+Begin
+ MyNameIdx := Lx_NbFindNameText(Ncb.F.Name);
+ If MyNameIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End;
+ PIdx := -1;
+ For I := 0 To 31 Do
+  If LxNetBios.Pending[I].InUse And (Not LxNetBios.Pending[I].IsListen) And
+     Emu_NbNameEq(LxNetBios.Pending[I].CallName, Ncb.F.Name) And
+     Emu_NbPatternMatch(Ncb.F.CallName, LxNetBios.Pending[I].LocalName) Then
+   PIdx := I;
+ If PIdx < 0 Then Begin
+  PIdx := Lx_NbFindFreePending;
+  If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End;
+  Lx_NbPackAddr(Addr, Seg, Ofs);
+  LxNetBios.Pending[PIdx].InUse := True;
+  LxNetBios.Pending[PIdx].IsListen := True;
+  LxNetBios.Pending[PIdx].LocalNum := LxNetBios.Names[MyNameIdx].Num;
+  LxNetBios.Pending[PIdx].LocalName := Ncb.F.Name;
+  LxNetBios.Pending[PIdx].CallName := Ncb.F.CallName;
+  LxNetBios.Pending[PIdx].NcbSeg := Seg;
+  LxNetBios.Pending[PIdx].NcbOfs := Ofs;
+  Ncb.F.RetCode := $FF;
+  Exit;
+ End;
+ S1 := Lx_NbAllocSession;
+ If S1 < 0 Then Begin Ncb.F.RetCode := $11; Exit; End;
+ S2 := Lx_NbAllocSession;
+ If S2 < 0 Then Begin
+  LxNetBios.Sessions[S1].InUse := False;
+  Ncb.F.RetCode := $11; Exit;
+ End;
+ LxNetBios.Sessions[S1].Lsn := Lx_NbAllocLsn;
+ LxNetBios.Sessions[S2].Lsn := Lx_NbAllocLsn;
+ LxNetBios.Sessions[S1].LocalNum := LxNetBios.Names[MyNameIdx].Num;
+ LxNetBios.Sessions[S1].LocalName := Ncb.F.Name;
+ LxNetBios.Sessions[S1].RemoteName := LxNetBios.Pending[PIdx].LocalName;
+ LxNetBios.Sessions[S1].PeerLsn := LxNetBios.Sessions[S2].Lsn;
+ LxNetBios.Sessions[S1].RecvLen := 0;
+ LxNetBios.Sessions[S1].Aborted := False;
+ LxNetBios.Sessions[S2].LocalNum := LxNetBios.Pending[PIdx].LocalNum;
+ LxNetBios.Sessions[S2].LocalName := LxNetBios.Pending[PIdx].LocalName;
+ LxNetBios.Sessions[S2].RemoteName := Ncb.F.Name;
+ LxNetBios.Sessions[S2].PeerLsn := LxNetBios.Sessions[S1].Lsn;
+ LxNetBios.Sessions[S2].RecvLen := 0;
+ LxNetBios.Sessions[S2].Aborted := False;
+ OtherNcb := Lx_NbReadNcb(Lx_NbUnpackAddr(LxNetBios.Pending[PIdx].NcbSeg, LxNetBios.Pending[PIdx].NcbOfs));
+ OtherNcb.F.RetCode := 0;
+ OtherNcb.F.Lsn := LxNetBios.Sessions[S2].Lsn;
+ Lx_NbWriteNcb(Lx_NbUnpackAddr(LxNetBios.Pending[PIdx].NcbSeg, LxNetBios.Pending[PIdx].NcbOfs), OtherNcb);
+ Ncb.F.RetCode := 0;
+ Ncb.F.Lsn := LxNetBios.Sessions[S1].Lsn;
+ Ncb.F.CallName := LxNetBios.Pending[PIdx].LocalName;
+ LxNetBios.Pending[PIdx].InUse := False;
+End;
+
+Procedure Lx_NbCmdHangup(Var Ncb: TEmuNbNcb);
+Var SIdx, PIdx: Integer;
+Begin
+ SIdx := Lx_NbFindSessionByLsn(Ncb.F.Lsn);
+ If SIdx < 0 Then Begin Ncb.F.RetCode := $08; Exit; End;
+ PIdx := Lx_NbFindSessionByLsn(LxNetBios.Sessions[SIdx].PeerLsn);
+ If PIdx >= 0 Then LxNetBios.Sessions[PIdx].Aborted := True;
+ LxNetBios.Sessions[SIdx].InUse := False;
+ Ncb.F.RetCode := 0;
+End;
+
+Function Lx_NbDeliverToPendingRecv(PeerIdx: Integer; Var Data: TEmuNbBuf2048; Len: Integer): Boolean;
+Var I, J, Copied: Integer; Addr: LongInt;
+Begin
+ Lx_NbDeliverToPendingRecv := False;
+ For I := 0 To 31 Do
+  If LxNetBios.PendingRecv[I].InUse Then
+   If (LxNetBios.PendingRecv[I].AnyName And
+       (LxNetBios.PendingRecv[I].LocalNum = LxNetBios.Sessions[PeerIdx].LocalNum)) Or
+      ((Not LxNetBios.PendingRecv[I].AnyName) And
+       (LxNetBios.PendingRecv[I].Lsn = LxNetBios.Sessions[PeerIdx].Lsn)) Then Begin
+    Copied := Len;
+    If Copied > LxNetBios.PendingRecv[I].MaxLen Then Copied := LxNetBios.PendingRecv[I].MaxLen;
+    For J := 0 To Copied - 1 Do
+     Lx_WriteByte(Lx_NbUnpackAddr(LxNetBios.PendingRecv[I].BufSeg,
+      LxNetBios.PendingRecv[I].BufOfs) + J, Data[J]);
+    Addr := Lx_NbUnpackAddr(LxNetBios.PendingRecv[I].NcbSeg, LxNetBios.PendingRecv[I].NcbOfs);
+    Lx_WriteByte(Addr + 1, 0);
+    Lx_WriteByte(Addr + 2, LxNetBios.Sessions[PeerIdx].Lsn);
+    Lx_WriteWord(Addr + 8, Word(Copied));
+    LxNetBios.PendingRecv[I].InUse := False;
+    Lx_NbDeliverToPendingRecv := True;
+    Exit;
+   End;
+End;
+
+Procedure Lx_NbCmdSend(Var Ncb: TEmuNbNcb);
+Var SIdx, PeerIdx, Len, I: Integer; Data: TEmuNbBuf2048; SrcAddr: LongInt;
+Begin
+ SIdx := Lx_NbFindSessionByLsn(Ncb.F.Lsn);
+ If SIdx < 0 Then Begin Ncb.F.RetCode := $08; Exit; End;
+ If LxNetBios.Sessions[SIdx].Aborted Then Begin Ncb.F.RetCode := $18; Exit; End;
+ Len := Ncb.F.Length;
+ If Len > 2048 Then Len := 2048;
+ SrcAddr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+ For I := 0 To Len - 1 Do Data[I] := Lx_ReadByte(SrcAddr + I);
+ PeerIdx := Lx_NbFindSessionByLsn(LxNetBios.Sessions[SIdx].PeerLsn);
+ If PeerIdx < 0 Then Begin Ncb.F.RetCode := $18; Exit; End;
+ If Not Lx_NbDeliverToPendingRecv(PeerIdx, Data, Len) Then
+  For I := 0 To Len - 1 Do
+   If LxNetBios.Sessions[PeerIdx].RecvLen < 2048 Then Begin
+    LxNetBios.Sessions[PeerIdx].RecvBuf[LxNetBios.Sessions[PeerIdx].RecvLen] := Data[I];
+    Inc(LxNetBios.Sessions[PeerIdx].RecvLen);
+   End;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Lx_NbCmdRecv(Var Ncb: TEmuNbNcb; Addr: LongInt);
+Var SIdx, Copied, I, PIdx: Integer; Seg, Ofs: Word; DstAddr: LongInt;
+Begin
+ SIdx := Lx_NbFindSessionByLsn(Ncb.F.Lsn);
+ If SIdx < 0 Then Begin Ncb.F.RetCode := $08; Exit; End;
+ If LxNetBios.Sessions[SIdx].RecvLen > 0 Then Begin
+  Copied := LxNetBios.Sessions[SIdx].RecvLen;
+  If Copied > Ncb.F.Length Then Copied := Ncb.F.Length;
+  DstAddr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+  For I := 0 To Copied - 1 Do
+   Lx_WriteByte(DstAddr + I, LxNetBios.Sessions[SIdx].RecvBuf[I]);
+  For I := Copied To LxNetBios.Sessions[SIdx].RecvLen - 1 Do
+   LxNetBios.Sessions[SIdx].RecvBuf[I - Copied] := LxNetBios.Sessions[SIdx].RecvBuf[I];
+  Dec(LxNetBios.Sessions[SIdx].RecvLen, Copied);
+  Ncb.F.Length := Copied;
+  Ncb.F.RetCode := 0;
+  Exit;
+ End;
+ If LxNetBios.Sessions[SIdx].Aborted Then Begin Ncb.F.RetCode := $18; Exit; End;
+ PIdx := Lx_NbFindFreePendingRecv;
+ If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End;
+ Lx_NbPackAddr(Addr, Seg, Ofs);
+ LxNetBios.PendingRecv[PIdx].InUse := True;
+ LxNetBios.PendingRecv[PIdx].AnyName := False;
+ LxNetBios.PendingRecv[PIdx].Lsn := Ncb.F.Lsn;
+ LxNetBios.PendingRecv[PIdx].LocalNum := LxNetBios.Sessions[SIdx].LocalNum;
+ LxNetBios.PendingRecv[PIdx].NcbSeg := Seg;
+ LxNetBios.PendingRecv[PIdx].NcbOfs := Ofs;
+ LxNetBios.PendingRecv[PIdx].BufSeg := Ncb.F.BufSeg;
+ LxNetBios.PendingRecv[PIdx].BufOfs := Ncb.F.BufOfs;
+ LxNetBios.PendingRecv[PIdx].MaxLen := Ncb.F.Length;
+ Ncb.F.RetCode := $FF;
+End;
+
+Procedure Lx_NbCmdRecvAny(Var Ncb: TEmuNbNcb; Addr: LongInt);
+Var I, SIdx, Copied, PIdx: Integer; Seg, Ofs: Word; DstAddr: LongInt;
+Begin
+ SIdx := -1;
+ For I := 0 To 31 Do
+  If LxNetBios.Sessions[I].InUse And (LxNetBios.Sessions[I].LocalNum = Ncb.F.Num) And
+     (LxNetBios.Sessions[I].RecvLen > 0) Then
+   SIdx := I;
+ If SIdx >= 0 Then Begin
+  Copied := LxNetBios.Sessions[SIdx].RecvLen;
+  If Copied > Ncb.F.Length Then Copied := Ncb.F.Length;
+  DstAddr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+  For I := 0 To Copied - 1 Do
+   Lx_WriteByte(DstAddr + I, LxNetBios.Sessions[SIdx].RecvBuf[I]);
+  For I := Copied To LxNetBios.Sessions[SIdx].RecvLen - 1 Do
+   LxNetBios.Sessions[SIdx].RecvBuf[I - Copied] := LxNetBios.Sessions[SIdx].RecvBuf[I];
+  Dec(LxNetBios.Sessions[SIdx].RecvLen, Copied);
+  Ncb.F.Length := Copied;
+  Ncb.F.Lsn := LxNetBios.Sessions[SIdx].Lsn;
+  Ncb.F.RetCode := 0;
+  Exit;
+ End;
+ PIdx := Lx_NbFindFreePendingRecv;
+ If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End;
+ Lx_NbPackAddr(Addr, Seg, Ofs);
+ LxNetBios.PendingRecv[PIdx].InUse := True;
+ LxNetBios.PendingRecv[PIdx].AnyName := True;
+ LxNetBios.PendingRecv[PIdx].LocalNum := Ncb.F.Num;
+ LxNetBios.PendingRecv[PIdx].NcbSeg := Seg;
+ LxNetBios.PendingRecv[PIdx].NcbOfs := Ofs;
+ LxNetBios.PendingRecv[PIdx].BufSeg := Ncb.F.BufSeg;
+ LxNetBios.PendingRecv[PIdx].BufOfs := Ncb.F.BufOfs;
+ LxNetBios.PendingRecv[PIdx].MaxLen := Ncb.F.Length;
+ Ncb.F.RetCode := $FF;
+End;
+
+Function Lx_NbDeliverToPendingDgUnicast(Const DestName: TEmuNb16; Var Dg: TEmuNbDgram): Boolean;
+Var I, J, Copied, NameIdx: Integer; Addr: LongInt;
+Begin
+ Lx_NbDeliverToPendingDgUnicast := False;
+ For I := 0 To 31 Do
+  If LxNetBios.PendingDgRecv[I].InUse And (Not LxNetBios.PendingDgRecv[I].Broadcast) Then Begin
+   NameIdx := Lx_NbFindNameByNum(LxNetBios.PendingDgRecv[I].LocalNum);
+   If (NameIdx >= 0) And Emu_NbNameEq(LxNetBios.Names[NameIdx].Nom, DestName) Then Begin
+    Copied := Dg.Len;
+    If Copied > LxNetBios.PendingDgRecv[I].MaxLen Then Copied := LxNetBios.PendingDgRecv[I].MaxLen;
+    For J := 0 To Copied - 1 Do
+     Lx_WriteByte(Lx_NbUnpackAddr(LxNetBios.PendingDgRecv[I].BufSeg,
+      LxNetBios.PendingDgRecv[I].BufOfs) + J, Dg.Data[J]);
+    Addr := Lx_NbUnpackAddr(LxNetBios.PendingDgRecv[I].NcbSeg, LxNetBios.PendingDgRecv[I].NcbOfs);
+    Lx_WriteByte(Addr + 1, 0);
+    Lx_WriteWord(Addr + 8, Word(Copied));
+    For J := 0 To 15 Do
+     Lx_WriteByte(Addr + 10 + J, Byte(Dg.FromName[J]));
+    LxNetBios.PendingDgRecv[I].InUse := False;
+    Lx_NbDeliverToPendingDgUnicast := True;
+    Exit;
+   End;
+  End;
+End;
+
+Procedure Lx_NbDeliverToPendingDgBroadcast(Var Dg: TEmuNbDgram; Var AnyDelivered: Boolean);
+Var I, J, Copied: Integer; Addr: LongInt;
+Begin
+ AnyDelivered := False;
+ For I := 0 To 31 Do
+  If LxNetBios.PendingDgRecv[I].InUse And LxNetBios.PendingDgRecv[I].Broadcast Then Begin
+   Copied := Dg.Len;
+   If Copied > LxNetBios.PendingDgRecv[I].MaxLen Then Copied := LxNetBios.PendingDgRecv[I].MaxLen;
+   For J := 0 To Copied - 1 Do
+    Lx_WriteByte(Lx_NbUnpackAddr(LxNetBios.PendingDgRecv[I].BufSeg,
+     LxNetBios.PendingDgRecv[I].BufOfs) + J, Dg.Data[J]);
+   Addr := Lx_NbUnpackAddr(LxNetBios.PendingDgRecv[I].NcbSeg, LxNetBios.PendingDgRecv[I].NcbOfs);
+   Lx_WriteByte(Addr + 1, 0);
+   Lx_WriteWord(Addr + 8, Word(Copied));
+   For J := 0 To 15 Do
+    Lx_WriteByte(Addr + 10 + J, Byte(Dg.FromName[J]));
+   LxNetBios.PendingDgRecv[I].InUse := False;
+   AnyDelivered := True;
+  End;
+End;
+
+Procedure Lx_NbCmdSendDg(Var Ncb: TEmuNbNcb; Broadcast: Boolean);
+Var SrcIdx, Len, I, QIdx: Integer; Dg: TEmuNbDgram; Delivered: Boolean; SrcAddr: LongInt;
+Begin
+ SrcIdx := Lx_NbFindNameByNum(Ncb.F.Num);
+ If SrcIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End;
+ Len := Ncb.F.Length;
+ If Len > 512 Then Len := 512;
+ Dg.Len := Len;
+ SrcAddr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+ For I := 0 To Len - 1 Do Dg.Data[I] := Lx_ReadByte(SrcAddr + I);
+ Dg.FromName := LxNetBios.Names[SrcIdx].Nom;
+ If Broadcast Then Begin
+  Lx_NbDeliverToPendingDgBroadcast(Dg, Delivered);
+  If Not Delivered Then Emu_NbQueuePush(LxNetBios.BcastDg, Dg);
+ End Else Begin
+  If Not Lx_NbDeliverToPendingDgUnicast(Ncb.F.CallName, Dg) Then Begin
+   QIdx := Lx_NbFindOrAllocDgQueue(Ncb.F.CallName);
+   If QIdx >= 0 Then Emu_NbQueuePush(LxNetBios.DgQueues[QIdx], Dg);
+  End;
+ End;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Lx_NbCmdRecvDg(Var Ncb: TEmuNbNcb; Addr: LongInt; Broadcast: Boolean);
+Var NameIdx, QIdx, Copied, I, PIdx: Integer; Dg: TEmuNbDgram; Got: Boolean;
+ Seg, Ofs: Word; DstAddr: LongInt;
+Begin
+ If Broadcast Then
+  Got := Emu_NbQueuePopInto(LxNetBios.BcastDg, Dg)
+ Else Begin
+  NameIdx := Lx_NbFindNameByNum(Ncb.F.Num);
+  If NameIdx < 0 Then Begin Ncb.F.RetCode := $13; Exit; End;
+  Got := False;
+  QIdx := Lx_NbFindOrAllocDgQueue(LxNetBios.Names[NameIdx].Nom);
+  If QIdx >= 0 Then Got := Emu_NbQueuePopInto(LxNetBios.DgQueues[QIdx], Dg);
+ End;
+ If Got Then Begin
+  Copied := Dg.Len;
+  If Copied > Ncb.F.Length Then Copied := Ncb.F.Length;
+  DstAddr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+  For I := 0 To Copied - 1 Do Lx_WriteByte(DstAddr + I, Dg.Data[I]);
+  Ncb.F.Length := Copied;
+  Ncb.F.CallName := Dg.FromName;
+  Ncb.F.RetCode := 0;
+  Exit;
+ End;
+ PIdx := Lx_NbFindFreePendingDgRecv;
+ If PIdx < 0 Then Begin Ncb.F.RetCode := $21; Exit; End;
+ Lx_NbPackAddr(Addr, Seg, Ofs);
+ LxNetBios.PendingDgRecv[PIdx].InUse := True;
+ LxNetBios.PendingDgRecv[PIdx].Broadcast := Broadcast;
+ LxNetBios.PendingDgRecv[PIdx].LocalNum := Ncb.F.Num;
+ LxNetBios.PendingDgRecv[PIdx].NcbSeg := Seg;
+ LxNetBios.PendingDgRecv[PIdx].NcbOfs := Ofs;
+ LxNetBios.PendingDgRecv[PIdx].BufSeg := Ncb.F.BufSeg;
+ LxNetBios.PendingDgRecv[PIdx].BufOfs := Ncb.F.BufOfs;
+ LxNetBios.PendingDgRecv[PIdx].MaxLen := Ncb.F.Length;
+ Ncb.F.RetCode := $FF;
+End;
+
+Procedure Lx_NbCmdAdapterStatus(Var Ncb: TEmuNbNcb);
+Var I, J, Cnt, Pos: Integer; BaseAddr: LongInt;
+
+ Procedure PB(V: Byte);
+ Begin
+  Lx_WriteByte(BaseAddr + Pos, V);
+  Inc(Pos);
+ End;
+
+ Procedure PW(V: Word);
+ Begin
+  PB(Lo(V)); PB(Hi(V));
+ End;
+
+ Procedure PD(V: LongInt);
+ Begin
+  PW(Word(V And $FFFF)); PW(Word((V Shr 16) And $FFFF));
+ End;
+
+Begin
+ BaseAddr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+ Pos := 0;
+ For I := 0 To 5 Do PB(LxNetBios.LocalAddr[I]);
+ PB(3); PB(0); PB($FE); PB(0);
+ PW(0); PW(0); PW(0); PW(0); PW(0);
+ PD(0); PD(0);
+ PW(0); PW(0); PW(0); PW(0);
+ PD(0);
+ PW(32); PW(0); PW(0); PW(0);
+ PW(512);
+ PW(0); PW(32); PW(0);
+ PW(2048);
+ Cnt := 0;
+ For I := 0 To 31 Do If LxNetBios.Names[I].InUse Then Inc(Cnt);
+ PW(Cnt);
+ For I := 0 To 31 Do
+  If LxNetBios.Names[I].InUse Then Begin
+   For J := 0 To 15 Do PB(Byte(LxNetBios.Names[I].Nom[J]));
+   PB(LxNetBios.Names[I].Num);
+   PB(0);
+  End;
+ Ncb.F.Length := Pos;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Lx_NbCmdSessionStatus(Var Ncb: TEmuNbNcb);
+Var I, J, Cnt, Pos: Integer; St: Byte; BaseAddr: LongInt;
+
+ Procedure PB(V: Byte);
+ Begin
+  Lx_WriteByte(BaseAddr + Pos, V);
+  Inc(Pos);
+ End;
+
+Begin
+ BaseAddr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+ Cnt := 0;
+ For I := 0 To 31 Do
+  If LxNetBios.Sessions[I].InUse And (LxNetBios.Sessions[I].LocalNum = Ncb.F.Num) Then Inc(Cnt);
+ Pos := 0;
+ PB(Ncb.F.Num); PB(Cnt); PB(0); PB(0);
+ For I := 0 To 31 Do
+  If LxNetBios.Sessions[I].InUse And (LxNetBios.Sessions[I].LocalNum = Ncb.F.Num) Then Begin
+   PB(LxNetBios.Sessions[I].Lsn);
+   If LxNetBios.Sessions[I].Aborted Then St := 6 Else St := 3;
+   PB(St);
+   For J := 0 To 15 Do PB(Byte(LxNetBios.Sessions[I].LocalName[J]));
+   For J := 0 To 15 Do PB(Byte(LxNetBios.Sessions[I].RemoteName[J]));
+   PB(0); PB(0);
+  End;
+ Ncb.F.Length := Pos;
+ Ncb.F.RetCode := 0;
+End;
+
+Procedure Lx_NbCmdCancel(Var Ncb: TEmuNbNcb);
+Var I: Integer; Found: Boolean; Addr: LongInt;
+Begin
+ Found := False;
+ Addr := Lx_NbUnpackAddr(Ncb.F.BufSeg, Ncb.F.BufOfs);
+ For I := 0 To 31 Do
+  If LxNetBios.Pending[I].InUse And (LxNetBios.Pending[I].NcbSeg = Ncb.F.BufSeg) And
+     (LxNetBios.Pending[I].NcbOfs = Ncb.F.BufOfs) Then Begin
+   Lx_WriteByte(Addr + 1, $0B);
+   LxNetBios.Pending[I].InUse := False;
+   Found := True;
+  End;
+ For I := 0 To 31 Do
+  If LxNetBios.PendingRecv[I].InUse And (LxNetBios.PendingRecv[I].NcbSeg = Ncb.F.BufSeg) And
+     (LxNetBios.PendingRecv[I].NcbOfs = Ncb.F.BufOfs) Then Begin
+   Lx_WriteByte(Addr + 1, $0B);
+   LxNetBios.PendingRecv[I].InUse := False;
+   Found := True;
+  End;
+ For I := 0 To 31 Do
+  If LxNetBios.PendingDgRecv[I].InUse And (LxNetBios.PendingDgRecv[I].NcbSeg = Ncb.F.BufSeg) And
+     (LxNetBios.PendingDgRecv[I].NcbOfs = Ncb.F.BufOfs) Then Begin
+   Lx_WriteByte(Addr + 1, $0B);
+   LxNetBios.PendingDgRecv[I].InUse := False;
+   Found := True;
+  End;
+ If Found Then Ncb.F.RetCode := 0 Else Ncb.F.RetCode := $26;
+End;
+
+{ Dispatche une commande NCB deja lue en memoire (Addr = adresse lineaire   }
+{ 32 bits du debut de la NCB de 64 octets, deja copiee dans LX_Mem par      }
+{ l'appelant - voir NetBiosSubmit/NetBios dans Lx_DoDosCall) - meme Case     }
+{ que Emu_DoInt5C, adapte a l'adressage plat. }
+Function Lx_NbSubmit(Addr: LongInt): Byte;
+Var Ncb: TEmuNbNcb; Cmd: Byte;
+Begin
+ Ncb := Lx_NbReadNcb(Addr);
+ Cmd := Ncb.F.Command And $7F;
+ Case Cmd Of
+  $32: Lx_NbCmdReset(Ncb);
+  $30: Lx_NbCmdAddName(Ncb, False);
+  $36: Lx_NbCmdAddName(Ncb, True);
+  $31: Lx_NbCmdDelName(Ncb);
+  $10: Lx_NbCmdCall(Ncb, Addr);
+  $11: Lx_NbCmdListen(Ncb, Addr);
+  $12: Lx_NbCmdHangup(Ncb);
+  $14, $71, $17, $72: Lx_NbCmdSend(Ncb);
+  $15: Lx_NbCmdRecv(Ncb, Addr);
+  $16: Lx_NbCmdRecvAny(Ncb, Addr);
+  $20: Lx_NbCmdSendDg(Ncb, False);
+  $22: Lx_NbCmdSendDg(Ncb, True);
+  $21: Lx_NbCmdRecvDg(Ncb, Addr, False);
+  $23: Lx_NbCmdRecvDg(Ncb, Addr, True);
+  $33: Lx_NbCmdAdapterStatus(Ncb);
+  $34: Lx_NbCmdSessionStatus(Ncb);
+  $35: Lx_NbCmdCancel(Ncb);
+  $70: Ncb.F.RetCode := 0;
+ Else
+  Ncb.F.RetCode := $03;
+ End;
+ Lx_NbWriteNcb(Addr, Ncb);
+ Lx_NbSubmit := Ncb.F.RetCode;
+End;
+
 { --- Chantier OS/2 LX, Stage 3 (suite) : dispatcher DOSCALLS. Appele par   }
 { Lx_Step DES QUE EIP entre dans la zone de trappe (avant tout decodage    }
 { d instruction, voir plus bas) - a cet instant, l appel proche qui a       }
@@ -83057,6 +83817,10 @@ Var
  { SILENCIEUSEMENT sans jamais le signaler, corrompant les donnees reelles  }
  { de l utilisateur plutot que de refuser proprement. }
  ClipStr: AnsiString;
+ { NetBios/NetBiosOpen/NetBiosSubmit/NetBiosEnum/NetBiosClose (ACSNETB.DLL/ }
+ { NETAPI.DLL, dispatch par nom - voir plus bas). }
+ NbFuncName: String;
+ NbPhf, NbPncb, NbPBuf, NbPCb: LongInt;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= LX_ImportSlotCount) Then Begin
   Lx_Halt('Emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
@@ -83274,6 +84038,73 @@ Begin
     NArgsPopped := 1;
     Handled := True;
    End;
+  End;
+ End Else
+ If ((ModName = 'ACSNETB') Or (ModName = 'NETAPI')) And (Not IsOrd) And
+    (SlotIndex >= 0) And (SlotIndex < LX_MAX_TRAP_SLOTS) Then Begin
+  { NetBios/NetBiosOpen/NetBiosSubmit/NetBiosEnum/NetBiosClose (demande      }
+  { explicite de l'utilisateur) - voir le grand commentaire de tete pres    }
+  { de Lx_NbPackAddr pour le perimetre complet (etat LxNetBios INDEPENDANT  }
+  { de la pile DOS EmuNetBios, adressage plat). Dispatch par NOM REEL       }
+  { (LX_ImportNameStr, resolu au chargement - voir Lx_ReadImportProcName)   }
+  { car aucun ordinal verifie n'est disponible pour ces 2 DLL, contrairement}
+  { a DOSCALLS/PMWIN ci-dessus. }
+  NbFuncName := UpCaseStr(LX_ImportNameStr[SlotIndex]);
+  If NbFuncName = 'NETBIOSOPEN' Then Begin
+   { USHORT NetBiosOpen(PSZ pszDriverName, USHORT usLana, USHORT usOpenOpt, }
+   { PHFILE phf) - pszDriverName/usOpenOpt ignores (un seul adaptateur       }
+   { virtuel, jamais plusieurs pilotes concurrents a distinguer par nom). }
+   NbPhf := Lx_ReadDWord(LX_Reg.ESP + 16);
+   LxNetBiosOpen := True;
+   If (NbPhf >= 0) And (NbPhf + 4 <= High(LX_Mem)) Then Lx_WriteDWord(NbPhf, 1);
+   LX_Reg.EAX := 0; { NO_ERROR }
+   NArgsPopped := 4;
+   Handled := True;
+  End Else
+  If NbFuncName = 'NETBIOSCLOSE' Then Begin
+   { USHORT NetBiosClose(HFILE hf) }
+   LxNetBiosOpen := False;
+   LX_Reg.EAX := 0;
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If NbFuncName = 'NETBIOSSUBMIT' Then Begin
+   { USHORT NetBiosSubmit(SHORT sLana, USHORT usTimeOut, PNCB pncb) -        }
+   { usTimeOut ignore, ce moteur ne bloque jamais (meme limite documentee    }
+   { que la pile DOS INT 5Ch, voir NRC_PENDING/$FF plus haut). Renvoie       }
+   { directement ncb_retcode (meme convention que AL en sortie de           }
+   { l'INT 5Ch reel), pas juste "soumission acceptee". }
+   NbPncb := Lx_ReadDWord(LX_Reg.ESP + 12);
+   LX_Reg.EAX := Lx_NbSubmit(NbPncb);
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If NbFuncName = 'NETBIOS' Then Begin
+   { USHORT NetBios(PNCB pncb) - plus ancienne interface IBM (ACSNETB.DLL   }
+   { uniquement, absente de NETAPI.DLL) : un seul parametre, pas de LANA/   }
+   { timeout separes. }
+   NbPncb := Lx_ReadDWord(LX_Reg.ESP + 4);
+   LX_Reg.EAX := Lx_NbSubmit(NbPncb);
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If NbFuncName = 'NETBIOSENUM' Then Begin
+   { Enumere les adaptateurs NetBIOS disponibles - un SEUL adaptateur         }
+   { virtuel ici (LANA 0). Disposition exacte NON verifiee contre une         }
+   { source primaire (contrairement au reste de ce dispatcheur) : ecrit un   }
+   { octet "nombre de LANA"=1 suivi de l'octet "numero de LANA"=0 a          }
+   { pBuffer, meilleure estimation raisonnable plutot qu'un refus pur -       }
+   { a corriger si un vrai programme NetBiosEnum se comporte autrement. }
+   NbPBuf := Lx_ReadDWord(LX_Reg.ESP + 4);
+   NbPCb := Lx_ReadDWord(LX_Reg.ESP + 8);
+   If (NbPBuf >= 0) And (NbPBuf + 2 <= High(LX_Mem)) Then Begin
+    Lx_WriteByte(NbPBuf, 1);
+    Lx_WriteByte(NbPBuf + 1, 0);
+   End;
+   If (NbPCb >= 0) And (NbPCb + 2 <= High(LX_Mem)) Then Lx_WriteWord(NbPCb, 2);
+   LX_Reg.EAX := 0;
+   NArgsPopped := 2;
+   Handled := True;
   End;
  End;
  If Not Handled Then Begin
@@ -167503,6 +168334,8 @@ Begin NesActive := False;
   { immediatement, execution reelle pilotee par l idle-tick via            }
   { Lx_RunOneChunk). }
   LX_Panel := @P;
+  FillChar(LxNetBios, SizeOf(LxNetBios), 0);
+  LxNetBiosOpen := False;
   Loaded := Emu_LoadLX(BinaryPath);
   If Not Loaded Then Begin
    P.CurFg := 12;
