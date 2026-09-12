@@ -2354,6 +2354,11 @@ Const
  OS9_PRCDESC_SIZE = 512; { taille reelle documentee d un descripteur de processus }
  OS9_PDIMG_OFS    = 256; { offset de la table "image DAT" simplifiee dans le descripteur }
  OS9_PDIMG_LEN    = 64;  { 64 blocs logiques de 1 Ko suivis (0..63) - format simplifie disclose }
+ { Sixieme lot de F$ (2026-09-12, demande explicite) : F$FModul/F$ELink     }
+ { ont besoin d une VRAIE entree de repertoire adressable (pas juste une    }
+ { entree de tableau Pascal) - format longueur+nom simplifie et disclose,   }
+ { carve depuis la MEME zone F$Mem au demarrage -COS9 (voir ShowEmulatorPanel).}
+ OS9_MODDIR_ENTRY_SIZE = 16;
  { Zone de parametres (ligne de commande) ecrite par ShowEmulatorPanel et   }
  { pointee par Y au demarrage - au-dela des 4 emplacements F$Load/F$Fork    }
  { ($A000..$DFFF), avant la pile ($FFFE). }
@@ -10304,6 +10309,12 @@ Var
  { F$SUser/F$ID : UID REEL stocke (F$ID/$0C plus haut a ete mis a jour      }
  { pour le lire au lieu de renvoyer 0 fixe). }
  OS9_UserID     : Word;
+ { Sixieme lot de F$ (2026-09-12, demande explicite) : adresses REELLES     }
+ { (carve depuis la zone F$Mem au demarrage -COS9) des entrees de           }
+ { "repertoire des modules" exposees par F$FModul/$4E et consommees par     }
+ { F$ELink/$4D - voir OS9_ModDirEntryAddr/OS9_ModSlotByDirAddr. }
+ OS9_PrimaryDirAddr: Word;
+ OS9_ModDirAddr : Array[0..3] Of Word;
  { --- Etat emulateur CoCo 3 (jalon 1 : VDG alpha 32x16) --- }
  Coco3_Active   : Boolean;
  Coco3_FB       : Array[0..199, 0..255] Of Byte;  { framebuffer 256x200 idx couleur EGA }
@@ -163003,6 +163014,33 @@ Begin
     End;
 End;
 
+{ Sixieme lot de F$ (2026-09-12, demande explicite) : traduit un slot de    }
+{ module (meme convention que OS9_FindModuleSlot : -2=principal, 0..3=      }
+{ table F$Load/F$Fork) vers l adresse REELLE de son entree de repertoire    }
+{ carvee au demarrage -COS9 (voir ShowEmulatorPanel) - utilise par           }
+{ F$FModul/$4E. Et l inverse (adresse -> slot), utilise par F$ELink/$4D. }
+Function OS9_ModDirEntryAddr(Slot: Integer): Word;
+Begin
+  If Slot = -2 Then OS9_ModDirEntryAddr := OS9_PrimaryDirAddr
+  Else If (Slot >= 0) And (Slot <= 3) Then OS9_ModDirEntryAddr := OS9_ModDirAddr[Slot]
+  Else OS9_ModDirEntryAddr := 0;
+End;
+
+Function OS9_ModSlotByDirAddr(Addr: Word): Integer;
+Var I: Integer;
+Begin
+  OS9_ModSlotByDirAddr := -1;
+  If (Addr <> 0) And (Addr = OS9_PrimaryDirAddr) Then Begin
+    OS9_ModSlotByDirAddr := -2;
+    Exit;
+  End;
+  For I := 0 To 3 Do
+    If (Addr <> 0) And (OS9_ModDirAddr[I] = Addr) Then Begin
+      OS9_ModSlotByDirAddr := I;
+      Exit;
+    End;
+End;
+
 { CRC-24/OS-9 reel (2026-09-12, F$CRC/F$CRCMod - demande explicite) :       }
 { poly=$800063, init=$FFFFFF, non reflechi, xorout=$FFFFFF - parametres    }
 { VERIFIES via le catalogue de reference reveng.sourceforge.io/crc-        }
@@ -163072,7 +163110,21 @@ End;
 { du vrai materiel MMU/DAT qui n existe pas dans ce coeur 6809 a memoire     }
 { plate - les simuler risquerait une vraie corruption memoire ou un faux     }
 { succes trompeur, pas une simple simplification (voir le commentaire juste }
-{ avant le cas $2C plus bas pour le detail). }
+{ avant le cas $2C plus bas pour le detail). Sixieme lot (meme session) :    }
+{ F$Find64, F$FreeLB, F$FreeHB, F$IODel, F$ELink, F$FModul, F$LDAXY,         }
+{ F$LDAXYP, F$LDABX, F$LDDDXY, F$GCMDir sont REELS (F$FreeLB/F$FreeHB/       }
+{ F$LDAXY/F$LDABX/F$LDDDXY reutilisent soit la table image DAT par           }
+{ descripteur de F$AllPrc, soit le fait qu un seul espace d adresses plat    }
+{ existe ici ; F$FModul/F$ELink exposent une VRAIE entree de repertoire de   }
+{ modules carvee au demarrage -COS9, voir OS9_ModDirEntryAddr/               }
+{ OS9_ModSlotByDirAddr ; F$GCMDir est un succes sans effet honnete, rien a   }
+{ compacter dans une table fixe). F$IRQ/F$IOQu/F$GProcP/F$DelTsk/F$MapBlk    }
+{ echouent honnetement pour les memes raisons deja exposees ci-dessus        }
+{ (respectivement : aucun controleur d IRQ, aucune suspension inter-          }
+{ processus reveillable - la simuler bloquerait cet emulateur POUR            }
+{ TOUJOURS -, aucun descripteur resident pour le processus "auto", aucun     }
+{ materiel MMU de registres de tache, meme chose pour le mappage physique    }
+{ de blocs). }
 Procedure M6809_DoOS9Syscall(SvcCode: Byte);
 Var
   Ch: Byte;
@@ -163128,6 +163180,12 @@ Var
   AIOK: Boolean;
   PDPtr: Word;
   CBZI: LongInt;
+  { Sixieme lot de F$/I$ (2026-09-12, demande explicite). }
+  FHNeed, FHFound, FHRun, FHI: Integer;
+  ELSlot: Integer;
+  FMName: String;
+  FMSlot, FMLen, FMI: Integer;
+  FMDirAddr: Word;
 Begin
   M6809_CC := M6809_CC And Not $01; { Carry clair = succes par defaut }
   Case SvcCode Of
@@ -163812,6 +163870,23 @@ Begin
     { la table "image DAT" simplifiee que F$AllPrc cree DANS le descripteur  }
     { qu il alloue lui-meme (memoire que ce sous-ensemble possede et         }
     { controle entierement, aucun risque de collision non plus). }
+    { Sixieme lot de F$/I$ (2026-09-12, demande explicite) : F$IRQ/F$IOQu    }
+    { necessitent un vrai controleur d interruptions materiel/une vraie      }
+    { suspension inter-processus reveillable - AUCUN des deux n existe dans  }
+    { ce coeur texte synchrone (F$IOQu, honorer litteralement la suspension  }
+    { "indefinie" documentee bloquerait cet emulateur POUR TOUJOURS, un      }
+    { vrai risque, pas juste une simplification) - echec honnete pour les    }
+    { deux, meme discipline que F$AProc/F$Boot juste apres. }
+    $2A: Begin { F$IRQ(D=adresse registre d etat, X=0 ou adresse paquet,     }
+           { Y=routine de service, U=zone memoire) - convention registre     }
+           { VERIFIEE (wiki F$IRQ). }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $2B: Begin { F$IOQu(A=PID) - convention registre VERIFIEE (wiki          }
+           { F$IOQu : "suspend le processus appelant indefiniment jusqu a    }
+           { un reveil externe"). }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
     $2C: Begin { F$AProc(X=descripteur de processus) - insere dans la file   }
            { d attente d execution. AUCUN ordonnanceur n existe dans ce      }
            { sous-ensemble synchrone (F$Fork execute et revient tout de      }
@@ -163820,6 +163895,17 @@ Begin
            { ne se produira jamais - echec honnete plutot qu un mensonge,    }
            { convention registre verifiee (wiki F$AProc). }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $2F: Begin { F$Find64(A=numero de bloc, X=adresse de la table de pages) }
+           { -> Y=adresse du bloc ; Carry positionne si bloc interdit/         }
+           { inutilise - convention registre VERIFIEE (wiki F$Find64). REEL : }
+           { reutilise le MEME format de table auto-coherent que F$All64/$30  }
+           { juste apres (disclose, voir ce cas). }
+           If (M6809_A < 1) Or (M6809_A > OS9_ALL64_BPP) Or
+              (M6809_Rd(Word(M6809_X + M6809_A)) = 0) Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else
+             M6809_Y := Word(M6809_X + 64 + (M6809_A - 1) * 64);
          End;
     $30: Begin { F$All64(X=base table de pages, 0=non allouee) -> A=numero   }
            { de bloc, X=base table, Y=adresse du bloc - convention registre  }
@@ -163864,6 +163950,22 @@ Begin
              End;
            End;
          End;
+    $33: Begin { F$IODel(X=adresse d un module d E/S) - convention registre  }
+           { VERIFIEE (wiki F$IODel). REEL : reverse-lookup dans la MEME     }
+           { table de modules que F$UnLink (OS9_ModBase) - ce sous-ensemble  }
+           { ne distingue jamais un module "d E/S" des autres types (F$Link/ }
+           { F$UnLink ne le font pas plus). Erreur si l adresse ne             }
+           { correspond a aucun module charge/utilise. }
+           Slot := -1;
+           For J := 0 To 3 Do
+             If OS9_ModUsed[J] And (OS9_ModBase[J] = M6809_X) Then Begin
+               Slot := J; Break;
+             End;
+           If Slot < 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+           End Else
+             OS9_ModUsed[Slot] := False;
+         End;
     $35: Begin { F$Boot() - amorcage systeme (lie le module Boot/celui de     }
            { l en-tete INIT depuis un peripherique physique de demarrage) -   }
            { AUCUN peripherique/mecanisme de recherche de module au           }
@@ -163890,6 +163992,15 @@ Begin
              OS9_MemSize := OS9_MemSize + BTBytes;
              M6809_SetD(BTBytes);
            End;
+         End;
+    $37: Begin { F$GProcP(A=PID) -> B=pointeur vers le descripteur de         }
+           { processus - convention registre VERIFIEE (wiki F$GProcP). Ce    }
+           { sous-ensemble n a JAMAIS de descripteur resident representant   }
+           { le processus "auto" en cours d execution (F$AllPrc/$4B alloue    }
+           { seulement de NOUVEAUX descripteurs a la demande, jamais          }
+           { associes en retour a un PID - meme raison que F$DelPrc/$4C) -   }
+           { rien de reel a renvoyer. Echec honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
          End;
     $39: Begin { F$AllRAM(B=nb de blocs) - AUCUN pool general de blocs de     }
            { RAM physique independant de OS9_MemSize/du chargeur de modules   }
@@ -163932,6 +164043,42 @@ Begin
              For AII := AIStart To AIStart + AICount - 1 Do
                M6809_Wr(Word(M6809_X + OS9_PDIMG_OFS + AII), 0);
          End;
+    $3D: Begin { F$FreeLB(B=nb de blocs, Y=pointeur image DAT) -> A=numero   }
+           { de bloc de depart - convention registre VERIFIEE (wiki           }
+           { F$FreeLB). REEL : "pointeur image DAT" reinterprete comme le    }
+           { pointeur de descripteur de processus deja etabli par             }
+           { F$AllPrc/$4B (MEME table "image DAT" simplifiee que F$AllImg/   }
+           { F$DelImg, OS9_PDIMG_OFS/LEN) - simplification disclosee, pas un  }
+           { second pool invente. Cherche depuis le DEBUT (adresses basses)  }
+           { la premiere plage libre, SANS la reserver (F$AllImg fait ca      }
+           { separement, meme composition que le vrai OS-9). }
+           FHNeed := M6809_B; FHFound := -1; FHRun := 0;
+           For FHI := 0 To OS9_PDIMG_LEN - 1 Do Begin
+             If M6809_Rd(Word(M6809_Y + OS9_PDIMG_OFS + FHI)) = 0 Then Begin
+               Inc(FHRun);
+               If FHRun = FHNeed Then Begin FHFound := FHI - FHNeed + 1; Break; End;
+             End Else FHRun := 0;
+           End;
+           If FHFound < 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else
+             M6809_A := FHFound;
+         End;
+    $3E: Begin { F$FreeHB - miroir de F$FreeLB ci-dessus, mais cherche        }
+           { depuis la FIN (adresses hautes) - convention registre VERIFIEE  }
+           { (wiki F$FreeHB). }
+           FHNeed := M6809_B; FHFound := -1; FHRun := 0;
+           For FHI := OS9_PDIMG_LEN - 1 Downto 0 Do Begin
+             If M6809_Rd(Word(M6809_Y + OS9_PDIMG_OFS + FHI)) = 0 Then Begin
+               Inc(FHRun);
+               If FHRun = FHNeed Then Begin FHFound := FHI; Break; End;
+             End Else FHRun := 0;
+           End;
+           If FHFound < 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else
+             M6809_A := FHFound;
+         End;
     $3F: Begin { F$AllTsk(X=descripteur de processus) - attribue un numero   }
            { de tache MATERIEL (registre de tache MMU reel) au processus,     }
            { et "copie l image DAT dans le materiel" (citation wiki           }
@@ -163955,6 +164102,12 @@ Begin
            { de RAM physique - pas d incoherence, deux appels distincts). }
            M6809_X := Word(LongInt(M6809_B) * $1000 + LongInt(M6809_X));
          End;
+    $40: Begin { F$DelTsk(X=descripteur de processus) - convention registre  }
+           { VERIFIEE (wiki F$DelTsk). Miroir exact de F$AllTsk/$3F juste     }
+           { au-dessus (meme absence de vrai materiel MMU/registres de        }
+           { tache) - meme echec honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
     $45: Begin { F$DATTmp(?) - "cree temporairement une image DAT, appel      }
            { obsolete" (description fournie par l utilisateur, confirmee     }
            { independamment : page wiki NitrOS-9 introuvable/404, cas rare   }
@@ -163962,6 +164115,46 @@ Begin
            { reference exploitable). Echec honnete, aucun materiel DAT reel   }
            { de toute facon dans ce coeur a memoire plate. }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $46: Begin { F$LDAXY(X=deplacement de bloc, Y=pointeur image DAT) ->     }
+           { A=octet - convention registre VERIFIEE (wiki F$LDAXY, qui        }
+           { precise elle-meme "suppose que X reste dans les limites du       }
+           { bloc, non verifie"). REEL : ce sous-ensemble n a qu UN SEUL       }
+           { espace d adresses plat (pas de banque materielle separee par     }
+           { "image DAT") - "octet a l image DAT(Y) deplacement X" degenere   }
+           { donc correctement en un simple acces memoire Y+X dans cet        }
+           { espace unique - PAS une valeur inventee, c est le resultat       }
+           { mathematiquement correct quand il n y a qu un seul espace         }
+           { d adresses a traduire. }
+           M6809_A := M6809_Rd(Word(M6809_Y + M6809_X));
+         End;
+    $47: Begin { F$LDAXYP - miroir post-incremente de F$LDAXY ci-dessus       }
+           { ("[X+,]Y" = mode d adressage 6809 post-incremente, description   }
+           { fournie par l utilisateur ; PAGE WIKI NitrOS-9 INTROUVABLE       }
+           { malgre plusieurs tentatives - meme discipline honnete que        }
+           { F$SSpd/F$TimAlm/F$TPS/I$Seek : implemente par analogie directe   }
+           { et forte avec F$LDAXY, sa seule difference documentee etant le  }
+           { post-incrementement). }
+           M6809_A := M6809_Rd(Word(M6809_Y + M6809_X));
+           M6809_X := Word(M6809_X + 1);
+         End;
+    $48: Begin { F$LDDDXY(D=deplacement, X=deplacement dans l image DAT,      }
+           { Y=pointeur image DAT) -> D=mot a [D+X],[Y] - convention          }
+           { confirmee UNIQUEMENT via le nom de l appel et la description     }
+           { fournie par l utilisateur (le texte extrait de la page wiki       }
+           { elle-meme etait incoherent/mal forme pour cet appel precis) :     }
+           { implemente comme adresse = Y + D + X (mode d adressage 6809      }
+           { indexe double "D,X,Y", coherent avec le nom LDDDXY et             }
+           { F$LDAXY/F$LDABX). }
+           M6809_SetD(M6809_Rd16(Word(M6809_Y + LongInt(M6809_GetD) + M6809_X)));
+         End;
+    $49: Begin { F$LDABX(B=numero de tache, X=pointeur) -> A=octet a 0,X     }
+           { dans l espace d adresses de la tache - convention registre       }
+           { VERIFIEE (wiki F$LDABX). REEL, meme raisonnement que F$LDAXY :   }
+           { un seul espace d adresses plat existe ici, donc "l espace de     }
+           { la tache B" EST cet espace unique - B (numero de tache) est      }
+           { accepte mais sans effet, il n y a rien d autre a distinguer. }
+           M6809_A := M6809_Rd(M6809_X);
          End;
     $4B: Begin { F$AllPrc() -> U=pointeur vers un descripteur de processus   }
            { - convention registre VERIFIEE (wiki F$AllPrc : "alloue et       }
@@ -163994,6 +164187,59 @@ Begin
            { rien. }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
          End;
+    $4D: Begin { F$ELink(B=type de module, X=pointeur d entree de            }
+           { repertoire) -> U=adresse d en-tete de module, Y=point d entree  }
+           { - convention registre VERIFIEE (wiki F$ELink). REEL : X doit     }
+           { correspondre a une des adresses d entree de repertoire que CE    }
+           { sous-ensemble a lui-meme distribuees via F$FModul/$4E juste       }
+           { apres (voir OS9_ModDirEntryAddr/OS9_ModSlotByDirAddr) - erreur   }
+           { propre sinon. }
+           ELSlot := OS9_ModSlotByDirAddr(M6809_X);
+           If ELSlot = -2 Then Begin
+             M6809_U := 0; M6809_Y := 0; { module principal : pas d en-tete    }
+           End Else If ELSlot >= 0 Then Begin              { charge separement ici }
+             M6809_U := OS9_ModBase[ELSlot];
+             M6809_Y := OS9_ModExec[ELSlot];
+           End Else Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+           End;
+         End;
+    $4E: Begin { F$FModul(A=type de module, X=pointeur chaine de nom,        }
+           { Y=pointeur image DAT du nom) -> A=type, B=revision, U=pointeur  }
+           { d entree de repertoire - convention registre VERIFIEE (wiki      }
+           { F$FModul). REEL : recherche dans la MEME table de modules que    }
+           { F$Link (OS9_FindModuleSlot), rafraichit puis renvoie l ADRESSE   }
+           { REELLE d une entree de repertoire dediee (OS9_ModDirAddr/         }
+           { OS9_PrimaryDirAddr, allouees une fois au demarrage -COS9) -       }
+           { format d entree simplifie et disclose (longueur+nom sur 16       }
+           { octets), pas le format Microware exact. B (revision) toujours    }
+           { 0, non suivi ici. }
+           FMName := M6809_ReadOS9Name(M6809_X);
+           FMSlot := OS9_FindModuleSlot(FMName);
+           FMDirAddr := OS9_ModDirEntryAddr(FMSlot);
+           If (FMSlot = -1) Or (FMDirAddr = 0) Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+           End Else Begin
+             FMLen := Length(FMName);
+             If FMLen > 15 Then FMLen := 15;
+             M6809_Wr(FMDirAddr, FMLen);
+             For FMI := 1 To FMLen Do
+               M6809_Wr(Word(FMDirAddr + FMI), Ord(FMName[FMI]));
+             M6809_B := 0;
+             M6809_U := FMDirAddr;
+           End;
+         End;
+    $4F: Begin { F$MapBlk(X=numero de bloc de depart, B=nb de blocs) ->      }
+           { U=adresse du premier bloc - convention registre VERIFIEE (wiki  }
+           { F$MapBlk : "mappe les blocs... du haut vers le bas dans           }
+           { l espace d adresses du processus"). Contrairement a F$FreeHB/     }
+           { F$FreeLB, cet appel ne prend AUCUN pointeur de contexte par       }
+           { processus (pas de descripteur/image DAT en parametre) - c est    }
+           { la vraie primitive materielle MMU sous-jacente (registres de     }
+           { tache reels), absente de ce coeur 6809 a memoire plate, meme      }
+           { raison que F$AllTsk/F$DelTsk. Echec honnete. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
     $50: Begin { F$ClrBlk(B=nb de blocs, U=adresse du premier bloc) -         }
            { convention registre VERIFIEE (wiki F$ClrBlk). REEL en partie :   }
            { efface reellement B blocs de $1000 octets (meme granularite que  }
@@ -164013,6 +164259,17 @@ Begin
            { echec honnete, pas une acceptation qui mentirait sur un pool     }
            { inexistant. }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $52: Begin { F$GCMDir() - compacte les entrees du repertoire des         }
+           { modules - convention registre VERIFIEE (wiki F$GCMDir :          }
+           { "reserve EXCLUSIVEMENT aux operations internes de NitrOS-9, ne   }
+           { devrait jamais etre appele depuis un programme utilisateur",     }
+           { aucune entree/sortie documentee au-dela des erreurs). La table   }
+           { de modules de ce sous-ensemble est un tableau FIXE a 4            }
+           { emplacements, jamais fragmente au sens ou l entend cet appel -    }
+           { succes sans effet honnete (rien a compacter), PAS un mensonge    }
+           { puisque la doc elle-meme ne promet aucun effet observable en      }
+           { sortie normale. }
          End;
     $53: Begin { F$AllHRAM(B=nb de blocs) - variante "recherche depuis le     }
            { sommet de la memoire" de F$AllRAM/$39 (citation wiki F$AllHRAM)  }
@@ -168533,6 +168790,8 @@ Var
  { chargement -COS9, voir plus bas. }
  OS9ClkY, OS9ClkM, OS9ClkD, OS9ClkDow: Word;
  OS9ClkH, OS9ClkMi, OS9ClkS, OS9ClkHs: Word;
+ OS9DirBase: Word;
+ OS9DirI: Integer;
  Loaded: Boolean;
  Steps: LongInt;
  IsX86: Boolean;
@@ -169527,6 +169786,15 @@ Begin NesActive := False;
    OS9_ClockMin := Byte(OS9ClkMi);
    OS9_ClockSec := Byte(OS9ClkS);
    OS9_ClockSet := True;
+   { F$FModul/$4E doit renvoyer une VRAIE adresse d entree de repertoire -   }
+   { carve 5 entrees fixes (principal + 4 emplacements F$Load/F$Fork) une   }
+   { fois pour toutes, depuis la MEME zone F$Mem (OS9_MemSize) que F$All64/ }
+   { F$AllPrc/F$BtMem - aucun second pool. }
+   OS9DirBase := OS9_MEM_BASE + OS9_MemSize;
+   OS9_PrimaryDirAddr := OS9DirBase;
+   For OS9DirI := 0 To 3 Do
+     OS9_ModDirAddr[OS9DirI] := OS9DirBase + (OS9DirI + 1) * OS9_MODDIR_ENTRY_SIZE;
+   OS9_MemSize := OS9_MemSize + 5 * OS9_MODDIR_ENTRY_SIZE;
    Loaded := M6809_LoadOS9Module(BinaryPath, EntryAddr16);
    OS9_Active := Loaded;
   End;
