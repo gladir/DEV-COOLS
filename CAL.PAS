@@ -5,14 +5,17 @@ Program CAL;
   Reference: Cray Research 2240004 revision C, chapitre 4.
   Voir DOC/CAL.txt pour la syntaxe et les limites. }
 {$I-}
+
 Const
  MaxSymbols=1024;
  MaxBytes=60000;
+
 Type
  TSymbol=Record Name:String[32];
  Value:LongInt
 End;
 TCode=Array[0..MaxBytes-1] of Byte;
+
 Var
  Symbols:Array[1..MaxSymbols] of TSymbol;
  Code:^TCode;
@@ -357,7 +360,7 @@ End;
 
 Procedure Help;Begin
  WriteLn('CAL - Cette commande permet de lancer l''assembleur ',
-         'Cray-1 (sous-ensemble).');
+ 'Cray-1 (sous-ensemble).');
  WriteLn;
  WriteLn('Syntaxe: CAL source [-o sortie.bin] [-l listing.lst]');
  WriteLn;
@@ -368,6 +371,7 @@ Procedure Help;Begin
  WriteLn('Image absolue big-endian; adresses en parcels; defaut decimal.');
  WriteLn('Limites et exemples: DOC/CAL.txt')
 End;
+
 Var
  Arg:String;
  N,Io:Integer;

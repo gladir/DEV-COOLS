@@ -79251,6 +79251,14 @@ Var
  POLCount, POLI: Integer;
  POLPtX, POLPtY: Array[0..255] Of Integer;
  RDCLevel: Integer;
+ { GDI.EXE CreatePolygonRgn/CreateRectRgn(Indirect)/DPtoLP (2026-09-12,     }
+ { nouvelle session, demande explicite). }
+ CPRSeg, CPROfs: Word;
+ CPRCount, CPRI: Integer;
+ CPRMinX, CPRMaxX, CPRMinY, CPRMaxY, CPRPtX, CPRPtY: SmallInt;
+ DPLSeg, DPLOfs: Word;
+ DPLCount, DPLI: Integer;
+ DPLDevX, DPLDevY, DPLLogX, DPLLogY: SmallInt;
  { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite). }
  LBSeg, LBOfs, LBColorLo, LBColorHi: Word;
 Begin
@@ -81481,13 +81489,124 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
+   63: Begin
+    { CreatePolygonRgn(lpPoints,nCount,nPolyFillMode):HRGN - ordinal        }
+    { VERIFIE via gdi.exe16.spec (1 pointeur LOIN (2 mots) + 2 mots = 4      }
+    { mots). REEL EN PARTIE, meme discipline que CreateEllipticRgn/$54 :    }
+    { ce sous-ensemble n'a qu'UN SEUL rectangle de clip mono-DC reellement   }
+    { suivi (Win16_ClipX1/Y1/X2/Y2/ClipActive) - "creer" une region          }
+    { polygonale l'active DIRECTEMENT comme le RECTANGLE ENGLOBANT REEL      }
+    { des N points lus (min/max calcules pour de vrai), jamais la vraie      }
+    { forme polygonale (aucune geometrie de region courbe/concave n'est      }
+    { modelisee ici). nPolyFillMode accepte sans effet (meme limitation      }
+    { deja disclosee pour SetPolyFillMode/$6). }
+    CPRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CPROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CPRCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If CPRCount > 0 Then Begin
+     CPRMinX := SmallInt(Emu_ReadWord(P.CPU, CPRSeg, CPROfs));
+     CPRMaxX := CPRMinX; CPRMinY := SmallInt(Emu_ReadWord(P.CPU, CPRSeg, Word(CPROfs + 2)));
+     CPRMaxY := CPRMinY;
+     For CPRI := 1 To CPRCount - 1 Do Begin
+      CPRPtX := SmallInt(Emu_ReadWord(P.CPU, CPRSeg, Word(CPROfs + CPRI * 4)));
+      CPRPtY := SmallInt(Emu_ReadWord(P.CPU, CPRSeg, Word(CPROfs + CPRI * 4 + 2)));
+      If CPRPtX < CPRMinX Then CPRMinX := CPRPtX;
+      If CPRPtX > CPRMaxX Then CPRMaxX := CPRPtX;
+      If CPRPtY < CPRMinY Then CPRMinY := CPRPtY;
+      If CPRPtY > CPRMaxY Then CPRMaxY := CPRPtY;
+     End;
+     Win16_ClipX1 := CPRMinX; Win16_ClipY1 := CPRMinY;
+     Win16_ClipX2 := CPRMaxX; Win16_ClipY2 := CPRMaxY;
+     Win16_ClipActive := True;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   64: Begin
+    { CreateRectRgn(nLeftRect,nTopRect,nRightRect,nBottomRect):HRGN -        }
+    { ordinal VERIFIE via gdi.exe16.spec (4 mots SIGNES). REEL SANS            }
+    { approximation (contrairement a CreateEllipticRgn/$54 et                }
+    { CreatePolygonRgn/$63) : un rectangle EST exactement representable       }
+    { par le modele a un seul rectangle de clip de ce sous-ensemble, donc     }
+    { aucune perte de forme cette fois - active directement                   }
+    { Win16_ClipX1/Y1/X2/Y2/ClipActive (coordonnees CLIENT, comme              }
+    { Exclude/IntersectClipRect). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    Win16_ClipX1 := GdiX1; Win16_ClipY1 := GdiY1;
+    Win16_ClipX2 := GdiX2; Win16_ClipY2 := GdiY2;
+    Win16_ClipActive := True;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   65: Begin
+    { CreateRectRgnIndirect(lpRect):HRGN - ordinal VERIFIE via gdi.exe16.   }
+    { spec (1 pointeur LOIN = 2 mots, structure RECT standard). REEL SANS   }
+    { approximation, meme discipline que CreateRectRgn/$64 juste au-dessus  }
+    { (variante "structure en memoire" du meme appel). }
+    LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_ClipX1 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, LBOfs));
+    Win16_ClipY1 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 2)));
+    Win16_ClipX2 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 4)));
+    Win16_ClipY2 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 6)));
+    Win16_ClipActive := True;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
    66: Begin
     { CreateSolidBrush(crColor):HBRUSH - ordinal VERIFIE via                }
     { gdi.exe16.spec (prend un LONG = 2 mots). Rendu GDI reel HORS DE       }
     { PORTEE (Stage 6) - simplification DOCUMENTEE : handle synthetique     }
-    { non-nul, aucun VRAI pinceau dessinable. }
+    { non-nul, aucun VRAI pinceau dessinable. AMELIORATION 2026-09-12        }
+    { (demande explicite, cette meme session) : lit et conserve             }
+    { REELLEMENT crColor dans Win16_LastBrushColor - le MEME global deja     }
+    { utilise par CreateBrushIndirect/$50 et CreateHatchBrush/$58, comblant  }
+    { une incoherence : c'etait le SEUL des 3 appels de creation de           }
+    { pinceau a ne pas encore le faire. }
+    LBColorHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBColorLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_LastBrushColor := (LongInt(LBColorHi) Shl 16) Or LongInt(LBColorLo);
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
+   End;
+   67: Begin
+    { DPtoLP(hdc,lpPoints,nCount):bool - ordinal VERIFIE via gdi.exe16.spec }
+    { (1 mot + 1 pointeur LOIN (2 mots) + 1 mot = 4 mots). REEL : premier    }
+    { VRAI consommateur de SetWindowOrg/SetWindowExt/SetViewportOrg/         }
+    { SetViewportExt (ordinaux 11-14, stockes depuis leur propre lot mais    }
+    { jamais utilises faute de tout consommateur - meme retroactivation      }
+    { que TextOut/$33 pour SetTextColor/SetTextCharacterExtra). Formule       }
+    { REELLE (inverse de la transformation logique->peripherique standard    }
+    { documentee) :                                                          }
+    { LogiqueX = (PeripheriqueX-ViewportOrgX)*WindowExtX/ViewportExtX          }
+    {            +WindowOrgX (et l'equivalent Y) - avec les valeurs par        }
+    { defaut (Org=(0,0), Ext=(1,1), le cas MM_TEXT jamais modifie), cette      }
+    { formule redonne l'identite exacte (LogiqueX=PeripheriqueX), donc          }
+    { AUCUNE regression pour tout code existant qui n'a jamais touche ces      }
+    { appels. Denominateur (ViewportExt) nul garde la coordonnee INCHANGEE     }
+    { (defensif). Modifie le tableau de points EN PLACE, comme le vrai DPtoLP.}
+    DPLSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    DPLOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    DPLCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    For DPLI := 0 To DPLCount - 1 Do Begin
+     DPLDevX := SmallInt(Emu_ReadWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4)));
+     DPLDevY := SmallInt(Emu_ReadWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4 + 2)));
+     If Win16_CurrentViewportExtX <> 0 Then
+      DPLLogX := SmallInt(Round((DPLDevX - Win16_CurrentViewportOrgX) *
+       Win16_CurrentWindowExtX / Win16_CurrentViewportExtX) + Win16_CurrentWindowOrgX)
+     Else DPLLogX := DPLDevX;
+     If Win16_CurrentViewportExtY <> 0 Then
+      DPLLogY := SmallInt(Round((DPLDevY - Win16_CurrentViewportOrgY) *
+       Win16_CurrentWindowExtY / Win16_CurrentViewportExtY) + Win16_CurrentWindowOrgY)
+     Else DPLLogY := DPLDevY;
+     Emu_WriteWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4), Word(DPLLogX));
+     Emu_WriteWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4 + 2), Word(DPLLogY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
    End;
    69: Begin
     { DeleteObject(hObj):bool - ordinal VERIFIE via gdi.exe16.spec. Meme    }
