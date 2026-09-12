@@ -6170,6 +6170,15 @@ Const
  { (meme limitation deja assumee que Win16_ImportModIdx[] etc.). }
  WIN16_MAX_WNDCLASSES = 8;
  WIN16_MAX_WINDOWS    = 8;
+ { Barre de titre reelle (2026-09-12, demande explicite) - hissee en        }
+ { constante GLOBALE (pas locale a Win16_DrawWindowFrame) car CreateWindow/ }
+ { $41 doit AUSSI la connaitre pour garantir une marge suffisante au-dessus }
+ { de chaque fenetre (voir CWY plus bas) - le dessin de la barre reste       }
+ { NON-INVASIF (au-dessus de la boite existante, voir Win16_DrawWindowFrame)}
+ { donc cette seule verification/reservation de marge a la creation suffit  }
+ { a rendre la barre TOUJOURS visible sans toucher aux ~37 conversions       }
+ { CLIENT->ABSOLU deja etablies (Win16_WindowY+1) dans tout ce chantier. }
+ WIN16_TITLEBAR_H     = 9;
  WIN16_MAX_MSGQUEUE   = 32;
  { Stage 6b (2026-08-30) : minuteurs SetTimer/KillTimer, meme limitation      }
  { mono-programme. }
@@ -78292,27 +78301,98 @@ End;
 { l'utilisateur - "mode graphique par defaut, pas mode texte") : dessine   }
 { un cadre de fenetre en VRAIS PIXELS via Emu_VidSetPixel (framebuffer     }
 { EmuVideo reel, mode $13 320x200x256 - voir ShowEmulatorPanel), plus      }
-{ aucun rapport avec la grille de texte P.VRAM (l'ancienne version ASCII   }
-{ de cette fonction, et son helper Win16_PutCharAt, sont retires - plus    }
-{ utilises par personne). Coordonnees deja en pixels REELS 1:1 (le         }
-{ programme les calcule lui-meme via GetDeviceCaps/GetSystemMetrics, deja  }
-{ ajustes a 320x200 - aucune mise a l'echelle necessaire ici). Couleur 15  }
-{ = blanc (palette EGA standard des 16 premieres entrees de la DAC par     }
-{ defaut - voir Emu_VidInitDefaultDAC). Le TITRE n'est PAS dessine en      }
-{ pixels ici (aucune police bitmap disponible pour le moment - voir Stage  }
-{ 6c) - le bandeau de titre du PANNEAU lui-meme (dessine par              }
-{ DrawEmulatorPanel, hors framebuffer) affiche deja le chemin du fichier,  }
-{ suffisant pour identifier l'onglet. }
+{ aucun rapport avec la grille de texte P.VRAM. Coordonnees deja en        }
+{ pixels REELS 1:1 (le programme les calcule lui-meme via                 }
+{ GetDeviceCaps/GetSystemMetrics, deja ajustes a 320x200). MISE A JOUR     }
+{ (2026-09-12, demande explicite) : une VRAIE barre de titre (avec le       }
+{ VRAI titre en pixels, voir Win16_DrawChar5x7/Win16_Font5x7 desormais     }
+{ disponibles depuis TextOut/$33) est maintenant dessinee, remplacant       }
+{ l'ancienne limitation "aucune police bitmap disponible" - voir plus bas. }
+{ Forward necessaire : Win16_DrawChar5x7 n'est definie que plus loin dans   }
+{ ce fichier (avec le reste de la police 5x7, TextOut/$33). }
+Procedure Win16_DrawChar5x7(X, Y: Integer; Ch: Char; FgColor, BgColor: Byte); Forward;
+
+{ Icone de barre de titre (fleche haut/bas dans un petit carre blanc a      }
+{ bordure noire, 7x7) - utilise par Win16_DrawWindowFrame ci-dessous pour   }
+{ les 2 boutons "minimiser"(bas)/"agrandir"(haut) (2026-09-12, demande       }
+{ explicite, capture d ecran Windows 2.x/3.x fournie comme reference - VRAI }
+{ convention Windows 2.x ou les 2 boutons sont TOUJOURS visibles ensemble,  }
+{ contrairement aux versions posterieures qui n en affichent qu un a la     }
+{ fois). Glyphes dessines a la main, approximation visuelle honnetement     }
+{ disclosee - aucune ressource bitmap authentique de ce projet a reproduire }
+{ au pixel pres. }
+Procedure Win16_DrawTitleIcon(X0, Y0: Integer; PointUp: Boolean);
+Var
+ X, Y: Integer;
+Begin
+ For Y := 0 To 6 Do
+  For X := 0 To 6 Do
+   If (X = 0) Or (X = 6) Or (Y = 0) Or (Y = 6) Then
+    Emu_VidSetPixel(X0 + X, Y0 + Y, 0)
+   Else
+    Emu_VidSetPixel(X0 + X, Y0 + Y, 15);
+ If PointUp Then Begin
+  Emu_VidSetPixel(X0 + 3, Y0 + 2, 0);
+  Emu_VidSetPixel(X0 + 2, Y0 + 3, 0); Emu_VidSetPixel(X0 + 3, Y0 + 3, 0); Emu_VidSetPixel(X0 + 4, Y0 + 3, 0);
+  Emu_VidSetPixel(X0 + 1, Y0 + 4, 0); Emu_VidSetPixel(X0 + 2, Y0 + 4, 0);
+  Emu_VidSetPixel(X0 + 3, Y0 + 4, 0); Emu_VidSetPixel(X0 + 4, Y0 + 4, 0); Emu_VidSetPixel(X0 + 5, Y0 + 4, 0);
+ End Else Begin
+  Emu_VidSetPixel(X0 + 1, Y0 + 2, 0); Emu_VidSetPixel(X0 + 2, Y0 + 2, 0);
+  Emu_VidSetPixel(X0 + 3, Y0 + 2, 0); Emu_VidSetPixel(X0 + 4, Y0 + 2, 0); Emu_VidSetPixel(X0 + 5, Y0 + 2, 0);
+  Emu_VidSetPixel(X0 + 2, Y0 + 3, 0); Emu_VidSetPixel(X0 + 3, Y0 + 3, 0); Emu_VidSetPixel(X0 + 4, Y0 + 3, 0);
+  Emu_VidSetPixel(X0 + 3, Y0 + 4, 0);
+ End;
+End;
+
 Procedure Win16_DrawWindowFrame(Var P: TEmulatorPanel; WIndex: Integer);
 Var
  X1, Y1, X2, Y2: Integer;
  X, Y: Integer;
+ TY1, TY2, TXR: Integer;
+ TChI: Integer;
 Begin
  If (WIndex < 0) Or (WIndex >= Win16_WindowCount) Then Exit;
  X1 := Win16_WindowX[WIndex];
  Y1 := Win16_WindowY[WIndex];
  X2 := X1 + Win16_WindowW[WIndex] - 1;
  Y2 := Y1 + Win16_WindowH[WIndex] - 1;
+ { Barre de titre BLEUE dessinee AU-DESSUS de la boite bordure+client        }
+ { existante (2026-09-12, demande explicite) - DELIBEREMENT NON-INVASIF :   }
+ { Win16_WindowX/Y continuent de designer exactement la MEME chose qu avant  }
+ { (le coin de la boite bordure+client), donc AUCUNE des ~37 conversions     }
+ { CLIENT->ABSOLU deja etablies dans tout ce chantier (Win16_WindowY+1,      }
+ { utilisees par MoveTo/LineTo/GetDC/etc.) n a besoin d etre retouchee - un  }
+ { refactor global de ce calcul, repete dans des dizaines d ordinaux GDI     }
+ { deja verifies un par un cette session, aurait ete disproportionnellement }
+ { risque pour ce simple ajout visuel. Necessite une marge d au moins         }
+ { WIN16_TITLEBAR_H pixels au-dessus de Win16_WindowY - CreateWindow/$41      }
+ { utilise deja Y=10 par defaut (CW_USEDEFAULT, $8000), largement suffisant. }
+ If Y1 >= WIN16_TITLEBAR_H Then Begin
+  TY1 := Y1 - WIN16_TITLEBAR_H;
+  TY2 := Y1 - 1;
+  For Y := TY1 To TY2 Do
+   For X := X1 To X2 Do
+    Emu_VidSetPixel(X, Y, 1); { bleu }
+  { Icone systeme (petit carre blanc a bordure noire + barre horizontale,   }
+  { placeholder generique - aucune icone par application reelle disponible  }
+  { dans ce projet). }
+  For Y := 0 To 6 Do
+   For X := 0 To 6 Do
+    If (X = 0) Or (X = 6) Or (Y = 0) Or (Y = 6) Then
+     Emu_VidSetPixel(X1 + 1 + X, TY1 + 1 + Y, 0)
+    Else
+     Emu_VidSetPixel(X1 + 1 + X, TY1 + 1 + Y, 15);
+  For X := 1 To 5 Do Emu_VidSetPixel(X1 + 1 + X, TY1 + 4, 0);
+  { 2 icones minimiser (fleche bas)/agrandir (fleche haut) a droite. }
+  TXR := X2 - 15;
+  Win16_DrawTitleIcon(TXR, TY1 + 1, False);
+  Win16_DrawTitleIcon(TXR + 8, TY1 + 1, True);
+  { Titre de la fenetre (police 5x7 MAISON, Win16_Font5x7) en blanc sur      }
+  { bleu, apres l icone systeme. }
+  For TChI := 1 To Length(Win16_WindowTitle[WIndex]) Do
+   Win16_DrawChar5x7(X1 + 10 + (TChI - 1) * 6, TY1 + 1,
+    Win16_WindowTitle[WIndex][TChI], 15, 1);
+ End;
  { Fond de la zone client (2026-08-30, signale par l'utilisateur : "le    }
  { fond devrait etre blanc par defaut" - un vrai Windows 2.x/3.x remplit   }
  { l'interieur de la fenetre en blanc (COLOR_WINDOW/WHITE_BRUSH, le pinceau}
@@ -79783,6 +79863,16 @@ Begin
      If CWY = $8000 Then CWY := 10;
      If (CWW = $8000) Or (CWW = 0) Then CWW := 280;
      If (CWH = $8000) Or (CWH = 0) Then CWH := 160;
+     { Marge REELLE pour la barre de titre (2026-09-12, demande explicite,   }
+     { capture d ecran Windows 2.x/3.x fournie comme reference) : un CWY      }
+     { EXPLICITE (pas $8000/CW_USEDEFAULT) peut demander une position trop    }
+     { proche du haut de l ecran virtuel 320x200 pour laisser de la place a   }
+     { Win16_TITLEBAR_H pixels de barre de titre AU-DESSUS - confirme en      }
+     { direct sur le VRAI CLOCK.EXE (Y explicite petit, pas $8000). Decale    }
+     { la fenetre vers le bas plutot que de dessiner une barre tronquee ou    }
+     { de l omettre - meme esprit que le "plausible par defaut" deja           }
+     { applique 2 lignes plus haut pour $8000. }
+     If SmallInt(CWY) < WIN16_TITLEBAR_H Then CWY := WIN16_TITLEBAR_H;
      Win16_WindowX[CWIdx] := SmallInt(CWX);
      Win16_WindowY[CWIdx] := SmallInt(CWY);
      Win16_WindowW[CWIdx] := SmallInt(CWW);
@@ -131343,6 +131433,22 @@ Begin
    ============================================================ }
  If ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP') Or (P.TargetCPU = '-CWIN16')) And
     EmuVideo.IsGraphic Then Begin
+  { Correctif scintillement, 2eme partie (2026-09-12, demande utilisateur :  }
+  { "rafraichir l ecran quand il y a un changement plutot que tout le temps }
+  { comme un abrutis") : ce bloc redessinait l integralite de l ecran        }
+  { emule (fond noir + redessin RLE complet) a CHAQUE appel de               }
+  { DrawEmulatorPanel, meme quand rien n avait change dans EmuVideo depuis    }
+  { le dernier redessin (cet appel arrive tres souvent pour des raisons       }
+  { sans rapport - clignotement de curseur ailleurs dans l IDE, etc., voir    }
+  { les dizaines de sites d appel de DrawEmulatorPanel). EmuVideo.GfxDirty    }
+  { existe deja et est positionne a True par CHAQUE ecriture reelle en        }
+  { memoire video (Emu_VidWriteByte/SetPixel) mais n etait jusqu ici jamais   }
+  { consulte avant de redessiner. Ne rien faire du tout (page deja affichee   }
+  { laissee intacte) quand ni le framebuffer ni la geometrie du panneau n ont }
+  { change reduit tres fortement la frequence des cycles fond-noir-puis-      }
+  { redessin responsables du scintillement signale, en plus d etre           }
+  { litteralement ce qui a ete demande. }
+  If (Not EmuVideo.GfxDirty) And (Not P.NeedRepaint) Then Exit;
   Inc(EmuDiag_DrawCnt);
   GfxW := EmuVideo.Width;
   GfxH := EmuVideo.Height;
@@ -131361,6 +131467,23 @@ Begin
   P.PanelY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
   GridX := P.PanelX;
   GridY := P.PanelY + 24;
+  { Correctif scintillement (2026-09-12) : ce bloc dessinait directement sur }
+  { la page ACTIVE/VISIBLE (fond noir efface puis redessine trame par trame,}
+  { visible a l ecran le temps du redessin) - meme cause et meme remede que }
+  { le double buffering deja en place plus bas dans cette procedure pour le }
+  { rendu texte (voir commentaire "Double buffering reel" ~ligne 131510) : }
+  { composer entierement sur la page ARRIERE puis un seul flip atomique a   }
+  { la fin, au lieu de peindre trame par trame sur ce que l utilisateur voit}
+  { deja. Meme tampon EmuPageBuf/EmuDblBufPage, reutilise tel quel. }
+  EmuBackPage := 1 - EmuDblBufPage;
+  If EmuPageBuf = Nil Then Begin
+   EmuPageBufSz := ImageSize(0, 0, GetScreenWidth - 1, GetScreenHeight - 1);
+   GetMem(EmuPageBuf, EmuPageBufSz);
+  End;
+  SetActivePage(EmuDblBufPage);
+  GetImage(0, 0, GetScreenWidth - 1, GetScreenHeight - 1, EmuPageBuf^);
+  SetActivePage(EmuBackPage);
+  PutImage(0, 0, EmuPageBuf^, NormalPut);
   { Bordure et barre de titre }
   DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
    P.PanelX + GridW + 2, P.PanelY + GridH + 48,
@@ -131415,6 +131538,12 @@ Begin
     'Arrete (code de fin: ' + IntToStr(P.Fault) + ')', CLR_HIGHLIGHTTEXT);
   P.NeedRepaint := False;
   EmuVideo.GfxDirty := False;
+  { Flip atomique : voir commentaire du meme nom plus bas dans cette         }
+  { procedure - l utilisateur ne voit jamais l etat intermediaire compose    }
+  { ci-dessus, seulement le resultat final d un coup. }
+  SetVisualPage(EmuBackPage);
+  SetActivePage(EmuBackPage);
+  EmuDblBufPage := EmuBackPage;
   Exit;
  End;
  { Double buffering reel (2026-08-16) : tout le rendu ci-dessous (bordure,   }
@@ -171535,6 +171664,7 @@ Var
  OS9ClkY, OS9ClkM, OS9ClkD, OS9ClkDow: Word;
  OS9ClkH, OS9ClkMi, OS9ClkS, OS9ClkHs: Word;
  OS9DirBase: Word;
+ Win16DeskX, Win16DeskY: Integer;
  OS9DirI: Integer;
  Loaded: Boolean;
  Steps: LongInt;
@@ -172907,6 +173037,17 @@ Begin NesActive := False;
   { fichier) pour que les coordonnees GDI du programme correspondent       }
   { DIRECTEMENT aux pixels reels, sans mise a l'echelle. }
   Emu_VidSetMode($13, P);
+  { Bureau cyan clair (2026-09-12, demande explicite, capture d ecran       }
+  { Windows 2.x/3.x fournie comme reference) - un vrai Windows 2.x/3.x        }
+  { peint tout le bureau en cyan clair (COLOR_BACKGROUND par defaut) avant   }
+  { la moindre fenetre ; Emu_VidSetMode laisse le framebuffer a 0 (noir) par }
+  { defaut comme un vrai changement de mode VGA, jamais rempli d une         }
+  { couleur de bureau. Index 11 = lightcyan, la partie EGA-compatible du     }
+  { VRAI palette par defaut du mode $13 (les 16 premiers index reproduisent  }
+  { fidelement la palette EGA 16 couleurs standard). }
+  For Win16DeskY := 0 To 199 Do
+   For Win16DeskX := 0 To 319 Do
+    Emu_VidSetPixel(Win16DeskX, Win16DeskY, 11);
   DrawEmulatorPanel(P);
   EmuDbg.Active := True;
   EmuDbg.CPU    := EDC_8086;
