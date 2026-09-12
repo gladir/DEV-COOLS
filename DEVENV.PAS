@@ -79097,6 +79097,22 @@ Begin
  Win16_CallEnumObjectsProc := P.CPU.Regs.AX;
 End;
 
+{ Appelle SYNCHRONE un VRAI callback LINEDDAPROC16 (INT16 X, INT16 Y,      }
+{ LPARAM lParam) - signature VERIFIEE via le VRAI source Wine (meme        }
+{ fichier, LINEDDAPROC16) - utilise par LineDDA (GDI ordinal 100,          }
+{ 2026-09-12, demande explicite). Ne renvoie rien (VOID reel, contrairement }
+{ aux callbacks Enum*/WndProc qui renvoient tous un int) - Procedure, pas   }
+{ Function. }
+Procedure Win16_CallLineDDAProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
+ X, Y, LParamHi, LParamLo: Word);
+Begin
+ Emu_PushWord(P.CPU, X);
+ Emu_PushWord(P.CPU, Y);
+ Emu_PushWord(P.CPU, LParamHi);
+ Emu_PushWord(P.CPU, LParamLo);
+ Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+End;
+
 { Coeur de GetMessage/PeekMessage (ordinaux USER 108/109) - priorite REELLE }
 { Windows (entree file > repaint > minuteur), meme ordre de priorite que    }
 { documente pour les messages "generes"/bas niveau. Retourne False           }
@@ -79314,6 +79330,9 @@ Var
  GTFCount, GTFSeg, GTFOfs: Word;
  GTFName: String;
  GTFLen, GTFI: Integer;
+ { GDI.EXE LineDDA (2026-09-12, nouvelle session, demande explicite). }
+ LDX1, LDY1, LDX2, LDY2: SmallInt;
+ LDDX, LDDY, LDSX, LDSY, LDErr, LDE2, LDCurX, LDCurY, LDGuard: Integer;
  { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite). }
  LBSeg, LBOfs, LBColorLo, LBColorHi: Word;
 Begin
@@ -82099,6 +82118,192 @@ Begin
     End Else
      P.CPU.Regs.AX := 0;
     ArgWords := 4;
+   End;
+   93: Begin
+    { GetTextMetrics(hdc,lpMetrics):bool - ordinal VERIFIE via le VRAI       }
+    { source Wine (wingdi16.h, 1 pointeur LOIN = 2 mots). REEL : remplit     }
+    { un VRAI TEXTMETRIC16 (31 octets, layout VERIFIE via Wine - meme        }
+    { construction EXACTE que celle deja batie pour EnumFonts/$70, ici       }
+    { copiee telle quelle plutot que factorisee pour ne pas risquer de       }
+    { perturber ce lot deja verifie) - REFLETE les vraies caracteristiques   }
+    { de la seule police de ce sous-ensemble (Win16_Font5x7). }
+    LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    For EFI := 0 To 30 Do Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + EFI), 0);
+    Emu_WriteWord(P.CPU, LBSeg, LBOfs, 7);              { tmHeight }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 2), 7);    { tmAscent }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 10), 6);   { tmAveCharWidth }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 12), 6);   { tmMaxCharWidth }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 14), 400); { tmWeight }
+    Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 19), 32);  { tmFirstChar }
+    Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 20), 90);  { tmLastChar }
+    Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 21), 32);  { tmDefaultChar }
+    Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 22), 32);  { tmBreakChar }
+    Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 23), $31); { tmPitchAndFamily }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   94: Begin
+    { GetViewportExt(hdc):DWORD - ordinal VERIFIE via le VRAI source Wine   }
+    { (wingdi16.h). REEL trivial : renvoie Win16_CurrentViewportExtX/Y       }
+    { deja suivis par SetViewportExt/$14, packes DX:AX=y:x comme partout      }
+    { ailleurs pour cette famille. }
+    P.CPU.Regs.AX := Word(Win16_CurrentViewportExtX);
+    P.CPU.Regs.DX := Word(Win16_CurrentViewportExtY);
+    ArgWords := 1;
+   End;
+   95: Begin
+    { GetViewportOrg(hdc):DWORD - ordinal VERIFIE via le VRAI source Wine   }
+    { (wingdi16.h). REEL trivial : renvoie Win16_CurrentViewportOrgX/Y        }
+    { deja suivis par SetViewportOrg/$13. }
+    P.CPU.Regs.AX := Word(Win16_CurrentViewportOrgX);
+    P.CPU.Regs.DX := Word(Win16_CurrentViewportOrgY);
+    ArgWords := 1;
+   End;
+   96: Begin
+    { GetWindowExt(hdc):DWORD - ordinal VERIFIE via le VRAI source Wine     }
+    { (wingdi16.h). REEL trivial : renvoie Win16_CurrentWindowExtX/Y deja    }
+    { suivis par SetWindowExt/$12 (et REELLEMENT consommes par DPtoLP/$67    }
+    { depuis son propre lot). }
+    P.CPU.Regs.AX := Word(Win16_CurrentWindowExtX);
+    P.CPU.Regs.DX := Word(Win16_CurrentWindowExtY);
+    ArgWords := 1;
+   End;
+   97: Begin
+    { GetWindowOrg(hdc):DWORD - ordinal VERIFIE via le VRAI source Wine     }
+    { (wingdi16.h). REEL trivial : renvoie Win16_CurrentWindowOrgX/Y deja    }
+    { suivis par SetWindowOrg/$11 (et REELLEMENT consommes par DPtoLP/$67    }
+    { depuis son propre lot). }
+    P.CPU.Regs.AX := Word(Win16_CurrentWindowOrgX);
+    P.CPU.Regs.DX := Word(Win16_CurrentWindowOrgY);
+    ArgWords := 1;
+   End;
+   98: Begin
+    { IntersectVisRect(hdc,X1,Y1,X2,Y2):int - ordinal VERIFIE via le VRAI   }
+    { source Wine (wingdi16.h, 4 mots SIGNES = 5 mots avec hdc, meme         }
+    { signature qu'ExcludeVisRect/$73). Meme convention "region visible =    }
+    { region de clip mono-DC" deja etablie pour ExcludeVisRect - REEL,        }
+    { intersection geometrique EXACTE, reutilise la MEME logique             }
+    { qu'IntersectClipRect/$22. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Not Win16_ClipActive Then Begin
+     Win16_ClipX1 := GdiX1; Win16_ClipY1 := GdiY1;
+     Win16_ClipX2 := GdiX2; Win16_ClipY2 := GdiY2;
+     Win16_ClipActive := True;
+    End Else Begin
+     If GdiX1 > Win16_ClipX1 Then Win16_ClipX1 := GdiX1;
+     If GdiY1 > Win16_ClipY1 Then Win16_ClipY1 := GdiY1;
+     If GdiX2 < Win16_ClipX2 Then Win16_ClipX2 := GdiX2;
+     If GdiY2 < Win16_ClipY2 Then Win16_ClipY2 := GdiY2;
+    End;
+    If (Win16_ClipX1 >= Win16_ClipX2) Or (Win16_ClipY1 >= Win16_ClipY2) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 2;
+    ArgWords := 5;
+   End;
+   99: Begin
+    { LPtoDP(hdc,lpPoints,nCount):bool - ordinal VERIFIE via le VRAI source }
+    { Wine (wingdi16.h, meme signature que DPtoLP/$67). REEL : formule        }
+    { INVERSE exacte de DPtoLP (logique->peripherique au lieu de              }
+    { peripherique->logique), reutilise le MEME etat deja suivi              }
+    { (SetWindowOrg/Ext, SetViewportOrg/Ext - ordinaux 11-14) - identite      }
+    { exacte avec les valeurs par defaut (Org=(0,0), Ext=(1,1)), AUCUNE       }
+    { regression pour le code existant. Modifie le tableau EN PLACE,          }
+    { comme le vrai LPtoDP. }
+    DPLSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    DPLOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    DPLCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    For DPLI := 0 To DPLCount - 1 Do Begin
+     DPLLogX := SmallInt(Emu_ReadWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4)));
+     DPLLogY := SmallInt(Emu_ReadWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4 + 2)));
+     If Win16_CurrentWindowExtX <> 0 Then
+      DPLDevX := SmallInt(Round((DPLLogX - Win16_CurrentWindowOrgX) *
+       Win16_CurrentViewportExtX / Win16_CurrentWindowExtX) + Win16_CurrentViewportOrgX)
+     Else DPLDevX := DPLLogX;
+     If Win16_CurrentWindowExtY <> 0 Then
+      DPLDevY := SmallInt(Round((DPLLogY - Win16_CurrentWindowOrgY) *
+       Win16_CurrentViewportExtY / Win16_CurrentWindowExtY) + Win16_CurrentViewportOrgY)
+     Else DPLDevY := DPLLogY;
+     Emu_WriteWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4), Word(DPLDevX));
+     Emu_WriteWord(P.CPU, DPLSeg, Word(DPLOfs + DPLI * 4 + 2), Word(DPLDevY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   100: Begin
+    { LineDDA(X1,Y1,X2,Y2,lpLineFunc,lParam):void - ordinal VERIFIE via le  }
+    { VRAI source Wine (wingdi16.h, LineDDA16 - PAS de hdc, 4 mots SIGNES    }
+    { + 1 pointeur LOIN (2 mots) + 1 LONG (2 mots) = 8 mots). REEL : calcule }
+    { les VRAIS points de la ligne (meme algorithme de Bresenham deja         }
+    { etabli par Win16_DrawLine - un DDA au sens strict est base virgule      }
+    { flottante dans la doc d'origine, mais produit une sequence de points    }
+    { pratiquement equivalente ; disclose comme une reutilisation reelle      }
+    { plutot qu'une reimplementation du DDA classique) et invoque              }
+    { REELLEMENT le callback UNE FOIS PAR POINT via la nouvelle                }
+    { Win16_CallLineDDAProc (meme mecanisme Dpmi_RunRealProc). Coordonnees    }
+    { NON converties en pixels absolus (contrairement aux primitives de       }
+    { dessin) : LineDDA ne touche jamais le framebuffer lui-meme, seulement   }
+    { un calcul geometrique - les points rapportes restent dans le MEME       }
+    { espace de coordonnees que celui fourni par l'appelant. }
+    { Empilement complet (X1,Y1,X2,Y2,funcSeg,funcOfs,lParamHi,lParamLo) =   }
+    { 8 mots, PAS de hdc -> SP+4=lParamLo (dernier empile) jusqu'a           }
+    { SP+18=X1 (premier empile), chaque offset recalcule un par un ici. }
+    LDX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18)));
+    LDY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16)));
+    LDX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    LDY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    EFFuncSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    EFFuncOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    EFParamHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EFParamLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LDDX := Abs(LDX2 - LDX1); If LDX1 < LDX2 Then LDSX := 1 Else LDSX := -1;
+    LDDY := -Abs(LDY2 - LDY1); If LDY1 < LDY2 Then LDSY := 1 Else LDSY := -1;
+    LDErr := LDDX + LDDY;
+    LDCurX := LDX1; LDCurY := LDY1;
+    LDGuard := 0;
+    While (LDGuard < 2000) Do Begin
+     Win16_CallLineDDAProc(P, EFFuncSeg, EFFuncOfs, Word(LDCurX), Word(LDCurY),
+      EFParamHi, EFParamLo);
+     If (LDCurX = LDX2) And (LDCurY = LDY2) Then Break;
+     LDE2 := 2 * LDErr;
+     If LDE2 >= LDDY Then Begin LDErr := LDErr + LDDY; LDCurX := LDCurX + LDSX; End;
+     If LDE2 <= LDDX Then Begin LDErr := LDErr + LDDX; LDCurY := LDCurY + LDSY; End;
+     Inc(LDGuard);
+    End;
+    ArgWords := 8;
+   End;
+   101: Begin
+    { OffsetRgn(hRgn,X,Y):int - ordinal VERIFIE via le VRAI source Wine     }
+    { (wingdi16.h - PAS de hdc, 3 mots). Meme convention "hRgn = le clip     }
+    { mono-DC" deja etablie (FillRgn/InvertRgn/PaintRgn/SelectClipRgn) -      }
+    { REEL, deplace VRAIMENT Win16_ClipX1/Y1/X2/Y2 si un clip est actif        }
+    { (meme logique qu'OffsetClipRgn/$32), sans effet sinon. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ClipActive Then Begin
+     Win16_ClipX1 := Win16_ClipX1 + GdiX1; Win16_ClipX2 := Win16_ClipX2 + GdiX1;
+     Win16_ClipY1 := Win16_ClipY1 + GdiY1; Win16_ClipY2 := Win16_ClipY2 + GdiY1;
+    End;
+    P.CPU.Regs.AX := 2;
+    ArgWords := 3;
+   End;
+   102: Begin
+    { OffsetVisRgn(hdc,X,Y):int - ordinal VERIFIE via le VRAI source Wine   }
+    { (wingdi16.h, 3 mots). Meme convention "region visible = clip mono-DC"   }
+    { deja etablie pour ExcludeVisRect/IntersectVisRect - REEL, identique a   }
+    { OffsetRgn/$101 (meme deplacement reel de Win16_ClipX1/Y1/X2/Y2). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ClipActive Then Begin
+     Win16_ClipX1 := Win16_ClipX1 + GdiX1; Win16_ClipX2 := Win16_ClipX2 + GdiX1;
+     Win16_ClipY1 := Win16_ClipY1 + GdiY1; Win16_ClipY2 := Win16_ClipY2 + GdiY1;
+    End;
+    P.CPU.Regs.AX := 2;
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
