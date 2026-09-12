@@ -7753,6 +7753,23 @@ Var
  { (meme limitation deja disclosee pour SetBkMode). }
  Win16_CurrentBkColor: LongInt;
  Win16_CurrentMapMode: Word;
+ { GDI.EXE SetPolyFillMode/SetStretchBltMode/SetTextCharacterExtra/         }
+ { SetTextColor/SetTextJustification (2026-09-12, demande explicite) -      }
+ { meme modele "mono-DC" reel-mais-non-consomme que ci-dessus. }
+ Win16_CurrentPolyFillMode: Word;
+ Win16_CurrentStretchBltMode: Word;
+ Win16_CurrentTextCharExtra: SmallInt;
+ Win16_CurrentTextColor: LongInt;
+ Win16_CurrentBreakExtra: SmallInt;
+ Win16_CurrentBreakCount: SmallInt;
+ { GDI.EXE SetWindowOrg/SetWindowExt/SetViewportOrg/SetViewportExt/         }
+ { OffsetWindowOrg (2026-09-12, demande explicite) - meme famille           }
+ { MapMode/coordonnees que Win16_CurrentMapMode, meme discipline "get/set   }
+ { reel, non consomme par le pipeline de coordonnees existant". }
+ Win16_CurrentWindowOrgX, Win16_CurrentWindowOrgY: SmallInt;
+ Win16_CurrentWindowExtX, Win16_CurrentWindowExtY: SmallInt;
+ Win16_CurrentViewportOrgX, Win16_CurrentViewportOrgY: SmallInt;
+ Win16_CurrentViewportExtX, Win16_CurrentViewportExtY: SmallInt;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -77670,6 +77687,16 @@ Begin
  Win16_CurrentROP2 := 13; { R2_COPYPEN, defaut reel d'un DC neuf }
  Win16_CurrentBkColor := $00FFFFFF; { blanc (COLORREF 0x00BBGGRR), defaut reel d'un DC neuf }
  Win16_CurrentMapMode := 1; { MM_TEXT, defaut reel d'un DC neuf }
+ Win16_CurrentPolyFillMode := 1; { ALTERNATE, defaut reel d'un DC neuf }
+ Win16_CurrentStretchBltMode := 1; { BLACKONWHITE, defaut reel d'un DC neuf }
+ Win16_CurrentTextCharExtra := 0; { defaut reel d'un DC neuf }
+ Win16_CurrentTextColor := $00000000; { noir, defaut reel d'un DC neuf }
+ Win16_CurrentBreakExtra := 0;
+ Win16_CurrentBreakCount := 0;
+ Win16_CurrentWindowOrgX := 0; Win16_CurrentWindowOrgY := 0; { defaut reel d'un DC neuf }
+ Win16_CurrentWindowExtX := 1; Win16_CurrentWindowExtY := 1; { defaut reel d'un DC neuf }
+ Win16_CurrentViewportOrgX := 0; Win16_CurrentViewportOrgY := 0; { defaut reel d'un DC neuf }
+ Win16_CurrentViewportExtX := 1; Win16_CurrentViewportExtY := 1; { defaut reel d'un DC neuf }
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -78591,6 +78618,19 @@ Var
  GBKOld: LongInt;
  GBKLo, GBKHi: Word;
  GMMOld: Word;
+ { GDI.EXE SetPolyFillMode/SetStretchBltMode/SetTextCharacterExtra/         }
+ { SetTextColor/SetTextJustification (2026-09-12, demande explicite). }
+ GPFOld, GSBOld: Word;
+ GTCEOld: SmallInt;
+ GTXOld: LongInt;
+ GTXLo, GTXHi: Word;
+ GTJExtra, GTJCount: SmallInt;
+ { GDI.EXE SetWindowOrg/SetWindowExt/SetViewportOrg/SetViewportExt/         }
+ { OffsetWindowOrg (2026-09-12, demande explicite). }
+ GWOOldX, GWOOldY: SmallInt;
+ GWEOldX, GWEOldY: SmallInt;
+ GVOOldX, GVOOldY: SmallInt;
+ GVEOldX, GVEOldY: SmallInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -79792,6 +79832,156 @@ Begin
     { cette version, pas une simplification de fonctionnalite manquante. }
     P.CPU.Regs.AX := 1; { ABSOLUTE }
     ArgWords := 2;
+   End;
+   6: Begin
+    { SetPolyFillMode(hdc, nPolyFillMode):int (mode precedent) - ordinal    }
+    { VERIFIE via gdi.exe16.spec (2 mots). Meme discipline REELLE que        }
+    { SetBkColor/$1, SetMapMode/$3, SetROP2/$4 : stocke et retourne          }
+    { VRAIMENT l'ancien mode (mono-DC, Win16_CurrentPolyFillMode, defaut     }
+    { ALTERNATE=1 - le vrai defaut documente d'un DC neuf) - mais AUCUN      }
+    { appel Polygon/PolyPolygon n'existe encore dans ce sous-ensemble        }
+    { (seuls LineTo/Ellipse/Rectangle sont cables, Stage 6c) pour consommer  }
+    { ce mode - meme limitation deja disclosee pour SetBkMode/SetBkColor. }
+    GPFOld := Win16_CurrentPolyFillMode;
+    Win16_CurrentPolyFillMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := GPFOld;
+    ArgWords := 2;
+   End;
+   7: Begin
+    { SetStretchBltMode(hdc, nStretchMode):int (mode precedent) - ordinal   }
+    { VERIFIE via gdi.exe16.spec (2 mots). Meme discipline REELLE :          }
+    { stocke/retourne (mono-DC, Win16_CurrentStretchBltMode, defaut          }
+    { BLACKONWHITE=1 - le vrai defaut documente) - aucun StretchBlt/         }
+    { StretchDIBits n'existe encore dans ce sous-ensemble, meme limitation   }
+    { disclosee que ci-dessus. }
+    GSBOld := Win16_CurrentStretchBltMode;
+    Win16_CurrentStretchBltMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := GSBOld;
+    ArgWords := 2;
+   End;
+   8: Begin
+    { SetTextCharacterExtra(hdc, nCharExtra):int (valeur precedente) -       }
+    { ordinal VERIFIE via gdi.exe16.spec (2 mots SIGNES). Stocke/retourne    }
+    { REELLEMENT (mono-DC, Win16_CurrentTextCharExtra, defaut 0 - le vrai    }
+    { defaut documente, aucun espacement supplementaire) - aucun TextOut/    }
+    { ExtTextOut n'existe encore dans ce sous-ensemble pour consommer cette  }
+    { valeur, meme limitation disclosee que ci-dessus. }
+    GTCEOld := Win16_CurrentTextCharExtra;
+    Win16_CurrentTextCharExtra := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Word(GTCEOld);
+    ArgWords := 2;
+   End;
+   9: Begin
+    { SetTextColor(hdc, crColor):COLORREF - ordinal VERIFIE via              }
+    { gdi.exe16.spec (1 mot + 1 LONG = 3 mots, meme convention de poids       }
+    { fort d'abord que SetBkColor/$1). Stocke/retourne REELLEMENT (mono-DC,  }
+    { Win16_CurrentTextColor, defaut $00000000 noir - le vrai defaut          }
+    { documente d'un DC neuf) - aucun TextOut n'existe encore dans ce         }
+    { sous-ensemble pour consommer cette couleur, meme limitation disclosee  }
+    { que SetBkColor/$1. }
+    GTXOld := Win16_CurrentTextColor;
+    GTXLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GTXHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Win16_CurrentTextColor := (LongInt(GTXHi) Shl 16) Or LongInt(GTXLo);
+    P.CPU.Regs.AX := Word(GTXOld And $FFFF);
+    P.CPU.Regs.DX := Word((GTXOld Shr 16) And $FFFF);
+    ArgWords := 3;
+   End;
+   10: Begin
+    { SetTextJustification(hdc, nBreakExtra, nBreakCount):int - ordinal     }
+    { VERIFIE via gdi.exe16.spec (3 mots : hdc + 2 entiers signes). Stocke    }
+    { REELLEMENT les 2 valeurs (mono-DC, Win16_CurrentBreakExtra/Count) -     }
+    { aucun TextOut n'existe encore pour repartir l'espacement demande sur    }
+    { les espaces d'une chaine, meme limitation disclosee que ci-dessus.      }
+    { Convention de VALEUR DE RETOUR non confirmee independamment pour cet    }
+    { ordinal 16 bits precis (documentation d'epoque ambigue a ce sujet) -    }
+    { modelisee sur le successeur Win32 bien documente de cette meme API     }
+    { (GDI32 SetTextJustification), qui renvoie nBreakExtra echo - best-      }
+    { effort raisonnable, disclose. }
+    GTJExtra := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    GTJCount := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    Win16_CurrentBreakExtra := GTJExtra;
+    Win16_CurrentBreakCount := GTJCount;
+    P.CPU.Regs.AX := Word(GTJExtra);
+    ArgWords := 3;
+   End;
+   11: Begin
+    { SetWindowOrg(hdc, X, Y):DWORD (origine PRECEDENTE, POINT packe          }
+    { DX:AX=y:x) - ordinal VERIFIE via gdi.exe16.spec (3 mots : hdc + 2       }
+    { entiers SIGNES, Y au sommet de la pile comme SetTextJustification       }
+    { ci-dessus). Stocke/retourne REELLEMENT (mono-DC,                        }
+    { Win16_CurrentWindowOrgX/Y, defaut (0,0) - le vrai defaut documente      }
+    { d'un DC neuf) - fait partie de la famille MapMode/Window*/Viewport*    }
+    { (ordinaux 3/11-15) dont seul le "get/set" est reel : le pipeline de     }
+    { coordonnees existant (MoveTo/LineTo/Rectangle/Ellipse) continue de      }
+    { traiter les coordonnees comme des pixels CLIENT directs (MM_TEXT),      }
+    { meme limitation deja disclosee pour SetMapMode/$3 - une transformation }
+    { logique->peripherique complete n'est pas cablee. }
+    GWOOldX := Win16_CurrentWindowOrgX;
+    GWOOldY := Win16_CurrentWindowOrgY;
+    Win16_CurrentWindowOrgX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    Win16_CurrentWindowOrgY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Word(GWOOldX);
+    P.CPU.Regs.DX := Word(GWOOldY);
+    ArgWords := 3;
+   End;
+   12: Begin
+    { SetWindowExt(hdc, X, Y):DWORD (extension PRECEDENTE, POINT packe        }
+    { DX:AX=y:x) - ordinal VERIFIE via gdi.exe16.spec (3 mots). Meme          }
+    { discipline que SetWindowOrg/$11 : stocke/retourne REELLEMENT           }
+    { (Win16_CurrentWindowExtX/Y, defaut (1,1) - le vrai defaut documente),   }
+    { non consomme par le pipeline de coordonnees existant. }
+    GWEOldX := Win16_CurrentWindowExtX;
+    GWEOldY := Win16_CurrentWindowExtY;
+    Win16_CurrentWindowExtX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    Win16_CurrentWindowExtY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Word(GWEOldX);
+    P.CPU.Regs.DX := Word(GWEOldY);
+    ArgWords := 3;
+   End;
+   13: Begin
+    { SetViewportOrg(hdc, X, Y):DWORD (origine PRECEDENTE, POINT packe        }
+    { DX:AX=y:x) - ordinal VERIFIE via gdi.exe16.spec (3 mots). Meme          }
+    { discipline : stocke/retourne REELLEMENT                                }
+    { (Win16_CurrentViewportOrgX/Y, defaut (0,0) - le vrai defaut             }
+    { documente), non consomme par le pipeline de coordonnees existant. }
+    GVOOldX := Win16_CurrentViewportOrgX;
+    GVOOldY := Win16_CurrentViewportOrgY;
+    Win16_CurrentViewportOrgX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    Win16_CurrentViewportOrgY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Word(GVOOldX);
+    P.CPU.Regs.DX := Word(GVOOldY);
+    ArgWords := 3;
+   End;
+   14: Begin
+    { SetViewportExt(hdc, X, Y):DWORD (extension PRECEDENTE, POINT packe      }
+    { DX:AX=y:x) - ordinal VERIFIE via gdi.exe16.spec (3 mots). Meme          }
+    { discipline : stocke/retourne REELLEMENT                                }
+    { (Win16_CurrentViewportExtX/Y, defaut (1,1) - le vrai defaut             }
+    { documente), non consomme par le pipeline de coordonnees existant. }
+    GVEOldX := Win16_CurrentViewportExtX;
+    GVEOldY := Win16_CurrentViewportExtY;
+    Win16_CurrentViewportExtX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    Win16_CurrentViewportExtY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Word(GVEOldX);
+    P.CPU.Regs.DX := Word(GVEOldY);
+    ArgWords := 3;
+   End;
+   15: Begin
+    { OffsetWindowOrg(hdc, X, Y):DWORD (origine PRECEDENTE, POINT packe       }
+    { DX:AX=y:x) - ordinal VERIFIE via gdi.exe16.spec (3 mots). REEL, et      }
+    { genuinement DIFFERENT de SetWindowOrg/$11 (pas une simple redite) :     }
+    { ajoute X,Y a l'origine COURANTE au lieu de l'ecraser, exactement le     }
+    { sens documente ("modifie les coordonnees d'origine RELATIVEMENT a       }
+    { l'origine courante"). Meme limitation disclosee : non consomme par le  }
+    { pipeline de coordonnees existant. }
+    GWOOldX := Win16_CurrentWindowOrgX;
+    GWOOldY := Win16_CurrentWindowOrgY;
+    Win16_CurrentWindowOrgX := SmallInt(Word(GWOOldX) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    Win16_CurrentWindowOrgY := SmallInt(Word(GWOOldY) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Word(GWOOldX);
+    P.CPU.Regs.DX := Word(GWOOldY);
+    ArgWords := 3;
    End;
    80: Begin
     { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }
