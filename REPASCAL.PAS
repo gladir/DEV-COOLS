@@ -495,6 +495,7 @@ Begin
   End;Error('impossible d''installer le fichier reformate');Exit;
  End;
 End;
+
 BEGIN
  HadError:=False;
  If ParamCount<>1 Then Begin
