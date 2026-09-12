@@ -28,7 +28,7 @@ Var
  PreserveCommentIndent,AwaitingThenBegin:Boolean;
  RoutineHeader,AwaitingRoutineBegin,RoutineNeedsBlank,DeclarationSection,
  UsesSection:Boolean;
- ParenthesisLevel:Integer;
+ ParenthesisLevel,ConditionalLevel:Integer;
 
 Function UpperString(Const S:String):String;
 Var
@@ -265,6 +265,27 @@ Begin
  If LastSemi<>0 Then FindLineBreak:=LastSemi Else FindLineBreak:=LastOperator;
 End;
 
+Procedure EmitPending;Forward;
+
+Function ConditionalDirectiveKind(Const S:TSourceString):Integer;
+Var U:TSourceString;
+Begin
+ U:=UpperString(TrimLine(S));ConditionalDirectiveKind:=0;
+ If(Copy(U,1,7)='{$IFDEF')or(Copy(U,1,8)='{$IFNDEF')or
+   (Copy(U,1,4)='{$IF')or(Copy(U,1,7)='{$IFOPT')Then ConditionalDirectiveKind:=1
+ Else If(Copy(U,1,6)='{$ELSE')or(Copy(U,1,8)='{$ELSEIF')Then ConditionalDirectiveKind:=2
+ Else If(Copy(U,1,7)='{$ENDIF')or(Copy(U,1,7)='{$IFEND')Then ConditionalDirectiveKind:=3;
+End;
+
+Procedure EmitConditionalDirective(Const S:TSourceString;Kind:Integer);
+Var I,Level:Integer;
+Begin
+ EmitPending;If Kind in[2,3]Then If ConditionalLevel>0 Then Dec(ConditionalLevel);
+ Level:=IndentLevel+ConditionalLevel;For I:=1 to Level do Write(OutputFile,' ');
+ WriteLn(OutputFile,TrimLine(S));If Kind in[1,2]Then Inc(ConditionalLevel);
+ If IOResult<>0 Then Error('erreur d''ecriture de directive conditionnelle');
+End;
+
 Procedure WriteFormattedLine(Const Source:TSourceString;Level:LongInt);
 Var
  S,Part:TSourceString;
@@ -293,8 +314,9 @@ Begin
  If S=''Then Begin
   WriteLn(OutputFile);PreserveCommentIndent:=False;Exit;
  End;
- If PreserveCommentIndent Then WriteLn(OutputFile,S)Else WriteFormattedLine(S,IndentLevel)
- ;PreserveCommentIndent:=False;AwaitingThenBegin:=False;
+ If PreserveCommentIndent Then WriteLn(OutputFile,S)
+ Else WriteFormattedLine(S,IndentLevel+ConditionalLevel);
+ PreserveCommentIndent:=False;AwaitingThenBegin:=False;
  If IOResult<>0 Then Error('erreur d''ecriture');
 End;
 
@@ -306,6 +328,7 @@ Procedure FormatLine(Const L:TSourceString;Var State:TCommentState;
 Var SkipProgram:Boolean);
 Var
  I,J:LongInt;
+ DirectiveKind:Integer;
  W,U,S:String;
  C:Char;
 Begin
@@ -325,6 +348,14 @@ Begin
      Inc(I,2);State:=csNone;Break;
     End;Inc(I);
    End;AppendComment(Copy(L,J,I-J));Continue;
+  End;
+  If(C='{')and(I<Length(L))and(L[I+1]='$')Then Begin
+   J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);
+   If I<=Length(L)Then Inc(I);DirectiveKind:=ConditionalDirectiveKind(Copy(L,J,I-J));
+   If DirectiveKind<>0 Then Begin
+    PreserveCommentIndent:=False;AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
+    EmitConditionalDirective(Copy(L,J,I-J),DirectiveKind);Continue;
+   End;I:=J;
   End;
   If C='{'Then Begin
    AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
@@ -471,7 +502,7 @@ Begin
  OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;RoutineHeader:=False;
  AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;DeclarationSection:=False;
  UsesSection:=False;
- ParenthesisLevel:=0;
+ ParenthesisLevel:=0;ConditionalLevel:=0;
  IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;
  SkipProgram:=HasProgram and not IsUnit;
  If not IsUnit Then WriteLn(OutputFile,'Program ',ProgramName,';');
