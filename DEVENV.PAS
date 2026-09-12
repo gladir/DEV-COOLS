@@ -7770,6 +7770,19 @@ Var
  Win16_CurrentWindowExtX, Win16_CurrentWindowExtY: SmallInt;
  Win16_CurrentViewportOrgX, Win16_CurrentViewportOrgY: SmallInt;
  Win16_CurrentViewportExtX, Win16_CurrentViewportExtY: SmallInt;
+ { GDI.EXE ExcludeClipRect/IntersectClipRect (2026-09-12, demande           }
+ { explicite) - UN SEUL rectangle de clip mono-DC (pas une vraie region     }
+ { complexe), voir le commentaire au site d'appel pour le detail des        }
+ { limites disclosees d'ExcludeClipRect. }
+ Win16_ClipActive: Boolean;
+ Win16_ClipX1, Win16_ClipY1, Win16_ClipX2, Win16_ClipY2: Integer;
+ { GDI.EXE FloodFill (2026-09-12, demande explicite) - pile de travail       }
+ { GLOBALE (pas locale a la procedure) pour l'algorithme de remplissage      }
+ { par propagation : bornee a la taille du framebuffer $13 entier           }
+ { (320x200=64000, marge incluse) - une pile LOCALE de cette taille           }
+ { risquerait un debordement de pile reel, une globale est en zone de        }
+ { donnees statique, sans risque. }
+ Win16_FFStackX, Win16_FFStackY: Array[0..64099] Of Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -77697,6 +77710,8 @@ Begin
  Win16_CurrentWindowExtX := 1; Win16_CurrentWindowExtY := 1; { defaut reel d'un DC neuf }
  Win16_CurrentViewportOrgX := 0; Win16_CurrentViewportOrgY := 0; { defaut reel d'un DC neuf }
  Win16_CurrentViewportExtX := 1; Win16_CurrentViewportExtY := 1; { defaut reel d'un DC neuf }
+ Win16_ClipActive := False;
+ Win16_ClipX1 := 0; Win16_ClipY1 := 0; Win16_ClipX2 := 0; Win16_ClipY2 := 0;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -78399,6 +78414,157 @@ Begin
  End;
 End;
 
+Const
+ { Constante propre plutot que le Pi integre (meme precaution deja prise    }
+ { par PerlPi/~62209 dans ce fichier). }
+ Win16_Pi = 3.14159265358979323846;
+
+{ atan2 minimal (2026-09-12, Arc/GDI ordinal 23, demande explicite) - meme  }
+{ technique que PerlArcTan2 (~62195) mais copie INDEPENDANTE (evite toute   }
+{ dependance croisee avec le moteur Perl, aucun lien fonctionnel entre les  }
+{ deux). Renvoie un angle en radians dans ]-Pi,Pi]. }
+Function Win16_ArcTan2(Y, X: Real): Real;
+Begin
+ If X > 0 Then Win16_ArcTan2 := ArcTan(Y / X)
+ Else If (X < 0) And (Y >= 0) Then Win16_ArcTan2 := ArcTan(Y / X) + Win16_Pi
+ Else If (X < 0) And (Y < 0) Then Win16_ArcTan2 := ArcTan(Y / X) - Win16_Pi
+ Else If (X = 0) And (Y > 0) Then Win16_ArcTan2 := Win16_Pi / 2
+ Else If (X = 0) And (Y < 0) Then Win16_ArcTan2 := -Win16_Pi / 2
+ Else Win16_ArcTan2 := 0;
+End;
+
+{ Trace un ARC d'ellipse (contour PARTIEL, pas le plein contour) inscrit    }
+{ dans (X1,Y1)-(X2,Y2), du rayon passant par (X3,Y3) au rayon passant par   }
+{ (X4,Y4), sens ANTI-HORAIRE (AD_COUNTERCLOCKWISE, le vrai defaut           }
+{ documente d'un DC neuf - SetArcDirection non demande/non implante) -      }
+{ utilise par Arc (GDI ordinal 23, 2026-09-12, demande explicite).          }
+{ Reutilise le MEME algorithme du point milieu que Win16_DrawEllipseBox     }
+{ juste au-dessus, DUPLIQUE plutot que factorise (pour ne surtout pas       }
+{ risquer de perturber Ellipse/$24, deja verifie live sur CLOCK.EXE), mais  }
+{ teste l'angle de CHAQUE point candidat avant de le tracer. (X3,Y3)/       }
+{ (X4,Y4) definissent l'angle via le rayon depuis le centre - ils n'ont     }
+{ PAS besoin d'etre exactement sur le contour eux-memes, meme convention    }
+{ reelle documentee. }
+Procedure Win16_DrawArc(X1, Y1, X2, Y2, X3, Y3, X4, Y4: Integer; Color: Byte);
+Var
+ CX, CY, RX, RY: Integer;
+ X, Y: Integer;
+ RX2, RY2, TwoRX2, TwoRY2: LongInt;
+ Ex, Ey: LongInt;
+ P1, P2: LongInt;
+ StartA, EndA: Real;
+
+ Function InRange(Dx, Dy: Integer): Boolean;
+ Var A: Real;
+ Begin
+  A := Win16_ArcTan2(-Dy / RY, Dx / RX);
+  If A < 0 Then A := A + 2 * Win16_Pi;
+  If StartA <= EndA Then
+   InRange := (A >= StartA) And (A <= EndA)
+  Else
+   InRange := (A >= StartA) Or (A <= EndA);
+ End;
+
+ Procedure Plot4(Dx, Dy: Integer);
+ Begin
+  If InRange(Dx, Dy) Then Win16_PlotPixel(CX + Dx, CY + Dy, Color);
+  If InRange(-Dx, Dy) Then Win16_PlotPixel(CX - Dx, CY + Dy, Color);
+  If InRange(Dx, -Dy) Then Win16_PlotPixel(CX + Dx, CY - Dy, Color);
+  If InRange(-Dx, -Dy) Then Win16_PlotPixel(CX - Dx, CY - Dy, Color);
+ End;
+
+Begin
+ CX := (X1 + X2) Div 2;
+ CY := (Y1 + Y2) Div 2;
+ RX := Abs(X2 - X1) Div 2;
+ RY := Abs(Y2 - Y1) Div 2;
+ If (RX <= 0) Or (RY <= 0) Then Exit;
+ StartA := Win16_ArcTan2(-(Y3 - CY) / RY, (X3 - CX) / RX);
+ If StartA < 0 Then StartA := StartA + 2 * Win16_Pi;
+ EndA := Win16_ArcTan2(-(Y4 - CY) / RY, (X4 - CX) / RX);
+ If EndA < 0 Then EndA := EndA + 2 * Win16_Pi;
+ RX2 := LongInt(RX) * RX;
+ RY2 := LongInt(RY) * RY;
+ TwoRX2 := 2 * RX2;
+ TwoRY2 := 2 * RY2;
+ X := 0; Y := RY;
+ Ex := 0; Ey := TwoRX2 * Y;
+ If InRange(0, Y) Then Win16_PlotPixel(CX, CY + Y, Color);
+ If InRange(0, -Y) Then Win16_PlotPixel(CX, CY - Y, Color);
+ P1 := RY2 - (RX2 * RY) + (RX2 Div 4);
+ While Ex < Ey Do Begin
+  Inc(X);
+  Ex := Ex + TwoRY2;
+  If P1 < 0 Then
+   P1 := P1 + RY2 + Ex
+  Else Begin
+   Dec(Y);
+   Ey := Ey - TwoRX2;
+   P1 := P1 + RY2 + Ex - Ey;
+  End;
+  Plot4(X, Y);
+ End;
+ P2 := (RY2 * (X + 1) * (X + 1)) + (RX2 * (Y - 1) * (Y - 1)) - RX2 * RY2;
+ While Y > 0 Do Begin
+  Dec(Y);
+  Ey := Ey - TwoRX2;
+  If P2 > 0 Then
+   P2 := P2 + RX2 - Ey
+  Else Begin
+   Inc(X);
+   Ex := Ex + TwoRY2;
+   P2 := P2 + RX2 - Ey + Ex;
+  End;
+  Plot4(X, Y);
+ End;
+End;
+
+{ Remplissage par propagation (pile, 4-connexe) - utilise par FloodFill      }
+{ (GDI ordinal 25, 2026-09-12, demande explicite). Semantique FloodFill      }
+{ "bordure" REELLE (pas FLOODFILLSURFACE) : remplit tout ce qui n'est PAS    }
+{ BoundaryColor a partir du point de depart, s'arrete sur BoundaryColor -    }
+{ marque (peint) DES la mise en pile plutot qu'au depilement, pour ne         }
+{ jamais empiler le meme pixel plus d'une fois (borne stricte le pire cas    }
+{ a la surface du rectangle, voir Win16_FFStackX/Y, globales pour eviter     }
+{ tout risque de depassement de pile d'appel reelle). Bornee au rectangle    }
+{ (MinX,MinY)-(MaxX,MaxY) fourni par l'appelant (le rectangle de la          }
+{ fenetre active), jamais tout l'ecran partage EmuVideo. }
+Procedure Win16_FloodFillRegion(SeedX, SeedY: Integer; BoundaryColor, FillColor: Byte;
+                                 MinX, MinY, MaxX, MaxY: Integer);
+Var
+ { LongInt et NON Integer : Integer est 16 bits dans ce fichier ($MODE TP,   }
+ { voir la convention deja etablie ailleurs - CMCount/CRAcc/etc.), max       }
+ { 32767, insuffisant pour indexer une pile pouvant vraiment atteindre       }
+ { 64099 (surface max du framebuffer $13 entier) - BOGUE REEL trouve par     }
+ { le compilateur lui-meme ("comparaison toujours fausse") et corrige AVANT }
+ { livraison : un Integer aurait silencieusement enveloppe (wrap) et corrompu}
+ { l'indexation pour tout remplissage reellement grand. }
+ SP: LongInt;
+ CX, CY: Integer;
+
+ Procedure TryPush(TX, TY: Integer);
+ Begin
+  If (TX < MinX) Or (TX > MaxX) Or (TY < MinY) Or (TY > MaxY) Then Exit;
+  If SP >= High(Win16_FFStackX) Then Exit; { garde-fou memoire, cas normal jamais atteint pour une seule fenetre }
+  If Emu_VidGetPixel(TX, TY) = BoundaryColor Then Exit;
+  If Emu_VidGetPixel(TX, TY) = FillColor Then Exit;
+  Emu_VidSetPixel(TX, TY, FillColor);
+  Win16_FFStackX[SP] := TX; Win16_FFStackY[SP] := TY; Inc(SP);
+ End;
+
+Begin
+ SP := 0;
+ TryPush(SeedX, SeedY);
+ While SP > 0 Do Begin
+  Dec(SP);
+  CX := Win16_FFStackX[SP]; CY := Win16_FFStackY[SP];
+  TryPush(CX + 1, CY);
+  TryPush(CX - 1, CY);
+  TryPush(CX, CY + 1);
+  TryPush(CX, CY - 1);
+ End;
+End;
+
 { Appelle SYNCHRONE la VRAIE WNDPROC 16 bits du programme (dispatchee par   }
 { DispatchMessage) - reutilise Dpmi_RunRealProc TEL QUEL (meme motif exact  }
 { que les rappels DPMI mode reel : empiler les arguments convention Pascal, }
@@ -78637,6 +78803,10 @@ Var
  SWEXNum, SWEXDenom, SWEYNum, SWEYDenom: SmallInt;
  SVEOldX, SVEOldY: SmallInt;
  SVEXNum, SVEXDenom, SVEYNum, SVEYDenom: SmallInt;
+ { GDI.EXE Arc/FloodFill (2026-09-12, demande explicite). }
+ ArcX3, ArcY3, ArcX4, ArcY4: SmallInt;
+ FFLo, FFHi: Word;
+ FFColor: LongInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -80194,6 +80364,122 @@ Begin
       IntToStr(GdiX1) + ',' + IntToStr(GdiY1) + ')');
     P.CPU.Regs.AX := 1;
     ArgWords := 3;
+   End;
+   21, 22: Begin
+    { ExcludeClipRect(hdc,X1,Y1,X2,Y2):int / IntersectClipRect(hdc,X1,Y1,     }
+    { X2,Y2):int - ordinaux VERIFIES via gdi.exe16.spec (4 mots SIGNES        }
+    { chacun, meme signature que Ellipse/Rectangle ci-dessous). REEL pour     }
+    { IntersectClipRect (intersection geometrique EXACTE de 2 rectangles,     }
+    { toujours representable par un seul rectangle - Win16_ClipX1/Y1/X2/Y2/   }
+    { Win16_ClipActive, mono-DC). ExcludeClipRect est PLUS LIMITE, disclose   }
+    { honnetement : ce sous-ensemble ne modelise qu'UN SEUL rectangle de      }
+    { clip (pas une vraie region complexe) - soustraire un rectangle d'un     }
+    { rectangle ne redonne un rectangle EXACT que dans les cas ou le          }
+    { rectangle exclu traverse completement le clip actuel selon un axe       }
+    { (rogne alors l'autre axe reellement) ; le cas general (un "trou" au     }
+    { milieu) n'est PAS representable par ce modele a un seul rectangle -     }
+    { le clip reste alors INCHANGE plutot que d'inventer un resultat. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Not Win16_ClipActive Then Begin
+     Win16_ClipX1 := GdiX1; Win16_ClipY1 := GdiY1;
+     Win16_ClipX2 := GdiX2; Win16_ClipY2 := GdiY2;
+     Win16_ClipActive := True;
+    End;
+    If Ordinal = 22 Then Begin
+     If GdiX1 > Win16_ClipX1 Then Win16_ClipX1 := GdiX1;
+     If GdiY1 > Win16_ClipY1 Then Win16_ClipY1 := GdiY1;
+     If GdiX2 < Win16_ClipX2 Then Win16_ClipX2 := GdiX2;
+     If GdiY2 < Win16_ClipY2 Then Win16_ClipY2 := GdiY2;
+    End Else Begin
+     { ExcludeClipRect : ne gere que les cas ou le rectangle exclu traverse  }
+     { completement le clip courant selon un axe (seul cas exactement        }
+     { representable par un rectangle) - sinon inchange, disclose ci-dessus. }
+     If (GdiX1 <= Win16_ClipX1) And (GdiX2 >= Win16_ClipX2) Then Begin
+      If GdiY1 <= Win16_ClipY1 Then Win16_ClipY1 := GdiY2
+      Else If GdiY2 >= Win16_ClipY2 Then Win16_ClipY2 := GdiY1;
+     End Else If (GdiY1 <= Win16_ClipY1) And (GdiY2 >= Win16_ClipY2) Then Begin
+      If GdiX1 <= Win16_ClipX1 Then Win16_ClipX1 := GdiX2
+      Else If GdiX2 >= Win16_ClipX2 Then Win16_ClipX2 := GdiX1;
+     End;
+    End;
+    If (Win16_ClipX1 >= Win16_ClipX2) Or (Win16_ClipY1 >= Win16_ClipY2) Then
+     P.CPU.Regs.AX := 1  { NULLREGION }
+    Else
+     P.CPU.Regs.AX := 2; { SIMPLEREGION - ce sous-ensemble ne suit jamais une vraie region complexe }
+    ArgWords := 5;
+   End;
+   23: Begin
+    { Arc(hdc,X1,Y1,X2,Y2,X3,Y3,X4,Y4):bool - ordinal VERIFIE via             }
+    { gdi.exe16.spec (8 mots SIGNES = 9 mots avec hdc). REEL : reutilise      }
+    { l'algorithme du point milieu deja etabli par Win16_DrawEllipseBox        }
+    { (voir Win16_DrawArc, nouvelle procedure juste apres), filtre par        }
+    { angle - (X3,Y3)/(X4,Y4) definissent les rayons de depart/fin depuis     }
+    { le centre (projetes sur l'ellipse par l'angle, pas necessairement       }
+    { sur le contour eux-memes - meme convention reelle documentee), sens     }
+    { anti-horaire (AD_COUNTERCLOCKWISE, le vrai defaut documente d'un DC     }
+    { neuf - SetArcDirection non demande/non implante). Coordonnees CLIENT    }
+    { converties en pixels ABSOLUS comme Ellipse/Rectangle. Couleur fixe      }
+    { noire (0), meme rationale que LineTo/Ellipse/Rectangle. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    ArcX4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    ArcY4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY2);
+     ArcX3 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX3);
+     ArcY3 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY3);
+     ArcX4 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX4);
+     ArcY4 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY4);
+     Win16_DrawArc(GdiX1, GdiY1, GdiX2, GdiY2, ArcX3, ArcY3, ArcX4, ArcY4, 0);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 9;
+   End;
+   25: Begin
+    { FloodFill(hdc,X,Y,crColor):bool - ordinal VERIFIE via gdi.exe16.spec   }
+    { (1 mot + 1 mot + 1 mot + 1 LONG = 5 mots, LONG poids-fort d'abord       }
+    { comme SetBkColor/$1). REEL : vrai algorithme de remplissage par         }
+    { propagation (pile, 4-connexe, voir Win16_FloodFillRegion juste apres)   }
+    { qui REMPLIT jusqu'a atteindre des pixels de crColor (semantique         }
+    { FloodFill "bordure", PAS FLOODFILLSURFACE) - borne DEFENSIVEMENT au     }
+    { rectangle de la fenetre active (jamais tout l'ecran partage EmuVideo), }
+    { evitant tout debordement si crColor n'est jamais rencontre. Couleur     }
+    { de remplissage fixe noire (0) : le PINCEAU courant reste synthetique    }
+    { (aucune vraie couleur de brosse suivie nulle part dans ce sous-          }
+    { ensemble, meme limitation deja disclosee pour LineTo/Ellipse/            }
+    { Rectangle - pas une regression propre a FloodFill). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    FFLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FFHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    { Seul l'octet bas de crColor importe reellement : ce sous-ensemble       }
+    { rend tout en mode $13 (256 COULEURS INDEXEES), pas en vrai RGB 24       }
+    { bits - meme convention deja implicite pour toutes les couleurs de       }
+    { dessin fixes (0=noir) utilisees par LineTo/Ellipse/Rectangle. FFHi      }
+    { combine ici uniquement pour rester fidele au COLORREF complet lu        }
+    { (disclose), sans effet different sur le resultat en mode $13. }
+    FFColor := (LongInt(FFHi) Shl 16) Or LongInt(FFLo);
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     Win16_FloodFillRegion(GdiX1, GdiY1, Byte(FFColor And $FF), 0,
+      Win16_WindowX[Win16_ActiveDCWindow] + 1,
+      Win16_WindowY[Win16_ActiveDCWindow] + 1,
+      Win16_WindowX[Win16_ActiveDCWindow] + Win16_WindowW[Win16_ActiveDCWindow] - 2,
+      Win16_WindowY[Win16_ActiveDCWindow] + Win16_WindowH[Win16_ActiveDCWindow] - 2);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
    End;
    24, 27: Begin
     { Ellipse(hdc,X1,Y1,X2,Y2):bool / Rectangle(hdc,X1,Y1,X2,Y2):bool -      }
