@@ -3427,7 +3427,7 @@ Type
 
  { Type de shell du terminal }
  TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_GULAM, SK_AMIGADOS, SK_NCOMMANDER,
-  SK_OS2REXX);
+  SK_OS2REXX, SK_COS);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
@@ -85625,6 +85625,7 @@ Begin
   SK_GULAM:      FName := 'terminal-gulam.log';
   SK_AMIGADOS:   FName := 'terminal-amiga.log';
   SK_OS2REXX:    FName := 'terminal-os2.log';
+  SK_COS:        FName := 'terminal-cos.log';
  Else
   FName := 'terminal.log';
  End;
@@ -116242,6 +116243,55 @@ Begin
       ''' n''est pas reconnu comme commande interne ou externe.');
    End;
   End;
+  SK_COS: Begin
+   { COS (Cray Operating System, Cray-1, 1976) - demande explicite de       }
+   { l'utilisateur, jeu de commandes limite a celles listees               }
+   { (gladir.com/OS/COS/*.htm) : CHANNEL/CLASS/CLEAR/COMMENT/DISK/DKERR/   }
+   { DROP/DSPL/HELP/PAUSE/STATUS. Aucun format de reponse REEL (colonnes   }
+   { exactes de DSPL/DISK/STATUS, etc.) n'a pu etre verifie contre une      }
+   { source primaire (manuel COS introuvable en ligne) - reponses          }
+   { honnetement simplifiees/disclosees plutot qu'inventees en detail,      }
+   { meme esprit que les autres "simplifications disclosees" de ce         }
+   { fichier (ex: NetBiosEnum). Ce terminal ne fait PAS tourner de vrai     }
+   { flux de commandes COS (pas de fichier de commandes/JCL, pas de file    }
+   { d attente de jobs reelle) : DROP/PAUSE/CLASS restent donc de simples   }
+   { accuses de reception textuels, un seul "job" interactif existant ici. }
+   If CurrCmd = 'CHANNEL' Then
+    TermAddLine(TP, 'CHANNEL ' + TermTrim(ParamStr) + ' STATUS CHANGED.')
+   Else If CurrCmd = 'CLASS' Then
+    TermAddLine(TP, 'CLASS ' + TermTrim(ParamStr) + ' STATUS CHANGED.')
+   Else If CurrCmd = 'CLEAR' Then
+    TermCmd_CLS(TP)
+   Else If CurrCmd = 'COMMENT' Then Begin
+    { Un commentaire n'a, par definition, aucun effet ni sortie. }
+   End
+   Else If CurrCmd = 'DISK' Then Begin
+    TermAddLine(TP, 'DS.  CH  UN  EST  TYPE  PRCT FULL');
+    TermAddLine(TP, 'AUCUN CANAL DISQUE CONFIGURE (aucun disque Cray-1 emule).');
+   End
+   Else If CurrCmd = 'DKERR' Then
+    TermAddLine(TP, 'AUCUNE ERREUR DISQUE.')
+   Else If CurrCmd = 'DROP' Then
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' DROPPED.')
+   Else If CurrCmd = 'DSPL' Then Begin
+    TermAddLine(TP, 'CRAY-1 / COS  ' + TermGetCurrentDir);
+    TermAddLine(TP, 'CP  STATE=RUN   JOB=INTERACTIF   ST=' + TermTrim(ParamStr));
+   End
+   Else If CurrCmd = 'PAUSE' Then
+    TermAddLine(TP, 'PAUSE - AUCUN FLUX DE COMMANDES EN COURS.')
+   Else If CurrCmd = 'STATUS' Then Begin
+    TermAddLine(TP, 'SYSTEM STATUS.');
+    TermAddLine(TP, 'CRAY-1  COS  1 JOB (INTERACTIF)  ETAT=RUN');
+   End
+   Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then Begin
+    TermAddLine(TP, 'COS built-in commands:');
+    TermAddLine(TP, ' CHANNEL  CLASS  CLEAR  COMMENT  DISK');
+    TermAddLine(TP, ' DKERR    DROP   DSPL   HELP     PAUSE');
+    TermAddLine(TP, ' STATUS');
+   End
+   Else
+    TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
+  End;
  End;
 End;
 
@@ -116255,6 +116305,7 @@ Begin
   SK_BASH:       TermCmdHistFile := 'devenv-bash.hist';
   SK_AMIGADOS:   TermCmdHistFile := 'devenv-amiga.hist';
   SK_OS2REXX:    TermCmdHistFile := 'devenv-os2.hist';
+  SK_COS:        TermCmdHistFile := 'devenv-cos.hist';
  Else
   TermCmdHistFile := 'devenv-term.hist';
  End;
@@ -116382,6 +116433,7 @@ Begin
  InitTerminalPanel(TermPanels[SK_AMIGADOS], SK_AMIGADOS);
  InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
  InitTerminalPanel(TermPanels[SK_OS2REXX], SK_OS2REXX);
+ InitTerminalPanel(TermPanels[SK_COS], SK_COS);
  { Comme l original sur DOS reel (et comme les 4 autres shells de ce      }
  { panneau) : demarrer sur le repertoire courant de la machine hote,           }
  { lettre de lecteur incluse (ex: C:\SOURCE\GITHUB\DEV-COOLS), pas sur           }
@@ -120012,6 +120064,7 @@ Begin
   SK_AMIGADOS:   SelLabel := 'AmigaDOS';
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
   SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
+  SK_COS:        SelLabel := 'COS (Cray-1)';
  End;
  SetColor(15);
  OutTextXY(SBX + 4, SBY + 3, SelLabel);
@@ -120156,6 +120209,12 @@ Begin
      ' ' + TP.InputLine + '_';
    SK_AMIGADOS:
     PromptStr := '1.SYS:> ' + TP.InputLine + '_';
+   SK_COS:
+    { Syntaxe reelle COS : commandes separees par des virgules, ligne     }
+    { terminee par un point (ex: STATUS,ALL.) - prompt simplifie, aucune  }
+    { convention interactive precise n'a ete retrouvee pour ce systeme    }
+    { par lots (batch) de 1976. }
+    PromptStr := 'COS: ' + TP.InputLine + '_';
   Else
    PromptStr := PromptStr + '> ' + TP.InputLine + '_';
   End;
@@ -120358,11 +120417,23 @@ Begin
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H + 3,
    'OS/2 & REXX');
+  { Item 8 : COS (Cray-1) }
+  If TermSelectIdx = 7 Then
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE)
+  Else
+   SetFillStyle(SolidFill, 8);
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H - 1);
+  SetColor(15);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H + 3,
+   'COS (Cray-1)');
   { Bordure de la liste }
   SetColor(CLR_BORDER);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H - 1);
+   SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H - 1);
  End;
  TP.NeedRepaint := False;
 End;
@@ -120646,6 +120717,25 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
+   { Item 8 : COS (Cray-1) }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + 7 * TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 8 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_COS;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_COS].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_COS],
+       'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
    { Clic ailleurs : fermer la liste }
    TermSelectOpen := False;
    FullRepaintNeeded := True;
@@ -120665,6 +120755,7 @@ Begin
      SK_AMIGADOS:   TermSelectIdx := 4;
      SK_NCOMMANDER: TermSelectIdx := 5;
      SK_OS2REXX:    TermSelectIdx := 6;
+     SK_COS:        TermSelectIdx := 7;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -120882,7 +120973,7 @@ Begin
     Exit;
    End;
    If Ev.KeyCode = $50 Then Begin { Fleche bas }
-    If TermSelectIdx < 5 Then
+    If TermSelectIdx < 7 Then
      Inc(TermSelectIdx);
     FullRepaintNeeded := True;
     Exit;
@@ -120898,6 +120989,7 @@ Begin
      4: NewShell := SK_AMIGADOS;
      5: NewShell := SK_NCOMMANDER;
      6: NewShell := SK_OS2REXX;
+     7: NewShell := SK_COS;
     End;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -120919,6 +121011,9 @@ Begin
        SK_OS2REXX:
         TermAddLine(TermPanels[SK_OS2REXX],
          'OS/2 (TM) Command Interpreter. Tapez ? pour la liste des commandes.');
+       SK_COS:
+        TermAddLine(TermPanels[SK_COS],
+         'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
       End;
     End;
     TermPanels[ActiveShell].NeedRepaint := True;
@@ -120996,6 +121091,8 @@ Begin
         TermAddLine(TP, 'user$ ' + TP.InputLine);
        SK_AMIGADOS:
         TermAddLine(TP, '1.SYS:> ' + TP.InputLine);
+       SK_COS:
+        TermAddLine(TP, 'COS: ' + TP.InputLine);
       Else
        TermAddLine(TP, Dir + '> ' + TP.InputLine);
       End;
