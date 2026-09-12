@@ -2346,6 +2346,14 @@ Const
  OS9_MEM_BASE     = $8000;
  OS9_MEM_MAX      = $2000;
  OS9_FORK_SENTINEL = $FFFC;
+ { Cinquieme lot de F$ (2026-09-12, demande explicite) : F$All64/F$AllPrc/  }
+ { F$BtMem partagent le MEME allocateur "bump" OS9_MemSize que F$Mem       }
+ { (aucun second pool invente qui risquerait de recouvrir de la memoire     }
+ { deja utilisee par le module principal/la pile). }
+ OS9_ALL64_BPP    = 3;   { blocs de 64o utilisables par page (256-64 de table)/64 }
+ OS9_PRCDESC_SIZE = 512; { taille reelle documentee d un descripteur de processus }
+ OS9_PDIMG_OFS    = 256; { offset de la table "image DAT" simplifiee dans le descripteur }
+ OS9_PDIMG_LEN    = 64;  { 64 blocs logiques de 1 Ko suivis (0..63) - format simplifie disclose }
  { Zone de parametres (ligne de commande) ecrite par ShowEmulatorPanel et   }
  { pointee par Y au demarrage - au-dela des 4 emplacements F$Load/F$Fork    }
  { ($A000..$DFFF), avant la pile ($FFFE). }
@@ -163044,7 +163052,8 @@ End;
 { F$Mem, F$Sleep, F$SSpd, F$ID, F$SPrior, F$SSWI, F$PErr, F$PrsNam,         }
 { F$CmpNam, F$SchBit, F$AllBit, F$DelBit, F$Time, F$STime, F$CRC, F$CRCMod, }
 { F$CpyMem, F$SUser, F$GPrDsc, F$GBlkMp, F$GModDr, F$CpyMem, F$Alarm,       }
-{ F$Debug, F$TPS, F$TimAlm, I$Attach, I$Detach, I$Dup, I$Create, I$Open,    }
+{ F$Debug, F$TPS, F$TimAlm, F$All64, F$BtMem, F$DATLog, F$AllPrc,          }
+{ F$AllImg, F$DelImg, F$ClrBlk, I$Attach, I$Detach, I$Dup, I$Create, I$Open,}
 { I$MakDir, I$ChgDir, I$Delete, I$Seek, I$Close, I$Read, I$ReadLn, I$Write, }
 { I$WritLn, I$DeletX, I$GetStt/I$SetStt (acceptes sans donnees reelles).    }
 { Tout autre code de service retourne une erreur generique (Carry           }
@@ -163057,7 +163066,13 @@ End;
 { partagent maintenant un repertoire "courant" virtuel (OS9_CurDir/         }
 { OS9_ResolveHostPath) - DELIBEREMENT distinct du repertoire du processus   }
 { hote DEVENV.exe (le changer affecterait tous les autres panneaux de       }
-{ l IDE). }
+{ l IDE). F$AProc/F$Boot/F$AllRAM/F$AllHRAM/F$AllTsk/F$DelPrc/F$DelRAM/     }
+{ F$DATTmp echouent DELIBEREMENT et proprement (Carry positionne) : ils      }
+{ necessitent un vrai pool general de RAM physique, un vrai ordonnanceur ou }
+{ du vrai materiel MMU/DAT qui n existe pas dans ce coeur 6809 a memoire     }
+{ plate - les simuler risquerait une vraie corruption memoire ou un faux     }
+{ succes trompeur, pas une simple simplification (voir le commentaire juste }
+{ avant le cas $2C plus bas pour le detail). }
 Procedure M6809_DoOS9Syscall(SvcCode: Byte);
 Var
   Ch: Byte;
@@ -163105,6 +163120,14 @@ Var
   { Quatrieme lot d appels I$ (2026-09-12, demande explicite). }
   SeekPos: LongInt;
   OS9ErF: File;
+  { Cinquieme lot de F$ (2026-09-12, demande explicite). }
+  A64Page: Word;
+  A64Found, A64I: Integer;
+  BTBytes: Word;
+  AIStart, AICount, AII: Integer;
+  AIOK: Boolean;
+  PDPtr: Word;
+  CBZI: LongInt;
 Begin
   M6809_CC := M6809_CC And Not $01; { Carry clair = succes par defaut }
   Case SvcCode Of
@@ -163766,6 +163789,235 @@ Begin
            { individuelle par processus, specifique au CoCo, meme famille) : }
            { echec propre plutot qu un succes invente, aucune horloge temps   }
            { reel/callback differe n etant cablee dans ce coeur texte. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    { Cinquieme lot de F$ (2026-09-12, demande explicite) : appels bas       }
+    { niveau de gestion memoire/processus/DAT. Ce sous-ensemble OS-9/6809    }
+    { modelise UN SEUL "processus" logique (PID=1, F$Fork synchrone, voir    }
+    { commentaire d en-tete de M6809_DoOS9Syscall) et n a AUCUN materiel     }
+    { MMU/DAT reel (memoire plate M6809_Mem[0..$FFFF]) - la plupart de ces   }
+    { appels existent dans OS-9 reel pour gerer un pool general de blocs de }
+    { RAM physique partages entre plusieurs processus et un vrai            }
+    { ordonnanceur, RIEN de tout cela n existe ici. Plutot que d inventer un }
+    { second pool de memoire independant de OS9_MemSize (F$Mem) qui         }
+    { risquerait de "liberer"/"allouer" des adresses deja reellement         }
+    { occupees par le module charge/la pile - une vraie corruption, pas      }
+    { une simple simplification - les appels qui necessitent ce pool        }
+    { general ou du vrai materiel MMU/ordonnanceur echouent PROPREMENT       }
+    { (Carry positionne) plutot que de simuler un succes trompeur, meme      }
+    { discipline que F$Alarm/F$TimAlm plus haut. F$All64/F$AllPrc/F$BtMem    }
+    { restent REELLEMENT fonctionnels en reutilisant le MEME allocateur      }
+    { "bump" OS9_MemSize que F$Mem (aucun risque de collision, une seule     }
+    { source de verite memoire) ; F$AllImg/F$DelImg operent reellement sur   }
+    { la table "image DAT" simplifiee que F$AllPrc cree DANS le descripteur  }
+    { qu il alloue lui-meme (memoire que ce sous-ensemble possede et         }
+    { controle entierement, aucun risque de collision non plus). }
+    $2C: Begin { F$AProc(X=descripteur de processus) - insere dans la file   }
+           { d attente d execution. AUCUN ordonnanceur n existe dans ce      }
+           { sous-ensemble synchrone (F$Fork execute et revient tout de      }
+           { suite, rien ne consulte jamais de file d attente) : accepter    }
+           { silencieusement laisserait croire a une execution differee qui  }
+           { ne se produira jamais - echec honnete plutot qu un mensonge,    }
+           { convention registre verifiee (wiki F$AProc). }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $30: Begin { F$All64(X=base table de pages, 0=non allouee) -> A=numero   }
+           { de bloc, X=base table, Y=adresse du bloc - convention registre  }
+           { VERIFIEE (wiki F$All64). Format interne de la table simplifie   }
+           { et disclose (comme F$GPrDsc/F$GModDr/F$GBlkMp) : une page de     }
+           { 256 octets = 64 octets de table (octet 0=compteur, octets       }
+           { 1..3=etat de chacun des 3 blocs restants, 0=libre sinon         }
+           { =numero de bloc) + 3 blocs de 64 octets - PAS le format         }
+           { Microware exact (non verifie byte-pres), mais un format auto-   }
+           { coherent qui rend l appel reellement fonctionnel. Chainage      }
+           { multi-page NON implemente (echec propre si la page est pleine), }
+           { disclose. Nouvelle page allouee depuis la MEME zone F$Mem       }
+           { (OS9_MemSize) - pas un second pool independant. }
+           If M6809_X = 0 Then Begin
+             If LongInt(OS9_MemSize) + 256 > OS9_MEM_MAX Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+             End Else Begin
+               A64Page := OS9_MEM_BASE + OS9_MemSize;
+               OS9_MemSize := OS9_MemSize + 256;
+               M6809_Wr(A64Page, 1);
+               M6809_Wr(Word(A64Page + 1), 1);
+               M6809_Wr(Word(A64Page + 2), 0);
+               M6809_Wr(Word(A64Page + 3), 0);
+               M6809_A := 1;
+               M6809_X := A64Page;
+               M6809_Y := Word(A64Page + 64);
+             End;
+           End Else Begin
+             A64Page := M6809_X;
+             A64Found := 0;
+             For A64I := 1 To OS9_ALL64_BPP Do
+               If M6809_Rd(Word(A64Page + A64I)) = 0 Then Begin
+                 A64Found := A64I; Break;
+               End;
+             If A64Found = 0 Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+             End Else Begin
+               M6809_Wr(Word(A64Page + A64Found), A64Found);
+               M6809_Wr(A64Page, M6809_Rd(A64Page) + 1);
+               M6809_A := A64Found;
+               M6809_Y := Word(A64Page + 64 + (A64Found - 1) * 64);
+             End;
+           End;
+         End;
+    $35: Begin { F$Boot() - amorcage systeme (lie le module Boot/celui de     }
+           { l en-tete INIT depuis un peripherique physique de demarrage) -   }
+           { AUCUN peripherique/mecanisme de recherche de module au           }
+           { demarrage n existe ici (le module principal est deja charge     }
+           { directement par M6809_LoadOS9Module avant meme le premier        }
+           { cycle CPU) - echec honnete, convention registre verifiee (wiki   }
+           { F$Boot, qui ne documente d ailleurs aucune sortie normale non    }
+           { plus, seulement le cas d erreur). }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $36: Begin { F$BtMem(D=octets demandes) -> D=octets accordes, U=pointeur }
+           { - convention registre VERIFIEE (wiki F$BtMem : "fonctionnellement }
+           { equivalent a F$SRqMem"). REEL : reutilise le meme allocateur     }
+           { "bump" OS9_MemSize que F$Mem/F$All64/F$AllPrc, arrondi au         }
+           { paragraphe de 16 octets (granularite raisonnable, la page wiki    }
+           { source ne precise pas la taille de bloc exacte pour cet appel     }
+           { precis - disclose). }
+           BTBytes := (M6809_GetD + 15) And Not 15;
+           If LongInt(OS9_MemSize) + BTBytes > OS9_MEM_MAX Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+             M6809_SetD(0);
+           End Else Begin
+             M6809_U := OS9_MEM_BASE + OS9_MemSize;
+             OS9_MemSize := OS9_MemSize + BTBytes;
+             M6809_SetD(BTBytes);
+           End;
+         End;
+    $39: Begin { F$AllRAM(B=nb de blocs) - AUCUN pool general de blocs de     }
+           { RAM physique independant de OS9_MemSize/du chargeur de modules   }
+           { n existe (l inventer risquerait de "donner" une adresse deja     }
+           { reellement occupee par le module/la pile - une vraie             }
+           { corruption memoire, pas une simplification) - echec honnete,     }
+           { convention registre verifiee (wiki F$AllRAM). }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $3A: Begin { F$AllImg(A=bloc de depart, B=nb de blocs, X=descripteur de  }
+           { processus) -> reserve des blocs dans l "image DAT" simplifiee    }
+           { du descripteur (voir F$AllPrc/$4B plus bas pour son format,      }
+           { OS9_PDIMG_OFS/OS9_PDIMG_LEN) - REEL et borne a la memoire que ce  }
+           { sous-ensemble possede deja (le descripteur lui-meme), sans        }
+           { inventer de pool physique externe. Convention registre VERIFIEE  }
+           { (wiki F$AllImg). Erreur si un bloc de la plage est deja marque    }
+           { utilise, ou si la plage deborde OS9_PDIMG_LEN. }
+           AIStart := M6809_A; AICount := M6809_B; AIOK := True;
+           If (AIStart < 0) Or (AIStart + AICount > OS9_PDIMG_LEN) Or (AICount <= 0) Then
+             AIOK := False
+           Else
+             For AII := AIStart To AIStart + AICount - 1 Do
+               If M6809_Rd(Word(M6809_X + OS9_PDIMG_OFS + AII)) <> 0 Then AIOK := False;
+           If Not AIOK Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else
+             For AII := AIStart To AIStart + AICount - 1 Do
+               M6809_Wr(Word(M6809_X + OS9_PDIMG_OFS + AII), 1);
+         End;
+    $3B: Begin { F$DelImg(A=bloc de depart, B=nb de blocs, X=descripteur de  }
+           { processus) - miroir reel de F$AllImg ci-dessus : efface les      }
+           { memes octets de l "image DAT" simplifiee. Convention registre    }
+           { VERIFIEE (wiki F$DelImg). }
+           AIStart := M6809_A; AICount := M6809_B; AIOK := True;
+           If (AIStart < 0) Or (AIStart + AICount > OS9_PDIMG_LEN) Or (AICount <= 0) Then
+             AIOK := False;
+           If Not AIOK Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else
+             For AII := AIStart To AIStart + AICount - 1 Do
+               M6809_Wr(Word(M6809_X + OS9_PDIMG_OFS + AII), 0);
+         End;
+    $3F: Begin { F$AllTsk(X=descripteur de processus) - attribue un numero   }
+           { de tache MATERIEL (registre de tache MMU reel) au processus,     }
+           { et "copie l image DAT dans le materiel" (citation wiki           }
+           { F$AllTsk) - meme avec un descripteur reel (F$AllPrc/$4B), cet    }
+           { appel n a fondamentalement RIEN a faire ici : ce coeur 6809 est  }
+           { a memoire plate, sans le moindre registre de tache/MMU a          }
+           { programmer - le simuler donnerait un faux numero de tache sans   }
+           { aucun effet materiel reel correspondant, une vraie tromperie.    }
+           { Echec honnete, convention registre verifiee (wiki F$AllTsk,      }
+           { sortie normale non documentee non plus sur cette page). }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $44: Begin { F$DATLog(B=numero de bloc image DAT, X=deplacement dans le  }
+           { bloc) -> X=adresse logique - REEL, pure arithmetique sans        }
+           { dependance a un pool/materiel invente. Formule et granularite    }
+           { de bloc ($1000=4 Ko) reprises TELLES QUELLES de l exemple        }
+           { concret donne par la page wiki elle-meme (B=2, X=$0329 ->        }
+           { X=$2329), pas une supposition - a noter : granularite DIFFERENTE }
+           { du bloc $2000 (8 Ko) deja etabli pour F$GBlkMp (une autre         }
+           { grandeur documentee ailleurs pour un usage different, la carte    }
+           { de RAM physique - pas d incoherence, deux appels distincts). }
+           M6809_X := Word(LongInt(M6809_B) * $1000 + LongInt(M6809_X));
+         End;
+    $45: Begin { F$DATTmp(?) - "cree temporairement une image DAT, appel      }
+           { obsolete" (description fournie par l utilisateur, confirmee     }
+           { independamment : page wiki NitrOS-9 introuvable/404, cas rare   }
+           { d un appel a la fois documente comme obsolete ET sans page de    }
+           { reference exploitable). Echec honnete, aucun materiel DAT reel   }
+           { de toute facon dans ce coeur a memoire plate. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $4B: Begin { F$AllPrc() -> U=pointeur vers un descripteur de processus   }
+           { - convention registre VERIFIEE (wiki F$AllPrc : "alloue et       }
+           { initialise un descripteur de 512 octets, efface les 256          }
+           { premiers octets"). REEL : carve depuis la MEME zone F$Mem        }
+           { (OS9_MemSize), pas un second pool. Les 256 octets suivants       }
+           { hebergent notre table "image DAT" simplifiee (OS9_PDIMG_OFS/     }
+           { OS9_PDIMG_LEN, voir F$AllImg/F$DelImg ci-dessus) - format         }
+           { interne disclose, pas le vrai format Microware byte-pres (meme   }
+           { precedent que F$GPrDsc/F$GModDr/F$GBlkMp). }
+           If LongInt(OS9_MemSize) + OS9_PRCDESC_SIZE > OS9_MEM_MAX Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+           End Else Begin
+             PDPtr := OS9_MEM_BASE + OS9_MemSize;
+             OS9_MemSize := OS9_MemSize + OS9_PRCDESC_SIZE;
+             For AII := 0 To OS9_PRCDESC_SIZE - 1 Do
+               M6809_Wr(Word(PDPtr + AII), 0);
+             M6809_U := PDPtr;
+           End;
+         End;
+    $4C: Begin { F$DelPrc(A=ID de processus) - convention registre VERIFIEE  }
+           { (wiki F$DelPrc). Ce sous-ensemble ne construit JAMAIS de table   }
+           { PID->descripteur (F$AllPrc/$4B ci-dessus rend un pointeur brut,  }
+           { jamais associe a un numero de PID distinct - le seul PID connu   }
+           { partout ailleurs dans ce sous-ensemble, F$ID/F$GPrDsc/F$Send,     }
+           { est la constante 1, le "processus" en cours d execution lui-     }
+           { meme, qu on ne detruit evidemment jamais depuis l interieur de   }
+           { son propre appel systeme) - rien de reel a liberer par numero    }
+           { de PID ici, echec honnete plutot qu un succes qui ne ferait      }
+           { rien. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $50: Begin { F$ClrBlk(B=nb de blocs, U=adresse du premier bloc) -         }
+           { convention registre VERIFIEE (wiki F$ClrBlk). REEL en partie :   }
+           { efface reellement B blocs de $1000 octets (meme granularite que  }
+           { F$DATLog/$44) a partir de U - l EFFACEMENT est un vrai effet     }
+           { memoire ; en revanche, "marquer ces blocs comme libres" dans un  }
+           { pool general n a pas de sens ici (voir F$AllRAM/$39, ce pool     }
+           { n existe pas) - disclose, meme discipline "effet partiel reel"   }
+           { que F$SPrior. }
+           For CBZI := 0 To (LongInt(M6809_B) * $1000) - 1 Do
+             M6809_Wr(Word(M6809_U + CBZI), 0);
+         End;
+    $51: Begin { F$DelRAM(B=nb de blocs, X=numero de bloc de depart) -        }
+           { convention registre VERIFIEE (wiki F$DelRAM). Miroir de          }
+           { F$AllRAM/$39 : puisqu aucun bloc n a jamais pu etre reellement    }
+           { alloue par cet appel (echec honnete systematique ci-dessus),     }
+           { il n y a jamais rien de reel a liberer ici non plus - meme        }
+           { echec honnete, pas une acceptation qui mentirait sur un pool     }
+           { inexistant. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $53: Begin { F$AllHRAM(B=nb de blocs) - variante "recherche depuis le     }
+           { sommet de la memoire" de F$AllRAM/$39 (citation wiki F$AllHRAM)  }
+           { - meme absence fondamentale de pool general reel, meme echec     }
+           { honnete pour la meme raison exacte. }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
          End;
     $55: Begin { F$CRCMod(A=0 desactive / <>0 active la verification CRC des }
