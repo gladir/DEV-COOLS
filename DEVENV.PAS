@@ -8368,6 +8368,14 @@ Var
  PE_TraceCount   : LongInt;
  PE_FSPrefixActive: Boolean;
  PE_AsyncKeyEsc  : Boolean;
+ { Chantier Windows NT/Win32 (PE), Stage 3 : meme motif que LX_Panel/        }
+ { ELF64_Panel - pointeur vers l onglet emulateur GUI actif, pour que        }
+ { Pe_DoWin32Call (WriteFile) puisse ecrire sur l ecran virtuel via          }
+ { EmuVScr_WriteStr. Reste Nil tant que le Stage 4 (branchement             }
+ { ShowEmulatorPanel/-CPE) n a pas encore ete ecrit - WriteFile continue de  }
+ { fonctionner sans lui (bytes ecrits/valeur de retour corrects), juste     }
+ { sans affichage GUI reel avant le Stage 4. }
+ PE_Panel        : ^TEmulatorPanel;
  { Table des emplacements de trappe d import Win32 (voir PE_TRAP_BASE) -     }
  { remplie une fois par Pe_ParseImports (appelee par Emu_LoadPE), consultee  }
  { par Pe_DoWin32Call des que Pe_Step detecte EIP dans la zone de trappe.    }
@@ -80739,28 +80747,95 @@ Begin
  End;
 End;
 
-{ Chantier Windows NT/Win32 (PE), Stage 2 (placeholder) / Stage 3 (reel) :  }
-{ appelee par Pe_Step des que EIP entre dans la zone de trappe -            }
-{ PLACEHOLDER volontaire pour l instant (arret propre et informatif,        }
-{ jamais un crash ni un comportement invente) - la vraie table de dispatch   }
-{ Win32 (GetStdHandle/WriteFile/ExitProcess d abord, voir                    }
-{ project_devenv_win32pe.md) sera ecrite a l Etape 3, EN PLACE de ce corps,  }
-{ sans toucher a Pe_Step ni a Pe_ParseImports qui restent valables tels      }
-{ quels. }
+{ Chantier Windows NT/Win32 (PE), Stage 3 (2026-09-12) : dispatch Win32     }
+{ reel - appelee par Pe_Step des que EIP entre dans la zone de trappe.       }
+{ Sous-ensemble VERIFIE minimal (GetStdHandle/WriteFile/ExitProcess, le      }
+{ strict necessaire pour faire tourner test01_hello.exe de bout en bout,     }
+{ voir project_devenv_win32pe.md) - meme retour synthetique stdcall          }
+{ manuel (pop adresse de retour + N*4 octets d arguments, sans repasser par  }
+{ le decodeur) que Lx_DoDosCall, meme convention DLL insensible a la casse   }
+{ (KERNEL32.DLL vs kernel32.dll observes tous les deux sur de vrais           }
+{ binaires - abap86.exe utilise la casse minuscule, test01_hello.exe la      }
+{ casse majuscule) mais fonction SENSIBLE a la casse (GetProcAddress reel     }
+{ l est aussi). Handles stdout/stderr SYNTHETIQUES (1/2, PAS les vraies       }
+{ valeurs opaques que Windows retournerait) - portee honnetement disclosee : }
+{ suffisant puisque seul WriteFile sur ces 2 handles precis est implante,    }
+{ jamais reinjectes dans une vraie API Windows. Ecrit sur l ecran virtuel    }
+{ de l onglet emulateur via PE_Panel (Nil tant que le Stage 4 n a pas       }
+{ branche ShowEmulatorPanel - WriteFile reste correct cote CPU/valeur de     }
+{ retour meme sans affichage GUI, voir le commentaire de PE_Panel). Tout     }
+{ import non reconnu (module ou fonction) : arret propre et informatif,     }
+{ jamais un crash ni un comportement invente - meme discipline que           }
+{ Lx_DoDosCall pour un appel systeme non supporte. }
 Procedure Pe_DoWin32Call(SlotIndex: Integer);
 Var
- Desc: String;
+ DllName, FuncName, Desc: String;
+ NArgsPopped: Integer;
+ Handled: Boolean;
+ RetAddr: LongInt;
+ HFile, PBuf, CbWrite, PcbActual, NStdHandle, ExitCode: LongInt;
+ S: String;
+ I: Integer;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= PE_ImportSlotCount) Then Begin
   Pe_Halt('Appel vers un emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
   Exit;
  End;
- If PE_ImportIsOrd[SlotIndex] Then
-  Desc := PE_ImportDllName[SlotIndex] + '!ordinal#' + IntToStr(PE_ImportOrdinal[SlotIndex])
- Else
-  Desc := PE_ImportDllName[SlotIndex] + '!' + PE_ImportFuncName[SlotIndex];
- Pe_Halt('Appel d''import ' + Desc + ' (emplacement ' + IntToStr(SlotIndex) +
-  ') - dispatch Win32 pas encore implemente (Etape 3)');
+ DllName := UpCaseStr(PE_ImportDllName[SlotIndex]);
+ FuncName := PE_ImportFuncName[SlotIndex];
+ NArgsPopped := 0;
+ Handled := False;
+ If (DllName = 'KERNEL32.DLL') And (Not PE_ImportIsOrd[SlotIndex]) Then Begin
+  If FuncName = 'ExitProcess' Then Begin
+   ExitCode := Pe_ReadDWord(PE_Reg.ESP + 4);
+   PE_Halted := True;
+   PE_LastBadEIP := PE_EIP;
+   PE_HaltReason := 'ExitProcess(' + IntToStr(ExitCode) + ')';
+   Exit;
+  End
+  Else If FuncName = 'GetStdHandle' Then Begin { UINT nStdHandle }
+   NStdHandle := Pe_ReadDWord(PE_Reg.ESP + 4);
+   Case NStdHandle Of
+    -11: PE_Reg.EAX := 1; { STD_OUTPUT_HANDLE -> handle synthetique }
+    -12: PE_Reg.EAX := 2; { STD_ERROR_HANDLE -> handle synthetique }
+   Else PE_Reg.EAX := -1; { INVALID_HANDLE_VALUE - STDIN/valeur inconnue, jamais implante }
+   End;
+   NArgsPopped := 1;
+   Handled := True;
+  End
+  Else If FuncName = 'WriteFile' Then Begin { HANDLE hFile, LPCVOID lpBuffer,
+   DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped }
+   HFile := Pe_ReadDWord(PE_Reg.ESP + 4);
+   PBuf := Pe_ReadDWord(PE_Reg.ESP + 8);
+   CbWrite := Pe_ReadDWord(PE_Reg.ESP + 12);
+   PcbActual := Pe_ReadDWord(PE_Reg.ESP + 16);
+   If (HFile = 1) Or (HFile = 2) Then Begin
+    S := '';
+    For I := 0 To CbWrite - 1 Do
+     If Length(S) < 255 Then S := S + Chr(Pe_ReadByte(PBuf + I));
+    If PE_Panel <> Nil Then EmuVScr_WriteStr(PE_Panel^, S);
+   End;
+   If (PcbActual >= 0) And (PcbActual + 4 <= High(PE_Mem)) Then Pe_WriteDWord(PcbActual, CbWrite);
+   PE_Reg.EAX := 1; { TRUE - succes }
+   NArgsPopped := 5;
+   Handled := True;
+  End;
+ End;
+ If Not Handled Then Begin
+  If PE_ImportIsOrd[SlotIndex] Then
+   Desc := PE_ImportDllName[SlotIndex] + '!ordinal#' + IntToStr(PE_ImportOrdinal[SlotIndex])
+  Else
+   Desc := PE_ImportDllName[SlotIndex] + '!' + FuncName;
+  Pe_Halt('Appel d''import non supporte : ' + Desc + ' (emplacement ' +
+   IntToStr(SlotIndex) + ') - sous-ensemble minimal Win32 (Etape 3)');
+  Exit;
+ End;
+ { Retour synthetique stdcall : depile l adresse de retour + les N*4        }
+ { octets d arguments consommes par CETTE fonction precise, SANS repasser   }
+ { par le decodeur - meme principe exact que Lx_DoDosCall. }
+ RetAddr := Pe_ReadDWord(PE_Reg.ESP);
+ PE_Reg.ESP := PE_Reg.ESP + 4 + NArgsPopped * 4;
+ PE_EIP := RetAddr;
 End;
 
 { Execute UNE instruction a PE_EIP (ou service un appel d import si EIP     }

@@ -24,7 +24,7 @@ Var
  CommentState:TCommentState;
  OutLine:TSourceString;
  PreserveCommentIndent,AwaitingThenBegin:Boolean;
- RoutineHeader,AwaitingRoutineBegin,DeclarationSection:Boolean;
+ RoutineHeader,AwaitingRoutineBegin,DeclarationSection,UsesSection:Boolean;
  ParenthesisLevel:Integer;
 Function UpperString(Const S:String):String;
 Var
@@ -349,6 +349,10 @@ Begin
     RoutineHeader:=True;AwaitingRoutineBegin:=False;ParenthesisLevel:=0;
     AwaitingThenBegin:=False;
    End
+   Else If U='USES'Then Begin
+    EmitPending;WriteLn(OutputFile);AppendText('Uses');UsesSection:=True;
+    AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
+   End
    Else If(U='CONST')or(U='TYPE')or(U='VAR')Then Begin
     If(ParenthesisLevel=0)and((TrimLine(OutLine)='')or AwaitingRoutineBegin)Then Begin
      If AwaitingRoutineBegin Then Begin
@@ -399,6 +403,9 @@ Begin
   If RoutineHeader and(C=';')and(ParenthesisLevel=0)Then Begin
    AppendText(C);RoutineHeader:=False;AwaitingRoutineBegin:=True;Inc(I);Continue;
   End;
+  If UsesSection and(C=';')Then Begin
+   AppendText(C);EmitLine;WriteLn(OutputFile);UsesSection:=False;Inc(I);Continue;
+  End;
   If DeclarationSection and(C=';')Then Begin
    AppendText(C);EmitLine;Inc(I);Continue;
   End;
@@ -424,7 +431,7 @@ Begin
   Close(InputFile);Error('impossible de creer le fichier temporaire');Exit;
  End;
  OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;RoutineHeader:=False;
- AwaitingRoutineBegin:=False;DeclarationSection:=False;ParenthesisLevel:=0;
+ AwaitingRoutineBegin:=False;DeclarationSection:=False;UsesSection:=False;ParenthesisLevel:=0;
  IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;
  SkipProgram:=HasProgram and not IsUnit;
  If not IsUnit Then WriteLn(OutputFile,'Program ',ProgramName,';');
