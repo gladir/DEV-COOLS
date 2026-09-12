@@ -10249,6 +10249,14 @@ Var
  { stdin/stdout/stderr, mappes sur l ecran virtuel). }
  OS9_FileH      : Array[0..7] Of File;
  OS9_FileOpen   : Array[0..7] Of Boolean;
+ { Quatrieme lot de F$/I$ (2026-09-12, demande explicite) : I$ChgDir change }
+ { ce repertoire "courant" virtuel (PAS le repertoire courant du processus  }
+ { hote DEVENV.exe - le modifier affecterait tous les autres panneaux de    }
+ { l IDE, un effet de bord clairement inacceptable) ; OS9_ResolveHostPath   }
+ { (definie plus bas) le prefixe aux noms relatifs pour I$Open/I$Create/    }
+ { I$Delete/I$DeletX/I$MakDir/I$ChgDir - vide par defaut (= comportement    }
+ { d avant, chemin hote tel quel, retro-compatible avec I$Open existant). }
+ OS9_CurDir     : String;
  { F$CRCMod (krnp2, 2026-09-12) : bascule la verification CRC-24 reelle des }
  { modules au chargement (voir M6809_CRC24Step/M6809_LoadOS9ModuleAt) -     }
  { active par defaut, comme le vrai OS-9. }
@@ -162964,6 +162972,7 @@ End;
 { des chargeurs 6809). }
 Procedure M6809_Step; Forward;
 Function M6809_ReadOS9Name(Addr: Word): String; Forward;
+Function OS9_ResolveHostPath(Const Name: String): String; Forward;
 Function M6809_LoadOS9ModuleAt(Const FileName: String; Base: Word;
                                Var EntryAddr: Word;
                                Var ModName: String): Boolean; Forward;
@@ -163035,14 +163044,20 @@ End;
 { F$Mem, F$Sleep, F$SSpd, F$ID, F$SPrior, F$SSWI, F$PErr, F$PrsNam,         }
 { F$CmpNam, F$SchBit, F$AllBit, F$DelBit, F$Time, F$STime, F$CRC, F$CRCMod, }
 { F$CpyMem, F$SUser, F$GPrDsc, F$GBlkMp, F$GModDr, F$CpyMem, F$Alarm,       }
-{ F$Debug, F$TPS, F$TimAlm, I$Open, I$Close, I$Read, I$Write, I$GetStt/     }
-{ I$SetStt (acceptes sans donnees reelles). Tout autre code de service      }
-{ retourne une erreur generique (Carry positionne, B=$FF) plutot que        }
-{ d inventer un resultat, meme principe que les autres backends "trap        }
-{ systeme" de ce fichier (GEMDOS/AES/BIOS/XBIOS Atari ST). F$Send/F$Icpt     }
-{ forment desormais un VRAI mecanisme de signal synchrone (trame SWI         }
-{ complete + RTI reel, voir M6809_PushSWIFrame) - le seul "processus" de     }
-{ ce sous-ensemble (PID=1) peut donc reellement s auto-signaler. }
+{ F$Debug, F$TPS, F$TimAlm, I$Attach, I$Detach, I$Dup, I$Create, I$Open,    }
+{ I$MakDir, I$ChgDir, I$Delete, I$Seek, I$Close, I$Read, I$ReadLn, I$Write, }
+{ I$WritLn, I$DeletX, I$GetStt/I$SetStt (acceptes sans donnees reelles).    }
+{ Tout autre code de service retourne une erreur generique (Carry           }
+{ positionne, B=$FF) plutot que d inventer un resultat, meme principe que   }
+{ les autres backends "trap systeme" de ce fichier (GEMDOS/AES/BIOS/XBIOS   }
+{ Atari ST). F$Send/F$Icpt forment desormais un VRAI mecanisme de signal    }
+{ synchrone (trame SWI complete + RTI reel, voir M6809_PushSWIFrame) - le    }
+{ seul "processus" de ce sous-ensemble (PID=1) peut donc reellement s       }
+{ auto-signaler. I$ChgDir/I$Open/I$Create/I$Delete/I$DeletX/I$MakDir        }
+{ partagent maintenant un repertoire "courant" virtuel (OS9_CurDir/         }
+{ OS9_ResolveHostPath) - DELIBEREMENT distinct du repertoire du processus   }
+{ hote DEVENV.exe (le changer affecterait tous les autres panneaux de       }
+{ l IDE). }
 Procedure M6809_DoOS9Syscall(SvcCode: Byte);
 Var
   Ch: Byte;
@@ -163087,6 +163102,9 @@ Var
   DeltaW: Word;
   DeltaS: LongInt;
   NewSize: LongInt;
+  { Quatrieme lot d appels I$ (2026-09-12, demande explicite). }
+  SeekPos: LongInt;
+  OS9ErF: File;
 Begin
   M6809_CC := M6809_CC And Not $01; { Carry clair = succes par defaut }
   Case SvcCode Of
@@ -163767,8 +163785,89 @@ Begin
            OS9_CRCModEnabled := (M6809_A <> 0);
            M6809_A := Ord(OS9OldCRCMod);
          End;
-    $84: Begin { I$Open(mode=A, pathlist=X) }
+    $80: Begin { I$Attach(mode=A, nom peripherique=X) - convention REGISTRE   }
+           { verifiee (sourceforge.net/p/nitros9/wiki/I$Attach) : X avance    }
+           { apres le nom, U=adresse de la table de peripherique. Ce sous-    }
+           { ensemble n a AUCUNE vraie table de peripheriques/pilotes (I$Open }
+           { traite deja le pathlist comme un chemin hote direct, sans        }
+           { passer par un descripteur de peripherique) - accepte sans effet  }
+           { reel, U toujours 0, meme discipline honnete que I$GetStt/        }
+           { I$SetStt ci-dessous (deja disclosee ainsi avant ce lot). }
            HostPath := M6809_ReadOS9Name(M6809_X);
+           M6809_X := Word(M6809_X + Length(HostPath));
+           M6809_U := 0;
+         End;
+    $81: Begin { I$Detach(table peripherique=U) - meme discipline honnete    }
+           { que I$Attach ci-dessus : aucune vraie table a detacher, accepte  }
+           { inconditionnellement (pas d erreur possible sans etat reel a      }
+           { valider). Convention registre verifiee (wiki I$Detach). }
+         End;
+    $82: Begin { I$Dup(A=numero de chemin a dupliquer) -> A=nouveau numero -  }
+           { convention REGISTRE verifiee (wiki I$Dup). Chemins 0..2 (flux    }
+           { virtuels stdin/out/err) : dupliquer redonne le meme numero, deja }
+           { valide pour toujours (I$Read/I$Write les traitent par valeur,    }
+           { pas via la table OS9_FileH) - pas d erreur. Chemins reels :      }
+           { COPIE REELLE du handle Pascal (File est un record contenant le   }
+           { handle hote) vers un nouveau slot libre - les deux numeros de    }
+           { chemin partagent alors VRAIMENT la meme position dans le         }
+           { fichier hote, exactement le comportement documente d I$Dup (pas  }
+           { une simulation). Limite disclosee : fermer l un des deux invalide }
+           { le handle hote partage pour l autre (aucun compteur de           }
+           { references reel, contrairement au vrai OS-9). }
+           If M6809_A > 2 Then Begin
+             PIdx := M6809_A - 3;
+             If (PIdx < 0) Or (PIdx > 7) Or (Not OS9_FileOpen[PIdx]) Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $C6;
+             End Else Begin
+               FreeSlot := -1;
+               For J := 0 To 7 Do
+                 If Not OS9_FileOpen[J] Then Begin FreeSlot := J; Break; End;
+               If FreeSlot < 0 Then Begin
+                 M6809_CC := M6809_CC Or $01; M6809_B := $F4;
+               End Else Begin
+                 OS9_FileH[FreeSlot] := OS9_FileH[PIdx];
+                 OS9_FileOpen[FreeSlot] := True;
+                 M6809_A := FreeSlot + 3;
+               End;
+             End;
+           End;
+         End;
+    $83: Begin { I$Create(mode=A 2=ecriture/3=maj, attrs=B, pathlist=X) ->    }
+           { A=numero de chemin - convention REGISTRE verifiee (wiki          }
+           { I$Create). B (attributs OS-9 lecture/ecriture/execution) accepte }
+           { mais SANS effet reel : le systeme de fichiers hote (NTFS) n a    }
+           { pas d equivalent direct pour ces bits - meme discipline honnete  }
+           { que F$SPrior (registre stocke/accepte, sans effet reel cable). }
+           { Mode 3 (maj) ouvre sans tronquer si le fichier existe deja       }
+           { (comme I$Open sans le bit lecture-seule) ; mode 2 (ecriture)     }
+           { cree/tronque toujours, correspondant au sens documente de        }
+           { "Create" (nouveau fichier). }
+           HostPath := OS9_ResolveHostPath(M6809_ReadOS9Name(M6809_X));
+           M6809_X := Word(M6809_X + Length(HostPath));
+           FreeSlot := -1;
+           For J := 0 To 7 Do
+             If Not OS9_FileOpen[J] Then Begin FreeSlot := J; Break; End;
+           If FreeSlot < 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F4;
+           End Else Begin
+             Assign(OS9_FileH[FreeSlot], HostPath);
+             {$I-}
+             If M6809_A = 3 Then Begin
+               Reset(OS9_FileH[FreeSlot], 1);
+               If IOResult <> 0 Then Rewrite(OS9_FileH[FreeSlot], 1);
+             End Else
+               Rewrite(OS9_FileH[FreeSlot], 1);
+             {$I+}
+             If IOResult <> 0 Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $D6;
+             End Else Begin
+               OS9_FileOpen[FreeSlot] := True;
+               M6809_A := FreeSlot + 3;
+             End;
+           End;
+         End;
+    $84: Begin { I$Open(mode=A, pathlist=X) }
+           HostPath := OS9_ResolveHostPath(M6809_ReadOS9Name(M6809_X));
            FreeSlot := -1;
            For J := 0 To 7 Do
              If Not OS9_FileOpen[J] Then Begin FreeSlot := J; Break; End;
@@ -163789,6 +163888,55 @@ Begin
                OS9_FileOpen[FreeSlot] := True;
                M6809_A := FreeSlot + 3; { 0..2 reserves stdin/out/err }
              End;
+           End;
+         End;
+    $85: Begin { I$MakDir(attrs=B, pathlist=X) - convention REGISTRE          }
+           { verifiee (wiki I$MakDir). B accepte sans effet reel, meme        }
+           { disclosure qu I$Create ci-dessus. }
+           HostPath := OS9_ResolveHostPath(M6809_ReadOS9Name(M6809_X));
+           M6809_X := Word(M6809_X + Length(HostPath));
+           {$I-} MkDir(HostPath); {$I+}
+           If IOResult <> 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $D6;
+           End;
+         End;
+    $86: Begin { I$ChgDir(mode=A, pathlist=X) - convention REGISTRE verifiee  }
+           { (wiki I$ChgDir). Change OS9_CurDir (repertoire "courant" VIRTUEL }
+           { de ce sous-ensemble OS-9, PAS le repertoire du processus hote     }
+           { DEVENV.exe - voir commentaire sur OS9_CurDir) ; A (mode d acces)  }
+           { accepte sans verification reelle, meme disclosure que ci-dessus. }
+           HostPath := OS9_ResolveHostPath(M6809_ReadOS9Name(M6809_X));
+           M6809_X := Word(M6809_X + Length(HostPath));
+           If Not DirectoryExists(HostPath) Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $D6;
+           End Else
+             OS9_CurDir := HostPath;
+         End;
+    $87: Begin { I$Delete(pathlist=X) - convention REGISTRE verifiee (wiki    }
+           { I$Delete). }
+           HostPath := OS9_ResolveHostPath(M6809_ReadOS9Name(M6809_X));
+           M6809_X := Word(M6809_X + Length(HostPath));
+           Assign(OS9ErF, HostPath);
+           {$I-} Erase(OS9ErF); {$I+}
+           If IOResult <> 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $D6;
+           End;
+         End;
+    $88: Begin { I$Seek(path=A, X:Y=position 32 bits, X=poids fort) -        }
+           { CONVENTION NON CONFIRMEE via la page wiki NitrOS-9 (celle-ci     }
+           { renvoie systematiquement le contenu de la page I$ReadLn au lieu  }
+           { de la sienne, meme apres plusieurs tentatives d URL - probleme    }
+           { cote serveur wiki, pas une erreur de notre cote) - implementee   }
+           { d apres la convention standard bien connue du Manuel technique   }
+           { OS-9 (position 32 bits en octets, X=mot fort/Y=mot faible),      }
+           { meme discipline honnete que F$SSpd/F$TimAlm/F$TPS plus haut. }
+           PIdx := M6809_A - 3;
+           If (M6809_A <= 2) Or (PIdx < 0) Or (PIdx > 7) Or
+              (Not OS9_FileOpen[PIdx]) Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $C6;
+           End Else Begin
+             SeekPos := (LongInt(M6809_X) Shl 16) Or LongInt(M6809_Y);
+             Seek(OS9_FileH[PIdx], SeekPos);
            End;
          End;
     $8F: Begin { I$Close(path=A) }
@@ -163815,6 +163963,29 @@ Begin
                  BlockRead(OS9_FileH[PIdx], Ch, 1);
                  M6809_Wr(Word(M6809_X + N), Ch);
                  Inc(N);
+               End;
+               M6809_Y := N;
+             End;
+           End;
+         End;
+    $8B: Begin { I$ReadLn(path=A, buf=X, maxcount=Y) -> Y=octets lus - lit    }
+           { jusqu au CR inclus, convention REGISTRE verifiee (wiki           }
+           { I$ReadLn) - miroir de I$Read ci-dessus et d I$WritLn plus bas.  }
+           Path := M6809_A;
+           Cnt := M6809_Y;
+           If Path <= 2 Then
+             M6809_Y := 0 { clavier non cable, meme limitation qu I$Read }
+           Else Begin
+             PIdx := Path - 3;
+             If (PIdx < 0) Or (PIdx > 7) Or (Not OS9_FileOpen[PIdx]) Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $C6;
+             End Else Begin
+               N := 0;
+               While (N < Cnt) And (Not Eof(OS9_FileH[PIdx])) Do Begin
+                 BlockRead(OS9_FileH[PIdx], Ch, 1);
+                 M6809_Wr(Word(M6809_X + N), Ch);
+                 Inc(N);
+                 If Ch = 13 Then Break;
                End;
                M6809_Y := N;
              End;
@@ -163854,6 +164025,20 @@ Begin
          End;
     $8D, $8E: ; { I$GetStt/I$SetStt : acceptes sans donnees reelles - aucune }
                 { table de codes de statut par peripherique implementee ici. }
+    $90: Begin { I$DeletX(mode=A, pathlist=X) - convention REGISTRE verifiee }
+           { (wiki I$DeletX) mais SEMANTIQUE precise (variante d I$Delete    }
+           { pour repertoire d execution) non confirmee au-dela des          }
+           { registres eux-memes - implementee ici comme I$Delete (meme      }
+           { action reelle sur le systeme de fichiers hote), A accepte sans   }
+           { distinction, disclosure honnete similaire a F$CRCMod. }
+           HostPath := OS9_ResolveHostPath(M6809_ReadOS9Name(M6809_X));
+           M6809_X := Word(M6809_X + Length(HostPath));
+           Assign(OS9ErF, HostPath);
+           {$I-} Erase(OS9ErF); {$I+}
+           If IOResult <> 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $D6;
+           End;
+         End;
   Else
     M6809_CC := M6809_CC Or $01;
     M6809_B := $FF;
@@ -165376,6 +165561,20 @@ Begin
     Inc(I);
   End;
   M6809_ReadOS9Name := S;
+End;
+
+{ Prefixe un nom de fichier/pathlist I$xxx par OS9_CurDir (voir I$ChgDir)   }
+{ s il n est pas deja absolu (commence par '/' ou '\', meme convention que  }
+{ celle deja utilisee telle quelle par I$Open) ni prefixe d un lecteur hote }
+{ Windows ("C:..."). Retourne le nom tel quel si OS9_CurDir est vide -      }
+{ comportement identique a avant l ajout d I$ChgDir, retro-compatible. }
+Function OS9_ResolveHostPath(Const Name: String): String;
+Begin
+  If (OS9_CurDir = '') Or (Length(Name) = 0) Or (Name[1] = '/') Or
+     (Name[1] = '\') Or ((Length(Name) >= 2) And (Name[2] = ':')) Then
+    OS9_ResolveHostPath := Name
+  Else
+    OS9_ResolveHostPath := OS9_CurDir + '\' + Name;
 End;
 
 { Charge un module OS-9/6809 a une adresse de base arbitraire (utilise par  }
