@@ -1,11 +1,7 @@
+{ @author: Sylvain Maltais (support@gladir.com), d'apres GeoDump 0.5 de Marcus Groeber @created: 2026 @website(https://www.gladir.com/dev-cools) @abstract(Target: Turbo Pascal / Free Pascal 3.2) @abstract: Clone Turbo Pascal / Free Pascal de GEODUMP 0.5. @license: MIT }
+
 Program GEODUMP;
-{ @author: Sylvain Maltais (support@gladir.com), d'apres GeoDump 0.5 de Marcus Groeber
-  @created: 2026
-  @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal / Free Pascal 3.2)
-  @abstract: Clone Turbo Pascal / Free Pascal de GEODUMP 0.5.
-  @license: MIT
-}
+
 
 Uses Dos;
 
@@ -686,8 +682,8 @@ Begin
   End;
  End; DecodeRM:=S+']';
 End;
-
 Function DecodeInstruction(Ofs:Word; Var Text:String; Var Target:LongInt;
+
 Var Stops:Boolean):Integer;
 Const
  Jcc:Array[0..15] of String[3]=('jo','jno','jb','jnb','je','jne','jbe','ja','js','jns',
@@ -1291,8 +1287,8 @@ Begin
  If (V and $0002) <> 0 Then Add('JETE'); If (V and $0001) <> 0 Then Add('PERMUTE');
  If S = '' Then S := '0'; SegmentFlags := S;
 End;
-
 Procedure DisplayHeap(Posn,Size:LongInt;Const SegName:String;SegIndex:Word;
+
 ObjectResource:Boolean);
 Var
  HList,Entries,FreeSize,Flags,LType,I,Ofs,FreeOfs,BlockSize,NextOfs,HandleOfs:Word;

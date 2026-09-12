@@ -7752,6 +7752,10 @@ Var
  { REELS mais AUCUN chemin de rendu ne consomme encore ces deux valeurs     }
  { (meme limitation deja disclosee pour SetBkMode). }
  Win16_CurrentBkColor: LongInt;
+ { GetBkMode/$76 (2026-09-12, nouvelle session, demande explicite) - REEL   }
+ { desormais (SetBkMode/$2 retouche pour le stocker, meme discipline de     }
+ { retroactivation que CreateSolidBrush au lot precedent). }
+ Win16_CurrentBkMode: Word;
  Win16_CurrentMapMode: Word;
  { GDI.EXE SetPolyFillMode/SetStretchBltMode/SetTextCharacterExtra/         }
  { SetTextColor/SetTextJustification (2026-09-12, demande explicite) -      }
@@ -77751,6 +77755,7 @@ Begin
  Win16_GdiTraceMax := 80;
  Win16_CurrentROP2 := 13; { R2_COPYPEN, defaut reel d'un DC neuf }
  Win16_CurrentBkColor := $00FFFFFF; { blanc (COLORREF 0x00BBGGRR), defaut reel d'un DC neuf }
+ Win16_CurrentBkMode := 2; { OPAQUE, defaut reel d'un DC neuf }
  Win16_CurrentMapMode := 1; { MM_TEXT, defaut reel d'un DC neuf }
  Win16_CurrentPolyFillMode := 1; { ALTERNATE, defaut reel d'un DC neuf }
  Win16_CurrentStretchBltMode := 1; { BLACKONWHITE, defaut reel d'un DC neuf }
@@ -79058,6 +79063,40 @@ Begin
  Win16_CallWndProc := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
 End;
 
+{ Appelle SYNCHRONE un VRAI callback FONTENUMPROC16 (SEGPTR lplf, SEGPTR    }
+{ lptm, UINT16 nFontType, LPARAM lParam) - signature VERIFIEE via le VRAI   }
+{ source Wine (include/wine/wingdi16.h, FONTENUMPROC16) - utilise par       }
+{ EnumFonts (GDI ordinal 70, 2026-09-12, demande explicite). Meme motif      }
+{ exact que Win16_CallWndProc ci-dessus (Dpmi_RunRealProc). }
+Function Win16_CallEnumFontsProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
+ LplfSeg, LplfOfs, LptmSeg, LptmOfs, NFontType, LParamHi, LParamLo: Word): Word;
+Begin
+ Emu_PushWord(P.CPU, LplfSeg);
+ Emu_PushWord(P.CPU, LplfOfs);
+ Emu_PushWord(P.CPU, LptmSeg);
+ Emu_PushWord(P.CPU, LptmOfs);
+ Emu_PushWord(P.CPU, NFontType);
+ Emu_PushWord(P.CPU, LParamHi);
+ Emu_PushWord(P.CPU, LParamLo);
+ Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+ Win16_CallEnumFontsProc := P.CPU.Regs.AX;
+End;
+
+{ Appelle SYNCHRONE un VRAI callback GOBJENUMPROC16 (SEGPTR lpObject,       }
+{ LPARAM lParam) - signature VERIFIEE via le VRAI source Wine (meme         }
+{ fichier) - utilise par EnumObjects (GDI ordinal 71, 2026-09-12,           }
+{ demande explicite). }
+Function Win16_CallEnumObjectsProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
+ LpObjSeg, LpObjOfs, LParamHi, LParamLo: Word): Word;
+Begin
+ Emu_PushWord(P.CPU, LpObjSeg);
+ Emu_PushWord(P.CPU, LpObjOfs);
+ Emu_PushWord(P.CPU, LParamHi);
+ Emu_PushWord(P.CPU, LParamLo);
+ Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+ Win16_CallEnumObjectsProc := P.CPU.Regs.AX;
+End;
+
 { Coeur de GetMessage/PeekMessage (ordinaux USER 108/109) - priorite REELLE }
 { Windows (entree file > repaint > minuteur), meme ordre de priorite que    }
 { documente pour les messages "generes"/bas niveau. Retourne False           }
@@ -79259,6 +79298,14 @@ Var
  DPLSeg, DPLOfs: Word;
  DPLCount, DPLI: Integer;
  DPLDevX, DPLDevY, DPLLogX, DPLLogY: SmallInt;
+ { GDI.EXE EnumFonts/EnumObjects/EqualRgn (2026-09-12, nouvelle session,    }
+ { demande explicite). }
+ EFFaceSeg, EFFaceOfs, EFFuncSeg, EFFuncOfs, EFParamHi, EFParamLo: Word;
+ EFLogFontOfs, EFTextMetOfs: Word;
+ EFI: Integer;
+ EFFaceName: String;
+ EOType: Word;
+ EORgn1, EORgn2: Word;
  { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite). }
  LBSeg, LBOfs, LBColorLo, LBColorHi: Word;
 Begin
@@ -80438,11 +80485,16 @@ Begin
    2: Begin
     { SetBkMode(hdc, nBkMode):int (mode precedent) - ordinal VERIFIE via    }
     { gdi.exe16.spec (2 mots). Rendu GDI reel HORS DE PORTEE (mode de       }
-    { fond non modelise, le fond blanc est deja pose une fois par           }
-    { Win16_DrawWindowFrame a la creation) - simplification DOCUMENTEE :    }
-    { rapporte toujours OPAQUE (2) comme mode precedent, jamais verifie par }
-    { un code de dessin normal (valeur de retour rarement exploitee). }
-    P.CPU.Regs.AX := 2;
+    { fond non modelise dans le rendu, le fond blanc est deja pose une      }
+    { fois par Win16_DrawWindowFrame a la creation). AMELIORATION            }
+    { 2026-09-12 (demande explicite, GetBkMode/$76) : stocke desormais       }
+    { REELLEMENT le mode dans Win16_CurrentBkMode (defaut OPAQUE=2, le       }
+    { vrai defaut documente d'un DC neuf) - comble la meme incoherence       }
+    { deja rencontree pour CreateSolidBrush (lot precedent) : c'etait le     }
+    { seul "Set" de mode a ne pas encore conserver sa propre valeur pour     }
+    { qu'un "Get" correspondant puisse la relire. }
+    P.CPU.Regs.AX := Win16_CurrentBkMode;
+    Win16_CurrentBkMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     ArgWords := 2;
    End;
    3: Begin
@@ -81608,12 +81660,230 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 4;
    End;
+   68: Begin
+    { DeleteDC(hdc):bool - ordinal VERIFIE via le VRAI source Wine           }
+    { (include/wine/wingdi16.h, DeleteDC16(HDC16)). Meme simplification     }
+    { que DeleteObject/$69 juste apres : rapporte toujours un succes, aucun  }
+    { VRAI contexte de peripheriquement synthetique (CreateCompatibleDC/     }
+    { CreateDC, ordinaux 52/53) n'a de vraie ressource a liberer. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
    69: Begin
     { DeleteObject(hObj):bool - ordinal VERIFIE via gdi.exe16.spec. Meme    }
     { simplification que les autres "objets GDI synthetiques" ci-dessus :  }
     { rapporte toujours un succes, aucun VRAI objet a liberer. }
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
+   End;
+   70: Begin
+    { EnumFonts(hdc,lpFaceName,lpFontFunc,lParam):int - signature VERIFIEE  }
+    { via le VRAI source Wine (EnumFonts16(HDC16,LPCSTR,FONTENUMPROC16,      }
+    { LPARAM), 1 mot + 1 segstr (2 mots) + 1 pointeur LOIN (2 mots) + 1      }
+    { LONG (2 mots) = 7 mots). REEL : ce sous-ensemble a EXACTEMENT UNE       }
+    { vraie police (la police bitmap 5x7 MAISON de TextOut/$33,               }
+    { Win16_Font5x7) - construit un VRAI LOGFONT16 (50 octets, layout         }
+    { VERIFIE via Wine) + TEXTMETRIC16 (31 octets, layout VERIFIE via         }
+    { Wine) dans le tas local (bump allocator, jamais libere - meme            }
+    { convention que LocalAlloc), reflete honnetement les VRAIES              }
+    { caracteristiques de cette police (hauteur 7, largeur 5, avancement      }
+    { 6, premier/dernier caractere couvert 32/90, nom "5x7" - PAS un nom       }
+    { de police Windows reelle usurpe), puis invoque REELLEMENT le            }
+    { callback UNE FOIS via Win16_CallEnumFontsProc (nouvelle fonction,       }
+    { voir plus haut - meme mecanisme Dpmi_RunRealProc que                    }
+    { Win16_CallWndProc). lpFaceName est ignore (une seule police existe,     }
+    { toujours celle-la, filtrage par nom sans objet ici). }
+    { Empilement complet (hdc,faceSeg,faceOfs,funcSeg,funcOfs,lParamHi,       }
+    { lParamLo) = 7 mots -> SP+4=lParamLo (dernier empile) jusqu'a            }
+    { SP+16=hdc (non lu), chaque offset recalcule un par un ici. }
+    EFFaceSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    EFFaceOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    EFFuncSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    EFFuncOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    EFParamHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EFParamLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LongInt(Win16_HeapNext) + 81) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     EFLogFontOfs := Win16_HeapNext;
+     EFTextMetOfs := Word(Win16_HeapNext + 50);
+     Win16_HeapNext := Win16_HeapNext + 81;
+     For EFI := 0 To 80 Do Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + EFI), 0);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, EFLogFontOfs, 7);        { lfHeight }
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 2), 5); { lfWidth }
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 8), 400); { lfWeight }
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 17), $31); { lfPitchAndFamily : FIXED_PITCH|FF_MODERN }
+     EFFaceName := '5x7';
+     For EFI := 1 To Length(EFFaceName) Do
+      Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 18 + EFI - 1), Ord(EFFaceName[EFI]));
+     Emu_WriteWord(P.CPU, Win16_StackSeg, EFTextMetOfs, 7);         { tmHeight }
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 2), 7); { tmAscent }
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 10), 6); { tmAveCharWidth }
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 12), 6); { tmMaxCharWidth }
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 14), 400); { tmWeight }
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 19), 32); { tmFirstChar }
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 20), 90); { tmLastChar }
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 21), 32); { tmDefaultChar }
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 22), 32); { tmBreakChar }
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 23), $31); { tmPitchAndFamily }
+     P.CPU.Regs.AX := Win16_CallEnumFontsProc(P, EFFuncSeg, EFFuncOfs,
+      Win16_StackSeg, EFLogFontOfs, Win16_StackSeg, EFTextMetOfs, 0,
+      EFParamHi, EFParamLo);
+    End;
+    ArgWords := 7;
+   End;
+   71: Begin
+    { EnumObjects(hdc,nObjectType,lpObjectFunc,lParam):int - signature      }
+    { VERIFIEE via le VRAI source Wine (EnumObjects16(HDC16,INT16,           }
+    { GOBJENUMPROC16,LPARAM), 2 mots + 1 pointeur LOIN (2 mots) + 1 LONG     }
+    { (2 mots) = 6 mots). NOTE : la description fournie par l'utilisateur     }
+    { ("IEnumIDList"/enumeration de dossier) decrit en realite une TOUT       }
+    { AUTRE API (l'interface COM Shell IEnumIDList, Win32 bien plus          }
+    { recente, sans rapport avec GDI.EXE) - implemente ici la VRAIE           }
+    { fonction historique confirmee a cet ordinal precis dans le source        }
+    { Wine cite ci-dessus (enumeration de crayons/pinceaux). REEL EN         }
+    { PARTIE : ce sous-ensemble ne suit qu'UN SEUL "dernier" crayon/pinceau   }
+    { (Win16_LastPenColor/LastBrushColor, voir CreatePenIndirect/$62 et       }
+    { CreateBrushIndirect/$50) - construit un VRAI LOGPEN16/LOGBRUSH16 (10   }
+    { octets, layout VERIFIE via Wine) reflechissant cette derniere            }
+    { couleur et invoque le callback UNE SEULE FOIS (jamais une vraie liste  }
+    { enumerable de tous les objets crees). nObjectType : 1=OBJ_PEN,          }
+    { 2=OBJ_BRUSH (constantes reelles) - tout autre type honnetement hors     }
+    { de portee (aucune donnee equivalente suivie), retourne 0 sans           }
+    { invoquer le callback. }
+    { Empilement complet (hdc,nObjectType,funcSeg,funcOfs,lParamHi,          }
+    { lParamLo) = 6 mots -> SP+4=lParamLo (dernier empile) jusqu'a            }
+    { SP+14=hdc (non lu). }
+    EOType := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    EFFuncSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    EFFuncOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    EFParamHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EFParamLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (EOType <> 1) And (EOType <> 2) Then
+     P.CPU.Regs.AX := 0
+    Else If (LongInt(Win16_HeapNext) + 10) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     EFLogFontOfs := Win16_HeapNext;
+     Win16_HeapNext := Win16_HeapNext + 10;
+     If EOType = 1 Then Begin { LOGPEN16 : lopnStyle,lopnWidth(x,y),lopnColor }
+      Emu_WriteWord(P.CPU, Win16_StackSeg, EFLogFontOfs, 0); { PS_SOLID }
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 2), 1);
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 4), 0);
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 6), Word(Win16_LastPenColor And $FFFF));
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 8), Word((Win16_LastPenColor Shr 16) And $FFFF));
+     End Else Begin { LOGBRUSH16 : lbStyle,lbColor,lbHatch }
+      Emu_WriteWord(P.CPU, Win16_StackSeg, EFLogFontOfs, 0); { BS_SOLID }
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 2), Word(Win16_LastBrushColor And $FFFF));
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 4), Word((Win16_LastBrushColor Shr 16) And $FFFF));
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 6), 0);
+     End;
+     P.CPU.Regs.AX := Win16_CallEnumObjectsProc(P, EFFuncSeg, EFFuncOfs,
+      Win16_StackSeg, EFLogFontOfs, EFParamHi, EFParamLo);
+    End;
+    ArgWords := 6;
+   End;
+   72: Begin
+    { EqualRgn(hSrcRgn1,hSrcRgn2):bool - ordinal VERIFIE via gdi.exe16.spec }
+    { (2 mots). Ce sous-ensemble ne suit qu'UN SEUL rectangle de clip mono-  }
+    { DC (jamais des formes distinctes par handle, voir la famille           }
+    { CreateRectRgn/CreateEllipticRgn/etc.) : deux handles STRICTEMENT        }
+    { EGAUX (meme valeur numerique) font REELLEMENT reference au meme         }
+    { objet, retourne TRUE avec certitude - deux handles DIFFERENTS ne         }
+    { peuvent PAS etre compares honnetement (aucune forme distincte           }
+    { memorisee par handle), retourne FALSE plutot que d'inventer une          }
+    { egalite/inegalite non verifiable. }
+    EORgn1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EORgn2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If EORgn1 = EORgn2 Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   73: Begin
+    { ExcludeVisRect(hdc,X1,Y1,X2,Y2):int - ordinal VERIFIE via le VRAI      }
+    { source Wine (wingdi16.h). Appel historique PRE-3.0 (le concept de       }
+    { "region visible" a ete unifie avec le "clip region" plus tard) - ce     }
+    { sous-ensemble ne fait DEJA aucune distinction entre les deux (un        }
+    { seul rectangle mono-DC suivi) : reutilise EXACTEMENT la MEME logique   }
+    { qu'ExcludeClipRect/$21 (meme limitation disclosee : ne gere que les     }
+    { cas ou le rectangle exclu traverse completement le clip selon un axe). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Not Win16_ClipActive Then Begin
+     Win16_ClipX1 := GdiX1; Win16_ClipY1 := GdiY1;
+     Win16_ClipX2 := GdiX2; Win16_ClipY2 := GdiY2;
+     Win16_ClipActive := True;
+    End Else Begin
+     If (GdiX1 <= Win16_ClipX1) And (GdiX2 >= Win16_ClipX2) Then Begin
+      If GdiY1 <= Win16_ClipY1 Then Win16_ClipY1 := GdiY2
+      Else If GdiY2 >= Win16_ClipY2 Then Win16_ClipY2 := GdiY1;
+     End Else If (GdiY1 <= Win16_ClipY1) And (GdiY2 >= Win16_ClipY2) Then Begin
+      If GdiX1 <= Win16_ClipX1 Then Win16_ClipX1 := GdiX2
+      Else If GdiX2 >= Win16_ClipX2 Then Win16_ClipX2 := GdiX1;
+     End;
+    End;
+    If (Win16_ClipX1 >= Win16_ClipX2) Or (Win16_ClipY1 >= Win16_ClipY2) Then
+     P.CPU.Regs.AX := 1  { NULLREGION }
+    Else
+     P.CPU.Regs.AX := 2; { SIMPLEREGION }
+    ArgWords := 5;
+   End;
+   74: Begin
+    { GetBitmapBits(hbitmap,dwCount,lpBits):LONG - ordinal VERIFIE via le   }
+    { VRAI source Wine (wingdi16.h). Rien a copier : AUCUN bitmap de ce      }
+    { sous-ensemble ne stocke jamais de vraies donnees pixel (CreateBitmap/  }
+    { CreateBitmapIndirect/CreateCompatibleBitmap - ordinaux 48/49/51 - sont }
+    { tous des handles synthetiques sans contenu reel) - retourne 0, le       }
+    { comportement REEL documente d'un echec (handle de bitmap invalide/     }
+    { sans donnees), pas une valeur inventee. }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 5;
+   End;
+   75: Begin
+    { GetBkColor(hdc):COLORREF - ordinal VERIFIE via le VRAI source Wine    }
+    { (wingdi16.h). REEL, trivial : renvoie Win16_CurrentBkColor deja         }
+    { reellement suivi par SetBkColor/$1 depuis son propre lot. }
+    P.CPU.Regs.AX := Word(Win16_CurrentBkColor And $FFFF);
+    P.CPU.Regs.DX := Word((Win16_CurrentBkColor Shr 16) And $FFFF);
+    ArgWords := 1;
+   End;
+   76: Begin
+    { GetBkMode(hdc):int - ordinal VERIFIE via le VRAI source Wine           }
+    { (wingdi16.h). SetBkMode/$2 (Stage 6) ne stockait jusqu'ici AUCUNE       }
+    { valeur (rapportait toujours OPAQUE(2) comme "mode precedent" sans       }
+    { jamais la conserver) - COMBLE ici la MEME incoherence deja rencontree  }
+    { pour CreateSolidBrush au lot precedent : nouveau                        }
+    { `Win16_CurrentBkMode` REELLEMENT suivi desormais (SetBkMode/$2           }
+    { retouche pour le stocker, voir ce cas plus haut), GetBkMode le lit      }
+    { pour de vrai. }
+    P.CPU.Regs.AX := Win16_CurrentBkMode;
+    ArgWords := 1;
+   End;
+   77: Begin
+    { GetClipBox(hdc,lpRect):int - ordinal VERIFIE via le VRAI source Wine  }
+    { (wingdi16.h, structure RECT standard). REEL : renvoie VRAIMENT le      }
+    { rectangle de clip mono-DC deja suivi (Win16_ClipX1/Y1/X2/Y2,            }
+    { coordonnees CLIENT - meme espace que celui fourni par l'appelant a      }
+    { Exclude/IntersectClipRect/CreateRectRgn/etc.) ; si aucun clip n'est     }
+    { actif, renvoie l'etendue REELLE de la zone client de la fenetre         }
+    { active (0,0)-(largeur,hauteur), pas une valeur arbitraire. }
+    LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_ClipActive Then Begin
+     Emu_WriteWord(P.CPU, LBSeg, LBOfs, Word(Win16_ClipX1));
+     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 2), Word(Win16_ClipY1));
+     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 4), Word(Win16_ClipX2));
+     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 6), Word(Win16_ClipY2));
+    End Else If Win16_ActiveDCWindow >= 0 Then Begin
+     Emu_WriteWord(P.CPU, LBSeg, LBOfs, 0);
+     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 2), 0);
+     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 4), Word(Win16_WindowW[Win16_ActiveDCWindow] - 2));
+     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 6), Word(Win16_WindowH[Win16_ActiveDCWindow] - 2));
+    End;
+    P.CPU.Regs.AX := 2; { SIMPLEREGION }
+    ArgWords := 3;
    End;
    80: Begin
     { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }

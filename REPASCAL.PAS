@@ -31,6 +31,8 @@ Var
  RoutineHeader,AwaitingRoutineBegin,RoutineNeedsBlank,DeclarationSection,
  DeclarationIsLocal,UsesSection,AfterUsesBlank:Boolean;
  ParenthesisLevel,ConditionalLevel:Integer;
+ MetadataComment,MetadataCandidate:TSourceString;
+ MetadataFound,MetadataCapture,MetadataSkipped,SuppressMetadata:Boolean;
 
 Function UpperString(Const S:String):String;
 Var
@@ -39,6 +41,47 @@ Var
 Begin
  R:=S;
  For I:=1 to Length(R)do R[I]:=UpCase(R[I]);UpperString:=R;
+End;
+
+Function CollapseSpaces(Const S:TSourceString):TSourceString;
+Var R:TSourceString;I:LongInt;PendingSpace:Boolean;
+Begin
+ R:='';PendingSpace:=False;For I:=1 to Length(S)do
+  If S[I]in[' ',#9,#13,#10]Then PendingSpace:=Length(R)>0
+  Else Begin If PendingSpace Then R:=R+' ';R:=R+S[I];PendingSpace:=False;End;
+ CollapseSpaces:=R;
+End;
+
+Function FormatMetadataComment(Const S:TSourceString):TSourceString;
+Var Flat,R:TSourceString;I:LongInt;SeenTag:Boolean;
+Begin
+ Flat:=CollapseSpaces(S);R:='';SeenTag:=False;I:=1;
+ While I<=Length(Flat)do Begin
+  If Flat[I]='@'Then Begin
+   If SeenTag and(I>1)and(Flat[I-1]=' ')Then Begin
+    While(Length(R)>0)and(R[Length(R)]=' ')do Delete(R,Length(R),1);
+    R:=R+#13#10+' ';
+   End;SeenTag:=True;
+  End;R:=R+Flat[I];Inc(I);
+ End;FormatMetadataComment:=R;
+End;
+
+Procedure CaptureMetadataLine(Const L:TSourceString);
+Var I,J:LongInt;Piece:TSourceString;
+Begin
+ If MetadataFound Then Exit;I:=1;
+ If not MetadataCapture Then Begin While(I<=Length(L))and(L[I]<>'{')do Inc(I);
+  If I>Length(L)Then Exit;MetadataCandidate:='';MetadataCapture:=True;
+ End;
+ J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Inc(I);
+ Piece:=Copy(L,J,I-J);If MetadataCandidate<>''Then MetadataCandidate:=MetadataCandidate+' ';
+ MetadataCandidate:=MetadataCandidate+Piece;
+ If Pos('}',Piece)<>0 Then Begin MetadataCapture:=False;
+  If Pos('@',MetadataCandidate)<>0 Then Begin
+   MetadataComment:=FormatMetadataComment(MetadataCandidate);MetadataFound:=True;
+  End
+  Else MetadataCandidate:='';
+ End;
 End;
 
 Function IsIdentStart(C:Char):Boolean;Begin
@@ -186,11 +229,14 @@ Var
  FirstFound:Boolean;
 Begin
  BeginTotal:=0;EndTotal:=0;MainBeginNumber:=0;MainEndNumber:=0;BlockTop:=0;IsUnit:=False;
- HasProgram:=False;CommentState:=csNone;FirstFound:=False;
+ HasProgram:=False;CommentState:=csNone;FirstFound:=False;MetadataFound:=False;
+ MetadataCapture:=False;MetadataComment:='';MetadataCandidate:='';
  Assign(InputFile,SourceName);Reset(InputFile);If IOResult<>0 Then Begin
   Error('impossible d''ouvrir '+SourceName);Exit;
  End;
- While ReadSourceLine(InputFile,L)do CountLine(L,CommentState,FirstFound);
+ While ReadSourceLine(InputFile,L)do Begin
+  CaptureMetadataLine(L);CountLine(L,CommentState,FirstFound);
+ End;
  Close(InputFile);If IOResult<>0 Then Error('erreur de fermeture du fichier source');
 End;
 
@@ -346,16 +392,17 @@ Var
  DirectiveKind:Integer;
  W,U,S:String;
  C:Char;
- ThisDeclarationIsLocal:Boolean;
+ ThisDeclarationIsLocal,SkipThisComment:Boolean;
 Begin
  I:=1;PreserveCommentIndent:=State<>csNone;
  While(I<=Length(L))and not HadError do Begin
   C:=L[I];
   If State=csBrace Then Begin
-   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;J:=I;
+   SkipThisComment:=SuppressMetadata;AwaitingThenBegin:=False;AwaitingDoBegin:=False;
+   AwaitingRoutineBegin:=False;J:=I;
    While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
-    Inc(I);State:=csNone;
-   End;AppendComment(Copy(L,J,I-J));Continue;
+    Inc(I);State:=csNone;If SuppressMetadata Then Begin MetadataSkipped:=True;SuppressMetadata:=False;End;
+   End;If not SkipThisComment Then AppendComment(Copy(L,J,I-J));Continue;
   End;
   If State=csParen Then Begin
    AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;J:=I;
@@ -377,10 +424,12 @@ Begin
   End;
   If C='{'Then Begin
    AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;
+   If MetadataFound and not MetadataSkipped and(Pos('@',Copy(L,I,Length(L)-I+1))<>0)Then SuppressMetadata:=True;
+   SkipThisComment:=SuppressMetadata;
    If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csBrace;J:=I;Inc(I);
    While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
-    Inc(I);State:=csNone;
-   End;AppendComment(Copy(L,J,I-J));Continue;
+    Inc(I);State:=csNone;If SuppressMetadata Then Begin MetadataSkipped:=True;SuppressMetadata:=False;End;
+   End;If not SkipThisComment Then AppendComment(Copy(L,J,I-J));Continue;
   End;
   If(C='(')and(I<Length(L))and(L[I+1]='*')Then Begin
    AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;
@@ -539,9 +588,14 @@ Begin
  DeclarationIsLocal:=False;AfterUsesBlank:=False;
  UsesSection:=False;
  ParenthesisLevel:=0;ConditionalLevel:=0;
+ MetadataSkipped:=False;SuppressMetadata:=False;
  IndentLevel:=0;BeginNumber:=0;EndNumber:=0;CommentState:=csNone;
  SkipProgram:=HasProgram and not IsUnit;
- If not IsUnit Then WriteLn(OutputFile,'Program ',ProgramName,';');
+ If not IsUnit Then Begin
+  If MetadataFound Then Begin WriteLn(OutputFile,MetadataComment);WriteLn(OutputFile);End;
+  WriteLn(OutputFile,'Program ',ProgramName,';');
+  If MetadataFound Then WriteLn(OutputFile);
+ End;
  While not HadError and ReadSourceLine(InputFile,L)do FormatLine(L,CommentState,
  SkipProgram);
  Close(InputFile);Close(OutputFile);
