@@ -10254,14 +10254,40 @@ Var
  { active par defaut, comme le vrai OS-9. }
  OS9_CRCModEnabled: Boolean;
  { F$Icpt (2026-09-12, demande explicite) : enregistrement REEL (X/U        }
- { stockes), mais jamais invoque - aucun mecanisme de signal (F$Send/       }
- { kill) n existe dans ce sous-ensemble OS-9, donc une routine              }
- { d interception enregistree ici est honnetement correcte (elle ne peut    }
- { jamais etre appelee puisqu aucun signal n est jamais envoye) plutot      }
- { qu une simulation. }
+ { stockes) - MISE A JOUR (meme session, troisieme lot) : desormais         }
+ { VRAIMENT invoquee par F$Send/$08 (voir plus bas), qui existe maintenant. }
  OS9_IcptX      : Word;
  OS9_IcptU      : Word;
  OS9_IcptSet    : Boolean;
+ { Troisieme lot de F$ (2026-09-12, demande explicite). }
+ { F$SPrior : priorite stockee mais sans effet sur un ordonnancement        }
+ { (aucun ordonnanceur multi-processus n existe dans ce sous-ensemble mono- }
+ { "processus") - meme discipline que les sections critiques Win16/PE      }
+ { (comportement honnetement correct pour la portee, pas une simulation).  }
+ OS9_ProcPriority: Byte;
+ { F$SSWI : vecteurs utilisateur REELS pour SWI ($3F) et SWI3 ($11 3F) -    }
+ { rediriges vers la routine utilisateur au lieu de toujours arreter le     }
+ { programme (voir M6809_Step/M6809_StepPage3). SWI2 (type 2) reste        }
+ { EXCLU expres : c est le vecteur qu utilise CE dispatcher OS-9 lui-meme   }
+ { (voir M6809_StepPage2, $3F) - la vraie doc F$SSWI avertit explicitement  }
+ { que le redefinir casse tout logiciel Microware qui l utilise pour        }
+ { appeler NitrOS-9, donc l honorer reellement casserait ce sous-ensemble   }
+ { OS-9 tout entier. Simplification honnetement disclosee, PAS un oubli. }
+ OS9_SWI1Vector : Word;
+ OS9_SWI1Set    : Boolean;
+ OS9_SWI3Vector : Word;
+ OS9_SWI3Set    : Boolean;
+ { F$STime/F$Time : horloge REELLE (6 octets annee/mois/jour/heures/        }
+ { minutes/secondes) - initialisee avec l heure REELLE de l hote au         }
+ { chargement (voir -COS9 dans ShowEmulatorPanel), comme le ferait un vrai  }
+ { systeme OS-9 demarre (Init/le pilote d horloge appelle deja F$STime      }
+ { avant que l utilisateur ait la main) - F$STime peut ensuite l ecraser.  }
+ OS9_ClockSet   : Boolean;
+ OS9_ClockYear, OS9_ClockMonth, OS9_ClockDay: Byte;
+ OS9_ClockHour, OS9_ClockMin, OS9_ClockSec: Byte;
+ { F$SUser/F$ID : UID REEL stocke (F$ID/$0C plus haut a ete mis a jour      }
+ { pour le lire au lieu de renvoyer 0 fixe). }
+ OS9_UserID     : Word;
  { --- Etat emulateur CoCo 3 (jalon 1 : VDG alpha 32x16) --- }
  Coco3_Active   : Boolean;
  Coco3_FB       : Array[0..199, 0..255] Of Byte;  { framebuffer 256x200 idx couleur EGA }
@@ -162981,16 +163007,42 @@ Begin
   M6809_CRC24Step := Acc;
 End;
 
+{ Empile une VRAIE trame SWI/SWI2/SWI3 complete (2026-09-12, troisieme lot  }
+{ de F$, demande explicite) - ordre reel 6809 (E=1 impose avant             }
+{ l empilement, PC empile en premier donc le plus profond, CC en dernier    }
+{ donc le plus proche du sommet) : PC,U,Y,X,DP,B,A,CC. Utilisee par F$Send  }
+{ (invocation reelle d une routine F$Icpt) et par les nouveaux vecteurs      }
+{ utilisateur SWI/SWI3 de F$SSWI (voir M6809_Step/M6809_StepPage3, opcode    }
+{ $3F) - le retour se fait par un vrai RTI ($3B, ajoute dans ce meme         }
+{ chantier, voir plus bas) qui depile exactement dans l ordre inverse.       }
+Procedure M6809_PushSWIFrame;
+Begin
+  M6809_CC := M6809_CC Or $80; { E=1 : empilement complet, pas juste PC (FIRQ) }
+  M6809_Push16S(M6809_PC);
+  M6809_Push16S(M6809_U);
+  M6809_Push16S(M6809_Y);
+  M6809_Push16S(M6809_X);
+  M6809_Push8S(M6809_DP);
+  M6809_Push8S(M6809_B);
+  M6809_Push8S(M6809_A);
+  M6809_Push8S(M6809_CC);
+End;
+
 { Appels systeme OS-9/6809 (SWI2 suivi d un octet de service inline,        }
 { convention "OS9 servicecode" des assembleurs OS-9 reels). Sous-ensemble    }
-{ implemente : F$Link, F$Load, F$UnLink, F$Chain, F$Fork (synchrone - pas   }
-{ de vrai multitache), F$Wait, F$Exit, F$Mem, F$Sleep, F$CmpNam, F$AllBit,  }
-{ F$DelBit, F$CRC, F$CRCMod, F$CpyMem, F$GPrDsc, F$GBlkMp, F$GModDr,        }
-{ F$Alarm, F$Debug, I$Open, I$Close, I$Read, I$Write, I$GetStt/I$SetStt     }
-{ (acceptes sans donnees reelles). Tout autre code de service retourne une }
-{ erreur generique (Carry positionne, B=$FF) plutot que d inventer un       }
-{ resultat, meme principe que les autres backends "trap systeme" de ce      }
-{ fichier (GEMDOS/AES/BIOS/XBIOS Atari ST). }
+{ implemente : F$Link, F$Load, F$UnLink, F$Unload, F$Chain, F$Fork          }
+{ (synchrone - pas de vrai multitache), F$Wait, F$Send, F$Icpt, F$Exit,     }
+{ F$Mem, F$Sleep, F$SSpd, F$ID, F$SPrior, F$SSWI, F$PErr, F$PrsNam,         }
+{ F$CmpNam, F$SchBit, F$AllBit, F$DelBit, F$Time, F$STime, F$CRC, F$CRCMod, }
+{ F$CpyMem, F$SUser, F$GPrDsc, F$GBlkMp, F$GModDr, F$CpyMem, F$Alarm,       }
+{ F$Debug, F$TPS, F$TimAlm, I$Open, I$Close, I$Read, I$Write, I$GetStt/     }
+{ I$SetStt (acceptes sans donnees reelles). Tout autre code de service      }
+{ retourne une erreur generique (Carry positionne, B=$FF) plutot que        }
+{ d inventer un resultat, meme principe que les autres backends "trap        }
+{ systeme" de ce fichier (GEMDOS/AES/BIOS/XBIOS Atari ST). F$Send/F$Icpt     }
+{ forment desormais un VRAI mecanisme de signal synchrone (trame SWI         }
+{ complete + RTI reel, voir M6809_PushSWIFrame) - le seul "processus" de     }
+{ ce sous-ensemble (PID=1) peut donc reellement s auto-signaler. }
 Procedure M6809_DoOS9Syscall(SvcCode: Byte);
 Var
   Ch: Byte;
@@ -163204,26 +163256,93 @@ Begin
            M6809_U := OS9_MEM_BASE;
            M6809_Y := OS9_MEM_BASE;
          End;
+    $08: Begin { F$Send(A=PID dest, B=code signal) - convention registre     }
+           { VERIFIEE (sourceforge.net/p/nitros9/wiki/F$Send). Ce sous-       }
+           { ensemble ne modelise qu UN SEUL processus (PID=1, voir F$ID/    }
+           { $0C et F$GPrDsc/$18) - s envoyer un signal a soi-meme EST le     }
+           { seul cas possible ici, un comportement REEL (rien n empeche un  }
+           { vrai programme OS-9 de le faire). Code 0 = terminaison          }
+           { systeme, jamais interceptable (vraie semantique documentee) ;   }
+           { si aucune routine F$Icpt/$09 n est enregistree, un vrai OS-9     }
+           { termine le processus a la reception d un signal (cite dans la   }
+           { doc F$Icpt) - reproduit ici a l identique. Si une routine EST   }
+           { enregistree, elle est VRAIMENT invoquee (trame SWI complete +   }
+           { vrai RTI, voir M6809_PushSWIFrame plus haut) - pas une           }
+           { simulation. }
+           If M6809_A <> 1 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0; { processus introuvable }
+           End Else If (M6809_B = 0) Or (Not OS9_IcptSet) Then Begin
+             M6809_Halted := True;
+             M6809_ExitCode := M6809_B;
+           End Else Begin
+             M6809_PushSWIFrame;
+             M6809_U := OS9_IcptU;
+             M6809_PC := OS9_IcptX;
+           End;
+         End;
     $09: Begin { F$Icpt(X=adresse routine d interception, U=zone memoire de }
            { la routine) - convention registre VERIFIEE (sourceforge.net/   }
            { p/nitros9/wiki/F$Icpt). Enregistrement REEL (voir OS9_Icpt* et  }
-           { son commentaire de tete pour l explication complete : jamais    }
-           { invoque ici puisqu aucun mecanisme de signal n existe dans ce   }
-           { sous-ensemble - comportement honnetement correct, pas une       }
-           { simulation). }
+           { son commentaire de tete pour l explication complete) - VRAIMENT }
+           { invoquee par F$Send/$08 ci-dessus. }
            OS9_IcptX := M6809_X;
            OS9_IcptU := M6809_U;
            OS9_IcptSet := True;
          End;
     $0A: ; { F$Sleep(D=ticks) : ne bloque jamais }
+    $0B: Begin { F$SSpd(A=PID a suspendre) - AUCUNE documentation             }
+           { exploitable trouvee pour cet appel precis (page wiki NitrOS-9   }
+           { manquante malgre plusieurs tentatives) - convention BEST-EFFORT }
+           { par analogie avec F$SPrior/$0D et F$Send/$08 ci-dessus (meme     }
+           { famille "agir sur un processus par PID", toutes deux confirmees }
+           { utiliser A=PID) - a corriger si un vrai programme revele une    }
+           { convention differente. Ce sous-ensemble ne modelise qu un seul   }
+           { processus SYNCHRONE (jamais reellement suspendu "en             }
+           { arriere-plan" puisqu aucun autre processus ne s execute en       }
+           { parallele) - accepte l appel pour le seul PID valide (1), sans   }
+           { effet reel autre que celui deja assure par F$Sleep/$0A juste     }
+           { au-dessus (qui ne bloque pas non plus, meme discipline). }
+           If M6809_A <> 1 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+           End;
+         End;
     $0C: Begin { F$ID() -> A=PID, Y=UID - convention registre VERIFIEE       }
            { (sourceforge.net/p/nitros9/wiki/F$ID). Ce sous-ensemble ne      }
            { modelise qu UN SEUL "processus" logique (voir F$GPrDsc/$18 plus }
-           { haut, meme PID=1) et un seul utilisateur (superutilisateur,      }
-           { UID=0, meme simplification que F$Debug/$23 plus bas - systeme   }
-           { mono-utilisateur comme un vrai CoCo3, UID herite de CC3Go). }
+           { haut, meme PID=1). UID REEL lu depuis OS9_UserID (mis a jour    }
+           { par F$SUser/$1C plus bas - 0=superutilisateur par defaut, comme }
+           { un vrai systeme CoCo3 mono-utilisateur, UID herite de CC3Go). }
            M6809_A := 1;
-           M6809_Y := 0;
+           M6809_Y := OS9_UserID;
+         End;
+    $0D: Begin { F$SPrior(A=PID, B=priorite) - convention registre           }
+           { VERIFIEE (sourceforge.net/p/nitros9/wiki/F$SPrior). Stockee      }
+           { reellement (OS9_ProcPriority) mais sans effet sur un             }
+           { ordonnancement (aucun ordonnanceur multi-processus n existe     }
+           { ici) - comportement honnetement correct pour cette portee (voir }
+           { le commentaire de tete pres de la globale), pas une simulation. }
+           If M6809_A <> 1 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0;
+           End Else
+             OS9_ProcPriority := M6809_B;
+         End;
+    $0E: Begin { F$SSWI(A=type SWI 1/2/3, X=adresse routine) - convention     }
+           { registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$SSWI). SWI   }
+           { (type 1) et SWI3 (type 3) sont VRAIMENT rediriges (voir les      }
+           { opcodes $3F page 1 et $11 3F page 3, M6809_Step/                 }
+           { M6809_StepPage3) - la routine utilisateur recoit une VRAIE       }
+           { trame SWI complete (M6809_PushSWIFrame) et retourne par un vrai  }
+           { RTI ($3B, deja existant). SWI2 (type 2) reste EXPRES non         }
+           { honore : c est le vecteur qu utilise ce dispatcher OS-9 lui-     }
+           { meme (voir OS9_SWI1Vector/Set pour l explication complete,       }
+           { meme avertissement que la vraie doc Microware : le redefinir    }
+           { casserait tout logiciel qui l utilise pour appeler NitrOS-9). }
+           Case M6809_A Of
+             1: Begin OS9_SWI1Vector := M6809_X; OS9_SWI1Set := True; End;
+             3: Begin OS9_SWI3Vector := M6809_X; OS9_SWI3Set := True; End;
+             2: ; { SWI2 : accepte silencieusement, sans effet reel, voir ci-dessus }
+             Else Begin M6809_CC := M6809_CC Or $01; M6809_B := $FF; End;
+           End;
          End;
     $0F: Begin { F$PErr(B=code d erreur) - convention registre VERIFIEE      }
            { (sourceforge.net/p/nitros9/wiki/F$PErr). Comportement par        }
@@ -163483,6 +163602,55 @@ Begin
            For CMI := 0 To CMCount - 1 Do
              M6809_Wr(Word(M6809_U + CMI), M6809_Rd(Word(M6809_X + CMI)));
          End;
+    $15: Begin { F$Time(X=adresse tampon 6 octets) -> copie le paquet         }
+           { horaire courant - convention registre ET format de paquet       }
+           { VERIFIES (sourceforge.net/p/nitros9/wiki/F$Time : annee/mois/   }
+           { jour/heures/minutes/secondes). Echoue reellement si F$STime/    }
+           { $16 n a jamais ete appele (vraie semantique documentee : "Time  }
+           { ... n existe pas si aucun appel prealable a F$STime n a ete     }
+           { fait") - mais voir OS9_ClockSet (globales) : ce chantier         }
+           { initialise deja l horloge avec l heure REELLE de l hote au       }
+           { chargement, comme le ferait un vrai systeme deja demarre par    }
+           { Init, donc ce cas d erreur ne se produit en pratique jamais ici.}
+           If Not OS9_ClockSet Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $8D; { E$Unit, pilote absent }
+           End Else Begin
+             M6809_Wr(M6809_X, OS9_ClockYear);
+             M6809_Wr(Word(M6809_X + 1), OS9_ClockMonth);
+             M6809_Wr(Word(M6809_X + 2), OS9_ClockDay);
+             M6809_Wr(Word(M6809_X + 3), OS9_ClockHour);
+             M6809_Wr(Word(M6809_X + 4), OS9_ClockMin);
+             M6809_Wr(Word(M6809_X + 5), OS9_ClockSec);
+           End;
+         End;
+    $16: Begin { F$STime(X=adresse paquet horaire 6 octets) - convention     }
+           { registre ET format de paquet VERIFIES (sourceforge.net/p/       }
+           { nitros9/wiki/F$STime). Stockage REEL (OS9_Clock*), relu           }
+           { ensuite par F$Time/$15 ci-dessus. }
+           OS9_ClockYear := M6809_Rd(M6809_X);
+           OS9_ClockMonth := M6809_Rd(Word(M6809_X + 1));
+           OS9_ClockDay := M6809_Rd(Word(M6809_X + 2));
+           OS9_ClockHour := M6809_Rd(Word(M6809_X + 3));
+           OS9_ClockMin := M6809_Rd(Word(M6809_X + 4));
+           OS9_ClockSec := M6809_Rd(Word(M6809_X + 5));
+           OS9_ClockSet := True;
+         End;
+    $1C: Begin { F$SUser(Y=UID desire) - convention registre VERIFIEE        }
+           { (sourceforge.net/p/nitros9/wiki/F$SUser : "sans verification    }
+           { d erreur ni validation de l appelant", cite textuellement).      }
+           { Stockage REEL, relu ensuite par F$ID/$0C plus haut. }
+           OS9_UserID := M6809_Y;
+         End;
+    $1D: Begin { F$Unload(A=type module, X=pointeur nom module) - convention }
+           { registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$Unload).    }
+           { Meme mecanisme que F$UnLink/$02 (deja existant, qui lit deja un }
+           { nom - convention simplifiee de ce chantier plutot que la vraie   }
+           { adresse d en-tete de module) - seule difference reelle ici : le  }
+           { nom est en X, pas en Y. }
+           ModName := M6809_ReadOS9Name(M6809_X);
+           Slot := OS9_FindModuleSlot(ModName);
+           If Slot >= 0 Then OS9_ModUsed[Slot] := False;
+         End;
     $1E: Begin { F$Alarm(X=paquet horaire) - convention registre VERIFIEE     }
            { (sourceforge.net/p/nitros9/wiki/F$Alarm : "sonne la cloche       }
            { pendant 15 secondes", "un seul alarme a la fois"). Aucune        }
@@ -163565,6 +163733,22 @@ Begin
            End;
            { toute autre valeur : retour sans erreur, sans effet - conforme   }
            { a la vraie specification F$Debug citee ci-dessus. }
+         End;
+    $25: Begin { F$TPS() -> Y=nb de tics systeme par seconde - AUCUNE page    }
+           { wiki dediee trouvee pour la convention registre (manquante),     }
+           { mais la VALEUR REELLE renvoyee est connue et verifiable          }
+           { independamment : un CoCo/OS-9 reel cadence son horloge systeme   }
+           { sur le signal VSYNC materiel, 60 Hz en region NTSC (la seule      }
+           { region CoCo/OS-9 courante) - valeur reelle, pas arbitraire. }
+           M6809_Y := 60;
+         End;
+    $26: Begin { F$TimAlm(?) - AUCUNE documentation exploitable trouvee       }
+           { (page wiki NitrOS-9 manquante malgre plusieurs tentatives) -     }
+           { meme discipline honnete que F$Alarm/$1E plus haut (alarme        }
+           { individuelle par processus, specifique au CoCo, meme famille) : }
+           { echec propre plutot qu un succes invente, aucune horloge temps   }
+           { reel/callback differe n etant cablee dans ce coeur texte. }
+           M6809_CC := M6809_CC Or $01; M6809_B := $FF;
          End;
     $55: Begin { F$CRCMod(A=0 desactive / <>0 active la verification CRC des }
            { modules au chargement, krnp2 - voir OS9_CRCModEnabled et son     }
@@ -163741,7 +163925,15 @@ Begin
     $9C: Begin EA := M6809_AmDirect; M6809_DoCmp16(M6809_S, M6809_Rd16(EA)); End;
     $AC: Begin EA := M6809_AmIndexed; M6809_DoCmp16(M6809_S, M6809_Rd16(EA)); End;
     $BC: Begin EA := M6809_AmExtended; M6809_DoCmp16(M6809_S, M6809_Rd16(EA)); End;
-    $3F: Begin { SWI3 } M6809_Halted := True; M6809_ExitCode := 0; End;
+    $3F: Begin { SWI3 - meme correctif que SWI page 1 ci-dessus (type 3), }
+           { voir OS9_SWI3Vector/OS9_SWI3Set. }
+           If OS9_SWI3Set Then Begin
+             M6809_PushSWIFrame;
+             M6809_PC := OS9_SWI3Vector;
+           End Else Begin
+             M6809_Halted := True; M6809_ExitCode := 0;
+           End;
+         End;
   End;
 End;
 
@@ -163851,7 +164043,18 @@ Begin
          If Tmp = 0 Then M6809_CC := M6809_CC Or $04;
          If (M6809_B And $80) <> 0 Then M6809_CC := M6809_CC Or $01;
        End;
-    $3F: Begin { SWI } M6809_Halted := True; M6809_ExitCode := 0; End;
+    $3F: Begin { SWI - VRAI vecteur utilisateur si F$SSWI/$0E l a defini      }
+           { (type 1, voir OS9_SWI1Vector/OS9_SWI1Set et son commentaire de   }
+           { tete) : trame SWI complete empilee (M6809_PushSWIFrame),         }
+           { retour par un vrai RTI (deja existant, $3B ci-dessus) - sinon,   }
+           { comportement inchange (fin de programme). }
+           If OS9_SWI1Set Then Begin
+             M6809_PushSWIFrame;
+             M6809_PC := OS9_SWI1Vector;
+           End Else Begin
+             M6809_Halted := True; M6809_ExitCode := 0;
+           End;
+         End;
     $32: M6809_S := M6809_AmIndexed;                     { LEAS }
     $33: M6809_U := M6809_AmIndexed;                     { LEAU }
     $30: Begin M6809_X := M6809_AmIndexed;
@@ -167875,6 +168078,10 @@ Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
  BinaryPath, TargetCPU: String; Args: String);
 Var
  OldFg, OldBg: Byte;
+ { F$STime/F$Time (chantier OS-9, 2026-09-12) : horloge de l hote reelle au }
+ { chargement -COS9, voir plus bas. }
+ OS9ClkY, OS9ClkM, OS9ClkD, OS9ClkDow: Word;
+ OS9ClkH, OS9ClkMi, OS9ClkS, OS9ClkHs: Word;
  Loaded: Boolean;
  Steps: LongInt;
  IsX86: Boolean;
@@ -168853,6 +169060,22 @@ Begin NesActive := False;
    OS9_ForkExitCode := 0;
    OS9_MemSize := 0;
    OS9_CRCModEnabled := True; { verification CRC-24 active par defaut, comme le vrai OS-9 }
+   OS9_ProcPriority := 128; { priorite "normale" par defaut, valeur mediane raisonnable }
+   OS9_SWI1Set := False; OS9_SWI3Set := False;
+   OS9_UserID := 0; { superutilisateur, coherent avec F$ID/F$Debug ci-dessus }
+   { F$Time echoue reellement tant que F$STime n a jamais ete appele (vraie }
+   { semantique documentee), MAIS un vrai OS-9 demarre avec Init qui a deja }
+   { appele F$STime avant que l utilisateur ait la main - on reproduit donc }
+   { cet etat "deja demarre" avec l heure REELLE de l hote (pas inventee). }
+   GetDate(OS9ClkY, OS9ClkM, OS9ClkD, OS9ClkDow);
+   GetTime(OS9ClkH, OS9ClkMi, OS9ClkS, OS9ClkHs);
+   OS9_ClockYear := Byte(OS9ClkY Mod 256);
+   OS9_ClockMonth := Byte(OS9ClkM);
+   OS9_ClockDay := Byte(OS9ClkD);
+   OS9_ClockHour := Byte(OS9ClkH);
+   OS9_ClockMin := Byte(OS9ClkMi);
+   OS9_ClockSec := Byte(OS9ClkS);
+   OS9_ClockSet := True;
    Loaded := M6809_LoadOS9Module(BinaryPath, EntryAddr16);
    OS9_Active := Loaded;
   End;
