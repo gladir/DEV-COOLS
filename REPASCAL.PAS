@@ -3,6 +3,7 @@ Program REPASCAL;
 Uses Dos;
 {$I-}
 Const MaxLineLength = 255;
+      MaxFormattedWidth = 90;
 Type
 TCommentState = (csNone,csBrace,csParen);
  {$IFDEF FPC}
@@ -187,14 +188,52 @@ Begin
  OutLine:=OutLine+S;
  {$ENDIF}
 End;
+
+Function LeftTrim(Const S:TSourceString):TSourceString;
+Var I:LongInt;
+Begin I:=1;While(I<=Length(S))and(S[I]in[' ',#9])do Inc(I);LeftTrim:=Copy(S,I,Length(S)-I+1);End;
+
+Function FindLineBreak(Const S:TSourceString;Limit:LongInt):LongInt;
+Var I,LastSemi,LastOperator:LongInt;InString,InBrace,InParenComment:Boolean;C:Char;
+Begin
+ LastSemi:=0;LastOperator:=0;InString:=False;InBrace:=False;InParenComment:=False;I:=1;
+ While(I<=Length(S))and(I<=Limit)do Begin C:=S[I];
+  If InString Then Begin If C=''''Then If(I<Length(S))and(S[I+1]='''')Then Inc(I)Else InString:=False;End
+  Else If InBrace Then Begin If C='}'Then InBrace:=False;End
+  Else If InParenComment Then Begin If(C='*')and(I<Length(S))and(S[I+1]=')')Then Begin InParenComment:=False;Inc(I);End;End
+  Else If C=''''Then InString:=True
+  Else If C='{'Then InBrace:=True
+  Else If(C='(')and(I<Length(S))and(S[I+1]='*')Then Begin InParenComment:=True;Inc(I);End
+  Else If(C='/')and(I<Length(S))and(S[I+1]='/')Then Break
+  Else If C=';'Then Begin
+   If UpperString(Copy(S,I+1,5))<>'BEGIN'Then LastSemi:=I;
+  End
+  Else If C in['(',')','+','-','/','*','=','<','>',',']Then LastOperator:=I;
+  Inc(I);
+ End;
+ If LastSemi<>0 Then FindLineBreak:=LastSemi Else FindLineBreak:=LastOperator;
+End;
+
+Procedure WriteFormattedLine(Const Source:TSourceString;Level:LongInt);
+Var S,Part:TSourceString;Available,BreakPos,I:LongInt;
+Begin
+ S:=Source;If Level>=MaxFormattedWidth Then Available:=1 Else Available:=MaxFormattedWidth-Level;
+ While Length(S)>Available do Begin BreakPos:=FindLineBreak(S,Available);
+  If BreakPos=0 Then Break;
+  Part:=TrimLine(Copy(S,1,BreakPos));For I:=1 to Level do Write(OutputFile,' ');WriteLn(OutputFile,Part);
+  If IOResult<>0 Then Begin Error('erreur d''ecriture');Exit;End;S:=LeftTrim(Copy(S,BreakPos+1,Length(S)-BreakPos));
+ End;
+ For I:=1 to Level do Write(OutputFile,' ');WriteLn(OutputFile,S);
+End;
+
 Procedure EmitLine;
-Var S:TSourceString;I:LongInt;
+Var S:TSourceString;
 Begin
  If PreserveCommentIndent Then S:=OutLine Else S:=TrimLine(OutLine);OutLine:='';
  If S=''Then Begin
   WriteLn(OutputFile);PreserveCommentIndent:=False;Exit;
  End;
- If not PreserveCommentIndent Then For I:=1 to IndentLevel do Write(OutputFile,' ');WriteLn(OutputFile,S);PreserveCommentIndent:=False;AwaitingThenBegin:=False;
+ If PreserveCommentIndent Then WriteLn(OutputFile,S)Else WriteFormattedLine(S,IndentLevel);PreserveCommentIndent:=False;AwaitingThenBegin:=False;
  If IOResult<>0 Then Error('erreur d''ecriture');
 End;
 Procedure EmitPending;
