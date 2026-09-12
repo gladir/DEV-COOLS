@@ -35,7 +35,8 @@ Var
  R:String;
  I:Integer;
 Begin
- R:=S;For I:=1 to Length(R)do R[I]:=UpCase(R[I]);UpperString:=R;
+ R:=S;
+ For I:=1 to Length(R)do R[I]:=UpCase(R[I]);UpperString:=R;
 End;
 
 Function IsIdentStart(C:Char):Boolean;Begin
@@ -54,8 +55,8 @@ Function FileBase(Const S:String):String;
 Var
  I,First,Dot:Integer;
 Begin
- First:=1;Dot:=0;For I:=1 to Length(S)do
- If S[I]in['\','/',':']Then Begin
+ First:=1;Dot:=0;
+ For I:=1 to Length(S)do If S[I]in['\','/',':']Then Begin
   First:=I+1;Dot:=0;
  End Else If S[I]='.'Then Dot:=I;
  If Dot=0 Then Dot:=Length(S)+1;FileBase:=Copy(S,First,Dot-First);
@@ -65,8 +66,8 @@ Function ReplaceExtension(Const S,Ext:String):String;
 Var
  I,Dot:Integer;
 Begin
- Dot:=0;For I:=Length(S)downto 1 do
- Begin
+ Dot:=0;
+ For I:=Length(S)downto 1 do Begin
   If S[I]='.'Then Begin
    Dot:=I;Break;
   End;If S[I]in['\','/',':']Then Break;
@@ -96,8 +97,7 @@ Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;
   TooLong:Boolean;
  Begin
   ReadSourceLine:=False;If Eof(T)Then Exit;L:='';TooLong:=False;
-  While not Eoln(T)do
-  Begin
+  While not Eoln(T)do Begin
    Read(T,C);If IOResult<>0 Then Begin
     Error('erreur de lecture');Exit;
    End;
@@ -120,8 +120,8 @@ Var
  W:String;
  C:Char;
 Begin
- I:=1;While I<=Length(L)do
- Begin
+ I:=1;
+ While I<=Length(L)do Begin
   C:=L[I];
   If State=csBrace Then Begin
    If C='}'Then State:=csNone;Inc(I);Continue;
@@ -139,8 +139,8 @@ Begin
   End;
   If(C='/')and(I<Length(L))and(L[I+1]='/')Then Exit;
   If C=''''Then Begin
-   Inc(I);While I<=Length(L)do
-   Begin
+   Inc(I);
+   While I<=Length(L)do Begin
     If L[I]=''''Then Begin
      If(I<Length(L))and(L[I+1]='''')Then Inc(I,2)Else
      Begin
@@ -150,7 +150,8 @@ Begin
    End;Continue;
   End;
   If IsIdentStart(C)Then Begin
-   J:=I;While(I<=Length(L))and IsIdentChar(L[I])do Inc(I);W:=Copy(L,J,I-J);
+   J:=I;
+   While(I<=Length(L))and IsIdentChar(L[I])do Inc(I);W:=Copy(L,J,I-J);
    If not FirstFound Then Begin
     FirstFound:=True;HasProgram:=SameText(W,'PROGRAM');IsUnit:=SameText(W,'UNIT');
    End;
@@ -194,7 +195,8 @@ Function TrimLine(Const S:TSourceString):TSourceString;
 Var
  A,B:LongInt;
 Begin
- A:=1;While(A<=Length(S))and(S[A]=' ')do Inc(A);B:=Length(S);
+ A:=1;
+ While(A<=Length(S))and(S[A]=' ')do Inc(A);B:=Length(S);
  While(B>=A)and(S[B]=' ')do Dec(B);TrimLine:=Copy(S,A,B-A+1);
 End;
 
@@ -203,7 +205,8 @@ Var
  T:TSourceString;
  I:LongInt;
 Begin
- T:=S;For I:=1 to Length(T)do If T[I]=#9 Then T[I]:=' ';
+ T:=S;
+ For I:=1 to Length(T)do If T[I]=#9 Then T[I]:=' ';
  {$IFNDEF FPC}
   If Length(OutLine)+Length(T)>MaxLineLength Then Begin
    Error('ligne produite trop longue');Exit;
@@ -224,8 +227,8 @@ Procedure AppendComment(Const S:TSourceString);Begin
 End;
 
 Procedure EnsureOneTrailingSpace;Begin
- While(Length(OutLine)>0)and(OutLine[Length(OutLine)]in[' ',#9])do
-  Delete(OutLine,Length(OutLine),1);
+ While(Length(OutLine)>0)and(OutLine[Length(OutLine)]in[' ',#9])do  Delete(OutLine,Length(
+ OutLine),1);
  OutLine:=OutLine+' ';
 End;
 
@@ -233,7 +236,8 @@ Function LeftTrim(Const S:TSourceString):TSourceString;
 Var
  I:LongInt;
 Begin
- I:=1;While(I<=Length(S))and(S[I]in[' ',#9])do Inc(I);LeftTrim:=Copy(S,I,Length(S)-I+1);
+ I:=1;
+ While(I<=Length(S))and(S[I]in[' ',#9])do Inc(I);LeftTrim:=Copy(S,I,Length(S)-I+1);
 End;
 
 Function FindLineBreak(Const S:TSourceString;Limit:LongInt):LongInt;
@@ -243,8 +247,7 @@ Var
  C:Char;
 Begin
  LastSemi:=0;LastOperator:=0;InString:=False;InBrace:=False;InParenComment:=False;I:=1;
- While(I<=Length(S))and(I<=Limit)do
- Begin
+ While(I<=Length(S))and(I<=Limit)do Begin
   C:=S[I];
   If InString Then Begin
    If C=''''Then If(I<Length(S))and(S[I+1]='''')Then Inc(I)Else InString:=False;
@@ -289,7 +292,8 @@ Var
  I,Level:Integer;
 Begin
  EmitPending;If Kind in[2,3]Then If ConditionalLevel>0 Then Dec(ConditionalLevel);
- Level:=IndentLevel+ConditionalLevel;For I:=1 to Level do Write(OutputFile,' ');
+ Level:=IndentLevel+ConditionalLevel;
+ For I:=1 to Level do Write(OutputFile,' ');
  WriteLn(OutputFile,TrimLine(S));If Kind in[1,2]Then Inc(ConditionalLevel);
  If IOResult<>0 Then Error('erreur d''ecriture de directive conditionnelle');
 End;
@@ -301,11 +305,11 @@ Var
 Begin
  S:=Source;
  If Level>=MaxFormattedWidth Then Available:=1 Else Available:=MaxFormattedWidth-Level;
- While Length(S)>Available do
- Begin
+ While Length(S)>Available do Begin
   BreakPos:=FindLineBreak(S,Available);
   If BreakPos=0 Then Break;
-  Part:=TrimLine(Copy(S,1,BreakPos));For I:=1 to Level do Write(OutputFile,' ');
+  Part:=TrimLine(Copy(S,1,BreakPos));
+  For I:=1 to Level do Write(OutputFile,' ');
   WriteLn(OutputFile,Part);
   If IOResult<>0 Then Begin
    Error('erreur d''ecriture');Exit;
@@ -340,8 +344,8 @@ Var
  W,U,S:String;
  C:Char;
 Begin
- I:=1;PreserveCommentIndent:=State<>csNone;While(I<=Length(L))and not HadError do
- Begin
+ I:=1;PreserveCommentIndent:=State<>csNone;
+ While(I<=Length(L))and not HadError do Begin
   C:=L[I];
   If State=csBrace Then Begin
    AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;J:=I;
@@ -350,15 +354,16 @@ Begin
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If State=csParen Then Begin
-   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;J:=I;While I<=Length(L)do
-   Begin
+   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;J:=I;
+   While I<=Length(L)do Begin
     If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin
      Inc(I,2);State:=csNone;Break;
     End;Inc(I);
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If(C='{')and(I<Length(L))and(L[I+1]='$')Then Begin
-   J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);
+   J:=I;
+   While(I<=Length(L))and(L[I]<>'}')do Inc(I);
    If I<=Length(L)Then Inc(I);DirectiveKind:=ConditionalDirectiveKind(Copy(L,J,I-J));
    If DirectiveKind<>0 Then Begin
     PreserveCommentIndent:=False;AwaitingThenBegin:=False;AwaitingDoBegin:=False;
@@ -376,8 +381,7 @@ Begin
   If(C='(')and(I<Length(L))and(L[I+1]='*')Then Begin
    AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;
    If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csParen;J:=I;Inc(I,2);
-   While I<=Length(L)do
-   Begin
+   While I<=Length(L)do Begin
     If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin
      Inc(I,2);State:=csNone;Break;
     End;Inc(I);
@@ -389,8 +393,8 @@ Begin
    AppendComment(Copy(L,I,Length(L)-I+1));Break;
   End;
   If C=''''Then Begin
-   J:=I;Inc(I);While I<=Length(L)do
-   Begin
+   J:=I;Inc(I);
+   While I<=Length(L)do Begin
     If L[I]=''''Then Begin
      If(I<Length(L))and(L[I+1]='''')Then Inc(I,2)Else
      Begin
@@ -400,7 +404,8 @@ Begin
    End;If not SkipProgram Then AppendText(Copy(L,J,I-J));Continue;
   End;
   If IsIdentStart(C)Then Begin
-   J:=I;While(I<=Length(L))and IsIdentChar(L[I])do Inc(I);W:=Copy(L,J,I-J);
+   J:=I;
+   While(I<=Length(L))and IsIdentChar(L[I])do Inc(I);W:=Copy(L,J,I-J);
    U:=UpperString(W);
    If SkipProgram Then Continue;
    If(U='PROCEDURE')or(U='FUNCTION')Then Begin
@@ -502,7 +507,8 @@ Begin
    If AwaitingRoutineBegin Then AwaitingRoutineBegin:=False;
   End;Inc(I);
  End;
- If(TrimLine(OutLine)<>'')and not(AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin)
+ If(TrimLine(OutLine)<>'')and not(
+ AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin)
  Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram Then OutLine:='';
 End;
 
