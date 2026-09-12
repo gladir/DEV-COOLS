@@ -25,7 +25,7 @@ Var
  BlockBegin:Array[1..255]of LongInt;
  CommentState:TCommentState;
  OutLine:TSourceString;
- PreserveCommentIndent,AwaitingThenBegin:Boolean;
+ PreserveCommentIndent,AwaitingThenBegin,AwaitingDoBegin:Boolean;
  RoutineHeader,AwaitingRoutineBegin,RoutineNeedsBlank,DeclarationSection,
  UsesSection:Boolean;
  ParenthesisLevel,ConditionalLevel:Integer;
@@ -223,6 +223,12 @@ Procedure AppendComment(Const S:TSourceString);Begin
  {$ENDIF}
 End;
 
+Procedure EnsureOneTrailingSpace;Begin
+ While(Length(OutLine)>0)and(OutLine[Length(OutLine)]in[' ',#9])do
+  Delete(OutLine,Length(OutLine),1);
+ OutLine:=OutLine+' ';
+End;
+
 Function LeftTrim(Const S:TSourceString):TSourceString;
 Var
  I:LongInt;
@@ -318,7 +324,7 @@ Begin
  End;
  If PreserveCommentIndent Then WriteLn(OutputFile,S)
  Else WriteFormattedLine(S,IndentLevel+ConditionalLevel);
- PreserveCommentIndent:=False;AwaitingThenBegin:=False;
+ PreserveCommentIndent:=False;AwaitingThenBegin:=False;AwaitingDoBegin:=False;
  If IOResult<>0 Then Error('erreur d''ecriture');
 End;
 
@@ -338,13 +344,13 @@ Begin
  Begin
   C:=L[I];
   If State=csBrace Then Begin
-   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;J:=I;
+   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;J:=I;
    While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
     Inc(I);State:=csNone;
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If State=csParen Then Begin
-   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;J:=I;While I<=Length(L)do
+   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;J:=I;While I<=Length(L)do
    Begin
     If(L[I]='*')and(I<Length(L))and(L[I+1]=')')Then Begin
      Inc(I,2);State:=csNone;Break;
@@ -355,19 +361,20 @@ Begin
    J:=I;While(I<=Length(L))and(L[I]<>'}')do Inc(I);
    If I<=Length(L)Then Inc(I);DirectiveKind:=ConditionalDirectiveKind(Copy(L,J,I-J));
    If DirectiveKind<>0 Then Begin
-    PreserveCommentIndent:=False;AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
+    PreserveCommentIndent:=False;AwaitingThenBegin:=False;AwaitingDoBegin:=False;
+    AwaitingRoutineBegin:=False;
     EmitConditionalDirective(Copy(L,J,I-J),DirectiveKind);Continue;
    End;I:=J;
   End;
   If C='{'Then Begin
-   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
+   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;
    If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csBrace;J:=I;Inc(I);
    While(I<=Length(L))and(L[I]<>'}')do Inc(I);If I<=Length(L)Then Begin
     Inc(I);State:=csNone;
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If(C='(')and(I<Length(L))and(L[I+1]='*')Then Begin
-   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
+   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;
    If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;State:=csParen;J:=I;Inc(I,2);
    While I<=Length(L)do
    Begin
@@ -377,7 +384,7 @@ Begin
    End;AppendComment(Copy(L,J,I-J));Continue;
   End;
   If(C='/')and(I<Length(L))and(L[I+1]='/')Then Begin
-   AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
+   AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;
    If TrimLine(OutLine)=''Then PreserveCommentIndent:=True;
    AppendComment(Copy(L,I,Length(L)-I+1));Break;
   End;
@@ -407,11 +414,11 @@ Begin
     End;
     EmitPending;If U='PROCEDURE'Then AppendText('Procedure')Else AppendText('Function');
     RoutineHeader:=True;AwaitingRoutineBegin:=False;ParenthesisLevel:=0;
-    AwaitingThenBegin:=False;RoutineNeedsBlank:=True;
+    AwaitingThenBegin:=False;AwaitingDoBegin:=False;RoutineNeedsBlank:=True;
    End
    Else If U='USES'Then Begin
     EmitPending;WriteLn(OutputFile);AppendText('Uses');UsesSection:=True;
-    AwaitingThenBegin:=False;AwaitingRoutineBegin:=False;
+    AwaitingThenBegin:=False;AwaitingDoBegin:=False;AwaitingRoutineBegin:=False;
    End
    Else If(U='CONST')or(U='TYPE')or(U='VAR')Then Begin
     If(ParenthesisLevel=0)and((TrimLine(OutLine)='')or AwaitingRoutineBegin)Then Begin
@@ -428,7 +435,7 @@ Begin
      Else AppendText('Var');EmitLine;Inc(IndentLevel);DeclarationSection:=True;
     End Else
     Begin
-     AppendText(W);AwaitingThenBegin:=False;
+     AppendText(W);AwaitingThenBegin:=False;AwaitingDoBegin:=False;
     End;
    End
    Else If U='BEGIN'Then Begin
@@ -436,7 +443,8 @@ Begin
      If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;
     End;
     If AwaitingRoutineBegin and RoutineNeedsBlank Then WriteLn(OutputFile);
-    If not(AwaitingThenBegin or AwaitingRoutineBegin)Then EmitPending;
+    If not(AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin)Then EmitPending;
+    If AwaitingThenBegin or AwaitingDoBegin Then EnsureOneTrailingSpace;
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then WriteLn(OutputFile);
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';
     AppendText(S);AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
@@ -450,9 +458,16 @@ Begin
    Else If U='THEN'Then Begin
     AppendText('Then');AwaitingThenBegin:=True;
    End
+   Else If U='DO'Then Begin
+    AppendText(W);AwaitingDoBegin:=True;AwaitingThenBegin:=False;
+   End
+   Else If(U='FOR')or(U='WHILE')Then Begin
+    EmitPending;If U='FOR'Then AppendText('For')Else AppendText('While');
+    AwaitingThenBegin:=False;AwaitingDoBegin:=False;
+   End
    Else If U='FORWARD'Then Begin
     AppendText('Forward');AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
-    AwaitingThenBegin:=False;
+    AwaitingThenBegin:=False;AwaitingDoBegin:=False;
    End
    Else
    Begin
@@ -460,7 +475,7 @@ Begin
      If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;
      AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
     End;
-    AppendText(W);AwaitingThenBegin:=False;
+    AppendText(W);AwaitingThenBegin:=False;AwaitingDoBegin:=False;
    End;Continue;
   End;
   If SkipProgram Then Begin
@@ -483,10 +498,11 @@ Begin
    Inc(I);Continue;
   End;
   AppendText(C);If not(C in[' ',#9])Then Begin
-   AwaitingThenBegin:=False;If AwaitingRoutineBegin Then AwaitingRoutineBegin:=False;
+   AwaitingThenBegin:=False;AwaitingDoBegin:=False;
+   If AwaitingRoutineBegin Then AwaitingRoutineBegin:=False;
   End;Inc(I);
  End;
- If(TrimLine(OutLine)<>'')and not(AwaitingThenBegin or AwaitingRoutineBegin)
+ If(TrimLine(OutLine)<>'')and not(AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin)
  Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram Then OutLine:='';
 End;
 
@@ -501,7 +517,8 @@ Begin
  Assign(OutputFile,TempName);Rewrite(OutputFile);If IOResult<>0 Then Begin
   Close(InputFile);Error('impossible de creer le fichier temporaire');Exit;
  End;
- OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;RoutineHeader:=False;
+ OutLine:='';PreserveCommentIndent:=False;AwaitingThenBegin:=False;
+ AwaitingDoBegin:=False;RoutineHeader:=False;
  AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;DeclarationSection:=False;
  UsesSection:=False;
  ParenthesisLevel:=0;ConditionalLevel:=0;

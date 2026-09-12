@@ -8386,6 +8386,46 @@ Var
  PE_ImportFuncName : Array[0..PE_MAX_TRAP_SLOTS - 1] Of String;
  PE_ImportIsOrd    : Array[0..PE_MAX_TRAP_SLOTS - 1] Of Boolean;
  PE_ImportOrdinal  : Array[0..PE_MAX_TRAP_SLOTS - 1] Of LongInt;
+ { Chantier Windows NT/Win32 (PE), suivi "faire tourner abap86.exe"          }
+ { (2026-09-12, demande explicite - voir project_devenv_win32pe.md) : etat   }
+ { ajoute au fil des imports Win32 reellement rencontres a l execution        }
+ { (jamais par anticipation, meme methode empirique que le reste de ce        }
+ { chantier). Allocateur bump unique (HeapAlloc/LocalAlloc/SysAllocStringLen/}
+ { chaines internes GetCommandLineA/GetStartupInfoA) - meme principe exact   }
+ { que LX_HeapNext/DosAllocMem (jamais de liberation reelle, HeapFree/       }
+ { LocalFree/SysFreeString restent sans effet, disclosed) - demarre bien     }
+ { au-dessus de la plus grosse image chargee a ce jour (abap86.exe culmine   }
+ { a ImageBase+$34000) et plafonne a PE_FS_BASE, comme LX plafonne a          }
+ { LX_FS_BASE. }
+ PE_HeapNext     : LongInt;
+ { TlsAlloc/TlsGetValue/TlsSetValue : vraie table de recase (pas une          }
+ { simulation) - un seul "thread" d execution reel dans cet emulateur, donc   }
+ { une table PARTAGEE (pas par-thread) est deja un comportement correct pour }
+ { la portee visee, pas une approximation. }
+ PE_TlsSlots     : Array[0..63] Of LongInt;
+ PE_TlsNextSlot  : Integer;
+ { GetLastError/SetLastError : vrai etat, pas invente. }
+ PE_LastError    : LongInt;
+ { Registres de segment (MOV r/m,Sreg / MOV Sreg,r/m, opcodes 8C/8E) -       }
+ { valeurs synthetiques mais realistes (selecteurs plats reels d un          }
+ { processus Win32 32 bits : CS=$1B, DS=ES=SS=$23, FS=$3B pointe le TIB,     }
+ { GS=$00) - ce moteur est deja plat (PE_Mem indexe par adresse virtuelle    }
+ { absolue), donc aucun effet d adressage n est simule au chargement d un    }
+ { segment, uniquement la valeur numerique lue/ecrite - suffisant pour le    }
+ { code observe ici (verification legacy SS==DS du demarrage CRT MinGW).    }
+ { Index : 0=ES 1=CS 2=SS 3=DS 4=FS 5=GS (ordre standard du champ reg de     }
+ { ModRM pour ce groupe d opcodes). }
+ PE_Seg          : Array[0..5] Of Word;
+ { Coprocesseur x87 (chantier de suivi FPU, 2026-09-12) - meme conception   }
+ { que ELF64_FpuReg (voir son commentaire de tete, ~ligne 130056) : pile    }
+ { simulee par decalage physique du tableau (PUSH/POP deplacent les        }
+ { valeurs), adressage ST(i) par indice constant, arithmetique deleguee au  }
+ { type Extended natif de FPC (reel 80 bits x87 sur cette cible). }
+ PE_FpuReg       : Array[0..7] Of Extended;
+ PE_FpuCW        : Word;
+ PE_FpuC0        : Boolean;
+ PE_FpuC2        : Boolean;
+ PE_FpuC3        : Boolean;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : T6502MemArr;
  CPU6502_A      : Byte;
@@ -10654,11 +10694,23 @@ End;
 { besoin) - Forward necessaire ici car ParseCommandLine (/TESTUNIT) l appelle}
 { bien plus haut dans le fichier. }
 Procedure RunUnitTests8086(Const FileName: String; Const ArchName: String); Forward;
+{ Chantier Windows NT/Win32 (PE), follow-up "faire tourner abap86.exe"      }
+{ (2026-09-12, demande explicite) : crochet de diagnostic TEMPORAIRE          }
+{ (/PERUN2:fichier, meme discipline que les crochets precedents - a retirer   }
+{ une fois ce chantier de suivi termine) pour iterer vite (console pure,      }
+{ pas de capture d'ecran GUI) pendant l'ajout empirique des cas               }
+{ Pe_DoWin32Call manquants. }
+Function Emu_LoadPE(Const FileName: String): Boolean; Forward;
+Procedure Pe_Step; Forward;
+Function Pe_ReadByte(Addr: LongInt): Byte; Forward;
+Function Pe_ReadDWord(Addr: LongInt): LongInt; Forward;
 
 Procedure ParseCommandLine(Var Opts: TDevEnvOptions);
 Var
  I, K: Integer;
  Arg, Ext, EmuArg, EmuName, EmuFn, EmuUp: String;
+ DumpS: String;
+ DumpI: Integer;
 Begin
  For I := 1 To ParamCount Do Begin
   Arg := ParamStr(I);
@@ -10878,6 +10930,27 @@ Begin
    If Not FileExists(EmuFn) Then
     FatalError('Image CD-ROM introuvable: ' + EmuFn);
    Opts.CdromImg1 := EmuFn;
+  End
+  Else If (Length(Arg) >= 8) And
+          ((Copy(Arg, 1, 8) = '/PERUN2:') Or (Copy(Arg, 1, 8) = '/perun2:')) Then Begin
+   { Crochet TEMPORAIRE - voir le commentaire pres du Forward de Emu_LoadPE  }
+   { ci-dessus. A RETIRER une fois ce chantier de suivi termine. }
+   EmuFn := Copy(Arg, 9, Length(Arg) - 8);
+   If Not Emu_LoadPE(EmuFn) Then Begin
+    ConRawWriteLn('PERUN2 : "' + EmuFn + '" introuvable ou pas un PE32 i386 valide.');
+    Halt(1);
+   End;
+   While (Not PE_Halted) And (PE_InstrCount < 50000000) Do Pe_Step;
+   ConRawWriteLn('instructions=' + IntToStr(PE_InstrCount));
+   If PE_Halted Then Begin
+    ConRawWriteLn('halte=[' + PE_HaltReason + ']');
+    ConRawWriteLn('lastbadeip=$' + HexLong(PE_LastBadEIP));
+    DumpS := '';
+    For DumpI := -8 To 7 Do DumpS := DumpS + HexByte(Pe_ReadByte(PE_LastBadEIP + DumpI)) + ' ';
+    ConRawWriteLn('bytes=[' + DumpS + ']');
+   End Else
+    ConRawWriteLn('non-halte apres 50000000 instructions, eip=$' + HexLong(PE_EIP));
+   Halt(EXIT_OK);
   End
   Else If (Length(Arg) >= 10) And
           ((Copy(Arg, 1, 10) = '/TESTUNIT,') Or (Copy(Arg, 1, 10) = '/testunit,') Or
@@ -80121,6 +80194,7 @@ Var
  I: Integer;
  Sect: TPESectionHeader;
  CopyLen: LongInt;
+ ChunkOfs, ChunkRemain, ChunkLen: LongInt;
 Begin
  Emu_LoadPE := False;
  PE_Loaded := False;
@@ -80158,8 +80232,27 @@ Begin
    Seek(F, Sect.PointerToRawData);
    {$I+}
    If IOResult <> 0 Then Begin Close(F); Exit; End;
-   BlockRead(F, PE_Mem[PE_ImageBase + Sect.VirtualAddress], CopyLen, BytesRead);
-   If BytesRead <> Word(CopyLen) Then Begin Close(F); Exit; End;
+   { BOGUE REEL corrige (2026-09-12, chantier de suivi abap86.exe) :          }
+   { BlockRead sur ce systeme ne transfere fiablement qu au maximum 65535     }
+   { octets par appel (parametre "Result" de type Word, meme limite deja      }
+   { respectee par Emu_LoadLX qui ne lit jamais plus d une page a la fois -   }
+   { voir son commentaire pres de la ligne ~79930). Une section .text de      }
+   { 91648 octets (SizeOfRawData) passee en un seul appel etait tronquee a    }
+   { 91648 Mod 65536 = 26112 octets copies, le reste restant zero-rempli      }
+   { (silencieusement, aucune erreur IOResult) - observe en pistant un CALL   }
+   { qui atterrissait dans une zone d octets nuls (0x416BE0) alors que la     }
+   { fonction reelle du binaire s y trouvait bel et bien. Corrige en           }
+   { decoupant la copie en blocs d au plus 32768 octets. }
+   ChunkOfs := 0;
+   ChunkRemain := CopyLen;
+   While ChunkRemain > 0 Do Begin
+    ChunkLen := ChunkRemain;
+    If ChunkLen > 32768 Then ChunkLen := 32768;
+    BlockRead(F, PE_Mem[PE_ImageBase + Sect.VirtualAddress + ChunkOfs], ChunkLen, BytesRead);
+    If BytesRead <> Word(ChunkLen) Then Begin Close(F); Exit; End;
+    Inc(ChunkOfs, ChunkLen);
+    Dec(ChunkRemain, ChunkLen);
+   End;
   End;
   { Repositionner sur la table des sections pour l iteration suivante -    }
   { la copie ci-dessus a deplace le curseur du fichier ailleurs. }
@@ -80199,6 +80292,18 @@ Begin
  PE_InstrCount := 0;
  PE_TraceCount := 0;
  PE_AsyncKeyEsc := False;
+ { Suivi "faire tourner abap86.exe" : heap bump allocator/TLS/erreur -       }
+ { $500000 (1 Mo au-dessus d ImageBase) laisse une marge tres confortable    }
+ { au-dessus de la plus grosse image testee (abap86.exe, ImageBase+$34000). }
+ PE_HeapNext := $500000;
+ FillChar(PE_TlsSlots, SizeOf(PE_TlsSlots), 0);
+ PE_TlsNextSlot := 0;
+ PE_LastError := 0;
+ PE_Seg[0] := $23; { ES } PE_Seg[1] := $1B; { CS } PE_Seg[2] := $23; { SS }
+ PE_Seg[3] := $23; { DS } PE_Seg[4] := $3B; { FS } PE_Seg[5] := $00; { GS }
+ For I := 0 To 7 Do PE_FpuReg[I] := 0;
+ PE_FpuCW := $037F; { mot de controle par defaut reel (FNINIT), voir Pe_Step DB E3 }
+ PE_FpuC0 := False; PE_FpuC2 := False; PE_FpuC3 := False;
  PE_Loaded := True;
  Emu_LoadPE := True;
 End;
@@ -80498,6 +80603,7 @@ Var
  CF, OFBit, TopBit, NewCF: Boolean;
  I: Integer;
  SignBit: LongWord;
+ Mask: LongWord;
 Begin
  Case Size Of 1: Bits := 8; 2: Bits := 16; Else Bits := 32; End;
  Case Size Of
@@ -80505,13 +80611,23 @@ Begin
   2: Begin UV := Word(Val); SignBit := $8000; End;
  Else Begin UV := LongWord(Val); SignBit := $80000000; End;
  End;
+ { BOGUE REEL corrige (2026-09-12, chantier de suivi FPU) : "(LongWord(1)   }
+ { Shl Bits) - 1" avec Bits=32 calcule "1 Shl 32", un decalage EGAL a la     }
+ { largeur du type - comportement indefini (x86 le traite comme "Shl 0" a   }
+ { cause du masquage materiel du compte a 5 bits), donnant un masque de 0   }
+ { au lieu de $FFFFFFFF : TOUT SHL/ROL/RCL 32 bits mettait donc            }
+ { silencieusement le resultat a zero. Jamais declenche avant abap86.exe    }
+ { (aucun test/programme precedent n avait utilise un decalage 32 bits sur  }
+ { ce coeur) - trouve en tracant "SHL EAX,4" (valeur 2 -> 0 au lieu de 32)   }
+ { dans le code d amorçage du tas CRT de MinGW. }
+ If Bits = 32 Then Mask := $FFFFFFFF Else Mask := (LongWord(1) Shl Bits) - 1;
  CF := EFG_CF In PE_Flags.s;
  Count := Count Mod 32;
  For I := 1 To Count Do Begin
   Case SubOp Of
    0: Begin { ROL }
     TopBit := (UV And SignBit) <> 0;
-    UV := ((UV Shl 1) Or Ord(TopBit)) And ((LongWord(1) Shl Bits) - 1);
+    UV := ((UV Shl 1) Or Ord(TopBit)) And Mask;
     CF := TopBit;
    End;
    1: Begin { ROR }
@@ -80521,7 +80637,7 @@ Begin
    End;
    2: Begin { RCL }
     TopBit := (UV And SignBit) <> 0;
-    UV := ((UV Shl 1) Or Ord(CF)) And ((LongWord(1) Shl Bits) - 1);
+    UV := ((UV Shl 1) Or Ord(CF)) And Mask;
     CF := TopBit;
    End;
    3: Begin { RCR }
@@ -80531,7 +80647,7 @@ Begin
    End;
    4, 6: Begin { SHL/SAL }
     CF := (UV And SignBit) <> 0;
-    UV := (UV Shl 1) And ((LongWord(1) Shl Bits) - 1);
+    UV := (UV Shl 1) And Mask;
    End;
    5: Begin { SHR }
     CF := (UV And 1) <> 0;
@@ -80595,6 +80711,16 @@ Var
  Dir: Integer;
  Cont: Boolean;
 Begin
+ { BOGUE REEL corrige (2026-09-12, chantier de suivi abap86.exe) : un vrai   }
+ { processeur x86 verifie ECX AVANT d executer le corps de l instruction     }
+ { pour un prefixe REP/REPE/REPNE - un compte initial de 0 signifie ZERO     }
+ { repetition, pas "au moins une". Ce code executait toujours le corps une   }
+ { premiere fois puis decrementait ECX ensuite - avec ECX=0 en entree, la    }
+ { decrementation le faisait deborder a $FFFFFFFF (LongInt=-1), transformant }
+ { un REP STOSB legitimement vide en boucle d environ 4 milliards            }
+ { d iterations. Observe sur abap86.exe (REP STOSB a $410DD8, ECX=0 des la    }
+ { premiere entree - trace confirmee via un crochet /PERUN2 temporaire).     }
+ If (RepMode <> 0) And (PE_Reg.ECX = 0) Then Exit;
  If Op2 In [$A4, $A6, $AA, $AC, $AE] Then Sz := 1 Else Sz := OpSize;
  If EFG_DF In PE_Flags.s Then Dir := -1 Else Dir := 1;
  Case Op2 Of
@@ -80747,6 +80873,258 @@ Begin
  End;
 End;
 
+{ ==========================================================================
+  Coprocesseur x87 (chantier de suivi FPU, 2026-09-12 - "Implementer :" ->
+  demarrer le chantier x87 apres accord explicite de l utilisateur). Port
+  quasi-direct de l implementation x87 deja reelle et complete de l emulateur
+  ELF64 (voir ELF64_FpuReg et son commentaire de tete, ~ligne 130056) -
+  meme conception (pile simulee par decalage physique du tableau, ST(i) par
+  indice constant, arithmetique deleguee au type Extended natif de FPC),
+  seulement retargete vers PE_Mem/Pe_Read*/Pe_Write* et TDpmiOperand
+  (Op.IsReg/Op.RegNum/Op.LinAddr - equivalent exact de l EA.IsReg/EA.RegIdx/
+  Elf64_ResolveEA(EA) d ELF64, sauf que Pe_DecodeModRM resout deja l adresse
+  lineaire directement, donc aucun "Resolve" separe n est necessaire ici).
+  ========================================================================== }
+
+Procedure Pe_FpuPush(V: Extended);
+Var
+ I: Integer;
+Begin
+ For I := 7 DownTo 1 Do PE_FpuReg[I] := PE_FpuReg[I - 1];
+ PE_FpuReg[0] := V;
+End;
+
+Function Pe_FpuPop: Extended;
+Var
+ I: Integer;
+Begin
+ Pe_FpuPop := PE_FpuReg[0];
+ For I := 0 To 6 Do PE_FpuReg[I] := PE_FpuReg[I + 1];
+ PE_FpuReg[7] := 0;
+End;
+
+{ Met a jour les fanions de condition x87 C0/C2/C3 (image de FCOM/FUCOM) -  }
+{ non ordonne (NaN) traite comme "non comparable" (C0=C2=C3=1). }
+Procedure Pe_FpuCompare(A, B: Extended);
+Begin
+ If A > B Then Begin PE_FpuC0 := False; PE_FpuC2 := False; PE_FpuC3 := False; End
+ Else If A < B Then Begin PE_FpuC0 := True; PE_FpuC2 := False; PE_FpuC3 := False; End
+ Else If A = B Then Begin PE_FpuC0 := False; PE_FpuC2 := False; PE_FpuC3 := True; End
+ Else Begin PE_FpuC0 := True; PE_FpuC2 := True; PE_FpuC3 := True; End;
+End;
+
+{ FCOMI/FUCOMI : comme Pe_FpuCompare, mais expose directement le resultat  }
+{ dans les fanions entiers (CF=C0, PF=C2, ZF=C3), forme preferee par les    }
+{ compilateurs modernes pour brancher sur une comparaison flottante. }
+Procedure Pe_FpuCompareToFlags(A, B: Extended);
+Begin
+ Pe_FpuCompare(A, B);
+ If PE_FpuC0 Then Include(PE_Flags.s, EFG_CF) Else Exclude(PE_Flags.s, EFG_CF);
+ If PE_FpuC2 Then Include(PE_Flags.s, EFG_PF) Else Exclude(PE_Flags.s, EFG_PF);
+ If PE_FpuC3 Then Include(PE_Flags.s, EFG_ZF) Else Exclude(PE_Flags.s, EFG_ZF);
+End;
+
+Function Pe_ReadSingle(Addr: LongInt): Extended;
+Var
+ Buf: Array[0..3] Of Byte;
+ S: Single;
+ I: Integer;
+Begin
+ For I := 0 To 3 Do Buf[I] := Pe_ReadByte(Addr + I);
+ Move(Buf, S, SizeOf(S));
+ Pe_ReadSingle := S;
+End;
+
+Procedure Pe_WriteSingle(Addr: LongInt; V: Extended);
+Var
+ S: Single;
+ Buf: Array[0..3] Of Byte;
+ I: Integer;
+Begin
+ S := V;
+ Move(S, Buf, SizeOf(S));
+ For I := 0 To 3 Do Pe_WriteByte(Addr + I, Buf[I]);
+End;
+
+Function Pe_ReadDouble(Addr: LongInt): Extended;
+Var
+ Buf: Array[0..7] Of Byte;
+ D: Double;
+ I: Integer;
+Begin
+ For I := 0 To 7 Do Buf[I] := Pe_ReadByte(Addr + I);
+ Move(Buf, D, SizeOf(D));
+ Pe_ReadDouble := D;
+End;
+
+Procedure Pe_WriteDouble(Addr: LongInt; V: Extended);
+Var
+ D: Double;
+ Buf: Array[0..7] Of Byte;
+ I: Integer;
+Begin
+ D := V;
+ Move(D, Buf, SizeOf(D));
+ For I := 0 To 7 Do Pe_WriteByte(Addr + I, Buf[I]);
+End;
+
+{ Reel 80 bits (m80real) directement, sans conversion - le format memoire  }
+{ x86 et le type Extended de FPC sur cette cible (i386) partagent le meme   }
+{ codage x87. }
+Function Pe_ReadExtended(Addr: LongInt): Extended;
+Var
+ Buf: Array[0..9] Of Byte;
+ E: Extended;
+ I: Integer;
+Begin
+ For I := 0 To 9 Do Buf[I] := Pe_ReadByte(Addr + I);
+ E := 0;
+ Move(Buf, E, SizeOf(E));
+ Pe_ReadExtended := E;
+End;
+
+Procedure Pe_WriteExtended(Addr: LongInt; V: Extended);
+Var
+ Buf: Array[0..9] Of Byte;
+ I: Integer;
+Begin
+ FillChar(Buf, SizeOf(Buf), 0);
+ Move(V, Buf, SizeOf(V));
+ For I := 0 To 9 Do Pe_WriteByte(Addr + I, Buf[I]);
+End;
+
+Function Pe_FildMem(Addr: LongInt; Size: Integer): Extended;
+Var
+ Lo, Hi: LongInt;
+ V: Int64;
+Begin
+ Case Size Of
+  16: Begin
+   V := Pe_ReadWord(Addr);
+   If (V And $8000) <> 0 Then V := V Or Int64($FFFFFFFFFFFF0000);
+  End;
+  32: V := Pe_ReadDWord(Addr); { LongInt->Int64 : deja signe correctement }
+  Else Begin { 64 : assemble a partir de deux DWord, low d abord (little-endian) }
+   Lo := Pe_ReadDWord(Addr);
+   Hi := Pe_ReadDWord(Addr + 4);
+   V := (Int64(Hi) Shl 32) Or Int64(LongWord(Lo));
+  End;
+ End;
+ Pe_FildMem := V;
+End;
+
+{ Arrondit au plus proche (approximation du mode d arrondi controle par le }
+{ mot de controle x87, non applique ici - limitation connue, meme que      }
+{ Elf64_FistpMem) puis ecrit l entier resultant en memoire. }
+Procedure Pe_FistpMem(Addr: LongInt; Size: Integer; V: Extended; DoPop: Boolean);
+Var
+ IV: Int64;
+Begin
+ IV := Round(V);
+ Case Size Of
+  16: Pe_WriteWord(Addr, Word(IV));
+  32: Pe_WriteDWord(Addr, LongInt(LongWord(IV)));
+  Else Begin
+   Pe_WriteDWord(Addr, LongInt(LongWord(IV And $FFFFFFFF)));
+   Pe_WriteDWord(Addr + 4, LongInt(LongWord(IV Shr 32)));
+  End;
+ End;
+ If DoPop Then Pe_FpuPop;
+End;
+
+{ Chantier Windows NT/Win32 (PE), suivi "faire tourner abap86.exe"          }
+{ (2026-09-12) : allocateur bump unique - voir le commentaire de PE_HeapNext}
+{ ci-dessus (globales) pour le contexte complet. Retourne 0 si epuise        }
+{ (jamais une adresse hors bornes silencieusement acceptee). }
+Function Pe_HeapAllocBytes(NBytes: LongInt): LongInt;
+Var
+ Addr: LongInt;
+Begin
+ If NBytes < 0 Then NBytes := 0;
+ NBytes := (NBytes + 15) And Not 15; { aligne a 16, meme esprit que Lx_DoDosCall/DosAllocMem }
+ If PE_HeapNext + NBytes > PE_FS_BASE Then Begin
+  Pe_HeapAllocBytes := 0;
+  Exit;
+ End;
+ Addr := PE_HeapNext;
+ PE_HeapNext := PE_HeapNext + NBytes;
+ Pe_HeapAllocBytes := Addr;
+End;
+
+{ Ecrit une chaine Pascal (octets bruts, PAS de conversion Unicode) suivie   }
+{ d un octet nul a l adresse Addr - aide pour GetCommandLineA/                }
+{ GetModuleFileNameA ci-dessous. }
+Procedure Pe_WriteAsciiZ(Addr: LongInt; Const S: String);
+Var
+ I: Integer;
+Begin
+ For I := 1 To Length(S) Do Pe_WriteByte(Addr + I - 1, Ord(S[I]));
+ Pe_WriteByte(Addr + Length(S), 0);
+End;
+
+{ Table nom->ID + Case numerique (2026-09-12, demande explicite de           }
+{ l utilisateur) : Pascal ne supporte pas Case sur une chaine, meme          }
+{ principe exact que PSCmdNames/PSCmdIDs/TermLookupPSCmd du shell            }
+{ PowerShell dev (voir project_devenv_ps_dispatch_refactor.md) - remplace la }
+{ longue chaine "If DllName=X Then If FuncName=Y Then..." par une recherche  }
+{ dans cette table suivie d un Case ApiId Of. Cle = "DLLNAME!FuncName"        }
+{ (DLL en MAJUSCULES - UpCaseStr deja applique cote appelant - fonction      }
+{ SENSIBLE a la casse, comme le vrai GetProcAddress). }
+Const
+ PE_API_COUNT = 41;
+ PE_ApiNames: Array[1..PE_API_COUNT] Of String[48] = (
+  'KERNEL32.DLL!ExitProcess',              { 1 }
+  'KERNEL32.DLL!GetStdHandle',             { 2 }
+  'KERNEL32.DLL!WriteFile',                { 3 }
+  'KERNEL32.DLL!GetLastError',             { 4 }
+  'KERNEL32.DLL!SetLastError',             { 5 }
+  'KERNEL32.DLL!GetCurrentProcessId',      { 6 }
+  'KERNEL32.DLL!GetCurrentThreadId',       { 7 }
+  'KERNEL32.DLL!GetCurrentProcess',        { 8 }
+  'KERNEL32.DLL!GetConsoleMode',           { 9 }
+  'KERNEL32.DLL!GetConsoleOutputCP',       { 10 }
+  'KERNEL32.DLL!GetConsoleCP',             { 11 }
+  'KERNEL32.DLL!GetOEMCP',                 { 12 }
+  'KERNEL32.DLL!GetACP',                   { 13 }
+  'KERNEL32.DLL!GetModuleHandleA',         { 14 }
+  'KERNEL32.DLL!GetModuleFileNameA',       { 15 }
+  'KERNEL32.DLL!GetStartupInfoA',          { 16 }
+  'KERNEL32.DLL!GetCommandLineA',          { 17 }
+  'KERNEL32.DLL!ReadProcessMemory',        { 18 }
+  'KERNEL32.DLL!GetProcessHeap',           { 19 }
+  'KERNEL32.DLL!HeapAlloc',                { 20 }
+  'KERNEL32.DLL!HeapFree',                 { 21 }
+  'KERNEL32.DLL!LocalAlloc',               { 22 }
+  'KERNEL32.DLL!LocalFree',                { 23 }
+  'KERNEL32.DLL!TlsAlloc',                 { 24 }
+  'KERNEL32.DLL!TlsGetValue',              { 25 }
+  'KERNEL32.DLL!TlsSetValue',              { 26 }
+  'KERNEL32.DLL!InitializeCriticalSection',{ 27 }
+  'KERNEL32.DLL!DeleteCriticalSection',    { 28 }
+  'KERNEL32.DLL!EnterCriticalSection',     { 29 }
+  'KERNEL32.DLL!LeaveCriticalSection',     { 30 }
+  'KERNEL32.DLL!TryEnterCriticalSection',  { 31 }
+  'KERNEL32.DLL!Sleep',                    { 32 }
+  'KERNEL32.DLL!CloseHandle',              { 33 }
+  'KERNEL32.DLL!MultiByteToWideChar',      { 34 }
+  'KERNEL32.DLL!WideCharToMultiByte',      { 35 }
+  'OLEAUT32.DLL!SysAllocStringLen',        { 36 }
+  'OLEAUT32.DLL!SysFreeString',            { 37 }
+  'OLEAUT32.DLL!SysReAllocStringLen',      { 38 }
+  'USER32.DLL!MessageBoxA',                { 39 }
+  'USER32.DLL!CharUpperBuffW',             { 40 }
+  'USER32.DLL!CharLowerBuffW'              { 41 }
+ );
+
+Function Pe_LookupApi(Const Key: String): Integer;
+Var
+ I: Integer;
+Begin
+ Pe_LookupApi := 0;
+ For I := 1 To PE_API_COUNT Do
+  If PE_ApiNames[I] = Key Then Begin Pe_LookupApi := I; Exit; End;
+End;
+
 { Chantier Windows NT/Win32 (PE), Stage 3 (2026-09-12) : dispatch Win32     }
 { reel - appelee par Pe_Step des que EIP entre dans la zone de trappe.       }
 { Sous-ensemble VERIFIE minimal (GetStdHandle/WriteFile/ExitProcess, le      }
@@ -80770,12 +81148,17 @@ End;
 Procedure Pe_DoWin32Call(SlotIndex: Integer);
 Var
  DllName, FuncName, Desc: String;
+ ApiId: Integer;
  NArgsPopped: Integer;
  Handled: Boolean;
  RetAddr: LongInt;
  HFile, PBuf, CbWrite, PcbActual, NStdHandle, ExitCode: LongInt;
  S: String;
- I: Integer;
+ I, J: Integer;
+ ArgA, ArgB, ArgC, ArgD, ArgE, ArgF, ArgG, ArgH: LongInt;
+ Addr, NBytes: LongInt;
+ W: Word;
+ CmdLine: String;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= PE_ImportSlotCount) Then Begin
   Pe_Halt('Appel vers un emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
@@ -80784,26 +81167,39 @@ Begin
  DllName := UpCaseStr(PE_ImportDllName[SlotIndex]);
  FuncName := PE_ImportFuncName[SlotIndex];
  NArgsPopped := 0;
- Handled := False;
- If (DllName = 'KERNEL32.DLL') And (Not PE_ImportIsOrd[SlotIndex]) Then Begin
-  If FuncName = 'ExitProcess' Then Begin
+ Handled := True;
+ If PE_ImportIsOrd[SlotIndex] Then ApiId := 0
+ Else ApiId := Pe_LookupApi(DllName + '!' + FuncName);
+ { A partir de l ID 4 (GetLastError) : suivi "faire tourner abap86.exe"     }
+ { (2026-09-12, demande explicite) - chaque cas a ete ajoute apres avoir    }
+ { ete reellement atteint (arret propre observe), jamais par anticipation,  }
+ { meme methode empirique que le reste de ce chantier (et que les           }
+ { DOSCALLS/PMWIN de LX). Simplifications honnetement disclosees, PAS des   }
+ { inventions : un seul "thread" d execution reel existe dans cet           }
+ { emulateur (sections critiques et TLS partages sans contention possible   }
+ { sont donc un comportement CORRECT pour cette portee, pas une             }
+ { approximation) ; l allocateur bump unique (Pe_HeapAllocBytes) ne libere   }
+ { jamais reellement (HeapFree/LocalFree/SysFreeString sans effet), meme    }
+ { motif que LX_HeapNext/DosFreeMem. }
+ Case ApiId Of
+  1: Begin { KERNEL32.DLL!ExitProcess }
    ExitCode := Pe_ReadDWord(PE_Reg.ESP + 4);
    PE_Halted := True;
    PE_LastBadEIP := PE_EIP;
    PE_HaltReason := 'ExitProcess(' + IntToStr(ExitCode) + ')';
    Exit;
-  End
-  Else If FuncName = 'GetStdHandle' Then Begin { UINT nStdHandle }
+  End;
+  2: Begin { KERNEL32.DLL!GetStdHandle - UINT nStdHandle }
    NStdHandle := Pe_ReadDWord(PE_Reg.ESP + 4);
    Case NStdHandle Of
+    -10: PE_Reg.EAX := 0; { STD_INPUT_HANDLE -> handle synthetique (jamais lu, aucun ReadFile implante) }
     -11: PE_Reg.EAX := 1; { STD_OUTPUT_HANDLE -> handle synthetique }
     -12: PE_Reg.EAX := 2; { STD_ERROR_HANDLE -> handle synthetique }
-   Else PE_Reg.EAX := -1; { INVALID_HANDLE_VALUE - STDIN/valeur inconnue, jamais implante }
+   Else PE_Reg.EAX := -1; { INVALID_HANDLE_VALUE - valeur inconnue }
    End;
    NArgsPopped := 1;
-   Handled := True;
-  End
-  Else If FuncName = 'WriteFile' Then Begin { HANDLE hFile, LPCVOID lpBuffer,
+  End;
+  3: Begin { KERNEL32.DLL!WriteFile - HANDLE hFile, LPCVOID lpBuffer,
    DWORD nNumberOfBytesToWrite, LPDWORD lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped }
    HFile := Pe_ReadDWord(PE_Reg.ESP + 4);
    PBuf := Pe_ReadDWord(PE_Reg.ESP + 8);
@@ -80818,8 +81214,267 @@ Begin
    If (PcbActual >= 0) And (PcbActual + 4 <= High(PE_Mem)) Then Pe_WriteDWord(PcbActual, CbWrite);
    PE_Reg.EAX := 1; { TRUE - succes }
    NArgsPopped := 5;
-   Handled := True;
   End;
+  4: Begin { KERNEL32.DLL!GetLastError }
+   PE_Reg.EAX := PE_LastError;
+  End;
+  5: Begin { KERNEL32.DLL!SetLastError }
+   PE_LastError := Pe_ReadDWord(PE_Reg.ESP + 4);
+   NArgsPopped := 1;
+  End;
+  6: PE_Reg.EAX := 1000; { KERNEL32.DLL!GetCurrentProcessId - PID synthetique }
+  7: PE_Reg.EAX := 1001; { KERNEL32.DLL!GetCurrentThreadId - TID synthetique }
+  8: PE_Reg.EAX := -1;   { KERNEL32.DLL!GetCurrentProcess - pseudo-handle reel Windows }
+  9: Begin { KERNEL32.DLL!GetConsoleMode - HANDLE hConsoleHandle, LPDWORD lpMode }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   If (ArgB >= 0) And (ArgB + 4 <= High(PE_Mem)) Then
+    Pe_WriteDWord(ArgB, $1F7); { jeu de drapeaux plausible, aucun suivi reel du mode console }
+   PE_Reg.EAX := 1;
+   NArgsPopped := 2;
+  End;
+  10: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetConsoleOutputCP - fixe, pas de vraie locale systeme }
+  11: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetConsoleCP }
+  12: PE_Reg.EAX := 437;  { KERNEL32.DLL!GetOEMCP }
+  13: PE_Reg.EAX := 1252; { KERNEL32.DLL!GetACP - Windows-1252, fixe }
+  14: Begin { KERNEL32.DLL!GetModuleHandleA - LPCSTR lpModuleName }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   If ArgA = 0 Then PE_Reg.EAX := PE_ImageBase { NULL -> module courant, HMODULE=ImageBase, un vrai comportement Windows }
+   Else PE_Reg.EAX := 0; { pas de table de DLL chargees - toute autre demande echoue proprement }
+   NArgsPopped := 1;
+  End;
+  15: Begin { KERNEL32.DLL!GetModuleFileNameA - HMODULE hModule, LPSTR lpFilename, DWORD nSize }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12);
+   S := PE_BinaryPath;
+   If Length(S) >= ArgC Then Begin
+    { tampon trop petit : tronque, PAS de terminateur nul (vrai comportement }
+    { Windows pre-Vista), ERROR_INSUFFICIENT_BUFFER (122) et longueur =      }
+    { taille du tampon. }
+    For I := 0 To ArgC - 1 Do Pe_WriteByte(ArgB + I, Ord(S[I + 1]));
+    PE_LastError := 122;
+    PE_Reg.EAX := ArgC;
+   End Else Begin
+    Pe_WriteAsciiZ(ArgB, S);
+    PE_Reg.EAX := Length(S);
+   End;
+   NArgsPopped := 3;
+  End;
+  16: Begin { KERNEL32.DLL!GetStartupInfoA - LPSTARTUPINFOA lpStartupInfo }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   If (ArgA >= 0) And (ArgA + 68 <= High(PE_Mem)) Then Begin
+    For I := 0 To 67 Do Pe_WriteByte(ArgA + I, 0); { STARTUPINFOA = 68 octets, tout a zero par defaut }
+    Pe_WriteDWord(ArgA, 68);       { cb }
+    Pe_WriteWord(ArgA + 48, 1);    { wShowWindow = SW_SHOWNORMAL }
+    Pe_WriteDWord(ArgA + 56, 0);   { hStdInput  = handle synthetique stdin  }
+    Pe_WriteDWord(ArgA + 60, 1);   { hStdOutput = handle synthetique stdout }
+    Pe_WriteDWord(ArgA + 64, 2);   { hStdError  = handle synthetique stderr }
+   End;
+   NArgsPopped := 1;
+  End;
+  17: Begin { KERNEL32.DLL!GetCommandLineA }
+   { Aucune emulation d argv : la ligne de commande synthetique se limite au }
+   { chemin du programme entre guillemets, sans arguments - portee            }
+   { honnetement disclosee (voir project_devenv_win32pe.md). }
+   CmdLine := '"' + PE_BinaryPath + '"';
+   Addr := Pe_HeapAllocBytes(Length(CmdLine) + 1);
+   If Addr <> 0 Then Pe_WriteAsciiZ(Addr, CmdLine);
+   PE_Reg.EAX := Addr;
+  End;
+  18: Begin { KERNEL32.DLL!ReadProcessMemory - HANDLE hProcess, LPCVOID lpBaseAddress,
+   LPVOID lpBuffer, SIZE_T nSize, SIZE_T *lpNumberOfBytesRead }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12);
+   ArgD := Pe_ReadDWord(PE_Reg.ESP + 16);
+   ArgE := Pe_ReadDWord(PE_Reg.ESP + 20);
+   { hProcess ignore : ce processus emule n en voit jamais qu un seul (le     }
+   { sien) - une copie intra-memoire est donc le comportement REEL correct   }
+   { pour le seul cas qui puisse se presenter ici (auto-lecture). }
+   For I := 0 To ArgD - 1 Do Pe_WriteByte(ArgC + I, Pe_ReadByte(ArgB + I));
+   If (ArgE >= 0) And (ArgE + 4 <= High(PE_Mem)) Then Pe_WriteDWord(ArgE, ArgD);
+   PE_Reg.EAX := 1;
+   NArgsPopped := 5;
+  End;
+  19: PE_Reg.EAX := 1; { KERNEL32.DLL!GetProcessHeap - handle de tas synthetique unique }
+  20: Begin { KERNEL32.DLL!HeapAlloc - HANDLE hHeap, DWORD dwFlags, SIZE_T dwBytes }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12);
+   Addr := Pe_HeapAllocBytes(ArgC);
+   If (Addr <> 0) And ((ArgB And 8) <> 0) Then { HEAP_ZERO_MEMORY }
+    For I := 0 To ArgC - 1 Do Pe_WriteByte(Addr + I, 0);
+   PE_Reg.EAX := Addr;
+   NArgsPopped := 3;
+  End;
+  21: Begin { KERNEL32.DLL!HeapFree }
+   PE_Reg.EAX := 1; { TRUE - allocateur bump, jamais reellement libere }
+   NArgsPopped := 3;
+  End;
+  22: Begin { KERNEL32.DLL!LocalAlloc - UINT uFlags, SIZE_T uBytes }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   Addr := Pe_HeapAllocBytes(ArgB);
+   If (Addr <> 0) And ((ArgA And $40) <> 0) Then { LMEM_ZEROINIT }
+    For I := 0 To ArgB - 1 Do Pe_WriteByte(Addr + I, 0);
+   PE_Reg.EAX := Addr;
+   NArgsPopped := 2;
+  End;
+  23: Begin { KERNEL32.DLL!LocalFree }
+   PE_Reg.EAX := 0; { NULL = succes pour LocalFree }
+   NArgsPopped := 1;
+  End;
+  24: Begin { KERNEL32.DLL!TlsAlloc }
+   If PE_TlsNextSlot < 64 Then Begin
+    PE_Reg.EAX := PE_TlsNextSlot;
+    Inc(PE_TlsNextSlot);
+   End Else
+    PE_Reg.EAX := -1; { TLS_OUT_OF_INDEXES }
+  End;
+  25: Begin { KERNEL32.DLL!TlsGetValue - DWORD dwTlsIndex }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   If (ArgA >= 0) And (ArgA < 64) Then PE_Reg.EAX := PE_TlsSlots[ArgA]
+   Else PE_Reg.EAX := 0;
+   NArgsPopped := 1;
+  End;
+  26: Begin { KERNEL32.DLL!TlsSetValue - DWORD dwTlsIndex, LPVOID lpTlsValue }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   If (ArgA >= 0) And (ArgA < 64) Then Begin
+    PE_TlsSlots[ArgA] := ArgB;
+    PE_Reg.EAX := 1;
+   End Else PE_Reg.EAX := 0;
+   NArgsPopped := 2;
+  End;
+  27, 28, 29, 30: Begin { KERNEL32.DLL - Initialize/Delete/Enter/LeaveCriticalSection }
+   { Sans effet : un seul "thread" d execution reel ici, donc une section     }
+   { critique ne peut jamais etre reellement contestee - comportement         }
+   { correct, pas une simulation. }
+   NArgsPopped := 1;
+  End;
+  31: Begin { KERNEL32.DLL!TryEnterCriticalSection }
+   PE_Reg.EAX := 1; { reussit toujours, meme raison que ci-dessus }
+   NArgsPopped := 1;
+  End;
+  32: Begin { KERNEL32.DLL!Sleep }
+   { Sans effet : aucune notion de temps reel dans cet emulateur pas a pas. }
+   NArgsPopped := 1;
+  End;
+  33: Begin { KERNEL32.DLL!CloseHandle }
+   PE_Reg.EAX := 1; { TRUE - aucune vraie table de handles a nettoyer }
+   NArgsPopped := 1;
+  End;
+  34: Begin { KERNEL32.DLL!MultiByteToWideChar - UINT CodePage, DWORD dwFlags,
+   LPCSTR lpMultiByteStr, int cbMultiByte, LPWSTR lpWideCharStr, int cchWideChar }
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12); { lpMultiByteStr }
+   ArgD := Pe_ReadDWord(PE_Reg.ESP + 16); { cbMultiByte }
+   ArgE := Pe_ReadDWord(PE_Reg.ESP + 20); { lpWideCharStr }
+   ArgF := Pe_ReadDWord(PE_Reg.ESP + 24); { cchWideChar }
+   { Conversion simplifiee (1 octet source -> 1 mot UTF-16, style Latin-1) - }
+   { correcte pour l ASCII pur, approximative au-dela de 0x7F (aucune vraie   }
+   { table de page de code) - portee honnetement disclosee. }
+   If ArgD = -1 Then Begin { source terminee par un octet nul }
+    J := 0;
+    While Pe_ReadByte(ArgC + J) <> 0 Do Inc(J);
+    Inc(J); { inclut le terminateur nul, comme le vrai MultiByteToWideChar }
+   End Else J := ArgD;
+   If ArgF <> 0 Then Begin
+    If J > ArgF Then J := ArgF;
+    For I := 0 To J - 1 Do Pe_WriteWord(ArgE + I * 2, Word(Pe_ReadByte(ArgC + I)));
+   End;
+   PE_Reg.EAX := J;
+   NArgsPopped := 6;
+  End;
+  35: Begin { KERNEL32.DLL!WideCharToMultiByte - UINT CodePage, DWORD dwFlags,
+   LPCWSTR lpWideCharStr, int cchWideChar, LPSTR lpMultiByteStr, int cbMultiByte,
+   LPCSTR lpDefaultChar, LPBOOL lpUsedDefaultChar }
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12); { lpWideCharStr }
+   ArgD := Pe_ReadDWord(PE_Reg.ESP + 16); { cchWideChar }
+   ArgE := Pe_ReadDWord(PE_Reg.ESP + 20); { lpMultiByteStr }
+   ArgF := Pe_ReadDWord(PE_Reg.ESP + 24); { cbMultiByte }
+   If ArgD = -1 Then Begin
+    J := 0;
+    While Pe_ReadWord(ArgC + J * 2) <> 0 Do Inc(J);
+    Inc(J);
+   End Else J := ArgD;
+   If ArgF <> 0 Then Begin
+    If J > ArgF Then J := ArgF;
+    For I := 0 To J - 1 Do Pe_WriteByte(ArgE + I, Byte(Pe_ReadWord(ArgC + I * 2) And $FF));
+   End;
+   PE_Reg.EAX := J;
+   NArgsPopped := 8;
+  End;
+  36: Begin { OLEAUT32.DLL!SysAllocStringLen - OLECHAR *psz, UINT len }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4); { psz, peut etre NULL }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8); { len, en caracteres UTF-16 }
+   { Vrai format BSTR : prefixe de longueur (4 octets, en OCTETS) juste       }
+   { avant le pointeur renvoye, puis les caracteres, puis un terminateur nul  }
+   { UTF-16 - pas une invention, c est le format reel decrit par la doc OLE.  }
+   Addr := Pe_HeapAllocBytes(4 + ArgB * 2 + 2);
+   If Addr <> 0 Then Begin
+    Pe_WriteDWord(Addr, ArgB * 2);
+    If ArgA <> 0 Then
+     For I := 0 To ArgB - 1 Do Pe_WriteWord(Addr + 4 + I * 2, Pe_ReadWord(ArgA + I * 2))
+    Else
+     For I := 0 To ArgB - 1 Do Pe_WriteWord(Addr + 4 + I * 2, 0);
+    Pe_WriteWord(Addr + 4 + ArgB * 2, 0);
+    PE_Reg.EAX := Addr + 4;
+   End Else PE_Reg.EAX := 0;
+   NArgsPopped := 2;
+  End;
+  37: Begin { OLEAUT32.DLL!SysFreeString }
+   PE_Reg.EAX := 0; { procedure VOID en realite - allocateur bump, sans effet }
+   NArgsPopped := 1;
+  End;
+  38: Begin { OLEAUT32.DLL!SysReAllocStringLen - BSTR *pbstr, OLECHAR *psz, UINT len }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4); { pbstr - adresse ou ecrire le nouveau pointeur }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8); { psz }
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12); { len }
+   Addr := Pe_HeapAllocBytes(4 + ArgC * 2 + 2);
+   If Addr <> 0 Then Begin
+    Pe_WriteDWord(Addr, ArgC * 2);
+    If ArgB <> 0 Then
+     For I := 0 To ArgC - 1 Do Pe_WriteWord(Addr + 4 + I * 2, Pe_ReadWord(ArgB + I * 2))
+    Else
+     For I := 0 To ArgC - 1 Do Pe_WriteWord(Addr + 4 + I * 2, 0);
+    Pe_WriteWord(Addr + 4 + ArgC * 2, 0);
+    If (ArgA >= 0) And (ArgA + 4 <= High(PE_Mem)) Then Pe_WriteDWord(ArgA, Addr + 4);
+    PE_Reg.EAX := 1;
+   End Else PE_Reg.EAX := 0;
+   NArgsPopped := 3;
+  End;
+  39: Begin { USER32.DLL!MessageBoxA - HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType }
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);  { lpText }
+   ArgC := Pe_ReadDWord(PE_Reg.ESP + 12); { lpCaption }
+   { Pas de vraie fenetre GUI (emulateur console uniquement, voir            }
+   { project_devenv_win32pe.md) - le texte est echo sur l ecran virtuel       }
+   { plutot qu invente ou perdu, IDOK renvoye immediatement. }
+   S := '[MessageBox';
+   If ArgC <> 0 Then S := S + ' "' + Pe_ReadAsciiZ(ArgC) + '"';
+   S := S + '] ';
+   If ArgB <> 0 Then S := S + Pe_ReadAsciiZ(ArgB);
+   If PE_Panel <> Nil Then Begin
+    EmuVScr_WriteStr(PE_Panel^, S);
+    EmuVScr_PutChar(PE_Panel^, #13); EmuVScr_PutChar(PE_Panel^, #10);
+   End;
+   PE_Reg.EAX := 1; { IDOK }
+   NArgsPopped := 4;
+  End;
+  40, 41: Begin { USER32.DLL!CharUpperBuffW / CharLowerBuffW - LPWSTR lpsz, DWORD cchLength }
+   ArgA := Pe_ReadDWord(PE_Reg.ESP + 4);
+   ArgB := Pe_ReadDWord(PE_Reg.ESP + 8);
+   { Conversion ASCII uniquement (A-Z/a-z) - aucune vraie table Unicode de   }
+   { casse, portee honnetement disclosee. }
+   For I := 0 To ArgB - 1 Do Begin
+    W := Pe_ReadWord(ArgA + I * 2);
+    If ApiId = 40 Then Begin
+     If (W >= Ord('a')) And (W <= Ord('z')) Then W := W - 32;
+    End Else Begin
+     If (W >= Ord('A')) And (W <= Ord('Z')) Then W := W + 32;
+    End;
+    Pe_WriteWord(ArgA + I * 2, W);
+   End;
+   PE_Reg.EAX := ArgB;
+   NArgsPopped := 2;
+  End;
+  Else Handled := False;
  End;
  If Not Handled Then Begin
   If PE_ImportIsOrd[SlotIndex] Then
@@ -80848,7 +81503,9 @@ Var
  OpSize: Byte;
  RepMode: Byte;
  Op: TDpmiOperand;
- A, Imm, Res, Target, OldCF: LongInt;
+ A, Imm, Res, Target, OldCF, SR: LongInt;
+ P64: Int64;
+ FVal: Extended;
  Op2: Byte;
  TraceIdx: LongInt;
 Begin
@@ -80891,6 +81548,37 @@ Begin
      Inc(PE_EIP, 4);
      If Pe_TestCond(Op2 And $F) Then PE_EIP := PE_EIP + Target;
     End;
+    $90..$9F: Begin { SETcc r/m8 }
+     ModRM := Pe_FetchByte(0);
+     Pe_DecodeModRM(ModRM, Op);
+     Inc(PE_EIP, Op.Len);
+     If Pe_TestCond(Op2 And $F) Then Pe_PutOp(Op, 1, 1) Else Pe_PutOp(Op, 1, 0);
+    End;
+    $B6, $B7: Begin { MOVZX Gv,Eb/Ew }
+     ModRM := Pe_FetchByte(0);
+     Reg := (ModRM Shr 3) And 7;
+     Pe_DecodeModRM(ModRM, Op);
+     Inc(PE_EIP, Op.Len);
+     If Op2 = $B6 Then A := Pe_GetOp(Op, 1) And $FF
+     Else A := Pe_GetOp(Op, 2) And $FFFF;
+     If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, Reg, Word(A))
+     Else Dpmi_SetReg32(PE_Reg, Reg, A);
+    End;
+    $BE, $BF: Begin { MOVSX Gv,Eb/Ew }
+     ModRM := Pe_FetchByte(0);
+     Reg := (ModRM Shr 3) And 7;
+     Pe_DecodeModRM(ModRM, Op);
+     Inc(PE_EIP, Op.Len);
+     If Op2 = $BE Then Begin
+      A := Pe_GetOp(Op, 1) And $FF;
+      If (A And $80) <> 0 Then A := A Or LongInt($FFFFFF00);
+     End Else Begin
+      A := Pe_GetOp(Op, 2) And $FFFF;
+      If (A And $8000) <> 0 Then A := A Or LongInt($FFFF0000);
+     End;
+     If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, Reg, Word(A))
+     Else Dpmi_SetReg32(PE_Reg, Reg, A);
+    End;
    Else Pe_Halt('Opcode 0F ' + HexByte(Op2) + ' non reconnu (Stage 2)');
    End;
   End;
@@ -80922,6 +81610,38 @@ Begin
    Imm := Pe_FetchByte(0); Inc(PE_EIP);
    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
    If OpSize = 2 Then Pe_Push16(Word(Imm)) Else Pe_Push32(Imm);
+  End;
+  $69, $6B: Begin { IMUL Gv,Ev,Iz/Ib (imm16 si prefixe 66, imm32 sinon pour  }
+   { $69 ; imm8 signe-etendu pour $6B) - 3 operandes, tronque a la taille du }
+   { registre destination, CF/OF si le resultat pleine largeur ne tenait    }
+   { pas dedans (meme convention que Pe_MulDiv/IMUL 1 operande). }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   A := Pe_GetOp(Op, OpSize);
+   If B = $6B Then Begin
+    Imm := Pe_FetchByte(0); Inc(PE_EIP);
+    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   End Else If OpSize = 2 Then Begin
+    Imm := Pe_FetchWord(0); Inc(PE_EIP, 2);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+   End Else Begin
+    Imm := Pe_FetchDWord(0); Inc(PE_EIP, 4);
+   End;
+   If OpSize = 2 Then Begin
+    SR := SmallInt(Word(A)) * SmallInt(Word(Imm));
+    Dpmi_SetReg16(PE_Reg, Reg, Word(SR));
+    If (SR < -32768) Or (SR > 32767) Then
+     Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+    Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+   End Else Begin
+    P64 := Int64(A) * Int64(Imm);
+    Dpmi_SetReg32(PE_Reg, Reg, LongInt(LongWord(P64 And $FFFFFFFF)));
+    If (P64 < -2147483648) Or (P64 > 2147483647) Then
+     Begin Include(PE_Flags.s, EFG_CF); Include(PE_Flags.s, EFG_OF); End
+    Else Begin Exclude(PE_Flags.s, EFG_CF); Exclude(PE_Flags.s, EFG_OF); End;
+   End;
   End;
   $70..$7F: Begin { Jcc rel8 }
    Imm := Pe_FetchByte(0); Inc(PE_EIP);
@@ -80982,6 +81702,15 @@ Begin
    If OpSize = 2 Then Dpmi_SetReg16(PE_Reg, Reg, Word(Op.LinAddr))
    Else Dpmi_SetReg32(PE_Reg, Reg, Op.LinAddr);
   End;
+  $8C, $8E: Begin { MOV r/m16,Sreg / MOV Sreg,r/m16 - voir PE_Seg }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If Reg > 5 Then Pe_Halt('Registre de segment invalide (reg=' + IntToStr(Reg) + ')')
+   Else If B = $8C Then Pe_PutOp(Op, 2, PE_Seg[Reg])
+   Else PE_Seg[Reg] := Word(Pe_GetOp(Op, 2));
+  End;
   $90: ; { NOP }
   $91..$97: Begin { XCHG eAX,reg }
    If OpSize = 2 Then Begin
@@ -80993,6 +81722,41 @@ Begin
     Dpmi_SetReg32(PE_Reg, B And 7, PE_Reg.EAX);
     PE_Reg.EAX := Res;
    End;
+  End;
+  $9C: Begin { PUSHF/PUSHFD - meme convention que le coeur 8086 reel (voir son  }
+   { commentaire pres de $9C, ~ligne 151267) : Flags.Base (Word) est deja      }
+   { l alias exact du mot bas EFLAGS (CF=bit0..OF=bit11), aucun bit au-dela    }
+   { n est modelise. }
+   If OpSize = 2 Then Pe_Push16(PE_Flags.Base)
+   Else Pe_Push32(LongInt(LongWord(PE_Flags.Base)));
+  End;
+  $9D: Begin { POPF/POPFD - seul le mot bas depile est conserve, meme          }
+   { convention que le coeur 8086 reel. }
+   If OpSize = 2 Then PE_Flags.Base := Pe_Pop16
+   Else PE_Flags.Base := Word(Pe_Pop32);
+  End;
+  $9E: PE_Flags.Base := (PE_Flags.Base And $FF00) Or PE_Reg.AH; { SAHF }
+  $9F: PE_Reg.AH := Byte(PE_Flags.Base); { LAHF }
+  $9B: ; { WAIT/FWAIT - synchronisation bus/exceptions non modelisee, sans effet }
+  $A0: Begin { MOV AL,moffs8 - adresse absolue 32 bits (pas de prefixe $67 ici,   }
+   { flat 32 bits uniquement, meme convention que LEA/PUSH OFFSET : voir le }
+   { bogue RVA/VA corrige a l Etape 2 de ce chantier) }
+   Target := Pe_FetchDWord(0); Inc(PE_EIP, 4);
+   PE_Reg.AL := Pe_ReadByte(Target);
+  End;
+  $A1: Begin { MOV eAX,moffs }
+   Target := Pe_FetchDWord(0); Inc(PE_EIP, 4);
+   If OpSize = 2 Then PE_Reg.AX := Pe_ReadWord(Target)
+   Else PE_Reg.EAX := Pe_ReadDWord(Target);
+  End;
+  $A2: Begin { MOV moffs8,AL }
+   Target := Pe_FetchDWord(0); Inc(PE_EIP, 4);
+   Pe_WriteByte(Target, PE_Reg.AL);
+  End;
+  $A3: Begin { MOV moffs,eAX }
+   Target := Pe_FetchDWord(0); Inc(PE_EIP, 4);
+   If OpSize = 2 Then Pe_WriteWord(Target, PE_Reg.AX)
+   Else Pe_WriteDWord(Target, PE_Reg.EAX);
   End;
   $A4, $A5, $A6, $A7, $AA, $AB, $AC, $AD, $AE, $AF: Begin
    If B In [$A4, $A6, $AA, $AC, $AE] Then Pe_StringOp(B, 1, RepMode)
@@ -81072,6 +81836,221 @@ Begin
    Inc(PE_EIP, Op.Len);
    If B = $D2 Then Pe_PutOp(Op, 1, Pe_Shift(Sub, Pe_GetOp(Op, 1), PE_Reg.CL, 1))
    Else Pe_PutOp(Op, OpSize, Pe_Shift(Sub, Pe_GetOp(Op, OpSize), PE_Reg.CL, OpSize));
+  End;
+  { Coprocesseur x87 (D8-DF) - voir le commentaire de tete pres de           }
+  { Pe_FpuPush pour le contexte complet (port de ELF64_FpuReg). }
+  $D8: Begin { ST0 op= (m32real ou ST(i)), reel simple precision }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If Op.IsReg Then FVal := PE_FpuReg[Op.RegNum] Else FVal := Pe_ReadSingle(Op.LinAddr);
+   Case Reg Of
+    0: PE_FpuReg[0] := PE_FpuReg[0] + FVal;
+    1: PE_FpuReg[0] := PE_FpuReg[0] * FVal;
+    2: Pe_FpuCompare(PE_FpuReg[0], FVal);
+    3: Begin Pe_FpuCompare(PE_FpuReg[0], FVal); Pe_FpuPop; End;
+    4: PE_FpuReg[0] := PE_FpuReg[0] - FVal;
+    5: PE_FpuReg[0] := FVal - PE_FpuReg[0];
+    6: PE_FpuReg[0] := PE_FpuReg[0] / FVal;
+    7: PE_FpuReg[0] := FVal / PE_FpuReg[0];
+   End;
+  End;
+  $D9: Begin { chargement/format/constantes/transcendantes }
+   ModRM := Pe_FetchByte(0);
+   If (ModRM And $C0) = $C0 Then Begin
+    Op2 := ModRM; Inc(PE_EIP);
+    Case Op2 Of
+     $C0..$C7: Pe_FpuPush(PE_FpuReg[Op2 And 7]); { FLD ST(i) }
+     $C8..$CF: Begin { FXCH ST(i) }
+      FVal := PE_FpuReg[0];
+      PE_FpuReg[0] := PE_FpuReg[Op2 And 7];
+      PE_FpuReg[Op2 And 7] := FVal;
+     End;
+     $D0: ; { FNOP }
+     $E0: PE_FpuReg[0] := -PE_FpuReg[0];      { FCHS }
+     $E1: PE_FpuReg[0] := Abs(PE_FpuReg[0]);  { FABS }
+     $E4: Pe_FpuCompare(PE_FpuReg[0], 0);     { FTST }
+     $E8: Pe_FpuPush(1.0);                    { FLD1 }
+     $EE: Pe_FpuPush(0.0);                    { FLDZ }
+     $FA: PE_FpuReg[0] := Sqrt(PE_FpuReg[0]); { FSQRT }
+     $FC: PE_FpuReg[0] := Int(PE_FpuReg[0]);  { FRNDINT (troncature, mode d arrondi non applique) }
+     Else Pe_Halt('Opcode x87 D9 ' + HexByte(Op2) + ' non reconnu (Stage 2)');
+    End;
+   End Else Begin
+    Reg := (ModRM Shr 3) And 7;
+    Pe_DecodeModRM(ModRM, Op);
+    Inc(PE_EIP, Op.Len);
+    Case Reg Of
+     0: Pe_FpuPush(Pe_ReadSingle(Op.LinAddr));              { FLD m32real }
+     2: Pe_WriteSingle(Op.LinAddr, PE_FpuReg[0]);            { FST m32real }
+     3: Begin Pe_WriteSingle(Op.LinAddr, PE_FpuReg[0]); Pe_FpuPop; End; { FSTP m32real }
+     5: PE_FpuCW := Pe_ReadWord(Op.LinAddr);                 { FLDCW }
+     7: Pe_WriteWord(Op.LinAddr, PE_FpuCW);                  { FNSTCW }
+     Else Pe_Halt('Groupe x87 D9 /' + IntToStr(Reg) + ' non reconnu (Stage 2)');
+    End;
+   End;
+  End;
+  $DA: Begin { entier 32 bits memoire, ou FUCOMPP/FCMOVcc en registre }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If Op.IsReg Then Begin
+    If (Reg = 5) And (Op.RegNum = 1) Then Begin { DA E9 = FUCOMPP }
+     Pe_FpuCompare(PE_FpuReg[0], PE_FpuReg[1]);
+     Pe_FpuPop; Pe_FpuPop;
+    End Else Pe_Halt('Opcode x87 DA (FCMOVcc) non reconnu (Stage 2)');
+   End Else Begin
+    FVal := Pe_FildMem(Op.LinAddr, 32);
+    Case Reg Of
+     0: PE_FpuReg[0] := PE_FpuReg[0] + FVal;
+     1: PE_FpuReg[0] := PE_FpuReg[0] * FVal;
+     4: PE_FpuReg[0] := PE_FpuReg[0] - FVal;
+     5: PE_FpuReg[0] := FVal - PE_FpuReg[0];
+     6: PE_FpuReg[0] := PE_FpuReg[0] / FVal;
+     7: PE_FpuReg[0] := FVal / PE_FpuReg[0];
+     Else Pe_Halt('Groupe x87 DA /' + IntToStr(Reg) + ' non reconnu (Stage 2)');
+    End;
+   End;
+  End;
+  $DB: Begin { entier 32 bits / reel 80 bits, controle }
+   ModRM := Pe_FetchByte(0);
+   If (ModRM And $C0) = $C0 Then Begin
+    Op2 := ModRM; Inc(PE_EIP);
+    Case Op2 Of
+     $E3: Begin { FNINIT }
+      For Sub := 0 To 7 Do PE_FpuReg[Sub] := 0;
+      PE_FpuCW := $037F;
+     End;
+     $E2: ; { FNCLEX : aucun etat d exception suivi }
+     $E8..$EF: Pe_FpuCompareToFlags(PE_FpuReg[0], PE_FpuReg[Op2 And 7]); { FUCOMI }
+     $F0..$F7: Pe_FpuCompareToFlags(PE_FpuReg[0], PE_FpuReg[Op2 And 7]); { FCOMI }
+     Else Pe_Halt('Opcode x87 DB ' + HexByte(Op2) + ' non reconnu (Stage 2)');
+    End;
+   End Else Begin
+    Reg := (ModRM Shr 3) And 7;
+    Pe_DecodeModRM(ModRM, Op);
+    Inc(PE_EIP, Op.Len);
+    Case Reg Of
+     0: Pe_FpuPush(Pe_FildMem(Op.LinAddr, 32));              { FILD m32int }
+     2: Pe_FistpMem(Op.LinAddr, 32, PE_FpuReg[0], False);    { FIST m32int }
+     3: Pe_FistpMem(Op.LinAddr, 32, PE_FpuReg[0], True);     { FISTP m32int }
+     5: Pe_FpuPush(Pe_ReadExtended(Op.LinAddr));             { FLD m80real }
+     7: Begin Pe_WriteExtended(Op.LinAddr, PE_FpuReg[0]); Pe_FpuPop; End; { FSTP m80real }
+     Else Pe_Halt('Groupe x87 DB /' + IntToStr(Reg) + ' non reconnu (Stage 2)');
+    End;
+   End;
+  End;
+  $DC: Begin { ST(i) op= (m64real ou ST0), reel double precision }
+   ModRM := Pe_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Pe_DecodeModRM(ModRM, Op);
+   Inc(PE_EIP, Op.Len);
+   If Op.IsReg Then Begin { forme registre : destination ST(i), inversee par rapport a D8 }
+    Case Reg Of
+     0: PE_FpuReg[Op.RegNum] := PE_FpuReg[Op.RegNum] + PE_FpuReg[0];
+     1: PE_FpuReg[Op.RegNum] := PE_FpuReg[Op.RegNum] * PE_FpuReg[0];
+     2: Pe_FpuCompare(PE_FpuReg[0], PE_FpuReg[Op.RegNum]);
+     3: Begin Pe_FpuCompare(PE_FpuReg[0], PE_FpuReg[Op.RegNum]); Pe_FpuPop; End;
+     4: PE_FpuReg[Op.RegNum] := PE_FpuReg[Op.RegNum] - PE_FpuReg[0];
+     5: PE_FpuReg[Op.RegNum] := PE_FpuReg[0] - PE_FpuReg[Op.RegNum];
+     6: PE_FpuReg[Op.RegNum] := PE_FpuReg[Op.RegNum] / PE_FpuReg[0];
+     7: PE_FpuReg[Op.RegNum] := PE_FpuReg[0] / PE_FpuReg[Op.RegNum];
+    End;
+   End Else Begin
+    FVal := Pe_ReadDouble(Op.LinAddr);
+    Case Reg Of
+     0: PE_FpuReg[0] := PE_FpuReg[0] + FVal;
+     1: PE_FpuReg[0] := PE_FpuReg[0] * FVal;
+     2: Pe_FpuCompare(PE_FpuReg[0], FVal);
+     3: Begin Pe_FpuCompare(PE_FpuReg[0], FVal); Pe_FpuPop; End;
+     4: PE_FpuReg[0] := PE_FpuReg[0] - FVal;
+     5: PE_FpuReg[0] := FVal - PE_FpuReg[0];
+     6: PE_FpuReg[0] := PE_FpuReg[0] / FVal;
+     7: PE_FpuReg[0] := FVal / PE_FpuReg[0];
+    End;
+   End;
+  End;
+  $DD: Begin { reel double precision (chargement/format), FST(P) ST(i) }
+   ModRM := Pe_FetchByte(0);
+   If (ModRM And $C0) = $C0 Then Begin
+    Op2 := ModRM; Inc(PE_EIP);
+    Case Op2 Of
+     $C0..$C7: ; { FFREE ST(i) : tags non suivis, sans effet }
+     $D0..$D7: PE_FpuReg[Op2 And 7] := PE_FpuReg[0];                   { FST ST(i) }
+     $D8..$DF: Begin PE_FpuReg[Op2 And 7] := PE_FpuReg[0]; Pe_FpuPop; End; { FSTP ST(i) }
+     $E0..$E7: Pe_FpuCompare(PE_FpuReg[0], PE_FpuReg[Op2 And 7]);      { FUCOM }
+     $E8..$EF: Begin Pe_FpuCompare(PE_FpuReg[0], PE_FpuReg[Op2 And 7]); Pe_FpuPop; End; { FUCOMP }
+     Else Pe_Halt('Opcode x87 DD ' + HexByte(Op2) + ' non reconnu (Stage 2)');
+    End;
+   End Else Begin
+    Reg := (ModRM Shr 3) And 7;
+    Pe_DecodeModRM(ModRM, Op);
+    Inc(PE_EIP, Op.Len);
+    Case Reg Of
+     0: Pe_FpuPush(Pe_ReadDouble(Op.LinAddr));              { FLD m64real }
+     2: Pe_WriteDouble(Op.LinAddr, PE_FpuReg[0]);            { FST m64real }
+     3: Begin Pe_WriteDouble(Op.LinAddr, PE_FpuReg[0]); Pe_FpuPop; End; { FSTP m64real }
+     7: Pe_WriteWord(Op.LinAddr, (Ord(PE_FpuC3) Shl 14) Or   { FNSTSW m2byte }
+        (Ord(PE_FpuC2) Shl 10) Or (Ord(PE_FpuC0) Shl 8));
+     Else Pe_Halt('Groupe x87 DD /' + IntToStr(Reg) + ' non reconnu (Stage 2)');
+    End;
+   End;
+  End;
+  $DE: Begin { entier 16 bits memoire, ou *P (pop) en registre }
+   ModRM := Pe_FetchByte(0);
+   If (ModRM And $C0) = $C0 Then Begin
+    Op2 := ModRM; Inc(PE_EIP);
+    Case Op2 Of
+     $C0..$C7: Begin PE_FpuReg[Op2 And 7] := PE_FpuReg[Op2 And 7] + PE_FpuReg[0]; Pe_FpuPop; End; { FADDP }
+     $C8..$CF: Begin PE_FpuReg[Op2 And 7] := PE_FpuReg[Op2 And 7] * PE_FpuReg[0]; Pe_FpuPop; End; { FMULP }
+     $D9: Begin Pe_FpuCompare(PE_FpuReg[0], PE_FpuReg[1]); Pe_FpuPop; Pe_FpuPop; End; { FCOMPP }
+     $E0..$E7: Begin PE_FpuReg[Op2 And 7] := PE_FpuReg[0] - PE_FpuReg[Op2 And 7]; Pe_FpuPop; End; { FSUBRP }
+     $E8..$EF: Begin PE_FpuReg[Op2 And 7] := PE_FpuReg[Op2 And 7] - PE_FpuReg[0]; Pe_FpuPop; End; { FSUBP }
+     $F0..$F7: Begin PE_FpuReg[Op2 And 7] := PE_FpuReg[0] / PE_FpuReg[Op2 And 7]; Pe_FpuPop; End; { FDIVRP }
+     $F8..$FF: Begin PE_FpuReg[Op2 And 7] := PE_FpuReg[Op2 And 7] / PE_FpuReg[0]; Pe_FpuPop; End; { FDIVP }
+     Else Pe_Halt('Opcode x87 DE ' + HexByte(Op2) + ' non reconnu (Stage 2)');
+    End;
+   End Else Begin
+    Reg := (ModRM Shr 3) And 7;
+    Pe_DecodeModRM(ModRM, Op);
+    Inc(PE_EIP, Op.Len);
+    FVal := Pe_FildMem(Op.LinAddr, 16);
+    Case Reg Of
+     0: PE_FpuReg[0] := PE_FpuReg[0] + FVal;
+     1: PE_FpuReg[0] := PE_FpuReg[0] * FVal;
+     4: PE_FpuReg[0] := PE_FpuReg[0] - FVal;
+     5: PE_FpuReg[0] := FVal - PE_FpuReg[0];
+     6: PE_FpuReg[0] := PE_FpuReg[0] / FVal;
+     7: PE_FpuReg[0] := FVal / PE_FpuReg[0];
+     Else Pe_Halt('Groupe x87 DE /' + IntToStr(Reg) + ' non reconnu (Stage 2)');
+    End;
+   End;
+  End;
+  $DF: Begin { entier 16/64 bits, FNSTSW AX, FUCOMIP/FCOMIP }
+   ModRM := Pe_FetchByte(0);
+   If (ModRM And $C0) = $C0 Then Begin
+    Op2 := ModRM; Inc(PE_EIP);
+    Case Op2 Of
+     $E0: PE_Reg.AX := Word((Ord(PE_FpuC3) Shl 14) Or            { FNSTSW AX }
+          (Ord(PE_FpuC2) Shl 10) Or (Ord(PE_FpuC0) Shl 8));
+     $E8..$EF: Begin Pe_FpuCompareToFlags(PE_FpuReg[0], PE_FpuReg[Op2 And 7]); Pe_FpuPop; End; { FUCOMIP }
+     $F0..$F7: Begin Pe_FpuCompareToFlags(PE_FpuReg[0], PE_FpuReg[Op2 And 7]); Pe_FpuPop; End; { FCOMIP }
+     Else Pe_Halt('Opcode x87 DF ' + HexByte(Op2) + ' non reconnu (Stage 2)');
+    End;
+   End Else Begin
+    Reg := (ModRM Shr 3) And 7;
+    Pe_DecodeModRM(ModRM, Op);
+    Inc(PE_EIP, Op.Len);
+    Case Reg Of
+     0: Pe_FpuPush(Pe_FildMem(Op.LinAddr, 16));             { FILD m16int }
+     3: Pe_FistpMem(Op.LinAddr, 16, PE_FpuReg[0], True);    { FISTP m16int }
+     5: Pe_FpuPush(Pe_FildMem(Op.LinAddr, 64));             { FILD m64int }
+     7: Pe_FistpMem(Op.LinAddr, 64, PE_FpuReg[0], True);    { FISTP m64int }
+     Else Pe_Halt('Groupe x87 DF /' + IntToStr(Reg) + ' non reconnu (Stage 2)');
+    End;
+   End;
   End;
   $E8: Begin { CALL rel32/rel16 (proche) }
    If OpSize = 2 Then Begin
@@ -81525,6 +82504,7 @@ Var
  CF, OFBit, TopBit, NewCF: Boolean;
  I: Integer;
  SignBit: LongWord;
+ Mask: LongWord;
 Begin
  Case Size Of 1: Bits := 8; 2: Bits := 16; Else Bits := 32; End;
  Case Size Of
@@ -81532,13 +82512,18 @@ Begin
   2: Begin UV := Word(Val); SignBit := $8000; End;
  Else Begin UV := LongWord(Val); SignBit := $80000000; End;
  End;
+ { Meme correctif que Pe_Shift (chantier de suivi FPU, 2026-09-12) : "1 Shl }
+ { 32" est un decalage indefini (egal a la largeur du type), donnant un     }
+ { masque de 0 au lieu de $FFFFFFFF - tout SHL/ROL/RCL 32 bits mettait      }
+ { silencieusement le resultat a zero, jamais declenche avant abap86.exe.   }
+ If Bits = 32 Then Mask := $FFFFFFFF Else Mask := (LongWord(1) Shl Bits) - 1;
  CF := EFG_CF In LX_Flags.s;
  Count := Count Mod 32; { convention x86 reelle : masque a 5 bits }
  For I := 1 To Count Do Begin
   Case SubOp Of
    0: Begin { ROL }
     TopBit := (UV And SignBit) <> 0;
-    UV := ((UV Shl 1) Or Ord(TopBit)) And ((LongWord(1) Shl Bits) - 1);
+    UV := ((UV Shl 1) Or Ord(TopBit)) And Mask;
     CF := TopBit;
    End;
    1: Begin { ROR }
@@ -81548,7 +82533,7 @@ Begin
    End;
    2: Begin { RCL }
     TopBit := (UV And SignBit) <> 0;
-    UV := ((UV Shl 1) Or Ord(CF)) And ((LongWord(1) Shl Bits) - 1);
+    UV := ((UV Shl 1) Or Ord(CF)) And Mask;
     CF := TopBit;
    End;
    3: Begin { RCR }
@@ -81558,7 +82543,7 @@ Begin
    End;
    4, 6: Begin { SHL/SAL }
     CF := (UV And SignBit) <> 0;
-    UV := (UV Shl 1) And ((LongWord(1) Shl Bits) - 1);
+    UV := (UV Shl 1) And Mask;
    End;
    5: Begin { SHR }
     CF := (UV And 1) <> 0;
@@ -81628,6 +82613,10 @@ Var
  Dir: Integer;
  Cont: Boolean;
 Begin
+ { Meme correctif que Pe_StringOp (chantier de suivi Win32/PE, 2026-09-12) : }
+ { un compte REP initial de 0 doit executer ZERO fois, pas boucler jusqu a   }
+ { $FFFFFFFF apres decrementation. }
+ If (RepMode <> 0) And (LX_Reg.ECX = 0) Then Exit;
  If Op2 In [$A4, $A6, $AA, $AC, $AE] Then Sz := 1 Else Sz := OpSize;
  If EFG_DF In LX_Flags.s Then Dir := -1 Else Dir := 1;
  Case Op2 Of
@@ -82093,7 +83082,8 @@ Var
  OpSize: Byte;
  RepMode: Byte;
  Op: TDpmiOperand;
- A, Imm, Res, Target, OldCF: LongInt;
+ A, Imm, Res, Target, OldCF, SR: LongInt;
+ P64: Int64;
  Op2: Byte;
  TraceIdx: LongInt;
 Begin
@@ -82141,6 +83131,37 @@ Begin
      Inc(LX_EIP, 4);
      If Lx_TestCond(Op2 And $F) Then LX_EIP := LX_EIP + Target;
     End;
+    $90..$9F: Begin { SETcc r/m8 }
+     ModRM := Lx_FetchByte(0);
+     Lx_DecodeModRM(ModRM, Op);
+     Inc(LX_EIP, Op.Len);
+     If Lx_TestCond(Op2 And $F) Then Lx_PutOp(Op, 1, 1) Else Lx_PutOp(Op, 1, 0);
+    End;
+    $B6, $B7: Begin { MOVZX Gv,Eb/Ew }
+     ModRM := Lx_FetchByte(0);
+     Reg := (ModRM Shr 3) And 7;
+     Lx_DecodeModRM(ModRM, Op);
+     Inc(LX_EIP, Op.Len);
+     If Op2 = $B6 Then A := Lx_GetOp(Op, 1) And $FF
+     Else A := Lx_GetOp(Op, 2) And $FFFF;
+     If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, Reg, Word(A))
+     Else Dpmi_SetReg32(LX_Reg, Reg, A);
+    End;
+    $BE, $BF: Begin { MOVSX Gv,Eb/Ew }
+     ModRM := Lx_FetchByte(0);
+     Reg := (ModRM Shr 3) And 7;
+     Lx_DecodeModRM(ModRM, Op);
+     Inc(LX_EIP, Op.Len);
+     If Op2 = $BE Then Begin
+      A := Lx_GetOp(Op, 1) And $FF;
+      If (A And $80) <> 0 Then A := A Or LongInt($FFFFFF00);
+     End Else Begin
+      A := Lx_GetOp(Op, 2) And $FFFF;
+      If (A And $8000) <> 0 Then A := A Or LongInt($FFFF0000);
+     End;
+     If OpSize = 2 Then Dpmi_SetReg16(LX_Reg, Reg, Word(A))
+     Else Dpmi_SetReg32(LX_Reg, Reg, A);
+    End;
    Else Lx_Halt('Opcode 0F ' + HexByte(Op2) + ' non reconnu (Stage 2)');
    End;
   End;
@@ -82172,6 +83193,36 @@ Begin
    Imm := Lx_FetchByte(0); Inc(LX_EIP);
    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
    If OpSize = 2 Then Lx_Push16(Word(Imm)) Else Lx_Push32(Imm);
+  End;
+  $69, $6B: Begin { IMUL Gv,Ev,Iz/Ib - meme correctif que Pe_Step (chantier   }
+   { de suivi Win32/PE 2026-09-12), opcode manquant depuis le fork initial. }
+   ModRM := Lx_FetchByte(0);
+   Reg := (ModRM Shr 3) And 7;
+   Lx_DecodeModRM(ModRM, Op);
+   Inc(LX_EIP, Op.Len);
+   A := Lx_GetOp(Op, OpSize);
+   If B = $6B Then Begin
+    Imm := Lx_FetchByte(0); Inc(LX_EIP);
+    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   End Else If OpSize = 2 Then Begin
+    Imm := Lx_FetchWord(0); Inc(LX_EIP, 2);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+   End Else Begin
+    Imm := Lx_FetchDWord(0); Inc(LX_EIP, 4);
+   End;
+   If OpSize = 2 Then Begin
+    SR := SmallInt(Word(A)) * SmallInt(Word(Imm));
+    Dpmi_SetReg16(LX_Reg, Reg, Word(SR));
+    If (SR < -32768) Or (SR > 32767) Then
+     Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+    Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+   End Else Begin
+    P64 := Int64(A) * Int64(Imm);
+    Dpmi_SetReg32(LX_Reg, Reg, LongInt(LongWord(P64 And $FFFFFFFF)));
+    If (P64 < -2147483648) Or (P64 > 2147483647) Then
+     Begin Include(LX_Flags.s, EFG_CF); Include(LX_Flags.s, EFG_OF); End
+    Else Begin Exclude(LX_Flags.s, EFG_CF); Exclude(LX_Flags.s, EFG_OF); End;
+   End;
   End;
   $70..$7F: Begin { Jcc rel8 }
    Imm := Lx_FetchByte(0); Inc(LX_EIP);
@@ -82245,6 +83296,38 @@ Begin
     Dpmi_SetReg32(LX_Reg, B And 7, LX_Reg.EAX);
     LX_Reg.EAX := Res;
    End;
+  End;
+  $9C: Begin { PUSHF/PUSHFD - meme correctif que Pe_Step (chantier de suivi   }
+   { Win32/PE, 2026-09-12). }
+   If OpSize = 2 Then Lx_Push16(LX_Flags.Base)
+   Else Lx_Push32(LongInt(LongWord(LX_Flags.Base)));
+  End;
+  $9D: Begin { POPF/POPFD }
+   If OpSize = 2 Then LX_Flags.Base := Lx_Pop16
+   Else LX_Flags.Base := Word(Lx_Pop32);
+  End;
+  $9E: LX_Flags.Base := (LX_Flags.Base And $FF00) Or LX_Reg.AH; { SAHF }
+  $9F: LX_Reg.AH := Byte(LX_Flags.Base); { LAHF }
+  $9B: ; { WAIT/FWAIT - sans effet, meme correctif que Pe_Step }
+  $A0: Begin { MOV AL,moffs8 - adresse absolue 32 bits, meme correctif que    }
+   { Pe_Step (chantier Win32/PE 2026-09-12) : opcode manquant depuis le      }
+   { fork initial de Dpmi_Step, jamais atteint avant abap86.exe. }
+   Target := Lx_FetchDWord(0); Inc(LX_EIP, 4);
+   LX_Reg.AL := Lx_ReadByte(Target);
+  End;
+  $A1: Begin { MOV eAX,moffs }
+   Target := Lx_FetchDWord(0); Inc(LX_EIP, 4);
+   If OpSize = 2 Then LX_Reg.AX := Lx_ReadWord(Target)
+   Else LX_Reg.EAX := Lx_ReadDWord(Target);
+  End;
+  $A2: Begin { MOV moffs8,AL }
+   Target := Lx_FetchDWord(0); Inc(LX_EIP, 4);
+   Lx_WriteByte(Target, LX_Reg.AL);
+  End;
+  $A3: Begin { MOV moffs,eAX }
+   Target := Lx_FetchDWord(0); Inc(LX_EIP, 4);
+   If OpSize = 2 Then Lx_WriteWord(Target, LX_Reg.AX)
+   Else Lx_WriteDWord(Target, LX_Reg.EAX);
   End;
   $A4, $A5, $A6, $A7, $AA, $AB, $AC, $AD, $AE, $AF: Begin
    If B In [$A4, $A6, $AA, $AC, $AE] Then Lx_StringOp(B, 1, RepMode)
