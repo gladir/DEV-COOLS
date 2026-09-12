@@ -81885,6 +81885,38 @@ Begin
     P.CPU.Regs.AX := 2; { SIMPLEREGION }
     ArgWords := 3;
    End;
+   78: Begin
+    { GetCurrentPosition(hdc):DWORD - ordinal VERIFIE via le VRAI source     }
+    { Wine (wingdi16.h). REEL : reconvertit Win16_PenX/Y (deja reel,          }
+    { Stage 6c, coordonnees ABSOLUES du framebuffer) vers les coordonnees     }
+    { CLIENT d'origine en annulant EXACTEMENT la MEME conversion             }
+    { qu'appliquent MoveTo/$14/LineTo/$13 (+1 pour le cadre de fenetre) -     }
+    { l'inverse precis de leur propre calcul, pas une approximation. }
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_PenX - Win16_WindowX[Win16_ActiveDCWindow] - 1);
+     GdiY1 := SmallInt(Win16_PenY - Win16_WindowY[Win16_ActiveDCWindow] - 1);
+    End Else Begin
+     GdiX1 := 0; GdiY1 := 0;
+    End;
+    P.CPU.Regs.AX := Word(GdiX1);
+    P.CPU.Regs.DX := Word(GdiY1);
+    ArgWords := 1;
+   End;
+   79: Begin
+    { GetDCOrg(hdc):DWORD - ordinal VERIFIE via le VRAI source Wine          }
+    { (wingdi16.h). REEL : renvoie la VRAIE origine de la zone client de     }
+    { la fenetre active en coordonnees ECRAN (ABSOLUES du framebuffer          }
+    { $13 partage EmuVideo) - Win16_WindowX/Y[ActiveDC]+1, exactement le      }
+    { point (0,0) client tel que converti partout ailleurs (MoveTo/LineTo/   }
+    { Ellipse/Rectangle/...). }
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     P.CPU.Regs.AX := Word(Win16_WindowX[Win16_ActiveDCWindow] + 1);
+     P.CPU.Regs.DX := Word(Win16_WindowY[Win16_ActiveDCWindow] + 1);
+    End Else Begin
+     P.CPU.Regs.AX := 0; P.CPU.Regs.DX := 0;
+    End;
+    ArgWords := 1;
+   End;
    80: Begin
     { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }
     { gdi.exe16.spec ; les constantes nIndex (HORZRES=8, VERTRES=10,        }
@@ -81919,6 +81951,29 @@ Begin
      Else P.CPU.Regs.AX := 0;
     End;
     ArgWords := 2;
+   End;
+   81: Begin
+    { GetMapMode(hdc):int - ordinal VERIFIE via le VRAI source Wine          }
+    { (wingdi16.h). REEL trivial : renvoie Win16_CurrentMapMode deja          }
+    { reellement suivi par SetMapMode/$3 depuis son propre lot. }
+    P.CPU.Regs.AX := Win16_CurrentMapMode;
+    ArgWords := 1;
+   End;
+   82: Begin
+    { GetObject(hObj,nCount,lpObject):int - ordinal VERIFIE via le VRAI      }
+    { source Wine (wingdi16.h, GetObject16(HGDIOBJ16,INT16,LPVOID) - 1 mot   }
+    { + 1 mot + 1 pointeur LOIN (2 mots) = 4 mots). Honnete retour 0           }
+    { (echec) : TOUS les handles GDI synthetiques de ce sous-ensemble          }
+    { (CreatePen/CreateSolidBrush/CreateFont/CreateBitmap/etc.) renvoient      }
+    { la MEME valeur constante (1), rendant un objet-de-type-crayon et un      }
+    { objet-de-type-pinceau LITTERALEMENT INDISTINGUABLES par leur handle -   }
+    { aucune facon honnete de savoir QUELLE structure (LOGPEN/LOGBRUSH/       }
+    { LOGFONT/BITMAP) remplir pour un hObj donne, meme avec              }
+    { Win16_LastPenColor/LastBrushColor deja suivis (on ne sait pas LEQUEL    }
+    { des deux ce hObj precis designait a sa creation). Retourne 0 plutot     }
+    { que de deviner un type d'objet au hasard. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 4;
    End;
    87: Begin
     { GetStockObject(nIndex):handle - ordinal VERIFIE via gdi.exe16.spec.  }
