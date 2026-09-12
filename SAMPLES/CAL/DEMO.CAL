@@ -1,0 +1,14 @@
+* Exemple Cray-1 : constantes, calcul scalaire et vectoriel, branchement.
+         IDENT DEMO
+         BASE D
+N        EQU 10
+START    A1 N
+         VL A1
+         S1 2
+         S2 3
+         S3 S1+S2
+         V1 V2+V3
+         J DONE
+         ERR
+DONE     EX
+         END
