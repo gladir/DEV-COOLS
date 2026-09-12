@@ -6937,6 +6937,25 @@ Var
  PrevMouseX : Integer;
  PrevMouseY : Integer;
  PrevMouseBtn : LongInt;
+ { PollEvents/PrevCtrlInsDown (2026-09-11, bogue reel corrige, demande        }
+ { explicite : "Ctrl+Ins... Le presse-papier ne semble rien copier") :        }
+ { Ctrl+Ins (Ctrl tenu + Inser) n'atteint JAMAIS ReadKey/KeyPressed sur cette  }
+ { configuration - confirme par un journal de diagnostic temporaire montrant  }
+ { que TOUTE autre touche (fleches, Entree, lettres) est bien recue par       }
+ { PollEvents pendant que Ctrl+Inser (envoye via keybd_event bas niveau, pas   }
+ { seulement SendKeys) ne produit RIEN du tout - la combinaison est avalee    }
+ { avant meme d atteindre la file de touches DOS-like emulee par PtcCrt.      }
+ { Shift+Inser, lui, atteint bien PollEvents normalement (verifie en direct)  }
+ { - le probleme est specifique a Ctrl+Inser, pas aux modificateurs en        }
+ { general. Contournement : interroger l etat physique reel de Ctrl et       }
+ { d Inser directement via GetAsyncKeyState (deja utilise plus bas pour       }
+ { ShiftState) a chaque appel de PollEvents, independamment de               }
+ { ReadKey/KeyPressed, et synthetiser l evenement standard (KeyCode=$52,      }
+ { ShiftState bit 2) que HandleTerminalEvent et GridKeyDown attendent deja    }
+ { tous les deux - detection de front (PrevCtrlInsDown) pour ne declencher    }
+ { qu une seule fois par appui, pas a chaque frame tant que la touche reste   }
+ { enfoncee. }
+ PrevCtrlInsDown : Boolean;
  { Widgets }
  WidgetList   : Array[0..MAX_WIDGETS - 1] Of TWidget;
  WidgetCount  : Integer;
@@ -10993,6 +11012,7 @@ Begin
  LastClickY := -1;
  LastClickTime := 0;
  LastClickBtn := MB_NONE;
+ PrevCtrlInsDown := False;
 End;
 
 { --- Horodatage en millisecondes --- }
@@ -11108,10 +11128,38 @@ Var
  Now: LongInt;
  Ch: Char;
  Btn: TMouseButton;
+ {$IFDEF WINDOWS}
+ CtrlInsNowDown: Boolean;
+ {$ENDIF}
 Begin
  ClearEvent(Ev);
  Now := GetTimestamp;
  Ev.Timestamp := Now;
+
+ {$IFDEF WINDOWS}
+ { Ctrl+Ins (2026-09-11, bogue reel corrige, demande explicite : "Ctrl+Ins    }
+ { ... Le presse-papier ne semble rien copier") - voir le commentaire pres de }
+ { PrevCtrlInsDown (declaration globale) pour le diagnostic complet : cette   }
+ { combinaison precise n atteint JAMAIS ReadKey/KeyPressed ci-dessous sur     }
+ { cette configuration (confirme par journal temporaire - toute autre touche, }
+ { y compris Shift+Ins, y arrive normalement). Contournement : interroger    }
+ { l etat physique reel via GetAsyncKeyState independamment de               }
+ { ReadKey/KeyPressed, avec detection de front (PrevCtrlInsDown) pour ne      }
+ { synthetiser l evenement qu une seule fois par appui. KeyCode=$52/          }
+ { ShiftState bit 2 reproduit exactement ce que HandleTerminalEvent (Terminal)}
+ { et GridKeyDown (grille) attendent deja tous les deux de la voie normale -  }
+ { aucun changement necessaire cote consommateur. }
+ CtrlInsNowDown := (GetAsyncKeyState($11) < 0) And (GetAsyncKeyState($2D) < 0);
+ If CtrlInsNowDown And (Not PrevCtrlInsDown) Then Begin
+  PrevCtrlInsDown := True;
+  Ev.Kind := EV_KEY_DOWN;
+  Ev.KeyCode := $52;
+  Ev.KeyChar := #0;
+  Ev.ShiftState := 2;
+  Exit;
+ End;
+ If Not CtrlInsNowDown Then PrevCtrlInsDown := False;
+ {$ENDIF}
 
  { Verifier le clavier d abord }
  If KeyPressed Then Begin
@@ -42924,6 +42972,46 @@ Begin
  End;
 End;
 
+{ BOGUE REEL corrige (2026-09-11, demande explicite : "Lorsque je monte une   }
+{ image iso, le terminal affiche aucun fichier que je fais un dir d:") :      }
+{ un CD-ROM monte via /CDROM0:/CDROM1: (Emu_CdromOpenAll, EmuCdrom[]) n etait }
+{ visible QUE de l emulateur DOS 8086 embarque (INT21h, via                   }
+{ Emu_CdromDriveFromPath/Emu_CdromFindFirst) - jamais du Terminal de cet IDE }
+{ lui-meme (CMD/Norton Commander, systeme hote reel). "DIR D:" dans le        }
+{ Terminal tombait donc dans la branche FindFirst hote generique tout en bas }
+{ de TermCmd_DIR_CMD, qui cherche un vrai lecteur Windows D: - inexistant ou  }
+{ sans rapport sur la machine de l utilisateur, d ou "aucun fichier". Ajoute  }
+{ ici en miroir de Term_ResolveVirtTarget ci-dessus (meme convention          }
+{ "X:"/"X:chemin" prefixe), mais compare aux lettres REELLEMENT assignees     }
+{ par Emu_CdromAssignDriveLetters (EmuCdrom[i].DriveLetter, independant de    }
+{ Term_DriveIdxFromLetter/FatVol qui ne connaissent que A-D) plutot que de     }
+{ reutiliser Term_ResolveVirtTarget tel quel - un CD-ROM ISO9660 n est PAS un  }
+{ volume FatVol (pas de FAT, pas d ecriture possible) donc ne peut pas         }
+{ partager son contrat Idx/FatVol[Idx]. Porte volontairement limitee a "DIR"  }
+{ (TermCmd_DIR_CMD, seul point signale) - CD/TYPE/COPY/Norton Commander        }
+{ (panneaux visuels Alt+F1) depuis un CD-ROM monte restent un chantier futur   }
+{ distinct, non couverts ici. }
+Function Term_ResolveCdromTarget(P: String; Var CdIdx: Byte;
+ Var AbsP: String): Boolean;
+Var
+ DL: Char;
+ Rest: String;
+ HasColon: Boolean;
+Begin
+ Term_ResolveCdromTarget := False;
+ HasColon := (Length(P) >= 2) And (P[2] = ':');
+ If Not HasColon Then Exit;
+ DL := UpCase(P[1]);
+ Rest := Copy(P, 3, Length(P) - 2);
+ If EmuCdrom[0].Open And (Chr(Ord('A') + EmuCdrom[0].DriveLetter) = DL) Then
+  CdIdx := 0
+ Else If EmuCdrom[1].Open And (Chr(Ord('A') + EmuCdrom[1].DriveLetter) = DL) Then
+  CdIdx := 1
+ Else Exit;
+ AbsP := Rest;
+ Term_ResolveCdromTarget := True;
+End;
+
 { --- Copie de fichier interne (supporte disques virtuels) --- }
 
 Function TermCopyFile(Var TP: TTerminalPanel;
@@ -43295,6 +43383,9 @@ Var
  StartCl: LongInt;
  Free: LongInt;
  LblTxt: String;
+ CdIdx: Byte;
+ CdI: Integer;
+ CdPacked: LongInt;
 Begin
  FirstParam := TermExtractParam(ParamStr, 1);
  { Mode disque virtuel : utiliser le FAT image (cwd ou cible explicite
@@ -43327,6 +43418,57 @@ Begin
   Str(Free, S);
   While Length(S) < 14 Do S := ' ' + S;
   TermAddLine(TP, '              ' + S + ' bytes free');
+  Exit;
+ End;
+ { CD-ROM ISO9660 monte (/CDROM0:/CDROM1:) - voir le commentaire de tete de   }
+ { Term_ResolveCdromTarget pour le bogue reel corrige ici (2026-09-11). }
+ If Term_ResolveCdromTarget(FirstParam, CdIdx, AbsP) Then Begin
+  If Not Emu_CdromFindFirst(CdIdx, AbsP, '*.*') Then Begin
+   TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie.');
+   Exit;
+  End;
+  TermAddLine(TP, ' Volume in drive ' +
+   Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter) + ' is ' +
+   EmuCdrom[CdIdx].VolLabel);
+  TermAddLine(TP, '');
+  If (AbsP = '') Or (AbsP = '\') Then
+   TermAddLine(TP, ' Directory of ' +
+    Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter) + ':\')
+  Else
+   TermAddLine(TP, ' Directory of ' +
+    Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter) + ':' + AbsP);
+  TermAddLine(TP, '');
+  TotalFiles := 0;
+  TotalDirs := 0;
+  TotalSize := 0;
+  For CdI := 0 To EmuFindCount - 1 Do Begin
+   CdPacked := (LongInt(EmuCdFindDate[CdI]) Shl 16) Or EmuCdFindTime[CdI];
+   UnpackTime(CdPacked, T);
+   Line := TermPadZeroLeft(T.Month, 2) + '/' +
+    TermPadZeroLeft(T.Day, 2) + '/' +
+    TermPadZeroLeft(T.Year, 4) + '  ';
+   Str(T.Hour:2, S);
+   Line := Line + S + ':' + TermPadZeroLeft(T.Min, 2) + '    ';
+   If EmuCdFindIsDir[CdI] Then Begin
+    Line := Line + '<DIR>          ' + EmuFindResults[CdI];
+    Inc(TotalDirs);
+   End Else Begin
+    Str(EmuCdFindSize[CdI], S);
+    While Length(S) < 14 Do S := ' ' + S;
+    Line := Line + S + ' ' + EmuFindResults[CdI];
+    Inc(TotalFiles);
+    Inc(TotalSize, EmuCdFindSize[CdI]);
+   End;
+   TermAddLine(TP, Line);
+  End;
+  Str(TotalFiles, S);
+  While Length(S) < 16 Do S := ' ' + S;
+  Str(TotalSize, Line);
+  While Length(Line) < 14 Do Line := ' ' + Line;
+  TermAddLine(TP, S + ' File(s)' + Line + ' bytes');
+  Str(TotalDirs, S);
+  While Length(S) < 16 Do S := ' ' + S;
+  TermAddLine(TP, S + ' Dir(s)   0 bytes free (lecture seule)');
   Exit;
  End;
  If FirstParam = '' Then
