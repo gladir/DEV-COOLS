@@ -1,0 +1,79 @@
+CAL - Assembleur Cray Assembly Language pour Cray-1
+=================================================
+
+Compilation : fpc -Mtp CAL.PAS
+Utilisation : CAL source [-o sortie.bin] [-l listing.lst]
+Aide        : CAL --help
+Exemple     : CAL SAMPLES\CAL\DEMO.CAL -o demo.bin -l demo.lst
+
+Implementation autonome en syntaxe Turbo Pascal 7. Compilation verifiee
+avec Free Pascal 3.2 en mode TP; compilateur Borland original non teste.
+Le tampon binaire est alloue sur le tas pour respecter le segment de donnees.
+
+Format source
+-------------
+Une etiquette commence en colonne 1. Sans etiquette, indenter la ligne.
+Les champs etiquette, resultat et operande sont separes par des espaces
+ou tabulations. L'operande ne doit pas contenir d'espaces; le champ suivant
+est un commentaire CAL. Le suffixe ':' des etiquettes est facultatif.
+Une etoile en colonne 1 ou un point-virgule introduit un commentaire.
+La casse n'est pas significative. Les etiquettes ont au plus 32 caracteres.
+Longueur maximale d'une ligne : 255 caracteres.
+
+Expressions : nombres, symboles, * (adresse courante), sommes/differences.
+Nombres decimaux par defaut; prefixes 0D, 0O, 0X pour decimal/octal/hexadecimal.
+BASE D/O/H change la base. En hexadecimal, commencer par un chiffre
+(0XFF ou 0FF sous BASE H). Expressions limitees aux entiers signes 32 bits.
+Pas de parentheses, multiplication, attributs d'adresse ni chaines.
+
+Instructions implementees
+------------------------
+ERR, EX, PASS; J adresse, J B00..B77; R adresse;
+JAZ/JAN/JAP/JAM/JSZ/JSN/JSP/JSM adresse.
+Ai constante, Si constante (deux parcels, meme pour une petite valeur).
+Constantes de -4194304 a 4194303, negatives par instruction complement.
+Ai Ak, Si Sk, Ai Sj, Si Ak; Si RTC, Si VM; VL Ak, VM Sj.
+Ai Aj+Ak, Aj-Ak, Aj*Ak.
+Si Sj+Sk, Sj-Sk, Sj+FSk, Sj-FSk, Sj*FSk, Sj&Sk, Sj!Sk, Sj\Sk.
+Vi Vj+Vk, Vj-Vk, Vj+FVk, Vj-FVk, Vj&Vk, Vj!Vk, Vj\Vk.
+i,j,k sont compris entre 0 et 7. Les particularites materielles des
+registres d'operande numero zero sont conservees dans les encodages.
+Une forme inconnue provoque une erreur, jamais une instruction factice.
+
+Directives
+----------
+IDENT, TITLE : informations ignorees, aucun code produit.
+nom EQU expression : constante; references deja definies uniquement.
+ORG expression : origine absolue en parcels, vers l'avant seulement.
+PARCEL expressions : liste separee par virgules, valeurs 16 bits non signees.
+CON expressions : mots 64 bits avec extension du signe des expressions 32 bits.
+BSS expression : reserve ce nombre de mots de 64 bits, initialises a zero.
+END : termine la lecture de l'unite source.
+CON/BSS n'ajoutent pas d'alignement implicite; utiliser ORG si necessaire.
+
+Sortie et limites
+-----------------
+Assemblage en deux passes; etiquettes en avant admises dans les instructions
+et les donnees. ORG, BSS et EQU exigent des valeurs connues a la premiere passe.
+Adresses toujours en parcels de 16 bits, sans attribut mot/parcelle CAL.
+Sortie binaire brute big-endian a partir de l'adresse zero; trous a zero.
+Maximum 60000 octets et 1024 symboles. Pas de fichier objet COS/UNICOS,
+de relocation ni d'editeur de liens. Ce sous-ensemble ne couvre pas les
+macros, INCLUDE, sections, assemblage conditionnel, instructions memoire,
+decalages, toutes les operations vectorielles ni les extensions X-MP/X1.
+Ce programme ne constitue donc pas un remplacement integral du CAL historique.
+
+Le listing donne numero de ligne, adresse de depart et jusqu'a quatre
+parcels en decimal. Les lignes EQU et commentaires ne sont pas listees.
+Les sorties existantes sont refusees pour proteger les fichiers utilisateur.
+Code retour 0 : succes/aide; 1 : erreur. Aucun binaire cree si erreur source;
+un listing de diagnostic peut subsister apres une erreur de seconde passe.
+
+References des encodages
+-----------------------
+Cray Research, CRAY-1 Hardware Reference Manual, 2240004 revision C, chapitre 4 :
+https://ed-thelen.org/comp-hist/CRAY-1-HardRefMan/CRAY-1-HRM.html
+Cray Research, Symbolic Machine Instructions, SR-0085, janvier 1986 :
+https://cray.modularcircuits.com/cray_docs/sw/cal/SR-0085_Symbolic_Machine_Instructions_Jan86.pdf
+
+Verification reproductible : powershell -File TESTS\CAL_TEST.ps1
