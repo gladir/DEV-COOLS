@@ -7,6 +7,7 @@ Uses Dos;
 Const
  MaxLineLength = 255;
  MaxFormattedWidth = 90;
+
 Type
  TCommentState = (csNone,csBrace,csParen);
  {$IFDEF FPC}
@@ -14,6 +15,7 @@ Type
  {$ELSE}
   TSourceString = String;
  {$ENDIF}
+
 Var
  SourceName,TempName,BackupName,ProgramName:String;
  InputFile,OutputFile:Text;
@@ -92,6 +94,7 @@ Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;
   End;ReadSourceLine:=True;
  End;
 {$ELSE}
+
  Var
   C:Char;
   TooLong:Boolean;
@@ -342,7 +345,8 @@ Var
  I,J:LongInt;
  DirectiveKind:Integer;
  W,U,S:String;
- C:Char;ThisDeclarationIsLocal:Boolean;
+ C:Char;
+ ThisDeclarationIsLocal:Boolean;
 Begin
  I:=1;PreserveCommentIndent:=State<>csNone;
  While(I<=Length(L))and not HadError do Begin
