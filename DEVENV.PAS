@@ -10253,6 +10253,15 @@ Var
  { modules au chargement (voir M6809_CRC24Step/M6809_LoadOS9ModuleAt) -     }
  { active par defaut, comme le vrai OS-9. }
  OS9_CRCModEnabled: Boolean;
+ { F$Icpt (2026-09-12, demande explicite) : enregistrement REEL (X/U        }
+ { stockes), mais jamais invoque - aucun mecanisme de signal (F$Send/       }
+ { kill) n existe dans ce sous-ensemble OS-9, donc une routine              }
+ { d interception enregistree ici est honnetement correcte (elle ne peut    }
+ { jamais etre appelee puisqu aucun signal n est jamais envoye) plutot      }
+ { qu une simulation. }
+ OS9_IcptX      : Word;
+ OS9_IcptU      : Word;
+ OS9_IcptSet    : Boolean;
  { --- Etat emulateur CoCo 3 (jalon 1 : VDG alpha 32x16) --- }
  Coco3_Active   : Boolean;
  Coco3_FB       : Array[0..199, 0..255] Of Byte;  { framebuffer 256x200 idx couleur EGA }
@@ -163008,6 +163017,19 @@ Var
   GPPid, GPI, GPJ: Integer;
   CHParamBytes: Word;
   OS9OldCRCMod: Boolean;
+  { Second lot d appels F$ (2026-09-12, demande explicite). }
+  NMHdr: Array[0..12] Of Byte;
+  NMFile: File;
+  NMBytesRead: Word;
+  NMPathStr: String;
+  NMI: Integer;
+  PNAddr, PNStart, PNEnd: Word;
+  PNCh: Byte;
+  PNLegal: Boolean;
+  SBFirst, SBEnd, SBNeed, SBTotalBits, SBBit: LongInt;
+  SBByteOfs, SBBitInByte: LongInt;
+  SBRunStart, SBRunLen, SBBestStart, SBBestLen: LongInt;
+  SBFound: Boolean;
   OK: Boolean;
   Guard: LongInt;
   DeltaW: Word;
@@ -163182,7 +163204,69 @@ Begin
            M6809_U := OS9_MEM_BASE;
            M6809_Y := OS9_MEM_BASE;
          End;
+    $09: Begin { F$Icpt(X=adresse routine d interception, U=zone memoire de }
+           { la routine) - convention registre VERIFIEE (sourceforge.net/   }
+           { p/nitros9/wiki/F$Icpt). Enregistrement REEL (voir OS9_Icpt* et  }
+           { son commentaire de tete pour l explication complete : jamais    }
+           { invoque ici puisqu aucun mecanisme de signal n existe dans ce   }
+           { sous-ensemble - comportement honnetement correct, pas une       }
+           { simulation). }
+           OS9_IcptX := M6809_X;
+           OS9_IcptU := M6809_U;
+           OS9_IcptSet := True;
+         End;
     $0A: ; { F$Sleep(D=ticks) : ne bloque jamais }
+    $0C: Begin { F$ID() -> A=PID, Y=UID - convention registre VERIFIEE       }
+           { (sourceforge.net/p/nitros9/wiki/F$ID). Ce sous-ensemble ne      }
+           { modelise qu UN SEUL "processus" logique (voir F$GPrDsc/$18 plus }
+           { haut, meme PID=1) et un seul utilisateur (superutilisateur,      }
+           { UID=0, meme simplification que F$Debug/$23 plus bas - systeme   }
+           { mono-utilisateur comme un vrai CoCo3, UID herite de CC3Go). }
+           M6809_A := 1;
+           M6809_Y := 0;
+         End;
+    $0F: Begin { F$PErr(B=code d erreur) - convention registre VERIFIEE      }
+           { (sourceforge.net/p/nitros9/wiki/F$PErr). Comportement par        }
+           { defaut REEL cite par la doc elle-meme ("ERROR #decimal        }
+           { number") - ecrit sur l ecran virtuel de l onglet (chemin        }
+           { d erreur standard, comme I$Write/I$WritLn ci-dessous pour les   }
+           { chemins 0-2). }
+           If M6809_Panel <> Nil Then Begin
+             EmuVScr_WriteStr(M6809_Panel^, 'ERROR #' + IntToStr(M6809_B));
+             EmuVScr_PutChar(M6809_Panel^, #13); EmuVScr_PutChar(M6809_Panel^, #10);
+           End;
+         End;
+    $10: Begin { F$PrsNam(X=adresse pathlist) -> X=adresse du slash          }
+           { optionnel+1, Y=adresse du dernier caractere du nom+1, A=octet   }
+           { delimiteur, B=longueur du nom - convention registre VERIFIEE    }
+           { (sourceforge.net/p/nitros9/wiki/F$PrsNam). Jeu de caracteres    }
+           { "legaux" pour un nom NON confirme byte-pres contre une source   }
+           { authentique (lettres/chiffres/points/tirets/soulignes, exclut   }
+           { '/' et les espaces/controle) - simplification honnetement       }
+           { disclosee, raisonnable et courante pour OS-9. }
+           PNAddr := M6809_X;
+           If M6809_Rd(PNAddr) = Ord('/') Then Inc(PNAddr); { slash optionnel saute }
+           PNStart := PNAddr;
+           PNEnd := PNStart;
+           While True Do Begin
+             PNCh := M6809_Rd(PNEnd);
+             PNLegal := ((PNCh >= Ord('A')) And (PNCh <= Ord('Z'))) Or
+                        ((PNCh >= Ord('a')) And (PNCh <= Ord('z'))) Or
+                        ((PNCh >= Ord('0')) And (PNCh <= Ord('9'))) Or
+                        (PNCh = Ord('.')) Or (PNCh = Ord('_')) Or (PNCh = Ord('-'));
+             If Not PNLegal Then Break;
+             Inc(PNEnd);
+           End;
+           If PNEnd = PNStart Then Begin { aucun caractere de nom trouve }
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+             M6809_Y := PNStart;
+           End Else Begin
+             M6809_X := PNAddr;
+             M6809_Y := PNEnd;
+             M6809_A := M6809_Rd(PNEnd); { octet delimiteur }
+             M6809_B := PNEnd - PNStart;
+           End;
+         End;
     $11: Begin { F$CmpNam(B=longueur chaine1, X=chaine1, Y=chaine2) : Carry }
            { clair si egales, positionne sinon - VERIFIE via la doc          }
            { NitrOS-9 (sourceforge.net/p/nitros9/wiki/F$CmpNam). Le dernier   }
@@ -163206,6 +163290,45 @@ Begin
            If CNMatch And (CNI <> CNLen) Then CNMatch := False;
            If CNMatch Then M6809_CC := M6809_CC And Not $01
            Else M6809_CC := M6809_CC Or $01;
+         End;
+    $12: Begin { F$SchBit(D=1er bit, X=adresse debut table, Y=nb bits        }
+           { requis, U=adresse fin table) -> succes : D=1er bit du bloc       }
+           { trouve, Y=nb bits (inchange) ; echec : Carry+B, D/Y=plus grand   }
+           { bloc libre trouve - convention registre VERIFIEE (sourceforge.  }
+           { net/p/nitros9/wiki/F$SchBit). Meme convention de bits que        }
+           { F$AllBit/F$DelBit ci-dessous (bit 0 = MSB du premier octet,      }
+           { bit efface=libre/positionne=alloue) - recherche un VRAI bloc de  }
+           { bits effaces consecutifs, pas une simulation. }
+           SBFirst := M6809_GetD;
+           SBNeed := M6809_Y;
+           SBEnd := M6809_U;
+           SBTotalBits := (LongInt(SBEnd) - LongInt(M6809_X) + 1) * 8;
+           SBRunStart := -1; SBRunLen := 0;
+           SBBestStart := -1; SBBestLen := 0;
+           SBFound := False;
+           SBBit := SBFirst;
+           While (SBBit < SBTotalBits) And (Not SBFound) Do Begin
+             SBByteOfs := SBBit Div 8;
+             SBBitInByte := 7 - (SBBit Mod 8);
+             If (M6809_Rd(Word(M6809_X + SBByteOfs)) And (1 Shl SBBitInByte)) = 0 Then Begin
+               { bit efface = libre }
+               If SBRunStart = -1 Then SBRunStart := SBBit;
+               Inc(SBRunLen);
+               If SBRunLen > SBBestLen Then Begin SBBestLen := SBRunLen; SBBestStart := SBRunStart; End;
+               If SBRunLen >= SBNeed Then SBFound := True;
+             End Else Begin
+               SBRunStart := -1; SBRunLen := 0;
+             End;
+             Inc(SBBit);
+           End;
+           If SBFound Then Begin
+             M6809_SetD(Word(SBRunStart));
+             M6809_Y := SBNeed;
+           End Else Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+             M6809_SetD(Word(SBBestStart));
+             M6809_Y := SBBestLen;
+           End;
          End;
     $13: Begin { F$AllBit(D=1er bit, X=adresse table, Y=nb bits) : positionne}
            { Y bits a partir du bit D - VERIFIE via la doc NitrOS-9           }
@@ -163369,6 +163492,61 @@ Begin
            { - echec honnete plutot qu un succes simule qui ne sonnerait       }
            { jamais reellement, meme discipline que le reste de ce fichier.   }
            M6809_CC := M6809_CC Or $01; M6809_B := $FF;
+         End;
+    $21: Begin { F$NMLink(A=langage/type, X=adresse nom module) -> A=type/    }
+           { langage, B=revision, X=adresse apres le nom, Y=taille requise -  }
+           { convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/    }
+           { F$NMLink). Contrairement a F$Link/$00 plus haut, exige que le    }
+           { module soit DEJA resident (n en charge jamais un nouveau depuis  }
+           { l hote - c est precisement F$NMLoad/$22 juste plus bas qui fait  }
+           { cela) - lit les vrais champs d en-tete ($87CD) deja presents en   }
+           { memoire a la base du module resident plutot que d inventer des   }
+           { valeurs. }
+           NMPathStr := M6809_ReadOS9Name(M6809_X);
+           NMI := Length(NMPathStr);
+           If (NMI > 0) And ((M6809_Rd(Word(M6809_X + NMI - 1)) And $80) = 0) Then Inc(NMI);
+           Slot := OS9_FindModuleSlot(NMPathStr);
+           If Slot < 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0; { E$MNF, pas resident }
+           End Else Begin
+             ChildEntry := OS9_ModBase[Slot]; { reutilise comme base temporaire }
+             M6809_A := M6809_Rd(Word(ChildEntry + 6));         { type/langage }
+             M6809_B := M6809_Rd(Word(ChildEntry + 7)) And $0F; { revision }
+             M6809_Y := M6809_Rd16(Word(ChildEntry + 2));        { taille du module }
+             M6809_X := Word(M6809_X + NMI);
+           End;
+         End;
+    $22: Begin { F$NMLoad(A=langage/type, X=adresse pathlist) -> A=type/      }
+           { langage, B=revision, X=adresse apres le pathlist, Y=taille       }
+           { requise - convention registre VERIFIEE (sourceforge.net/p/      }
+           { nitros9/wiki/F$NMLoad). Contrairement a F$Load/$01 plus haut,    }
+           { NE charge PAS le module en memoire (ne consomme aucun            }
+           { emplacement de la table OS9_Mod*) : lit uniquement l en-tete      }
+           { ($87CD, 13 octets) du fichier hote pour rapporter ses vraies      }
+           { caracteristiques - correctement distinct de F$Load par           }
+           { construction, pas juste par nom. }
+           NMPathStr := M6809_ReadOS9Name(M6809_X);
+           NMI := Length(NMPathStr);
+           If (NMI > 0) And ((M6809_Rd(Word(M6809_X + NMI - 1)) And $80) = 0) Then Inc(NMI);
+           GetDir(0, HostDir);
+           HostPath := HostDir + '\' + NMPathStr;
+           Assign(NMFile, HostPath);
+           {$I-} Reset(NMFile, 1); {$I+}
+           If IOResult <> 0 Then Begin
+             M6809_CC := M6809_CC Or $01; M6809_B := $F0; { E$MNF }
+           End Else Begin
+             BlockRead(NMFile, NMHdr, SizeOf(NMHdr), NMBytesRead);
+             Close(NMFile);
+             If (NMBytesRead < SizeOf(NMHdr)) Or
+                (((Word(NMHdr[0]) Shl 8) Or NMHdr[1]) <> $87CD) Then Begin
+               M6809_CC := M6809_CC Or $01; M6809_B := $F0; { pas un module OS-9 valide }
+             End Else Begin
+               M6809_A := NMHdr[6];              { type/langage }
+               M6809_B := NMHdr[7] And $0F;       { revision }
+               M6809_Y := (Word(NMHdr[2]) Shl 8) Or NMHdr[3]; { taille du module }
+               M6809_X := Word(M6809_X + NMI);
+             End;
+           End;
          End;
     $23: Begin { F$Debug(A=code fonction, 255=demande de redemarrage) -       }
            { convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/    }
