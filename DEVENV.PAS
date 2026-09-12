@@ -6046,6 +6046,90 @@ Type
   MinAlloc         : Word;   { taille minimale d'allocation (0 = 64 Ko)    }
  End;
 
+ { Chantier Windows NT/Win32 (PE), Stage 1 (2026-09-11, demande explicite   }
+ { de l utilisateur - voir project_devenv_win32pe.md pour le plan complet   }
+ { par etapes, calque sur le chantier OS/2 LX) : en-tete "PE" d un           }
+ { executable Win32 natif (Portable Executable, format de tous les .EXE/    }
+ { .DLL Windows NT/9x/.../11 32 bits). Layout verifie EMPIRIQUEMENT (pas     }
+ { seulement d apres une reference ecrite, meme discipline que LX/NE            }
+ { ci-dessus) en relisant WIN32\abap86.exe (vrai binaire MinGW/GCC de ce      }
+ { depot) via un script PowerShell autonome cette meme session : machine=     }
+ { $014C (i386), SizeOfOptionalHeader=224 (confirme = SizeOf(                }
+ { TPEOptionalHeader32) ci-dessous), point d entree RVA=$1530, 8 sections    }
+ { (.text VA=4096 RawSize=91648 RawPtr=1024, etc.), table d imports          }
+ { (kernel32.dll/oleaut32.dll/user32.dll) decodee avec succes aux offsets    }
+ { standard - deux signaux independants (machine+magic coherents, imports    }
+ { qui donnent de vrais noms ASCII plausibles) qui confirment ce layout. }
+ TPEFileHeader = Record
+  Machine             : Word;    { $014C = i386, seul type supporte ici     }
+  NumberOfSections    : Word;
+  TimeDateStamp       : LongInt;
+  PointerToSymbolTable: LongInt;
+  NumberOfSymbols     : LongInt;
+  SizeOfOptionalHeader: Word;
+  Characteristics     : Word;
+ End;
+
+ { En-tete optionnel PE32 (32 bits) - Magic=$10B, distinct de PE32+          }
+ { ($20B, 64 bits, hors de portee - voir NCEXE_OTHER qui continue de le      }
+ { rejeter). 224 octets exactement (96 champs fixes + 16 entrees              }
+ { DataDirectory de 8 octets), confirme par SizeOfOptionalHeader lu sur       }
+ { abap86.exe. }
+ TPEDataDirEntry = Record
+  VirtualAddress: LongInt;
+  DirSize       : LongInt;
+ End;
+ TPEOptionalHeader32 = Record
+  Magic                       : Word;
+  MajorLinkerVersion          : Byte;
+  MinorLinkerVersion          : Byte;
+  SizeOfCode                  : LongInt;
+  SizeOfInitializedData       : LongInt;
+  SizeOfUninitializedData     : LongInt;
+  AddressOfEntryPoint         : LongInt;  { RVA - verifie = $1530 sur abap86.exe }
+  BaseOfCode                  : LongInt;
+  BaseOfData                  : LongInt;
+  ImageBase                   : LongInt;
+  SectionAlignment            : LongInt;
+  FileAlignment               : LongInt;
+  MajorOperatingSystemVersion : Word;
+  MinorOperatingSystemVersion : Word;
+  MajorImageVersion           : Word;
+  MinorImageVersion           : Word;
+  MajorSubsystemVersion       : Word;
+  MinorSubsystemVersion       : Word;
+  Win32VersionValue           : LongInt;
+  SizeOfImage                 : LongInt;
+  SizeOfHeaders                : LongInt;
+  CheckSum                    : LongInt;
+  Subsystem                   : Word;
+  DllCharacteristics          : Word;
+  SizeOfStackReserve          : LongInt;
+  SizeOfStackCommit           : LongInt;
+  SizeOfHeapReserve           : LongInt;
+  SizeOfHeapCommit            : LongInt;
+  LoaderFlags                 : LongInt;
+  NumberOfRvaAndSizes         : LongInt;
+  DataDirectory               : Array[0..15] Of TPEDataDirEntry;
+ End;
+
+ { Entree table des sections (40 octets) - VirtualAddress/SizeOfRawData/    }
+ { PointerToRawData verifies contre les 8 sections reelles de abap86.exe     }
+ { (.text/.data/.rdata/.bss/.CRT/.idata/.stab/.stabstr). }
+ TPESectionName = Array[0..7] Of Char;
+ TPESectionHeader = Record
+  SName               : TPESectionName;
+  VirtualSize         : LongInt;
+  VirtualAddress      : LongInt;
+  SizeOfRawData       : LongInt;
+  PointerToRawData    : LongInt;
+  PointerToRelocations: LongInt;
+  PointerToLinenumbers: LongInt;
+  NumberOfRelocations : Word;
+  NumberOfLinenumbers : Word;
+  Characteristics     : LongInt;
+ End;
+
 Const
  { Chantier Windows 16 bits, Stage 2 : limites du chargeur NE - segments   }
  { et emplacements de trappe d'import, mêmes constantes utilisees par      }
@@ -6108,6 +6192,11 @@ Const
  { au-dela de ce prologue. Placee juste sous LX_TRAP_BASE pour ne jamais   }
  { chevaucher le tas (voir le nouveau plafond de Emu_LoadLX/DosAllocMem).  }
  LX_FS_BASE = LX_TRAP_BASE - $1000; { 4 Ko reserves, sous la zone de trappe}
+ { Chantier Windows NT/Win32 (PE), Stage 1 : limite du nombre de sections   }
+ { gerees par Emu_LoadPE/TermCmd_PEInfo - abap86.exe en a 8, largement       }
+ { en-dessous d une limite genereuse pour un PE "normal" (rarement plus de  }
+ { 10-15 sections). }
+ MAX_PE_SECTIONS = 64;
 
 Type
  { Entree table des pages objet LX (e32_objmap), 8 octets - format        }
@@ -8210,6 +8299,22 @@ Var
  { de fenetres/file de messages n existe dans cet emulateur LX, portee      }
  { "console uniquement" deja actee - voir project_devenv_os2lx.md). }
  LX_ClipViewerHwnd: LongInt;
+ { Chantier Windows NT/Win32 (PE), Stage 1 (2026-09-11) : etat du futur     }
+ { emulateur de programmes Win32 natifs, mode console uniquement (voir      }
+ { project_devenv_win32pe.md). Modele memoire plat calque sur LX_Mem/       }
+ { ELF64_Mem (un seul tampon, adresse lineaire = RVA = index direct, pas    }
+ { de soustraction d ImageBase necessaire puisqu on construit notre propre  }
+ { espace d adressage). }
+ PE_Mem         : Array[0..$1FFFFFF] Of Byte; { 32 Mo d espace lineaire emule}
+ PE_EntryPoint  : LongInt;  { RVA - copie de AddressOfEntryPoint au chargement}
+ PE_ImageBase   : LongInt;  { pour affichage/diagnostic seulement (PEINFO)  }
+ PE_Loaded      : Boolean;
+ PE_BinaryPath  : String;
+ PE_SectionCount: Integer;
+ PE_SectionName : Array[0..MAX_PE_SECTIONS - 1] Of String[8];
+ PE_SectionVAddr: Array[0..MAX_PE_SECTIONS - 1] Of LongInt;
+ PE_SectionVSize: Array[0..MAX_PE_SECTIONS - 1] Of LongInt;
+ PE_SectionRSize: Array[0..MAX_PE_SECTIONS - 1] Of LongInt;
  { Etat de l emulateur 6502 (Apple II, C64, Atari 8-bit, NES, Atari 2600) }
  CPU6502_Mem    : T6502MemArr;
  CPU6502_A      : Byte;
@@ -72200,6 +72305,34 @@ Begin
  CreateEmulatorTab(ExePath, '-CWIN16', '');
 End;
 
+{ Start-Win32Program/Start-Win32Application (2026-09-11, demande explicite }
+{ de l utilisateur, alias PowerShell dev) : lance l emulateur Windows NT / }
+{ Win32 (PE, chantier en cours - voir project_devenv_win32pe.md) sur un    }
+{ executable hote - meme motif exact que TermCmd_Win16Launch ci-dessus,    }
+{ seule la cible CreateEmulatorTab change (-CPE au lieu de -CWIN16). }
+Procedure TermCmd_Win32Launch(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, ExePath: String;
+Begin
+ CurrParam := TermExtractParam(ParamStr, 1);
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-Win32Program fichier.exe');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-Win32Program : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ ExePath := TermFindRomByExt(Dir, CurrParam, 'EXE');
+ If ExePath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(ExePath, '-CPE', '');
+End;
+
 { Start-DosProgram (2026-08-30, demande explicite de l utilisateur, alias  }
 { PowerShell dev) : lance l emulateur DOS (8086, cible -CD) sur un         }
 { executable/.com hote, meme motif exact que LOADFIX/LOADHIGH ci-dessous   }
@@ -79696,6 +79829,143 @@ Begin
  Emu_LoadLX := True;
 End;
 
+{ Chantier Windows NT/Win32 (PE), Stage 1 (2026-09-11) : meme discipline    }
+{ exacte que Lx_ReadHeader/Win16_ReadHeader ci-dessus (MZ -> e_lfanew ->     }
+{ signature secondaire), avec en plus la lecture de l en-tete fichier et    }
+{ de l en-tete optionnel PE32 (necessaires ici, contrairement a LX/NE, pour }
+{ trouver l offset de la table des sections - SizeOfOptionalHeader varie    }
+{ en principe d un linker a l autre, meme si 224 est la valeur universelle  }
+{ pour un PE32 standard, verifiee sur abap86.exe). Rejette proprement tout  }
+{ PE non-i386 (Machine <> $014C, ex. AMD64=$8664) et tout PE32+ (Magic <>   }
+{ $10B, ex. $20B) - NCFindExeKind continue de les classer NCEXE_OTHER. }
+{ Convertit un nom de section PE (8 octets, complete par des zeros - PAS   }
+{ des espaces comme le VolLabel ISO9660 de Emu_CdromOpenOne) en chaine       }
+{ Pascal courte, en s arretant au premier octet nul (ou a la fin des 8       }
+{ octets si le nom fait exactement 8 caracteres, ex. ".stabstr"). }
+Function Pe_SectionNameStr(Const SName: TPESectionName): String;
+Var
+ I: Integer;
+ S: String;
+Begin
+ S := '';
+ For I := 0 To 7 Do Begin
+  If SName[I] = #0 Then Break;
+  S := S + SName[I];
+ End;
+ Pe_SectionNameStr := S;
+End;
+
+Function Pe_ReadHeaders(Const Path: String; Var FileHdr: TPEFileHeader;
+ Var OptHdr: TPEOptionalHeader32; Var HdrOfs, FSize: LongInt): Boolean;
+Var
+ F: File;
+ Sig: Array[0..1] Of Char;
+ LfanewBuf: Array[0..3] Of Byte;
+ PeSig: Array[0..3] Of Char;
+ BytesRead: Word;
+Begin
+ Pe_ReadHeaders := False;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ FSize := FileSize(F);
+ If FSize < 64 Then Begin Close(F); Exit; End;
+ BlockRead(F, Sig, 2, BytesRead);
+ If (BytesRead <> 2) Or (Sig[0] <> 'M') Or (Sig[1] <> 'Z') Then Begin
+  Close(F); Exit;
+ End;
+ Seek(F, $3C);
+ BlockRead(F, LfanewBuf, 4, BytesRead);
+ If BytesRead <> 4 Then Begin Close(F); Exit; End;
+ HdrOfs := LongInt(LfanewBuf[0]) Or (LongInt(LfanewBuf[1]) Shl 8) Or
+  (LongInt(LfanewBuf[2]) Shl 16) Or (LongInt(LfanewBuf[3]) Shl 24);
+ If (HdrOfs <= 0) Or (HdrOfs + 4 > FSize) Then Begin Close(F); Exit; End;
+ Seek(F, HdrOfs);
+ BlockRead(F, PeSig, 4, BytesRead);
+ If (BytesRead <> 4) Or (PeSig[0] <> 'P') Or (PeSig[1] <> 'E') Or
+    (PeSig[2] <> #0) Or (PeSig[3] <> #0) Then Begin
+  Close(F); Exit;
+ End;
+ FillChar(FileHdr, SizeOf(FileHdr), 0);
+ BlockRead(F, FileHdr, SizeOf(FileHdr), BytesRead);
+ If BytesRead <> SizeOf(FileHdr) Then Begin Close(F); Exit; End;
+ If FileHdr.Machine <> $014C Then Begin Close(F); Exit; End; { i386 seul supporte }
+ FillChar(OptHdr, SizeOf(OptHdr), 0);
+ BlockRead(F, OptHdr, SizeOf(OptHdr), BytesRead);
+ Close(F);
+ If BytesRead <> SizeOf(OptHdr) Then Exit;
+ If OptHdr.Magic <> $10B Then Exit; { PE32 uniquement, pas PE32+ (64 bits) }
+ Pe_ReadHeaders := True;
+End;
+
+{ Chantier Windows NT/Win32 (PE), Stage 1 (suite) : chargeur reel - copie   }
+{ chaque section a son adresse virtuelle (RVA) dans PE_Mem. Beaucoup plus   }
+{ simple que Emu_LoadLX (pas de table de pages indirecte, pas de fixups a   }
+{ appliquer a ce stade - juste une copie directe par section) : PE_Mem est  }
+{ mis a zero une seule fois avant la boucle, donc la partie "BSS" d une      }
+{ section (VirtualSize > SizeOfRawData, ex. .bss qui a SizeOfRawData=0) est }
+{ deja correctement zero-remplie sans code special, contrairement au         }
+{ traitement page-par-page necessaire pour LX. }
+Function Emu_LoadPE(Const FileName: String): Boolean;
+Var
+ FileHdr: TPEFileHeader;
+ OptHdr: TPEOptionalHeader32;
+ HdrOfs, FSize: LongInt;
+ F: File;
+ BytesRead: Word;
+ I: Integer;
+ Sect: TPESectionHeader;
+ CopyLen: LongInt;
+Begin
+ Emu_LoadPE := False;
+ PE_Loaded := False;
+ PE_SectionCount := 0;
+ If Not Pe_ReadHeaders(FileName, FileHdr, OptHdr, HdrOfs, FSize) Then Exit;
+ If (FileHdr.NumberOfSections <= 0) Or
+    (FileHdr.NumberOfSections > MAX_PE_SECTIONS) Then Exit;
+ FillChar(PE_Mem, SizeOf(PE_Mem), 0);
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Seek(F, HdrOfs + 4 + SizeOf(FileHdr) + FileHdr.SizeOfOptionalHeader);
+ For I := 0 To FileHdr.NumberOfSections - 1 Do Begin
+  FillChar(Sect, SizeOf(Sect), 0);
+  BlockRead(F, Sect, SizeOf(Sect), BytesRead);
+  If BytesRead <> SizeOf(Sect) Then Begin Close(F); Exit; End;
+  PE_SectionName[I]  := Pe_SectionNameStr(Sect.SName);
+  PE_SectionVAddr[I] := Sect.VirtualAddress;
+  PE_SectionVSize[I] := Sect.VirtualSize;
+  PE_SectionRSize[I] := Sect.SizeOfRawData;
+  Inc(PE_SectionCount);
+  If (Sect.SizeOfRawData > 0) And (Sect.VirtualAddress >= 0) Then Begin
+   CopyLen := Sect.SizeOfRawData;
+   If Sect.VirtualAddress + CopyLen > LongInt(SizeOf(PE_Mem)) Then Begin
+    Close(F); Exit; { section hors de l espace lineaire emule }
+   End;
+   {$I-}
+   Seek(F, Sect.PointerToRawData);
+   {$I+}
+   If IOResult <> 0 Then Begin Close(F); Exit; End;
+   BlockRead(F, PE_Mem[Sect.VirtualAddress], CopyLen, BytesRead);
+   If BytesRead <> Word(CopyLen) Then Begin Close(F); Exit; End;
+  End;
+  { Repositionner sur la table des sections pour l iteration suivante -    }
+  { la copie ci-dessus a deplace le curseur du fichier ailleurs. }
+  Seek(F, HdrOfs + 4 + SizeOf(FileHdr) + FileHdr.SizeOfOptionalHeader +
+   LongInt(I + 1) * SizeOf(TPESectionHeader));
+ End;
+ Close(F);
+ PE_EntryPoint := OptHdr.AddressOfEntryPoint;
+ PE_ImageBase := OptHdr.ImageBase;
+ PE_BinaryPath := FileName;
+ PE_Loaded := True;
+ Emu_LoadPE := True;
+End;
+
 { Forward - les aides registre generiques (Dpmi_Get/SetReg8/16/32, aucune  }
 { dependance LDT/DPMI dans leur corps, juste un mappage numero->champ       }
 { TEmuRegs) ne sont definies que plus loin dans le fichier (pres de         }
@@ -81042,6 +81312,65 @@ Begin
   End;
  End;
  Close(F);
+End;
+
+{ Chantier Windows NT/Win32 (PE), Stage 1 (2026-09-11) : PEINFO <chemin     }
+{ hote> - dumpe l en-tete PE + table des sections SANS charger en memoire   }
+{ ni executer, meme role exact que LXINFO/WIN16INFO ci-dessus. Reutilise    }
+{ Pe_ReadHeaders (le meme lecteur d en-tetes qu Emu_LoadPE) pour eviter de   }
+{ dupliquer le parsing - seule la table des sections est relue separement,  }
+{ meme motif que LXINFO qui rouvre le fichier pour re-lire sa table des      }
+{ objets apres Lx_ReadHeader. }
+Procedure TermCmd_PEInfo(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Path: String;
+ FileHdr: TPEFileHeader;
+ OptHdr: TPEOptionalHeader32;
+ HdrOfs, FSize: LongInt;
+ F: File;
+ BytesRead: Word;
+ I: Integer;
+ Sect: TPESectionHeader;
+Begin
+ Path := TermTrim(ParamStr);
+ If Path = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : PEINFO <chemin hote vers un .exe>');
+  Exit;
+ End;
+ If Not Pe_ReadHeaders(Path, FileHdr, OptHdr, HdrOfs, FSize) Then Begin
+  TermAddLine(TP, 'PEINFO : "' + Path +
+   '" introuvable, ou pas un PE32 i386 valide (PE32+/64 bits non supporte).');
+  Exit;
+ End;
+ TermAddLine(TP, 'PEINFO ' + Path + ' (' + IntToStr(FSize) + ' octets)');
+ TermAddLine(TP, ' machine=$' + HexLong(FileHdr.Machine) + ' (i386)' +
+  '  sections=' + IntToStr(FileHdr.NumberOfSections));
+ TermAddLine(TP, ' point d''entree (RVA)=$' + HexLong(OptHdr.AddressOfEntryPoint) +
+  '  ImageBase=$' + HexLong(OptHdr.ImageBase));
+ TermAddLine(TP, ' SizeOfImage=$' + HexLong(OptHdr.SizeOfImage) +
+  '  SectionAlignment=$' + HexLong(OptHdr.SectionAlignment) +
+  '  FileAlignment=$' + HexLong(OptHdr.FileAlignment));
+ If (FileHdr.NumberOfSections > 0) And
+    (FileHdr.NumberOfSections <= MAX_PE_SECTIONS) Then Begin
+  TermAddLine(TP, ' -- table des sections --');
+  {$I-}
+  Assign(F, Path);
+  Reset(F, 1);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+  Seek(F, HdrOfs + 4 + SizeOf(FileHdr) + FileHdr.SizeOfOptionalHeader);
+  For I := 0 To FileHdr.NumberOfSections - 1 Do Begin
+   FillChar(Sect, SizeOf(Sect), 0);
+   BlockRead(F, Sect, SizeOf(Sect), BytesRead);
+   If BytesRead <> SizeOf(Sect) Then Break;
+   TermAddLine(TP, '  ' + Pe_SectionNameStr(Sect.SName) +
+    '  VA=$' + HexLong(Sect.VirtualAddress) +
+    '  VSize=$' + HexLong(Sect.VirtualSize) +
+    '  RawSize=$' + HexLong(Sect.SizeOfRawData) +
+    '  RawPtr=$' + HexLong(Sect.PointerToRawData));
+  End;
+  Close(F);
+ End;
 End;
 
 { Chantier Windows 16 bits (2026-08-25), Stage 1 : WIN16INFO <chemin hote> }
@@ -101314,6 +101643,12 @@ Begin
   TermAddLine(TP,
    '  Invoke-Win16Program fichier[.exe]        Alias de Start-Win16');
   TermAddLine(TP, '');
+  TermAddLine(TP, '--- Lancer un programme Windows 32 bits (PE) ---');
+  TermAddLine(TP,
+   '  Start-Win32Program fichier[.exe]        Emulateur Windows NT/Win32 (PE)');
+  TermAddLine(TP,
+   '  Start-Win32Application fichier[.exe]    Alias de Start-Win32Program');
+  TermAddLine(TP, '');
   TermAddLine(TP, '--- Lancer un programme DOS ---');
   TermAddLine(TP,
    '  Start-DosProgram fichier[.exe/.com]     Emulateur DOS (8086)');
@@ -110829,7 +111164,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 247;
+ PS_CMD_ALIASES = 249;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -111056,7 +111391,8 @@ Const
   'REVOKE-ORACLEPRIVILEGE',
   'BACKUP-ORACLEDATABASE',
   'RESTORE-ORACLEDATABASE',
-  'START-OS9PROGRAM'
+  'START-OS9PROGRAM',
+  'START-WIN32PROGRAM','START-WIN32APPLICATION'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -111283,7 +111619,8 @@ Const
   223,
   224,
   225,
-  226
+  226,
+  227,227
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -111742,6 +112079,8 @@ Begin
     TermCmd_ARM64(TP, ParamStr)
    Else If CurrCmd = 'LXINFO' Then
     TermCmd_LXInfo(TP, ParamStr)
+   Else If CurrCmd = 'PEINFO' Then
+    TermCmd_PEInfo(TP, ParamStr)
    Else If CurrCmd = 'WIN16INFO' Then
     TermCmd_Win16Info(TP, ParamStr)
    Else If CurrCmd = 'WIN16LOAD' Then
@@ -112035,6 +112374,9 @@ Begin
     78: TermCmd_StartNesProgram(TP, ParamStr);       { START-NESPROGRAM }
     79: TermCmd_StartLinuxProgram(TP, ParamStr);      { START-LINUXPROGRAM }
     226: TermCmd_StartOS9Program(TP, ParamStr);       { START-OS9PROGRAM }
+    { Start-Win32Program/Start-Win32Application (2026-09-11, demande        }
+    { explicite) - meme handler TermCmd_Win32Launch pour les 2 alias. }
+    227: TermCmd_Win32Launch(TP, ParamStr);      { START-WIN32PROGRAM/APPLICATION }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -112394,6 +112736,8 @@ Begin
    TermCmd_ELFBP(TP, ParamStr)
   Else If CurrCmd = 'LXINFO' Then
    TermCmd_LXInfo(TP, ParamStr)
+  Else If CurrCmd = 'PEINFO' Then
+   TermCmd_PEInfo(TP, ParamStr)
   Else If CurrCmd = 'WIN16INFO' Then
    TermCmd_Win16Info(TP, ParamStr)
   Else If CurrCmd = 'WIN16LOAD' Then
@@ -114895,6 +115239,17 @@ Begin
     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_WIN16) Then Begin
      CreateEmulatorTab(TempPath, '-CWIN16', '');
      NCActionOpenAssociated := True;
+    End
+    { Chantier Windows NT/Win32 (PE), Stage 0 (2026-09-11, demande explicite }
+    { de l utilisateur : "clic sur WIN32\abap86.exe... presentement il ne   }
+    { fait rien") - meme motif que les Stage 0 OS/2 LX/Win16 ci-dessus :    }
+    { NCEXE_OTHER (PE) n avait AUCUNE branche Else, Entree ne faisait donc  }
+    { litteralement rien. Simple message pour l instant - voir              }
+    { project_devenv_win32pe.md pour le plan complet par etapes. }
+    Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OTHER) Then Begin
+     NCShowMessage('Executable Win32 (PE) detecte - emulateur en ' +
+      'developpement (voir project_devenv_win32pe.md).', ncBrowse);
+     NCActionOpenAssociated := True;
     End;
    End;
   End;
@@ -114948,6 +115303,13 @@ Begin
      { commentaire jumeau au site HPFS ci-dessus pour le contexte complet. }
      Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_WIN16) Then Begin
       CreateEmulatorTab(TempPath, '-CWIN16', '');
+      NCActionOpenAssociated := True;
+     End
+     { Chantier Windows NT/Win32 (PE), Stage 0 - voir le commentaire jumeau }
+     { au site HPFS ci-dessus pour le contexte complet. }
+     Else If (Ext = 'EXE') And (NCFindExeKind(TempPath) = NCEXE_OTHER) Then Begin
+      NCShowMessage('Executable Win32 (PE) detecte - emulateur en ' +
+       'developpement (voir project_devenv_win32pe.md).', ncBrowse);
       NCActionOpenAssociated := True;
      End;
     End;
@@ -115012,6 +115374,13 @@ Begin
    { commentaire jumeau au site HPFS plus haut pour le contexte complet. }
    Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_WIN16) Then Begin
     CreateEmulatorTab(FullPath, '-CWIN16', '');
+    NCActionOpenAssociated := True;
+   End
+   { Chantier Windows NT/Win32 (PE), Stage 0 - voir le commentaire jumeau   }
+   { au site HPFS plus haut pour le contexte complet. }
+   Else If (Ext = 'EXE') And (NCFindExeKind(FullPath) = NCEXE_OTHER) Then Begin
+    NCShowMessage('Executable Win32 (PE) detecte - emulateur en ' +
+     'developpement (voir project_devenv_win32pe.md).', ncBrowse);
     NCActionOpenAssociated := True;
    End
    Else If (Ext = '') And NCIsElfExecutable(FullPath) Then Begin
