@@ -7782,6 +7782,10 @@ Var
  { appels de remplissage existants (FillRgn/PatBlt/etc.) continuent          }
  { d'utiliser leur noir fixe deja etabli. }
  Win16_LastBrushColor: LongInt;
+ { GDI.EXE CreatePenIndirect (2026-09-12, demande explicite) - SEPARE de    }
+ { Win16_LastBrushColor (un stylo et un pinceau sont des objets              }
+ { conceptuellement distincts), meme discipline "reel mais non consomme". }
+ Win16_LastPenColor: LongInt;
  { GDI.EXE FloodFill (2026-09-12, demande explicite) - pile de travail       }
  { GLOBALE (pas locale a la procedure) pour l'algorithme de remplissage      }
  { par propagation : bornee a la taille du framebuffer $13 entier           }
@@ -77762,6 +77766,7 @@ Begin
  Win16_ClipX1 := 0; Win16_ClipY1 := 0; Win16_ClipX2 := 0; Win16_ClipY2 := 0;
  Win16_DCSaveLevel := 0;
  Win16_LastBrushColor := 0;
+ Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
@@ -81413,6 +81418,42 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 16;
    End;
+   57: Begin
+    { CreateFontIndirect(lpLogFont):HFONT - ordinal VERIFIE via              }
+    { gdi.exe16.spec (1 pointeur LOIN = 2 mots, structure LOGFONT). Meme     }
+    { discipline honnete que CreateFont/$56 juste au-dessus : handle          }
+    { synthetique non-nul, RIEN de la structure LOGFONT n'est conserve       }
+    { (meme raison exacte : aucun mecanisme de mise a l'echelle de police     }
+    { n'existe dans ce sous-ensemble pour consommer une valeur stockee). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   58: Begin
+    { CreateHatchBrush(nIndex,crColor):HBRUSH - ordinal VERIFIE via          }
+    { gdi.exe16.spec (1 mot + 1 LONG = 3 mots, LONG poids-fort d'abord        }
+    { comme SetBkColor/$1). Meme simplification de rendu que                 }
+    { CreateSolidBrush/$66 (handle synthetique, aucun VRAI motif de           }
+    { hachures dessinable) - mais lit et conserve REELLEMENT crColor dans     }
+    { Win16_LastBrushColor (meme convention deja etablie par                  }
+    { CreateBrushIndirect/$50 : aucun consommateur actuel, disclose            }
+    { honnetement). nIndex (style de hachure) accepte sans effet, meme        }
+    { limitation. }
+    LBColorHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBColorLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_LastBrushColor := (LongInt(LBColorHi) Shl 16) Or LongInt(LBColorLo);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   60: Begin
+    { CreatePatternBrush(hBitmap):HBRUSH - ordinal VERIFIE via gdi.exe16.   }
+    { spec (1 mot). Meme simplification de rendu que CreateSolidBrush/$66 : }
+    { handle synthetique non-nul - contrairement a CreateHatchBrush/$58,     }
+    { AUCUNE couleur reelle n'est extraite (hBitmap ne reference qu'un        }
+    { handle de bitmap synthetique lui-meme sans donnees pixel reelles,       }
+    { voir CreateBitmap/$48 - rien de reel a en tirer). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
    61: Begin
     { CreatePen(nStyle, nWidth, crColor):HPEN - ordinal VERIFIE via         }
     { gdi.exe16.spec (2 mots signes + 1 LONG = 4 mots). Meme               }
@@ -81420,6 +81461,25 @@ Begin
     { non-nul, aucun VRAI stylo dessinable. }
     P.CPU.Regs.AX := 1;
     ArgWords := 4;
+   End;
+   62: Begin
+    { CreatePenIndirect(lpLogPen):HPEN - ordinal VERIFIE via gdi.exe16.spec }
+    { (1 pointeur LOIN = 2 mots, structure LOGPEN : lopnStyle mot@0,          }
+    { lopnWidth POINT (mot x@2, mot y@4, y toujours ignore pour un stylo -    }
+    { convention reelle documentee), lopnColor LONG@6). Meme simplification  }
+    { de rendu que CreatePen/$61 (handle synthetique, aucun VRAI stylo        }
+    { dessinable) - mais lit et conserve REELLEMENT lopnColor dans un         }
+    { nouveau `Win16_LastPenColor` (SEPARE de Win16_LastBrushColor - un       }
+    { stylo et un pinceau sont des objets conceptuellement distincts, meme    }
+    { si aucun des deux n'est encore consomme, disclose comme                 }
+    { CreateBrushIndirect/$50). }
+    LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LBColorLo := Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 6));
+    LBColorHi := Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 8));
+    Win16_LastPenColor := (LongInt(LBColorHi) Shl 16) Or LongInt(LBColorLo);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
    End;
    66: Begin
     { CreateSolidBrush(crColor):HBRUSH - ordinal VERIFIE via                }
