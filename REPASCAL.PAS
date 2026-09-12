@@ -26,8 +26,10 @@ Var
  CommentState:TCommentState;
  OutLine:TSourceString;
  PreserveCommentIndent,AwaitingThenBegin:Boolean;
- RoutineHeader,AwaitingRoutineBegin,RoutineNeedsBlank,DeclarationSection,UsesSection:Boolean;
+ RoutineHeader,AwaitingRoutineBegin,RoutineNeedsBlank,DeclarationSection,
+ UsesSection:Boolean;
  ParenthesisLevel:Integer;
+
 Function UpperString(Const S:String):String;
 Var
  R:String;
@@ -35,15 +37,19 @@ Var
 Begin
  R:=S;For I:=1 to Length(R)do R[I]:=UpCase(R[I]);UpperString:=R;
 End;
+
 Function IsIdentStart(C:Char):Boolean;Begin
  IsIdentStart:=C in ['A'..'Z','a'..'z','_'];
 End;
+
 Function IsIdentChar(C:Char):Boolean;Begin
  IsIdentChar:=C in ['A'..'Z','a'..'z','_','0'..'9'];
 End;
+
 Function SameText(Const A,B:String):Boolean;Begin
  SameText:=UpperString(A)=UpperString(B);
 End;
+
 Function FileBase(Const S:String):String;
 Var
  I,First,Dot:Integer;
@@ -54,6 +60,7 @@ Begin
  End Else If S[I]='.'Then Dot:=I;
  If Dot=0 Then Dot:=Length(S)+1;FileBase:=Copy(S,First,Dot-First);
 End;
+
 Function ReplaceExtension(Const S,Ext:String):String;
 Var
  I,Dot:Integer;
@@ -66,9 +73,11 @@ Begin
  End;
  If Dot=0 Then ReplaceExtension:=S+Ext Else ReplaceExtension:=Copy(S,1,Dot-1)+Ext;
 End;
+
 Procedure Error(Const S:String);Begin
  WriteLn('REPASCAL: ',S);HadError:=True;
 End;
+
 Procedure Usage;Begin
  WriteLn('REPASCAL - Reformate un fichier source Pascal.');WriteLn;
  WriteLn('Syntaxe : REPASCAL fichier.pas');
@@ -103,6 +112,7 @@ Begin
  ReadSourceLine:=True;
 End;
 {$ENDIF}
+
 Procedure CountLine(Const L:TSourceString;Var State:TCommentState;Var FirstFound:Boolean);
 Var
  I,J:Integer;
@@ -164,6 +174,7 @@ Begin
   End;Inc(I);
  End;
 End;
+
 Procedure FirstPass;
 Var
  L:TSourceString;
@@ -177,6 +188,7 @@ Begin
  While ReadSourceLine(InputFile,L)do CountLine(L,CommentState,FirstFound);
  Close(InputFile);If IOResult<>0 Then Error('erreur de fermeture du fichier source');
 End;
+
 Function TrimLine(Const S:TSourceString):TSourceString;
 Var
  A,B:LongInt;
@@ -184,6 +196,7 @@ Begin
  A:=1;While(A<=Length(S))and(S[A]=' ')do Inc(A);B:=Length(S);
  While(B>=A)and(S[B]=' ')do Dec(B);TrimLine:=Copy(S,A,B-A+1);
 End;
+
 Procedure AppendText(Const S:TSourceString);
 Var
  T:TSourceString;
@@ -198,6 +211,7 @@ Begin
  OutLine:=OutLine+T;
  {$ENDIF}
 End;
+
 Procedure AppendComment(Const S:TSourceString);Begin
  {$IFNDEF FPC}
  If Length(OutLine)+Length(S)>MaxLineLength Then Begin
@@ -207,12 +221,14 @@ Procedure AppendComment(Const S:TSourceString);Begin
  OutLine:=OutLine+S;
  {$ENDIF}
 End;
+
 Function LeftTrim(Const S:TSourceString):TSourceString;
 Var
  I:LongInt;
 Begin
  I:=1;While(I<=Length(S))and(S[I]in[' ',#9])do Inc(I);LeftTrim:=Copy(S,I,Length(S)-I+1);
 End;
+
 Function FindLineBreak(Const S:TSourceString;Limit:LongInt):LongInt;
 Var
  I,LastSemi,LastOperator:LongInt;
@@ -248,6 +264,7 @@ Begin
  End;
  If LastSemi<>0 Then FindLineBreak:=LastSemi Else FindLineBreak:=LastOperator;
 End;
+
 Procedure WriteFormattedLine(Const Source:TSourceString;Level:LongInt);
 Var
  S,Part:TSourceString;
@@ -267,6 +284,7 @@ Begin
  End;
  For I:=1 to Level do Write(OutputFile,' ');WriteLn(OutputFile,S);
 End;
+
 Procedure EmitLine;
 Var
  S:TSourceString;
@@ -279,10 +297,12 @@ Begin
  ;PreserveCommentIndent:=False;AwaitingThenBegin:=False;
  If IOResult<>0 Then Error('erreur d''ecriture');
 End;
+
 Procedure EmitPending;Begin
  If TrimLine(OutLine)<>''Then EmitLine Else OutLine:='';
 End;
 Procedure FormatLine(Const L:TSourceString;Var State:TCommentState;
+
 Var SkipProgram:Boolean);
 Var
  I,J:LongInt;
@@ -345,7 +365,8 @@ Begin
    If SkipProgram Then Continue;
    If(U='PROCEDURE')or(U='FUNCTION')Then Begin
     If AwaitingRoutineBegin Then Begin
-     If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;AwaitingRoutineBegin:=False;
+     If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;
+     AwaitingRoutineBegin:=False;
      RoutineNeedsBlank:=False;
     End;
     If DeclarationSection Then Begin
@@ -362,7 +383,8 @@ Begin
    Else If(U='CONST')or(U='TYPE')or(U='VAR')Then Begin
     If(ParenthesisLevel=0)and((TrimLine(OutLine)='')or AwaitingRoutineBegin)Then Begin
      If AwaitingRoutineBegin Then Begin
-      If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;AwaitingRoutineBegin:=False;
+      If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;
+      AwaitingRoutineBegin:=False;
       RoutineNeedsBlank:=False;
      End;
      If DeclarationSection Then Begin
@@ -433,6 +455,7 @@ Begin
  If(TrimLine(OutLine)<>'')and not(AwaitingThenBegin or AwaitingRoutineBegin)
  Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram Then OutLine:='';
 End;
+
 Procedure SecondPass;
 Var
  L:TSourceString;
@@ -456,6 +479,7 @@ Begin
  Close(InputFile);Close(OutputFile);
  If IOResult<>0 Then Error('erreur de fermeture du fichier temporaire');
 End;
+
 Procedure InstallResult;
 Var
  OldFile,NewFile,BakFile:File;
