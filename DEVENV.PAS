@@ -78631,6 +78631,12 @@ Var
  GWEOldX, GWEOldY: SmallInt;
  GVOOldX, GVOOldY: SmallInt;
  GVEOldX, GVEOldY: SmallInt;
+ { GDI.EXE ScaleWindowExt/OffsetViewportOrg/ScaleViewportExt (2026-09-12,   }
+ { demande explicite). }
+ SWEOldX, SWEOldY: SmallInt;
+ SWEXNum, SWEXDenom, SWEYNum, SWEYDenom: SmallInt;
+ SVEOldX, SVEOldY: SmallInt;
+ SVEXNum, SVEXDenom, SVEYNum, SVEYDenom: SmallInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -79982,6 +79988,67 @@ Begin
     P.CPU.Regs.AX := Word(GWOOldX);
     P.CPU.Regs.DX := Word(GWOOldY);
     ArgWords := 3;
+   End;
+   16: Begin
+    { ScaleWindowExt(hdc, xNum, xDenom, yNum, yDenom):DWORD (extension       }
+    { PRECEDENTE, POINT packe DX:AX=y:x) - ordinal VERIFIE via                }
+    { gdi.exe16.spec (5 mots : hdc + 4 entiers SIGNES, yDenom au sommet de   }
+    { la pile). REEL : multiplie/divise VRAIMENT Win16_CurrentWindowExtX/Y   }
+    { par les fractions demandees (arrondi au plus proche, meme esprit       }
+    { qu'un MulDiv reel) - genuinement different de SetWindowExt/$12 (pas    }
+    { une redite, une mise a l'echelle RELATIVE a la valeur courante, sens    }
+    { documente par l'utilisateur). Denominateur nul garde l'axe INCHANGE    }
+    { (defensif, un vrai GDI refuserait/ignorerait aussi une division par     }
+    { zero plutot que planter). Meme limitation deja disclosee pour toute la }
+    { famille MapMode/Window*/Viewport* : non consomme par le pipeline de    }
+    { coordonnees existant. }
+    SWEOldX := Win16_CurrentWindowExtX;
+    SWEOldY := Win16_CurrentWindowExtY;
+    SWEXNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    SWEXDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    SWEYNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    SWEYDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If SWEXDenom <> 0 Then
+     Win16_CurrentWindowExtX := SmallInt(Round(SWEOldX * SWEXNum / SWEXDenom));
+    If SWEYDenom <> 0 Then
+     Win16_CurrentWindowExtY := SmallInt(Round(SWEOldY * SWEYNum / SWEYDenom));
+    P.CPU.Regs.AX := Word(SWEOldX);
+    P.CPU.Regs.DX := Word(SWEOldY);
+    ArgWords := 5;
+   End;
+   17: Begin
+    { OffsetViewportOrg(hdc, X, Y):DWORD (origine PRECEDENTE, POINT packe    }
+    { DX:AX=y:x) - ordinal VERIFIE via gdi.exe16.spec (3 mots). REEL, miroir }
+    { exact d'OffsetWindowOrg/$15 mais pour le point de vue : ajoute X,Y a   }
+    { l'origine COURANTE (Win16_CurrentViewportOrgX/Y) au lieu de l'ecraser, }
+    { sens documente par l'utilisateur. }
+    GVOOldX := Win16_CurrentViewportOrgX;
+    GVOOldY := Win16_CurrentViewportOrgY;
+    Win16_CurrentViewportOrgX := SmallInt(Word(GVOOldX) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    Win16_CurrentViewportOrgY := SmallInt(Word(GVOOldY) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Word(GVOOldX);
+    P.CPU.Regs.DX := Word(GVOOldY);
+    ArgWords := 3;
+   End;
+   18: Begin
+    { ScaleViewportExt(hdc, xNum, xDenom, yNum, yDenom):DWORD (extension      }
+    { PRECEDENTE, POINT packe DX:AX=y:x) - ordinal VERIFIE via                }
+    { gdi.exe16.spec (5 mots). REEL, miroir exact de ScaleWindowExt/$16       }
+    { mais pour le point de vue (Win16_CurrentViewportExtX/Y) - meme          }
+    { arrondi, meme garde denominateur nul. }
+    SVEOldX := Win16_CurrentViewportExtX;
+    SVEOldY := Win16_CurrentViewportExtY;
+    SVEXNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    SVEXDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    SVEYNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    SVEYDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If SVEXDenom <> 0 Then
+     Win16_CurrentViewportExtX := SmallInt(Round(SVEOldX * SVEXNum / SVEXDenom));
+    If SVEYDenom <> 0 Then
+     Win16_CurrentViewportExtY := SmallInt(Round(SVEOldY * SVEYNum / SVEYDenom));
+    P.CPU.Regs.AX := Word(SVEOldX);
+    P.CPU.Regs.DX := Word(SVEOldY);
+    ArgWords := 5;
    End;
    80: Begin
     { GetDeviceCaps(hDC, nIndex):int - ordinal VERIFIE via                  }
