@@ -5269,6 +5269,15 @@ Type
   CharH      : Integer;          { hauteur d un caractere (px)     }
   Cols       : Integer;          { colonnes effectives (40 ou 80)  }
   Rows       : Integer;          { lignes effectives (typ. 25)     }
+  { LastGridW/H (2026-09-12, New-EmulatorGif) : largeur/hauteur REELLES du }
+  { contenu dessine par le DERNIER appel a DrawEmulatorPanel, quel que     }
+  { soit le backend (graphique mis a l'echelle, texte, NES/Atari/CoCo3 -   }
+  { chacun calcule sa propre geometrie LOCALEMENT dans DrawEmulatorPanel,  }
+  { jamais partagee ailleurs jusqu'ici) - permet a un appelant EXTERNE     }
+  { (capture d'ecran) de connaitre le rectangle EXACT du contenu emule     }
+  { sans dupliquer 5 formules de geometrie differentes. }
+  LastGridW  : Integer;
+  LastGridH  : Integer;
   NeedRepaint: Boolean;          { redessin complet requis         }
   StatusMsg  : String[127];      { message d etat affiche en bas   }
   { Stage 1 "multi-fenetre" (2026-08-15) : Loaded distingue "binaire      }
@@ -10870,6 +10879,13 @@ Function Emu_LoadPE(Const FileName: String): Boolean; Forward;
 Procedure Pe_Step; Forward;
 Function Pe_ReadByte(Addr: LongInt): Byte; Forward;
 Function Pe_ReadDWord(Addr: LongInt): LongInt; Forward;
+{ Crochet TEMPORAIRE /WIN16DMP (2026-09-12, enquete aiguille CLOCK.EXE, voir  }
+{ plus bas) - memes 3 routines deja definies plus loin dans le fichier,      }
+{ Forward necessaire ici pour la meme raison que RunUnitTests8086 ci-dessus. }
+Procedure Emu_InitComputer(Var C: TEmuCPU); Forward;
+Function Win16_LoadNE(Var C: TEmuCPU; Const Path: String): Boolean; Forward;
+Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
+Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String; Forward;
 
 Procedure ParseCommandLine(Var Opts: TDevEnvOptions);
 Var
@@ -10877,6 +10893,12 @@ Var
  Arg, Ext, EmuArg, EmuName, EmuFn, EmuUp: String;
  DumpS: String;
  DumpI: Integer;
+ Dmp_Parts: String;
+ Dmp_C1: Integer;
+ DmpPath, DmpSegS, DmpOfsS, DmpLenS: String;
+ DmpSeg, DmpOfs: Word;
+ DmpLen: LongInt;
+ DmpErr: Integer;
 Begin
  For I := 1 To ParamCount Do Begin
   Arg := ParamStr(I);
@@ -11117,6 +11139,45 @@ Begin
    End Else
     ConRawWriteLn('non-halte apres 50000000 instructions, eip=$' + HexLong(PE_EIP));
    Halt(EXIT_OK);
+  End
+  Else If (Length(Arg) >= 10) And
+          ((Copy(Arg, 1, 10) = '/WIN16DMP:') Or (Copy(Arg, 1, 10) = '/win16dmp:')) Then Begin
+   { Crochet TEMPORAIRE de diagnostic (2026-09-12, enquete aiguille CLOCK.EXE)}
+   { - vide brut d'octets a un segment:offset reel deja resolu par            }
+   { Win16_LoadNE (RealSegBase, voir Win16_SegBase), pour desassembler a la   }
+   { main sans repasser par une capture GUI. Syntaxe :                        }
+   { /WIN16DMP:chemin.exe,segHex,ofsHex,longueur - A RETIRER apres usage. }
+   Begin
+    Dmp_Parts := Arg;
+    Delete(Dmp_Parts, 1, 10);
+    Dmp_C1 := Pos(',', Dmp_Parts);
+    DmpPath := Copy(Dmp_Parts, 1, Dmp_C1 - 1);
+    Delete(Dmp_Parts, 1, Dmp_C1);
+    Dmp_C1 := Pos(',', Dmp_Parts);
+    DmpSegS := Copy(Dmp_Parts, 1, Dmp_C1 - 1);
+    Delete(Dmp_Parts, 1, Dmp_C1);
+    Dmp_C1 := Pos(',', Dmp_Parts);
+    DmpOfsS := Copy(Dmp_Parts, 1, Dmp_C1 - 1);
+    DmpLenS := Copy(Dmp_Parts, Dmp_C1 + 1, Length(Dmp_Parts) - Dmp_C1);
+    Val('$' + DmpSegS, DmpSeg, DmpErr);
+    Val('$' + DmpOfsS, DmpOfs, DmpErr);
+    Val(DmpLenS, DmpLen, DmpErr);
+    FillChar(EmuPanel, SizeOf(EmuPanel), 0);
+    Emu_InitComputer(EmuPanel.CPU);
+    If Not Win16_LoadNE(EmuPanel.CPU, DmpPath) Then Begin
+     ConRawWriteLn('WIN16DMP : echec chargement - ' + Win16_LastError);
+     Halt(1);
+    End;
+    { DmpLen ici = nombre d'INSTRUCTIONS a desassembler (pas d'octets) via     }
+    { EmuDbg_Disasm8086 deja existant (lit EmuPanel.CPU, voir sa declaration). }
+    For DumpI := 1 To DmpLen Do Begin
+     DmpErr := 0;
+     DumpS := EmuDbg_Disasm8086(DmpSeg, DmpOfs, DmpErr);
+     ConRawWriteLn(HexWord(DmpSeg) + ':' + HexWord(DmpOfs) + '  ' + DumpS);
+     DmpOfs := Word(DmpOfs + DmpErr);
+    End;
+    Halt(EXIT_OK);
+   End;
   End
   Else If (Length(Arg) >= 10) And
           ((Copy(Arg, 1, 10) = '/TESTUNIT,') Or (Copy(Arg, 1, 10) = '/testunit,') Or
@@ -12552,7 +12613,9 @@ Procedure EmuDbg_StepOver; Forward;
 Procedure EmuDbg_StepOut; Forward;
 Procedure EmuDbg_ToggleBPAtPC; Forward;
 Procedure EmuDbg_AddBP(Addr: LongInt; ACPU: TEmuDbgCPU); Forward;
-Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String; Forward;
+{ EmuDbg_Disasm8086 a deja un Forward plus haut (~ligne 10871, crochet       }
+{ /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un Forward en      }
+{ double). }
 Function EmuDbg_FindBP(Addr: LongInt; ACPU: TEmuDbgCPU): Integer; Forward;
 Function EmuDbg_IsBreakKey(Var Ev: TEvent): Boolean; Forward;
 Procedure EmuDbg_OnBeforeStep6502; Forward;
@@ -77547,9 +77610,10 @@ End;
 { ne sont definies que beaucoup plus loin dans ce fichier (~ligne 50600+,   }
 { section emulateur 8086). Forward necessaire, meme motif deja etabli pour  }
 { Dpmi_GetReg8/16/32 reutilise par le chantier OS/2 LX. }
-Procedure Emu_InitComputer(Var C: TEmuCPU); Forward;
+{ Emu_InitComputer et Emu_ReadByte ont deja un Forward plus haut (~ligne     }
+{ 10870, crochet /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un  }
+{ Forward en double). }
 Procedure Emu_Done(Var C: TEmuCPU); Forward;
-Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
 Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
 Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word); Forward;
 Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
@@ -80642,6 +80706,7 @@ Begin
     { aiguilles d'horloge sans scintillement). }
     P.CPU.Regs.AX := Win16_CurrentROP2;
     Win16_CurrentROP2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_GdiTraceLog('SetROP2 -> ' + IntToStr(Win16_CurrentROP2));
     ArgWords := 2;
    End;
    5: Begin
@@ -80883,7 +80948,9 @@ Begin
      Win16_GdiTraceLog('LineTo client=(' + IntToStr(GdiX1) + ',' +
       IntToStr(GdiY1) + ') from pen=(' + IntToStr(Win16_PenX) + ',' +
       IntToStr(Win16_PenY) + ') to abs=(' + IntToStr(GdiX2) + ',' +
-      IntToStr(GdiY2) + ')');
+      IntToStr(GdiY2) + ') caller=' +
+      HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 2))) + ':' +
+      HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, P.CPU.Regs.SP)));
      Win16_DrawLine(Win16_PenX, Win16_PenY, GdiX2, GdiY2, 0);
      Win16_PenX := GdiX2;
      Win16_PenY := GdiY2;
@@ -117026,6 +117093,282 @@ Begin
   'Oracle distinct de TNS/TTC, hors de portee de ce chantier.');
 End;
 
+{ ============================================================ }
+{ === New-EmulatorGif (2026-09-12, demande explicite) :    === }
+{ === capture GIF anime de l'onglet emulateur actif        === }
+{ ============================================================ }
+{ Palette EGA/VGA 16 couleurs STANDARD - jamais interrogee            }
+{ dynamiquement, ce sont des CONSTANTES bien connues (memes valeurs    }
+{ que celles produites par Emu_VidApprox16 pour ces 16 indices, voir   }
+{ DrawEmulatorPanel) : l'ecran REEL de cet IDE (PtcGraph/BGI) est      }
+{ TOUJOURS un mode 16 couleurs, quel que soit le mode video EMULE     }
+{ (mode $13 256 couleurs compris - deja reduit a 16 avant meme         }
+{ d'atteindre l'ecran hote, voir Emu_VidPixelToBGI). }
+Const
+ GifEgaPal: Array[0..15,0..2] Of Byte = (
+  (0,0,0),      (0,0,170),    (0,170,0),    (0,170,170),
+  (170,0,0),    (170,0,170),  (170,85,0),   (170,170,170),
+  (85,85,85),   (85,85,255),  (85,255,85),  (85,255,255),
+  (255,85,85),  (255,85,255), (255,255,85), (255,255,255));
+
+Var
+ GifBitBuf: LongInt;
+ GifBitCnt: Integer;
+ GifOut: AnsiString;
+ GifSubBuf: AnsiString;
+ { Dictionnaire LZW indexe directement par (codePrefixe*256+octet) -     }
+ { 1 048 576 entrees (12 bits de code max = 4096 prefixes possibles *    }
+ { 256 valeurs d'octet), -1 = absent. GLOBAL (pas local a la fonction    }
+ { de compression) : un tableau de cette taille sur la PILE ferait       }
+ { deborder la pile - meme raisonnement deja applique ailleurs dans ce   }
+ { fichier pour les gros tampons (EmuVideo.Mem, PE_Mem, etc.). }
+ GifDict: Array[0..1048575] Of SmallInt;
+
+Procedure GifBitsReset;
+Begin
+ GifBitBuf := 0; GifBitCnt := 0; GifOut := ''; GifSubBuf := '';
+End;
+
+Procedure GifSubFlush;
+Begin
+ If Length(GifSubBuf) > 0 Then Begin
+  GifOut := GifOut + Chr(Length(GifSubBuf)) + GifSubBuf;
+  GifSubBuf := '';
+ End;
+End;
+
+Procedure GifEmitByte(B: Byte);
+Begin
+ GifSubBuf := GifSubBuf + Chr(B);
+ If Length(GifSubBuf) = 255 Then GifSubFlush;
+End;
+
+Procedure GifEmitCode(Code: LongInt; Width: Integer);
+Begin
+ GifBitBuf := GifBitBuf Or (Code Shl GifBitCnt);
+ GifBitCnt := GifBitCnt + Width;
+ While GifBitCnt >= 8 Do Begin
+  GifEmitByte(Byte(GifBitBuf And $FF));
+  GifBitBuf := GifBitBuf Shr 8;
+  GifBitCnt := GifBitCnt - 8;
+ End;
+End;
+
+Procedure GifBitsFinish;
+Begin
+ If GifBitCnt > 0 Then Begin
+  GifEmitByte(Byte(GifBitBuf And $FF));
+  GifBitBuf := 0; GifBitCnt := 0;
+ End;
+ GifSubFlush;
+ GifOut := GifOut + Chr(0);
+End;
+
+{ Compression LZW REELLE (pas un habillage "store") du contenu d'UNE     }
+{ trame - algorithme standard GIF (dictionnaire remis a zero au debut   }
+{ de CHAQUE trame, ce qui est valide : chaque bloc Image Descriptor a    }
+{ son propre flux LZW independant). }
+Function GifCompressFrame(Const Pixels: AnsiString; MinCodeSize: Integer): AnsiString;
+Var
+ ClearCode, EndCode, NextCode, CodeSize: LongInt;
+ I, PrefixCode, PixByte, Key, K: LongInt;
+Begin
+ GifBitsReset;
+ ClearCode := 1 Shl MinCodeSize;
+ EndCode := ClearCode + 1;
+ For K := 0 To 1048575 Do GifDict[K] := -1;
+ NextCode := EndCode + 1;
+ CodeSize := MinCodeSize + 1;
+ GifEmitCode(ClearCode, CodeSize);
+ PrefixCode := -1;
+ For I := 1 To Length(Pixels) Do Begin
+  PixByte := Ord(Pixels[I]);
+  If PrefixCode = -1 Then PrefixCode := PixByte
+  Else Begin
+   Key := PrefixCode * 256 + PixByte;
+   If GifDict[Key] <> -1 Then
+    PrefixCode := GifDict[Key]
+   Else Begin
+    GifEmitCode(PrefixCode, CodeSize);
+    GifDict[Key] := NextCode;
+    Inc(NextCode);
+    If NextCode > (1 Shl CodeSize) Then Begin
+     If CodeSize < 12 Then
+      Inc(CodeSize)
+     Else Begin
+      GifEmitCode(ClearCode, CodeSize);
+      For K := 0 To 1048575 Do GifDict[K] := -1;
+      NextCode := EndCode + 1;
+      CodeSize := MinCodeSize + 1;
+     End;
+    End;
+    PrefixCode := PixByte;
+   End;
+  End;
+ End;
+ If PrefixCode <> -1 Then GifEmitCode(PrefixCode, CodeSize);
+ GifEmitCode(EndCode, CodeSize);
+ GifBitsFinish;
+ GifCompressFrame := GifOut;
+End;
+
+{ Assemble le bloc Graphic Control Extension + Image Descriptor +        }
+{ donnees image compressees pour UNE trame - 16 couleurs fixes (indice   }
+{ 4 bits), pas de table de couleurs locale, pas d'entrelacement. }
+Function GifBuildFrame(Const Pixels: AnsiString; W, H: Integer; DelayCs: Word): AnsiString;
+Var
+ S: AnsiString;
+Begin
+ S := Chr($21) + Chr($F9) + Chr(4) + Chr(4) +
+  Chr(Byte(DelayCs And $FF)) + Chr(Byte((DelayCs Shr 8) And $FF)) +
+  Chr(0) + Chr(0);
+ S := S + Chr($2C) + Chr(0) + Chr(0) + Chr(0) + Chr(0) +
+  Chr(Byte(W And $FF)) + Chr(Byte((W Shr 8) And $FF)) +
+  Chr(Byte(H And $FF)) + Chr(Byte((H Shr 8) And $FF)) + Chr(0);
+ S := S + Chr(4) + GifCompressFrame(Pixels, 4);
+ GifBuildFrame := S;
+End;
+
+Procedure TermCmd_NewEmulatorGif(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ DEFAULT_DURATION  = 5;
+ DEFAULT_FRAMERATE = 5;
+ MAX_FRAMERATE     = 20;
+Var
+ UpParams: String;
+ FlagPos, ErrC: Integer;
+ Duration, FrameRate: Integer;
+ OutPath, ArgS: String;
+ CapX1, CapY1, CapX2, CapY2, CapW, CapH: Integer;
+ GifData, FrameList, PixBuf: AnsiString;
+ FrameCount: Integer;
+ StartMs, NowMs, NextFrameDueMs: LongInt;
+ DelayCs: Word;
+ X, Y, PalI: Integer;
+ Yr, Mo2, Dy2, Wd2, Hr2, Mn2, Sc2, Hs2: Word;
+ F: File;
+Begin
+ If (WinMgr.ActiveIdx < 0) Or
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind <> WK_EMU) Or
+    (Not EmuPanel.Loaded) Then Begin
+  TermAddLine(TP, 'New-EmulatorGif : aucun onglet emulateur actif ' +
+   '(l''onglet actuellement ouvert doit etre un emulateur, pas ce Terminal).');
+  Exit;
+ End;
+ UpParams := TermStrToUpper(ParamStr);
+ Duration := DEFAULT_DURATION;
+ FlagPos := System.Pos('-DURATION', UpParams);
+ If FlagPos > 0 Then Begin
+  ArgS := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 9, Length(ParamStr)), 1));
+  Val(ArgS, Duration, ErrC);
+  If (ErrC <> 0) Or (Duration <= 0) Then Duration := DEFAULT_DURATION;
+ End;
+ { -Duration 5/10/15 sont les valeurs typiques suggerees par            }
+ { l'utilisateur, mais n'importe quel entier positif est accepte (ce    }
+ { terminal n'a pas de vrai mecanisme ValidateSet) - borne haute large  }
+ { et raisonnable pour eviter un GIF demesure/un blocage trop long de    }
+ { l'IDE (cette commande est SYNCHRONE, elle bloque le reste de l'IDE    }
+ { pendant la capture, meme principe qu'un enregistreur d'ecran reel). }
+ If Duration > 60 Then Duration := 60;
+ FrameRate := DEFAULT_FRAMERATE;
+ FlagPos := System.Pos('-FRAMERATE', UpParams);
+ If FlagPos > 0 Then Begin
+  ArgS := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 10, Length(ParamStr)), 1));
+  Val(ArgS, FrameRate, ErrC);
+  If (ErrC <> 0) Or (FrameRate <= 0) Then FrameRate := DEFAULT_FRAMERATE;
+ End;
+ If FrameRate > MAX_FRAMERATE Then FrameRate := MAX_FRAMERATE;
+ OutPath := '';
+ FlagPos := System.Pos('-PATH', UpParams);
+ If FlagPos > 0 Then
+  OutPath := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 5, Length(ParamStr)), 1));
+ If OutPath = '' Then Begin
+  GetDate(Yr, Mo2, Dy2, Wd2);
+  GetTime(Hr2, Mn2, Sc2, Hs2);
+  OutPath := 'EmulatorCapture_' + TermPadZeroLeft(Yr, 4) +
+   TermPadZeroLeft(Mo2, 2) + TermPadZeroLeft(Dy2, 2) + '_' +
+   TermPadZeroLeft(Hr2, 2) + TermPadZeroLeft(Mn2, 2) +
+   TermPadZeroLeft(Sc2, 2) + '.gif';
+ End;
+ { Rectangle de capture : un premier appel a DrawEmulatorPanel remplit    }
+ { P.LastGridW/LastGridH (2026-09-12, nouveaux champs - voir leur         }
+ { declaration) avec la largeur/hauteur REELLE du contenu emule pour le   }
+ { backend courant (chacun calcule sa propre geometrie en interne -       }
+ { graphique mis a l'echelle, texte 80x25, NES/Atari/CoCo3...), sans       }
+ { avoir a dupliquer ces formules ici. Capture le panneau ENTIER          }
+ { (bordure+barre de titre+contenu+barre d'etat), pas seulement le        }
+ { contenu emule brut - marge fixe raisonnable couvrant ces elements de   }
+ { decor, bornee a l'ecran. Corrige aussi un vrai probleme de PERFORMANCE }
+ { constate en testant : capturer toute la zone de panneau (potentiellement}
+ { >1 million de pixels) via GetPixel un par un (seule methode fiable     }
+ { avec PtcGraph, le format interne de GetImage n'etant pas documente ici)}
+ { rendait une capture de 5 secondes tres largement plus longue que 5     }
+ { secondes reelles - se limiter au contenu emule REEL (typiquement       }
+ { quelques dizaines de milliers de pixels) le rend a nouveau pratique. }
+ DrawEmulatorPanel(EmuPanel);
+ CapX1 := EmuPanel.PanelX;
+ CapY1 := EmuPanel.PanelY;
+ CapW := EmuPanel.LastGridW + 4;
+ CapH := EmuPanel.LastGridH + 70;
+ If CapW <= 4 Then CapW := 320;
+ If CapH <= 70 Then CapH := 200;
+ CapX2 := CapX1 + CapW - 1;
+ CapY2 := CapY1 + CapH - 1;
+ If CapX2 > GetScreenWidth - 1 Then CapX2 := GetScreenWidth - 1;
+ If CapY2 > GetScreenHeight - 1 Then CapY2 := GetScreenHeight - 1;
+ CapW := CapX2 - CapX1 + 1;
+ CapH := CapY2 - CapY1 + 1;
+ DelayCs := Word(Round(100 / FrameRate));
+ If DelayCs = 0 Then DelayCs := 1;
+ TermAddLine(TP, 'New-EmulatorGif : capture de ' + IntToStr(Duration) +
+  ' seconde(s) a ' + IntToStr(FrameRate) + ' im/s en cours (IDE bloque ' +
+  'pendant la capture)...');
+ FrameList := '';
+ FrameCount := 0;
+ StartMs := GetTimestamp;
+ NextFrameDueMs := StartMs;
+ While (GetTimestamp - StartMs) < (LongInt(Duration) * 1000) Do Begin
+  NowMs := GetTimestamp;
+  If EmuPanel.Running Then StepEmulator(EmuPanel);
+  If NowMs >= NextFrameDueMs Then Begin
+   DrawEmulatorPanel(EmuPanel);
+   SetLength(PixBuf, CapW * CapH);
+   For Y := 0 To CapH - 1 Do
+    For X := 0 To CapW - 1 Do
+     PixBuf[Y * CapW + X + 1] := Chr(GetPixel(CapX1 + X, CapY1 + Y) And $0F);
+   FrameList := FrameList + GifBuildFrame(PixBuf, CapW, CapH, DelayCs);
+   Inc(FrameCount);
+   NextFrameDueMs := NextFrameDueMs + Round(1000 / FrameRate);
+  End;
+ End;
+ If FrameCount = 0 Then Begin
+  TermAddLine(TP, 'New-EmulatorGif : aucune trame capturee.');
+  Exit;
+ End;
+ GifData := 'GIF89a';
+ GifData := GifData + Chr(Byte(CapW And $FF)) + Chr(Byte((CapW Shr 8) And $FF));
+ GifData := GifData + Chr(Byte(CapH And $FF)) + Chr(Byte((CapH Shr 8) And $FF));
+ GifData := GifData + Chr($F3) + Chr(0) + Chr(0);
+ For PalI := 0 To 15 Do
+  GifData := GifData + Chr(GifEgaPal[PalI, 0]) + Chr(GifEgaPal[PalI, 1]) +
+   Chr(GifEgaPal[PalI, 2]);
+ GifData := GifData + Chr($21) + Chr($FF) + Chr(11) + 'NETSCAPE2.0' +
+  Chr(3) + Chr(1) + Chr(0) + Chr(0) + Chr(0);
+ GifData := GifData + FrameList;
+ GifData := GifData + Chr($3B);
+ Assign(F, OutPath);
+ {$I-} Rewrite(F, 1); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'New-EmulatorGif : impossible de creer "' + OutPath + '".');
+  Exit;
+ End;
+ BlockWrite(F, GifData[1], Length(GifData));
+ Close(F);
+ TermAddLine(TP, 'New-EmulatorGif : ' + IntToStr(FrameCount) +
+  ' trame(s) (' + IntToStr(CapW) + 'x' + IntToStr(CapH) + ') ecrites dans "' +
+  OutPath + '" (' + IntToStr(Length(GifData)) + ' octets).');
+End;
+
 
 { ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
@@ -117043,7 +117386,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 250;
+ PS_CMD_ALIASES = 251;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -117272,7 +117615,8 @@ Const
   'RESTORE-ORACLEDATABASE',
   'START-OS9PROGRAM',
   'START-WIN32PROGRAM','START-WIN32APPLICATION',
-  'START-CRAY1PROGRAM'
+  'START-CRAY1PROGRAM',
+  'NEW-EMULATORGIF'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -117501,7 +117845,8 @@ Const
   225,
   226,
   227,227,
-  228
+  228,
+  229
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -118259,6 +118604,9 @@ Begin
     { explicite) - meme handler TermCmd_Win32Launch pour les 2 alias. }
     227: TermCmd_Win32Launch(TP, ParamStr);      { START-WIN32PROGRAM/APPLICATION }
     228: TermCmd_StartCray1Program(TP, ParamStr); { START-CRAY1PROGRAM }
+    { New-EmulatorGif (2026-09-12, demande explicite) : capture GIF anime }
+    { de l'onglet emulateur actuellement actif. }
+    229: TermCmd_NewEmulatorGif(TP, ParamStr);    { NEW-EMULATORGIF }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -131336,6 +131684,7 @@ Begin
     End;
    End;
   NesFBFirst := False;
+  P.LastGridW := GridW; P.LastGridH := GridH;
   Exit;
  End;
  { Mode Atari 2600 : rendu pixel du framebuffer 160x192 -------------- }
@@ -131371,6 +131720,7 @@ Begin
     End;
    End;
   A2600_FBFirst := False;
+  P.LastGridW := GridW; P.LastGridH := GridH;
   Exit;
  End;
  { Mode CoCo 3 : rendu pixel du framebuffer 256x200 ------------------- }
@@ -131413,6 +131763,7 @@ Begin
     End;
    End;
   Coco3_FBFirst := False;
+  P.LastGridW := GridW; P.LastGridH := GridH;
   Exit;
  End;
  { Correctif 2026-08-15 : le panneau doit apparaitre au meme endroit que  }
@@ -131544,6 +131895,7 @@ Begin
   SetVisualPage(EmuBackPage);
   SetActivePage(EmuBackPage);
   EmuDblBufPage := EmuBackPage;
+  P.LastGridW := GridW; P.LastGridH := GridH;
   Exit;
  End;
  { Double buffering reel (2026-08-16) : tout le rendu ci-dessous (bordure,   }
@@ -131648,6 +132000,7 @@ Begin
  SetVisualPage(EmuBackPage);
  SetActivePage(EmuBackPage);
  EmuDblBufPage := EmuBackPage;
+ P.LastGridW := GridW; P.LastGridH := GridH;
 End;
 
 { ============================================================
