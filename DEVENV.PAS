@@ -8246,6 +8246,14 @@ Var
  CRAY1_ExitCode : Integer;
  CRAY1_Cycles   : LongInt;
  CRAY1_Panel    : ^TEmulatorPanel;
+ { PDT (Program Description Table) COS - voir CRAY1_LoadAbs, signature      }
+ { 'CRAY-PDT' : nom de job (JOBNAME, 8 car.), longueur de champ demandee    }
+ { (FL, en mots CRAY de 64 bits) et priorite - vides/zero pour un binaire   }
+ { 'CRAY-1\0\0' ordinaire (sans PDT, retro-compatible). }
+ CRAY1_HasPDT     : Boolean;
+ CRAY1_JobName    : String[8];
+ CRAY1_FieldLength: LongInt;
+ CRAY1_Priority   : Byte;
  { Etat de l emulateur P-Code UCSD p-System integre (p-machine 16 bits, }
  { flux de p-code brut mono-segment sans dictionnaire - meme convention }
  { que les outils DISPCODE.PAS/ASMPCODE.PAS de l utilisateur ; voir     }
@@ -158664,6 +158672,16 @@ End;
 { backend DEST_CRAY1 de TPCW32 (Phases 2c..2i). Voir CRAYRUN.PAS pour la     }
 { version standalone. Format binaire : COS Absolute Binary (signature        }
 { 'CRAY-1\0\0', 3 mots 64 bits BE : code/data/entry, parcels BE).            }
+{ Variante avec PDT (Program Description Table, demande explicite de        }
+{ l'utilisateur) : signature 'CRAY-PDT' suivie de 3 mots 64 bits BE          }
+{ supplementaires AVANT code/data/entry - JOBNAME (8 car. ASCII, espaces     }
+{ de bourrage), FL (Field Length demandee, en mots CRAY de 64 bits) et       }
+{ PRIORITY (0-63, octet bas du mot) - memes conventions PDT que celles       }
+{ deja documentees pour le shell terminal COS (CHANNEL/CLASS/STATUS/etc.,   }
+{ voir SK_COS dans TermExecuteCommand). FL est VERIFIEE (pas juste stockee) :}
+{ un besoin (code+data) superieur a la FL demandee est refuse, comme le      }
+{ ferait reellement COS plutot que de charger silencieusement un programme  }
+{ qui depasse la memoire qu'il a lui-meme demandee.                          }
 { Opcodes : ERR=$01, EX=$04 (trap COS), J=$05, JSZ=$09, JSN=$0A, JSP=$0B,    }
 { JSM=$0C, MOVS=$20, ADDS=$30, SUBS=$31, ANDS=$34, XORS=$35, ORS=$36,        }
 { LDS=$40, STS=$48, LDIMM=$60.                                                }
@@ -158689,19 +158707,48 @@ Var
   PB: Array[0..1] Of Byte;
   CodeWords, DataWords: LongInt;
   Total, I: LongInt;
+  IsPDT: Boolean;
+  NameI: Integer;
 Begin
   CRAY1_LoadAbs := False;
   EntryAddr := 0;
+  CRAY1_HasPDT := False;
+  CRAY1_JobName := '';
+  CRAY1_FieldLength := 0;
+  CRAY1_Priority := 0;
   Assign(F, FileName);
   {$I-} Reset(F, 1); {$I+}
   If IOResult <> 0 Then Exit;
   BlockRead(F, Sig, 8);
-  If (Sig[0] <> Ord('C')) Or (Sig[1] <> Ord('R')) Or
-     (Sig[2] <> Ord('A')) Or (Sig[3] <> Ord('Y')) Or
-     (Sig[4] <> Ord('-')) Or (Sig[5] <> Ord('1')) Then
-  Begin
-    Close(F);
-    Exit;
+  IsPDT := (Sig[0] = Ord('C')) And (Sig[1] = Ord('R')) And
+   (Sig[2] = Ord('A')) And (Sig[3] = Ord('Y')) And (Sig[4] = Ord('-')) And
+   (Sig[5] = Ord('P')) And (Sig[6] = Ord('D')) And (Sig[7] = Ord('T'));
+  If Not IsPDT Then Begin
+   If (Sig[0] <> Ord('C')) Or (Sig[1] <> Ord('R')) Or
+      (Sig[2] <> Ord('A')) Or (Sig[3] <> Ord('Y')) Or
+      (Sig[4] <> Ord('-')) Or (Sig[5] <> Ord('1')) Then
+   Begin
+     Close(F);
+     Exit;
+   End;
+  End;
+  If IsPDT Then Begin
+   { JOBNAME : 8 octets ASCII, espaces de bourrage retires a droite. }
+   BlockRead(F, W, 8);
+   CRAY1_JobName := '';
+   For NameI := 0 To 7 Do
+    If W[NameI] <> 0 Then CRAY1_JobName := CRAY1_JobName + Chr(W[NameI]);
+   While (Length(CRAY1_JobName) > 0) And
+         (CRAY1_JobName[Length(CRAY1_JobName)] = ' ') Do
+    CRAY1_JobName := Copy(CRAY1_JobName, 1, Length(CRAY1_JobName) - 1);
+   { FL : meme convention que CodeWords/DataWords/EntryAddr plus bas         }
+   { (32 bits utiles dans les 4 derniers octets du mot BE de 8 octets). }
+   BlockRead(F, W, 8);
+   CRAY1_FieldLength := (LongInt(W[4]) Shl 24) Or (LongInt(W[5]) Shl 16) Or
+                        (LongInt(W[6]) Shl 8) Or W[7];
+   BlockRead(F, W, 8);
+   CRAY1_Priority := W[7];
+   CRAY1_HasPDT := True;
   End;
   BlockRead(F, W, 8);
   CodeWords := (LongInt(W[4]) Shl 24) Or (LongInt(W[5]) Shl 16) Or
@@ -158712,6 +158759,12 @@ Begin
   BlockRead(F, W, 8);
   EntryAddr := (LongInt(W[4]) Shl 24) Or (LongInt(W[5]) Shl 16) Or
                (LongInt(W[6]) Shl 8) Or W[7];
+  { FL demandee insuffisante pour le code+donnees reels : refus, exactement }
+  { comme le ferait COS plutot que de charger un programme qui deborde de   }
+  { la memoire qu'il a lui-meme demandee via son PDT. }
+  If CRAY1_HasPDT And (CRAY1_FieldLength > 0) And
+     (CodeWords + DataWords > CRAY1_FieldLength) Then
+  Begin Close(F); Exit; End;
   Total := (CodeWords + DataWords) * 4;
   If (Total < 0) Or (Total > 65536) Then
   Begin Close(F); Exit; End;
@@ -170995,7 +171048,7 @@ Begin NesActive := False;
     'Erreur : impossible de charger ' + BinaryPath);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    EmuVScr_WriteStr(P,
-    '(format attendu : COS Absolute Binary, signature CRAY-1)');
+    '(format attendu : COS Absolute Binary, signature CRAY-1 ou CRAY-PDT)');
    P.CurFg := OldFg;
    P.Running := False;
    P.Fault := sfEndProgram;
@@ -171006,6 +171059,17 @@ Begin NesActive := False;
   { l entree COS pointe ailleurs ($0200 typiquement). On execute    }
   { directement le code utilisateur.                                }
   CRAY1_PC := 0;
+  { Banniere de job COS reelle (PDT) - affichee inconditionnellement (pas   }
+  { seulement en mode debogage) : c'est ce qu'un vrai COS imprime toujours  }
+  { au demarrage d'un job, JOBNAME/FL/PRIORITY viennent directement du       }
+  { Program Description Table du binaire (voir CRAY1_LoadAbs). }
+  If CRAY1_HasPDT Then Begin
+   P.CurFg := 11;
+   EmuVScr_WriteStr(P, 'JOB ' + CRAY1_JobName + '  FL=' +
+    IntToStr(CRAY1_FieldLength) + '  PRIORITY=' + IntToStr(CRAY1_Priority));
+   P.CurFg := 7;
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+  End;
   If OptionsDlg.Data.EmuShowDebugMessages Then Begin
    P.CurFg := 10;
    EmuVScr_WriteStr(P, 'Programme charge (entree COS=$' +
