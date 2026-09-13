@@ -9,12 +9,15 @@ Program OS9ASM;
 
 {$A-,B-,I-,R-,S-}
 
+Uses Dos;
+
 Const
  Version='1.0';
  MaxLine=120;
  ImageSize=65535;
  WorkspaceOverhead=1096;
  SymbolWorkspaceSize=15;
+ MaxIncludeDepth=13;
 
 Type
  TName=String[31];
@@ -39,11 +42,17 @@ End;
 TConditionalFrame=Record
  ParentActive,TestTrue,ElseSeen:Boolean
 End;
+PIncludeNode=^TIncludeNode;
+TIncludeNode=Record
+ FileName:String;
+ Next:PIncludeNode
+End;
 TBytes=Array[0..ImageSize]of Byte;
 
 Var
  Symbols:PSymbol;
  Decisions,DecisionTail,DecisionCursor:PDecision;
+ IncludeStack:PIncludeNode;
  Image:^TBytes;
  SourceName,ObjectName,ListName:String;
  MakeObject,ObjectExplicit,ListOn,SymbolsOn,CondList,ErrorsInList,FormFeed,Generated,
@@ -54,8 +63,9 @@ Var
  PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
  ListFile:Text;
  ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull,CurrentLineError,
- ConditionalSkipped:Boolean;
- ProgramName,Title,ParsedComment:String;
+ ConditionalSkipped,FatalIncludeError:Boolean;
+ ProgramName,Title,ParsedComment,CurrentSourceName:String;
+ IncludeDepth:Integer;
  InitialOptions:TOptionState;
 
 Function Upper(S:String):String;
@@ -111,7 +121,7 @@ Procedure Help;Begin
 End;
 
 Procedure Error(S:String);Begin
- Inc(Errors);WriteLn(StdErr,SourceName,'(',LineNo,'): erreur: ',S);
+ Inc(Errors);WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): erreur: ',S);
  if PassNo=2 Then CurrentLineError:=True;
  if(PassNo=2)and ListOn and ErrorsInList Then OutText('**** ERREUR: '+S)
 End;
@@ -906,6 +916,75 @@ Begin
  End
 End;
 
+Function DirectoryPart(Path:String):String;
+Var
+ I,P:Integer;
+Begin
+ P:=0;For I:=1 to Length(Path)do if Path[I]in['/','\']Then P:=I;
+ if P=0 Then DirectoryPart:=''else DirectoryPart:=Copy(Path,1,P)
+End;
+
+Function JoinPath(DirectoryName,FileName:String):String;
+Begin
+ if DirectoryName=''Then JoinPath:=FileName
+ else if DirectoryName[Length(DirectoryName)]in['/','\',':']Then
+  JoinPath:=DirectoryName+FileName else JoinPath:=DirectoryName+'\'+FileName
+End;
+
+Function CanonicalPath(Path:String):String;
+Var
+ I:Integer;
+Begin
+ Path:=FExpand(Path);
+ For I:=1 to Length(Path)do Begin
+  if Path[I]='/'Then Path[I]:='\';Path[I]:=UpCase(Path[I])
+ End;
+ CanonicalPath:=Path
+End;
+
+Function TryOpenSource(Var F:Text;Candidate:String):Boolean;
+Begin
+ Assign(F,Candidate);Reset(F);TryOpenSource:=IOResult=0
+End;
+
+Function ResolveAndOpenSource(Requested,Caller:String;Var F:Text;Var Resolved:String):Boolean;
+Var
+ Candidate,Root:String;
+ I:Integer;
+ IsAbsolute:Boolean;
+Begin
+ ResolveAndOpenSource:=False;Requested:=Trim(Requested);if Requested=''Then Exit;
+ IsAbsolute:=(Requested[1]in['/','\'])or((Length(Requested)>1)and(Requested[2]=':'));
+ if not IsAbsolute Then Begin
+  Candidate:=JoinPath(DirectoryPart(Caller),Requested);
+  if TryOpenSource(F,Candidate)Then Begin Resolved:=CanonicalPath(Candidate);ResolveAndOpenSource:=True;Exit End
+ End;
+ if TryOpenSource(F,Requested)Then Begin Resolved:=CanonicalPath(Requested);ResolveAndOpenSource:=True;Exit End;
+ { Sur DOS/Windows, OS9ROOT permet de monter les chemins /d0, /dd, etc. }
+ if Requested[1]='/'Then Begin
+  Root:=GetEnv('OS9ROOT');if Root<>''Then Begin
+   Candidate:=JoinPath(Root,Copy(Requested,2,255));
+   For I:=1 to Length(Candidate)do if Candidate[I]='/'Then Candidate[I]:='\';
+   if TryOpenSource(F,Candidate)Then Begin
+    Resolved:=CanonicalPath(Candidate);ResolveAndOpenSource:=True;Exit
+   End
+  End;
+  Candidate:=Copy(Requested,2,255);
+  For I:=1 to Length(Candidate)do if Candidate[I]='/'Then Candidate[I]:='\';
+  if TryOpenSource(F,Candidate)Then Begin Resolved:=CanonicalPath(Candidate);ResolveAndOpenSource:=True End
+ End
+End;
+
+Function IncludeIsActive(Path:String):Boolean;
+Var
+ P:PIncludeNode;
+Begin
+ IncludeIsActive:=False;P:=IncludeStack;
+ While P<>Nil do Begin
+  if P^.FileName=Path Then Begin IncludeIsActive:=True;Exit End;P:=P^.Next
+ End
+End;
+
 Procedure ProcessFile(FileName:String);
 Var
  F:Text;
@@ -913,12 +992,24 @@ Var
  OldPC,V:LongInt;
  K:Boolean;
  Cond:Array[1..16]of TConditionalFrame;
- Depth,OverflowDepth,I:Integer;
+ Depth,OverflowDepth,I,SavedLine:Integer;
  Active:Boolean;
+ Resolved,SavedSource:String;
+ IncludeNode:PIncludeNode;
 Begin
- Assign(F,FileName);Reset(F);if IOResult<>0 Then Begin
-  Error('impossible d''ouvrir '+FileName);Exit
- End;Depth:=0;OverflowDepth:=0;Active:=True;
+ if IncludeDepth>=MaxIncludeDepth Then Begin
+  Error('trop de fichiers USE imbriques');FatalIncludeError:=True;StopAssembly:=True;Exit
+ End;
+ if not ResolveAndOpenSource(FileName,CurrentSourceName,F,Resolved)Then Begin
+  Error('impossible d''ouvrir '+FileName);FatalIncludeError:=True;StopAssembly:=True;Exit
+ End;
+ if IncludeIsActive(Resolved)Then Begin
+  Close(F);Error('inclusion USE cyclique: '+FileName);FatalIncludeError:=True;
+  StopAssembly:=True;Exit
+ End;
+ New(IncludeNode);IncludeNode^.FileName:=Resolved;IncludeNode^.Next:=IncludeStack;
+ IncludeStack:=IncludeNode;Inc(IncludeDepth);SavedSource:=CurrentSourceName;SavedLine:=LineNo;
+ CurrentSourceName:=Resolved;LineNo:=0;Depth:=0;OverflowDepth:=0;Active:=True;
  While not Eof(F)and not StopAssembly do Begin
   ReadLn(F,Line);Inc(LineNo);
   if Length(Line)>MaxLine Then Begin
@@ -1026,7 +1117,9 @@ Begin
   End else if O='EMOD'Then Begin
    Emit(0);Emit(0);Emit(0)
   End else if O='NAM'Then ProgramName:=A else if O='TTL'Then Title:=A else if O=
-  'USE'Then Begin ProcessFile(A);LineByteCount:=0 End
+  'USE'Then Begin
+   ListLine(OldPC,OldPC,Line);ProcessFile(A);LineByteCount:=0;Continue
+  End
   else if(O='PAG')or(O='PAGE')Then Begin PageLine:=0;Continue End
   else if O='SPC'Then Begin
    if Trim(A)=''Then V:=1 else V:=Eval(A,K);
@@ -1034,8 +1127,10 @@ Begin
   End else if O='OPT'Then ApplyOption(A,True)
   else if O='END'Then StopAssembly:=True else EncodeInstruction(O,A);
   ListLine(OldPC,OldPC,Line)
- End;Close(F);
- if(PassNo=2)and((Depth<>0)or(OverflowDepth<>0))Then Error('ENDC manquant')
+ End;
+ if(PassNo=2)and((Depth<>0)or(OverflowDepth<>0))Then Error('ENDC manquant');
+ Close(F);IncludeStack:=IncludeNode^.Next;Dispose(IncludeNode);Dec(IncludeDepth);
+ CurrentSourceName:=SavedSource;LineNo:=SavedLine
 End;
 
 Procedure FixModule;
@@ -1145,12 +1240,12 @@ Var
  Code:Integer;
 
 BEGIN
- Symbols:=Nil;Decisions:=Nil;DecisionTail:=Nil;DecisionCursor:=Nil;
+ Symbols:=Nil;Decisions:=Nil;DecisionTail:=Nil;DecisionCursor:=Nil;IncludeStack:=Nil;
  SourceName:='';ObjectName:='';ListName:='';MakeObject:=False;
  ObjectExplicit:=False;ListOn:=False;SymbolsOn:=False;ListingToFile:=False;
  Motorola:=False;Narrow:=False;FormFeed:=False;Generated:=False;
  ParseArgs;SaveOptions(InitialOptions);WorkspaceLimit:=LongInt(MemoryK)*1024;
- WorkspaceUsed:=WorkspaceOverhead;WorkspaceFull:=False;
+ WorkspaceUsed:=WorkspaceOverhead;WorkspaceFull:=False;FatalIncludeError:=False;
  Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
   WriteLn('ASM: impossible d''ouvrir ',SourceName);Halt(2)
  End;Close(F);GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
@@ -1161,10 +1256,11 @@ BEGIN
  End;
  Errors:=0;Warnings:=0;ProgramName:=Upper(SourceName);Title:='';
  For PassNo:=1 to 2 do Begin
-  if not WorkspaceFull Then Begin
+  if not WorkspaceFull and not FatalIncludeError Then Begin
    RestoreOptions(InitialOptions);
    PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
-   PageLine:=0;StopAssembly:=False;if PassNo=2 Then DecisionCursor:=Decisions;
+   PageLine:=0;StopAssembly:=False;IncludeDepth:=0;CurrentSourceName:=SourceName;
+   if PassNo=2 Then DecisionCursor:=Decisions;
    ProcessFile(SourceName)
   End
  End;

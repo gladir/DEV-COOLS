@@ -92875,6 +92875,13 @@ End;
 { EMPIRIQUEMENT verifie (Stage 1) sur CLOCK.EXE ET CALENDAR.EXE, tous deux }
 { KERNEL=1/GDI=2/USER=3 - simplification documentee, PAS une garantie      }
 { universelle du format NE (a revoir si un 3e fichier reel rompt cet ordre)}
+{ Emu_HostPath (definie bien plus bas, partagee par toute la couche DOS -  }
+{ meme resolution de chemin que le reste de cet emulateur) - Forward       }
+{ necessaire ici pour AddFontResource/$119 et GetMetaFile/$124 (2026-09-13,}
+{ demande explicite), qui verifient reellement l'existence du fichier      }
+{ hote plutot que de retourner un handle synthetique sans aucune           }
+{ verification. }
+Function Emu_HostPath(Const DosName: String): String; Forward;
 Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
 Var
  ModIdx, Ordinal: Word;
@@ -93006,6 +93013,11 @@ Var
  LDDX, LDDY, LDSX, LDSY, LDErr, LDE2, LDCurX, LDCurY, LDGuard: Integer;
  { GDI.EXE CreateBrushIndirect (2026-09-12, demande explicite). }
  LBSeg, LBOfs, LBColorLo, LBColorHi: Word;
+ { GDI.EXE AddFontResource/GetMetaFile (2026-09-13, demande explicite). }
+ AFRSeg, AFROfs: Word;
+ AFRName: String;
+ GMFSeg, GMFOfs: Word;
+ GMFName: String;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -96101,6 +96113,95 @@ Begin
      P.CPU.Regs.AX := 0; P.CPU.Regs.DX := 0;
     End;
     ArgWords := 3;
+   End;
+   119: Begin
+    { AddFontResource(lpFilename):int - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                    }
+    { AddFontResource(str)" - un seul parametre "str" = pointeur LOIN vers }
+    { une chaine ASCIIZ, 2 mots, retour 16 bits AX seul). REEL EN PARTIE,   }
+    { contrairement a LoadCursor/LoadIcon/LoadBitmap ($173-175, USER.EXE)   }
+    { qui retournent toujours un handle synthetique sans jamais verifier   }
+    { quoi que ce soit : ici le nom de fichier est reellement lu           }
+    { (Win16_ReadGuestString, meme lecteur ASCIIZ que CreateWindow) et      }
+    { resolu vers un VRAI chemin hote (Emu_HostPath, meme resolveur que     }
+    { toute la couche DOS de cet emulateur) - si le fichier existe          }
+    { REELLEMENT sur le disque hote, retourne 1 (au moins une police        }
+    { "ajoutee", comportement documente en cas de succes), sinon 0 (echec   }
+    { reel documente, fichier introuvable) ; AUCUN contenu de police n'est }
+    { jamais reellement charge/parse (aucun moteur de rendu de police       }
+    { TrueType/bitmap Win16 dans ce sous-ensemble). }
+    AFRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    AFROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    AFRName := Win16_ReadGuestString(P.CPU, AFRSeg, AFROfs);
+    If FileExists(Emu_HostPath(AFRName)) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   121: Begin
+    { Death(word):int - ordinal/signature VERIFIES via le VRAI source      }
+    { Wine (gdi.exe16.spec : "pascal -ret16 Death(word)", 1 mot, retour     }
+    { 16 bits AX seul). Fonction INTERNE de GDI dans les VRAIS Windows      }
+    { 2.x/3.x (jamais documentee publiquement par Microsoft, utilisee       }
+    { avec Resurrection/$122 pour suspendre/restaurer temporairement        }
+    { l'usage du materiel video par GDI - typiquement autour d'un           }
+    { basculement plein ecran vers une session DOS). Ce sous-ensemble        }
+    { mono-fenetre/mono-DC n'a aucun concept de "pilote video" separe a      }
+    { desactiver (tout le rendu passe directement par le framebuffer        }
+    { EmuVideo partage) - accepte l'appel honnetement sans aucun effet       }
+    { reel, retourne 1 (accepte). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   122: Begin
+    { Resurrection(word,word,word,word,word,word,word):int - ordinal/      }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 Resurrection(word word word word word word word)", 7 mots,     }
+    { retour 16 bits AX seul). Contrepartie de Death/$121, meme discipline  }
+    { honnete : aucun des 7 parametres n'est documente publiquement par     }
+    { Microsoft et aucun concept de "pilote video" separe n'existe dans ce  }
+    { sous-ensemble a restaurer - les 7 mots sont depiles (ArgWords)        }
+    { SANS etre lus individuellement (aucun n'influence quoi que ce soit    }
+    { ici), retourne 1 (accepte), meme reponse que Death/$121. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 7;
+   End;
+   123: Begin
+    { PlayMetaFile(hdc,hmf):BOOL - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 PlayMetaFile(word        }
+    { word)", 2 mots, retour 16 bits AX seul). Meme discipline honnete que  }
+    { CombineRgn/$47 : aucune vraie table d'objets metafichier n'existe     }
+    { dans ce sous-ensemble (GetMetaFile/$124 ci-dessous verifie           }
+    { seulement l'EXISTENCE du fichier hote, ne parse/stocke jamais son     }
+    { contenu reel) - rejouer un handle qui ne pointe jamais vers de       }
+    { vraies donnees enregistrees serait invente. Retourne FALSE(0), le    }
+    { comportement reel documente d'un handle de metafichier invalide,      }
+    { pas une valeur inventee. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   124: Begin
+    { GetMetaFile(lpFilename):HMETAFILE - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                 }
+    { GetMetaFile(str)", 1 pointeur LOIN = 2 mots, retour 16 bits AX        }
+    { seul). Meme discipline REELLE EN PARTIE que AddFontResource/$119      }
+    { juste au-dessus : le nom de fichier est reellement lu                }
+    { (Win16_ReadGuestString) et resolu vers un VRAI chemin hote            }
+    { (Emu_HostPath) - si le fichier .WMF existe REELLEMENT sur le disque   }
+    { hote, retourne un handle synthetique non-nul (1), sinon 0 (echec      }
+    { reel documente, fichier introuvable) ; AUCUN enregistrement GDI reel  }
+    { n'est jamais lu/parse depuis ce fichier (voir la limitation           }
+    { disclosee de PlayMetaFile/$123 ci-dessus - le handle retourne ici ne   }
+    { pointe jamais vers de vraies donnees rejouables). }
+    GMFSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GMFOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GMFName := Win16_ReadGuestString(P.CPU, GMFSeg, GMFOfs);
+    If FileExists(Emu_HostPath(GMFName)) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
