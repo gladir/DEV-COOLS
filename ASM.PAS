@@ -13,6 +13,8 @@ Const
  Version='1.0';
  MaxLine=120;
  ImageSize=65535;
+ WorkspaceOverhead=1096;
+ SymbolWorkspaceSize=15;
 
 Type
  TName=String[31];
@@ -45,10 +47,11 @@ Var
  Narrow,Motorola:Boolean;
  PageLength,PageWidth,MemoryK,PassNo,Errors,Warnings,LineNo,PageNo,PageLine,
  LineByteCount:Integer;
+ WorkspaceLimit,WorkspaceUsed:LongInt;
  PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
  ListFile:Text;
- ListingToFile,StopAssembly,ConstantDirective:Boolean;
- ProgramName,Title:String;
+ ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull:Boolean;
+ ProgramName,Title,ParsedComment:String;
  InitialOptions:TOptionState;
 
 Function Upper(S:String):String;
@@ -114,6 +117,18 @@ Var
 Begin
  N:=Upper(N);P:=Symbols;
  While(P<>Nil)and(P^.Name<>N)do P:=P^.Next;FindSymbol:=P
+End;
+
+Function ReserveWorkspace(Bytes:Integer):Boolean;
+Begin
+ ReserveWorkspace:=False;
+ if WorkspaceFull Then Exit;
+ if(Bytes<0)or(WorkspaceUsed>WorkspaceLimit-Bytes)Then Begin
+  WorkspaceFull:=True;StopAssembly:=True;Inc(Errors);
+  WriteLn(StdErr,'MEMORY FULL');
+  if(PassNo=2)and ListOn and ErrorsInList Then OutText('**** MEMORY FULL');Exit
+ End;
+ Inc(WorkspaceUsed,Bytes);ReserveWorkspace:=True
 End;
 
 Procedure ApplyOption(OptionText:String;FromSource:Boolean);
@@ -201,6 +216,7 @@ Begin
   if PassNo=2 Then Error('etiquette incorrecte: '+N);Exit
  End;
  P:=FindSymbol(N);if P=Nil Then Begin
+  if not ReserveWorkspace(SymbolWorkspaceSize)Then Exit;
   New(P);P^.Name:=N;P^.Next:=Symbols;Symbols:=P;P^.Defined:=False;P^.Mutable:=CanSet
  End;
  if(PassNo=1)and P^.Defined and not P^.Mutable Then Begin
@@ -714,52 +730,85 @@ Begin
  End
 End;
 
-Procedure ParseFields(Line:String;Var LabelName,Op,Operand:String);
+Function OperationHasNoOperand(Op:String):Boolean;
+Var
+ Dummy:Word;
+Begin
+ Dummy:=InherentOp(Op);
+ OperationHasNoOperand:=(Dummy<>$FFFF)or(Op='EMOD')or(Op='END')or(Op='ELSE')or
+  (Op='ENDC')or(Op='IFP1')or(Op='PAG')or(Op='PAGE')
+End;
+
+Procedure SplitOperandAndComment(Op,Rest:String;Var Operand,Comment:String);
+Var
+ I,J,Level:Integer;
+ Q,Delimiter,PrevChar,NextChar:Char;
+Begin
+ Operand:='';Comment:='';Rest:=Trim(Rest);if Rest=''Then Exit;
+ if OperationHasNoOperand(Op)Then Begin Comment:=Rest;Exit End;
+ if(Op='FCC')or(Op='FCS')Then Begin
+  Delimiter:=Rest[1];I:=2;
+  While(I<=Length(Rest))and(Rest[I]<>Delimiter)do Inc(I);
+  if I<=Length(Rest)Then Begin
+   Operand:=Copy(Rest,1,I);Comment:=Trim(Copy(Rest,I+1,255));
+   if(Comment<>'')and(Comment[1]=';')Then Comment:=Trim(Copy(Comment,2,255))
+  End else Operand:=Rest;
+  Exit
+ End;
+ if(Op='NAM')or(Op='TTL')Then Begin
+  I:=Pos(';',Rest);
+  if I=0 Then Operand:=Rest else Begin
+   Operand:=Trim(Copy(Rest,1,I-1));Comment:=Trim(Copy(Rest,I+1,255))
+  End;Exit
+ End;
+ I:=1;Level:=0;Q:=#0;
+ While I<=Length(Rest)do Begin
+  if(Rest[I]='''')and(Q=#0)Then Begin
+   Inc(I);if I<=Length(Rest)Then Inc(I);Continue
+  End;
+  if Rest[I]='"'Then Begin
+   if Q=#0 Then Q:='"'else Q:=#0;Inc(I);Continue
+  End;
+  if Q=#0 Then Begin
+   if Rest[I]in['(','[']Then Inc(Level)else if Rest[I]in[')',']']Then Dec(Level);
+   if(Level=0)and(Rest[I]=';')Then Begin
+    Operand:=Trim(Copy(Rest,1,I-1));Comment:=Trim(Copy(Rest,I+1,255));Exit
+   End;
+   if(Level=0)and(Rest[I]in[' ',#9])Then Begin
+    J:=I;While(J<=Length(Rest))and(Rest[J]in[' ',#9])do Inc(J);
+    PrevChar:=#0;if I>1 Then PrevChar:=Rest[I-1];NextChar:=#0;
+    if J<=Length(Rest)Then NextChar:=Rest[J];
+    if not(PrevChar in['+','-','*','/','&','!','^',',','(','[','<','>','#'])and
+       not(NextChar in['+','-','*','/','&','!','^',',',')',']'])Then Begin
+     Operand:=Trim(Copy(Rest,1,I-1));Comment:=Trim(Copy(Rest,J,255));Exit
+    End;
+    I:=J;Continue
+   End
+  End;
+  Inc(I)
+ End;
+ Operand:=Trim(Rest)
+End;
+
+Procedure ParseFields(Line:String;Var LabelName,Op,Operand,Comment:String);
 Var
  I,J:Integer;
  FirstBlank:Boolean;
- Q:Char;
+ Rest:String;
 Begin
- LabelName:='';Op:='';Operand:='';if Trim(Line)=''Then Exit;if Line[1]='*'Then Exit;
+ LabelName:='';Op:='';Operand:='';Comment:='';if Trim(Line)=''Then Exit;
+ if Line[1]='*'Then Begin Comment:=Copy(Line,2,255);Exit End;
  FirstBlank:=Line[1]in[' ',#9];I:=1;
  While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);J:=I;
- While(J<=Length(Line))and not(Line[J]in[' ',#9])do Inc(J);if not FirstBlank Then Begin
+ While(J<=Length(Line))and not(Line[J]in[' ',#9])do Inc(J);
+ if not FirstBlank Then Begin
   LabelName:=Copy(Line,I,J-I);I:=J;
   While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);J:=I;
   While(J<=Length(Line))and not(Line[J]in[' ',#9])do Inc(J)
- End;Op:=Upper(Copy(Line,I,J-I));I:=J;
- While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);Operand:=Trim(Copy(Line,I,255));
- I:=1;Q:=#0;
- While I<=Length(Operand)do Begin
-  if(Operand[I]='''')and(Q=#0)Then Begin
-   Inc(I);if I<=Length(Operand)Then Inc(I);Continue
-  End;
-  if Operand[I]='"'Then Begin
-   if Q=#0 Then Q:='"'else Q:=#0
-  End else if(Operand[I]=';')and(Q=#0)Then Begin
-   Operand:=Trim(Copy(Operand,1,I-1));Break
-  End;Inc(I)
- End
-End;
-
-Procedure RemoveFieldComment(Op:String;Var Operand:String);
-Var
- I:Integer;
- Q:Char;
-Begin
- if(Op='NAM')or(Op='TTL')or(Op='FCC')or(Op='FCS')Then Exit;Q:=#0;I:=1;
- While I<=Length(Operand)do Begin
-  if(Operand[I]='''')and(Q=#0)Then Begin
-   Inc(I);if I<=Length(Operand)Then Inc(I);Continue
-  End;
-  if Operand[I]='"'Then Begin
-   if Q=#0 Then Q:='"'else Q:=#0
-  End
-  else if(Operand[I]in[' ',#9])and(Q=#0)Then Begin
-   Operand:=Trim(Copy(Operand,1,I-1));Exit
-  End;
-  Inc(I)
- End
+ End;
+ Op:=Upper(Copy(Line,I,J-I));I:=J;
+ While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);
+ Rest:=Copy(Line,I,255);SplitOperandAndComment(Op,Rest,Operand,Comment)
 End;
 
 Procedure ListLine(Addr:LongInt;OldPC:LongInt;Src:String);
@@ -808,6 +857,40 @@ Begin
  End
 End;
 
+Function LabelForbidden(Op:String):Boolean;
+Begin
+ LabelForbidden:=(Op='END')or(Op='NAM')or(Op='TTL')or(Op='OPT')or(Op='ORG')or
+  (Op='PAG')or(Op='PAGE')or(Op='SPC')or(Op='SETDP')or(Op='USE')
+End;
+
+Function OperandRequired(Op:String):Boolean;
+Begin
+ OperandRequired:=(Op='EQU')or(Op='SET')or(Op='FCB')or(Op='FDB')or(Op='FCC')or
+  (Op='FCS')or(Op='RMB')or(Op='ORG')or(Op='SETDP')or(Op='USE')or
+  (Op='OS9')or(Op='MOD')or(Op='IF')or(Op='IFEQ')or(Op='IFNE')or(Op='IFLT')or
+  (Op='IFLE')or(Op='IFGT')or(Op='IFGE')or(Op='OPT')
+End;
+
+Function ValidateSourceFields(LabelName,Op,Operand,Comment:String):Boolean;
+Begin
+ ValidateSourceFields:=True;
+ if(LabelName<>'')and not ValidSymbolName(LabelName)Then Begin
+  if PassNo=2 Then Error('BAD LABEL: '+LabelName);ValidateSourceFields:=False
+ End;
+ if(LabelName<>'')and LabelForbidden(Op)Then Begin
+  if PassNo=2 Then Error('etiquette interdite avec '+Op);ValidateSourceFields:=False
+ End;
+ if((Op='EQU')or(Op='SET'))and(LabelName='')Then Begin
+  if PassNo=2 Then Error(Op+' exige une etiquette');ValidateSourceFields:=False
+ End;
+ if OperandRequired(Op)and(Trim(Operand)='')Then Begin
+  if PassNo=2 Then Error('operande manquant pour '+Op);ValidateSourceFields:=False
+ End;
+ if(Comment<>'')and((Op='NAM')or(Op='TTL')or(Op='OPT'))Then Begin
+  if PassNo=2 Then Error('commentaire interdit avec '+Op);ValidateSourceFields:=False
+ End
+End;
+
 Procedure ProcessFile(FileName:String);
 Var
  F:Text;
@@ -823,9 +906,14 @@ Begin
  End;Depth:=0;Active:=True;
  While not Eof(F)and not StopAssembly do Begin
   ReadLn(F,Line);Inc(LineNo);
-  if Length(Line)>MaxLine Then Error('ligne de plus de 120 caracteres');
-  ParseFields(Line,L,O,A);RemoveFieldComment(O,A);OldPC:=PC;LineByteCount:=0;
+  if Length(Line)>MaxLine Then Begin
+   if PassNo=2 Then Error('ligne de plus de 120 caracteres');Line:=Copy(Line,1,MaxLine)
+  End;
+  ParseFields(Line,L,O,A,ParsedComment);OldPC:=PC;LineByteCount:=0;
   ConstantDirective:=False;
+  if not ValidateSourceFields(L,O,A,ParsedComment)Then Begin
+   ListLine(OldPC,OldPC,Line);Continue
+  End;
   if(O='IF')or(O='IFEQ')or(O='IFNE')or(O='IFLT')or(O='IFLE')or(O='IFGT')or(O='IFGE')or(O=
   'IFP1')Then Begin
    Inc(Depth);if Depth>16 Then Begin
@@ -904,9 +992,10 @@ Begin
    Emit(0);Emit(0);Emit(0)
   End else if O='NAM'Then ProgramName:=A else if O='TTL'Then Title:=A else if O=
   'USE'Then Begin ProcessFile(A);LineByteCount:=0 End
-  else if O='PAG'Then PageLine:=0 else if O='SPC'Then Begin
-   if PassNo=2 Then
-   For I:=1 to Eval(A,K)do OutText('')
+  else if(O='PAG')or(O='PAGE')Then Begin PageLine:=0;Continue End
+  else if O='SPC'Then Begin
+   if Trim(A)=''Then V:=1 else V:=Eval(A,K);
+   if PassNo=2 Then For I:=1 to V do OutText('');Continue
   End else if O='OPT'Then ApplyOption(A,True)
   else if O='END'Then StopAssembly:=True else EncodeInstruction(O,A);
   ListLine(OldPC,OldPC,Line)
@@ -1024,7 +1113,9 @@ BEGIN
  SourceName:='';ObjectName:='';ListName:='';MakeObject:=False;
  ObjectExplicit:=False;ListOn:=False;SymbolsOn:=False;ListingToFile:=False;
  Motorola:=False;Narrow:=False;FormFeed:=False;Generated:=False;
- ParseArgs;SaveOptions(InitialOptions);Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
+ ParseArgs;SaveOptions(InitialOptions);WorkspaceLimit:=LongInt(MemoryK)*1024;
+ WorkspaceUsed:=WorkspaceOverhead;WorkspaceFull:=False;
+ Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
   WriteLn('ASM: impossible d''ouvrir ',SourceName);Halt(2)
  End;Close(F);GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
  if ListingToFile Then Begin
@@ -1034,10 +1125,12 @@ BEGIN
  End;
  Errors:=0;Warnings:=0;ProgramName:=Upper(SourceName);Title:='';
  For PassNo:=1 to 2 do Begin
-  RestoreOptions(InitialOptions);
-  PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
-  PageLine:=0;StopAssembly:=False;if PassNo=2 Then DecisionCursor:=Decisions;
-  ProcessFile(SourceName)
+  if not WorkspaceFull Then Begin
+   RestoreOptions(InitialOptions);
+   PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
+   PageLine:=0;StopAssembly:=False;if PassNo=2 Then DecisionCursor:=Decisions;
+   ProcessFile(SourceName)
+  End
  End;
  PrintSymbols;if MakeObject and(Errors=0)Then WriteObject;
  if ListingToFile Then Close(ListFile);
