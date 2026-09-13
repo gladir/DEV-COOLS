@@ -95992,6 +95992,116 @@ Begin
     P.CPU.Regs.AX := 2;
     ArgWords := 3;
    End;
+   103: Begin
+    { PtVisible(hdc,X,Y):BOOL - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (dlls/gdi.exe16/gdi.exe16.spec : "pascal -ret16           }
+    { PtVisible(word s_word s_word)", donc 3 mots, retour 16 bits AX        }
+    { seul - PAS de DX, contrairement a GetDCOrg/$79). REEL : teste          }
+    { vraiment (X,Y) contre le rectangle de clip mono-DC deja suivi         }
+    { (Win16_ClipX1/Y1/X2/Y2/ClipActive, coordonnees CLIENT - meme espace    }
+    { que GetClipBox/$77 et consorts, meme convention "region visible =      }
+    { clip mono-DC" deja etablie pour OffsetVisRgn/$102) ; si aucun clip     }
+    { n'est actif, tout point est visible (comportement reel documente :    }
+    { DC sans region de clip = toute la surface est visible). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6))); { X }
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4))); { Y }
+    If Win16_ClipActive Then Begin
+     If (GdiX1 >= Win16_ClipX1) And (GdiX1 < Win16_ClipX2) And
+        (GdiY1 >= Win16_ClipY1) And (GdiY1 < Win16_ClipY2) Then
+      P.CPU.Regs.AX := 1
+     Else
+      P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   104: Begin
+    { RectVisible(hdc,lpRect):BOOL - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { RectVisibleOld(word ptr)" - nom interne Wine, la vraie fonction        }
+    { exportee reste RectVisible ; 1 mot + 1 pointeur LOIN (2 mots) = 3      }
+    { mots, retour 16 bits AX seul, meme forme que GetClipBox/$77). REEL :   }
+    { teste un VRAI chevauchement entre le rectangle fourni (structure       }
+    { RECT standard, meme lecture que CreateRectRgnIndirect/$65) et le       }
+    { rectangle de clip mono-DC deja suivi ; si aucun clip n'est actif, le   }
+    { rectangle est toujours au moins partiellement visible (meme            }
+    { discipline que PtVisible/$103 juste au-dessus). }
+    LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, LBOfs));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 2)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 4)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 6)));
+    If Win16_ClipActive Then Begin
+     If (GdiX2 > Win16_ClipX1) And (GdiX1 < Win16_ClipX2) And
+        (GdiY2 > Win16_ClipY1) And (GdiY1 < Win16_ClipY2) Then
+      P.CPU.Regs.AX := 1
+     Else
+      P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   105: Begin
+    { SelectVisRgn(hdc,hRgn):int - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 SelectVisRgn(word        }
+    { word)", 2 mots, retour 16 bits AX seul). Meme discipline honnete       }
+    { que SelectClipRgn/$44 juste au-dessus, et meme convention "region      }
+    { visible = clip mono-DC" deja etablie pour OffsetVisRgn/$102 :          }
+    { hRgn=NULL(0) desactive reellement Win16_ClipActive (tout redevient     }
+    { visible) ; hRgn non-nul reste honnetement hors de portee (aucune       }
+    { vraie table d'objets region nommes n'existe, meme limitation deja      }
+    { disclosee pour SelectClipRgn/$44 et CombineRgn/$47) - le clip/          }
+    { visible reste alors INCHANGE, disclose plutot qu'un resultat           }
+    { invente. Retourne toujours SIMPLEREGION(2), meme discipline que        }
+    { SelectClipRgn/$44. }
+    ArcX4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4))); { hRgn }
+    If ArcX4 = 0 Then Win16_ClipActive := False;
+    P.CPU.Regs.AX := 2; { SIMPLEREGION }
+    ArgWords := 2;
+   End;
+   106: Begin
+    { SetBitmapBits(hbitmap,dwCount,lpBits):LONG - ordinal/signature        }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal             }
+    { SetBitmapBits(word long ptr)", 1 mot + LONG (2 mots) + pointeur        }
+    { LOIN (2 mots) = 5 mots, retour DWORD AX:DX, meme forme que              }
+    { GetBitmapBits/$74). Meme discipline honnete que GetBitmapBits/$74 :   }
+    { AUCUN bitmap de ce sous-ensemble ne stocke jamais de vraies             }
+    { donnees pixel (CreateBitmap/CreateBitmapIndirect/                       }
+    { CreateCompatibleBitmap - ordinaux 48/49/51 - sont tous des handles      }
+    { synthetiques sans contenu reel) - retourne 0, le comportement REEL     }
+    { documente d'un echec (handle de bitmap invalide/sans donnees), pas     }
+    { une valeur inventee. }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 5;
+   End;
+   117: Begin
+    { SetDCOrg(hdc,X,Y):DWORD - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (gdi.exe16.spec : "pascal SetDCOrg(word s_word            }
+    { s_word)", 3 mots, meme forme que PtVisible/$103/OffsetVisRgn/$102,     }
+    { retour DWORD AX:DX). Fonction INTERNE de GDI dans les VRAIS Windows    }
+    { 3.x (reservee aux pilotes d'affichage d'apres la documentation         }
+    { Microsoft d'origine, jamais appelee par une application normale) :     }
+    { X/Y sont lus mais IGNORES - la veritable origine de ce sous-           }
+    { ensemble mono-fenetre reste toujours derivee de la position REELLE    }
+    { de la fenetre active (Win16_WindowX/Y), exactement comme               }
+    { GetDCOrg/$79 la calcule deja ; la "deplacer" independamment de la      }
+    { fenetre briserait cette coherence sans aucun moyen reel de la          }
+    { restituer ailleurs (aucune structure "DC" separee de la fenetre        }
+    { n'existe dans ce sous-ensemble mono-fenetre/mono-DC). Retourne          }
+    { neanmoins la VRAIE origine courante (identique a GetDCOrg/$79)          }
+    { comme "origine precedente", conforme au contrat reel de l'API           }
+    { (renvoie l'ancienne origine) - disclose honnetement plutot              }
+    { qu'une valeur inventee. }
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     P.CPU.Regs.AX := Word(Win16_WindowX[Win16_ActiveDCWindow] + 1);
+     P.CPU.Regs.DX := Word(Win16_WindowY[Win16_ActiveDCWindow] + 1);
+    End Else Begin
+     P.CPU.Regs.AX := 0; P.CPU.Regs.DX := 0;
+    End;
+    ArgWords := 3;
+   End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
     Exit;

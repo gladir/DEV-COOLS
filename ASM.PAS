@@ -36,6 +36,9 @@ TOptionState=Record
  PageLength,PageWidth:Integer;
  ObjectName:String
 End;
+TConditionalFrame=Record
+ ParentActive,TestTrue,ElseSeen:Boolean
+End;
 TBytes=Array[0..ImageSize]of Byte;
 
 Var
@@ -50,7 +53,8 @@ Var
  WorkspaceLimit,WorkspaceUsed:LongInt;
  PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
  ListFile:Text;
- ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull:Boolean;
+ ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull,CurrentLineError,
+ ConditionalSkipped:Boolean;
  ProgramName,Title,ParsedComment:String;
  InitialOptions:TOptionState;
 
@@ -108,7 +112,13 @@ End;
 
 Procedure Error(S:String);Begin
  Inc(Errors);WriteLn(StdErr,SourceName,'(',LineNo,'): erreur: ',S);
+ if PassNo=2 Then CurrentLineError:=True;
  if(PassNo=2)and ListOn and ErrorsInList Then OutText('**** ERREUR: '+S)
+End;
+
+Function Signed16(V:LongInt):LongInt;
+Begin
+ V:=V and$FFFF;if V>$7FFF Then Signed16:=V-$10000 else Signed16:=V
 End;
 
 Function FindSymbol(N:String):PSymbol;
@@ -827,11 +837,14 @@ Var
  Procedure PutPhysicalLine(Address:LongInt;BytesText,SourceText:String;First:Boolean);
  Begin
   StartPage;
-  if Narrow Then Begin
-   S:=Hex(Address,4)+' '+BytesText;
+ if Narrow Then Begin
+   if CurrentLineError Then S:='E ' else if ConditionalSkipped Then S:='C ' else S:='  ';
+   S:=S+Hex(Address,4)+' '+BytesText;
    if SourceText<>''Then S:=S+' '+SourceText
-  End else if First Then
-   S:=Hex(LineNo,4)+' '+Hex(Address,4)+' '+Copy(BytesText+'               ',1,15)+SourceText
+  End else if First Then Begin
+   if CurrentLineError Then S:='E' else if ConditionalSkipped Then S:='C' else S:=' ';
+   S:=Hex(LineNo,4)+S+Hex(Address,4)+' '+Copy(BytesText+'               ',1,15)+SourceText
+  End
   else S:='     '+Hex(Address,4)+' '+Copy(BytesText+'               ',1,15);
   if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);OutText(S);Inc(PageLine);
   if PageLine>=PageLength Then Begin
@@ -860,7 +873,9 @@ End;
 Function LabelForbidden(Op:String):Boolean;
 Begin
  LabelForbidden:=(Op='END')or(Op='NAM')or(Op='TTL')or(Op='OPT')or(Op='ORG')or
-  (Op='PAG')or(Op='PAGE')or(Op='SPC')or(Op='SETDP')or(Op='USE')
+  (Op='PAG')or(Op='PAGE')or(Op='SPC')or(Op='SETDP')or(Op='USE')or(Op='IF')or
+  (Op='IFEQ')or(Op='IFNE')or(Op='IFLT')or(Op='IFLE')or(Op='IFGT')or(Op='IFGE')or
+  (Op='IFP1')or(Op='ELSE')or(Op='ENDC')
 End;
 
 Function OperandRequired(Op:String):Boolean;
@@ -897,44 +912,64 @@ Var
  Line,L,O,A:String;
  OldPC,V:LongInt;
  K:Boolean;
- Cond:Array[1..16]of Boolean;
- Depth,I:Integer;
+ Cond:Array[1..16]of TConditionalFrame;
+ Depth,OverflowDepth,I:Integer;
  Active:Boolean;
 Begin
  Assign(F,FileName);Reset(F);if IOResult<>0 Then Begin
   Error('impossible d''ouvrir '+FileName);Exit
- End;Depth:=0;Active:=True;
+ End;Depth:=0;OverflowDepth:=0;Active:=True;
  While not Eof(F)and not StopAssembly do Begin
   ReadLn(F,Line);Inc(LineNo);
   if Length(Line)>MaxLine Then Begin
    if PassNo=2 Then Error('ligne de plus de 120 caracteres');Line:=Copy(Line,1,MaxLine)
   End;
   ParseFields(Line,L,O,A,ParsedComment);OldPC:=PC;LineByteCount:=0;
-  ConstantDirective:=False;
+  ConstantDirective:=False;CurrentLineError:=False;ConditionalSkipped:=False;
   if not ValidateSourceFields(L,O,A,ParsedComment)Then Begin
    ListLine(OldPC,OldPC,Line);Continue
   End;
-  if(O='IF')or(O='IFEQ')or(O='IFNE')or(O='IFLT')or(O='IFLE')or(O='IFGT')or(O='IFGE')or(O=
-  'IFP1')Then Begin
-   Inc(Depth);if Depth>16 Then Begin
-    Error('imbrication conditionnelle trop profonde');Depth:=16
-   End;Cond[Depth]:=Active;if O='IFP1'Then K:=PassNo=1 else
-   Begin
-    V:=Eval(A,K);
-    if O='IFEQ'Then K:=V=0 else if O='IFNE'Then K:=V<>0 else if O='IFLT'Then K:=V<
-    0 else if O='IFLE'Then K:=V<=0 else if O='IFGT'Then K:=V>0 else if O='IFGE'Then K:=V>=
-    0 else K:=V<>0
-   End;Active:=Active and K;Continue
+  if(O='IF')or(O='IFEQ')or(O='IFNE')or(O='IFLT')or(O='IFLE')or(O='IFGT')or(O='IFGE')or
+    (O='IFP1')Then Begin
+   if OverflowDepth>0 Then Inc(OverflowDepth)
+   else if Depth=16 Then Begin
+    if PassNo=2 Then Error('imbrication conditionnelle trop profonde');OverflowDepth:=1
+   End else Begin
+    Inc(Depth);Cond[Depth].ParentActive:=Active;Cond[Depth].ElseSeen:=False;K:=False;
+    if Active Then Begin
+     if O='IFP1'Then K:=PassNo=1 else Begin
+      V:=Eval(A,K);
+      if(PassNo=1)and not K Then Error('reference avant dans une condition');
+      if K Then Begin
+       if O='IFEQ'Then K:=V=0 else if O='IFNE'Then K:=V<>0
+       else if O='IFLT'Then K:=Signed16(V)<0 else if O='IFLE'Then K:=Signed16(V)<=0
+       else if O='IFGT'Then K:=Signed16(V)>0 else if O='IFGE'Then K:=Signed16(V)>=0
+       else K:=V<>0
+      End
+     End
+    End;
+    Cond[Depth].TestTrue:=K;Active:=Cond[Depth].ParentActive and K
+   End;
+   if CondList or CurrentLineError Then ListLine(OldPC,OldPC,Line);Continue
   End;
   if O='ELSE'Then Begin
-   if Depth=0 Then Error('ELSE sans IF')else Active:=Cond[Depth]and not Active;Continue
-  End;if O='ENDC'Then Begin
-   if Depth=0 Then Error('ENDC sans IF')else
-   Begin
-    Active:=Cond[Depth];Dec(Depth)
-   End;Continue
-  End;if not Active Then Begin
-   if CondList Then ListLine(OldPC,OldPC,Line);Continue
+   if OverflowDepth>0 Then Begin End
+   else if Depth=0 Then Begin if PassNo=2 Then Error('ELSE sans IF')End
+   else if Cond[Depth].ElseSeen Then Begin if PassNo=2 Then Error('ELSE en double')End
+   else Begin
+    Cond[Depth].ElseSeen:=True;
+    Active:=Cond[Depth].ParentActive and not Cond[Depth].TestTrue
+   End;
+   if CondList or CurrentLineError Then ListLine(OldPC,OldPC,Line);Continue
+  End;
+  if O='ENDC'Then Begin
+   if OverflowDepth>0 Then Dec(OverflowDepth)
+   else if Depth=0 Then Begin if PassNo=2 Then Error('ENDC sans IF')End
+   else Begin Active:=Cond[Depth].ParentActive;Dec(Depth)End;
+   if CondList or CurrentLineError Then ListLine(OldPC,OldPC,Line);Continue
+  End;
+  if not Active Then Begin
+   ConditionalSkipped:=True;if CondList Then ListLine(OldPC,OldPC,Line);Continue
   End;
   if(L<>'')and(O<>'EQU')and(O<>'SET')and(O<>'RMB')Then DefineSymbol(L,PC,'L',False);
   if O=''Then Begin
@@ -999,7 +1034,8 @@ Begin
   End else if O='OPT'Then ApplyOption(A,True)
   else if O='END'Then StopAssembly:=True else EncodeInstruction(O,A);
   ListLine(OldPC,OldPC,Line)
- End;Close(F);if Depth<>0 Then Error('ENDC manquant')
+ End;Close(F);
+ if(PassNo=2)and((Depth<>0)or(OverflowDepth<>0))Then Error('ENDC manquant')
 End;
 
 Procedure FixModule;
