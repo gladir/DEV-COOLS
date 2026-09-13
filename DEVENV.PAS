@@ -85949,6 +85949,7 @@ Var
  CosPollRate: String;    { POLL : taux de controle d'echange de message declare }
  CosRefreshRate: String; { REFRESH : taux de rafraichissement de l'affichage declare }
  CosStationId: String;   { ROUTE : identificateur de station declare }
+ CosStreamCount: String; { STREAM : nombre de flux de donnees declare }
 
 { --- DIR (format OS-9 simplifie - reutilise Fat_ListDir/style CMD plutot   }
 { que d'inventer une mise en page OS-9 authentique non verifiee ; reste     }
@@ -132867,9 +132868,11 @@ Begin
    { ENTER/ERROR/FLUSH/IACON/JOB/JSTAT/KILL/LIMIT/LINK/LOGOFF/LOGON/       }
    { LPATH/MESSAGE/MONITOR/MSG/OPERATOR/POLL/RECOVER/REFRESH/RELEASE/      }
    { REPLY/RERUN/RESTORE/RESUME/ROUTE/RSTAT/SAVE/SCROLL/SET/SHUTDOWN/      }
-   { SNAP/STAGE/STATCLASS/STATION/HELP/PAUSE/STATUS. Aucun format de       }
-   { reponse REEL (colonnes exactes de DSPL/DISK/STATUS/CONC/DATASET/      }
-   { JOB/JSTAT/RSTAT/STATCLASS/STATION, etc.) n'a pu etre verifie contre   }
+   { SNAP/STAGE/STATCLASS/STATION/STMSG/STORAGE/STP/STREAM/STRSTAT/        }
+   { SUBMIT/SUSPEND/SWAP/SWEEP/SWITCH/TAPE/TCLEAR/TJOB/TLINK/UNLOAD/       }
+   { HELP/PAUSE/STATUS. Aucun format de reponse REEL (colonnes exactes de  }
+   { DSPL/DISK/STATUS/CONC/DATASET/JOB/JSTAT/RSTAT/STATCLASS/STATION/      }
+   { STORAGE/STP/STRSTAT/SWAP/TAPE/TJOB, etc.) n'a pu etre verifie contre  }
    { une source primaire (manuel COS introuvable en ligne) - reponses      }
    { honnetement simplifiees/disclosees plutot qu'inventees en detail,     }
    { meme esprit que les autres "simplifications disclosees" de ce         }
@@ -132878,13 +132881,15 @@ Begin
    { d attente de jobs reelle) : DROP/PAUSE/CLASS/CONSOLE/DELAY/END/        }
    { ENTER/FLUSH/IACON/JOB/JSTAT/KILL/LINK/LOGOFF/LOGON/LPATH/MONITOR/      }
    { MSG/RECOVER/RELEASE/REPLY/RERUN/RESTORE/RESUME/RSTAT/SAVE/SCROLL/      }
-   { SET/SHUTDOWN/STAGE/STATCLASS/STATION restent donc de simples accuses   }
-   { de reception textuels (SHUTDOWN disclose explicitement qu'aucun       }
-   { arret reel n'a lieu - jamais de comportement destructeur invente a     }
-   { partir d'un simple mot-cle), un seul "job" interactif existant ici.   }
-   { DEFAULT/LIMIT/OPERATOR/POLL/REFRESH/ROUTE sont les seules commandes    }
-   { de ce lot a garder un etat reel (CosDefaultDevice/CosActiveJobLimit/   }
-   { CosPrimaryOperator/CosPollRate/CosRefreshRate/CosStationId, meme       }
+   { SET/SHUTDOWN/STAGE/STATCLASS/STATION/STMSG/STORAGE/STP/STRSTAT/       }
+   { SUBMIT/SUSPEND/SWAP/SWEEP/SWITCH/TAPE/TCLEAR/TJOB/TLINK/UNLOAD         }
+   { restent donc de simples accuses de reception textuels (SHUTDOWN       }
+   { disclose explicitement qu'aucun arret reel n'a lieu - jamais de       }
+   { comportement destructeur invente a partir d'un simple mot-cle), un    }
+   { seul "job" interactif existant ici. DEFAULT/LIMIT/OPERATOR/POLL/      }
+   { REFRESH/ROUTE/STREAM sont les seules commandes de ce lot a garder      }
+   { un etat reel (CosDefaultDevice/CosActiveJobLimit/CosPrimaryOperator/   }
+   { CosPollRate/CosRefreshRate/CosStationId/CosStreamCount, meme           }
    { discipline que MONTYPE du shell OS-9 voisin - voir TermCmd_HELP plus  }
    { haut). MESSAGE et SNAP font exception dans l'autre sens : elles        }
    { ecrivent REELLEMENT sur le disque hote (COSLOG.TXT en ajout pour       }
@@ -133050,6 +133055,53 @@ Begin
     TermAddLine(TP, 'I/O SUBSYSTEM STATION STATUS.');
     TermAddLine(TP, 'AUCUNE STATION E/S CONFIGUREE (aucun sous-systeme d''E/S Cray-1 emule).');
    End
+   Else If CurrCmd = 'STMSG' Then Begin
+    TermAddLine(TP, 'STATION MESSAGES.');
+    TermAddLine(TP, 'AUCUN MESSAGE DE STATION EN ATTENTE.');
+   End
+   Else If CurrCmd = 'STORAGE' Then Begin
+    TermAddLine(TP, 'MASS STORAGE STATUS.');
+    TermAddLine(TP, 'AUCUN PERIPHERIQUE DE STOCKAGE DE MASSE CONFIGURE (aucun disque Cray-1 emule).');
+   End
+   Else If CurrCmd = 'STP' Then Begin
+    TermAddLine(TP, 'SYSTEM TASK PROCESSOR STATISTICS.');
+    TermAddLine(TP, 'AUCUNE STATISTIQUE STP DISPONIBLE (aucun materiel Cray-1 emule).');
+   End
+   Else If CurrCmd = 'STREAM' Then Begin
+    If TermTrim(ParamStr) <> '' Then CosStreamCount := TermTrim(ParamStr);
+    If CosStreamCount = '' Then TermAddLine(TP, 'DATA STREAM COUNT : NON DEFINI.')
+    Else TermAddLine(TP, 'DATA STREAM COUNT : ' + CosStreamCount);
+   End
+   Else If CurrCmd = 'STRSTAT' Then Begin
+    TermAddLine(TP, 'STATION STREAM ' + TermTrim(ParamStr) + ' STATUS.');
+    TermAddLine(TP, 'AUCUN FLUX DE STATION CONFIGURE.');
+   End
+   Else If CurrCmd = 'SUBMIT' Then
+    TermAddLine(TP, 'DATASET STAGING JOB ' + TermTrim(ParamStr) + ' SUBMITTED.')
+   Else If CurrCmd = 'SUSPEND' Then
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' SUSPENDED.')
+   Else If CurrCmd = 'SWAP' Then Begin
+    TermAddLine(TP, 'SWAP SPACE STATUS.');
+    TermAddLine(TP, 'AUCUN ESPACE D''ECHANGE CONFIGURE.');
+   End
+   Else If CurrCmd = 'SWEEP' Then
+    TermAddLine(TP, 'GENERIC RESOURCE ' + TermTrim(ParamStr) + ' CLEARED.')
+   Else If CurrCmd = 'SWITCH' Then
+    TermAddLine(TP, 'JOB DIRECTION SWITCH ' + TermTrim(ParamStr) + ' PROCESSED.')
+   Else If CurrCmd = 'TAPE' Then Begin
+    TermAddLine(TP, 'TAPE DEVICE ' + TermTrim(ParamStr) + ' INFORMATION.');
+    TermAddLine(TP, 'AUCUN LECTEUR DE BANDE MAGNETIQUE CONFIGURE (aucun materiel Cray-1 emule).');
+   End
+   Else If CurrCmd = 'TCLEAR' Then
+    TermAddLine(TP, 'TAPE DRIVE ' + TermTrim(ParamStr) + ' DEADLOCK CLEARED.')
+   Else If CurrCmd = 'TJOB' Then Begin
+    TermAddLine(TP, 'TAPE JOB ' + TermTrim(ParamStr) + ' STATUS.');
+    TermAddLine(TP, 'AUCUN TRAVAIL SUR BANDE EN COURS.');
+   End
+   Else If CurrCmd = 'TLINK' Then
+    TermAddLine(TP, 'TAPE ' + TermTrim(ParamStr) + ' LINKED TO JOB TAPE REQUEST.')
+   Else If CurrCmd = 'UNLOAD' Then
+    TermAddLine(TP, 'TAPE ' + TermTrim(ParamStr) + ' UNLOADED.')
    Else If CurrCmd = 'PAUSE' Then
     TermAddLine(TP, 'PAUSE - AUCUN FLUX DE COMMANDES EN COURS.')
    Else If CurrCmd = 'STATUS' Then Begin
@@ -133068,7 +133120,10 @@ Begin
     TermAddLine(TP, ' RECOVER   REFRESH   RELEASE   REPLY     RERUN');
     TermAddLine(TP, ' RESTORE   RESUME    ROUTE     RSTAT     SAVE');
     TermAddLine(TP, ' SCROLL    SET       SHUTDOWN  SNAP      STAGE');
-    TermAddLine(TP, ' STATCLASS STATION   STATUS');
+    TermAddLine(TP, ' STATCLASS STATION   STATUS    STMSG     STORAGE');
+    TermAddLine(TP, ' STP       STREAM    STRSTAT   SUBMIT    SUSPEND');
+    TermAddLine(TP, ' SWAP      SWEEP     SWITCH    TAPE      TCLEAR');
+    TermAddLine(TP, ' TJOB      TLINK     UNLOAD');
    End
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');

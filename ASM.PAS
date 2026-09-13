@@ -47,7 +47,7 @@ Var
  LineByteCount:Integer;
  PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
  ListFile:Text;
- ListingToFile,StopAssembly:Boolean;
+ ListingToFile,StopAssembly,ConstantDirective:Boolean;
  ProgramName,Title:String;
  InitialOptions:TOptionState;
 
@@ -765,18 +765,46 @@ End;
 Procedure ListLine(Addr:LongInt;OldPC:LongInt;Src:String);
 Var
  S,Bs:String;
- I:LongInt;
+ I,FirstByte,LastByte:LongInt;
+
+ Procedure StartPage;
+ Begin
+  if PageLine=0 Then Begin
+   Inc(PageNo);OutText(ProgramName+'  '+Title+'  Page '+Hex(PageNo,2));OutText('');
+   Inc(PageLine,2)
+  End
+ End;
+
+ Procedure PutPhysicalLine(Address:LongInt;BytesText,SourceText:String;First:Boolean);
+ Begin
+  StartPage;
+  if Narrow Then Begin
+   S:=Hex(Address,4)+' '+BytesText;
+   if SourceText<>''Then S:=S+' '+SourceText
+  End else if First Then
+   S:=Hex(LineNo,4)+' '+Hex(Address,4)+' '+Copy(BytesText+'               ',1,15)+SourceText
+  else S:='     '+Hex(Address,4)+' '+Copy(BytesText+'               ',1,15);
+  if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);OutText(S);Inc(PageLine);
+  if PageLine>=PageLength Then Begin
+   if FormFeed Then OutText(#12);PageLine:=0
+  End
+ End;
+
 Begin
- if(PassNo<>2)or not ListOn Then Exit;if PageLine=0 Then Begin
-  Inc(PageNo);OutText(ProgramName+'  '+Title+'  Page '+Hex(PageNo,2));OutText('');
-  Inc(PageLine,2)
- End;Bs:='';
- For I:=OldPC to OldPC+LineByteCount-1 do if(I>=0)and(I<=ImageSize)Then
-  Bs:=Bs+Hex(Image^[I],2)+' ';
- if Narrow Then S:=Hex(Addr,4)+' '+Bs+' '+Src else S:=Hex(LineNo,4)+' '+Hex(Addr,4)+' '+
- Copy(Bs+'               ',1,15)+Src;if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);
- OutText(S);Inc(PageLine);if PageLine>=PageLength Then Begin
-  if FormFeed Then OutText(#12);PageLine:=0
+ if(PassNo<>2)or not ListOn Then Exit;
+ FirstByte:=0;LastByte:=LineByteCount-1;if LastByte>4 Then LastByte:=4;Bs:='';
+ For I:=FirstByte to LastByte do if(OldPC+I>=0)and(OldPC+I<=ImageSize)Then
+  Bs:=Bs+Hex(Image^[OldPC+I],2)+' ';
+ PutPhysicalLine(Addr,Bs,Src,True);
+ if Generated and ConstantDirective Then Begin
+  FirstByte:=5;
+  While FirstByte<LineByteCount do Begin
+   LastByte:=FirstByte+4;if LastByte>=LineByteCount Then LastByte:=LineByteCount-1;
+   Bs:='';
+   For I:=FirstByte to LastByte do if(OldPC+I>=0)and(OldPC+I<=ImageSize)Then
+    Bs:=Bs+Hex(Image^[OldPC+I],2)+' ';
+   PutPhysicalLine(OldPC+FirstByte,Bs,'',False);Inc(FirstByte,5)
+  End
  End
 End;
 
@@ -797,6 +825,7 @@ Begin
   ReadLn(F,Line);Inc(LineNo);
   if Length(Line)>MaxLine Then Error('ligne de plus de 120 caracteres');
   ParseFields(Line,L,O,A);RemoveFieldComment(O,A);OldPC:=PC;LineByteCount:=0;
+  ConstantDirective:=False;
   if(O='IF')or(O='IFEQ')or(O='IFNE')or(O='IFLT')or(O='IFLE')or(O='IFGT')or(O='IFGE')or(O=
   'IFP1')Then Begin
    Inc(Depth);if Depth>16 Then Begin
@@ -829,6 +858,7 @@ Begin
    V:=Eval(A,K);
    if L=''Then Error('SET exige une etiquette')else DefineSymbol(L,V,'E',True)
   End else if(O='FCB')or(O='FDB')Then Begin
+   ConstantDirective:=True;
    Repeat L:=NextPart(A);if(L<>'')and(L[1]='"')Then Begin
     For I:=2 to Length(L)-1 do if O='FCB'Then Emit(Ord(L[I]))else EmitW(Ord(L[I]))
    End else
@@ -838,6 +868,7 @@ Begin
     else Begin CheckWord(V,K,'constante FDB');EmitW(V)End
    End Until A=''
   End else if(O='FCC')or(O='FCS')Then Begin
+   ConstantDirective:=True;
    A:=Trim(A);if Length(A)>=2 Then Begin
     L:=A[1];I:=2;
     While(I<=Length(A))and(A[I]<>L[1])do Inc(I);
