@@ -3440,7 +3440,7 @@ Type
 
  { Type de shell du terminal }
  TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_GULAM, SK_AMIGADOS, SK_NCOMMANDER,
-  SK_OS2REXX, SK_COS);
+  SK_OS2REXX, SK_OS9, SK_COS);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
@@ -10886,6 +10886,29 @@ Procedure Emu_InitComputer(Var C: TEmuCPU); Forward;
 Function Win16_LoadNE(Var C: TEmuCPU; Const Path: String): Boolean; Forward;
 Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
 Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String; Forward;
+Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
+Procedure Win16_SetupEntryRegs(Var C: TEmuCPU); Forward;
+Procedure Emu_InitBDA(Var P: TEmulatorPanel); Forward;
+Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_StepOne(Var P: TEmulatorPanel); Forward;
+Procedure Emu_TimerTick(Var P: TEmulatorPanel); Forward;
+Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel); Forward;
+Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
+ BinaryPath, TargetCPU: String; Args: String); Forward;
+Procedure Emu_DpbInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_CdsInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_SftInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_SdaInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_AssignInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_IpxInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_PktInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_NetBiosInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_XmsInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_EmsInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_MouseInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_MscdexInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_DpmiInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_VidSetMode(NewMode: Byte; Var P: TEmulatorPanel); Forward;
 
 Procedure ParseCommandLine(Var Opts: TDevEnvOptions);
 Var
@@ -10895,9 +10918,11 @@ Var
  DumpI: Integer;
  Dmp_Parts: String;
  Dmp_C1: Integer;
- DmpPath, DmpSegS, DmpOfsS, DmpLenS: String;
+ DmpPath, DmpSegS, DmpOfsS, DmpLenS, DmpRunStepsS: String;
  DmpSeg, DmpOfs: Word;
- DmpLen: LongInt;
+ DmpLen, DmpRunSteps, DmpStepI: LongInt;
+ DmpHexMode: Boolean;
+ DmpWatchHits: LongInt;
  DmpErr: Integer;
 Begin
  For I := 1 To ParamCount Do Begin
@@ -11158,23 +11183,134 @@ Begin
     Delete(Dmp_Parts, 1, Dmp_C1);
     Dmp_C1 := Pos(',', Dmp_Parts);
     DmpOfsS := Copy(Dmp_Parts, 1, Dmp_C1 - 1);
+    { Champ optionnel supplementaire apres la longueur (separe par une      }
+    { autre virgule) : nombre de PAS REELS a executer (Emu_StepOne, avec la}
+    { meme cadence IRQ/tick que WIN16RUN) avant de faire le dump/desassem- }
+    { blage - necessaire pour inspecter de la memoire de DONNEES qui n'est }
+    { remplie qu'a l'execution (ex. pointeurs de table initialises au       }
+    { WM_CREATE), jamais presente telle quelle dans le fichier NE brut. }
     DmpLenS := Copy(Dmp_Parts, Dmp_C1 + 1, Length(Dmp_Parts) - Dmp_C1);
+    DmpRunSteps := 0;
+    Dmp_C1 := Pos(',', DmpLenS);
+    If Dmp_C1 > 0 Then Begin
+     DmpRunStepsS := Copy(DmpLenS, Dmp_C1 + 1, Length(DmpLenS) - Dmp_C1);
+     DmpLenS := Copy(DmpLenS, 1, Dmp_C1 - 1);
+     Val(DmpRunStepsS, DmpRunSteps, DmpErr);
+    End;
     Val('$' + DmpSegS, DmpSeg, DmpErr);
     Val('$' + DmpOfsS, DmpOfs, DmpErr);
+    DmpHexMode := (Length(DmpLenS) > 0) And
+     ((DmpLenS[1] = 'H') Or (DmpLenS[1] = 'h'));
+    If DmpHexMode Then Delete(DmpLenS, 1, 1);
     Val(DmpLenS, DmpLen, DmpErr);
     FillChar(EmuPanel, SizeOf(EmuPanel), 0);
-    Emu_InitComputer(EmuPanel.CPU);
-    If Not Win16_LoadNE(EmuPanel.CPU, DmpPath) Then Begin
-     ConRawWriteLn('WIN16DMP : echec chargement - ' + Win16_LastError);
-     Halt(1);
+    If DmpRunSteps > 0 Then Begin
+     { Meme sequence d'initialisation EXACTE que le bloc IsWin16 de           }
+     { ShowEmulatorPanel (172108+), MOINS les appels qui touchent l'ecran     }
+     { graphique reel (DrawEmulatorPanel/Emu_VidSetPixel de bureau/etc.) -    }
+     { ShowEmulatorPanel elle-meme PLANTE ici (Access Violation) car ce       }
+     { crochet console n'a jamais initialise PtcGraph (aucun InitGraph        }
+     { equivalent, comme /PERUN2 et les autres crochets console de ce         }
+     { fichier). BOGUE REEL trouve en testant (2026-09-12) : la toute         }
+     { premiere version de ce crochet (Emu_InitComputer+Win16_LoadNE+         }
+     { Win16_SetupEntryRegs+Emu_InitBDA+Emu_DefaultVectorsInit seulement)      }
+     { omettait Emu_VidSetMode/Emu_DpbInit/Emu_CdsInit/Emu_SftInit/            }
+     { Emu_SdaInit/Emu_AssignInit/Emu_IpxInit/Emu_PktInit/Emu_NetBiosInit/     }
+     { Emu_XmsInit/Emu_EmsInit/Emu_MouseInit/Emu_MscdexInit/Emu_DpmiInit -    }
+     { sans eux, CLOCK.EXE restait bloque (boucle d'attente sur un sous-       }
+     { systeme jamais initialise) bien avant d'atteindre la moindre routine   }
+     { de dessin, meme apres 30 millions de pas. }
+     Emu_InitComputer(EmuPanel.CPU);
+     If Not Win16_LoadNE(EmuPanel.CPU, DmpPath) Then Begin
+      ConRawWriteLn('WIN16DMP : echec chargement - ' + Win16_LastError);
+      Halt(1);
+     End;
+     Win16_SetupEntryRegs(EmuPanel.CPU);
+     EmuPanel.CPU.Fault := sfNone;
+     Emu_InitBDA(EmuPanel);
+     Emu_DpbInit(EmuPanel);
+     Emu_CdsInit(EmuPanel);
+     Emu_SftInit(EmuPanel);
+     Emu_SdaInit(EmuPanel);
+     Emu_AssignInit(EmuPanel);
+     Emu_IpxInit(EmuPanel);
+     Emu_PktInit(EmuPanel);
+     Emu_NetBiosInit(EmuPanel);
+     Emu_XmsInit(EmuPanel);
+     Emu_EmsInit(EmuPanel);
+     Emu_MouseInit(EmuPanel);
+     Emu_MscdexInit(EmuPanel);
+     Emu_DpmiInit(EmuPanel);
+     Emu_DefaultVectorsInit(EmuPanel);
+     Emu_VidSetMode($13, EmuPanel);
+     EmuStepsToTick := EmuStepsPerTick;
+     DmpWatchHits := 0;
+     For DmpStepI := 1 To DmpRunSteps Do Begin
+      If EmuPanel.CPU.Fault <> sfNone Then Break;
+      { Point d'observation TEMPORAIRE (2026-09-12, enquete aiguille         }
+      { CLOCK.EXE) : a chaque passage par 1028:07C0 (juste apres le prologue }
+      { PUSH BP/MOV BP,SP de la fonction de dessin d'une aiguille/repere,     }
+      { voir le desassemblage documente dans project_devenv_win16.md), lit   }
+      { [BP+6] = le VRAI index (0-59) passe par l'appelant a cet instant -    }
+      { objectif : voir si des index >30 (partie gauche du cadran, ou le      }
+      { dx du tableau devient negatif - table verifiee correcte par ailleurs) }
+      { sont un jour reellement demandes. }
+      If (EmuPanel.CPU.Segs.CS = $1028) And (EmuPanel.CPU.IP = $07C0) And
+         (DmpWatchHits < 200) Then Begin
+       Inc(DmpWatchHits);
+       ConRawWriteLn('  watch#' + IntToStr(DmpWatchHits) + ' pas=' +
+        IntToStr(DmpStepI) + ' [BP+6]=' +
+        IntToStr(SmallInt(Emu_ReadWord(EmuPanel.CPU, EmuPanel.CPU.Segs.SS,
+         Word(EmuPanel.CPU.Regs.BP + 6)))));
+      End;
+      Emu_StepOne(EmuPanel);
+      Dec(EmuStepsToTick);
+      If EmuStepsToTick <= 0 Then Begin
+       EmuStepsToTick := EmuStepsPerTick;
+       Emu_TimerTick(EmuPanel);
+      End;
+      Emu_ServiceIrqs(EmuPanel);
+     End;
+     ConRawWriteLn('WIN16DMP : ' + IntToStr(DmpRunSteps) +
+      ' pas executes (fault=' + IntToStr(EmuPanel.CPU.Fault) +
+      '), ' + IntToStr(DmpWatchHits) + ' passages par le point d''observation.');
+     ConRawWriteLn('  CS:IP final=' + HexWord(EmuPanel.CPU.Segs.CS) + ':' +
+      HexWord(EmuPanel.CPU.IP) + ' LastError=' + Win16_LastError);
+    End Else Begin
+     { Pas d'execution demandee : simple chargement statique (comme avant), }
+     { suffisant pour desassembler/dumper le fichier NE brut tel quel. }
+     Emu_InitComputer(EmuPanel.CPU);
+     If Not Win16_LoadNE(EmuPanel.CPU, DmpPath) Then Begin
+      ConRawWriteLn('WIN16DMP : echec chargement - ' + Win16_LastError);
+      Halt(1);
+     End;
     End;
-    { DmpLen ici = nombre d'INSTRUCTIONS a desassembler (pas d'octets) via     }
-    { EmuDbg_Disasm8086 deja existant (lit EmuPanel.CPU, voir sa declaration). }
-    For DumpI := 1 To DmpLen Do Begin
-     DmpErr := 0;
-     DumpS := EmuDbg_Disasm8086(DmpSeg, DmpOfs, DmpErr);
-     ConRawWriteLn(HexWord(DmpSeg) + ':' + HexWord(DmpOfs) + '  ' + DumpS);
-     DmpOfs := Word(DmpOfs + DmpErr);
+    ConRawWriteLn('DS(StackSeg)=$' + HexWord(Win16_StackSeg) +
+     ' [DS:00DE]=$' + HexWord(Emu_ReadWord(EmuPanel.CPU, Win16_StackSeg, $00DE)) +
+     ' [DS:00E0]=$' + HexWord(Emu_ReadWord(EmuPanel.CPU, Win16_StackSeg, $00E0)));
+    { Mode brut : si le champ longueur commence par 'H'/'h', DmpLen compte  }
+    { des OCTETS a dumper en hexa (donnees, ex. la table dx/dy) plutot      }
+    { que des INSTRUCTIONS a desassembler (code) - meme crochet, 2 modes. }
+    If DmpHexMode Then Begin
+     DumpS := '';
+     For DumpI := 0 To DmpLen - 1 Do Begin
+      DumpS := DumpS + HexByte(Emu_ReadByte(EmuPanel.CPU, DmpSeg, Word(DmpOfs + DumpI))) + ' ';
+      If (DumpI Mod 16) = 15 Then Begin
+       ConRawWriteLn(HexWord(DmpSeg) + ':' + HexWord(Word(DmpOfs + DumpI - 15)) + '  ' + DumpS);
+       DumpS := '';
+      End;
+     End;
+     If DumpS <> '' Then
+      ConRawWriteLn(HexWord(DmpSeg) + ':' + HexWord(Word(DmpOfs + (DmpLen - 1) - (Length(DumpS) Div 3) + 1)) + '  ' + DumpS);
+    End Else Begin
+     { DmpLen ici = nombre d'INSTRUCTIONS a desassembler (pas d'octets) via  }
+     { EmuDbg_Disasm8086 deja existant (lit EmuPanel.CPU, voir declaration).}
+     For DumpI := 1 To DmpLen Do Begin
+      DmpErr := 0;
+      DumpS := EmuDbg_Disasm8086(DmpSeg, DmpOfs, DmpErr);
+      ConRawWriteLn(HexWord(DmpSeg) + ':' + HexWord(DmpOfs) + '  ' + DumpS);
+      DmpOfs := Word(DmpOfs + DmpErr);
+     End;
     End;
     Halt(EXIT_OK);
    End;
@@ -12730,7 +12866,9 @@ Function Emu_MountDiskSlot(Idx: Byte; FName: String): Boolean; Forward;
 Procedure Emu_UnmountDiskSlot(Idx: Byte); Forward;
 Procedure Emu_CdromOpenOne(Idx: Byte; FName: String); Forward;
 Procedure Emu_CdromAssignDriveLetters; Forward;
-Procedure Emu_PktInit(Var P: TEmulatorPanel); Forward;
+{ Emu_PktInit a deja un Forward plus haut (~ligne 10913, crochet            }
+{ /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un Forward en    }
+{ double). }
 Procedure Emu_WriteDefaultVector(Var P: TEmulatorPanel; Num: Byte); Forward;
 Function Emu_DosEnvRead(Var C: TEmuCPU; EnvSeg: Word;
  Var Vars: Array Of String; Var Count: Integer): Boolean; Forward;
@@ -12739,8 +12877,9 @@ Function Emu_DosEnvWrite(Var C: TEmuCPU; EnvSeg: Word;
 
 { Declarations anticipees pour l emulateur 8086 integre }
 Procedure InitEmulatorPanel(Var P: TEmulatorPanel); Forward;
-Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
- BinaryPath, TargetCPU: String; Args: String); Forward;
+{ ShowEmulatorPanel a deja un Forward plus haut (~ligne 10897, crochet      }
+{ /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un Forward en    }
+{ double). }
 { Stage 2 "multi-onglets emulateur" (2026-08-15) : point d entree PUBLIC a  }
 { utiliser PARTOUT au lieu d appeler ShowEmulatorPanel(EmuPanel,...)          }
 { directement - cree l onglet WK_EMU en plus de charger le binaire. }
@@ -12811,12 +12950,9 @@ Procedure Win16_LoadVideoState; Forward;
 { Chantier Windows 16 bits, Stage 6 (2026-08-29) : WIN16RUN reproduit      }
 { desormais la cadence IRQ/minuterie materielle de DOS_RunOneChunk - ces   }
 { 4 procedures sont definies bien plus loin dans ce fichier (bloc          }
-{ peripheriques BIOS/IRQ, ~70821-71062), Forward requis pour les appeler   }
-{ depuis TermCmd_Win16Run (~39835), qui les precede textuellement. }
-Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel); Forward;
-Procedure Emu_InitBDA(Var P: TEmulatorPanel); Forward;
-Procedure Emu_TimerTick(Var P: TEmulatorPanel); Forward;
-Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel); Forward;
+{ peripheriques BIOS/IRQ, ~70821-71062) - MAIS ont deja toutes les 4 un    }
+{ Forward encore plus haut (~ligne 10891, crochet /WIN16DMP), pas la      }
+{ peine de le repeter ici (FPC refuse un Forward en double). }
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel); Forward;
 Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
  Var Ev: TEvent); Forward;
@@ -12828,7 +12964,9 @@ Procedure EmuVScr_GotoXY(Var P: TEmulatorPanel; X, Y: Byte); Forward;
 Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Word); Forward;
 { --- Forward pour la carte video unifiee CGA/EGA/VGA --- }
 Procedure Emu_VidInit; Forward;
-Procedure Emu_VidSetMode(NewMode: Byte; Var P: TEmulatorPanel); Forward;
+{ Emu_VidSetMode a deja un Forward plus haut (~ligne 10924, crochet         }
+{ /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un Forward en    }
+{ double). }
 Function  Emu_VidReadByte(MemOfs: LongInt): Byte; Forward;
 Procedure Emu_VidWriteByte(MemOfs: LongInt; Value: Byte); Forward;
 Procedure Emu_VidSetPixel(X, Y: Integer; Color: Byte); Forward;
@@ -12849,10 +12987,9 @@ Function Emu_CGAActive: Boolean; Forward;
 Function Emu_ATIActive: Boolean; Forward;
 Function EmuVScr_HasKey(Var P: TEmulatorPanel): Boolean; Forward;
 Function EmuVScr_PopKey(Var P: TEmulatorPanel): Word; Forward;
-{ Necessaire a NCCmd_ViewNetworkStatus (Disque > "Utilitaire reseau...") }
-{ pour lire la BDA (ports COM) bien avant la definition complete du      }
-{ sous-systeme d emulation 8086 plus bas dans ce fichier. }
-Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
+{ Emu_ReadWord a deja un Forward plus haut (~ligne 10888, crochet         }
+{ /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un Forward en   }
+{ double). }
 { Necessaire a TermCmd_MEM (voir plus bas, section "Chaine MCB (Memory     }
 { Control Block) reelle") bien avant la definition complete de ce sous-    }
 { systeme, comme Emu_ReadWord ci-dessus pour NCCmd_ViewNetworkStatus. }
@@ -12876,7 +13013,9 @@ Function Emu_IsoResolve(Idx: Byte; DosPath: String;
 Function Emu_CdromFindFirst(Idx: Integer; Const DirRel, Pattern: String): Boolean; Forward;
 { Necessaire a Emu_DoInt31 (AX=0300h/0301h/0302h, voir DOC/DPMI.txt 7) bien }
 { avant la definition complete du coeur 8086 reel plus bas dans ce fichier.}
-Procedure Emu_StepOne(Var P: TEmulatorPanel); Forward;
+{ Emu_StepOne a deja un Forward plus haut (~ligne 10893, crochet           }
+{ /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un Forward en    }
+{ double). }
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte); Forward;
 { Necessaire a TermFindPrgExecutable (executer un .PRG tape dans un shell  }
 { terminal) bien avant sa definition complete pres de NCActionOpenAssociated}
@@ -72856,6 +72995,455 @@ Begin
  CreateEmulatorTab(RomPath, '-COS9', RestParam);
 End;
 
+{ ============================================================
+  Shell Terminal "OS-9 (CoCo 3)" (SK_OS9, 2026-09-12, demande explicite
+  de l'utilisateur - liste de 50 commandes fournie, source
+  gladir.com/OS/OS9/*.htm) : etat/aides partages entre les commandes
+  ci-dessous, jamais lus/ecrits ailleurs dans ce fichier - mêmes
+  singletons GLOBAUX que PsHereStringActive plus haut (un seul panneau
+  OS-9 existe, TermPanels[SK_OS9]).
+  ============================================================ }
+Var
+ Os9DataDir: String;   { CHD/PWD : repertoire de recherche des DONNEES }
+ Os9ExecDir: String;   { CHX/PXD : repertoire de recherche des EXECUTABLES }
+ Os9MonType: String;   { MONTYPE : type de moniteur declare }
+ Os9TModeStr: String;  { TMODE : parametres terminal declares }
+ Os9XModeStr: String;  { XMODE : parametres peripherique declares }
+ Os9LinkCount: Integer;     { LINK/UNLINK : compteur de liaisons simule }
+ Os9DeviceCount: Integer;   { INIZ/DEINIZ : nombre de peripheriques "connectes" }
+
+{ --- DIR (format OS-9 simplifie - reutilise Fat_ListDir/style CMD plutot   }
+{ que d'inventer une mise en page OS-9 authentique non verifiee ; reste     }
+{ compatible RBF reel (OS9_ListDir) via le meme mecanisme generique que      }
+{ CMD/AmigaDOS/OS2&REXX, voir Fat_ResolveDir/Fat_ListDir). --- }
+Procedure TermCmd_OS9_DIR(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Info: SearchRec;
+ ShowDir, S: String;
+ FirstParam, AbsP: String;
+ TotalFiles, TotalDirs: LongInt;
+ Idx: Byte;
+ IsRoot: Boolean;
+ StartCl: LongInt;
+ Free: LongInt;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
+   TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie.');
+   Exit;
+  End;
+  Fat_ListDir(Idx, IsRoot, StartCl, TP, 0);
+  Free := Fat_FreeBytes(Idx);
+  Str(Free, S);
+  TermAddLine(TP, S + ' bytes free.');
+  Exit;
+ End;
+ If FirstParam = '' Then ShowDir := '*.*' Else ShowDir := FirstParam;
+ TotalFiles := 0; TotalDirs := 0;
+ FindFirst(ShowDir, AnyFile, Info);
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) = Directory Then Begin
+   TermAddLine(TP, Info.Name + '  <DIR>');
+   Inc(TotalDirs);
+  End Else Begin
+   TermAddLine(TP, Info.Name + '  ' + IntToStr(Info.Size));
+   Inc(TotalFiles);
+  End;
+  FindNext(Info);
+ End;
+ TermAddLine(TP, IntToStr(TotalFiles) + ' file(s), ' +
+  IntToStr(TotalDirs) + ' dir(s).');
+End;
+
+{ --- FREE (espace libre) --- }
+Procedure TermCmd_OS9_FREE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FirstParam, AbsP: String;
+ Idx: Byte;
+ Free: LongInt;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  Free := Fat_FreeBytes(Idx);
+  TermAddLine(TP, Chr(Ord('A') + Idx) + ': ' + IntToStr(Free) + ' bytes free.');
+  Exit;
+ End;
+ TermAddLine(TP, IntToStr(LongInt(DiskFree(0))) + ' bytes free.');
+End;
+
+{ --- CMP (comparaison octet par octet de 2 fichiers) --- }
+Procedure TermCmd_OS9_CMP(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ F1, F2: File Of Byte;
+ B1, B2: Byte;
+ Err: Word;
+ Pos: LongInt;
+ Diffs: LongInt;
+ Name1, Name2: String;
+Begin
+ Name1 := TermExtractParam(ParamStr, 1);
+ Name2 := TermExtractParam(ParamStr, 2);
+ If (Name1 = '') Or (Name2 = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : CMP fichier1 fichier2');
+  Exit;
+ End;
+ {$I-} Assign(F1, Name1); Reset(F1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ {$I-} Assign(F2, Name2); Reset(F2); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  Close(F1);
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ If FileSize(F1) <> FileSize(F2) Then Begin
+  TermAddLine(TP, 'Les fichiers sont de tailles differentes.');
+  Close(F1); Close(F2);
+  Exit;
+ End;
+ Pos := 0; Diffs := 0;
+ While (Not EOF(F1)) And (Diffs = 0) Do Begin
+  Read(F1, B1); Read(F2, B2);
+  If B1 <> B2 Then Begin
+   TermAddLine(TP, 'Difference au decalage ' + IntToStr(Pos) + ' ($' +
+    HexLong(Pos) + ').');
+   Inc(Diffs);
+  End;
+  Inc(Pos);
+ End;
+ Close(F1); Close(F2);
+ If Diffs = 0 Then TermAddLine(TP, 'Les fichiers sont identiques.');
+End;
+
+{ --- MERGE (concatenation reelle de N fichiers vers le dernier argument) --- }
+Procedure TermCmd_OS9_MERGE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ ArgCount, I: Integer;
+ Args: Array[1..40] Of String;
+ InF: File Of Byte;
+ OutF: File Of Byte;
+ B: Byte;
+ Err: Word;
+ TotalBytes: LongInt;
+Begin
+ ArgCount := 0;
+ While (TermExtractParam(ParamStr, ArgCount + 1) <> '') And (ArgCount < 40) Do Begin
+  Inc(ArgCount);
+  Args[ArgCount] := TermExtractParam(ParamStr, ArgCount);
+ End;
+ If ArgCount < 2 Then Begin
+  TermAddLine(TP, 'Syntaxe : MERGE fichier1 [fichier2 ...] destination');
+  Exit;
+ End;
+ {$I-} Assign(OutF, Args[ArgCount]); Rewrite(OutF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ TotalBytes := 0;
+ For I := 1 To ArgCount - 1 Do Begin
+  {$I-} Assign(InF, Args[I]); Reset(InF); {$I+}
+  If IOResult <> 0 Then Begin
+   TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie : ' + Args[I]);
+   Continue;
+  End;
+  While Not EOF(InF) Do Begin
+   Read(InF, B);
+   Write(OutF, B);
+   Inc(TotalBytes);
+  End;
+  Close(InF);
+ End;
+ Close(OutF);
+ TermAddLine(TP, IntToStr(ArgCount - 1) + ' fichier(s) fusionne(s), ' +
+  IntToStr(TotalBytes) + ' octets ecrits dans ' + Args[ArgCount] + '.');
+End;
+
+{ --- IDENT (en-tete de module OS-9 REEL, format Microware documente : mot  }
+{ de synchronisation $87CD, taille, offset nom, type/langage, }
+{ attributs/revision, edition, CRC-24 final) - lit les octets bruts d'un    }
+{ fichier hote, aucune supposition, refuse proprement si la synchro ne      }
+{ correspond pas. --- }
+Procedure TermCmd_OS9_IDENT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ F: File;
+ Err: Word;
+ Hdr: Array[0..15] Of Byte;
+ NRead: Word;
+ Sync, ModSize, NameOfs, TypeLang, AttrRev, Edition: Word;
+ ModName: String;
+ NameBuf: Array[0..63] Of Byte;
+ NamePos: Word;
+ C: Byte;
+ FName: String;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : IDENT module');
+  Exit;
+ End;
+ {$I-} Assign(F, FName); Reset(F, 1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ BlockRead(F, Hdr, 16, NRead);
+ If NRead < 9 Then Begin
+  TermAddLine(TP, 'IDENT : fichier trop court pour etre un module OS-9.');
+  Close(F);
+  Exit;
+ End;
+ Sync := (Word(Hdr[0]) Shl 8) Or Hdr[1];
+ If Sync <> $87CD Then Begin
+  TermAddLine(TP, 'IDENT : signature absente ($87CD attendu, $' +
+   HexWord(Sync) + ' trouve) - pas un module OS-9 reel.');
+  Close(F);
+  Exit;
+ End;
+ ModSize  := (Word(Hdr[2]) Shl 8) Or Hdr[3];
+ NameOfs  := (Word(Hdr[4]) Shl 8) Or Hdr[5];
+ TypeLang := Hdr[6];
+ AttrRev  := Hdr[7];
+ Edition  := Hdr[8];
+ { Nom du module : chaine ASCII au decalage NameOfs, dernier caractere avec }
+ { son bit haut positionne (convention reelle OS-9, verifie via la doc      }
+ { Microware "Module Header" - PAS une simple chaine terminee par zero). }
+ ModName := '';
+ If NameOfs < SizeOf(NameBuf) Then Begin
+  Seek(F, NameOfs);
+  NamePos := 0;
+  Repeat
+   BlockRead(F, C, 1, NRead);
+   If NRead = 0 Then Break;
+   ModName := ModName + Chr(C And $7F);
+   Inc(NamePos);
+  Until ((C And $80) <> 0) Or (NamePos >= 32);
+ End;
+ Close(F);
+ TermAddLine(TP, 'Module : ' + ModName);
+ TermAddLine(TP, '  Taille declaree  : ' + IntToStr(ModSize) + ' octets');
+ TermAddLine(TP, '  Type/Langage     : $' + HexByte(TypeLang) +
+  ' (type=' + IntToStr(TypeLang Shr 4) + ', langage=' +
+  IntToStr(TypeLang And $0F) + ')');
+ TermAddLine(TP, '  Attributs/Revis. : $' + HexByte(AttrRev) +
+  ' (attributs=' + IntToStr(AttrRev Shr 4) + ', revision=' +
+  IntToStr(AttrRev And $0F) + ')');
+ TermAddLine(TP, '  Edition          : ' + IntToStr(Edition));
+End;
+
+{ --- DISPLAY (affiche un message encode en hexadecimal) --- }
+Procedure TermCmd_OS9_DISPLAY(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ HexS, S: String;
+ I: Integer;
+ ByteVal, ErrCode: Integer;
+Begin
+ HexS := TermTrim(ParamStr);
+ If HexS = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : DISPLAY xxYYzz... (paires hexadecimales)');
+  Exit;
+ End;
+ S := '';
+ I := 1;
+ While I + 1 <= Length(HexS) Do Begin
+  Val('$' + Copy(HexS, I, 2), ByteVal, ErrCode);
+  If ErrCode <> 0 Then Begin
+   TermAddLine(TP, 'DISPLAY : sequence hexadecimale invalide.');
+   Exit;
+  End;
+  If (ByteVal >= 32) And (ByteVal <= 126) Then
+   S := S + Chr(ByteVal)
+  Else If ByteVal = 13 Then Begin
+   TermAddLine(TP, S);
+   S := '';
+  End Else
+   S := S + '.';
+  I := I + 2;
+ End;
+ If S <> '' Then TermAddLine(TP, S);
+End;
+
+{ --- ATTR (lecture reelle via Fat_FindPath, ecriture reelle via            }
+{ Fat_SetAttr - refuse honnetement sur une image OS-9 RBF montee, qui est   }
+{ strictement lecture seule dans cette implementation, voir OS9_TryMount). --- }
+Procedure TermCmd_OS9_ATTR(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FirstParam, NewAttrS, AbsP: String;
+ Idx: Byte;
+ Attr: Byte;
+ Cluster, Size: LongInt;
+ NewAttr: Integer;
+ ErrCode: Integer;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ NewAttrS := TermExtractParam(ParamStr, 2);
+ If FirstParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ATTR fichier [nouveaux-attributs-hexa]');
+  Exit;
+ End;
+ If Not Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  TermAddLine(TP, 'ATTR : disponible uniquement sur un disque virtuel monte.');
+  Exit;
+ End;
+ If Not Fat_FindPath(Idx, AbsP, Attr, Cluster, Size) Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ If NewAttrS = '' Then Begin
+  TermAddLine(TP, FirstParam + ' : attributs = $' + HexByte(Attr));
+  Exit;
+ End;
+ If FatVol[Idx].IsOS9 Then Begin
+  TermAddLine(TP, 'ATTR : image OS-9 RBF montee en LECTURE SEULE dans cet ' +
+   'emulateur - impossible de modifier les attributs.');
+  Exit;
+ End;
+ Val('$' + NewAttrS, NewAttr, ErrCode);
+ If ErrCode <> 0 Then Begin
+  TermAddLine(TP, 'ATTR : attributs invalides.');
+  Exit;
+ End;
+ If Fat_SetAttr(Idx, AbsP, Byte(NewAttr)) Then
+  TermAddLine(TP, FirstParam + ' : attributs fixes a $' + HexByte(Byte(NewAttr)))
+ Else
+  TermAddLine(TP, 'ATTR : echec de l''ecriture des attributs.');
+End;
+
+{ --- MDIR (modules en memoire - lit REELLEMENT les tableaux globaux         }
+{ OS9_ModName/OS9_ModUsed du coeur 6809, partages avec le dernier onglet     }
+{ -COS9 lance via EX ci-dessous - honnetement vide si aucun n'a jamais      }
+{ tourne cette session). --- }
+Procedure TermCmd_OS9_MDIR(Var TP: TTerminalPanel);
+Var
+ I: Integer;
+ AnyMod: Boolean;
+Begin
+ AnyMod := False;
+ TermAddLine(TP, 'Name             Base  Exec');
+ For I := 0 To 3 Do
+  If OS9_ModUsed[I] Then Begin
+   TermAddLine(TP, OS9_ModName[I] + '  $' + HexWord(OS9_ModBase[I]) +
+    '  $' + HexWord(OS9_ModExec[I]));
+   AnyMod := True;
+  End;
+ If Not AnyMod Then
+  TermAddLine(TP, '(aucun module en memoire - aucun programme -COS9 ' +
+   'n''a encore ete execute via EX cette session)');
+End;
+
+{ --- SHELL (execute reellement un fichier de commandes OS-9, ligne par     }
+{ ligne, via TermExecuteCommand - meme principe que /BASH:fichier. --- }
+Procedure TermCmd_OS9_SHELL(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Handle: Text;
+ Err: Word;
+ FName, CurrLine: String;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : SHELL fichier-de-commandes');
+  Exit;
+ End;
+ Assign(Handle, FName);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  If TermTrim(CurrLine) <> '' Then
+   TermExecuteCommand(TP, CurrLine);
+ End;
+ Close(Handle);
+End;
+
+{ --- HELP (liste des 50 commandes du shell OS-9, source gladir.com/OS/OS9) --- }
+Procedure TermCmd_OS9_HELP(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP, 'OS-9/6809 shell built-in commands :');
+ TermAddLine(TP, '  ATTR BACKUP BASIC09 BUILD CHD CHX CMP COBBLER CONFIG COPY');
+ TermAddLine(TP, '  DATE DCHECK DEINIZ DEL DELDIR DIR DISPLAY DSAVE ECHO EDIT');
+ TermAddLine(TP, '  ERROR EX FORMAT FREE HELP IDENT INIZ KILL LINK LIST LOAD');
+ TermAddLine(TP, '  MAKDIR MDIR MERGE MFREE MODPATCH MONTYPE OS9GEN PROCS PWD');
+ TermAddLine(TP, '  PXD RENAME SETPR SETIME SHELL TMODE TUNEPORT UNLINK');
+ TermAddLine(TP, '  WCREATE XMODE');
+End;
+
+{ --- DSAVE (procedure de commande simplifiee recreant le repertoire        }
+{ COURANT, non recursif - un vrai DSAVE OS-9 descend tout l'arbre). --- }
+Procedure TermCmd_OS9_DSAVE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ OutHandle: Text;
+ Err: Word;
+ FName: String;
+ Info: SearchRec;
+ Count: Integer;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : DSAVE fichier-de-sortie');
+  Exit;
+ End;
+ Assign(OutHandle, FName);
+ {$I-} Rewrite(OutHandle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Count := 0;
+ FindFirst('*.*', AnyFile, Info);
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) = Directory Then
+   WriteLn(OutHandle, 'MAKDIR ' + Info.Name)
+  Else
+   WriteLn(OutHandle, '; fichier : ' + Info.Name);
+  Inc(Count);
+  FindNext(Info);
+ End;
+ Close(OutHandle);
+ TermAddLine(TP, 'DSAVE (simplifie, repertoire courant seulement) : ' +
+  IntToStr(Count) + ' entree(s) ecrites dans ' + FName + '.');
+End;
+
+{ --- DCHECK (verification simplifiee : compte fichiers/repertoires +       }
+{ espace libre - AUCUNE reparation reelle n'est effectuee, contrairement    }
+{ au vrai DCHECK OS-9). --- }
+Procedure TermCmd_OS9_DCHECK(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Info: SearchRec;
+ TotalFiles, TotalDirs: LongInt;
+ FirstParam, AbsP: String;
+ Idx: Byte;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ TotalFiles := 0; TotalDirs := 0;
+ FindFirst('*.*', AnyFile, Info);
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) = Directory Then Inc(TotalDirs)
+  Else Inc(TotalFiles);
+  FindNext(Info);
+ End;
+ TermAddLine(TP, 'DCHECK (verification simplifiee, aucune reparation reelle) :');
+ TermAddLine(TP, '  ' + IntToStr(TotalFiles) + ' fichier(s), ' +
+  IntToStr(TotalDirs) + ' repertoire(s) dans le repertoire courant.');
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then
+  TermAddLine(TP, '  Espace libre : ' + IntToStr(Fat_FreeBytes(Idx)) + ' octets.')
+ Else
+  TermAddLine(TP, '  Espace libre (hote) : ' + IntToStr(LongInt(DiskFree(0))) + ' octets.');
+ TermAddLine(TP, '  Aucune erreur detectee (aucune verification structurelle ' +
+  'reelle du systeme de fichiers n''est effectuee).');
+End;
+
 { Start-Cray1Program (2026-09-12, demande explicite de l'utilisateur -      }
 { "il n'existe actuellement aucune commande terminal ni association NC     }
 { pour lancer directement un .abs") - meme motif exact que                  }
@@ -80950,7 +81538,10 @@ Begin
       IntToStr(Win16_PenY) + ') to abs=(' + IntToStr(GdiX2) + ',' +
       IntToStr(GdiY2) + ') caller=' +
       HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 2))) + ':' +
-      HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, P.CPU.Regs.SP)));
+      HexWord(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, P.CPU.Regs.SP)) +
+      ' BP=' + HexWord(P.CPU.Regs.BP) + ' [BP+6]=' +
+      IntToStr(SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+       Word(P.CPU.Regs.BP + 6)))));
      Win16_DrawLine(Win16_PenX, Win16_PenY, GdiX2, GdiY2, 0);
      Win16_PenX := GdiX2;
      Win16_PenY := GdiY2;
@@ -88244,6 +88835,7 @@ Begin
   SK_GULAM:      FName := 'terminal-gulam.log';
   SK_AMIGADOS:   FName := 'terminal-amiga.log';
   SK_OS2REXX:    FName := 'terminal-os2.log';
+  SK_OS9:        FName := 'terminal-os9.log';
   SK_COS:        FName := 'terminal-cos.log';
  Else
   FName := 'terminal.log';
@@ -117967,6 +118559,7 @@ Var
  ArgCmd3, ArgCmd4: String;
  PSCmdID: Byte;
  GulamAliasI: Integer;
+ Os9BuildF: File;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -119148,6 +119741,156 @@ Begin
       ''' n''est pas reconnu comme commande interne ou externe.');
    End;
   End;
+  SK_OS9: Begin
+   { OS-9 (CoCo 3, Microware) - demande explicite de l'utilisateur, liste   }
+   { de 50 commandes fournie par l'utilisateur (gladir.com/OS/OS9/*.htm).   }
+   { Commandes fichier reelles : reutilisent les MEMES handlers TermCmd_*   }
+   { generiques que CMD/AmigaDOS/OS2&REXX (COPY/DEL/MKDIR/RMDIR/REN/TYPE/   }
+   { EDIT/DATE), deja compatibles avec une image OS-9 RBF reelle montee     }
+   { (FatVol[].IsOS9, lecture seule - voir OS9_TryMount) via le mecanisme    }
+   { generique Term_ResolveVirtTarget/Fat_*. Commandes sans equivalent      }
+   { reel dans cette implementation (BACKUP/COBBLER/CONFIG/DEINIZ/FORMAT/   }
+   { MODPATCH/OS9GEN/WCREATE/BASIC09) : accuse de reception textuel honnete }
+   { plutot qu'un comportement invente, meme discipline que COS ci-dessous. }
+   If CurrCmd = 'COPY' Then TermCmd_COPY(TP, ParamStr)
+   Else If CurrCmd = 'DEL' Then TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'DELDIR' Then TermCmd_RMDIR(TP, ParamStr)
+   Else If CurrCmd = 'MAKDIR' Then TermCmd_MKDIR(TP, ParamStr)
+   Else If CurrCmd = 'RENAME' Then TermCmd_REN(TP, ParamStr)
+   Else If CurrCmd = 'LIST' Then TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'DIR' Then TermCmd_OS9_DIR(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then TermCmd_DATE(TP)
+   Else If CurrCmd = 'ECHO' Then TermCmd_ECHO(TP, ParamStr)
+   Else If CurrCmd = 'EDIT' Then TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'FREE' Then TermCmd_OS9_FREE(TP, ParamStr)
+   Else If CurrCmd = 'CMP' Then TermCmd_OS9_CMP(TP, ParamStr)
+   Else If CurrCmd = 'MERGE' Then TermCmd_OS9_MERGE(TP, ParamStr)
+   Else If CurrCmd = 'IDENT' Then TermCmd_OS9_IDENT(TP, ParamStr)
+   Else If CurrCmd = 'DISPLAY' Then TermCmd_OS9_DISPLAY(TP, ParamStr)
+   Else If CurrCmd = 'ATTR' Then TermCmd_OS9_ATTR(TP, ParamStr)
+   Else If CurrCmd = 'MDIR' Then TermCmd_OS9_MDIR(TP)
+   Else If CurrCmd = 'SHELL' Then TermCmd_OS9_SHELL(TP, ParamStr)
+   Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then TermCmd_OS9_HELP(TP)
+   Else If CurrCmd = 'DSAVE' Then TermCmd_OS9_DSAVE(TP, ParamStr)
+   Else If CurrCmd = 'DCHECK' Then TermCmd_OS9_DCHECK(TP, ParamStr)
+   Else If CurrCmd = 'EX' Then TermCmd_StartOS9Program(TP, ParamStr)
+   Else If CurrCmd = 'LOAD' Then Begin
+    TermAddLine(TP, 'LOAD : non distingue de EX dans cet emulateur - le ' +
+     'module est charge ET execute immediatement (voir EX).');
+    TermCmd_StartOS9Program(TP, ParamStr);
+   End
+   Else If CurrCmd = 'KILL' Then
+    TermAddLine(TP, 'KILL : non supporte - un module lance via EX tourne ' +
+     'dans son PROPRE onglet emulateur (ferme-le directement, Ctrl+W ou ' +
+     'le bouton de fermeture de l''onglet) ; ce terminal ne peut pas agir ' +
+     'sur un onglet distinct.')
+   Else If CurrCmd = 'PROCS' Then Begin
+    TermAddLine(TP, '#Process  Id  Name');
+    TermAddLine(TP, '       1   1  shell (ce terminal - modele mono-processus)');
+   End
+   Else If CurrCmd = 'CHD' Then Begin
+    If TermTrim(ParamStr) <> '' Then Os9DataDir := TermTrim(ParamStr);
+    TermAddLine(TP, 'Data directory : ' + Os9DataDir);
+   End
+   Else If CurrCmd = 'CHX' Then Begin
+    If TermTrim(ParamStr) <> '' Then Os9ExecDir := TermTrim(ParamStr);
+    TermAddLine(TP, 'Execution directory : ' + Os9ExecDir);
+   End
+   Else If CurrCmd = 'PWD' Then Begin
+    If Os9DataDir = '' Then GetDir(0, Os9DataDir);
+    TermAddLine(TP, Os9DataDir);
+   End
+   Else If CurrCmd = 'PXD' Then Begin
+    If Os9ExecDir = '' Then GetDir(0, Os9ExecDir);
+    TermAddLine(TP, Os9ExecDir);
+   End
+   Else If CurrCmd = 'ERROR' Then
+    TermAddLine(TP, 'ERROR : aucun code d''erreur formel n''est conserve ' +
+     'par ce terminal - chaque commande affiche directement son propre ' +
+     'message en cas d''echec.')
+   Else If CurrCmd = 'SETPR' Then
+    TermAddLine(TP, 'SETPR ' + TermTrim(ParamStr) +
+     ' : priorite acceptee (aucun ordonnanceur multi-processus reel n''est ' +
+     'simule ici).')
+   Else If CurrCmd = 'SETIME' Then Begin
+    { Horloge SIMULEE uniquement - ne touche JAMAIS l'horloge reelle de     }
+    { l'hote (contrairement au vrai SETIME OS-9) : changer l'heure reelle    }
+    { d'une machine de developpement depuis un shell jouet serait une        }
+    { action destructrice hors de toute proportion avec la demande.          }
+    TermAddLine(TP, 'SETIME : horloge systeme OS-9 SIMULEE uniquement dans ' +
+     'ce terminal - l''horloge reelle de cet ordinateur n''est jamais ' +
+     'modifiee.');
+   End
+   Else If CurrCmd = 'MONTYPE' Then Begin
+    If TermTrim(ParamStr) <> '' Then Os9MonType := TermTrim(ParamStr);
+    If Os9MonType = '' Then TermAddLine(TP, 'MONTYPE : 80 colonnes, couleur (defaut).')
+    Else TermAddLine(TP, 'MONTYPE : ' + Os9MonType);
+   End
+   Else If CurrCmd = 'TMODE' Then Begin
+    If TermTrim(ParamStr) <> '' Then Os9TModeStr := TermTrim(ParamStr);
+    If Os9TModeStr = '' Then TermAddLine(TP, 'TMODE : parametres par defaut.')
+    Else TermAddLine(TP, 'TMODE : ' + Os9TModeStr);
+   End
+   Else If CurrCmd = 'XMODE' Then Begin
+    If TermTrim(ParamStr) <> '' Then Os9XModeStr := TermTrim(ParamStr);
+    If Os9XModeStr = '' Then TermAddLine(TP, 'XMODE : parametres par defaut.')
+    Else TermAddLine(TP, 'XMODE : ' + Os9XModeStr);
+   End
+   Else If CurrCmd = 'TUNEPORT' Then
+    TermAddLine(TP, 'TUNEPORT ' + TermTrim(ParamStr) + ' : parametre accepte.')
+   Else If CurrCmd = 'INIZ' Then Begin
+    Inc(Os9DeviceCount);
+    TermAddLine(TP, 'INIZ : peripherique ''' + TermTrim(ParamStr) +
+     ''' connecte (' + IntToStr(Os9DeviceCount) + ' au total cette session).');
+   End
+   Else If CurrCmd = 'DEINIZ' Then Begin
+    If Os9DeviceCount > 0 Then Dec(Os9DeviceCount);
+    TermAddLine(TP, 'DEINIZ : peripherique ''' + TermTrim(ParamStr) +
+     ''' deconnecte.');
+   End
+   Else If CurrCmd = 'LINK' Then Begin
+    Inc(Os9LinkCount);
+    TermAddLine(TP, 'LINK : module ''' + TermTrim(ParamStr) +
+     ''' lie (compteur de liaisons = ' + IntToStr(Os9LinkCount) + ').');
+   End
+   Else If CurrCmd = 'UNLINK' Then Begin
+    If Os9LinkCount > 0 Then Dec(Os9LinkCount);
+    TermAddLine(TP, 'UNLINK : module ''' + TermTrim(ParamStr) +
+     ''' delie (compteur de liaisons = ' + IntToStr(Os9LinkCount) + ').');
+   End
+   Else If CurrCmd = 'BUILD' Then Begin
+    { Simplifie : cree un fichier VIDE - le vrai BUILD OS-9 capture les     }
+    { lignes tapees interactivement jusqu'a un caractere de fin (aucun       }
+    { mecanisme de saisie multi-lignes de ce type n'existe dans ce terminal, }
+    { contrairement au here-string @"..."@ de PowerShell dev). }
+    If TermTrim(ParamStr) = '' Then
+     TermAddLine(TP, 'Syntaxe : BUILD fichier')
+    Else Begin
+     Assign(Os9BuildF, TermTrim(ParamStr));
+     {$I-} Rewrite(Os9BuildF); {$I+}
+     If IOResult = 0 Then Begin
+      Close(Os9BuildF);
+      TermAddLine(TP, 'BUILD (simplifie) : fichier vide ''' +
+       TermTrim(ParamStr) + ''' cree (pas de saisie interactive simulee).');
+     End Else
+      TermAddLine(TP, 'BUILD : impossible de creer le fichier.');
+    End;
+   End
+   Else If (CurrCmd = 'BACKUP') Or (CurrCmd = 'COBBLER') Or
+           (CurrCmd = 'CONFIG') Or (CurrCmd = 'FORMAT') Or
+           (CurrCmd = 'OS9GEN') Or (CurrCmd = 'MODPATCH') Or
+           (CurrCmd = 'WCREATE') Or (CurrCmd = 'BASIC09') Then
+    TermAddLine(TP, CurrCmd + ' : commande reconnue, mais non supportee - ' +
+     'aucun mecanisme reel de disquette/amorçage/interprete Basic09 n''est ' +
+     'emule par ce terminal.')
+   Else If CurrCmd = 'MFREE' Then
+    { Valeur illustrative plausible (configuration CoCo 3 courante, 512 Ko  }
+    { de RAM) - aucune gestion memoire OS-9 reelle n'est modelisee au        }
+    { niveau de ce terminal (contrairement au coeur 6809 -COS9 lui-meme). }
+    TermAddLine(TP, 'MFREE (illustratif) : 458752 bytes free (RAM 512K, CoCo 3).')
+   Else
+    TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
+  End;
   SK_COS: Begin
    { COS (Cray Operating System, Cray-1, 1976) - demande explicite de       }
    { l'utilisateur, jeu de commandes limite a celles listees               }
@@ -119210,6 +119953,7 @@ Begin
   SK_BASH:       TermCmdHistFile := 'devenv-bash.hist';
   SK_AMIGADOS:   TermCmdHistFile := 'devenv-amiga.hist';
   SK_OS2REXX:    TermCmdHistFile := 'devenv-os2.hist';
+  SK_OS9:        TermCmdHistFile := 'devenv-os9.hist';
   SK_COS:        TermCmdHistFile := 'devenv-cos.hist';
  Else
   TermCmdHistFile := 'devenv-term.hist';
@@ -119338,6 +120082,7 @@ Begin
  InitTerminalPanel(TermPanels[SK_AMIGADOS], SK_AMIGADOS);
  InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
  InitTerminalPanel(TermPanels[SK_OS2REXX], SK_OS2REXX);
+ InitTerminalPanel(TermPanels[SK_OS9], SK_OS9);
  InitTerminalPanel(TermPanels[SK_COS], SK_COS);
  { Comme l original sur DOS reel (et comme les 4 autres shells de ce      }
  { panneau) : demarrer sur le repertoire courant de la machine hote,           }
@@ -122933,9 +123678,12 @@ Var
  ThumbX, ThumbW: Integer;
  HBarY, SBarBottom: Integer;
  { Gulam imite l ecran monochrome ST reel : fond blanc, texte noir -       }
- { seul shell distinct des autres (fond gris fonce/texte clair). }
+ { seul shell distinct des autres (fond gris fonce/texte clair). OS-9      }
+ { (2026-09-12, demande explicite : "fond Vert clair, ecriture noir")      }
+ { rejoint ce meme groupe de shells a fond clair. }
  IsAmigaDOSPanel:Boolean;
  IsGulamPanel:Boolean;
+ IsOS9Panel:Boolean;
 Begin
  If Not TermVisible Then Exit;
  PX := TermX;
@@ -122944,10 +123692,13 @@ Begin
  PH := TermHeight;
  IsAmigaDOSPanel := (TP.Shell = SK_AMIGADOS);
  IsGulamPanel := (TP.Shell = SK_GULAM);
+ IsOS9Panel := (TP.Shell = SK_OS9);
  { Fond sombre (8=gris fonce, pas 0 car SetBkColor remappe 0) - Gulam a  }
- { son propre fond blanc (15), voir IsGulamPanel ci-dessus. }
+ { son propre fond blanc (15), OS-9 son propre fond vert clair (10),       }
+ { voir IsGulamPanel/IsOS9Panel ci-dessus. }
  If(IsAmigaDOSPanel)Then SetFillStyle(SolidFill, 1) Else
- If(IsGulamPanel)Then SetFillStyle(SolidFill, 15)
+ If(IsGulamPanel)Then SetFillStyle(SolidFill, 15) Else
+ If(IsOS9Panel)Then SetFillStyle(SolidFill, 10)
                  Else SetFillStyle(SolidFill, 8);
  Bar(PX, PY, PX + PW - 1, PY + PH - 1);
  { Barre du haut avec titre TERMINAL et SelectBox }
@@ -122975,6 +123726,7 @@ Begin
   SK_AMIGADOS:   SelLabel := 'AmigaDOS';
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
   SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
+  SK_OS9:        SelLabel := 'OS-9 (CoCo 3)';
   SK_COS:        SelLabel := 'COS (Cray-1)';
  End;
  SetColor(15);
@@ -123093,7 +123845,7 @@ Begin
   { CLR_EDITOR_TEXT en usage (8, gris fonce) EST donc le "noir" etabli et    }
   { deja eprouve de tout ce fichier - reutilise ici a l identique plutot     }
   { que de re-tenter la couleur 0 deja infirmee. }
-  If IsGulamPanel Then SetColor(CLR_EDITOR_TEXT) Else SetColor(15);
+  If IsGulamPanel Or IsOS9Panel Then SetColor(CLR_EDITOR_TEXT) Else SetColor(15);
   YPos := PY + TERM_TAB_HEIGHT + 2;
   TextLines := 0;
   For I := 0 To VisLines - 1 Do Begin
@@ -123117,7 +123869,7 @@ Begin
     ligne pour le prochain affichage. }
   { Meme correctif que ci-dessus (CLR_EDITOR_TEXT, voir le commentaire       }
   { complet plus haut) pour la ligne de saisie. }
-  If IsGulamPanel Then SetColor(CLR_EDITOR_TEXT) Else SetColor(10);
+  If IsGulamPanel Or IsOS9Panel Then SetColor(CLR_EDITOR_TEXT) Else SetColor(10);
   If TextLines < VisLines Then
    YPos := PY + TERM_TAB_HEIGHT + 2
     + TextLines * TERM_LINE_HEIGHT
@@ -123137,6 +123889,12 @@ Begin
      ' ' + TP.InputLine + '_';
    SK_AMIGADOS:
     PromptStr := '1.SYS:> ' + TP.InputLine + '_';
+   SK_OS9:
+    { Prompt shell OS-9 reel : repertoire de travail courant suivi de "$" -}
+    { convention courante des shells OS-9/NitrOS-9 (variable d'invite     }
+    { "PS1"-like), simplifiee ici (aucune personnalisation via "shell -p" }
+    { n'est simulee). }
+    PromptStr := PromptStr + ' $ ' + TP.InputLine + '_';
    SK_COS:
     { Syntaxe reelle COS : commandes separees par des virgules, ligne     }
     { terminee par un point (ex: STATUS,ALL.) - prompt simplifie, aucune  }
@@ -123361,7 +124119,7 @@ Begin
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H + 3,
    'OS/2 & REXX');
-  { Item 8 : COS (Cray-1) }
+  { Item 8 : OS-9 (CoCo 3) }
   If TermSelectIdx = 7 Then Begin
    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
   End Else Begin
@@ -123372,13 +124130,25 @@ Begin
    SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H - 1);
   OutTextXY(SBX + 4,
    SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H + 3,
+   'OS-9 (CoCo 3)');
+  { Item 9 : COS (Cray-1) }
+  If TermSelectIdx = 8 Then Begin
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+  End Else Begin
+   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  End;
+  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H,
+   SBX + TERM_SELECT_WIDTH - 1,
+   SBY + TERM_SELECT_HEIGHT + 9 * TERM_SELECT_ITEM_H - 1);
+  OutTextXY(SBX + 4,
+   SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H + 3,
    'COS (Cray-1)');
   { Bordure de la liste - CLR_EDITOR_TEXT (8), voir le commentaire de tete   }
   { ci-dessus. }
   SetColor(CLR_EDITOR_TEXT);
   Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
    SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H - 1);
+   SBY + TERM_SELECT_HEIGHT + 9 * TERM_SELECT_ITEM_H - 1);
  End;
  TP.NeedRepaint := False;
 End;
@@ -123662,13 +124432,32 @@ Begin
     FullRepaintNeeded := True;
     Exit;
    End;
-   { Item 8 : COS (Cray-1) }
+   { Item 8 : OS-9 (CoCo 3) }
    If (Ev.MouseX >= SBX) And
       (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
       (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
        + 7 * TERM_SELECT_ITEM_H) And
       (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
        + 8 * TERM_SELECT_ITEM_H) Then Begin
+    NewShell := SK_OS9;
+    TermSelectOpen := False;
+    If ActiveShell <> NewShell Then Begin
+     ActiveShell := NewShell;
+     If TermPanels[SK_OS9].LineCount = 0 Then
+      TermAddLine(TermPanels[SK_OS9],
+       'OS-9/6809 Level Two. Tapez HELP pour la liste des commandes.');
+    End;
+    TermPanels[ActiveShell].NeedRepaint := True;
+    FullRepaintNeeded := True;
+    Exit;
+   End;
+   { Item 9 : COS (Cray-1) }
+   If (Ev.MouseX >= SBX) And
+      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
+       + 8 * TERM_SELECT_ITEM_H) And
+      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
+       + 9 * TERM_SELECT_ITEM_H) Then Begin
     NewShell := SK_COS;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -123700,7 +124489,8 @@ Begin
      SK_AMIGADOS:   TermSelectIdx := 4;
      SK_NCOMMANDER: TermSelectIdx := 5;
      SK_OS2REXX:    TermSelectIdx := 6;
-     SK_COS:        TermSelectIdx := 7;
+     SK_OS9:        TermSelectIdx := 7;
+     SK_COS:        TermSelectIdx := 8;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -123918,7 +124708,7 @@ Begin
     Exit;
    End;
    If Ev.KeyCode = $50 Then Begin { Fleche bas }
-    If TermSelectIdx < 7 Then
+    If TermSelectIdx < 8 Then
      Inc(TermSelectIdx);
     FullRepaintNeeded := True;
     Exit;
@@ -123934,7 +124724,8 @@ Begin
      4: NewShell := SK_AMIGADOS;
      5: NewShell := SK_NCOMMANDER;
      6: NewShell := SK_OS2REXX;
-     7: NewShell := SK_COS;
+     7: NewShell := SK_OS9;
+     8: NewShell := SK_COS;
     End;
     TermSelectOpen := False;
     If ActiveShell <> NewShell Then Begin
@@ -123956,6 +124747,9 @@ Begin
        SK_OS2REXX:
         TermAddLine(TermPanels[SK_OS2REXX],
          'OS/2 (TM) Command Interpreter. Tapez ? pour la liste des commandes.');
+       SK_OS9:
+        TermAddLine(TermPanels[SK_OS9],
+         'OS-9/6809 Level Two. Tapez HELP pour la liste des commandes.');
        SK_COS:
         TermAddLine(TermPanels[SK_COS],
          'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
