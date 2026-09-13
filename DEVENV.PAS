@@ -93343,6 +93343,27 @@ Var
  FWFWidth, FWFHeight: SmallInt;
  FWFX, FWFY: Integer;
  GI2H1, GI2H2: Word;
+ { GDI.EXE ordinaux 412-467 (2026-09-14, demande explicite). }
+ DibInfoSeg, DibInfoOfs: Word;
+ DibBitsSeg, DibBitsOfs: Word;
+ DibSize: LongInt;
+ DibWidth, DibHeight: LongInt;
+ DibBitCount: Word;
+ DibCompression: LongInt;
+ DibRowStride: LongInt;
+ DibXDest, DibYDest, DibDx, DibDy, DibXSrc, DibYSrc: SmallInt;
+ DibDestW, DibDestH, DibSrcW, DibSrcH: SmallInt;
+ DibStartScan, DibNumScans: Word;
+ DibRow, DibCol: LongInt;
+ DibSrcRowFromTop: LongInt;
+ DibByteVal: Byte;
+ DibOk: Boolean;
+ DibDestX, DibDestY: Integer;
+ DibSampleX, DibSampleYFromTop: LongInt;
+ GSGDReqType: Word;
+ UTAWSeg, UTAWOfs, UTAASeg, UTAAOfs: Word;
+ UTAI: Integer;
+ UTAWCh: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -98921,6 +98942,472 @@ Begin
     { que tous les autres handles GDI "objet" de ce sous-ensemble. }
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
+   End;
+   412: Begin
+    { IsDCCurrentPalette(hdc):BOOL - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { IsDCCurrentPalette(word)", 1 mot, retour 16 bits AX seul). REEL DANS  }
+    { LA LIMITE du modele mono-DC deja etabli : le VRAI IsDCCurrentPalette   }
+    { compare la palette du DC a la palette "premier plan" du SYSTEME        }
+    { (qui peut differer si plusieurs applications ont chacune leur           }
+    { propre palette realisee) - ce sous-ensemble n'a qu'UN SEUL              }
+    { Win16_CurrentPalette global (pas de distinction premier/arriere-       }
+    { plan multi-applications, voir GDISelectPalette/$361,                   }
+    { [[project_devenv_win16_gdi_ord352_370]]) : renvoie donc honnetement     }
+    { VRAI des qu'une palette est selectionnee (elle est alors               }
+    { NECESSAIREMENT la seule/actuelle dans ce modele), FAUX sinon. }
+    P.CPU.Regs.AX := Ord(Win16_CurrentPalette >= 1);
+    ArgWords := 1;
+   End;
+   439: Begin
+    { StretchDIBits(hdc,XDest,YDest,nDestWidth,nDestHeight,XSrc,YSrc,        }
+    { nSrcWidth,nSrcHeight,lpBits,lpBitsInfo,wUsage,dwRop):int - ordinal/    }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : 1 mot +   }
+    { 8 mots SIGNES + 2 pointeurs LOIN (4 mots) + 1 mot + 1 LONG (2 mots) =  }
+    { 16 mots, retour 16 bits AX seul). REEL EN PARTIE : ce sous-ensemble    }
+    { a un VRAI framebuffer 8 bits indexe (mode $13) qui correspond           }
+    { EXACTEMENT au format DIB 8 bits non compresse (BI_RGB) le plus          }
+    { courant - lit un VRAI BITMAPINFOHEADER (biSize=40 verifie, layout       }
+    { officiel Microsoft) et fait un VRAI redimensionnement au plus           }
+    { proche voisin (nearest-neighbor, algorithme REEL et documente, pas      }
+    { invente) depuis le DIB source vers l'ecran, octet DIB utilise            }
+    { DIRECTEMENT comme index VGA (coherent avec la convention "index          }
+    { seul compte" deja etablie partout ailleurs - PAS de correspondance      }
+    { table de couleurs DIB->palette peripherique, disclose). Limite           }
+    { honnetement disclosee : SEUL le format BITMAPINFOHEADER 8bpp non         }
+    { compresse est supporte (biSize=40, biBitCount=8, biCompression=0) -     }
+    { tout autre format (BITMAPCOREHEADER 12 octets, 1/4/24 bpp, RLE)          }
+    { echoue proprement (AX=0) plutot que de produire un rendu incorrect. }
+    DibXDest := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 32)));
+    DibYDest := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 30)));
+    DibDestW := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 28)));
+    DibDestH := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 26)));
+    DibXSrc := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 24)));
+    DibYSrc := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 22)));
+    DibSrcW := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20)));
+    DibSrcH := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18)));
+    DibBitsSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    DibBitsOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    DibInfoSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    DibInfoOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    DibSize := Emu_ReadWord(P.CPU, DibInfoSeg, DibInfoOfs);
+    DibWidth := SmallInt(Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 4)));
+    DibHeight := SmallInt(Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 8)));
+    DibBitCount := Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 14));
+    DibCompression := Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 16));
+    DibOk := (DibSize = 40) And (DibBitCount = 8) And (DibCompression = 0) And
+     (DibWidth > 0) And (DibHeight > 0) And (DibDestW > 0) And (DibDestH > 0);
+    If DibOk And (Win16_ActiveDCWindow >= 0) Then Begin
+     DibRowStride := (DibWidth + 3) And Not 3;
+     For DibDestY := 0 To DibDestH - 1 Do
+      For DibDestX := 0 To DibDestW - 1 Do Begin
+       DibSampleX := DibXSrc + (LongInt(DibDestX) * DibSrcW) Div DibDestW;
+       { XSrc/YSrc sont REELLEMENT mesures depuis le coin BAS-GAUCHE du DIB  }
+       { (convention documentee officiellement, le DIB etant lui-meme         }
+       { stocke bas-vers-haut) - "rangee depuis le bas" ne subit donc AUCUNE  }
+       { inversion pour l'INDEX DE STOCKAGE (l'indice de rangee EST deja       }
+       { mesure depuis le bas), seule la correspondance vers la destination   }
+       { TOP-DOWN de l'ecran inverse le sens de progression de destY. }
+       DibSampleYFromTop := DibYSrc + (DibSrcH - 1 -
+        (LongInt(DibDestY) * DibSrcH) Div DibDestH);
+       If (DibSampleX >= 0) And (DibSampleX < DibWidth) And
+          (DibSampleYFromTop >= 0) And (DibSampleYFromTop < DibHeight) Then Begin
+        DibByteVal := Emu_ReadByte(P.CPU, DibBitsSeg,
+         Word(DibBitsOfs + DibSampleYFromTop * DibRowStride + DibSampleX));
+        Emu_VidSetPixel(
+         Win16_WindowX[Win16_ActiveDCWindow] + 1 + DibXDest + DibDestX,
+         Win16_WindowY[Win16_ActiveDCWindow] + 1 + DibYDest + DibDestY,
+         DibByteVal);
+       End;
+      End;
+     P.CPU.Regs.AX := DibDestH;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 16;
+   End;
+   440, 441: Begin
+    { SetDIBits(hdc,hbitmap,startScan,numScans,lpBits,lpBitsInfo,wUsage):   }
+    { int (440) / GetDIBits(...):int (441) - ordinaux/signatures VERIFIES  }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16              }
+    { SetDIBits/GetDIBits(word word word word ptr ptr word)", 4 mots + 2     }
+    { pointeurs LOIN (4 mots) + 1 mot = 9 mots chacun, meme signature).       }
+    { Contrairement a StretchDIBits/$439/SetDIBitsToDevice/$443 ci-dessous   }
+    { (qui ciblent directement la SURFACE du DC = notre VRAI framebuffer),  }
+    { ces deux-ci operent sur un OBJET bitmap distinct (hbitmap) - or         }
+    { AUCUN objet bitmap de ce sous-ensemble (CreateBitmap/$48/                }
+    { CreateCompatibleBitmap/$51/etc.) n'a de VRAI stockage de pixels          }
+    { propre (tous renvoient le MEME handle synthetique 1 sans tampon        }
+    { reel, deja disclose). Echec honnete (0 lignes traitees) plutot que      }
+    { d'inventer un tampon de pixels qui n'existe pas. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 9;
+   End;
+   442: Begin
+    { CreateDIBitmap(hdc,lpInfoHeader,dwFlags,lpInitBits,lpInitInfo,         }
+    { wUsage):HBITMAP - ordinal/signature VERIFIES via le VRAI source        }
+    { Wine (gdi.exe16.spec : "pascal -ret16 CreateDIBitmap(word ptr long     }
+    { ptr ptr word)", 1 mot + 1 pointeur LOIN (2 mots) + 1 LONG (2 mots) +   }
+    { 2 pointeurs LOIN (4 mots) + 1 mot = 10 mots, retour 16 bits AX          }
+    { seul). Meme discipline que CreateBitmap/$48/CreateUserBitmap/$407 :     }
+    { handle synthetique non-nul (1), aucun VRAI stockage de pixels           }
+    { (coherent avec l'echec honnete de SetDIBits/$440/GetDIBits/$441          }
+    { ci-dessus - un bitmap "cree avec des donnees DIB initiales" n'a pas     }
+    { plus de vrai contenu que les autres). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 10;
+   End;
+   443: Begin
+    { SetDIBitsToDevice(hdc,xDest,yDest,dx,dy,xSrc,ySrc,startScan,           }
+    { numScans,lpBits,lpBitsInfo,wUsage):int - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (gdi.exe16.spec : 1 mot + 6 mots SIGNES + 2    }
+    { mots + 2 pointeurs LOIN (4 mots) + 1 mot = 14 mots, retour 16 bits AX  }
+    { seul). REEL, MEME discipline que StretchDIBits/$439 ci-dessus mais      }
+    { SANS redimensionnement (dx/dy partages entre source et destination,     }
+    { exactement le contrat documente de cette fonction - contrairement a    }
+    { StretchDIBits) : copie directement les octets DIB (index VGA direct)    }
+    { de la surface source vers l'ecran, en respectant startScan/numScans     }
+    { (sous-ensemble de lignes DIB a copier) et l'ordre de stockage           }
+    { "bas-vers-haut" REEL d'un DIB (biHeight positif). MEME limitation        }
+    { disclosee que StretchDIBits : seul BITMAPINFOHEADER 8bpp non             }
+    { compresse est supporte. }
+    DibXDest := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 28)));
+    DibYDest := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 26)));
+    DibDx := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 24)));
+    DibDy := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 22)));
+    DibXSrc := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20)));
+    DibYSrc := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18)));
+    DibStartScan := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    DibNumScans := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    DibBitsSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    DibBitsOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    DibInfoSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    DibInfoOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    DibSize := Emu_ReadWord(P.CPU, DibInfoSeg, DibInfoOfs);
+    DibWidth := SmallInt(Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 4)));
+    DibHeight := SmallInt(Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 8)));
+    DibBitCount := Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 14));
+    DibCompression := Emu_ReadWord(P.CPU, DibInfoSeg, Word(DibInfoOfs + 16));
+    DibOk := (DibSize = 40) And (DibBitCount = 8) And (DibCompression = 0) And
+     (DibWidth > 0) And (DibHeight > 0) And (DibDx > 0) And (DibDy > 0);
+    If DibOk And (Win16_ActiveDCWindow >= 0) Then Begin
+     DibRowStride := (DibWidth + 3) And Not 3;
+     For DibRow := DibStartScan To Integer(DibStartScan) + Integer(DibNumScans) - 1 Do Begin
+      If (DibRow >= 0) And (DibRow < DibHeight) Then Begin
+       { DibRow (startScan..) EST DEJA une rangee mesuree depuis le BAS      }
+       { (stockage DIB bas-vers-haut, index de stockage = rangee-depuis-le-  }
+       { bas directement) - AUCUNE inversion pour la comparer a YSrc (lui-    }
+       { meme mesure depuis le bas du DIB, convention REELLE documentee       }
+       { officiellement) - seule la correspondance vers la destination        }
+       { TOP-DOWN de l'ecran inverse le sens de progression. }
+       If (DibRow >= DibYSrc) And (DibRow < Integer(DibYSrc) + Integer(DibDy)) Then Begin
+        DibSrcRowFromTop := Integer(DibYSrc) + Integer(DibDy) - 1 - DibRow;
+        For DibCol := 0 To Integer(DibDx) - 1 Do
+         If (DibXSrc + DibCol >= 0) And (DibXSrc + DibCol < DibWidth) Then Begin
+          DibByteVal := Emu_ReadByte(P.CPU, DibBitsSeg,
+           Word(DibBitsOfs + DibRow * DibRowStride + DibXSrc + DibCol));
+          Emu_VidSetPixel(
+           Win16_WindowX[Win16_ActiveDCWindow] + 1 + DibXDest + DibCol,
+           Win16_WindowY[Win16_ActiveDCWindow] + 1 + DibYDest + DibSrcRowFromTop,
+           DibByteVal);
+         End;
+       End;
+      End;
+     End;
+     P.CPU.Regs.AX := DibNumScans;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 14;
+   End;
+   444: Begin
+    { CreateRoundRectRgn(left,top,right,bottom,ellW,ellH):HRGN - ordinal/   }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : 6 mots   }
+    { SIGNES, retour 16 bits AX seul). REEL POUR LE CAS DEGENERE, verifie    }
+    { via le VRAI source Wine (gdi.c, recupere via WebFetch) : "if          }
+    { (ellipse_width==0 || ellipse_height==0) return                        }
+    { CreateRectRgn16(...)" - reproduit A L'IDENTIQUE cette condition. Pour  }
+    { le cas NON degenere (coins reellement arrondis), ce sous-ensemble ne   }
+    { modelise de toute facon qu'UN SEUL rectangle de clip mono-DC (meme     }
+    { limitation deja disclosee pour CreateEllipticRgn/$54/                  }
+    { CreatePolygonRgn/$63) - degenere donc AUSSI vers le rectangle           }
+    { englobant reel (left,top,right,bottom), les rayons de coin ellW/ellH   }
+    { etant acceptes mais sans effet de forme. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    Win16_ClipX1 := GdiX1; Win16_ClipY1 := GdiY1;
+    Win16_ClipX2 := GdiX2; Win16_ClipY2 := GdiY2;
+    Win16_ClipActive := True;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   445: Begin
+    { CreateDIBPatternBrush(hglobal,wUsage):HBRUSH - ordinal/signature      }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { CreateDIBPatternBrush(word word)", 2 mots, retour 16 bits AX seul).    }
+    { Meme discipline que CreateBrushIndirect/CreateSolidBrush deja           }
+    { etablis : handle synthetique non-nul (1), aucune VRAIE brosse a         }
+    { motif bitmap (les operations de remplissage existantes utilisent        }
+    { toujours leur couleur fixe deja etablie). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   { DeviceColorMatch/449 : DELIBEREMENT NON IMPLANTE - le VRAI source      }
+   { Wine officiel (gdi.exe16.spec) ET la source secondaire (projet          }
+   { WineVDM) marquent TOUS LES DEUX "stub DEVICECOLORMATCH", SANS AUCUNE    }
+   { signature. Meme discipline exacte que FTrapping0/$355/QueryJob/$248    }
+   { (voir [[project_devenv_win16_gdi_ord352_370]]) : inventer un nombre     }
+   { de mots ici serait une pure supposition qui risquerait de corrompre     }
+   { la pile de TOUS les appels Win16 suivants - laisse donc                 }
+   { deliberement tomber sur le gestionnaire generique "Else" ci-dessous. }
+   450: Begin
+    { PolyPolygon(hdc,lpPoints,lpPolyCounts,nCount):BOOL - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal  }
+    { -ret16 PolyPolygon(word ptr ptr word)", 1 mot + 2 pointeurs LOIN (4    }
+    { mots) + 1 mot = 6 mots, retour 16 bits AX seul). REEL : reutilise A    }
+    { L'IDENTIQUE Win16_DrawPolyLine deja etabli pour Polygon/$36 - trace    }
+    { CHAQUE sous-polygone (lu depuis lpPolyCounts) comme un polygone FERME  }
+    { independant, exactement le contrat documente de PolyPolygon (N          }
+    { polygones separes, pas une seule forme continue). Chaque sous-           }
+    { polygone plafonne a 256 points (meme garde-fou deja disclose que        }
+    { Polygon/$36). }
+    POLPtsSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    POLPtsOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CPRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CPROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CPRCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     DibCol := 0; { reutilise comme decalage courant en NOMBRE DE POINTS dans lpPoints }
+     For CPRI := 0 To CPRCount - 1 Do Begin
+      POLCount := Emu_ReadWord(P.CPU, CPRSeg, Word(CPROfs + CPRI * 2));
+      If POLCount > 256 Then POLCount := 256;
+      For POLI := 0 To POLCount - 1 Do Begin
+       POLPtX[POLI] := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg,
+        Word(POLPtsOfs + (DibCol + POLI) * 4)));
+       POLPtY[POLI] := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg,
+        Word(POLPtsOfs + (DibCol + POLI) * 4 + 2)));
+       POLPtX[POLI] := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + POLPtX[POLI]);
+       POLPtY[POLI] := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + POLPtY[POLI]);
+      End;
+      If POLCount > 0 Then Win16_DrawPolyLine(POLPtX, POLPtY, POLCount, True, 0);
+      DibCol := DibCol + POLCount;
+     End;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   451: Begin
+    { CreatePolyPolygonRgn(lpPoints,lpPolyCounts,nCount,nPolyFillMode):     }
+    { HRGN - ordinal/signature VERIFIES via le VRAI source Wine               }
+    { (gdi.exe16.spec : "pascal -ret16 CreatePolyPolygonRgn(ptr ptr word     }
+    { word)", 2 pointeurs LOIN (4 mots) + 2 mots = 6 mots, retour 16 bits     }
+    { AX seul). REEL EN PARTIE, meme discipline que CreatePolygonRgn/$63     }
+    { (voir son commentaire complet) : calcule le VRAI rectangle englobant   }
+    { de TOUS les points de TOUS les sous-polygones combines (min/max         }
+    { calcules pour de vrai sur l'ensemble), jamais la vraie forme             }
+    { multi-polygonale (aucune geometrie de region courbe/concave/a           }
+    { plusieurs contours n'est modelisee ici). nPolyFillMode accepte sans     }
+    { effet (meme limitation deja disclosee pour SetPolyFillMode/$6). }
+    POLPtsSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    POLPtsOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    CPRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CPROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CPRCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CPRI := 0;
+    DibCol := 0; { total de points sur tous les sous-polygones }
+    For POLI := 0 To CPRCount - 1 Do
+     DibCol := DibCol + Emu_ReadWord(P.CPU, CPRSeg, Word(CPROfs + POLI * 2));
+    If DibCol > 0 Then Begin
+     CPRMinX := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg, POLPtsOfs));
+     CPRMaxX := CPRMinX; CPRMinY := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg, Word(POLPtsOfs + 2)));
+     CPRMaxY := CPRMinY;
+     For CPRI := 1 To Integer(DibCol) - 1 Do Begin
+      CPRPtX := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg, Word(POLPtsOfs + CPRI * 4)));
+      CPRPtY := SmallInt(Emu_ReadWord(P.CPU, POLPtsSeg, Word(POLPtsOfs + CPRI * 4 + 2)));
+      If CPRPtX < CPRMinX Then CPRMinX := CPRPtX;
+      If CPRPtX > CPRMaxX Then CPRMaxX := CPRPtX;
+      If CPRPtY < CPRMinY Then CPRMinY := CPRPtY;
+      If CPRPtY > CPRMaxY Then CPRMaxY := CPRPtY;
+     End;
+     Win16_ClipX1 := CPRMinX; Win16_ClipY1 := CPRMinY;
+     Win16_ClipX2 := CPRMaxX; Win16_ClipY2 := CPRMaxY;
+     Win16_ClipActive := True;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   452: Begin
+    { GdiSeeGdiDo(wReqType,wParam1,wParam2,wParam3):DWORD - ordinal/         }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal  }
+    { GdiSeeGdiDo(word word word word)", 4 mots, retour DWORD AX:DX - PAS    }
+    { de -ret16). REEL SANS AUCUNE simplification : le VRAI source Wine       }
+    { (gdi.c, recupere via WebFetch) EST LUI-MEME un aiguillage complet       }
+    { avec des valeurs de retour FIXES et documentees pour chaque             }
+    { wReqType (0x0001 LocalAlloc->0, 0x0002 LocalFree->0, 0x0003              }
+    { LocalCompact->65000, 0x0103 LocalHeap et tout le reste-> $FFFFFFFF)     }
+    { - reproduit ici A L'IDENTIQUE, aucune invention necessaire. }
+    { wReqType est le SEUL argument qui influence le retour (verifie dans   }
+    { le VRAI code source - wParam1/2/3 ne servent qu'a des messages de      }
+    { journalisation WARN sans effet sur le resultat) - lu au bon            }
+    { decalage (SP+10, le plus profond des 4 mots) sans lire les 3 autres    }
+    { inutilement, meme discipline que l'octet de poids fort inutilise de    }
+    { GetNearestColor/$154. }
+    GSGDReqType := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    Case GSGDReqType Of
+     $0001, $0002: Begin P.CPU.Regs.AX := 0; P.CPU.Regs.DX := 0; End;
+     $0003: Begin P.CPU.Regs.AX := 65000; P.CPU.Regs.DX := 0; End;
+     Else Begin P.CPU.Regs.AX := $FFFF; P.CPU.Regs.DX := $FFFF; End;
+    End;
+    ArgWords := 4;
+   End;
+   { GdiTaskTermination/460 : signature VERIFIEE via une SOURCE              }
+   { SECONDAIRE differente mais reelle et publique (projet WineVDM,          }
+   { absent du VRAI source Wine officiel qui le marque "stub                 }
+   { GDITASKTERMINATION") : "pascal -ret16 GdiTaskTermination(word)", 1       }
+   { mot, retour 16 bits AX seul. Fonction interne appelee par USER a la      }
+   { fin d'une tache pour liberer tous les objets GDI dont elle etait          }
+   { proprietaire (voir SetObjectOwner/$461 ci-dessous) - ce sous-ensemble    }
+   { ne suit AUCUNE propriete d'objet par tache (SetObjectOwner est un        }
+   { no-op reel, voir son commentaire), donc il n'y a litteralement rien a    }
+   { liberer ici - reussit honnetement (TRUE) sans effet. }
+   460: Begin
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   461: Begin
+    { SetObjectOwner(hgdiobj,hOwner):void - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                   }
+    { SetObjectOwner(word word)", 2 mots, retour 16 bits AX seul meme si     }
+    { le VRAI prototype C est void). REEL SANS AUCUNE simplification : le    }
+    { VRAI corps de la fonction Wine (gdi.c, recupere via WebFetch) est       }
+    { LITTERALEMENT "/* Nothing to do */" - reproduit ici a l'identique,      }
+    { consomme juste les arguments sans rien faire d'autre (fonction de       }
+    { debogage utilisee par le compilateur de version debug de Windows,       }
+    { hors de portee de ce sous-ensemble de toute facon). }
+    ArgWords := 2;
+   End;
+   462: Begin
+    { IsGDIObject(handle):BOOL - ordinal/signature VERIFIES via le VRAI     }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 IsGDIObject(word)", 1     }
+    { mot, retour 16 bits AX seul). Le VRAI source Wine (gdi.c, recupere      }
+    { via WebFetch) verifie un VRAI type d'objet via une table de              }
+    { correspondance GetObjectType - ce sous-ensemble n'a AUCUNE VRAIE         }
+    { table de types d'objets (CreatePen/CreateSolidBrush/CreateFont/          }
+    { CreateBitmap/etc. renvoient TOUS le MEME handle synthetique 1,           }
+    { deja disclose pour GetObject/$82) : approxime honnetement en             }
+    { renvoyant VRAI uniquement pour ce SEUL handle synthetique universel      }
+    { (1), FAUX pour tout autre - une approximation DISCLOSEE (les              }
+    { handles des sous-systemes specialises comme les palettes/regions          }
+    { sauvegardees/files de priorite ne sont pas reconnus par ce test           }
+    { simplifie). }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    P.CPU.Regs.AX := Ord(PalHandle = 1);
+    ArgWords := 1;
+   End;
+   463: Begin
+    { MakeObjectPrivate(handle,bPrivate):void - ordinal/signature VERIFIES }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16               }
+    { MakeObjectPrivate(word word)", 2 mots, retour 16 bits AX seul meme      }
+    { si le VRAI prototype documente est void). Fonction interne rare qui     }
+    { marque un objet GDI comme prive a une tache (empechant son partage      }
+    { entre applications) - ce sous-ensemble n'a de toute facon qu'UNE         }
+    { SEULE tache emulee a la fois (aucun partage d'objet inter-tache          }
+    { possible ici), meme discipline "no-op reel" que SetObjectOwner/$461     }
+    { ci-dessus (dont le VRAI corps Wine est aussi litteralement vide). }
+    ArgWords := 2;
+   End;
+   { FixupBogusPublisherMetafile/464 : DELIBEREMENT NON IMPLANTE - le VRAI  }
+   { source Wine officiel (gdi.exe16.spec) ET la source secondaire            }
+   { (projet WineVDM) marquent TOUS LES DEUX "stub                            }
+   { FIXUPBOGUSPUBLISHERMETAFILE", SANS AUCUNE signature. Meme discipline     }
+   { exacte que DeviceColorMatch/$449 ci-dessus - laisse deliberement          }
+   { tomber sur le gestionnaire generique "Else" ci-dessous. }
+   465: Begin
+    { RectVisible(hdc,lprc):BOOL - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 RectVisible(word ptr)",  }
+    { 1 mot + 1 pointeur LOIN (2 mots) = 3 mots, retour 16 bits AX seul).     }
+    { REEL : variante RECTANGLE de PtVisible/$103 deja etabli - teste une     }
+    { VRAIE intersection AABB entre le rectangle fourni et le clip mono-DC    }
+    { courant (Win16_ClipX1/Y1/X2/Y2/ClipActive). Meme discipline que          }
+    { PtVisible : absence de clip actif -> tout est visible (VRAI               }
+    { inconditionnel), le comportement reel documente d'un DC neuf.            }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, GRBOfs));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 2)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 4)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 6)));
+    If (Not Win16_ClipActive) Or
+     ((GdiX1 < Win16_ClipX2) And (GdiX2 > Win16_ClipX1) And
+      (GdiY1 < Win16_ClipY2) And (GdiY2 > Win16_ClipY1)) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   466: Begin
+    { RectInRegion(hrgn,lprc):BOOL - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                      }
+    { RectInRegion(word ptr)", 1 mot + 1 pointeur LOIN (2 mots) = 3 mots,     }
+    { retour 16 bits AX seul - MEME forme exacte que                          }
+    { RectInRegionOld/$181, voir [[project_devenv_win16_gdi_ord169_175]]).   }
+    { REEL, DUPLIQUE A L'IDENTIQUE le code deja etabli et verifie de           }
+    { RectInRegionOld/$181 (l'alias "moderne" Win32 du meme concept, le        }
+    { VRAI Wine delegue d'ailleurs les deux au MEME RectInRegion 32 bits       }
+    { sous-jacent) - reutilise le MEME decodage de handle deja etabli pour     }
+    { GetRgnBox/$134/PtInRegion/$161/SetRectRgn/$172. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GRBHRgn := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, GRBOfs));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 2)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 4)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 6)));
+    If (GRBHRgn >= 2) And (GRBHRgn - 1 <= Win16_VisRgnStackTop) Then Begin
+     GRBX1 := Win16_VisRgnStack[GRBHRgn - 1].X1; GRBY1 := Win16_VisRgnStack[GRBHRgn - 1].Y1;
+     GRBX2 := Win16_VisRgnStack[GRBHRgn - 1].X2; GRBY2 := Win16_VisRgnStack[GRBHRgn - 1].Y2;
+     GRBActive := Win16_VisRgnStack[GRBHRgn - 1].Active;
+    End Else Begin
+     GRBX1 := Win16_ClipX1; GRBY1 := Win16_ClipY1;
+     GRBX2 := Win16_ClipX2; GRBY2 := Win16_ClipY2;
+     GRBActive := Win16_ClipActive;
+    End;
+    If GRBActive And (GdiX1 < GRBX2) And (GdiX2 > GRBX1) And
+     (GdiY1 < GRBY2) And (GdiY2 > GRBY1) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   467: Begin
+    { UnicodeToAnsi(lpSrcStr,lpDstStr):int - ordinal/signature VERIFIES    }
+    { via une SOURCE SECONDAIRE differente mais reelle et publique (projet  }
+    { WineVDM, absent du VRAI source Wine officiel qui le marque "stub       }
+    { UNICODETOANSI") : "pascal -ret16 UnicodeToAnsi(segptr segptr)", 2       }
+    { pointeurs LOIN (2x2=4 mots), retour 16 bits AX seul - ordre des         }
+    { parametres (source Unicode d'abord, destination ANSI ensuite)           }
+    { deduit du nom de la fonction lui-meme (sens non ambigu). REEL :          }
+    { convertit VRAIMENT une chaine UTF-16 terminee par un mot nul vers        }
+    { de l'ANSI terminee par un octet nul, meme simplification style           }
+    { Latin-1 (1 mot source -> 1 octet, tronque au-dela de $FF) DEJA           }
+    { etablie pour l'emulation KERNEL32.DLL!WideCharToMultiByte du               }
+    { sous-systeme PE32 - une conversion REELLE et fonctionnelle pour le        }
+    { sous-ensemble ASCII/Latin-1, approximative au-dela (disclose,             }
+    { coherent avec l'usage etabli ailleurs dans ce fichier). Retourne le       }
+    { nombre d'octets ANSI ecrits (terminateur inclus, comme le VRAI            }
+    { WideCharToMultiByte). }
+    UTAWSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    UTAWOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    UTAASeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    UTAAOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    UTAI := 0;
+    Repeat
+     UTAWCh := Emu_ReadWord(P.CPU, UTAWSeg, Word(UTAWOfs + UTAI * 2));
+     Emu_WriteByte(P.CPU, UTAASeg, Word(UTAAOfs + UTAI), Byte(UTAWCh And $FF));
+     Inc(UTAI);
+    Until (UTAWCh = 0) Or (UTAI >= 255);
+    P.CPU.Regs.AX := UTAI;
+    ArgWords := 4;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
