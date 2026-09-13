@@ -10908,14 +10908,6 @@ Function Win16_LoadNE(Var C: TEmuCPU; Const Path: String): Boolean; Forward;
 Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
 Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String; Forward;
 Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
-{ Crochet de verification TEMPORAIRE (2026-09-13, ajout des ordinaux GDI  }
-{ 130/131/132/133/134) - memes routines deja definies plus loin, meme     }
-{ raison Forward que ci-dessus. }
-Function Win16_ResolveImportSlot(Var C: TEmuCPU; ModIdx: Word;
- IsOrdinal: Boolean; Value: Word): Integer; Forward;
-Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer); Forward;
-Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
-Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
 Procedure Win16_SetupEntryRegs(Var C: TEmuCPU); Forward;
 Procedure Emu_InitBDA(Var P: TEmulatorPanel); Forward;
 Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel); Forward;
@@ -10953,9 +10945,6 @@ Var
  DmpHexMode: Boolean;
  DmpWatchHits: LongInt;
  DmpErr: Integer;
- GdiTestSlot: Integer;
- GdiTestI: Integer;
- GdiTestS: String;
 Begin
  For I := 1 To ParamCount Do Begin
   Arg := ParamStr(I);
@@ -91169,9 +91158,9 @@ End;
 { 10870, crochet /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un  }
 { Forward en double). }
 Procedure Emu_Done(Var C: TEmuCPU); Forward;
-{ Emu_WriteByte et Emu_PushWord deja forward-declarees plus haut (crochet  }
-{ GDITEST temporaire, pres du Forward de Emu_ReadWord). }
+Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
 Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word); Forward;
+Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
 Function Emu_PopWord(Var C: TEmuCPU): Word; Forward;
 { Emu_ReadWord et Emu_StepOne ont deja un Forward plus haut (~ligne 10539/ }
 { 10557) - pas la peine de le repeter ici (FPC refuse un Forward en double)}
@@ -96333,16 +96322,19 @@ Begin
     { copie REELLEMENT l'etat du rectangle de clip/visible mono-DC          }
     { courant (Win16_ClipX1/Y1/X2/Y2/ClipActive) dans une VRAIE pile de     }
     { sauvegarde (Win16_VisRgnStack, 16 niveaux max), et retourne           }
-    { l'INDICE de cette sauvegarde (1-base) comme handle - contrairement    }
-    { a la convention "handle toujours = 1" utilisee ailleurs pour les       }
-    { regions (CreateRectRgn/etc.), cet indice identifie REELLEMENT et       }
-    { distinctement CHAQUE sauvegarde, plus fidele au vrai contrat de        }
-    { l'API (chaque HRGN sauvegarde doit rester distinct) et sans risque     }
-    { puisqu'aucun autre ordinal de ce sous-ensemble ne deferencie un        }
-    { HRGN par sa valeur. RestoreVisRgn/$130 (contrepartie reelle de cette   }
-    { pile, ajoutee dans un lot ulterieur - voir ce cas plus bas) depile     }
-    { REELLEMENT ces sauvegardes. Pile pleine -> echec honnete (0), pas     }
-    { une valeur inventee. }
+    { l'INDICE de cette sauvegarde, DECALE DE 1 (Win16_VisRgnStackTop+1),   }
+    { comme handle - contrairement a la convention "handle toujours = 1"    }
+    { utilisee ailleurs pour les regions (CreateRectRgn/etc.), cet indice    }
+    { identifie REELLEMENT et distinctement CHAQUE sauvegarde ; le          }
+    { decalage de 1 evite deliberement toute collision avec le handle        }
+    { generique 1 (InquireVisRgn/$131 et la convention region-courante       }
+    { deja etablie), donc les handles de ce lot commencent a 2 - plus       }
+    { fidele au vrai contrat de l'API (chaque HRGN sauvegarde doit rester    }
+    { distinct) et sans risque puisqu'aucun autre ordinal de ce sous-        }
+    { ensemble ne deferencie un HRGN par sa valeur. RestoreVisRgn/$130       }
+    { (contrepartie reelle de cette pile, ajoutee dans un lot ulterieur -    }
+    { voir ce cas plus bas) depile REELLEMENT ces sauvegardes. Pile          }
+    { pleine -> echec honnete (0), pas une valeur inventee. }
     If Win16_VisRgnStackTop < 16 Then Begin
      Inc(Win16_VisRgnStackTop);
      Win16_VisRgnStack[Win16_VisRgnStackTop].X1 := Win16_ClipX1;
@@ -96350,7 +96342,7 @@ Begin
      Win16_VisRgnStack[Win16_VisRgnStackTop].X2 := Win16_ClipX2;
      Win16_VisRgnStack[Win16_VisRgnStackTop].Y2 := Win16_ClipY2;
      Win16_VisRgnStack[Win16_VisRgnStackTop].Active := Win16_ClipActive;
-     P.CPU.Regs.AX := Word(Win16_VisRgnStackTop);
+     P.CPU.Regs.AX := Word(Win16_VisRgnStackTop + 1);
     End Else
      P.CPU.Regs.AX := 0;
     ArgWords := 1;
@@ -96363,16 +96355,17 @@ Begin
     { dernier instantane de la pile (Win16_VisRgnStack) et restaure          }
     { VRAIMENT Win16_ClipX1/Y1/X2/Y2/ClipActive a partir de cette copie      }
     { (pas juste un compteur decremente comme SaveDC/RestoreDC) - retourne  }
-    { le meme indice-handle que celui rendu par le SaveVisRgn correspondant }
-    { (identifie reellement QUELLE sauvegarde vient d'etre restauree).       }
-    { Pile vide -> echec honnete (0, ERROR), pas une valeur inventee. }
+    { le meme indice-handle (decale de 1, voir SaveVisRgn/$129) que celui    }
+    { rendu par le SaveVisRgn correspondant (identifie reellement QUELLE    }
+    { sauvegarde vient d'etre restauree). Pile vide -> echec honnete (0,    }
+    { ERROR), pas une valeur inventee. }
     If Win16_VisRgnStackTop > 0 Then Begin
      Win16_ClipX1 := Win16_VisRgnStack[Win16_VisRgnStackTop].X1;
      Win16_ClipY1 := Win16_VisRgnStack[Win16_VisRgnStackTop].Y1;
      Win16_ClipX2 := Win16_VisRgnStack[Win16_VisRgnStackTop].X2;
      Win16_ClipY2 := Win16_VisRgnStack[Win16_VisRgnStackTop].Y2;
      Win16_ClipActive := Win16_VisRgnStack[Win16_VisRgnStackTop].Active;
-     P.CPU.Regs.AX := Word(Win16_VisRgnStackTop);
+     P.CPU.Regs.AX := Word(Win16_VisRgnStackTop + 1);
      Dec(Win16_VisRgnStackTop);
     End Else
      P.CPU.Regs.AX := 0;
@@ -96460,20 +96453,21 @@ Begin
     { GetRgnBox(word ptr)", 1 mot + 1 pointeur LOIN (2 mots) = 3 mots,       }
     { retour 16 bits AX seul, meme forme que GetClipBox/$77). REEL EN        }
     { PARTIE, et plus riche que GetClipBox/$77 : si hRgn correspond a un     }
-    { indice encore valide de la pile SaveVisRgn/$129 (Win16_VisRgnStack),   }
-    { renvoie REELLEMENT le rectangle englobant de CETTE sauvegarde           }
-    { precise (et non le clip courant) - sinon (hRgn=1, la convention        }
-    { generique "region courante" utilisee partout ailleurs, ou toute        }
-    { autre valeur), retombe sur le MEME comportement que GetClipBox/$77     }
-    { (rectangle de clip mono-DC courant, ou etendue client complete si      }
-    { aucun clip actif). }
+    { indice encore valide de la pile SaveVisRgn/$129 (Win16_VisRgnStack,   }
+    { handle decale de 1 - voir SaveVisRgn/$129 - donc hRgn>=2), renvoie     }
+    { REELLEMENT le rectangle englobant de CETTE sauvegarde precise (et      }
+    { non le clip courant) - sinon (hRgn=1, la convention generique           }
+    { "region courante" utilisee partout ailleurs, ou toute autre valeur),   }
+    { retombe sur le MEME comportement que GetClipBox/$77 (rectangle de      }
+    { clip mono-DC courant, ou etendue client complete si aucun clip          }
+    { actif). }
     GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     GRBHRgn := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
-    If (GRBHRgn >= 1) And (GRBHRgn <= Win16_VisRgnStackTop) And (GRBHRgn <> 1) Then Begin
-     GRBX1 := Win16_VisRgnStack[GRBHRgn].X1; GRBY1 := Win16_VisRgnStack[GRBHRgn].Y1;
-     GRBX2 := Win16_VisRgnStack[GRBHRgn].X2; GRBY2 := Win16_VisRgnStack[GRBHRgn].Y2;
-     GRBActive := Win16_VisRgnStack[GRBHRgn].Active;
+    If (GRBHRgn >= 2) And (GRBHRgn - 1 <= Win16_VisRgnStackTop) Then Begin
+     GRBX1 := Win16_VisRgnStack[GRBHRgn - 1].X1; GRBY1 := Win16_VisRgnStack[GRBHRgn - 1].Y1;
+     GRBX2 := Win16_VisRgnStack[GRBHRgn - 1].X2; GRBY2 := Win16_VisRgnStack[GRBHRgn - 1].Y2;
+     GRBActive := Win16_VisRgnStack[GRBHRgn - 1].Active;
     End Else Begin
      GRBX1 := Win16_ClipX1; GRBY1 := Win16_ClipY1;
      GRBX2 := Win16_ClipX2; GRBY2 := Win16_ClipY2;
