@@ -7942,6 +7942,15 @@ Var
  { effet de bord risque sur le systeme de l'utilisateur, meme discipline    }
  { prudente que CreateMetaFile/$125 qui n'ecrit jamais de vrai fichier).    }
  Win16_PrintJobOpen: Boolean;
+ { GDI.EXE GetTextAlign/SetTextAlign (2026-09-13, demande explicite,       }
+ { ordinaux 345/346) - REEL, meme modele "mono-DC" que Win16_CurrentROP2/  }
+ { Win16_CurrentBkMode : defaut reel documente d'un DC neuf =              }
+ { TA_LEFT|TA_TOP|TA_NOUPDATECP = 0. }
+ Win16_CurrentTextAlign: Word;
+ { GDI.EXE SetMapperFlags (2026-09-13, demande explicite, ordinal 349) -   }
+ { REEL, meme modele mono-DC - ASPECT_FILTERING desactive par defaut       }
+ { (0), coherent avec le defaut documente. }
+ Win16_CurrentMapperFlags: LongInt;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91505,6 +91514,8 @@ Begin
  Win16_BoundsX1 := 0; Win16_BoundsY1 := 0; Win16_BoundsX2 := 0; Win16_BoundsY2 := 0;
  Win16_PQStackTop := 0;
  Win16_PrintJobOpen := False;
+ Win16_CurrentTextAlign := 0;
+ Win16_CurrentMapperFlags := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -92463,6 +92474,34 @@ Begin
  Win16_DrawLine(CX, CY, BX4, BY4, Color);
 End;
 
+{ Trace une "corde" (arc elliptique + 1 ligne droite reliant les 2 points   }
+{ de l'arc DIRECTEMENT entre eux, PAS vers le centre) - utilise par Chord   }
+{ (GDI ordinal 348, 2026-09-13, demande explicite). REEL : composition     }
+{ IDENTIQUE a Win16_DrawPie ci-dessus (memes formules de projection          }
+{ parametrique pour les 2 points reels du contour), seule la ligne de        }
+{ fermeture differe (BX3,BY3)-(BX4,BY4) au lieu des 2 rayons vers le         }
+{ centre - c'est exactement la difference documentee entre Chord et Pie.    }
+Procedure Win16_DrawChord(X1, Y1, X2, Y2, X3, Y3, X4, Y4: Integer; Color: Byte);
+Var
+ CX, CY, RX, RY: Integer;
+ A3, A4: Real;
+ BX3, BY3, BX4, BY4: Integer;
+Begin
+ CX := (X1 + X2) Div 2;
+ CY := (Y1 + Y2) Div 2;
+ RX := Abs(X2 - X1) Div 2;
+ RY := Abs(Y2 - Y1) Div 2;
+ If (RX <= 0) Or (RY <= 0) Then Exit;
+ A3 := Win16_ArcTan2(-(Y3 - CY) / RY, (X3 - CX) / RX);
+ A4 := Win16_ArcTan2(-(Y4 - CY) / RY, (X4 - CX) / RX);
+ BX3 := CX + Round(RX * Cos(A3));
+ BY3 := CY - Round(RY * Sin(A3));
+ BX4 := CX + Round(RX * Cos(A4));
+ BY4 := CY - Round(RY * Sin(A4));
+ Win16_DrawArc(X1, Y1, X2, Y2, X3, Y3, X4, Y4, Color);
+ Win16_DrawLine(BX3, BY3, BX4, BY4, Color);
+End;
+
 { Trace un rectangle aux coins arrondis (4 segments droits + 4 quarts        }
 { d'ellipse aux coins, largeur/hauteur d'ellipse X3/Y3) - utilise par         }
 { RoundRect (GDI ordinal 28, 2026-09-12, demande explicite). REEL :          }
@@ -93190,6 +93229,14 @@ Var
  { 245/250). }
  CopyDstSeg, CopyDstOfs, CopySrcSeg, CopySrcOfs, CopyCount: Word;
  CopyI: Integer;
+ { GDI.EXE GetRasterizerCaps/GetTextAlign/SetTextAlign/SetMapperFlags/     }
+ { GetCharWidth (2026-09-13, demande explicite, ordinaux 313/345/346/349/  }
+ { 350). }
+ GTAOld: Word;
+ SMFOldFlags: LongInt;
+ SMFHi, SMFLo: Word;
+ GCWFirst, GCWLast: Word;
+ GCWI: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -97859,6 +97906,254 @@ Begin
     { d'un vrai fichier invente. }
     P.CPU.Regs.AX := 0;
     ArgWords := 7;
+   End;
+   311: Begin
+    { GetFontData(hdc,dwTable,dwOffset,lpvBuffer,cbData):DWORD - ordinal/  }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { GetFontData(word long long ptr long)", 1 mot + 2 LONG (4 mots) + 1    }
+    { pointeur LOIN (2 mots) + 1 LONG (2 mots) = 9 mots, retour DWORD       }
+    { AX:DX - PAS de -ret16). REEL documente : GetFontData ne fonctionne    }
+    { QUE sur les polices TrueType (lit des tables sfnt brutes directement  }
+    { du fichier de police) - ce sous-ensemble ne dessine qu'une SEULE      }
+    { police BITMAP a largeur fixe (jamais TrueType, voir                   }
+    { GetTextMetrics/tmAveCharWidth), donc echouer avec GDI_ERROR            }
+    { ($FFFFFFFF, verifie via wingdi.h) EST le comportement REEL et          }
+    { correct ici, pas une simplification - meme discipline exacte que      }
+    { GetCharABCWidths/$307/GetGlyphOutline/$309 (voir                       }
+    { [[project_devenv_win16_gdi_ord300_310]]). }
+    P.CPU.Regs.AX := $FFFF; { GDI_ERROR }
+    P.CPU.Regs.DX := $FFFF;
+    ArgWords := 9;
+   End;
+   { ConvertOutLineFontFile/312 et EngineExtTextOut/314 : DELIBEREMENT      }
+   { NON IMPLANTES - le VRAI source Wine officiel (gdi.exe16.spec) marque   }
+   { les DEUX "stub ConvertOutLineFontFile"/"stub EngineExtTextOut", SANS   }
+   { AUCUNE signature. La SOURCE SECONDAIRE (projet WineVDM, meme            }
+   { discipline que ScanLR/$135/QueryJob/$248) a ete revisitee pour ces      }
+   { deux cas precis et n'apporte RIEN de plus : son gdi.exe16.spec          }
+   { repete IDENTIQUEMENT les deux memes stubs sans le moindre mot de        }
+   { parametre. Meme discipline exacte que SetDCStatus/$170/RSIN/$178/       }
+   { QueryJob/$248/DeleteSpoolPage/$253 (voir                                }
+   { [[project_devenv_win16_gdi_ord169_175]]/                                }
+   { [[project_devenv_win16_gdi_ord242_254]]) : inventer un nombre de        }
+   { mots ici serait une pure supposition qui risquerait de corrompre la     }
+   { pile de TOUS les appels Win16 suivants - laisse donc deliberement       }
+   { tomber sur le gestionnaire generique "Else" ci-dessous. }
+   313: Begin
+    { GetRasterizerCaps(lprs,cb):BOOL - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { GetRasterizerCaps(ptr word)", 1 pointeur LOIN (2 mots) + 1 mot = 3     }
+    { mots, retour 16 bits AX seul). REEL ET HONNETE, PAS une                }
+    { simplification : remplit un VRAI RASTERIZER_STATUS16 (nSize=6,         }
+    { wFlags, nLanguageID=0) - puisqu'AUCUN moteur TrueType n'existe          }
+    { reellement dans ce sous-ensemble (voir toute la famille EngineXxx/     }
+    { 300-306, [[project_devenv_win16_gdi_ord300_310]]), rapporter            }
+    { wFlags=0 (RC_TT_AVAILABLE absent) est la VERITE, pas un echec           }
+    { invente - c'est exactement ce qu'un vrai systeme SANS rasteriseur       }
+    { TrueType installe repondrait. La fonction elle-meme reussit             }
+    { (renvoie TRUE, le REMPLISSAGE du struct a reussi), seul le contenu      }
+    { du struct dit honnetement "pas de TrueType ici". }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, 6);              { nSize }
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), 0);    { wFlags = 0 }
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 4), 0);    { nLanguageID }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   330: Begin
+    { EnumFontFamilies(hdc,lpszFamily,lpEnumFontFamProc,lParam):int -      }
+    { ordinal/signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : }
+    { "pascal -ret16 EnumFontFamilies(word str segptr long)", MEME forme    }
+    { exacte que EnumFonts/$70 (7 mots) - et le VRAI Windows documente que  }
+    { les deux utilisent le MEME type de callback FONTENUMPROC. REEL :      }
+    { reutilise A L'IDENTIQUE la construction LOGFONT16/TEXTMETRIC16 et      }
+    { l'invocation Win16_CallEnumFontsProc deja etablies pour EnumFonts/$70  }
+    { (voir le commentaire complet a ce site) - ce sous-ensemble a            }
+    { EXACTEMENT une famille de police (la police bitmap 5x7 MAISON),        }
+    { enumeree UNE FOIS reellement via un VRAI appel de callback 16 bits.    }
+    { lpszFamily est ignore (une seule famille existe, toujours celle-la). }
+    EFFaceSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    EFFaceOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    EFFuncSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    EFFuncOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    EFParamHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EFParamLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LongInt(Win16_HeapNext) + 81) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     EFLogFontOfs := Win16_HeapNext;
+     EFTextMetOfs := Word(Win16_HeapNext + 50);
+     Win16_HeapNext := Win16_HeapNext + 81;
+     For EFI := 0 To 80 Do Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + EFI), 0);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, EFLogFontOfs, 7);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 2), 5);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 8), 400);
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 17), $31);
+     EFFaceName := '5x7';
+     For EFI := 1 To Length(EFFaceName) Do
+      Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 18 + EFI - 1), Ord(EFFaceName[EFI]));
+     Emu_WriteWord(P.CPU, Win16_StackSeg, EFTextMetOfs, 7);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 2), 7);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 10), 6);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 12), 6);
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 14), 400);
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 19), 32);
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 20), 90);
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 21), 32);
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 22), 32);
+     Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 23), $31);
+     P.CPU.Regs.AX := Win16_CallEnumFontsProc(P, EFFuncSeg, EFFuncOfs,
+      Win16_StackSeg, EFLogFontOfs, Win16_StackSeg, EFTextMetOfs, 0,
+      EFParamHi, EFParamLo);
+    End;
+    ArgWords := 7;
+   End;
+   332: Begin
+    { GetKerningPairs(hdc,nPairs,lpKernPair):int - ordinal/signature       }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { GetKerningPairs(word word ptr)", 2 mots + 1 pointeur LOIN (2 mots) =  }
+    { 4 mots, retour 16 bits AX seul). REEL ET HONNETE : le crenage est un   }
+    { concept de police PROPORTIONNELLE/TrueType (ajustement fin de           }
+    { l'espacement entre paires de caracteres specifiques) - une police       }
+    { BITMAP a largeur fixe n'a, par definition, JAMAIS de paires de           }
+    { crenage. Retourne honnetement 0 (aucune paire), le comportement          }
+    { REEL et documente pour toute police sans crenage - pas une              }
+    { simplification. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   345: Begin
+    { GetTextAlign(hdc):UINT - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 GetTextAlign(word)", 1   }
+    { mot, retour 16 bits AX seul). REEL, meme modele mono-DC deja etabli    }
+    { pour Win16_CurrentROP2/$4/Win16_CurrentBkMode/etc. : renvoie             }
+    { VRAIMENT Win16_CurrentTextAlign (defaut reel documente d'un DC neuf     }
+    { = TA_LEFT|TA_TOP|TA_NOUPDATECP = 0). }
+    P.CPU.Regs.AX := Win16_CurrentTextAlign;
+    ArgWords := 1;
+   End;
+   346: Begin
+    { SetTextAlign(hdc,fMode):UINT - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { SetTextAlign(word word)", 2 mots, retour 16 bits AX seul). REEL,        }
+    { contrepartie exacte de GetTextAlign/$345 : stocke REELLEMENT la         }
+    { nouvelle valeur et renvoie l'ANCIENNE, coherent avec le contrat          }
+    { "retourne l'ancienne valeur" deja etabli par SetBrushOrg/$148/           }
+    { SetHookFlags/$192. Non consomme par Win16_DrawTextOut/ExtTextOut/$351   }
+    { (l'alignement de texte reel n'affecte aucun chemin de rendu existant    }
+    { - meme limitation deja disclosee pour SetBkColor/SetROP2 avant que      }
+    { TextOut/$33 ne les consomme). }
+    GTAOld := Win16_CurrentTextAlign;
+    Win16_CurrentTextAlign := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := GTAOld;
+    ArgWords := 2;
+   End;
+   348: Begin
+    { Chord(hdc,X1,Y1,X2,Y2,X3,Y3,X4,Y4):bool - ordinal/signature VERIFIES }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16 Chord(word   }
+    { s_word s_word s_word s_word s_word s_word s_word s_word)", 8 mots     }
+    { SIGNES + hdc = 9 mots, MEME forme exacte que Arc/$23/Pie/$26 deja       }
+    { etablis). REEL : voir Win16_DrawChord ci-dessus (arc + 1 corde          }
+    { reliant directement les 2 points de l'arc, PAS vers le centre comme     }
+    { Pie) - composition avec Win16_DrawArc, memes conventions que             }
+    { Arc/Pie (coordonnees CLIENT->ABSOLUES, couleur noire fixe, sens          }
+    { anti-horaire par defaut). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    ArcX3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    ArcY3 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    ArcX4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    ArcY4 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     GdiX2 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX2);
+     GdiY2 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY2);
+     ArcX3 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX3);
+     ArcY3 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY3);
+     ArcX4 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + ArcX4);
+     ArcY4 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + ArcY4);
+     Win16_DrawChord(GdiX1, GdiY1, GdiX2, GdiY2, ArcX3, ArcY3, ArcX4, ArcY4, 0);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 9;
+   End;
+   349: Begin
+    { SetMapperFlags(hdc,dwFlag):DWORD - ordinal/signature VERIFIES via le }
+    { VRAI source Wine (gdi.exe16.spec : "pascal SetMapperFlags(word         }
+    { long)", 1 mot + 1 LONG (2 mots) = 3 mots, retour DWORD AX:DX - PAS    }
+    { de -ret16). REEL, meme modele mono-DC : stocke REELLEMENT le            }
+    { drapeau (Win16_CurrentMapperFlags, ASPECT_FILTERING desactive par      }
+    { defaut) et renvoie l'ANCIENNE valeur complete (DWORD), coherent         }
+    { avec le contrat "retourne l'ancienne valeur" deja etabli. Non           }
+    { consomme par le pipeline de selection de police (aucun vrai              }
+    { mappeur de polices proportionnel n'existe ici de toute facon, une        }
+    { seule police bitmap fixe). }
+    SMFOldFlags := Win16_CurrentMapperFlags;
+    SMFHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SMFLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_CurrentMapperFlags := (LongInt(SMFHi) Shl 16) Or LongInt(SMFLo);
+    P.CPU.Regs.AX := Word(SMFOldFlags And $FFFF);
+    P.CPU.Regs.DX := Word((SMFOldFlags Shr 16) And $FFFF);
+    ArgWords := 3;
+   End;
+   350: Begin
+    { GetCharWidth(hdc,iFirstChar,iLastChar,lpBuffer):BOOL - ordinal/       }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 GetCharWidth(word word word ptr)", 3 mots + 1 pointeur LOIN    }
+    { (2 mots) = 5 mots, retour 16 bits AX seul). REEL ET COMPLET            }
+    { (CONTRAIREMENT au quirk "un seul mot ecrit" d'EngineGetCharWidth/      }
+    { $303, un ordinal DIFFERENT - voir                                      }
+    { [[project_devenv_win16_gdi_ord300_310]]) : ecrit REELLEMENT la          }
+    { largeur (tmAveCharWidth=6, deja etablie pour GetTextMetrics/            }
+    { EnumFonts) dans CHAQUE entree du tableau pour tout le rang               }
+    { iFirstChar..iLastChar - une police BITMAP a largeur FIXE a, par          }
+    { definition, la MEME largeur pour tous ses caracteres, donc remplir       }
+    { le tableau entier avec cette VRAIE valeur unique est correct, pas        }
+    { une approximation. }
+    GCWFirst := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GCWLast := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    For GCWI := 0 To Integer(GCWLast) - Integer(GCWFirst) Do
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + GCWI * 2), 6);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   351: Begin
+    { ExtTextOut(hdc,X,Y,fuOptions,lprc,lpString,cbCount,lpDx):BOOL -      }
+    { ordinal/signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : }
+    { "pascal -ret16 ExtTextOut(word s_word s_word word ptr str word        }
+    { ptr)", 4 mots + 1 pointeur LOIN (2 mots) + 1 pointeur LOIN (2 mots) +  }
+    { 1 mot + 1 pointeur LOIN (2 mots) = 11 mots, retour 16 bits AX seul).   }
+    { REEL EN PARTIE : reutilise A L'IDENTIQUE Win16_DrawTextOut deja         }
+    { etabli pour TextOut/$33 (voir le commentaire complet a ce site) pour   }
+    { le texte/position - lprc (rectangle de clip optionnel, drapeaux         }
+    { ETO_CLIPPED/ETO_OPAQUE) et lpDx (tableau d'espacement inter-            }
+    { caractere explicite) sont acceptes mais jamais consommes (police        }
+    { bitmap a largeur fixe, aucun chemin de rendu ne gere de toute facon      }
+    { le clipping de texte ni un espacement variable par caractere -           }
+    { meme discipline que les parametres non consommes deja disclosee          }
+    { ailleurs, ex. OpenJob/$240). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 22)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20)));
+    TOStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    TOStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    TOCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    If TOCount > 255 Then TOCount := 255;
+    TOStr := '';
+    For TOI := 0 To TOCount - 1 Do
+     TOStr := TOStr + Chr(Emu_ReadByte(P.CPU, TOStrSeg, Word(TOStrOfs + TOI)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     Win16_DrawTextOut(GdiX1, GdiY1, TOStr);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 11;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
