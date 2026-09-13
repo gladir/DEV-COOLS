@@ -18,6 +18,9 @@ Const
  WorkspaceOverhead=1096;
  SymbolWorkspaceSize=15;
  MaxIncludeDepth=13;
+ MaxErrors=20;
+ ExitAssemblyError=1;
+ ExitFatalError=2;
 
 Type
  TName=String[31];
@@ -25,6 +28,7 @@ Type
  TSymbol=Record Name:TName;
  Value:LongInt;
  Kind:Char;
+ LastPass:Byte;
  Defined,Mutable:Boolean;
  Next:PSymbol
 End;
@@ -61,10 +65,12 @@ Var
  LineByteCount:Integer;
  WorkspaceLimit,WorkspaceUsed:LongInt;
  PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
+ Pass1PC,Pass1DataPC,Pass1LowAddr,Pass1HighAddr:LongInt;
  ModuleCRC,DeclaredModuleSize:LongInt;
  ListFile:Text;
  ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull,CurrentLineError,
  CurrentLineWarning,CurrentLineData,ConditionalSkipped,FatalIncludeError:Boolean;
+ FatalError,TooManyErrors:Boolean;
  ModuleSeen,ModuleOpen,ModuleClosed,ModuleCRCActive,ModuleSizeKnown,
  ModuleMotorolaLayoutChanged:Boolean;
  ProgramName,Title,ParsedComment,CurrentSourceName,CurrentLineErrorText:String;
@@ -124,17 +130,31 @@ Procedure Help;Begin
 End;
 
 Procedure Error(S:String);Begin
- Inc(Errors);WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): erreur: ',S);
- if PassNo=2 Then Begin
-  CurrentLineError:=True;
-  if CurrentLineErrorText=''Then CurrentLineErrorText:=S
-  else CurrentLineErrorText:=CurrentLineErrorText+'; '+S
+ if PassNo<>2 Then Exit;
+ Inc(Errors);WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): ',S);
+ CurrentLineError:=True;
+ if CurrentLineErrorText=''Then CurrentLineErrorText:=S
+ else CurrentLineErrorText:=CurrentLineErrorText+'; '+S;
+ if Errors>=MaxErrors Then Begin
+  if not TooManyErrors Then Begin
+   TooManyErrors:=True;WriteLn(StdErr,'TOO MANY ERRORS');
+   CurrentLineErrorText:=CurrentLineErrorText+'; TOO MANY ERRORS'
+  End;StopAssembly:=True
  End
 End;
 
 Procedure Warning(S:String);Begin
- Inc(Warnings);if PassNo=2 Then CurrentLineWarning:=True;
- WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): avertissement: ',S)
+ if PassNo<>2 Then Exit;
+ Inc(Warnings);CurrentLineWarning:=True;
+ WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): WARNING: ',S)
+End;
+
+Procedure Fatal(S:String);
+Begin
+ if not FatalError Then Begin
+  FatalError:=True;Inc(Errors);WriteLn(StdErr,S);
+  if PassNo=2 Then Begin CurrentLineError:=True;CurrentLineErrorText:=S End
+ End;StopAssembly:=True
 End;
 
 Function NextCRC(CRC:LongInt;B:Byte):LongInt;
@@ -170,9 +190,7 @@ Begin
  ReserveWorkspace:=False;
  if WorkspaceFull Then Exit;
  if(Bytes<0)or(WorkspaceUsed>WorkspaceLimit-Bytes)Then Begin
-  WorkspaceFull:=True;StopAssembly:=True;Inc(Errors);
-  WriteLn(StdErr,'MEMORY FULL');
-  if(PassNo=2)and ListOn and ErrorsInList Then OutText('**** MEMORY FULL');Exit
+  WorkspaceFull:=True;Fatal('MEMORY FULL');Exit
  End;
  Inc(WorkspaceUsed,Bytes);ReserveWorkspace:=True
 End;
@@ -263,15 +281,16 @@ Begin
  End;
  P:=FindSymbol(N);if P=Nil Then Begin
   if not ReserveWorkspace(SymbolWorkspaceSize)Then Exit;
-  New(P);P^.Name:=N;P^.Next:=Symbols;Symbols:=P;P^.Defined:=False;P^.Mutable:=CanSet
+  New(P);P^.Name:=N;P^.Next:=Symbols;Symbols:=P;P^.Defined:=False;
+  P^.Mutable:=CanSet;P^.LastPass:=0
  End;
- if(PassNo=1)and P^.Defined and not P^.Mutable Then Begin
-  Error('symbole defini deux fois: '+N);Exit
- End;
- if(PassNo=2)and P^.Defined and(P^.Value<>V)and not P^.Mutable Then Begin
+ if(PassNo=2)and P^.Defined and(P^.LastPass<>2)and(P^.Value<>V)and not P^.Mutable Then Begin
   Error('PHASING: '+N);Exit
  End;
- P^.Value:=V;P^.Kind:=K;P^.Defined:=True;P^.Mutable:=CanSet
+ if(P^.LastPass=PassNo)and P^.Defined and not P^.Mutable Then Begin
+  Error('symbole defini deux fois: '+N);Exit
+ End;
+ P^.Value:=V;P^.Kind:=K;P^.Defined:=True;P^.Mutable:=CanSet;P^.LastPass:=PassNo
 End;
 
 Var
@@ -1056,7 +1075,7 @@ Var
  OldPC,OldDataPC,ListAddr,V:LongInt;
  K:Boolean;
  Cond:Array[1..16]of TConditionalFrame;
- Depth,OverflowDepth,I,SavedLine,OperandCount:Integer;
+ Depth,OverflowDepth,I,SavedLine,OperandCount,ReadCode:Integer;
  Active,TrailingComma:Boolean;
  Resolved,SavedSource:String;
  IncludeNode:PIncludeNode;
@@ -1065,20 +1084,21 @@ Var
  HeaderParity:Byte;
 Begin
  if IncludeDepth>=MaxIncludeDepth Then Begin
-  Error('trop de fichiers USE imbriques');FatalIncludeError:=True;StopAssembly:=True;Exit
+  Fatal('USE DEPTH');FatalIncludeError:=True;Exit
  End;
  if not ResolveAndOpenSource(FileName,CurrentSourceName,F,Resolved)Then Begin
-  Error('impossible d''ouvrir '+FileName);FatalIncludeError:=True;StopAssembly:=True;Exit
+  Fatal('CAN''T OPEN PATH: '+FileName);FatalIncludeError:=True;Exit
  End;
  if IncludeIsActive(Resolved)Then Begin
-  Close(F);Error('inclusion USE cyclique: '+FileName);FatalIncludeError:=True;
-  StopAssembly:=True;Exit
+  Close(F);Fatal('USE CYCLE: '+FileName);FatalIncludeError:=True;Exit
  End;
  New(IncludeNode);IncludeNode^.FileName:=Resolved;IncludeNode^.Next:=IncludeStack;
  IncludeStack:=IncludeNode;Inc(IncludeDepth);SavedSource:=CurrentSourceName;SavedLine:=LineNo;
  CurrentSourceName:=Resolved;LineNo:=0;Depth:=0;OverflowDepth:=0;Active:=True;
  While not Eof(F)and not StopAssembly do Begin
-  ReadLn(F,Line);Inc(LineNo);
+  ReadLn(F,Line);ReadCode:=IOResult;
+  if ReadCode<>0 Then Begin Fatal('READ ERROR: '+CurrentSourceName);Break End;
+  Inc(LineNo);
   if Length(Line)>MaxLine Then Begin
    if PassNo=2 Then Error('ligne de plus de 120 caracteres');Line:=Copy(Line,1,MaxLine)
   End;
@@ -1245,7 +1265,9 @@ Begin
  End;
  if(PassNo=2)and((Depth<>0)or(OverflowDepth<>0))Then Error('ENDC manquant');
  if(PassNo=2)and(IncludeDepth=1)and ModuleOpen Then Error('EMOD manquant');
- Close(F);IncludeStack:=IncludeNode^.Next;Dispose(IncludeNode);Dec(IncludeDepth);
+ Close(F);ReadCode:=IOResult;
+ if(ReadCode<>0)and not FatalError Then Fatal('READ ERROR: '+CurrentSourceName);
+ IncludeStack:=IncludeNode^.Next;Dispose(IncludeNode);Dec(IncludeDepth);
  CurrentSourceName:=SavedSource;LineNo:=SavedLine
 End;
 
@@ -1279,14 +1301,27 @@ Var
  F:File;
  I:LongInt;
  B:Byte;
+ Written,WriteCode:Word;
+
+ Procedure RemovePartialObject;
+ Begin
+  Assign(F,ObjectName);Erase(F);WriteCode:=IOResult;
+  if WriteCode<>0 Then WriteLn(StdErr,'CAN''T DELETE PATH: ',ObjectName)
+ End;
 Begin
  if not ValidateModuleImage Then Exit;
  Assign(F,ObjectName);Rewrite(F,1);if IOResult<>0 Then Begin
-  Error('impossible de creer '+ObjectName);Exit
+  Fatal('OBJECT PATH: '+ObjectName);Exit
  End;
+ WriteCode:=0;
  For I:=LowAddr to HighAddr do Begin
-  B:=Image^[I];BlockWrite(F,B,1)
- End;Close(F);if IOResult<>0 Then Error('erreur d''ecriture de '+ObjectName)
+  B:=Image^[I];BlockWrite(F,B,1,Written);WriteCode:=IOResult;
+  if(WriteCode<>0)or(Written<>1)Then Break
+ End;
+ Close(F);if(WriteCode=0)Then WriteCode:=IOResult else Written:=IOResult;
+ if WriteCode<>0 Then Begin
+  Fatal('WRITE ERROR: '+ObjectName);RemovePartialObject
+ End
 End;
 
 Procedure PrintSymbols;
@@ -1387,12 +1422,15 @@ BEGIN
  Motorola:=False;Narrow:=False;FormFeed:=False;Generated:=False;
  ParseArgs;SaveOptions(InitialOptions);WorkspaceLimit:=LongInt(MemoryK)*1024;
  WorkspaceUsed:=WorkspaceOverhead;WorkspaceFull:=False;FatalIncludeError:=False;
+ FatalError:=False;TooManyErrors:=False;
  Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
-  WriteLn('ASM: impossible d''ouvrir ',SourceName);Halt(2)
- End;Close(F);GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
+  WriteLn(StdErr,'CAN''T OPEN PATH: ',SourceName);Halt(ExitFatalError)
+ End;Close(F);Code:=IOResult;if Code<>0 Then Begin
+  WriteLn(StdErr,'READ ERROR: ',SourceName);Halt(ExitFatalError)
+ End;GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
  if ListingToFile Then Begin
   Assign(ListFile,ListName);Rewrite(ListFile);if IOResult<>0 Then Begin
-   WriteLn('ASM: impossible de creer ',ListName);Halt(2)
+   WriteLn(StdErr,'CAN''T OPEN PATH: ',ListName);Halt(ExitFatalError)
   End
  End;
  Errors:=0;Warnings:=0;ProgramName:=Upper(SourceName);Title:='';
@@ -1404,12 +1442,20 @@ BEGIN
    ModuleSeen:=False;ModuleOpen:=False;ModuleClosed:=False;ModuleCRCActive:=False;
    ModuleSizeKnown:=False;ModuleMotorolaLayoutChanged:=False;
    if PassNo=2 Then DecisionCursor:=Decisions;
-   ProcessFile(SourceName)
+   ProcessFile(SourceName);
+   if PassNo=1 Then Begin
+    Pass1PC:=PC;Pass1DataPC:=DataPC;Pass1LowAddr:=LowAddr;Pass1HighAddr:=HighAddr
+   End else if not FatalError Then Begin
+    if(PC<>Pass1PC)or(DataPC<>Pass1DataPC)or(LowAddr<>Pass1LowAddr)or
+      (HighAddr<>Pass1HighAddr)or(DecisionCursor<>Nil)Then Error('PHASING')
+   End
   End
  End;
- PrintSymbols;if MakeObject and(Errors=0)Then WriteObject;
+ if not FatalError Then PrintSymbols;
+ if MakeObject and(Errors=0)and not FatalError Then WriteObject;
  if ListingToFile Then Close(ListFile);
  if Errors=0 Then WriteLn('Assemblage termine: aucune erreur.')else WriteLn(Errors,
  ' erreur(s).');DisposeSymbols;DisposeDecisions;FreeMem(Image,SizeOf(TBytes));
- if Errors<>0 Then Halt(1)
+ if FatalError Then Halt(ExitFatalError);
+ if Errors<>0 Then Halt(ExitAssemblyError)
 END.

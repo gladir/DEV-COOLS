@@ -7838,6 +7838,11 @@ Var
  Win16_EnvDeviceName: String;
  Win16_EnvData: Array[0..255] Of Byte;
  Win16_EnvDataLen: Integer;
+ { GDI.EXE SetBrushOrg/GetBrushOrg/UnrealizeObject (2026-09-13, demande     }
+ { explicite, ordinaux 148/149/150) - origine REELLE du motif de la         }
+ { brosse courante, mono-DC (coherent avec Win16_CurrentWindowOrgX/Y et      }
+ { consorts deja etablis pour SetWindowOrg/etc.). }
+ Win16_BrushOrgX, Win16_BrushOrgY: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91390,6 +91395,7 @@ Begin
  Win16_VisRgnStackTop := 0;
  Win16_EnvDeviceName := '';
  Win16_EnvDataLen := 0;
+ Win16_BrushOrgX := 0; Win16_BrushOrgY := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -96488,6 +96494,101 @@ Begin
     Else
      P.CPU.Regs.AX := 2; { SIMPLEREGION }
     ArgWords := 3;
+   End;
+   135: Begin
+    { ScanLR(word,word,word,long,word):int - ordinal ABSENT du VRAI        }
+    { source Wine officiel (dlls/gdi.exe16/gdi.exe16.spec le marque          }
+    { "#135 pascal ScanLr" - LITTERALEMENT COMMENTE, jamais implante ni      }
+    { documente par Wine). Signature/taille de pile (6 mots : 3 mots +       }
+    { 1 LONG (2 mots) + 1 mot) VERIFIEE via une SOURCE SECONDAIRE            }
+    { differente mais reelle et publique (projet WineVDM, otya128/winevdm,   }
+    { gdi/gdi.exe16.spec, qui a reconstitue cet ordinal specifiquement       }
+    { pour l'emulation Win16 - AUCUNE implementation reelle (fonction C)     }
+    { n'a ete retrouvee la non plus, seule la forme des parametres).         }
+    { CONSEQUENCE HONNETE : contrairement a Death/$121/Resurrection/$122     }
+    { (ou la semantique generale - suspendre/restaurer les pilotes video -   }
+    { est au moins connue meme sans implementation), ICI meme le ROLE de     }
+    { chaque parametre individuel reste incertain au-dela de la              }
+    { description sommaire fournie par l'utilisateur ("fixer des pixels     }
+    { dans une simple ligne") - AUCUN mapping de parametres n'est donc        }
+    { invente ni aucun pixel reellement pose : seule la VRAIE taille de       }
+    { pile (6 mots) est respectee (critique pour ne pas corrompre les         }
+    { appels suivants), la fonction est acceptee honnetement sans effet      }
+    { reel, retourne 1 (accepte). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   136: Begin
+    { RemoveFontResource(lpFilename):int - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { RemoveFontResource(str)", 1 pointeur LOIN = 2 mots, retour 16 bits     }
+    { AX seul, meme forme que AddFontResource/$119). REEL EN PARTIE, meme    }
+    { discipline exacte que AddFontResource/$119 (aucune vraie table des     }
+    { polices ajoutees n'existe dans ce sous-ensemble pour verifier          }
+    { qu'un ajout precedent existe vraiment) : le nom de fichier est          }
+    { reellement lu et resolu vers un vrai chemin hote (Win16_ReadGuestString/}
+    { Emu_HostPath), et le VRAI succes/echec depend de l'EXISTENCE           }
+    { reelle du fichier sur le disque hote (coherent en interne avec         }
+    { AddFontResource/$119 - le "retirer" d'un fichier qui "s'ajouterait"    }
+    { avec succes reussit egalement ici). }
+    AFRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    AFROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    AFRName := Win16_ReadGuestString(P.CPU, AFRSeg, AFROfs);
+    If FileExists(Emu_HostPath(AFRName)) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   148: Begin
+    { SetBrushOrg(hdc,X,Y):DWORD - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal SetBrushOrg(word s_word         }
+    { s_word)", 3 mots, meme forme que PtVisible/$103/OffsetVisRgn/$102,    }
+    { retour DWORD AX:DX). REEL, SANS simplification : fixe VRAIMENT          }
+    { l'origine du motif de la brosse courante (Win16_BrushOrgX/Y,           }
+    { nouveaux globaux mono-DC, meme discipline que                          }
+    { Win16_CurrentWindowOrgX/Y etc. deja etablis pour SetWindowOrg/$12)     }
+    { et retourne l'ANCIENNE origine (comportement documente : la valeur     }
+    { PRECEDENTE, pas la nouvelle), pas une valeur inventee. Aucun VRAI       }
+    { rendu de brosse hachuree n'existe dans ce sous-ensemble (PatBlt/       }
+    { etc. deja disclosee comme limitee) donc cette origine n'a pas           }
+    { encore de consequence visuelle - state REEL neanmoins, coherent        }
+    { avec GetBrushOrg/$149 juste apres. }
+    P.CPU.Regs.AX := Word(Win16_BrushOrgX);
+    P.CPU.Regs.DX := Word(Win16_BrushOrgY);
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6))); { X }
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4))); { Y }
+    Win16_BrushOrgX := GdiX1;
+    Win16_BrushOrgY := GdiY1;
+    ArgWords := 3;
+   End;
+   149: Begin
+    { GetBrushOrg(hdc):DWORD - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (gdi.exe16.spec : "pascal GetBrushOrg(word)", 1 mot,       }
+    { retour DWORD AX:DX). REEL : contrepartie exacte de SetBrushOrg/$148 - }
+    { renvoie VRAIMENT Win16_BrushOrgX/Y. }
+    P.CPU.Regs.AX := Word(Win16_BrushOrgX);
+    P.CPU.Regs.DX := Word(Win16_BrushOrgY);
+    ArgWords := 1;
+   End;
+   150: Begin
+    { UnrealizeObject(hobj):BOOL - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16                        }
+    { UnrealizeObject(word)", 1 mot, retour 16 bits AX seul). REEL EN        }
+    { PARTIE : le vrai contrat couvre 2 cas selon le TYPE de hobj (brosse    }
+    { -> reinitialise son origine ; palette logique -> force son            }
+    { remappage). Aucune vraie table d'objets typee n'existe dans ce         }
+    { sous-ensemble pour distinguer les deux (tous les handles sont          }
+    { synthetiques et indistincts, meme limitation que SelectObject/$45)     }
+    { - applique donc REELLEMENT le cas brosse (remet VRAIMENT               }
+    { Win16_BrushOrgX/Y a (0,0), l'effet documente le plus courant en         }
+    { pratique) inconditionnellement ; le cas palette logique reste           }
+    { honnetement hors de portee (aucun systeme de palette logique           }
+    { modelise). Retourne toujours TRUE(1). }
+    Win16_BrushOrgX := 0;
+    Win16_BrushOrgY := 0;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
