@@ -51,23 +51,29 @@ End;
 
 Function Hex(V:LongInt;N:Integer):String;
 Const
- D='0123456789ABCDEF';
+ D:Array[0..15]of Char='0123456789ABCDEF';
 Var
  S:String;
 Begin
  S:='';
  While N>0 do Begin
-  S:=D[(V and 15)+1]+S;V:=V shr 4;Dec(N)
- End;Hex:=S
+  S:=D[(V and 15)+1]+S;
+  V:=V shr 4;Dec(N)
+ End;
+ Hex:=S
 End;
 
 Procedure OutText(S:String);Begin
- if ListingToFile Then WriteLn(ListFile,S)else WriteLn(S)
+ If ListingToFile Then WriteLn(ListFile,S)
+                  Else WriteLn(S)
 End;
 
 Procedure Help;Begin
- WriteLn('ASM ',Version,' - Assembleur Microware OS-9/6809');
+ WriteLn('ASM ',Version,' - Cette commande permet de lancer ',
+         'l''Assembleur Microware OS-9/6809.');
+ WriteLn;
  WriteLn('Syntaxe : ASM fichier [options] [#memoire] [>listing]');
+ WriteLn;
  WriteLn(' C/-C     afficher/masquer l''assemblage conditionnel (defaut C)');
  WriteLn(' Dnn      nombre de lignes par page (defaut D66)');
  WriteLn(' E/-E     inclure/exclure les erreurs du listing (defaut E)');
