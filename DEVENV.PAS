@@ -7951,6 +7951,38 @@ Var
  { REEL, meme modele mono-DC - ASPECT_FILTERING desactive par defaut       }
  { (0), coherent avec le defaut documente. }
  Win16_CurrentMapperFlags: LongInt;
+ { GDI.EXE CreatePalette/GDISelectPalette/GDIRealizePalette/                }
+ { GetPaletteEntries/SetPaletteEntries/AnimatePalette/ResizePalette/        }
+ { GetNearestPaletteIndex (2026-09-13, demande explicite, ordinaux          }
+ { 360-368/370) - REEL, PAS une simplification : ce sous-ensemble a un      }
+ { VRAI DAC VGA materiel (EmuVideo.DAC, 256 entrees x 3 octets 6 bits,      }
+ { deja etabli pour INT 10h AH=10h et les ports $3C7-$3C9) - une VRAIE      }
+ { file de palettes logiques (LOGPALETTE, layout verifie via wingdi.h :     }
+ { palVersion/palNumEntries/palPalEntry[] de PALETTEENTRY 4 octets           }
+ { R/G/B/Flags) est stockee ici, et GDIRealizePalette ecrit REELEMENT ces   }
+ { valeurs dans le VRAI DAC (conversion 8 bits->6 bits par Shr 2) - donc    }
+ { les couleurs affichees a l'ecran changent VRAIMENT suite a un cycle       }
+ { CreatePalette/SelectPalette/RealizePalette complet, pas un no-op.        }
+ { Namespace de handle separe (8 palettes max, commence a 1). }
+ Win16_PaletteStack: Array[1..8] Of Record
+  NumEntries: Integer;
+  R, G, B, Flags: Array[0..255] Of Byte;
+ End;
+ Win16_PaletteStackTop: Integer;
+ Win16_CurrentPalette: Integer;
+ { GDI.EXE SetSystemPaletteUse/GetSystemPaletteUse (2026-09-14, demande    }
+ { explicite, ordinaux 373/374) - REEL, mono-DC : ce sous-ensemble ne       }
+ { distingue pas les 20 couleurs "statiques" reservees du reste (les 256   }
+ { entrees du DAC sont toutes egalement disponibles, voir la famille        }
+ { palette 360-370) - stocke/retourne neanmoins REELLEMENT le drapeau       }
+ { demande (defaut reel documente SYSPAL_STATIC=1). }
+ Win16_SystemPaletteUse: Word;
+ { GDI.EXE SetAbortProc (2026-09-14, demande explicite, ordinal 381) -      }
+ { stocke REELLEMENT le pointeur de fonction, meme discipline "installe    }
+ { mais jamais rappele" deja etablie pour Win16_DCHookProcSeg/Ofs           }
+ { ($190) et pour l'absence d'AbortProc de QueryAbort/$155 (aucune vraie    }
+ { boucle d'impression ne poll periodiquement ce callback ici). }
+ Win16_AbortProcSeg, Win16_AbortProcOfs: Word;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91516,6 +91548,10 @@ Begin
  Win16_PrintJobOpen := False;
  Win16_CurrentTextAlign := 0;
  Win16_CurrentMapperFlags := 0;
+ Win16_PaletteStackTop := 0;
+ Win16_CurrentPalette := 0;
+ Win16_SystemPaletteUse := 1; { SYSPAL_STATIC, defaut reel documente }
+ Win16_AbortProcSeg := 0; Win16_AbortProcOfs := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -92442,6 +92478,51 @@ Begin
  End;
 End;
 
+{ Variante SURFACE (FLOODFILLSURFACE=1, PAS FLOODFILLBORDER=0 ci-dessus) -   }
+{ utilisee par ExtFloodFill (GDI ordinal 372, 2026-09-14, demande            }
+{ explicite) : au lieu de remplir jusqu'a atteindre une couleur de           }
+{ BORDURE, remplit tous les pixels qui correspondent EXACTEMENT a la         }
+{ couleur cible (TargetColor, normalement la couleur deja presente au        }
+{ point de depart) - la difference reelle documentee entre les deux modes    }
+{ de ExtFloodFill. DUPLIQUE plutot que factorise avec                        }
+{ Win16_FloodFillRegion ci-dessus (meme discipline que Win16_DrawArc vs      }
+{ Win16_DrawEllipseBox) pour ne surtout pas risquer de perturber              }
+{ FloodFill/$25, deja verifie live. }
+Procedure Win16_FloodFillSurface(SeedX, SeedY: Integer; TargetColor, FillColor: Byte;
+                                  MinX, MinY, MaxX, MaxY: Integer);
+Var
+ SP: LongInt;
+ CX, CY: Integer;
+
+ Procedure TryPush(TX, TY: Integer);
+ Begin
+  If (TX < MinX) Or (TX > MaxX) Or (TY < MinY) Or (TY > MaxY) Then Exit;
+  If SP >= High(Win16_FFStackX) Then Exit;
+  If Emu_VidGetPixel(TX, TY) <> TargetColor Then Exit;
+  Emu_VidSetPixel(TX, TY, FillColor);
+  Win16_FFStackX[SP] := TX; Win16_FFStackY[SP] := TY; Inc(SP);
+ End;
+
+Begin
+ { Garde-fou REEL (pas seulement defensif) : si TargetColor=FillColor,      }
+ { peindre "la meme couleur que deja presente" ne change jamais l'etat       }
+ { d'un pixel visite - contrairement a Win16_FloodFillRegion ci-dessus       }
+ { (qui progresse toujours vers BoundaryColor/FillColor, jamais les deux     }
+ { identiques dans l'usage reel), une boucle sans fin serait possible ici    }
+ { sans ce cas particulier (rien a remplir de toute facon dans ce cas). }
+ If TargetColor = FillColor Then Exit;
+ SP := 0;
+ TryPush(SeedX, SeedY);
+ While SP > 0 Do Begin
+  Dec(SP);
+  CX := Win16_FFStackX[SP]; CY := Win16_FFStackY[SP];
+  TryPush(CX + 1, CY);
+  TryPush(CX - 1, CY);
+  TryPush(CX, CY + 1);
+  TryPush(CX, CY - 1);
+ End;
+End;
+
 { Trace une "pointe de tarte" (arc elliptique + 2 lignes droites du centre  }
 { vers chacun des 2 points de l'arc) - utilise par Pie (GDI ordinal 26,     }
 { 2026-09-12, demande explicite). REEL : reutilise Win16_DrawArc TEL QUEL   }
@@ -93056,6 +93137,11 @@ End;
 { hote plutot que de retourner un handle synthetique sans aucune           }
 { verification. }
 Function Emu_HostPath(Const DosName: String): String; Forward;
+{ RealizeDefaultPalette (GDI ordinal 365, 2026-09-13, demande explicite) -  }
+{ Emu_VidInitDefaultDAC n'est definie que plus loin dans le fichier          }
+{ (section video), Forward necessaire pour la meme raison qu'Emu_HostPath   }
+{ ci-dessus. }
+Procedure Emu_VidInitDefaultDAC; Forward;
 Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
 Var
  ModIdx, Ordinal: Word;
@@ -93237,6 +93323,26 @@ Var
  SMFHi, SMFLo: Word;
  GCWFirst, GCWLast: Word;
  GCWI: Integer;
+ { GDI.EXE famille Palette (2026-09-13, demande explicite, ordinaux        }
+ { 352/353/360-368/370). }
+ PalHandle, PalOldHandle: Integer;
+ PalSeg, PalOfs: Word;
+ PalNumEnt: Word;
+ PalStart, PalCount: Word;
+ PalI: Integer;
+ PalTargetR, PalTargetG, PalTargetB: Byte;
+ PalBestIdx: Integer;
+ PalBestDist, PalDist: LongInt;
+ PalDR, PalDG, PalDB: Integer;
+ { GDI.EXE ordinaux 372-411 (2026-09-14, demande explicite). }
+ EFFFillType: Word;
+ SPUOld: Word;
+ GSPEStart, GSPECount: Word;
+ GSPESeg, GSPEOfs: Word;
+ GSPEI: Integer;
+ FWFWidth, FWFHeight: SmallInt;
+ FWFX, FWFY: Integer;
+ GI2H1, GI2H2: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -98154,6 +98260,667 @@ Begin
     End;
     P.CPU.Regs.AX := 1;
     ArgWords := 11;
+   End;
+   352: Begin
+    { GetPhysicalFontHandle(hFont):DWORD - ordinal ABSENT/COMMENTE du VRAI }
+    { source Wine officiel (gdi.exe16.spec le marque "352 stub               }
+    { GetPhysicalFontHandle" - un stub SANS signature). Signature VERIFIEE  }
+    { via une SOURCE SECONDAIRE differente mais reelle et publique           }
+    { (projet WineVDM) : "pascal GetPhysicalFontHandle(word)", 1 mot,        }
+    { retour DWORD AX:DX - PAS de -ret16. Fonction interne qui retourne le  }
+    { handle du "module de police physique" derriere une police REALISEE   }
+    { (voir la famille EngineXxx/300-306, [[project_devenv_win16_gdi_ord300_310]]) -  }
+    { aucune vraie table de polices realisees n'existe dans ce               }
+    { sous-ensemble (une seule police bitmap MAISON, jamais "realisee" via   }
+    { un vrai moteur). Echec honnete (0:0). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   353: Begin
+    { GetAspectRatioFilter(hdc):DWORD - ordinal ABSENT/COMMENTE du VRAI    }
+    { source Wine officiel (gdi.exe16.spec le marque "353 stub               }
+    { GetAspectRatioFilter" - un stub SANS signature). Signature VERIFIEE   }
+    { via la SOURCE SECONDAIRE WineVDM : "pascal                             }
+    { GetAspectRatioFilter(word)", 1 mot, retour DWORD AX:DX - PAS de        }
+    { -ret16. SetAspectRatioFilter n'a jamais ete demande/implante dans ce  }
+    { sous-ensemble - aucun filtre n'est donc jamais actif, retour honnete   }
+    { 0:0 (aucun filtre defini), coherent avec l'absence totale de           }
+    { mecanisme de mise a l'echelle de police proportionnelle ici (une        }
+    { seule police bitmap fixe). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   354: Begin
+    { ShrinkGDIHeap():BOOL - ordinal ABSENT/COMMENTE du VRAI source Wine   }
+    { officiel (gdi.exe16.spec le marque "354 stub ShrinkGDIHeap" - un      }
+    { stub SANS signature). Signature VERIFIEE via la SOURCE SECONDAIRE     }
+    { WineVDM : "pascal -ret16 ShrinkGDIHeap()", 0 mot (AUCUN parametre,     }
+    { premiere fois ce chantier), retour 16 bits AX seul. REEL EN PARTIE :   }
+    { le tas GDI de ce sous-ensemble (Win16_HeapNext/Win16_HeapLimit) est    }
+    { un simple allocateur "bump" sans jamais rien liberer/fragmenter -      }
+    { "retrecir" un tel allocateur a sa taille minimale n'a pas de sens       }
+    { (rien a compacter), mais l'appel REUSSIT honnetement (TRUE) puisqu'   }
+    { aucune vraie erreur ne peut survenir ici. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 0;
+   End;
+   { FTrapping0/355 : DELIBEREMENT NON IMPLANTE - le VRAI source Wine       }
+   { officiel (gdi.exe16.spec) ET la source secondaire (projet WineVDM)      }
+   { marquent TOUS LES DEUX "stub FTrapping0", SANS AUCUNE signature.        }
+   { Meme discipline exacte que SetDCStatus/$170/RSIN/$178/QueryJob/$248/    }
+   { DeleteSpoolPage/$253/ConvertOutlineFontFile/$312/EngineExtTextOut/$314  }
+   { (voir [[project_devenv_win16_gdi_ord169_175]]/                         }
+   { [[project_devenv_win16_gdi_ord311_351]]) : inventer un nombre de        }
+   { mots ici serait une pure supposition qui risquerait de corrompre la     }
+   { pile de TOUS les appels Win16 suivants - laisse donc deliberement       }
+   { tomber sur le gestionnaire generique "Else" ci-dessous. }
+   360: Begin
+    { CreatePalette(lpLogPalette):HPALETTE - ordinal/signature VERIFIES     }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16               }
+    { CreatePalette(ptr)", 1 pointeur LOIN (2 mots) = 2 mots, retour 16      }
+    { bits AX seul). REEL, PAS une simplification : lit un VRAI              }
+    { LOGPALETTE (layout verifie via wingdi.h officiel Microsoft :           }
+    { palVersion(word)/palNumEntries(word)/palPalEntry[] de PALETTEENTRY     }
+    { 4 octets R/G/B/Flags chacune) depuis la memoire emulee et le stocke    }
+    { dans une VRAIE pile de palettes par-handle (Win16_PaletteStack, 8      }
+    { niveaux, 256 entrees max chacune - namespace de handle separe,          }
+    { commence a 1). Pile pleine -> echec honnete (0). }
+    PalSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PalOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    { PalOfs+0 = palVersion, jamais lu : toujours $300 en pratique (VRAIE  }
+    { convention documentee depuis Windows 3.0), aucune branche de code    }
+    { ici ne se comporte differemment selon sa valeur. }
+    PalNumEnt := Emu_ReadWord(P.CPU, PalSeg, Word(PalOfs + 2));
+    If PalNumEnt > 256 Then PalNumEnt := 256;
+    If Win16_PaletteStackTop < 8 Then Begin
+     Inc(Win16_PaletteStackTop);
+     PalHandle := Win16_PaletteStackTop;
+     Win16_PaletteStack[PalHandle].NumEntries := PalNumEnt;
+     For PalI := 0 To PalNumEnt - 1 Do Begin
+      Win16_PaletteStack[PalHandle].R[PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + 4 + PalI * 4));
+      Win16_PaletteStack[PalHandle].G[PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + 4 + PalI * 4 + 1));
+      Win16_PaletteStack[PalHandle].B[PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + 4 + PalI * 4 + 2));
+      Win16_PaletteStack[PalHandle].Flags[PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + 4 + PalI * 4 + 3));
+     End;
+     P.CPU.Regs.AX := Word(PalHandle);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   361: Begin
+    { GDISelectPalette(hdc,hPalette,bForceBkgd):HPALETTE - ordinal/         }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 GDISelectPalette(word word word)", 3 mots, retour 16 bits AX   }
+    { seul). REEL : stocke REELLEMENT le handle selectionne mono-DC          }
+    { (Win16_CurrentPalette) et renvoie l'ANCIEN, coherent avec le contrat    }
+    { "retourne l'ancienne valeur" deja etabli. bForceBkgd (premier/arriere }
+    { plan) est ignore (modele mono-fenetre, une seule palette active a       }
+    { la fois - le VRAI Wine distingue hPrimaryPalette du reste, hors de      }
+    { portee ici). Handle non valide accepte sans verification, meme          }
+    { discipline que SelectObject/$45. }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    PalOldHandle := Win16_CurrentPalette;
+    Win16_CurrentPalette := PalHandle;
+    P.CPU.Regs.AX := Word(PalOldHandle);
+    ArgWords := 3;
+   End;
+   362: Begin
+    { GDIRealizePalette(hdc):UINT - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (gdi.exe16.spec : "pascal -ret16                          }
+    { GDIRealizePalette(word)", 1 mot, retour 16 bits AX seul). REEL ET      }
+    { CONCRET : ecrit VRAIMENT les entrees de la palette selectionnee        }
+    { (Win16_CurrentPalette) dans le VRAI DAC materiel VGA                   }
+    { (EmuVideo.DAC, deja etabli pour INT 10h AH=10h/ports $3C7-$3C9),        }
+    { convertissant chaque composante 8 bits (0-255) en 6 bits VGA           }
+    { (0-63) par division par 4 - les couleurs REELLEMENT affichees a         }
+    { l'ecran changent suite a cet appel, ce n'est PAS un no-op. Retourne     }
+    { le nombre d'entrees REELLEMENT realisees (0 si aucune palette           }
+    { selectionnee/handle invalide). }
+    PalHandle := Win16_CurrentPalette;
+    If (PalHandle >= 1) And (PalHandle <= Win16_PaletteStackTop) Then Begin
+     For PalI := 0 To Win16_PaletteStack[PalHandle].NumEntries - 1 Do Begin
+      EmuVideo.DAC[PalI * 3 + 0] := Win16_PaletteStack[PalHandle].R[PalI] Shr 2;
+      EmuVideo.DAC[PalI * 3 + 1] := Win16_PaletteStack[PalHandle].G[PalI] Shr 2;
+      EmuVideo.DAC[PalI * 3 + 2] := Win16_PaletteStack[PalHandle].B[PalI] Shr 2;
+     End;
+     P.CPU.Regs.AX := Word(Win16_PaletteStack[PalHandle].NumEntries);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   363: Begin
+    { GetPaletteEntries(hpal,iStart,nEntries,lpPe):UINT - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 GetPaletteEntries(word word word ptr)", 3 mots + 1 pointeur     }
+    { LOIN (2 mots) = 5 mots, retour 16 bits AX seul). REEL : copie           }
+    { VRAIMENT les entrees stockees (R,G,B,Flags, 4 octets chacune,           }
+    { layout PALETTEENTRY verifie via wingdi.h) dans *lpPe. Retourne le       }
+    { nombre REEL d'entrees copiees (borne par NumEntries-iStart), 0 si       }
+    { handle invalide. }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    PalStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    PalCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    PalSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PalOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (PalHandle >= 1) And (PalHandle <= Win16_PaletteStackTop) Then Begin
+     If Integer(PalStart) + Integer(PalCount) > Win16_PaletteStack[PalHandle].NumEntries Then
+      PalCount := Word(Win16_PaletteStack[PalHandle].NumEntries - Integer(PalStart));
+     If Integer(PalCount) < 0 Then PalCount := 0;
+     For PalI := 0 To Integer(PalCount) - 1 Do Begin
+      Emu_WriteByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4),
+       Win16_PaletteStack[PalHandle].R[PalStart + PalI]);
+      Emu_WriteByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 1),
+       Win16_PaletteStack[PalHandle].G[PalStart + PalI]);
+      Emu_WriteByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 2),
+       Win16_PaletteStack[PalHandle].B[PalStart + PalI]);
+      Emu_WriteByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 3),
+       Win16_PaletteStack[PalHandle].Flags[PalStart + PalI]);
+     End;
+     P.CPU.Regs.AX := PalCount;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   364: Begin
+    { SetPaletteEntries(hpal,iStart,nEntries,lpPe):UINT - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 SetPaletteEntries(word word word ptr)", MEME forme exacte que  }
+    { GetPaletteEntries/$363 = 5 mots, retour 16 bits AX seul). REEL,        }
+    { contrepartie exacte : ecrit VRAIMENT les entrees fournies dans le       }
+    { stockage de la palette (borne par la capacite allouee a la creation,   }
+    { jamais au-dela). N'ecrit PAS automatiquement dans le DAC (il faut       }
+    { un GDIRealizePalette/$362 explicite ensuite, comportement reel          }
+    { documente - contrairement a AnimatePalette/$367 ci-dessous). }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    PalStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    PalCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    PalSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PalOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (PalHandle >= 1) And (PalHandle <= Win16_PaletteStackTop) Then Begin
+     If Integer(PalStart) + Integer(PalCount) > Win16_PaletteStack[PalHandle].NumEntries Then
+      PalCount := Word(Win16_PaletteStack[PalHandle].NumEntries - Integer(PalStart));
+     If Integer(PalCount) < 0 Then PalCount := 0;
+     For PalI := 0 To Integer(PalCount) - 1 Do Begin
+      Win16_PaletteStack[PalHandle].R[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4));
+      Win16_PaletteStack[PalHandle].G[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 1));
+      Win16_PaletteStack[PalHandle].B[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 2));
+      Win16_PaletteStack[PalHandle].Flags[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 3));
+     End;
+     P.CPU.Regs.AX := PalCount;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   365: Begin
+    { RealizeDefaultPalette(hdc):UINT - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { RealizeDefaultPalette(word)", 1 mot, retour 16 bits AX seul). REEL :   }
+    { restitue REELLEMENT le VRAI DAC materiel a sa palette par defaut        }
+    { (reutilise Emu_VidInitDefaultDAC, la MEME routine deja appelee au        }
+    { demarrage du mode $13 - 16 couleurs IBM standard + 16 niveaux de         }
+    { gris + remplissage RGB regulier pour le reste, voir son               }
+    { commentaire complet a son site de definition), PAS une valeur           }
+    { inventee ici. Retourne 256 (le nombre reel d'entrees DAC               }
+    { reinitialisees). }
+    Emu_VidInitDefaultDAC;
+    P.CPU.Regs.AX := 256;
+    ArgWords := 1;
+   End;
+   366: Begin
+    { UpdateColors(hdc):BOOL - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 UpdateColors(word)", 1   }
+    { mot, retour 16 bits AX seul). REEL ET HONNETE : le VRAI                }
+    { UpdateColors remappe les pixels DEJA DESSINES d'une region client       }
+    { pour refleter un changement de palette recent (utile sur les VRAIS     }
+    { peripheriques dont le framebuffer stocke des index figes converti      }
+    { en RGB par un pilote une seule fois). Ce sous-ensemble convertit        }
+    { CHAQUE pixel indexe en RGB EN DIRECT via le DAC a chaque rendu           }
+    { d'ecran (voir le lecteur de framebuffer qui lit EmuVideo.DAC a           }
+    { chaque affichage) - il n'y a donc litteralement RIEN a "mettre a         }
+    { jour" ici, les couleurs sont TOUJOURS deja a jour par construction.      }
+    { Retourne TRUE(1), le VRAI Wine fait de meme ("return TRUE" }
+    { inconditionnel dans son propre code source). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   367: Begin
+    { AnimatePalette(hpal,iStart,nEntries,lpColors):void - ordinal/         }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 AnimatePalette(word word word ptr)", MEME forme exacte que      }
+    { GetPaletteEntries/$363/SetPaletteEntries/$364 = 5 mots). REEL,          }
+    { difference cle avec SetPaletteEntries/$364 : ecrit les entrees ET       }
+    { les repercute IMMEDIATEMENT dans le VRAI DAC materiel SI cette          }
+    { palette est celle ACTUELLEMENT selectionnee (Win16_CurrentPalette),     }
+    { sans attendre un GDIRealizePalette/$362 explicite - exactement le       }
+    { comportement reel documente qui distingue AnimatePalette des autres     }
+    { fonctions de palette (utilise historiquement pour des effets            }
+    { d'animation de couleur en temps reel). Simplification disclosee :      }
+    { la vraie restriction "seules les entrees marquees PC_RESERVED sont      }
+    { animables" n'est pas appliquee (toutes les entrees fournies sont         }
+    { animees), ce sous-ensemble ne suit de toute facon jamais les              }
+    { drapeaux PC_RESERVED ailleurs. }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    PalStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    PalCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    PalSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PalOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (PalHandle >= 1) And (PalHandle <= Win16_PaletteStackTop) Then Begin
+     If Integer(PalStart) + Integer(PalCount) > Win16_PaletteStack[PalHandle].NumEntries Then
+      PalCount := Word(Win16_PaletteStack[PalHandle].NumEntries - Integer(PalStart));
+     If Integer(PalCount) < 0 Then PalCount := 0;
+     For PalI := 0 To Integer(PalCount) - 1 Do Begin
+      Win16_PaletteStack[PalHandle].R[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4));
+      Win16_PaletteStack[PalHandle].G[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 1));
+      Win16_PaletteStack[PalHandle].B[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 2));
+      Win16_PaletteStack[PalHandle].Flags[PalStart + PalI] :=
+       Emu_ReadByte(P.CPU, PalSeg, Word(PalOfs + PalI * 4 + 3));
+      If PalHandle = Win16_CurrentPalette Then Begin
+       EmuVideo.DAC[(PalStart + PalI) * 3 + 0] := Win16_PaletteStack[PalHandle].R[PalStart + PalI] Shr 2;
+       EmuVideo.DAC[(PalStart + PalI) * 3 + 1] := Win16_PaletteStack[PalHandle].G[PalStart + PalI] Shr 2;
+       EmuVideo.DAC[(PalStart + PalI) * 3 + 2] := Win16_PaletteStack[PalHandle].B[PalStart + PalI] Shr 2;
+      End;
+     End;
+    End;
+    ArgWords := 5;
+   End;
+   368: Begin
+    { ResizePalette(hpal,nEntries):BOOL - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { ResizePalette(word word)", 2 mots, retour 16 bits AX seul). REEL :     }
+    { change VRAIMENT le nombre d'entrees stockees (borne a 256, la           }
+    { limite fixe de ce sous-ensemble - agrandir au-dela conserverait les     }
+    { anciennes valeurs, retrecir tronque simplement, meme discipline que      }
+    { SizePQ/$234). Handle invalide -> FALSE(0). }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    PalNumEnt := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (PalHandle >= 1) And (PalHandle <= Win16_PaletteStackTop) Then Begin
+     If PalNumEnt > 256 Then PalNumEnt := 256;
+     Win16_PaletteStack[PalHandle].NumEntries := PalNumEnt;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   370: Begin
+    { GetNearestPaletteIndex(hpal,clrref):UINT - ordinal/signature          }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16      }
+    { GetNearestPaletteIndex(word long)", 1 mot + 1 LONG (2 mots) = 3        }
+    { mots, retour 16 bits AX seul). REEL : recherche VRAIMENT l'entree de   }
+    { distance euclidienne au carre minimale parmi les entrees stockees       }
+    { de la palette (clrref au format COLORREF 0x00BBGGRR deja etabli         }
+    { ailleurs - octet de poids faible=R). Handle invalide/palette vide ->    }
+    { CLR_INVALID=$FFFF (constante REELLE documentee, tronquee sur 16         }
+    { bits comme le reste des retours -ret16 de ce lot). }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    PalStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));  { clrref poids fort : 0x00BB }
+    PalCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));  { clrref poids faible : 0xGGRR }
+    PalTargetR := Byte(PalCount And $FF);
+    PalTargetG := Byte((PalCount Shr 8) And $FF);
+    PalTargetB := Byte(PalStart And $FF);
+    If (PalHandle >= 1) And (PalHandle <= Win16_PaletteStackTop) And
+     (Win16_PaletteStack[PalHandle].NumEntries > 0) Then Begin
+     PalBestIdx := 0;
+     PalBestDist := $7FFFFFFF;
+     For PalI := 0 To Win16_PaletteStack[PalHandle].NumEntries - 1 Do Begin
+      PalDR := Integer(Win16_PaletteStack[PalHandle].R[PalI]) - Integer(PalTargetR);
+      PalDG := Integer(Win16_PaletteStack[PalHandle].G[PalI]) - Integer(PalTargetG);
+      PalDB := Integer(Win16_PaletteStack[PalHandle].B[PalI]) - Integer(PalTargetB);
+      PalDist := LongInt(PalDR) * PalDR + LongInt(PalDG) * PalDG + LongInt(PalDB) * PalDB;
+      If PalDist < PalBestDist Then Begin
+       PalBestDist := PalDist;
+       PalBestIdx := PalI;
+      End;
+     End;
+     P.CPU.Regs.AX := Word(PalBestIdx);
+    End Else
+     P.CPU.Regs.AX := $FFFF; { CLR_INVALID }
+    ArgWords := 3;
+   End;
+   372: Begin
+    { ExtFloodFill(hdc,X,Y,crColor,fuFillType):BOOL - ordinal/signature    }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { ExtFloodFill(word s_word s_word long word)", 1+1+1 mots + 1 LONG (2   }
+    { mots) + 1 mot = 6 mots, retour 16 bits AX seul). REEL, VRAI            }
+    { deuxieme mode par rapport a FloodFill/$25 : fuFillType=                }
+    { FLOODFILLBORDER(0, constante REELLE verifiee via wingdi.h) reutilise   }
+    { A L'IDENTIQUE Win16_FloodFillRegion deja etabli par FloodFill/$25 ;    }
+    { fuFillType=FLOODFILLSURFACE(1) utilise la NOUVELLE                     }
+    { Win16_FloodFillSurface ci-dessus (remplit les pixels de MEME            }
+    { couleur que le point de depart, pas jusqu'a une bordure) - la           }
+    { VRAIE difference documentee entre les deux modes. Meme convention       }
+    { couleur (octet bas de crColor) et meme couleur de remplissage fixe      }
+    { (noir=0) que FloodFill/$25. }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    FFHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FFLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EFFFillType := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FFColor := (LongInt(FFHi) Shl 16) Or LongInt(FFLo);
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX1);
+     GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
+     If EFFFillType = 1 Then { FLOODFILLSURFACE }
+      Win16_FloodFillSurface(GdiX1, GdiY1, Byte(FFColor And $FF), 0,
+       Win16_WindowX[Win16_ActiveDCWindow] + 1,
+       Win16_WindowY[Win16_ActiveDCWindow] + 1,
+       Win16_WindowX[Win16_ActiveDCWindow] + Win16_WindowW[Win16_ActiveDCWindow] - 2,
+       Win16_WindowY[Win16_ActiveDCWindow] + Win16_WindowH[Win16_ActiveDCWindow] - 2)
+     Else { FLOODFILLBORDER }
+      Win16_FloodFillRegion(GdiX1, GdiY1, Byte(FFColor And $FF), 0,
+       Win16_WindowX[Win16_ActiveDCWindow] + 1,
+       Win16_WindowY[Win16_ActiveDCWindow] + 1,
+       Win16_WindowX[Win16_ActiveDCWindow] + Win16_WindowW[Win16_ActiveDCWindow] - 2,
+       Win16_WindowY[Win16_ActiveDCWindow] + Win16_WindowH[Win16_ActiveDCWindow] - 2);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   373: Begin
+    { SetSystemPaletteUse(hdc,use):int - ordinal/signature VERIFIES via le }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { SetSystemPaletteUse(word word)", 2 mots, retour 16 bits AX seul).      }
+    { REEL, mono-DC : ce sous-ensemble ne distingue pas les 20 couleurs       }
+    { "statiques" reservees du reste (les 256 entrees DAC sont toutes         }
+    { egalement disponibles, voir la famille palette 360-370) mais stocke     }
+    { REELLEMENT le drapeau demande et renvoie l'ANCIEN, coherent avec le     }
+    { contrat "retourne l'ancienne valeur" deja etabli. }
+    SPUOld := Win16_SystemPaletteUse;
+    Win16_SystemPaletteUse := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := SPUOld;
+    ArgWords := 2;
+   End;
+   374: Begin
+    { GetSystemPaletteUse(hdc):int - ordinal/signature VERIFIES via le VRAI}
+    { source Wine (gdi.exe16.spec : "pascal -ret16                          }
+    { GetSystemPaletteUse(word)", 1 mot, retour 16 bits AX seul). REEL,       }
+    { contrepartie exacte de SetSystemPaletteUse/$373 : renvoie VRAIMENT      }
+    { Win16_SystemPaletteUse. }
+    P.CPU.Regs.AX := Win16_SystemPaletteUse;
+    ArgWords := 1;
+   End;
+   375: Begin
+    { GetSystemPaletteEntries(hdc,iStart,nEntries,lpPe):UINT - ordinal/     }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 GetSystemPaletteEntries(word word word ptr)", 3 mots + 1        }
+    { pointeur LOIN (2 mots) = 5 mots, retour 16 bits AX seul). REEL : lit   }
+    { VRAIMENT les entrees actuelles du VRAI DAC materiel (EmuVideo.DAC,     }
+    { deja etabli - PAS une palette logique separee, la palette SYSTEME     }
+    { EST le DAC dans ce sous-ensemble), reconvertit chaque composante 6     }
+    { bits VGA en 8 bits (Shl 2, l'inverse exact de la conversion faite      }
+    { par GDIRealizePalette/$362) - un VRAI aller-retour DAC->GDI->DAC       }
+    { possible. Flags toujours 0 (aucun drapeau PC_* suivi pour le DAC       }
+    { materiel). Retourne le nombre REEL d'entrees copiees (borne a 256). }
+    GSPEStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GSPECount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GSPESeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GSPEOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Integer(GSPEStart) + Integer(GSPECount) > 256 Then
+     GSPECount := Word(256 - Integer(GSPEStart));
+    If Integer(GSPECount) < 0 Then GSPECount := 0;
+    For GSPEI := 0 To Integer(GSPECount) - 1 Do Begin
+     Emu_WriteByte(P.CPU, GSPESeg, Word(GSPEOfs + GSPEI * 4),
+      Byte(EmuVideo.DAC[(GSPEStart + GSPEI) * 3 + 0] Shl 2));
+     Emu_WriteByte(P.CPU, GSPESeg, Word(GSPEOfs + GSPEI * 4 + 1),
+      Byte(EmuVideo.DAC[(GSPEStart + GSPEI) * 3 + 1] Shl 2));
+     Emu_WriteByte(P.CPU, GSPESeg, Word(GSPEOfs + GSPEI * 4 + 2),
+      Byte(EmuVideo.DAC[(GSPEStart + GSPEI) * 3 + 2] Shl 2));
+     Emu_WriteByte(P.CPU, GSPESeg, Word(GSPEOfs + GSPEI * 4 + 3), 0);
+    End;
+    P.CPU.Regs.AX := GSPECount;
+    ArgWords := 5;
+   End;
+   376: Begin
+    { ResetDC(hdc,lpDevMode):HDC - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 ResetDC(word ptr)", 1    }
+    { mot + 1 pointeur LOIN (2 mots) = 3 mots, retour 16 bits AX seul).      }
+    { Le VRAI ResetDC reconfigure un DC d'IMPRESSION depuis un DEVMODE       }
+    { (papier/orientation) - aucun VRAI peripherique d'impression           }
+    { configurable n'existe dans ce sous-ensemble (mono-DC = l'ecran).       }
+    { lpDevMode accepte mais jamais lu (rien ne le consomme, meme            }
+    { discipline que lpOutput/lpTitle d'OpenJob/$240). Retourne le MEME      }
+    { hdc inchange, le comportement reel documente d'un succes (ResetDC      }
+    { renvoie le hdc si reussi, NULL si echec - ce sous-ensemble ne peut     }
+    { jamais echouer ici). }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    ArgWords := 3;
+   End;
+   377: Begin
+    { StartDoc(hdc,lpdi):int - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 StartDoc(word ptr)", 1   }
+    { mot + 1 pointeur LOIN (2 mots) = 3 mots, retour 16 bits AX seul).      }
+    { REEL EN PARTIE : StartDoc/EndDoc/StartPage/EndPage/AbortDoc (ordinaux }
+    { 377/378/379/380/382 ci-dessous) sont l'API d'impression MODERNE        }
+    { (Win 3.1) qui remplace OpenJob/CloseJob/$240/$243 - ce sous-ensemble   }
+    { partage DELIBEREMENT le MEME etat mono-travail                        }
+    { (Win16_PrintJobOpen, voir [[project_devenv_win16_gdi_ord233_241]]) :   }
+    { une vraie application utilise l'UNE OU L'AUTRE famille, jamais les      }
+    { deux simultanement en pratique, donc partager l'etat est fidele, pas   }
+    { une simplification supplementaire. lpdi (DOCINFO16) accepte mais       }
+    { jamais lu (meme discipline que lpOutput/lpTitle d'OpenJob). Echoue     }
+    { honnetement (SP_ERROR=$FFFF) si un travail est deja ouvert. }
+    If Win16_PrintJobOpen Then
+     P.CPU.Regs.AX := $FFFF { SP_ERROR }
+    Else Begin
+     Win16_PrintJobOpen := True;
+     P.CPU.Regs.AX := 1;
+    End;
+    ArgWords := 3;
+   End;
+   378: Begin
+    { EndDoc(hdc):int - ordinal/signature VERIFIES via le VRAI source Wine }
+    { (gdi.exe16.spec : "pascal -ret16 EndDoc(word)", 1 mot, retour 16      }
+    { bits AX seul). REEL : ferme le MEME travail mono-etat que              }
+    { CloseJob/$243 (voir StartDoc/$377 ci-dessus pour la justification du   }
+    { partage d'etat). }
+    If Win16_PrintJobOpen Then Begin
+     Win16_PrintJobOpen := False;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := $FFFF; { SP_ERROR }
+    ArgWords := 1;
+   End;
+   379, 380: Begin
+    { StartPage(hdc):int (379) / EndPage(hdc):int (380) - ordinaux/         }
+    { signatures VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal}
+    { -ret16 StartPage(word)"/"pascal -ret16 EndPage(word)", 1 mot chacun,  }
+    { retour 16 bits AX seul). REEL EN PARTIE : ce sous-ensemble ne suit     }
+    { aucune vraie notion de "page" separee (comme StartSpoolPage/$246/     }
+    { EndSpoolPage/$247, deja honnetement disclosee comme non-implantee     }
+    { par le VRAI Wine lui-meme, voir                                       }
+    { [[project_devenv_win16_gdi_ord242_254]]), mais VALIDE reellement       }
+    { qu'un document est bien ouvert (Win16_PrintJobOpen) avant de           }
+    { reussir - un vrai controle de sequence, pas un succes inconditionnel   }
+    { invente. }
+    If Win16_PrintJobOpen Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := $FFFF; { SP_ERROR }
+    ArgWords := 1;
+   End;
+   381: Begin
+    { SetAbortProc(hdc,lpfn):int - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 SetAbortProc(word        }
+    { segptr)", 1 mot + 1 pointeur LOIN (2 mots) = 3 mots, retour 16 bits   }
+    { AX seul). REEL : stocke VRAIMENT le pointeur de fonction              }
+    { (Win16_AbortProcSeg/Ofs) - mais ne l'appelle JAMAIS (aucune vraie      }
+    { boucle d'impression ne poll periodiquement ce callback ici, meme       }
+    { limitation honnetement disclosee que l'absence d'AbortProc de          }
+    { QueryAbort/$155, voir [[project_devenv_win16_gdi_ord151_156]] -        }
+    { coherent : QueryAbort retourne FALSE precisement PARCE QU'aucun         }
+    { AbortProc n'est jamais reellement invoque pour demander l'annulation). }
+    Win16_AbortProcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Win16_AbortProcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   382: Begin
+    { AbortDoc(hdc):int - ordinal/signature VERIFIES via le VRAI source    }
+    { Wine (gdi.exe16.spec : "pascal -ret16 AbortDoc(word)", 1 mot, retour }
+    { 16 bits AX seul). REEL : annule le MEME travail mono-etat que          }
+    { EndDoc/$378/CloseJob/$243 (voir StartDoc/$377 pour la justification    }
+    { du partage d'etat) - l'annulation "immediate sans finalisation          }
+    { normale" documentee reellement pour AbortDoc degenere en la MEME       }
+    { operation de fermeture ici puisqu'aucune donnee d'impression reelle    }
+    { n'est de toute facon jamais accumulee (voir WriteSpool/$241). }
+    If Win16_PrintJobOpen Then Begin
+     Win16_PrintJobOpen := False;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := $FFFF; { SP_ERROR }
+    ArgWords := 1;
+   End;
+   400: Begin
+    { FastWindowFrame(hdc,lprc,width,height,rop):BOOL - ordinal/signature  }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { FastWindowFrame(word ptr s_word s_word long)", 1 mot + 1 pointeur      }
+    { LOIN (2 mots) + 2 mots + 1 LONG (2 mots) = 7 mots, retour 16 bits AX  }
+    { seul). REEL : le VRAI source Wine (gdi.c, recupere via WebFetch)        }
+    { dessine 4 bandes rectangulaires (haut/gauche/bas/droite, chacune de     }
+    { largeur/hauteur donnee) avec GRAY_BRUSH via 4 PatBlt - reproduit ici    }
+    { la MEME geometrie EXACTE des 4 bandes (memes formules de decoupe        }
+    { que le vrai code source) avec une VRAIE boucle de remplissage           }
+    { (Emu_VidSetPixel, meme primitive que FillRect/$81), couleur GRIS         }
+    { fixe (7, deja etabli comme gris clair par Emu_VidInitDefaultDAC)         }
+    { plutot que noir (le pinceau GRAY_BRUSH reel n'a pas d'equivalent         }
+    { fixe noir ailleurs dans ce sous-ensemble). rop est accepte mais          }
+    { jamais consomme (aucun mode de trace ROP2 general implante pour le      }
+    { remplissage de rectangles, meme limitation que PatBlt/FillRect). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    FWFWidth := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    FWFHeight := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
+     FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
+     FRRight := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRRight);
+     FRBottom := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRBottom);
+     { Bande du haut : (left,top)-(right-width,top+height) }
+     For FWFY := FRTop To FRTop + FWFHeight - 1 Do
+      For FWFX := FRLeft To FRRight - FWFWidth - 1 Do Emu_VidSetPixel(FWFX, FWFY, 7);
+     { Bande de gauche : (left,top+height)-(left+width,bottom) }
+     For FWFY := FRTop + FWFHeight To FRBottom - 1 Do
+      For FWFX := FRLeft To FRLeft + FWFWidth - 1 Do Emu_VidSetPixel(FWFX, FWFY, 7);
+     { Bande du bas : (left+width,bottom-height)-(right,bottom) }
+     For FWFY := FRBottom - FWFHeight To FRBottom - 1 Do
+      For FWFX := FRLeft + FWFWidth To FRRight - 1 Do Emu_VidSetPixel(FWFX, FWFY, 7);
+     { Bande de droite : (right-width,top)-(right,bottom-height) }
+     For FWFY := FRTop To FRBottom - FWFHeight - 1 Do
+      For FWFX := FRRight - FWFWidth To FRRight - 1 Do Emu_VidSetPixel(FWFX, FWFY, 7);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 7;
+   End;
+   401: Begin
+    { GDIMoveBitmap(hbitmap):BOOL - ordinal ABSENT/COMMENTE du VRAI source }
+    { Wine officiel (gdi.exe16.spec le marque "401 stub GDIMOVEBITMAP" -    }
+    { un stub SANS signature). Signature VERIFIEE via une SOURCE             }
+    { SECONDAIRE differente mais reelle et publique (projet WineVDM) :       }
+    { "pascal -ret16 GdiMoveBitmap(word)", 1 mot, retour 16 bits AX seul.    }
+    { Fonction interne historique qui "epingle"/"depingle" (GlobalWire/       }
+    { GlobalUnWire, description fournie par l'utilisateur) la memoire         }
+    { globale mobile d'un bitmap avant/apres un acces direct - ce              }
+    { sous-ensemble utilise un allocateur "bump" qui ne deplace JAMAIS         }
+    { rien en memoire (voir ShrinkGDIHeap/$354, [[project_devenv_win16_gdi_ord352_370]]) -}
+    { l'operation d'epinglage n'a donc litteralement rien a faire ici, et      }
+    { reussit honnetement (TRUE) sans effet, le comportement correct           }
+    { d'un "wire" sur une allocation qui ne bougera de toute facon jamais. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   403: Begin
+    { GdiInit2(h1,h2):HANDLE - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 GdiInit2(word word)", 2  }
+    { mots, retour 16 bits AX seul). REEL SANS AUCUNE simplification : le    }
+    { VRAI source Wine (gdi.c, recupere via WebFetch) EST LUI-MEME un        }
+    { stub ("FIXME ...,stub") mais son algorithme de repli EST reel et        }
+    { simple - "if(h2==0xffff) return 0xffff; return h1;" - reproduit ici    }
+    { A L'IDENTIQUE, aucune invention necessaire. }
+    GI2H1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GI2H2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If GI2H2 = $FFFF Then P.CPU.Regs.AX := $FFFF
+    Else P.CPU.Regs.AX := GI2H1;
+    ArgWords := 2;
+   End;
+   405: Begin
+    { FinalGdiInit(hPattern):void - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 FinalGdiInit(word)", 1   }
+    { mot, retour 16 bits AX seul meme si le VRAI prototype C est void).     }
+    { REEL SANS AUCUNE simplification : le VRAI corps de la fonction Wine    }
+    { (gdi.c, recupere via WebFetch) est LITTERALEMENT un corps vide -        }
+    { reproduit ici a l'identique, consomme juste l'argument sans rien        }
+    { faire d'autre. }
+    ArgWords := 1;
+   End;
+   407: Begin
+    { CreateUserBitmap(width,height,planes,bpp,lpBits):HBITMAP - ordinal/  }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 CreateUserBitmap(word word word word ptr)", 4 mots + 1          }
+    { pointeur LOIN (2 mots) = 6 mots, retour 16 bits AX seul). Le VRAI      }
+    { source Wine (gdi.c, recupere via WebFetch) est LITTERALEMENT un        }
+    { simple alias de CreateBitmap16 ("return CreateBitmap16(...)") - ce      }
+    { sous-ensemble reutilise donc A L'IDENTIQUE la MEME simplification       }
+    { deja etablie pour CreateBitmap/$48 (handle synthetique non-nul 1,       }
+    { aucun VRAI bitmap stocke) plutot que d'inventer un comportement          }
+    { distinct pour ce simple alias. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   409: Begin
+    { CreateUserDiscardableBitmap(dummy,width,height):HBITMAP - ordinal/    }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 CreateUserDiscardableBitmap(word word word)", 3 mots, retour   }
+    { 16 bits AX seul). Le VRAI source Wine (gdi.c, recupere via WebFetch)   }
+    { cree un vrai bitmap compatible sur un DC ecran temporaire - ce          }
+    { sous-ensemble reutilise la MEME simplification deja etablie pour        }
+    { CreateCompatibleBitmap/$51/CreateDiscardableBitmap/$156 (handle         }
+    { synthetique non-nul 1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   410: Begin
+    { IsValidMetaFile(hmf):BOOL - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 IsValidMetaFile(word)", }
+    { 1 mot, retour 16 bits AX seul). REEL pour le CONTRAT : le VRAI          }
+    { source Wine (metafile.c, recupere via WebFetch) verifie un VRAI         }
+    { en-tete METAHEADER (type/taille/version) - ce sous-ensemble n'a          }
+    { qu'UNE SEULE convention de metafichier synthetique valide (handle=1,    }
+    { etablie par CreateMetaFile/$125 et consorts, voir                       }
+    { [[project_devenv_win16_gdi_ord125_129]]) : reproduit fidelement          }
+    { cette VALIDATION reelle (TRUE seulement pour hmf=1, FALSE pour tout      }
+    { autre handle) plutot que de renvoyer TRUE inconditionnellement. }
+    PalHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If PalHandle = 1 Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   411: Begin
+    { GetCurLogFont(hdc):HFONT - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 GetCurLogFont(word)", 1  }
+    { mot, retour 16 bits AX seul). Le VRAI source Wine (gdi.c, recupere     }
+    { via WebFetch) renvoie le VRAI objet police actuellement selectionne    }
+    { (GetCurrentObject OBJ_FONT) - ce sous-ensemble n'a qu'UNE SEULE          }
+    { police reelle (la police bitmap 5x7 MAISON, toujours "selectionnee"     }
+    { puisqu'il n'y en a jamais d'autre a choisir, voir EnumFonts/$70)        }
+    { - renvoie donc honnetement le MEME handle synthetique non-nul (1)       }
+    { que tous les autres handles GDI "objet" de ce sous-ensemble. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);

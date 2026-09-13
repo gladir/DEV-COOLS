@@ -8060,7 +8060,8 @@ End;
 { ============================================================================ }
 
 Procedure ShowHelp;Begin
- WriteLn('AS68 - Clone de l''assembleur Digital Research 68000');
+ WriteLn('AS68 - Cette commande permet de lancer un clone de ',
+         'l''assembleur Digital Research 68000.');
  WriteLn('Sortie objet relogeable DRI compatible Atari ST / CP/M-68K');
  WriteLn;
  WriteLn('Syntaxe : AS68 [options] fichier.S');
