@@ -7921,8 +7921,27 @@ Var
   Count: Integer;
   Tags: Array[0..63] Of SmallInt;
   Keys: Array[0..63] Of SmallInt;
+  { DeletePQ/$235 (2026-09-13, demande explicite) : marque un handle       }
+  { comme LIBERE - empeche toute reutilisation via un handle perime         }
+  { (use-after-free), PLUS de protection que le vrai Wine dont             }
+  { DeletePQ16 se contente d'un GlobalFree16 brut sans jamais invalider     }
+  { les autres ordinaux PQ contre un hPQ perime. }
+  Deleted: Boolean;
  End;
  Win16_PQStackTop: Integer;
+ { GDI.EXE OpenJob/WriteSpool (2026-09-13, demande explicite, ordinaux      }
+ { 240/241) - le VRAI source Wine (dlls/gdi.exe16/printdrv.c, recupere      }
+ { via WebFetch) demarre un VRAI travail d'impression hote               }
+ { (StartDocA/ExtEscape) mais avec sa PROPRE limitation disclosee : un      }
+ { SEUL travail global a la fois (`gPrintJobsTable[0]`, deuxieme            }
+ { OpenJob echoue tant qu'aucun CloseJob n'est appele). Ce sous-ensemble    }
+ { reprend cette MEME limitation "un seul travail a la fois" (coherente     }
+ { avec le modele mono-fenetre/mono-DC deja etabli partout ailleurs) mais   }
+ { SANS jamais toucher a une vraie imprimante hote (aucun `StartDocA`/      }
+ { `ExtEscape` reel - demarrer un vrai travail d'impression serait un        }
+ { effet de bord risque sur le systeme de l'utilisateur, meme discipline    }
+ { prudente que CreateMetaFile/$125 qui n'ecrit jamais de vrai fichier).    }
+ Win16_PrintJobOpen: Boolean;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91485,6 +91504,7 @@ Begin
  Win16_BoundsEmpty := True;
  Win16_BoundsX1 := 0; Win16_BoundsY1 := 0; Win16_BoundsX2 := 0; Win16_BoundsY2 := 0;
  Win16_PQStackTop := 0;
+ Win16_PrintJobOpen := False;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -93161,6 +93181,11 @@ Var
  { demande explicite, ordinaux 196/230/231/232). }
  PQHandle, PQSize: Integer;
  PQI, PQMinIdx: Integer;
+ { GDI.EXE InsertPQ/SizePQ/DeletePQ/WriteSpool (2026-09-13, demande         }
+ { explicite, ordinaux 233/234/235/241). }
+ PQTag, PQKey: Integer;
+ PQOldCap, PQDelta: Integer;
+ WSCch: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -97355,6 +97380,7 @@ Begin
      End Else
       Win16_PQStack[PQHandle].Cap := 64;
      Win16_PQStack[PQHandle].Count := 0;
+     Win16_PQStack[PQHandle].Deleted := False;
      P.CPU.Regs.AX := Word(PQHandle);
     End Else
      P.CPU.Regs.AX := $FFFF;
@@ -97370,17 +97396,13 @@ Begin
     { PLUS LOIN et cherche REELLEMENT l'entree de cle (priorite) minimale    }
     { dans la VRAIE file par-handle installee par CreatePQ/$230 : MinPQ la   }
     { laisse en place (consultation), ExtractPQ la retire (tri par           }
-    { insertion lineaire, coherent avec InsertPQ16 tel que verifie dans le  }
-    { VRAI printdrv.c - liste chainee de paires (tag,cle), meme si Wine      }
-    { l'implante avec un bogue reel disclose : une VARIABLE GLOBALE          }
-    { PARTAGEE entre TOUS les handles au lieu du hPQ passe, "stub???" de     }
-    { l'aveu meme des auteurs de Wine - ce sous-ensemble ne reproduit PAS    }
-    { ce bogue, chaque handle a sa PROPRE file). InsertPQ/$233 n'a PAS ete   }
-    { demande dans ce lot : aucune entree ne peut donc encore exister -      }
-    { renvoie honnetement -1 ("file vide"), le comportement REEL et          }
-    { correct d'une file authentiquement vide, pas une simplification. }
+    { insertion lineaire, coherent avec InsertPQ/$233 ci-dessous qui         }
+    { alimente desormais reellement cette file). Handle invalide, jamais     }
+    { cree, ou LIBERE par DeletePQ/$235 (voir Deleted ci-dessus) -> -1        }
+    { honnete, meme sentinelle que CreatePQ. }
     PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
     If (PQHandle >= 1) And (PQHandle <= Win16_PQStackTop) And
+     (Not Win16_PQStack[PQHandle].Deleted) And
      (Win16_PQStack[PQHandle].Count > 0) Then Begin
      PQMinIdx := 0;
      For PQI := 1 To Win16_PQStack[PQHandle].Count - 1 Do
@@ -97397,6 +97419,141 @@ Begin
     End Else
      P.CPU.Regs.AX := $FFFF;
     ArgWords := 1;
+   End;
+   233: Begin
+    { InsertPQ(hPQ,tag,key):BOOL - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 InsertPQ(word word       }
+    { word)", 3 mots, retour 16 bits AX seul). Le VRAI source Wine           }
+    { (printdrv.c, struct hpq avec next/tag/key, recupere via WebFetch) EST}
+    { reellement implante mais avec un bogue disclose par ses PROPRES        }
+    { auteurs (`FIXME "stub???"`) : il empile (tag,cle) dans une VARIABLE    }
+    { GLOBALE PARTAGEE `hpqueue` au lieu du hPQ recu, et renvoie TOUJOURS   }
+    { TRUE sans jamais verifier de limite de capacite (liste chainee        }
+    { dynamique). Ce sous-ensemble alimente REELLEMENT la file PAR-HANDLE   }
+    { installee par CreatePQ/$230 (voir                                     }
+    { [[project_devenv_win16_gdi_ord195_232]]) - PAS le bogue de partage     }
+    { global de Wine - et verifie REELLEMENT la capacite fixe (64 entrees   }
+    { max, ou moins si nSize l'a bornee a la creation) puisque ce             }
+    { sous-ensemble utilise un tableau fixe plutot qu'une liste chainee      }
+    { dynamique : file pleine ou handle invalide/libere -> FALSE(0)          }
+    { honnete, plutot que le TRUE inconditionnel de Wine (qui ne peut de     }
+    { toute facon jamais echouer avec sa liste chainee sans limite). }
+    PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    PQTag := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    PQKey := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If (PQHandle >= 1) And (PQHandle <= Win16_PQStackTop) And
+     (Not Win16_PQStack[PQHandle].Deleted) And
+     (Win16_PQStack[PQHandle].Count < Win16_PQStack[PQHandle].Cap) Then Begin
+     Win16_PQStack[PQHandle].Tags[Win16_PQStack[PQHandle].Count] := PQTag;
+     Win16_PQStack[PQHandle].Keys[Win16_PQStack[PQHandle].Count] := PQKey;
+     Inc(Win16_PQStack[PQHandle].Count);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   234: Begin
+    { SizePQ(hPQ,sizechange):int - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 SizePQ(word word)", 2    }
+    { mots, retour 16 bits AX seul). Le VRAI source Wine (printdrv.c,       }
+    { recupere via WebFetch) est un stub honnete qui renvoie TOUJOURS -1   }
+    { ("FIXME stub"). Ce sous-ensemble va PLUS LOIN, coherent avec           }
+    { CreatePQ/InsertPQ ci-dessus : redimensionne REELLEMENT la capacite     }
+    { de la file PAR-HANDLE (bornee a [Count..64], ne peut jamais            }
+    { descendre sous le nombre d'entrees deja presentes ni depasser la       }
+    { limite fixe du tableau), et retourne l'ANCIENNE capacite - coherent    }
+    { avec le contrat "retourne l'ancienne valeur" deja etabli par           }
+    { SetBrushOrg/$148/SetHookFlags/$192. Handle invalide/libere -> -1        }
+    { honnete, meme sentinelle SP_ERROR que le stub de Wine. }
+    PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    PQDelta := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If (PQHandle >= 1) And (PQHandle <= Win16_PQStackTop) And
+     (Not Win16_PQStack[PQHandle].Deleted) Then Begin
+     PQOldCap := Win16_PQStack[PQHandle].Cap;
+     Win16_PQStack[PQHandle].Cap := PQOldCap + PQDelta;
+     If Win16_PQStack[PQHandle].Cap > 64 Then Win16_PQStack[PQHandle].Cap := 64;
+     If Win16_PQStack[PQHandle].Cap < Win16_PQStack[PQHandle].Count Then
+      Win16_PQStack[PQHandle].Cap := Win16_PQStack[PQHandle].Count;
+     P.CPU.Regs.AX := Word(PQOldCap);
+    End Else
+     P.CPU.Regs.AX := $FFFF;
+    ArgWords := 2;
+   End;
+   235: Begin
+    { DeletePQ(hPQ):int - ordinal/signature VERIFIES via le VRAI source    }
+    { Wine (gdi.exe16.spec : "pascal -ret16 DeletePQ(word)", 1 mot, retour }
+    { 16 bits AX seul). Le VRAI source Wine (printdrv.c, recupere via       }
+    { WebFetch) est un simple `return GlobalFree16(hPQ)` - convention        }
+    { REELLE documentee de GlobalFree : renvoie 0 (NULL) en cas de           }
+    { SUCCES, ou le handle lui-meme en cas d'ECHEC. Ce sous-ensemble         }
+    { reproduit fidelement cette convention pour la VRAIE file PAR-HANDLE   }
+    { : marque le handle LIBERE (Deleted:=True, voir le champ ci-dessus)     }
+    { et renvoie 0 (succes) - un handle deja libere ou jamais cree           }
+    { echoue en renvoyant le handle lui-meme (echec), exactement le          }
+    { comportement documente de GlobalFree. PLUS de protection que le        }
+    { vrai Wine : une fois libere, le handle est REELLEMENT invalide pour    }
+    { tous les autres ordinaux PQ (MinPQ/ExtractPQ/InsertPQ/SizePQ           }
+    { verifient tous `Not Deleted`) - contrairement a Wine dont              }
+    { `GlobalFree16(1)` (le handle synthetique fixe de sa branche active)    }
+    { n'a de toute facon aucun lien reel avec un veritable objet GDI.       }
+    PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If (PQHandle >= 1) And (PQHandle <= Win16_PQStackTop) And
+     (Not Win16_PQStack[PQHandle].Deleted) Then Begin
+     Win16_PQStack[PQHandle].Deleted := True;
+     P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := Word(PQHandle);
+    ArgWords := 1;
+   End;
+   240: Begin
+    { OpenJob(lpOutput,lpTitle,hDC):HPJOB - ordinal/signature VERIFIES via }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16 OpenJob(str str }
+    { word)", 2 pointeurs LOIN (2x2=4 mots) + 1 mot = 5 mots, retour 16     }
+    { bits AX seul). Le VRAI source Wine (printdrv.c, recupere via           }
+    { WebFetch) demarre un VRAI travail d'impression HOTE (StartDocA) mais  }
+    { avec sa PROPRE limitation disclosee : un SEUL travail global a la      }
+    { fois (`gPrintJobsTable[0]`, un 2e OpenJob echoue tant qu'aucun          }
+    { CloseJob n'est appele). Ce sous-ensemble reprend cette MEME             }
+    { limitation "un seul travail a la fois" (Win16_PrintJobOpen, coherent  }
+    { avec le modele mono-fenetre/mono-DC deja etabli partout ailleurs)      }
+    { mais SANS jamais toucher a une vraie imprimante hote (aucun            }
+    { `StartDocA`/`ExtEscape` reel - demarrer un vrai travail                }
+    { d'impression serait un effet de bord risque sur le systeme de          }
+    { l'utilisateur, meme prudence que CreateMetaFile/$125 qui n'ecrit        }
+    { jamais de vrai fichier). lpOutput/lpTitle sont acceptes mais jamais    }
+    { lus (rien ne les consomme dans ce sous-ensemble, memes discipline       }
+    { que l'octet de poids fort inutilise de GetNearestColor/$154). Retour  }
+    { SP_ERROR=$FFFF (constante REELLE verifiee via wingdi.h) si un           }
+    { travail est deja ouvert, sinon handle synthetique=1. }
+    If Win16_PrintJobOpen Then
+     P.CPU.Regs.AX := $FFFF { SP_ERROR }
+    Else Begin
+     Win16_PrintJobOpen := True;
+     P.CPU.Regs.AX := 1;
+    End;
+    ArgWords := 5;
+   End;
+   241: Begin
+    { WriteSpool(hJob,lpData,cch):int - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16 WriteSpool(word     }
+    { ptr word)", 1 mot + 1 pointeur LOIN (2 mots) + 1 mot = 4 mots,         }
+    { retour 16 bits AX seul). REEL EN PARTIE : valide le handle de           }
+    { travail (doit correspondre au travail synthetique=1 actuellement       }
+    { ouvert par OpenJob/$240 ci-dessus) et renvoie cch (nombre d'octets     }
+    { "ecrits") en cas de succes - MEME contrat de succes/echec que le       }
+    { VRAI WriteSpool16 (qui renvoie cch ou SP_ERROR). Limite honnetement    }
+    { disclosee : les octets ne sont JAMAIS reellement achemines vers une    }
+    { imprimante hote (le VRAI Wine les transmet via ExtEscape/PASSTHROUGH  }
+    { a un vrai pilote d'impression - hors de portee ici, aucun sous-         }
+    { systeme d'impression reel n'existe, meme prudence que OpenJob/$240     }
+    { qui ne demarre non plus aucun vrai travail hote). }
+    WSCch := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    If Win16_PrintJobOpen And (PQHandle = 1) And (WSCch > 0) Then
+     P.CPU.Regs.AX := Word(WSCch)
+    Else
+     P.CPU.Regs.AX := $FFFF; { SP_ERROR }
+    ArgWords := 4;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
