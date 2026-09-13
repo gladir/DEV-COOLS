@@ -2405,6 +2405,8 @@ Type
   TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
   BashBatch       : TString;   { /BASH:fichier.sh }
   GulamBatch      : TString;   { /GULAM:fichier.gsh }
+  Os9Batch        : TString;   { /OS9:fichier - shell OS-9 (CoCo 3) }
+  CosBatch        : TString;   { /COS:fichier - shell COS (Cray-1) }
   RexxFile        : TString;   { /REXX:fichier.rex }
   AwkFile         : TString;   { /AWK:fichier.awk }
   PerlFile        : TString;   { /PERL:fichier.pl }
@@ -10855,6 +10857,8 @@ Begin
  Opts.TerminalDosBatch := '';
  Opts.TerminalOS2Batch := '';
  Opts.BashBatch        := '';
+ Opts.Os9Batch         := '';
+ Opts.CosBatch         := '';
  Opts.RexxFile         := '';
  Opts.AwkFile          := '';
  Opts.PerlFile         := '';
@@ -10965,6 +10969,26 @@ Begin
     Opts.GulamBatch := Copy(Arg, 8, Length(Arg) - 7);
    If (Opts.GulamBatch = '') Or (Not FileExists(Opts.GulamBatch)) Then
     FatalError('Fichier script introuvable: ' + Opts.GulamBatch);
+  End Else
+    { /OS9:fichier - meme principe que /BASH:/GULAM: ci-dessus, mais ouvre  }
+    { le shell "OS-9 (CoCo 3)" (SK_OS9) - demande explicite de              }
+    { l'utilisateur, 2026-09-13. }
+    If (Length(Arg) >= 5) And
+      ((Copy(Arg, 1, 5) = '/OS9:') Or (Copy(Arg, 1, 5) = '/os9:') Or
+      (Copy(Arg, 1, 5) = '-OS9:') Or (Copy(Arg, 1, 5) = '-os9:')) Then Begin
+    Opts.Os9Batch := Copy(Arg, 6, Length(Arg) - 5);
+   If (Opts.Os9Batch = '') Or (Not FileExists(Opts.Os9Batch)) Then
+    FatalError('Fichier script introuvable: ' + Opts.Os9Batch);
+  End Else
+    { /COS:fichier - meme principe, mais ouvre le shell "COS (Cray-1)"      }
+    { (SK_COS) - demande explicite de l'utilisateur, 2026-09-13 (meme       }
+    { chantier que l'ajout de la commande CAL dans ce shell). }
+    If (Length(Arg) >= 5) And
+      ((Copy(Arg, 1, 5) = '/COS:') Or (Copy(Arg, 1, 5) = '/cos:') Or
+      (Copy(Arg, 1, 5) = '-COS:') Or (Copy(Arg, 1, 5) = '-cos:')) Then Begin
+    Opts.CosBatch := Copy(Arg, 6, Length(Arg) - 5);
+   If (Opts.CosBatch = '') Or (Not FileExists(Opts.CosBatch)) Then
+    FatalError('Fichier script introuvable: ' + Opts.CosBatch);
   End Else
     If (Length(Arg) >= 6) And
       ((Copy(Arg, 1, 6) = '/REXX:') Or (Copy(Arg, 1, 6) = '/rexx:') Or
@@ -60654,6 +60678,606 @@ Begin
  End;
  CleanupTempFile(LINK_TEMP_OUTPUT);
 End;
+
+{ ============================================================
+  CAL (Terminal, mode COS (Cray-1) - SK_COS) - 2026-09-13, demande
+  explicite de l'utilisateur : "ajoute la commande CAL dans le mode
+  COS (Cray) du Terminal / Je m'attends a ce que tu integre
+  integralement mon code du compilateur assembleur CAL.PAS dans
+  DEVENV.PAS". Meme technique exacte que MASM/LINK ci-dessus (voir
+  [[project_devenv_masm]]/[[project_devenv_link]]) : le corps ENTIER de
+  C:\SOURCE\GITHUB\DEV-COOLS\CAL.PAS (assembleur Cray-1 reel, sous-
+  ensemble autonome, 462 lignes) est imbrique CI-DESSOUS TEL QUEL - zero
+  identificateur renomme (Upper/Trim/Token/Error/Find/Expr/Emit/Machine/
+  etc. restent identiques a l'original ; l'imbrication dans une seule
+  procedure suffit a les rendre invisibles/sans collision avec le reste
+  de ce fichier de ~150000 lignes, meme argument que MASM/LINK).
+
+  3 adaptations reelles (jeu de code bien plus petit que LINK, donc
+  moins d'adaptations necessaires) :
+   1. ParamStr/ParamCount (boucle d'arguments du corps principal) :
+      memes fonctions locales masquantes que MASM/LINK
+      (CalTokenizeArgs), alimentees par RawArgs (la partie de la ligne
+      de commande suivant "CAL").
+   2. Halt (13 usages dans CAL.PAS) : TOUS situes directement dans le
+      bloc principal BEGIN...END. d'origine, AUCUN a l'interieur d'une
+      procedure imbriquee (Error/Find/Expr/Emit/Machine/ParseLine/Help
+      n'appellent jamais Halt) - contrairement a LINK.PAS (28 Halt
+      repartis sur ~14 procedures, ayant necessite un drapeau LinkAbort
+      propage), ici un simple Exit a chaque site suffit puisque ce bloc
+      principal est isole dans sa propre procedure imbriquee CalMain,
+      appelee par le wrapper ci-dessous.
+   3. Writeln (tous usages, aucun site individuel modifie) : meme
+      technique que MASM/LINK - Output re-Assign vers un fichier
+      temporaire reel avant l'appel a CalMain, relu et republie via
+      TermAddLine apres coup. Le fichier de listing (option -l, un vrai
+      fichier texte via la variable Listing, distincte de Output) reste
+      ecrit tel quel sur le disque hote - c'est une sortie fichier
+      voulue par l'utilisateur (option explicite), pas un message
+      console a republier.
+  Le commutateur d'E/S non verifiee de tete de CAL.PAS (ligne 7,
+  s'appliquant a tout le programme original) est reproduit ici en
+  encadrant CalMain (Reset/Rewrite/BlockWrite/Close de CAL.PAS ne sont
+  PAS individuellement entoures d'un tel commutateur local dans le code
+  original - ils dependent de ce commutateur global pour convertir un
+  fichier source/sortie/listing absent en IOResult verifiable plutot
+  qu'un Runtime error 2 fatal qui plantarait DEVENV.exe).
+  ============================================================ }
+
+{$I-}
+{ Reproduit ci-dessus le commutateur d'E/S non verifiee de tete de     }
+{ CAL.PAS original - encadre TOUTE cette procedure (voir le            }
+{ commentaire precedent), reactive juste apres son End; final.         }
+Procedure TermCmd_Cal(Var TP: TTerminalPanel; RawArgs: String);
+
+Const
+ CAL_TEMP_OUTPUT = '_caltmp.out';
+ CAL_MAX_ARGS    = 32;
+
+Var
+ CalArgs   : Array[1..CAL_MAX_ARGS] Of String;
+ CalArgCnt : Integer;
+ CalDumpF    : Text;
+ CalDumpLine : String;
+
+Procedure CalTokenizeArgs(Const S: String);
+Var
+ I: Integer;
+ Cur: String;
+Begin
+ CalArgCnt := 0;
+ Cur := '';
+ For I := 1 To Length(S) Do Begin
+  If (S[I] = ' ') Or (S[I] = #9) Then Begin
+   If Cur <> '' Then Begin
+    If CalArgCnt < CAL_MAX_ARGS Then Begin
+     Inc(CalArgCnt);
+     CalArgs[CalArgCnt] := Cur;
+    End;
+    Cur := '';
+   End;
+  End Else
+   Cur := Cur + S[I];
+ End;
+ If Cur <> '' Then
+  If CalArgCnt < CAL_MAX_ARGS Then Begin
+   Inc(CalArgCnt);
+   CalArgs[CalArgCnt] := Cur;
+  End;
+End;
+
+{ Masquent volontairement ParamCount/ParamStr du RTL pour toute la       }
+{ portee imbriquee ci-dessous (meme motif que TermCmd_Masm/TermCmd_Link). }
+Function ParamCount: Integer;
+Begin
+ ParamCount := CalArgCnt;
+End;
+
+Function ParamStr(Idx: Integer): String;
+Begin
+ If (Idx >= 1) And (Idx <= CalArgCnt) Then ParamStr := CalArgs[Idx]
+ Else ParamStr := '';
+End;
+
+{ ============================================================
+  A partir d'ici : corps INTEGRAL de CAL.PAS (Const/Type/Var/
+  fonctions/procedures, puis son BEGIN...END. original devenu le corps
+  de CalMain ci-dessous), imbrique tel quel.
+  ============================================================ }
+
+Const
+ MaxSymbols=1024;
+ MaxBytes=60000;
+
+Type
+ TSymbol=Record Name:String[32];
+ Value:LongInt
+End;
+TCode=Array[0..MaxBytes-1] of Byte;
+
+Var
+ Symbols:Array[1..MaxSymbols] of TSymbol;
+ Code:^TCode;
+ Count,Pass,LineNo,Errors,Radix:Integer;
+ PC,Size:LongInt;
+ Src,Dest,ListName,Raw:String;
+ InputFile,Listing:Text;
+ OutputFile:File;
+ Finished,Known,ListOpen:Boolean;
+
+Function Upper(S:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S) do S[I]:=UpCase(S[I]); Upper:=S
+End;
+
+Function Trim(S:String):String;Begin
+ While (Length(S)>0) and (S[1]<=' ') do Delete(S,1,1);
+ While (Length(S)>0) and (S[Length(S)]<=' ') do Delete(S,Length(S),1);
+ Trim:=S
+End;
+
+Function Token(Var S:String):String;
+Var
+ I:Integer;
+Begin
+ S:=Trim(S); I:=1;
+ While (I<=Length(S)) and (S[I]>' ') do Inc(I);
+ Token:=Copy(S,1,I-1); Delete(S,1,I); S:=Trim(S)
+End;
+
+Procedure Error(S:String);Begin
+ WriteLn(Src,'(',LineNo,'): erreur: ',S); Inc(Errors)
+End;
+
+Function Find(S:String):Integer;
+Var
+ I:Integer;
+Begin
+ Find:=0;
+ For I:=1 to Count do If Symbols[I].Name=S Then Begin
+  Find:=I; Exit
+ End
+End;
+
+Function ValidName(S:String):Boolean;
+Var
+ I:Integer;
+Begin
+ ValidName:=False;
+ If (Length(S)=0) or (Length(S)>32) Then Exit;
+ If not (S[1] in ['A'..'Z','_','$']) Then Exit;
+ For I:=2 to Length(S) do    If not (S[I] in ['A'..'Z','0'..'9','_','$']) Then Exit;
+ ValidName:=True
+End;
+
+Procedure Define(S:String; V:LongInt);
+Var
+ I:Integer;
+Begin
+ If not ValidName(S) Then Begin
+  Error('etiquette invalide: '+S); Exit
+ End;
+ I:=Find(S);
+ If Pass=1 Then Begin
+  If I<>0 Then Error('symbole duplique: '+S)
+  Else If Count=MaxSymbols Then Error('table des symboles pleine')
+  Else
+  Begin
+   Inc(Count); Symbols[Count].Name:=S; Symbols[Count].Value:=V
+  End
+ End Else If I<>0 Then    If Symbols[I].Value<>V Then Error('valeur instable: '+S)
+End;
+{ Expressions signees, termes nombres/symboles/*, operateurs + et -.
+  Calcul en real pour detecter les debordements avant conversion LongInt. }
+
+Function Expr(S:String):LongInt;
+Var
+ P,Q,B,D,I,Sign:Integer;
+ T:String;
+ N,Total:Real;
+Begin
+ Expr:=0; S:=Trim(S); P:=1; Total:=0; Known:=True;
+ If S='' Then Begin
+  Error('expression manquante'); Exit
+ End;
+ While P<=Length(S) do Begin
+  Sign:=1;
+  If S[P]='-' Then Begin
+   Sign:=-1; Inc(P)
+  End
+  Else If S[P]='+' Then Inc(P);
+  Q:=P;
+  While (P<=Length(S)) and not (S[P] in ['+','-']) do Inc(P);
+  T:=Trim(Copy(S,Q,P-Q)); N:=0;
+  If T='' Then Begin
+   Error('expression invalide'); Exit
+  End;
+  If T='*' Then N:=PC
+  Else If T[1] in ['0'..'9'] Then Begin
+   B:=Radix; I:=1;
+   If Copy(T,1,2)='0X' Then Begin
+    B:=16; I:=3
+   End
+   Else If Copy(T,1,2)='0O' Then Begin
+    B:=8; I:=3
+   End
+   Else If Copy(T,1,2)='0D' Then Begin
+    B:=10; I:=3
+   End;
+   If I>Length(T) Then Begin
+    Error('nombre vide'); Exit
+   End;
+   While I<=Length(T) do Begin
+    D:=Ord(T[I])-Ord('0');
+    If T[I] in ['A'..'F'] Then D:=Ord(T[I])-Ord('A')+10;
+    If (D<0) or (D>=B) Then Begin
+     Error('chiffre invalide: '+T); Exit
+    End;
+    N:=N*B+D;
+    If N>2147483648.0 Then Begin
+     Error('nombre hors limites'); Exit
+    End;
+    Inc(I)
+   End
+  End Else
+  Begin
+   I:=Find(T);
+   If I=0 Then Begin
+    Known:=False;
+    If Pass=2 Then Error('symbole inconnu: '+T)
+   End Else N:=Symbols[I].Value
+  End;
+  Total:=Total+Sign*N;
+  If (Total>2147483647.0) or (Total< -2147483648.0) Then Begin
+   Error('expression hors limites'); Exit
+  End
+ End;
+ Expr:=Trunc(Total)
+End;
+
+Procedure Emit(V:LongInt);Begin
+ If (PC<0) or (PC>=MaxBytes div 2) Then Begin
+  Error('image trop grande (60000 octets)'); Exit
+ End;
+ If Pass=2 Then Begin
+  Code^[PC*2]:=(V shr 8) and 255; Code^[PC*2+1]:=V and 255
+ End;
+ Inc(PC); If PC*2>Size Then Size:=PC*2
+End;
+
+Procedure Ins(Op,I,J,K:Integer);Begin
+ Emit(LongInt(Op)*512+I*64+J*8+K)
+End;
+
+Function Reg(S:String; C:Char):Integer;Begin
+ Reg:=-1;
+ If Length(S)=2 Then    If (S[1]=C) and (S[2] in ['0'..'7']) Then Reg:=Ord(S[2])-48
+End;
+
+Procedure LongIns(Op,I:Integer; S:String; Limit:LongInt);
+Var
+ V:LongInt;
+Begin
+ V:=Expr(S);
+ If (V<0) and ((Op=16) or (Op=32)) Then Begin
+  Inc(Op); V:=-(V+1)
+ End;
+ If (V<0) or (V>Limit) Then Error('operande hors limites');
+ Emit(LongInt(Op)*512+I*64+(V shr 16)); Emit(V)
+End;
+
+Procedure Machine(R,O:String);
+Var
+ I,J,K,Op,P:Integer;
+ C:Char;
+ L,T,Oper:String;
+Begin
+ If (R='ERR') or (R='EX') or (R='PASS') Then Begin
+  If O<>'' Then Error('operande superflu');
+  If R='ERR' Then Emit(0) Else If R='EX' Then Ins(4,0,0,0)
+  Else Ins(1,0,0,0);
+  Exit
+ End;
+ Op:=-1;
+ If R='J' Then Op:=6 Else If R='R' Then Op:=7
+ Else If R='JAZ' Then Op:=8 Else If R='JAN' Then Op:=9
+ Else If R='JAP' Then Op:=10 Else If R='JAM' Then Op:=11
+ Else If R='JSZ' Then Op:=12 Else If R='JSN' Then Op:=13
+ Else If R='JSP' Then Op:=14 Else If R='JSM' Then Op:=15;
+ If Op>=0 Then Begin
+  If (R='J') and (Length(O)=3) and (O[1]='B') and
+  (O[2] in ['0'..'7']) and (O[3] in ['0'..'7']) Then      Ins(5,0,Ord(O[2])-48,Ord(O[3])-
+  48)
+  Else LongIns(Op,0,O,16777215);
+  Exit
+ End;
+ If R='VL' Then Begin
+  K:=Reg(O,'A'); If K<0 Then Error('registre A attendu') Else Ins(2,0,0,K);
+  Exit
+ End;
+ If R='VM' Then Begin
+  J:=Reg(O,'S'); If J<0 Then Error('registre S attendu') Else Ins(3,0,J,0);
+  Exit
+ End;
+ If R='' Then Begin
+  Error('instruction manquante'); Exit
+ End;
+ C:=R[1]; I:=Reg(R,C);
+ If (I<0) or not (C in ['A','S','V']) Then Begin
+  Error('instruction non prise en charge: '+R); Exit
+ End;
+ If (C='S') and ((O='RTC') or (O='VM')) Then Begin
+  If O='RTC' Then Ins(58,I,0,0) Else Ins(59,I,0,0); Exit
+ End;
+ J:=Reg(O,'S');
+ If (C='A') and (J>=0) Then Begin
+  Ins(19,I,J,0); Exit
+ End;
+ K:=Reg(O,'A');
+ If (C='S') and (K>=0) Then Begin
+  Ins(57,I,0,K); Exit
+ End;
+ K:=Reg(O,C);
+ If (K>=0) and (C in ['A','S']) Then Begin
+  If C='A' Then Ins(24,I,0,K) Else Ins(48,I,0,K); Exit
+ End;
+  { Binary register expressions: Aj+Ak, Sj+FSk, Vj&Vk, etc. }
+ If Length(O)>=5 Then Begin
+  L:=Copy(O,1,2); Oper:=Copy(O,3,1); P:=4;
+  If (Length(O)>=6) and (O[4]='F') Then Begin
+   Oper:=Oper+'F'; P:=5
+  End;
+  T:=Copy(O,P,255); J:=Reg(L,C); K:=Reg(T,C); Op:=-1;
+  If (J>=0) and (K>=0) Then Begin
+   If C='A' Then Begin
+    If Oper='+' Then Op:=24 Else If Oper='-' Then Op:=25
+    Else If Oper='*' Then Op:=26
+   End Else If C='S' Then Begin
+    If Oper='+' Then Op:=48 Else If Oper='-' Then Op:=49
+    Else If Oper='+F' Then Op:=50 Else If Oper='-F' Then Op:=51
+    Else If Oper='*F' Then Op:=52 Else If Oper='&' Then Op:=36
+    Else If Oper='!' Then Op:=41 Else If Oper='\' Then Op:=38
+   End Else
+   Begin
+    If Oper='+' Then Op:=109 Else If Oper='-' Then Op:=111
+    Else If Oper='&' Then Op:=97 Else If Oper='!' Then Op:=99
+    Else If Oper='\' Then Op:=101
+    Else If Oper='+F' Then Op:=121 Else If Oper='-F' Then Op:=123
+   End;
+   If Op>=0 Then Begin
+    Ins(Op,I,J,K); Exit
+   End
+  End
+ End;
+  { Constants always use two parcels: stable forward-reference sizes. }
+ If (C in ['A','S']) and (Length(O)>0) Then Begin
+  If (O[1] in ['0'..'9','+','-','*']) or
+  (ValidName(O) and (Reg(O,'A')<0) and (Reg(O,'S')<0) and (Reg(O,'V')<0)) Then Begin
+   If C='A' Then Op:=16 Else Op:=32;
+   LongIns(Op,I,O,4194303); Exit
+  End
+ End;
+ Error('forme non prise en charge: '+R+' '+O)
+End;
+
+Procedure ParseLine;
+Var
+ S,LabelName,R,O,T:String;
+ P,I:Integer;
+ V,Start:LongInt;
+Begin
+ S:=Upper(Raw); Start:=PC;
+ If S='' Then Exit;
+ If S[1]='*' Then Exit;
+ P:=Pos(';',S); If P>0 Then Delete(S,P,255);
+ If Trim(S)='' Then Exit;
+ LabelName:='';
+ If S[1]>' ' Then Begin
+  LabelName:=Token(S);
+  If LabelName[Length(LabelName)]=':' Then Delete(LabelName,Length(LabelName),1)
+ End;
+ R:=Token(S); O:=Trim(S);
+  { Ignore trailing CAL comment field, separated by whitespace. }
+ O:=Token(O);
+ If R='EQU' Then Begin
+  V:=Expr(O);
+  If (Pass=1) and not Known Then Error('EQU exige des symboles deja definis');
+  Define(LabelName,V); Exit
+ End;
+ If LabelName<>'' Then Define(LabelName,PC);
+ If R='' Then Exit;
+ If R='END' Then Finished:=True
+ Else If (R='IDENT') or (R='TITLE') Then Begin
+ End
+ Else If R='BASE' Then Begin
+  If O='D' Then Radix:=10 Else If O='O' Then Radix:=8
+  Else If O='H' Then Radix:=16 Else Error('BASE attend D, O ou H')
+ End Else If R='ORG' Then Begin
+  V:=Expr(O);
+  If not Known Then Error('ORG exige une valeur connue');
+  If (V<PC) or (V>=MaxBytes div 2) Then Error('ORG hors limites ou en arriere')
+  Else
+  Begin
+   PC:=V; If PC*2>Size Then Size:=PC*2
+  End
+ End Else If R='BSS' Then Begin
+  V:=Expr(O);
+  If not Known Then Error('BSS exige une valeur connue');
+  If (V<0) or (V>(MaxBytes div 2-PC) div 4) Then Error('BSS hors limites')
+  Else
+  While V>0 do Begin
+   For I:=1 to 4 do Emit(0); Dec(V)
+  End
+ End Else If (R='CON') or (R='PARCEL') Then Begin
+  Repeat
+  P:=Pos(',',O); If P=0 Then P:=Length(O)+1;
+  T:=Copy(O,1,P-1); Delete(O,1,P); V:=Expr(T);
+  If R='CON' Then Begin
+   If V<0 Then Begin
+    Emit(65535); Emit(65535)
+   End
+   Else
+   Begin
+    Emit(0); Emit(0)
+   End;
+   Emit(V shr 16); Emit(V)
+  End Else
+  Begin
+   If (V<0) or (V>65535) Then Error('PARCEL hors limites'); Emit(V)
+  End
+  Until O=''
+ End Else Machine(R,O);
+ If (Pass=2) and ListOpen Then Begin
+  Write(Listing,LineNo:5,' ',Start:7,' ');
+  For I:=0 to Integer(PC-Start)-1 do      If I<4 Then Write(Listing,LongInt(Code^[(Start+
+  I)*2])*256+Code^[(Start+I)*2+1]:6,' ');
+  WriteLn(Listing,'  ',Raw)
+ End
+End;
+
+Procedure Help;Begin
+ WriteLn('CAL - Cette commande permet de lancer l''assembleur ',
+ 'Cray-1 (sous-ensemble).');
+ WriteLn;
+ WriteLn('Syntaxe: CAL source [-o sortie.bin] [-l listing.lst]');
+ WriteLn;
+ WriteLn('Source: [etiquette] resultat operande ; commentaire');
+ WriteLn;
+ WriteLn('Sans etiquette, commencer la ligne par une espace.');
+ WriteLn('Directives: IDENT TITLE BASE EQU ORG CON PARCEL BSS END');
+ WriteLn('Image absolue big-endian; adresses en parcels; defaut decimal.');
+ WriteLn('Limites et exemples: DOC/CAL.txt')
+End;
+
+{ Corps original BEGIN...END. de CAL.PAS, devenu CalMain (Halt -> Exit, }
+{ voir le commentaire d'en-tete ci-dessus - 13 sites, tous a ce niveau, }
+{ aucun a l'interieur d'une procedure imbriquee). }
+Procedure CalMain;
+Var
+ Arg:String;
+ N,Io,PassIdx:Integer;
+ Written:Word;
+Begin
+ Count:=0; Errors:=0; LineNo:=0; Src:=''; Dest:=''; ListName:=''; ListOpen:=False;
+ N:=1;
+ While N<=ParamCount do Begin
+  Arg:=ParamStr(N);
+  If (Arg='--help') or (Arg='-h') or (Arg='/?') Then Begin
+   Help; Exit
+  End
+  Else If (Arg='-o') or (Arg='-l') Then Begin
+   Inc(N); If N>ParamCount Then Begin
+    WriteLn('Option incomplete: ',Arg); Exit
+   End;
+   If Arg='-o' Then Dest:=ParamStr(N) Else ListName:=ParamStr(N)
+  End Else If (Copy(Arg,1,1)='-') or (Src<>'') Then Begin
+   WriteLn('Argument invalide: ',Arg); Exit
+  End Else Src:=Arg;
+  Inc(N)
+ End;
+ If Src='' Then Begin
+  Help; Exit
+ End;
+ New(Code);
+ If Dest='' Then Dest:=Src+'.bin';
+  { Refuse all existing output paths: also protects aliases of the source. }
+ Assign(OutputFile,Dest); Reset(OutputFile,1); Io:=IOResult;
+ If Io=0 Then Begin
+  Close(OutputFile); WriteLn('Sortie deja existante: ',Dest); Exit
+ End;
+ If ListName<>'' Then Begin
+  If Upper(ListName)=Upper(Dest) Then Begin
+   WriteLn('Sorties identiques'); Exit
+  End;
+  Assign(OutputFile,ListName); Reset(OutputFile,1); Io:=IOResult;
+  If Io=0 Then Begin
+   Close(OutputFile); WriteLn('Listing deja existant'); Exit
+  End
+ End;
+ { PassIdx (pas Pass directement) comme compteur de boucle : Pass est   }
+ { declare dans la portee englobante (TermCmd_Cal, partagee avec       }
+ { Error/Expr/Define/ParseLine) - FPC exige qu'un compteur For soit    }
+ { local a la procedure qui contient la boucle, contrainte absente de  }
+ { l'original ou ce bloc etait le programme lui-meme, pas une          }
+ { procedure imbriquee. }
+ For PassIdx:=1 to 2 do Begin
+  Pass:=PassIdx;
+  PC:=0; Size:=0; Radix:=10; LineNo:=0; Finished:=False;
+  FillChar(Code^,SizeOf(TCode),0);
+  Assign(InputFile,Src); Reset(InputFile);
+  If IOResult<>0 Then Begin
+   WriteLn('Lecture impossible: ',Src); Exit
+  End;
+  If (Pass=2) and (ListName<>'') Then Begin
+   Assign(Listing,ListName); Rewrite(Listing);
+   If IOResult<>0 Then Begin
+    WriteLn('Creation listing impossible'); Exit
+   End;
+   ListOpen:=True
+  End;
+  While not Eof(InputFile) and not Finished do Begin
+   ReadLn(InputFile,Raw);
+   If IOResult<>0 Then Begin
+    Error('lecture impossible'); Break
+   End;
+   Inc(LineNo); ParseLine
+  End;
+  Close(InputFile); Io:=IOResult;
+  If ListOpen Then Begin
+   Close(Listing); If IOResult<>0 Then Error('ecriture listing impossible');
+   ListOpen:=False
+  End;
+  If Errors<>0 Then Begin
+   WriteLn(Errors,' erreur(s), binaire non genere.'); Exit
+  End
+ End;
+ Assign(OutputFile,Dest); Rewrite(OutputFile,1);
+ If IOResult<>0 Then Begin
+  WriteLn('Creation impossible: ',Dest); Exit
+ End;
+ BlockWrite(OutputFile,Code^,Word(Size),Written); Io:=IOResult;
+ Close(OutputFile);
+ If (IOResult<>0) or (Io<>0) or (Written<>Size) Then Begin
+  WriteLn('Ecriture impossible'); Exit
+ End;
+ WriteLn('CAL: ',Size,' octets, ',Count,' symboles -> ',Dest)
+End;
+
+{ ============================================================
+  Corps du wrapper : redirige Output vers un fichier temporaire reel
+  avant d'appeler CalMain (le corps original BEGIN...END. de CAL.PAS,
+  renomme et nestte ci-dessus), puis republie la sortie capturee dans
+  ce terminal - meme technique exacte que TermCmd_Masm/TermCmd_Link.
+  ============================================================ }
+Begin
+ CalTokenizeArgs(RawArgs);
+
+ Assign(Output, CAL_TEMP_OUTPUT); Rewrite(Output);
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'CAL : impossible de creer le fichier temporaire de sortie.');
+  Exit;
+ End;
+
+ CalMain;
+
+ Close(Output);
+ If IOResult <> 0 Then ; { ignorer l erreur de fermeture }
+
+ { Republier la sortie capturee dans ce terminal, ligne par ligne. }
+ Assign(CalDumpF, CAL_TEMP_OUTPUT);
+ Reset(CalDumpF);
+ If IOResult = 0 Then Begin
+  While Not EOF(CalDumpF) Do Begin
+   ReadLn(CalDumpF, CalDumpLine);
+   TermAddLine(TP, CalDumpLine);
+  End;
+  Close(CalDumpF);
+ End;
+ CleanupTempFile(CAL_TEMP_OUTPUT);
+End;
+{$I+} { reactive la verification d'E/S, ferme le commutateur ouvert en tete de TermCmd_Cal. }
 
 { ============================================================
   PERL (Terminal, profil "bash" uniquement - SK_BASH) - 2026-09-05,
@@ -119904,7 +120528,13 @@ Begin
    { flux de commandes COS (pas de fichier de commandes/JCL, pas de file    }
    { d attente de jobs reelle) : DROP/PAUSE/CLASS restent donc de simples   }
    { accuses de reception textuels, un seul "job" interactif existant ici. }
-   If CurrCmd = 'CHANNEL' Then
+   { CAL (assembleur Cray-1 reel, voir TermCmd_Cal plus haut) fait          }
+   { exception : contrairement au reste de ce shell, ce n'est PAS un        }
+   { accuse de reception simplifie mais l'integration integrale et          }
+   { fonctionnelle de CAL.PAS, demande explicitement par l'utilisateur.     }
+   If CurrCmd = 'CAL' Then
+    TermCmd_Cal(TP, ParamStr)
+   Else If CurrCmd = 'CHANNEL' Then
     TermAddLine(TP, 'CHANNEL ' + TermTrim(ParamStr) + ' STATUS CHANGED.')
    Else If CurrCmd = 'CLASS' Then
     TermAddLine(TP, 'CLASS ' + TermTrim(ParamStr) + ' STATUS CHANGED.')
@@ -119933,9 +120563,9 @@ Begin
    End
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then Begin
     TermAddLine(TP, 'COS built-in commands:');
-    TermAddLine(TP, ' CHANNEL  CLASS  CLEAR  COMMENT  DISK');
-    TermAddLine(TP, ' DKERR    DROP   DSPL   HELP     PAUSE');
-    TermAddLine(TP, ' STATUS');
+    TermAddLine(TP, ' CAL      CHANNEL CLASS  CLEAR    COMMENT');
+    TermAddLine(TP, ' DISK     DKERR   DROP   DSPL     HELP');
+    TermAddLine(TP, ' PAUSE    STATUS');
    End
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
@@ -189463,6 +190093,57 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   {$I-} Assign(BatchFile, Opts.GulamBatch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
+ { /OS9:fichier - meme principe que /BASH:/GULAM: ci-dessus, mais ouvre le }
+ { shell "OS-9 (CoCo 3)" (SK_OS9) - demande explicite de l'utilisateur,    }
+ { 2026-09-13. }
+ If Opts.Os9Batch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_OS9;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.Os9Batch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
+ { /COS:fichier - meme principe, mais ouvre le shell "COS (Cray-1)"        }
+ { (SK_COS) - demande explicite de l'utilisateur, 2026-09-13 (meme         }
+ { chantier que l'ajout de la commande CAL dans ce shell, voir             }
+ { [[project_devenv_cal]]). }
+ If Opts.CosBatch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_COS;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.CosBatch); Reset(BatchFile); {$I+}
   If IOResult = 0 Then Begin
    While Not Eof(BatchFile) Do Begin
     ReadLn(BatchFile, BatchLine);
