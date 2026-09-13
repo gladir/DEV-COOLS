@@ -99409,6 +99409,357 @@ Begin
     P.CPU.Regs.AX := UTAI;
     ArgWords := 4;
    End;
+   468: Begin
+    { GetBitmapDimensionEx(hbitmap,lpSize):BOOL - ordinal/signature         }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { GetBitmapDimensionEx(word ptr)", 1 mot + 1 pointeur LOIN (2 mots) =   }
+    { 3 mots, retour 16 bits AX seul). REEL, variante "Ex" (ecrit via un    }
+    { pointeur SIZE plutot que de retourner un DWORD packe DX:AX) de         }
+    { GetBitmapDimension/$162 deja etabli - ecrit VRAIMENT                  }
+    { Win16_BitmapDimCX/CY. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(Win16_BitmapDimCX));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(Win16_BitmapDimCY));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   469: Begin
+    { GetBrushOrgEx(hdc,lppt):BOOL - ordinal/signature VERIFIES via le VRAI}
+    { source Wine (gdi.exe16.spec : "pascal -ret16 GetBrushOrgEx(word       }
+    { ptr)", 3 mots, retour 16 bits AX seul). REEL, variante "Ex" de         }
+    { GetBrushOrg/$149 deja etabli - ecrit VRAIMENT Win16_BrushOrgX/Y.      }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(Win16_BrushOrgX));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(Win16_BrushOrgY));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   470: Begin
+    { GetCurrentPositionEx(hdc,lppt):BOOL - ordinal/signature VERIFIES via }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { GetCurrentPositionEx(word ptr)", 3 mots, retour 16 bits AX seul).      }
+    { REEL, variante "Ex" de GetCurrentPosition/$78 deja etabli - reutilise }
+    { A L'IDENTIQUE sa reconversion de Win16_PenX/Y (coordonnees ABSOLUES   }
+    { du framebuffer) vers les coordonnees CLIENT d'origine, l'inverse       }
+    { precis du calcul de MoveTo/LineTo. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_PenX - Win16_WindowX[Win16_ActiveDCWindow] - 1);
+     GdiY1 := SmallInt(Win16_PenY - Win16_WindowY[Win16_ActiveDCWindow] - 1);
+    End Else Begin
+     GdiX1 := 0; GdiY1 := 0;
+    End;
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GdiX1));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GdiY1));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   471: Begin
+    { GetTextExtentPoint(hdc,lpString,cbString,lpSize):BOOL - ordinal/      }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 GetTextExtentPoint(word ptr s_word ptr)", 1 mot + 1 pointeur   }
+    { LOIN (2 mots) + 1 mot + 1 pointeur LOIN (2 mots) = 6 mots, retour 16  }
+    { bits AX seul). REEL ET EXACT, variante "Ex" (ecrit via un pointeur    }
+    { SIZE plutot que de retourner un DWORD packe DX:AX) de                 }
+    { GetTextExtent/$91 deja etabli - reutilise la MEME formule EXACTE       }
+    { (pas une approximation) que Win16_DrawTextOut/$33 lui-meme (6 +        }
+    { Win16_CurrentTextCharExtra par caractere, hauteur fixe 7). lpString    }
+    { n'a meme pas besoin d'etre lu (seule sa LONGUEUR cbString compte       }
+    { pour cette police a chasse fixe). }
+    GTECount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GTECount * (6 + Win16_CurrentTextCharExtra)));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), 7);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   472: Begin
+    { GetViewportExtEx(hdc,lpSize):BOOL - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { GetViewportExtEx(word ptr)", 3 mots, retour 16 bits AX seul). REEL,   }
+    { variante "Ex" de SetViewportExt/$14 (qui ne retourne que l'ANCIENNE   }
+    { valeur) - premiere fois qu'une VRAIE lecture PURE de                  }
+    { Win16_CurrentViewportExtX/Y sans jamais l'ecraser est demandee. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(Win16_CurrentViewportExtX));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(Win16_CurrentViewportExtY));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   473: Begin
+    { GetViewportOrgEx(hdc,lppt):BOOL - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { GetViewportOrgEx(word ptr)", 3 mots, retour 16 bits AX seul). REEL,    }
+    { lecture pure de Win16_CurrentViewportOrgX/Y, meme discipline que        }
+    { GetViewportExtEx/$472 ci-dessus. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(Win16_CurrentViewportOrgX));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(Win16_CurrentViewportOrgY));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   474: Begin
+    { GetWindowExtEx(hdc,lpSize):BOOL - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { GetWindowExtEx(word ptr)", 3 mots, retour 16 bits AX seul). REEL,      }
+    { lecture pure de Win16_CurrentWindowExtX/Y, meme discipline que          }
+    { GetViewportExtEx/$472. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(Win16_CurrentWindowExtX));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(Win16_CurrentWindowExtY));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   475: Begin
+    { GetWindowOrgEx(hdc,lppt):BOOL - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                     }
+    { GetWindowOrgEx(word ptr)", 3 mots, retour 16 bits AX seul). REEL,      }
+    { lecture pure de Win16_CurrentWindowOrgX/Y, meme discipline que          }
+    { GetViewportExtEx/$472. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(Win16_CurrentWindowOrgX));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(Win16_CurrentWindowOrgY));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   476: Begin
+    { OffsetViewportOrgEx(hdc,X,Y,lppt):BOOL - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16              }
+    { OffsetViewportOrgEx(word s_word s_word ptr)", 1 mot + 2 mots SIGNES + }
+    { 1 pointeur LOIN (2 mots) = 5 mots, retour 16 bits AX seul). REEL,      }
+    { variante "Ex" (ecrit l'ANCIENNE valeur via pointeur plutot que de la  }
+    { retourner packee DX:AX) d'OffsetViewportOrg/$16 deja etabli -           }
+    { ajoute VRAIMENT X,Y a l'origine COURANTE. }
+    GVOOldX := Win16_CurrentViewportOrgX;
+    GVOOldY := Win16_CurrentViewportOrgY;
+    Win16_CurrentViewportOrgX := SmallInt(Word(GVOOldX) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    Win16_CurrentViewportOrgY := SmallInt(Word(GVOOldY) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GVOOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GVOOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   477: Begin
+    { OffsetWindowOrgEx(hdc,X,Y,lppt):BOOL - ordinal/signature VERIFIES    }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16              }
+    { OffsetWindowOrgEx(word s_word s_word ptr)", 5 mots, retour 16 bits    }
+    { AX seul). REEL, variante "Ex" d'OffsetWindowOrg/$15 deja etabli -      }
+    { ajoute VRAIMENT X,Y a l'origine fenetre COURANTE. }
+    GWOOldX := Win16_CurrentWindowOrgX;
+    GWOOldY := Win16_CurrentWindowOrgY;
+    Win16_CurrentWindowOrgX := SmallInt(Word(GWOOldX) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    Win16_CurrentWindowOrgY := SmallInt(Word(GWOOldY) + Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GWOOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GWOOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   478: Begin
+    { SetBitmapDimensionEx(hbitmap,X,Y,lpSize):BOOL - ordinal/signature    }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { SetBitmapDimensionEx(word s_word s_word ptr)", 5 mots, retour 16      }
+    { bits AX seul). REEL, variante "Ex" de SetBitmapDimension/$163 deja    }
+    { etabli - fixe VRAIMENT Win16_BitmapDimCX/CY et ecrit l'ANCIENNE        }
+    { dimension via le pointeur (au lieu de DX:AX). }
+    GWOOldX := SmallInt(Win16_BitmapDimCX);
+    GWOOldY := SmallInt(Win16_BitmapDimCY);
+    Win16_BitmapDimCX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    Win16_BitmapDimCY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GWOOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GWOOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   479: Begin
+    { SetViewportExtEx(hdc,X,Y,lpSize):BOOL - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16              }
+    { SetViewportExtEx(word s_word s_word ptr)", 5 mots, retour 16 bits AX }
+    { seul). REEL, variante "Ex" de SetViewportExt/$14 deja etabli. }
+    GVEOldX := Win16_CurrentViewportExtX;
+    GVEOldY := Win16_CurrentViewportExtY;
+    Win16_CurrentViewportExtX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    Win16_CurrentViewportExtY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GVEOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GVEOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   480: Begin
+    { SetViewportOrgEx(hdc,X,Y,lppt):BOOL - ordinal/signature VERIFIES via }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { SetViewportOrgEx(word s_word s_word ptr)", 5 mots, retour 16 bits AX }
+    { seul). REEL, variante "Ex" de SetViewportOrg/$13 deja etabli. }
+    GVOOldX := Win16_CurrentViewportOrgX;
+    GVOOldY := Win16_CurrentViewportOrgY;
+    Win16_CurrentViewportOrgX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    Win16_CurrentViewportOrgY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GVOOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GVOOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   481: Begin
+    { SetWindowExtEx(hdc,X,Y,lpSize):BOOL - ordinal/signature VERIFIES via }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { SetWindowExtEx(word s_word s_word ptr)", 5 mots, retour 16 bits AX    }
+    { seul). REEL, variante "Ex" de SetWindowExt/$12 deja etabli. }
+    GWEOldX := Win16_CurrentWindowExtX;
+    GWEOldY := Win16_CurrentWindowExtY;
+    Win16_CurrentWindowExtX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    Win16_CurrentWindowExtY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GWEOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GWEOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   482: Begin
+    { SetWindowOrgEx(hdc,X,Y,lppt):BOOL - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { SetWindowOrgEx(word s_word s_word ptr)", 5 mots, retour 16 bits AX    }
+    { seul). REEL, variante "Ex" de SetWindowOrg/$11 deja etabli. }
+    GWOOldX := Win16_CurrentWindowOrgX;
+    GWOOldY := Win16_CurrentWindowOrgY;
+    Win16_CurrentWindowOrgX := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    Win16_CurrentWindowOrgY := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GWOOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GWOOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   483: Begin
+    { MoveToEx(hdc,X,Y,lppt):BOOL - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 MoveToEx(word s_word     }
+    { s_word ptr)", 5 mots, retour 16 bits AX seul). REEL, variante "Ex"    }
+    { de MoveTo/$20 deja etabli - pose VRAIMENT Win16_PenX/Y (coordonnees   }
+    { CLIENT converties en ABSOLUES comme MoveTo/LineTo) et ecrit l'ANCIENNE}
+    { position (reconvertie en CLIENT via la MEME formule inverse que        }
+    { GetCurrentPosition/$78/GetCurrentPositionEx/$470) via le pointeur,     }
+    { au lieu du DWORD packe non modelise de MoveTo/$20. }
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     GdiX1 := SmallInt(Win16_PenX - Win16_WindowX[Win16_ActiveDCWindow] - 1);
+     GdiY1 := SmallInt(Win16_PenY - Win16_WindowY[Win16_ActiveDCWindow] - 1);
+    End Else Begin
+     GdiX1 := 0; GdiY1 := 0;
+    End;
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GdiX1));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GdiY1));
+    End;
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     Win16_PenX := Win16_WindowX[Win16_ActiveDCWindow] + 1 + GdiX2;
+     Win16_PenY := Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY2;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   484: Begin
+    { ScaleViewportExtEx(hdc,xNum,xDenom,yNum,yDenom,lpSize):BOOL -         }
+    { ordinal/signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : }
+    { "pascal -ret16 ScaleViewportExtEx(word s_word s_word s_word s_word    }
+    { ptr)", 1 mot + 4 mots SIGNES + 1 pointeur LOIN (2 mots) = 7 mots,      }
+    { retour 16 bits AX seul). REEL, variante "Ex" de                        }
+    { ScaleViewportExt/$18 deja etabli - meme arrondi, meme garde              }
+    { denominateur nul. }
+    SVEOldX := Win16_CurrentViewportExtX;
+    SVEOldY := Win16_CurrentViewportExtY;
+    SVEXNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    SVEXDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    SVEYNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    SVEYDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    If SVEXDenom <> 0 Then
+     Win16_CurrentViewportExtX := SmallInt(Round(SVEOldX * SVEXNum / SVEXDenom));
+    If SVEYDenom <> 0 Then
+     Win16_CurrentViewportExtY := SmallInt(Round(SVEOldY * SVEYNum / SVEYDenom));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(SVEOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(SVEOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 7;
+   End;
+   485: Begin
+    { ScaleWindowExtEx(hdc,xNum,xDenom,yNum,yDenom,lpSize):BOOL - ordinal/ }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal}
+    { -ret16 ScaleWindowExtEx(word s_word s_word s_word s_word ptr)", 7     }
+    { mots, retour 16 bits AX seul). REEL, variante "Ex" de                 }
+    { ScaleWindowExt/$16 deja etabli. }
+    SWEOldX := Win16_CurrentWindowExtX;
+    SWEOldY := Win16_CurrentWindowExtY;
+    SWEXNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    SWEXDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    SWEYNum := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    SWEYDenom := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    If SWEXDenom <> 0 Then
+     Win16_CurrentWindowExtX := SmallInt(Round(SWEOldX * SWEXNum / SWEXDenom));
+    If SWEYDenom <> 0 Then
+     Win16_CurrentWindowExtY := SmallInt(Round(SWEOldY * SWEYNum / SWEYDenom));
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GRBSeg <> 0) Or (GRBOfs <> 0) Then Begin
+     Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(SWEOldX));
+     Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(SWEOldY));
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 7;
+   End;
+   486: Begin
+    { GetAspectRatioFilterEx(hdc,lpSize):BOOL - ordinal/signature          }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { GetAspectRatioFilterEx(word ptr)", 3 mots, retour 16 bits AX seul).    }
+    { REEL, variante "Ex" de GetAspectRatioFilter/$353 deja etabli           }
+    { (voir [[project_devenv_win16_gdi_ord352_370]]) : aucun filtre           }
+    { d'aspect-ratio n'est jamais defini dans ce sous-ensemble               }
+    { (SetAspectRatioFilter n'a jamais ete demande/implante) - ecrit           }
+    { honnetement (0,0) via le pointeur au lieu du DWORD packe 0:0. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, 0);
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), 0);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
     Exit;
