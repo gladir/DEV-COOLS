@@ -85939,6 +85939,12 @@ Var
  Os9LinkCount: Integer;     { LINK/UNLINK : compteur de liaisons simule }
  Os9DeviceCount: Integer;   { INIZ/DEINIZ : nombre de peripheriques "connectes" }
 
+{ Shell Terminal "COS (Cray-1)" (SK_COS) : etat partage entre les       }
+{ commandes COS ci-dessous (voir plus bas), meme discipline que les     }
+{ singletons OS-9 ci-dessus (un seul panneau COS existe). }
+Var
+ CosDefaultDevice: String;  { DEFAULT : peripherique de mise en scene declare }
+
 { --- DIR (format OS-9 simplifie - reutilise Fat_ListDir/style CMD plutot   }
 { que d'inventer une mise en page OS-9 authentique non verifiee ; reste     }
 { compatible RBF reel (OS9_ListDir) via le meme mecanisme generique que      }
@@ -132849,20 +132855,24 @@ Begin
   SK_COS: Begin
    { COS (Cray Operating System, Cray-1, 1976) - demande explicite de       }
    { l'utilisateur, jeu de commandes limite a celles listees               }
-   { (gladir.com/OS/COS/*.htm) : CHANNEL/CLASS/CLEAR/COMMENT/DISK/DKERR/   }
-   { DROP/DSPL/HELP/PAUSE/STATUS. Aucun format de reponse REEL (colonnes   }
-   { exactes de DSPL/DISK/STATUS, etc.) n'a pu etre verifie contre une      }
+   { (gladir.com/OS/COS/*.htm) : CHANNEL/CLASS/CLEAR/COMMENT/CONC/         }
+   { CONFIGURE/CONSOLE/DATASET/DEFAULT/DELAY/DISK/DKERR/DROP/DSPL/HELP/    }
+   { PAUSE/STATUS. Aucun format de reponse REEL (colonnes exactes de       }
+   { DSPL/DISK/STATUS/CONC/DATASET, etc.) n'a pu etre verifie contre une   }
    { source primaire (manuel COS introuvable en ligne) - reponses          }
    { honnetement simplifiees/disclosees plutot qu'inventees en detail,      }
    { meme esprit que les autres "simplifications disclosees" de ce         }
    { fichier (ex: NetBiosEnum). Ce terminal ne fait PAS tourner de vrai     }
    { flux de commandes COS (pas de fichier de commandes/JCL, pas de file    }
-   { d attente de jobs reelle) : DROP/PAUSE/CLASS restent donc de simples   }
-   { accuses de reception textuels, un seul "job" interactif existant ici. }
-   { CAL (assembleur Cray-1 reel, voir TermCmd_Cal plus haut) fait          }
-   { exception : contrairement au reste de ce shell, ce n'est PAS un        }
-   { accuse de reception simplifie mais l'integration integrale et          }
-   { fonctionnelle de CAL.PAS, demande explicitement par l'utilisateur.     }
+   { d attente de jobs reelle) : DROP/PAUSE/CLASS/CONSOLE/DELAY restent      }
+   { donc de simples accuses de reception textuels, un seul "job"           }
+   { interactif existant ici. DEFAULT est la seule commande de ce lot a     }
+   { garder un etat reel (CosDefaultDevice, meme discipline que MONTYPE     }
+   { du shell OS-9 voisin - voir TermCmd_HELP plus haut). CAL (assembleur   }
+   { Cray-1 reel, voir TermCmd_Cal plus haut) fait exception : contrairement}
+   { au reste de ce shell, ce n'est PAS un accuse de reception simplifie    }
+   { mais l'integration integrale et fonctionnelle de CAL.PAS, demande      }
+   { explicitement par l'utilisateur.                                       }
    If CurrCmd = 'CAL' Then
     TermCmd_Cal(TP, ParamStr)
    Else If CurrCmd = 'CHANNEL' Then
@@ -132874,6 +132884,25 @@ Begin
    Else If CurrCmd = 'COMMENT' Then Begin
     { Un commentaire n'a, par definition, aucun effet ni sortie. }
    End
+   Else If CurrCmd = 'CONC' Then Begin
+    TermAddLine(TP, 'CONCENTRATOR ACTIVITY MONITOR.');
+    TermAddLine(TP, 'AUCUN CONCENTRATEUR CONFIGURE (aucun materiel de telecommunication emule).');
+   End
+   Else If CurrCmd = 'CONFIGURE' Then
+    TermAddLine(TP, 'PERIPHERIQUE ALTERNATIF ' + TermTrim(ParamStr) + ' CONFIGURE.')
+   Else If CurrCmd = 'CONSOLE' Then
+    TermAddLine(TP, 'CONSOLE DE STATION ' + TermTrim(ParamStr) + ' ALLOUEE.')
+   Else If CurrCmd = 'DATASET' Then Begin
+    TermAddLine(TP, 'DATASET ' + TermTrim(ParamStr) + ' STATUS.');
+    TermAddLine(TP, 'AUCUN ENSEMBLE DE DONNEES CONFIGURE (aucun disque Cray-1 emule).');
+   End
+   Else If CurrCmd = 'DEFAULT' Then Begin
+    If TermTrim(ParamStr) <> '' Then CosDefaultDevice := TermTrim(ParamStr);
+    If CosDefaultDevice = '' Then TermAddLine(TP, 'DEFAULT STAGING DEVICE : DS (defaut).')
+    Else TermAddLine(TP, 'DEFAULT STAGING DEVICE : ' + CosDefaultDevice);
+   End
+   Else If CurrCmd = 'DELAY' Then
+    TermAddLine(TP, 'DELAY ' + TermTrim(ParamStr) + ' - AUCUNE ATTENTE REELLE (terminal non interactif au sens COS).')
    Else If CurrCmd = 'DISK' Then Begin
     TermAddLine(TP, 'DS.  CH  UN  EST  TYPE  PRCT FULL');
     TermAddLine(TP, 'AUCUN CANAL DISQUE CONFIGURE (aucun disque Cray-1 emule).');
@@ -132894,9 +132923,10 @@ Begin
    End
    Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then Begin
     TermAddLine(TP, 'COS built-in commands:');
-    TermAddLine(TP, ' CAL      CHANNEL CLASS  CLEAR    COMMENT');
-    TermAddLine(TP, ' DISK     DKERR   DROP   DSPL     HELP');
-    TermAddLine(TP, ' PAUSE    STATUS');
+    TermAddLine(TP, ' CAL       CHANNEL   CLASS     CLEAR     COMMENT');
+    TermAddLine(TP, ' CONC      CONFIGURE CONSOLE   DATASET   DEFAULT');
+    TermAddLine(TP, ' DELAY     DISK      DKERR     DROP      DSPL');
+    TermAddLine(TP, ' HELP      PAUSE     STATUS');
    End
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
