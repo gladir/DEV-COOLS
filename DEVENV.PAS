@@ -7849,6 +7849,34 @@ Var
  { CreateCompatibleBitmap/CreateDiscardableBitmap retournent tous le         }
  { MEME handle=1). }
  Win16_BitmapDimCX, Win16_BitmapDimCY: Integer;
+ { GDI.EXE GetDCState/SetDCState (2026-09-13, demande explicite, ordinaux   }
+ { 179/180) - contrairement a SaveVisRgn/$129 (qui ne copiait que le        }
+ { rectangle de clip), une VRAIE pile d'instantanes de TOUT l'etat mono-DC  }
+ { deja suivi ailleurs dans ce dispatcher (ROP2, couleurs de fond/texte,     }
+ { modes, origines/etendues fenetre-et-viewport, clip, origine de brosse) - }
+ { namespace de handle SEPARE de Win16_VisRgnStack (HDCS <> HRGN en Windows }
+ { reel, aucune collision possible), donc PAS besoin du decalage +1 utilise }
+ { pour Win16_VisRgnStack (voir SaveVisRgn/$129). }
+ Win16_DCStateStack: Array[1..16] Of Record
+  ROP2: Word;
+  BkColor: LongInt;
+  BkMode: Word;
+  MapMode: Word;
+  PolyFillMode: Word;
+  StretchBltMode: Word;
+  TextCharExtra: SmallInt;
+  TextColor: LongInt;
+  BreakExtra: SmallInt;
+  BreakCount: SmallInt;
+  WindowOrgX, WindowOrgY: SmallInt;
+  WindowExtX, WindowExtY: SmallInt;
+  ViewportOrgX, ViewportOrgY: SmallInt;
+  ViewportExtX, ViewportExtY: SmallInt;
+  ClipActive: Boolean;
+  ClipX1, ClipY1, ClipX2, ClipY2: Integer;
+  BrushOrgX, BrushOrgY: Integer;
+ End;
+ Win16_DCStateStackTop: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91403,6 +91431,7 @@ Begin
  Win16_EnvDataLen := 0;
  Win16_BrushOrgX := 0; Win16_BrushOrgY := 0;
  Win16_BitmapDimCX := 0; Win16_BitmapDimCY := 0;
+ Win16_DCStateStackTop := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -93065,6 +93094,9 @@ Var
  GRBHRgn: Integer;
  { GDI.EXE GetNearestColor (2026-09-13, demande explicite, ordinal 154). }
  GNCColorLo: Word;
+ { GDI.EXE GetDCState/SetDCState (2026-09-13, demande explicite,           }
+ { ordinaux 179/180). }
+ GDCSHandle: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -96888,6 +96920,166 @@ Begin
     { documente pour ce cas precis. }
     P.CPU.Regs.AX := 1;
     ArgWords := 6;
+   End;
+   176: Begin
+    { PlayMetaFileRecord(hdc,lpHandletable,lpMetaRecord,nHandles):BOOL -   }
+    { ordinal/signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : }
+    { "pascal -ret16 PlayMetaFileRecord(word ptr ptr word)", 1 mot + 2      }
+    { pointeurs LOIN (2x2=4 mots) + 1 mot = 6 mots, retour 16 bits AX       }
+    { seul). MEME discipline honnete que PlayMetaFile/$123 : jouer un       }
+    { METARECORD reel exigerait de decoder son champ rdFunction (opcode    }
+    { GDI) et son tableau rdParm variable - un vrai petit interprete de     }
+    { bytecode GDI, hors de portee de ce sous-ensemble (aucun moteur        }
+    { d'enregistrement/rejeu de fichier meta n'existe ici, voir             }
+    { [[project_devenv_win16_gdi_ord125_129]]). Retourne FALSE(0), le       }
+    { comportement reel documente en cas d'echec de lecture de              }
+    { l'enregistrement, pas une valeur inventee. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 6;
+   End;
+   { RCOS/177 et RSIN/178 : DELIBEREMENT NON IMPLANTES - le VRAI source     }
+   { Wine officiel (gdi.exe16.spec) marque les deux "stub RCOS # W2.0       }
+   { (only ?)" / "stub RSIN # W2.0 (only ?)", SANS AUCUNE signature. La     }
+   { SOURCE SECONDAIRE deja utilisee ce chantier pour les cas similaires    }
+   { (projet WineVDM, voir ScanLR/$135 et IsDCDirty/$169 -                  }
+   { [[project_devenv_win16_gdi_ord135_150]]/                               }
+   { [[project_devenv_win16_gdi_ord169_175]]) a ete revisitee pour ce cas   }
+   { precis et n'apporte RIEN de plus : son gdi.exe16.spec repete             }
+   { IDENTIQUEMENT "178 stub RSIN" sans le moindre mot de parametre, et      }
+   { aucune fonction d'implementation (RSin/RCos/calcul de sinus/cosinus     }
+   { mis a l'echelle) n'existe non plus dans son gdi/gdi.c. Meme            }
+   { discipline exacte que SetDCStatus/$170 (voir                           }
+   { [[project_devenv_win16_gdi_ord169_175]]) : inventer un nombre de mots   }
+   { ici serait une pure supposition qui risquerait de corrompre la pile     }
+   { de TOUS les appels Win16 suivants - laisse donc deliberement tomber     }
+   { sur le gestionnaire generique "Else" ci-dessous. RSIN/178 seul avait    }
+   { ete demande explicitement dans ce lot (RCOS/177 non demande). }
+   179: Begin
+    { GetDCState(hdc):HDCS - ordinal/signature VERIFIES via le VRAI source  }
+    { Wine (gdi.exe16.spec : "pascal -ret16 GetDCState(word)", 1 mot,       }
+    { retour 16 bits AX seul). REEL, plus riche que SaveVisRgn/$129 : une   }
+    { VRAIE pile d'instantanes (Win16_DCStateStack, 16 niveaux) copie TOUT  }
+    { l'etat mono-DC deja suivi ailleurs dans ce dispatcher (ROP2/          }
+    { SetROP2/$4, couleurs et modes de fond/texte, modes de remplissage/    }
+    { stretch, extra/justification de texte, origines et etendues           }
+    { fenetre-et-viewport, clip Win16_ClipX1..Y2/ClipActive, origine de     }
+    { brosse Win16_BrushOrgX/Y) - PAS seulement le rectangle de clip comme  }
+    { SaveVisRgn. Namespace de handle SEPARE (HDCS <> HRGN en Windows reel, }
+    { aucune collision possible avec la convention "handle=1" des regions), }
+    { donc les handles commencent directement a 1 (pas de decalage +1       }
+    { necessaire ici, contrairement a SaveVisRgn/$129). Pile pleine ->      }
+    { echoue honnetement (0), le comportement reel d'un tas GDI epuise. }
+    If Win16_DCStateStackTop < 16 Then Begin
+     Inc(Win16_DCStateStackTop);
+     GDCSHandle := Win16_DCStateStackTop;
+     Win16_DCStateStack[GDCSHandle].ROP2 := Win16_CurrentROP2;
+     Win16_DCStateStack[GDCSHandle].BkColor := Win16_CurrentBkColor;
+     Win16_DCStateStack[GDCSHandle].BkMode := Win16_CurrentBkMode;
+     Win16_DCStateStack[GDCSHandle].MapMode := Win16_CurrentMapMode;
+     Win16_DCStateStack[GDCSHandle].PolyFillMode := Win16_CurrentPolyFillMode;
+     Win16_DCStateStack[GDCSHandle].StretchBltMode := Win16_CurrentStretchBltMode;
+     Win16_DCStateStack[GDCSHandle].TextCharExtra := Win16_CurrentTextCharExtra;
+     Win16_DCStateStack[GDCSHandle].TextColor := Win16_CurrentTextColor;
+     Win16_DCStateStack[GDCSHandle].BreakExtra := Win16_CurrentBreakExtra;
+     Win16_DCStateStack[GDCSHandle].BreakCount := Win16_CurrentBreakCount;
+     Win16_DCStateStack[GDCSHandle].WindowOrgX := Win16_CurrentWindowOrgX;
+     Win16_DCStateStack[GDCSHandle].WindowOrgY := Win16_CurrentWindowOrgY;
+     Win16_DCStateStack[GDCSHandle].WindowExtX := Win16_CurrentWindowExtX;
+     Win16_DCStateStack[GDCSHandle].WindowExtY := Win16_CurrentWindowExtY;
+     Win16_DCStateStack[GDCSHandle].ViewportOrgX := Win16_CurrentViewportOrgX;
+     Win16_DCStateStack[GDCSHandle].ViewportOrgY := Win16_CurrentViewportOrgY;
+     Win16_DCStateStack[GDCSHandle].ViewportExtX := Win16_CurrentViewportExtX;
+     Win16_DCStateStack[GDCSHandle].ViewportExtY := Win16_CurrentViewportExtY;
+     Win16_DCStateStack[GDCSHandle].ClipActive := Win16_ClipActive;
+     Win16_DCStateStack[GDCSHandle].ClipX1 := Win16_ClipX1;
+     Win16_DCStateStack[GDCSHandle].ClipY1 := Win16_ClipY1;
+     Win16_DCStateStack[GDCSHandle].ClipX2 := Win16_ClipX2;
+     Win16_DCStateStack[GDCSHandle].ClipY2 := Win16_ClipY2;
+     Win16_DCStateStack[GDCSHandle].BrushOrgX := Win16_BrushOrgX;
+     Win16_DCStateStack[GDCSHandle].BrushOrgY := Win16_BrushOrgY;
+     P.CPU.Regs.AX := Word(GDCSHandle);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   180: Begin
+    { SetDCState(hdc,hdcs):void - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 SetDCState(word word)", }
+    { 2 mots, retour 16 bits AX seul meme si le vrai contrat documente ne   }
+    { renvoie rien d'exploite par l'appelant). REEL, contrepartie exacte de }
+    { GetDCState/$179 ci-dessus : si hdcs correspond a un instantane        }
+    { encore valide de Win16_DCStateStack, restitue VRAIMENT chaque champ   }
+    { dans les globales mono-DC live correspondantes (contrairement a       }
+    { RestoreDC, qui ne peut de toute facon rien restaurer car SaveDC/$11   }
+    { n'a jamais rien sauvegarde de reel). Handle invalide -> echoue         }
+    { honnetement (0). }
+    GDCSHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If (GDCSHandle >= 1) And (GDCSHandle <= Win16_DCStateStackTop) Then Begin
+     Win16_CurrentROP2 := Win16_DCStateStack[GDCSHandle].ROP2;
+     Win16_CurrentBkColor := Win16_DCStateStack[GDCSHandle].BkColor;
+     Win16_CurrentBkMode := Win16_DCStateStack[GDCSHandle].BkMode;
+     Win16_CurrentMapMode := Win16_DCStateStack[GDCSHandle].MapMode;
+     Win16_CurrentPolyFillMode := Win16_DCStateStack[GDCSHandle].PolyFillMode;
+     Win16_CurrentStretchBltMode := Win16_DCStateStack[GDCSHandle].StretchBltMode;
+     Win16_CurrentTextCharExtra := Win16_DCStateStack[GDCSHandle].TextCharExtra;
+     Win16_CurrentTextColor := Win16_DCStateStack[GDCSHandle].TextColor;
+     Win16_CurrentBreakExtra := Win16_DCStateStack[GDCSHandle].BreakExtra;
+     Win16_CurrentBreakCount := Win16_DCStateStack[GDCSHandle].BreakCount;
+     Win16_CurrentWindowOrgX := Win16_DCStateStack[GDCSHandle].WindowOrgX;
+     Win16_CurrentWindowOrgY := Win16_DCStateStack[GDCSHandle].WindowOrgY;
+     Win16_CurrentWindowExtX := Win16_DCStateStack[GDCSHandle].WindowExtX;
+     Win16_CurrentWindowExtY := Win16_DCStateStack[GDCSHandle].WindowExtY;
+     Win16_CurrentViewportOrgX := Win16_DCStateStack[GDCSHandle].ViewportOrgX;
+     Win16_CurrentViewportOrgY := Win16_DCStateStack[GDCSHandle].ViewportOrgY;
+     Win16_CurrentViewportExtX := Win16_DCStateStack[GDCSHandle].ViewportExtX;
+     Win16_CurrentViewportExtY := Win16_DCStateStack[GDCSHandle].ViewportExtY;
+     Win16_ClipActive := Win16_DCStateStack[GDCSHandle].ClipActive;
+     Win16_ClipX1 := Win16_DCStateStack[GDCSHandle].ClipX1;
+     Win16_ClipY1 := Win16_DCStateStack[GDCSHandle].ClipY1;
+     Win16_ClipX2 := Win16_DCStateStack[GDCSHandle].ClipX2;
+     Win16_ClipY2 := Win16_DCStateStack[GDCSHandle].ClipY2;
+     Win16_BrushOrgX := Win16_DCStateStack[GDCSHandle].BrushOrgX;
+     Win16_BrushOrgY := Win16_DCStateStack[GDCSHandle].BrushOrgY;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   181: Begin
+    { RectInRegionOld(hrgn,lpRect):BOOL (alias reel RECTINREGION) -         }
+    { ordinal/signature VERIFIES via le VRAI source Wine (gdi.exe16.spec :  }
+    { "pascal -ret16 RectInRegionOld(word ptr)", 1 mot + 1 pointeur LOIN    }
+    { (2 mots) = 3 mots, retour 16 bits AX seul). REEL EN PARTIE, reutilise }
+    { le MEME decodage de handle deja etabli pour GetRgnBox/$134/           }
+    { PtInRegion/$161/SetRectRgn/$172 : si hRgn correspond a un handle de   }
+    { pile SaveVisRgn/$129 encore valide (>=2, decale de 1), teste           }
+    { REELLEMENT le rectangle passe contre le rectangle englobant de CETTE  }
+    { sauvegarde precise ; sinon teste contre le clip mono-DC courant.      }
+    { Test d'intersection AABB standard (bords droit/bas EXCLUSIFS, comme   }
+    { toute vraie region GDI rectangulaire). Absence de region active ->     }
+    { FALSE honnete, meme discipline que PtInRegion/$161. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GRBHRgn := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, GRBOfs));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 2)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 4)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, GRBSeg, Word(GRBOfs + 6)));
+    If (GRBHRgn >= 2) And (GRBHRgn - 1 <= Win16_VisRgnStackTop) Then Begin
+     GRBX1 := Win16_VisRgnStack[GRBHRgn - 1].X1; GRBY1 := Win16_VisRgnStack[GRBHRgn - 1].Y1;
+     GRBX2 := Win16_VisRgnStack[GRBHRgn - 1].X2; GRBY2 := Win16_VisRgnStack[GRBHRgn - 1].Y2;
+     GRBActive := Win16_VisRgnStack[GRBHRgn - 1].Active;
+    End Else Begin
+     GRBX1 := Win16_ClipX1; GRBY1 := Win16_ClipY1;
+     GRBX2 := Win16_ClipX2; GRBY2 := Win16_ClipY2;
+     GRBActive := Win16_ClipActive;
+    End;
+    If GRBActive And (GdiX1 < GRBX2) And (GdiX2 > GRBX1) And
+     (GdiY1 < GRBY2) And (GdiY2 > GRBY1) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
