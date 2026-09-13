@@ -64,10 +64,10 @@ Var
  ModuleCRC,DeclaredModuleSize:LongInt;
  ListFile:Text;
  ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull,CurrentLineError,
- ConditionalSkipped,FatalIncludeError:Boolean;
+ CurrentLineWarning,CurrentLineData,ConditionalSkipped,FatalIncludeError:Boolean;
  ModuleSeen,ModuleOpen,ModuleClosed,ModuleCRCActive,ModuleSizeKnown,
  ModuleMotorolaLayoutChanged:Boolean;
- ProgramName,Title,ParsedComment,CurrentSourceName:String;
+ ProgramName,Title,ParsedComment,CurrentSourceName,CurrentLineErrorText:String;
  IncludeDepth:Integer;
  InitialOptions:TOptionState;
 
@@ -125,12 +125,16 @@ End;
 
 Procedure Error(S:String);Begin
  Inc(Errors);WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): erreur: ',S);
- if PassNo=2 Then CurrentLineError:=True;
- if(PassNo=2)and ListOn and ErrorsInList Then OutText('**** ERREUR: '+S)
+ if PassNo=2 Then Begin
+  CurrentLineError:=True;
+  if CurrentLineErrorText=''Then CurrentLineErrorText:=S
+  else CurrentLineErrorText:=CurrentLineErrorText+'; '+S
+ End
 End;
 
 Procedure Warning(S:String);Begin
- Inc(Warnings);WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): avertissement: ',S)
+ Inc(Warnings);if PassNo=2 Then CurrentLineWarning:=True;
+ WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): avertissement: ',S)
 End;
 
 Function NextCRC(CRC:LongInt;B:Byte):LongInt;
@@ -255,7 +259,7 @@ Var
 Begin
  N:=Upper(N);
  if not ValidSymbolName(N)Then Begin
-  if PassNo=2 Then Error('etiquette incorrecte: '+N);Exit
+  if PassNo=2 Then Error('BAD LABEL: '+N);Exit
  End;
  P:=FindSymbol(N);if P=Nil Then Begin
   if not ReserveWorkspace(SymbolWorkspaceSize)Then Exit;
@@ -265,7 +269,7 @@ Begin
   Error('symbole defini deux fois: '+N);Exit
  End;
  if(PassNo=2)and P^.Defined and(P^.Value<>V)and not P^.Mutable Then Begin
-  Error('erreur de phase: '+N);Exit
+  Error('PHASING: '+N);Exit
  End;
  P^.Value:=V;P^.Kind:=K;P^.Defined:=True;P^.Mutable:=CanSet
 End;
@@ -464,18 +468,18 @@ Begin
  End else if DecisionCursor<>Nil Then Begin
   SelectSize:=DecisionCursor^.Size;DecisionCursor:=DecisionCursor^.Next
  End else Begin
-  Error('erreur de phase dans la selection d''adressage');SelectSize:=Proposed
+  Error('PHASING');SelectSize:=Proposed
  End
 End;
 
 Procedure CheckByte(V:LongInt;Known:Boolean;What:String);
 Begin
- if(PassNo=2)and Known and((V<-$80)or(V>$FF))Then Error(What+' hors plage 8 bits')
+ if(PassNo=2)and Known and((V<-$80)or(V>$FF))Then Error('OUT OF RANGE: '+What)
 End;
 
 Procedure CheckWord(V:LongInt;Known:Boolean;What:String);
 Begin
- if(PassNo=2)and Known and((V<-$8000)or(V>$FFFF))Then Error(What+' hors plage 16 bits')
+ if(PassNo=2)and Known and((V<-$8000)or(V>$FFFF))Then Error('OUT OF RANGE: '+What)
 End;
 
 Function NextPart(Var S:String):String;
@@ -696,11 +700,13 @@ Begin
  Op:=BranchOp(M,LongB);if Op<>$FFFF Then Begin
   V:=Eval(Operand,K);EmitOp(Op);if LongB Then Begin
    Off:=V-(PC+2);
-   if(PassNo=2)and K and((Off<-$8000)or(Off>$7FFF))Then Error('branche longue hors portee');EmitW(Off)
+   if(PassNo=2)and K and((Off<-$8000)or(Off>$7FFF))Then Error('OUT OF RANGE');
+   if(PassNo=2)and K and(Off>=-$80)and(Off<=$7F)Then Warning('branche longue inutile');
+   EmitW(Off)
   End else
   Begin
    Off:=V-(PC+1);
-   if(PassNo=2)and K and((Off<-$80)or(Off>$7F))Then Error('branche hors portee');
+   if(PassNo=2)and K and((Off<-$80)or(Off>$7F))Then Error('OUT OF RANGE');
    Emit(Byte(Off))
   End;Exit
  End;
@@ -739,7 +745,7 @@ Begin
    $108E else if M='STY'Then Op:=$108F else if M='LDS'Then Op:=$10CE else if M=
    'STS'Then Op:=$10CF else if M='CMPU'Then Op:=$1183 else if M='CMPS'Then Op:=$118C;
    if Op=0 Then Begin
-    Error('instruction inconnue: '+M);Exit
+    Error('BAD INSTR: '+M);Exit
    End;Base:=Byte(Op);WI:=True;Emit(Byte(Op shr 8))
   End
  End;
@@ -750,12 +756,13 @@ Begin
  End;
  if(A<>'')and(A[1]='#')Then Begin
   if(M='STA')or(M='STB')or(M='STD')or(M='STX')or(M='STU')or(M='STY')or(M='STS')or(M='JMP')
-  or(M='JSR')Then Error('mode immediat illegal');Delete(A,1,1);Emit(Base);V:=Eval(A,K);
+  or(M='JSR')Then Error('ADDRESS MODE');Delete(A,1,1);Emit(Base);V:=Eval(A,K);
   if WI Then Begin CheckWord(V,K,'operande immediate');EmitW(V)End
   else Begin CheckByte(V,K,'operande immediate');Emit(Byte(V))End;Exit
  End;
  if UnaryBase(M,B)Then Base:=B;K:=True;if(A<>'')and(A[1]='>')Then Begin
   Delete(A,1,1);V:=Eval(A,K);CheckWord(V,K,'adresse etendue');
+  if(PassNo=2)and not Motorola Then Warning('mode etendu en programme OS-9');
   if UnaryBase(M,B)Then Emit(B+$70)else Emit(Base+$30);EmitW(V)
  End else
  Begin
@@ -770,6 +777,7 @@ Begin
   End else
   Begin
    CheckWord(V,K,'adresse etendue');
+   if(PassNo=2)and not Motorola Then Warning('mode etendu en programme OS-9');
    if UnaryBase(M,B)Then Emit(B+$70)else Emit(Base+$30);EmitW(V)
   End
  End
@@ -856,53 +864,84 @@ Begin
  Rest:=Copy(Line,I,255);SplitOperandAndComment(Op,Rest,Operand,Comment)
 End;
 
+Procedure StartListingPage;
+Var
+ S:String;
+Begin
+ if PageLine<>0 Then Exit;
+ Inc(PageNo);S:='Microware OS-9 Assembler';
+ While Length(S)<PageWidth-10 do S:=S+' ';
+ S:=S+'Page '+Hex(PageNo,2);if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);
+ OutText(S);Inc(PageLine);
+ S:=ProgramName;if Title<>''Then S:=S+' - '+Title;
+ if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);OutText(S);Inc(PageLine);
+ OutText('');Inc(PageLine)
+End;
+
+Procedure EjectListingPage;
+Begin
+ if PageLine=0 Then Exit;
+ if FormFeed Then OutText(#12)
+ else While PageLine<PageLength do Begin OutText('');Inc(PageLine)End;
+ PageLine:=0
+End;
+
+Procedure ListingPhysical(S:String);
+Begin
+ StartListingPage;if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);
+ OutText(S);Inc(PageLine);if PageLine>=PageLength Then EjectListingPage
+End;
+
+Procedure ListingSpaces(N:LongInt);
+Begin
+ While N>0 do Begin ListingPhysical('');Dec(N)End
+End;
+
 Procedure ListLine(Addr:LongInt;OldPC:LongInt;Src:String);
 Var
  S,Bs:String;
- I,FirstByte,LastByte:LongInt;
-
- Procedure StartPage;
- Begin
-  if PageLine=0 Then Begin
-   Inc(PageNo);OutText(ProgramName+'  '+Title+'  Page '+Hex(PageNo,2));OutText('');
-   Inc(PageLine,2)
-  End
- End;
+ I,FirstByte,LastByte,BytesPerLine:LongInt;
+ Mark:Char;
 
  Procedure PutPhysicalLine(Address:LongInt;BytesText,SourceText:String;First:Boolean);
  Begin
-  StartPage;
- if Narrow Then Begin
-   if CurrentLineError Then S:='E ' else if ConditionalSkipped Then S:='C ' else S:='  ';
-   S:=S+Hex(Address,4)+' '+BytesText;
+  if First Then Begin
+   if CurrentLineError Then Mark:='E'else if CurrentLineWarning Then Mark:='W'
+   else if CurrentLineData Then Mark:='D'else if ConditionalSkipped Then Mark:='C'
+   else Mark:=' ';
+  End else Mark:=' ';
+  if Narrow Then Begin
+   S:=Mark+' '+Hex(Address,4)+' '+BytesText;
    if SourceText<>''Then S:=S+' '+SourceText
-  End else if First Then Begin
-   if CurrentLineError Then S:='E' else if ConditionalSkipped Then S:='C' else S:=' ';
-   S:=Hex(LineNo,4)+S+Hex(Address,4)+' '+Copy(BytesText+'               ',1,15)+SourceText
-  End
-  else S:='     '+Hex(Address,4)+' '+Copy(BytesText+'               ',1,15);
-  if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);OutText(S);Inc(PageLine);
-  if PageLine>=PageLength Then Begin
-   if FormFeed Then OutText(#12);PageLine:=0
-  End
+  End else Begin
+   if First Then S:=Hex(LineNo,4)+' '+Mark+' '+Hex(Address,4)+' '
+   else S:='       '+Hex(Address,4)+' ';
+   S:=S+Copy(BytesText+'        ',1,8);
+   if First Then S:=S+' '+SourceText
+  End;
+  ListingPhysical(S)
  End;
 
 Begin
  if(PassNo<>2)or not ListOn Then Exit;
- FirstByte:=0;LastByte:=LineByteCount-1;if LastByte>4 Then LastByte:=4;Bs:='';
+ if Narrow Then BytesPerLine:=3 else BytesPerLine:=4;
+ FirstByte:=0;LastByte:=LineByteCount-1;
+ if LastByte>=BytesPerLine Then LastByte:=BytesPerLine-1;Bs:='';
  For I:=FirstByte to LastByte do if(OldPC+I>=0)and(OldPC+I<=ImageSize)Then
-  Bs:=Bs+Hex(Image^[OldPC+I],2)+' ';
+  Bs:=Bs+Hex(Image^[OldPC+I],2);
  PutPhysicalLine(Addr,Bs,Src,True);
  if Generated and ConstantDirective Then Begin
-  FirstByte:=5;
+  FirstByte:=BytesPerLine;
   While FirstByte<LineByteCount do Begin
-   LastByte:=FirstByte+4;if LastByte>=LineByteCount Then LastByte:=LineByteCount-1;
-   Bs:='';
+   LastByte:=FirstByte+BytesPerLine-1;
+   if LastByte>=LineByteCount Then LastByte:=LineByteCount-1;Bs:='';
    For I:=FirstByte to LastByte do if(OldPC+I>=0)and(OldPC+I<=ImageSize)Then
-    Bs:=Bs+Hex(Image^[OldPC+I],2)+' ';
-   PutPhysicalLine(OldPC+FirstByte,Bs,'',False);Inc(FirstByte,5)
+    Bs:=Bs+Hex(Image^[OldPC+I],2);
+   PutPhysicalLine(OldPC+FirstByte,Bs,'',False);Inc(FirstByte,BytesPerLine)
   End
- End
+ End;
+ if CurrentLineError and ErrorsInList and(CurrentLineErrorText<>'')Then
+  ListingPhysical('**** '+CurrentLineErrorText)
 End;
 
 Function LabelForbidden(Op:String):Boolean;
@@ -1014,7 +1053,7 @@ Procedure ProcessFile(FileName:String);
 Var
  F:Text;
  Line,L,O,A:String;
- OldPC,V:LongInt;
+ OldPC,OldDataPC,ListAddr,V:LongInt;
  K:Boolean;
  Cond:Array[1..16]of TConditionalFrame;
  Depth,OverflowDepth,I,SavedLine,OperandCount:Integer;
@@ -1043,8 +1082,10 @@ Begin
   if Length(Line)>MaxLine Then Begin
    if PassNo=2 Then Error('ligne de plus de 120 caracteres');Line:=Copy(Line,1,MaxLine)
   End;
-  ParseFields(Line,L,O,A,ParsedComment);OldPC:=PC;LineByteCount:=0;
-  ConstantDirective:=False;CurrentLineError:=False;ConditionalSkipped:=False;
+  ParseFields(Line,L,O,A,ParsedComment);OldPC:=PC;OldDataPC:=DataPC;ListAddr:=OldPC;
+  LineByteCount:=0;
+  ConstantDirective:=False;CurrentLineError:=False;CurrentLineWarning:=False;
+  CurrentLineData:=False;CurrentLineErrorText:='';ConditionalSkipped:=False;
   if not ValidateSourceFields(L,O,A,ParsedComment)Then Begin
    ListLine(OldPC,OldPC,Line);Continue
   End;
@@ -1098,7 +1139,7 @@ Begin
    if L=''Then Error('EQU exige une etiquette')else DefineSymbol(L,V,'E',False)
   End else if O='SET'Then Begin
    V:=Eval(A,K);
-   if L=''Then Error('SET exige une etiquette')else DefineSymbol(L,V,'E',True)
+   if L=''Then Error('SET exige une etiquette')else DefineSymbol(L,V,'S',True)
   End else if(O='FCB')or(O='FDB')Then Begin
    ConstantDirective:=True;
    Repeat L:=NextPart(A);if(L<>'')and(L[1]='"')Then Begin
@@ -1123,6 +1164,8 @@ Begin
     End
    End else Error('chaine attendue')
   End else if O='RMB'Then Begin
+   CurrentLineData:=not Motorola;
+   if not Motorola Then ListAddr:=OldDataPC;
    if ModuleOpen and Motorola Then ModuleMotorolaLayoutChanged:=True;
    V:=Eval(A,K);if Motorola Then Begin
     if L<>''Then DefineSymbol(L,PC,'D',False);Inc(PC,V)
@@ -1188,13 +1231,17 @@ Begin
   'USE'Then Begin
    ListLine(OldPC,OldPC,Line);ProcessFile(A);LineByteCount:=0;Continue
   End
-  else if(O='PAG')or(O='PAGE')Then Begin PageLine:=0;Continue End
+  else if(O='PAG')or(O='PAGE')Then Begin
+   if(PassNo=2)and ListOn Then EjectListingPage;Continue
+  End
   else if O='SPC'Then Begin
    if Trim(A)=''Then V:=1 else V:=Eval(A,K);
-   if PassNo=2 Then For I:=1 to V do OutText('');Continue
+   if not K Then Error('expression SPC incorrecte')
+   else if(V<0)or(V>255)Then Error('OUT OF RANGE: SPC')
+   else if(PassNo=2)and ListOn Then ListingSpaces(V);Continue
   End else if O='OPT'Then ApplyOption(A,True)
   else if O='END'Then StopAssembly:=True else EncodeInstruction(O,A);
-  ListLine(OldPC,OldPC,Line)
+  ListLine(ListAddr,OldPC,Line)
  End;
  if(PassNo=2)and((Depth<>0)or(OverflowDepth<>0))Then Error('ENDC manquant');
  if(PassNo=2)and(IncludeDepth=1)and ModuleOpen Then Error('EMOD manquant');
@@ -1244,13 +1291,32 @@ End;
 
 Procedure PrintSymbols;
 Var
- P:PSymbol;
+ P,Q,R,Sorted:PSymbol;
+ S,E:String;
+ Col,Cols,EntryWidth:Integer;
 Begin
- if not SymbolsOn Then Exit;OutText('');OutText('Table des symboles');P:=Symbols;
+ if not SymbolsOn Then Exit;
+ { Tri alphabetique stable, uniquement par chainage des noeuds. }
+ Sorted:=Nil;P:=Symbols;
  While P<>Nil do Begin
-  OutText(Copy(P^.Name+'                                ',1,32)+' '+Hex(P^.Value,4)+' '+
-  P^.Kind);P:=P^.Next
- End
+  Q:=P^.Next;
+  if(Sorted=Nil)or(P^.Name<Sorted^.Name)Then Begin P^.Next:=Sorted;Sorted:=P End
+  else Begin
+   R:=Sorted;While(R^.Next<>Nil)and(R^.Next^.Name<=P^.Name)do R:=R^.Next;
+   P^.Next:=R^.Next;R^.Next:=P
+  End;P:=Q
+ End;Symbols:=Sorted;
+ ListingPhysical('');ListingPhysical('Symbol Table');
+ if Narrow Then EntryWidth:=16 else EntryWidth:=20;
+ Cols:=PageWidth div EntryWidth;if Cols<1 Then Cols:=1;S:='';Col:=0;P:=Symbols;
+ While P<>Nil do Begin
+  if P^.Defined Then E:=P^.Kind else E:='U';
+  E:=Copy(P^.Name+'        ',1,8)+' '+Hex(P^.Value,4)+' '+E;
+  While Length(E)<EntryWidth do E:=E+' ';S:=S+E;Inc(Col);
+  if Col=Cols Then Begin ListingPhysical(S);S:='';Col:=0 End;
+  P:=P^.Next
+ End;
+ if S<>''Then ListingPhysical(S)
 End;
 
 Procedure ParseArgs;

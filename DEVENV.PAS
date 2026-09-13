@@ -7831,6 +7831,13 @@ Var
   Active: Boolean;
  End;
  Win16_VisRgnStackTop: Integer;
+ { GDI.EXE SetEnvironment/GetEnvironment (2026-09-13, demande explicite,    }
+ { ordinaux 132/133) - UN SEUL environnement de peripherique memorise      }
+ { (coherent avec le modele mono-fenetre/mono-DC de ce sous-ensemble :     }
+ { aucun vrai pilote d'imprimante/peripherique multiple n'existe). }
+ Win16_EnvDeviceName: String;
+ Win16_EnvData: Array[0..255] Of Byte;
+ Win16_EnvDataLen: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -10901,6 +10908,14 @@ Function Win16_LoadNE(Var C: TEmuCPU; Const Path: String): Boolean; Forward;
 Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
 Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String; Forward;
 Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
+{ Crochet de verification TEMPORAIRE (2026-09-13, ajout des ordinaux GDI  }
+{ 130/131/132/133/134) - memes routines deja definies plus loin, meme     }
+{ raison Forward que ci-dessus. }
+Function Win16_ResolveImportSlot(Var C: TEmuCPU; ModIdx: Word;
+ IsOrdinal: Boolean; Value: Word): Integer; Forward;
+Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer); Forward;
+Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
+Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
 Procedure Win16_SetupEntryRegs(Var C: TEmuCPU); Forward;
 Procedure Emu_InitBDA(Var P: TEmulatorPanel); Forward;
 Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel); Forward;
@@ -10938,6 +10953,9 @@ Var
  DmpHexMode: Boolean;
  DmpWatchHits: LongInt;
  DmpErr: Integer;
+ GdiTestSlot: Integer;
+ GdiTestI: Integer;
+ GdiTestS: String;
 Begin
  For I := 1 To ParamCount Do Begin
   Arg := ParamStr(I);
@@ -91151,9 +91169,9 @@ End;
 { 10870, crochet /WIN16DMP) - pas la peine de le repeter ici (FPC refuse un  }
 { Forward en double). }
 Procedure Emu_Done(Var C: TEmuCPU); Forward;
-Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
+{ Emu_WriteByte et Emu_PushWord deja forward-declarees plus haut (crochet  }
+{ GDITEST temporaire, pres du Forward de Emu_ReadWord). }
 Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word); Forward;
-Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
 Function Emu_PopWord(Var C: TEmuCPU): Word; Forward;
 { Emu_ReadWord et Emu_StepOne ont deja un Forward plus haut (~ligne 10539/ }
 { 10557) - pas la peine de le repeter ici (FPC refuse un Forward en double)}
@@ -91381,6 +91399,8 @@ Begin
  Win16_ClipX1 := 0; Win16_ClipY1 := 0; Win16_ClipX2 := 0; Win16_ClipY2 := 0;
  Win16_DCSaveLevel := 0;
  Win16_VisRgnStackTop := 0;
+ Win16_EnvDeviceName := '';
+ Win16_EnvDataLen := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -93032,6 +93052,15 @@ Var
  { GDI.EXE MulDiv (2026-09-13, demande explicite). }
  MDNumber, MDNumerator, MDDenominator: SmallInt;
  MDRet: LongInt;
+ { GDI.EXE SetEnvironment/GetEnvironment/GetRgnBox (2026-09-13, demande     }
+ { explicite). }
+ SEDevSeg, SEDevOfs, SEEnvSeg, SEEnvOfs, SECount: Word;
+ SEDevName: String;
+ SEI: Integer;
+ GRBSeg, GRBOfs: Word;
+ GRBX1, GRBY1, GRBX2, GRBY2: Integer;
+ GRBActive: Boolean;
+ GRBHRgn: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -96310,10 +96339,9 @@ Begin
     { distinctement CHAQUE sauvegarde, plus fidele au vrai contrat de        }
     { l'API (chaque HRGN sauvegarde doit rester distinct) et sans risque     }
     { puisqu'aucun autre ordinal de ce sous-ensemble ne deferencie un        }
-    { HRGN par sa valeur. RestoreVisRgn (contrepartie reelle de cette        }
-    { pile) n'a PAS ete demande dans ce lot - les sauvegardes s'accumulent  }
-    { honnetement sans jamais etre consommees pour l'instant, meme esprit   }
-    { que SaveDC/$11 sans RestoreDC. Pile pleine -> echec honnete (0), pas  }
+    { HRGN par sa valeur. RestoreVisRgn/$130 (contrepartie reelle de cette   }
+    { pile, ajoutee dans un lot ulterieur - voir ce cas plus bas) depile     }
+    { REELLEMENT ces sauvegardes. Pile pleine -> echec honnete (0), pas     }
     { une valeur inventee. }
     If Win16_VisRgnStackTop < 16 Then Begin
      Inc(Win16_VisRgnStackTop);
@@ -96326,6 +96354,146 @@ Begin
     End Else
      P.CPU.Regs.AX := 0;
     ArgWords := 1;
+   End;
+   130: Begin
+    { RestoreVisRgn(hdc):HRGN - ordinal/signature VERIFIES via le VRAI     }
+    { source Wine (gdi.exe16.spec : "pascal -ret16                        }
+    { RestoreVisRgn(word)", 1 mot, retour 16 bits AX seul). REEL :          }
+    { contrepartie EXACTE de SaveVisRgn/$129 - depile REELLEMENT le          }
+    { dernier instantane de la pile (Win16_VisRgnStack) et restaure          }
+    { VRAIMENT Win16_ClipX1/Y1/X2/Y2/ClipActive a partir de cette copie      }
+    { (pas juste un compteur decremente comme SaveDC/RestoreDC) - retourne  }
+    { le meme indice-handle que celui rendu par le SaveVisRgn correspondant }
+    { (identifie reellement QUELLE sauvegarde vient d'etre restauree).       }
+    { Pile vide -> echec honnete (0, ERROR), pas une valeur inventee. }
+    If Win16_VisRgnStackTop > 0 Then Begin
+     Win16_ClipX1 := Win16_VisRgnStack[Win16_VisRgnStackTop].X1;
+     Win16_ClipY1 := Win16_VisRgnStack[Win16_VisRgnStackTop].Y1;
+     Win16_ClipX2 := Win16_VisRgnStack[Win16_VisRgnStackTop].X2;
+     Win16_ClipY2 := Win16_VisRgnStack[Win16_VisRgnStackTop].Y2;
+     Win16_ClipActive := Win16_VisRgnStack[Win16_VisRgnStackTop].Active;
+     P.CPU.Regs.AX := Word(Win16_VisRgnStackTop);
+     Dec(Win16_VisRgnStackTop);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   131: Begin
+    { InquireVisRgn(hdc):HRGN - ordinal/signature VERIFIES via le VRAI     }
+    { source Wine (gdi.exe16.spec : "pascal -ret16                        }
+    { InquireVisRgn(word)", 1 mot, retour 16 bits AX seul). REEL EN         }
+    { PARTIE : contrairement a SaveVisRgn/$129/RestoreVisRgn/$130, cette    }
+    { fonction ne fait qu'INTERROGER (aucune pile touchee) - retourne le    }
+    { handle generique 1, meme convention "handle=1 designe LA region       }
+    { courante" que tous les autres createurs de region de ce sous-          }
+    { ensemble (CreateRectRgn/CreatePolygonRgn/etc.), puisqu'aucune vraie   }
+    { table d'objets region nommes n'existe pour distinguer plusieurs        }
+    { HRGN "courants" simultanes. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   132: Begin
+    { SetEnvironment(lpDevice,lpEnviron,cbEnviron):int - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec :          }
+    { "pascal -ret16 SetEnvironment(str str word)", 2 pointeurs LOIN (4      }
+    { mots) + 1 mot = 5 mots, retour 16 bits AX seul). REEL EN PARTIE :      }
+    { fonction interne GDI obscure (memorise un bloc de donnees de           }
+    { pilote associe a un nom de peripherique, jamais documentee en          }
+    { detail par Microsoft) - ce sous-ensemble memorise REELLEMENT UN       }
+    { SEUL environnement (Win16_EnvDeviceName/EnvData/EnvDataLen, coherent   }
+    { avec le modele mono-fenetre/mono-DC : aucun vrai pilote                }
+    { d'imprimante/peripherique multiple n'existe), copiant reellement       }
+    { jusqu'a 256 octets bruts (PAS necessairement ASCIIZ - cbEnviron        }
+    { donne la vraie longueur) depuis la memoire emulee. Retourne 1 si le    }
+    { contenu tient dans la limite de 256 octets, 0 sinon (echec honnete,    }
+    { limite disclosee plutot qu'une troncature silencieuse inventee). }
+    SEDevSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    SEDevOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SEEnvSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SEEnvOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SECount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SEDevName := Win16_ReadGuestString(P.CPU, SEDevSeg, SEDevOfs);
+    If SECount > 256 Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     Win16_EnvDeviceName := SEDevName;
+     For SEI := 0 To SECount - 1 Do
+      Win16_EnvData[SEI] := Emu_ReadByte(P.CPU, SEEnvSeg, Word(SEEnvOfs + SEI));
+     Win16_EnvDataLen := SECount;
+     P.CPU.Regs.AX := 1;
+    End;
+    ArgWords := 5;
+   End;
+   133: Begin
+    { GetEnvironment(lpDevice,lpEnviron,cbEnviron):int - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec :          }
+    { "pascal -ret16 GetEnvironment(str str word)", meme forme que          }
+    { SetEnvironment/$132, 5 mots). REEL EN PARTIE, contrepartie exacte     }
+    { de SetEnvironment/$132 : si le nom de peripherique correspond a        }
+    { celui REELLEMENT memorise, recopie REELLEMENT jusqu'a cbEnviron        }
+    { octets stockes vers lpEnviron et retourne la VRAIE longueur totale     }
+    { disponible (comportement documente : permet a l'appelant de            }
+    { redemander avec un tampon plus grand) ; lpEnviron=NULL (0000:0000)     }
+    { ne copie rien mais retourne quand meme cette longueur (idiome           }
+    { "interroger la taille" reel) ; nom non correspondant ou aucun           }
+    { environnement jamais memorise -> 0 (echec honnete). }
+    SEDevSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    SEDevOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SEEnvSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SEEnvOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SECount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SEDevName := Win16_ReadGuestString(P.CPU, SEDevSeg, SEDevOfs);
+    If (Win16_EnvDataLen > 0) And (SEDevName = Win16_EnvDeviceName) Then Begin
+     If (SEEnvSeg <> 0) Or (SEEnvOfs <> 0) Then
+      For SEI := 0 To SECount - 1 Do Begin
+       If SEI >= Win16_EnvDataLen Then Break;
+       Emu_WriteByte(P.CPU, SEEnvSeg, Word(SEEnvOfs + SEI), Win16_EnvData[SEI]);
+      End;
+     P.CPU.Regs.AX := Word(Win16_EnvDataLen);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   134: Begin
+    { GetRgnBox(hrgn,lpRect):int - ordinal/signature VERIFIES via le       }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                    }
+    { GetRgnBox(word ptr)", 1 mot + 1 pointeur LOIN (2 mots) = 3 mots,       }
+    { retour 16 bits AX seul, meme forme que GetClipBox/$77). REEL EN        }
+    { PARTIE, et plus riche que GetClipBox/$77 : si hRgn correspond a un     }
+    { indice encore valide de la pile SaveVisRgn/$129 (Win16_VisRgnStack),   }
+    { renvoie REELLEMENT le rectangle englobant de CETTE sauvegarde           }
+    { precise (et non le clip courant) - sinon (hRgn=1, la convention        }
+    { generique "region courante" utilisee partout ailleurs, ou toute        }
+    { autre valeur), retombe sur le MEME comportement que GetClipBox/$77     }
+    { (rectangle de clip mono-DC courant, ou etendue client complete si      }
+    { aucun clip actif). }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GRBHRgn := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    If (GRBHRgn >= 1) And (GRBHRgn <= Win16_VisRgnStackTop) And (GRBHRgn <> 1) Then Begin
+     GRBX1 := Win16_VisRgnStack[GRBHRgn].X1; GRBY1 := Win16_VisRgnStack[GRBHRgn].Y1;
+     GRBX2 := Win16_VisRgnStack[GRBHRgn].X2; GRBY2 := Win16_VisRgnStack[GRBHRgn].Y2;
+     GRBActive := Win16_VisRgnStack[GRBHRgn].Active;
+    End Else Begin
+     GRBX1 := Win16_ClipX1; GRBY1 := Win16_ClipY1;
+     GRBX2 := Win16_ClipX2; GRBY2 := Win16_ClipY2;
+     GRBActive := Win16_ClipActive;
+     If (Not GRBActive) And (Win16_ActiveDCWindow >= 0) Then Begin
+      GRBX1 := 0; GRBY1 := 0;
+      GRBX2 := Win16_WindowW[Win16_ActiveDCWindow] - 2;
+      GRBY2 := Win16_WindowH[Win16_ActiveDCWindow] - 2;
+      GRBActive := True;
+     End;
+    End;
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, Word(GRBX1));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), Word(GRBY1));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 4), Word(GRBX2));
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 6), Word(GRBY2));
+    If Not GRBActive Then
+     P.CPU.Regs.AX := 1 { NULLREGION }
+    Else
+     P.CPU.Regs.AX := 2; { SIMPLEREGION }
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
