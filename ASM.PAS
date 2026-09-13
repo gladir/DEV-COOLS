@@ -58,7 +58,7 @@ Var
  Decisions,DecisionTail,DecisionCursor:PDecision;
  IncludeStack:PIncludeNode;
  Image:^TBytes;
- SourceName,ObjectName,ListName:String;
+ SourceName,ObjectName,ObjectPath,RootSourcePath,ListName:String;
  MakeObject,ObjectExplicit,ListOn,SymbolsOn,CondList,ErrorsInList,FormFeed,Generated,
  Narrow,Motorola:Boolean;
  PageLength,PageWidth,MemoryK,PassNo,Errors,Warnings,LineNo,PageNo,PageLine,
@@ -1014,6 +1014,32 @@ Begin
   JoinPath:=DirectoryName+FileName else JoinPath:=DirectoryName+'\'+FileName
 End;
 
+Function ReplaceExtension(Path,NewExtension:String):String;
+Var
+ I,LastSeparator,LastDot:Integer;
+Begin
+ LastSeparator:=0;LastDot:=0;
+ For I:=1 to Length(Path)do Begin
+  if Path[I]in['/','\',':']Then Begin LastSeparator:=I;LastDot:=0 End
+  else if Path[I]='.'Then LastDot:=I
+ End;
+ if LastDot>LastSeparator Then Path:=Copy(Path,1,LastDot-1);
+ ReplaceExtension:=Path+NewExtension
+End;
+
+Function HostOutputPath(Path:String):String;
+Var
+ Root:String;
+ I:Integer;
+Begin
+ HostOutputPath:=Path;if Path=''Then Exit;
+ if Path[1]='/'Then Begin
+  Root:=GetEnv('OS9ROOT');if Root<>''Then Path:=JoinPath(Root,Copy(Path,2,255))
+ End;
+ For I:=1 to Length(Path)do if Path[I]='/'Then Path[I]:='\';
+ HostOutputPath:=Path
+End;
+
 Function CanonicalPath(Path:String):String;
 Var
  I:Integer;
@@ -1089,6 +1115,7 @@ Begin
  if not ResolveAndOpenSource(FileName,CurrentSourceName,F,Resolved)Then Begin
   Fatal('CAN''T OPEN PATH: '+FileName);FatalIncludeError:=True;Exit
  End;
+ if IncludeDepth=0 Then RootSourcePath:=Resolved;
  if IncludeIsActive(Resolved)Then Begin
   Close(F);Fatal('USE CYCLE: '+FileName);FatalIncludeError:=True;Exit
  End;
@@ -1305,12 +1332,16 @@ Var
 
  Procedure RemovePartialObject;
  Begin
-  Assign(F,ObjectName);Erase(F);WriteCode:=IOResult;
+  Assign(F,ObjectPath);Erase(F);WriteCode:=IOResult;
   if WriteCode<>0 Then WriteLn(StdErr,'CAN''T DELETE PATH: ',ObjectName)
  End;
 Begin
  if not ValidateModuleImage Then Exit;
- Assign(F,ObjectName);Rewrite(F,1);if IOResult<>0 Then Begin
+ ObjectPath:=HostOutputPath(ObjectName);
+ if(RootSourcePath<>'')and(CanonicalPath(ObjectPath)=RootSourcePath)Then Begin
+  Fatal('OBJECT PATH IS SOURCE PATH: '+ObjectName);Exit
+ End;
+ Assign(F,ObjectPath);Rewrite(F,1);if IOResult<>0 Then Begin
   Fatal('OBJECT PATH: '+ObjectName);Exit
  End;
  WriteCode:=0;
@@ -1383,9 +1414,7 @@ Begin
   End;Inc(I)
  End;
  if not ObjectExplicit Then Begin
-  ObjectName:=SourceName;
-  if Pos('.',ObjectName)>0 Then ObjectName:=Copy(ObjectName,1,Pos('.',ObjectName)-1);
-  ObjectName:=ObjectName+'.obj'
+  ObjectName:=ReplaceExtension(SourceName,'.obj')
  End;if ListingToFile and(ListName='')Then Begin
   WriteLn('ASM: nom du listing absent');Halt(2)
  End
@@ -1411,23 +1440,15 @@ Begin
  End
 End;
 
-Var
- F:File;
- Code:Integer;
-
 BEGIN
  Symbols:=Nil;Decisions:=Nil;DecisionTail:=Nil;DecisionCursor:=Nil;IncludeStack:=Nil;
- SourceName:='';ObjectName:='';ListName:='';MakeObject:=False;
+ SourceName:='';ObjectName:='';ObjectPath:='';RootSourcePath:='';ListName:='';MakeObject:=False;
  ObjectExplicit:=False;ListOn:=False;SymbolsOn:=False;ListingToFile:=False;
  Motorola:=False;Narrow:=False;FormFeed:=False;Generated:=False;
  ParseArgs;SaveOptions(InitialOptions);WorkspaceLimit:=LongInt(MemoryK)*1024;
  WorkspaceUsed:=WorkspaceOverhead;WorkspaceFull:=False;FatalIncludeError:=False;
  FatalError:=False;TooManyErrors:=False;
- Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
-  WriteLn(StdErr,'CAN''T OPEN PATH: ',SourceName);Halt(ExitFatalError)
- End;Close(F);Code:=IOResult;if Code<>0 Then Begin
-  WriteLn(StdErr,'READ ERROR: ',SourceName);Halt(ExitFatalError)
- End;GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
+ GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
  if ListingToFile Then Begin
   Assign(ListFile,ListName);Rewrite(ListFile);if IOResult<>0 Then Begin
    WriteLn(StdErr,'CAN''T OPEN PATH: ',ListName);Halt(ExitFatalError)
@@ -1437,6 +1458,7 @@ BEGIN
  For PassNo:=1 to 2 do Begin
   if not WorkspaceFull and not FatalIncludeError Then Begin
    RestoreOptions(InitialOptions);
+   FillChar(Image^,SizeOf(TBytes),0);
    PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
    PageLine:=0;StopAssembly:=False;IncludeDepth:=0;CurrentSourceName:=SourceName;
    ModuleSeen:=False;ModuleOpen:=False;ModuleClosed:=False;ModuleCRCActive:=False;
