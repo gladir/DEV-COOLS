@@ -132856,22 +132856,23 @@ Begin
    { COS (Cray Operating System, Cray-1, 1976) - demande explicite de       }
    { l'utilisateur, jeu de commandes limite a celles listees               }
    { (gladir.com/OS/COS/*.htm) : CHANNEL/CLASS/CLEAR/COMMENT/CONC/         }
-   { CONFIGURE/CONSOLE/DATASET/DEFAULT/DELAY/DISK/DKERR/DROP/DSPL/HELP/    }
-   { PAUSE/STATUS. Aucun format de reponse REEL (colonnes exactes de       }
-   { DSPL/DISK/STATUS/CONC/DATASET, etc.) n'a pu etre verifie contre une   }
-   { source primaire (manuel COS introuvable en ligne) - reponses          }
-   { honnetement simplifiees/disclosees plutot qu'inventees en detail,      }
-   { meme esprit que les autres "simplifications disclosees" de ce         }
-   { fichier (ex: NetBiosEnum). Ce terminal ne fait PAS tourner de vrai     }
-   { flux de commandes COS (pas de fichier de commandes/JCL, pas de file    }
-   { d attente de jobs reelle) : DROP/PAUSE/CLASS/CONSOLE/DELAY restent      }
-   { donc de simples accuses de reception textuels, un seul "job"           }
-   { interactif existant ici. DEFAULT est la seule commande de ce lot a     }
-   { garder un etat reel (CosDefaultDevice, meme discipline que MONTYPE     }
-   { du shell OS-9 voisin - voir TermCmd_HELP plus haut). CAL (assembleur   }
-   { Cray-1 reel, voir TermCmd_Cal plus haut) fait exception : contrairement}
-   { au reste de ce shell, ce n'est PAS un accuse de reception simplifie    }
-   { mais l'integration integrale et fonctionnelle de CAL.PAS, demande      }
+   { CONFIGURE/CONSOLE/DATASET/DEFAULT/DELAY/DISK/DKERR/DROP/DSPL/END/     }
+   { ENTER/ERROR/FLUSH/HELP/PAUSE/STATUS. Aucun format de reponse REEL      }
+   { (colonnes exactes de DSPL/DISK/STATUS/CONC/DATASET, etc.) n'a pu       }
+   { etre verifie contre une source primaire (manuel COS introuvable en    }
+   { ligne) - reponses honnetement simplifiees/disclosees plutot          }
+   { qu'inventees en detail, meme esprit que les autres "simplifications   }
+   { disclosees" de ce fichier (ex: NetBiosEnum). Ce terminal ne fait PAS  }
+   { tourner de vrai flux de commandes COS (pas de fichier de commandes/   }
+   { JCL, pas de file d attente de jobs reelle) : DROP/PAUSE/CLASS/         }
+   { CONSOLE/DELAY/END/ENTER/FLUSH restent donc de simples accuses de       }
+   { reception textuels, un seul "job" interactif existant ici. DEFAULT    }
+   { est la seule commande de ce lot a garder un etat reel                 }
+   { (CosDefaultDevice, meme discipline que MONTYPE du shell OS-9 voisin - }
+   { voir TermCmd_HELP plus haut). CAL (assembleur Cray-1 reel, voir       }
+   { TermCmd_Cal plus haut) fait exception : contrairement au reste de ce  }
+   { shell, ce n'est PAS un accuse de reception simplifie mais             }
+   { l'integration integrale et fonctionnelle de CAL.PAS, demande          }
    { explicitement par l'utilisateur.                                       }
    If CurrCmd = 'CAL' Then
     TermCmd_Cal(TP, ParamStr)
@@ -132915,6 +132916,14 @@ Begin
     TermAddLine(TP, 'CRAY-1 / COS  ' + TermGetCurrentDir);
     TermAddLine(TP, 'CP  STATE=RUN   JOB=INTERACTIF   ST=' + TermTrim(ParamStr));
    End
+   Else If CurrCmd = 'END' Then
+    TermAddLine(TP, 'STATION OPERATION TERMINATED.')
+   Else If CurrCmd = 'ENTER' Then
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' SCHEDULING PARAMETERS CHANGED.')
+   Else If CurrCmd = 'ERROR' Then
+    TermAddLine(TP, 'AUCUNE ERREUR MATERIELLE (aucun materiel Cray-1 emule).')
+   Else If CurrCmd = 'FLUSH' Then
+    TermAddLine(TP, 'DONNEES COPIEES VERS ' + TermTrim(ParamStr) + ' (ensemble de sauvegarde).')
    Else If CurrCmd = 'PAUSE' Then
     TermAddLine(TP, 'PAUSE - AUCUN FLUX DE COMMANDES EN COURS.')
    Else If CurrCmd = 'STATUS' Then Begin
@@ -132926,7 +132935,8 @@ Begin
     TermAddLine(TP, ' CAL       CHANNEL   CLASS     CLEAR     COMMENT');
     TermAddLine(TP, ' CONC      CONFIGURE CONSOLE   DATASET   DEFAULT');
     TermAddLine(TP, ' DELAY     DISK      DKERR     DROP      DSPL');
-    TermAddLine(TP, ' HELP      PAUSE     STATUS');
+    TermAddLine(TP, ' END       ENTER     ERROR     FLUSH     HELP');
+    TermAddLine(TP, ' PAUSE     STATUS');
    End
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
