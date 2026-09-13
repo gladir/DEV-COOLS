@@ -93186,6 +93186,10 @@ Var
  PQTag, PQKey: Integer;
  PQOldCap, PQDelta: Integer;
  WSCch: Integer;
+ { GDI.EXE Copy/GetSpoolJob (2026-09-13, demande explicite, ordinaux       }
+ { 245/250). }
+ CopyDstSeg, CopyDstOfs, CopySrcSeg, CopySrcOfs, CopyCount: Word;
+ CopyI: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -97554,6 +97558,138 @@ Begin
     Else
      P.CPU.Regs.AX := $FFFF; { SP_ERROR }
     ArgWords := 4;
+   End;
+   242: Begin
+    { WriteDialog(hJob,lpMsg,cchMsg):int - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16 WriteDialog     }
+    { (word str word)", 1 mot + 1 pointeur LOIN (2 mots) + 1 mot = 4 mots,  }
+    { retour 16 bits AX seul). Le VRAI source Wine (printdrv.c, recupere    }
+    { via WebFetch) affiche une VRAIE MessageBoxA native (titre "Printing  }
+    { Error", boutons OK/Annuler) avec le message recu, et renvoie le        }
+    { resultat de la boite (IDOK=1/IDCANCEL=2). Ce sous-ensemble ne          }
+    { dispose d'AUCUN pont vers une vraie boite de dialogue hote depuis ce  }
+    { dispatcher GDI (aucun mecanisme equivalent etabli ailleurs dans ce     }
+    { fichier) - lpMsg est accepte mais jamais lu (rien ne le consomme,      }
+    { meme discipline que l'octet de poids fort inutilise de                }
+    { GetNearestColor/$154 et que lpOutput/lpTitle d'OpenJob/$240) -         }
+    { renvoie IDOK(1) sans interaction, le resultat le MOINS perturbateur    }
+    { (laisse toujours continuer l'impression plutot que de fabriquer une   }
+    { annulation inventee). }
+    P.CPU.Regs.AX := 1; { IDOK }
+    ArgWords := 4;
+   End;
+   243, 244: Begin
+    { CloseJob(hJob):int (243) / DeleteJob(hJob,nNotUsed):int (244) -       }
+    { ordinaux/signatures VERIFIES via le VRAI source Wine (gdi.exe16.spec :}
+    { "pascal -ret16 CloseJob(word)"/"pascal -ret16 DeleteJob(word word)",  }
+    { 1 et 2 mots, retour 16 bits AX seul). Le VRAI source Wine              }
+    { (printdrv.c, recupere via WebFetch) montre que DeleteJob16 est         }
+    { LITTERALEMENT un simple appel a CloseJob16(hJob) - son 2e parametre    }
+    { s'appelle "nNotUsed" dans le VRAI code source, jamais lu - ce           }
+    { sous-ensemble reproduit fidelement cette equivalence EXACTE plutot     }
+    { que d'inventer un comportement distinct pour DeleteJob. REEL :         }
+    { ferme VRAIMENT le travail synthetique installe par OpenJob/$240        }
+    { (Win16_PrintJobOpen, coherent avec le modele mono-travail deja          }
+    { etabli) si hJob=1 et qu'un travail est bien ouvert - reussit (1) et    }
+    { libere Win16_PrintJobOpen (un futur OpenJob peut a nouveau reussir) ;  }
+    { sinon echoue honnetement (SP_ERROR=$FFFF, meme constante REELLE        }
+    { documentee via wingdi.h que OpenJob/WriteSpool). }
+    PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+     Word(P.CPU.Regs.SP + 4 + Ord(Ordinal = 244) * 2)));
+    If Win16_PrintJobOpen And (PQHandle = 1) Then Begin
+     Win16_PrintJobOpen := False;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := $FFFF; { SP_ERROR }
+    If Ordinal = 244 Then ArgWords := 2 Else ArgWords := 1;
+   End;
+   245: Begin
+    { GetSpoolJob(nOption,param):DWORD - ordinal/signature VERIFIES via le }
+    { VRAI source Wine (gdi.exe16.spec : "pascal GetSpoolJob(word ptr)", 1  }
+    { mot + 1 LONG (2 mots, PAS un vrai pointeur dereference malgre le       }
+    { mot-cle spec "ptr" - confirme par la VRAIE signature C recuperee via   }
+    { WebFetch : "DWORD WINAPI GetSpoolJob16(int nOption, LONG param)") =    }
+    { 3 mots, retour DWORD AX:DX - PAS de -ret16). Le VRAI source Wine        }
+    { (printdrv.c) est un stub honnete qui ignore ENTIEREMENT ses 2           }
+    { parametres et renvoie TOUJOURS 0 - ce sous-ensemble reproduit           }
+    { fidelement ce comportement EXACT (aucune information de plus n'est     }
+    { documentee nulle part sur ce que "nOption" est cense selectionner). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 3;
+   End;
+   246, 247: Begin
+    { StartSpoolPage(hJob):int (246) / EndSpoolPage(hJob):int (247) -       }
+    { ordinaux/signatures VERIFIES via le VRAI source Wine (gdi.exe16.spec :}
+    { "pascal -ret16 StartSpoolPage(word)"/"pascal -ret16                   }
+    { EndSpoolPage(word)", 1 mot chacun, retour 16 bits AX seul). Le VRAI   }
+    { source Wine (printdrv.c, recupere via WebFetch) EST LUI-MEME un        }
+    { FIXME "unimplemented" explicite pour les DEUX qui renvoie              }
+    { inconditionnellement 1 sans rien faire - ce sous-ensemble reproduit    }
+    { fidelement ce MEME comportement honnete plutot que d'inventer une      }
+    { vraie notion de "page" dans un sous-systeme d'impression qui n'a de    }
+    { toute facon aucune existence reelle ici (voir OpenJob/$240). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   { QueryJob/248 et DeleteSpoolPage/253 : DELIBEREMENT NON IMPLANTES -      }
+   { le VRAI source Wine officiel (gdi.exe16.spec) marque les DEUX            }
+   { "stub QueryJob"/"stub DeleteSpoolPage", SANS AUCUNE signature. La        }
+   { SOURCE SECONDAIRE (projet WineVDM, meme discipline que ScanLR/$135/     }
+   { IsDCDirty/$169/SelectBitmap/$195) a ete revisitee pour ces deux cas      }
+   { precis et n'apporte RIEN de plus : son gdi.exe16.spec repete             }
+   { IDENTIQUEMENT les deux memes stubs sans le moindre mot de parametre.     }
+   { Meme discipline exacte que SetDCStatus/$170/RSIN/$178 (voir              }
+   { [[project_devenv_win16_gdi_ord169_175]]/                                }
+   { [[project_devenv_win16_gdi_ord195_232]]) : inventer un nombre de mots    }
+   { ici serait une pure supposition qui risquerait de corrompre la pile      }
+   { de TOUS les appels Win16 suivants - laisse donc deliberement tomber      }
+   { sur le gestionnaire generique "Else" ci-dessous. }
+   250: Begin
+    { Copy(lpDst,lpSrc,cb):void - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 Copy(ptr ptr word)", 2   }
+    { pointeurs LOIN (2x2=4 mots) + 1 mot = 5 mots, retour 16 bits AX        }
+    { seul). REEL SANS AUCUNE simplification : utilitaire de copie de         }
+    { memoire brute historiquement celebre (base du futur hmemcpy), sa        }
+    { semantique documentee publiquement est un simple copie octet par        }
+    { octet de cb octets depuis lpSrc vers lpDst (copie AVANT en AVANT,       }
+    { sans protection contre un chevauchement - un vrai utilitaire de         }
+    { vitesse brute, pas un memmove). Implante ici avec une VRAIE boucle      }
+    { Emu_ReadByte/Emu_WriteByte sur la memoire emulee. Aucune valeur de      }
+    { retour documentee n'a pu etre verifiee - AX mis a 0 plutot que          }
+    { d'inventer une valeur specifique (la forme de pile, seule chose         }
+    { critique pour la securite des appels suivants, est elle bien           }
+    { verifiee). }
+    CopyDstOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CopyDstSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    CopySrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CopySrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CopyCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    For CopyI := 0 To Integer(CopyCount) - 1 Do
+     Emu_WriteByte(P.CPU, CopyDstSeg, Word(CopyDstOfs + CopyI),
+      Emu_ReadByte(P.CPU, CopySrcSeg, Word(CopySrcOfs + CopyI)));
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   254: Begin
+    { SpoolFile(printer,port,job,file):HANDLE - ordinal ABSENT/COMMENTE     }
+    { du VRAI source Wine officiel (gdi.exe16.spec le marque "254 stub       }
+    { SpoolFile" - un stub SANS signature). Signature VERIFIEE via une       }
+    { SOURCE SECONDAIRE differente mais reelle et publique (projet           }
+    { WineVDM, otya128/winevdm, gdi/gdi.exe16.spec) : "pascal -ret16          }
+    { SpoolFile(ptr ptr ptr ptr)", 4 pointeurs LOIN (4x2=8 mots), retour     }
+    { 16 bits AX seul. Le VRAI corps C de WineVDM (gdi/printdrv.c, recupere  }
+    { via WebFetch) ouvre REELLEMENT une imprimante systeme HOTE             }
+    { (OpenPrinterA/StartDocPrinterA/WritePrinter) et lui envoie              }
+    { REELLEMENT le contenu d'un vrai fichier - un effet de bord bien trop    }
+    { risque pour ce sous-ensemble (imprimerait reellement sur                }
+    { l'imprimante systeme de l'utilisateur), meme prudence deja               }
+    { appliquee a OpenJob/$240/WriteSpool/$241 (aucun sous-systeme            }
+    { d'impression reel n'existe ici) et a CreateMetaFile/$125 (n'ecrit       }
+    { jamais de vrai fichier). Echec honnete (SP_ERROR=$FFFF) plutot que      }
+    { de risquer un vrai travail d'impression invente. }
+    P.CPU.Regs.AX := $FFFF; { SP_ERROR }
+    ArgWords := 8;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
