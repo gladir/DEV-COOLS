@@ -28,6 +28,12 @@ TDecision=Record
  Size:Byte;
  Next:PDecision
 End;
+TOptionState=Record
+ MakeObject,ObjectExplicit,ListOn,SymbolsOn,CondList,ErrorsInList,FormFeed,Generated,
+ Narrow,Motorola:Boolean;
+ PageLength,PageWidth:Integer;
+ ObjectName:String
+End;
 TBytes=Array[0..ImageSize]of Byte;
 
 Var
@@ -37,11 +43,13 @@ Var
  SourceName,ObjectName,ListName:String;
  MakeObject,ObjectExplicit,ListOn,SymbolsOn,CondList,ErrorsInList,FormFeed,Generated,
  Narrow,Motorola:Boolean;
- PageLength,PageWidth,MemoryK,PassNo,Errors,Warnings,LineNo,PageNo,PageLine:Integer;
+ PageLength,PageWidth,MemoryK,PassNo,Errors,Warnings,LineNo,PageNo,PageLine,
+ LineByteCount:Integer;
  PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
  ListFile:Text;
  ListingToFile,StopAssembly:Boolean;
  ProgramName,Title:String;
+ InitialOptions:TOptionState;
 
 Function Upper(S:String):String;
 Var
@@ -63,7 +71,7 @@ Var
 Begin
  S:='';
  While N>0 do Begin
-  S:=D[(V and 15)+1]+S;
+  S:=D[V and 15]+S;
   V:=V shr 4;Dec(N)
  End;
  Hex:=S
@@ -106,6 +114,72 @@ Var
 Begin
  N:=Upper(N);P:=Symbols;
  While(P<>Nil)and(P^.Name<>N)do P:=P^.Next;FindSymbol:=P
+End;
+
+Procedure ApplyOption(OptionText:String;FromSource:Boolean);
+Var
+ Raw,NumberText:String;
+ Enable:Boolean;
+ Key:Char;
+ N,Code,EqPos:Integer;
+Begin
+ Raw:=Trim(OptionText);Enable:=True;
+ if(Raw<>'')and(Raw[1]='-')Then Begin Enable:=False;Delete(Raw,1,1)End;
+ if Raw=''Then Begin
+  if FromSource Then Error('option OPT manquante')
+  else Begin WriteLn('ASM: option manquante');Halt(2)End;
+  Exit
+ End;
+ Key:=UpCase(Raw[1]);
+ if Key='C'Then CondList:=Enable
+ else if Key='E'Then ErrorsInList:=Enable
+ else if Key='F'Then FormFeed:=Enable
+ else if Key='G'Then Generated:=Enable
+ else if Key='L'Then ListOn:=Enable
+ else if Key='M'Then Motorola:=Enable
+ else if Key='N'Then Narrow:=Enable
+ else if Key='S'Then SymbolsOn:=Enable
+ else if(Key='D')or(Key='W')Then Begin
+  NumberText:=Copy(Raw,2,255);Val(NumberText,N,Code);
+  if(Code<>0)or(N<1)or(N>255)Then Begin
+   if FromSource Then Error('valeur incorrecte pour OPT '+Upper(Raw))
+   else Begin WriteLn('ASM: valeur d''option incorrecte: ',Raw);Halt(2)End
+  End else if Key='D'Then PageLength:=N else PageWidth:=N
+ End else if Key='O'Then Begin
+  MakeObject:=Enable;EqPos:=Pos('=',Raw);
+  if EqPos>0 Then Begin
+   if not Enable Then Begin
+    if FromSource Then Error('nom de fichier interdit avec OPT -O')
+    else Begin WriteLn('ASM: nom de fichier interdit avec -O');Halt(2)End
+   End else if EqPos=Length(Raw)Then Begin
+    if FromSource Then Error('nom de fichier objet manquant')
+    else Begin WriteLn('ASM: nom de fichier objet manquant');Halt(2)End
+   End else Begin
+    ObjectName:=Copy(Raw,EqPos+1,255);ObjectExplicit:=True
+   End
+  End
+ End else Begin
+  if FromSource Then Error('option OPT inconnue: '+Upper(Raw))
+  else Begin WriteLn('ASM: option inconnue: ',Raw);Halt(2)End
+ End
+End;
+
+Procedure SaveOptions(Var State:TOptionState);
+Begin
+ State.MakeObject:=MakeObject;State.ObjectExplicit:=ObjectExplicit;State.ListOn:=ListOn;
+ State.SymbolsOn:=SymbolsOn;State.CondList:=CondList;State.ErrorsInList:=ErrorsInList;
+ State.FormFeed:=FormFeed;State.Generated:=Generated;State.Narrow:=Narrow;
+ State.Motorola:=Motorola;State.PageLength:=PageLength;State.PageWidth:=PageWidth;
+ State.ObjectName:=ObjectName
+End;
+
+Procedure RestoreOptions(Var State:TOptionState);
+Begin
+ MakeObject:=State.MakeObject;ObjectExplicit:=State.ObjectExplicit;ListOn:=State.ListOn;
+ SymbolsOn:=State.SymbolsOn;CondList:=State.CondList;ErrorsInList:=State.ErrorsInList;
+ FormFeed:=State.FormFeed;Generated:=State.Generated;Narrow:=State.Narrow;
+ Motorola:=State.Motorola;PageLength:=State.PageLength;PageWidth:=State.PageWidth;
+ ObjectName:=State.ObjectName
 End;
 
 Function ValidSymbolName(N:String):Boolean;
@@ -307,7 +381,7 @@ Procedure Emit(B:Byte);Begin
  if(PC<0)or(PC>ImageSize)Then Begin
   Error('compteur programme hors limites');Exit
  End;if PassNo=2 Then Image^[PC]:=B;if PC<LowAddr Then LowAddr:=PC;
- if PC>HighAddr Then HighAddr:=PC;Inc(PC)
+ if PC>HighAddr Then HighAddr:=PC;Inc(PC);Inc(LineByteCount)
 End;
 
 Procedure EmitW(V:LongInt);Begin
@@ -697,7 +771,8 @@ Begin
   Inc(PageNo);OutText(ProgramName+'  '+Title+'  Page '+Hex(PageNo,2));OutText('');
   Inc(PageLine,2)
  End;Bs:='';
- For I:=OldPC to PC-1 do if(I>=0)and(I<=ImageSize)Then Bs:=Bs+Hex(Image^[I],2)+' ';
+ For I:=OldPC to OldPC+LineByteCount-1 do if(I>=0)and(I<=ImageSize)Then
+  Bs:=Bs+Hex(Image^[I],2)+' ';
  if Narrow Then S:=Hex(Addr,4)+' '+Bs+' '+Src else S:=Hex(LineNo,4)+' '+Hex(Addr,4)+' '+
  Copy(Bs+'               ',1,15)+Src;if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);
  OutText(S);Inc(PageLine);if PageLine>=PageLength Then Begin
@@ -721,7 +796,7 @@ Begin
  While not Eof(F)and not StopAssembly do Begin
   ReadLn(F,Line);Inc(LineNo);
   if Length(Line)>MaxLine Then Error('ligne de plus de 120 caracteres');
-  ParseFields(Line,L,O,A);RemoveFieldComment(O,A);OldPC:=PC;
+  ParseFields(Line,L,O,A);RemoveFieldComment(O,A);OldPC:=PC;LineByteCount:=0;
   if(O='IF')or(O='IFEQ')or(O='IFNE')or(O='IFLT')or(O='IFLE')or(O='IFGT')or(O='IFGE')or(O=
   'IFP1')Then Begin
    Inc(Depth);if Depth>16 Then Begin
@@ -797,11 +872,12 @@ Begin
   End else if O='EMOD'Then Begin
    Emit(0);Emit(0);Emit(0)
   End else if O='NAM'Then ProgramName:=A else if O='TTL'Then Title:=A else if O=
-  'USE'Then ProcessFile(A)else if O='PAG'Then PageLine:=0 else if O='SPC'Then Begin
+  'USE'Then Begin ProcessFile(A);LineByteCount:=0 End
+  else if O='PAG'Then PageLine:=0 else if O='SPC'Then Begin
    if PassNo=2 Then
    For I:=1 to Eval(A,K)do OutText('')
-  End else if O='OPT'Then Begin
-  End else if O='END'Then StopAssembly:=True else EncodeInstruction(O,A);
+  End else if O='OPT'Then ApplyOption(A,True)
+  else if O='END'Then StopAssembly:=True else EncodeInstruction(O,A);
   ListLine(OldPC,OldPC,Line)
  End;Close(F);if Depth<>0 Then Error('ENDC manquant')
 End;
@@ -853,9 +929,8 @@ End;
 
 Procedure ParseArgs;
 Var
- I,J,V:Integer;
+ I,J:Integer;
  S,T:String;
- Enable:Boolean;
 Begin
  CondList:=True;ErrorsInList:=True;PageLength:=66;PageWidth:=80;MemoryK:=4;I:=1;
  if ParamCount=0 Then Help;
@@ -876,25 +951,7 @@ Begin
     End else
     Begin
      T:=Copy(S,1,J-1);Delete(S,1,J)
-    End;T:=Upper(Trim(T));Enable:=True;if(T<>'')and(T[1]='-')Then Begin
-     Enable:=False;Delete(T,1,1)
-    End;if T=''Then Continue;
-    if T[1]='C'Then CondList:=Enable else if T[1]='E'Then ErrorsInList:=
-    Enable else if T[1]='F'Then FormFeed:=Enable else if T[1]='G'Then Generated:=
-    Enable else if T[1]='L'Then ListOn:=Enable else if T[1]='M'Then Motorola:=
-    Enable else if T[1]='N'Then Narrow:=Enable else if T[1]='S'Then SymbolsOn:=
-    Enable else if T[1]='D'Then Begin
-     Val(Copy(T,2,255),V,J);if J=0 Then PageLength:=V
-    End else if T[1]='W'Then Begin
-     Val(Copy(T,2,255),V,J);if J=0 Then PageWidth:=V
-    End else if T[1]='O'Then Begin
-     MakeObject:=Enable;if Pos('=',T)>0 Then Begin
-      ObjectName:=Copy(T,Pos('=',T)+1,255);ObjectExplicit:=True
-     End
-    End else
-    Begin
-     WriteLn('ASM: option inconnue: ',T);Halt(2)
-    End
+    End;T:=Trim(T);if T<>''Then ApplyOption(T,False)
    End
   End;Inc(I)
  End;
@@ -936,7 +993,7 @@ BEGIN
  SourceName:='';ObjectName:='';ListName:='';MakeObject:=False;
  ObjectExplicit:=False;ListOn:=False;SymbolsOn:=False;ListingToFile:=False;
  Motorola:=False;Narrow:=False;FormFeed:=False;Generated:=False;
- ParseArgs;Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
+ ParseArgs;SaveOptions(InitialOptions);Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
   WriteLn('ASM: impossible d''ouvrir ',SourceName);Halt(2)
  End;Close(F);GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
  if ListingToFile Then Begin
@@ -946,7 +1003,8 @@ BEGIN
  End;
  Errors:=0;Warnings:=0;ProgramName:=Upper(SourceName);Title:='';
  For PassNo:=1 to 2 do Begin
- PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
+  RestoreOptions(InitialOptions);
+  PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
   PageLine:=0;StopAssembly:=False;if PassNo=2 Then DecisionCursor:=Decisions;
   ProcessFile(SourceName)
  End;

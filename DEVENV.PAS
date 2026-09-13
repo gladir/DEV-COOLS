@@ -85946,6 +85946,9 @@ Var
  CosDefaultDevice: String;  { DEFAULT : peripherique de mise en scene declare }
  CosActiveJobLimit: String; { LIMIT : nombre limite de travaux actifs declare }
  CosPrimaryOperator: String; { OPERATOR : operateur principal de station declare }
+ CosPollRate: String;    { POLL : taux de controle d'echange de message declare }
+ CosRefreshRate: String; { REFRESH : taux de rafraichissement de l'affichage declare }
+ CosStationId: String;   { ROUTE : identificateur de station declare }
 
 { --- DIR (format OS-9 simplifie - reutilise Fat_ListDir/style CMD plutot   }
 { que d'inventer une mise en page OS-9 authentique non verifiee ; reste     }
@@ -131520,6 +131523,7 @@ Var
  GulamAliasI: Integer;
  Os9BuildF: File;
  CosLogF: Text;
+ CosSnapI: Integer;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -132861,28 +132865,35 @@ Begin
    { (gladir.com/OS/COS/*.htm) : CHANNEL/CLASS/CLEAR/COMMENT/CONC/         }
    { CONFIGURE/CONSOLE/DATASET/DEFAULT/DELAY/DISK/DKERR/DROP/DSPL/END/     }
    { ENTER/ERROR/FLUSH/IACON/JOB/JSTAT/KILL/LIMIT/LINK/LOGOFF/LOGON/       }
-   { LPATH/MESSAGE/MONITOR/MSG/OPERATOR/HELP/PAUSE/STATUS. Aucun format    }
-   { de reponse REEL (colonnes exactes de DSPL/DISK/STATUS/CONC/DATASET/   }
-   { JOB/JSTAT, etc.) n'a pu etre verifie contre une source primaire       }
-   { (manuel COS introuvable en ligne) - reponses honnetement              }
-   { simplifiees/disclosees plutot qu'inventees en detail, meme esprit     }
-   { que les autres "simplifications disclosees" de ce fichier (ex:        }
-   { NetBiosEnum). Ce terminal ne fait PAS tourner de vrai flux de          }
-   { commandes COS (pas de fichier de commandes/JCL, pas de file d         }
-   { attente de jobs reelle) : DROP/PAUSE/CLASS/CONSOLE/DELAY/END/ENTER/    }
-   { FLUSH/IACON/JOB/JSTAT/KILL/LINK/LOGOFF/LOGON/LPATH/MONITOR/MSG         }
-   { restent donc de simples accuses de reception textuels, un seul         }
-   { "job" interactif existant ici. DEFAULT/LIMIT/OPERATOR sont les seules }
-   { commandes de ce lot a garder un etat reel (CosDefaultDevice/           }
-   { CosActiveJobLimit/CosPrimaryOperator, meme discipline que MONTYPE du   }
-   { shell OS-9 voisin - voir TermCmd_HELP plus haut). MESSAGE fait         }
-   { exception dans l'autre sens : elle ecrit REELLEMENT sur le disque       }
-   { hote (COSLOG.TXT, Assign/Append/Rewrite - meme idiome que les          }
-   { journaux EMU*.LOG deja presents dans ce fichier), un vrai "journal de   }
-   { bord" persistant entre les sessions plutot qu'un simple accuse de      }
-   { reception. CAL (assembleur Cray-1 reel, voir TermCmd_Cal plus haut)    }
-   { fait exception encore plus poussee : contrairement au reste de ce      }
-   { shell, ce n'est PAS un accuse de reception simplifie mais              }
+   { LPATH/MESSAGE/MONITOR/MSG/OPERATOR/POLL/RECOVER/REFRESH/RELEASE/      }
+   { REPLY/RERUN/RESTORE/RESUME/ROUTE/RSTAT/SAVE/SCROLL/SET/SHUTDOWN/      }
+   { SNAP/STAGE/STATCLASS/STATION/HELP/PAUSE/STATUS. Aucun format de       }
+   { reponse REEL (colonnes exactes de DSPL/DISK/STATUS/CONC/DATASET/      }
+   { JOB/JSTAT/RSTAT/STATCLASS/STATION, etc.) n'a pu etre verifie contre   }
+   { une source primaire (manuel COS introuvable en ligne) - reponses      }
+   { honnetement simplifiees/disclosees plutot qu'inventees en detail,     }
+   { meme esprit que les autres "simplifications disclosees" de ce         }
+   { fichier (ex: NetBiosEnum). Ce terminal ne fait PAS tourner de vrai     }
+   { flux de commandes COS (pas de fichier de commandes/JCL, pas de file    }
+   { d attente de jobs reelle) : DROP/PAUSE/CLASS/CONSOLE/DELAY/END/        }
+   { ENTER/FLUSH/IACON/JOB/JSTAT/KILL/LINK/LOGOFF/LOGON/LPATH/MONITOR/      }
+   { MSG/RECOVER/RELEASE/REPLY/RERUN/RESTORE/RESUME/RSTAT/SAVE/SCROLL/      }
+   { SET/SHUTDOWN/STAGE/STATCLASS/STATION restent donc de simples accuses   }
+   { de reception textuels (SHUTDOWN disclose explicitement qu'aucun       }
+   { arret reel n'a lieu - jamais de comportement destructeur invente a     }
+   { partir d'un simple mot-cle), un seul "job" interactif existant ici.   }
+   { DEFAULT/LIMIT/OPERATOR/POLL/REFRESH/ROUTE sont les seules commandes    }
+   { de ce lot a garder un etat reel (CosDefaultDevice/CosActiveJobLimit/   }
+   { CosPrimaryOperator/CosPollRate/CosRefreshRate/CosStationId, meme       }
+   { discipline que MONTYPE du shell OS-9 voisin - voir TermCmd_HELP plus  }
+   { haut). MESSAGE et SNAP font exception dans l'autre sens : elles        }
+   { ecrivent REELLEMENT sur le disque hote (COSLOG.TXT en ajout pour       }
+   { MESSAGE, COSSNAP.TXT reecrit a chaque appel pour SNAP - meme idiome     }
+   { Assign/Append-ou-Rewrite que les journaux EMU*.LOG deja presents dans }
+   { ce fichier) plutot qu'un simple accuse de reception. CAL (assembleur   }
+   { Cray-1 reel, voir TermCmd_Cal plus haut) fait exception encore plus    }
+   { poussee : contrairement au reste de ce shell, ce n'est PAS un accuse   }
+   { de reception simplifie mais                                           }
    { l'integration integrale et fonctionnelle de CAL.PAS, demande           }
    { explicitement par l'utilisateur.                                       }
    If CurrCmd = 'CAL' Then
@@ -132980,6 +132991,65 @@ Begin
     If CosPrimaryOperator = '' Then TermAddLine(TP, 'PRIMARY OPERATOR : NON DEFINI.')
     Else TermAddLine(TP, 'PRIMARY OPERATOR : ' + CosPrimaryOperator);
    End
+   Else If CurrCmd = 'POLL' Then Begin
+    If TermTrim(ParamStr) <> '' Then CosPollRate := TermTrim(ParamStr);
+    If CosPollRate = '' Then TermAddLine(TP, 'MESSAGE EXCHANGE POLL RATE : NON DEFINI.')
+    Else TermAddLine(TP, 'MESSAGE EXCHANGE POLL RATE : ' + CosPollRate);
+   End
+   Else If CurrCmd = 'RECOVER' Then
+    TermAddLine(TP, 'SYSTEM RECOVERY INITIATED.')
+   Else If CurrCmd = 'REFRESH' Then Begin
+    If TermTrim(ParamStr) <> '' Then CosRefreshRate := TermTrim(ParamStr);
+    If CosRefreshRate = '' Then TermAddLine(TP, 'DISPLAY REFRESH RATE : NON DEFINI.')
+    Else TermAddLine(TP, 'DISPLAY REFRESH RATE : ' + CosRefreshRate);
+   End
+   Else If CurrCmd = 'RELEASE' Then
+    TermAddLine(TP, 'DATASET ' + TermTrim(ParamStr) + ' RELEASED FROM WAIT STATE.')
+   Else If CurrCmd = 'REPLY' Then
+    TermAddLine(TP, 'REPLY SENT : ' + TermTrim(ParamStr))
+   Else If CurrCmd = 'RERUN' Then
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' RERUN REQUESTED.')
+   Else If CurrCmd = 'RESTORE' Then
+    TermAddLine(TP, 'GENERIC RESOURCE ' + TermTrim(ParamStr) + ' RESTORED.')
+   Else If CurrCmd = 'RESUME' Then
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' RESUMED.')
+   Else If CurrCmd = 'ROUTE' Then Begin
+    If TermTrim(ParamStr) <> '' Then CosStationId := TermTrim(ParamStr);
+    If CosStationId = '' Then TermAddLine(TP, 'STATION IDENTIFIER : NON DEFINI.')
+    Else TermAddLine(TP, 'STATION IDENTIFIER : ' + CosStationId);
+   End
+   Else If CurrCmd = 'RSTAT' Then Begin
+    TermAddLine(TP, 'GENERIC RESOURCE STATUS.');
+    TermAddLine(TP, 'AUCUNE RESSOURCE GENERIQUE CONFIGUREE.');
+   End
+   Else If CurrCmd = 'SAVE' Then
+    TermAddLine(TP, 'DATASET ' + TermTrim(ParamStr) + ' STAGED (permanent).')
+   Else If CurrCmd = 'SCROLL' Then
+    TermAddLine(TP, 'SCROLL AREA ' + TermTrim(ParamStr) + ' STATUS CHANGED.')
+   Else If CurrCmd = 'SET' Then
+    TermAddLine(TP, 'PARAMETER(S) ' + TermTrim(ParamStr) + ' MODIFIED.')
+   Else If CurrCmd = 'SHUTDOWN' Then
+    TermAddLine(TP, 'SYSTEM SHUTDOWN REQUESTED - AUCUN ARRET REEL (cette commande ne ferme ni l''emulateur ni DEVENV.exe).')
+   Else If CurrCmd = 'SNAP' Then Begin
+    {$I-} Assign(CosLogF, 'COSSNAP.TXT'); Rewrite(CosLogF); {$I+}
+    If IOResult = 0 Then Begin
+     For CosSnapI := 0 To TP.LineCount - 1 Do
+      WriteLn(CosLogF, TP.Lines[CosSnapI]);
+     {$I-} Close(CosLogF); {$I+} If IOResult <> 0 Then ;
+     TermAddLine(TP, 'DISPLAY CONTENT PRINTED TO COSSNAP.TXT.');
+    End Else
+     TermAddLine(TP, 'SNAP : IMPOSSIBLE DE CREER COSSNAP.TXT.');
+   End
+   Else If CurrCmd = 'STAGE' Then
+    TermAddLine(TP, 'STAGING ' + TermTrim(ParamStr) + ' STATUS CHANGED.')
+   Else If CurrCmd = 'STATCLASS' Then Begin
+    TermAddLine(TP, 'JOB CLASS ' + TermTrim(ParamStr) + ' STATUS.');
+    TermAddLine(TP, 'AUCUNE CLASSE DE TRAVAIL CONFIGUREE.');
+   End
+   Else If CurrCmd = 'STATION' Then Begin
+    TermAddLine(TP, 'I/O SUBSYSTEM STATION STATUS.');
+    TermAddLine(TP, 'AUCUNE STATION E/S CONFIGUREE (aucun sous-systeme d''E/S Cray-1 emule).');
+   End
    Else If CurrCmd = 'PAUSE' Then
     TermAddLine(TP, 'PAUSE - AUCUN FLUX DE COMMANDES EN COURS.')
    Else If CurrCmd = 'STATUS' Then Begin
@@ -132994,7 +133064,11 @@ Begin
     TermAddLine(TP, ' END       ENTER     ERROR     FLUSH     HELP');
     TermAddLine(TP, ' IACON     JOB       JSTAT     KILL      LIMIT');
     TermAddLine(TP, ' LINK      LOGOFF    LOGON     LPATH     MESSAGE');
-    TermAddLine(TP, ' MONITOR   MSG       OPERATOR  PAUSE     STATUS');
+    TermAddLine(TP, ' MONITOR   MSG       OPERATOR  PAUSE     POLL');
+    TermAddLine(TP, ' RECOVER   REFRESH   RELEASE   REPLY     RERUN');
+    TermAddLine(TP, ' RESTORE   RESUME    ROUTE     RSTAT     SAVE');
+    TermAddLine(TP, ' SCROLL    SET       SHUTDOWN  SNAP      STAGE');
+    TermAddLine(TP, ' STATCLASS STATION   STATUS');
    End
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
