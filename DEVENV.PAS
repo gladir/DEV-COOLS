@@ -7877,6 +7877,28 @@ Var
   BrushOrgX, BrushOrgY: Integer;
  End;
  Win16_DCStateStackTop: Integer;
+ { GDI.EXE SetDCHook/GetDCHook/SetHookFlags (2026-09-13, demande            }
+ { explicite, ordinaux 190/191/192) - contrairement au VRAI source Wine     }
+ { (dlls/gdi.exe16/gdi.c : les 3 sont des stubs honnetes qui ne stockent     }
+ { RIEN et renvoient toujours FAUX/0/0), ce sous-ensemble va PLUS LOIN :     }
+ { un vrai stockage mono-DC (coherent avec SetEnvironment/GetEnvironment/   }
+ { $132/133 et SetBrushOrg/GetBrushOrg/$148/149 deja etablis) - le           }
+ { round-trip complet install/query est trivial et sans risque ici, donc    }
+ { PAS une raison de reproduire la limitation du pilote reel de Wine. }
+ Win16_DCHookProcSeg, Win16_DCHookProcOfs: Word;
+ Win16_DCHookData: LongInt;
+ Win16_DCHookFlags: Word;
+ { GDI.EXE SetBoundsRect/GetBoundsRect (2026-09-13, demande explicite,      }
+ { ordinaux 193/194) - contrat COMPLET et REEL des deux fonctions           }
+ { (active/desactive/reset/set/accumule un rectangle englobant mono-DC,     }
+ { verifie via la documentation Microsoft officielle DCB_*) - SEULE         }
+ { limitation disclosee : l'accumulation PASSIVE automatique pendant un      }
+ { trace GDI (MoveTo/LineTo/Rectangle/etc.) n'est PAS cablee dans ces        }
+ { primitives existantes (aurait exige de toucher chacune d'elles) ; seul    }
+ { le chemin explicite SetBoundsRect(...,DCB_ACCUMULATE,&rect) est reel. }
+ Win16_BoundsEnabled: Boolean;
+ Win16_BoundsEmpty: Boolean;
+ Win16_BoundsX1, Win16_BoundsY1, Win16_BoundsX2, Win16_BoundsY2: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91432,6 +91454,12 @@ Begin
  Win16_BrushOrgX := 0; Win16_BrushOrgY := 0;
  Win16_BitmapDimCX := 0; Win16_BitmapDimCY := 0;
  Win16_DCStateStackTop := 0;
+ Win16_DCHookProcSeg := 0; Win16_DCHookProcOfs := 0;
+ Win16_DCHookData := 0;
+ Win16_DCHookFlags := 0;
+ Win16_BoundsEnabled := False; { DCB_DISABLE, "desactive par defaut" (doc MS) }
+ Win16_BoundsEmpty := True;
+ Win16_BoundsX1 := 0; Win16_BoundsY1 := 0; Win16_BoundsX2 := 0; Win16_BoundsY2 := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -93097,6 +93125,13 @@ Var
  { GDI.EXE GetDCState/SetDCState (2026-09-13, demande explicite,           }
  { ordinaux 179/180). }
  GDCSHandle: Integer;
+ { GDI.EXE SetDCHook/GetDCHook/SetHookFlags/SetBoundsRect/GetBoundsRect     }
+ { (2026-09-13, demande explicite, ordinaux 190/191/192/193/194). }
+ SDHSeg, SDHOfs, SDHDataHi, SDHDataLo: Word;
+ GDHSeg, GDHOfs: Word;
+ SHFOld: Word;
+ SBRSeg, SBROfs, SBRFlags: Word;
+ SBROldState: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -97080,6 +97115,155 @@ Begin
     Else
      P.CPU.Regs.AX := 0;
     ArgWords := 3;
+   End;
+   190: Begin
+    { SetDCHook(hdc,hookProc,dwHookData):BOOL - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16               }
+    { SetDCHook(word segptr long)", 1 mot + 1 pointeur LOIN (2 mots) + 1     }
+    { LONG (2 mots) = 5 mots, retour 16 bits AX seul). Le VRAI source Wine   }
+    { (dlls/gdi.exe16/gdi.c, SetDCHook16 - recupere via WebFetch) est un     }
+    { stub honnete qui ne stocke RIEN et renvoie toujours FAUX ("not         }
+    { supported"). Ce sous-ensemble va PLUS LOIN, coherent avec              }
+    { SetEnvironment/$132/SetBrushOrg/$148 deja etablis : stocke REELLEMENT  }
+    { le pointeur de fonction et la donnee associee (mono-DC, un seul        }
+    { emplacement, mais un VRAI round-trip avec GetDCHook/$191 ci-dessous)   }
+    { - le hook n'est jamais REELLEMENT appele par aucune primitive de       }
+    { dessin existante (aucun mecanisme de rappel 16 bits generique          }
+    { n'existe ici), mais l'installation/interrogation elle-meme est reelle. }
+    SDHOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SDHSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SDHDataHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SDHDataLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_DCHookProcSeg := SDHSeg; Win16_DCHookProcOfs := SDHOfs;
+    Win16_DCHookData := (LongInt(SDHDataHi) Shl 16) Or LongInt(SDHDataLo);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   191: Begin
+    { GetDCHook(hdc,lpProcOut):DWORD - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (gdi.exe16.spec : "pascal GetDCHook(word ptr)", 1     }
+    { mot + 1 pointeur LOIN (2 mots) = 3 mots, retour DWORD AX:DX - PAS de   }
+    { -ret16, contrairement a SetDCHook/$190). REEL, contrepartie exacte de  }
+    { SetDCHook/$190 ci-dessus : ecrit le pointeur de fonction installe      }
+    { dans *lpProcOut (convention memoire reelle d'un pointeur LOIN en       }
+    { mode reel x86 : mot de poids faible=offset a l'adresse basse, mot de   }
+    { poids fort=segment a l'adresse haute) et renvoie dwHookData via AX:DX. }
+    { Aucun hook installe (Win16_DCHookProcSeg/Ofs=0:0 par defaut) -> ecrit  }
+    { 0:0 et renvoie 0, le comportement honnete d'un DC neuf. }
+    GDHSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GDHOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GDHSeg, GDHOfs, Win16_DCHookProcOfs);
+    Emu_WriteWord(P.CPU, GDHSeg, Word(GDHOfs + 2), Win16_DCHookProcSeg);
+    P.CPU.Regs.AX := Word(Win16_DCHookData And $FFFF);
+    P.CPU.Regs.DX := Word((Win16_DCHookData Shr 16) And $FFFF);
+    ArgWords := 3;
+   End;
+   192: Begin
+    { SetHookFlags(hdc,flags):WORD - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16 SetHookFlags(word    }
+    { word)", 2 mots, retour 16 bits AX seul). MEME discipline que           }
+    { SetDCHook/$190 : le VRAI source Wine est un stub honnete qui           }
+    { renvoie toujours 0 - ce sous-ensemble stocke REELLEMENT les            }
+    { drapeaux (mono-DC, Win16_DCHookFlags) et renvoie l'ANCIENNE valeur,    }
+    { coherent avec le contrat "retourne l'ancienne valeur" deja etabli      }
+    { par SetBrushOrg/$148/SetWindowOrg/$11. }
+    SHFOld := Win16_DCHookFlags;
+    Win16_DCHookFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := SHFOld;
+    ArgWords := 2;
+   End;
+   193: Begin
+    { SetBoundsRect(hdc,lprc,flags):UINT - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { SetBoundsRect(word ptr word)", 1 mot + 1 pointeur LOIN (2 mots) + 1    }
+    { mot = 4 mots, retour 16 bits AX seul). REEL ET COMPLET (contrairement  }
+    { a SetDCHook ci-dessus, le contrat documente PUBLIQUEMENT par           }
+    { Microsoft pour cette fonction - DCB_RESET=1/DCB_ACCUMULATE=2/          }
+    { DCB_SET=3/DCB_ENABLE=4/DCB_DISABLE=8, verifies via wingdi.h et la      }
+    { documentation officielle SetBoundsRect - est integralement             }
+    { implante) : active/desactive l'accumulation, remplace ou fusionne     }
+    { (union) le rectangle englobant mono-DC, et retourne l'ETAT PRECEDENT   }
+    { (ENABLE/DISABLE Ou RESET/SET selon que le rectangle etait vide).       }
+    { SEULE limitation disclosee : l'accumulation PASSIVE automatique        }
+    { pendant un trace GDI (MoveTo/LineTo/Rectangle/etc.) n'est PAS cablee   }
+    { dans ces primitives existantes (aurait exige de toucher chacune        }
+    { d'elles) - seul le chemin explicite SetBoundsRect(...,accumulate,rc)   }
+    { est reel ici. }
+    SBROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SBRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SBRFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SBROldState := 0;
+    If Win16_BoundsEnabled Then SBROldState := SBROldState Or 4 { DCB_ENABLE }
+    Else SBROldState := SBROldState Or 8; { DCB_DISABLE }
+    If Win16_BoundsEmpty Then SBROldState := SBROldState Or 1 { DCB_RESET }
+    Else SBROldState := SBROldState Or 3; { DCB_SET }
+    If (SBRFlags And 4) <> 0 Then Win16_BoundsEnabled := True;  { DCB_ENABLE }
+    If (SBRFlags And 8) <> 0 Then Win16_BoundsEnabled := False; { DCB_DISABLE }
+    If (SBRFlags And 3) = 3 Then Begin { DCB_SET = DCB_RESET Or DCB_ACCUMULATE }
+     If (SBRSeg <> 0) Or (SBROfs <> 0) Then Begin
+      Win16_BoundsX1 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, SBROfs));
+      Win16_BoundsY1 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, Word(SBROfs + 2)));
+      Win16_BoundsX2 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, Word(SBROfs + 4)));
+      Win16_BoundsY2 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, Word(SBROfs + 6)));
+      Win16_BoundsEmpty := False;
+     End Else
+      Win16_BoundsEmpty := True;
+    End Else If (SBRFlags And 3) = 1 Then { DCB_RESET seul }
+     Win16_BoundsEmpty := True
+    Else If (SBRFlags And 3) = 2 Then Begin { DCB_ACCUMULATE seul : union }
+     If (SBRSeg <> 0) Or (SBROfs <> 0) Then Begin
+      GdiX1 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, SBROfs));
+      GdiY1 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, Word(SBROfs + 2)));
+      GdiX2 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, Word(SBROfs + 4)));
+      GdiY2 := SmallInt(Emu_ReadWord(P.CPU, SBRSeg, Word(SBROfs + 6)));
+      If Win16_BoundsEmpty Then Begin
+       Win16_BoundsX1 := GdiX1; Win16_BoundsY1 := GdiY1;
+       Win16_BoundsX2 := GdiX2; Win16_BoundsY2 := GdiY2;
+      End Else Begin
+       If GdiX1 < Win16_BoundsX1 Then Win16_BoundsX1 := GdiX1;
+       If GdiY1 < Win16_BoundsY1 Then Win16_BoundsY1 := GdiY1;
+       If GdiX2 > Win16_BoundsX2 Then Win16_BoundsX2 := GdiX2;
+       If GdiY2 > Win16_BoundsY2 Then Win16_BoundsY2 := GdiY2;
+      End;
+      Win16_BoundsEmpty := False;
+     End;
+    End;
+    P.CPU.Regs.AX := SBROldState;
+    ArgWords := 4;
+   End;
+   194: Begin
+    { GetBoundsRect(hdc,lprc,flags):UINT - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { GetBoundsRect(word ptr word)", meme forme que SetBoundsRect/$193 = 4  }
+    { mots, retour 16 bits AX seul). REEL ET COMPLET, contrepartie exacte   }
+    { de SetBoundsRect/$193 : ecrit le rectangle englobant mono-DC courant   }
+    { dans *lprc (0,0,0,0 si vide), renvoie l'ETAT COURANT (ENABLE/DISABLE   }
+    { Ou RESET/SET), et si le drapeau DCB_RESET est present, VIDE le         }
+    { rectangle APRES l'avoir retourne (comportement documente             }
+    { officiellement : "Clears the bounding rectangle after returning       }
+    { it."). }
+    SBROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SBRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SBRFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_BoundsEmpty Then Begin
+     Emu_WriteWord(P.CPU, SBRSeg, SBROfs, 0);
+     Emu_WriteWord(P.CPU, SBRSeg, Word(SBROfs + 2), 0);
+     Emu_WriteWord(P.CPU, SBRSeg, Word(SBROfs + 4), 0);
+     Emu_WriteWord(P.CPU, SBRSeg, Word(SBROfs + 6), 0);
+    End Else Begin
+     Emu_WriteWord(P.CPU, SBRSeg, SBROfs, Word(Win16_BoundsX1));
+     Emu_WriteWord(P.CPU, SBRSeg, Word(SBROfs + 2), Word(Win16_BoundsY1));
+     Emu_WriteWord(P.CPU, SBRSeg, Word(SBROfs + 4), Word(Win16_BoundsX2));
+     Emu_WriteWord(P.CPU, SBRSeg, Word(SBROfs + 6), Word(Win16_BoundsY2));
+    End;
+    SBROldState := 0;
+    If Win16_BoundsEnabled Then SBROldState := SBROldState Or 4
+    Else SBROldState := SBROldState Or 8;
+    If Win16_BoundsEmpty Then SBROldState := SBROldState Or 1
+    Else SBROldState := SBROldState Or 3;
+    If (SBRFlags And 1) <> 0 Then Win16_BoundsEmpty := True; { DCB_RESET }
+    P.CPU.Regs.AX := SBROldState;
+    ArgWords := 4;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
