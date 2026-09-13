@@ -7899,6 +7899,30 @@ Var
  Win16_BoundsEnabled: Boolean;
  Win16_BoundsEmpty: Boolean;
  Win16_BoundsX1, Win16_BoundsY1, Win16_BoundsX2, Win16_BoundsY2: Integer;
+ { GDI.EXE CreatePQ/MinPQ/ExtractPQ (2026-09-13, demande explicite,         }
+ { ordinaux 230/231/232) - "file d'attente de priorite" interne GDI          }
+ { (utilisee historiquement par le rasteriseur TrueType pour le tri de       }
+ { points par distance). Le VRAI source Wine (dlls/gdi.exe16/printdrv.c,    }
+ { recupere via WebFetch) a CreatePQ16/MinPQ16 comme des stubs DESACTIVES    }
+ { (branche `#if 0` morte, FIXME "stub", retour fixe 1/0) et InsertPQ16      }
+ { REEL mais BOGUE (utilise une VARIABLE GLOBALE PARTAGEE `hpqueue` pour      }
+ { TOUS les handles au lieu du hPQ passe - "stub???" de l'aveu meme des      }
+ { auteurs de Wine). Ce sous-ensemble va PLUS LOIN, coherent avec le         }
+ { precedent SetDCHook/$190 ([[project_devenv_win16_gdi_ord190_194]]) :     }
+ { une VRAIE file par-handle (pas de variable globale partagee, PAS le       }
+ { bogue de Wine) - tableaux (tag,cle) tries lineairement, capacite fixe     }
+ { 64 entrees. InsertPQ/$233 n'a PAS ete demande dans ce lot, donc AUCUNE    }
+ { entree ne peut encore etre ajoutee : MinPQ/ExtractPQ renverront            }
+ { honnetement "vide" (-1) jusqu'a ce qu'un lot futur implante InsertPQ -    }
+ { PAS une simplification, le comportement REEL et correct d'une file        }
+ { authentiquement vide. }
+ Win16_PQStack: Array[1..16] Of Record
+  Cap: Integer;
+  Count: Integer;
+  Tags: Array[0..63] Of SmallInt;
+  Keys: Array[0..63] Of SmallInt;
+ End;
+ Win16_PQStackTop: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91460,6 +91484,7 @@ Begin
  Win16_BoundsEnabled := False; { DCB_DISABLE, "desactive par defaut" (doc MS) }
  Win16_BoundsEmpty := True;
  Win16_BoundsX1 := 0; Win16_BoundsY1 := 0; Win16_BoundsX2 := 0; Win16_BoundsY2 := 0;
+ Win16_PQStackTop := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -93132,6 +93157,10 @@ Var
  SHFOld: Word;
  SBRSeg, SBROfs, SBRFlags: Word;
  SBROldState: Word;
+ { GDI.EXE CreatePQ/MinPQ/ExtractPQ/SetMetaFileBitsBetter (2026-09-13,      }
+ { demande explicite, ordinaux 196/230/231/232). }
+ PQHandle, PQSize: Integer;
+ PQI, PQMinIdx: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -97264,6 +97293,110 @@ Begin
     If (SBRFlags And 1) <> 0 Then Win16_BoundsEmpty := True; { DCB_RESET }
     P.CPU.Regs.AX := SBROldState;
     ArgWords := 4;
+   End;
+   195: Begin
+    { SelectBitmap(hdc,hbitmap):HBITMAP - ordinal ABSENT/COMMENTE du VRAI   }
+    { source Wine officiel (gdi.exe16.spec le marque "195 stub               }
+    { SelectBitmap" - un stub SANS signature). Signature VERIFIEE via une   }
+    { SOURCE SECONDAIRE differente mais reelle et publique (projet           }
+    { WineVDM, otya128/winevdm, gdi/gdi.exe16.spec, meme discipline que      }
+    { ScanLR/$135/IsDCDirty/$169) : "pascal -ret16 SelectBitmap(word         }
+    { word)", 2 mots, retour 16 bits AX seul - coherent avec la              }
+    { description fournie par l'utilisateur : "fournit exactement les       }
+    { memes fonctionnalites qu'une fonction SelectObject lorsqu'une          }
+    { fonction est utilise pour selectionner un Bitmap". REEL : reutilise    }
+    { donc a l'identique la MEME simplification deja disclosee au site       }
+    { d'implementation de SelectObject/$45 (rendu GDI reel hors de           }
+    { portee, Stage 6) - handle synthetique non-nul (1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   196: Begin
+    { SetMetaFileBitsBetter(hMeta):HMETAFILE - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16              }
+    { SetMetaFileBitsBetter(word)", 1 mot, retour 16 bits AX seul). REEL,   }
+    { CONTRAIREMENT a SetMetaFileBits/$160 (qui accepte n'importe quel      }
+    { hMem sans validation) : le VRAI source Wine (dlls/gdi.exe16/          }
+    { metafile.c, SetMetaFileBitsBetter16 - recupere via WebFetch) VALIDE   }
+    { reellement le handle via IsValidMetaFile16 avant de reussir           }
+    { (retourne 0 si invalide). Ce sous-ensemble reproduit cette VRAIE      }
+    { distinction : hMeta=1 (l'UNIQUE convention "metafichier synthetique  }
+    { valide" etablie par CreateMetaFile/$125 et consorts, voir              }
+    { [[project_devenv_win16_gdi_ord125_129]]) reussit et renvoie le MEME   }
+    { handle (1) - tout autre hMeta echoue honnetement (0), le              }
+    { comportement reel documente d'un handle de metafichier invalide. }
+    PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If PQHandle = 1 Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   230: Begin
+    { CreatePQ(nSize):HPQ - ordinal/signature VERIFIES via le VRAI source  }
+    { Wine (gdi.exe16.spec : "pascal -ret16 CreatePQ(word)", 1 mot, retour }
+    { 16 bits AX seul). Le VRAI source Wine (dlls/gdi.exe16/printdrv.c,     }
+    { recupere via WebFetch) contient une branche `#if 0` REELLE mais       }
+    { DESACTIVEE (jamais compilee) qui alloue un vrai bloc memoire global   }
+    { proportionnel a nSize et retourne $FFFF en cas d'echec d'allocation - }
+    { la branche ACTIVE (compilee) est un simple stub qui ignore nSize et   }
+    { renvoie toujours 1. Ce sous-ensemble va PLUS LOIN (coherent avec le   }
+    { precedent SetDCHook/$190, voir                                        }
+    { [[project_devenv_win16_gdi_ord190_194]]) : une VRAIE pile PAR-HANDLE  }
+    { (Win16_PQStack, 16 niveaux, 64 entrees (tag,cle) chacune, capacite     }
+    { REELLEMENT bornee par nSize dans cette limite) plutot que le handle    }
+    { synthetique fixe de la branche active de Wine - reprend meme le        }
+    { sentinelle d'echec $FFFF de la branche DESACTIVEE de Wine (pile de     }
+    { 16 files pleine) plutot que d'en inventer une nouvelle. }
+    PQSize := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Win16_PQStackTop < 16 Then Begin
+     Inc(Win16_PQStackTop);
+     PQHandle := Win16_PQStackTop;
+     If PQSize > 0 Then Begin
+      If PQSize > 64 Then Win16_PQStack[PQHandle].Cap := 64
+      Else Win16_PQStack[PQHandle].Cap := PQSize;
+     End Else
+      Win16_PQStack[PQHandle].Cap := 64;
+     Win16_PQStack[PQHandle].Count := 0;
+     P.CPU.Regs.AX := Word(PQHandle);
+    End Else
+     P.CPU.Regs.AX := $FFFF;
+    ArgWords := 1;
+   End;
+   231, 232: Begin
+    { MinPQ(hPQ):int (231) / ExtractPQ(hPQ):int (232) - ordinaux/           }
+    { signatures VERIFIES via le VRAI source Wine (gdi.exe16.spec :          }
+    { "pascal -ret16 MinPQ(word)"/"pascal -ret16 ExtractPQ(word)", 1 mot    }
+    { chacun, retour 16 bits AX seul). MEME famille que CreatePQ/$230        }
+    { ci-dessus : le VRAI source Wine (printdrv.c) les implante comme des   }
+    { stubs qui ignorent hPQ et renvoient toujours 0 - ce sous-ensemble va   }
+    { PLUS LOIN et cherche REELLEMENT l'entree de cle (priorite) minimale    }
+    { dans la VRAIE file par-handle installee par CreatePQ/$230 : MinPQ la   }
+    { laisse en place (consultation), ExtractPQ la retire (tri par           }
+    { insertion lineaire, coherent avec InsertPQ16 tel que verifie dans le  }
+    { VRAI printdrv.c - liste chainee de paires (tag,cle), meme si Wine      }
+    { l'implante avec un bogue reel disclose : une VARIABLE GLOBALE          }
+    { PARTAGEE entre TOUS les handles au lieu du hPQ passe, "stub???" de     }
+    { l'aveu meme des auteurs de Wine - ce sous-ensemble ne reproduit PAS    }
+    { ce bogue, chaque handle a sa PROPRE file). InsertPQ/$233 n'a PAS ete   }
+    { demande dans ce lot : aucune entree ne peut donc encore exister -      }
+    { renvoie honnetement -1 ("file vide"), le comportement REEL et          }
+    { correct d'une file authentiquement vide, pas une simplification. }
+    PQHandle := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If (PQHandle >= 1) And (PQHandle <= Win16_PQStackTop) And
+     (Win16_PQStack[PQHandle].Count > 0) Then Begin
+     PQMinIdx := 0;
+     For PQI := 1 To Win16_PQStack[PQHandle].Count - 1 Do
+      If Win16_PQStack[PQHandle].Keys[PQI] < Win16_PQStack[PQHandle].Keys[PQMinIdx] Then
+       PQMinIdx := PQI;
+     P.CPU.Regs.AX := Word(Win16_PQStack[PQHandle].Tags[PQMinIdx]);
+     If Ordinal = 232 Then Begin { ExtractPQ : retire l'entree trouvee }
+      For PQI := PQMinIdx To Win16_PQStack[PQHandle].Count - 2 Do Begin
+       Win16_PQStack[PQHandle].Tags[PQI] := Win16_PQStack[PQHandle].Tags[PQI + 1];
+       Win16_PQStack[PQHandle].Keys[PQI] := Win16_PQStack[PQHandle].Keys[PQI + 1];
+      End;
+      Dec(Win16_PQStack[PQHandle].Count);
+     End;
+    End Else
+     P.CPU.Regs.AX := $FFFF;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
