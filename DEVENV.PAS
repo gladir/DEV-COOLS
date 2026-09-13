@@ -97691,6 +97691,175 @@ Begin
     P.CPU.Regs.AX := $FFFF; { SP_ERROR }
     ArgWords := 8;
    End;
+   300: Begin
+    { EngineEnumerateFont(lpszFontName,proc,data):DWORD - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal  }
+    { EngineEnumerateFont(str segptr long)", 1 pointeur LOIN (str, 2 mots) +}
+    { 1 pointeur LOIN (segptr, 2 mots) + 1 LONG (2 mots) = 6 mots, retour   }
+    { DWORD AX:DX - PAS de -ret16). Le VRAI source Wine (dlls/gdi.exe16/     }
+    { gdi.c, recupere via WebFetch) est un stub honnete ("FIXME ...,stub")  }
+    { qui ignore ses 3 parametres et renvoie TOUJOURS 0 - ce sous-ensemble  }
+    { reproduit fidelement ce MEME comportement (le "moteur de pilote        }
+    { d'imprimante TrueType" - le vrai role documente de cette famille       }
+    { EngineXxx - n'a de toute facon aucune existence reelle dans ce         }
+    { sous-ensemble, qui ne dessine qu'une police bitmap fixe). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   301: Begin
+    { EngineDeleteFont(lpFontInfo):BOOL - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                  }
+    { EngineDeleteFont(ptr)", 1 pointeur LOIN = 2 mots, retour 16 bits AX   }
+    { seul). Le VRAI source Wine (gdi.c, recupere via WebFetch) LIT           }
+    { reellement la structure FONTINFO16 pointee (verifie ses drapeaux       }
+    { dfType, un champ dfFace calcule par un decalage d'octet code en dur,   }
+    { et libere conditionnellement un handle GDI trouve a un AUTRE decalage  }
+    { code en dur $54) - une manipulation de structure interne trop fragile  }
+    { et dependante d'un vrai moteur de polices realisees pour etre           }
+    { reproduite ici SANS ce moteur (aucune vraie table FONTINFO16 n'existe  }
+    { dans ce sous-ensemble). Le point cle disclose : la VRAIE fonction        }
+    { renvoie TOUJOURS 1, QUELLE QUE SOIT l'issue de cette liberation          }
+    { conditionnelle interne - ce sous-ensemble reproduit fidelement ce       }
+    { SEUL comportement observable de l'exterieur (retour=1), sans jamais     }
+    { dereferencer le pointeur recu (une lecture a des decalages inventes     }
+    { serait un vrai risque, pas une simplification honnete). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   302: Begin
+    { EngineRealizeFont(lplogFont,lptextxform,lpfontInfo):DWORD - ordinal/ }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal  }
+    { EngineRealizeFont(ptr ptr ptr)", 3 pointeurs LOIN (3x2=6 mots),        }
+    { retour DWORD AX:DX - PAS de -ret16). Le VRAI source Wine (gdi.c,        }
+    { recupere via WebFetch) est un stub honnete ("FIXME ...,stub") qui      }
+    { ignore ses 3 parametres et renvoie TOUJOURS 0 - reproduit fidelement.  }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   303: Begin
+    { EngineGetCharWidth(lpFontInfo,firstChar,lastChar,buffer):BOOL -       }
+    { ordinal/signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : }
+    { "pascal -ret16 EngineGetCharWidth(ptr word word ptr)", 1 pointeur      }
+    { LOIN + 2 mots + 1 pointeur LOIN = 6 mots, retour 16 bits AX seul).      }
+    { Le VRAI source Wine (gdi.c, recupere via WebFetch) contient une         }
+    { BOUCLE for(firstChar..lastChar) qui ne fait QUE journaliser un FIXME,   }
+    { et l'ecriture reelle "*buffer++ = lpFontInfo->dfAvgWidth" se trouve      }
+    { EN DEHORS de cette boucle - un VRAI quirk du code Wine (n'ecrit          }
+    { qu'UN SEUL mot au total, jamais toute la plage demandee), renvoie        }
+    { TOUJOURS 1. Ce sous-ensemble reproduit fidelement ce MEME quirk         }
+    { EXACT (un seul mot ecrit) en reutilisant la largeur moyenne de           }
+    { caractere DEJA etablie ailleurs pour GetTextMetrics (tmAveCharWidth=6,  }
+    { voir les 2 sites d'ecriture existants) plutot que d'inventer une         }
+    { nouvelle valeur - dfAvgWidth et tmAveCharWidth designent tous deux la    }
+    { MEME notion reelle documentee (largeur moyenne de caractere de la        }
+    { police), donc reutiliser la valeur deja disclosee est fidele, pas une    }
+    { coincidence pratique. }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, 6); { tmAveCharWidth, deja etabli }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   304: Begin
+    { EngineSetFontContext(lpFontInfo,data):BOOL - ordinal/signature       }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { EngineSetFontContext(ptr word)", 1 pointeur LOIN + 1 mot = 3 mots,     }
+    { retour 16 bits AX seul). Le VRAI source Wine (gdi.c, recupere via      }
+    { WebFetch) est un stub honnete ("FIXME stub?") qui ignore ses 2          }
+    { parametres et renvoie TOUJOURS 0 - reproduit fidelement. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   305: Begin
+    { EngineGetGlyphBMP(...):BOOL - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 EngineGetGlyphBMP(word   }
+    { ptr word word ptr long ptr)", 1+1+1 mots + 2 pointeurs LOIN (4 mots) + }
+    { 1 LONG (2 mots) + 1 pointeur LOIN (2 mots) = 11 mots, retour 16 bits   }
+    { AX seul). Le VRAI source Wine (gdi.c, recupere via WebFetch) est un    }
+    { stub honnete ("FIXME stub?") qui ignore TOUS ses parametres et         }
+    { renvoie TOUJOURS 0 - reproduit fidelement (aucun rasteriseur de         }
+    { glyphe bitmap n'existe de toute facon dans ce sous-ensemble). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 11;
+   End;
+   306: Begin
+    { EngineMakeFontDir(hdc,fontdir,string):DWORD - ordinal/signature      }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal            }
+    { EngineMakeFontDir(word ptr ptr)", 1 mot + 2 pointeurs LOIN (4 mots) =  }
+    { 5 mots, retour DWORD AX:DX - PAS de -ret16). Le VRAI source Wine       }
+    { (gdi.c, recupere via WebFetch) est un stub EXPLICITEMENT documente     }
+    { "stub! (always fails)" qui renvoie TOUJOURS ~0UL ($FFFFFFFF) - ce      }
+    { sous-ensemble reproduit fidelement cet echec systematique DOCUMENTE    }
+    { par le code source lui-meme, pas une valeur inventee. }
+    P.CPU.Regs.AX := $FFFF;
+    P.CPU.Regs.DX := $FFFF;
+    ArgWords := 5;
+   End;
+   307: Begin
+    { GetCharABCWidths(hdc,firstChar,lastChar,lpabc):BOOL - ordinal/        }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal  }
+    { -ret16 GetCharABCWidths(word word word ptr)", 3 mots + 1 pointeur      }
+    { LOIN (2 mots) = 5 mots, retour 16 bits AX seul). Le VRAI source Wine   }
+    { (gdi.c, recupere via WebFetch) delegue REELLEMENT a la vraie API       }
+    { 32 bits hote GetCharABCWidthsA - dont le VRAI contrat DOCUMENTE         }
+    { officiellement echoue (FALSE) pour toute police NON-TrueType (les       }
+    { largeurs ABC n'existent que pour les polices a espacement proportionnel}
+    { TrueType). Ce sous-ensemble ne dessine qu'une SEULE police bitmap a     }
+    { largeur fixe (jamais TrueType, voir GetTextMetrics/tmAveCharWidth) -    }
+    { echouer ici n'est PAS une simplification mais le comportement REEL      }
+    { documente et correct pour ce type de police. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   308: Begin
+    { GetOutlineTextMetrics(hdc,cbData,lpOTM):UINT - ordinal/signature     }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16     }
+    { GetOutlineTextMetrics(word word ptr)", 2 mots + 1 pointeur LOIN (2    }
+    { mots) = 4 mots, retour 16 bits AX seul). Le VRAI source Wine (gdi.c,   }
+    { recupere via WebFetch) est LUI-MEME un stub honnete ("FIXME ...:       }
+    { stub") qui renvoie TOUJOURS 0, MEME dans le Wine moderne actuel -       }
+    { reproduit fidelement (les metriques de contour TrueType n'ont de        }
+    { toute facon aucun sens pour la police bitmap fixe de ce sous-ensemble).}
+    P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   309: Begin
+    { GetGlyphOutline(hdc,uChar,fuFormat,lpgm,cbBuffer,lpBuffer,lpmat2):    }
+    { DWORD - ordinal/signature VERIFIES via le VRAI source Wine            }
+    { (gdi.exe16.spec : "pascal GetGlyphOutline(word word word ptr long     }
+    { ptr ptr)", 3 mots + 1 pointeur LOIN (2 mots) + 1 LONG (2 mots) + 2      }
+    { pointeurs LOIN (4 mots) = 11 mots, retour DWORD AX:DX - PAS de          }
+    { -ret16). Le VRAI source Wine (gdi.c, recupere via WebFetch) delegue    }
+    { REELLEMENT a la vraie API 32 bits hote GetGlyphOutlineA - dont le       }
+    { VRAI contrat DOCUMENTE officiellement echoue avec GDI_ERROR            }
+    { ($FFFFFFFF, verifie via wingdi.h) pour toute police NON-TrueType,        }
+    { MEME discipline exacte que GetCharABCWidths/$307 ci-dessus : ce         }
+    { sous-ensemble ne dessine qu'une police bitmap fixe, jamais TrueType -   }
+    { echouer avec GDI_ERROR n'est PAS une simplification mais le              }
+    { comportement REEL documente et correct ici. }
+    P.CPU.Regs.AX := $FFFF; { GDI_ERROR }
+    P.CPU.Regs.DX := $FFFF;
+    ArgWords := 11;
+   End;
+   310: Begin
+    { CreateScalableFontResource(fHidden,lpszResourceFile,fontFile,path):  }
+    { BOOL - ordinal/signature VERIFIES via le VRAI source Wine              }
+    { (gdi.exe16.spec : "pascal -ret16                                       }
+    { CreateScalableFontResource(word str str str)", 1 mot + 3 pointeurs     }
+    { LOIN (3x2=6 mots) = 7 mots, retour 16 bits AX seul). Le VRAI source     }
+    { Wine (gdi.c, recupere via WebFetch) delegue DIRECTEMENT a la vraie      }
+    { API 32 bits hote CreateScalableFontResourceA, qui CREE REELLEMENT       }
+    { un fichier de ressource .FOT sur le disque hote - un effet de bord      }
+    { de CREATION bien trop risque pour ce sous-ensemble (meme prudence       }
+    { deja appliquee a CreateMetaFile/$125/OpenJob/$240/SpoolFile/$254 :      }
+    { aucune de ces operations de CREATION n'ecrit jamais de vrai fichier     }
+    { hote). Echec honnete (FALSE=0) plutot que de risquer la creation        }
+    { d'un vrai fichier invente. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 7;
+   End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
     Exit;
