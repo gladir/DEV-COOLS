@@ -7843,6 +7843,12 @@ Var
  { brosse courante, mono-DC (coherent avec Win16_CurrentWindowOrgX/Y et      }
  { consorts deja etablis pour SetWindowOrg/etc.). }
  Win16_BrushOrgX, Win16_BrushOrgY: Integer;
+ { GDI.EXE GetBitmapDimension/SetBitmapDimension (2026-09-13, demande       }
+ { explicite, ordinaux 162/163) - dimensions REELLES (0,1 mm) du seul       }
+ { bitmap synthetique mono-objet de ce sous-ensemble (CreateBitmap/          }
+ { CreateCompatibleBitmap/CreateDiscardableBitmap retournent tous le         }
+ { MEME handle=1). }
+ Win16_BitmapDimCX, Win16_BitmapDimCY: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91396,6 +91402,7 @@ Begin
  Win16_EnvDeviceName := '';
  Win16_EnvDataLen := 0;
  Win16_BrushOrgX := 0; Win16_BrushOrgY := 0;
+ Win16_BitmapDimCX := 0; Win16_BitmapDimCY := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -93056,6 +93063,8 @@ Var
  GRBX1, GRBY1, GRBX2, GRBY2: Integer;
  GRBActive: Boolean;
  GRBHRgn: Integer;
+ { GDI.EXE GetNearestColor (2026-09-13, demande explicite, ordinal 154). }
+ GNCColorLo: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -96589,6 +96598,185 @@ Begin
     Win16_BrushOrgY := 0;
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
+   End;
+   151: Begin
+    { CopyMetaFile(hmfSrc,lpFilename):HMETAFILE - ordinal/signature        }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16    }
+    { CopyMetaFile(word str)", 1 mot + 1 pointeur LOIN (2 mots) = 3 mots,   }
+    { retour 16 bits AX seul). Meme famille hors de portee que              }
+    { CreateMetaFile/$125/CloseMetaFile/$126/PlayMetaFile/$123 (voir         }
+    { [[project_devenv_win16_gdi_ord125_129]]) : aucun contenu de           }
+    { metafichier n'est jamais reellement enregistre dans ce sous-           }
+    { ensemble, donc rien de reel a copier. Meme discipline que              }
+    { CreateMetaFile/$125 pour lpFilename : N'ECRIT PAS de fichier reel      }
+    { sur le disque hote meme quand un nom est fourni (appel de              }
+    { CREATION potentiellement destructeur d'un fichier hote homonyme,       }
+    { contrairement a un simple test d'EXISTENCE) - handle synthetique       }
+    { non-nul (1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   153: Begin
+    { CreateIC(lpszDriver,lpszDevice,lpszOutput,lpdvmInit):HDC - ordinal/  }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 CreateIC(str str str ptr)", 4 pointeurs LOIN = 8 mots, retour  }
+    { 16 bits AX seul - EXACTEMENT la meme forme que CreateDC/$53 juste     }
+    { au-dessus). Meme simplification que CreateDC/$53/CreateCompatibleDC/  }
+    { $52 : handle de DC synthetique non-nul, aucun VRAI pilote de           }
+    { peripherique nomme (imprimante, etc.) n'est modelise. Utile en          }
+    { pratique meme ainsi : un appelant typique passe ce handle a            }
+    { GetDeviceCaps/$80, qui ignore deja son parametre hdc et renvoie les    }
+    { VRAIES valeurs du mode video actif ($13 320x200x256) - donc            }
+    { interroger les capacites via ce handle "contexte d'information"        }
+    { fonctionne reellement de bout en bout, seul le dessin serait           }
+    { impossible (non pertinent : un IC ne sert jamais a dessiner). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 8;
+   End;
+   154: Begin
+    { GetNearestColor(hdc,crColor):COLORREF - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (gdi.exe16.spec : "pascal                    }
+    { GetNearestColor(word long)", 1 mot + 1 LONG (2 mots) = 3 mots,        }
+    { retour DWORD AX:DX - PAS de -ret16 contrairement a la plupart des     }
+    { ordinaux voisins). REEL, coherent avec la convention couleur DEJA     }
+    { etablie dans tout ce sous-ensemble (SetPixel/$31, FloodFill,           }
+    { PatBlt, SetBkColor/$1, SetTextColor : "seul l'octet bas de crColor    }
+    { compte", mode video $13 a 256 couleurs INDEXEES reel) : la "couleur    }
+    { solide la plus proche" dans CE modele simplifie EST exactement         }
+    { crColor avec les 3 octets de poids fort mis a zero, puisque aucune    }
+    { correspondance RGB->palette VGA reelle n'est jamais faite ailleurs     }
+    { non plus - fidele a la propre simplification deja disclosee de ce     }
+    { fichier plutot qu'une nouvelle simplification inventee ici. }
+    { P.CPU.Regs.SP + 6 = octet de poids fort de crColor, jamais lu (voir  }
+    { le commentaire ci-dessus - seul l'octet bas compte ici). }
+    GNCColorLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := Word(GNCColorLo And $00FF);
+    P.CPU.Regs.DX := 0;
+    ArgWords := 3;
+   End;
+   155: Begin
+    { QueryAbort(hdc,nCode):BOOL - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 QueryAbort(word          }
+    { word)", 2 mots, retour 16 bits AX seul). REEL pour le CONTRAT de       }
+    { retour : le vrai QueryAbort appelle la procedure AbortProc            }
+    { enregistree par l'application (SetAbortProc, non implante dans ce     }
+    { sous-ensemble - aucun sous-systeme d'impression n'existe) - sans       }
+    { AbortProc enregistree, le vrai Windows ne demande jamais               }
+    { l'annulation ; retourne donc FALSE(0) (ne PAS annuler), le              }
+    { comportement reel documente par defaut, pas une valeur inventee. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   156: Begin
+    { CreateDiscardableBitmap(hdc,nWidth,nHeight):HBITMAP - ordinal/       }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal }
+    { -ret16 CreateDiscardableBitmap(word word word)", 3 mots, meme          }
+    { forme que CreateCompatibleBitmap/$51). Meme simplification de          }
+    { rendu que CreateBitmap/$48/CreateCompatibleBitmap/$51 : handle          }
+    { synthetique non-nul, aucune VRAIE surface de bitmap escamotable         }
+    { (discardable) n'est geree - la notion meme de memoire escamotable      }
+    { n'a pas de sens dans ce sous-ensemble (aucune vraie pression            }
+    { memoire GlobalDiscard/GlobalCompact modelisee). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   159: Begin
+    { GetMetaFileBits(hmf):HGLOBAL - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                    }
+    { GetMetaFileBits(word)", 1 mot, retour 16 bits AX seul). REEL pour     }
+    { le CONTRAT d'echec, meme famille que PlayMetaFile/$123/               }
+    { GetBitmapBits/$74 : AUCUN metafichier de ce sous-ensemble ne stocke   }
+    { jamais de vrais enregistrements GDI (CreateMetaFile/$125/             }
+    { CloseMetaFile/$126/CopyMetaFile/$151 sont tous des handles             }
+    { synthetiques sans contenu reel), donc il n'y a litteralement rien     }
+    { a copier dans un objet memoire global - retourne 0, le                }
+    { comportement REEL documente d'un echec (handle de metafichier          }
+    { invalide/sans donnees), pas une valeur inventee. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   160: Begin
+    { SetMetaFileBits(hMem):HMETAFILE - ordinal/signature VERIFIES via     }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal -ret16                 }
+    { SetMetaFileBits(word)", 1 mot, retour 16 bits AX seul). Meme          }
+    { famille hors de portee que CreateMetaFile/$125/CopyMetaFile/$151 :    }
+    { aucun VRAI moteur de metafichier n'existe pour interpreter le          }
+    { contenu du bloc memoire fourni, meme si celui-ci provenait d'un        }
+    { vrai LocalAlloc (Win16_HeapNext) - ce sous-ensemble ne sait de           }
+    { toute facon jamais rejouer un metafichier reel (meme limitation         }
+    { que PlayMetaFile/$123) - handle synthetique non-nul (1), accepte       }
+    { sans validation reelle du contenu. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   161: Begin
+    { PtInRegion(hrgn,X,Y):BOOL - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 PtInRegion(word         }
+    { s_word s_word)", 3 mots, meme forme que PtVisible/$103, retour 16     }
+    { bits AX seul). REEL EN PARTIE, plus riche que PtVisible/$103 et       }
+    { reutilise le MEME mecanisme deja etabli pour GetRgnBox/$134 : si      }
+    { hRgn correspond a un handle de pile SaveVisRgn/$129 encore valide     }
+    { (>=2, decale de 1 - voir SaveVisRgn/$129), teste REELLEMENT le        }
+    { point contre le rectangle englobant de CETTE sauvegarde precise ;      }
+    { sinon (hRgn=1, la convention generique "region courante", ou toute    }
+    { autre valeur), teste contre le rectangle de clip mono-DC courant       }
+    { (Win16_ClipX1/Y1/X2/Y2/ClipActive). Contrairement a PtVisible/$103    }
+    { (ou l'absence de clip signifie "tout est visible"), l'absence de       }
+    { region active ici retourne honnetement FALSE (aucune forme de          }
+    { region n'a jamais ete definie - echec honnete plutot qu'un "toujours   }
+    { vrai" invente). }
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6))); { X }
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4))); { Y }
+    GRBHRgn := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    If (GRBHRgn >= 2) And (GRBHRgn - 1 <= Win16_VisRgnStackTop) Then Begin
+     GRBX1 := Win16_VisRgnStack[GRBHRgn - 1].X1; GRBY1 := Win16_VisRgnStack[GRBHRgn - 1].Y1;
+     GRBX2 := Win16_VisRgnStack[GRBHRgn - 1].X2; GRBY2 := Win16_VisRgnStack[GRBHRgn - 1].Y2;
+     GRBActive := Win16_VisRgnStack[GRBHRgn - 1].Active;
+    End Else Begin
+     GRBX1 := Win16_ClipX1; GRBY1 := Win16_ClipY1;
+     GRBX2 := Win16_ClipX2; GRBY2 := Win16_ClipY2;
+     GRBActive := Win16_ClipActive;
+    End;
+    If GRBActive And (GdiX1 >= GRBX1) And (GdiX1 < GRBX2) And
+       (GdiY1 >= GRBY1) And (GdiY1 < GRBY2) Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   162: Begin
+    { GetBitmapDimension(hbitmap):DWORD - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (gdi.exe16.spec : "pascal                        }
+    { GetBitmapDimension(word)", 1 mot, retour DWORD AX:DX - PAS de         }
+    { -ret16). REEL : contrepartie de SetBitmapDimension/$163 - renvoie     }
+    { VRAIMENT Win16_BitmapDimCX/CY (nouveaux globaux). Meme                }
+    { simplification "mono-objet" que Win16_BrushOrgX/Y ($148/149) : ce     }
+    { sous-ensemble n'a qu'UN SEUL bitmap synthetique reellement             }
+    { distingue (CreateBitmap/CreateCompatibleBitmap/                        }
+    { CreateDiscardableBitmap retournent tous le MEME handle=1, aucune       }
+    { vraie table d'objets bitmap), donc une seule paire de dimensions       }
+    { est suivie plutot qu'une par handle. }
+    P.CPU.Regs.AX := Word(Win16_BitmapDimCX);
+    P.CPU.Regs.DX := Word(Win16_BitmapDimCY);
+    ArgWords := 1;
+   End;
+   163: Begin
+    { SetBitmapDimension(hbitmap,nWidth,nHeight):DWORD - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec :          }
+    { "pascal SetBitmapDimension(word s_word s_word)", 3 mots, meme         }
+    { forme que PtVisible/$103, retour DWORD AX:DX - PAS de -ret16). REEL,  }
+    { meme discipline "retourne l'ANCIENNE valeur" que SetBrushOrg/$148 :   }
+    { fixe VRAIMENT Win16_BitmapDimCX/CY (unite documentee de 0,1 mm,        }
+    { valeur brute non convertie - aucune consommation reelle de cette      }
+    { unite ailleurs dans ce sous-ensemble) et retourne la dimension          }
+    { PRECEDENTE. }
+    P.CPU.Regs.AX := Word(Win16_BitmapDimCX);
+    P.CPU.Regs.DX := Word(Win16_BitmapDimCY);
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    Win16_BitmapDimCX := GdiX1;
+    Win16_BitmapDimCY := GdiY1;
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
