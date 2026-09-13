@@ -96778,6 +96778,117 @@ Begin
     Win16_BitmapDimCY := GdiY1;
     ArgWords := 3;
    End;
+   169: Begin
+    { IsDCDirty(hdc,lpRect):BOOL - ordinal ABSENT/COMMENTE du VRAI          }
+    { source Wine officiel (dlls/gdi.exe16/gdi.exe16.spec le marque         }
+    { "169 stub IsDCDirty" - un stub SANS signature). Signature VERIFIEE   }
+    { via une SOURCE SECONDAIRE differente mais reelle et publique          }
+    { (projet WineVDM, otya128/winevdm, gdi/gdi.exe16.spec, meme            }
+    { discipline que ScanLR/$135 - voir                                     }
+    { [[project_devenv_win16_gdi_ord135_150]]) : "pascal -ret16              }
+    { IsDCDirty(word segptr)", 1 mot + 1 pointeur LOIN (2 mots) = 3 mots,    }
+    { retour 16 bits AX seul - coherent avec la description fournie par     }
+    { l'utilisateur (renvoie un booleen ET remplit un lpRect). Fonction     }
+    { INTERNE de GDI (jamais appelee par une application normale d'apres   }
+    { la documentation, utilisee par les pilotes d'impression pour le       }
+    { bandage/pagination) : ce sous-ensemble ne suit AUCUN "residu de       }
+    { dessin" reel distinct du framebuffer partage EmuVideo - retourne      }
+    { honnetement FALSE(0) ("aucun residu"), le comportement reel d'un      }
+    { DC neuf/propre, et remplit lpRect de zeros (le contenu de lpRect      }
+    { n'est documente comme significatif QUE si le retour est TRUE, donc   }
+    { le zerofill est une precaution defensive, pas une valeur inventee     }
+    { pretendant etre reelle). }
+    GRBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, GRBSeg, GRBOfs, 0);
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 2), 0);
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 4), 0);
+    Emu_WriteWord(P.CPU, GRBSeg, Word(GRBOfs + 6), 0);
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   { SetDCStatus/170 (contrepartie logique de IsDCDirty/169 ci-dessus,     }
+   { "fixer l'etat d'un rectangle de contexte de peripherique afin        }
+   { d'indiquer s'il contient des residus") : DELIBEREMENT NON             }
+   { IMPLANTE - contrairement a ScanLR/$135/IsDCDirty/$169, la source      }
+   { secondaire WineVDM elle-meme ne donne AUCUNE signature pour cet       }
+   { ordinal ("170 stub SetDCStatus", strictement identique au vrai         }
+   { Wine - ni parametres ni implementation C retrouvee dans                }
+   { winevdm/gdi/gdi.c non plus). Inventer un nombre de mots de pile        }
+   { pour cet ordinal risquerait de corrompre reellement la pile de         }
+   { TOUS les appels suivants si le nombre etait faux - contrairement a     }
+   { une mauvaise valeur de retour (simplement fausse), une MAUVAISE        }
+   { taille de pile est une vraie source de plantage. Laisse donc            }
+   { deliberement tomber sur le "Else" generique ci-dessous (arret          }
+   { propre et informatif via Win16_Halt, comme tout ordinal non             }
+   { implante), plutot que d'inventer une forme non verifiable. }
+   172: Begin
+    { SetRectRgn(hrgn,nLeft,nTop,nRight,nBottom):BOOL - ordinal/           }
+    { signature VERIFIES via le VRAI source Wine (gdi.exe16.spec :          }
+    { "pascal -ret16 SetRectRgn(word s_word s_word s_word s_word)", 5       }
+    { mots SIGNES (sauf hrgn), retour 16 bits AX seul). REEL EN PARTIE,     }
+    { reutilise le MEME decodage de handle deja etabli pour GetRgnBox/      }
+    { $134/PtInRegion/$161 : si hRgn correspond a un handle de pile          }
+    { SaveVisRgn/$129 encore valide (>=2, decale de 1), MUTE REELLEMENT     }
+    { cette sauvegarde precise avec le nouveau rectangle (contrairement    }
+    { a CreateRectRgn/$64 qui cree TOUJOURS une nouvelle region, celle-ci   }
+    { redefinit une region EXISTANTE, exactement le contrat reel documente }
+    { de SetRectRgn) ; sinon (hRgn=1, la convention generique, ou toute     }
+    { autre valeur), mute le rectangle de clip mono-DC courant (meme         }
+    { comportement que CreateRectRgn/$64). Retourne TRUE(1). }
+    GRBHRgn := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    GdiX1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+    GdiY1 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GdiX2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    GdiY2 := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If (GRBHRgn >= 2) And (GRBHRgn - 1 <= Win16_VisRgnStackTop) Then Begin
+     Win16_VisRgnStack[GRBHRgn - 1].X1 := GdiX1; Win16_VisRgnStack[GRBHRgn - 1].Y1 := GdiY1;
+     Win16_VisRgnStack[GRBHRgn - 1].X2 := GdiX2; Win16_VisRgnStack[GRBHRgn - 1].Y2 := GdiY2;
+     Win16_VisRgnStack[GRBHRgn - 1].Active := True;
+    End Else Begin
+     Win16_ClipX1 := GdiX1; Win16_ClipY1 := GdiY1;
+     Win16_ClipX2 := GdiX2; Win16_ClipY2 := GdiY2;
+     Win16_ClipActive := True;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   173: Begin
+    { GetClipRgn(hdc):HRGN - ordinal/signature VERIFIES via le VRAI        }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 GetClipRgn(word)", 1     }
+    { mot, retour 16 bits AX seul - VARIANTE Win16 plus simple que le        }
+    { GetClipRgn(hdc,hrgn) du Win32 moderne, coherente avec la               }
+    { description fournie par l'utilisateur : renvoie directement un        }
+    { HANDLE plutot que de remplir un objet region existant). REEL :         }
+    { renvoie 1 (le handle generique "region courante" deja utilise          }
+    { partout ailleurs) si un clip est reellement actif                      }
+    { (Win16_ClipActive), sinon 0 (NULL - AUCUNE region de clip n'est         }
+    { actuellement definie), le comportement reel documente. }
+    If Win16_ClipActive Then
+     P.CPU.Regs.AX := 1
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   175: Begin
+    { EnumMetaFile(hdc,hmf,lpEnumFunc,lParam):BOOL - ordinal/signature     }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16    }
+    { EnumMetaFile(word word segptr long)", 1+1 mots + 1 pointeur LOIN     }
+    { (2 mots) + 1 LONG (2 mots) = 6 mots, retour 16 bits AX seul). REEL,   }
+    { PAS une simplification deguisee : AUCUN metafichier de ce sous-       }
+    { ensemble ne stocke jamais de vrais enregistrements GDI (meme          }
+    { famille que CreateMetaFile/$125/PlayMetaFile/$123/                    }
+    { GetMetaFileBits/$159 - voir                                           }
+    { [[project_devenv_win16_gdi_ord125_129]]/                              }
+    { [[project_devenv_win16_gdi_ord159_163]]) - un metafichier VIDE a       }
+    { REELLEMENT ZERO enregistrement a enumerer, donc lpEnumFunc n'est      }
+    { JAMAIS reellement rappele (correct pour zero enregistrement, pas       }
+    { une omission) et la fonction retourne TRUE(1) (enumeration reussie     }
+    { de l'ensemble - vide - des enregistrements), le comportement reel      }
+    { documente pour ce cas precis. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
     Exit;
