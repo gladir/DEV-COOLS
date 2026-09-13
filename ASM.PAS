@@ -23,10 +23,16 @@ Type
  Defined,Mutable:Boolean;
  Next:PSymbol
 End;
+PDecision=^TDecision;
+TDecision=Record
+ Size:Byte;
+ Next:PDecision
+End;
 TBytes=Array[0..ImageSize]of Byte;
 
 Var
  Symbols:PSymbol;
+ Decisions,DecisionTail,DecisionCursor:PDecision;
  Image:^TBytes;
  SourceName,ObjectName,ListName:String;
  MakeObject,ObjectExplicit,ListOn,SymbolsOn,CondList,ErrorsInList,FormFeed,Generated,
@@ -237,6 +243,31 @@ Procedure EmitOp(Op:Word);Begin
  if Op>$FF Then Emit(Byte(Op shr 8));Emit(Byte(Op))
 End;
 
+Function SelectSize(Proposed:Byte):Byte;
+Var
+ P:PDecision;
+Begin
+ if PassNo=1 Then Begin
+  New(P);P^.Size:=Proposed;P^.Next:=Nil;
+  if Decisions=Nil Then Decisions:=P else DecisionTail^.Next:=P;
+  DecisionTail:=P;SelectSize:=Proposed
+ End else if DecisionCursor<>Nil Then Begin
+  SelectSize:=DecisionCursor^.Size;DecisionCursor:=DecisionCursor^.Next
+ End else Begin
+  Error('erreur de phase dans la selection d''adressage');SelectSize:=Proposed
+ End
+End;
+
+Procedure CheckByte(V:LongInt;Known:Boolean;What:String);
+Begin
+ if(PassNo=2)and Known and((V<-$80)or(V>$FF))Then Error(What+' hors plage 8 bits')
+End;
+
+Procedure CheckWord(V:LongInt;Known:Boolean;What:String);
+Begin
+ if(PassNo=2)and Known and((V<-$8000)or(V>$FFFF))Then Error(What+' hors plage 16 bits')
+End;
+
 Function NextPart(Var S:String):String;
 Var
  I:Integer;
@@ -284,6 +315,8 @@ Var
  I:Integer;
 Begin
  BranchOp:=$FFFF;LongBranch:=False;
+ if M='BHS'Then M:='BCC' else if M='BLO'Then M:='BCS' else if M='LBHS'Then M:='LBCC'
+ else if M='LBLO'Then M:='LBCS';
  if M='BRA'Then BranchOp:=$20 else if M='BSR'Then BranchOp:=$8D else if M='LBRA'Then Begin
   BranchOp:=$16;LongBranch:=True
  End else if M='LBSR'Then Begin
@@ -357,27 +390,39 @@ End;
 Procedure EncodeIndexed(S:String);
 Var
  Ind:Boolean;
- Comma,I,R,Post:Integer;
+ Comma,I,R,Post,Chosen:Integer;
  A,B:String;
- V:LongInt;
+ V,Disp:LongInt;
  K:Boolean;
- ForceShort:Boolean;
+ ForceShort,ForceLong:Boolean;
 Begin
  S:=Trim(S);Ind:=(Length(S)>1)and(S[1]='[')and(S[Length(S)]=']');
  if Ind Then S:=Trim(Copy(S,2,Length(S)-2));Comma:=0;
  For I:=Length(S)downto 1 do if S[I]=','Then Begin
   Comma:=I;Break
- End;if Comma=0 Then Begin
-  Error('registre index absent');Emit($84);Exit
+ End;
+ { Forme indirecte etendue [adresse] : post-octet $9F suivi de l'adresse. }
+ if Comma=0 Then Begin
+  if not Ind Then Begin
+   Error('registre index absent');Emit($84);Exit
+  End;
+  V:=Eval(S,K);CheckWord(V,K,'adresse indirecte');Emit($9F);EmitW(V);Exit
  End;
  A:=Trim(Copy(S,1,Comma-1));B:=Upper(Trim(Copy(S,Comma+1,255)));
- ForceShort:=(Length(A)>0)and(A[1]='<');if ForceShort Then Delete(A,1,1);
+ ForceShort:=(Length(A)>0)and(A[1]='<');ForceLong:=(Length(A)>0)and(A[1]='>');
+ if ForceShort or ForceLong Then Delete(A,1,1);
  if(B='PC')or(B='PCR')Then Begin
-  V:=Eval(A,K);if ForceShort Then Begin
-   Post:=$8C;if Ind Then Post:=Post or $10;Emit(Post);Emit(Byte(V-(PC+1)))
+  if A='' Then Begin Error('adresse PCR absente');V:=0;K:=False End else V:=Eval(A,K);
+  if ForceShort Then Begin
+   { PC pointe ici sur le post-octet; l'instruction finit deux octets plus loin. }
+   Disp:=V-(PC+2);if(PassNo=2)and K and((Disp<-$80)or(Disp>$7F))Then
+    Error('deplacement PCR hors plage 8 bits');
+   Post:=$8C;if Ind Then Post:=Post or $10;Emit(Post);Emit(Byte(Disp))
   End else
   Begin
-   Post:=$8D;if Ind Then Post:=Post or $10;Emit(Post);EmitW(V-(PC+2))
+   Disp:=V-(PC+3);if(PassNo=2)and K and((Disp<-$8000)or(Disp>$7FFF))Then
+    Error('deplacement PCR hors plage 16 bits');
+   Post:=$8D;if Ind Then Post:=Post or $10;Emit(Post);EmitW(Disp)
   End;Exit
  End;
  if Copy(B,1,2)='--'Then Begin
@@ -392,19 +437,33 @@ Begin
  R:=IndexReg(B);if R<0 Then Begin
   Error('registre index incorrect: '+B);R:=0
  End;if Post>=0 Then Begin
+  if A<>'' Then Error('offset interdit avec auto-indexation');
   if Ind and(Post in[$80,$82])Then Error('mode indexe indirect illegal');
   if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));Exit
  End;
  if(A='A')Then Post:=$86 else if(A='B')Then Post:=$85 else if(A='D')Then Post:=$8B else
  Begin
-  V:=Eval(A,K);if not Ind and(V>=-16)and(V<=15)Then Begin
+  if A='' Then Begin
+   Post:=$84;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));Exit
+  End;
+  V:=Eval(A,K);
+  if ForceLong Then Chosen:=2
+  else if ForceShort Then Chosen:=1
+  else if not Ind and K and(V>=-16)and(V<=15)Then Chosen:=0
+  else if K and(V>=-128)and(V<=127)Then Chosen:=1
+  else Chosen:=2;
+  Chosen:=SelectSize(Chosen);
+  if Chosen=0 Then Begin
+   if Ind Then Error('offset indexe 5 bits indirect illegal');
+   if(PassNo=2)and K and((V<-16)or(V>15))Then Error('offset indexe hors plage 5 bits');
    Emit((R shl 5)or(Byte(V)and$1F));Exit
-  End else if(V>=-128)and(V<=127)Then Begin
+  End;
+  if Chosen=1 Then Begin
+   if(PassNo=2)and K and((V<-$80)or(V>$7F))Then Error('offset indexe hors plage 8 bits');
    Post:=$88;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));Emit(Byte(V));Exit
-  End else
-  Begin
-   Post:=$89;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));EmitW(V);Exit
-  End
+  End;
+  if(PassNo=2)and K and((V<-$8000)or(V>$7FFF))Then Error('offset indexe hors plage 16 bits');
+  Post:=$89;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));EmitW(V);Exit
  End;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5))
 End;
 
@@ -424,7 +483,7 @@ Begin
  Op:=BranchOp(M,LongB);if Op<>$FFFF Then Begin
   V:=Eval(Operand,K);EmitOp(Op);if LongB Then Begin
    Off:=V-(PC+2);
-   if K and((Off<-$8000)or(Off>$7FFF))Then Error('branche longue hors portee');EmitW(Off)
+   if(PassNo=2)and K and((Off<-$8000)or(Off>$7FFF))Then Error('branche longue hors portee');EmitW(Off)
   End else
   Begin
    Off:=V-(PC+1);
@@ -470,7 +529,7 @@ Begin
    End;Base:=Byte(Op);WI:=True;Emit(Byte(Op shr 8))
   End
  End;
- A:=Trim(Operand);Indexed:=False;
+ A:=Trim(Operand);Indexed:=(Length(A)>1)and(A[1]='[')and(A[Length(A)]=']');
  For I:=1 to Length(A)do if A[I]=','Then Indexed:=True;
  if Indexed Then Begin
   if UnaryBase(M,B)Then Emit(B+$60)else Emit(Base+$20);EncodeIndexed(A);Exit
@@ -478,17 +537,25 @@ Begin
  if(A<>'')and(A[1]='#')Then Begin
   if(M='STA')or(M='STB')or(M='STD')or(M='STX')or(M='STU')or(M='STY')or(M='STS')or(M='JMP')
   or(M='JSR')Then Error('mode immediat illegal');Delete(A,1,1);Emit(Base);V:=Eval(A,K);
-  if WI Then EmitW(V)else Emit(Byte(V));Exit
+  if WI Then Begin CheckWord(V,K,'operande immediate');EmitW(V)End
+  else Begin CheckByte(V,K,'operande immediate');Emit(Byte(V))End;Exit
  End;
  if UnaryBase(M,B)Then Base:=B;K:=True;if(A<>'')and(A[1]='>')Then Begin
-  Delete(A,1,1);V:=Eval(A,K);if UnaryBase(M,B)Then Emit(B+$70)else Emit(Base+$30);EmitW(V)
+  Delete(A,1,1);V:=Eval(A,K);CheckWord(V,K,'adresse etendue');
+  if UnaryBase(M,B)Then Emit(B+$70)else Emit(Base+$30);EmitW(V)
  End else
  Begin
   ForceDirect:=(A<>'')and(A[1]='<');if ForceDirect Then Delete(A,1,1);V:=Eval(A,K);
-  if ForceDirect or(K and((V shr 8)=DirectPage))Then Begin
+  if ForceDirect Then I:=1 else if K and(V>=0)and(V<=$FFFF)and(((V shr 8)and$FF)=DirectPage)
+   Then I:=1 else I:=2;I:=SelectSize(I);
+  if I=1 Then Begin
+   CheckWord(V,K,'adresse directe');
+   if K and not ForceDirect and(((V shr 8)and$FF)<>DirectPage)Then
+    Error('adresse hors de la page directe');
    if UnaryBase(M,B)Then Emit(B)else Emit(Base+$10);Emit(Byte(V))
   End else
   Begin
+   CheckWord(V,K,'adresse etendue');
    if UnaryBase(M,B)Then Emit(B+$70)else Emit(Base+$30);EmitW(V)
   End
  End
@@ -759,12 +826,23 @@ Begin
  End
 End;
 
+Procedure DisposeDecisions;
+Var
+ P,Q:PDecision;
+Begin
+ P:=Decisions;
+ While P<>Nil do Begin
+  Q:=P^.Next;Dispose(P);P:=Q
+ End
+End;
+
 Var
  F:File;
  Code:Integer;
 
 BEGIN
- Symbols:=Nil;SourceName:='';ObjectName:='';ListName:='';MakeObject:=False;
+ Symbols:=Nil;Decisions:=Nil;DecisionTail:=Nil;DecisionCursor:=Nil;
+ SourceName:='';ObjectName:='';ListName:='';MakeObject:=False;
  ObjectExplicit:=False;ListOn:=False;SymbolsOn:=False;ListingToFile:=False;
  Motorola:=False;Narrow:=False;FormFeed:=False;Generated:=False;
  ParseArgs;Assign(F,SourceName);Reset(F,1);Code:=IOResult;if Code<>0 Then Begin
@@ -777,11 +855,13 @@ BEGIN
  End;
  Errors:=0;Warnings:=0;ProgramName:=Upper(SourceName);Title:='';
  For PassNo:=1 to 2 do Begin
-  PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
-  PageLine:=0;StopAssembly:=False;ProcessFile(SourceName)
+ PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
+  PageLine:=0;StopAssembly:=False;if PassNo=2 Then DecisionCursor:=Decisions;
+  ProcessFile(SourceName)
  End;
  PrintSymbols;if MakeObject and(Errors=0)Then WriteObject;
  if ListingToFile Then Close(ListFile);
  if Errors=0 Then WriteLn('Assemblage termine: aucune erreur.')else WriteLn(Errors,
- ' erreur(s).');DisposeSymbols;FreeMem(Image,SizeOf(TBytes));if Errors<>0 Then Halt(1)
+ ' erreur(s).');DisposeSymbols;DisposeDecisions;FreeMem(Image,SizeOf(TBytes));
+ if Errors<>0 Then Halt(1)
 END.
