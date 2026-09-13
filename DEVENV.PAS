@@ -7821,6 +7821,16 @@ Var
  { niveau d'empilement, voir le commentaire au site d'appel : aucun           }
  { instantane d'etat n'est reellement sauvegarde (RestoreDC non implante). }
  Win16_DCSaveLevel: Integer;
+ { GDI.EXE SaveVisRgn (2026-09-13, demande explicite, ordinal 129) - pile    }
+ { REELLE (contrairement a Win16_DCSaveLevel ci-dessus) de sauvegardes du   }
+ { rectangle de clip/visible mono-DC courant, voir le commentaire au site    }
+ { d'appel : RestoreVisRgn (contrepartie qui depilerait) n'a PAS ete         }
+ { demande dans ce lot, les sauvegardes s'accumulent sans etre consommees. }
+ Win16_VisRgnStack: Array[1..16] Of Record
+  X1, Y1, X2, Y2: Integer;
+  Active: Boolean;
+ End;
+ Win16_VisRgnStackTop: Integer;
  { Diagnostic (2026-08-30) : nombre de VRAIS pas CPU consommes par le       }
  { dernier appel Dpmi_RunRealProc (donc par Win16_CallWndProc) - invisible  }
  { autrement dans WIN16RUN.LOG, dont le compteur de pas n avance qu une      }
@@ -91370,6 +91380,7 @@ Begin
  Win16_ClipActive := False;
  Win16_ClipX1 := 0; Win16_ClipY1 := 0; Win16_ClipX2 := 0; Win16_ClipY2 := 0;
  Win16_DCSaveLevel := 0;
+ Win16_VisRgnStackTop := 0;
  Win16_LastBrushColor := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
@@ -93018,6 +93029,9 @@ Var
  AFRName: String;
  GMFSeg, GMFOfs: Word;
  GMFName: String;
+ { GDI.EXE MulDiv (2026-09-13, demande explicite). }
+ MDNumber, MDNumerator, MDDenominator: SmallInt;
+ MDRet: LongInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -96202,6 +96216,116 @@ Begin
     Else
      P.CPU.Regs.AX := 0;
     ArgWords := 2;
+   End;
+   125: Begin
+    { CreateMetaFile(lpFilename):HDC - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                    }
+    { CreateMetaFile(str)", 1 pointeur LOIN = 2 mots, retour 16 bits AX     }
+    { seul). Rendu GDI reel HORS DE PORTEE (meme famille que                }
+    { PlayMetaFile/$123/GetMetaFile/$124 ci-dessus : aucun moteur           }
+    { d'enregistrement de veritables appels GDI n'existe dans ce            }
+    { sous-ensemble) - handle synthetique non-nul (1), meme discipline      }
+    { que CreateCompatibleDC/$52. Contrairement a AddFontResource/$119/     }
+    { GetMetaFile/$124, le nom de fichier N'EST PAS utilise pour            }
+    { creer/verifier un vrai fichier sur le disque hote : CreateMetaFile   }
+    { est un appel de CREATION (potentiellement destructeur d'un vrai       }
+    { fichier hote homonyme), contrairement a un simple test d'EXISTENCE - }
+    { creer un fichier reel ici serait un effet de bord risque, pas une     }
+    { simplification honnete. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   126: Begin
+    { CloseMetaFile(hdc):HMETAFILE - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (gdi.exe16.spec : "pascal -ret16                    }
+    { CloseMetaFile(word)", 1 mot, retour 16 bits AX seul). Meme famille    }
+    { que CreateMetaFile/$125 : ferme le faux contexte et retourne un       }
+    { handle synthetique non-nul (1) "jouable" - qui ne joue jamais         }
+    { reellement rien, meme limitation honnetement disclosee que            }
+    { PlayMetaFile/$123. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   127: Begin
+    { DeleteMetaFile(hmf):BOOL - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (gdi.exe16.spec : "pascal -ret16                         }
+    { DeleteMetaFile(word)", 1 mot, retour 16 bits AX seul). REEL pour le   }
+    { CONTRAT de reussite : aucun handle synthetique de ce sous-ensemble    }
+    { (CreateMetaFile/$125, GetMetaFile/$124) ne pointe jamais vers une     }
+    { vraie allocation memoire/fichier ouvert a liberer - "supprimer" un    }
+    { tel handle ne peut donc jamais reellement echouer ici, contrairement   }
+    { au vrai Windows (ou un handle invalide echouerait) : retourne         }
+    { toujours TRUE(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   128: Begin
+    { MulDiv(nNumber,nNumerator,nDenominator):int - ordinal/signature      }
+    { VERIFIES via le VRAI source Wine (gdi.exe16.spec : "pascal -ret16    }
+    { MulDiv(s_word s_word s_word)", 3 mots SIGNES, retour 16 bits AX       }
+    { seul). REEL, SANS AUCUNE simplification : algorithme copie a l       }
+    { l'identique du VRAI code source Wine (dlls/gdi.exe16/gdi.c,          }
+    { MulDiv16, recupere via recherche web, PAS devine) - multiplication    }
+    { 32 bits intermediaire + arrondi au plus proche (ajoute ou soustrait   }
+    { nDenominator div 2 selon le signe du produit), division par zero et   }
+    { debordement (resultat hors -32767..32767) renvoient tous deux le      }
+    { sentinelle reel -32768 - y compris la meme "bizarrerie" de             }
+    { debordement lors de la negation de nNumber=-32768 quand                }
+    { nDenominator<0 (fidelite comportementale au vrai code Wine/Windows,   }
+    { pas une correction inventee ici). }
+    MDNumber := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    MDNumerator := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    MDDenominator := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If MDDenominator = 0 Then
+     P.CPU.Regs.AX := Word(SmallInt(-32768))
+    Else Begin
+     If MDDenominator < 0 Then Begin
+      MDNumber := SmallInt(-LongInt(MDNumber));
+      MDDenominator := SmallInt(-LongInt(MDDenominator));
+     End;
+     If ((MDNumber < 0) And (MDNumerator < 0)) Or
+        ((MDNumber >= 0) And (MDNumerator >= 0)) Then
+      MDRet := (LongInt(MDNumber) * MDNumerator + (MDDenominator Div 2)) Div MDDenominator
+     Else
+      MDRet := (LongInt(MDNumber) * MDNumerator - (MDDenominator Div 2)) Div MDDenominator;
+     If (MDRet > 32767) Or (MDRet < -32767) Then
+      P.CPU.Regs.AX := Word(SmallInt(-32768))
+     Else
+      P.CPU.Regs.AX := Word(SmallInt(MDRet));
+    End;
+    ArgWords := 3;
+   End;
+   129: Begin
+    { SaveVisRgn(hdc):HRGN - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (gdi.exe16.spec : "pascal -ret16 SaveVisRgn(word)", 1     }
+    { mot, retour 16 bits AX seul). REEL EN PARTIE, plus pousse que         }
+    { SaveDC/$11 (qui ne fait qu'incrementer un compteur sans jamais rien  }
+    { sauvegarder reellement, disclose honnetement a son propre site) :     }
+    { copie REELLEMENT l'etat du rectangle de clip/visible mono-DC          }
+    { courant (Win16_ClipX1/Y1/X2/Y2/ClipActive) dans une VRAIE pile de     }
+    { sauvegarde (Win16_VisRgnStack, 16 niveaux max), et retourne           }
+    { l'INDICE de cette sauvegarde (1-base) comme handle - contrairement    }
+    { a la convention "handle toujours = 1" utilisee ailleurs pour les       }
+    { regions (CreateRectRgn/etc.), cet indice identifie REELLEMENT et       }
+    { distinctement CHAQUE sauvegarde, plus fidele au vrai contrat de        }
+    { l'API (chaque HRGN sauvegarde doit rester distinct) et sans risque     }
+    { puisqu'aucun autre ordinal de ce sous-ensemble ne deferencie un        }
+    { HRGN par sa valeur. RestoreVisRgn (contrepartie reelle de cette        }
+    { pile) n'a PAS ete demande dans ce lot - les sauvegardes s'accumulent  }
+    { honnetement sans jamais etre consommees pour l'instant, meme esprit   }
+    { que SaveDC/$11 sans RestoreDC. Pile pleine -> echec honnete (0), pas  }
+    { une valeur inventee. }
+    If Win16_VisRgnStackTop < 16 Then Begin
+     Inc(Win16_VisRgnStackTop);
+     Win16_VisRgnStack[Win16_VisRgnStackTop].X1 := Win16_ClipX1;
+     Win16_VisRgnStack[Win16_VisRgnStackTop].Y1 := Win16_ClipY1;
+     Win16_VisRgnStack[Win16_VisRgnStackTop].X2 := Win16_ClipX2;
+     Win16_VisRgnStack[Win16_VisRgnStackTop].Y2 := Win16_ClipY2;
+     Win16_VisRgnStack[Win16_VisRgnStackTop].Active := Win16_ClipActive;
+     P.CPU.Regs.AX := Word(Win16_VisRgnStackTop);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
