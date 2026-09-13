@@ -108,11 +108,25 @@ Begin
  While(P<>Nil)and(P^.Name<>N)do P:=P^.Next;FindSymbol:=P
 End;
 
+Function ValidSymbolName(N:String):Boolean;
+Var
+ I:Integer;
+Begin
+ ValidSymbolName:=False;
+ if(Length(N)<1)or(Length(N)>8)or not(UpCase(N[1])in['A'..'Z'])Then Exit;
+ For I:=2 to Length(N)do if not(UpCase(N[I])in['A'..'Z','0'..'9','_','.','$'])Then Exit;
+ ValidSymbolName:=True
+End;
+
 Procedure DefineSymbol(N:String;V:LongInt;K:Char;CanSet:Boolean);
 Var
  P:PSymbol;
 Begin
- N:=Upper(N);P:=FindSymbol(N);if P=Nil Then Begin
+ N:=Upper(N);
+ if not ValidSymbolName(N)Then Begin
+  if PassNo=2 Then Error('etiquette incorrecte: '+N);Exit
+ End;
+ P:=FindSymbol(N);if P=Nil Then Begin
   New(P);P^.Name:=N;P^.Next:=Symbols;Symbols:=P;P^.Defined:=False;P^.Mutable:=CanSet
  End;
  if(PassNo=1)and P^.Defined and not P^.Mutable Then Begin
@@ -126,13 +140,14 @@ End;
 
 Var
  ExprText:String;
- ExprPos:Integer;
+ ExprPos,ExprForwardCount:Integer;
  ExprKnown:Boolean;
 
 Procedure SkipSpace;Begin
  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in[' ',#9])do Inc(ExprPos)
 End;
 Function ParseExpr:LongInt;Forward;
+Function UnaryValue:LongInt;Forward;
 
 Function Atom:LongInt;
 Var
@@ -142,41 +157,49 @@ Var
  C:Char;
 Begin
  SkipSpace;if ExprPos>Length(ExprText)Then Begin
-  ExprKnown:=False;Atom:=0;Exit
+  if PassNo=2 Then Error('operande manquant');ExprKnown:=False;Atom:=0;Exit
  End;C:=ExprText[ExprPos];
  if C='('Then Begin
   Inc(ExprPos);V:=ParseExpr;SkipSpace;
-  if(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos)else Error(
-  'parenthese fermante attendue');Atom:=V;Exit
+  if(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos)else Begin
+   if PassNo=2 Then Error('parenthese droite manquante');ExprKnown:=False
+  End;Atom:=V;Exit
  End;
- if C='-'Then Begin
-  Inc(ExprPos);Atom:=-Atom;Exit
- End;if C='+'Then Begin
-  Inc(ExprPos);Atom:=Atom;Exit
- End;
+ { Dans le dialecte Microware, une constante caractere est une apostrophe suivie
+   d'un seul caractere; elle n'a pas d'apostrophe fermante. }
  if C=''''Then Begin
-  Inc(ExprPos);if ExprPos<=Length(ExprText)Then V:=Ord(ExprText[ExprPos])else V:=0;
-  Inc(ExprPos);if(ExprPos<=Length(ExprText))and(ExprText[ExprPos]='''')Then Inc(ExprPos);
+  Inc(ExprPos);if ExprPos<=Length(ExprText)Then Begin
+   V:=Ord(ExprText[ExprPos]);Inc(ExprPos)
+  End else Begin
+   if PassNo=2 Then Error('caractere manquant apres apostrophe');ExprKnown:=False;V:=0
+  End;
   Atom:=V;Exit
  End;
  if C='$'Then Begin
-  Inc(ExprPos);V:=0;
+  Inc(ExprPos);V:=0;S:='';
   While(ExprPos<=Length(ExprText))and(UpCase(ExprText[ExprPos])in['0'..'9','A'..'F'])
   do Begin
-   C:=UpCase(ExprText[ExprPos]);if C<='9'Then V:=V*16+Ord(C)-48 else V:=V*16+Ord(C)-55;
+   C:=UpCase(ExprText[ExprPos]);S:=S+C;
+   if C<='9'Then V:=V*16+Ord(C)-48 else V:=V*16+Ord(C)-55;
    Inc(ExprPos)
+  End;if(S='')or(Length(S)>4)Then Begin
+   if PassNo=2 Then Error('constante hexadecimale incorrecte');ExprKnown:=False
   End;Atom:=V;Exit
  End;
  if C='%'Then Begin
-  Inc(ExprPos);V:=0;
+  Inc(ExprPos);V:=0;S:='';
   While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['0','1'])do Begin
-   V:=V*2+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+   S:=S+ExprText[ExprPos];V:=V*2+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+  End;if(S='')or(Length(S)>16)Then Begin
+   if PassNo=2 Then Error('constante binaire incorrecte');ExprKnown:=False
   End;Atom:=V;Exit
  End;
  if C='@'Then Begin
-  Inc(ExprPos);V:=0;
+  Inc(ExprPos);V:=0;S:='';
   While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['0'..'7'])do Begin
-   V:=V*8+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+   S:=S+ExprText[ExprPos];V:=V*8+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+  End;if(S='')or(V>65535)Then Begin
+   if PassNo=2 Then Error('constante octale incorrecte');ExprKnown:=False
   End;Atom:=V;Exit
  End;
  if C='*'Then Begin
@@ -188,16 +211,52 @@ Begin
   V:=0;
   While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['0'..'9'])do Begin
    V:=V*10+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+  End;if V>65535 Then Begin
+   if PassNo=2 Then Error('constante superieure a 65535');ExprKnown:=False
   End;Atom:=V;Exit
  End;
  S:='';
  While(ExprPos<=Length(ExprText))and(UpCase(ExprText[ExprPos])in['A'..'Z','0'..'9','_',
- '$','@','.'])do Begin
+ '$','.'])do Begin
   S:=S+UpCase(ExprText[ExprPos]);Inc(ExprPos)
  End;
+ if S=''Then Begin
+  if PassNo=2 Then Error('operande incorrect');ExprKnown:=False;Atom:=0;Exit
+ End;
+ if not ValidSymbolName(S)Then Begin
+  if PassNo=2 Then Error('nom symbolique incorrect: '+S);ExprKnown:=False;Atom:=0;Exit
+ End;
  P:=FindSymbol(S);if(P=Nil)or not P^.Defined Then Begin
+  Inc(ExprForwardCount);
   if PassNo=2 Then Error('symbole non defini: '+S);ExprKnown:=False;Atom:=0
  End else Atom:=P^.Value
+End;
+
+Function UnaryValue:LongInt;
+Var
+ C:Char;
+Begin
+ SkipSpace;
+ if ExprPos>Length(ExprText)Then Begin UnaryValue:=Atom;Exit End;
+ C:=ExprText[ExprPos];
+ if C='-'Then Begin Inc(ExprPos);UnaryValue:=-UnaryValue End
+ else if C='+'Then Begin Inc(ExprPos);UnaryValue:=UnaryValue End
+ else if C='^'Then Begin Inc(ExprPos);UnaryValue:=(not UnaryValue)and$FFFF End
+ else UnaryValue:=Atom
+End;
+
+Function LogicalValue:LongInt;
+Var
+ V,W:LongInt;
+ C:Char;
+Begin
+ V:=UnaryValue;
+ Repeat
+  SkipSpace;if ExprPos>Length(ExprText)Then Break;C:=ExprText[ExprPos];
+  if not(C in['&','!'])Then Break;Inc(ExprPos);W:=UnaryValue;
+  if C='&'Then V:=(V and W)and$FFFF else V:=(V or W)and$FFFF
+ Until False;
+ LogicalValue:=V
 End;
 
 Function Product:LongInt;
@@ -205,10 +264,17 @@ Var
  V,W:LongInt;
  C:Char;
 Begin
- V:=Atom;Repeat SkipSpace;if ExprPos>Length(ExprText)Then Break;C:=ExprText[ExprPos];
- if not(C in['*','/'])Then Break;Inc(ExprPos);W:=Atom;
- if C='*'Then V:=V*W else if W=0 Then Error('division par zero')else V:=
- V div W Until False;Product:=V
+ V:=LogicalValue;Repeat SkipSpace;if ExprPos>Length(ExprText)Then Break;C:=ExprText[ExprPos];
+ if not(C in['*','/'])Then Break;Inc(ExprPos);W:=LogicalValue;
+ if C='*'Then Begin
+  V:=(V and$FFFF)*(W and$FFFF);
+  if V>65535 Then Begin if PassNo=2 Then Error('debordement de multiplication');
+   ExprKnown:=False;V:=V and$FFFF
+  End
+ End else if(W and$FFFF)=0 Then Begin
+  if PassNo=2 Then Error('division par zero');ExprKnown:=False;V:=0
+ End else V:=(V and$FFFF)div(W and$FFFF)
+ Until False;Product:=V
 End;
 
 Function ParseExpr:LongInt;
@@ -221,11 +287,20 @@ Begin
  if C='+'Then V:=V+Product else V:=V-Product Until False;ParseExpr:=V
 End;
 
-Function Eval(S:String;Var Known:Boolean):LongInt;Begin
- ExprText:=S;ExprPos:=1;ExprKnown:=True;Eval:=ParseExpr;SkipSpace;
+Function Eval(S:String;Var Known:Boolean):LongInt;
+Var
+ V:LongInt;
+Begin
+ ExprText:=S;ExprPos:=1;ExprKnown:=True;ExprForwardCount:=0;V:=ParseExpr;SkipSpace;
  if ExprPos<=Length(ExprText)Then Begin
   if PassNo=2 Then Error('expression incorrecte: '+S);ExprKnown:=False
- End;Known:=ExprKnown
+ End;
+ if(PassNo=1)and(ExprForwardCount>1)Then Begin
+  Error('references avant multiples dans une expression');ExprKnown:=False
+ End;
+ if ExprKnown and((V<-$8000)or(V>$FFFF))Then Begin
+  if PassNo=2 Then Error('resultat d''expression hors plage 16 bits');ExprKnown:=False
+ End;Known:=ExprKnown;Eval:=V
 End;
 
 Procedure Emit(B:Byte);Begin
@@ -275,8 +350,11 @@ Var
 Begin
  S:=Trim(S);Q:=#0;I:=1;
  While I<=Length(S)do Begin
-  if(S[I]in['''','"'])Then Begin
-   if Q=#0 Then Q:=S[I]else if Q=S[I]Then Q:=#0
+  if(S[I]='''')and(Q=#0)Then Begin
+   Inc(I);if I<=Length(S)Then Inc(I);Continue
+  End;
+  if S[I]='"'Then Begin
+   if Q=#0 Then Q:='"'else Q:=#0
   End else if(S[I]=',')and(Q=#0)Then Break;Inc(I)
  End;if I<=Length(S)Then Begin
   NextPart:=Trim(Copy(S,1,I-1));Delete(S,1,I)
@@ -508,7 +586,8 @@ Begin
  End;
  if(M='ORCC')or(M='ANDCC')or(M='CWAI')Then Begin
   if M='ORCC'Then Emit($1A)else if M='ANDCC'Then Emit($1C)else Emit($3C);A:=Trim(Operand);
-  if(A<>'')and(A[1]='#')Then Delete(A,1,1);Emit(Byte(Eval(A,K)));Exit
+  if(A<>'')and(A[1]='#')Then Delete(A,1,1);V:=Eval(A,K);
+  CheckByte(V,K,'operande immediate');Emit(Byte(V));Exit
  End;
  if(M='LEAX')or(M='LEAY')or(M='LEAS')or(M='LEAU')Then Begin
   if M='LEAX'Then Emit($30)else if M='LEAY'Then Emit($31)else if M='LEAS'Then Emit($32)
@@ -565,6 +644,7 @@ Procedure ParseFields(Line:String;Var LabelName,Op,Operand:String);
 Var
  I,J:Integer;
  FirstBlank:Boolean;
+ Q:Char;
 Begin
  LabelName:='';Op:='';Operand:='';if Trim(Line)=''Then Exit;if Line[1]='*'Then Exit;
  FirstBlank:=Line[1]in[' ',#9];I:=1;
@@ -575,9 +655,14 @@ Begin
   While(J<=Length(Line))and not(Line[J]in[' ',#9])do Inc(J)
  End;Op:=Upper(Copy(Line,I,J-I));I:=J;
  While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);Operand:=Trim(Copy(Line,I,255));
- I:=1;
+ I:=1;Q:=#0;
  While I<=Length(Operand)do Begin
-  if Operand[I]=';'Then Begin
+  if(Operand[I]='''')and(Q=#0)Then Begin
+   Inc(I);if I<=Length(Operand)Then Inc(I);Continue
+  End;
+  if Operand[I]='"'Then Begin
+   if Q=#0 Then Q:='"'else Q:=#0
+  End else if(Operand[I]=';')and(Q=#0)Then Begin
    Operand:=Trim(Copy(Operand,1,I-1));Break
   End;Inc(I)
  End
@@ -590,8 +675,11 @@ Var
 Begin
  if(Op='NAM')or(Op='TTL')or(Op='FCC')or(Op='FCS')Then Exit;Q:=#0;I:=1;
  While I<=Length(Operand)do Begin
-  if Operand[I]in['''','"']Then Begin
-   if Q=#0 Then Q:=Operand[I]else if Q=Operand[I]Then Q:=#0
+  if(Operand[I]='''')and(Q=#0)Then Begin
+   Inc(I);if I<=Length(Operand)Then Inc(I);Continue
+  End;
+  if Operand[I]='"'Then Begin
+   if Q=#0 Then Q:='"'else Q:=#0
   End
   else if(Operand[I]in[' ',#9])and(Q=#0)Then Begin
    Operand:=Trim(Copy(Operand,1,I-1));Exit
@@ -666,11 +754,13 @@ Begin
    V:=Eval(A,K);
    if L=''Then Error('SET exige une etiquette')else DefineSymbol(L,V,'E',True)
   End else if(O='FCB')or(O='FDB')Then Begin
-   Repeat L:=NextPart(A);if(L<>'')and(L[1]in['''','"'])Then Begin
+   Repeat L:=NextPart(A);if(L<>'')and(L[1]='"')Then Begin
     For I:=2 to Length(L)-1 do if O='FCB'Then Emit(Ord(L[I]))else EmitW(Ord(L[I]))
    End else
    Begin
-    V:=Eval(L,K);if O='FCB'Then Emit(Byte(V))else EmitW(V)
+    V:=Eval(L,K);
+    if O='FCB'Then Begin CheckByte(V,K,'constante FCB');Emit(Byte(V))End
+    else Begin CheckWord(V,K,'constante FDB');EmitW(V)End
    End Until A=''
   End else if(O='FCC')or(O='FCS')Then Begin
    A:=Trim(A);if Length(A)>=2 Then Begin
@@ -694,13 +784,14 @@ Begin
   End else if O='ORG'Then Begin
    V:=Eval(A,K);if Motorola Then PC:=V else DataPC:=V
   End else if O='SETDP'Then Begin
-   V:=Eval(A,K);DirectPage:=(V shr 8)and$FF
+   V:=Eval(A,K);CheckWord(V,K,'valeur SETDP');DirectPage:=(V shr 8)and$FF
   End else if O='OS9'Then Begin
-   Emit($10);Emit($3F);Emit(Byte(Eval(A,K)))
+   Emit($10);Emit($3F);V:=Eval(A,K);CheckByte(V,K,'numero d''appel OS9');Emit(Byte(V))
   End else if O='MOD'Then Begin
    PC:=0;DataPC:=0;LowAddr:=0;Emit($87);Emit($CD);L:=NextPart(A);EmitW(Eval(L,K));
-   L:=NextPart(A);EmitW(Eval(L,K));L:=NextPart(A);Emit(Byte(Eval(L,K)));L:=NextPart(A);
-   Emit(Byte(Eval(L,K)));Emit(0);if A<>''Then Begin
+   L:=NextPart(A);EmitW(Eval(L,K));L:=NextPart(A);V:=Eval(L,K);
+   CheckByte(V,K,'type/langage MOD');Emit(Byte(V));L:=NextPart(A);V:=Eval(L,K);
+   CheckByte(V,K,'attribut/revision MOD');Emit(Byte(V));Emit(0);if A<>''Then Begin
     L:=NextPart(A);EmitW(Eval(L,K));EmitW(Eval(A,K))
    End
   End else if O='EMOD'Then Begin

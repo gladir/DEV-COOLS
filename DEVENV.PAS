@@ -85944,6 +85944,8 @@ Var
 { singletons OS-9 ci-dessus (un seul panneau COS existe). }
 Var
  CosDefaultDevice: String;  { DEFAULT : peripherique de mise en scene declare }
+ CosActiveJobLimit: String; { LIMIT : nombre limite de travaux actifs declare }
+ CosPrimaryOperator: String; { OPERATOR : operateur principal de station declare }
 
 { --- DIR (format OS-9 simplifie - reutilise Fat_ListDir/style CMD plutot   }
 { que d'inventer une mise en page OS-9 authentique non verifiee ; reste     }
@@ -131517,6 +131519,7 @@ Var
  PSCmdID: Byte;
  GulamAliasI: Integer;
  Os9BuildF: File;
+ CosLogF: Text;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -132857,22 +132860,30 @@ Begin
    { l'utilisateur, jeu de commandes limite a celles listees               }
    { (gladir.com/OS/COS/*.htm) : CHANNEL/CLASS/CLEAR/COMMENT/CONC/         }
    { CONFIGURE/CONSOLE/DATASET/DEFAULT/DELAY/DISK/DKERR/DROP/DSPL/END/     }
-   { ENTER/ERROR/FLUSH/HELP/PAUSE/STATUS. Aucun format de reponse REEL      }
-   { (colonnes exactes de DSPL/DISK/STATUS/CONC/DATASET, etc.) n'a pu       }
-   { etre verifie contre une source primaire (manuel COS introuvable en    }
-   { ligne) - reponses honnetement simplifiees/disclosees plutot          }
-   { qu'inventees en detail, meme esprit que les autres "simplifications   }
-   { disclosees" de ce fichier (ex: NetBiosEnum). Ce terminal ne fait PAS  }
-   { tourner de vrai flux de commandes COS (pas de fichier de commandes/   }
-   { JCL, pas de file d attente de jobs reelle) : DROP/PAUSE/CLASS/         }
-   { CONSOLE/DELAY/END/ENTER/FLUSH restent donc de simples accuses de       }
-   { reception textuels, un seul "job" interactif existant ici. DEFAULT    }
-   { est la seule commande de ce lot a garder un etat reel                 }
-   { (CosDefaultDevice, meme discipline que MONTYPE du shell OS-9 voisin - }
-   { voir TermCmd_HELP plus haut). CAL (assembleur Cray-1 reel, voir       }
-   { TermCmd_Cal plus haut) fait exception : contrairement au reste de ce  }
-   { shell, ce n'est PAS un accuse de reception simplifie mais             }
-   { l'integration integrale et fonctionnelle de CAL.PAS, demande          }
+   { ENTER/ERROR/FLUSH/IACON/JOB/JSTAT/KILL/LIMIT/LINK/LOGOFF/LOGON/       }
+   { LPATH/MESSAGE/MONITOR/MSG/OPERATOR/HELP/PAUSE/STATUS. Aucun format    }
+   { de reponse REEL (colonnes exactes de DSPL/DISK/STATUS/CONC/DATASET/   }
+   { JOB/JSTAT, etc.) n'a pu etre verifie contre une source primaire       }
+   { (manuel COS introuvable en ligne) - reponses honnetement              }
+   { simplifiees/disclosees plutot qu'inventees en detail, meme esprit     }
+   { que les autres "simplifications disclosees" de ce fichier (ex:        }
+   { NetBiosEnum). Ce terminal ne fait PAS tourner de vrai flux de          }
+   { commandes COS (pas de fichier de commandes/JCL, pas de file d         }
+   { attente de jobs reelle) : DROP/PAUSE/CLASS/CONSOLE/DELAY/END/ENTER/    }
+   { FLUSH/IACON/JOB/JSTAT/KILL/LINK/LOGOFF/LOGON/LPATH/MONITOR/MSG         }
+   { restent donc de simples accuses de reception textuels, un seul         }
+   { "job" interactif existant ici. DEFAULT/LIMIT/OPERATOR sont les seules }
+   { commandes de ce lot a garder un etat reel (CosDefaultDevice/           }
+   { CosActiveJobLimit/CosPrimaryOperator, meme discipline que MONTYPE du   }
+   { shell OS-9 voisin - voir TermCmd_HELP plus haut). MESSAGE fait         }
+   { exception dans l'autre sens : elle ecrit REELLEMENT sur le disque       }
+   { hote (COSLOG.TXT, Assign/Append/Rewrite - meme idiome que les          }
+   { journaux EMU*.LOG deja presents dans ce fichier), un vrai "journal de   }
+   { bord" persistant entre les sessions plutot qu'un simple accuse de      }
+   { reception. CAL (assembleur Cray-1 reel, voir TermCmd_Cal plus haut)    }
+   { fait exception encore plus poussee : contrairement au reste de ce      }
+   { shell, ce n'est PAS un accuse de reception simplifie mais              }
+   { l'integration integrale et fonctionnelle de CAL.PAS, demande           }
    { explicitement par l'utilisateur.                                       }
    If CurrCmd = 'CAL' Then
     TermCmd_Cal(TP, ParamStr)
@@ -132924,6 +132935,51 @@ Begin
     TermAddLine(TP, 'AUCUNE ERREUR MATERIELLE (aucun materiel Cray-1 emule).')
    Else If CurrCmd = 'FLUSH' Then
     TermAddLine(TP, 'DONNEES COPIEES VERS ' + TermTrim(ParamStr) + ' (ensemble de sauvegarde).')
+   Else If CurrCmd = 'IACON' Then
+    TermAddLine(TP, 'MIOP CONSOLE INITIALIZED.')
+   Else If CurrCmd = 'JOB' Then Begin
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' STATUS.');
+    TermAddLine(TP, 'JOB=INTERACTIF  STATE=RUN');
+   End
+   Else If CurrCmd = 'JSTAT' Then Begin
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' DETAILED STATUS.');
+    TermAddLine(TP, 'CP=RUN  MEMORY=N/A  IO=N/A  CPU TIME=N/A');
+   End
+   Else If CurrCmd = 'KILL' Then
+    TermAddLine(TP, 'JOB ' + TermTrim(ParamStr) + ' KILLED.')
+   Else If CurrCmd = 'LIMIT' Then Begin
+    If TermTrim(ParamStr) <> '' Then CosActiveJobLimit := TermTrim(ParamStr);
+    If CosActiveJobLimit = '' Then TermAddLine(TP, 'ACTIVE JOB LIMIT : NON DEFINIE.')
+    Else TermAddLine(TP, 'ACTIVE JOB LIMIT : ' + CosActiveJobLimit);
+   End
+   Else If CurrCmd = 'LINK' Then Begin
+    TermAddLine(TP, 'LINK ' + TermTrim(ParamStr) + ' STATUS.');
+    TermAddLine(TP, 'AUCUN LIEN RESEAU CONFIGURE (aucun materiel de telecommunication emule).');
+   End
+   Else If CurrCmd = 'LOGOFF' Then
+    TermAddLine(TP, 'STATION ' + TermTrim(ParamStr) + ' DISCONNECTED.')
+   Else If CurrCmd = 'LOGON' Then
+    TermAddLine(TP, 'STATION ' + TermTrim(ParamStr) + ' CONNECTED.')
+   Else If CurrCmd = 'LPATH' Then
+    TermAddLine(TP, 'LOGICAL PATH ' + TermTrim(ParamStr) + ' : AUCUN CHEMIN LOGIQUE CONFIGURE.')
+   Else If CurrCmd = 'MESSAGE' Then Begin
+    {$I-} Assign(CosLogF, 'COSLOG.TXT'); Append(CosLogF);
+    If IOResult <> 0 Then Begin Assign(CosLogF, 'COSLOG.TXT'); Rewrite(CosLogF); End;
+    WriteLn(CosLogF, TermTrim(ParamStr));
+    Close(CosLogF); {$I+} If IOResult <> 0 Then ;
+    TermAddLine(TP, 'MESSAGE LOGGED TO COSLOG.TXT : ' + TermTrim(ParamStr));
+   End
+   Else If CurrCmd = 'MONITOR' Then Begin
+    TermAddLine(TP, 'SYSTEM PARAMETER MONITOR.');
+    TermAddLine(TP, 'CRAY-1  COS  1 JOB (INTERACTIF)  ETAT=RUN');
+   End
+   Else If CurrCmd = 'MSG' Then
+    TermAddLine(TP, 'OPERATOR MESSAGE: ' + TermTrim(ParamStr))
+   Else If CurrCmd = 'OPERATOR' Then Begin
+    If TermTrim(ParamStr) <> '' Then CosPrimaryOperator := TermTrim(ParamStr);
+    If CosPrimaryOperator = '' Then TermAddLine(TP, 'PRIMARY OPERATOR : NON DEFINI.')
+    Else TermAddLine(TP, 'PRIMARY OPERATOR : ' + CosPrimaryOperator);
+   End
    Else If CurrCmd = 'PAUSE' Then
     TermAddLine(TP, 'PAUSE - AUCUN FLUX DE COMMANDES EN COURS.')
    Else If CurrCmd = 'STATUS' Then Begin
@@ -132936,7 +132992,9 @@ Begin
     TermAddLine(TP, ' CONC      CONFIGURE CONSOLE   DATASET   DEFAULT');
     TermAddLine(TP, ' DELAY     DISK      DKERR     DROP      DSPL');
     TermAddLine(TP, ' END       ENTER     ERROR     FLUSH     HELP');
-    TermAddLine(TP, ' PAUSE     STATUS');
+    TermAddLine(TP, ' IACON     JOB       JSTAT     KILL      LIMIT');
+    TermAddLine(TP, ' LINK      LOGOFF    LOGON     LPATH     MESSAGE');
+    TermAddLine(TP, ' MONITOR   MSG       OPERATOR  PAUSE     STATUS');
    End
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
