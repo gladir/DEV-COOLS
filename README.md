@@ -169,6 +169,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Algol 68 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>AS68.PAS</b></td>
+			<td>Cette commande permet de lancer un clone de l'assembleur Digital Research 68000.</td>
+		</tr>
+		<tr>
 			<td><b>ASC2ABAP.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source ABAP/4.</td>
 		</tr>	
@@ -593,6 +597,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le fabricant de liaison.</td>
 		</tr>
 		<tr>
+			<td><b>LINK68.PAS</b></td>
+			<td>Cette commande permet de lancer un clone du linker Digital Research/Alcyon pour Atari ST.</td>
+		</tr>
+		<tr>
 			<td><b>LISP86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur LISP pour de l'assembleur du microprocesseur 8086/8088.</td>
 		</tr>
@@ -789,6 +797,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>READELF.PAS</b></td>
 			<td>Cette commande permet d'afficher des informations sur un ELF.</td>
+		</tr>
+		<tr>
+			<td><b>REPASCAL.PAS</b></td>
+			<td>Cette commande permet de reformater un fichier source Pascal.</td>
 		</tr>
 		<tr>
 			<td><b>RGB2HTML.PAS</b></td>
