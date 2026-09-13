@@ -61,9 +61,12 @@ Var
  LineByteCount:Integer;
  WorkspaceLimit,WorkspaceUsed:LongInt;
  PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
+ ModuleCRC,DeclaredModuleSize:LongInt;
  ListFile:Text;
  ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull,CurrentLineError,
  ConditionalSkipped,FatalIncludeError:Boolean;
+ ModuleSeen,ModuleOpen,ModuleClosed,ModuleCRCActive,ModuleSizeKnown,
+ ModuleMotorolaLayoutChanged:Boolean;
  ProgramName,Title,ParsedComment,CurrentSourceName:String;
  IncludeDepth:Integer;
  InitialOptions:TOptionState;
@@ -124,6 +127,25 @@ Procedure Error(S:String);Begin
  Inc(Errors);WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): erreur: ',S);
  if PassNo=2 Then CurrentLineError:=True;
  if(PassNo=2)and ListOn and ErrorsInList Then OutText('**** ERREUR: '+S)
+End;
+
+Procedure Warning(S:String);Begin
+ Inc(Warnings);WriteLn(StdErr,CurrentSourceName,'(',LineNo,'): avertissement: ',S)
+End;
+
+Function NextCRC(CRC:LongInt;B:Byte):LongInt;
+Var
+ I:Integer;
+Begin
+ CRC:=CRC xor(LongInt(B)shl 16);
+ For I:=1 to 8 do Begin
+  CRC:=CRC shl 1;if(CRC and$1000000)<>0 Then CRC:=CRC xor$800063
+ End;NextCRC:=CRC
+End;
+
+Procedure UpdateModuleCRC(B:Byte);
+Begin
+ ModuleCRC:=NextCRC(ModuleCRC,B)
 End;
 
 Function Signed16(V:LongInt):LongInt;
@@ -414,9 +436,12 @@ Begin
 End;
 
 Procedure Emit(B:Byte);Begin
+ if ModuleClosed and(LineByteCount=0)and(PassNo=2)Then Error('code objet apres EMOD');
  if(PC<0)or(PC>ImageSize)Then Begin
   Error('compteur programme hors limites');Exit
- End;if PassNo=2 Then Image^[PC]:=B;if PC<LowAddr Then LowAddr:=PC;
+ End;if PassNo=2 Then Begin
+  Image^[PC]:=B;if ModuleCRCActive Then UpdateModuleCRC(B)
+ End;if PC<LowAddr Then LowAddr:=PC;
  if PC>HighAddr Then HighAddr:=PC;Inc(PC);Inc(LineByteCount)
 End;
 
@@ -885,7 +910,7 @@ Begin
  LabelForbidden:=(Op='END')or(Op='NAM')or(Op='TTL')or(Op='OPT')or(Op='ORG')or
   (Op='PAG')or(Op='PAGE')or(Op='SPC')or(Op='SETDP')or(Op='USE')or(Op='IF')or
   (Op='IFEQ')or(Op='IFNE')or(Op='IFLT')or(Op='IFLE')or(Op='IFGT')or(Op='IFGE')or
-  (Op='IFP1')or(Op='ELSE')or(Op='ENDC')
+  (Op='IFP1')or(Op='ELSE')or(Op='ENDC')or(Op='MOD')or(Op='EMOD')
 End;
 
 Function OperandRequired(Op:String):Boolean;
@@ -992,10 +1017,13 @@ Var
  OldPC,V:LongInt;
  K:Boolean;
  Cond:Array[1..16]of TConditionalFrame;
- Depth,OverflowDepth,I,SavedLine:Integer;
- Active:Boolean;
+ Depth,OverflowDepth,I,SavedLine,OperandCount:Integer;
+ Active,TrailingComma:Boolean;
  Resolved,SavedSource:String;
  IncludeNode:PIncludeNode;
+ ModuleValues:Array[1..6]of LongInt;
+ ModuleKnown:Array[1..6]of Boolean;
+ HeaderParity:Byte;
 Begin
  if IncludeDepth>=MaxIncludeDepth Then Begin
   Error('trop de fichiers USE imbriques');FatalIncludeError:=True;StopAssembly:=True;Exit
@@ -1095,6 +1123,7 @@ Begin
     End
    End else Error('chaine attendue')
   End else if O='RMB'Then Begin
+   if ModuleOpen and Motorola Then ModuleMotorolaLayoutChanged:=True;
    V:=Eval(A,K);if Motorola Then Begin
     if L<>''Then DefineSymbol(L,PC,'D',False);Inc(PC,V)
    End else
@@ -1102,20 +1131,59 @@ Begin
     if L<>''Then DefineSymbol(L,DataPC,'D',False);Inc(DataPC,V)
    End
   End else if O='ORG'Then Begin
+   if ModuleOpen and Motorola Then ModuleMotorolaLayoutChanged:=True;
    V:=Eval(A,K);if Motorola Then PC:=V else DataPC:=V
   End else if O='SETDP'Then Begin
    V:=Eval(A,K);CheckWord(V,K,'valeur SETDP');DirectPage:=(V shr 8)and$FF
   End else if O='OS9'Then Begin
    Emit($10);Emit($3F);V:=Eval(A,K);CheckByte(V,K,'numero d''appel OS9');Emit(Byte(V))
   End else if O='MOD'Then Begin
-   PC:=0;DataPC:=0;LowAddr:=0;Emit($87);Emit($CD);L:=NextPart(A);EmitW(Eval(L,K));
-   L:=NextPart(A);EmitW(Eval(L,K));L:=NextPart(A);V:=Eval(L,K);
-   CheckByte(V,K,'type/langage MOD');Emit(Byte(V));L:=NextPart(A);V:=Eval(L,K);
-   CheckByte(V,K,'attribut/revision MOD');Emit(Byte(V));Emit(0);if A<>''Then Begin
-    L:=NextPart(A);EmitW(Eval(L,K));EmitW(Eval(A,K))
+   if ModuleSeen Then Begin if PassNo=2 Then Error('plusieurs directives MOD')End
+   else if HighAddr>=0 Then Begin
+    if PassNo=2 Then Error('MOD doit preceder tout code objet');ModuleSeen:=True
+   End
+   else Begin
+    OperandCount:=0;TrailingComma:=(A<>'')and(A[Length(A)]=',');
+    While A<>''do Begin
+     Inc(OperandCount);L:=NextPart(A);
+     if OperandCount<=6 Then ModuleValues[OperandCount]:=Eval(L,ModuleKnown[OperandCount])
+    End;
+    if TrailingComma Then Inc(OperandCount);
+    if not(OperandCount in[4,6])Then Begin
+     if PassNo=2 Then Error('MOD exige exactement quatre ou six operandes')
+    End else Begin
+     ModuleSeen:=True;ModuleOpen:=True;ModuleClosed:=False;
+     ModuleMotorolaLayoutChanged:=False;DeclaredModuleSize:=ModuleValues[1];
+     ModuleSizeKnown:=ModuleKnown[1];PC:=0;DataPC:=0;LowAddr:=0;
+     ModuleCRC:=$FFFFFF;ModuleCRCActive:=PassNo=2;
+     CheckWord(ModuleValues[1],ModuleKnown[1],'taille MOD');
+     CheckWord(ModuleValues[2],ModuleKnown[2],'offset du nom MOD');
+     CheckByte(ModuleValues[3],ModuleKnown[3],'type/langage MOD');
+     CheckByte(ModuleValues[4],ModuleKnown[4],'attribut/revision MOD');
+     HeaderParity:=$87 xor$CD xor Byte(ModuleValues[1]shr 8)xor Byte(ModuleValues[1])xor
+      Byte(ModuleValues[2]shr 8)xor Byte(ModuleValues[2])xor Byte(ModuleValues[3])xor
+      Byte(ModuleValues[4])xor$FF;
+     Emit($87);Emit($CD);EmitW(ModuleValues[1]);EmitW(ModuleValues[2]);
+     Emit(Byte(ModuleValues[3]));Emit(Byte(ModuleValues[4]));Emit(HeaderParity);
+     if OperandCount=6 Then Begin
+      CheckWord(ModuleValues[5],ModuleKnown[5],'offset d''execution MOD');
+      CheckWord(ModuleValues[6],ModuleKnown[6],'memoire permanente MOD');
+      EmitW(ModuleValues[5]);EmitW(ModuleValues[6])
+     End
+    End
    End
   End else if O='EMOD'Then Begin
-   Emit(0);Emit(0);Emit(0)
+   if not ModuleOpen Then Begin
+    if PassNo=2 Then Error('EMOD sans MOD ouvert')
+   End else Begin
+    if PassNo=2 Then V:=(ModuleCRC and$FFFFFF)xor$FFFFFF else V:=0;
+    ModuleCRCActive:=False;Emit(Byte(V shr 16));Emit(Byte(V shr 8));Emit(Byte(V));
+    ModuleOpen:=False;ModuleClosed:=True;
+    if(PassNo=2)and ModuleSizeKnown and(PC<>DeclaredModuleSize)Then
+     Error('taille de module declaree incorrecte');
+    if(PassNo=2)and ModuleMotorolaLayoutChanged Then
+     Warning('ORG ou RMB entre MOD et EMOD en mode Motorola: CRC historique non contigu')
+   End
   End else if O='NAM'Then ProgramName:=A else if O='TTL'Then Title:=A else if O=
   'USE'Then Begin
    ListLine(OldPC,OldPC,Line);ProcessFile(A);LineByteCount:=0;Continue
@@ -1129,28 +1197,34 @@ Begin
   ListLine(OldPC,OldPC,Line)
  End;
  if(PassNo=2)and((Depth<>0)or(OverflowDepth<>0))Then Error('ENDC manquant');
+ if(PassNo=2)and(IncludeDepth=1)and ModuleOpen Then Error('EMOD manquant');
  Close(F);IncludeStack:=IncludeNode^.Next;Dispose(IncludeNode);Dec(IncludeDepth);
  CurrentSourceName:=SavedSource;LineNo:=SavedLine
 End;
 
-Procedure FixModule;
+Function ValidateModuleImage:Boolean;
 Var
  I:LongInt;
  P:Byte;
- CRC:LongInt;
+ CRC,StoredCRC,HeaderSize:LongInt;
 Begin
- if(HighAddr<8)or(Image^[0]<>$87)or(Image^[1]<>$CD)Then Exit;P:=0;
- For I:=0 to 7 do P:=P xor Image^[I];Image^[8]:=P xor $FF;
- { CRC-24 OS-9, polynome $800063; les trois octets CRC sont le complement. }
- CRC:=$FFFFFF;
- For I:=0 to HighAddr-3 do Begin
-  CRC:=CRC xor(LongInt(Image^[I])shl 16);P:=0;
-  While P<8 do Begin
-   if(CRC and $800000)<>0 Then CRC:=(CRC shl 1)xor$800063 else CRC:=CRC shl 1;
-   CRC:=CRC and $FFFFFF;Inc(P)
-  End
- End;CRC:=CRC xor $FFFFFF;Image^[HighAddr-2]:=Byte(CRC shr 16);
- Image^[HighAddr-1]:=Byte(CRC shr 8);Image^[HighAddr]:=Byte(CRC)
+ ValidateModuleImage:=True;if not ModuleSeen Then Exit;
+ if(HighAddr<11)or(LowAddr<>0)or(Image^[0]<>$87)or(Image^[1]<>$CD)Then Begin
+  Error('en-tete de module OS-9 incorrect');ValidateModuleImage:=False;Exit
+ End;
+ P:=0;For I:=0 to 8 do P:=P xor Image^[I];
+ if P<>$FF Then Begin Error('parite d''en-tete MOD incorrecte');ValidateModuleImage:=False End;
+ HeaderSize:=(LongInt(Image^[2])shl 8)or Image^[3];
+ if HeaderSize<>HighAddr+1 Then Begin
+  Error('taille finale du module incorrecte');ValidateModuleImage:=False
+ End;
+ if not ModuleMotorolaLayoutChanged Then Begin
+  CRC:=$FFFFFF;For I:=0 to HighAddr-3 do CRC:=NextCRC(CRC,Image^[I]);
+  CRC:=(CRC and$FFFFFF)xor$FFFFFF;
+  StoredCRC:=(LongInt(Image^[HighAddr-2])shl 16)or
+   (LongInt(Image^[HighAddr-1])shl 8)or Image^[HighAddr];
+  if CRC<>StoredCRC Then Begin Error('CRC OS-9 incorrect');ValidateModuleImage:=False End
+ End
 End;
 
 Procedure WriteObject;
@@ -1159,7 +1233,8 @@ Var
  I:LongInt;
  B:Byte;
 Begin
- FixModule;Assign(F,ObjectName);Rewrite(F,1);if IOResult<>0 Then Begin
+ if not ValidateModuleImage Then Exit;
+ Assign(F,ObjectName);Rewrite(F,1);if IOResult<>0 Then Begin
   Error('impossible de creer '+ObjectName);Exit
  End;
  For I:=LowAddr to HighAddr do Begin
@@ -1260,6 +1335,8 @@ BEGIN
    RestoreOptions(InitialOptions);
    PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
    PageLine:=0;StopAssembly:=False;IncludeDepth:=0;CurrentSourceName:=SourceName;
+   ModuleSeen:=False;ModuleOpen:=False;ModuleClosed:=False;ModuleCRCActive:=False;
+   ModuleSizeKnown:=False;ModuleMotorolaLayoutChanged:=False;
    if PassNo=2 Then DecisionCursor:=Decisions;
    ProcessFile(SourceName)
   End
