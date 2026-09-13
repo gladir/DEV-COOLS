@@ -169,6 +169,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Algol 68 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>AS68.PAS</b></td>
+			<td>Cette commande permet de lancer un clone de l'assembleur Digital Research 68000.</td>
+		</tr>
+		<tr>
 			<td><b>ASC2ABAP.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source ABAP/4.</td>
 		</tr>	
