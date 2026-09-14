@@ -93830,6 +93830,11 @@ Var
  GEVHdr: TNEHeader;
  GEVHdrOfs, GEVFSize: LongInt;
  SEMOld: Word;
+ { KERNEL.EXE GlobalWire/OutputDebugString (2026-09-14, demande explicite, }
+ { ordinaux 111/115). }
+ ODSSeg, ODSOfs: Word;
+ ODSStr: String;
+ ODSFile: Text;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -95664,6 +95669,176 @@ Begin
     P.CPU.Regs.DX := 0;
     ArgWords := 1;
    End;
+   111: Begin
+    { GlobalWire(hMem):far ptr - ordinal VERIFIE via le VRAI source Wine    }
+    { (krnl386.exe16.spec : "pascal GlobalWire(word) GlobalWire16", 1 mot,  }
+    { PAS de "-ret16" = retour COMPLET DX:AX). REEL corps C de reference :  }
+    { "SEGPTR WINAPI GlobalWire16(HGLOBAL16 handle) : return                }
+    { WIN16_GlobalLock16(handle);" - un SIMPLE ALIAS de GlobalLock, RIEN    }
+    { d'autre - reproduit EXACTEMENT le meme corps deja etabli pour         }
+    { GlobalLock/$18 (identite : handle=offset direct, segment=            }
+    { Win16_StackSeg), pas une seconde implantation inventee. }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   112: Begin
+    { GlobalUnWire(hMem):bool - ordinal VERIFIE via le VRAI source Wine     }
+    { (krnl386.exe16.spec : "pascal -ret16 GlobalUnWire(word)               }
+    { GlobalUnWire16", 1 mot). REEL corps C de reference : "BOOL16 WINAPI   }
+    { GlobalUnWire16(HGLOBAL16 handle) : return !GlobalUnlock16(handle);"  }
+    { - la NEGATION du resultat de GlobalUnlock. Ce sous-ensemble a DEJA    }
+    { etabli (GlobalUnlock/$19) qu'aucun VRAI compte de verrou n'est tenu   }
+    { et que le bloc est donc TOUJOURS rapporte "completement deverrouille" }
+    { - la negation honnete de ce meme etat donne TOUJOURS vrai ici aussi,  }
+    { pas une invention separee. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   113: Begin
+    { __AHSHIFT - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.   }
+    { spec : "113 equate __AHSHIFT 3") - PAS une fonction "pascal"/"stub",  }
+    { mais une CONSTANTE DE DONNEES exportee (type "equate" du format NE) : }
+    { un VRAI programme Win16 la lit via GetProcAddress puis utilise        }
+    { directement la VALEUR retournee comme un immediat (jamais un VRAI    }
+    { far CALL a travers cet ordinal en pratique). Fourni ici par prudence  }
+    { defensive si un far CALL y survenait quand meme, avec la VRAIE        }
+    { valeur permanente documentee (3, inchangee depuis Windows 3.x)        }
+    { plutot que de la laisser tomber dans le catch-all generique. }
+    P.CPU.Regs.AX := 3;
+    ArgWords := 0;
+   End;
+   114: Begin
+    { __AHINCR - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.    }
+    { spec : "114 equate __AHINCR 8") - meme nature "equate" que            }
+    { __AHSHIFT/$113 ci-dessus (constante de donnees, pas une fonction),    }
+    { meme raisonnement defensif, VRAIE valeur permanente documentee (8). }
+    P.CPU.Regs.AX := 8;
+    ArgWords := 0;
+   End;
+   115: Begin
+    { OutputDebugString(lpStr):void - ordinal VERIFIE via le VRAI source    }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 OutputDebugString(str)      }
+    { OutputDebugString16", 2 mots). REEL corps C de reference : "void      }
+    { WINAPI OutputDebugString16(LPCSTR str) : OutputDebugStringA(str);"    }
+    { - relaie VRAIMENT la chaine vers le mecanisme de sortie de deboguage. }
+    { Ce sous-ensemble n'a AUCUN vrai debogueur attache (comportement       }
+    { documente reel dans ce cas : rien d'observable pour le programme      }
+    { appelant) - plutot que ne rien faire du tout, la VRAIE chaine lue      }
+    { est ecrite dans un VRAI fichier hote (WIN16DBG.LOG, ajout), un aller  }
+    { -retour disque reel et verifiable, dans le meme esprit que EMUCODE.   }
+    { LOG deja present dans ce depot pour d'autres sous-systemes. }
+    ODSSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ODSOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ODSStr := Win16_ReadGuestString(P.CPU, ODSSeg, ODSOfs);
+    Assign(ODSFile, 'WIN16DBG.LOG');
+    {$I-}
+    If FileExists('WIN16DBG.LOG') Then Append(ODSFile) Else Rewrite(ODSFile);
+    {$I+}
+    If IOResult = 0 Then Begin
+     WriteLn(ODSFile, ODSStr);
+     Close(ODSFile);
+    End;
+    ArgWords := 2;
+   End;
+   { InitLib/116 : ordinal marque "stub" SANS AUCUNE signature exploitable  }
+   { dans le VRAI source Wine (krnl386.exe16.spec) ET dans la source         }
+   { secondaire WineVDM (meme resultat) - DELIBEREMENT NON IMPLANTE (meme   }
+   { discipline que NoHookDosCall/$101, CallProcInstance/$53). }
+   117: Begin
+    { OldYield():void - ordinal VERIFIE via le VRAI source Wine              }
+    { (krnl386.exe16.spec : "pascal -ret16 OldYield() OldYield16", 0 mot).   }
+    { REEL corps C de reference : "void WINAPI OldYield16(void) :           }
+    { ReleaseThunkLock(&count); RestoreThunkLock(count);" - pure gestion    }
+    { interne de verrou de thunk 16/32 bits de Wine, SANS AUCUN effet        }
+    { observable sur l'etat CPU invite (ni AX/DX, ni aucun registre n'est    }
+    { touche par ce corps reel). Ce sous-ensemble est de plus strictement    }
+    { mono-tache (voir SetTaskQueue/$34 etc.) : "ceder" a une autre tache    }
+    { est un no-op honnete puisqu'aucune autre tache n'existe jamais.        }
+    { AX/DX delibberement NON touches, exactement comme le VRAI corps.       }
+    ArgWords := 0;
+   End;
+   118: Begin
+    { GetTaskQueueDS():void - ordinal VERIFIE via le VRAI source Wine        }
+    { (krnl386.exe16.spec : "pascal -ret16 GetTaskQueueDS()                  }
+    { GetTaskQueueDS16", 0 mot). REEL corps C de reference : "void WINAPI    }
+    { GetTaskQueueDS16(void) : CURRENT_STACK16->ds =                        }
+    { GlobalHandleToSel16(GetTaskQueue16(0));" - ne retourne RIEN dans       }
+    { AX/DX, fixe directement le registre DS qui sera restaure au retour     }
+    { (le "cadre de pile 16 bits courant" de Wine correspond ICI            }
+    { directement a P.CPU.Segs.DS, deja le VRAI etat CPU emule - aucun       }
+    { relais supplementaire necessaire). GetTaskQueue16(0) = file d'attente  }
+    { de la tache COURANTE (convention deja etablie pour GetTaskQueue/$35)  }
+    { = Win16_TaskQueueHandle, reutilise directement comme selecteur         }
+    { (convention identite deja etablie partout dans ce chantier : un        }
+    { handle synthetique EST directement utilisable comme segment/          }
+    { selecteur, ex. LocalHandle/$11, GlobalHandle/$21). }
+    P.CPU.Segs.DS := Win16_TaskQueueHandle;
+    ArgWords := 0;
+   End;
+   119: Begin
+    { GetTaskQueueES():void - meme raisonnement qu'GetTaskQueueDS/$118      }
+    { ci-dessus, mais fixe ES au lieu de DS (VRAI corps C de reference :     }
+    { "CURRENT_STACK16->es = GlobalHandleToSel16(GetTaskQueue16(0));"). }
+    P.CPU.Segs.ES := Win16_TaskQueueHandle;
+    ArgWords := 0;
+   End;
+   { UndefDynLink/120 : ordinal marque "stub" SANS AUCUNE signature          }
+   { exploitable dans le VRAI source Wine ET dans WineVDM (meme resultat) - }
+   { DELIBEREMENT NON IMPLANTE (meme discipline que InitLib/$116). }
+   121: Begin
+    { LocalShrink(hMem,newSize):word - ordinal VERIFIE via le VRAI source   }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 LocalShrink(word word)      }
+    { LocalShrink16", 2 mots). Le VRAI CORPS de reference dans Wine EST     }
+    { LUI-MEME un stub honnete ("UINT16 WINAPI LocalShrink16(HGLOBAL16      }
+    { handle, UINT16 newsize) : TRACE(...); return 0;", aucun VRAI          }
+    { retrecissement effectue) - reproduit A L'IDENTIQUE (AX=0), ce n'est   }
+    { PAS une simplification de ce sous-ensemble mais le comportement REEL  }
+    { de reference lui-meme. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   122: Begin
+    { IsTaskLocked():HTASK16 - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 IsTaskLocked() IsTaskLocked16",  }
+    { 0 mot). REEL corps C de reference : "HTASK16 WINAPI                   }
+    { IsTaskLocked16(void) : return hLockedTask;" - retourne le VRAI        }
+    { handle de la tache verrouilleuse (0 si aucune). Reutilise             }
+    { DIRECTEMENT l'etat deja etabli par LockCurrentTask/$33                }
+    { (Win16_TaskLocked, Win16_StackSeg comme identite synthetique de "la   }
+    { seule tache existante" verrouillee ou non), pas une seconde variable  }
+    { d'etat inventee. }
+    If Win16_TaskLocked Then P.CPU.Regs.AX := Win16_StackSeg
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   123: Begin
+    { KbdRst():void - ordinal VERIFIE via le VRAI source Wine               }
+    { (krnl386.exe16.spec : "pascal -ret16 KbdRst() KERNEL_nop", 0 mot) -   }
+    { route LITTERALEMENT vers le no-op generique reel de Wine, meme         }
+    { decouverte que GetLastDiskChange/$98/ValidateCodeSegments/$100/       }
+    { EnableDos/$41/DisableDos/$42 - reproduit A L'IDENTIQUE. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   124: Begin
+    { EnableKernel():void - ordinal VERIFIE via le VRAI source Wine         }
+    { (krnl386.exe16.spec : "pascal -ret16 EnableKernel() KERNEL_nop", 0    }
+    { mot) - meme routage reel vers KERNEL_nop que KbdRst/$123 ci-dessus. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   125: Begin
+    { DisableKernel():void - ordinal VERIFIE via le VRAI source Wine        }
+    { (krnl386.exe16.spec : "pascal -ret16 DisableKernel() KERNEL_nop", 0   }
+    { mot) - meme routage reel vers KERNEL_nop que KbdRst/$123 ci-dessus. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   { MemoryFreed/126 : ordinal marque "stub" SANS AUCUNE signature          }
+   { exploitable dans le VRAI source Wine ET dans WineVDM (meme resultat) - }
+   { DELIBEREMENT NON IMPLANTE (meme discipline que InitLib/$116,           }
+   { UndefDynLink/$120). }
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
     Exit;
