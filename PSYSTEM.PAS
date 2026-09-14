@@ -216,25 +216,25 @@ Begin
    'D':DeleteFileCommand;
    'V':VolumeCommand;
    'Q':Done:=True;
-   '?':WriteLn('List, Copy, Rename, Delete, Volume, Quit');
+   '?':WriteLn('Liste, Copie, Renommage, Suppression, Volume, Quitter');
   else WriteLn('Unknown file command.')End
  Until Done
 End;
 
 Procedure Help;
 Begin
- WriteLn('E  Edit the current source file');
- WriteLn('R  Compile when necessary and run the work program');
- WriteLn('F  File manager');
- WriteLn('C  Compile the current Pascal source');
- WriteLn('L  Link object files');
- WriteLn('X  Execute an existing program');
- WriteLn('A  Assemble a source file');
- WriteLn('D  Start the debugger');
- WriteLn('Q  Quit PSYSTEM');
+ WriteLn('E  Editer le fichier source de travail');
+ WriteLn('R  Compiler si necessaire, puis executer le programme de travail');
+ WriteLn('F  Ouvrir le gestionnaire de fichiers');
+ WriteLn('C  Compiler le fichier source Pascal courant');
+ WriteLn('L  Lier des fichiers objets');
+ WriteLn('X  Executer un programme deja compile');
+ WriteLn('A  Assembler un fichier source');
+ WriteLn('D  Lancer le debogueur');
+ WriteLn('Q  Quitter PSYSTEM');
  WriteLn;
- WriteLn('External tools may be selected with PSYSTEM_EDITOR, PSYSTEM_COMPILER,');
- WriteLn('PSYSTEM_LINKER, PSYSTEM_ASSEMBLER and PSYSTEM_DEBUGGER.')
+ WriteLn('Les outils externes peuvent etre choisis avec PSYSTEM_EDITOR,');
+ WriteLn('PSYSTEM_COMPILER, PSYSTEM_LINKER, PSYSTEM_ASSEMBLER et PSYSTEM_DEBUGGER.')
 End;
 
 Procedure Prompt;
@@ -265,11 +265,14 @@ Begin
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
   if(S='/?')or(S='-?')or(UpperString(S)='HELP')Then Begin
-   WriteLn('PSYSTEM ',Version,' - UCSD p-System command environment.');Help;Halt(0)
+   WriteLn('PSYSTEM ',Version,' - Cette commande permet lancer ',
+           'l''environnement de commande UCSD p-System.');
+   Help;
+   Halt(0)
   End else if WorkFile=''Then WorkFile:=S
   else
   Begin
-   WriteLn('Syntaxe: PSYSTEM [workfile]');
+   WriteLn('Syntaxe : PSYSTEM [fichier-de-travail]');
    Halt(1)
   End
  End;
