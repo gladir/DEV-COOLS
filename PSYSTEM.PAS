@@ -160,22 +160,45 @@ End;
 Function PCode_LoadRaw(Const FileName:String):Boolean;
 Var
  F:File;
- Sz:LongInt;
+ Sz,SegmentSize,SegmentPos,AttrPos,LoadedSize:LongInt;
  ReadCount:Word;
+ Header:Array[0..511]of Byte;
+ ProcCount:Byte;
 Begin
  PCode_LoadRaw:=False;Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Exit;
  Sz:=FileSize(F);
- if(Sz<0)or(Sz>SizeOf(TPCodeMemory))Then Begin
+ if Sz<0 Then Begin
   Close(F);if IOResult<>0 Then Begin
   End;WriteLn('Fichier p-Code trop grand.');Exit
  End;
  FillChar(PCode_Mem^,SizeOf(TPCodeMemory),0);ReadCount:=0;
- if Sz>0 Then BlockRead(F,PCode_Mem^,Sz,ReadCount);
- if(IOResult<>0)or(ReadCount<>Sz)Then Begin
+ LoadedSize:=Sz;
+ if Sz>=512 Then Begin
+  BlockRead(F,Header,512,ReadCount);SegmentPos:=(Header[0]or(Header[1]shl 8))*512;
+  SegmentSize:=Header[2]or(Header[3]shl 8);
+  if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
+   (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
+   Seek(F,SegmentPos);ReadCount:=0;BlockRead(F,PCode_Mem^,SegmentSize,ReadCount);
+   LoadedSize:=SegmentSize;ProcCount:=PCode_Mem^[SegmentSize-2];
+   AttrPos:=PCode_Mem^[SegmentSize-4]or(PCode_Mem^[SegmentSize-3]shl 8);
+   if(ProcCount<1)or(AttrPos<0)or(AttrPos>SegmentSize-14)Then Begin
+    Close(F);if IOResult<>0 Then Begin End;
+    WriteLn('Dictionnaire de procedures invalide.');Exit
+   End;PCode_CodeSize:=AttrPos
+  End else Begin
+   if Sz>SizeOf(TPCodeMemory)Then Begin Close(F);if IOResult<>0 Then Begin End;Exit End;
+   Seek(F,0);ReadCount:=0;if Sz>0 Then BlockRead(F,PCode_Mem^,Sz,ReadCount);
+   LoadedSize:=Sz;PCode_CodeSize:=Sz
+  End
+ End else Begin
+  if Sz>SizeOf(TPCodeMemory)Then Begin Close(F);if IOResult<>0 Then Begin End;Exit End;
+  if Sz>0 Then BlockRead(F,PCode_Mem^,Sz,ReadCount);PCode_CodeSize:=Sz
+ End;
+ if(IOResult<>0)or(ReadCount<>LoadedSize)Then Begin
   Close(F);if IOResult<>0 Then Begin
   End;Exit
  End;
- Close(F);if IOResult<>0 Then Exit;PCode_CodeSize:=Sz;PCode_LoadRaw:=True
+ Close(F);if IOResult<>0 Then Exit;PCode_LoadRaw:=True
 End;
 
 Function PCode_Fetch(Ofs: LongInt): Byte;Begin
@@ -1435,6 +1458,28 @@ Begin
  End
 End;
 
+Function WriteUCSDCodeFile(CodeName,SegmentName:String;CodeLength:LongInt;
+ DataWords:Integer):Boolean;
+Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
+ Procedure HW(Offset:Integer;Value:Word);
+ Begin Header[Offset]:=Byte(Value);Header[Offset+1]:=Byte(Value shr 8)End;
+ Procedure EW(Value:Word);
+ Begin CPE(Byte(Value));CPE(Byte(Value shr 8))End;
+Begin
+ WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin CPFail('segment trop grand');Exit End;
+ EW(DataWords*2);EW(0);EW(CodeLength-1);EW(0);CPE(1);CPE(0);
+ EW(CodeLength);CPE(1);CPE(1);SegmentLength:=CPCodePos;
+ FillChar(Header,SizeOf(Header),0);HW(0,1);HW(2,SegmentLength);
+ SegmentName:=UpperString(SegmentName);if Length(SegmentName)>8 Then SegmentName:=Copy(SegmentName,1,8);
+ For I:=1 to Length(SegmentName)do Header[63+I]:=Ord(SegmentName[I]);
+ HW(192,1);HW(224,0);HW(256,$0101);
+ Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then Begin CPFail('creation impossible');Exit End;
+ BlockWrite(F,Header,512,W);if(IOResult<>0)or(W<>512)Then CPFail('erreur d''ecriture');
+ if not CPError Then Begin BlockWrite(F,PCode_Mem^,SegmentLength,N);
+  if(IOResult<>0)or(N<>SegmentLength)Then CPFail('erreur d''ecriture')End;
+ Close(F);if IOResult<>0 Then CPFail('erreur de fermeture');WriteUCSDCodeFile:=not CPError
+End;
+
 Function CompilePascalPCode(SourceName,CodeName:String):Integer;
 Label 99;
 
@@ -1488,14 +1533,7 @@ Begin
   End
  End;
  CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');CPE(214);
- if not CPError Then Begin
-  Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then CPFail('creation impossible')
-  else
-  Begin
-   BlockWrite(F,PCode_Mem^,CPCodePos,N);
-   if(IOResult<>0)or(N<>CPCodePos)Then CPFail('erreur d''ecriture');Close(F)
-  End
- End;
+ if not CPError Then WriteUCSDCodeFile(CodeName,'PROGRAM',CPCodePos,CPVarCount);
  99:P:=CPSymbols;
  While P<>Nil do Begin
   Q:=P^.Next;Dispose(P);P:=Q
