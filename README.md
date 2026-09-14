@@ -728,6 +728,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer un compilateur Pascal générant du code pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>PERL.PAS</b></td>
+			<td>Cette commande permet de lancer le langage de programmation Perl.</td>
+		</tr>
+		<tr>
 			<td><b>PERL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Perl pour l'assembleur du microprocesseur 8086 ou 8088.</td>
 		</tr>
