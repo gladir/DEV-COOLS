@@ -14,9 +14,13 @@ Uses Dos;
 Const
  Version='1.0';
 
+Type
+ TPSYSTEMTarget=(ptAppleHeath,ptUCSDPascalII,ptUCSDPSystemIII,ptUCSDPSystemIV);
+
 Var
  WorkFile,ProgramFile:String;
  Finished:Boolean;
+ CurrentTarget:TPSYSTEMTarget;
 
 Function TrimString(S:String):String;Begin
  While(Length(S)>0)and(S[1]in[' ',#9])do Delete(S,1,1);
@@ -199,6 +203,26 @@ Begin
   End;Exit
  End;
  Close(F);if IOResult<>0 Then Exit;PCode_LoadRaw:=True
+End;
+
+Function TargetName:String;
+Begin
+ Case CurrentTarget of
+  ptAppleHeath:TargetName:='APPLEHEATH';
+  ptUCSDPascalII:TargetName:='UCSDPASCALII';
+  ptUCSDPSystemIII:TargetName:='UCSDPSYSTEMIII';
+ else TargetName:='UCSDPSYSTEMIV'End
+End;
+
+Function SelectTarget(S:String):Boolean;
+Begin
+ S:=UpperString(S);SelectTarget:=True;
+ if(S='APPLEHEALT')or(S='APPLEHEATH')or(S='APPLE')or(S='HEATH')Then
+  CurrentTarget:=ptAppleHeath
+ else if(S='UCSDPASCALII')or(S='PASCALII')or(S='II')Then CurrentTarget:=ptUCSDPascalII
+ else if(S='UCSDPSYSTEMIII')or(S='PSYSTEMIII')or(S='III')Then CurrentTarget:=ptUCSDPSystemIII
+ else if(S='UCSDPSYSTEMIV')or(S='PSYSTEMIV')or(S='IV')Then CurrentTarget:=ptUCSDPSystemIV
+ else SelectTarget:=False
 End;
 
 Function PCode_Fetch(Ofs: LongInt): Byte;Begin
@@ -1472,7 +1496,13 @@ Begin
  FillChar(Header,SizeOf(Header),0);HW(0,1);HW(2,SegmentLength);
  SegmentName:=UpperString(SegmentName);if Length(SegmentName)>8 Then SegmentName:=Copy(SegmentName,1,8);
  For I:=1 to Length(SegmentName)do Header[63+I]:=Ord(SegmentName[I]);
- HW(192,1);HW(224,0);HW(256,$0101);
+ HW(192,1);HW(224,0);
+ Case CurrentTarget of
+  ptAppleHeath:HW(256,$0101);
+  ptUCSDPascalII:HW(256,$0201);
+  ptUCSDPSystemIII:HW(256,$0301);
+  ptUCSDPSystemIV:HW(256,$0401)
+ End;
  Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then Begin CPFail('creation impossible');Exit End;
  BlockWrite(F,Header,512,W);if(IOResult<>0)or(W<>512)Then CPFail('erreur d''ecriture');
  if not CPError Then Begin BlockWrite(F,PCode_Mem^,SegmentLength,N);
@@ -1953,6 +1983,9 @@ Procedure Help;Begin
  WriteLn('A  Assembler un fichier source');
  WriteLn('D  Lancer le debogueur p-Code integre');
  WriteLn('Q  Quitter PSYSTEM');
+ WriteLn('/TARGET:nom  Choisir la version du p-System cible');
+ WriteLn('  APPLEHEALT, UCSDPASCALII, UCSDPSYSTEMIII ou UCSDPSYSTEMIV');
+ WriteLn('Cible courante: ',TargetName);
  WriteLn;
  WriteLn(
  'Les outils externes peuvent etre choisis avec PSYSTEM_EDITOR et PSYSTEM_LINKER.');
@@ -1989,7 +2022,7 @@ Var
  I:Integer;
  S:String;
 Begin
- WorkFile:='';ProgramFile:='';
+ WorkFile:='';ProgramFile:='';CurrentTarget:=ptUCSDPSystemIV;
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
   if(S='/?')or(S='-?')or(UpperString(S)='HELP')Then Begin
@@ -1997,19 +2030,25 @@ Begin
    'l''environnement de commande UCSD p-System.');
    Help;
    Halt(0)
+  End else if(Copy(UpperString(S),1,8)='/TARGET:')or
+   (Copy(UpperString(S),1,8)='-TARGET:')Then Begin
+   if not SelectTarget(Copy(S,9,255))Then Begin
+    WriteLn('Cible p-System inconnue: ',Copy(S,9,255));Halt(1)
+   End
   End else if WorkFile=''Then WorkFile:=S
   else
   Begin
-   WriteLn('Syntaxe : PSYSTEM [fichier-de-travail]');
+   WriteLn('Syntaxe : PSYSTEM [fichier-de-travail] [/TARGET:cible]');
    Halt(1)
   End
  End;
- if WorkFile<>''Then ProgramFile:=ReplaceExtension(WorkFile,'.exe')
+ if WorkFile<>''Then ProgramFile:=ReplaceExtension(WorkFile,'.CODE')
 End;
 
 BEGIN
  CommandLine;Finished:=False;
  WriteLn('UCSD p-System compatible command environment ',Version);
+ WriteLn('Cible: ',TargetName);
  if WorkFile<>''Then WriteLn('Work file: ',WorkFile);
  Repeat Prompt Until Finished;
  WriteLn('System halted.')
