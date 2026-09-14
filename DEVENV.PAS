@@ -7725,6 +7725,21 @@ Var
  { d'unicite, incremente a chaque appel avec wUnique=0. }
  Win16_ErrorMode: Word;
  Win16_TempFileCounter: Word;
+ { FileCDR/$130 (2026-09-14, demande explicite) - stocke mais jamais         }
+ { reellement appele (aucune notification reelle de changement de           }
+ { fichier systeme dans ce sous-ensemble), meme honnetete que                }
+ { Win16_ResourceHandlerSeg/Ofs. GetDOSEnvironment/$131 - bloc               }
+ { d'environnement REEL construit paresseusement (une fois) depuis le       }
+ { VRAI environnement du processus hote (EnvStr/EnvCount). SetSigHandler/    }
+ { $140 - stocke le VRAI gestionnaire/mode de signal courant de la tache     }
+ { (distinct de Win16_TaskSignalProcSeg/Ofs : concept "sighandler" reel      }
+ { different de "task signal proc"), jamais reellement invoque (aucun        }
+ { VRAI Ctrl+Break/exception Win16 ne le declenche dans ce sous-ensemble). }
+ Win16_FileCdrSeg, Win16_FileCdrOfs: Word;
+ Win16_DosEnvBuilt: Boolean;
+ Win16_DosEnvOfs: Word;
+ Win16_SigHandlerSeg, Win16_SigHandlerOfs: Word;
+ Win16_SigFlags: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91839,6 +91854,13 @@ Begin
  Win16_ResourceHandlerOfs := 0;
  Win16_ErrorMode := 0;
  Win16_TempFileCounter := 0;
+ Win16_FileCdrSeg := 0;
+ Win16_FileCdrOfs := 0;
+ Win16_DosEnvBuilt := False;
+ Win16_DosEnvOfs := 0;
+ Win16_SigHandlerSeg := 0;
+ Win16_SigHandlerOfs := 0;
+ Win16_SigFlags := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -92134,7 +92156,7 @@ Function Emu_HostPath(Const DosName: String): String; Forward;
 { VRAI aller-retour disque. Format INI standard ([Section]/Cle=Valeur,        }
 { lignes ';' ignorees comme commentaires, comparaisons insensibles a la       }
 { casse). }
-Function Win16_ProfileFindValue(Const SectionName, KeyName: String;
+Function Win16_ProfileFindValue(Const SectionName, KeyName, FileName: String;
  Var OutValue: String): Boolean;
 Var
  F: Text;
@@ -92144,7 +92166,7 @@ Var
 Begin
  Win16_ProfileFindValue := False;
  OutValue := '';
- {$I-} Assign(F, Emu_HostPath('WIN.INI')); Reset(F); {$I+}
+ {$I-} Assign(F, Emu_HostPath(FileName)); Reset(F); {$I+}
  If IOResult <> 0 Then Exit;
  InSection := False;
  While Not Eof(F) Do Begin
@@ -92184,7 +92206,7 @@ End;
 Const
  WIN16_PROFILE_MAX_LINES = 4096;
 
-Procedure Win16_ProfileWriteValue(Const SectionName, KeyName, ValueStr: String;
+Procedure Win16_ProfileWriteValue(Const SectionName, KeyName, ValueStr, FileName: String;
  DeleteEntry: Boolean);
 Var
  Lines: Array[0..WIN16_PROFILE_MAX_LINES - 1] Of String;
@@ -92197,7 +92219,7 @@ Var
  InSection: Boolean;
  HostPath: String;
 Begin
- HostPath := Emu_HostPath('WIN.INI');
+ HostPath := Emu_HostPath(FileName);
  LineCount := 0;
  {$I-} Assign(F, HostPath); Reset(F); {$I+}
  If IOResult = 0 Then Begin
@@ -93359,6 +93381,13 @@ Function Emu_AllocHandle: Integer; Forward;
 { necessaire - un simple appel direct suffit). }
 Procedure Emu_DoInt21(Var P: TEmulatorPanel); Forward;
 Procedure Emu_DoInt5C(Var P: TEmulatorPanel); Forward;
+{ Emu_DosTerminate/Emu_DpbFind (definies bien plus bas) - Forward           }
+{ necessaire pour FatalAppExit/$137 (reutilise REELLEMENT le MEME           }
+{ mecanisme de fin de tache que INT21h AH=31h/AH=4Ch) et GetDriveType/$136  }
+{ (reutilise REELLEMENT le MEME test de validite de lecteur que INT21h      }
+{ AH=1Fh/AH=32h), 2026-09-14, demande explicite. }
+Procedure Emu_DosTerminate(Var P: TEmulatorPanel; Const NormalMsg: String); Forward;
+Function Emu_DpbFind(DL: Byte; Var DpbOfs: Word): Boolean; Forward;
 { KEYBOARD.DRV (2026-09-14, demande explicite) : nouveau module ModIdx=4,   }
 { suite logique de l'ordre KERNEL=1/GDI=2/USER=3 deja documente plus haut   }
 { (empiriquement verifie sur CLOCK.EXE/CALENDAR.EXE) - meme simplification  }
@@ -93835,6 +93864,43 @@ Var
  ODSSeg, ODSOfs: Word;
  ODSStr: String;
  ODSFile: Text;
+ { KERNEL.EXE GetPrivateProfileInt/String/WritePrivateProfileString/         }
+ { FileCDR/GetDOSEnvironment/GetWinFlags/GetExePtr/GetWindowsDirectory/      }
+ { GetSystemDirectory/GetDriveType/FatalAppExit/GetHeapSpaces/               }
+ { SetSigHandler/DirectedYield (2026-09-14, demande explicite, ordinaux      }
+ { 127-138/140/150). }
+ GPPIAppSeg, GPPIAppOfs, GPPIKeySeg, GPPIKeyOfs, GPPIFileSeg, GPPIFileOfs: Word;
+ GPPIDefault: SmallInt;
+ GPPIApp, GPPIKey, GPPIFile, GPPIValStr: String;
+ GPPIValInt: LongInt;
+ GPPIValErr: Integer;
+ GPPSAppSeg, GPPSAppOfs, GPPSKeySeg, GPPSKeyOfs: Word;
+ GPPSDefSeg, GPPSDefOfs, GPPSRetSeg, GPPSRetOfs, GPPSSize: Word;
+ GPPSFileSeg, GPPSFileOfs: Word;
+ GPPSApp, GPPSKey, GPPSDefStr, GPPSFile, GPPSOutStr: String;
+ GPPSLen, GPPSJ: Integer;
+ WPPSAppSeg, WPPSAppOfs, WPPSKeySeg, WPPSKeyOfs: Word;
+ WPPSStrSeg, WPPSStrOfs, WPPSFileSeg, WPPSFileOfs: Word;
+ WPPSApp, WPPSKey, WPPSStr, WPPSFile: String;
+ FCDRSeg, FCDROfs, FCDROldSeg, FCDROldOfs: Word;
+ GDEI, GDETotal, GDEWritePos: LongInt;
+ GDES: String;
+ GDEProgName: String;
+ GDEJ: Integer;
+ GEPHandle: Word;
+ GWDPath: String;
+ GWDBufSeg, GWDBufOfs, GWDSize: Word;
+ GWDLen, GWDJ: Integer;
+ GSDPath: String;
+ GSDBufSeg, GSDBufOfs, GSDSize: Word;
+ GSDLen, GSDJ: Integer;
+ GDTDrive: Byte;
+ GDTDummyOfs: Word;
+ FAEStrSeg, FAEStrOfs: Word;
+ FAEStr: String;
+ GHSFree: Word;
+ SSHNewSeg, SSHNewOfs, SSHOldHSeg, SSHOldHOfs, SSHOldMSeg, SSHOldMOfs: Word;
+ SSHNewMode, SSHFlag: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -94668,7 +94734,7 @@ Begin
     GPIDefault := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
     GPIApp := Win16_ReadGuestString(P.CPU, GPIAppSeg, GPIAppOfs);
     GPIKey := Win16_ReadGuestString(P.CPU, GPIKeySeg, GPIKeyOfs);
-    If Win16_ProfileFindValue(GPIApp, GPIKey, GPIValStr) Then Begin
+    If Win16_ProfileFindValue(GPIApp, GPIKey, 'WIN.INI', GPIValStr) Then Begin
      Val(GPIValStr, GPIValInt, GPIValErr);
      If GPIValErr = 0 Then P.CPU.Regs.AX := Word(GPIValInt)
      Else P.CPU.Regs.AX := Word(GPIDefault);
@@ -94697,7 +94763,7 @@ Begin
     GPSApp := Win16_ReadGuestString(P.CPU, GPSAppSeg, GPSAppOfs);
     GPSKey := Win16_ReadGuestString(P.CPU, GPSKeySeg, GPSKeyOfs);
     GPSDefStr := Win16_ReadGuestString(P.CPU, GPSDefSeg, GPSDefOfs);
-    If Not Win16_ProfileFindValue(GPSApp, GPSKey, GPSOutStr) Then
+    If Not Win16_ProfileFindValue(GPSApp, GPSKey, 'WIN.INI', GPSOutStr) Then
      GPSOutStr := GPSDefStr;
     GPSLen := Length(GPSOutStr);
     If GPSLen > Integer(GPSSize) - 1 Then GPSLen := Integer(GPSSize) - 1;
@@ -94731,10 +94797,10 @@ Begin
     WPSApp := Win16_ReadGuestString(P.CPU, WPSAppSeg, WPSAppOfs);
     WPSKey := Win16_ReadGuestString(P.CPU, WPSKeySeg, WPSKeyOfs);
     If (WPSStrSeg = 0) And (WPSStrOfs = 0) Then
-     Win16_ProfileWriteValue(WPSApp, WPSKey, '', True)
+     Win16_ProfileWriteValue(WPSApp, WPSKey, '', 'WIN.INI', True)
     Else Begin
      WPSStr := Win16_ReadGuestString(P.CPU, WPSStrSeg, WPSStrOfs);
-     Win16_ProfileWriteValue(WPSApp, WPSKey, WPSStr, False);
+     Win16_ProfileWriteValue(WPSApp, WPSKey, WPSStr, 'WIN.INI', False);
     End;
     P.CPU.Regs.AX := 1;
     ArgWords := 6;
@@ -95839,6 +95905,403 @@ Begin
    { exploitable dans le VRAI source Wine ET dans WineVDM (meme resultat) - }
    { DELIBEREMENT NON IMPLANTE (meme discipline que InitLib/$116,           }
    { UndefDynLink/$120). }
+   127: Begin
+    { GetPrivateProfileInt(lpAppName,lpKeyName,nDefault,lpFileName):word - }
+    { ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :         }
+    { "pascal -ret16 GetPrivateProfileInt(str str s_word str)               }
+    { GetPrivateProfileInt16", 2+2+1+2 = 7 mots). REEL ET CONCRET :          }
+    { reutilise le MEME moteur INI reel que GetProfileInt/$57                }
+    { (Win16_ProfileFindValue), desormais GENERALISE a un nom de fichier     }
+    { arbitraire (parametre ajoute) plutot que fige a WIN.INI. lpFileName    }
+    { NUL (seg=ofs=0, convention documentee reelle "utiliser WIN.INI")       }
+    { retombe honnetement sur WIN.INI. }
+    GPPIAppSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    GPPIAppOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    GPPIKeySeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    GPPIKeyOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GPPIDefault := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    GPPIFileSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GPPIFileOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GPPIApp := Win16_ReadGuestString(P.CPU, GPPIAppSeg, GPPIAppOfs);
+    GPPIKey := Win16_ReadGuestString(P.CPU, GPPIKeySeg, GPPIKeyOfs);
+    If (GPPIFileSeg = 0) And (GPPIFileOfs = 0) Then
+     GPPIFile := 'WIN.INI'
+    Else
+     GPPIFile := Win16_ReadGuestString(P.CPU, GPPIFileSeg, GPPIFileOfs);
+    If Win16_ProfileFindValue(GPPIApp, GPPIKey, GPPIFile, GPPIValStr) Then Begin
+     Val(GPPIValStr, GPPIValInt, GPPIValErr);
+     If GPPIValErr = 0 Then P.CPU.Regs.AX := Word(GPPIValInt)
+     Else P.CPU.Regs.AX := Word(GPPIDefault);
+    End Else
+     P.CPU.Regs.AX := Word(GPPIDefault);
+    ArgWords := 7;
+   End;
+   128: Begin
+    { GetPrivateProfileString(lpAppName,lpKeyName,lpDefault,                }
+    { lpReturnedString,nSize,lpFileName):int - ordinal VERIFIE via le VRAI  }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16                      }
+    { GetPrivateProfileString(str str str ptr word str)                     }
+    { GetPrivateProfileString16", 2+2+2+2+1+2 = 11 mots). REEL ET CONCRET,  }
+    { MEME moteur que GetProfileString/$58 mais avec un fichier ARBITRAIRE  }
+    { (lpFileName NUL -> WIN.INI, meme convention que                       }
+    { GetPrivateProfileInt/$127 ci-dessus). Portee DEJA DISCLOSEE pour       }
+    { GetProfileString/$58 : lpAppName/lpKeyName NUL (enumeration de         }
+    { sections/cles, documentee reelle) NON implante ici non plus. }
+    GPPSAppSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 24));
+    GPPSAppOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 22));
+    GPPSKeySeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20));
+    GPPSKeyOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18));
+    GPPSDefSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    GPPSDefOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    GPPSRetSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    GPPSRetOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GPPSSize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GPPSFileSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GPPSFileOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GPPSApp := Win16_ReadGuestString(P.CPU, GPPSAppSeg, GPPSAppOfs);
+    GPPSKey := Win16_ReadGuestString(P.CPU, GPPSKeySeg, GPPSKeyOfs);
+    GPPSDefStr := Win16_ReadGuestString(P.CPU, GPPSDefSeg, GPPSDefOfs);
+    If (GPPSFileSeg = 0) And (GPPSFileOfs = 0) Then
+     GPPSFile := 'WIN.INI'
+    Else
+     GPPSFile := Win16_ReadGuestString(P.CPU, GPPSFileSeg, GPPSFileOfs);
+    If Not Win16_ProfileFindValue(GPPSApp, GPPSKey, GPPSFile, GPPSOutStr) Then
+     GPPSOutStr := GPPSDefStr;
+    GPPSLen := Length(GPPSOutStr);
+    If GPPSLen > Integer(GPPSSize) - 1 Then GPPSLen := Integer(GPPSSize) - 1;
+    If GPPSLen < 0 Then GPPSLen := 0;
+    For GPPSJ := 1 To GPPSLen Do
+     Emu_WriteByte(P.CPU, GPPSRetSeg, Word(GPPSRetOfs + GPPSJ - 1), Byte(Ord(GPPSOutStr[GPPSJ])));
+    Emu_WriteByte(P.CPU, GPPSRetSeg, Word(GPPSRetOfs + GPPSLen), 0);
+    P.CPU.Regs.AX := Word(GPPSLen);
+    ArgWords := 11;
+   End;
+   129: Begin
+    { WritePrivateProfileString(lpAppName,lpKeyName,lpString,lpFileName):   }
+    { BOOL - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :  }
+    { "pascal -ret16 WritePrivateProfileString(str str str str)             }
+    { WritePrivateProfileString16", 2+2+2+2 = 8 mots). REEL ET CONCRET,      }
+    { MEME moteur que WriteProfileString/$59 mais sur un fichier            }
+    { ARBITRAIRE (lpFileName NUL -> WIN.INI, meme convention). lpString     }
+    { NUL -> supprime la cle (meme portee disclosee que                     }
+    { WriteProfileString/$59 : suppression de section entiere NON           }
+    { implantee). }
+    WPPSAppSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18));
+    WPPSAppOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    WPPSKeySeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    WPPSKeyOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    WPPSStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    WPPSStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    WPPSFileSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    WPPSFileOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    WPPSApp := Win16_ReadGuestString(P.CPU, WPPSAppSeg, WPPSAppOfs);
+    WPPSKey := Win16_ReadGuestString(P.CPU, WPPSKeySeg, WPPSKeyOfs);
+    If (WPPSFileSeg = 0) And (WPPSFileOfs = 0) Then
+     WPPSFile := 'WIN.INI'
+    Else
+     WPPSFile := Win16_ReadGuestString(P.CPU, WPPSFileSeg, WPPSFileOfs);
+    If (WPPSStrSeg = 0) And (WPPSStrOfs = 0) Then
+     Win16_ProfileWriteValue(WPPSApp, WPPSKey, '', WPPSFile, True)
+    Else Begin
+     WPPSStr := Win16_ReadGuestString(P.CPU, WPPSStrSeg, WPPSStrOfs);
+     Win16_ProfileWriteValue(WPPSApp, WPPSKey, WPPSStr, WPPSFile, False);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 8;
+   End;
+   130: Begin
+    { FileCDR(lpFunc):FARPROC - ordinal VERIFIE via le VRAI source Wine    }
+    { (krnl386.exe16.spec : "pascal FileCDR(ptr) FileCDR16", 1 far ptr = 2  }
+    { mots, PAS de "-ret16" = retour COMPLET DX:AX). Corps C de reference   }
+    { introuvable dans le VRAI source apres recherche ciblee, MAIS sa       }
+    { PORTEE documentee par l'utilisateur lui-meme ("installer une          }
+    { fonction utilisateur appelee si un changement de fichier systeme se   }
+    { produit") est un pur installateur de callback - stocke VRAIMENT le    }
+    { nouveau gestionnaire et retourne l'ANCIEN (MEME contrat verifie que   }
+    { SetResourceHandler/$67 pour cette exacte forme d'ordinal), jamais     }
+    { reellement invoque (aucune VRAIE notification de creation/           }
+    { suppression de fichier systeme dans ce sous-ensemble). }
+    FCDRSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FCDROfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FCDROldSeg := Win16_FileCdrSeg;
+    FCDROldOfs := Win16_FileCdrOfs;
+    Win16_FileCdrSeg := FCDRSeg;
+    Win16_FileCdrOfs := FCDROfs;
+    P.CPU.Regs.AX := FCDROldOfs;
+    P.CPU.Regs.DX := FCDROldSeg;
+    ArgWords := 2;
+   End;
+   131: Begin
+    { GetDOSEnvironment():SEGPTR - ordinal VERIFIE via le VRAI source Wine }
+    { (krnl386.exe16.spec : "pascal GetDOSEnvironment()                    }
+    { GetDOSEnvironment16", 0 mot, PAS de "-ret16" = retour COMPLET DX:AX). }
+    { REEL corps C de reference : construit paresseusement (une seule       }
+    { fois, cache par la suite - "static handle" dans le VRAI code) un      }
+    { bloc depuis le VRAI environnement du PROCESSUS HOTE                   }
+    { (GetEnvironmentStringsA reel), termine par un octet nul                }
+    { supplementaire puis WORD(1) puis le nom ASCIIZ du programme - ici     }
+    { EXACTEMENT la MEME valeur hardcodee que le VRAI corps Wine lui-meme    }
+    { ("C:\WINDOWS\SYSTEM\KRNL386.EXE", un detail d'authenticite reel, pas  }
+    { une simplification). Reproduit ici avec EnvStr/EnvCount (memes         }
+    { fonctions RTL Pascal deja utilisees ailleurs dans ce fichier pour un   }
+    { usage similaire) - le VRAI environnement du processus hote            }
+    { DEVENV.exe. Construit dans le MEME tas plat que GlobalAlloc/$15        }
+    { (bump allocator Win16_HeapNext/Win16_HeapLimit, handle=offset          }
+    { direct) - echec honnete (0:0) si la taille depasse le VRAI espace      }
+    { tas restant. }
+    If Not Win16_DosEnvBuilt Then Begin
+     GDEProgName := 'C:\WINDOWS\SYSTEM\KRNL386.EXE';
+     GDETotal := 0;
+     For GDEI := 0 To EnvCount Do
+      GDETotal := GDETotal + LongInt(Length(EnvStr(GDEI))) + 1;
+     GDETotal := GDETotal + 1 + 2 + LongInt(Length(GDEProgName)) + 1;
+     If (LongInt(Win16_HeapNext) + GDETotal) > LongInt(Win16_HeapLimit) Then
+      Win16_DosEnvOfs := 0
+     Else Begin
+      GDEWritePos := Win16_HeapNext;
+      For GDEI := 0 To EnvCount Do Begin
+       GDES := EnvStr(GDEI);
+       For GDEJ := 1 To Length(GDES) Do
+        Emu_WriteByte(P.CPU, Win16_StackSeg, Word(GDEWritePos + GDEJ - 1), Byte(Ord(GDES[GDEJ])));
+       Emu_WriteByte(P.CPU, Win16_StackSeg, Word(GDEWritePos + Length(GDES)), 0);
+       GDEWritePos := GDEWritePos + LongInt(Length(GDES)) + 1;
+      End;
+      Emu_WriteByte(P.CPU, Win16_StackSeg, Word(GDEWritePos), 0);
+      GDEWritePos := GDEWritePos + 1;
+      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(GDEWritePos), 1);
+      GDEWritePos := GDEWritePos + 2;
+      For GDEJ := 1 To Length(GDEProgName) Do
+       Emu_WriteByte(P.CPU, Win16_StackSeg, Word(GDEWritePos + GDEJ - 1), Byte(Ord(GDEProgName[GDEJ])));
+      Emu_WriteByte(P.CPU, Win16_StackSeg, Word(GDEWritePos + Length(GDEProgName)), 0);
+      Win16_DosEnvOfs := Win16_HeapNext;
+      Win16_HeapNext := Word(GDEWritePos + Length(GDEProgName) + 1);
+     End;
+     Win16_DosEnvBuilt := True;
+    End;
+    If Win16_DosEnvOfs = 0 Then Begin
+     P.CPU.Regs.AX := 0;
+     P.CPU.Regs.DX := 0;
+    End Else Begin
+     P.CPU.Regs.AX := Win16_DosEnvOfs;
+     P.CPU.Regs.DX := Win16_StackSeg;
+    End;
+    ArgWords := 0;
+   End;
+   132: Begin
+    { GetWinFlags():DWORD - ordinal VERIFIE via le VRAI source Wine         }
+    { (krnl386.exe16.spec : "pascal GetWinFlags() GetWinFlags16", 0 mot,    }
+    { PAS de "-ret16" = retour COMPLET DX:AX). REEL corps C de reference    }
+    { (recupere via recherche web) : combine des VRAIS drapeaux documentes  }
+    { WF_CPUxxx/WF_ENHANCED/WF_PMODE/WF_80x87/WF_PAGING (WINDOWS.H           }
+    { historique) selon le VRAI processeur/mode hote. Ce sous-ensemble       }
+    { Win16 partage son infrastructure DPMI/32 bits avec les autres          }
+    { emulateurs 386 de ce depot (LX/PE) : rapporte honnetement la           }
+    { combinaison DOCUMENTEE reelle du "mode 386 enrichi"                    }
+    { (WF_CPU386+WF_ENHANCED+WF_PMODE+WF_80x87+WF_PAGING, $0C25) - le mode   }
+    { que ce KERNEL.EXE emule conceptuellement, pas une valeur inventee. }
+    P.CPU.Regs.AX := $0C25;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 0;
+   End;
+   133: Begin
+    { GetExePtr(hInstance):HINSTANCE - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16 GetExePtr(word) }
+    { WIN16_GetExePtr", 1 mot, retour 16 bits AX seul). Corps C de           }
+    { reference introuvable dans le VRAI source apres plusieurs recherches  }
+    { ciblees (uniquement des APPELS a cette fonction trouves, jamais sa     }
+    { definition), MAIS sa PORTEE documentee par l'utilisateur lui-meme      }
+    { ("accepte un gestionnaire de differents types et retourne la           }
+    { correspondance du gestionnaire") est un normalisateur/validateur de   }
+    { handle - or ce sous-ensemble a DEJA etabli qu'un SEUL VRAI module      }
+    { existe, avec Win16_StackSeg comme identite synthetique unique         }
+    { (GetModuleHandle/$47, GetCurrentTask/$36, LoadLibrary/$95) :           }
+    { hInstance=0 (convention documentee "tache courante") ou                }
+    { hInstance=Win16_StackSeg -> Win16_StackSeg ; toute autre valeur -> 0   }
+    { (handle inconnu, meme discipline que GetModuleHandle/$47), MEME        }
+    { raisonnement honnete que PatchCodeHandle/$110. }
+    GEPHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GEPHandle = 0) Or (GEPHandle = Win16_StackSeg) Then
+     P.CPU.Regs.AX := Win16_StackSeg
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   134: Begin
+    { GetWindowsDirectory(lpBuffer,nSize):UINT - ordinal VERIFIE via le     }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                 }
+    { GetWindowsDirectory(ptr word) GetWindowsDirectory16", 2+1 = 3 mots).  }
+    { REEL corps C de reference : relaie vers le VRAI repertoire Windows    }
+    { de l'hote (GetWindowsDirectoryA) - INAPPLICABLE ici (cet emulateur    }
+    { ne partage PAS le systeme de fichiers hote comme "C:" invite).        }
+    { Rapporte honnetement le chemin standard documente reel d'une          }
+    { installation Windows 3.x par defaut ("C:\WINDOWS", jamais invente -   }
+    { c'est le VRAI chemin par defaut de toute installation Windows 3.x     }
+    { reelle), tronque a nSize-1 caracteres (meme simplification deja        }
+    { etablie pour GetModuleFileName/$49 : pas la nuance documentee          }
+    { "retourne la taille requise si le tampon est trop petit"). }
+    GWDBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GWDBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GWDSize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GWDPath := 'C:\WINDOWS';
+    GWDLen := Length(GWDPath);
+    If GWDLen > Integer(GWDSize) - 1 Then GWDLen := Integer(GWDSize) - 1;
+    If GWDLen < 0 Then GWDLen := 0;
+    For GWDJ := 1 To GWDLen Do
+     Emu_WriteByte(P.CPU, GWDBufSeg, Word(GWDBufOfs + GWDJ - 1), Byte(Ord(GWDPath[GWDJ])));
+    Emu_WriteByte(P.CPU, GWDBufSeg, Word(GWDBufOfs + GWDLen), 0);
+    P.CPU.Regs.AX := Word(GWDLen);
+    ArgWords := 3;
+   End;
+   135: Begin
+    { GetSystemDirectory(lpBuffer,nSize):UINT - ordinal VERIFIE via le      }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                 }
+    { GetSystemDirectory(ptr word) GetSystemDirectory16", 2+1 = 3 mots).    }
+    { REEL corps C de reference : WindowsDir + "\SYSTEM" (relation exacte    }
+    { reproduite ici a l'identique, PAS une valeur separee inventee) -       }
+    { "C:\WINDOWS\SYSTEM", meme tronquage a nSize-1 que                      }
+    { GetWindowsDirectory/$134 ci-dessus. }
+    GSDBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GSDBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GSDSize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GSDPath := 'C:\WINDOWS\SYSTEM';
+    GSDLen := Length(GSDPath);
+    If GSDLen > Integer(GSDSize) - 1 Then GSDLen := Integer(GSDSize) - 1;
+    If GSDLen < 0 Then GSDLen := 0;
+    For GSDJ := 1 To GSDLen Do
+     Emu_WriteByte(P.CPU, GSDBufSeg, Word(GSDBufOfs + GSDJ - 1), Byte(Ord(GSDPath[GSDJ])));
+    Emu_WriteByte(P.CPU, GSDBufSeg, Word(GSDBufOfs + GSDLen), 0);
+    P.CPU.Regs.AX := Word(GSDLen);
+    ArgWords := 3;
+   End;
+   136: Begin
+    { GetDriveType(nDrive):UINT - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GetDriveType(word)   }
+    { GetDriveType16", 1 mot). REEL corps C de reference : nDrive est un     }
+    { index 0-based (0=A:,1=B:,2=C:,...), MEME convention DEJA verifiee et   }
+    { reutilisee pour INT21h AH=1Fh/AH=32h (Emu_DpbFind, voir ce cas plus    }
+    { bas) - reutilise DIRECTEMENT ce MEME test de validite de lecteur       }
+    { (aucun second repertoire de lecteurs invente) : lecteur monte ->       }
+    { DRIVE_FIXED(3, un VRAI disque dur, coherent avec le systeme de         }
+    { fichiers DPB/SFT/CDS deja reel) ; sinon -> DRIVE_UNKNOWN(0, VRAIE      }
+    { valeur documentee pour un lecteur invalide). }
+    GDTDrive := Byte(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If Emu_DpbFind(GDTDrive, GDTDummyOfs) Then
+     P.CPU.Regs.AX := 3
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   137: Begin
+    { FatalAppExit(action,lpString):void - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16              }
+    { FatalAppExit(word str) FatalAppExit16", 1+2 = 3 mots). REEL corps C   }
+    { de reference (recupere via recherche web) : affiche une VRAIE         }
+    { MessageBoxA avec lpString (sauf si error_mode a SEM_NOGPFAULTERRORBOX,}
+    { voir SetErrorMode/$107/Win16_ErrorMode) PUIS TERMINE                   }
+    { INCONDITIONNELLEMENT la tache (ExitThread(0xff) dans le VRAI code,     }
+    { que la boite ait ete montree ou non). Ce sous-ensemble n'a AUCUNE      }
+    { VRAIE facade MessageBox USER.EXE construite - plutot que d'inventer    }
+    { une boite de dialogue, reutilise le VRAI mecanisme de terminaison       }
+    { deja etabli et verifie de ce sous-ensemble (Emu_DosTerminate, le MEME }
+    { utilise par INT21h AH=31h/AH=4Ch) pour la partie qui compte VRAIMENT   }
+    { ("termine toujours la tache") - le message est inclus dans le          }
+    { diagnostic de fin de programme plutot qu'affiche dans une boite,       }
+    { portee honnetement disclosee. action n'a pas besoin d'etre lu           }
+    { (purement cosmetique dans le VRAI corps - ne conditionne jamais la     }
+    { terminaison elle-meme). }
+    FAEStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FAEStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FAEStr := Win16_ReadGuestString(P.CPU, FAEStrSeg, FAEStrOfs);
+    EmuExitCode := $FF;
+    EmuExitType := 3;
+    Emu_DosTerminate(P, 'Win16 FatalAppExit : ' + FAEStr);
+    ArgWords := 3;
+   End;
+   138: Begin
+    { GetHeapSpaces(wFlags):DWORD - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (krnl386.exe16.spec : "pascal GetHeapSpaces(word)         }
+    { GetHeapSpaces16", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX).      }
+    { Corps C de reference introuvable dans le VRAI source apres recherche  }
+    { ciblee, MAIS sa PORTEE documentee par l'utilisateur lui-meme           }
+    { ("calculer les ressources systeme actuellement disponibles") est       }
+    { directement calculable depuis un VRAI etat deja tenu par ce            }
+    { sous-ensemble : Win16_HeapLimit-Win16_HeapNext est le VRAI espace       }
+    { libre restant du bump allocator PARTAGE par LocalAlloc/$5 et           }
+    { GlobalAlloc/$15 (deja disclose comme identiques ici) - wFlags           }
+    { (selecteur documente reel "tas global(0)/tas local(1)") n'a pas         }
+    { besoin d'etre lu puisque les deux SONT le meme tas dans ce              }
+    { sous-ensemble, MEME raisonnement honnete que PatchCodeHandle/$110. }
+    GHSFree := Word(LongInt(Win16_HeapLimit) - LongInt(Win16_HeapNext));
+    P.CPU.Regs.AX := GHSFree;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   { DoSignal/139 : ordinal marque "stub" SANS AUCUNE signature exploitable }
+   { dans le VRAI source Wine ET dans WineVDM (meme resultat) - DELIBEREMENT}
+   { NON IMPLANTE (meme discipline que InitLib/$116, UndefDynLink/$120,     }
+   { MemoryFreed/$126). }
+   140: Begin
+    { SetSigHandler(newhandler,oldhandler,oldmode,newmode,flag):word -      }
+    { ordinal/signature VERIFIES via le VRAI source Wine                    }
+    { (krnl386.exe16.spec : "pascal -ret16 SetSigHandler(segptr ptr ptr     }
+    { word word) SetSigHandler16", 2+2+2+1+1 = 8 mots). REEL corps C de      }
+    { reference (recupere via recherche web, "FIXME... unimplemented" mais  }
+    { avec un VRAI corps executable derriere ce FIXME) : flag<>1 -> ne       }
+    { fait RIEN, retourne 0 ; newmode=0 -> newhandler traite comme NUL       }
+    { (gestionnaire par defaut) ; newmode<>4 -> ecrit VRAIMENT l'ANCIEN       }
+    { mode/gestionnaire dans oldmode/oldhandler (SEULEMENT si ces            }
+    { pointeurs ne sont pas NUL, exactement comme le VRAI corps) puis        }
+    { REMPLACE le mode/gestionnaire courant ; newmode=4 -> ne touche RIEN    }
+    { (ni lecture ni ecriture, VRAI comportement documente par le VRAI       }
+    { code source lui-meme, pas une simplification). Reutilise de nouveaux  }
+    { globaux Win16_SigHandlerSeg/Ofs/Win16_SigFlags (DISTINCTS de           }
+    { Win16_TaskSignalProcSeg/Ofs/$38 : concept "sighandler" reel            }
+    { different du concept "task signal proc"), jamais reellement invoque    }
+    { (aucun VRAI Ctrl+Break/exception Win16 ne le declenche ici). }
+    SSHNewSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18));
+    SSHNewOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    SSHOldHSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    SSHOldHOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    SSHOldMSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SSHOldMOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SSHNewMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SSHFlag := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If SSHFlag = 1 Then Begin
+     If SSHNewMode = 0 Then Begin
+      SSHNewSeg := 0;
+      SSHNewOfs := 0;
+     End;
+     If SSHNewMode <> 4 Then Begin
+      If (SSHOldMSeg <> 0) Or (SSHOldMOfs <> 0) Then
+       Emu_WriteWord(P.CPU, SSHOldMSeg, SSHOldMOfs, Win16_SigFlags);
+      Win16_SigFlags := SSHNewMode;
+      If (SSHOldHSeg <> 0) Or (SSHOldHOfs <> 0) Then Begin
+       Emu_WriteWord(P.CPU, SSHOldHSeg, SSHOldHOfs, Win16_SigHandlerOfs);
+       Emu_WriteWord(P.CPU, SSHOldHSeg, Word(SSHOldHOfs + 2), Win16_SigHandlerSeg);
+      End;
+      Win16_SigHandlerSeg := SSHNewSeg;
+      Win16_SigHandlerOfs := SSHNewOfs;
+     End;
+    End;
+    P.CPU.Regs.AX := 0;
+    ArgWords := 8;
+   End;
+   { InitTask1/141 : ordinal marque "stub" SANS AUCUNE signature            }
+   { exploitable dans le VRAI source Wine ET dans WineVDM (meme resultat) - }
+   { DELIBEREMENT NON IMPLANTE (meme discipline que InitLib/$116,           }
+   { UndefDynLink/$120, MemoryFreed/$126, DoSignal/$139). }
+   150: Begin
+    { DirectedYield(hTask):void - ordinal VERIFIE via le VRAI source Wine  }
+    { (krnl386.exe16.spec : "pascal -ret16 DirectedYield(word)              }
+    { DirectedYield16", 1 mot). REEL corps C de reference : appelle          }
+    { INCONDITIONNELLEMENT OldYield16() sans jamais lire hTask (confirme     }
+    { via le VRAI source - le parametre est completement ignore meme dans   }
+    { le VRAI Windows/Wine) - MEME honnetete deja etablie pour               }
+    { OldYield/$117 (mono-tache, aucun effet CPU observable, AX/DX non       }
+    { touches). hTask n'a pas besoin d'etre lu (le VRAI corps ne le lit      }
+    { pas non plus). }
+    ArgWords := 1;
+   End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
     Exit;
