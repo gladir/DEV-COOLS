@@ -7746,6 +7746,10 @@ Var
  Win16_LocalBlockOfs: Array[0..63] Of Word;
  Win16_LocalBlockSize: Array[0..63] Of Word;
  Win16_LocalBlockCount: Integer;
+ { Compteur de verrou de page pour GlobalPageLock/GlobalPageUnlock         }
+ { ($191/$192, 2026-09-14) - MEME repertoire partage que Win16_LocalBlock* }
+ { ci-dessus (voir GlobalAlloc/$15), index identique. }
+ Win16_LocalBlockPageLock: Array[0..63] Of Byte;
  { Callback de notification du tas local (LocalNotify/$14, 2026-09-14,     }
  { demande explicite) - stocke mais jamais reellement appele (aucune        }
  { condition de bas de tas/compactage ne le declenche dans ce               }
@@ -92252,6 +92256,7 @@ Begin
   Win16_HeapStart := 0;
  End;
  Win16_LocalBlockCount := 0;
+ FillChar(Win16_LocalBlockPageLock, SizeOf(Win16_LocalBlockPageLock), 0);
  Win16_LocalNotifySeg := 0;
  Win16_LocalNotifyOfs := 0;
  Win16_TaskLocked := False;
@@ -94344,6 +94349,22 @@ Var
  GDFSel: Word;
  GSBSel: Word;
  GSBBase: LongInt;
+ { KERNEL.EXE SetSelectorBase/GetSelectorLimit/SetSelectorLimit/            }
+ { equates E000h-C000h/SelectorAccessRights/GlobalFix/GlobalUnfix/          }
+ { GlobalPageLock/GlobalPageUnlock/SetHandleCount/ValidateFreeSpaces/       }
+ { DebugBreak (2026-09-14, demande explicite, ordinaux 187-200+203). }
+ SSBSel: Word;
+ SSBBaseLo: Word;
+ GSLSel: Word;
+ GSLMcbSig: Byte;
+ GSLOwner, GSLSizePar: Word;
+ GSLLimit: LongInt;
+ SSLSel: Word;
+ SSLLimitLo: Word;
+ GPLHandle: Word;
+ GFXHandle: Word;
+ SARSel, SAROp, SARVal: Word;
+ SHCCount: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -94415,6 +94436,7 @@ Begin
      Win16_HeapNext := LIWStart;
      Win16_HeapLimit := LIWEnd;
      Win16_LocalBlockCount := 0;
+ FillChar(Win16_LocalBlockPageLock, SizeOf(Win16_LocalBlockPageLock), 0);
      P.CPU.Regs.AX := 1;
     End Else
      P.CPU.Regs.AX := 0;
@@ -94784,6 +94806,7 @@ Begin
     { (une seule instance/module charge dans ce sous-ensemble, meme            }
     { discipline que hInstance ignore par FindResource/$60). }
     Win16_LocalBlockCount := 0;
+ FillChar(Win16_LocalBlockPageLock, SizeOf(Win16_LocalBlockPageLock), 0);
     P.CPU.Regs.AX := 0;
     ArgWords := 1;
    End;
@@ -97229,6 +97252,232 @@ Begin
     P.CPU.Regs.AX := Word(GSBBase And $FFFF);
     P.CPU.Regs.DX := Word((GSBBase Shr 16) And $FFFF);
     ArgWords := 1;
+   End;
+   187: Begin
+    { SetSelectorBase(sel,base):word - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16 SetSelectorBase }
+    { (word long) SetSelectorBase", 1+2 = 3 mots). REEL documente : change   }
+    { l'adresse lineaire de base du descripteur, retourne le selecteur      }
+    { (0 si invalide). Ce sous-ensemble N'A AUCUNE VRAIE table de            }
+    { descripteurs reassignables (voir GetSelectorBase/$186 : base=sel*16   }
+    { UNIVERSELLE, appliquee partout) - une VRAIE reassignation de base      }
+    { casserait cette formule pour tout le reste du sous-ensemble.           }
+    { Limitation DOCUMENTEE : accepte l'appel et rapporte un succes (sel     }
+    { inchange, meme convention que AllocCStoDSAlias/$170 - aucune vraie     }
+    { distinction/effet possible), mais le mot bas de base n'est PAS         }
+    { reellement stocke. Mot bas de base seulement lu (meme limitation       }
+    { documentee que GlobalDosAlloc/$184). }
+    SSBBaseLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SSBSel := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    If SSBBaseLo = SSBBaseLo Then ; { lu, non stocke - voir commentaire ci-dessus }
+    P.CPU.Regs.AX := SSBSel;
+    ArgWords := 3;
+   End;
+   188: Begin
+    { GetSelectorLimit(sel):DWORD - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (krnl386.exe16.spec : "pascal GetSelectorLimit(word)       }
+    { GetSelectorLimit16", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX).   }
+    { REEL : la VRAIE limite d'un bloc alloue par ce sous-ensemble EST son   }
+    { en-tete MCB reel (Sig/Owner/SizePar a McbSeg=sel-1, voir Emu_McbSet -  }
+    { le MEME en-tete deja ecrit par GlobalDosAlloc/$184/Emu_LoadCom/Exe) -   }
+    { lu directement ici plutot que d'inventer une limite separee. Signature}
+    { MCB absente (segment materiel fixe $A000/$B800/etc., ou non alloue     }
+    { par ce mecanisme) -> $FFFF (limite maximale, comportement honnete par  }
+    { defaut documente pour un segment 16 bits plein). }
+    GSLSel := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GSLMcbSig := Emu_ReadByte(P.CPU, Word(GSLSel - 1), 0);
+    If (GSLMcbSig = Ord('M')) Or (GSLMcbSig = Ord('Z')) Then Begin
+     GSLOwner := Emu_ReadWord(P.CPU, Word(GSLSel - 1), 1);
+     GSLSizePar := Emu_ReadWord(P.CPU, Word(GSLSel - 1), 3);
+     If GSLOwner = GSLOwner Then ; { lu pour coherence, non utilise ici }
+     GSLLimit := LongInt(GSLSizePar) * 16 - 1;
+    End Else
+     GSLLimit := $FFFF;
+    P.CPU.Regs.AX := Word(GSLLimit And $FFFF);
+    P.CPU.Regs.DX := Word((GSLLimit Shr 16) And $FFFF);
+    ArgWords := 1;
+   End;
+   189: Begin
+    { SetSelectorLimit(sel,limit):word - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16 SetSelectorLimit}
+    { (word long) SetSelectorLimit16", 1+2 = 3 mots). MEME limitation         }
+    { DOCUMENTEE que SetSelectorBase/$187 : la VRAIE limite (GetSelectorLimit/}
+    { $188) est deja derivee de l'en-tete MCB reel, qui reflete la VRAIE      }
+    { taille utilisable - la reecrire arbitrairement ici romprait cette       }
+    { coherence. Accepte l'appel et rapporte un succes (sel inchange), mot    }
+    { bas de limit seulement lu (non stocke). }
+    SSLLimitLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SSLSel := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    If SSLLimitLo = SSLLimitLo Then ;
+    P.CPU.Regs.AX := SSLSel;
+    ArgWords := 3;
+   End;
+   190: Begin
+    { __E000H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "190 equate __E000H 0") - meme nature "equate" que __A000H/$174/        }
+    { __D000H/$179, MEME raisonnement : le segment $E000 universellement      }
+    { documente (zone superieure de ROM d'extension) d'une VRAIE machine      }
+    { compatible PC reel-mode, plutot que le 0 de compatibilite Wine. }
+    P.CPU.Regs.AX := $E000;
+    ArgWords := 0;
+   End;
+   191: Begin
+    { GlobalPageLock(handle):word - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GlobalPageLock(word)  }
+    { GlobalPageLock16", 1 mot). REEL documente : incremente un compteur de   }
+    { verrou de PAGE (empeche le systeme d'echanger les pages physiques) et   }
+    { retourne le NOUVEAU compteur (0 si handle invalide). Ce sous-ensemble   }
+    { n'a AUCUNE VRAIE pagination/echange, mais reutilise le VRAI repertoire  }
+    { partage Win16_LocalBlock* (voir GlobalAlloc/$15) pour tenir un VRAI     }
+    { compteur par handle (Win16_LocalBlockPageLock), plutot que de retourner}
+    { une constante arbitraire - la VALIDATION du handle reste donc reelle,   }
+    { seul l'EFFET (empecher l'echange) est honnetement sans consequence      }
+    { (aucune pagination a empecher dans ce sous-ensemble). }
+    GPLHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LHIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = GPLHandle Then LHIdx := LHI;
+    If LHIdx >= 0 Then Begin
+     If Win16_LocalBlockPageLock[LHIdx] < 255 Then
+      Inc(Win16_LocalBlockPageLock[LHIdx]);
+     P.CPU.Regs.AX := Win16_LocalBlockPageLock[LHIdx];
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   192: Begin
+    { GlobalPageUnlock(handle):word - ordinal/signature VERIFIES. Symetrique}
+    { honnete de GlobalPageLock/$191 : decremente le MEME compteur reel et    }
+    { retourne le nouveau compte (plancher 0, jamais negatif - meme discipline}
+    { defensive que EmuXms.Handles[H].LockCount ailleurs dans ce fichier). }
+    GPLHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LHIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = GPLHandle Then LHIdx := LHI;
+    If LHIdx >= 0 Then Begin
+     If Win16_LocalBlockPageLock[LHIdx] > 0 Then
+      Dec(Win16_LocalBlockPageLock[LHIdx]);
+     P.CPU.Regs.AX := Win16_LocalBlockPageLock[LHIdx];
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   193: Begin
+    { __0040H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "193 equate __0040H 0") - meme nature "equate" que __0000H/$183,        }
+    { MEME raisonnement : le segment $0040 universellement documente de la    }
+    { zone de donnees BIOS (BDA) reel-mode. }
+    P.CPU.Regs.AX := $0040;
+    ArgWords := 0;
+   End;
+   194: Begin
+    { __F000H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "194 equate __F000H 0") - meme nature "equate" que __ROMBIOS/$173        }
+    { (litteralement le MEME segment $F000, la ROM BIOS materielle           }
+    { universellement documentee de toute machine PC compatible). }
+    P.CPU.Regs.AX := $F000;
+    ArgWords := 0;
+   End;
+   195: Begin
+    { __C000H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "195 equate __C000H 0") - meme nature "equate" que __B000H/__B800H/     }
+    { $181/$182, MEME raisonnement : le segment $C000 universellement         }
+    { documente de la ROM BIOS video (carte graphique) reel-mode. }
+    P.CPU.Regs.AX := $C000;
+    ArgWords := 0;
+   End;
+   196: Begin
+    { SelectorAccessRights(sel,op,val):word - ordinal/signature VERIFIES    }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16            }
+    { SelectorAccessRights(word word word) SelectorAccessRights16", 3 mots). }
+    { REEL documente : op=0 lit les octets de droits d'acces du descripteur,  }
+    { op<>0 les ecrit (retourne 0). Ce sous-ensemble n'a AUCUNE VRAIE table   }
+    { de descripteurs avec des droits d'acces individuels (memoire plate,     }
+    { deja etabli pour GlobalHandleNoRIP/$159/AllocAlias/$172) - la LECTURE   }
+    { retourne honnetement une valeur CONVENTIONNELLE fixe ($00F3 : present,  }
+    { anneau 3, segment de donnees lecture/ecriture 16 bits - le motif         }
+    { standard documente d'un descripteur Win16 valide), l'ECRITURE est        }
+    { acceptee (retourne 0=succes, comportement documente reel) sans avoir     }
+    { de VRAI descripteur a modifier. }
+    SARVal := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SAROp := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SARSel := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    If SARSel = SARSel Then ; { lu pour coherence, aucune VRAIE table par selecteur }
+    If SAROp = 0 Then
+     P.CPU.Regs.AX := $00F3
+    Else Begin
+     If SARVal = SARVal Then ;
+     P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 3;
+   End;
+   197: Begin
+    { GlobalFix(handle):word - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GlobalFix(word)        }
+    { GlobalFix16", 1 mot). REEL documente : incremente le compte de verrou   }
+    { (empeche le deplacement/la decharge) et retourne le selecteur associe   }
+    { (0 si invalide). Ce sous-ensemble ne deplace/ne decharge JAMAIS un       }
+    { bloc global de toute facon (bump allocator, voir GlobalFree/$17) -      }
+    { "fixer" un bloc n'a donc honnetement AUCUN effet supplementaire a        }
+    { modeliser, seule la VALIDATION du handle (via le VRAI repertoire         }
+    { partage Win16_LocalBlock*) et le retour du selecteur (identite,          }
+    { MEME modele que GlobalHandle/$21) sont reels. }
+    GFXHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LHIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = GFXHandle Then LHIdx := LHI;
+    If LHIdx >= 0 Then P.CPU.Regs.AX := Win16_StackSeg
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   198: Begin
+    { GlobalUnfix(handle):void - ordinal/signature VERIFIES via le VRAI     }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GlobalUnfix(word)      }
+    { GlobalUnfix16", 1 mot - "-ret16" cote thunk 16 bits malgre un VRAI       }
+    { corps C retournant void, AX:=0 documente). Symetrique honnete de         }
+    { GlobalFix/$197 : aucun effet reel a annuler (memes raisons), rapporte    }
+    { simplement un AX=0 conforme au thunk reel. }
+    GFXHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If GFXHandle = GFXHandle Then ; { lu pour coherence avec le VRAI prototype }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   199: Begin
+    { SetHandleCount(count):word - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 SetHandleCount(word)   }
+    { SetHandleCount16", 1 mot). REEL documente : le VRAI corps Wine lui-      }
+    { meme ne fait que deleguer a SetHandleCount Win32, DEVENUE UN NO-OP        }
+    { OBSOLETE (comportement reel documente depuis Windows NT) qui rapporte    }
+    { simplement le compte DEMANDE - reproduit A L'IDENTIQUE, pas une           }
+    { simplification de ce sous-ensemble. }
+    SHCCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := SHCCount;
+    ArgWords := 1;
+   End;
+   200: Begin
+    { ValidateFreeSpaces():BOOL - ordinal VERIFIE via le VRAI source Wine   }
+    { (krnl386.exe16.spec : "pascal -ret16 ValidateFreeSpaces() KERNEL_nop",  }
+    { 0 mot). Le VRAI Wine lui-meme route cet ordinal vers un no-op            }
+    { GENERIQUE (KERNEL_nop) - reproduit A L'IDENTIQUE, meme routage reel      }
+    { que EnableDos/$41/KbdRst/$123. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   203: Begin
+    { DebugBreak():void - ordinal/signature VERIFIES via le VRAI source     }
+    { Wine (krnl386.exe16.spec : "pascal -register DebugBreak()               }
+    { DebugBreak16") - convention "-register" (aucun parametre sur la pile,   }
+    { le VRAI corps agit directement sur le contexte CPU courant). REEL        }
+    { documente : leve une VRAIE exception de point d'arret (EXCEPTION_       }
+    { BREAKPOINT). Ce sous-ensemble a un VRAI mecanisme de point d'arret       }
+    { deja etabli pour le debogueur 8086 (EmuDbg_RequestBreak(EDC_8086),       }
+    { utilise ailleurs pour NES/CoCo3/etc. avec leur propre TEmuDbgCPU) -       }
+    { reutilise ici TEL QUEL plutot que d'inventer un mecanisme separe :        }
+    { un programme Win16 qui appelle DebugBreak declenche REELLEMENT           }
+    { l'arret du debogueur integre de cet IDE, exactement comme un VRAI        }
+    { point d'arret logiciel le ferait sous un VRAI debogueur Windows. }
+    EmuDbg_RequestBreak(EDC_8086);
+    ArgWords := 0;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
