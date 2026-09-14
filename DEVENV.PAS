@@ -74216,6 +74216,1647 @@ End;
 {$I+} { reactive la verification d'E/S, ferme le commutateur ouvert en tete de TermCmd_Link68. }
 
 { ============================================================
+  ASM (Terminal, mode "OS-9" - SK_OS9) - 2026-09-14, demande explicite
+  de l'utilisateur : "je voudrais que tu implementes la commande ASM du
+  Terminal en mode OS-9 : le code source est dans ASM.PAS, il faudrait
+  que tu copies au complet le code dans DEVENV.PAS et que tu l'adaptes
+  pour qu'il fonctionne correctement dans le terminal d'OS-9" -
+  integration integrale, meme discipline que MASM/LINK/CAL/AS68/LINK68
+  ci-dessus (voir [[project_devenv_masm]]/[[project_devenv_link]]/
+  [[project_devenv_cal]]/[[project_devenv_as68]]/[[project_devenv_link68]]) :
+  le corps ENTIER de C:\SOURCE\GITHUB\DEV-COOLS\ASM.PAS (clone de
+  l'assembleur Microware OS-9/6809, ~1483 lignes) est imbrique
+  CI-DESSOUS TEL QUEL - zero identificateur renomme (Error/Warning/
+  Fatal/ParseArgs/ProcessFile/EncodeInstruction/WriteObject/etc.
+  restent exactement comme dans le fichier original).
+
+  3 adaptations reelles (memes principes que MASM/AS68 ci-dessus) :
+  1. ParamStr/ParamCount masques localement (AsmTokenizeArgs), alimentes
+     par RawArgs (la ligne de commande apres "ASM").
+  2. Halt (11 usages reels dans le fichier original, TOUS confines a
+     l'analyse de la ligne de commande - Help/ApplyOption(FromSource=
+     False)/ParseArgs - JAMAIS atteints pendant l'assemblage
+     proprement dit, qui a deja son PROPRE mecanisme cooperatif reel
+     StopAssembly/FatalError sans le moindre Halt) : remplaces par un
+     drapeau AsmAbort + Exit la ou une suite de code serait dangereuse.
+     La structure if/then/else de 9 des 11 sites empeche deja tout
+     fall-through vers du code non protege (branches soeurs
+     automatiquement ignorees) - seul le 10e site (echec d'ouverture du
+     fichier de listing dans le bloc principal, avant les 2 passes
+     d'assemblage) a reellement besoin d'un Exit explicite pour eviter
+     de poursuivre avec un fichier de listing invalide. Les 2 derniers
+     Halt (fin normale du programme, codes de sortie de PROCESSUS hote)
+     sont simplement retires - aucun equivalent utile dans un IDE hote,
+     meme discipline que la fin de TermCmd_Masm/TermCmd_As68.
+  3. Writeln (tous usages vers Output implicite, meme technique que
+     MASM/LINK/CAL/AS68/LINK68) : Output redirige vers un fichier
+     temporaire reel avant d'appeler Run, relu et republie via
+     TermAddLine apres coup - aucun site WriteLn(...) individuel
+     modifie pour cette partie. PARTICULARITE reelle de ASM.PAS
+     (absente des ports precedents de cette serie) : Error/Warning/
+     Fatal et 2 autres sites (WriteObject/RemovePartialObject, echec
+     d'ouverture du listing) ecrivent explicitement via
+     WriteLn(StdErr,...) plutot que vers Output. Rediriger StdErr EN
+     PLUS de Output vers le MEME fichier hote reel n'est PAS fiable :
+     deux variables Text independantes assignees au meme chemin
+     tiennent chacune leur PROPRE tampon/position interne et peuvent
+     desynchroniser l'ordre d'ecriture reel sur disque, corrompant
+     l'entrelacement erreurs/sortie normale. Les 6 sites StdErr sont
+     donc les SEULS touches dans tout ce portage (StdErr retire,
+     ecrivent desormais vers Output comme le reste du fichier) - la
+     SEULE deviation du principe "zero site WriteLn modifie" de toute
+     cette serie de ports, disclosee ici plutot que risquee
+     silencieusement.
+  ============================================================ }
+
+{$I-}
+Procedure TermCmd_Asm(Var TP: TTerminalPanel; RawArgs: String);
+
+Const
+ ASM_TEMP_OUTPUT = '_asmtmp.out';
+ ASM_MAX_ARGS    = 32;
+
+Var
+ AsmArgs    : Array[1..ASM_MAX_ARGS] Of String;
+ AsmArgCnt  : Integer;
+ AsmDumpF   : Text;
+ AsmDumpLine: String;
+ AsmAbort   : Boolean;
+
+Procedure AsmTokenizeArgs(Const S: String);
+Var
+ I: Integer;
+ Cur: String;
+Begin
+ AsmArgCnt := 0;
+ Cur := '';
+ For I := 1 To Length(S) Do Begin
+  If (S[I] = ' ') Or (S[I] = #9) Then Begin
+   If Cur <> '' Then Begin
+    If AsmArgCnt < ASM_MAX_ARGS Then Begin
+     Inc(AsmArgCnt);
+     AsmArgs[AsmArgCnt] := Cur;
+    End;
+    Cur := '';
+   End;
+  End Else
+   Cur := Cur + S[I];
+ End;
+ If Cur <> '' Then
+  If AsmArgCnt < ASM_MAX_ARGS Then Begin
+   Inc(AsmArgCnt);
+   AsmArgs[AsmArgCnt] := Cur;
+  End;
+End;
+
+{ Masquent volontairement ParamCount/ParamStr du RTL pour toute la       }
+{ portee imbriquee ci-dessous, exactement comme MasmParamCountFn/        }
+{ MasmParamStrFn (TermCmd_Masm) - ParseArgs (plus bas) les appelle sans   }
+{ savoir qu'il s'agit desormais de ces versions locales. }
+Function ParamCount: Integer;
+Begin
+ ParamCount := AsmArgCnt;
+End;
+
+Function ParamStr(Idx: Integer): String;
+Begin
+ If (Idx >= 1) And (Idx <= AsmArgCnt) Then ParamStr := AsmArgs[Idx]
+ Else ParamStr := '';
+End;
+
+{ ============================================================
+  Corps INTEGRAL de ASM.PAS ci-dessous (Const/Type/Var/Function/
+  Procedure originaux, jusqu'a l'ancien BEGIN...END. du programme
+  devenu Procedure Run juste avant le wrapper final) - zero
+  identificateur renomme, voir le commentaire d'en-tete ci-dessus pour
+  le detail des 3 adaptations reelles (Halt/StdErr/ParamStr).
+  ============================================================ }
+
+Const
+ Version='1.0';
+ MaxLine=120;
+ ImageSize=65535;
+ WorkspaceOverhead=1096;
+ SymbolWorkspaceSize=15;
+ MaxIncludeDepth=13;
+ MaxErrors=20;
+ ExitAssemblyError=1;
+ ExitFatalError=2;
+
+Type
+ TName=String[31];
+ PSymbol=^TSymbol;
+ TSymbol=Record Name:TName;
+ Value:LongInt;
+ Kind:Char;
+ LastPass:Byte;
+ Defined,Mutable:Boolean;
+ Next:PSymbol
+End;
+PDecision=^TDecision;
+TDecision=Record
+ Size:Byte;
+ Next:PDecision
+End;
+TOptionState=Record
+ MakeObject,ObjectExplicit,ListOn,SymbolsOn,CondList,ErrorsInList,FormFeed,Generated,
+ Narrow,Motorola:Boolean;
+ PageLength,PageWidth:Integer;
+ ObjectName:String
+End;
+TConditionalFrame=Record
+ ParentActive,TestTrue,ElseSeen:Boolean
+End;
+PIncludeNode=^TIncludeNode;
+TIncludeNode=Record
+ FileName:String;
+ Next:PIncludeNode
+End;
+TBytes=Array[0..ImageSize]of Byte;
+
+Var
+ Symbols:PSymbol;
+ Decisions,DecisionTail,DecisionCursor:PDecision;
+ IncludeStack:PIncludeNode;
+ Image:^TBytes;
+ SourceName,ObjectName,ObjectPath,RootSourcePath,ListName:String;
+ MakeObject,ObjectExplicit,ListOn,SymbolsOn,CondList,ErrorsInList,FormFeed,Generated,
+ Narrow,Motorola:Boolean;
+ PageLength,PageWidth,MemoryK,PassNo,Errors,Warnings,LineNo,PageNo,PageLine,
+ LineByteCount:Integer;
+ WorkspaceLimit,WorkspaceUsed:LongInt;
+ PC,DataPC,LowAddr,HighAddr,DirectPage:LongInt;
+ Pass1PC,Pass1DataPC,Pass1LowAddr,Pass1HighAddr:LongInt;
+ ModuleCRC,DeclaredModuleSize:LongInt;
+ ListFile:Text;
+ ListingToFile,StopAssembly,ConstantDirective,WorkspaceFull,CurrentLineError,
+ CurrentLineWarning,CurrentLineData,ConditionalSkipped,FatalIncludeError:Boolean;
+ FatalError,TooManyErrors:Boolean;
+ ModuleSeen,ModuleOpen,ModuleClosed,ModuleCRCActive,ModuleSizeKnown,
+ ModuleMotorolaLayoutChanged:Boolean;
+ ProgramName,Title,ParsedComment,CurrentSourceName,CurrentLineErrorText:String;
+ IncludeDepth:Integer;
+ InitialOptions:TOptionState;
+
+Function Upper(S:String):String;
+Var
+ I:Integer;
+Begin
+ For I:=1 to Length(S)do if S[I]in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);Upper:=S
+End;
+
+Function Trim(S:String):String;Begin
+ While(Length(S)>0)and(S[1]in[#9,' '])do Delete(S,1,1);
+ While(Length(S)>0)and(S[Length(S)]in[#9,' '])do Delete(S,Length(S),1);Trim:=S
+End;
+
+Function Hex(V:LongInt;N:Integer):String;
+Const
+ D:Array[0..15]of Char='0123456789ABCDEF';
+Var
+ S:String;
+Begin
+ S:='';
+ While N>0 do Begin
+  S:=D[V and 15]+S;
+  V:=V shr 4;Dec(N)
+ End;
+ Hex:=S
+End;
+
+Procedure OutText(S:String);Begin
+ If ListingToFile Then WriteLn(ListFile,S)
+                  Else WriteLn(S)
+End;
+
+Procedure Help;Begin
+ WriteLn('ASM ',Version,' - Cette commande permet de lancer ',
+         'l''Assembleur Microware OS-9/6809.');
+ WriteLn;
+ WriteLn('Syntaxe : ASM fichier [options] [#memoire] [>listing]');
+ WriteLn;
+ WriteLn(' C/-C     afficher/masquer l''assemblage conditionnel (defaut C)');
+ WriteLn(' Dnn      nombre de lignes par page (defaut D66)');
+ WriteLn(' E/-E     inclure/exclure les erreurs du listing (defaut E)');
+ WriteLn(' F/-F     changements de page par Form Feed');
+ WriteLn(' G/-G     afficher toutes les lignes generees');
+ WriteLn(' L/-L     produire un listing formate');
+ WriteLn(' M/-M     mode Motorola absolu');
+ WriteLn(' N/-N     listing etroit');
+ WriteLn(' O[=nom]  produire le fichier objet');
+ WriteLn(' S/-S     ajouter la table des symboles');
+ WriteLn(' Wnn      largeur du listing (defaut W80)');
+ WriteLn(' #nn[K]   memoire de travail annoncee (defaut 4K)');
+ WriteLn(' >nom     rediriger le listing');AsmAbort:=True;
+End;
+
+Procedure Error(S:String);Begin
+ if PassNo<>2 Then Exit;
+ Inc(Errors);WriteLn(CurrentSourceName,'(',LineNo,'): ',S);
+ CurrentLineError:=True;
+ if CurrentLineErrorText=''Then CurrentLineErrorText:=S
+ else CurrentLineErrorText:=CurrentLineErrorText+'; '+S;
+ if Errors>=MaxErrors Then Begin
+  if not TooManyErrors Then Begin
+   TooManyErrors:=True;WriteLn('TOO MANY ERRORS');
+   CurrentLineErrorText:=CurrentLineErrorText+'; TOO MANY ERRORS'
+  End;StopAssembly:=True
+ End
+End;
+
+Procedure Warning(S:String);Begin
+ if PassNo<>2 Then Exit;
+ Inc(Warnings);CurrentLineWarning:=True;
+ WriteLn(CurrentSourceName,'(',LineNo,'): WARNING: ',S)
+End;
+
+Procedure Fatal(S:String);
+Begin
+ if not FatalError Then Begin
+  FatalError:=True;Inc(Errors);WriteLn(S);
+  if PassNo=2 Then Begin CurrentLineError:=True;CurrentLineErrorText:=S End
+ End;StopAssembly:=True
+End;
+
+Function NextCRC(CRC:LongInt;B:Byte):LongInt;
+Var
+ I:Integer;
+Begin
+ CRC:=CRC xor(LongInt(B)shl 16);
+ For I:=1 to 8 do Begin
+  CRC:=CRC shl 1;if(CRC and$1000000)<>0 Then CRC:=CRC xor$800063
+ End;NextCRC:=CRC
+End;
+
+Procedure UpdateModuleCRC(B:Byte);
+Begin
+ ModuleCRC:=NextCRC(ModuleCRC,B)
+End;
+
+Function Signed16(V:LongInt):LongInt;
+Begin
+ V:=V and$FFFF;if V>$7FFF Then Signed16:=V-$10000 else Signed16:=V
+End;
+
+Function FindSymbol(N:String):PSymbol;
+Var
+ P:PSymbol;
+Begin
+ N:=Upper(N);P:=Symbols;
+ While(P<>Nil)and(P^.Name<>N)do P:=P^.Next;FindSymbol:=P
+End;
+
+Function ReserveWorkspace(Bytes:Integer):Boolean;
+Begin
+ ReserveWorkspace:=False;
+ if WorkspaceFull Then Exit;
+ if(Bytes<0)or(WorkspaceUsed>WorkspaceLimit-Bytes)Then Begin
+  WorkspaceFull:=True;Fatal('MEMORY FULL');Exit
+ End;
+ Inc(WorkspaceUsed,Bytes);ReserveWorkspace:=True
+End;
+
+Procedure ApplyOption(OptionText:String;FromSource:Boolean);
+Var
+ Raw,NumberText:String;
+ Enable:Boolean;
+ Key:Char;
+ N,Code,EqPos:Integer;
+Begin
+ Raw:=Trim(OptionText);Enable:=True;
+ if(Raw<>'')and(Raw[1]='-')Then Begin Enable:=False;Delete(Raw,1,1)End;
+ if Raw=''Then Begin
+  if FromSource Then Error('option OPT manquante')
+  else Begin WriteLn('ASM: option manquante');AsmAbort:=True;End;
+  Exit
+ End;
+ Key:=UpCase(Raw[1]);
+ if Key='C'Then CondList:=Enable
+ else if Key='E'Then ErrorsInList:=Enable
+ else if Key='F'Then FormFeed:=Enable
+ else if Key='G'Then Generated:=Enable
+ else if Key='L'Then ListOn:=Enable
+ else if Key='M'Then Motorola:=Enable
+ else if Key='N'Then Narrow:=Enable
+ else if Key='S'Then SymbolsOn:=Enable
+ else if(Key='D')or(Key='W')Then Begin
+  NumberText:=Copy(Raw,2,255);Val(NumberText,N,Code);
+  if(Code<>0)or(N<1)or(N>255)Then Begin
+   if FromSource Then Error('valeur incorrecte pour OPT '+Upper(Raw))
+   else Begin WriteLn('ASM: valeur d''option incorrecte: ',Raw);AsmAbort:=True;End
+  End else if Key='D'Then PageLength:=N else PageWidth:=N
+ End else if Key='O'Then Begin
+  MakeObject:=Enable;EqPos:=Pos('=',Raw);
+  if EqPos>0 Then Begin
+   if not Enable Then Begin
+    if FromSource Then Error('nom de fichier interdit avec OPT -O')
+    else Begin WriteLn('ASM: nom de fichier interdit avec -O');AsmAbort:=True;End
+   End else if EqPos=Length(Raw)Then Begin
+    if FromSource Then Error('nom de fichier objet manquant')
+    else Begin WriteLn('ASM: nom de fichier objet manquant');AsmAbort:=True;End
+   End else Begin
+    ObjectName:=Copy(Raw,EqPos+1,255);ObjectExplicit:=True
+   End
+  End
+ End else Begin
+  if FromSource Then Error('option OPT inconnue: '+Upper(Raw))
+  else Begin WriteLn('ASM: option inconnue: ',Raw);AsmAbort:=True;End
+ End
+End;
+
+Procedure SaveOptions(Var State:TOptionState);
+Begin
+ State.MakeObject:=MakeObject;State.ObjectExplicit:=ObjectExplicit;State.ListOn:=ListOn;
+ State.SymbolsOn:=SymbolsOn;State.CondList:=CondList;State.ErrorsInList:=ErrorsInList;
+ State.FormFeed:=FormFeed;State.Generated:=Generated;State.Narrow:=Narrow;
+ State.Motorola:=Motorola;State.PageLength:=PageLength;State.PageWidth:=PageWidth;
+ State.ObjectName:=ObjectName
+End;
+
+Procedure RestoreOptions(Var State:TOptionState);
+Begin
+ MakeObject:=State.MakeObject;ObjectExplicit:=State.ObjectExplicit;ListOn:=State.ListOn;
+ SymbolsOn:=State.SymbolsOn;CondList:=State.CondList;ErrorsInList:=State.ErrorsInList;
+ FormFeed:=State.FormFeed;Generated:=State.Generated;Narrow:=State.Narrow;
+ Motorola:=State.Motorola;PageLength:=State.PageLength;PageWidth:=State.PageWidth;
+ ObjectName:=State.ObjectName
+End;
+
+Function ValidSymbolName(N:String):Boolean;
+Var
+ I:Integer;
+Begin
+ ValidSymbolName:=False;
+ if(Length(N)<1)or(Length(N)>8)or not(UpCase(N[1])in['A'..'Z'])Then Exit;
+ For I:=2 to Length(N)do if not(UpCase(N[I])in['A'..'Z','0'..'9','_','.','$'])Then Exit;
+ ValidSymbolName:=True
+End;
+
+Procedure DefineSymbol(N:String;V:LongInt;K:Char;CanSet:Boolean);
+Var
+ P:PSymbol;
+Begin
+ N:=Upper(N);
+ if not ValidSymbolName(N)Then Begin
+  if PassNo=2 Then Error('BAD LABEL: '+N);Exit
+ End;
+ P:=FindSymbol(N);if P=Nil Then Begin
+  if not ReserveWorkspace(SymbolWorkspaceSize)Then Exit;
+  New(P);P^.Name:=N;P^.Next:=Symbols;Symbols:=P;P^.Defined:=False;
+  P^.Mutable:=CanSet;P^.LastPass:=0
+ End;
+ if(PassNo=2)and P^.Defined and(P^.LastPass<>2)and(P^.Value<>V)and not P^.Mutable Then Begin
+  Error('PHASING: '+N);Exit
+ End;
+ if(P^.LastPass=PassNo)and P^.Defined and not P^.Mutable Then Begin
+  Error('symbole defini deux fois: '+N);Exit
+ End;
+ P^.Value:=V;P^.Kind:=K;P^.Defined:=True;P^.Mutable:=CanSet;P^.LastPass:=PassNo
+End;
+
+Var
+ ExprText:String;
+ ExprPos,ExprForwardCount:Integer;
+ ExprKnown:Boolean;
+
+Procedure SkipSpace;Begin
+ While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in[' ',#9])do Inc(ExprPos)
+End;
+Function ParseExpr:LongInt;Forward;
+Function UnaryValue:LongInt;Forward;
+
+Function Atom:LongInt;
+Var
+ S:String;
+ P:PSymbol;
+ V:LongInt;
+ C:Char;
+Begin
+ SkipSpace;if ExprPos>Length(ExprText)Then Begin
+  if PassNo=2 Then Error('operande manquant');ExprKnown:=False;Atom:=0;Exit
+ End;C:=ExprText[ExprPos];
+ if C='('Then Begin
+  Inc(ExprPos);V:=ParseExpr;SkipSpace;
+  if(ExprPos<=Length(ExprText))and(ExprText[ExprPos]=')')Then Inc(ExprPos)else Begin
+   if PassNo=2 Then Error('parenthese droite manquante');ExprKnown:=False
+  End;Atom:=V;Exit
+ End;
+ { Dans le dialecte Microware, une constante caractere est une apostrophe suivie
+   d'un seul caractere; elle n'a pas d'apostrophe fermante. }
+ if C=''''Then Begin
+  Inc(ExprPos);if ExprPos<=Length(ExprText)Then Begin
+   V:=Ord(ExprText[ExprPos]);Inc(ExprPos)
+  End else Begin
+   if PassNo=2 Then Error('caractere manquant apres apostrophe');ExprKnown:=False;V:=0
+  End;
+  Atom:=V;Exit
+ End;
+ if C='$'Then Begin
+  Inc(ExprPos);V:=0;S:='';
+  While(ExprPos<=Length(ExprText))and(UpCase(ExprText[ExprPos])in['0'..'9','A'..'F'])
+  do Begin
+   C:=UpCase(ExprText[ExprPos]);S:=S+C;
+   if C<='9'Then V:=V*16+Ord(C)-48 else V:=V*16+Ord(C)-55;
+   Inc(ExprPos)
+  End;if(S='')or(Length(S)>4)Then Begin
+   if PassNo=2 Then Error('constante hexadecimale incorrecte');ExprKnown:=False
+  End;Atom:=V;Exit
+ End;
+ if C='%'Then Begin
+  Inc(ExprPos);V:=0;S:='';
+  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['0','1'])do Begin
+   S:=S+ExprText[ExprPos];V:=V*2+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+  End;if(S='')or(Length(S)>16)Then Begin
+   if PassNo=2 Then Error('constante binaire incorrecte');ExprKnown:=False
+  End;Atom:=V;Exit
+ End;
+ if C='@'Then Begin
+  Inc(ExprPos);V:=0;S:='';
+  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['0'..'7'])do Begin
+   S:=S+ExprText[ExprPos];V:=V*8+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+  End;if(S='')or(V>65535)Then Begin
+   if PassNo=2 Then Error('constante octale incorrecte');ExprKnown:=False
+  End;Atom:=V;Exit
+ End;
+ if C='*'Then Begin
+  Inc(ExprPos);Atom:=PC;Exit
+ End;if C='.'Then Begin
+  Inc(ExprPos);Atom:=DataPC;Exit
+ End;
+ if C in['0'..'9']Then Begin
+  V:=0;
+  While(ExprPos<=Length(ExprText))and(ExprText[ExprPos]in['0'..'9'])do Begin
+   V:=V*10+Ord(ExprText[ExprPos])-48;Inc(ExprPos)
+  End;if V>65535 Then Begin
+   if PassNo=2 Then Error('constante superieure a 65535');ExprKnown:=False
+  End;Atom:=V;Exit
+ End;
+ S:='';
+ While(ExprPos<=Length(ExprText))and(UpCase(ExprText[ExprPos])in['A'..'Z','0'..'9','_',
+ '$','.'])do Begin
+  S:=S+UpCase(ExprText[ExprPos]);Inc(ExprPos)
+ End;
+ if S=''Then Begin
+  if PassNo=2 Then Error('operande incorrect');ExprKnown:=False;Atom:=0;Exit
+ End;
+ if not ValidSymbolName(S)Then Begin
+  if PassNo=2 Then Error('nom symbolique incorrect: '+S);ExprKnown:=False;Atom:=0;Exit
+ End;
+ P:=FindSymbol(S);if(P=Nil)or not P^.Defined Then Begin
+  Inc(ExprForwardCount);
+  if PassNo=2 Then Error('symbole non defini: '+S);ExprKnown:=False;Atom:=0
+ End else Atom:=P^.Value
+End;
+
+Function UnaryValue:LongInt;
+Var
+ C:Char;
+Begin
+ SkipSpace;
+ if ExprPos>Length(ExprText)Then Begin UnaryValue:=Atom;Exit End;
+ C:=ExprText[ExprPos];
+ if C='-'Then Begin Inc(ExprPos);UnaryValue:=-UnaryValue End
+ else if C='+'Then Begin Inc(ExprPos);UnaryValue:=UnaryValue End
+ else if C='^'Then Begin Inc(ExprPos);UnaryValue:=(not UnaryValue)and$FFFF End
+ else UnaryValue:=Atom
+End;
+
+Function LogicalValue:LongInt;
+Var
+ V,W:LongInt;
+ C:Char;
+Begin
+ V:=UnaryValue;
+ Repeat
+  SkipSpace;if ExprPos>Length(ExprText)Then Break;C:=ExprText[ExprPos];
+  if not(C in['&','!'])Then Break;Inc(ExprPos);W:=UnaryValue;
+  if C='&'Then V:=(V and W)and$FFFF else V:=(V or W)and$FFFF
+ Until False;
+ LogicalValue:=V
+End;
+
+Function Product:LongInt;
+Var
+ V,W:LongInt;
+ C:Char;
+Begin
+ V:=LogicalValue;Repeat SkipSpace;if ExprPos>Length(ExprText)Then Break;C:=ExprText[ExprPos];
+ if not(C in['*','/'])Then Break;Inc(ExprPos);W:=LogicalValue;
+ if C='*'Then Begin
+  V:=(V and$FFFF)*(W and$FFFF);
+  if V>65535 Then Begin if PassNo=2 Then Error('debordement de multiplication');
+   ExprKnown:=False;V:=V and$FFFF
+  End
+ End else if(W and$FFFF)=0 Then Begin
+  if PassNo=2 Then Error('division par zero');ExprKnown:=False;V:=0
+ End else V:=(V and$FFFF)div(W and$FFFF)
+ Until False;Product:=V
+End;
+
+Function ParseExpr:LongInt;
+Var
+ V:LongInt;
+ C:Char;
+Begin
+ V:=Product;Repeat SkipSpace;if ExprPos>Length(ExprText)Then Break;C:=ExprText[ExprPos];
+ if not(C in['+','-'])Then Break;Inc(ExprPos);
+ if C='+'Then V:=V+Product else V:=V-Product Until False;ParseExpr:=V
+End;
+
+Function Eval(S:String;Var Known:Boolean):LongInt;
+Var
+ V:LongInt;
+Begin
+ ExprText:=S;ExprPos:=1;ExprKnown:=True;ExprForwardCount:=0;V:=ParseExpr;SkipSpace;
+ if ExprPos<=Length(ExprText)Then Begin
+  if PassNo=2 Then Error('expression incorrecte: '+S);ExprKnown:=False
+ End;
+ if(PassNo=1)and(ExprForwardCount>1)Then Begin
+  Error('references avant multiples dans une expression');ExprKnown:=False
+ End;
+ if ExprKnown and((V<-$8000)or(V>$FFFF))Then Begin
+  if PassNo=2 Then Error('resultat d''expression hors plage 16 bits');ExprKnown:=False
+ End;Known:=ExprKnown;Eval:=V
+End;
+
+Procedure Emit(B:Byte);Begin
+ if ModuleClosed and(LineByteCount=0)and(PassNo=2)Then Error('code objet apres EMOD');
+ if(PC<0)or(PC>ImageSize)Then Begin
+  Error('compteur programme hors limites');Exit
+ End;if PassNo=2 Then Begin
+  Image^[PC]:=B;if ModuleCRCActive Then UpdateModuleCRC(B)
+ End;if PC<LowAddr Then LowAddr:=PC;
+ if PC>HighAddr Then HighAddr:=PC;Inc(PC);Inc(LineByteCount)
+End;
+
+Procedure EmitW(V:LongInt);Begin
+ Emit(Byte(V shr 8));Emit(Byte(V))
+End;
+
+Procedure EmitOp(Op:Word);Begin
+ if Op>$FF Then Emit(Byte(Op shr 8));Emit(Byte(Op))
+End;
+
+Function SelectSize(Proposed:Byte):Byte;
+Var
+ P:PDecision;
+Begin
+ if PassNo=1 Then Begin
+  New(P);P^.Size:=Proposed;P^.Next:=Nil;
+  if Decisions=Nil Then Decisions:=P else DecisionTail^.Next:=P;
+  DecisionTail:=P;SelectSize:=Proposed
+ End else if DecisionCursor<>Nil Then Begin
+  SelectSize:=DecisionCursor^.Size;DecisionCursor:=DecisionCursor^.Next
+ End else Begin
+  Error('PHASING');SelectSize:=Proposed
+ End
+End;
+
+Procedure CheckByte(V:LongInt;Known:Boolean;What:String);
+Begin
+ if(PassNo=2)and Known and((V<-$80)or(V>$FF))Then Error('OUT OF RANGE: '+What)
+End;
+
+Procedure CheckWord(V:LongInt;Known:Boolean;What:String);
+Begin
+ if(PassNo=2)and Known and((V<-$8000)or(V>$FFFF))Then Error('OUT OF RANGE: '+What)
+End;
+
+Function NextPart(Var S:String):String;
+Var
+ I:Integer;
+ Q:Char;
+Begin
+ S:=Trim(S);Q:=#0;I:=1;
+ While I<=Length(S)do Begin
+  if(S[I]='''')and(Q=#0)Then Begin
+   Inc(I);if I<=Length(S)Then Inc(I);Continue
+  End;
+  if S[I]='"'Then Begin
+   if Q=#0 Then Q:='"'else Q:=#0
+  End else if(S[I]=',')and(Q=#0)Then Break;Inc(I)
+ End;if I<=Length(S)Then Begin
+  NextPart:=Trim(Copy(S,1,I-1));Delete(S,1,I)
+ End else
+ Begin
+  NextPart:=Trim(S);S:=''
+ End
+End;
+
+Function InherentOp(M:String):Word;Begin
+ InherentOp:=$FFFF;
+ if M='NOP'Then InherentOp:=$12 else if M='SYNC'Then InherentOp:=$13 else if M=
+ 'DAA'Then InherentOp:=$19 else if M='SEX'Then InherentOp:=$1D else if M=
+ 'RTS'Then InherentOp:=$39 else if M='ABX'Then InherentOp:=$3A else if M=
+ 'RTI'Then InherentOp:=$3B else if M='MUL'Then InherentOp:=$3D else if M=
+ 'SWI'Then InherentOp:=$3F else if M='SWI2'Then InherentOp:=$103F else if M=
+ 'SWI3'Then InherentOp:=$113F else
+ if M='NEGA'Then InherentOp:=$40 else if M='COMA'Then InherentOp:=$43 else if M=
+ 'LSRA'Then InherentOp:=$44 else if M='RORA'Then InherentOp:=$46 else if M=
+ 'ASRA'Then InherentOp:=$47 else if(M='ASLA')or(M='LSLA')Then InherentOp:=$48 else if M=
+ 'ROLA'Then InherentOp:=$49 else if M='DECA'Then InherentOp:=$4A else if M=
+ 'INCA'Then InherentOp:=$4C else if M='TSTA'Then InherentOp:=$4D else if M=
+ 'CLRA'Then InherentOp:=$4F else
+ if M='NEGB'Then InherentOp:=$50 else if M='COMB'Then InherentOp:=$53 else if M=
+ 'LSRB'Then InherentOp:=$54 else if M='RORB'Then InherentOp:=$56 else if M=
+ 'ASRB'Then InherentOp:=$57 else if(M='ASLB')or(M='LSLB')Then InherentOp:=$58 else if M=
+ 'ROLB'Then InherentOp:=$59 else if M='DECB'Then InherentOp:=$5A else if M=
+ 'INCB'Then InherentOp:=$5C else if M='TSTB'Then InherentOp:=$5D else if M=
+ 'CLRB'Then InherentOp:=$5F
+End;
+
+Function BranchOp(M:String;Var LongBranch:Boolean):Word;
+Const
+ BNames:String='BRNBHIBLSBCCBCSBNEBEQBVCBVSBPLBMIBGEBLTBGTBLE';
+Var
+ I:Integer;
+Begin
+ BranchOp:=$FFFF;LongBranch:=False;
+ if M='BHS'Then M:='BCC' else if M='BLO'Then M:='BCS' else if M='LBHS'Then M:='LBCC'
+ else if M='LBLO'Then M:='LBCS';
+ if M='BRA'Then BranchOp:=$20 else if M='BSR'Then BranchOp:=$8D else if M='LBRA'Then Begin
+  BranchOp:=$16;LongBranch:=True
+ End else if M='LBSR'Then Begin
+  BranchOp:=$17;LongBranch:=True
+ End else
+ Begin
+  if Copy(M,1,2)='LB'Then Begin
+   M:=Copy(M,2,Length(M));LongBranch:=True
+  End;
+  For I:=0 to 15 do if M=Copy(BNames,I*3+1,3)Then Begin
+   if LongBranch Then BranchOp:=$1021+I else BranchOp:=$21+I;Exit
+  End
+ End
+End;
+
+Function MemBase(M:String;Var Base:Byte;Var WordImm:Boolean):Boolean;Begin
+ MemBase:=True;WordImm:=False;
+ if M='SUBA'Then Base:=$80 else if M='CMPA'Then Base:=$81 else if M='SBCA'Then Base:=
+ $82 else if M='SUBD'Then Begin
+  Base:=$83;WordImm:=True
+ End else if M='ANDA'Then Base:=$84 else if M='BITA'Then Base:=$85 else if M=
+ 'LDA'Then Base:=$86 else if M='STA'Then Base:=$87 else if M='EORA'Then Base:=
+ $88 else if M='ADCA'Then Base:=$89 else if M='ORA'Then Base:=$8A else if M=
+ 'ADDA'Then Base:=$8B else if M='CMPX'Then Begin
+  Base:=$8C;WordImm:=True
+ End else if M='LDX'Then Begin
+  Base:=$8E;WordImm:=True
+ End else if M='STX'Then Begin
+  Base:=$8F;WordImm:=True
+ End else
+ if M='SUBB'Then Base:=$C0 else if M='CMPB'Then Base:=$C1 else if M='SBCB'Then Base:=
+ $C2 else if M='ADDD'Then Begin
+  Base:=$C3;WordImm:=True
+ End else if M='ANDB'Then Base:=$C4 else if M='BITB'Then Base:=$C5 else if M=
+ 'LDB'Then Base:=$C6 else if M='STB'Then Base:=$C7 else if M='EORB'Then Base:=
+ $C8 else if M='ADCB'Then Base:=$C9 else if M='ORB'Then Base:=$CA else if M=
+ 'ADDB'Then Base:=$CB else if M='LDD'Then Begin
+  Base:=$CC;WordImm:=True
+ End else if M='STD'Then Begin
+  Base:=$CD;WordImm:=True
+ End else if M='LDU'Then Begin
+  Base:=$CE;WordImm:=True
+ End else if M='STU'Then Begin
+  Base:=$CF;WordImm:=True
+ End else MemBase:=False
+End;
+
+Function UnaryBase(M:String;Var Base:Byte):Boolean;Begin
+ UnaryBase:=True;
+ if M='NEG'Then Base:=$00 else if M='COM'Then Base:=$03 else if M='LSR'Then Base:=
+ $04 else if M='ROR'Then Base:=$06 else if M='ASR'Then Base:=$07 else if(M='ASL')or(M=
+ 'LSL')Then Base:=$08 else if M='ROL'Then Base:=$09 else if M='DEC'Then Base:=
+ $0A else if M='INC'Then Base:=$0C else if M='TST'Then Base:=$0D else if M=
+ 'JMP'Then Base:=$0E else if M='CLR'Then Base:=$0F else UnaryBase:=False
+End;
+
+Function RegCode(R:String):Integer;Begin
+ R:=Upper(Trim(R));RegCode:=-1;
+ if R='D'Then RegCode:=0 else if R='X'Then RegCode:=1 else if R='Y'Then RegCode:=
+ 2 else if R='U'Then RegCode:=3 else if R='S'Then RegCode:=4 else if R='PC'Then RegCode:=
+ 5 else if R='A'Then RegCode:=8 else if R='B'Then RegCode:=9 else if R='CC'Then RegCode:=
+ 10 else if R='DP'Then RegCode:=11
+End;
+
+Function IndexReg(R:String):Integer;Begin
+ R:=Upper(Trim(R));IndexReg:=-1;
+ if R='X'Then IndexReg:=0 else if R='Y'Then IndexReg:=1 else if R='U'Then IndexReg:=
+ 2 else if(R='S')or(R='SP')Then IndexReg:=3
+End;
+
+Procedure EncodeIndexed(S:String);
+Var
+ Ind:Boolean;
+ Comma,I,R,Post,Chosen:Integer;
+ A,B:String;
+ V,Disp:LongInt;
+ K:Boolean;
+ ForceShort,ForceLong:Boolean;
+Begin
+ S:=Trim(S);Ind:=(Length(S)>1)and(S[1]='[')and(S[Length(S)]=']');
+ if Ind Then S:=Trim(Copy(S,2,Length(S)-2));Comma:=0;
+ For I:=Length(S)downto 1 do if S[I]=','Then Begin
+  Comma:=I;Break
+ End;
+ { Forme indirecte etendue [adresse] : post-octet $9F suivi de l'adresse. }
+ if Comma=0 Then Begin
+  if not Ind Then Begin
+   Error('registre index absent');Emit($84);Exit
+  End;
+  V:=Eval(S,K);CheckWord(V,K,'adresse indirecte');Emit($9F);EmitW(V);Exit
+ End;
+ A:=Trim(Copy(S,1,Comma-1));B:=Upper(Trim(Copy(S,Comma+1,255)));
+ ForceShort:=(Length(A)>0)and(A[1]='<');ForceLong:=(Length(A)>0)and(A[1]='>');
+ if ForceShort or ForceLong Then Delete(A,1,1);
+ if(B='PC')or(B='PCR')Then Begin
+  if A='' Then Begin Error('adresse PCR absente');V:=0;K:=False End else V:=Eval(A,K);
+  if ForceShort Then Begin
+   { PC pointe ici sur le post-octet; l'instruction finit deux octets plus loin. }
+   Disp:=V-(PC+2);if(PassNo=2)and K and((Disp<-$80)or(Disp>$7F))Then
+    Error('deplacement PCR hors plage 8 bits');
+   Post:=$8C;if Ind Then Post:=Post or $10;Emit(Post);Emit(Byte(Disp))
+  End else
+  Begin
+   Disp:=V-(PC+3);if(PassNo=2)and K and((Disp<-$8000)or(Disp>$7FFF))Then
+    Error('deplacement PCR hors plage 16 bits');
+   Post:=$8D;if Ind Then Post:=Post or $10;Emit(Post);EmitW(Disp)
+  End;Exit
+ End;
+ if Copy(B,1,2)='--'Then Begin
+  Delete(B,1,2);Post:=$83
+ End else if Copy(B,1,1)='-'Then Begin
+  Delete(B,1,1);Post:=$82
+ End else if Copy(B,Length(B)-1,2)='++'Then Begin
+  Delete(B,Length(B)-1,2);Post:=$81
+ End else if Copy(B,Length(B),1)='+'Then Begin
+  Delete(B,Length(B),1);Post:=$80
+ End else Post:=-1;
+ R:=IndexReg(B);if R<0 Then Begin
+  Error('registre index incorrect: '+B);R:=0
+ End;if Post>=0 Then Begin
+  if A<>'' Then Error('offset interdit avec auto-indexation');
+  if Ind and(Post in[$80,$82])Then Error('mode indexe indirect illegal');
+  if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));Exit
+ End;
+ if(A='A')Then Post:=$86 else if(A='B')Then Post:=$85 else if(A='D')Then Post:=$8B else
+ Begin
+  if A='' Then Begin
+   Post:=$84;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));Exit
+  End;
+  V:=Eval(A,K);
+  if ForceLong Then Chosen:=2
+  else if ForceShort Then Chosen:=1
+  else if not Ind and K and(V>=-16)and(V<=15)Then Chosen:=0
+  else if K and(V>=-128)and(V<=127)Then Chosen:=1
+  else Chosen:=2;
+  Chosen:=SelectSize(Chosen);
+  if Chosen=0 Then Begin
+   if Ind Then Error('offset indexe 5 bits indirect illegal');
+   if(PassNo=2)and K and((V<-16)or(V>15))Then Error('offset indexe hors plage 5 bits');
+   Emit((R shl 5)or(Byte(V)and$1F));Exit
+  End;
+  if Chosen=1 Then Begin
+   if(PassNo=2)and K and((V<-$80)or(V>$7F))Then Error('offset indexe hors plage 8 bits');
+   Post:=$88;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));Emit(Byte(V));Exit
+  End;
+  if(PassNo=2)and K and((V<-$8000)or(V>$7FFF))Then Error('offset indexe hors plage 16 bits');
+  Post:=$89;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5));EmitW(V);Exit
+ End;if Ind Then Post:=Post or $10;Emit(Post or(R shl 5))
+End;
+
+Procedure EncodeInstruction(M,Operand:String);
+Var
+ Op:Word;
+ Base,B:Byte;
+ LongB,WI,K,ForceDirect:Boolean;
+ V,Off:LongInt;
+ A,C:String;
+ R1,R2,I:Integer;
+ Indexed:Boolean;
+Begin
+ Op:=InherentOp(M);if Op<>$FFFF Then Begin
+  if Trim(Operand)<>''Then Error('operande superflu');EmitOp(Op);Exit
+ End;
+ Op:=BranchOp(M,LongB);if Op<>$FFFF Then Begin
+  V:=Eval(Operand,K);EmitOp(Op);if LongB Then Begin
+   Off:=V-(PC+2);
+   if(PassNo=2)and K and((Off<-$8000)or(Off>$7FFF))Then Error('OUT OF RANGE');
+   if(PassNo=2)and K and(Off>=-$80)and(Off<=$7F)Then Warning('branche longue inutile');
+   EmitW(Off)
+  End else
+  Begin
+   Off:=V-(PC+1);
+   if(PassNo=2)and K and((Off<-$80)or(Off>$7F))Then Error('OUT OF RANGE');
+   Emit(Byte(Off))
+  End;Exit
+ End;
+ if(M='TFR')or(M='EXG')Then Begin
+  if M='TFR'Then Emit($1F)else Emit($1E);A:=Operand;C:=NextPart(A);R1:=RegCode(C);
+  R2:=RegCode(A);
+  if(R1<0)or(R2<0)or(((R1<8)xor(R2<8)))Then Error('registres incompatibles');
+  Emit(Byte((R1 shl 4)or R2));Exit
+ End;
+ if(M='PSHS')or(M='PULS')or(M='PSHU')or(M='PULU')Then Begin
+  if M='PSHS'Then Emit($34)else if M='PULS'Then Emit($35)else if M='PSHU'Then Emit($36)
+  else Emit($37);B:=0;A:=Operand;Repeat C:=Upper(NextPart(A));
+  if C='CC'Then B:=B or 1 else if C='A'Then B:=B or 2 else if C='B'Then B:=
+  B or 4 else if C='D'Then B:=B or 6 else if C='DP'Then B:=B or 8 else if C='X'Then B:=
+  B or 16 else if C='Y'Then B:=B or 32 else if C='U'Then B:=B or 64 else if C='S'Then B:=
+  B or 64 else if C='PC'Then B:=B or 128 else Error('registre de pile incorrect')Until A=
+  '';Emit(B);Exit
+ End;
+ if(M='ORCC')or(M='ANDCC')or(M='CWAI')Then Begin
+  if M='ORCC'Then Emit($1A)else if M='ANDCC'Then Emit($1C)else Emit($3C);A:=Trim(Operand);
+  if(A<>'')and(A[1]='#')Then Delete(A,1,1);V:=Eval(A,K);
+  CheckByte(V,K,'operande immediate');Emit(Byte(V));Exit
+ End;
+ if(M='LEAX')or(M='LEAY')or(M='LEAS')or(M='LEAU')Then Begin
+  if M='LEAX'Then Emit($30)else if M='LEAY'Then Emit($31)else if M='LEAS'Then Emit($32)
+  else Emit($33);EncodeIndexed(Operand);Exit
+ End;
+ if M='JSR'Then Begin
+  Base:=$8D;WI:=True
+ End else if not MemBase(M,Base,WI)Then Begin
+  if UnaryBase(M,Base)Then WI:=False else
+  Begin
+   { Page 2/3 loads and compares }
+   Op:=0;
+   if M='CMPD'Then Op:=$1083 else if M='CMPY'Then Op:=$108C else if M='LDY'Then Op:=
+   $108E else if M='STY'Then Op:=$108F else if M='LDS'Then Op:=$10CE else if M=
+   'STS'Then Op:=$10CF else if M='CMPU'Then Op:=$1183 else if M='CMPS'Then Op:=$118C;
+   if Op=0 Then Begin
+    Error('BAD INSTR: '+M);Exit
+   End;Base:=Byte(Op);WI:=True;Emit(Byte(Op shr 8))
+  End
+ End;
+ A:=Trim(Operand);Indexed:=(Length(A)>1)and(A[1]='[')and(A[Length(A)]=']');
+ For I:=1 to Length(A)do if A[I]=','Then Indexed:=True;
+ if Indexed Then Begin
+  if UnaryBase(M,B)Then Emit(B+$60)else Emit(Base+$20);EncodeIndexed(A);Exit
+ End;
+ if(A<>'')and(A[1]='#')Then Begin
+  if(M='STA')or(M='STB')or(M='STD')or(M='STX')or(M='STU')or(M='STY')or(M='STS')or(M='JMP')
+  or(M='JSR')Then Error('ADDRESS MODE');Delete(A,1,1);Emit(Base);V:=Eval(A,K);
+  if WI Then Begin CheckWord(V,K,'operande immediate');EmitW(V)End
+  else Begin CheckByte(V,K,'operande immediate');Emit(Byte(V))End;Exit
+ End;
+ if UnaryBase(M,B)Then Base:=B;K:=True;if(A<>'')and(A[1]='>')Then Begin
+  Delete(A,1,1);V:=Eval(A,K);CheckWord(V,K,'adresse etendue');
+  if(PassNo=2)and not Motorola Then Warning('mode etendu en programme OS-9');
+  if UnaryBase(M,B)Then Emit(B+$70)else Emit(Base+$30);EmitW(V)
+ End else
+ Begin
+  ForceDirect:=(A<>'')and(A[1]='<');if ForceDirect Then Delete(A,1,1);V:=Eval(A,K);
+  if ForceDirect Then I:=1 else if K and(V>=0)and(V<=$FFFF)and(((V shr 8)and$FF)=DirectPage)
+   Then I:=1 else I:=2;I:=SelectSize(I);
+  if I=1 Then Begin
+   CheckWord(V,K,'adresse directe');
+   if K and not ForceDirect and(((V shr 8)and$FF)<>DirectPage)Then
+    Error('adresse hors de la page directe');
+   if UnaryBase(M,B)Then Emit(B)else Emit(Base+$10);Emit(Byte(V))
+  End else
+  Begin
+   CheckWord(V,K,'adresse etendue');
+   if(PassNo=2)and not Motorola Then Warning('mode etendu en programme OS-9');
+   if UnaryBase(M,B)Then Emit(B+$70)else Emit(Base+$30);EmitW(V)
+  End
+ End
+End;
+
+Function OperationHasNoOperand(Op:String):Boolean;
+Var
+ Dummy:Word;
+Begin
+ Dummy:=InherentOp(Op);
+ OperationHasNoOperand:=(Dummy<>$FFFF)or(Op='EMOD')or(Op='END')or(Op='ELSE')or
+  (Op='ENDC')or(Op='IFP1')or(Op='PAG')or(Op='PAGE')
+End;
+
+Procedure SplitOperandAndComment(Op,Rest:String;Var Operand,Comment:String);
+Var
+ I,J,Level:Integer;
+ Q,Delimiter,PrevChar,NextChar:Char;
+Begin
+ Operand:='';Comment:='';Rest:=Trim(Rest);if Rest=''Then Exit;
+ if OperationHasNoOperand(Op)Then Begin Comment:=Rest;Exit End;
+ if(Op='FCC')or(Op='FCS')Then Begin
+  Delimiter:=Rest[1];I:=2;
+  While(I<=Length(Rest))and(Rest[I]<>Delimiter)do Inc(I);
+  if I<=Length(Rest)Then Begin
+   Operand:=Copy(Rest,1,I);Comment:=Trim(Copy(Rest,I+1,255));
+   if(Comment<>'')and(Comment[1]=';')Then Comment:=Trim(Copy(Comment,2,255))
+  End else Operand:=Rest;
+  Exit
+ End;
+ if(Op='NAM')or(Op='TTL')Then Begin
+  I:=Pos(';',Rest);
+  if I=0 Then Operand:=Rest else Begin
+   Operand:=Trim(Copy(Rest,1,I-1));Comment:=Trim(Copy(Rest,I+1,255))
+  End;Exit
+ End;
+ I:=1;Level:=0;Q:=#0;
+ While I<=Length(Rest)do Begin
+  if(Rest[I]='''')and(Q=#0)Then Begin
+   Inc(I);if I<=Length(Rest)Then Inc(I);Continue
+  End;
+  if Rest[I]='"'Then Begin
+   if Q=#0 Then Q:='"'else Q:=#0;Inc(I);Continue
+  End;
+  if Q=#0 Then Begin
+   if Rest[I]in['(','[']Then Inc(Level)else if Rest[I]in[')',']']Then Dec(Level);
+   if(Level=0)and(Rest[I]=';')Then Begin
+    Operand:=Trim(Copy(Rest,1,I-1));Comment:=Trim(Copy(Rest,I+1,255));Exit
+   End;
+   if(Level=0)and(Rest[I]in[' ',#9])Then Begin
+    J:=I;While(J<=Length(Rest))and(Rest[J]in[' ',#9])do Inc(J);
+    PrevChar:=#0;if I>1 Then PrevChar:=Rest[I-1];NextChar:=#0;
+    if J<=Length(Rest)Then NextChar:=Rest[J];
+    if not(PrevChar in['+','-','*','/','&','!','^',',','(','[','<','>','#'])and
+       not(NextChar in['+','-','*','/','&','!','^',',',')',']'])Then Begin
+     Operand:=Trim(Copy(Rest,1,I-1));Comment:=Trim(Copy(Rest,J,255));Exit
+    End;
+    I:=J;Continue
+   End
+  End;
+  Inc(I)
+ End;
+ Operand:=Trim(Rest)
+End;
+
+Procedure ParseFields(Line:String;Var LabelName,Op,Operand,Comment:String);
+Var
+ I,J:Integer;
+ FirstBlank:Boolean;
+ Rest:String;
+Begin
+ LabelName:='';Op:='';Operand:='';Comment:='';if Trim(Line)=''Then Exit;
+ if Line[1]='*'Then Begin Comment:=Copy(Line,2,255);Exit End;
+ FirstBlank:=Line[1]in[' ',#9];I:=1;
+ While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);J:=I;
+ While(J<=Length(Line))and not(Line[J]in[' ',#9])do Inc(J);
+ if not FirstBlank Then Begin
+  LabelName:=Copy(Line,I,J-I);I:=J;
+  While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);J:=I;
+  While(J<=Length(Line))and not(Line[J]in[' ',#9])do Inc(J)
+ End;
+ Op:=Upper(Copy(Line,I,J-I));I:=J;
+ While(I<=Length(Line))and(Line[I]in[' ',#9])do Inc(I);
+ Rest:=Copy(Line,I,255);SplitOperandAndComment(Op,Rest,Operand,Comment)
+End;
+
+Procedure StartListingPage;
+Var
+ S:String;
+Begin
+ if PageLine<>0 Then Exit;
+ Inc(PageNo);S:='Microware OS-9 Assembler';
+ While Length(S)<PageWidth-10 do S:=S+' ';
+ S:=S+'Page '+Hex(PageNo,2);if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);
+ OutText(S);Inc(PageLine);
+ S:=ProgramName;if Title<>''Then S:=S+' - '+Title;
+ if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);OutText(S);Inc(PageLine);
+ OutText('');Inc(PageLine)
+End;
+
+Procedure EjectListingPage;
+Begin
+ if PageLine=0 Then Exit;
+ if FormFeed Then OutText(#12)
+ else While PageLine<PageLength do Begin OutText('');Inc(PageLine)End;
+ PageLine:=0
+End;
+
+Procedure ListingPhysical(S:String);
+Begin
+ StartListingPage;if Length(S)>PageWidth Then S:=Copy(S,1,PageWidth);
+ OutText(S);Inc(PageLine);if PageLine>=PageLength Then EjectListingPage
+End;
+
+Procedure ListingSpaces(N:LongInt);
+Begin
+ While N>0 do Begin ListingPhysical('');Dec(N)End
+End;
+
+Procedure ListLine(Addr:LongInt;OldPC:LongInt;Src:String);
+Var
+ S,Bs:String;
+ I,FirstByte,LastByte,BytesPerLine:LongInt;
+ Mark:Char;
+
+ Procedure PutPhysicalLine(Address:LongInt;BytesText,SourceText:String;First:Boolean);
+ Begin
+  if First Then Begin
+   if CurrentLineError Then Mark:='E'else if CurrentLineWarning Then Mark:='W'
+   else if CurrentLineData Then Mark:='D'else if ConditionalSkipped Then Mark:='C'
+   else Mark:=' ';
+  End else Mark:=' ';
+  if Narrow Then Begin
+   S:=Mark+' '+Hex(Address,4)+' '+BytesText;
+   if SourceText<>''Then S:=S+' '+SourceText
+  End else Begin
+   if First Then S:=Hex(LineNo,4)+' '+Mark+' '+Hex(Address,4)+' '
+   else S:='       '+Hex(Address,4)+' ';
+   S:=S+Copy(BytesText+'        ',1,8);
+   if First Then S:=S+' '+SourceText
+  End;
+  ListingPhysical(S)
+ End;
+
+Begin
+ if(PassNo<>2)or not ListOn Then Exit;
+ if Narrow Then BytesPerLine:=3 else BytesPerLine:=4;
+ FirstByte:=0;LastByte:=LineByteCount-1;
+ if LastByte>=BytesPerLine Then LastByte:=BytesPerLine-1;Bs:='';
+ For I:=FirstByte to LastByte do if(OldPC+I>=0)and(OldPC+I<=ImageSize)Then
+  Bs:=Bs+Hex(Image^[OldPC+I],2);
+ PutPhysicalLine(Addr,Bs,Src,True);
+ if Generated and ConstantDirective Then Begin
+  FirstByte:=BytesPerLine;
+  While FirstByte<LineByteCount do Begin
+   LastByte:=FirstByte+BytesPerLine-1;
+   if LastByte>=LineByteCount Then LastByte:=LineByteCount-1;Bs:='';
+   For I:=FirstByte to LastByte do if(OldPC+I>=0)and(OldPC+I<=ImageSize)Then
+    Bs:=Bs+Hex(Image^[OldPC+I],2);
+   PutPhysicalLine(OldPC+FirstByte,Bs,'',False);Inc(FirstByte,BytesPerLine)
+  End
+ End;
+ if CurrentLineError and ErrorsInList and(CurrentLineErrorText<>'')Then
+  ListingPhysical('**** '+CurrentLineErrorText)
+End;
+
+Function LabelForbidden(Op:String):Boolean;
+Begin
+ LabelForbidden:=(Op='END')or(Op='NAM')or(Op='TTL')or(Op='OPT')or(Op='ORG')or
+  (Op='PAG')or(Op='PAGE')or(Op='SPC')or(Op='SETDP')or(Op='USE')or(Op='IF')or
+  (Op='IFEQ')or(Op='IFNE')or(Op='IFLT')or(Op='IFLE')or(Op='IFGT')or(Op='IFGE')or
+  (Op='IFP1')or(Op='ELSE')or(Op='ENDC')or(Op='MOD')or(Op='EMOD')
+End;
+
+Function OperandRequired(Op:String):Boolean;
+Begin
+ OperandRequired:=(Op='EQU')or(Op='SET')or(Op='FCB')or(Op='FDB')or(Op='FCC')or
+  (Op='FCS')or(Op='RMB')or(Op='ORG')or(Op='SETDP')or(Op='USE')or
+  (Op='OS9')or(Op='MOD')or(Op='IF')or(Op='IFEQ')or(Op='IFNE')or(Op='IFLT')or
+  (Op='IFLE')or(Op='IFGT')or(Op='IFGE')or(Op='OPT')
+End;
+
+Function ValidateSourceFields(LabelName,Op,Operand,Comment:String):Boolean;
+Begin
+ ValidateSourceFields:=True;
+ if(LabelName<>'')and not ValidSymbolName(LabelName)Then Begin
+  if PassNo=2 Then Error('BAD LABEL: '+LabelName);ValidateSourceFields:=False
+ End;
+ if(LabelName<>'')and LabelForbidden(Op)Then Begin
+  if PassNo=2 Then Error('etiquette interdite avec '+Op);ValidateSourceFields:=False
+ End;
+ if((Op='EQU')or(Op='SET'))and(LabelName='')Then Begin
+  if PassNo=2 Then Error(Op+' exige une etiquette');ValidateSourceFields:=False
+ End;
+ if OperandRequired(Op)and(Trim(Operand)='')Then Begin
+  if PassNo=2 Then Error('operande manquant pour '+Op);ValidateSourceFields:=False
+ End;
+ if(Comment<>'')and((Op='NAM')or(Op='TTL')or(Op='OPT'))Then Begin
+  if PassNo=2 Then Error('commentaire interdit avec '+Op);ValidateSourceFields:=False
+ End
+End;
+
+Function DirectoryPart(Path:String):String;
+Var
+ I,P:Integer;
+Begin
+ P:=0;For I:=1 to Length(Path)do if Path[I]in['/','\']Then P:=I;
+ if P=0 Then DirectoryPart:=''else DirectoryPart:=Copy(Path,1,P)
+End;
+
+Function JoinPath(DirectoryName,FileName:String):String;
+Begin
+ if DirectoryName=''Then JoinPath:=FileName
+ else if DirectoryName[Length(DirectoryName)]in['/','\',':']Then
+  JoinPath:=DirectoryName+FileName else JoinPath:=DirectoryName+'\'+FileName
+End;
+
+Function ReplaceExtension(Path,NewExtension:String):String;
+Var
+ I,LastSeparator,LastDot:Integer;
+Begin
+ LastSeparator:=0;LastDot:=0;
+ For I:=1 to Length(Path)do Begin
+  if Path[I]in['/','\',':']Then Begin LastSeparator:=I;LastDot:=0 End
+  else if Path[I]='.'Then LastDot:=I
+ End;
+ if LastDot>LastSeparator Then Path:=Copy(Path,1,LastDot-1);
+ ReplaceExtension:=Path+NewExtension
+End;
+
+Function HostOutputPath(Path:String):String;
+Var
+ Root:String;
+ I:Integer;
+Begin
+ HostOutputPath:=Path;if Path=''Then Exit;
+ if Path[1]='/'Then Begin
+  Root:=GetEnv('OS9ROOT');if Root<>''Then Path:=JoinPath(Root,Copy(Path,2,255))
+ End;
+ For I:=1 to Length(Path)do if Path[I]='/'Then Path[I]:='\';
+ HostOutputPath:=Path
+End;
+
+Function CanonicalPath(Path:String):String;
+Var
+ I:Integer;
+Begin
+ Path:=FExpand(Path);
+ For I:=1 to Length(Path)do Begin
+  if Path[I]='/'Then Path[I]:='\';Path[I]:=UpCase(Path[I])
+ End;
+ CanonicalPath:=Path
+End;
+
+Function TryOpenSource(Var F:Text;Candidate:String):Boolean;
+Begin
+ Assign(F,Candidate);Reset(F);TryOpenSource:=IOResult=0
+End;
+
+Function ResolveAndOpenSource(Requested,Caller:String;Var F:Text;Var Resolved:String):Boolean;
+Var
+ Candidate,Root:String;
+ I:Integer;
+ IsAbsolute:Boolean;
+Begin
+ ResolveAndOpenSource:=False;Requested:=Trim(Requested);if Requested=''Then Exit;
+ IsAbsolute:=(Requested[1]in['/','\'])or((Length(Requested)>1)and(Requested[2]=':'));
+ if not IsAbsolute Then Begin
+  Candidate:=JoinPath(DirectoryPart(Caller),Requested);
+  if TryOpenSource(F,Candidate)Then Begin Resolved:=CanonicalPath(Candidate);ResolveAndOpenSource:=True;Exit End
+ End;
+ if TryOpenSource(F,Requested)Then Begin Resolved:=CanonicalPath(Requested);ResolveAndOpenSource:=True;Exit End;
+ { Sur DOS/Windows, OS9ROOT permet de monter les chemins /d0, /dd, etc. }
+ if Requested[1]='/'Then Begin
+  Root:=GetEnv('OS9ROOT');if Root<>''Then Begin
+   Candidate:=JoinPath(Root,Copy(Requested,2,255));
+   For I:=1 to Length(Candidate)do if Candidate[I]='/'Then Candidate[I]:='\';
+   if TryOpenSource(F,Candidate)Then Begin
+    Resolved:=CanonicalPath(Candidate);ResolveAndOpenSource:=True;Exit
+   End
+  End;
+  Candidate:=Copy(Requested,2,255);
+  For I:=1 to Length(Candidate)do if Candidate[I]='/'Then Candidate[I]:='\';
+  if TryOpenSource(F,Candidate)Then Begin Resolved:=CanonicalPath(Candidate);ResolveAndOpenSource:=True End
+ End
+End;
+
+Function IncludeIsActive(Path:String):Boolean;
+Var
+ P:PIncludeNode;
+Begin
+ IncludeIsActive:=False;P:=IncludeStack;
+ While P<>Nil do Begin
+  if P^.FileName=Path Then Begin IncludeIsActive:=True;Exit End;P:=P^.Next
+ End
+End;
+
+Procedure ProcessFile(FileName:String);
+Var
+ F:Text;
+ Line,L,O,A:String;
+ OldPC,OldDataPC,ListAddr,V:LongInt;
+ K:Boolean;
+ Cond:Array[1..16]of TConditionalFrame;
+ Depth,OverflowDepth,I,SavedLine,OperandCount,ReadCode:Integer;
+ Active,TrailingComma:Boolean;
+ Resolved,SavedSource:String;
+ IncludeNode:PIncludeNode;
+ ModuleValues:Array[1..6]of LongInt;
+ ModuleKnown:Array[1..6]of Boolean;
+ HeaderParity:Byte;
+Begin
+ if IncludeDepth>=MaxIncludeDepth Then Begin
+  Fatal('USE DEPTH');FatalIncludeError:=True;Exit
+ End;
+ if not ResolveAndOpenSource(FileName,CurrentSourceName,F,Resolved)Then Begin
+  Fatal('CAN''T OPEN PATH: '+FileName);FatalIncludeError:=True;Exit
+ End;
+ if IncludeDepth=0 Then RootSourcePath:=Resolved;
+ if IncludeIsActive(Resolved)Then Begin
+  Close(F);Fatal('USE CYCLE: '+FileName);FatalIncludeError:=True;Exit
+ End;
+ New(IncludeNode);IncludeNode^.FileName:=Resolved;IncludeNode^.Next:=IncludeStack;
+ IncludeStack:=IncludeNode;Inc(IncludeDepth);SavedSource:=CurrentSourceName;SavedLine:=LineNo;
+ CurrentSourceName:=Resolved;LineNo:=0;Depth:=0;OverflowDepth:=0;Active:=True;
+ While not Eof(F)and not StopAssembly do Begin
+  ReadLn(F,Line);ReadCode:=IOResult;
+  if ReadCode<>0 Then Begin Fatal('READ ERROR: '+CurrentSourceName);Break End;
+  Inc(LineNo);
+  if Length(Line)>MaxLine Then Begin
+   if PassNo=2 Then Error('ligne de plus de 120 caracteres');Line:=Copy(Line,1,MaxLine)
+  End;
+  ParseFields(Line,L,O,A,ParsedComment);OldPC:=PC;OldDataPC:=DataPC;ListAddr:=OldPC;
+  LineByteCount:=0;
+  ConstantDirective:=False;CurrentLineError:=False;CurrentLineWarning:=False;
+  CurrentLineData:=False;CurrentLineErrorText:='';ConditionalSkipped:=False;
+  if not ValidateSourceFields(L,O,A,ParsedComment)Then Begin
+   ListLine(OldPC,OldPC,Line);Continue
+  End;
+  if(O='IF')or(O='IFEQ')or(O='IFNE')or(O='IFLT')or(O='IFLE')or(O='IFGT')or(O='IFGE')or
+    (O='IFP1')Then Begin
+   if OverflowDepth>0 Then Inc(OverflowDepth)
+   else if Depth=16 Then Begin
+    if PassNo=2 Then Error('imbrication conditionnelle trop profonde');OverflowDepth:=1
+   End else Begin
+    Inc(Depth);Cond[Depth].ParentActive:=Active;Cond[Depth].ElseSeen:=False;K:=False;
+    if Active Then Begin
+     if O='IFP1'Then K:=PassNo=1 else Begin
+      V:=Eval(A,K);
+      if(PassNo=1)and not K Then Error('reference avant dans une condition');
+      if K Then Begin
+       if O='IFEQ'Then K:=V=0 else if O='IFNE'Then K:=V<>0
+       else if O='IFLT'Then K:=Signed16(V)<0 else if O='IFLE'Then K:=Signed16(V)<=0
+       else if O='IFGT'Then K:=Signed16(V)>0 else if O='IFGE'Then K:=Signed16(V)>=0
+       else K:=V<>0
+      End
+     End
+    End;
+    Cond[Depth].TestTrue:=K;Active:=Cond[Depth].ParentActive and K
+   End;
+   if CondList or CurrentLineError Then ListLine(OldPC,OldPC,Line);Continue
+  End;
+  if O='ELSE'Then Begin
+   if OverflowDepth>0 Then Begin End
+   else if Depth=0 Then Begin if PassNo=2 Then Error('ELSE sans IF')End
+   else if Cond[Depth].ElseSeen Then Begin if PassNo=2 Then Error('ELSE en double')End
+   else Begin
+    Cond[Depth].ElseSeen:=True;
+    Active:=Cond[Depth].ParentActive and not Cond[Depth].TestTrue
+   End;
+   if CondList or CurrentLineError Then ListLine(OldPC,OldPC,Line);Continue
+  End;
+  if O='ENDC'Then Begin
+   if OverflowDepth>0 Then Dec(OverflowDepth)
+   else if Depth=0 Then Begin if PassNo=2 Then Error('ENDC sans IF')End
+   else Begin Active:=Cond[Depth].ParentActive;Dec(Depth)End;
+   if CondList or CurrentLineError Then ListLine(OldPC,OldPC,Line);Continue
+  End;
+  if not Active Then Begin
+   ConditionalSkipped:=True;if CondList Then ListLine(OldPC,OldPC,Line);Continue
+  End;
+  if(L<>'')and(O<>'EQU')and(O<>'SET')and(O<>'RMB')Then DefineSymbol(L,PC,'L',False);
+  if O=''Then Begin
+   ListLine(OldPC,OldPC,Line);Continue
+  End else if O='EQU'Then Begin
+   V:=Eval(A,K);
+   if L=''Then Error('EQU exige une etiquette')else DefineSymbol(L,V,'E',False)
+  End else if O='SET'Then Begin
+   V:=Eval(A,K);
+   if L=''Then Error('SET exige une etiquette')else DefineSymbol(L,V,'S',True)
+  End else if(O='FCB')or(O='FDB')Then Begin
+   ConstantDirective:=True;
+   Repeat L:=NextPart(A);if(L<>'')and(L[1]='"')Then Begin
+    For I:=2 to Length(L)-1 do if O='FCB'Then Emit(Ord(L[I]))else EmitW(Ord(L[I]))
+   End else
+   Begin
+    V:=Eval(L,K);
+    if O='FCB'Then Begin CheckByte(V,K,'constante FCB');Emit(Byte(V))End
+    else Begin CheckWord(V,K,'constante FDB');EmitW(V)End
+   End Until A=''
+  End else if(O='FCC')or(O='FCS')Then Begin
+   ConstantDirective:=True;
+   A:=Trim(A);if Length(A)>=2 Then Begin
+    L:=A[1];I:=2;
+    While(I<=Length(A))and(A[I]<>L[1])do Inc(I);
+    if I>Length(A)Then Error('delimiteur de chaine manquant')else
+    Begin
+     A:=Copy(A,2,I-2);
+     For I:=1 to Length(A)do Begin
+      V:=Ord(A[I]);if(O='FCS')and(I=Length(A))Then V:=V or $80;Emit(Byte(V))
+     End
+    End
+   End else Error('chaine attendue')
+  End else if O='RMB'Then Begin
+   CurrentLineData:=not Motorola;
+   if not Motorola Then ListAddr:=OldDataPC;
+   if ModuleOpen and Motorola Then ModuleMotorolaLayoutChanged:=True;
+   V:=Eval(A,K);if Motorola Then Begin
+    if L<>''Then DefineSymbol(L,PC,'D',False);Inc(PC,V)
+   End else
+   Begin
+    if L<>''Then DefineSymbol(L,DataPC,'D',False);Inc(DataPC,V)
+   End
+  End else if O='ORG'Then Begin
+   if ModuleOpen and Motorola Then ModuleMotorolaLayoutChanged:=True;
+   V:=Eval(A,K);if Motorola Then PC:=V else DataPC:=V
+  End else if O='SETDP'Then Begin
+   V:=Eval(A,K);CheckWord(V,K,'valeur SETDP');DirectPage:=(V shr 8)and$FF
+  End else if O='OS9'Then Begin
+   Emit($10);Emit($3F);V:=Eval(A,K);CheckByte(V,K,'numero d''appel OS9');Emit(Byte(V))
+  End else if O='MOD'Then Begin
+   if ModuleSeen Then Begin if PassNo=2 Then Error('plusieurs directives MOD')End
+   else if HighAddr>=0 Then Begin
+    if PassNo=2 Then Error('MOD doit preceder tout code objet');ModuleSeen:=True
+   End
+   else Begin
+    OperandCount:=0;TrailingComma:=(A<>'')and(A[Length(A)]=',');
+    While A<>''do Begin
+     Inc(OperandCount);L:=NextPart(A);
+     if OperandCount<=6 Then ModuleValues[OperandCount]:=Eval(L,ModuleKnown[OperandCount])
+    End;
+    if TrailingComma Then Inc(OperandCount);
+    if not(OperandCount in[4,6])Then Begin
+     if PassNo=2 Then Error('MOD exige exactement quatre ou six operandes')
+    End else Begin
+     ModuleSeen:=True;ModuleOpen:=True;ModuleClosed:=False;
+     ModuleMotorolaLayoutChanged:=False;DeclaredModuleSize:=ModuleValues[1];
+     ModuleSizeKnown:=ModuleKnown[1];PC:=0;DataPC:=0;LowAddr:=0;
+     ModuleCRC:=$FFFFFF;ModuleCRCActive:=PassNo=2;
+     CheckWord(ModuleValues[1],ModuleKnown[1],'taille MOD');
+     CheckWord(ModuleValues[2],ModuleKnown[2],'offset du nom MOD');
+     CheckByte(ModuleValues[3],ModuleKnown[3],'type/langage MOD');
+     CheckByte(ModuleValues[4],ModuleKnown[4],'attribut/revision MOD');
+     HeaderParity:=$87 xor$CD xor Byte(ModuleValues[1]shr 8)xor Byte(ModuleValues[1])xor
+      Byte(ModuleValues[2]shr 8)xor Byte(ModuleValues[2])xor Byte(ModuleValues[3])xor
+      Byte(ModuleValues[4])xor$FF;
+     Emit($87);Emit($CD);EmitW(ModuleValues[1]);EmitW(ModuleValues[2]);
+     Emit(Byte(ModuleValues[3]));Emit(Byte(ModuleValues[4]));Emit(HeaderParity);
+     if OperandCount=6 Then Begin
+      CheckWord(ModuleValues[5],ModuleKnown[5],'offset d''execution MOD');
+      CheckWord(ModuleValues[6],ModuleKnown[6],'memoire permanente MOD');
+      EmitW(ModuleValues[5]);EmitW(ModuleValues[6])
+     End
+    End
+   End
+  End else if O='EMOD'Then Begin
+   if not ModuleOpen Then Begin
+    if PassNo=2 Then Error('EMOD sans MOD ouvert')
+   End else Begin
+    if PassNo=2 Then V:=(ModuleCRC and$FFFFFF)xor$FFFFFF else V:=0;
+    ModuleCRCActive:=False;Emit(Byte(V shr 16));Emit(Byte(V shr 8));Emit(Byte(V));
+    ModuleOpen:=False;ModuleClosed:=True;
+    if(PassNo=2)and ModuleSizeKnown and(PC<>DeclaredModuleSize)Then
+     Error('taille de module declaree incorrecte');
+    if(PassNo=2)and ModuleMotorolaLayoutChanged Then
+     Warning('ORG ou RMB entre MOD et EMOD en mode Motorola: CRC historique non contigu')
+   End
+  End else if O='NAM'Then ProgramName:=A else if O='TTL'Then Title:=A else if O=
+  'USE'Then Begin
+   ListLine(OldPC,OldPC,Line);ProcessFile(A);LineByteCount:=0;Continue
+  End
+  else if(O='PAG')or(O='PAGE')Then Begin
+   if(PassNo=2)and ListOn Then EjectListingPage;Continue
+  End
+  else if O='SPC'Then Begin
+   if Trim(A)=''Then V:=1 else V:=Eval(A,K);
+   if not K Then Error('expression SPC incorrecte')
+   else if(V<0)or(V>255)Then Error('OUT OF RANGE: SPC')
+   else if(PassNo=2)and ListOn Then ListingSpaces(V);Continue
+  End else if O='OPT'Then ApplyOption(A,True)
+  else if O='END'Then StopAssembly:=True else EncodeInstruction(O,A);
+  ListLine(ListAddr,OldPC,Line)
+ End;
+ if(PassNo=2)and((Depth<>0)or(OverflowDepth<>0))Then Error('ENDC manquant');
+ if(PassNo=2)and(IncludeDepth=1)and ModuleOpen Then Error('EMOD manquant');
+ Close(F);ReadCode:=IOResult;
+ if(ReadCode<>0)and not FatalError Then Fatal('READ ERROR: '+CurrentSourceName);
+ IncludeStack:=IncludeNode^.Next;Dispose(IncludeNode);Dec(IncludeDepth);
+ CurrentSourceName:=SavedSource;LineNo:=SavedLine
+End;
+
+Function ValidateModuleImage:Boolean;
+Var
+ I:LongInt;
+ P:Byte;
+ CRC,StoredCRC,HeaderSize:LongInt;
+Begin
+ ValidateModuleImage:=True;if not ModuleSeen Then Exit;
+ if(HighAddr<11)or(LowAddr<>0)or(Image^[0]<>$87)or(Image^[1]<>$CD)Then Begin
+  Error('en-tete de module OS-9 incorrect');ValidateModuleImage:=False;Exit
+ End;
+ P:=0;For I:=0 to 8 do P:=P xor Image^[I];
+ if P<>$FF Then Begin Error('parite d''en-tete MOD incorrecte');ValidateModuleImage:=False End;
+ HeaderSize:=(LongInt(Image^[2])shl 8)or Image^[3];
+ if HeaderSize<>HighAddr+1 Then Begin
+  Error('taille finale du module incorrecte');ValidateModuleImage:=False
+ End;
+ if not ModuleMotorolaLayoutChanged Then Begin
+  CRC:=$FFFFFF;For I:=0 to HighAddr-3 do CRC:=NextCRC(CRC,Image^[I]);
+  CRC:=(CRC and$FFFFFF)xor$FFFFFF;
+  StoredCRC:=(LongInt(Image^[HighAddr-2])shl 16)or
+   (LongInt(Image^[HighAddr-1])shl 8)or Image^[HighAddr];
+  if CRC<>StoredCRC Then Begin Error('CRC OS-9 incorrect');ValidateModuleImage:=False End
+ End
+End;
+
+Procedure WriteObject;
+Var
+ F:File;
+ I:LongInt;
+ B:Byte;
+ Written,WriteCode:Word;
+
+ Procedure RemovePartialObject;
+ Begin
+  Assign(F,ObjectPath);Erase(F);WriteCode:=IOResult;
+  if WriteCode<>0 Then WriteLn('CAN''T DELETE PATH: ',ObjectName)
+ End;
+Begin
+ if not ValidateModuleImage Then Exit;
+ ObjectPath:=HostOutputPath(ObjectName);
+ if(RootSourcePath<>'')and(CanonicalPath(ObjectPath)=RootSourcePath)Then Begin
+  Fatal('OBJECT PATH IS SOURCE PATH: '+ObjectName);Exit
+ End;
+ Assign(F,ObjectPath);Rewrite(F,1);if IOResult<>0 Then Begin
+  Fatal('OBJECT PATH: '+ObjectName);Exit
+ End;
+ WriteCode:=0;
+ For I:=LowAddr to HighAddr do Begin
+  B:=Image^[I];BlockWrite(F,B,1,Written);WriteCode:=IOResult;
+  if(WriteCode<>0)or(Written<>1)Then Break
+ End;
+ Close(F);if(WriteCode=0)Then WriteCode:=IOResult else Written:=IOResult;
+ if WriteCode<>0 Then Begin
+  Fatal('WRITE ERROR: '+ObjectName);RemovePartialObject
+ End
+End;
+
+Procedure PrintSymbols;
+Var
+ P,Q,R,Sorted:PSymbol;
+ S,E:String;
+ Col,Cols,EntryWidth:Integer;
+Begin
+ if not SymbolsOn Then Exit;
+ { Tri alphabetique stable, uniquement par chainage des noeuds. }
+ Sorted:=Nil;P:=Symbols;
+ While P<>Nil do Begin
+  Q:=P^.Next;
+  if(Sorted=Nil)or(P^.Name<Sorted^.Name)Then Begin P^.Next:=Sorted;Sorted:=P End
+  else Begin
+   R:=Sorted;While(R^.Next<>Nil)and(R^.Next^.Name<=P^.Name)do R:=R^.Next;
+   P^.Next:=R^.Next;R^.Next:=P
+  End;P:=Q
+ End;Symbols:=Sorted;
+ ListingPhysical('');ListingPhysical('Symbol Table');
+ if Narrow Then EntryWidth:=16 else EntryWidth:=20;
+ Cols:=PageWidth div EntryWidth;if Cols<1 Then Cols:=1;S:='';Col:=0;P:=Symbols;
+ While P<>Nil do Begin
+  if P^.Defined Then E:=P^.Kind else E:='U';
+  E:=Copy(P^.Name+'        ',1,8)+' '+Hex(P^.Value,4)+' '+E;
+  While Length(E)<EntryWidth do E:=E+' ';S:=S+E;Inc(Col);
+  if Col=Cols Then Begin ListingPhysical(S);S:='';Col:=0 End;
+  P:=P^.Next
+ End;
+ if S<>''Then ListingPhysical(S)
+End;
+
+Procedure ParseArgs;
+Var
+ I,J:Integer;
+ S,T:String;
+Begin
+ CondList:=True;ErrorsInList:=True;PageLength:=66;PageWidth:=80;MemoryK:=4;I:=1;
+ if ParamCount=0 Then Help;
+ While I<=ParamCount do Begin
+  S:=ParamStr(I);
+  if(S='/?')or(S='-?')or(Upper(S)='HELP')Then Help else if S[1]='#'Then Begin
+   T:=Upper(Copy(S,2,255));if(T<>'')and(T[Length(T)]='K')Then Delete(T,Length(T),1);
+   Val(T,MemoryK,J);if(J<>0)or(MemoryK<1)Then Begin
+    WriteLn('ASM: taille memoire incorrecte');AsmAbort:=True;
+   End
+  End else if S[1]='>'Then Begin
+   ListName:=Copy(S,2,255);ListingToFile:=True;ListOn:=True
+  End else if SourceName=''Then SourceName:=S else
+  Begin
+   While S<>''do Begin
+    J:=Pos(',',S);if J=0 Then Begin
+     T:=S;S:=''
+    End else
+    Begin
+     T:=Copy(S,1,J-1);Delete(S,1,J)
+    End;T:=Trim(T);if T<>''Then ApplyOption(T,False)
+   End
+  End;Inc(I)
+ End;
+ if not ObjectExplicit Then Begin
+  ObjectName:=ReplaceExtension(SourceName,'.obj')
+ End;if ListingToFile and(ListName='')Then Begin
+  WriteLn('ASM: nom du listing absent');AsmAbort:=True;
+ End
+End;
+
+Procedure DisposeSymbols;
+Var
+ P,Q:PSymbol;
+Begin
+ P:=Symbols;
+ While P<>Nil do Begin
+  Q:=P^.Next;Dispose(P);P:=Q
+ End
+End;
+
+Procedure DisposeDecisions;
+Var
+ P,Q:PDecision;
+Begin
+ P:=Decisions;
+ While P<>Nil do Begin
+  Q:=P^.Next;Dispose(P);P:=Q
+ End
+End;
+
+Procedure Run;
+Var
+ { FPC $MODE TP refuse une variable "capturee" par des procedures        }
+ { imbriquees (PassNo est lu par Error/Warning/Fatal/ProcessFile/Emit,    }
+ { toutes imbriquees ici) comme compteur direct de boucle For            }
+ { ("Illegal counter variable") - contrainte reelle du compilateur       }
+ { decouverte a la compilation, PassLoop sert uniquement a piloter la    }
+ { boucle, PassNo (utilise partout ailleurs TEL QUEL) est mis a jour a   }
+ { chaque iteration. }
+ PassLoop: Integer;
+Begin
+ Symbols:=Nil;Decisions:=Nil;DecisionTail:=Nil;DecisionCursor:=Nil;IncludeStack:=Nil;
+ SourceName:='';ObjectName:='';ObjectPath:='';RootSourcePath:='';ListName:='';MakeObject:=False;
+ ObjectExplicit:=False;ListOn:=False;SymbolsOn:=False;ListingToFile:=False;
+ Motorola:=False;Narrow:=False;FormFeed:=False;Generated:=False;
+ ParseArgs;
+ { AsmAbort (Help/ApplyOption via /? ou une option de ligne de commande   }
+ { incorrecte) : arreter ici, meme discipline que le point de controle    }
+ { "If MasmAbort Then ..."/"If As68Abort Then Exit;" apres ParseArgs -     }
+ { sans ce controle, une commande "ASM /?" continuerait vers les 2        }
+ { passes d'assemblage avec SourceName vide et afficherait une erreur      }
+ { "CAN'T OPEN PATH" superflue apres le texte d'aide. }
+ If AsmAbort Then Exit;
+ SaveOptions(InitialOptions);WorkspaceLimit:=LongInt(MemoryK)*1024;
+ WorkspaceUsed:=WorkspaceOverhead;WorkspaceFull:=False;FatalIncludeError:=False;
+ FatalError:=False;TooManyErrors:=False;
+ GetMem(Image,SizeOf(TBytes));FillChar(Image^,SizeOf(TBytes),0);
+ if ListingToFile Then Begin
+  Assign(ListFile,ListName);Rewrite(ListFile);if IOResult<>0 Then Begin
+   WriteLn('CAN''T OPEN PATH: ',ListName);AsmAbort:=True;Exit;
+  End
+ End;
+ Errors:=0;Warnings:=0;ProgramName:=Upper(SourceName);Title:='';
+ For PassLoop:=1 to 2 do Begin
+  PassNo:=PassLoop;
+  if not WorkspaceFull and not FatalIncludeError Then Begin
+   RestoreOptions(InitialOptions);
+   FillChar(Image^,SizeOf(TBytes),0);
+   PC:=0;DataPC:=0;DirectPage:=0;LowAddr:=ImageSize;HighAddr:=-1;LineNo:=0;PageNo:=0;
+   PageLine:=0;StopAssembly:=False;IncludeDepth:=0;CurrentSourceName:=SourceName;
+   ModuleSeen:=False;ModuleOpen:=False;ModuleClosed:=False;ModuleCRCActive:=False;
+   ModuleSizeKnown:=False;ModuleMotorolaLayoutChanged:=False;
+   if PassNo=2 Then DecisionCursor:=Decisions;
+   ProcessFile(SourceName);
+   if PassNo=1 Then Begin
+    Pass1PC:=PC;Pass1DataPC:=DataPC;Pass1LowAddr:=LowAddr;Pass1HighAddr:=HighAddr
+   End else if not FatalError Then Begin
+    if(PC<>Pass1PC)or(DataPC<>Pass1DataPC)or(LowAddr<>Pass1LowAddr)or
+      (HighAddr<>Pass1HighAddr)or(DecisionCursor<>Nil)Then Error('PHASING')
+   End
+  End
+ End;
+ if not FatalError Then PrintSymbols;
+ if MakeObject and(Errors=0)and not FatalError Then WriteObject;
+ if ListingToFile Then Close(ListFile);
+ if Errors=0 Then WriteLn('Assemblage termine: aucune erreur.')else WriteLn(Errors,
+ ' erreur(s).');DisposeSymbols;DisposeDecisions;FreeMem(Image,SizeOf(TBytes));
+End;
+
+{ ============================================================
+  Corps du wrapper : redirige Output vers un fichier temporaire reel
+  avant d'appeler Run (le corps original BEGIN...END. de ASM.PAS,
+  ci-dessus, adapte : Halt -> AsmAbort/Exit), puis republie la sortie
+  capturee dans ce terminal - meme technique exacte que
+  TermCmd_Masm/TermCmd_Link/TermCmd_Cal/TermCmd_As68/TermCmd_Link68.
+  ============================================================ }
+Begin
+ AsmTokenizeArgs(RawArgs);
+ AsmAbort := False;
+
+ Assign(Output, ASM_TEMP_OUTPUT); Rewrite(Output);
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'ASM : impossible de creer le fichier temporaire de sortie.');
+  Exit;
+ End;
+
+ Run;
+
+ Close(Output);
+ If IOResult <> 0 Then ; { ignorer l erreur de fermeture }
+
+ { Republier la sortie capturee dans ce terminal, ligne par ligne. }
+ Assign(AsmDumpF, ASM_TEMP_OUTPUT);
+ Reset(AsmDumpF);
+ If IOResult = 0 Then Begin
+  While Not EOF(AsmDumpF) Do Begin
+   ReadLn(AsmDumpF, AsmDumpLine);
+   TermAddLine(TP, AsmDumpLine);
+  End;
+  Close(AsmDumpF);
+ End;
+ CleanupTempFile(ASM_TEMP_OUTPUT);
+End;
+{$I+} { reactive la verification d'E/S, ferme le commutateur ouvert en tete de TermCmd_Asm. }
+
+{ ============================================================
   PERL (Terminal, profil "bash" uniquement - SK_BASH) - 2026-09-05,
   demande explicite de l'utilisateur : "Implementer la commande complete
   'perl' et tous les parametres Linux dans Terminal en mode 'bash' /
@@ -86938,11 +88579,13 @@ Begin
  Close(Handle);
 End;
 
-{ --- HELP (liste des 50 commandes du shell OS-9, source gladir.com/OS/OS9) --- }
+{ --- HELP (liste des 50 commandes du shell OS-9 + ASM, source              }
+{ gladir.com/OS/OS9 - ASM ajoutee le 2026-09-14, demande explicite,         }
+{ voir TermCmd_Asm) --- }
 Procedure TermCmd_OS9_HELP(Var TP: TTerminalPanel);
 Begin
  TermAddLine(TP, 'OS-9/6809 shell built-in commands :');
- TermAddLine(TP, '  ATTR BACKUP BASIC09 BUILD CHD CHX CMP COBBLER CONFIG COPY');
+ TermAddLine(TP, '  ASM ATTR BACKUP BASIC09 BUILD CHD CHX CMP COBBLER CONFIG COPY');
  TermAddLine(TP, '  DATE DCHECK DEINIZ DEL DELDIR DIR DISPLAY DSAVE ECHO EDIT');
  TermAddLine(TP, '  ERROR EX FORMAT FREE HELP IDENT INIZ KILL LINK LIST LOAD');
  TermAddLine(TP, '  MAKDIR MDIR MERGE MFREE MODPATCH MONTYPE OS9GEN PROCS PWD');
@@ -140837,7 +142480,9 @@ Begin
   End;
   SK_OS9: Begin
    { OS-9 (CoCo 3, Microware) - demande explicite de l'utilisateur, liste   }
-   { de 50 commandes fournie par l'utilisateur (gladir.com/OS/OS9/*.htm).   }
+   { de 50 commandes fournie par l'utilisateur (gladir.com/OS/OS9/*.htm),   }
+   { +ASM ajoutee le 2026-09-14 (port integral de ASM.PAS, voir             }
+   { TermCmd_Asm plus haut). }
    { Commandes fichier reelles : reutilisent les MEMES handlers TermCmd_*   }
    { generiques que CMD/AmigaDOS/OS2&REXX (COPY/DEL/MKDIR/RMDIR/REN/TYPE/   }
    { EDIT/DATE), deja compatibles avec une image OS-9 RBF reelle montee     }
@@ -140846,7 +142491,8 @@ Begin
    { reel dans cette implementation (BACKUP/COBBLER/CONFIG/DEINIZ/FORMAT/   }
    { MODPATCH/OS9GEN/WCREATE/BASIC09) : accuse de reception textuel honnete }
    { plutot qu'un comportement invente, meme discipline que COS ci-dessous. }
-   If CurrCmd = 'COPY' Then TermCmd_COPY(TP, ParamStr)
+   If CurrCmd = 'ASM' Then TermCmd_Asm(TP, ParamStr)
+   Else If CurrCmd = 'COPY' Then TermCmd_COPY(TP, ParamStr)
    Else If CurrCmd = 'DEL' Then TermCmd_DEL(TP, ParamStr)
    Else If CurrCmd = 'DELDIR' Then TermCmd_RMDIR(TP, ParamStr)
    Else If CurrCmd = 'MAKDIR' Then TermCmd_MKDIR(TP, ParamStr)
