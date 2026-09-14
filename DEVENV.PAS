@@ -11092,6 +11092,10 @@ Procedure ShowHelp;Begin
  ConRawWriteLn('  /TERMINALOS2:batchfile      Ouvrir OS/2 & REXX et ex'+#130+'cuter un fichier .BAT');
  ConRawWriteLn('  /BASH:fichier.sh            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter ce script');
  ConRawWriteLn('  /GULAM:fichier.gsh          Ouvrir le Terminal en mode Gul'+#132+'m et ex'+#130+'cuter ce script');
+ ConRawWriteLn('  /OS9:fichier                Ouvrir le Terminal en mode OS-9 (CoCo 3) et ex'+#130+'cuter');
+ ConRawWriteLn('                              ce script');
+ ConRawWriteLn('  /COS:fichier                Ouvrir le Terminal en mode COS (Cray-1) et ex'+#130+'cuter');
+ ConRawWriteLn('                              ce script');
  ConRawWriteLn('  /REXX:fichier.rex           Ouvrir OS/2 & REXX et ex'+#130+'cuter ce script REXX');
  ConRawWriteLn('  /AWK:fichier.awk            Ouvrir le Terminal en mode Bash et ex'+#130+'cuter');
  ConRawWriteLn('                              ce script AWK');
@@ -111596,15 +111600,33 @@ End;
 
 Procedure TermZoomCycle;
 Var
- ScrH, BottomY, NewH: Integer;
+ ScrH, BottomY, NewH, FullTop: Integer;
 Begin
  ScrH := GetScreenHeight;
  Inc(TermZoomLvl);
  If TermZoomLvl > 2 Then TermZoomLvl := 0;
- Case TermZoomLvl Of
-  0: NewH := OUTPUT_HEIGHT;
-  1: NewH := OUTPUT_HEIGHT + 80;
-  2: NewH := OUTPUT_HEIGHT + 160;
+ { Demande explicite de l'utilisateur (2026-09-14) : quand l'Explorateur  }
+ { de solutions ET Proprietes sont FERMES (icone de fermeture, voir       }
+ { RelayoutRightDock), le niveau de zoom maximal doit prendre TOUT        }
+ { l'espace disponible du bureau (jusqu'au bas de la barre d'onglets, la  }
+ { MEME limite haute que Exp.Y/RelayoutRightDock) plutot que le modeste   }
+ { "+160" fixe utilise quand ces panneaux restent ouverts (la largeur      }
+ { est deja geree separement par RelayoutRightDock/TermWidth). }
+ If (Not ExplorerPanelVisible) And (Not PropertiesPanelVisible) Then Begin
+  Case TermZoomLvl Of
+   0: NewH := OUTPUT_HEIGHT;
+   1: NewH := OUTPUT_HEIGHT + 80;
+   2: Begin
+       FullTop := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
+       NewH := ScrH - STATUSBAR_HEIGHT - FullTop;
+      End;
+  End;
+ End Else Begin
+  Case TermZoomLvl Of
+   0: NewH := OUTPUT_HEIGHT;
+   1: NewH := OUTPUT_HEIGHT + 80;
+   2: NewH := OUTPUT_HEIGHT + 160;
+  End;
  End;
  BottomY := ScrH - NewH - STATUSBAR_HEIGHT;
  TermY := BottomY;
