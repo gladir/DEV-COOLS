@@ -1451,7 +1451,7 @@ Type
   Name:String[31];ProcNumber,LexicalLevel,ParameterWords,LocalWords:Integer;
   IsFunction,IsForward,IsDefined:Boolean;ResultType:PPasType;
   Parameters:PPasParameter;Parent,Next:PPasRoutine;
-  SourcePosition,CodeStart,CodeLength:LongInt
+  SourcePosition,EndPosition,CodeStart,CodeLength:LongInt
  End;
  PPasSymbol=^TPasSymbol;
  TPasSymbol=Record Name:String[31];
@@ -1464,7 +1464,7 @@ PPasSource=^TPCodeMemory;
 
 Var
  CPSource:PPasSource;
- CPSize,CPPos,CPLine,CPCodePos,CPVarCount:LongInt;
+ CPSize,CPPos,CPTokenPos,CPLine,CPCodePos,CPVarCount:LongInt;
  CPToken,CPText:String;
  CPNumber:LongInt;
  CPError:Boolean;
@@ -1493,6 +1493,17 @@ Begin
  R:=CPRoutines;
  While(R<>Nil)and((R^.Name<>S)or(R^.Parent<>Parent))do R:=R^.Next;
  CPFindRoutine:=R
+End;
+
+Function CPVisibleRoutine(S:String):PPasRoutine;
+Var R,Scope:PPasRoutine;
+Begin
+ Scope:=CPCurrentRoutine;
+ Repeat
+  R:=CPFindRoutine(S,Scope);if R<>Nil Then Begin CPVisibleRoutine:=R;Exit End;
+  if Scope<>Nil Then Scope:=Scope^.Parent else Break
+ Until False;
+ CPVisibleRoutine:=Nil
 End;
 
 Function CPAddRoutine(S:String;Parent:PPasRoutine;IsFunc:Boolean):PPasRoutine;
@@ -1542,6 +1553,7 @@ Begin
   End;if CPPos<CPSize Then Inc(CPPos)
  End else Break
  Until False;
+ CPTokenPos:=CPPos;
  C:=Chr(CPSource^[CPPos]);
  if C in['A'..'Z','a'..'z','_']Then Begin
   CPText:='';
@@ -1656,7 +1668,7 @@ Begin
   R^.IsForward:=True;CPNext;if CPToken=';'Then CPNext;Exit
  End;
  if R^.IsDefined Then Begin CPFail('routine deja definie: '+Name);Exit End;
- R^.IsDefined:=True;R^.IsForward:=False;R^.SourcePosition:=CPPos;
+ R^.IsDefined:=True;R^.IsForward:=False;R^.SourcePosition:=CPTokenPos;
  Old:=CPCurrentRoutine;CPCurrentRoutine:=R;
  { Les declarations imbriquees precedent le BEGIN du corps. }
  While(CPToken<>'EOF')and not CPIs('BEGIN')do Begin
@@ -1670,6 +1682,7 @@ Begin
   End;
   if CPToken=';'Then CPNext
  End else CPFail('BEGIN de routine attendu: '+Name);
+ R^.EndPosition:=CPTokenPos;
  CPCurrentRoutine:=Old
 End;
 
@@ -1706,11 +1719,66 @@ Procedure CPConst(V:LongInt);Begin
   CPOp(199,$81);CPE(V);CPE(V shr 8)
  End
 End;
+
+Procedure CPEmitRoutineCall(R:PPasRoutine);
+Var Delta:Integer;
+Begin
+ if R=Nil Then Begin CPFail('routine inconnue');Exit End;
+ if CurrentTarget=ptUCSDPSystemIV Then Begin
+  if(CPCurrentRoutine=Nil)or(R^.Parent=CPCurrentRoutine)Then Begin
+   CPE($90);CPE(R^.ProcNumber)                         { CLP }
+  End else if R^.Parent=Nil Then Begin
+   CPE($91);CPE(R^.ProcNumber)                         { CGP }
+  End else Begin
+   Delta:=CPCurrentRoutine^.LexicalLevel-R^.Parent^.LexicalLevel;
+   if Delta<0 Then Delta:=0;CPE($92);CPE(Delta);CPE(R^.ProcNumber) { CIP }
+  End
+ End else Begin
+  { Table II.0/II.1: CLP=$CE, CGP=$CF et CIP=$AE. }
+  if R^.Parent=Nil Then Begin CPE(207);CPE(R^.ProcNumber)End
+  else if(CPCurrentRoutine<>Nil)and(R^.Parent=CPCurrentRoutine)Then
+   Begin CPE(206);CPE(R^.ProcNumber)End
+  else Begin
+   if CPCurrentRoutine=Nil Then Delta:=0 else
+    Delta:=CPCurrentRoutine^.LexicalLevel-R^.Parent^.LexicalLevel;
+   if Delta<0 Then Delta:=0;CPE(174);CPE(Delta);CPE(R^.ProcNumber)
+  End
+ End
+End;
+
+Procedure CPEmitRoutineReturn(R:PPasRoutine);
+Begin
+ if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(R^.ParameterWords)End
+ else Begin CPE(173);CPE(R^.ParameterWords)End
+End;
+
+Procedure CPLoadSymbol(P:PPasSymbol);
+Var D:Integer;
+Begin
+ if P^.Scope=Nil Then Begin CPOp(169,$85);CPBig(P^.Address)End
+ else if P^.Scope=CPCurrentRoutine Then Begin CPOp(202,$87);CPBig(P^.Address)End
+ else Begin
+  D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
+  CPOp(182,$89);CPE(D);CPBig(P^.Address)
+ End
+End;
+
+Procedure CPStoreSymbol(P:PPasSymbol);
+Var D:Integer;
+Begin
+ if P^.Scope=Nil Then Begin CPOp(171,$A5);CPBig(P^.Address)End
+ else if P^.Scope=CPCurrentRoutine Then Begin CPOp(204,$A4);CPBig(P^.Address)End
+ else Begin
+  D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
+  CPOp(184,$A6);CPE(D);CPBig(P^.Address)
+ End
+End;
 Procedure CPExpression;Forward;
 
 Procedure CPFactor;
 Var
  P:PPasSymbol;
+ R:PPasRoutine;
  Neg:Boolean;
 Begin
  Neg:=False;if CPToken='-'Then Begin
@@ -1731,11 +1799,15 @@ Begin
   CPConst(0);CPNext
  End
  else if CPToken='ID'Then Begin
-  P:=CPFind(CPText);if P=Nil Then CPFail('identificateur inconnu: '+CPText)
+  P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);
+  if(P=Nil)and(R<>Nil)and R^.IsFunction Then Begin
+   CPNext;if CPToken='('Then Begin CPNext;CPNeed(')')End;CPEmitRoutineCall(R)
+  End else if P=Nil Then CPFail('identificateur inconnu: '+CPText)
   else if P^.IsConst Then CPConst(P^.Value)else
   Begin
-   CPOp(169,$85);CPBig(P^.Address)
-  End;CPNext
+   CPLoadSymbol(P)
+  End;
+  if(P<>Nil)Then CPNext
  End else
  Begin
   CPFail('facteur attendu');CPNext
@@ -1796,6 +1868,7 @@ End;
 Procedure CPStatement;
 Var
  P:PPasSymbol;
+ R:PPasRoutine;
  Name:String;
  J,Patch:LongInt;
 Begin
@@ -1839,11 +1912,13 @@ Begin
   End
  End
  else if CPToken='ID'Then Begin
-  P:=CPFind(CPText);Name:=CPText;CPNext;
-  if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else
+  P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);Name:=CPText;CPNext;
+  if(P=Nil)and(R<>Nil)Then Begin
+   if CPToken='('Then Begin CPNext;CPNeed(')')End;CPEmitRoutineCall(R)
+  End else if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else
   Begin
    CPNeed(':=');CPExpression;
-   CPOp(171,$A5);CPBig(P^.Address)
+   CPStoreSymbol(P)
   End
  End
 End;
