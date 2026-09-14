@@ -171,6 +171,7 @@ Var
  ReadCount:Word;
  Header:Array[0..511]of Byte;
  ProcCount:Byte;
+ TargetInfo:Word;
 Begin
  PCode_LoadRaw:=False;Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Exit;
  Sz:=FileSize(F);
@@ -183,6 +184,15 @@ Begin
  if Sz>=512 Then Begin
   BlockRead(F,Header,512,ReadCount);SegmentPos:=(Header[0]or(Header[1]shl 8))*512;
   SegmentSize:=Header[2]or(Header[3]shl 8);
+  if ReadCount=512 Then Begin
+   TargetInfo:=Header[256]or(Header[257]shl 8);
+   Case TargetInfo of
+    $0101:CurrentTarget:=ptAppleHeath;
+    $0201:CurrentTarget:=ptUCSDPascalII;
+    $0301:CurrentTarget:=ptUCSDPSystemIII;
+    $0401:CurrentTarget:=ptUCSDPSystemIV
+   End
+  End;
   if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
    (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
    Seek(F,SegmentPos);ReadCount:=0;BlockRead(F,PCode_Mem^,SegmentSize,ReadCount);
@@ -2011,7 +2021,13 @@ End;
 
 Procedure ResetMachine;Begin
  FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
- PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0
+ PCode_Base:=0;PCode_CurrentProc:=0;PCode_Cycles:=0;
+ PCode_Halted:=False;PCode_ExitCode:=0;
+ if CurrentTarget=ptUCSDPSystemIV Then Begin
+  PCode_SP:=High(PCode_Data^)+1;
+  if PCode_IsIVSegment Then PCode_IVCall(1,0,True)
+  else Begin PCode_Halted:=True;PCode_ExitCode:=1 End
+ End
 End;
 
 Procedure DebugHelp;Begin
