@@ -1466,7 +1466,7 @@ Type
   Name:String[31];Kind:TPasTypeKind;SizeWords,AlignWords:Word;
   PackedType:Boolean;LowBound,HighBound:LongInt;
   ElementType,IndexType,ResultType:PPasType;ElementCount:LongInt;
-  Fields:PPasField;Parameters:PPasParameter;Next:PPasType
+  Fields:PPasField;Parameters:PPasParameter;Scope:PPasRoutine;Next:PPasType
  End;
  TPasParameter=Record
   Name:String[31];ParamType:PPasType;ByReference,Structured:Boolean;
@@ -1474,17 +1474,27 @@ Type
  End;
  TPasRoutine=Record
   Name:String[31];ProcNumber,LexicalLevel,ParameterWords,LocalWords:Integer;
-  IsFunction,IsForward,IsDefined:Boolean;ResultType:PPasType;
+  IsFunction,IsForward,IsExternal,IsSeparate,IsDefined:Boolean;
+  ExternalSegment,ExternalProcedure:Integer;ResultType:PPasType;
   Parameters:PPasParameter;Parent,Next:PPasRoutine;
   SourcePosition,EndPosition,CodeStart,CodeLength:LongInt
  End;
  PPasSymbol=^TPasSymbol;
  TPasSymbol=Record Name:String[31];
  Address,Value:Integer;
- IsConst:Boolean;SymbolType:PPasType;Scope:PPasRoutine;LexicalLevel:Integer;
+ IsConst:Boolean;ConstText:String[255];ConstReal:Real;
+ IsStringConst,IsRealConst:Boolean;
+ SymbolType:PPasType;Scope:PPasRoutine;LexicalLevel:Integer;
  IsParameter,ByReference:Boolean;
  Next:PPasSymbol
 End;
+ TConstKind=(ckInteger,ckCharacter,ckString,ckReal);
+ TConstValue=Record Kind:TConstKind;I:LongInt;R:Real;S:String[255]End;
+ PPasLabelFixup=^TPasLabelFixup;
+ TPasLabelFixup=Record Position:LongInt;Next:PPasLabelFixup End;
+ PPasLabel=^TPasLabel;
+ TPasLabel=Record Name:String[31];Scope:PPasRoutine;Address:LongInt;
+  Defined:Boolean;Fixups:PPasLabelFixup;Next:PPasLabel End;
 PPasSource=^TPCodeMemory;
 
 Var
@@ -1492,19 +1502,22 @@ Var
  CPSize,CPPos,CPTokenPos,CPLine,CPCodePos,CPVarCount:LongInt;
  CPMainStart,CPMainLength:LongInt;
  CPToken,CPText:String;
- CPNumber:LongInt;
+ CPNumber:LongInt;CPRealNumber:Real;
  CPError:Boolean;
  CPSymbols:PPasSymbol;
  CPTypes:PPasType;
  CPRoutines:PPasRoutine;
+ CPLabels:PPasLabel;
  CPCurrentRoutine:PPasRoutine;
  CPPass,CPNextProcedure:Integer;
+ CPRangeChecks,CPIOChecks,CPOverflowChecks:Boolean;
 
 Function CPAddType(S:String;K:TPasTypeKind;Words:Word):PPasType;
 Var T:PPasType;
 Begin
  New(T);FillChar(T^,SizeOf(TPasType),0);T^.Name:=S;T^.Kind:=K;
- T^.SizeWords:=Words;T^.AlignWords:=1;T^.Next:=CPTypes;CPTypes:=T;CPAddType:=T
+ T^.SizeWords:=Words;T^.AlignWords:=1;T^.Scope:=CPCurrentRoutine;
+ T^.Next:=CPTypes;CPTypes:=T;CPAddType:=T
 End;
 
 Function CPAlignedSize(Size,Alignment:LongInt):LongInt;Begin
@@ -1537,9 +1550,14 @@ Begin
 End;
 
 Function CPFindType(S:String):PPasType;
-Var T:PPasType;
+Var T:PPasType;R:PPasRoutine;
 Begin
- T:=CPTypes;While(T<>Nil)and(T^.Name<>S)do T:=T^.Next;CPFindType:=T
+ R:=CPCurrentRoutine;
+ Repeat
+  T:=CPTypes;While(T<>Nil)and((T^.Name<>S)or(T^.Scope<>R))do T:=T^.Next;
+  if T<>Nil Then Begin CPFindType:=T;Exit End;
+  if R<>Nil Then R:=R^.Parent else Break
+ Until False;CPFindType:=Nil
 End;
 
 Function CPFindRoutine(S:String;Parent:PPasRoutine):PPasRoutine;
@@ -1574,7 +1592,7 @@ End;
 
 Procedure CPFreeTables;
 Var S,SN:PPasSymbol;T,TN:PPasType;R,RN:PPasRoutine;P,PN:PPasParameter;
- F,FN:PPasField;
+ F,FN:PPasField;L,LN:PPasLabel;X,XN:PPasLabelFixup;
 Begin
  S:=CPSymbols;While S<>Nil do Begin SN:=S^.Next;Dispose(S);S:=SN End;
  R:=CPRoutines;While R<>Nil do Begin P:=R^.Parameters;
@@ -1585,7 +1603,11 @@ Begin
   F:=T^.Fields;While F<>Nil do Begin FN:=F^.Next;Dispose(F);F:=FN End;
   TN:=T^.Next;Dispose(T);T:=TN
  End;
- CPSymbols:=Nil;CPRoutines:=Nil;CPTypes:=Nil
+ L:=CPLabels;While L<>Nil do Begin X:=L^.Fixups;
+  While X<>Nil do Begin XN:=X^.Next;Dispose(X);X:=XN End;
+  LN:=L^.Next;Dispose(L);L:=LN
+ End;
+ CPSymbols:=Nil;CPRoutines:=Nil;CPTypes:=Nil;CPLabels:=Nil
 End;
 
 Procedure CPFail(S:String);Begin
@@ -1598,9 +1620,9 @@ End;
 
 Procedure CPNext;
 Var
- C:Char;
+ C:Char;D:String;Code:Integer;
 Begin
- CPToken:='';CPText:='';CPNumber:=0;
+ CPToken:='';CPText:='';CPNumber:=0;CPRealNumber:=0;
  Repeat
  While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in[' ',#9,#10,#13])do Begin
   if CPSource^[CPPos]=10 Then Inc(CPLine);Inc(CPPos)
@@ -1611,9 +1633,19 @@ Begin
  C:=Chr(CPSource^[CPPos]);
  if C='{'Then Begin
   Inc(CPPos);
+  D:='';
   While(CPPos<CPSize)and(CPSource^[CPPos]<>Ord('}'))do Begin
+   if Length(D)<255 Then D:=D+UpCase(Chr(CPSource^[CPPos]));
    if CPSource^[CPPos]=10 Then Inc(CPLine);Inc(CPPos)
-  End;if CPPos<CPSize Then Inc(CPPos)
+  End;if CPPos<CPSize Then Inc(CPPos);
+  if(D<>'')and(D[1]='$')Then Begin
+   Delete(D,1,1);D:=TrimString(D);
+   if D='R+'Then CPRangeChecks:=True else if D='R-'Then CPRangeChecks:=False
+   else if D='I+'Then CPIOChecks:=True else if D='I-'Then CPIOChecks:=False
+   else if D='Q+'Then CPOverflowChecks:=True else if D='Q-'Then CPOverflowChecks:=False
+   else if Copy(D,1,7)='TARGET 'Then
+    if not SelectTarget(TrimString(Copy(D,8,255)))Then CPFail('cible de directive inconnue')
+  End
  End else Break
  Until False;
  CPTokenPos:=CPPos;
@@ -1627,6 +1659,21 @@ Begin
  if C in['0'..'9']Then Begin
   While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
    CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');Inc(CPPos)
+  End;
+  if(CPPos<CPSize)and(CPSource^[CPPos]=Ord('.'))and
+   ((CPPos+1>=CPSize)or(CPSource^[CPPos+1]<>Ord('.')))Then Begin
+   Str(CPNumber,D);CPText:=D+'.';Inc(CPPos);
+   While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
+    CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos)
+   End;Val(CPText,CPRealNumber,Code);if Code<>0 Then CPFail('constante reelle invalide');
+   CPToken:='REALNUM';Exit
+  End;CPToken:='NUM';Exit
+ End;
+ if C='$'Then Begin
+  Inc(CPPos);CPNumber:=0;
+  While(CPPos<CPSize)and(UpCase(Chr(CPSource^[CPPos]))in['0'..'9','A'..'F'])do Begin
+   C:=UpCase(Chr(CPSource^[CPPos]));if C<='9'Then CPNumber:=CPNumber*16+Ord(C)-Ord('0')
+   else CPNumber:=CPNumber*16+Ord(C)-Ord('A')+10;Inc(CPPos)
   End;CPToken:='NUM';Exit
  End;
  if C=''''Then Begin
@@ -1668,6 +1715,7 @@ Function CPNewAnonymousType(K:TPasTypeKind):PPasType;
 Var T:PPasType;
 Begin
  New(T);FillChar(T^,SizeOf(TPasType),0);T^.Kind:=K;T^.AlignWords:=1;
+ T^.Scope:=CPCurrentRoutine;
  T^.Next:=CPTypes;CPTypes:=T;CPNewAnonymousType:=T
 End;
 
@@ -1826,7 +1874,9 @@ Begin
   not CPIs('BEGIN')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and
   not CPError do Begin
   Name:=CPText;CPNext;CPNeed('=');T:=CPParseType;
-  Named:=CPFindType(Name);if Named=Nil Then Named:=CPAddType(Name,ptkAlias,T^.SizeWords);
+  Named:=CPFindType(Name);
+  if(Named<>Nil)and(Named^.Scope<>CPCurrentRoutine)Then Named:=Nil;
+  if Named=Nil Then Named:=CPAddType(Name,ptkAlias,T^.SizeWords);
   Named^.Kind:=ptkAlias;Named^.SizeWords:=T^.SizeWords;Named^.ElementType:=T;
   Named^.AlignWords:=T^.AlignWords;Named^.LowBound:=T^.LowBound;Named^.HighBound:=T^.HighBound;
   CPNeed(';')
@@ -1872,12 +1922,151 @@ Begin
  CPAdd(S,V,K);P:=CPFind(S);if P<>Nil Then P^.SymbolType:=T
 End;
 
+Function CPEvalConstExpression: TConstValue;Forward;
+
+Function CPEvalConstFactor:TConstValue;
+Var V:TConstValue;P:PPasSymbol;Neg:Boolean;
+Begin
+ FillChar(V,SizeOf(V),0);V.Kind:=ckInteger;Neg:=False;
+ if CPToken='-'Then Begin Neg:=True;CPNext End else if CPToken='+'Then CPNext;
+ if CPToken='NUM'Then Begin V.I:=CPNumber;CPNext End
+ else if CPToken='REALNUM'Then Begin V.Kind:=ckReal;V.R:=CPRealNumber;CPNext End
+ else if CPToken='STR'Then Begin V.S:=CPText;
+  if Length(V.S)=1 Then Begin V.Kind:=ckCharacter;V.I:=Ord(V.S[1])End
+  else V.Kind:=ckString;CPNext
+ end else if CPToken='('Then Begin CPNext;V:=CPEvalConstExpression;CPNeed(')')End
+ else if CPToken='ID'Then Begin
+  P:=CPFind(CPText);if(P=Nil)or not P^.IsConst Then CPFail('constante inconnue: '+CPText)
+  else if P^.IsStringConst Then Begin V.Kind:=ckString;V.S:=P^.ConstText End
+  else if P^.IsRealConst Then Begin V.Kind:=ckReal;V.R:=P^.ConstReal End
+  else Begin V.I:=P^.Value;V.Kind:=ckInteger;
+   if(P^.SymbolType<>Nil)and(P^.SymbolType^.Kind=ptkChar)Then V.Kind:=ckCharacter
+  End;CPNext
+ end else Begin CPFail('constante attendue');CPNext End;
+ if Neg Then Begin
+  if V.Kind=ckReal Then V.R:=-V.R else if V.Kind in[ckInteger,ckCharacter]Then V.I:=-V.I
+  else CPFail('signe interdit devant une chaine')
+ End;CPEvalConstFactor:=V
+End;
+
+Function CPEvalConstTerm:TConstValue;
+Var A,B:TConstValue;O:String;
+Begin
+ A:=CPEvalConstFactor;
+ While(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')do Begin
+  O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;B:=CPEvalConstFactor;
+  if(A.Kind=ckReal)or(B.Kind=ckReal)or(O='/')Then Begin
+   if A.Kind<>ckReal Then A.R:=A.I;if B.Kind<>ckReal Then B.R:=B.I;A.Kind:=ckReal;
+   if O='*'Then A.R:=A.R*B.R else if B.R=0 Then CPFail('division par zero')else A.R:=A.R/B.R
+  End else if O='*'Then A.I:=A.I*B.I
+  else if O='DIV'Then Begin if B.I=0 Then CPFail('division par zero')else A.I:=A.I div B.I End
+  else if O='MOD'Then Begin if B.I=0 Then CPFail('division par zero')else A.I:=A.I mod B.I End
+  else A.I:=A.I and B.I
+ End;CPEvalConstTerm:=A
+End;
+
+Function CPEvalConstExpression:TConstValue;
+Var A,B:TConstValue;O:String;
+Begin
+ A:=CPEvalConstTerm;
+ While(CPToken='+')or(CPToken='-')or CPIs('OR')do Begin
+  O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;B:=CPEvalConstTerm;
+  if(A.Kind=ckString)or(B.Kind=ckString)Then Begin
+   if O<>'+'Then CPFail('operateur interdit sur une chaine')else Begin
+    if A.Kind<>ckString Then A.S:=Chr(A.I);if B.Kind<>ckString Then B.S:=Chr(B.I);
+    A.S:=A.S+B.S;A.Kind:=ckString
+   End
+  End else if(A.Kind=ckReal)or(B.Kind=ckReal)Then Begin
+   if A.Kind<>ckReal Then A.R:=A.I;if B.Kind<>ckReal Then B.R:=B.I;A.Kind:=ckReal;
+   if O='+'Then A.R:=A.R+B.R else A.R:=A.R-B.R
+  End else if O='+'Then A.I:=A.I+B.I else if O='-'Then A.I:=A.I-B.I else A.I:=A.I or B.I
+ End;CPEvalConstExpression:=A
+End;
+
+Procedure CPParseConstSection;
+Var Name:String;V:TConstValue;P:PPasSymbol;T:PPasType;
+Begin
+ if not CPIs('CONST')Then Exit;CPNext;
+ While(CPToken='ID')and not CPIs('TYPE')and not CPIs('VAR')and not CPIs('LABEL')and
+  not CPIs('BEGIN')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPError do Begin
+  Name:=CPText;CPNext;CPNeed('=');V:=CPEvalConstExpression;
+  P:=CPFind(Name);if(P=Nil)or(P^.Scope<>CPCurrentRoutine)Then Begin
+   Case V.Kind of
+    ckCharacter:T:=CPFindType('CHAR');ckReal:T:=CPFindType('REAL');
+    ckString:T:=CPFindType('STRING');else T:=CPFindType('INTEGER')
+   End;CPAddTyped(Name,V.I,True,T);P:=CPFind(Name);
+   if V.Kind=ckString Then Begin P^.IsStringConst:=True;P^.ConstText:=V.S End;
+   if V.Kind=ckReal Then Begin P^.IsRealConst:=True;P^.ConstReal:=V.R End
+  End else Begin
+   P^.Value:=V.I;P^.ConstText:=V.S;P^.ConstReal:=V.R;
+   P^.IsStringConst:=V.Kind=ckString;P^.IsRealConst:=V.Kind=ckReal
+  End;CPNeed(';')
+ End
+End;
+
 Procedure CPE(B:Byte);Begin
  if CPPass=1 Then Exit;
  if CPCodePos>=65535 Then CPFail('programme trop grand')else
  Begin
   PCode_Mem^[CPCodePos]:=B;Inc(CPCodePos)
  End
+End;
+
+Procedure CPOp(OpcodeII,OpcodeIV:Byte);Forward;
+
+Function CPFindLabel(S:String;CreateIt:Boolean):PPasLabel;
+Var L:PPasLabel;
+Begin
+ L:=CPLabels;While(L<>Nil)and((L^.Name<>S)or(L^.Scope<>CPCurrentRoutine))do L:=L^.Next;
+ if(L=Nil)and CreateIt Then Begin New(L);FillChar(L^,SizeOf(TPasLabel),0);
+  L^.Name:=S;L^.Scope:=CPCurrentRoutine;L^.Next:=CPLabels;CPLabels:=L
+ End;CPFindLabel:=L
+End;
+
+Procedure CPPatchLabel(L:PPasLabel);
+Var X:PPasLabelFixup;D:LongInt;
+Begin
+ X:=L^.Fixups;While X<>Nil do Begin D:=L^.Address-X^.Position-1;
+  if(D<-128)or(D>127)Then CPFail('GOTO hors de portee: '+L^.Name)
+  else PCode_Mem^[X^.Position]:=Byte(D);X:=X^.Next
+ End
+End;
+
+Procedure CPDefineLabel(S:String);
+Var L:PPasLabel;
+Begin
+ L:=CPFindLabel(S,True);if L^.Defined Then CPFail('etiquette deja definie: '+S)
+ else Begin L^.Defined:=True;L^.Address:=CPCodePos;CPPatchLabel(L)End
+End;
+
+Procedure CPEmitGoto(S:String);
+Var L:PPasLabel;X:PPasLabelFixup;D:LongInt;
+Begin
+ L:=CPFindLabel(S,True);CPOp(185,$8A);
+ if L^.Defined Then Begin D:=L^.Address-CPCodePos-1;
+  if(D<-128)or(D>127)Then CPFail('GOTO hors de portee: '+S);CPE(Byte(D))
+ End else Begin New(X);X^.Position:=CPCodePos;X^.Next:=L^.Fixups;L^.Fixups:=X;CPE(0)End
+End;
+
+Procedure CPCheckLabels(R:PPasRoutine);
+Var L:PPasLabel;
+Begin
+ L:=CPLabels;While L<>Nil do Begin
+  if(L^.Scope=R)and not L^.Defined Then CPFail('etiquette non definie: '+L^.Name);
+  L:=L^.Next
+ End
+End;
+
+Procedure CPParseLabelSection;
+Var S:String;
+Begin
+ if not CPIs('LABEL')Then Exit;CPNext;
+ Repeat
+  if CPToken='NUM'Then Begin Str(CPNumber,S);CPNext End
+  else if CPToken='ID'Then Begin S:=CPText;CPNext End
+  else Begin CPFail('etiquette attendue');Exit End;
+  CPFindLabel(S,True);if CPToken=','Then CPNext else Break
+ Until False;CPNeed(';')
 End;
 
 Procedure CPDropScope(R:PPasRoutine);
@@ -1929,6 +2118,15 @@ Begin
  End;
  While(CPToken<>';')and(CPToken<>'EOF')do CPNext;
  if CPToken=';'Then CPNext;
+ if CPIs('EXTERNAL')or CPIs('SEPARATE')Then Begin
+  R^.IsExternal:=CPIs('EXTERNAL');R^.IsSeparate:=CPIs('SEPARATE');R^.IsDefined:=True;
+  CPNext;
+  if CPToken='NUM'Then Begin R^.ExternalSegment:=CPNumber;CPNext;
+   if CPToken=','Then Begin CPNext;if CPToken='NUM'Then Begin
+    R^.ExternalProcedure:=CPNumber;CPNext End End
+  End;
+  if CPToken=';'Then CPNext;Exit
+ End;
  if CPIs('FORWARD')Then Begin
   if R^.IsDefined Then CPFail('FORWARD apres definition: '+Name);
   R^.IsForward:=True;CPNext;if CPToken=';'Then CPNext;Exit
@@ -1938,6 +2136,7 @@ Begin
  Old:=CPCurrentRoutine;CPCurrentRoutine:=R;
  { Les declarations imbriquees precedent le BEGIN du corps. }
   While(CPToken<>'EOF')and not CPIs('BEGIN')do Begin
+  if CPIs('CONST')Then CPParseConstSection else
   if CPIs('TYPE')Then CPParseTypeSection else
   if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(R)else CPNext
  End;
@@ -1958,6 +2157,7 @@ Var R:PPasRoutine;
 Begin
  CPPass:=1;CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPNext;
  While(CPToken<>'EOF')and not CPError do Begin
+  if CPIs('CONST')Then CPParseConstSection else
   if CPIs('TYPE')Then CPParseTypeSection else
   if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(Nil)else CPNext
  End;
@@ -1992,6 +2192,11 @@ Procedure CPEmitRoutineCall(R:PPasRoutine);
 Var Delta:Integer;
 Begin
  if R=Nil Then Begin CPFail('routine inconnue');Exit End;
+ if R^.IsExternal or R^.IsSeparate Then Begin
+  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(R^.ExternalSegment);CPE(R^.ExternalProcedure)End
+  else Begin CPE(205);CPE(R^.ExternalSegment);CPE(R^.ExternalProcedure)End;
+  Exit
+ End;
  if CurrentTarget=ptUCSDPSystemIV Then Begin
   if(CPCurrentRoutine=Nil)or(R^.Parent=CPCurrentRoutine)Then Begin
    CPE($90);CPE(R^.ProcNumber)                         { CLP }
@@ -2164,6 +2369,15 @@ Var
  J,Patch:LongInt;
 Begin
  if CPIs('BEGIN')Then CPCompound
+ else if CPIs('GOTO')Then Begin
+  CPNext;if CPToken='NUM'Then Begin Str(CPNumber,Name);CPNext End
+  else if CPToken='ID'Then Begin Name:=CPText;CPNext End
+  else Begin CPFail('etiquette attendue apres GOTO');Exit End;
+  CPEmitGoto(Name)
+ End
+ else if CPToken='NUM'Then Begin
+  Str(CPNumber,Name);CPNext;CPNeed(':');CPDefineLabel(Name);CPStatement
+ End
  else if CPIs('IF')Then Begin
   CPNext;CPExpression;if not CPIs('THEN')Then CPFail('THEN attendu')else CPNext;
   CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;
@@ -2204,6 +2418,7 @@ Begin
  End
  else if CPToken='ID'Then Begin
   P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);Name:=CPText;CPNext;
+  if CPToken=':'Then Begin CPNext;CPDefineLabel(Name);CPStatement;Exit End;
   if(P=Nil)and(R<>Nil)Then Begin
    CPEmitActualParameters(R);CPEmitRoutineCall(R)
   End else if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else
@@ -2222,6 +2437,10 @@ Var Child:PPasRoutine;Par:PPasParameter;Sym:PPasSymbol;
  Typ:PPasType;Names:Array[1..64]of String;N,I,Remain,Words:Integer;
 Begin
  if(R=Nil)or not R^.IsDefined Then Exit;
+ if R^.IsExternal or R^.IsSeparate Then Begin
+  CPCurrentRoutine:=R;R^.CodeStart:=CPCodePos;CPEmitRoutineReturn(R);
+  R^.CodeLength:=CPCodePos-R^.CodeStart;CPCurrentRoutine:=Nil;Exit
+ End;
  CPCurrentRoutine:=R;CPPos:=R^.SourcePosition;CPNext;
  While(CPToken<>'EOF')and not CPIs('BEGIN')and not CPError do Begin
   if CPIs('PROCEDURE')or CPIs('FUNCTION')Then Begin
@@ -2230,7 +2449,9 @@ Begin
    Child:=CPFindRoutine(CPText,R);
    if Child=Nil Then Begin CPFail('routine imbriquee absente de la passe 1');Exit End;
    CPPos:=Child^.EndPosition;CPNext
-  End else if CPIs('TYPE')Then CPParseTypeSection
+  End else if CPIs('CONST')Then CPParseConstSection
+  else if CPIs('TYPE')Then CPParseTypeSection
+  else if CPIs('LABEL')Then CPParseLabelSection
   else if CPIs('VAR')Then Begin
    CPNext;
    While(CPToken='ID')and not CPIs('BEGIN')and not CPIs('PROCEDURE')and
@@ -2262,7 +2483,7 @@ Begin
   Sym:=CPFind(R^.Name);if Sym<>Nil Then Sym^.SymbolType:=R^.ResultType
  End;
  R^.CodeStart:=CPCodePos;CPCompound;CPEmitRoutineReturn(R);
- R^.CodeLength:=CPCodePos-R^.CodeStart;CPCurrentRoutine:=Nil
+ CPCheckLabels(R);R^.CodeLength:=CPCodePos-R^.CodeStart;CPCurrentRoutine:=Nil
 End;
 
 Procedure CPGenerateAllRoutines;
@@ -2359,8 +2580,9 @@ Var
  V,SavedPos,SavedLine:LongInt;
  Typ,TextType:PPasType;
 Begin
- CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;
+ CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;CPLabels:=Nil;
  CPCurrentRoutine:=Nil;CPPass:=1;CPNextProcedure:=1;
+ CPRangeChecks:=False;CPIOChecks:=True;CPOverflowChecks:=False;
  Typ:=CPAddType('INTEGER',ptkInteger,1);Typ^.LowBound:=-32768;Typ^.HighBound:=32767;
  Typ:=CPAddType('BOOLEAN',ptkBoolean,1);Typ^.LowBound:=0;Typ^.HighBound:=1;
  Typ:=CPAddType('CHAR',ptkChar,1);Typ^.LowBound:=0;Typ^.HighBound:=255;
@@ -2385,18 +2607,8 @@ Begin
   CPNext;if CPToken='ID'Then CPNext;
   While(CPToken<>';')and(CPToken<>'EOF')do CPNext;CPNeed(';')
  End;
- if CPIs('CONST')Then Begin
-  CPNext;
-  While(CPToken='ID')and not CPError do Begin
-   Names[1]:=CPText;CPNext;CPNeed('=');if CPToken='NUM'Then Begin
-    V:=CPNumber;CPNext
-   End
-   else
-   Begin
-    CPFail('constante entiere attendue');V:=0
-   End;CPAdd(Names[1],V,True);CPNeed(';')
-  End
- End;
+ if CPIs('LABEL')Then CPParseLabelSection;
+ if CPIs('CONST')Then CPParseConstSection;
  if CPIs('TYPE')Then CPParseTypeSection;
  if CPIs('VAR')Then Begin
   CPNext;
@@ -2423,6 +2635,7 @@ Begin
   CPPos:=R^.EndPosition;CPNext
  End;
  CPMainStart:=CPCodePos;CPCompound;
+ CPCheckLabels(Nil);
  if CPToken='.'Then CPNext else CPFail('point final attendu');
  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214);
  CPMainLength:=CPCodePos-CPMainStart;
