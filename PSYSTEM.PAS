@@ -941,12 +941,199 @@ Begin
  else WriteLn('Echec de l''assemblage (code ',Code,').')
 End;
 
-Procedure DebugCommand;
-Var
- Name,Debugger:String;
+Function DebugHex(V:LongInt;N:Integer):String;
+Const Digits:Array[0..15]of Char='0123456789ABCDEF';
+Var S:String;
 Begin
- Name:=ProgramFile;AskFile('Program to debug',Name);if Name=''Then Exit;
- Debugger:=ToolName('PSYSTEM_DEBUGGER','DEBUG');RunShell(Debugger+' '+QuoteName(Name))
+ S:='';While N>0 do Begin S:=Digits[V and 15]+S;V:=V shr 4;Dec(N)End;DebugHex:=S
+End;
+
+Function DebugNumber(S:String;Var V:LongInt):Boolean;
+Var P:Integer;OK:Boolean;
+Begin P:=1;OK:=ParseNum(P,S,V);SkipSp(P,S);
+ DebugNumber:=OK and(P>Length(S))
+End;
+
+Function PCodeInstruction(Address:LongInt;Var NextAddress:LongInt):String;
+Var Op,Kind,B,N:Byte;Used,I:Integer;V:LongInt;S,T:String;
+Begin
+ NextAddress:=Address+1;
+ if(Address<0)or(Address>=PCode_CodeSize)Then Begin PCodeInstruction:='<hors code>';Exit End;
+ Op:=PCode_Fetch(Address);
+ if Op<128 Then Begin Str(Op,T);PCodeInstruction:='SLDC '+T;Exit End;
+ S:=Mnem128[Op];Kind:=Kind128[Op];
+ Case Kind of
+  OPK_NONE:;
+  OPK_UB:Begin B:=PCode_Fetch(Address+1);Str(B,T);S:=S+' '+T;NextAddress:=Address+2 End;
+  OPK_SB:Begin Str(ShortInt(PCode_Fetch(Address+1)),T);S:=S+' '+T;NextAddress:=Address+2 End;
+  OPK_W:Begin V:=PCode_Fetch(Address+1)or(PCode_Fetch(Address+2)shl 8);
+   Str(V,T);S:=S+' '+T;NextAddress:=Address+3 End;
+  OPK_BIG:Begin V:=PCode_ReadBig(Address+1,Used);Str(V,T);S:=S+' '+T;NextAddress:=Address+1+Used End;
+  OPK_UBUB:Begin Str(PCode_Fetch(Address+1),T);S:=S+' '+T+',';
+   Str(PCode_Fetch(Address+2),T);S:=S+T;NextAddress:=Address+3 End;
+  OPK_UBBIG,OPK_DBBIG:Begin B:=PCode_Fetch(Address+1);V:=PCode_ReadBig(Address+2,Used);
+   Str(B,T);S:=S+' ';if Kind=OPK_DBBIG Then S:=S+'L';S:=S+T+',';Str(V,T);S:=S+T;
+   NextAddress:=Address+2+Used End;
+  OPK_LSA:Begin N:=PCode_Fetch(Address+1);S:=S+' '+PCode_IntToStr(N)+',"';
+   For I:=0 to N-1 do Begin B:=PCode_Fetch(Address+2+I);
+    if B in[32..126]Then S:=S+Chr(B)else S:=S+'.' End;
+   S:=S+'"';NextAddress:=Address+2+N End;
+  OPK_LDC:Begin N:=PCode_Fetch(Address+1);S:=S+' '+PCode_IntToStr(N);
+   For I:=0 to N-1 do Begin V:=PCode_Fetch(Address+2+I*2)or
+    (PCode_Fetch(Address+3+I*2)shl 8);S:=S+',$'+DebugHex(V,4)End;
+   NextAddress:=Address+2+N*2 End;
+  OPK_XJP:Begin End;
+ End;PCodeInstruction:=S
+End;
+
+Procedure DebugCommand;
+Const MaxBreakpoints=16;MaxRunCycles=10000000;
+Var
+ Name,Line,Command,Args,S:String;
+ Breakpoint:Array[1..MaxBreakpoints]of LongInt;
+ BreakCount,I,N:Integer;
+ Address,V,NextAddress,RunCount:LongInt;
+ Done,Hit:Boolean;
+
+ Function IsBreakpoint(A:LongInt):Boolean;
+ Var J:Integer;
+ Begin IsBreakpoint:=False;For J:=1 to BreakCount do if Breakpoint[J]=A Then Begin
+  IsBreakpoint:=True;Exit End
+ End;
+
+ Procedure Registers;
+ Begin
+  WriteLn('PC=$',DebugHex(PCode_PC,4),'  SP=',PCode_SP,'  MP=',PCode_MP,
+   '  cycles=',PCode_Cycles,'  sortie=',PCode_ExitCode);
+  if not PCode_Halted Then WriteLn(DebugHex(PCode_PC,4),': ',
+   PCodeInstruction(PCode_PC,NextAddress))else WriteLn('Machine arretee.')
+ End;
+
+ Procedure ResetMachine;
+ Begin
+  FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0
+ End;
+
+ Procedure DebugHelp;
+ Begin
+  WriteLn('S [n]       Executer une ou plusieurs instructions');
+  WriteLn('G [adresse] Continuer jusqu''a un point d''arret');
+  WriteLn('B [adresse] Poser ou afficher les points d''arret');
+  WriteLn('BC adresse  Supprimer un point d''arret (BC ALL: tous)');
+  WriteLn('U [a] [n]   Desassembler (10 instructions par defaut)');
+  WriteLn('R            Afficher les registres de la VM');
+  WriteLn('K [n]        Afficher la pile');
+  WriteLn('M a [n]      Afficher la memoire de donnees');
+  WriteLn('E a valeur   Modifier un mot de donnees');
+  WriteLn('P adresse    Modifier le compteur programme');
+  WriteLn('I            Reinitialiser le programme');
+  WriteLn('Q            Quitter le debogueur')
+ End;
+
+Begin
+ Name:=ProgramFile;AskFile('Programme p-Code a deboguer',Name);if Name=''Then Exit;
+ if not FileExists(Name)and FileExists(Name+'.CODE')Then Name:=Name+'.CODE';
+ if not FileExists(Name)Then Begin WriteLn('Fichier introuvable: ',Name);Exit End;
+ GetMem(PCode_Mem,SizeOf(TPCodeMemory));GetMem(PCode_Data,SizeOf(TPCodeData));
+ if not PCode_LoadRaw(Name)Then Begin WriteLn('Chargement impossible.');
+  FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit End;
+ ProgramFile:=Name;BreakCount:=0;FillChar(Breakpoint,SizeOf(Breakpoint),0);
+ Done:=False;ResetMachine;
+ WriteLn('Debogueur p-System interne - ',PCode_CodeSize,' octet(s). Tapez ? pour l''aide.');
+ Registers;
+ Repeat
+  Write('Debug> ');ReadLn(Line);Line:=TrimString(Line);if Line=''Then Command:='S'else Begin
+   I:=Pos(' ',Line);if I=0 Then Begin Command:=UpperString(Line);Args:=''End
+   else Begin Command:=UpperString(Copy(Line,1,I-1));Args:=TrimString(Copy(Line,I+1,255))End
+  End;
+  if(Command='?')or(Command='H')or(Command='HELP')Then DebugHelp
+  else if Command='R'Then Registers
+  else if Command='I'Then Begin ResetMachine;Registers End
+  else if Command='Q'Then Done:=True
+  else if Command='P'Then Begin
+   if DebugNumber(Args,Address)and(Address>=0)and(Address<PCode_CodeSize)Then Begin
+    PCode_PC:=Address;PCode_Halted:=False;Registers
+   End else WriteLn('Adresse incorrecte.')
+  End
+  else if Command='S'Then Begin
+   if Args=''Then N:=1 else if DebugNumber(Args,V)Then N:=V else N:=0;
+   if N<1 Then WriteLn('Nombre de pas incorrect.')else Begin
+    For I:=1 to N do if not PCode_Halted Then Begin PCode_Step;Inc(PCode_Cycles)End;
+    Registers
+   End
+  End
+  else if Command='G'Then Begin
+   if Args<>''Then if DebugNumber(Args,Address)and(Address>=0)and(Address<PCode_CodeSize)
+    Then Begin PCode_PC:=Address;PCode_Halted:=False End else Begin
+     WriteLn('Adresse incorrecte.');Continue
+    End;
+   RunCount:=0;Hit:=False;
+   Repeat
+    if IsBreakpoint(PCode_PC)Then Begin Hit:=True;Break End;
+    if PCode_Fetch(PCode_PC)=213 Then Begin Hit:=True;WriteLn('Point BPT atteint.');Break End;
+    PCode_Step;Inc(PCode_Cycles);Inc(RunCount)
+   Until PCode_Halted or(RunCount>=MaxRunCycles);
+   if Hit Then WriteLn('Point d''arret a $',DebugHex(PCode_PC,4));
+   if RunCount>=MaxRunCycles Then WriteLn('Limite d''execution atteinte.');Registers
+  End
+  else if Command='B'Then Begin
+   if Args=''Then Begin
+    if BreakCount=0 Then WriteLn('Aucun point d''arret.');
+    For I:=1 to BreakCount do WriteLn(I:2,': $',DebugHex(Breakpoint[I],4))
+   End else if not DebugNumber(Args,Address)or(Address<0)or(Address>=PCode_CodeSize)Then
+    WriteLn('Adresse incorrecte.')
+   else if IsBreakpoint(Address)Then WriteLn('Point d''arret deja present.')
+   else if BreakCount=MaxBreakpoints Then WriteLn('Table des points d''arret pleine.')
+   else Begin Inc(BreakCount);Breakpoint[BreakCount]:=Address;
+    WriteLn('Point d''arret pose a $',DebugHex(Address,4))End
+  End
+  else if Command='BC'Then Begin
+   if UpperString(Args)='ALL'Then BreakCount:=0
+   else if DebugNumber(Args,Address)Then Begin
+    I:=1;While(I<=BreakCount)and(Breakpoint[I]<>Address)do Inc(I);
+    if I>BreakCount Then WriteLn('Point d''arret introuvable.')else Begin
+     For N:=I to BreakCount-1 do Breakpoint[N]:=Breakpoint[N+1];Dec(BreakCount)
+    End
+   End else WriteLn('Adresse incorrecte.')
+  End
+  else if Command='U'Then Begin
+   Address:=PCode_PC;N:=10;if Args<>''Then Begin
+    I:=Pos(' ',Args);if I=0 Then Begin if not DebugNumber(Args,Address)Then N:=0 End
+    else Begin S:=Copy(Args,1,I-1);Delete(Args,1,I);Args:=TrimString(Args);
+     if not DebugNumber(S,Address)or not DebugNumber(Args,V)Then N:=0 else N:=V End
+   End;
+   if(N<1)or(Address<0)or(Address>=PCode_CodeSize)Then WriteLn('Parametres incorrects.')
+   else For I:=1 to N do if Address<PCode_CodeSize Then Begin
+    S:=PCodeInstruction(Address,NextAddress);WriteLn(DebugHex(Address,4),': ',S);
+    if NextAddress<=Address Then Address:=Address+1 else Address:=NextAddress
+   End
+  End
+  else if Command='K'Then Begin
+   if Args=''Then N:=16 else if DebugNumber(Args,V)Then N:=V else N:=0;
+   if N<0 Then N:=0;if N>PCode_SP Then N:=PCode_SP;
+   For I:=PCode_SP-N to PCode_SP-1 do WriteLn(I:5,': ',PCode_Data^[I])
+  End
+  else if Command='M'Then Begin
+   I:=Pos(' ',Args);if I=0 Then Begin S:=Args;N:=16 End else Begin
+    S:=Copy(Args,1,I-1);Delete(Args,1,I);if not DebugNumber(TrimString(Args),V)Then V:=0;N:=V
+   End;
+   if not DebugNumber(S,Address)or(Address<0)or(Address>High(PCode_Data^))or(N<1)Then
+    WriteLn('Parametres incorrects.')else Begin
+     if Address+N-1>High(PCode_Data^)Then N:=High(PCode_Data^)-Address+1;
+     For I:=0 to N-1 do WriteLn(Address+I:5,': ',PCode_Data^[Address+I])
+    End
+  End
+  else if Command='E'Then Begin
+   I:=Pos(' ',Args);if I=0 Then WriteLn('Syntaxe: E adresse valeur')else Begin
+    S:=Copy(Args,1,I-1);Delete(Args,1,I);
+    if DebugNumber(S,Address)and DebugNumber(TrimString(Args),V)and
+      (Address>=0)and(Address<=High(PCode_Data^))Then PCode_Data^[Address]:=V
+    else WriteLn('Parametres incorrects.')
+   End
+  End else WriteLn('Commande inconnue. Tapez ? pour l''aide.')
+ Until Done;
+ FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory))
 End;
 
 Procedure ListFiles;
@@ -1058,12 +1245,12 @@ Procedure Help;Begin
  WriteLn('L  Lier des fichiers objets');
  WriteLn('X  Executer un fichier p-Code .CODE avec la machine virtuelle integree');
  WriteLn('A  Assembler un fichier source');
- WriteLn('D  Lancer le debogueur');
+ WriteLn('D  Lancer le debogueur p-Code integre');
  WriteLn('Q  Quitter PSYSTEM');
  WriteLn;
  WriteLn('Les outils externes peuvent etre choisis avec PSYSTEM_EDITOR,');
- WriteLn('PSYSTEM_COMPILER, PSYSTEM_LINKER et PSYSTEM_DEBUGGER.');
- WriteLn('L''assembleur et l''executeur p-Code sont directement integres a PSYSTEM.')
+ WriteLn('PSYSTEM_COMPILER et PSYSTEM_LINKER.');
+ WriteLn('L''assembleur, l''executeur et le debogueur p-Code sont integres a PSYSTEM.')
 End;
 
 Procedure Prompt;
