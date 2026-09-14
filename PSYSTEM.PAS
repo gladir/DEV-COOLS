@@ -270,9 +270,11 @@ End;
 
 Procedure PCode_Push(V: Integer);Begin
  If PCode_Halted Then Exit;
- If PCode_SP < High(PCode_Data^) Then Begin
-  PCode_Data^[PCode_SP] := V;
-  Inc(PCode_SP);
+ If CurrentTarget=ptUCSDPSystemIV Then Begin
+  If PCode_SP>0 Then Begin Dec(PCode_SP);PCode_Data^[PCode_SP]:=V End
+  Else Begin PCode_Write('[depassement de pile p-code]');PCode_Halted:=True;PCode_ExitCode:=1 End
+ End Else If PCode_SP < High(PCode_Data^) Then Begin
+  PCode_Data^[PCode_SP] := V;Inc(PCode_SP);
  End Else
  Begin
   PCode_Write('[depassement de pile p-code]');
@@ -282,7 +284,14 @@ Procedure PCode_Push(V: Integer);Begin
 End;
 
 Function PCode_Pop: Integer;Begin
- If PCode_SP > 0 Then Begin
+ If CurrentTarget=ptUCSDPSystemIV Then Begin
+  If PCode_SP<=High(PCode_Data^)Then Begin
+   PCode_Pop:=PCode_Data^[PCode_SP];Inc(PCode_SP)
+  End Else Begin
+   If Not PCode_Halted Then PCode_Write('[pile p-code vide]');
+   PCode_Halted:=True;PCode_ExitCode:=1;PCode_Pop:=0
+  End
+ End Else If PCode_SP > 0 Then Begin
   Dec(PCode_SP);
   PCode_Pop := PCode_Data^[PCode_SP];
  End Else
@@ -432,24 +441,19 @@ Begin
 End;
 
 Procedure PCode_IVCall(ProcNum,LexLevel:Integer;GlobalCall:Boolean);
-Var Entry,StaticLink,NewMP:LongInt;Locals,I:Integer;
+Var Entry,StaticLink:LongInt;Locals,I:Integer;
 Begin
  Entry:=PCode_IVProcAddress(ProcNum,Locals);
  if Entry<0 Then Begin PCode_Unsupported('procedure p-System IV invalide');Exit End;
  if GlobalCall Then StaticLink:=PCode_Base
  else if LexLevel=0 Then StaticLink:=PCode_MP
  else StaticLink:=PCode_StaticBase(LexLevel);
- NewMP:=PCode_SP;
- if NewMP+5+Locals>High(PCode_Data^)Then Begin
+ if PCode_SP<Locals+5 Then Begin
   PCode_Unsupported('cadre p-System IV trop grand');Exit
  End;
- PCode_DataSet(NewMP,StaticLink);       { MSSTAT }
- PCode_DataSet(NewMP+1,PCode_MP);      { MSDYN  }
- PCode_DataSet(NewMP+2,PCode_PC);      { IPC    }
- PCode_DataSet(NewMP+3,0);             { MSENV: segment courant }
- PCode_DataSet(NewMP+4,PCode_CurrentProc); { MPROC }
- PCode_MP:=NewMP;PCode_SP:=NewMP+5+Locals;
- For I:=0 to Locals-1 do PCode_DataSet(NewMP+5+I,0);
+ Dec(PCode_SP,Locals);For I:=0 to Locals-1 do PCode_DataSet(PCode_SP+I,0);
+ PCode_Push(PCode_CurrentProc);PCode_Push(0);PCode_Push(PCode_PC);
+ PCode_Push(PCode_MP);PCode_Push(StaticLink);PCode_MP:=PCode_SP;
  PCode_CurrentProc:=ProcNum;PCode_PC:=Entry
 End;
 
@@ -461,7 +465,8 @@ Begin
  if(CallerProc=0)and(ReturnPC=0)Then Begin
   PCode_Halted:=True;PCode_ExitCode:=0;Exit
  End;
- PCode_SP:=OldMP-Count;if PCode_SP<0 Then PCode_SP:=0;
+ PCode_SP:=OldMP+5+Count;
+ if PCode_SP>High(PCode_Data^)+1 Then PCode_SP:=High(PCode_Data^)+1;
  PCode_MP:=CallerMP;PCode_CurrentProc:=CallerProc;PCode_PC:=ReturnPC
 End;
 
@@ -924,6 +929,7 @@ Begin
   FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
  End;
  FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ if CurrentTarget=ptUCSDPSystemIV Then PCode_SP:=High(PCode_Data^)+1;
  PCode_Base:=0;PCode_CurrentProc:=0;
  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
  if CurrentTarget=ptUCSDPSystemIV Then Begin
@@ -1418,10 +1424,30 @@ Begin
 End;
 
 Type
+ PPasType=^TPasType;
+ PPasRoutine=^TPasRoutine;
+ PPasParameter=^TPasParameter;
+ TPasTypeKind=(ptkInteger,ptkBoolean,ptkChar,ptkArray,ptkRecord,ptkPointer,
+  ptkAlias);
+ TPasType=Record
+  Name:String[31];Kind:TPasTypeKind;SizeWords:Word;
+  ElementType:PPasType;ElementCount:Word;Next:PPasType
+ End;
+ TPasParameter=Record
+  Name:String[31];ParamType:PPasType;ByReference,Structured:Boolean;
+  Offset:Integer;Next:PPasParameter
+ End;
+ TPasRoutine=Record
+  Name:String[31];ProcNumber,LexicalLevel,ParameterWords,LocalWords:Integer;
+  IsFunction,IsForward,IsDefined:Boolean;ResultType:PPasType;
+  Parameters:PPasParameter;Parent,Next:PPasRoutine;
+  SourcePosition,CodeStart,CodeLength:LongInt
+ End;
  PPasSymbol=^TPasSymbol;
  TPasSymbol=Record Name:String[31];
  Address,Value:Integer;
- IsConst:Boolean;
+ IsConst:Boolean;SymbolType:PPasType;Scope:PPasRoutine;LexicalLevel:Integer;
+ IsParameter,ByReference:Boolean;
  Next:PPasSymbol
 End;
 PPasSource=^TPCodeMemory;
@@ -1433,6 +1459,54 @@ Var
  CPNumber:LongInt;
  CPError:Boolean;
  CPSymbols:PPasSymbol;
+ CPTypes:PPasType;
+ CPRoutines:PPasRoutine;
+ CPCurrentRoutine:PPasRoutine;
+ CPPass,CPNextProcedure:Integer;
+
+Function CPAddType(S:String;K:TPasTypeKind;Words:Word):PPasType;
+Var T:PPasType;
+Begin
+ New(T);FillChar(T^,SizeOf(TPasType),0);T^.Name:=S;T^.Kind:=K;
+ T^.SizeWords:=Words;T^.Next:=CPTypes;CPTypes:=T;CPAddType:=T
+End;
+
+Function CPFindType(S:String):PPasType;
+Var T:PPasType;
+Begin
+ T:=CPTypes;While(T<>Nil)and(T^.Name<>S)do T:=T^.Next;CPFindType:=T
+End;
+
+Function CPFindRoutine(S:String;Parent:PPasRoutine):PPasRoutine;
+Var R:PPasRoutine;
+Begin
+ R:=CPRoutines;
+ While(R<>Nil)and((R^.Name<>S)or(R^.Parent<>Parent))do R:=R^.Next;
+ CPFindRoutine:=R
+End;
+
+Function CPAddRoutine(S:String;Parent:PPasRoutine;IsFunc:Boolean):PPasRoutine;
+Var R:PPasRoutine;
+Begin
+ R:=CPFindRoutine(S,Parent);
+ if R<>Nil Then Begin CPAddRoutine:=R;Exit End;
+ New(R);FillChar(R^,SizeOf(TPasRoutine),0);R^.Name:=S;R^.Parent:=Parent;
+ R^.IsFunction:=IsFunc;Inc(CPNextProcedure);R^.ProcNumber:=CPNextProcedure;
+ if Parent=Nil Then R^.LexicalLevel:=1 else R^.LexicalLevel:=Parent^.LexicalLevel+1;
+ R^.Next:=CPRoutines;CPRoutines:=R;CPAddRoutine:=R
+End;
+
+Procedure CPFreeTables;
+Var S,SN:PPasSymbol;T,TN:PPasType;R,RN:PPasRoutine;P,PN:PPasParameter;
+Begin
+ S:=CPSymbols;While S<>Nil do Begin SN:=S^.Next;Dispose(S);S:=SN End;
+ R:=CPRoutines;While R<>Nil do Begin P:=R^.Parameters;
+  While P<>Nil do Begin PN:=P^.Next;Dispose(P);P:=PN End;
+  RN:=R^.Next;Dispose(R);R:=RN
+ End;
+ T:=CPTypes;While T<>Nil do Begin TN:=T^.Next;Dispose(T);T:=TN End;
+ CPSymbols:=Nil;CPRoutines:=Nil;CPTypes:=Nil
+End;
 
 Procedure CPFail(S:String);Begin
  if not CPError Then WriteLn('Erreur UCSD ligne ',CPLine,': ',S);CPError:=True
@@ -1514,7 +1588,10 @@ Begin
  if CPFind(S)<>Nil Then Begin
   CPFail('identificateur deja defini: '+S);Exit
  End;
- New(P);P^.Name:=S;P^.Value:=V;P^.Address:=V;P^.IsConst:=K;P^.Next:=CPSymbols;CPSymbols:=P
+ New(P);FillChar(P^,SizeOf(TPasSymbol),0);P^.Name:=S;P^.Value:=V;
+ P^.Address:=V;P^.IsConst:=K;P^.Scope:=CPCurrentRoutine;
+ if CPCurrentRoutine<>Nil Then P^.LexicalLevel:=CPCurrentRoutine^.LexicalLevel;
+ P^.Next:=CPSymbols;CPSymbols:=P
 End;
 
 Procedure CPE(B:Byte);Begin
@@ -1744,7 +1821,10 @@ Var
  NC,I:Integer;
  V:LongInt;
 Begin
- CompilePascalPCode:=1;CPSymbols:=Nil;CPError:=False;CPLine:=1;CPVarCount:=0;
+ CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;
+ CPCurrentRoutine:=Nil;CPPass:=1;CPNextProcedure:=1;
+ CPAddType('INTEGER',ptkInteger,1);CPAddType('BOOLEAN',ptkBoolean,1);
+ CPAddType('CHAR',ptkChar,1);CPError:=False;CPLine:=1;CPVarCount:=0;
  GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
  Assign(F,SourceName);Reset(F,1);if IOResult<>0 Then Begin
   CPFail('ouverture impossible');Goto 99
@@ -1787,10 +1867,8 @@ Begin
  CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');
  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214);
  if not CPError Then WriteUCSDCodeFile(CodeName,'PROGRAM',CPCodePos,CPVarCount);
- 99:P:=CPSymbols;
- While P<>Nil do Begin
-  Q:=P^.Next;Dispose(P);P:=Q
- End;
+ 99:P:=CPSymbols;Q:=P; { conserves seulement pour compatibilite TP }
+ CPFreeTables;
  FreeMem(PCode_Mem,SizeOf(TPCodeMemory));FreeMem(CPSource,SizeOf(TPCodeMemory));
  if not CPError Then Begin
   WriteLn(CPCodePos,' octet(s) de p-Code.');CompilePascalPCode:=0
