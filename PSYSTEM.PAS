@@ -1585,17 +1585,29 @@ End;
 
 Function CPFind(S:String):PPasSymbol;
 Var
- P:PPasSymbol;
+ P,Best:PPasSymbol;
+ R:PPasRoutine;
 Begin
- P:=CPSymbols;
- While(P<>Nil)and(P^.Name<>S)do P:=P^.Next;CPFind:=P
+ Best:=Nil;R:=CPCurrentRoutine;
+ Repeat
+  P:=CPSymbols;
+  While P<>Nil do Begin
+   if(P^.Name=S)and(P^.Scope=R)Then Begin Best:=P;Break End;
+   P:=P^.Next
+  End;
+  if Best<>Nil Then Break;
+  if R<>Nil Then R:=R^.Parent else Break
+ Until False;
+ CPFind:=Best
 End;
 
 Procedure CPAdd(S:String;V:Integer;K:Boolean);
 Var
  P:PPasSymbol;
 Begin
- if CPFind(S)<>Nil Then Begin
+ P:=CPSymbols;
+ While(P<>Nil)and((P^.Name<>S)or(P^.Scope<>CPCurrentRoutine))do P:=P^.Next;
+ if P<>Nil Then Begin
   CPFail('identificateur deja defini: '+S);Exit
  End;
  New(P);FillChar(P^,SizeOf(TPasSymbol),0);P^.Name:=S;P^.Value:=V;
@@ -1605,9 +1617,74 @@ Begin
 End;
 
 Procedure CPE(B:Byte);Begin
+ if CPPass=1 Then Exit;
  if CPCodePos>=65535 Then CPFail('programme trop grand')else
  Begin
   PCode_Mem^[CPCodePos]:=B;Inc(CPCodePos)
+ End
+End;
+
+Procedure CPDropScope(R:PPasRoutine);
+Var P,Prev,N:PPasSymbol;
+Begin
+ Prev:=Nil;P:=CPSymbols;
+ While P<>Nil do Begin
+  N:=P^.Next;
+  if P^.Scope=R Then Begin
+   if Prev=Nil Then CPSymbols:=N else Prev^.Next:=N;Dispose(P)
+  End else Prev:=P;
+  P:=N
+ End
+End;
+
+Procedure CPScanRoutine(Parent:PPasRoutine);Forward;
+
+Procedure CPScanRoutine(Parent:PPasRoutine);
+Var R,Old:PPasRoutine;Name:String;Depth:Integer;IsFunc:Boolean;
+Begin
+ IsFunc:=CPIs('FUNCTION');CPNext;
+ if CPToken<>'ID'Then Begin CPFail('nom de routine attendu');Exit End;
+ Name:=CPText;R:=CPFindRoutine(Name,Parent);
+ if R=Nil Then R:=CPAddRoutine(Name,Parent,IsFunc);
+ CPNext;
+ { Signature: la passe de declarations conserve sa position et saute ici
+   les types; leur resolution detaillee appartient a la passe semantique. }
+ While(CPToken<>';')and(CPToken<>'EOF')do CPNext;
+ if CPToken=';'Then CPNext;
+ if CPIs('FORWARD')Then Begin
+  if R^.IsDefined Then CPFail('FORWARD apres definition: '+Name);
+  R^.IsForward:=True;CPNext;if CPToken=';'Then CPNext;Exit
+ End;
+ if R^.IsDefined Then Begin CPFail('routine deja definie: '+Name);Exit End;
+ R^.IsDefined:=True;R^.IsForward:=False;R^.SourcePosition:=CPPos;
+ Old:=CPCurrentRoutine;CPCurrentRoutine:=R;
+ { Les declarations imbriquees precedent le BEGIN du corps. }
+ While(CPToken<>'EOF')and not CPIs('BEGIN')do Begin
+  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(R)else CPNext
+ End;
+ if CPIs('BEGIN')Then Begin
+  Depth:=1;CPNext;
+  While(Depth>0)and(CPToken<>'EOF')do Begin
+   if CPIs('BEGIN')Then Inc(Depth)else if CPIs('END')Then Dec(Depth);
+   CPNext
+  End;
+  if CPToken=';'Then CPNext
+ End else CPFail('BEGIN de routine attendu: '+Name);
+ CPCurrentRoutine:=Old
+End;
+
+Procedure CPDeclarationPass;
+Var R:PPasRoutine;
+Begin
+ CPPass:=1;CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPNext;
+ While(CPToken<>'EOF')and not CPError do Begin
+  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(Nil)else CPNext
+ End;
+ R:=CPRoutines;
+ While R<>Nil do Begin
+  if R^.IsForward and not R^.IsDefined Then
+   CPFail('declaration FORWARD non resolue: '+R^.Name);
+  R:=R^.Next
  End
 End;
 
@@ -1826,7 +1903,6 @@ Var
  F:File;
  Sz:LongInt;
  N:Word;
- P,Q:PPasSymbol;
  Names:Array[1..64]of String;
  NC,I:Integer;
  V:LongInt;
@@ -1844,7 +1920,9 @@ Begin
  End;
  BlockRead(F,CPSource^,Sz,N);if(IOResult<>0)or(N<>Sz)Then CPFail('erreur de lecture');
  Close(F);
- CPSize:=Sz;CPPos:=0;CPCodePos:=0;CPNext;
+ CPSize:=Sz;CPDeclarationPass;
+ if CPError Then Goto 99;
+ CPPass:=2;CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPCodePos:=0;CPNext;
  if CPIs('PROGRAM')Then Begin
   CPNext;if CPToken='ID'Then CPNext;
   While(CPToken<>';')and(CPToken<>'EOF')do CPNext;CPNeed(';')
@@ -1877,8 +1955,7 @@ Begin
  CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');
  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214);
  if not CPError Then WriteUCSDCodeFile(CodeName,'PROGRAM',CPCodePos,CPVarCount);
- 99:P:=CPSymbols;Q:=P; { conserves seulement pour compatibilite TP }
- CPFreeTables;
+ 99:CPFreeTables;
  FreeMem(PCode_Mem,SizeOf(TPCodeMemory));FreeMem(CPSource,SizeOf(TPCodeMemory));
  if not CPError Then Begin
   WriteLn(CPCodePos,' octet(s) de p-Code.');CompilePascalPCode:=0
