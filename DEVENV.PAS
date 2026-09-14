@@ -7808,6 +7808,13 @@ Var
  { deja etabli pour les atomes ($C000+, voir Win16_AtomName) mais dans une   }
  { sous-plage distincte ($C100+) pour eviter toute collision avec eux. }
  Win16_SelectorNext: Word;
+ { LocalHandleDelta/$310 + GetSetKernelDOSProc/$311 (2026-09-14, demande     }
+ { explicite) : simples cases de stockage get/set, comme                     }
+ { Win16_LocalNotifySeg/Ofs ci-dessus - jamais reellement consultees          }
+ { ailleurs (aucune VRAIE croissance de repertoire de handles, aucun VRAI      }
+ { relogement d'INT 21h dans ce sous-ensemble), meme honnetete documentee.    }
+ Win16_LocalHandleDelta: Word;
+ Win16_KernelDosProcSeg, Win16_KernelDosProcOfs: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -92278,6 +92285,9 @@ Begin
  Win16_GlobalNotifySeg := 0;
  Win16_GlobalNotifyOfs := 0;
  Win16_SelectorNext := $C100;
+ Win16_LocalHandleDelta := 0;
+ Win16_KernelDosProcSeg := 0;
+ Win16_KernelDosProcOfs := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -92557,6 +92567,25 @@ Begin
   S := S + Chr(B);
  End;
  Win16_ReadGuestString := S;
+End;
+
+{ Ecrit une ligne dans le VRAI fichier hote WIN16DBG.LOG (2026-09-14,      }
+{ demande explicite : LogError/$324, LogParamError/$325, HandleParamError/ }
+{ $327, _DebugOutput/$328) - factorise le MEME motif Assign/Append/        }
+{ WriteLn/Close deja utilise en ligne pour OutputDebugString/$115 (aller-   }
+{ retour disque reel, pas une simulation en memoire perdue). }
+Procedure Win16_DebugLogLine(Const S: String);
+Var
+ LogFile: Text;
+Begin
+ Assign(LogFile, 'WIN16DBG.LOG');
+ {$I-}
+ If FileExists('WIN16DBG.LOG') Then Append(LogFile) Else Rewrite(LogFile);
+ {$I+}
+ If IOResult = 0 Then Begin
+  WriteLn(LogFile, S);
+  Close(LogFile);
+ End;
 End;
 
 { Emu_HostPath n'est definie que plus loin dans ce fichier (section DOS) -   }
@@ -94365,6 +94394,29 @@ Var
  GFXHandle: Word;
  SARSel, SAROp, SARVal: Word;
  SHCCount: Word;
+ { AllocSelectorArray/IsDBCSLeadByte/LocalHandleDelta/GetSetKernelDOSProc/  }
+ { WriteOutProfiles/GetFreeMemInfo/IsTask/IsRomModule-File/LogError/         }
+ { LogParamError/HandleParamError/_DebugOutput/DebugFillBuffer (2026-09-14, }
+ { demande explicite, ordinaux 206/207/310/311/315/316/320/323-329). }
+ ASACount: Word;
+ LHDDelta: Word;
+ GSKPtrOfs, GSKPtrSeg: Word;
+ GSKOldOfs, GSKOldSeg: Word;
+ GFMMcbSeg: Word;
+ GFMSig: Byte;
+ GFMFreeB: LongInt;
+ GFMTotalPages, GFMFreePages: LongInt;
+ GFMDone: Boolean;
+ ISTHandle: Word;
+ LEuErr: Word;
+ LEInfoSeg, LEInfoOfs: Word;
+ LPEuErr: Word;
+ LPEFnSeg, LPEFnOfs, LPEParamSeg, LPEParamOfs: Word;
+ HPEuErr, HPEAxLo, HPECxLo: Word;
+ DBOFlags: Word;
+ DBOSpecSeg, DBOSpecOfs: Word;
+ DBOSpec: String;
+ K329Seg, K329Ofs, K329Len, K329I: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -97478,6 +97530,254 @@ Begin
     { point d'arret logiciel le ferait sous un VRAI debogueur Windows. }
     EmuDbg_RequestBreak(EDC_8086);
     ArgWords := 0;
+   End;
+   206: Begin
+    { AllocSelectorArray(count):word - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { AllocSelectorArray(word) AllocSelectorArray16", 1 mot). REEL           }
+    { documente : alloue un bloc de "count" selecteurs CONSECUTIFS et         }
+    { retourne le PREMIER (0 si count=0/echec). Reutilise le MEME compteur    }
+    { reel Win16_SelectorNext deja etabli pour AllocSelector/$175 (meme        }
+    { espace reserve $C100+) - avance de "count" au lieu de 1, garantissant   }
+    { que les "count" valeurs retournees sont bien CONSECUTIVES et jamais      }
+    { reutilisees ensuite (meme discipline "bump allocator qui ne recupere    }
+    { jamais" que FreeSelector/$176). }
+    ASACount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If ASACount = 0 Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     P.CPU.Regs.AX := Win16_SelectorNext;
+     Win16_SelectorNext := Word(Win16_SelectorNext + ASACount);
+    End;
+    ArgWords := 1;
+   End;
+   207: Begin
+    { IsDBCSLeadByte(b):bool - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 IsDBCSLeadByte(word)  }
+    { IsDBCSLeadByte", 1 mot). REEL documente : sur une page de code SANS     }
+    { jeu de caracteres double octet installe (chinois/japonais/coreen),      }
+    { une VRAIE Windows retourne TOUJOURS FAUX ici, quel que soit l'octet     }
+    { teste - ce sous-ensemble ne modelise QUE des pages de code a un seul    }
+    { octet (latin/OEM, voir Emu_ClipOemToAnsi/AnsiToOem) : reproduit ce      }
+    { comportement REEL a l'identique, pas une simplification. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   310: Begin
+    { LocalHandleDelta(delta):word - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { LocalHandleDelta(word) LocalHandleDelta16", 1 mot). REEL documente :    }
+    { delta<>0 FIXE une nouvelle valeur, delta=0 se contente de LIRE la       }
+    { valeur courante - toujours retournee. Ce sous-ensemble n'a AUCUNE       }
+    { VRAIE croissance de repertoire de handles (Win16_LocalBlockOfs est un   }
+    { tableau de taille FIXE) - stocke honnetement la valeur demandee         }
+    { (nouveau global Win16_LocalHandleDelta) sans qu'elle ait de VRAI         }
+    { effet, meme discipline que GlobalNotify/$154 (case de stockage jamais   }
+    { relue ailleurs). }
+    LHDDelta := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If LHDDelta <> 0 Then Win16_LocalHandleDelta := LHDDelta;
+    P.CPU.Regs.AX := Win16_LocalHandleDelta;
+    ArgWords := 1;
+   End;
+   311: Begin
+    { GetSetKernelDOSProc(ptr):DWORD - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal                         }
+    { GetSetKernelDOSProc(ptr) GetSetKernelDOSProc16", 2 mots, PAS de         }
+    { "-ret16" = retour COMPLET DX:AX). REEL documente : permet a un          }
+    { debogueur/VxD de rediriger l'adresse appelee par Dos3Call/               }
+    { NoHookDosCall (voir Emu_DoInt21/Emu_DoInt5C, deja cables en DUR sur      }
+    { les VRAIES routines de ce sous-ensemble - AUCUN point d'indirection      }
+    { reel n'existe pour les rediriger). Limitation DOCUMENTEE : stocke        }
+    { honnetement la nouvelle adresse (nouveau global                          }
+    { Win16_KernelDosProcSeg/Ofs, ptr=0:0 = simple lecture sans modifier) et    }
+    { retourne l'ANCIENNE (convention far pointer DWORD deja etablie pour      }
+    { LocalNotify/$14/GlobalNotify/$154), mais Dos3Call/NoHookDosCall            }
+    { n'appellent JAMAIS reellement cette adresse (meme honnetete que          }
+    { GlobalNotify : stocke, jamais invoque). }
+    GSKPtrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GSKPtrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GSKOldOfs := Win16_KernelDosProcOfs;
+    GSKOldSeg := Win16_KernelDosProcSeg;
+    If (GSKPtrSeg <> 0) Or (GSKPtrOfs <> 0) Then Begin
+     Win16_KernelDosProcSeg := GSKPtrSeg;
+     Win16_KernelDosProcOfs := GSKPtrOfs;
+    End;
+    P.CPU.Regs.AX := GSKOldOfs;
+    P.CPU.Regs.DX := GSKOldSeg;
+    ArgWords := 2;
+   End;
+   315: Begin
+    { WriteOutProfiles():bool - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 WriteOutProfiles()    }
+    { WriteOutProfiles16", 0 mot). REEL documente : vide sur disque les       }
+    { tampons de fichier .INI en attente. Ce sous-ensemble n'a AUCUN VRAI     }
+    { tampon a vider : Win16_ProfileWriteValue (WriteProfileString/$59)        }
+    { fait deja un VRAI aller-retour disque SYNCHRONE (lit-modifie-reecrit    }
+    { le VRAI fichier hote) a CHAQUE appel, jamais de mise en cache en         }
+    { memoire - un no-op honnete puisqu'il n'y a litteralement rien a          }
+    { vider, pas une simplification de ce sous-ensemble. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 0;
+   End;
+   316: Begin
+    { GetFreeMemInfo():DWORD - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (krnl386.exe16.spec : "pascal GetFreeMemInfo()             }
+    { GetFreeMemInfo16", 0 mot, PAS de "-ret16" = retour COMPLET DX:AX,       }
+    { MAKELONG(totalPages,freePages) donc AX=total, DX=libre). REEL ET        }
+    { CONCRET : parcourt la VRAIE chaine MCB (Emu_McbSig/Owner/Size, le        }
+    { MEME moteur deja utilise par TermCmd_MEM) pour sommer les VRAIS          }
+    { octets libres, convertis en pages de 4096 octets (taille de page x86     }
+    { universellement documentee) - PAS une constante inventee. Aucun          }
+    { programme charge (EmuMcbFirstSeg=0) -> la memoire conventionnelle         }
+    { totale (655360 octets=160 pages) est honnetement consideree entierement }
+    { libre (aucune allocation a soustraire). }
+    GFMTotalPages := 655360 Div 4096;
+    If EmuMcbFirstSeg = 0 Then
+     GFMFreePages := GFMTotalPages
+    Else Begin
+     GFMFreeB := 0;
+     GFMMcbSeg := EmuMcbFirstSeg;
+     GFMDone := False;
+     While Not GFMDone Do Begin
+      GFMSig := Emu_McbSig(P.CPU, GFMMcbSeg);
+      If Emu_McbOwner(P.CPU, GFMMcbSeg) = 0 Then
+       Inc(GFMFreeB, LongInt(Emu_McbSize(P.CPU, GFMMcbSeg)) * 16);
+      If GFMSig = Ord('M') Then
+       GFMMcbSeg := Word(GFMMcbSeg + 1 + Emu_McbSize(P.CPU, GFMMcbSeg))
+      Else GFMDone := True;
+     End;
+     GFMFreePages := GFMFreeB Div 4096;
+    End;
+    P.CPU.Regs.AX := Word(GFMTotalPages);
+    P.CPU.Regs.DX := Word(GFMFreePages);
+    ArgWords := 0;
+   End;
+   320: Begin
+    { IsTask(hTask):bool - ordinal/signature VERIFIES via le VRAI source    }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 IsTask(word) IsTask16", 1     }
+    { mot). REEL documente : valide qu'un handle designe une VRAIE tache      }
+    { active. Ce sous-ensemble est STRICTEMENT mono-tache (deja etabli         }
+    { partout - GetCurrentTask/$36/GetNumTasks/$152) : la SEULE tache          }
+    { valide possible est Win16_StackSeg, VRAIE identite deja utilisee par     }
+    { GetCurrentTask - TOUT autre handle est honnetement invalide. }
+    ISTHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If ISTHandle = Win16_StackSeg Then P.CPU.Regs.AX := 1
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   323: Begin
+    { IsRomModule(h):bool - ordinal/signature VERIFIES via le VRAI source   }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 IsRomModule(word)             }
+    { IsRomModule16", 1 mot). REEL documente : le VRAI corps C est lui-meme   }
+    { un "toujours FAUX" litteral (retourne FALSE sans condition) - reproduit }
+    { A L'IDENTIQUE, pas une simplification de ce sous-ensemble (meme          }
+    { discipline que GetCurPID/$157/IsWinOldApTask/$158). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   324: Begin
+    { LogError(uErr,lpvInfo):void - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 LogError(word ptr)    }
+    { LogError(word ptr) LogError16", 1+2 = 3 mots). REEL documente : le      }
+    { VRAI corps C ne fait qu'un MESSAGE() de deboguage (aucun effet sur le    }
+    { programme appelant) - relaie VRAIMENT vers le meme fichier hote           }
+    { WIN16DBG.LOG deja etabli pour OutputDebugString/$115 (Win16_             }
+    { DebugLogLine, nouveau helper factorise pour ce lot), plutot que ne        }
+    { rien faire du tout. }
+    LEInfoOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LEInfoSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LEuErr := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    Win16_DebugLogLine('LogError: uErr=$' + HexWord(LEuErr) + ' lpvInfo=' +
+     HexWord(LEInfoSeg) + ':' + HexWord(LEInfoOfs));
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   325: Begin
+    { LogParamError(uErr,lpfn,lpvParam):void - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16           }
+    { LogParamError(word ptr ptr) LogParamError16", 1+2+2 = 5 mots). MEME    }
+    { relais reel vers WIN16DBG.LOG que LogError/$324 ci-dessus. }
+    LPEParamOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LPEParamSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LPEFnOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LPEFnSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LPEuErr := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    Win16_DebugLogLine('LogParamError: uErr=$' + HexWord(LPEuErr) +
+     ' lpfn=' + HexWord(LPEFnSeg) + ':' + HexWord(LPEFnOfs) +
+     ' lpvParam=' + HexWord(LPEParamSeg) + ':' + HexWord(LPEParamOfs));
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   326: Begin
+    { IsRomFile(h):bool - ordinal/signature VERIFIES via le VRAI source     }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 IsRomFile(word) IsRomFile16",}
+    { 1 mot). REEL documente : MEME corps "toujours FAUX" litteral que        }
+    { IsRomModule/$323 ci-dessus, reproduit A L'IDENTIQUE. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   327: Begin
+    { K327/HandleParamError():void - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -register K327()        }
+    { HandleParamError") - convention "-register", aucun parametre sur la     }
+    { pile (le VRAI corps lit directement BX=uErr, CS:IP courant=lpfn,         }
+    { AX:CX=lpvParam depuis le contexte CPU). Relaie VRAIMENT vers               }
+    { LogParamError (meme WIN16DBG.LOG). Limitation DOCUMENTEE : le VRAI       }
+    { corps C, si uErr n'a PAS le bit ERR_WARNING ($8000, valeur documentee    }
+    { du SDK Windows), deroule ensuite la pile pour ABANDONNER l'appel en       }
+    { cours (simule un "retour force" vers l'appelant de l'appelant) - ce      }
+    { deroulement manuel de pile SERAIT INCOMPATIBLE avec l'epilogue           }
+    { COMMUN de Win16_DispatchCall (qui depile TOUJOURS son propre couple       }
+    { CS:IP de retour standard juste apres ce Case, voir la fin de cette        }
+    { procedure) : l'implanter ici corromprait cet epilogue partage pour        }
+    { TOUS les autres ordinaux. Seul l'effet de JOURNALISATION (reel et         }
+    { verifiable) est reproduit ; l'abandon d'appel ne l'est pas - disclose     }
+    { plutot que de risquer de corrompre le CPU pour un ordinal de              }
+    { deboguage interne que ce sous-ensemble n'exerce jamais reellement. }
+    HPEuErr := P.CPU.Regs.BX;
+    HPEAxLo := P.CPU.Regs.AX;
+    HPECxLo := P.CPU.Regs.CX;
+    Win16_DebugLogLine('HandleParamError: uErr=$' + HexWord(HPEuErr) +
+     ' lpfn=' + HexWord(P.CPU.Segs.CS) + ':' + HexWord(P.CPU.IP) +
+     ' lpvParam=' + HexWord(HPECxLo) + ':' + HexWord(HPEAxLo));
+    ArgWords := 0;
+   End;
+   328: Begin
+    { _DebugOutput(flags,spec,...):void - ordinal/signature VERIFIES via le }
+    { VRAI source Wine (krnl386.exe16.spec : "varargs -ret16                 }
+    { _DebugOutput(word str) _DebugOutput") - convention "varargs" : SEULE   }
+    { la partie FIXE (flags+spec, 1+2=3 mots) est depilee par l'appele         }
+    { (voir ArgWords ci-dessous), la partie variable (arguments               }
+    { supplementaires de formatage) reste a la charge de l'appelant,           }
+    { exactement comme le VRAI corps C ("FIXME(%s %04x %s\n, caller,           }
+    { flags, debugstr_a(spec))") qui n'interpole JAMAIS reellement les          }
+    { arguments variables dans spec - reproduit fidelement : spec est           }
+    { journalise TEL QUEL, sans tenter de formater les arguments variables      }
+    { (ce sous-ensemble n'a pas de VRAI sprintf 16 bits generique a leur        }
+    { appliquer). }
+    DBOSpecOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    DBOSpecSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    DBOFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    DBOSpec := Win16_ReadGuestString(P.CPU, DBOSpecSeg, DBOSpecOfs);
+    Win16_DebugLogLine('_DebugOutput: flags=$' + HexWord(DBOFlags) +
+     ' spec=' + DBOSpec);
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   329: Begin
+    { K329/DebugFillBuffer(str,wBytes):void - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16            }
+    { K329(str word) DebugFillBuffer", 2+1 = 3 mots). REEL ET CONCRET : le     }
+    { VRAI corps C ("memset(lpBuffer, 0xf9, wBytes)") remplit REELEMENT le      }
+    { tampon avec l'octet $F9 (DBGFILL_BUFFER, valeur documentee) - reproduit  }
+    { a l'identique, VRAIE ecriture memoire octet par octet via Emu_WriteByte. }
+    K329Len := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    K329Ofs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    K329Seg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    For K329I := 0 To K329Len - 1 Do
+     Emu_WriteByte(P.CPU, K329Seg, Word(K329Ofs + K329I), $F9);
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);

@@ -16,6 +16,7 @@ Const
 
 Type
  TPSYSTEMTarget=(ptAppleHeath,ptUCSDPascalII,ptUCSDPSystemIII,ptUCSDPSystemIV);
+ TSingleBits=Record Case Boolean of False:(S:Single);True:(L:LongInt)End;
 
 Var
  WorkFile,ProgramFile:String;
@@ -494,7 +495,7 @@ Begin
 End;
 
 Procedure PCode_StepIV;
-Var Op,B:Byte;SB:ShortInt;A,V1,V2,FB:LongInt;N,Used,Lvl:Integer;
+Var Op,B:Byte;SB:ShortInt;A,V1,V2,FB:LongInt;N,Used,Lvl:Integer;R1,R2:TSingleBits;
 Begin
  if PCode_Halted Then Exit;
  if(PCode_PC<0)or(PCode_PC>=PCode_CodeSize)Then Begin
@@ -571,8 +572,22 @@ Begin
  $B7:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 or V2)End;
  $B8:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and V2)End;
  $B9:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and not V2)End;
+ $BA:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 shl V2)End;
+ $BB:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 shr V2)End;
+ $BC:Begin A:=PCode_Fetch(PCode_PC)or(PCode_Fetch(PCode_PC+1)shl 8)or
+  (LongInt(PCode_Fetch(PCode_PC+2))shl 16)or(LongInt(PCode_Fetch(PCode_PC+3))shl 24);
+  Inc(PCode_PC,4);PCode_Push(A)End;
+ $BE:Begin R1.S:=PCode_Pop;PCode_Push(R1.L)End;
+ $BF:Begin R1.L:=PCode_Pop;PCode_Push(Trunc(R1.S))End;
+ $CD:Begin R1.L:=PCode_Pop;R1.S:=-R1.S;PCode_Push(R1.L)End;
  $BD:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V2);PCode_Push(V1)End;
  $C4:Begin V2:=PCode_Pop;A:=PCode_Pop;PCode_DataSet(A,V2)End;
+ $C8,$C9,$CA,$CC:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;
+  if Op=$C8 Then R1.S:=R1.S+R2.S else if Op=$C9 Then R1.S:=R1.S-R2.S
+  else if Op=$CA Then R1.S:=R1.S*R2.S else if R2.S=0 Then Begin
+   PCode_Unsupported('division reelle par zero');Exit End else R1.S:=R1.S/R2.S;
+  PCode_Push(R1.L)
+ End;
  $CB:Begin V2:=PCode_Pop;V1:=PCode_Pop;A:=PCode_Pop;if(A<V1)or(A>V2)Then PCode_Unsupported('indice hors limites')else PCode_Push(A)End;
  $D2,$D3,$D4:Begin
   SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);
@@ -603,6 +618,7 @@ Var
  SB: ShortInt;
  W, Used, N, I, Lvl: Integer;
  A, V1, V2, Addr, FB: LongInt;
+ R1,R2:TSingleBits;
  Temp: Array[0..255] Of Integer;
 Begin
  If CurrentTarget=ptUCSDPSystemIV Then Begin PCode_StepIV;Exit End;
@@ -622,17 +638,19 @@ Begin
  Begin
   V1 := PCode_Pop; If V1 < 0 Then V1 := -V1; PCode_Push(V1); Inc(PCode_PC);
  End; { ABI/ABR }
- 130, 131:
+ 130:
  Begin
   V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 + V2); Inc(PCode_PC);
- End; { ADI/ADR }
+ End;
+ 131:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;R1.S:=R1.S+R2.S;
+  PCode_Push(R1.L);Inc(PCode_PC)End;
  132:
  Begin
  { LAND } V2 := PCode_Pop; V1 := PCode_Pop;
   PCode_Push(Ord((V1 <> 0) And (V2 <> 0))); Inc(PCode_PC);
  End;
  133:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and not V2);Inc(PCode_PC)End;
- 134, 135:
+ 134:
  Begin
  { DVI/DVR } V2 := PCode_Pop; V1 := PCode_Pop;
   If V2 = 0 Then Begin
@@ -640,6 +658,10 @@ Begin
    PCode_Halted := True; PCode_ExitCode := 300;
   End Else PCode_Push(V1 Div V2);
   Inc(PCode_PC);
+ End;
+ 135:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;
+  if R2.S=0 Then PCode_Unsupported('division reelle par zero')
+  else Begin R1.S:=R1.S/R2.S;PCode_Push(R1.L)End;Inc(PCode_PC)
  End;
  136:
  Begin
@@ -653,7 +675,8 @@ Begin
   End;
   Inc(PCode_PC);
  End;
- 137, 138: Inc(PCode_PC); { FLO/FLT : pas de reels, no-op }
+ 137:Begin R1.S:=PCode_Pop;PCode_Push(R1.L);Inc(PCode_PC)End;
+ 138:Begin R1.L:=PCode_Pop;PCode_Push(Trunc(R1.S));Inc(PCode_PC)End;
  139:Begin V2:=PCode_Pop;V1:=PCode_Pop;
   if(V1<0)or(V1>15)Then PCode_Push(0)else PCode_Push(Ord((V2 and(1 shl V1))<>0));Inc(PCode_PC)End;
  140:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and V2);Inc(PCode_PC)End;
@@ -671,28 +694,34 @@ Begin
   End Else PCode_Push(V1 Mod V2);
   Inc(PCode_PC);
  End;
- 143, 144:
+ 143:
  Begin
   V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 * V2); Inc(PCode_PC);
- End; { MPI/MPR }
- 145, 146:
+ End; { MPI }
+ 144:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;R1.S:=R1.S*R2.S;
+  PCode_Push(R1.L);Inc(PCode_PC)End;
+ 145:
  Begin
   V1 := PCode_Pop; PCode_Push(-V1); Inc(PCode_PC);
- End; { NGI/NGR }
+ End; { NGI }
+ 146:Begin R1.L:=PCode_Pop;R1.S:=-R1.S;PCode_Push(R1.L);Inc(PCode_PC)End;
  147:
  Begin
   V1 := PCode_Pop; PCode_Push(Ord(V1 = 0)); Inc(PCode_PC);
  End; { LNOT }
  148: PCode_Unsupported('SRS (ensembles)');
-149, 150:
+149:
 Begin
   V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 - V2); Inc(PCode_PC);
-End; { SBI/SBR }
+End; { SBI }
+150:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;R1.S:=R1.S-R2.S;
+ PCode_Push(R1.L);Inc(PCode_PC)End;
  151: PCode_Unsupported('SGS (ensembles)');
- 152, 153:
+ 152:
  Begin
   V1 := PCode_Pop; PCode_Push(V1 * V1); Inc(PCode_PC);
- End; { SQI/SQR }
+ End; { SQI }
+ 153:Begin R1.L:=PCode_Pop;R1.S:=R1.S*R1.S;PCode_Push(R1.L);Inc(PCode_PC)End;
  154:
  Begin
  { STO : pile = [..., adresse, valeur] } V1 := PCode_Pop; Addr := PCode_Pop;
@@ -923,9 +952,11 @@ End;
 207:Begin N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,0,True)End;
 208: PCode_Unsupported('LPA (tableau tasse)');
 209: PCode_Unsupported('STE (unite externe)');
-210: PCode_Unsupported('opcode reserve ???');
-211: PCode_Unsupported('EFJ');
-212: PCode_Unsupported('NFJ');
+210:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 shl V2);Inc(PCode_PC)End;
+211:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 shr V2);Inc(PCode_PC)End;
+212:Begin V1:=PCode_Fetch(PCode_PC+1)or(PCode_Fetch(PCode_PC+2)shl 8)or
+  (LongInt(PCode_Fetch(PCode_PC+3))shl 16)or(LongInt(PCode_Fetch(PCode_PC+4))shl 24);
+  PCode_Push(V1);Inc(PCode_PC,5)End;
 213: Inc(PCode_PC, 2); { BPT : point d arret, ignore }
 214:
 Begin
@@ -1559,6 +1590,23 @@ Begin
  End
 End;
 
+Function CPAssignmentCompatible(Dest,Source:PPasType):Boolean;
+Begin
+ if CPTypeEquivalent(Dest,Source)Then Begin CPAssignmentCompatible:=True;Exit End;
+ While(Dest<>Nil)and(Dest^.Kind=ptkAlias)do Dest:=Dest^.ElementType;
+ While(Source<>Nil)and(Source^.Kind=ptkAlias)do Source:=Source^.ElementType;
+ if(Dest=Nil)or(Source=Nil)Then CPAssignmentCompatible:=False
+ else if Dest^.Kind=ptkSubrange Then CPAssignmentCompatible:=CPAssignmentCompatible(Dest^.ElementType,Source)
+ else if Source^.Kind=ptkSubrange Then CPAssignmentCompatible:=CPAssignmentCompatible(Dest,Source^.ElementType)
+ else if(Dest^.Kind=ptkString)and(Source^.Kind in[ptkString,ptkChar])Then
+  CPAssignmentCompatible:=True
+ else if(Dest^.Kind=Source^.Kind)and(Dest^.Kind in[ptkInteger,ptkBoolean,
+  ptkChar,ptkReal,ptkEnumeration,ptkPointer])Then CPAssignmentCompatible:=True
+ else if(Dest^.Kind=ptkSet)and(Source^.Kind=ptkSet)and
+  (Dest^.SizeWords=Source^.SizeWords)Then CPAssignmentCompatible:=True
+ else CPAssignmentCompatible:=False
+End;
+
 Function CPFindType(S:String):PPasType;
 Var T:PPasType;R:PPasRoutine;
 Begin
@@ -1950,6 +1998,9 @@ Function CPEvalConstFactor:TConstValue;
 Var V:TConstValue;P:PPasSymbol;Neg:Boolean;
 Begin
  FillChar(V,SizeOf(V),0);V.Kind:=ckInteger;Neg:=False;
+ if CPIs('NOT')Then Begin CPNext;V:=CPEvalConstFactor;V.I:=not V.I;
+  CPEvalConstFactor:=V;Exit
+ End;
  if CPToken='-'Then Begin Neg:=True;CPNext End else if CPToken='+'Then CPNext;
  if CPToken='NUM'Then Begin V.I:=CPNumber;CPNext End
  else if CPToken='REALNUM'Then Begin V.Kind:=ckReal;V.R:=CPRealNumber;CPNext End
@@ -1975,12 +2026,15 @@ Function CPEvalConstTerm:TConstValue;
 Var A,B:TConstValue;O:String;
 Begin
  A:=CPEvalConstFactor;
- While(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')do Begin
+ While(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')or
+  CPIs('SHL')or CPIs('SHR')do Begin
   O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;B:=CPEvalConstFactor;
   if(A.Kind=ckReal)or(B.Kind=ckReal)or(O='/')Then Begin
    if A.Kind<>ckReal Then A.R:=A.I;if B.Kind<>ckReal Then B.R:=B.I;A.Kind:=ckReal;
    if O='*'Then A.R:=A.R*B.R else if B.R=0 Then CPFail('division par zero')else A.R:=A.R/B.R
-  End else if O='*'Then A.I:=A.I*B.I
+  End else if O='SHL'Then A.I:=A.I shl B.I
+  else if O='SHR'Then A.I:=A.I shr B.I
+  else if O='*'Then A.I:=A.I*B.I
   else if O='DIV'Then Begin if B.I=0 Then CPFail('division par zero')else A.I:=A.I div B.I End
   else if O='MOD'Then Begin if B.I=0 Then CPFail('division par zero')else A.I:=A.I mod B.I End
   else A.I:=A.I and B.I
@@ -2019,6 +2073,8 @@ Begin
    End;CPAddTyped(Name,V.I,True,T);P:=CPFind(Name);
    if V.Kind=ckString Then Begin P^.IsStringConst:=True;P^.ConstText:=V.S End;
    if V.Kind=ckReal Then Begin P^.IsRealConst:=True;P^.ConstReal:=V.R End
+   else if(V.Kind in[ckInteger,ckCharacter])and((V.I<-32768)or(V.I>65535))Then
+    CPFail('debordement d''une constante 16 bits')
   End else Begin
    P^.Value:=V.I;P^.ConstText:=V.S;P^.ConstReal:=V.R;
    P^.IsStringConst:=V.Kind=ckString;P^.IsRealConst:=V.Kind=ckReal
@@ -2210,6 +2266,13 @@ Procedure CPConst(V:LongInt);Begin
  End
 End;
 
+Procedure CPRealConst(V:Real);
+Var B:TSingleBits;
+Begin
+ B.S:=V;if CurrentTarget=ptUCSDPSystemIV Then CPE($BC)else CPE(212);
+ CPE(Byte(B.L));CPE(Byte(B.L shr 8));CPE(Byte(B.L shr 16));CPE(Byte(B.L shr 24))
+End;
+
 Procedure CPEmitRoutineCall(R:PPasRoutine);
 Var Delta:Integer;
 Begin
@@ -2260,11 +2323,15 @@ Begin
    if CPToken<>'ID'Then CPFail('variable attendue pour parametre VAR')else Begin
     S:=CPFind(CPText);if(S=Nil)or S^.IsConst Then CPFail('parametre VAR invalide')
     else Begin
+     if not CPTypeEquivalent(A^.ParamType,S^.SymbolType)Then CPFail('type de parametre VAR incompatible');
      if S^.Scope=Nil Then Begin CPOp(165,$86);CPBig(S^.Address)End
      else Begin CPOp(198,$84);CPBig(S^.Address)End
     End;CPNext
    End
-  End else CPExpression;
+  End else Begin CPExpression;
+   if not CPAssignmentCompatible(A^.ParamType,CPLastExpressionType)Then
+    CPFail('type de parametre incompatible')
+  End;
   A:=A^.Next;if A<>Nil Then CPNeed(',')
  End;
  if R^.Parameters<>Nil Then CPNeed(')')
@@ -2373,17 +2440,25 @@ Procedure CPFactor;
 Var
  P:PPasSymbol;
  R:PPasRoutine;
- T:PPasType;
+ T,CastType,SourceType:PPasType;Ident:String;
  Neg:Boolean;CV:TConstValue;Lo,Hi,K,Mask:LongInt;
 Begin
- CPLastExpressionType:=CPFindType('INTEGER');Neg:=False;if CPToken='-'Then Begin
+ CPLastExpressionType:=CPFindType('INTEGER');Neg:=False;
+ if CPIs('NOT')Then Begin CPNext;CPFactor;CPOp(147,$E5);CPLastExpressionType:=CPFindType('BOOLEAN');Exit End;
+ if CPToken='-'Then Begin
   Neg:=True;CPNext
  End;
  if CPToken='NUM'Then Begin
   CPConst(CPNumber);CPNext
  End
+ else if CPToken='REALNUM'Then Begin
+  CPRealConst(CPRealNumber);CPLastExpressionType:=CPFindType('REAL');CPNext
+ End
  else if CPToken='STR'Then Begin
-  CPFail('chaine interdite dans cette expression');CPNext
+  if Length(CPText)=1 Then Begin CPConst(Ord(CPText[1]));CPLastExpressionType:=CPFindType('CHAR')End
+  else Begin CPE(166);CPE(Length(CPText));For K:=1 to Length(CPText)do CPE(Ord(CPText[K]));
+   CPLastExpressionType:=CPFindType('STRING')
+  End;CPNext
  End
  else if CPToken='('Then Begin
   CPNext;CPExpression;CPNeed(')')
@@ -2400,22 +2475,37 @@ Begin
   CPLastExpressionType^.ElementType:=CPFindType('INTEGER');CPLastExpressionType^.SizeWords:=1
  End
  else if CPIs('TRUE')Then Begin
-  CPConst(1);CPNext
+  CPConst(1);CPLastExpressionType:=CPFindType('BOOLEAN');CPNext
  End else if CPIs('FALSE')Then Begin
-  CPConst(0);CPNext
+  CPConst(0);CPLastExpressionType:=CPFindType('BOOLEAN');CPNext
  End
  else if CPToken='ID'Then Begin
-  P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);
+  Ident:=CPText;P:=CPFind(Ident);R:=CPVisibleRoutine(Ident);CastType:=CPFindType(Ident);
   CPNext;
-  if(R<>Nil)and R^.IsFunction and((CPToken='(')or(R^.Parameters=Nil))Then Begin
+  if(CastType<>Nil)and(CPToken='(')Then Begin
+   CPNext;CPExpression;SourceType:=CPLastExpressionType;CPNeed(')');
+   While(CastType^.Kind=ptkAlias)do CastType:=CastType^.ElementType;
+   While(SourceType<>Nil)and(SourceType^.Kind=ptkAlias)do SourceType:=SourceType^.ElementType;
+   if(CastType^.Kind=ptkReal)and(SourceType<>Nil)and(SourceType^.Kind<>ptkReal)Then CPOp(137,$BE)
+   else if(CastType^.Kind<>ptkReal)and(SourceType<>Nil)and(SourceType^.Kind=ptkReal)Then CPOp(138,$BF);
+   CPLastExpressionType:=CastType
+  End else if(R<>Nil)and R^.IsFunction and((CPToken='(')or(R^.Parameters=Nil))Then Begin
    CPEmitActualParameters(R);CPEmitRoutineCall(R);CPLastExpressionType:=R^.ResultType
-  End else if P=Nil Then CPFail('identificateur inconnu: '+CPText)
-  else if P^.IsConst Then CPConst(P^.Value)else
+  End else if P=Nil Then CPFail('identificateur inconnu: '+Ident)
+  else if P^.IsConst Then Begin
+   if P^.IsRealConst Then Begin CPRealConst(P^.ConstReal);CPLastExpressionType:=CPFindType('REAL')End
+   else if P^.IsStringConst Then Begin CPE(166);CPE(Length(P^.ConstText));
+    For K:=1 to Length(P^.ConstText)do CPE(Ord(P^.ConstText[K]));CPLastExpressionType:=CPFindType('STRING')
+   End else Begin CPConst(P^.Value);CPLastExpressionType:=P^.SymbolType End
+  End else
   Begin CPDesignator(P,True,T);CPLastExpressionType:=T End
  End else
  Begin
   CPFail('facteur attendu');CPNext
- End;if Neg Then CPOp(145,$E1)
+ End;if Neg Then Begin
+  if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkReal)Then CPOp(146,$CD)
+  else CPOp(145,$E1)
+ End
 End;
 
 Procedure CPTerm;
@@ -2423,12 +2513,20 @@ Var
  O:String;LT,RT:PPasType;
 Begin
  CPFactor;LT:=CPLastExpressionType;
- While(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')do Begin
+ While(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')or
+  CPIs('SHL')or CPIs('SHR')do Begin
   O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;CPFactor;RT:=CPLastExpressionType;
-  if(O='*')and(((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet)))Then CPOp(140,$B8)
-  else if O='*'Then CPOp(143,$8C)else if(O='/')or(O='DIV')Then CPOp(134,$8D)
+  if(O='SHL')or(O='SHR')Then Begin
+   if(O='SHL')Then CPOp(210,$BA)else CPOp(211,$BB);LT:=CPFindType('INTEGER')
+  End else if(O='*')and(((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet)))Then CPOp(140,$B8)
+  else if((LT<>Nil)and(LT^.Kind=ptkReal))or((RT<>Nil)and(RT^.Kind=ptkReal))Then Begin
+   if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then
+    CPFail('conversion explicite requise pour une operation reelle')
+   else if O='*'Then CPOp(144,$CA)else if O='/'Then CPOp(135,$CC)
+   else CPFail('DIV, MOD et AND interdits sur les reels');LT:=CPFindType('REAL')
+  End else if O='*'Then CPOp(143,$8C)else if(O='/')or(O='DIV')Then CPOp(134,$8D)
   else if O='MOD'Then CPOp(142,$8F)else CPOp(132,$A1)
-  ;LT:=RT
+  ;if(O<>'SHL')and(O<>'SHR')and not((LT<>Nil)and(LT^.Kind=ptkReal))Then LT:=RT
  End;CPLastExpressionType:=LT
 End;
 
@@ -2442,8 +2540,13 @@ Begin
   if CPToken='ID'Then O:=CPText;CPNext;CPTerm;RT:=CPLastExpressionType;
   if((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet))Then Begin
    if O='+'Then CPOp(156,$B7)else if O='-'Then CPOp(133,$B9)else CPOp(156,$B7)
+  End else if((LT<>Nil)and(LT^.Kind=ptkReal))or((RT<>Nil)and(RT^.Kind=ptkReal))Then Begin
+   if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then
+    CPFail('conversion explicite requise pour une operation reelle')
+   else if O='+'Then CPOp(131,$C8)else if O='-'Then CPOp(150,$C9)
+   else CPFail('OR interdit sur les reels');LT:=CPFindType('REAL')
   End else if O='+'Then CPOp(130,$A2)else if O='-'Then CPOp(149,$A3)else CPOp(141,$A0);
-  LT:=RT
+  if(LT=Nil)or(LT^.Kind<>ptkReal)Then LT:=RT
  End;CPLastExpressionType:=LT
 End;
 
@@ -2451,7 +2554,10 @@ Procedure CPExpression;
 Var
  O:String;
 Begin
- CPSimple;if CPIs('IN')Then Begin CPNext;CPSimple;CPOp(139,$B6);Exit End;
+ CPSimple;if CPIs('IN')Then Begin CPNext;CPSimple;
+  if(CPLastExpressionType=Nil)or(CPLastExpressionType^.Kind<>ptkSet)Then CPFail('ensemble attendu apres IN');
+  CPOp(139,$B6);CPLastExpressionType:=CPFindType('BOOLEAN');Exit
+ End;
  if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
  (CPToken='>')or(CPToken='>=')Then Begin
   O:=CPToken;CPNext;CPSimple;
@@ -2459,7 +2565,7 @@ Begin
   else if O='<'Then Begin CPOp(196,$B3);CPOp(147,$9F)End
   else if O='<='Then CPOp(200,$B2)
   else if O='>'Then Begin CPOp(200,$B2);CPOp(147,$9F)End
-  else CPOp(196,$B3)
+  else CPOp(196,$B3);CPLastExpressionType:=CPFindType('BOOLEAN')
  End
 End;
 Procedure CPStatement;Forward;
@@ -2613,7 +2719,10 @@ Begin
       else Begin CPOp(168,$8E);CPBig(T^.SizeWords)End
      End
     End
-   End else Begin CPExpression;CPOp(154,$C4)End
+   End else Begin CPExpression;
+    if not CPAssignmentCompatible(T,CPLastExpressionType)Then CPFail('types incompatibles dans l''affectation');
+    CPOp(154,$C4)
+   End
   End
  End
 End;
@@ -2775,7 +2884,9 @@ Begin
  Typ:=CPAddType('INTEGER',ptkInteger,1);Typ^.LowBound:=-32768;Typ^.HighBound:=32767;
  Typ:=CPAddType('BOOLEAN',ptkBoolean,1);Typ^.LowBound:=0;Typ^.HighBound:=1;
  Typ:=CPAddType('CHAR',ptkChar,1);Typ^.LowBound:=0;Typ^.HighBound:=255;
- CPAddType('REAL',ptkReal,2);
+ { Une cellule TPCodeData contient 32 bits: un REAL IEEE simple occupe donc
+   une cellule VM, tout en restant serialise comme valeur 32 bits. }
+ CPAddType('REAL',ptkReal,1);
  TextType:=CPAddType('STRING',ptkString,128);TextType^.HighBound:=255;TextType^.PackedType:=True;
  TextType:=CPAddType('TEXT',ptkFile,1);TextType^.ElementType:=CPFindType('CHAR');
  CPError:=False;CPLine:=1;CPVarCount:=0;
