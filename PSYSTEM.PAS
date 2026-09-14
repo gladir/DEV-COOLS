@@ -128,15 +128,420 @@ Procedure RunCommand;Begin
  WriteLn('Running ',ProgramFile,' ...');RunShell(QuoteName(ProgramFile))
 End;
 
+Type
+ TPCodeMemory=Array[0..65534]of Byte;
+ PPCodeMemory=^TPCodeMemory;
+ TPCodeData=Array[0..8191]of Integer;
+ PPCodeData=^TPCodeData;
+
+Var
+ PCode_Mem:PPCodeMemory;
+ PCode_Data:PPCodeData;
+ PCode_CodeSize,PCode_PC,PCode_SP,PCode_MP,PCode_Cycles:LongInt;
+ PCode_Halted:Boolean;
+ PCode_ExitCode:Integer;
+
+Function PCode_IntToStr(V:LongInt):String;
+Var S:String;
+Begin Str(V,S);PCode_IntToStr:=S End;
+
+Procedure PCode_Write(S:String);
+Begin Write(S)End;
+
+Procedure PCode_PutChar(C:Char);
+Begin Write(C)End;
+
+Function PCode_LoadRaw(Const FileName:String):Boolean;
+Var F:File;Sz:LongInt;ReadCount:Word;
+Begin
+ PCode_LoadRaw:=False;Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Exit;
+ Sz:=FileSize(F);
+ if(Sz<0)or(Sz>SizeOf(TPCodeMemory))Then Begin
+  Close(F);if IOResult<>0 Then Begin End;WriteLn('Fichier p-Code trop grand.');Exit
+ End;
+ FillChar(PCode_Mem^,SizeOf(TPCodeMemory),0);ReadCount:=0;
+ if Sz>0 Then BlockRead(F,PCode_Mem^,Sz,ReadCount);
+ if(IOResult<>0)or(ReadCount<>Sz)Then Begin Close(F);if IOResult<>0 Then Begin End;Exit End;
+ Close(F);if IOResult<>0 Then Exit;PCode_CodeSize:=Sz;PCode_LoadRaw:=True
+End;
+
+Function PCode_Fetch(Ofs: LongInt): Byte;
+Begin
+ If (Ofs >= 0) And (Ofs < PCode_CodeSize) Then PCode_Fetch := PCode_Mem^[Ofs]
+ Else PCode_Fetch := 0;
+End;
+
+{ BIG : MSB=0 => 1 octet (0..127) ; MSB=1 => 14 bits sur 2 octets (grand-boutiste). }
+Function PCode_ReadBig(Ofs: LongInt; Var Used: Integer): Integer;
+Var B1, B2: Byte;
+Begin
+ B1 := PCode_Fetch(Ofs);
+ If B1 < 128 Then Begin Used := 1; PCode_ReadBig := B1; End
+ Else Begin
+  B2 := PCode_Fetch(Ofs + 1);
+  Used := 2;
+  PCode_ReadBig := (Integer(B1 And $7F) * 256) + B2;
+ End;
+End;
+
+Procedure PCode_Push(V: Integer);
+Begin
+ If PCode_Halted Then Exit;
+ If PCode_SP < High(PCode_Data^) Then Begin
+  PCode_Data^[PCode_SP] := V;
+  Inc(PCode_SP);
+ End Else Begin
+  PCode_Write('[depassement de pile p-code]');
+  PCode_Halted := True;
+  PCode_ExitCode := 1;
+ End;
+End;
+
+Function PCode_Pop: Integer;
+Begin
+ If PCode_SP > 0 Then Begin
+  Dec(PCode_SP);
+  PCode_Pop := PCode_Data^[PCode_SP];
+ End Else Begin
+  If Not PCode_Halted Then
+   PCode_Write('[pile p-code vide]');
+  PCode_Halted := True;
+  PCode_ExitCode := 1;
+  PCode_Pop := 0;
+ End;
+End;
+
+Function PCode_DataAt(A: LongInt): Integer;
+Begin
+ If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_DataAt := PCode_Data^[A]
+ Else Begin PCode_DataAt := 0; End;
+End;
+
+Procedure PCode_DataSet(A: LongInt; V: Integer);
+Begin
+ If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_Data^[A] := V;
+End;
+
+{ Resout la base de cadre a Lvl chainons statiques (mot 0 du cadre = lien   }
+{ statique) en amont du cadre courant (PCode_MP). Lvl=0 => cadre courant.   }
+Function PCode_StaticBase(Lvl: Integer): LongInt;
+Var FB: LongInt; I: Integer;
+Begin
+ FB := PCode_MP;
+ For I := 1 To Lvl Do FB := PCode_DataAt(FB);
+ PCode_StaticBase := FB;
+End;
+
+Procedure PCode_Unsupported(Const Msg: String);
+Begin
+ If Not PCode_Halted Then Begin
+  PCode_Write('[' + Msg + ' non supporte]');
+  PCode_Halted := True;
+  PCode_ExitCode := 1;
+ End;
+End;
+
+{ Appel d unite externe (CXP) 0 = runtime hote (E/S console, adapte de la  }
+{ numerotation SYSTEM.PASCAL documentee par DISPCODE/PDECODE, mais avec une }
+{ convention de parametrage SIMPLIFIEE de mon fait : valeurs directement    }
+{ sur la pile, sans descripteur de fichier - voir memoire projet).          }
+Procedure PCode_CallUnit0(ProcNum: Byte);
+Var
+ V, Addr, N, I: Integer;
+ S: String;
+Begin
+ Case ProcNum Of
+  2:  Begin { execerror : arret avec code d erreur } N := PCode_Pop;
+       PCode_Write('[EXECERROR ' + PCode_IntToStr(N) + ']');
+       PCode_Halted := True; PCode_ExitCode := N; End;
+  12: Begin { read integer : pas d entree disponible, pousse 0 } PCode_Push(0); End;
+  13: Begin { write integer } V := PCode_Pop; Str(V, S); PCode_Write(S); End;
+  16: Begin { read char : pas d entree disponible, pousse 0 } PCode_Push(0); End;
+  17: Begin { write char } PCode_PutChar(Chr(Byte(PCode_Pop And $FF))); End;
+  19: Begin { write string : pile = [..., adresse, longueur] (longueur au sommet) }
+       N := PCode_Pop; Addr := PCode_Pop;
+       For I := 0 To N - 1 Do Begin
+        If Addr >= 30000 Then
+         PCode_PutChar(Chr(PCode_Fetch(Addr - 30000 + I)))
+        Else
+         PCode_PutChar(Chr(Byte(PCode_DataAt(Addr + I) And $FF)));
+       End;
+      End;
+  21: Begin { readln : ignore, pas d entree disponible } End;
+  22: Begin { writeln } PCode_PutChar(#13); PCode_PutChar(#10); End;
+ Else
+  PCode_Unsupported('CXP 0,' + PCode_IntToStr(ProcNum) + ' (E/S)');
+ End;
+End;
+
+{ Appel de procedure standard (CSP). Table de numeros reprise de           }
+{ DISPCODE.PAS (CSPName) - seules EXIT (4) et les no-op mathematiques sur   }
+{ entiers (18=TRC, 19=RND, pas de reel donc identite) sont implementees.    }
+Procedure PCode_CallCSP(CspNum: Byte);
+Var N: Integer;
+Begin
+ Case CspNum Of
+  4:  Begin { exit } N := PCode_Pop; PCode_Halted := True; PCode_ExitCode := N; End;
+  18, 19: Begin { trunc/round : deja entier dans ce sous-ensemble, no-op } End;
+ Else
+  PCode_Unsupported('CSP ' + PCode_IntToStr(CspNum));
+ End;
+End;
+
+{ Execute UNE instruction p-code a partir de PCode_PC. }
+Procedure PCode_Step;
+Var
+ Op: Byte;
+ B: Byte;
+ SB: ShortInt;
+ W, Used, N, I, Lvl: Integer;
+ A, V1, V2, Addr, FB: LongInt;
+ Temp: Array[0..255] Of Integer;
+Begin
+ If PCode_Halted Then Exit;
+ If (PCode_PC < 0) Or (PCode_PC >= PCode_CodeSize) Then Begin
+  PCode_Halted := True; PCode_ExitCode := 1; Exit;
+ End;
+ Op := PCode_Fetch(PCode_PC);
+ If Op < 128 Then Begin { SLDC n : charge court la constante n (0..127) }
+  PCode_Push(Op);
+  Inc(PCode_PC);
+  Exit;
+ End;
+ Case Op Of
+  128, 129: Begin V1 := PCode_Pop; If V1 < 0 Then V1 := -V1; PCode_Push(V1); Inc(PCode_PC); End; { ABI/ABR }
+  130, 131: Begin V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 + V2); Inc(PCode_PC); End; { ADI/ADR }
+  132: Begin { LAND } V2 := PCode_Pop; V1 := PCode_Pop;
+        PCode_Push(Ord((V1 <> 0) And (V2 <> 0))); Inc(PCode_PC); End;
+  133: PCode_Unsupported('DIF (ensembles)'); { DIF }
+  134, 135: Begin { DVI/DVR } V2 := PCode_Pop; V1 := PCode_Pop;
+        If V2 = 0 Then Begin
+         PCode_Write('[erreur 300 : division par zero]');
+         PCode_Halted := True; PCode_ExitCode := 300;
+        End Else PCode_Push(V1 Div V2);
+        Inc(PCode_PC); End;
+  136: Begin { CHK : verifie bornes [min,max] sur la valeur au sommet (non depilee) }
+        V2 := PCode_Pop; { max }
+        V1 := PCode_Pop; { min }
+        W := PCode_DataAt(PCode_SP - 1); { valeur, laissee sur la pile }
+        If (W < V1) Or (W > V2) Then Begin
+         PCode_Write('[erreur 302 : hors bornes]');
+         PCode_Halted := True; PCode_ExitCode := 302;
+        End;
+        Inc(PCode_PC); End;
+  137, 138: Inc(PCode_PC); { FLO/FLT : pas de reels, no-op }
+  139: PCode_Unsupported('INN (ensembles)');
+  140: PCode_Unsupported('INT (ensembles)');
+  141: Begin { IOR : OU booleen } V2 := PCode_Pop; V1 := PCode_Pop;
+        PCode_Push(Ord((V1 <> 0) Or (V2 <> 0))); Inc(PCode_PC); End;
+  142: Begin { MODI } V2 := PCode_Pop; V1 := PCode_Pop;
+        If V2 = 0 Then Begin
+         PCode_Write('[erreur 300 : division par zero]');
+         PCode_Halted := True; PCode_ExitCode := 300;
+        End Else PCode_Push(V1 Mod V2);
+        Inc(PCode_PC); End;
+  143, 144: Begin V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 * V2); Inc(PCode_PC); End; { MPI/MPR }
+  145, 146: Begin V1 := PCode_Pop; PCode_Push(-V1); Inc(PCode_PC); End; { NGI/NGR }
+  147: Begin V1 := PCode_Pop; PCode_Push(Ord(V1 = 0)); Inc(PCode_PC); End; { LNOT }
+  148: PCode_Unsupported('SRS (ensembles)');
+  149, 150: Begin V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 - V2); Inc(PCode_PC); End; { SBI/SBR }
+  151: PCode_Unsupported('SGS (ensembles)');
+  152, 153: Begin V1 := PCode_Pop; PCode_Push(V1 * V1); Inc(PCode_PC); End; { SQI/SQR }
+  154: Begin { STO : pile = [..., adresse, valeur] } V1 := PCode_Pop; Addr := PCode_Pop;
+        PCode_DataSet(Addr, V1); Inc(PCode_PC); End;
+  155: PCode_Unsupported('IXS (chaines)');
+  156: PCode_Unsupported('UNI (ensembles)');
+  157: PCode_Unsupported('LDE (unite externe)');
+  158: Begin { CSP n } B := PCode_Fetch(PCode_PC + 1); PCode_PC := PCode_PC + 2;
+        PCode_CallCSP(B); End;
+  159: Begin PCode_Push(0); Inc(PCode_PC); End; { LDCN : NIL }
+  160: PCode_Unsupported('ADJ (ensembles)');
+  161: Begin { FJP dep : saut si faux }
+        SB := ShortInt(PCode_Fetch(PCode_PC + 1));
+        V1 := PCode_Pop;
+        If V1 = 0 Then PCode_PC := PCode_PC + 2 + SB
+        Else PCode_PC := PCode_PC + 2;
+       End;
+  162: Begin { INC n } A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop;
+        PCode_Push(V1 + A); PCode_PC := PCode_PC + 1 + Used; End;
+  163: Begin { IND n : *(pop()+n) }
+        A := PCode_ReadBig(PCode_PC + 1, Used); Addr := PCode_Pop;
+        PCode_Push(PCode_DataAt(Addr + A)); PCode_PC := PCode_PC + 1 + Used; End;
+  164: Begin { IXA n : indexation tableau, taille element n mots }
+        A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop; Addr := PCode_Pop;
+        PCode_Push(Addr + V1 * A); PCode_PC := PCode_PC + 1 + Used; End;
+  165: Begin { LAO n : adresse globale }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(A);
+        PCode_PC := PCode_PC + 1 + Used; End;
+  166: Begin { LSA n,"texte" : adresse (taguee espace code) de la chaine litterale }
+        N := PCode_Fetch(PCode_PC + 1);
+        PCode_Push(30000 + (PCode_PC + 2));
+        PCode_PC := PCode_PC + 2 + N; End;
+  167: PCode_Unsupported('LAE (unite externe)');
+  168: Begin { MOV n : pile = [..., dest, src], copie n mots src->dest }
+        A := PCode_ReadBig(PCode_PC + 1, Used);
+        V2 := PCode_Pop; { src }
+        V1 := PCode_Pop; { dest }
+        For I := 0 To A - 1 Do PCode_DataSet(V1 + I, PCode_DataAt(V2 + I));
+        PCode_PC := PCode_PC + 1 + Used; End;
+  169: Begin { LDO n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(PCode_DataAt(A));
+        PCode_PC := PCode_PC + 1 + Used; End;
+  170: PCode_Unsupported('SAS');
+  171: Begin { SRO n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop;
+        PCode_DataSet(A, V1); PCode_PC := PCode_PC + 1 + Used; End;
+  172: PCode_Unsupported('XJP (table de cas)');
+  173: Begin { RNP n : retour procedure (non testee dans ce sous-ensemble, } { programme = un seul bloc plat sans appel) }
+        N := PCode_Fetch(PCode_PC + 1);
+        Addr := PCode_DataAt(PCode_MP + 2); { retIC }
+        FB := PCode_DataAt(PCode_MP + 1);   { lien dynamique }
+        PCode_SP := PCode_MP - N;
+        PCode_MP := FB;
+        PCode_PC := Addr; End;
+  174: PCode_Unsupported('CIP (appel indirect)');
+  175, 176, 177, 180, 181, 183: Begin { EQU/GEQ/GRT/LEQ/LES/NEQ : octet type ignore, compare entier }
+        Inc(PCode_PC); { consomme l octet discriminant de type }
+        B := PCode_Fetch(PCode_PC); Inc(PCode_PC);
+        V2 := PCode_Pop; V1 := PCode_Pop;
+        Case Op Of
+         175: PCode_Push(Ord(V1 = V2));
+         176: PCode_Push(Ord(V1 >= V2));
+         177: PCode_Push(Ord(V1 > V2));
+         180: PCode_Push(Ord(V1 <= V2));
+         181: PCode_Push(Ord(V1 < V2));
+         183: PCode_Push(Ord(V1 <> V2));
+        End;
+       End;
+  178: Begin { LDA Lvl,Off : adresse via chainage statique }
+        Lvl := PCode_Fetch(PCode_PC + 1);
+        A := PCode_ReadBig(PCode_PC + 2, Used);
+        FB := PCode_StaticBase(Lvl);
+        PCode_Push(FB + A);
+        PCode_PC := PCode_PC + 2 + Used; End;
+  179: Begin { LDC n,$w1,... : charge n constantes 16 bits }
+        N := PCode_Fetch(PCode_PC + 1);
+        For I := 0 To N - 1 Do Begin
+         W := PCode_Fetch(PCode_PC + 2 + I*2) Or (PCode_Fetch(PCode_PC + 3 + I*2) Shl 8);
+         PCode_Push(W);
+        End;
+        PCode_PC := PCode_PC + 2 + N*2; End;
+  182: Begin { LOD Lvl,Off : charge via chainage statique }
+        Lvl := PCode_Fetch(PCode_PC + 1);
+        A := PCode_ReadBig(PCode_PC + 2, Used);
+        FB := PCode_StaticBase(Lvl);
+        PCode_Push(PCode_DataAt(FB + A));
+        PCode_PC := PCode_PC + 2 + Used; End;
+  184: Begin { STR Lvl,Off : stocke via chainage statique }
+        Lvl := PCode_Fetch(PCode_PC + 1);
+        A := PCode_ReadBig(PCode_PC + 2, Used);
+        FB := PCode_StaticBase(Lvl);
+        V1 := PCode_Pop;
+        PCode_DataSet(FB + A, V1);
+        PCode_PC := PCode_PC + 2 + Used; End;
+  185: Begin { UJP dep }
+        SB := ShortInt(PCode_Fetch(PCode_PC + 1));
+        PCode_PC := PCode_PC + 2 + SB; End;
+  186, 187: PCode_Unsupported('LDP/STP (fichiers)'); { LDP/STP }
+  188: Begin { LDM n : empile n mots depuis l adresse au sommet }
+        N := PCode_Fetch(PCode_PC + 1); Addr := PCode_Pop;
+        For I := 0 To N - 1 Do PCode_Push(PCode_DataAt(Addr + I));
+        PCode_PC := PCode_PC + 2; End;
+  189: Begin { STM n : pile = [..., dest, mot1..motN], depile n mots puis dest }
+        N := PCode_Fetch(PCode_PC + 1);
+        For I := N - 1 Downto 0 Do Temp[I] := PCode_Pop;
+        Addr := PCode_Pop;
+        For I := 0 To N - 1 Do PCode_DataSet(Addr + I, Temp[I]);
+        PCode_PC := PCode_PC + 2; End;
+  190, 191: PCode_Unsupported('LDB/STB (octets)'); { LDB/STB }
+  192: PCode_Unsupported('IXP (tableau tasse)');
+  193: Begin { RBP n : retour de bloc = fin de programme }
+        PCode_Halted := True; PCode_ExitCode := 0; End;
+  194: PCode_Unsupported('CBP');
+  195, 196, 197, 200, 201, 203: Begin { EQUI/GEQI/GRTI/LEQI/LESI/NEQI }
+        V2 := PCode_Pop; V1 := PCode_Pop;
+        Case Op Of
+         195: PCode_Push(Ord(V1 = V2));
+         196: PCode_Push(Ord(V1 >= V2));
+         197: PCode_Push(Ord(V1 > V2));
+         200: PCode_Push(Ord(V1 <= V2));
+         201: PCode_Push(Ord(V1 < V2));
+         203: PCode_Push(Ord(V1 <> V2));
+        End;
+        Inc(PCode_PC); End;
+  198: Begin { LLA n : adresse locale MP+n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(PCode_MP + A);
+        PCode_PC := PCode_PC + 1 + Used; End;
+  199: Begin { LDCI w : constante entiere 16 bits (Integer 16 bits signe -}
+        { la troncature d affectation fait deja l extension de signe).   }
+        W := PCode_Fetch(PCode_PC + 1) Or (PCode_Fetch(PCode_PC + 2) Shl 8);
+        PCode_Push(W); PCode_PC := PCode_PC + 3; End;
+  202: Begin { LDL n : charge local MP+n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(PCode_DataAt(PCode_MP + A));
+        PCode_PC := PCode_PC + 1 + Used; End;
+  204: Begin { STL n : stocke local MP+n }
+        A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop;
+        PCode_DataSet(PCode_MP + A, V1); PCode_PC := PCode_PC + 1 + Used; End;
+  205: Begin { CXP unite,proc }
+        B := PCode_Fetch(PCode_PC + 1); N := PCode_Fetch(PCode_PC + 2);
+        PCode_PC := PCode_PC + 3;
+        If B = 0 Then PCode_CallUnit0(N)
+        Else PCode_Unsupported('CXP ' + PCode_IntToStr(B) + ',' + PCode_IntToStr(N) + ' (unite externe)');
+       End;
+  206: PCode_Unsupported('CLP (appel par numero)');
+  207: PCode_Unsupported('CGP (appel par numero)');
+  208: PCode_Unsupported('LPA (tableau tasse)');
+  209: PCode_Unsupported('STE (unite externe)');
+  210: PCode_Unsupported('opcode reserve ???');
+  211: PCode_Unsupported('EFJ');
+  212: PCode_Unsupported('NFJ');
+  213: Inc(PCode_PC, 2); { BPT : point d arret, ignore }
+  214: Begin PCode_Halted := True; PCode_ExitCode := 0; End; { XIT }
+  215: Inc(PCode_PC); { NOP }
+  216..231: Begin { SLDL1..16 }
+        PCode_Push(PCode_DataAt(PCode_MP + (Op - 215))); Inc(PCode_PC); End;
+  232..247: Begin { SLDO1..16 }
+        PCode_Push(PCode_DataAt(Op - 231)); Inc(PCode_PC); End;
+  248..255: Begin { SIND0..7 }
+        Addr := PCode_Pop; PCode_Push(PCode_DataAt(Addr + (Op - 248))); Inc(PCode_PC); End;
+ End;
+End;
+
+
+Function ExecutePCodeFile(Const FileName:String):Integer;
+Const MaxCycles=10000000;
+Begin
+ ExecutePCodeFile:=1;GetMem(PCode_Mem,SizeOf(TPCodeMemory));
+ GetMem(PCode_Data,SizeOf(TPCodeData));
+ if not PCode_LoadRaw(FileName)Then Begin
+  WriteLn('Impossible de charger le fichier p-Code: ',FileName);
+  FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
+ End;
+ FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
+ While not PCode_Halted and(PCode_Cycles<MaxCycles)do Begin
+  PCode_Step;Inc(PCode_Cycles)
+ End;
+ if not PCode_Halted Then Begin
+  WriteLn('[limite d''instructions p-Code atteinte]');PCode_ExitCode:=1
+ End;
+ FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));
+ ExecutePCodeFile:=PCode_ExitCode
+End;
+
+
 Procedure ExecuteCommand;
 Var
  Name:String;
+ Code:Integer;
 Begin
- Name:=ProgramFile;AskFile('Program file',Name);if Name=''Then Exit;
+ Name:=ProgramFile;AskFile('Programme p-Code',Name);if Name=''Then Exit;
+ if not FileExists(Name)and FileExists(Name+'.CODE')Then Name:=Name+'.CODE';
  if not FileExists(Name)Then Begin
-  WriteLn('File not found: ',Name);Exit
+  WriteLn('Fichier introuvable: ',Name);Exit
  End;
- ProgramFile:=Name;RunShell(QuoteName(Name))
+ ProgramFile:=Name;WriteLn('Execution de ',Name,' ...');Code:=ExecutePCodeFile(Name);
+ WriteLn;WriteLn('Fin du programme p-Code (code ',Code,').')
 End;
 
 Procedure LinkCommand;
@@ -651,14 +1056,14 @@ Procedure Help;Begin
  WriteLn('F  Ouvrir le gestionnaire de fichiers');
  WriteLn('C  Compiler le fichier source Pascal courant');
  WriteLn('L  Lier des fichiers objets');
- WriteLn('X  Executer un programme deja compile');
+ WriteLn('X  Executer un fichier p-Code .CODE avec la machine virtuelle integree');
  WriteLn('A  Assembler un fichier source');
  WriteLn('D  Lancer le debogueur');
  WriteLn('Q  Quitter PSYSTEM');
  WriteLn;
  WriteLn('Les outils externes peuvent etre choisis avec PSYSTEM_EDITOR,');
  WriteLn('PSYSTEM_COMPILER, PSYSTEM_LINKER et PSYSTEM_DEBUGGER.');
- WriteLn('L''assembleur p-Code est directement integre a PSYSTEM.')
+ WriteLn('L''assembleur et l''executeur p-Code sont directement integres a PSYSTEM.')
 End;
 
 Procedure Prompt;
