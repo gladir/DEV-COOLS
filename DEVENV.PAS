@@ -7705,6 +7705,19 @@ Var
  Win16_TaskLocked: Boolean;
  Win16_TaskQueueHandle: Word;
  Win16_TaskSignalProcSeg, Win16_TaskSignalProcOfs: Word;
+ { VRAIE table d'atomes locale (InitAtomTable/$68 - FindAtom/$69 -           }
+ { AddAtom/$70 - DeleteAtom/$71 - GetAtomName/$72 - GetAtomHandle/$73,       }
+ { 2026-09-14, demande explicite) - handles reels a partir de $C000 (le       }
+ { minimum documente reel pour un atome de chaine, distinct des atomes       }
+ { entiers $0001-$BFFF). }
+ Win16_AtomCount: Integer;
+ Win16_AtomName: Array[0..127] Of String;
+ Win16_AtomRefCount: Array[0..127] Of Word;
+ { Callback de gestionnaire de ressource personnalise                       }
+ { (SetResourceHandler/$67, 2026-09-14) - stocke mais jamais reellement      }
+ { appele (LoadResource/$61 utilise toujours son propre chargeur reel        }
+ { integre), meme honnetete que Win16_LocalNotifySeg/Ofs. }
+ Win16_ResourceHandlerSeg, Win16_ResourceHandlerOfs: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91814,6 +91827,9 @@ Begin
  Win16_TaskQueueHandle := 0;
  Win16_TaskSignalProcSeg := 0;
  Win16_TaskSignalProcOfs := 0;
+ Win16_AtomCount := 0;
+ Win16_ResourceHandlerSeg := 0;
+ Win16_ResourceHandlerOfs := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -93319,6 +93335,13 @@ End;
 { (section video), Forward necessaire pour la meme raison qu'Emu_HostPath   }
 { ci-dessus. }
 Procedure Emu_VidInitDefaultDAC; Forward;
+{ Emu_AllocHandle (definie bien plus bas, section DOS INT21h) - Forward     }
+{ necessaire pour AccessResource/$64 et OpenFile/$74 (2026-09-14, demande   }
+{ explicite) qui reutilisent REELLEMENT la MEME table de handles fichier    }
+{ DOS partagee (EmuFileH/EmuFileOpen/etc., deja etablie ailleurs dans ce     }
+{ fichier pour INT 21h AH=3Dh/AH=3Ch) plutot que d'inventer un second        }
+{ mecanisme de handle distinct. }
+Function Emu_AllocHandle: Integer; Forward;
 { KEYBOARD.DRV (2026-09-14, demande explicite) : nouveau module ModIdx=4,   }
 { suite logique de l'ordre KERNEL=1/GDI=2/USER=3 deja documente plus haut   }
 { (empiriquement verifie sur CLOCK.EXE/CALENDAR.EXE) - meme simplification  }
@@ -93729,6 +93752,23 @@ Var
  GPSLen, GPSJ: Integer;
  WPSAppSeg, WPSAppOfs, WPSKeySeg, WPSKeyOfs, WPSStrSeg, WPSStrOfs: Word;
  WPSApp, WPSKey, WPSStr: String;
+ { KERNEL.EXE AccessResource/AllocResource/SetResourceHandler/               }
+ { InitAtomTable/FindAtom/AddAtom/DeleteAtom/GetAtomName/GetAtomHandle/       }
+ { OpenFile (2026-09-14, demande explicite, ordinaux 64/66-74). }
+ ARHandle: Integer;
+ AllocResHi, AllocResLo: Word;
+ AllocResSize: Word;
+ SRHFnSeg, SRHFnOfs: Word;
+ SRHOldSeg, SRHOldOfs: Word;
+ AtomStr: String;
+ AtomIdx, AtomI: Integer;
+ AtomHandle: Word;
+ GANHandle, GANSeg, GANOfs, GANSize: Word;
+ GANLen, GANJ: Integer;
+ OFNameSeg, OFNameOfs, OFBuffSeg, OFBuffOfs, OFStyle: Word;
+ OFName, OFHostPath: String;
+ OFHandle: Integer;
+ OFTempFile: File;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -94728,6 +94768,43 @@ Begin
     P.CPU.Regs.AX := 0;
     ArgWords := 1;
    End;
+   64: Begin
+    { AccessResource(hInstance,hResInfo):HFILE - ordinal VERIFIE via le     }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { AccessResource(word word) AccessResource16", 2 mots). REEL ET           }
+    { CONCRET : ouvre VRAIMENT Win16_LoadedPath et positionne le VRAI          }
+    { pointeur de fichier au debut de la derniere ressource trouvee            }
+    { (Win16_LastRsrcFileOfs, etabli par FindResource/$60) - reutilise le      }
+    { MEME repertoire de handles fichier DOS partage (EmuFileH/EmuFileOpen/    }
+    { etc.) deja etabli pour INT 21h AH=3Dh/3Ch, PAS un second mecanisme       }
+    { invente : le handle retourne peut REELLEMENT etre relu ensuite via       }
+    { les fonctions fichier DOS standard. Ignore hInstance/hResInfo             }
+    { (simplification a un seul emplacement de stockage, voir FindResource/    }
+    { $60). Aucune ressource trouvee ou table pleine : $FFFF (HFILE_ERROR,      }
+    { valeur documentee reelle), pas une approximation. }
+    If Not Win16_LastRsrcFound Then
+     P.CPU.Regs.AX := Word(-1)
+    Else Begin
+     ARHandle := Emu_AllocHandle;
+     If ARHandle = 0 Then
+      P.CPU.Regs.AX := Word(-1)
+     Else Begin
+      Assign(EmuFileH[ARHandle], Win16_LoadedPath);
+      {$I-} Reset(EmuFileH[ARHandle], 1); {$I+}
+      If IOResult <> 0 Then
+       P.CPU.Regs.AX := Word(-1)
+      Else Begin
+       Seek(EmuFileH[ARHandle], Win16_LastRsrcFileOfs);
+       EmuFileOpen[ARHandle] := True;
+       EmuFileName[ARHandle] := Win16_LoadedPath;
+       EmuFileMode[ARHandle] := 0;
+       EmuFileFirstRd[ARHandle] := True;
+       P.CPU.Regs.AX := Word(ARHandle);
+      End;
+     End;
+    End;
+    ArgWords := 2;
+   End;
    65: Begin
     { SizeofResource(hInstance, hResInfo):DWORD - PAS de "-ret16" = retour  }
     { COMPLET DX:AX (taille en octets). Ignore les 2 arguments             }
@@ -94741,6 +94818,242 @@ Begin
     End;
     ArgWords := 2;
    End;
+   66: Begin
+    { AllocResource(hInstance,hResInfo,dwSize):HGLOBAL - ordinal VERIFIE    }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16           }
+    { AllocResource(word word long) AllocResource16", 1+1+2 = 4 mots).       }
+    { REEL : dwSize=0 (documente reel "utiliser la taille reelle de la       }
+    { ressource") -> reutilise Win16_LastRsrcLen ; sinon utilise le mot        }
+    { bas de dwSize (notre tas etant minuscule, une VRAIE taille >64Ko         }
+    { echouerait honnetement de toute facon, meme limitation deja               }
+    { documentee pour GlobalAlloc/$15). Alloue VRAIMENT via le MEME bump       }
+    { allocator/repertoire partage que GlobalAlloc/$15 (simplification         }
+    { LMEM_FIXED deja etablie). }
+    AllocResHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    AllocResLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (AllocResHi = 0) And (AllocResLo = 0) Then
+     AllocResSize := Word(Win16_LastRsrcLen And $FFFF)
+    Else
+     AllocResSize := AllocResLo;
+    If (LongInt(Win16_HeapNext) + LongInt(AllocResSize)) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     P.CPU.Regs.AX := Win16_HeapNext;
+     If Win16_LocalBlockCount < 64 Then Begin
+      Win16_LocalBlockOfs[Win16_LocalBlockCount] := Win16_HeapNext;
+      Win16_LocalBlockSize[Win16_LocalBlockCount] := AllocResSize;
+      Inc(Win16_LocalBlockCount);
+     End;
+     Win16_HeapNext := Win16_HeapNext + AllocResSize;
+    End;
+    ArgWords := 4;
+   End;
+   67: Begin
+    { SetResourceHandler(hInstance,lpTypeName,lpResourceHandler):FARPROC -  }
+    { ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec : "pascal }
+    { SetResourceHandler(word str segptr) SetResourceHandler16", 1+2+2 = 5   }
+    { mots, PAS de "-ret16" = retour COMPLET DX:AX). REEL : fixe VRAIMENT     }
+    { Win16_ResourceHandlerSeg/Ofs et retourne l'ANCIEN callback - mais ne    }
+    { l'appelle JAMAIS (LoadResource/$61 utilise toujours son propre           }
+    { chargeur reel integre, meme honnetete que LocalNotify/$14). Portee      }
+    { DISCLOSEE : un SEUL emplacement pour tous les types de ressource        }
+    { (pas de table indexee par lpTypeName) - suffisant tant qu'un            }
+    { programme n'installe pas plusieurs gestionnaires distincts               }
+    { simultanement. hInstance/lpTypeName n'ont pas besoin d'etre lus          }
+    { (aucune branche ne depend de leur valeur). }
+    SRHOldSeg := Win16_ResourceHandlerSeg;
+    SRHOldOfs := Win16_ResourceHandlerOfs;
+    SRHFnSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SRHFnOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_ResourceHandlerSeg := SRHFnSeg;
+    Win16_ResourceHandlerOfs := SRHFnOfs;
+    P.CPU.Regs.AX := SRHOldOfs;
+    P.CPU.Regs.DX := SRHOldSeg;
+    ArgWords := 5;
+   End;
+   68: Begin
+    { InitAtomTable(nSize):BOOL - ordinal VERIFIE via le VRAI source Wine   }
+    { (krnl386.exe16.spec : "pascal -ret16 InitAtomTable(word)               }
+    { InitAtomTable16", 1 mot). REEL : (re)initialise VRAIMENT la table       }
+    { d'atomes locale Win16_AtomName/RefCount (2026-09-14, nouvelle table)    }
+    { - nSize est une taille de table CONSULTATIVE (documentee reelle,         }
+    { jamais une limite stricte dans les vraies implementations non plus)      }
+    { et n'a pas besoin d'etre lue (notre table a une capacite fixe de 128    }
+    { entrees, largement suffisant pour un usage normal). }
+    Win16_AtomCount := 0;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   69: Begin
+    { FindAtom(lpString):ATOM - ordinal VERIFIE via le VRAI source Wine     }
+    { (krnl386.exe16.spec : "pascal -ret16 FindAtom(str) FindAtom16", 2      }
+    { mots). REEL : recherche VRAIMENT dans Win16_AtomName (comparaison        }
+    { insensible a la casse, convention documentee reelle des atomes           }
+    { locaux) SANS creer de nouvel atome ni modifier le compte de               }
+    { references - retourne le VRAI handle ($C000+index, minimum               }
+    { documente reel pour un atome de chaine) si trouve, sinon 0                }
+    { (documente reel "atome introuvable"). }
+    AtomStr := UpCaseStr(Win16_ReadGuestString(P.CPU,
+     Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)),
+     Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4))));
+    AtomIdx := -1;
+    For AtomI := 0 To Win16_AtomCount - 1 Do
+     If UpCaseStr(Win16_AtomName[AtomI]) = AtomStr Then AtomIdx := AtomI;
+    If AtomIdx >= 0 Then P.CPU.Regs.AX := Word($C000 + AtomIdx)
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   70: Begin
+    { AddAtom(lpString):ATOM - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 AddAtom(str) AddAtom16", 2        }
+    { mots). REEL : chaine deja presente (comparaison insensible a la          }
+    { casse) -> incremente VRAIMENT son compte de references et retourne le   }
+    { MEME handle (documente reel). Chaine absente -> cree VRAIMENT une        }
+    { nouvelle entree dans Win16_AtomName (handle $C000+index). Table          }
+    { pleine (128 entrees) : echec honnete (0), aucune approximation. }
+    AtomStr := Win16_ReadGuestString(P.CPU,
+     Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)),
+     Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    AtomIdx := -1;
+    For AtomI := 0 To Win16_AtomCount - 1 Do
+     If UpCaseStr(Win16_AtomName[AtomI]) = UpCaseStr(AtomStr) Then AtomIdx := AtomI;
+    If AtomIdx >= 0 Then Begin
+     Inc(Win16_AtomRefCount[AtomIdx]);
+     P.CPU.Regs.AX := Word($C000 + AtomIdx);
+    End Else If Win16_AtomCount < 128 Then Begin
+     Win16_AtomName[Win16_AtomCount] := AtomStr;
+     Win16_AtomRefCount[Win16_AtomCount] := 1;
+     P.CPU.Regs.AX := Word($C000 + Win16_AtomCount);
+     Inc(Win16_AtomCount);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   71: Begin
+    { DeleteAtom(nAtom):ATOM - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 DeleteAtom(word) DeleteAtom16",   }
+    { 1 mot). REEL : decremente VRAIMENT le compte de references - atteint    }
+    { zero -> retire VRAIMENT l'entree (retourne 0, succes complet             }
+    { documente reel) ; encore des references -> retourne l'atome lui-meme    }
+    { INCHANGE (documente reel exact, PAS 0). Atome inconnu : retourne          }
+    { l'atome inchange (echec honnete, rien a decrementer). }
+    AtomHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    AtomIdx := Integer(AtomHandle) - $C000;
+    If (AtomIdx >= 0) And (AtomIdx < Win16_AtomCount) Then Begin
+     If Win16_AtomRefCount[AtomIdx] > 0 Then Dec(Win16_AtomRefCount[AtomIdx]);
+     If Win16_AtomRefCount[AtomIdx] = 0 Then Begin
+      For AtomI := AtomIdx To Win16_AtomCount - 2 Do Begin
+       Win16_AtomName[AtomI] := Win16_AtomName[AtomI + 1];
+       Win16_AtomRefCount[AtomI] := Win16_AtomRefCount[AtomI + 1];
+      End;
+      Dec(Win16_AtomCount);
+      P.CPU.Regs.AX := 0;
+     End Else
+      P.CPU.Regs.AX := AtomHandle;
+    End Else
+     P.CPU.Regs.AX := AtomHandle;
+    ArgWords := 1;
+   End;
+   72: Begin
+    { GetAtomName(nAtom,lpBuffer,nSize):word - ordinal VERIFIE via le VRAI  }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GetAtomName(word      }
+    { ptr word) GetAtomName16", 1+2+1 = 4 mots). REEL : copie VRAIMENT la     }
+    { chaine enregistree, tronquee a nSize-1 caracteres, retourne la VRAIE    }
+    { longueur ecrite (documente reel). Atome inconnu : 0, rien n'est          }
+    { ecrit (documente reel). }
+    GANHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GANSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GANOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GANSize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    AtomIdx := Integer(GANHandle) - $C000;
+    If (AtomIdx >= 0) And (AtomIdx < Win16_AtomCount) Then Begin
+     GANLen := Length(Win16_AtomName[AtomIdx]);
+     If GANLen > Integer(GANSize) - 1 Then GANLen := Integer(GANSize) - 1;
+     If GANLen < 0 Then GANLen := 0;
+     For GANJ := 1 To GANLen Do
+      Emu_WriteByte(P.CPU, GANSeg, Word(GANOfs + GANJ - 1), Byte(Ord(Win16_AtomName[AtomIdx][GANJ])));
+     Emu_WriteByte(P.CPU, GANSeg, Word(GANOfs + GANLen), 0);
+     P.CPU.Regs.AX := Word(GANLen);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   73: Begin
+    { GetAtomHandle(nAtom):ATOM - ordinal VERIFIE via le VRAI source Wine   }
+    { (krnl386.exe16.spec : "pascal -ret16 GetAtomHandle(word)               }
+    { GetAtomHandle16", 1 mot). REEL pour la simplification deja etablie       }
+    { partout ailleurs (handle=identite directe, ex. LocalHandle/$11) :        }
+    { confirme VRAIMENT que l'atome existe dans la table avant de le            }
+    { retourner inchange, sinon 0 (documente reel "atome invalide"). }
+    AtomHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    AtomIdx := Integer(AtomHandle) - $C000;
+    If (AtomIdx >= 0) And (AtomIdx < Win16_AtomCount) Then P.CPU.Regs.AX := AtomHandle
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   74: Begin
+    { OpenFile(lpFileName,lpReOpenBuff,wStyle):HFILE - ordinal VERIFIE via  }
+    { le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16               }
+    { OpenFile(str ptr word) OpenFile16", 2+2+1 = 5 mots). REEL ET            }
+    { CONCRET pour les 3 styles principaux documentes (constantes             }
+    { WINDOWS.H standard, pas inventees) : OF_EXIST($4000) verifie             }
+    { REELLEMENT l'existence hote (Emu_HostPath) sans ouvrir ; OF_DELETE       }
+    { ($200) efface REELLEMENT le fichier hote ; sinon ouvre/cree             }
+    { REELLEMENT via le MEME repertoire de handles fichier DOS partage         }
+    { (EmuFileH/etc.) que AccessResource/$64 ci-dessus - OF_CREATE($1000)      }
+    { determine Rewrite vs Reset. Portee DISCLOSEE : seul le champ             }
+    { nErrCode de OFSTRUCT (lpReOpenBuff+2) est rempli - szPathName (le        }
+    { reste de la structure, rarement consulte par un programme normal)        }
+    { ne l'est pas. Echec : HFILE_ERROR ($FFFF, valeur documentee reelle). }
+    OFNameSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    OFNameOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    OFBuffSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    OFBuffOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    OFStyle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    OFName := Win16_ReadGuestString(P.CPU, OFNameSeg, OFNameOfs);
+    OFHostPath := Emu_HostPath(OFName);
+    If (OFStyle And $4000) <> 0 Then Begin { OF_EXIST }
+     If FileExists(OFHostPath) Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := Word(-1);
+    End Else If (OFStyle And $0200) <> 0 Then Begin { OF_DELETE }
+     If FileExists(OFHostPath) Then Begin
+      Assign(OFTempFile, OFHostPath);
+      {$I-} Erase(OFTempFile); {$I+}
+      If IOResult = 0 Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := Word(-1);
+     End Else
+      P.CPU.Regs.AX := Word(-1);
+    End Else Begin
+     OFHandle := Emu_AllocHandle;
+     If OFHandle = 0 Then
+      P.CPU.Regs.AX := Word(-1)
+     Else Begin
+      Assign(EmuFileH[OFHandle], OFHostPath);
+      If (OFStyle And $1000) <> 0 Then Begin { OF_CREATE }
+       {$I-} Rewrite(EmuFileH[OFHandle], 1); {$I+}
+      End Else Begin
+       {$I-} Reset(EmuFileH[OFHandle], 1); {$I+}
+      End;
+      If IOResult <> 0 Then Begin
+       P.CPU.Regs.AX := Word(-1);
+       If (OFBuffSeg <> 0) Or (OFBuffOfs <> 0) Then
+        Emu_WriteWord(P.CPU, OFBuffSeg, Word(OFBuffOfs + 2), 2);
+      End Else Begin
+       EmuFileOpen[OFHandle] := True;
+       EmuFileName[OFHandle] := OFHostPath;
+       EmuFileMode[OFHandle] := Byte(OFStyle And 3);
+       EmuFileFirstRd[OFHandle] := True;
+       P.CPU.Regs.AX := Word(OFHandle);
+       If (OFBuffSeg <> 0) Or (OFBuffOfs <> 0) Then
+        Emu_WriteWord(P.CPU, OFBuffSeg, Word(OFBuffOfs + 2), 0);
+      End;
+     End;
+    End;
+    ArgWords := 5;
+   End;
+   { OpenPathName/75 et DeletePathName/76 : ordinaux marques "stub" SANS     }
+   { AUCUNE signature exploitable dans le VRAI source Wine                   }
+   { (krnl386.exe16.spec) ET dans la source secondaire WineVDM (meme          }
+   { resultat pour les deux) - DELIBEREMENT NON IMPLANTES (meme discipline   }
+   { que FatalExit/$1, CallProcInstance/$53). }
    91: Begin
     { InitTask - convention REGISTRES verifiee (Raymond Chen, "How do      }
     { 16-bit programs start up?", devblogs.microsoft.com/oldnewthing) :    }
