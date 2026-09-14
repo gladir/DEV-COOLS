@@ -5282,6 +5282,11 @@ Type
   { sans dupliquer 5 formules de geometrie differentes. }
   LastGridW  : Integer;
   LastGridH  : Integer;
+  { Infobulle du titre tronque (2026-09-14, demande explicite) - meme        }
+  { patron delai/etat que TooltipTimer/TooltipVisible de la barre d outils   }
+  { principale (voir DrawTooltip/HandleToolBarEvent). }
+  TitleHoverSince     : LongInt;
+  TitleTooltipVisible : Boolean;
   NeedRepaint: Boolean;          { redessin complet requis         }
   StatusMsg  : String[127];      { message d etat affiche en bas   }
   { Stage 1 "multi-fenetre" (2026-08-15) : Loaded distingue "binaire      }
@@ -152050,6 +152055,8 @@ Begin
  P.PanelY := 0;
  P.NeedRepaint := True;
  P.StatusMsg := '';
+ P.TitleHoverSince := 0;
+ P.TitleTooltipVisible := False;
  P.Loaded := False;
  P.TotalSteps := 0;
  For Y := 0 To 24 Do
@@ -152716,6 +152723,75 @@ Begin
  End;
 End;
 
+{ Tronque Title pour tenir dans MaxW pixels REELS (TextWidth, pas un        }
+{ compte de caracteres fixe) - BOGUE REEL corrige (2026-09-14, demande      }
+{ explicite : "les titres des emulateurs... debordent") : les 2 sites       }
+{ d'appel (barre de titre graphique/texte) utilisaient un simple             }
+{ Copy(Title,1,73)/Copy(Title,1,87) FIGE, qui ignorait la largeur REELLE     }
+{ disponible du panneau (variable selon la taille de fenetre et le CPU       }
+{ cible, voir GridW) - un titre plus long que prevu, ou un panneau plus      }
+{ etroit que prevu, debordait quand meme de la barre de titre. Recherche     }
+{ dichotomique de la plus longue troncature (+ "...") qui tient reellement   }
+{ dans MaxW, plutot qu'une simple estimation. }
+Function TruncateTitleToWidth(Const FullTitle: String; MaxW: Integer): String;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ If TextWidth(FullTitle) <= MaxW Then Begin
+  TruncateTitleToWidth := FullTitle;
+  Exit;
+ End;
+ Lo := 0;
+ Hi := Length(FullTitle);
+ While Lo < Hi Do Begin
+  Mid := (Lo + Hi + 1) Div 2;
+  If TextWidth(Copy(FullTitle, 1, Mid) + '...') <= MaxW Then Lo := Mid
+  Else Hi := Mid - 1;
+ End;
+ If Lo <= 0 Then
+  TruncateTitleToWidth := '...'
+ Else
+  TruncateTitleToWidth := Copy(FullTitle, 1, Lo) + '...';
+End;
+
+{ Infobulle jaune du titre complet (2026-09-14, demande explicite) - MEME   }
+{ style visuel exact que DrawTooltip (barre d outils principale, couleur    }
+{ 14 = jaune clair, texte en CLR_BORDER) : affichee quand la souris          }
+{ survole le titre depuis au moins TOOLTIP_DELAY ms (voir                    }
+{ HandleEmulatorPanelEvent, EV_MOUSE_MOVE), qu'il ait ete tronque ou non. }
+{ BOGUE REEL corrige (2026-09-14, demande explicite) : dessiner l'infobulle }
+{ SANS BORNE de largeur (juste TextWidth(FullTitle), potentiellement bien   }
+{ plus large que le panneau pour un long chemin) laissait un RESIDU         }
+{ PERMANENT a l'ecran des que la souris quittait le titre : le "fond        }
+{ noir"+rendu pixel RLE de DrawEmulatorPanel (qui efface/redessine la       }
+{ zone GridX..GridX+GridW CHAQUE image, y compris pour faire disparaitre    }
+{ l'infobulle une fois cachee) ne couvre QUE cette largeur GridW - la        }
+{ portion de l'infobulle qui depassait GridW tombait dans une "zone morte"  }
+{ jamais repeinte par personne (ni l'emulateur, ni le panneau voisin,       }
+{ pas systematiquement a chaque image) et restait donc collee a l'ecran     }
+{ indefiniment, meme apres que TitleTooltipVisible repasse a False. Corrige }
+{ en bornant TOUJOURS l'infobulle a MaxW (meme largeur utile que le titre   }
+{ tronque, moins la reserve pour "[Esc] Fermer") - garantit qu'elle reste    }
+{ TOUJOURS dans la zone que DrawEmulatorPanel repeint de toute facon a       }
+{ chaque image, donc plus jamais de residu. }
+Procedure DrawEmuTitleTooltip(Var P: TEmulatorPanel; Const FullTitle: String;
+ MaxW: Integer);
+Var
+ TX, TY, TW: Integer;
+ ShownText: String;
+Begin
+ If Not P.TitleTooltipVisible Then Exit;
+ TX := P.PanelX + 6;
+ TY := P.PanelY + 24;
+ ShownText := TruncateTitleToWidth(FullTitle, MaxW);
+ TW := TextWidth(ShownText) + 8;
+ SetColor(14); SetFillStyle(SolidFill, 14);
+ Bar(TX, TY, TX + TW, TY + 16);
+ SetColor(CLR_BORDER);
+ Rectangle(TX, TY, TX + TW, TY + 16);
+ OutTextXY(TX + 4, TY + 3, ShownText);
+End;
+
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel);
 Var
  GridX, GridY: Integer;
@@ -152723,7 +152799,7 @@ Var
  PixX, PixY: Integer;
  ScrH: Integer;
  GridW, GridH: Integer;
- Title: String;
+ Title, FullTitle: String;
  Cell: TEmuCell;
  S: String;
  NesScale: Integer;
@@ -152946,11 +153022,11 @@ Begin
   For Sy := 0 To GfxH - 1 Do
    For Sx := 0 To GfxW - 1 Do
     If Emu_VidGetPixel(Sx, Sy) <> 0 Then Inc(RunStart);
-  Title := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
+  FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
            ' [mode $' + HexByte(EmuVideo.Mode) + ' ' +
            IntToStr(GfxW) + 'x' + IntToStr(GfxH) +
            ' px<>0=' + IntToStr(RunStart) + ']';
-  If Length(Title) > 90 Then Title := Copy(Title, 1, 87) + '...';
+  Title := TruncateTitleToWidth(FullTitle, GridW - 108);
   DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
   DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
    '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
@@ -152986,6 +153062,20 @@ Begin
   Else
    DrawText(GridX + 6, GridY + GridH + 6,
     'Arrete (code de fin: ' + IntToStr(P.Fault) + ')', CLR_HIGHLIGHTTEXT);
+  { BOGUE REEL corrige (2026-09-14, demande explicite) : l'infobulle du     }
+  { titre DOIT etre dessinee EN DERNIER, APRES le "fond noir"+rendu pixel   }
+  { RLE ci-dessus - ceux-ci repeignent TOUTE la zone GridX..GridX+GridW/    }
+  { GridY..GridY+GridH (qui chevauche la ligne de titre, juste en dessous)  }
+  { et effaçaient donc silencieusement l'infobulle si elle etait dessinee   }
+  { avant eux (comme le faisait la 1ere version de ce correctif) - seule    }
+  { la portion de l'infobulle DEPASSANT GridW (si le titre complet est très }
+  { long) survivait par accident, donnant l'illusion d'un decalage vers la  }
+  { droite alors qu'il s'agissait en realite d'un effacement partiel.        }
+  { MaxW=GridW-12 (voir aussi le commentaire de tete de                      }
+  { DrawEmuTitleTooltip) : la borne EN LARGEUR EN PLUS de l'ordre de dessin, }
+  { pour garantir que meme un titre tres long reste TOUJOURS dans la zone    }
+  { que ce bloc repeint de toute facon chaque image. }
+  DrawEmuTitleTooltip(P, FullTitle, GridW - 12);
   P.NeedRepaint := False;
   EmuVideo.GfxDirty := False;
   { Flip atomique : voir commentaire du meme nom plus bas dans cette         }
@@ -153035,9 +153125,8 @@ Begin
  DrawFilledRect(P.PanelX, P.PanelY,
   P.PanelX + GridW, P.PanelY + 22,
   CLR_TITLEBAR_ACTIVE);
- Title := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath;
- If Length(Title) > 76 Then
-  Title := Copy(Title, 1, 73) + '...';
+ FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath;
+ Title := TruncateTitleToWidth(FullTitle, GridW - 108);
  DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
  DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
   '[Esc] Fermer', CLR_HIGHLIGHTTEXT);
@@ -153089,6 +153178,13 @@ Begin
   DrawText(GridX + 6, GridY + GridH + 6,
    'Arrete (code de fin: ' + IntToStr(P.Fault) + ')',
    CLR_HIGHLIGHTTEXT);
+ { BOGUE REEL corrige (2026-09-14, demande explicite) : MEME raisonnement   }
+ { que dans la branche graphique ci-dessus - l'infobulle doit etre          }
+ { dessinee APRES le fond/les cellules de texte (qui repeignent la meme     }
+ { zone), sinon elle est silencieusement effacee, ET bornee a GridW-12       }
+ { (voir DrawEmuTitleTooltip) pour ne jamais laisser de residu hors de la    }
+ { zone repeinte chaque image. }
+ DrawEmuTitleTooltip(P, FullTitle, GridW - 12);
  P.NeedRepaint := False;
  { Flip atomique : la page qu on vient de composer entierement ci-dessus     }
  { devient visible d un coup, aucun etat intermediaire n est jamais visible. }
@@ -195620,8 +195716,34 @@ Begin
     EmuVScr_PushKey(P, Word(K) Shl 8);
    End;
   EV_MOUSE_MOVE:
-   If IsDOSTarget Then
-    EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns);
+   Begin
+    { Infobulle jaune du titre tronque (2026-09-14, demande explicite) -    }
+    { meme patron delai que TooltipTimer/TooltipVisible de la barre         }
+    { d outils principale (voir DrawTooltip/HandleToolBarEvent plus haut     }
+    { dans ce fichier) : la souris doit rester immobile sur le TITRE (pas    }
+    { tout le bandeau - exclut le bouton "[Esc] Fermer" a droite, reserve    }
+    { sur 100px comme deja etabli par DrawEmulatorPanel) pendant             }
+    { TOOLTIP_DELAY ms avant que l infobulle apparaisse. Reutilise           }
+    { P.LastGridW (deja tenu a jour par DrawEmulatorPanel pour              }
+    { New-EmulatorGif) plutot que de recalculer la geometrie ici. }
+    If (Ev.MouseX >= P.PanelX) And (Ev.MouseX < P.PanelX + P.LastGridW - 100) And
+       (Ev.MouseY >= P.PanelY) And (Ev.MouseY < P.PanelY + 22) Then Begin
+     If P.TitleHoverSince = 0 Then P.TitleHoverSince := GetTimestamp;
+     If (Not P.TitleTooltipVisible) And
+        (GetTimestamp - P.TitleHoverSince >= TOOLTIP_DELAY) Then Begin
+      P.TitleTooltipVisible := True;
+      P.NeedRepaint := True;
+     End;
+    End Else Begin
+     P.TitleHoverSince := 0;
+     If P.TitleTooltipVisible Then Begin
+      P.TitleTooltipVisible := False;
+      P.NeedRepaint := True;
+     End;
+    End;
+    If IsDOSTarget Then
+     EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns);
+   End;
   EV_MOUSE_DOWN:
    If IsDOSTarget Then Begin
     Case Ev.MouseBtn Of
