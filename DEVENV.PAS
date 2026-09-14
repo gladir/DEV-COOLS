@@ -93769,6 +93769,34 @@ Var
  OFName, OFHostPath: String;
  OFHandle: Integer;
  OFTempFile: File;
+ { KERNEL.EXE _lclose/_lread/_lcreat/_llseek/_lopen/_lwrite/lstrcpy/          }
+ { lstrcat/lstrlen/GetTempDrive/GetCodeHandle/DefineHandleTable/              }
+ { LoadLibrary/FreeLibrary (2026-09-14, demande explicite, ordinaux           }
+ { 81-86/88-90/92-96) - reutilisent la MEME table de handles fichier DOS       }
+ { partagee (EmuFileH/etc.) qu'AccessResource/$64 et OpenFile/$74. }
+ LCHandle: Word;
+ LRHandle, LRBufSeg, LRBufOfs: Word;
+ LRCount, LRTotal, LRChunk: LongInt;
+ LCrNameSeg, LCrNameOfs: Word;
+ LCrName, LCrHostPath: String;
+ LCrHandle: Integer;
+ LLHandle, LLOrigin: Word;
+ LLOffHi, LLOffLo: Word;
+ LLOffset, LLNewPos: LongInt;
+ LOpNameSeg, LOpNameOfs, LOpMode: Word;
+ LOpName, LOpHostPath: String;
+ LOpHandle: Integer;
+ LWHandle, LWBufSeg, LWBufOfs: Word;
+ LWCount, LWTotal, LWChunk: LongInt;
+ LSCDestSeg, LSCDestOfs, LSCSrcSeg, LSCSrcOfs: Word;
+ LSCSrcStr: String;
+ LSCJ: Integer;
+ LCatDestStr: String;
+ LCatDestLen, LCatJ: Integer;
+ LSLSeg, LSLOfs: Word;
+ GCHSeg: Word;
+ LLibSeg, LLibOfs: Word;
+ LLibName, LLibHostPath, LLibBase: String;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -95054,6 +95082,232 @@ Begin
    { (krnl386.exe16.spec) ET dans la source secondaire WineVDM (meme          }
    { resultat pour les deux) - DELIBEREMENT NON IMPLANTES (meme discipline   }
    { que FatalExit/$1, CallProcInstance/$53). }
+   81: Begin
+    { _lclose(hFile):word - ordinal VERIFIE via le VRAI source Wine        }
+    { (krnl386.exe16.spec : "pascal -ret16 _lclose(word) _lclose16", 1      }
+    { mot). REEL ET CONCRET : ferme VRAIMENT le handle via la MEME table     }
+    { de handles fichier DOS partagee (EmuFileH/EmuFileOpen) deja etablie    }
+    { pour AccessResource/$64/OpenFile/$74 et INT 21h AH=3Dh/3Eh/3Ch -        }
+    { PAS un second mecanisme invente. Handle invalide/deja ferme :           }
+    { HFILE_ERROR ($FFFF, documente reel), pas une approximation. }
+    LCHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LCHandle >= 5) And (LCHandle <= 31) And EmuFileOpen[LCHandle] Then Begin
+     Close(EmuFileH[LCHandle]);
+     EmuFileOpen[LCHandle] := False;
+     P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := Word(-1);
+    ArgWords := 1;
+   End;
+   82: Begin
+    { _lread(hFile,lpBuffer,wBytes):word - ordinal VERIFIE via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 _lread(word segptr   }
+    { word) WIN16_lread", 1+2+1 = 4 mots). REEL ET CONCRET : lit VRAIMENT    }
+    { depuis le VRAI fichier hote (MEME table de handles partagee que        }
+    { _lclose/$81 ci-dessus) par blocs de 4096 octets (LRBuf, deja           }
+    { declare pour LoadResource/$61) copies octet par octet dans la           }
+    { memoire emulee - retourne le VRAI nombre d'octets REELLEMENT lus        }
+    { (peut etre inferieur a wBytes en fin de fichier, documente reel).        }
+    { Handle invalide : HFILE_ERROR ($FFFF). }
+    LRHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LRBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LRBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LRCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LRHandle < 5) Or (LRHandle > 31) Or (Not EmuFileOpen[LRHandle]) Then
+     P.CPU.Regs.AX := Word(-1)
+    Else Begin
+     LRTotal := 0;
+     While LRTotal < LRCount Do Begin
+      LRChunk := LRCount - LRTotal;
+      If LRChunk > SizeOf(LRBuf) Then LRChunk := SizeOf(LRBuf);
+      BlockRead(EmuFileH[LRHandle], LRBuf, Word(LRChunk), LRBytesRead);
+      For LRI := 0 To Integer(LRBytesRead) - 1 Do
+       Emu_WriteByte(P.CPU, LRBufSeg, Word(LRBufOfs + LRTotal + LRI), LRBuf[LRI]);
+      LRTotal := LRTotal + LRBytesRead;
+      If LRBytesRead < Word(LRChunk) Then Break;
+     End;
+     P.CPU.Regs.AX := Word(LRTotal);
+    End;
+    ArgWords := 4;
+   End;
+   83: Begin
+    { _lcreat(lpFileName,iAttribute):word - ordinal VERIFIE via le VRAI    }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 _lcreat(str word)     }
+    { _lcreat16", 2+1 = 3 mots). REEL ET CONCRET : cree VRAIMENT (ou          }
+    { tronque) le fichier hote via la MEME table de handles partagee que      }
+    { _lclose/$81 (Emu_AllocHandle+Rewrite, meme mecanisme qu'OpenFile/$74    }
+    { avec OF_CREATE). iAttribute (DOS - lecture seule/cache/systeme)          }
+    { n'a pas besoin d'etre lu (aucun attribut de fichier reel n'est           }
+    { modelise dans ce sous-ensemble). Echec : HFILE_ERROR ($FFFF). }
+    LCrNameSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LCrNameOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LCrName := Win16_ReadGuestString(P.CPU, LCrNameSeg, LCrNameOfs);
+    LCrHostPath := Emu_HostPath(LCrName);
+    LCrHandle := Emu_AllocHandle;
+    If LCrHandle = 0 Then
+     P.CPU.Regs.AX := Word(-1)
+    Else Begin
+     Assign(EmuFileH[LCrHandle], LCrHostPath);
+     {$I-} Rewrite(EmuFileH[LCrHandle], 1); {$I+}
+     If IOResult <> 0 Then
+      P.CPU.Regs.AX := Word(-1)
+     Else Begin
+      EmuFileOpen[LCrHandle] := True;
+      EmuFileName[LCrHandle] := LCrHostPath;
+      EmuFileMode[LCrHandle] := 1;
+      EmuFileFirstRd[LCrHandle] := True;
+      P.CPU.Regs.AX := Word(LCrHandle);
+     End;
+    End;
+    ArgWords := 3;
+   End;
+   84: Begin
+    { _llseek(hFile,lOffset,iOrigin):LONG - ordinal VERIFIE via le VRAI    }
+    { source Wine (krnl386.exe16.spec : "pascal _llseek(word long word)      }
+    { _llseek16", 1+2+1 = 4 mots, PAS de "-ret16" = retour COMPLET DX:AX).   }
+    { REEL ET CONCRET : positionne VRAIMENT le pointeur de fichier hote       }
+    { (Seek standard Pascal sur EmuFileH[handle], meme table partagee que     }
+    { _lclose/$81) selon les 3 origines documentees reelles (0=debut,          }
+    { 1=position courante, 2=fin) et retourne la VRAIE nouvelle position.      }
+    { Handle invalide : $FFFFFFFF (HFILE_ERROR, documente reel). }
+    LLHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LLOffHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LLOffLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LLOrigin := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LLHandle < 5) Or (LLHandle > 31) Or (Not EmuFileOpen[LLHandle]) Then Begin
+     P.CPU.Regs.AX := $FFFF;
+     P.CPU.Regs.DX := $FFFF;
+    End Else Begin
+     LLOffset := (LongInt(LLOffHi) Shl 16) Or LongInt(LLOffLo);
+     Case LLOrigin Of
+      0: LLNewPos := LLOffset;
+      1: LLNewPos := FilePos(EmuFileH[LLHandle]) + LLOffset;
+      2: LLNewPos := FileSize(EmuFileH[LLHandle]) + LLOffset;
+      Else LLNewPos := FilePos(EmuFileH[LLHandle]);
+     End;
+     If LLNewPos < 0 Then LLNewPos := 0;
+     Seek(EmuFileH[LLHandle], LLNewPos);
+     P.CPU.Regs.AX := Word(LLNewPos And $FFFF);
+     P.CPU.Regs.DX := Word((LLNewPos Shr 16) And $FFFF);
+    End;
+    ArgWords := 4;
+   End;
+   85: Begin
+    { _lopen(lpFileName,iReadWrite):word - ordinal VERIFIE via le VRAI     }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 _lopen(str word)      }
+    { _lopen16", 2+1 = 3 mots). REEL ET CONCRET : ouvre VRAIMENT un           }
+    { fichier hote EXISTANT (echoue si absent, contrairement a _lcreat/$83)   }
+    { via la MEME table de handles partagee que _lclose/$81. iReadWrite       }
+    { (mode lecture/ecriture/lecture-ecriture) enregistre dans                }
+    { EmuFileMode. Fichier introuvable ou table pleine : HFILE_ERROR           }
+    { ($FFFF). }
+    LOpNameSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LOpNameOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LOpMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LOpName := Win16_ReadGuestString(P.CPU, LOpNameSeg, LOpNameOfs);
+    LOpHostPath := Emu_HostPath(LOpName);
+    If Not FileExists(LOpHostPath) Then
+     P.CPU.Regs.AX := Word(-1)
+    Else Begin
+     LOpHandle := Emu_AllocHandle;
+     If LOpHandle = 0 Then
+      P.CPU.Regs.AX := Word(-1)
+     Else Begin
+      Assign(EmuFileH[LOpHandle], LOpHostPath);
+      {$I-} Reset(EmuFileH[LOpHandle], 1); {$I+}
+      If IOResult <> 0 Then
+       P.CPU.Regs.AX := Word(-1)
+      Else Begin
+       EmuFileOpen[LOpHandle] := True;
+       EmuFileName[LOpHandle] := LOpHostPath;
+       EmuFileMode[LOpHandle] := Byte(LOpMode And 3);
+       EmuFileFirstRd[LOpHandle] := True;
+       P.CPU.Regs.AX := Word(LOpHandle);
+      End;
+     End;
+    End;
+    ArgWords := 3;
+   End;
+   86: Begin
+    { _lwrite(hFile,lpBuffer,wBytes):word - ordinal VERIFIE via le VRAI    }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 _lwrite(word ptr      }
+    { word) _lwrite16", 1+2+1 = 4 mots). REEL ET CONCRET : ecrit VRAIMENT    }
+    { dans le VRAI fichier hote (MEME table de handles partagee que           }
+    { _lclose/$81) par blocs de 4096 octets (LRBuf reutilise) copies           }
+    { depuis la memoire emulee - retourne le VRAI nombre d'octets              }
+    { REELLEMENT ecrits. Handle invalide : HFILE_ERROR ($FFFF). }
+    LWHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LWBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LWBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LWCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LWHandle < 5) Or (LWHandle > 31) Or (Not EmuFileOpen[LWHandle]) Then
+     P.CPU.Regs.AX := Word(-1)
+    Else Begin
+     LWTotal := 0;
+     While LWTotal < LWCount Do Begin
+      LWChunk := LWCount - LWTotal;
+      If LWChunk > SizeOf(LRBuf) Then LWChunk := SizeOf(LRBuf);
+      For LRI := 0 To Integer(LWChunk) - 1 Do
+       LRBuf[LRI] := Emu_ReadByte(P.CPU, LWBufSeg, Word(LWBufOfs + LWTotal + LRI));
+      BlockWrite(EmuFileH[LWHandle], LRBuf, Word(LWChunk));
+      LWTotal := LWTotal + LWChunk;
+     End;
+     P.CPU.Regs.AX := Word(LWTotal);
+    End;
+    ArgWords := 4;
+   End;
+   88: Begin
+    { lstrcpy(lpString1,lpString2):LPSTR - ordinal VERIFIE via le VRAI     }
+    { source Wine (krnl386.exe16.spec : "pascal lstrcpy(segptr str)          }
+    { lstrcpy16", 2+2 = 4 mots, PAS de "-ret16" = retour COMPLET DX:AX).      }
+    { REEL : copie VRAIMENT la chaine ASCIIZ source (Win16_ReadGuestString)   }
+    { vers la destination octet par octet plus le terminateur nul, retourne  }
+    { lpString1 INCHANGE (documente reel exact). }
+    LSCDestSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LSCDestOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LSCSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LSCSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LSCSrcStr := Win16_ReadGuestString(P.CPU, LSCSrcSeg, LSCSrcOfs);
+    For LSCJ := 1 To Length(LSCSrcStr) Do
+     Emu_WriteByte(P.CPU, LSCDestSeg, Word(LSCDestOfs + LSCJ - 1), Byte(Ord(LSCSrcStr[LSCJ])));
+    Emu_WriteByte(P.CPU, LSCDestSeg, Word(LSCDestOfs + Length(LSCSrcStr)), 0);
+    P.CPU.Regs.AX := LSCDestOfs;
+    P.CPU.Regs.DX := LSCDestSeg;
+    ArgWords := 4;
+   End;
+   89: Begin
+    { lstrcat(lpString1,lpString2):LPSTR - ordinal VERIFIE via le VRAI     }
+    { source Wine (krnl386.exe16.spec : "pascal lstrcat(segstr str)          }
+    { lstrcat16", 2+2 = 4 mots, PAS de "-ret16" = retour COMPLET DX:AX).      }
+    { REEL : lit VRAIMENT la chaine destination existante pour trouver son    }
+    { VRAI terminateur nul, y ajoute VRAIMENT la chaine source a la suite,     }
+    { retourne lpString1 INCHANGE (documente reel exact) - meme forme          }
+    { exacte que lstrcpy/$88 ci-dessus. }
+    LSCDestSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LSCDestOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LSCSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LSCSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LCatDestStr := Win16_ReadGuestString(P.CPU, LSCDestSeg, LSCDestOfs);
+    LCatDestLen := Length(LCatDestStr);
+    LSCSrcStr := Win16_ReadGuestString(P.CPU, LSCSrcSeg, LSCSrcOfs);
+    For LCatJ := 1 To Length(LSCSrcStr) Do
+     Emu_WriteByte(P.CPU, LSCDestSeg, Word(LSCDestOfs + LCatDestLen + LCatJ - 1), Byte(Ord(LSCSrcStr[LCatJ])));
+    Emu_WriteByte(P.CPU, LSCDestSeg, Word(LSCDestOfs + LCatDestLen + Length(LSCSrcStr)), 0);
+    P.CPU.Regs.AX := LSCDestOfs;
+    P.CPU.Regs.DX := LSCDestSeg;
+    ArgWords := 4;
+   End;
+   90: Begin
+    { lstrlen(lpString):int - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 lstrlen(str) lstrlen16", 2        }
+    { mots). REEL : retourne la VRAIE longueur (Win16_ReadGuestString,        }
+    { meme lecteur ASCIIZ que partout ailleurs dans ce fichier), PAS une      }
+    { approximation. }
+    LSLSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LSLOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := Word(Length(Win16_ReadGuestString(P.CPU, LSLSeg, LSLOfs)));
+    ArgWords := 2;
+   End;
    91: Begin
     { InitTask - convention REGISTRES verifiee (Raymond Chen, "How do      }
     { 16-bit programs start up?", devblogs.microsoft.com/oldnewthing) :    }
@@ -95078,6 +95332,89 @@ Begin
     P.CPU.Regs.BP := P.CPU.Regs.SP;
     P.CPU.Segs.ES := P.CPU.Segs.DS;
     ArgWords := 0;
+   End;
+   92: Begin
+    { GetTempDrive(cDriveLetter):word - ordinal VERIFIE via le VRAI        }
+    { source Wine (krnl386.exe16.spec : "pascal GetTempDrive(word)           }
+    { GetTempDrive", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX). REEL :   }
+    { reutilise le MEME lecteur par defaut deja etabli reellement pour        }
+    { INT 21h/AH=19h ailleurs dans ce fichier (C:, aucun second lecteur        }
+    { par defaut invente) - AL='C' (documente reel : lettre ASCII, PAS un     }
+    { index). cDriveLetter (lecteur suggere) n'a pas besoin d'etre lu           }
+    { (un seul lecteur par defaut modelise, toujours retourne). }
+    P.CPU.Regs.AX := Ord('C');
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   93: Begin
+    { GetCodeHandle(lpProc):HANDLE - ordinal VERIFIE via le VRAI source    }
+    { Wine (krnl386.exe16.spec : "pascal GetCodeHandle(segptr)               }
+    { GetCodeHandle16", 2 mots, PAS de "-ret16" = retour COMPLET DX:AX).      }
+    { REEL pour la simplification deja etablie partout ailleurs (aucun         }
+    { second espace de "handle de segment" distinct du segment lui-meme -      }
+    { ce sous-ensemble n'a pas de gestionnaire de selecteurs proteges) :        }
+    { retourne VRAIMENT le segment de lpProc INCHANGE comme son propre         }
+    { "handle" (identite, meme esprit que LocalHandle/$11). lpProc:offset      }
+    { n'a pas besoin d'etre lu (seul le segment identifie le code). }
+    GCHSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    P.CPU.Regs.AX := GCHSeg;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 2;
+   End;
+   94: Begin
+    { DefineHandleTable(wTableSelector):BOOL - ordinal VERIFIE via le      }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { DefineHandleTable(word) DefineHandleTable16", 1 mot). REEL : fonction   }
+    { INTERNE du noyau Windows (pagination EMM, jamais appelee par une         }
+    { VRAIE application - description utilisateur elle-meme : "utilise par    }
+    { la division des Applications de Microsoft") - ce sous-ensemble n'a      }
+    { AUCUNE pagination EMM reelle a configurer (memoire plate, meme            }
+    { comportement de reference que le VRAI Wine qui ne fait rien de plus     }
+    { non plus dans cette situation) : rapporte honnetement un succes          }
+    { sans effet, wTableSelector n'a pas besoin d'etre lu. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   95: Begin
+    { LoadLibrary(lpLibFileName):HINSTANCE - ordinal VERIFIE via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16                       }
+    { LoadLibrary(str) LoadLibrary16", 2 mots). REEL EN PARTIE : les 3         }
+    { DLL noyau TOUJOURS residentes dans une VRAIE session Win16 (KERNEL/     }
+    { GDI/USER, ou le module lui-meme) reussissent VRAIMENT (retournent        }
+    { Win16_StackSeg, meme identite synthetique deja etablie partout           }
+    { ailleurs) - fait reel, pas invente. Sinon, MEME discipline honnete       }
+    { que LoadModule/$45 (fichier hote introuvable -> 2, ERROR_FILE_NOT_      }
+    { FOUND ; present mais ne peut pas etre reellement charge en second        }
+    { module concurrent -> 0, echec generique) : ce sous-ensemble reste        }
+    { mono-programme. }
+    LLibSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LLibOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LLibName := UpCaseStr(Win16_ReadGuestString(P.CPU, LLibSeg, LLibOfs));
+    LLibBase := UpCaseStr(ExtractFileName(Win16_LoadedPath));
+    LLibBase := Copy(LLibBase, 1, Length(LLibBase) - Length(ExtractFileExt(LLibBase)));
+    If (LLibName = 'KERNEL') Or (LLibName = 'GDI') Or (LLibName = 'USER') Or
+       (LLibName = LLibBase) Then
+     P.CPU.Regs.AX := Win16_StackSeg
+    Else Begin
+     LLibHostPath := Emu_HostPath(LLibName);
+     If Not FileExists(LLibHostPath) Then
+      P.CPU.Regs.AX := 2
+     Else
+      P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 2;
+   End;
+   96: Begin
+    { FreeLibrary(hLibModule):void - ordinal VERIFIE via le VRAI source    }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 FreeLibrary(word)             }
+    { FreeLibrary16", 1 mot). REEL dans les limites honnetes deja etablies     }
+    { (aucun VRAI compteur de reference tenu, meme esprit que                  }
+    { FreeModule/$46/GlobalFree/$17) : ne peut JAMAIS reellement "decharger"   }
+    { KERNEL/GDI/USER (toujours residents) ni le module lui-meme -              }
+    { hLibModule n'a pas besoin d'etre lu (aucune branche ne depend de sa       }
+    { valeur). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
