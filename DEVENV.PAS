@@ -7694,6 +7694,11 @@ Var
  Win16_LocalBlockOfs: Array[0..63] Of Word;
  Win16_LocalBlockSize: Array[0..63] Of Word;
  Win16_LocalBlockCount: Integer;
+ { Callback de notification du tas local (LocalNotify/$14, 2026-09-14,     }
+ { demande explicite) - stocke mais jamais reellement appele (aucune        }
+ { condition de bas de tas/compactage ne le declenche dans ce               }
+ { sous-ensemble, meme honnetete que Win16_AbortProcSeg/Ofs). }
+ Win16_LocalNotifySeg, Win16_LocalNotifyOfs: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91797,6 +91802,8 @@ Begin
   Win16_HeapLimit := 0;
  End;
  Win16_LocalBlockCount := 0;
+ Win16_LocalNotifySeg := 0;
+ Win16_LocalNotifyOfs := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -93510,6 +93517,19 @@ Var
  LLHMem: Word;
  LSHMem: Word;
  LSIdx: Integer;
+ { KERNEL.EXE LocalHandle/LocalFlags/LocalCompact/LocalNotify/               }
+ { GlobalReAlloc/GlobalSize (2026-09-14, demande explicite, ordinaux         }
+ { 11/12/13/14/16/20). }
+ LHMem: Word;
+ LHIdx, LHI: Integer;
+ LFMem: Word;
+ LFIdx: Integer;
+ LCMinFree: Word;
+ LNOldSeg, LNOldOfs: Word;
+ GRAHMem, GRADwBytesLo: Word;
+ GRAIdx: Integer;
+ GSHMem: Word;
+ GSIdx: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -93525,30 +93545,28 @@ Begin
   Exit;
  End;
  If ModIdx = 1 Then Begin { KERNEL }
+  { A PARTIR DU 2026-09-14 (retour explicite de l'utilisateur) : ce Case    }
+  { est maintenu TRIE PAR ORDRE NUMERIQUE CROISSANT d'ordinal - tout ajout  }
+  { futur doit s'inserer a sa place numerique, pas etre simplement ajoute   }
+  { a la fin. Voir [[feedback_win16_dispatch_case_order]]. }
   Case Ordinal Of
-   91: Begin
-    { InitTask - convention REGISTRES verifiee (Raymond Chen, "How do      }
-    { 16-bit programs start up?", devblogs.microsoft.com/oldnewthing) :    }
-    { AUCUN argument sur la pile, tout passe par les registres. En ENTREE, }
-    { les registres sont deja ceux que "le chargeur" (nous, au Stage 4)    }
-    { a poses avant de sauter au point d'entree - AX=0 BX=taille-pile      }
-    { CX=taille-tas DX=inutilise SI=instance precedente DI=cette instance  }
-    { BP=0 DS=SS=segment de donnees automatique ES=selecteur PSP SP=haut   }
-    { de pile. En SORTIE (ce que cette branche doit poser) : AX=selecteur  }
-    { PSP (0=echec) BX=offset ligne de commande CX=limite de pile          }
-    { DX=nCmdShow BP=haut de pile (pour deroulement) ES=selecteur ligne de }
-    { commande - SI/DI/DS/SS INCHANGES (passes tels quels dans les deux    }
-    { sens d'apres la meme source). }
-    P.CPU.Regs.AX := 1;                  { PSP/selecteur non nul = succes }
-    { Ligne de commande vide : chaine DOS classique longueur-prefixee,     }
-    { ecrite a l offset 0 du segment de donnees (jamais lu par un          }
-    { programme normal a cet endroit precis, avant toute autre init). }
-    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, 0, 0);
-    P.CPU.Regs.BX := 0;
-    P.CPU.Regs.CX := 0;
-    P.CPU.Regs.DX := 1;                  { nCmdShow = SW_SHOWNORMAL        }
-    P.CPU.Regs.BP := P.CPU.Regs.SP;
-    P.CPU.Segs.ES := P.CPU.Segs.DS;
+   { FatalExit/1 : ordinal marque "stub" SANS AUCUNE signature exploitable  }
+   { dans le VRAI source Wine (krnl386.exe16.spec) ET dans la source         }
+   { secondaire WineVDM (krnl386.exe16.spec, meme resultat) - DELIBEREMENT  }
+   { NON IMPLANTE (meme discipline que FTrapping0/$355,                     }
+   { SetDCStatus/$170, etc.) : retombe sur le gestionnaire generique          }
+   { Win16_Halt ci-dessous. }
+   2: Begin
+    { ExitKernel():BOOL - ordinal VERIFIE via le VRAI source Wine            }
+    { (krnl386.exe16.spec : "pascal -ret16 ExitKernel() ExitKernel16", 0     }
+    { mot). REEL : l'effet documente (arreter Windows) n'a qu'UNE seule      }
+    { traduction honnete dans un emulateur mono-programme - la MEME fin de   }
+    { programme propre (sfEndProgram) que INT 21h/AH=4Ch deja etabli          }
+    { ailleurs dans ce fichier, PAS un Win16_Halt "non supporte" (l'appel    }
+    { est reellement traite, pas ignore). }
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'ExitKernel : fin de Windows demandee';
+    P.CPU.Regs.AX := 1;
     ArgWords := 0;
    End;
    3: Begin
@@ -93566,6 +93584,27 @@ Begin
     P.CPU.Regs.AX := $0002; { "Windows 2.0" : AL=2 AH=0 }
     P.CPU.Regs.DX := $1E03; { DOS 3.30 : DL=3(majeur) DH=30 decimal(mineur) }
     ArgWords := 0;
+   End;
+   4: Begin
+    { LocalInit(wSeg,wStart,wEnd):BOOL - ordinal VERIFIE via le VRAI source }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 LocalInit(word word word)    }
+    { LocalInit16", 3 mots). REEL pour le SEUL segment de tas que ce          }
+    { sous-ensemble modelise reellement (Win16_StackSeg, deja utilise par     }
+    { LocalAlloc/$5 et consorts) : si wSeg correspond, (re)positionne          }
+    { VRAIMENT Win16_HeapNext/Win16_HeapLimit sur wStart/wEnd et vide le      }
+    { repertoire de blocs. Echec honnete pour tout AUTRE segment (aucun       }
+    { second tas independant modelise). }
+    LIWSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LIWStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LIWEnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If LIWSeg = Win16_StackSeg Then Begin
+     Win16_HeapNext := LIWStart;
+     Win16_HeapLimit := LIWEnd;
+     Win16_LocalBlockCount := 0;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
    End;
    5: Begin
     { LocalAlloc(wFlags, wBytes):word - ordinal verifie via le fichier      }
@@ -93600,6 +93639,41 @@ Begin
     End;
     ArgWords := 2;
    End;
+   6: Begin
+    { LocalReAlloc(hMem,wBytes,wFlags):word - ordinal VERIFIE via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 LocalReAlloc(word     }
+    { word word) LocalReAlloc16", 3 mots). REEL, dans les limites honnetes    }
+    { d'un bump allocator SANS liste libre : retrouve le bloc dans le         }
+    { repertoire Win16_LocalBlock* (rempli par LocalAlloc/$5) - RETRECIR      }
+    { reussit toujours (simple mise a jour de la taille enregistree,           }
+    { l'espace excedentaire devient juste inutilise, sans consequence pour    }
+    { un bloc FIXED). AGRANDIR ne reussit VRAIMENT que si ce bloc est le       }
+    { DERNIER alloue (rien apres lui dans le tas) ET que la place est          }
+    { disponible - sinon ECHEC honnete (retour NULL documente reel) : un      }
+    { bloc FIXED ne peut PAS etre deplace, et ce sous-ensemble n'a aucune      }
+    { liste libre pour combler l'espace d'un bloc plus recent. Handle          }
+    { inconnu (jamais alloue via LocalAlloc/$5, ou repertoire plein a          }
+    { l'origine) : echec honnete. }
+    LRAHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LRAWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LRAWFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LRAIdx := -1;
+    For LSIdx := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LSIdx] = LRAHMem Then LRAIdx := LSIdx;
+    If LRAIdx < 0 Then
+     P.CPU.Regs.AX := 0
+    Else If LRAWBytes <= Win16_LocalBlockSize[LRAIdx] Then Begin
+     Win16_LocalBlockSize[LRAIdx] := LRAWBytes;
+     P.CPU.Regs.AX := LRAHMem;
+    End Else If (Word(LRAHMem + Win16_LocalBlockSize[LRAIdx]) = Win16_HeapNext) And
+                ((LongInt(LRAHMem) + LongInt(LRAWBytes)) <= LongInt(Win16_HeapLimit)) Then Begin
+     Win16_HeapNext := Word(LRAHMem + LRAWBytes);
+     Win16_LocalBlockSize[LRAIdx] := LRAWBytes;
+     P.CPU.Regs.AX := LRAHMem;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
    7: Begin
     { LocalFree(hMem):word - ordinal verifie via krnl386.exe16.spec.        }
     { Retourne NULL(0) en cas de succes, le handle lui-meme en cas          }
@@ -93611,6 +93685,250 @@ Begin
     { ne re-epuise pas completement le tas, deja documente comme limite). }
     P.CPU.Regs.AX := 0;
     ArgWords := 1;
+   End;
+   8: Begin
+    { LocalLock(hMem):far ptr - ordinal VERIFIE via le VRAI source Wine     }
+    { (krnl386.exe16.spec : "pascal LocalLock(word) LocalLock16", 1 mot,      }
+    { PAS de "-ret16" = retour COMPLET DX:AX). REEL, meme forme et meme        }
+    { simplification EXACTE que GlobalLock/$18 deja etabli (handle deja       }
+    { simplifie en offset direct, semantique LMEM_FIXED - aucun VRAI           }
+    { compteur de verrou a tenir puisque le bloc ne bouge jamais). }
+    LLHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := LLHMem;
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   9: Begin
+    { LocalUnlock(hMem):BOOL - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 LocalUnlock(word) LocalUnlock16", }
+    { 1 mot). REEL, meme forme et meme simplification EXACTE que              }
+    { GlobalUnlock/$19 deja etabli : rapporte toujours un succes (aucun       }
+    { VRAI verrou a lever, handle=offset direct). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   10: Begin
+    { LocalSize(hMem):word - ordinal VERIFIE via le VRAI source Wine        }
+    { (krnl386.exe16.spec : "pascal -ret16 LocalSize(word) LocalSize16", 1   }
+    { mot). REEL : consulte VRAIMENT le repertoire Win16_LocalBlock* rempli   }
+    { par LocalAlloc/$5 et eventuellement mis a jour par LocalReAlloc/$6 -    }
+    { retourne la VRAIE taille enregistree, PAS une approximation. Handle     }
+    { inconnu (jamais alloue via LocalAlloc/$5, ou repertoire plein a          }
+    { l'origine) : retourne honnetement 0 (comportement documente reel pour   }
+    { un handle invalide). }
+    LSHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LSIdx := -1;
+    For LRAIdx := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LRAIdx] = LSHMem Then LSIdx := LRAIdx;
+    If LSIdx >= 0 Then P.CPU.Regs.AX := Win16_LocalBlockSize[LSIdx]
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   11: Begin
+    { LocalHandle(wMem):word - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 LocalHandle(word)                }
+    { LocalHandle16", 1 mot). REEL pour la simplification LMEM_FIXED deja   }
+    { etablie (handle=offset direct, voir LocalAlloc/$5) : puisque le        }
+    { handle EST deja directement le pointeur, LocalHandle n'a rien a        }
+    { convertir - consulte VRAIMENT le repertoire Win16_LocalBlock* pour     }
+    { confirmer que ce handle correspond a un bloc reellement alloue,        }
+    { retourne wMem inchange si trouve, sinon 0 (comportement documente      }
+    { reel pour un handle invalide). }
+    LHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LHIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = LHMem Then LHIdx := LHI;
+    If LHIdx >= 0 Then P.CPU.Regs.AX := LHMem Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   12: Begin
+    { LocalFlags(wMem):word - ordinal VERIFIE via le VRAI source Wine       }
+    { (krnl386.exe16.spec : "pascal -ret16 LocalFlags(word) LocalFlags16",   }
+    { 1 mot). REEL pour ce sous-ensemble : le bit de poids fort               }
+    { (LMEM_DISCARDED) et le compte de verrous (octet bas) sont               }
+    { HONNETEMENT toujours 0 - aucun bloc n'est JAMAIS discarde (aucun        }
+    { segment DISCARDABLE reellement modelise) et LocalLock/$8 est deja        }
+    { etabli comme sans etat (semantique LMEM_FIXED, aucun VRAI compteur      }
+    { de verrou). Handle inconnu : retourne LMEM_INVALID_HANDLE ($8000,       }
+    { constante documentee reelle), pas une approximation. }
+    LFMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LFIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = LFMem Then LFIdx := LHI;
+    If LFIdx >= 0 Then P.CPU.Regs.AX := 0 Else P.CPU.Regs.AX := $8000;
+    ArgWords := 1;
+   End;
+   13: Begin
+    { LocalCompact(wMinFree):word - ordinal VERIFIE via le VRAI source      }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 LocalCompact(word)           }
+    { LocalCompact16", 1 mot). REEL pour un bump allocator SANS liste libre :}
+    { aucun bloc n'etant JAMAIS reellement libere/deplace (voir LocalFree/$7)}
+    { il n'y a litteralement RIEN a compacter/defragmenter - le SEUL espace  }
+    { libre reel est la portion vierge entre Win16_HeapNext et                }
+    { Win16_HeapLimit. Retourne VRAIMENT cette taille (le contrat documente  }
+    { reel : "la taille du plus grand bloc libre disponible apres           }
+    { compactage") - wMinFree lui-meme n'affecte pas ce resultat honnete       }
+    { (rien a compacter pour l'atteindre), lu uniquement pour respecter la    }
+    { forme reelle de la pile. }
+    LCMinFree := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_HeapLimit > Win16_HeapNext Then
+     P.CPU.Regs.AX := Win16_HeapLimit - Win16_HeapNext
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   14: Begin
+    { LocalNotify(lpfn):FARPROC - ordinal VERIFIE via le VRAI source Wine   }
+    { (krnl386.exe16.spec : "pascal LocalNotify(long) LocalNotify16", 1      }
+    { parametre LONG = 2 mots, PAS de "-ret16" = retour COMPLET DX:AX).      }
+    { REEL : fixe VRAIMENT Win16_LocalNotifySeg/Ofs (le callback de           }
+    { notification du tas, jamais appele par ce sous-ensemble - aucune        }
+    { condition de bas de tas/compactage ne declenche jamais de VRAI           }
+    { callback, meme honnetete que SetAbortProc/$381 qui stocke sans           }
+    { jamais invoquer) et retourne l'ANCIENNE valeur, convention far           }
+    { pointeur DWORD deja etablie ailleurs (poids fort=segment). }
+    LNOldSeg := Win16_LocalNotifySeg;
+    LNOldOfs := Win16_LocalNotifyOfs;
+    Win16_LocalNotifySeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Win16_LocalNotifyOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := LNOldOfs;
+    P.CPU.Regs.DX := LNOldSeg;
+    ArgWords := 2;
+   End;
+   15: Begin
+    { GlobalAlloc(wFlags, dwBytes):word - ordinal VERIFIE via                }
+    { krnl386.exe16.spec (dwBytes est un LONG = 2 mots, mot bas lu ici -    }
+    { notre tas local etant minuscule, une VRAIE allocation >64Ko            }
+    { echouerait honnetement de toute facon). Le tas "global" et le tas     }
+    { "local" sont TRAITES DE FACON IDENTIQUE dans cette simplification     }
+    { (meme bump allocator Win16_HeapNext/Win16_HeapLimit que LocalAlloc,   }
+    { ordinal 5 ci-dessus) - simplification DOCUMENTEE, coherente avec le   }
+    { modele "handle = offset direct" deja utilise partout dans ce          }
+    { chantier. Enregistre REELLEMENT (offset,taille) dans le MEME            }
+    { repertoire Win16_LocalBlock* que LocalAlloc/$5 (2026-09-14, demande     }
+    { explicite : necessaire pour que GlobalReAlloc/$16 et GlobalSize/$20     }
+    { connaissent la VRAIE taille d'un bloc Global existant). }
+    LocalWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     P.CPU.Regs.AX := Win16_HeapNext;
+     If Win16_LocalBlockCount < 64 Then Begin
+      Win16_LocalBlockOfs[Win16_LocalBlockCount] := Win16_HeapNext;
+      Win16_LocalBlockSize[Win16_LocalBlockCount] := LocalWBytes;
+      Inc(Win16_LocalBlockCount);
+     End;
+     Win16_HeapNext := Win16_HeapNext + LocalWBytes;
+    End;
+    ArgWords := 3;
+   End;
+   16: Begin
+    { GlobalReAlloc(hMem,dwBytes,wFlags):word - ordinal VERIFIE via le VRAI }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GlobalReAlloc(word    }
+    { long word) GlobalReAlloc16", 1+2+1 = 4 mots). REEL, MEME algorithme     }
+    { exact que LocalReAlloc/$6 (le tas global et le tas local partagent      }
+    { deja le MEME bump allocator et repertoire, voir GlobalAlloc/$15) -      }
+    { seul le mot bas de dwBytes est utilise (notre tas etant minuscule,      }
+    { une VRAIE demande >64Ko echouerait honnetement de toute facon, meme     }
+    { limitation deja documentee pour GlobalAlloc/$15). }
+    GRAHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GRADwBytesLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GRAIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = GRAHMem Then GRAIdx := LHI;
+    If GRAIdx < 0 Then
+     P.CPU.Regs.AX := 0
+    Else If GRADwBytesLo <= Win16_LocalBlockSize[GRAIdx] Then Begin
+     Win16_LocalBlockSize[GRAIdx] := GRADwBytesLo;
+     P.CPU.Regs.AX := GRAHMem;
+    End Else If (Word(GRAHMem + Win16_LocalBlockSize[GRAIdx]) = Win16_HeapNext) And
+                ((LongInt(GRAHMem) + LongInt(GRADwBytesLo)) <= LongInt(Win16_HeapLimit)) Then Begin
+     Win16_HeapNext := Word(GRAHMem + GRADwBytesLo);
+     Win16_LocalBlockSize[GRAIdx] := GRADwBytesLo;
+     P.CPU.Regs.AX := GRAHMem;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   17: Begin
+    { GlobalFree(hMem):word - ordinal VERIFIE. Meme simplification que      }
+    { LocalFree (ordinal 7) : le tas est un bump allocator qui ne recupere  }
+    { JAMAIS la memoire - rapporte toujours un succes. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   18: Begin
+    { GlobalLock(hMem):far ptr - ordinal VERIFIE. PAS de "-ret16" = retour  }
+    { COMPLET DX:AX. Handle deja simplifie en offset direct (LMEM_FIXED,    }
+    { voir LocalAlloc/ordinal 5) : identite - retourne ce meme offset avec  }
+    { le segment du tas (Win16_StackSeg). }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   19: Begin
+    { GlobalUnlock(hMem):bool - ordinal VERIFIE. Rapporte toujours un       }
+    { succes (aucun VRAI verrou a lever, handle=offset direct). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   20: Begin
+    { GlobalSize(hMem):DWORD - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal GlobalSize(word) GlobalSize16", 1 mot,    }
+    { PAS de "-ret16" = retour COMPLET DX:AX). REEL : consulte le MEME        }
+    { repertoire partage Win16_LocalBlock* (voir GlobalAlloc/$15,             }
+    { GlobalReAlloc/$16) - retourne la VRAIE taille enregistree (DX=0,        }
+    { notre tas ne depassant jamais 64Ko). Handle inconnu : 0 (comportement   }
+    { documente reel). }
+    GSHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GSIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = GSHMem Then GSIdx := LHI;
+    If GSIdx >= 0 Then P.CPU.Regs.AX := Win16_LocalBlockSize[GSIdx]
+    Else P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   21: Begin
+    { GlobalHandle(wMem):DWORD (HIWORD=hInstance module, LOWORD=hMem) -     }
+    { ordinal VERIFIE. PAS de "-ret16" = retour COMPLET DX:AX. Simplifie :  }
+    { hInstance synthetique = Win16_StackSeg (notre seul "module" charge),  }
+    { hMem inchange (identite, meme modele que GlobalLock). }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   30: Begin
+    { WaitEvent(hTask):bool - ordinal verifie via Wine (krnl386.exe16.spec  }
+    { + task.c, source publique) : bloque la tache appelante jusqu'a ce     }
+    { qu'une AUTRE tache appelle PostEvent pour elle (ordonnancement        }
+    { cooperatif Windows 2.x/3.x), sauf si un evenement est deja en         }
+    { attente (pTask->nEvents>0), auquel cas elle retourne FALSE            }
+    { IMMEDIATEMENT sans bloquer. VRAIE LIMITE DE CONCEPTION documentee :   }
+    { cet emulateur n'execute jamais qu'UNE seule tache Win16 a la fois     }
+    { (voir l'etat global Win16_* - meme limitation que LX_Mem/ELF64) -     }
+    { aucune autre tache ne peut donc JAMAIS appeler PostEvent, et un        }
+    { blocage reel bloquerait le programme pour toujours. Simplification    }
+    { choisie : toujours emprunter le chemin "evenement deja present"       }
+    { (retour FALSE immediat, sans jamais attendre) - n'affecte que le      }
+    { TIMING (equivalent a un vrai scheduler qui aurait poste l'evenement   }
+    { au tick suivant), jamais l'etat/les donnees du programme. }
+    P.CPU.Regs.AX := 0; { FALSE - evenement deja "present", pas d'attente }
+    ArgWords := 1;      { WaitEvent(hTask) : un seul parametre. }
+   End;
+   51: Begin
+    { MakeProcInstance(lpProc,hInstance):FARPROC - ordinal VERIFIE via       }
+    { krnl386.exe16.spec (segptr + 1 mot = 3 mots). Stage 6b (2026-08-30) :  }
+    { un VRAI MakeProcInstance fabrique un thunk qui fixe DS a hInstance     }
+    { avant de sauter au vrai code - necessaire seulement quand PLUSIEURS    }
+    { instances du meme programme (donc plusieurs DS possibles) coexistent. }
+    { Ce chantier reste mono-programme/mono-instance (meme limitation deja  }
+    { assumee partout ailleurs - Win16_ImportModIdx[] etc.), donc il ne peut }
+    { jamais y avoir qu'un seul DS possible : retourne lpProc INCHANGE,      }
+    { aucun VRAI thunk d'instance necessaire. }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    P.CPU.Regs.DX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    ArgWords := 3;
    End;
    60: Begin
     { FindResource(hInstance, lpName, lpType):HRSRC - ordinal VERIFIE via   }
@@ -93720,200 +94038,30 @@ Begin
     End;
     ArgWords := 2;
    End;
-   15: Begin
-    { GlobalAlloc(wFlags, dwBytes):word - ordinal VERIFIE via                }
-    { krnl386.exe16.spec (dwBytes est un LONG = 2 mots, mot bas lu ici -    }
-    { notre tas local etant minuscule, une VRAIE allocation >64Ko            }
-    { echouerait honnetement de toute facon). Le tas "global" et le tas     }
-    { "local" sont TRAITES DE FACON IDENTIQUE dans cette simplification     }
-    { (meme bump allocator Win16_HeapNext/Win16_HeapLimit que LocalAlloc,   }
-    { ordinal 5 ci-dessus) - simplification DOCUMENTEE, coherente avec le   }
-    { modele "handle = offset direct" deja utilise partout dans ce          }
-    { chantier. }
-    LocalWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) > LongInt(Win16_HeapLimit) Then
-     P.CPU.Regs.AX := 0
-    Else Begin
-     P.CPU.Regs.AX := Win16_HeapNext;
-     Win16_HeapNext := Win16_HeapNext + LocalWBytes;
-    End;
-    ArgWords := 3;
-   End;
-   17: Begin
-    { GlobalFree(hMem):word - ordinal VERIFIE. Meme simplification que      }
-    { LocalFree (ordinal 7) : le tas est un bump allocator qui ne recupere  }
-    { JAMAIS la memoire - rapporte toujours un succes. }
-    P.CPU.Regs.AX := 0;
-    ArgWords := 1;
-   End;
-   18: Begin
-    { GlobalLock(hMem):far ptr - ordinal VERIFIE. PAS de "-ret16" = retour  }
-    { COMPLET DX:AX. Handle deja simplifie en offset direct (LMEM_FIXED,    }
-    { voir LocalAlloc/ordinal 5) : identite - retourne ce meme offset avec  }
-    { le segment du tas (Win16_StackSeg). }
-    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    P.CPU.Regs.DX := Win16_StackSeg;
-    ArgWords := 1;
-   End;
-   19: Begin
-    { GlobalUnlock(hMem):bool - ordinal VERIFIE. Rapporte toujours un       }
-    { succes (aucun VRAI verrou a lever, handle=offset direct). }
-    P.CPU.Regs.AX := 1;
-    ArgWords := 1;
-   End;
-   21: Begin
-    { GlobalHandle(wMem):DWORD (HIWORD=hInstance module, LOWORD=hMem) -     }
-    { ordinal VERIFIE. PAS de "-ret16" = retour COMPLET DX:AX. Simplifie :  }
-    { hInstance synthetique = Win16_StackSeg (notre seul "module" charge),  }
-    { hMem inchange (identite, meme modele que GlobalLock). }
-    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    P.CPU.Regs.DX := Win16_StackSeg;
-    ArgWords := 1;
-   End;
-   30: Begin
-    { WaitEvent(hTask):bool - ordinal verifie via Wine (krnl386.exe16.spec  }
-    { + task.c, source publique) : bloque la tache appelante jusqu'a ce     }
-    { qu'une AUTRE tache appelle PostEvent pour elle (ordonnancement        }
-    { cooperatif Windows 2.x/3.x), sauf si un evenement est deja en         }
-    { attente (pTask->nEvents>0), auquel cas elle retourne FALSE            }
-    { IMMEDIATEMENT sans bloquer. VRAIE LIMITE DE CONCEPTION documentee :   }
-    { cet emulateur n'execute jamais qu'UNE seule tache Win16 a la fois     }
-    { (voir l'etat global Win16_* - meme limitation que LX_Mem/ELF64) -     }
-    { aucune autre tache ne peut donc JAMAIS appeler PostEvent, et un        }
-    { blocage reel bloquerait le programme pour toujours. Simplification    }
-    { choisie : toujours emprunter le chemin "evenement deja present"       }
-    { (retour FALSE immediat, sans jamais attendre) - n'affecte que le      }
-    { TIMING (equivalent a un vrai scheduler qui aurait poste l'evenement   }
-    { au tick suivant), jamais l'etat/les donnees du programme. }
-    P.CPU.Regs.AX := 0; { FALSE - evenement deja "present", pas d'attente }
-    ArgWords := 1;      { WaitEvent(hTask) : un seul parametre. }
-   End;
-   51: Begin
-    { MakeProcInstance(lpProc,hInstance):FARPROC - ordinal VERIFIE via       }
-    { krnl386.exe16.spec (segptr + 1 mot = 3 mots). Stage 6b (2026-08-30) :  }
-    { un VRAI MakeProcInstance fabrique un thunk qui fixe DS a hInstance     }
-    { avant de sauter au vrai code - necessaire seulement quand PLUSIEURS    }
-    { instances du meme programme (donc plusieurs DS possibles) coexistent. }
-    { Ce chantier reste mono-programme/mono-instance (meme limitation deja  }
-    { assumee partout ailleurs - Win16_ImportModIdx[] etc.), donc il ne peut }
-    { jamais y avoir qu'un seul DS possible : retourne lpProc INCHANGE,      }
-    { aucun VRAI thunk d'instance necessaire. }
-    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
-    P.CPU.Regs.DX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
-    ArgWords := 3;
-   End;
-   { FatalExit/1 : ordinal marque "stub" SANS AUCUNE signature exploitable  }
-   { dans le VRAI source Wine (krnl386.exe16.spec) ET dans la source         }
-   { secondaire WineVDM (krnl386.exe16.spec, meme resultat) - DELIBEREMENT  }
-   { NON IMPLANTE (meme discipline que FTrapping0/$355,                     }
-   { SetDCStatus/$170, etc.) : retombe sur le gestionnaire generique          }
-   { Win16_Halt ci-dessous. }
-   2: Begin
-    { ExitKernel():BOOL - ordinal VERIFIE via le VRAI source Wine            }
-    { (krnl386.exe16.spec : "pascal -ret16 ExitKernel() ExitKernel16", 0     }
-    { mot). REEL : l'effet documente (arreter Windows) n'a qu'UNE seule      }
-    { traduction honnete dans un emulateur mono-programme - la MEME fin de   }
-    { programme propre (sfEndProgram) que INT 21h/AH=4Ch deja etabli          }
-    { ailleurs dans ce fichier, PAS un Win16_Halt "non supporte" (l'appel    }
-    { est reellement traite, pas ignore). }
-    P.CPU.Fault := sfEndProgram;
-    P.StatusMsg := 'ExitKernel : fin de Windows demandee';
-    P.CPU.Regs.AX := 1;
+   91: Begin
+    { InitTask - convention REGISTRES verifiee (Raymond Chen, "How do      }
+    { 16-bit programs start up?", devblogs.microsoft.com/oldnewthing) :    }
+    { AUCUN argument sur la pile, tout passe par les registres. En ENTREE, }
+    { les registres sont deja ceux que "le chargeur" (nous, au Stage 4)    }
+    { a poses avant de sauter au point d'entree - AX=0 BX=taille-pile      }
+    { CX=taille-tas DX=inutilise SI=instance precedente DI=cette instance  }
+    { BP=0 DS=SS=segment de donnees automatique ES=selecteur PSP SP=haut   }
+    { de pile. En SORTIE (ce que cette branche doit poser) : AX=selecteur  }
+    { PSP (0=echec) BX=offset ligne de commande CX=limite de pile          }
+    { DX=nCmdShow BP=haut de pile (pour deroulement) ES=selecteur ligne de }
+    { commande - SI/DI/DS/SS INCHANGES (passes tels quels dans les deux    }
+    { sens d'apres la meme source). }
+    P.CPU.Regs.AX := 1;                  { PSP/selecteur non nul = succes }
+    { Ligne de commande vide : chaine DOS classique longueur-prefixee,     }
+    { ecrite a l offset 0 du segment de donnees (jamais lu par un          }
+    { programme normal a cet endroit precis, avant toute autre init). }
+    Emu_WriteByte(P.CPU, P.CPU.Segs.DS, 0, 0);
+    P.CPU.Regs.BX := 0;
+    P.CPU.Regs.CX := 0;
+    P.CPU.Regs.DX := 1;                  { nCmdShow = SW_SHOWNORMAL        }
+    P.CPU.Regs.BP := P.CPU.Regs.SP;
+    P.CPU.Segs.ES := P.CPU.Segs.DS;
     ArgWords := 0;
-   End;
-   4: Begin
-    { LocalInit(wSeg,wStart,wEnd):BOOL - ordinal VERIFIE via le VRAI source }
-    { Wine (krnl386.exe16.spec : "pascal -ret16 LocalInit(word word word)    }
-    { LocalInit16", 3 mots). REEL pour le SEUL segment de tas que ce          }
-    { sous-ensemble modelise reellement (Win16_StackSeg, deja utilise par     }
-    { LocalAlloc/$5 et consorts) : si wSeg correspond, (re)positionne          }
-    { VRAIMENT Win16_HeapNext/Win16_HeapLimit sur wStart/wEnd et vide le      }
-    { repertoire de blocs. Echec honnete pour tout AUTRE segment (aucun       }
-    { second tas independant modelise). }
-    LIWSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
-    LIWStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
-    LIWEnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    If LIWSeg = Win16_StackSeg Then Begin
-     Win16_HeapNext := LIWStart;
-     Win16_HeapLimit := LIWEnd;
-     Win16_LocalBlockCount := 0;
-     P.CPU.Regs.AX := 1;
-    End Else
-     P.CPU.Regs.AX := 0;
-    ArgWords := 3;
-   End;
-   6: Begin
-    { LocalReAlloc(hMem,wBytes,wFlags):word - ordinal VERIFIE via le VRAI   }
-    { source Wine (krnl386.exe16.spec : "pascal -ret16 LocalReAlloc(word     }
-    { word word) LocalReAlloc16", 3 mots). REEL, dans les limites honnetes    }
-    { d'un bump allocator SANS liste libre : retrouve le bloc dans le         }
-    { repertoire Win16_LocalBlock* (rempli par LocalAlloc/$5) - RETRECIR      }
-    { reussit toujours (simple mise a jour de la taille enregistree,           }
-    { l'espace excedentaire devient juste inutilise, sans consequence pour    }
-    { un bloc FIXED). AGRANDIR ne reussit VRAIMENT que si ce bloc est le       }
-    { DERNIER alloue (rien apres lui dans le tas) ET que la place est          }
-    { disponible - sinon ECHEC honnete (retour NULL documente reel) : un      }
-    { bloc FIXED ne peut PAS etre deplace, et ce sous-ensemble n'a aucune      }
-    { liste libre pour combler l'espace d'un bloc plus recent. Handle          }
-    { inconnu (jamais alloue via LocalAlloc/$5, ou repertoire plein a          }
-    { l'origine) : echec honnete. }
-    LRAHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
-    LRAWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
-    LRAWFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    LRAIdx := -1;
-    For LSIdx := 0 To Win16_LocalBlockCount - 1 Do
-     If Win16_LocalBlockOfs[LSIdx] = LRAHMem Then LRAIdx := LSIdx;
-    If LRAIdx < 0 Then
-     P.CPU.Regs.AX := 0
-    Else If LRAWBytes <= Win16_LocalBlockSize[LRAIdx] Then Begin
-     Win16_LocalBlockSize[LRAIdx] := LRAWBytes;
-     P.CPU.Regs.AX := LRAHMem;
-    End Else If (Word(LRAHMem + Win16_LocalBlockSize[LRAIdx]) = Win16_HeapNext) And
-                ((LongInt(LRAHMem) + LongInt(LRAWBytes)) <= LongInt(Win16_HeapLimit)) Then Begin
-     Win16_HeapNext := Word(LRAHMem + LRAWBytes);
-     Win16_LocalBlockSize[LRAIdx] := LRAWBytes;
-     P.CPU.Regs.AX := LRAHMem;
-    End Else
-     P.CPU.Regs.AX := 0;
-    ArgWords := 3;
-   End;
-   8: Begin
-    { LocalLock(hMem):far ptr - ordinal VERIFIE via le VRAI source Wine     }
-    { (krnl386.exe16.spec : "pascal LocalLock(word) LocalLock16", 1 mot,      }
-    { PAS de "-ret16" = retour COMPLET DX:AX). REEL, meme forme et meme        }
-    { simplification EXACTE que GlobalLock/$18 deja etabli (handle deja       }
-    { simplifie en offset direct, semantique LMEM_FIXED - aucun VRAI           }
-    { compteur de verrou a tenir puisque le bloc ne bouge jamais). }
-    LLHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    P.CPU.Regs.AX := LLHMem;
-    P.CPU.Regs.DX := Win16_StackSeg;
-    ArgWords := 1;
-   End;
-   9: Begin
-    { LocalUnlock(hMem):BOOL - ordinal VERIFIE via le VRAI source Wine      }
-    { (krnl386.exe16.spec : "pascal -ret16 LocalUnlock(word) LocalUnlock16", }
-    { 1 mot). REEL, meme forme et meme simplification EXACTE que              }
-    { GlobalUnlock/$19 deja etabli : rapporte toujours un succes (aucun       }
-    { VRAI verrou a lever, handle=offset direct). }
-    P.CPU.Regs.AX := 1;
-    ArgWords := 1;
-   End;
-   10: Begin
-    { LocalSize(hMem):word - ordinal VERIFIE via le VRAI source Wine        }
-    { (krnl386.exe16.spec : "pascal -ret16 LocalSize(word) LocalSize16", 1   }
-    { mot). REEL : consulte VRAIMENT le repertoire Win16_LocalBlock* rempli   }
-    { par LocalAlloc/$5 et eventuellement mis a jour par LocalReAlloc/$6 -    }
-    { retourne la VRAIE taille enregistree, PAS une approximation. Handle     }
-    { inconnu (jamais alloue via LocalAlloc/$5, ou repertoire plein a          }
-    { l'origine) : retourne honnetement 0 (comportement documente reel pour   }
-    { un handle invalide). }
-    LSHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    LSIdx := -1;
-    For LRAIdx := 0 To Win16_LocalBlockCount - 1 Do
-     If Win16_LocalBlockOfs[LRAIdx] = LSHMem Then LSIdx := LRAIdx;
-    If LSIdx >= 0 Then P.CPU.Regs.AX := Win16_LocalBlockSize[LSIdx]
-    Else P.CPU.Regs.AX := 0;
-    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
