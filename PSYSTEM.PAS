@@ -1465,6 +1465,7 @@ PPasSource=^TPCodeMemory;
 Var
  CPSource:PPasSource;
  CPSize,CPPos,CPTokenPos,CPLine,CPCodePos,CPVarCount:LongInt;
+ CPMainStart,CPMainLength:LongInt;
  CPToken,CPText:String;
  CPNumber:LongInt;
  CPError:Boolean;
@@ -1652,15 +1653,37 @@ End;
 Procedure CPScanRoutine(Parent:PPasRoutine);Forward;
 
 Procedure CPScanRoutine(Parent:PPasRoutine);
-Var R,Old:PPasRoutine;Name:String;Depth:Integer;IsFunc:Boolean;
+Var R,Old:PPasRoutine;P,Tail:PPasParameter;Typ:PPasType;
+ Name,PN:String;Depth:Integer;IsFunc,ByRef:Boolean;
 Begin
  IsFunc:=CPIs('FUNCTION');CPNext;
  if CPToken<>'ID'Then Begin CPFail('nom de routine attendu');Exit End;
  Name:=CPText;R:=CPFindRoutine(Name,Parent);
  if R=Nil Then R:=CPAddRoutine(Name,Parent,IsFunc);
  CPNext;
- { Signature: la passe de declarations conserve sa position et saute ici
-   les types; leur resolution detaillee appartient a la passe semantique. }
+ Tail:=R^.Parameters;While(Tail<>Nil)and(Tail^.Next<>Nil)do Tail:=Tail^.Next;
+ if CPToken='('Then Begin
+  CPNext;
+  While(CPToken<>')')and(CPToken<>'EOF')and not CPError do Begin
+   ByRef:=CPIs('VAR');if ByRef Then CPNext;
+   if CPToken<>'ID'Then Begin CPFail('nom de parametre attendu');Break End;
+   PN:=CPText;CPNext;CPNeed(':');
+   if CPToken<>'ID'Then Begin CPFail('type de parametre attendu');Break End;
+   Typ:=CPFindType(CPText);if Typ=Nil Then Typ:=CPFindType('INTEGER');CPNext;
+   if R^.Parameters=Nil Then Begin
+    New(P);FillChar(P^,SizeOf(TPasParameter),0);P^.Name:=PN;P^.ParamType:=Typ;
+    P^.ByReference:=ByRef;P^.Structured:=Typ^.SizeWords>1;
+    if P^.ByReference or P^.Structured Then Inc(R^.ParameterWords)
+    else Inc(R^.ParameterWords,Typ^.SizeWords);
+    P^.Next:=Nil;if Tail=Nil Then R^.Parameters:=P else Tail^.Next:=P;Tail:=P
+   End;
+   if CPToken=';'Then CPNext else Break
+  End;CPNeed(')')
+ End;
+ if IsFunc and(CPToken=':')Then Begin
+  CPNext;if CPToken='ID'Then Begin R^.ResultType:=CPFindType(CPText);CPNext End
+  else CPFail('type de resultat attendu')
+ End;
  While(CPToken<>';')and(CPToken<>'EOF')do CPNext;
  if CPToken=';'Then CPNext;
  if CPIs('FORWARD')Then Begin
@@ -1752,15 +1775,39 @@ Begin
  else Begin CPE(173);CPE(R^.ParameterWords)End
 End;
 
+Procedure CPExpression;Forward;
+
+Procedure CPEmitActualParameters(R:PPasRoutine);
+Var A:PPasParameter;S:PPasSymbol;
+Begin
+ if R^.IsFunction Then CPConst(0); { cellule resultat conservee par RPU/RNP }
+ A:=R^.Parameters;
+ if A<>Nil Then CPNeed('(')else if CPToken='('Then Begin CPNext;CPNeed(')');Exit End;
+ While(A<>Nil)and not CPError do Begin
+  if A^.ByReference or A^.Structured Then Begin
+   if CPToken<>'ID'Then CPFail('variable attendue pour parametre VAR')else Begin
+    S:=CPFind(CPText);if(S=Nil)or S^.IsConst Then CPFail('parametre VAR invalide')
+    else Begin
+     if S^.Scope=Nil Then Begin CPOp(165,$86);CPBig(S^.Address)End
+     else Begin CPOp(198,$84);CPBig(S^.Address)End
+    End;CPNext
+   End
+  End else CPExpression;
+  A:=A^.Next;if A<>Nil Then CPNeed(',')
+ End;
+ if R^.Parameters<>Nil Then CPNeed(')')
+End;
+
 Procedure CPLoadSymbol(P:PPasSymbol);
 Var D:Integer;
 Begin
  if P^.Scope=Nil Then Begin CPOp(169,$85);CPBig(P^.Address)End
  else if P^.Scope=CPCurrentRoutine Then Begin CPOp(202,$87);CPBig(P^.Address)End
  else Begin
-  D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
+ D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
   CPOp(182,$89);CPE(D);CPBig(P^.Address)
- End
+ End;
+ if P^.ByReference Then Begin CPOp(163,$E6);CPBig(0)End
 End;
 
 Procedure CPStoreSymbol(P:PPasSymbol);
@@ -1773,7 +1820,6 @@ Begin
   CPOp(184,$A6);CPE(D);CPBig(P^.Address)
  End
 End;
-Procedure CPExpression;Forward;
 
 Procedure CPFactor;
 Var
@@ -1801,7 +1847,7 @@ Begin
  else if CPToken='ID'Then Begin
   P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);
   if(P=Nil)and(R<>Nil)and R^.IsFunction Then Begin
-   CPNext;if CPToken='('Then Begin CPNext;CPNeed(')')End;CPEmitRoutineCall(R)
+   CPNext;CPEmitActualParameters(R);CPEmitRoutineCall(R)
   End else if P=Nil Then CPFail('identificateur inconnu: '+CPText)
   else if P^.IsConst Then CPConst(P^.Value)else
   Begin
@@ -1914,17 +1960,21 @@ Begin
  else if CPToken='ID'Then Begin
   P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);Name:=CPText;CPNext;
   if(P=Nil)and(R<>Nil)Then Begin
-   if CPToken='('Then Begin CPNext;CPNeed(')')End;CPEmitRoutineCall(R)
+   CPEmitActualParameters(R);CPEmitRoutineCall(R)
   End else if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else
   Begin
-   CPNeed(':=');CPExpression;
-   CPStoreSymbol(P)
+   CPNeed(':=');
+   if P^.ByReference Then Begin
+    P^.ByReference:=False;CPLoadSymbol(P);P^.ByReference:=True;
+    CPExpression;CPOp(154,$C4)
+   End else Begin CPExpression;CPStoreSymbol(P)End
   End
  End
 End;
 
 Procedure CPGenerateRoutine(R:PPasRoutine);
-Var Child:PPasRoutine;Names:Array[1..64]of String;N,I:Integer;
+Var Child:PPasRoutine;Par:PPasParameter;Sym:PPasSymbol;
+ Names:Array[1..64]of String;N,I,Remain,Words:Integer;
 Begin
  if(R=Nil)or not R^.IsDefined Then Exit;
  CPCurrentRoutine:=R;CPPos:=R^.SourcePosition;CPNext;
@@ -1950,6 +2000,18 @@ Begin
    End
   End else CPNext
  End;
+ Remain:=R^.ParameterWords;Par:=R^.Parameters;
+ While Par<>Nil do Begin
+  if Par^.ByReference or Par^.Structured Then Words:=1 else Words:=Par^.ParamType^.SizeWords;
+  Dec(Remain,Words);CPAdd(Par^.Name,R^.LocalWords+Remain,False);
+  Sym:=CPFind(Par^.Name);if Sym<>Nil Then Begin Sym^.IsParameter:=True;
+   Sym^.ByReference:=Par^.ByReference or Par^.Structured;Sym^.SymbolType:=Par^.ParamType End;
+  Par^.Offset:=R^.LocalWords+Remain;Par:=Par^.Next
+ End;
+ if R^.IsFunction Then Begin
+  CPAdd(R^.Name,R^.LocalWords+R^.ParameterWords,False);
+  Sym:=CPFind(R^.Name);if Sym<>Nil Then Sym^.SymbolType:=R^.ResultType
+ End;
  R^.CodeStart:=CPCodePos;CPCompound;CPEmitRoutineReturn(R);
  R^.CodeLength:=CPCodePos-R^.CodeStart;CPDropScope(R);CPCurrentRoutine:=Nil
 End;
@@ -1964,7 +2026,8 @@ End;
 Function WriteUCSDCodeFile(CodeName,SegmentName:String;CodeLength:LongInt;
  DataWords:Integer):Boolean;
 Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
- ProcEntry,ProcDict:LongInt;
+ ProcEntry,ProcDict,Posi,Src,Len:LongInt;ProcNo,ProcTotal,J:Integer;
+ Tmp:PPCodeMemory;R:PPasRoutine;Attr:Array[1..255]of Word;
  Procedure HW(Offset:Integer;Value:Word);
  Begin Header[Offset]:=Byte(Value);Header[Offset+1]:=Byte(Value shr 8)End;
  Procedure EW(Value:Word);
@@ -1972,20 +2035,39 @@ Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
 Begin
  WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin CPFail('segment trop grand');Exit End;
  if CurrentTarget=ptUCSDPSystemIV Then Begin
-  { En-tete interne IV (11 mots), attribut de procedure, code, pointeur
-    de procedure puis dictionnaire. Les offsets internes sont en mots. }
-  if CodeLength>65480 Then Begin CPFail('segment IV trop grand');Exit End;
-  For I:=CodeLength-1 downto 0 do PCode_Mem^[I+24]:=PCode_Mem^[I];
-  FillChar(PCode_Mem^,24,0);ProcEntry:=24+CodeLength;
-  if Odd(ProcEntry)Then Begin PCode_Mem^[ProcEntry]:=$9C;Inc(ProcEntry)End;
-  ProcDict:=ProcEntry+2;
-  PCode_Mem^[0]:=Byte((ProcDict div 2));PCode_Mem^[1]:=Byte((ProcDict div 2)shr 8);
-  PCode_Mem^[12]:=1;PCode_Mem^[13]:=0; { endian natif }
-  PCode_Mem^[20]:=Byte((ProcEntry div 2));PCode_Mem^[21]:=Byte((ProcEntry div 2)shr 8);
-  PCode_Mem^[22]:=Byte(DataWords);PCode_Mem^[23]:=Byte(DataWords shr 8);
-  PCode_Mem^[ProcEntry]:=11;PCode_Mem^[ProcEntry+1]:=0; { attribut a 22 }
-  PCode_Mem^[ProcDict]:=1;PCode_Mem^[ProcDict+1]:=0;
-  CPCodePos:=ProcDict+2;SegmentLength:=CPCodePos
+  ProcTotal:=CPNextProcedure;
+  if ProcTotal>255 Then Begin CPFail('plus de 255 procedures');Exit End;
+  GetMem(Tmp,SizeOf(TPCodeMemory));FillChar(Tmp^,SizeOf(TPCodeMemory),0);
+  Posi:=22;
+  For ProcNo:=1 to ProcTotal do Begin
+   if ProcNo=1 Then Begin Src:=CPMainStart;Len:=CPMainLength;N:=DataWords End
+   else Begin
+    R:=CPRoutines;While(R<>Nil)and(R^.ProcNumber<>ProcNo)do R:=R^.Next;
+    if R=Nil Then Begin CPFail('procedure absente du dictionnaire');Break End;
+    Src:=R^.CodeStart;Len:=R^.CodeLength;N:=R^.LocalWords
+   End;
+   if(Src<0)or(Len<=0)or(Src+Len>CodeLength)or(Posi+Len+520>65534)Then Begin
+    CPFail('plage de procedure invalide');Break
+   End;
+   Attr[ProcNo]:=Posi div 2;
+   Tmp^[Posi-2]:=Byte((Posi+2+Len)div 2);
+   Tmp^[Posi-1]:=Byte(((Posi+2+Len)div 2)shr 8);
+   Tmp^[Posi]:=Byte(N);Tmp^[Posi+1]:=Byte(N shr 8);Inc(Posi,2);
+   For J:=0 to Len-1 do Tmp^[Posi+J]:=PCode_Mem^[Src+J];Inc(Posi,Len);
+   if Odd(Posi)Then Begin Tmp^[Posi]:=$9C;Inc(Posi)End;
+   if ProcNo<ProcTotal Then Inc(Posi,2) { end-pointer suivant }
+  End;
+  if CPError Then Begin FreeMem(Tmp,SizeOf(TPCodeMemory));Exit End;
+  ProcDict:=Posi+ProcTotal*2;
+  For ProcNo:=1 to ProcTotal do Begin
+   ProcEntry:=ProcDict-ProcNo*2;Tmp^[ProcEntry]:=Byte(Attr[ProcNo]);
+   Tmp^[ProcEntry+1]:=Byte(Attr[ProcNo]shr 8)
+  End;
+  Tmp^[ProcDict]:=Byte(ProcTotal);Tmp^[ProcDict+1]:=0;
+  Tmp^[0]:=Byte(ProcDict div 2);Tmp^[1]:=Byte((ProcDict div 2)shr 8);
+  Tmp^[12]:=1;Tmp^[13]:=0;CPCodePos:=ProcDict+2;
+  Move(Tmp^,PCode_Mem^,CPCodePos);FreeMem(Tmp,SizeOf(TPCodeMemory));
+  SegmentLength:=CPCodePos
  End else Begin
   EW(DataWords*2);EW(0);EW(CodeLength-1);EW(0);CPE(1);CPE(0);
   EW(CodeLength);CPE(1);CPE(1);SegmentLength:=CPCodePos
@@ -2075,8 +2157,10 @@ Begin
   if R=Nil Then Begin CPFail('routine absente de la passe 1');Break End;
   CPPos:=R^.EndPosition;CPNext
  End;
- CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');
+ CPMainStart:=CPCodePos;CPCompound;
+ if CPToken='.'Then CPNext else CPFail('point final attendu');
  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214);
+ CPMainLength:=CPCodePos-CPMainStart;
  if not CPError Then WriteUCSDCodeFile(CodeName,'PROGRAM',CPCodePos,CPVarCount);
  99:CPFreeTables;
  FreeMem(PCode_Mem,SizeOf(TPCodeMemory));FreeMem(CPSource,SizeOf(TPCodeMemory));
