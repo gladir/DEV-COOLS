@@ -7752,6 +7752,11 @@ Var
  { GlobalNotify NE retourne PAS l'ancien callback (contrairement a           }
  { LocalNotify). }
  Win16_GlobalNotifySeg, Win16_GlobalNotifyOfs: Word;
+ { AllocSelector/$175 (2026-09-14, demande explicite) - compteur reel de     }
+ { "selecteurs" synthetiques frais, dans le MEME espace reserve/non-memoire  }
+ { deja etabli pour les atomes ($C000+, voir Win16_AtomName) mais dans une   }
+ { sous-plage distincte ($C100+) pour eviter toute collision avec eux. }
+ Win16_SelectorNext: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91877,6 +91882,7 @@ Begin
  Win16_SigFlags := 0;
  Win16_GlobalNotifySeg := 0;
  Win16_GlobalNotifyOfs := 0;
+ Win16_SelectorNext := $C100;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -93404,6 +93410,12 @@ Procedure Emu_DoInt5C(Var P: TEmulatorPanel); Forward;
 { AH=1Fh/AH=32h), 2026-09-14, demande explicite. }
 Procedure Emu_DosTerminate(Var P: TEmulatorPanel; Const NormalMsg: String); Forward;
 Function Emu_DpbFind(DL: Byte; Var DpbOfs: Word): Boolean; Forward;
+{ Emu_McbAlloc/Emu_McbFree (definies bien plus bas, section MCB) - Forward  }
+{ necessaire pour GlobalDosAlloc/$184/GlobalDosFree/$185 (2026-09-14,       }
+{ demande explicite) qui reutilisent REELLEMENT le MEME allocateur de       }
+{ memoire conventionnelle DOS deja etabli pour INT21h AH=48h/AH=49h. }
+Function Emu_McbAlloc(Var C: TEmuCPU; NeedParas, Owner: Word; Var GotSeg, MaxFree: Word): Boolean; Forward;
+Function Emu_McbFree(Var C: TEmuCPU; BlockSeg: Word): Boolean; Forward;
 { KEYBOARD.DRV (2026-09-14, demande explicite) : nouveau module ModIdx=4,   }
 { suite logique de l'ordre KERNEL=1/GDI=2/USER=3 deja documente plus haut   }
 { (empiriquement verifie sur CLOCK.EXE/CALENDAR.EXE) - meme simplification  }
@@ -93926,6 +93938,22 @@ Var
  GLRNHandle: Word;
  WEPathSeg, WEPathOfs: Word;
  WEPath, WEHostPath: String;
+ { KERNEL.EXE GetExpWinVer/DirectResAlloc/AllocSelector/PrestoChangoSelector/}
+ { LongPtrAdd/GlobalDosAlloc/GlobalDosFree/GetSelectorBase (2026-09-14,      }
+ { demande explicite, ordinaux 167/168/175/177/180/184/185/186). }
+ GEWHdr: TNEHeader;
+ GEWHdrOfs, GEWFSize: LongInt;
+ GEWModule: Word;
+ DRASize: Word;
+ PCSDst: Word;
+ LPAOfsLo, LPAAddHi, LPAAddLo: Word;
+ LPANewOfs: LongInt;
+ GDASize: Word;
+ GDAParas: Word;
+ GDAGotSeg, GDAMaxFree: Word;
+ GDFSel: Word;
+ GSBSel: Word;
+ GSBBase: LongInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -96523,6 +96551,294 @@ Begin
     Else
      P.CPU.Regs.AX := 0;
     ArgWords := 3;
+   End;
+   167: Begin
+    { GetExpWinVer(hModule):word - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16                       }
+    { GetExpWinVer(word) GetExpWinVer16", 1 mot). REEL : MEME technique      }
+    { deja etablie pour GetExeVersion/$105 (Win16_ReadHeader, champ reel     }
+    { ne_expver du VRAI en-tete NE) - hModule=0 (convention documentee        }
+    { "module courant") ou hModule=Win16_StackSeg -> relit VRAIMENT le        }
+    { fichier ; tout autre handle -> module inconnu, echec honnete (0),       }
+    { meme discipline que GetModuleFileName/$49. }
+    GEWModule := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GEWModule <> 0) And (GEWModule <> Win16_StackSeg) Then
+     P.CPU.Regs.AX := 0
+    Else If Win16_ReadHeader(Win16_LoadedPath, GEWHdr, GEWHdrOfs, GEWFSize) Then
+     P.CPU.Regs.AX := GEWHdr.ne_expver
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   168: Begin
+    { DirectResAlloc(hInstance,wType,wSize):HRSRC - ordinal/signature       }
+    { VERIFIES via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16  }
+    { DirectResAlloc(word word word) DirectResAlloc16", 3 mots). REEL :      }
+    { alloue VRAIMENT wSize octets via le MEME bump allocator/repertoire     }
+    { partage que AllocResource/$66/GlobalAlloc/$15 (simplification          }
+    { LMEM_FIXED deja etablie) - pas une seconde comptabilite inventee.      }
+    { hInstance et wType n'ont pas besoin d'etre lus (aucune branche n'en    }
+    { depend : hInstance est mono-programme, wType ne fait que documenter    }
+    { l'intention du type de ressource sans effet sur l'allocation           }
+    { elle-meme). }
+    DRASize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (LongInt(Win16_HeapNext) + LongInt(DRASize)) > LongInt(Win16_HeapLimit) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     P.CPU.Regs.AX := Win16_HeapNext;
+     If Win16_LocalBlockCount < 64 Then Begin
+      Win16_LocalBlockOfs[Win16_LocalBlockCount] := Win16_HeapNext;
+      Win16_LocalBlockSize[Win16_LocalBlockCount] := DRASize;
+      Inc(Win16_LocalBlockCount);
+     End;
+     Win16_HeapNext := Win16_HeapNext + DRASize;
+    End;
+    ArgWords := 3;
+   End;
+   169: Begin
+    { GetFreeSpace(wFlags):DWORD - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal GetFreeSpace(word)           }
+    { GetFreeSpace16", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX). REEL :}
+    { MEME formule deja etablie pour GetHeapSpaces/$138/LocalCountFree/$161  }
+    { (Win16_HeapLimit-Win16_HeapNext = VRAI espace libre restant du bump    }
+    { allocator partage) - pas une seconde comptabilite inventee. wFlags     }
+    { n'a pas besoin d'etre lu (local et global partagent deja le MEME tas   }
+    { dans ce sous-ensemble). }
+    P.CPU.Regs.AX := Word(LongInt(Win16_HeapLimit) - LongInt(Win16_HeapNext));
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   170: Begin
+    { AllocCStoDSAlias(sel):word - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16                       }
+    { AllocCStoDSAlias(word) AllocCStoDSAlias16", 1 mot). REEL corps         }
+    { documente : cree un NOUVEAU selecteur alias pointant vers la MEME       }
+    { memoire physique que sel mais avec des droits d'acces DONNEES au       }
+    { lieu de CODE. Ce sous-ensemble ne modelise justement AUCUNE            }
+    { indirection de descripteur/droits d'acces reels (memoire plate,        }
+    { Emu_ReadByte/WriteByte fonctionnent identiquement quel que soit le      }
+    { "type" nominal d'un segment, deja etabli partout - ex.                  }
+    { GlobalHandleNoRIP/$159) : l'alias peut donc SANS DANGER etre le MEME    }
+    { segment que sel (l'acces "donnees" y fonctionne deja de toute facon),  }
+    { pas une seconde implantation inventee. }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ArgWords := 1;
+   End;
+   171: Begin
+    { AllocDStoCSAlias(sel):word - MEME raisonnement EXACT que               }
+    { AllocCStoDSAlias/$170 ci-dessus, direction inverse (donnees->code) -   }
+    { ordinal/signature VERIFIES via le VRAI source Wine                     }
+    { (krnl386.exe16.spec : "pascal -ret16 AllocDStoCSAlias(word)            }
+    { AllocDStoCSAlias16", 1 mot). }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ArgWords := 1;
+   End;
+   172: Begin
+    { AllocAlias(sel):word - ordinal/signature VERIFIES via le VRAI source  }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 AllocAlias(word)             }
+    { AllocCStoDSAlias16" - remarquer que le VRAI nom de fonction C EST      }
+    { LITTERALEMENT AllocCStoDSAlias16, le MEME que l'ordinal 170 : ce ne     }
+    { sont pas deux implantations distinctes meme dans le VRAI Wine, mais     }
+    { UN SEUL point d'entree partage sous 2 ordinaux - reproduit ici avec le }
+    { MEME corps EXACT que AllocCStoDSAlias/$170. }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ArgWords := 1;
+   End;
+   173: Begin
+    { __ROMBIOS - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.    }
+    { spec : "173 equate __ROMBIOS 0") - PAS une fonction, une CONSTANTE DE  }
+    { DONNEES exportee (type "equate" du format NE, meme nature que          }
+    { __AHSHIFT/$113/__AHINCR/$114 d'un lot precedent) : un VRAI programme    }
+    { la lit via GetProcAddress et l'utilise comme SEGMENT REEL directement. }
+    { Le VRAI Wine retourne 0 ici car Wine ne modelise aucune VRAIE           }
+    { adresse reel-mode (ce n'est qu'une compatibilite API sur un OS          }
+    { moderne) - CE sous-ensemble, a la difference de Wine, est un VRAI       }
+    { emulateur 8086 avec un VRAI espace d'adressage reel-mode : la VALEUR    }
+    { honnete et verifiable ici est le VRAI segment ROM BIOS universellement }
+    { documente de toute machine PC compatible ($F000), pas le 0 de          }
+    { compatibilite de Wine. Fourni par prudence defensive si un far CALL    }
+    { y survenait (comme pour __AHSHIFT/$113). }
+    P.CPU.Regs.AX := $F000;
+    ArgWords := 0;
+   End;
+   174: Begin
+    { __A000H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "174 equate __A000H 0") - meme nature "equate" que __ROMBIOS/$173      }
+    { ci-dessus, MEME raisonnement (ce sous-ensemble a un VRAI espace         }
+    { d'adressage reel-mode, contrairement a Wine) : la VRAIE adresse de      }
+    { segment de la memoire video VGA/graphique haute resolution              }
+    { universellement documentee ($A000, deja utilisee ailleurs dans ce      }
+    { fichier pour le VRAI framebuffer VGA). }
+    P.CPU.Regs.AX := $A000;
+    ArgWords := 0;
+   End;
+   175: Begin
+    { AllocSelector(sel):word - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 AllocSelector(word)   }
+    { AllocSelector16", 1 mot). REEL documente : alloue TOUJOURS un           }
+    { NOUVEAU/DIFFERENT selecteur (sel=0 ou non, seul change le fait de       }
+    { copier ou non les attributs du descripteur source - non modelise ici,  }
+    { AUCUNE fonction SetSelectorBase/Limit n'est demandee dans ce lot pour   }
+    { rendre ce nouveau selecteur reellement adressable de toute facon).      }
+    { Nouveau compteur reel Win16_SelectorNext ($C100+, MEME espace reserve   }
+    { "non-memoire" deja etabli pour les atomes/$C000 mais dans une           }
+    { sous-plage distincte pour eviter toute collision) - retourne             }
+    { VRAIMENT une valeur fraiche et differente a CHAQUE appel, pas une        }
+    { identite figee inventee. sel n'a pas besoin d'etre lu (aucune           }
+    { branche n'en depend, voir ci-dessus). }
+    P.CPU.Regs.AX := Win16_SelectorNext;
+    Inc(Win16_SelectorNext);
+    ArgWords := 1;
+   End;
+   176: Begin
+    { FreeSelector(sel):word - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 FreeSelector(word)    }
+    { FreeSelector16", 1 mot). Documente reel : retourne 0 en cas de         }
+    { succes. AllocSelector/$175 ci-dessus utilise un simple compteur          }
+    { croissant SANS AUCUNE VRAIE table de descripteurs a liberer (meme       }
+    { simplification "bump allocator qui ne recupere jamais" deja etablie     }
+    { partout dans ce chantier - LocalFree/$7, GlobalFree/$17,                }
+    { FreeProcInstance/$52, FreeModule/$46) - rapporte donc TOUJOURS un        }
+    { succes. sel n'a pas besoin d'etre lu. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   177: Begin
+    { PrestoChangoSelector(selSrc,selDst):word - ordinal/signature          }
+    { VERIFIES via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16  }
+    { PrestoChangoSelector(word word) PrestoChangoSelector16", 2 mots).       }
+    { REEL documente : reecrit le descripteur de selDst pour devenir le       }
+    { type COMPLEMENTAIRE (code<->donnees) de selSrc, puis retourne selDst    }
+    { INCHANGE. Ce sous-ensemble ne modelisant aucun VRAI droit d'acces       }
+    { code/donnees distinct (memoire plate, meme raisonnement                }
+    { qu'AllocCStoDSAlias/$170), "changer le type" n'a AUCUN effet             }
+    { observable ici - retourne honnetement selDst tel quel, le VRAI           }
+    { contrat de valeur de retour. selSrc n'a pas besoin d'etre lu             }
+    { (aucune branche n'en depend). }
+    PCSDst := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := PCSDst;
+    ArgWords := 2;
+   End;
+   178: Begin
+    { __WINFLAGS - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.   }
+    { spec : "178 equate __WINFLAGS 0x413") - meme nature "equate" que        }
+    { __ROMBIOS/$173 ci-dessus, mais CETTE constante n'est PAS un segment     }
+    { materiel reel (contrairement a __A000H etc.) : reproduit ici la         }
+    { VALEUR EXACTE deja verifiee dans le VRAI fichier .spec ($0413),          }
+    { aucune meilleure alternative reelle n'existe pour ce cas precis. }
+    P.CPU.Regs.AX := $0413;
+    ArgWords := 0;
+   End;
+   179: Begin
+    { __D000H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "179 equate __D000H 0") - meme nature "equate" que __A000H/$174,        }
+    { MEME raisonnement (VRAI espace d'adressage reel-mode de ce               }
+    { sous-ensemble) : le segment $D000 universellement documente pour la     }
+    { fenetre de ROM optionnelle/UMB reel-mode. }
+    P.CPU.Regs.AX := $D000;
+    ArgWords := 0;
+   End;
+   180: Begin
+    { LongPtrAdd(lp,dwAdd):LONG - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 LongPtrAdd(long       }
+    { long) LongPtrAdd16", 2 LONGs = 4 mots, "-ret16" = retourne SEULEMENT    }
+    { le nouvel OFFSET en AX, le VRAI segment ne change jamais donc l'appelant}
+    { n'a pas besoin qu'on le lui retourne). REEL, contrat documente par      }
+    { l'utilisateur lui-meme : ajoute dwAdd a l'OFFSET de lp (le segment       }
+    { reste inchange) - implante litteralement, pas une simplification.       }
+    { Convention LONG deja etablie (mot HAUT pousse en premier/plus            }
+    { profond) : lp = segment(HAUT,+10)+offset(BAS,+8) ; dwAdd =               }
+    { haut(+6)+bas(+4). }
+    LPAOfsLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LPAAddHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LPAAddLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LPANewOfs := LongInt(LPAOfsLo) + ((LongInt(LPAAddHi) Shl 16) Or LongInt(LPAAddLo));
+    P.CPU.Regs.AX := Word(LPANewOfs);
+    ArgWords := 4;
+   End;
+   181: Begin
+    { __B000H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "181 equate __B000H 0") - meme nature "equate" que __A000H/$174,        }
+    { MEME raisonnement : le segment $B000 universellement documente pour    }
+    { la memoire texte monochrome (MDA/Hercules) reel-mode. }
+    P.CPU.Regs.AX := $B000;
+    ArgWords := 0;
+   End;
+   182: Begin
+    { __B800H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "182 equate __B800H 0") - meme nature "equate" que __A000H/$174,        }
+    { MEME raisonnement : le segment $B800 universellement documente pour    }
+    { la memoire texte couleur (CGA/VGA) reel-mode, deja utilisee ailleurs    }
+    { dans ce fichier pour le VRAI framebuffer texte. }
+    P.CPU.Regs.AX := $B800;
+    ArgWords := 0;
+   End;
+   183: Begin
+    { __0000H - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :}
+    { "183 equate __0000H 0") - meme nature "equate" que __A000H/$174,        }
+    { MEME raisonnement : le segment $0000 universellement documente de la    }
+    { table de vecteurs d'interruption/memoire basse reel-mode. }
+    P.CPU.Regs.AX := $0000;
+    ArgWords := 0;
+   End;
+   184: Begin
+    { GlobalDOSAlloc(dwSize):DWORD - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (krnl386.exe16.spec : "pascal GlobalDOSAlloc(long)         }
+    { GlobalDOSAlloc16", 1 LONG = 2 mots, PAS de "-ret16" = retour COMPLET    }
+    { DX:AX = selecteur:segment reel-mode). REEL : contrairement aux           }
+    { simplifications "offset dans Win16_StackSeg" habituelles (GlobalAlloc/  }
+    { $15), ce contrat exige un VRAI segment autonome avec offset 0            }
+    { utilisable directement en reel-mode - reutilise donc le VRAI            }
+    { allocateur de memoire conventionnelle DOS DEJA etabli et verifie         }
+    { (Emu_McbAlloc, le MEME utilise par INT21h AH=48h) plutot que d'inventer }
+    { un second mecanisme. DX=AX=segment obtenu (simplification DOCUMENTEE :  }
+    { aucune distinction numerique separee selecteur/segment reel-mode dans   }
+    { ce sous-ensemble, meme convention identite que partout ailleurs).       }
+    { Echec (memoire insuffisante) -> DX=AX=0 (documente reel). Mot bas        }
+    { seulement lu (meme limitation documentee que GlobalAlloc/$15). }
+    GDASize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GDAParas := Word((LongInt(GDASize) + 15) Div 16);
+    If Emu_McbAlloc(P.CPU, GDAParas, EmuPspSeg, GDAGotSeg, GDAMaxFree) Then Begin
+     P.CPU.Regs.AX := GDAGotSeg;
+     P.CPU.Regs.DX := GDAGotSeg;
+    End Else Begin
+     P.CPU.Regs.AX := 0;
+     P.CPU.Regs.DX := 0;
+    End;
+    ArgWords := 2;
+   End;
+   185: Begin
+    { GlobalDOSFree(sel):word - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GlobalDOSFree(word)   }
+    { GlobalDOSFree16", 1 mot). REEL : reutilise le VRAI liberateur de        }
+    { memoire conventionnelle DOS deja etabli (Emu_McbFree, le MEME utilise  }
+    { par INT21h AH=49h) - symetrique honnete de GlobalDosAlloc/$184.         }
+    { Documente reel : retourne 0 en cas de succes, sel INCHANGE en cas       }
+    { d'echec (bloc invalide). }
+    GDFSel := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Emu_McbFree(P.CPU, GDFSel) Then
+     P.CPU.Regs.AX := 0
+    Else
+     P.CPU.Regs.AX := GDFSel;
+    ArgWords := 1;
+   End;
+   186: Begin
+    { GetSelectorBase(sel):DWORD - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal GetSelectorBase(word)        }
+    { GetSelectorBase", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX).       }
+    { REEL documente : retourne l'adresse LINEAIRE de base du descripteur     }
+    { du selecteur. Ce sous-ensemble n'a AUCUNE VRAIE table de descripteurs   }
+    { avec des bases arbitrairement reassignables (AUCUNE fonction             }
+    { SetSelectorBase n'est demandee dans ce lot) - la formule reel-mode       }
+    { UNIVERSELLE et VERIFIABLE (base = selecteur*16) s'applique donc          }
+    { honnetement a TOUT selecteur/segment de ce sous-ensemble, la MEME        }
+    { convention "identite" deja utilisee partout ailleurs (GlobalHandle/     }
+    { $21, GetSelectorBase d'un VRAI selecteur AllocSelector/$175 inclus). }
+    GSBSel := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GSBBase := LongInt(GSBSel) * 16;
+    P.CPU.Regs.AX := Word(GSBBase And $FFFF);
+    P.CPU.Regs.DX := Word((GSBBase Shr 16) And $FFFF);
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
