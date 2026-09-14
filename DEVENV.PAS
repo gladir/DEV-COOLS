@@ -1540,6 +1540,10 @@ Const
  MAX_GIT_LOG      = 200;
  { Onglet "PasChat" }
  MAX_CHAT_MESSAGES = 256;
+ { Selection de texte a la souris (2026-09-14) - nombre max de rangees   }
+ { visibles capturees pour la selection/copie, meme echelle que          }
+ { TP.VisRowText du Terminal. }
+ MAX_CHAT_VISROWS = 128;
  { Capture de sortie de commande externe generique (git, ...) }
  MAX_CMD_OUTPUT_LINES = 300;
  { Retour a la ligne automatique des bulles de conversation PasChat }
@@ -7316,6 +7320,16 @@ Var
  ChatInputFocused: Boolean;
  ChatScrollTop   : Integer;
  ChatInitialized : Boolean;
+ { Selection de texte a la souris + Ctrl+Ins/Shift+Ins (2026-09-14,      }
+ { demande explicite de l utilisateur) - meme motif que TermSel/         }
+ { TP.VisRowText du Terminal (voir DrawTerminalSelection/TermHitTest/    }
+ { TermGetSelectedText), adapte au texte proportionnel (pas monospace)   }
+ { et aux bulles a largeur/position variables de PasChat. }
+ ChatSel         : TSelection;
+ ChatVisRowText  : Array[0..MAX_CHAT_VISROWS - 1] Of String;
+ ChatVisRowX     : Array[0..MAX_CHAT_VISROWS - 1] Of Integer;
+ ChatVisRowY     : Array[0..MAX_CHAT_VISROWS - 1] Of Integer;
+ ChatVisRowCount : Integer;
  { EXTENSION (2026-08-09) : dernier fichier cree/modifie par PasChat -   }
  { permet a l utilisateur de dire "le fichier que tu viens de modifier"          }
  { sans le renommer, puisque PASCHAT.exe (invoque a chaque question dans          }
@@ -13089,6 +13103,7 @@ Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
 { onglets du panneau Explorateur (Modification Git/Team Explorer/           }
 { PasChat) - voir TExplorerTabKind. }
 Procedure DrawExplorerTabStrip(Var Exp: TSolutionExplorer); Forward;
+Function TruncateTitleToWidth(Const FullTitle: String; MaxW: Integer): String; Forward;
 Function ExplorerTabStripHitTest(Var Exp: TSolutionExplorer;
  MX, MY: Integer): Integer; Forward;
 Procedure DrawGitChangesContent(Var Exp: TSolutionExplorer); Forward;
@@ -35531,6 +35546,12 @@ Begin
    ETAB_TEAMEXPLORER: Lbl := 'Team';
    ETAB_PASCHAT:      Lbl := 'PasChat';
   End;
+  { BOGUE REEL (2026-09-14, demande explicite de l utilisateur) : si le    }
+  { libelle est plus large que l onglet (petite fenetre), le decalage de   }
+  { centrage devient NEGATIF et le texte deborde sur l onglet voisin -     }
+  { tronque au prealable avec la MEME fonction que le titre des panneaux   }
+  { emulateur (TruncateTitleToWidth). }
+  Lbl := TruncateTitleToWidth(Lbl, TabW - 4);
   OutTextXY(TabX + (TabW - TextWidth(Lbl)) Div 2, TSY + 5, Lbl);
   If I > 0 Then Begin
    SetColor(CLR_BORDER);
@@ -36677,6 +36698,8 @@ Begin
  ChatInputCPos := 0;
  ChatScrollTop := 0;
  PasChatLastFile := '';
+ ClearSelection(ChatSel);
+ ChatVisRowCount := 0;
  ChatInitialized := True;
 End;
 
@@ -36865,6 +36888,9 @@ Var
  BarTop, BarBot: Integer;
  VisStart, VisEnd, InputBoxTextW: Integer;
  VisText: String;
+ RowIdx, RowTop: Integer;
+ SL, SC, EL, EC: LongInt;
+ SelX1, SelX2: Integer;
 Begin
  PasChatEnsureInit;
  CTop := ExplorerTabContentTop(Exp);
@@ -36872,6 +36898,9 @@ Begin
  InputTop := CBot - 24;
  MsgBot := InputTop;
  BubW := ChatBubbleWidth(Exp);
+ { Selection de texte a la souris (2026-09-14) - recapture les rangees   }
+ { visibles CETTE image, meme motif que TP.VisRowText du Terminal. }
+ ChatVisRowCount := 0;
  { Hauteur totale de la conversation (pour plafonner le defilement). }
  TotalH := 4;
  For I := 0 To ChatMsgCount - 1 Do Begin
@@ -36906,8 +36935,45 @@ Begin
    End;
    SetColor(FgColor);
    For J := 0 To LC - 1 Do
-    If (Y + 3 + J * 14 >= CTop - 14) And (Y + 3 + J * 14 <= MsgBot) Then
+    If (Y + 3 + J * 14 >= CTop - 14) And (Y + 3 + J * 14 <= MsgBot) Then Begin
+     { Capture de la rangee pour la selection/copie a la souris           }
+     { (2026-09-14, demande explicite de l utilisateur) - meme motif que  }
+     { TP.VisRowText/TermHitTest/TermGetSelectedText du Terminal, adapte  }
+     { au texte proportionnel (TextWidth) et a la position X variable des }
+     { bulles (au lieu d une grille monospace fixe). }
+     RowTop := Y + J * 14;
+     If ChatVisRowCount < MAX_CHAT_VISROWS Then Begin
+      RowIdx := ChatVisRowCount;
+      ChatVisRowText[RowIdx] := Lines[J];
+      ChatVisRowX[RowIdx] := BubX + 4;
+      ChatVisRowY[RowIdx] := RowTop;
+      Inc(ChatVisRowCount);
+      { Fond de selection AVANT le texte (meme ordre que                  }
+      { DrawTerminalSelection/DrawSelection). }
+      If IsSelectionActive(ChatSel) Then Begin
+       GetOrderedSelection(ChatSel, SL, SC, EL, EC);
+       If (RowIdx >= SL) And (RowIdx <= EL) Then Begin
+        If RowIdx = SL Then
+         SelX1 := BubX + 4 + TextWidth(Copy(Lines[J], 1, SC - 1))
+        Else
+         SelX1 := BubX + 4;
+        If RowIdx = EL Then
+         SelX2 := BubX + 4 + TextWidth(Copy(Lines[J], 1, EC - 1))
+        Else
+         SelX2 := BubX + 4 + TextWidth(Lines[J]) + 4;
+        If SelX2 > SelX1 Then Begin
+         { CLR_SELECTION (bleu) est EXACTEMENT la meme couleur que la      }
+         { bulle utilisateur (CLR_TITLEBAR_ACTIVE) - y serait invisible.   }
+         { CLR_LINE_HIGHLIGHT (jaune) contraste avec les 2 fonds de bulle  }
+         { possibles (bleu utilisateur/gris assistant). }
+         SetFillStyle(SolidFill, CLR_LINE_HIGHLIGHT);
+         Bar(SelX1, RowTop, SelX2 - 1, RowTop + 13);
+        End;
+       End;
+      End;
+     End;
      OutTextXY(BubX + 4, Y + 3 + J * 14, Lines[J]);
+    End;
   End;
   Y := Y + LC * 14 + 12;
  End;
@@ -36961,10 +37027,116 @@ Begin
   And (MY >= InputTop + 2) And (MY <= InputTop + 20);
 End;
 
+{ Convertit des coordonnees pixel de la souris en (rangee visible, colonne)  }
+{ pour la selection de texte de PasChat (2026-09-14, demande explicite de    }
+{ l utilisateur) - meme principe que TermHitTest, adapte au texte           }
+{ proportionnel (TextWidth au lieu de TERM_CHAR_WIDTH fixe) et a la          }
+{ position X variable des bulles (ChatVisRowX, au lieu de TermX+4 fixe).     }
+Procedure ChatHitTest(MX, MY: Integer; Var Row, Col: LongInt);
+Var
+ I: Integer;
+Begin
+ Row := 0;
+ If ChatVisRowCount > 0 Then Begin
+  Row := ChatVisRowCount - 1;
+  For I := 0 To ChatVisRowCount - 1 Do
+   If MY < ChatVisRowY[I] + 14 Then Begin
+    Row := I;
+    Break;
+   End;
+ End;
+ Col := 1;
+ If (Row >= 0) And (Row < ChatVisRowCount) Then
+  While (Col <= Length(ChatVisRowText[Row])) And
+        (TextWidth(Copy(ChatVisRowText[Row], 1, Col)) < (MX - ChatVisRowX[Row])) Do
+   Inc(Col);
+End;
+
+{ Texte a copier pour Ctrl+Ins dans PasChat (2026-09-14, demande explicite   }
+{ de l utilisateur) - meme motif que TermGetSelectedText, sur                }
+{ ChatVisRowText/ChatVisRowCount (rangees REELLEMENT dessinees cette image)  }
+{ au lieu du buffer brut des messages (qui n est pas encore mis en forme). }
+Function ChatGetSelectedText: String;
+Var
+ SL, SC, EL, EC: LongInt;
+ I: LongInt;
+ Line: String;
+ Result: String;
+Begin
+ If Not IsSelectionActive(ChatSel) Then Begin
+  ChatGetSelectedText := '';
+  Exit;
+ End;
+ Result := '';
+ GetOrderedSelection(ChatSel, SL, SC, EL, EC);
+ If (SL < 0) Or (SL >= ChatVisRowCount) Or (EL < 0) Or (EL >= ChatVisRowCount) Then Begin
+  ChatGetSelectedText := '';
+  Exit;
+ End;
+ If SL = EL Then Begin
+  Line := ChatVisRowText[SL];
+  If (SC >= 1) And (EC >= SC) And (SC <= Length(Line) + 1) Then Begin
+   If EC > Length(Line) + 1 Then EC := Length(Line) + 1;
+   Result := Copy(Line, SC, EC - SC);
+  End;
+ End Else Begin
+  Line := ChatVisRowText[SL];
+  If SC <= Length(Line) Then
+   Result := Copy(Line, SC, Length(Line) - SC + 1)
+  Else
+   Result := '';
+  For I := SL + 1 To EL - 1 Do
+   Result := Result + #13#10 + ChatVisRowText[I];
+  Line := ChatVisRowText[EL];
+  If EC > 1 Then
+   Result := Result + #13#10 + Copy(Line, 1, EC - 1)
+  Else
+   Result := Result + #13#10;
+ End;
+ ChatGetSelectedText := Result;
+End;
+
+{ "Coller" (Shift+Ins) dans le champ de saisie de PasChat (2026-09-14,      }
+{ demande explicite de l utilisateur) - meme motif que                      }
+{ TermPasteFromClipboard, sur ChatInputBuf/ChatInputCPos au lieu de         }
+{ TP.InputLine/TP.InputCol (seule zone editable de cet onglet - la          }
+{ conversation elle-meme est en lecture seule). Seule la premiere ligne     }
+{ est prise si le contenu colle est multi-lignes (meme limitation           }
+{ disclosee que le Terminal : un champ de saisie ne peut pas contenir de    }
+{ retour a la ligne). }
+Procedure PasChatPasteFromClipboard;
+Var
+ ClipText, Head, Tail: String;
+ CRPos, LFPos, CutPos: Integer;
+Begin
+ ClipText := GetRealClipboardText;
+ If ClipText = '' Then Exit;
+ CRPos := Pos(#13, ClipText);
+ LFPos := Pos(#10, ClipText);
+ CutPos := 0;
+ If (CRPos > 0) And ((LFPos = 0) Or (CRPos < LFPos)) Then CutPos := CRPos
+ Else If LFPos > 0 Then CutPos := LFPos;
+ If CutPos > 0 Then ClipText := Copy(ClipText, 1, CutPos - 1);
+ If ChatInputCPos < 0 Then ChatInputCPos := 0;
+ If ChatInputCPos > Length(ChatInputBuf) Then
+  ChatInputCPos := Length(ChatInputBuf);
+ Head := Copy(ChatInputBuf, 1, ChatInputCPos);
+ Tail := Copy(ChatInputBuf, ChatInputCPos + 1, Length(ChatInputBuf));
+ If Length(Head) + Length(ClipText) + Length(Tail) <= 255 Then Begin
+  ChatInputBuf := Head + ClipText + Tail;
+  ChatInputCPos := ChatInputCPos + Length(ClipText);
+ End;
+End;
+
 { --- Gerer les evenements de l onglet "PasChat" --- }
 
 Procedure HandlePasChatEvent(Var Exp: TSolutionExplorer; Ev: TEvent);
+Var
+ CTop, MsgBot: Integer;
+ HitRow, HitCol: LongInt;
 Begin
+ CTop := ExplorerTabContentTop(Exp);
+ MsgBot := ExplorerContentBottom(Exp) - 24;
  If ChatInputFocused Then Begin
   If Ev.Kind = EV_KEY_CHAR Then Begin
    If Ev.KeyChar = #13 Then { Entree : envoyer le message }
@@ -36997,6 +37169,43 @@ Begin
    Exit;
   End Else
    ChatInputFocused := False;
+  { Debut de selection de texte au clic gauche dans la zone de              }
+  { conversation (2026-09-14, demande explicite de l utilisateur) - meme   }
+  { motif que le debut de selection du Terminal (StartSelection/           }
+  { ChatHitTest), adapte au texte proportionnel des bulles. }
+  If (Ev.MouseBtn = MB_LEFT) And (Ev.MouseX >= Exp.X) And
+     (Ev.MouseX < Exp.X + Exp.Width) And
+     (Ev.MouseY >= CTop) And (Ev.MouseY < MsgBot) Then Begin
+   ChatHitTest(Ev.MouseX, Ev.MouseY, HitRow, HitCol);
+   ClearSelection(ChatSel);
+   StartSelection(ChatSel, HitRow, HitCol);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End;
+ End
+ Else If (Ev.Kind = EV_MOUSE_MOVE) Then Begin
+  { Glissement : etendre la selection si le bouton gauche est enfonce      }
+  { (2026-09-14, demande explicite - meme motif que HandleTerminalEvent). }
+  If IsSelectionActive(ChatSel) And (Ev.MouseBtn <> MB_NONE) Then Begin
+   ChatHitTest(Ev.MouseX, Ev.MouseY, HitRow, HitCol);
+   ExtendSelection(ChatSel, HitRow, HitCol);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End;
+ End
+ Else If (Ev.Kind = EV_MOUSE_UP) Then Begin
+  { Relachement : finaliser la selection (l annuler si debut = fin, un     }
+  { simple clic sans glisser ne doit pas laisser une "selection" degeneree }
+  { d un seul caractere - meme motif que HandleTerminalEvent). }
+  If IsSelectionActive(ChatSel) Then Begin
+   ChatHitTest(Ev.MouseX, Ev.MouseY, HitRow, HitCol);
+   ExtendSelection(ChatSel, HitRow, HitCol);
+   If (ChatSel.StartLine = ChatSel.EndLine) And
+      (ChatSel.StartCol = ChatSel.EndCol) Then
+    ClearSelection(ChatSel);
+   Exp.NeedRepaint := True;
+   DrawExplorer(Exp);
+  End;
  End
  Else If Ev.Kind = EV_KEY_DOWN Then Begin
   If Ev.KeyCode = 72 Then Begin { Fleche haut }
@@ -37009,6 +37218,20 @@ Begin
    Inc(ChatScrollTop, 14);
    Exp.NeedRepaint := True;
    DrawExplorer(Exp);
+  End
+  Else If Ev.KeyCode = $52 Then Begin { Inser - Ctrl+Ins/Shift+Ins }
+   { Copier/coller presse-papiers (2026-09-14, demande explicite de        }
+   { l utilisateur) - memes conventions et memes fonctions reutilisees     }
+   { que le Terminal (SetRealClipboardText/GetRealClipboardText), voir     }
+   { HandleTerminalEvent. Ctrl+Ins copie la selection de la conversation ; }
+   { Shift+Ins colle dans le champ de saisie (seule zone editable ici). }
+   If (Ev.ShiftState And 2) <> 0 Then Begin { Ctrl+Ins : copier }
+    SetRealClipboardText(ChatGetSelectedText);
+   End Else If (Ev.ShiftState And 1) <> 0 Then Begin { Shift+Ins : coller }
+    PasChatPasteFromClipboard;
+    Exp.NeedRepaint := True;
+    DrawExplorer(Exp);
+   End;
   End;
  End;
 End;
