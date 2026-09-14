@@ -7687,6 +7687,11 @@ Var
  Win16_HeapNext, Win16_HeapLimit: Word;  { bump allocator LocalAlloc,   }
                                           { dans le segment autodata     }
                                           { (Stage 5).                   }
+ Win16_HeapStart: Word;  { position INITIALE de Win16_HeapNext au        }
+                          { chargement (LocalHeapSize/$162, 2026-09-14,   }
+                          { demande explicite) - Win16_HeapNext avance    }
+                          { ensuite au fil des allocations, contrairement }
+                          { a cette valeur figee. }
  { Repertoire REEL (offset,taille) des blocs LocalAlloc/$5 (2026-09-14,   }
  { demande explicite KERNEL.EXE 1-10) - necessaire pour que LocalReAlloc/ }
  { $6 et LocalSize/$10 connaissent la VRAIE taille d'un bloc existant     }
@@ -7740,6 +7745,13 @@ Var
  Win16_DosEnvOfs: Word;
  Win16_SigHandlerSeg, Win16_SigHandlerOfs: Word;
  Win16_SigFlags: Word;
+ { GlobalNotify/$154 (2026-09-14, demande explicite) - stocke mais jamais    }
+ { reellement appele (aucun VRAI mecanisme de rejet/discard de memoire       }
+ { globale dans ce sous-ensemble), meme honnetete que                        }
+ { Win16_LocalNotifySeg/Ofs - a la difference DOCUMENTEE reelle que          }
+ { GlobalNotify NE retourne PAS l'ancien callback (contrairement a           }
+ { LocalNotify). }
+ Win16_GlobalNotifySeg, Win16_GlobalNotifyOfs: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91838,9 +91850,11 @@ Begin
  If Hdr.ne_autodata >= 1 Then Begin
   Win16_HeapNext := AutoDataMinAlloc;
   Win16_HeapLimit := AutoDataLimit;
+  Win16_HeapStart := AutoDataMinAlloc;
  End Else Begin
   Win16_HeapNext := 0;
   Win16_HeapLimit := 0;
+  Win16_HeapStart := 0;
  End;
  Win16_LocalBlockCount := 0;
  Win16_LocalNotifySeg := 0;
@@ -91861,6 +91875,8 @@ Begin
  Win16_SigHandlerSeg := 0;
  Win16_SigHandlerOfs := 0;
  Win16_SigFlags := 0;
+ Win16_GlobalNotifySeg := 0;
+ Win16_GlobalNotifyOfs := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -93901,6 +93917,15 @@ Var
  GHSFree: Word;
  SSHNewSeg, SSHNewOfs, SSHOldHSeg, SSHOldHOfs, SSHOldMSeg, SSHOldMOfs: Word;
  SSHNewMode, SSHFlag: Word;
+ { KERNEL.EXE GlobalNotify/LimitEMSPages/GlobalHandleNoRIP/                  }
+ { GlobalLRUOldest/GlobalLRUNewest/WinExec (2026-09-14, demande explicite,   }
+ { ordinaux 154/156/159/163/164/166). }
+ GNSeg, GNOfs: Word;
+ LEPPages: Word;
+ GLROHandle: Word;
+ GLRNHandle: Word;
+ WEPathSeg, WEPathOfs: Word;
+ WEPath, WEHostPath: String;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -96301,6 +96326,203 @@ Begin
     { touches). hTask n'a pas besoin d'etre lu (le VRAI corps ne le lit      }
     { pas non plus). }
     ArgWords := 1;
+   End;
+   { WinOldApCall/151 : ordinal marque "stub" SANS AUCUNE signature          }
+   { exploitable dans le VRAI source Wine ET dans WineVDM (meme resultat) -  }
+   { DELIBEREMENT NON IMPLANTE (meme discipline que InitLib/$116,            }
+   { UndefDynLink/$120, MemoryFreed/$126, DoSignal/$139, InitTask1/$141). }
+   152: Begin
+    { GetNumTasks():word - ordinal/signature VERIFIES via le VRAI source     }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 GetNumTasks()                 }
+    { GetNumTasks16", 0 mot). REEL corps C de reference : retourne le VRAI    }
+    { compteur de taches actives (nTaskCount). Ce sous-ensemble est            }
+    { STRICTEMENT mono-tache (deja etabli partout : SetTaskQueue/$34,          }
+    { IsTaskLocked/$122, GetCurrentTask/$36...) - le VRAI compte ici est       }
+    { donc TOUJOURS 1, pas une simplification separee mais la consequence     }
+    { directe de cet invariant deja verifie. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 0;
+   End;
+   154: Begin
+    { GlobalNotify(proc):void - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 GlobalNotify(segptr)  }
+    { GlobalNotify16", 2 mots). REEL corps C de reference (recupere via      }
+    { recherche web, avec une note explicite du VRAI code source lui-meme :  }
+    { "GlobalNotify does NOT return the old NotifyProc -- contrary to        }
+    { LocalNotify !!") : stocke VRAIMENT le callback dans un champ dedie de   }
+    { la tache (discardhandler), sans jamais retourner l'ancien - a la        }
+    { difference DOCUMENTEE de LocalNotify/$14 (deja implante en retournant   }
+    { l'ancien). Nouveaux globaux Win16_GlobalNotifySeg/Ofs (DISTINCTS de     }
+    { Win16_LocalNotifySeg/Ofs) - jamais reellement invoques (aucun VRAI      }
+    { mecanisme de rejet/discard de memoire globale dans ce sous-ensemble,    }
+    { meme honnetete que LocalNotify/$14). }
+    GNSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GNOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_GlobalNotifySeg := GNSeg;
+    Win16_GlobalNotifyOfs := GNOfs;
+    ArgWords := 2;
+   End;
+   155: Begin
+    { GetTaskDS():HINSTANCE - ordinal/signature VERIFIES via le VRAI source }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 GetTaskDS() GetTaskDS16", 0  }
+    { mot). REEL corps C de reference : retourne                             }
+    { GlobalHandleToSel16(pTask->hInstance) - le selecteur de l'instance/     }
+    { module de la tache courante. Ce sous-ensemble a DEJA etabli Win16_     }
+    { StackSeg comme identite synthetique unique de ce module/cette          }
+    { instance (GetCurrentTask/$36, GetModuleHandle/$47, GetExePtr/$133) -    }
+    { reutilise DIRECTEMENT, pas une seconde identite inventee. }
+    P.CPU.Regs.AX := Win16_StackSeg;
+    ArgWords := 0;
+   End;
+   156: Begin
+    { LimitEMSPages(dwMaxPages):void - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal LimitEMSPages(long)     }
+    { LimitEMSPages16", 1 LONG = 2 mots, PAS de "-ret16" mais fonction        }
+    { reellement void). Corps C de reference introuvable dans le VRAI        }
+    { source apres recherche ciblee, MAIS sa PORTEE documentee par            }
+    { l'utilisateur lui-meme ("limiter le nombre de pages de memoire EMS")   }
+    { s'applique DIRECTEMENT au VRAI etat EMS deja tenu par ce sous-ensemble }
+    { (EmuEms.TotalPages, le VRAI plafond de pages EMM deja modelise,         }
+    { voir Emu_EmsInit) : reduit VRAIMENT ce plafond si la nouvelle valeur   }
+    { demandee est PLUS PETITE (comportement historique documente du VRAI    }
+    { KERNEL.EXE au demarrage de Windows : restreint, n'agrandit jamais, le  }
+    { pool EMS disponible aux programmes DOS) - mot bas seulement lu (notre  }
+    { pool EMS, deja plafonne a 32 Mo/2048 pages, tient dans un mot). }
+    LEPPages := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If LongInt(LEPPages) < EmuEms.TotalPages Then
+     EmuEms.TotalPages := LongInt(LEPPages);
+    ArgWords := 2;
+   End;
+   157: Begin
+    { GetCurPID(dwUnused):DWORD - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (krnl386.exe16.spec : "pascal GetCurPID(long)              }
+    { GetCurPID16", 1 LONG = 2 mots, PAS de "-ret16" = retour COMPLET         }
+    { DX:AX). Le VRAI CORPS de reference est LUI-MEME un "toujours 0"         }
+    { litteral ("DWORD WINAPI GetCurPID16(DWORD unused) : return 0;") -      }
+    { reproduit A L'IDENTIQUE, ce n'est PAS une simplification de ce          }
+    { sous-ensemble mais le comportement REEL de reference. dwUnused n'a      }
+    { pas besoin d'etre lu (le VRAI corps ne l'utilise pas non plus, d'ou     }
+    { son nom). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 2;
+   End;
+   158: Begin
+    { IsWinOldApTask(hTask):BOOL - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16                       }
+    { IsWinOldApTask(word) IsWinOldApTask16", 1 mot). Le VRAI CORPS de       }
+    { reference retourne LITTERALEMENT toujours FALSE (commentaire du VRAI   }
+    { code source lui-meme : "should return bit 0 of byte 0x48 in PSP" -     }
+    { jamais implante meme dans le VRAI Wine) - reproduit A L'IDENTIQUE.      }
+    { hTask n'a pas besoin d'etre lu (le VRAI corps ne l'utilise pas non      }
+    { plus). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   159: Begin
+    { GlobalHandleNoRIP(sel):DWORD - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (krnl386.exe16.spec : "pascal GlobalHandleNoRIP(word)      }
+    { GlobalHandleNoRIP16", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX).  }
+    { REEL corps C de reference : cherche sel dans la table d'arenes et       }
+    { retourne MAKELONG(handle reel, selecteur) - le suffixe "NoRIP"          }
+    { (Realloc-In-Place) n'a AUCUNE incidence ici puisque ce sous-ensemble    }
+    { ne modelise justement AUCUNE indirection de bloc deplacable (handle=    }
+    { offset direct, meme identite que GlobalHandle/$21) : MEME corps EXACT  }
+    { que GlobalHandle/$21 deja implante, pas une seconde implantation. }
+    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   { EMSCopy/160 : ordinal marque "stub" SANS AUCUNE signature exploitable  }
+   { dans le VRAI source Wine ET dans WineVDM (meme resultat) -              }
+   { DELIBEREMENT NON IMPLANTE (meme discipline que WinOldApCall/$151). }
+   161: Begin
+    { LocalCountFree():word - ordinal/signature VERIFIES via le VRAI source }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 LocalCountFree()             }
+    { LocalCountFree16", 0 mot). REEL corps C de reference : additionne la   }
+    { taille de tous les blocs LIBRES du tas de DS. Ce sous-ensemble tient    }
+    { deja REELLEMENT cette information de facon equivalente via le bump      }
+    { allocator partage (Win16_HeapLimit-Win16_HeapNext = VRAI espace libre  }
+    { restant, MEME formule deja etablie pour GetHeapSpaces/$138) - pas une   }
+    { seconde comptabilite inventee. }
+    P.CPU.Regs.AX := Word(LongInt(Win16_HeapLimit) - LongInt(Win16_HeapNext));
+    ArgWords := 0;
+   End;
+   162: Begin
+    { LocalHeapSize():word - ordinal/signature VERIFIES via le VRAI source  }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 LocalHeapSize()              }
+    { LocalHeapSize16", 0 mot). REEL corps C de reference : retourne         }
+    { pInfo->last - pInfo->first (la VRAIE capacite TOTALE du tas, pas       }
+    { l'espace libre). Nouveau global Win16_HeapStart (position figee de     }
+    { Win16_HeapNext au chargement, voir Win16_LoadNE) permet de reproduire   }
+    { EXACTEMENT cette meme formule "dernier-premier" avec de VRAIES          }
+    { valeurs deja tenues, plutot que d'inventer une capacite separee. }
+    P.CPU.Regs.AX := Word(LongInt(Win16_HeapLimit) - LongInt(Win16_HeapStart));
+    ArgWords := 0;
+   End;
+   163: Begin
+    { GlobalLRUOldest(handle):HGLOBAL - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                 }
+    { GlobalLRUOldest(word) GlobalLRUOldest16", 1 mot). REEL corps C de      }
+    { reference : handle=-1 (convention documentee "DS courant") ->           }
+    { retourne CURRENT_DS (le VRAI registre DS de l'appelant, directement     }
+    { P.CPU.Segs.DS ici) ; sinon retourne handle INCHANGE (aucun VRAI          }
+    { classement LRU de blocs discardables dans ce sous-ensemble, meme        }
+    { honnetete que GlobalNotify/$154 ci-dessus) - reproduit EXACTEMENT ce    }
+    { VRAI contrat, pas une simplification qui ignorerait le cas -1. }
+    GLROHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If GLROHandle = $FFFF Then
+     P.CPU.Regs.AX := P.CPU.Segs.DS
+    Else
+     P.CPU.Regs.AX := GLROHandle;
+    ArgWords := 1;
+   End;
+   164: Begin
+    { GlobalLRUNewest(handle):HGLOBAL - MEME contrat EXACT que               }
+    { GlobalLRUOldest/$163 ci-dessus (VRAI corps Wine identique : handle=-1  }
+    { -> CURRENT_DS, sinon handle inchange). }
+    GLRNHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If GLRNHandle = $FFFF Then
+     P.CPU.Regs.AX := P.CPU.Segs.DS
+    Else
+     P.CPU.Regs.AX := GLRNHandle;
+    ArgWords := 1;
+   End;
+   165: Begin
+    { A20Proc(mode):void - ordinal/signature VERIFIES via le VRAI source    }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 A20Proc(word) A20Proc16", 1  }
+    { mot). PORTEE documentee par l'utilisateur lui-meme : "ne fait rien en  }
+    { mode d'execution standard ou etendue" - or ce sous-ensemble rapporte    }
+    { DEJA honnetement le mode "386 enrichi" via GetWinFlags/$132            }
+    { (WF_ENHANCED, $0C25) : le VRAI comportement documente pour CE mode      }
+    { EST precisement un no-op total, reproduit ici a l'identique (AX/DX      }
+    { non touches, meme le VRAI corps ne les touche pas). mode n'a pas        }
+    { besoin d'etre lu (aucune branche ne depend de sa valeur, ce              }
+    { sous-ensemble n'est jamais en "mode reel" Win16). }
+    ArgWords := 1;
+   End;
+   166: Begin
+    { WinExec(lpCmdLine,nCmdShow):HINSTANCE - ordinal/signature VERIFIES    }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16           }
+    { WinExec(str word) WinExec16", 2+1 = 3 mots). REEL documente :          }
+    { WinExec est historiquement implante EN TERMES de LoadModule (MEME       }
+    { mecanisme sous-jacent reel) - reutilise ici la MEME verification        }
+    { REELLE d'existence de fichier hote deja etablie pour LoadModule/$45     }
+    { (Emu_HostPath+FileExists) : fichier introuvable -> 2 (documente reel    }
+    { "file not found", meme code que LoadModule/$45) ; fichier REELLEMENT    }
+    { present -> 0 (documente reel "out of memory", meme limitation           }
+    { mono-programme deja disclosee pour LoadModule/$45 : ne peut pas          }
+    { reellement lancer un second programme Win16 concurrent). nCmdShow       }
+    { n'a pas besoin d'etre lu (aucune branche ne depend de sa valeur). }
+    WEPathSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    WEPathOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    WEPath := Win16_ReadGuestString(P.CPU, WEPathSeg, WEPathOfs);
+    WEHostPath := Emu_HostPath(WEPath);
+    If Not FileExists(WEHostPath) Then
+     P.CPU.Regs.AX := 2
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
