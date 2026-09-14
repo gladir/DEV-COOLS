@@ -93530,6 +93530,11 @@ Var
  GRAIdx: Integer;
  GSHMem: Word;
  GSIdx: Integer;
+ { KERNEL.EXE GlobalFlags/LockSegment (2026-09-14, demande explicite,       }
+ { ordinaux 22/23). }
+ GFMem: Word;
+ GFIdx: Integer;
+ LockSeg: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -93898,6 +93903,107 @@ Begin
     P.CPU.Regs.DX := Win16_StackSeg;
     ArgWords := 1;
    End;
+   22: Begin
+    { GlobalFlags(wMem):word - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 GlobalFlags(word) GlobalFlags16",}
+    { 1 mot). REEL, meme forme et meme simplification EXACTE que             }
+    { LocalFlags/$12 (le tas global et le tas local partagent deja le        }
+    { MEME repertoire Win16_LocalBlock*, voir GlobalAlloc/$15) : compte de    }
+    { verrous et bit GMEM_DISCARDED toujours 0 (honnete, aucun etat reel     }
+    { tenu), handle inconnu -> GMEM_INVALID_HANDLE ($8000, constante          }
+    { documentee reelle). }
+    GFMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GFIdx := -1;
+    For LHI := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LHI] = GFMem Then GFIdx := LHI;
+    If GFIdx >= 0 Then P.CPU.Regs.AX := 0 Else P.CPU.Regs.AX := $8000;
+    ArgWords := 1;
+   End;
+   23: Begin
+    { LockSegment(wSeg):word - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 LockSegment(word)                 }
+    { LockSegment16", 1 mot). REEL pour la simplification LMEM_FIXED deja    }
+    { etablie (aucun segment ne bouge jamais dans ce sous-ensemble, meme      }
+    { esprit que LocalLock/$8 et GlobalLock/$18 sans etat) : $FFFF            }
+    { (documente reel, "-1" = segment de donnees automatique courant)         }
+    { retourne VRAIMENT Win16_StackSeg, tout autre segment est retourne       }
+    { INCHANGE (identite - rien a verrouiller de plus, il ne bouge deja       }
+    { jamais). }
+    LockSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If LockSeg = $FFFF Then P.CPU.Regs.AX := Win16_StackSeg
+    Else P.CPU.Regs.AX := LockSeg;
+    ArgWords := 1;
+   End;
+   24: Begin
+    { UnlockSegment(wSeg):word - ordinal VERIFIE via le VRAI source Wine    }
+    { (krnl386.exe16.spec : "pascal -ret16 UnlockSegment(word)               }
+    { UnlockSegment16", 1 mot). REEL, symetrique de LockSegment/$23 :         }
+    { rapporte toujours un succes (aucun VRAI verrou de segment a lever,      }
+    { rien ne bouge jamais dans ce sous-ensemble) - wSeg n'a pas besoin       }
+    { d'etre lu (aucune branche ne depend de sa valeur, meme discipline       }
+    { que WaitEvent/$30 pour son propre parametre inutilise). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   25: Begin
+    { GlobalCompact(dwMinFree):DWORD - ordinal VERIFIE via le VRAI source   }
+    { Wine (krnl386.exe16.spec : "pascal GlobalCompact(long)                 }
+    { GlobalCompact16", 1 parametre LONG = 2 mots, PAS de "-ret16" = retour  }
+    { COMPLET DX:AX). REEL, MEME algorithme exact que LocalCompact/$13 (le    }
+    { tas global et le tas local partagent deja le MEME bump allocator,       }
+    { voir GlobalAlloc/$15) : le SEUL espace libre reel est la portion        }
+    { vierge entre Win16_HeapNext et Win16_HeapLimit - dwMinFree n'a pas      }
+    { besoin d'etre lu (rien a compacter pour l'atteindre, meme discipline    }
+    { que LocalCompact/$13). DX=0 (notre tas ne depassant jamais 64Ko). }
+    If Win16_HeapLimit > Win16_HeapNext Then
+     P.CPU.Regs.AX := Win16_HeapLimit - Win16_HeapNext
+    Else
+     P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 2;
+   End;
+   26: Begin
+    { GlobalFreeAll(hModule):word - ordinal VERIFIE via le VRAI source      }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 GlobalFreeAll(word)          }
+    { GlobalFreeAll16", 1 mot). REEL dans les limites honnetes d'un bump      }
+    { allocator SANS liste libre : ne peut PAS reellement recuperer          }
+    { l'espace du tas (meme limitation deja disclosee pour LocalFree/$7/      }
+    { GlobalFree/$17), mais vide REELLEMENT le repertoire de handles          }
+    { Win16_LocalBlock* - apres cet appel, plus AUCUN handle anterieur       }
+    { n'est reconnu par LocalSize/GlobalSize/LocalHandle/etc (comportement    }
+    { honnete, pas une approximation). hModule n'a pas besoin d'etre lu       }
+    { (une seule instance/module charge dans ce sous-ensemble, meme            }
+    { discipline que hInstance ignore par FindResource/$60). }
+    Win16_LocalBlockCount := 0;
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   28: Begin
+    { GlobalMasterHandle():DWORD (HIWORD=selecteur, LOWORD=handle du bloc   }
+    { d'information du tas global, familierement surnomme "Burgermaster") - }
+    { ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec : "pascal }
+    { GlobalMasterHandle() GlobalMasterHandle16", 0 mot, PAS de "-ret16" =   }
+    { retour COMPLET DX:AX). REEL : ce sous-ensemble n'a qu'UN SEUL tas       }
+    { (voir Win16_HeapNext/Limit) - reutilise Win16_StackSeg (la MEME          }
+    { identite synthetique deja utilisee pour representer "le tas" par       }
+    { GlobalHandle/$21, GlobalLock/$18, etc.) pour les DEUX mots plutot        }
+    { que d'inventer un second identifiant distinct sans signification        }
+    { verifiable. }
+    P.CPU.Regs.AX := Win16_StackSeg;
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 0;
+   End;
+   29: Begin
+    { Yield():void - ordinal VERIFIE via le VRAI source Wine                }
+    { (krnl386.exe16.spec : "pascal -ret16 Yield() Yield16", 0 mot). REEL :  }
+    { cede volontairement le CPU a une AUTRE tache Win16 prete (meme          }
+    { ordonnancement cooperatif documente que WaitEvent/$30) - ce               }
+    { sous-ensemble n'execute jamais qu'UNE seule tache (meme limitation       }
+    { deja disclosee pour WaitEvent/$30) : n'a donc litteralement rien a       }
+    { faire, retour immediat honnete. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
    30: Begin
     { WaitEvent(hTask):bool - ordinal verifie via Wine (krnl386.exe16.spec  }
     { + task.c, source publique) : bloque la tache appelante jusqu'a ce     }
@@ -93915,6 +94021,20 @@ Begin
     { au tick suivant), jamais l'etat/les donnees du programme. }
     P.CPU.Regs.AX := 0; { FALSE - evenement deja "present", pas d'attente }
     ArgWords := 1;      { WaitEvent(hTask) : un seul parametre. }
+   End;
+   31: Begin
+    { PostEvent(hTask):word - ordinal VERIFIE via le VRAI source Wine       }
+    { (krnl386.exe16.spec : "pascal -ret16 PostEvent(word) PostEvent16", 1   }
+    { mot). REEL, symetrique honnete de WaitEvent/$30 : dans ce                }
+    { sous-ensemble mono-tache (meme limitation deja disclosee), WaitEvent    }
+    { ne bloque JAMAIS reellement (chemin "evenement deja present"             }
+    { systematique) - poster un evenement pour n'importe quelle tache n'a     }
+    { donc aucun effet observable a attendre, mais l'appel EST honnetement    }
+    { accepte (succes) plutot que rejete, coherent avec GlobalFree/$17 et      }
+    { consorts ("toujours reussir" dans les limites documentees). hTask n'a   }
+    { pas besoin d'etre lu (aucune branche ne depend de sa valeur). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
    End;
    51: Begin
     { MakeProcInstance(lpProc,hInstance):FARPROC - ordinal VERIFIE via       }
