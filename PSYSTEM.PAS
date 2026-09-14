@@ -137,7 +137,7 @@ End;
 Type
  TPCodeMemory=Array[0..65534]of Byte;
  PPCodeMemory=^TPCodeMemory;
- TPCodeData=Array[0..8191]of Integer;
+ TPCodeData=Array[0..8191]of LongInt;
  PPCodeData=^TPCodeData;
 
 Var
@@ -292,7 +292,7 @@ Begin
  End;
 End;
 
-Procedure PCode_Push(V: Integer);Begin
+Procedure PCode_Push(V: LongInt);Begin
  If PCode_Halted Then Exit;
  If PCode_HasProcDictionary Then Begin
   If PCode_SP>0 Then Begin Dec(PCode_SP);PCode_Data^[PCode_SP]:=V End
@@ -307,7 +307,7 @@ Procedure PCode_Push(V: Integer);Begin
  End;
 End;
 
-Function PCode_Pop: Integer;Begin
+Function PCode_Pop: LongInt;Begin
  If PCode_HasProcDictionary Then Begin
   If PCode_SP<=High(PCode_Data^)Then Begin
    PCode_Pop:=PCode_Data^[PCode_SP];Inc(PCode_SP)
@@ -327,7 +327,7 @@ Function PCode_Pop: Integer;Begin
  End;
 End;
 
-Function PCode_DataAt(A: LongInt): Integer;Begin
+Function PCode_DataAt(A: LongInt): LongInt;Begin
  If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_DataAt := PCode_Data^[A]
  Else
  Begin
@@ -335,7 +335,7 @@ Function PCode_DataAt(A: LongInt): Integer;Begin
  End;
 End;
 
-Procedure PCode_DataSet(A: LongInt; V: Integer);Begin
+Procedure PCode_DataSet(A: LongInt; V: LongInt);Begin
  If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_Data^[A] := V;
 End;
 { Resout la base de cadre a Lvl chainons statiques (mot 0 du cadre = lien   }
@@ -580,6 +580,11 @@ Begin
  $BE:Begin R1.S:=PCode_Pop;PCode_Push(R1.L)End;
  $BF:Begin R1.L:=PCode_Pop;PCode_Push(Trunc(R1.S))End;
  $CD:Begin R1.L:=PCode_Pop;R1.S:=-R1.S;PCode_Push(R1.L)End;
+ $CE:Begin B:=PCode_Fetch(PCode_PC);Inc(PCode_PC);R2.L:=PCode_Pop;R1.L:=PCode_Pop;
+  Case B of 0:PCode_Push(Ord(R1.S=R2.S));1:PCode_Push(Ord(R1.S<>R2.S));
+   2:PCode_Push(Ord(R1.S<R2.S));3:PCode_Push(Ord(R1.S<=R2.S));
+   4:PCode_Push(Ord(R1.S>R2.S));5:PCode_Push(Ord(R1.S>=R2.S))End
+ End;
  $BD:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V2);PCode_Push(V1)End;
  $C4:Begin V2:=PCode_Pop;A:=PCode_Pop;PCode_DataSet(A,V2)End;
  $C8,$C9,$CA,$CC:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;
@@ -957,7 +962,11 @@ End;
 212:Begin V1:=PCode_Fetch(PCode_PC+1)or(PCode_Fetch(PCode_PC+2)shl 8)or
   (LongInt(PCode_Fetch(PCode_PC+3))shl 16)or(LongInt(PCode_Fetch(PCode_PC+4))shl 24);
   PCode_Push(V1);Inc(PCode_PC,5)End;
-213: Inc(PCode_PC, 2); { BPT : point d arret, ignore }
+213:Begin B:=PCode_Fetch(PCode_PC+1);R2.L:=PCode_Pop;R1.L:=PCode_Pop;
+ Case B of 0:PCode_Push(Ord(R1.S=R2.S));1:PCode_Push(Ord(R1.S<>R2.S));
+  2:PCode_Push(Ord(R1.S<R2.S));3:PCode_Push(Ord(R1.S<=R2.S));
+  4:PCode_Push(Ord(R1.S>R2.S));5:PCode_Push(Ord(R1.S>=R2.S))End;Inc(PCode_PC,2)
+End;
 214:
 Begin
  PCode_Halted := True; PCode_ExitCode := 0;
@@ -1994,6 +2003,11 @@ End;
 
 Function CPEvalConstExpression: TConstValue;Forward;
 
+Procedure CPCheckConstRange(V:LongInt);
+Begin
+ if(V<-32768)or(V>65535)Then CPFail('debordement d''expression constante 16 bits')
+End;
+
 Function CPEvalConstFactor:TConstValue;
 Var V:TConstValue;P:PPasSymbol;Neg:Boolean;
 Begin
@@ -2037,7 +2051,8 @@ Begin
   else if O='*'Then A.I:=A.I*B.I
   else if O='DIV'Then Begin if B.I=0 Then CPFail('division par zero')else A.I:=A.I div B.I End
   else if O='MOD'Then Begin if B.I=0 Then CPFail('division par zero')else A.I:=A.I mod B.I End
-  else A.I:=A.I and B.I
+  else A.I:=A.I and B.I;
+  if A.Kind<>ckReal Then CPCheckConstRange(A.I)
  End;CPEvalConstTerm:=A
 End;
 
@@ -2055,7 +2070,28 @@ Begin
   End else if(A.Kind=ckReal)or(B.Kind=ckReal)Then Begin
    if A.Kind<>ckReal Then A.R:=A.I;if B.Kind<>ckReal Then B.R:=B.I;A.Kind:=ckReal;
    if O='+'Then A.R:=A.R+B.R else A.R:=A.R-B.R
-  End else if O='+'Then A.I:=A.I+B.I else if O='-'Then A.I:=A.I-B.I else A.I:=A.I or B.I
+  End else if O='+'Then A.I:=A.I+B.I else if O='-'Then A.I:=A.I-B.I else A.I:=A.I or B.I;
+  if not(A.Kind in[ckReal,ckString])Then CPCheckConstRange(A.I)
+ End;
+ if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
+  (CPToken='>')or(CPToken='>=')Then Begin
+  O:=CPToken;CPNext;B:=CPEvalConstExpression;
+  if(A.Kind=ckString)or(B.Kind=ckString)Then Begin
+   if A.Kind<>ckString Then A.S:=Chr(A.I);if B.Kind<>ckString Then B.S:=Chr(B.I);
+   if O='='Then A.I:=Ord(A.S=B.S)else if O='<>'Then A.I:=Ord(A.S<>B.S)
+   else if O='<'Then A.I:=Ord(A.S<B.S)else if O='<='Then A.I:=Ord(A.S<=B.S)
+   else if O='>'Then A.I:=Ord(A.S>B.S)else A.I:=Ord(A.S>=B.S)
+  End else Begin
+   if A.Kind=ckReal Then Begin if B.Kind<>ckReal Then B.R:=B.I End
+   else if B.Kind=ckReal Then A.R:=A.I;
+   if(A.Kind=ckReal)or(B.Kind=ckReal)Then Begin
+    if O='='Then A.I:=Ord(A.R=B.R)else if O='<>'Then A.I:=Ord(A.R<>B.R)
+    else if O='<'Then A.I:=Ord(A.R<B.R)else if O='<='Then A.I:=Ord(A.R<=B.R)
+    else if O='>'Then A.I:=Ord(A.R>B.R)else A.I:=Ord(A.R>=B.R)
+   End else if O='='Then A.I:=Ord(A.I=B.I)else if O='<>'Then A.I:=Ord(A.I<>B.I)
+   else if O='<'Then A.I:=Ord(A.I<B.I)else if O='<='Then A.I:=Ord(A.I<=B.I)
+   else if O='>'Then A.I:=Ord(A.I>B.I)else A.I:=Ord(A.I>=B.I)
+  End;A.Kind:=ckInteger
  End;CPEvalConstExpression:=A
 End;
 
@@ -2552,16 +2588,24 @@ End;
 
 Procedure CPExpression;
 Var
- O:String;
+ O:String;LT,RT:PPasType;Cmp:Byte;
 Begin
- CPSimple;if CPIs('IN')Then Begin CPNext;CPSimple;
+ CPSimple;LT:=CPLastExpressionType;if CPIs('IN')Then Begin CPNext;CPSimple;
   if(CPLastExpressionType=Nil)or(CPLastExpressionType^.Kind<>ptkSet)Then CPFail('ensemble attendu apres IN');
   CPOp(139,$B6);CPLastExpressionType:=CPFindType('BOOLEAN');Exit
  End;
  if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
  (CPToken='>')or(CPToken='>=')Then Begin
-  O:=CPToken;CPNext;CPSimple;
-  if O='='Then CPOp(195,$B0)else if O='<>'Then CPOp(203,$B1)
+  O:=CPToken;CPNext;CPSimple;RT:=CPLastExpressionType;
+  if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkString)or(RT^.Kind=ptkString))Then
+   CPFail('comparaison dynamique de chaines non prise en charge')
+  else if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkReal)or(RT^.Kind=ptkReal))Then Begin
+   if(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then CPFail('conversion reelle explicite requise');
+   if O='='Then Cmp:=0 else if O='<>'Then Cmp:=1 else if O='<'Then Cmp:=2
+   else if O='<='Then Cmp:=3 else if O='>'Then Cmp:=4 else Cmp:=5;
+   if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($CE);CPE(Cmp)End
+   else Begin CPE(213);CPE(Cmp)End
+  End else if O='='Then CPOp(195,$B0)else if O='<>'Then CPOp(203,$B1)
   else if O='<'Then Begin CPOp(196,$B3);CPOp(147,$9F)End
   else if O='<='Then CPOp(200,$B2)
   else if O='>'Then Begin CPOp(200,$B2);CPOp(147,$9F)End
