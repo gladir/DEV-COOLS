@@ -1941,6 +1941,8 @@ Const
  TERM_SELECT_WIDTH     = 180;     { largeur du selecteur deroulant }
  TERM_SELECT_HEIGHT    = 18;      { hauteur du selecteur ferme     }
  TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
+ TERM_SELECT_COUNT     = 9;       { nombre total de shells du selecteur }
+ TERM_SELECT_SBAR_W    = 14;      { largeur barre defilement du selecteur }
  TERM_SCROLLBAR_WIDTH  = 14;      { largeur barre defilement term  }
  TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
  { Barre de defilement HORIZONTALE (2026-08-30, demande explicite de       }
@@ -7346,6 +7348,9 @@ Var
  TermVisible  : Boolean;           { le panneau terminal est visible }
  TermSelectOpen : Boolean;         { le selectbox deroulant est ouvert}
  TermSelectIdx  : Integer;         { index surbrillance clavier 0..2 }
+ TermSelectScrollTop : Integer;    { 1er item visible (defilement,  }
+                                    { 2026-09-14) - voir             }
+                                    { TermSelectClampScrollTop.      }
  TerminalOnTop  : Boolean;         { True=terminal au-dessus de Sortie}
  TermX        : Integer;           { position X commune du panneau   }
  TermY        : Integer;           { position Y commune du panneau   }
@@ -140437,6 +140442,7 @@ Begin
  TermVisible := False;
  TermSelectOpen := False;
  TermSelectIdx := 1;
+ TermSelectScrollTop := 0;
  TerminalOnTop := True;
  TerminalHasFocus := False;
  ExplorerHasFocus := False;
@@ -144031,12 +144037,134 @@ Begin
  End;
 End;
 
+{ Selecteur deroulant de shell du Terminal (BOGUE REEL corrige, 2026-09-14, }
+{ demande explicite de l utilisateur) : la liste des 9 shells etait          }
+{ TOUJOURS dessinee en entier (9 * TERM_SELECT_ITEM_H = 162 px) a partir de  }
+{ SBY+TERM_SELECT_HEIGHT, sans jamais verifier si elle depassait le bas de   }
+{ l ecran - quand le Terminal est positionne bas (ou l ecran hote est          }
+{ petit), la liste "defoncait" l affichage et se dessinait PAR-DESSUS/EN       }
+{ DESSOUS de la barre de status. Corrige en cadrant la fenetre visible sur    }
+{ l espace REELLEMENT disponible AU-DESSUS de la barre de status             }
+{ (GetScreenHeight-STATUSBAR_HEIGHT, jamais depasse) et en ajoutant une VRAIE }
+{ barre de defilement verticale (fleches haut/bas #30/#31, meme style que la }
+{ barre de defilement principale du Terminal juste plus haut dans ce           }
+{ fichier) quand tous les items ne rentrent pas. TermSelectVisibleCount/       }
+{ TermSelectClampScrollTop DOIVENT etre appeles avec les MEMES valeurs par     }
+{ DrawTerminalPanel (dessin) et HandleTerminalEvent (clic) pour rester         }
+{ synchronises - meme discipline que DosDropdownVisibleCount/ScrollStart      }
+{ (Options > Emulateur DOS) qui resout exactement la meme categorie de        }
+{ probleme. }
+Function TermSelectCaption(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0: TermSelectCaption := 'Invite de commandes';
+  1: TermSelectCaption := 'PowerShell dev';
+  2: TermSelectCaption := 'Bash';
+  3: TermSelectCaption := 'Gul'+#132+'m';
+  4: TermSelectCaption := 'AmigaDOS';
+  5: TermSelectCaption := 'Norton Commander';
+  6: TermSelectCaption := 'OS/2 & REXX';
+  7: TermSelectCaption := 'OS-9 (CoCo 3)';
+  8: TermSelectCaption := 'COS (Cray-1)';
+  Else TermSelectCaption := '';
+ End;
+End;
+
+Function TermSelectVisibleCount: Integer;
+Var
+ ListTop, AvailBelow, MaxVisible: Integer;
+Begin
+ ListTop := TermY + 2 + TERM_SELECT_HEIGHT;
+ AvailBelow := (GetScreenHeight - STATUSBAR_HEIGHT) - ListTop;
+ MaxVisible := AvailBelow Div TERM_SELECT_ITEM_H;
+ If MaxVisible < 1 Then MaxVisible := 1;
+ If MaxVisible > TERM_SELECT_COUNT Then MaxVisible := TERM_SELECT_COUNT;
+ TermSelectVisibleCount := MaxVisible;
+End;
+
+{ Fenetre de defilement centree sur TermSelectIdx (garde toujours l item     }
+{ courant visible), MEME principe que DosDropdownScrollStart mais avec        }
+{ l etat persiste dans TermSelectScrollTop (pour que les boutons fleche de    }
+{ la barre de defilement puissent aussi le faire avancer directement, voir     }
+{ HandleTerminalEvent). }
+Function TermSelectClampScrollTop(MaxVisible: Integer): Integer;
+Var Start: Integer;
+Begin
+ Start := TermSelectScrollTop;
+ If TermSelectIdx < Start Then Start := TermSelectIdx;
+ If TermSelectIdx > Start + MaxVisible - 1 Then Start := TermSelectIdx - MaxVisible + 1;
+ If Start > TERM_SELECT_COUNT - MaxVisible Then Start := TERM_SELECT_COUNT - MaxVisible;
+ If Start < 0 Then Start := 0;
+ TermSelectScrollTop := Start;
+ TermSelectClampScrollTop := Start;
+End;
+
+{ Confirme le choix ChosenIdx (Entree clavier OU clic sur un item de la      }
+{ liste) : EXTRAIT tel quel de l ancien bloc "Enter" (145093-145134 avant ce  }
+{ correctif) pour n avoir plus qu UNE SEULE copie de cette logique, reutilisee}
+{ aussi par le clic souris sur un item (qui dupliquait ce meme code 9 fois    }
+{ avant ce correctif). }
+Procedure TermSelectConfirmChoice(ChosenIdx: Integer);
+Var NewShell: TShellKind;
+Begin
+ Case ChosenIdx Of
+  0: NewShell := SK_CMD;
+  1: NewShell := SK_POWERSHELL;
+  2: NewShell := SK_BASH;
+  3: NewShell := SK_GULAM;
+  4: NewShell := SK_AMIGADOS;
+  5: NewShell := SK_NCOMMANDER;
+  6: NewShell := SK_OS2REXX;
+  7: NewShell := SK_OS9;
+  8: NewShell := SK_COS;
+  Else NewShell := ActiveShell;
+ End;
+ TermSelectOpen := False;
+ If ActiveShell <> NewShell Then Begin
+  ActiveShell := NewShell;
+  If TermPanels[ActiveShell].LineCount = 0 Then
+   Case ActiveShell Of
+    SK_CMD:
+     TermAddLine(TermPanels[SK_CMD],
+      'Invite de commandes developpeur. Tapez HELP.');
+    SK_POWERSHELL:
+     TermAddLine(TermPanels[SK_POWERSHELL],
+      'PowerShell developpeur. Tapez HELP.');
+    SK_BASH:
+     TermAddLine(TermPanels[SK_BASH],
+      'Bash terminal. Tapez help.');
+    SK_GULAM:
+     TermAddLine(TermPanels[SK_GULAM],
+      'gul'+#132+'m shell. Tapez help.');
+    SK_AMIGADOS:
+     TermAddLine(TermPanels[SK_AMIGADOS],
+      'AmigaDOS 3.1. Tapez ? pour la liste des commandes.');
+    SK_OS2REXX:
+     TermAddLine(TermPanels[SK_OS2REXX],
+      'OS/2 (TM) Command Interpreter. Tapez ? pour la liste des commandes.');
+    SK_OS9:
+     TermAddLine(TermPanels[SK_OS9],
+      'OS-9/6809 Level Two. Tapez HELP pour la liste des commandes.');
+    SK_COS:
+     TermAddLine(TermPanels[SK_COS],
+      'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
+   End;
+ End;
+ TermPanels[ActiveShell].NeedRepaint := True;
+ FullRepaintNeeded := True;
+End;
+
 Procedure DrawTerminalPanel(Var TP: TTerminalPanel);
 Var
  I, YPos, VisLines: Integer;
  S, PromptStr, SelLabel: String;
  MaxCols: Integer;
  PX, PY, PW, PH: Integer;
+ TSMaxVisible: Integer;
+ TSNeedScroll: Boolean;
+ TSScrollTop, TSItemW, TSListTop, TSListBottom: Integer;
+ TSRow, TSIdx: Integer;
+ TSBarX, TSTrackTop, TSTrackBottom, TSTrackH, TSThumbH, TSThumbY: Integer;
  SBX, SBY: Integer;
  SBarX, TextRight: Integer;
  TrackTop, TrackBottom, TrackH: Integer;
@@ -144410,119 +144538,76 @@ Begin
   { CLR_EDITOR_TEXT=8 existe precisement pour cette raison). L item          }
   { survole/selectionne garde son fond bleu (CLR_TITLEBAR_ACTIVE) avec       }
   { texte blanc, deja bien contraste. }
-  { Item 1 : Invite de commandes }
-  If TermSelectIdx = 0 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+  { BOGUE REEL corrige (2026-09-14, demande explicite) : voir le grand       }
+  { commentaire juste avant TermSelectCaption ci-dessus - la liste ne         }
+  { depasse plus jamais GetScreenHeight-STATUSBAR_HEIGHT, et affiche une      }
+  { VRAIE barre de defilement (fleches haut/bas) quand les 9 items ne         }
+  { rentrent pas tous. }
+  TSMaxVisible := TermSelectVisibleCount;
+  TSNeedScroll := TSMaxVisible < TERM_SELECT_COUNT;
+  TSScrollTop := TermSelectClampScrollTop(TSMaxVisible);
+  If TSNeedScroll Then TSItemW := TERM_SELECT_WIDTH - TERM_SELECT_SBAR_W
+  Else TSItemW := TERM_SELECT_WIDTH;
+  TSListTop := SBY + TERM_SELECT_HEIGHT;
+  For TSRow := 0 To TSMaxVisible - 1 Do Begin
+   TSIdx := TSScrollTop + TSRow;
+   If TSIdx = TermSelectIdx Then Begin
+    SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
+   End Else Begin
+    SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
+   End;
+   Bar(SBX, TSListTop + TSRow * TERM_SELECT_ITEM_H,
+    SBX + TSItemW - 1, TSListTop + (TSRow + 1) * TERM_SELECT_ITEM_H - 1);
+   OutTextXY(SBX + 4, TSListTop + TSRow * TERM_SELECT_ITEM_H + 3,
+    TermSelectCaption(TSIdx));
   End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4, SBY + TERM_SELECT_HEIGHT + 3,
-   'Invite de commandes');
-  { Item 2 : PowerShell dev }
-  If TermSelectIdx = 1 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + TERM_SELECT_ITEM_H + 3,
-   'PowerShell dev');
-  { Item 3 : Bash }
-  If TermSelectIdx = 2 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + 2 * TERM_SELECT_ITEM_H + 3,
-   'Bash');
-  { Item 4 : Gulam }
-  If TermSelectIdx = 3 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + 3 * TERM_SELECT_ITEM_H + 3,
-   'Gul'+#132+'m');
-  { Item 5 : AmigaDOS }
-  If TermSelectIdx = 4 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + 4 * TERM_SELECT_ITEM_H + 3,
-   'AmigaDOS');
-  { Item 6 : Norton Commander }
-  If TermSelectIdx = 5 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + 5 * TERM_SELECT_ITEM_H + 3,
-   'Norton Commander');
-  { Item 7 : OS/2 & REXX }
-  If TermSelectIdx = 6 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + 6 * TERM_SELECT_ITEM_H + 3,
-   'OS/2 & REXX');
-  { Item 8 : OS-9 (CoCo 3) }
-  If TermSelectIdx = 7 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + 7 * TERM_SELECT_ITEM_H + 3,
-   'OS-9 (CoCo 3)');
-  { Item 9 : COS (Cray-1) }
-  If TermSelectIdx = 8 Then Begin
-   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE); SetColor(15);
-  End Else Begin
-   SetFillStyle(SolidFill, 15); SetColor(CLR_EDITOR_TEXT);
-  End;
-  Bar(SBX, SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 9 * TERM_SELECT_ITEM_H - 1);
-  OutTextXY(SBX + 4,
-   SBY + TERM_SELECT_HEIGHT + 8 * TERM_SELECT_ITEM_H + 3,
-   'COS (Cray-1)');
+  TSListBottom := TSListTop + TSMaxVisible * TERM_SELECT_ITEM_H - 1;
   { Bordure de la liste - CLR_EDITOR_TEXT (8), voir le commentaire de tete   }
   { ci-dessus. }
   SetColor(CLR_EDITOR_TEXT);
-  Rectangle(SBX, SBY + TERM_SELECT_HEIGHT,
-   SBX + TERM_SELECT_WIDTH - 1,
-   SBY + TERM_SELECT_HEIGHT + 9 * TERM_SELECT_ITEM_H - 1);
+  Rectangle(SBX, TSListTop, SBX + TSItemW - 1, TSListBottom);
+  { Barre de defilement verticale (2026-09-14, demande explicite) - MEME     }
+  { style que la barre de defilement principale du Terminal plus haut         }
+  { dans cette procedure (fleches #30/#31, piste + curseur proportionnel). }
+  If TSNeedScroll Then Begin
+   TSBarX := SBX + TSItemW;
+   SetFillStyle(SolidFill, 7);
+   Bar(TSBarX, TSListTop, TSBarX + TERM_SELECT_SBAR_W - 1, TSListBottom);
+   SetColor(CLR_BORDER);
+   Rectangle(TSBarX, TSListTop, TSBarX + TERM_SELECT_SBAR_W - 1, TSListBottom);
+   { Bouton fleche haut }
+   SetFillStyle(SolidFill, 8);
+   Bar(TSBarX + 1, TSListTop + 1,
+    TSBarX + TERM_SELECT_SBAR_W - 2, TSListTop + TERM_SCROLL_BTN_H - 1);
+   SetColor(CLR_BORDER);
+   Rectangle(TSBarX + 1, TSListTop + 1,
+    TSBarX + TERM_SELECT_SBAR_W - 2, TSListTop + TERM_SCROLL_BTN_H - 1);
+   SetColor(15);
+   OutTextXY(TSBarX + 3, TSListTop + 3, #30);
+   { Bouton fleche bas }
+   SetFillStyle(SolidFill, 8);
+   Bar(TSBarX + 1, TSListBottom - TERM_SCROLL_BTN_H,
+    TSBarX + TERM_SELECT_SBAR_W - 2, TSListBottom - 1);
+   SetColor(CLR_BORDER);
+   Rectangle(TSBarX + 1, TSListBottom - TERM_SCROLL_BTN_H,
+    TSBarX + TERM_SELECT_SBAR_W - 2, TSListBottom - 1);
+   SetColor(15);
+   OutTextXY(TSBarX + 3, TSListBottom - TERM_SCROLL_BTN_H + 3, #31);
+   { Piste + curseur proportionnel }
+   TSTrackTop := TSListTop + TERM_SCROLL_BTN_H + 1;
+   TSTrackBottom := TSListBottom - 1 - TERM_SCROLL_BTN_H;
+   TSTrackH := TSTrackBottom - TSTrackTop + 1;
+   If TSTrackH < 4 Then TSTrackH := 4;
+   TSThumbH := (LongInt(TSMaxVisible) * TSTrackH) Div TERM_SELECT_COUNT;
+   If TSThumbH < 6 Then TSThumbH := 6;
+   If TSThumbH > TSTrackH Then TSThumbH := TSTrackH;
+   TSThumbY := TSTrackTop + (LongInt(TSScrollTop) * (TSTrackH - TSThumbH))
+    Div (TERM_SELECT_COUNT - TSMaxVisible);
+   SetFillStyle(SolidFill, CLR_TITLEBAR_ACTIVE);
+   Bar(TSBarX + 2, TSThumbY, TSBarX + TERM_SELECT_SBAR_W - 3, TSThumbY + TSThumbH - 1);
+   SetColor(CLR_BORDER);
+   Rectangle(TSBarX + 2, TSThumbY, TSBarX + TERM_SELECT_SBAR_W - 3, TSThumbY + TSThumbH - 1);
+  End;
  End;
  TP.NeedRepaint := False;
 End;
@@ -144640,7 +144725,9 @@ Var
  Ch: Char;
  Dir: String;
  SBX, SBY: Integer;
- NewShell: TShellKind;
+ TSMaxVisible: Integer;
+ TSNeedScroll: Boolean;
+ TSScrollTop, TSItemW, TSListTop, TSListBottom: Integer;
  FKBarCW, FKBarY, FKBarColW, FKBarSlot: Integer;
  FakeEv: TEvent;
  DDLeft, DDRight, DDTop, DDBottom, TopHit, ItemHit: Integer;
@@ -144677,170 +144764,50 @@ Begin
    DrawContextMenu(CtxMenu);
    Exit;
   End;
-  { Si la liste deroulante est ouverte, verifier clic sur un item }
+  { Si la liste deroulante est ouverte, verifier clic sur un item ou sur la  }
+  { barre de defilement (BOGUE REEL corrige, 2026-09-14, demande explicite : }
+  { voir le grand commentaire pres de TermSelectCaption/DrawTerminalPanel -  }
+  { la liste peut maintenant defiler au lieu de "defoncer" l affichage sous  }
+  { la barre de status). Les 9 blocs de clic individuels (un rectangle       }
+  { absolu par item) sont remplaces par UN SEUL calcul de ligne relative a   }
+  { la fenetre de defilement, partage avec TermSelectConfirmChoice (voir     }
+  { plus haut dans ce fichier) qui centralise desormais aussi la logique de  }
+  { changement de shell auparavant dupliquee dans chacun de ces 9 blocs. }
   If TermSelectOpen Then Begin
-   { Item 1 : Invite de commandes }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_CMD;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_CMD].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_CMD],
-       'Invite de commandes developpeur. Tapez HELP.');
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
+   TSMaxVisible := TermSelectVisibleCount;
+   TSNeedScroll := TSMaxVisible < TERM_SELECT_COUNT;
+   TSScrollTop := TermSelectClampScrollTop(TSMaxVisible);
+   If TSNeedScroll Then TSItemW := TERM_SELECT_WIDTH - TERM_SELECT_SBAR_W
+   Else TSItemW := TERM_SELECT_WIDTH;
+   TSListTop := SBY + TERM_SELECT_HEIGHT;
+   TSListBottom := TSListTop + TSMaxVisible * TERM_SELECT_ITEM_H - 1;
+   { Clic sur un item visible de la liste }
+   If (Ev.MouseX >= SBX) And (Ev.MouseX < SBX + TSItemW) And
+      (Ev.MouseY >= TSListTop) And (Ev.MouseY <= TSListBottom) Then Begin
+    TermSelectIdx := TSScrollTop + (Ev.MouseY - TSListTop) Div TERM_SELECT_ITEM_H;
+    TermSelectConfirmChoice(TermSelectIdx);
     Exit;
    End;
-   { Item 2 : PowerShell dev }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 2 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_POWERSHELL;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_POWERSHELL].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_POWERSHELL],
-       'PowerShell developpeur. Tapez HELP.');
+   { Clic sur la barre de defilement verticale : fleches haut/bas = meme     }
+   { effet que les fleches clavier, clic dans la piste = defilement d une    }
+   { page (TSMaxVisible items) - meme heuristique que la barre de            }
+   { defilement principale du Terminal (moitie haute/basse du track). }
+   If TSNeedScroll And
+      (Ev.MouseX >= SBX + TSItemW) And (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
+      (Ev.MouseY >= TSListTop) And (Ev.MouseY <= TSListBottom) Then Begin
+    If Ev.MouseY < TSListTop + TERM_SCROLL_BTN_H Then Begin
+     If TermSelectIdx > 0 Then Dec(TermSelectIdx);
+    End Else If Ev.MouseY > TSListBottom - TERM_SCROLL_BTN_H Then Begin
+     If TermSelectIdx < TERM_SELECT_COUNT - 1 Then Inc(TermSelectIdx);
+    End Else Begin
+     If Ev.MouseY < (TSListTop + TSListBottom) Div 2 Then Begin
+      TermSelectIdx := TermSelectIdx - TSMaxVisible;
+      If TermSelectIdx < 0 Then TermSelectIdx := 0;
+     End Else Begin
+      TermSelectIdx := TermSelectIdx + TSMaxVisible;
+      If TermSelectIdx > TERM_SELECT_COUNT - 1 Then TermSelectIdx := TERM_SELECT_COUNT - 1;
+     End;
     End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
-    Exit;
-   End;
-   { Item 3 : Bash }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 2 * TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 3 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_BASH;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_BASH].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_BASH],
-       'Bash terminal. Tapez help.');
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
-    Exit;
-   End;
-   { Item 4 : Gulam }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 3 * TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 4 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_GULAM;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_GULAM].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_GULAM],
-       'gul'+#132+'m shell. Tapez help.');
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
-    Exit;
-   End;
-   { Item 5 : AmigaDOS }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 4 * TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 5 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_AMIGADOS;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_AMIGADOS].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_AMIGADOS],
-       'AmigaDOS 3.1. Tapez ? pour la liste des commandes.');
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
-    Exit;
-   End;
-   { Item 6 : Norton Commander }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 5 * TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 6 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_NCOMMANDER;
-    TermSelectOpen := False;
-    ActiveShell := NewShell;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
-    Exit;
-   End;
-   { Item 7 : OS/2 & REXX }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 6 * TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 7 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_OS2REXX;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_OS2REXX].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_OS2REXX],
-       'OS/2 (TM) Command Interpreter. Tapez ? pour la liste des commandes.');
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
-    Exit;
-   End;
-   { Item 8 : OS-9 (CoCo 3) }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 7 * TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 8 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_OS9;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_OS9].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_OS9],
-       'OS-9/6809 Level Two. Tapez HELP pour la liste des commandes.');
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
-    Exit;
-   End;
-   { Item 9 : COS (Cray-1) }
-   If (Ev.MouseX >= SBX) And
-      (Ev.MouseX < SBX + TERM_SELECT_WIDTH) And
-      (Ev.MouseY >= SBY + TERM_SELECT_HEIGHT
-       + 8 * TERM_SELECT_ITEM_H) And
-      (Ev.MouseY < SBY + TERM_SELECT_HEIGHT
-       + 9 * TERM_SELECT_ITEM_H) Then Begin
-    NewShell := SK_COS;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[SK_COS].LineCount = 0 Then
-      TermAddLine(TermPanels[SK_COS],
-       'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
     FullRepaintNeeded := True;
     Exit;
    End;
@@ -145072,7 +145039,11 @@ Begin
    FullRepaintNeeded := True;
   End;
  End;
- { Navigation clavier dans la liste deroulante }
+ { Navigation clavier dans la liste deroulante - le defilement dans la      }
+ { fenetre visible (si tous les items ne rentrent pas au-dessus de la       }
+ { barre de status) est gere automatiquement par TermSelectClampScrollTop   }
+ { au prochain dessin (voir DrawTerminalPanel), Fleche haut/bas n a donc      }
+ { qu a deplacer TermSelectIdx comme avant. }
  If TermSelectOpen Then Begin
   If Ev.Kind = EV_KEY_DOWN Then Begin
    If Ev.KeyCode = $48 Then Begin { Fleche haut }
@@ -145082,7 +145053,7 @@ Begin
     Exit;
    End;
    If Ev.KeyCode = $50 Then Begin { Fleche bas }
-    If TermSelectIdx < 8 Then
+    If TermSelectIdx < TERM_SELECT_COUNT - 1 Then
      Inc(TermSelectIdx);
     FullRepaintNeeded := True;
     Exit;
@@ -145090,47 +145061,7 @@ Begin
   End;
   If Ev.Kind = EV_KEY_CHAR Then Begin
    If Ev.KeyChar = #13 Then Begin { Enter : confirmer }
-    Case TermSelectIdx Of
-     0: NewShell := SK_CMD;
-     1: NewShell := SK_POWERSHELL;
-     2: NewShell := SK_BASH;
-     3: NewShell := SK_GULAM;
-     4: NewShell := SK_AMIGADOS;
-     5: NewShell := SK_NCOMMANDER;
-     6: NewShell := SK_OS2REXX;
-     7: NewShell := SK_OS9;
-     8: NewShell := SK_COS;
-    End;
-    TermSelectOpen := False;
-    If ActiveShell <> NewShell Then Begin
-     ActiveShell := NewShell;
-     If TermPanels[ActiveShell].LineCount = 0 Then
-      Case ActiveShell Of
-       SK_CMD:
-        TermAddLine(TermPanels[SK_CMD],
-         'Invite de commandes developpeur. Tapez HELP.');
-       SK_POWERSHELL:
-        TermAddLine(TermPanels[SK_POWERSHELL],
-         'PowerShell developpeur. Tapez HELP.');
-       SK_BASH:
-        TermAddLine(TermPanels[SK_BASH],
-         'Bash terminal. Tapez help.');
-       SK_AMIGADOS:
-        TermAddLine(TermPanels[SK_AMIGADOS],
-         'AmigaDOS 3.1. Tapez ? pour la liste des commandes.');
-       SK_OS2REXX:
-        TermAddLine(TermPanels[SK_OS2REXX],
-         'OS/2 (TM) Command Interpreter. Tapez ? pour la liste des commandes.');
-       SK_OS9:
-        TermAddLine(TermPanels[SK_OS9],
-         'OS-9/6809 Level Two. Tapez HELP pour la liste des commandes.');
-       SK_COS:
-        TermAddLine(TermPanels[SK_COS],
-         'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
-      End;
-    End;
-    TermPanels[ActiveShell].NeedRepaint := True;
-    FullRepaintNeeded := True;
+    TermSelectConfirmChoice(TermSelectIdx);
     Exit;
    End;
    If Ev.KeyChar = #27 Then Begin { Echap : fermer }
