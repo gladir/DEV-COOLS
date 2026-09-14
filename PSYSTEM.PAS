@@ -102,22 +102,23 @@ Begin
  RunShell(Editor+' '+QuoteName(WorkFile))
 End;
 
+Function CompilePascalPCode(SourceName,CodeName:String):Integer;Forward;
+
 Function CompileWork(AskName:Boolean):Boolean;
-Var
- Compiler:String;
- Code:Integer;
+Var Code:Integer;
 Begin
  CompileWork:=False;if AskName or(WorkFile='')Then AskFile('Source file',WorkFile);
  if WorkFile=''Then Exit;
  if not FileExists(WorkFile)Then Begin
   WriteLn('File not found: ',WorkFile);Exit
  End;
- Compiler:=ToolName('PSYSTEM_COMPILER','FPC');
- WriteLn('Compiling ',WorkFile,' ...');Code:=RunShell(Compiler+' '+QuoteName(WorkFile));
+ ProgramFile:=ReplaceExtension(WorkFile,'.CODE');
+ WriteLn('Compilation UCSD de ',WorkFile,' ...');
+ Code:=CompilePascalPCode(WorkFile,ProgramFile);
  if Code<>0 Then Begin
   WriteLn('Compile failed (status ',Code,').');Exit
  End;
- ProgramFile:=ReplaceExtension(WorkFile,'.exe');CompileWork:=True;
+ CompileWork:=True;
  WriteLn('Compilation complete.')
 End;
 
@@ -928,6 +929,148 @@ Begin
 End;
 
 
+Type
+ PPasSymbol=^TPasSymbol;
+ TPasSymbol=Record Name:String[31];Address,Value:Integer;IsConst:Boolean;Next:PPasSymbol End;
+ PPasSource=^TPCodeMemory;
+
+Var
+ CPSource:PPasSource;CPSize,CPPos,CPLine,CPCodePos,CPVarCount:LongInt;
+ CPToken,CPText:String;CPNumber:LongInt;CPError:Boolean;CPSymbols:PPasSymbol;
+
+Procedure CPFail(S:String);
+Begin if not CPError Then WriteLn('Erreur UCSD ligne ',CPLine,': ',S);CPError:=True End;
+
+Procedure CPNext;
+Var C:Char;
+Begin
+ CPToken:='';CPText:='';CPNumber:=0;
+ Repeat
+  while(CPPos<CPSize)and(Chr(CPSource^[CPPos])in[' ',#9,#10,#13])do Begin
+   if CPSource^[CPPos]=10 Then Inc(CPLine);Inc(CPPos)
+  End;
+  if CPPos>=CPSize Then Begin CPToken:='EOF';Exit End;
+  C:=Chr(CPSource^[CPPos]);
+  if C='{'Then Begin Inc(CPPos);while(CPPos<CPSize)and(CPSource^[CPPos]<>Ord('}'))do Begin
+   if CPSource^[CPPos]=10 Then Inc(CPLine);Inc(CPPos)End;if CPPos<CPSize Then Inc(CPPos)
+  End else Break
+ Until False;
+ C:=Chr(CPSource^[CPPos]);
+ if C in['A'..'Z','a'..'z','_']Then Begin CPText:='';
+  while(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['A'..'Z','a'..'z','_','0'..'9'])do Begin
+   CPText:=CPText+UpCase(Chr(CPSource^[CPPos]));Inc(CPPos)End;CPToken:='ID';Exit
+ End;
+ if C in['0'..'9']Then Begin
+  while(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
+   CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');Inc(CPPos)End;CPToken:='NUM';Exit
+ End;
+ if C=''''Then Begin Inc(CPPos);while(CPPos<CPSize)do Begin C:=Chr(CPSource^[CPPos]);Inc(CPPos);
+  if C=''''Then Begin if(CPPos<CPSize)and(CPSource^[CPPos]=Ord(''''))Then Begin
+   CPText:=CPText+'''';Inc(CPPos)End else Break End else CPText:=CPText+C End;CPToken:='STR';Exit
+ End;
+ CPToken:=C;Inc(CPPos);
+ if(C in[':', '<','>'])and(CPPos<CPSize)Then Begin
+  C:=Chr(CPSource^[CPPos]);if((CPToken=':')and(C='='))or((CPToken='<')and(C in['=','>']))or
+   ((CPToken='>')and(C='='))Then Begin CPToken:=CPToken+C;Inc(CPPos)End
+ End
+End;
+
+Function CPIs(S:String):Boolean;Begin CPIs:=(CPToken='ID')and(CPText=S)End;
+Procedure CPNeed(S:String);Begin if CPToken<>S Then CPFail('"'+S+'" attendu')else CPNext End;
+Function CPFind(S:String):PPasSymbol;Var P:PPasSymbol;
+Begin P:=CPSymbols;while(P<>Nil)and(P^.Name<>S)do P:=P^.Next;CPFind:=P End;
+Procedure CPAdd(S:String;V:Integer;K:Boolean);Var P:PPasSymbol;
+Begin if CPFind(S)<>Nil Then Begin CPFail('identificateur deja defini: '+S);Exit End;
+ New(P);P^.Name:=S;P^.Value:=V;P^.Address:=V;P^.IsConst:=K;P^.Next:=CPSymbols;CPSymbols:=P End;
+Procedure CPE(B:Byte);Begin if CPCodePos>=65535 Then CPFail('programme trop grand')else Begin
+ PCode_Mem^[CPCodePos]:=B;Inc(CPCodePos)End End;
+Procedure CPBig(V:LongInt);Begin if V<128 Then CPE(V)else Begin CPE($80 or(V shr 8));CPE(V)End End;
+Procedure CPConst(V:LongInt);Begin if(V>=0)and(V<128)Then CPE(V)else Begin CPE(199);CPE(V);CPE(V shr 8)End End;
+Procedure CPExpression;Forward;
+Procedure CPFactor;Var P:PPasSymbol;Neg:Boolean;
+Begin Neg:=False;if CPToken='-'Then Begin Neg:=True;CPNext End;
+ if CPToken='NUM'Then Begin CPConst(CPNumber);CPNext End
+ else if CPToken='STR'Then Begin CPFail('chaine interdite dans cette expression');CPNext End
+ else if CPToken='('Then Begin CPNext;CPExpression;CPNeed(')')End
+ else if CPIs('TRUE')Then Begin CPConst(1);CPNext End else if CPIs('FALSE')Then Begin CPConst(0);CPNext End
+ else if CPToken='ID'Then Begin P:=CPFind(CPText);if P=Nil Then CPFail('identificateur inconnu: '+CPText)
+  else if P^.IsConst Then CPConst(P^.Value)else Begin CPE(169);CPBig(P^.Address)End;CPNext
+ End else Begin CPFail('facteur attendu');CPNext End;if Neg Then CPE(145)
+End;
+Procedure CPTerm;Var O:String;
+Begin CPFactor;while(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')do Begin
+ O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;CPFactor;
+ if O='*'Then CPE(143)else if(O='/')or(O='DIV')Then CPE(134)else if O='MOD'Then CPE(142)else CPE(132)End
+End;
+Procedure CPSimple;Var O:String;
+Begin CPTerm;while(CPToken='+')or(CPToken='-')or CPIs('OR')do Begin O:=CPToken;
+ if CPToken='ID'Then O:=CPText;CPNext;CPTerm;if O='+'Then CPE(130)else if O='-'Then CPE(149)else CPE(141)End End;
+Procedure CPExpression;Var O:String;
+Begin CPSimple;if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
+ (CPToken='>')or(CPToken='>=')Then Begin O:=CPToken;CPNext;CPSimple;
+  if O='='Then CPE(195)else if O='<>'Then CPE(203)else if O='<'Then CPE(201)
+  else if O='<='Then CPE(200)else if O='>'Then CPE(197)else CPE(196)End End;
+Procedure CPStatement;Forward;
+Procedure CPCompound;
+Begin if not CPIs('BEGIN')Then Begin CPFail('BEGIN attendu');Exit End;CPNext;
+ while not CPIs('END')and(CPToken<>'EOF')and not CPError do Begin CPStatement;
+  if CPToken=';'Then CPNext else if not CPIs('END')Then CPFail('point-virgule attendu')End;
+ if CPIs('END')Then CPNext
+End;
+Procedure CPStatement;
+Var P:PPasSymbol;Name:String;J,Patch:LongInt;
+Begin
+ if CPIs('BEGIN')Then CPCompound
+ else if CPIs('IF')Then Begin CPNext;CPExpression;if not CPIs('THEN')Then CPFail('THEN attendu')else CPNext;
+  CPE(161);Patch:=CPCodePos;CPE(0);CPStatement;
+  if CPIs('ELSE')Then Begin CPE(185);J:=CPCodePos;CPE(0);PCode_Mem^[Patch]:=CPCodePos-Patch-1;
+   CPNext;CPStatement;PCode_Mem^[J]:=CPCodePos-J-1 End else PCode_Mem^[Patch]:=CPCodePos-Patch-1
+ End
+ else if CPIs('WHILE')Then Begin J:=CPCodePos;CPNext;CPExpression;if not CPIs('DO')Then CPFail('DO attendu')else CPNext;
+  CPE(161);Patch:=CPCodePos;CPE(0);CPStatement;CPE(185);CPE(J-(CPCodePos+1));PCode_Mem^[Patch]:=CPCodePos-Patch-1
+ End
+ else if CPIs('WRITE')or CPIs('WRITELN')Then Begin Name:=CPText;CPNext;
+  if CPToken='('Then Begin CPNext;while CPToken<>')'do Begin
+   if CPToken='STR'Then Begin CPE(166);CPE(Length(CPText));for J:=1 to Length(CPText)do CPE(Ord(CPText[J]));
+    CPConst(Length(CPText));CPE(205);CPE(0);CPE(19);CPNext
+   End else Begin CPExpression;CPE(205);CPE(0);CPE(13)End;
+   if CPToken=','Then CPNext else Break End;CPNeed(')')End;
+  if Name='WRITELN'Then Begin CPE(205);CPE(0);CPE(22)End
+ End
+ else if CPToken='ID'Then Begin P:=CPFind(CPText);Name:=CPText;CPNext;
+  if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else Begin CPNeed(':=');CPExpression;
+   CPE(171);CPBig(P^.Address)End
+ End
+End;
+
+Function CompilePascalPCode(SourceName,CodeName:String):Integer;
+Label 99;
+Var F:File;Sz:LongInt;N:Word;P,Q:PPasSymbol;Names:Array[1..64]of String;NC,I:Integer;V:LongInt;
+Begin
+ CompilePascalPCode:=1;CPSymbols:=Nil;CPError:=False;CPLine:=1;CPVarCount:=0;
+ GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
+ Assign(F,SourceName);Reset(F,1);if IOResult<>0 Then Begin CPFail('ouverture impossible');Goto 99 End;
+ Sz:=FileSize(F);if Sz>65534 Then Begin Close(F);CPFail('source trop grand');Goto 99 End;
+ BlockRead(F,CPSource^,Sz,N);if(IOResult<>0)or(N<>Sz)Then CPFail('erreur de lecture');Close(F);
+ CPSize:=Sz;CPPos:=0;CPCodePos:=0;CPNext;
+ if CPIs('PROGRAM')Then Begin CPNext;if CPToken='ID'Then CPNext;while(CPToken<>';')and(CPToken<>'EOF')do CPNext;CPNeed(';')End;
+ if CPIs('CONST')Then Begin CPNext;while(CPToken='ID')and not CPError do Begin
+  Names[1]:=CPText;CPNext;CPNeed('=');if CPToken='NUM'Then Begin V:=CPNumber;CPNext End
+  else Begin CPFail('constante entiere attendue');V:=0 End;CPAdd(Names[1],V,True);CPNeed(';')End End;
+ if CPIs('VAR')Then Begin CPNext;while(CPToken='ID')and not CPIs('BEGIN')and
+  not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPError do Begin NC:=0;
+  Repeat Inc(NC);Names[NC]:=CPText;CPNext;if CPToken=','Then CPNext else Break Until NC=64;
+  CPNeed(':');if CPToken='ID'Then CPNext else CPFail('type attendu');CPNeed(';');
+  for I:=1 to NC do Begin Inc(CPVarCount);CPAdd(Names[I],CPVarCount,False)End
+ End End;
+ CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');CPE(214);
+ if not CPError Then Begin Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then CPFail('creation impossible')
+  else Begin BlockWrite(F,PCode_Mem^,CPCodePos,N);if(IOResult<>0)or(N<>CPCodePos)Then CPFail('erreur d''ecriture');Close(F)End End;
+99:P:=CPSymbols;while P<>Nil do Begin Q:=P^.Next;Dispose(P);P:=Q End;
+ FreeMem(PCode_Mem,SizeOf(TPCodeMemory));FreeMem(CPSource,SizeOf(TPCodeMemory));
+ if not CPError Then Begin WriteLn(CPCodePos,' octet(s) de p-Code.');CompilePascalPCode:=0 End
+End;
+
 Procedure AssembleCommand;
 Var
  Name,OutputName:String;
@@ -1248,9 +1391,8 @@ Procedure Help;Begin
  WriteLn('D  Lancer le debogueur p-Code integre');
  WriteLn('Q  Quitter PSYSTEM');
  WriteLn;
- WriteLn('Les outils externes peuvent etre choisis avec PSYSTEM_EDITOR,');
- WriteLn('PSYSTEM_COMPILER et PSYSTEM_LINKER.');
- WriteLn('L''assembleur, l''executeur et le debogueur p-Code sont integres a PSYSTEM.')
+ WriteLn('Les outils externes peuvent etre choisis avec PSYSTEM_EDITOR et PSYSTEM_LINKER.');
+ WriteLn('Le compilateur, l''assembleur, l''executeur et le debogueur p-Code sont integres.')
 End;
 
 Procedure Prompt;
