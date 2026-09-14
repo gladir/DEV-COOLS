@@ -534,8 +534,8 @@ Begin
  $8C:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1*V2)End;
  $8D:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_Unsupported('division par zero')else PCode_Push(V1 div V2)End;
  $8E:Begin
-  N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);A:=PCode_DataAt(PCode_SP-N-1);
-  While N>0 do Begin Dec(N);PCode_DataSet(A+N,PCode_Pop)End;PCode_Pop
+  N:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);V2:=PCode_Pop;V1:=PCode_Pop;
+  For Lvl:=0 to N-1 do PCode_DataSet(V1+Lvl,PCode_DataAt(V2+Lvl))
  End;
  $8F:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_Unsupported('division par zero')else Begin A:=V1 mod V2;if A<0 Then A:=A+V2;PCode_Push(A)End End;
  $90:Begin N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_IVCall(N,0,False)End;
@@ -566,6 +566,11 @@ Begin
   Case Op of $B0:PCode_Push(Ord(V1=V2));$B1:PCode_Push(Ord(V1<>V2));
    $B2,$B4:PCode_Push(Ord(V1<=V2));$B3,$B5:PCode_Push(Ord(V1>=V2))End
  End;
+ $B6:Begin V2:=PCode_Pop;V1:=PCode_Pop;
+  if(V1<0)or(V1>15)Then PCode_Push(0)else PCode_Push(Ord((V2 and(1 shl V1))<>0))End;
+ $B7:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 or V2)End;
+ $B8:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and V2)End;
+ $B9:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and not V2)End;
  $BD:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V2);PCode_Push(V1)End;
  $C4:Begin V2:=PCode_Pop;A:=PCode_Pop;PCode_DataSet(A,V2)End;
  $CB:Begin V2:=PCode_Pop;V1:=PCode_Pop;A:=PCode_Pop;if(A<V1)or(A>V2)Then PCode_Unsupported('indice hors limites')else PCode_Push(A)End;
@@ -626,7 +631,7 @@ Begin
  { LAND } V2 := PCode_Pop; V1 := PCode_Pop;
   PCode_Push(Ord((V1 <> 0) And (V2 <> 0))); Inc(PCode_PC);
  End;
- 133: PCode_Unsupported('DIF (ensembles)'); { DIF }
+ 133:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and not V2);Inc(PCode_PC)End;
  134, 135:
  Begin
  { DVI/DVR } V2 := PCode_Pop; V1 := PCode_Pop;
@@ -649,8 +654,9 @@ Begin
   Inc(PCode_PC);
  End;
  137, 138: Inc(PCode_PC); { FLO/FLT : pas de reels, no-op }
- 139: PCode_Unsupported('INN (ensembles)');
- 140: PCode_Unsupported('INT (ensembles)');
+ 139:Begin V2:=PCode_Pop;V1:=PCode_Pop;
+  if(V1<0)or(V1>15)Then PCode_Push(0)else PCode_Push(Ord((V2 and(1 shl V1))<>0));Inc(PCode_PC)End;
+ 140:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and V2);Inc(PCode_PC)End;
  141:
  Begin
  { IOR : OU booleen } V2 := PCode_Pop; V1 := PCode_Pop;
@@ -678,10 +684,10 @@ Begin
   V1 := PCode_Pop; PCode_Push(Ord(V1 = 0)); Inc(PCode_PC);
  End; { LNOT }
  148: PCode_Unsupported('SRS (ensembles)');
- 149, 150:
- Begin
+149, 150:
+Begin
   V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 - V2); Inc(PCode_PC);
- End; { SBI/SBR }
+End; { SBI/SBR }
  151: PCode_Unsupported('SGS (ensembles)');
  152, 153:
  Begin
@@ -693,7 +699,7 @@ Begin
   PCode_DataSet(Addr, V1); Inc(PCode_PC);
  End;
  155: PCode_Unsupported('IXS (chaines)');
- 156: PCode_Unsupported('UNI (ensembles)');
+ 156:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 or V2);Inc(PCode_PC)End;
  157: PCode_Unsupported('LDE (unite externe)');
  158:
  Begin
@@ -1486,6 +1492,7 @@ Type
  IsStringConst,IsRealConst:Boolean;
  SymbolType:PPasType;Scope:PPasRoutine;LexicalLevel:Integer;
  IsParameter,ByReference:Boolean;
+ BaseSymbol:PPasSymbol;FieldOffset:Integer;
  Next:PPasSymbol
 End;
  TConstKind=(ckInteger,ckCharacter,ckString,ckReal);
@@ -1508,8 +1515,11 @@ Var
  CPTypes:PPasType;
  CPRoutines:PPasRoutine;
  CPLabels:PPasLabel;
+ CPWithSymbol:PPasSymbol;CPWithType:PPasType;CPWithField:TPasSymbol;
+ CPLastExpressionType:PPasType;
  CPCurrentRoutine:PPasRoutine;
  CPPass,CPNextProcedure:Integer;
+ CPTempNumber:Integer;
  CPRangeChecks,CPIOChecks,CPOverflowChecks:Boolean;
 
 Function CPAddType(S:String;K:TPasTypeKind;Words:Word):PPasType;
@@ -1798,22 +1808,23 @@ Begin
 End;
 
 Function CPParseType:PPasType;
-Var T,Base,Idx,Elem,Outer:PPasType;PackedFlag:Boolean;Lo,Hi,Count:LongInt;
+Var T,Base,Idx,Elem,Outer,TailType:PPasType;PackedFlag:Boolean;Lo,Hi,Count:LongInt;
  Name:String;N:Integer;
 Begin
  PackedFlag:=False;if CPIs('PACKED')Then Begin PackedFlag:=True;CPNext End;
  if CPIs('ARRAY')Then Begin
-  CPNext;CPNeed('[');Outer:=Nil;
+  CPNext;CPNeed('[');Outer:=Nil;TailType:=Nil;
   Repeat
    Idx:=CPParseType;Elem:=CPNewAnonymousType(ptkArray);Elem^.IndexType:=Idx;
    Count:=Idx^.HighBound-Idx^.LowBound+1;if Count<0 Then Count:=0;Elem^.ElementCount:=Count;
-   Elem^.PackedType:=PackedFlag;if Outer=Nil Then Outer:=Elem else Begin Elem^.ElementType:=Outer;Outer:=Elem End;
+   Elem^.PackedType:=PackedFlag;
+   if Outer=Nil Then Outer:=Elem else TailType^.ElementType:=Elem;TailType:=Elem;
    if CPToken=','Then CPNext else Break
   Until False;CPNeed(']');if not CPIs('OF')Then CPFail('OF attendu')else CPNext;
   Base:=CPParseType;
   { Les dimensions ont ete lues de gauche a droite: applique le type elementaire
     au maillon le plus interieur puis calcule les tailles vers l'exterieur. }
-  T:=Outer;While(T^.ElementType<>Nil)do T:=T^.ElementType;T^.ElementType:=Base;
+  TailType^.ElementType:=Base;
   CPRecomputeSize(Outer);CPParseType:=Outer;Exit
  end;
  if CPIs('RECORD')Then Begin CPParseType:=CPParseRecord(PackedFlag);Exit End;
@@ -1887,6 +1898,7 @@ Function CPFind(S:String):PPasSymbol;
 Var
  P,Best:PPasSymbol;
  R:PPasRoutine;
+ T:PPasType;F:PPasField;
 Begin
  Best:=Nil;R:=CPCurrentRoutine;
  Repeat
@@ -1898,7 +1910,17 @@ Begin
   if Best<>Nil Then Break;
   if R<>Nil Then R:=R^.Parent else Break
  Until False;
- CPFind:=Best
+ if(Best=Nil)and(CPWithSymbol<>Nil)Then Begin
+  T:=CPWithType;While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+  if(T<>Nil)and(T^.Kind in[ptkRecord,ptkVariantRecord])Then Begin
+   F:=T^.Fields;While(F<>Nil)and(F^.Name<>S)do F:=F^.Next;
+   if F<>Nil Then Begin FillChar(CPWithField,SizeOf(CPWithField),0);
+    CPWithField.Name:=S;CPWithField.SymbolType:=F^.FieldType;
+    CPWithField.BaseSymbol:=CPWithSymbol;CPWithField.FieldOffset:=F^.OffsetWords;
+    Best:=@CPWithField
+   End
+  End
+ End;CPFind:=Best
 End;
 
 Procedure CPAdd(S:String;V:Integer;K:Boolean);
@@ -2271,13 +2293,90 @@ Begin
  End
 End;
 
+Function CPAllocateTemp:PPasSymbol;
+Var S:String;
+Begin
+ Inc(CPTempNumber);Str(CPTempNumber,S);S:='$TEMP'+S;
+ if CPCurrentRoutine=Nil Then Begin Inc(CPVarCount);CPAddTyped(S,CPVarCount,False,CPFindType('INTEGER'))End
+ else Begin Inc(CPCurrentRoutine^.LocalWords);
+  CPAddTyped(S,CPCurrentRoutine^.LocalWords,False,CPFindType('INTEGER'))
+ End;CPAllocateTemp:=CPFind(S)
+End;
+
+Function CPFindField(T:PPasType;S:String):PPasField;
+Var F:PPasField;
+Begin
+ While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+ if(T=Nil)or not(T^.Kind in[ptkRecord,ptkVariantRecord])Then Begin CPFindField:=Nil;Exit End;
+ F:=T^.Fields;While(F<>Nil)and(F^.Name<>S)do F:=F^.Next;CPFindField:=F
+End;
+
+Procedure CPAddressSymbol(P:PPasSymbol);
+Var D:Integer;
+Begin
+ if P^.BaseSymbol<>Nil Then Begin CPAddressSymbol(P^.BaseSymbol);
+  if P^.FieldOffset<>0 Then Begin CPOp(162,$E7);CPBig(P^.FieldOffset)End;Exit
+ End;
+ if P^.ByReference Then Begin
+  P^.ByReference:=False;CPLoadSymbol(P);P^.ByReference:=True;Exit
+ End;
+ if P^.Scope=Nil Then Begin CPOp(165,$86);CPBig(P^.Address)End
+ else if P^.Scope=CPCurrentRoutine Then Begin CPOp(198,$84);CPBig(P^.Address)End
+ else Begin D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
+  CPOp(181,$88);CPE(D);CPBig(P^.Address)
+ End
+End;
+
+Procedure CPDesignator(P:PPasSymbol;LoadValue:Boolean;Var T:PPasType);
+Var F:PPasField;Idx:PPasType;
+Begin
+ T:=P^.SymbolType;if T=Nil Then T:=CPFindType('INTEGER');CPAddressSymbol(P);
+ While not CPError do Begin
+  While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+  if CPToken='['Then Begin
+   if(T=Nil)or(T^.Kind<>ptkArray)Then Begin CPFail('indexation d''un objet non tableau');Exit End;
+   CPNext;Repeat
+    Idx:=T^.IndexType;CPExpression;
+    if CPRangeChecks Then Begin CPConst(Idx^.LowBound);CPConst(Idx^.HighBound);CPOp(136,$CB)End;
+    if Idx^.LowBound<>0 Then Begin CPConst(Idx^.LowBound);CPOp(149,$A3)End;
+    CPOp(164,$D7);CPBig(T^.ElementType^.SizeWords);T:=T^.ElementType;
+    if CPToken=','Then Begin CPNext;
+     While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+     if(T=Nil)or(T^.Kind<>ptkArray)Then Begin CPFail('trop d''indices');Break End
+    End else Break
+   Until False;CPNeed(']')
+  End else if CPToken='.'Then Begin
+   CPNext;if CPToken<>'ID'Then Begin CPFail('nom de champ attendu');Exit End;
+   F:=CPFindField(T,CPText);if F=Nil Then Begin CPFail('champ inconnu: '+CPText);Exit End;
+   if F^.OffsetWords<>0 Then Begin CPOp(162,$E7);CPBig(F^.OffsetWords)End;
+   T:=F^.FieldType;CPNext
+  End else if CPToken='^'Then Begin
+   if(T=Nil)or(T^.Kind<>ptkPointer)Then Begin CPFail('déréférencement d''un non-pointeur');Exit End;
+   CPOp(163,$E6);CPBig(0);T:=T^.ElementType;CPNext
+  End else Break
+ End;
+ if LoadValue Then Begin
+  While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+  if(T<>Nil)and(T^.SizeWords>1)Then CPFail('valeur structurée interdite dans une expression scalaire')
+  else Begin CPOp(163,$E6);CPBig(0)End
+ End
+End;
+
+Procedure CPJumpBack(Target:LongInt);
+Var D:LongInt;
+Begin
+ CPOp(185,$8A);D:=Target-CPCodePos-1;
+ if(D<-128)or(D>127)Then CPFail('boucle trop longue')else CPE(Byte(D))
+End;
+
 Procedure CPFactor;
 Var
  P:PPasSymbol;
  R:PPasRoutine;
- Neg:Boolean;
+ T:PPasType;
+ Neg:Boolean;CV:TConstValue;Lo,Hi,K,Mask:LongInt;
 Begin
- Neg:=False;if CPToken='-'Then Begin
+ CPLastExpressionType:=CPFindType('INTEGER');Neg:=False;if CPToken='-'Then Begin
   Neg:=True;CPNext
  End;
  if CPToken='NUM'Then Begin
@@ -2289,6 +2388,17 @@ Begin
  else if CPToken='('Then Begin
   CPNext;CPExpression;CPNeed(')')
  End
+ else if CPToken='['Then Begin
+  CPNext;Mask:=0;
+  While(CPToken<>']')and(CPToken<>'EOF')and not CPError do Begin
+   CV:=CPEvalConstExpression;if CV.Kind=ckReal Then Begin CPFail('element d''ensemble non ordinal');Break End;
+   Lo:=CV.I;Hi:=Lo;if CPToken='..'Then Begin CPNext;CV:=CPEvalConstExpression;Hi:=CV.I End;
+   if(Lo<0)or(Hi>15)or(Lo>Hi)Then CPFail('ensemble immediat limite a 0..15')
+   else For K:=Lo to Hi do Mask:=Mask or(1 shl K);
+   if CPToken=','Then CPNext else Break
+  End;CPNeed(']');CPConst(Mask);CPLastExpressionType:=CPNewAnonymousType(ptkSet);
+  CPLastExpressionType^.ElementType:=CPFindType('INTEGER');CPLastExpressionType^.SizeWords:=1
+ End
  else if CPIs('TRUE')Then Begin
   CPConst(1);CPNext
  End else if CPIs('FALSE')Then Begin
@@ -2297,13 +2407,11 @@ Begin
  else if CPToken='ID'Then Begin
   P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);
   CPNext;
-  if(R<>Nil)and R^.IsFunction and(CPToken='(')Then Begin
-   CPEmitActualParameters(R);CPEmitRoutineCall(R)
+  if(R<>Nil)and R^.IsFunction and((CPToken='(')or(R^.Parameters=Nil))Then Begin
+   CPEmitActualParameters(R);CPEmitRoutineCall(R);CPLastExpressionType:=R^.ResultType
   End else if P=Nil Then CPFail('identificateur inconnu: '+CPText)
   else if P^.IsConst Then CPConst(P^.Value)else
-  Begin
-   CPLoadSymbol(P)
-  End
+  Begin CPDesignator(P,True,T);CPLastExpressionType:=T End
  End else
  Begin
   CPFail('facteur attendu');CPNext
@@ -2312,33 +2420,39 @@ End;
 
 Procedure CPTerm;
 Var
- O:String;
+ O:String;LT,RT:PPasType;
 Begin
- CPFactor;
+ CPFactor;LT:=CPLastExpressionType;
  While(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')do Begin
-  O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;CPFactor;
-  if O='*'Then CPOp(143,$8C)else if(O='/')or(O='DIV')Then CPOp(134,$8D)
+  O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;CPFactor;RT:=CPLastExpressionType;
+  if(O='*')and(((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet)))Then CPOp(140,$B8)
+  else if O='*'Then CPOp(143,$8C)else if(O='/')or(O='DIV')Then CPOp(134,$8D)
   else if O='MOD'Then CPOp(142,$8F)else CPOp(132,$A1)
- End
+  ;LT:=RT
+ End;CPLastExpressionType:=LT
 End;
 
 Procedure CPSimple;
 Var
- O:String;
+ O:String;LT,RT:PPasType;
 Begin
- CPTerm;
+ CPTerm;LT:=CPLastExpressionType;
  While(CPToken='+')or(CPToken='-')or CPIs('OR')do Begin
   O:=CPToken;
-  if CPToken='ID'Then O:=CPText;CPNext;CPTerm;
-  if O='+'Then CPOp(130,$A2)else if O='-'Then CPOp(149,$A3)else CPOp(141,$A0)
- End
+  if CPToken='ID'Then O:=CPText;CPNext;CPTerm;RT:=CPLastExpressionType;
+  if((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet))Then Begin
+   if O='+'Then CPOp(156,$B7)else if O='-'Then CPOp(133,$B9)else CPOp(156,$B7)
+  End else if O='+'Then CPOp(130,$A2)else if O='-'Then CPOp(149,$A3)else CPOp(141,$A0);
+  LT:=RT
+ End;CPLastExpressionType:=LT
 End;
 
 Procedure CPExpression;
 Var
  O:String;
 Begin
- CPSimple;if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
+ CPSimple;if CPIs('IN')Then Begin CPNext;CPSimple;CPOp(139,$B6);Exit End;
+ if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
  (CPToken='>')or(CPToken='>=')Then Begin
   O:=CPToken;CPNext;CPSimple;
   if O='='Then CPOp(195,$B0)else if O='<>'Then CPOp(203,$B1)
@@ -2363,10 +2477,13 @@ End;
 
 Procedure CPStatement;
 Var
- P:PPasSymbol;
+ P,Tmp:PPasSymbol;
  R:PPasRoutine;
+ T,RT:PPasType;
  Name:String;
- J,Patch:LongInt;
+ J,Patch,LoopStart:LongInt;Down,More:Boolean;
+ CV,CV2:TConstValue;EndPatch:Array[1..64]of LongInt;EndCount,I:Integer;
+ SavedWith:PPasSymbol;SavedWithType:PPasType;
 Begin
  if CPIs('BEGIN')Then CPCompound
  else if CPIs('GOTO')Then Begin
@@ -2390,6 +2507,69 @@ Begin
   J:=CPCodePos;CPNext;CPExpression;if not CPIs('DO')Then CPFail('DO attendu')else CPNext;
   CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;CPOp(185,$8A);CPE(J-(CPCodePos+1));
   PCode_Mem^[Patch]:=CPCodePos-Patch-1
+ End
+ else if CPIs('REPEAT')Then Begin
+  LoopStart:=CPCodePos;CPNext;
+  While not CPIs('UNTIL')and(CPToken<>'EOF')and not CPError do Begin
+   CPStatement;if CPToken=';'Then CPNext else if not CPIs('UNTIL')Then CPFail('point-virgule attendu')
+  End;
+  if CPIs('UNTIL')Then CPNext else CPFail('UNTIL attendu');CPExpression;
+  CPOp(161,$D4);J:=LoopStart-CPCodePos-1;
+  if(J<-128)or(J>127)Then CPFail('REPEAT trop long')else CPE(Byte(J))
+ End
+ else if CPIs('FOR')Then Begin
+  CPNext;if CPToken<>'ID'Then Begin CPFail('variable de controle attendue');Exit End;
+  P:=CPFind(CPText);if(P=Nil)or P^.IsConst Then Begin CPFail('variable de controle invalide');Exit End;
+  CPNext;CPNeed(':=');CPExpression;CPStoreSymbol(P);
+  Down:=CPIs('DOWNTO');if not Down and not CPIs('TO')Then Begin CPFail('TO ou DOWNTO attendu');Exit End;
+  CPNext;Tmp:=CPAllocateTemp;CPExpression;CPStoreSymbol(Tmp);
+  if not CPIs('DO')Then CPFail('DO attendu')else CPNext;LoopStart:=CPCodePos;
+  CPLoadSymbol(P);CPLoadSymbol(Tmp);
+  if Down Then CPOp(196,$B3)else CPOp(200,$B2);
+  CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;
+  CPLoadSymbol(P);CPConst(1);if Down Then CPOp(149,$A3)else CPOp(130,$A2);CPStoreSymbol(P);
+  CPJumpBack(LoopStart);J:=CPCodePos-Patch-1;
+  if J>127 Then CPFail('FOR trop long')else PCode_Mem^[Patch]:=Byte(J)
+ End
+ else if CPIs('CASE')Then Begin
+  CPNext;Tmp:=CPAllocateTemp;CPExpression;CPStoreSymbol(Tmp);
+  if not CPIs('OF')Then CPFail('OF attendu')else CPNext;EndCount:=0;
+  While not CPIs('END')and not CPIs('ELSE')and(CPToken<>'EOF')and not CPError do Begin
+   More:=False;
+   Repeat
+    CV:=CPEvalConstExpression;CPLoadSymbol(Tmp);CPConst(CV.I);
+    if CPToken='..'Then Begin CPNext;CV2:=CPEvalConstExpression;
+     CPOp(196,$B3);CPLoadSymbol(Tmp);CPConst(CV2.I);CPOp(200,$B2);CPOp(132,$A1)
+    End else CPOp(195,$B0);
+    if More Then CPOp(141,$A0);More:=True;
+    if CPToken=','Then CPNext else Break
+   Until False;
+   CPNeed(':');CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;
+   Inc(EndCount);if EndCount>64 Then Begin CPFail('trop de branches CASE');Break End;
+   CPOp(185,$8A);EndPatch[EndCount]:=CPCodePos;CPE(0);
+   J:=CPCodePos-Patch-1;if J>127 Then CPFail('branche CASE trop longue')else PCode_Mem^[Patch]:=Byte(J);
+   if CPToken=';'Then CPNext
+  End;
+  if CPIs('ELSE')Then Begin CPNext;
+   While not CPIs('END')and(CPToken<>'EOF')and not CPError do Begin
+    CPStatement;if CPToken=';'Then CPNext else Break
+   End
+  End;
+  if CPIs('END')Then CPNext else CPFail('END de CASE attendu');
+  For I:=1 to EndCount do Begin J:=CPCodePos-EndPatch[I]-1;
+   if J>127 Then CPFail('CASE trop long')else PCode_Mem^[EndPatch[I]]:=Byte(J)
+  End
+ End
+ else if CPIs('WITH')Then Begin
+  CPNext;if CPToken<>'ID'Then Begin CPFail('variable attendue apres WITH');Exit End;
+  P:=CPFind(CPText);if(P=Nil)or(P^.IsConst)Then Begin CPFail('variable WITH invalide');Exit End;
+  T:=P^.SymbolType;While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+  if(T=Nil)or not(T^.Kind in[ptkRecord,ptkVariantRecord])Then Begin
+   CPFail('WITH exige un enregistrement');Exit
+  End;
+  SavedWith:=CPWithSymbol;SavedWithType:=CPWithType;CPWithSymbol:=P;CPWithType:=T;CPNext;
+  if not CPIs('DO')Then CPFail('DO attendu')else Begin CPNext;CPStatement End;
+  CPWithSymbol:=SavedWith;CPWithType:=SavedWithType
  End
  else if CPIs('WRITE')or CPIs('WRITELN')Then Begin
   Name:=CPText;CPNext;
@@ -2423,11 +2603,17 @@ Begin
    CPEmitActualParameters(R);CPEmitRoutineCall(R)
   End else if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else
   Begin
-   CPNeed(':=');
-   if P^.ByReference Then Begin
-    P^.ByReference:=False;CPLoadSymbol(P);P^.ByReference:=True;
-    CPExpression;CPOp(154,$C4)
-   End else Begin CPExpression;CPStoreSymbol(P)End
+   CPDesignator(P,False,T);CPNeed(':=');
+   While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+   if(T<>Nil)and(T^.SizeWords>1)Then Begin
+    if CPToken<>'ID'Then CPFail('source structuree attendue')else Begin
+     P:=CPFind(CPText);if P=Nil Then CPFail('variable source inconnue')else Begin
+      CPNext;CPDesignator(P,False,RT);
+      if not CPTypeEquivalent(T,RT)Then CPFail('types structures incompatibles')
+      else Begin CPOp(168,$8E);CPBig(T^.SizeWords)End
+     End
+    End
+   End else Begin CPExpression;CPOp(154,$C4)End
   End
  End
 End;
@@ -2510,7 +2696,9 @@ Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
  Begin CPE(Byte(Value));CPE(Byte(Value shr 8))End;
 Begin
  WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin CPFail('segment trop grand');Exit End;
- if(CurrentTarget=ptUCSDPSystemIV)or(CPNextProcedure>1)Then Begin
+ { Le dictionnaire est aussi employe pour un programme II a une seule
+   procedure: il separe la pile descendante des variables globales. }
+ if CPNextProcedure>=1 Then Begin
   ProcTotal:=CPNextProcedure;
   if ProcTotal>255 Then Begin CPFail('plus de 255 procedures');Exit End;
   GetMem(Tmp,SizeOf(TPCodeMemory));FillChar(Tmp^,SizeOf(TPCodeMemory),0);
@@ -2551,7 +2739,7 @@ Begin
  FillChar(Header,SizeOf(Header),0);HW(0,1);HW(2,SegmentLength);
  SegmentName:=UpperString(SegmentName);if Length(SegmentName)>8 Then SegmentName:=Copy(SegmentName,1,8);
  For I:=1 to Length(SegmentName)do Header[63+I]:=Ord(SegmentName[I]);
- if(CurrentTarget=ptUCSDPSystemIV)or(CPNextProcedure>1)Then
+ if CPNextProcedure>=1 Then
   For I:=1 to Length(SegmentName)do PCode_Mem^[3+I]:=Ord(SegmentName[I]);
  HW(192,1);HW(224,0);
  Case CurrentTarget of
@@ -2582,6 +2770,7 @@ Var
 Begin
  CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;CPLabels:=Nil;
  CPCurrentRoutine:=Nil;CPPass:=1;CPNextProcedure:=1;
+ CPTempNumber:=0;CPWithSymbol:=Nil;CPWithType:=Nil;
  CPRangeChecks:=False;CPIOChecks:=True;CPOverflowChecks:=False;
  Typ:=CPAddType('INTEGER',ptkInteger,1);Typ^.LowBound:=-32768;Typ^.HighBound:=32767;
  Typ:=CPAddType('BOOLEAN',ptkBoolean,1);Typ^.LowBound:=0;Typ^.HighBound:=1;
