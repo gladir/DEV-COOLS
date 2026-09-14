@@ -143,6 +143,9 @@ Var
  PCode_Mem:PPCodeMemory;
  PCode_Data:PPCodeData;
  PCode_CodeSize,PCode_PC,PCode_SP,PCode_MP,PCode_Cycles:LongInt;
+ PCode_SegmentSize,PCode_ProcDict,PCode_Base:LongInt;
+ PCode_ProcCount,PCode_CurrentProc:Integer;
+ PCode_IsIVSegment:Boolean;
  PCode_Halted:Boolean;
  PCode_ExitCode:Integer;
 
@@ -183,12 +186,16 @@ Begin
   if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
    (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
    Seek(F,SegmentPos);ReadCount:=0;BlockRead(F,PCode_Mem^,SegmentSize,ReadCount);
-   LoadedSize:=SegmentSize;ProcCount:=PCode_Mem^[SegmentSize-2];
-   AttrPos:=PCode_Mem^[SegmentSize-4]or(PCode_Mem^[SegmentSize-3]shl 8);
-   if(ProcCount<1)or(AttrPos<0)or(AttrPos>SegmentSize-14)Then Begin
-    Close(F);if IOResult<>0 Then Begin End;
-    WriteLn('Dictionnaire de procedures invalide.');Exit
-   End;PCode_CodeSize:=AttrPos
+   LoadedSize:=SegmentSize;
+   if CurrentTarget=ptUCSDPSystemIV Then PCode_CodeSize:=SegmentSize
+   else Begin
+    ProcCount:=PCode_Mem^[SegmentSize-2];
+    AttrPos:=PCode_Mem^[SegmentSize-4]or(PCode_Mem^[SegmentSize-3]shl 8);
+    if(ProcCount<1)or(AttrPos<0)or(AttrPos>SegmentSize-14)Then Begin
+     Close(F);if IOResult<>0 Then Begin End;
+     WriteLn('Dictionnaire de procedures invalide.');Exit
+    End;PCode_CodeSize:=AttrPos
+   End
   End else Begin
    if Sz>SizeOf(TPCodeMemory)Then Begin Close(F);if IOResult<>0 Then Begin End;Exit End;
    Seek(F,0);ReadCount:=0;if Sz>0 Then BlockRead(F,PCode_Mem^,Sz,ReadCount);
@@ -202,7 +209,21 @@ Begin
   Close(F);if IOResult<>0 Then Begin
   End;Exit
  End;
- Close(F);if IOResult<>0 Then Exit;PCode_LoadRaw:=True
+ Close(F);if IOResult<>0 Then Exit;
+ PCode_SegmentSize:=LoadedSize;PCode_ProcDict:=0;PCode_ProcCount:=0;
+ PCode_IsIVSegment:=False;
+ { Un segment IV commence par l'offset, exprime en mots, de son
+   dictionnaire de procedures. Le dictionnaire contient ensuite son compte. }
+ if(CurrentTarget=ptUCSDPSystemIV)and(LoadedSize>=24)Then Begin
+  PCode_ProcDict:=(PCode_Mem^[0]or(PCode_Mem^[1]shl 8))*2;
+  if(PCode_ProcDict>=22)and(PCode_ProcDict+1<LoadedSize)Then Begin
+   PCode_ProcCount:=PCode_Mem^[PCode_ProcDict]or
+    (PCode_Mem^[PCode_ProcDict+1]shl 8);
+   PCode_IsIVSegment:=(PCode_ProcCount>0)and
+    (PCode_ProcDict-PCode_ProcCount*2>=22)
+  End
+ End;
+ PCode_LoadRaw:=True
 End;
 
 Function TargetName:String;
@@ -380,6 +401,166 @@ Begin
  PCode_Unsupported('CSP ' + PCode_IntToStr(CspNum));
 End;
 End;
+
+{ ------------------------------------------------------------------------ }
+{ UCSD p-System IV.0/IV.2                                                  }
+{ Adresses de donnees en mots; adresses de code en octets. Un MSCW occupe }
+{ cinq mots: MSSTAT, MSDYN, IPC, MSENV et MPROC.                           }
+
+Function PCode_IVWord(Ofs:LongInt):Integer;Begin
+ PCode_IVWord:=PCode_Fetch(Ofs)or(PCode_Fetch(Ofs+1)shl 8)
+End;
+
+Function PCode_IVSignedWord(Ofs:LongInt):Integer;
+Var V:LongInt;
+Begin
+ V:=PCode_IVWord(Ofs);if V>32767 Then V:=V-65536;PCode_IVSignedWord:=V
+End;
+
+Function PCode_IVProcAddress(ProcNum:Integer;Var Locals:Integer):LongInt;
+Var P,A:LongInt;
+Begin
+ PCode_IVProcAddress:=-1;Locals:=0;
+ if not PCode_IsIVSegment or(ProcNum<1)or(ProcNum>PCode_ProcCount)Then Exit;
+ P:=PCode_ProcDict-ProcNum*2;
+ if(P<22)or(P+1>=PCode_SegmentSize)Then Exit;
+ A:=PCode_IVWord(P)*2;
+ if(A<2)or(A+1>=PCode_SegmentSize)Then Exit;
+ Locals:=PCode_IVWord(A);
+ if Locals=-1 Then Exit;
+ PCode_IVProcAddress:=A+2
+End;
+
+Procedure PCode_IVCall(ProcNum,LexLevel:Integer;GlobalCall:Boolean);
+Var Entry,StaticLink,NewMP:LongInt;Locals,I:Integer;
+Begin
+ Entry:=PCode_IVProcAddress(ProcNum,Locals);
+ if Entry<0 Then Begin PCode_Unsupported('procedure p-System IV invalide');Exit End;
+ if GlobalCall Then StaticLink:=PCode_Base
+ else if LexLevel=0 Then StaticLink:=PCode_MP
+ else StaticLink:=PCode_StaticBase(LexLevel);
+ NewMP:=PCode_SP;
+ if NewMP+5+Locals>High(PCode_Data^)Then Begin
+  PCode_Unsupported('cadre p-System IV trop grand');Exit
+ End;
+ PCode_DataSet(NewMP,StaticLink);       { MSSTAT }
+ PCode_DataSet(NewMP+1,PCode_MP);      { MSDYN  }
+ PCode_DataSet(NewMP+2,PCode_PC);      { IPC    }
+ PCode_DataSet(NewMP+3,0);             { MSENV: segment courant }
+ PCode_DataSet(NewMP+4,PCode_CurrentProc); { MPROC }
+ PCode_MP:=NewMP;PCode_SP:=NewMP+5+Locals;
+ For I:=0 to Locals-1 do PCode_DataSet(NewMP+5+I,0);
+ PCode_CurrentProc:=ProcNum;PCode_PC:=Entry
+End;
+
+Procedure PCode_IVReturn(Count:Integer);
+Var OldMP,ReturnPC,CallerMP:LongInt;CallerProc:Integer;
+Begin
+ OldMP:=PCode_MP;ReturnPC:=PCode_DataAt(OldMP+2);
+ CallerMP:=PCode_DataAt(OldMP+1);CallerProc:=PCode_DataAt(OldMP+4);
+ if(CallerProc=0)and(ReturnPC=0)Then Begin
+  PCode_Halted:=True;PCode_ExitCode:=0;Exit
+ End;
+ PCode_SP:=OldMP-Count;if PCode_SP<0 Then PCode_SP:=0;
+ PCode_MP:=CallerMP;PCode_CurrentProc:=CallerProc;PCode_PC:=ReturnPC
+End;
+
+Procedure PCode_StepIV;
+Var Op,B:Byte;SB:ShortInt;A,V1,V2,FB:LongInt;N,Used,Lvl:Integer;
+Begin
+ if PCode_Halted Then Exit;
+ if(PCode_PC<0)or(PCode_PC>=PCode_CodeSize)Then Begin
+  PCode_Unsupported('adresse p-System IV hors segment');Exit
+ End;
+ Op:=PCode_Fetch(PCode_PC);Inc(PCode_PC);
+ if Op<=$1F Then Begin PCode_Push(Op);Exit End;
+ if(Op>=$20)and(Op<=$2F)Then Begin
+  PCode_Push(PCode_DataAt(PCode_MP+5+(Op-$20)+1));Exit
+ End;
+ if(Op>=$30)and(Op<=$3F)Then Begin
+  PCode_Push(PCode_DataAt(PCode_Base+5+(Op-$30)+1));Exit
+ End;
+ if(Op>=$60)and(Op<=$67)Then Begin
+  PCode_Push(PCode_MP+5+(Op-$60)+1);Exit
+ End;
+ if(Op>=$68)and(Op<=$6F)Then Begin
+  PCode_DataSet(PCode_MP+5+(Op-$68)+1,PCode_Pop);Exit
+ End;
+ if(Op>=$78)and(Op<=$7F)Then Begin
+  A:=PCode_Pop;PCode_Push(PCode_DataAt(A+Op-$78));Exit
+ End;
+ Case Op of
+ $80:Begin PCode_Push(PCode_Fetch(PCode_PC));Inc(PCode_PC)End; { LDCB }
+ $81:Begin PCode_Push(PCode_IVSignedWord(PCode_PC));Inc(PCode_PC,2)End;
+ $84:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_Push(PCode_MP+5+A)End;
+ $85:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_Push(PCode_DataAt(PCode_Base+5+A))End;
+ $86:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_Push(PCode_Base+5+A)End;
+ $87:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_Push(PCode_DataAt(PCode_MP+5+A))End;
+ $88,$89:Begin
+  Lvl:=PCode_Fetch(PCode_PC);Inc(PCode_PC);A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);
+  FB:=PCode_StaticBase(Lvl);
+  if Op=$88 Then PCode_Push(FB+5+A)else PCode_Push(PCode_DataAt(FB+5+A))
+ End;
+ $8A:Begin SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);Inc(PCode_PC,SB)End;
+ $8B:Begin A:=PCode_IVSignedWord(PCode_PC);Inc(PCode_PC,2);Inc(PCode_PC,A)End;
+ $8C:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1*V2)End;
+ $8D:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_Unsupported('division par zero')else PCode_Push(V1 div V2)End;
+ $8E:Begin
+  N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);A:=PCode_DataAt(PCode_SP-N-1);
+  While N>0 do Begin Dec(N);PCode_DataSet(A+N,PCode_Pop)End;PCode_Pop
+ End;
+ $8F:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_Unsupported('division par zero')else Begin A:=V1 mod V2;if A<0 Then A:=A+V2;PCode_Push(A)End End;
+ $90:Begin N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_IVCall(N,0,False)End;
+ $91:Begin N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_IVCall(N,0,True)End;
+ $92:Begin Lvl:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,Lvl,False)End;
+ $93,$94:Begin
+  B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
+  if B=0 Then PCode_CallUnit0(N)
+  else PCode_Unsupported('appel inter-segment p-System IV')
+ End;
+ $95:Begin PCode_Unsupported('appel inter-segment intermediaire p-System IV')End;
+ $96:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_IVReturn(A)End;
+ $98: PCode_Push(0);
+ $99:Begin Lvl:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_Push(PCode_StaticBase(Lvl))End;
+ $9C:Begin End;
+ $9E:Begin PCode_Unsupported('point d''arret p-System IV')End;
+ $9F:Begin V1:=PCode_Pop;PCode_Push(Ord((V1 and 1)=0))End;
+ $A0:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 or V2)End;
+ $A1:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and V2)End;
+ $A2:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1+V2)End;
+ $A3:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1-V2)End;
+ $A4:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_DataSet(PCode_MP+5+A,PCode_Pop)End;
+ $A5:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_DataSet(PCode_Base+5+A,PCode_Pop)End;
+ $A6:Begin Lvl:=PCode_Fetch(PCode_PC);Inc(PCode_PC);A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_DataSet(PCode_StaticBase(Lvl)+5+A,PCode_Pop)End;
+ $AC:Begin B:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_CallCSP(B)End;
+ $B0..$B3,$B4,$B5:Begin
+  V2:=PCode_Pop;V1:=PCode_Pop;
+  Case Op of $B0:PCode_Push(Ord(V1=V2));$B1:PCode_Push(Ord(V1<>V2));
+   $B2,$B4:PCode_Push(Ord(V1<=V2));$B3,$B5:PCode_Push(Ord(V1>=V2))End
+ End;
+ $BD:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V2);PCode_Push(V1)End;
+ $C4:Begin V2:=PCode_Pop;A:=PCode_Pop;PCode_DataSet(A,V2)End;
+ $CB:Begin V2:=PCode_Pop;V1:=PCode_Pop;A:=PCode_Pop;if(A<V1)or(A>V2)Then PCode_Unsupported('indice hors limites')else PCode_Push(A)End;
+ $D2,$D3,$D4:Begin
+  SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);
+  if Op=$D4 Then Begin V1:=PCode_Pop;if(V1 and 1)=0 Then Inc(PCode_PC,SB)End
+  else Begin V2:=PCode_Pop;V1:=PCode_Pop;if((Op=$D2)and(V1<>V2))or((Op=$D3)and(V1=V2))Then Inc(PCode_PC,SB)End
+ End;
+ $D5:Begin A:=PCode_IVSignedWord(PCode_PC);Inc(PCode_PC,2);V1:=PCode_Pop;if(V1 and 1)=0 Then Inc(PCode_PC,A)End;
+ $D7:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1+V2*A)End;
+ $E0:Begin V1:=PCode_Pop;if V1<0 Then V1:=-V1;PCode_Push(V1)End;
+ $E1:Begin PCode_Push(-PCode_Pop)End;
+ $E2:Begin V1:=PCode_Pop;PCode_Push(V1);PCode_Push(V1)End;
+ $E5:Begin PCode_Push(not PCode_Pop)End;
+ $E6:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_Push(PCode_DataAt(PCode_Pop+A))End;
+ $E7:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_Push(PCode_Pop+A)End;
+ $ED:Begin PCode_Push(PCode_Pop+1)End;
+ $EE:Begin PCode_Push(PCode_Pop-1)End;
+ $EF,$F0:Begin N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_IVCall(N,Op-$EE,False)End;
+ $F1:Begin SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);V1:=PCode_Pop;if(V1 and 1)<>0 Then Inc(PCode_PC,SB)End;
+ else PCode_Unsupported('opcode p-System IV $'+PCode_IntToStr(Op))
+ End
+End;
 { Execute UNE instruction p-code a partir de PCode_PC. }
 
 Procedure PCode_Step;
@@ -391,6 +572,7 @@ Var
  A, V1, V2, Addr, FB: LongInt;
  Temp: Array[0..255] Of Integer;
 Begin
+ If CurrentTarget=ptUCSDPSystemIV Then Begin PCode_StepIV;Exit End;
  If PCode_Halted Then Exit;
  If (PCode_PC < 0) Or (PCode_PC >= PCode_CodeSize) Then Begin
   PCode_Halted := True; PCode_ExitCode := 1; Exit;
@@ -742,7 +924,14 @@ Begin
   FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
  End;
  FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ PCode_Base:=0;PCode_CurrentProc:=0;
  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
+ if CurrentTarget=ptUCSDPSystemIV Then Begin
+  if not PCode_IsIVSegment Then Begin
+   WriteLn('Le fichier ne contient pas un segment p-System IV valide.');
+   PCode_Halted:=True;PCode_ExitCode:=1
+  End else PCode_IVCall(1,0,True)
+ End;
  While not PCode_Halted and(PCode_Cycles<MaxCycles)do Begin
   PCode_Step;Inc(PCode_Cycles)
  End;
@@ -1335,6 +1524,10 @@ Procedure CPE(B:Byte);Begin
  End
 End;
 
+Procedure CPOp(OpcodeII,OpcodeIV:Byte);Begin
+ if CurrentTarget=ptUCSDPSystemIV Then CPE(OpcodeIV)else CPE(OpcodeII)
+End;
+
 Procedure CPBig(V:LongInt);Begin
  if V<128 Then CPE(V)else
  Begin
@@ -1343,9 +1536,10 @@ Procedure CPBig(V:LongInt);Begin
 End;
 
 Procedure CPConst(V:LongInt);Begin
- if(V>=0)and(V<128)Then CPE(V)else
+ if(V>=0)and(V<128)and(CurrentTarget<>ptUCSDPSystemIV)Then CPE(V)
+ else if(V>=0)and(V<32)Then CPE(V)else
  Begin
-  CPE(199);CPE(V);CPE(V shr 8)
+  CPOp(199,$81);CPE(V);CPE(V shr 8)
  End
 End;
 Procedure CPExpression;Forward;
@@ -1376,12 +1570,12 @@ Begin
   P:=CPFind(CPText);if P=Nil Then CPFail('identificateur inconnu: '+CPText)
   else if P^.IsConst Then CPConst(P^.Value)else
   Begin
-   CPE(169);CPBig(P^.Address)
+   CPOp(169,$85);CPBig(P^.Address)
   End;CPNext
  End else
  Begin
   CPFail('facteur attendu');CPNext
- End;if Neg Then CPE(145)
+ End;if Neg Then CPOp(145,$E1)
 End;
 
 Procedure CPTerm;
@@ -1391,8 +1585,8 @@ Begin
  CPFactor;
  While(CPToken='*')or(CPToken='/')or CPIs('DIV')or CPIs('MOD')or CPIs('AND')do Begin
   O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;CPFactor;
-  if O='*'Then CPE(143)else if(O='/')or(O='DIV')Then CPE(134)else if O='MOD'Then CPE(142)
-  else CPE(132)
+  if O='*'Then CPOp(143,$8C)else if(O='/')or(O='DIV')Then CPOp(134,$8D)
+  else if O='MOD'Then CPOp(142,$8F)else CPOp(132,$A1)
  End
 End;
 
@@ -1404,7 +1598,7 @@ Begin
  While(CPToken='+')or(CPToken='-')or CPIs('OR')do Begin
   O:=CPToken;
   if CPToken='ID'Then O:=CPText;CPNext;CPTerm;
-  if O='+'Then CPE(130)else if O='-'Then CPE(149)else CPE(141)
+  if O='+'Then CPOp(130,$A2)else if O='-'Then CPOp(149,$A3)else CPOp(141,$A0)
  End
 End;
 
@@ -1415,8 +1609,11 @@ Begin
  CPSimple;if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
  (CPToken='>')or(CPToken='>=')Then Begin
   O:=CPToken;CPNext;CPSimple;
-  if O='='Then CPE(195)else if O='<>'Then CPE(203)else if O='<'Then CPE(201)
-  else if O='<='Then CPE(200)else if O='>'Then CPE(197)else CPE(196)
+  if O='='Then CPOp(195,$B0)else if O='<>'Then CPOp(203,$B1)
+  else if O='<'Then Begin CPOp(196,$B3);CPOp(147,$9F)End
+  else if O='<='Then CPOp(200,$B2)
+  else if O='>'Then Begin CPOp(200,$B2);CPOp(147,$9F)End
+  else CPOp(196,$B3)
  End
 End;
 Procedure CPStatement;Forward;
@@ -1441,15 +1638,15 @@ Begin
  if CPIs('BEGIN')Then CPCompound
  else if CPIs('IF')Then Begin
   CPNext;CPExpression;if not CPIs('THEN')Then CPFail('THEN attendu')else CPNext;
-  CPE(161);Patch:=CPCodePos;CPE(0);CPStatement;
+  CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;
   if CPIs('ELSE')Then Begin
-   CPE(185);J:=CPCodePos;CPE(0);PCode_Mem^[Patch]:=CPCodePos-Patch-1;
+   CPOp(185,$8A);J:=CPCodePos;CPE(0);PCode_Mem^[Patch]:=CPCodePos-Patch-1;
    CPNext;CPStatement;PCode_Mem^[J]:=CPCodePos-J-1
   End else PCode_Mem^[Patch]:=CPCodePos-Patch-1
  End
  else if CPIs('WHILE')Then Begin
   J:=CPCodePos;CPNext;CPExpression;if not CPIs('DO')Then CPFail('DO attendu')else CPNext;
-  CPE(161);Patch:=CPCodePos;CPE(0);CPStatement;CPE(185);CPE(J-(CPCodePos+1));
+  CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;CPOp(185,$8A);CPE(J-(CPCodePos+1));
   PCode_Mem^[Patch]:=CPCodePos-Patch-1
  End
  else if CPIs('WRITE')or CPIs('WRITELN')Then Begin
@@ -1460,16 +1657,21 @@ Begin
     if CPToken='STR'Then Begin
      CPE(166);CPE(Length(CPText));
      For J:=1 to Length(CPText)do CPE(Ord(CPText[J]));
-     CPConst(Length(CPText));CPE(205);CPE(0);CPE(19);CPNext
+     CPConst(Length(CPText));
+     if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(19)End
+     else Begin CPE(205);CPE(0);CPE(19)End;CPNext
     End else
     Begin
-     CPExpression;CPE(205);CPE(0);CPE(13)
+     CPExpression;
+     if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(13)End
+     else Begin CPE(205);CPE(0);CPE(13)End
     End;
     if CPToken=','Then CPNext else Break
    End;CPNeed(')')
   End;
   if Name='WRITELN'Then Begin
-   CPE(205);CPE(0);CPE(22)
+   if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(22)End
+   else Begin CPE(205);CPE(0);CPE(22)End
   End
  End
  else if CPToken='ID'Then Begin
@@ -1477,7 +1679,7 @@ Begin
   if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else
   Begin
    CPNeed(':=');CPExpression;
-   CPE(171);CPBig(P^.Address)
+   CPOp(171,$A5);CPBig(P^.Address)
   End
  End
 End;
@@ -1485,17 +1687,37 @@ End;
 Function WriteUCSDCodeFile(CodeName,SegmentName:String;CodeLength:LongInt;
  DataWords:Integer):Boolean;
 Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
+ ProcEntry,ProcDict:LongInt;
  Procedure HW(Offset:Integer;Value:Word);
  Begin Header[Offset]:=Byte(Value);Header[Offset+1]:=Byte(Value shr 8)End;
  Procedure EW(Value:Word);
  Begin CPE(Byte(Value));CPE(Byte(Value shr 8))End;
 Begin
  WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin CPFail('segment trop grand');Exit End;
- EW(DataWords*2);EW(0);EW(CodeLength-1);EW(0);CPE(1);CPE(0);
- EW(CodeLength);CPE(1);CPE(1);SegmentLength:=CPCodePos;
+ if CurrentTarget=ptUCSDPSystemIV Then Begin
+  { En-tete interne IV (11 mots), attribut de procedure, code, pointeur
+    de procedure puis dictionnaire. Les offsets internes sont en mots. }
+  if CodeLength>65480 Then Begin CPFail('segment IV trop grand');Exit End;
+  For I:=CodeLength-1 downto 0 do PCode_Mem^[I+24]:=PCode_Mem^[I];
+  FillChar(PCode_Mem^,24,0);ProcEntry:=24+CodeLength;
+  if Odd(ProcEntry)Then Begin PCode_Mem^[ProcEntry]:=$9C;Inc(ProcEntry)End;
+  ProcDict:=ProcEntry+2;
+  PCode_Mem^[0]:=Byte((ProcDict div 2));PCode_Mem^[1]:=Byte((ProcDict div 2)shr 8);
+  PCode_Mem^[12]:=1;PCode_Mem^[13]:=0; { endian natif }
+  PCode_Mem^[20]:=Byte((ProcEntry div 2));PCode_Mem^[21]:=Byte((ProcEntry div 2)shr 8);
+  PCode_Mem^[22]:=Byte(DataWords);PCode_Mem^[23]:=Byte(DataWords shr 8);
+  PCode_Mem^[ProcEntry]:=11;PCode_Mem^[ProcEntry+1]:=0; { attribut a 22 }
+  PCode_Mem^[ProcDict]:=1;PCode_Mem^[ProcDict+1]:=0;
+  CPCodePos:=ProcDict+2;SegmentLength:=CPCodePos
+ End else Begin
+  EW(DataWords*2);EW(0);EW(CodeLength-1);EW(0);CPE(1);CPE(0);
+  EW(CodeLength);CPE(1);CPE(1);SegmentLength:=CPCodePos
+ End;
  FillChar(Header,SizeOf(Header),0);HW(0,1);HW(2,SegmentLength);
  SegmentName:=UpperString(SegmentName);if Length(SegmentName)>8 Then SegmentName:=Copy(SegmentName,1,8);
  For I:=1 to Length(SegmentName)do Header[63+I]:=Ord(SegmentName[I]);
+ if CurrentTarget=ptUCSDPSystemIV Then
+  For I:=1 to Length(SegmentName)do PCode_Mem^[3+I]:=Ord(SegmentName[I]);
  HW(192,1);HW(224,0);
  Case CurrentTarget of
   ptAppleHeath:HW(256,$0101);
@@ -1562,7 +1784,8 @@ Begin
    End
   End
  End;
- CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');CPE(214);
+ CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');
+ if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214);
  if not CPError Then WriteUCSDCodeFile(CodeName,'PROGRAM',CPCodePos,CPVarCount);
  99:P:=CPSymbols;
  While P<>Nil do Begin
@@ -2022,7 +2245,9 @@ Var
  I:Integer;
  S:String;
 Begin
- WorkFile:='';ProgramFile:='';CurrentTarget:=ptUCSDPSystemIV;
+ { Le jeu d'opcodes de la machine virtuelle et de l'assembleur integres
+   correspond par defaut a UCSD Pascal II.0/II.1. }
+ WorkFile:='';ProgramFile:='';CurrentTarget:=ptUCSDPascalII;
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
   if(S='/?')or(S='-?')or(UpperString(S)='HELP')Then Begin
