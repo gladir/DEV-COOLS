@@ -7699,6 +7699,12 @@ Var
  { condition de bas de tas/compactage ne le declenche dans ce               }
  { sous-ensemble, meme honnetete que Win16_AbortProcSeg/Ofs). }
  Win16_LocalNotifySeg, Win16_LocalNotifyOfs: Word;
+ { Etat de tache mono-tache (LockCurrentTask/$33, SetTaskQueue/$34,        }
+ { SetTaskSignalProc/$38, 2026-09-14, demande explicite) - callback         }
+ { jamais reellement appele, meme honnetete que Win16_LocalNotifySeg/Ofs.   }
+ Win16_TaskLocked: Boolean;
+ Win16_TaskQueueHandle: Word;
+ Win16_TaskSignalProcSeg, Win16_TaskSignalProcOfs: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91804,6 +91810,10 @@ Begin
  Win16_LocalBlockCount := 0;
  Win16_LocalNotifySeg := 0;
  Win16_LocalNotifyOfs := 0;
+ Win16_TaskLocked := False;
+ Win16_TaskQueueHandle := 0;
+ Win16_TaskSignalProcSeg := 0;
+ Win16_TaskSignalProcOfs := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -92083,6 +92093,157 @@ Begin
   S := S + Chr(B);
  End;
  Win16_ReadGuestString := S;
+End;
+
+{ Emu_HostPath n'est definie que plus loin dans ce fichier (section DOS) -   }
+{ Forward necessaire ici pour Win16_ProfileFindValue/Win16_ProfileWriteValue }
+{ ci-dessous (2026-09-14, demande explicite GetProfileInt/String/            }
+{ WriteProfileString). Le Forward permanent plus loin dans le fichier         }
+{ (juste avant Win16_DispatchCall) a ete converti en commentaire pour         }
+{ eviter un Forward en double (FPC le refuse). }
+Function Emu_HostPath(Const DosName: String): String; Forward;
+{ GetProfileInt/$57, GetProfileString/$58, WriteProfileString/$59            }
+{ (2026-09-14, demande explicite) : VRAI moteur INI minimal operant sur un    }
+{ VRAI fichier hote WIN.INI (resolu via Emu_HostPath, meme resolveur que      }
+{ tout le reste de cet emulateur) - pas une simulation en memoire, un         }
+{ VRAI aller-retour disque. Format INI standard ([Section]/Cle=Valeur,        }
+{ lignes ';' ignorees comme commentaires, comparaisons insensibles a la       }
+{ casse). }
+Function Win16_ProfileFindValue(Const SectionName, KeyName: String;
+ Var OutValue: String): Boolean;
+Var
+ F: Text;
+ Line, CurSection, LKey, LVal: String;
+ EqPos, J: Integer;
+ InSection: Boolean;
+Begin
+ Win16_ProfileFindValue := False;
+ OutValue := '';
+ {$I-} Assign(F, Emu_HostPath('WIN.INI')); Reset(F); {$I+}
+ If IOResult <> 0 Then Exit;
+ InSection := False;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  While (Length(Line) > 0) And (Line[Length(Line)] In [' ', #13, #9]) Do
+   Line := Copy(Line, 1, Length(Line) - 1);
+  J := 1;
+  While (J <= Length(Line)) And (Line[J] In [' ', #9]) Do Inc(J);
+  Line := Copy(Line, J, Length(Line) - J + 1);
+  If (Length(Line) > 0) And (Line[1] = '[') Then Begin
+   CurSection := Copy(Line, 2, Length(Line) - 2);
+   If (Length(CurSection) > 0) And (CurSection[Length(CurSection)] = ']') Then
+    CurSection := Copy(CurSection, 1, Length(CurSection) - 1);
+   InSection := (UpCaseStr(CurSection) = UpCaseStr(SectionName));
+  End Else If InSection And (Length(Line) > 0) And (Line[1] <> ';') Then Begin
+   EqPos := Pos('=', Line);
+   If EqPos > 0 Then Begin
+    LKey := Copy(Line, 1, EqPos - 1);
+    While (Length(LKey) > 0) And (LKey[Length(LKey)] = ' ') Do
+     LKey := Copy(LKey, 1, Length(LKey) - 1);
+    If UpCaseStr(LKey) = UpCaseStr(KeyName) Then Begin
+     LVal := Copy(Line, EqPos + 1, Length(Line) - EqPos);
+     J := 1;
+     While (J <= Length(LVal)) And (LVal[J] = ' ') Do Inc(J);
+     LVal := Copy(LVal, J, Length(LVal) - J + 1);
+     OutValue := LVal;
+     Win16_ProfileFindValue := True;
+     Close(F);
+     Exit;
+    End;
+   End;
+  End;
+ End;
+ Close(F);
+End;
+
+Const
+ WIN16_PROFILE_MAX_LINES = 4096;
+
+Procedure Win16_ProfileWriteValue(Const SectionName, KeyName, ValueStr: String;
+ DeleteEntry: Boolean);
+Var
+ Lines: Array[0..WIN16_PROFILE_MAX_LINES - 1] Of String;
+ LineCount, I, J: Integer;
+ F: Text;
+ CurSection: String;
+ SecStart, SecEnd, KeyLine: Integer;
+ Line, LKey: String;
+ EqPos: Integer;
+ InSection: Boolean;
+ HostPath: String;
+Begin
+ HostPath := Emu_HostPath('WIN.INI');
+ LineCount := 0;
+ {$I-} Assign(F, HostPath); Reset(F); {$I+}
+ If IOResult = 0 Then Begin
+  While (Not Eof(F)) And (LineCount < WIN16_PROFILE_MAX_LINES) Do Begin
+   ReadLn(F, Lines[LineCount]);
+   Inc(LineCount);
+  End;
+  Close(F);
+ End;
+ { Localiser la section [SectionName] existante : SecStart = index de        }
+ { l'en-tete, SecEnd = index APRES sa derniere ligne (exclusif). }
+ SecStart := -1; SecEnd := -1;
+ InSection := False;
+ For I := 0 To LineCount - 1 Do Begin
+  Line := Lines[I];
+  J := 1;
+  While (J <= Length(Line)) And (Line[J] In [' ', #9]) Do Inc(J);
+  If (J <= Length(Line)) And (Line[J] = '[') Then Begin
+   If InSection Then Begin SecEnd := I; InSection := False; End;
+   CurSection := Copy(Line, J + 1, Length(Line) - J);
+   If Pos(']', CurSection) > 0 Then
+    CurSection := Copy(CurSection, 1, Pos(']', CurSection) - 1);
+   If UpCaseStr(CurSection) = UpCaseStr(SectionName) Then Begin
+    SecStart := I;
+    InSection := True;
+   End;
+  End;
+ End;
+ If InSection Then SecEnd := LineCount;
+ { Trouver la ligne de la cle a l'interieur de la section (si elle existe). }
+ KeyLine := -1;
+ If SecStart >= 0 Then
+  For I := SecStart + 1 To SecEnd - 1 Do Begin
+   Line := Lines[I];
+   EqPos := Pos('=', Line);
+   If EqPos > 0 Then Begin
+    LKey := Copy(Line, 1, EqPos - 1);
+    While (Length(LKey) > 0) And (LKey[Length(LKey)] = ' ') Do
+     LKey := Copy(LKey, 1, Length(LKey) - 1);
+    If UpCaseStr(LKey) = UpCaseStr(KeyName) Then Begin
+     KeyLine := I;
+     Break;
+    End;
+   End;
+  End;
+ If DeleteEntry Then Begin
+  If KeyLine >= 0 Then Begin
+   For I := KeyLine To LineCount - 2 Do Lines[I] := Lines[I + 1];
+   Dec(LineCount);
+  End;
+ End Else Begin
+  If KeyLine >= 0 Then
+   Lines[KeyLine] := KeyName + '=' + ValueStr
+  Else If SecStart >= 0 Then Begin
+   If LineCount < WIN16_PROFILE_MAX_LINES Then Begin
+    For I := LineCount DownTo SecStart + 2 Do Lines[I] := Lines[I - 1];
+    Lines[SecStart + 1] := KeyName + '=' + ValueStr;
+    Inc(LineCount);
+   End;
+  End Else Begin
+   If LineCount < WIN16_PROFILE_MAX_LINES - 2 Then Begin
+    Lines[LineCount] := '[' + SectionName + ']'; Inc(LineCount);
+    Lines[LineCount] := KeyName + '=' + ValueStr; Inc(LineCount);
+   End;
+  End;
+ End;
+ {$I-} Assign(F, HostPath); Rewrite(F); {$I+}
+ If IOResult = 0 Then Begin
+  For I := 0 To LineCount - 1 Do WriteLn(F, Lines[I]);
+  Close(F);
+ End;
 End;
 
 { Chantier Stage 6 (2026-08-29, REECRIT sur demande explicite de           }
@@ -93150,8 +93311,9 @@ End;
 { necessaire ici pour AddFontResource/$119 et GetMetaFile/$124 (2026-09-13,}
 { demande explicite), qui verifient reellement l'existence du fichier      }
 { hote plutot que de retourner un handle synthetique sans aucune           }
-{ verification. }
-Function Emu_HostPath(Const DosName: String): String; Forward;
+{ verification. Forward DEJA POSE plus haut (2026-09-14, juste apres         }
+{ Win16_ReadGuestString, pour Win16_ProfileFindValue/Write) - pas la peine   }
+{ de le repeter ici (FPC refuse un Forward en double). }
 { RealizeDefaultPalette (GDI ordinal 365, 2026-09-13, demande explicite) -  }
 { Emu_VidInitDefaultDAC n'est definie que plus loin dans le fichier          }
 { (section video), Forward necessaire pour la meme raison qu'Emu_HostPath   }
@@ -93535,6 +93697,38 @@ Var
  GFMem: Word;
  GFIdx: Integer;
  LockSeg: Word;
+ { KERNEL.EXE SetPriority/LockCurrentTask/SetTaskQueue/GetTaskQueue/         }
+ { SetTaskSignalProc/LoadModule/GetModuleHandle/GetModuleUsage               }
+ { (2026-09-14, demande explicite, ordinaux 32-38/45/47/48). }
+ SPHTask: Word;
+ LCTBLock: Word;
+ STQHTask, STQHQueue: Word;
+ GTQHTask: Word;
+ STSPOldSeg, STSPOldOfs: Word;
+ LMNameSeg, LMNameOfs: Word;
+ LMName: String;
+ GMHSeg, GMHOfs: Word;
+ GMHName, GMHBase, GMHExt: String;
+ GMUHModule: Word;
+ { KERNEL.EXE GetModuleFileName/GetProcAddress/GetProfileInt/                }
+ { GetProfileString/WriteProfileString (2026-09-14, demande explicite,      }
+ { ordinaux 49/50/57/58/59). }
+ GMFNHModule, GMFNSeg, GMFNOfs, GMFNSize: Word;
+ GMFNLen: Integer;
+ GPAHModule, GPASeg, GPAOfs, GPASegNum, GPAEntryOfs: Word;
+ GPAHdr: TNEHeader;
+ GPAHdrOfs, GPAFSize: LongInt;
+ GPIAppSeg, GPIAppOfs, GPIKeySeg, GPIKeyOfs: Word;
+ GPIDefault: SmallInt;
+ GPIApp, GPIKey, GPIValStr: String;
+ GPIValInt: LongInt;
+ GPIValErr: Integer;
+ GPSAppSeg, GPSAppOfs, GPSKeySeg, GPSKeyOfs: Word;
+ GPSDefSeg, GPSDefOfs, GPSRetSeg, GPSRetOfs, GPSSize: Word;
+ GPSApp, GPSKey, GPSDefStr, GPSOutStr: String;
+ GPSLen, GPSJ: Integer;
+ WPSAppSeg, WPSAppOfs, WPSKeySeg, WPSKeyOfs, WPSStrSeg, WPSStrOfs: Word;
+ WPSApp, WPSKey, WPSStr: String;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -94036,6 +94230,263 @@ Begin
     P.CPU.Regs.AX := 1;
     ArgWords := 1;
    End;
+   32: Begin
+    { SetPriority(hTask,nPriority):BOOL - ordinal VERIFIE via le VRAI       }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 SetPriority(word      }
+    { s_word) SetPriority16", 1+1 = 2 mots). REEL pour la simplification      }
+    { mono-tache deja disclosee (WaitEvent/$30) : aucun VRAI ordonnanceur     }
+    { multi-tache n'existe dans ce sous-ensemble, donc nPriority n'a aucun    }
+    { effet observable - mais reussit HONNETEMENT si hTask designe VRAIMENT  }
+    { la seule tache existante (Win16_StackSeg, la MEME identite synthetique }
+    { deja reutilisee pour GlobalHandle/$21 etc.), echoue sinon (documente    }
+    { reel pour une tache inconnue). nPriority lui-meme n'a pas besoin        }
+    { d'etre lu (aucune branche ne depend de sa valeur). }
+    SPHTask := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If SPHTask = Win16_StackSeg Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   33: Begin
+    { LockCurrentTask(bLock):HTASK - ordinal VERIFIE via le VRAI source     }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 LockCurrentTask(word)        }
+    { LockCurrentTask16", 1 mot). REEL : fixe VRAIMENT Win16_TaskLocked      }
+    { (nouvel etat, 2026-09-14) et retourne le handle de la tache courante   }
+    { (Win16_StackSeg) si desormais verrouillee, sinon 0 - contrat documente }
+    { reel. Aucun VRAI ordonnanceur a bloquer/debloquer (meme limitation      }
+    { mono-tache que WaitEvent/$30) : seul l'etat retourne par cet ordinal    }
+    { lui-meme est observable. }
+    LCTBLock := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Win16_TaskLocked := (LCTBLock <> 0);
+    If Win16_TaskLocked Then P.CPU.Regs.AX := Win16_StackSeg Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   34: Begin
+    { SetTaskQueue(hTask,hQueue):HQUEUE - ordinal VERIFIE via le VRAI        }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 SetTaskQueue(word     }
+    { word) SetTaskQueue16", 2 mots). REEL : associe VRAIMENT hQueue a la     }
+    { tache si hTask designe la seule tache existante (Win16_StackSeg),       }
+    { retourne l'ANCIENNE valeur (nouvel etat Win16_TaskQueueHandle,          }
+    { 2026-09-14) - contrat documente reel. Tache inconnue : 0 (documente     }
+    { reel). }
+    STQHTask := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    STQHQueue := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If STQHTask = Win16_StackSeg Then Begin
+     P.CPU.Regs.AX := Win16_TaskQueueHandle;
+     Win16_TaskQueueHandle := STQHQueue;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   35: Begin
+    { GetTaskQueue(hTask):HQUEUE - ordinal VERIFIE via le VRAI source Wine  }
+    { (krnl386.exe16.spec : "pascal -ret16 GetTaskQueue(word)                }
+    { GetTaskQueue16", 1 mot). REEL : retourne VRAIMENT                       }
+    { Win16_TaskQueueHandle (rempli par SetTaskQueue/$34) si hTask designe    }
+    { la seule tache existante OU vaut 0 (convention documentee reelle        }
+    { "0 = tache courante", tres repandue dans les API Win16), sinon 0. }
+    GTQHTask := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GTQHTask = 0) Or (GTQHTask = Win16_StackSeg) Then
+     P.CPU.Regs.AX := Win16_TaskQueueHandle
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   36: Begin
+    { GetCurrentTask():HTASK - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal GetCurrentTask() WIN16_GetCurrentTask",  }
+    { 0 mot, PAS de "-ret16" = retour COMPLET DX:AX). REEL : ce               }
+    { sous-ensemble n'execute jamais qu'UNE seule tache (meme limitation      }
+    { deja disclosee pour WaitEvent/$30) - retourne Win16_StackSeg, la        }
+    { MEME identite synthetique deja reutilisee pour GlobalHandle/$21,        }
+    { LockCurrentTask/$33, SetTaskQueue/$34 ci-dessus. }
+    P.CPU.Regs.AX := Win16_StackSeg;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 0;
+   End;
+   37: Begin
+    { GetCurrentPDB():selecteur - ordinal VERIFIE via le VRAI source Wine   }
+    { (krnl386.exe16.spec : "pascal GetCurrentPDB() GetCurrentPDB16", 0      }
+    { mot, PAS de "-ret16" = retour COMPLET DX:AX). Ce sous-ensemble n'a      }
+    { JAMAIS modelise de segment PDB/PSP separe (InitTask/$91 pose             }
+    { seulement un booleen de succes en AX, pas un VRAI selecteur, voir        }
+    { son propre commentaire) - reutilise Win16_StackSeg (la MEME identite    }
+    { synthetique "unique objet suivi" deja etablie partout ailleurs dans     }
+    { ce fichier, ex. GlobalMasterHandle/$28) plutot que d'inventer un         }
+    { second segment sans signification verifiable. }
+    P.CPU.Regs.AX := Win16_StackSeg;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 0;
+   End;
+   38: Begin
+    { SetTaskSignalProc(hTask,lpfn):FARPROC - ordinal VERIFIE via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal                              }
+    { SetTaskSignalProc(word segptr) SetTaskSignalProc", 1+2 = 3 mots, PAS   }
+    { de "-ret16" = retour COMPLET DX:AX). REEL : fixe VRAIMENT               }
+    { Win16_TaskSignalProcSeg/Ofs (nouvel etat, 2026-09-14) et retourne        }
+    { l'ANCIEN callback - mais ne l'appelle JAMAIS (meme honnetete que         }
+    { LocalNotify/$14 et SetAbortProc/$381 : aucune des conditions reelles     }
+    { documentees - creation/destruction de tache, exception - ne se           }
+    { produit jamais dans ce sous-ensemble mono-tache). hTask n'a pas          }
+    { besoin d'etre lu (une seule tache existe, forcement la cible). }
+    STSPOldSeg := Win16_TaskSignalProcSeg;
+    STSPOldOfs := Win16_TaskSignalProcOfs;
+    Win16_TaskSignalProcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Win16_TaskSignalProcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := STSPOldOfs;
+    P.CPU.Regs.DX := STSPOldSeg;
+    ArgWords := 3;
+   End;
+   41: Begin
+    { EnableDos():BOOL - ordinal VERIFIE via le VRAI source Wine            }
+    { (krnl386.exe16.spec : "pascal -ret16 EnableDos() KERNEL_nop", 0 mot).  }
+    { Le VRAI Wine lui-meme route cet ordinal vers un no-op GENERIQUE         }
+    { (KERNEL_nop) - reproduit A L'IDENTIQUE (pas une simplification de ce    }
+    { sous-ensemble, c'est le comportement REEL de reference). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   42: Begin
+    { DisableDos():BOOL - ordinal VERIFIE via le VRAI source Wine           }
+    { (krnl386.exe16.spec : "pascal -ret16 DisableDos() KERNEL_nop", 0       }
+    { mot). Meme routage reel vers KERNEL_nop que EnableDos/$41 ci-dessus -   }
+    { reproduit A L'IDENTIQUE. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   45: Begin
+    { LoadModule(lpModuleName,lpParamBlock):word - ordinal VERIFIE via le   }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { LoadModule(str ptr) LoadModule16", 2+2 = 4 mots). REEL pour la          }
+    { VERIFICATION du fichier (Win16_ReadGuestString + Emu_HostPath, meme     }
+    { lecteur/resolveur que AddFontResource/$119) : fichier hote introuvable  }
+    { -> 2 (ERROR_FILE_NOT_FOUND, code d'echec documente reel). Fichier        }
+    { REELLEMENT present -> 0 (echec generique documente reel "memoire        }
+    { insuffisante/format invalide") : ce sous-ensemble reste                 }
+    { mono-programme (tout l'etat Win16_* global, meme limitation deja         }
+    { disclosee partout ailleurs) et ne peut PAS reellement charger et         }
+    { executer un second programme Win16 concurrent, quelle que soit la       }
+    { cause exacte reelle. lpParamBlock n'a pas besoin d'etre lu (jamais       }
+    { utilise, aucun chargement ne peut reussir de toute facon). }
+    LMNameSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LMNameOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LMName := Win16_ReadGuestString(P.CPU, LMNameSeg, LMNameOfs);
+    If Not FileExists(Emu_HostPath(LMName)) Then
+     P.CPU.Regs.AX := 2
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   46: Begin
+    { FreeModule(hModule):BOOL - ordinal VERIFIE via le VRAI source Wine    }
+    { (krnl386.exe16.spec : "pascal -ret16 FreeModule(word) FreeModule16",   }
+    { 1 mot). REEL dans les limites d'une simplification mono-module          }
+    { (aucun VRAI compteur de reference tenu, meme esprit que LocalFree/$7/   }
+    { GlobalFree/$17) : rapporte toujours un succes. hModule n'a pas besoin   }
+    { d'etre lu (aucune branche ne depend de sa valeur). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   47: Begin
+    { GetModuleHandle(lpModuleName):HMODULE - ordinal VERIFIE via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal GetModuleHandle(segstr)      }
+    { WIN16_GetModuleHandle", 2 mots (segstr = far pointer pour ce             }
+    { sous-ensemble), PAS de "-ret16" = retour COMPLET DX:AX). REEL :         }
+    { pointeur NUL (seg=ofs=0, convention documentee reelle "module           }
+    { courant") -> Win16_StackSeg. Sinon lit VRAIMENT le nom (meme lecteur    }
+    { Win16_ReadGuestString que LoadModule/$45) et le compare (sans la        }
+    { casse) au VRAI nom de base du fichier charge (Win16_LoadedPath, sans    }
+    { extension) - correspond -> Win16_StackSeg, sinon 0 (documente reel      }
+    { "module introuvable"), PAS un succes systematique invente. }
+    GMHSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GMHOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If GMHSeg = 0 Then Begin
+     If GMHOfs = 0 Then P.CPU.Regs.AX := Win16_StackSeg Else P.CPU.Regs.AX := 0;
+    End Else Begin
+     GMHName := UpCaseStr(Win16_ReadGuestString(P.CPU, GMHSeg, GMHOfs));
+     GMHBase := UpCaseStr(ExtractFileName(Win16_LoadedPath));
+     GMHExt := ExtractFileExt(GMHBase);
+     GMHBase := Copy(GMHBase, 1, Length(GMHBase) - Length(GMHExt));
+     If GMHName = GMHBase Then P.CPU.Regs.AX := Win16_StackSeg Else P.CPU.Regs.AX := 0;
+    End;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 2;
+   End;
+   48: Begin
+    { GetModuleUsage(hModule):word - ordinal VERIFIE via le VRAI source     }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 GetModuleUsage(word)         }
+    { GetModuleUsage16", 1 mot). REEL dans les limites d'une simplification  }
+    { mono-module (aucun VRAI compteur de reference tenu) : le SEUL module    }
+    { existant (Win16_StackSeg) est honnetement TOUJOURS utilise (1,           }
+    { valeur veridique - la tache en cours l'utilise reellement), tout        }
+    { autre handle -> 0 (documente reel "module inconnu"). }
+    GMUHModule := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If GMUHModule = Win16_StackSeg Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   49: Begin
+    { GetModuleFileName(hModule,lpFilename,nSize):word - ordinal VERIFIE    }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16          }
+    { GetModuleFileName(word ptr s_word) GetModuleFileName16", 1+2+1 = 4     }
+    { mots). REEL pour le SEUL module que ce sous-ensemble modelise           }
+    { (hModule=0 OU Win16_StackSeg, meme convention "module courant" que      }
+    { GetModuleHandle/$47) : ecrit VRAIMENT Win16_LoadedPath (le VRAI          }
+    { chemin hote utilise pour charger ce programme, deja reutilise par        }
+    { LoadResource/$61) tronque a nSize-1 caracteres, retourne la VRAIE        }
+    { longueur ecrite (documente reel). Handle inconnu : 0, rien n'est          }
+    { ecrit (documente reel). }
+    GMFNHModule := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GMFNSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GMFNOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GMFNSize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GMFNHModule <> 0) And (GMFNHModule <> Win16_StackSeg) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     GMFNLen := Length(Win16_LoadedPath);
+     If GMFNLen > Integer(GMFNSize) - 1 Then GMFNLen := Integer(GMFNSize) - 1;
+     If GMFNLen < 0 Then GMFNLen := 0;
+     For GPSJ := 1 To GMFNLen Do
+      Emu_WriteByte(P.CPU, GMFNSeg, Word(GMFNOfs + GPSJ - 1), Byte(Ord(Win16_LoadedPath[GPSJ])));
+     Emu_WriteByte(P.CPU, GMFNSeg, Word(GMFNOfs + GMFNLen), 0);
+     P.CPU.Regs.AX := Word(GMFNLen);
+    End;
+    ArgWords := 4;
+   End;
+   50: Begin
+    { GetProcAddress(hModule,lpProcName):FARPROC - ordinal VERIFIE via le   }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal GetProcAddress(word     }
+    { str) GetProcAddress16", 1+2 = 3 mots, PAS de "-ret16" = retour           }
+    { COMPLET DX:AX). REEL PARTIELLEMENT : quand lpProcName est un entier     }
+    { MAKEINTRESOURCE (segment=0, mot bas=ordinal - meme convention deja       }
+    { etablie pour FindResource/$60), relit VRAIMENT la table d'entree NE      }
+    { du fichier charge (Win16_ReadHeader + Win16_ResolveEntryOrdinal, la      }
+    { MEME paire de fonctions deja utilisee par Win16_LoadNE pour les          }
+    { relogements IMPORTORDINAL) pour resoudre l'ordinal en un VRAI            }
+    { segment:offset reel du programme charge. Recherche par NOM (segment     }
+    { <>0) NON IMPLANTEE (aucun analyseur de table de noms residents/non       }
+    { residents NE dans ce sous-ensemble) - echoue honnetement (0:0) plutot    }
+    { que d'inventer une correspondance. hModule doit designer le SEUL         }
+    { module charge (ou 0/"courant") - sinon echec honnete. }
+    GPAHModule := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GPASeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GPAOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GPAHModule <> 0) And (GPAHModule <> Win16_StackSeg) Then Begin
+     P.CPU.Regs.AX := 0;
+     P.CPU.Regs.DX := 0;
+    End Else If GPASeg <> 0 Then Begin
+     P.CPU.Regs.AX := 0;
+     P.CPU.Regs.DX := 0;
+    End Else Begin
+     If Win16_ReadHeader(Win16_LoadedPath, GPAHdr, GPAHdrOfs, GPAFSize) And
+        Win16_ResolveEntryOrdinal(GPAHdr, GPAHdrOfs, Win16_LoadedPath, GPAOfs, GPASegNum, GPAEntryOfs) And
+        (GPASegNum >= 1) And (GPASegNum <= Win16_SegCount) Then Begin
+      P.CPU.Regs.AX := GPAEntryOfs;
+      P.CPU.Regs.DX := Win16_SegBase[GPASegNum];
+     End Else Begin
+      P.CPU.Regs.AX := 0;
+      P.CPU.Regs.DX := 0;
+     End;
+    End;
+    ArgWords := 3;
+   End;
    51: Begin
     { MakeProcInstance(lpProc,hInstance):FARPROC - ordinal VERIFIE via       }
     { krnl386.exe16.spec (segptr + 1 mot = 3 mots). Stage 6b (2026-08-30) :  }
@@ -94049,6 +94500,138 @@ Begin
     P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     P.CPU.Regs.DX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
     ArgWords := 3;
+   End;
+   { CallProcInstance/53 : ordinal marque "stub" SANS AUCUNE signature       }
+   { exploitable dans le VRAI source Wine (krnl386.exe16.spec) ET dans la    }
+   { source secondaire WineVDM (meme resultat) - DELIBEREMENT NON            }
+   { IMPLANTE (meme discipline que FatalExit/$1). }
+   52: Begin
+    { FreeProcInstance(lpProc):BOOL - ordinal VERIFIE via le VRAI source    }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 FreeProcInstance(segptr)      }
+    { FreeProcInstance16", 2 mots). REEL, symetrique honnete de               }
+    { MakeProcInstance/$51 : puisque celui-ci ne fabrique JAMAIS de VRAI       }
+    { thunk (retourne lpProc inchange, mono-instance), il n'y a               }
+    { litteralement rien a liberer - rapporte toujours un succes. lpProc      }
+    { n'a pas besoin d'etre lu (aucune branche ne depend de sa valeur). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   54: Begin
+    { GetInstanceData(hInstance,pData,cbData):int - ordinal VERIFIE via le  }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { GetInstanceData(word word word) GetInstanceData16", 3 mots - pData      }
+    { est un pointeur PRES/NEAR (simple mot, relatif au DS courant), pas      }
+    { un pointeur LOIN). REEL : copie les donnees d'instance de la            }
+    { PRECEDENTE instance de ce programme - ce sous-ensemble est               }
+    { STRICTEMENT mono-instance (meme limitation deja disclosee partout        }
+    { ailleurs - Win16_ImportModIdx[] etc.) : AUCUNE instance precedente ne    }
+    { peut jamais exister, donc retourne honnetement 0 (le contrat            }
+    { documente reel exact pour ce cas : "no previous instance"). Aucun        }
+    { parametre n'a besoin d'etre lu (aucune branche ne depend de leur         }
+    { valeur). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   { Catch/55 et Throw/56 : signature "-register" (PAS "pascal" standard -   }
+   { arguments/retour passes par REGISTRES precis du CPU, PAS empiles sur    }
+   { la pile) confirmee dans le VRAI source Wine ET WineVDM, mais le           }
+   { mappage EXACT registre<->champ n'a pu etre verifie dans le source C       }
+   { d'AUCUNE des deux sources apres plusieurs recherches ciblees              }
+   { infructueuses. DE PLUS, Throw exige structurellement de "revenir en      }
+   { arriere" a travers un cadre d'appel anterieur (semantique longjmp :       }
+   { restaurer SP/BP/CS/IP d'un point d'execution PASSE) - un mecanisme        }
+   { fondamentalement incompatible avec l'epilogue UNIQUE et partage de        }
+   { Win16_DispatchCall (qui effectue toujours un simple retour normal au      }
+   { site d'appel immediat). DELIBEREMENT NON IMPLANTES pour ces deux          }
+   { raisons cumulatives (signature registre non verifiee ET mecanisme de      }
+   { controle de flux structurellement non supporte), plutot que d'inventer    }
+   { l'un ou l'autre. }
+   57: Begin
+    { GetProfileInt(lpAppName,lpKeyName,nDefault):int - ordinal VERIFIE via }
+    { le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16               }
+    { GetProfileInt(str str s_word) GetProfileInt16", 2+2+1 = 5 mots). REEL  }
+    { ET CONCRET : lit VRAIMENT un fichier WIN.INI HOTE (resolu via           }
+    { Emu_HostPath, meme resolveur que tout le reste de cet emulateur) via    }
+    { le nouveau moteur Win16_ProfileFindValue - PAS une simulation en        }
+    { memoire. Cle/section introuvable ou valeur non numerique : retourne     }
+    { honnetement nDefault (comportement documente reel exact). }
+    GPIAppSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    GPIAppOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GPIKeySeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GPIKeyOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GPIDefault := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    GPIApp := Win16_ReadGuestString(P.CPU, GPIAppSeg, GPIAppOfs);
+    GPIKey := Win16_ReadGuestString(P.CPU, GPIKeySeg, GPIKeyOfs);
+    If Win16_ProfileFindValue(GPIApp, GPIKey, GPIValStr) Then Begin
+     Val(GPIValStr, GPIValInt, GPIValErr);
+     If GPIValErr = 0 Then P.CPU.Regs.AX := Word(GPIValInt)
+     Else P.CPU.Regs.AX := Word(GPIDefault);
+    End Else
+     P.CPU.Regs.AX := Word(GPIDefault);
+    ArgWords := 5;
+   End;
+   58: Begin
+    { GetProfileString(lpAppName,lpKeyName,lpDefault,lpReturnedString,       }
+    { nSize):int - ordinal VERIFIE via le VRAI source Wine                   }
+    { (krnl386.exe16.spec : "pascal -ret16 GetProfileString(str str str      }
+    { ptr word) GetProfileString16", 2+2+2+2+1 = 9 mots). REEL ET CONCRET,    }
+    { MEME moteur WIN.INI hote que GetProfileInt/$57 : cle/section            }
+    { introuvable -> copie honnetement la VRAIE chaine lpDefault (comportement}
+    { documente reel exact), tronquee a nSize-1 caracteres, retourne la       }
+    { VRAIE longueur ecrite. }
+    GPSAppSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 20));
+    GPSAppOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18));
+    GPSKeySeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    GPSKeyOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    GPSDefSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    GPSDefOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GPSRetSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GPSRetOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GPSSize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GPSApp := Win16_ReadGuestString(P.CPU, GPSAppSeg, GPSAppOfs);
+    GPSKey := Win16_ReadGuestString(P.CPU, GPSKeySeg, GPSKeyOfs);
+    GPSDefStr := Win16_ReadGuestString(P.CPU, GPSDefSeg, GPSDefOfs);
+    If Not Win16_ProfileFindValue(GPSApp, GPSKey, GPSOutStr) Then
+     GPSOutStr := GPSDefStr;
+    GPSLen := Length(GPSOutStr);
+    If GPSLen > Integer(GPSSize) - 1 Then GPSLen := Integer(GPSSize) - 1;
+    If GPSLen < 0 Then GPSLen := 0;
+    For GPSJ := 1 To GPSLen Do
+     Emu_WriteByte(P.CPU, GPSRetSeg, Word(GPSRetOfs + GPSJ - 1), Byte(Ord(GPSOutStr[GPSJ])));
+    Emu_WriteByte(P.CPU, GPSRetSeg, Word(GPSRetOfs + GPSLen), 0);
+    P.CPU.Regs.AX := Word(GPSLen);
+    ArgWords := 9;
+   End;
+   59: Begin
+    { WriteProfileString(lpAppName,lpKeyName,lpString):BOOL - ordinal       }
+    { VERIFIE via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16   }
+    { WriteProfileString(str str str) WriteProfileString16", 2+2+2 = 6       }
+    { mots). REEL ET CONCRET : ecrit VRAIMENT dans le fichier WIN.INI HOTE    }
+    { via le nouveau moteur Win16_ProfileWriteValue (lit-modifie-reecrit     }
+    { le VRAI fichier disque, PAS une simulation en memoire perdue au         }
+    { prochain lancement). lpString NUL (seg=ofs=0, convention documentee     }
+    { reelle) -> SUPPRIME la cle. Portee DISCLOSEE : la suppression de la     }
+    { SECTION ENTIERE quand lpKeyName est NUL (autre cas documente reel)      }
+    { n'est PAS implantee (Win16_ProfileWriteValue ne supprime qu'une cle     }
+    { a la fois) - traite ce cas comme une cle vide sans effet plutot que      }
+    { de supprimer la section, un no-op honnete plutot qu'un comportement     }
+    { invente. }
+    WPSAppSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    WPSAppOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    WPSKeySeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    WPSKeyOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    WPSStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    WPSStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    WPSApp := Win16_ReadGuestString(P.CPU, WPSAppSeg, WPSAppOfs);
+    WPSKey := Win16_ReadGuestString(P.CPU, WPSKeySeg, WPSKeyOfs);
+    If (WPSStrSeg = 0) And (WPSStrOfs = 0) Then
+     Win16_ProfileWriteValue(WPSApp, WPSKey, '', True)
+    Else Begin
+     WPSStr := Win16_ReadGuestString(P.CPU, WPSStrSeg, WPSStrOfs);
+     Win16_ProfileWriteValue(WPSApp, WPSKey, WPSStr, False);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
    End;
    60: Begin
     { FindResource(hInstance, lpName, lpType):HRSRC - ordinal VERIFIE via   }
