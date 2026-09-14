@@ -170,7 +170,7 @@ Var
  Sz,SegmentSize,SegmentPos,AttrPos,LoadedSize:LongInt;
  ReadCount:Word;
  Header:Array[0..511]of Byte;
- ProcCount:Byte;
+ ProcCount:Byte;I:Integer;Entry:LongInt;
  TargetInfo:Word;
 Begin
  PCode_LoadRaw:=False;Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Exit;
@@ -230,7 +230,14 @@ Begin
    PCode_ProcCount:=PCode_Mem^[PCode_ProcDict]or
     (PCode_Mem^[PCode_ProcDict+1]shl 8);
    PCode_IsIVSegment:=(PCode_ProcCount>0)and
-    (PCode_ProcDict-PCode_ProcCount*2>=22)
+    (PCode_ProcCount<=255)and(PCode_ProcDict-PCode_ProcCount*2>=22);
+   if PCode_IsIVSegment Then
+    For I:=1 to PCode_ProcCount do Begin
+     Entry:=(PCode_Mem^[PCode_ProcDict-I*2]or
+      (PCode_Mem^[PCode_ProcDict-I*2+1]shl 8))*2;
+     if(Entry<22)or(Entry+1>=PCode_ProcDict-PCode_ProcCount*2)Then
+      PCode_IsIVSegment:=False
+    End
   End
  End;
  PCode_LoadRaw:=True
@@ -1531,7 +1538,11 @@ Begin
 End;
 
 Procedure CPFail(S:String);Begin
- if not CPError Then WriteLn('Erreur UCSD ligne ',CPLine,': ',S);CPError:=True
+ if not CPError Then Begin
+  Write('Erreur UCSD ligne ',CPLine,': ',S);
+  if CPToken='ID'Then Write(' pres de "',CPText,'"')else
+   if CPToken<>'EOF'Then Write(' pres de "',CPToken,'"');WriteLn
+ End;CPError:=True
 End;
 
 Procedure CPNext;
@@ -1846,14 +1857,14 @@ Begin
  End
  else if CPToken='ID'Then Begin
   P:=CPFind(CPText);R:=CPVisibleRoutine(CPText);
-  if(P=Nil)and(R<>Nil)and R^.IsFunction Then Begin
-   CPNext;CPEmitActualParameters(R);CPEmitRoutineCall(R)
+  CPNext;
+  if(R<>Nil)and R^.IsFunction and(CPToken='(')Then Begin
+   CPEmitActualParameters(R);CPEmitRoutineCall(R)
   End else if P=Nil Then CPFail('identificateur inconnu: '+CPText)
   else if P^.IsConst Then CPConst(P^.Value)else
   Begin
    CPLoadSymbol(P)
-  End;
-  if(P<>Nil)Then CPNext
+  End
  End else
  Begin
   CPFail('facteur attendu');CPNext
@@ -2013,14 +2024,20 @@ Begin
   Sym:=CPFind(R^.Name);if Sym<>Nil Then Sym^.SymbolType:=R^.ResultType
  End;
  R^.CodeStart:=CPCodePos;CPCompound;CPEmitRoutineReturn(R);
- R^.CodeLength:=CPCodePos-R^.CodeStart;CPDropScope(R);CPCurrentRoutine:=Nil
+ R^.CodeLength:=CPCodePos-R^.CodeStart;CPCurrentRoutine:=Nil
 End;
 
 Procedure CPGenerateAllRoutines;
-Var R:PPasRoutine;
+Var R:PPasRoutine;Level,MaxLevel:Integer;
 Begin
- CPPass:=2;R:=CPRoutines;
- While(R<>Nil)and not CPError do Begin CPGenerateRoutine(R);R:=R^.Next End
+ CPPass:=2;MaxLevel:=0;R:=CPRoutines;
+ While R<>Nil do Begin if R^.LexicalLevel>MaxLevel Then MaxLevel:=R^.LexicalLevel;R:=R^.Next End;
+ For Level:=1 to MaxLevel do Begin
+  R:=CPRoutines;
+  While(R<>Nil)and not CPError do Begin
+   if R^.LexicalLevel=Level Then CPGenerateRoutine(R);R:=R^.Next
+  End
+ End
 End;
 
 Function WriteUCSDCodeFile(CodeName,SegmentName:String;CodeLength:LongInt;
@@ -2101,7 +2118,7 @@ Var
  N:Word;
  Names:Array[1..64]of String;
  NC,I:Integer;
- V:LongInt;
+ V,SavedPos,SavedLine:LongInt;
 Begin
  CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;
  CPCurrentRoutine:=Nil;CPPass:=1;CPNextProcedure:=1;
@@ -2118,9 +2135,8 @@ Begin
  Close(F);
  CPSize:=Sz;CPDeclarationPass;
  if CPError Then Goto 99;
- CPPass:=2;CPCurrentRoutine:=Nil;CPCodePos:=0;CPGenerateAllRoutines;
- if CPError Then Goto 99;
- CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPNext;
+ CPPass:=2;CPCurrentRoutine:=Nil;CPCodePos:=0;
+ CPPos:=0;CPLine:=1;CPNext;
  if CPIs('PROGRAM')Then Begin
   CPNext;if CPToken='ID'Then CPNext;
   While(CPToken<>';')and(CPToken<>'EOF')do CPNext;CPNeed(';')
@@ -2150,6 +2166,9 @@ Begin
    End
   End
  End;
+ SavedPos:=CPTokenPos;SavedLine:=CPLine;CPGenerateAllRoutines;
+ if CPError Then Goto 99;
+ CPCurrentRoutine:=Nil;CPPos:=SavedPos;CPLine:=SavedLine;CPNext;
  While CPIs('PROCEDURE')or CPIs('FUNCTION')do Begin
   CPNext;
   if CPToken<>'ID'Then Begin CPFail('nom de routine attendu');Break End;
@@ -2205,6 +2224,53 @@ Begin
  DebugNumber:=OK and(P>Length(S))
 End;
 
+Function PCodeIVInstruction(Address:LongInt;Var NextAddress:LongInt):String;
+Var Op,B,N:Byte;V,Used:Integer;S:String;
+Begin
+ Op:=PCode_Fetch(Address);NextAddress:=Address+1;S:='';
+ if Op<=$1F Then S:='SLDC '+PCode_IntToStr(Op)
+ else if(Op>=$20)and(Op<=$2F)Then S:='SLDL '+PCode_IntToStr(Op-$1F)
+ else if(Op>=$30)and(Op<=$3F)Then S:='SLDO '+PCode_IntToStr(Op-$2F)
+ else if(Op>=$60)and(Op<=$67)Then S:='SLLA '+PCode_IntToStr(Op-$5F)
+ else if(Op>=$68)and(Op<=$6F)Then S:='SSTL '+PCode_IntToStr(Op-$67)
+ else if(Op>=$78)and(Op<=$7F)Then S:='SIND '+PCode_IntToStr(Op-$78)
+ else Case Op of
+ $80:Begin S:='LDCB '+PCode_IntToStr(PCode_Fetch(Address+1));NextAddress:=Address+2 End;
+ $81:Begin S:='LDCI '+PCode_IntToStr(PCode_IVSignedWord(Address+1));NextAddress:=Address+3 End;
+ $84,$85,$86,$87,$96,$E6,$E7:Begin
+  V:=PCode_ReadBig(Address+1,Used);NextAddress:=Address+1+Used;
+  Case Op of $84:S:='LLA ';$85:S:='LDO ';$86:S:='LAO ';$87:S:='LDL ';
+   $96:S:='RPU ';$E6:S:='IND ';else S:='INC 'End;S:=S+PCode_IntToStr(V)
+ End;
+ $88,$89,$92:Begin
+  B:=PCode_Fetch(Address+1);
+  if Op=$92 Then Begin N:=PCode_Fetch(Address+2);NextAddress:=Address+3;
+   S:='CIP '+PCode_IntToStr(B)+','+PCode_IntToStr(N)
+  End else Begin V:=PCode_ReadBig(Address+2,Used);NextAddress:=Address+2+Used;
+   if Op=$88 Then S:='LDA 'else S:='LOD ';
+   S:=S+PCode_IntToStr(B)+','+PCode_IntToStr(V)
+  End
+ End;
+ $8A,$D2,$D3,$D4,$F1:Begin
+  Case Op of $8A:S:='UJP ';$D2:S:='EFJ ';$D3:S:='NFJ ';$D4:S:='FJP ';else S:='TJP 'End;
+  S:=S+PCode_IntToStr(ShortInt(PCode_Fetch(Address+1)));NextAddress:=Address+2
+ End;
+ $90,$91,$AC,$EF,$F0:Begin
+  B:=PCode_Fetch(Address+1);NextAddress:=Address+2;
+  Case Op of $90:S:='CLP ';$91:S:='CGP ';$AC:S:='CSP ';$EF:S:='SCIP1 ';else S:='SCIP2 'End;
+  S:=S+PCode_IntToStr(B)
+ End;
+ $93,$94:Begin B:=PCode_Fetch(Address+1);N:=PCode_Fetch(Address+2);NextAddress:=Address+3;
+  if Op=$93 Then S:='CXL 'else S:='CXG ';S:=S+PCode_IntToStr(B)+','+PCode_IntToStr(N)End;
+ $8C:S:='MPI';$8D:S:='DVI';$8F:S:='MODI';$98:S:='LDCN';$9C:S:='NOP';
+ $9F:S:='BNOT';$A0:S:='LOR';$A1:S:='LAND';$A2:S:='ADI';$A3:S:='SBI';
+ $B0:S:='EQUI';$B1:S:='NEQI';$B2:S:='LEQI';$B3:S:='GEQI';$BD:S:='SWAP';
+ $C4:S:='STO';$CB:S:='CHK';$E0:S:='ABI';$E1:S:='NGI';$E2:S:='DUP1';
+ $E5:S:='LNOT';$ED:S:='INCI';$EE:S:='DECI';
+ else S:='DB $'+DebugHex(Op,2)
+ End;PCodeIVInstruction:=S
+End;
+
 Function PCodeInstruction(Address:LongInt;Var NextAddress:LongInt):String;
 Var
  Op,Kind,B,N:Byte;
@@ -2215,6 +2281,9 @@ Begin
  NextAddress:=Address+1;
  if(Address<0)or(Address>=PCode_CodeSize)Then Begin
   PCodeInstruction:='<hors code>';Exit
+ End;
+ if CurrentTarget=ptUCSDPSystemIV Then Begin
+  PCodeInstruction:=PCodeIVInstruction(Address,NextAddress);Exit
  End;
  Op:=PCode_Fetch(Address);
  if Op<128 Then Begin
@@ -2298,7 +2367,7 @@ End;
 
 Procedure Registers;Begin
  WriteLn('PC=$',DebugHex(PCode_PC,4),'  SP=',PCode_SP,'  MP=',PCode_MP,
- '  cycles=',PCode_Cycles,'  sortie=',PCode_ExitCode);
+ '  PROC=',PCode_CurrentProc,'  cycles=',PCode_Cycles,'  sortie=',PCode_ExitCode);
  if not PCode_Halted Then WriteLn(DebugHex(PCode_PC,4),': ',
  PCodeInstruction(PCode_PC,NextAddress))else WriteLn('Machine arretee.')
 End;
@@ -2325,6 +2394,7 @@ Procedure DebugHelp;Begin
  WriteLn('M a [n]      Afficher la memoire de donnees');
  WriteLn('E a valeur   Modifier un mot de donnees');
  WriteLn('P adresse    Modifier le compteur programme');
+ WriteLn('PROC [n]     Lister les procedures ou ouvrir la procedure n');
  WriteLn('I            Reinitialiser le programme');
  WriteLn('Q            Quitter le debogueur')
 End;
@@ -2361,6 +2431,21 @@ Begin
   ResetMachine;Registers
  End
  else if Command='Q'Then Done:=True
+ else if Command='PROC'Then Begin
+  if not PCode_IsIVSegment Then WriteLn('Dictionnaire IV indisponible.')
+  else if Args=''Then Begin
+   For I:=1 to PCode_ProcCount do Begin
+    Address:=(PCode_Fetch(PCode_ProcDict-I*2)or
+     (PCode_Fetch(PCode_ProcDict-I*2+1)shl 8))*2;
+    WriteLn('Procedure ',I:3,'  attribut=$',DebugHex(Address,4),
+     '  entree=$',DebugHex(Address+2,4),'  locaux=',PCode_IVWord(Address))
+   End
+  End else if DebugNumber(Args,V)and(V>=1)and(V<=PCode_ProcCount)Then Begin
+   Address:=(PCode_Fetch(PCode_ProcDict-V*2)or
+    (PCode_Fetch(PCode_ProcDict-V*2+1)shl 8))*2;
+   PCode_PC:=Address+2;WriteLn('Procedure ',V,' selectionnee.');Registers
+  End else WriteLn('Numero de procedure incorrect.')
+ End
  else if Command='P'Then Begin
   if DebugNumber(Args,Address)and(Address>=0)and(Address<PCode_CodeSize)Then Begin
    PCode_PC:=Address;PCode_Halted:=False;Registers
@@ -2442,8 +2527,14 @@ Begin
  End
  else if Command='K'Then Begin
   if Args=''Then N:=16 else if DebugNumber(Args,V)Then N:=V else N:=0;
-  if N<0 Then N:=0;if N>PCode_SP Then N:=PCode_SP;
-  For I:=PCode_SP-N to PCode_SP-1 do WriteLn(I:5,': ',PCode_Data^[I])
+  if N<0 Then N:=0;
+  if CurrentTarget=ptUCSDPSystemIV Then Begin
+   if PCode_SP+N>High(PCode_Data^)+1 Then N:=High(PCode_Data^)+1-PCode_SP;
+   For I:=PCode_SP to PCode_SP+N-1 do WriteLn(I:5,': ',PCode_Data^[I])
+  End else Begin
+   if N>PCode_SP Then N:=PCode_SP;
+   For I:=PCode_SP-N to PCode_SP-1 do WriteLn(I:5,': ',PCode_Data^[I])
+  End
  End
  else if Command='M'Then Begin
   I:=Pos(' ',Args);if I=0 Then Begin
