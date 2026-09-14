@@ -7718,6 +7718,13 @@ Var
  { appele (LoadResource/$61 utilise toujours son propre chargeur reel        }
  { integre), meme honnetete que Win16_LocalNotifySeg/Ofs. }
  Win16_ResourceHandlerSeg, Win16_ResourceHandlerOfs: Word;
+ { SetErrorMode/$107 (2026-09-14, demande explicite) - stocke le VRAI       }
+ { mode d'erreur courant (aucun consommateur reel ne le verifie encore       }
+ { dans ce sous-ensemble - meme honnetete deja etablie pour                  }
+ { Win16_LocalNotifySeg/Ofs). GetTempFileName/$97 - compteur reel             }
+ { d'unicite, incremente a chaque appel avec wUnique=0. }
+ Win16_ErrorMode: Word;
+ Win16_TempFileCounter: Word;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91830,6 +91837,8 @@ Begin
  Win16_AtomCount := 0;
  Win16_ResourceHandlerSeg := 0;
  Win16_ResourceHandlerOfs := 0;
+ Win16_ErrorMode := 0;
+ Win16_TempFileCounter := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -93342,6 +93351,14 @@ Procedure Emu_VidInitDefaultDAC; Forward;
 { fichier pour INT 21h AH=3Dh/AH=3Ch) plutot que d'inventer un second        }
 { mecanisme de handle distinct. }
 Function Emu_AllocHandle: Integer; Forward;
+{ Emu_DoInt21/Emu_DoInt5C (definies bien plus bas, sections INT21h/NetBIOS)  }
+{ - Forward necessaire pour DOS3Call/$102 et NetBIOSCall/$103 (2026-09-14,   }
+{ demande explicite) qui reutilisent REELLEMENT les MEMES gestionnaires       }
+{ d'interruption DOS deja etablis (convention "-register" du VRAI Wine :      }
+{ les registres du CPU emule SONT deja les arguments, aucune marshalling      }
+{ necessaire - un simple appel direct suffit). }
+Procedure Emu_DoInt21(Var P: TEmulatorPanel); Forward;
+Procedure Emu_DoInt5C(Var P: TEmulatorPanel); Forward;
 { KEYBOARD.DRV (2026-09-14, demande explicite) : nouveau module ModIdx=4,   }
 { suite logique de l'ordre KERNEL=1/GDI=2/USER=3 deja documente plus haut   }
 { (empiriquement verifie sur CLOCK.EXE/CALENDAR.EXE) - meme simplification  }
@@ -93797,6 +93814,22 @@ Var
  GCHSeg: Word;
  LLibSeg, LLibOfs: Word;
  LLibName, LLibHostPath, LLibBase: String;
+ { KERNEL.EXE GetTempFileName/GetCodeInfo/GetExeVersion/SetErrorMode         }
+ { (2026-09-14, demande explicite, ordinaux 97/104/105/107). }
+ GTFPrefixSeg, GTFPrefixOfs, GTFUnique, GTFOutSeg, GTFOutOfs: Word;
+ GTFPrefix, GTFPath: String;
+ GTFJ: Integer;
+ GCIProcSeg, GCIInfoSeg, GCIInfoOfs: Word;
+ GCISegNr, GCII: Integer;
+ GCIHdr: TNEHeader;
+ GCIHdrOfs, GCIFSize: LongInt;
+ GCIFile: File;
+ GCISeg: TNESegment;
+ GCIBytesRead: Word;
+ GCICbAlloc: Word;
+ GEVHdr: TNEHeader;
+ GEVHdrOfs, GEVFSize: LongInt;
+ SEMOld: Word;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -95414,6 +95447,221 @@ Begin
     { hLibModule n'a pas besoin d'etre lu (aucune branche ne depend de sa       }
     { valeur). }
     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   97: Begin
+    { GetTempFileName(wDriveLetter,lpPrefixString,wUnique,lpTempFileName):   }
+    { word - ordinal VERIFIE via le VRAI source Wine (krnl386.exe16.spec :   }
+    { "pascal -ret16 GetTempFileName(word str word ptr)                      }
+    { GetTempFileName16", 1+2+1+2 = 6 mots). REEL : construit VRAIMENT un     }
+    { nom au format documente reel xxxNNNN.TMP (prefixe tronque a 3           }
+    { caracteres majuscules + 4 chiffres hexa d'unicite) et l'ecrit dans      }
+    { la memoire emulee. wUnique=0 (documente reel "le systeme genere un      }
+    { nombre unique") utilise VRAIMENT un compteur reel                       }
+    { (Win16_TempFileCounter, incremente a chaque appel) ; wUnique<>0          }
+    { reutilise cette valeur telle quelle (documente reel). Le lecteur         }
+    { reutilise le MEME lecteur par defaut deja etabli pour                    }
+    { GetTempDrive/$92 (C:) - wDriveLetter n'a pas besoin d'etre lu. }
+    GTFPrefixSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    GTFPrefixOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GTFUnique := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GTFOutSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GTFOutOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GTFPrefixSeg = 0) And (GTFPrefixOfs = 0) Then
+     GTFPrefix := ''
+    Else
+     GTFPrefix := UpCaseStr(Copy(Win16_ReadGuestString(P.CPU, GTFPrefixSeg, GTFPrefixOfs), 1, 3));
+    If GTFUnique = 0 Then Begin
+     Inc(Win16_TempFileCounter);
+     GTFUnique := Win16_TempFileCounter;
+    End;
+    GTFPath := 'C:\' + GTFPrefix + HexWord(GTFUnique) + '.TMP';
+    For GTFJ := 1 To Length(GTFPath) Do
+     Emu_WriteByte(P.CPU, GTFOutSeg, Word(GTFOutOfs + GTFJ - 1), Byte(Ord(GTFPath[GTFJ])));
+    Emu_WriteByte(P.CPU, GTFOutSeg, Word(GTFOutOfs + Length(GTFPath)), 0);
+    P.CPU.Regs.AX := GTFUnique;
+    ArgWords := 6;
+   End;
+   98: Begin
+    { GetLastDiskChange():BOOL - ordinal VERIFIE via le VRAI source Wine    }
+    { (krnl386.exe16.spec : "pascal -ret16 GetLastDiskChange()                }
+    { KERNEL_nop", 0 mot). Le VRAI Wine lui-meme route cet ordinal vers un    }
+    { no-op GENERIQUE (KERNEL_nop) - reproduit A L'IDENTIQUE (comportement    }
+    { REEL de reference, pas une simplification de ce sous-ensemble). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   99: Begin
+    { GetLPErrMode():SEGPTR - ordinal VERIFIE via le VRAI source Wine       }
+    { (krnl386.exe16.spec : "pascal GetLPErrMode()", 0 mot, PAS de "-ret16"  }
+    { = retour COMPLET DX:AX). Le VRAI CORPS de reference dans Wine EST       }
+    { LUI-MEME un stub honnete ("FIXME: stub", retourne 0) - reproduit A      }
+    { L'IDENTIQUE (comportement REEL de reference, pas invente). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 0;
+   End;
+   100: Begin
+    { ValidateCodeSegments():BOOL - ordinal VERIFIE via le VRAI source      }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 ValidateCodeSegments()        }
+    { KERNEL_nop", 0 mot). Meme routage reel vers KERNEL_nop que               }
+    { GetLastDiskChange/$98 ci-dessus - reproduit A L'IDENTIQUE. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   { NoHookDosCall/101 : ordinal marque "stub" SANS AUCUNE signature         }
+   { exploitable dans le VRAI source Wine (krnl386.exe16.spec) ET dans la    }
+   { source secondaire WineVDM (meme resultat) - DELIBEREMENT NON            }
+   { IMPLANTE (meme discipline que FatalExit/$1, CallProcInstance/$53). }
+   102: Begin
+    { DOS3Call():LONG - ordinal VERIFIE via le VRAI source Wine              }
+    { (krnl386.exe16.spec : "pascal -register DOS3Call() DOS3Call", 0 mot,   }
+    { convention "-register" : AUCUN argument sur la pile, les registres      }
+    { du CPU emule SONT DEJA les VRAIS arguments DOS attendus - c'est          }
+    { EXACTEMENT le contrat documente reel de DOS3Call : "appelle              }
+    { directement INT 21h avec les registres tels quels". REEL ET             }
+    { CONCRET : invoque VRAIMENT le MEME gestionnaire INT 21h                  }
+    { (Emu_DoInt21) deja etabli pour ce sous-ensemble DOS, PAS un second       }
+    { mecanisme invente - contrairement a Catch/$55/Throw/$56 (registre       }
+    { non verifiable ET incompatible avec l'epilogue), DOS3Call ne fait        }
+    { AUCUN saut de pile arriere : c'est un simple relais direct,               }
+    { pleinement compatible avec l'epilogue normal de Win16_DispatchCall. }
+    Emu_DoInt21(P);
+    ArgWords := 0;
+   End;
+   103: Begin
+    { NetBIOSCall():LONG - ordinal VERIFIE via le VRAI source Wine          }
+    { (krnl386.exe16.spec : "pascal -register NetBIOSCall()                  }
+    { NetBIOSCall16", 0 mot, MEME convention "-register" que DOS3Call/$102    }
+    { ci-dessus). REEL ET CONCRET : invoque VRAIMENT le MEME gestionnaire      }
+    { INT 5Ch (Emu_DoInt5C, le VRAI sous-systeme NetBIOS complet deja          }
+    { etabli dans ce fichier - voir project_devenv_netbios) - simple           }
+    { relais direct, meme raisonnement que DOS3Call/$102. }
+    Emu_DoInt5C(P);
+    ArgWords := 0;
+   End;
+   104: Begin
+    { GetCodeInfo(lpProc,lpSegInfo):BOOL - ordinal VERIFIE via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16                       }
+    { GetCodeInfo(segptr ptr) GetCodeInfo16", 2+2 = 4 mots). REEL ET          }
+    { CONCRET : le VRAI corps C de reference (dlls/krnl386.exe16/task.c)      }
+    { remplit une structure SEGINFO (offSegment/cbSegment/flags/cbAlloc/      }
+    { h/alignShift) depuis la VRAIE table de segments NE - reproduit ICI      }
+    { en relisant REELLEMENT cette table (Win16_ReadHeader + relecture         }
+    { directe de l'entree TNESegment, meme technique deja etablie pour         }
+    { GetProcAddress/$50) pour le segment correspondant au VRAI segment de     }
+    { lpProc (recherche inverse dans Win16_SegBase[]). "h" reutilise            }
+    { l'identite deja etablie partout ailleurs (le segment reel lui-meme,      }
+    { pas un second espace de handle). ES=handle de module en sortie            }
+    { (documente reel) reutilise Win16_StackSeg. Segment inconnu ou             }
+    { fichier illisible : echec honnete (FALSE). }
+    GCIProcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GCIInfoSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GCIInfoOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCISegNr := -1;
+    For GCII := 1 To Win16_SegCount Do
+     If Win16_SegBase[GCII] = GCIProcSeg Then GCISegNr := GCII;
+    If GCISegNr < 0 Then
+     P.CPU.Regs.AX := 0
+    Else If Not Win16_ReadHeader(Win16_LoadedPath, GCIHdr, GCIHdrOfs, GCIFSize) Then
+     P.CPU.Regs.AX := 0
+    Else Begin
+     Assign(GCIFile, Win16_LoadedPath);
+     {$I-} Reset(GCIFile, 1); {$I+}
+     If IOResult <> 0 Then
+      P.CPU.Regs.AX := 0
+     Else Begin
+      Seek(GCIFile, GCIHdrOfs + GCIHdr.ne_segtab + (GCISegNr - 1) * 8);
+      BlockRead(GCIFile, GCISeg, SizeOf(GCISeg), GCIBytesRead);
+      Close(GCIFile);
+      GCICbAlloc := GCISeg.MinAlloc;
+      If GCICbAlloc = 0 Then GCICbAlloc := $FFFF;
+      If GCISegNr = GCIHdr.ne_autodata Then
+       GCICbAlloc := Word(LongInt(GCICbAlloc) + LongInt(GCIHdr.ne_heap) + LongInt(GCIHdr.ne_stack));
+      Emu_WriteWord(P.CPU, GCIInfoSeg, Word(GCIInfoOfs + 0), GCISeg.DataOffsetSectors);
+      Emu_WriteWord(P.CPU, GCIInfoSeg, Word(GCIInfoOfs + 2), GCISeg.DataLength);
+      Emu_WriteWord(P.CPU, GCIInfoSeg, Word(GCIInfoOfs + 4), GCISeg.SegFlags);
+      Emu_WriteWord(P.CPU, GCIInfoSeg, Word(GCIInfoOfs + 6), GCICbAlloc);
+      Emu_WriteWord(P.CPU, GCIInfoSeg, Word(GCIInfoOfs + 8), Win16_SegBase[GCISegNr]);
+      Emu_WriteWord(P.CPU, GCIInfoSeg, Word(GCIInfoOfs + 10), GCIHdr.ne_align);
+      P.CPU.Segs.ES := Win16_StackSeg;
+      P.CPU.Regs.AX := 1;
+     End;
+    End;
+    ArgWords := 4;
+   End;
+   105: Begin
+    { GetExeVersion():word - ordinal VERIFIE via le VRAI source Wine       }
+    { (krnl386.exe16.spec : "pascal -ret16 GetExeVersion()                   }
+    { GetExeVersion16", 0 mot). REEL : relit VRAIMENT le VRAI en-tete NE       }
+    { (Win16_ReadHeader, meme technique deja etablie) et retourne le VRAI      }
+    { champ ne_expver ("version Windows attendue" documentee reelle du         }
+    { format NE), PAS une valeur inventee. Fichier illisible : 0                }
+    { (documente reel "echec"). }
+    If Win16_ReadHeader(Win16_LoadedPath, GEVHdr, GEVHdrOfs, GEVFSize) Then
+     P.CPU.Regs.AX := GEVHdr.ne_expver
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   106: Begin
+    { SetSwapAreaSize(wKBytes):LONG - ordinal VERIFIE via le VRAI source    }
+    { Wine (krnl386.exe16.spec : "pascal SetSwapAreaSize(word)                }
+    { SetSwapAreaSize16", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX).     }
+    { REEL dans les limites honnetes de ce sous-ensemble : aucune VRAIE        }
+    { zone d'echange (swap) n'est modelisee (memoire plate) - rapporte         }
+    { honnetement un succes sans effet, meme esprit que                        }
+    { DefineHandleTable/$94. wKBytes n'a pas besoin d'etre lu (aucune          }
+    { branche ne depend de sa valeur). }
+    P.CPU.Regs.AX := 1;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   107: Begin
+    { SetErrorMode(wMode):word - ordinal VERIFIE via le VRAI source Wine    }
+    { (krnl386.exe16.spec : "pascal -ret16 SetErrorMode(word)                 }
+    { SetErrorMode16", 1 mot). REEL : fixe VRAIMENT Win16_ErrorMode            }
+    { (nouvel etat, 2026-09-14) et retourne l'ANCIEN mode (documente reel      }
+    { exact) - aucun consommateur reel de ce mode dans ce sous-ensemble         }
+    { pour l'instant (meme honnetete deja etablie pour                          }
+    { Win16_LocalNotifySeg/Ofs : stocke fidelement, pas encore branche a        }
+    { un VRAI comportement d'erreur critique INT 24h). }
+    SEMOld := Win16_ErrorMode;
+    Win16_ErrorMode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := SEMOld;
+    ArgWords := 1;
+   End;
+   { SwitchStackTo/108 et SwitchStackBack/109 : signatures VERIFIEES        }
+   { ("pascal -ret16 SwitchStackTo(word word word) SwitchStackTo16" et        }
+   { "pascal -register SwitchStackBack() SwitchStackBack16"), mais le VRAI    }
+   { corps C de reference (dlls/krnl386.exe16/task.c) copie une PORTION       }
+   { OUVERTE (dependante du programme) du cadre de pile ANCIEN vers le         }
+   { NOUVEAU emplacement avant de commuter SS:SP, puis SwitchStackBack         }
+   { restaure directement CONTEXT86.Ebp/SegSs/Esp - un mecanisme                }
+   { structurellement similaire a Catch/$55/Throw/$56 (manipulation directe    }
+   { de cadre de pile, PAS un simple relais compatible avec l'epilogue          }
+   { normal de Win16_DispatchCall) : une implantation fidele exigerait de       }
+   { deviner QUELLE portion du cadre ancien copier (ouvert, dependant du        }
+   { programme) - DELIBEREMENT NON IMPLANTES plutot que d'inventer une          }
+   { copie partielle fragile qui risquerait de corrompre silencieusement        }
+   { l'execution de tout appel Win16 suivant. }
+   110: Begin
+    { PatchCodeHandle(hInstance):FARPROC - ordinal VERIFIE via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "pascal PatchCodeHandle(word)         }
+    { PatchCodeHandle16", 1 mot, PAS de "-ret16" = retour COMPLET DX:AX).     }
+    { Corps C de reference introuvable dans le VRAI source apres plusieurs     }
+    { recherches ciblees, MAIS sa PORTEE documentee par l'utilisateur           }
+    { lui-meme ("modifie le code prolog d'un chargeur d'application") vise      }
+    { PRECISEMENT le thunk fabrique par MakeProcInstance/$51 - or ce            }
+    { sous-ensemble a DEJA etabli (voir MakeProcInstance/$51,                    }
+    { FreeProcInstance/$52) qu'AUCUN VRAI thunk n'est jamais fabrique             }
+    { (mono-instance, lpProc retourne inchange) : il n'y a donc                  }
+    { litteralement rien de reel a patcher ici non plus, MEME raisonnement       }
+    { honnete que FreeProcInstance/$52, pas une invention du comportement        }
+    { interne de la fonction elle-meme. hInstance n'a pas besoin d'etre lu       }
+    { (aucune branche ne depend de sa valeur). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
     ArgWords := 1;
    End;
    Else Begin
