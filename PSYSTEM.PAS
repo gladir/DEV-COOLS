@@ -146,6 +146,7 @@ Var
  PCode_CodeSize,PCode_PC,PCode_SP,PCode_MP,PCode_Cycles:LongInt;
  PCode_SegmentSize,PCode_ProcDict,PCode_Base:LongInt;
  PCode_ProcCount,PCode_CurrentProc:Integer;
+ PCode_StringHeap:LongInt;
  PCode_IsIVSegment,PCode_HasProcDictionary:Boolean;
  PCode_Halted:Boolean;
  PCode_ExitCode:Integer;
@@ -163,6 +164,50 @@ End;
 
 Procedure PCode_PutChar(C:Char);Begin
  Write(C)
+End;
+
+Function PCode_DataAt(A:LongInt):LongInt;Forward;
+Procedure PCode_DataSet(A:LongInt;V:LongInt);Forward;
+Function PCode_Fetch(Ofs:LongInt):Byte;Forward;
+
+Function PCode_StringLength(A:LongInt):Integer;
+Var N:LongInt;
+Begin
+ if A>=30000 Then N:=PCode_Fetch(A-30000-1)else N:=PCode_DataAt(A);
+ if N<0 Then N:=0;if N>255 Then N:=255;PCode_StringLength:=N
+End;
+
+Function PCode_StringChar(A:LongInt;I:Integer):Byte;
+Begin
+ if(I<1)or(I>PCode_StringLength(A))Then PCode_StringChar:=0
+ else if A>=30000 Then PCode_StringChar:=PCode_Fetch(A-30000+I-1)
+ else PCode_StringChar:=Byte(PCode_DataAt(A+I))
+End;
+
+Function PCode_NewString(A,B:LongInt;StartA,CountA,StartB,CountB:Integer):LongInt;
+Var D,I,N:LongInt;
+Begin
+ D:=PCode_StringHeap;N:=0;
+ For I:=0 to CountA-1 do if(StartA+I>=1)and(StartA+I<=PCode_StringLength(A))Then Begin
+  Inc(N);PCode_DataSet(D+N,PCode_StringChar(A,StartA+I))
+ End;
+ For I:=0 to CountB-1 do if(StartB+I>=1)and(StartB+I<=PCode_StringLength(B))and(N<255)Then Begin
+  Inc(N);PCode_DataSet(D+N,PCode_StringChar(B,StartB+I))
+ End;PCode_DataSet(D,N);Inc(PCode_StringHeap,N+1);PCode_NewString:=D
+End;
+
+Procedure PCode_AssignString(D,S:LongInt;MaxLen:Integer);
+Var I,N:Integer;
+Begin
+ N:=PCode_StringLength(S);if N>MaxLen Then N:=MaxLen;PCode_DataSet(D,N);
+ For I:=1 to N do PCode_DataSet(D+I,PCode_StringChar(S,I))
+End;
+
+Function PCode_CharString(C:LongInt):LongInt;
+Var D:LongInt;
+Begin
+ D:=PCode_StringHeap;PCode_DataSet(D,1);PCode_DataSet(D+1,Byte(C));Inc(PCode_StringHeap,2);
+ PCode_CharString:=D
 End;
 
 Function PCode_LoadRaw(Const FileName:String):Boolean;
@@ -419,18 +464,48 @@ End;
 
 Procedure PCode_CallCSP(CspNum: Byte);
 Var
- N: Integer;
+ N,I,P: Integer;A,B,D:LongInt;Cmp:Integer;
 Begin
  Case CspNum Of
  4:
  Begin
  { exit } N := PCode_Pop; PCode_Halted := True; PCode_ExitCode := N; 
  End;
- 18, 19:
- Begin
+18, 19:
+Begin
  { trunc/round : deja entier dans ce sous-ensemble, no-op } 
+End;
+ 40:Begin A:=PCode_Pop;PCode_Push(PCode_StringLength(A))End;
+ 41:Begin B:=PCode_Pop;A:=PCode_Pop;
+  PCode_Push(PCode_NewString(A,B,1,PCode_StringLength(A),1,PCode_StringLength(B)))End;
+ 42:Begin B:=PCode_Pop;A:=PCode_Pop;Cmp:=0;N:=PCode_StringLength(A);
+  if PCode_StringLength(B)<N Then N:=PCode_StringLength(B);I:=1;
+  While(I<=N)and(Cmp=0)do Begin Cmp:=Integer(PCode_StringChar(A,I))-Integer(PCode_StringChar(B,I));Inc(I)End;
+  if Cmp=0 Then Cmp:=PCode_StringLength(A)-PCode_StringLength(B);PCode_Push(Cmp)
  End;
- Else
+ 43:Begin N:=PCode_Pop;P:=PCode_Pop;A:=PCode_Pop;PCode_Push(PCode_NewString(A,0,P,N,1,0))End;
+ 44:Begin B:=PCode_Pop;A:=PCode_Pop;P:=0;
+  For I:=1 to PCode_StringLength(B)-PCode_StringLength(A)+1 do Begin
+   N:=1;While(N<=PCode_StringLength(A))and(PCode_StringChar(B,I+N-1)=PCode_StringChar(A,N))do Inc(N);
+   if N>PCode_StringLength(A)Then Begin P:=I;Break End
+  End;PCode_Push(P)
+ End;
+ 45:Begin N:=PCode_Pop;A:=PCode_Pop;D:=PCode_Pop;PCode_AssignString(D,A,N)End;
+ 46:Begin I:=PCode_Pop;A:=PCode_Pop;PCode_Push(PCode_StringChar(A,I))End;
+ 47:Begin N:=PCode_Pop;P:=PCode_Pop;D:=PCode_Pop;A:=PCode_Pop;
+  B:=PCode_NewString(D,0,1,P-1,1,0);B:=PCode_NewString(B,A,1,PCode_StringLength(B),1,PCode_StringLength(A));
+  B:=PCode_NewString(B,D,1,PCode_StringLength(B),P,PCode_StringLength(D)-P+1);PCode_AssignString(D,B,N)
+ End;
+ 48:Begin N:=PCode_Pop;P:=PCode_Pop;D:=PCode_Pop;
+  B:=PCode_NewString(D,D,1,P-1,P+N,PCode_StringLength(D)-P-N+1);PCode_AssignString(D,B,255)
+ End;
+ 49:Begin A:=PCode_Pop;For I:=1 to PCode_StringLength(A)do PCode_PutChar(Chr(PCode_StringChar(A,I)))End;
+ 50:Begin A:=PCode_Pop;PCode_Push(PCode_CharString(A))End;
+ 51:Begin N:=PCode_Pop;B:=PCode_Pop;A:=PCode_Pop;
+  if(N and 1)<>0 Then A:=PCode_CharString(A);if(N and 2)<>0 Then B:=PCode_CharString(B);
+  PCode_Push(PCode_NewString(A,B,1,PCode_StringLength(A),1,PCode_StringLength(B)))
+ End;
+Else
  PCode_Unsupported('CSP ' + PCode_IntToStr(CspNum));
 End;
 End;
@@ -1001,7 +1076,7 @@ Begin
   WriteLn('Impossible de charger le fichier p-Code: ',FileName);
   FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
  End;
- FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  if PCode_HasProcDictionary Then PCode_SP:=High(PCode_Data^)+1;
  PCode_Base:=0;PCode_CurrentProc:=0;
  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
@@ -1743,6 +1818,13 @@ Begin
    else CPNumber:=CPNumber*16+Ord(C)-Ord('A')+10;Inc(CPPos)
   End;CPToken:='NUM';Exit
  End;
+ if C='#'Then Begin
+  Inc(CPPos);CPNumber:=0;
+  While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
+   CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');Inc(CPPos)
+  End;if(CPNumber<0)or(CPNumber>255)Then CPFail('caractere de controle hors limites');
+  CPToken:='CTRL';Exit
+ End;
  if C=''''Then Begin
   Inc(CPPos);
   While(CPPos<CPSize)do Begin
@@ -1905,7 +1987,7 @@ Begin
  if CPIs('STRING')Then Begin CPNext;Hi:=255;if CPToken='['Then Begin CPNext;
    if CPToken='NUM'Then Begin Hi:=CPNumber;CPNext End else CPFail('longueur de chaine attendue');CPNeed(']')
   End;if Hi>255 Then Begin CPFail('chaine UCSD limitee a 255 caracteres');Hi:=255 End;
-  T:=CPNewAnonymousType(ptkString);T^.HighBound:=Hi;T^.SizeWords:=(Hi+2)div 2;
+  T:=CPNewAnonymousType(ptkString);T^.HighBound:=Hi;T^.SizeWords:=Hi+1;
   T^.PackedType:=True;CPParseType:=T;Exit
  end;
  if CPToken='('Then Begin
@@ -2309,6 +2391,8 @@ Begin
  CPE(Byte(B.L));CPE(Byte(B.L shr 8));CPE(Byte(B.L shr 16));CPE(Byte(B.L shr 24))
 End;
 
+Procedure CPEmitCSP(N:Byte);Begin CPOp(158,$AC);CPE(N)End;
+
 Procedure CPEmitRoutineCall(R:PPasRoutine);
 Var Delta:Integer;
 Begin
@@ -2437,6 +2521,11 @@ Begin
  While not CPError do Begin
   While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
   if CPToken='['Then Begin
+   if(T<>Nil)and(T^.Kind=ptkString)Then Begin
+    CPNext;CPExpression;
+    if CPRangeChecks Then Begin CPConst(1);CPConst(T^.HighBound);CPOp(136,$CB)End;
+    CPOp(164,$D7);CPBig(1);T:=CPFindType('CHAR');CPNeed(']');Continue
+   End;
    if(T=Nil)or(T^.Kind<>ptkArray)Then Begin CPFail('indexation d''un objet non tableau');Exit End;
    CPNext;Repeat
     Idx:=T^.IndexType;CPExpression;
@@ -2460,7 +2549,8 @@ Begin
  End;
  if LoadValue Then Begin
   While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
-  if(T<>Nil)and(T^.SizeWords>1)Then CPFail('valeur structurée interdite dans une expression scalaire')
+  if(T<>Nil)and(T^.Kind=ptkString)Then Begin End
+  else if(T<>Nil)and(T^.SizeWords>1)Then CPFail('valeur structurée interdite dans une expression scalaire')
   else Begin CPOp(163,$E6);CPBig(0)End
  End
 End;
@@ -2476,7 +2566,7 @@ Procedure CPFactor;
 Var
  P:PPasSymbol;
  R:PPasRoutine;
- T,CastType,SourceType:PPasType;Ident:String;
+ T,CastType,SourceType,LeftType:PPasType;Ident:String;Flags:Integer;
  Neg:Boolean;CV:TConstValue;Lo,Hi,K,Mask:LongInt;
 Begin
  CPLastExpressionType:=CPFindType('INTEGER');Neg:=False;
@@ -2487,6 +2577,7 @@ Begin
  if CPToken='NUM'Then Begin
   CPConst(CPNumber);CPNext
  End
+ else if CPToken='CTRL'Then Begin CPConst(CPNumber);CPLastExpressionType:=CPFindType('CHAR');CPNext End
  else if CPToken='REALNUM'Then Begin
   CPRealConst(CPRealNumber);CPLastExpressionType:=CPFindType('REAL');CPNext
  End
@@ -2509,6 +2600,30 @@ Begin
    if CPToken=','Then CPNext else Break
   End;CPNeed(']');CPConst(Mask);CPLastExpressionType:=CPNewAnonymousType(ptkSet);
   CPLastExpressionType^.ElementType:=CPFindType('INTEGER');CPLastExpressionType^.SizeWords:=1
+ End
+ else if CPIs('LENGTH')Then Begin
+  CPNext;CPNeed('(');CPExpression;CPNeed(')');CPEmitCSP(40);
+  CPLastExpressionType:=CPFindType('INTEGER')
+ End
+ else if CPIs('CONCAT')Then Begin
+  CPNext;CPNeed('(');CPExpression;LeftType:=CPLastExpressionType;CPNeed(',');CPExpression;
+  Flags:=0;if(LeftType<>Nil)and(LeftType^.Kind=ptkChar)Then Flags:=1;
+  if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkChar)Then Inc(Flags,2);
+  CPConst(Flags);CPEmitCSP(51);
+  While CPToken=','do Begin CPNext;CPExpression;Flags:=0;
+   if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkChar)Then Flags:=2;
+   CPConst(Flags);CPEmitCSP(51)
+  End;
+  CPNeed(')');CPLastExpressionType:=CPFindType('STRING')
+ End
+ else if CPIs('COPY')Then Begin
+  CPNext;CPNeed('(');CPExpression;CPNeed(',');CPExpression;CPNeed(',');CPExpression;
+  CPNeed(')');CPEmitCSP(43);CPLastExpressionType:=CPFindType('STRING')
+ End
+ else if CPIs('POS')Then Begin
+  CPNext;CPNeed('(');CPExpression;CPNeed(',');CPExpression;CPNeed(')');
+  { La VM attend chaine puis sous-chaine. }
+  CPEmitCSP(44);CPLastExpressionType:=CPFindType('INTEGER')
  End
  else if CPIs('TRUE')Then Begin
   CPConst(1);CPLastExpressionType:=CPFindType('BOOLEAN');CPNext
@@ -2568,13 +2683,20 @@ End;
 
 Procedure CPSimple;
 Var
- O:String;LT,RT:PPasType;
+ O:String;LT,RT:PPasType;I:Integer;
 Begin
  CPTerm;LT:=CPLastExpressionType;
  While(CPToken='+')or(CPToken='-')or CPIs('OR')do Begin
   O:=CPToken;
   if CPToken='ID'Then O:=CPText;CPNext;CPTerm;RT:=CPLastExpressionType;
-  if((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet))Then Begin
+  if((LT<>Nil)and(LT^.Kind in[ptkString,ptkChar]))and
+    ((RT<>Nil)and(RT^.Kind in[ptkString,ptkChar]))and
+    ((LT^.Kind=ptkString)or(RT^.Kind=ptkString))Then Begin
+   if O<>'+'Then CPFail('operateur de chaine invalide')else Begin
+    I:=0;if LT^.Kind=ptkChar Then I:=1;if RT^.Kind=ptkChar Then Inc(I,2);
+    CPConst(I);CPEmitCSP(51)
+   End;LT:=CPFindType('STRING')
+  End else if((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet))Then Begin
    if O='+'Then CPOp(156,$B7)else if O='-'Then CPOp(133,$B9)else CPOp(156,$B7)
   End else if((LT<>Nil)and(LT^.Kind=ptkReal))or((RT<>Nil)and(RT^.Kind=ptkReal))Then Begin
    if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then
@@ -2597,8 +2719,13 @@ Begin
  if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
  (CPToken='>')or(CPToken='>=')Then Begin
   O:=CPToken;CPNext;CPSimple;RT:=CPLastExpressionType;
-  if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkString)or(RT^.Kind=ptkString))Then
-   CPFail('comparaison dynamique de chaines non prise en charge')
+  if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkString)or(RT^.Kind=ptkString))Then Begin
+   if(LT^.Kind<>ptkString)or(RT^.Kind<>ptkString)Then CPFail('comparaison de chaines incompatible');
+   CPEmitCSP(42);CPConst(0);
+   if O='='Then CPOp(195,$B0)else if O='<>'Then CPOp(203,$B1)
+   else if O='<'Then Begin CPOp(196,$B3);CPOp(147,$9F)End else if O='<='Then CPOp(200,$B2)
+   else if O='>'Then Begin CPOp(200,$B2);CPOp(147,$9F)End else CPOp(196,$B3)
+  End
   else if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkReal)or(RT^.Kind=ptkReal))Then Begin
    if(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then CPFail('conversion reelle explicite requise');
    if O='='Then Cmp:=0 else if O='<>'Then Cmp:=1 else if O='<'Then Cmp:=2
@@ -2721,6 +2848,17 @@ Begin
   if not CPIs('DO')Then CPFail('DO attendu')else Begin CPNext;CPStatement End;
   CPWithSymbol:=SavedWith;CPWithType:=SavedWithType
  End
+ else if CPIs('INSERT')Then Begin
+  CPNext;CPNeed('(');CPExpression;if(CPLastExpressionType<>Nil)and
+   (CPLastExpressionType^.Kind=ptkChar)Then CPEmitCSP(50);
+  CPNeed(',');CPExpression;RT:=CPLastExpressionType;
+  CPNeed(',');CPExpression;CPNeed(')');
+  if(RT<>Nil)and(RT^.Kind=ptkString)Then CPConst(RT^.HighBound)else CPConst(255);CPEmitCSP(47)
+ End
+ else if CPIs('DELETE')Then Begin
+  CPNext;CPNeed('(');CPExpression;CPNeed(',');CPExpression;CPNeed(',');CPExpression;
+  CPNeed(')');CPEmitCSP(48)
+ End
  else if CPIs('WRITE')or CPIs('WRITELN')Then Begin
   Name:=CPText;CPNext;
   if CPToken='('Then Begin
@@ -2735,7 +2873,8 @@ Begin
     End else
     Begin
      CPExpression;
-     if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(13)End
+     if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkString)Then CPEmitCSP(49)
+     else if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(13)End
      else Begin CPE(205);CPE(0);CPE(13)End
     End;
     if CPToken=','Then CPNext else Break
@@ -2755,7 +2894,13 @@ Begin
   Begin
    CPDesignator(P,False,T);CPNeed(':=');
    While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
-   if(T<>Nil)and(T^.SizeWords>1)Then Begin
+   if(T<>Nil)and(T^.Kind=ptkString)Then Begin
+    CPExpression;if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkChar)Then Begin
+     CPEmitCSP(50);CPLastExpressionType:=CPFindType('STRING')
+    End;
+    if(CPLastExpressionType=Nil)or(CPLastExpressionType^.Kind<>ptkString)Then
+     CPFail('chaine attendue dans l''affectation')else Begin CPConst(T^.HighBound);CPEmitCSP(45)End
+   End else if(T<>Nil)and(T^.SizeWords>1)Then Begin
     if CPToken<>'ID'Then CPFail('source structuree attendue')else Begin
      P:=CPFind(CPText);if P=Nil Then CPFail('variable source inconnue')else Begin
       CPNext;CPDesignator(P,False,RT);
@@ -2931,7 +3076,7 @@ Begin
  { Une cellule TPCodeData contient 32 bits: un REAL IEEE simple occupe donc
    une cellule VM, tout en restant serialise comme valeur 32 bits. }
  CPAddType('REAL',ptkReal,1);
- TextType:=CPAddType('STRING',ptkString,128);TextType^.HighBound:=255;TextType^.PackedType:=True;
+ TextType:=CPAddType('STRING',ptkString,256);TextType^.HighBound:=255;TextType^.PackedType:=True;
  TextType:=CPAddType('TEXT',ptkFile,1);TextType^.ElementType:=CPFindType('CHAR');
  CPError:=False;CPLine:=1;CPVarCount:=0;
  GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
@@ -3176,7 +3321,7 @@ Procedure Registers;Begin
 End;
 
 Procedure ResetMachine;Begin
- FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  PCode_Base:=0;PCode_CurrentProc:=0;PCode_Cycles:=0;
  PCode_Halted:=False;PCode_ExitCode:=0;
  if PCode_HasProcDictionary Then Begin
