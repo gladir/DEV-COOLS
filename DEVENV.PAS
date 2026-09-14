@@ -93142,6 +93142,120 @@ Function Emu_HostPath(Const DosName: String): String; Forward;
 { (section video), Forward necessaire pour la meme raison qu'Emu_HostPath   }
 { ci-dessus. }
 Procedure Emu_VidInitDefaultDAC; Forward;
+{ KEYBOARD.DRV (2026-09-14, demande explicite) : nouveau module ModIdx=4,   }
+{ suite logique de l'ordre KERNEL=1/GDI=2/USER=3 deja documente plus haut   }
+{ (empiriquement verifie sur CLOCK.EXE/CALENDAR.EXE) - meme simplification  }
+{ documentee, PAS une garantie universelle du format NE. Table de clavier   }
+{ US REELLE (code de balayage PC/AT Scan Code Set 1, standard materiel      }
+{ documente - PAS invente) limitee au sous-ensemble alphanumerique          }
+{ principal (A-Z, 0-9, Retour arriere/Tabulation/Entree/Echap/Espace) :     }
+{ toute touche hors de ce sous-ensemble echoue honnetement (retour 0/$FFFF  }
+{ documente par les VRAIES API MapVirtualKey/VkKeyScan/OemKeyScan pour       }
+{ "aucune correspondance"), plutot que d'inventer une valeur plausible. }
+Const
+ WIN16_KBD_LETTER_SCAN: Array[0..25] Of Byte = ($1E,$30,$2E,$20,$12,$21,$22,
+  $23,$17,$24,$25,$26,$32,$31,$18,$19,$10,$13,$1F,$14,$16,$2F,$11,$2D,$15,$2C);
+ WIN16_KBD_DIGIT_SCAN: Array[0..9] Of Byte = ($0B,$02,$03,$04,$05,$06,$07,$08,$09,$0A);
+ WIN16_KBD_SHIFT_DIGIT_CHAR: Array[0..9] Of Char = (')','!','@','#','$','%','^','&','*','(');
+
+Function Win16_KbdScanForVK(VK: Byte): Byte;
+Begin
+ Win16_KbdScanForVK := 0;
+ If (VK >= Ord('A')) And (VK <= Ord('Z')) Then
+  Win16_KbdScanForVK := WIN16_KBD_LETTER_SCAN[VK - Ord('A')]
+ Else If (VK >= Ord('0')) And (VK <= Ord('9')) Then
+  Win16_KbdScanForVK := WIN16_KBD_DIGIT_SCAN[VK - Ord('0')]
+ Else Case VK Of
+  8:  Win16_KbdScanForVK := $0E; { VK_BACK }
+  9:  Win16_KbdScanForVK := $0F; { VK_TAB }
+  13: Win16_KbdScanForVK := $1C; { VK_RETURN }
+  27: Win16_KbdScanForVK := $01; { VK_ESCAPE }
+  32: Win16_KbdScanForVK := $39; { VK_SPACE }
+ End;
+End;
+
+Function Win16_KbdVKForScan(Scan: Byte): Byte;
+Var KVI: Integer;
+Begin
+ Win16_KbdVKForScan := 0;
+ For KVI := 0 To 25 Do
+  If WIN16_KBD_LETTER_SCAN[KVI] = Scan Then Win16_KbdVKForScan := Ord('A') + KVI;
+ For KVI := 0 To 9 Do
+  If WIN16_KBD_DIGIT_SCAN[KVI] = Scan Then Win16_KbdVKForScan := Ord('0') + KVI;
+ Case Scan Of
+  $0E: Win16_KbdVKForScan := 8;
+  $0F: Win16_KbdVKForScan := 9;
+  $1C: Win16_KbdVKForScan := 13;
+  $01: Win16_KbdVKForScan := 27;
+  $39: Win16_KbdVKForScan := 32;
+ End;
+End;
+
+Function Win16_KbdNameForScan(Scan: Byte): String;
+Var KNI: Integer;
+Begin
+ Win16_KbdNameForScan := '';
+ For KNI := 0 To 25 Do
+  If WIN16_KBD_LETTER_SCAN[KNI] = Scan Then Win16_KbdNameForScan := Chr(Ord('A') + KNI);
+ For KNI := 0 To 9 Do
+  If WIN16_KBD_DIGIT_SCAN[KNI] = Scan Then Win16_KbdNameForScan := Chr(Ord('0') + KNI);
+ Case Scan Of
+  $0E: Win16_KbdNameForScan := 'Backspace';
+  $0F: Win16_KbdNameForScan := 'Tab';
+  $1C: Win16_KbdNameForScan := 'Enter';
+  $01: Win16_KbdNameForScan := 'Esc';
+  $39: Win16_KbdNameForScan := 'Space';
+ End;
+End;
+
+Function Win16_KbdAsciiForVK(VK: Byte; Shift: Boolean): Byte;
+Begin
+ Win16_KbdAsciiForVK := 0;
+ If (VK >= Ord('A')) And (VK <= Ord('Z')) Then Begin
+  If Shift Then Win16_KbdAsciiForVK := VK Else Win16_KbdAsciiForVK := VK + 32;
+ End Else If (VK >= Ord('0')) And (VK <= Ord('9')) Then Begin
+  If Shift Then Win16_KbdAsciiForVK := Ord(WIN16_KBD_SHIFT_DIGIT_CHAR[VK - Ord('0')])
+  Else Win16_KbdAsciiForVK := VK;
+ End Else Case VK Of
+  8:  Win16_KbdAsciiForVK := 8;
+  9:  Win16_KbdAsciiForVK := 9;
+  13: Win16_KbdAsciiForVK := 13;
+  27: Win16_KbdAsciiForVK := 27;
+  32: Win16_KbdAsciiForVK := 32;
+ End;
+End;
+
+{ Recherche inverse partagee par VkKeyScan/$129 et OemKeyScan/$128 : quelle  }
+{ touche (VK) et quel etat MAJ produit le caractere Ch sur notre sous-        }
+{ ensemble de clavier US. }
+Function Win16_KbdVKAndShiftForChar(Ch: Byte; Var ShiftNeeded: Boolean): Byte;
+Var KCI: Integer;
+Begin
+ Win16_KbdVKAndShiftForChar := 0;
+ ShiftNeeded := False;
+ If (Ch >= Ord('a')) And (Ch <= Ord('z')) Then Begin
+  Win16_KbdVKAndShiftForChar := Ch - 32;
+ End Else If (Ch >= Ord('A')) And (Ch <= Ord('Z')) Then Begin
+  Win16_KbdVKAndShiftForChar := Ch;
+  ShiftNeeded := True;
+ End Else If (Ch >= Ord('0')) And (Ch <= Ord('9')) Then Begin
+  Win16_KbdVKAndShiftForChar := Ch;
+ End Else Begin
+  For KCI := 0 To 9 Do
+   If Ord(WIN16_KBD_SHIFT_DIGIT_CHAR[KCI]) = Ch Then Begin
+    Win16_KbdVKAndShiftForChar := Ord('0') + KCI;
+    ShiftNeeded := True;
+   End;
+  Case Ch Of
+   8:  Win16_KbdVKAndShiftForChar := 8;
+   9:  Win16_KbdVKAndShiftForChar := 9;
+   13: Win16_KbdVKAndShiftForChar := 13;
+   27: Win16_KbdVKAndShiftForChar := 27;
+   32: Win16_KbdVKAndShiftForChar := 32;
+  End;
+ End;
+End;
+
 Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
 Var
  ModIdx, Ordinal: Word;
@@ -93364,6 +93478,22 @@ Var
  UTAWSeg, UTAWOfs, UTAASeg, UTAAOfs: Word;
  UTAI: Integer;
  UTAWCh: Word;
+ { KEYBOARD.DRV, ModIdx=4 (2026-09-14, demande explicite, ordinaux           }
+ { 4/5/6/128-135). }
+ KbdVirtKey: Word;
+ KbdKeyStateSeg, KbdKeyStateOfs: Word;
+ KbdCharSeg, KbdCharOfs: Word;
+ KbdShift: Boolean;
+ KbdAscii, KbdVK, KbdScan: Byte;
+ KbdSrcSeg, KbdSrcOfs, KbdDstSeg, KbdDstOfs: Word;
+ KbdCbLen, KbdI: Word;
+ KbdByteVal: Byte;
+ KbdOemChar, KbdChar: Word;
+ KbdTypeFlag, KbdMapType, KbdCode: Word;
+ KbdLParamHi, KbdNSize: Word;
+ KbdStringSeg, KbdStringOfs: Word;
+ KbdName: String;
+ KbdWriteLen, KbdJ: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -99762,6 +99892,220 @@ Begin
    End;
    Else Begin
     Win16_Halt(P, 'GDI', Ordinal);
+    Exit;
+   End;
+  End;
+ End Else If ModIdx = 4 Then Begin { KEYBOARD.DRV }
+  Case Ordinal Of
+   4: Begin
+    { ToAscii(wVirtKey,wScanCode,lpKeyState,lpChar,wFlags):DWORD - ordinal/  }
+    { signature VERIFIES via le VRAI source Wine                             }
+    { (keyboard.drv16.spec : "pascal -ret16 ToAscii(word word ptr ptr        }
+    { word) ToAscii16" - noter que malgre le nom "ToAscii16" la macro spec   }
+    { elle-meme utilise bien -ret16 ici) : 1+1+2+2+1 = 7 mots. REEL pour le   }
+    { sous-ensemble alphanumerique principal (A-Z/0-9/Retour arriere/         }
+    { Tabulation/Entree/Echap/Espace, voir la table Win16_Kbd* juste avant   }
+    { Win16_DispatchCall) : consulte le VRAI octet d'etat MAJ (bit haut de   }
+    { lpKeyState[$10]=VK_SHIFT) pour choisir majuscule/minuscule ou le         }
+    { symbole MAJ d'un chiffre (!@#$%^&*() - disposition US reelle,            }
+    { standard, pas inventee). Touche hors du sous-ensemble : retourne         }
+    { honnetement 0 (aucune traduction), le comportement documente reel.      }
+    KbdVirtKey := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    KbdKeyStateSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    KbdKeyStateOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    KbdCharSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    KbdCharOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    KbdShift := (Emu_ReadByte(P.CPU, KbdKeyStateSeg, Word(KbdKeyStateOfs + $10)) And $80) <> 0;
+    KbdAscii := Win16_KbdAsciiForVK(Byte(KbdVirtKey), KbdShift);
+    If KbdAscii <> 0 Then Begin
+     Emu_WriteByte(P.CPU, KbdCharSeg, KbdCharOfs, KbdAscii);
+     Emu_WriteByte(P.CPU, KbdCharSeg, Word(KbdCharOfs + 1), 0);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 7;
+   End;
+   5: Begin
+    { AnsiToOem(lpAnsiStr,lpOemStr):BOOL - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (keyboard.drv16.spec : "pascal -ret16              }
+    { AnsiToOem(str ptr) AnsiToOem16", 2+2 = 4 mots, retour 16 bits AX        }
+    { seul). SIMPLIFICATION DISCLOSEE (meme discipline que                    }
+    { UnicodeToAnsi/$467, voir [[project_devenv_win16_gdi_ord412_467]]) :     }
+    { copie IDENTITE octet-par-octet (pas de VRAIE table CP1252->CP437)      }
+    { jusqu'au terminateur nul, plus fidele pour la plage ASCII 0-127         }
+    { (identique dans les deux jeux de caracteres, fait reel documente)       }
+    { que pour la plage etendue 128-255. }
+    KbdSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    KbdSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    KbdDstSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    KbdDstOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    KbdI := 0;
+    Repeat
+     KbdByteVal := Emu_ReadByte(P.CPU, KbdSrcSeg, Word(KbdSrcOfs + KbdI));
+     Emu_WriteByte(P.CPU, KbdDstSeg, Word(KbdDstOfs + KbdI), KbdByteVal);
+     Inc(KbdI);
+    Until (KbdByteVal = 0) Or (KbdI >= 255);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   6: Begin
+    { OemToAnsi(lpOemStr,lpAnsiStr):BOOL - meme forme et meme simplification }
+    { disclosee que AnsiToOem/$5 ci-dessus (ordinal/signature VERIFIES via   }
+    { keyboard.drv16.spec). }
+    KbdSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    KbdSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    KbdDstSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    KbdDstOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    KbdI := 0;
+    Repeat
+     KbdByteVal := Emu_ReadByte(P.CPU, KbdSrcSeg, Word(KbdSrcOfs + KbdI));
+     Emu_WriteByte(P.CPU, KbdDstSeg, Word(KbdDstOfs + KbdI), KbdByteVal);
+     Inc(KbdI);
+    Until (KbdByteVal = 0) Or (KbdI >= 255);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   128: Begin
+    { OemKeyScan(wOemChar):DWORD - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (keyboard.drv16.spec : "pascal OemKeyScan(word)            }
+    { OemKeyScan16", 1 mot). REEL pour le sous-ensemble Win16_Kbd* : LOWORD  }
+    { = code de balayage (octet bas) + etat MAJ (octet haut, bit0=SHIFT),     }
+    { HIWORD = 0 si succes. Echec honnete (touche hors sous-ensemble) :       }
+    { DX:AX = $FFFF:$FFFF, le retour documente reel "impossible a produire". }
+    KbdOemChar := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    KbdVK := Win16_KbdVKAndShiftForChar(Byte(KbdOemChar), KbdShift);
+    KbdScan := Win16_KbdScanForVK(KbdVK);
+    If (KbdVK = 0) Or (KbdScan = 0) Then Begin
+     P.CPU.Regs.AX := $FFFF;
+     P.CPU.Regs.DX := $FFFF;
+    End Else Begin
+     If KbdShift Then P.CPU.Regs.AX := Word(KbdScan) Or $0100
+     Else P.CPU.Regs.AX := Word(KbdScan);
+     P.CPU.Regs.DX := 0;
+    End;
+    ArgWords := 1;
+   End;
+   129: Begin
+    { VkKeyScan(cChar):WORD - ordinal/signature VERIFIES via le VRAI source }
+    { Wine (keyboard.drv16.spec : "pascal -ret16 VkKeyScan(word)             }
+    { VkKeyScan16", 1 mot, retour 16 bits AX SEUL - contrairement a           }
+    { OemKeyScan/$128 qui n'a PAS -ret16). LOBYTE(AX)=code de touche          }
+    { virtuelle, HIBYTE(AX)=etat MAJ (bit0=SHIFT). Echec honnete : AX=$FFFF   }
+    { (documente reel "aucune touche du clavier courant ne produit ce         }
+    { caractere"). }
+    KbdChar := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    KbdVK := Win16_KbdVKAndShiftForChar(Byte(KbdChar), KbdShift);
+    If KbdVK = 0 Then P.CPU.Regs.AX := $FFFF
+    Else If KbdShift Then P.CPU.Regs.AX := Word(KbdVK) Or $0100
+    Else P.CPU.Regs.AX := Word(KbdVK);
+    ArgWords := 1;
+   End;
+   130: Begin
+    { GetKeyboardType(nTypeFlag):WORD - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (keyboard.drv16.spec : "pascal -ret16                 }
+    { GetKeyboardType(word) GetKeyboardType16", 1 mot). REEL : valeurs        }
+    { documentees Microsoft pour un clavier etendu 101/102 touches           }
+    { generique (0->4 type materiel, 1->0 sous-type OEM generique,            }
+    { 2->12 nombre de touches de fonction) - pas invente, standard            }
+    { documente. Valeur nTypeFlag inconnue : 0 (comportement documente reel).}
+    KbdTypeFlag := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Case KbdTypeFlag Of
+     0: P.CPU.Regs.AX := 4;
+     1: P.CPU.Regs.AX := 0;
+     2: P.CPU.Regs.AX := 12;
+     Else P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 1;
+   End;
+   131: Begin
+    { MapVirtualKey(uCode,uMapType):WORD - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (keyboard.drv16.spec : "pascal -ret16              }
+    { MapVirtualKey(word word) MapVirtualKey16", 2 mots). REEL pour le        }
+    { sous-ensemble Win16_Kbd* : 0=VK->code de balayage, 1=code de            }
+    { balayage->VK, 2=VK->caractere ASCII non-decale (minuscule pour une      }
+    { lettre), 3=code de balayage->VK (traite comme 1 pour ce sous-ensemble, }
+    { aucune distinction gauche/droite modelisee). Retourne honnetement 0     }
+    { si aucune correspondance (documente reel). }
+    KbdCode := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    KbdMapType := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Case KbdMapType Of
+     0: P.CPU.Regs.AX := Win16_KbdScanForVK(Byte(KbdCode));
+     1: P.CPU.Regs.AX := Win16_KbdVKForScan(Byte(KbdCode));
+     2: P.CPU.Regs.AX := Win16_KbdAsciiForVK(Byte(KbdCode), False);
+     3: P.CPU.Regs.AX := Win16_KbdVKForScan(Byte(KbdCode));
+     Else P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 2;
+   End;
+   132: Begin
+    { GetKBCodePage():WORD - ordinal/signature VERIFIES via le VRAI source  }
+    { Wine (keyboard.drv16.spec : "pascal -ret16 GetKBCodePage()             }
+    { GetKBCodePage16", 0 mot - AUCUN parametre). REEL : 437, la page de      }
+    { code OEM US par defaut documentee (standard, pas invente). }
+    P.CPU.Regs.AX := 437;
+    ArgWords := 0;
+   End;
+   133: Begin
+    { GetKeyNameText(lParam,lpString,nSize):WORD - ordinal/signature         }
+    { VERIFIES via le VRAI source Wine (keyboard.drv16.spec : "pascal        }
+    { -ret16 GetKeyNameText(long ptr word) GetKeyNameText16", 2+2+1 = 5      }
+    { mots). REEL pour le sous-ensemble Win16_Kbd* : le code de balayage      }
+    { est le mot de poids FORT de lParam, octet bas (bits 16-23, meme          }
+    { encodage documente que lParam de WM_KEYDOWN) - ecrit le VRAI nom de     }
+    { touche (ex. "A", "Enter") tronque a nSize-1 caracteres, retourne la     }
+    { longueur ecrite (documente reel). Touche hors sous-ensemble : chaine   }
+    { vide, retour 0. }
+    KbdLParamHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    KbdStringSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    KbdStringOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    KbdNSize := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    KbdName := Win16_KbdNameForScan(Byte(KbdLParamHi And $FF));
+    KbdWriteLen := Length(KbdName);
+    If KbdWriteLen > Integer(KbdNSize) - 1 Then KbdWriteLen := Integer(KbdNSize) - 1;
+    If KbdWriteLen < 0 Then KbdWriteLen := 0;
+    For KbdJ := 1 To KbdWriteLen Do
+     Emu_WriteByte(P.CPU, KbdStringSeg, Word(KbdStringOfs + KbdJ - 1), Byte(Ord(KbdName[KbdJ])));
+    Emu_WriteByte(P.CPU, KbdStringSeg, Word(KbdStringOfs + KbdWriteLen), 0);
+    P.CPU.Regs.AX := Word(KbdWriteLen);
+    ArgWords := 5;
+   End;
+   134: Begin
+    { AnsiToOemBuff(lpAnsiStr,lpOemStr,cbLen):VOID - ordinal/signature       }
+    { VERIFIES via le VRAI source Wine (keyboard.drv16.spec : "pascal        }
+    { -ret16 AnsiToOemBuff(ptr ptr word) AnsiToOemBuff16", 2+2+1 = 5 mots).   }
+    { REELLEMENT sans terminateur nul requis (contrairement a AnsiToOem/$5)  }
+    { - copie EXACTEMENT cbLen octets. Meme simplification IDENTITE           }
+    { disclosee que AnsiToOem/$5. AX non significatif (contrat reel documente}
+    { VOID) - fixe a 0 par honnetete. }
+    KbdSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    KbdSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    KbdDstSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    KbdDstOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    KbdCbLen := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    For KbdI := 0 To KbdCbLen - 1 Do
+     Emu_WriteByte(P.CPU, KbdDstSeg, Word(KbdDstOfs + KbdI),
+      Emu_ReadByte(P.CPU, KbdSrcSeg, Word(KbdSrcOfs + KbdI)));
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   135: Begin
+    { OemToAnsiBuff(lpOemStr,lpAnsiStr,cbLen):VOID - meme forme et meme      }
+    { simplification disclosee que AnsiToOemBuff/$134 ci-dessus (ordinal/     }
+    { signature VERIFIES via keyboard.drv16.spec). }
+    KbdSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    KbdSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    KbdDstSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    KbdDstOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    KbdCbLen := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    For KbdI := 0 To KbdCbLen - 1 Do
+     Emu_WriteByte(P.CPU, KbdDstSeg, Word(KbdDstOfs + KbdI),
+      Emu_ReadByte(P.CPU, KbdSrcSeg, Word(KbdSrcOfs + KbdI)));
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   Else Begin
+    Win16_Halt(P, 'KEYBOARD', Ordinal);
     Exit;
    End;
   End;

@@ -10,6 +10,12 @@ Const
 
 Type
  TCommentState = (csNone,csBrace,csParen);
+ PIdentifier = ^TIdentifier;
+ TIdentifier = Record
+  Name:String[63];
+  Count:LongInt;
+  Next:PIdentifier;
+ End;
  {$IFDEF FPC}
   TSourceString = AnsiString;
  {$ELSE}
@@ -17,7 +23,7 @@ Type
  {$ENDIF}
 
 Var
- SourceName,TempName,BackupName,ProgramName:String;
+ SourceName,FormatSourceName,DeadName,TempName,BackupName,ProgramName:String;
  InputFile,OutputFile:Text;
  IsUnit,HasProgram,HadError:Boolean;
  BeginTotal,EndTotal,BeginNumber,EndNumber,IndentLevel,MainBeginNumber,
@@ -33,6 +39,8 @@ Var
  ParenthesisLevel,ConditionalLevel:Integer;
  MetadataComment,MetadataCandidate:TSourceString;
  MetadataFound,MetadataCapture,MetadataSkipped,SuppressMetadata:Boolean;
+ DeadCode:Boolean;
+ Identifiers:PIdentifier;
 
 Function UpperString(Const S:String):String;
 Var
@@ -130,11 +138,12 @@ Procedure Usage;Begin
  WriteLn('REPASCAL - Cette commande permet de reformater un ',
          'fichier source Pascal.');
  WriteLn;
- WriteLn('Syntaxe : REPASCAL fichier.pas');
+ WriteLn('Syntaxe : REPASCAL fichier.pas [-DEADCODE]');
  WriteLn('          REPASCAL /?');
  WriteLn;
  WriteLn('Le fichier est reformate sur place et l''original est conserve avec');
  WriteLn('l''extension .BAK. Les commentaires et les chaines sont preserves.');
+ WriteLn('-DEADCODE supprime prudemment les declarations inutilisees et le code inaccessible.');
 End;
 
 Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;
@@ -168,6 +177,194 @@ Function ReadSourceLine(Var T:Text;Var L:TSourceString):Boolean;
   ReadSourceLine:=True;
  End;
 {$ENDIF}
+
+Function TrimLine(Const S:TSourceString):TSourceString;Forward;
+
+Function FindIdentifier(Const N:String):PIdentifier;
+Var P:PIdentifier;U:String;
+Begin
+ U:=UpperString(N);P:=Identifiers;
+ While(P<>Nil)and(P^.Name<>U)do P:=P^.Next;FindIdentifier:=P
+End;
+
+Procedure AddIdentifier(Const N:String);
+Var P:PIdentifier;U:String;
+Begin
+ U:=UpperString(N);if U=''Then Exit;P:=FindIdentifier(U);
+ if P=Nil Then Begin New(P);P^.Name:=U;P^.Count:=0;P^.Next:=Identifiers;Identifiers:=P End;
+ Inc(P^.Count)
+End;
+
+Function IdentifierCount(Const N:String):LongInt;
+Var P:PIdentifier;
+Begin P:=FindIdentifier(N);if P=Nil Then IdentifierCount:=0 else IdentifierCount:=P^.Count End;
+
+Function CodeWithoutComments(Const L:TSourceString;Var State:TCommentState):TSourceString;
+Var R:TSourceString;I:LongInt;C:Char;
+Begin
+ R:='';I:=1;
+ While I<=Length(L)do Begin
+  C:=L[I];
+  if State=csBrace Then Begin
+   if C='}'Then State:=csNone;R:=R+' ';Inc(I);Continue
+  End;
+  if State=csParen Then Begin
+   if(C='*')and(I<Length(L))and(L[I+1]=')')Then Begin
+    State:=csNone;R:=R+'  ';Inc(I,2)
+   End else Begin R:=R+' ';Inc(I)End;Continue
+  End;
+  if C='{'Then Begin State:=csBrace;R:=R+' ';Inc(I);Continue End;
+  if(C='(')and(I<Length(L))and(L[I+1]='*')Then Begin
+   State:=csParen;R:=R+'  ';Inc(I,2);Continue
+  End;
+  if(C='/')and(I<Length(L))and(L[I+1]='/')Then Begin
+   While I<=Length(L)do Begin R:=R+' ';Inc(I)End;Break
+  End;
+  if C=''''Then Begin
+   R:=R+' ';Inc(I);
+   While I<=Length(L)do Begin
+    R:=R+' ';
+    if L[I]=''''Then Begin
+     if(I<Length(L))and(L[I+1]='''')Then Begin R:=R+' ';Inc(I,2)End
+     else Begin Inc(I);Break End
+    End else Inc(I)
+   End;Continue
+  End;
+  R:=R+C;Inc(I)
+ End;CodeWithoutComments:=R
+End;
+
+Procedure CountIdentifiersInCode(Const S:TSourceString);
+Var I,J:LongInt;
+Begin
+ I:=1;While I<=Length(S)do Begin
+  if IsIdentStart(S[I])Then Begin
+   J:=I;While(I<=Length(S))and IsIdentChar(S[I])do Inc(I);
+   AddIdentifier(Copy(S,J,I-J))
+  End else Inc(I)
+ End
+End;
+
+Function FirstCodeWord(Const S:TSourceString):String;
+Var I,J:LongInt;
+Begin
+ I:=1;While(I<=Length(S))and not IsIdentStart(S[I])do Inc(I);J:=I;
+ While(I<=Length(S))and IsIdentChar(S[I])do Inc(I);
+ FirstCodeWord:=UpperString(Copy(S,J,I-J))
+End;
+
+Function LastCodeWord(Const S:TSourceString):String;
+Var I,J:LongInt;W:String;
+Begin
+ I:=1;W:='';While I<=Length(S)do Begin
+  if IsIdentStart(S[I])Then Begin
+   J:=I;While(I<=Length(S))and IsIdentChar(S[I])do Inc(I);W:=Copy(S,J,I-J)
+  End else Inc(I)
+ End;LastCodeWord:=UpperString(W)
+End;
+
+Function ContainsComment(Const S:TSourceString):Boolean;
+Begin
+ ContainsComment:=(Pos('{',S)<>0)or(Pos('(*',S)<>0)or(Pos('//',S)<>0)
+End;
+
+Function PruneVariableLine(Const Original,Code:TSourceString;Var Remove:Boolean):TSourceString;
+Var Left,N,Kept,Indent:String;I,P,J:LongInt;Valid,HadUnused:Boolean;
+Begin
+ Remove:=False;PruneVariableLine:=Original;P:=Pos(':',Code);
+ if(P=0)or(Pos(':=',Code)<>0)or(Pos(';',Code)=0)or(Pos('=',Code)<>0)Then Exit;
+ Left:=Copy(Code,1,P-1);I:=1;Kept:='';Valid:=True;HadUnused:=False;
+ While I<=Length(Left)do Begin
+  While(I<=Length(Left))and(Left[I]in[' ',#9,','])do Inc(I);
+  if I>Length(Left)Then Break;
+  if not IsIdentStart(Left[I])Then Begin Valid:=False;Break End;J:=I;
+  While(I<=Length(Left))and IsIdentChar(Left[I])do Inc(I);N:=Copy(Original,J,I-J);
+  if IdentifierCount(N)<=1 Then HadUnused:=True
+  else Begin if Kept<>''Then Kept:=Kept+',';Kept:=Kept+N End;
+  While(I<=Length(Left))and(Left[I]in[' ',#9])do Inc(I);
+  if(I<=Length(Left))and(Left[I]<>',')Then Begin Valid:=False;Break End
+ End;
+ if not Valid or not HadUnused Then Exit;
+ if Kept=''Then Begin Remove:=True;PruneVariableLine:='';Exit End;
+ I:=1;Indent:='';While(I<=Length(Original))and(Original[I]in[' ',#9])do Begin
+  if Original[I]=#9 Then Indent:=Indent+' 'else Indent:=Indent+Original[I];Inc(I)
+ End;
+ PruneVariableLine:=Indent+Kept+Copy(Original,P,Length(Original)-P+1)
+End;
+
+Function BlockDelta(Const Code:TSourceString):Integer;
+Var I,J:LongInt;W:String;D:Integer;
+Begin
+ I:=1;D:=0;While I<=Length(Code)do Begin
+  if IsIdentStart(Code[I])Then Begin
+   J:=I;While(I<=Length(Code))and IsIdentChar(Code[I])do Inc(I);
+   W:=UpperString(Copy(Code,J,I-J));
+   if(W='BEGIN')or(W='CASE')or(W='RECORD')or(W='TRY')or(W='ASM')or
+     (W='OBJECT')or(W='REPEAT')Then Inc(D)
+   else if(W='END')or(W='UNTIL')Then Dec(D)
+  End else Inc(I)
+ End;BlockDelta:=D
+End;
+
+Function IsTerminatingStatement(Const Code:TSourceString):Boolean;
+Var U,W:String;
+Begin
+ U:=TrimLine(Code);W:=FirstCodeWord(U);
+ IsTerminatingStatement:=(Pos(';',U)<>0)and((W='EXIT')or(W='HALT')or(W='BREAK')or
+  (W='CONTINUE')or(W='RAISE'))and(Pos('IF ',UpperString(U))<>1)
+End;
+
+Procedure DisposeIdentifiers;
+Var P,Q:PIdentifier;
+Begin
+ P:=Identifiers;While P<>Nil do Begin Q:=P^.Next;Dispose(P);P:=Q End;Identifiers:=Nil
+End;
+
+Procedure DeadCodePass;
+Var InFile,DeadFile:Text;L,Code:TSourceString;State:TCommentState;
+ FirstWord,LastWord:String;VarSection,Unreachable,RemoveLine,ControlledNext,
+ WasControlled:Boolean;Depth,DeadDepth,ColonPos:Integer;
+Begin
+ Identifiers:=Nil;State:=csNone;Assign(InFile,SourceName);Reset(InFile);
+ if IOResult<>0 Then Begin Error('impossible d''ouvrir '+SourceName);Exit End;
+ While ReadSourceLine(InFile,L)do Begin Code:=CodeWithoutComments(L,State);CountIdentifiersInCode(Code)End;
+ Close(InFile);if IOResult<>0 Then Begin Error('erreur de lecture de '+SourceName);DisposeIdentifiers;Exit End;
+ Assign(InFile,SourceName);Reset(InFile);if IOResult<>0 Then Begin
+  Error('impossible de relire '+SourceName);DisposeIdentifiers;Exit
+ End;
+ Assign(DeadFile,DeadName);Rewrite(DeadFile);if IOResult<>0 Then Begin
+  Close(InFile);Error('impossible de creer le fichier temporaire DEADCODE');DisposeIdentifiers;Exit
+ End;
+ State:=csNone;VarSection:=False;Unreachable:=False;ControlledNext:=False;
+ Depth:=0;DeadDepth:=0;
+ While not HadError and ReadSourceLine(InFile,L)do Begin
+  Code:=CodeWithoutComments(L,State);FirstWord:=FirstCodeWord(Code);LastWord:=LastCodeWord(Code);
+  WasControlled:=ControlledNext;
+  if TrimLine(Code)<>''Then ControlledNext:=(LastWord='THEN')or(LastWord='DO');
+  if FirstWord='VAR'Then VarSection:=True
+  else if(FirstWord='CONST')or(FirstWord='TYPE')or(FirstWord='BEGIN')or
+   (FirstWord='PROCEDURE')or(FirstWord='FUNCTION')or(FirstWord='USES')or
+   (FirstWord='LABEL')Then VarSection:=False;
+  if Unreachable Then Begin
+   ColonPos:=Pos(':',Code);
+   if(Pos('{$',L)<>0)or((Depth<=DeadDepth)and((FirstWord='END')or(FirstWord='ELSE')or
+    (FirstWord='UNTIL')or(FirstWord='EXCEPT')or(FirstWord='FINALLY')or
+    ((ColonPos>0)and(Pos(':=',Code)=0))))Then Unreachable:=False
+   else if(TrimLine(Code)<>'')and not ContainsComment(L)Then Begin
+    Inc(Depth,BlockDelta(Code));Continue
+   End
+  End;
+  if VarSection and(FirstWord<>'VAR')and not ContainsComment(L)Then Begin
+   L:=PruneVariableLine(L,Code,RemoveLine);if not RemoveLine Then WriteLn(DeadFile,L)
+  End else WriteLn(DeadFile,L);
+  if not Unreachable and not WasControlled and IsTerminatingStatement(Code)Then Begin
+   Unreachable:=True;DeadDepth:=Depth
+  End;
+  Inc(Depth,BlockDelta(Code));if Depth<0 Then Depth:=0
+ End;
+ Close(InFile);Close(DeadFile);if IOResult<>0 Then Error('erreur d''ecriture DEADCODE');
+ DisposeIdentifiers
+End;
 
 Procedure CountLine(Const L:TSourceString;Var State:TCommentState;Var FirstFound:Boolean);
 Var
@@ -240,8 +437,8 @@ Begin
  BeginTotal:=0;EndTotal:=0;MainBeginNumber:=0;MainEndNumber:=0;BlockTop:=0;IsUnit:=False;
  HasProgram:=False;CommentState:=csNone;FirstFound:=False;MetadataFound:=False;
  MetadataCapture:=False;MetadataComment:='';MetadataCandidate:='';
- Assign(InputFile,SourceName);Reset(InputFile);If IOResult<>0 Then Begin
-  Error('impossible d''ouvrir '+SourceName);Exit;
+ Assign(InputFile,FormatSourceName);Reset(InputFile);If IOResult<>0 Then Begin
+  Error('impossible d''ouvrir '+FormatSourceName);Exit;
  End;
  While ReadSourceLine(InputFile,L)do Begin
   CaptureMetadataLine(L);CountLine(L,CommentState,FirstFound);
@@ -585,7 +782,7 @@ Var
  L:TSourceString;
  SkipProgram:Boolean;
 Begin
- Assign(InputFile,SourceName);Reset(InputFile);If IOResult<>0 Then Begin
+ Assign(InputFile,FormatSourceName);Reset(InputFile);If IOResult<>0 Then Begin
   Error('impossible de relire le fichier');Exit;
  End;
  Assign(OutputFile,TempName);Rewrite(OutputFile);If IOResult<>0 Then Begin
@@ -626,20 +823,33 @@ Begin
  End;
 End;
 
+Procedure RemoveDeadTemporary;
+Var F:File;
+Begin
+ if not DeadCode Then Exit;Assign(F,DeadName);Erase(F);if IOResult<>0 Then Begin End
+End;
+
+Var I:Integer;Arg:String;
 BEGIN
- HadError:=False;
- If(ParamCount=1)and((ParamStr(1)='/?')or(ParamStr(1)='-?'))Then Begin
-  Usage;Halt(0);
+ HadError:=False;DeadCode:=False;SourceName:='';
+ For I:=1 to ParamCount do Begin
+  Arg:=ParamStr(I);
+  If(Arg='/?')or(Arg='-?')Then Begin Usage;Halt(0)End
+  Else If UpperString(Arg)='-DEADCODE'Then DeadCode:=True
+  Else If SourceName=''Then SourceName:=Arg
+  Else Begin Usage;Halt(1)End
  End;
- If ParamCount<>1 Then Begin
-  Usage;Halt(1);
- End;
- SourceName:=ParamStr(1);TempName:=ReplaceExtension(SourceName,'.$$$');
+ If SourceName=''Then Begin Usage;Halt(1)End;
+ TempName:=ReplaceExtension(SourceName,'.$$$');
  BackupName:=ReplaceExtension(SourceName,'.BAK');
+ DeadName:=ReplaceExtension(SourceName,'.$DC');FormatSourceName:=SourceName;
  ProgramName:=UpperString(FileBase(SourceName));If ProgramName=''Then Begin
   Error('nom de fichier invalide');Halt(1);
  End;
  If ProgramName[1]in['0'..'9']Then ProgramName:='_'+ProgramName;
- FirstPass;If HadError Then Halt(1);SecondPass;If HadError Then Halt(1);InstallResult;
+ If DeadCode Then Begin DeadCodePass;FormatSourceName:=DeadName End;
+ If HadError Then Begin RemoveDeadTemporary;Halt(1)End;
+ FirstPass;If HadError Then Begin RemoveDeadTemporary;Halt(1)End;
+ SecondPass;RemoveDeadTemporary;If HadError Then Halt(1);InstallResult;
  If HadError Then Halt(1);WriteLn('Fichier reformate. Sauvegarde: ',BackupName);
 END.
