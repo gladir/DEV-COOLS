@@ -7687,6 +7687,13 @@ Var
  Win16_HeapNext, Win16_HeapLimit: Word;  { bump allocator LocalAlloc,   }
                                           { dans le segment autodata     }
                                           { (Stage 5).                   }
+ { Repertoire REEL (offset,taille) des blocs LocalAlloc/$5 (2026-09-14,   }
+ { demande explicite KERNEL.EXE 1-10) - necessaire pour que LocalReAlloc/ }
+ { $6 et LocalSize/$10 connaissent la VRAIE taille d'un bloc existant     }
+ { (le bump allocator lui-meme ne gardait jusqu'ici aucune metadonnee).   }
+ Win16_LocalBlockOfs: Array[0..63] Of Word;
+ Win16_LocalBlockSize: Array[0..63] Of Word;
+ Win16_LocalBlockCount: Integer;
  Win16_LoadedPath     : String;          { pour relire la table de       }
                                           { ressources a la demande       }
                                           { (LoadString etc., Stage 5).   }
@@ -91789,6 +91796,7 @@ Begin
   Win16_HeapNext := 0;
   Win16_HeapLimit := 0;
  End;
+ Win16_LocalBlockCount := 0;
  { Chantier Stage 5 : chemin + offset absolu de la table de ressources     }
  { retenus pour une relecture A LA DEMANDE (LoadString etc.) - meme        }
  { discipline que Win16_ResolveEntryOrdinal (fichier rouvert au besoin,    }
@@ -93494,6 +93502,14 @@ Var
  KbdStringSeg, KbdStringOfs: Word;
  KbdName: String;
  KbdWriteLen, KbdJ: Integer;
+ { KERNEL.EXE LocalInit/LocalReAlloc/LocalLock/LocalUnlock/LocalSize        }
+ { (2026-09-14, demande explicite, ordinaux 2/4/6/8/9/10). }
+ LIWSeg, LIWStart, LIWEnd: Word;
+ LRAHMem, LRAWBytes, LRAWFlags: Word;
+ LRAIdx: Integer;
+ LLHMem: Word;
+ LSHMem: Word;
+ LSIdx: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -93538,8 +93554,17 @@ Begin
    3: Begin
     { GetVersion - AL=version majeure, AH=version mineure (convention      }
     { confirmee par de tres nombreux exemples de code source Windows 2.x/  }
-    { 3.x publics qui decodent AX de cette facon des le retour). }
+    { 3.x publics qui decodent AX de cette facon des le retour). Ordinal    }
+    { VERIFIE via krnl386.exe16.spec : "pascal GetVersion() GetVersion16",  }
+    { PAS de "-ret16" - le retour est un VRAI DWORD (DX:AX), le mot de      }
+    { poids fort (DX) donnant la version DOS (2026-09-14, demande           }
+    { explicite : ce mot etait auparavant laisse a sa valeur precedente,    }
+    { jamais fixe) - reutilise A L'IDENTIQUE la VRAIE version DOS deja       }
+    { rapportee par ce meme emulateur a INT 21h/AH=30h (voir ce cas plus     }
+    { loin dans ce fichier : AL=3 AH=30 decimal = DOS 3.30), pas une         }
+    { valeur distincte inventee. }
     P.CPU.Regs.AX := $0002; { "Windows 2.0" : AL=2 AH=0 }
+    P.CPU.Regs.DX := $1E03; { DOS 3.30 : DL=3(majeur) DH=30 decimal(mineur) }
     ArgWords := 0;
    End;
    5: Begin
@@ -93553,13 +93578,24 @@ Begin
     { le "handle" retourne est TOUJOURS directement l'offset reel du bloc   }
     { (semantique LMEM_FIXED) - wFlags (MOVEABLE/ZEROINIT/...) est ignore.  }
     { Bump allocator dans le tas local reserve par Win16_LoadNE - jamais    }
-    { libere (LocalFree non implante) : suffisant pour une premiere         }
-    { iteration reelle (Stage 5), a etendre si un vrai programme le exige.  }
+    { libere reellement (LocalFree/$7 rapporte toujours un succes sans      }
+    { recuperer l'espace) : suffisant pour une premiere iteration reelle    }
+    { (Stage 5), a etendre si un vrai programme le exige. Enregistre        }
+    { REELLEMENT (offset,taille) dans Win16_LocalBlock* (2026-09-14,         }
+    { demande explicite KERNEL.EXE 1-10) - necessaire pour que               }
+    { LocalReAlloc/$6 et LocalSize/$10 connaissent la VRAIE taille d'un      }
+    { bloc existant ; silencieusement non-suivi si le repertoire est plein   }
+    { (limite documentee, n'affecte pas l'allocation elle-meme). }
     LocalWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) > LongInt(Win16_HeapLimit) Then
      P.CPU.Regs.AX := 0   { echec honnete : tas local epuise }
     Else Begin
      P.CPU.Regs.AX := Win16_HeapNext;
+     If Win16_LocalBlockCount < 64 Then Begin
+      Win16_LocalBlockOfs[Win16_LocalBlockCount] := Win16_HeapNext;
+      Win16_LocalBlockSize[Win16_LocalBlockCount] := LocalWBytes;
+      Inc(Win16_LocalBlockCount);
+     End;
      Win16_HeapNext := Win16_HeapNext + LocalWBytes;
     End;
     ArgWords := 2;
@@ -93765,6 +93801,119 @@ Begin
     P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     P.CPU.Regs.DX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
     ArgWords := 3;
+   End;
+   { FatalExit/1 : ordinal marque "stub" SANS AUCUNE signature exploitable  }
+   { dans le VRAI source Wine (krnl386.exe16.spec) ET dans la source         }
+   { secondaire WineVDM (krnl386.exe16.spec, meme resultat) - DELIBEREMENT  }
+   { NON IMPLANTE (meme discipline que FTrapping0/$355,                     }
+   { SetDCStatus/$170, etc.) : retombe sur le gestionnaire generique          }
+   { Win16_Halt ci-dessous. }
+   2: Begin
+    { ExitKernel():BOOL - ordinal VERIFIE via le VRAI source Wine            }
+    { (krnl386.exe16.spec : "pascal -ret16 ExitKernel() ExitKernel16", 0     }
+    { mot). REEL : l'effet documente (arreter Windows) n'a qu'UNE seule      }
+    { traduction honnete dans un emulateur mono-programme - la MEME fin de   }
+    { programme propre (sfEndProgram) que INT 21h/AH=4Ch deja etabli          }
+    { ailleurs dans ce fichier, PAS un Win16_Halt "non supporte" (l'appel    }
+    { est reellement traite, pas ignore). }
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'ExitKernel : fin de Windows demandee';
+    P.CPU.Regs.AX := 1;
+    ArgWords := 0;
+   End;
+   4: Begin
+    { LocalInit(wSeg,wStart,wEnd):BOOL - ordinal VERIFIE via le VRAI source }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 LocalInit(word word word)    }
+    { LocalInit16", 3 mots). REEL pour le SEUL segment de tas que ce          }
+    { sous-ensemble modelise reellement (Win16_StackSeg, deja utilise par     }
+    { LocalAlloc/$5 et consorts) : si wSeg correspond, (re)positionne          }
+    { VRAIMENT Win16_HeapNext/Win16_HeapLimit sur wStart/wEnd et vide le      }
+    { repertoire de blocs. Echec honnete pour tout AUTRE segment (aucun       }
+    { second tas independant modelise). }
+    LIWSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LIWStart := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LIWEnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If LIWSeg = Win16_StackSeg Then Begin
+     Win16_HeapNext := LIWStart;
+     Win16_HeapLimit := LIWEnd;
+     Win16_LocalBlockCount := 0;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   6: Begin
+    { LocalReAlloc(hMem,wBytes,wFlags):word - ordinal VERIFIE via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 LocalReAlloc(word     }
+    { word word) LocalReAlloc16", 3 mots). REEL, dans les limites honnetes    }
+    { d'un bump allocator SANS liste libre : retrouve le bloc dans le         }
+    { repertoire Win16_LocalBlock* (rempli par LocalAlloc/$5) - RETRECIR      }
+    { reussit toujours (simple mise a jour de la taille enregistree,           }
+    { l'espace excedentaire devient juste inutilise, sans consequence pour    }
+    { un bloc FIXED). AGRANDIR ne reussit VRAIMENT que si ce bloc est le       }
+    { DERNIER alloue (rien apres lui dans le tas) ET que la place est          }
+    { disponible - sinon ECHEC honnete (retour NULL documente reel) : un      }
+    { bloc FIXED ne peut PAS etre deplace, et ce sous-ensemble n'a aucune      }
+    { liste libre pour combler l'espace d'un bloc plus recent. Handle          }
+    { inconnu (jamais alloue via LocalAlloc/$5, ou repertoire plein a          }
+    { l'origine) : echec honnete. }
+    LRAHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LRAWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LRAWFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LRAIdx := -1;
+    For LSIdx := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LSIdx] = LRAHMem Then LRAIdx := LSIdx;
+    If LRAIdx < 0 Then
+     P.CPU.Regs.AX := 0
+    Else If LRAWBytes <= Win16_LocalBlockSize[LRAIdx] Then Begin
+     Win16_LocalBlockSize[LRAIdx] := LRAWBytes;
+     P.CPU.Regs.AX := LRAHMem;
+    End Else If (Word(LRAHMem + Win16_LocalBlockSize[LRAIdx]) = Win16_HeapNext) And
+                ((LongInt(LRAHMem) + LongInt(LRAWBytes)) <= LongInt(Win16_HeapLimit)) Then Begin
+     Win16_HeapNext := Word(LRAHMem + LRAWBytes);
+     Win16_LocalBlockSize[LRAIdx] := LRAWBytes;
+     P.CPU.Regs.AX := LRAHMem;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   8: Begin
+    { LocalLock(hMem):far ptr - ordinal VERIFIE via le VRAI source Wine     }
+    { (krnl386.exe16.spec : "pascal LocalLock(word) LocalLock16", 1 mot,      }
+    { PAS de "-ret16" = retour COMPLET DX:AX). REEL, meme forme et meme        }
+    { simplification EXACTE que GlobalLock/$18 deja etabli (handle deja       }
+    { simplifie en offset direct, semantique LMEM_FIXED - aucun VRAI           }
+    { compteur de verrou a tenir puisque le bloc ne bouge jamais). }
+    LLHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := LLHMem;
+    P.CPU.Regs.DX := Win16_StackSeg;
+    ArgWords := 1;
+   End;
+   9: Begin
+    { LocalUnlock(hMem):BOOL - ordinal VERIFIE via le VRAI source Wine      }
+    { (krnl386.exe16.spec : "pascal -ret16 LocalUnlock(word) LocalUnlock16", }
+    { 1 mot). REEL, meme forme et meme simplification EXACTE que              }
+    { GlobalUnlock/$19 deja etabli : rapporte toujours un succes (aucun       }
+    { VRAI verrou a lever, handle=offset direct). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   10: Begin
+    { LocalSize(hMem):word - ordinal VERIFIE via le VRAI source Wine        }
+    { (krnl386.exe16.spec : "pascal -ret16 LocalSize(word) LocalSize16", 1   }
+    { mot). REEL : consulte VRAIMENT le repertoire Win16_LocalBlock* rempli   }
+    { par LocalAlloc/$5 et eventuellement mis a jour par LocalReAlloc/$6 -    }
+    { retourne la VRAIE taille enregistree, PAS une approximation. Handle     }
+    { inconnu (jamais alloue via LocalAlloc/$5, ou repertoire plein a          }
+    { l'origine) : retourne honnetement 0 (comportement documente reel pour   }
+    { un handle invalide). }
+    LSHMem := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LSIdx := -1;
+    For LRAIdx := 0 To Win16_LocalBlockCount - 1 Do
+     If Win16_LocalBlockOfs[LRAIdx] = LSHMem Then LSIdx := LRAIdx;
+    If LSIdx >= 0 Then P.CPU.Regs.AX := Win16_LocalBlockSize[LSIdx]
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
