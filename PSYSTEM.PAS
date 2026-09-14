@@ -1923,6 +1923,44 @@ Begin
  End
 End;
 
+Procedure CPGenerateRoutine(R:PPasRoutine);
+Var Child:PPasRoutine;Names:Array[1..64]of String;N,I:Integer;
+Begin
+ if(R=Nil)or not R^.IsDefined Then Exit;
+ CPCurrentRoutine:=R;CPPos:=R^.SourcePosition;CPNext;
+ While(CPToken<>'EOF')and not CPIs('BEGIN')and not CPError do Begin
+  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then Begin
+   CPNext;
+   if CPToken<>'ID'Then Begin CPFail('nom de routine imbriquee attendu');Exit End;
+   Child:=CPFindRoutine(CPText,R);
+   if Child=Nil Then Begin CPFail('routine imbriquee absente de la passe 1');Exit End;
+   CPPos:=Child^.EndPosition;CPNext
+  End else if CPIs('VAR')Then Begin
+   CPNext;
+   While(CPToken='ID')and not CPIs('BEGIN')and not CPIs('PROCEDURE')and
+    not CPIs('FUNCTION')and not CPIs('CONST')and not CPIs('TYPE')and
+    not CPError do Begin
+    N:=0;
+    Repeat Inc(N);Names[N]:=CPText;CPNext;
+     if CPToken=','Then CPNext else Break
+    Until N=64;
+    CPNeed(':');if CPToken='ID'Then CPNext else CPFail('type local attendu');
+    CPNeed(';');
+    For I:=1 to N do Begin Inc(R^.LocalWords);CPAdd(Names[I],R^.LocalWords,False)End
+   End
+  End else CPNext
+ End;
+ R^.CodeStart:=CPCodePos;CPCompound;CPEmitRoutineReturn(R);
+ R^.CodeLength:=CPCodePos-R^.CodeStart;CPDropScope(R);CPCurrentRoutine:=Nil
+End;
+
+Procedure CPGenerateAllRoutines;
+Var R:PPasRoutine;
+Begin
+ CPPass:=2;R:=CPRoutines;
+ While(R<>Nil)and not CPError do Begin CPGenerateRoutine(R);R:=R^.Next End
+End;
+
 Function WriteUCSDCodeFile(CodeName,SegmentName:String;CodeLength:LongInt;
  DataWords:Integer):Boolean;
 Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
@@ -1976,6 +2014,7 @@ Label 99;
 
 Var
  F:File;
+ R:PPasRoutine;
  Sz:LongInt;
  N:Word;
  Names:Array[1..64]of String;
@@ -1997,7 +2036,9 @@ Begin
  Close(F);
  CPSize:=Sz;CPDeclarationPass;
  if CPError Then Goto 99;
- CPPass:=2;CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPCodePos:=0;CPNext;
+ CPPass:=2;CPCurrentRoutine:=Nil;CPCodePos:=0;CPGenerateAllRoutines;
+ if CPError Then Goto 99;
+ CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPNext;
  if CPIs('PROGRAM')Then Begin
   CPNext;if CPToken='ID'Then CPNext;
   While(CPToken<>';')and(CPToken<>'EOF')do CPNext;CPNeed(';')
@@ -2026,6 +2067,13 @@ Begin
     Inc(CPVarCount);CPAdd(Names[I],CPVarCount,False)
    End
   End
+ End;
+ While CPIs('PROCEDURE')or CPIs('FUNCTION')do Begin
+  CPNext;
+  if CPToken<>'ID'Then Begin CPFail('nom de routine attendu');Break End;
+  R:=CPFindRoutine(CPText,Nil);
+  if R=Nil Then Begin CPFail('routine absente de la passe 1');Break End;
+  CPPos:=R^.EndPosition;CPNext
  End;
  CPCompound;if CPToken='.'Then CPNext else CPFail('point final attendu');
  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214);

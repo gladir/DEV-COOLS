@@ -2016,6 +2016,13 @@ Const
  CLR_BTNFACE           = 7;    { gris clair : face de bouton          }
  CLR_GRAYTEXT          = 8;    { gris fonce : texte desactive         }
 
+ { Icone de fermeture (rouge/X blanc), style "MonsterBook" - demande        }
+ { explicite de l utilisateur (2026-09-14), coin superieur droit des        }
+ { panneaux Terminal/Explorateur de solutions/Proprietes. }
+ CLR_CLOSEICON_BG      = 4;    { rouge : fond du carre                }
+ CLR_CLOSEICON_FG      = 15;   { blanc : X                            }
+ CLOSEICON_SIZE        = 14;   { cote du carre en pixels              }
+
  { Codes de fin d execution de l emulateur 8086 (sf = stop fault) }
  sfNone        = 0;
  sfInvalidCode = 1;
@@ -7351,6 +7358,22 @@ Var
  TerminalHasFocus : Boolean;       { le terminal a le focus clavier }
  ExplorerHasFocus : Boolean;       { l'explorateur a le focus clavier}
  TermVisible  : Boolean;           { le panneau terminal est visible }
+ ExplorerPanelVisible : Boolean;   { icone fermeture (2026-09-14) : le }
+                                    { panneau Explorateur est visible }
+ RightDockCloseConsumed : Boolean; { BOGUE REEL (2026-09-14) : fermer  }
+                                    { Explorateur via son icone         }
+                                    { relocalise aussitot le bandeau de }
+                                    { titre de Proprietes exactement au }
+                                    { point clique (RelayoutRightDock)  }
+                                    { - sans ce garde-fou, le MEME clic }
+                                    { est ensuite retest par            }
+                                    { HandlePropertiesEvent (appele     }
+                                    { juste apres dans DispatchEvent)   }
+                                    { et ferme AUSSI Proprietes.        }
+ PropertiesPanelVisible : Boolean; { icone fermeture (2026-09-14) : le }
+                                    { panneau Proprietes est visible  }
+ SavedExplorerWidth : Integer;     { restaure EXPLORER_WIDTH quand on }
+                                    { rouvre Explorateur/Proprietes   }
  TermSelectOpen : Boolean;         { le selectbox deroulant est ouvert}
  TermSelectIdx  : Integer;         { index surbrillance clavier 0..2 }
  TermSelectScrollTop : Integer;    { 1er item visible (defilement,  }
@@ -12898,6 +12921,7 @@ Begin
  AddMenuItem(MainMenuBar.Menus[2], 'Liste d''erreurs', 'Ctrl+\+E', 302);
  AddMenuItem(MainMenuBar.Menus[2], 'Terminal', 'Ctrl+`', 303);
  AddMenuItem(MainMenuBar.Menus[2], 'Explorateur d''objets SQL Server,...', '', 304);
+ AddMenuItem(MainMenuBar.Menus[2], 'Propri'+#130+'t'+#130+'s', 'Ctrl+Alt+P', 305);
  AddMenuSeparator(MainMenuBar.Menus[2]);
  AddMenuItem(MainMenuBar.Menus[2], 'Barre d''outils', '', 310);
  AddMenuItem(MainMenuBar.Menus[2], 'Plein '+#130+'cran', 'Shift+Alt+Enter', 311);
@@ -13058,6 +13082,7 @@ Function ShowMessageBox(Title, Text: String;
  Buttons: TMessageButtons; Icon: TMessageIcon): Integer; Forward;
 Procedure ShowOptionsDialog(Var Dlg: TOptionsDialog); Forward;
 Procedure DrawExplorer(Var Exp: TSolutionExplorer); Forward;
+Procedure RelayoutRightDock; Forward;
 Procedure ShowExplorerContextMenu(Var Exp: TSolutionExplorer;
  Var CM: TContextMenu; NodeIdx, MX, MY: Integer); Forward;
 { EXTENSION (2026-08-08) : declarations anticipees pour les 3 nouveaux    }
@@ -13972,6 +13997,16 @@ Begin
         CreateSqlObjectExplorerWindow;
         FullRepaintNeeded := True;
        End;
+  300: Begin { Affichage > Explorateur de solution : icone de fermeture }
+        { (2026-09-14, demande explicite) - tag deja present dans le menu }
+        { depuis longtemps mais jamais branche jusqu ici. }
+        ExplorerPanelVisible := Not ExplorerPanelVisible;
+        RelayoutRightDock;
+       End;
+  305: Begin { Affichage > Proprietes : icone de fermeture (2026-09-14) }
+        PropertiesPanelVisible := Not PropertiesPanelVisible;
+        RelayoutRightDock;
+       End;
  End;
 End;
 
@@ -14222,6 +14257,28 @@ Begin
     PutPixel(X + IX, Y + IY, C);
    End;
   End;
+End;
+
+{ --- Icone de fermeture (carre rouge + X blanc), style "MonsterBook" - }
+{ demande explicite de l utilisateur (2026-09-14). X,Y = coin superieur }
+{ gauche du carre ; l appelant calcule sa propre position (coin haut-  }
+{ droit de son bandeau de titre). }
+
+Procedure DrawCloseIcon(X, Y: Integer);
+Begin
+ SetFillStyle(SolidFill, CLR_CLOSEICON_BG);
+ Bar(X, Y, X + CLOSEICON_SIZE - 1, Y + CLOSEICON_SIZE - 1);
+ SetColor(CLR_CLOSEICON_FG);
+ Line(X + 3, Y + 3, X + CLOSEICON_SIZE - 4, Y + CLOSEICON_SIZE - 4);
+ Line(X + 3, Y + CLOSEICON_SIZE - 4, X + CLOSEICON_SIZE - 4, Y + 3);
+End;
+
+{ --- Tester si (MX,MY) est dans l icone de fermeture dessinee a (IconX,IconY) --- }
+
+Function HitCloseIcon(MX, MY, IconX, IconY: Integer): Boolean;
+Begin
+ HitCloseIcon := (MX >= IconX) And (MX < IconX + CLOSEICON_SIZE) And
+  (MY >= IconY) And (MY < IconY + CLOSEICON_SIZE);
 End;
 
 { --- Initialisation d une icone vide --- }
@@ -34670,6 +34727,12 @@ Function ComputePropsPanelHeight: Integer;
 Var
  ExpY, TotalAvail, H: Integer;
 Begin
+ { Icone de fermeture (2026-09-14) : panneau Proprietes ferme -> hauteur }
+ { nulle, cascade automatiquement dans Exp.Height (voir RelayoutRightDock). }
+ If Not PropertiesPanelVisible Then Begin
+  ComputePropsPanelHeight := 0;
+  Exit;
+ End;
  ExpY := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
  TotalAvail := GetScreenHeight - ExpY - STATUSBAR_HEIGHT
   - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT;
@@ -34677,6 +34740,67 @@ Begin
  If H < PROPS_MIN_HEIGHT Then H := PROPS_MIN_HEIGHT;
  If H > PROPS_MAX_HEIGHT Then H := PROPS_MAX_HEIGHT;
  ComputePropsPanelHeight := H;
+End;
+
+{ --- Recalculer en direct la mise en page de la colonne de droite       }
+{ (Explorateur de solutions + Proprietes) selon ExplorerPanelVisible/    }
+{ PropertiesPanelVisible, et propager la largeur liberee/reprise aux     }
+{ fenetres editeur deja ouvertes et au Terminal - demande explicite de   }
+{ l utilisateur (2026-09-14, icone de fermeture) : "Fermer et            }
+{ reorganiser", comme Visual Studio, pas un simple espace vide. Appelee  }
+{ a chaque bascule de visibilite (icone de fermeture ou menu Affichage). }
+
+Procedure RelayoutRightDock;
+Var
+ I: Integer;
+Begin
+ If ExplorerPanelVisible Or PropertiesPanelVisible Then Begin
+  If EXPLORER_WIDTH = 0 Then EXPLORER_WIDTH := SavedExplorerWidth;
+ End Else Begin
+  If EXPLORER_WIDTH <> 0 Then SavedExplorerWidth := EXPLORER_WIDTH;
+  EXPLORER_WIDTH := 0;
+ End;
+
+ { Explorateur de solutions }
+ SolExplorer.X := GetScreenWidth - EXPLORER_WIDTH;
+ SolExplorer.Y := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
+ SolExplorer.Width := EXPLORER_WIDTH;
+ If PropertiesPanelVisible Then
+  SolExplorer.Height := GetScreenHeight - SolExplorer.Y - STATUSBAR_HEIGHT
+   - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT
+   - ComputePropsPanelHeight - PROPS_SPLITTER_HEIGHT
+ Else
+  SolExplorer.Height := GetScreenHeight - SolExplorer.Y - STATUSBAR_HEIGHT
+   - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT;
+ SolExplorer.SplitterX := SolExplorer.X - SPLITTER_WIDTH;
+
+ { Proprietes }
+ PropsPanel.X := GetScreenWidth - EXPLORER_WIDTH;
+ PropsPanel.Width := EXPLORER_WIDTH;
+ If ExplorerPanelVisible Then Begin
+  PropsPanel.Height := ComputePropsPanelHeight;
+  PropsPanel.Y := GetScreenHeight - PropsPanel.Height - STATUSBAR_HEIGHT
+   - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT;
+ End Else Begin
+  { Explorateur ferme : Proprietes remonte combler toute la colonne }
+  PropsPanel.Y := TOOLBTN_HEIGHT + TAB_HEIGHT + 2;
+  PropsPanel.Height := GetScreenHeight - PropsPanel.Y - STATUSBAR_HEIGHT
+   - OUTPUT_HEIGHT - OUTPUT_SPLITTER_HEIGHT;
+ End;
+ PropsPanel.SplitterY := PropsPanel.Y - PROPS_SPLITTER_HEIGHT;
+
+ { Propager aux fenetres editeur deja ouvertes et au Terminal, comme      }
+ { Visual Studio : elles s elargissent pour combler l espace libere      }
+ { (ou retrecissent si la colonne est rouverte). }
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WinMgr.Windows[I].Maximized Then
+   WinMgr.Windows[I].Width := GetScreenWidth - EXPLORER_WIDTH;
+ If TermVisible Then
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+
+ SolExplorer.NeedRepaint := True;
+ PropsPanel.NeedRepaint := True;
+ FullRepaintNeeded := True;
 End;
 
 { --- Initialiser un noeud de l explorateur --- }
@@ -35169,6 +35293,9 @@ Var
  I, DrawY, VisCount, VisTot, MaxVis: Integer;
  BtnX, BtnY, SearchY, CTop, CurX: Integer;
 Begin
+ { Icone de fermeture (2026-09-14) : panneau ferme, ne rien dessiner - }
+ { meme garde que DrawTerminalPanel/If Not TermVisible Then Exit. }
+ If Not ExplorerPanelVisible Then Exit;
  { Fond du panneau }
  SetFillStyle(SolidFill, CLR_EXPLORER_BG);
  Bar(Exp.X, Exp.Y, Exp.X + Exp.Width - 1,
@@ -35187,6 +35314,9 @@ Begin
   ETAB_TEAMEXPLORER: OutTextXY(Exp.X + 4, Exp.Y + 3, 'Team Explorer');
   ETAB_PASCHAT:      OutTextXY(Exp.X + 4, Exp.Y + 3, 'PasChat');
  End;
+ { Icone de fermeture (rouge/X blanc), demande explicite de              }
+ { l utilisateur (2026-09-14) - coin superieur droit du bandeau de titre. }
+ DrawCloseIcon(Exp.X + Exp.Width - CLOSEICON_SIZE - 3, Exp.Y + 3);
  { Splitter - commun a tous les onglets }
  SetFillStyle(SolidFill, CLR_BORDER);
  Bar(Exp.SplitterX, Exp.Y,
@@ -37322,6 +37452,17 @@ Var
  MaxScroll: Integer;
  Now: LongInt;
 Begin
+ { Icone de fermeture (rouge/X blanc), demande explicite de l utilisateur }
+ { (2026-09-14) - verifiee EN PREMIER, avant tout le reste (y compris la  }
+ { bande d onglets). }
+ If ExplorerPanelVisible And (Ev.Kind = EV_MOUSE_DOWN) Then
+  If HitCloseIcon(Ev.MouseX, Ev.MouseY,
+     Exp.X + Exp.Width - CLOSEICON_SIZE - 3, Exp.Y + 3) Then Begin
+   ExplorerPanelVisible := False;
+   RelayoutRightDock;
+   RightDockCloseConsumed := True;
+   Exit;
+  End;
  { EXTENSION (2026-08-08) : bande d onglets - toujours active, quel que    }
  { soit l onglet courant. Verifiee EN PREMIER, avant tout le reste. }
  If Ev.Kind = EV_MOUSE_DOWN Then Begin
@@ -38743,6 +38884,9 @@ Begin
   OutTextXY(PP.X + 4, PP.Y + 4, PP.SourceTitle)
  Else
   OutTextXY(PP.X + 4, PP.Y + 4, 'Proprietes');
+ { Icone de fermeture (rouge/X blanc), demande explicite de              }
+ { l utilisateur (2026-09-14) - coin superieur droit du bandeau de titre. }
+ DrawCloseIcon(PP.X + PP.Width - CLOSEICON_SIZE - 3, PP.Y + 3);
 End;
 
 { --- Dessiner une ligne de propriete --- }
@@ -38796,6 +38940,9 @@ Procedure DrawPropertiesPanel(Var PP: TPropertiesPanel);
 Var
  I, RowY, Visible: Integer;
 Begin
+ { Icone de fermeture (2026-09-14) : panneau ferme, ne rien dessiner - }
+ { meme garde que DrawTerminalPanel/If Not TermVisible Then Exit. }
+ If Not PropertiesPanelVisible Then Exit;
  { Bordure du panneau }
  SetColor(CLR_BORDER);
  Rectangle(PP.X, PP.Y, PP.X + PP.Width - 1,
@@ -38918,6 +39065,16 @@ Var
 Begin
  Case Ev.Kind Of
   EV_MOUSE_DOWN: Begin
+   { Icone de fermeture (rouge/X blanc), demande explicite de              }
+   { l utilisateur (2026-09-14) - verifiee EN PREMIER, avant tout le reste. }
+   If PropertiesPanelVisible And
+      HitCloseIcon(Ev.MouseX, Ev.MouseY,
+      PP.X + PP.Width - CLOSEICON_SIZE - 3, PP.Y + 3) Then Begin
+    PropertiesPanelVisible := False;
+    RelayoutRightDock;
+    RightDockCloseConsumed := True;
+    Exit;
+   End;
    { Splitter horizontal }
    If PropertiesSplitterHitTest(PP, Ev.MouseX, Ev.MouseY) Then Begin
     PP.Dragging := True;
@@ -144240,6 +144397,9 @@ Begin
  OutTextXY(SBX + 4, SBY + 3, SelLabel);
  { Fleche vers le bas }
  OutTextXY(SBX + TERM_SELECT_WIDTH - 14, SBY + 3, #31);
+ { Icone de fermeture (rouge/X blanc), demande explicite de              }
+ { l utilisateur (2026-09-14) - coin superieur droit du bandeau de titre. }
+ DrawCloseIcon(PX + PW - CLOSEICON_SIZE - 3, PY + 3);
  { Bordure du panneau }
  SetColor(CLR_BORDER);
  Rectangle(PX, PY, PX + PW - 1, PY + PH - 1);
@@ -144745,6 +144905,15 @@ Begin
  SBY := TermY + 2;
  { Clic souris }
  If (Ev.Kind = EV_MOUSE_DOWN) Then Begin
+  { Icone de fermeture (rouge/X blanc), demande explicite de              }
+  { l utilisateur (2026-09-14) - verifiee EN PREMIER, avant tout le reste. }
+  If HitCloseIcon(Ev.MouseX, Ev.MouseY,
+     TermX + TermWidth - CLOSEICON_SIZE - 3, TermY + 3) Then Begin
+   TermVisible := False;
+   TerminalHasFocus := False;
+   FullRepaintNeeded := True;
+   Exit;
+  End;
   { Clic droit dans la zone du terminal : menu contextuel }
   If (Ev.MouseBtn = MB_RIGHT) And
      (Ev.MouseX >= TermX) And
@@ -208678,6 +208847,9 @@ Var
  SubX, SubY: Integer;
 Begin
  If Ev.Kind = EV_NONE Then Exit;
+ { Icone de fermeture Explorateur/Proprietes (2026-09-14) : voir la     }
+ { note sur RightDockCloseConsumed - reinitialise a chaque evenement.  }
+ RightDockCloseConsumed := False;
  { Menu contextuel en priorite si visible }
  If CtxMenu.Visible Then Begin
   CtxTag := HandleContextMenuEvent(CtxMenu, Ev);
@@ -209685,9 +209857,13 @@ Begin
   End;
  End;
  { Evenements pour l explorateur }
- HandleExplorerEvent(SolExplorer, Ev);
- { Evenements pour le panneau de proprietes }
- HandlePropertiesEvent(PropsPanel, Ev);
+ If Not RightDockCloseConsumed Then
+  HandleExplorerEvent(SolExplorer, Ev);
+ { Evenements pour le panneau de proprietes - voir RightDockCloseConsumed }
+ { (2026-09-14) : ne pas retester le MEME clic si l Explorateur vient de  }
+ { se fermer et a deplace le bandeau de Proprietes exactement dessus. }
+ If Not RightDockCloseConsumed Then
+  HandlePropertiesEvent(PropsPanel, Ev);
  { Evenements pour le panneau de sortie }
  HandleOutputEvent(OutputPanel, Ev);
  { Evenements pour le terminal integre }
@@ -210461,6 +210637,9 @@ BEGIN
  InitXMLHighlighter(XMLHL);
  InitPSPHighlighter(PSPHL);
  InitJSPHighlighter(JSPHL);
+ ExplorerPanelVisible := True;
+ PropertiesPanelVisible := True;
+ SavedExplorerWidth := EXPLORER_WIDTH;
  InitExplorer(SolExplorer);
  InitContextMenu(CtxMenu);
  InitSolution(CurrentSolution);
