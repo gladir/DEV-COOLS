@@ -139,6 +139,10 @@ Type
  PPCodeMemory=^TPCodeMemory;
  TPCodeData=Array[0..8191]of LongInt;
  PPCodeData=^TPCodeData;
+ TPCodeRuntimeFile=Record
+  Used,Opened,TextMode,Writing:Boolean;Name:String[127];T:Text;F:File;
+  Buffer,BufferAddress:LongInt;LastError:Integer
+ End;
 
 Var
  PCode_Mem:PPCodeMemory;
@@ -147,6 +151,10 @@ Var
  PCode_SegmentSize,PCode_ProcDict,PCode_Base:LongInt;
  PCode_ProcCount,PCode_CurrentProc:Integer;
  PCode_StringHeap:LongInt;
+ PCode_Files:Array[1..16]of TPCodeRuntimeFile;
+ PCode_LastIOError:Integer;
+ PCode_IOChecking:Boolean;
+ PCode_FreeStart,PCode_FreeSize:Array[1..64]of LongInt;PCode_FreeCount:Integer;
  PCode_IsIVSegment,PCode_HasProcDictionary:Boolean;
  PCode_Halted:Boolean;
  PCode_ExitCode:Integer;
@@ -208,6 +216,93 @@ Var D:LongInt;
 Begin
  D:=PCode_StringHeap;PCode_DataSet(D,1);PCode_DataSet(D+1,Byte(C));Inc(PCode_StringHeap,2);
  PCode_CharString:=D
+End;
+
+Procedure PCode_IOError(H,E:Integer);Forward;
+
+Function PCode_Allocate(Words:Integer):LongInt;
+Var A,I:LongInt;
+Begin
+ if Words<1 Then Words:=1;
+ For I:=1 to PCode_FreeCount do if PCode_FreeSize[I]>=Words Then Begin
+  A:=PCode_FreeStart[I];Inc(PCode_FreeStart[I],Words);Dec(PCode_FreeSize[I],Words);
+  if PCode_FreeSize[I]=0 Then Begin PCode_FreeStart[I]:=PCode_FreeStart[PCode_FreeCount];
+   PCode_FreeSize[I]:=PCode_FreeSize[PCode_FreeCount];Dec(PCode_FreeCount)End;
+  PCode_Allocate:=A;Exit
+ End;A:=PCode_StringHeap;
+ if(A+Words>=PCode_SP-32)Then Begin PCode_IOError(0,4);PCode_Allocate:=0;Exit End;
+ For I:=0 to Words-1 do PCode_DataSet(A+I,0);Inc(PCode_StringHeap,Words);PCode_Allocate:=A
+End;
+
+Procedure PCode_Release(A:LongInt;Words:Integer);
+Begin
+ if(A<=0)or(Words<=0)Then Exit;
+ if PCode_FreeCount<64 Then Begin Inc(PCode_FreeCount);PCode_FreeStart[PCode_FreeCount]:=A;
+  PCode_FreeSize[PCode_FreeCount]:=Words
+ End
+End;
+
+Procedure PCode_InitFiles;
+Var I:Integer;
+Begin
+ For I:=1 to 16 do Begin PCode_Files[I].Used:=False;PCode_Files[I].Opened:=False End;
+ PCode_LastIOError:=0;PCode_IOChecking:=True;PCode_FreeCount:=0
+End;
+
+Function PCode_MapFileName(S:String):String;
+Var P:Integer;U:String;
+Begin
+ U:=UpperString(S);
+ if(U='PRINTER:')or(U='PRINTER')Then S:='PRN'
+ else if(U='CONSOLE:')or(U='CONSOLE')or(U='KEYBOARD:')or(U='KEYBOARD')Then S:='CON'
+ else Begin P:=Pos(':',S);
+  if(P>1)and not((P=2)and(UpCase(S[1])in['A'..'Z']))Then S:=Copy(S,P+1,255)
+ End;PCode_MapFileName:=S
+End;
+
+Procedure PCode_CloseFiles;
+Var I,E:Integer;
+Begin
+ For I:=1 to 16 do if PCode_Files[I].Used and PCode_Files[I].Opened Then Begin
+  if PCode_Files[I].TextMode Then Close(PCode_Files[I].T)else Close(PCode_Files[I].F);
+  E:=IOResult;PCode_Files[I].LastError:=E;PCode_Files[I].Opened:=False
+ End
+End;
+
+Function PCode_FileHandle(FileAddress:LongInt;CreateIt:Boolean):Integer;
+Var H,I:Integer;
+Begin
+ H:=PCode_DataAt(FileAddress);
+ if(H<1)or(H>16)or not PCode_Files[H].Used Then Begin H:=0;
+  if CreateIt Then For I:=1 to 16 do if not PCode_Files[I].Used Then Begin
+   H:=I;PCode_Files[I].Used:=True;PCode_Files[I].Opened:=False;
+   PCode_Files[I].Name:='';PCode_Files[I].BufferAddress:=PCode_StringHeap;
+   Inc(PCode_StringHeap);PCode_DataSet(FileAddress,H);Break
+  End
+ End;PCode_FileHandle:=H
+End;
+
+Procedure PCode_IOError(H,E:Integer);
+Begin
+ PCode_LastIOError:=E;if(H>=1)and(H<=16)Then PCode_Files[H].LastError:=E;
+ if(E<>0)and PCode_IOChecking Then Begin PCode_Write('[erreur E/S '+PCode_IntToStr(E)+']');
+  PCode_Halted:=True;PCode_ExitCode:=E
+ End
+End;
+
+Procedure PCode_OpenFile(FileAddress:LongInt;ForWriting,AsText:Boolean);
+Var H,E:Integer;
+Begin
+ H:=PCode_FileHandle(FileAddress,True);if H=0 Then Begin PCode_IOError(0,4);Exit End;
+ if PCode_Files[H].Opened Then Begin
+  if PCode_Files[H].TextMode Then Close(PCode_Files[H].T)else Close(PCode_Files[H].F);E:=IOResult
+ End;
+ PCode_Files[H].TextMode:=AsText;PCode_Files[H].Writing:=ForWriting;
+ if AsText Then Begin Assign(PCode_Files[H].T,PCode_Files[H].Name);
+  if ForWriting Then Rewrite(PCode_Files[H].T)else Reset(PCode_Files[H].T)
+ End else Begin Assign(PCode_Files[H].F,PCode_Files[H].Name);
+  if ForWriting Then Rewrite(PCode_Files[H].F,1)else Reset(PCode_Files[H].F,1)
+ End;E:=IOResult;PCode_Files[H].Opened:=E=0;PCode_IOError(H,E)
 End;
 
 Function PCode_LoadRaw(Const FileName:String):Boolean;
@@ -464,17 +559,16 @@ End;
 
 Procedure PCode_CallCSP(CspNum: Byte);
 Var
- N,I,P: Integer;A,B,D:LongInt;Cmp:Integer;
+ N,I,P,H,E,Wid,Prec,Kind: Integer;A,B,D,V:LongInt;Cmp:Integer;S:String;RB:TSingleBits;
 Begin
  Case CspNum Of
  4:
  Begin
  { exit } N := PCode_Pop; PCode_Halted := True; PCode_ExitCode := N; 
  End;
-18, 19:
-Begin
- { trunc/round : deja entier dans ce sous-ensemble, no-op } 
-End;
+ 18:Begin RB.L:=PCode_Pop;PCode_Push(Trunc(RB.S))End;
+ 19:Begin RB.L:=PCode_Pop;if RB.S>=0 Then PCode_Push(Trunc(RB.S+0.5))
+  else PCode_Push(Trunc(RB.S-0.5))End;
  40:Begin A:=PCode_Pop;PCode_Push(PCode_StringLength(A))End;
  41:Begin B:=PCode_Pop;A:=PCode_Pop;
   PCode_Push(PCode_NewString(A,B,1,PCode_StringLength(A),1,PCode_StringLength(B)))End;
@@ -504,6 +598,124 @@ End;
  51:Begin N:=PCode_Pop;B:=PCode_Pop;A:=PCode_Pop;
   if(N and 1)<>0 Then A:=PCode_CharString(A);if(N and 2)<>0 Then B:=PCode_CharString(B);
   PCode_Push(PCode_NewString(A,B,1,PCode_StringLength(A),1,PCode_StringLength(B)))
+ End;
+ 53:Begin B:=PCode_Pop;A:=PCode_Pop;H:=PCode_FileHandle(A,False);
+  if A=0 Then For I:=1 to PCode_StringLength(B)do PCode_PutChar(Chr(PCode_StringChar(B,I)))
+  else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then PCode_IOError(H,103)
+  else Begin For I:=1 to PCode_StringLength(B)do Write(PCode_Files[H].T,Chr(PCode_StringChar(B,I)));
+   PCode_IOError(H,IOResult)
+  End
+ End;
+ 54:Begin Wid:=PCode_Pop;B:=PCode_Pop;A:=PCode_Pop;N:=PCode_StringLength(B);
+  if Wid>N Then Begin S:='';For I:=1 to Wid-N do S:=S+' 'End else S:='';
+  For I:=1 to N do S:=S+Chr(PCode_StringChar(B,I));H:=PCode_FileHandle(A,False);
+  if A=0 Then Write(S)else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then
+   PCode_IOError(H,103)else Begin Write(PCode_Files[H].T,S);PCode_IOError(H,IOResult)End
+ End;
+ 55:Begin A:=PCode_Pop;H:=PCode_FileHandle(A,False);if A=0 Then WriteLn
+  else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then PCode_IOError(H,103)
+  else Begin WriteLn(PCode_Files[H].T);PCode_IOError(H,IOResult)End
+ End;
+ 60:Begin A:=PCode_Pop;D:=PCode_Pop;H:=PCode_FileHandle(D,True);
+  if H=0 Then PCode_IOError(0,4)else Begin S:='';For I:=1 to PCode_StringLength(A)do S:=S+Chr(PCode_StringChar(A,I));
+   PCode_Files[H].Name:=PCode_MapFileName(S)
+  End
+ End;
+ 61,62:Begin Kind:=PCode_Pop;D:=PCode_Pop;PCode_OpenFile(D,CspNum=62,Kind<>0)End;
+ 63:Begin D:=PCode_Pop;H:=PCode_FileHandle(D,False);if(H>0)and PCode_Files[H].Opened Then Begin
+   if PCode_Files[H].TextMode Then Close(PCode_Files[H].T)else Close(PCode_Files[H].F);
+   E:=IOResult;PCode_Files[H].Opened:=False;PCode_IOError(H,E)
+  End
+ End;
+ 64:Begin D:=PCode_Pop;if D=0 Then PCode_Push(Ord(Eof(Input)))else Begin
+   H:=PCode_FileHandle(D,False);if(H=0)or not PCode_Files[H].Opened Then Begin PCode_IOError(H,103);PCode_Push(1)End
+   else if PCode_Files[H].TextMode Then PCode_Push(Ord(Eof(PCode_Files[H].T)))
+   else PCode_Push(Ord(Eof(PCode_Files[H].F)))
+  End
+ End;
+ 65:Begin D:=PCode_Pop;if D=0 Then PCode_Push(Ord(Eoln(Input)))else Begin
+   H:=PCode_FileHandle(D,False);if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then Begin
+    PCode_IOError(H,103);PCode_Push(1)End else PCode_Push(Ord(Eoln(PCode_Files[H].T)))
+  End
+ End;
+ 66,67:Begin D:=PCode_Pop;A:=PCode_Pop;H:=PCode_FileHandle(A,False);
+   if A=0 Then Begin if CspNum=66 Then Read(V)else Begin Read(S);if S=''Then V:=0 else V:=Ord(S[1])End;E:=IOResult End
+   else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then E:=103
+   else Begin if CspNum=66 Then Read(PCode_Files[H].T,V)else Begin Read(PCode_Files[H].T,S);
+    if S=''Then V:=0 else V:=Ord(S[1])End;E:=IOResult End;
+   if E=0 Then PCode_DataSet(D,V);PCode_IOError(H,E)
+  End;
+ 68:Begin N:=PCode_Pop;D:=PCode_Pop;A:=PCode_Pop;H:=PCode_FileHandle(A,False);S:='';
+   if A=0 Then Begin Read(S);E:=IOResult End
+   else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then E:=103
+   else Begin Read(PCode_Files[H].T,S);E:=IOResult End;
+   if E=0 Then Begin B:=PCode_StringHeap;PCode_DataSet(B,Length(S));For I:=1 to Length(S)do PCode_DataSet(B+I,Ord(S[I]));
+    Inc(PCode_StringHeap,Length(S)+1);PCode_AssignString(D,B,N)
+   End;PCode_IOError(H,E)
+  End;
+ 69:Begin A:=PCode_Pop;H:=PCode_FileHandle(A,False);
+   if A=0 Then Begin ReadLn;E:=IOResult End else if(H=0)or not PCode_Files[H].Opened or
+    not PCode_Files[H].TextMode Then E:=103 else Begin ReadLn(PCode_Files[H].T);E:=IOResult End;
+   PCode_IOError(H,E)
+  End;
+ 70:Begin Prec:=PCode_Pop;Wid:=PCode_Pop;Kind:=PCode_Pop;V:=PCode_Pop;A:=PCode_Pop;
+   H:=PCode_FileHandle(A,False);S:='';
+   Case Kind of 0:Str(V:Wid,S);1:Begin S:=Chr(Byte(V));while Length(S)<Wid do S:=' '+S End;
+    2:Begin if V=0 Then S:='FALSE'else S:='TRUE';while Length(S)<Wid do S:=' '+S End;
+    3:Begin RB.L:=V;if Prec>=0 Then Str(RB.S:Wid:Prec,S)else Str(RB.S:Wid,S)End
+   End;
+   if A=0 Then Write(S)else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then
+    PCode_IOError(H,103)else Begin Write(PCode_Files[H].T,S);PCode_IOError(H,IOResult)End
+  End;
+ 71:Begin D:=PCode_Pop;H:=PCode_FileHandle(D,False);if(H=0)or not PCode_Files[H].Opened or
+   PCode_Files[H].TextMode Then PCode_IOError(H,103)else Begin
+    BlockRead(PCode_Files[H].F,PCode_Files[H].Buffer,SizeOf(LongInt),N);E:=IOResult;
+    if E=0 Then PCode_DataSet(PCode_Files[H].BufferAddress,PCode_Files[H].Buffer);
+    if(N<>SizeOf(LongInt))and(E=0)Then E:=100;PCode_IOError(H,E)
+   End
+  End;
+  72:Begin D:=PCode_Pop;H:=PCode_FileHandle(D,False);if(H=0)or not PCode_Files[H].Opened or
+   PCode_Files[H].TextMode Then PCode_IOError(H,103)else Begin
+    PCode_Files[H].Buffer:=PCode_DataAt(PCode_Files[H].BufferAddress);
+    BlockWrite(PCode_Files[H].F,PCode_Files[H].Buffer,SizeOf(LongInt),N);E:=IOResult;
+    if(N<>SizeOf(LongInt))and(E=0)Then E:=101;PCode_IOError(H,E)
+   End
+  End;
+ 73:Begin D:=PCode_Pop;H:=PCode_FileHandle(D,True);
+  if H=0 Then Begin PCode_IOError(0,4);PCode_Push(0)End
+  else PCode_Push(PCode_Files[H].BufferAddress)
+ End;
+ 74:Begin PCode_IOChecking:=PCode_Pop<>0 End;
+  75:Begin PCode_Push(PCode_LastIOError);PCode_LastIOError:=0 End;
+ 76:Begin D:=PCode_Pop;A:=PCode_Pop;H:=PCode_FileHandle(A,False);RB.S:=0;
+  if A=0 Then Begin Read(RB.S);E:=IOResult End
+  else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then E:=103
+  else Begin Read(PCode_Files[H].T,RB.S);E:=IOResult End;
+  if E=0 Then PCode_DataSet(D,RB.L);PCode_IOError(H,E)
+ End;
+ 77:Begin D:=PCode_Pop;A:=PCode_Pop;H:=PCode_FileHandle(A,False);S:='';
+  if A=0 Then Begin Read(S);E:=IOResult End
+  else if(H=0)or not PCode_Files[H].Opened or not PCode_Files[H].TextMode Then E:=103
+  else Begin Read(PCode_Files[H].T,S);E:=IOResult End;
+  S:=UpperString(S);if(S='TRUE')or(S='1')Then V:=1 else V:=0;
+  if E=0 Then PCode_DataSet(D,V);PCode_IOError(H,E)
+ End;
+ 80:Begin N:=PCode_Pop;D:=PCode_Pop;PCode_DataSet(D,PCode_Allocate(N))End;
+ 81:Begin N:=PCode_Pop;D:=PCode_Pop;A:=PCode_DataAt(D);PCode_Release(A,N);PCode_DataSet(D,0)End;
+ 82:Begin N:=PCode_Pop;D:=PCode_Pop;A:=PCode_Pop;
+  For I:=0 to N-1 do PCode_DataSet(D+I,PCode_DataAt(A+I))
+ End;
+ 83:Begin N:=PCode_Pop;D:=PCode_Pop;A:=PCode_Pop;
+  For I:=N-1 downto 0 do PCode_DataSet(D+I,PCode_DataAt(A+I))
+ End;
+ 84:Begin V:=PCode_Pop;N:=PCode_Pop;D:=PCode_Pop;
+  For I:=0 to N-1 do PCode_DataSet(D+I,Byte(V))
+ End;
+ 90,91,92,93,94,95:Begin RB.L:=PCode_Pop;
+  Case CspNum of 90:RB.S:=Sin(RB.S);91:RB.S:=Cos(RB.S);92:RB.S:=ArcTan(RB.S);
+   93:RB.S:=Exp(RB.S);94:Begin if RB.S<=0 Then Begin PCode_Unsupported('logarithme hors domaine');Exit End;
+    RB.S:=Ln(RB.S)End;95:Begin if RB.S<0 Then Begin PCode_Unsupported('racine hors domaine');Exit End;
+    RB.S:=Sqrt(RB.S)End End;PCode_Push(RB.L)
  End;
 Else
  PCode_Unsupported('CSP ' + PCode_IntToStr(CspNum));
@@ -676,6 +888,9 @@ Begin
  End;
  $D5:Begin A:=PCode_IVSignedWord(PCode_PC);Inc(PCode_PC,2);V1:=PCode_Pop;if(V1 and 1)=0 Then Inc(PCode_PC,A)End;
  $D7:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1+V2*A)End;
+ $D8:Begin R1.L:=PCode_Pop;if R1.S<0 Then R1.S:=-R1.S;PCode_Push(R1.L)End;
+ $D9:Begin R1.L:=PCode_Pop;R1.S:=R1.S*R1.S;PCode_Push(R1.L)End;
+ $DA:Begin V1:=PCode_Pop;PCode_Push(V1*V1)End;
  $E0:Begin V1:=PCode_Pop;if V1<0 Then V1:=-V1;PCode_Push(V1)End;
  $E1:Begin PCode_Push(-PCode_Pop)End;
  $E2:Begin V1:=PCode_Pop;PCode_Push(V1);PCode_Push(V1)End;
@@ -1076,7 +1291,7 @@ Begin
   WriteLn('Impossible de charger le fichier p-Code: ',FileName);
   FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
  End;
- FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  if PCode_HasProcDictionary Then PCode_SP:=High(PCode_Data^)+1;
  PCode_Base:=0;PCode_CurrentProc:=0;
  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
@@ -1092,7 +1307,7 @@ Begin
  if not PCode_Halted Then Begin
   WriteLn('[limite d''instructions p-Code atteinte]');PCode_ExitCode:=1
  End;
- FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));
+ PCode_CloseFiles;FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));
  ExecutePCodeFile:=PCode_ExitCode
 End;
 
@@ -1689,6 +1904,16 @@ Begin
  else if(Dest^.Kind=ptkSet)and(Source^.Kind=ptkSet)and
   (Dest^.SizeWords=Source^.SizeWords)Then CPAssignmentCompatible:=True
  else CPAssignmentCompatible:=False
+End;
+
+Function CPBaseType(T:PPasType):PPasType;Begin
+ While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;CPBaseType:=T
+End;
+
+Function CPIsTextType(T:PPasType):Boolean;
+Begin
+ T:=CPBaseType(T);CPIsTextType:=(T<>Nil)and(T^.Kind=ptkFile)and
+  (CPBaseType(T^.ElementType)<>Nil)and(CPBaseType(T^.ElementType)^.Kind=ptkChar)
 End;
 
 Function CPFindType(S:String):PPasType;
@@ -2392,6 +2617,7 @@ Begin
 End;
 
 Procedure CPEmitCSP(N:Byte);Begin CPOp(158,$AC);CPE(N)End;
+Procedure CPEmitIOCSP(N:Byte);Begin CPConst(Ord(CPIOChecks));CPEmitCSP(74);CPEmitCSP(N)End;
 
 Procedure CPEmitRoutineCall(R:PPasRoutine);
 Var Delta:Integer;
@@ -2543,8 +2769,11 @@ Begin
    if F^.OffsetWords<>0 Then Begin CPOp(162,$E7);CPBig(F^.OffsetWords)End;
    T:=F^.FieldType;CPNext
   End else if CPToken='^'Then Begin
-   if(T=Nil)or(T^.Kind<>ptkPointer)Then Begin CPFail('déréférencement d''un non-pointeur');Exit End;
-   CPOp(163,$E6);CPBig(0);T:=T^.ElementType;CPNext
+   if(T<>Nil)and(T^.Kind=ptkFile)Then Begin CPEmitCSP(73);T:=T^.ElementType;CPNext End
+   else Begin
+    if(T=Nil)or(T^.Kind<>ptkPointer)Then Begin CPFail('déréférencement d''un non-pointeur');Exit End;
+    CPOp(163,$E6);CPBig(0);T:=T^.ElementType;CPNext
+   End
   End else Break
  End;
  if LoadValue Then Begin
@@ -2598,8 +2827,45 @@ Begin
    if(Lo<0)or(Hi>15)or(Lo>Hi)Then CPFail('ensemble immediat limite a 0..15')
    else For K:=Lo to Hi do Mask:=Mask or(1 shl K);
    if CPToken=','Then CPNext else Break
-  End;CPNeed(']');CPConst(Mask);CPLastExpressionType:=CPNewAnonymousType(ptkSet);
+ End;CPNeed(']');CPConst(Mask);CPLastExpressionType:=CPNewAnonymousType(ptkSet);
   CPLastExpressionType^.ElementType:=CPFindType('INTEGER');CPLastExpressionType^.SizeWords:=1
+ End
+ else if CPIs('ABS')or CPIs('SQR')or CPIs('ODD')or CPIs('SUCC')or CPIs('PRED')or
+  CPIs('ORD')or CPIs('CHR')or CPIs('ROUND')or CPIs('TRUNC')or CPIs('SIN')or
+  CPIs('COS')or CPIs('ARCTAN')or CPIs('EXP')or CPIs('LN')or CPIs('SQRT')Then Begin
+  Ident:=CPText;CPNext;CPNeed('(');CPExpression;SourceType:=CPBaseType(CPLastExpressionType);CPNeed(')');
+  if Ident='ABS'Then Begin if(SourceType<>Nil)and(SourceType^.Kind=ptkReal)Then CPOp(129,$D8)
+   else CPOp(128,$E0)
+  End else if Ident='SQR'Then Begin if(SourceType<>Nil)and(SourceType^.Kind=ptkReal)Then CPOp(153,$D9)
+   else CPOp(152,$DA)
+  End else if Ident='ODD'Then Begin CPConst(2);CPOp(142,$8F);CPConst(1);CPOp(195,$B0);
+   CPLastExpressionType:=CPFindType('BOOLEAN')
+  End else if Ident='SUCC'Then Begin CPConst(1);CPOp(130,$A2)End
+  else if Ident='PRED'Then Begin CPConst(1);CPOp(149,$A3)End
+  else if Ident='ORD'Then CPLastExpressionType:=CPFindType('INTEGER')
+  else if Ident='CHR'Then CPLastExpressionType:=CPFindType('CHAR')
+  else if Ident='ROUND'Then Begin CPEmitCSP(19);CPLastExpressionType:=CPFindType('INTEGER')End
+  else if Ident='TRUNC'Then Begin CPEmitCSP(18);CPLastExpressionType:=CPFindType('INTEGER')End
+  else Begin
+   if(SourceType=Nil)or(SourceType^.Kind<>ptkReal)Then CPFail('argument reel attendu pour '+Ident);
+   if Ident='SIN'Then Flags:=90 else if Ident='COS'Then Flags:=91 else if Ident='ARCTAN'Then Flags:=92
+   else if Ident='EXP'Then Flags:=93 else if Ident='LN'Then Flags:=94 else Flags:=95;
+   CPEmitCSP(Flags);CPLastExpressionType:=CPFindType('REAL')
+  End
+ End
+ else if CPIs('IORESULT')Then Begin CPNext;if CPToken='('Then Begin CPNext;CPNeed(')')End;
+  CPEmitCSP(75);CPLastExpressionType:=CPFindType('INTEGER')
+ End
+ else if CPIs('EOF')or CPIs('EOLN')Then Begin
+  Ident:=CPText;CPNext;
+  if CPToken='('Then Begin CPNext;
+   if CPToken<>'ID'Then CPFail('fichier attendu')else Begin P:=CPFind(CPText);
+    if(P=Nil)or(CPBaseType(P^.SymbolType)=Nil)or(CPBaseType(P^.SymbolType)^.Kind<>ptkFile)Then
+     CPFail('variable fichier attendue')else CPAddressSymbol(P);CPNext
+   End;CPNeed(')')
+  End else CPConst(0);
+  if Ident='EOF'Then CPEmitIOCSP(64)else CPEmitIOCSP(65);
+  CPLastExpressionType:=CPFindType('BOOLEAN')
  End
  else if CPIs('LENGTH')Then Begin
   CPNext;CPNeed('(');CPExpression;CPNeed(')');CPEmitCSP(40);
@@ -2848,6 +3114,96 @@ Begin
   if not CPIs('DO')Then CPFail('DO attendu')else Begin CPNext;CPStatement End;
   CPWithSymbol:=SavedWith;CPWithType:=SavedWithType
  End
+ else if CPIs('NEW')or CPIs('DISPOSE')Then Begin
+  Name:=CPText;CPNext;CPNeed('(');if CPToken<>'ID'Then CPFail('variable pointeur attendue')else Begin
+   P:=CPFind(CPText);T:=Nil;if P<>Nil Then T:=CPBaseType(P^.SymbolType);
+   if(P=Nil)or(T=Nil)or(T^.Kind<>ptkPointer)Then CPFail('pointeur attendu')
+   else Begin CPAddressSymbol(P);if Name='NEW'Then Begin
+    if T^.ElementType=Nil Then CPConst(1)else CPConst(T^.ElementType^.SizeWords);CPEmitCSP(80)
+   End else Begin if T^.ElementType=Nil Then CPConst(1)else CPConst(T^.ElementType^.SizeWords);
+    CPEmitCSP(81)End
+   End;CPNext
+  End;
+  { Les selecteurs de variantes de NEW sont acceptes puis ignores. }
+  While CPToken=','do Begin CPNext;CPExpression End;CPNeed(')')
+ End
+ else if CPIs('MOVELEFT')or CPIs('MOVERIGHT')Then Begin
+  Name:=CPText;CPNext;CPNeed('(');
+  if CPToken<>'ID'Then CPFail('source attendue')else Begin P:=CPFind(CPText);CPNext;CPDesignator(P,False,T)End;
+  CPNeed(',');if CPToken<>'ID'Then CPFail('destination attendue')else Begin P:=CPFind(CPText);CPNext;CPDesignator(P,False,T)End;
+  CPNeed(',');CPExpression;CPNeed(')');if Name='MOVELEFT'Then CPEmitCSP(82)else CPEmitCSP(83)
+ End
+ else if CPIs('FILLCHAR')Then Begin
+  CPNext;CPNeed('(');if CPToken<>'ID'Then CPFail('destination attendue')else Begin
+   P:=CPFind(CPText);CPNext;CPDesignator(P,False,T)
+  End;CPNeed(',');CPExpression;CPNeed(',');CPExpression;CPNeed(')');CPEmitCSP(84)
+ End
+ else if CPIs('PACK')or CPIs('UNPACK')Then Begin
+  Name:=CPText;CPNext;CPNeed('(');
+  if CPToken<>'ID'Then CPFail('tableau source attendu')else Begin P:=CPFind(CPText);CPNext;CPDesignator(P,False,T)End;
+  CPNeed(',');
+  if Name='PACK'Then Begin CPExpression;
+   T:=CPBaseType(T);if(T<>Nil)and(T^.Kind=ptkArray)Then Begin
+    if T^.IndexType^.LowBound<>0 Then Begin CPConst(T^.IndexType^.LowBound);CPOp(149,$A3)End;
+    CPOp(164,$D7);CPBig(T^.ElementType^.SizeWords)
+   End;CPNeed(',');if CPToken<>'ID'Then CPFail('tableau tasse attendu')else Begin
+    P:=CPFind(CPText);RT:=CPBaseType(P^.SymbolType);CPNext;CPDesignator(P,False,T);
+    if RT=Nil Then CPConst(1)else CPConst(RT^.SizeWords)
+   End
+  End else Begin
+   if CPToken<>'ID'Then CPFail('tableau destination attendu')else Begin P:=CPFind(CPText);CPNext;CPDesignator(P,False,RT)End;
+   CPNeed(',');CPExpression;if CPBaseType(RT)<>Nil Then Begin CPOp(164,$D7);CPBig(CPBaseType(RT)^.ElementType^.SizeWords)End;
+   if CPBaseType(T)=Nil Then CPConst(1)else CPConst(CPBaseType(T)^.SizeWords)
+  End;CPNeed(')');CPEmitCSP(82)
+ End
+ else if CPIs('HALT')Then Begin
+  CPNext;if CPToken='('Then Begin CPNext;CPExpression;CPNeed(')')End else CPConst(0);
+  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(2)End
+  else Begin CPE(205);CPE(0);CPE(2)End
+ End
+ else if CPIs('EXIT')Then Begin CPNext;
+  if CPCurrentRoutine<>Nil Then CPEmitRoutineReturn(CPCurrentRoutine)
+  else if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214)
+ End
+ else if CPIs('ASSIGN')Then Begin
+  CPNext;CPNeed('(');if CPToken<>'ID'Then CPFail('variable fichier attendue')else Begin
+   P:=CPFind(CPText);if(P=Nil)or(CPBaseType(P^.SymbolType)=Nil)or
+    (CPBaseType(P^.SymbolType)^.Kind<>ptkFile)Then CPFail('variable fichier invalide')
+   else CPAddressSymbol(P);CPNext
+  End;CPNeed(',');CPExpression;CPNeed(')');CPEmitIOCSP(60)
+ End
+ else if CPIs('RESET')or CPIs('REWRITE')or CPIs('CLOSE')or CPIs('GET')or CPIs('PUT')Then Begin
+  Name:=CPText;CPNext;CPNeed('(');if CPToken<>'ID'Then CPFail('variable fichier attendue')else Begin
+   P:=CPFind(CPText);T:=Nil;if P<>Nil Then T:=CPBaseType(P^.SymbolType);
+   if(P=Nil)or(T=Nil)or(T^.Kind<>ptkFile)Then CPFail('variable fichier invalide')
+   else CPAddressSymbol(P);CPNext
+  End;CPNeed(')');
+  if Name='RESET'Then Begin if P=Nil Then CPConst(0)else CPConst(Ord(CPIsTextType(P^.SymbolType)));CPEmitIOCSP(61)End
+  else if Name='REWRITE'Then Begin if P=Nil Then CPConst(0)else CPConst(Ord(CPIsTextType(P^.SymbolType)));CPEmitIOCSP(62)End
+  else if Name='CLOSE'Then CPEmitIOCSP(63)else if Name='GET'Then CPEmitIOCSP(71)else CPEmitIOCSP(72)
+ End
+ else if CPIs('READ')or CPIs('READLN')Then Begin
+  Name:=CPText;CPNext;P:=Nil;
+  if CPToken='('Then Begin CPNext;
+   if CPToken='ID'Then Begin Tmp:=CPFind(CPText);
+    if(Tmp<>Nil)and(CPBaseType(Tmp^.SymbolType)<>Nil)and(CPBaseType(Tmp^.SymbolType)^.Kind=ptkFile)Then Begin
+     P:=Tmp;CPNext;if CPToken=','Then CPNext
+    End
+   End;
+   While(CPToken<>')')and not CPError do Begin
+    if CPToken<>'ID'Then Begin CPFail('variable attendue par READ');Break End;
+    Tmp:=CPFind(CPText);if(Tmp=Nil)or Tmp^.IsConst Then Begin CPFail('variable READ invalide');Break End;
+    if P=Nil Then CPConst(0)else CPAddressSymbol(P);CPAddressSymbol(Tmp);T:=CPBaseType(Tmp^.SymbolType);CPNext;
+    if(T<>Nil)and(T^.Kind=ptkString)Then Begin CPConst(T^.HighBound);CPEmitIOCSP(68)End
+    else if(T<>Nil)and(T^.Kind=ptkChar)Then CPEmitIOCSP(67)
+    else if(T<>Nil)and(T^.Kind=ptkReal)Then CPEmitIOCSP(76)
+    else if(T<>Nil)and(T^.Kind=ptkBoolean)Then CPEmitIOCSP(77)
+    else CPEmitIOCSP(66);
+    if CPToken=','Then CPNext else Break
+   End;CPNeed(')')
+  End;
+  if Name='READLN'Then Begin if P=Nil Then CPConst(0)else CPAddressSymbol(P);CPEmitIOCSP(69)End
+ End
  else if CPIs('INSERT')Then Begin
   CPNext;CPNeed('(');CPExpression;if(CPLastExpressionType<>Nil)and
    (CPLastExpressionType^.Kind=ptkChar)Then CPEmitCSP(50);
@@ -2860,29 +3216,30 @@ Begin
   CPNeed(')');CPEmitCSP(48)
  End
  else if CPIs('WRITE')or CPIs('WRITELN')Then Begin
-  Name:=CPText;CPNext;
+  Name:=CPText;CPNext;P:=Nil;
   if CPToken='('Then Begin
    CPNext;
+   if CPToken='ID'Then Begin Tmp:=CPFind(CPText);
+    if(Tmp<>Nil)and(CPBaseType(Tmp^.SymbolType)<>Nil)and
+     (CPBaseType(Tmp^.SymbolType)^.Kind=ptkFile)Then Begin
+     P:=Tmp;CPNext;if CPToken=','Then CPNext
+    End
+   End;
    While CPToken<>')'do Begin
-    if CPToken='STR'Then Begin
-     CPE(166);CPE(Length(CPText));
-     For J:=1 to Length(CPText)do CPE(Ord(CPText[J]));
-     CPConst(Length(CPText));
-     if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(19)End
-     else Begin CPE(205);CPE(0);CPE(19)End;CPNext
-    End else
-    Begin
-     CPExpression;
-     if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkString)Then CPEmitCSP(49)
-     else if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(13)End
-     else Begin CPE(205);CPE(0);CPE(13)End
+    if P=Nil Then CPConst(0)else CPAddressSymbol(P);CPExpression;T:=CPBaseType(CPLastExpressionType);
+    if(T<>Nil)and(T^.Kind=ptkString)Then Begin
+     if CPToken=':'Then Begin CPNext;CPExpression End else CPConst(0);CPEmitIOCSP(54)
+    End else Begin
+     I:=0;if(T<>Nil)and(T^.Kind=ptkChar)Then I:=1 else
+      if(T<>Nil)and(T^.Kind=ptkBoolean)Then I:=2 else if(T<>Nil)and(T^.Kind=ptkReal)Then I:=3;
+     CPConst(I);if CPToken=':'Then Begin CPNext;CPExpression End else CPConst(0);
+     if CPToken=':'Then Begin CPNext;CPExpression End else CPConst(-1);CPEmitIOCSP(70)
     End;
     if CPToken=','Then CPNext else Break
    End;CPNeed(')')
   End;
   if Name='WRITELN'Then Begin
-   if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(0);CPE(22)End
-   else Begin CPE(205);CPE(0);CPE(22)End
+   if P=Nil Then CPConst(0)else CPAddressSymbol(P);CPEmitIOCSP(55)
   End
  End
  else if CPToken='ID'Then Begin
@@ -3321,7 +3678,7 @@ Procedure Registers;Begin
 End;
 
 Procedure ResetMachine;Begin
- FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  PCode_Base:=0;PCode_CurrentProc:=0;PCode_Cycles:=0;
  PCode_Halted:=False;PCode_ExitCode:=0;
  if PCode_HasProcDictionary Then Begin
