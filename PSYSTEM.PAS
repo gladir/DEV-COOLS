@@ -2946,6 +2946,27 @@ Begin
  166:CPUCSDErrorText:='Multideclared label';
  167:CPUCSDErrorText:='Undeclared label';
  168:CPUCSDErrorText:='Undefined label';
+ 169:CPUCSDErrorText:='Error in base set';
+ 170:CPUCSDErrorText:='Value parameter expected';
+ 171:CPUCSDErrorText:='Standard file was re-declared';
+ 172:CPUCSDErrorText:='Undeclared external file';
+ 173:CPUCSDErrorText:='FORTRAN procedure or function expected';
+ 174:CPUCSDErrorText:='Pascal function or function expected';
+ 175:CPUCSDErrorText:='Semaphore value parameter not allowed';
+ 182:CPUCSDErrorText:='Nested UNITs not allowed';
+ 183:CPUCSDErrorText:='External declaration not allowed at this nesting level';
+ 184:CPUCSDErrorText:='External declaration not allowed in INTERFACE section';
+ 185:CPUCSDErrorText:='Segment declaration not allowed in INTERFACE section';
+ 186:CPUCSDErrorText:='Labels not allowed in INTERFACE section';
+ 187:CPUCSDErrorText:='Attempt to open library in INTERFACE section';
+ 188:CPUCSDErrorText:='UNIT not declared in previous uses declaration';
+ 189:CPUCSDErrorText:='''USES'' not allowed at this nesting level';
+ 190:CPUCSDErrorText:='UNIT not in library';
+ 191:CPUCSDErrorText:='Forward declaration was not segment';
+ 192:CPUCSDErrorText:='Forward declaration was segment';
+ 193:CPUCSDErrorText:='Not enough room for this operation';
+ 194:CPUCSDErrorText:='Flag must be declared at top of program';
+ 195:CPUCSDErrorText:='Unit not importable';
  else CPUCSDErrorText:='Compiler error'
  End
 End;
@@ -3406,7 +3427,10 @@ Begin
   else if not CPIsOrdinalType(T^.ElementType)Then
    CPFailCode(115,'le type de base doit etre scalaire ou sous-intervalle');
   Count:=T^.ElementType^.HighBound-T^.ElementType^.LowBound+1;
-  if Count<1 Then Count:=256;if Count>256 Then CPFail('ensemble de plus de 256 elements');
+  if(Count<1)or(Count>256)or(T^.ElementType^.LowBound<0)or
+   (T^.ElementType^.HighBound>255)Then
+   CPFailCode(169,'bornes du type de base de l''ensemble hors de 0..255');
+  if Count<1 Then Count:=256;
   T^.SizeWords:=(Count+15)div 16;T^.PackedType:=PackedFlag;CPParseType:=T;Exit
  End;
  if CPIs('FILE')Then Begin
@@ -3553,6 +3577,9 @@ Procedure CPAddTyped(S:String;V:Integer;K:Boolean;T:PPasType);
 Var
  P:PPasSymbol;
 Begin
+ if(CPCurrentRoutine=Nil)and((S='INPUT')or(S='OUTPUT'))Then Begin
+  CPFailCode(171,'fichier standard redeclare: '+S);Exit
+ End;
  CPAdd(S,V,K);P:=CPFind(S);if P<>Nil Then Begin
   P^.SymbolType:=T;P^.Used:=False
  End
@@ -3726,7 +3753,7 @@ End;
 
 Procedure CPE(B:Byte);Begin
  if CPPass=1 Then Exit;
- if CPCodePos>=65535 Then CPFail('programme trop grand')else
+ if CPCodePos>=65535 Then CPFailCode(193,'programme trop grand')else
  Begin
   PCode_Mem^[CPCodePos]:=B;Inc(CPCodePos)
  End
@@ -3961,6 +3988,8 @@ Begin
  While(CPToken<>';')and(CPToken<>'EOF')do CPNext;
  if CPToken=';'Then CPNext;
  if CPIs('EXTERNAL')or CPIs('SEPARATE')Then Begin
+  if CPIs('EXTERNAL')and(Parent<>Nil)Then
+   CPFailCode(183,'declaration EXTERNAL dans une routine imbriquee');
   R^.IsExternal:=CPIs('EXTERNAL');R^.IsSeparate:=CPIs('SEPARATE');R^.IsDefined:=True;
   CPNext;
   if CPToken='NUM'Then Begin
@@ -3985,6 +4014,8 @@ Begin
  Old:=CPCurrentRoutine;CPCurrentRoutine:=R;
  { Les declarations imbriquees precedent le BEGIN du corps. }
  While(CPToken<>'EOF')and not CPIs('BEGIN')do Begin
+  if CPIs('UNIT')Then CPFailCode(182,'unite imbriquee interdite');
+  if CPIs('USES')Then CPFailCode(189,'USES interdit dans une routine');
   if CPIs('CONST')Then CPParseConstSection else
   if CPIs('TYPE')Then CPParseTypeSection else
   if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(R)else CPNext
@@ -5169,7 +5200,7 @@ Begin
   Sym:=CPFind(R^.Name);if Sym<>Nil Then Sym^.SymbolType:=R^.ResultType
  End;
  if(LongInt(R^.LocalWords)+R^.ParameterWords+5>32767)Then Begin
-  CPFail('cadre local depasse 32767 mots: '+R^.Name);CPCurrentRoutine:=Nil;Exit
+  CPFailCode(193,'cadre local depasse 32767 mots: '+R^.Name);CPCurrentRoutine:=Nil;Exit
  End;
  R^.CodeStart:=CPCodePos;CPCompound;CPEmitRoutineReturn(R);
  CPCheckLabels(R);R^.CodeLength:=CPCodePos-R^.CodeStart;CPCurrentRoutine:=Nil
@@ -5218,10 +5249,10 @@ Procedure EW(Value:Word);Begin
 End;
 Begin
  WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin
-  CPFail('segment trop grand');Exit
+  CPFailCode(193,'segment trop grand');Exit
  End;
  if(LongInt(DataWords)+5>32767)Then Begin
-  CPFail('cadre global depasse 32767 mots');Exit
+  CPFailCode(193,'cadre global depasse 32767 mots');Exit
  End;
  { Le dictionnaire est aussi employe pour un programme II a une seule
    procedure: il separe la pile descendante des variables globales. }
@@ -5377,7 +5408,7 @@ Begin
   CPFail('ouverture impossible');Goto 99
  End;
  Sz:=FileSize(F);if Sz>65534 Then Begin
-  Close(F);CPFail('source trop grand');Goto 99
+  Close(F);CPFailCode(193,'source trop grand');Goto 99
  End;
  BlockRead(F,CPSource^,Sz,N);if(IOResult<>0)or(N<>Sz)Then CPFail('erreur de lecture');
  Close(F);
