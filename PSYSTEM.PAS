@@ -155,6 +155,7 @@ Var
  PCode_LastIOError:Integer;
  PCode_IOChecking:Boolean;
  PCode_FreeStart,PCode_FreeSize:Array[1..64]of LongInt;PCode_FreeCount:Integer;
+ PCode_ExternalData:Array[0..15,0..1023]of LongInt;
  PCode_IsIVSegment,PCode_HasProcDictionary:Boolean;
  PCode_Halted:Boolean;
  PCode_ExitCode:Integer;
@@ -176,6 +177,7 @@ End;
 
 Function PCode_DataAt(A:LongInt):LongInt;Forward;
 Procedure PCode_DataSet(A:LongInt;V:LongInt);Forward;
+Procedure PCode_RuntimeError(Code:Integer;Const Msg:String);Forward;
 Function PCode_Fetch(Ofs:LongInt):Byte;Forward;
 
 Function PCode_StringLength(A:LongInt):Integer;
@@ -468,7 +470,9 @@ Function PCode_Pop: LongInt;Begin
 End;
 
 Function PCode_DataAt(A: LongInt): LongInt;Begin
- If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_DataAt := PCode_Data^[A]
+ If (A>=100000)and(A<116384)Then
+  PCode_DataAt:=PCode_ExternalData[(A-100000)div 1024,(A-100000)mod 1024]
+ Else If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_DataAt := PCode_Data^[A]
  Else
  Begin
   PCode_DataAt := 0;
@@ -476,7 +480,9 @@ Function PCode_DataAt(A: LongInt): LongInt;Begin
 End;
 
 Procedure PCode_DataSet(A: LongInt; V: LongInt);Begin
- If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_Data^[A] := V;
+ If (A>=100000)and(A<116384)Then
+  PCode_ExternalData[(A-100000)div 1024,(A-100000)mod 1024]:=V
+ Else If (A >= 0) And (A <= High(PCode_Data^)) Then PCode_Data^[A] := V;
 End;
 { Resout la base de cadre a Lvl chainons statiques (mot 0 du cadre = lien   }
 { statique) en amont du cadre courant (PCode_MP). Lvl=0 => cadre courant.   }
@@ -491,13 +497,6 @@ Begin
  PCode_StaticBase := FB;
 End;
 
-Procedure PCode_Unsupported(Const Msg: String);Begin
- If Not PCode_Halted Then Begin
-  PCode_Write('[' + Msg + ' non supporte]');
-  PCode_Halted := True;
-  PCode_ExitCode := 1;
- End;
-End;
 { Appel d unite externe (CXP) 0 = runtime hote (E/S console, adapte de la  }
 { numerotation SYSTEM.PASCAL documentee par DISPCODE/PDECODE, mais avec une }
 { convention de parametrage SIMPLIFIEE de mon fait : valeurs directement    }
@@ -550,7 +549,7 @@ Begin
  { writeln } PCode_PutChar(#13); PCode_PutChar(#10); 
  End;
  Else
- PCode_Unsupported('CXP 0,' + PCode_IntToStr(ProcNum) + ' (E/S)');
+ PCode_RuntimeError(305,'procedure SYSTEM '+PCode_IntToStr(ProcNum)+' inconnue');
 End;
 End;
 { Appel de procedure standard (CSP). Table de numeros reprise de           }
@@ -713,13 +712,21 @@ Begin
  End;
  90,91,92,93,94,95:Begin RB.L:=PCode_Pop;
   Case CspNum of 90:RB.S:=Sin(RB.S);91:RB.S:=Cos(RB.S);92:RB.S:=ArcTan(RB.S);
-   93:RB.S:=Exp(RB.S);94:Begin if RB.S<=0 Then Begin PCode_Unsupported('logarithme hors domaine');Exit End;
-    RB.S:=Ln(RB.S)End;95:Begin if RB.S<0 Then Begin PCode_Unsupported('racine hors domaine');Exit End;
+   93:RB.S:=Exp(RB.S);94:Begin if RB.S<=0 Then Begin PCode_RuntimeError(306,'logarithme hors domaine');Exit End;
+    RB.S:=Ln(RB.S)End;95:Begin if RB.S<0 Then Begin PCode_RuntimeError(306,'racine hors domaine');Exit End;
     RB.S:=Sqrt(RB.S)End End;PCode_Push(RB.L)
  End;
 Else
- PCode_Unsupported('CSP ' + PCode_IntToStr(CspNum));
+ PCode_RuntimeError(305,'CSP '+PCode_IntToStr(CspNum)+' inconnue');
 End;
+
+End;
+
+Procedure PCode_RuntimeError(Code:Integer;Const Msg:String);
+Begin
+ if not PCode_Halted Then Begin PCode_Write('[erreur execution '+PCode_IntToStr(Code)+': '+Msg+']');
+  PCode_Halted:=True;PCode_ExitCode:=Code
+ End
 End;
 
 { ------------------------------------------------------------------------ }
@@ -755,12 +762,12 @@ Procedure PCode_IVCall(ProcNum,LexLevel:Integer;GlobalCall:Boolean);
 Var Entry,StaticLink:LongInt;Locals,I:Integer;
 Begin
  Entry:=PCode_IVProcAddress(ProcNum,Locals);
- if Entry<0 Then Begin PCode_Unsupported('procedure p-System IV invalide');Exit End;
+ if Entry<0 Then Begin PCode_RuntimeError(301,'procedure p-System IV invalide');Exit End;
  if GlobalCall Then StaticLink:=PCode_Base
  else if LexLevel=0 Then StaticLink:=PCode_MP
  else StaticLink:=PCode_StaticBase(LexLevel);
  if PCode_SP<Locals+5 Then Begin
-  PCode_Unsupported('cadre p-System IV trop grand');Exit
+  PCode_RuntimeError(303,'cadre p-System IV trop grand');Exit
  End;
  Dec(PCode_SP,Locals);For I:=0 to Locals-1 do PCode_DataSet(PCode_SP+I,0);
  PCode_Push(PCode_CurrentProc);PCode_Push(0);PCode_Push(PCode_PC);
@@ -786,7 +793,7 @@ Var Op,B:Byte;SB:ShortInt;A,V1,V2,FB:LongInt;N,Used,Lvl:Integer;R1,R2:TSingleBit
 Begin
  if PCode_Halted Then Exit;
  if(PCode_PC<0)or(PCode_PC>=PCode_CodeSize)Then Begin
-  PCode_Unsupported('adresse p-System IV hors segment');Exit
+  PCode_RuntimeError(304,'adresse p-System IV hors segment');Exit
  End;
  Op:=PCode_Fetch(PCode_PC);Inc(PCode_PC);
  if Op<=$1F Then Begin PCode_Push(Op);Exit End;
@@ -820,26 +827,28 @@ Begin
  $8A:Begin SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);Inc(PCode_PC,SB)End;
  $8B:Begin A:=PCode_IVSignedWord(PCode_PC);Inc(PCode_PC,2);Inc(PCode_PC,A)End;
  $8C:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1*V2)End;
- $8D:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_Unsupported('division par zero')else PCode_Push(V1 div V2)End;
+ $8D:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_RuntimeError(300,'division par zero')else PCode_Push(V1 div V2)End;
  $8E:Begin
   N:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);V2:=PCode_Pop;V1:=PCode_Pop;
   For Lvl:=0 to N-1 do PCode_DataSet(V1+Lvl,PCode_DataAt(V2+Lvl))
  End;
- $8F:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_Unsupported('division par zero')else Begin A:=V1 mod V2;if A<0 Then A:=A+V2;PCode_Push(A)End End;
+ $8F:Begin V2:=PCode_Pop;V1:=PCode_Pop;if V2=0 Then PCode_RuntimeError(300,'division par zero')else Begin A:=V1 mod V2;if A<0 Then A:=A+V2;PCode_Push(A)End End;
  $90:Begin N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_IVCall(N,0,False)End;
  $91:Begin N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_IVCall(N,0,True)End;
  $92:Begin Lvl:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,Lvl,False)End;
  $93,$94:Begin
   B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
   if B=0 Then PCode_CallUnit0(N)
-  else PCode_Unsupported('appel inter-segment p-System IV')
+  else if B<=15 Then PCode_CallCSP(N)else PCode_RuntimeError(304,'segment externe invalide')
  End;
- $95:Begin PCode_Unsupported('appel inter-segment intermediaire p-System IV')End;
+ $95:Begin B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
+  if B<=15 Then PCode_CallCSP(N)else PCode_RuntimeError(304,'segment intermediaire invalide')
+ End;
  $96:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);PCode_IVReturn(A)End;
  $98: PCode_Push(0);
  $99:Begin Lvl:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_Push(PCode_StaticBase(Lvl))End;
  $9C:Begin End;
- $9E:Begin PCode_Unsupported('point d''arret p-System IV')End;
+ $9E:Begin PCode_RuntimeError(310,'point d''arret p-System IV')End;
  $9F:Begin V1:=PCode_Pop;PCode_Push(Ord((V1 and 1)=0))End;
  $A0:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 or V2)End;
  $A1:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and V2)End;
@@ -877,16 +886,20 @@ Begin
  $C8,$C9,$CA,$CC:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;
   if Op=$C8 Then R1.S:=R1.S+R2.S else if Op=$C9 Then R1.S:=R1.S-R2.S
   else if Op=$CA Then R1.S:=R1.S*R2.S else if R2.S=0 Then Begin
-   PCode_Unsupported('division reelle par zero');Exit End else R1.S:=R1.S/R2.S;
+   PCode_RuntimeError(300,'division reelle par zero');Exit End else R1.S:=R1.S/R2.S;
   PCode_Push(R1.L)
  End;
- $CB:Begin V2:=PCode_Pop;V1:=PCode_Pop;A:=PCode_Pop;if(A<V1)or(A>V2)Then PCode_Unsupported('indice hors limites')else PCode_Push(A)End;
+ $CB:Begin V2:=PCode_Pop;V1:=PCode_Pop;A:=PCode_Pop;if(A<V1)or(A>V2)Then PCode_RuntimeError(302,'indice hors limites')else PCode_Push(A)End;
  $D2,$D3,$D4:Begin
   SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);
   if Op=$D4 Then Begin V1:=PCode_Pop;if(V1 and 1)=0 Then Inc(PCode_PC,SB)End
   else Begin V2:=PCode_Pop;V1:=PCode_Pop;if((Op=$D2)and(V1<>V2))or((Op=$D3)and(V1=V2))Then Inc(PCode_PC,SB)End
  End;
  $D5:Begin A:=PCode_IVSignedWord(PCode_PC);Inc(PCode_PC,2);V1:=PCode_Pop;if(V1 and 1)=0 Then Inc(PCode_PC,A)End;
+ $D6:Begin V1:=PCode_Pop;V2:=PCode_IVSignedWord(PCode_PC);A:=PCode_IVSignedWord(PCode_PC+2);
+  if(V1<V2)or(V1>A)Then Inc(PCode_PC,4+2*(A-V2+1))
+  else Begin FB:=PCode_PC+4+2*(V1-V2);Inc(PCode_PC,4+2*(A-V2+1)+PCode_IVSignedWord(FB))End
+ End;
  $D7:Begin A:=PCode_ReadBig(PCode_PC,Used);Inc(PCode_PC,Used);V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1+V2*A)End;
  $D8:Begin R1.L:=PCode_Pop;if R1.S<0 Then R1.S:=-R1.S;PCode_Push(R1.L)End;
  $D9:Begin R1.L:=PCode_Pop;R1.S:=R1.S*R1.S;PCode_Push(R1.L)End;
@@ -901,7 +914,7 @@ Begin
  $EE:Begin PCode_Push(PCode_Pop-1)End;
  $EF,$F0:Begin N:=PCode_Fetch(PCode_PC);Inc(PCode_PC);PCode_IVCall(N,Op-$EE,False)End;
  $F1:Begin SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);V1:=PCode_Pop;if(V1 and 1)<>0 Then Inc(PCode_PC,SB)End;
- else PCode_Unsupported('opcode p-System IV $'+PCode_IntToStr(Op))
+ else PCode_RuntimeError(301,'opcode p-System IV $'+PCode_IntToStr(Op))
  End
 End;
 { Execute UNE instruction p-code a partir de PCode_PC. }
@@ -955,7 +968,7 @@ Begin
   Inc(PCode_PC);
  End;
  135:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;
-  if R2.S=0 Then PCode_Unsupported('division reelle par zero')
+  if R2.S=0 Then PCode_RuntimeError(300,'division reelle par zero')
   else Begin R1.S:=R1.S/R2.S;PCode_Push(R1.L)End;Inc(PCode_PC)
  End;
  136:
@@ -1004,14 +1017,19 @@ Begin
  Begin
   V1 := PCode_Pop; PCode_Push(Ord(V1 = 0)); Inc(PCode_PC);
  End; { LNOT }
- 148: PCode_Unsupported('SRS (ensembles)');
+ 148:Begin { SRS: construit l'ensemble [borne basse..borne haute] }
+  V2:=PCode_Pop;V1:=PCode_Pop;A:=0;
+  if V1<0 Then V1:=0;if V2>15 Then V2:=15;
+  For I:=V1 to V2 do A:=A or(LongInt(1)shl I);PCode_Push(A);Inc(PCode_PC)
+ End;
 149:
 Begin
   V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 - V2); Inc(PCode_PC);
 End; { SBI }
 150:Begin R2.L:=PCode_Pop;R1.L:=PCode_Pop;R1.S:=R1.S-R2.S;
  PCode_Push(R1.L);Inc(PCode_PC)End;
- 151: PCode_Unsupported('SGS (ensembles)');
+ 151:Begin V1:=PCode_Pop;if(V1>=0)and(V1<=15)Then PCode_Push(LongInt(1)shl V1)
+  else PCode_Push(0);Inc(PCode_PC)End;
  152:
  Begin
   V1 := PCode_Pop; PCode_Push(V1 * V1); Inc(PCode_PC);
@@ -1022,9 +1040,13 @@ End; { SBI }
  { STO : pile = [..., adresse, valeur] } V1 := PCode_Pop; Addr := PCode_Pop;
   PCode_DataSet(Addr, V1); Inc(PCode_PC);
  End;
- 155: PCode_Unsupported('IXS (chaines)');
+ 155:Begin V1:=PCode_Pop;Addr:=PCode_Pop;
+  PCode_Push(PCode_StringChar(Addr,V1));Inc(PCode_PC)End;
  156:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 or V2);Inc(PCode_PC)End;
- 157: PCode_Unsupported('LDE (unite externe)');
+ 157:Begin B:=PCode_Fetch(PCode_PC+1);A:=PCode_ReadBig(PCode_PC+2,Used);
+  if(B>15)or(A>1023)Then PCode_RuntimeError(304,'adresse externe invalide')
+  else PCode_Push(PCode_ExternalData[B,A]);PCode_PC:=PCode_PC+2+Used
+ End;
  158:
  Begin
  { CSP n } B := PCode_Fetch(PCode_PC + 1); PCode_PC := PCode_PC + 2;
@@ -1034,7 +1056,11 @@ End; { SBI }
  Begin
   PCode_Push(0); Inc(PCode_PC);
  End; { LDCN : NIL }
- 160: PCode_Unsupported('ADJ (ensembles)');
+ 160:Begin { ADJ normalise le dernier mot d'un ensemble; ici un mot suffit. }
+  A:=PCode_ReadBig(PCode_PC+1,Used);V1:=PCode_Pop;
+  if A<16 Then V1:=V1 and((LongInt(1)shl A)-1);PCode_Push(V1);
+  PCode_PC:=PCode_PC+1+Used
+ End;
  161:
  Begin
  { FJP dep : saut si faux }
@@ -1073,7 +1099,10 @@ End; { SBI }
   PCode_Push(30000 + (PCode_PC + 2));
   PCode_PC := PCode_PC + 2 + N;
  End;
- 167: PCode_Unsupported('LAE (unite externe)');
+ 167:Begin B:=PCode_Fetch(PCode_PC+1);A:=PCode_ReadBig(PCode_PC+2,Used);
+  if(B>15)or(A>1023)Then PCode_RuntimeError(304,'adresse externe invalide')
+  else PCode_Push(100000+LongInt(B)*1024+A);PCode_PC:=PCode_PC+2+Used
+ End;
  168:
  Begin
  { MOV n : pile = [..., dest, src], copie n mots src->dest }
@@ -1089,14 +1118,20 @@ End; { SBI }
   A := PCode_ReadBig(PCode_PC + 1, Used); PCode_Push(PCode_DataAt(A));
   PCode_PC := PCode_PC + 1 + Used;
  End;
- 170: PCode_Unsupported('SAS');
+ 170:Begin N:=PCode_Fetch(PCode_PC+1);V1:=PCode_Pop;Addr:=PCode_Pop;
+  PCode_AssignString(Addr,V1,N);Inc(PCode_PC,2)End;
  171:
  Begin
  { SRO n }
   A := PCode_ReadBig(PCode_PC + 1, Used); V1 := PCode_Pop;
   PCode_DataSet(A, V1); PCode_PC := PCode_PC + 1 + Used;
  End;
- 172: PCode_Unsupported('XJP (table de cas)');
+ 172:Begin { selecteur, minimum, maximum, puis deplacements signes }
+  V1:=PCode_Pop;V2:=PCode_IVSignedWord(PCode_PC+1);A:=PCode_IVSignedWord(PCode_PC+3);
+  if(V1<V2)or(V1>A)Then PCode_PC:=PCode_PC+5+2*(A-V2+1)
+  else Begin Addr:=PCode_PC+5+2*(V1-V2);PCode_PC:=PCode_PC+5+
+    2*(A-V2+1)+PCode_IVSignedWord(Addr)End
+ End;
 173:
 Begin
  N := PCode_Fetch(PCode_PC + 1);
@@ -1166,7 +1201,12 @@ Begin
  SB := ShortInt(PCode_Fetch(PCode_PC + 1));
  PCode_PC := PCode_PC + 2 + SB;
 End;
-186, 187: PCode_Unsupported('LDP/STP (fichiers)'); { LDP/STP }
+186,187:Begin { fenetre du fichier pointe par l'adresse de variable fichier }
+ Addr:=PCode_Pop;N:=PCode_FileHandle(Addr,False);
+ if(N<1)or(N>16)Then PCode_RuntimeError(320,'fichier non initialise')
+ else if Op=186 Then PCode_Push(PCode_DataAt(PCode_Files[N].BufferAddress))
+ else PCode_DataSet(PCode_Files[N].BufferAddress,PCode_Pop);Inc(PCode_PC)
+End;
 188:
 Begin
  { LDM n : empile n mots depuis l adresse au sommet }
@@ -1183,8 +1223,17 @@ Begin
  For I := 0 To N - 1 Do PCode_DataSet(Addr + I, Temp[I]);
  PCode_PC := PCode_PC + 2;
 End;
-190, 191: PCode_Unsupported('LDB/STB (octets)'); { LDB/STB }
-192: PCode_Unsupported('IXP (tableau tasse)');
+190:Begin A:=PCode_ReadBig(PCode_PC+1,Used);Addr:=PCode_Pop;
+ PCode_Push(PCode_DataAt(Addr+A)and $FF);PCode_PC:=PCode_PC+1+Used End;
+191:Begin A:=PCode_ReadBig(PCode_PC+1,Used);V1:=PCode_Pop;Addr:=PCode_Pop;
+ PCode_DataSet(Addr+A,(PCode_DataAt(Addr+A)and not $FF)or(V1 and $FF));
+ PCode_PC:=PCode_PC+1+Used End;
+192:Begin { IXP: taille du champ en bits, index et adresse }
+ B:=PCode_Fetch(PCode_PC+1);V1:=PCode_Pop;Addr:=PCode_Pop;
+ if(B=0)or(B>16)Then PCode_RuntimeError(302,'largeur packed invalide')else Begin
+  A:=V1*B;V2:=PCode_DataAt(Addr+A div 16);PCode_Push((V2 shr(A mod 16))and
+   ((LongInt(1)shl B)-1))End;Inc(PCode_PC,2)
+End;
 193:
 Begin
  { RBP n : retour de bloc = fin de programme }
@@ -1240,13 +1289,20 @@ Begin
  B := PCode_Fetch(PCode_PC + 1); N := PCode_Fetch(PCode_PC + 2);
  PCode_PC := PCode_PC + 3;
  If B = 0 Then PCode_CallUnit0(N)
- Else PCode_Unsupported('CXP ' + PCode_IntToStr(B) + ',' + PCode_IntToStr(N) +
- ' (unite externe)');
+ Else if B<=15 Then PCode_CallCSP(N)
+ Else PCode_RuntimeError(304,'segment externe invalide');
 End;
 206:Begin N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,0,False)End;
 207:Begin N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,0,True)End;
-208: PCode_Unsupported('LPA (tableau tasse)');
-209: PCode_Unsupported('STE (unite externe)');
+208:Begin { adresse du mot contenant l'element packed }
+ B:=PCode_Fetch(PCode_PC+1);V1:=PCode_Pop;Addr:=PCode_Pop;
+ if(B=0)or(B>16)Then PCode_RuntimeError(302,'largeur packed invalide')
+ else PCode_Push(Addr+(V1*B)div 16);Inc(PCode_PC,2)
+End;
+209:Begin B:=PCode_Fetch(PCode_PC+1);A:=PCode_ReadBig(PCode_PC+2,Used);V1:=PCode_Pop;
+ if(B>15)or(A>1023)Then PCode_RuntimeError(304,'adresse externe invalide')
+ else PCode_ExternalData[B,A]:=V1;PCode_PC:=PCode_PC+2+Used
+End;
 210:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 shl V2);Inc(PCode_PC)End;
 211:Begin V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 shr V2);Inc(PCode_PC)End;
 212:Begin V1:=PCode_Fetch(PCode_PC+1)or(PCode_Fetch(PCode_PC+2)shl 8)or
@@ -1291,7 +1347,8 @@ Begin
   WriteLn('Impossible de charger le fichier p-Code: ',FileName);
   FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
  End;
- FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ FillChar(PCode_Data^,SizeOf(TPCodeData),0);FillChar(PCode_ExternalData,SizeOf(PCode_ExternalData),0);
+ PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  if PCode_HasProcDictionary Then PCode_SP:=High(PCode_Data^)+1;
  PCode_Base:=0;PCode_CurrentProc:=0;
  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
@@ -1327,18 +1384,94 @@ End;
 
 Procedure LinkCommand;
 Var
- Modules,OutputName,Linker,CommandLine:String;
- Code:Integer;
+ Modules,OutputName,S,Name:String;
+ Inputs:Array[1..16]of String;
+ SegPos,SegLen:Array[1..16]of LongInt;
+ SegName:Array[1..16]of String[8];
+ Src:Array[1..16]of File;
+ Header:Array[0..511]of Byte;InHeader:Array[1..16,0..511]of Byte;
+ Buffer:Array[0..4095]of Byte;
+ OutF:File;Count,I,J,K,P,E,EC,IC,HPos,PatchPos,TargetSeg,TargetProc:Integer;
+ N,W:Word;OutPos,Want:LongInt;OK:Boolean;ImportName,ExportName:String;
+ Procedure PutWord(Ofs:Integer;V:Word);
+ Begin Header[Ofs]:=Byte(V);Header[Ofs+1]:=Byte(V shr 8)End;
 Begin
- Write('Object files: ');ReadLn(Modules);Modules:=TrimString(Modules);
- if Modules=''Then Exit;OutputName:=ProgramFile;AskFile('Output program',OutputName);
- if OutputName=''Then Exit;Linker:=ToolName('PSYSTEM_LINKER','FPC');
- CommandLine:=Linker+' '+Modules+' -o'+QuoteName(OutputName);
- WriteLn('Linking ',OutputName,' ...');Code:=RunShell(CommandLine);
- if Code=0 Then Begin
-  ProgramFile:=OutputName;WriteLn('Link complete.')
- End
- else WriteLn('Link failed (status ',Code,').')
+ Write('Modules .CODE (separes par virgule): ');ReadLn(Modules);Modules:=TrimString(Modules);
+ if Modules=''Then Exit;OutputName:=ProgramFile;AskFile('Programme .CODE produit',OutputName);
+ if OutputName=''Then Exit;if Pos('.',OutputName)=0 Then OutputName:=OutputName+'.CODE';
+ Count:=0;P:=1;
+ While P<=Length(Modules)do Begin
+  While(P<=Length(Modules))and(Modules[P]in[' ',#9,','])do Inc(P);S:='';
+  While(P<=Length(Modules))and not(Modules[P]in[' ',#9,','])do Begin S:=S+Modules[P];Inc(P)End;
+  if S<>''Then Begin Inc(Count);if Count>16 Then Begin WriteLn('Trop de segments (maximum 16).');Exit End;
+   if Pos('.',S)=0 Then S:=S+'.CODE';Inputs[Count]:=S
+  End
+ End;
+ FillChar(Header,SizeOf(Header),0);OK:=True;
+ For I:=1 to Count do Begin
+  Assign(Src[I],Inputs[I]);Reset(Src[I],1);E:=IOResult;
+  if E<>0 Then Begin WriteLn('Impossible d''ouvrir ',Inputs[I]);OK:=False;Break End;
+  BlockRead(Src[I],InHeader[I],512,N);if(IOResult<>0)or(N<>512)Then Begin
+   WriteLn('En-tete .CODE invalide: ',Inputs[I]);OK:=False;Break
+  End;
+  SegPos[I]:=(InHeader[I,0]or(InHeader[I,1]shl 8))*512;
+  SegLen[I]:=InHeader[I,2]or(InHeader[I,3]shl 8);
+  if(SegPos[I]<512)or(SegLen[I]<2)Then Begin WriteLn('Segment invalide: ',Inputs[I]);OK:=False;Break End;
+  SegName[I]:='';For J:=64 to 71 do if InHeader[I,J]<>0 Then SegName[I]:=SegName[I]+Chr(InHeader[I,J]);
+  if SegName[I]=''Then Begin Name:=UpperString(ReplaceExtension(Inputs[I],''));
+   if Length(Name)>8 Then Name:=Copy(Name,1,8);SegName[I]:=Name End;
+  Header[256]:=InHeader[I,256];Header[257]:=InHeader[I,257]
+ End;
+ if not OK Then Begin For J:=1 to I do Begin Close(Src[J]);E:=IOResult End;Exit End;
+ Assign(OutF,OutputName);Rewrite(OutF,1);if IOResult<>0 Then Begin
+  WriteLn('Impossible de creer ',OutputName);For I:=1 to Count do Begin Close(Src[I]);E:=IOResult End;Exit
+ End;
+ OutPos:=512;
+ For I:=1 to Count do Begin
+  if Odd(OutPos div 512)Then Begin End;
+  Want:=(OutPos+511)div 512;PutWord((I-1)*4,Want);PutWord((I-1)*4+2,SegLen[I]);
+  For J:=1 to Length(SegName[I])do Header[63+(I-1)*8+J]:=Ord(SegName[I][J]);OutPos:=Want*512+SegLen[I]
+ End;
+ BlockWrite(OutF,Header,512,W);OK:=(IOResult=0)and(W=512);OutPos:=512;
+ For I:=1 to Count do Begin
+  Want:=(Header[(I-1)*4]or(Header[(I-1)*4+1]shl 8))*512;
+  FillChar(Buffer,SizeOf(Buffer),0);
+  While OK and(OutPos<Want)do Begin N:=Want-OutPos;if N>SizeOf(Buffer)Then N:=SizeOf(Buffer);
+   BlockWrite(OutF,Buffer,N,W);OK:=(IOResult=0)and(W=N);Inc(OutPos,N)End;
+  Seek(Src[I],SegPos[I]);E:=IOResult;N:=SizeOf(Buffer);
+  While OK and(SegLen[I]>0)do Begin if SegLen[I]<N Then N:=SegLen[I];
+   BlockRead(Src[I],Buffer,N,W);OK:=(IOResult=0)and(W=N);
+   if OK Then Begin BlockWrite(OutF,Buffer,N,W);OK:=(IOResult=0)and(W=N)End;
+   Dec(SegLen[I],N);Inc(OutPos,N)
+  End
+ End;
+ { Resout les importations PSLK apres copie des segments. }
+ For I:=1 to Count do if(InHeader[I,288]=Ord('P'))and(InHeader[I,289]=Ord('S'))and
+  (InHeader[I,290]=Ord('L'))and(InHeader[I,291]=Ord('K'))Then Begin
+  EC:=InHeader[I,292];IC:=InHeader[I,293];HPos:=294+EC*9;
+  For J:=0 to IC-1 do Begin
+   ImportName:='';For K:=0 to 7 do if InHeader[I,HPos+J*10+K]<>0 Then
+    ImportName:=ImportName+Chr(InHeader[I,HPos+J*10+K]);
+   PatchPos:=InHeader[I,HPos+J*10+8]or(InHeader[I,HPos+J*10+9]shl 8);
+   TargetSeg:=0;TargetProc:=0;
+   For K:=1 to Count do if(InHeader[K,288]=Ord('P'))and(TargetSeg=0)Then Begin
+    EC:=InHeader[K,292];P:=0;
+    While(P<EC)and(TargetSeg=0)do Begin ExportName:='';
+     For E:=0 to 7 do if InHeader[K,294+P*9+E]<>0 Then
+      ExportName:=ExportName+Chr(InHeader[K,294+P*9+E]);
+     if ExportName=ImportName Then Begin TargetSeg:=K;TargetProc:=InHeader[K,294+P*9+8]End;Inc(P)
+    End
+   End;
+   if TargetSeg=0 Then Begin WriteLn('Symbole externe non resolu: ',ImportName);OK:=False End
+   else Begin Want:=(Header[(I-1)*4]or(Header[(I-1)*4+1]shl 8))*512+PatchPos;
+    Seek(OutF,Want);E:=IOResult;if E=0 Then Begin Buffer[0]:=TargetSeg;Buffer[1]:=TargetProc;
+     BlockWrite(OutF,Buffer,2,W);OK:=OK and(IOResult=0)and(W=2)End else OK:=False
+   End
+  End
+ End;
+ For I:=1 to Count do Begin Close(Src[I]);E:=IOResult End;Close(OutF);if IOResult<>0 Then OK:=False;
+ if OK Then Begin ProgramFile:=OutputName;WriteLn('Liaison UCSD terminee: ',Count,' segment(s), ',OutputName)End
+ else Begin WriteLn('Echec de la liaison UCSD.');Assign(OutF,OutputName);Erase(OutF);E:=IOResult End
 End;
 
 Const
@@ -1748,7 +1881,15 @@ Begin
  OPK_XJP:
  Begin
   Emit(Code);
-  Err('XJP: tableau de cas non support'+#130+', utiliser DB pour la suite');
+  If Not ParseNum(P,S,V) Then Begin Err('XJP: borne basse attendue');Exit End;
+  If Not ExpectComma(P,S)or not ParseNum(P,S,V2)Then Begin Err('XJP: borne haute attendue');Exit End;
+  if(V2<V)or(V2-V>255)Then Begin Err('XJP: intervalle invalide');Exit End;
+  EmitW(V);EmitW(V2);
+  For I:=V to V2 do Begin
+   if not ExpectComma(P,S)or not ParseNum(P,S,V)Then Begin
+    Err('XJP: deplacement de branche attendu');Exit
+   End;EmitW(V)
+  End
  End;
 End;
 End;
@@ -1832,6 +1973,9 @@ End;
  PPasLabel=^TPasLabel;
  TPasLabel=Record Name:String[31];Scope:PPasRoutine;Address:LongInt;
   Defined:Boolean;Fixups:PPasLabelFixup;Next:PPasLabel End;
+ PPasRelocation=^TPasRelocation;
+ TPasRelocation=Record Name:String[31];Owner:PPasRoutine;
+  CodePosition,FinalPosition:LongInt;Next:PPasRelocation End;
 PPasSource=^TPCodeMemory;
 
 Var
@@ -1845,6 +1989,7 @@ Var
  CPTypes:PPasType;
  CPRoutines:PPasRoutine;
  CPLabels:PPasLabel;
+ CPRelocations:PPasRelocation;
  CPWithSymbol:PPasSymbol;CPWithType:PPasType;CPWithField:TPasSymbol;
  CPLastExpressionType:PPasType;
  CPCurrentRoutine:PPasRoutine;
@@ -1960,6 +2105,7 @@ End;
 Procedure CPFreeTables;
 Var S,SN:PPasSymbol;T,TN:PPasType;R,RN:PPasRoutine;P,PN:PPasParameter;
  F,FN:PPasField;L,LN:PPasLabel;X,XN:PPasLabelFixup;
+ Q,QN:PPasRelocation;
 Begin
  S:=CPSymbols;While S<>Nil do Begin SN:=S^.Next;Dispose(S);S:=SN End;
  R:=CPRoutines;While R<>Nil do Begin P:=R^.Parameters;
@@ -1974,7 +2120,8 @@ Begin
   While X<>Nil do Begin XN:=X^.Next;Dispose(X);X:=XN End;
   LN:=L^.Next;Dispose(L);L:=LN
  End;
- CPSymbols:=Nil;CPRoutines:=Nil;CPTypes:=Nil;CPLabels:=Nil
+ Q:=CPRelocations;While Q<>Nil do Begin QN:=Q^.Next;Dispose(Q);Q:=QN End;
+ CPSymbols:=Nil;CPRoutines:=Nil;CPTypes:=Nil;CPLabels:=Nil;CPRelocations:=Nil
 End;
 
 Procedure CPFail(S:String);Begin
@@ -2546,11 +2693,11 @@ Begin
    if CPToken=','Then Begin CPNext;if CPToken='NUM'Then Begin
     R^.ExternalProcedure:=CPNumber;CPNext End End
   End;
-  if CPToken=';'Then CPNext;Exit
+  if CPToken=';'Then CPNext;R^.EndPosition:=CPTokenPos;Exit
  End;
  if CPIs('FORWARD')Then Begin
   if R^.IsDefined Then CPFail('FORWARD apres definition: '+Name);
-  R^.IsForward:=True;CPNext;if CPToken=';'Then CPNext;Exit
+  R^.IsForward:=True;CPNext;if CPToken=';'Then CPNext;R^.EndPosition:=CPTokenPos;Exit
  End;
  if R^.IsDefined Then Begin CPFail('routine deja definie: '+Name);Exit End;
  R^.IsDefined:=True;R^.IsForward:=False;R^.SourcePosition:=CPTokenPos;
@@ -2620,10 +2767,13 @@ Procedure CPEmitCSP(N:Byte);Begin CPOp(158,$AC);CPE(N)End;
 Procedure CPEmitIOCSP(N:Byte);Begin CPConst(Ord(CPIOChecks));CPEmitCSP(74);CPEmitCSP(N)End;
 
 Procedure CPEmitRoutineCall(R:PPasRoutine);
-Var Delta:Integer;
+Var Delta:Integer;Q:PPasRelocation;
 Begin
  if R=Nil Then Begin CPFail('routine inconnue');Exit End;
  if R^.IsExternal or R^.IsSeparate Then Begin
+  New(Q);FillChar(Q^,SizeOf(TPasRelocation),0);Q^.Name:=R^.Name;
+  Q^.Owner:=CPCurrentRoutine;Q^.CodePosition:=CPCodePos+1;Q^.FinalPosition:=-1;
+  Q^.Next:=CPRelocations;CPRelocations:=Q;
   if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($93);CPE(R^.ExternalSegment);CPE(R^.ExternalProcedure)End
   else Begin CPE(205);CPE(R^.ExternalSegment);CPE(R^.ExternalProcedure)End;
   Exit
@@ -3344,7 +3494,8 @@ Function WriteUCSDCodeFile(CodeName,SegmentName:String;CodeLength:LongInt;
  DataWords:Integer):Boolean;
 Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
  ProcEntry,ProcDict,Posi,Src,Len:LongInt;ProcNo,ProcTotal,J:Integer;
- Tmp:PPCodeMemory;R:PPasRoutine;Attr:Array[1..255]of Word;
+ Tmp:PPCodeMemory;R,Owner:PPasRoutine;Q:PPasRelocation;Attr:Array[1..255]of Word;
+ ImportCount,ExportCount,HPos,K:Integer;PublicName:String;
  Procedure HW(Offset:Integer;Value:Word);
  Begin Header[Offset]:=Byte(Value);Header[Offset+1]:=Byte(Value shr 8)End;
  Procedure EW(Value:Word);
@@ -3372,6 +3523,11 @@ Begin
    Tmp^[Posi-2]:=Byte((Posi+2+Len)div 2);
    Tmp^[Posi-1]:=Byte(((Posi+2+Len)div 2)shr 8);
    Tmp^[Posi]:=Byte(N);Tmp^[Posi+1]:=Byte(N shr 8);Inc(Posi,2);
+   if ProcNo=1 Then Owner:=Nil else Owner:=R;
+   Q:=CPRelocations;While Q<>Nil do Begin
+    if(Q^.Owner=Owner)and(Q^.CodePosition>=Src)and(Q^.CodePosition<Src+Len)Then
+     Q^.FinalPosition:=Posi+(Q^.CodePosition-Src);Q:=Q^.Next
+   End;
    For J:=0 to Len-1 do Tmp^[Posi+J]:=PCode_Mem^[Src+J];Inc(Posi,Len);
    if Odd(Posi)Then Begin Tmp^[Posi]:=$9C;Inc(Posi)End;
    if ProcNo<ProcTotal Then Inc(Posi,2) { end-pointer suivant }
@@ -3401,7 +3557,32 @@ Begin
   ptAppleHeath:HW(256,$0101);
   ptUCSDPascalII:HW(256,$0201);
   ptUCSDPSystemIII:HW(256,$0301);
-  ptUCSDPSystemIV:HW(256,$0401)
+ ptUCSDPSystemIV:HW(256,$0401)
+ End;
+ { Extension de liaison PSLK: exportations et sites de relogement symboliques.
+   Elle occupe la partie reservee de l'en-tete et reste ignoree des anciens
+   chargeurs UCSD. Une importation designe l'octet segment d'un CXP/CXL. }
+ Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('L');Header[291]:=Ord('K');
+ ExportCount:=0;R:=CPRoutines;While R<>Nil do Begin
+  if(R^.Parent=Nil)and not R^.IsExternal and not R^.IsSeparate Then Inc(ExportCount);R:=R^.Next
+ End;
+ ImportCount:=0;Q:=CPRelocations;While Q<>Nil do Begin if Q^.FinalPosition>=0 Then Inc(ImportCount);Q:=Q^.Next End;
+ if ExportCount>10 Then ExportCount:=10;if ImportCount>10 Then ImportCount:=10;
+ Header[292]:=ExportCount;Header[293]:=ImportCount;HPos:=294;K:=0;R:=CPRoutines;
+ While(R<>Nil)and(K<ExportCount)do Begin
+  if(R^.Parent=Nil)and not R^.IsExternal and not R^.IsSeparate Then Begin
+   PublicName:=UpperString(R^.Name);if Length(PublicName)>8 Then PublicName:=Copy(PublicName,1,8);
+   For I:=1 to Length(PublicName)do Header[HPos+I-1]:=Ord(PublicName[I]);Header[HPos+8]:=R^.ProcNumber;
+   Inc(HPos,9);Inc(K)
+  End;R:=R^.Next
+ End;
+ K:=0;Q:=CPRelocations;While(Q<>Nil)and(K<ImportCount)do Begin
+  if Q^.FinalPosition>=0 Then Begin PublicName:=UpperString(Q^.Name);
+   if Length(PublicName)>8 Then PublicName:=Copy(PublicName,1,8);
+   For I:=1 to Length(PublicName)do Header[HPos+I-1]:=Ord(PublicName[I]);
+   Header[HPos+8]:=Byte(Q^.FinalPosition);Header[HPos+9]:=Byte(Q^.FinalPosition shr 8);
+   Inc(HPos,10);Inc(K)
+  End;Q:=Q^.Next
  End;
  Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then Begin CPFail('creation impossible');Exit End;
  BlockWrite(F,Header,512,W);if(IOResult<>0)or(W<>512)Then CPFail('erreur d''ecriture');
@@ -3424,6 +3605,7 @@ Var
  Typ,TextType:PPasType;
 Begin
  CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;CPLabels:=Nil;
+ CPRelocations:=Nil;
  CPCurrentRoutine:=Nil;CPPass:=1;CPNextProcedure:=1;
  CPTempNumber:=0;CPWithSymbol:=Nil;CPWithType:=Nil;
  CPRangeChecks:=False;CPIOChecks:=True;CPOverflowChecks:=False;
@@ -3645,6 +3827,11 @@ Begin
  End;
  OPK_XJP:
  Begin
+  V:=PCode_IVSignedWord(Address+1);N:=PCode_IVSignedWord(Address+3);
+  S:=S+' '+PCode_IntToStr(V)+','+PCode_IntToStr(N);NextAddress:=Address+5;
+  For I:=V to N do Begin
+   S:=S+','+PCode_IntToStr(PCode_IVSignedWord(NextAddress));Inc(NextAddress,2)
+  End
  End;
 End;PCodeInstruction:=S
 End;
@@ -3678,7 +3865,8 @@ Procedure Registers;Begin
 End;
 
 Procedure ResetMachine;Begin
- FillChar(PCode_Data^,SizeOf(TPCodeData),0);PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
+ FillChar(PCode_Data^,SizeOf(TPCodeData),0);FillChar(PCode_ExternalData,SizeOf(PCode_ExternalData),0);
+ PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  PCode_Base:=0;PCode_CurrentProc:=0;PCode_Cycles:=0;
  PCode_Halted:=False;PCode_ExitCode:=0;
  if PCode_HasProcDictionary Then Begin
@@ -3985,9 +4173,9 @@ Procedure Help;Begin
  WriteLn('Cible courante: ',TargetName);
  WriteLn;
  WriteLn(
- 'Les outils externes peuvent etre choisis avec PSYSTEM_EDITOR et PSYSTEM_LINKER.');
+ 'L''editeur externe peut etre choisi avec PSYSTEM_EDITOR.');
  WriteLn(
- 'Le compilateur, l''assembleur, l''executeur et le debogueur p-Code sont integres.')
+ 'Le compilateur, l''assembleur, le linker, l''executeur et le debogueur p-Code sont integres.')
 End;
 
 Procedure Prompt;

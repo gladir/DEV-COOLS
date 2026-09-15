@@ -103,11 +103,13 @@ Procedure Fail(S:String);Begin
 End;
 
 Procedure Help;Begin
- WriteLn('RELMOD ',Version,' - Convertisseur DRI CP/M-68K vers GEMDOS.');
+ WriteLn('RELMOD ',Version,' - Cete commande permet de lancer le ',
+         'convertisseur DRI CP/M-68K vers GEMDOS.');
  WriteLn;
  WriteLn('Syntaxe : RELMOD [-]entree[.68K] [sortie[.PRG]] ...');
  WriteLn;
- WriteLn('Un nom precede de - commence une nouvelle conversion.');
+ WriteLn('Un nom pr'+#130+'c'+#130+'d'+#130+
+         ' de - commence une nouvelle conversion.');
  WriteLn('Exemple : RELMOD BAR -BAZ.ZIP');
  Halt(0)
 End;
