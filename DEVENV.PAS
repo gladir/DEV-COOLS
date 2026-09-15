@@ -130277,453 +130277,478 @@ End;
 { par categorie pour rester lisible malgre le nombre desormais important    }
 { de commandes. }
 Procedure TermCmd_HELP(Var TP: TTerminalPanel);
+Const
+ MAX_HELP_CMD_LINES = 300;
+Var
+ HelpCmdLines: Array[0..MAX_HELP_CMD_LINES - 1] Of String;
+ HelpCmdCount, HelpI, HelpJ: Integer;
+ HelpTmp: String;
+
+ { SK_CMD ("Invite de commande") : liste unique triee par ordre       }
+ { alphabetique, sans sections (demande explicite de l'utilisateur,   }
+ { 2026-09-15) - les autres shells gardent l'affichage par categories }
+ { ci-dessous inchange. Les en-tetes "--- ... ---" et les lignes       }
+ { vides ne sont que des separateurs de section : ignores ici. }
+ Procedure HelpEmit(Const S: String);
+ Begin
+  If TP.Shell = SK_CMD Then Begin
+   If (S = '') Or (Copy(S, 1, 3) = '---') Then Exit;
+   If HelpCmdCount < MAX_HELP_CMD_LINES Then Begin
+    HelpCmdLines[HelpCmdCount] := S;
+    Inc(HelpCmdCount);
+   End;
+  End Else
+   TermAddLine(TP, S);
+ End;
+
 Begin
+ HelpCmdCount := 0;
  TermAddLine(TP, 'Commandes disponibles :');
  TermAddLine(TP, '');
- TermAddLine(TP, '--- Fichiers et repertoires ---');
- TermAddLine(TP,
+ HelpEmit( '--- Fichiers et repertoires ---');
+ HelpEmit(
   '  CD chemin        Changer de repertoire');
- TermAddLine(TP,
+ HelpEmit(
   '  CLS              Effacer le terminal');
- TermAddLine(TP,
+ HelpEmit(
   '  COPY src dst     Copier un fichier');
- TermAddLine(TP,
+ HelpEmit(
   '  CURL [-X m][-d d][-H "N: V"][-o f][-s] url  VRAIE requete HTTP(S)');
- TermAddLine(TP,
+ HelpEmit(
   '  DATE             Afficher la date');
- TermAddLine(TP,
+ HelpEmit(
   '  DEL fichier      Supprimer un fichier');
- TermAddLine(TP,
+ HelpEmit(
   '  DIR [chemin]     Lister un repertoire');
- TermAddLine(TP,
+ HelpEmit(
   '  ECHO texte       Afficher du texte');
- TermAddLine(TP,
+ HelpEmit(
   '  EXIT             Fermer le terminal');
- TermAddLine(TP,
+ HelpEmit(
   '  HELP             Cette aide');
- TermAddLine(TP,
+ HelpEmit(
   '  MKDIR rep        Creer un repertoire');
- TermAddLine(TP,
+ HelpEmit(
   '  MOVE src dst     Deplacer un fichier');
- TermAddLine(TP,
+ HelpEmit(
   '  POPD             Depiler un repertoire');
- TermAddLine(TP,
+ HelpEmit(
   '  PUSHD [chemin]   Empiler un repertoire');
- TermAddLine(TP,
+ HelpEmit(
   '  PWD              Repertoire courant');
- TermAddLine(TP,
+ HelpEmit(
   '  REN ancien nouv  Renommer un fichier');
- TermAddLine(TP,
+ HelpEmit(
   '  RMDIR rep        Supprimer un repertoire');
- TermAddLine(TP,
+ HelpEmit(
   '  SET              Variables d''environnement');
- TermAddLine(TP,
+ HelpEmit(
   '  TIME             Afficher l''heure');
- TermAddLine(TP,
+ HelpEmit(
   '  TYPE fichier     Afficher le contenu');
- TermAddLine(TP,
+ HelpEmit(
   '  VER              Version du terminal');
- TermAddLine(TP,
+ HelpEmit(
   '  VOL [X:]         Etiquette/serie du volume');
  { Add-Content (2026-08-30, demande explicite de l'utilisateur, "support   }
  { complet" - PowerShell dev uniquement, TYPE/GET-CONTENT ci-dessus reste   }
  { la seule commande de LECTURE partagee par tous les shells). }
  If TP.Shell = SK_POWERSHELL Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit(
    '  $nom = "texte" / $nom = @"..."@       Variable scalaire / here-string');
-  TermAddLine(TP,
+  HelpEmit(
    '  $nom  /  $nom.propriete               Affiche une variable/propriete');
-  TermAddLine(TP,
+  HelpEmit(
    '  $obj = ConvertFrom-Yaml $texte        Capture dans une variable objet');
-  TermAddLine(TP, '--- Ajouter du contenu a un fichier ---');
-  TermAddLine(TP,
+  HelpEmit( '--- Ajouter du contenu a un fichier ---');
+  HelpEmit(
    '  Add-Content fichier texte           Ajoute une ligne en fin de fichier');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-Content -Path f -Value texte     Meme chose (syntaxe nommee)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-History commande                Ajoute au rappel Haut/Bas');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-JiraIssueComment -Issue PROJ-1 -Comment texte  Ajoute un commentaire');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-MdbcCollection -CollectionName c [-DatabaseName b]  Cree une collection');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-MdbcData -Document json [-CollectionName c]  Insere un ou plusieurs documents');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-Member ...                       Reconnue, sans objet a completer');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-TeamUser -GroupId id -User u [-Role Owner|Member]  Ajoute un membre');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-Type -Path fichier.cs            Compile via CSCW32.EXE');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-Type -TypeDefinition "code"      Idem, code C# sur une ligne');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMDvdDrive -Path f.iso [-VMName n]   Idem pour un lecteur CD-ROM');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMFibreChannelHba / Add-VMGroupMember   Reconnues, sans equivalent');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMHardDiskDrive -Path f [-VMName n]  Monte f sur C:/D: (si un ' +
    'emulateur est actif)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMMigrationNetwork/RemoteFx3dVideoAdapter  Idem');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMNetworkAdapter [-VMName n]     Active le pilote de paquets ' +
    '(INT 60h)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMNetworkAdapterAcl/ExtendedAcl/RoutingDomainMapping  Idem');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMScsiController/StoragePath     Idem (redondantes/sans registre)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Add-VMSwitch/SwitchExtension*/SwitchTeamMember  Reconnues, sans ' +
    'equivalent');
-  TermAddLine(TP,
+  HelpEmit(
    '  Backup-OracleDatabase  Non supporte (RMAN est un protocole Oracle distinct)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Backup-SqlDatabase -Database nom -BackupFile f  Copie brute du .mdf (PAS le format .bak)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Checkpoint-VM [-Path base]             Ecrit base.vmcx+.vmrs' +
    '[+.avhdx] (si actif)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Clear-Content fichier                Vide un fichier (0 octet)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Clear-History                        Vide le rappel Haut/Bas');
-  TermAddLine(TP,
+  HelpEmit(
    '  Clear-Item fichier                   Idem (meme fournisseur ici)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Clear-ItemProperty f [-Name Attributes]  Efface RO/Hidden/Sys/' +
    'Archive (volume FAT monte)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Clear-RecycleBin -Force              Vide la VRAIE Corbeille (reel)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Clear-Variable NOM                   Vide une variable d''env. DOS ' +
    '(emulateur actif)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Close-Redis [-Session n]  Ferme une session Redis');
-  TermAddLine(TP,
+  HelpEmit(
    '  Compare-Object f1 f2                 Differences ligne-par-ligne');
-  TermAddLine(TP,
+  HelpEmit(
    '  Compare-VM [n1 n2]                   Compare 2 onglets emulateur ' +
    'ouverts');
-  TermAddLine(TP,
+  HelpEmit(
    '  Complete-VMFailover                  Reconnue, sans equivalent ' +
    '(Hyper-V Replica)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Connect-McpServer -Url http://hote:port/chemin [-Name n]  VRAI client MCP (HTTP)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Connect-Mdbc [-ConnectionString mongodb://hote:port/base] [-DatabaseName b]  VRAI client MongoDB');
-  TermAddLine(TP,
+  HelpEmit(
    '  Connect-MicrosoftTeams -AccessToken t [-Uri url] [-Name n]  VRAI client Teams (Graph)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Connect-OracleDatabase -Server s [-Port p] [-ServiceName n] [-UserName u] ' +
    '[-Password m]  Ouvre une vraie connexion TNS/TTC');
-  TermAddLine(TP,
+  HelpEmit(
    '  Connect-PSSession / Connect-WSMan     Reconnues, sans remoting ' +
    'PowerShell/WinRM');
-  TermAddLine(TP,
+  HelpEmit(
    '  Connect-VMNetworkAdapter [-VMName n]  Reconnecte la carte reseau ' +
    '(deja ajoutee)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Connect-VMSan                          Reconnue, sans equivalent ' +
    '(Fibre Channel)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Convert-Path -Path chemin             Resout en chemin absolu ' +
    '(jokers *,? geres)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertFrom-Csv -Path f.csv [-Delimiter c]   Affiche les objets ' +
    'analyses');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertFrom-Json -Path f.json         Affiche la structure analysee');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertFrom-Markdown -Path f.md       Affiche le HTML resultant');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertFrom-SddlString "O:BAG:BAD:.." Analyse REELLE (Win32 securite)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertFrom-SecureString texte        Chiffre (VRAI DPAPI, hex)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertFrom-StringData -Path f.txt    Affiche les paires cle=valeur');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertFrom-Yaml -Path f.yaml         Affiche la structure analysee');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertTo-Csv $objet [-Delimiter c]   Affiche l''en-tete+valeurs ' +
    'CSV de $objet');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertTo-Html $objet [-Title texte]  Affiche le document HTML ' +
    'reel (table) de $objet');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertTo-Json $objet [-Depth n]      Affiche le JSON reel ' +
    '(nombres/bool non guillemetes) de $objet');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertTo-SecureString -String t -AsPlainText -Force   Cree (VRAI ' +
    'DPAPI si $var=)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertTo-SecureString -String hexChiffre   Redechiffre (DPAPI) ' +
    'une sortie ConvertFrom-SecureString');
-  TermAddLine(TP,
+  HelpEmit(
    '  ConvertTo-Xml $objet [-As String|Property]  Affiche le XML ' +
    'PowerShell de $objet');
-  TermAddLine(TP,
+  HelpEmit(
    '  Copy-Item source destination         Copie un fichier');
-  TermAddLine(TP,
+  HelpEmit(
    '  Copy-Item -Path f -Destination d     Copie (syntaxe nommee)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Copy-ItemProperty -Path f -Destination d  Copie Attributes FAT');
-  TermAddLine(TP,
+  HelpEmit(
    '  Copy-VMFile -SourcePath f -DestinationPath d  Copie hote/VM');
-  TermAddLine(TP,
+  HelpEmit(
    '  Disconnect-McpServer [-Name n]         Deconnecte un serveur MCP');
-  TermAddLine(TP,
+  HelpEmit(
    '  Disconnect-MicrosoftTeams [-Name n]  Deconnecte une session Teams');
-  TermAddLine(TP,
+  HelpEmit(
    '  Disconnect-OracleDatabase [-Name n]  Ferme la connexion Oracle courante');
-  TermAddLine(TP,
+  HelpEmit(
    '  Export-Csv -Path f -InputObject $objet  Ecrit un fichier CSV');
-  TermAddLine(TP,
+  HelpEmit(
    '  Export-MdbcData -Path f.json [-CollectionName c] [-Filter json]  Ecrit un fichier JSON');
-  TermAddLine(TP,
+  HelpEmit(
    '  ForEach-Object $objet [-MemberName nom]  Parcourt un objet');
-  TermAddLine(TP,
+  HelpEmit(
    '  Format-Hex -Path f [-Count n] [-Offset n] Affiche les octets');
-  TermAddLine(TP,
+  HelpEmit(
    '  Format-List [-InputObject $objet] [-Property nom]  Affiche les proprietes');
-  TermAddLine(TP,
+  HelpEmit(
    '  Format-Table [-InputObject $objet] [-Property nom] Affiche en colonnes');
-  TermAddLine(TP,
+  HelpEmit(
    '  Format-Wide [-InputObject $objet] [-Property nom] Affiche en largeur');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-Alias [-Name nom]                  Liste les alias reconnus');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-Command [-Name nom]                 Liste les commandes reconnues');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-Content -Path f [-TotalCount n]     Lit un fichier');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-CouchDBActiveTask [-Server url]  Liste les taches actives');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-CouchDBDatabase [-Name base] [-Server url]  Liste/affiche des bases');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-CouchDBDocument -Database base -Id doc [-Server url]  Recupere un document');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-CouchDBMembership [-Server url]  Infos sur les noeuds du cluster');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-CouchDBServer [-Server url] [-UserName u] [-Password p]  Infos du serveur');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-CouchDBUUID [-Count n] [-Server url]  Demande des UUID au serveur');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-Date [-Format format]               Affiche date et heure');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-Error [-Newest n]                    Affiche les erreurs recentes');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-FormatData [-TypeName nom]           Liste les vues de format');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-Help [-Name commande]                Affiche l''aide');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-History [-Id n] [-Count n] [-Newest n] Affiche l''historique');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-JiraIssue -Key PROJ-1 [-Session n]   Affiche un ticket Jira');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-JiraIssueComment -Issue PROJ-1 [-Session n]  Liste les commentaires');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-JiraIssueType [-Session n]           Liste les types de ticket Jira');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-JiraProject [-Project P] [-Session n]  Liste/affiche des projets Jira');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-JiraStatus [-Session n]              Liste les statuts Jira');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-JiraTransition -Issue PROJ-1 [-Session n]  Liste les transitions possibles');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-JiraUser -UserName u [-Session n]    Affiche un utilisateur Jira');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-McpResources [-Name n]             Liste les ressources MCP (resources/list)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-McpServer [-Name n]                Liste les serveurs MCP connectes');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-McpTools [-Name n]                 Liste les outils MCP (tools/list)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-MdbcCollection [-DatabaseName b] [-Session n]  Liste les collections');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-MdbcData [-CollectionName c] [-Filter json] [-Limit n]  Cherche des documents');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-MdbcDatabase [-Session n]          Liste les bases MongoDB (listDatabases)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleColumn [-Name n] -Table t  Colonnes d''une table (USER_TAB_COLUMNS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleConstraint [-Name n]  Liste les contraintes (USER_CONSTRAINTS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleDatabase [-Name n]  Infos sur la base courante (V$DATABASE)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleFunction [-Name n]  Liste les fonctions');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleIndex [-Name n]  Liste les index (USER_INDEXES)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OraclePackage [-Name n]  Liste les packages PL/SQL');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleProcedure [-Name n]  Liste les procedures stockees');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleSequence [-Name n]  Liste les sequences (USER_SEQUENCES)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleSession [-Name n]  Liste les sessions Oracle (V$SESSION)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleSynonym [-Name n]  Liste les synonymes (USER_SYNONYMS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleTable [-Name n]  Liste les tables (USER_TABLES)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleTablespace [-Name n]  Liste les tablespaces (USER_TABLESPACES)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleTrigger [-Name n]  Liste les triggers (USER_TRIGGERS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleUser [-Name n]  Liste les utilisateurs (ALL_USERS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-OracleView [-Name n]  Liste les vues (USER_VIEWS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-RedisHash -Key cle [-Field champ]  Lit un hachage (HGET/HGETALL)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-RedisKey [-Pattern p]  Enumere les cles (KEYS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-RedisList -Key cle [-Start n] [-Stop n]  Lit une liste (LRANGE)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-RedisServer [-Session n]  Infos du serveur (INFO server)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-RedisSet -Key cle  Lit un ensemble (SMEMBERS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-RedisString -Key cle [-Session n]  Lit une chaine (GET)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-SqlAgent  SQL Server Agent non disponible sur ce moteur');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-SqlDatabase [-ServerInstance chemin] [-Name nom]  Affiche la base "master"');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-SqlErrorLog  Journal ERRORLOG non disponible sur ce moteur');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-Team [-GroupId id] [-DisplayName n] [-Session n]  Liste/affiche des equipes');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-TeamChannel -GroupId id [-Session n]  Liste les canaux d''une equipe');
-  TermAddLine(TP,
+  HelpEmit(
    '  Get-TeamUser -GroupId id [-Role Owner|Member]  Liste les membres d''une equipe');
-  TermAddLine(TP,
+  HelpEmit(
    '  Grant-OraclePrivilege [-Name n] -Privilege p -UserName u  Accorde un privilege');
-  TermAddLine(TP,
+  HelpEmit(
    '  Import-MdbcData -Path f.json [-CollectionName c]  Insere depuis un fichier JSON');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-JiraIssueTransition -Issue P -Transition id-ou-nom  Applique une transition');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-McpTool -ToolName t [-Arguments {json}] [-Name n]  Appelle un outil MCP');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-MdbcAggregate -Pipeline json [-CollectionName c]  Execute un pipeline d''agregation');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-MdbcCommand -Command json [-DatabaseName b]  Commande MongoDB brute (passe-plat)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-OracleNonQuery [-Name n] -Query sql  Execute INSERT/UPDATE/DELETE/CREATE');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-OracleQuery [-Name n] -Query sql  Execute un SELECT et affiche le resultat');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-OracleScript [-Name n] -Path f.sql  Execute un fichier de commandes SQL');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-RedisScript -Script lua [-KeyName c1,c2] [-Argument a1,a2]  Execute un script (EVAL)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-RedisTransaction [-Session n]  Execute la transaction (EXEC reel)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-Sqlcmd [-ServerInstance chemin] [-Database nom] -Query "texte"  Execute du T-SQL');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-CouchDBAdmin -UserName u -Password p [-Server url]  Cree un administrateur');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-CouchDBDatabase -Name base [-Server url]  Cree une base');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-CouchDBDocument -Database base -Document json [-Id doc]  Cree un document');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-JiraIssue -Project P -IssueType t -Summary s [-Description d]  Cree un ticket');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-JiraSession -UserName u -ApiToken t [-Uri url] [-Name n]  VRAI client Jira (HTTP)');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-OracleSequence [-Name n] -SequenceName s  Cree une sequence');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-OracleTable [-Name n] -Table t -Columns "col type, ..."  Cree une table');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-OracleUser [-Name n] -UserName u -Password m  Cree un utilisateur Oracle');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-RedisTransaction [-Session n]  Demarre une transaction (MULTI reel)');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-SqlBackupEncryptionOption -Algorithm a -EncryptorType t -EncryptorName n  Descripteur');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-Team -DisplayName n [-Description d] [-Visibility Public|Private]  Cree une equipe');
-  TermAddLine(TP,
+  HelpEmit(
    '  New-TeamChannel -GroupId id -DisplayName n [-Description d]  Cree un canal');
-  TermAddLine(TP,
+  HelpEmit(
    '  Open-Redis [-Server hote] [-Port n] [-Password p] [-Database n]  Connexion TCP reelle');
-  TermAddLine(TP,
+  HelpEmit(
    '  Read-SqlTableData -TableName t [-ColumnName c1,c2] [-TopN n] -Filter "clause"  Lit des lignes');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-CouchDBAdmin -UserName u [-Server url]  Supprime un administrateur');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-CouchDBDatabase -Name base [-Server url]  Supprime une base');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-CouchDBDocument -Database base -Id doc -Rev rev  Supprime un document');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-MdbcCollection -CollectionName c [-DatabaseName b]  Supprime une collection');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-MdbcData -Filter json [-Many] [-CollectionName c]  Supprime des documents');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-MdbcDatabase [-DatabaseName b] [-Session n]  Supprime une base (dropDatabase)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-OracleSequence [-Name n] -SequenceName s  Supprime une sequence');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-OracleTable [-Name n] -Table t  Supprime une table');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-OracleUser [-Name n] -UserName u  Supprime un utilisateur');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-RedisKey -Key cle  Supprime une cle (DEL)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-Team -GroupId id [-Session n]  Supprime une equipe');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-TeamChannel -GroupId id -DisplayName n [-Session n]  Supprime un canal');
-  TermAddLine(TP,
+  HelpEmit(
    '  Remove-TeamUser -GroupId id -User u [-Role Owner|Member]  Retire un membre');
-  TermAddLine(TP,
+  HelpEmit(
    '  Rename-RedisKey -Key cle -NewKey nouvelle  Renomme une cle (RENAME)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Restore-OracleDatabase  Non supporte (RMAN est un protocole Oracle distinct)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Restore-SqlDatabase -Database nom -BackupFile f [-Force]  Restaure depuis une copie');
-  TermAddLine(TP,
+  HelpEmit(
    '  Restore-VMCheckpoint -Path base        Relit base.vmcx+.vmrs' +
    '[+.avhdx]');
-  TermAddLine(TP,
+  HelpEmit(
    '  Revoke-OraclePrivilege [-Name n] -Privilege p -UserName u  Retire un privilege');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-CouchDBDocument -Database base -Id doc -Rev rev -Document json  Modifie un document');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-JiraConfigServer -Server url        Regle le serveur Jira par defaut');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-JiraIssue -Key PROJ-1 [-Summary s] [-Description d]  Modifie un ticket');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-MdbcData -Filter json -Document json [-CollectionName c]  Remplace un document');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-RedisHash -Key cle -Field champ -Value v  Ecrit un champ de hachage (HSET)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-RedisKey -Key cle -Value v [-ExpireSeconds n]  Ecrit une cle (SET generique)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-RedisList -Key cle -Value v  Ajoute en fin de liste (RPUSH reel)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-RedisSet -Key cle -Value v  Ajoute a un ensemble (SADD reel)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-RedisString -Key cle -Value v [-ExpireSeconds n]  Ecrit une chaine (SET)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-Team -GroupId id [-DisplayName n] [-Description d] [-Visibility v]  Modifie une equipe');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-TeamChannel -GroupId id -CurrentDisplayName n [-NewDisplayName n]  Modifie un canal');
-  TermAddLine(TP,
+  HelpEmit(
    '  Set-Variable NOM VALEUR              Definit une variable d''env. ' +
    'DOS (idem)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-CouchDBReplication -Source s -Target t [-Continuous] [-CreateTarget]  Lance une replication');
-  TermAddLine(TP,
+  HelpEmit(
    '  Test-OracleConnection [-Name n]  Verifie la connexion (SELECT 1 FROM DUAL)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Test-RedisKey -Key cle  Verifie l''existence d''une cle (EXISTS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Test-SqlAvailabilityGroup  Groupes de disponibilite non geres (fichier .mdf unique)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Test-SqlDatabaseReplicaState  Repliques non gerees (fichier .mdf unique)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Update-MdbcData -Filter json -Update json [-Multi]  Modifie via operateurs $set etc.');
-  TermAddLine(TP,
+  HelpEmit(
    '  Write-SqlTableData -TableName t -InputData json  Insere des lignes (INSERT reel)');
  End;
  { EDIT : disponible dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX     }
@@ -130732,9 +130757,9 @@ Begin
  { jamais suppose (meme discipline que l avertissement juste en dessous). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
     (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Editeur de texte ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Editeur de texte ---');
+  HelpEmit(
    '  EDIT fichier     Ouvrir un fichier dans l''editeur de texte');
  End;
  { ASSIGN : SK_CMD/SK_NCOMMANDER/SK_OS2REXX uniquement (2026-09-07, demande }
@@ -130742,13 +130767,13 @@ Begin
  { (AmigaDOS a deja sa PROPRE commande ASSIGN, sans rapport, voir plus bas). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Or
     (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Affectation de lecteur (emulateur DOS) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Affectation de lecteur (emulateur DOS) ---');
+  HelpEmit(
    '  ASSIGN d1=d2 [...] Redirige le lecteur d1 vers d2 dans l''emulateur');
-  TermAddLine(TP,
+  HelpEmit(
    '  ASSIGN /STATUS      Affiche les affectations en vigueur');
-  TermAddLine(TP,
+  HelpEmit(
    '  ASSIGN              (seul) Retire toutes les affectations');
  End;
  { ARJ (2026-08-31, demande explicite de l'utilisateur, port complet et      }
@@ -130756,25 +130781,25 @@ Begin
  { code natif directement dans DEVENV.PAS) - memes 4 shells que EDIT.        }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
     (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Archives ARJ (integre, sans executable externe) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Archives ARJ (integre, sans executable externe) ---');
+  HelpEmit(
    '  ARJ l archive.arj              Lister le contenu');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ v archive.arj               Lister avec details');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ e archive.arj [patron]      Extraire (sans le chemin)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ x archive.arj [patron]      Extraire (avec le chemin)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ t archive.arj               Tester l''integrite');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ a -m<0..4> archive.arj f... Ajouter/compresser des fichiers');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ d archive.arj patron        Supprimer des fichiers de l''archive');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ u/f/m ...                    Update/Freshen/Move (=Add+options)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ARJ /?                           Aide complete (commandes, switches)');
  End;
  { UNZIP (2026-08-31, demande explicite de l'utilisateur, port complet et   }
@@ -130783,21 +130808,21 @@ Begin
  { ARJ/EDIT. }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
     (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Archives ZIP (integre, sans executable externe) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Archives ZIP (integre, sans executable externe) ---');
+  HelpEmit(
    '  UNZIP -l archive.zip           Lister le contenu');
-  TermAddLine(TP,
+  HelpEmit(
    '  UNZIP -v archive.zip           Lister avec details (methode/CRC)');
-  TermAddLine(TP,
+  HelpEmit(
    '  UNZIP archive.zip [-d rep]     Extraire (avec les chemins)');
-  TermAddLine(TP,
+  HelpEmit(
    '  UNZIP -t archive.zip           Tester l''integrite (CRC)');
-  TermAddLine(TP,
+  HelpEmit(
    '  UNZIP -x motif archive.zip     Exclure des fichiers');
-  TermAddLine(TP,
+  HelpEmit(
    '  UNZIP -P mdp archive.zip       Mot de passe ZipCrypto classique');
-  TermAddLine(TP,
+  HelpEmit(
    '  UNZIP /?                       Aide complete (store/shrink/reduce/' +
    'implode/deflate/deflate64/DCL/BZIP2/LZMA/TERSE/Zstandard)');
  End;
@@ -130807,25 +130832,25 @@ Begin
  { ARJ/UNZIP/EDIT. }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
     (TP.Shell = SK_NCOMMANDER) Or (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Archives ICE/LZH (integre, sans executable externe) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Archives ICE/LZH (integre, sans executable externe) ---');
+  HelpEmit(
    '  LHICE l archive.ice             Lister le contenu');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE v archive.ice             Lister avec details');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE e/x archive.ice [f...]    Extraire (e=sans chemin, x=avec)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE p archive.ice [f...]      Afficher sur la sortie du terminal');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE t archive.ice             Tester l''integrite (CRC)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE a archive.ice f...        Ajouter (compression -lh1- reelle)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE u/f/m archive.ice f...    Update/Freshen/Move (=Add+options)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE d archive.ice f...        Supprimer des fichiers de l''archive');
-  TermAddLine(TP,
+  HelpEmit(
    '  LHICE /s ...                    Force le stockage (-lh0-, sans -lh1-)');
  End;
  { CSCRIPT (2026-08-31, demande explicite de l'utilisateur, port complet et }
@@ -130835,28 +130860,28 @@ Begin
  { propre interprete REXX). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
     (TP.Shell = SK_NCOMMANDER) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- CSCRIPT (interprete VBScript console) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- CSCRIPT (interprete VBScript console) ---');
+  HelpEmit(
    '  CSCRIPT script.vbs [arguments]     Executer un script VBScript');
-  TermAddLine(TP,
+  HelpEmit(
    '  CSCRIPT //B script.vbs             Mode batch (MsgBox repond OK)');
-  TermAddLine(TP,
+  HelpEmit(
    '  CSCRIPT //NoLogo script.vbs        Sans la banniere de version');
-  TermAddLine(TP,
+  HelpEmit(
    '  CSCRIPT //T:secondes script.vbs    Delai d''execution maximal');
-  TermAddLine(TP,
+  HelpEmit(
    '  CSCRIPT /? ou //?                  Aide complete');
  End;
  { PSCRIPT (2026-08-31, demande explicite de l'utilisateur, "support        }
  { complet") - meme 3 shells que CSCRIPT ci-dessus, voir TermCmd_PSCRIPT. }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
     (TP.Shell = SK_NCOMMANDER) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- PSCRIPT (interprete PascalScript console) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- PSCRIPT (interprete PascalScript console) ---');
+  HelpEmit(
    '  PSCRIPT script.psc [arguments]     Executer un script PascalScript');
-  TermAddLine(TP,
+  HelpEmit(
    '  PSCRIPT /? ou -h                   Aide complete');
  End;
  { Compress-Archive (2026-08-31, demande explicite - VRAIE compression      }
@@ -130864,29 +130889,29 @@ Begin
  { Huffman fixes deja construits/verifies pour `unzip`) - PowerShell dev    }
  { uniquement, meme convention que Compare-Object/Compare-VM. }
  If TP.Shell = SK_POWERSHELL Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Creer une archive ZIP (Deflate reel) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Creer une archive ZIP (Deflate reel) ---');
+  HelpEmit(
    '  Compress-Archive -Path f,g -DestinationPath archive.zip   Cree');
-  TermAddLine(TP,
+  HelpEmit(
    '  Compress-Archive -Path dossier -DestinationPath a.zip     Recursif');
-  TermAddLine(TP,
+  HelpEmit(
    '  ... -CompressionLevel NoCompression                       Stockage (0)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ... -Update                                                Ajoute/remplace');
-  TermAddLine(TP,
+  HelpEmit(
    '  ... -Force                                                 Ecrase la cible');
  End;
  { Expand-Archive (2026-08-31, demande explicite) - reutilise le moteur     }
  { d'extraction reel deja existant d'UNZIP - PowerShell dev uniquement. }
  If TP.Shell = SK_POWERSHELL Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Extraire une archive ZIP ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Extraire une archive ZIP ---');
+  HelpEmit(
    '  Expand-Archive -Path archive.zip -DestinationPath dossier   Extrait');
-  TermAddLine(TP,
+  HelpEmit(
    '  Expand-Archive -Path archive.zip                            Dossier auto');
-  TermAddLine(TP,
+  HelpEmit(
    '  ... -Force                                                  Dossier existant');
  End;
  { Alias PowerShell (verbe-nom) pour WIN/WIN16 (2026-08-30, demande         }
@@ -130895,37 +130920,37 @@ Begin
  { SK_POWERSHELL uniquement : WIN/WIN16 eux-memes restent SK_CMD/            }
  { SK_NCOMMANDER (deja documentes plus bas, section "Lancer un emulateur"). }
  If TP.Shell = SK_POWERSHELL Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Lancer un programme Windows 16 bits ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Lancer un programme Windows 16 bits ---');
+  HelpEmit(
    '  Start-Win16 fichier[.exe]              Emulateur Windows 16 bits (NE)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-Win16Program fichier[.exe]        Alias de Start-Win16');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-Win16Application fichier[.exe]    Alias de Start-Win16');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-Win16 fichier[.exe]              Alias de Start-Win16');
-  TermAddLine(TP,
+  HelpEmit(
    '  Invoke-Win16Program fichier[.exe]        Alias de Start-Win16');
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Lancer un programme Windows 32 bits (PE) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Lancer un programme Windows 32 bits (PE) ---');
+  HelpEmit(
    '  Start-Win32Program fichier[.exe]        Emulateur Windows NT/Win32 (PE)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-Win32Application fichier[.exe]    Alias de Start-Win32Program');
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Lancer un programme DOS ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Lancer un programme DOS ---');
+  HelpEmit(
    '  Start-DosProgram fichier[.exe/.com]     Emulateur DOS (8086)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-Atari2600Program fichier[.a26/.bin]  Emulateur Atari 2600');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-NesProgram fichier[.nes]           Emulateur NES');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-OS9Program fichier[.os9]           Emulateur OS-9/6809');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-Cray1Program fichier[.abs]         Emulateur Cray-1 (COS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  Start-LinuxProgram fichier               Emulateur Linux x86-64 (ELF)');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
@@ -130935,111 +130960,111 @@ Begin
  { ne les comprennent pas serait aussi trompeur que l ancienne liste          }
  { incomplete signalee par l utilisateur. }
  If (TP.Shell <> SK_BASH) And (TP.Shell <> SK_GULAM) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Journaux de diagnostic ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Journaux de diagnostic ---');
+  HelpEmit(
    '  LOG ON /EMUDIAG  Activer EMUDIAG.LOG');
-  TermAddLine(TP,
+  HelpEmit(
    '  LOG ON /EMUINT13 Activer EMUINT13.LOG');
-  TermAddLine(TP,
+  HelpEmit(
    '  LOG OFF [/EMUDIAG|/EMUINT13] Desactiver un journal');
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Amorcer un disque virtuel ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Amorcer un disque virtuel ---');
+  HelpEmit(
    '  BOOT d: [/DOS|/OS2|/LINUX|/LINUXARM] [/GUI] [/CMD]  Amorcer un lecteur virtuel');
  End;
  { DEVENV solution.sln : SK_CMD/SK_POWERSHELL/SK_NCOMMANDER seulement       }
  { (verifie de la meme facon que les autres blocs conditionnels ci-dessus). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_POWERSHELL) Or
     (TP.Shell = SK_NCOMMANDER) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Ouvrir une solution ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Ouvrir une solution ---');
+  HelpEmit(
    '  DEVENV solution.sln    Ouvrir dans l''Explorateur de solutions');
  End;
  { NES/ATARI2600/C64/COCO3/WIN16, MOUNT et tous les diagnostics OS/2 LX/     }
  { Windows 16 bits : SK_CMD et SK_NCOMMANDER uniquement (verifie de la      }
  { meme facon). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Monter un repertoire hote (comme DOSBox) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Monter un repertoire hote (comme DOSBox) ---');
+  HelpEmit(
    '  MOUNT                  Lister les lecteurs montes');
-  TermAddLine(TP,
+  HelpEmit(
    '  MOUNT lettre dossier   Monter dossier sur lettre: (ex. MOUNT E C:\ROMS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  MOUNT -u lettre        Demonter lettre:');
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Monter une image disque (comme DOSBox, A/B/C/D seulement) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Monter une image disque (comme DOSBox, A/B/C/D seulement) ---');
+  HelpEmit(
    '  IMGMOUNT lettre image [-t ...] [-fs ...] [-size ...]  Monter une image');
-  TermAddLine(TP,
+  HelpEmit(
    '  IMGMOUNT -u lettre     Demonter lettre: (A, B, C ou D)');
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Lancer un emulateur ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Lancer un emulateur ---');
+  HelpEmit(
    '  NES fichier[.nes]            Emulateur Nintendo NES');
-  TermAddLine(TP,
+  HelpEmit(
    '  ATARI2600 fichier[.a26]      Emulateur Atari 2600 (VCS)');
-  TermAddLine(TP,
+  HelpEmit(
    '  ATARI2600VCS fichier[.a26]   Alias de ATARI2600');
-  TermAddLine(TP,
+  HelpEmit(
    '  C64 [fichier[.prg]]          Emulateur Commodore 64 (BASIC si vide)');
-  TermAddLine(TP,
+  HelpEmit(
    '  COMMODORE64 [fichier[.prg]]  Alias de C64');
-  TermAddLine(TP,
+  HelpEmit(
    '  COCO3 fichier[.rom|.pak|.bin] Emulateur Tandy Color Computer 3');
-  TermAddLine(TP,
+  HelpEmit(
    '  WIN fichier[.exe]            Emulateur Windows 16 bits (NE)');
-  TermAddLine(TP,
+  HelpEmit(
    '  WIN16 fichier[.exe]          Alias de WIN');
-  TermAddLine(TP,
+  HelpEmit(
    '  LINUX fichier                Emulateur Linux x86-64 (ELF64)');
-  TermAddLine(TP,
+  HelpEmit(
    '  OS2 fichier[.exe]            Emulateur OS/2 LX');
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Diagnostic OS/2 LX (chantier -COS2LX) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Diagnostic OS/2 LX (chantier -COS2LX) ---');
+  HelpEmit(
    '  ELFBP [adresse [n]]  Point d''arret ELF64 par adresse (OFF pour retirer)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LXINFO fichier       Dumper l''en-tete/objets/imports d''un .EXE OS/2 LX');
-  TermAddLine(TP,
+  HelpEmit(
    '  LXLOAD fichier       Charger un .EXE OS/2 LX (diagnostic, sans executer)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LXSTEP fichier [n]   Executer n pas d''un .EXE OS/2 LX (trace)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LXDUMP fichier       Vidage memoire apres chargement OS/2 LX');
-  TermAddLine(TP,
+  HelpEmit(
    '  LXCALL fichier ord   Appeler un ordinal DOSCALLS resolu (diagnostic)');
-  TermAddLine(TP,
+  HelpEmit(
    '  LXSCAN fichier       Balayer les imports/exports d''un .EXE OS/2 LX');
-  TermAddLine(TP,
+  HelpEmit(
    '  LXGET fichier ordre  Extraire un module importe vers un fichier hote');
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Diagnostic Windows 16 bits (chantier -CWIN16) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Diagnostic Windows 16 bits (chantier -CWIN16) ---');
+  HelpEmit(
    '  WIN16INFO fichier    Dumper l''en-tete/segments/imports d''un .EXE NE');
-  TermAddLine(TP,
+  HelpEmit(
    '  WIN16LOAD fichier    Charger un .EXE NE (diagnostic, sans executer)');
-  TermAddLine(TP,
+  HelpEmit(
    '  WIN16CALL fichier    Appeler KERNEL.InitTask resolu (diagnostic)');
-  TermAddLine(TP,
+  HelpEmit(
    '  WIN16RUN fichier [n] Executer n pas d''un .EXE NE, trace vers WIN16RUN.LOG');
  End;
  { LOADFIX : SK_CMD uniquement (2026-08-30, demande explicite de            }
  { l utilisateur - voir TermCmd_LOADFIX pres de TermCmd_BOOT). }
  If TP.Shell = SK_CMD Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Charger un programme au-dessus de 64 Ko (comme MS-DOS) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Charger un programme au-dessus de 64 Ko (comme MS-DOS) ---');
+  HelpEmit(
    '  LOADFIX programme [arguments]  Charge au-dessus des 64 premiers Ko');
  End;
  { HISTORY : SK_CMD uniquement (demande explicite de l utilisateur - voir   }
  { TermCmd_HISTORY pres de TermCmd_GetHistory). }
  If TP.Shell = SK_CMD Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Historique des commandes ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Historique des commandes ---');
+  HelpEmit(
    '  HISTORY                         Affiche l''historique de rappel Haut/Bas');
  End;
  { MEM : SK_CMD et SK_NCOMMANDER (2026-09-06, demande explicite de          }
@@ -131047,21 +131072,21 @@ Begin
  { format texte du vrai MEM.EXE de DOS avec les VRAIS chiffres de           }
  { l emulateur courant (chaine MCB/EMS/XMS/UMB). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Etat memoire de l''emulateur DOS courant (comme MS-DOS) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Etat memoire de l''emulateur DOS courant (comme MS-DOS) ---');
+  HelpEmit(
    '  MEM [/SUMMARY]                  Memoire conventionnelle/EMS/XMS/UMB');
-  TermAddLine(TP,
+  HelpEmit(
    '  MEM /FREE                       Liste les blocs de memoire libres');
-  TermAddLine(TP,
+  HelpEmit(
    '  MEM /PROGRAM                    Liste les blocs charges par segment/PSP');
-  TermAddLine(TP,
+  HelpEmit(
    '  MEM /CLASSIFY                   Idem /PROGRAM, avec la zone (conv./UMB)');
-  TermAddLine(TP,
+  HelpEmit(
    '  MEM /DEBUG                      Vidage complet de la chaine MCB');
-  TermAddLine(TP,
+  HelpEmit(
    '  MEM /RAW                        Vidage MCB brut (segment;proprietaire;...)');
-  TermAddLine(TP,
+  HelpEmit(
    '  MEM /MODULE nom                 Non supporte (aucun nom dans le MCB)');
  End;
  { LH/LOADHIGH : SK_CMD et SK_OS2REXX (2026-08-30, demande explicite de     }
@@ -131070,11 +131095,11 @@ Begin
  { DOS: OS, cochee par defaut) : decochee, meme limitation honnete que le   }
  { pilote XMS (aucune UMB disponible, charge en memoire conventionnelle). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Charger un programme en memoire haute (comme MS-DOS) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Charger un programme en memoire haute (comme MS-DOS) ---');
+  HelpEmit(
    '  LOADHIGH programme [arguments]  Charge en memoire haute (UMB, $C000) si');
-  TermAddLine(TP,
+  HelpEmit(
    '  LH programme [arguments]        activee (Options > Emulateur > DOS: OS)');
  End;
  { REXX : SK_OS2REXX uniquement (2026-08-30, demande explicite de           }
@@ -131082,11 +131107,11 @@ Begin
  { pres de TermCmd_IMGMOUNT). PMREXX (2026-09-07, demande explicite) :      }
  { simple alias de REXX, voir TermExecuteCommand/SK_OS2REXX. }
  If TP.Shell = SK_OS2REXX Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- Langage de script REXX ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- Langage de script REXX ---');
+  HelpEmit(
    '  REXX fichier.rex [arguments]  Lance un script REXX complet');
-  TermAddLine(TP,
+  HelpEmit(
    '  PMREXX fichier.rex [arguments]  Alias de REXX (nom du frontal OS/2)');
  End;
  { GREP : SK_BASH uniquement (2026-09-05, demande explicite de               }
@@ -131096,13 +131121,13 @@ Begin
  { dans le dispatcher de commandes mais jamais ajoutes a cette aide - HELP   }
  { ne les mentionnait donc jamais, alors qu'ils fonctionnaient deja. }
  If (TP.Shell = SK_BASH) Or (TP.Shell = SK_GULAM) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- GREP (recherche par expression reguliere) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- GREP (recherche par expression reguliere) ---');
+  HelpEmit(
    '  grep [OPTIONS] MOTIF FICHIER...   -i -v -c -n -l -L -w -x -o -q -s');
-  TermAddLine(TP,
+  HelpEmit(
    '                                    -H -h -r -R -F -A n -B n -C n -m n');
-  TermAddLine(TP,
+  HelpEmit(
    '                                    -e MOTIF -f FICHIER');
  End;
  { PERL : SK_BASH uniquement (2026-09-05, demande explicite de              }
@@ -131110,28 +131135,28 @@ Begin
  { Ajoutee proactivement ici des le premier chantier, pour eviter de         }
  { reproduire le meme oubli que GREP/MASM/LINK ci-dessus. }
  If (TP.Shell = SK_BASH) Or (TP.Shell = SK_GULAM) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- PERL (interprete Perl) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- PERL (interprete Perl) ---');
+  HelpEmit(
    '  perl [options] [-e code | fichier.pl] [args...]  -e -E -n -p -i[sfx]');
-  TermAddLine(TP,
+  HelpEmit(
    '                                    -a -F motif -l -0 -s -S -I rep');
-  TermAddLine(TP,
+  HelpEmit(
    '                                    -M mod -m mod -w -W -c -v -V -h --');
-  TermAddLine(TP,
+  HelpEmit(
    '  perl -h                                             Aide complete');
  End;
  { AWK : SK_BASH uniquement (2026-09-06, demande explicite de               }
  { l'utilisateur - port complet du prototype AWK.PAS, voir TermCmd_Awk).    }
  { Ajoutee proactivement ici des le premier chantier, meme raison que PERL. }
  If (TP.Shell = SK_BASH) Or (TP.Shell = SK_GULAM) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- AWK (traitement de texte par regles) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- AWK (traitement de texte par regles) ---');
+  HelpEmit(
    '  awk [options] ''programme'' [fichier...]      -f fichier -v var=val');
-  TermAddLine(TP,
+  HelpEmit(
    '                                              -F sep -v -V -h --');
-  TermAddLine(TP,
+  HelpEmit(
    '  awk -h                                       Aide complete');
  End;
  { MASM : SK_CMD/SK_NCOMMANDER/SK_OS2REXX (2026-09-05, demande explicite -   }
@@ -131139,11 +131164,11 @@ Begin
  { TermCmd_Masm). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Or
     (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- MASM (assembleur 8086, sortie .OBJ Intel OMF) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- MASM (assembleur 8086, sortie .OBJ Intel OMF) ---');
+  HelpEmit(
    '  MASM source[.ASM] [obj[.OBJ] [lst[.LST]]] [options]  Assembler');
-  TermAddLine(TP,
+  HelpEmit(
    '  MASM /?                                              Aide complete');
  End;
  { LINK : SK_CMD/SK_NCOMMANDER/SK_OS2REXX (2026-09-05, demande explicite -   }
@@ -131151,36 +131176,49 @@ Begin
  { voir TermCmd_Link). }
  If (TP.Shell = SK_CMD) Or (TP.Shell = SK_NCOMMANDER) Or
     (TP.Shell = SK_OS2REXX) Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- LINK (editeur de liens, .OBJ Intel OMF -> .EXE DOS) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- LINK (editeur de liens, .OBJ Intel OMF -> .EXE DOS) ---');
+  HelpEmit(
    '  LINK obj[.OBJ] [exe[.EXE] [map[.MAP]]] [options]     Lier');
-  TermAddLine(TP,
+  HelpEmit(
    '  LINK /?                                              Aide complete');
  End;
  { AS68 : SK_GULAM uniquement (2026-09-13, demande explicite de            }
  { l'utilisateur - port complet et integral de AS68.PAS, clone Digital     }
  { Research AS68 pour Atari ST/CP-M-68K, voir TermCmd_As68). }
  If TP.Shell = SK_GULAM Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- AS68 (assembleur 68000, sortie objet relogeable DRI) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- AS68 (assembleur 68000, sortie objet relogeable DRI) ---');
+  HelpEmit(
    '  as68 [options] fichier.S           -O obj -U -L -N -P -F rep -S rep -I');
-  TermAddLine(TP,
+  HelpEmit(
    '  as68 --help                        Aide complete');
  End;
  { LINK68 : SK_GULAM uniquement (2026-09-13, demande explicite de l    }
  { utilisateur - port complet et integral de LINK68.PAS, editeur de     }
  { liens DRI .O/AR68 -> .068 Atari ST, voir TermCmd_Link68). }
  If TP.Shell = SK_GULAM Then Begin
-  TermAddLine(TP, '');
-  TermAddLine(TP, '--- LINK68 (editeur de liens, objets DRI .O/AR68 -> .068 Atari ST) ---');
-  TermAddLine(TP,
+  HelpEmit( '');
+  HelpEmit( '--- LINK68 (editeur de liens, objets DRI .O/AR68 -> .068 Atari ST) ---');
+  HelpEmit(
    '  link68 [options] sortie=obj1,obj2,...   Lier (voir link68 /? pour [U,S,...])');
-  TermAddLine(TP,
+  HelpEmit(
    '  link68 obj1,obj2,...                    Sortie par defaut (.068)');
-  TermAddLine(TP,
+  HelpEmit(
    '  link68 /?                               Aide complete');
+ End;
+ If TP.Shell = SK_CMD Then Begin
+  For HelpI := 1 To HelpCmdCount - 1 Do Begin
+   HelpTmp := HelpCmdLines[HelpI];
+   HelpJ := HelpI - 1;
+   While (HelpJ >= 0) And (HelpCmdLines[HelpJ] > HelpTmp) Do Begin
+    HelpCmdLines[HelpJ + 1] := HelpCmdLines[HelpJ];
+    Dec(HelpJ);
+   End;
+   HelpCmdLines[HelpJ + 1] := HelpTmp;
+  End;
+  For HelpI := 0 To HelpCmdCount - 1 Do
+   TermAddLine(TP, HelpCmdLines[HelpI]);
  End;
 End;
 
