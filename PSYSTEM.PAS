@@ -2984,6 +2984,20 @@ Begin
  302:CPUCSDErrorText:='Index expression out of bounds';
  303:CPUCSDErrorText:='Value to be assigned is out of bounds';
  304:CPUCSDErrorText:='Element expression out of range';
+ 398:CPUCSDErrorText:='Implementation restriction';
+ 399:CPUCSDErrorText:='Implementation restriction';
+ 400:CPUCSDErrorText:='Illegal character in text';
+ 401:CPUCSDErrorText:='Unexpected end of input';
+ 402:CPUCSDErrorText:='Error in writing code file, not enough room';
+ 403:CPUCSDErrorText:='Error in reading include file';
+ 404:CPUCSDErrorText:='Error in writing list file, not enough room';
+ 405:CPUCSDErrorText:='''PROGRAM'' or ''UNIT'' expected';
+ 406:CPUCSDErrorText:='Include file not legal';
+ 407:CPUCSDErrorText:='Include file nesting limit exceeded';
+ 408:CPUCSDErrorText:='INTERFACE section not contained in one file';
+ 409:CPUCSDErrorText:='Unit name reserved for system';
+ 410:CPUCSDErrorText:='Disk error';
+ 500:CPUCSDErrorText:='Assembler error';
  else CPUCSDErrorText:='Compiler error'
  End
 End;
@@ -3117,7 +3131,7 @@ Begin
   if A=#10 Then Inc(CPLine);
   if Length(D)<255 Then D:=D+A;Inc(CPPos)
  End;
- if Depth<>0 Then CPFail('fin de fichier dans un commentaire')
+ if Depth<>0 Then CPFailCode(401,'fin de fichier dans un commentaire')
  else if Directive Then ApplyDirective(D)
 End;
 Begin
@@ -3127,7 +3141,7 @@ Begin
   if CPSource^[CPPos]=10 Then Inc(CPLine);Inc(CPPos)
  End;
  if CPPos>=CPSize Then Begin
-  CPToken:='EOF';Exit
+  CPTokenPos:=CPPos;CPToken:='EOF';Exit
  End;
  CPTokenPos:=CPPos;
  C:=Chr(CPSource^[CPPos]);
@@ -3229,11 +3243,13 @@ Begin
     CPFail('chaine de plus de 255 caracteres');Break
    End
   End;
-  if not Closed and not CPError Then CPFail('fin de fichier dans une chaine');
+  if not Closed and not CPError Then CPFailCode(401,'fin de fichier dans une chaine');
   CPToken:='STR';Exit
  End;
- if Ord(C)<32 Then Begin
-  CPFail('caractere de controle invalide dans le source');CPToken:='EOF';Exit
+ if not(C in['+', '-', '*', '/', '=', '<', '>', '(', ')', '[', ']',
+  '.', ',', ':', ';', '^', '@'])Then Begin
+  CPFailCode(400,'caractere invalide dans le source');Inc(CPPos);
+  CPToken:='INVALID';Exit
  End;
  CPToken:=C;Inc(CPPos);
  if(C='.')and(CPPos<CPSize)and(CPSource^[CPPos]=Ord('.'))Then Begin
@@ -3254,7 +3270,8 @@ End;
 
 Procedure CPNeed(S:String);Begin
  if CPToken<>S Then Begin
-  if S=')'Then CPFailCode(4,''')'' attendu')
+  if CPToken='EOF'Then CPFailCode(401,'fin de source avant "'+S+'"')
+  else if S=')'Then CPFailCode(4,''')'' attendu')
   else if S=':'Then CPFailCode(5,''':'' attendu')
   else if S='OF'Then CPFailCode(8,'''OF'' attendu')
   else if S='('Then CPFailCode(9,'''('' attendu')
@@ -4063,6 +4080,12 @@ Var
  R:PPasRoutine;
 Begin
  CPPass:=1;CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPNext;
+ if not CPIs('PROGRAM')and not CPIs('UNIT')Then Begin
+  CPFailCode(405,'''PROGRAM'' ou ''UNIT'' attendu');Exit
+ End;
+ if CPIs('UNIT')Then Begin
+  CPFailCode(398,'compilation autonome des UNIT non implementee');Exit
+ End;
  While(CPToken<>'EOF')do Begin
   CPError:=False;
   if CPIs('CONST')Then CPParseConstSection else
@@ -4731,9 +4754,12 @@ Procedure CPCompound;Begin
  End;CPNext;
  While not CPIs('END')and(CPToken<>'EOF')and not CPError do Begin
   CPStatement;
-  if CPToken=';'Then CPNext else if not CPIs('END')Then CPFail('point-virgule attendu')
+  if CPToken=';'Then CPNext else if CPToken='EOF'Then
+   CPFailCode(401,'fin de source avant END')
+  else if not CPIs('END')Then CPFail('point-virgule attendu')
  End;
- if CPIs('END')Then CPNext
+ if CPIs('END')Then CPNext else if(CPToken='EOF')and not CPError Then
+  CPFailCode(401,'fin de source avant END')
 End;
 
 Procedure CPStatement;
@@ -5390,14 +5416,18 @@ While(Q<>Nil)and(K<ImportCount)do Begin
  End;Q:=Q^.Next
 End;
 Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then Begin
- CPFail('creation impossible');Exit
+ CPFailCode(402,'creation du fichier CODE impossible');Exit
 End;
-BlockWrite(F,Header,512,W);if(IOResult<>0)or(W<>512)Then CPFail('erreur d''ecriture');
+BlockWrite(F,Header,512,W);if(IOResult<>0)or(W<>512)Then
+ CPFailCode(402,'erreur d''ecriture du fichier CODE');
 if not CPError Then Begin
  BlockWrite(F,PCode_Mem^,SegmentLength,N);
- if(IOResult<>0)or(N<>SegmentLength)Then CPFail('erreur d''ecriture')
+ if(IOResult<>0)or(N<>SegmentLength)Then CPFailCode(402,'erreur d''ecriture du fichier CODE')
 End;
-Close(F);if IOResult<>0 Then CPFail('erreur de fermeture');WriteUCSDCodeFile:=not CPError
+Close(F);if IOResult<>0 Then CPFailCode(402,'erreur de fermeture du fichier CODE');
+if CPError Then Begin Erase(F);if IOResult<>0 Then
+ WriteLn('Impossible de supprimer le fichier CODE incomplet: ',CodeName) End;
+WriteUCSDCodeFile:=not CPError
 End;
 
 Function CompilePascalPCode(SourceName,CodeName:String):Integer;
@@ -5429,15 +5459,19 @@ Begin
  TextType:=CPAddType('TEXT',ptkFile,1);TextType^.ElementType:=CPFindType('CHAR');
  CPError:=False;CPHadErrors:=False;CPDiagnosticCount:=0;CPFirstErrorCode:=0;
  CPLine:=1;CPVarCount:=0;
+ CPSize:=0;CPTokenPos:=0;
  GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
  Assign(F,SourceName);Reset(F,1);if IOResult<>0 Then Begin
-  CPFail('ouverture impossible');Goto 99
+  CPFailCode(410,'ouverture du source impossible');Goto 99
  End;
  Sz:=FileSize(F);if Sz>65534 Then Begin
   Close(F);CPFailCode(193,'source trop grand');Goto 99
  End;
- BlockRead(F,CPSource^,Sz,N);if(IOResult<>0)or(N<>Sz)Then CPFail('erreur de lecture');
+ BlockRead(F,CPSource^,Sz,N);if(IOResult<>0)or(N<>Sz)Then
+  CPFailCode(410,'erreur de lecture du source');
  Close(F);
+ if IOResult<>0 Then CPFailCode(410,'erreur de fermeture du source');
+ if CPError Then Goto 99;
  CPSize:=Sz;CPDeclarationPass;
  if CPError Then Goto 99;
  CPPass:=2;CPCurrentRoutine:=Nil;CPCodePos:=0;
@@ -5481,6 +5515,7 @@ Begin
   CPPos:=R^.EndPosition;CPNext
  End;
  CPMainStart:=CPCodePos;CPCompound;
+ if CPError Then Goto 99;
  CPCheckLabels(Nil);
  if CPToken='.'Then CPNext else CPFail('point final attendu');
  if CurrentTarget=ptUCSDPSystemIV Then Begin
@@ -5507,7 +5542,7 @@ Begin
  if Code=0 Then Begin
   ProgramFile:=OutputName;WriteLn('Assemblage termine.')
  End
- else WriteLn('Echec de l''assemblage (code ',Code,').')
+ else WriteLn('Erreur UCSD 500 (Assembler error): echec de l''assemblage (code ',Code,').')
 End;
 
 Function DebugHex(V:LongInt;N:Integer):String;
