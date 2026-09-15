@@ -2650,7 +2650,7 @@ Var
  CPNumber:LongInt;
  CPRealNumber:Real;
  CPError,CPHadErrors:Boolean;
- CPDiagnosticCount:Integer;
+ CPDiagnosticCount,CPFirstErrorCode:Integer;
  CPSymbols:PPasSymbol;
  CPTypes:PPasType;
  CPRoutines:PPasRoutine;
@@ -2850,12 +2850,45 @@ Begin
  End
 End;
 
-Procedure CPFail(S:String);
+Function CPUCSDErrorText(Code:Integer):String;
+Begin
+ Case Code of
+  1:CPUCSDErrorText:='Error in simple type';2:CPUCSDErrorText:='Identifier expected';
+  3:CPUCSDErrorText:='Unimplemented error';4:CPUCSDErrorText:=''')'' expected';
+  5:CPUCSDErrorText:=''':'' expected';6:CPUCSDErrorText:='Illegal symbol (terminator expected)';
+  7:CPUCSDErrorText:='Error in parameter list';8:CPUCSDErrorText:='''OF'' expected';
+  9:CPUCSDErrorText:='''('' expected';10:CPUCSDErrorText:='Error in type';
+ 11:CPUCSDErrorText:=''''' expected';13:CPUCSDErrorText:='''END'' expected';
+ 14:CPUCSDErrorText:=''';'' expected';15:CPUCSDErrorText:='Integer expected';
+ 16:CPUCSDErrorText:='''='' expected';else CPUCSDErrorText:='Compiler error'
+ End
+End;
+
+Function CPInferErrorCode(S:String):Integer;
+Var U:String;
+Begin
+ U:=UpperString(S);CPInferErrorCode:=6;
+ if U='OF ATTENDU'Then CPInferErrorCode:=8
+ else if(U='END ATTENDU')or(Pos('END D''',U)=1)Then CPInferErrorCode:=13
+ else if(Pos('NON IMPLEMENT',U)<>0)or(Pos('NON DISPONIBLE',U)<>0)Then CPInferErrorCode:=3
+ else if Pos('PARAMETRE',U)<>0 Then CPInferErrorCode:=7
+ else if(Pos('IDENTIFICATEUR',U)<>0)or(Pos('NOM DE ',U)<>0)Then CPInferErrorCode:=2
+ else if(Pos('TYPE SIMPLE',U)<>0)or(Pos('BORNE',U)<>0)Then CPInferErrorCode:=1
+ else if Pos('TYPE',U)<>0 Then CPInferErrorCode:=10
+ else if(Pos('ENTIER',U)<>0)or(Pos('NOMBRE ATTENDU',U)<>0)or
+  (Pos('CONSTANTE ATTENDUE',U)<>0)Then CPInferErrorCode:=15
+ else if Pos('END',U)<>0 Then CPInferErrorCode:=13
+ else if Pos('POINT-VIRGULE',U)<>0 Then CPInferErrorCode:=14
+ else if(Pos('APOSTROPHE',U)<>0)or(Pos('FIN DE FICHIER DANS UNE CHAINE',U)<>0)Then CPInferErrorCode:=11
+End;
+
+Procedure CPFailCode(ErrorCode:Integer;S:String);
 Var
  StartPos,EndPos,Col,I:LongInt;
  LineText,Category:String;
 Begin
- CPError:=True;CPHadErrors:=True;if CPDiagnosticCount>=50 Then Exit;
+ CPError:=True;CPHadErrors:=True;if CPFirstErrorCode=0 Then CPFirstErrorCode:=ErrorCode;
+ if CPDiagnosticCount>=50 Then Exit;
  Inc(CPDiagnosticCount);
  Category:='syntaxe';
  if(Pos('TYPE',UpperString(S))<>0)or(Pos('IDENTIFICATEUR',UpperString(S))<>0)or
@@ -2869,12 +2902,16 @@ Begin
  While(EndPos<CPSize)and not(CPSource^[EndPos]in[10,13])do Begin
   if Length(LineText)<255 Then LineText:=LineText+Chr(CPSource^[EndPos]);Inc(EndPos)
  End;Col:=CPTokenPos-StartPos+1;if Col<1 Then Col:=1;
- WriteLn('Erreur UCSD ',Category,' ',CPLine,':',Col,': ',S);
+ WriteLn('Erreur UCSD ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',Category,
+  ' ',CPLine,':',Col,': ',S);
  if LineText<>''Then Begin
   WriteLn(LineText);
   For I:=2 to Col do Write(' ');WriteLn('^')
  End
 End;
+
+Procedure CPFail(S:String);
+Begin CPFailCode(CPInferErrorCode(S),S)End;
 
 Procedure CPNext;
 Var
@@ -3052,7 +3089,16 @@ Function CPIs(S:String):Boolean;Begin
 End;
 
 Procedure CPNeed(S:String);Begin
- if CPToken<>S Then CPFail('"'+S+'" attendu')else CPNext
+ if CPToken<>S Then Begin
+  if S=')'Then CPFailCode(4,''')'' attendu')
+  else if S=':'Then CPFailCode(5,''':'' attendu')
+  else if S='OF'Then CPFailCode(8,'''OF'' attendu')
+  else if S='('Then CPFailCode(9,'''('' attendu')
+  else if S='END'Then CPFailCode(13,'''END'' attendu')
+  else if S=';'Then CPFailCode(14,''';'' attendu')
+  else if S='='Then CPFailCode(16,'''='' attendu')
+  else CPFailCode(6,'symbole "'+S+'" attendu')
+ End else CPNext
 End;
 Function CPFind(S:String):PPasSymbol;Forward;
 Procedure CPAdd(S:String;V:Integer;K:Boolean);Forward;
@@ -5047,7 +5093,8 @@ Begin
  TextType:=CPAddType('STRING',ptkString,256);TextType^.HighBound:=255;
  TextType^.PackedType:=True;
  TextType:=CPAddType('TEXT',ptkFile,1);TextType^.ElementType:=CPFindType('CHAR');
- CPError:=False;CPHadErrors:=False;CPDiagnosticCount:=0;CPLine:=1;CPVarCount:=0;
+ CPError:=False;CPHadErrors:=False;CPDiagnosticCount:=0;CPFirstErrorCode:=0;
+ CPLine:=1;CPVarCount:=0;
  GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
  Assign(F,SourceName);Reset(F,1);if IOResult<>0 Then Begin
   CPFail('ouverture impossible');Goto 99
@@ -5108,7 +5155,7 @@ Begin
  FreeMem(PCode_Mem,SizeOf(TPCodeMemory));FreeMem(CPSource,SizeOf(TPCodeMemory));
  if not CPError Then Begin
   WriteLn(CPCodePos,' octet(s) de p-Code.');CompilePascalPCode:=0
- End
+ End else if CPFirstErrorCode<>0 Then CompilePascalPCode:=CPFirstErrorCode
 End;
 
 Procedure AssembleCommand;
