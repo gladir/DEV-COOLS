@@ -2860,7 +2860,16 @@ Begin
   9:CPUCSDErrorText:='''('' expected';10:CPUCSDErrorText:='Error in type';
  11:CPUCSDErrorText:=''''' expected';13:CPUCSDErrorText:='''END'' expected';
  14:CPUCSDErrorText:=''';'' expected';15:CPUCSDErrorText:='Integer expected';
- 16:CPUCSDErrorText:='''='' expected';else CPUCSDErrorText:='Compiler error'
+ 16:CPUCSDErrorText:='''='' expected';17:CPUCSDErrorText:='''BEGIN'' expected';
+ 18:CPUCSDErrorText:='Error in declaration part';
+ 19:CPUCSDErrorText:='Error in <field-list>';20:CPUCSDErrorText:=''','' expected';
+ 21:CPUCSDErrorText:='''*'' expected';22:CPUCSDErrorText:='''INTERFACE'' expected';
+ 23:CPUCSDErrorText:='''IMPLEMENTATION'' expected';24:CPUCSDErrorText:='''UNIT'' expected';
+ 50:CPUCSDErrorText:='Error in constant';51:CPUCSDErrorText:=''':='' expected';
+ 52:CPUCSDErrorText:='''THEN'' expected';53:CPUCSDErrorText:='''UNTIL'' expected';
+ 54:CPUCSDErrorText:='''DO'' expected';
+ 55:CPUCSDErrorText:='''TO'' or ''DOWNTO'' expected in for statement';
+ else CPUCSDErrorText:='Compiler error'
  End
 End;
 
@@ -2868,16 +2877,28 @@ Function CPInferErrorCode(S:String):Integer;
 Var U:String;
 Begin
  U:=UpperString(S);CPInferErrorCode:=6;
- if U='OF ATTENDU'Then CPInferErrorCode:=8
+ if(Pos('BEGIN',U)<>0)and(Pos('ATTENDU',U)<>0)Then CPInferErrorCode:=17
+ else if(Pos('PARTIE DECLAR',U)<>0)or(Pos('ERREUR DE DECLAR',U)<>0)or
+  (Pos('DECLARATION',U)<>0)Then CPInferErrorCode:=18
+ else if(Pos('LISTE DE CHAMP',U)<>0)or(Pos('NOM DE CHAMP ATTENDU',U)<>0)Then CPInferErrorCode:=19
+ else if U='VIRGULE ATTENDUE'Then CPInferErrorCode:=20
+ else if U='INTERFACE ATTENDU'Then CPInferErrorCode:=22
+ else if U='IMPLEMENTATION ATTENDU'Then CPInferErrorCode:=23
+ else if U='UNIT ATTENDU'Then CPInferErrorCode:=24
+ else if Pos('CONSTANTE',U)<>0 Then CPInferErrorCode:=50
+ else if U='THEN ATTENDU'Then CPInferErrorCode:=52
+ else if U='UNTIL ATTENDU'Then CPInferErrorCode:=53
+ else if U='DO ATTENDU'Then CPInferErrorCode:=54
+ else if Pos('TO OU DOWNTO ATTENDU',U)<>0 Then CPInferErrorCode:=55
+ else if U='OF ATTENDU'Then CPInferErrorCode:=8
  else if(U='END ATTENDU')or(Pos('END D''',U)=1)Then CPInferErrorCode:=13
  else if(Pos('NON IMPLEMENT',U)<>0)or(Pos('NON DISPONIBLE',U)<>0)Then CPInferErrorCode:=3
  else if Pos('PARAMETRE',U)<>0 Then CPInferErrorCode:=7
- else if(Pos('IDENTIFICATEUR',U)<>0)or(Pos('NOM DE ',U)<>0)Then CPInferErrorCode:=2
+ else if((Pos('IDENTIFICATEUR',U)<>0)or(Pos('NOM DE ',U)<>0))and
+  (Pos('ATTENDU',U)<>0)Then CPInferErrorCode:=2
  else if(Pos('TYPE SIMPLE',U)<>0)or(Pos('BORNE',U)<>0)Then CPInferErrorCode:=1
  else if Pos('TYPE',U)<>0 Then CPInferErrorCode:=10
- else if(Pos('ENTIER',U)<>0)or(Pos('NOMBRE ATTENDU',U)<>0)or
-  (Pos('CONSTANTE ATTENDUE',U)<>0)Then CPInferErrorCode:=15
- else if Pos('END',U)<>0 Then CPInferErrorCode:=13
+ else if(Pos('ENTIER',U)<>0)or(Pos('NOMBRE ATTENDU',U)<>0)Then CPInferErrorCode:=15
  else if Pos('POINT-VIRGULE',U)<>0 Then CPInferErrorCode:=14
  else if(Pos('APOSTROPHE',U)<>0)or(Pos('FIN DE FICHIER DANS UNE CHAINE',U)<>0)Then CPInferErrorCode:=11
 End;
@@ -3097,6 +3118,16 @@ Procedure CPNeed(S:String);Begin
   else if S='END'Then CPFailCode(13,'''END'' attendu')
   else if S=';'Then CPFailCode(14,''';'' attendu')
   else if S='='Then CPFailCode(16,'''='' attendu')
+  else if S='BEGIN'Then CPFailCode(17,'''BEGIN'' attendu')
+  else if S=','Then CPFailCode(20,''','' attendu')
+  else if S='*'Then CPFailCode(21,'''*'' attendu')
+  else if S='INTERFACE'Then CPFailCode(22,'''INTERFACE'' attendu')
+  else if S='IMPLEMENTATION'Then CPFailCode(23,'''IMPLEMENTATION'' attendu')
+  else if S='UNIT'Then CPFailCode(24,'''UNIT'' attendu')
+  else if S=':='Then CPFailCode(51,''':='' attendu')
+  else if S='THEN'Then CPFailCode(52,'''THEN'' attendu')
+  else if S='UNTIL'Then CPFailCode(53,'''UNTIL'' attendu')
+  else if S='DO'Then CPFailCode(54,'''DO'' attendu')
   else CPFailCode(6,'symbole "'+S+'" attendu')
  End else CPNext
 End;
