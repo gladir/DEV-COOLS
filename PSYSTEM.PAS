@@ -2651,6 +2651,49 @@ End;
 
 Procedure CPOp(OpcodeII,OpcodeIV:Byte);Forward;
 
+Procedure CPWriteBranchWord(P:LongInt;D:LongInt);
+Begin
+ if(P<0)or(P+1>=CPCodePos)Then Begin CPFail('correctif de branchement invalide');Exit End;
+ if(D<-32768)or(D>32767)Then Begin CPFail('deplacement de branchement 16 bits hors limites');Exit End;
+ PCode_Mem^[P]:=Byte(D);PCode_Mem^[P+1]:=Byte(D shr 8)
+End;
+
+{ Produit un saut conditionnel avant dont le correctif est toujours 16 bits.
+  IV dispose de UJPW. II utilise XJP sur un selecteur constant comme
+  trampoline long; le chemin vrai contourne le trampoline. }
+Function CPForwardFalse:LongInt;
+Begin
+ CPOp(161,$D4);CPE(2);
+ if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($8A);CPE(3);CPE($8B);
+  CPForwardFalse:=CPCodePos;CPE(0);CPE(0)
+ End else Begin CPE(185);CPE(8);CPE(0);CPE(172);CPE(0);CPE(0);CPE(0);CPE(0);
+  CPForwardFalse:=CPCodePos;CPE(0);CPE(0)
+ End
+End;
+
+Function CPForwardJump:LongInt;
+Begin
+ if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($8B);CPForwardJump:=CPCodePos;CPE(0);CPE(0)End
+ else Begin CPE(0);CPE(172);CPE(0);CPE(0);CPE(0);CPE(0);
+  CPForwardJump:=CPCodePos;CPE(0);CPE(0)
+ End
+End;
+
+Procedure CPPatchForward(P,Target:LongInt);
+Begin CPWriteBranchWord(P,Target-(P+2))End;
+
+Procedure CPJumpBack(Target:LongInt);
+Var D:LongInt;
+Begin
+ D:=Target-(CPCodePos+2);
+ if(D>=-128)and(D<=127)Then Begin CPOp(185,$8A);CPE(Byte(D))End
+ else if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($8B);D:=Target-(CPCodePos+2);
+  if(D<-32768)or(D>32767)Then CPFail('branche arriere hors limites')else Begin CPE(Byte(D));CPE(Byte(D shr 8))End
+ End else Begin CPE(0);CPE(172);CPE(0);CPE(0);CPE(0);CPE(0);D:=Target-(CPCodePos+2);
+  if(D<-32768)or(D>32767)Then CPFail('branche arriere hors limites')else Begin CPE(Byte(D));CPE(Byte(D shr 8))End
+ End
+End;
+
 Function CPFindLabel(S:String;CreateIt:Boolean):PPasLabel;
 Var L:PPasLabel;
 Begin
@@ -2663,9 +2706,8 @@ End;
 Procedure CPPatchLabel(L:PPasLabel);
 Var X:PPasLabelFixup;D:LongInt;
 Begin
- X:=L^.Fixups;While X<>Nil do Begin D:=L^.Address-X^.Position-1;
-  if(D<-128)or(D>127)Then CPFail('GOTO hors de portee: '+L^.Name)
-  else PCode_Mem^[X^.Position]:=Byte(D);X:=X^.Next
+ X:=L^.Fixups;While X<>Nil do Begin D:=L^.Address-(X^.Position+2);
+  CPWriteBranchWord(X^.Position,D);X:=X^.Next
  End
 End;
 
@@ -2677,12 +2719,11 @@ Begin
 End;
 
 Procedure CPEmitGoto(S:String);
-Var L:PPasLabel;X:PPasLabelFixup;D:LongInt;
+Var L:PPasLabel;X:PPasLabelFixup;
 Begin
- L:=CPFindLabel(S,True);CPOp(185,$8A);
- if L^.Defined Then Begin D:=L^.Address-CPCodePos-1;
-  if(D<-128)or(D>127)Then CPFail('GOTO hors de portee: '+S);CPE(Byte(D))
- End else Begin New(X);X^.Position:=CPCodePos;X^.Next:=L^.Fixups;L^.Fixups:=X;CPE(0)End
+ L:=CPFindLabel(S,True);
+ if L^.Defined Then CPJumpBack(L^.Address)
+ else Begin New(X);X^.Position:=CPForwardJump;X^.Next:=L^.Fixups;L^.Fixups:=X End
 End;
 
 Procedure CPCheckLabels(R:PPasRoutine);
@@ -2911,7 +2952,9 @@ End;
 Procedure CPLoadSymbol(P:PPasSymbol);
 Var D:Integer;
 Begin
- if P^.Scope=Nil Then Begin CPOp(169,$85);CPBig(P^.Address)End
+ if(CPCurrentRoutine<>Nil)and(P^.Scope=CPCurrentRoutine)and(CurrentTarget=ptUCSDPSystemIV)and
+  (P^.Address>=1)and(P^.Address<=16)Then CPE($20+P^.Address-1)
+ else if P^.Scope=Nil Then Begin CPOp(169,$85);CPBig(P^.Address)End
  else if P^.Scope=CPCurrentRoutine Then Begin CPOp(202,$87);CPBig(P^.Address)End
  else Begin
  D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
@@ -2923,7 +2966,9 @@ End;
 Procedure CPStoreSymbol(P:PPasSymbol);
 Var D:Integer;
 Begin
- if P^.Scope=Nil Then Begin CPOp(171,$A5);CPBig(P^.Address)End
+ if(CPCurrentRoutine<>Nil)and(P^.Scope=CPCurrentRoutine)and(CurrentTarget=ptUCSDPSystemIV)and
+  (P^.Address>=1)and(P^.Address<=8)Then CPE($68+P^.Address-1)
+ else if P^.Scope=Nil Then Begin CPOp(171,$A5);CPBig(P^.Address)End
  else if P^.Scope=CPCurrentRoutine Then Begin CPOp(204,$A4);CPBig(P^.Address)End
  else Begin
   D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
@@ -2958,7 +3003,9 @@ Begin
  if P^.ByReference Then Begin
   P^.ByReference:=False;CPLoadSymbol(P);P^.ByReference:=True;Exit
  End;
- if P^.Scope=Nil Then Begin CPOp(165,$86);CPBig(P^.Address)End
+ if(CPCurrentRoutine<>Nil)and(P^.Scope=CPCurrentRoutine)and(CurrentTarget=ptUCSDPSystemIV)and
+  (P^.Address>=1)and(P^.Address<=16)Then CPE($60+P^.Address-1)
+ else if P^.Scope=Nil Then Begin CPOp(165,$86);CPBig(P^.Address)End
  else if P^.Scope=CPCurrentRoutine Then Begin CPOp(198,$84);CPBig(P^.Address)End
  else Begin D:=CPCurrentRoutine^.LexicalLevel-P^.LexicalLevel;
   CPOp(181,$88);CPE(D);CPBig(P^.Address)
@@ -3007,13 +3054,6 @@ Begin
   else if(T<>Nil)and(T^.SizeWords>1)Then CPFail('valeur structurée interdite dans une expression scalaire')
   else Begin CPOp(163,$E6);CPBig(0)End
  End
-End;
-
-Procedure CPJumpBack(Target:LongInt);
-Var D:LongInt;
-Begin
- CPOp(185,$8A);D:=Target-CPCodePos-1;
- if(D<-128)or(D>127)Then CPFail('boucle trop longue')else CPE(Byte(D))
 End;
 
 Procedure CPFactor;
@@ -3265,16 +3305,15 @@ Begin
  End
  else if CPIs('IF')Then Begin
   CPNext;CPExpression;if not CPIs('THEN')Then CPFail('THEN attendu')else CPNext;
-  CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;
+  Patch:=CPForwardFalse;CPStatement;
   if CPIs('ELSE')Then Begin
-   CPOp(185,$8A);J:=CPCodePos;CPE(0);PCode_Mem^[Patch]:=CPCodePos-Patch-1;
-   CPNext;CPStatement;PCode_Mem^[J]:=CPCodePos-J-1
-  End else PCode_Mem^[Patch]:=CPCodePos-Patch-1
+   J:=CPForwardJump;CPPatchForward(Patch,CPCodePos);
+   CPNext;CPStatement;CPPatchForward(J,CPCodePos)
+  End else CPPatchForward(Patch,CPCodePos)
  End
  else if CPIs('WHILE')Then Begin
   J:=CPCodePos;CPNext;CPExpression;if not CPIs('DO')Then CPFail('DO attendu')else CPNext;
-  CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;CPOp(185,$8A);CPE(J-(CPCodePos+1));
-  PCode_Mem^[Patch]:=CPCodePos-Patch-1
+  Patch:=CPForwardFalse;CPStatement;CPJumpBack(J);CPPatchForward(Patch,CPCodePos)
  End
  else if CPIs('REPEAT')Then Begin
   LoopStart:=CPCodePos;CPNext;
@@ -3282,8 +3321,7 @@ Begin
    CPStatement;if CPToken=';'Then CPNext else if not CPIs('UNTIL')Then CPFail('point-virgule attendu')
   End;
   if CPIs('UNTIL')Then CPNext else CPFail('UNTIL attendu');CPExpression;
-  CPOp(161,$D4);J:=LoopStart-CPCodePos-1;
-  if(J<-128)or(J>127)Then CPFail('REPEAT trop long')else CPE(Byte(J))
+  Patch:=CPForwardFalse;CPPatchForward(Patch,LoopStart)
  End
  else if CPIs('FOR')Then Begin
   CPNext;if CPToken<>'ID'Then Begin CPFail('variable de controle attendue');Exit End;
@@ -3294,10 +3332,9 @@ Begin
   if not CPIs('DO')Then CPFail('DO attendu')else CPNext;LoopStart:=CPCodePos;
   CPLoadSymbol(P);CPLoadSymbol(Tmp);
   if Down Then CPOp(196,$B3)else CPOp(200,$B2);
-  CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;
+  Patch:=CPForwardFalse;CPStatement;
   CPLoadSymbol(P);CPConst(1);if Down Then CPOp(149,$A3)else CPOp(130,$A2);CPStoreSymbol(P);
-  CPJumpBack(LoopStart);J:=CPCodePos-Patch-1;
-  if J>127 Then CPFail('FOR trop long')else PCode_Mem^[Patch]:=Byte(J)
+  CPJumpBack(LoopStart);CPPatchForward(Patch,CPCodePos)
  End
  else if CPIs('CASE')Then Begin
   CPNext;Tmp:=CPAllocateTemp;CPExpression;CPStoreSymbol(Tmp);
@@ -3312,10 +3349,9 @@ Begin
     if More Then CPOp(141,$A0);More:=True;
     if CPToken=','Then CPNext else Break
    Until False;
-   CPNeed(':');CPOp(161,$D4);Patch:=CPCodePos;CPE(0);CPStatement;
+   CPNeed(':');Patch:=CPForwardFalse;CPStatement;
    Inc(EndCount);if EndCount>64 Then Begin CPFail('trop de branches CASE');Break End;
-   CPOp(185,$8A);EndPatch[EndCount]:=CPCodePos;CPE(0);
-   J:=CPCodePos-Patch-1;if J>127 Then CPFail('branche CASE trop longue')else PCode_Mem^[Patch]:=Byte(J);
+   EndPatch[EndCount]:=CPForwardJump;CPPatchForward(Patch,CPCodePos);
    if CPToken=';'Then CPNext
   End;
   if CPIs('ELSE')Then Begin CPNext;
@@ -3324,9 +3360,7 @@ Begin
    End
   End;
   if CPIs('END')Then CPNext else CPFail('END de CASE attendu');
-  For I:=1 to EndCount do Begin J:=CPCodePos-EndPatch[I]-1;
-   if J>127 Then CPFail('CASE trop long')else PCode_Mem^[EndPatch[I]]:=Byte(J)
-  End
+  For I:=1 to EndCount do CPPatchForward(EndPatch[I],CPCodePos)
  End
  else if CPIs('WITH')Then Begin
   CPNext;if CPToken<>'ID'Then Begin CPFail('variable attendue apres WITH');Exit End;
@@ -3548,6 +3582,9 @@ Begin
   CPAdd(R^.Name,R^.LocalWords+R^.ParameterWords,False);
   Sym:=CPFind(R^.Name);if Sym<>Nil Then Sym^.SymbolType:=R^.ResultType
  End;
+ if(LongInt(R^.LocalWords)+R^.ParameterWords+5>32767)Then Begin
+  CPFail('cadre local depasse 32767 mots: '+R^.Name);CPCurrentRoutine:=Nil;Exit
+ End;
  R^.CodeStart:=CPCodePos;CPCompound;CPEmitRoutineReturn(R);
  CPCheckLabels(R);R^.CodeLength:=CPCodePos-R^.CodeStart;CPCurrentRoutine:=Nil
 End;
@@ -3577,6 +3614,7 @@ Var F:File;Header:Array[0..511]of Byte;SegmentLength:Word;N,W:Word;I:Integer;
  Begin CPE(Byte(Value));CPE(Byte(Value shr 8))End;
 Begin
  WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin CPFail('segment trop grand');Exit End;
+ if(LongInt(DataWords)+5>32767)Then Begin CPFail('cadre global depasse 32767 mots');Exit End;
  { Le dictionnaire est aussi employe pour un programme II a une seule
    procedure: il separe la pile descendante des variables globales. }
  if CPNextProcedure>=1 Then Begin
@@ -3620,8 +3658,9 @@ Begin
   SegmentLength:=CPCodePos
  End else Begin
   EW(DataWords*2);EW(0);EW(CodeLength-1);EW(0);CPE(1);CPE(0);
-  EW(CodeLength);CPE(1);CPE(1);SegmentLength:=CPCodePos
+ EW(CodeLength);CPE(1);CPE(1);SegmentLength:=CPCodePos
  End;
+ if Odd(SegmentLength)Then Begin PCode_Mem^[SegmentLength]:=$9C;Inc(SegmentLength);CPCodePos:=SegmentLength End;
  FillChar(Header,SizeOf(Header),0);HW(0,1);HW(2,SegmentLength);
  SegmentName:=UpperString(SegmentName);if Length(SegmentName)>8 Then SegmentName:=Copy(SegmentName,1,8);
  For I:=1 to Length(SegmentName)do Header[63+I]:=Ord(SegmentName[I]);
