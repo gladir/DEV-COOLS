@@ -807,6 +807,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet d'afficher des informations sur un ELF.</td>
 		</tr>
 		<tr>
+			<td><b>RELMOD.PAS</b></td>
+			<td>Cette commande permet de lancer le convertisseur DRI CP/M-68K vers GEMDOS.</td>
+		</tr>
+		<tr>
 			<td><b>REPASCAL.PAS</b></td>
 			<td>Cette commande permet de reformater un fichier source Pascal.</td>
 		</tr>
