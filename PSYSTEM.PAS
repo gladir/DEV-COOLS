@@ -24,6 +24,8 @@ Var
  WorkFile,ProgramFile:String;
  Finished:Boolean;
  CurrentTarget:TPSYSTEMTarget;
+ OriginalErrors:Boolean;
+ CheckCodeRequested:Boolean;
 
 Function TrimString(S:String):String;Begin
  While(Length(S)>0)and(S[1]in[' ',#9])do Delete(S,1,1);
@@ -340,6 +342,145 @@ Begin
  End;E:=IOResult;PCode_Files[H].Opened:=E=0;PCode_IOError(H,E)
 End;
 
+{ Verificateur independant: ne confond pas les pointeurs auto-relatifs II
+  avec les offsets absolus en mots du dictionnaire prive du clone.
+  Champs II verifies contre segment_builder_code::procedure_end,
+  ucsd-psystem-xc (description du format, pas reutilisation de son code). }
+Function CheckUCSDCodeFile(FileName:String):Boolean;
+Type
+ THeader=Array[0..511]of Byte;
+Var
+ F:File;
+ Header:THeader;
+ Image:PPCodeMemory;
+ Size,Start,LengthBytes,Slot,Attr,Entry,ExitAddress,DictStart:LongInt;
+ Starts,Lengths:Array[0..15]of LongInt;
+ I,J,P,Count,LexLevel,Kind,Seen:Integer;
+ DataBytes,ParamBytes:LongInt;
+ N:Word;
+ BigEndian,PrivateFormat,OK,Readable:Boolean;
+ SegmentName:String;
+
+Function HW(Ofs:Integer):Word;Begin
+ if BigEndian Then HW:=Word(Header[Ofs])*256+Header[Ofs+1]
+ else HW:=Word(Header[Ofs+1])*256+Header[Ofs]
+End;
+
+Function IW(Ofs:LongInt):Word;Begin
+ if BigEndian Then IW:=Word(Image^[Ofs])*256+Image^[Ofs+1]
+ else IW:=Word(Image^[Ofs+1])*256+Image^[Ofs]
+End;
+
+Procedure Bad(S:String);Begin
+ WriteLn('CODE invalide: ',S);OK:=False
+End;
+
+Function PlausibleHeader:Boolean;
+Var K:Integer;A,L:LongInt;Found:Boolean;
+Begin
+ Found:=False;PlausibleHeader:=False;
+ For K:=0 to 15 do Begin
+  A:=LongInt(HW(K*4))*512;L:=HW(K*4+2);
+  if(A<>0)and(L<>0)Then Begin
+   if(A<512)or(A>Size)or(L>Size-A)Then Exit;Found:=True
+  End
+ End;PlausibleHeader:=Found
+End;
+
+Begin
+ CheckUCSDCodeFile:=False;Image:=Nil;OK:=True;Seen:=0;
+ Assign(F,FileName);Reset(F,1);
+ if IOResult<>0 Then Begin WriteLn('Lecture CODE impossible: ',FileName);Exit End;
+ Size:=FileSize(F);
+ if(IOResult<>0)or(Size<512)Then Begin
+  Close(F);if IOResult<>0 Then Begin End;
+  WriteLn('Un fichier CODE segmente avec en-tete de 512 octets est requis.');Exit
+ End;
+ BlockRead(F,Header,512,N);Readable:=(IOResult=0)and(N=512);
+ if not Readable Then Begin Close(F);if IOResult<>0 Then Begin End;Exit End;
+ BigEndian:=False;
+ if not PlausibleHeader Then Begin
+  BigEndian:=True;
+  if not PlausibleHeader Then Begin
+   Close(F);if IOResult<>0 Then Begin End;Bad('en-tete ou bornes des segments');Exit
+  End
+ End;
+ PrivateFormat:=(Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
+  (Header[290]=Ord('L'))and(Header[291]=Ord('K'));
+ if PrivateFormat Then WriteLn('Format prive PSYSTEM/PSLK (non certifie UCSD).')
+ else WriteLn('Verification structurelle des attributs UCSD II.0/II.1.');
+ if BigEndian Then WriteLn('Mots: grand-boutiste.')else WriteLn('Mots: petit-boutiste.');
+ FillChar(Starts,SizeOf(Starts),0);FillChar(Lengths,SizeOf(Lengths),0);
+ GetMem(Image,SizeOf(TPCodeMemory));
+ For I:=0 to 15 do Begin
+  Start:=LongInt(HW(I*4))*512;LengthBytes:=HW(I*4+2);
+  if(Start=0)or(LengthBytes=0)Then Continue;
+  Inc(Seen);SegmentName:='';
+  For J:=64+I*8 to 71+I*8 do SegmentName:=SegmentName+Chr(Header[J]);
+  Kind:=HW(192+I*2);
+  WriteLn('Segment ',I,': ',TrimString(SegmentName),'  octets=',LengthBytes,
+   '  bloc=',Start div 512,'  type=',Kind);
+  For J:=0 to I-1 do
+   if(Lengths[J]>0)and(Start<Starts[J]+Lengths[J])and
+    (Starts[J]<Start+LengthBytes)Then Bad('segments de code superposes');
+  Starts[I]:=Start;Lengths[I]:=LengthBytes;
+  if Odd(LengthBytes)or(LengthBytes>SizeOf(TPCodeMemory))Then Begin
+   Bad('taille de segment non alignee ou excessive');Continue
+  End;
+  Seek(F,Start);if IOResult<>0 Then Begin Bad('positionnement du segment');Continue End;
+  BlockRead(F,Image^,LengthBytes,N);
+  if(IOResult<>0)or(N<>LengthBytes)Then Begin Bad('lecture incomplete du segment');Continue End;
+  if PrivateFormat Then Begin
+   if LengthBytes<24 Then Begin Bad('segment prive trop court');Continue End;
+   Slot:=LongInt(IW(0))*2;
+   if(Slot<22)or(Slot+2>LengthBytes)Then Begin Bad('dictionnaire prive hors segment');Continue End;
+   Count:=IW(Slot);DictStart:=Slot-LongInt(Count)*2;
+   if(Count<1)or(Count>255)or(DictStart<22)Then Begin Bad('nombre de procedures prive');Continue End;
+   For P:=1 to Count do Begin
+    Attr:=LongInt(IW(Slot-P*2))*2;
+    if(Attr<22)or(Attr+2>DictStart)Then Bad('attribut prive hors zone')
+    else WriteLn(' Procedure ',P,': entree=',Attr+2,' locaux=',IW(Attr))
+   End;Continue
+  End;
+  { IV a un format distinct: ne jamais le certifier avec les regles II. }
+  if CurrentTarget=ptUCSDPSystemIV Then Begin
+   Bad('validation du format IV historique non encore implementee');Continue
+  End;
+  if Kind=7 Then Begin WriteLn(' Segment de donnees, sans dictionnaire de procedures.');Continue End;
+  if LengthBytes<4 Then Begin Bad('segment II trop court');Continue End;
+  Count:=Image^[LengthBytes-1];DictStart:=LengthBytes-2-LongInt(Count)*2;
+  if(Count=0)or(DictStart<0)Then Begin Bad('dictionnaire II hors segment');Continue End;
+  WriteLn(' Numero de segment=',Image^[LengthBytes-2],' procedures=',Count);
+  For P:=1 to Count do Begin
+   Slot:=LengthBytes-2-P*2;
+   if IW(Slot)=0 Then Begin WriteLn(' Procedure ',P,': entree absente.');Continue End;
+   Attr:=Slot-IW(Slot);
+   if(Attr<2)or(Attr+2>DictStart)or Odd(Attr)Then Begin
+    Bad('pointeur auto-relatif de procedure hors zone');Continue
+   End;
+   if Image^[Attr]=0 Then Begin
+    WriteLn(' Procedure ',P,': code natif; relogements non verifies.');
+    Bad('verification complete du code natif non implementee');Continue
+   End;
+   if(Attr<8)or(Image^[Attr]<>P)Then Begin Bad('numero ou attributs de procedure II');Continue End;
+   Entry:=Attr-2-IW(Attr-2);ExitAddress:=Attr-4-IW(Attr-4);
+   DataBytes:=IW(Attr-8);ParamBytes:=IW(Attr-6);LexLevel:=Image^[Attr+1];
+   if LexLevel>127 Then LexLevel:=LexLevel-256;
+   if(Entry<0)or(Entry>ExitAddress)or(ExitAddress>=Attr-8)or Odd(Entry)
+    or Odd(DataBytes)or Odd(ParamBytes)Then Begin
+    Bad('entree, sortie ou tailles de cadre II invalides');Continue
+   End;
+   WriteLn(' Procedure ',P,': entree=',Entry,' sortie=',ExitAddress,
+    ' locaux(octets)=',DataBytes,' parametres(octets)=',ParamBytes,' niveau=',LexLevel)
+  End
+ End;
+ FreeMem(Image,SizeOf(TPCodeMemory));Close(F);
+ if IOResult<>0 Then Bad('fermeture du fichier');
+ if Seen=0 Then Bad('aucun segment de code');
+ if OK Then WriteLn('Structure verifiee. ABI et execution non certifiees.');
+ CheckUCSDCodeFile:=OK
+End;
+
 Function PCode_LoadRaw(Const FileName:String):Boolean;
 Var
  F:File;
@@ -373,6 +514,12 @@ Begin
  End;
  if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
  (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
+  if not((Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
+   (Header[290]=Ord('L'))and(Header[291]=Ord('K')))Then Begin
+   Close(F);if IOResult<>0 Then Begin End;
+   WriteLn('Format CODE historique ou inconnu: ABI non prise en charge par cette VM.');
+   WriteLn('Utilisez PSYSTEM fichier.CODE /CHECKCODE pour verifier sa structure.');Exit
+  End;
   Seek(F,SegmentPos);ReadCount:=0;BlockRead(F,PCode_Mem^,SegmentSize,ReadCount);
   LoadedSize:=SegmentSize;
   AttrPos:=(PCode_Mem^[0]or(PCode_Mem^[1]shl 8))*2;
@@ -2858,6 +3005,166 @@ End;
 
 Function CPUCSDErrorText(Code:Integer):String;
 Begin
+ if not OriginalErrors Then Begin
+  Case Code of
+   1:CPUCSDErrorText:='Erreur dans un type simple';
+   2:CPUCSDErrorText:='Identificateur attendu';
+   3:CPUCSDErrorText:='Fonctionnalite non implementee';
+   4:CPUCSDErrorText:=''')'' attendu';
+   5:CPUCSDErrorText:=''':'' attendu';
+   6:CPUCSDErrorText:='Symbole illegal (terminateur attendu)';
+   7:CPUCSDErrorText:='Erreur dans la liste des parametres';
+   8:CPUCSDErrorText:='''OF'' attendu';
+   9:CPUCSDErrorText:='''('' attendu';
+   10:CPUCSDErrorText:='Erreur dans un type';
+   11:CPUCSDErrorText:='Apostrophe attendue';
+   13:CPUCSDErrorText:='''END'' attendu';
+   14:CPUCSDErrorText:=''';'' attendu';
+   15:CPUCSDErrorText:='Entier attendu';
+   16:CPUCSDErrorText:='''='' attendu';
+   17:CPUCSDErrorText:='''BEGIN'' attendu';
+   18:CPUCSDErrorText:='Erreur dans la partie declarations';
+   19:CPUCSDErrorText:='Erreur dans la liste des champs';
+   20:CPUCSDErrorText:=''','' attendu';
+   21:CPUCSDErrorText:='''*'' attendu';
+   22:CPUCSDErrorText:='''INTERFACE'' attendu';
+   23:CPUCSDErrorText:='''IMPLEMENTATION'' attendu';
+   24:CPUCSDErrorText:='''UNIT'' attendu';
+   50:CPUCSDErrorText:='Erreur dans une constante';
+   51:CPUCSDErrorText:=''':='' attendu';
+   52:CPUCSDErrorText:='''THEN'' attendu';
+   53:CPUCSDErrorText:='''UNTIL'' attendu';
+   54:CPUCSDErrorText:='''DO'' attendu';
+   55:CPUCSDErrorText:='''TO'' ou ''DOWNTO'' attendu dans FOR';
+   56:CPUCSDErrorText:='''IF'' attendu';
+   57:CPUCSDErrorText:='''FILE'' attendu';
+   58:CPUCSDErrorText:='Erreur dans un facteur (expression incorrecte)';
+   59:CPUCSDErrorText:='Erreur dans une variable';
+   60:CPUCSDErrorText:='Le type doit etre SEMAPHORE';
+   61:CPUCSDErrorText:='Le type doit etre PROCESSID';
+   62:CPUCSDErrorText:='Processus interdit a ce niveau d''imbrication';
+   63:CPUCSDErrorText:='Seule la tache principale peut demarrer des processus';
+   101:CPUCSDErrorText:='Identificateur declare deux fois';
+   102:CPUCSDErrorText:='La borne inferieure depasse la borne superieure';
+   103:CPUCSDErrorText:='Identificateur de classe incorrecte';
+   104:CPUCSDErrorText:='Identificateur non declare';
+   105:CPUCSDErrorText:='Signe interdit';
+   106:CPUCSDErrorText:='Nombre attendu';
+   107:CPUCSDErrorText:='Types de sous-intervalles incompatibles';
+   108:CPUCSDErrorText:='Fichier interdit ici';
+   109:CPUCSDErrorText:='Le type ne doit pas etre reel';
+   110:CPUCSDErrorText:='Le discriminant doit etre scalaire ou sous-intervalle';
+   111:CPUCSDErrorText:='Incompatibilite avec le discriminant';
+   112:CPUCSDErrorText:='Le type d''index ne doit pas etre reel';
+   113:CPUCSDErrorText:='Le type d''index doit etre scalaire ou sous-intervalle';
+   114:CPUCSDErrorText:='Le type de base ne doit pas etre reel';
+   115:CPUCSDErrorText:='Le type de base doit etre scalaire ou sous-intervalle';
+   116,125:CPUCSDErrorText:='Type incorrect du parametre d''une procedure standard';
+   117:CPUCSDErrorText:='Reference FORWARD non satisfaite';
+   118:CPUCSDErrorText:='Type FORWARD dans une declaration de variable';
+   119:CPUCSDErrorText:='Parametres redefinis pour une procedure FORWARD';
+   120:CPUCSDErrorText:='Le resultat doit etre scalaire, sous-intervalle ou pointeur';
+   121:CPUCSDErrorText:='Parametre fichier par valeur interdit';
+   122:CPUCSDErrorText:='Type de resultat redefini pour une fonction FORWARD';
+   123:CPUCSDErrorText:='Type de resultat absent dans la declaration de fonction';
+   124:CPUCSDErrorText:='Format F reserve aux reels';
+   126:CPUCSDErrorText:='Nombre de parametres different de la declaration';
+   127:CPUCSDErrorText:='Substitution de parametre illegale';
+   128:CPUCSDErrorText:='Type de resultat different de la declaration';
+   129:CPUCSDErrorText:='Conflit de types entre operandes';
+   130:CPUCSDErrorText:='L''expression n''est pas un ensemble';
+   131:CPUCSDErrorText:='Seuls les tests d''egalite sont autorises';
+   132:CPUCSDErrorText:='Inclusion stricte interdite';
+   133:CPUCSDErrorText:='Comparaison de fichiers interdite';
+   134:CPUCSDErrorText:='Type d''operande illegal';
+   135:CPUCSDErrorText:='L''operande doit etre Boolean';
+   136:CPUCSDErrorText:='L''element d''ensemble doit etre scalaire ou sous-intervalle';
+   137:CPUCSDErrorText:='Types d''elements d''ensemble incompatibles';
+   138:CPUCSDErrorText:='La variable n''est pas un tableau';
+   139:CPUCSDErrorText:='Type d''index incompatible avec la declaration';
+   140:CPUCSDErrorText:='La variable n''est pas un enregistrement';
+   141:CPUCSDErrorText:='La variable doit etre un fichier ou un pointeur';
+   142:CPUCSDErrorText:='Resolution de parametre illegale';
+   143:CPUCSDErrorText:='Type illegal de variable de controle de boucle';
+   144:CPUCSDErrorText:='Type d''expression illegal';
+   145:CPUCSDErrorText:='Conflit de types';
+   146:CPUCSDErrorText:='Affectation de fichiers interdite';
+   147:CPUCSDErrorText:='Type d''etiquette incompatible avec l''expression CASE';
+   148:CPUCSDErrorText:='Les bornes du sous-intervalle doivent etre scalaires';
+   149:CPUCSDErrorText:='Le type d''index doit etre entier';
+   150:CPUCSDErrorText:='Affectation a une fonction standard interdite';
+   151:CPUCSDErrorText:='Affectation a une fonction formelle interdite';
+   152:CPUCSDErrorText:='Champ absent de cet enregistrement';
+   153:CPUCSDErrorText:='Erreur de type dans READ';
+   154:CPUCSDErrorText:='Le parametre effectif doit etre une variable';
+   155:CPUCSDErrorText:='Variable de controle formelle ou non locale interdite';
+   156:CPUCSDErrorText:='Etiquette CASE definie plusieurs fois';
+   157:CPUCSDErrorText:='Trop de cas dans l''instruction CASE';
+   158:CPUCSDErrorText:='Variante absente de cet enregistrement';
+   159:CPUCSDErrorText:='Discriminants reels ou chaines interdits';
+   160:CPUCSDErrorText:='La declaration precedente n''etait pas FORWARD';
+   161:CPUCSDErrorText:='Nouvelle declaration FORWARD';
+   162:CPUCSDErrorText:='La taille du parametre doit etre constante';
+   163:CPUCSDErrorText:='Variante manquante dans la declaration';
+   164:CPUCSDErrorText:='Substitution d''une procedure ou fonction standard interdite';
+   165:CPUCSDErrorText:='Etiquette definie plusieurs fois';
+   166:CPUCSDErrorText:='Etiquette declaree plusieurs fois';
+   167:CPUCSDErrorText:='Etiquette non declaree';
+   168:CPUCSDErrorText:='Etiquette non definie';
+   169:CPUCSDErrorText:='Erreur dans le type de base de l''ensemble';
+   170:CPUCSDErrorText:='Parametre par valeur attendu';
+   171:CPUCSDErrorText:='Fichier standard redeclare';
+   172:CPUCSDErrorText:='Fichier externe non declare';
+   173:CPUCSDErrorText:='Procedure ou fonction FORTRAN attendue';
+   174:CPUCSDErrorText:='Fonction Pascal attendue';
+   175:CPUCSDErrorText:='Parametre semaphore par valeur interdit';
+   182:CPUCSDErrorText:='Unites imbriquees interdites';
+   183:CPUCSDErrorText:='Declaration EXTERNAL interdite a ce niveau';
+   184:CPUCSDErrorText:='Declaration EXTERNAL interdite dans INTERFACE';
+   185:CPUCSDErrorText:='Declaration de segment interdite dans INTERFACE';
+   186:CPUCSDErrorText:='Etiquettes interdites dans INTERFACE';
+   187:CPUCSDErrorText:='Ouverture de bibliotheque dans INTERFACE interdite';
+   188:CPUCSDErrorText:='Unite absente de la declaration USES precedente';
+   189:CPUCSDErrorText:='USES interdit a ce niveau d''imbrication';
+   190:CPUCSDErrorText:='Unite absente de la bibliotheque';
+   191:CPUCSDErrorText:='La declaration FORWARD n''etait pas un segment';
+   192:CPUCSDErrorText:='La declaration FORWARD etait un segment';
+   193:CPUCSDErrorText:='Espace insuffisant pour cette operation';
+   194:CPUCSDErrorText:='Le drapeau doit etre declare au debut du programme';
+   195:CPUCSDErrorText:='Unite non importable';
+   201:CPUCSDErrorText:='Erreur dans un nombre reel : chiffre attendu';
+   202:CPUCSDErrorText:='La constante chaine ne doit pas depasser la ligne source';
+   203:CPUCSDErrorText:='Constante entiere hors limites';
+   204:CPUCSDErrorText:='8 ou 9 dans un nombre octal';
+   250:CPUCSDErrorText:='Trop de portees imbriquees d''identificateurs';
+   251:CPUCSDErrorText:='Trop de procedures ou fonctions imbriquees';
+   252:CPUCSDErrorText:='Trop de references FORWARD d''entrees de procedures';
+   253:CPUCSDErrorText:='Procedure trop longue';
+   254:CPUCSDErrorText:='Trop de constantes longues dans cette procedure';
+   256:CPUCSDErrorText:='Trop de references externes';
+   257:CPUCSDErrorText:='Trop d''elements externes';
+   259:CPUCSDErrorText:='Expression trop compliquee';
+   300:CPUCSDErrorText:='Division par zero';
+   301:CPUCSDErrorText:='Aucun cas prevu pour cette valeur';
+   302:CPUCSDErrorText:='Expression d''index hors limites';
+   303:CPUCSDErrorText:='Valeur a affecter hors limites';
+   304:CPUCSDErrorText:='Expression d''element hors limites';
+   398,399:CPUCSDErrorText:='Restriction d''implementation';
+   400:CPUCSDErrorText:='Caractere illegal dans le texte';
+   401:CPUCSDErrorText:='Fin d''entree inattendue';
+   402:CPUCSDErrorText:='Erreur d''ecriture du fichier CODE : espace insuffisant';
+   403:CPUCSDErrorText:='Erreur de lecture du fichier inclus';
+   404:CPUCSDErrorText:='Erreur d''ecriture du listing : espace insuffisant';
+   405:CPUCSDErrorText:='''PROGRAM'' ou ''UNIT'' attendu';
+   406:CPUCSDErrorText:='Fichier inclus illegal';
+   407:CPUCSDErrorText:='Limite d''imbrication des fichiers inclus depassee';
+   408:CPUCSDErrorText:='La section INTERFACE doit tenir dans un seul fichier';
+   409:CPUCSDErrorText:='Nom d''unite reserve au systeme';
+   410:CPUCSDErrorText:='Erreur disque';
+   500:CPUCSDErrorText:='Erreur de l''assembleur';
+   else CPUCSDErrorText:='Erreur du compilateur'
+  End;Exit
+ End;
  Case Code of
   1:CPUCSDErrorText:='Error in simple type';2:CPUCSDErrorText:='Identifier expected';
   3:CPUCSDErrorText:='Unimplemented error';4:CPUCSDErrorText:=''')'' expected';
@@ -3071,7 +3378,9 @@ Begin
  While(EndPos<CPSize)and not(CPSource^[EndPos]in[10,13])do Begin
   if Length(LineText)<255 Then LineText:=LineText+Chr(CPSource^[EndPos]);Inc(EndPos)
  End;Col:=CPTokenPos-StartPos+1;if Col<1 Then Col:=1;
- WriteLn('Erreur UCSD ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',Category,
+ if OriginalErrors Then
+  WriteLn('UCSD error ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',CPLine,':',Col)
+ else WriteLn('Erreur UCSD ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',Category,
   ' ',CPLine,':',Col,': ',S);
  if LineText<>''Then Begin
   WriteLn(LineText);
@@ -5950,7 +6259,8 @@ Begin
  if Code=0 Then Begin
   ProgramFile:=OutputName;WriteLn('Assemblage termine.')
  End
- else WriteLn('Erreur UCSD 500 (Assembler error): echec de l''assemblage (code ',Code,').')
+ else if OriginalErrors Then WriteLn('UCSD error 500 (',CPUCSDErrorText(500),'): ',Code)
+ else WriteLn('Erreur UCSD 500 (',CPUCSDErrorText(500),'): echec de l''assemblage (code ',Code,').')
 End;
 
 Function DebugHex(V:LongInt;N:Integer):String;
@@ -6460,6 +6770,8 @@ Procedure Help;Begin
  WriteLn('Q  Quitter PSYSTEM');
  WriteLn('/TARGET:nom  Choisir la version du p-System cible');
  WriteLn('  APPLEHEALT, UCSDPASCALII, UCSDPSYSTEMIII ou UCSDPSYSTEMIV');
+ WriteLn('/ORGINALERR  Afficher les messages d''erreur UCSD originaux en anglais');
+ WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
  WriteLn('Cible courante: ',TargetName);
  WriteLn;
  WriteLn(
@@ -6500,6 +6812,8 @@ Begin
  { Le jeu d'opcodes de la machine virtuelle et de l'assembleur integres
    correspond par defaut a UCSD Pascal II.0/II.1. }
  WorkFile:='';ProgramFile:='';CurrentTarget:=ptUCSDPascalII;
+ OriginalErrors:=False;
+ CheckCodeRequested:=False;
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
   if(S='/?')or(S='-?')or(UpperString(S)='HELP')Then Begin
@@ -6507,7 +6821,10 @@ Begin
    'l''environnement de commande UCSD p-System.');
    Help;
    Halt(0)
-  End else if(Copy(UpperString(S),1,8)='/TARGET:')or
+  End else if UpperString(S)='/CHECKCODE'Then CheckCodeRequested:=True
+  else if(UpperString(S)='/ORGINALERR')or(UpperString(S)='/ORIGINALERR')Then
+   OriginalErrors:=True
+  else if(Copy(UpperString(S),1,8)='/TARGET:')or
   (Copy(UpperString(S),1,8)='-TARGET:')Then Begin
    if not SelectTarget(Copy(S,9,255))Then Begin
     WriteLn('Cible p-System inconnue: ',Copy(S,9,255));Halt(1)
@@ -6515,9 +6832,13 @@ Begin
   End else if WorkFile=''Then WorkFile:=S
   else
   Begin
-   WriteLn('Syntaxe : PSYSTEM [fichier-de-travail] [/TARGET:cible]');
+   WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/ORGINALERR] [/CHECKCODE]');
    Halt(1)
   End
+ End;
+ if CheckCodeRequested Then Begin
+  if WorkFile=''Then Begin WriteLn('/CHECKCODE exige un fichier CODE.');Halt(1) End;
+  if CheckUCSDCodeFile(WorkFile)Then Halt(0)else Halt(1)
  End;
  if WorkFile<>''Then ProgramFile:=ReplaceExtension(WorkFile,'.CODE')
 End;
