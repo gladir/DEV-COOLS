@@ -2967,6 +2967,23 @@ Begin
  193:CPUCSDErrorText:='Not enough room for this operation';
  194:CPUCSDErrorText:='Flag must be declared at top of program';
  195:CPUCSDErrorText:='Unit not importable';
+ 201:CPUCSDErrorText:='Error in real number - digit expected';
+ 202:CPUCSDErrorText:='String constant must not exceed source line';
+ 203:CPUCSDErrorText:='Integer constant exceeds range';
+ 204:CPUCSDErrorText:='8 or 9 in octal number';
+ 250:CPUCSDErrorText:='Too many scopes of nested identifiers';
+ 251:CPUCSDErrorText:='Too many nested procedures or functions';
+ 252:CPUCSDErrorText:='Too many forward references of procedures entries';
+ 253:CPUCSDErrorText:='Procedure too long';
+ 254:CPUCSDErrorText:='Too many long constants in this procedure';
+ 256:CPUCSDErrorText:='Too many external references';
+ 257:CPUCSDErrorText:='Too many externals';
+ 259:CPUCSDErrorText:='Expression too complicated';
+ 300:CPUCSDErrorText:='Division by zero';
+ 301:CPUCSDErrorText:='No case provided for this value';
+ 302:CPUCSDErrorText:='Index expression out of bounds';
+ 303:CPUCSDErrorText:='Value to be assigned is out of bounds';
+ 304:CPUCSDErrorText:='Element expression out of range';
  else CPUCSDErrorText:='Compiler error'
  End
 End;
@@ -3131,13 +3148,15 @@ Begin
  if C in['0'..'9']Then Begin
   NumText:='';Digits:=0;
   While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
-   if CPNumber>(High(LongInt)-(CPSource^[CPPos]-Ord('0')))div 10 Then    CPFail(
+   if CPNumber>(High(LongInt)-(CPSource^[CPPos]-Ord('0')))div 10 Then CPFailCode(203,
    'constante entiere trop grande')else CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');
    NumText:=NumText+Chr(CPSource^[CPPos]);Inc(Digits);Inc(CPPos)
   End;
   if(CPPos<CPSize)and(CPSource^[CPPos]=Ord('.'))and
   ((CPPos+1>=CPSize)or(CPSource^[CPPos+1]<>Ord('.')))Then Begin
    CPText:=NumText+'.';Inc(CPPos);
+   if(CPPos>=CPSize)or not(Chr(CPSource^[CPPos])in['0'..'9'])Then
+    CPFailCode(201,'chiffre attendu apres le point decimal');
    While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
     CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos)
    End;
@@ -3150,8 +3169,8 @@ Begin
     While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
      CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos);Inc(Digits)
     End;
-    if Digits=0 Then CPFail('exposant reel incomplet')
-   End;Val(CPText,CPRealNumber,Code);if Code<>0 Then CPFail('constante reelle invalide');
+    if Digits=0 Then CPFailCode(201,'exposant reel incomplet')
+   End;Val(CPText,CPRealNumber,Code);if Code<>0 Then CPFailCode(201,'constante reelle invalide');
    CPToken:='REALNUM';Exit
   End;
   if(CPPos<CPSize)and(UpCase(Chr(CPSource^[CPPos]))in['E','D'])Then Begin
@@ -3163,16 +3182,22 @@ Begin
    While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
     CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos);Inc(Digits)
    End;
-   if Digits=0 Then CPFail('exposant reel incomplet');Val(CPText,CPRealNumber,Code);
-   if Code<>0 Then CPFail('constante reelle invalide');CPToken:='REALNUM';Exit
-  End;CPToken:='NUM';Exit
+   if Digits=0 Then CPFailCode(201,'exposant reel incomplet');Val(CPText,CPRealNumber,Code);
+   if Code<>0 Then CPFailCode(201,'constante reelle invalide');CPToken:='REALNUM';Exit
+  End;if CPNumber>65535 Then CPFailCode(203,'constante entiere hors limites UCSD');
+  CPToken:='NUM';Exit
  End;
  if C='$'Then Begin
   Inc(CPPos);CPNumber:=0;Digits:=0;
   While(CPPos<CPSize)and(UpCase(Chr(CPSource^[CPPos]))in['0'..'9','A'..'F'])do Begin
+   if CPNumber>4095 Then Begin
+    CPFailCode(203,'constante hexadecimale hors limites UCSD');
+    While(CPPos<CPSize)and(UpCase(Chr(CPSource^[CPPos]))in['0'..'9','A'..'F'])do Inc(CPPos);
+    Break
+   End;
    C:=UpCase(Chr(CPSource^[CPPos]));if C<='9'Then CPNumber:=CPNumber*16+Ord(C)-Ord('0')
    else CPNumber:=CPNumber*16+Ord(C)-Ord('A')+10;Inc(CPPos);Inc(Digits);
-   if CPNumber>65535 Then CPFail('constante hexadecimale hors limites UCSD')
+   if CPNumber>65535 Then CPFailCode(203,'constante hexadecimale hors limites UCSD')
   End;if Digits=0 Then CPFail('chiffre hexadecimal attendu');CPToken:='NUM';Exit
  End;
  if C='#'Then Begin
@@ -3195,7 +3220,8 @@ Begin
      Closed:=True;Break
     End
    End else if C in[#10,#13]Then Begin
-    CPFail('fin de ligne dans une chaine');Break
+    CPFailCode(202,'fin de ligne dans une chaine');
+    if C=#10 Then Inc(CPLine);Break
    End
    else if Length(CPText)<255 Then CPText:=CPText+C
    else
@@ -3587,7 +3613,7 @@ End;
 Function CPEvalConstExpression: TConstValue;Forward;
 
 Procedure CPCheckConstRange(V:LongInt);Begin
- if(V<-32768)or(V>65535)Then CPFail('debordement d''expression constante 16 bits')
+ if(V<-32768)or(V>65535)Then CPFailCode(203,'debordement d''expression constante 16 bits')
 End;
 
 Function CPEvalConstFactor:TConstValue;
@@ -3657,16 +3683,16 @@ Begin
   O:=CPToken;if CPToken='ID'Then O:=CPText;CPNext;B:=CPEvalConstFactor;
   if(A.Kind=ckReal)or(B.Kind=ckReal)or(O='/')Then Begin
    if A.Kind<>ckReal Then A.R:=A.I;if B.Kind<>ckReal Then B.R:=B.I;A.Kind:=ckReal;
-   if O='*'Then A.R:=A.R*B.R else if B.R=0 Then CPFail('division par zero')else A.R:=A.R/
+   if O='*'Then A.R:=A.R*B.R else if B.R=0 Then CPFailCode(300,'division par zero')else A.R:=A.R/
    B.R
   End else if O='SHL'Then A.I:=A.I shl B.I
   else if O='SHR'Then A.I:=A.I shr B.I
   else if O='*'Then A.I:=A.I*B.I
   else if O='DIV'Then Begin
-   if B.I=0 Then CPFail('division par zero')else A.I:=A.I div B.I
+   if B.I=0 Then CPFailCode(300,'division par zero')else A.I:=A.I div B.I
   End
   else if O='MOD'Then Begin
-   if B.I=0 Then CPFail('division par zero')else A.I:=A.I mod B.I
+   if B.I=0 Then CPFailCode(300,'division par zero')else A.I:=A.I mod B.I
   End
   else A.I:=A.I and B.I;
   if A.Kind<>ckReal Then CPCheckConstRange(A.I)
@@ -4432,7 +4458,7 @@ Begin
     if(CV.Kind=ckCharacter)<>(CV2.Kind=ckCharacter)Then
      CPFailCode(137,'types d''elements d''ensemble incompatibles')
    End;
-   if(Lo<0)or(Hi>15)or(Lo>Hi)Then CPFail('ensemble immediat limite a 0..15')
+   if(Lo<0)or(Hi>15)or(Lo>Hi)Then CPFailCode(304,'ensemble immediat limite a 0..15')
    else
    For K:=Lo to Hi do Mask:=Mask or(1 shl K);
    if CPToken=','Then CPNext else Break
