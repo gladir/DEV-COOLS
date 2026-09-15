@@ -103,7 +103,7 @@ Procedure Fail(S:String);Begin
 End;
 
 Procedure Help;Begin
- WriteLn('RELMOD ',Version,' - Cete commande permet de lancer le ',
+ WriteLn('RELMOD ',Version,' - Cette commande permet de lancer le ',
          'convertisseur DRI CP/M-68K vers GEMDOS.');
  WriteLn;
  WriteLn('Syntaxe : RELMOD [-]entree[.68K] [sortie[.PRG]] ...');

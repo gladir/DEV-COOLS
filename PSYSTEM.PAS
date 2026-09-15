@@ -2134,7 +2134,39 @@ End;
 
 Procedure CPNext;
 Var
- C:Char;D:String;Code:Integer;
+ C,Close2:Char;D,NumText:String;Code,Depth,Digits:Integer;Closed:Boolean;
+ Procedure ApplyDirective(S:String);
+ Begin
+  S:=UpperString(TrimString(S));if(S<>'')and(S[1]='$')Then Delete(S,1,1);
+  S:=TrimString(S);
+  if S='R+'Then CPRangeChecks:=True else if S='R-'Then CPRangeChecks:=False
+  else if S='I+'Then CPIOChecks:=True else if S='I-'Then CPIOChecks:=False
+  else if S='Q+'Then CPOverflowChecks:=True else if S='Q-'Then CPOverflowChecks:=False
+  else if Copy(S,1,7)='TARGET 'Then
+   if not SelectTarget(TrimString(Copy(S,8,255)))Then CPFail('cible de directive inconnue')
+ End;
+ Procedure SkipComment(ParenForm:Boolean);
+ Var A,B:Char;Directive:Boolean;
+ Begin
+  D:='';Depth:=1;if ParenForm Then Begin Inc(CPPos,2);Close2:=')'End
+  else Begin Inc(CPPos);Close2:=#0 End;
+  Directive:=(CPPos<CPSize)and(CPSource^[CPPos]=Ord('$'));
+  While(CPPos<CPSize)and(Depth>0)do Begin
+   A:=Chr(CPSource^[CPPos]);B:=#0;if CPPos+1<CPSize Then B:=Chr(CPSource^[CPPos+1]);
+   if(A='{')and(Close2=#0)Then Begin Inc(Depth);if Length(D)<255 Then D:=D+A;Inc(CPPos);Continue End;
+   if(A='(')and(B='*')and(Close2=')')Then Begin Inc(Depth);if Length(D)<254 Then D:=D+'(*';Inc(CPPos,2);Continue End;
+   if(A='}')and(Close2=#0)Then Begin Dec(Depth);Inc(CPPos);if Depth=0 Then Break;
+    if Length(D)<255 Then D:=D+'}';Continue
+   End;
+   if(A='*')and(B=')')and(Close2=')')Then Begin Dec(Depth);Inc(CPPos,2);if Depth=0 Then Break;
+    if Length(D)<253 Then D:=D+'*)';Continue
+   End;
+   if A=#10 Then Inc(CPLine);
+   if Length(D)<255 Then D:=D+A;Inc(CPPos)
+  End;
+  if Depth<>0 Then CPFail('fin de fichier dans un commentaire')
+  else if Directive Then ApplyDirective(D)
+ End;
 Begin
  CPToken:='';CPText:='';CPNumber:=0;CPRealNumber:=0;
  Repeat
@@ -2145,69 +2177,82 @@ Begin
   CPToken:='EOF';Exit
  End;
  C:=Chr(CPSource^[CPPos]);
- if C='{'Then Begin
-  Inc(CPPos);
-  D:='';
-  While(CPPos<CPSize)and(CPSource^[CPPos]<>Ord('}'))do Begin
-   if Length(D)<255 Then D:=D+UpCase(Chr(CPSource^[CPPos]));
-   if CPSource^[CPPos]=10 Then Inc(CPLine);Inc(CPPos)
-  End;if CPPos<CPSize Then Inc(CPPos);
-  if(D<>'')and(D[1]='$')Then Begin
-   Delete(D,1,1);D:=TrimString(D);
-   if D='R+'Then CPRangeChecks:=True else if D='R-'Then CPRangeChecks:=False
-   else if D='I+'Then CPIOChecks:=True else if D='I-'Then CPIOChecks:=False
-   else if D='Q+'Then CPOverflowChecks:=True else if D='Q-'Then CPOverflowChecks:=False
-   else if Copy(D,1,7)='TARGET 'Then
-    if not SelectTarget(TrimString(Copy(D,8,255)))Then CPFail('cible de directive inconnue')
-  End
- End else Break
+ if C='{'Then SkipComment(False)
+ else if(C='(')and(CPPos+1<CPSize)and(CPSource^[CPPos+1]=Ord('*'))Then SkipComment(True)
+ else Break
  Until False;
+ if CPError Then Begin CPToken:='EOF';Exit End;
  CPTokenPos:=CPPos;
  C:=Chr(CPSource^[CPPos]);
  if C in['A'..'Z','a'..'z','_']Then Begin
-  CPText:='';
+ CPText:='';Digits:=0;
   While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['A'..'Z','a'..'z','_','0'..'9'])do Begin
-   CPText:=CPText+UpCase(Chr(CPSource^[CPPos]));Inc(CPPos)
-  End;CPToken:='ID';Exit
+   Inc(Digits);if Length(CPText)<31 Then CPText:=CPText+UpCase(Chr(CPSource^[CPPos]));Inc(CPPos)
+  End;if Digits>31 Then CPFail('identificateur de plus de 31 caracteres');CPToken:='ID';Exit
  End;
  if C in['0'..'9']Then Begin
+  NumText:='';Digits:=0;
   While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
-   CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');Inc(CPPos)
+   if CPNumber>(High(LongInt)-(CPSource^[CPPos]-Ord('0')))div 10 Then
+    CPFail('constante entiere trop grande')else CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');
+   NumText:=NumText+Chr(CPSource^[CPPos]);Inc(Digits);Inc(CPPos)
   End;
   if(CPPos<CPSize)and(CPSource^[CPPos]=Ord('.'))and
    ((CPPos+1>=CPSize)or(CPSource^[CPPos+1]<>Ord('.')))Then Begin
-   Str(CPNumber,D);CPText:=D+'.';Inc(CPPos);
+   CPText:=NumText+'.';Inc(CPPos);
    While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
     CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos)
+   End;
+   if(CPPos<CPSize)and(UpCase(Chr(CPSource^[CPPos]))in['E','D'])Then Begin
+    CPText:=CPText+'E';Inc(CPPos);
+    if(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['+','-'])Then Begin CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos)End;
+    Digits:=0;While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
+     CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos);Inc(Digits)End;
+    if Digits=0 Then CPFail('exposant reel incomplet')
    End;Val(CPText,CPRealNumber,Code);if Code<>0 Then CPFail('constante reelle invalide');
    CPToken:='REALNUM';Exit
+  End;
+  if(CPPos<CPSize)and(UpCase(Chr(CPSource^[CPPos]))in['E','D'])Then Begin
+   CPText:=NumText+'E';Inc(CPPos);if(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['+','-'])Then Begin
+    CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos)End;
+   Digits:=0;While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
+    CPText:=CPText+Chr(CPSource^[CPPos]);Inc(CPPos);Inc(Digits)End;
+   if Digits=0 Then CPFail('exposant reel incomplet');Val(CPText,CPRealNumber,Code);
+   if Code<>0 Then CPFail('constante reelle invalide');CPToken:='REALNUM';Exit
   End;CPToken:='NUM';Exit
  End;
  if C='$'Then Begin
-  Inc(CPPos);CPNumber:=0;
+  Inc(CPPos);CPNumber:=0;Digits:=0;
   While(CPPos<CPSize)and(UpCase(Chr(CPSource^[CPPos]))in['0'..'9','A'..'F'])do Begin
    C:=UpCase(Chr(CPSource^[CPPos]));if C<='9'Then CPNumber:=CPNumber*16+Ord(C)-Ord('0')
-   else CPNumber:=CPNumber*16+Ord(C)-Ord('A')+10;Inc(CPPos)
-  End;CPToken:='NUM';Exit
+   else CPNumber:=CPNumber*16+Ord(C)-Ord('A')+10;Inc(CPPos);Inc(Digits);
+   if CPNumber>65535 Then CPFail('constante hexadecimale hors limites UCSD')
+  End;if Digits=0 Then CPFail('chiffre hexadecimal attendu');CPToken:='NUM';Exit
  End;
  if C='#'Then Begin
-  Inc(CPPos);CPNumber:=0;
+  Inc(CPPos);CPNumber:=0;Digits:=0;
   While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
-   CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');Inc(CPPos)
-  End;if(CPNumber<0)or(CPNumber>255)Then CPFail('caractere de controle hors limites');
+   CPNumber:=CPNumber*10+CPSource^[CPPos]-Ord('0');Inc(CPPos);Inc(Digits)
+  End;if Digits=0 Then CPFail('code de caractere attendu')else
+   if CPNumber>255 Then CPFail('caractere de controle hors limites');
   CPToken:='CTRL';Exit
  End;
  if C=''''Then Begin
-  Inc(CPPos);
+  Inc(CPPos);Closed:=False;
   While(CPPos<CPSize)do Begin
    C:=Chr(CPSource^[CPPos]);Inc(CPPos);
    if C=''''Then Begin
     if(CPPos<CPSize)and(CPSource^[CPPos]=Ord(''''))Then Begin
      CPText:=CPText+'''';Inc(CPPos)
-    End else Break
-   End else CPText:=CPText+C
-  End;CPToken:='STR';Exit
+    End else Begin Closed:=True;Break End
+   End else if C in[#10,#13]Then Begin CPFail('fin de ligne dans une chaine');Break End
+   else if Length(CPText)<255 Then CPText:=CPText+C
+   else Begin CPFail('chaine de plus de 255 caracteres');Break End
+  End;
+  if not Closed and not CPError Then CPFail('fin de fichier dans une chaine');
+  CPToken:='STR';Exit
  End;
+ if Ord(C)<32 Then Begin CPFail('caractere de controle invalide dans le source');CPToken:='EOF';Exit End;
  CPToken:=C;Inc(CPPos);
  if(C='.')and(CPPos<CPSize)and(CPSource^[CPPos]=Ord('.'))Then Begin
   CPToken:='..';Inc(CPPos);Exit
@@ -2257,6 +2302,7 @@ Begin
  Neg:=False;if CPToken='-'Then Begin Neg:=True;CPNext End else
   if CPToken='+'Then CPNext;
  if CPToken='NUM'Then Begin V:=CPNumber;Base:=CPFindType('INTEGER');CPNext End
+ else if CPToken='CTRL'Then Begin V:=CPNumber;Base:=CPFindType('CHAR');CPNext End
  else if CPToken='STR'Then Begin
   if Length(CPText)<>1 Then Begin CPFail('borne caractere invalide');CPBoundValue:=False;Exit End;
   V:=Ord(CPText[1]);Base:=CPFindType('CHAR');CPNext
@@ -2471,6 +2517,7 @@ Begin
  End;
  if CPToken='-'Then Begin Neg:=True;CPNext End else if CPToken='+'Then CPNext;
  if CPToken='NUM'Then Begin V.I:=CPNumber;CPNext End
+ else if CPToken='CTRL'Then Begin V.Kind:=ckCharacter;V.I:=CPNumber;CPNext End
  else if CPToken='REALNUM'Then Begin V.Kind:=ckReal;V.R:=CPRealNumber;CPNext End
  else if CPToken='STR'Then Begin V.S:=CPText;
   if Length(V.S)=1 Then Begin V.Kind:=ckCharacter;V.I:=Ord(V.S[1])End
@@ -2910,7 +2957,7 @@ Begin
     CPOp(164,$D7);CPBig(T^.ElementType^.SizeWords);T:=T^.ElementType;
     if CPToken=','Then Begin CPNext;
      While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
-     if(T=Nil)or(T^.Kind<>ptkArray)Then Begin CPFail('trop d''indices');Break End
+    if(T=Nil)or(T^.Kind<>ptkArray)Then Begin CPFail('trop d''indices');Break End
     End else Break
    Until False;CPNeed(']')
   End else if CPToken='.'Then Begin
