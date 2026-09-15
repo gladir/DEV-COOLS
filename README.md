@@ -277,6 +277,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de convertir un fichier ASCII en code source SAS.</td>
 		</tr>
 		<tr>
+			<td><b>ASM.PAS</b></td>
+			<td>Cette commande permet de lancer l'Assembleur Microware OS-9/6809.</td>
+		</tr>
+		<tr>
 			<td><b>ASM6502.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 6502.</td>
 		</tr>
@@ -722,6 +726,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>PC8086.PAS</b></td>
 			<td>Cette commande permet de lancer un compilateur Pascal générant du code pour l'assembleur du microprocesseur 8086 ou 8088.</td>
+		</tr>
+		<tr>
+			<td><b>PERL.PAS</b></td>
+			<td>Cette commande permet de lancer le langage de programmation Perl.</td>
 		</tr>
 		<tr>
 			<td><b>PERL86.PAS</b></td>
