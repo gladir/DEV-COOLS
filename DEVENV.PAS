@@ -1918,6 +1918,25 @@ Const
  TOOLBAR_HEIGHT        = 28;
  MENUBAR_HEIGHT        = 20;
  STATUSBAR_HEIGHT      = 20;
+ { /TASKBARWIN95 (2026-09-15) : hauteur de la barre des taches style       }
+ { Windows 95, reservee en bas du VRAI ecran physique - voir GetScreenHeight}
+ { et DrawWin95Taskbar. }
+ TASKBAR_WIN95_HEIGHT  = 30;
+ { Couleurs numeriques brutes (palette EGA/VGA standard) plutot que les    }
+ { constantes nommees White/Black/DarkGray/... de l unite Graph : AUCUN    }
+ { des ~213 000 lignes existantes de ce fichier ne les utilise (verifie    }
+ { par recherche exhaustive - seuls des litteraux numeriques ou les        }
+ { constantes CLR_* maison sont employes ailleurs), donc leur disponibilite}
+ { reelle sous PtcGraph dans ce projet precis n est jamais confirmee -      }
+ { les valeurs numeriques directes evitent ce risque de compilation. }
+ W95_BLACK     = 0;
+ W95_BLUE      = 1;
+ W95_GREEN     = 2;
+ W95_RED       = 4;
+ W95_LIGHTGRAY = 7;
+ W95_DARKGRAY  = 8;
+ W95_YELLOW    = 14;
+ W95_WHITE     = 15;
  { EXTENSION (2026-08-02) : OUTPUT_HEIGHT est devenue une VARIABLE (voir     }
  { plus bas, section Var) calculee au demarrage par                              }
  { UpdateOutputHeightForScreen - demande explicite de l utilisateur : sur       }
@@ -2414,6 +2433,7 @@ Type
   CdromImg0       : TString;   { /CDROM0:fichier.iso -> 1er lecteur CD}
   CdromImg1       : TString;   { /CDROM1:fichier.iso -> 2e lecteur CD }
   NCMode          : Boolean;   { /NC : ouvrir le Terminal en Norton Commander des le demarrage }
+  TaskbarWin95    : Boolean;   { /TASKBARWIN95 : barre des taches Windows 95 (voir [[project WINDOWS95-0]]) }
   TerminalDosBatch: TString;   { /TERMINALDOS:fichier.bat }
   TerminalOS2Batch: TString;   { /TERMINALOS2:fichier.bat }
   BashBatch       : TString;   { /BASH:fichier.sh }
@@ -7148,6 +7168,30 @@ Var
  OpenMenuIdx  : Integer;      { index du menu ouvert (-1=aucun) }
  SelItemIdx   : Integer;      { index de l item selectionne     }
  MenuActive   : Boolean;      { barre de menus active           }
+ { Barre des taches Windows 95 (/TASKBARWIN95, 2026-09-15, demande        }
+ { explicite de l utilisateur - port du shell de WINDOWS95-0 : Bureau/    }
+ { barre des taches/menu Demarrer/boites Executer, Arreter, Date et heure.}
+ { Le mini-Paint jouet de ce projet est volontairement exclu (choix         }
+ { explicite de l utilisateur : hors sujet pour un IDE). Voir la grande    }
+ { section "BARRE DES TACHES WINDOWS 95" juste avant DrawAllWidgets. }
+ Win95StartMenuOpen      : Boolean;
+ Win95ProgMenuOpen       : Boolean;   { sous-menu Programmes             }
+ Win95AccMenuOpen        : Boolean;   { sous-menu Accessoires            }
+ Win95HoverMenuItem      : Integer;   { 0=aucun, 1-8                     }
+ Win95HoverProgItem      : Integer;   { 0=aucun, 1-2                     }
+ Win95HoverAccItem       : Integer;   { 0=aucun, 1                       }
+ Win95RunDlgVisible      : Boolean;
+ Win95RunCommand         : String;
+ Win95ShutdownDlgVisible : Boolean;
+ Win95ShutdownOption     : Integer;   { 1=Fermer,2=Redemarrer,3=Session  }
+ Win95DateTimeDlgVisible : Boolean;
+ Win95DateTimeTab        : Integer;   { 1=Date et heure, 2=Fuseau horaire}
+ Win95SelHour            : Word;
+ Win95SelMin             : Word;
+ Win95SelSec             : Word;
+ Win95TimeManuallyModified: Boolean;
+ Win95LastClockMinute    : Integer;   { -1 = jamais dessine              }
+ Win95LastAnalogSecond   : Integer;
  { Sauvegarde du fond sous le menu deroulant (GetImage/PutImage) }
  MenuBgBuf    : Pointer;      { buffer du fond sauvegarde       }
  MenuBgX1     : Integer;      { rectangle sauvegarde            }
@@ -11106,6 +11150,10 @@ Procedure ShowHelp;Begin
  COnRawWriteLn('                              ce script VBScript');
  ConRawWriteLn('  /PASCALSCRIPT:fichier.psc   Ouvrir CMD (Invite de commandes) et ex'+#130+'cuter');
  ConRawWriteLn('                              ce script PascalScript');
+ ConRawWriteLn('  /TASKBARWIN95               Afficher une barre des taches style Windows 95');
+ ConRawWriteLn('                              en bas de l'''+#130+'cran (menu D'+#130+'marrer, horloge,');
+ ConRawWriteLn('                              t'+#131+'che DEVENV) - r'+#130+'duit d''autant la hauteur');
+ ConRawWriteLn('                              utile de l''IDE');
  ConRawWriteLn('  -maxscreen                  Ouvrir l''IDE en plein '+#130+'cran');
  ConRawWriteLn('  -h                          Afficher cette aide');
  ConRawWriteLn('  --help                      Afficher cette aide');
@@ -11148,6 +11196,7 @@ Begin
  Opts.CdromImg0       := '';
  Opts.CdromImg1       := '';
  Opts.NCMode          := False;
+ Opts.TaskbarWin95    := False;
  Opts.TerminalDosBatch := '';
  Opts.TerminalOS2Batch := '';
  Opts.BashBatch        := '';
@@ -11230,6 +11279,8 @@ Begin
   If(Arg='-v')Or(Arg='-V')Then Opts.Verbose := True Else
   If(Arg = '-d')Or(Arg='-D')Then Opts.DebugMode := True Else
   If(Arg='/NC')Or(Arg='/nc')Or(Arg='-NC')Or(Arg='-nc')Then Opts.NCMode := True Else
+  If(Arg='/TASKBARWIN95')Or(Arg='/taskbarwin95')Or
+    (Arg='-TASKBARWIN95')Or(Arg='-taskbarwin95')Then Opts.TaskbarWin95 := True Else
     If (Length(Arg) >= 13) And
       ((Copy(Arg, 1, 13) = '/TERMINALDOS:') Or
       (Copy(Arg, 1, 13) = '/terminaldos:') Or
@@ -11799,8 +11850,20 @@ Begin
 End;
 
 Function GetScreenHeight: Integer;
+Var
+ H: Integer;
 Begin
- GetScreenHeight := GetMaxY + 1;
+ H := GetMaxY + 1;
+ { /TASKBARWIN95 (2026-09-15, demande explicite de l utilisateur) :        }
+ { reserve une bande en bas du VRAI ecran physique pour la barre des       }
+ { taches Windows 95 - TOUT le reste de l IDE (barre d etat, Terminal,     }
+ { dock droit, etc.) se recale automatiquement au-dessus puisque ce code   }
+ { positionne deja ses elements via GetScreenHeight plutot que GetMaxY      }
+ { directement (seul ResetClipRect utilise GetMaxY brut, a dessein, pour   }
+ { permettre a DrawWin95Taskbar de dessiner dans la bande reservee). }
+ If Opts.TaskbarWin95 Then
+  H := H - TASKBAR_WIN95_HEIGHT;
+ GetScreenHeight := H;
 End;
 
 { --- Largeur de l explorateur de solution adaptee a l ecran ---           }
@@ -207658,6 +207721,1090 @@ Begin
   'Nouveau fichier cree : ' + FullPath, Ord(OTK_BUILD));
 End;
 
+{ ============================================================
+  BARRE DES TACHES WINDOWS 95 (/TASKBARWIN95)
+  ------------------------------------------------------------
+  Port du shell (bureau/barre des taches/menu Demarrer/boites
+  Executer, Arreter, Date et heure) de C:\SOURCE\GITHUB\WINDOWS95-0
+  (WIN.PAS) - demande explicite de l utilisateur (2026-09-15).
+
+  Choix de portee, valides explicitement avec l utilisateur :
+  - Le mini-Paint jouet de WIN.PAS est EXCLU (choix explicite : hors
+    sujet pour un IDE).
+  - Les elements du menu Demarrer qui n etaient que des etiquettes
+    mortes dans le projet d origine (aucun gestionnaire de clic dans
+    WIN.PAS : Documents/Parametres/Rechercher/Aide, Jeux/Demarrage
+    du sous-menu Programmes, Bloc-notes/Calculatrice du sous-menu
+    Accessoires) sont ici soit cables sur de VRAIES actions DEVENV
+    deja existantes, soit retirees plutot que reproduites comme des
+    boutons qui ne font toujours rien :
+      Documents               -> Ouvrir fichier (Ctrl+O)
+      Parametres              -> Options (Outils > Options)
+      Rechercher              -> Rechercher (Ctrl+F)
+      Aide                    -> A propos de DEVENV
+      Programmes > MS-DOS     -> ouvre le Terminal (Invite de commandes)
+      Programmes > Accessoires > Bloc-notes -> Nouveau fichier (Ctrl+N)
+      Programmes > Jeux/Demarrage : retires (aucun equivalent reel)
+      Accessoires > Calculatrice : retiree (aucun equivalent reel)
+  - La boite Date/Heure reste fidele a l original : purement
+    informative. L original ne persistait deja pas les changements
+    (bouton Appliquer jamais implante, meme dans WIN.PAS - "TODO").
+    Elle NE modifie PAS l horloge reelle de la machine : changer
+    l heure systeme depuis un IDE serait une action a fort impact
+    jamais demandee par l utilisateur.
+  - Les 3 options de la boite Arreter appellent toutes TryQuit
+    (fermeture propre, demande de sauvegarde si necessaire) plutot
+    que le Halt(0) brut de WIN.PAS : sous FPC (cible de compilation
+    reelle ici), WIN.PAS lui-meme fait deja aboutir ses 3 options au
+    meme Halt(0) sans distinction reelle (pas d APM/INT19h portable
+    sous FPC) - meme comportement de fond ici, en sur.
+  - Aucune constante de couleur nommee de l unite Graph (White/Black/
+    DarkGray/...) n est utilisee : verification faite qu AUCUNE des
+    ~213 000 lignes existantes de ce fichier ne s en sert (seuls des
+    litteraux numeriques ou les CLR_* maison), donc leur disponibilite
+    reelle ici n est jamais confirmee - W95_* (section Constantes plus
+    haut) les remplace par des valeurs numeriques brutes de la palette
+    EGA/VGA standard.
+  - Aucun SetTextStyle n est appele : DEVENV n en appelle NULLE PART
+    ailleurs dans les ~213 000 lignes (verifie), la police par defaut
+    8x8 posee par InitGraph reste donc active tout du long - inutile
+    et RISQUE (etat de police global au GC non restaure) d en changer
+    ici pour une simple decoration.
+  ============================================================ }
+
+{ --- Bordure 3D (releve/enfonce) --- }
+Procedure Win95Draw3DBorder(X1, Y1, X2, Y2: Integer; Raised: Boolean);
+Begin
+ If Raised Then Begin
+  SetColor(W95_WHITE);
+  Line(X1, Y1, X2 - 1, Y1);
+  Line(X1, Y1, X1, Y2 - 1);
+  SetColor(W95_DARKGRAY);
+  Line(X2, Y1, X2, Y2);
+  Line(X1, Y2, X2, Y2);
+ End Else Begin
+  SetColor(W95_DARKGRAY);
+  Line(X1, Y1, X2 - 1, Y1);
+  Line(X1, Y1, X1, Y2 - 1);
+  SetColor(W95_WHITE);
+  Line(X2, Y1, X2, Y2);
+  Line(X1, Y2, X2, Y2);
+ End;
+End;
+
+{ --- Icone Windows (quatre carres colores) --- }
+Procedure Win95DrawIcon(X, Y: Integer);
+Begin
+ SetFillStyle(SolidFill, W95_RED);    Bar(X, Y, X + 4, Y + 4);
+ SetFillStyle(SolidFill, W95_GREEN);  Bar(X + 5, Y, X + 9, Y + 4);
+ SetFillStyle(SolidFill, W95_BLUE);   Bar(X, Y + 5, X + 4, Y + 9);
+ SetFillStyle(SolidFill, W95_YELLOW); Bar(X + 5, Y + 5, X + 9, Y + 9);
+ SetColor(W95_BLACK);
+ Rectangle(X - 1, Y - 1, X + 10, Y + 10);
+End;
+
+{ --- Bouton radio simple (cercle + point central) --- }
+Procedure Win95DrawRadioButton(X, Y: Integer; Selected: Boolean; Const Txt: String);
+Begin
+ SetColor(W95_BLACK);
+ Circle(X + 6, Y + 6, 5);
+ SetColor(W95_WHITE);
+ Circle(X + 6, Y + 6, 4);
+ SetFillStyle(SolidFill, W95_WHITE);
+ FloodFill(X + 6, Y + 6, W95_WHITE);
+ If Selected Then Begin
+  SetColor(W95_BLACK);
+  SetFillStyle(SolidFill, W95_BLACK);
+  FillEllipse(X + 6, Y + 6, 2, 2);
+ End;
+ SetColor(W95_BLACK);
+ OutTextXY(X + 18, Y + 2, Txt);
+End;
+
+{ --- Moteur generique de menu deroulant (fond+bordure+items+survol) :    }
+{ dessin et test de survol/clic partagent EXACTEMENT la meme formule de   }
+{ geometrie (Win95FlyoutHeight), pour eviter le bogue classique de        }
+{ derive entre coordonnees de dessin et de detection. }
+Const
+ W95_MENU_ROWH    = 20;
+ W95_MENU_PADTOP  = 6;
+ W95_MENU_PADBOT  = 6;
+
+Function Win95FlyoutHeight(ItemCount: Integer): Integer;
+Begin
+ Win95FlyoutHeight := W95_MENU_PADTOP + ItemCount * W95_MENU_ROWH + W95_MENU_PADBOT;
+End;
+
+Function Win95FlyoutHitTest(X1, Y1, Width, ItemCount, MX, MY: Integer): Integer;
+Var
+ H, Row: Integer;
+Begin
+ Win95FlyoutHitTest := 0;
+ H := Win95FlyoutHeight(ItemCount);
+ If (MX < X1) Or (MX > X1 + Width) Or (MY < Y1) Or (MY > Y1 + H) Then Exit;
+ Row := (MY - Y1 - W95_MENU_PADTOP) Div W95_MENU_ROWH;
+ If (Row >= 0) And (Row < ItemCount) Then
+  Win95FlyoutHitTest := Row + 1;
+End;
+
+Procedure Win95DrawFlyoutMenu(X1, Y1, Width, LeftPad: Integer;
+ Const Items: Array Of String; HoverIdx: Integer);
+Var
+ I, Y, H: Integer;
+Begin
+ H := Win95FlyoutHeight(Length(Items));
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(X1, Y1, X1 + Width, Y1 + H);
+ Win95Draw3DBorder(X1, Y1, X1 + Width, Y1 + H, True);
+ For I := 0 To High(Items) Do Begin
+  Y := Y1 + W95_MENU_PADTOP + I * W95_MENU_ROWH;
+  If HoverIdx = I + 1 Then Begin
+   SetFillStyle(SolidFill, W95_BLUE);
+   Bar(X1 + LeftPad - 4, Y, X1 + Width - 3, Y + W95_MENU_ROWH - 2);
+   SetColor(W95_WHITE);
+  End Else
+   SetColor(W95_BLACK);
+  OutTextXY(X1 + LeftPad, Y + 5, Items[I]);
+ End;
+End;
+
+{ --- Geometrie des 3 menus (principal, Programmes, Accessoires) : une    }
+{ seule fonction par menu, partagee par le dessin ET le test de survol/   }
+{ clic. }
+Procedure Win95MainMenuGeometry(Var X1, Y1, W, H: Integer);
+Begin
+ X1 := 2;
+ W := 178;
+ H := Win95FlyoutHeight(7);
+ Y1 := GetMaxY - TASKBAR_WIN95_HEIGHT - H;
+End;
+
+Procedure Win95ProgMenuGeometry(Var X1, Y1, W, H: Integer);
+Var
+ MX1, MY1, MW, MH: Integer;
+Begin
+ Win95MainMenuGeometry(MX1, MY1, MW, MH);
+ X1 := MX1 + MW + 2;
+ Y1 := MY1 + 6;
+ W := 150;
+ H := Win95FlyoutHeight(2);
+End;
+
+Procedure Win95AccMenuGeometry(Var X1, Y1, W, H: Integer);
+Var
+ PX1, PY1, PW, PH: Integer;
+Begin
+ Win95ProgMenuGeometry(PX1, PY1, PW, PH);
+ X1 := PX1 + PW + 2;
+ Y1 := PY1 + 6;
+ W := 150;
+ H := Win95FlyoutHeight(1);
+End;
+
+Function Win95HitMainMenu(MX, MY: Integer): Integer;
+Var
+ X1, Y1, W, H: Integer;
+Begin
+ Win95MainMenuGeometry(X1, Y1, W, H);
+ Win95HitMainMenu := Win95FlyoutHitTest(X1, Y1, W, 7, MX, MY);
+End;
+
+Function Win95HitProgMenu(MX, MY: Integer): Integer;
+Var
+ X1, Y1, W, H: Integer;
+Begin
+ Win95ProgMenuGeometry(X1, Y1, W, H);
+ Win95HitProgMenu := Win95FlyoutHitTest(X1, Y1, W, 2, MX, MY);
+End;
+
+Function Win95HitAccMenu(MX, MY: Integer): Integer;
+Var
+ X1, Y1, W, H: Integer;
+Begin
+ Win95AccMenuGeometry(X1, Y1, W, H);
+ Win95HitAccMenu := Win95FlyoutHitTest(X1, Y1, W, 1, MX, MY);
+End;
+
+{ --- Bouton Demarrer / horloge (bande de la barre des taches) --- }
+Function Win95IsOnStartButton(MX, MY: Integer): Boolean;
+Var
+ Top: Integer;
+Begin
+ Top := GetScreenHeight;
+ Win95IsOnStartButton := (MX >= 2) And (MX <= 90) And
+  (MY >= Top + 2) And (MY <= GetMaxY - 2);
+End;
+
+Function Win95IsOnClock(MX, MY: Integer): Boolean;
+Var
+ Top, MXMax: Integer;
+Begin
+ Top := GetScreenHeight;
+ MXMax := GetMaxX;
+ Win95IsOnClock := (MX >= MXMax - 95) And (MX <= MXMax - 2) And
+  (MY >= Top + 2) And (MY <= GetMaxY - 2);
+End;
+
+{ --- Sous-menu Accessoires (Bloc-notes uniquement, voir banniere) --- }
+Procedure DrawWin95AccessoiresMenu;
+Const
+ Items: Array[0..0] Of String = ('Bloc-notes');
+Var
+ X1, Y1, W, H: Integer;
+Begin
+ Win95AccMenuGeometry(X1, Y1, W, H);
+ Win95DrawFlyoutMenu(X1, Y1, W, 10, Items, Win95HoverAccItem);
+End;
+
+{ --- Sous-menu Programmes (Accessoires + MS-DOS uniquement) --- }
+Procedure DrawWin95ProgrammesMenu;
+Const
+ Items: Array[0..1] Of String = ('Accessoires', 'MS-DOS');
+Var
+ X1, Y1, W, H: Integer;
+Begin
+ Win95ProgMenuGeometry(X1, Y1, W, H);
+ Win95DrawFlyoutMenu(X1, Y1, W, 10, Items, Win95HoverProgItem);
+ If Win95AccMenuOpen Then DrawWin95AccessoiresMenu;
+End;
+
+{ --- Menu Demarrer principal --- }
+Procedure DrawWin95StartMenu;
+Const
+ Items: Array[0..6] Of String = (
+  'Programmes', 'Documents', 'Parametres', 'Rechercher',
+  'Aide', 'Executer...', 'Arreter...');
+Var
+ X1, Y1, W, H: Integer;
+Begin
+ Win95MainMenuGeometry(X1, Y1, W, H);
+ Win95DrawFlyoutMenu(X1, Y1, W, 30, Items, Win95HoverMenuItem);
+ { Bande d accent bleue a gauche, comme la bande "Windows 95" originale }
+ SetFillStyle(SolidFill, W95_BLUE);
+ Bar(X1 + 2, Y1 + 2, X1 + 22, Y1 + H - 2);
+ If Win95ProgMenuOpen Then DrawWin95ProgrammesMenu;
+End;
+
+{ --- Barre des taches elle-meme (bouton Demarrer, tache DEVENV, horloge) }
+Procedure DrawWin95Taskbar;
+Var
+ MX, Top, Bottom: Integer;
+ Hour, Min, Sec, Sec100: Word;
+ HourStr, MinStr, AmPm, TimeStr: String;
+ TaskX1, TaskX2: Integer;
+Begin
+ MX := GetMaxX;
+ Top := GetScreenHeight;
+ Bottom := GetMaxY;
+
+ { Fond de la barre }
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(0, Top, MX, Bottom);
+ SetColor(W95_WHITE);
+ Line(0, Top, MX, Top);
+
+ { Bouton Demarrer (enfonce quand le menu est ouvert) }
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(2, Top + 2, 90, Bottom - 2);
+ Win95Draw3DBorder(2, Top + 2, 90, Bottom - 2, Not Win95StartMenuOpen);
+ Win95DrawIcon(6, Top + 8);
+ SetColor(W95_BLACK);
+ OutTextXY(20, Top + 10, 'D' + #130 + 'marrer');
+
+ { Tache DEVENV : seule application "ouverte" dans cette barre - toujours}
+ { active/enfoncee (demande explicite de l utilisateur : "une des taches}
+ { serait DEVENV (Visual Studio) presente"). }
+ TaskX1 := 95;
+ TaskX2 := TaskX1 + 190;
+ If TaskX2 < MX - 100 Then Begin
+  SetFillStyle(SolidFill, W95_LIGHTGRAY);
+  Bar(TaskX1, Top + 3, TaskX2, Bottom - 3);
+  Win95Draw3DBorder(TaskX1, Top + 3, TaskX2, Bottom - 3, False);
+  SetColor(W95_BLACK);
+  OutTextXY(TaskX1 + 5, Top + 9, 'DEVENV - Visual Studio');
+ End;
+
+ { Horloge (format 12h AM/PM, comme WINDOWS95-0) }
+ GetTime(Hour, Min, Sec, Sec100);
+ MinStr := TermPadZeroLeft(Min, 2);
+ If Hour = 0 Then Begin HourStr := '12'; AmPm := 'AM'; End
+ Else If Hour < 12 Then Begin HourStr := IntToStr(Hour); AmPm := 'AM'; End
+ Else If Hour = 12 Then Begin HourStr := '12'; AmPm := 'PM'; End
+ Else Begin HourStr := IntToStr(Hour - 12); AmPm := 'PM'; End;
+ TimeStr := HourStr + ':' + MinStr + ' ' + AmPm;
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(MX - 95, Top + 2, MX - 2, Bottom - 2);
+ Win95Draw3DBorder(MX - 95, Top + 2, MX - 2, Bottom - 2, False);
+ SetColor(W95_BLACK);
+ OutTextXY(MX - 90, Top + 9, TimeStr);
+End;
+
+{ --- Fermer tout le shell Windows 95 (menu + sous-menus + boites) --- }
+Procedure Win95CloseAllOverlays;
+Begin
+ Win95StartMenuOpen      := False;
+ Win95ProgMenuOpen       := False;
+ Win95AccMenuOpen        := False;
+ Win95HoverMenuItem      := 0;
+ Win95HoverProgItem      := 0;
+ Win95HoverAccItem       := 0;
+ Win95RunDlgVisible      := False;
+ Win95ShutdownDlgVisible := False;
+ Win95DateTimeDlgVisible := False;
+End;
+
+{ --- Ouvrir le Terminal en Invite de commandes (MS-DOS/Executer) - meme  }
+{ sequence exacte que le menu Affichage > Terminal (tag 303). }
+Procedure Win95OpenMsDosTerminal;
+Begin
+ ActiveShell := SK_CMD;
+ TermVisible := True;
+ TermX := 0;
+ TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+ TermHeight := OUTPUT_HEIGHT;
+ If TermPanels[ActiveShell].LineCount = 0 Then
+  TermAddLine(TermPanels[ActiveShell],
+   'Terminal integre. Tapez HELP pour la liste des commandes.');
+ TerminalHasFocus := True;
+ TermSelectOpen := False;
+ TerminalOnTop := True;
+End;
+
+{ --- Aide > A propos de DEVENV (meme texte que le menu Aide, tag 900) --- }
+Procedure Win95ShowAbout;
+Begin
+ ShowMessageBox('A propos de DEVENV',
+  'DEVENV - Clone de Visual Studio en mode graphique' + #10 +
+  'Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')' + #10 +
+  #10 +
+  'Auteur  : Sylvain Maltais' + #10 +
+  'Web     : https://www.gladir.com/dev-cools' + #10 +
+  'Licence : MIT',
+  MB_OK, MI_INFO);
+End;
+
+{ --- Clic dans le menu Demarrer / ses sous-menus --- }
+Procedure Win95StartMenuMouseDown(MX, MY: Integer);
+Var
+ Item: Integer;
+Begin
+ If Win95AccMenuOpen Then Begin
+  Item := Win95HitAccMenu(MX, MY);
+  If Item = 1 Then Begin { Bloc-notes -> Nouveau fichier }
+   Win95CloseAllOverlays;
+   ShowNewFileDialog(NewFileDlg);
+   Exit;
+  End;
+ End;
+ If Win95ProgMenuOpen Then Begin
+  Item := Win95HitProgMenu(MX, MY);
+  If Item = 1 Then Begin { Accessoires }
+   Win95AccMenuOpen := True;
+   Exit;
+  End Else If Item = 2 Then Begin { MS-DOS }
+   Win95CloseAllOverlays;
+   Win95OpenMsDosTerminal;
+   Exit;
+  End;
+ End;
+ Item := Win95HitMainMenu(MX, MY);
+ Case Item Of
+  1: Win95ProgMenuOpen := True;                     { Programmes }
+  2: Begin                                          { Documents }
+      Win95CloseAllOverlays;
+      InitFileDialog(FileDlg, False);
+      LoadDirectoryFiles(FileDlg);
+      FileDlg.Base.Visible := True;
+      DrawFileDialog(FileDlg);
+     End;
+  3: Begin Win95CloseAllOverlays; ShowOptionsDialog(OptionsDlg); End; { Parametres }
+  4: Begin Win95CloseAllOverlays; ShowFindDialog(FindReplaceDlg); End; { Rechercher }
+  5: Begin Win95CloseAllOverlays; Win95ShowAbout; End;                 { Aide }
+  6: Begin                                          { Executer... }
+      Win95CloseAllOverlays;
+      Win95RunDlgVisible := True;
+      Win95RunCommand := '';
+     End;
+  7: Begin                                          { Arreter... }
+      Win95CloseAllOverlays;
+      Win95ShutdownDlgVisible := True;
+      Win95ShutdownOption := 1;
+     End;
+  Else
+   Win95CloseAllOverlays; { clic hors de tout item : fermer le menu }
+ End;
+End;
+
+{ --- Survol (deplacement de la souris) pendant que le menu est ouvert --- }
+Procedure Win95UpdateHover(MX, MY: Integer);
+Begin
+ If Not Win95StartMenuOpen Then Exit;
+ Win95HoverMenuItem := Win95HitMainMenu(MX, MY);
+ If Win95ProgMenuOpen Then
+  Win95HoverProgItem := Win95HitProgMenu(MX, MY)
+ Else
+  Win95HoverProgItem := 0;
+ If Win95AccMenuOpen Then
+  Win95HoverAccItem := Win95HitAccMenu(MX, MY)
+ Else
+  Win95HoverAccItem := 0;
+End;
+
+{ --- Boite de dialogue Executer --- }
+Function Win95IsOnRunOKButton(MX, MY: Integer): Boolean;
+Var
+ CX, CY, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 200; DY2 := CY + 70;
+ Win95IsOnRunOKButton := (MX >= DX2 - 140) And (MX <= DX2 - 95) And
+  (MY >= DY2 - 35) And (MY <= DY2 - 15);
+End;
+
+Function Win95IsOnRunCancelButton(MX, MY: Integer): Boolean;
+Var
+ CX, CY, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 200; DY2 := CY + 70;
+ Win95IsOnRunCancelButton := (MX >= DX2 - 85) And (MX <= DX2 - 10) And
+  (MY >= DY2 - 35) And (MY <= DY2 - 15);
+End;
+
+Procedure DrawWin95RunDialog;
+Var
+ CX, CY, DX1, DY1, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 70;
+ DX2 := CX + 200; DY2 := CY + 70;
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(DX1, DY1, DX2, DY2);
+ Win95Draw3DBorder(DX1, DY1, DX2, DY2, True);
+
+ SetFillStyle(SolidFill, W95_BLUE);
+ Bar(DX1 + 2, DY1 + 2, DX2 - 2, DY1 + 20);
+ SetColor(W95_WHITE);
+ OutTextXY(DX1 + 8, DY1 + 8, 'Executer');
+
+ SetColor(W95_BLACK);
+ OutTextXY(DX1 + 15, DY1 + 30, 'Tapez le nom d''une commande DEVENV (Terminal).');
+ OutTextXY(DX1 + 15, DY1 + 45, 'Elle sera executee dans l''Invite de commandes.');
+
+ OutTextXY(DX1 + 15, DY1 + 80, 'Ouvrir :');
+ SetFillStyle(SolidFill, W95_WHITE);
+ Bar(DX1 + 70, DY1 + 77, DX2 - 15, DY1 + 95);
+ Win95Draw3DBorder(DX1 + 70, DY1 + 77, DX2 - 15, DY1 + 95, False);
+ SetColor(W95_BLACK);
+ OutTextXY(DX1 + 75, DY1 + 82, Win95RunCommand);
+ If (GetTimestamp Div 500) Mod 2 = 0 Then Begin
+  Line(DX1 + 75 + Length(Win95RunCommand) * 8, DY1 + 82,
+       DX1 + 75 + Length(Win95RunCommand) * 8, DY1 + 92);
+ End;
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(DX2 - 140, DY2 - 35, DX2 - 95, DY2 - 15);
+ Win95Draw3DBorder(DX2 - 140, DY2 - 35, DX2 - 95, DY2 - 15, True);
+ SetColor(W95_BLACK);
+ OutTextXY(DX2 - 120, DY2 - 28, 'OK');
+
+ Bar(DX2 - 85, DY2 - 35, DX2 - 10, DY2 - 15);
+ Win95Draw3DBorder(DX2 - 85, DY2 - 35, DX2 - 10, DY2 - 15, True);
+ OutTextXY(DX2 - 75, DY2 - 28, 'Annuler');
+End;
+
+Procedure Win95ExecuteRunCommand;
+Begin
+ If TermTrim(Win95RunCommand) = '' Then Exit;
+ { Reutilise le VRAI moteur de commandes du Terminal (Invite de           }
+ { commandes) plutot qu un Exec(COMSPEC) brut comme WIN.PAS - la commande }
+ { est executee exactement comme si elle avait ete tapee directement dans}
+ { le Terminal. }
+ Win95OpenMsDosTerminal;
+ TermExecuteCommand(TermPanels[SK_CMD], Win95RunCommand);
+End;
+
+Procedure Win95RunKeyChar(Ch: Char);
+Begin
+ Case Ch Of
+  #8: If Length(Win95RunCommand) > 0 Then
+       Delete(Win95RunCommand, Length(Win95RunCommand), 1);
+  #13: Begin
+        Win95ExecuteRunCommand;
+        Win95RunDlgVisible := False;
+       End;
+  #27: Win95RunDlgVisible := False;
+  #32..#126: If Length(Win95RunCommand) < 50 Then
+       Win95RunCommand := Win95RunCommand + Ch;
+ End;
+End;
+
+Procedure Win95RunMouseDown(MX, MY: Integer);
+Begin
+ If Win95IsOnRunOKButton(MX, MY) Then Begin
+  Win95ExecuteRunCommand;
+  Win95RunDlgVisible := False;
+ End Else If Win95IsOnRunCancelButton(MX, MY) Then
+  Win95RunDlgVisible := False;
+End;
+
+{ --- Boite de dialogue Arreter --- }
+Function Win95IsOnRadioButton(MX, MY, ButtonNumber: Integer): Boolean;
+Var
+ CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 150; DY1 := CY - 80;
+ Win95IsOnRadioButton := (MX >= DX1 + 45) And (MX <= DX1 + 250) And
+  (MY >= DY1 + 55 + (ButtonNumber - 1) * 20) And
+  (MY <= DY1 + 70 + (ButtonNumber - 1) * 20);
+End;
+
+Function Win95IsOnShutdownOKButton(MX, MY: Integer): Boolean;
+Var
+ CX, CY, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 150; DY2 := CY + 80;
+ Win95IsOnShutdownOKButton := (MX >= DX2 - 120) And (MX <= DX2 - 70) And
+  (MY >= DY2 - 35) And (MY <= DY2 - 10);
+End;
+
+Function Win95IsOnShutdownCancelButton(MX, MY: Integer): Boolean;
+Var
+ CX, CY, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 150; DY2 := CY + 80;
+ Win95IsOnShutdownCancelButton := (MX >= DX2 - 60) And (MX <= DX2 - 10) And
+  (MY >= DY2 - 35) And (MY <= DY2 - 10);
+End;
+
+Procedure DrawWin95ShutdownDialog;
+Var
+ CX, CY, DX1, DY1, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 150; DY1 := CY - 80;
+ DX2 := CX + 150; DY2 := CY + 80;
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(DX1, DY1, DX2, DY2);
+ Win95Draw3DBorder(DX1, DY1, DX2, DY2, True);
+
+ SetFillStyle(SolidFill, W95_BLUE);
+ Bar(DX1 + 2, DY1 + 2, DX2 - 2, DY1 + 20);
+ SetColor(W95_WHITE);
+ OutTextXY(DX1 + 8, DY1 + 8, 'Arreter DEVENV');
+
+ SetColor(W95_BLUE);
+ SetFillStyle(SolidFill, W95_BLUE);
+ FillEllipse(DX1 + 20, DY1 + 45, 12, 12);
+ SetColor(W95_WHITE);
+ OutTextXY(DX1 + 17, DY1 + 40, 'i');
+
+ SetColor(W95_BLACK);
+ OutTextXY(DX1 + 45, DY1 + 35, 'Que voulez-vous faire ?');
+ Win95DrawRadioButton(DX1 + 45, DY1 + 55, Win95ShutdownOption = 1, 'Fermer DEVENV');
+ Win95DrawRadioButton(DX1 + 45, DY1 + 75, Win95ShutdownOption = 2, 'Redemarrer DEVENV');
+ Win95DrawRadioButton(DX1 + 45, DY1 + 95, Win95ShutdownOption = 3, 'Fermer la session');
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(DX2 - 120, DY2 - 35, DX2 - 70, DY2 - 10);
+ Win95Draw3DBorder(DX2 - 120, DY2 - 35, DX2 - 70, DY2 - 10, True);
+ SetColor(W95_BLACK);
+ OutTextXY(DX2 - 105, DY2 - 28, 'OK');
+ Bar(DX2 - 60, DY2 - 35, DX2 - 10, DY2 - 10);
+ Win95Draw3DBorder(DX2 - 60, DY2 - 35, DX2 - 10, DY2 - 10, True);
+ OutTextXY(DX2 - 45, DY2 - 28, 'Annuler');
+End;
+
+{ Sous FPC (cible de compilation reelle de DEVENV), WIN.PAS lui-meme fait }
+{ deja aboutir ses 3 options au meme Halt(0) sans distinction reelle (pas}
+{ d APM/INT19h portable) - ici, les 3 appellent TryQuit (fermeture propre,}
+{ demande de sauvegarde si necessaire) plutot qu un Halt(0) brut. }
+Procedure Win95ExecuteShutdownAction;
+Begin
+ TryQuit;
+End;
+
+Procedure Win95ShutdownMouseDown(MX, MY: Integer);
+Var
+ I: Integer;
+Begin
+ For I := 1 To 3 Do
+  If Win95IsOnRadioButton(MX, MY, I) Then
+   Win95ShutdownOption := I;
+ If Win95IsOnShutdownOKButton(MX, MY) Then Begin
+  Win95ShutdownDlgVisible := False;
+  Win95ExecuteShutdownAction;
+ End Else If Win95IsOnShutdownCancelButton(MX, MY) Then
+  Win95ShutdownDlgVisible := False;
+End;
+
+{ --- Boite de dialogue Proprietes Date/Heure --- }
+Procedure Win95DrawAnalogClock(CenterX, CenterY, Radius, H, M, S: Integer);
+Var
+ HourAngle, MinuteAngle, SecondAngle: Real;
+ HourX, HourY, MinuteX, MinuteY, SecondX, SecondY: Integer;
+Begin
+ SetColor(W95_BLACK);
+ Circle(CenterX, CenterY, Radius);
+ SetFillStyle(SolidFill, W95_WHITE);
+ FloodFill(CenterX, CenterY, W95_BLACK);
+
+ SetColor(W95_BLACK);
+ OutTextXY(CenterX - 3, CenterY - Radius + 5, '12');
+ OutTextXY(CenterX + Radius - 8, CenterY - 5, '3');
+ OutTextXY(CenterX - 3, CenterY + Radius - 15, '6');
+ OutTextXY(CenterX - Radius + 5, CenterY - 5, '9');
+
+ HourAngle := (H Mod 12 + M / 60.0) * Pi / 6.0 - Pi / 2.0;
+ MinuteAngle := M * Pi / 30.0 - Pi / 2.0;
+ SecondAngle := S * Pi / 30.0 - Pi / 2.0;
+
+ HourX := CenterX + Round(Cos(HourAngle) * (Radius - 20));
+ HourY := CenterY + Round(Sin(HourAngle) * (Radius - 20));
+ SetColor(W95_BLACK);
+ Line(CenterX, CenterY, HourX, HourY);
+ Line(CenterX + 1, CenterY, HourX + 1, HourY);
+
+ MinuteX := CenterX + Round(Cos(MinuteAngle) * (Radius - 10));
+ MinuteY := CenterY + Round(Sin(MinuteAngle) * (Radius - 10));
+ Line(CenterX, CenterY, MinuteX, MinuteY);
+
+ SecondX := CenterX + Round(Cos(SecondAngle) * (Radius - 5));
+ SecondY := CenterY + Round(Sin(SecondAngle) * (Radius - 5));
+ SetColor(W95_RED);
+ Line(CenterX, CenterY, SecondX, SecondY);
+
+ SetColor(W95_BLACK);
+ SetFillStyle(SolidFill, W95_BLACK);
+ FillEllipse(CenterX, CenterY, 3, 3);
+End;
+
+Procedure Win95DrawCalendar(X, Y, Year, Month, Day: Integer);
+Var
+ I, J, FirstDay, DaysInMonth, CurrentDay: Integer;
+ MonthNames: Array[1..12] Of String;
+Begin
+ MonthNames[1] := 'Janvier'; MonthNames[2] := 'Fevrier'; MonthNames[3] := 'Mars';
+ MonthNames[4] := 'Avril'; MonthNames[5] := 'Mai'; MonthNames[6] := 'Juin';
+ MonthNames[7] := 'Juillet'; MonthNames[8] := 'Aout'; MonthNames[9] := 'Septembre';
+ MonthNames[10] := 'Octobre'; MonthNames[11] := 'Novembre'; MonthNames[12] := 'Decembre';
+
+ SetFillStyle(SolidFill, W95_WHITE);
+ Bar(X, Y, X + 200, Y + 150);
+ Win95Draw3DBorder(X, Y, X + 200, Y + 150, False);
+
+ SetColor(W95_BLACK);
+ OutTextXY(X + 10, Y + 10, MonthNames[Month] + ' ' + IntToStr(Year));
+ OutTextXY(X + 10, Y + 30, 'D  L  M  M  J  V  S');
+
+ FirstDay := ((Year - 1900) * 365 + Month * 30 + Day) Mod 7;
+ Case Month Of
+  2: If Year Mod 4 = 0 Then DaysInMonth := 29 Else DaysInMonth := 28;
+  4, 6, 9, 11: DaysInMonth := 30;
+  Else DaysInMonth := 31;
+ End;
+
+ CurrentDay := 1;
+ For I := 0 To 5 Do
+  For J := 0 To 6 Do Begin
+   If (I = 0) And (J < FirstDay) Then
+    { case vide en debut de mois }
+   Else If CurrentDay <= DaysInMonth Then Begin
+    If CurrentDay = Day Then Begin
+     SetFillStyle(SolidFill, W95_BLUE);
+     Bar(X + 10 + J * 25, Y + 50 + I * 15, X + 30 + J * 25, Y + 65 + I * 15);
+     SetColor(W95_WHITE);
+    End Else
+     SetColor(W95_BLACK);
+    OutTextXY(X + 15 + J * 25, Y + 52 + I * 15, IntToStr(CurrentDay));
+    Inc(CurrentDay);
+   End;
+  End;
+End;
+
+Procedure Win95DrawTimeSpinner(X, Y, Value: Integer);
+Begin
+ SetFillStyle(SolidFill, W95_WHITE);
+ Bar(X, Y, X + 40, Y + 20);
+ SetColor(W95_BLACK);
+ Win95Draw3DBorder(X, Y, X + 40, Y + 20, False);
+
+ SetColor(W95_BLACK);
+ If Value < 10 Then
+  OutTextXY(X + 8, Y + 6, '0' + IntToStr(Value))
+ Else
+  OutTextXY(X + 8, Y + 6, IntToStr(Value));
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(X + 42, Y, X + 52, Y + 9);
+ Bar(X + 42, Y + 11, X + 52, Y + 20);
+ Win95Draw3DBorder(X + 42, Y, X + 52, Y + 9, True);
+ Win95Draw3DBorder(X + 42, Y + 11, X + 52, Y + 20, True);
+
+ SetColor(W95_BLACK);
+ Line(X + 45, Y + 4, X + 49, Y + 4);
+ Line(X + 47, Y + 2, X + 47, Y + 6);
+ Line(X + 45, Y + 15, X + 49, Y + 15);
+End;
+
+Procedure Win95DrawDateTimeTabs(X, Y, CurrentTab: Integer);
+Begin
+ If CurrentTab = 1 Then Begin
+  SetFillStyle(SolidFill, W95_LIGHTGRAY);
+  Bar(X + 5, Y + 25, X + 120, Y + 45);
+  SetColor(W95_BLACK);
+  OutTextXY(X + 15, Y + 32, 'Date et heure');
+  Win95Draw3DBorder(X + 5, Y + 25, X + 120, Y + 45, True);
+ End Else Begin
+  SetFillStyle(SolidFill, W95_DARKGRAY);
+  Bar(X + 5, Y + 27, X + 120, Y + 45);
+  SetColor(W95_BLACK);
+  OutTextXY(X + 15, Y + 34, 'Date et heure');
+  Win95Draw3DBorder(X + 5, Y + 27, X + 120, Y + 45, False);
+ End;
+
+ If CurrentTab = 2 Then Begin
+  SetFillStyle(SolidFill, W95_LIGHTGRAY);
+  Bar(X + 125, Y + 25, X + 250, Y + 45);
+  SetColor(W95_BLACK);
+  OutTextXY(X + 135, Y + 32, 'Fuseau horaire');
+  Win95Draw3DBorder(X + 125, Y + 25, X + 250, Y + 45, True);
+ End Else Begin
+  SetFillStyle(SolidFill, W95_DARKGRAY);
+  Bar(X + 125, Y + 27, X + 250, Y + 45);
+  SetColor(W95_BLACK);
+  OutTextXY(X + 135, Y + 34, 'Fuseau horaire');
+  Win95Draw3DBorder(X + 125, Y + 27, X + 250, Y + 45, False);
+ End;
+End;
+
+Procedure DrawWin95DateTimeDialog;
+Var
+ CX, CY, DX1, DY1, DX2, DY2: Integer;
+ H, M, S, DayOfWeek: Word;
+ Year, Month, Day: Word;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ DX2 := CX + 200; DY2 := CY + 150;
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(DX1, DY1, DX2, DY2);
+ Win95Draw3DBorder(DX1, DY1, DX2, DY2, True);
+
+ SetFillStyle(SolidFill, W95_BLUE);
+ Bar(DX1 + 2, DY1 + 2, DX2 - 2, DY1 + 22);
+ SetColor(W95_WHITE);
+ OutTextXY(DX1 + 8, DY1 + 8, 'Proprietes Date/Heure');
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(DX2 - 22, DY1 + 4, DX2 - 4, DY1 + 18);
+ Win95Draw3DBorder(DX2 - 22, DY1 + 4, DX2 - 4, DY1 + 18, True);
+ SetColor(W95_BLACK);
+ OutTextXY(DX2 - 17, DY1 + 8, 'X');
+
+ Win95DrawDateTimeTabs(DX1, DY1, Win95DateTimeTab);
+
+ GetTime(H, M, S, DayOfWeek);
+ GetDate(Year, Month, Day, DayOfWeek);
+ If Not Win95TimeManuallyModified Then Begin
+  Win95SelHour := H;
+  Win95SelMin := M;
+  Win95SelSec := S;
+ End;
+
+ If Win95DateTimeTab = 1 Then Begin
+  Win95DrawCalendar(DX1 + 15, DY1 + 60, Year, Month, Day);
+  Win95DrawAnalogClock(DX1 + 280, DY1 + 120, 45,
+   Win95SelHour, Win95SelMin, Win95SelSec);
+
+  SetColor(W95_BLACK);
+  OutTextXY(DX1 + 230, DY1 + 190, 'Heure:');
+  Win95DrawTimeSpinner(DX1 + 230, DY1 + 205, Win95SelHour);
+  OutTextXY(DX1 + 285, DY1 + 190, 'Min:');
+  Win95DrawTimeSpinner(DX1 + 285, DY1 + 205, Win95SelMin);
+  OutTextXY(DX1 + 335, DY1 + 190, 'Sec:');
+  Win95DrawTimeSpinner(DX1 + 335, DY1 + 205, Win95SelSec);
+ End Else Begin
+  SetColor(W95_BLACK);
+  OutTextXY(DX1 + 15, DY1 + 60, 'Fuseau horaire :');
+  SetFillStyle(SolidFill, W95_WHITE);
+  Bar(DX1 + 15, DY1 + 80, DX1 + 350, DY1 + 100);
+  Win95Draw3DBorder(DX1 + 15, DY1 + 80, DX1 + 350, DY1 + 100, False);
+  SetColor(W95_BLACK);
+  OutTextXY(DX1 + 20, DY1 + 85, '(GMT-05:00) Heure de l''Est (Canada et Etats-Unis)');
+  SetFillStyle(SolidFill, W95_BLUE);
+  Bar(DX1 + 15, DY1 + 120, DX1 + 350, DY1 + 200);
+  SetColor(W95_YELLOW);
+  OutTextXY(DX1 + 170, DY1 + 155, 'AMERIQUE');
+ End;
+
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(DX2 - 250, DY2 - 35, DX2 - 200, DY2 - 15);
+ Win95Draw3DBorder(DX2 - 250, DY2 - 35, DX2 - 200, DY2 - 15, True);
+ SetColor(W95_BLACK);
+ OutTextXY(DX2 - 235, DY2 - 28, 'OK');
+
+ Bar(DX2 - 190, DY2 - 35, DX2 - 110, DY2 - 15);
+ Win95Draw3DBorder(DX2 - 190, DY2 - 35, DX2 - 110, DY2 - 15, True);
+ OutTextXY(DX2 - 170, DY2 - 28, 'Annuler');
+
+ Bar(DX2 - 105, DY2 - 35, DX2 - 5, DY2 - 15);
+ Win95Draw3DBorder(DX2 - 105, DY2 - 35, DX2 - 5, DY2 - 15, True);
+ OutTextXY(DX2 - 80, DY2 - 28, 'Appliquer');
+End;
+
+Function Win95IsOnDateTab(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnDateTab := (MX >= DX1 + 5) And (MX <= DX1 + 120) And
+  (MY >= DY1 + 25) And (MY <= DY1 + 45);
+End;
+
+Function Win95IsOnTimezoneTab(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnTimezoneTab := (MX >= DX1 + 125) And (MX <= DX1 + 250) And
+  (MY >= DY1 + 25) And (MY <= DY1 + 45);
+End;
+
+Function Win95IsOnDateTimeCloseButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX2, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 200; DY1 := CY - 150;
+ Win95IsOnDateTimeCloseButton := (MX >= DX2 - 22) And (MX <= DX2 - 4) And
+  (MY >= DY1 + 4) And (MY <= DY1 + 18);
+End;
+
+Function Win95IsOnDateTimeOKButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 200; DY2 := CY + 150;
+ Win95IsOnDateTimeOKButton := (MX >= DX2 - 250) And (MX <= DX2 - 200) And
+  (MY >= DY2 - 35) And (MY <= DY2 - 15);
+End;
+
+Function Win95IsOnDateTimeCancelButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 200; DY2 := CY + 150;
+ Win95IsOnDateTimeCancelButton := (MX >= DX2 - 190) And (MX <= DX2 - 110) And
+  (MY >= DY2 - 35) And (MY <= DY2 - 15);
+End;
+
+Function Win95IsOnDateTimeApplyButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX2, DY2: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX2 := CX + 200; DY2 := CY + 150;
+ Win95IsOnDateTimeApplyButton := (MX >= DX2 - 105) And (MX <= DX2 - 5) And
+  (MY >= DY2 - 35) And (MY <= DY2 - 15);
+End;
+
+Function Win95IsOnHourPlusButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnHourPlusButton := (MX >= DX1 + 272) And (MX <= DX1 + 282) And
+  (MY >= DY1 + 205) And (MY <= DY1 + 214);
+End;
+
+Function Win95IsOnHourMinusButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnHourMinusButton := (MX >= DX1 + 272) And (MX <= DX1 + 282) And
+  (MY >= DY1 + 216) And (MY <= DY1 + 225);
+End;
+
+Function Win95IsOnMinutePlusButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnMinutePlusButton := (MX >= DX1 + 327) And (MX <= DX1 + 337) And
+  (MY >= DY1 + 205) And (MY <= DY1 + 214);
+End;
+
+Function Win95IsOnMinuteMinusButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnMinuteMinusButton := (MX >= DX1 + 327) And (MX <= DX1 + 337) And
+  (MY >= DY1 + 216) And (MY <= DY1 + 225);
+End;
+
+Function Win95IsOnSecondPlusButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnSecondPlusButton := (MX >= DX1 + 377) And (MX <= DX1 + 387) And
+  (MY >= DY1 + 205) And (MY <= DY1 + 214);
+End;
+
+Function Win95IsOnSecondMinusButton(MX, MY: Integer): Boolean;
+Var CX, CY, DX1, DY1: Integer;
+Begin
+ CX := GetMaxX Div 2; CY := GetMaxY Div 2;
+ DX1 := CX - 200; DY1 := CY - 150;
+ Win95IsOnSecondMinusButton := (MX >= DX1 + 377) And (MX <= DX1 + 387) And
+  (MY >= DY1 + 216) And (MY <= DY1 + 225);
+End;
+
+Procedure Win95DateTimeMouseDown(MX, MY: Integer);
+Begin
+ If Win95IsOnDateTab(MX, MY) Then
+  Win95DateTimeTab := 1
+ Else If Win95IsOnTimezoneTab(MX, MY) Then
+  Win95DateTimeTab := 2
+ Else If Win95IsOnDateTimeCloseButton(MX, MY) Or
+         Win95IsOnDateTimeOKButton(MX, MY) Or
+         Win95IsOnDateTimeCancelButton(MX, MY) Then
+  Win95DateTimeDlgVisible := False
+ Else If Win95IsOnDateTimeApplyButton(MX, MY) Then Begin
+  { Non implante : l original WIN.PAS ne le faisait deja pas (TODO jamais }
+  { rempli) - purement informatif, ne modifie jamais l horloge reelle de }
+  { la machine (changer l heure systeme depuis un IDE serait une action  }
+  { a fort impact, jamais demandee par l utilisateur). }
+ End Else If Win95IsOnHourPlusButton(MX, MY) Then Begin
+  Win95TimeManuallyModified := True;
+  Win95SelHour := (Win95SelHour + 1) Mod 24;
+ End Else If Win95IsOnHourMinusButton(MX, MY) Then Begin
+  Win95TimeManuallyModified := True;
+  If Win95SelHour = 0 Then Win95SelHour := 23 Else Dec(Win95SelHour);
+ End Else If Win95IsOnMinutePlusButton(MX, MY) Then Begin
+  Win95TimeManuallyModified := True;
+  Win95SelMin := (Win95SelMin + 1) Mod 60;
+ End Else If Win95IsOnMinuteMinusButton(MX, MY) Then Begin
+  Win95TimeManuallyModified := True;
+  If Win95SelMin = 0 Then Win95SelMin := 59 Else Dec(Win95SelMin);
+ End Else If Win95IsOnSecondPlusButton(MX, MY) Then Begin
+  Win95TimeManuallyModified := True;
+  Win95SelSec := (Win95SelSec + 1) Mod 60;
+ End Else If Win95IsOnSecondMinusButton(MX, MY) Then Begin
+  Win95TimeManuallyModified := True;
+  If Win95SelSec = 0 Then Win95SelSec := 59 Else Dec(Win95SelSec);
+ End;
+End;
+
+{ --- Repartiteur d evenements principal du shell Windows 95 --- }
+Function Win95HandleEvent(Var Ev: TEvent): Boolean;
+Var
+ MX, MY: Integer;
+ InTaskbarStrip, Overlay: Boolean;
+ Sec100Dummy: Word;
+Begin
+ Win95HandleEvent := False;
+ MX := Ev.MouseX;
+ MY := Ev.MouseY;
+ InTaskbarStrip := MY >= GetScreenHeight;
+ Overlay := Win95StartMenuOpen Or Win95RunDlgVisible Or
+  Win95ShutdownDlgVisible Or Win95DateTimeDlgVisible;
+
+ If Ev.Kind = EV_MOUSE_MOVE Then Begin
+  If Overlay Then Begin
+   Win95UpdateHover(MX, MY);
+   Win95HandleEvent := True;
+  End Else If InTaskbarStrip Then
+   Win95HandleEvent := True;
+  Exit;
+ End;
+
+ If (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseBtn = MB_LEFT) Then Begin
+  If Win95IsOnStartButton(MX, MY) Then Begin
+   If Win95StartMenuOpen Then
+    Win95CloseAllOverlays
+   Else Begin
+    Win95CloseAllOverlays;
+    Win95StartMenuOpen := True;
+   End;
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If Win95DateTimeDlgVisible Then Begin
+   Win95DateTimeMouseDown(MX, MY);
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If Win95RunDlgVisible Then Begin
+   Win95RunMouseDown(MX, MY);
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If Win95ShutdownDlgVisible Then Begin
+   Win95ShutdownMouseDown(MX, MY);
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If Win95StartMenuOpen Then Begin
+   Win95StartMenuMouseDown(MX, MY);
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If InTaskbarStrip Then Begin
+   If Win95IsOnClock(MX, MY) Then Begin
+    Win95DateTimeDlgVisible := True;
+    Win95DateTimeTab := 1;
+    Win95TimeManuallyModified := False;
+    GetTime(Win95SelHour, Win95SelMin, Win95SelSec, Sec100Dummy);
+   End;
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  Exit;
+ End;
+
+ If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Win95RunDlgVisible Then Begin
+   Win95RunKeyChar(Ev.KeyChar);
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If Win95ShutdownDlgVisible Then Begin
+   Case Ev.KeyChar Of
+    '1': Win95ShutdownOption := 1;
+    '2': Win95ShutdownOption := 2;
+    '3': Win95ShutdownOption := 3;
+    #13: Begin
+          Win95ShutdownDlgVisible := False;
+          Win95ExecuteShutdownAction;
+         End;
+    #27: Win95ShutdownDlgVisible := False;
+   End;
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If Win95DateTimeDlgVisible Then Begin
+   If Ev.KeyChar = #27 Then Win95DateTimeDlgVisible := False;
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If Win95StartMenuOpen Then Begin
+   If Ev.KeyChar = #27 Then Win95CloseAllOverlays;
+   Win95HandleEvent := True;
+   Exit;
+  End;
+ End;
+End;
+
 { --- Dessiner tous les widgets de l IDE --- }
 
 Procedure DrawAllWidgets;
@@ -207760,6 +208907,16 @@ Begin
   DrawEmuActivityDialog(EmuActivityDlg);
  If EmuCmdConsole.Base.Visible Then
   DrawEmuCmdConsole(EmuCmdConsole);
+ { /TASKBARWIN95 : dessine la barre des taches en tout dernier, par-dessus}
+ { tout le reste (comme la vraie barre des taches Windows), puis le      }
+ { dialogue/menu Windows 95 le plus recemment ouvert, un seul a la fois. }
+ If Opts.TaskbarWin95 Then Begin
+  DrawWin95Taskbar;
+  If Win95DateTimeDlgVisible Then DrawWin95DateTimeDialog
+  Else If Win95RunDlgVisible Then DrawWin95RunDialog
+  Else If Win95ShutdownDlgVisible Then DrawWin95ShutdownDialog
+  Else If Win95StartMenuOpen Then DrawWin95StartMenu;
+ End;
 End;
 
 { ============================================================
@@ -212452,6 +213609,25 @@ Begin
  InitStartPage(StartPage);
  InitTerminals;
  EmuDbg_Init;
+ { /TASKBARWIN95 (2026-09-15) }
+ Win95StartMenuOpen      := False;
+ Win95ProgMenuOpen       := False;
+ Win95AccMenuOpen        := False;
+ Win95HoverMenuItem      := 0;
+ Win95HoverProgItem      := 0;
+ Win95HoverAccItem       := 0;
+ Win95RunDlgVisible      := False;
+ Win95RunCommand         := '';
+ Win95ShutdownDlgVisible := False;
+ Win95ShutdownOption     := 1;
+ Win95DateTimeDlgVisible := False;
+ Win95DateTimeTab        := 1;
+ Win95SelHour            := 0;
+ Win95SelMin             := 0;
+ Win95SelSec             := 0;
+ Win95TimeManuallyModified := False;
+ Win95LastClockMinute    := -1;
+ Win95LastAnalogSecond   := -1;
  TerminalHasFocus := False;
  QuitRequested := False;
  FullRepaintNeeded := False;
