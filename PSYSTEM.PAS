@@ -2630,7 +2630,7 @@ PPasLabel=^TPasLabel;
 TPasLabel=Record Name:String[31];
 Scope:PPasRoutine;
 Address:LongInt;
-Defined:Boolean;
+Defined,Declared:Boolean;
 Fixups:PPasLabelFixup;
 Next:PPasLabel
 End;
@@ -2908,7 +2908,44 @@ Begin
  128:CPUCSDErrorText:='Result type does not agree with declaration';
  129:CPUCSDErrorText:='Type conflict of operands';
  130:CPUCSDErrorText:='Expression is not of set type';
- 131:CPUCSDErrorText:='Tests on equality allowed only';
+  131:CPUCSDErrorText:='Tests on equality allowed only';
+ 132:CPUCSDErrorText:='Strict inclusion not allowed';
+ 133:CPUCSDErrorText:='File comparison not allowed';
+ 134:CPUCSDErrorText:='Illegal type of operand(s)';
+ 135:CPUCSDErrorText:='Type of operand must be Boolean';
+ 136:CPUCSDErrorText:='Set element type must be scalar or subrange';
+ 137:CPUCSDErrorText:='Set element types must be compatible';
+ 138:CPUCSDErrorText:='Type of variable is not array';
+ 139:CPUCSDErrorText:='Index type is not compatible with the declaration';
+ 140:CPUCSDErrorText:='Type of variable is not record';
+ 141:CPUCSDErrorText:='Type of variable must be file or pointer';
+ 142:CPUCSDErrorText:='Illegal parameter solution';
+ 143:CPUCSDErrorText:='Illegal type of loop control variable';
+ 144:CPUCSDErrorText:='Illegal type of expression';
+ 145:CPUCSDErrorText:='Type conflict';
+ 146:CPUCSDErrorText:='Assignment of files not allowed';
+ 147:CPUCSDErrorText:='Label type incompatible with selecting expression';
+ 148:CPUCSDErrorText:='Subrange bounds must be scalar';
+ 149:CPUCSDErrorText:='Index type must be integer';
+ 150:CPUCSDErrorText:='Assignment to standard function is not allowed';
+ 151:CPUCSDErrorText:='Assignment to formal function is not allowed';
+ 152:CPUCSDErrorText:='No such field in this record';
+ 153:CPUCSDErrorText:='Type error in read';
+ 154:CPUCSDErrorText:='Actual parameter must be a variable';
+ 155:CPUCSDErrorText:='Control variable cannot be formal or non-local';
+ 156:CPUCSDErrorText:='Multidefined case label';
+ 157:CPUCSDErrorText:='Too many cases in case statement';
+ 158:CPUCSDErrorText:='No such variant in this record';
+ 159:CPUCSDErrorText:='Real or string tagfields not allowed';
+ 160:CPUCSDErrorText:='Previous declaration was not forward';
+ 161:CPUCSDErrorText:='Again forward declared';
+ 162:CPUCSDErrorText:='Parameter size must be constant';
+ 163:CPUCSDErrorText:='Missing variant in declaration';
+ 164:CPUCSDErrorText:='Substitution of standard proc/func not allowed';
+ 165:CPUCSDErrorText:='Multidefined label';
+ 166:CPUCSDErrorText:='Multideclared label';
+ 167:CPUCSDErrorText:='Undeclared label';
+ 168:CPUCSDErrorText:='Undefined label';
  else CPUCSDErrorText:='Compiler error'
  End
 End;
@@ -3292,6 +3329,9 @@ Begin
     if CPToken=':'Then Begin CPNext;FT:=CPParseType End else FT:=CPFindType(TagName)
    End;
    FT:=CPBaseType(FT);
+   if(FT<>Nil)and(FT^.Kind in[ptkReal,ptkString])Then
+    CPFailCode(159,'champ de balise reel ou chaine interdit')
+   else
    if(FT=Nil)or not(FT^.Kind in[ptkInteger,ptkBoolean,ptkChar,ptkEnumeration,ptkSubrange])Then
     CPFailCode(110,'le type du champ de balise doit etre scalaire ou sous-intervalle');
    if CPIs('OF')Then CPNext else CPFailCode(8,'''OF'' attendu');
@@ -3785,7 +3825,9 @@ Procedure CPDefineLabel(S:String);
 Var
  L:PPasLabel;
 Begin
- L:=CPFindLabel(S,True);if L^.Defined Then CPFailCode(101,'etiquette declaree deux fois: '+S)
+ L:=CPFindLabel(S,True);
+ if not L^.Declared Then Begin CPFailCode(167,'etiquette non declaree: '+S);Exit End;
+ if L^.Defined Then CPFailCode(165,'etiquette definie deux fois: '+S)
  else
  Begin
   L^.Defined:=True;L^.Address:=CPCodePos;CPPatchLabel(L)
@@ -3798,6 +3840,7 @@ Var
  X:PPasLabelFixup;
 Begin
  L:=CPFindLabel(S,True);
+ if not L^.Declared Then Begin CPFailCode(167,'etiquette non declaree: '+S);Exit End;
  if L^.Defined Then CPJumpBack(L^.Address)
  else
  Begin
@@ -3811,7 +3854,8 @@ Var
 Begin
  L:=CPLabels;
  While L<>Nil do Begin
-  if(L^.Scope=R)and not L^.Defined Then CPFail('etiquette non definie: '+L^.Name);
+  if(L^.Scope=R)and L^.Declared and not L^.Defined Then
+   CPFailCode(168,'etiquette non definie: '+L^.Name);
   L:=L^.Next
  End
 End;
@@ -3819,6 +3863,7 @@ End;
 Procedure CPParseLabelSection;
 Var
  S:String;
+ L:PPasLabel;
 Begin
  if not CPIs('LABEL')Then Exit;CPNext;
  Repeat
@@ -3832,7 +3877,9 @@ Begin
  Begin
   CPFail('etiquette attendue');Exit
  End;
- CPFindLabel(S,True);if CPToken=','Then CPNext else Break
+ L:=CPFindLabel(S,True);
+ if L^.Declared Then CPFailCode(166,'etiquette declaree deux fois: '+S);
+ L^.Declared:=True;if CPToken=','Then CPNext else Break
  Until False;CPNeed(';')
 End;
 
@@ -3927,11 +3974,12 @@ Begin
   if CPToken=';'Then CPNext;R^.EndPosition:=CPTokenPos;Exit
  End;
  if CPIs('FORWARD')Then Begin
-  if R^.IsDefined Then CPFail('FORWARD apres definition: '+Name);
+ if R^.IsDefined Then CPFailCode(160,'declaration precedente non FORWARD: '+Name);
+ if WasForward Then CPFailCode(161,'nouvelle declaration FORWARD: '+Name);
   R^.IsForward:=True;CPNext;if CPToken=';'Then CPNext;R^.EndPosition:=CPTokenPos;Exit
  End;
  if R^.IsDefined Then Begin
-  CPFailCode(101,'routine declaree deux fois: '+Name);Exit
+ CPFailCode(160,'declaration precedente non FORWARD: '+Name);Exit
  End;
  R^.IsDefined:=True;R^.IsForward:=False;R^.SourcePosition:=CPTokenPos;
  Old:=CPCurrentRoutine;CPCurrentRoutine:=R;
@@ -4086,10 +4134,10 @@ Begin
  While(A<>Nil)and not CPError do Begin
   if CPToken=')'Then Begin CPFailCode(126,'nombre de parametres incorrect');Break End;
   if A^.ByReference or A^.Structured Then Begin
-   if CPToken<>'ID'Then CPFail('variable attendue pour parametre VAR')else
+ if CPToken<>'ID'Then CPFailCode(154,'variable attendue pour parametre VAR')else
    Begin
     S:=CPFind(CPText);if(S=Nil)or S^.IsConst Then
-     CPFailCode(127,'substitution illegale du parametre VAR')
+ CPFailCode(154,'le parametre actuel doit etre une variable')
     else
     Begin
      if not CPTypeEquivalent(A^.ParamType,S^.SymbolType)Then
@@ -4227,16 +4275,21 @@ Begin
   if CPToken='['Then Begin
    if(T<>Nil)and(T^.Kind=ptkString)Then Begin
     CPNext;CPExpression;
+    if(CPBaseType(CPLastExpressionType)=Nil)or
+     (CPBaseType(CPLastExpressionType)^.Kind<>ptkInteger)Then
+     CPFailCode(149,'l''index d''une chaine doit etre entier');
     if CPRangeChecks Then Begin
      CPConst(1);CPConst(T^.HighBound);CPOp(136,$CB)
     End;
     CPOp(164,$D7);CPBig(1);T:=CPFindType('CHAR');CPNeed(']');Continue
    End;
    if(T=Nil)or(T^.Kind<>ptkArray)Then Begin
-    CPFail('indexation d''un objet non tableau');Exit
+    CPFailCode(138,'le type de la variable n''est pas un tableau');Exit
    End;
    CPNext;Repeat
    Idx:=T^.IndexType;CPExpression;
+   if not CPAssignmentCompatible(Idx,CPLastExpressionType)Then
+    CPFailCode(139,'type d''index incompatible avec la declaration');
    if CPRangeChecks Then Begin
     CPConst(Idx^.LowBound);CPConst(Idx^.HighBound);CPOp(136,$CB)
    End;
@@ -4253,11 +4306,14 @@ Begin
    End else Break
    Until False;CPNeed(']')
   End else if CPToken='.'Then Begin
+   if(T=Nil)or not(T^.Kind in[ptkRecord,ptkVariantRecord])Then Begin
+    CPFailCode(140,'le type de la variable n''est pas un enregistrement');Exit
+   End;
    CPNext;if CPToken<>'ID'Then Begin
     CPFail('nom de champ attendu');Exit
    End;
    F:=CPFindField(T,CPText);if F=Nil Then Begin
-    CPFail('champ inconnu: '+CPText);Exit
+ CPFailCode(152,'champ inconnu: '+CPText);Exit
    End;
    if F^.OffsetWords<>0 Then Begin
     CPOp(162,$E7);CPBig(F^.OffsetWords)
@@ -4270,7 +4326,7 @@ Begin
    else
    Begin
     if(T=Nil)or(T^.Kind<>ptkPointer)Then Begin
-     CPFail('déréférencement d''un non-pointeur');Exit
+     CPFailCode(141,'le type de la variable doit etre fichier ou pointeur');Exit
     End;
     CPOp(163,$E6);CPBig(0);T:=T^.ElementType;CPNext
    End
@@ -4297,12 +4353,16 @@ Var
  Ident:String;
  Flags:Integer;
  Neg:Boolean;
- CV:TConstValue;
+ CV,CV2:TConstValue;
  Lo,Hi,K,Mask:LongInt;
 Begin
  CPLastExpressionType:=CPFindType('INTEGER');Neg:=False;
  if CPIs('NOT')Then Begin
-  CPNext;CPFactor;CPOp(147,$E5);CPLastExpressionType:=CPFindType('BOOLEAN');Exit
+  CPNext;CPFactor;
+  if(CPBaseType(CPLastExpressionType)=Nil)or
+   (CPBaseType(CPLastExpressionType)^.Kind<>ptkBoolean)Then
+   CPFailCode(135,'l''operande de NOT doit etre Boolean');
+  CPOp(147,$E5);CPLastExpressionType:=CPFindType('BOOLEAN');Exit
  End;
  if CPToken='-'Then Begin
   Neg:=True;CPNext
@@ -4333,11 +4393,13 @@ Begin
  else if CPToken='['Then Begin
   CPNext;Mask:=0;
   While(CPToken<>']')and(CPToken<>'EOF')and not CPError do Begin
-   CV:=CPEvalConstExpression;if CV.Kind=ckReal Then Begin
-    CPFail('element d''ensemble non ordinal');Break
+   CV:=CPEvalConstExpression;CV2:=CV;if CV.Kind in[ckReal,ckString]Then Begin
+    CPFailCode(136,'le type d''element d''ensemble doit etre scalaire ou sous-intervalle');Break
    End;
    Lo:=CV.I;Hi:=Lo;if CPToken='..'Then Begin
-    CPNext;CV:=CPEvalConstExpression;Hi:=CV.I
+    CPNext;CV:=CPEvalConstExpression;Hi:=CV.I;
+    if(CV.Kind=ckCharacter)<>(CV2.Kind=ckCharacter)Then
+     CPFailCode(137,'types d''elements d''ensemble incompatibles')
    End;
    if(Lo<0)or(Hi>15)or(Lo>Hi)Then CPFail('ensemble immediat limite a 0..15')
    else
@@ -4488,14 +4550,24 @@ Begin
   if(O='SHL')or(O='SHR')Then Begin
    if(O='SHL')Then CPOp(210,$BA)else CPOp(211,$BB);LT:=CPFindType('INTEGER')
   End else if(O='*')and(((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet)))
-  Then CPOp(140,$B8)
+  Then Begin
+   if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkSet)or(RT^.Kind<>ptkSet)Then
+    CPFailCode(134,'type illegal des operandes')
+   else if not CPTypeEquivalent(LT^.ElementType,RT^.ElementType)Then
+    CPFailCode(137,'types d''elements d''ensembles incompatibles');
+   CPOp(140,$B8)
+  End
   else if((LT<>Nil)and(LT^.Kind=ptkReal))or((RT<>Nil)and(RT^.Kind=ptkReal))Then Begin
    if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then    CPFail(
    'conversion explicite requise pour une operation reelle')
    else if O='*'Then CPOp(144,$CA)else if O='/'Then CPOp(135,$CC)
    else CPFail('DIV, MOD et AND interdits sur les reels');LT:=CPFindType('REAL')
   End else if O='*'Then CPOp(143,$8C)else if(O='/')or(O='DIV')Then CPOp(134,$8D)
-  else if O='MOD'Then CPOp(142,$8F)else CPOp(132,$A1)
+  else if O='MOD'Then CPOp(142,$8F)else Begin
+   if(CPBaseType(LT)=Nil)or(CPBaseType(RT)=Nil)or
+    (CPBaseType(LT)^.Kind<>ptkBoolean)or(CPBaseType(RT)^.Kind<>ptkBoolean)Then
+    CPFailCode(135,'les operandes de AND doivent etre Boolean');CPOp(132,$A1)
+  End
   ;if(O<>'SHL')and(O<>'SHR')and not((LT<>Nil)and(LT^.Kind=ptkReal))Then LT:=RT
  End;CPLastExpressionType:=LT
 End;
@@ -4519,13 +4591,21 @@ Begin
     CPConst(I);CPEmitCSP(51)
    End;LT:=CPFindType('STRING')
   End else if((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet))Then Begin
+   if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkSet)or(RT^.Kind<>ptkSet)Then
+    CPFailCode(134,'type illegal des operandes')
+   else if not CPTypeEquivalent(LT^.ElementType,RT^.ElementType)Then
+    CPFailCode(137,'types d''elements d''ensembles incompatibles');
    if O='+'Then CPOp(156,$B7)else if O='-'Then CPOp(133,$B9)else CPOp(156,$B7)
   End else if((LT<>Nil)and(LT^.Kind=ptkReal))or((RT<>Nil)and(RT^.Kind=ptkReal))Then Begin
    if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then    CPFail(
    'conversion explicite requise pour une operation reelle')
    else if O='+'Then CPOp(131,$C8)else if O='-'Then CPOp(150,$C9)
    else CPFail('OR interdit sur les reels');LT:=CPFindType('REAL')
-  End else if O='+'Then CPOp(130,$A2)else if O='-'Then CPOp(149,$A3)else CPOp(141,$A0);
+  End else if O='+'Then CPOp(130,$A2)else if O='-'Then CPOp(149,$A3)else Begin
+   if(CPBaseType(LT)=Nil)or(CPBaseType(RT)=Nil)or
+    (CPBaseType(LT)^.Kind<>ptkBoolean)or(CPBaseType(RT)^.Kind<>ptkBoolean)Then
+    CPFailCode(135,'les operandes de OR doivent etre Boolean');CPOp(141,$A0)
+  End;
   if(LT=Nil)or(LT^.Kind<>ptkReal)Then LT:=RT
  End;CPLastExpressionType:=LT
 End;
@@ -4600,6 +4680,9 @@ Procedure CPCompound;Begin
 End;
 
 Procedure CPStatement;
+Type
+ PCaseRange=^TCaseRange;
+ TCaseRange=Record LowValue,HighValue:LongInt;Next:PCaseRange End;
 Var
  P,Tmp:PPasSymbol;
  R:PPasRoutine;
@@ -4612,6 +4695,8 @@ Var
  EndCount,I:Integer;
  SavedWith:PPasSymbol;
  SavedWithType:PPasType;
+ CaseRanges,CaseRange,CaseScan:PCaseRange;
+ CaseHigh:LongInt;
 Begin
  if CPIs('BEGIN')Then CPCompound
  else if CPIs('GOTO')Then Begin
@@ -4631,7 +4716,11 @@ Begin
   Str(CPNumber,Name);CPNext;CPNeed(':');CPDefineLabel(Name);CPStatement
  End
  else if CPIs('IF')Then Begin
-  CPNext;CPExpression;if not CPIs('THEN')Then CPFail('THEN attendu')else CPNext;
+  CPNext;CPExpression;
+  if(CPBaseType(CPLastExpressionType)=Nil)or
+   (CPBaseType(CPLastExpressionType)^.Kind<>ptkBoolean)Then
+   CPFailCode(135,'l''operande de IF doit etre Boolean');
+  if not CPIs('THEN')Then CPFail('THEN attendu')else CPNext;
   Patch:=CPForwardFalse;CPStatement;
   if CPIs('ELSE')Then Begin
    J:=CPForwardJump;CPPatchForward(Patch,CPCodePos);
@@ -4639,7 +4728,11 @@ Begin
   End else CPPatchForward(Patch,CPCodePos)
  End
  else if CPIs('WHILE')Then Begin
-  J:=CPCodePos;CPNext;CPExpression;if not CPIs('DO')Then CPFail('DO attendu')else CPNext;
+  J:=CPCodePos;CPNext;CPExpression;
+  if(CPBaseType(CPLastExpressionType)=Nil)or
+   (CPBaseType(CPLastExpressionType)^.Kind<>ptkBoolean)Then
+   CPFailCode(135,'l''operande de WHILE doit etre Boolean');
+  if not CPIs('DO')Then CPFail('DO attendu')else CPNext;
   Patch:=CPForwardFalse;CPStatement;CPJumpBack(J);CPPatchForward(Patch,CPCodePos)
  End
  else if CPIs('REPEAT')Then Begin
@@ -4649,6 +4742,9 @@ Begin
    if CPToken=';'Then CPNext else if not CPIs('UNTIL')Then CPFail('point-virgule attendu')
   End;
   if CPIs('UNTIL')Then CPNext else CPFail('UNTIL attendu');CPExpression;
+  if(CPBaseType(CPLastExpressionType)=Nil)or
+   (CPBaseType(CPLastExpressionType)^.Kind<>ptkBoolean)Then
+   CPFailCode(135,'l''operande de UNTIL doit etre Boolean');
   Patch:=CPForwardFalse;CPPatchForward(Patch,LoopStart)
  End
  else if CPIs('FOR')Then Begin
@@ -4657,6 +4753,12 @@ Begin
   End;
   P:=CPFind(CPText);if(P=Nil)or P^.IsConst Then Begin
    CPFailCode(103,'identificateur de classe variable attendu');Exit
+  End;
+  if not CPIsOrdinalType(P^.SymbolType)Then Begin
+   CPFailCode(143,'type illegal de variable de controle de boucle');Exit
+  End;
+  if P^.IsParameter or(P^.Scope<>CPCurrentRoutine)Then Begin
+   CPFailCode(155,'variable de controle formelle ou non locale');Exit
   End;
   CPNext;CPNeed(':=');CPExpression;CPStoreSymbol(P);
   Down:=CPIs('DOWNTO');if not Down and not CPIs('TO')Then Begin
@@ -4672,22 +4774,39 @@ Begin
   CPJumpBack(LoopStart);CPPatchForward(Patch,CPCodePos)
  End
  else if CPIs('CASE')Then Begin
-  CPNext;Tmp:=CPAllocateTemp;CPExpression;CPStoreSymbol(Tmp);
+  CPNext;Tmp:=CPAllocateTemp;CPExpression;T:=CPBaseType(CPLastExpressionType);
+  if not CPIsOrdinalType(T)Then CPFailCode(144,'type illegal d''expression CASE');
+  CPStoreSymbol(Tmp);
   if not CPIs('OF')Then CPFail('OF attendu')else CPNext;EndCount:=0;
+  CaseRanges:=Nil;
   While not CPIs('END')and not CPIs('ELSE')and(CPToken<>'EOF')and not CPError do Begin
    More:=False;
    Repeat
-   CV:=CPEvalConstExpression;CPLoadSymbol(Tmp);CPConst(CV.I);
+   CV:=CPEvalConstExpression;
+   CaseHigh:=CV.I;
+   if((T<>Nil)and(T^.Kind=ptkChar)and(CV.Kind<>ckCharacter))or
+    ((T<>Nil)and(T^.Kind<>ptkChar)and(CV.Kind=ckCharacter))Then
+    CPFailCode(147,'type d''etiquette incompatible avec l''expression CASE');
+   CPLoadSymbol(Tmp);CPConst(CV.I);
    if CPToken='..'Then Begin
     CPNext;CV2:=CPEvalConstExpression;
+    CaseHigh:=CV2.I;
     CPOp(196,$B3);CPLoadSymbol(Tmp);CPConst(CV2.I);CPOp(200,$B2);CPOp(132,$A1)
    End else CPOp(195,$B0);
+   CaseScan:=CaseRanges;
+   While CaseScan<>Nil do Begin
+    if(CV.I<=CaseScan^.HighValue)and(CaseHigh>=CaseScan^.LowValue)Then
+     CPFailCode(156,'etiquette CASE definie plusieurs fois');
+    CaseScan:=CaseScan^.Next
+   End;
+   New(CaseRange);CaseRange^.LowValue:=CV.I;CaseRange^.HighValue:=CaseHigh;
+   CaseRange^.Next:=CaseRanges;CaseRanges:=CaseRange;
    if More Then CPOp(141,$A0);More:=True;
    if CPToken=','Then CPNext else Break
    Until False;
    CPNeed(':');Patch:=CPForwardFalse;CPStatement;
    Inc(EndCount);if EndCount>64 Then Begin
-    CPFail('trop de branches CASE');Break
+    CPFailCode(157,'trop de branches CASE');EndCount:=64;Break
    End;
    EndPatch[EndCount]:=CPForwardJump;CPPatchForward(Patch,CPCodePos);
    if CPToken=';'Then CPNext
@@ -4699,7 +4818,10 @@ Begin
    End
   End;
   if CPIs('END')Then CPNext else CPFail('END de CASE attendu');
-  For I:=1 to EndCount do CPPatchForward(EndPatch[I],CPCodePos)
+  For I:=1 to EndCount do CPPatchForward(EndPatch[I],CPCodePos);
+  While CaseRanges<>Nil do Begin
+   CaseRange:=CaseRanges;CaseRanges:=CaseRange^.Next;Dispose(CaseRange)
+  End
  End
  else if CPIs('WITH')Then Begin
   CPNext;if CPToken<>'ID'Then Begin
@@ -4725,7 +4847,8 @@ Begin
   if CPToken<>'ID'Then CPFail('variable pointeur attendue')else
   Begin
    P:=CPFind(CPText);T:=Nil;if P<>Nil Then T:=CPBaseType(P^.SymbolType);
-   if(P=Nil)or(T=Nil)or(T^.Kind<>ptkPointer)Then CPFail('pointeur attendu')
+   if(P=Nil)or(T=Nil)or(T^.Kind<>ptkPointer)Then
+    CPFailCode(141,'le type de la variable doit etre fichier ou pointeur')
    else
    Begin
     CPAddressSymbol(P);if Name='NEW'Then Begin
@@ -4853,10 +4976,15 @@ Begin
    End;
    While(CPToken<>')')and not CPError do Begin
     if CPToken<>'ID'Then Begin
-     CPFail('variable attendue par READ');Break
+     CPFailCode(154,'variable attendue par READ');Break
     End;
     Tmp:=CPFind(CPText);if(Tmp=Nil)or Tmp^.IsConst Then Begin
-     CPFailCode(116,'type incorrect du parametre de READ');Break
+     CPFailCode(153,'type incorrect du parametre de READ');Break
+    End;
+    T:=CPBaseType(Tmp^.SymbolType);
+    if(T=Nil)or not(T^.Kind in[ptkInteger,ptkSubrange,ptkChar,ptkReal,
+     ptkBoolean,ptkString])Then Begin
+     CPFailCode(153,'type incorrect du parametre de READ');Break
     End;
     if P=Nil Then CPConst(0)else CPAddressSymbol(P);CPAddressSymbol(Tmp);
     T:=CPBaseType(Tmp^.SymbolType);CPNext;
@@ -4932,11 +5060,16 @@ Begin
   End;
   if(P=Nil)and(R<>Nil)Then Begin
    CPEmitActualParameters(R);CPEmitRoutineCall(R)
-  End else if P=Nil Then CPFailCode(104,'identificateur non declare: '+Name)
+  End else if(P=Nil)and((Name='ABS')or(Name='SQR')or(Name='ODD')or
+   (Name='SUCC')or(Name='PRED')or(Name='ORD')or(Name='CHR'))Then
+   CPFailCode(150,'affectation a une fonction standard interdite')
+  else if P=Nil Then CPFailCode(104,'identificateur non declare: '+Name)
   else if P^.IsConst Then CPFailCode(103,'identificateur de classe variable attendu: '+Name)else
   Begin
    CPDesignator(P,False,T);CPNeed(':=');
    While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
+   if(T<>Nil)and(T^.Kind=ptkFile)Then
+    CPFailCode(146,'affectation de fichiers interdite');
    if(T<>Nil)and(T^.Kind=ptkString)Then Begin
     CPExpression;
     if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkChar)Then Begin
