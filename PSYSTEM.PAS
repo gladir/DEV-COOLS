@@ -2733,6 +2733,12 @@ Function CPBaseType(T:PPasType):PPasType;Begin
  While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;CPBaseType:=T
 End;
 
+Function CPIsOrdinalType(T:PPasType):Boolean;
+Begin
+ T:=CPBaseType(T);CPIsOrdinalType:=(T<>Nil)and
+  (T^.Kind in[ptkInteger,ptkBoolean,ptkChar,ptkEnumeration,ptkSubrange])
+End;
+
 Function CPIsTextType(T:PPasType):Boolean;Begin
  T:=CPBaseType(T);CPIsTextType:=(T<>Nil)and(T^.Kind=ptkFile)and
  (CPBaseType(T^.ElementType)<>Nil)and(CPBaseType(T^.ElementType)^.Kind=ptkChar)
@@ -2883,7 +2889,26 @@ Begin
  108:CPUCSDErrorText:='File not allowed here';109:CPUCSDErrorText:='Type must not be real';
  110:CPUCSDErrorText:='<tagfield> type must be scalar or subrange';
  111:CPUCSDErrorText:='Incompatible with <tagfield> part';
- 112:CPUCSDErrorText:='Index type must not be real';
+  112:CPUCSDErrorText:='Index type must not be real';
+ 113:CPUCSDErrorText:='Index type must be a scalar or a subrange';
+ 114:CPUCSDErrorText:='Base type must not be real';
+ 115:CPUCSDErrorText:='Base type must be a scalar or a subrange';
+ 116:CPUCSDErrorText:='Error in type of standard procedure parameter';
+ 117:CPUCSDErrorText:='Unsatisfied forward reference';
+ 118:CPUCSDErrorText:='Forward reference type identifier in var declaration';
+ 119:CPUCSDErrorText:='Re-specified params not OK for a forward procedure';
+ 120:CPUCSDErrorText:='Function result type must be scalar, subrange or pointer';
+ 121:CPUCSDErrorText:='File value parameter not allowed';
+ 122:CPUCSDErrorText:='A forward function''s result type can''t be re-specified';
+ 123:CPUCSDErrorText:='Missing result type in function declaration';
+ 124:CPUCSDErrorText:='F-format for reals only';
+ 125:CPUCSDErrorText:='Error in type of standard procedure parameter';
+ 126:CPUCSDErrorText:='Number of parameters does not agree with declaration';
+ 127:CPUCSDErrorText:='Illegal parameter substitution';
+ 128:CPUCSDErrorText:='Result type does not agree with declaration';
+ 129:CPUCSDErrorText:='Type conflict of operands';
+ 130:CPUCSDErrorText:='Expression is not of set type';
+ 131:CPUCSDErrorText:='Tests on equality allowed only';
  else CPUCSDErrorText:='Compiler error'
  End
 End;
@@ -3312,7 +3337,9 @@ Begin
   Repeat
   Idx:=CPParseType;
   if(CPBaseType(Idx)<>Nil)and(CPBaseType(Idx)^.Kind=ptkReal)Then
-   CPFailCode(112,'le type d''index ne doit pas etre reel');
+   CPFailCode(112,'le type d''index ne doit pas etre reel')
+  else if not CPIsOrdinalType(Idx)Then
+   CPFailCode(113,'le type d''index doit etre scalaire ou sous-intervalle');
   Elem:=CPNewAnonymousType(ptkArray);Elem^.IndexType:=Idx;
   Count:=Idx^.HighBound-Idx^.LowBound+1;if Count<0 Then Count:=0;
   Elem^.ElementCount:=Count;
@@ -3335,7 +3362,9 @@ Begin
   CPNext;if CPIs('OF')Then CPNext else CPFail('OF attendu');
   T:=CPNewAnonymousType(ptkSet);T^.ElementType:=CPParseType;
   if(CPBaseType(T^.ElementType)<>Nil)and(CPBaseType(T^.ElementType)^.Kind=ptkReal)Then
-   CPFailCode(109,'le type d''un ensemble ne doit pas etre reel');
+   CPFailCode(114,'le type de base ne doit pas etre reel')
+  else if not CPIsOrdinalType(T^.ElementType)Then
+   CPFailCode(115,'le type de base doit etre scalaire ou sous-intervalle');
   Count:=T^.ElementType^.HighBound-T^.ElementType^.LowBound+1;
   if Count<1 Then Count:=256;if Count>256 Then CPFail('ensemble de plus de 256 elements');
   T^.SizeWords:=(Count+15)div 16;T^.PackedType:=PackedFlag;CPParseType:=T;Exit
@@ -3826,21 +3855,23 @@ Procedure CPScanRoutine(Parent:PPasRoutine);
 Var
  R,Old:PPasRoutine;
  P,Tail:PPasParameter;
- Typ:PPasType;
+ Typ,NewResult:PPasType;
  Name,PN:String;
  Depth:Integer;
- IsFunc,ByRef:Boolean;
+ IsFunc,ByRef,WasForward,HadParamSpec,HadResultSpec:Boolean;
 Begin
  IsFunc:=CPIs('FUNCTION');CPNext;
  if CPToken<>'ID'Then Begin
   CPFail('nom de routine attendu');Exit
  End;
  Name:=CPText;R:=CPFindRoutine(Name,Parent);
+ WasForward:=(R<>Nil)and R^.IsForward;HadParamSpec:=False;HadResultSpec:=False;
  if R=Nil Then R:=CPAddRoutine(Name,Parent,IsFunc);
  CPNext;
  Tail:=R^.Parameters;
  While(Tail<>Nil)and(Tail^.Next<>Nil)do Tail:=Tail^.Next;
  if CPToken='('Then Begin
+  HadParamSpec:=True;
   CPNext;
   While(CPToken<>')')and(CPToken<>'EOF')and not CPError do Begin
    ByRef:=CPIs('VAR');if ByRef Then CPNext;
@@ -3852,6 +3883,8 @@ Begin
     CPFail('type de parametre attendu');Break
    End;
    Typ:=CPFindType(CPText);if Typ=Nil Then Typ:=CPFindType('INTEGER');CPNext;
+   if(CPBaseType(Typ)<>Nil)and(CPBaseType(Typ)^.Kind=ptkFile)and not ByRef Then
+    CPFailCode(121,'un fichier ne peut pas etre passe par valeur');
    if R^.Parameters=Nil Then Begin
     New(P);FillChar(P^,SizeOf(TPasParameter),0);P^.Name:=PN;P^.ParamType:=Typ;
     P^.ByReference:=ByRef;P^.Structured:=Typ^.SizeWords>1;
@@ -3862,12 +3895,22 @@ Begin
    if CPToken=';'Then CPNext else Break
   End;CPNeed(')')
  End;
+ if WasForward and HadParamSpec Then
+  CPFailCode(119,'les parametres d''une procedure FORWARD ne peuvent pas etre redefinis');
  if IsFunc and(CPToken=':')Then Begin
-  CPNext;if CPToken='ID'Then Begin
-   R^.ResultType:=CPFindType(CPText);CPNext
+  HadResultSpec:=True;CPNext;if CPToken='ID'Then Begin
+   NewResult:=CPFindType(CPText);CPNext;
+   if WasForward Then CPFailCode(122,'le resultat d''une fonction FORWARD ne peut pas etre redefini')
+   else R^.ResultType:=NewResult;
+   NewResult:=CPBaseType(NewResult);
+   if(NewResult=Nil)or not(NewResult^.Kind in[ptkInteger,ptkBoolean,ptkChar,
+    ptkEnumeration,ptkSubrange,ptkPointer,ptkReal])Then
+    CPFailCode(120,'le resultat d''une fonction doit etre scalaire, sous-intervalle ou pointeur')
   End
   else CPFail('type de resultat attendu')
  End;
+ if IsFunc and not HadResultSpec and not WasForward Then
+  CPFailCode(123,'type de resultat absent dans la declaration de fonction');
  While(CPToken<>';')and(CPToken<>'EOF')do CPNext;
  if CPToken=';'Then CPNext;
  if CPIs('EXTERNAL')or CPIs('SEPARATE')Then Begin
@@ -3929,8 +3972,8 @@ Begin
  End;
  R:=CPRoutines;
  While R<>Nil do Begin
-  if R^.IsForward and not R^.IsDefined Then   CPFail('declaration FORWARD non resolue: '+
-  R^.Name);
+  if R^.IsForward and not R^.IsDefined Then
+   CPFailCode(117,'reference FORWARD non satisfaite: '+R^.Name);
   R:=R^.Next
  End;CPError:=CPHadErrors
 End;
@@ -4041,14 +4084,16 @@ Begin
   CPNext;CPNeed(')');Exit
  End;
  While(A<>Nil)and not CPError do Begin
+  if CPToken=')'Then Begin CPFailCode(126,'nombre de parametres incorrect');Break End;
   if A^.ByReference or A^.Structured Then Begin
    if CPToken<>'ID'Then CPFail('variable attendue pour parametre VAR')else
    Begin
-    S:=CPFind(CPText);if(S=Nil)or S^.IsConst Then CPFail('parametre VAR invalide')
+    S:=CPFind(CPText);if(S=Nil)or S^.IsConst Then
+     CPFailCode(127,'substitution illegale du parametre VAR')
     else
     Begin
-     if not CPTypeEquivalent(A^.ParamType,S^.SymbolType)Then CPFail(
-     'type de parametre VAR incompatible');
+     if not CPTypeEquivalent(A^.ParamType,S^.SymbolType)Then
+      CPFailCode(127,'substitution de parametre incompatible');
      if S^.Scope=Nil Then Begin
       CPOp(165,$86);CPBig(S^.Address)
      End
@@ -4061,10 +4106,13 @@ Begin
   End else
   Begin
    CPExpression;
-   if not CPAssignmentCompatible(A^.ParamType,CPLastExpressionType)Then    CPFail(
-   'type de parametre incompatible')
+   if not CPAssignmentCompatible(A^.ParamType,CPLastExpressionType)Then
+    CPFailCode(127,'substitution de parametre incompatible')
   End;
-  A:=A^.Next;if A<>Nil Then CPNeed(',')
+  A:=A^.Next;
+  if A<>Nil Then Begin
+   if CPToken<>','Then CPFailCode(126,'nombre de parametres incorrect')else CPNext
+  End else if CPToken=','Then CPFailCode(126,'trop de parametres effectifs')
  End;
  if R^.Parameters<>Nil Then CPNeed(')')
 End;
@@ -4329,8 +4377,8 @@ Begin
   End
   else
   Begin
-   if(SourceType=Nil)or(SourceType^.Kind<>ptkReal)Then CPFail(
-   'argument reel attendu pour '+Ident);
+   if(SourceType=Nil)or(SourceType^.Kind<>ptkReal)Then
+    CPFailCode(125,'type incorrect du parametre de '+Ident);
    if Ident='SIN'Then Flags:=90 else if Ident='COS'Then Flags:=91 else if Ident=
    'ARCTAN'Then Flags:=92
    else if Ident='EXP'Then Flags:=93 else if Ident='LN'Then Flags:=94 else Flags:=95;
@@ -4490,16 +4538,22 @@ Var
 Begin
  CPSimple;LT:=CPLastExpressionType;if CPIs('IN')Then Begin
   CPNext;CPSimple;
-  if(CPLastExpressionType=Nil)or(CPLastExpressionType^.Kind<>ptkSet)Then CPFail(
-  'ensemble attendu apres IN');
+  if(CPLastExpressionType=Nil)or(CPLastExpressionType^.Kind<>ptkSet)Then
+   CPFailCode(130,'l''expression apres IN n''est pas un ensemble');
   CPOp(139,$B6);CPLastExpressionType:=CPFindType('BOOLEAN');Exit
  End;
  if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
  (CPToken='>')or(CPToken='>=')Then Begin
-  O:=CPToken;CPNext;CPSimple;RT:=CPLastExpressionType;
-  if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkString)or(RT^.Kind=ptkString))Then Begin
-   if(LT^.Kind<>ptkString)or(RT^.Kind<>ptkString)Then CPFail(
-   'comparaison de chaines incompatible');
+ O:=CPToken;CPNext;CPSimple;RT:=CPLastExpressionType;
+  if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkSet)or(RT^.Kind=ptkSet))Then Begin
+   if(LT^.Kind<>ptkSet)or(RT^.Kind<>ptkSet)Then
+    CPFailCode(129,'conflit de types des operandes')
+   else if(O<>'=')and(O<>'<>')Then
+    CPFailCode(131,'seuls les tests d''egalite sont autorises sur les ensembles');
+   if O='='Then CPOp(195,$B0)else CPOp(203,$B1)
+  End else if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkString)or(RT^.Kind=ptkString))Then Begin
+   if(LT^.Kind<>ptkString)or(RT^.Kind<>ptkString)Then
+    CPFailCode(129,'conflit de types des operandes chaine');
    CPEmitCSP(42);CPConst(0);
    if O='='Then CPOp(195,$B0)else if O='<>'Then CPOp(203,$B1)
    else if O='<'Then Begin
@@ -4762,7 +4816,8 @@ Begin
   CPNext;CPNeed('(');if CPToken<>'ID'Then CPFail('variable fichier attendue')else
   Begin
    P:=CPFind(CPText);if(P=Nil)or(CPBaseType(P^.SymbolType)=Nil)or
-   (CPBaseType(P^.SymbolType)^.Kind<>ptkFile)Then CPFail('variable fichier invalide')
+   (CPBaseType(P^.SymbolType)^.Kind<>ptkFile)Then
+    CPFailCode(116,'type incorrect du parametre fichier')
    else CPAddressSymbol(P);CPNext
   End;CPNeed(',');CPExpression;CPNeed(')');CPEmitIOCSP(60)
  End
@@ -4772,7 +4827,8 @@ Begin
   if CPToken<>'ID'Then CPFail('variable fichier attendue')else
   Begin
    P:=CPFind(CPText);T:=Nil;if P<>Nil Then T:=CPBaseType(P^.SymbolType);
-   if(P=Nil)or(T=Nil)or(T^.Kind<>ptkFile)Then CPFail('variable fichier invalide')
+   if(P=Nil)or(T=Nil)or(T^.Kind<>ptkFile)Then
+    CPFailCode(116,'type incorrect du parametre fichier')
    else CPAddressSymbol(P);CPNext
   End;CPNeed(')');
   if Name='RESET'Then Begin
@@ -4800,7 +4856,7 @@ Begin
      CPFail('variable attendue par READ');Break
     End;
     Tmp:=CPFind(CPText);if(Tmp=Nil)or Tmp^.IsConst Then Begin
-     CPFail('variable READ invalide');Break
+     CPFailCode(116,'type incorrect du parametre de READ');Break
     End;
     if P=Nil Then CPConst(0)else CPAddressSymbol(P);CPAddressSymbol(Tmp);
     T:=CPBaseType(Tmp^.SymbolType);CPNext;
@@ -4857,6 +4913,8 @@ Begin
       CPNext;CPExpression
      End else CPConst(0);
      if CPToken=':'Then Begin
+      if(T=Nil)or(T^.Kind<>ptkReal)Then
+       CPFailCode(124,'le format F est reserve aux reels');
       CPNext;CPExpression
      End else CPConst(-1);CPEmitIOCSP(70)
     End;
@@ -4895,7 +4953,7 @@ Begin
      P:=CPFind(CPText);if P=Nil Then CPFailCode(104,'variable source non declaree')else
      Begin
       CPNext;CPDesignator(P,False,RT);
-      if not CPTypeEquivalent(T,RT)Then CPFail('types structures incompatibles')
+      if not CPTypeEquivalent(T,RT)Then CPFailCode(129,'types structures incompatibles')
       else
       Begin
        CPOp(168,$8E);CPBig(T^.SizeWords)
@@ -4905,8 +4963,8 @@ Begin
    End else
    Begin
     CPExpression;
-    if not CPAssignmentCompatible(T,CPLastExpressionType)Then CPFail(
-    'types incompatibles dans l''affectation');
+    if not CPAssignmentCompatible(T,CPLastExpressionType)Then
+     CPFailCode(129,'types incompatibles dans l''affectation');
     CPOp(154,$C4)
    End
   End
@@ -4952,6 +5010,8 @@ Begin
     if CPToken=','Then CPNext else Break
     Until N=64;
     CPNeed(':');Typ:=CPParseType;
+    if(Typ<>Nil)and(Typ^.Kind=ptkAlias)and(Typ^.SizeWords=0)Then
+     CPFailCode(118,'type FORWARD dans une declaration de variable');
     CPNeed(';');
     For I:=1 to N do Begin
      R^.LocalWords:=CPAlignedSize(R^.LocalWords,Typ^.AlignWords);
@@ -5206,7 +5266,10 @@ Begin
    NC:=0;
    Repeat Inc(NC);Names[NC]:=CPText;CPNext;
    if CPToken=','Then CPNext else Break Until NC=64;
-   CPNeed(':');Typ:=CPParseType;CPNeed(';');
+   CPNeed(':');Typ:=CPParseType;
+   if(Typ<>Nil)and(Typ^.Kind=ptkAlias)and(Typ^.SizeWords=0)Then
+    CPFailCode(118,'type FORWARD dans une declaration de variable');
+   CPNeed(';');
    For I:=1 to NC do Begin
     CPVarCount:=CPAlignedSize(CPVarCount,Typ^.AlignWords);
     CPAddTyped(Names[I],CPVarCount+1,False,Typ);Inc(CPVarCount,Typ^.SizeWords)
