@@ -4002,7 +4002,7 @@ Begin
    Typ:=CPFindType(CPText);if Typ=Nil Then Typ:=CPFindType('INTEGER');CPNext;
    if(CPBaseType(Typ)<>Nil)and(CPBaseType(Typ)^.Kind=ptkFile)and not ByRef Then
     CPFailCode(121,'un fichier ne peut pas etre passe par valeur');
-   if R^.Parameters=Nil Then Begin
+   if not WasForward Then Begin
     New(P);FillChar(P^,SizeOf(TPasParameter),0);P^.Name:=PN;P^.ParamType:=Typ;
     P^.ByReference:=ByRef;P^.Structured:=Typ^.SizeWords>1;
     if P^.ByReference or P^.Structured Then Inc(R^.ParameterWords)
@@ -5430,6 +5430,413 @@ if CPError Then Begin Erase(F);if IOResult<>0 Then
 WriteUCSDCodeFile:=not CPError
 End;
 
+{ Liaison des sources UNIT: les noms propres a chaque unite sont qualifies
+  avant les passes du compilateur. Aucune interface binaire historique n'est
+  supposee dans cette premiere implementation. }
+Function CPExpandUnits(SourceName:String):Boolean;
+Type
+ PTrivia=^TTrivia;
+ TTrivia=Record Text:String;Next:PTrivia End;
+ PToken=^TToken;
+ TToken=Record Text,Kind:String;Next,AllocatedNext:PToken;Trivia:PTrivia End;
+ PName=^TName;
+ TName=Record Name,Replacement,Signature:String;
+  PublicName,OwnName,UnitAlias:Boolean;Next:PName End;
+ PUnitSource=^TUnitSource;
+ TUnitSource=Record Name,Path,Prefix:String;
+  Tokens,Constants,Types,Variables,Routines,Init:PToken;
+  Names:PName;Loading,Loaded:Boolean;Next,OrderNext:PUnitSource End;
+Var
+ Units,Root,U:PUnitSource;
+ AllTokens,AllocatedTokens:PToken;
+ Ordered,OrderTail:PUnitSource;
+ Counter:Integer;
+ Output:PPasSource;
+ OutputSize:LongInt;
+ TriviaTail:PTrivia;
+
+Function IsWord(T:PToken;S:String):Boolean;Begin
+ IsWord:=(T<>Nil);if T<>Nil Then IsWord:=(T^.Kind='ID')and(T^.Text=S)
+End;
+
+Procedure Error(Code:Integer;S:String);Begin CPFailCode(Code,S)End;
+
+Function NewToken:PToken;
+Var T:PToken;
+Begin
+ New(T);T^.Text:='';T^.Kind:='';T^.Next:=Nil;
+ T^.Trivia:=Nil;
+ T^.AllocatedNext:=AllocatedTokens;AllocatedTokens:=T;NewToken:=T
+End;
+
+Function Tokenize:PToken;
+Var T,Head,Tail:PToken;I,L,PreviousEnd:LongInt;V:PTrivia;
+Begin
+ Head:=Nil;Tail:=Nil;PreviousEnd:=0;CPPos:=0;CPLine:=1;CPNext;
+ While(CPToken<>'EOF')and not CPError do Begin
+  T:=NewToken;T^.Kind:=CPToken;
+  I:=PreviousEnd;
+  While I<CPTokenPos do Begin
+   New(V);V^.Text:='';V^.Next:=Nil;
+   While(I<CPTokenPos)and(Length(V^.Text)<255)do Begin
+    V^.Text:=V^.Text+Chr(CPSource^[I]);Inc(I)
+   End;
+   if T^.Trivia=Nil Then T^.Trivia:=V else TriviaTail^.Next:=V;
+   TriviaTail:=V
+  End;
+  L:=CPPos-CPTokenPos;
+  if L>255 Then Error(398,'token trop long pour la liaison des unites')
+  else For I:=CPTokenPos to CPPos-1 do T^.Text:=T^.Text+Chr(CPSource^[I]);
+  if T^.Kind='ID'Then T^.Text:=CPText;
+  if Head=Nil Then Head:=T else Tail^.Next:=T;Tail:=T;
+  PreviousEnd:=CPPos;
+  { Liste distincte pour liberer aussi les listes decoupees. }
+  CPNext
+ End;Tokenize:=Head
+End;
+
+Procedure AddName(A:PUnitSource;S:String;Pub:Boolean);
+Var N:PName;
+Begin
+ N:=A^.Names;While(N<>Nil)and(N^.Name<>S)do N:=N^.Next;
+ if(N<>Nil)and N^.OwnName Then Begin if Pub Then N^.PublicName:=True;Exit End;
+ if N=Nil Then Begin New(N);N^.Next:=A^.Names;A^.Names:=N End;
+ N^.Name:=S;N^.Replacement:=A^.Prefix+S;N^.PublicName:=Pub;
+ N^.OwnName:=True;N^.UnitAlias:=False;N^.Signature:='';
+ if Length(N^.Replacement)>31 Then Error(398,'nom qualifie d''unite trop long: '+S);
+End;
+
+Function Signature(T,Last:PToken):String;
+Var S:String;
+Begin
+ S:='';
+ While T<>Nil do Begin
+  if Length(S)+Length(T^.Text)+1>255 Then Begin
+   Error(398,'signature d''interface trop longue');Break
+  End;
+  S:=S+T^.Text+' ';if T=Last Then Break;T:=T^.Next
+ End;Signature:=S
+End;
+
+Function HeaderEnd(T:PToken):PToken;
+Var Depth:Integer;
+Begin
+ Depth:=0;
+ While T<>Nil do Begin
+  if T^.Text='('Then Inc(Depth)else if T^.Text=')'Then Dec(Depth);
+  if(T^.Text=';')and(Depth=0)Then Begin HeaderEnd:=T;Exit End;
+  T:=T^.Next
+ End;Error(401,'fin de source dans un en-tete de routine');HeaderEnd:=Nil
+End;
+
+Function RoutineEnd(T:PToken):PToken;
+Var H:PToken;Depth:Integer;
+Begin
+ RoutineEnd:=Nil;H:=HeaderEnd(T);if H=Nil Then Exit;T:=H^.Next;
+ if IsWord(T,'FORWARD')or IsWord(T,'EXTERNAL')or IsWord(T,'SEPARATE')Then Begin
+  RoutineEnd:=HeaderEnd(T);Exit
+ End;
+ While(T<>Nil)and not IsWord(T,'BEGIN')and not CPError do Begin
+  if IsWord(T,'PROCEDURE')or IsWord(T,'FUNCTION')Then Begin
+   H:=RoutineEnd(T);if H=Nil Then Exit;T:=H^.Next
+  End else T:=T^.Next
+ End;
+ Depth:=0;
+ While T<>Nil do Begin
+  if IsWord(T,'BEGIN')or IsWord(T,'CASE')Then Inc(Depth)
+  else if IsWord(T,'END')Then Begin
+   Dec(Depth);if Depth=0 Then Begin
+    T:=T^.Next;if(T=Nil)or(T^.Text<>';')Then Error(14,'point-virgule apres routine attendu');
+    RoutineEnd:=T;Exit
+   End
+  End;T:=T^.Next
+ End;Error(401,'fin de source dans le corps d''une routine')
+End;
+
+Procedure Append(Var Head:PToken;First,Last:PToken);
+Var T:PToken;
+Begin
+ if(First=Nil)or(Last=Nil)Then Exit;
+ if Head=Nil Then Head:=First else Begin
+  T:=Head;While T^.Next<>Nil do T:=T^.Next;T^.Next:=First
+ End;Last^.Next:=Nil
+End;
+
+Function DirectoryOf(S:String):String;
+Var I:Integer;
+Begin
+ I:=Length(S);While(I>0)and not(S[I]in['/', '\', ':'])do Dec(I);
+ DirectoryOf:=Copy(S,1,I)
+End;
+
+Function LoadUnit(S,Caller:String):PUnitSource;Forward;
+
+Procedure ParseUses(A:PUnitSource;Var T:PToken);
+Var B:PUnitSource;N,M:PName;S:String;
+Begin
+ T:=T^.Next;
+ While(T<>Nil)and not CPError do Begin
+  if T^.Kind<>'ID'Then Begin Error(2,'nom d''unite attendu');Exit End;
+  S:=T^.Text;B:=LoadUnit(S,A^.Path);if B=Nil Then Exit;
+  New(M);M^.Name:=S;M^.Replacement:='';M^.Signature:='';
+  M^.PublicName:=False;M^.OwnName:=False;M^.UnitAlias:=True;
+  M^.Next:=A^.Names;A^.Names:=M;
+  N:=B^.Names;
+  While N<>Nil do Begin
+   if N^.PublicName Then Begin
+    M:=A^.Names;While(M<>Nil)and(M^.Name<>N^.Name)do M:=M^.Next;
+    if(M<>Nil)and(M^.Replacement<>N^.Replacement)Then
+     Error(101,'export ambigu dans USES: '+N^.Name)
+    else if M=Nil Then Begin
+     New(M);M^:=N^;M^.PublicName:=False;M^.OwnName:=False;
+     M^.Next:=A^.Names;A^.Names:=M
+    End
+   End;N:=N^.Next
+  End;
+  T:=T^.Next;if(T<>Nil)and(T^.Text=',')Then T:=T^.Next else Break
+ End;
+ if(T=Nil)or(T^.Text<>';')Then Error(14,'point-virgule apres USES attendu')
+ else T:=T^.Next
+End;
+
+Procedure ParseSource(A:PUnitSource;IsUnit:Boolean);
+Var T,H,First,Last,NextToken,NameToken:PToken;
+ Pub:Boolean;Section,Depth:Integer;AtName:Boolean;
+ N:PName;
+Begin
+ T:=A^.Tokens;Pub:=IsUnit;
+ if not IsWord(T,'UNIT')and not IsWord(T,'PROGRAM')Then Begin
+  Error(405,'''PROGRAM'' ou ''UNIT'' attendu');Exit
+ End;
+ if IsUnit and not IsWord(T,'UNIT')Then Begin Error(24,'UNIT attendu dans le fichier d''unite');Exit End;
+ T:=T^.Next;if(T=Nil)or(T^.Kind<>'ID')Then Begin Error(2,'nom attendu');Exit End;
+ if IsUnit and(T^.Text<>A^.Name)Then Begin Error(188,'nom UNIT different du fichier demande');Exit End;
+ H:=HeaderEnd(T);if H=Nil Then Exit;T:=H^.Next;
+ if IsUnit Then Begin
+  if not IsWord(T,'INTERFACE')Then Begin Error(22,'INTERFACE attendu');Exit End;
+  T:=T^.Next
+ End;
+ While(T<>Nil)and not CPError do Begin
+  if IsWord(T,'USES')Then ParseUses(A,T)
+  else if IsWord(T,'IMPLEMENTATION')Then Begin
+   if not IsUnit or not Pub Then Begin Error(18,'IMPLEMENTATION inattendu');Exit End;
+   Pub:=False;T:=T^.Next
+  End
+  else if IsWord(T,'CONST')or IsWord(T,'TYPE')or IsWord(T,'VAR')Then Begin
+   if IsWord(T,'CONST')Then Section:=1 else if IsWord(T,'TYPE')Then Section:=2 else Section:=3;
+   T:=T^.Next;First:=T;Last:=Nil;Depth:=0;AtName:=True;
+   While(T<>Nil)and not CPError do Begin
+    if(Depth=0)and(T^.Kind='ID')and
+     ((T^.Text='CONST')or(T^.Text='TYPE')or(T^.Text='VAR')or
+      (T^.Text='PROCEDURE')or(T^.Text='FUNCTION')or(T^.Text='IMPLEMENTATION')or
+      (T^.Text='USES')or(T^.Text='BEGIN')or(T^.Text='END'))Then Break;
+    if AtName and(T^.Kind='ID')Then Begin
+     AddName(A,T^.Text,Pub);if Section<>3 Then AtName:=False
+    End;
+    if(Section=3)and(T^.Text=':')Then AtName:=False;
+    if IsWord(T,'RECORD')Then Inc(Depth)else if IsWord(T,'END')Then Dec(Depth);
+    if(T^.Text=';')and(Depth=0)Then AtName:=True;
+    Last:=T;T:=T^.Next
+   End;
+   if Last<>Nil Then Begin
+    if Section=1 Then Append(A^.Constants,First,Last)
+    else if Section=2 Then Append(A^.Types,First,Last)
+    else Append(A^.Variables,First,Last)
+   End
+  End
+  else if IsWord(T,'PROCEDURE')or IsWord(T,'FUNCTION')Then Begin
+   First:=T;NameToken:=T^.Next;
+   if(NameToken=Nil)or(NameToken^.Kind<>'ID')Then Begin Error(2,'nom de routine attendu');Exit End;
+   if Pub Then Begin
+    AddName(A,NameToken^.Text,True);H:=HeaderEnd(T);if H=Nil Then Exit;
+    N:=A^.Names;While(N<>Nil)and(N^.Name<>NameToken^.Text)do N:=N^.Next;
+    if N<>Nil Then N^.Signature:=Signature(First,H);
+    NextToken:=H^.Next;
+    if IsWord(NextToken,'EXTERNAL')Then Begin Error(184,'EXTERNAL interdit dans INTERFACE');Exit End;
+    Last:=NewToken;Last^.Text:='FORWARD';Last^.Kind:='ID';Last^.Next:=NewToken;
+    Last^.Next^.Text:=';';Last^.Next^.Kind:=';';Last^.Next^.Next:=Nil;
+    H^.Next:=Last;Last:=Last^.Next;Append(A^.Routines,First,Last);T:=NextToken
+   End else Begin
+    H:=HeaderEnd(T);Last:=RoutineEnd(T);if(H=Nil)or(Last=Nil)Then Exit;
+    NextToken:=Last^.Next;N:=A^.Names;
+    While(N<>Nil)and(N^.Name<>NameToken^.Text)do N:=N^.Next;
+    if(N<>Nil)and N^.PublicName and(N^.Signature<>'')Then Begin
+     if(NameToken^.Next<>H)and(Signature(First,H)<>N^.Signature)Then Begin
+      Error(128,'signature IMPLEMENTATION incompatible avec INTERFACE: '+NameToken^.Text);Exit
+     End;
+     { Le contrat de l'interface fournit deja les parametres et le resultat. }
+     NameToken^.Next:=H
+    End else AddName(A,NameToken^.Text,False);
+    Append(A^.Routines,First,Last);T:=NextToken
+   End
+  End
+  else if IsWord(T,'BEGIN')or IsWord(T,'END')Then Begin
+   if IsUnit and Pub Then Begin Error(23,'IMPLEMENTATION attendu');Exit End;
+   A^.Init:=T;Break
+  End else Begin Error(18,'declaration inattendue: '+T^.Text);Exit End
+ End;
+ if not CPError Then Begin
+  T:=A^.Init;Last:=Nil;H:=Nil;
+  While T<>Nil do Begin H:=Last;Last:=T;T:=T^.Next End;
+  if(Last=Nil)or(Last^.Text<>'.')or not IsWord(H,'END')Then
+   Error(401,'END. attendu a la fin du fichier')
+ End;
+ if IsUnit and Pub Then Error(23,'IMPLEMENTATION attendu');
+ if A^.Init=Nil Then Error(401,'fin de source avant le corps final')
+End;
+
+Function LoadUnit(S,Caller:String):PUnitSource;
+Var A:PUnitSource;F:File;Sz:LongInt;Count:Word;
+ SavedSource:PPasSource;SavedSize:LongInt;Path:String;
+Begin
+ LoadUnit:=Nil;A:=Units;
+ While(A<>Nil)and(A^.Name<>S)do A:=A^.Next;
+ if A<>Nil Then Begin
+  if A^.Loading Then Error(195,'cycle de dependances USES: '+S)
+  else LoadUnit:=A;Exit
+ End;
+ Path:=DirectoryOf(Caller)+S+'.PAS';
+ if not FileExists(Path)Then Path:=S+'.PAS';
+ if not FileExists(Path)Then Begin Error(190,'source d''unite introuvable: '+S);Exit End;
+ New(A);FillChar(A^,SizeOf(TUnitSource),0);A^.Name:=S;A^.Path:=Path;
+ Inc(Counter);Str(Counter,A^.Prefix);A^.Prefix:='U'+A^.Prefix+'_';
+ A^.Loading:=True;A^.Next:=Units;Units:=A;
+ SavedSource:=CPSource;SavedSize:=CPSize;GetMem(CPSource,SizeOf(TPCodeMemory));CPSize:=0;
+ Assign(F,Path);Reset(F,1);
+ if IOResult<>0 Then Error(410,'lecture de l''unite impossible: '+Path)
+ else Begin
+  Sz:=FileSize(F);if(Sz<0)or(Sz>65534)Then Error(193,'source d''unite trop grand')
+  else Begin
+   BlockRead(F,CPSource^,Sz,Count);if(IOResult<>0)or(Count<>Sz)Then
+    Error(410,'lecture incomplete de l''unite: '+Path)
+   else Begin CPSize:=Sz;A^.Tokens:=Tokenize;ParseSource(A,True) End
+  End;Close(F);if IOResult<>0 Then Error(410,'fermeture de l''unite impossible')
+ End;
+ FreeMem(CPSource,SizeOf(TPCodeMemory));CPSource:=SavedSource;CPSize:=SavedSize;
+ A^.Loading:=False;A^.Loaded:=not CPError;if not CPError Then Begin
+  if Ordered=Nil Then Ordered:=A else OrderTail^.OrderNext:=A;
+  OrderTail:=A;LoadUnit:=A
+ End
+End;
+
+Procedure Emit(S:String);
+Var I:Integer;
+Begin
+ if OutputSize+Length(S)+1>65534 Then Begin Error(193,'programme et unites trop grands');Exit End;
+ For I:=1 to Length(S)do Begin Output^[OutputSize]:=Ord(S[I]);Inc(OutputSize) End;
+ Output^[OutputSize]:=10;Inc(OutputSize)
+End;
+
+Procedure EmitTokens(A:PUnitSource;T:PToken;StopAtEnd:Boolean);
+Var N:PName;B:PUnitSource;S:String;Depth,RecordDepth:Integer;V:PTrivia;
+ FieldName,AfterDot:Boolean;
+Begin
+ Depth:=0;RecordDepth:=0;FieldName:=False;AfterDot:=False;
+ While(T<>Nil)and not CPError do Begin
+  if StopAtEnd and IsWord(T,'END')and(Depth=0)Then Break;
+  if IsWord(T,'BEGIN')or IsWord(T,'CASE')Then Inc(Depth)
+  else if IsWord(T,'END')Then Dec(Depth);
+  S:=T^.Text;
+  if T^.Kind='ID'Then Begin
+   B:=Units;While(B<>Nil)and(B^.Name<>S)do B:=B^.Next;
+   if(B<>Nil)and(T^.Next<>Nil)and(T^.Next^.Text='.')Then Begin
+    N:=A^.Names;While(N<>Nil)and not((N^.Name=S)and N^.UnitAlias)do N:=N^.Next;
+    if(N=Nil)and(A^.Name<>S)Then Begin
+     Error(188,'unite absente de USES: '+S);Exit
+    End;
+    T:=T^.Next^.Next;if T=Nil Then Begin Error(2,'identificateur apres unite attendu');Exit End;
+    N:=B^.Names;While(N<>Nil)and(N^.Name<>T^.Text)do N:=N^.Next;
+    if(N=Nil)or not N^.PublicName Then Begin Error(104,'export d''unite inconnu: '+T^.Text);Exit End;
+    S:=N^.Replacement
+   End else if not AfterDot and not((RecordDepth>0)and FieldName)Then Begin
+    N:=A^.Names;While(N<>Nil)and(N^.Name<>S)do N:=N^.Next;
+    if(N<>Nil)and not N^.UnitAlias Then S:=N^.Replacement
+   End
+  End;
+  V:=T^.Trivia;While(V<>Nil)and not CPError do Begin
+   { Ne pas introduire de saut au milieu d'un commentaire decoupe. }
+   if OutputSize+Length(V^.Text)>65534 Then Begin
+    Error(193,'commentaires et unites trop grands');Break
+   End;
+   Move(V^.Text[1],Output^[OutputSize],Length(V^.Text));Inc(OutputSize,Length(V^.Text));
+   V:=V^.Next
+  End;
+  Emit(S);
+  if IsWord(T,'RECORD')Then Begin Inc(RecordDepth);FieldName:=True End
+  else if(RecordDepth>0)and IsWord(T,'END')Then Dec(RecordDepth)
+  else if RecordDepth>0 Then Begin
+   if T^.Text=':'Then FieldName:=False
+   else if T^.Text=';'Then FieldName:=True
+  End;
+  AfterDot:=T^.Text='.';T:=T^.Next
+ End
+End;
+
+Procedure EmitSection(Section:Integer);
+Var A:PUnitSource;T:PToken;
+Begin
+ A:=Ordered;
+ { Les dependances sont ajoutees en tete: leur declarations precedent celles
+   des unites qui les utilisent. }
+ While A<>Nil do Begin
+  if Section=1 Then T:=A^.Constants else if Section=2 Then T:=A^.Types
+  else if Section=3 Then T:=A^.Variables else T:=A^.Routines;
+  EmitTokens(A,T,False);A:=A^.OrderNext
+ End;
+ if Section=1 Then T:=Root^.Constants else if Section=2 Then T:=Root^.Types
+ else if Section=3 Then T:=Root^.Variables else T:=Root^.Routines;
+ EmitTokens(Root,T,False)
+End;
+
+Procedure FreeTokens(T:PToken);
+Var N:PToken;V,W:PTrivia;
+Begin While T<>Nil do Begin
+ N:=T^.AllocatedNext;V:=T^.Trivia;
+ While V<>Nil do Begin W:=V^.Next;Dispose(V);V:=W End;
+ Dispose(T);T:=N
+End End;
+
+Procedure FreeUnit(A:PUnitSource);
+Var N,M:PName;
+Begin
+ N:=A^.Names;While N<>Nil do Begin M:=N^.Next;Dispose(N);N:=M End;Dispose(A)
+End;
+
+Begin
+ CPExpandUnits:=False;Units:=Nil;Ordered:=Nil;OrderTail:=Nil;
+ AllocatedTokens:=Nil;Counter:=0;OutputSize:=0;
+ New(Root);FillChar(Root^,SizeOf(TUnitSource),0);Root^.Path:=SourceName;
+ Root^.Tokens:=Tokenize;
+ { Sans UNIT ni USES, conserve la source et ses commentaires/diagnostics. }
+ U:=Nil;AllTokens:=Root^.Tokens;
+ While(AllTokens<>Nil)and not IsWord(AllTokens,'USES')do AllTokens:=AllTokens^.Next;
+ if(AllTokens=Nil)and not IsWord(Root^.Tokens,'UNIT')Then Begin
+  FreeTokens(AllocatedTokens);Dispose(Root);CPExpandUnits:=not CPError;Exit
+ End;
+ if IsWord(Root^.Tokens,'UNIT')Then Begin
+  if Root^.Tokens^.Next<>Nil Then Root^.Name:=Root^.Tokens^.Next^.Text;
+  Root^.Prefix:='U0_';ParseSource(Root,True)
+ End else ParseSource(Root,False);
+ GetMem(Output,SizeOf(TPCodeMemory));
+ if not CPError Then Begin
+  Emit('PROGRAM LINKED;');Emit('CONST');EmitSection(1);
+  Emit('TYPE');EmitSection(2);Emit('VAR');EmitSection(3);EmitSection(4);
+  Emit('BEGIN');U:=Ordered;
+  While U<>Nil do Begin
+   if IsWord(U^.Init,'BEGIN')Then Begin EmitTokens(U,U^.Init^.Next,True);Emit(';') End;
+   U:=U^.OrderNext
+  End;
+  if IsWord(Root^.Init,'BEGIN')Then EmitTokens(Root,Root^.Init^.Next,True);
+  Emit('END.');
+  if not CPError Then Begin Move(Output^,CPSource^,OutputSize);CPSize:=OutputSize End
+ End;
+ FreeMem(Output,SizeOf(TPCodeMemory));
+ { Le registre d'allocation libere aussi les en-tetes et signatures detaches. }
+ FreeUnit(Root);U:=Units;While U<>Nil do Begin Units:=U^.Next;FreeUnit(U);U:=Units End;
+ FreeTokens(AllocatedTokens);
+ CPPos:=0;CPTokenPos:=0;CPLine:=1;CPExpandUnits:=not CPError
+End;
+
 Function CompilePascalPCode(SourceName,CodeName:String):Integer;
 Label 99;
 
@@ -5472,7 +5879,8 @@ Begin
  Close(F);
  if IOResult<>0 Then CPFailCode(410,'erreur de fermeture du source');
  if CPError Then Goto 99;
- CPSize:=Sz;CPDeclarationPass;
+ CPSize:=Sz;if not CPExpandUnits(SourceName)Then Goto 99;
+ CPDeclarationPass;
  if CPError Then Goto 99;
  CPPass:=2;CPCurrentRoutine:=Nil;CPCodePos:=0;
  CPPos:=0;CPLine:=1;CPNext;
