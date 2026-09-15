@@ -1959,7 +1959,7 @@ Type
  PPasSymbol=^TPasSymbol;
  TPasSymbol=Record Name:String[31];
  Address,Value:Integer;
- IsConst:Boolean;ConstText:String[255];ConstReal:Real;
+ IsConst,Used:Boolean;DeclarationLine:Integer;ConstText:String[255];ConstReal:Real;
  IsStringConst,IsRealConst:Boolean;
  SymbolType:PPasType;Scope:PPasRoutine;LexicalLevel:Integer;
  IsParameter,ByReference:Boolean;
@@ -1984,7 +1984,7 @@ Var
  CPMainStart,CPMainLength:LongInt;
  CPToken,CPText:String;
  CPNumber:LongInt;CPRealNumber:Real;
- CPError:Boolean;
+ CPError,CPHadErrors:Boolean;CPDiagnosticCount:Integer;
  CPSymbols:PPasSymbol;
  CPTypes:PPasType;
  CPRoutines:PPasRoutine;
@@ -2124,12 +2124,34 @@ Begin
  CPSymbols:=Nil;CPRoutines:=Nil;CPTypes:=Nil;CPLabels:=Nil;CPRelocations:=Nil
 End;
 
-Procedure CPFail(S:String);Begin
- if not CPError Then Begin
-  Write('Erreur UCSD ligne ',CPLine,': ',S);
-  if CPToken='ID'Then Write(' pres de "',CPText,'"')else
-   if CPToken<>'EOF'Then Write(' pres de "',CPToken,'"');WriteLn
- End;CPError:=True
+Procedure CPReportUnused;
+Var P:PPasSymbol;
+Begin
+ P:=CPSymbols;While P<>Nil do Begin
+  if not P^.Used and(P^.Name<>'')and(P<>@CPWithField)Then
+   WriteLn('Avertissement UCSD semantique ',P^.DeclarationLine,
+    ': identificateur inutilise: ',P^.Name);
+  P:=P^.Next
+ End
+End;
+
+Procedure CPFail(S:String);
+Var StartPos,EndPos,Col,I:LongInt;LineText,Category:String;
+Begin
+ CPError:=True;CPHadErrors:=True;if CPDiagnosticCount>=50 Then Exit;Inc(CPDiagnosticCount);
+ Category:='syntaxe';
+ if(Pos('TYPE',UpperString(S))<>0)or(Pos('IDENTIFICATEUR',UpperString(S))<>0)or
+  (Pos('BORNE',UpperString(S))<>0)Then Category:='semantique';
+ if(Pos('COMMENTAIRE',UpperString(S))<>0)or(Pos('CHAINE',UpperString(S))<>0)or
+  (Pos('CARACTERE',UpperString(S))<>0)or(Pos('HEXADECIMAL',UpperString(S))<>0)or
+  (Pos('EXPOSANT',UpperString(S))<>0)Then Category:='lexicale';
+ StartPos:=CPTokenPos;if StartPos>CPSize Then StartPos:=CPSize;
+ While(StartPos>0)and(CPSource^[StartPos-1]<>10)do Dec(StartPos);
+ EndPos:=StartPos;LineText:='';While(EndPos<CPSize)and not(CPSource^[EndPos]in[10,13])do Begin
+  if Length(LineText)<255 Then LineText:=LineText+Chr(CPSource^[EndPos]);Inc(EndPos)
+ End;Col:=CPTokenPos-StartPos+1;if Col<1 Then Col:=1;
+ WriteLn('Erreur UCSD ',Category,' ',CPLine,':',Col,': ',S);
+ if LineText<>''Then Begin WriteLn(LineText);For I:=2 to Col do Write(' ');WriteLn('^')End
 End;
 
 Procedure CPNext;
@@ -2176,12 +2198,12 @@ Begin
  if CPPos>=CPSize Then Begin
   CPToken:='EOF';Exit
  End;
+ CPTokenPos:=CPPos;
  C:=Chr(CPSource^[CPPos]);
  if C='{'Then SkipComment(False)
  else if(C='(')and(CPPos+1<CPSize)and(CPSource^[CPPos+1]=Ord('*'))Then SkipComment(True)
  else Break
  Until False;
- if CPError Then Begin CPToken:='EOF';Exit End;
  CPTokenPos:=CPPos;
  C:=Chr(CPSource^[CPPos]);
  if C in['A'..'Z','a'..'z','_']Then Begin
@@ -2477,7 +2499,7 @@ Begin
     Best:=@CPWithField
    End
   End
- End;CPFind:=Best
+ End;if(Best<>Nil)and(Best<>@CPWithField)Then Best^.Used:=True;CPFind:=Best
 End;
 
 Procedure CPAdd(S:String;V:Integer;K:Boolean);
@@ -2490,7 +2512,7 @@ Begin
   CPFail('identificateur deja defini: '+S);Exit
  End;
  New(P);FillChar(P^,SizeOf(TPasSymbol),0);P^.Name:=S;P^.Value:=V;
- P^.Address:=V;P^.IsConst:=K;P^.Scope:=CPCurrentRoutine;
+ P^.Address:=V;P^.IsConst:=K;P^.Scope:=CPCurrentRoutine;P^.DeclarationLine:=CPLine;
  if CPCurrentRoutine<>Nil Then P^.LexicalLevel:=CPCurrentRoutine^.LexicalLevel;
  P^.Next:=CPSymbols;CPSymbols:=P
 End;
@@ -2498,7 +2520,7 @@ End;
 Procedure CPAddTyped(S:String;V:Integer;K:Boolean;T:PPasType);
 Var P:PPasSymbol;
 Begin
- CPAdd(S,V,K);P:=CPFind(S);if P<>Nil Then P^.SymbolType:=T
+ CPAdd(S,V,K);P:=CPFind(S);if P<>Nil Then Begin P^.SymbolType:=T;P^.Used:=False End
 End;
 
 Function CPEvalConstExpression: TConstValue;Forward;
@@ -2615,7 +2637,7 @@ Begin
   End else Begin
    P^.Value:=V.I;P^.ConstText:=V.S;P^.ConstReal:=V.R;
    P^.IsStringConst:=V.Kind=ckString;P^.IsRealConst:=V.Kind=ckReal
-  End;CPNeed(';')
+  End;if P<>Nil Then P^.Used:=False;CPNeed(';')
  End
 End;
 
@@ -2771,17 +2793,23 @@ Procedure CPDeclarationPass;
 Var R:PPasRoutine;
 Begin
  CPPass:=1;CPCurrentRoutine:=Nil;CPPos:=0;CPLine:=1;CPNext;
- While(CPToken<>'EOF')and not CPError do Begin
+ While(CPToken<>'EOF')do Begin
+  CPError:=False;
   if CPIs('CONST')Then CPParseConstSection else
   if CPIs('TYPE')Then CPParseTypeSection else
-  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(Nil)else CPNext
+  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(Nil)else CPNext;
+  if CPError Then Begin
+   While(CPToken<>'EOF')and(CPToken<>';')and not CPIs('CONST')and not CPIs('TYPE')and
+    not CPIs('VAR')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPIs('BEGIN')do CPNext;
+   if CPToken=';'Then CPNext
+  End
  End;
  R:=CPRoutines;
  While R<>Nil do Begin
   if R^.IsForward and not R^.IsDefined Then
    CPFail('declaration FORWARD non resolue: '+R^.Name);
   R:=R^.Next
- End
+ End;CPError:=CPHadErrors
 End;
 
 Procedure CPOp(OpcodeII,OpcodeIV:Byte);Begin
@@ -3664,7 +3692,7 @@ Begin
  CPAddType('REAL',ptkReal,1);
  TextType:=CPAddType('STRING',ptkString,256);TextType^.HighBound:=255;TextType^.PackedType:=True;
  TextType:=CPAddType('TEXT',ptkFile,1);TextType^.ElementType:=CPFindType('CHAR');
- CPError:=False;CPLine:=1;CPVarCount:=0;
+ CPError:=False;CPHadErrors:=False;CPDiagnosticCount:=0;CPLine:=1;CPVarCount:=0;
  GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
  Assign(F,SourceName);Reset(F,1);if IOResult<>0 Then Begin
   CPFail('ouverture impossible');Goto 99
@@ -3715,7 +3743,7 @@ Begin
  if CurrentTarget=ptUCSDPSystemIV Then Begin CPE($96);CPBig(0)End else CPE(214);
  CPMainLength:=CPCodePos-CPMainStart;
  if not CPError Then WriteUCSDCodeFile(CodeName,'PROGRAM',CPCodePos,CPVarCount);
- 99:CPFreeTables;
+ 99:if not CPHadErrors Then CPReportUnused;CPFreeTables;
  FreeMem(PCode_Mem,SizeOf(TPCodeMemory));FreeMem(CPSource,SizeOf(TPCodeMemory));
  if not CPError Then Begin
   WriteLn(CPCodePos,' octet(s) de p-Code.');CompilePascalPCode:=0
