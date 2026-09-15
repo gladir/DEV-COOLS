@@ -2867,8 +2867,23 @@ Begin
  23:CPUCSDErrorText:='''IMPLEMENTATION'' expected';24:CPUCSDErrorText:='''UNIT'' expected';
  50:CPUCSDErrorText:='Error in constant';51:CPUCSDErrorText:=''':='' expected';
  52:CPUCSDErrorText:='''THEN'' expected';53:CPUCSDErrorText:='''UNTIL'' expected';
- 54:CPUCSDErrorText:='''DO'' expected';
- 55:CPUCSDErrorText:='''TO'' or ''DOWNTO'' expected in for statement';
+  54:CPUCSDErrorText:='''DO'' expected';
+  55:CPUCSDErrorText:='''TO'' or ''DOWNTO'' expected in for statement';
+ 56:CPUCSDErrorText:='''IF'' expected';57:CPUCSDErrorText:='''FILE'' expected';
+ 58:CPUCSDErrorText:='Error in <factor> (bad expression)';
+ 59:CPUCSDErrorText:='Error in variable';60:CPUCSDErrorText:='Must be of type ''SEMAPHORE''';
+ 61:CPUCSDErrorText:='Must be of type ''PROCESSID''';
+ 62:CPUCSDErrorText:='Process not allowed at this nesting level';
+ 63:CPUCSDErrorText:='Only main task may start processes';
+ 101:CPUCSDErrorText:='Identifier declared twice';
+ 102:CPUCSDErrorText:='Low bound exceeds high bound';
+ 103:CPUCSDErrorText:='Identifier is not of the appropriate class';
+ 104:CPUCSDErrorText:='Undeclared identifier';105:CPUCSDErrorText:='Sign not allowed';
+ 106:CPUCSDErrorText:='Number expected';107:CPUCSDErrorText:='Incompatible subrange types';
+ 108:CPUCSDErrorText:='File not allowed here';109:CPUCSDErrorText:='Type must not be real';
+ 110:CPUCSDErrorText:='<tagfield> type must be scalar or subrange';
+ 111:CPUCSDErrorText:='Incompatible with <tagfield> part';
+ 112:CPUCSDErrorText:='Index type must not be real';
  else CPUCSDErrorText:='Compiler error'
  End
 End;
@@ -2890,6 +2905,25 @@ Begin
  else if U='UNTIL ATTENDU'Then CPInferErrorCode:=53
  else if U='DO ATTENDU'Then CPInferErrorCode:=54
  else if Pos('TO OU DOWNTO ATTENDU',U)<>0 Then CPInferErrorCode:=55
+ else if U='IF ATTENDU'Then CPInferErrorCode:=56
+ else if U='FILE ATTENDU'Then CPInferErrorCode:=57
+ else if(Pos('FACTEUR',U)<>0)or(Pos('MAUVAISE EXPRESSION',U)<>0)Then CPInferErrorCode:=58
+ else if(Pos('VARIABLE',U)<>0)and(Pos('ATTENDU',U)<>0)Then CPInferErrorCode:=59
+ else if Pos('SEMAPHORE',U)<>0 Then CPInferErrorCode:=60
+ else if Pos('PROCESSID',U)<>0 Then CPInferErrorCode:=61
+ else if Pos('NIVEAU D''IMBRICATION',U)<>0 Then CPInferErrorCode:=62
+ else if Pos('TACHE PRINCIPALE',U)<>0 Then CPInferErrorCode:=63
+ else if(Pos('DEJA DEFINI',U)<>0)or(Pos('DECLARE DEUX FOIS',U)<>0)Then CPInferErrorCode:=101
+ else if(Pos('SOUS-INTERVALLE INVERSE',U)<>0)or(Pos('BORNE INFERIEURE',U)<>0)Then CPInferErrorCode:=102
+ else if(Pos('INVALIDE',U)<>0)and(Pos('IDENTIFICATEUR',U)<>0)Then CPInferErrorCode:=103
+ else if(Pos('IDENTIFICATEUR INCONNU',U)<>0)or(Pos('TYPE INCONNU',U)<>0)or
+  (Pos('CONSTANTE INCONNUE',U)<>0)Then CPInferErrorCode:=104
+ else if(Pos('SIGNE INTERDIT',U)<>0)or(Pos('SIGNE NON AUTORISE',U)<>0)Then CPInferErrorCode:=105
+ else if Pos('NOMBRE ATTENDU',U)<>0 Then CPInferErrorCode:=106
+ else if Pos('BORNES DE TYPES INCOMPATIBLES',U)<>0 Then CPInferErrorCode:=107
+ else if Pos('FICHIER INTERDIT',U)<>0 Then CPInferErrorCode:=108
+ else if Pos('TYPE NE DOIT PAS ETRE REEL',U)<>0 Then CPInferErrorCode:=109
+ else if Pos('INDEX NE DOIT PAS ETRE REEL',U)<>0 Then CPInferErrorCode:=112
  else if U='OF ATTENDU'Then CPInferErrorCode:=8
  else if(U='END ATTENDU')or(Pos('END D''',U)=1)Then CPInferErrorCode:=13
  else if(Pos('NON IMPLEMENT',U)<>0)or(Pos('NON DISPONIBLE',U)<>0)Then CPInferErrorCode:=3
@@ -3128,6 +3162,8 @@ Procedure CPNeed(S:String);Begin
   else if S='THEN'Then CPFailCode(52,'''THEN'' attendu')
   else if S='UNTIL'Then CPFailCode(53,'''UNTIL'' attendu')
   else if S='DO'Then CPFailCode(54,'''DO'' attendu')
+  else if S='IF'Then CPFailCode(56,'''IF'' attendu')
+  else if S='FILE'Then CPFailCode(57,'''FILE'' attendu')
   else CPFailCode(6,'symbole "'+S+'" attendu')
  End else CPNext
 End;
@@ -3215,6 +3251,7 @@ Var
  T,FT:PPasType;
  F,Tail:PPasField;
  Names:Array[1..64]of String;
+ TagName:String;
  N,I:Integer;
  Offset,MaxOffset:LongInt;
 Begin
@@ -3225,7 +3262,14 @@ Begin
    T^.Kind:=ptkVariantRecord;
    { Le discriminant et les variantes partagent la meme zone; leur syntaxe est
      parcourue tout en conservant la taille maximale rencontree. }
-   CPNext;
+   CPNext;FT:=Nil;
+   if CPToken='ID'Then Begin TagName:=CPText;CPNext;
+    if CPToken=':'Then Begin CPNext;FT:=CPParseType End else FT:=CPFindType(TagName)
+   End;
+   FT:=CPBaseType(FT);
+   if(FT=Nil)or not(FT^.Kind in[ptkInteger,ptkBoolean,ptkChar,ptkEnumeration,ptkSubrange])Then
+    CPFailCode(110,'le type du champ de balise doit etre scalaire ou sous-intervalle');
+   if CPIs('OF')Then CPNext else CPFailCode(8,'''OF'' attendu');
    While(CPToken<>'EOF')and not CPIs('END')do Begin
     if CPToken='('Then Begin
      CPNext;Continue
@@ -3266,7 +3310,10 @@ Begin
  if CPIs('ARRAY')Then Begin
   CPNext;CPNeed('[');Outer:=Nil;TailType:=Nil;
   Repeat
-  Idx:=CPParseType;Elem:=CPNewAnonymousType(ptkArray);Elem^.IndexType:=Idx;
+  Idx:=CPParseType;
+  if(CPBaseType(Idx)<>Nil)and(CPBaseType(Idx)^.Kind=ptkReal)Then
+   CPFailCode(112,'le type d''index ne doit pas etre reel');
+  Elem:=CPNewAnonymousType(ptkArray);Elem^.IndexType:=Idx;
   Count:=Idx^.HighBound-Idx^.LowBound+1;if Count<0 Then Count:=0;
   Elem^.ElementCount:=Count;
   Elem^.PackedType:=PackedFlag;
@@ -3277,6 +3324,8 @@ Begin
   { Les dimensions ont ete lues de gauche a droite: applique le type elementaire
     au maillon le plus interieur puis calcule les tailles vers l'exterieur. }
   TailType^.ElementType:=Base;
+  if(CPBaseType(Base)<>Nil)and(CPBaseType(Base)^.Kind=ptkFile)Then
+   CPFailCode(108,'fichier interdit comme element de tableau');
   CPRecomputeSize(Outer);CPParseType:=Outer;Exit
  End;
  if CPIs('RECORD')Then Begin
@@ -3285,6 +3334,8 @@ Begin
  if CPIs('SET')Then Begin
   CPNext;if CPIs('OF')Then CPNext else CPFail('OF attendu');
   T:=CPNewAnonymousType(ptkSet);T^.ElementType:=CPParseType;
+  if(CPBaseType(T^.ElementType)<>Nil)and(CPBaseType(T^.ElementType)^.Kind=ptkReal)Then
+   CPFailCode(109,'le type d''un ensemble ne doit pas etre reel');
   Count:=T^.ElementType^.HighBound-T^.ElementType^.LowBound+1;
   if Count<1 Then Count:=256;if Count>256 Then CPFail('ensemble de plus de 256 elements');
   T^.SizeWords:=(Count+15)div 16;T^.PackedType:=PackedFlag;CPParseType:=T;Exit
@@ -3339,8 +3390,8 @@ Begin
   CPNeed('..');if not CPBoundValue(Hi,Idx)Then Begin
    CPParseType:=Base;Exit
   End;
-  if not CPTypeEquivalent(Base,Idx)Then CPFail('bornes de types incompatibles');
-  if Lo>Hi Then CPFail('sous-intervalle inverse');T:=CPNewAnonymousType(ptkSubrange);
+  if not CPTypeEquivalent(Base,Idx)Then CPFailCode(107,'bornes de types incompatibles');
+  if Lo>Hi Then CPFailCode(102,'la borne inferieure depasse la borne superieure');T:=CPNewAnonymousType(ptkSubrange);
   T^.ElementType:=Base;T^.LowBound:=Lo;T^.HighBound:=Hi;T^.SizeWords:=1;CPParseType:=T;
   Exit
  End;
@@ -3352,7 +3403,7 @@ Begin
    End
   End;
   if T=Nil Then Begin
-   CPFail('type inconnu: '+Name);T:=CPFindType('INTEGER')
+   CPFailCode(104,'type non declare: '+Name);T:=CPFindType('INTEGER')
   End;
   CPParseType:=T;Exit
  End;
@@ -3421,7 +3472,7 @@ Begin
  P:=CPSymbols;
  While(P<>Nil)and((P^.Name<>S)or(P^.Scope<>CPCurrentRoutine))do P:=P^.Next;
  if P<>Nil Then Begin
-  CPFail('identificateur deja defini: '+S);Exit
+  CPFailCode(101,'identificateur declare deux fois: '+S);Exit
  End;
  New(P);FillChar(P^,SizeOf(TPasSymbol),0);P^.Name:=S;P^.Value:=V;
  P^.Address:=V;P^.IsConst:=K;P^.Scope:=CPCurrentRoutine;P^.DeclarationLine:=CPLine;
@@ -3476,7 +3527,8 @@ Begin
   CPNext;V:=CPEvalConstExpression;CPNeed(')')
  End
  else if CPToken='ID'Then Begin
-  P:=CPFind(CPText);if(P=Nil)or not P^.IsConst Then CPFail('constante inconnue: '+CPText)
+  P:=CPFind(CPText);if P=Nil Then CPFailCode(104,'constante non declaree: '+CPText)
+  else if not P^.IsConst Then CPFailCode(103,'identificateur de classe constante attendu: '+CPText)
   else if P^.IsStringConst Then Begin
    V.Kind:=ckString;V.S:=P^.ConstText
   End
@@ -3494,7 +3546,7 @@ Begin
  End;
  if Neg Then Begin
   if V.Kind=ckReal Then V.R:=-V.R else if V.Kind in[ckInteger,ckCharacter]Then V.I:=-V.I
-  else CPFail('signe interdit devant une chaine')
+  else CPFailCode(105,'signe non autorise devant une chaine')
  End;CPEvalConstFactor:=V
 End;
 
@@ -3704,7 +3756,7 @@ Procedure CPDefineLabel(S:String);
 Var
  L:PPasLabel;
 Begin
- L:=CPFindLabel(S,True);if L^.Defined Then CPFail('etiquette deja definie: '+S)
+ L:=CPFindLabel(S,True);if L^.Defined Then CPFailCode(101,'etiquette declaree deux fois: '+S)
  else
  Begin
   L^.Defined:=True;L^.Address:=CPCodePos;CPPatchLabel(L)
@@ -3836,7 +3888,7 @@ Begin
   R^.IsForward:=True;CPNext;if CPToken=';'Then CPNext;R^.EndPosition:=CPTokenPos;Exit
  End;
  if R^.IsDefined Then Begin
-  CPFail('routine deja definie: '+Name);Exit
+  CPFailCode(101,'routine declaree deux fois: '+Name);Exit
  End;
  R^.IsDefined:=True;R^.IsForward:=False;R^.SourcePosition:=CPTokenPos;
  Old:=CPCurrentRoutine;CPCurrentRoutine:=R;
@@ -4350,7 +4402,7 @@ Begin
    CPLastExpressionType:=CastType
   End else if(R<>Nil)and R^.IsFunction and((CPToken='(')or(R^.Parameters=Nil))Then Begin
    CPEmitActualParameters(R);CPEmitRoutineCall(R);CPLastExpressionType:=R^.ResultType
-  End else if P=Nil Then CPFail('identificateur inconnu: '+Ident)
+ End else if P=Nil Then CPFailCode(104,'identificateur non declare: '+Ident)
   else if P^.IsConst Then Begin
    if P^.IsRealConst Then Begin
     CPRealConst(P^.ConstReal);CPLastExpressionType:=CPFindType('REAL')
@@ -4369,7 +4421,7 @@ Begin
   End
  End else
  Begin
-  CPFail('facteur attendu');CPNext
+  CPFailCode(58,'erreur dans le facteur (expression incorrecte)');CPNext
  End;if Neg Then Begin
   if(CPLastExpressionType<>Nil)and(CPLastExpressionType^.Kind=ptkReal)Then CPOp(146,$CD)
   else CPOp(145,$E1)
@@ -4547,10 +4599,10 @@ Begin
  End
  else if CPIs('FOR')Then Begin
   CPNext;if CPToken<>'ID'Then Begin
-   CPFail('variable de controle attendue');Exit
+   CPFailCode(59,'erreur dans la variable de controle');Exit
   End;
   P:=CPFind(CPText);if(P=Nil)or P^.IsConst Then Begin
-   CPFail('variable de controle invalide');Exit
+   CPFailCode(103,'identificateur de classe variable attendu');Exit
   End;
   CPNext;CPNeed(':=');CPExpression;CPStoreSymbol(P);
   Down:=CPIs('DOWNTO');if not Down and not CPIs('TO')Then Begin
@@ -4822,7 +4874,8 @@ Begin
   End;
   if(P=Nil)and(R<>Nil)Then Begin
    CPEmitActualParameters(R);CPEmitRoutineCall(R)
-  End else if(P=nil)or P^.IsConst Then CPFail('variable attendue: '+Name)else
+  End else if P=Nil Then CPFailCode(104,'identificateur non declare: '+Name)
+  else if P^.IsConst Then CPFailCode(103,'identificateur de classe variable attendu: '+Name)else
   Begin
    CPDesignator(P,False,T);CPNeed(':=');
    While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
@@ -4839,7 +4892,7 @@ Begin
    End else if(T<>Nil)and(T^.SizeWords>1)Then Begin
     if CPToken<>'ID'Then CPFail('source structuree attendue')else
     Begin
-     P:=CPFind(CPText);if P=Nil Then CPFail('variable source inconnue')else
+     P:=CPFind(CPText);if P=Nil Then CPFailCode(104,'variable source non declaree')else
      Begin
       CPNext;CPDesignator(P,False,RT);
       if not CPTypeEquivalent(T,RT)Then CPFail('types structures incompatibles')
