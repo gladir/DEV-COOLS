@@ -2961,6 +2961,7 @@ End;
 TPasRoutine=Record
 Name:String[31];
 ProcNumber,LexicalLevel,ParameterWords,LocalWords:Integer;
+DeclarationLine:Integer;
 IsFunction,IsForward,IsExternal,IsSeparate,IsDefined:Boolean;
 ExternalSegment,ExternalProcedure:Integer;
 ResultType:PPasType;
@@ -4644,6 +4645,7 @@ Begin
  Name:=CPText;R:=CPFindRoutine(Name,Parent);
  WasForward:=(R<>Nil)and R^.IsForward;HadParamSpec:=False;HadResultSpec:=False;
  if R=Nil Then R:=CPAddRoutine(Name,Parent,IsFunc);
+ if R^.DeclarationLine=0 Then R^.DeclarationLine:=CPLine;
  CPNext;
  Tail:=R^.Parameters;
  While(Tail<>Nil)and(Tail^.Next<>Nil)do Tail:=Tail^.Next;
@@ -5967,6 +5969,10 @@ Var
  LinkRecord,PointerRecord,ZeroBlock:Array[0..511]of Byte;
  RefCount,RefIndex,LinkSize,InterfaceBlock,EndPosition:LongInt;
  PrevQ:PPasRelocation;
+ DebugFile:Text;
+ DebugName:String;
+ Sym:PPasSymbol;
+ ParentNo,TypeKind:Integer;
 
 Procedure HW(Offset:Integer;Value:Word);Begin
  Header[Offset]:=Byte(Value);Header[Offset+1]:=Byte(Value shr 8)
@@ -6160,6 +6166,34 @@ End;
 Close(F);if IOResult<>0 Then CPFailCode(402,'erreur de fermeture du fichier CODE');
 if CPError Then Begin Erase(F);if IOResult<>0 Then
  WriteLn('Impossible de supprimer le fichier CODE incomplet: ',CodeName) End;
+if not CPError Then Begin
+ DebugName:=ReplaceExtension(CodeName,'.DBG');Assign(DebugFile,DebugName);Rewrite(DebugFile);
+ if IOResult=0 Then Begin
+  WriteLn(DebugFile,'PSDBG1 ',Ord(CurrentTarget),' ',SegmentName);
+  WriteLn(DebugFile,'R 1 0 0 ',LongInt(Attr[1])*2+2,' ',CPMainLength,' ',DataWords,
+   ' 0 1 ',SegmentName);
+  R:=CPRoutines;
+  While R<>Nil do Begin
+   ParentNo:=1;if R^.Parent<>Nil Then ParentNo:=R^.Parent^.ProcNumber;
+   if(R^.ProcNumber>=1)and(R^.ProcNumber<=ProcTotal)Then
+    WriteLn(DebugFile,'R ',R^.ProcNumber,' ',R^.LexicalLevel,' ',ParentNo,' ',
+     LongInt(Attr[R^.ProcNumber])*2+2,' ',R^.CodeLength,' ',R^.LocalWords,' ',
+     R^.ParameterWords,' ',R^.DeclarationLine,' ',R^.Name);
+   R:=R^.Next
+  End;
+  Sym:=CPSymbols;
+  While Sym<>Nil do Begin
+   if not Sym^.IsConst Then Begin
+    ParentNo:=1;if Sym^.Scope<>Nil Then ParentNo:=Sym^.Scope^.ProcNumber;
+    TypeKind:=-1;if Sym^.SymbolType<>Nil Then TypeKind:=Ord(CPBaseType(Sym^.SymbolType)^.Kind);
+    WriteLn(DebugFile,'S ',ParentNo,' ',Sym^.Address,' ',Sym^.LexicalLevel,' ',
+     Ord(Sym^.IsParameter),' ',Ord(Sym^.ByReference),' ',TypeKind,' ',
+     Sym^.DeclarationLine,' ',Sym^.Name)
+   End;Sym:=Sym^.Next
+  End;
+  Close(DebugFile);if IOResult<>0 Then WriteLn('Avertissement: fermeture ',DebugName)
+ End else WriteLn('Avertissement: creation impossible de ',DebugName)
+End;
 WriteUCSDCodeFile:=not CPError
 End;
 
@@ -6942,12 +6976,110 @@ Procedure DebugCommand;
 Const
  MaxBreakpoints=16;
  MaxRunCycles=10000000;
+Type
+ PDebugRoutine=^TDebugRoutine;
+ TDebugRoutine=Record ProcNo,Level,ParentNo:Integer;Start,Length:LongInt;
+  Locals,Params,SourceLine:Integer;Name:String[31];Next:PDebugRoutine End;
+ PDebugSymbol=^TDebugSymbol;
+ TDebugSymbol=Record ProcNo,Address,Level:Integer;IsParam,ByRef:Boolean;
+  TypeKind,SourceLine:Integer;Name:String[31];Next:PDebugSymbol End;
 Var
  Name,Line,Command,Args,S:String;
  Breakpoint:Array[1..MaxBreakpoints]of LongInt;
  BreakCount,I,N:Integer;
  Address,V,NextAddress,RunCount:LongInt;
  Done,Hit:Boolean;
+ DebugRoutines:PDebugRoutine;
+ DebugSymbols:PDebugSymbol;
+
+Function TakeField(Var X:String):String;
+Var P:Integer;T:String;
+Begin
+ X:=TrimString(X);P:=Pos(' ',X);
+ if P=0 Then Begin TakeField:=X;X:='' End
+ else Begin T:=Copy(X,1,P-1);Delete(X,1,P);TakeField:=TrimString(T) End
+End;
+
+Function FieldInt(Var X:String):LongInt;
+Var T:String;V:LongInt;C:Integer;
+Begin T:=TakeField(X);Val(T,V,C);if C<>0 Then V:=0;FieldInt:=V End;
+
+Procedure LoadDebugInfo;
+Var F:Text;L,K:String;R:PDebugRoutine;Y:PDebugSymbol;
+Begin
+ DebugRoutines:=Nil;DebugSymbols:=Nil;Assign(F,ReplaceExtension(Name,'.DBG'));Reset(F);
+ if IOResult<>0 Then Exit;
+ While not Eof(F)do Begin
+  ReadLn(F,L);if IOResult<>0 Then Break;K:=TakeField(L);
+  if K='R'Then Begin
+   New(R);FillChar(R^,SizeOf(TDebugRoutine),0);R^.ProcNo:=FieldInt(L);
+   R^.Level:=FieldInt(L);R^.ParentNo:=FieldInt(L);R^.Start:=FieldInt(L);
+   R^.Length:=FieldInt(L);R^.Locals:=FieldInt(L);R^.Params:=FieldInt(L);
+   R^.SourceLine:=FieldInt(L);R^.Name:=TakeField(L);R^.Next:=DebugRoutines;DebugRoutines:=R
+  End else if K='S'Then Begin
+   New(Y);FillChar(Y^,SizeOf(TDebugSymbol),0);Y^.ProcNo:=FieldInt(L);
+   Y^.Address:=FieldInt(L);Y^.Level:=FieldInt(L);Y^.IsParam:=FieldInt(L)<>0;
+   Y^.ByRef:=FieldInt(L)<>0;Y^.TypeKind:=FieldInt(L);Y^.SourceLine:=FieldInt(L);
+   Y^.Name:=TakeField(L);Y^.Next:=DebugSymbols;DebugSymbols:=Y
+  End
+ End;Close(F);if IOResult<>0 Then Begin End
+End;
+
+Procedure FreeDebugInfo;
+Var R,Q:PDebugRoutine;S,T:PDebugSymbol;
+Begin R:=DebugRoutines;While R<>Nil do Begin Q:=R^.Next;Dispose(R);R:=Q End;
+ S:=DebugSymbols;While S<>Nil do Begin T:=S^.Next;Dispose(S);S:=T End
+End;
+
+Function CurrentDebugRoutine:PDebugRoutine;
+Var R:PDebugRoutine;
+Begin
+ CurrentDebugRoutine:=Nil;R:=DebugRoutines;
+ While R<>Nil do Begin
+  if(PCode_PC>=R^.Start)and(PCode_PC<R^.Start+R^.Length)Then Begin
+   CurrentDebugRoutine:=R;Exit
+  End;R:=R^.Next
+ End
+End;
+
+Procedure ShowSource;
+Var R:PDebugRoutine;
+Begin R:=CurrentDebugRoutine;if R=Nil Then WriteLn('Aucune information source pour cette adresse.')
+ else WriteLn(R^.Name,' : ligne de declaration ',R^.SourceLine,
+  ', niveau lexical ',R^.Level,', plage $',DebugHex(R^.Start,4),'..$',
+  DebugHex(R^.Start+R^.Length-1,4))
+End;
+
+Procedure ShowFrames;
+Var M:LongInt;R:PDebugRoutine;Depth,ProcNo:Integer;
+Begin
+ if not PCode_HasProcDictionary Then Begin WriteLn('Cadres structures indisponibles.');Exit End;
+ M:=PCode_MP;Depth:=0;ProcNo:=PCode_CurrentProc;
+ While(M>0)and(M<=High(PCode_Data^)-4)and(Depth<64)do Begin
+  R:=DebugRoutines;While(R<>Nil)and(R^.ProcNo<>ProcNo)do R:=R^.Next;
+  Write('#',Depth:2,' MP=',M,' PROC=',ProcNo);
+  if R<>Nil Then Write(' ',R^.Name,' ligne ',R^.SourceLine);WriteLn;
+  ProcNo:=PCode_DataAt(M+4);if PCode_DataAt(M+1)=M Then Break;
+  M:=PCode_DataAt(M+1);Inc(Depth)
+ End
+End;
+
+Procedure ShowSymbols(Const Filter:String);
+Var Y:PDebugSymbol;R:PDebugRoutine;A,V:LongInt;Found:Boolean;
+Begin
+ R:=CurrentDebugRoutine;Y:=DebugSymbols;Found:=False;
+ While Y<>Nil do Begin
+  if((R<>Nil)and((Y^.ProcNo=R^.ProcNo)or(Y^.ProcNo=1))or
+    ((R=Nil)and(Y^.ProcNo=1)))and
+   ((Filter='')or(UpperString(Y^.Name)=UpperString(Filter)))Then Begin
+   if Y^.ProcNo=1 Then A:=Y^.Address
+   else if PCode_HasProcDictionary Then A:=PCode_MP+5+Y^.Address else A:=PCode_MP+Y^.Address;
+   if Y^.ByRef Then A:=PCode_DataAt(A);V:=PCode_DataAt(A);Found:=True;
+   WriteLn(Y^.Name:20,' @',A:5,' = ',V,'  type=',Y^.TypeKind,
+    ' ligne=',Y^.SourceLine)
+  End;Y:=Y^.Next
+ End;if not Found Then WriteLn('Aucun symbole visible correspondant.')
+End;
 
 Function IsBreakpoint(A:LongInt):Boolean;
 Var
@@ -6994,6 +7126,9 @@ Procedure DebugHelp;Begin
  WriteLn('E a valeur   Modifier un mot de donnees');
  WriteLn('P adresse    Modifier le compteur programme');
  WriteLn('PROC [n]     Lister les procedures ou ouvrir la procedure n');
+ WriteLn('V [nom]      Afficher les variables visibles et leur valeur');
+ WriteLn('F            Afficher les cadres et la chaine dynamique');
+ WriteLn('L            Afficher la position source symbolique');
  WriteLn('I            Reinitialiser le programme');
  WriteLn('Q            Quitter le debogueur')
 End;
@@ -7008,7 +7143,7 @@ Begin
   WriteLn('Chargement impossible.');
   FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
  End;
- ProgramFile:=Name;BreakCount:=0;FillChar(Breakpoint,SizeOf(Breakpoint),0);
+ ProgramFile:=Name;BreakCount:=0;FillChar(Breakpoint,SizeOf(Breakpoint),0);LoadDebugInfo;
  Done:=False;ResetMachine;
  WriteLn('Debogueur p-System interne - ',PCode_CodeSize,
  ' octet(s). Tapez ? pour l''aide.');
@@ -7026,6 +7161,9 @@ Begin
  End;
  if(Command='?')or(Command='H')or(Command='HELP')Then DebugHelp
  else if Command='R'Then Registers
+ else if Command='V'Then ShowSymbols(Args)
+ else if Command='F'Then ShowFrames
+ else if Command='L'Then ShowSource
  else if Command='I'Then Begin
   ResetMachine;Registers
  End
@@ -7161,7 +7299,7 @@ Begin
   End
  End else WriteLn('Commande inconnue. Tapez ? pour l''aide.')
  Until Done;
- FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory))
+ FreeDebugInfo;FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory))
 End;
 
 Procedure ListFiles;
