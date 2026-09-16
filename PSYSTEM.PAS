@@ -1106,6 +1106,59 @@ Begin
  End
 End;PCode_Push(RB.L)
 End;
+100:
+Begin
+ N:=PCode_Pop;D:=PCode_Allocate(16);
+ For I:=0 to 15 do PCode_DataSet(D+I,0);
+ While N>0 do Begin
+  B:=PCode_Pop;A:=PCode_Pop;
+  if A<0 Then A:=0;if B>255 Then B:=255;
+  While A<=B do Begin
+   I:=A div 16;V:=PCode_DataAt(D+I)or(LongInt(1)shl(A mod 16));
+   PCode_DataSet(D+I,V);Inc(A)
+  End;Dec(N)
+ End;PCode_Push(D)
+End;
+101:
+Begin
+ Kind:=PCode_Pop;B:=PCode_Pop;A:=PCode_Pop;D:=PCode_Allocate(16);
+ For I:=0 to 15 do Begin
+  Case Kind of
+  1:V:=PCode_DataAt(A+I)and not PCode_DataAt(B+I);
+  2:V:=PCode_DataAt(A+I)and PCode_DataAt(B+I);
+  else V:=PCode_DataAt(A+I)or PCode_DataAt(B+I)
+  End;PCode_DataSet(D+I,V and $FFFF)
+ End;PCode_Push(D)
+End;
+102:
+Begin
+ A:=PCode_Pop;V:=PCode_Pop;
+ if(V<0)or(V>255)Then PCode_Push(0)
+ else PCode_Push(Ord((PCode_DataAt(A+V div 16)and(LongInt(1)shl(V mod 16)))<>0))
+End;
+103:
+Begin
+ Kind:=PCode_Pop;B:=PCode_Pop;A:=PCode_Pop;Cmp:=0;
+ For I:=0 to 15 do if(PCode_DataAt(A+I)and $FFFF)<>
+  (PCode_DataAt(B+I)and $FFFF)Then Cmp:=1;
+ if Kind=0 Then PCode_Push(Ord(Cmp=0))else PCode_Push(Ord(Cmp<>0))
+End;
+104:
+Begin
+ Kind:=PCode_Pop;N:=PCode_Pop;B:=PCode_Pop;A:=PCode_Pop;Cmp:=0;
+ For I:=0 to N-1 do if PCode_DataAt(A+I)<>PCode_DataAt(B+I)Then Cmp:=1;
+ if Kind=0 Then PCode_Push(Ord(Cmp=0))else PCode_Push(Ord(Cmp<>0))
+End;
+105:
+Begin
+ N:=PCode_Pop;A:=PCode_Pop;D:=PCode_Allocate(N);
+ For I:=0 to N-1 do PCode_DataSet(D+I,PCode_DataAt(A+I));PCode_Push(D)
+End;
+106:
+Begin
+ N:=PCode_Pop;D:=PCode_Pop;V:=PCode_Pop;A:=PCode_DataAt(D);
+ if A<>0 Then PCode_DataSet(A+N,V)
+End;
 Else
 PCode_RuntimeError(305,'CSP '+PCode_IntToStr(CspNum)+' inconnue');
 End;
@@ -2808,6 +2861,8 @@ SizeWords,AlignWords:Word;
 PackedType:Boolean;
 LowBound,HighBound:LongInt;
 ElementType,IndexType,ResultType:PPasType;
+VariantTagType:PPasType;
+VariantTagOffset:Word;
 ElementCount:LongInt;
 Fields:PPasField;
 Parameters:PPasParameter;
@@ -2960,7 +3015,7 @@ Function CPAssignmentCompatible(Dest,Source:PPasType):Boolean;Begin
  else if(Dest^.Kind=Source^.Kind)and(Dest^.Kind in[ptkInteger,ptkBoolean,
  ptkChar,ptkReal,ptkEnumeration,ptkPointer])Then CPAssignmentCompatible:=True
  else if(Dest^.Kind=ptkSet)and(Source^.Kind=ptkSet)and
- (Dest^.SizeWords=Source^.SizeWords)Then CPAssignmentCompatible:=True
+ CPTypeEquivalent(Dest^.ElementType,Source^.ElementType)Then CPAssignmentCompatible:=True
  else CPAssignmentCompatible:=False
 End;
 
@@ -3777,6 +3832,7 @@ Var
  TagName:String;
  N,I:Integer;
  Offset,MaxOffset:LongInt;
+ HasTagName:Boolean;
 Begin
  T:=CPNewAnonymousType(ptkRecord);T^.PackedType:=PackedFlag;CPNext;Offset:=0;MaxOffset:=0;
  Tail:=Nil;
@@ -3785,9 +3841,10 @@ Begin
    T^.Kind:=ptkVariantRecord;
    { Le discriminant et les variantes partagent la meme zone; leur syntaxe est
      parcourue tout en conservant la taille maximale rencontree. }
-   CPNext;FT:=Nil;
+   CPNext;FT:=Nil;HasTagName:=False;
    if CPToken='ID'Then Begin TagName:=CPText;CPNext;
-    if CPToken=':'Then Begin CPNext;FT:=CPParseType End else FT:=CPFindType(TagName)
+    if CPToken=':'Then Begin HasTagName:=True;CPNext;FT:=CPParseType End
+    else FT:=CPFindType(TagName)
    End;
    FT:=CPBaseType(FT);
    if(FT<>Nil)and(FT^.Kind in[ptkReal,ptkString])Then
@@ -3795,6 +3852,13 @@ Begin
    else
    if(FT=Nil)or not(FT^.Kind in[ptkInteger,ptkBoolean,ptkChar,ptkEnumeration,ptkSubrange])Then
     CPFailCode(110,'le type du champ de balise doit etre scalaire ou sous-intervalle');
+   T^.VariantTagType:=FT;
+   if HasTagName and(FT<>Nil)Then Begin
+    Offset:=CPAlignedSize(Offset,FT^.AlignWords);T^.VariantTagOffset:=Offset;
+    New(F);FillChar(F^,SizeOf(TPasField),0);F^.Name:=TagName;F^.FieldType:=FT;
+    F^.OffsetWords:=Offset;if Tail=Nil Then T^.Fields:=F else Tail^.Next:=F;Tail:=F;
+    Inc(Offset,FT^.SizeWords);if Offset>MaxOffset Then MaxOffset:=Offset
+   End;
    if CPIs('OF')Then CPNext else CPFailCode(8,'''OF'' attendu');
    While(CPToken<>'EOF')and not CPIs('END')do Begin
     if CPToken='('Then Begin
@@ -3871,7 +3935,7 @@ Begin
    (T^.ElementType^.HighBound>255)Then
    CPFailCode(169,'bornes du type de base de l''ensemble hors de 0..255');
   if Count<1 Then Count:=256;
-  T^.SizeWords:=(Count+15)div 16;T^.PackedType:=PackedFlag;CPParseType:=T;Exit
+  T^.SizeWords:=16;T^.PackedType:=PackedFlag;CPParseType:=T;Exit
  End;
  if CPIs('FILE')Then Begin
   CPNext;T:=CPNewAnonymousType(ptkFile);T^.SizeWords:=1;
@@ -4597,11 +4661,13 @@ Procedure CPEmitRoutineReturn(R:PPasRoutine);Begin
  End
 End;
 Procedure CPExpression;Forward;
+Procedure CPDesignator(P:PPasSymbol;LoadValue:Boolean;Var T:PPasType);Forward;
 
 Procedure CPEmitActualParameters(R:PPasRoutine);
 Var
- A:PPasParameter;
- S:PPasSymbol;
+A:PPasParameter;
+S:PPasSymbol;
+T:PPasType;
 Begin
  if R^.IsFunction Then CPConst(0); { cellule resultat conservee par RPU/RNP }
  A:=R^.Parameters;
@@ -4619,12 +4685,9 @@ Begin
     Begin
      if not CPTypeEquivalent(A^.ParamType,S^.SymbolType)Then
       CPFailCode(127,'substitution de parametre incompatible');
-     if S^.Scope=Nil Then Begin
-      CPOp(165,$86);CPBig(S^.Address)
-     End
-     else
-     Begin
-      CPOp(198,$84);CPBig(S^.Address)
+     CPDesignator(S,False,T);
+     if A^.Structured and not A^.ByReference Then Begin
+      CPConst(A^.ParamType^.SizeWords);CPEmitCSP(105)
      End
     End;CPNext
    End
@@ -4813,8 +4876,9 @@ Begin
   While(T<>Nil)and(T^.Kind=ptkAlias)do T:=T^.ElementType;
   if(T<>Nil)and(T^.Kind=ptkString)Then Begin
   End
-  else if(T<>Nil)and(T^.SizeWords>1)Then CPFail(
-  'valeur structurée interdite dans une expression scalaire')
+  else if(T<>Nil)and(T^.SizeWords>1)Then Begin
+   { Les valeurs structurees circulent par adresse dans l'ABI privee. }
+  End
   else
   Begin
    CPOp(163,$E6);CPBig(0)
@@ -4831,7 +4895,9 @@ Var
  Flags:Integer;
  Neg:Boolean;
  CV,CV2:TConstValue;
- Lo,Hi,K,Mask:LongInt;
+ Lo,Hi,K:LongInt;
+ SetLow,SetHigh:Array[1..64]of LongInt;
+ SetCount,I:Integer;
 Begin
  CPLastExpressionType:=CPFindType('INTEGER');Neg:=False;
  if CPIs('NOT')Then Begin
@@ -4868,7 +4934,7 @@ Begin
   CPNext;CPExpression;CPNeed(')')
  End
  else if CPToken='['Then Begin
-  CPNext;Mask:=0;
+  CPNext;SetCount:=0;
   While(CPToken<>']')and(CPToken<>'EOF')and not CPError do Begin
    CV:=CPEvalConstExpression;CV2:=CV;if CV.Kind in[ckReal,ckString]Then Begin
     CPFailCode(136,'le type d''element d''ensemble doit etre scalaire ou sous-intervalle');Break
@@ -4878,13 +4944,15 @@ Begin
     if(CV.Kind=ckCharacter)<>(CV2.Kind=ckCharacter)Then
      CPFailCode(137,'types d''elements d''ensemble incompatibles')
    End;
-   if(Lo<0)or(Hi>15)or(Lo>Hi)Then CPFailCode(304,'ensemble immediat limite a 0..15')
-   else
-   For K:=Lo to Hi do Mask:=Mask or(1 shl K);
+   if(Lo<0)or(Hi>255)or(Lo>Hi)Then CPFailCode(304,'element d''ensemble hors de 0..255')
+   else if SetCount=64 Then CPFailCode(193,'constante ensemble trop complexe')
+   else Begin Inc(SetCount);SetLow[SetCount]:=Lo;SetHigh[SetCount]:=Hi End;
    if CPToken=','Then CPNext else Break
-  End;CPNeed(']');CPConst(Mask);CPLastExpressionType:=CPNewAnonymousType(ptkSet);
+  End;CPNeed(']');
+  For I:=1 to SetCount do Begin CPConst(SetLow[I]);CPConst(SetHigh[I]) End;
+  CPConst(SetCount);CPEmitCSP(100);CPLastExpressionType:=CPNewAnonymousType(ptkSet);
   CPLastExpressionType^.ElementType:=CPFindType('INTEGER');
-  CPLastExpressionType^.SizeWords:=1
+  CPLastExpressionType^.SizeWords:=16
  End
  else if CPIs('ABS')or CPIs('SQR')or CPIs('ODD')or CPIs('SUCC')or CPIs('PRED')or
  CPIs('ORD')or CPIs('CHR')or CPIs('ROUND')or CPIs('TRUNC')or CPIs('SIN')or
@@ -5030,9 +5098,10 @@ Begin
   Then Begin
    if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkSet)or(RT^.Kind<>ptkSet)Then
     CPFailCode(134,'type illegal des operandes')
-   else if not CPTypeEquivalent(LT^.ElementType,RT^.ElementType)Then
+   else if not(CPAssignmentCompatible(LT^.ElementType,RT^.ElementType)or
+    CPAssignmentCompatible(RT^.ElementType,LT^.ElementType))Then
     CPFailCode(137,'types d''elements d''ensembles incompatibles');
-   CPOp(140,$B8)
+   CPConst(2);CPEmitCSP(101)
   End
   else if((LT<>Nil)and(LT^.Kind=ptkReal))or((RT<>Nil)and(RT^.Kind=ptkReal))Then Begin
    if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then    CPFail(
@@ -5070,9 +5139,10 @@ Begin
   End else if((LT<>Nil)and(LT^.Kind=ptkSet))or((RT<>Nil)and(RT^.Kind=ptkSet))Then Begin
    if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkSet)or(RT^.Kind<>ptkSet)Then
     CPFailCode(134,'type illegal des operandes')
-   else if not CPTypeEquivalent(LT^.ElementType,RT^.ElementType)Then
+   else if not(CPAssignmentCompatible(LT^.ElementType,RT^.ElementType)or
+    CPAssignmentCompatible(RT^.ElementType,LT^.ElementType))Then
     CPFailCode(137,'types d''elements d''ensembles incompatibles');
-   if O='+'Then CPOp(156,$B7)else if O='-'Then CPOp(133,$B9)else CPOp(156,$B7)
+   if O='-'Then CPConst(1)else CPConst(0);CPEmitCSP(101)
   End else if((LT<>Nil)and(LT^.Kind=ptkReal))or((RT<>Nil)and(RT^.Kind=ptkReal))Then Begin
    if(LT=Nil)or(RT=Nil)or(LT^.Kind<>ptkReal)or(RT^.Kind<>ptkReal)Then    CPFail(
    'conversion explicite requise pour une operation reelle')
@@ -5097,7 +5167,7 @@ Begin
   CPNext;CPSimple;
   if(CPLastExpressionType=Nil)or(CPLastExpressionType^.Kind<>ptkSet)Then
    CPFailCode(130,'l''expression apres IN n''est pas un ensemble');
-  CPOp(139,$B6);CPLastExpressionType:=CPFindType('BOOLEAN');Exit
+  CPEmitCSP(102);CPLastExpressionType:=CPFindType('BOOLEAN');Exit
  End;
  if(CPToken='=')or(CPToken='<>')or(CPToken='<')or(CPToken='<=')or
  (CPToken='>')or(CPToken='>=')Then Begin
@@ -5107,7 +5177,12 @@ Begin
     CPFailCode(129,'conflit de types des operandes')
    else if(O<>'=')and(O<>'<>')Then
     CPFailCode(131,'seuls les tests d''egalite sont autorises sur les ensembles');
-   if O='='Then CPOp(195,$B0)else CPOp(203,$B1)
+   if O='='Then CPConst(0)else CPConst(1);CPEmitCSP(103)
+  End else if(LT<>Nil)and(RT<>Nil)and(LT^.SizeWords>1)Then Begin
+   if not CPTypeEquivalent(LT,RT)Then CPFailCode(129,'types structures incompatibles')
+   else if(O<>'=')and(O<>'<>')Then
+    CPFailCode(131,'seuls les tests d''egalite sont autorises sur les structures');
+   CPConst(LT^.SizeWords);if O='='Then CPConst(0)else CPConst(1);CPEmitCSP(104)
   End else if(LT<>Nil)and(RT<>Nil)and((LT^.Kind=ptkString)or(RT^.Kind=ptkString))Then Begin
    if(LT^.Kind<>ptkString)or(RT^.Kind<>ptkString)Then
     CPFailCode(129,'conflit de types des operandes chaine');
@@ -5341,9 +5416,17 @@ Begin
     End
    End;CPNext
   End;
-  { Les selecteurs de variantes de NEW sont acceptes puis ignores. }
+  I:=0;
   While CPToken=','do Begin
-   CPNext;CPExpression
+   Inc(I);CPNext;CPExpression;
+   RT:=Nil;if(T<>Nil)and(T^.Kind=ptkPointer)Then RT:=CPBaseType(T^.ElementType);
+   if(I>1)or(RT=Nil)or(RT^.Kind<>ptkVariantRecord)or
+    (RT^.VariantTagType=Nil)Then CPFailCode(158,'aucune variante correspondante')
+   else Begin
+    if not CPAssignmentCompatible(RT^.VariantTagType,CPLastExpressionType)Then
+     CPFailCode(111,'selecteur incompatible avec le champ de balise');
+    CPAddressSymbol(P);CPConst(RT^.VariantTagOffset);CPEmitCSP(106)
+   End
   End;CPNeed(')')
  End
  else if CPIs('MOVELEFT')or CPIs('MOVERIGHT')Then Begin
@@ -5561,18 +5644,9 @@ Begin
      CPConst(T^.HighBound);CPEmitCSP(45)
     End
    End else if(T<>Nil)and(T^.SizeWords>1)Then Begin
-    if CPToken<>'ID'Then CPFail('source structuree attendue')else
-    Begin
-     P:=CPFind(CPText);if P=Nil Then CPFailCode(104,'variable source non declaree')else
-     Begin
-      CPNext;CPDesignator(P,False,RT);
-      if not CPTypeEquivalent(T,RT)Then CPFailCode(129,'types structures incompatibles')
-      else
-      Begin
-       CPOp(168,$8E);CPBig(T^.SizeWords)
-      End
-     End
-    End
+    CPExpression;RT:=CPLastExpressionType;
+    if not CPAssignmentCompatible(T,RT)Then CPFailCode(129,'types structures incompatibles')
+    else Begin CPOp(168,$8E);CPBig(T^.SizeWords) End
    End else
    Begin
     CPExpression;
