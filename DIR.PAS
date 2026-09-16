@@ -1,7 +1,7 @@
 { @author: Sylvain Maltais (support@gladir.com)
   @created: 2021
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal)
+  @abstract(Cible : Turbo Pascal 7, Free Pascal)
 }
 
 Program DIR;
@@ -119,7 +119,8 @@ Begin
    Case SortOrder[I] of
     'C':Begin VA:=A^.Compression; VB:=B^.Compression; End;
     'D':Begin
-     { Compare packed DOS timestamps as unsigned values, including years >= 2044. }
+     { Comparer les dates/heures DOS compactes comme des valeurs non signees,
+       y compris pour les annees >= 2044. }
      VA:=A^.Data.Time;
      VB:=B^.Data.Time;
      If VA<0Then VA:=VA+4294967296.0;
@@ -141,7 +142,7 @@ Begin
  End;
 End;
 
-{ Stable merge sort: equal keys retain enumeration order. }
+{ Tri fusion stable : les cles egales conservent l'ordre d'enumeration. }
 Function SortEntries(Head:PDirEntry):PDirEntry;
 Var
  Slow,Fast,Left,Right,Tail,Sorted,Chosen:PDirEntry;
@@ -200,9 +201,9 @@ Var
 Begin
  DosStoredSize:=False;
  StoredSize:=0;
- { AX=4302h has a different meaning on DR DOS (access rights).
-   Only use the MS-DOS 7+ interface. AH=30h supplies the OEM ID;
-   AX=3306h supplies the real version even when SETVER is active. }
+ { AX=4302h a une autre signification sous DR DOS (droits d'acces).
+   Utiliser uniquement l'interface MS-DOS 7+. AH=30h fournit l'identifiant OEM;
+   AX=3306h fournit la version reelle meme lorsque SETVER est actif. }
  FillChar(R,SizeOf(R),0);
  R.AX:=$3000;
  If Not CallDos Then Exit;
@@ -220,7 +221,8 @@ Begin
  R.AX:=$4302;
  R.Flags:=FCarry;
  {$IFDEF GO32V2}
- { Protected-mode addresses cannot be passed as DOS segment:offset pointers. }
+ { Les adresses du mode protege ne peuvent pas etre transmises
+   comme des pointeurs DOS segment:deplacement. }
  If Length(Path)+1>Go32.TB_Size Then Exit;
  Go32.DosMemPut(Go32.TB_Segment,Go32.TB_Offset,FileNameZ,Length(Path)+1);
  R.DS:=Go32.TB_Segment;
@@ -229,8 +231,9 @@ Begin
  R.DS:=Seg(FileNameZ);
  R.DX:=Ofs(FileNameZ);
  {$ENDIF}
- { INT 21h/AX=4302h: DS:DX -> ASCIIZ path, CF=error, DX:AX=size.
-   On an uncompressed volume the result is rounded to a cluster boundary. }
+ { INT 21h/AX=4302h : DS:DX -> chemin ASCIIZ, CF=erreur, DX:AX=taille.
+   Sur un volume non compresse, le resultat est arrondi au multiple
+   superieur de la taille d'une unite d'allocation. }
  If Not CallDos Then Exit;
  If (R.Flags and FCarry)<>0Then Exit;
  StoredSize:=R.DX*65536.0+R.AX;
@@ -249,7 +252,8 @@ Var
  LowSize,HighSize:DWORD;
 {$ENDIF}{$ENDIF}
 Begin
- { Percentage of bytes saved; unavailable values and empty files use zero. }
+ { Pourcentage d'octets economises; zero pour les valeurs indisponibles
+   et les fichiers vides. }
  CompressionRate:=0;
  If (Info.Size<=0)or((Info.Attr and Directory)<>0)Then Exit;
  FSplit(FExpand(ShowDir),D,N,E);
@@ -279,7 +283,8 @@ Begin
  End;
 End;
 
-{ Each sign applies to the following attribute; unsigned attributes are required. }
+{ Chaque signe s'applique a l'attribut suivant;
+  les attributs sans signe doivent etre presents. }
 Function ParseAttributes(S:String):Boolean;
 Var
  I:Integer;
