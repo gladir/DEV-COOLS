@@ -130,6 +130,11 @@ Begin
 End;
 
 BEGIN
+ {$IFDEF FPC}
+  {$IFDEF WINDOWS}
+   SetUseACP(False);
+  {$ENDIF}
+ {$ENDIF}
  Language:=_French;
  TmpLanguage:=GetEnv('LANGUAGE');
  If TmpLanguage<>''Then Begin
@@ -155,31 +160,39 @@ BEGIN
     _Germany:Begin
      WriteLn('Listet die Dateien und Unterverzeichnisse eines Verzeichnisses auf.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [/A[[:]attributs]] [path] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [/A[[:]Attribute]] [Pfad] [/FORMAT:format]');
+     WriteLn;
+     WriteLn(' /A[[:]Attribute]  A=Archiv D=Verzeichnis H=Versteckt R=Schreibgesch'+#129+'tzt S=System');
+     WriteLn('                  + : einschlie'+#225+'en; - : ausschlie'+#225+'en');
+     WriteLn('                  /A : alle; /A:H-D : versteckte Dateien ohne Verzeichnisse');
     End;
     _English:Begin
      WriteLn('Purpose:  Display information about files and subdirectories.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [/A[[:]attributs]] [path] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [/A[[:]attributes]] [path] [/FORMAT:format]');
+     WriteLn;
+     WriteLn(' /A[[:]attributes] A=Archive D=Directory H=Hidden R=ReadOnly S=System');
+     WriteLn('                  + : include; - : exclude');
+     WriteLn('                  /A : all; /A:H-D : hidden files without directories');
     End;
     Else Begin
-     WriteLn('DIR   Cette commande permet d''afficher le contenu d''un repertoire dans l''unite de disque.');
+     WriteLn('DIR   Cette commande permet d''afficher le contenu d''un r'+#130+'pertoire dans l''unite de disque.');
      WriteLn;
      WriteLn('Syntaxe:');
      WriteLn;
      WriteLn('DIR [/?] [/2|/W] [/B] [/P] [/A[[:]attributs]] [chemin] [/FORMAT:format]');
      WriteLn;
-     WriteLn(' /?             Ce parametre permet d''afficher l''aide sur cette commande');
-     WriteLn(' /2             Ce parametre permet d''afficher sur 2 colonnes');
-     WriteLn(' /B             Ce parametre enleve l''entete et les details de la fin');
-     WriteLn(' /P             Ce parametre affiche une pause apres l''affichage d''une page pleine');
-     WriteLn(' /W             Ce parametre affiche seulement les fichiers sur plein de colonnes');
-     WriteLn(' /FORMAT:format Ce parametre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
+     WriteLn(' /?             Ce param'+#138+'tre permet d''afficher l''aide sur cette commande');
+     WriteLn(' /2             Ce param'+#138+'tre permet d''afficher sur 2 colonnes');
+     WriteLn(' /A[[:]attributs]  A=Archive D=R'+#130+'pertoire H=Cach'+#130+' R=Lecture seule S=Syst'+#138+'me');
+     WriteLn('                  + : inclure; - : exclure');
+     WriteLn('                  /A : tous; /A:H-D : fichiers cach'+#130+'s sans les r'+#130+'pertoires');
+     WriteLn(' /B             Ce param'+#138+'tre enl'+#138+'ve l''entete et les d'+#130+'tails de la fin');
+     WriteLn(' /P             Ce param'+#138+'tre affiche une pause apres l''affichage d''une page pleine');
+     WriteLn(' /W             Ce param'+#138+'tre affiche seulement les fichiers sur plein de colonnes');
+     WriteLn(' /FORMAT:format Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
     End;
    End;
-   WriteLn(' /A[[:]attributs]  A=Archive D=Directory H=Hidden R=ReadOnly S=System');
-   WriteLn('                  + : inclure / include; - : exclure / exclude');
-   WriteLn('                  /A : tous / all; /A:H-D : hidden files');
    Exit;
   End
    Else
