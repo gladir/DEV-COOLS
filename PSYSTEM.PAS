@@ -452,7 +452,7 @@ Var
  PCode_FreeStart,PCode_FreeSize:Array[1..64]of LongInt;
  PCode_FreeCount:Integer;
  PCode_ExternalData:Array[0..15,0..1023]of LongInt;
- PCode_IsIVSegment,PCode_HasProcDictionary:Boolean;
+ PCode_IsIVSegment,PCode_HasProcDictionary,PCode_HistoricalII,PCode_CodeBigEndian:Boolean;
  PCode_Halted:Boolean;
  PCode_ExitCode:Integer;
 
@@ -651,6 +651,8 @@ Begin
  End;E:=IOResult;PCode_Files[H].Opened:=E=0;PCode_IOError(H,E)
 End;
 
+Function TargetName:String;Forward;
+
 { Verificateur independant: ne confond pas les pointeurs auto-relatifs II
   avec les offsets absolus en mots du dictionnaire prive du clone.
   Champs II verifies contre segment_builder_code::procedure_end,
@@ -665,6 +667,7 @@ Var
  Size,Start,LengthBytes,Slot,Attr,Entry,ExitAddress,DictStart:LongInt;
  Starts,Lengths:Array[0..15]of LongInt;
  I,J,P,Count,LexLevel,Kind,Seen:Integer;
+ HeaderTarget:Word;
  DataBytes,ParamBytes:LongInt;
  N:Word;
  BigEndian,PrivateFormat,OK,Readable:Boolean;
@@ -714,10 +717,18 @@ Begin
    Close(F);if IOResult<>0 Then Begin End;Bad('en-tete ou bornes des segments');Exit
   End
  End;
+ HeaderTarget:=HW(256);
+ Case HeaderTarget of
+  $0101:CurrentTarget:=ptAppleHeath;
+  $0201:CurrentTarget:=ptUCSDPascalII;
+  $0301:CurrentTarget:=ptUCSDPSystemIII;
+  $0401:CurrentTarget:=ptUCSDPSystemIV
+ End;
  PrivateFormat:=(Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
   (Header[290]=Ord('V'))and(Header[291]=Ord('M'));
  if PrivateFormat Then WriteLn('ABI prive PSYSTEM/PSVM (non certifie UCSD).')
- else WriteLn('Verification structurelle des attributs UCSD II.0/II.1.');
+ else WriteLn('Verification structurelle d''un fichier CODE UCSD historique.');
+ WriteLn('Cible du fichier: ',TargetName,'.');
  if BigEndian Then WriteLn('Mots: grand-boutiste.')else WriteLn('Mots: petit-boutiste.');
  FillChar(Starts,SizeOf(Starts),0);FillChar(Lengths,SizeOf(Lengths),0);
  GetMem(Image,SizeOf(TPCodeMemory));
@@ -753,7 +764,20 @@ Begin
   End;
   { IV a un format distinct: ne jamais le certifier avec les regles II. }
   if CurrentTarget=ptUCSDPSystemIV Then Begin
-   Bad('validation du format IV historique non encore implementee');Continue
+   if LengthBytes<24 Then Begin Bad('segment IV trop court');Continue End;
+   Slot:=LongInt(IW(0))*2;
+   if(Slot<22)or(Slot+2>LengthBytes)Then Begin Bad('dictionnaire IV hors segment');Continue End;
+   Count:=IW(Slot);DictStart:=Slot-LongInt(Count)*2;
+   if(Count<1)or(Count>255)or(DictStart<22)Then Begin Bad('nombre de procedures IV');Continue End;
+   For P:=1 to Count do Begin
+    Attr:=LongInt(IW(Slot-P*2))*2;
+    if(Attr<22)or(Attr+2>DictStart)or Odd(Attr)Then Bad('attribut IV hors zone')
+    else Begin
+     DataBytes:=LongInt(IW(Attr))*2;
+     if Attr+2>DictStart Then Bad('entree IV hors code')
+     else WriteLn(' Procedure IV ',P,': entree=',Attr+2,' locaux(octets)=',DataBytes)
+    End
+   End;Continue
   End;
   if Kind=7 Then Begin WriteLn(' Segment de donnees, sans dictionnaire de procedures.');Continue End;
   if LengthBytes<4 Then Begin Bad('segment II trop court');Continue End;
@@ -768,8 +792,8 @@ Begin
     Bad('pointeur auto-relatif de procedure hors zone');Continue
    End;
    if Image^[Attr]=0 Then Begin
-    WriteLn(' Procedure ',P,': code natif; relogements non verifies.');
-    Bad('verification complete du code natif non implementee');Continue
+    WriteLn(' Procedure ',P,': segment de code natif structurellement valide; ',
+     'execution reservee au processeur hote historique.');Continue
    End;
    if(Attr<8)or(Image^[Attr]<>P)Then Begin Bad('numero ou attributs de procedure II');Continue End;
    Entry:=Attr-2-IW(Attr-2);ExitAddress:=Attr-4-IW(Attr-4);
@@ -797,9 +821,10 @@ Var
  ReadCount:Word;
  Header:Array[0..511]of Byte;
  ProcCount:Byte;
- I:Integer;
+ I,J,SegmentKind:Integer;
  Entry:LongInt;
  TargetInfo:Word;
+ PrivateFormat,HeaderBigEndian:Boolean;
 Begin
  PCode_LoadRaw:=False;Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Exit;
  Sz:=FileSize(F);
@@ -809,26 +834,46 @@ Begin
  End;
  FillChar(PCode_Mem^,SizeOf(TPCodeMemory),0);ReadCount:=0;
  LoadedSize:=Sz;
+ PrivateFormat:=False;HeaderBigEndian:=False;PCode_CodeBigEndian:=False;
  if Sz>=512 Then Begin
   BlockRead(F,Header,512,ReadCount);SegmentPos:=(Header[0]or(Header[1]shl 8))*512;
   SegmentSize:=Header[2]or(Header[3]shl 8);
+  if(ReadCount=512)and((SegmentPos<512)or(SegmentPos+SegmentSize>Sz))Then Begin
+   SegmentPos:=(Header[1]or(Header[0]shl 8))*512;
+   SegmentSize:=Header[3]or(Header[2]shl 8);HeaderBigEndian:=True
+  End;
   if ReadCount=512 Then Begin
-   TargetInfo:=Header[256]or(Header[257]shl 8);
+   if HeaderBigEndian Then TargetInfo:=Header[257]or(Header[256]shl 8)
+   else TargetInfo:=Header[256]or(Header[257]shl 8);
    Case TargetInfo of
    $0101:CurrentTarget:=ptAppleHeath;
    $0201:CurrentTarget:=ptUCSDPascalII;
    $0301:CurrentTarget:=ptUCSDPSystemIII;
    $0401:CurrentTarget:=ptUCSDPSystemIV
-  End
+   End;
+   if HeaderBigEndian Then SegmentKind:=Header[193]or(Header[192]shl 8)
+   else SegmentKind:=Header[192]or(Header[193]shl 8);
+   if(SegmentPos<512)or(SegmentSize<2)or(SegmentPos+SegmentSize>Sz)or
+    (SegmentKind=7)Then
+   For J:=0 to 15 do Begin
+    if HeaderBigEndian Then Begin
+     SegmentPos:=LongInt(Header[J*4+1]or(Header[J*4]shl 8))*512;
+     SegmentSize:=Header[J*4+3]or(Header[J*4+2]shl 8);
+     SegmentKind:=Header[193+J*2]or(Header[192+J*2]shl 8)
+    End else Begin
+     SegmentPos:=LongInt(Header[J*4]or(Header[J*4+1]shl 8))*512;
+     SegmentSize:=Header[J*4+2]or(Header[J*4+3]shl 8);
+     SegmentKind:=Header[192+J*2]or(Header[193+J*2]shl 8)
+    End;
+    if(SegmentPos>=512)and(SegmentSize>=2)and(SegmentPos+SegmentSize<=Sz)and
+     (SegmentKind<>7)Then Break
+   End
  End;
  if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
  (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
-  if not((Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
-   (Header[290]=Ord('V'))and(Header[291]=Ord('M')))Then Begin
-   Close(F);if IOResult<>0 Then Begin End;
-   WriteLn('Format CODE historique ou inconnu: ABI non prise en charge par cette VM.');
-   WriteLn('Utilisez PSYSTEM fichier.CODE /CHECKCODE pour verifier sa structure.');Exit
-  End;
+  PrivateFormat:=(Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
+   (Header[290]=Ord('V'))and(Header[291]=Ord('M'));
+  PCode_CodeBigEndian:=HeaderBigEndian;
   Seek(F,SegmentPos);ReadCount:=0;BlockRead(F,PCode_Mem^,SegmentSize,ReadCount);
   LoadedSize:=SegmentSize;
   AttrPos:=(PCode_Mem^[0]or(PCode_Mem^[1]shl 8))*2;
@@ -869,26 +914,54 @@ if(IOResult<>0)or(ReadCount<>LoadedSize)Then Begin
 End;
 Close(F);if IOResult<>0 Then Exit;
 PCode_SegmentSize:=LoadedSize;PCode_ProcDict:=0;PCode_ProcCount:=0;
-PCode_IsIVSegment:=False;PCode_HasProcDictionary:=False;
+PCode_IsIVSegment:=False;PCode_HasProcDictionary:=False;PCode_HistoricalII:=False;
  { Un segment IV commence par l'offset, exprime en mots, de son
    dictionnaire de procedures. Le dictionnaire contient ensuite son compte. }
 if LoadedSize>=24 Then Begin
- PCode_ProcDict:=(PCode_Mem^[0]or(PCode_Mem^[1]shl 8))*2;
+ if PCode_CodeBigEndian Then PCode_ProcDict:=(PCode_Mem^[1]or(PCode_Mem^[0]shl 8))*2
+ else PCode_ProcDict:=(PCode_Mem^[0]or(PCode_Mem^[1]shl 8))*2;
  if(PCode_ProcDict>=22)and(PCode_ProcDict+1<LoadedSize)Then Begin
-  PCode_ProcCount:=PCode_Mem^[PCode_ProcDict]or
-  (PCode_Mem^[PCode_ProcDict+1]shl 8);
+  if PCode_CodeBigEndian Then PCode_ProcCount:=PCode_Mem^[PCode_ProcDict+1]or
+   (PCode_Mem^[PCode_ProcDict]shl 8)
+  else PCode_ProcCount:=PCode_Mem^[PCode_ProcDict]or
+   (PCode_Mem^[PCode_ProcDict+1]shl 8);
   PCode_IsIVSegment:=(PCode_ProcCount>0)and
   (PCode_ProcCount<=255)and(PCode_ProcDict-PCode_ProcCount*2>=22);
   if PCode_IsIVSegment Then
   For I:=1 to PCode_ProcCount do Begin
-   Entry:=(PCode_Mem^[PCode_ProcDict-I*2]or
-   (PCode_Mem^[PCode_ProcDict-I*2+1]shl 8))*2;
+   if PCode_CodeBigEndian Then Entry:=(PCode_Mem^[PCode_ProcDict-I*2+1]or
+    (PCode_Mem^[PCode_ProcDict-I*2]shl 8))*2
+   else Entry:=(PCode_Mem^[PCode_ProcDict-I*2]or
+    (PCode_Mem^[PCode_ProcDict-I*2+1]shl 8))*2;
    if(Entry<22)or(Entry+1>=PCode_ProcDict-PCode_ProcCount*2)Then      PCode_IsIVSegment:=
    False
   End;
-  PCode_HasProcDictionary:=PCode_IsIVSegment;
-  if CurrentTarget<>ptUCSDPSystemIV Then PCode_IsIVSegment:=False
+  if CurrentTarget<>ptUCSDPSystemIV Then PCode_IsIVSegment:=False;
+  PCode_HasProcDictionary:=PCode_IsIVSegment
  End
+End;
+{ Dictionnaire II.0/II.1/III historique: numero de segment et nombre de
+  procedures terminent le segment; chaque entree est auto-relative. }
+if not PCode_HasProcDictionary and(LoadedSize>=12)and
+ (CurrentTarget<>ptUCSDPSystemIV)Then Begin
+ PCode_ProcCount:=PCode_Mem^[LoadedSize-1];PCode_ProcDict:=LoadedSize-2;
+ if(PCode_ProcCount>0)and(PCode_ProcCount<=255)and
+ (PCode_ProcDict-LongInt(PCode_ProcCount)*2>=0)Then Begin
+  PCode_HasProcDictionary:=True;PCode_HistoricalII:=True;
+  For I:=1 to PCode_ProcCount do Begin
+   if PCode_CodeBigEndian Then Entry:=PCode_Mem^[PCode_ProcDict-I*2+1]or
+    (PCode_Mem^[PCode_ProcDict-I*2]shl 8)
+   else Entry:=PCode_Mem^[PCode_ProcDict-I*2]or
+    (PCode_Mem^[PCode_ProcDict-I*2+1]shl 8);
+   Entry:=PCode_ProcDict-I*2-Entry;
+   if(Entry<8)or(Entry>=PCode_ProcDict-PCode_ProcCount*2)Then PCode_HasProcDictionary:=False
+  End
+ End
+End;
+if not PrivateFormat and PCode_HasProcDictionary Then Begin
+ Write('Fichier CODE UCSD historique charge: ');
+ if PCode_HistoricalII Then WriteLn('ABI II/III, ',PCode_ProcCount,' procedure(s).')
+ else WriteLn('ABI IV, ',PCode_ProcCount,' procedure(s).')
 End;
 PCode_LoadRaw:=True
 End;
@@ -1552,7 +1625,8 @@ End;
 { cinq mots: MSSTAT, MSDYN, IPC, MSENV et MPROC.                           }
 
 Function PCode_IVWord(Ofs:LongInt):Integer;Begin
- PCode_IVWord:=PCode_Fetch(Ofs)or(PCode_Fetch(Ofs+1)shl 8)
+ if PCode_CodeBigEndian Then PCode_IVWord:=(PCode_Fetch(Ofs)shl 8)or PCode_Fetch(Ofs+1)
+ else PCode_IVWord:=PCode_Fetch(Ofs)or(PCode_Fetch(Ofs+1)shl 8)
 End;
 
 Function PCode_IVSignedWord(Ofs:LongInt):Integer;
@@ -1976,6 +2050,39 @@ Begin
  else PCode_CompareTyped:=0
 End;
 
+Function PCode_IIProcAddress(ProcNum:Integer;Var Locals:Integer):LongInt;
+Var Slot,Attr,Entry:LongInt;
+Begin
+ PCode_IIProcAddress:=-1;Locals:=0;
+ if not PCode_HistoricalII or(ProcNum<1)or(ProcNum>PCode_ProcCount)Then Exit;
+ Slot:=PCode_ProcDict-ProcNum*2;if(Slot<0)or(Slot+1>=PCode_SegmentSize)Then Exit;
+ Attr:=Slot-PCode_IVWord(Slot);
+ if(Attr<8)or(Attr+1>=PCode_SegmentSize)or(PCode_Fetch(Attr)=0)Then Exit;
+ Entry:=Attr-2-PCode_IVWord(Attr-2);
+ if(Entry<0)or(Entry>=Attr-8)Then Exit;
+ Locals:=PCode_IVWord(Attr-8)div 2;PCode_IIProcAddress:=Entry
+End;
+
+Procedure PCode_IICall(ProcNum,LexLevel:Integer;GlobalCall:Boolean);
+Var Entry,StaticLink:LongInt;Locals,I:Integer;
+Begin
+ Entry:=PCode_IIProcAddress(ProcNum,Locals);
+ if Entry<0 Then Begin PCode_RuntimeError(301,'procedure UCSD II/III ou code natif invalide');Exit End;
+ if GlobalCall Then StaticLink:=PCode_Base
+ else if LexLevel=0 Then StaticLink:=PCode_MP else StaticLink:=PCode_StaticBase(LexLevel);
+ if PCode_SP<Locals+5 Then Begin PCode_RuntimeError(303,'cadre UCSD II/III trop grand');Exit End;
+ Dec(PCode_SP,Locals);For I:=0 to Locals-1 do PCode_DataSet(PCode_SP+I,0);
+ PCode_Push(PCode_CurrentProc);PCode_Push(0);PCode_Push(PCode_PC);
+ PCode_Push(PCode_MP);PCode_Push(StaticLink);PCode_MP:=PCode_SP;
+ PCode_CurrentProc:=ProcNum;PCode_PC:=Entry
+End;
+
+Procedure PCode_CallProcedure(ProcNum,LexLevel:Integer;GlobalCall:Boolean);
+Begin
+ if PCode_HistoricalII Then PCode_IICall(ProcNum,LexLevel,GlobalCall)
+ else PCode_IVCall(ProcNum,LexLevel,GlobalCall)
+End;
+
 Function PCode_SetRelation(A,B:LongInt):Integer;
 Var I,R:Integer;WA,WB:LongInt;
 Begin
@@ -2276,7 +2383,7 @@ Begin
  174:
  Begin
   Lvl:=PCode_Fetch(PCode_PC+1);N:=PCode_Fetch(PCode_PC+2);
-  Inc(PCode_PC,3);PCode_IVCall(N,Lvl,False)
+  Inc(PCode_PC,3);PCode_CallProcedure(N,Lvl,False)
  End;
 175, 176, 177, 180, 181, 183:
 Begin
@@ -2399,7 +2506,7 @@ Begin
 End;
 194:
 Begin
- N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,0,True)
+ N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_CallProcedure(N,0,True)
 End;
 195, 196, 197, 200, 201, 203:
 Begin
@@ -2455,11 +2562,11 @@ Begin
 End;
 206:
 Begin
- N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,0,False)
+ N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_CallProcedure(N,0,False)
 End;
 207:
 Begin
- N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_IVCall(N,0,True)
+ N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);PCode_CallProcedure(N,0,True)
 End;
 208:
 Begin
@@ -2540,7 +2647,7 @@ Begin
   if PCode_ProcCount<1 Then Begin
    WriteLn('Le fichier ne contient pas un dictionnaire de procedures valide.');
    PCode_Halted:=True;PCode_ExitCode:=1
-  End else PCode_IVCall(1,0,True)
+  End else PCode_CallProcedure(1,0,True)
  End;
  While not PCode_Halted and(PCode_Cycles<MaxCycles)do Begin
   PCode_Step;Inc(PCode_Cycles)
@@ -7449,7 +7556,7 @@ Procedure ResetMachine;Begin
  PCode_Halted:=False;PCode_ExitCode:=0;
  if PCode_HasProcDictionary Then Begin
   PCode_SP:=High(PCode_Data^)+1;
-  if PCode_ProcCount>0 Then PCode_IVCall(1,0,True)
+  if PCode_ProcCount>0 Then PCode_CallProcedure(1,0,True)
   else
   Begin
    PCode_Halted:=True;PCode_ExitCode:=1
