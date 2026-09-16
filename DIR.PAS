@@ -28,7 +28,7 @@ Var
  P:Byte;
  Info:SearchRec;
  T:DateTime;
- Option:Set of (Pause,Subdirectory,Lower,Brief,Description);
+ Option:Set of (Pause,Subdirectory,Lower,Brief,Description,CompressionDetails);
  Column:Set Of (Double,Width);
  TotalNumFiles,TotalSize:LongInt;
  CurrParam,ShowDir,CurrLabel:String;
@@ -40,6 +40,12 @@ Var
  EntriesLoaded:Boolean;
 
 Function StrToUpper(S:String):String; Forward;
+
+Function ShowCompression:Boolean;
+Begin
+ ShowCompression:=(CompressionDetails in Option)and
+                  Not(Brief in Option)and Not(Width in Column);
+End;
 
 Function DisplayName:String;
 Var
@@ -241,25 +247,56 @@ Begin
 End;
 {$ENDIF}
 
-Function CompressionRate:Real;
+{$IFDEF DOSCOMPRESSION}
+Function DosCompressedDrive(Drive:Char):Boolean;
 Var
+ {$IFDEF GO32V2}R:Go32.TRealRegs;{$ELSE}R:Registers;{$ENDIF}
+Begin
+ DosCompressedDrive:=False;
+ If Not(UpCase(Drive) in ['A'..'Z'])Then Exit;
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$4A11;
+ {$IFDEF GO32V2}
+ If Not Go32.RealIntr($2F,R)Then Exit;
+ {$ELSE}
+ Intr($2F,R);
+ {$ENDIF}
+ If (R.AX<>0)or(R.BX<>$444D)Then Exit;
+ { DoubleSpace/DriveSpace : le bit 7 de BL identifie un lecteur compresse. }
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$4A11;
+ R.BX:=1;
+ R.DL:=Ord(UpCase(Drive))-Ord('A');
+ {$IFDEF GO32V2}
+ If Not Go32.RealIntr($2F,R)Then Exit;
+ {$ELSE}
+ Intr($2F,R);
+ {$ENDIF}
+ DosCompressedDrive:=(R.AX=0)and((R.BL and $80)<>0);
+End;
+{$ENDIF}
+
+Function FileStorageInfo(Var StoredSize:Real;Var Compressed:Boolean):Boolean;
+Var
+ Available:Boolean;
  D:DirStr;
  N:NameStr;
  E:ExtStr;
- StoredSize:Real;
 {$IFDEF FPC}{$IFDEF WINDOWS}
  Path:AnsiString;
- LowSize,HighSize:DWORD;
+ LowSize,HighSize,Attributes:DWORD;
 {$ENDIF}{$ENDIF}
 Begin
- { Pourcentage d'octets economises; zero pour les valeurs indisponibles
-   et les fichiers vides. }
- CompressionRate:=0;
+ FileStorageInfo:=False;
+ Available:=False;
+ Compressed:=False;
+ StoredSize:=0;
  If (Info.Size<=0)or((Info.Attr and Directory)<>0)Then Exit;
  FSplit(FExpand(ShowDir),D,N,E);
- StoredSize:=Info.Size;
 {$IFDEF DOSCOMPRESSION}
  If Not DosStoredSize(D+Info.Name,StoredSize)Then Exit;
+ Compressed:=DosCompressedDrive(D[1]);
+ Available:=True;
 {$ENDIF}
 {$IFDEF FPC}{$IFDEF WINDOWS}
  Path:=D+Info.Name;
@@ -267,9 +304,44 @@ Begin
  LowSize:=Windows.GetCompressedFileSizeA(PChar(Path),@HighSize);
  If (LowSize=DWORD($FFFFFFFF))and(Windows.GetLastError<>0)Then Exit;
  StoredSize:=HighSize*4294967296.0+LowSize;
+ Attributes:=Windows.GetFileAttributesA(PChar(Path));
+ If Attributes<>DWORD($FFFFFFFF)Then
+  Compressed:=(Attributes and FILE_ATTRIBUTE_COMPRESSED)<>0;
+ Available:=True;
 {$ENDIF}{$ENDIF}
+ { La reduction effective couvre aussi les volumes compresses Windows 9x. }
+ If Available and(StoredSize<Info.Size)Then Compressed:=True;
+ FileStorageInfo:=Available;
+End;
+
+Function CompressionRate:Real;
+Var
+ StoredSize:Real;
+ Compressed:Boolean;
+Begin
+ { Pourcentage d'octets economises pour le tri /O:C. }
+ CompressionRate:=0;
+ If Not FileStorageInfo(StoredSize,Compressed)Then Exit;
  If StoredSize<Info.Size Then
   CompressionRate:=100.0*(1.0-StoredSize/Info.Size);
+End;
+
+Function CompressionRatioText:String;
+Var
+ StoredSize,AllocatedSize:Real;
+ Compressed:Boolean;
+ S:String;
+Begin
+ CompressionRatioText:='-';
+ If Not FileStorageInfo(StoredSize,Compressed)Then Exit;
+ If Not Compressed Then Exit;
+ If StoredSize<=0Then Exit;
+ { Arrondir la taille logique a l'unite de 8 Ko, sans debordement LongInt.
+   La taille physique reste celle fournie par le systeme, sans arrondi a 8 Ko. }
+ AllocatedSize:=(Info.Size div 8192)*8192.0;
+ If (Info.Size mod 8192)<>0Then AllocatedSize:=AllocatedSize+8192.0;
+ Str(AllocatedSize/StoredSize:0:1,S);
+ CompressionRatioText:=S+':1';
 End;
 
 Procedure FreeEntries;
@@ -472,11 +544,13 @@ BEGIN
     _Germany:Begin
      WriteLn('Listet die Dateien und Unterverzeichnisse eines Verzeichnisses auf.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/L] [/P] [/A[[:]Attribute]] [/O[[:]Folge]] [Pfad] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/A[[:]Attribute]] [/O[[:]Folge]] [Pfad] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]Attribute]  A=Archiv D=Verzeichnis H=Versteckt R=Schreibgesch'+#129+'tzt S=System');
      WriteLn('                  + : einschlie'+#225+'en; - : ausschlie'+#225+'en');
      WriteLn('                  /A : alle; /A:H-D : versteckte Dateien ohne Verzeichnisse');
+     WriteLn(' /C               DoubleSpace-Kompressionsverh'+#132+'ltnis, 8-KB-Einheiten');
+     WriteLn('                  MS-DOS 7+ / Windows; - = nicht verf'+#129+'gbar; /B und /W haben Vorrang');
      WriteLn(' /L               Datei- und Verzeichnisnamen in Kleinbuchstaben anzeigen');
      WriteLn(' /O[[:]Folge]     C=Kompressionsrate D=Datum/Zeit E=Erweiterung');
      WriteLn('                  G=Verzeichnisse zuerst N=Name S=Gr'+#148+'sse');
@@ -488,11 +562,13 @@ BEGIN
     _English:Begin
      WriteLn('Purpose:  Display information about files and subdirectories.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/L] [/P] [/A[[:]attributes]] [/O[[:]order]] [path] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/A[[:]attributes]] [/O[[:]order]] [path] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]attributes] A=Archive D=Directory H=Hidden R=ReadOnly S=System');
      WriteLn('                  + : include; - : exclude');
      WriteLn('                  /A : all; /A:H-D : hidden files without directories');
+     WriteLn(' /C               DoubleSpace compression ratio, based on 8 KB allocation units');
+     WriteLn('                  MS-DOS 7+ / Windows; - = unavailable; ignored with /B or /W');
      WriteLn(' /L               Display file and directory names in lowercase');
      WriteLn(' /O[[:]order]     C=Compression rate D=Date/time E=Extension');
      WriteLn('                  G=Directories first N=Name S=Size');
@@ -506,7 +582,7 @@ BEGIN
      WriteLn;
      WriteLn('Syntaxe:');
      WriteLn;
-     WriteLn('DIR [/?] [/2|/W] [/B] [/L] [/P] [/A[[:]attributs]] [/O[[:]ordretri]] [chemin] [/FORMAT:format]');
+     WriteLn('DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/A[[:]attributs]] [/O[[:]ordretri]] [chemin] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /?             Ce param'+#138+'tre permet d''afficher l''aide sur cette commande');
      WriteLn(' /2             Ce param'+#138+'tre permet d''afficher sur 2 colonnes');
@@ -514,6 +590,8 @@ BEGIN
      WriteLn('                  + : inclure; - : exclure');
      WriteLn('                  /A : tous; /A:H-D : fichiers cach'+#130+'s sans les r'+#130+'pertoires');
      WriteLn(' /B             Ce param'+#138+'tre enl'+#138+'ve l''entete et les d'+#130+'tails de la fin');
+     WriteLn(' /C               Taux de compression DoubleSpace, unit'+#130+'s d''allocation de 8 Ko');
+     WriteLn('                  MS-DOS 7+ / Windows; - = indisponible; ignor'+#130+' avec /B ou /W');
      WriteLn(' /L               Affiche les noms des fichiers et r'+#130+'pertoires en minuscules');
      WriteLn(' /O[[:]ordretri]  C=Taux de compression D=Date/heure E=Extension');
      WriteLn('                  G=R'+#130+'pertoires en premier N=Nom S=Taille');
@@ -547,6 +625,7 @@ BEGIN
    End;
   End Else
   If(CurrParam='/B')or(CurrParam='/b')Then Include(Option,Brief) Else
+  If(CurrParam='/C')or(CurrParam='/c')Then Include(Option,CompressionDetails) Else
   If(CurrParam='/L')or(CurrParam='/l')Then Include(Option,Lower) Else
   If(CurrParam='/P')or(CurrParam='/p')Then Include(Option,Pause) Else
   If(CurrParam='/W')or(CurrParam='/w')Then Include(Column,Width) Else
@@ -570,6 +649,7 @@ BEGIN
    FindFirstMatch;
    While DOSError=0 do Begin
     Write(DisplayName);
+    If ShowCompression Then Write(',',CompressionRatioText);
     If Not((Width)in(Column))Then Begin
      Write(',');
      If Info.Attr and Directory=Directory Then Begin
@@ -603,6 +683,7 @@ BEGIN
    WriteLn('<table>');
    WriteLn(' ':4,'<tr>');
    WriteLn(' ':8,'<th>FileName</th>');
+   If ShowCompression Then WriteLn(' ':8,'<th>Compression (8K)</th>');
    If Not((Width)in(Column))Then Begin
     WriteLn(' ':8,'<th>Attribut</th>');
     WriteLn(' ':8,'<th>Size</th>');
@@ -613,6 +694,7 @@ BEGIN
    While DOSError=0 do Begin
     WriteLn(' ':4,'<tr>');
     WriteLn(' ':8,'<td>',DisplayName,'</td>');
+    If ShowCompression Then WriteLn(' ':8,'<td>',CompressionRatioText,'</td>');
     If Not((Width)in(Column))Then Begin
      Write(' ':8,'<td>');
      If Info.Attr and Directory=Directory Then Begin
@@ -651,6 +733,8 @@ BEGIN
    While Error=0 do Begin
     WriteLn(' ':4,'"file":{');
     WriteLn(' ':8,'"filename":"',DisplayName,'",');
+    If ShowCompression Then
+     WriteLn(' ':8,'"compression8k":"',CompressionRatioText,'",');
     If Not((Width)in(Column))Then Begin
      Write(' ':8,'"attribut":"');
      If Info.Attr and Directory=Directory Then Begin
@@ -694,6 +778,8 @@ BEGIN
    Error:=DOSError;
    While Error=0 do Begin
     WriteLn(' ':7,'(Name:''',DisplayName,''';');
+    If ShowCompression Then
+     WriteLn(' ':8,'(* Compression (8K): ',CompressionRatioText,' *)');
     If Not((Width)in(Column))Then Begin
      Write(' ':8,'Attr:');
      First:=True;
@@ -738,14 +824,18 @@ BEGIN
   _SQL:Begin
    WriteLn('CREATE TABLE files (');
    WriteLn(' ':8,'filename TEXT,');
+   If ShowCompression Then WriteLn(' ':8,'compression8k TEXT,');
    WriteLn(' ':8,'attribut TEXT,');
    WriteLn(' ':8,'size INT,');
    WriteLn(' ':8,'time TEXT');
    WriteLn(');');
    FindFirstMatch;
    While DOSError=0 do Begin
-    WriteLn('INSERT INTO files (filename,attribut,size,time) VALUES (');
+    Write('INSERT INTO files (filename,');
+    If ShowCompression Then Write('compression8k,');
+    WriteLn('attribut,size,time) VALUES (');
     WriteLn(' ':8,'''',DisplayName,''',');
+    If ShowCompression Then WriteLn(' ':8,'''',CompressionRatioText,''',');
     If Not((Width)in(Column))Then Begin
      Write(' ':8,'''');
      If Info.Attr and Directory=Directory Then Begin
@@ -781,6 +871,8 @@ BEGIN
    While DOSError=0 do Begin
     WriteLn(' ':4,'<file>');
     WriteLn(' ':8,'<filename>',DisplayName,'</filename>');
+    If ShowCompression Then
+     WriteLn(' ':8,'<compression8k>',CompressionRatioText,'</compression8k>');
     If Not((Width)in(Column))Then Begin
      Write(' ':8,'<attribut>');
      If Info.Attr and Directory=Directory Then Begin
@@ -833,6 +925,7 @@ BEGIN
     End
      Else
     Write(Info.Size:9);
+    If ShowCompression Then Write(' ',CompressionRatioText:8);
     UnpackTime(Info.Time,T);
     Write(' ',T.Year:4,'-',PadZeroLeft(T.Month,2),'-',PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2),' ');
     FindNextMatch;
@@ -862,6 +955,7 @@ BEGIN
      End
       Else
      Write(Info.Size:15);
+     If ShowCompression Then Write(' ',CompressionRatioText:8);
      UnpackTime(Info.Time,T);
      WriteLn(' ',T.Year:4,'-',PadZeroLeft(T.Month,2),'-',PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2));
      Inc(TotalNumFiles);
