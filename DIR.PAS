@@ -6,7 +6,11 @@
 
 Program DIR;
 
-Uses {$IFDEF FPC}{$IFDEF WINDOWS}Windows,{$ENDIF}{$ENDIF} Crt,DOS;
+{$IFDEF MSDOS}{$DEFINE DOSCOMPRESSION}{$ENDIF}
+{$IFDEF GO32V2}{$DEFINE DOSCOMPRESSION}{$ENDIF}
+
+Uses {$IFDEF FPC}{$IFDEF WINDOWS}Windows,{$ENDIF}{$ENDIF}
+     {$IFDEF GO32V2}Go32,{$ENDIF} Crt,DOS;
 
 Type
  PDirEntry=^TDirEntry;
@@ -176,30 +180,92 @@ Begin
  SortEntries:=Sorted;
 End;
 
-Function CompressionRate:Real;
-{$IFDEF FPC}{$IFDEF WINDOWS}
+{$IFDEF DOSCOMPRESSION}
+Function DosStoredSize(Path:String;Var StoredSize:Real):Boolean;
 Var
- Path:AnsiString;
+ {$IFDEF GO32V2}R:Go32.TRealRegs;{$ELSE}R:Registers;{$ENDIF}
+ FileNameZ:Array[0..255]of Char;
+ MajorVersion:Byte;
+
+ Function CallDos:Boolean;
+ Begin
+  {$IFDEF GO32V2}
+  CallDos:=Go32.RealIntr($21,R);
+  {$ELSE}
+  MsDos(R);
+  CallDos:=True;
+  {$ENDIF}
+ End;
+
+Begin
+ DosStoredSize:=False;
+ StoredSize:=0;
+ { AX=4302h has a different meaning on DR DOS (access rights).
+   Only use the MS-DOS 7+ interface. AH=30h supplies the OEM ID;
+   AX=3306h supplies the real version even when SETVER is active. }
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$3000;
+ If Not CallDos Then Exit;
+ If R.BH=$EE Then Exit;
+ MajorVersion:=R.AL;
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$3306;
+ If Not CallDos Then Exit;
+ If (R.Flags and FCarry)=0Then
+  If R.AL<>$FF Then MajorVersion:=R.BL;
+ If MajorVersion<7Then Exit;
+ FillChar(FileNameZ,SizeOf(FileNameZ),0);
+ Move(Path[1],FileNameZ[0],Length(Path));
+ FillChar(R,SizeOf(R),0);
+ R.AX:=$4302;
+ R.Flags:=FCarry;
+ {$IFDEF GO32V2}
+ { Protected-mode addresses cannot be passed as DOS segment:offset pointers. }
+ If Length(Path)+1>Go32.TB_Size Then Exit;
+ Go32.DosMemPut(Go32.TB_Segment,Go32.TB_Offset,FileNameZ,Length(Path)+1);
+ R.DS:=Go32.TB_Segment;
+ R.DX:=Go32.TB_Offset;
+ {$ELSE}
+ R.DS:=Seg(FileNameZ);
+ R.DX:=Ofs(FileNameZ);
+ {$ENDIF}
+ { INT 21h/AX=4302h: DS:DX -> ASCIIZ path, CF=error, DX:AX=size.
+   On an uncompressed volume the result is rounded to a cluster boundary. }
+ If Not CallDos Then Exit;
+ If (R.Flags and FCarry)<>0Then Exit;
+ StoredSize:=R.DX*65536.0+R.AX;
+ DosStoredSize:=True;
+End;
+{$ENDIF}
+
+Function CompressionRate:Real;
+Var
  D:DirStr;
  N:NameStr;
  E:ExtStr;
- LowSize,HighSize:DWORD;
  StoredSize:Real;
+{$IFDEF FPC}{$IFDEF WINDOWS}
+ Path:AnsiString;
+ LowSize,HighSize:DWORD;
 {$ENDIF}{$ENDIF}
 Begin
  { Percentage of bytes saved; unavailable values and empty files use zero. }
  CompressionRate:=0;
-{$IFDEF FPC}{$IFDEF WINDOWS}
  If (Info.Size<=0)or((Info.Attr and Directory)<>0)Then Exit;
  FSplit(FExpand(ShowDir),D,N,E);
+ StoredSize:=Info.Size;
+{$IFDEF DOSCOMPRESSION}
+ If Not DosStoredSize(D+Info.Name,StoredSize)Then Exit;
+{$ENDIF}
+{$IFDEF FPC}{$IFDEF WINDOWS}
  Path:=D+Info.Name;
  Windows.SetLastError(0);
  LowSize:=Windows.GetCompressedFileSizeA(PChar(Path),@HighSize);
  If (LowSize=DWORD($FFFFFFFF))and(Windows.GetLastError<>0)Then Exit;
  StoredSize:=HighSize*4294967296.0+LowSize;
+{$ENDIF}{$ENDIF}
  If StoredSize<Info.Size Then
   CompressionRate:=100.0*(1.0-StoredSize/Info.Size);
-{$ENDIF}{$ENDIF}
 End;
 
 Procedure FreeEntries;
@@ -411,7 +477,8 @@ BEGIN
      WriteLn('                  G=Verzeichnisse zuerst N=Name S=Gr'+#148+'sse');
      WriteLn('                  Aufsteigend; - kehrt den folgenden Schl'+#129+'ssel um');
      WriteLn('                  /O = GN; mehrere Schl'+#129+'ssel, z.B. /O:G-S');
-     WriteLn('                  C: eingesparte Bytes (%), Windows; sonst 0');
+     WriteLn('                  C: eingesparte Bytes (%), Windows / MS-DOS 7+');
+     WriteLn('                  Ohne Unterst'+#129+'tzung: 0');
     End;
     _English:Begin
      WriteLn('Purpose:  Display information about files and subdirectories.');
@@ -426,7 +493,8 @@ BEGIN
      WriteLn('                  G=Directories first N=Name S=Size');
      WriteLn('                  Ascending; - reverses the following key');
      WriteLn('                  /O = GN; combine keys, e.g. /O:G-S');
-     WriteLn('                  C: bytes saved (%), Windows; otherwise 0');
+     WriteLn('                  C: bytes saved (%), Windows / MS-DOS 7+');
+     WriteLn('                  Unsupported systems: 0');
     End;
     Else Begin
      WriteLn('DIR   Cette commande permet d''afficher le contenu d''un r'+#130+'pertoire dans l''unite de disque.');
@@ -446,7 +514,8 @@ BEGIN
      WriteLn('                  G=R'+#130+'pertoires en premier N=Nom S=Taille');
      WriteLn('                  Ordre croissant; - inverse le crit'+#138+'re suivant');
      WriteLn('                  /O = GN; crit'+#138+'res combinables, ex. /O:G-S');
-     WriteLn('                  C : octets '+#130+'conomis'+#130+'s (%), Windows; sinon 0');
+     WriteLn('                  C : octets '+#130+'conomis'+#130+'s (%), Windows / MS-DOS 7+');
+     WriteLn('                  Syst'+#138+'mes non pris en charge : 0');
      WriteLn(' /P             Ce param'+#138+'tre affiche une pause apres l''affichage d''une page pleine');
      WriteLn(' /W             Ce param'+#138+'tre affiche seulement les fichiers sur plein de colonnes');
      WriteLn(' /FORMAT:format Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
