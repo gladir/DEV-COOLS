@@ -33,7 +33,8 @@ Var
  P:Byte;
  Info:SearchRec;
  T:DateTime;
- Option:Set of (Pause,Subdirectory,Lower,Brief,Description,CompressionDetails);
+ Option:Set of (Pause,Subdirectory,Lower,Brief,Description,CompressionDetails,
+                NoColor,FullPath,JustifyNames,NoHeader);
  Column:Set Of (Double,Width,Four);
  TotalNumFiles,TotalSize:LongInt;
  CurrParam,ShowDir,CurrLabel:String;
@@ -47,6 +48,7 @@ Var
  RecursiveRoot,RecursiveMask,CurrentFolder:String;
 
 Function StrToUpper(S:String):String; Forward;
+Function PadRight(S:String;Space:Byte):String; Forward;
 
 Function ShowCompression:Boolean;
 Begin
@@ -58,13 +60,42 @@ Function DisplayName:String;
 Var
  S:String;
  I:Integer;
+ D:DirStr;
+ N:NameStr;
+ E:ExtStr;
 Begin
  S:=Info.Name;
- If Subdirectory in Option Then S:=CurrentFolder+S;
+ If Subdirectory in Option Then S:=CurrentFolder+S Else
+ If FullPath in Option Then Begin
+  FSplit(FExpand(ShowDir),D,N,E);
+  S:=D+S;
+ End;
  If Lower in Option Then
   For I:=1 to Length(S)do
    If S[I] in ['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
  DisplayName:=S;
+End;
+
+Function TextDisplayName:String;
+Var
+ S,Name,Prefix,Extension:String;
+ I,Dot:Integer;
+Begin
+ S:=DisplayName;
+ TextDisplayName:=S;
+ If Not(JustifyNames in Option)Then Exit;
+ If (Info.Attr and Directory)<>0Then Exit;
+ { Separer le nom de son extension, sans modifier les chemins ni les exports. }
+ Prefix:=Copy(S,1,Length(S)-Length(Info.Name));
+ Name:=Copy(S,Length(Prefix)+1,255);
+ Dot:=0;
+ For I:=2 to Length(Name)do If Name[I]='.'Then Dot:=I;
+ Extension:='';
+ If Dot>0Then Begin
+  Extension:=Copy(Name,Dot+1,255);
+  Name:=Copy(Name,1,Dot-1);
+ End;
+ TextDisplayName:=Prefix+PadRight(Name,8)+' '+PadRight(Extension,3);
 End;
 
 Function ParseSortOrder(S:String):Boolean;
@@ -757,7 +788,7 @@ Begin
     Les noms longs et les grandes tailles sont conserves integralement. }
   While (Count<4)and(DosError=0)do Begin
    Inc(Count);
-   Names[Count]:=DisplayName;
+   Names[Count]:=TextDisplayName;
    If (Info.Attr and Directory)<>0Then Sizes[Count]:='<DIR>'
    Else Str(Info.Size,Sizes[Count]);
    If Length(Names[Count])>NameWidth Then NameWidth:=Length(Names[Count]);
@@ -851,7 +882,7 @@ BEGIN
     _Germany:Begin
      WriteLn('Listet die Dateien und Unterverzeichnisse eines Verzeichnisses auf.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/L] [/P] [/S] ',
+     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/P] [/S] ',
              '[/A[[:]Attribute]] [/O[[:]Folge]] [Pfad] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]Attribute]  A=Archiv D=Verzeichnis H=Versteckt R=Schreibgesch'+#129+'tzt S=System');
@@ -863,6 +894,10 @@ BEGIN
      WriteLn(' /1               Eine Datei pro Zeile: Name, Gr'+#148+'sse, Datum, Beschreibung');
      WriteLn('                  Beschreibungen aus DESCRIPT.ION im jeweiligen Verzeichnis');
      WriteLn(' /4               Dateien mit ihren Gr'+#148+'ssen in vier Spalten anzeigen');
+     WriteLn(' /D               Farbdarstellung deaktivieren');
+     WriteLn(' /F               Vollst'+#132+'ndige Dateinamen mit Pfad anzeigen');
+     WriteLn(' /J               Dateinamen und Erweiterungen getrennt ausrichten');
+     WriteLn(' /K               Kopfzeilen ausblenden, Summen beibehalten');
      WriteLn(' /S               Dateien auch in allen Unterverzeichnissen auflisten');
      WriteLn(' /O[[:]Folge]     C=Kompressionsrate D=Datum/Zeit E=Erweiterung');
      WriteLn('                  G=Verzeichnisse zuerst N=Name S=Gr'+#148+'sse');
@@ -874,7 +909,7 @@ BEGIN
     _English:Begin
      WriteLn('Purpose:  Display information about files and subdirectories.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/L] [/P] [/S] ',
+     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/P] [/S] ',
              '[/A[[:]attributes]] [/O[[:]order]] [path] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]attributes] A=Archive D=Directory H=Hidden R=ReadOnly S=System');
@@ -886,6 +921,10 @@ BEGIN
      WriteLn(' /1               One file per line: name, size, date and description');
      WriteLn('                  Descriptions from DESCRIPT.ION in each directory');
      WriteLn(' /4               Display files and their sizes in four columns');
+     WriteLn(' /D               Disable color coding');
+     WriteLn(' /F               Display full filenames including their paths');
+     WriteLn(' /J               Align filenames and extensions separately');
+     WriteLn(' /K               Suppress headers, retaining totals');
      WriteLn(' /S               List files recursively in all subdirectories');
      WriteLn(' /O[[:]order]     C=Compression rate D=Date/time E=Extension');
      WriteLn('                  G=Directories first N=Name S=Size');
@@ -899,21 +938,25 @@ BEGIN
      WriteLn;
      WriteLn('Syntaxe:');
      WriteLn;
-     WriteLn('DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/L] [/P] [/S] ',
+     WriteLn('DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/P] [/S] ',
              '[/A[[:]attributs]] [/O[[:]ordretri]] [chemin] [/FORMAT:format]');
      WriteLn;
-     WriteLn(' /?             Ce param'+#138+'tre permet d''afficher l''aide sur cette commande');
+     WriteLn(' /?               Ce param'+#138+'tre permet d''afficher l''aide sur cette commande');
      WriteLn(' /1               Un fichier par ligne : nom, taille, date et description');
      WriteLn('                  Descriptions lues dans DESCRIPT.ION de chaque dossier');
-     WriteLn(' /2             Ce param'+#138+'tre permet d''afficher sur 2 colonnes');
-     WriteLn(' /4               Affiche les fichiers et leurs tailles sur quatre colonnes');     
+     WriteLn(' /2               Ce param'+#138+'tre permet d''afficher sur 2 colonnes');
+     WriteLn(' /4               Affiche les fichiers et leurs tailles sur quatre colonnes');
      WriteLn(' /A[[:]attributs]  A=Archive D=R'+#130+'pertoire H=Cach'+#130+' R=Lecture seule S=Syst'+#138+'me');
      WriteLn('                  + : inclure; - : exclure');
-     WriteLn('                  /A : tous; /A:H-D : fichiers cach'+#130+'s sans les r'+#130+'pertoires');
-     WriteLn(' /B             Ce param'+#138+'tre enl'+#138+'ve l''entete et les d'+#130+'tails de la fin');
+     WriteLn('                  /A : tous; /A:H-D : fichiers cach'+#130+'s sans les r'+#130+'pertoires');     
+     WriteLn(' /B               Ce param'+#138+'tre enl'+#138+'ve l''entete et les d'+#130+'tails de la fin');     
      WriteLn(' /C               Taux de compression DoubleSpace, unit'+#130+'s d''allocation de 8 Ko');
-     WriteLn('                  MS-DOS 7+ / Windows; - = indisponible; ignor'+#130+' avec /B ou /W');
-     WriteLn(' /FORMAT:format Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
+     WriteLn('                  MS-DOS 7+ / Windows; - = indisponible; ignor'+#130+' avec /B ou /W');     
+     WriteLn(' /D               D'+#130+'sactive la colorisation');
+     WriteLn(' /F               Affiche les noms complets avec leur chemin');
+     WriteLn(' /FORMAT:format   Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');     
+     WriteLn(' /J               Aligne s'+#130+'par'+#130+'ment les noms et les extensions');
+     WriteLn(' /K               Masque les ent'+#136+'tes et conserve les totaux');
      WriteLn(' /L               Affiche les noms des fichiers et r'+#130+'pertoires en minuscules');
      WriteLn(' /O[[:]ordretri]  C=Taux de compression D=Date/heure E=Extension');
      WriteLn('                  G=R'+#130+'pertoires en premier N=Nom S=Taille');
@@ -953,6 +996,10 @@ BEGIN
   End Else
   If(CurrParam='/B')or(CurrParam='/b')Then Include(Option,Brief) Else
   If(CurrParam='/C')or(CurrParam='/c')Then Include(Option,CompressionDetails) Else
+  If(CurrParam='/D')or(CurrParam='/d')Then Include(Option,NoColor) Else
+  If(CurrParam='/F')or(CurrParam='/f')Then Include(Option,FullPath) Else
+  If(CurrParam='/J')or(CurrParam='/j')Then Include(Option,JustifyNames) Else
+  If(CurrParam='/K')or(CurrParam='/k')Then Include(Option,NoHeader) Else
   If(CurrParam='/L')or(CurrParam='/l')Then Include(Option,Lower) Else
   If(CurrParam='/P')or(CurrParam='/p')Then Include(Option,Pause) Else
   If(CurrParam='/S')or(CurrParam='/s')Then Include(Option,Subdirectory) Else
@@ -981,6 +1028,12 @@ BEGIN
   End;
  End;
  If Subdirectory in Option Then PrepareRecursivePath;
+ If (FullPath in Option)and Not(Subdirectory in Option)Then Begin
+  PrepareRecursivePath;
+  ShowDir:=AppendPath(RecursiveRoot,RecursiveMask);
+ End;
+ { Aucun schema de couleurs n'est applique; /D retablit les attributs normaux. }
+ If (NoColor in Option)and(OutputFormat=_Text)Then NormVideo;
  CurrDrive:=Path2Drive(ShowDir);
  CurrLabel:=GetDiskLabel(Byte(CurrDrive)-64);
  P:=0;
@@ -1246,7 +1299,7 @@ BEGIN
   End;
   Else Begin
    FindFirstMatch;
-   If(Subdirectory in Option)and(Brief in Option)and
+   If((Subdirectory in Option)or(FullPath in Option))and(Brief in Option)and
      Not(Description in Option)Then While DosError=0do Begin
     WriteLn(DisplayName);
     FindNextMatch;
@@ -1262,7 +1315,7 @@ BEGIN
    End Else
    If Four in Column Then ShowFourColumns Else
    If(Width)in(Column)Then While DOSError=0 do Begin
-    Write(PadRight(DisplayName,16));
+    Write(PadRight(TextDisplayName,16));
     FindNextMatch;
     If(Pause)in(Option)Then Begin
     Inc(P);
@@ -1276,7 +1329,7 @@ BEGIN
    End
     Else
    If(Double)in(Column)Then While DOSError=0 do Begin
-    Write(PadRight(DisplayName,13));
+    Write(PadRight(TextDisplayName,13));
     If Info.Attr and Directory=Directory Then Begin
      Write(PadRight('<DIR>',9));
     End
@@ -1300,13 +1353,13 @@ BEGIN
    Begin
     TotalNumFiles:=0;
     TotalSize:=0;
-    If Not((Brief)in(Option))Then Begin
+    If Not(Brief in Option)and Not(NoHeader in Option)Then Begin
      Inc(P,2);
      WriteLn('Le volume de l''unite '+CurrDrive+' est '+CurrLabel);
      WriteLn;
     End;
     While DOSError=0 do Begin
-     Write(PadRight(DisplayName,13));
+     Write(PadRight(TextDisplayName,13));
      If Info.Attr and Directory=Directory Then Begin
       Write(PadRight('<DIR>',15));
      End
