@@ -429,13 +429,23 @@ Type
  PPCodeMemory=^TPCodeMemory;
  TPCodeData=Array[0..8191]of LongInt;
  PPCodeData=^TPCodeData;
+ TPCodeMSCW=Record
+  StaticLink,DynamicLink,ReturnIPC,Environment,ProcedureId:Word
+ End;
+ TPCodeSyscom=Record
+  IORSLT,XEQERR:Word;
+  CurrentSegment,CurrentProcedure:Word;
+  StackPointer,MarkPointer,HeapPointer:Word;
+  PrefixUnit,RootUnit:Word
+ End;
  TPCodeRuntimeFile=Record
  Used,Opened,TextMode,Writing:Boolean;
  Name:String[127];
  T:Text;
  F:File;
  Buffer,BufferAddress:LongInt;
- RecordWords:Integer;
+ UCSDAddress:LongInt;
+ RecordWords,Flags:Integer;
  LastError:Integer
 End;
 
@@ -445,6 +455,8 @@ Var
  PCode_CodeSize,PCode_PC,PCode_SP,PCode_MP,PCode_Cycles:LongInt;
  PCode_SegmentSize,PCode_ProcDict,PCode_Base:LongInt;
  PCode_ProcCount,PCode_CurrentProc:Integer;
+ PCode_CurrentSegment:Integer;
+ PCode_SYSCOM:TPCodeSyscom;
  PCode_StringHeap:LongInt;
  PCode_Files:Array[1..16]of TPCodeRuntimeFile;
  PCode_LastIOError:Integer;
@@ -580,7 +592,8 @@ Var
  I:Integer;
 Begin
  For I:=1 to 16 do Begin
-  PCode_Files[I].Used:=False;PCode_Files[I].Opened:=False
+  PCode_Files[I].Used:=False;PCode_Files[I].Opened:=False;
+  PCode_Files[I].UCSDAddress:=0;PCode_Files[I].Flags:=0
  End;
  PCode_LastIOError:=0;PCode_IOChecking:=True;PCode_FreeCount:=0
 End;
@@ -611,6 +624,7 @@ Begin
   For I:=1 to 16 do if not PCode_Files[I].Used Then Begin
    H:=I;PCode_Files[I].Used:=True;PCode_Files[I].Opened:=False;
    PCode_Files[I].Name:='';PCode_Files[I].BufferAddress:=0;
+   PCode_Files[I].UCSDAddress:=FileAddress;PCode_Files[I].Flags:=0;
    PCode_DataSet(FileAddress,H);Break
   End
  End;PCode_FileHandle:=H
@@ -618,6 +632,7 @@ End;
 
 Procedure PCode_IOError(H,E:Integer);Begin
  PCode_LastIOError:=E;if(H>=1)and(H<=16)Then PCode_Files[H].LastError:=E;
+ PCode_SYSCOM.IORSLT:=E;
  if(E<>0)and PCode_IOChecking Then Begin
   PCode_Write('[erreur E/S '+PCode_IntToStr(E)+']');
   PCode_Halted:=True;PCode_ExitCode:=E
@@ -835,6 +850,7 @@ Begin
  FillChar(PCode_Mem^,SizeOf(TPCodeMemory),0);ReadCount:=0;
  LoadedSize:=Sz;
  PrivateFormat:=False;HeaderBigEndian:=False;PCode_CodeBigEndian:=False;
+ PCode_CurrentSegment:=0;
  if Sz>=512 Then Begin
   BlockRead(F,Header,512,ReadCount);SegmentPos:=(Header[0]or(Header[1]shl 8))*512;
   SegmentSize:=Header[2]or(Header[3]shl 8);
@@ -866,7 +882,7 @@ Begin
      SegmentKind:=Header[192+J*2]or(Header[193+J*2]shl 8)
     End;
     if(SegmentPos>=512)and(SegmentSize>=2)and(SegmentPos+SegmentSize<=Sz)and
-     (SegmentKind<>7)Then Break
+    (SegmentKind<>7)Then Begin PCode_CurrentSegment:=J;Break End
    End
  End;
  if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
@@ -1555,6 +1571,7 @@ Begin
  End
 End;PCode_Push(RB.L)
 End;
+
 100:
 Begin
  N:=PCode_Pop;D:=PCode_Allocate(16);
@@ -1613,16 +1630,52 @@ PCode_RuntimeError(305,'CSP '+PCode_IntToStr(CspNum)+' inconnue');
 End;
 End;
 
+Const
+ MSCW_STATIC=0;MSCW_DYNAMIC=1;MSCW_IPC=2;MSCW_ENV=3;MSCW_PROC=4;
+
+Procedure PCode_UpdateSyscom;
+Var V:Integer;
+Begin
+ PCode_SYSCOM.IORSLT:=PCode_LastIOError;PCode_SYSCOM.XEQERR:=PCode_ExitCode;
+ PCode_SYSCOM.CurrentSegment:=PCode_CurrentSegment;
+ PCode_SYSCOM.CurrentProcedure:=PCode_CurrentProc;
+ PCode_SYSCOM.StackPointer:=PCode_SP;PCode_SYSCOM.MarkPointer:=PCode_MP;
+ PCode_SYSCOM.HeapPointer:=PCode_StringHeap;V:=FindVolume(FilerPrefix);
+ if V<>0 Then PCode_SYSCOM.PrefixUnit:=Volumes[V].UnitNo else PCode_SYSCOM.PrefixUnit:=4;
+ PCode_SYSCOM.RootUnit:=4;
+ { Fenetre SYSCOM du segment SYSTEM, accessible par LDE/STE segment zero. }
+ PCode_ExternalData[0,0]:=PCode_SYSCOM.IORSLT;
+ PCode_ExternalData[0,1]:=PCode_SYSCOM.XEQERR;
+ PCode_ExternalData[0,2]:=PCode_SYSCOM.CurrentSegment;
+ PCode_ExternalData[0,3]:=PCode_SYSCOM.CurrentProcedure;
+ PCode_ExternalData[0,4]:=PCode_SYSCOM.StackPointer;
+ PCode_ExternalData[0,5]:=PCode_SYSCOM.MarkPointer;
+ PCode_ExternalData[0,6]:=PCode_SYSCOM.HeapPointer;
+ PCode_ExternalData[0,7]:=PCode_SYSCOM.PrefixUnit;
+ PCode_ExternalData[0,8]:=PCode_SYSCOM.RootUnit
+End;
+
+Procedure PCode_WriteMSCW(Base,StaticLink,DynamicLink,ReturnIPC:LongInt;
+ SegmentNo,ProcedureNo:Integer);
+Begin
+ PCode_DataSet(Base+MSCW_STATIC,StaticLink);PCode_DataSet(Base+MSCW_DYNAMIC,DynamicLink);
+ PCode_DataSet(Base+MSCW_IPC,ReturnIPC);
+ PCode_DataSet(Base+MSCW_ENV,(SegmentNo shl 8)or(ProcedureNo and $FF));
+ PCode_DataSet(Base+MSCW_PROC,ProcedureNo)
+End;
+
 Procedure PCode_RuntimeError(Code:Integer;Const Msg:String);Begin
  if not PCode_Halted Then Begin
   PCode_Write('[erreur execution '+PCode_IntToStr(Code)+': '+Msg+']');
-  PCode_Halted:=True;PCode_ExitCode:=Code
+  PCode_Halted:=True;PCode_ExitCode:=Code;PCode_SYSCOM.XEQERR:=Code
  End
 End;
 { ------------------------------------------------------------------------ }
 { UCSD p-System IV.0/IV.2                                                  }
 { Adresses de donnees en mots; adresses de code en octets. Un MSCW occupe }
 { cinq mots: MSSTAT, MSDYN, IPC, MSENV et MPROC.                           }
+
+Procedure PCode_CallProcedure(ProcNum,LexLevel:Integer;GlobalCall:Boolean);Forward;
 
 Function PCode_IVWord(Ofs:LongInt):Integer;Begin
  if PCode_CodeBigEndian Then PCode_IVWord:=(PCode_Fetch(Ofs)shl 8)or PCode_Fetch(Ofs+1)
@@ -1668,9 +1721,9 @@ Begin
  End;
  Dec(PCode_SP,Locals);
  For I:=0 to Locals-1 do PCode_DataSet(PCode_SP+I,0);
- PCode_Push(PCode_CurrentProc);PCode_Push(0);PCode_Push(PCode_PC);
- PCode_Push(PCode_MP);PCode_Push(StaticLink);PCode_MP:=PCode_SP;
- PCode_CurrentProc:=ProcNum;PCode_PC:=Entry
+ Dec(PCode_SP,5);PCode_WriteMSCW(PCode_SP,StaticLink,PCode_MP,PCode_PC,
+  PCode_CurrentSegment,PCode_CurrentProc);PCode_MP:=PCode_SP;
+ PCode_CurrentProc:=ProcNum;PCode_PC:=Entry;PCode_UpdateSyscom
 End;
 
 Procedure PCode_IVReturn(Count:Integer);
@@ -1678,14 +1731,15 @@ Var
  OldMP,ReturnPC,CallerMP:LongInt;
  CallerProc:Integer;
 Begin
- OldMP:=PCode_MP;ReturnPC:=PCode_DataAt(OldMP+2);
- CallerMP:=PCode_DataAt(OldMP+1);CallerProc:=PCode_DataAt(OldMP+4);
+ OldMP:=PCode_MP;ReturnPC:=PCode_DataAt(OldMP+MSCW_IPC);
+ CallerMP:=PCode_DataAt(OldMP+MSCW_DYNAMIC);CallerProc:=PCode_DataAt(OldMP+MSCW_PROC);
  if(CallerProc=0)and(ReturnPC=0)Then Begin
   PCode_Halted:=True;PCode_ExitCode:=0;Exit
  End;
  PCode_SP:=OldMP+5+Count;
  if PCode_SP>High(PCode_Data^)+1 Then PCode_SP:=High(PCode_Data^)+1;
- PCode_MP:=CallerMP;PCode_CurrentProc:=CallerProc;PCode_PC:=ReturnPC
+ PCode_CurrentSegment:=(PCode_DataAt(OldMP+MSCW_ENV)shr 8)and $FF;
+ PCode_MP:=CallerMP;PCode_CurrentProc:=CallerProc;PCode_PC:=ReturnPC;PCode_UpdateSyscom
 End;
 
 Procedure PCode_StepIV;
@@ -1797,16 +1851,16 @@ Begin
  End;
  $93,$94:
  Begin
-  B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
-  if B=0 Then PCode_CallUnit0(N)
-  else if B<=15 Then PCode_CallCSP(N)else PCode_RuntimeError(304,
-  'segment externe invalide')
+ B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
+ if B=0 Then PCode_CallUnit0(N)
+  else if B=PCode_CurrentSegment Then PCode_CallProcedure(N,0,Op=$94)
+  else PCode_RuntimeError(304,'segment externe absent du cache')
  End;
  $95:
  Begin
   B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
-  if B<=15 Then PCode_CallCSP(N)else PCode_RuntimeError(304,
-  'segment intermediaire invalide')
+  if B=PCode_CurrentSegment Then PCode_CallProcedure(N,0,False)
+  else PCode_RuntimeError(304,'segment intermediaire absent du cache')
  End;
  $96:
  Begin
@@ -2072,9 +2126,9 @@ Begin
  else if LexLevel=0 Then StaticLink:=PCode_MP else StaticLink:=PCode_StaticBase(LexLevel);
  if PCode_SP<Locals+5 Then Begin PCode_RuntimeError(303,'cadre UCSD II/III trop grand');Exit End;
  Dec(PCode_SP,Locals);For I:=0 to Locals-1 do PCode_DataSet(PCode_SP+I,0);
- PCode_Push(PCode_CurrentProc);PCode_Push(0);PCode_Push(PCode_PC);
- PCode_Push(PCode_MP);PCode_Push(StaticLink);PCode_MP:=PCode_SP;
- PCode_CurrentProc:=ProcNum;PCode_PC:=Entry
+ Dec(PCode_SP,5);PCode_WriteMSCW(PCode_SP,StaticLink,PCode_MP,PCode_PC,
+  PCode_CurrentSegment,PCode_CurrentProc);PCode_MP:=PCode_SP;
+ PCode_CurrentProc:=ProcNum;PCode_PC:=Entry;PCode_UpdateSyscom
 End;
 
 Procedure PCode_CallProcedure(ProcNum,LexLevel:Integer;GlobalCall:Boolean);
@@ -2557,8 +2611,8 @@ Begin
  B := PCode_Fetch(PCode_PC + 1); N := PCode_Fetch(PCode_PC + 2);
  PCode_PC := PCode_PC + 3;
  If B = 0 Then PCode_CallUnit0(N)
- Else if B<=15 Then PCode_CallCSP(N)
- Else PCode_RuntimeError(304,'segment externe invalide');
+ Else if B=PCode_CurrentSegment Then PCode_CallProcedure(N,0,True)
+ Else PCode_RuntimeError(304,'segment externe absent du cache');
 End;
 206:
 Begin
@@ -2639,10 +2693,12 @@ Begin
  End;
  FillChar(PCode_Data^,SizeOf(TPCodeData),0);
  FillChar(PCode_ExternalData,SizeOf(PCode_ExternalData),0);
+ FillChar(PCode_SYSCOM,SizeOf(PCode_SYSCOM),0);
  PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  if PCode_HasProcDictionary Then PCode_SP:=High(PCode_Data^)+1;
  PCode_Base:=0;PCode_CurrentProc:=0;
  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
+ PCode_UpdateSyscom;
  if PCode_HasProcDictionary Then Begin
   if PCode_ProcCount<1 Then Begin
    WriteLn('Le fichier ne contient pas un dictionnaire de procedures valide.');
@@ -2650,7 +2706,7 @@ Begin
   End else PCode_CallProcedure(1,0,True)
  End;
  While not PCode_Halted and(PCode_Cycles<MaxCycles)do Begin
-  PCode_Step;Inc(PCode_Cycles)
+  PCode_Step;Inc(PCode_Cycles);PCode_UpdateSyscom
  End;
  if not PCode_Halted Then Begin
   WriteLn('[limite d''instructions p-Code atteinte]');PCode_ExitCode:=1
@@ -7551,9 +7607,10 @@ End;
 Procedure ResetMachine;Begin
  FillChar(PCode_Data^,SizeOf(TPCodeData),0);
  FillChar(PCode_ExternalData,SizeOf(PCode_ExternalData),0);
+ FillChar(PCode_SYSCOM,SizeOf(PCode_SYSCOM),0);
  PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  PCode_Base:=0;PCode_CurrentProc:=0;PCode_Cycles:=0;
- PCode_Halted:=False;PCode_ExitCode:=0;
+ PCode_Halted:=False;PCode_ExitCode:=0;PCode_UpdateSyscom;
  if PCode_HasProcDictionary Then Begin
   PCode_SP:=High(PCode_Data^)+1;
   if PCode_ProcCount>0 Then PCode_CallProcedure(1,0,True)
