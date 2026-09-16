@@ -2950,6 +2950,8 @@ Var
  CPPass,CPNextProcedure:Integer;
  CPTempNumber:Integer;
  CPRangeChecks,CPIOChecks,CPOverflowChecks:Boolean;
+ CPListing:Boolean;
+ CPDiagnosticFile:String;
  CPCompilationIsUnit:Boolean;
  CPCompilationName:String[8];
  CPInterfaceSource:PPasSource;
@@ -3522,9 +3524,10 @@ Begin
   if Length(LineText)<255 Then LineText:=LineText+Chr(CPSource^[EndPos]);Inc(EndPos)
  End;Col:=CPTokenPos-StartPos+1;if Col<1 Then Col:=1;
  if OriginalErrors Then
-  WriteLn('UCSD error ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',CPLine,':',Col)
+  WriteLn('UCSD error ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',
+   CPDiagnosticFile,':',CPLine,':',Col)
  else WriteLn('Erreur UCSD ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',Category,
-  ' ',CPLine,':',Col,': ',S);
+  ' ',CPDiagnosticFile,':',CPLine,':',Col,': ',S);
  if LineText<>''Then Begin
   WriteLn(LineText);
   For I:=2 to Col do Write(' ');WriteLn('^')
@@ -3541,14 +3544,30 @@ Var
  Code,Depth,Digits:Integer;
  Closed:Boolean;
 
-Procedure ApplyDirective(S:String);Begin
- S:=UpperString(TrimString(S));if(S<>'')and(S[1]='$')Then Delete(S,1,1);
- S:=TrimString(S);
+Procedure ApplyDirective(S:String);
+Var P,Code:Integer;N,Raw:String;
+Begin
+ Raw:=TrimString(S);if(Raw<>'')and(Raw[1]='$')Then Delete(Raw,1,1);
+ Raw:=TrimString(Raw);S:=UpperString(Raw);
  if S='R+'Then CPRangeChecks:=True else if S='R-'Then CPRangeChecks:=False
  else if S='I+'Then CPIOChecks:=True else if S='I-'Then CPIOChecks:=False
  else if S='Q+'Then CPOverflowChecks:=True else if S='Q-'Then CPOverflowChecks:=False
+ else if(S='L+')or(S='L')Then CPListing:=True
+ else if S='L-'Then CPListing:=False
+ else if Copy(S,1,7)='SOURCE 'Then Begin
+  Delete(Raw,1,7);P:=Pos('|',Raw);
+  if P>0 Then Begin
+   CPDiagnosticFile:=Copy(Raw,1,P-1);N:=Copy(Raw,P+1,255);Val(N,CPLine,Code);
+   if Code<>0 Then CPLine:=0 else Dec(CPLine)
+  End
+ End
+ else if(S='B+')or(S='B-')or(S='C+')or(S='C-')or(S='D+')or(S='D-')or
+  (S='G+')or(S='G-')or(S='P+')or(S='P-')or(S='S+')or(S='S-')or
+  (S='U+')or(S='U-')or(S='X+')or(S='X-')Then Begin End
  else if Copy(S,1,7)='TARGET 'Then   if not SelectTarget(TrimString(Copy(S,8,255)))
  Then CPFail('cible de directive inconnue')
+ else if(Copy(S,1,2)<>'I ')and(Copy(S,1,8)<>'INCLUDE ')Then
+  CPFailCode(398,'directive UCSD inconnue: '+S)
 End;
 
 Procedure SkipComment(ParenForm:Boolean);
@@ -3666,6 +3685,17 @@ Begin
    if CPNumber>65535 Then CPFailCode(203,'constante hexadecimale hors limites UCSD')
   End;if Digits=0 Then CPFail('chiffre hexadecimal attendu');CPToken:='NUM';Exit
  End;
+ if C='&'Then Begin
+  Inc(CPPos);CPNumber:=0;Digits:=0;
+  While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
+   C:=Chr(CPSource^[CPPos]);
+   if C in['8','9']Then CPFailCode(204,'8 ou 9 dans un nombre octal')
+   else if CPNumber>(65535-(Ord(C)-Ord('0')))div 8 Then
+    CPFailCode(203,'constante octale hors limites UCSD')
+   else CPNumber:=CPNumber*8+Ord(C)-Ord('0');Inc(CPPos);Inc(Digits)
+  End;
+  if Digits=0 Then CPFailCode(106,'chiffre octal attendu');CPToken:='NUM';Exit
+ End;
  if C='#'Then Begin
   Inc(CPPos);CPNumber:=0;Digits:=0;
   While(CPPos<CPSize)and(Chr(CPSource^[CPPos])in['0'..'9'])do Begin
@@ -3744,6 +3774,92 @@ Procedure CPNeed(S:String);Begin
   else if S='FILE'Then CPFailCode(57,'''FILE'' attendu')
   else CPFailCode(6,'symbole "'+S+'" attendu')
  End else CPNext
+End;
+
+Function CPExpandIncludeFiles(Const RootName:String):Boolean;
+Var OutBuf:PPasSource;OutSize:LongInt;
+
+Function DirOf(Const S:String):String;
+Var I:Integer;
+Begin I:=Length(S);While(I>0)and not(S[I]in['/','\',':'])do Dec(I);DirOf:=Copy(S,1,I) End;
+
+Procedure PutText(Const S:String);
+Var I:Integer;
+Begin
+ if OutSize+Length(S)>65534 Then Begin CPFailCode(193,'sources incluses trop grandes');Exit End;
+ For I:=1 to Length(S)do Begin OutBuf^[OutSize]:=Ord(S[I]);Inc(OutSize) End
+End;
+
+Procedure Expand(B:PPasSource;L:LongInt;Const FileName,Chain:String;Depth:Integer);
+Var I,J,LineNo:LongInt;D,U,N,Path,Marker:String;Paren:Boolean;F:File;Sz:LongInt;
+ Count:Word;Child:PPasSource;
+Begin
+ if Depth>8 Then Begin CPFailCode(407,'limite d''imbrication des fichiers inclus depassee');Exit End;
+ I:=0;LineNo:=1;PutText('{$SOURCE '+FileName+'|1}'+#10);
+ While(I<L)and not CPError do Begin
+  Paren:=False;J:=I;
+  if(B^[I]=Ord('{'))and(I+2<L)and(B^[I+1]=Ord('$'))Then J:=I+2
+  else if(B^[I]=Ord('('))and(I+3<L)and(B^[I+1]=Ord('*'))and
+   (B^[I+2]=Ord('$'))Then Begin J:=I+3;Paren:=True End
+  else Begin
+   OutBuf^[OutSize]:=B^[I];Inc(OutSize);if B^[I]=10 Then Inc(LineNo);Inc(I);Continue
+  End;
+  D:='';
+  While(J<L)and(Length(D)<255)and
+   ((not Paren and(B^[J]<>Ord('}')))or(Paren and not((B^[J]=Ord('*'))and
+    (J+1<L)and(B^[J+1]=Ord(')')))))do Begin D:=D+Chr(B^[J]);Inc(J) End;
+  if J>=L Then Begin CPFailCode(401,'fin de fichier dans une directive');Exit End;
+  U:=UpperString(TrimString(D));N:='';
+  if(Copy(U,1,8)='INCLUDE ')Then N:=TrimString(Copy(D,9,255))
+  else if(Copy(U,1,2)='I ')Then N:=TrimString(Copy(D,3,255));
+  if N=''Then Begin
+   if(U='L')or(U='L+')Then CPListing:=True else if U='L-'Then CPListing:=False;
+   While I<=J+Ord(Paren)do Begin
+    OutBuf^[OutSize]:=B^[I];Inc(OutSize);if B^[I]=10 Then Inc(LineNo);Inc(I)
+   End;Continue
+  End;
+  if(N[1]='''')and(N[Length(N)]='''')and(Length(N)>=2)Then N:=Copy(N,2,Length(N)-2);
+  Path:=DirOf(FileName)+N;if not FileExists(Path)Then Path:=N;
+  if Pos('|'+UpperString(Path)+'|',UpperString(Chain))<>0 Then Begin
+   CPFailCode(406,'inclusion cyclique: '+Path);Exit
+  End;
+  Assign(F,Path);Reset(F,1);if IOResult<>0 Then Begin
+   CPFailCode(403,'lecture du fichier inclus impossible: '+Path);Exit
+  End;Sz:=FileSize(F);
+  if(Sz<0)or(Sz>65534)Then Begin Close(F);if IOResult<>0 Then Begin End;
+   CPFailCode(406,'fichier inclus illegal: '+Path);Exit
+  End;
+  GetMem(Child,SizeOf(TPCodeMemory));Count:=0;if Sz>0 Then BlockRead(F,Child^,Sz,Count);
+  if(IOResult<>0)or(Count<>Sz)Then CPFailCode(403,'lecture incomplete du fichier inclus: '+Path);
+  Close(F);if IOResult<>0 Then CPFailCode(403,'fermeture du fichier inclus impossible: '+Path);
+  if not CPError Then Expand(Child,Sz,Path,Chain+UpperString(Path)+'|',Depth+1);
+  FreeMem(Child,SizeOf(TPCodeMemory));
+  if Paren Then I:=J+2 else I:=J+1;
+  Str(LineNo,Marker);PutText(#10+'{$SOURCE '+FileName+'|'+Marker+'}'+#10)
+ End
+End;
+
+Procedure CPPrintSourceListing;
+Var I,LineNo:LongInt;S:String;
+Begin
+ WriteLn('Listing de compilation:');I:=0;LineNo:=1;S:='';
+ While I<CPSize do Begin
+  if CPSource^[I]=10 Then Begin
+   WriteLn(LineNo:5,'  ',S);S:='';Inc(LineNo)
+  End else if CPSource^[I]<>13 Then Begin
+   if Length(S)<240 Then S:=S+Chr(CPSource^[I])
+  End;Inc(I)
+ End;
+ if S<>''Then WriteLn(LineNo:5,'  ',S);WriteLn
+End;
+
+Begin
+ CPExpandIncludeFiles:=False;GetMem(OutBuf,SizeOf(TPCodeMemory));OutSize:=0;
+ Expand(CPSource,CPSize,RootName,'|'+UpperString(RootName)+'|',0);
+ if not CPError Then Begin Move(OutBuf^,CPSource^,OutSize);CPSize:=OutSize;
+  CPExpandIncludeFiles:=True;if CPListing Then CPPrintSourceListing End;
+ FreeMem(OutBuf,SizeOf(TPCodeMemory));CPPos:=0;CPTokenPos:=0;CPLine:=1;
+ CPDiagnosticFile:=RootName
 End;
 Function CPFind(S:String):PPasSymbol;Forward;
 Procedure CPAdd(S:String;V:Integer;K:Boolean);Forward;
@@ -6225,6 +6341,7 @@ End;
 Function LoadUnit(S,Caller:String):PUnitSource;
 Var A:PUnitSource;F:File;Sz,TextPos,LinkAt,CodeAt,CodeLen:LongInt;Count:Word;
  SavedSource:PPasSource;SavedSize:LongInt;Path:String;
+ SavedDiagnostic:String;
  H:Array[0..511]of Byte;LR:Array[0..15]of Byte;RN:String;
  LT,PN:Integer;NM:PName;CodeInput:Boolean;
 Begin
@@ -6245,7 +6362,8 @@ Begin
  New(A);FillChar(A^,SizeOf(TUnitSource),0);A^.Name:=S;A^.Path:=Path;
  Inc(Counter);Str(Counter,A^.Prefix);A^.Prefix:='U'+A^.Prefix+'_';
  A^.Loading:=True;A^.Next:=Units;Units:=A;
- SavedSource:=CPSource;SavedSize:=CPSize;GetMem(CPSource,SizeOf(TPCodeMemory));CPSize:=0;
+ SavedSource:=CPSource;SavedSize:=CPSize;SavedDiagnostic:=CPDiagnosticFile;
+ GetMem(CPSource,SizeOf(TPCodeMemory));CPSize:=0;
  Assign(F,Path);Reset(F,1);
  if IOResult<>0 Then Error(410,'lecture de l''unite impossible: '+Path)
  else Begin
@@ -6290,10 +6408,14 @@ Begin
   else Begin
    BlockRead(F,CPSource^,Sz,Count);if(IOResult<>0)or(Count<>Sz)Then
     Error(410,'lecture incomplete de l''unite: '+Path)
-   else Begin CPSize:=Sz;A^.Tokens:=Tokenize;ParseSource(A,True) End
+   else Begin
+    CPSize:=Sz;
+    if CPExpandIncludeFiles(Path)Then Begin A^.Tokens:=Tokenize;ParseSource(A,True) End
+   End
   End;Close(F);if IOResult<>0 Then Error(410,'fermeture de l''unite impossible')
  End;
  FreeMem(CPSource,SizeOf(TPCodeMemory));CPSource:=SavedSource;CPSize:=SavedSize;
+ CPDiagnosticFile:=SavedDiagnostic;
  A^.Loading:=False;A^.Loaded:=not CPError;if not CPError Then Begin
   if Ordered=Nil Then Ordered:=A else OrderTail^.OrderNext:=A;
   OrderTail:=A;LoadUnit:=A
@@ -6457,7 +6579,7 @@ Begin
  CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;CPLabels:=Nil;
  CPRelocations:=Nil;
  CPCurrentRoutine:=Nil;CPPass:=1;CPNextProcedure:=1;
- CPTempNumber:=0;CPWithSymbol:=Nil;CPWithType:=Nil;
+ CPTempNumber:=0;CPWithSymbol:=Nil;CPWithType:=Nil;CPDiagnosticFile:=SourceName;
  CPRangeChecks:=False;CPIOChecks:=True;CPOverflowChecks:=False;
  Typ:=CPAddType('INTEGER',ptkInteger,1);Typ^.LowBound:=-32768;Typ^.HighBound:=32767;
  Typ:=CPAddType('BOOLEAN',ptkBoolean,1);Typ^.LowBound:=0;Typ^.HighBound:=1;
@@ -6484,7 +6606,8 @@ Begin
  Close(F);
  if IOResult<>0 Then CPFailCode(410,'erreur de fermeture du source');
  if CPError Then Goto 99;
- CPSize:=Sz;if not CPExpandUnits(SourceName)Then Goto 99;
+ CPSize:=Sz;if not CPExpandIncludeFiles(SourceName)Then Goto 99;
+ if not CPExpandUnits(SourceName)Then Goto 99;
  CPDeclarationPass;
  if CPError Then Goto 99;
  CPPass:=2;CPCurrentRoutine:=Nil;CPCodePos:=0;
@@ -7068,6 +7191,7 @@ Procedure Help;Begin
  WriteLn('/TARGET:nom  Choisir la version du p-System cible');
  WriteLn('  APPLEHEALT, UCSDPASCALII, UCSDPSYSTEMIII ou UCSDPSYSTEMIV');
  WriteLn('/ORGINALERR  Afficher les messages d''erreur UCSD originaux en anglais');
+ WriteLn('/LIST         Afficher le listing du source compile');
  WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
  WriteLn('Cible courante: ',TargetName);
  WriteLn;
@@ -7109,7 +7233,7 @@ Begin
  { Le jeu d'opcodes de la machine virtuelle et de l'assembleur integres
    correspond par defaut a UCSD Pascal II.0/II.1. }
  WorkFile:='';ProgramFile:='';CurrentTarget:=ptUCSDPascalII;
- OriginalErrors:=False;
+ OriginalErrors:=False;CPListing:=False;
  CheckCodeRequested:=False;
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
@@ -7119,6 +7243,7 @@ Begin
    Help;
    Halt(0)
   End else if UpperString(S)='/CHECKCODE'Then CheckCodeRequested:=True
+  else if(UpperString(S)='/LIST')or(UpperString(S)='-LIST')Then CPListing:=True
   else if(UpperString(S)='/ORGINALERR')or(UpperString(S)='/ORIGINALERR')Then
    OriginalErrors:=True
   else if(Copy(UpperString(S),1,8)='/TARGET:')or
@@ -7129,7 +7254,7 @@ Begin
   End else if WorkFile=''Then WorkFile:=S
   else
   Begin
-   WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/ORGINALERR] [/CHECKCODE]');
+   WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/ORGINALERR] [/LIST] [/CHECKCODE]');
    Halt(1)
   End
  End;
