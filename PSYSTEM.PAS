@@ -102,13 +102,144 @@ Begin
 End;
 
 Procedure EditCommand;
+Type
+ PEditLine=^TEditLine;
+ TEditLine=Record Text:String;Next:PEditLine End;
 Var
- Editor:String;
+ Head,Tail,P,Q,N:PEditLine;
+ F:Text;
+ S,Cmd,Arg,Answer:String;
+ LineNo,Count,Code,I:Integer;
+ Dirty,Done,Loaded:Boolean;
+
+Function LineAt(N:Integer):PEditLine;
+Var X:PEditLine;K:Integer;
+Begin X:=Head;K:=1;While(X<>Nil)and(K<N)do Begin X:=X^.Next;Inc(K) End;LineAt:=X End;
+
+Function LeftTrim(S:String):String;
+Begin While(S<>'')and(S[1]in[' ',#9])do Delete(S,1,1);LeftTrim:=S End;
+
+Procedure SplitCommand(Const Input:String;Var C,A:String);
+Var K:Integer;
 Begin
- AskFile('Edit file',WorkFile);if WorkFile=''Then Exit;
- Editor:=ToolName('PSYSTEM_EDITOR',GetEnv('EDITOR'));
- if Editor=''Then Editor:='EDIT';
- RunShell(Editor+' '+QuoteName(WorkFile))
+ K:=1;While(K<=Length(Input))and not(Input[K]in[' ',#9])do Inc(K);
+ if K>Length(Input)Then Begin C:=UpperString(Input);A:='' End
+ else Begin C:=UpperString(Copy(Input,1,K-1));A:=Copy(Input,K+1,255) End
+End;
+
+Function ReadNumber(Var A:String;Default:Integer):Integer;
+Var T:String;K,E,V:Integer;
+Begin
+ A:=LeftTrim(A);K:=1;While(K<=Length(A))and not(A[K]in[' ',#9])do Inc(K);
+ if K>Length(A)Then Begin T:=A;A:='' End
+ else Begin T:=Copy(A,1,K-1);Delete(A,1,K) End;
+ if T=''Then V:=Default else Begin Val(T,V,E);if E<>0 Then V:=-1 End;ReadNumber:=V
+End;
+
+Procedure ShowLines(First,HowMany:Integer);
+Var X:PEditLine;K:Integer;
+Begin
+ if First<1 Then First:=1;if HowMany<1 Then HowMany:=20;X:=LineAt(First);K:=First;
+ While(X<>Nil)and(HowMany>0)do Begin WriteLn(K:5,'  ',X^.Text);X:=X^.Next;
+  Inc(K);Dec(HowMany) End
+End;
+
+Procedure InsertLine(AtLine:Integer;Const V:String);
+Var X,Prev:PEditLine;
+Begin
+ New(X);X^.Text:=V;X^.Next:=Nil;
+ if(Head=Nil)or(AtLine<=1)Then Begin X^.Next:=Head;Head:=X;if Tail=Nil Then Tail:=X End
+ else Begin Prev:=LineAt(AtLine-1);if Prev=Nil Then Begin Tail^.Next:=X;Tail:=X End
+  else Begin X^.Next:=Prev^.Next;Prev^.Next:=X;if X^.Next=Nil Then Tail:=X End End;
+ Inc(LineNo);Dirty:=True
+End;
+
+Procedure DeleteLines(AtLine,HowMany:Integer);
+Var Prev,X:PEditLine;
+Begin
+ if(AtLine<1)or(HowMany<1)Then Exit;
+ if AtLine=1 Then Prev:=Nil else Prev:=LineAt(AtLine-1);
+ if Prev=Nil Then X:=Head else X:=Prev^.Next;
+ While(X<>Nil)and(HowMany>0)do Begin Q:=X^.Next;Dispose(X);X:=Q;Dec(HowMany);Dec(LineNo) End;
+ if Prev=Nil Then Head:=X else Prev^.Next:=X;
+ Tail:=Head;if Tail<>Nil Then While Tail^.Next<>Nil do Tail:=Tail^.Next;Dirty:=True
+End;
+
+Function SaveFile:Boolean;
+Var X:PEditLine;E:Integer;
+Begin
+ SaveFile:=False;Assign(F,WorkFile);Rewrite(F);E:=IOResult;if E<>0 Then Begin
+  WriteLn('Impossible de creer ',WorkFile,' (erreur ',E,').');Exit
+ End;
+ X:=Head;While X<>Nil do Begin WriteLn(F,X^.Text);E:=IOResult;if E<>0 Then Break;X:=X^.Next End;
+ Close(F);if E=0 Then E:=IOResult;
+ if E<>0 Then WriteLn('Erreur d''ecriture ',E,'.')else Begin Dirty:=False;SaveFile:=True;
+  WriteLn(LineNo,' ligne(s) sauvegardee(s).') End
+End;
+
+Procedure EditorHelp;
+Begin
+ WriteLn('L [ligne] [nombre]  Lister le texte');
+ WriteLn('I ligne texte        Inserer avant une ligne');
+ WriteLn('A texte              Ajouter une ligne a la fin');
+ WriteLn('R ligne texte        Remplacer une ligne');
+ WriteLn('D ligne [nombre]     Supprimer une ou plusieurs lignes');
+ WriteLn('F texte              Rechercher du texte');
+ WriteLn('W                    Sauvegarder');
+ WriteLn('Q                    Quitter (Q! abandonne les changements)');
+ WriteLn('?                    Afficher cette aide')
+End;
+Begin
+ AskFile('Fichier a editer',WorkFile);if WorkFile=''Then Exit;
+ Head:=Nil;Tail:=Nil;LineNo:=0;Dirty:=False;Loaded:=False;
+ Assign(F,WorkFile);Reset(F);
+ if IOResult=0 Then Begin
+  Loaded:=True;
+  While not Eof(F)do Begin ReadLn(F,S);Code:=IOResult;if Code<>0 Then Break;
+   New(P);P^.Text:=S;P^.Next:=Nil;if Head=Nil Then Head:=P else Tail^.Next:=P;
+   Tail:=P;Inc(LineNo)
+  End;Close(F);Code:=IOResult;
+  if Code<>0 Then WriteLn('Avertissement: lecture incomplete du fichier.')
+ End;
+ if Loaded Then WriteLn(LineNo,' ligne(s) chargee(s).')
+ else WriteLn('Nouveau fichier: ',WorkFile);
+ EditorHelp;Done:=False;
+ Repeat
+  Write('Edit> ');ReadLn(S);S:=LeftTrim(S);if S=''Then Continue;
+  SplitCommand(S,Cmd,Arg);
+  if(Cmd='?')or(Cmd='H')Then EditorHelp
+  else if Cmd='L'Then Begin
+   I:=ReadNumber(Arg,1);Count:=ReadNumber(Arg,20);
+   if I<1 Then WriteLn('Numero de ligne incorrect.')else ShowLines(I,Count)
+  End
+  else if Cmd='I'Then Begin
+   I:=ReadNumber(Arg,-1);if I<1 Then WriteLn('Syntaxe: I ligne texte')
+   else InsertLine(I,Arg)
+  End
+  else if Cmd='A'Then InsertLine(LineNo+1,Arg)
+  else if Cmd='R'Then Begin
+   I:=ReadNumber(Arg,-1);P:=LineAt(I);if P=Nil Then WriteLn('Ligne inexistante.')
+   else Begin P^.Text:=Arg;Dirty:=True End
+  End
+  else if Cmd='D'Then Begin
+   I:=ReadNumber(Arg,-1);Count:=ReadNumber(Arg,1);
+   if(I<1)or(LineAt(I)=Nil)Then WriteLn('Ligne inexistante.')else DeleteLines(I,Count)
+  End
+  else if Cmd='F'Then Begin
+   P:=Head;I:=1;Count:=0;
+   While P<>Nil do Begin if Pos(UpperString(Arg),UpperString(P^.Text))<>0 Then Begin
+    WriteLn(I:5,'  ',P^.Text);Inc(Count) End;P:=P^.Next;Inc(I) End;
+   WriteLn(Count,' occurrence(s).')
+  End
+  else if Cmd='W'Then Begin if SaveFile Then ProgramFile:=ReplaceExtension(WorkFile,'.CODE') End
+  else if Cmd='Q!'Then Done:=True
+  else if Cmd='Q'Then Begin
+   if Dirty Then Begin Write('Sauvegarder les changements (O/N/Annuler) ? ');ReadLn(Answer);
+    Answer:=UpperString(TrimString(Answer));if(Answer='O')or(Answer='OUI')Then Done:=SaveFile
+    else if(Answer='N')or(Answer='NON')Then Done:=True End else Done:=True
+  End else WriteLn('Commande inconnue. Tapez ? pour l''aide.')
+ Until Done;
+ P:=Head;While P<>Nil do Begin N:=P^.Next;Dispose(P);P:=N End
 End;
 Function CompilePascalPCode(SourceName,CodeName:String):Integer;Forward;
 
@@ -7420,8 +7551,7 @@ Procedure Help;Begin
  WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
  WriteLn('Cible courante: ',TargetName);
  WriteLn;
- WriteLn(
- 'L''editeur externe peut etre choisi avec PSYSTEM_EDITOR.');
+ WriteLn('L''editeur de lignes est integre a la commande E.');
  WriteLn(
  'Le compilateur, l''assembleur, le linker, l''executeur et le debogueur p-Code sont integres.')
 End;
