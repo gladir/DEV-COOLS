@@ -927,12 +927,31 @@ End;
 Procedure PCode_CallCSP(CspNum: Byte);
 Var
  N,I,P,H,E,Wid,Prec,Kind: Integer;
+ Hour,Minute,Second,Hundredth:Word;
  A,B,D,V:LongInt;
  Cmp:Integer;
  S:String;
  RB:TSingleBits;
 Begin
  Case CspNum Of
+ 0:
+ Begin
+  PCode_IOChecking:=PCode_Pop<>0
+ End;
+ 1:
+ Begin
+  N:=PCode_Pop;D:=PCode_Pop;PCode_DataSet(D,PCode_Allocate(N))
+ End;
+ 2:
+ Begin
+  N:=PCode_Pop;D:=PCode_Pop;A:=PCode_Pop;
+  For I:=0 to N-1 do PCode_DataSet(D+I,PCode_DataAt(A+I))
+ End;
+ 3:
+ Begin
+  N:=PCode_Pop;D:=PCode_Pop;A:=PCode_Pop;
+  For I:=N-1 downto 0 do PCode_DataSet(D+I,PCode_DataAt(A+I))
+ End;
  4:
  Begin
  { exit } N := PCode_Pop; PCode_Halted := True; PCode_ExitCode := N; 
@@ -945,6 +964,46 @@ Begin
  Begin
   RB.L:=PCode_Pop;if RB.S>=0 Then PCode_Push(Trunc(RB.S+0.5))
   else PCode_Push(Trunc(RB.S-0.5))
+ End;
+ 9:
+ Begin
+  GetTime(Hour,Minute,Second,Hundredth);
+  PCode_Push(LongInt(Hour)*360000+LongInt(Minute)*6000+LongInt(Second)*100+Hundredth)
+ End;
+ 10:
+ Begin
+  V:=PCode_Pop;N:=PCode_Pop;D:=PCode_Pop;
+  For I:=0 to N-1 do PCode_DataSet(D+I,Byte(V))
+ End;
+ 20,21,22,23,24,25,26:
+ Begin
+  RB.L:=PCode_Pop;
+  Case CspNum of
+  20:RB.S:=Sin(RB.S);21:RB.S:=Cos(RB.S);22:Begin
+   if Cos(RB.S)=0 Then Begin PCode_RuntimeError(306,'tangente hors domaine');Exit End;
+   RB.S:=Sin(RB.S)/Cos(RB.S)
+  End;
+  23:RB.S:=ArcTan(RB.S);
+  24:Begin if RB.S<=0 Then Begin PCode_RuntimeError(306,'logarithme hors domaine');Exit End;
+   RB.S:=Ln(RB.S) End;
+  25:RB.S:=Exp(RB.S);
+  26:Begin if RB.S<0 Then Begin PCode_RuntimeError(306,'racine hors domaine');Exit End;
+   RB.S:=Sqrt(RB.S) End
+  End;PCode_Push(RB.L)
+ End;
+ 27:
+ Begin
+  D:=PCode_Pop;PCode_DataSet(D,PCode_StringHeap)
+ End;
+ 28:
+ Begin
+  A:=PCode_Pop;
+  if(A<4096)or(A>PCode_StringHeap)Then PCode_RuntimeError(303,'marque de tas invalide')
+  else Begin PCode_StringHeap:=A;PCode_FreeCount:=0 End
+ End;
+ 29,37:
+ Begin
+  PCode_Push(PCode_LastIOError);PCode_LastIOError:=0
  End;
  40:
  Begin
@@ -4936,7 +4995,7 @@ Procedure CPEmitCSP(N:Byte);Begin
 End;
 
 Procedure CPEmitIOCSP(N:Byte);Begin
- CPConst(Ord(CPIOChecks));CPEmitCSP(74);CPEmitCSP(N)
+ CPConst(Ord(CPIOChecks));CPEmitCSP(0);CPEmitCSP(N)
 End;
 
 Procedure CPEmitRoutineCall(R:PPasRoutine);
@@ -5323,9 +5382,9 @@ Begin
   Begin
    if(SourceType=Nil)or(SourceType^.Kind<>ptkReal)Then
     CPFailCode(125,'type incorrect du parametre de '+Ident);
-   if Ident='SIN'Then Flags:=90 else if Ident='COS'Then Flags:=91 else if Ident=
-   'ARCTAN'Then Flags:=92
-   else if Ident='EXP'Then Flags:=93 else if Ident='LN'Then Flags:=94 else Flags:=95;
+   if Ident='SIN'Then Flags:=20 else if Ident='COS'Then Flags:=21 else if Ident=
+   'ARCTAN'Then Flags:=23
+   else if Ident='EXP'Then Flags:=25 else if Ident='LN'Then Flags:=24 else Flags:=26;
    CPEmitCSP(Flags);CPLastExpressionType:=CPFindType('REAL')
   End
  End
@@ -5333,7 +5392,7 @@ Begin
   CPNext;if CPToken='('Then Begin
    CPNext;CPNeed(')')
   End;
-  CPEmitCSP(75);CPLastExpressionType:=CPFindType('INTEGER')
+  CPEmitCSP(37);CPLastExpressionType:=CPFindType('INTEGER')
  End
  else if CPIs('EOF')or CPIs('EOLN')Then Begin
   Ident:=CPText;CPNext;
@@ -5745,7 +5804,7 @@ Begin
    Begin
     CPAddressSymbol(P);if Name='NEW'Then Begin
      if T^.ElementType=Nil Then CPConst(1)else CPConst(T^.ElementType^.SizeWords);
-     CPEmitCSP(80)
+     CPEmitCSP(1)
     End else
     Begin
      if T^.ElementType=Nil Then CPConst(1)else CPConst(T^.ElementType^.SizeWords);
@@ -5777,13 +5836,13 @@ Begin
    P:=CPFind(CPText);CPNext;CPDesignator(P,False,T)
   End;
   CPNeed(',');CPExpression;CPNeed(')');
-  if Name='MOVELEFT'Then CPEmitCSP(82)else CPEmitCSP(83)
+  if Name='MOVELEFT'Then CPEmitCSP(2)else CPEmitCSP(3)
  End
  else if CPIs('FILLCHAR')Then Begin
   CPNext;CPNeed('(');if CPToken<>'ID'Then CPFail('destination attendue')else
   Begin
    P:=CPFind(CPText);CPNext;CPDesignator(P,False,T)
-  End;CPNeed(',');CPExpression;CPNeed(',');CPExpression;CPNeed(')');CPEmitCSP(84)
+  End;CPNeed(',');CPExpression;CPNeed(',');CPExpression;CPNeed(')');CPEmitCSP(10)
  End
  else if CPIs('PACK')or CPIs('UNPACK')Then Begin
   Name:=CPText;CPNext;CPNeed('(');
@@ -6599,6 +6658,7 @@ Function LoadUnit(S,Caller:String):PUnitSource;
 Var A:PUnitSource;F:File;Sz,TextPos,LinkAt,CodeAt,CodeLen:LongInt;Count:Word;
  SavedSource:PPasSource;SavedSize:LongInt;Path:String;
  SavedDiagnostic:String;
+ LibPath:String;
  H:Array[0..511]of Byte;LR:Array[0..15]of Byte;RN:String;
  LT,PN:Integer;NM:PName;CodeInput:Boolean;
 Begin
@@ -6614,6 +6674,13 @@ Begin
  if not FileExists(Path)Then Begin
   Path:=DirectoryOf(Caller)+S+'.CODE';if not FileExists(Path)Then Path:=S+'.CODE';
   CodeInput:=FileExists(Path)
+ End;
+ if not FileExists(Path)Then Begin
+  LibPath:=GetEnv('PSYSTEM_LIBRARY');
+  if LibPath<>''Then Begin
+   if not(LibPath[Length(LibPath)]in['/','\',':'])Then LibPath:=LibPath+'\';
+   Path:=LibPath+S+'.CODE';CodeInput:=FileExists(Path)
+  End
  End;
  if not FileExists(Path)Then Begin Error(190,'source ou CODE d''unite introuvable: '+S);Exit End;
  New(A);FillChar(A^,SizeOf(TUnitSource),0);A^.Name:=S;A^.Path:=Path;
@@ -7554,6 +7621,7 @@ Procedure Help;Begin
  WriteLn('/ORGINALERR  Afficher les messages d''erreur UCSD originaux en anglais');
  WriteLn('/LIST         Afficher le listing du source compile');
  WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
+ WriteLn('PSYSTEM_LIBRARY indique le repertoire des unites SYSTEM et bibliotheques .CODE.');
  WriteLn('Cible courante: ',TargetName);
  WriteLn;
  WriteLn('L''editeur de lignes est integre a la commande E.');
