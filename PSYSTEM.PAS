@@ -406,8 +406,8 @@ Begin
   End
  End;
  PrivateFormat:=(Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
-  (Header[290]=Ord('L'))and(Header[291]=Ord('K'));
- if PrivateFormat Then WriteLn('Format prive PSYSTEM/PSLK (non certifie UCSD).')
+  (Header[290]=Ord('V'))and(Header[291]=Ord('M'));
+ if PrivateFormat Then WriteLn('ABI prive PSYSTEM/PSVM (non certifie UCSD).')
  else WriteLn('Verification structurelle des attributs UCSD II.0/II.1.');
  if BigEndian Then WriteLn('Mots: grand-boutiste.')else WriteLn('Mots: petit-boutiste.');
  FillChar(Starts,SizeOf(Starts),0);FillChar(Lengths,SizeOf(Lengths),0);
@@ -515,7 +515,7 @@ Begin
  if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
  (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
   if not((Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
-   (Header[290]=Ord('L'))and(Header[291]=Ord('K')))Then Begin
+   (Header[290]=Ord('V'))and(Header[291]=Ord('M')))Then Begin
    Close(F);if IOResult<>0 Then Begin End;
    WriteLn('Format CODE historique ou inconnu: ABI non prise en charge par cette VM.');
    WriteLn('Utilisez PSYSTEM fichier.CODE /CHECKCODE pour verifier sa structure.');Exit
@@ -2098,6 +2098,10 @@ Begin
 End;
 
 Procedure LinkCommand;
+Type
+ PLinkSymbol=^TLinkSymbol;
+ TLinkSymbol=Record Name:String[8];SegmentNumber,ProcedureNumber:Integer;
+ Next:PLinkSymbol End;
 Var
  Modules,OutputName,S,Name:String;
  Inputs:Array[1..16]of String;
@@ -2110,12 +2114,83 @@ Var
  OutF:File;
  Count,I,J,K,P,E,EC,IC,HPos,PatchPos,TargetSeg,TargetProc:Integer;
  N,W:Word;
- OutPos,Want:LongInt;
+ OutPos,Want,Remaining,LinkPos:LongInt;
  OK:Boolean;
  ImportName,ExportName:String;
+ Symbols,Sym,NextSym:PLinkSymbol;
+ LinkRec,RefRec:Array[0..15]of Byte;
+ LinkType,LinkRefs,LinkProc,RefNo:Integer;
 
 Procedure PutWord(Ofs:Integer;V:Word);Begin
  Header[Ofs]:=Byte(V);Header[Ofs+1]:=Byte(V shr 8)
+End;
+
+Function RecWord(Var B:Array of Byte;Ofs:Integer):Word;Begin
+ RecWord:=B[Ofs]or(B[Ofs+1]shl 8)
+End;
+
+Function RecName(Var B:Array of Byte):String;
+Var X:Integer;T:String;
+Begin
+ T:='';For X:=0 to 7 do if B[X]<>0 Then T:=T+Chr(B[X]);RecName:=UpperString(T)
+End;
+
+Function FindLinkSymbol(S:String):PLinkSymbol;
+Var X:PLinkSymbol;
+Begin
+ X:=Symbols;S:=UpperString(S);While(X<>Nil)and(X^.Name<>S)do X:=X^.Next;
+ FindLinkSymbol:=X
+End;
+
+Procedure ScanHistoricalLinks(ModuleNo:Integer;Definitions:Boolean);
+Var Present:Boolean;LocalName:String;X:PLinkSymbol;ReadWords:Word;Slot:Integer;
+Begin
+ LinkPos:=SegPos[ModuleNo]+SegLen[ModuleNo];
+ if(LinkPos mod 512)<>0 Then LinkPos:=((LinkPos+511)div 512)*512;
+ Repeat
+  Present:=False;Seek(Src[ModuleNo],LinkPos);E:=IOResult;
+  if E=0 Then Begin BlockRead(Src[ModuleNo],LinkRec,16,ReadWords);
+   Present:=(IOResult=0)and(ReadWords=16) End;
+  if not Present Then Begin
+   WriteLn('Informations de liaison tronquees: ',Inputs[ModuleNo]);OK:=False;Exit
+  End;Inc(LinkPos,16);LinkType:=RecWord(LinkRec,8);LocalName:=RecName(LinkRec);
+  if LinkType=0 Then Exit;
+  if LinkType=11 Then Begin
+   if Definitions Then Begin
+    LinkProc:=RecWord(LinkRec,10);X:=FindLinkSymbol(LocalName);
+    if X<>Nil Then Begin WriteLn('Symbole defini plusieurs fois: ',LocalName);OK:=False End
+    else Begin New(X);X^.Name:=LocalName;X^.SegmentNumber:=ModuleNo;
+     X^.ProcedureNumber:=LinkProc;X^.Next:=Symbols;Symbols:=X End
+   End
+  End else if(LinkType in[1,2,3,4,5,13,14])Then Begin
+   LinkRefs:=RecWord(LinkRec,12);RefNo:=0;
+   While RefNo<LinkRefs do Begin
+    Seek(Src[ModuleNo],LinkPos);E:=IOResult;
+    if E=0 Then BlockRead(Src[ModuleNo],RefRec,16,ReadWords)else ReadWords:=0;
+    if(IOResult<>0)or(ReadWords<>16)Then Begin
+     WriteLn('Liste de references tronquee: ',LocalName);OK:=False;Exit
+    End;Inc(LinkPos,16);
+    For Slot:=0 to 7 do if RefNo<LinkRefs Then Begin
+     if not Definitions Then Begin
+      X:=FindLinkSymbol(LocalName);
+      if X=Nil Then Begin WriteLn('Symbole externe non resolu: ',LocalName);OK:=False End
+      else Begin
+       PatchPos:=RecWord(RefRec,Slot*2);
+       if PatchPos+1>=SegLen[ModuleNo]Then Begin
+        WriteLn('Reference hors segment: ',LocalName);OK:=False
+       End else Begin
+        Want:=(Header[(ModuleNo-1)*4]or(Header[(ModuleNo-1)*4+1]shl 8))*512+PatchPos;
+        Seek(OutF,Want);E:=IOResult;if E=0 Then Begin
+         Buffer[0]:=X^.SegmentNumber;Buffer[1]:=X^.ProcedureNumber;
+         BlockWrite(OutF,Buffer,2,W);OK:=OK and(IOResult=0)and(W=2)
+        End else OK:=False
+       End
+      End
+     End;Inc(RefNo)
+    End
+   End
+  End
+ Until not OK
 End;
 Begin
  Write('Modules .CODE (separes par virgule): ');ReadLn(Modules);
@@ -2123,7 +2198,7 @@ Begin
  if Modules=''Then Exit;OutputName:=ProgramFile;
  AskFile('Programme .CODE produit',OutputName);
  if OutputName=''Then Exit;if Pos('.',OutputName)=0 Then OutputName:=OutputName+'.CODE';
- Count:=0;P:=1;
+ Count:=0;P:=1;Symbols:=Nil;
  While P<=Length(Modules)do Begin
   While(P<=Length(Modules))and(Modules[P]in[' ',#9,','])do Inc(P);S:='';
   While(P<=Length(Modules))and not(Modules[P]in[' ',#9,','])do Begin
@@ -2131,7 +2206,7 @@ Begin
   End;
   if S<>''Then Begin
    Inc(Count);if Count>16 Then Begin
-    WriteLn('Trop de segments (maximum 16).');Exit
+    WriteLn('Le dictionnaire UCSD CODE ne peut contenir que 16 segments.');Exit
    End;
    if Pos('.',S)=0 Then S:=S+'.CODE';Inputs[Count]:=S
   End
@@ -2158,6 +2233,7 @@ Begin
   End;
   Header[256]:=InHeader[I,256];Header[257]:=InHeader[I,257]
  End;
+ Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('V');Header[291]:=Ord('M');
  if not OK Then Begin
   For J:=1 to I do Begin
    Close(Src[J]);E:=IOResult
@@ -2185,17 +2261,24 @@ Begin
    N:=Want-OutPos;if N>SizeOf(Buffer)Then N:=SizeOf(Buffer);
    BlockWrite(OutF,Buffer,N,W);OK:=(IOResult=0)and(W=N);Inc(OutPos,N)
   End;
-  Seek(Src[I],SegPos[I]);E:=IOResult;N:=SizeOf(Buffer);
-  While OK and(SegLen[I]>0)do Begin
-   if SegLen[I]<N Then N:=SegLen[I];
+  Seek(Src[I],SegPos[I]);E:=IOResult;N:=SizeOf(Buffer);Remaining:=SegLen[I];
+  While OK and(Remaining>0)do Begin
+   if Remaining<N Then N:=Remaining;
    BlockRead(Src[I],Buffer,N,W);OK:=(IOResult=0)and(W=N);
    if OK Then Begin
     BlockWrite(OutF,Buffer,N,W);OK:=(IOResult=0)and(W=N)
    End;
-   Dec(SegLen[I],N);Inc(OutPos,N)
+   Dec(Remaining,N);Inc(OutPos,N)
   End
  End;
- { Resout les importations PSLK apres copie des segments. }
+ For I:=1 to Count do if(InHeader[I,288]=Ord('P'))and
+  (InHeader[I,289]=Ord('S'))and(InHeader[I,290]=Ord('V'))and
+  (InHeader[I,291]=Ord('M'))Then ScanHistoricalLinks(I,True);
+ For I:=1 to Count do if OK and(InHeader[I,288]=Ord('P'))and
+  (InHeader[I,289]=Ord('S'))and(InHeader[I,290]=Ord('V'))and
+  (InHeader[I,291]=Ord('M'))Then ScanHistoricalLinks(I,False);
+ { Compatibilite avec les anciens objets PSLK du clone. Les nouveaux objets
+   emploient les enregistrements historiques de liaison apres le segment. }
  For I:=1 to Count do if(InHeader[I,288]=Ord('P'))and(InHeader[I,289]=Ord('S'))and
  (InHeader[I,290]=Ord('L'))and(InHeader[I,291]=Ord('K'))Then Begin
   EC:=InHeader[I,292];IC:=InHeader[I,293];HPos:=294+EC*9;
@@ -2232,6 +2315,7 @@ Begin
  For I:=1 to Count do Begin
   Close(Src[I]);E:=IOResult
  End;Close(OutF);if IOResult<>0 Then OK:=False;
+ Sym:=Symbols;While Sym<>Nil do Begin NextSym:=Sym^.Next;Dispose(Sym);Sym:=NextSym End;
  if OK Then Begin
   ProgramFile:=OutputName;
   WriteLn('Liaison UCSD terminee: ',Count,' segment(s), ',OutputName)
@@ -2811,6 +2895,10 @@ Var
  CPPass,CPNextProcedure:Integer;
  CPTempNumber:Integer;
  CPRangeChecks,CPIOChecks,CPOverflowChecks:Boolean;
+ CPCompilationIsUnit:Boolean;
+ CPCompilationName:String[8];
+ CPInterfaceSource:PPasSource;
+ CPInterfaceLength:LongInt;
 
 Function CPAddType(S:String;K:TPasTypeKind;Words:Word):PPasType;
 Var
@@ -5598,8 +5686,10 @@ Var
  R,Owner:PPasRoutine;
  Q:PPasRelocation;
  Attr:Array[1..255]of Word;
- ImportCount,ExportCount,HPos,K:Integer;
- PublicName:String;
+ ImportCount:Integer;
+ LinkRecord,PointerRecord,ZeroBlock:Array[0..511]of Byte;
+ RefCount,RefIndex,LinkSize,InterfaceBlock,EndPosition:LongInt;
+ PrevQ:PPasRelocation;
 
 Procedure HW(Offset:Integer;Value:Word);Begin
  Header[Offset]:=Byte(Value);Header[Offset+1]:=Byte(Value shr 8)
@@ -5607,6 +5697,34 @@ End;
 
 Procedure EW(Value:Word);Begin
  CPE(Byte(Value));CPE(Byte(Value shr 8))
+End;
+
+Procedure LinkWord(Var B:Array of Byte;Ofs:Integer;Value:Word);Begin
+ B[Ofs]:=Byte(Value);B[Ofs+1]:=Byte(Value shr 8)
+End;
+
+Procedure LinkName(Var B:Array of Byte;S:String);
+Var X:Integer;
+Begin
+ S:=UpperString(S);if Length(S)>8 Then S:=Copy(S,1,8);
+ For X:=1 to Length(S)do B[X-1]:=Ord(S[X])
+End;
+
+Procedure WriteLinkBlock(Var B:Array of Byte;Count:Word);
+Var Written:Word;
+Begin
+ if CPError Then Exit;BlockWrite(F,B[0],Count,Written);
+ if(IOResult<>0)or(Written<>Count)Then
+  CPFailCode(402,'erreur d''ecriture des informations de liaison')
+End;
+
+Function IsFirstRelocation(X:PPasRelocation):Boolean;
+Var Y:PPasRelocation;
+Begin
+ Y:=CPRelocations;
+ While(Y<>Nil)and(Y<>X)do Begin
+  if Y^.Name=X^.Name Then Begin IsFirstRelocation:=False;Exit End;Y:=Y^.Next
+ End;IsFirstRelocation:=True
 End;
 Begin
  WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin
@@ -5683,47 +5801,23 @@ Begin
  For I:=1 to Length(SegmentName)do Header[63+I]:=Ord(SegmentName[I]);
  if CPNextProcedure>=1 Then
  For I:=1 to Length(SegmentName)do PCode_Mem^[3+I]:=Ord(SegmentName[I]);
- HW(192,1);HW(224,0);
+ ImportCount:=0;Q:=CPRelocations;
+ While Q<>Nil do Begin
+  if Q^.FinalPosition>=0 Then Inc(ImportCount);Q:=Q^.Next
+ End;
+ if CPCompilationIsUnit Then HW(192,4)
+ else if ImportCount>0 Then HW(192,1)else HW(192,0);
+ HW(224,0);
  Case CurrentTarget of
  ptAppleHeath:HW(256,$0101);
  ptUCSDPascalII:HW(256,$0201);
  ptUCSDPSystemIII:HW(256,$0301);
  ptUCSDPSystemIV:HW(256,$0401)
 End;
- { Extension de liaison PSLK: exportations et sites de relogement symboliques.
-   Elle occupe la partie reservee de l'en-tete et reste ignoree des anciens
-   chargeurs UCSD. Une importation designe l'octet segment d'un CXP/CXL. }
-Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('L');Header[291]:=Ord('K');
-ExportCount:=0;R:=CPRoutines;
-While R<>Nil do Begin
- if(R^.Parent=Nil)and not R^.IsExternal and not R^.IsSeparate Then Inc(ExportCount);
- R:=R^.Next
-End;
-ImportCount:=0;Q:=CPRelocations;
-While Q<>Nil do Begin
- if Q^.FinalPosition>=0 Then Inc(ImportCount);Q:=Q^.Next
-End;
-if ExportCount>10 Then ExportCount:=10;if ImportCount>10 Then ImportCount:=10;
-Header[292]:=ExportCount;Header[293]:=ImportCount;HPos:=294;K:=0;R:=CPRoutines;
-While(R<>Nil)and(K<ExportCount)do Begin
- if(R^.Parent=Nil)and not R^.IsExternal and not R^.IsSeparate Then Begin
-  PublicName:=UpperString(R^.Name);
-  if Length(PublicName)>8 Then PublicName:=Copy(PublicName,1,8);
-  For I:=1 to Length(PublicName)do Header[HPos+I-1]:=Ord(PublicName[I]);
-  Header[HPos+8]:=R^.ProcNumber;
-  Inc(HPos,9);Inc(K)
- End;R:=R^.Next
-End;
-K:=0;Q:=CPRelocations;
-While(Q<>Nil)and(K<ImportCount)do Begin
- if Q^.FinalPosition>=0 Then Begin
-  PublicName:=UpperString(Q^.Name);
-  if Length(PublicName)>8 Then PublicName:=Copy(PublicName,1,8);
-  For I:=1 to Length(PublicName)do Header[HPos+I-1]:=Ord(PublicName[I]);
-  Header[HPos+8]:=Byte(Q^.FinalPosition);Header[HPos+9]:=Byte(Q^.FinalPosition shr 8);
-  Inc(HPos,10);Inc(K)
- End;Q:=Q^.Next
-End;
+ { PSVM identifie seulement le dictionnaire et l'ABI internes. Les symboles
+   ne sont plus tronques dans l'en-tete: ils sont ecrits comme LIENTRY UCSD. }
+Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('V');Header[291]:=Ord('M');
+Header[292]:=0;Header[293]:=0;
 Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then Begin
  CPFailCode(402,'creation du fichier CODE impossible');Exit
 End;
@@ -5732,6 +5826,59 @@ BlockWrite(F,Header,512,W);if(IOResult<>0)or(W<>512)Then
 if not CPError Then Begin
  BlockWrite(F,PCode_Mem^,SegmentLength,N);
  if(IOResult<>0)or(N<>SegmentLength)Then CPFailCode(402,'erreur d''ecriture du fichier CODE')
+End;
+{ Les LIENTRY commencent au bloc suivant. Chaque en-tete occupe huit mots;
+  les SEPPREF sont suivis de blocs de huit offsets absolus dans le segment. }
+if not CPError Then Begin
+ FillChar(ZeroBlock,SizeOf(ZeroBlock),0);LinkSize:=512+SegmentLength;
+ if(LinkSize mod 512)<>0 Then WriteLinkBlock(ZeroBlock,512-(LinkSize mod 512));
+ R:=CPRoutines;
+ While(R<>Nil)and not CPError do Begin
+  if(R^.Parent=Nil)and not R^.IsExternal and not R^.IsSeparate Then Begin
+   FillChar(LinkRecord,16,0);LinkName(LinkRecord,R^.Name);
+   LinkWord(LinkRecord,8,11); { SEPPROC }
+   LinkWord(LinkRecord,10,R^.ProcNumber);LinkWord(LinkRecord,12,R^.ParameterWords*2);
+   WriteLinkBlock(LinkRecord,16)
+  End;R:=R^.Next
+ End;
+ Q:=CPRelocations;
+ While(Q<>Nil)and not CPError do Begin
+  if(Q^.FinalPosition>=0)and IsFirstRelocation(Q)Then Begin
+   RefCount:=0;PrevQ:=CPRelocations;
+   While PrevQ<>Nil do Begin
+    if(PrevQ^.Name=Q^.Name)and(PrevQ^.FinalPosition>=0)Then Inc(RefCount);
+    PrevQ:=PrevQ^.Next
+   End;
+   FillChar(LinkRecord,16,0);LinkName(LinkRecord,Q^.Name);
+   LinkWord(LinkRecord,8,13); { SEPPREF }
+   LinkWord(LinkRecord,10,1); { BYTE: segment/procedure dans CXP }
+   LinkWord(LinkRecord,12,RefCount);WriteLinkBlock(LinkRecord,16);
+   RefIndex:=0;FillChar(PointerRecord,16,0);PrevQ:=CPRelocations;
+   While PrevQ<>Nil do Begin
+    if(PrevQ^.Name=Q^.Name)and(PrevQ^.FinalPosition>=0)Then Begin
+     LinkWord(PointerRecord,(RefIndex mod 8)*2,PrevQ^.FinalPosition);
+     Inc(RefIndex);if(RefIndex mod 8)=0 Then Begin
+      WriteLinkBlock(PointerRecord,16);FillChar(PointerRecord,16,0)
+     End
+    End;PrevQ:=PrevQ^.Next
+   End;
+   if(RefIndex mod 8)<>0 Then WriteLinkBlock(PointerRecord,16)
+  End;Q:=Q^.Next
+ End;
+ FillChar(LinkRecord,16,0);LinkWord(LinkRecord,8,0); { EOFMARK }
+ LinkWord(LinkRecord,10,DataWords+1);WriteLinkBlock(LinkRecord,16)
+End;
+if not CPError and CPCompilationIsUnit and(CPInterfaceLength>0)Then Begin
+ EndPosition:=FilePos(F);
+ if(EndPosition mod 512)<>0 Then WriteLinkBlock(ZeroBlock,512-(EndPosition mod 512));
+ InterfaceBlock:=FilePos(F)div 512;
+ LinkRecord[0]:=Byte(CPInterfaceLength);LinkRecord[1]:=Byte(CPInterfaceLength shr 8);
+ WriteLinkBlock(LinkRecord,2);
+ BlockWrite(F,CPInterfaceSource^,CPInterfaceLength,N);
+ if(IOResult<>0)or(N<>CPInterfaceLength)Then
+  CPFailCode(402,'erreur d''ecriture de l''interface d''unite');
+ EndPosition:=FilePos(F);Seek(F,224);LinkRecord[0]:=Byte(InterfaceBlock);
+ LinkRecord[1]:=Byte(InterfaceBlock shr 8);WriteLinkBlock(LinkRecord,2);Seek(F,EndPosition)
 End;
 Close(F);if IOResult<>0 Then CPFailCode(402,'erreur de fermeture du fichier CODE');
 if CPError Then Begin Erase(F);if IOResult<>0 Then
@@ -5750,11 +5897,11 @@ Type
  TToken=Record Text,Kind:String;Next,AllocatedNext:PToken;Trivia:PTrivia End;
  PName=^TName;
  TName=Record Name,Replacement,Signature:String;
-  PublicName,OwnName,UnitAlias:Boolean;Next:PName End;
+  PublicName,OwnName,UnitAlias:Boolean;BinaryProc:Integer;Next:PName End;
  PUnitSource=^TUnitSource;
  TUnitSource=Record Name,Path,Prefix:String;
   Tokens,Constants,Types,Variables,Routines,Init:PToken;
-  Names:PName;Loading,Loaded:Boolean;Next,OrderNext:PUnitSource End;
+  Names:PName;Loading,Loaded,FromCode:Boolean;Next,OrderNext:PUnitSource End;
 Var
  Units,Root,U:PUnitSource;
  AllTokens,AllocatedTokens:PToken;
@@ -5962,9 +6109,16 @@ Begin
     if N<>Nil Then N^.Signature:=Signature(First,H);
     NextToken:=H^.Next;
     if IsWord(NextToken,'EXTERNAL')Then Begin Error(184,'EXTERNAL interdit dans INTERFACE');Exit End;
-    Last:=NewToken;Last^.Text:='FORWARD';Last^.Kind:='ID';Last^.Next:=NewToken;
-    Last^.Next^.Text:=';';Last^.Next^.Kind:=';';Last^.Next^.Next:=Nil;
-    H^.Next:=Last;Last:=Last^.Next;Append(A^.Routines,First,Last);T:=NextToken
+    Last:=NewToken;H^.Next:=Last;
+    if A^.FromCode Then Begin
+     Last^.Text:='EXTERNAL';Last^.Kind:='ID';Last^.Next:=NewToken;
+     Last:=Last^.Next;Str(N^.BinaryProc,Last^.Text);Last^.Kind:='NUM';
+     Last^.Next:=NewToken;Last:=Last^.Next;Last^.Text:=';';Last^.Kind:=';'
+    End else Begin
+     Last^.Text:='FORWARD';Last^.Kind:='ID';Last^.Next:=NewToken;
+     Last:=Last^.Next;Last^.Text:=';';Last^.Kind:=';'
+    End;
+    Last^.Next:=Nil;Append(A^.Routines,First,Last);T:=NextToken
    End else Begin
     H:=HeaderEnd(T);Last:=RoutineEnd(T);if(H=Nil)or(Last=Nil)Then Exit;
     NextToken:=Last^.Next;N:=A^.Names;
@@ -5995,8 +6149,10 @@ Begin
 End;
 
 Function LoadUnit(S,Caller:String):PUnitSource;
-Var A:PUnitSource;F:File;Sz:LongInt;Count:Word;
+Var A:PUnitSource;F:File;Sz,TextPos,LinkAt,CodeAt,CodeLen:LongInt;Count:Word;
  SavedSource:PPasSource;SavedSize:LongInt;Path:String;
+ H:Array[0..511]of Byte;LR:Array[0..15]of Byte;RN:String;
+ LT,PN:Integer;NM:PName;CodeInput:Boolean;
 Begin
  LoadUnit:=Nil;A:=Units;
  While(A<>Nil)and(A^.Name<>S)do A:=A^.Next;
@@ -6006,7 +6162,12 @@ Begin
  End;
  Path:=DirectoryOf(Caller)+S+'.PAS';
  if not FileExists(Path)Then Path:=S+'.PAS';
- if not FileExists(Path)Then Begin Error(190,'source d''unite introuvable: '+S);Exit End;
+ CodeInput:=False;
+ if not FileExists(Path)Then Begin
+  Path:=DirectoryOf(Caller)+S+'.CODE';if not FileExists(Path)Then Path:=S+'.CODE';
+  CodeInput:=FileExists(Path)
+ End;
+ if not FileExists(Path)Then Begin Error(190,'source ou CODE d''unite introuvable: '+S);Exit End;
  New(A);FillChar(A^,SizeOf(TUnitSource),0);A^.Name:=S;A^.Path:=Path;
  Inc(Counter);Str(Counter,A^.Prefix);A^.Prefix:='U'+A^.Prefix+'_';
  A^.Loading:=True;A^.Next:=Units;Units:=A;
@@ -6014,7 +6175,44 @@ Begin
  Assign(F,Path);Reset(F,1);
  if IOResult<>0 Then Error(410,'lecture de l''unite impossible: '+Path)
  else Begin
-  Sz:=FileSize(F);if(Sz<0)or(Sz>65534)Then Error(193,'source d''unite trop grand')
+  Sz:=FileSize(F);
+  if CodeInput Then Begin
+   if Sz<514 Then Error(190,'CODE d''unite invalide: '+Path)
+   else Begin
+    BlockRead(F,H,512,Count);
+    if(IOResult<>0)or(Count<>512)or(H[288]<>Ord('P'))or(H[289]<>Ord('S'))or
+     (H[290]<>Ord('V'))or(H[291]<>Ord('M'))Then
+     Error(195,'CODE d''unite incompatible: '+Path)
+    else Begin
+     A^.FromCode:=True;TextPos:=(H[224]or(H[225]shl 8))*512;
+     CodeAt:=(H[0]or(H[1]shl 8))*512;CodeLen:=H[2]or(H[3]shl 8);
+     if(TextPos<512)or(TextPos+2>Sz)Then Error(190,'interface absente du CODE: '+Path)
+     else Begin
+      Seek(F,TextPos);BlockRead(F,LR,2,Count);CPSize:=LR[0]or(LR[1]shl 8);
+      if(CPSize<1)or(TextPos+2+CPSize>Sz)Then Error(190,'interface CODE invalide')
+      else Begin
+       BlockRead(F,CPSource^,CPSize,Count);
+       if(IOResult<>0)or(Count<>CPSize)Then Error(410,'lecture interface CODE incomplete')
+      End
+     End;
+     LinkAt:=CodeAt+CodeLen;if(LinkAt mod 512)<>0 Then LinkAt:=((LinkAt+511)div 512)*512;
+     While not CPError and(LinkAt+16<=Sz)do Begin
+      Seek(F,LinkAt);BlockRead(F,LR,16,Count);if(IOResult<>0)or(Count<>16)Then Break;
+      LT:=LR[8]or(LR[9]shl 8);if LT=0 Then Break;
+      if LT=11 Then Begin
+       RN:='';For PN:=0 to 7 do if LR[PN]<>0 Then RN:=RN+Chr(LR[PN]);
+       New(NM);FillChar(NM^,SizeOf(TName),0);NM^.Name:=RN;NM^.Replacement:=RN;
+       NM^.PublicName:=True;NM^.OwnName:=True;NM^.BinaryProc:=LR[10]or(LR[11]shl 8);
+       NM^.Next:=A^.Names;A^.Names:=NM
+      End;
+      Inc(LinkAt,16);
+      if LT in[1,2,3,4,5,13,14]Then
+       Inc(LinkAt,(((LR[12]or(LR[13]shl 8))+7)div 8)*16)
+     End;
+     if not CPError Then Begin A^.Tokens:=Tokenize;ParseSource(A,True) End
+    End
+   End
+  End else if(Sz<0)or(Sz>65534)Then Error(193,'source d''unite trop grand')
   else Begin
    BlockRead(F,CPSource^,Sz,Count);if(IOResult<>0)or(Count<>Sz)Then
     Error(410,'lecture incomplete de l''unite: '+Path)
@@ -6111,8 +6309,28 @@ Begin
  N:=A^.Names;While N<>Nil do Begin M:=N^.Next;Dispose(N);N:=M End;Dispose(A)
 End;
 
+Procedure CaptureInterface(T:PToken);
+Var S:String;I:Integer;
+Begin
+ CPInterfaceLength:=0;
+ While(T<>Nil)and not IsWord(T,'IMPLEMENTATION')do Begin
+  S:=T^.Text+' ';
+  if CPInterfaceLength+Length(S)>65500 Then Begin
+   Error(398,'interface d''unite trop grande');Exit
+  End;
+  For I:=1 to Length(S)do Begin
+   CPInterfaceSource^[CPInterfaceLength]:=Ord(S[I]);Inc(CPInterfaceLength)
+  End;T:=T^.Next
+ End;
+ S:='IMPLEMENTATION END. ';
+ For I:=1 to Length(S)do Begin
+  CPInterfaceSource^[CPInterfaceLength]:=Ord(S[I]);Inc(CPInterfaceLength)
+ End
+End;
+
 Begin
  CPExpandUnits:=False;Units:=Nil;Ordered:=Nil;OrderTail:=Nil;
+ CPCompilationIsUnit:=False;CPCompilationName:='PROGRAM';
  AllocatedTokens:=Nil;Counter:=0;OutputSize:=0;
  New(Root);FillChar(Root^,SizeOf(TUnitSource),0);Root^.Path:=SourceName;
  Root^.Tokens:=Tokenize;
@@ -6124,7 +6342,10 @@ Begin
  End;
  if IsWord(Root^.Tokens,'UNIT')Then Begin
   if Root^.Tokens^.Next<>Nil Then Root^.Name:=Root^.Tokens^.Next^.Text;
-  Root^.Prefix:='U0_';ParseSource(Root,True)
+  CPCompilationIsUnit:=True;CPCompilationName:=Root^.Name;
+  if Length(CPCompilationName)>8 Then CPCompilationName:=Copy(CPCompilationName,1,8);
+  CaptureInterface(Root^.Tokens);
+  Root^.Prefix:='';ParseSource(Root,True)
  End else ParseSource(Root,False);
  GetMem(Output,SizeOf(TPCodeMemory));
  if not CPError Then Begin
@@ -6177,6 +6398,7 @@ Begin
  CPLine:=1;CPVarCount:=0;
  CPSize:=0;CPTokenPos:=0;
  GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
+ GetMem(CPInterfaceSource,SizeOf(TPCodeMemory));CPInterfaceLength:=0;
  Assign(F,SourceName);Reset(F,1);if IOResult<>0 Then Begin
   CPFailCode(410,'ouverture du source impossible');Goto 99
  End;
@@ -6239,8 +6461,9 @@ Begin
   CPE($96);CPBig(0)
  End else CPE(214);
  CPMainLength:=CPCodePos-CPMainStart;
- if not CPError Then WriteUCSDCodeFile(CodeName,'PROGRAM',CPCodePos,CPVarCount);
+ if not CPError Then WriteUCSDCodeFile(CodeName,CPCompilationName,CPCodePos,CPVarCount);
  99:if not CPHadErrors Then CPReportUnused;CPFreeTables;
+ FreeMem(CPInterfaceSource,SizeOf(TPCodeMemory));
  FreeMem(PCode_Mem,SizeOf(TPCodeMemory));FreeMem(CPSource,SizeOf(TPCodeMemory));
  if not CPError Then Begin
   WriteLn(CPCodePos,' octet(s) de p-Code.');CompilePascalPCode:=0
