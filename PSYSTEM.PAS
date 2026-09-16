@@ -16,12 +16,18 @@ Const
 
 Type
  TPSYSTEMTarget=(ptAppleHeath,ptUCSDPascalII,ptUCSDPSystemIII,ptUCSDPSystemIV);
+ TVolumeKind=(vkNone,vkConsole,vkDisk,vkPrinter,vkRemoteIn,vkRemoteOut);
+ TVolumeEntry=Record
+  UnitNo:Byte;Name,HostPath:String;Kind:TVolumeKind;Online,BlockDevice:Boolean
+ End;
  TSingleBits=Record Case Boolean of False:(S:Single);
  True:(L:LongInt)
 End;
 
 Var
- WorkFile,ProgramFile,WorkTitle,FilerPrefix,FilerDate:String;
+ WorkFile,ProgramFile,WorkTitle,FilerPrefix,FilerRoot,FilerDate:String;
+ Volumes:Array[1..12]of TVolumeEntry;
+ VolumeCount:Integer;
  Finished:Boolean;
  CurrentTarget:TPSYSTEMTarget;
  OriginalErrors:Boolean;
@@ -89,11 +95,14 @@ Begin
  ReadLn(S);S:=TrimString(S);if S<>''Then Name:=S
 End;
 
+Function ResolveUCSDName(S:String):String;Forward;
+
 Function FileExists(Name:String):Boolean;
 Var
  F:File;
  Exists:Boolean;
 Begin
+ Name:=ResolveUCSDName(Name);
  Assign(F,Name);Reset(F,1);Exists:=IOResult=0;
  if Exists Then Begin
   Close(F);if IOResult<>0 Then Exists:=False
@@ -101,9 +110,99 @@ Begin
  FileExists:=Exists
 End;
 
+Function JoinPath(A,B:String):String;
+Begin
+ if A=''Then JoinPath:=B
+ else if B=''Then JoinPath:=A
+ else if A[Length(A)]in['\','/']Then JoinPath:=A+B
+ else JoinPath:=A+'\'+B
+End;
+
+Function FindVolume(Const Spec:String):Integer;
+Var I,E,N:Integer;U:String;
+Begin
+ U:=UpperString(Spec);FindVolume:=0;
+ if(U<>'')and(U[1]='#')Then Begin Val(Copy(U,2,255),N,E);if E=0 Then
+  For I:=1 to VolumeCount do if Volumes[I].UnitNo=N Then Begin FindVolume:=I;Exit End
+ End else For I:=1 to VolumeCount do if UpperString(Volumes[I].Name)=U Then Begin
+  FindVolume:=I;Exit
+ End
+End;
+
+Function ResolveUCSDName(S:String):String;
+Var P,V:Integer;VolumeSpec,Tail,U:String;
+Begin
+ S:=TrimString(S);if S=''Then Begin ResolveUCSDName:='';Exit End;
+ U:=UpperString(S);
+ if(U='CONSOLE:')or(U='CONSOLE')or(U='SYSTERM:')or(U='SYSTERM')Then Begin
+  ResolveUCSDName:='CON';Exit
+ End;
+ if(U='PRINTER:')or(U='PRINTER')Then Begin ResolveUCSDName:='PRN';Exit End;
+ if(U='REMIN:')or(U='REMIN')Then Begin ResolveUCSDName:='SYSTEM.REMIN';Exit End;
+ if(U='REMOUT:')or(U='REMOUT')Then Begin ResolveUCSDName:='SYSTEM.REMOUT';Exit End;
+ { Un nom DOS X:\... n'est pas un identificateur de volume UCSD. }
+ if(Length(S)>=3)and(S[2]=':')and(S[1]in['A'..'Z','a'..'z'])and(S[3]in['\','/'])Then Begin
+  ResolveUCSDName:=S;Exit
+ End;
+ P:=Pos(':',S);
+ if P<>0 Then Begin
+  VolumeSpec:=Copy(S,1,P-1);Tail:=Copy(S,P+1,255);
+  if VolumeSpec=''Then VolumeSpec:=FilerPrefix
+  else if VolumeSpec='*'Then VolumeSpec:='SYSTEM';
+  V:=FindVolume(VolumeSpec);
+  if(V<>0)and(Volumes[V].Kind=vkDisk)Then ResolveUCSDName:=JoinPath(Volumes[V].HostPath,Tail)
+  else if V<>0 Then ResolveUCSDName:=ResolveUCSDName(Volumes[V].Name)
+  else ResolveUCSDName:=S
+ End else Begin
+  V:=FindVolume(FilerPrefix);
+  if(V<>0)and(Volumes[V].Kind=vkDisk)Then ResolveUCSDName:=JoinPath(Volumes[V].HostPath,S)
+  else ResolveUCSDName:=S
+ End
+End;
+
+Procedure AddVolume(UnitNo:Byte;Const Name,HostPath:String;Kind:TVolumeKind;BlockDevice:Boolean);
+Var Info:SearchRec;
+Begin
+ if VolumeCount>=High(Volumes)Then Exit;Inc(VolumeCount);Volumes[VolumeCount].UnitNo:=UnitNo;
+ Volumes[VolumeCount].Name:=UpperString(Name);Volumes[VolumeCount].HostPath:=HostPath;
+ Volumes[VolumeCount].Kind:=Kind;Volumes[VolumeCount].BlockDevice:=BlockDevice;
+ if Kind=vkDisk Then Begin
+  FindFirst(HostPath,Directory,Info);
+  Volumes[VolumeCount].Online:=(DosError=0)and((Info.Attr and Directory)<>0)
+ End else Volumes[VolumeCount].Online:=True
+End;
+
+Procedure InitializeVolumes;
+Var P,P4,P5,P9:String;
+Begin
+ VolumeCount:=0;GetDir(0,P);FilerRoot:=P;
+ P4:=GetEnv('PSYSTEM_VOLUME4');if P4=''Then P4:=P;
+ P5:=GetEnv('PSYSTEM_VOLUME5');if P5=''Then P5:=P;
+ P9:=GetEnv('PSYSTEM_VOLUME9');if P9=''Then P9:=JoinPath(P,'RAMDISK');
+ AddVolume(1,'CONSOLE','CON',vkConsole,False);AddVolume(2,'SYSTERM','CON',vkConsole,False);
+ AddVolume(4,'SYSTEM',P4,vkDisk,True);AddVolume(5,'WORK',P5,vkDisk,True);
+ AddVolume(6,'PRINTER','PRN',vkPrinter,False);
+ AddVolume(7,'REMIN',JoinPath(P,'SYSTEM.REMIN'),vkRemoteIn,False);
+ AddVolume(8,'REMOUT',JoinPath(P,'SYSTEM.REMOUT'),vkRemoteOut,False);
+ AddVolume(9,'RAM',P9,vkDisk,True);
+ FilerPrefix:='SYSTEM'
+End;
+
+Function ConfigureVolume(S:String):Boolean;
+Var P,E,N,V:Integer;U,Path:String;Info:SearchRec;
+Begin
+ ConfigureVolume:=False;P:=Pos('=',S);if P=0 Then Exit;
+ U:=Copy(S,1,P-1);Path:=Copy(S,P+1,255);if(U<>'')and(U[1]='#')Then Delete(U,1,1);
+ Val(U,N,E);if(E<>0)or(N<0)or(N>127)or(Path='')Then Exit;V:=FindVolume('#'+U);if V=0 Then Exit;
+ if Volumes[V].Kind<>vkDisk Then Exit;Volumes[V].HostPath:=FExpand(Path);
+ FindFirst(Volumes[V].HostPath,Directory,Info);
+ Volumes[V].Online:=(DosError=0)and((Info.Attr and Directory)<>0);ConfigureVolume:=Volumes[V].Online
+End;
+
 Function AssociatedCodeName(Const Name:String):String;
 Begin
- if UpperString(Name)='SYSTEM.WRK.TEXT'Then AssociatedCodeName:='SYSTEM.WRK.CODE'
+ if UpperString(FExpand(Name))=UpperString(FExpand(ResolveUCSDName('SYSTEM:SYSTEM.WRK.TEXT')))
+ Then AssociatedCodeName:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.CODE')
  else AssociatedCodeName:=ReplaceExtension(Name,'.CODE')
 End;
 
@@ -119,14 +218,15 @@ Begin
 End;
 
 Function CopyHostFile(Const Source,Target:String):Boolean;
-Var A,B:File;Buffer:Array[1..8192]of Byte;N,W:Word;OK:Boolean;
+Var A,B:File;Buffer:Array[1..8192]of Byte;N,W:Word;OK:Boolean;Src,Dst:String;
 Begin
  CopyHostFile:=False;
- if UpperString(FExpand(Source))=UpperString(FExpand(Target))Then Begin
-  CopyHostFile:=FileExists(Source);Exit
+ Src:=ResolveUCSDName(Source);Dst:=ResolveUCSDName(Target);
+ if UpperString(FExpand(Src))=UpperString(FExpand(Dst))Then Begin
+  CopyHostFile:=FileExists(Src);Exit
  End;
- Assign(A,Source);Reset(A,1);if IOResult<>0 Then Exit;
- Assign(B,Target);Rewrite(B,1);if IOResult<>0 Then Begin Close(A);if IOResult<>0 Then Begin End;Exit End;
+ Assign(A,Src);Reset(A,1);if IOResult<>0 Then Exit;
+ Assign(B,Dst);Rewrite(B,1);if IOResult<>0 Then Begin Close(A);if IOResult<>0 Then Begin End;Exit End;
  OK:=True;
  Repeat
   BlockRead(A,Buffer,SizeOf(Buffer),N);if IOResult<>0 Then Begin OK:=False;Break End;
@@ -137,9 +237,9 @@ Begin
 End;
 
 Procedure RemoveHostFile(Const Name:String);
-Var F:File;
+Var F:File;Path:String;
 Begin
- if not FileExists(Name)Then Exit;Assign(F,Name);Erase(F);if IOResult<>0 Then
+ Path:=ResolveUCSDName(Name);if not FileExists(Path)Then Exit;Assign(F,Path);Erase(F);if IOResult<>0 Then
   WriteLn('Impossible de supprimer ',Name,'.')
 End;
 
@@ -211,8 +311,8 @@ Function SaveFile:Boolean;
 Var X:PEditLine;E:Integer;HadCode:Boolean;
 Begin
  SaveFile:=False;
- if(UpperString(WorkFile)='SYSTEM.WRK.TEXT')and FileExists(WorkFile)Then
-  if not CopyHostFile(WorkFile,'SYSTEM.WRK.BACK')Then
+ if(UpperString(FExpand(WorkFile))=UpperString(FExpand(ResolveUCSDName('SYSTEM:SYSTEM.WRK.TEXT'))))and
+ FileExists(WorkFile)Then if not CopyHostFile(WorkFile,'SYSTEM:SYSTEM.WRK.BACK')Then
    WriteLn('Avertissement: impossible de creer SYSTEM.WRK.BACK.');
  HadCode:=FileExists(AssociatedCodeName(WorkFile));
  Assign(F,WorkFile);Rewrite(F);E:=IOResult;if E<>0 Then Begin
@@ -486,18 +586,8 @@ Begin
 End;
 
 Function PCode_MapFileName(S:String):String;
-Var
- P:Integer;
- U:String;
 Begin
- U:=UpperString(S);
- if(U='PRINTER:')or(U='PRINTER')Then S:='PRN'
- else if(U='CONSOLE:')or(U='CONSOLE')or(U='KEYBOARD:')or(U='KEYBOARD')Then S:='CON'
- else
- Begin
-  P:=Pos(':',S);
-  if(P>1)and not((P=2)and(UpCase(S[1])in['A'..'Z']))Then S:=Copy(S,P+1,255)
- End;PCode_MapFileName:=S
+ PCode_MapFileName:=ResolveUCSDName(S)
 End;
 
 Procedure PCode_CloseFiles;
@@ -2468,7 +2558,7 @@ Var
  Name:String;
  Code:Integer;
 Begin
- Name:=ProgramFile;AskFile('Programme p-Code',Name);if Name=''Then Exit;
+ Name:=ProgramFile;AskFile('Programme p-Code',Name);if Name=''Then Exit;Name:=ResolveUCSDName(Name);
  if not FileExists(Name)and FileExists(Name+'.CODE')Then Name:=Name+'.CODE';
  if not FileExists(Name)Then Begin
   WriteLn('Fichier introuvable: ',Name);Exit
@@ -7046,7 +7136,7 @@ Var
  Name,OutputName:String;
  Code:Integer;
 Begin
- Name:='';AskFile('Source assembleur p-Code',Name);if Name=''Then Exit;
+ Name:='';AskFile('Source assembleur p-Code',Name);if Name=''Then Exit;Name:=ResolveUCSDName(Name);
  if not FileExists(Name)and FileExists(Name+'.ASM')Then Name:=Name+'.ASM';
  OutputName:=ReplaceExtension(Name,'.CODE');AskFile('Fichier p-Code produit',OutputName);
  if OutputName=''Then Exit;Code:=AssemblePCode(Name,OutputName);
@@ -7386,7 +7476,7 @@ Procedure DebugHelp;Begin
  WriteLn('Q            Quitter le debogueur')
 End;
 Begin
- Name:=ProgramFile;AskFile('Programme p-Code a deboguer',Name);if Name=''Then Exit;
+ Name:=ProgramFile;AskFile('Programme p-Code a deboguer',Name);if Name=''Then Exit;Name:=ResolveUCSDName(Name);
  if not FileExists(Name)and FileExists(Name+'.CODE')Then Name:=Name+'.CODE';
  if not FileExists(Name)Then Begin
   WriteLn('Fichier introuvable: ',Name);Exit
@@ -7560,7 +7650,7 @@ Var
  Mask:String;
  Info:SearchRec;
 Begin
- Mask:='*.*';AskFile('Fichiers a lister',Mask);FindFirst(Mask,AnyFile,Info);
+ Mask:='*.*';AskFile('Fichiers a lister',Mask);Mask:=ResolveUCSDName(Mask);FindFirst(Mask,AnyFile,Info);
  if DosError<>0 Then Begin
   WriteLn('Aucun fichier.');Exit
  End;
@@ -7582,6 +7672,7 @@ Var
 Begin
  Source:='';Target:='';AskFile('Copy from',Source);if Source=''Then Exit;
  AskFile('Copy to',Target);if Target=''Then Exit;
+ Source:=ResolveUCSDName(Source);Target:=ResolveUCSDName(Target);
  if UpperString(FExpand(Source))=UpperString(FExpand(Target))Then Begin
   WriteLn('Source and destination are the same file.');Exit
  End;
@@ -7611,6 +7702,7 @@ Var
 Begin
  OldName:='';NewName:='';AskFile('Rename file',OldName);if OldName=''Then Exit;
  AskFile('New name',NewName);if NewName=''Then Exit;
+ OldName:=ResolveUCSDName(OldName);NewName:=ResolveUCSDName(NewName);
  Assign(F,OldName);Rename(F,NewName);
  if IOResult<>0 Then WriteLn('Rename failed.')else WriteLn('Rename complete.')
 End;
@@ -7621,6 +7713,7 @@ Var
  F:File;
 Begin
  Name:='';AskFile('Delete file',Name);if Name=''Then Exit;
+ Name:=ResolveUCSDName(Name);
  Write('Delete ',Name,' (Y/N)? ');ReadLn(Answer);
  if(Answer='')or not(UpCase(Answer[1])='Y')Then Exit;
  Assign(F,Name);Erase(F);
@@ -7629,16 +7722,23 @@ End;
 
 Procedure VolumeCommand;
 Var
- DirectoryName:String;
+ DirectoryName:String;I:Integer;Mark:Char;
 Begin
- GetDir(0,DirectoryName);WriteLn('Current volume and directory: ',DirectoryName);
- WriteLn('Free bytes: ',DiskFree(0));WriteLn('Total bytes: ',DiskSize(0))
+ WriteLn('Volumes en ligne:');
+ For I:=1 to VolumeCount do if Volumes[I].Online Then Begin
+  if Volumes[I].BlockDevice Then Mark:='#'else Mark:=' ';
+  WriteLn(Volumes[I].UnitNo:3,' ',Mark,' ',Volumes[I].Name,':  ',Volumes[I].HostPath)
+ End;
+ DirectoryName:=Volumes[FindVolume('SYSTEM')].HostPath;
+ WriteLn('Volume racine - SYSTEM: (',DirectoryName,')');
+ WriteLn('Prefixe       - ',FilerPrefix,':');
+ WriteLn('Libre: ',DiskFree(0),' octets; capacite: ',DiskSize(0),' octets.')
 End;
 
 Procedure ExtendedListFiles;
 Var Mask:String;Info:SearchRec;DT:DateTime;Count:Integer;Total:LongInt;
 Begin
- Mask:='*.*';AskFile('Repertoire etendu de quels fichiers',Mask);
+ Mask:='*.*';AskFile('Repertoire etendu de quels fichiers',Mask);Mask:=ResolveUCSDName(Mask);
  FindFirst(Mask,AnyFile,Info);Count:=0;Total:=0;
  if DosError<>0 Then Begin WriteLn('Aucun fichier.');Exit End;
  WriteLn('Nom':20,'Octets':11,'  Date       Heure  Attributs');
@@ -7656,6 +7756,7 @@ Procedure MakeFileCommand;
 Var Name,S:String;F:File;Blocks,E:Integer;Remain,N:LongInt;Buffer:Array[1..512]of Byte;
 Begin
  Name:='';AskFile('Creer quel fichier',Name);if Name=''Then Exit;
+ Name:=ResolveUCSDName(Name);
  S:='0';AskFile('Nombre de blocs de 512 octets',S);Val(S,Blocks,E);
  if(E<>0)or(Blocks<0)Then Begin WriteLn('Taille incorrecte.');Exit End;
  if FileExists(Name)Then Begin WriteLn('Le fichier existe deja.');Exit End;
@@ -7669,12 +7770,13 @@ Begin
 End;
 
 Procedure PrefixCommand;
-Var Name:String;E:Integer;
+Var Name:String;V:Integer;
 Begin
- Name:=FilerPrefix;AskFile('Nouveau prefixe',Name);if Name=''Then Exit;
- ChDir(Name);E:=IOResult;if E<>0 Then WriteLn('Prefixe inaccessible.')else Begin
-  GetDir(0,FilerPrefix);WriteLn('Prefixe: ',FilerPrefix)
- End
+ Name:=FilerPrefix;AskFile('Nouveau prefixe (volume ou #unite)',Name);if Name=''Then Exit;
+ if Name[Length(Name)]=':'Then Delete(Name,Length(Name),1);V:=FindVolume(Name);
+ if(V=0)or not Volumes[V].Online or(Volumes[V].Kind<>vkDisk)Then
+  WriteLn('Volume de prefixe inconnu ou non structure.')
+ else Begin FilerPrefix:=Volumes[V].Name;WriteLn('Prefixe: ',FilerPrefix,':') End
 End;
 
 Procedure DateCommand;
@@ -7689,6 +7791,7 @@ Procedure ExamineFileCommand;
 Var Name:String;F:File;B:Array[0..15]of Byte;N:Word;Offset:LongInt;I:Integer;C:Char;
 Begin
  Name:='';AskFile('Examiner quel fichier',Name);if Name=''Then Exit;
+ Name:=ResolveUCSDName(Name);
  Assign(F,Name);Reset(F,1);if IOResult<>0 Then Begin WriteLn('Fichier introuvable.');Exit End;
  Offset:=0;
  Repeat
@@ -7704,7 +7807,8 @@ End;
 Procedure BadBlocksCommand;
 Var Mask:String;Info:SearchRec;F:File;Buffer:Array[1..8192]of Byte;N:Word;Bad,Count:Integer;
 Begin
- Mask:='*.*';AskFile('Verifier quels fichiers',Mask);FindFirst(Mask,Archive or ReadOnly or Hidden or SysFile,Info);
+ Mask:='*.*';AskFile('Verifier quels fichiers',Mask);Mask:=ResolveUCSDName(Mask);
+ FindFirst(Mask,Archive or ReadOnly or Hidden or SysFile,Info);
  Bad:=0;Count:=0;
  While DosError=0 do Begin
   Assign(F,Info.Name);Reset(F,1);
@@ -7725,6 +7829,7 @@ Procedure ZeroCommand;
 Var Name,Answer:String;Info:SearchRec;
 Begin
  Name:='';AskFile('Initialiser quel nouveau repertoire-volume',Name);if Name=''Then Exit;
+ Name:=ResolveUCSDName(Name);
  FindFirst(Name+'\*.*',AnyFile,Info);
  if DosError=0 Then Begin WriteLn('Refus: le repertoire existe ou n''est pas vide.');Exit End;
  Write('Creer le volume vide ',Name,' (O/N) ? ');ReadLn(Answer);
@@ -7762,11 +7867,12 @@ Begin
   Write('Remplacer le fichier de travail courant (O/N) ? ');ReadLn(Answer);
   Answer:=UpperString(TrimString(Answer));if(Answer<>'O')and(Answer<>'OUI')Then Exit
  End;
- if not CopyHostFile(Name,'SYSTEM.WRK.TEXT')Then Begin WriteLn('Chargement impossible.');Exit End;
- CodeName:=AssociatedCodeName(Name);RemoveHostFile('SYSTEM.WRK.CODE');
- if FileExists(CodeName)Then if not CopyHostFile(CodeName,'SYSTEM.WRK.CODE')Then
+ if not CopyHostFile(Name,'SYSTEM:SYSTEM.WRK.TEXT')Then Begin WriteLn('Chargement impossible.');Exit End;
+ CodeName:=AssociatedCodeName(Name);RemoveHostFile('SYSTEM:SYSTEM.WRK.CODE');
+ if FileExists(CodeName)Then if not CopyHostFile(CodeName,'SYSTEM:SYSTEM.WRK.CODE')Then
   WriteLn('Avertissement: la partie CODE n''a pas pu etre chargee.');
- WorkFile:='SYSTEM.WRK.TEXT';ProgramFile:='SYSTEM.WRK.CODE';WorkTitle:=Name;
+ WorkFile:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.TEXT');
+ ProgramFile:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.CODE');WorkTitle:=Name;
  WriteLn('Fichier de travail charge.');WhatWorkFile
 End;
 
@@ -7775,9 +7881,9 @@ Var Answer:String;
 Begin
  Write('Abandonner le fichier de travail courant (O/N) ? ');ReadLn(Answer);
  Answer:=UpperString(TrimString(Answer));if(Answer<>'O')and(Answer<>'OUI')Then Exit;
- RemoveHostFile('SYSTEM.WRK.TEXT');RemoveHostFile('SYSTEM.WRK.CODE');
- RemoveHostFile('SYSTEM.WRK.BACK');WorkFile:='SYSTEM.WRK.TEXT';
- ProgramFile:='SYSTEM.WRK.CODE';WorkTitle:='SANS NOM';
+ RemoveHostFile('SYSTEM:SYSTEM.WRK.TEXT');RemoveHostFile('SYSTEM:SYSTEM.WRK.CODE');
+ RemoveHostFile('SYSTEM:SYSTEM.WRK.BACK');WorkFile:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.TEXT');
+ ProgramFile:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.CODE');WorkTitle:='SANS NOM';
  WriteLn('Nouveau fichier de travail vide.')
 End;
 
@@ -7856,6 +7962,8 @@ Procedure Help;Begin
  WriteLn('/ORGINALERR  Afficher les messages d''erreur UCSD originaux en anglais');
  WriteLn('/LIST         Afficher le listing du source compile');
  WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
+ WriteLn('/VOLUME:n=chemin  Associer un numero d''unite disque a un repertoire hote');
+ WriteLn('Variables: PSYSTEM_VOLUME4, PSYSTEM_VOLUME5 et PSYSTEM_VOLUME9.');
  WriteLn('PSYSTEM_LIBRARY indique le repertoire des unites SYSTEM et bibliotheques .CODE.');
  WriteLn('Sans nom de fichier, le travail courant est SYSTEM.WRK.TEXT / SYSTEM.WRK.CODE.');
  WriteLn('Le gestionnaire F fournit G(et, N(ouveau, S(auver et W(hat.');
@@ -7899,7 +8007,7 @@ Begin
  { Le jeu d'opcodes de la machine virtuelle et de l'assembleur integres
    correspond par defaut a UCSD Pascal II.0/II.1. }
  WorkFile:='';ProgramFile:='';WorkTitle:='';CurrentTarget:=ptUCSDPascalII;
- GetDir(0,FilerPrefix);GetDate(Y,M,D,Dow);Str(D,A);Str(M,B);Str(Y,C);
+ InitializeVolumes;GetDate(Y,M,D,Dow);Str(D,A);Str(M,B);Str(Y,C);
  FilerDate:=A+'/'+B+'/'+C;
  OriginalErrors:=False;CPListing:=False;
  CheckCodeRequested:=False;
@@ -7911,6 +8019,11 @@ Begin
    Help;
    Halt(0)
   End else if UpperString(S)='/CHECKCODE'Then CheckCodeRequested:=True
+  else if Copy(UpperString(S),1,8)='/VOLUME:'Then Begin
+   if not ConfigureVolume(Copy(S,9,255))Then Begin
+    WriteLn('Association de volume incorrecte ou repertoire inaccessible: ',Copy(S,9,255));Halt(1)
+   End
+  End
   else if(UpperString(S)='/LIST')or(UpperString(S)='-LIST')Then CPListing:=True
   else if(UpperString(S)='/ORGINALERR')or(UpperString(S)='/ORIGINALERR')Then
    OriginalErrors:=True
@@ -7922,18 +8035,21 @@ Begin
   End else if WorkFile=''Then WorkFile:=S
   else
   Begin
-   WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/ORGINALERR] [/LIST] [/CHECKCODE]');
+   WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/VOLUME:n=chemin]');
+   WriteLn('          [/ORGINALERR] [/LIST] [/CHECKCODE]');
    Halt(1)
   End
  End;
+ if WorkFile<>''Then Begin WorkTitle:=WorkFile;WorkFile:=ResolveUCSDName(WorkFile) End;
  if CheckCodeRequested Then Begin
   if WorkFile=''Then Begin WriteLn('/CHECKCODE exige un fichier CODE.');Halt(1) End;
   if CheckUCSDCodeFile(WorkFile)Then Halt(0)else Halt(1)
  End;
  if WorkFile=''Then Begin
-  WorkFile:='SYSTEM.WRK.TEXT';ProgramFile:='SYSTEM.WRK.CODE';WorkTitle:='SYSTEM.WRK'
+  WorkFile:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.TEXT');
+  ProgramFile:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.CODE');WorkTitle:='SYSTEM.WRK'
  End else Begin
-  ProgramFile:=AssociatedCodeName(WorkFile);WorkTitle:=WorkFile
+  ProgramFile:=AssociatedCodeName(WorkFile);if WorkTitle=''Then WorkTitle:=WorkFile
  End
 End;
 
