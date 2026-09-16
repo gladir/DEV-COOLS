@@ -22,6 +22,62 @@ Var
  CurrParam,ShowDir,CurrLabel:String;
  CurrDrive:Char;
  OutputFormat:(_Text,_CSV,_HTML,_Json,_Pascal,_SQL,_XML);
+ RequiredAttr,ExcludedAttr:Word;
+
+{ Each sign applies to the following attribute; unsigned attributes are required. }
+Function ParseAttributes(S:String):Boolean;
+Var
+ I:Integer;
+ Mask:Word;
+ ExcludeAttr:Boolean;
+Begin
+ ParseAttributes:=False;
+ RequiredAttr:=0;
+ ExcludedAttr:=0;
+ I:=3;
+ If I<=Length(S)Then If S[I]=':'Then Inc(I);
+ While I<=Length(S)do Begin
+  ExcludeAttr:=False;
+  If S[I] in ['+','-']Then Begin
+   ExcludeAttr:=S[I]='-';
+   Inc(I);
+   If I>Length(S)Then Exit;
+  End;
+  Case UpCase(S[I]) of
+   'A':Mask:=Archive;
+   'D':Mask:=Directory;
+   'H':Mask:=Hidden;
+   'R':Mask:=ReadOnly;
+   'S':Mask:=SysFile;
+   Else Exit;
+  End;
+  If ExcludeAttr Then ExcludedAttr:=ExcludedAttr or Mask
+                 Else RequiredAttr:=RequiredAttr or Mask;
+  Inc(I);
+ End;
+ ParseAttributes:=True;
+End;
+
+Procedure SkipExcluded;
+Begin
+ While DosError=0do Begin
+  If ((Info.Attr and RequiredAttr)=RequiredAttr)and
+     ((Info.Attr and ExcludedAttr)=0)Then Exit;
+  FindNext(Info);
+ End;
+End;
+
+Procedure FindFirstMatch;
+Begin
+ FindFirst(ShowDir,AnyFile,Info);
+ SkipExcluded;
+End;
+
+Procedure FindNextMatch;
+Begin
+ FindNext(Info);
+ SkipExcluded;
+End;
 
 Function PadRight(S:String;Space:Byte):String;
 Var
@@ -85,6 +141,8 @@ BEGIN
  End;
  Option:=[];
  Column:=[];
+ RequiredAttr:=0;
+ ExcludedAttr:=0;
  P:=0;
  ShowDir:='*.*';
  OutputFormat:=_Text;
@@ -97,19 +155,19 @@ BEGIN
     _Germany:Begin
      WriteLn('Listet die Dateien und Unterverzeichnisse eines Verzeichnisses auf.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [path] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [/A[[:]attributs]] [path] [/FORMAT:format]');
     End;
     _English:Begin
      WriteLn('Purpose:  Display information about files and subdirectories.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [path] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/P] [/A[[:]attributs]] [path] [/FORMAT:format]');
     End;
     Else Begin
      WriteLn('DIR   Cette commande permet d''afficher le contenu d''un repertoire dans l''unite de disque.');
      WriteLn;
      WriteLn('Syntaxe:');
      WriteLn;
-     WriteLn('DIR [/?] [/2|/W] [/B] [/P] [chemin] [/FORMAT:format]');
+     WriteLn('DIR [/?] [/2|/W] [/B] [/P] [/A[[:]attributs]] [chemin] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /?             Ce parametre permet d''afficher l''aide sur cette commande');
      WriteLn(' /2             Ce parametre permet d''afficher sur 2 colonnes');
@@ -119,10 +177,19 @@ BEGIN
      WriteLn(' /FORMAT:format Ce parametre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
     End;
    End;
+   WriteLn(' /A[[:]attributs]  A=Archive D=Directory H=Hidden R=ReadOnly S=System');
+   WriteLn('                  + : inclure / include; - : exclure / exclude');
+   WriteLn('                  /A : tous / all; /A:H-D : hidden files');
    Exit;
   End
    Else
   If CurrParam='/2'Then Include(Column,Double) Else
+  If StrToUpper(Copy(CurrParam,1,2))='/A'Then Begin
+   If Not ParseAttributes(CurrParam)Then Begin
+    WriteLn('Invalid attribute parameter: ',CurrParam);
+    Halt(1);
+   End;
+  End Else
   If(CurrParam='/B')or(CurrParam='/b')Then Include(Option,Brief) Else
   If(CurrParam='/L')or(CurrParam='/l')Then Include(Option,Lower) Else
   If(CurrParam='/P')or(CurrParam='/p')Then Include(Option,Pause) Else
@@ -144,7 +211,7 @@ BEGIN
  P:=0;
  Case OutputFormat of
   _CSV:Begin
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    While DOSError=0 do Begin
     Write(Info.Name);
     If Not((Width)in(Column))Then Begin
@@ -170,7 +237,7 @@ BEGIN
      Write(T.Year:4,'-',PadZeroLeft(T.Month,2),'-',PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2));
     End;
     WriteLn;
-    FindNext(Info);
+    FindNextMatch;
    End;
   End;
   _HTML:Begin
@@ -186,7 +253,7 @@ BEGIN
     WriteLn(' ':8,'<th>Time</th>');
    End;
    WriteLn(' ':4,'</tr>');
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    While DOSError=0 do Begin
     WriteLn(' ':4,'<tr>');
     WriteLn(' ':8,'<td>',Info.Name,'</td>');
@@ -215,7 +282,7 @@ BEGIN
              PadZeroLeft(T.Min,2),'</td>');
     End;
     WriteLn(' ':4,'</tr>');
-    FindNext(Info);
+    FindNextMatch;
    End;
    WriteLn('</table>');
    WriteLn('</body>');
@@ -223,7 +290,7 @@ BEGIN
   End;
   _Json:Begin
    WriteLn('{');
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    Error:=DOSError;
    While Error=0 do Begin
     WriteLn(' ':4,'"file":{');
@@ -252,7 +319,7 @@ BEGIN
              PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2),'"');
     End;
     Write(' ':4,'}');
-    FindNext(Info);
+    FindNextMatch;
     Error:=DOSError;
     If Error=0 Then Write(',');
     WriteLn;
@@ -261,13 +328,13 @@ BEGIN
   End;
   _Pascal:Begin
    TotalNumFiles:=0;
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    While DOSError=0 do Begin
-    FindNext(Info);
+    FindNextMatch;
     Inc(TotalNumFiles);
    End;
    WriteLn('Var files:Array[1..',TotalNumFiles,'] of SearchRec=(');
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    Error:=DOSError;
    While Error=0 do Begin
     WriteLn(' ':7,'(Name:''',Info.Name,''';');
@@ -305,7 +372,7 @@ BEGIN
              PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2),' *)');
     End;
     Write(' ':4,')');
-    FindNext(Info);
+    FindNextMatch;
     Error:=DOSError;
     If Error=0 Then Write(',');
     WriteLn;
@@ -319,7 +386,7 @@ BEGIN
    WriteLn(' ':8,'size INT,');
    WriteLn(' ':8,'time TEXT');
    WriteLn(');');
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    While DOSError=0 do Begin
     WriteLn('INSERT INTO files (filename,attribut,size,time) VALUES (');
     WriteLn(' ':8,'''',Info.Name,''',');
@@ -348,13 +415,13 @@ BEGIN
              '''');
     End;
     WriteLn(' ':4,');');
-    FindNext(Info);
+    FindNextMatch;
    End;
   End;
   _XML:Begin
    WriteLn('<?xml version="1.0" encoding="UTF-8"?>');
    WriteLn('<files>');
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    While DOSError=0 do Begin
     WriteLn(' ':4,'<file>');
     WriteLn(' ':8,'<filename>',Info.Name,'</filename>');
@@ -383,15 +450,15 @@ BEGIN
              '</time>');
     End;
     WriteLn(' ':4,'</file>');
-    FindNext(Info);
+    FindNextMatch;
    End;
    WriteLn('</files>');
   End;
   Else Begin
-   FindFirst(ShowDir,AnyFile,Info);
+   FindFirstMatch;
    If(Width)in(Column)Then While DOSError=0 do Begin
     Write(PadRight(Info.Name,16));
-    FindNext(Info);
+    FindNextMatch;
     If(Pause)in(Option)Then Begin
     Inc(P);
      If P=Hi(WindMax)Then Begin
@@ -412,7 +479,7 @@ BEGIN
     Write(Info.Size:9);
     UnpackTime(Info.Time,T);
     Write(' ',T.Year:4,'-',PadZeroLeft(T.Month,2),'-',PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2),' ');
-    FindNext(Info);
+    FindNextMatch;
     If(Pause)in(Option)Then Begin
      Inc(P);
      If P=Hi(WindMax)Then Begin
@@ -441,7 +508,9 @@ BEGIN
      Write(Info.Size:15);
      UnpackTime(Info.Time,T);
      WriteLn(' ',T.Year:4,'-',PadZeroLeft(T.Month,2),'-',PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2));
-     FindNext(Info);
+     Inc(TotalNumFiles);
+     Inc(TotalSize,Info.Size);
+     FindNextMatch;
      If(Pause)in(Option)Then Begin
       Inc(P);
       If P=Hi(WindMax)Then Begin
@@ -451,8 +520,6 @@ BEGIN
        P:=0;
       End;
      End;
-     Inc(TotalNumFiles);
-     Inc(TotalSize,Info.Size);
     End;
     If Not((Brief)in(Option))Then Begin
      WriteLn(' Les ',TotalNumFiles,' fichier(s) utilisent ',TotalSize,' octet(s)');
