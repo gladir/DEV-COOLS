@@ -149,6 +149,7 @@ Type
  T:Text;
  F:File;
  Buffer,BufferAddress:LongInt;
+ RecordWords:Integer;
  LastError:Integer
 End;
 
@@ -236,28 +237,55 @@ Procedure PCode_IOError(H,E:Integer);Forward;
 
 Function PCode_Allocate(Words:Integer):LongInt;
 Var
- A,I:LongInt;
+A,I,J:LongInt;
 Begin
- if Words<1 Then Words:=1;
+ if Words<1 Then Begin PCode_RuntimeError(303,'taille d''allocation invalide');PCode_Allocate:=0;Exit End;
  For I:=1 to PCode_FreeCount do if PCode_FreeSize[I]>=Words Then Begin
   A:=PCode_FreeStart[I];Inc(PCode_FreeStart[I],Words);Dec(PCode_FreeSize[I],Words);
   if PCode_FreeSize[I]=0 Then Begin
    PCode_FreeStart[I]:=PCode_FreeStart[PCode_FreeCount];
    PCode_FreeSize[I]:=PCode_FreeSize[PCode_FreeCount];Dec(PCode_FreeCount)
   End;
-  PCode_Allocate:=A;Exit
+  For J:=0 to Words-1 do PCode_DataSet(A+J,0);PCode_Allocate:=A;Exit
  End;A:=PCode_StringHeap;
- if(A+Words>=PCode_SP-32)Then Begin
-  PCode_IOError(0,4);PCode_Allocate:=0;Exit
+ if(PCode_HasProcDictionary and(A+Words>=PCode_SP-32))or
+  ((not PCode_HasProcDictionary)and(A+Words>High(PCode_Data^)))Then Begin
+  PCode_RuntimeError(303,'tas p-code plein');PCode_Allocate:=0;Exit
  End;
  For I:=0 to Words-1 do PCode_DataSet(A+I,0);Inc(PCode_StringHeap,Words);PCode_Allocate:=A
 End;
 
-Procedure PCode_Release(A:LongInt;Words:Integer);Begin
- if(A<=0)or(Words<=0)Then Exit;
- if PCode_FreeCount<64 Then Begin
-  Inc(PCode_FreeCount);PCode_FreeStart[PCode_FreeCount]:=A;
-  PCode_FreeSize[PCode_FreeCount]:=Words
+Procedure PCode_Release(A:LongInt;Words:Integer);
+Var I,J:Integer;Changed:Boolean;
+Begin
+ if(A<=0)or(Words<=0)or(A+Words>PCode_StringHeap)Then Begin
+  PCode_RuntimeError(303,'liberation de tas invalide');Exit
+ End;
+ For I:=1 to PCode_FreeCount do
+  if(A<PCode_FreeStart[I]+PCode_FreeSize[I])and(PCode_FreeStart[I]<A+Words)Then Begin
+   PCode_RuntimeError(303,'bloc de tas deja libere');Exit
+  End;
+ if PCode_FreeCount>=64 Then Begin PCode_RuntimeError(303,'table des blocs libres pleine');Exit End;
+ Inc(PCode_FreeCount);PCode_FreeStart[PCode_FreeCount]:=A;PCode_FreeSize[PCode_FreeCount]:=Words;
+ Repeat
+  Changed:=False;I:=1;
+  While I<=PCode_FreeCount do Begin J:=I+1;
+   While J<=PCode_FreeCount do Begin
+    if PCode_FreeStart[I]+PCode_FreeSize[I]=PCode_FreeStart[J]Then Begin
+     Inc(PCode_FreeSize[I],PCode_FreeSize[J]);
+     PCode_FreeStart[J]:=PCode_FreeStart[PCode_FreeCount];
+     PCode_FreeSize[J]:=PCode_FreeSize[PCode_FreeCount];Dec(PCode_FreeCount);Changed:=True
+    End else if PCode_FreeStart[J]+PCode_FreeSize[J]=PCode_FreeStart[I]Then Begin
+     PCode_FreeStart[I]:=PCode_FreeStart[J];Inc(PCode_FreeSize[I],PCode_FreeSize[J]);
+     PCode_FreeStart[J]:=PCode_FreeStart[PCode_FreeCount];
+     PCode_FreeSize[J]:=PCode_FreeSize[PCode_FreeCount];Dec(PCode_FreeCount);Changed:=True
+    End else Inc(J)
+   End;Inc(I)
+  End
+ Until not Changed;
+ For I:=1 to PCode_FreeCount do if PCode_FreeStart[I]+PCode_FreeSize[I]=PCode_StringHeap Then Begin
+  PCode_StringHeap:=PCode_FreeStart[I];PCode_FreeStart[I]:=PCode_FreeStart[PCode_FreeCount];
+  PCode_FreeSize[I]:=PCode_FreeSize[PCode_FreeCount];Dec(PCode_FreeCount);Break
  End
 End;
 
@@ -306,8 +334,8 @@ Begin
   if CreateIt Then
   For I:=1 to 16 do if not PCode_Files[I].Used Then Begin
    H:=I;PCode_Files[I].Used:=True;PCode_Files[I].Opened:=False;
-   PCode_Files[I].Name:='';PCode_Files[I].BufferAddress:=PCode_StringHeap;
-   Inc(PCode_StringHeap);PCode_DataSet(FileAddress,H);Break
+   PCode_Files[I].Name:='';PCode_Files[I].BufferAddress:=0;
+   PCode_DataSet(FileAddress,H);Break
   End
  End;PCode_FileHandle:=H
 End;
@@ -320,7 +348,7 @@ Procedure PCode_IOError(H,E:Integer);Begin
  End
 End;
 
-Procedure PCode_OpenFile(FileAddress:LongInt;ForWriting,AsText:Boolean);
+Procedure PCode_OpenFile(FileAddress:LongInt;ForWriting:Boolean;RecordKind:Integer);
 Var
  H,E:Integer;
 Begin
@@ -331,8 +359,13 @@ Begin
   if PCode_Files[H].TextMode Then Close(PCode_Files[H].T)else Close(PCode_Files[H].F);
   E:=IOResult
  End;
- PCode_Files[H].TextMode:=AsText;PCode_Files[H].Writing:=ForWriting;
- if AsText Then Begin
+ PCode_Files[H].TextMode:=RecordKind<0;PCode_Files[H].Writing:=ForWriting;
+ if RecordKind<0 Then PCode_Files[H].RecordWords:=1
+ else Begin PCode_Files[H].RecordWords:=RecordKind;if PCode_Files[H].RecordWords<1 Then
+  PCode_Files[H].RecordWords:=1 End;
+ if PCode_Files[H].BufferAddress=0 Then
+  PCode_Files[H].BufferAddress:=PCode_Allocate(PCode_Files[H].RecordWords);
+ if PCode_Files[H].TextMode Then Begin
   Assign(PCode_Files[H].T,PCode_Files[H].Name);
   if ForWriting Then Rewrite(PCode_Files[H].T)else Reset(PCode_Files[H].T)
  End else
@@ -636,7 +669,7 @@ Procedure PCode_Push(V: LongInt);Begin
   Begin
    PCode_Write('[depassement de pile p-code]');PCode_Halted:=True;PCode_ExitCode:=1
   End
- End Else If PCode_SP < High(PCode_Data^) Then Begin
+ End Else If PCode_SP < 4064 Then Begin
   PCode_Data^[PCode_SP] := V;Inc(PCode_SP);
  End Else
  Begin
@@ -713,7 +746,7 @@ Begin
  End;
  12:
  Begin
- { read integer : pas d entree disponible, pousse 0 } PCode_Push(0); 
+  Read(V);if IOResult<>0 Then PCode_IOError(0,106)else PCode_Push(V)
  End;
  13:
  Begin
@@ -721,7 +754,9 @@ Begin
  End;
  16:
  Begin
- { read char : pas d entree disponible, pousse 0 } PCode_Push(0); 
+  if Eof(Input)Then Begin PCode_IOError(0,100);PCode_Push(0) End
+  else Begin Read(S);if IOResult<>0 Then PCode_IOError(0,106)
+   else if S=''Then PCode_Push(0)else PCode_Push(Ord(S[1])) End
  End;
  17:
  Begin
@@ -739,7 +774,7 @@ Begin
  End;
  21:
  Begin
- { readln : ignore, pas d entree disponible } 
+  ReadLn;if IOResult<>0 Then PCode_IOError(0,106)
  End;
  22:
  Begin
@@ -896,7 +931,7 @@ Begin
  End;
  61,62:
  Begin
-  Kind:=PCode_Pop;D:=PCode_Pop;PCode_OpenFile(D,CspNum=62,Kind<>0)
+  Kind:=PCode_Pop;D:=PCode_Pop;PCode_OpenFile(D,CspNum=62,Kind)
  End;
  63:
  Begin
@@ -1006,9 +1041,12 @@ Begin
  D:=PCode_Pop;H:=PCode_FileHandle(D,False);if(H=0)or not PCode_Files[H].Opened or
  PCode_Files[H].TextMode Then PCode_IOError(H,103)else
  Begin
-  BlockRead(PCode_Files[H].F,PCode_Files[H].Buffer,SizeOf(LongInt),N);E:=IOResult;
-  if E=0 Then PCode_DataSet(PCode_Files[H].BufferAddress,PCode_Files[H].Buffer);
-  if(N<>SizeOf(LongInt))and(E=0)Then E:=100;PCode_IOError(H,E)
+  N:=0;
+  For I:=0 to PCode_Files[H].RecordWords-1 do Begin
+   BlockRead(PCode_Files[H].F,V,SizeOf(LongInt),N);E:=IOResult;
+   if(E<>0)or(N<>SizeOf(LongInt))Then Begin if E=0 Then E:=100;Break End;
+   PCode_DataSet(PCode_Files[H].BufferAddress+I,V)
+  End;PCode_IOError(H,E)
  End
 End;
 72:
@@ -1016,9 +1054,12 @@ Begin
  D:=PCode_Pop;H:=PCode_FileHandle(D,False);if(H=0)or not PCode_Files[H].Opened or
  PCode_Files[H].TextMode Then PCode_IOError(H,103)else
  Begin
-  PCode_Files[H].Buffer:=PCode_DataAt(PCode_Files[H].BufferAddress);
-  BlockWrite(PCode_Files[H].F,PCode_Files[H].Buffer,SizeOf(LongInt),N);E:=IOResult;
-  if(N<>SizeOf(LongInt))and(E=0)Then E:=101;PCode_IOError(H,E)
+  E:=0;
+  For I:=0 to PCode_Files[H].RecordWords-1 do Begin
+   V:=PCode_DataAt(PCode_Files[H].BufferAddress+I);
+   BlockWrite(PCode_Files[H].F,V,SizeOf(LongInt),N);E:=IOResult;
+   if(E<>0)or(N<>SizeOf(LongInt))Then Begin if E=0 Then E:=101;Break End
+  End;PCode_IOError(H,E)
  End
 End;
 73:
@@ -1581,12 +1622,43 @@ End
 End;
 { Execute UNE instruction p-code a partir de PCode_PC. }
 
+Function PCode_CompareTyped(TypeCode:Byte;A,B:LongInt):Integer;
+Var I,N,C:Integer;R1,R2:TSingleBits;
+Begin
+ C:=0;
+ Case TypeCode of
+  2:Begin R1.L:=A;R2.L:=B;if R1.S<R2.S Then C:=-1 else if R1.S>R2.S Then C:=1 End;
+  4:Begin
+   N:=PCode_StringLength(A);if PCode_StringLength(B)<N Then N:=PCode_StringLength(B);
+   I:=1;While(I<=N)and(C=0)do Begin
+    C:=Integer(PCode_StringChar(A,I))-Integer(PCode_StringChar(B,I));Inc(I)
+   End;
+   if C=0 Then C:=PCode_StringLength(A)-PCode_StringLength(B)
+  End;
+  else if A<B Then C:=-1 else if A>B Then C:=1
+ End;
+ if C<0 Then PCode_CompareTyped:=-1 else if C>0 Then PCode_CompareTyped:=1
+ else PCode_CompareTyped:=0
+End;
+
+Function PCode_SetRelation(A,B:LongInt):Integer;
+Var I,R:Integer;WA,WB:LongInt;
+Begin
+ R:=1+2+4;
+ For I:=0 to 15 do Begin
+  WA:=PCode_DataAt(A+I)and $FFFF;WB:=PCode_DataAt(B+I)and $FFFF;
+  if WA<>WB Then R:=R and not 1;
+  if(WA and not WB)<>0 Then R:=R and not 2;
+  if(WB and not WA)<>0 Then R:=R and not 4
+ End;PCode_SetRelation:=R
+End;
+
 Procedure PCode_Step;
 Var
  Op: Byte;
  B: Byte;
  SB: ShortInt;
- W, Used, N, I, Lvl: Integer;
+ W, Used, N, I, Lvl, Cmp: Integer;
  A, V1, V2, Addr, FB: LongInt;
  R1,R2:TSingleBits;
  Temp: Array[0..255] Of Integer;
@@ -1626,7 +1698,7 @@ Begin
  End;
  133:
  Begin
-  V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and not V2);Inc(PCode_PC)
+  PCode_Push(1);PCode_CallCSP(101);Inc(PCode_PC)
  End;
  134:
  Begin
@@ -1668,13 +1740,11 @@ Begin
  End;
  139:
  Begin
-  V2:=PCode_Pop;V1:=PCode_Pop;
-  if(V1<0)or(V1>15)Then PCode_Push(0)else PCode_Push(Ord((V2 and(1 shl V1))<>0));
-  Inc(PCode_PC)
+  PCode_CallCSP(102);Inc(PCode_PC)
  End;
  140:
  Begin
-  V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 and V2);Inc(PCode_PC)
+  PCode_Push(2);PCode_CallCSP(101);Inc(PCode_PC)
  End;
  141:
  Begin
@@ -1713,10 +1783,8 @@ Begin
  End; { LNOT }
  148:
  Begin
- { SRS: construit l'ensemble [borne basse..borne haute] }
-  V2:=PCode_Pop;V1:=PCode_Pop;A:=0;
-  if V1<0 Then V1:=0;if V2>15 Then V2:=15;
-  For I:=V1 to V2 do A:=A or(LongInt(1)shl I);PCode_Push(A);Inc(PCode_PC)
+ { SRS: construit un ensemble UCSD de 256 bits. }
+  PCode_Push(1);PCode_CallCSP(100);Inc(PCode_PC)
  End;
  149:
  Begin
@@ -1729,8 +1797,8 @@ Begin
  End;
  151:
  Begin
-  V1:=PCode_Pop;if(V1>=0)and(V1<=15)Then PCode_Push(LongInt(1)shl V1)
-  else PCode_Push(0);Inc(PCode_PC)
+  V1:=PCode_Pop;PCode_Push(V1);PCode_Push(V1);PCode_Push(1);
+  PCode_CallCSP(100);Inc(PCode_PC)
  End;
  152:
  Begin
@@ -1752,7 +1820,7 @@ Begin
  End;
  156:
  Begin
-  V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1 or V2);Inc(PCode_PC)
+  PCode_Push(0);PCode_CallCSP(101);Inc(PCode_PC)
  End;
  157:
  Begin
@@ -1771,9 +1839,13 @@ Begin
  End; { LDCN : NIL }
  160:
  Begin
- { ADJ normalise le dernier mot d'un ensemble; ici un mot suffit. }
+ { ADJ normalise les bits au-dela de la cardinalite demandee. }
   A:=PCode_ReadBig(PCode_PC+1,Used);V1:=PCode_Pop;
-  if A<16 Then V1:=V1 and((LongInt(1)shl A)-1);PCode_Push(V1);
+  if A<256 Then Begin
+   For I:=(A+15)div 16 to 15 do PCode_DataSet(V1+I,0);
+   if(A mod 16)<>0 Then PCode_DataSet(V1+A div 16,PCode_DataAt(V1+A div 16)and
+    ((LongInt(1)shl(A mod 16))-1))
+  End;PCode_Push(V1);
   PCode_PC:=PCode_PC+1+Used
  End;
  161:
@@ -1871,20 +1943,30 @@ Begin
   Lvl:=PCode_Fetch(PCode_PC+1);N:=PCode_Fetch(PCode_PC+2);
   Inc(PCode_PC,3);PCode_IVCall(N,Lvl,False)
  End;
- 175, 176, 177, 180, 181, 183:
- Begin
- { EQU/GEQ/GRT/LEQ/LES/NEQ : octet type ignore, compare entier }
-  Inc(PCode_PC); { consomme l octet discriminant de type }
-  B := PCode_Fetch(PCode_PC); Inc(PCode_PC);
+175, 176, 177, 180, 181, 183:
+Begin
+ { EQU/GEQ/GRT/LEQ/LES/NEQ : discriminants UCSD 2=reel, 4=chaine,
+   6=ensemble multi-mots; les autres types sont des ordinaux/pointeurs. }
+ Inc(PCode_PC);B := PCode_Fetch(PCode_PC); Inc(PCode_PC);
   V2 := PCode_Pop; V1 := PCode_Pop;
+ if B=6 Then Begin
+  Cmp:=PCode_SetRelation(V1,V2);
+  Case Op of
+  175:PCode_Push(Ord((Cmp and 1)<>0));
+  176:PCode_Push(Ord((Cmp and 4)<>0));
+  177:PCode_Push(Ord(((Cmp and 4)<>0)and((Cmp and 1)=0)));
+  180:PCode_Push(Ord((Cmp and 2)<>0));
+  181:PCode_Push(Ord(((Cmp and 2)<>0)and((Cmp and 1)=0)));
+  183:PCode_Push(Ord((Cmp and 1)=0))
+  End
+ End else Begin
+  Cmp:=PCode_CompareTyped(B,V1,V2);
   Case Op Of
-  175: PCode_Push(Ord(V1 = V2));
-  176: PCode_Push(Ord(V1 >= V2));
-  177: PCode_Push(Ord(V1 > V2));
-  180: PCode_Push(Ord(V1 <= V2));
-  181: PCode_Push(Ord(V1 < V2));
-  183: PCode_Push(Ord(V1 <> V2));
- End;
+  175:PCode_Push(Ord(Cmp=0));176:PCode_Push(Ord(Cmp>=0));
+  177:PCode_Push(Ord(Cmp>0));180:PCode_Push(Ord(Cmp<=0));
+  181:PCode_Push(Ord(Cmp<0));183:PCode_Push(Ord(Cmp<>0))
+  End
+ End
 End;
 178:
 Begin
@@ -3017,7 +3099,8 @@ Function CPAssignmentCompatible(Dest,Source:PPasType):Boolean;Begin
  else if(Dest^.Kind=Source^.Kind)and(Dest^.Kind in[ptkInteger,ptkBoolean,
  ptkChar,ptkReal,ptkEnumeration,ptkPointer])Then CPAssignmentCompatible:=True
  else if(Dest^.Kind=ptkSet)and(Source^.Kind=ptkSet)and
- CPTypeEquivalent(Dest^.ElementType,Source^.ElementType)Then CPAssignmentCompatible:=True
+ (CPAssignmentCompatible(Dest^.ElementType,Source^.ElementType)or
+  CPAssignmentCompatible(Source^.ElementType,Dest^.ElementType))Then CPAssignmentCompatible:=True
  else CPAssignmentCompatible:=False
 End;
 
@@ -5634,10 +5717,14 @@ Begin
    else CPAddressSymbol(P);CPNext
   End;CPNeed(')');
   if Name='RESET'Then Begin
-   if P=Nil Then CPConst(0)else CPConst(Ord(CPIsTextType(P^.SymbolType)));CPEmitIOCSP(61)
+   if P=Nil Then CPConst(1)else if CPIsTextType(P^.SymbolType)Then CPConst(-1)
+   else Begin T:=CPBaseType(P^.SymbolType);if(T=nil)or(T^.ElementType=nil)Then CPConst(1)
+    else CPConst(T^.ElementType^.SizeWords) End;CPEmitIOCSP(61)
   End
   else if Name='REWRITE'Then Begin
-   if P=Nil Then CPConst(0)else CPConst(Ord(CPIsTextType(P^.SymbolType)));CPEmitIOCSP(62)
+   if P=Nil Then CPConst(1)else if CPIsTextType(P^.SymbolType)Then CPConst(-1)
+   else Begin T:=CPBaseType(P^.SymbolType);if(T=nil)or(T^.ElementType=nil)Then CPConst(1)
+    else CPConst(T^.ElementType^.SizeWords) End;CPEmitIOCSP(62)
   End
   else if Name='CLOSE'Then CPEmitIOCSP(63)else if Name='GET'Then CPEmitIOCSP(71)
   else CPEmitIOCSP(72)
