@@ -21,7 +21,7 @@ Type
 End;
 
 Var
- WorkFile,ProgramFile,WorkTitle:String;
+ WorkFile,ProgramFile,WorkTitle,FilerPrefix,FilerDate:String;
  Finished:Boolean;
  CurrentTarget:TPSYSTEMTarget;
  OriginalErrors:Boolean;
@@ -7560,9 +7560,9 @@ Var
  Mask:String;
  Info:SearchRec;
 Begin
- Mask:='*.*';AskFile('File mask',Mask);FindFirst(Mask,AnyFile,Info);
+ Mask:='*.*';AskFile('Fichiers a lister',Mask);FindFirst(Mask,AnyFile,Info);
  if DosError<>0 Then Begin
-  WriteLn('No files.');Exit
+  WriteLn('Aucun fichier.');Exit
  End;
  While DosError=0 do Begin
   if(Info.Name<>'.')and(Info.Name<>'..')Then Begin
@@ -7635,6 +7635,103 @@ Begin
  WriteLn('Free bytes: ',DiskFree(0));WriteLn('Total bytes: ',DiskSize(0))
 End;
 
+Procedure ExtendedListFiles;
+Var Mask:String;Info:SearchRec;DT:DateTime;Count:Integer;Total:LongInt;
+Begin
+ Mask:='*.*';AskFile('Repertoire etendu de quels fichiers',Mask);
+ FindFirst(Mask,AnyFile,Info);Count:=0;Total:=0;
+ if DosError<>0 Then Begin WriteLn('Aucun fichier.');Exit End;
+ WriteLn('Nom':20,'Octets':11,'  Date       Heure  Attributs');
+ While DosError=0 do Begin
+  if(Info.Name<>'.')and(Info.Name<>'..')Then Begin
+   UnpackTime(Info.Time,DT);Write(Info.Name:20,Info.Size:11,'  ',DT.Day:2,'/',DT.Month:2,
+    '/',DT.Year:4,' ',DT.Hour:2,':',DT.Min:2,'  ',Info.Attr:3);
+   if(Info.Attr and Directory)<>0 Then Write(' <REP>');WriteLn;
+   Inc(Count);if(Info.Attr and Directory)=0 Then Inc(Total,Info.Size)
+  End;FindNext(Info)
+ End;WriteLn(Count,' entree(s), ',Total,' octet(s).')
+End;
+
+Procedure MakeFileCommand;
+Var Name,S:String;F:File;Blocks,E:Integer;Remain,N:LongInt;Buffer:Array[1..512]of Byte;
+Begin
+ Name:='';AskFile('Creer quel fichier',Name);if Name=''Then Exit;
+ S:='0';AskFile('Nombre de blocs de 512 octets',S);Val(S,Blocks,E);
+ if(E<>0)or(Blocks<0)Then Begin WriteLn('Taille incorrecte.');Exit End;
+ if FileExists(Name)Then Begin WriteLn('Le fichier existe deja.');Exit End;
+ FillChar(Buffer,SizeOf(Buffer),0);Assign(F,Name);Rewrite(F,1);E:=IOResult;
+ if E<>0 Then Begin WriteLn('Creation impossible.');Exit End;
+ Remain:=LongInt(Blocks)*512;
+ While Remain>0 do Begin N:=SizeOf(Buffer);if N>Remain Then N:=Remain;
+  BlockWrite(F,Buffer,N);if IOResult<>0 Then Begin WriteLn('Erreur disque.');Break End;Dec(Remain,N)
+ End;Close(F);if IOResult<>0 Then Begin End;
+ if Remain=0 Then WriteLn(Name,' cree (',Blocks,' bloc(s)).')
+End;
+
+Procedure PrefixCommand;
+Var Name:String;E:Integer;
+Begin
+ Name:=FilerPrefix;AskFile('Nouveau prefixe',Name);if Name=''Then Exit;
+ ChDir(Name);E:=IOResult;if E<>0 Then WriteLn('Prefixe inaccessible.')else Begin
+  GetDir(0,FilerPrefix);WriteLn('Prefixe: ',FilerPrefix)
+ End
+End;
+
+Procedure DateCommand;
+Var S:String;
+Begin
+ WriteLn('Date du p-System: ',FilerDate);S:=FilerDate;
+ AskFile('Nouvelle date (JJ/MM/AAAA, Entree conserve)',S);
+ if S<>''Then FilerDate:=S
+End;
+
+Procedure ExamineFileCommand;
+Var Name:String;F:File;B:Array[0..15]of Byte;N:Word;Offset:LongInt;I:Integer;C:Char;
+Begin
+ Name:='';AskFile('Examiner quel fichier',Name);if Name=''Then Exit;
+ Assign(F,Name);Reset(F,1);if IOResult<>0 Then Begin WriteLn('Fichier introuvable.');Exit End;
+ Offset:=0;
+ Repeat
+  BlockRead(F,B,SizeOf(B),N);if IOResult<>0 Then Begin N:=0;WriteLn('Erreur de lecture.') End;
+  if N<>0 Then Begin Write(Offset:8,'  ');For I:=0 to 15 do
+   if I<N Then Write(DebugHex(B[I],2),' ')else Write('   ');Write(' ');
+   For I:=0 to N-1 do Begin C:=Chr(B[I]);if(C<' ')or(C>#126)Then C:='.';Write(C) End;WriteLn;
+   Inc(Offset,N)
+  End
+ Until N=0;Close(F);if IOResult<>0 Then Begin End
+End;
+
+Procedure BadBlocksCommand;
+Var Mask:String;Info:SearchRec;F:File;Buffer:Array[1..8192]of Byte;N:Word;Bad,Count:Integer;
+Begin
+ Mask:='*.*';AskFile('Verifier quels fichiers',Mask);FindFirst(Mask,Archive or ReadOnly or Hidden or SysFile,Info);
+ Bad:=0;Count:=0;
+ While DosError=0 do Begin
+  Assign(F,Info.Name);Reset(F,1);
+  if IOResult<>0 Then Inc(Bad)else Begin
+   Repeat BlockRead(F,Buffer,SizeOf(Buffer),N)Until(IOResult<>0)or(N=0);
+   if IOResult<>0 Then Inc(Bad);Close(F);if IOResult<>0 Then Inc(Bad)
+  End;Inc(Count);FindNext(Info)
+ End;WriteLn(Count,' fichier(s) verifies, ',Bad,' erreur(s) de lecture.')
+End;
+
+Procedure KrunchCommand;
+Begin
+ WriteLn('K(runch: le systeme de fichiers hote compacte et alloue lui-meme les fichiers.');
+ WriteLn('Aucune relocalisation de blocs n''est necessaire.')
+End;
+
+Procedure ZeroCommand;
+Var Name,Answer:String;Info:SearchRec;
+Begin
+ Name:='';AskFile('Initialiser quel nouveau repertoire-volume',Name);if Name=''Then Exit;
+ FindFirst(Name+'\*.*',AnyFile,Info);
+ if DosError=0 Then Begin WriteLn('Refus: le repertoire existe ou n''est pas vide.');Exit End;
+ Write('Creer le volume vide ',Name,' (O/N) ? ');ReadLn(Answer);
+ Answer:=UpperString(TrimString(Answer));if(Answer<>'O')and(Answer<>'OUI')Then Exit;
+ MkDir(Name);if IOResult<>0 Then WriteLn('Initialisation impossible.')else WriteLn('Volume initialise: ',Name)
+End;
+
 Procedure WhatWorkFile;
 Var F:File;N:LongInt;
 Begin
@@ -7704,26 +7801,40 @@ Var
  Done:Boolean;
 Begin
  Done:=False;Repeat
- Write('Fichier: G(et, N(ouveau, S(auver, W(hat, L(iste, T(ransfert, ');
- Write('R(enommer, D(effacer, V(olume, Q(uit ? ');ReadLn(S);
+ Write('Filer: B(ad, C(hange, D(ate, E(xtended, G(et, K(runch, L(ist, ');
+ Write('M(ake, N(ew, P(refix, Q(uit, R(emove, S(ave, T(ransfer, ');
+ Write('V(olumes, W(hat, X(amine, Z(ero ? ');ReadLn(S);
  S:=UpperString(TrimString(S));if S=''Then Continue;
+ if Copy(S,1,2)='LO'Then Begin
+  WriteLn('LOst directory: aucune copie de repertoire UCSD n''existe sur un volume hote.');
+  Continue
+ End;
  Case S[1]of
+ 'B':BadBlocksCommand;
+ 'C':RenameFileCommand;
+ 'D':DateCommand;
+ 'E':ExtendedListFiles;
  'G':GetWorkFile;
- 'N':NewWorkFile;
- 'S':SaveWorkFile;
- 'W':WhatWorkFile;
+ 'K':KrunchCommand;
  'L':ListFiles;
- 'T','C':CopyFileCommand;
- 'R':RenameFileCommand;
- 'D':DeleteFileCommand;
- 'V':VolumeCommand;
+ 'M':MakeFileCommand;
+ 'N':NewWorkFile;
+ 'P':PrefixCommand;
  'Q':Done:=True;
+ 'R':DeleteFileCommand;
+ 'S':SaveWorkFile;
+ 'T':CopyFileCommand;
+ 'V':VolumeCommand;
+ 'W':WhatWorkFile;
+ 'X':ExamineFileCommand;
+ 'Z':ZeroCommand;
  '?':Begin
-  WriteLn('Get charge un fichier dans SYSTEM.WRK.TEXT et sa partie CODE.');
-  WriteLn('Nouveau efface SYSTEM.WRK.TEXT, SYSTEM.WRK.CODE et SYSTEM.WRK.BACK.');
-  WriteLn('Sauver copie les parties TEXT et CODE sous le nom indique.');
-  WriteLn('What affiche l''etat du fichier de travail courant.');
-  WriteLn('Liste, Transfert, Renommage, Effacement, Volume et Quitter gerent les fichiers.')
+  WriteLn('B verifie la lisibilite; C renomme; D affiche/change la date p-System.');
+  WriteLn('E donne le repertoire etendu; G charge le fichier de travail; K compacte.');
+  WriteLn('L liste; LO recherche un repertoire perdu; M cree un fichier reserve.');
+  WriteLn('N efface le travail; P change le prefixe; R supprime; S sauvegarde.');
+  WriteLn('T transfere; V decrit le volume; W decrit le travail; X examine en hexadecimal.');
+  WriteLn('Z initialise uniquement un nouveau repertoire-volume vide; Q quitte le Filer.')
  End;
  else WriteLn('Commande de fichier inconnue.')
 End
@@ -7782,11 +7893,14 @@ End;
 Procedure CommandLine;
 Var
  I:Integer;
- S:String;
+ S,A,B,C:String;
+ Y,M,D,Dow:Word;
 Begin
  { Le jeu d'opcodes de la machine virtuelle et de l'assembleur integres
    correspond par defaut a UCSD Pascal II.0/II.1. }
  WorkFile:='';ProgramFile:='';WorkTitle:='';CurrentTarget:=ptUCSDPascalII;
+ GetDir(0,FilerPrefix);GetDate(Y,M,D,Dow);Str(D,A);Str(M,B);Str(Y,C);
+ FilerDate:=A+'/'+B+'/'+C;
  OriginalErrors:=False;CPListing:=False;
  CheckCodeRequested:=False;
  For I:=1 to ParamCount do Begin
