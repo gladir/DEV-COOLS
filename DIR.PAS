@@ -13,6 +13,11 @@ Uses {$IFDEF FPC}{$IFDEF WINDOWS}Windows,{$ENDIF}{$ENDIF}
      {$IFDEF GO32V2}Go32,{$ENDIF} Crt,DOS;
 
 Type
+ PDirPath=^TDirPath;
+ TDirPath=Record
+  Path:String;
+  Next:PDirPath;
+ End;
  PDirEntry=^TDirEntry;
  TDirEntry=Record
   Data:SearchRec;
@@ -38,6 +43,8 @@ Var
  SortOrder:String;
  Entries,CurrentEntry:PDirEntry;
  EntriesLoaded:Boolean;
+ PendingDirs:PDirPath;
+ RecursiveRoot,RecursiveMask,CurrentFolder:String;
 
 Function StrToUpper(S:String):String; Forward;
 
@@ -53,6 +60,7 @@ Var
  I:Integer;
 Begin
  S:=Info.Name;
+ If Subdirectory in Option Then S:=CurrentFolder+S;
  If Lower in Option Then
   For I:=1 to Length(S)do
    If S[I] in ['A'..'Z']Then S[I]:=Chr(Ord(S[I])+32);
@@ -394,12 +402,14 @@ Procedure SkipExcluded;
 Begin
  While DosError=0do Begin
   If ((Info.Attr and RequiredAttr)=RequiredAttr)and
-     ((Info.Attr and ExcludedAttr)=0)Then Exit;
+     ((Info.Attr and ExcludedAttr)=0)Then
+   If Not(Subdirectory in Option)or
+      ((Info.Name<>'.')and(Info.Name<>'..'))Then Exit;
   FindNext(Info);
  End;
 End;
 
-Procedure FindFirstMatch;
+Procedure FindFirstLocalMatch;
 Var
  Entry,Tail:PDirEntry;
 Begin
@@ -445,7 +455,7 @@ Begin
  SkipExcluded;
 End;
 
-Procedure FindNextMatch;
+Procedure FindNextLocalMatch;
 Begin
  If SortOrder<>''Then Begin
   If CurrentEntry<>Nil Then CurrentEntry:=CurrentEntry^.Next;
@@ -457,6 +467,184 @@ Begin
  End;
  FindNext(Info);
  SkipExcluded;
+End;
+
+Function AppendPath(A,B:String):String;
+Begin
+ If Length(A)+Length(B)>255Then Begin
+  Case Language of
+   _Germany:WriteLn('Pfad zu lang: ',A,B);
+   _English:WriteLn('Path too long: ',A,B);
+   Else WriteLn('Chemin trop long : ',A,B);
+  End;
+  Halt(1);
+ End;
+ AppendPath:=A+B;
+End;
+
+Function FolderPath(Path:String):String;
+Begin
+ If Path<>''Then
+  If Not(Path[Length(Path)] in ['\','/'])Then
+   {$IFDEF UNIX}Path:=AppendPath(Path,'/');{$ELSE}Path:=AppendPath(Path,'\');{$ENDIF}
+ FolderPath:=Path;
+End;
+
+Procedure FreePendingDirs;
+Var
+ NextDir:PDirPath;
+Begin
+ While PendingDirs<>Nil do Begin
+  NextDir:=PendingDirs^.Next;
+  Dispose(PendingDirs);
+  PendingDirs:=NextDir;
+ End;
+End;
+
+Procedure QueueSubdirectories;
+Var
+ DirInfo:SearchRec;
+ Node,Head,Tail:PDirPath;
+ Path:String;
+ Descend:Boolean;
+ {$IFDEF FPC}{$IFDEF WINDOWS}
+ NativePath:AnsiString;
+ Attributes:DWORD;
+ {$ENDIF}{$ENDIF}
+Begin
+ Head:=Nil;
+ Tail:=Nil;
+ { Le masque de fichiers et /A ne doivent pas filtrer les dossiers a parcourir. }
+ FindFirst(AppendPath(CurrentFolder,'*.*'),AnyFile,DirInfo);
+ While DosError=0do Begin
+  Descend:=((DirInfo.Attr and Directory)<>0)and
+           (DirInfo.Name<>'.')and(DirInfo.Name<>'..');
+  If Descend Then Begin
+   Path:=AppendPath(CurrentFolder,DirInfo.Name);
+   {$IFDEF FPC}{$IFDEF WINDOWS}
+   { Ne pas suivre les jonctions ou liens pouvant revenir vers un dossier parent. }
+   NativePath:=Path;
+   Attributes:=Windows.GetFileAttributesA(PChar(NativePath));
+   Descend:=(Attributes<>DWORD($FFFFFFFF))and
+            ((Attributes and FILE_ATTRIBUTE_REPARSE_POINT)=0);
+   {$ENDIF}{$ENDIF}
+   {$IFDEF UNIX}
+   Descend:=(DirInfo.Attr and $40)=0;
+   {$ENDIF}
+   If Descend Then Begin
+    {$IFNDEF FPC}
+    If MaxAvail<SizeOf(TDirPath)Then Begin
+     Case Language of
+      _Germany:WriteLn('Nicht genug Speicher.');
+      _English:WriteLn('Not enough memory.');
+      Else WriteLn('M'+#130+'moire insuffisante.');
+     End;
+     Halt(1);
+    End;
+    {$ENDIF}
+    New(Node);
+    Node^.Path:=FolderPath(Path);
+    Node^.Next:=Nil;
+    If Head=Nil Then Head:=Node Else Tail^.Next:=Node;
+    Tail:=Node;
+   End;
+  End;
+  FindNext(DirInfo);
+ End;
+ {$IFDEF FPC}FindClose(DirInfo);{$ENDIF}
+ { Parcours en profondeur, sans conserver de recherche ouverte pour les parents. }
+ If Tail<>Nil Then Begin
+  Tail^.Next:=PendingDirs;
+  PendingDirs:=Head;
+ End;
+End;
+
+Procedure StartFolder;
+Begin
+ FreeEntries;
+ CurrentEntry:=Nil;
+ EntriesLoaded:=False;
+ ShowDir:=AppendPath(CurrentFolder,RecursiveMask);
+ QueueSubdirectories;
+ FindFirstLocalMatch;
+End;
+
+Procedure AdvanceFolder;
+Var
+ Node:PDirPath;
+Begin
+ While DosError<>0do Begin
+  If SortOrder=''Then Begin
+   {$IFDEF FPC}FindClose(Info);{$ENDIF}
+  End;
+  If PendingDirs=Nil Then Begin
+   DosError:=18;
+   Exit;
+  End;
+  Node:=PendingDirs;
+  PendingDirs:=Node^.Next;
+  CurrentFolder:=Node^.Path;
+  Dispose(Node);
+  StartFolder;
+ End;
+End;
+
+Procedure FindFirstMatch;
+Begin
+ If Not(Subdirectory in Option)Then Begin
+  FindFirstLocalMatch;
+  Exit;
+ End;
+ { Reinitialiser aussi le parcours pour la seconde passe du format Pascal. }
+ FreePendingDirs;
+ CurrentFolder:=RecursiveRoot;
+ StartFolder;
+ AdvanceFolder;
+End;
+
+Procedure FindNextMatch;
+Begin
+ FindNextLocalMatch;
+ If Subdirectory in Option Then AdvanceFolder;
+End;
+
+Procedure PrepareRecursivePath;
+Var
+ DirInfo:SearchRec;
+ D:DirStr;
+ N:NameStr;
+ E:ExtStr;
+ Expanded:String;
+ IsFolder:Boolean;
+Begin
+ Expanded:=FExpand(ShowDir);
+ IsFolder:=False;
+ If (Pos('*',Expanded)=0)and(Pos('?',Expanded)=0)Then Begin
+  FindFirst(Expanded,AnyFile,DirInfo);
+  If DosError=0Then IsFolder:=(DirInfo.Attr and Directory)<>0;
+  {$IFDEF FPC}FindClose(DirInfo);{$ENDIF}
+ End;
+ If IsFolder Then Begin
+  RecursiveRoot:=FolderPath(Expanded);
+  RecursiveMask:='*.*';
+ End Else Begin
+  FSplit(Expanded,D,N,E);
+  RecursiveRoot:=FolderPath(D);
+  RecursiveMask:=N+E;
+  If RecursiveMask=''Then RecursiveMask:='*.*';
+ End;
+End;
+
+Procedure WriteJsonDisplayName;
+Var
+ S:String;
+ I:Integer;
+Begin
+ S:=DisplayName;
+ For I:=1 to Length(S)do Begin
+  If S[I] in ['\','"']Then Write('\');
+  Write(S[I]);
+ End;
 End;
 
 Function PadRight(S:String;Space:Byte):String;
@@ -533,6 +721,7 @@ BEGIN
  Entries:=Nil;
  CurrentEntry:=Nil;
  EntriesLoaded:=False;
+ PendingDirs:=Nil;
  ShowDir:='*.*';
  OutputFormat:=_Text;
  Repeat
@@ -544,7 +733,7 @@ BEGIN
     _Germany:Begin
      WriteLn('Listet die Dateien und Unterverzeichnisse eines Verzeichnisses auf.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/A[[:]Attribute]] [/O[[:]Folge]] [Pfad] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/S] [/A[[:]Attribute]] [/O[[:]Folge]] [Pfad] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]Attribute]  A=Archiv D=Verzeichnis H=Versteckt R=Schreibgesch'+#129+'tzt S=System');
      WriteLn('                  + : einschlie'+#225+'en; - : ausschlie'+#225+'en');
@@ -552,6 +741,7 @@ BEGIN
      WriteLn(' /C               DoubleSpace-Kompressionsverh'+#132+'ltnis, 8-KB-Einheiten');
      WriteLn('                  MS-DOS 7+ / Windows; - = nicht verf'+#129+'gbar; /B und /W haben Vorrang');
      WriteLn(' /L               Datei- und Verzeichnisnamen in Kleinbuchstaben anzeigen');
+     WriteLn(' /S               Dateien auch in allen Unterverzeichnissen auflisten');
      WriteLn(' /O[[:]Folge]     C=Kompressionsrate D=Datum/Zeit E=Erweiterung');
      WriteLn('                  G=Verzeichnisse zuerst N=Name S=Gr'+#148+'sse');
      WriteLn('                  Aufsteigend; - kehrt den folgenden Schl'+#129+'ssel um');
@@ -562,7 +752,7 @@ BEGIN
     _English:Begin
      WriteLn('Purpose:  Display information about files and subdirectories.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/A[[:]attributes]] [/O[[:]order]] [path] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/S] [/A[[:]attributes]] [/O[[:]order]] [path] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]attributes] A=Archive D=Directory H=Hidden R=ReadOnly S=System');
      WriteLn('                  + : include; - : exclude');
@@ -570,6 +760,7 @@ BEGIN
      WriteLn(' /C               DoubleSpace compression ratio, based on 8 KB allocation units');
      WriteLn('                  MS-DOS 7+ / Windows; - = unavailable; ignored with /B or /W');
      WriteLn(' /L               Display file and directory names in lowercase');
+     WriteLn(' /S               List files recursively in all subdirectories');
      WriteLn(' /O[[:]order]     C=Compression rate D=Date/time E=Extension');
      WriteLn('                  G=Directories first N=Name S=Size');
      WriteLn('                  Ascending; - reverses the following key');
@@ -582,7 +773,7 @@ BEGIN
      WriteLn;
      WriteLn('Syntaxe:');
      WriteLn;
-     WriteLn('DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/A[[:]attributs]] [/O[[:]ordretri]] [chemin] [/FORMAT:format]');
+     WriteLn('DIR [/?] [/2|/W] [/B] [/C] [/L] [/P] [/S] [/A[[:]attributs]] [/O[[:]ordretri]] [chemin] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /?             Ce param'+#138+'tre permet d''afficher l''aide sur cette commande');
      WriteLn(' /2             Ce param'+#138+'tre permet d''afficher sur 2 colonnes');
@@ -592,16 +783,18 @@ BEGIN
      WriteLn(' /B             Ce param'+#138+'tre enl'+#138+'ve l''entete et les d'+#130+'tails de la fin');
      WriteLn(' /C               Taux de compression DoubleSpace, unit'+#130+'s d''allocation de 8 Ko');
      WriteLn('                  MS-DOS 7+ / Windows; - = indisponible; ignor'+#130+' avec /B ou /W');
+     WriteLn(' /FORMAT:format Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
      WriteLn(' /L               Affiche les noms des fichiers et r'+#130+'pertoires en minuscules');
+     
      WriteLn(' /O[[:]ordretri]  C=Taux de compression D=Date/heure E=Extension');
      WriteLn('                  G=R'+#130+'pertoires en premier N=Nom S=Taille');
      WriteLn('                  Ordre croissant; - inverse le crit'+#138+'re suivant');
      WriteLn('                  /O = GN; crit'+#138+'res combinables, ex. /O:G-S');
      WriteLn('                  C : octets '+#130+'conomis'+#130+'s (%), Windows / MS-DOS 7+');
      WriteLn('                  Syst'+#138+'mes non pris en charge : 0');
-     WriteLn(' /P             Ce param'+#138+'tre affiche une pause apres l''affichage d''une page pleine');
-     WriteLn(' /W             Ce param'+#138+'tre affiche seulement les fichiers sur plein de colonnes');
-     WriteLn(' /FORMAT:format Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
+     WriteLn(' /P               Ce param'+#138+'tre affiche une pause apres l''affichage d''une page pleine');
+     WriteLn(' /S               Ce param'+#138+'tre affiche les fichiers du dossier et de tous ses sous-dossiers');
+     WriteLn(' /W               Ce param'+#138+'tre affiche seulement les fichiers sur plein de colonnes');
     End;
    End;
    Exit;
@@ -628,6 +821,7 @@ BEGIN
   If(CurrParam='/C')or(CurrParam='/c')Then Include(Option,CompressionDetails) Else
   If(CurrParam='/L')or(CurrParam='/l')Then Include(Option,Lower) Else
   If(CurrParam='/P')or(CurrParam='/p')Then Include(Option,Pause) Else
+  If(CurrParam='/S')or(CurrParam='/s')Then Include(Option,Subdirectory) Else
   If(CurrParam='/W')or(CurrParam='/w')Then Include(Column,Width) Else
   If(StrToUpper(Copy(CurrParam,1,8))='/FORMAT:')Then Begin
    If StrToUpper(Copy(CurrParam,9,255))='CSV'Then OutputFormat:=_CSV Else
@@ -641,6 +835,7 @@ BEGIN
   ShowDir:=CurrParam;
   If P>99Then Break;
  Until CurrParam='';
+ If Subdirectory in Option Then PrepareRecursivePath;
  CurrDrive:=Path2Drive(ShowDir);
  CurrLabel:=GetDiskLabel(Byte(CurrDrive)-64);
  P:=0;
@@ -732,7 +927,9 @@ BEGIN
    Error:=DOSError;
    While Error=0 do Begin
     WriteLn(' ':4,'"file":{');
-    WriteLn(' ':8,'"filename":"',DisplayName,'",');
+    Write(' ':8,'"filename":"');
+    WriteJsonDisplayName;
+    WriteLn('",');
     If ShowCompression Then
      WriteLn(' ':8,'"compression8k":"',CompressionRatioText,'",');
     If Not((Width)in(Column))Then Begin
@@ -904,6 +1101,19 @@ BEGIN
   End;
   Else Begin
    FindFirstMatch;
+   If(Subdirectory in Option)and(Brief in Option)Then While DosError=0do Begin
+    WriteLn(DisplayName);
+    FindNextMatch;
+    If Pause in Option Then Begin
+     Inc(P);
+     If P=Hi(WindMax)Then Begin
+      Write('Presse une touche pour continuer...');
+      If ReadKey=#27Then Exit;
+      WriteLn;
+      P:=0;
+     End;
+    End;
+   End Else
    If(Width)in(Column)Then While DOSError=0 do Begin
     Write(PadRight(DisplayName,16));
     FindNextMatch;
@@ -979,4 +1189,5 @@ BEGIN
   End;
  End;
  FreeEntries;
+ FreePendingDirs;
 END.
