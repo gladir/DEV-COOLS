@@ -242,6 +242,7 @@ Begin
  P:=Head;While P<>Nil do Begin N:=P^.Next;Dispose(P);P:=N End
 End;
 Function CompilePascalPCode(SourceName,CodeName:String):Integer;Forward;
+Function ExecutePCodeFile(Const FileName:String):Integer;Forward;
 
 Function CompileWork(AskName:Boolean):Boolean;
 Var
@@ -262,11 +263,15 @@ Begin
  WriteLn('Compilation complete.')
 End;
 
-Procedure RunCommand;Begin
+Procedure RunCommand;
+Var Code:Integer;
+Begin
  if WorkFile=''Then AskFile('Source file',WorkFile);
  if WorkFile=''Then Exit;
  if(ProgramFile='')or not FileExists(ProgramFile)Then  if not CompileWork(False)Then Exit;
- WriteLn('Running ',ProgramFile,' ...');RunShell(QuoteName(ProgramFile))
+ WriteLn('Execution de ',ProgramFile,' avec la machine virtuelle integree ...');
+ Code:=ExecutePCodeFile(ProgramFile);
+ WriteLn;WriteLn('Fin du programme p-Code (code ',Code,').')
 End;
 
 Type
