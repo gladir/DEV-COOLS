@@ -21,7 +21,7 @@ Type
 End;
 
 Var
- WorkFile,ProgramFile:String;
+ WorkFile,ProgramFile,WorkTitle:String;
  Finished:Boolean;
  CurrentTarget:TPSYSTEMTarget;
  OriginalErrors:Boolean;
@@ -101,6 +101,48 @@ Begin
  FileExists:=Exists
 End;
 
+Function AssociatedCodeName(Const Name:String):String;
+Begin
+ if UpperString(Name)='SYSTEM.WRK.TEXT'Then AssociatedCodeName:='SYSTEM.WRK.CODE'
+ else AssociatedCodeName:=ReplaceExtension(Name,'.CODE')
+End;
+
+Function WorkTextName(Name:String):String;
+Var I:Integer;HasDot:Boolean;
+Begin
+ Name:=TrimString(Name);HasDot:=False;
+ For I:=Length(Name)downto 1 do Begin
+  if Name[I]='.'Then Begin HasDot:=True;Break End;
+  if Name[I]in['\','/',':']Then Break
+ End;
+ if not HasDot Then Name:=Name+'.TEXT';WorkTextName:=Name
+End;
+
+Function CopyHostFile(Const Source,Target:String):Boolean;
+Var A,B:File;Buffer:Array[1..8192]of Byte;N,W:Word;OK:Boolean;
+Begin
+ CopyHostFile:=False;
+ if UpperString(FExpand(Source))=UpperString(FExpand(Target))Then Begin
+  CopyHostFile:=FileExists(Source);Exit
+ End;
+ Assign(A,Source);Reset(A,1);if IOResult<>0 Then Exit;
+ Assign(B,Target);Rewrite(B,1);if IOResult<>0 Then Begin Close(A);if IOResult<>0 Then Begin End;Exit End;
+ OK:=True;
+ Repeat
+  BlockRead(A,Buffer,SizeOf(Buffer),N);if IOResult<>0 Then Begin OK:=False;Break End;
+  if N<>0 Then Begin BlockWrite(B,Buffer,N,W);if(IOResult<>0)or(W<>N)Then OK:=False End
+ Until(N=0)or not OK;
+ Close(A);if IOResult<>0 Then OK:=False;Close(B);if IOResult<>0 Then OK:=False;
+ CopyHostFile:=OK
+End;
+
+Procedure RemoveHostFile(Const Name:String);
+Var F:File;
+Begin
+ if not FileExists(Name)Then Exit;Assign(F,Name);Erase(F);if IOResult<>0 Then
+  WriteLn('Impossible de supprimer ',Name,'.')
+End;
+
 Procedure EditCommand;
 Type
  PEditLine=^TEditLine;
@@ -166,15 +208,23 @@ Begin
 End;
 
 Function SaveFile:Boolean;
-Var X:PEditLine;E:Integer;
+Var X:PEditLine;E:Integer;HadCode:Boolean;
 Begin
- SaveFile:=False;Assign(F,WorkFile);Rewrite(F);E:=IOResult;if E<>0 Then Begin
+ SaveFile:=False;
+ if(UpperString(WorkFile)='SYSTEM.WRK.TEXT')and FileExists(WorkFile)Then
+  if not CopyHostFile(WorkFile,'SYSTEM.WRK.BACK')Then
+   WriteLn('Avertissement: impossible de creer SYSTEM.WRK.BACK.');
+ HadCode:=FileExists(AssociatedCodeName(WorkFile));
+ Assign(F,WorkFile);Rewrite(F);E:=IOResult;if E<>0 Then Begin
   WriteLn('Impossible de creer ',WorkFile,' (erreur ',E,').');Exit
  End;
  X:=Head;While X<>Nil do Begin WriteLn(F,X^.Text);E:=IOResult;if E<>0 Then Break;X:=X^.Next End;
  Close(F);if E=0 Then E:=IOResult;
- if E<>0 Then WriteLn('Erreur d''ecriture ',E,'.')else Begin Dirty:=False;SaveFile:=True;
-  WriteLn(LineNo,' ligne(s) sauvegardee(s).') End
+ if E<>0 Then WriteLn('Erreur d''ecriture ',E,'.')else Begin
+  ProgramFile:=AssociatedCodeName(WorkFile);if HadCode Then RemoveHostFile(ProgramFile);
+  Dirty:=False;SaveFile:=True;WriteLn(LineNo,' ligne(s) sauvegardee(s).');
+  if HadCode Then WriteLn('La partie CODE devenue obsolete a ete supprimee.')
+ End
 End;
 
 Procedure EditorHelp;
@@ -190,7 +240,7 @@ Begin
  WriteLn('?                    Afficher cette aide')
 End;
 Begin
- AskFile('Fichier a editer',WorkFile);if WorkFile=''Then Exit;
+ if WorkFile=''Then AskFile('Fichier a editer',WorkFile);if WorkFile=''Then Exit;
  Head:=Nil;Tail:=Nil;LineNo:=0;Dirty:=False;Loaded:=False;
  Assign(F,WorkFile);Reset(F);
  if IOResult=0 Then Begin
@@ -231,7 +281,7 @@ Begin
     WriteLn(I:5,'  ',P^.Text);Inc(Count) End;P:=P^.Next;Inc(I) End;
    WriteLn(Count,' occurrence(s).')
   End
-  else if Cmd='W'Then Begin if SaveFile Then ProgramFile:=ReplaceExtension(WorkFile,'.CODE') End
+  else if Cmd='W'Then Begin if SaveFile Then ProgramFile:=AssociatedCodeName(WorkFile) End
   else if Cmd='Q!'Then Done:=True
   else if Cmd='Q'Then Begin
    if Dirty Then Begin Write('Sauvegarder les changements (O/N/Annuler) ? ');ReadLn(Answer);
@@ -248,12 +298,12 @@ Function CompileWork(AskName:Boolean):Boolean;
 Var
  Code:Integer;
 Begin
- CompileWork:=False;if AskName or(WorkFile='')Then AskFile('Source file',WorkFile);
+ CompileWork:=False;if AskName or(WorkFile='')Then AskFile('Fichier source',WorkFile);
  if WorkFile=''Then Exit;
  if not FileExists(WorkFile)Then Begin
-  WriteLn('File not found: ',WorkFile);Exit
+  WriteLn('Fichier de travail introuvable: ',WorkFile);Exit
  End;
- ProgramFile:=ReplaceExtension(WorkFile,'.CODE');
+ ProgramFile:=AssociatedCodeName(WorkFile);
  WriteLn('Compilation UCSD de ',WorkFile,' ...');
  Code:=CompilePascalPCode(WorkFile,ProgramFile);
  if Code<>0 Then Begin
@@ -7585,23 +7635,97 @@ Begin
  WriteLn('Free bytes: ',DiskFree(0));WriteLn('Total bytes: ',DiskSize(0))
 End;
 
+Procedure WhatWorkFile;
+Var F:File;N:LongInt;
+Begin
+ WriteLn('Nom du fichier de travail: ',WorkTitle);
+ Write('  Texte: ',WorkFile);
+ if FileExists(WorkFile)Then Begin
+  Assign(F,WorkFile);Reset(F,1);if IOResult=0 Then Begin N:=FileSize(F);Close(F);
+   if IOResult<>0 Then Begin End;WriteLn(' (',N,' octets)') End
+  else WriteLn(' (illisible)')
+ End else WriteLn(' (absent)');
+ Write('  Code : ',ProgramFile);
+ if FileExists(ProgramFile)Then Begin
+  Assign(F,ProgramFile);Reset(F,1);if IOResult=0 Then Begin N:=FileSize(F);Close(F);
+   if IOResult<>0 Then Begin End;WriteLn(' (',N,' octets)') End
+  else WriteLn(' (illisible)')
+ End else WriteLn(' (absent)');
+ if FileExists('SYSTEM.WRK.BACK')Then WriteLn('  Sauvegarde precedente: SYSTEM.WRK.BACK')
+End;
+
+Procedure GetWorkFile;
+Var Name,CodeName,Answer:String;
+Begin
+ Name:='';AskFile('Fichier a charger comme travail',Name);if Name=''Then Exit;
+ Name:=WorkTextName(Name);if not FileExists(Name)Then Begin
+  WriteLn('Fichier introuvable: ',Name);Exit
+ End;
+ if FileExists('SYSTEM.WRK.TEXT')Then Begin
+  Write('Remplacer le fichier de travail courant (O/N) ? ');ReadLn(Answer);
+  Answer:=UpperString(TrimString(Answer));if(Answer<>'O')and(Answer<>'OUI')Then Exit
+ End;
+ if not CopyHostFile(Name,'SYSTEM.WRK.TEXT')Then Begin WriteLn('Chargement impossible.');Exit End;
+ CodeName:=AssociatedCodeName(Name);RemoveHostFile('SYSTEM.WRK.CODE');
+ if FileExists(CodeName)Then if not CopyHostFile(CodeName,'SYSTEM.WRK.CODE')Then
+  WriteLn('Avertissement: la partie CODE n''a pas pu etre chargee.');
+ WorkFile:='SYSTEM.WRK.TEXT';ProgramFile:='SYSTEM.WRK.CODE';WorkTitle:=Name;
+ WriteLn('Fichier de travail charge.');WhatWorkFile
+End;
+
+Procedure NewWorkFile;
+Var Answer:String;
+Begin
+ Write('Abandonner le fichier de travail courant (O/N) ? ');ReadLn(Answer);
+ Answer:=UpperString(TrimString(Answer));if(Answer<>'O')and(Answer<>'OUI')Then Exit;
+ RemoveHostFile('SYSTEM.WRK.TEXT');RemoveHostFile('SYSTEM.WRK.CODE');
+ RemoveHostFile('SYSTEM.WRK.BACK');WorkFile:='SYSTEM.WRK.TEXT';
+ ProgramFile:='SYSTEM.WRK.CODE';WorkTitle:='SANS NOM';
+ WriteLn('Nouveau fichier de travail vide.')
+End;
+
+Procedure SaveWorkFile;
+Var Name,CodeName:String;
+Begin
+ if not FileExists(WorkFile)Then Begin WriteLn('Aucune partie TEXT a sauvegarder.');Exit End;
+ Name:='';if(WorkTitle<>'')and(UpperString(WorkTitle)<>'SANS NOM')Then Name:=WorkTitle;
+ AskFile('Nom de sauvegarde',Name);if Name=''Then Exit;Name:=WorkTextName(Name);
+ if not CopyHostFile(WorkFile,Name)Then Begin WriteLn('Sauvegarde TEXT impossible.');Exit End;
+ CodeName:=AssociatedCodeName(Name);
+ if FileExists(ProgramFile)Then Begin
+  if not CopyHostFile(ProgramFile,CodeName)Then Begin WriteLn('Sauvegarde CODE impossible.');Exit End
+ End;
+ WorkTitle:=Name;WriteLn('Fichier de travail sauvegarde sous ',Name,'.')
+End;
+
 Procedure FileCommand;
 Var
  S:String;
  Done:Boolean;
 Begin
  Done:=False;Repeat
- Write('File: L(ist, C(opy, R(ename, D(elete, V(olume, Q(uit ? ');ReadLn(S);
+ Write('Fichier: G(et, N(ouveau, S(auver, W(hat, L(iste, T(ransfert, ');
+ Write('R(enommer, D(effacer, V(olume, Q(uit ? ');ReadLn(S);
  S:=UpperString(TrimString(S));if S=''Then Continue;
  Case S[1]of
+ 'G':GetWorkFile;
+ 'N':NewWorkFile;
+ 'S':SaveWorkFile;
+ 'W':WhatWorkFile;
  'L':ListFiles;
- 'C':CopyFileCommand;
+ 'T','C':CopyFileCommand;
  'R':RenameFileCommand;
  'D':DeleteFileCommand;
  'V':VolumeCommand;
  'Q':Done:=True;
- '?':WriteLn('Liste, Copie, Renommage, Suppression, Volume, Quitter');
- else WriteLn('Unknown file command.')
+ '?':Begin
+  WriteLn('Get charge un fichier dans SYSTEM.WRK.TEXT et sa partie CODE.');
+  WriteLn('Nouveau efface SYSTEM.WRK.TEXT, SYSTEM.WRK.CODE et SYSTEM.WRK.BACK.');
+  WriteLn('Sauver copie les parties TEXT et CODE sous le nom indique.');
+  WriteLn('What affiche l''etat du fichier de travail courant.');
+  WriteLn('Liste, Transfert, Renommage, Effacement, Volume et Quitter gerent les fichiers.')
+ End;
+ else WriteLn('Commande de fichier inconnue.')
 End
 Until Done
 End;
@@ -7622,6 +7746,8 @@ Procedure Help;Begin
  WriteLn('/LIST         Afficher le listing du source compile');
  WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
  WriteLn('PSYSTEM_LIBRARY indique le repertoire des unites SYSTEM et bibliotheques .CODE.');
+ WriteLn('Sans nom de fichier, le travail courant est SYSTEM.WRK.TEXT / SYSTEM.WRK.CODE.');
+ WriteLn('Le gestionnaire F fournit G(et, N(ouveau, S(auver et W(hat.');
  WriteLn('Cible courante: ',TargetName);
  WriteLn;
  WriteLn('L''editeur de lignes est integre a la commande E.');
@@ -7641,7 +7767,7 @@ Begin
  'E':EditCommand;
  'R':RunCommand;
  'F':FileCommand;
- 'C':if CompileWork(True)Then Begin
+ 'C':if CompileWork(False)Then Begin
  End;
  'L':LinkCommand;
  'X':ExecuteCommand;
@@ -7660,7 +7786,7 @@ Var
 Begin
  { Le jeu d'opcodes de la machine virtuelle et de l'assembleur integres
    correspond par defaut a UCSD Pascal II.0/II.1. }
- WorkFile:='';ProgramFile:='';CurrentTarget:=ptUCSDPascalII;
+ WorkFile:='';ProgramFile:='';WorkTitle:='';CurrentTarget:=ptUCSDPascalII;
  OriginalErrors:=False;CPListing:=False;
  CheckCodeRequested:=False;
  For I:=1 to ParamCount do Begin
@@ -7690,14 +7816,28 @@ Begin
   if WorkFile=''Then Begin WriteLn('/CHECKCODE exige un fichier CODE.');Halt(1) End;
   if CheckUCSDCodeFile(WorkFile)Then Halt(0)else Halt(1)
  End;
- if WorkFile<>''Then ProgramFile:=ReplaceExtension(WorkFile,'.CODE')
+ if WorkFile=''Then Begin
+  WorkFile:='SYSTEM.WRK.TEXT';ProgramFile:='SYSTEM.WRK.CODE';WorkTitle:='SYSTEM.WRK'
+ End else Begin
+  ProgramFile:=AssociatedCodeName(WorkFile);WorkTitle:=WorkFile
+ End
+End;
+
+Procedure RunStartupFile;
+Var Code:Integer;
+Begin
+ if not FileExists('SYSTEM.STARTUP')Then Exit;
+ WriteLn('Execution de SYSTEM.STARTUP ...');Code:=ExecutePCodeFile('SYSTEM.STARTUP');
+ if Code<>0 Then WriteLn('SYSTEM.STARTUP s''est termine avec le code ',Code,'.')
 End;
 
 BEGIN
  CommandLine;Finished:=False;
  WriteLn('UCSD p-System compatible command environment ',Version);
  WriteLn('Cible: ',TargetName);
- if WorkFile<>''Then WriteLn('Work file: ',WorkFile);
+ WriteLn('Fichier de travail: ',WorkTitle);
+ WriteLn('  TEXT: ',WorkFile,'   CODE: ',ProgramFile);
+ RunStartupFile;
  Repeat Prompt Until Finished;
  WriteLn('System halted.')
 END.
