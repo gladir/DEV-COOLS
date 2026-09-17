@@ -879,24 +879,28 @@ Begin
  End;
 End;
 
-Procedure ShowVerticalColumns;
+Procedure ShowColumns;
 Var
  Head,Tail,Node,NextCell:PDisplayCell;
  Starts:Array[1..5]of PDisplayCell;
  Count,Rows,Row,Step:LongInt;
  Col,Columns:Byte;
- CellWidth,Used,J:Integer;
+ CellWidth,Used,J,NameWidth,DetailsWidth:Integer;
+ IsVertical,More:Boolean;
  SizeText,YearText:String;
 Begin
  Head:=Nil;
  Tail:=Nil;
  Count:=0;
+ IsVertical:=Vertical in Option;
+ NameWidth:=12;
+ DetailsWidth:=0;
  Columns:=2;
  If Width in Column Then Columns:=5;
  If Four in Column Then Columns:=4;
  CellWidth:=16;
  If Width in Column Then CellWidth:=14;
- { Conserver l'ordre etabli par /O, puis repartir les entrees par colonne. }
+ { Mesurer toute la liste pour conserver les memes alignements sur chaque ligne. }
  While DosError=0do Begin
   {$IFNDEF FPC}
   If MaxAvail<SizeOf(TDisplayCell)Then Begin
@@ -915,6 +919,8 @@ Begin
   If Not(Width in Column)Then Begin
    If (Info.Attr and Directory)<>0Then SizeText:='<DIR>'
    Else Str(Info.Size,SizeText);
+   If Not(Four in Column)Then
+    While Length(SizeText)<9do SizeText:=' '+SizeText;
    Node^.Details:=' '+SizeText;
    If Not(Four in Column)Then Begin
     If ShowCompression Then Node^.Details:=Node^.Details+' '+CompressionRatioText;
@@ -925,12 +931,16 @@ Begin
    End;
   End;
   Used:=Length(Node^.Name)+Length(Node^.Details);
+  If Length(Node^.Name)>NameWidth Then NameWidth:=Length(Node^.Name);
+  If Length(Node^.Details)>DetailsWidth Then DetailsWidth:=Length(Node^.Details);
   If Used>CellWidth Then CellWidth:=Used;
   If Head=Nil Then Head:=Node Else Tail^.Next:=Node;
   Tail:=Node;
   Inc(Count);
   FindNextMatch;
  End;
+ If Not(Width in Column)and Not(Four in Column)Then
+  CellWidth:=NameWidth+DetailsWidth;
  Rows:=Count div Columns;
  If (Count mod Columns)<>0Then Inc(Rows);
  Node:=Head;
@@ -938,16 +948,23 @@ Begin
   Starts[Col]:=Node;
   For Step:=1 to Rows do If Node<>Nil Then Node:=Node^.Next;
  End;
+ Node:=Head;
  For Row:=1 to Rows do Begin
   For Col:=1 to Columns do Begin
-   Node:=Starts[Col];
+   If IsVertical Then Node:=Starts[Col];
    If Node<>Nil Then Begin
     If Col>1Then Write('  ');
-    Write(Node^.Name,Node^.Details);
     Used:=Length(Node^.Name)+Length(Node^.Details);
-    If Col<Columns Then
-     If Starts[Col+1]<>Nil Then For J:=Used+1 to CellWidth do Write(' ');
-    Starts[Col]:=Node^.Next;
+    If Not(Width in Column)and Not(Four in Column)Then Begin
+     Write(PadRight(Node^.Name,NameWidth),Node^.Details);
+     Used:=NameWidth+Length(Node^.Details);
+    End Else Write(Node^.Name,Node^.Details);
+    More:=False;
+    If Col<Columns Then Begin
+     If IsVertical Then More:=Starts[Col+1]<>Nil Else More:=Node^.Next<>Nil;
+    End;
+    If More Then For J:=Used+1 to CellWidth do Write(' ');
+    If IsVertical Then Starts[Col]:=Node^.Next Else Node:=Node^.Next;
     { La derniere ligne peut etre incomplete dans la derniere colonne. }
     If Row=Rows Then Starts[Col]:=Nil;
    End;
@@ -1466,7 +1483,7 @@ BEGIN
    FindFirstMatch;
    If SummaryOnly in Option Then ShowSummary Else
    If AttributesOnly in Option Then ShowAttributes Else
-   If(Vertical in Option)and(Column<>[])Then ShowVerticalColumns Else
+   If(Vertical in Option)and(Column<>[])Then ShowColumns Else
    If((Subdirectory in Option)or(FullPath in Option))and(Brief in Option)and
      Not(Description in Option)Then While DosError=0do Begin
     WriteLn(DisplayName);
@@ -1496,28 +1513,7 @@ BEGIN
     End;
    End
     Else
-   If(Double)in(Column)Then While DOSError=0 do Begin
-    Write(PadRight(TextDisplayName,13));
-    If Info.Attr and Directory=Directory Then Begin
-     Write(PadRight('<DIR>',9));
-    End
-     Else
-    Write(Info.Size:9);
-    If ShowCompression Then Write(' ',CompressionRatioText:8);
-    UnpackTime(Info.Time,T);
-    Write(' ',T.Year:4,'-',PadZeroLeft(T.Month,2),'-',PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2),' ');
-    FindNextMatch;
-    If(Pause)in(Option)Then Begin
-     Inc(P);
-     If P=Hi(WindMax)Then Begin
-      Write('Presse une touche pour continuer...');
-      If ReadKey=#27Then Exit;
-      WriteLn;
-      P:=0;
-     End;
-    End;
-   End
-    Else
+   If Double in Column Then ShowColumns Else
    Begin
     TotalNumFiles:=0;
     TotalSize:=0;
