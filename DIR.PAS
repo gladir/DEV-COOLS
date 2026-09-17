@@ -13,6 +13,11 @@ Uses {$IFDEF FPC}{$IFDEF WINDOWS}Windows,{$ENDIF}{$ENDIF}
      {$IFDEF GO32V2}Go32,{$ENDIF} Crt,DOS;
 
 Type
+ PDisplayCell=^TDisplayCell;
+ TDisplayCell=Record
+  Name,Details:String;
+  Next:PDisplayCell;
+ End;
  PDirPath=^TDirPath;
  TDirPath=Record
   Path:String;
@@ -34,7 +39,8 @@ Var
  Info:SearchRec;
  T:DateTime;
  Option:Set of (Pause,Subdirectory,Lower,Brief,Description,CompressionDetails,
-                NoColor,FullPath,JustifyNames,NoHeader);
+                NoColor,FullPath,JustifyNames,NoHeader,NoFooter,
+                AttributesOnly,SummaryOnly,Vertical);
  Column:Set Of (Double,Width,Four);
  TotalNumFiles,TotalSize:LongInt;
  CurrParam,ShowDir,CurrLabel:String;
@@ -49,6 +55,18 @@ Var
 
 Function StrToUpper(S:String):String; Forward;
 Function PadRight(S:String;Space:Byte):String; Forward;
+
+Procedure ResetOptions;
+Begin
+ { Retablir les options initiales sans modifier le chemin ni la langue.
+   Les parametres places apres /N seront ensuite appliques normalement. }
+ Option:=[];
+ Column:=[];
+ RequiredAttr:=0;
+ ExcludedAttr:=0;
+ SortOrder:='';
+ OutputFormat:=_Text;
+End;
 
 Function ShowCompression:Boolean;
 Begin
@@ -813,6 +831,137 @@ Begin
  End;
 End;
 
+Function PageContinue:Boolean;
+Begin
+ PageContinue:=True;
+ If Not(Pause in Option)Then Exit;
+ Inc(P);
+ If P<Hi(WindMax)Then Exit;
+ Write('Presse une touche pour continuer...');
+ PageContinue:=ReadKey<>#27;
+ WriteLn;
+ P:=0;
+End;
+
+Procedure ShowAttributes;
+Var
+ S:String;
+Begin
+ While DosError=0do Begin
+  S:='-----';
+  If (Info.Attr and ReadOnly)<>0Then S[1]:='R';
+  If (Info.Attr and Hidden)<>0Then S[2]:='H';
+  If (Info.Attr and SysFile)<>0Then S[3]:='S';
+  If (Info.Attr and Directory)<>0Then S[4]:='D';
+  If (Info.Attr and Archive)<>0Then S[5]:='A';
+  WriteLn(PadRight(TextDisplayName,13),' ',S);
+  FindNextMatch;
+  If DosError=0Then If Not PageContinue Then Exit;
+ End;
+End;
+
+Procedure ShowSummary;
+Begin
+ TotalNumFiles:=0;
+ TotalSize:=0;
+ While DosError=0do Begin
+  { Les dossiers ne sont pas comptes comme des fichiers. }
+  If (Info.Attr and Directory)=0Then Begin
+   Inc(TotalNumFiles);
+   Inc(TotalSize,Info.Size);
+  End;
+  FindNextMatch;
+ End;
+ Case Language of
+  _Germany:WriteLn(TotalNumFiles,' Datei(en), ',TotalSize,' Byte');
+  _English:WriteLn(TotalNumFiles,' file(s), ',TotalSize,' bytes');
+  Else WriteLn(TotalNumFiles,' fichier(s), ',TotalSize,' octet(s)');
+ End;
+End;
+
+Procedure ShowVerticalColumns;
+Var
+ Head,Tail,Node,NextCell:PDisplayCell;
+ Starts:Array[1..5]of PDisplayCell;
+ Count,Rows,Row,Step:LongInt;
+ Col,Columns:Byte;
+ CellWidth,Used,J:Integer;
+ SizeText,YearText:String;
+Begin
+ Head:=Nil;
+ Tail:=Nil;
+ Count:=0;
+ Columns:=2;
+ If Width in Column Then Columns:=5;
+ If Four in Column Then Columns:=4;
+ CellWidth:=16;
+ If Width in Column Then CellWidth:=14;
+ { Conserver l'ordre etabli par /O, puis repartir les entrees par colonne. }
+ While DosError=0do Begin
+  {$IFNDEF FPC}
+  If MaxAvail<SizeOf(TDisplayCell)Then Begin
+   Case Language of
+    _Germany:WriteLn('Nicht genug Speicher.');
+    _English:WriteLn('Not enough memory.');
+    Else WriteLn('M'+#130+'moire insuffisante.');
+   End;
+   Halt(1);
+  End;
+  {$ENDIF}
+  New(Node);
+  Node^.Name:=TextDisplayName;
+  Node^.Details:='';
+  Node^.Next:=Nil;
+  If Not(Width in Column)Then Begin
+   If (Info.Attr and Directory)<>0Then SizeText:='<DIR>'
+   Else Str(Info.Size,SizeText);
+   Node^.Details:=' '+SizeText;
+   If Not(Four in Column)Then Begin
+    If ShowCompression Then Node^.Details:=Node^.Details+' '+CompressionRatioText;
+    UnpackTime(Info.Time,T);
+    Str(T.Year,YearText);
+    Node^.Details:=Node^.Details+' '+YearText+'-'+PadZeroLeft(T.Month,2)+'-'+
+     PadZeroLeft(T.Day,2)+' '+PadZeroLeft(T.Hour,2)+':'+PadZeroLeft(T.Min,2);
+   End;
+  End;
+  Used:=Length(Node^.Name)+Length(Node^.Details);
+  If Used>CellWidth Then CellWidth:=Used;
+  If Head=Nil Then Head:=Node Else Tail^.Next:=Node;
+  Tail:=Node;
+  Inc(Count);
+  FindNextMatch;
+ End;
+ Rows:=Count div Columns;
+ If (Count mod Columns)<>0Then Inc(Rows);
+ Node:=Head;
+ For Col:=1 to Columns do Begin
+  Starts[Col]:=Node;
+  For Step:=1 to Rows do If Node<>Nil Then Node:=Node^.Next;
+ End;
+ For Row:=1 to Rows do Begin
+  For Col:=1 to Columns do Begin
+   Node:=Starts[Col];
+   If Node<>Nil Then Begin
+    If Col>1Then Write('  ');
+    Write(Node^.Name,Node^.Details);
+    Used:=Length(Node^.Name)+Length(Node^.Details);
+    If Col<Columns Then
+     If Starts[Col+1]<>Nil Then For J:=Used+1 to CellWidth do Write(' ');
+    Starts[Col]:=Node^.Next;
+    { La derniere ligne peut etre incomplete dans la derniere colonne. }
+    If Row=Rows Then Starts[Col]:=Nil;
+   End;
+  End;
+  WriteLn;
+  If Row<Rows Then If Not PageContinue Then Break;
+ End;
+ While Head<>Nil do Begin
+  NextCell:=Head^.Next;
+  Dispose(Head);
+  Head:=NextCell;
+ End;
+End;
+
 Function StrToUpper(S:String):String;
 Var
  I:Byte;
@@ -861,18 +1010,13 @@ BEGIN
   If StrToUpper(Copy(TmpLanguage,1,2))='IT'Then Language:=_Italian Else
   If StrToUpper(Copy(TmpLanguage,1,2))='SP'Then Language:=_Spain;
  End;
- Option:=[];
- Column:=[];
- RequiredAttr:=0;
- ExcludedAttr:=0;
+ ResetOptions;
  P:=0;
- SortOrder:='';
  Entries:=Nil;
  CurrentEntry:=Nil;
  EntriesLoaded:=False;
  PendingDirs:=Nil;
  ShowDir:='*.*';
- OutputFormat:=_Text;
  Repeat
   Inc(P);
   CurrParam:=ParamStr(P);
@@ -882,8 +1026,8 @@ BEGIN
     _Germany:Begin
      WriteLn('Listet die Dateien und Unterverzeichnisse eines Verzeichnisses auf.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/P] [/S] ',
-             '[/A[[:]Attribute]] [/O[[:]Folge]] [Pfad] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/M] [/N] [/P] [/S] ',
+             '[/T] [/U] [/V] [/A[[:]Attribute]] [/O[[:]Folge]] [Pfad] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]Attribute]  A=Archiv D=Verzeichnis H=Versteckt R=Schreibgesch'+#129+'tzt S=System');
      WriteLn('                  + : einschlie'+#225+'en; - : ausschlie'+#225+'en');
@@ -898,6 +1042,11 @@ BEGIN
      WriteLn(' /F               Vollst'+#132+'ndige Dateinamen mit Pfad anzeigen');
      WriteLn(' /J               Dateinamen und Erweiterungen getrennt ausrichten');
      WriteLn(' /K               Kopfzeilen ausblenden, Summen beibehalten');
+     WriteLn(' /M               Fusszeilen mit Dateianzahl und Speicherplatz ausblenden');
+     WriteLn(' /N               Bisherige Optionen auf die Standardwerte zur'+#129+'cksetzen');
+     WriteLn(' /T               Nur Namen und Attribute anzeigen (R H S D A)');
+     WriteLn(' /U               Nur Dateianzahl und belegte Bytes anzeigen');
+     WriteLn(' /V               Spalten senkrecht f'+#129+'llen, mit /2, /4 oder /W');
      WriteLn(' /S               Dateien auch in allen Unterverzeichnissen auflisten');
      WriteLn(' /O[[:]Folge]     C=Kompressionsrate D=Datum/Zeit E=Erweiterung');
      WriteLn('                  G=Verzeichnisse zuerst N=Name S=Gr'+#148+'sse');
@@ -909,8 +1058,8 @@ BEGIN
     _English:Begin
      WriteLn('Purpose:  Display information about files and subdirectories.');
      WriteLn;
-     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/P] [/S] ',
-             '[/A[[:]attributes]] [/O[[:]order]] [path] [/FORMAT:format]');
+     WriteLn('Format:   DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/M] [/N] [/P] [/S] ',
+             '[/T] [/U] [/V] [/A[[:]attributes]] [/O[[:]order]] [path] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /A[[:]attributes] A=Archive D=Directory H=Hidden R=ReadOnly S=System');
      WriteLn('                  + : include; - : exclude');
@@ -925,6 +1074,11 @@ BEGIN
      WriteLn(' /F               Display full filenames including their paths');
      WriteLn(' /J               Align filenames and extensions separately');
      WriteLn(' /K               Suppress headers, retaining totals');
+     WriteLn(' /M               Suppress footer information and totals');
+     WriteLn(' /N               Reset preceding options to their defaults');
+     WriteLn(' /T               Display only names and attributes (R H S D A)');
+     WriteLn(' /U               Display only file count and bytes used');
+     WriteLn(' /V               Fill columns vertically with /2, /4 or /W');
      WriteLn(' /S               List files recursively in all subdirectories');
      WriteLn(' /O[[:]order]     C=Compression rate D=Date/time E=Extension');
      WriteLn('                  G=Directories first N=Name S=Size');
@@ -938,8 +1092,8 @@ BEGIN
      WriteLn;
      WriteLn('Syntaxe:');
      WriteLn;
-     WriteLn('DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/P] [/S] ',
-             '[/A[[:]attributs]] [/O[[:]ordretri]] [chemin] [/FORMAT:format]');
+     WriteLn('DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/M] [/N] [/P] [/S] ',
+             '[/T] [/U] [/V] [/A[[:]attributs]] [/O[[:]ordretri]] [chemin] [/FORMAT:format]');
      WriteLn;
      WriteLn(' /?               Ce param'+#138+'tre permet d''afficher l''aide sur cette commande');
      WriteLn(' /1               Un fichier par ligne : nom, taille, date et description');
@@ -958,6 +1112,8 @@ BEGIN
      WriteLn(' /J               Aligne s'+#130+'par'+#130+'ment les noms et les extensions');
      WriteLn(' /K               Masque les ent'+#136+'tes et conserve les totaux');
      WriteLn(' /L               Affiche les noms des fichiers et r'+#130+'pertoires en minuscules');
+     WriteLn(' /M               Masque le bas de page : totaux et espace libre');
+     WriteLn(' /N               R'+#130+'initialise les options pr'+#130+'c'+#130+'dentes aux valeurs par d'+#130+'faut');
      WriteLn(' /O[[:]ordretri]  C=Taux de compression D=Date/heure E=Extension');
      WriteLn('                  G=R'+#130+'pertoires en premier N=Nom S=Taille');
      WriteLn('                  Ordre croissant; - inverse le crit'+#138+'re suivant');
@@ -966,6 +1122,9 @@ BEGIN
      WriteLn('                  Syst'+#138+'mes non pris en charge : 0');
      WriteLn(' /P               Ce param'+#138+'tre affiche une pause apres l''affichage d''une page pleine');
      WriteLn(' /S               Ce param'+#138+'tre affiche les fichiers du dossier et de tous ses sous-dossiers');
+     WriteLn(' /T               Affiche uniquement les noms et attributs (R H S D A)');
+     WriteLn(' /U               Affiche uniquement le nombre de fichiers et les octets utilis'+#130+'s');
+     WriteLn(' /V               Remplit les colonnes verticalement avec /2, /4 ou /W');     
      WriteLn(' /W               Ce param'+#138+'tre affiche seulement les fichiers sur plein de colonnes');
     End;
    End;
@@ -1001,8 +1160,13 @@ BEGIN
   If(CurrParam='/J')or(CurrParam='/j')Then Include(Option,JustifyNames) Else
   If(CurrParam='/K')or(CurrParam='/k')Then Include(Option,NoHeader) Else
   If(CurrParam='/L')or(CurrParam='/l')Then Include(Option,Lower) Else
+  If(CurrParam='/M')or(CurrParam='/m')Then Include(Option,NoFooter) Else
+  If(CurrParam='/N')or(CurrParam='/n')Then ResetOptions Else
   If(CurrParam='/P')or(CurrParam='/p')Then Include(Option,Pause) Else
   If(CurrParam='/S')or(CurrParam='/s')Then Include(Option,Subdirectory) Else
+  If(CurrParam='/T')or(CurrParam='/t')Then Include(Option,AttributesOnly) Else
+  If(CurrParam='/U')or(CurrParam='/u')Then Include(Option,SummaryOnly) Else
+  If(CurrParam='/V')or(CurrParam='/v')Then Include(Option,Vertical) Else
   If(CurrParam='/W')or(CurrParam='/w')Then Begin
    Exclude(Column,Four);
    Include(Column,Width);
@@ -1019,7 +1183,8 @@ BEGIN
   ShowDir:=CurrParam;
   If P>99Then Break;
  Until CurrParam='';
- If (Description in Option)or(Four in Column)Then Begin
+ If (Description in Option)or(Four in Column)or(AttributesOnly in Option)or
+    (SummaryOnly in Option)or((Vertical in Option)and(Column<>[]))Then Begin
   If Description in Option Then Column:=[];
   OutputFormat:=_Text;
   If Not(Subdirectory in Option)Then Begin
@@ -1299,6 +1464,9 @@ BEGIN
   End;
   Else Begin
    FindFirstMatch;
+   If SummaryOnly in Option Then ShowSummary Else
+   If AttributesOnly in Option Then ShowAttributes Else
+   If(Vertical in Option)and(Column<>[])Then ShowVerticalColumns Else
    If((Subdirectory in Option)or(FullPath in Option))and(Brief in Option)and
      Not(Description in Option)Then While DosError=0do Begin
     WriteLn(DisplayName);
@@ -1383,7 +1551,7 @@ BEGIN
       End;
      End;
     End;
-    If Not((Brief)in(Option))Then Begin
+    If Not(Brief in Option)and Not(NoFooter in Option)Then Begin
      WriteLn(' Les ',TotalNumFiles,' fichier(s) utilisent ',TotalSize,' octet(s)');
      WriteLn(DiskFree(Byte(CurrDrive)-64):10,' octet(s) de libre');
     End;
