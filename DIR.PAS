@@ -55,6 +55,7 @@ Var
  RecursiveRoot,RecursiveMask,CurrentFolder:String;
  ColorRules:String;
  OriginalColor:Byte;
+ ListingNameWidth:Byte;
 
 Function StrToUpper(S:String):String; Forward;
 Function PadRight(S:String;Space:Byte):String; Forward;
@@ -1633,6 +1634,14 @@ BEGIN
     Else
    If Double in Column Then ShowColumns Else
    Begin
+    { Mesurer les noms affiches, chemins compris, avant de tracer les colonnes. }
+    ListingNameWidth:=12;
+    While DosError=0do Begin
+     If Length(TextDisplayName)>ListingNameWidth Then
+      ListingNameWidth:=Length(TextDisplayName);
+     FindNextMatch;
+    End;
+    FindFirstMatch;
     TotalNumFiles:=0;
     TotalSize:=0;
     If Not(Brief in Option)and Not(NoHeader in Option)Then Begin
@@ -1642,7 +1651,7 @@ BEGIN
     End;
     While DOSError=0 do Begin
      TextAttr:=EntryColor;
-     Write(PadRight(TextDisplayName,13));
+     Write(PadRight(TextDisplayName,ListingNameWidth),' ');
      If Info.Attr and Directory=Directory Then Begin
       Write(PadRight('<DIR>',15));
      End
