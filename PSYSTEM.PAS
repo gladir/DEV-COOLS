@@ -479,6 +479,7 @@ Var
  PCode_FreeCount:Integer;
  PCode_ExternalData:Array[0..15,0..1023]of LongInt;
  PCode_IsIVSegment,PCode_HasProcDictionary,PCode_HistoricalII,PCode_CodeBigEndian:Boolean;
+ PCode_RangeChecking,PCode_OverflowChecking:Boolean;
  PCode_Halted:Boolean;
  PCode_ExitCode:Integer;
 
@@ -704,6 +705,7 @@ End;
 
 Function TargetName:String;Forward;
 Function PCode_IVWord(Ofs:LongInt):Integer;Forward;
+Function PCode_IVSignedWord(Ofs:LongInt):Integer;Forward;
 Procedure PCode_UpdateSyscom;Forward;
 
 { Verificateur independant: ne confond pas les pointeurs auto-relatifs II
@@ -1842,6 +1844,57 @@ Procedure PCode_RuntimeError(Code:Integer;Const Msg:String);Begin
   PCode_Halted:=True;PCode_ExitCode:=Code;PCode_SYSCOM.XEQERR:=Code
  End
 End;
+
+Function PCode_Peek:LongInt;Begin
+ if PCode_HasProcDictionary Then Begin
+  if PCode_SP<=High(PCode_Data^)Then PCode_Peek:=PCode_DataAt(PCode_SP)
+  else Begin PCode_RuntimeError(304,'pile p-code vide');PCode_Peek:=0 End
+ end else if PCode_SP>0 Then PCode_Peek:=PCode_DataAt(PCode_SP-1)
+ else Begin PCode_RuntimeError(304,'pile p-code vide');PCode_Peek:=0 End
+End;
+
+Function PCode_CodeLong(Ofs:LongInt):LongInt;Begin
+ if PCode_CodeBigEndian Then PCode_CodeLong:=
+  (LongInt(PCode_Fetch(Ofs))shl 24)or(LongInt(PCode_Fetch(Ofs+1))shl 16)or
+  (LongInt(PCode_Fetch(Ofs+2))shl 8)or PCode_Fetch(Ofs+3)
+ else PCode_CodeLong:=PCode_Fetch(Ofs)or(LongInt(PCode_Fetch(Ofs+1))shl 8)or
+  (LongInt(PCode_Fetch(Ofs+2))shl 16)or(LongInt(PCode_Fetch(Ofs+3))shl 24)
+End;
+
+Function PCode_SetPCChecked(NewPC:LongInt;Const Operation:String):Boolean;
+Var Valid:Boolean;
+Begin
+ Valid:=(NewPC>=0)and(NewPC<PCode_CodeSize);PCode_SetPCChecked:=Valid;
+ if Valid Then PCode_PC:=NewPC
+ else PCode_RuntimeError(304,Operation+': adresse hors segment')
+End;
+
+Procedure PCode_PushIntegerChecked(V:LongInt);Begin
+ if PCode_OverflowChecking and((V<-32768)or(V>32767))Then
+  PCode_RuntimeError(303,'debordement entier')
+ else PCode_Push(V)
+End;
+
+Procedure PCode_ExecuteXJP(TableAddress,Selector:LongInt);
+Var LowValue,HighValue:Integer;Count,TableEnd,Entry,Target:LongInt;
+Begin
+ if(TableAddress<0)or(TableAddress+3>=PCode_CodeSize)Then Begin
+  PCode_RuntimeError(304,'table CASE tronquee');Exit
+ End;
+ LowValue:=PCode_IVSignedWord(TableAddress);
+ HighValue:=PCode_IVSignedWord(TableAddress+2);
+ Count:=LongInt(HighValue)-LowValue+1;
+ if(Count<=0)or(Count>(PCode_CodeSize-TableAddress-4)div 2)Then Begin
+  PCode_RuntimeError(304,'table CASE invalide');Exit
+ End;
+ TableEnd:=TableAddress+4+Count*2;
+ if(Selector<LowValue)or(Selector>HighValue)Then Begin
+  PCode_RuntimeError(301,'aucun cas pour cette valeur');Exit
+ End;
+ Entry:=TableAddress+4+(Selector-LowValue)*2;
+ Target:=TableEnd+PCode_IVSignedWord(Entry);
+ PCode_SetPCChecked(Target,'XJP')
+End;
 { ------------------------------------------------------------------------ }
 { UCSD p-System IV.0/IV.2                                                  }
 { Adresses de donnees en mots; adresses de code en octets. Un MSCW occupe }
@@ -1987,15 +2040,17 @@ Begin
  End;
  $8A:
  Begin
-  SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);Inc(PCode_PC,SB)
+  SB:=ShortInt(PCode_Fetch(PCode_PC));Inc(PCode_PC);
+  PCode_SetPCChecked(PCode_PC+SB,'UJP')
  End;
  $8B:
  Begin
-  A:=PCode_IVSignedWord(PCode_PC);Inc(PCode_PC,2);Inc(PCode_PC,A)
+  A:=PCode_IVSignedWord(PCode_PC);Inc(PCode_PC,2);
+  PCode_SetPCChecked(PCode_PC+A,'UJP')
  End;
  $8C:
  Begin
-  V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1*V2)
+  V2:=PCode_Pop;V1:=PCode_Pop;PCode_PushIntegerChecked(V1*V2)
  End;
  $8D:
  Begin
@@ -2070,11 +2125,11 @@ Begin
  End;
  $A2:
  Begin
-  V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1+V2)
+  V2:=PCode_Pop;V1:=PCode_Pop;PCode_PushIntegerChecked(V1+V2)
  End;
  $A3:
  Begin
-  V2:=PCode_Pop;V1:=PCode_Pop;PCode_Push(V1-V2)
+  V2:=PCode_Pop;V1:=PCode_Pop;PCode_PushIntegerChecked(V1-V2)
  End;
  $A4:
  Begin
@@ -2128,8 +2183,7 @@ Begin
 End;
 $BC:
 Begin
- A:=PCode_Fetch(PCode_PC)or(PCode_Fetch(PCode_PC+1)shl 8)or
- (LongInt(PCode_Fetch(PCode_PC+2))shl 16)or(LongInt(PCode_Fetch(PCode_PC+3))shl 24);
+ A:=PCode_CodeLong(PCode_PC);
  Inc(PCode_PC,4);PCode_Push(A)
 End;
 $BE:
@@ -2172,7 +2226,8 @@ End;
 $CB:
 Begin
  V2:=PCode_Pop;V1:=PCode_Pop;A:=PCode_Pop;
- if(A<V1)or(A>V2)Then PCode_RuntimeError(302,'indice hors limites')else PCode_Push(A)
+ if PCode_RangeChecking and((A<V1)or(A>V2))Then
+  PCode_RuntimeError(302,'indice hors limites')else PCode_Push(A)
 End;
 $D2,$D3,$D4:
 Begin
@@ -2193,12 +2248,7 @@ Begin
 End;
 $D6:
 Begin
- V1:=PCode_Pop;V2:=PCode_IVSignedWord(PCode_PC);A:=PCode_IVSignedWord(PCode_PC+2);
- if(V1<V2)or(V1>A)Then Inc(PCode_PC,4+2*(A-V2+1))
- else
- Begin
-  FB:=PCode_PC+4+2*(V1-V2);Inc(PCode_PC,4+2*(A-V2+1)+PCode_IVSignedWord(FB))
- End
+ V1:=PCode_Pop;PCode_ExecuteXJP(PCode_PC,V1)
 End;
 $D7:
 Begin
@@ -2215,7 +2265,7 @@ Begin
 End;
 $DA:
 Begin
- V1:=PCode_Pop;PCode_Push(V1*V1)
+ V1:=PCode_Pop;PCode_PushIntegerChecked(V1*V1)
 End;
 $E0:
 Begin
@@ -2223,7 +2273,7 @@ Begin
 End;
 $E1:
 Begin
- PCode_Push(-PCode_Pop)
+ PCode_PushIntegerChecked(-PCode_Pop)
 End;
 $E2:
 Begin
@@ -2295,11 +2345,26 @@ Begin
  Locals:=PCode_IVWord(Attr-8)div 2;PCode_IIProcAddress:=Entry
 End;
 
+Function PCode_IIProcedureNative(ProcNum:Integer):Boolean;
+Var Slot,Attr:LongInt;
+Begin
+ PCode_IIProcedureNative:=False;
+ if not PCode_HistoricalII or(ProcNum<1)or(ProcNum>PCode_ProcCount)Then Exit;
+ Slot:=PCode_ProcDict-ProcNum*2;
+ if(Slot<0)or(Slot+1>=PCode_SegmentSize)Then Exit;
+ Attr:=Slot-PCode_IVWord(Slot);
+ if(Attr>=8)and(Attr<PCode_SegmentSize)Then PCode_IIProcedureNative:=PCode_Fetch(Attr)=0
+End;
+
 Procedure PCode_IICall(ProcNum,LexLevel:Integer;GlobalCall:Boolean);
 Var Entry,StaticLink:LongInt;Locals,I,CallerSegment:Integer;
 Begin
  Entry:=PCode_IIProcAddress(ProcNum,Locals);
- if Entry<0 Then Begin PCode_RuntimeError(301,'procedure UCSD II/III ou code natif invalide');Exit End;
+ if Entry<0 Then Begin
+  if PCode_IIProcedureNative(ProcNum)Then
+   PCode_RuntimeError(500,'procedure native non executable sur cette machine hote')
+  else PCode_RuntimeError(301,'procedure UCSD II/III invalide');Exit
+ End;
  if GlobalCall Then StaticLink:=PCode_Base
  else if LexLevel=0 Then StaticLink:=PCode_MP else StaticLink:=PCode_StaticBase(LexLevel);
  if PCode_SP<Locals+5 Then Begin PCode_RuntimeError(303,'cadre UCSD II/III trop grand');Exit End;
@@ -2371,7 +2436,7 @@ Begin
  End; { ABI/ABR }
  130:
  Begin
-  V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 + V2); Inc(PCode_PC);
+  V2 := PCode_Pop; V1 := PCode_Pop; PCode_PushIntegerChecked(V1 + V2); Inc(PCode_PC);
  End;
  131:
  Begin
@@ -2391,8 +2456,7 @@ Begin
  Begin
  { DVI/DVR } V2 := PCode_Pop; V1 := PCode_Pop;
   If V2 = 0 Then Begin
-   PCode_Write('[erreur 300 : division par zero]');
-   PCode_Halted := True; PCode_ExitCode := 300;
+   PCode_RuntimeError(300,'division par zero');
   End Else PCode_Push(V1 Div V2);
   Inc(PCode_PC);
  End;
@@ -2410,11 +2474,9 @@ Begin
  { CHK : verifie bornes [min,max] sur la valeur au sommet (non depilee) }
   V2 := PCode_Pop; { max }
   V1 := PCode_Pop; { min }
-  W := PCode_DataAt(PCode_SP - 1); { valeur, laissee sur la pile }
-  If (W < V1) Or (W > V2) Then Begin
-   PCode_Write('[erreur 302 : hors bornes]');
-   PCode_Halted := True; PCode_ExitCode := 302;
-  End;
+  W := PCode_Peek; { valeur, laissee sur la pile }
+  If PCode_RangeChecking And ((W < V1) Or (W > V2)) Then
+   PCode_RuntimeError(302,'indice hors limites');
   Inc(PCode_PC);
  End;
  137:
@@ -2442,14 +2504,13 @@ Begin
  Begin
  { MODI } V2 := PCode_Pop; V1 := PCode_Pop;
   If V2 = 0 Then Begin
-   PCode_Write('[erreur 300 : division par zero]');
-   PCode_Halted := True; PCode_ExitCode := 300;
+   PCode_RuntimeError(300,'division par zero');
   End Else PCode_Push(V1 Mod V2);
   Inc(PCode_PC);
  End;
  143:
  Begin
-  V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 * V2); Inc(PCode_PC);
+  V2 := PCode_Pop; V1 := PCode_Pop; PCode_PushIntegerChecked(V1 * V2); Inc(PCode_PC);
  End; { MPI }
  144:
  Begin
@@ -2458,7 +2519,7 @@ Begin
  End;
  145:
  Begin
-  V1 := PCode_Pop; PCode_Push(-V1); Inc(PCode_PC);
+  V1 := PCode_Pop; PCode_PushIntegerChecked(-V1); Inc(PCode_PC);
  End; { NGI }
  146:
  Begin
@@ -2475,7 +2536,7 @@ Begin
  End;
  149:
  Begin
-  V2 := PCode_Pop; V1 := PCode_Pop; PCode_Push(V1 - V2); Inc(PCode_PC);
+  V2 := PCode_Pop; V1 := PCode_Pop; PCode_PushIntegerChecked(V1 - V2); Inc(PCode_PC);
  End; { SBI }
  150:
  Begin
@@ -2489,7 +2550,7 @@ Begin
  End;
  152:
  Begin
-  V1 := PCode_Pop; PCode_Push(V1 * V1); Inc(PCode_PC);
+  V1 := PCode_Pop; PCode_PushIntegerChecked(V1 * V1); Inc(PCode_PC);
  End; { SQI }
  153:
  Begin
@@ -2608,13 +2669,7 @@ Begin
  172:
  Begin
  { selecteur, minimum, maximum, puis deplacements signes }
-  V1:=PCode_Pop;V2:=PCode_IVSignedWord(PCode_PC+1);A:=PCode_IVSignedWord(PCode_PC+3);
-  if(V1<V2)or(V1>A)Then PCode_PC:=PCode_PC+5+2*(A-V2+1)
-  else
-  Begin
-   Addr:=PCode_PC+5+2*(V1-V2);PCode_PC:=PCode_PC+5+
-   2*(A-V2+1)+PCode_IVSignedWord(Addr)
-  End
+  V1:=PCode_Pop;PCode_ExecuteXJP(PCode_PC+1,V1)
  End;
  173:
  Begin
@@ -2669,7 +2724,7 @@ Begin
  { LDC n,$w1,... : charge n constantes 16 bits }
  N := PCode_Fetch(PCode_PC + 1);
  For I := 0 To N - 1 Do Begin
-  W := PCode_Fetch(PCode_PC + 2 + I*2) Or (PCode_Fetch(PCode_PC + 3 + I*2) Shl 8);
+  W := PCode_IVWord(PCode_PC + 2 + I*2);
   PCode_Push(W);
  End;
  PCode_PC := PCode_PC + 2 + N*2;
@@ -2778,7 +2833,7 @@ End;
 Begin
  { LDCI w : constante entiere 16 bits (Integer 16 bits signe -}
         { la troncature d affectation fait deja l extension de signe).   }
- W := PCode_Fetch(PCode_PC + 1) Or (PCode_Fetch(PCode_PC + 2) Shl 8);
+ W := PCode_IVSignedWord(PCode_PC + 1);
  PCode_Push(W); PCode_PC := PCode_PC + 3;
 End;
 202:
@@ -2836,8 +2891,7 @@ Begin
 End;
 212:
 Begin
- V1:=PCode_Fetch(PCode_PC+1)or(PCode_Fetch(PCode_PC+2)shl 8)or
- (LongInt(PCode_Fetch(PCode_PC+3))shl 16)or(LongInt(PCode_Fetch(PCode_PC+4))shl 24);
+ V1:=PCode_CodeLong(PCode_PC+1);
  PCode_Push(V1);Inc(PCode_PC,5)
 End;
 213:
@@ -8319,6 +8373,8 @@ Procedure Help;Begin
  WriteLn('/ORGINALERR  Afficher les messages d''erreur UCSD originaux en anglais');
  WriteLn('/LIST         Afficher le listing du source compile');
  WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
+ WriteLn('/RANGECHECK[+|-]  Activer/desactiver les controles de bornes de la VM');
+ WriteLn('/OVERFLOWCHECK[+|-]  Activer/desactiver les debordements entiers 16 bits');
  WriteLn('/VOLUME:n=chemin  Associer un numero d''unite disque a un repertoire hote');
  WriteLn('Variables: PSYSTEM_VOLUME4, PSYSTEM_VOLUME5 et PSYSTEM_VOLUME9.');
  WriteLn('PSYSTEM_LIBRARY indique le repertoire des unites SYSTEM et bibliotheques .CODE.');
@@ -8367,6 +8423,7 @@ Begin
  InitializeVolumes;GetDate(Y,M,D,Dow);Str(D,A);Str(M,B);Str(Y,C);
  FilerDate:=A+'/'+B+'/'+C;
  OriginalErrors:=False;CPListing:=False;
+ PCode_RangeChecking:=True;PCode_OverflowChecking:=False;
  CheckCodeRequested:=False;
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
@@ -8376,6 +8433,12 @@ Begin
    Help;
    Halt(0)
   End else if UpperString(S)='/CHECKCODE'Then CheckCodeRequested:=True
+  else if(UpperString(S)='/RANGECHECK')or(UpperString(S)='/RANGECHECK+')Then
+   PCode_RangeChecking:=True
+  else if UpperString(S)='/RANGECHECK-'Then PCode_RangeChecking:=False
+  else if(UpperString(S)='/OVERFLOWCHECK')or(UpperString(S)='/OVERFLOWCHECK+')Then
+   PCode_OverflowChecking:=True
+  else if UpperString(S)='/OVERFLOWCHECK-'Then PCode_OverflowChecking:=False
   else if Copy(UpperString(S),1,8)='/VOLUME:'Then Begin
    if not ConfigureVolume(Copy(S,9,255))Then Begin
     WriteLn('Association de volume incorrecte ou repertoire inaccessible: ',Copy(S,9,255));Halt(1)
@@ -8393,7 +8456,8 @@ Begin
   else
   Begin
    WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/VOLUME:n=chemin]');
-   WriteLn('          [/ORGINALERR] [/LIST] [/CHECKCODE]');
+   WriteLn('          [/ORGINALERR] [/LIST] [/CHECKCODE] [/RANGECHECK[+|-]]');
+   WriteLn('          [/OVERFLOWCHECK[+|-]]');
    Halt(1)
   End
  End;
