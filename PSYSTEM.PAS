@@ -3097,7 +3097,8 @@ End;
 Procedure LinkCommand;
 Type
  PLinkSymbol=^TLinkSymbol;
- TLinkSymbol=Record Name:String[8];SegmentNumber,ProcedureNumber:Integer;
+ TLinkSymbol=Record Name:String[8];SymbolKind:Integer;
+ SegmentNumber,ProcedureNumber,Value,ParameterBytes:Integer;
  Next:PLinkSymbol End;
 Var
  Modules,OutputName,S,Name:String;
@@ -3110,13 +3111,14 @@ Var
  Buffer:Array[0..4095]of Byte;
  OutF:File;
  Count,I,J,K,P,E,EC,IC,HPos,PatchPos,TargetSeg,TargetProc:Integer;
+ PrivateBase:Array[1..16]of Integer;
  N,W:Word;
  OutPos,Want,Remaining,LinkPos:LongInt;
  OK:Boolean;
  ImportName,ExportName:String;
  Symbols,Sym,NextSym:PLinkSymbol;
  LinkRec,RefRec:Array[0..15]of Byte;
- LinkType,LinkRefs,LinkProc,RefNo:Integer;
+ LinkType,LinkRefs,RefNo:Integer;
 
 Procedure PutWord(Ofs:Integer;V:Word);Begin
  Header[Ofs]:=Byte(V);Header[Ofs+1]:=Byte(V shr 8)
@@ -3139,8 +3141,54 @@ Begin
  FindLinkSymbol:=X
 End;
 
+Procedure AddLinkSymbol(Const LocalName:String;AKind,ModuleNo,AProc,AValue,AParams:Integer);
+Var X:PLinkSymbol;
+Begin
+ X:=FindLinkSymbol(LocalName);
+ if X<>Nil Then Begin WriteLn('Symbole defini plusieurs fois: ',LocalName);OK:=False;Exit End;
+ New(X);X^.Name:=LocalName;X^.SymbolKind:=AKind;
+ X^.SegmentNumber:=ModuleNo-1;X^.ProcedureNumber:=AProc;
+ X^.Value:=AValue;X^.ParameterBytes:=AParams;X^.Next:=Symbols;Symbols:=X
+End;
+
+Procedure PatchHistoricalReference(ModuleNo,ReferenceType,FormatCode:Integer;
+ PatchOffset:LongInt;X:PLinkSymbol);
+Var V:LongInt;Bytes:Integer;
+Begin
+ if X=Nil Then Exit;
+ if ReferenceType in[13,14]Then Begin
+  if(PatchOffset<0)or(PatchOffset+2>SegLen[ModuleNo])Then Begin
+   WriteLn('Reference hors segment: ',X^.Name);OK:=False;Exit
+  End;
+  Want:=(Header[(ModuleNo-1)*4]or(Header[(ModuleNo-1)*4+1]shl 8))*512+PatchOffset;
+  Seek(OutF,Want);E:=IOResult;if E<>0 Then Begin OK:=False;Exit End;
+  Buffer[0]:=Byte(X^.SegmentNumber);Buffer[1]:=Byte(X^.ProcedureNumber);
+  BlockWrite(OutF,Buffer,2,W);OK:=OK and(IOResult=0)and(W=2);Exit
+ End;
+ Case ReferenceType of
+  1:V:=X^.SegmentNumber;                         { UNITREF }
+  2:V:=X^.Value;                                 { GLOBREF }
+  3:V:=X^.Value;                                 { PUBLREF }
+  5:V:=X^.Value;                                 { CONSTREF }
+  else V:=X^.Value
+ End;
+ if FormatCode=1 Then Bytes:=1 else Bytes:=2;
+ if(PatchOffset<0)or(PatchOffset+Bytes>SegLen[ModuleNo])Then Begin
+  WriteLn('Reference hors segment: ',X^.Name);OK:=False;Exit
+ End;
+ Want:=(Header[(ModuleNo-1)*4]or(Header[(ModuleNo-1)*4+1]shl 8))*512+PatchOffset;
+ Seek(OutF,Want);E:=IOResult;if E<>0 Then Begin OK:=False;Exit End;
+ if FormatCode=1 Then Begin Buffer[0]:=Byte(V);Bytes:=1 End
+ else if FormatCode=2 Then Begin
+  if(V>=0)and(V<128)Then Begin Buffer[0]:=Byte(V);Buffer[1]:=0 End
+  else Begin Buffer[0]:=$80 or Byte(V shr 8);Buffer[1]:=Byte(V) End;Bytes:=2
+ End else Begin Buffer[0]:=Byte(V);Buffer[1]:=Byte(V shr 8);Bytes:=2 End;
+ BlockWrite(OutF,Buffer,Bytes,W);OK:=OK and(IOResult=0)and(W=Bytes)
+End;
+
 Procedure ScanHistoricalLinks(ModuleNo:Integer;Definitions:Boolean);
-Var Present:Boolean;LocalName:String;X:PLinkSymbol;ReadWords:Word;Slot:Integer;
+Var Present:Boolean;LocalName:String;X:PLinkSymbol;ReadWords:Word;Slot,FormatCode:Integer;
+ TempSymbol:TLinkSymbol;
 Begin
  LinkPos:=SegPos[ModuleNo]+SegLen[ModuleNo];
  if(LinkPos mod 512)<>0 Then LinkPos:=((LinkPos+511)div 512)*512;
@@ -3151,16 +3199,38 @@ Begin
   if not Present Then Begin
    WriteLn('Informations de liaison tronquees: ',Inputs[ModuleNo]);OK:=False;Exit
   End;Inc(LinkPos,16);LinkType:=RecWord(LinkRec,8);LocalName:=RecName(LinkRec);
-  if LinkType=0 Then Exit;
-  if LinkType=11 Then Begin
+  if LinkType=0 Then Begin
+   if Definitions Then PrivateBase[ModuleNo]:=RecWord(LinkRec,10);Exit
+  End;
+  if LinkType in[6,7,8,11,12]Then Begin
    if Definitions Then Begin
-    LinkProc:=RecWord(LinkRec,10);X:=FindLinkSymbol(LocalName);
-    if X<>Nil Then Begin WriteLn('Symbole defini plusieurs fois: ',LocalName);OK:=False End
-    else Begin New(X);X^.Name:=LocalName;X^.SegmentNumber:=ModuleNo;
-     X^.ProcedureNumber:=LinkProc;X^.Next:=Symbols;Symbols:=X End
+    Case LinkType of
+     6:AddLinkSymbol(LocalName,LinkType,ModuleNo,RecWord(LinkRec,10),
+        RecWord(LinkRec,12),0);                    { GLOBDEF }
+     7:AddLinkSymbol(LocalName,LinkType,ModuleNo,0,RecWord(LinkRec,10),0); { PUBLDEF }
+     8:AddLinkSymbol(LocalName,LinkType,ModuleNo,0,RecWord(LinkRec,10),0); { CONSTDEF }
+     11,12:AddLinkSymbol(LocalName,LinkType,ModuleNo,RecWord(LinkRec,10),0,
+        RecWord(LinkRec,12))                       { SEPPROC/SEPFUNC }
+    End
+   End
+  End else if LinkType in[9,10]Then Begin
+   { EXTPROC/EXTFUNC identifient la procedure appelante et le nombre
+     d'octets de parametres; ils ne possedent pas de PtrList. }
+   if not Definitions Then Begin
+    X:=FindLinkSymbol(LocalName);
+    if(X=Nil)or not(X^.SymbolKind in[11,12])Then Begin
+     WriteLn('Routine externe non resolue: ',LocalName);OK:=False
+    End else if X^.ParameterBytes<>RecWord(LinkRec,12)Then Begin
+     WriteLn('Parametres incompatibles pour ',LocalName);OK:=False
+    End
    End
   End else if(LinkType in[1,2,3,4,5,13,14])Then Begin
-   LinkRefs:=RecWord(LinkRec,12);RefNo:=0;
+   FormatCode:=RecWord(LinkRec,10);LinkRefs:=RecWord(LinkRec,12);RefNo:=0;
+   if(LinkType=4)and not Definitions Then Begin
+    FillChar(TempSymbol,SizeOf(TempSymbol),0);TempSymbol.Name:=LocalName;
+    TempSymbol.SymbolKind:=4;TempSymbol.Value:=PrivateBase[ModuleNo];X:=@TempSymbol;
+    Inc(PrivateBase[ModuleNo],RecWord(LinkRec,14))
+   End;
    While RefNo<LinkRefs do Begin
     Seek(Src[ModuleNo],LinkPos);E:=IOResult;
     if E=0 Then BlockRead(Src[ModuleNo],RefRec,16,ReadWords)else ReadWords:=0;
@@ -3169,23 +3239,15 @@ Begin
     End;Inc(LinkPos,16);
     For Slot:=0 to 7 do if RefNo<LinkRefs Then Begin
      if not Definitions Then Begin
-      X:=FindLinkSymbol(LocalName);
+      if LinkType<>4 Then X:=FindLinkSymbol(LocalName);
       if X=Nil Then Begin WriteLn('Symbole externe non resolu: ',LocalName);OK:=False End
-      else Begin
-       PatchPos:=RecWord(RefRec,Slot*2);
-       if PatchPos+1>=SegLen[ModuleNo]Then Begin
-        WriteLn('Reference hors segment: ',LocalName);OK:=False
-       End else Begin
-        Want:=(Header[(ModuleNo-1)*4]or(Header[(ModuleNo-1)*4+1]shl 8))*512+PatchPos;
-        Seek(OutF,Want);E:=IOResult;if E=0 Then Begin
-         Buffer[0]:=X^.SegmentNumber;Buffer[1]:=X^.ProcedureNumber;
-         BlockWrite(OutF,Buffer,2,W);OK:=OK and(IOResult=0)and(W=2)
-        End else OK:=False
-       End
-      End
+      else Begin PatchPos:=RecWord(RefRec,Slot*2);
+       PatchHistoricalReference(ModuleNo,LinkType,FormatCode,PatchPos,X) End
      End;Inc(RefNo)
     End
    End
+  End else Begin
+   WriteLn('Type LIENTRY inconnu ',LinkType,' dans ',Inputs[ModuleNo]);OK:=False
   End
  Until not OK
 End;
@@ -3195,7 +3257,7 @@ Begin
  if Modules=''Then Exit;OutputName:=ProgramFile;
  AskFile('Programme .CODE produit',OutputName);
  if OutputName=''Then Exit;if Pos('.',OutputName)=0 Then OutputName:=OutputName+'.CODE';
- Count:=0;P:=1;Symbols:=Nil;
+ Count:=0;P:=1;Symbols:=Nil;FillChar(PrivateBase,SizeOf(PrivateBase),0);
  While P<=Length(Modules)do Begin
   While(P<=Length(Modules))and(Modules[P]in[' ',#9,','])do Inc(P);S:='';
   While(P<=Length(Modules))and not(Modules[P]in[' ',#9,','])do Begin
@@ -3228,12 +3290,16 @@ Begin
    Name:=UpperString(ReplaceExtension(Inputs[I],''));
    if Length(Name)>8 Then Name:=Copy(Name,1,8);SegName[I]:=Name
   End;
-  Header[256]:=InHeader[I,256];Header[257]:=InHeader[I,257]
  End;
  if not OK Then Begin
   For J:=1 to I do Begin
    Close(Src[J]);E:=IOResult
   End;Exit
+ End;
+ { Chaque entree du dictionnaire est egalement une definition UNITREF. }
+ For I:=1 to Count do AddLinkSymbol(SegName[I],1,I,0,0,0);
+ if not OK Then Begin
+  For I:=1 to Count do Begin Close(Src[I]);E:=IOResult End;Exit
  End;
  Assign(OutF,OutputName);Rewrite(OutF,1);if IOResult<>0 Then Begin
   WriteLn('Impossible de creer ',OutputName);
@@ -3247,6 +3313,9 @@ Begin
   End;
   Want:=(OutPos+511)div 512;PutWord((I-1)*4,Want);PutWord((I-1)*4+2,SegLen[I]);
   For J:=1 to Length(SegName[I])do Header[63+(I-1)*8+J]:=Ord(SegName[I][J]);
+  PutWord(192+(I-1)*2,InHeader[I,192]or(InHeader[I,193]shl 8));
+  PutWord(224+(I-1)*2,0); { aucun texte d'interface recopie par l'editeur de liens }
+  PutWord(256+(I-1)*2,InHeader[I,256]or(InHeader[I,257]shl 8));
   OutPos:=Want*512+SegLen[I]
  End;
  BlockWrite(OutF,Header,512,W);OK:=(IOResult=0)and(W=512);OutPos:=512;
@@ -3881,6 +3950,8 @@ Var
  CPRealNumber:Real;
  CPError,CPHadErrors:Boolean;
  CPDiagnosticCount,CPFirstErrorCode:Integer;
+ CPLastDiagnosticCode,CPLastDiagnosticLine,CPLastDiagnosticColumn:Integer;
+ CPTooManyDiagnostics:Boolean;
  CPSymbols:PPasSymbol;
  CPTypes:PPasType;
  CPRoutines:PPasRoutine;
@@ -3902,6 +3973,8 @@ Var
  CPInterfaceSource:PPasSource;
  CPInterfaceLength:LongInt;
 
+Procedure CPFailCode(ErrorCode:Integer;S:String);Forward;
+
 Function CPAddType(S:String;K:TPasTypeKind;Words:Word):PPasType;
 Var
  T:PPasType;
@@ -3914,6 +3987,20 @@ End;
 Function CPAlignedSize(Size,Alignment:LongInt):LongInt;Begin
  if Alignment<1 Then Alignment:=1;
  CPAlignedSize:=((Size+Alignment-1)div Alignment)*Alignment
+End;
+
+Function CPTypeEquivalent(A,B:PPasType):Boolean;Forward;
+
+Function CPParameterListsEquivalent(A,B:PPasParameter):Boolean;
+Begin
+ While(A<>Nil)and(B<>Nil)do Begin
+  if(A^.ByReference<>B^.ByReference)or(A^.Structured<>B^.Structured)or
+   not CPTypeEquivalent(A^.ParamType,B^.ParamType)Then Begin
+    CPParameterListsEquivalent:=False;Exit
+  End;
+  A:=A^.Next;B:=B^.Next
+ End;
+ CPParameterListsEquivalent:=(A=Nil)and(B=Nil)
 End;
 
 Function CPTypeEquivalent(A,B:PPasType):Boolean;Begin
@@ -3940,8 +4027,14 @@ Function CPTypeEquivalent(A,B:PPasType):Boolean;Begin
  ptkPointer,ptkFile,ptkSet:CPTypeEquivalent:=CPTypeEquivalent(A^.ElementType,
  B^.ElementType);
  ptkString:CPTypeEquivalent:=A^.HighBound=B^.HighBound;
- ptkRecord,ptkVariantRecord,ptkEnumeration,ptkProcedure,ptkFunction:
- CPTypeEquivalent:=False;
+ ptkProcedure,ptkFunction:Begin
+  if A^.Kind=ptkFunction Then
+   if not CPTypeEquivalent(A^.ResultType,B^.ResultType)Then Begin
+    CPTypeEquivalent:=False;Exit
+   End;
+  CPTypeEquivalent:=CPParameterListsEquivalent(A^.Parameters,B^.Parameters)
+ End;
+ ptkRecord,ptkVariantRecord,ptkEnumeration:CPTypeEquivalent:=False;
  else CPTypeEquivalent:=A^.Name=B^.Name
 End
 End;
@@ -4024,6 +4117,7 @@ End;
 Function CPAddRoutine(S:String;Parent:PPasRoutine;IsFunc:Boolean):PPasRoutine;
 Var
  R:PPasRoutine;
+ MaxDepth:Integer;
 Begin
  R:=CPFindRoutine(S,Parent);
  if R<>Nil Then Begin
@@ -4032,6 +4126,11 @@ Begin
  New(R);FillChar(R^,SizeOf(TPasRoutine),0);R^.Name:=S;R^.Parent:=Parent;
  R^.IsFunction:=IsFunc;Inc(CPNextProcedure);R^.ProcNumber:=CPNextProcedure;
  if Parent=Nil Then R^.LexicalLevel:=1 else R^.LexicalLevel:=Parent^.LexicalLevel+1;
+ if CurrentTarget=ptUCSDPSystemIV Then MaxDepth:=16 else MaxDepth:=8;
+ if R^.LexicalLevel>MaxDepth Then
+  CPFailCode(251,'trop de procedures ou fonctions imbriquees');
+ if CPNextProcedure>255 Then
+  CPFailCode(252,'trop d''entrees de procedures ou de references FORWARD');
  R^.Next:=CPRoutines;CPRoutines:=R;CPAddRoutine:=R
 End;
 
@@ -4452,29 +4551,43 @@ End;
 Procedure CPFailCode(ErrorCode:Integer;S:String);
 Var
  StartPos,EndPos,Col,I:LongInt;
+ DiagnosticLimit:Integer;
  LineText,Category:String;
 Begin
  CPError:=True;CPHadErrors:=True;if CPFirstErrorCode=0 Then CPFirstErrorCode:=ErrorCode;
- if CPDiagnosticCount>=50 Then Exit;
- Inc(CPDiagnosticCount);
- Category:='syntaxe';
- if(Pos('TYPE',UpperString(S))<>0)or(Pos('IDENTIFICATEUR',UpperString(S))<>0)or
- (Pos('BORNE',UpperString(S))<>0)Then Category:='semantique';
- if(Pos('COMMENTAIRE',UpperString(S))<>0)or(Pos('CHAINE',UpperString(S))<>0)or
- (Pos('CARACTERE',UpperString(S))<>0)or(Pos('HEXADECIMAL',UpperString(S))<>0)or
- (Pos('EXPOSANT',UpperString(S))<>0)Then Category:='lexicale';
  StartPos:=CPTokenPos;if StartPos>CPSize Then StartPos:=CPSize;
  While(StartPos>0)and(CPSource^[StartPos-1]<>10)do Dec(StartPos);
  EndPos:=StartPos;LineText:='';
  While(EndPos<CPSize)and not(CPSource^[EndPos]in[10,13])do Begin
   if Length(LineText)<255 Then LineText:=LineText+Chr(CPSource^[EndPos]);Inc(EndPos)
  End;Col:=CPTokenPos-StartPos+1;if Col<1 Then Col:=1;
+ { Une erreur peut etre rencontree pendant les deux passes. Ne la publier
+   qu'une fois, sans supprimer deux erreurs distinctes de la meme ligne. }
+ if(ErrorCode=CPLastDiagnosticCode)and(CPLine=CPLastDiagnosticLine)and
+  (Col=CPLastDiagnosticColumn)Then Exit;
+ CPLastDiagnosticCode:=ErrorCode;CPLastDiagnosticLine:=CPLine;
+ CPLastDiagnosticColumn:=Col;
+ if CurrentTarget=ptUCSDPSystemIV Then DiagnosticLimit:=50 else DiagnosticLimit:=10;
+ if CPDiagnosticCount>=DiagnosticLimit Then Begin
+  if not CPTooManyDiagnostics Then Begin
+   CPTooManyDiagnostics:=True;
+   WriteLn('Erreur UCSD 193 (',CPUCSDErrorText(193),'): trop d''erreurs; analyse interrompue')
+  End;Exit
+ End;
+ Inc(CPDiagnosticCount);
+ if(ErrorCode>=201)and(ErrorCode<=204)or(ErrorCode=400)or(ErrorCode=401)Then
+  Category:='lexicale'
+ else if(ErrorCode>=101)and(ErrorCode<=195)Then Category:='semantique'
+ else Category:='syntaxe';
  if OriginalErrors Then
-  WriteLn('UCSD error ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',
-   CPDiagnosticFile,':',CPLine,':',Col)
+ Begin
+  WriteLn(CPLine:5,'  ',LineText);
+  Write('***** ');For I:=2 to Col do Write(' ');
+  WriteLn('^ ',ErrorCode:3,'  ',CPUCSDErrorText(ErrorCode))
+ End
  else WriteLn('Erreur UCSD ',ErrorCode,' (',CPUCSDErrorText(ErrorCode),') ',Category,
   ' ',CPDiagnosticFile,':',CPLine,':',Col,': ',S);
- if LineText<>''Then Begin
+ if(LineText<>'')and not OriginalErrors Then Begin
   WriteLn(LineText);
   For I:=2 to Col do Write(' ');WriteLn('^')
  End
@@ -4722,6 +4835,21 @@ Procedure CPNeed(S:String);Begin
  End else CPNext
 End;
 
+Procedure CPRecoverDeclaration;
+Var P:LongInt;
+Begin
+ { Reprise UCSD: abandonner uniquement la declaration courante. Les mots qui
+   ouvrent une nouvelle partie ne sont pas consommes. }
+ P:=CPTokenPos-1;
+ While(P>=0)and(CPSource^[P]in[9,10,13,32])do Dec(P);
+ if(P>=0)and(CPSource^[P]=Ord(';'))Then Begin CPError:=False;Exit End;
+ While(CPToken<>'EOF')and(CPToken<>';')and not CPIs('LABEL')and
+  not CPIs('CONST')and not CPIs('TYPE')and not CPIs('VAR')and
+  not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPIs('BEGIN')do CPNext;
+ if CPToken=';'Then CPNext;
+ CPError:=False
+End;
+
 Function CPExpandIncludeFiles(Const RootName:String):Boolean;
 Var OutBuf:PPasSource;OutSize:LongInt;
 
@@ -4869,16 +4997,33 @@ Function CPParseType:PPasType;Forward;
 
 Function CPParseFormalType(K:TPasTypeKind):PPasType;
 Var
- T:PPasType;
- Depth:Integer;
+ T,PT:PPasType;
+ P,Tail:PPasParameter;
+ Names:Array[1..64]of String[31];
+ N,I:Integer;
+ ByRef:Boolean;
 Begin
  T:=CPNewAnonymousType(K);T^.SizeWords:=1;CPNext;
  if CPToken='('Then Begin
-  Depth:=1;CPNext;
-  While(Depth>0)and(CPToken<>'EOF')do Begin
-   if CPToken='('Then Inc(Depth)else if CPToken=')'Then Dec(Depth);
-   if Depth>0 Then CPNext
-  End;if CPToken=')'Then CPNext
+  CPNext;Tail:=Nil;
+  While(CPToken<>')')and(CPToken<>'EOF')and not CPError do Begin
+   ByRef:=CPIs('VAR');if ByRef Then CPNext;
+   N:=0;
+   Repeat
+    if CPToken<>'ID'Then Begin CPFailCode(7,'erreur dans la liste de parametres');Break End;
+    if N<64 Then Begin Inc(N);Names[N]:=CPText End else
+     CPFailCode(193,'trop de parametres formels');
+    CPNext;if CPToken=','Then CPNext else Break
+   Until False;
+   CPNeed(':');PT:=CPParseType;
+   For I:=1 to N do Begin
+    New(P);FillChar(P^,SizeOf(TPasParameter),0);P^.Name:=Names[I];P^.ParamType:=PT;
+    P^.ByReference:=ByRef;P^.Structured:=(PT<>Nil)and(PT^.SizeWords>1);
+    if Tail=Nil Then T^.Parameters:=P else Tail^.Next:=P;Tail:=P
+   End;
+   if CPToken=';'Then CPNext else Break
+  End;
+  CPNeed(')')
  End;
  if(K=ptkFunction)and(CPToken=':')Then Begin
   CPNext;T^.ResultType:=CPParseType
@@ -5077,7 +5222,7 @@ Begin
  if not CPIs('TYPE')Then Exit;CPNext;
  While(CPToken='ID')and not CPIs('VAR')and not CPIs('CONST')and
  not CPIs('BEGIN')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and
- not CPError do Begin
+ not CPTooManyDiagnostics do Begin
   Name:=CPText;CPNext;CPNeed('=');T:=CPParseType;
   Named:=CPFindType(Name);
   if(Named<>Nil)and(Named^.Scope<>CPCurrentRoutine)Then Named:=Nil;
@@ -5085,7 +5230,7 @@ Begin
   Named^.Kind:=ptkAlias;Named^.SizeWords:=T^.SizeWords;Named^.ElementType:=T;
   Named^.AlignWords:=T^.AlignWords;Named^.LowBound:=T^.LowBound;
   Named^.HighBound:=T^.HighBound;
-  CPNeed(';')
+  CPNeed(';');if CPError Then CPRecoverDeclaration
  End
 End;
 
@@ -5294,7 +5439,7 @@ Begin
  if not CPIs('CONST')Then Exit;CPNext;
  While(CPToken='ID')and not CPIs('TYPE')and not CPIs('VAR')and not CPIs('LABEL')and
  not CPIs('BEGIN')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')
- and not CPError do Begin
+ and not CPTooManyDiagnostics do Begin
   Name:=CPText;CPNext;CPNeed('=');V:=CPEvalConstExpression;
   P:=CPFind(Name);if(P=Nil)or(P^.Scope<>CPCurrentRoutine)Then Begin
    Case V.Kind of
@@ -5313,7 +5458,7 @@ Begin
  Begin
   P^.Value:=V.I;P^.ConstText:=V.S;P^.ConstReal:=V.R;
   P^.IsStringConst:=V.Kind=ckString;P^.IsRealConst:=V.Kind=ckReal
- End;if P<>Nil Then P^.Used:=False;CPNeed(';')
+ End;if P<>Nil Then P^.Used:=False;CPNeed(';');if CPError Then CPRecoverDeclaration
 End
 End;
 
@@ -5497,7 +5642,8 @@ Var
  P,Tail:PPasParameter;
  Typ,NewResult:PPasType;
  Name,PN:String;
- Depth:Integer;
+ ParamNames:Array[1..64]of String[31];
+ Depth,ParamCount,ParamIndex:Integer;
  IsFunc,ByRef,WasForward,HadParamSpec,HadResultSpec:Boolean;
 Begin
  IsFunc:=CPIs('FUNCTION');CPNext;
@@ -5516,17 +5662,24 @@ Begin
   CPNext;
   While(CPToken<>')')and(CPToken<>'EOF')and not CPError do Begin
    ByRef:=CPIs('VAR');if ByRef Then CPNext;
-   if CPToken<>'ID'Then Begin
-    CPFail('nom de parametre attendu');Break
-   End;
-   PN:=CPText;CPNext;CPNeed(':');
+   ParamCount:=0;
+   Repeat
+    if CPToken<>'ID'Then Begin CPFail('nom de parametre attendu');Break End;
+    if ParamCount<64 Then Begin
+     Inc(ParamCount);ParamNames[ParamCount]:=CPText
+    End else CPFailCode(193,'trop de parametres dans un groupe');
+    CPNext;if CPToken=','Then CPNext else Break
+   Until False;
+   CPNeed(':');
    if CPToken<>'ID'Then Begin
     CPFail('type de parametre attendu');Break
    End;
    Typ:=CPFindType(CPText);if Typ=Nil Then Typ:=CPFindType('INTEGER');CPNext;
    if(CPBaseType(Typ)<>Nil)and(CPBaseType(Typ)^.Kind=ptkFile)and not ByRef Then
     CPFailCode(121,'un fichier ne peut pas etre passe par valeur');
-   if not WasForward Then Begin
+   if not WasForward Then
+   For ParamIndex:=1 to ParamCount do Begin
+    PN:=ParamNames[ParamIndex];
     New(P);FillChar(P^,SizeOf(TPasParameter),0);P^.Name:=PN;P^.ParamType:=Typ;
     P^.ByReference:=ByRef;P^.Structured:=Typ^.SizeWords>1;
     if P^.ByReference or P^.Structured Then Inc(R^.ParameterWords)
@@ -7671,6 +7824,8 @@ Begin
  TextType^.PackedType:=True;
  TextType:=CPAddType('TEXT',ptkFile,FIB_WORDS);TextType^.ElementType:=CPFindType('CHAR');
  CPError:=False;CPHadErrors:=False;CPDiagnosticCount:=0;CPFirstErrorCode:=0;
+ CPLastDiagnosticCode:=-1;CPLastDiagnosticLine:=-1;CPLastDiagnosticColumn:=-1;
+ CPTooManyDiagnostics:=False;
  CPLine:=1;CPVarCount:=0;
  CPSize:=0;CPTokenPos:=0;
  GetMem(CPSource,SizeOf(TPCodeMemory));GetMem(PCode_Mem,SizeOf(TPCodeMemory));
