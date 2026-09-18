@@ -14,6 +14,8 @@ Uses Dos;
 Const
  Version='1.0';
  MSCW_STATIC=0;MSCW_DYNAMIC=1;MSCW_IPC=2;MSCW_ENV=3;MSCW_PROC=4;
+ FIB_HANDLE=0;FIB_WINDOW=1;FIB_FLAGS=2;FIB_RECSIZE=3;FIB_ERROR=4;
+ FIB_POSLOW=5;FIB_POSHIGH=6;FIB_UNIT=7;FIB_WORDS=8;
 
 Type
  TPSYSTEMTarget=(ptAppleHeath,ptUCSDPascalII,ptUCSDPSystemIII,ptUCSDPSystemIV);
@@ -468,6 +470,7 @@ Var
  PCode_Segments:Array[0..15]of TPCodeSegmentState;
  PCode_CodeFileName:String;
  PCode_ReturnSegmentOverride:Integer;
+ PCode_AuthenticABI:Boolean;
  PCode_StringHeap:LongInt;
  PCode_Files:Array[1..16]of TPCodeRuntimeFile;
  PCode_LastIOError:Integer;
@@ -495,6 +498,7 @@ Procedure PCode_PutChar(C:Char);Begin
 End;
 Function PCode_DataAt(A:LongInt):LongInt;Forward;
 Procedure PCode_DataSet(A:LongInt;V:LongInt);Forward;
+Procedure PCode_DataSetWord(A:LongInt;V:Word);Forward;
 Procedure PCode_RuntimeError(Code:Integer;Const Msg:String);Forward;
 Function PCode_Fetch(Ofs:LongInt):Byte;Forward;
 
@@ -609,6 +613,26 @@ Begin
  PCode_LastIOError:=0;PCode_IOChecking:=True;PCode_FreeCount:=0
 End;
 
+Procedure PCode_SyncFileDescriptor(H:Integer);
+Var A,Flags,UnitNo:LongInt;Posi:LongInt;
+Begin
+ if(H<1)or(H>16)or not PCode_Files[H].Used or not PCode_AuthenticABI Then Exit;
+ A:=PCode_Files[H].UCSDAddress;if(A<0)or(A+FIB_WORDS-1>High(PCode_Data^))Then Exit;
+ Flags:=0;if PCode_Files[H].Opened Then Flags:=Flags or 1;
+ if PCode_Files[H].TextMode Then Flags:=Flags or 2;
+ if PCode_Files[H].Writing Then Flags:=Flags or 4;
+ UnitNo:=4;if UpperString(PCode_Files[H].Name)='CON'Then UnitNo:=1
+ else if UpperString(PCode_Files[H].Name)='PRN'Then UnitNo:=6;
+ Posi:=0;if PCode_Files[H].Opened and not PCode_Files[H].TextMode Then Begin
+  Posi:=FilePos(PCode_Files[H].F);if IOResult<>0 Then Posi:=0
+ End;
+ PCode_DataSetWord(A+FIB_HANDLE,H);PCode_DataSetWord(A+FIB_WINDOW,PCode_Files[H].BufferAddress);
+ PCode_DataSetWord(A+FIB_FLAGS,Flags);PCode_DataSetWord(A+FIB_RECSIZE,PCode_Files[H].RecordWords);
+ PCode_DataSetWord(A+FIB_ERROR,PCode_Files[H].LastError);
+ PCode_DataSetWord(A+FIB_POSLOW,Word(Posi));PCode_DataSetWord(A+FIB_POSHIGH,Word(Posi shr 16));
+ PCode_DataSetWord(A+FIB_UNIT,UnitNo)
+End;
+
 Function PCode_MapFileName(S:String):String;
 Begin
  PCode_MapFileName:=ResolveUCSDName(S)
@@ -636,13 +660,14 @@ Begin
    H:=I;PCode_Files[I].Used:=True;PCode_Files[I].Opened:=False;
    PCode_Files[I].Name:='';PCode_Files[I].BufferAddress:=0;
    PCode_Files[I].UCSDAddress:=FileAddress;PCode_Files[I].Flags:=0;
-   PCode_DataSet(FileAddress,H);Break
+   PCode_DataSetWord(FileAddress,H);PCode_SyncFileDescriptor(H);Break
   End
  End;PCode_FileHandle:=H
 End;
 
 Procedure PCode_IOError(H,E:Integer);Begin
  PCode_LastIOError:=E;if(H>=1)and(H<=16)Then PCode_Files[H].LastError:=E;
+ if(H>=1)and(H<=16)Then PCode_SyncFileDescriptor(H);
  PCode_SYSCOM.IORSLT:=E;
  if(E<>0)and PCode_IOChecking Then Begin
   PCode_Write('[erreur E/S '+PCode_IntToStr(E)+']');
@@ -864,6 +889,7 @@ Begin
  FillChar(PCode_Mem^,SizeOf(TPCodeMemory),0);ReadCount:=0;
  LoadedSize:=Sz;
  PrivateFormat:=False;HeaderBigEndian:=False;PCode_CodeBigEndian:=False;
+ PCode_AuthenticABI:=False;
  PCode_CurrentSegment:=0;
  if Sz>=512 Then Begin
   BlockRead(F,Header,512,ReadCount);SegmentPos:=(Header[0]or(Header[1]shl 8))*512;
@@ -918,6 +944,7 @@ Begin
  (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
   PrivateFormat:=(Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
    (Header[290]=Ord('V'))and(Header[291]=Ord('M'));
+  PCode_AuthenticABI:=not PrivateFormat or(Header[292]>=2);
   PCode_CodeBigEndian:=HeaderBigEndian;
   Seek(F,SegmentPos);ReadCount:=0;BlockRead(F,PCode_Mem^,SegmentSize,ReadCount);
   LoadedSize:=SegmentSize;
@@ -1239,10 +1266,9 @@ Begin
  For I := 1 To Lvl Do FB := PCode_DataAt(FB);
  PCode_StaticBase := FB;
 End;
-{ Appel d unite externe (CXP) 0 = runtime hote (E/S console, adapte de la  }
-{ numerotation SYSTEM.PASCAL documentee par DISPCODE/PDECODE, mais avec une }
-{ convention de parametrage SIMPLIFIEE de mon fait : valeurs directement    }
-{ sur la pile, sans descripteur de fichier - voir memoire projet).          }
+{ Appel d'unite externe (CXP) 0 = runtime SYSTEM. Les parametres suivent   }
+{ l'ordre de pile UCSD; les arguments FILE designent maintenant un FIB de  }
+{ huit mots dans la memoire p-machine, synchronise avec le service hote.   }
 
 Procedure PCode_CallUnit0(ProcNum: Byte);
 Var
@@ -3032,6 +3058,7 @@ Begin
   Header[256]:=InHeader[I,256];Header[257]:=InHeader[I,257]
  End;
  Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('V');Header[291]:=Ord('M');
+ Header[292]:=2;
  if not OK Then Begin
   For J:=1 to I do Begin
    Close(Src[J]);E:=IOResult
@@ -4801,7 +4828,7 @@ Begin
   T^.SizeWords:=16;T^.PackedType:=PackedFlag;CPParseType:=T;Exit
  End;
  if CPIs('FILE')Then Begin
-  CPNext;T:=CPNewAnonymousType(ptkFile);T^.SizeWords:=1;
+  CPNext;T:=CPNewAnonymousType(ptkFile);T^.SizeWords:=FIB_WORDS;
   if CPIs('OF')Then Begin
    CPNext;T^.ElementType:=CPParseType
   End;
@@ -6763,6 +6790,7 @@ End;
  { PSVM identifie seulement le dictionnaire et l'ABI internes. Les symboles
    ne sont plus tronques dans l'en-tete: ils sont ecrits comme LIENTRY UCSD. }
 Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('V');Header[291]:=Ord('M');
+Header[292]:=2;
 Header[292]:=0;Header[293]:=0;
 Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then Begin
  CPFailCode(402,'creation du fichier CODE impossible');Exit
@@ -7381,7 +7409,7 @@ Begin
  CPAddType('REAL',ptkReal,1);
  TextType:=CPAddType('STRING',ptkString,256);TextType^.HighBound:=255;
  TextType^.PackedType:=True;
- TextType:=CPAddType('TEXT',ptkFile,1);TextType^.ElementType:=CPFindType('CHAR');
+ TextType:=CPAddType('TEXT',ptkFile,FIB_WORDS);TextType^.ElementType:=CPFindType('CHAR');
  CPError:=False;CPHadErrors:=False;CPDiagnosticCount:=0;CPFirstErrorCode:=0;
  CPLine:=1;CPVarCount:=0;
  CPSize:=0;CPTokenPos:=0;
