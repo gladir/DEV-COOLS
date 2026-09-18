@@ -45392,10 +45392,33 @@ Var
    { l ordre horizontal habituel (meme convention que ShowColumns/          }
    { ShowFourColumns de DIR.PAS). }
    Case ColMode Of
-    1: Begin Cols := 5; CellW := 16; End;
-    2: Begin Cols := 4; CellW := 18; End;
-    Else Begin Cols := 2; CellW := 34; End;
+    1: Cols := 5;
+    2: Cols := 4;
+    Else Cols := 2;
    End;
+   { Largeur de colonne MESUREE sur la liste entiere (comme ShowColumns/     }
+   { ShowFourColumns de DIR.PAS), pas une constante fixe : un CellW fixe     }
+   { desalignait les colonnes suivantes des qu une entree (nom+taille+date)  }
+   { depassait la largeur prevue - BOGUE REEL signale par l utilisateur     }
+   { avec /2 (ex. "Program Files" pousse la colonne suivante). }
+   CellW := 0;
+   For I := 0 To DirExtCount - 1 Do Begin
+    E := DirExtEntries[I];
+    Nm := DirExt_DisplayName(E);
+    If ColMode = 1 Then Cell := Nm
+    Else Begin
+     If (E.Attr And Directory) <> 0 Then SzTxt := '<DIR>'
+     Else SzTxt := IntToStr(E.Size);
+     If ColMode = 2 Then Cell := Nm + ' ' + SzTxt
+     Else Begin
+      UnpackTime(E.PackedDT, FT);
+      Cell := Nm + ' ' + SzTxt + ' ' + TermPadZeroLeft(FT.Year, 4) + '-' +
+       TermPadZeroLeft(FT.Month, 2) + '-' + TermPadZeroLeft(FT.Day, 2);
+     End;
+    End;
+    If Length(Cell) > CellW Then CellW := Length(Cell);
+   End;
+   CellW := CellW + 2;
    Rows := DirExtCount Div Cols;
    If (DirExtCount Mod Cols) <> 0 Then Inc(Rows);
    If Rows < 1 Then Rows := 1;
