@@ -439,7 +439,9 @@ Type
   IORSLT,XEQERR:Word;
   CurrentSegment,CurrentProcedure:Word;
   StackPointer,MarkPointer,HeapPointer:Word;
-  PrefixUnit,RootUnit:Word
+  PrefixUnit,RootUnit:Word;
+  BreakChar,StopChar,FlushChar,EOFChar,CharMask,NoBreak:Byte;
+  ClockLow,ClockHigh:Word
  End;
  TPCodeSegmentState=Record
   Present,Loaded,BigEndian,IsIV,HistoricalII:Boolean;
@@ -1324,9 +1326,74 @@ Begin
  PCode_RuntimeError(305,'procedure SYSTEM '+PCode_IntToStr(ProcNum)+' inconnue');
 End;
 End;
-{ Appel de procedure standard (CSP). Table de numeros reprise de           }
-{ DISPCODE.PAS (CSPName) - seules EXIT (4) et les no-op mathematiques sur   }
-{ entiers (18=TRC, 19=RND, pas de reel donc identite) sont implementees.    }
+Function PCode_UnitIndex(UnitNo:Integer):Integer;
+Var I:Integer;
+Begin
+ PCode_UnitIndex:=0;
+ For I:=1 to VolumeCount do if Volumes[I].UnitNo=UnitNo Then Begin
+  PCode_UnitIndex:=I;Exit
+ End
+End;
+
+Procedure PCode_UnitRead(UnitNo:Integer;BufferAddress,ByteCount,BlockNo:LongInt;
+ Mode:Integer);
+Var I,V,E:Integer;C:Char;F:File;N:Word;B:Byte;Offset:LongInt;
+Begin
+ E:=0;V:=PCode_UnitIndex(UnitNo);
+ if(ByteCount<0)or(BufferAddress<0)or(BufferAddress+ByteCount>High(PCode_Data^)+1)Then
+  E:=4
+ else if(V=0)or not Volumes[V].Online Then E:=9
+ else Case Volumes[V].Kind of
+  vkConsole,vkRemoteIn:
+  For I:=0 to ByteCount-1 do Begin
+   if Eof(Input)Then Begin E:=100;Break End;
+   Read(C);E:=IOResult;if E<>0 Then Break;
+   PCode_DataSet(BufferAddress+I,Ord(C)and PCode_SYSCOM.CharMask)
+  End;
+  vkDisk:
+  Begin
+   { Une unite disque est brute uniquement lorsque HostPath designe une image. }
+   Assign(F,Volumes[V].HostPath);Reset(F,1);E:=IOResult;
+   if E=0 Then Begin
+    Offset:=BlockNo*512;Seek(F,Offset);E:=IOResult;
+    For I:=0 to ByteCount-1 do if E=0 Then Begin
+     BlockRead(F,B,1,N);E:=IOResult;
+     if(E=0)and(N=1)Then PCode_DataSet(BufferAddress+I,B)else if E=0 Then E:=100
+    End;Close(F);if E=0 Then E:=IOResult
+   End
+  End;
+  else E:=9
+ End;
+ PCode_IOError(0,E)
+End;
+
+Procedure PCode_UnitWrite(UnitNo:Integer;BufferAddress,ByteCount,BlockNo:LongInt;
+ Mode:Integer);
+Var I,V,E:Integer;F:File;N:Word;B:Byte;Offset:LongInt;
+Begin
+ E:=0;V:=PCode_UnitIndex(UnitNo);
+ if(ByteCount<0)or(BufferAddress<0)or(BufferAddress+ByteCount>High(PCode_Data^)+1)Then E:=4
+ else if(V=0)or not Volumes[V].Online Then E:=9
+ else Case Volumes[V].Kind of
+  vkConsole,vkPrinter,vkRemoteOut:
+  For I:=0 to ByteCount-1 do PCode_PutChar(Chr(Byte(PCode_DataAt(BufferAddress+I))));
+  vkDisk:
+  Begin
+   Assign(F,Volumes[V].HostPath);Reset(F,1);E:=IOResult;
+   if E=0 Then Begin
+    Offset:=BlockNo*512;Seek(F,Offset);E:=IOResult;
+    For I:=0 to ByteCount-1 do if E=0 Then Begin
+     B:=Byte(PCode_DataAt(BufferAddress+I));BlockWrite(F,B,1,N);E:=IOResult;
+     if(E=0)and(N<>1)Then E:=101
+    End;Close(F);if E=0 Then E:=IOResult
+   End
+  End;
+  else E:=9
+ End;
+ PCode_IOError(0,E)
+End;
+
+{ Appel de procedure standard (CSP), avec les services SBIOS portables. }
 
 Procedure PCode_CallCSP(CspNum: Byte);
 Var
@@ -1369,6 +1436,13 @@ Begin
   RB.L:=PCode_Pop;if RB.S>=0 Then PCode_Push(Trunc(RB.S+0.5))
   else PCode_Push(Trunc(RB.S-0.5))
  End;
+ 5,6:
+ Begin
+  { UNITREAD/UNITWRITE(unit,buffer,length,block,mode). }
+  Kind:=PCode_Pop;B:=PCode_Pop;N:=PCode_Pop;A:=PCode_Pop;V:=PCode_Pop;
+  if CspNum=5 Then PCode_UnitRead(V,A,N,B,Kind)
+  else PCode_UnitWrite(V,A,N,B,Kind)
+ End;
  9:
  Begin
   GetTime(Hour,Minute,Second,Hundredth);
@@ -1379,6 +1453,18 @@ Begin
   V:=PCode_Pop;N:=PCode_Pop;D:=PCode_Pop;
   For I:=0 to N-1 do PCode_DataSet(D+I,Byte(V))
  End;
+ 12:
+ Begin
+  { UNITSTATUS(unit,status,control): trente mots reserves, quatre documentes. }
+  Kind:=PCode_Pop;D:=PCode_Pop;V:=PCode_Pop;
+  For I:=0 to 29 do PCode_DataSet(D+I,0);H:=PCode_UnitIndex(V);
+  if H=0 Then PCode_IOError(0,9)else Begin
+   PCode_DataSet(D,0);
+   if Volumes[H].BlockDevice Then Begin
+    PCode_DataSet(D+1,512);PCode_DataSet(D+2,1);PCode_DataSet(D+3,0)
+   End;PCode_IOError(0,0)
+  End
+ End;
  20,21,22,23,24,25,26:
  Begin
   RB.L:=PCode_Pop;
@@ -1387,8 +1473,11 @@ Begin
    if Cos(RB.S)=0 Then Begin PCode_RuntimeError(306,'tangente hors domaine');Exit End;
    RB.S:=Sin(RB.S)/Cos(RB.S)
   End;
-  23:RB.S:=ArcTan(RB.S);
-  24:Begin if RB.S<=0 Then Begin PCode_RuntimeError(306,'logarithme hors domaine');Exit End;
+  23:if CurrentTarget<>ptUCSDPSystemIV Then Begin PCode_Push(Trunc(RB.S));Exit End
+     else RB.S:=ArcTan(RB.S);
+  24:if CurrentTarget<>ptUCSDPSystemIV Then Begin
+   if RB.S>=0 Then PCode_Push(Trunc(RB.S+0.5))else PCode_Push(Trunc(RB.S-0.5));Exit
+  End else Begin if RB.S<=0 Then Begin PCode_RuntimeError(306,'logarithme hors domaine');Exit End;
    RB.S:=Ln(RB.S) End;
   25:RB.S:=Exp(RB.S);
   26:Begin if RB.S<0 Then Begin PCode_RuntimeError(306,'racine hors domaine');Exit End;
@@ -1405,9 +1494,60 @@ Begin
   if(A<4096)or(A>PCode_StringHeap)Then PCode_RuntimeError(303,'marque de tas invalide')
   else Begin PCode_StringHeap:=A;PCode_FreeCount:=0 End
  End;
- 29,37:
+ 29:
  Begin
   PCode_Push(PCode_LastIOError);PCode_LastIOError:=0
+ End;
+ 30:
+ Begin
+  { Reserve selon la version; retourne l'etat synchrone sans alterer le tas. }
+  V:=PCode_Pop;PCode_Push(0)
+ End;
+ 31:
+ Begin
+  { PWR10, nom historique de la table CSP. }
+  N:=PCode_Pop;RB.S:=1.0;
+  if N>=0 Then For I:=1 to N do RB.S:=RB.S*10.0
+  else For I:=-1 downto N do RB.S:=RB.S/10.0;
+  PCode_Push(RB.L)
+ End;
+ 32:
+ Begin
+  { MARK dans les ABI II/Apple. }
+  D:=PCode_Pop;PCode_DataSet(D,PCode_StringHeap)
+ End;
+ 33:
+ Begin
+  { RELEASE dans les ABI II/Apple. }
+  A:=PCode_Pop;
+  if(A<4096)or(A>PCode_StringHeap)Then PCode_RuntimeError(303,'marque de tas invalide')
+  else Begin PCode_StringHeap:=A;PCode_FreeCount:=0 End
+ End;
+ 34:
+ Begin
+  PCode_Push(PCode_LastIOError);PCode_LastIOError:=0
+ End;
+ 35:
+ Begin
+  { UNITBUSY: les operations de l'adaptateur hote sont synchrones. }
+  V:=PCode_Pop;PCode_Push(0)
+ End;
+ 36:
+ Begin
+  { PWR10. }
+  N:=PCode_Pop;RB.S:=1.0;
+  if N>=0 Then For I:=1 to N do RB.S:=RB.S*10.0
+  else For I:=-1 downto N do RB.S:=RB.S/10.0;PCode_Push(RB.L)
+ End;
+ 37:
+ Begin
+  { UNITWAIT: l'adaptateur hote termine les transferts synchroniquement. }
+  V:=PCode_Pop;PCode_IOError(0,0)
+ End;
+ 38:
+ Begin
+  { UNITCLEAR. }
+  V:=PCode_Pop;PCode_LastIOError:=0;PCode_SYSCOM.IORSLT:=0
  End;
  40:
  Begin
@@ -1808,7 +1948,7 @@ End;
 End;
 
 Procedure PCode_UpdateSyscom;
-Var V:Integer;
+Var V:Integer;H,M,S,HS:Word;Ticks:LongInt;
 Begin
  PCode_SYSCOM.IORSLT:=PCode_LastIOError;PCode_SYSCOM.XEQERR:=PCode_ExitCode;
  PCode_SYSCOM.CurrentSegment:=PCode_CurrentSegment;
@@ -1817,6 +1957,8 @@ Begin
  PCode_SYSCOM.HeapPointer:=PCode_StringHeap;V:=FindVolume(FilerPrefix);
  if V<>0 Then PCode_SYSCOM.PrefixUnit:=Volumes[V].UnitNo else PCode_SYSCOM.PrefixUnit:=4;
  PCode_SYSCOM.RootUnit:=4;
+ GetTime(H,M,S,HS);Ticks:=LongInt(H)*360000+LongInt(M)*6000+LongInt(S)*100+HS;
+ PCode_SYSCOM.ClockLow:=Word(Ticks);PCode_SYSCOM.ClockHigh:=Word(Ticks shr 16);
  { Fenetre SYSCOM du segment SYSTEM, accessible par LDE/STE segment zero. }
  PCode_ExternalData[0,0]:=PCode_SYSCOM.IORSLT;
  PCode_ExternalData[0,1]:=PCode_SYSCOM.XEQERR;
@@ -1826,7 +1968,15 @@ Begin
  PCode_ExternalData[0,5]:=PCode_SYSCOM.MarkPointer;
  PCode_ExternalData[0,6]:=PCode_SYSCOM.HeapPointer;
  PCode_ExternalData[0,7]:=PCode_SYSCOM.PrefixUnit;
- PCode_ExternalData[0,8]:=PCode_SYSCOM.RootUnit
+ PCode_ExternalData[0,8]:=PCode_SYSCOM.RootUnit;
+ PCode_ExternalData[0,9]:=PCode_SYSCOM.BreakChar;
+ PCode_ExternalData[0,10]:=PCode_SYSCOM.StopChar;
+ PCode_ExternalData[0,11]:=PCode_SYSCOM.FlushChar;
+ PCode_ExternalData[0,12]:=PCode_SYSCOM.EOFChar;
+ PCode_ExternalData[0,13]:=PCode_SYSCOM.CharMask;
+ PCode_ExternalData[0,14]:=PCode_SYSCOM.NoBreak;
+ PCode_ExternalData[0,15]:=PCode_SYSCOM.ClockLow;
+ PCode_ExternalData[0,16]:=PCode_SYSCOM.ClockHigh
 End;
 
 Procedure PCode_WriteMSCW(Base,StaticLink,DynamicLink,ReturnIPC:LongInt;
@@ -2085,7 +2235,8 @@ Begin
  $93,$94:
  Begin
  B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
- if B=0 Then PCode_CallUnit0(N)
+ if(B=0)and PCode_Segments[0].Present Then PCode_CallExternalSegment(0,N,Op=$94)
+ else if B=0 Then PCode_CallUnit0(N)
   else if B=PCode_CurrentSegment Then PCode_CallProcedure(N,0,Op=$94)
   else PCode_CallExternalSegment(B,N,Op=$94)
  End;
@@ -2856,7 +3007,8 @@ Begin
  { CXP unite,proc }
  B := PCode_Fetch(PCode_PC + 1); N := PCode_Fetch(PCode_PC + 2);
  PCode_PC := PCode_PC + 3;
- If B = 0 Then PCode_CallUnit0(N)
+ If(B=0)and PCode_Segments[0].Present Then PCode_CallExternalSegment(0,N,True)
+ Else If B = 0 Then PCode_CallUnit0(N)
  Else if B=PCode_CurrentSegment Then PCode_CallProcedure(N,0,True)
  Else PCode_CallExternalSegment(B,N,True);
 End;
@@ -2939,6 +3091,8 @@ Begin
  FillChar(PCode_Data^,SizeOf(TPCodeData),0);
  FillChar(PCode_ExternalData,SizeOf(PCode_ExternalData),0);
  FillChar(PCode_SYSCOM,SizeOf(PCode_SYSCOM),0);
+ PCode_SYSCOM.BreakChar:=3;PCode_SYSCOM.StopChar:=19;PCode_SYSCOM.FlushChar:=6;
+ PCode_SYSCOM.EOFChar:=26;PCode_SYSCOM.CharMask:=$FF;PCode_SYSCOM.NoBreak:=0;
  PCode_InitFiles;PCode_StringHeap:=4096;PCode_PC:=0;PCode_SP:=0;PCode_MP:=0;
  if PCode_HasProcDictionary Then PCode_SP:=High(PCode_Data^)+1;
  PCode_Base:=0;PCode_CurrentProc:=0;
