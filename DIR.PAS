@@ -32,7 +32,7 @@ Type
  End;
 
 Var
- Language:(_French,_English,_Germany,_Italian,_Spain);
+ Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
  First:Boolean;
  Error:Integer;
@@ -1131,6 +1131,7 @@ BEGIN
  ColorRules:=StrToUpper(GetEnv('COLORDIR'));
  If ColorRules=''Then
   ColorRules:='DIRS:BRIGHT BLUE;EXE COM BAT BTM:BRIGHT GREEN;INI TXT:BRIGHT MAGENTA';
+  { Initialiser la langue }
  Language:=_French;
  TmpLanguage:=GetEnv('LANGUAGE');
  If TmpLanguage<>''Then Begin
@@ -1138,7 +1139,17 @@ BEGIN
   If StrToUpper(Copy(TmpLanguage,1,2))='EN'Then Language:=_English Else
   If StrToUpper(Copy(TmpLanguage,1,2))='GR'Then Language:=_Germany Else
   If StrToUpper(Copy(TmpLanguage,1,2))='IT'Then Language:=_Italian Else
-  If StrToUpper(Copy(TmpLanguage,1,2))='SP'Then Language:=_Spain;
+  If StrToUpper(Copy(TmpLanguage,1,2))='SP'Then Language:=_Spain Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='SQ')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='ALB')Then Language:=_Albanian Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='PT')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='PRT')Then Language:=_Portuguese Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='SE')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='SWE')Then Language:=_Swedish Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='DK')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='DNK')Then Language:=_Danish Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='JP')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='JPN')Then Language:=_Japanese;
  End;
  ResetOptions;
  P:=0;
@@ -1234,14 +1245,14 @@ BEGIN
      WriteLn(' /4               Affiche les fichiers et leurs tailles sur quatre colonnes');
      WriteLn(' /A[[:]attributs]  A=Archive D=R'+#130+'pertoire H=Cach'+#130+' R=Lecture seule S=Syst'+#138+'me');
      WriteLn('                  + : inclure; - : exclure');
-     WriteLn('                  /A : tous; /A:H-D : fichiers cach'+#130+'s sans les r'+#130+'pertoires');     
-     WriteLn(' /B               Ce param'+#138+'tre enl'+#138+'ve l''entete et les d'+#130+'tails de la fin');     
+     WriteLn('                  /A : tous; /A:H-D : fichiers cach'+#130+'s sans les r'+#130+'pertoires');
+     WriteLn(' /B               Ce param'+#138+'tre enl'+#138+'ve l''entete et les d'+#130+'tails de la fin');
      WriteLn(' /C               Taux de compression DoubleSpace, unit'+#130+'s d''allocation de 8 Ko');
-     WriteLn('                  MS-DOS 7+ / Windows; - = indisponible; ignor'+#130+' avec /B ou /W');     
+     WriteLn('                  MS-DOS 7+ / Windows; - = indisponible; ignor'+#130+' avec /B ou /W');
      WriteLn(' /D               D'+#130+'sactive la colorisation');
      WriteLn(' COLORDIR         Couleurs: DIRS, HIDDEN, SYSTEM, RDONLY, ARCHIVE, NORMAL ou extensions');
      WriteLn(' /F               Affiche les noms complets avec leur chemin');
-     WriteLn(' /FORMAT:format   Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');     
+     WriteLn(' /FORMAT:format   Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');
      WriteLn(' /J               Aligne s'+#130+'par'+#130+'ment les noms et les extensions');
      WriteLn(' /K               Masque les ent'+#136+'tes et conserve les totaux');
      WriteLn(' /L               Affiche les noms des fichiers et r'+#130+'pertoires en minuscules');
@@ -1257,7 +1268,7 @@ BEGIN
      WriteLn(' /S               Ce param'+#138+'tre affiche les fichiers du dossier et de tous ses sous-dossiers');
      WriteLn(' /T               Affiche uniquement les noms et attributs (R H S D A)');
      WriteLn(' /U               Affiche uniquement le nombre de fichiers et les octets utilis'+#130+'s');
-     WriteLn(' /V               Remplit les colonnes verticalement avec /2, /4 ou /W');     
+     WriteLn(' /V               Remplit les colonnes verticalement avec /2, /4 ou /W');
      WriteLn(' /W               Ce param'+#138+'tre affiche seulement les fichiers sur plein de colonnes');
     End;
    End;
