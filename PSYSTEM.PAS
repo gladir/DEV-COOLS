@@ -724,10 +724,9 @@ Var
  Size,Start,LengthBytes,Slot,Attr,Entry,ExitAddress,DictStart:LongInt;
  Starts,Lengths:Array[0..15]of LongInt;
  I,J,P,Count,LexLevel,Kind,Seen:Integer;
- HeaderTarget:Word;
  DataBytes,ParamBytes:LongInt;
  N:Word;
- BigEndian,PrivateFormat,OK,Readable:Boolean;
+ BigEndian,OK,Readable:Boolean;
  SegmentName:String;
 
 Function HW(Ofs:Integer):Word;Begin
@@ -774,18 +773,7 @@ Begin
    Close(F);if IOResult<>0 Then Begin End;Bad('en-tete ou bornes des segments');Exit
   End
  End;
- HeaderTarget:=HW(256);
- Case HeaderTarget of
-  $0101:CurrentTarget:=ptAppleHeath;
-  $0201:CurrentTarget:=ptUCSDPascalII;
-  $0301:CurrentTarget:=ptUCSDPSystemIII;
-  $0401:CurrentTarget:=ptUCSDPSystemIV
- End;
- PrivateFormat:=(Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
-  (Header[290]=Ord('V'))and(Header[291]=Ord('M'));
- if PrivateFormat Then WriteLn('ABI prive PSYSTEM/PSVM (non certifie UCSD).')
- else WriteLn('Verification structurelle d''un fichier CODE UCSD historique.');
- WriteLn('Cible du fichier: ',TargetName,'.');
+ WriteLn('Verification structurelle d''un fichier CODE UCSD historique.');
  if BigEndian Then WriteLn('Mots: grand-boutiste.')else WriteLn('Mots: petit-boutiste.');
  FillChar(Starts,SizeOf(Starts),0);FillChar(Lengths,SizeOf(Lengths),0);
  GetMem(Image,SizeOf(TPCodeMemory));
@@ -807,18 +795,6 @@ Begin
   Seek(F,Start);if IOResult<>0 Then Begin Bad('positionnement du segment');Continue End;
   BlockRead(F,Image^,LengthBytes,N);
   if(IOResult<>0)or(N<>LengthBytes)Then Begin Bad('lecture incomplete du segment');Continue End;
-  if PrivateFormat Then Begin
-   if LengthBytes<24 Then Begin Bad('segment prive trop court');Continue End;
-   Slot:=LongInt(IW(0))*2;
-   if(Slot<22)or(Slot+2>LengthBytes)Then Begin Bad('dictionnaire prive hors segment');Continue End;
-   Count:=IW(Slot);DictStart:=Slot-LongInt(Count)*2;
-   if(Count<1)or(Count>255)or(DictStart<22)Then Begin Bad('nombre de procedures prive');Continue End;
-   For P:=1 to Count do Begin
-    Attr:=LongInt(IW(Slot-P*2))*2;
-    if(Attr<22)or(Attr+2>DictStart)Then Bad('attribut prive hors zone')
-    else WriteLn(' Procedure ',P,': entree=',Attr+2,' locaux=',IW(Attr))
-   End;Continue
-  End;
   { IV a un format distinct: ne jamais le certifier avec les regles II. }
   if CurrentTarget=ptUCSDPSystemIV Then Begin
    if LengthBytes<24 Then Begin Bad('segment IV trop court');Continue End;
@@ -880,8 +856,7 @@ Var
  ProcCount:Byte;
  I,J,SegmentKind:Integer;
  Entry:LongInt;
- TargetInfo:Word;
- PrivateFormat,HeaderBigEndian:Boolean;
+ HeaderBigEndian:Boolean;
 Begin
  PCode_LoadRaw:=False;Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Exit;
  PCode_CodeFileName:=FileName;FillChar(PCode_Segments,SizeOf(PCode_Segments),0);
@@ -892,7 +867,7 @@ Begin
  End;
  FillChar(PCode_Mem^,SizeOf(TPCodeMemory),0);ReadCount:=0;
  LoadedSize:=Sz;
- PrivateFormat:=False;HeaderBigEndian:=False;PCode_CodeBigEndian:=False;
+ HeaderBigEndian:=False;PCode_CodeBigEndian:=False;
  PCode_AuthenticABI:=False;
  PCode_CurrentSegment:=0;
  if Sz>=512 Then Begin
@@ -918,14 +893,6 @@ Begin
      (PCode_Segments[J].FileOffset+PCode_Segments[J].Size<=Sz);
     PCode_Segments[J].BigEndian:=HeaderBigEndian
    End;
-   if HeaderBigEndian Then TargetInfo:=Header[257]or(Header[256]shl 8)
-   else TargetInfo:=Header[256]or(Header[257]shl 8);
-   Case TargetInfo of
-   $0101:CurrentTarget:=ptAppleHeath;
-   $0201:CurrentTarget:=ptUCSDPascalII;
-   $0301:CurrentTarget:=ptUCSDPSystemIII;
-   $0401:CurrentTarget:=ptUCSDPSystemIV
-   End;
    if HeaderBigEndian Then SegmentKind:=Header[193]or(Header[192]shl 8)
    else SegmentKind:=Header[192]or(Header[193]shl 8);
    if(SegmentPos<512)or(SegmentSize<2)or(SegmentPos+SegmentSize>Sz)or
@@ -946,9 +913,7 @@ Begin
  End;
  if(ReadCount=512)and(SegmentPos>=512)and(SegmentSize>=14)and
  (SegmentPos+SegmentSize<=Sz)and(SegmentSize<=SizeOf(TPCodeMemory))Then Begin
-  PrivateFormat:=(Header[288]=Ord('P'))and(Header[289]=Ord('S'))and
-   (Header[290]=Ord('V'))and(Header[291]=Ord('M'));
-  PCode_AuthenticABI:=not PrivateFormat or(Header[292]>=2);
+  PCode_AuthenticABI:=True;
   PCode_CodeBigEndian:=HeaderBigEndian;
   Seek(F,SegmentPos);ReadCount:=0;BlockRead(F,PCode_Mem^,SegmentSize,ReadCount);
   LoadedSize:=SegmentSize;
@@ -1034,7 +999,7 @@ if not PCode_HasProcDictionary and(LoadedSize>=12)and
   End
  End
 End;
-if not PrivateFormat and PCode_HasProcDictionary Then Begin
+if PCode_HasProcDictionary Then Begin
  Write('Fichier CODE UCSD historique charge: ');
  if PCode_HistoricalII Then WriteLn('ABI II/III, ',PCode_ProcCount,' procedure(s).')
  else WriteLn('ABI IV, ',PCode_ProcCount,' procedure(s).')
@@ -3265,8 +3230,6 @@ Begin
   End;
   Header[256]:=InHeader[I,256];Header[257]:=InHeader[I,257]
  End;
- Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('V');Header[291]:=Ord('M');
- Header[292]:=2;
  if not OK Then Begin
   For J:=1 to I do Begin
    Close(Src[J]);E:=IOResult
@@ -3304,12 +3267,12 @@ Begin
    Dec(Remaining,N);Inc(OutPos,N)
   End
  End;
- For I:=1 to Count do if(InHeader[I,288]=Ord('P'))and
-  (InHeader[I,289]=Ord('S'))and(InHeader[I,290]=Ord('V'))and
-  (InHeader[I,291]=Ord('M'))Then ScanHistoricalLinks(I,True);
- For I:=1 to Count do if OK and(InHeader[I,288]=Ord('P'))and
-  (InHeader[I,289]=Ord('S'))and(InHeader[I,290]=Ord('V'))and
-  (InHeader[I,291]=Ord('M'))Then ScanHistoricalLinks(I,False);
+ For I:=1 to Count do if not((InHeader[I,288]=Ord('P'))and
+  (InHeader[I,289]=Ord('S'))and(InHeader[I,290]=Ord('L'))and
+  (InHeader[I,291]=Ord('K')))Then ScanHistoricalLinks(I,True);
+ For I:=1 to Count do if OK and not((InHeader[I,288]=Ord('P'))and
+  (InHeader[I,289]=Ord('S'))and(InHeader[I,290]=Ord('L'))and
+  (InHeader[I,291]=Ord('K')))Then ScanHistoricalLinks(I,False);
  { Compatibilite avec les anciens objets PSLK du clone. Les nouveaux objets
    emploient les enregistrements historiques de liaison apres le segment. }
  For I:=1 to Count do if(InHeader[I,288]=Ord('P'))and(InHeader[I,289]=Ord('S'))and
@@ -3935,6 +3898,7 @@ Var
  CPDiagnosticFile:String;
  CPCompilationIsUnit:Boolean;
  CPCompilationName:String[8];
+ CPUnitSegmentKind,CPIntrinsicCodeSegment,CPIntrinsicDataSegment:Integer;
  CPInterfaceSource:PPasSource;
  CPInterfaceLength:LongInt;
 
@@ -5644,7 +5608,8 @@ Begin
   CPFailCode(405,'''PROGRAM'' ou ''UNIT'' attendu');Exit
  End;
  if CPIs('UNIT')Then Begin
-  CPFailCode(398,'compilation autonome des UNIT non implementee');Exit
+  CPNext;if CPToken='ID'Then CPNext else CPFailCode(2,'nom d''unite attendu');
+  if CPToken=';'Then CPNext else CPFailCode(14,''';'' attendu')
  End;
  While(CPToken<>'EOF')do Begin
   CPError:=False;
@@ -6905,7 +6870,68 @@ Begin
  Y:=CPRelocations;
  While(Y<>Nil)and(Y<>X)do Begin
   if Y^.Name=X^.Name Then Begin IsFirstRelocation:=False;Exit End;Y:=Y^.Next
- End;IsFirstRelocation:=True
+End;IsFirstRelocation:=True
+End;
+
+Function PublicInterfaceName(S:String):Boolean;
+Var I,J,L:LongInt;U:String;BeforeOK,AfterOK:Boolean;C:Char;
+Begin
+ PublicInterfaceName:=not CPCompilationIsUnit;
+ if not CPCompilationIsUnit Then Exit;
+ U:=UpperString(S);L:=Length(U);I:=0;
+ While I+L<=CPInterfaceLength do Begin
+  J:=1;While(J<=L)and(UpCase(Chr(CPInterfaceSource^[I+J-1]))=U[J])do Inc(J);
+  if J>L Then Begin
+   BeforeOK:=I=0;if not BeforeOK Then Begin C:=Chr(CPInterfaceSource^[I-1]);
+    BeforeOK:=not(UpCase(C)in['A'..'Z','0'..'9','_']) End;
+   AfterOK:=I+L>=CPInterfaceLength;if not AfterOK Then Begin
+    C:=Chr(CPInterfaceSource^[I+L]);AfterOK:=not(UpCase(C)in['A'..'Z','0'..'9','_'])
+   End;
+   if BeforeOK and AfterOK Then Begin PublicInterfaceName:=True;Exit End
+  End;Inc(I)
+End
+End;
+
+Procedure BuildHistoricalIISegment;
+Var EntryAddress,ExitAddress,AttrAddress,DictEnd:LongInt;PNo,K:Integer;
+Begin
+ GetMem(Tmp,SizeOf(TPCodeMemory));FillChar(Tmp^,SizeOf(TPCodeMemory),0);Posi:=0;
+ For PNo:=1 to ProcTotal do Begin
+  if PNo=1 Then Begin Src:=CPMainStart;Len:=CPMainLength;N:=DataWords;Owner:=Nil End
+  else Begin
+   R:=CPRoutines;While(R<>Nil)and(R^.ProcNumber<>PNo)do R:=R^.Next;
+   if R=Nil Then Begin CPFail('procedure absente du dictionnaire II');Break End;
+   Src:=R^.CodeStart;Len:=R^.CodeLength;N:=R^.LocalWords;Owner:=R
+  End;
+  if(Src<0)or(Len<=0)or(Src+Len>CodeLength)or(Posi+Len+12>65534)Then Begin
+   CPFail('plage de procedure II invalide');Break
+  End;
+  EntryAddress:=Posi;
+  Q:=CPRelocations;While Q<>Nil do Begin
+   if(Q^.Owner=Owner)and(Q^.CodePosition>=Src)and(Q^.CodePosition<Src+Len)Then
+    Q^.FinalPosition:=Posi+(Q^.CodePosition-Src);Q:=Q^.Next
+  End;
+  For K:=0 to Len-1 do Tmp^[Posi+K]:=PCode_Mem^[Src+K];Inc(Posi,Len);
+  if Odd(Posi)Then Begin Tmp^[Posi]:=$D7;Inc(Posi) End; { NOP II }
+  ExitAddress:=Posi-2;if ExitAddress<EntryAddress Then ExitAddress:=EntryAddress;
+  AttrAddress:=Posi+8;Attr[PNo]:=AttrAddress;
+  Tmp^[Posi]:=Byte(N*2);Tmp^[Posi+1]:=Byte((N*2)shr 8);
+  if PNo=1 Then K:=0 else K:=R^.ParameterWords*2;
+  Tmp^[Posi+2]:=Byte(K);Tmp^[Posi+3]:=Byte(K shr 8);
+  K:=(Posi+4)-ExitAddress;Tmp^[Posi+4]:=Byte(K);Tmp^[Posi+5]:=Byte(K shr 8);
+  K:=(Posi+6)-EntryAddress;Tmp^[Posi+6]:=Byte(K);Tmp^[Posi+7]:=Byte(K shr 8);
+  Tmp^[AttrAddress]:=Byte(PNo);
+  if PNo=1 Then Tmp^[AttrAddress+1]:=0 else Tmp^[AttrAddress+1]:=Byte(R^.LexicalLevel);
+  Inc(Posi,10)
+ End;
+ if CPError Then Begin FreeMem(Tmp,SizeOf(TPCodeMemory));Exit End;
+ DictEnd:=Posi+ProcTotal*2;
+ For PNo:=1 to ProcTotal do Begin
+  ProcEntry:=DictEnd-PNo*2;K:=ProcEntry-Attr[PNo];
+  Tmp^[ProcEntry]:=Byte(K);Tmp^[ProcEntry+1]:=Byte(K shr 8)
+ End;
+ Tmp^[DictEnd]:=1;Tmp^[DictEnd+1]:=Byte(ProcTotal);SegmentLength:=DictEnd+2;
+ CPCodePos:=SegmentLength;Move(Tmp^,PCode_Mem^,SegmentLength);FreeMem(Tmp,SizeOf(TPCodeMemory))
 End;
 Begin
  WriteUCSDCodeFile:=False;if CodeLength>65520 Then Begin
@@ -6918,9 +6944,10 @@ Begin
    procedure: il separe la pile descendante des variables globales. }
  if CPNextProcedure>=1 Then Begin
   ProcTotal:=CPNextProcedure;
-  if ProcTotal>255 Then Begin
+ if ProcTotal>255 Then Begin
    CPFail('plus de 255 procedures');Exit
   End;
+  if CurrentTarget<>ptUCSDPSystemIV Then BuildHistoricalIISegment else Begin
   GetMem(Tmp,SizeOf(TPCodeMemory));FillChar(Tmp^,SizeOf(TPCodeMemory),0);
   Posi:=22;
   For ProcNo:=1 to ProcTotal do Begin
@@ -6968,6 +6995,7 @@ Begin
   Tmp^[12]:=1;Tmp^[13]:=0;CPCodePos:=ProcDict+2;
   Move(Tmp^,PCode_Mem^,CPCodePos);FreeMem(Tmp,SizeOf(TPCodeMemory));
   SegmentLength:=CPCodePos
+  End
  End else
  Begin
   EW(DataWords*2);EW(0);EW(CodeLength-1);EW(0);CPE(1);CPE(0);
@@ -6986,20 +7014,11 @@ Begin
  While Q<>Nil do Begin
   if Q^.FinalPosition>=0 Then Inc(ImportCount);Q:=Q^.Next
  End;
- if CPCompilationIsUnit Then HW(192,4)
- else if ImportCount>0 Then HW(192,1)else HW(192,0);
+ if CPCompilationIsUnit Then HW(192,CPUnitSegmentKind)
+ else HW(192,1); { PROG_SEG; zero signifie historiquement NO_SEG }
  HW(224,0);
- Case CurrentTarget of
- ptAppleHeath:HW(256,$0101);
- ptUCSDPascalII:HW(256,$0201);
- ptUCSDPSystemIII:HW(256,$0301);
- ptUCSDPSystemIV:HW(256,$0401)
-End;
- { PSVM identifie seulement le dictionnaire et l'ABI internes. Les symboles
-   ne sont plus tronques dans l'en-tete: ils sont ecrits comme LIENTRY UCSD. }
-Header[288]:=Ord('P');Header[289]:=Ord('S');Header[290]:=Ord('V');Header[291]:=Ord('M');
-Header[292]:=2;
-Header[292]:=0;Header[293]:=0;
+{ Aucun marqueur ni metadata privee: les octets 256..287 appartiennent a la
+  table historique Seg_Info et restent disponibles pour ses seize entrees. }
 Assign(F,CodeName);Rewrite(F,1);if IOResult<>0 Then Begin
  CPFailCode(402,'creation du fichier CODE impossible');Exit
 End;
@@ -7016,7 +7035,8 @@ if not CPError Then Begin
  if(LinkSize mod 512)<>0 Then WriteLinkBlock(ZeroBlock,512-(LinkSize mod 512));
  R:=CPRoutines;
  While(R<>Nil)and not CPError do Begin
-  if(R^.Parent=Nil)and not R^.IsExternal and not R^.IsSeparate Then Begin
+  if(R^.Parent=Nil)and not R^.IsExternal and not R^.IsSeparate and
+   PublicInterfaceName(R^.Name)Then Begin
    FillChar(LinkRecord,16,0);LinkName(LinkRecord,R^.Name);
    LinkWord(LinkRecord,8,11); { SEPPROC }
    LinkWord(LinkRecord,10,R^.ProcNumber);LinkWord(LinkRecord,12,R^.ParameterWords*2);
@@ -7111,7 +7131,8 @@ Type
  PUnitSource=^TUnitSource;
  TUnitSource=Record Name,Path,Prefix:String;
   Tokens,Constants,Types,Variables,Routines,Init:PToken;
-  Names:PName;Loading,Loaded,FromCode:Boolean;Next,OrderNext:PUnitSource End;
+  Names:PName;Loading,Loaded,FromCode,SeparateUnit,IntrinsicUnit:Boolean;
+  CodeSegment,DataSegment:Integer;Next,OrderNext:PUnitSource End;
 Var
  Units,Root,U:PUnitSource;
  AllTokens,AllocatedTokens:PToken;
@@ -7265,27 +7286,49 @@ Begin
  else T:=T^.Next
 End;
 
-Procedure ParseSource(A:PUnitSource;IsUnit:Boolean);
+Procedure ParseSource(A:PUnitSource;UnitSourceFlag:Boolean);
 Var T,H,First,Last,NextToken,NameToken:PToken;
  Pub:Boolean;Section,Depth:Integer;AtName:Boolean;
  N:PName;
+
+Procedure ParseIntrinsicDirective(Var X:PToken);
+Var E:Integer;
 Begin
- T:=A^.Tokens;Pub:=IsUnit;
+ if not IsWord(X,'INTRINSIC')Then Exit;
+ A^.IntrinsicUnit:=True;X:=X^.Next;
+ if not IsWord(X,'CODE')Then Begin Error(6,'CODE attendu apres INTRINSIC');Exit End;
+ X:=X^.Next;if(X=Nil)or(X^.Kind<>'NUM')Then Begin Error(15,'numero de segment CODE attendu');Exit End;
+ Val(X^.Text,A^.CodeSegment,E);if E<>0 Then Begin Error(15,'numero de segment CODE incorrect');Exit End;
+ X:=X^.Next;
+ if IsWord(X,'DATA')Then Begin
+  X:=X^.Next;if(X=Nil)or(X^.Kind<>'NUM')Then Begin Error(15,'numero DATA attendu');Exit End;
+  Val(X^.Text,A^.DataSegment,E);if E<>0 Then Begin Error(15,'numero de segment DATA incorrect');Exit End;
+  X:=X^.Next
+ End;
+ if(A^.CodeSegment<0)or(A^.CodeSegment>31)or(A^.DataSegment<0)or
+  (A^.DataSegment>31)Then Begin Error(398,'numero de segment INTRINSIC hors de 0..31');Exit End;
+ if(X=Nil)or(X^.Text<>';')Then Begin Error(14,'point-virgule apres INTRINSIC attendu');Exit End;
+ X:=X^.Next
+End;
+Begin
+ T:=A^.Tokens;Pub:=UnitSourceFlag;
+ if IsWord(T,'SEPARATE')Then Begin A^.SeparateUnit:=True;T:=T^.Next End;
  if not IsWord(T,'UNIT')and not IsWord(T,'PROGRAM')Then Begin
   Error(405,'''PROGRAM'' ou ''UNIT'' attendu');Exit
  End;
- if IsUnit and not IsWord(T,'UNIT')Then Begin Error(24,'UNIT attendu dans le fichier d''unite');Exit End;
+ if UnitSourceFlag and not IsWord(T,'UNIT')Then Begin Error(24,'UNIT attendu dans le fichier d''unite');Exit End;
  T:=T^.Next;if(T=Nil)or(T^.Kind<>'ID')Then Begin Error(2,'nom attendu');Exit End;
- if IsUnit and(T^.Text<>A^.Name)Then Begin Error(188,'nom UNIT different du fichier demande');Exit End;
+ if UnitSourceFlag and(T^.Text<>A^.Name)Then Begin Error(188,'nom UNIT different du fichier demande');Exit End;
  H:=HeaderEnd(T);if H=Nil Then Exit;T:=H^.Next;
- if IsUnit Then Begin
+ if UnitSourceFlag Then Begin
+  ParseIntrinsicDirective(T);if CPError Then Exit;
   if not IsWord(T,'INTERFACE')Then Begin Error(22,'INTERFACE attendu');Exit End;
   T:=T^.Next
  End;
  While(T<>Nil)and not CPError do Begin
   if IsWord(T,'USES')Then ParseUses(A,T)
   else if IsWord(T,'IMPLEMENTATION')Then Begin
-   if not IsUnit or not Pub Then Begin Error(18,'IMPLEMENTATION inattendu');Exit End;
+   if not UnitSourceFlag or not Pub Then Begin Error(18,'IMPLEMENTATION inattendu');Exit End;
    Pub:=False;T:=T^.Next
   End
   else if IsWord(T,'CONST')or IsWord(T,'TYPE')or IsWord(T,'VAR')Then Begin
@@ -7344,7 +7387,7 @@ Begin
    End
   End
   else if IsWord(T,'BEGIN')or IsWord(T,'END')Then Begin
-   if IsUnit and Pub Then Begin Error(23,'IMPLEMENTATION attendu');Exit End;
+   if UnitSourceFlag and Pub Then Begin Error(23,'IMPLEMENTATION attendu');Exit End;
    A^.Init:=T;Break
   End else Begin Error(18,'declaration inattendue: '+T^.Text);Exit End
  End;
@@ -7354,7 +7397,7 @@ Begin
   if(Last=Nil)or(Last^.Text<>'.')or not IsWord(H,'END')Then
    Error(401,'END. attendu a la fin du fichier')
  End;
- if IsUnit and Pub Then Error(23,'IMPLEMENTATION attendu');
+ if UnitSourceFlag and Pub Then Error(23,'IMPLEMENTATION attendu');
  if A^.Init=Nil Then Error(401,'fin de source avant le corps final')
 End;
 
@@ -7400,9 +7443,9 @@ Begin
    if Sz<514 Then Error(190,'CODE d''unite invalide: '+Path)
    else Begin
     BlockRead(F,H,512,Count);
-    if(IOResult<>0)or(Count<>512)or(H[288]<>Ord('P'))or(H[289]<>Ord('S'))or
-     (H[290]<>Ord('V'))or(H[291]<>Ord('M'))Then
-     Error(195,'CODE d''unite incompatible: '+Path)
+    if(IOResult<>0)or(Count<>512)or
+     (((H[0]or(H[1]shl 8))=0)and((H[1]or(H[0]shl 8))=0))Then
+     Error(195,'dictionnaire CODE d''unite incompatible: '+Path)
     else Begin
      A^.FromCode:=True;TextPos:=(H[224]or(H[225]shl 8))*512;
      CodeAt:=(H[0]or(H[1]shl 8))*512;CodeLen:=H[2]or(H[3]shl 8);
@@ -7561,11 +7604,13 @@ Begin
  { Sans UNIT ni USES, conserve la source et ses commentaires/diagnostics. }
  U:=Nil;AllTokens:=Root^.Tokens;
  While(AllTokens<>Nil)and not IsWord(AllTokens,'USES')do AllTokens:=AllTokens^.Next;
- if(AllTokens=Nil)and not IsWord(Root^.Tokens,'UNIT')Then Begin
+ if(AllTokens=Nil)and not IsWord(Root^.Tokens,'UNIT')and
+  not IsWord(Root^.Tokens,'SEPARATE')Then Begin
   FreeTokens(AllocatedTokens);Dispose(Root);CPExpandUnits:=not CPError;Exit
  End;
- if IsWord(Root^.Tokens,'UNIT')Then Begin
-  if Root^.Tokens^.Next<>Nil Then Root^.Name:=Root^.Tokens^.Next^.Text;
+ if IsWord(Root^.Tokens,'UNIT')or IsWord(Root^.Tokens,'SEPARATE')Then Begin
+  AllTokens:=Root^.Tokens;if IsWord(AllTokens,'SEPARATE')Then AllTokens:=AllTokens^.Next;
+  if(AllTokens<>Nil)and(AllTokens^.Next<>Nil)Then Root^.Name:=AllTokens^.Next^.Text;
   CPCompilationIsUnit:=True;CPCompilationName:=Root^.Name;
   if Length(CPCompilationName)>8 Then CPCompilationName:=Copy(CPCompilationName,1,8);
   CaptureInterface(Root^.Tokens);
@@ -7583,6 +7628,12 @@ Begin
   if IsWord(Root^.Init,'BEGIN')Then EmitTokens(Root,Root^.Init^.Next,True);
   Emit('END.');
   if not CPError Then Begin Move(Output^,CPSource^,OutputSize);CPSize:=OutputSize End
+ End;
+ if CPCompilationIsUnit Then Begin
+  if Root^.SeparateUnit Then CPUnitSegmentKind:=4 else CPUnitSegmentKind:=2;
+  if Root^.IntrinsicUnit Then Begin
+   CPIntrinsicCodeSegment:=Root^.CodeSegment;CPIntrinsicDataSegment:=Root^.DataSegment
+  End
  End;
  FreeMem(Output,SizeOf(TPCodeMemory));
  { Le registre d'allocation libere aussi les en-tetes et signatures detaches. }
@@ -7607,6 +7658,7 @@ Begin
  CompilePascalPCode:=1;CPSymbols:=Nil;CPTypes:=Nil;CPRoutines:=Nil;CPLabels:=Nil;
  CPRelocations:=Nil;
  CPCurrentRoutine:=Nil;CPPass:=1;CPNextProcedure:=1;
+ CPUnitSegmentKind:=2;CPIntrinsicCodeSegment:=0;CPIntrinsicDataSegment:=0;
  CPTempNumber:=0;CPWithSymbol:=Nil;CPWithType:=Nil;CPDiagnosticFile:=SourceName;
  CPRangeChecks:=False;CPIOChecks:=True;CPOverflowChecks:=False;
  Typ:=CPAddType('INTEGER',ptkInteger,1);Typ^.LowBound:=-32768;Typ^.HighBound:=32767;
