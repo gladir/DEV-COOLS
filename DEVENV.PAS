@@ -3494,9 +3494,10 @@ Type
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
  TTermLine = Record
-  S    : String;
-  Prev : PTermLine;
-  Next : PTermLine;
+  S     : String;
+  Color : Byte;    { couleur de premier plan (palette 16 couleurs BGI) }
+  Prev  : PTermLine;
+  Next  : PTermLine;
  End;
 
  { Terminal integre }
@@ -40321,7 +40322,7 @@ Var
  PsPipelineLineCount: Integer;
  PsPipelineLines: Array[1..PS_PIPE_MAX_LINES] Of String;
 
-Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
+Procedure TermAddLineColor(Var TP: TTerminalPanel; S: String; Color: Byte);
 Var
  Node, Old: PTermLine;
  DbgF: Text;
@@ -40351,6 +40352,7 @@ Begin
  { Ajouter aussi a la liste chainee (historique d affichage) }
  New(Node);
  Node^.S := S;
+ Node^.Color := Color;
  Node^.Prev := TP.HistTail;
  Node^.Next := Nil;
  If TP.HistTail <> Nil Then TP.HistTail^.Next := Node
@@ -40375,6 +40377,13 @@ Begin
    TP.ScrollOffset := TP.HistCount - 1;
  End;
  TP.NeedRepaint := True;
+End;
+
+{ Couleur par defaut (blanc, 15) - inchange pour tous les appelants          }
+{ existants. Voir TermAddLineColor pour une ligne coloree (DIR /A etc). }
+Procedure TermAddLine(Var TP: TTerminalPanel; S: String);
+Begin
+ TermAddLineColor(TP, S, 15);
 End;
 
 { --- Fonctions utilitaires du shell --- }
@@ -44722,13 +44731,46 @@ End;
 
 { --- DIR / LS / GET-CHILDITEM --- }
 
+{ Moteur DIR "a la DIR.PAS" (port des parametres/fonctionnalites de         }
+{ DIR.PAS a la racine du projet, demande explicite de l utilisateur,       }
+{ 2026-09-18) partage par les 3 shells qui appellent tous TermCmd_DIR_CMD  }
+{ ci-dessous : Invite de commande (SK_CMD), Norton Commander (SK_NCOMMANDER,}
+{ ligne de commande du panneau) et OS/2 & REXX (SK_OS2REXX). Seule la      }
+{ branche "systeme de fichiers hote reel" (aucun lecteur virtuel/CD-ROM    }
+{ monte) beneficie du moteur etendu : les branches disque virtuel FAT/D64  }
+{ et CD-ROM ISO9660 plus bas restent inchangees (listage simple), le       }
+{ format de leurs entrees ne se pretant pas au tri/filtre/recursivite sans }
+{ reecriture separee de Fat_ListDir/D64_ListDir. Hors perimetre, documente }
+{ ci-dessous a chaque commutateur concerne : /C (taille compressee reelle) }
+{ necessiterait l API DOS/Windows bas niveau que ce fichier n utilise      }
+{ volontairement jamais (voir l en-tete de DEVENV.PAS) ; /1 (description   }
+{ DESCRIPT.ION) et /P (pause avec ReadKey bloquant) n ont pas d equivalent }
+{ dans ce panneau a defilement GUI non bloquant. }
+Const
+ MAX_DIREXT_ENTRIES = 4096;
+ MAX_DIREXT_PENDING = 512;
+
+Type
+ TDirExtEntry = Record
+  Name     : String[80];   { nom simple (sans prefixe de dossier)    }
+  RelDir   : String[140];  { prefixe dossier (mode /S ou /F), '' sinon }
+  Size     : LongInt;
+  Attr     : Byte;
+  PackedDT : LongInt;      { date/heure empaquetee DOS (SearchRec.Time) }
+ End;
+
+Var
+ DirExtEntries : Array[0..MAX_DIREXT_ENTRIES - 1] Of TDirExtEntry;
+ DirExtCount   : Integer;
+ DirExtPending : Array[0..MAX_DIREXT_PENDING - 1] Of String;
+ DirExtPendCnt : Integer;
+
 { --- DIR style CMD (Windows command prompt) --- }
 
 Procedure TermCmd_DIR_CMD(Var TP: TTerminalPanel; ParamStr: String);
 Var
- Info: SearchRec;
  T: DateTime;
- ShowDir, S, Line: String;
+ S, Line: String;
  TotalFiles, TotalDirs: LongInt;
  TotalSize: LongInt;
  FirstParam: String;
@@ -44741,8 +44783,649 @@ Var
  CdIdx: Byte;
  CdI: Integer;
  CdPacked: LongInt;
+ { --- etat de l analyse des commutateurs DIR.PAS --- }
+ TokenIdx: Integer;
+ Tok, TokU: String;
+ BaseDir, Mask: String;
+ SortOrder: String;
+ ReqAttr, ExclAttr: Word;
+ ColMode, OutFormat: Byte;
+ OptBrief, OptFullPath, OptJustify, OptNoHeader, OptLower, OptNoFooter,
+  OptSubdir, OptAttrOnly, OptSummaryOnly, OptVertical, OptNoColor: Boolean;
+
+ { Couleur d une entree selon ses attributs (repertoires/caches/systeme/    }
+ { lecture seule) - equivalent simplifie et code en dur de EntryColor de   }
+ { DIR.PAS (qui lit des regles COLORDIR configurables ; ce terminal n a    }
+ { pas de mecanisme SET variable=valeur reel, voir TermCmd_SET). Desactive }
+ { par /D (NoColor), et jamais applique aux formats structures /FORMAT:x  }
+ { (non plus dans DIR.PAS : "(NoColor in Option) or (OutputFormat<>_Text)"). }
+ Function DirExt_EntryColor(A: Byte): Byte;
+ Begin
+  If OptNoColor Then Begin DirExt_EntryColor := 15; Exit; End;
+  If (A And Directory) <> 0 Then DirExt_EntryColor := 11
+  { 7 (gris clair), pas 8 (gris fonce) : le fond du panneau Terminal        }
+  { lui-meme est deja 8 (voir DrawTerminalPanel) - un texte 8 y serait      }
+  { invisible. }
+  Else If (A And Hidden) <> 0 Then DirExt_EntryColor := 7
+  Else If (A And SysFile) <> 0 Then DirExt_EntryColor := 7
+  Else If (A And ReadOnly) <> 0 Then DirExt_EntryColor := 14
+  Else DirExt_EntryColor := 15;
+ End;
+
+ Procedure DirExt_ShowHelp;
+ Begin
+  TermAddLine(TP, 'DIR [lecteur:][chemin][masque] [switches]');
+  TermAddLine(TP, '  /A[:attr]   Fichiers ayant les attributs indiques (D H S R A, prefixe - pour exclure)');
+  TermAddLine(TP, '  /B          Noms seuls (une entree par ligne)');
+  TermAddLine(TP, '  /F          Affiche le chemin complet de chaque entree');
+  TermAddLine(TP, '  /J          Justifie les noms au format 8.3');
+  TermAddLine(TP, '  /K          N''affiche pas l''en-tete');
+  TermAddLine(TP, '  /L          Affiche les noms en minuscules');
+  TermAddLine(TP, '  /M          N''affiche pas le pied de page (totaux)');
+  TermAddLine(TP, '  /N          Reinitialise les options precedentes sur la ligne');
+  TermAddLine(TP, '  /O[:tri]    Trie (N nom, E extension, S taille, D date, G dossiers d''abord, - inverse)');
+  TermAddLine(TP, '  /S          Inclut les sous-dossiers (liste a plat, chemins relatifs)');
+  TermAddLine(TP, '  /T          Noms et attributs (R H S D A) seulement');
+  TermAddLine(TP, '  /U          Nombre de fichiers et octets utilises seulement');
+  TermAddLine(TP, '  /V          Remplit les colonnes verticalement (avec /2, /4 ou /W)');
+  TermAddLine(TP, '  /W          Plusieurs fichiers par ligne');
+  TermAddLine(TP, '  /2, /4      2 ou 4 colonnes (avec details)');
+  TermAddLine(TP, '  /FORMAT:x   Exporte en CSV, HTML, JSON, PASCAL, SQL ou XML');
+  TermAddLine(TP, '  /D          Desactive la coloration (repertoires/caches/systeme/lecture seule)');
+  TermAddLine(TP, '  /C, /1, /P  Non supportes par ce terminal (voir commentaire de tete de TermCmd_DIR_CMD)');
+ End;
+
+ Function DirExt_AttrStr(A: Byte): String;
+ Var
+  R: String;
+ Begin
+  R := '-----';
+  If (A And ReadOnly) <> 0 Then R[1] := 'R';
+  If (A And Hidden) <> 0 Then R[2] := 'H';
+  If (A And SysFile) <> 0 Then R[3] := 'S';
+  If (A And Directory) <> 0 Then R[4] := 'D';
+  If (A And Archive) <> 0 Then R[5] := 'A';
+  DirExt_AttrStr := R;
+ End;
+
+ { Chaque signe s applique a l attribut suivant (meme convention que        }
+ { ParseAttributes de DIR.PAS). }
+ Function DirExt_ParseAttr(Spec: String): Boolean;
+ Var
+  I: Integer;
+  Neg: Boolean;
+  AMask: Word;
+ Begin
+  DirExt_ParseAttr := False;
+  ReqAttr := 0;
+  ExclAttr := 0;
+  I := 3;
+  If (I <= Length(Spec)) And (Spec[I] = ':') Then Inc(I);
+  While I <= Length(Spec) Do Begin
+   Neg := False;
+   If (Spec[I] = '+') Or (Spec[I] = '-') Then Begin
+    Neg := Spec[I] = '-';
+    Inc(I);
+    If I > Length(Spec) Then Exit;
+   End;
+   Case UpCase(Spec[I]) Of
+    'A': AMask := Archive;
+    'D': AMask := Directory;
+    'H': AMask := Hidden;
+    'R': AMask := ReadOnly;
+    'S': AMask := SysFile;
+    Else Exit;
+   End;
+   If Neg Then ExclAttr := ExclAttr Or AMask Else ReqAttr := ReqAttr Or AMask;
+   Inc(I);
+  End;
+  DirExt_ParseAttr := True;
+ End;
+
+ Function DirExt_ParseSort(Spec: String): Boolean;
+ Var
+  I: Integer;
+ Begin
+  DirExt_ParseSort := False;
+  SortOrder := '';
+  I := 3;
+  If (I <= Length(Spec)) And (Spec[I] = ':') Then Inc(I);
+  While I <= Length(Spec) Do Begin
+   If Spec[I] In ['+', '-'] Then Begin
+    If Spec[I] = '-' Then SortOrder := SortOrder + '-';
+    Inc(I);
+    If I > Length(Spec) Then Exit;
+   End;
+   If Not (UpCase(Spec[I]) In ['C', 'D', 'E', 'G', 'N', 'S']) Then Exit;
+   SortOrder := SortOrder + UpCase(Spec[I]);
+   Inc(I);
+  End;
+  If SortOrder = '' Then SortOrder := 'GN';
+  DirExt_ParseSort := True;
+ End;
+
+ Function DirExt_Ext(NameUp: String): String;
+ Var
+  I: Integer;
+ Begin
+  DirExt_Ext := '';
+  For I := Length(NameUp) DownTo 1 Do
+   If NameUp[I] = '.' Then Begin
+    DirExt_Ext := Copy(NameUp, I + 1, 255);
+    Exit;
+   End;
+ End;
+
+ Procedure DirExt_AddEntry(Nm: String; Sz: LongInt; Att: Byte;
+  PDT: LongInt; Rel: String);
+ Begin
+  If DirExtCount >= MAX_DIREXT_ENTRIES Then Exit;
+  DirExtEntries[DirExtCount].Name := Nm;
+  DirExtEntries[DirExtCount].RelDir := Rel;
+  DirExtEntries[DirExtCount].Size := Sz;
+  DirExtEntries[DirExtCount].Attr := Att;
+  DirExtEntries[DirExtCount].PackedDT := PDT;
+  Inc(DirExtCount);
+ End;
+
+ { Un seul dossier : jetons correspondant au masque utilisateur, puis (mode }
+ { /S) mise en file des sous-dossiers via un masque '*.*' non filtre - meme }
+ { convention que QueueSubdirectories de DIR.PAS. }
+ Procedure DirExt_ScanOneFolder(Folder: String);
+ Var
+  FI: SearchRec;
+  RelShown: String;
+ Begin
+  FindFirst(Folder + Mask, AnyFile, FI);
+  While DosError = 0 Do Begin
+   If ((FI.Attr And ReqAttr) = ReqAttr) And ((FI.Attr And ExclAttr) = 0) And
+    (Not OptSubdir Or ((FI.Name <> '.') And (FI.Name <> '..'))) Then Begin
+    If OptSubdir Or OptFullPath Then RelShown := Folder Else RelShown := '';
+    DirExt_AddEntry(FI.Name, FI.Size, FI.Attr, FI.Time, RelShown);
+   End;
+   FindNext(FI);
+  End;
+  If OptSubdir Then Begin
+   FindFirst(Folder + '*.*', AnyFile, FI);
+   While DosError = 0 Do Begin
+    If ((FI.Attr And Directory) <> 0) And (FI.Name <> '.') And
+     (FI.Name <> '..') Then
+     If DirExtPendCnt < MAX_DIREXT_PENDING Then Begin
+      DirExtPending[DirExtPendCnt] := Folder + FI.Name + '\';
+      Inc(DirExtPendCnt);
+     End;
+    FindNext(FI);
+   End;
+  End;
+ End;
+
+ Procedure DirExt_Collect;
+ Var
+  Folder: String;
+ Begin
+  DirExtCount := 0;
+  DirExtPendCnt := 0;
+  DirExt_ScanOneFolder(BaseDir);
+  If OptSubdir Then
+   While DirExtPendCnt > 0 Do Begin
+    Dec(DirExtPendCnt);
+    Folder := DirExtPending[DirExtPendCnt];
+    DirExt_ScanOneFolder(Folder);
+   End;
+ End;
+
+ { Separe [FirstParam] en (BaseDir, Mask) absolus - meme principe que        }
+ { PrepareRecursivePath de DIR.PAS : un chemin sans '*'/'?' pointant vers un }
+ { dossier reel liste ce dossier entier (*.*) ; sinon FSplit isole le       }
+ { masque du dossier parent. }
+ Procedure DirExt_PrepareBase;
+ Var
+  Expanded, D, N, E: String;
+  DirInfo: SearchRec;
+  IsFolder: Boolean;
+ Begin
+  If FirstParam = '' Then FirstParam := '*.*';
+  Expanded := FExpand(FirstParam);
+  IsFolder := False;
+  If (Pos('*', Expanded) = 0) And (Pos('?', Expanded) = 0) Then Begin
+   FindFirst(Expanded, AnyFile, DirInfo);
+   If DosError = 0 Then IsFolder := (DirInfo.Attr And Directory) <> 0;
+  End;
+  If IsFolder Then Begin
+   BaseDir := Expanded;
+   Mask := '*.*';
+  End Else Begin
+   FSplit(Expanded, D, N, E);
+   BaseDir := D;
+   Mask := N + E;
+   If Mask = '' Then Mask := '*.*';
+  End;
+  If (BaseDir <> '') And (BaseDir[Length(BaseDir)] <> '\') Then
+   BaseDir := BaseDir + '\';
+ End;
+
+ Function DirExt_Compare(A, B: TDirExtEntry): Integer;
+ Var
+  K: Integer;
+  Dir: Integer;
+  Cmp: Integer;
+  SA, SB: String;
+ Begin
+  DirExt_Compare := 0;
+  K := 1;
+  While K <= Length(SortOrder) Do Begin
+   Dir := 1;
+   If SortOrder[K] = '-' Then Begin
+    Dir := -1;
+    Inc(K);
+    If K > Length(SortOrder) Then Break;
+   End;
+   Cmp := 0;
+   If SortOrder[K] In ['N', 'E'] Then Begin
+    SA := TermStrToUpper(A.Name);
+    SB := TermStrToUpper(B.Name);
+    If SortOrder[K] = 'E' Then Begin
+     SA := DirExt_Ext(SA);
+     SB := DirExt_Ext(SB);
+    End;
+    If SA < SB Then Cmp := -1 Else If SA > SB Then Cmp := 1;
+   End Else If SortOrder[K] = 'G' Then Begin
+    If ((A.Attr And Directory) <> 0) And ((B.Attr And Directory) = 0) Then
+     Cmp := -1
+    Else If ((A.Attr And Directory) = 0) And ((B.Attr And Directory) <> 0) Then
+     Cmp := 1;
+   End Else If SortOrder[K] = 'S' Then Begin
+    If A.Size < B.Size Then Cmp := -1 Else If A.Size > B.Size Then Cmp := 1;
+   End Else If SortOrder[K] = 'D' Then Begin
+    If A.PackedDT < B.PackedDT Then Cmp := -1
+    Else If A.PackedDT > B.PackedDT Then Cmp := 1;
+   End;
+   { 'C' (compression /O:C) : aucune donnee reelle disponible ici (voir     }
+   { restriction /C documentee en tete de fichier) - cle ignoree, l ordre   }
+   { reste stable sur les cles suivantes. }
+   If Cmp <> 0 Then Begin
+    DirExt_Compare := Cmp * Dir;
+    Exit;
+   End;
+   Inc(K);
+  End;
+ End;
+
+ { Tri par insertion stable (le nombre d entrees d un dossier reste modeste }
+ { en pratique - voir MAX_DIREXT_ENTRIES). }
+ Procedure DirExt_Sort;
+ Var
+  I, J: Integer;
+  Tmp: TDirExtEntry;
+ Begin
+  If SortOrder = '' Then Exit;
+  For I := 1 To DirExtCount - 1 Do Begin
+   Tmp := DirExtEntries[I];
+   J := I - 1;
+   While (J >= 0) And (DirExt_Compare(DirExtEntries[J], Tmp) > 0) Do Begin
+    DirExtEntries[J + 1] := DirExtEntries[J];
+    Dec(J);
+   End;
+   DirExtEntries[J + 1] := Tmp;
+  End;
+ End;
+
+ Function DirExt_DisplayName(E: TDirExtEntry): String;
+ Var
+  R: String;
+  I: Integer;
+ Begin
+  R := E.RelDir + E.Name;
+  If OptLower Then
+   For I := 1 To Length(R) Do
+    If R[I] In ['A'..'Z'] Then R[I] := Chr(Ord(R[I]) + 32);
+  DirExt_DisplayName := R;
+ End;
+
+ { Nom au format 8.3 (Nom.ext justifies separement) pour /J - jamais       }
+ { applique aux dossiers, ni au prefixe de chemin (RelDir). }
+ Function DirExt_JustifyName(E: TDirExtEntry): String;
+ Var
+  Nm, Ext, Pfx: String;
+  Dot, I: Integer;
+ Begin
+  DirExt_JustifyName := DirExt_DisplayName(E);
+  If Not OptJustify Then Exit;
+  If (E.Attr And Directory) <> 0 Then Exit;
+  Nm := E.Name;
+  Dot := 0;
+  For I := 2 To Length(Nm) Do If Nm[I] = '.' Then Dot := I;
+  Ext := '';
+  If Dot > 0 Then Begin
+   Ext := Copy(Nm, Dot + 1, 255);
+   Nm := Copy(Nm, 1, Dot - 1);
+  End;
+  Pfx := E.RelDir;
+  If OptLower Then Begin
+   For I := 1 To Length(Nm) Do
+    If Nm[I] In ['A'..'Z'] Then Nm[I] := Chr(Ord(Nm[I]) + 32);
+   For I := 1 To Length(Ext) Do
+    If Ext[I] In ['A'..'Z'] Then Ext[I] := Chr(Ord(Ext[I]) + 32);
+   For I := 1 To Length(Pfx) Do
+    If Pfx[I] In ['A'..'Z'] Then Pfx[I] := Chr(Ord(Pfx[I]) + 32);
+  End;
+  DirExt_JustifyName := Pfx + TermPadRight(Nm, 8) + ' ' + TermPadRight(Ext, 3);
+ End;
+
+ { /FORMAT:CSV|HTML|JSON|PASCAL|SQL|XML - export structure, sans les champs }
+ { de compression (voir /C, hors perimetre). }
+ Procedure DirExt_RenderFormat;
+ Var
+  I: Integer;
+  E: TDirExtEntry;
+  FT: DateTime;
+
+  Function AttrBrackets(A: Byte): String;
+  Var
+   R: String;
+  Begin
+   R := '';
+   If (A And Directory) <> 0 Then R := R + '[directory]';
+   If (A And ReadOnly) <> 0 Then R := R + '[readonly]';
+   If (A And SysFile) <> 0 Then R := R + '[system]';
+   If (A And Hidden) <> 0 Then R := R + '[hidden]';
+   If (A And Archive) <> 0 Then R := R + '[archive]';
+   AttrBrackets := R;
+  End;
+
+  Function EntryDate(PDT: LongInt): String;
+  Begin
+   UnpackTime(PDT, FT);
+   EntryDate := TermPadZeroLeft(FT.Year, 4) + '-' + TermPadZeroLeft(FT.Month, 2) +
+    '-' + TermPadZeroLeft(FT.Day, 2) + ' ' + TermPadZeroLeft(FT.Hour, 2) + ':' +
+    TermPadZeroLeft(FT.Min, 2);
+  End;
+
+ Begin
+  Case OutFormat Of
+   1: Begin { CSV }
+    For I := 0 To DirExtCount - 1 Do Begin
+     E := DirExtEntries[I];
+     TermAddLine(TP, DirExt_DisplayName(E) + ',' + AttrBrackets(E.Attr) + ',' +
+      IntToStr(E.Size) + ',' + EntryDate(E.PackedDT));
+    End;
+   End;
+   2: Begin { HTML }
+    TermAddLine(TP, '<!DOCTYPE html>');
+    TermAddLine(TP, '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="fr" lang="fr">');
+    TermAddLine(TP, '<body>');
+    TermAddLine(TP, '<table>');
+    TermAddLine(TP, '  <tr>');
+    TermAddLine(TP, '    <th>FileName</th>');
+    TermAddLine(TP, '    <th>Attribut</th>');
+    TermAddLine(TP, '    <th>Size</th>');
+    TermAddLine(TP, '    <th>Time</th>');
+    TermAddLine(TP, '  </tr>');
+    For I := 0 To DirExtCount - 1 Do Begin
+     E := DirExtEntries[I];
+     TermAddLine(TP, '  <tr>');
+     TermAddLine(TP, '    <td>' + DirExt_DisplayName(E) + '</td>');
+     TermAddLine(TP, '    <td>' + AttrBrackets(E.Attr) + '</td>');
+     TermAddLine(TP, '    <td>' + IntToStr(E.Size) + '</td>');
+     TermAddLine(TP, '    <td>' + EntryDate(E.PackedDT) + '</td>');
+     TermAddLine(TP, '  </tr>');
+    End;
+    TermAddLine(TP, '</table>');
+    TermAddLine(TP, '</body>');
+    TermAddLine(TP, '</html>');
+   End;
+   3: Begin { JSON }
+    TermAddLine(TP, '{');
+    For I := 0 To DirExtCount - 1 Do Begin
+     E := DirExtEntries[I];
+     TermAddLine(TP, '  "file":{');
+     TermAddLine(TP, '    "filename":"' + DirExt_DisplayName(E) + '",');
+     TermAddLine(TP, '    "attribut":"' + AttrBrackets(E.Attr) + '",');
+     TermAddLine(TP, '    "size":' + IntToStr(E.Size) + ',');
+     TermAddLine(TP, '    "time":"' + EntryDate(E.PackedDT) + '"');
+     If I < DirExtCount - 1 Then TermAddLine(TP, '  },') Else TermAddLine(TP, '  }');
+    End;
+    TermAddLine(TP, '}');
+   End;
+   4: Begin { PASCAL }
+    TermAddLine(TP, 'Var files: Array[1..' + IntToStr(DirExtCount) +
+     '] Of SearchRec = (');
+    For I := 0 To DirExtCount - 1 Do Begin
+     E := DirExtEntries[I];
+     TermAddLine(TP, '  (Name:''' + DirExt_DisplayName(E) + ''';');
+     TermAddLine(TP, '   Attr:''' + AttrBrackets(E.Attr) + ''';');
+     TermAddLine(TP, '   Size:' + IntToStr(E.Size) + ';');
+     If I < DirExtCount - 1 Then
+      TermAddLine(TP, '   Time:' + IntToStr(E.PackedDT) + '  (* ' + EntryDate(E.PackedDT) + ' *)),')
+     Else
+      TermAddLine(TP, '   Time:' + IntToStr(E.PackedDT) + '  (* ' + EntryDate(E.PackedDT) + ' *))');
+    End;
+    TermAddLine(TP, ');');
+   End;
+   5: Begin { SQL }
+    TermAddLine(TP, 'CREATE TABLE files (');
+    TermAddLine(TP, '  filename TEXT,');
+    TermAddLine(TP, '  attribut TEXT,');
+    TermAddLine(TP, '  size INT,');
+    TermAddLine(TP, '  time TEXT');
+    TermAddLine(TP, ');');
+    For I := 0 To DirExtCount - 1 Do Begin
+     E := DirExtEntries[I];
+     TermAddLine(TP, 'INSERT INTO files (filename,attribut,size,time) VALUES (');
+     TermAddLine(TP, '  ''' + DirExt_DisplayName(E) + ''',');
+     TermAddLine(TP, '  ''' + AttrBrackets(E.Attr) + ''',');
+     TermAddLine(TP, '  ' + IntToStr(E.Size) + ',');
+     TermAddLine(TP, '  ''' + EntryDate(E.PackedDT) + '''');
+     TermAddLine(TP, ');');
+    End;
+   End;
+   6: Begin { XML }
+    TermAddLine(TP, '<?xml version="1.0" encoding="UTF-8"?>');
+    TermAddLine(TP, '<files>');
+    For I := 0 To DirExtCount - 1 Do Begin
+     E := DirExtEntries[I];
+     TermAddLine(TP, '  <file>');
+     TermAddLine(TP, '    <filename>' + DirExt_DisplayName(E) + '</filename>');
+     TermAddLine(TP, '    <attribut>' + AttrBrackets(E.Attr) + '</attribut>');
+     TermAddLine(TP, '    <size>' + IntToStr(E.Size) + '</size>');
+     TermAddLine(TP, '    <time>' + EntryDate(E.PackedDT) + '</time>');
+     TermAddLine(TP, '  </file>');
+    End;
+    TermAddLine(TP, '</files>');
+   End;
+  End;
+ End;
+
+ { Rendu texte (par defaut, aucun /FORMAT:) - conserve la presentation      }
+ { CMD deja utilisee par les 3 shells (date/taille/nom), desormais pilotee  }
+ { par les commutateurs /B /T /U /K /M /W /2 /4 /V /J /L. }
+ Procedure DirExt_RenderText;
+ Var
+  I, Col, Cols, CellW: Integer;
+  Row, Rows: Integer;
+  E: TDirExtEntry;
+  FT: DateTime;
+  Ln, Cell, SzTxt, Nm: String;
+ Begin
+  TotalFiles := 0;
+  TotalDirs := 0;
+  TotalSize := 0;
+  If OptSummaryOnly Then Begin
+   For I := 0 To DirExtCount - 1 Do
+    If (DirExtEntries[I].Attr And Directory) = 0 Then Begin
+     Inc(TotalFiles);
+     Inc(TotalSize, DirExtEntries[I].Size);
+    End;
+   TermAddLine(TP, IntToStr(TotalFiles) + ' fichier(s), ' +
+    IntToStr(TotalSize) + ' octet(s)');
+   Exit;
+  End;
+  If OptAttrOnly Then Begin
+   For I := 0 To DirExtCount - 1 Do Begin
+    E := DirExtEntries[I];
+    TermAddLineColor(TP, TermPadRight(DirExt_DisplayName(E), 40) + ' ' +
+     DirExt_AttrStr(E.Attr), DirExt_EntryColor(E.Attr));
+   End;
+   Exit;
+  End;
+  If OptBrief Then Begin
+   For I := 0 To DirExtCount - 1 Do
+    TermAddLineColor(TP, DirExt_DisplayName(DirExtEntries[I]),
+     DirExt_EntryColor(DirExtEntries[I].Attr));
+   Exit;
+  End;
+  If ColMode <> 0 Then Begin
+   { Colonnes multiples : /W (5, nom seul), /4 (4, nom+taille), /2 (2,      }
+   { nom+taille+date) - /V remplit les colonnes verticalement au lieu de   }
+   { l ordre horizontal habituel (meme convention que ShowColumns/          }
+   { ShowFourColumns de DIR.PAS). }
+   Case ColMode Of
+    1: Begin Cols := 5; CellW := 16; End;
+    2: Begin Cols := 4; CellW := 18; End;
+    Else Begin Cols := 2; CellW := 34; End;
+   End;
+   Rows := DirExtCount Div Cols;
+   If (DirExtCount Mod Cols) <> 0 Then Inc(Rows);
+   If Rows < 1 Then Rows := 1;
+   For Row := 0 To Rows - 1 Do Begin
+    Ln := '';
+    For Col := 0 To Cols - 1 Do Begin
+     If OptVertical Then I := Col * Rows + Row Else I := Row * Cols + Col;
+     If I < DirExtCount Then Begin
+      E := DirExtEntries[I];
+      Nm := DirExt_DisplayName(E);
+      If ColMode = 1 Then Cell := Nm
+      Else Begin
+       If (E.Attr And Directory) <> 0 Then SzTxt := '<DIR>'
+       Else SzTxt := IntToStr(E.Size);
+       If ColMode = 2 Then Cell := Nm + ' ' + SzTxt
+       Else Begin
+        UnpackTime(E.PackedDT, FT);
+        Cell := Nm + ' ' + SzTxt + ' ' + TermPadZeroLeft(FT.Year, 4) + '-' +
+         TermPadZeroLeft(FT.Month, 2) + '-' + TermPadZeroLeft(FT.Day, 2);
+       End;
+      End;
+      If Col < Cols - 1 Then Cell := TermPadRight(Cell, CellW);
+      Ln := Ln + Cell;
+     End;
+    End;
+    TermAddLine(TP, TermTrimR(Ln));
+   End;
+   Exit;
+  End;
+  { Listing detaille par defaut (style CMD, comme avant le portage). }
+  If Not OptNoHeader Then Begin
+   TermAddLine(TP, ' Volume in drive ' + Copy(BaseDir, 1, 1) + ' has no label.');
+   TermAddLine(TP, '');
+   TermAddLine(TP, ' Directory of ' + BaseDir);
+   TermAddLine(TP, '');
+  End;
+  For I := 0 To DirExtCount - 1 Do Begin
+   E := DirExtEntries[I];
+   UnpackTime(E.PackedDT, FT);
+   Ln := TermPadZeroLeft(FT.Month, 2) + '/' + TermPadZeroLeft(FT.Day, 2) + '/' +
+    TermPadZeroLeft(FT.Year, 4) + '  ';
+   Str(FT.Hour:2, S);
+   Ln := Ln + S + ':' + TermPadZeroLeft(FT.Min, 2) + '    ';
+   If (E.Attr And Directory) <> 0 Then Begin
+    Ln := Ln + '<DIR>          ' + DirExt_JustifyName(E);
+    Inc(TotalDirs);
+   End Else Begin
+    Str(E.Size, S);
+    While Length(S) < 14 Do S := ' ' + S;
+    Ln := Ln + S + ' ' + DirExt_JustifyName(E);
+    Inc(TotalFiles);
+    Inc(TotalSize, E.Size);
+   End;
+   TermAddLineColor(TP, Ln, DirExt_EntryColor(E.Attr));
+  End;
+  If Not OptNoFooter Then Begin
+   Str(TotalFiles, S);
+   While Length(S) < 16 Do S := ' ' + S;
+   Str(TotalSize, Line);
+   While Length(Line) < 14 Do Line := ' ' + Line;
+   TermAddLine(TP, S + ' File(s)' + Line + ' bytes');
+   Str(TotalDirs, S);
+   While Length(S) < 16 Do S := ' ' + S;
+   TermAddLine(TP, S + ' Dir(s)  ' + IntToStr(LongInt(DiskFree(0))) + ' bytes free');
+  End;
+ End;
+
 Begin
- FirstParam := TermExtractParam(ParamStr, 1);
+ { --- Analyse des commutateurs (jetons commencant par '/') et du chemin/  }
+ { masque (dernier jeton nu, meme convention que "ShowDir:=CurrParam" dans  }
+ { DIR.PAS) - independant de leur position sur la ligne. }
+ OptBrief := False; OptFullPath := False; OptJustify := False;
+ OptNoHeader := False; OptLower := False; OptNoFooter := False;
+ OptSubdir := False; OptAttrOnly := False; OptSummaryOnly := False;
+ OptVertical := False; OptNoColor := False;
+ ColMode := 0;
+ ReqAttr := 0; ExclAttr := 0;
+ SortOrder := '';
+ OutFormat := 0;
+ FirstParam := '';
+ TokenIdx := 1;
+ Tok := TermExtractParam(ParamStr, TokenIdx);
+ While (Tok <> '') And (TokenIdx < 64) Do Begin
+  TokU := TermStrToUpper(Tok);
+  If Copy(TokU, 1, 1) = '/' Then Begin
+   If TokU = '/?' Then Begin
+    DirExt_ShowHelp;
+    Exit;
+   End
+   Else If Copy(TokU, 1, 2) = '/A' Then Begin
+    If Not DirExt_ParseAttr(TokU) Then
+     TermAddLine(TP, 'DIR : parametre d''attribut invalide : ' + Tok);
+   End
+   Else If Copy(TokU, 1, 2) = '/O' Then Begin
+    If Not DirExt_ParseSort(TokU) Then
+     TermAddLine(TP, 'DIR : ordre de tri invalide : ' + Tok);
+   End
+   Else If Copy(TokU, 1, 8) = '/FORMAT:' Then Begin
+    S := Copy(TokU, 9, 255);
+    If S = 'CSV' Then OutFormat := 1
+    Else If S = 'HTML' Then OutFormat := 2
+    Else If S = 'JSON' Then OutFormat := 3
+    Else If S = 'PASCAL' Then OutFormat := 4
+    Else If S = 'SQL' Then OutFormat := 5
+    Else If S = 'XML' Then OutFormat := 6
+    Else TermAddLine(TP, 'DIR : format de sortie inconnu : ' + Tok);
+   End
+   Else If TokU = '/B' Then OptBrief := True
+   Else If TokU = '/F' Then OptFullPath := True
+   Else If TokU = '/J' Then OptJustify := True
+   Else If TokU = '/K' Then OptNoHeader := True
+   Else If TokU = '/L' Then OptLower := True
+   Else If TokU = '/M' Then OptNoFooter := True
+   Else If TokU = '/N' Then Begin
+    OptBrief := False; OptFullPath := False; OptJustify := False;
+    OptNoHeader := False; OptLower := False; OptNoFooter := False;
+    OptSubdir := False; OptAttrOnly := False; OptSummaryOnly := False;
+    OptVertical := False; OptNoColor := False; ColMode := 0;
+    ReqAttr := 0; ExclAttr := 0; SortOrder := ''; OutFormat := 0;
+   End
+   Else If TokU = '/S' Then OptSubdir := True
+   Else If TokU = '/T' Then OptAttrOnly := True
+   Else If TokU = '/U' Then OptSummaryOnly := True
+   Else If TokU = '/V' Then OptVertical := True
+   Else If TokU = '/W' Then ColMode := 1
+   Else If TokU = '/2' Then ColMode := 3
+   Else If TokU = '/4' Then ColMode := 2
+   Else If TokU = '/D' Then OptNoColor := True
+   Else If TokU = '/P' Then Begin
+    { /P (pause) : accepte sans effet - ce panneau Terminal est un GUI a   }
+    { defilement non bloquant (pas de ReadKey synchrone possible ici).     }
+   End
+   Else If (TokU = '/C') Or (TokU = '/1') Then
+    TermAddLine(TP, 'DIR : ' + Tok +
+     ' non supporte par ce terminal (voir commentaire de tete de TermCmd_DIR_CMD).')
+   Else
+    TermAddLine(TP, 'DIR : parametre inconnu ignore : ' + Tok);
+  End
+  Else FirstParam := Tok;
+  Inc(TokenIdx);
+  Tok := TermExtractParam(ParamStr, TokenIdx);
+ End;
  { Mode disque virtuel : utiliser le FAT image (cwd ou cible explicite
    prefixee A:/B:). }
  If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
@@ -44826,47 +45509,12 @@ Begin
   TermAddLine(TP, S + ' Dir(s)   0 bytes free (lecture seule)');
   Exit;
  End;
- If FirstParam = '' Then
-  ShowDir := '*.*'
- Else
-  ShowDir := FirstParam;
- TermAddLine(TP, ' Volume in drive C has no label.');
- TermAddLine(TP, ' Volume Serial Number is 1234-5678');
- TermAddLine(TP, '');
- TermAddLine(TP, ' Directory of ' + TermGetCurrentDir);
- TermAddLine(TP, '');
- TotalFiles := 0;
- TotalDirs := 0;
- TotalSize := 0;
- FindFirst(ShowDir, AnyFile, Info);
- While DosError = 0 Do Begin
-  UnpackTime(Info.Time, T);
-  Line := TermPadZeroLeft(T.Month, 2) + '/' +
-   TermPadZeroLeft(T.Day, 2) + '/' +
-   TermPadZeroLeft(T.Year, 4) + '  ';
-  Str(T.Hour:2, S);
-  Line := Line + S + ':' + TermPadZeroLeft(T.Min, 2) + '    ';
-  If Info.Attr And Directory = Directory Then Begin
-   Line := Line + '<DIR>          ' + Info.Name;
-   Inc(TotalDirs);
-  End Else Begin
-   Str(Info.Size, S);
-   While Length(S) < 14 Do S := ' ' + S;
-   Line := Line + S + ' ' + Info.Name;
-   Inc(TotalFiles);
-   Inc(TotalSize, Info.Size);
-  End;
-  TermAddLine(TP, Line);
-  FindNext(Info);
- End;
- Str(TotalFiles, S);
- While Length(S) < 16 Do S := ' ' + S;
- Str(TotalSize, Line);
- While Length(Line) < 14 Do Line := ' ' + Line;
- TermAddLine(TP, S + ' File(s)' + Line + ' bytes');
- Str(TotalDirs, S);
- While Length(S) < 16 Do S := ' ' + S;
- TermAddLine(TP, S + ' Dir(s)   bytes free');
+ { Systeme de fichiers hote reel (aucun lecteur virtuel/CD-ROM cible) :     }
+ { moteur etendu a la DIR.PAS (attributs/tri/recursivite/colonnes/export). }
+ DirExt_PrepareBase;
+ DirExt_Collect;
+ DirExt_Sort;
+ If OutFormat <> 0 Then DirExt_RenderFormat Else DirExt_RenderText;
 End;
 
 { --- DIR style PowerShell (Get-ChildItem) --- }
@@ -147072,6 +147720,12 @@ Begin
   TextLines := 0;
   For I := 0 To VisLines - 1 Do Begin
    If Node <> Nil Then Begin
+    { Couleur par ligne (DIR /A colorise repertoires/caches/systeme/lecture }
+    { seule - voir TermAddLineColor) : les panneaux monochromes Gulam/OS-9  }
+    { gardent leur seule couleur de toujours, jamais ecrasee ligne par      }
+    { ligne. }
+    If IsGulamPanel Or IsOS9Panel Then SetColor(CLR_EDITOR_TEXT)
+    Else SetColor(Node^.Color);
     S := Node^.S;
     If TP.HScrollOffset > 0 Then
      If TP.HScrollOffset < Length(S) Then
