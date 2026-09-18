@@ -44769,7 +44769,6 @@ Var
 
 Procedure TermCmd_DIR_CMD(Var TP: TTerminalPanel; ParamStr: String);
 Var
- T: DateTime;
  S, Line: String;
  TotalFiles, TotalDirs: LongInt;
  TotalSize: LongInt;
@@ -44778,11 +44777,8 @@ Var
  AbsP: String;
  IsRoot: Boolean;
  StartCl: LongInt;
- Free: LongInt;
  LblTxt: String;
  CdIdx: Byte;
- CdI: Integer;
- CdPacked: LongInt;
  { --- etat de l analyse des commutateurs DIR.PAS --- }
  TokenIdx: Integer;
  Tok, TokU: String;
@@ -44792,6 +44788,9 @@ Var
  ColMode, OutFormat: Byte;
  OptBrief, OptFullPath, OptJustify, OptNoHeader, OptLower, OptNoFooter,
   OptSubdir, OptAttrOnly, OptSummaryOnly, OptVertical, OptNoColor: Boolean;
+ { En-tete/pied de page du listing detaille : varient selon la source      }
+ { (hote/disque virtuel/CD-ROM) - voir DirExt_RenderText. }
+ HdrLine1, HdrLine2, FreeBytesTxt: String;
 
  { Couleur d une entree selon ses attributs (repertoires/caches/systeme/    }
  { lecture seule) - equivalent simplifie et code en dur de EntryColor de   }
@@ -44971,6 +44970,119 @@ Var
     Dec(DirExtPendCnt);
     Folder := DirExtPending[DirExtPendCnt];
     DirExt_ScanOneFolder(Folder);
+   End;
+ End;
+
+ { Prefixe d affichage "X:\chemin\" pour un lecteur virtuel/CD-ROM (voir   }
+ { DirExt_CollectVirtOne/DirExt_CollectCdromOne - /S et /F). }
+ Function DirExt_DrivePrefix(DL: Char; Path: String): String;
+ Begin
+  If (Path = '') Or (Path = '\') Then DirExt_DrivePrefix := DL + ':\'
+  Else DirExt_DrivePrefix := DL + ':' + Path + '\';
+ End;
+
+ Function DirExt_ChildPath(ParentPath, Nm: String): String;
+ Begin
+  If (ParentPath = '') Or (ParentPath = '\') Then
+   DirExt_ChildPath := '\' + Nm
+  Else
+   DirExt_ChildPath := ParentPath + '\' + Nm;
+ End;
+
+ { Un seul dossier d un disque virtuel FAT12/16/32, D64, H8D, HPFS ou      }
+ { OS-9 - reutilise NCListDir (deja generique sur ces 5 formats pour le    }
+ { navigateur double-panneau de Norton Commander) plutot que de dupliquer  }
+ { la lecture bas niveau des secteurs. Limite acceptee (2026-09-18,        }
+ { demande explicite de l utilisateur pour au moins faire FONCTIONNER les  }
+ { parametres sur disque virtuel) : NCListDir n expose que IsDir (pas les  }
+ { bits Cache/Systeme/LectureSeule) - l attribut synthetise ici est donc   }
+ { Directory ou Archive uniquement, /A:H /A:S /A:R ne peuvent filtrer      }
+ { aucune entree virtuelle (ne concerne QUE le filtrage par attribut,      }
+ { tri/recursivite/colonnes/export/couleur restent pleinement fonctionnels). }
+ Procedure DirExt_CollectVirtOne(Slot: ShortInt; Path: String);
+ Var
+  VP: TNCPane;
+  VI: Integer;
+  Att: Byte;
+  PDT: LongInt;
+  RelShown: String;
+ Begin
+  VP.Path := Path;
+  NCListDir(Slot, VP);
+  If OptSubdir Or OptFullPath Then
+   RelShown := DirExt_DrivePrefix(Chr(Ord('A') + Slot), Path)
+  Else
+   RelShown := '';
+  For VI := 0 To VP.Count - 1 Do Begin
+   If VP.Entries[VI].IsDir Then Att := Directory Else Att := Archive;
+   PDT := (LongInt(VP.Entries[VI].FDate) Shl 16) Or VP.Entries[VI].FTime;
+   If ((Att And ReqAttr) = ReqAttr) And ((Att And ExclAttr) = 0) Then
+    DirExt_AddEntry(VP.Entries[VI].Name, VP.Entries[VI].Size, Att, PDT, RelShown);
+   If OptSubdir And VP.Entries[VI].IsDir Then
+    If DirExtPendCnt < MAX_DIREXT_PENDING Then Begin
+     DirExtPending[DirExtPendCnt] := DirExt_ChildPath(Path, VP.Entries[VI].Name);
+     Inc(DirExtPendCnt);
+    End;
+  End;
+ End;
+
+ Procedure DirExt_CollectVirt(Slot: ShortInt; StartPath: String);
+ Var
+  Folder: String;
+ Begin
+  DirExtCount := 0;
+  DirExtPendCnt := 0;
+  DirExt_CollectVirtOne(Slot, StartPath);
+  If OptSubdir Then
+   While DirExtPendCnt > 0 Do Begin
+    Dec(DirExtPendCnt);
+    Folder := DirExtPending[DirExtPendCnt];
+    DirExt_CollectVirtOne(Slot, Folder);
+   End;
+ End;
+
+ { Un seul dossier d un CD-ROM ISO9660 monte (/CDROM0:/CDROM1:) - reutilise }
+ { Emu_CdromFindFirst (deja utilise par l ancien rendu direct de cette     }
+ { branche) mais alimente DirExtEntries au lieu d ecrire des lignes de     }
+ { texte directement, pour profiter du meme moteur tri/filtre/colonnes/    }
+ { export/couleur que les autres sources. }
+ Procedure DirExt_CollectCdromOne(CdIdx: Byte; Path: String);
+ Var
+  CI: Integer;
+  Att: Byte;
+  PDT: LongInt;
+  RelShown: String;
+ Begin
+  If Not Emu_CdromFindFirst(CdIdx, Path, '*.*') Then Exit;
+  If OptSubdir Or OptFullPath Then
+   RelShown := DirExt_DrivePrefix(Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter), Path)
+  Else
+   RelShown := '';
+  For CI := 0 To EmuFindCount - 1 Do Begin
+   If EmuCdFindIsDir[CI] Then Att := Directory Else Att := Archive;
+   PDT := (LongInt(EmuCdFindDate[CI]) Shl 16) Or EmuCdFindTime[CI];
+   If ((Att And ReqAttr) = ReqAttr) And ((Att And ExclAttr) = 0) Then
+    DirExt_AddEntry(EmuFindResults[CI], EmuCdFindSize[CI], Att, PDT, RelShown);
+   If OptSubdir And EmuCdFindIsDir[CI] Then
+    If DirExtPendCnt < MAX_DIREXT_PENDING Then Begin
+     DirExtPending[DirExtPendCnt] := DirExt_ChildPath(Path, EmuFindResults[CI]);
+     Inc(DirExtPendCnt);
+    End;
+  End;
+ End;
+
+ Procedure DirExt_CollectCdrom(CdIdx: Byte; StartPath: String);
+ Var
+  Folder: String;
+ Begin
+  DirExtCount := 0;
+  DirExtPendCnt := 0;
+  DirExt_CollectCdromOne(CdIdx, StartPath);
+  If OptSubdir Then
+   While DirExtPendCnt > 0 Do Begin
+    Dec(DirExtPendCnt);
+    Folder := DirExtPending[DirExtPendCnt];
+    DirExt_CollectCdromOne(CdIdx, Folder);
    End;
  End;
 
@@ -45313,9 +45425,12 @@ Var
    End;
    Exit;
   End;
-  { Listing detaille par defaut (style CMD, comme avant le portage). }
+  { Listing detaille par defaut (style CMD) - HdrLine1/HdrLine2/FreeBytesTxt }
+  { sont prepares par l appelant (hote/disque virtuel/CD-ROM, voir plus     }
+  { bas dans TermCmd_DIR_CMD). }
   If Not OptNoHeader Then Begin
-   TermAddLine(TP, ' Volume in drive ' + Copy(BaseDir, 1, 1) + ' has no label.');
+   TermAddLine(TP, HdrLine1);
+   If HdrLine2 <> '' Then TermAddLine(TP, HdrLine2);
    TermAddLine(TP, '');
    TermAddLine(TP, ' Directory of ' + BaseDir);
    TermAddLine(TP, '');
@@ -45347,7 +45462,7 @@ Var
    TermAddLine(TP, S + ' File(s)' + Line + ' bytes');
    Str(TotalDirs, S);
    While Length(S) < 16 Do S := ' ' + S;
-   TermAddLine(TP, S + ' Dir(s)  ' + IntToStr(LongInt(DiskFree(0))) + ' bytes free');
+   TermAddLine(TP, S + ' Dir(s)  ' + FreeBytesTxt);
   End;
  End;
 
@@ -45426,92 +45541,66 @@ Begin
   Inc(TokenIdx);
   Tok := TermExtractParam(ParamStr, TokenIdx);
  End;
- { Mode disque virtuel : utiliser le FAT image (cwd ou cible explicite
-   prefixee A:/B:). }
+ { Mode disque virtuel : utiliser le FAT image (cwd ou cible explicite      }
+ { prefixee A:/B:) - RENFORCE (2026-09-18, demande explicite de            }
+ { l utilisateur : "aucun parametre ne fonctionne sur un disque virtuel")   }
+ { pour beneficier du MEME moteur DirExt (tri/filtre/recursivite/colonnes/  }
+ { export/couleur) que le systeme de fichiers hote, via NCListDir (deja     }
+ { generique sur FAT12/16/32, D64, H8D, HPFS, OS-9 - voir DirExt_           }
+ { CollectVirtOne plus haut pour la limite acceptee sur /A). }
  If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
-  { Image Commodore 64 (.D64) : listage natif CBM DOS. }
-  If FatVol[Idx].IsD64 Then Begin
-   D64_ListDir(Idx, TP);
-   Exit;
-  End;
-  If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
-   TermAddLine(TP,
-    'Le systeme ne trouve pas le chemin specifie.');
-   Exit;
-  End;
+  { La validite du chemin ne peut etre verifiee a l avance QUE pour du FAT  }
+  { "ordinaire" (Fat_ResolveDir) - D64/H8D/HPFS/OS-9 degradent en silence   }
+  { vers une liste vide plutot que ce message si le chemin n existe pas    }
+  { (limite acceptee de NCListDir lui-meme, deja ainsi pour Norton          }
+  { Commander). }
+  If (Not FatVol[Idx].IsD64) And (Not FatVol[Idx].IsH8D) And
+   (Not FatVol[Idx].IsHPFS) And (Not FatVol[Idx].IsOS9) Then
+   If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
+    TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie.');
+    Exit;
+   End;
   If FatVol[Idx].VolLabel <> '' Then
    LblTxt := FatVol[Idx].VolLabel
   Else
    LblTxt := 'no label';
-  TermAddLine(TP, ' Volume in drive ' +
-   Chr(Ord('A') + Idx) + ' is ' + LblTxt);
-  TermAddLine(TP, '');
-  If (AbsP = '') Or (AbsP = '\') Then
-   TermAddLine(TP, ' Directory of ' + Chr(Ord('A') + Idx) + ':\')
+  BaseDir := DirExt_DrivePrefix(Chr(Ord('A') + Idx), AbsP);
+  HdrLine1 := ' Volume in drive ' + Chr(Ord('A') + Idx) + ' is ' + LblTxt;
+  HdrLine2 := '';
+  If FatVol[Idx].IsD64 Or FatVol[Idx].IsH8D Or FatVol[Idx].IsHPFS Or
+   FatVol[Idx].IsOS9 Then
+   FreeBytesTxt := '0 bytes free (lecture seule)'
   Else
-   TermAddLine(TP, ' Directory of ' + Chr(Ord('A') + Idx) + ':' + AbsP);
-  TermAddLine(TP, '');
-  Fat_ListDir(Idx, IsRoot, StartCl, TP, 0);
-  Free := Fat_FreeBytes(Idx);
-  Str(Free, S);
-  While Length(S) < 14 Do S := ' ' + S;
-  TermAddLine(TP, '              ' + S + ' bytes free');
+   FreeBytesTxt := IntToStr(Fat_FreeBytes(Idx)) + ' bytes free';
+  DirExt_CollectVirt(Idx, AbsP);
+  DirExt_Sort;
+  If OutFormat <> 0 Then DirExt_RenderFormat Else DirExt_RenderText;
   Exit;
  End;
- { CD-ROM ISO9660 monte (/CDROM0:/CDROM1:) - voir le commentaire de tete de   }
- { Term_ResolveCdromTarget pour le bogue reel corrige ici (2026-09-11). }
+ { CD-ROM ISO9660 monte (/CDROM0:/CDROM1:) - voir le commentaire de tete de }
+ { Term_ResolveCdromTarget pour le bogue reel corrige ici (2026-09-11).     }
+ { Meme moteur DirExt que ci-dessus (2026-09-18). }
  If Term_ResolveCdromTarget(FirstParam, CdIdx, AbsP) Then Begin
   If Not Emu_CdromFindFirst(CdIdx, AbsP, '*.*') Then Begin
    TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie.');
    Exit;
   End;
-  TermAddLine(TP, ' Volume in drive ' +
-   Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter) + ' is ' +
-   EmuCdrom[CdIdx].VolLabel);
-  TermAddLine(TP, '');
-  If (AbsP = '') Or (AbsP = '\') Then
-   TermAddLine(TP, ' Directory of ' +
-    Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter) + ':\')
-  Else
-   TermAddLine(TP, ' Directory of ' +
-    Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter) + ':' + AbsP);
-  TermAddLine(TP, '');
-  TotalFiles := 0;
-  TotalDirs := 0;
-  TotalSize := 0;
-  For CdI := 0 To EmuFindCount - 1 Do Begin
-   CdPacked := (LongInt(EmuCdFindDate[CdI]) Shl 16) Or EmuCdFindTime[CdI];
-   UnpackTime(CdPacked, T);
-   Line := TermPadZeroLeft(T.Month, 2) + '/' +
-    TermPadZeroLeft(T.Day, 2) + '/' +
-    TermPadZeroLeft(T.Year, 4) + '  ';
-   Str(T.Hour:2, S);
-   Line := Line + S + ':' + TermPadZeroLeft(T.Min, 2) + '    ';
-   If EmuCdFindIsDir[CdI] Then Begin
-    Line := Line + '<DIR>          ' + EmuFindResults[CdI];
-    Inc(TotalDirs);
-   End Else Begin
-    Str(EmuCdFindSize[CdI], S);
-    While Length(S) < 14 Do S := ' ' + S;
-    Line := Line + S + ' ' + EmuFindResults[CdI];
-    Inc(TotalFiles);
-    Inc(TotalSize, EmuCdFindSize[CdI]);
-   End;
-   TermAddLine(TP, Line);
-  End;
-  Str(TotalFiles, S);
-  While Length(S) < 16 Do S := ' ' + S;
-  Str(TotalSize, Line);
-  While Length(Line) < 14 Do Line := ' ' + Line;
-  TermAddLine(TP, S + ' File(s)' + Line + ' bytes');
-  Str(TotalDirs, S);
-  While Length(S) < 16 Do S := ' ' + S;
-  TermAddLine(TP, S + ' Dir(s)   0 bytes free (lecture seule)');
+  BaseDir := DirExt_DrivePrefix(Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter), AbsP);
+  HdrLine1 := ' Volume in drive ' + Chr(Ord('A') + EmuCdrom[CdIdx].DriveLetter) +
+   ' is ' + EmuCdrom[CdIdx].VolLabel;
+  HdrLine2 := '';
+  FreeBytesTxt := '0 bytes free (lecture seule)';
+  DirExt_CollectCdrom(CdIdx, AbsP);
+  DirExt_Sort;
+  If OutFormat <> 0 Then DirExt_RenderFormat Else DirExt_RenderText;
   Exit;
  End;
  { Systeme de fichiers hote reel (aucun lecteur virtuel/CD-ROM cible) :     }
  { moteur etendu a la DIR.PAS (attributs/tri/recursivite/colonnes/export). }
  DirExt_PrepareBase;
+ HdrLine1 := ' Volume in drive ' + Copy(BaseDir, 1, 1) + ' has no label.';
+ HdrLine2 := ' Volume Serial Number is 1234-5678';
+ FreeBytesTxt := IntToStr(LongInt(DiskFree(0))) + ' bytes free';
  DirExt_Collect;
  DirExt_Sort;
  If OutFormat <> 0 Then DirExt_RenderFormat Else DirExt_RenderText;
