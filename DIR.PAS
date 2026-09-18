@@ -1164,6 +1164,47 @@ BEGIN
  If Length(CurrParam)=0Then Break;
   If CurrParam='/?'Then Begin
   Case Language of
+    _Italian:Begin
+     WriteLn('DIR   Visualizza il contenuto di una directory.');
+     WriteLn;
+     WriteLn('Sintassi:');
+     WriteLn;
+     WriteLn('DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/M] [/N] [/P] [/S] ',
+             '[/T] [/U] [/V] [/A[[:]attributi]] [/O[[:]ordine]] [percorso] [/FORMAT:formato]');
+     WriteLn;
+     WriteLn(' /?               Visualizza la guida del comando');
+     WriteLn(' /1               Un file per riga: nome, dimensione, data e descrizione');
+     WriteLn('                  Descrizioni lette da DESCRIPT.ION in ogni directory');
+     WriteLn(' /2               Visualizza i file su due colonne');
+     WriteLn(' /4               Visualizza i file e le dimensioni su quattro colonne');
+     WriteLn(' /A[[:]attributi]  A=Archivio D=Directory H=Nascosto R=Sola lettura S=Sistema');
+     WriteLn('                  + : includi; - : escludi');
+     WriteLn('                  /A : tutti; /A:H-D : file nascosti senza directory');
+     WriteLn(' /B               Omette le intestazioni e i riepiloghi finali');
+     WriteLn(' /C               Rapporto di compressione DoubleSpace, unit'+#133+' di allocazione di 8 KB');
+     WriteLn('                  MS-DOS 7+ / Windows; - = non disponibile; ignorato con /B o /W');
+     WriteLn(' /D               Disattiva la visualizzazione a colori');
+     WriteLn(' COLORDIR         Colori: DIRS, HIDDEN, SYSTEM, RDONLY, ARCHIVE, NORMAL o estensioni');
+     WriteLn(' /F               Visualizza i nomi completi con il percorso');
+     WriteLn(' /FORMAT:formato  Formati disponibili: CSV, HTML, Json, PASCAL, SQL o XML');
+     WriteLn(' /J               Allinea separatamente i nomi e le estensioni');
+     WriteLn(' /K               Nasconde le intestazioni e mantiene i totali');
+     WriteLn(' /L               Visualizza i nomi dei file e delle directory in minuscolo');
+     WriteLn(' /M               Nasconde i totali e lo spazio libero a fine elenco');
+     WriteLn(' /N               Ripristina i valori predefiniti delle opzioni precedenti');
+     WriteLn(' /O[[:]ordine]    C=Compressione D=Data/ora E=Estensione');
+     WriteLn('                  G=Directory prima dei file N=Nome S=Dimensione');
+     WriteLn('                  Ordine crescente; - inverte il criterio successivo');
+     WriteLn('                  /O = GN; criteri combinabili, ad esempio /O:G-S');
+     WriteLn('                  C: byte risparmiati (%), Windows / MS-DOS 7+');
+     WriteLn('                  Sistemi non supportati: 0');
+     WriteLn(' /P               Attende un tasto dopo ogni pagina');
+     WriteLn(' /S               Elenca i file della directory e di tutte le sottodirectory');
+     WriteLn(' /T               Visualizza solo i nomi e gli attributi (R H S D A)');
+     WriteLn(' /U               Visualizza solo il numero di file e i byte utilizzati');
+     WriteLn(' /V               Riempie le colonne verticalmente con /2, /4 o /W');
+     WriteLn(' /W               Visualizza solo i nomi su pi'+#151+' colonne');
+    End;
     _Germany:Begin
      WriteLn('Listet die Dateien und Unterverzeichnisse eines Verzeichnisses auf.');
      WriteLn;
