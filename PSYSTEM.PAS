@@ -3599,6 +3599,68 @@ Var
  N:LongInt;
 Begin
  LookupMn:=False;
+ if CurrentTarget=ptUCSDPSystemIV Then Begin
+  if Mn='SLDC'Then Begin Code:=0;Kind:=OPK_SLDC End
+  else if(Copy(Mn,1,4)='SLDL')and(Length(Mn)>=5)Then Begin
+   P:=5;if not ParseNum(P,Mn,N)or(N<1)or(N>16)Then Exit;
+   Code:=Byte($1F+N);Kind:=OPK_NONE
+  End
+  else if(Copy(Mn,1,4)='SLDO')and(Length(Mn)>=5)Then Begin
+   P:=5;if not ParseNum(P,Mn,N)or(N<1)or(N>16)Then Exit;
+   Code:=Byte($2F+N);Kind:=OPK_NONE
+  End
+  else if(Copy(Mn,1,4)='SIND')and(Length(Mn)>=5)Then Begin
+   P:=5;if not ParseNum(P,Mn,N)or(N<0)or(N>7)Then Exit;
+   Code:=Byte($78+N);Kind:=OPK_NONE
+  End
+  else if Mn='LDCB'Then Begin Code:=$80;Kind:=OPK_UB End
+  else if Mn='LDCI'Then Begin Code:=$81;Kind:=OPK_W End
+  else if Mn='LLA'Then Begin Code:=$84;Kind:=OPK_BIG End
+  else if Mn='LDO'Then Begin Code:=$85;Kind:=OPK_BIG End
+  else if Mn='LAO'Then Begin Code:=$86;Kind:=OPK_BIG End
+  else if Mn='LDL'Then Begin Code:=$87;Kind:=OPK_BIG End
+  else if Mn='LDA'Then Begin Code:=$88;Kind:=OPK_UBBIG End
+  else if Mn='LOD'Then Begin Code:=$89;Kind:=OPK_UBBIG End
+  else if Mn='UJP'Then Begin Code:=$8A;Kind:=OPK_SB End
+  else if Mn='UJPW'Then Begin Code:=$8B;Kind:=OPK_W End
+  else if Mn='MPI'Then Begin Code:=$8C;Kind:=OPK_NONE End
+  else if Mn='DVI'Then Begin Code:=$8D;Kind:=OPK_NONE End
+  else if Mn='MODI'Then Begin Code:=$8F;Kind:=OPK_NONE End
+  else if Mn='CLP'Then Begin Code:=$90;Kind:=OPK_UB End
+  else if Mn='CGP'Then Begin Code:=$91;Kind:=OPK_UB End
+  else if Mn='CIP'Then Begin Code:=$92;Kind:=OPK_UBUB End
+  else if Mn='CXL'Then Begin Code:=$93;Kind:=OPK_UBUB End
+  else if Mn='CXG'Then Begin Code:=$94;Kind:=OPK_UBUB End
+  else if Mn='RPU'Then Begin Code:=$96;Kind:=OPK_BIG End
+  else if Mn='LDCN'Then Begin Code:=$98;Kind:=OPK_NONE End
+  else if Mn='NOP'Then Begin Code:=$9C;Kind:=OPK_NONE End
+  else if Mn='BNOT'Then Begin Code:=$9F;Kind:=OPK_NONE End
+  else if Mn='LOR'Then Begin Code:=$A0;Kind:=OPK_NONE End
+  else if Mn='LAND'Then Begin Code:=$A1;Kind:=OPK_NONE End
+  else if Mn='ADI'Then Begin Code:=$A2;Kind:=OPK_NONE End
+  else if Mn='SBI'Then Begin Code:=$A3;Kind:=OPK_NONE End
+  else if Mn='EQUI'Then Begin Code:=$B0;Kind:=OPK_NONE End
+  else if Mn='NEQI'Then Begin Code:=$B1;Kind:=OPK_NONE End
+  else if Mn='LEQI'Then Begin Code:=$B2;Kind:=OPK_NONE End
+  else if Mn='GEQI'Then Begin Code:=$B3;Kind:=OPK_NONE End
+  else if Mn='SWAP'Then Begin Code:=$BD;Kind:=OPK_NONE End
+  else if Mn='STO'Then Begin Code:=$C4;Kind:=OPK_NONE End
+  else if Mn='CHK'Then Begin Code:=$CB;Kind:=OPK_NONE End
+  else if Mn='EFJ'Then Begin Code:=$D2;Kind:=OPK_SB End
+  else if Mn='NFJ'Then Begin Code:=$D3;Kind:=OPK_SB End
+  else if Mn='FJP'Then Begin Code:=$D4;Kind:=OPK_SB End
+  else if Mn='ABI'Then Begin Code:=$E0;Kind:=OPK_NONE End
+  else if Mn='NGI'Then Begin Code:=$E1;Kind:=OPK_NONE End
+  else if Mn='DUP1'Then Begin Code:=$E2;Kind:=OPK_NONE End
+  else if Mn='LNOT'Then Begin Code:=$E5;Kind:=OPK_NONE End
+  else if Mn='IND'Then Begin Code:=$E6;Kind:=OPK_BIG End
+  else if Mn='INC'Then Begin Code:=$E7;Kind:=OPK_BIG End
+  else if Mn='INCI'Then Begin Code:=$ED;Kind:=OPK_NONE End
+  else if Mn='DECI'Then Begin Code:=$EE;Kind:=OPK_NONE End
+  else if Mn='TJP'Then Begin Code:=$F1;Kind:=OPK_SB End
+  else Begin Code:=0;Kind:=0;Exit End;
+  LookupMn:=True;Exit
+ End;
  If Mn='SLDC' Then Begin
   Code:=0; Kind:=OPK_SLDC; LookupMn:=True; Exit;
  End;
@@ -3685,8 +3747,10 @@ Begin
   If Not ParseNum(P,S,V) Then Begin
    Err('SLDC: nombre attendu'); Exit;
   End;
-  If (V<0) Or (V>127) Then Begin
-   Err('SLDC hors limite (0..127)'); Exit;
+  If(V<0)or((CurrentTarget=ptUCSDPSystemIV)and(V>31))or
+   ((CurrentTarget<>ptUCSDPSystemIV)and(V>127))Then Begin
+   if CurrentTarget=ptUCSDPSystemIV Then Err('SLDC IV hors limite (0..31)')
+   else Err('SLDC hors limite (0..127)');Exit;
   End;
   Emit(Byte(V));
  End;
@@ -8100,6 +8164,7 @@ Type
 Var
  Name,Line,Command,Args,S:String;
  Breakpoint:Array[1..MaxBreakpoints]of LongInt;
+ BreakSegment:Array[1..MaxBreakpoints]of Integer;
  BreakCount,I,N:Integer;
  Address,V,NextAddress,RunCount:LongInt;
  Done,Hit:Boolean;
@@ -8156,6 +8221,38 @@ Begin
  End
 End;
 
+Function FindDebugRoutine(Const RoutineName:String):PDebugRoutine;
+Var R:PDebugRoutine;U:String;
+Begin
+ U:=UpperString(RoutineName);R:=DebugRoutines;
+ While(R<>Nil)and(UpperString(R^.Name)<>U)do R:=R^.Next;
+ FindDebugRoutine:=R
+End;
+
+Function ResolveDebugLocation(Const Text:String;Var Seg:Integer;Var A:LongInt):Boolean;
+Var T,L,RPart:String;P:Integer;V:LongInt;DR:PDebugRoutine;
+Begin
+ ResolveDebugLocation:=False;T:=TrimString(Text);Seg:=PCode_CurrentSegment;
+ P:=Pos(':',T);
+ if P>0 Then Begin
+  L:=Copy(T,1,P-1);RPart:=Copy(T,P+1,255);
+  if not DebugNumber(L,V)or(V<0)or(V>15)Then Exit;Seg:=V;T:=RPart
+ End;
+ if DebugNumber(T,A)Then Begin ResolveDebugLocation:=A>=0;Exit End;
+ DR:=FindDebugRoutine(T);if DR<>Nil Then Begin A:=DR^.Start;ResolveDebugLocation:=True End
+End;
+
+Function FrameForProcedure(ProcNo:Integer):LongInt;
+Var M,NextM:LongInt;Guard:Integer;
+Begin
+ FrameForProcedure:=-1;M:=PCode_MP;Guard:=0;
+ While(M>=0)and(M+MSCW_PROC<=High(PCode_Data^))and(Guard<64)do Begin
+  if(PCode_DataAt(M+MSCW_ENV)and $FF)=ProcNo Then Begin FrameForProcedure:=M;Exit End;
+  NextM:=PCode_DataAt(M+MSCW_DYNAMIC);if(NextM=M)or(NextM=0)Then Break;
+  M:=NextM;Inc(Guard)
+ End
+End;
+
 Procedure ShowSource;
 Var R:PDebugRoutine;
 Begin R:=CurrentDebugRoutine;if R=Nil Then WriteLn('Aucune information source pour cette adresse.')
@@ -8165,21 +8262,24 @@ Begin R:=CurrentDebugRoutine;if R=Nil Then WriteLn('Aucune information source po
 End;
 
 Procedure ShowFrames;
-Var M:LongInt;R:PDebugRoutine;Depth,ProcNo:Integer;
+Var M,SL,DL,IPC,Env:LongInt;R:PDebugRoutine;Depth,ProcNo,SegNo:Integer;
 Begin
  if not PCode_HasProcDictionary Then Begin WriteLn('Cadres structures indisponibles.');Exit End;
  M:=PCode_MP;Depth:=0;ProcNo:=PCode_CurrentProc;
  While(M>0)and(M<=High(PCode_Data^)-4)and(Depth<64)do Begin
   R:=DebugRoutines;While(R<>Nil)and(R^.ProcNo<>ProcNo)do R:=R^.Next;
-  Write('#',Depth:2,' MP=',M,' PROC=',ProcNo);
-  if R<>Nil Then Write(' ',R^.Name,' ligne ',R^.SourceLine);WriteLn;
-  ProcNo:=PCode_DataAt(M+4);if PCode_DataAt(M+1)=M Then Break;
-  M:=PCode_DataAt(M+1);Inc(Depth)
+  SL:=PCode_DataAt(M+MSCW_STATIC);DL:=PCode_DataAt(M+MSCW_DYNAMIC);
+  IPC:=PCode_DataAt(M+MSCW_IPC);Env:=PCode_DataAt(M+MSCW_ENV);
+  SegNo:=(Env shr 8)and $FF;
+  Write('#',Depth:2,' MP=',M,' SEG=',SegNo,' PROC=',ProcNo);
+  if R<>Nil Then Write(' ',R^.Name,' ligne ',R^.SourceLine);
+  WriteLn('  SL=',SL,' DL=',DL,' IPC=$',DebugHex(IPC,4),' ENV=$',DebugHex(Env,4));
+  ProcNo:=PCode_DataAt(M+MSCW_PROC);if DL=M Then Break;M:=DL;Inc(Depth)
  End
 End;
 
 Procedure ShowSymbols(Const Filter:String);
-Var Y:PDebugSymbol;R:PDebugRoutine;A,V:LongInt;Found:Boolean;
+Var Y:PDebugSymbol;R:PDebugRoutine;A,V,Frame:LongInt;Found:Boolean;
 Begin
  R:=CurrentDebugRoutine;Y:=DebugSymbols;Found:=False;
  While Y<>Nil do Begin
@@ -8187,7 +8287,11 @@ Begin
     ((R=Nil)and(Y^.ProcNo=1)))and
    ((Filter='')or(UpperString(Y^.Name)=UpperString(Filter)))Then Begin
    if Y^.ProcNo=1 Then A:=Y^.Address
-   else if PCode_HasProcDictionary Then A:=PCode_MP+5+Y^.Address else A:=PCode_MP+Y^.Address;
+   else Begin
+    Frame:=FrameForProcedure(Y^.ProcNo);
+    if Frame<0 Then Begin Y:=Y^.Next;Continue End;
+    if PCode_HasProcDictionary Then A:=Frame+5+Y^.Address else A:=Frame+Y^.Address
+   End;
    if Y^.ByRef Then A:=PCode_DataAt(A);V:=PCode_DataAt(A);Found:=True;
    WriteLn(Y^.Name:20,' @',A:5,' = ',V,'  type=',Y^.TypeKind,
     ' ligne=',Y^.SourceLine)
@@ -8200,7 +8304,7 @@ Var
  J:Integer;
 Begin
  IsBreakpoint:=False;
- For J:=1 to BreakCount do if Breakpoint[J]=A Then Begin
+ For J:=1 to BreakCount do if(BreakSegment[J]=PCode_CurrentSegment)and(Breakpoint[J]=A)Then Begin
   IsBreakpoint:=True;Exit
  End
 End;
@@ -8233,6 +8337,7 @@ Procedure DebugHelp;Begin
  WriteLn('S [n]       Executer une ou plusieurs instructions');
  WriteLn('G [adresse] Continuer jusqu''a un point d''arret');
  WriteLn('B [adresse] Poser ou afficher les points d''arret');
+ WriteLn('              adresse accepte NOMPROC ou segment:adresse');
  WriteLn('BC adresse  Supprimer un point d''arret (BC ALL: tous)');
  WriteLn('U [a] [n]   Desassembler (10 instructions par defaut)');
  WriteLn('R            Afficher les registres de la VM');
@@ -8243,6 +8348,7 @@ Procedure DebugHelp;Begin
  WriteLn('PROC [n]     Lister les procedures ou ouvrir la procedure n');
  WriteLn('V [nom]      Afficher les variables visibles et leur valeur');
  WriteLn('F            Afficher les cadres et la chaine dynamique');
+ WriteLn('SEG [n]      Lister les segments ou selectionner le segment n');
  WriteLn('L            Afficher la position source symbolique');
  WriteLn('I            Reinitialiser le programme');
  WriteLn('Q            Quitter le debogueur')
@@ -8258,7 +8364,8 @@ Begin
   WriteLn('Chargement impossible.');
   FreeMem(PCode_Data,SizeOf(TPCodeData));FreeMem(PCode_Mem,SizeOf(TPCodeMemory));Exit
  End;
- ProgramFile:=Name;BreakCount:=0;FillChar(Breakpoint,SizeOf(Breakpoint),0);LoadDebugInfo;
+ ProgramFile:=Name;BreakCount:=0;FillChar(Breakpoint,SizeOf(Breakpoint),0);
+ FillChar(BreakSegment,SizeOf(BreakSegment),0);LoadDebugInfo;
  Done:=False;ResetMachine;
  WriteLn('Debogueur p-System interne - ',PCode_CodeSize,
  ' octet(s). Tapez ? pour l''aide.');
@@ -8278,6 +8385,17 @@ Begin
  else if Command='R'Then Registers
  else if Command='V'Then ShowSymbols(Args)
  else if Command='F'Then ShowFrames
+ else if Command='SEG'Then Begin
+  if Args=''Then Begin
+   For I:=0 to 15 do if PCode_Segments[I].Present Then Begin
+    Write('Segment ',I:2,'  octets=',PCode_Segments[I].Size);
+    if I=PCode_CurrentSegment Then Write('  <courant>');
+    if PCode_Segments[I].Loaded Then Write('  charge');WriteLn
+   End
+  End else if DebugNumber(Args,V)and(V>=0)and(V<=15)and PCode_LoadSegment(V)Then Begin
+   PCode_PC:=0;WriteLn('Segment ',V,' selectionne.');Registers
+  End else WriteLn('Segment absent ou invalide.')
+ End
  else if Command='L'Then ShowSource
  else if Command='I'Then Begin
   ResetMachine;Registers
@@ -8314,8 +8432,11 @@ Begin
   End
  End
  else if Command='G'Then Begin
-  if Args<>''Then if DebugNumber(Args,Address)and(Address>=0)and(Address<PCode_CodeSize)
+  if Args<>''Then if ResolveDebugLocation(Args,N,Address)and(N>=0)and(N<=15)and
+   PCode_Segments[N].Present and(Address>=0)and(Address<PCode_Segments[N].Size)
   Then Begin
+   if N<>PCode_CurrentSegment Then
+    if not PCode_LoadSegment(N)Then Begin WriteLn('Chargement du segment impossible.');Continue End;
    PCode_PC:=Address;PCode_Halted:=False
   End else
   Begin
@@ -8337,25 +8458,31 @@ Begin
  else if Command='B'Then Begin
   if Args=''Then Begin
    if BreakCount=0 Then WriteLn('Aucun point d''arret.');
-   For I:=1 to BreakCount do WriteLn(I:2,': $',DebugHex(Breakpoint[I],4))
-  End else if not DebugNumber(Args,Address)or(Address<0)or(Address>=PCode_CodeSize)
+   For I:=1 to BreakCount do WriteLn(I:2,': ',BreakSegment[I],':$',DebugHex(Breakpoint[I],4))
+  End else if not ResolveDebugLocation(Args,N,Address)or(Address<0)or
+   (N<0)or(N>15)or not PCode_Segments[N].Present or(Address>=PCode_Segments[N].Size)
   Then    WriteLn('Adresse incorrecte.')
-  else if IsBreakpoint(Address)Then WriteLn('Point d''arret deja present.')
+  else Begin
+   Hit:=False;For I:=1 to BreakCount do
+    if(BreakSegment[I]=N)and(Breakpoint[I]=Address)Then Hit:=True;
+   if Hit Then WriteLn('Point d''arret deja present.')
   else if BreakCount=MaxBreakpoints Then WriteLn('Table des points d''arret pleine.')
   else
   Begin
-   Inc(BreakCount);Breakpoint[BreakCount]:=Address;
-   WriteLn('Point d''arret pose a $',DebugHex(Address,4))
+   Inc(BreakCount);Breakpoint[BreakCount]:=Address;BreakSegment[BreakCount]:=N;
+   WriteLn('Point d''arret pose a ',N,':$',DebugHex(Address,4))
+  End
   End
  End
  else if Command='BC'Then Begin
   if UpperString(Args)='ALL'Then BreakCount:=0
-  else if DebugNumber(Args,Address)Then Begin
+  else if ResolveDebugLocation(Args,N,Address)Then Begin
    I:=1;
-   While(I<=BreakCount)and(Breakpoint[I]<>Address)do Inc(I);
+   While(I<=BreakCount)and((Breakpoint[I]<>Address)or(BreakSegment[I]<>N))do Inc(I);
    if I>BreakCount Then WriteLn('Point d''arret introuvable.')else
    Begin
-    For N:=I to BreakCount-1 do Breakpoint[N]:=Breakpoint[N+1];Dec(BreakCount)
+    For N:=I to BreakCount-1 do Begin Breakpoint[N]:=Breakpoint[N+1];
+     BreakSegment[N]:=BreakSegment[N+1] End;Dec(BreakCount)
    End
   End else WriteLn('Adresse incorrecte.')
  End
