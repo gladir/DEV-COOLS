@@ -16,6 +16,7 @@ Type
  PDisplayCell=^TDisplayCell;
  TDisplayCell=Record
   Name,Details:String;
+  Color:Byte;
   Next:PDisplayCell;
  End;
  PDirPath=^TDirPath;
@@ -52,9 +53,107 @@ Var
  EntriesLoaded:Boolean;
  PendingDirs:PDirPath;
  RecursiveRoot,RecursiveMask,CurrentFolder:String;
+ ColorRules:String;
+ OriginalColor:Byte;
 
 Function StrToUpper(S:String):String; Forward;
 Function PadRight(S:String;Space:Byte):String; Forward;
+
+{ Les regles COLORDIR sont examinees de gauche a droite, comme sous 4DOS. }
+Function ColorMatch(Pattern,Value:String):Boolean;
+Var I,J,Star,Retry:Integer;
+Begin
+ I:=1; J:=1; Star:=0; Retry:=0;
+ While J<=Length(Value)do Begin
+  If (I<=Length(Pattern))and((Pattern[I]='?')or(Pattern[I]=Value[J]))Then Begin
+   Inc(I); Inc(J);
+  End Else If (I<=Length(Pattern))and(Pattern[I]='*')Then Begin
+   Star:=I; Inc(I); Retry:=J;
+  End Else If Star<>0Then Begin
+   Inc(Retry); J:=Retry; I:=Star+1;
+  End Else Begin ColorMatch:=False; Exit; End;
+ End;
+ While (I<=Length(Pattern))and(Pattern[I]='*')do Inc(I);
+ ColorMatch:=I>Length(Pattern);
+End;
+
+Function ColorSelector(S:String):Boolean;
+Var Name,Extension:String; I:Integer;
+Begin
+ If S='DIRS'Then ColorSelector:=(Info.Attr and Directory)<>0 Else
+ If S='HIDDEN'Then ColorSelector:=(Info.Attr and Hidden)<>0 Else
+ If S='SYSTEM'Then ColorSelector:=(Info.Attr and SysFile)<>0 Else
+ If S='RDONLY'Then ColorSelector:=(Info.Attr and ReadOnly)<>0 Else
+ If S='ARCHIVE'Then ColorSelector:=(Info.Attr and Archive)<>0 Else
+ If S='NORMAL'Then ColorSelector:=(Info.Attr and (Directory+Hidden+SysFile+ReadOnly))=0
+ Else Begin
+  Name:=StrToUpper(Info.Name); Extension:='';
+  For I:=Length(Name)downto 1do If Name[I]='.'Then Begin
+   Extension:=Copy(Name,I+1,255); Break;
+  End;
+  { Les extensions seules et les masques de noms sont acceptes. }
+  If Pos('.',S)>0Then ColorSelector:=ColorMatch(S,Name)
+  Else ColorSelector:=ColorMatch(S,Extension);
+ End;
+End;
+
+Function ParseColor(S:String;Var Value:Byte):Boolean;
+Var Token:String; N,Foreground,Background:Integer;
+ BrightColor,OnBackground,Valid:Boolean;
+Begin
+ Foreground:=-1; Background:=(OriginalColor shr 4)and 7;
+ BrightColor:=False; OnBackground:=False; Valid:=True;
+ While S<>''do Begin
+  While (Length(S)>0)and(S[1]=' ')do Delete(S,1,1);
+  If S=''Then Break;
+  N:=Pos(' ',S); If N=0Then N:=Length(S)+1;
+  Token:=Copy(S,1,N-1); Delete(S,1,N);
+  If (Token='BRIGHT')or(Token='BRI')Then BrightColor:=True Else
+  If Token='ON'Then Begin OnBackground:=True; BrightColor:=False; End Else Begin
+   N:=-1;
+   If (Token='BLACK')or(Token='BLA')Then N:=0 Else
+   If (Token='BLUE')or(Token='BLU')Then N:=1 Else
+   If (Token='GREEN')or(Token='GRE')Then N:=2 Else
+   If (Token='CYAN')or(Token='CYA')Then N:=3 Else
+   If Token='RED'Then N:=4 Else
+   If (Token='MAGENTA')or(Token='MAG')Then N:=5 Else
+   If (Token='BROWN')or(Token='BRO')Then N:=6 Else
+   If (Token='WHITE')or(Token='WHI')Then N:=7 Else
+   If (Token='GRAY')or(Token='GREY')Then N:=8 Else
+   If (Token='YELLOW')or(Token='YEL')Then N:=14;
+   If N<0Then Valid:=False Else Begin
+    If BrightColor Then N:=N or 8;
+    If OnBackground Then Background:=N and 7 Else Foreground:=N;
+   End;
+   BrightColor:=False;
+  End;
+ End;
+ ParseColor:=Valid and(Foreground>=0);
+ If Valid and(Foreground>=0)Then Value:=Foreground or(Background shl 4);
+End;
+
+Function EntryColor:Byte;
+Var Rules,Rule,Selectors,Token:String; N:Integer; Matches:Boolean; Value:Byte;
+Begin
+ EntryColor:=OriginalColor;
+ If (NoColor in Option)or(OutputFormat<>_Text)Then Exit;
+ Rules:=ColorRules;
+ While Rules<>''do Begin
+  N:=Pos(';',Rules); If N=0Then N:=Length(Rules)+1;
+  Rule:=Copy(Rules,1,N-1); Delete(Rules,1,N);
+  N:=Pos(':',Rule);
+  If N>0Then Begin
+   Selectors:=Copy(Rule,1,N-1); Delete(Rule,1,N); Matches:=False;
+   While Selectors<>''do Begin
+    While (Length(Selectors)>0)and(Selectors[1]=' ')do Delete(Selectors,1,1);
+    N:=Pos(' ',Selectors); If N=0Then N:=Length(Selectors)+1;
+    Token:=Copy(Selectors,1,N-1); Delete(Selectors,1,N);
+    If Token<>''Then If ColorSelector(Token)Then Matches:=True;
+   End;
+   If Matches Then If ParseColor(Rule,Value)Then Begin EntryColor:=Value; Exit; End;
+  End;
+ End;
+End;
 
 Procedure ResetOptions;
 Begin
@@ -795,6 +894,7 @@ End;
 Procedure ShowFourColumns;
 Var
  Names,Sizes:Array[1..4]of String;
+ Colors:Array[1..4]of Byte;
  Count,I:Byte;
  NameWidth,SizeWidth:Byte;
 Begin
@@ -807,6 +907,7 @@ Begin
   While (Count<4)and(DosError=0)do Begin
    Inc(Count);
    Names[Count]:=TextDisplayName;
+   Colors[Count]:=EntryColor;
    If (Info.Attr and Directory)<>0Then Sizes[Count]:='<DIR>'
    Else Str(Info.Size,Sizes[Count]);
    If Length(Names[Count])>NameWidth Then NameWidth:=Length(Names[Count]);
@@ -815,7 +916,9 @@ Begin
   End;
   For I:=1 to Count do Begin
    If I>1Then Write('  ');
+   TextAttr:=Colors[I];
    Write(PadRight(Names[I],NameWidth),' ',Sizes[I]:SizeWidth);
+   TextAttr:=OriginalColor;
   End;
   WriteLn;
   { La pagination compte les lignes completes, et non les fichiers. }
@@ -854,7 +957,9 @@ Begin
   If (Info.Attr and SysFile)<>0Then S[3]:='S';
   If (Info.Attr and Directory)<>0Then S[4]:='D';
   If (Info.Attr and Archive)<>0Then S[5]:='A';
+  TextAttr:=EntryColor;
   WriteLn(PadRight(TextDisplayName,13),' ',S);
+  TextAttr:=OriginalColor;
   FindNextMatch;
   If DosError=0Then If Not PageContinue Then Exit;
  End;
@@ -914,6 +1019,7 @@ Begin
   {$ENDIF}
   New(Node);
   Node^.Name:=TextDisplayName;
+  Node^.Color:=EntryColor;
   Node^.Details:='';
   Node^.Next:=Nil;
   If Not(Width in Column)Then Begin
@@ -954,11 +1060,13 @@ Begin
    If IsVertical Then Node:=Starts[Col];
    If Node<>Nil Then Begin
     If Col>1Then Write('  ');
+    TextAttr:=Node^.Color;
     Used:=Length(Node^.Name)+Length(Node^.Details);
     If Not(Width in Column)and Not(Four in Column)Then Begin
      Write(PadRight(Node^.Name,NameWidth),Node^.Details);
      Used:=NameWidth+Length(Node^.Details);
     End Else Write(Node^.Name,Node^.Details);
+    TextAttr:=OriginalColor;
     More:=False;
     If Col<Columns Then Begin
      If IsVertical Then More:=Starts[Col+1]<>Nil Else More:=Node^.Next<>Nil;
@@ -1018,6 +1126,10 @@ BEGIN
    SetUseACP(False);
   {$ENDIF}
  {$ENDIF}
+ OriginalColor:=TextAttr;
+ ColorRules:=StrToUpper(GetEnv('COLORDIR'));
+ If ColorRules=''Then
+  ColorRules:='DIRS:BRIGHT BLUE;EXE COM BAT BTM:BRIGHT GREEN;INI TXT:BRIGHT MAGENTA';
  Language:=_French;
  TmpLanguage:=GetEnv('LANGUAGE');
  If TmpLanguage<>''Then Begin
@@ -1056,6 +1168,7 @@ BEGIN
      WriteLn('                  Beschreibungen aus DESCRIPT.ION im jeweiligen Verzeichnis');
      WriteLn(' /4               Dateien mit ihren Gr'+#148+'ssen in vier Spalten anzeigen');
      WriteLn(' /D               Farbdarstellung deaktivieren');
+     WriteLn(' COLORDIR         Farben: DIRS, HIDDEN, SYSTEM, RDONLY, ARCHIVE, NORMAL oder Erweiterungen');
      WriteLn(' /F               Vollst'+#132+'ndige Dateinamen mit Pfad anzeigen');
      WriteLn(' /J               Dateinamen und Erweiterungen getrennt ausrichten');
      WriteLn(' /K               Kopfzeilen ausblenden, Summen beibehalten');
@@ -1088,6 +1201,7 @@ BEGIN
      WriteLn('                  Descriptions from DESCRIPT.ION in each directory');
      WriteLn(' /4               Display files and their sizes in four columns');
      WriteLn(' /D               Disable color coding');
+     WriteLn(' COLORDIR         Colors: DIRS, HIDDEN, SYSTEM, RDONLY, ARCHIVE, NORMAL or extensions');
      WriteLn(' /F               Display full filenames including their paths');
      WriteLn(' /J               Align filenames and extensions separately');
      WriteLn(' /K               Suppress headers, retaining totals');
@@ -1124,6 +1238,7 @@ BEGIN
      WriteLn(' /C               Taux de compression DoubleSpace, unit'+#130+'s d''allocation de 8 Ko');
      WriteLn('                  MS-DOS 7+ / Windows; - = indisponible; ignor'+#130+' avec /B ou /W');     
      WriteLn(' /D               D'+#130+'sactive la colorisation');
+     WriteLn(' COLORDIR         Couleurs: DIRS, HIDDEN, SYSTEM, RDONLY, ARCHIVE, NORMAL ou extensions');
      WriteLn(' /F               Affiche les noms complets avec leur chemin');
      WriteLn(' /FORMAT:format   Ce param'+#138+'tre permet d''indiquer CSV, HTML, Json, PASCAL, SQL ou XML');     
      WriteLn(' /J               Aligne s'+#130+'par'+#130+'ment les noms et les extensions');
@@ -1214,8 +1329,7 @@ BEGIN
   PrepareRecursivePath;
   ShowDir:=AppendPath(RecursiveRoot,RecursiveMask);
  End;
- { Aucun schema de couleurs n'est applique; /D retablit les attributs normaux. }
- If (NoColor in Option)and(OutputFormat=_Text)Then NormVideo;
+
  CurrDrive:=Path2Drive(ShowDir);
  CurrLabel:=GetDiskLabel(Byte(CurrDrive)-64);
  P:=0;
@@ -1486,7 +1600,9 @@ BEGIN
    If(Vertical in Option)and(Column<>[])Then ShowColumns Else
    If((Subdirectory in Option)or(FullPath in Option))and(Brief in Option)and
      Not(Description in Option)Then While DosError=0do Begin
+    TextAttr:=EntryColor;
     WriteLn(DisplayName);
+    TextAttr:=OriginalColor;
     FindNextMatch;
     If Pause in Option Then Begin
      Inc(P);
@@ -1500,7 +1616,9 @@ BEGIN
    End Else
    If Four in Column Then ShowFourColumns Else
    If(Width)in(Column)Then While DOSError=0 do Begin
+    TextAttr:=EntryColor;
     Write(PadRight(TextDisplayName,16));
+    TextAttr:=OriginalColor;
     FindNextMatch;
     If(Pause)in(Option)Then Begin
     Inc(P);
@@ -1523,6 +1641,7 @@ BEGIN
      WriteLn;
     End;
     While DOSError=0 do Begin
+     TextAttr:=EntryColor;
      Write(PadRight(TextDisplayName,13));
      If Info.Attr and Directory=Directory Then Begin
       Write(PadRight('<DIR>',15));
@@ -1533,6 +1652,7 @@ BEGIN
      UnpackTime(Info.Time,T);
      Write(' ',T.Year:4,'-',PadZeroLeft(T.Month,2),'-',PadZeroLeft(T.Day,2),' ',T.Hour:2,':',PadZeroLeft(T.Min,2));
      If Description in Option Then WriteFileDescription;
+     TextAttr:=OriginalColor;
      WriteLn;
      Inc(TotalNumFiles);
      Inc(TotalSize,Info.Size);
