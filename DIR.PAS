@@ -1164,6 +1164,47 @@ BEGIN
  If Length(CurrParam)=0Then Break;
   If CurrParam='/?'Then Begin
   Case Language of
+    _Japanese:Begin
+     WriteLn('DIR   Direkutori no naiyou o hyouji shimasu.');
+     WriteLn;
+     WriteLn('Koubun:');
+     WriteLn;
+     WriteLn('DIR [/?] [/1|/2|/4|/W] [/B] [/C] [/D] [/F] [/J] [/K] [/L] [/M] [/N] [/P] [/S] ',
+             '[/T] [/U] [/V] [/A[[:]zokusei]] [/O[[:]junjo]] [pasu] [/FORMAT:keishiki]');
+     WriteLn;
+     WriteLn(' /?               Komando no herupu o hyouji shimasu');
+     WriteLn(' /1               Ichi gyou ni ichi fairu: namae, saizu, nichiji, setsumei');
+     WriteLn('                  Kaku direkutori no DESCRIPT.ION kara setsumei o yomikomimasu');
+     WriteLn(' /2               Fairu o ni retsu de hyouji shimasu');
+     WriteLn(' /4               Fairu to saizu o yon retsu de hyouji shimasu');
+     WriteLn(' /A[[:]zokusei]    A=Aakaibu D=Direkutori H=Kakushi R=Yomitori senyou S=Shisutemu');
+     WriteLn('                  + : fukumeru; - : jogai suru');
+     WriteLn('                  /A : subete; /A:H-D : direkutori o nozoku kakushi fairu');
+     WriteLn(' /B               Midashi to matsubi no shuukei o hyouji shimasen');
+     WriteLn(' /C               DoubleSpace no asshukuhi, 8 KB no wariate tan''i');
+     WriteLn('                  MS-DOS 7+ / Windows; - = riyou fuka; /B mata wa /W de mukou');
+     WriteLn(' /D               Iro tsuki hyouji o mukou ni shimasu');
+     WriteLn(' COLORDIR         Iro: DIRS, HIDDEN, SYSTEM, RDONLY, ARCHIVE, NORMAL mata wa kakuchoushi');
+     WriteLn(' /F               Pasu o fukumu kanzen na fairumei o hyouji shimasu');
+     WriteLn(' /FORMAT:keishiki Keishiki: CSV, HTML, Json, PASCAL, SQL mata wa XML');
+     WriteLn(' /J               Fairumei to kakuchoushi o betsu betsu ni soroemasu');
+     WriteLn(' /K               Midashi o kakushi, goukei wa hyouji shimasu');
+     WriteLn(' /L               Fairumei to direktorimei o komoji de hyouji shimasu');
+     WriteLn(' /M               Matsubi no goukei to aki youryou o hyouji shimasen');
+     WriteLn(' /N               Sore made no opushon o shokichi ni modoshimasu');
+     WriteLn(' /O[[:]junjo]     C=Asshukuritsu D=Nichiji E=Kakuchoushi');
+     WriteLn('                  G=Direkutori o saki ni N=Namae S=Saizu');
+     WriteLn('                  Shoujun; - wa tsugi no kijun no junjo o gyakuten shimasu');
+     WriteLn('                  /O = GN; kijun wa kumiawase kanou, rei: /O:G-S');
+     WriteLn('                  C: sakugen shita baito (%), Windows / MS-DOS 7+');
+     WriteLn('                  Mitaiou no shisutemu: 0');
+     WriteLn(' /P               Kaku peeji no ato de kii nyuuryoku o machimasu');
+     WriteLn(' /S               Direkutori to subete no sabudirekutori no fairu o hyouji shimasu');
+     WriteLn(' /T               Namae to zokusei dake o hyouji shimasu (R H S D A)');
+     WriteLn(' /U               Fairusuu to shiyou baitosuu dake o hyouji shimasu');
+     WriteLn(' /V               /2, /4 mata wa /W de tate houkou ni narabemasu');
+     WriteLn(' /W               Namae dake o fukusuu no retsu de hyouji shimasu');
+    End;
     _Danish:Begin
      WriteLn('DIR   Viser indholdet af en mappe.');
      WriteLn;
