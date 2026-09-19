@@ -1,0 +1,535 @@
+FORMAT DES FICHIERS PC/GEOS ET GEOWORKS (.GEO)
+================================================
+
+Version du document : 1.0
+
+
+1. Objet du document
+--------------------
+
+Ce document decrit le conteneur binaire employe par PC/GEOS et GeoWorks pour
+les executables, bibliotheques et pilotes habituellement appeles "geodes" et
+portes par des fichiers .GEO. Il couvre les variantes GEOS 1.x et GEOS 2.x,
+les tables de bibliotheques, exportations, ressources et relogements, ainsi
+que les ressources LMem.
+
+Le meme en-tete general est aussi utilise par d'autres fichiers GEOS, en
+particulier les fichiers VM. Leur organisation est resumee a la section 11
+afin de permettre a un lecteur de distinguer correctement un .GEO executable
+d'un document GEOS.
+
+Les noms de champs proviennent principalement des structures historiques de
+GeoDump 0.5 presentes dans GEODUMP5/SOURCE/GEOS.H et GEOS2.H. Les offsets et
+les controles de taille correspondent aussi au lecteur GEODUMP.PAS de ce
+depot. Certains champs n'ont jamais ete publiquement documentes; ils sont
+donc notes "inconnu" plutot que de leur attribuer une signification supposee.
+
+
+2. Conventions binaires
+-----------------------
+
+Toutes les valeurs multioctets sont codees en ordre petit-boutiste x86.
+
+  u8       entier non signe de 8 bits
+  u16      entier non signe de 16 bits, octet faible en premier
+  u32      entier non signe de 32 bits, octet faible en premier
+  char[n]  tableau de n octets, souvent termine par NUL ou complete d'espaces
+
+Les structures sont compactes, sans octet de bourrage. Les offsets indiques
+dans ce document sont en hexadecimal, depuis le debut du fichier, sauf
+indication contraire.
+
+Les chaines utilisent le jeu de caracteres GEOS. Les octets 00h a 7Fh sont
+proches de l'ASCII; les octets 80h a FFh doivent etre convertis avec la table
+GEOS appropriee. Il ne faut pas les interpreter aveuglement comme CP437.
+
+
+3. Identification et classes de fichiers
+-----------------------------------------
+
+Les quatre premiers octets identifient la generation du fichier :
+
+  Octets sur disque   Valeur u32    Generation
+  C7 45 CF 53         53CF45C7h     GEOS 1.x
+  C7 45 C1 53         53C145C7h     GEOS 2.x
+
+Le champ de classe determine ensuite le contenu qui suit l'en-tete commun.
+
+GEOS 1.x :
+
+  0000h  executable (geode)
+  0001h  fichier VM
+
+GEOS 2.x :
+
+  0001h  executable (geode)
+  0002h  fichier VM
+  0003h  fichier au niveau octet
+  0004h  informations de repertoire
+  0005h  lien
+
+L'extension .GEO ne suffit donc pas pour valider le contenu. Le magic, la
+classe et toutes les bornes de tables doivent etre controles.
+
+
+4. Types communs
+----------------
+
+4.1 Numero de protocole (4 octets)
+
+  +00 u16 version
+  +02 u16 revision
+
+Il est habituellement affiche sous la forme "version.revision".
+
+4.2 Numero de version ou release (8 octets)
+
+  +00 u16 version majeure
+  +02 u16 version mineure
+  +04 u16 revision majeure
+  +06 u16 revision mineure
+
+La presentation historique est approximativement :
+
+  version-majeure.version-mineure  revision-majeure-revision-mineure
+
+4.3 Jeton GEOS (6 octets)
+
+  +00 char[4] chaine du jeton
+  +04 u16     identificateur numerique du fabricant
+
+Le jeton associe un type de fichier ou une icone a un producteur. Le second
+jeton de l'en-tete commun identifie normalement l'application creatrice.
+
+
+5. En-tete commun GEOS 1.x (192 octets)
+---------------------------------------
+
+  Offset Taille Type       Description
+  0000h    4    u32        magic 53CF45C7h
+  0004h    2    u16        classe du fichier
+  0006h    2    u16        attributs du fichier
+  0008h    8    release    version du fichier
+  0010h    4    protocol   protocole du fichier
+  0014h    6    token      jeton du type de fichier
+  001Ah    6    token      jeton de l'application creatrice
+  0020h   36    char[36]   nom long
+  0044h  100    char[100]  informations utilisateur
+  00A8h   24    char[24]   copyright
+  00C0h                    fin de l'en-tete commun
+
+Attributs observes du fichier :
+
+  8000h  modele
+  4000h  fichier public multiple
+  2000h  fichier public unique
+  0800h  fichier place en cache
+
+Les autres bits doivent etre conserves et affiches comme inconnus.
+
+
+6. En-tete commun GEOS 2.x (256 octets)
+---------------------------------------
+
+  Offset Taille Type       Description
+  0000h    4    u32        magic 53C145C7h
+  0004h   36    char[36]   nom long
+  0028h    2    u16        classe du fichier
+  002Ah    2    u16        attributs du fichier
+  002Ch    8    release    version du fichier
+  0034h    4    protocol   protocole du fichier
+  0038h    6    token      jeton du type de fichier
+  003Eh    6    token      jeton de l'application creatrice
+  0044h  100    char[100]  informations utilisateur
+  00A8h   24    char[24]   copyright
+  00C0h    8    octets     champ inconnu _x
+  00C8h    2    u16        date DOS compacte de creation
+  00CAh    2    u16        heure DOS compacte de creation
+  00CCh    8    char[8]    mot de passe/champ chiffre
+  00D4h   44    octets     champ inconnu _x2
+  0100h                    fin de l'en-tete commun
+
+Date DOS compacte :
+
+  bits  0..4   jour (1..31)
+  bits  5..8   mois (1..12)
+  bits  9..15  annee moins 1980
+
+Heure DOS compacte :
+
+  bits  0..4   secondes divisees par deux
+  bits  5..10  minutes
+  bits 11..15  heures
+
+Le mot de passe et les zones inconnues peuvent etre nuls. Un analyseur doit
+les conserver lors d'une reecriture, meme s'il n'en connait pas la semantique.
+
+
+7. En-tete d'un executable (geode)
+----------------------------------
+
+7.1 Position et normalisation
+
+Pour faciliter la comparaison des deux versions, la table suivante emploie
+un offset relatif P :
+
+  GEOS 1.x : P = 00C0h
+  GEOS 2.x : P = 00F8h
+
+Dans GEOS 1.x, P+00..P+07 est une zone historique inconnue faisant partie de
+l'en-tete applicatif de 96 octets.
+
+Dans GEOS 2.x, P+00..P+07 correspond aux huit derniers octets de l'en-tete
+commun. L'en-tete applicatif proprement dit commence donc a 0100h, soit P+08,
+et mesure 88 octets. Dans les deux cas, la premiere table commence a P+60h.
+
+7.2 Champs normalises
+
+  Relatif Taille Type       Description
+  +00h      8    octets     _x1; GEOS 1.x seulement, voir ci-dessus
+  +08h      2    u16        _attr, attributs internes du chargeur
+  +0Ah      2    u16        _type, type interne du chargeur
+  +0Ch      4    protocol   protocole minimal du noyau
+  +10h      2    u16        _numseg, copie du nombre de segments
+  +12h      2    u16        _numlib, copie du nombre de bibliotheques
+  +14h      2    u16        _numexp, copie du nombre d'exportations
+  +16h      2    u16        taille de pile / donnees non initialisees
+  +18h      2    u16        x2_ofs, offset de la classe processus presume
+  +1Ah      2    u16        x2_seg, ressource de la classe processus
+  +1Ch      2    u16        item du jeton/objet application
+  +1Eh      2    u16        ressource du jeton/objet application
+  +20h      2    octets     _x21, inconnu
+  +22h      2    u16        attributs du geode
+  +24h      2    u16        type public du geode
+  +26h      8    release    version du geode
+  +2Eh      4    protocol   protocole du geode
+  +32h      2    u16        CRC ou controle d'en-tete presume
+  +34h      8    char[8]    nom permanent interne
+  +3Ch      4    char[4]    extension interne
+  +40h      6    token      jeton du geode
+  +46h      2    octets     _x3, inconnu
+  +48h      2    u16        offset du point d'entree d'un pilote
+  +4Ah      2    u16        segment/ressource de ce point d'entree
+  +4Ch      2    u16        offset d'initialisation d'une bibliotheque
+  +4Eh      2    u16        segment/ressource d'initialisation
+  +50h      2    octets     _x33, inconnu
+  +52h      2    u16        nombre d'exportations
+  +54h      2    u16        nombre de bibliotheques importees
+  +56h      2    octets     _x4, inconnu
+  +58h      2    u16        nombre de segments/ressources
+  +5Ah      6    octets     _x5, inconnu
+  +60h                       debut des tables
+
+Types publics connus :
+
+  0001h  application
+  0002h  bibliotheque
+  0003h  pilote de peripherique
+  0005h  type d'application rencontre dans des geodes GEOS 2.x
+
+Bits d'attribut du geode utilises par GeoDump :
+
+  8000h  l'adresse +18h:+1Ah designe ProcessClass
+  4000h  l'adresse +4Ch:+4Eh designe l'initialisation de bibliotheque
+  2000h  l'adresse +48h:+4Ah designe la table du pilote
+
+Les copies prefixees par un soulignement ne doivent pas etre preferees aux
+champs publics sans verifier leur coherence. Une divergence indique un
+fichier inhabituel ou corrompu.
+
+
+8. Tables d'importation, d'exportation et de segments
+-----------------------------------------------------
+
+Les tables se suivent sans separateur :
+
+  P+60h
+    table des bibliotheques       nombre = numlib, taille = 14 octets
+    table des exportations        nombre = numexp, taille = 4 octets
+    table des segments            nombre = numseg, taille = 10 octets logiques
+
+8.1 Entree de bibliotheque importee (14 octets)
+
+  +00 char[8]   nom permanent de la bibliotheque
+  +08 u16       type : 2000h = pilote, 4000h = bibliotheque
+  +0A protocol  version/revision minimale requise
+
+L'ordre des entrees definit l'ordinal de bibliotheque utilise par certains
+relogements; la premiere entree a l'ordinal zero.
+
+8.2 Entree exportee (4 octets)
+
+  +00 u16  offset dans la ressource
+  +02 u16  numero de ressource/segment
+
+L'indice de l'entree dans la table est son ordinal public.
+
+8.3 Table des segments : quatre tableaux paralleles
+
+La table n'est pas un tableau de structures entrelacees. Elle contient quatre
+tableaux consecutifs pour N = numseg :
+
+  base + 0*N   N x u16  longueur non arrondie de chaque segment
+  base + 2*N   N x u32  position de chaque segment
+  base + 6*N   N x u16  taille de la table de relogements
+  base + 8*N   N x u16  attributs du segment
+
+La taille totale vaut donc 10*N octets. Pour le segment i :
+
+  longueur = u16(base + 2*i)
+  position = u32(base + 2*N + 4*i)
+  fixlen   = u16(base + 6*N + 2*i)
+  flags    = u16(base + 8*N + 2*i)
+
+ATTENTION : la position est relative a une base differente selon la version :
+
+  GEOS 1.x : base fichier = 0
+  GEOS 2.x : base fichier = 0100h
+
+Ainsi, dans GEOS 2.x, une valeur de position n'inclut pas l'en-tete commun de
+256 octets. La position physique vaut 0100h + position.
+
+
+9. Ressources, alignement et attributs
+--------------------------------------
+
+Chaque ressource est constituee de :
+
+  donnees utiles, sur "longueur" octets
+  bourrage jusqu'a la prochaine frontiere de 16 octets
+  table de relogements, sur "fixlen" octets
+
+La position physique de la table de relogements est :
+
+  base_fichier + position + ((longueur + 15) AND NOT 15)
+
+La taille de relogement doit etre divisible par quatre.
+
+Attributs du segment, combines sur 16 bits :
+
+  8000h  initialise a zero          HAF_ZERO_INIT
+  4000h  verrouille                 HAF_LOCK
+  2000h  ne pas signaler d'erreur   HAF_NO_ERR
+  1000h  interface utilisateur      HAF_UI
+  0800h  lecture seule              HAF_READ_ONLY
+  0400h  ressource objet            HAF_OBJECT_RESOURCE
+  0200h  code                       HAF_CODE
+  0100h  conforme                   HAF_CONFORMING
+  0080h  fixe                       HF_FIXED
+  0040h  partageable                HF_SHARABLE
+  0020h  jetable                    HF_DISCARDABLE
+  0010h  permutable                 HF_SWAPABLE
+  0008h  contient un tas LMem       HF_LMEM
+  0004h  debogage                   HF_DEBUG
+  0002h  actuellement jete          HF_DISCARDED
+  0001h  actuellement permute       HF_SWAPPED
+
+Une ressource de longueur nulle peut etre une ressource de donnees non
+initialisees. Le segment zero nul est ignore par l'utilitaire de ce depot.
+
+
+10. Relogements de ressources
+-----------------------------
+
+Chaque entree de relogement mesure quatre octets :
+
+  +00 u16 type et cible
+  +02 u16 offset du mot a corriger, relatif au debut de la ressource
+
+Les quatre bits faibles du type decrivent la forme de la correction :
+
+  0  pointeur 16:16 vers un numero de routine
+  1  offset 16 bits vers un numero de routine
+  2  segment 16 bits d'une routine
+  3  valeur de segment/handle
+  4  pointeur 16:16, stocke dans l'ordre segment:offset indique par GEOS
+
+Les bits 4 et 5 designent l'espace cible :
+
+  00h  noyau GEOS
+  10h  bibliotheque importee
+  20h  programme/geode courant
+  30h  reserve ou inconnu
+
+Pour une cible bibliotheque, l'octet fort du mot de type contient l'ordinal
+de la bibliotheque. Le mot ou le double mot present a l'emplacement corrige
+contient, selon le sous-type, un ordinal de routine, un numero de segment ou
+une adresse segment:offset.
+
+Combinaisons couramment interpretees :
+
+  00h  pointeur distant vers une routine du noyau
+  11h  offset d'une routine de bibliotheque
+  12h  segment d'une routine de bibliotheque
+  13h  handle d'une bibliotheque
+  14h  pointeur distant vers une routine de bibliotheque
+  22h  segment du programme (1 designe habituellement dgroup)
+  23h  handle d'une ressource du programme
+  24h  pointeur segment:offset dans le programme
+
+Les types non reconnus doivent etre preserves. Un chargeur ne doit jamais
+appliquer un relogement avant d'avoir verifie que son offset et la largeur de
+la valeur a modifier tiennent entierement dans la ressource.
+
+
+11. Ressources LMem et fichiers VM apparentes
+---------------------------------------------
+
+11.1 En-tete LMem dans une ressource
+
+Une ressource dont le bit 0008h est actif commence par :
+
+  +00 u16  segment/handle du bloc
+  +02 u16  offset de la liste des handles locaux
+  +04 u16  attributs LMem
+  +06 u16  type LMem
+  +08 u16  nombre d'octets geres par le tas
+  +0A u16  nombre d'entrees dans la liste des handles
+  +0C u16  offset du premier bloc libre
+  +0E u16  total d'octets libres
+
+Types LMem connus :
+
+  0 GENERAL       1 WINDOW       2 OBJ_BLOCK
+  3 GSTATE        4 FONT_BLK     5 GSTRING
+  6 DB_ITEMS
+
+Pour OBJ_BLOCK, l'en-tete est prolonge par dix octets :
+
+  +10 u16  inUseCount
+  +12 u16  interactibleCount
+  +14 u32  output
+  +18 u16  resourceSize
+
+La liste locale contient des offsets u16. Une valeur zero ou FFFFh indique
+une entree absente. Pour un chunk valide, le mot immediatement avant son
+offset donne sa taille. Les chunks et blocs libres sont typiquement arrondis
+sur quatre octets. Toute liste libre cyclique, tout chevauchement ou tout
+offset hors ressource doit etre traite comme une corruption.
+
+11.2 Fichiers VM
+
+Les fichiers VM ne sont pas des geodes, mais partagent le meme en-tete commun.
+Le sous-en-tete VM contient le magic ADEBh, la taille du repertoire et sa
+position u32. En GEOS 1.x il se trouve a 00C8h; en GEOS 2.x il commence a la
+base 0100h. En GEOS 2.x, les positions internes VM sont elles aussi relatives
+a cette base.
+
+Le repertoire VM commence par un en-tete de 32 octets, puis des entrees de
+12 octets. Un handle VM est un offset dans ce repertoire, et non un indice
+ordinal simple :
+
+  handle(i) = 32 + 12*i
+
+Une entree utilisee contient un handle memoire, des flags, un identificateur
+utilisateur, une taille u16 et une position u32. Une entree libre reutilise
+les premiers mots pour les liens precedent/suivant et la taille libre. Le
+repertoire indique notamment les handles MAP et DBMap.
+
+Cette distinction est essentielle : appliquer le lecteur de ressources .GEO
+a un fichier de classe VM produit des offsets depourvus de sens.
+
+
+12. Validation recommandee
+--------------------------
+
+Un lecteur robuste devrait au minimum :
+
+  1. verifier le magic avant tout autre champ;
+  2. verifier que l'en-tete commun complet tient dans le fichier;
+  3. verifier la classe avant de lire l'en-tete geode ou VM;
+  4. effectuer les additions et multiplications dans un type assez large;
+  5. refuser tout depassement lors du calcul numlib*14, numexp*4 et numseg*10;
+  6. verifier chaque position et longueur contre la taille physique du fichier;
+  7. exiger fixlen modulo 4 = 0;
+  8. verifier le bourrage de 16 octets sans debordement arithmetique;
+  9. verifier chaque relogement contre la taille de sa ressource;
+ 10. detecter les tables, chunks et zones libres qui se chevauchent;
+ 11. borner le parcours des listes chainees et detecter leurs cycles;
+ 12. conserver les champs et bits inconnus lors d'une reecriture.
+
+Les champs dupliques (_numseg/numseg, _numlib/numlib et _numexp/numexp)
+devraient aussi etre compares. Une difference ne doit pas provoquer une
+lecture hors limites; elle doit au minimum produire un avertissement.
+
+
+13. Utilitaire GEODUMP.PAS
+--------------------------
+
+Le fichier GEODUMP.PAS de ce depot contient un clone en Turbo Pascal/Free
+Pascal de GeoDump 0.5. Il reconnait les en-tetes GEOS 1.x et 2.x, les geodes,
+les fichiers VM, les ressources LMem, les blocs objets, les relogements et les
+polices GEOS BSWF/Nimbus. Il comprend aussi un desassembleur x86 symbolique.
+
+Compilation avec Free Pascal :
+
+  fpc GEODUMP.PAS
+
+Syntaxe :
+
+  GEODUMP [/D|/L] [/Rnn] [/1] fichier
+
+Options :
+
+  /D      affiche le contenu des blocs et ressources;
+  /L      produit un listing/desassemblage et implique /D;
+  /Rnn    limite l'analyse a la ressource decimale nn;
+  /1      produit le listing des la premiere passe d'analyse;
+  /?      affiche l'aide en francais.
+
+Exemples :
+
+  GEODUMP PROGRAM.GEO
+  GEODUMP /D PROGRAM.GEO
+  GEODUMP /L /R3 PROGRAM.GEO > PROGRAM.LST
+
+Pour le listing symbolique, GEODUMP.PAS peut lire un fichier PROGRAM.DIS et
+des fichiers de symboles de bibliotheques .SLS. La variable d'environnement
+GEODUMP peut indiquer le repertoire dans lequel rechercher ces fichiers
+auxiliaires. Les directives .DIS servent notamment a signaler des points
+d'entree de code ou de donnees et des tables de sauts.
+
+L'utilitaire effectue des controles de bornes, signale les tables tronquees,
+les relogements invalides et plusieurs corruptions VM/LMem. Son affichage est
+un outil d'analyse; il ne remplace pas le chargeur GEOS et ne garantit pas que
+les champs inconnus soient sans importance.
+
+
+14. Exemple de calcul d'une ressource GEOS 2.x
+----------------------------------------------
+
+Supposons un geode GEOS 2.x avec :
+
+  position[3] = 00001230h
+  longueur[3] = 0123h
+  fixlen[3]   = 0010h
+
+La base GEOS 2.x vaut 0100h :
+
+  donnees physiques = 0100h + 1230h = 1330h
+  longueur arrondie = (0123h + 0Fh) AND FFF0h = 0130h
+  relogements       = 1330h + 0130h = 1460h
+  nombre d'entrees  = 0010h / 4 = 4
+
+Le lecteur doit verifier les plages [1330h,1452h] pour les donnees utiles et
+[1460h,146Fh] pour les quatre relogements. Le bourrage entre les deux n'est
+pas compris dans la longueur utile de la ressource.
+
+
+15. Limites et sources techniques locales
+------------------------------------------
+
+Les structures de reference utilisees pour ce document sont :
+
+  GEODUMP5/SOURCE/GEOS.H
+  GEODUMP5/SOURCE/GEOS2.H
+  GEODUMP5/SOURCE/NIMBUS.H
+  GEODUMP5/GEODUMP.DOC
+  GEODUMP.PAS
+
+Les champs _x1, _x21, _x3, _x33, _x4, _x5 et certaines parties de l'en-tete
+GEOS 2.x sont deliberement decrits comme inconnus. Leur sens peut varier entre
+versions, SDK ou outils de liaison. La meilleure pratique consiste a les
+afficher en hexadecimal, a les conserver et a ne jamais les utiliser pour
+calculer une adresse sans une source supplementaire fiable.
+

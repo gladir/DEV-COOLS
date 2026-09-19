@@ -1,0 +1,351 @@
+FORMAT DE FICHIER NORTON GUIDES (.NG)
+=====================================
+
+Version de ce document : 1.0
+
+
+1. OBJET ET LIMITES
+-------------------
+
+Le suffixe .NG designe ici une base hypertexte Norton Guides pour DOS. Le
+present document decrit le format binaire observe dans les guides Norton et
+dans plusieurs lecteurs libres. Il ne decrit pas un fichier image PNG dont le
+nom aurait ete tronque ou incorrectement suffixe .NG.
+
+Le format n'a pas fait l'objet d'une specification publique complete connue.
+Plusieurs champs restent donc marques "inconnu". Un lecteur doit les conserver
+lors d'une reecriture et ne doit pas exiger qu'ils soient nuls.
+
+Les variantes Expert Help emploient la meme organisation generale, avec une
+signature differente.
+
+
+2. CONVENTIONS BINAIRES
+-----------------------
+
+Tous les offsets donnes dans ce document sont relatifs au debut de la structure
+concernee, sauf mention contraire.
+
+  u8      entier non signe de 8 bits
+  u16le   entier non signe de 16 bits, octet faible en premier
+  u32le   entier non signe de 32 bits, octet faible en premier
+  char[n] tableau de n octets
+
+Les pointeurs contenus dans les enregistrements sont des positions absolues en
+octets depuis le debut du fichier. La valeur zero doit etre acceptee comme
+absence de cible lorsqu'elle apparait dans un lien optionnel.
+
+La signature est souvent presentee sous forme du mot hexadecimal 474Eh. Dans
+le fichier little-endian, ses octets sont 4Eh,47h, soit les caracteres "NG".
+
+
+3. ORGANISATION GENERALE
+------------------------
+
+Une base est composee de :
+
+  +-------------------------------+
+  | en-tete non chiffre (378 oct.) |
+  +-------------------------------+
+  | enregistrement chiffre        |
+  +-------------------------------+
+  | enregistrement chiffre        |
+  +-------------------------------+
+  | ...                           |
+  +-------------------------------+
+
+Trois types d'enregistrements sont documentes :
+
+  0   entree courte (SHORT)
+  1   entree longue (LONG)
+  2   menu (MENU)
+
+Le champ Length permet de passer a l'enregistrement suivant. Les relations
+entre menus et entrees sont exprimees par des offsets absolus ; un lecteur ne
+doit donc pas deduire les cibles uniquement de l'ordre physique des blocs.
+
+
+4. CHIFFREMENT DES ENREGISTREMENTS
+----------------------------------
+
+Les octets des enregistrements situes apres l'en-tete sont masques par XOR avec
+1Ah :
+
+  clair = chiffre XOR 1Ah
+  chiffre = clair XOR 1Ah
+
+L'operation est symetrique et s'applique octet par octet. Elle n'utilise ni cle
+variable, ni etat entre deux octets. L'en-tete de 378 octets n'est pas soumis a
+ce XOR.
+
+Pour parcourir le fichier, il faut donc dechiffrer au minimum les quatre
+premiers octets d'un enregistrement afin d'obtenir Type et Length, valider la
+longueur, puis dechiffrer le reste du bloc.
+
+
+5. COMPRESSION DU TEXTE
+-----------------------
+
+Les chaines des entrees et menus utilisent un codage RLE des espaces. Apres le
+dechiffrement, la sequence :
+
+  FF nn
+
+represente nn caracteres espace (20h). Le compteur nn est un octet non signe.
+Les autres octets sont recopies tels quels. Les chaines sont terminees par 00h.
+
+Ordre de traitement recommande :
+
+  1. dechiffrer par XOR 1Ah ;
+  2. delimiter la chaine au moyen du zero terminal ;
+  3. developper les sequences FF nn.
+
+Un lecteur robuste doit refuser une sequence FF placee au dernier octet de
+l'enregistrement, car son compteur manque. Il doit egalement borner la taille
+decomposee afin d'eviter une allocation excessive sur un fichier corrompu.
+
+
+6. EN-TETE DU FICHIER
+---------------------
+
+Taille fixe connue : 378 octets (017Ah).
+
+Offset  Taille  Type      Description
+------  ------  --------  -----------------------------------------------
+0000h      2    u16le     Signature : 474Eh = Norton Guides (.NG)
+                             ou 4845h = Expert Help (.EH)
+0002h      2    u16le     Inconnu 1
+0004h      2    u16le     Inconnu 2
+0006h      2    u16le     Nombre de menus principaux
+0008h     40    char[40]  Titre de la base
+0030h     66    char[66]  Ligne de credits 1
+0072h     66    char[66]  Ligne de credits 2
+00B4h     66    char[66]  Ligne de credits 3
+00F6h     66    char[66]  Ligne de credits 4
+0138h     66    char[66]  Ligne de credits 5
+017Ah      -              Premier enregistrement
+
+Le titre et les credits sont termines par 00h lorsqu'ils occupent moins que la
+taille du champ. Si aucun zero n'est present, le champ entier constitue la
+chaine. Ces champs ne sont ni chiffres ni compresses.
+
+
+7. ENREGISTREMENT D'ENTREE COURTE (TYPE 0)
+------------------------------------------
+
+En-tete fixe : 26 octets, suivi d'une table de LineCount pointeurs, puis de
+LineCount chaines terminees par zero.
+
+Offset  Taille             Type      Description
+------  -----------------  --------  --------------------------------------
+0000h       2              u16le     Type = 0
+0002h       2              u16le     Longueur totale de l'enregistrement
+0004h       2              u16le     LineCount, nombre de lignes
+0006h       2              u16le     Inconnu
+0008h       2              u16le     Numero de ligne dans le parent
+000Ah       4              u32le     Offset absolu de l'entree parente
+000Eh       2              u16le     Numero du menu parent
+0010h       2              u16le     Numero du choix dans ce menu
+0012h       8              char[8]   Champ inconnu/reserve
+001Ah   4*LineCount        u32le[]   Cible associee a chaque ligne
+variable    variable                 LineCount chaines 00h compressees
+
+Position du texte :
+
+  TextOffset = 26 + 4 * LineCount
+
+Le pointeur numero i correspond a la ligne numero i. Un pointeur nul indique
+normalement une ligne sans saut. La validite d'un pointeur doit etre controlee
+avant son dereferencement : il doit designer le debut d'un enregistrement dans
+les limites du fichier.
+
+
+8. ENREGISTREMENT D'ENTREE LONGUE (TYPE 1)
+------------------------------------------
+
+Offset  Taille  Type      Description
+------  ------  --------  -----------------------------------------------
+0000h      2    u16le     Type = 1
+0002h      2    u16le     Longueur totale de l'enregistrement
+0004h      2    u16le     LineCount, nombre de lignes
+0006h      2    u16le     Indicateur de section "See also"
+0008h      2    u16le     Numero de ligne dans le parent
+000Ah      4    u32le     Offset absolu de l'entree parente
+000Eh      2    u16le     Numero du menu parent
+0010h      2    u16le     Numero du choix dans ce menu
+0012h      4    u32le     Offset absolu de l'entree precedente
+0016h      4    u32le     Offset absolu de l'entree suivante
+001Ah      -              Debut des lignes de texte
+
+Le corps commence par LineCount chaines 00h compressees.
+
+Si SeeAlsoFlag est nul, l'enregistrement se termine apres ces lignes. S'il est
+non nul, les donnees suivantes apparaissent immediatement apres la derniere
+ligne :
+
+Offset relatif  Taille          Type      Description
+--------------  --------------  --------  -------------------------------
++0                  2           u16le     SeeAlsoCount
++2              4*SeeAlsoCount  u32le[]   Offsets absolus des cibles
+variable            variable              SeeAlsoCount libelles 00h
+
+Les liens Previous et Next servent a la navigation sequentielle. Ils ne doivent
+pas etre confondus avec Parent, ni avec les liens "See also".
+
+
+9. ENREGISTREMENT DE MENU (TYPE 2)
+----------------------------------
+
+Offset  Taille               Type      Description
+------  -------------------  --------  -----------------------------------
+0000h       2                u16le     Type = 2
+0002h       2                u16le     Longueur totale de l'enregistrement
+0004h       2                u16le     PromptCount, nombre de choix
+0006h      20                char[20]  Champ inconnu/reserve
+001Ah   4*PromptCount        u32le[]   Cibles absolues des choix
+variable 8*PromptCount       char[]    Donnees inconnues par choix
+variable    variable                   Titre du menu, chaine 00h
+variable    variable                   PromptCount libelles 00h
+
+Position du titre :
+
+  TitleOffset = 26 + 12 * PromptCount
+
+Les outils historiques limitent habituellement le titre a 40 caracteres et un
+libelle a 50 caracteres. Des fichiers possedant des textes plus longs existent;
+un lecteur ne doit donc pas utiliser ces valeurs comme limites structurelles.
+La fin reelle est donnee par les separateurs 00h et par Length.
+
+
+10. CALCULS ET VALIDATIONS
+--------------------------
+
+Avant toute allocation ou lecture, effectuer les controles suivants avec une
+arithmetique suffisamment large :
+
+  * taille du fichier >= 378 ;
+  * signature egale a 474Eh ou 4845h ;
+  * position + 4 <= taille du fichier avant de lire Type et Length ;
+  * Length >= taille minimale du type d'enregistrement ;
+  * position + Length sans debordement et <= taille du fichier ;
+  * Type dans 0..2 ;
+  * 26 + 4*LineCount sans debordement pour une entree courte ;
+  * 26 + 12*PromptCount sans debordement pour un menu ;
+  * chaque chaine trouve son zero terminal avant la fin du bloc ;
+  * chaque FF possede son octet compteur ;
+  * chaque pointeur nul est traite comme optionnel ;
+  * chaque pointeur non nul reste dans le fichier et vise un enregistrement
+    dont l'en-tete est lisible ;
+  * les chaines Parent, Previous et Next sont parcourues avec detection des
+    cycles ;
+  * le nombre de menus lu ne doit jamais imposer une lecture au-dela du fichier.
+
+Il est utile de construire d'abord une table des positions de tous les
+enregistrements valides. Les pointeurs peuvent ensuite etre verifies contre
+cette table plutot que seulement contre la taille brute du fichier.
+
+
+11. ALGORITHME DE LECTURE RECOMMANDE
+------------------------------------
+
+Pseudo-code :
+
+  lire 378 octets d'en-tete
+  verifier la signature
+  position := 378
+
+  tant que position < taille_fichier :
+      lire et dechiffrer 4 octets
+      type   := lire_u16le(octets 0..1)
+      length := lire_u16le(octets 2..3)
+      verifier type, length et position + length
+      lire exactement length octets depuis position
+      dechiffrer chaque octet avec XOR 1Ah
+      analyser le bloc selon type
+      memoriser position comme debut d'enregistrement valide
+      position := position + length
+
+  verifier ensuite tous les pointeurs collectes
+
+Ne jamais rechercher un octet chiffre particulier pour localiser un bloc : le
+champ Length dechiffre est la seule methode de parcours structurel documentee.
+
+
+12. ECRITURE D'UNE BASE
+-----------------------
+
+Une ecriture fiable se fait en deux passes :
+
+  Premiere passe
+    * construire les menus et entrees en memoire ;
+    * compresser les espaces des chaines ;
+    * calculer la longueur exacte de chaque bloc ;
+    * attribuer les offsets absolus.
+
+  Deuxieme passe
+    * ecrire l'en-tete non chiffre ;
+    * remplir tous les pointeurs avec les offsets calcules ;
+    * serialiser les entiers en little-endian ;
+    * appliquer XOR 1Ah a chaque octet de chaque enregistrement ;
+    * ecrire les blocs sans modifier leur longueur.
+
+Les champs inconnus doivent etre recopies lors d'une modification. Lors de la
+creation d'un nouveau fichier, les mettre a zero est le choix le plus prudent,
+mais ce comportement n'est pas garanti identique a tous les compilateurs NGC.
+
+
+13. EXEMPLE MINIMAL D'IDENTIFICATION
+-----------------------------------
+
+Les huit premiers octets d'un Norton Guide typique non chiffre sont :
+
+  4E 47 xx xx xx xx mm mm
+
+ou xx designe un champ inconnu et mm mm le nombre de menus en little-endian.
+
+Pour un Expert Help :
+
+  45 48 xx xx xx xx mm mm
+
+Le premier enregistrement commence a 017Ah. Si son type clair vaut zero, les
+deux premiers octets stockes sur disque valent normalement :
+
+  1A 1A
+
+car 0000h XOR 1A1Ah = 1A1Ah.
+
+
+14. POINTS ENCORE NON DOCUMENTES
+--------------------------------
+
+Les significations suivantes ne sont pas etablies avec assez de certitude :
+
+  * les deux mots inconnus de l'en-tete ;
+  * le mot inconnu d'une entree courte ;
+  * les huit octets reserves d'une entree courte ;
+  * les vingt octets reserves d'un menu ;
+  * les huit octets par choix de menu ;
+  * les differences exactes entre toutes les versions de NGC et Expert Help ;
+  * les contraintes historiques precises sur les valeurs Parent/Menu ;
+  * l'encodage de caracteres attendu hors ASCII DOS/OEM.
+
+Ces zones ne doivent pas etre utilisees pour stocker des extensions privees si
+la compatibilite avec les lecteurs Norton d'origine est recherchee.
+
+
+15. REFERENCES
+--------------
+
+Dave Pearson, "The Norton Guide Database File Format" :
+  https://davep.org/norton-guides/file-format/
+
+jsNG, lecteur JavaScript de bases Norton Guides :
+  https://blog.davep.org/jsNG/lib/jsNG.html
+
+FileFormat.Info, identification historique de la signature NG :
+  https://www.fileformat.info/mirror/corion/original.htm
+
+La premiere reference constitue la source technique principale. Son auteur
+precise qu'il s'agit d'un format reconstitue par investigation et qu'il demeure
+incomplet. Les champs inconnus de ce document conservent volontairement cette
+qualification.
