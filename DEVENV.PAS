@@ -2084,6 +2084,8 @@ Const
  CLR_SELECTION         = 1;    { bleu : texte selectionne            }
  CLR_CURSOR            = 8;    { gris fonce : curseur (pas 0 car SetBkColor remappe 0) }
  CLR_LINE_HIGHLIGHT    = 14;   { jaune : ligne courante              }
+ CLR_ERROR_LINE        = 4;    { rouge : ligne en erreur (F5), voir   }
+                                { ErrorHighlightLine/ErrorHighlightFile}
  CLR_BORDER            = 8;    { gris fonce : bordures               }
  CLR_WINDOW            = 15;   { blanc : fond de fenetre/dialogue     }
  CLR_WINDOWTEXT        = 8;    { gris fonce : texte de fenetre/dialogue (pas 0 car SetBkColor remappe 0) }
@@ -7290,6 +7292,12 @@ Var
  EditorUndo   : TUndoStack;
  EditorRedo   : TUndoStack;
  EditorReady  : Boolean;  { True si ActiveEditor est initialise }
+ { Ligne en erreur suite a F5 (2026-09-19, demande explicite : "la ligne }
+ { ou est situe l'erreur devrait devenir rouge, le curseur devrait       }
+ { focuser a l'endroit exact de l'erreur") - ErrorHighlightLine est en    }
+ { base 0 (meme convention que Ed.CursorLine), 0 = aucune erreur active. }
+ ErrorHighlightLine : LongInt;
+ ErrorHighlightFile : String;
  { Editeurs hexadecimaux (un par fenetre de type WK_HEX) }
  HexEditors     : Array[0..MAX_WINDOWS - 1] Of PHexEditor;
  ActiveHexEditor: THexEditor;
@@ -11807,7 +11815,7 @@ Begin
                 (Ext = '.ADB') Or (Ext = '.ADS')  Or (Ext = '.ADA')  Or
                 (Ext = '.ABAP')Or (Ext = '.ABP')  Or (Ext = '.BAS')  Or
                 (Ext = '.FRM') Or
-                (Ext = '.PSP') Or (Ext = '.AWK')  Then Begin
+                (Ext = '.PSP') Or (Ext = '.AWK')  Or (Ext = '.PSC')  Then Begin
      If Not FileExists(Arg) Then
       FatalError('Fichier introuvable: ' + Arg);
      Opts.SourceFile := Arg;
@@ -20222,12 +20230,27 @@ End;
 Procedure DrawLineHighlight(Var Ed: TEditor);
 Var
  YPos: Integer;
+ IsErrorLine: Boolean;
 Begin
  If (Ed.CursorLine >= Ed.ScrollLine) And
     (Ed.CursorLine < Ed.ScrollLine + Ed.VisibleLines) Then Begin
   YPos := Ed.Y + (Ed.CursorLine - Ed.ScrollLine) * Ed.CharHeight;
-  SetColor(CLR_LINE_HIGHLIGHT);
-  SetFillStyle(SolidFill, CLR_LINE_HIGHLIGHT);
+  { F5 sur un script en erreur (2026-09-19, demande explicite) : la ligne  }
+  { fautive devient rouge au lieu du jaune habituel de la ligne courante - }
+  { le curseur y est deplace par l appelant (voir la section .psc de       }
+  { HandleStartDebugging), donc ErrorHighlightLine correspond toujours a   }
+  { Ed.CursorLine tant que l erreur reste active. }
+  IsErrorLine := (ErrorHighlightLine > 0) And
+   (ErrorHighlightLine - 1 = Ed.CursorLine) And
+   (ErrorHighlightFile <> '') And
+   (UpCaseStr(ErrorHighlightFile) = UpCaseStr(Ed.Buffer.FileName));
+  If IsErrorLine Then Begin
+   SetColor(CLR_ERROR_LINE);
+   SetFillStyle(SolidFill, CLR_ERROR_LINE);
+  End Else Begin
+   SetColor(CLR_LINE_HIGHLIGHT);
+   SetFillStyle(SolidFill, CLR_LINE_HIGHLIGHT);
+  End;
   Bar(Ed.X + Ed.GutterWidth, YPos,
       Ed.X + Ed.Width - 1, YPos + Ed.CharHeight - 1);
  End;
@@ -124951,6 +124974,32 @@ Begin
  PscSetV(N,V);
 End;
 
+{ Detecter les caracteres parasites apres la parenthese fermante d'un      }
+{ appel de type Nom(args) - (2026-09-19, demande explicite de              }
+{ l'utilisateur : "j'ai rajoute le chiffre 4 pour provoquer une erreur...  }
+{ ca donne l'impression qu'on a jamais presse sur la touche F5") - AVANT   }
+{ ce correctif, chaque site d'appel (WSCRIPT.ECHO/WRITELN/WRITE/SETLENGTH/ }
+{ appel generique) supposait silencieusement que le DERNIER caractere de   }
+{ la ligne etait la parenthese fermante et ignorait tout ce qui suivait si }
+{ ce n'etait PAS le cas (ex. "WScript.Echo('...');4" - le "4" en trop      }
+{ n'etait jamais detecte, l'appel s'executait normalement comme si de rien }
+{ n'etait, PscExitCode restait 0). Ce garde-fou refuse desormais           }
+{ explicitement toute ligne qui ne se termine pas par ')', et signale      }
+{ l'erreur avec le numero de ligne (PscCurrLineNo, deja suivi par          }
+{ PscExecRange) pour que l'appelant (TermCmd_PSCRIPT / HandleStartDebugging}
+{ ) puisse la reporter a l'utilisateur. }
+Function PscCheckCallSyntax(Const S:String):Boolean;
+Begin
+ If(Length(S)=0)or(S[Length(S)]<>')')Then Begin
+  PscWL('PSCRIPT: erreur de syntaxe (ligne '+IntToStr(PscCurrLineNo)+
+   ') : caracteres inattendus apres la parenthese fermante : '+
+   PscLS(PscCurrLineNo));
+  PscRuntimeError:=True;
+  PscCheckCallSyntax:=False;
+ End Else
+  PscCheckCallSyntax:=True;
+End;
+
 { Write/WriteLn (2026-09-08, demande explicite de l'utilisateur - absents  }
 { auparavant : seul WScript.Echo existait comme mecanisme de sortie, un    }
 { vrai "WriteLn(...)" de script echouait silencieusement en erreur         }
@@ -124986,12 +125035,14 @@ Begin
   Exit;
  End;
  If PscStarts(S,'WSCRIPT.ECHO(')Then Begin
+  If Not PscCheckCallSyntax(S) Then Exit;
   A:=Copy(S,14,Length(S)-14);
   If(Length(A)>0)and(A[Length(A)]=')')Then Delete(A,Length(A),1);
   PscEvalText(A,V);PscWL(V.Text);
   Exit;
  End;
  If PscStarts(S,'WRITELN(')Then Begin
+  If Not PscCheckCallSyntax(S) Then Exit;
   A:=Copy(S,9,Length(S)-9);
   If(Length(A)>0)and(A[Length(A)]=')')Then Delete(A,Length(A),1);
   PscWriteArgs(A,True);
@@ -125002,12 +125053,14 @@ Begin
   Exit;
  End;
  If PscStarts(S,'WRITE(')Then Begin
+  If Not PscCheckCallSyntax(S) Then Exit;
   A:=Copy(S,7,Length(S)-7);
   If(Length(A)>0)and(A[Length(A)]=')')Then Delete(A,Length(A),1);
   PscWriteArgs(A,False);
   Exit;
  End;
  If PscStarts(S,'SETLENGTH(')Then Begin
+  If Not PscCheckCallSyntax(S) Then Exit;
   A:=Copy(S,11,Length(S)-11);
   If A[Length(A)]=')'Then Delete(A,Length(A),1);
   P:=Pos(',',A);
@@ -125029,6 +125082,7 @@ Begin
  PscTryObjectAccess(S,V,ObjHandled);
  If ObjHandled Then Exit;
  P:=Pos('(',S);If P>0Then Begin
+  If Not PscCheckCallSyntax(S) Then Exit;
   N:=PscTrimS(Copy(S,1,P-1));
   A:=Copy(S,P+1,255);
   If A[Length(A)]=')'Then Delete(A,Length(A),1);
@@ -206774,6 +206828,7 @@ Var
  I: Integer;
  EffectiveCPU: String;
  DummyTP: TTerminalPanel;
+ ErrMsg: String;
 Begin
  { BOGUE REEL signale par l utilisateur (2026-08-02) : F5 recompilait      }
  { TOUJOURS le contenu SUR DISQUE du fichier actif, jamais le tampon         }
@@ -206814,6 +206869,13 @@ Begin
  OutputPanel.ActiveTab := OTK_BUILD;
  ClearOutput(OutputPanel, Ord(OTK_BUILD));
  ClearErrors(ErrorList);
+ { Bogue reel signale par l utilisateur (2026-09-19) : "la ligne ou est   }
+ { situe l'erreur devrait devenir rouge... la ca donne l'impression qu'on }
+ { a jamais presse sur la touche F5" - efface tout marquage d'une erreur  }
+ { precedente au debut de CHAQUE F5, pour ne pas laisser une ancienne     }
+ { ligne en rouge apres une execution reussie ou un changement de fichier.}
+ ErrorHighlightLine := 0;
+ ErrorHighlightFile := '';
  TempFile := '_buildout.tmp';
  { Calculer le nom de base sans extension }
  BaseName := ExtractFileName(SourceFile);
@@ -207774,10 +207836,38 @@ Begin
    AppendOutput(OutputPanel,
     '========== Build: 1 succeeded, 0 failed ==========',
     Ord(OTK_BUILD))
-  Else
+  Else Begin
    AppendOutput(OutputPanel,
     '========== Build: 0 succeeded, 1 failed ==========',
     Ord(OTK_BUILD));
+   { BOGUE REEL signale par l utilisateur (2026-09-19) : "la ligne ou est  }
+   { situe l'erreur devrait devenir rouge, le curseur devrait focuser a   }
+   { l'endroit exact de l'erreur et un message d'erreur devrait          }
+   { s'afficher... la ca donne l'impression qu'on a jamais presse sur la  }
+   { touche F5" - avant ce correctif, une erreur PascalScript ne          }
+   { produisait qu'une ligne discrete dans l'onglet Sortie de debogage,   }
+   { facile a manquer si ce panneau etait ferme ou pas remarque. }
+   If (PscCurrLineNo > 0) And EditorReady And (WinMgr.ActiveIdx >= 0) And
+      (UpCaseStr(WinMgr.Windows[WinMgr.ActiveIdx].FileName) =
+       UpCaseStr(SourceFile)) Then Begin
+    ErrorHighlightFile := SourceFile;
+    ErrorHighlightLine := PscCurrLineNo;
+    ActiveEditor.CursorLine := PscCurrLineNo - 1;
+    ActiveEditor.CursorCol := 1;
+    EnsureCursorVisible(ActiveEditor);
+    If Editors[WinMgr.ActiveIdx] <> Nil Then
+     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
+    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+   End;
+   If PsPipelineLineCount > 0 Then
+    ErrMsg := PsPipelineLines[PsPipelineLineCount]
+   Else
+    ErrMsg := 'Erreur d''execution PascalScript (voir l''onglet ' +
+     'Sortie de debogage).';
+   ShowMessageBox('Erreur PascalScript', ErrMsg, MB_OK, MI_ERROR);
+   FullRepaintNeeded := True;
+  End;
   { Sortie explicite : contrairement aux langages compiles ci-dessus, il    }
   { n'existe aucun ExeName pour un script interprete - ne JAMAIS tomber     }
   { dans l'epilogue partage plus bas ("Afficher le resultat"), qui tenterait}
@@ -215094,6 +215184,8 @@ Begin
  QuitRequested := False;
  FullRepaintNeeded := False;
  EditorReady := False;
+ ErrorHighlightLine := 0;
+ ErrorHighlightFile := '';
  If Opts.TerminalDosBatch <> '' Then Begin
   StartPage.Visible := False;
   ActiveShell := SK_CMD;
