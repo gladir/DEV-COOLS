@@ -1943,7 +1943,13 @@ Const
  { constantes CLR_* maison sont employes ailleurs), donc leur disponibilite}
  { reelle sous PtcGraph dans ce projet precis n est jamais confirmee -      }
  { les valeurs numeriques directes evitent ce risque de compilation. }
- W95_BLACK     = 0;
+ { W95_BLACK = 8 (gris fonce) et NON 0 : BOGUE REEL rencontre en testant  }
+ { en direct (2026-09-18) - le texte OutTextXY dessine avec la couleur 0  }
+ { est invisible (Line/Rectangle avec 0 restent visibles, seul le texte   }
+ { est touche), meme motif deja documente pour CLR_EDITOR_TEXT (voir son  }
+ { commentaire ligne ~2000 : "pas 0 car SetBkColor remappe 0") - meme      }
+ { convention reprise ici plutot que d ajouter un 2e contournement.        }
+ W95_BLACK     = 8;
  W95_BLUE      = 1;
  W95_GREEN     = 2;
  W95_RED       = 4;
@@ -208874,6 +208880,13 @@ Begin
   Item := Win95HitAccMenu(MX, MY);
   If Item = 1 Then Begin { Bloc-notes -> Nouveau fichier }
    Win95CloseAllOverlays;
+   { Efface le menu Windows 95 affiche jusqu ici AVANT que ShowNewFileDialog}
+   { (comme les autres boites appelees ci-dessous) ne dessine la sienne     }
+   { par-dessus : BOGUE REEL trouve en testant en direct (2026-09-18) -     }
+   { sans ce repaint, les pixels du menu deja ferme restaient visibles a    }
+   { l ecran tant qu aucun autre evenement ne forcait un DrawAllWidgets. }
+   FullRepaintNeeded := True;
+   DrawAllWidgets;
    ShowNewFileDialog(NewFileDlg);
    Exit;
   End;
@@ -208894,14 +208907,19 @@ Begin
   1: Win95ProgMenuOpen := True;                     { Programmes }
   2: Begin                                          { Documents }
       Win95CloseAllOverlays;
+      FullRepaintNeeded := True;
+      DrawAllWidgets;
       InitFileDialog(FileDlg, False);
       LoadDirectoryFiles(FileDlg);
       FileDlg.Base.Visible := True;
       DrawFileDialog(FileDlg);
      End;
-  3: Begin Win95CloseAllOverlays; ShowOptionsDialog(OptionsDlg); End; { Parametres }
-  4: Begin Win95CloseAllOverlays; ShowFindDialog(FindReplaceDlg); End; { Rechercher }
-  5: Begin Win95CloseAllOverlays; Win95ShowAbout; End;                 { Aide }
+  3: Begin Win95CloseAllOverlays; FullRepaintNeeded := True; DrawAllWidgets;
+      ShowOptionsDialog(OptionsDlg); End;                            { Parametres }
+  4: Begin Win95CloseAllOverlays; FullRepaintNeeded := True; DrawAllWidgets;
+      ShowFindDialog(FindReplaceDlg); End;                           { Rechercher }
+  5: Begin Win95CloseAllOverlays; FullRepaintNeeded := True; DrawAllWidgets;
+      Win95ShowAbout; End;                                           { Aide }
   6: Begin                                          { Executer... }
       Win95CloseAllOverlays;
       Win95RunDlgVisible := True;
@@ -209245,7 +209263,11 @@ Begin
  End Else Begin
   SetFillStyle(SolidFill, W95_DARKGRAY);
   Bar(X + 5, Y + 27, X + 120, Y + 45);
-  SetColor(W95_BLACK);
+  { Onglet inactif : fond gris fonce (W95_DARKGRAY=8) - texte en blanc,   }
+  { PAS W95_BLACK (=8 aussi, voir sa note plus haut) qui serait invisible }
+  { sur un fond de la meme couleur (BOGUE REEL trouve en testant en       }
+  { direct, 2026-09-18). }
+  SetColor(W95_WHITE);
   OutTextXY(X + 15, Y + 34, 'Date et heure');
   Win95Draw3DBorder(X + 5, Y + 27, X + 120, Y + 45, False);
  End;
@@ -209259,7 +209281,7 @@ Begin
  End Else Begin
   SetFillStyle(SolidFill, W95_DARKGRAY);
   Bar(X + 125, Y + 27, X + 250, Y + 45);
-  SetColor(W95_BLACK);
+  SetColor(W95_WHITE);
   OutTextXY(X + 135, Y + 34, 'Fuseau horaire');
   Win95Draw3DBorder(X + 125, Y + 27, X + 250, Y + 45, False);
  End;
@@ -209593,6 +209615,19 @@ Begin
   ClearScreen(CLR_BACKGROUND);
   DrawStartPage(StartPage, MRUList);
   DrawStatusBar(StatusBar);
+  { /TASKBARWIN95 (2026-09-18, BOGUE REEL trouve en testant en direct) :   }
+  { ce chemin sort AVANT le bloc taskbar tout en bas de cette procedure -  }
+  { sans ce meme bloc ici, la barre des taches disparaissait (effacee par  }
+  { le ClearScreen ci-dessus) des qu un DrawAllWidgets survenait pendant   }
+  { que la page de demarrage est affichee (ex. en cliquant sur Demarrer),  }
+  { et ne revenait qu au prochain changement de minute de l horloge. }
+  If Opts.TaskbarWin95 Then Begin
+   DrawWin95Taskbar;
+   If Win95DateTimeDlgVisible Then DrawWin95DateTimeDialog
+   Else If Win95RunDlgVisible Then DrawWin95RunDialog
+   Else If Win95ShutdownDlgVisible Then DrawWin95ShutdownDialog
+   Else If Win95StartMenuOpen Then DrawWin95StartMenu;
+  End;
   Exit;
  End;
  { Nettoyage unique lors de la transition page de demarrage -> IDE }
@@ -213262,6 +213297,14 @@ Var
  SubX, SubY: Integer;
 Begin
  If Ev.Kind = EV_NONE Then Exit;
+ { /TASKBARWIN95 : priorite absolue, avant meme le menu contextuel -      }
+ { c est le "bureau" Windows 95 qui heberge DEVENV, son bouton Demarrer/  }
+ { ses boites doivent intercepter la souris/le clavier avant tout le      }
+ { reste de l IDE, exactement comme la vraie barre des taches Windows.    }
+ If Opts.TaskbarWin95 And Win95HandleEvent(Ev) Then Begin
+  FullRepaintNeeded := True;
+  Exit;
+ End;
  { Icone de fermeture Explorateur/Proprietes (2026-09-14) : voir la     }
  { note sur RightDockCloseConsumed - reinitialise a chaque evenement.  }
  RightDockCloseConsumed := False;
@@ -214296,6 +214339,7 @@ Var
  LastBlinkState: Boolean;
  CurBlinkState: Boolean;
  ActNow: LongInt;
+ Win95NowH, Win95NowM, Win95NowS, Win95NowS100: Word;
 Begin
  QuitRequested := False;
  LastBlinkState := ProjPropCursorVisible;
@@ -214370,6 +214414,21 @@ Begin
     If CurBlinkState <> LastBlinkState Then Begin
      DrawExplorer(SolExplorer);
      LastBlinkState := CurBlinkState;
+    End;
+   End;
+   { /TASKBARWIN95 : l horloge de la barre des taches se redessine des    }
+   { qu une minute s ecoule (comme WINDOWS95-0/UpdateClock), l horloge   }
+   { analogique de la boite Date/Heure a chaque seconde pendant qu elle   }
+   { est ouverte. }
+   If Opts.TaskbarWin95 Then Begin
+    GetTime(Win95NowH, Win95NowM, Win95NowS, Win95NowS100);
+    If Win95NowM <> Win95LastClockMinute Then Begin
+     Win95LastClockMinute := Win95NowM;
+     DrawWin95Taskbar;
+    End;
+    If Win95DateTimeDlgVisible And (Win95NowS <> Win95LastAnalogSecond) Then Begin
+     Win95LastAnalogSecond := Win95NowS;
+     DrawWin95DateTimeDialog;
     End;
    End;
   End;
