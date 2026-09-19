@@ -124659,6 +124659,126 @@ Begin
    V:=PscDbConnect(A.Text);
    Exit;
   End;
+  { Fonctions arithmetiques/ordinales standard de Pascal (2026-09-19,       }
+  { demande explicite de l'utilisateur : "PascalScript ne supporte pas la  }
+  { fonction Abs, ArcTan, Cos, Exp, Frac, Hi, Int, Ln, Lo, Odd, Ord, Pred,  }
+  { Random, Round, Sin, Sqr, Sqrt, Succ, Tan, Trunc") - absentes jusqu ici, }
+  { un appel a l une d elles tombait dans le repli PscCallRoutine (recherche}
+  { d une Procedure/Function DEFINIE DANS LE SCRIPT) qui echouait toujours  }
+  { silencieusement (voir aussi PscCallRoutine, corrige juste en dessous    }
+  { pour signaler clairement une fonction inconnue). Meme mapping direct    }
+  { que INTTOSTR/LENGTH/etc. ci-dessus, toutes fonctions reelles du RTL      }
+  { Pascal (Abs/Sqr/Sqrt/Sin/Cos/ArcTan/Ln/Exp/Trunc/Round/Frac/Int/Odd/     }
+  { Pred/Succ/Hi/Lo/Random deja dans l unite System, aucun Uses            }
+  { supplementaire requis ; Tan n est PAS standard en Pascal/FPC (unite      }
+  { Math non utilisee ici) donc calculee via Sin/Cos, identique a sa         }
+  { definition mathematique). }
+  If U='ABS'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Abs(A.Num),V);
+   Exit;
+  End;
+  If U='ARCTAN'Then Begin
+   PscEvalText(S,A);
+   PscVNum(ArcTan(A.Num),V);
+   Exit;
+  End;
+  If U='COS'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Cos(A.Num),V);
+   Exit;
+  End;
+  If U='EXP'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Exp(A.Num),V);
+   Exit;
+  End;
+  If U='FRAC'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Frac(A.Num),V);
+   Exit;
+  End;
+  If U='HI'Then Begin
+   PscEvalText(S,A);
+   PscVNum((Trunc(A.Num) Shr 8) And $FF,V);
+   Exit;
+  End;
+  If U='INT'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Int(A.Num),V);
+   Exit;
+  End;
+  If U='LN'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Ln(A.Num),V);
+   Exit;
+  End;
+  If U='LO'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Trunc(A.Num) And $FF,V);
+   Exit;
+  End;
+  If U='ODD'Then Begin
+   PscEvalText(S,A);
+   If Odd(Trunc(A.Num))Then Begin PscVText('True',V);V.Num:=-1;End
+   Else Begin PscVText('False',V);V.Num:=0;End;
+   Exit;
+  End;
+  If U='ORD'Then Begin
+   PscEvalText(S,A);
+   If A.Numeric Then PscVNum(Trunc(A.Num),V)
+   Else If Length(A.Text)>0 Then PscVNum(Ord(A.Text[1]),V)
+   Else PscVNum(0,V);
+   Exit;
+  End;
+  If U='PRED'Then Begin
+   PscEvalText(S,A);
+   PscVNum(A.Num-1,V);
+   Exit;
+  End;
+  If U='RANDOM'Then Begin
+   If PscTrimS(S)=''Then PscVNum(Random,V)
+   Else Begin
+    PscEvalText(S,A);
+    PscVNum(Random(Trunc(A.Num)),V);
+   End;
+   Exit;
+  End;
+  If U='ROUND'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Round(A.Num),V);
+   Exit;
+  End;
+  If U='SIN'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Sin(A.Num),V);
+   Exit;
+  End;
+  If U='SQR'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Sqr(A.Num),V);
+   Exit;
+  End;
+  If U='SQRT'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Sqrt(A.Num),V);
+   Exit;
+  End;
+  If U='SUCC'Then Begin
+   PscEvalText(S,A);
+   PscVNum(A.Num+1,V);
+   Exit;
+  End;
+  If U='TAN'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Sin(A.Num)/Cos(A.Num),V);
+   Exit;
+  End;
+  If U='TRUNC'Then Begin
+   PscEvalText(S,A);
+   PscVNum(Trunc(A.Num),V);
+   Exit;
+  End;
   I:=Pos('.',Nm);
   If I>0 Then Begin
    ObjVarPart:=Copy(Nm,1,I-1);
@@ -124678,7 +124798,11 @@ Begin
  End;
  If U='WSCRIPT.SCRIPTNAME'Then PscVText(PscSourceName,V) Else
  If U='WSCRIPT.FULLNAME'Then PscVText(PscSourceName,V) Else
- If U='WSCRIPT.ARGUMENTS.COUNT'Then PscVNum(PscArgCount,V)
+ If U='WSCRIPT.ARGUMENTS.COUNT'Then PscVNum(PscArgCount,V)Else
+ { RANDOM sans parentheses (2026-09-19) : forme "X:=Random;" (reel entre  }
+ { 0 et 1) valide en Pascal, en plus de "Random(N)" deja gere ci-dessus   }
+ { dans la branche avec parentheses. }
+ If U='RANDOM'Then PscVNum(Random,V)
  Else Begin
   { Resultats.Eof (2026-09-08, forme propriete sans parentheses) - voir     }
   { PscTryObjectAccess plus haut ; repli inchange pour tout le reste. }
@@ -124934,6 +125058,17 @@ Begin
   End;
  End;
  If Not Found Then Begin
+  { BOGUE REEL signale par l utilisateur (2026-09-19) : "si la fonction    }
+  { n'est pas reconnue, il devrait retourner un message d'erreur que la    }
+  { fonction n'est pas reconnue" - avant ce correctif, PscRuntimeError     }
+  { etait bien mis a True (le script s arretait), mais AUCUN message n     }
+  { expliquait pourquoi : PscCallRoutine ne cherche QUE les Procedure/     }
+  { Function definies dans le script lui-meme, or c est aussi le repli      }
+  { final pour tout appel Nom(args) qui ne correspond a aucune fonction     }
+  { native geree plus haut dans PscPrimary (Abs/Sin/IntToStr/etc.) - le     }
+  { seul indice visible etait le message generique "erreur d'execution     }
+  { (ligne X)" de TermCmd_PSCRIPT, sans jamais nommer la fonction fautive. }
+  PscWL('PSCRIPT: fonction ou procedure non reconnue : '''+Name+'''');
   PscVText('',V);
   PscRuntimeError:=True;
   Exit;
