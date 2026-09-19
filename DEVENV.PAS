@@ -214363,6 +214363,20 @@ Begin
       DrawFileDialog(FileDlg);
      End;
      913: Begin { Copier en image }
+      { BOGUE REEL signale par l utilisateur (2026-09-19) : "il ne devrait  }
+      { pas copier dans l image le menu contextuel, il faudrait fermer le  }
+      { menu avant de faire la capture" - CtxMenu.Visible est deja remis a }
+      { False ICI (voir HandleContextMenuEvent, appele juste au-dessus),   }
+      { mais l ecran REEL n a pas encore ete redessine : FullRepaintNeeded }
+      { n est consomme que plus tard par MainLoop, apres le retour de      }
+      { DispatchEvent - or CopyTerminalImageToClipboard lit les pixels     }
+      { AVEC GetPixel directement sur l ecran TEL QU IL EST A CET INSTANT,  }
+      { donc avant ce correctif elle capturait encore les pixels du menu    }
+      { contextuel, restes affiches par-dessus le terminal. Forcer ici un   }
+      { redessin synchrone (meme motif deja utilise plus haut dans ce       }
+      { fichier, voir Win95* ~ligne 209700) avant la capture. }
+      FullRepaintNeeded := True;
+      DrawAllWidgets;
       CopyTerminalImageToClipboard;
      End;
      914: Begin { Sauvegarder en image... }
