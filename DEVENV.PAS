@@ -1028,6 +1028,15 @@ Function GetAsyncKeyState(vKey: LongInt): SmallInt;
          StdCall; External 'user32.dll' Name 'GetAsyncKeyState';
 Procedure WinSleep(MilliSec: LongInt);
          StdCall; External 'kernel32.dll' Name 'Sleep';
+{ /TASKBARWIN95 (2026-09-18, BOGUE REEL "-maxscreen" signale par           }
+{ l utilisateur) : voir la note complete pres de l appel dans               }
+{ InitializeGraphics - la fenetre Win32 creee par InitGraph en mode         }
+{ -maxscreen peut deborder de la VRAIE resolution de l ecran, rendant sa    }
+{ bordure basse (et donc la barre des taches /TASKBARWIN95) invisible. }
+Function Win_GetForegroundWindow: LongInt;
+         StdCall; External 'user32.dll' Name 'GetForegroundWindow';
+Function Win_ShowWindow(hWnd: LongInt; nCmdShow: LongInt): LongBool;
+         StdCall; External 'user32.dll' Name 'ShowWindow';
 { Ecriture console BRUTE, contournant Output (2026-09-02, decouvert en      }
 { mettant au point /TESTUNIT,8086: WriteLn(Output,...) ne produit STRICTEMENT}
 { aucun texte visible des que PtcCrt est charge - confirme par test isole   }
@@ -11823,6 +11832,25 @@ Begin
  SetBkColor(CLR_BACKGROUND);
  SetLineStyle(SolidLn, 0, NormWidth);
  ScreenMaxMode := Opts.MaxScreen;
+ {$IFDEF WINDOWS}
+ { BOGUE REEL signale par l utilisateur (2026-09-18, "/TASKBARWIN95 ne     }
+ { fonctionne pas dans la resolution maximum") : SelectScreenDriverMode    }
+ { choisit deja, pour -maxscreen, le mode D8bit le plus eleve renvoye par  }
+ { GetModeRange - VERIFIE en testant en direct que cette resolution peut   }
+ { depasser la VRAIE resolution de l ecran (1936x1100 constate sur un      }
+ { moniteur 1920x1080). La fenetre Win32 creee par InitGraph deborde alors }
+ { du bureau : sa bordure basse (barre d etat, et desormais la barre des   }
+ { taches /TASKBARWIN95 qui s y ancre via GetScreenHeight/GetMaxY) se       }
+ { retrouve hors ecran, invisible et inaccessible, tant que l utilisateur   }
+ { ne maximise pas la fenetre lui-meme. Deja reproduit et confirme corrige  }
+ { par un maximize manuel pendant les tests - le faire automatiquement ici  }
+ { (Windows recale alors la fenetre dans la VRAIE zone de travail de       }
+ { l ecran) evite ce debordement des le demarrage, pour -maxscreen SEUL    }
+ { comme combine a /TASKBARWIN95, sans toucher au choix de mode video      }
+ { lui-meme (SelectScreenDriverMode). }
+ If Opts.MaxScreen Then
+  Win_ShowWindow(Win_GetForegroundWindow, 3 { SW_MAXIMIZE });
+ {$ENDIF}
 End;
 
 { --- Fermeture du mode graphique --- }
