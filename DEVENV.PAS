@@ -10761,6 +10761,11 @@ Var
  { stdin/stdout/stderr, mappes sur l ecran virtuel). }
  OS9_FileH      : Array[0..7] Of File;
  OS9_FileOpen   : Array[0..7] Of Boolean;
+ { Get-OS9Device (2026-09-19, demande explicite de l utilisateur) : chemin  }
+ { hote associe a chaque chemin OS-9 ouvert (3..10) - File (unite standard) }
+ { n expose pas son nom apres Assign, donc suivi separement ici, mis a       }
+ { jour aux MEMES 4 sites que OS9_FileOpen (I$Create/I$Open/I$Dup/I$Close). }
+ OS9_FilePath   : Array[0..7] Of String;
  { Quatrieme lot de F$/I$ (2026-09-12, demande explicite) : I$ChgDir change }
  { ce repertoire "courant" virtuel (PAS le repertoire courant du processus  }
  { hote DEVENV.exe - le modifier affecterait tous les autres panneaux de    }
@@ -132178,6 +132183,16 @@ Begin
    '  Start-Cray1Program fichier[.abs]         Emulateur Cray-1 (COS)');
   HelpEmit(
    '  Start-LinuxProgram fichier               Emulateur Linux x86-64 (ELF)');
+  HelpEmit( '');
+  HelpEmit( '--- Interroger l''emulateur OS-9/6809 (2026-09-19) ---');
+  HelpEmit(
+   '  Get-OS9SystemCall [-Code n] [-Name texte]  Reference des appels F$/I$');
+  HelpEmit(
+   '  Invoke-OS9SystemCall -Code n [-A n][-B n][-X n][-Y n][-U n]  Appel reel');
+  HelpEmit(
+   '  Get-OS9Memory [-Address n [-Length n]]    Resume ou vidage hexa memoire');
+  HelpEmit(
+   '  Get-OS9Device                              Chemins I$Open/Create ouverts');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -141979,6 +141994,359 @@ Begin
 End;
 
 
+{ ============================================================
+  Commandes PowerShell dev pour interroger l'emulateur OS-9/6809
+  (2026-09-19, demande explicite de l'utilisateur : "ajoute les
+  commandes suivantes pour interroger l'emulateur OS-9 :
+  Invoke-OS9SystemCall / Get-OS9SystemCall / Get-OS9Memory /
+  Get-OS9Device"). Tout l etat OS-9/6809 (OS9_Active, M6809_*,
+  OS9_MemSize, OS9_FileH/FileOpen/FilePath) est GLOBAL - un seul
+  emulateur OS-9 existe a la fois dans ce processus DEVENV.exe
+  (demarre via Start-OS9Program/CreateEmulatorTab -COS9), donc ces
+  commandes agissent directement sur SON etat reel, sans avoir a
+  cibler un onglet particulier.
+  ============================================================ }
+
+{ Declaration anticipee : M6809_DoOS9Syscall est definie bien plus  }
+{ loin dans ce fichier (dispatcher SWI2 du coeur 6809) - necessaire }
+{ pour qu'Invoke-OS9SystemCall, definie ici avec les autres          }
+{ commandes PowerShell dev, puisse l'appeler directement. }
+Procedure M6809_DoOS9Syscall(SvcCode: Byte); Forward;
+
+Const
+ OS9_SYSCALL_COUNT = 101;
+ { Table de reference des appels F$/I$ (2026-09-19) - EXTRAITE          }
+ { automatiquement des commentaires reels de M6809_DoOS9Syscall (grep +  }
+ { script, jamais retapee a la main pour eviter toute transcription      }
+ { erronee sur 101 entrees) : Code/Name proviennent directement des       }
+ { etiquettes Case ($XX) et du premier identifiant F$.../I$... de chaque  }
+ { commentaire ; Desc est le reste de CE MEME commentaire (source unique  }
+ { de verite, deja verifiee/disclosee au cas par cas dans le code du      }
+ { dispatcher lui-meme - voir M6809_DoOS9Syscall pour le detail complet   }
+ { quand Desc est tronquee ou generique). }
+ OS9SysCalls: Array[1..OS9_SYSCALL_COUNT] Of Record
+  Code: Byte;
+  Name: String[14];
+  Desc: String[100];
+ End = (
+  (Code:0; Name:'F$Link'; Desc:'module deja resident uniquement'),
+  (Code:1; Name:'F$Load'; Desc:'F$Link, puis charge depuis l hote si absent'),
+  (Code:2; Name:'F$UnLink'; Desc:'libere l emplacement (jamais recycle finement)'),
+  (Code:3; Name:'F$Fork'; Desc:'execution SYNCHRONE (pas de vrai multitache)'),
+  (Code:5; Name:'F$Chain'; Desc:'VERIFIE via la documentation NitrOS-9 (sourceforge.net/p/nitros9/wiki/ F$Chain). Contrairement...'),
+  (Code:6; Name:'F$Exit'; Desc:'voir le code source (M6809_DoOS9Syscall) pour le detail'),
+  (Code:7; Name:'F$Mem'; Desc:'D=nouvelle taille, U=Y=base'),
+  (Code:8; Name:'F$Send'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$Send). Ce sous- ensemble ne...'),
+  (Code:9; Name:'F$Icpt'; Desc:'convention registre VERIFIEE (sourceforge.net/ p/nitros9/wiki/F$Icpt). Enregistrement REEL...'),
+  (Code:10; Name:'F$Sleep'; Desc:'ne bloque jamais'),
+  (Code:11; Name:'F$SSpd'; Desc:'AUCUNE documentation exploitable trouvee pour cet appel precis (page wiki NitrOS-9 manquante...'),
+  (Code:12; Name:'F$ID'; Desc:'A=PID, Y=UID - convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$ID). Ce...'),
+  (Code:13; Name:'F$SPrior'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$SPrior). Stockee reellement...'),
+  (Code:14; Name:'F$SSWI'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$SSWI). SWI (type 1) et SWI3...'),
+  (Code:15; Name:'F$PErr'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$PErr). Comportement par defaut...'),
+  (Code:16; Name:'F$PrsNam'; Desc:'X=adresse du slash optionnel+1, Y=adresse du dernier caractere du nom+1, A=octet delimiteur...'),
+  (Code:17; Name:'F$CmpNam'; Desc:'Carry clair si egales, positionne sinon - VERIFIE via la doc NitrOS-9 (sourceforge.net/p/nitros...'),
+  (Code:18; Name:'F$SchBit'; Desc:'succes : D=1er bit du bloc trouve, Y=nb bits (inchange) ; echec : Carry+B, D/Y=plus grand bloc...'),
+  (Code:19; Name:'F$AllBit'; Desc:'positionne Y bits a partir du bit D - VERIFIE via la doc NitrOS-9 (sourceforge.net/p/nitros9/wi...'),
+  (Code:20; Name:'F$DelBit'; Desc:'libere Y bits a partir du bit D - meme convention que F$AllBit (ordinal $13) juste au-dessus...'),
+  (Code:21; Name:'F$Time'; Desc:'copie le paquet horaire courant - convention registre ET format de paquet VERIFIES...'),
+  (Code:22; Name:'F$STime'; Desc:'convention registre ET format de paquet VERIFIES (sourceforge.net/p/ nitros9/wiki/F$STime)....'),
+  (Code:23; Name:'F$CRC'; Desc:'met a jour l accumulateur - VERIFIE via la doc NitrOS-9 (sourceforge.net/p/nitros9/wiki/F$CRC)...'),
+  (Code:24; Name:'F$GPrDsc'; Desc:'copie un descripteur de processus - convention registre VERIFIEE (sourceforge.net/p/nitros9/wik...'),
+  (Code:25; Name:'F$GBlkMp'; Desc:'D=taille de bloc, Y=taille de la table utilisee - convention registre VERIFIEE...'),
+  (Code:26; Name:'F$GModDr'; Desc:'Y=fin des donnees copiees, U=adresse de depart - convention registre VERIFIEE...'),
+  (Code:27; Name:'F$CpyMem'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$CpyMem). Simplification...'),
+  (Code:28; Name:'F$SUser'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$SUser : "sans verification d...'),
+  (Code:29; Name:'F$Unload'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$Unload). Meme mecanisme que...'),
+  (Code:30; Name:'F$Alarm'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/F$Alarm : "sonne la cloche...'),
+  (Code:33; Name:'F$NMLink'; Desc:'A=type/ langage, B=revision, X=adresse apres le nom, Y=taille requise - convention registre...'),
+  (Code:34; Name:'F$NMLoad'; Desc:'A=type/ langage, B=revision, X=adresse apres le pathlist, Y=taille requise - convention...'),
+  (Code:35; Name:'F$Debug'; Desc:'convention registre VERIFIEE (sourceforge.net/p/nitros9/wiki/ F$Debug : "si A differe de 255...'),
+  (Code:37; Name:'F$TPS'; Desc:'Y=nb de tics systeme par seconde - AUCUNE page wiki dediee trouvee pour la convention registre...'),
+  (Code:38; Name:'F$TimAlm'; Desc:'AUCUNE documentation exploitable trouvee (page wiki NitrOS-9 manquante malgre plusieurs...'),
+  (Code:39; Name:'F$VIRQ'; Desc:'PAGE WIKI CASSEE : sourceforge.net/p/nitros9/wiki/F%24VIRQ/ renvoie systematiquement (confirme...'),
+  (Code:40; Name:'F$SRqMem'; Desc:'D=octets accordes, U=pointeur - convention registre VERIFIEE (wiki F$SRqMem, qui precise elle-...'),
+  (Code:41; Name:'F$SRtMem'; Desc:'convention registre VERIFIEE (wiki F$SRtMem). REEL en partie : l allocateur "bump" OS9_MemSize...'),
+  (Code:42; Name:'F$IRQ'; Desc:'convention registre VERIFIEE (wiki F$IRQ).'),
+  (Code:43; Name:'F$IOQu'; Desc:'convention registre VERIFIEE (wiki F$IOQu : "suspend le processus appelant indefiniment jusqu...'),
+  (Code:44; Name:'F$AProc'; Desc:'insere dans la file d attente d execution. AUCUN ordonnanceur n existe dans ce sous-ensemble...'),
+  (Code:45; Name:'F$NProc'; Desc:'"demarre le processus suivant" - convention registre VERIFIEE (wiki F$NProc : "aucune entree...'),
+  (Code:46; Name:'F$VModul'; Desc:'U=adresse d entree de repertoire - convention registre VERIFIEE (wiki F$VModul : "valide l...'),
+  (Code:47; Name:'F$Find64'; Desc:'Y=adresse du bloc ; Carry positionne si bloc interdit/ inutilise - convention registre...'),
+  (Code:48; Name:'F$All64'; Desc:'A=numero de bloc, X=base table, Y=adresse du bloc - convention registre VERIFIEE (wiki...'),
+  (Code:49; Name:'F$Ret64'; Desc:'convention registre VERIFIEE (wiki F$Ret64). REEL : miroir exact de F$All64/$30 (libere le...'),
+  (Code:50; Name:'F$SSvc'; Desc:'convention registre VERIFIEE (wiki F$SSvc : "ajoute/ remplace des appels systeme personnalises...'),
+  (Code:51; Name:'F$IODel'; Desc:'convention registre VERIFIEE (wiki F$IODel). REEL : reverse-lookup dans la MEME table de...'),
+  (Code:52; Name:'F$SLink'; Desc:'A=type, B=revision, X=chaine mise a jour, Y=point d entree, U=pointeur de module - convention...'),
+  (Code:53; Name:'F$Boot'; Desc:'amorcage systeme (lie le module Boot/celui de l en-tete INIT depuis un peripherique physique...'),
+  (Code:54; Name:'F$BtMem'; Desc:'D=octets accordes, U=pointeur - convention registre VERIFIEE (wiki F$BtMem :...'),
+  (Code:55; Name:'F$GProcP'; Desc:'B=pointeur vers le descripteur de processus - convention registre VERIFIEE (wiki F$GProcP). Ce...'),
+  (Code:56; Name:'F$Move'; Desc:'convention registre VERIFIEE (wiki F$Move : "deplace des octets entre espaces d adresses...'),
+  (Code:57; Name:'F$AllRAM'; Desc:'AUCUN pool general de blocs de RAM physique independant de OS9_MemSize/du chargeur de modules...'),
+  (Code:58; Name:'F$AllImg'; Desc:'reserve des blocs dans l "image DAT" simplifiee du descripteur (voir F$AllPrc/$4B plus bas...'),
+  (Code:59; Name:'F$DelImg'; Desc:'miroir reel de F$AllImg ci-dessus : efface les memes octets de l "image DAT" simplifiee....'),
+  (Code:60; Name:'F$SetImg'; Desc:'convention registre VERIFIEE (wiki F$SetImg : "copie les blocs indiques dans l image DAT du...'),
+  (Code:61; Name:'F$FreeLB'; Desc:'A=numero de bloc de depart - convention registre VERIFIEE (wiki F$FreeLB). REEL : "pointeur...'),
+  (Code:62; Name:'F$FreeHB'; Desc:'miroir de F$FreeLB ci-dessus, mais cherche depuis la FIN (adresses hautes) - convention...'),
+  (Code:63; Name:'F$AllTsk'; Desc:'attribue un numero de tache MATERIEL (registre de tache MMU reel) au processus, et "copie l...'),
+  (Code:64; Name:'F$DelTsk'; Desc:'convention registre VERIFIEE (wiki F$DelTsk). Miroir exact de F$AllTsk/$3F juste au-dessus...'),
+  (Code:65; Name:'F$SetTsk'; Desc:'convention registre VERIFIEE (wiki F$SetTsk : "configure les registres materiels DAT pour un...'),
+  (Code:66; Name:'F$ResTsk'; Desc:'B=numero de tache reserve - convention registre VERIFIEE (wiki F$ResTsk). Meme raison que...'),
+  (Code:67; Name:'F$RelTsk'; Desc:'convention registre VERIFIEE (wiki F$RelTsk). Miroir de F$ResTsk/$42 : meme echec honnete...'),
+  (Code:68; Name:'F$DATLog'; Desc:'X=adresse logique - REEL, pure arithmetique sans dependance a un pool/materiel invente....'),
+  (Code:69; Name:'F$DATTmp'; Desc:'"cree temporairement une image DAT, appel obsolete" (description fournie par l utilisateur...'),
+  (Code:70; Name:'F$LDAXY'; Desc:'A=octet - convention registre VERIFIEE (wiki F$LDAXY, qui precise elle-meme "suppose que X...'),
+  (Code:71; Name:'F$LDAXYP'; Desc:'miroir post-incremente de F$LDAXY ci-dessus ("[X+,]Y" = mode d adressage 6809 post-incremente...'),
+  (Code:72; Name:'F$LDDDXY'; Desc:'D=mot a [D+X],[Y] - convention confirmee UNIQUEMENT via le nom de l appel et la description...'),
+  (Code:73; Name:'F$LDABX'; Desc:'A=octet a 0,X dans l espace d adresses de la tache - convention registre VERIFIEE (wiki...'),
+  (Code:74; Name:'F$STABX'; Desc:'convention registre VERIFIEE (wiki F$STABX). REEL, miroir exact (ecriture au lieu de lecture)...'),
+  (Code:75; Name:'F$AllPrc'; Desc:'U=pointeur vers un descripteur de processus - convention registre VERIFIEE (wiki F$AllPrc :...'),
+  (Code:76; Name:'F$DelPrc'; Desc:'convention registre VERIFIEE (wiki F$DelPrc). Ce sous-ensemble ne construit JAMAIS de table...'),
+  (Code:77; Name:'F$ELink'; Desc:'U=adresse d en-tete de module, Y=point d entree - convention registre VERIFIEE (wiki F$ELink)....'),
+  (Code:78; Name:'F$FModul'; Desc:'A=type, B=revision, U=pointeur d entree de repertoire - convention registre VERIFIEE (wiki...'),
+  (Code:79; Name:'F$MapBlk'; Desc:'U=adresse du premier bloc - convention registre VERIFIEE (wiki F$MapBlk : "mappe les blocs......'),
+  (Code:80; Name:'F$ClrBlk'; Desc:'convention registre VERIFIEE (wiki F$ClrBlk). REEL en partie : efface reellement B blocs de...'),
+  (Code:81; Name:'F$DelRAM'; Desc:'convention registre VERIFIEE (wiki F$DelRAM). Miroir de F$AllRAM/$39 : puisqu aucun bloc n a...'),
+  (Code:82; Name:'F$GCMDir'; Desc:'compacte les entrees du repertoire des modules - convention registre VERIFIEE (wiki F$GCMDir :...'),
+  (Code:83; Name:'F$AllHRAM'; Desc:'variante "recherche depuis le sommet de la memoire" de F$AllRAM/$39 (citation wiki F$AllHRAM)...'),
+  (Code:84; Name:'F$ReBoot'; Desc:'redemarre la machine (recharge OS9Boot ou revient a RS-DOS) - PAGE WIKI NitrOS-9 INTROUVABLE...'),
+  (Code:85; Name:'F$CRCMod'; Desc:'. CONVENTION REGISTRE NON CONFIRMEE de facon independante contre une source NitrOS-9...'),
+  (Code:86; Name:'F$XTime'; Desc:'PAGE WIKI NitrOS-9 INTROUVABLE (404) - convention registre RECONSTRUITE par analogie DIRECTE...'),
+  (Code:87; Name:'F$VBlock'; Desc:'"verifie les modules presents dans un bloc de memoire et les ajoute au repertoire (krn)" -...'),
+  (Code:128; Name:'I$Attach'; Desc:'convention REGISTRE verifiee (sourceforge.net/p/nitros9/wiki/I$Attach) : X avance apres le...'),
+  (Code:129; Name:'I$Detach'; Desc:'meme discipline honnete que I$Attach ci-dessus : aucune vraie table a detacher, accepte...'),
+  (Code:130; Name:'I$Dup'; Desc:'A=nouveau numero - convention REGISTRE verifiee (wiki I$Dup). Chemins 0..2 (flux virtuels...'),
+  (Code:131; Name:'I$Create'; Desc:'A=numero de chemin - convention REGISTRE verifiee (wiki I$Create). B (attributs OS-9...'),
+  (Code:132; Name:'I$Open'; Desc:'voir le code source (M6809_DoOS9Syscall) pour le detail'),
+  (Code:133; Name:'I$MakDir'; Desc:'convention REGISTRE verifiee (wiki I$MakDir). B accepte sans effet reel, meme disclosure qu...'),
+  (Code:134; Name:'I$ChgDir'; Desc:'convention REGISTRE verifiee (wiki I$ChgDir). Change OS9_CurDir (repertoire "courant" VIRTUEL...'),
+  (Code:135; Name:'I$Delete'; Desc:'convention REGISTRE verifiee (wiki I$Delete).'),
+  (Code:136; Name:'I$Seek'; Desc:'CONVENTION NON CONFIRMEE via la page wiki NitrOS-9 (celle-ci renvoie systematiquement le...'),
+  (Code:137; Name:'I$Read'; Desc:'voir le code source (M6809_DoOS9Syscall) pour le detail'),
+  (Code:138; Name:'I$Write'; Desc:'voir le code source (M6809_DoOS9Syscall) pour le detail'),
+  (Code:139; Name:'I$ReadLn'; Desc:'Y=octets lus - lit jusqu au CR inclus, convention REGISTRE verifiee (wiki I$ReadLn) - miroir...'),
+  (Code:140; Name:'I$WritLn'; Desc:'jusqu au CR inclus'),
+  (Code:141; Name:'I$GetStt'; Desc:'acceptes sans donnees reelles - aucune table de codes de statut par peripherique implementee...'),
+  (Code:142; Name:'I$SetStt'; Desc:'acceptes sans donnees reelles - aucune table de codes de statut par peripherique implementee...'),
+  (Code:143; Name:'I$Close'; Desc:'voir le code source (M6809_DoOS9Syscall) pour le detail'),
+  (Code:144; Name:'I$DeletX'; Desc:'convention REGISTRE verifiee (wiki I$DeletX) mais SEMANTIQUE precise (variante d I$Delete pour...')
+ );
+
+{ --- GET-OS9SYSTEMCALL (PowerShell dev) : reference des appels F$/I$ --- }
+Procedure TermCmd_GetOS9SystemCall(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, CodeArg, NameArg, UpName: String;
+ CodePos, NamePos: Integer;
+ FilterCode, Err, I, MatchCount: Integer;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ CodePos := System.Pos('-CODE', UpParams);
+ NamePos := System.Pos('-NAME', UpParams);
+ CodeArg := ''; NameArg := '';
+ If CodePos > 0 Then CodeArg := TermExtractParam(Copy(ParamStr,
+  CodePos + 5, Length(ParamStr)), 1);
+ If NamePos > 0 Then NameArg := TermExtractParam(Copy(ParamStr,
+  NamePos + 5, Length(ParamStr)), 1);
+ FilterCode := -1; Err := 0;
+ If CodeArg <> '' Then Val(CodeArg, FilterCode, Err);
+ If Err <> 0 Then FilterCode := -1;
+ UpName := TermStrToUpper(NameArg);
+ MatchCount := 0;
+ TermAddLine(TP, PadRight('Code', 6, ' ') + PadRight('Hex', 6, ' ') +
+  PadRight('Nom', 16, ' ') + 'Description');
+ For I := 1 To OS9_SYSCALL_COUNT Do Begin
+  If (FilterCode >= 0) And (OS9SysCalls[I].Code <> FilterCode) Then Continue;
+  If (UpName <> '') And
+     (System.Pos(UpName, TermStrToUpper(OS9SysCalls[I].Name)) = 0) Then
+   Continue;
+  TermAddLine(TP, PadRight(IntToStr(OS9SysCalls[I].Code), 6, ' ') +
+   PadRight('$' + HexByte(OS9SysCalls[I].Code), 6, ' ') +
+   PadRight(OS9SysCalls[I].Name, 16, ' ') + OS9SysCalls[I].Desc);
+  Inc(MatchCount);
+ End;
+ If MatchCount = 0 Then
+  TermAddLine(TP, 'Get-OS9SystemCall : aucun appel systeme trouve ' +
+   '(essayez sans filtre, ou HELP pour la syntaxe).');
+End;
+
+{ --- INVOKE-OS9SYSTEMCALL (PowerShell dev) : appelle reellement un      }
+{ appel F$/I$ sur l'emulateur OS-9 actif (M6809_DoOS9Syscall), avec       }
+{ les registres A/B/X/Y/U optionnellement forces avant l'appel (sinon    }
+{ leur valeur COURANTE, deja en place depuis la derniere execution, est   }
+{ conservee) - permet de tester un appel systeme isolement, exactement   }
+{ comme le ferait un programme 6809 reel via SWI2. --- }
+Procedure TermCmd_InvokeOS9SystemCall(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, CodeArg, AArg, BArg, XArg, YArg, UArg, SysName: String;
+ CodePos, APos, BPos, XPos, YPos, UPos: Integer;
+ Code, RegVal, Err, I: Integer;
+Begin
+ If Not OS9_Active Then Begin
+  TermAddLine(TP, 'Invoke-OS9SystemCall : aucun emulateur OS-9 actif ' +
+   '(utilisez Start-OS9Program pour en demarrer un).');
+  Exit;
+ End;
+ UpParams := TermStrToUpper(ParamStr);
+ CodePos := System.Pos('-CODE', UpParams);
+ APos := System.Pos('-A', UpParams);
+ BPos := System.Pos('-B', UpParams);
+ XPos := System.Pos('-X', UpParams);
+ YPos := System.Pos('-Y', UpParams);
+ UPos := System.Pos('-U', UpParams);
+ CodeArg := ''; AArg := ''; BArg := ''; XArg := ''; YArg := ''; UArg := '';
+ If CodePos > 0 Then CodeArg := TermExtractParam(Copy(ParamStr,
+  CodePos + 5, Length(ParamStr)), 1);
+ If APos > 0 Then AArg := TermExtractParam(Copy(ParamStr,
+  APos + 2, Length(ParamStr)), 1);
+ If BPos > 0 Then BArg := TermExtractParam(Copy(ParamStr,
+  BPos + 2, Length(ParamStr)), 1);
+ If XPos > 0 Then XArg := TermExtractParam(Copy(ParamStr,
+  XPos + 2, Length(ParamStr)), 1);
+ If YPos > 0 Then YArg := TermExtractParam(Copy(ParamStr,
+  YPos + 2, Length(ParamStr)), 1);
+ If UPos > 0 Then UArg := TermExtractParam(Copy(ParamStr,
+  UPos + 2, Length(ParamStr)), 1);
+ Code := -1; Err := 0;
+ If CodeArg <> '' Then Val(CodeArg, Code, Err);
+ If (CodeArg = '') Or (Err <> 0) Or (Code < 0) Or (Code > 255) Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-OS9SystemCall -Code n [-A n] [-B n] ' +
+   '[-X n] [-Y n] [-U n]');
+  Exit;
+ End;
+ If AArg <> '' Then Begin
+  Val(AArg, RegVal, Err); If Err = 0 Then M6809_A := Byte(RegVal Mod 256);
+ End;
+ If BArg <> '' Then Begin
+  Val(BArg, RegVal, Err); If Err = 0 Then M6809_B := Byte(RegVal Mod 256);
+ End;
+ If XArg <> '' Then Begin
+  Val(XArg, RegVal, Err); If Err = 0 Then M6809_X := Word(RegVal Mod 65536);
+ End;
+ If YArg <> '' Then Begin
+  Val(YArg, RegVal, Err); If Err = 0 Then M6809_Y := Word(RegVal Mod 65536);
+ End;
+ If UArg <> '' Then Begin
+  Val(UArg, RegVal, Err); If Err = 0 Then M6809_U := Word(RegVal Mod 65536);
+ End;
+ SysName := '';
+ For I := 1 To OS9_SYSCALL_COUNT Do
+  If OS9SysCalls[I].Code = Code Then Begin
+   SysName := OS9SysCalls[I].Name;
+   Break;
+  End;
+ If SysName <> '' Then
+  TermAddLine(TP, 'Invoke-OS9SystemCall : ' + SysName + ' ($' +
+   HexByte(Byte(Code)) + ')')
+ Else
+  TermAddLine(TP, 'Invoke-OS9SystemCall : appel non repertorie $' +
+   HexByte(Byte(Code)) + ' (invoque quand meme).');
+ M6809_DoOS9Syscall(Byte(Code));
+ TermAddLine(TP, '  A=$' + HexByte(M6809_A) + '  B=$' + HexByte(M6809_B) +
+  '  CC=$' + HexByte(M6809_CC));
+ TermAddLine(TP, '  X=$' + HexWord(M6809_X) + '  Y=$' + HexWord(M6809_Y) +
+  '  U=$' + HexWord(M6809_U));
+ If (M6809_CC And $01) <> 0 Then
+  TermAddLine(TP, '  Erreur (Carry positionne) - code B=$' +
+   HexByte(M6809_B) + ' (' + IntToStr(M6809_B) + ')')
+ Else
+  TermAddLine(TP, '  Succes (Carry efface).');
+End;
+
+{ --- GET-OS9MEMORY (PowerShell dev) : sans parametre, resume de         }
+{ l'allocateur "bump" F$Mem/F$BtMem/etc. (OS9_MemSize/OS9_MEM_MAX) ;      }
+{ avec -Address/-Length, vidage hexadecimal reel de M6809_Mem (les       }
+{ memes 64 Ko adressables par le coeur 6809 emule). --- }
+Procedure TermCmd_GetOS9Memory(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams, AddrArg, LenArg, HexLine, AscLine: String;
+ AddrPos, LenPos: Integer;
+ Addr, Len, Err, I, RowStart: Integer;
+ B: Byte;
+Begin
+ If Not OS9_Active Then Begin
+  TermAddLine(TP, 'Get-OS9Memory : aucun emulateur OS-9 actif ' +
+   '(utilisez Start-OS9Program pour en demarrer un).');
+  Exit;
+ End;
+ UpParams := TermStrToUpper(ParamStr);
+ AddrPos := System.Pos('-ADDRESS', UpParams);
+ LenPos := System.Pos('-LENGTH', UpParams);
+ AddrArg := ''; LenArg := '';
+ If AddrPos > 0 Then AddrArg := TermExtractParam(Copy(ParamStr,
+  AddrPos + 8, Length(ParamStr)), 1);
+ If LenPos > 0 Then LenArg := TermExtractParam(Copy(ParamStr,
+  LenPos + 7, Length(ParamStr)), 1);
+ If AddrArg = '' Then Begin
+  TermAddLine(TP, 'Memoire emulee OS-9/6809 (allocateur "bump" F$Mem) :');
+  TermAddLine(TP, '  Base    : $' + HexWord(OS9_MEM_BASE));
+  TermAddLine(TP, '  Taille  : ' + IntToStr(OS9_MEM_MAX) + ' octets ($' +
+   HexWord(OS9_MEM_MAX) + ')');
+  TermAddLine(TP, '  Utilise : ' + IntToStr(OS9_MemSize) + ' octets ($' +
+   HexWord(OS9_MemSize) + ')');
+  TermAddLine(TP, '  Libre   : ' + IntToStr(OS9_MEM_MAX - OS9_MemSize) +
+   ' octets');
+  TermAddLine(TP, '(ajoutez -Address n [-Length n] pour un vidage ' +
+   'hexadecimal de la memoire emulee)');
+  Exit;
+ End;
+ Addr := 0; Err := 0;
+ Val(AddrArg, Addr, Err);
+ If (Err <> 0) Or (Addr < 0) Or (Addr > 65535) Then Begin
+  TermAddLine(TP, 'Get-OS9Memory : adresse invalide : ' + AddrArg);
+  Exit;
+ End;
+ Len := 64; Err := 0;
+ If LenArg <> '' Then Val(LenArg, Len, Err);
+ If (Err <> 0) Or (Len <= 0) Then Len := 64;
+ If Len > 1024 Then Len := 1024;
+ RowStart := Addr;
+ While RowStart < Addr + Len Do Begin
+  HexLine := ''; AscLine := '';
+  For I := 0 To 15 Do Begin
+   If RowStart + I < Addr + Len Then Begin
+    B := M6809_Mem[Word(RowStart + I)];
+    HexLine := HexLine + HexByte(B) + ' ';
+    If (B >= 32) And (B <= 126) Then AscLine := AscLine + Chr(B)
+    Else AscLine := AscLine + '.';
+   End Else
+    HexLine := HexLine + '   ';
+  End;
+  TermAddLine(TP, '$' + HexWord(Word(RowStart)) + '  ' + HexLine + ' ' +
+   AscLine);
+  RowStart := RowStart + 16;
+ End;
+End;
+
+{ --- GET-OS9DEVICE (PowerShell dev) : table des chemins I$Open/Create/  }
+{ Dup ouverts (OS9_FileH/FileOpen, chemins hote reels 3..10) - voir       }
+{ OS9_FilePath (2026-09-19, ajoute pour cette commande : File, unite     }
+{ standard, n expose pas son nom apres Assign, donc suivi separement).   }
+Procedure TermCmd_GetOS9Device(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I: Integer;
+Begin
+ If Not OS9_Active Then Begin
+  TermAddLine(TP, 'Get-OS9Device : aucun emulateur OS-9 actif ' +
+   '(utilisez Start-OS9Program pour en demarrer un).');
+  Exit;
+ End;
+ TermAddLine(TP, PadRight('Chemin', 8, ' ') + PadRight('Etat', 10, ' ') +
+  'Cible');
+ TermAddLine(TP, PadRight('0', 8, ' ') + PadRight('reserve', 10, ' ') +
+  'stdin (ecran virtuel)');
+ TermAddLine(TP, PadRight('1', 8, ' ') + PadRight('reserve', 10, ' ') +
+  'stdout (ecran virtuel)');
+ TermAddLine(TP, PadRight('2', 8, ' ') + PadRight('reserve', 10, ' ') +
+  'stderr (ecran virtuel)');
+ For I := 0 To 7 Do
+  If OS9_FileOpen[I] Then
+   TermAddLine(TP, PadRight(IntToStr(I + 3), 8, ' ') +
+    PadRight('ouvert', 10, ' ') + OS9_FilePath[I])
+  Else
+   TermAddLine(TP, PadRight(IntToStr(I + 3), 8, ' ') + 'libre');
+End;
+
+
 { ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
@@ -141995,7 +142363,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 252;
+ PS_CMD_ALIASES = 256;
  PSCmd: Array[1..PS_CMD_ALIASES] Of Record
   Name: String[45];
   ID: Byte;
@@ -142134,6 +142502,9 @@ Const
   (Name:'GET-ORACLETRIGGER'; ID:210),
   (Name:'GET-ORACLEUSER'; ID:211),
   (Name:'GET-ORACLEVIEW'; ID:203),
+  (Name:'GET-OS9DEVICE'; ID:231),
+  (Name:'GET-OS9MEMORY'; ID:232),
+  (Name:'GET-OS9SYSTEMCALL'; ID:233),
   (Name:'GET-REDISHASH'; ID:180),
   (Name:'GET-REDISKEY'; ID:186),
   (Name:'GET-REDISLIST'; ID:182),
@@ -142156,6 +142527,7 @@ Const
   (Name:'INVOKE-ORACLENONQUERY'; ID:199),
   (Name:'INVOKE-ORACLEQUERY'; ID:198),
   (Name:'INVOKE-ORACLESCRIPT'; ID:200),
+  (Name:'INVOKE-OS9SYSTEMCALL'; ID:234),
   (Name:'INVOKE-REDISSCRIPT'; ID:192),
   (Name:'INVOKE-REDISTRANSACTION'; ID:194),
   (Name:'INVOKE-SQLCMD'; ID:151),
@@ -143030,6 +143402,12 @@ Begin
     { de l'onglet emulateur actuellement actif. }
     229: TermCmd_NewEmulatorGif(TP, ParamStr);    { NEW-EMULATORGIF }
     230: TermCmd_Perl(TP, ParamStr);              { PERL }
+    { Get/Invoke-OS9SystemCall, Get-OS9Memory, Get-OS9Device (2026-09-19,  }
+    { demande explicite) : interrogent l'emulateur OS-9/6809 global. }
+    231: TermCmd_GetOS9Device(TP, ParamStr);      { GET-OS9DEVICE }
+    232: TermCmd_GetOS9Memory(TP, ParamStr);      { GET-OS9MEMORY }
+    233: TermCmd_GetOS9SystemCall(TP, ParamStr);  { GET-OS9SYSTEMCALL }
+    234: TermCmd_InvokeOS9SystemCall(TP, ParamStr); { INVOKE-OS9SYSTEMCALL }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -192483,6 +192861,7 @@ Begin
                End Else Begin
                  OS9_FileH[FreeSlot] := OS9_FileH[PIdx];
                  OS9_FileOpen[FreeSlot] := True;
+                 OS9_FilePath[FreeSlot] := OS9_FilePath[PIdx];
                  M6809_A := FreeSlot + 3;
                End;
              End;
@@ -192518,6 +192897,7 @@ Begin
                M6809_CC := M6809_CC Or $01; M6809_B := $D6;
              End Else Begin
                OS9_FileOpen[FreeSlot] := True;
+               OS9_FilePath[FreeSlot] := HostPath;
                M6809_A := FreeSlot + 3;
              End;
            End;
@@ -192542,6 +192922,7 @@ Begin
                M6809_CC := M6809_CC Or $01; M6809_B := $D6; { introuvable }
              End Else Begin
                OS9_FileOpen[FreeSlot] := True;
+               OS9_FilePath[FreeSlot] := HostPath;
                M6809_A := FreeSlot + 3; { 0..2 reserves stdin/out/err }
              End;
            End;
@@ -192602,6 +192983,7 @@ Begin
            End Else Begin
              Close(OS9_FileH[PIdx]);
              OS9_FileOpen[PIdx] := False;
+             OS9_FilePath[PIdx] := '';
            End;
          End;
     $89: Begin { I$Read(path=A, buf=X, count=Y) }
