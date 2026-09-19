@@ -13455,6 +13455,10 @@ Procedure StepEmulator(Var P: TEmulatorPanel); Forward;
 Procedure EmuVScr_Clear(Var P: TEmulatorPanel); Forward;
 Procedure EmuVScr_PutChar(Var P: TEmulatorPanel; C: Char); Forward;
 Procedure EmuVScr_WriteStr(Var P: TEmulatorPanel; S: String); Forward;
+{ Meme motif que EmuVScr_WriteStr+deux EmuVScr_PutChar(#13,#10) deja repete  }
+{ des dizaines de fois (Win16/OS2LX/PE32/etc.) - factorise pour le chantier }
+{ PC/GEOS (2026-09-19) qui en a besoin pour un long rapport diagnostic.     }
+Procedure EmuVScr_WriteLn(Var P: TEmulatorPanel; S: String); Forward;
 Procedure EmuVScr_GotoXY(Var P: TEmulatorPanel; X, Y: Byte); Forward;
 Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Word); Forward;
 { --- Forward pour la carte video unifiee CGA/EGA/VGA --- }
@@ -89265,6 +89269,35 @@ Begin
  CreateEmulatorTab(RomPath, '-COS9', RestParam);
 End;
 
+{ Start-GeoWorksProgram (2026-09-19, demande explicite de l'utilisateur -   }
+{ chantier PC/GEOS-GeoWorks, voir Geos_LoadGeode/ShowEmulatorPanel pour la  }
+{ portee Stage 1 honnetement disclosee) - meme motif que                   }
+{ Start-Atari2600Program ci-dessus (pas de disque virtuel, chemin hote      }
+{ uniquement, TermFindRomByExt generique reutilise comme pour Start-       }
+{ OS9Program plus haut). }
+Procedure TermCmd_StartGeoWorksProgram(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-GeoWorksProgram fichier.geo');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Start-GeoWorksProgram : disque virtuel non supporte, ' +
+   'utiliser un chemin du systeme hote.');
+  Exit;
+ End;
+ GetDir(0, Dir);
+ RomPath := TermFindRomByExt(Dir, CurrParam, 'GEO');
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CGEOS', '');
+End;
+
 { ============================================================
   Shell Terminal "OS-9 (CoCo 3)" (SK_OS9, 2026-09-12, demande explicite
   de l'utilisateur - liste de 50 commandes fournie, source
@@ -95011,6 +95044,371 @@ Begin
   Win16_RsrcTabAbsOfs := 0;
 
  Win16_LoadNE := True;
+End;
+
+{ ============================================================
+  Chantier PC/GEOS-GeoWorks (.GEO), Stage 1 (2026-09-19, demande explicite
+  de l'utilisateur - "Entree sur un .GEO dans Norton Commander devrait
+  lancer l'emulateur GeoWorks, DEVENV.PAS ne fait rien"). AUCUN emulateur
+  GeoWorks n'existait avant ce chantier (aucune reference a .GEO/GeoWorks
+  nulle part dans ce fichier) - l'utilisateur a explicitement demande un
+  "nouvel emulateur GeoWorks complet" plutot qu'un simple raccourci vers
+  GEODUMP.PAS (l'outil d'analyse deja present, separe, qui ne fait que
+  lister/desassembler un .GEO sans jamais l'executer).
+
+  PORTEE HONNETEMENT DISCLOSEE DE CE STAGE 1 (voir DOC/GEO_FORMAT.txt,
+  document deja verifie ligne a ligne contre GEODUMP.PAS - meme source de
+  verite reutilisee ici, jamais redevinee) :
+   - Chargeur REEL d'en-tete GEOS 1.x/2.x + en-tete d'application/geode +
+     table de bibliotheques + table de segments, avec les MEMES offsets et
+     controles de bornes que GEODUMP.PAS (verifie sur les 2 fichiers .GEO
+     reels du depot, GEO/GSDUMP.GEO et GEO/INSTFE.GEO).
+   - Chargement REEL de chaque segment dans la memoire 8086 emulee
+     (P.CPU.Memory, un segment reel distinct par ressource, meme discipline
+     "FIXE" que Win16_LoadNE juste au-dessus).
+   - Relogements "programme courant" (cible $20, sections 7/10 du doc) REELS
+     : ce sont les seuls dont l'adresse finale est entierement connaissable
+     sans dependre d'un noyau/bibliotheque externe absent de ce depot.
+   - Relogements "noyau GEOS" (cible $00) et "bibliotheque importee" (cible
+     $10) : PAS appliques (aucune valeur inventee) - seulement comptes et
+     rapportes, exactement comme GEODUMP le fait deja pour son propre
+     rapport en lecture seule.
+  CE QUI N'EST PAS FAIT (disclosure honnete, pas un bogue silencieux) :
+  un vrai .GEO de type Application (les 2 seuls fichiers .GEO reels
+  disponibles dans ce depot pour verifier quoi que ce soit) n'a PAS de
+  point d'entree CPU classique - le noyau PC/GEOS demarre une application
+  en envoyant un message objet (MSG_META_ATTACH) a sa ProcessClass, un
+  systeme de fenetrage/objets complet (hors de portee de ce Stage 1, aussi
+  gros que le chantier Win16 GDI/KERNEL deja fait dans ce fichier, mais
+  pour une plateforme entierement differente). Ce Stage 1 charge donc le
+  geode reellement en memoire et affiche un rapport diagnostic complet
+  (bien plus riche que ne rien faire du tout, l'etat AVANT ce chantier),
+  mais ne tente PAS d'executer son code - une future etape pourra
+  reimplanter les bibliotheques Kernel/Ui/Graphics (comme KERNEL/GDI/USER
+  l'ont ete pour Win16) pour rendre une vraie execution possible. }
+Const
+ GEOS_MAX_LIB = 32;
+ GEOS_MAX_SEG = 96;
+Type
+ TGeosLibEntry = Record
+  Name: String[8];
+  LType: Word;      { $2000=pilote, $4000=bibliotheque }
+  ProtoVer, ProtoRev: Word;
+ End;
+ TGeosSegEntry = Record
+  SegBase: Word;     { segment reel alloue dans P.CPU.Memory }
+  Len, FixLen, Flags: Word;
+  FilePos: LongInt;
+ End;
+Var
+ Geos_LastError: String;
+ Geos_Version: Integer;          { 1 ou 2 }
+ Geos_Base: LongInt;             { 0 (GEOS 1.x) ou $100 (GEOS 2.x) }
+ Geos_LongName: String;
+ Geos_FileClass, Geos_FileAttr: Word;
+ Geos_TokenStr: String;
+ Geos_TokenMfg: Word;
+ Geos_PermName, Geos_PermExt: String;
+ Geos_AppType, Geos_AppAttr: Word;
+ Geos_KernelProtoVer, Geos_KernelProtoRev: Word;
+ Geos_StackSize: Word;
+ Geos_ProcClassRes, Geos_ProcClassOfs: Word;
+ Geos_AppObjRes, Geos_AppObjOfs: Word;
+ Geos_LibInitRes, Geos_LibInitOfs: Word;
+ Geos_DrvTableRes, Geos_DrvTableOfs: Word;
+ Geos_NumLib, Geos_NumExp, Geos_NumSeg: Word;
+ Geos_Lib: Array[0..GEOS_MAX_LIB - 1] Of TGeosLibEntry;
+ Geos_Seg: Array[0..GEOS_MAX_SEG - 1] Of TGeosSegEntry;
+ Geos_RelocKernelCount, Geos_RelocLibCount, Geos_RelocProgCount,
+  Geos_RelocOtherCount: LongInt;
+ Geos_LibRelocCount: Array[0..GEOS_MAX_LIB - 1] Of LongInt;
+ Geos_NextFreeSeg: Word;
+
+{ Lit une chaine de longueur fixe depuis le fichier ouvert F a la position }
+{ Pos, tronquee au premier octet nul - meme convention que FixedString de  }
+{ GEODUMP.PAS (traduction du jeu de caracteres GEOS 80h-FFh volontairement }
+{ omise ici, cosmetique uniquement pour ces champs, jamais utilisee pour   }
+{ une decision de chargement). }
+Function Geos_FixedStr(Var F: File; Pos: LongInt; Count: Integer): String;
+Var
+ Buf: Array[0..99] Of Byte;
+ BytesRead: Word;
+ S: String;
+ I: Integer;
+Begin
+ S := '';
+ Seek(F, Pos);
+ BlockRead(F, Buf, Count, BytesRead);
+ For I := 0 To BytesRead - 1 Do Begin
+  If Buf[I] = 0 Then Break;
+  S := S + Chr(Buf[I]);
+ End;
+ Geos_FixedStr := S;
+End;
+
+Function Geos_WordAt(Var F: File; Pos: LongInt): Word;
+Var
+ Buf: Array[0..1] Of Byte;
+ BytesRead: Word;
+Begin
+ Seek(F, Pos);
+ BlockRead(F, Buf, 2, BytesRead);
+ If BytesRead < 2 Then Geos_WordAt := 0
+ Else Geos_WordAt := Word(Buf[0]) Or (Word(Buf[1]) Shl 8);
+End;
+
+Function Geos_LongAt(Var F: File; Pos: LongInt): LongInt;
+Var
+ Buf: Array[0..3] Of Byte;
+ BytesRead: Word;
+Begin
+ Seek(F, Pos);
+ BlockRead(F, Buf, 4, BytesRead);
+ If BytesRead < 4 Then Geos_LongAt := 0
+ Else Geos_LongAt := LongInt(Buf[0]) Or (LongInt(Buf[1]) Shl 8) Or
+  (LongInt(Buf[2]) Shl 16) Or (LongInt(Buf[3]) Shl 24);
+End;
+
+{ Chargeur reel Stage 1 - voir le commentaire de tete ci-dessus pour la    }
+{ portee honnetement disclosee. Meme structure generale que Win16_LoadNE  }
+{ (segments reels dans C.Memory, meme allocateur "bump" de segments), mais}
+{ un format de fichier et des tables completement differents (voir        }
+{ DOC/GEO_FORMAT.txt, sections 5 a 10, deja verifie contre GEODUMP.PAS). }
+Function Geos_LoadGeode(Var C: TEmuCPU; Const Path: String): Boolean;
+Var
+ F: File;
+ FSize: LongInt;
+ Magic: LongInt;
+ HdrPos, AppHdrPos: LongInt;
+ LibPos, ExpPos, SegTablePos: LongInt;
+ I, J: Integer;
+ RealSegBase: Word;
+ RealLen: Word;
+ DataPos, FixPos, RoundLen: LongInt;
+ FixCount: Word;
+ RelType, RelOfs: Word;
+ RelForm, RelTarget: Byte;
+ LibOrdinal: Byte;
+ SegIdx: Word;
+ TargetAddr: LongInt;
+ Buf: Array[0..65535] Of Byte;
+ BytesRead: Word;
+Begin
+ Geos_LoadGeode := False;
+ Geos_LastError := '';
+ Geos_NextFreeSeg := $1000; { meme base que Win16_NextFreeSeg - jamais les }
+                             { deux chantiers actifs dans le meme onglet }
+ For I := 0 To GEOS_MAX_LIB - 1 Do Geos_LibRelocCount[I] := 0;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  Geos_LastError := 'fichier illisible';
+  Exit;
+ End;
+ FSize := FileSize(F);
+ If FSize < 4 Then Begin
+  Geos_LastError := 'fichier trop court';
+  Close(F);
+  Exit;
+ End;
+ Magic := Geos_LongAt(F, 0);
+ { Octets sur disque C7 45 CF 53 (GEOS1.x) / C7 45 C1 53 (GEOS2.x) donnent  }
+ {, relus en LongInt petit-boutiste tel que Geos_LongAt le fait, les       }
+ { constantes 53CF45C7h/53C145C7h du document - EXACTEMENT GEOS1_ID/       }
+ { GEOS2_ID de GEODUMP.PAS, jamais redevinees. }
+ If Magic = LongInt($53CF45C7) Then Geos_Version := 1
+ Else If Magic = LongInt($53C145C7) Then Geos_Version := 2
+ Else Begin
+  Geos_LastError := 'signature GEOS absente (pas un fichier .GEO valide)';
+  Close(F);
+  Exit;
+ End;
+ If Geos_Version = 1 Then Begin
+  HdrPos := 0; Geos_Base := 0; AppHdrPos := $C0;
+  If FSize < 192 Then Begin
+   Geos_LastError := 'en-tete GEOS 1.x tronque'; Close(F); Exit;
+  End;
+  Geos_FileClass := Geos_WordAt(F, HdrPos + 4);
+  Geos_FileAttr := Geos_WordAt(F, HdrPos + 6);
+  Geos_TokenStr := Geos_FixedStr(F, HdrPos + $14, 4);
+  Geos_TokenMfg := Geos_WordAt(F, HdrPos + $18);
+  Geos_LongName := Geos_FixedStr(F, HdrPos + $20, 36);
+ End Else Begin
+  HdrPos := 0; Geos_Base := $100; AppHdrPos := 248;
+  If FSize < 256 Then Begin
+   Geos_LastError := 'en-tete GEOS 2.x tronque'; Close(F); Exit;
+  End;
+  Geos_LongName := Geos_FixedStr(F, HdrPos + 4, 36);
+  Geos_FileClass := Geos_WordAt(F, HdrPos + $28);
+  Geos_FileAttr := Geos_WordAt(F, HdrPos + $2A);
+  Geos_TokenStr := Geos_FixedStr(F, HdrPos + $38, 4);
+  Geos_TokenMfg := Geos_WordAt(F, HdrPos + $3C);
+ End;
+ { Classe 0001h(GEOS1.x)/0001h(GEOS2.x, "executable") - voir section 3 du   }
+ { document : seul le geode executable est charge ici, un fichier VM/octet }
+ { /repertoire/lien de meme extension .GEO n'est PAS un programme. }
+ If ((Geos_Version = 1) And (Geos_FileClass <> $0000)) Or
+    ((Geos_Version = 2) And (Geos_FileClass <> $0001)) Then Begin
+  Geos_LastError := 'classe de fichier ' + HexWord(Geos_FileClass) +
+   ' non executable (VM/octet/repertoire/lien - voir section 3 du format)';
+  Close(F);
+  Exit;
+ End;
+ If FSize < AppHdrPos + 96 Then Begin
+  Geos_LastError := 'en-tete d''application tronque';
+  Close(F);
+  Exit;
+ End;
+ Geos_AppAttr := Geos_WordAt(F, AppHdrPos + $22);
+ Geos_AppType := Geos_WordAt(F, AppHdrPos + $24);
+ Geos_KernelProtoVer := Geos_WordAt(F, AppHdrPos + $0C);
+ Geos_KernelProtoRev := Geos_WordAt(F, AppHdrPos + $0E);
+ Geos_StackSize := Geos_WordAt(F, AppHdrPos + $16);
+ Geos_PermName := Geos_FixedStr(F, AppHdrPos + $34, 8);
+ Geos_PermExt := Geos_FixedStr(F, AppHdrPos + $3C, 4);
+ Geos_ProcClassOfs := Geos_WordAt(F, AppHdrPos + $18);
+ Geos_ProcClassRes := Geos_WordAt(F, AppHdrPos + $1A);
+ Geos_AppObjOfs := Geos_WordAt(F, AppHdrPos + $1C);
+ Geos_AppObjRes := Geos_WordAt(F, AppHdrPos + $1E);
+ Geos_LibInitOfs := Geos_WordAt(F, AppHdrPos + $4C);
+ Geos_LibInitRes := Geos_WordAt(F, AppHdrPos + $4E);
+ Geos_DrvTableOfs := Geos_WordAt(F, AppHdrPos + $48);
+ Geos_DrvTableRes := Geos_WordAt(F, AppHdrPos + $4A);
+ { Copies "publiques" (+52h/+54h/+58h), jamais les copies privees _numexp/  }
+ { _numlib/_numseg (+14h/+12h/+10h) - meme choix documente/verifie que      }
+ { GEODUMP.PAS (section 7.2 du format : "les copies... ne doivent pas etre }
+ { preferees aux champs publics"). }
+ Geos_NumExp := Geos_WordAt(F, AppHdrPos + $52);
+ Geos_NumLib := Geos_WordAt(F, AppHdrPos + $54);
+ Geos_NumSeg := Geos_WordAt(F, AppHdrPos + $58);
+ If Geos_NumLib > GEOS_MAX_LIB Then Begin
+  Geos_LastError := 'trop de bibliotheques importees (' +
+   IntToStr(Geos_NumLib) + ' > ' + IntToStr(GEOS_MAX_LIB) + ')';
+  Close(F); Exit;
+ End;
+ If Geos_NumSeg > GEOS_MAX_SEG Then Begin
+  Geos_LastError := 'trop de segments/ressources (' +
+   IntToStr(Geos_NumSeg) + ' > ' + IntToStr(GEOS_MAX_SEG) + ')';
+  Close(F); Exit;
+ End;
+ { Table des bibliotheques (14 octets/entree, section 8.1) juste apres     }
+ { l'en-tete d'application de 96 octets (P+60h). }
+ LibPos := AppHdrPos + 96;
+ If FSize < LibPos + LongInt(Geos_NumLib) * 14 Then Begin
+  Geos_LastError := 'table des bibliotheques tronquee';
+  Close(F); Exit;
+ End;
+ For I := 0 To Integer(Geos_NumLib) - 1 Do Begin
+  Geos_Lib[I].Name := Geos_FixedStr(F, LibPos + LongInt(I) * 14, 8);
+  Geos_Lib[I].LType := Geos_WordAt(F, LibPos + LongInt(I) * 14 + 8);
+  Geos_Lib[I].ProtoVer := Geos_WordAt(F, LibPos + LongInt(I) * 14 + 10);
+  Geos_Lib[I].ProtoRev := Geos_WordAt(F, LibPos + LongInt(I) * 14 + 12);
+ End;
+ { Table des exportations (4 octets/entree, section 8.2), puis table des   }
+ { segments (10*NumSeg octets, section 8.3) juste apres. }
+ ExpPos := LibPos + LongInt(Geos_NumLib) * 14;
+ If FSize < ExpPos + LongInt(Geos_NumExp) * 4 Then Begin
+  Geos_LastError := 'table des exportations tronquee';
+  Close(F); Exit;
+ End;
+ SegTablePos := ExpPos + LongInt(Geos_NumExp) * 4;
+ If FSize < SegTablePos + LongInt(Geos_NumSeg) * 10 Then Begin
+  Geos_LastError := 'table des segments tronquee';
+  Close(F); Exit;
+ End;
+ { Passe 1 : allouer un segment reel par ressource et copier ses octets    }
+ { bruts dans la memoire 8086 emulee - meme discipline "FIXE" que          }
+ { Win16_LoadNE (voir sa passe 1 juste au-dessus dans ce fichier). }
+ For I := 0 To Integer(Geos_NumSeg) - 1 Do Begin
+  Geos_Seg[I].Len := Geos_WordAt(F, SegTablePos + LongInt(I) * 2);
+  Geos_Seg[I].FilePos := Geos_LongAt(F,
+   SegTablePos + LongInt(Geos_NumSeg) * 2 + LongInt(I) * 4);
+  Geos_Seg[I].FixLen := Geos_WordAt(F,
+   SegTablePos + LongInt(Geos_NumSeg) * 6 + LongInt(I) * 2);
+  Geos_Seg[I].Flags := Geos_WordAt(F,
+   SegTablePos + LongInt(Geos_NumSeg) * 8 + LongInt(I) * 2);
+  If (Geos_Seg[I].FixLen Mod 4) <> 0 Then Begin
+   Geos_LastError := 'taille de relogement invalide dans la ressource ' +
+    IntToStr(I);
+   Close(F); Exit;
+  End;
+  DataPos := Geos_Base + Geos_Seg[I].FilePos;
+  RoundLen := (LongInt(Geos_Seg[I].Len) + 15) And LongInt($FFFFFFF0);
+  FixPos := DataPos + RoundLen;
+  If (DataPos < 0) Or (DataPos + LongInt(Geos_Seg[I].Len) > FSize) Or
+     (FixPos + LongInt(Geos_Seg[I].FixLen) > FSize) Then Begin
+   Geos_LastError := 'donnees/relogements hors fichier dans la ressource ' +
+    IntToStr(I);
+   Close(F); Exit;
+  End;
+  RealSegBase := Geos_NextFreeSeg;
+  Geos_Seg[I].SegBase := RealSegBase;
+  RealLen := Geos_Seg[I].Len;
+  If RealLen = 0 Then RealLen := 1; { ressource vide : reserve un paragraphe minimal }
+  Geos_NextFreeSeg := Geos_NextFreeSeg + Word((LongInt(RealLen) + 15) Shr 4);
+  If Geos_Seg[I].Len > 0 Then Begin
+   Seek(F, DataPos);
+   BlockRead(F, Buf, Geos_Seg[I].Len, BytesRead);
+   If BytesRead <> Geos_Seg[I].Len Then Begin
+    Geos_LastError := 'donnees de la ressource ' + IntToStr(I) + ' tronquees';
+    Close(F); Exit;
+   End;
+   For J := 0 To Integer(Geos_Seg[I].Len) - 1 Do
+    Emu_WriteByte(C, RealSegBase, Word(J), Buf[J]);
+  End;
+ End;
+ { Passe 2 : appliquer/classer les relogements de chaque ressource (section}
+ { 10 du format) - seule la cible "programme courant" ($20) est REELLEMENT }
+ { corrigee (adresse entierement connue, aucune dependance externe) ; les  }
+ { cibles "noyau" ($00) et "bibliotheque importee" ($10) sont seulement    }
+ { comptees, jamais patchees avec une valeur inventee (voir le commentaire }
+ { de tete de ce chantier). }
+ Geos_RelocKernelCount := 0; Geos_RelocLibCount := 0;
+ Geos_RelocProgCount := 0; Geos_RelocOtherCount := 0;
+ For I := 0 To Integer(Geos_NumSeg) - 1 Do Begin
+  If Geos_Seg[I].FixLen = 0 Then Continue;
+  DataPos := Geos_Base + Geos_Seg[I].FilePos;
+  RoundLen := (LongInt(Geos_Seg[I].Len) + 15) And LongInt($FFFFFFF0);
+  FixPos := DataPos + RoundLen;
+  FixCount := Geos_Seg[I].FixLen Div 4;
+  For J := 0 To Integer(FixCount) - 1 Do Begin
+   RelType := Geos_WordAt(F, FixPos + LongInt(J) * 4);
+   RelOfs := Geos_WordAt(F, FixPos + LongInt(J) * 4 + 2);
+   RelForm := Byte(RelType And $0F);
+   RelTarget := Byte(RelType And $30);
+   Case RelTarget Of
+    $00: Inc(Geos_RelocKernelCount);
+    $10: Begin
+     Inc(Geos_RelocLibCount);
+     LibOrdinal := Byte(RelType Shr 8);
+     If LibOrdinal < Geos_NumLib Then Inc(Geos_LibRelocCount[LibOrdinal]);
+    End;
+    $20: Begin
+     Inc(Geos_RelocProgCount);
+     { Le mot/dword a corriger vit DEJA dans la memoire emulee (Passe 1     }
+     { vient de l'y copier) - RelOfs est relatif au DEBUT de CETTE          }
+     { ressource. Le contenu actuel (avant correction) est un NUMERO DE     }
+     { RESSOURCE (segment logique 0-based du meme geode, PAS un segment     }
+     { reel) pour les formes 2/3/4, ou un numero de routine EXPORTEE pour   }
+     { les formes 0/1 - seules les formes 2/3 (segment/handle d'une         }
+     { ressource) sont resolubles ici sans table d'exportation supplement- }
+     { aire, les formes 0/1/4 (routine) exigeraient de re-indexer la table }
+     { d'exportation de CE MEME geode (section 8.2), hors de portee de ce   }
+     { Stage 1 (seul le comptage/la classification est garanti exact). }
+     If (RelForm = 2) Or (RelForm = 3) Then Begin
+      SegIdx := Emu_ReadWord(C, Geos_Seg[I].SegBase, RelOfs);
+      If SegIdx < Geos_NumSeg Then
+       Emu_WriteWord(C, Geos_Seg[I].SegBase, RelOfs, Geos_Seg[SegIdx].SegBase);
+     End;
+    End;
+    Else Inc(Geos_RelocOtherCount);
+   End;
+  End;
+ End;
+ Close(F);
+ Geos_LoadGeode := True;
 End;
 
 { Chantier Windows 16 bits, Stage 5 (2026-08-29) : recherche une ressource  }
@@ -132183,6 +132581,8 @@ Begin
    '  Start-Cray1Program fichier[.abs]         Emulateur Cray-1 (COS)');
   HelpEmit(
    '  Start-LinuxProgram fichier               Emulateur Linux x86-64 (ELF)');
+  HelpEmit(
+   '  Start-GeoWorksProgram fichier[.geo]      PC/GEOS-GeoWorks (Stage 1, analyse)');
   HelpEmit( '');
   HelpEmit( '--- Interroger l''emulateur OS-9/6809 (2026-09-19) ---');
   HelpEmit(
@@ -142363,7 +142763,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 256;
+ PS_CMD_ALIASES = 257;
  PSCmd: Array[1..PS_CMD_ALIASES] Of Record
   Name: String[45];
   ID: Byte;
@@ -142604,6 +143004,7 @@ Const
   (Name:'START-COUCHDBREPLICATION'; ID:175),
   (Name:'START-CRAY1PROGRAM'; ID:228),
   (Name:'START-DOSPROGRAM'; ID:59),
+  (Name:'START-GEOWORKSPROGRAM'; ID:235),
   (Name:'START-LINUXPROGRAM'; ID:79),
   (Name:'START-NESPROGRAM'; ID:78),
   (Name:'START-OS9PROGRAM'; ID:226),
@@ -143408,6 +143809,9 @@ Begin
     232: TermCmd_GetOS9Memory(TP, ParamStr);      { GET-OS9MEMORY }
     233: TermCmd_GetOS9SystemCall(TP, ParamStr);  { GET-OS9SYSTEMCALL }
     234: TermCmd_InvokeOS9SystemCall(TP, ParamStr); { INVOKE-OS9SYSTEMCALL }
+    { Start-GeoWorksProgram (2026-09-19, demande explicite) : emulateur     }
+    { PC/GEOS-GeoWorks Stage 1, voir TermCmd_StartGeoWorksProgram. }
+    235: TermCmd_StartGeoWorksProgram(TP, ParamStr); { START-GEOWORKSPROGRAM }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -146842,6 +147246,13 @@ Begin
   End
   Else If Ext = 'ACC' Then Begin
    CreateEmulatorTab(FullPath, '-CATARIST', '');
+   NCActionOpenAssociated := True;
+  End
+  Else If Ext = 'GEO' Then Begin
+   { Chantier PC/GEOS-GeoWorks, Stage 1 (2026-09-19, BOGUE REEL signale par }
+   { l'utilisateur - "Entree sur un .GEO dans Norton Commander ne fait      }
+   { rien") : meme motif que .PAK/.NES/.ABS/.A26/.XEX/.ACC ci-dessus. }
+   CreateEmulatorTab(FullPath, '-CGEOS', '');
    NCActionOpenAssociated := True;
   End
   Else If Ext = 'PRG' Then Begin
@@ -156434,6 +156845,12 @@ Var
 Begin
  For I := 1 To Length(S) Do
   EmuVScr_PutChar(P, S[I]);
+End;
+
+Procedure EmuVScr_WriteLn(Var P: TEmulatorPanel; S: String);
+Begin
+ EmuVScr_WriteStr(P, S);
+ EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
 End;
 
 { --- Empiler une touche dans la file (ring buffer 64 octets) --- }
@@ -197309,6 +197726,80 @@ Begin
  EmuExecDepth := Snap.ExecDepth;
 End;
 
+{ Rapport diagnostic PC/GEOS Stage 1 (2026-09-19) - imprime dans l'ecran    }
+{ virtuel de l'onglet emulateur les champs reels lus/charges par            }
+{ Geos_LoadGeode (voir son commentaire de tete pour la portee disclosee).  }
+{ Beaucoup plus riche que "ne rien faire" (l'etat avant ce chantier), et    }
+{ delibererement dans le meme esprit que le rapport de GEODUMP.PAS deja    }
+{ verifie (memes libelles/valeurs), mais affiche EN DIRECT dans l'IDE. }
+Procedure Geos_PrintDiagnostics(Var P: TEmulatorPanel);
+Var
+ I: Integer;
+ TypeName, Extra: String;
+Begin
+ EmuVScr_WriteLn(P, 'Geode charge : ' + Geos_LongName);
+ EmuVScr_WriteLn(P, 'Nom permanent : ' + Geos_PermName + Geos_PermExt +
+  '   Jeton : ' + Geos_TokenStr + ',' + IntToStr(Geos_TokenMfg));
+ EmuVScr_WriteLn(P, 'Format : GEOS ' + IntToStr(Geos_Version) + '.x' +
+  '   Protocole noyau minimal : ' + IntToStr(Geos_KernelProtoVer) + '.' +
+  IntToStr(Geos_KernelProtoRev));
+ Case Geos_AppType Of
+  1: TypeName := 'Application';
+  2: TypeName := 'Bibliotheque';
+  3: TypeName := 'Pilote de peripherique';
+  5: TypeName := 'Application (GEOS 2.x)';
+  Else TypeName := 'inconnu ($' + HexWord(Geos_AppType) + ')';
+ End;
+ EmuVScr_WriteLn(P, 'Type : ' + TypeName + '   Attributs : $' +
+  HexWord(Geos_AppAttr));
+ EmuVScr_WriteLn(P, 'Pile/donnees non initialisees : ' +
+  IntToStr(Geos_StackSize) + ' octets');
+ EmuVScr_WriteLn(P, '');
+ If Geos_NumLib > 0 Then Begin
+  EmuVScr_WriteLn(P, 'Bibliotheques importees (' + IntToStr(Geos_NumLib) + ') :');
+  For I := 0 To Integer(Geos_NumLib) - 1 Do Begin
+   If Geos_LibRelocCount[I] > 0 Then
+    Extra := '  - ' + IntToStr(Geos_LibRelocCount[I]) + ' routine(s) non resolue(s)'
+   Else
+    Extra := '';
+   EmuVScr_WriteLn(P, '  ' + IntToStr(I) + ': ' + Geos_Lib[I].Name +
+    ' (protocole ' + IntToStr(Geos_Lib[I].ProtoVer) + '.' +
+    IntToStr(Geos_Lib[I].ProtoRev) + ')' + Extra);
+  End;
+  EmuVScr_WriteLn(P, '');
+ End;
+ If (Geos_AppAttr And $8000) <> 0 Then
+  EmuVScr_WriteLn(P, 'Classe processus : ressource $' +
+   HexWord(Geos_ProcClassRes) + ' depl. $' + HexWord(Geos_ProcClassOfs) +
+   '   Objet application : ressource $' + HexWord(Geos_AppObjRes) +
+   ' depl. $' + HexWord(Geos_AppObjOfs));
+ If (Geos_AppAttr And $4000) <> 0 Then
+  EmuVScr_WriteLn(P, 'Point d''initialisation (bibliotheque) : ressource $' +
+   HexWord(Geos_LibInitRes) + ' depl. $' + HexWord(Geos_LibInitOfs));
+ If (Geos_AppAttr And $2000) <> 0 Then
+  EmuVScr_WriteLn(P, 'Table du pilote : ressource $' +
+   HexWord(Geos_DrvTableRes) + ' depl. $' + HexWord(Geos_DrvTableOfs));
+ EmuVScr_WriteLn(P, '');
+ EmuVScr_WriteLn(P, 'Segments/ressources charges en memoire emulee : ' +
+  IntToStr(Geos_NumSeg));
+ For I := 0 To Integer(Geos_NumSeg) - 1 Do Begin
+  If (Geos_Seg[I].Flags And 8) <> 0 Then Extra := '   [tas LMem]' Else Extra := '';
+  EmuVScr_WriteLn(P, '  Ress. ' + IntToStr(I) + ' : segment reel $' +
+   HexWord(Geos_Seg[I].SegBase) + '   taille $' + HexWord(Geos_Seg[I].Len) +
+   '   relogements ' + IntToStr(Geos_Seg[I].FixLen Div 4) + Extra);
+ End;
+ EmuVScr_WriteLn(P, '');
+ If Geos_RelocOtherCount > 0 Then
+  Extra := ', ' + IntToStr(Geos_RelocOtherCount) + ' cible inconnue'
+ Else
+  Extra := '';
+ EmuVScr_WriteLn(P, 'Relogements : ' + IntToStr(Geos_RelocProgCount) +
+  ' programme (appliques), ' + IntToStr(Geos_RelocKernelCount) +
+  ' noyau, ' + IntToStr(Geos_RelocLibCount) + ' bibliotheque' + Extra);
+ EmuVScr_WriteLn(P, '(noyau/bibliotheque : ni resolus ni patches - aucun');
+ EmuVScr_WriteLn(P, ' noyau/bibliotheque PC/GEOS reel n''est encore implante)');
+End;
+
 { --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
@@ -197336,6 +197827,7 @@ Var
  IsWin16: Boolean;
  IsARM64: Boolean;
  IsPE32: Boolean;
+ IsGeos: Boolean;
  TraceI, TraceN: LongInt;
  TraceLine: String;
  CPUName: String;
@@ -197516,6 +198008,19 @@ Begin NesActive := False;
   P.CurFg := 7;   { gris clair }
   P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CGEOS' Then
+ Begin
+  { Chantier PC/GEOS-GeoWorks (.GEO), Stage 1 (2026-09-19, demande          }
+  { explicite de l'utilisateur - "Entree sur un .GEO dans Norton Commander  }
+  { devrait lancer l'emulateur GeoWorks") - console 80x25, meme convention  }
+  { que les autres chantiers en Stage 1 (aucune fenetre/UI GEOS reelle,     }
+  { voir Geos_LoadGeode plus bas pour le perimetre honnetement disclose).   }
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsELF64 := (TargetCPU = '-CELF64');
@@ -197523,6 +198028,7 @@ Begin NesActive := False;
  IsOS2LX := (TargetCPU = '-COS2LX');
  IsWin16 := (TargetCPU = '-CWIN16');
  IsPE32 := (TargetCPU = '-CPE');
+ IsGeos := (TargetCPU = '-CGEOS');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
@@ -197548,6 +198054,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-COS2LX'  Then CPUName := 'OS/2 LX 32 bits (console)'
  Else If TargetCPU = '-CWIN16'  Then CPUName := 'Windows 2.x/3.x 16 bits (NE, console texte)'
  Else If TargetCPU = '-CPE'     Then CPUName := 'Windows NT/Win32 PE32 (console texte)'
+ Else If TargetCPU = '-CGEOS'   Then CPUName := 'PC/GEOS-GeoWorks (.GEO, Stage 1)'
  Else If TargetCPU = '-CARM64'  Then CPUName := 'ARM64 (AArch64) systeme'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else If TargetCPU = '-CPCODE'  Then CPUName := 'UCSD p-System (p-machine)'
@@ -198710,6 +199217,84 @@ Begin NesActive := False;
   EmuHasFocus := True;
   EmuLastActiveState := True;
   P.Loaded := True;
+  Exit;
+ End;
+ If IsGeos Then Begin
+  { Chantier PC/GEOS-GeoWorks, Stage 1 (2026-09-19) - voir le commentaire   }
+  { de tete de Geos_LoadGeode pour la portee honnetement disclosee : le     }
+  { geode est reellement charge/analyse/relogue (relogements "programme    }
+  { courant"), mais son code n'est PAS execute (aucune application .GEO    }
+  { reelle n'a de point d'entree CPU classique - voir ce meme commentaire).}
+  Emu_InitComputer(P.CPU);
+  If Not P.CPU.MemReady Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteStr(P, 'Erreur : impossible de creer le swap memoire.');
+   P.CurFg := OldFg;
+   P.Running := False;
+   P.StatusMsg := 'Memoire emulee indisponible';
+   Exit;
+  End;
+  Loaded := Geos_LoadGeode(P.CPU, BinaryPath);
+  If Not Loaded Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'Erreur : ' + Geos_LastError);
+   P.CurFg := 7;
+   EmuVScr_WriteLn(P, 'Seuls les geodes executables PC/GEOS 1.x/2.x valides');
+   EmuVScr_WriteLn(P, '(en-tete/tables coherents - voir DOC/GEO_FORMAT.txt)');
+   EmuVScr_WriteLn(P, 'sont reconnus par ce chargeur.');
+   P.CurFg := OldFg; P.CurBg := OldBg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec de chargement .GEO';
+   Emu_Done(P.CPU);
+   Exit;
+  End;
+  P.CurFg := 10;
+  EmuVScr_WriteLn(P, 'Geode PC/GEOS charge avec succes.');
+  P.CurFg := 7;
+  EmuVScr_WriteLn(P, '');
+  Geos_PrintDiagnostics(P);
+  EmuVScr_WriteLn(P, '');
+  P.CurFg := 14;
+  If (Geos_AppAttr And ($4000 Or $2000)) <> 0 Then
+   EmuVScr_WriteLn(P,
+    'Ce geode a un point d''entree direct (pilote/initialisation de')
+  Else
+   EmuVScr_WriteLn(P,
+    'Ce geode est une application : son demarrage reel passe par un');
+  If (Geos_AppAttr And ($4000 Or $2000)) <> 0 Then
+   EmuVScr_WriteLn(P,
+    'bibliotheque) mais son execution CPU reste hors de portee de ce')
+  Else
+   EmuVScr_WriteLn(P,
+    'message objet (MSG_META_ATTACH) envoye par le noyau PC/GEOS a sa');
+  If (Geos_AppAttr And ($4000 Or $2000)) <> 0 Then
+   EmuVScr_WriteLn(P, 'Stage 1 (aucune bibliotheque Kernel/Ui reelle).')
+  Else Begin
+   EmuVScr_WriteLn(P,
+    'ProcessClass - un systeme de fenetrage/objets complet, hors de');
+   EmuVScr_WriteLn(P, 'portee de ce Stage 1 (voir le rapport ci-dessus).');
+  End;
+  P.CurFg := 7;
+  EmuVScr_WriteLn(P, '');
+  { Stage 2 (2026-09-19, demande explicite) : contrairement au Stage 1 seul  }
+  { (qui appelait Emu_Done ici, la memoire n'ayant plus aucun usage), les    }
+  { nouvelles commandes Invoke-GeoWorksAPI ont besoin de la memoire emulee   }
+  { VIVANTE apres le chargement pour operer sur les ressources tas LMem du  }
+  { geode charge (ChunkArrayCreate/Append/etc., ArrayQuickSort) - P.Loaded  }
+  { est mis a True (sans risque : '-CGEOS' n'est PAS dans la liste de       }
+  { pompage par trame DOS_RunOneChunk, donc aucun pas d'execution           }
+  { automatique n'est declenche) uniquement pour que le meme garde-fou que  }
+  { New-EmulatorGif (WinMgr actif = WK_EMU + EmuPanel.Loaded) fonctionne. }
+  EmuVScr_WriteLn(P, 'Appuyez sur Echap pour fermer (la memoire emulee ' +
+   'reste active pour Invoke-GeoWorksAPI).');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.Loaded := True;
+  P.StatusMsg := 'Geode PC/GEOS charge (Stage 1+2)';
+  DrawEmulatorPanel(P);
   Exit;
  End;
  If Not IsX86 Then Begin
