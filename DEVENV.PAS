@@ -1966,6 +1966,30 @@ Const
  W95_DARKGRAY  = 8;
  W95_YELLOW    = 14;
  W95_WHITE     = 15;
+ { Taches dynamiques de la barre des taches (2026-09-18, demande explicite }
+ { de l utilisateur : "il devrait ajouter une tache pour chacun des        }
+ { blocs-notes qu il a rajoute, [et] la [meme] chose pour MS-DOS") - une   }
+ { tache par fenetre Bloc-notes ouverte (synchronisee avec le VRAI         }
+ { WinMgr, y compris a la fermeture, voir Win95OnEditorWindowClosing) et   }
+ { une tache par invite MS-DOS ouverte (le Terminal DEVENV etant unique,   }
+ { toutes les taches MS-DOS disparaissent ensemble des que TermVisible     }
+ { redevient faux, voir DrawWin95Taskbar). }
+ WIN95_MAX_TASKS    = 10;
+ WIN95_TASK_NOTEPAD = 1;
+ WIN95_TASK_MSDOS   = 2;
+ WIN95_TASKBTN_W    = 140;
+ { Isolation des taches (2026-09-18, demande explicite de l utilisateur : }
+ { "comme le ferait Windows 95" - cliquer une tache = SEULE sa fenetre est }
+ { visible ; aucune tache active = seul le bureau est visible). }
+ WIN95_ACTIVETASK_DESKTOP = 0;
+ WIN95_ACTIVETASK_DEVENV  = -1;
+ W95_CYAN = 3;
+ { Chrome de fenetre du Bloc-notes isole (2026-09-19, demande explicite de }
+ { l utilisateur : "devrait etre dans une fenetre maximisee avec le meme   }
+ { genre de menu que le Bloc-notes de Windows" - la version precedente ne  }
+ { montrait que le texte brut, sans aucune bordure de fenetre). }
+ WIN95_NOTEPAD_TITLEH = 22;
+ WIN95_NOTEPAD_MENUH  = 18;
  { EXTENSION (2026-08-02) : OUTPUT_HEIGHT est devenue une VARIABLE (voir     }
  { plus bas, section Var) calculee au demarrage par                              }
  { UpdateOutputHeightForScreen - demande explicite de l utilisateur : sur       }
@@ -7222,6 +7246,24 @@ Var
  Win95TimeManuallyModified: Boolean;
  Win95LastClockMinute    : Integer;   { -1 = jamais dessine              }
  Win95LastAnalogSecond   : Integer;
+ { Taches dynamiques (Bloc-notes/MS-DOS), voir WIN95_MAX_TASKS plus haut }
+ Win95TaskCount   : Integer;
+ Win95TaskActive  : Array[1..WIN95_MAX_TASKS] Of Boolean;
+ Win95TaskKind    : Array[1..WIN95_MAX_TASKS] Of Integer;
+ Win95TaskLabel   : Array[1..WIN95_MAX_TASKS] Of String;
+ Win95TaskWinIdx  : Array[1..WIN95_MAX_TASKS] Of Integer; { index WinMgr (Bloc-notes), -1 sinon }
+ { Tache active isolee en plein ecran : WIN95_ACTIVETASK_DESKTOP (bureau,  }
+ { rien d autre visible), WIN95_ACTIVETASK_DEVENV (IDE complet, normal),   }
+ { ou 1..WIN95_MAX_TASKS (une seule fenetre Bloc-notes/MS-DOS visible). }
+ Win95ActiveTask  : Integer;
+ { Menu Fichier du chrome de fenetre du Bloc-notes isole (voir             }
+ { Win95DrawNotepadChrome) - Edition/Recherche/Aide restent decoratifs     }
+ { (etiquettes non cliquables), demande explicite portant sur              }
+ { l APPARENCE d ensemble plutot que sur la fonctionnalite complete d un    }
+ { Bloc-notes ; Fichier reste reellement fonctionnel (Nouveau/Fermer) pour }
+ { eviter un menu qui a l air cliquable mais ne fait rien. }
+ Win95NotepadFileMenuOpen : Boolean;
+ Win95NotepadFileMenuHover: Integer;
  { Sauvegarde du fond sous le menu deroulant (GetImage/PutImage) }
  MenuBgBuf    : Pointer;      { buffer du fond sauvegarde       }
  MenuBgX1     : Integer;      { rectangle sauvegarde            }
@@ -13482,6 +13524,26 @@ Procedure DrawInputBox(Var IB: TInputBox); Forward;
 Function FindWindowByFileName(AFileName: String): Integer; Forward;
 Procedure TryQuit; Forward;
 Procedure CloseEditorWindow(Index: Integer); Forward;
+{ /TASKBARWIN95 (2026-09-18) : synchronise les taches Bloc-notes de la     }
+{ barre des taches Windows 95 avec la fermeture REELLE d une fenetre       }
+{ WinMgr (y compris le decalage d index que CloseEditorWindow applique a   }
+{ toutes les fenetres suivantes) - definie bien plus bas, pres du reste du }
+{ code /TASKBARWIN95, Forward necessaire ici car CloseEditorWindow (qui    }
+{ l appelle) est definie bien avant dans le fichier. }
+Procedure Win95OnEditorWindowClosing(Index: Integer); Forward;
+{ /TASKBARWIN95 (2026-09-18, demande explicite de l utilisateur : "comme   }
+{ le ferait Windows 95" - chaque tache de la barre des taches doit etre    }
+{ une VRAIE application isolee, une seule visible a la fois) : quand un    }
+{ Bloc-notes est isole en plein ecran, sa geometrie (ActiveEditor.X/Y/      }
+{ Width/Height) est temporairement agrandie - SyncActiveWindowOut (qui     }
+{ sauvegarde ActiveEditor dans Editors[]^, LE stockage PERSISTANT de la    }
+{ fenetre) doit la redocker AVANT, sinon la geometrie plein ecran s y       }
+{ figerait de facon permanente. Forward necessaire ici car                 }
+{ SyncActiveWindowOut (bien plus haut dans le fichier) l appelle, alors    }
+{ que la definition reelle vit avec le reste du code /TASKBARWIN95, bien   }
+{ plus bas. }
+Function Win95ActiveEditorIsIsolated: Boolean; Forward;
+Procedure Win95DockActiveEditor; Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure UpdatePropsPanelForExplorerNode(Var Exp: TSolutionExplorer;
  NodeIdx: Integer); Forward;
@@ -18456,6 +18518,10 @@ Procedure SyncActiveWindowOut;
 Begin
  If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then
   Exit;
+ { /TASKBARWIN95 : voir la note pres du Forward de Win95DockActiveEditor -  }
+ { redocker AVANT de sauvegarder, jamais figer une geometrie plein ecran   }
+ { dans le stockage persistant Editors[]^. }
+ If Win95ActiveEditorIsIsolated Then Win95DockActiveEditor;
  If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
   If HexEditors[WinMgr.ActiveIdx] <> Nil Then
    HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
@@ -18584,6 +18650,10 @@ Var
  ClosingDOSCPU: String;
 Begin
  If (Index < 0) Or (Index >= WinMgr.WinCount) Then Exit;
+ { /TASKBARWIN95 : garder les taches Bloc-notes de la barre des taches      }
+ { Windows 95 synchronisees avec cette fermeture (et le decalage d index    }
+ { qui suit plus bas) - voir Win95OnEditorWindowClosing. }
+ If Opts.TaskbarWin95 Then Win95OnEditorWindowClosing(Index);
  { Onglet DOS/8086 (Stage 2) : contrairement aux autres backends (dont les  }
  { snapshots sont de simples copies de valeurs), DOS_SaveState/LoadState     }
  { echangent des POINTEURS geants (video 256 Ko, XMS jusqu a 64 Mo, EMS     }
@@ -18703,9 +18773,32 @@ Begin
  GetActiveWindow := WinMgr.ActiveIdx;
 End;
 
+{ /TASKBARWIN95 (2026-09-19, demande explicite de l utilisateur : "la       }
+{ fenetre de Bloc-notes ne devrait pas etre presente dans les onglets de    }
+{ l editeur de DEVENV - Visual Studio") : une fenetre WinMgr creee depuis   }
+{ le menu Demarrer > Bloc-notes est une application Windows 95 ISOLEE, pas  }
+{ un document de "Visual Studio" - NextWindow/PreviousWindow/              }
+{ DrawWindowTabs/TabHitTest/TabCloseHitTest l ignorent tous desormais       }
+{ (seule Win95DrawIsolatedView/Win95DrawNotepadChrome la montre). }
+Function Win95IsNotepadWindow(Idx: Integer): Boolean;
+Var
+ I: Integer;
+Begin
+ Win95IsNotepadWindow := False;
+ If Not Opts.TaskbarWin95 Then Exit;
+ For I := 1 To WIN95_MAX_TASKS Do
+  If Win95TaskActive[I] And (Win95TaskKind[I] = WIN95_TASK_NOTEPAD) And
+     (Win95TaskWinIdx[I] = Idx) Then Begin
+   Win95IsNotepadWindow := True;
+   Exit;
+  End;
+End;
+
 { --- Fenetre suivante --- }
 
 Procedure NextWindow;
+Var
+ StartIdx, I: Integer;
 Begin
  If WinMgr.WinCount <= 1 Then Exit;
  { Stage 2 (2026-08-15) : BOGUE PREEXISTANT trouve pendant le test des        }
@@ -18714,20 +18807,39 @@ Begin
  { (et l affichage) ne suivaient jamais le nouvel index actif (Ctrl+F6         }
  { semblait ne rien faire). Meme correctif que ActivateWindow. }
  SyncActiveWindowOut;
- WinMgr.ActiveIdx := (WinMgr.ActiveIdx + 1) Mod WinMgr.WinCount;
+ StartIdx := WinMgr.ActiveIdx;
+ I := StartIdx;
+ Repeat
+  I := (I + 1) Mod WinMgr.WinCount;
+  If Not Win95IsNotepadWindow(I) Then Begin
+   WinMgr.ActiveIdx := I;
+   SyncActiveWindowIn(WinMgr.ActiveIdx);
+   Exit;
+  End;
+ Until I = StartIdx;
+ { Toutes les fenetres restantes sont des Bloc-notes isoles - rien de       }
+ { valide vers quoi basculer dans la vue normale de l IDE. }
  SyncActiveWindowIn(WinMgr.ActiveIdx);
 End;
 
 { --- Fenetre precedente --- }
 
 Procedure PreviousWindow;
+Var
+ StartIdx, I: Integer;
 Begin
  If WinMgr.WinCount <= 1 Then Exit;
  SyncActiveWindowOut;
- If WinMgr.ActiveIdx > 0 Then
-  Dec(WinMgr.ActiveIdx)
- Else
-  WinMgr.ActiveIdx := WinMgr.WinCount - 1;
+ StartIdx := WinMgr.ActiveIdx;
+ I := StartIdx;
+ Repeat
+  If I > 0 Then Dec(I) Else I := WinMgr.WinCount - 1;
+  If Not Win95IsNotepadWindow(I) Then Begin
+   WinMgr.ActiveIdx := I;
+   SyncActiveWindowIn(WinMgr.ActiveIdx);
+   Exit;
+  End;
+ Until I = StartIdx;
  SyncActiveWindowIn(WinMgr.ActiveIdx);
 End;
 
@@ -18763,6 +18875,7 @@ Begin
  Bar(0, TY, GetScreenWidth - EXPLORER_WIDTH - 1, TY + TAB_HEIGHT - 1);
  TX := 0 - WinMgr.TabScrollX;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
+  If Win95IsNotepadWindow(I) Then Continue;
   TW := TabWidth(I);
   If (TX + TW > 0) And (TX < GetScreenWidth - EXPLORER_WIDTH) Then Begin
    { Fond de l onglet }
@@ -18809,6 +18922,7 @@ Begin
  If MX < 0 Then Exit;
  TX := 0 - WinMgr.TabScrollX;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
+  If Win95IsNotepadWindow(I) Then Continue;
   TW := TabWidth(I);
   If (MX >= TX) And (MX < TX + TW) Then Begin
    TabHitTest := I;
@@ -18829,8 +18943,10 @@ Begin
  If (TabIdx < 0) Or (TabIdx >= WinMgr.WinCount) Then Exit;
  TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
  TX := 0 - WinMgr.TabScrollX;
- For I := 0 To TabIdx - 1 Do
+ For I := 0 To TabIdx - 1 Do Begin
+  If Win95IsNotepadWindow(I) Then Continue;
   TX := TX + TabWidth(I);
+ End;
  TW := TabWidth(TabIdx);
  CX := TX + TW - TAB_CLOSE_SIZE - 2;
  If (MX >= CX) And (MX < CX + TAB_CLOSE_SIZE) And
@@ -208799,6 +208915,130 @@ Begin
  If Win95ProgMenuOpen Then DrawWin95ProgrammesMenu;
 End;
 
+{ --- Taches dynamiques de la barre des taches (Bloc-notes/MS-DOS) --- }
+
+Procedure Win95InitTasks;
+Var
+ I: Integer;
+Begin
+ Win95TaskCount := 0;
+ For I := 1 To WIN95_MAX_TASKS Do
+  Win95TaskActive[I] := False;
+End;
+
+Procedure Win95RemoveTask(I: Integer);
+Begin
+ If Win95TaskActive[I] Then Begin
+  Win95TaskActive[I] := False;
+  Dec(Win95TaskCount);
+ End;
+End;
+
+Procedure Win95RemoveTasksByKind(Kind: Integer);
+Var
+ I: Integer;
+Begin
+ For I := 1 To WIN95_MAX_TASKS Do
+  If Win95TaskActive[I] And (Win95TaskKind[I] = Kind) Then
+   Win95RemoveTask(I);
+End;
+
+{ Renvoie l emplacement (1..WIN95_MAX_TASKS) utilise, ou 0 si la barre est }
+{ pleine - permet a l appelant d activer immediatement la tache tout juste}
+{ creee (demande explicite de l utilisateur : lancer un Bloc-notes/MS-DOS }
+{ depuis le menu Demarrer doit l afficher tout de suite, comme le ferait  }
+{ vraiment Windows 95, voir Win95SetActiveTask). }
+Function Win95AddTask(Kind: Integer; Const Lbl: String; WinIdx: Integer): Integer;
+Var
+ I: Integer;
+Begin
+ Win95AddTask := 0;
+ If Win95TaskCount >= WIN95_MAX_TASKS Then Exit; { plein : ignore silencieusement }
+ For I := 1 To WIN95_MAX_TASKS Do
+  If Not Win95TaskActive[I] Then Begin
+   Win95TaskActive[I] := True;
+   Win95TaskKind[I] := Kind;
+   Win95TaskLabel[I] := Lbl;
+   Win95TaskWinIdx[I] := WinIdx;
+   Inc(Win95TaskCount);
+   Win95AddTask := I;
+   Exit;
+  End;
+End;
+
+{ Appelee par CloseEditorWindow (voir son propre appel, plus haut dans le }
+{ fichier) - retire la tache Bloc-notes de la fenetre qui se ferme et      }
+{ decale les WinIdx des taches suivantes exactement comme                  }
+{ CloseEditorWindow decale WinMgr.Windows[] juste apres cet appel. }
+Procedure Win95OnEditorWindowClosing(Index: Integer);
+Var
+ I: Integer;
+Begin
+ For I := 1 To WIN95_MAX_TASKS Do
+  If Win95TaskActive[I] And (Win95TaskKind[I] = WIN95_TASK_NOTEPAD) Then Begin
+   If Win95TaskWinIdx[I] = Index Then
+    Win95RemoveTask(I)
+   Else If Win95TaskWinIdx[I] > Index Then
+    Dec(Win95TaskWinIdx[I]);
+  End;
+End;
+
+{ BOGUE REEL trouve en testant en direct (2026-09-18) : a la resolution   }
+{ VGA par defaut (640x480, bien plus petite que la fenetre Win32 realle,   }
+{ elle-meme mise a l echelle par PtcGraph), une largeur FIXE de            }
+{ WIN95_TASKBTN_W par tache ne laissait de la place que pour UNE seule     }
+{ tache dynamique avant que le garde-fou de debordement ne fasse           }
+{ disparaitre silencieusement les suivantes (confirme : un 2e Bloc-notes    }
+{ ouvert n avait jamais de bouton). Comme la VRAIE barre des taches         }
+{ Windows 95 (qui retrecit ses boutons a mesure que des taches s ouvrent   }
+{ plutot que d en perdre), la largeur de chaque bouton est maintenant       }
+{ calculee a partir de l espace REELLEMENT disponible entre la tache        }
+{ statique DEVENV et l horloge, divise par le nombre de taches actives -   }
+{ aucune tache active n est plus jamais invisible. }
+Function Win95TaskButtonWidth: Integer;
+Var
+ AvailStart, AvailEnd, Avail, W: Integer;
+Begin
+ AvailStart := 95 + 190 + 2;
+ AvailEnd := GetMaxX - 95 - 2;
+ Avail := AvailEnd - AvailStart;
+ If (Avail <= 0) Or (Win95TaskCount <= 0) Then Begin
+  Win95TaskButtonWidth := WIN95_TASKBTN_W;
+  Exit;
+ End;
+ W := Avail Div Win95TaskCount;
+ If W > WIN95_TASKBTN_W Then W := WIN95_TASKBTN_W;
+ If W < 24 Then W := 24; { garde-fou minimal : bouton toujours cliquable }
+ Win95TaskButtonWidth := W;
+End;
+
+{ Meme geometrie EXACTE que la boucle de dessin des taches dynamiques dans }
+{ DrawWin95Taskbar (juste plus bas) - les deux doivent rester              }
+{ synchronisees, meme discipline que Win95FlyoutHeight/Win95FlyoutHitTest  }
+{ plus haut (partagent d ailleurs desormais Win95TaskButtonWidth). }
+Function Win95TaskbarHitTest(MX, MY: Integer): Integer;
+Var
+ Top, Bottom, BtnW: Integer;
+ TX1, TX2: Integer;
+ I: Integer;
+Begin
+ Win95TaskbarHitTest := 0;
+ Top := GetScreenHeight;
+ Bottom := GetMaxY;
+ If (MY < Top + 3) Or (MY > Bottom - 3) Then Exit;
+ BtnW := Win95TaskButtonWidth;
+ TX1 := 95 + 190 + 2; { juste apres la tache statique DEVENV }
+ For I := 1 To WIN95_MAX_TASKS Do
+  If Win95TaskActive[I] Then Begin
+   TX2 := TX1 + BtnW;
+   If (MX >= TX1) And (MX <= TX2) Then Begin
+    Win95TaskbarHitTest := I;
+    Exit;
+   End;
+   TX1 := TX2 + 2;
+  End;
+End;
+
 { --- Barre des taches elle-meme (bouton Demarrer, tache DEVENV, horloge) }
 Procedure DrawWin95Taskbar;
 Var
@@ -208806,10 +209046,20 @@ Var
  Hour, Min, Sec, Sec100: Word;
  HourStr, MinStr, AmPm, TimeStr: String;
  TaskX1, TaskX2: Integer;
+ I, BtnW, MaxChars: Integer;
+ Lbl: String;
 Begin
  MX := GetMaxX;
  Top := GetScreenHeight;
  Bottom := GetMaxY;
+
+ { Le Terminal DEVENV est UNIQUE (pas une fenetre par invite comme un vrai}
+ { MS-DOS) - toutes les taches MS-DOS disparaissent ensemble des que le    }
+ { Terminal se ferme, quel que soit le chemin de fermeture emprunte (il y  }
+ { en a plus d une douzaine dans ce fichier) : verifie ici a chaque        }
+ { dessin plutot que d accrocher chacun d entre eux individuellement. }
+ If Opts.TaskbarWin95 And (Not TermVisible) Then
+  Win95RemoveTasksByKind(WIN95_TASK_MSDOS);
 
  { Fond de la barre }
  SetFillStyle(SolidFill, W95_LIGHTGRAY);
@@ -208825,9 +209075,9 @@ Begin
  SetColor(W95_BLACK);
  OutTextXY(20, Top + 10, 'D' + #130 + 'marrer');
 
- { Tache DEVENV : seule application "ouverte" dans cette barre - toujours}
- { active/enfoncee (demande explicite de l utilisateur : "une des taches}
- { serait DEVENV (Visual Studio) presente"). }
+ { Tache DEVENV : toujours presente en premier (demande explicite de       }
+ { l utilisateur : "une des taches serait DEVENV (Visual Studio)          }
+ { presente"). }
  TaskX1 := 95;
  TaskX2 := TaskX1 + 190;
  If TaskX2 < MX - 100 Then Begin
@@ -208837,6 +209087,31 @@ Begin
   SetColor(W95_BLACK);
   OutTextXY(TaskX1 + 5, Top + 9, 'DEVENV - Visual Studio');
  End;
+
+ { Taches dynamiques : une par Bloc-notes ouvert et par invite MS-DOS      }
+ { ouverte depuis le menu Demarrer (demande explicite de l utilisateur,    }
+ { 2026-09-18) - largeur/geometrie partagees avec Win95TaskbarHitTest via  }
+ { Win95TaskButtonWidth (voir son commentaire : largeur retrecie plutot    }
+ { qu une tache qui disparait quand l espace manque). }
+ BtnW := Win95TaskButtonWidth;
+ MaxChars := (BtnW - 10) Div 8;
+ If MaxChars < 1 Then MaxChars := 1;
+ TaskX1 := TaskX2 + 2;
+ For I := 1 To WIN95_MAX_TASKS Do
+  If Win95TaskActive[I] Then Begin
+   TaskX2 := TaskX1 + BtnW;
+   Lbl := Win95TaskLabel[I];
+   If Length(Lbl) > MaxChars Then Begin
+    If MaxChars > 3 Then Lbl := Copy(Lbl, 1, MaxChars - 3) + '...'
+    Else Lbl := Copy(Lbl, 1, MaxChars);
+   End;
+   SetFillStyle(SolidFill, W95_LIGHTGRAY);
+   Bar(TaskX1, Top + 3, TaskX2, Bottom - 3);
+   Win95Draw3DBorder(TaskX1, Top + 3, TaskX2, Bottom - 3, False);
+   SetColor(W95_BLACK);
+   OutTextXY(TaskX1 + 5, Top + 9, Lbl);
+   TaskX1 := TaskX2 + 2;
+  End;
 
  { Horloge (format 12h AM/PM, comme WINDOWS95-0) }
  GetTime(Hour, Min, Sec, Sec100);
@@ -208886,6 +209161,170 @@ Begin
  TerminalOnTop := True;
 End;
 
+{ --- Isolation des taches ("comme le ferait vraiment Windows 95") --- }
+{ Chaque tache est une VRAIE application isolee : cliquer sur la tache    }
+{ Bloc-notes X ne montre QUE la fenetre de Bloc-notes X, cliquer sur       }
+{ DEVENV - Visual Studio ne montre QUE l IDE complet, cliquer sur MS-DOS   }
+{ ne montre QUE le terminal, et si rien n est actif, seul le bureau est   }
+{ visible (demande explicite de l utilisateur, 2026-09-18). Voir           }
+{ Win95DrawIsolatedView (plus bas) pour le rendu correspondant et le       }
+{ Forward de Win95DockActiveEditor (tout en haut du fichier) pour pourquoi }
+{ la geometrie de l editeur doit etre soigneusement redockee avant toute   }
+{ sauvegarde persistante. }
+
+Function Win95ActiveEditorIsIsolated: Boolean;
+Begin
+ Win95ActiveEditorIsIsolated := Opts.TaskbarWin95 And
+  (Win95ActiveTask >= 1) And (Win95ActiveTask <= WIN95_MAX_TASKS) And
+  Win95TaskActive[Win95ActiveTask] And
+  (Win95TaskKind[Win95ActiveTask] = WIN95_TASK_NOTEPAD) And
+  (Win95TaskWinIdx[Win95ActiveTask] = WinMgr.ActiveIdx);
+End;
+
+{ Remet ActiveEditor a sa geometrie NORMALE (dockee, comme InitEditor la    }
+{ calcule a la creation) - meme formule exacte, pour que SyncActiveWindowOut}
+{ ne fige jamais un etat plein ecran dans Editors[]^. }
+Procedure Win95DockActiveEditor;
+Begin
+ ActiveEditor.X := 0;
+ ActiveEditor.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ ActiveEditor.Width := GetScreenWidth - EXPLORER_WIDTH;
+ ActiveEditor.Height := GetScreenHeight - MENUBAR_HEIGHT - TOOLBAR_HEIGHT
+   - TAB_HEIGHT - STATUSBAR_HEIGHT - OUTPUT_HEIGHT;
+ If ActiveEditor.Height < ActiveEditor.CharHeight Then
+  ActiveEditor.Height := ActiveEditor.CharHeight;
+ If ActiveEditor.Width < ActiveEditor.GutterWidth + ActiveEditor.CharWidth Then
+  ActiveEditor.Width := ActiveEditor.GutterWidth + ActiveEditor.CharWidth;
+ ActiveEditor.VisibleLines := ActiveEditor.Height Div ActiveEditor.CharHeight;
+ ActiveEditor.VisibleCols := (ActiveEditor.Width - ActiveEditor.GutterWidth)
+  Div ActiveEditor.CharWidth;
+End;
+
+{ Agrandit ActiveEditor pour occuper tout l ecran (au-dessus de la barre   }
+{ des taches, et sous le chrome de fenetre Bloc-notes - voir                }
+{ Win95DrawNotepadChrome) - c est cette MEME geometrie que lisent aussi     }
+{ bien DrawEditor que HandleEditorMouse, donc le clic souris reste          }
+{ correctement aligne pendant l isolation, pas seulement l affichage. }
+Procedure Win95IsolateActiveEditor;
+Begin
+ ActiveEditor.X := 0;
+ ActiveEditor.Y := WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH;
+ ActiveEditor.Width := GetScreenWidth;
+ ActiveEditor.Height := GetScreenHeight - WIN95_NOTEPAD_TITLEH - WIN95_NOTEPAD_MENUH;
+ If ActiveEditor.Height < ActiveEditor.CharHeight Then
+  ActiveEditor.Height := ActiveEditor.CharHeight;
+ If ActiveEditor.Width < ActiveEditor.GutterWidth + ActiveEditor.CharWidth Then
+  ActiveEditor.Width := ActiveEditor.GutterWidth + ActiveEditor.CharWidth;
+ ActiveEditor.VisibleLines := ActiveEditor.Height Div ActiveEditor.CharHeight;
+ ActiveEditor.VisibleCols := (ActiveEditor.Width - ActiveEditor.GutterWidth)
+  Div ActiveEditor.CharWidth;
+End;
+
+{ Meme principe que Win95Dock/IsolateActiveEditor, mais pour le Terminal : }
+{ pas de stockage persistant par fenetre a proteger ici (TermPanels[] est   }
+{ un singleton partage), donc Win95SetActiveTask redocke explicitement a   }
+{ CHAQUE transition plutot que via une garde centralisee. }
+Procedure Win95DockTerminal;
+Begin
+ TermX := 0;
+ TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+ TermHeight := OUTPUT_HEIGHT;
+End;
+
+Procedure Win95IsolateTerminal;
+Begin
+ TermX := 0;
+ TermY := 0;
+ TermWidth := GetScreenWidth;
+ TermHeight := GetScreenHeight;
+End;
+
+{ Verifie si la souris est sur la tache statique DEVENV - Visual Studio    }
+{ (memes coordonnees que son dessin dans DrawWin95Taskbar). }
+Function Win95IsOnDevenvTask(MX, MY: Integer): Boolean;
+Var
+ Top, Bottom: Integer;
+Begin
+ Top := GetScreenHeight;
+ Bottom := GetMaxY;
+ Win95IsOnDevenvTask := (MX >= 95) And (MX <= 285) And
+  (MY >= Top + 3) And (MY <= Bottom - 3);
+End;
+
+{ Si la fenetre WinMgr active est un Bloc-notes isole (voir                }
+{ Win95IsNotepadWindow), la vue normale de l IDE ne doit JAMAIS l afficher }
+{ dans l editeur/les onglets (demande explicite de l utilisateur,          }
+{ 2026-09-19) - bascule vers la premiere fenetre "Visual Studio" restante, }
+{ ou vide completement l editeur (EditorReady:=False) s il n en reste      }
+{ aucune. Appelee des qu on revient sur la tache DEVENV ou le bureau. }
+Procedure Win95EnsureDevenvActiveWindowValid;
+Var
+ I: Integer;
+Begin
+ If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
+ If Not Win95IsNotepadWindow(WinMgr.ActiveIdx) Then Exit;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If Not Win95IsNotepadWindow(I) Then Begin
+   ActivateWindow(I);
+   Exit;
+  End;
+ EditorReady := False;
+End;
+
+{ Point d entree UNIQUE pour changer de tache active (clic sur une tache   }
+{ de la barre, ou lancement d un nouveau Bloc-notes/MS-DOS depuis le menu  }
+{ Demarrer) - gere le redockage de l ancienne tache ET l isolation de la   }
+{ nouvelle, dans le bon ordre. }
+Procedure Win95SetActiveTask(NewTask: Integer);
+Var
+ NewWinIdx: Integer;
+Begin
+ { BOGUE REEL signale par l utilisateur (2026-09-19) : le menu et la barre }
+ { d outils de DEVENV disparaissaient (caches par l editeur, toujours      }
+ { dessine en plein ecran) en revenant sur la tache DEVENV apres un        }
+ { Bloc-notes. Cause : la garde de SyncActiveWindowOut (dans               }
+ { Win95ActiveEditorIsIsolated) ne se declenche que si la NOUVELLE tache   }
+ { appelle ActivateWindow - donc jamais en revenant vers DEVENV ou le      }
+ { bureau (NewTask = WIN95_ACTIVETASK_DEVENV/DESKTOP, aucun des deux ne    }
+ { passe par la branche WIN95_TASK_NOTEPAD ci-dessous). Redocker ici,       }
+ { INCONDITIONNELLEMENT et en tout premier, couvre TOUTES les transitions. }
+ If Win95ActiveEditorIsIsolated Then Win95DockActiveEditor;
+
+ { Si on quitte une invite MS-DOS isolee, la redocker d abord (voir la     }
+ { note de Win95DockTerminal ci-dessus - aucune garde centralisee possible }
+ { pour le Terminal, contrairement a l editeur). }
+ If (Win95ActiveTask >= 1) And (Win95ActiveTask <= WIN95_MAX_TASKS) And
+    Win95TaskActive[Win95ActiveTask] And
+    (Win95TaskKind[Win95ActiveTask] = WIN95_TASK_MSDOS) Then
+  Win95DockTerminal;
+
+ If (NewTask >= 1) And (NewTask <= WIN95_MAX_TASKS) And Win95TaskActive[NewTask] Then Begin
+  Case Win95TaskKind[NewTask] Of
+   WIN95_TASK_NOTEPAD:
+    If (Win95TaskWinIdx[NewTask] >= 0) And (Win95TaskWinIdx[NewTask] < WinMgr.WinCount) Then Begin
+     { ActivateWindow declenche SyncActiveWindowOut, qui se protege tout   }
+     { seul (voir la garde de Win95ActiveEditorIsIsolated) si l ancienne   }
+     { fenetre active etait elle-meme un Bloc-notes isole. }
+     ActivateWindow(Win95TaskWinIdx[NewTask]);
+     Win95IsolateActiveEditor;
+     { BOGUE REEL trouve en concevant l isolation (2026-09-18) : sans ceci,}
+     { le clavier restait route vers le Terminal (TerminalHasFocus laisse  }
+     { a True par une precedente tache MS-DOS) meme si c est desormais ce  }
+     { Bloc-notes qui est affiche plein ecran. }
+     TerminalHasFocus := False;
+    End;
+   WIN95_TASK_MSDOS: Begin
+    Win95OpenMsDosTerminal;
+    Win95IsolateTerminal;
+   End;
+  End;
+ End Else
+  Win95EnsureDevenvActiveWindowValid;
+
+ Win95ActiveTask := NewTask;
+End;
+
 { --- Aide > A propos de DEVENV (meme texte que le menu Aide, tag 900) --- }
 Procedure Win95ShowAbout;
 Begin
@@ -208902,20 +209341,30 @@ End;
 { --- Clic dans le menu Demarrer / ses sous-menus --- }
 Procedure Win95StartMenuMouseDown(MX, MY: Integer);
 Var
- Item: Integer;
+ Item, Slot: Integer;
 Begin
  If Win95AccMenuOpen Then Begin
   Item := Win95HitAccMenu(MX, MY);
-  If Item = 1 Then Begin { Bloc-notes -> Nouveau fichier }
+  If Item = 1 Then Begin { Bloc-notes -> nouveau fichier texte vierge }
    Win95CloseAllOverlays;
-   { Efface le menu Windows 95 affiche jusqu ici AVANT que ShowNewFileDialog}
-   { (comme les autres boites appelees ci-dessous) ne dessine la sienne     }
-   { par-dessus : BOGUE REEL trouve en testant en direct (2026-09-18) -     }
-   { sans ce repaint, les pixels du menu deja ferme restaient visibles a    }
-   { l ecran tant qu aucun autre evenement ne forcait un DrawAllWidgets. }
+   { Comme le vrai Bloc-notes (ouvre directement un document "Sans titre",}
+   { pas de boite de dialogue Nouveau fichier) - permet aussi de connaitre}
+   { l index WinMgr de la fenetre creee tout de suite pour lui associer   }
+   { une tache (demande explicite de l utilisateur, 2026-09-18 : "il       }
+   { devrait ajouter une tache pour chacun des blocs-notes qu il a         }
+   { rajoute"). Meme sequence que les autres appelants de CreateEditorWindow}
+   { (voir p.ex. ligne ~18433 : SyncActiveWindowOut puis masquer la page   }
+   { de demarrage avant de creer la fenetre). }
+   If EditorReady Then SyncActiveWindowOut;
+   StartPage.Visible := False;
+   CreateEditorWindow('');
+   EditorReady := True;
+   Slot := Win95AddTask(WIN95_TASK_NOTEPAD,
+    WinMgr.Windows[WinMgr.ActiveIdx].Title, WinMgr.ActiveIdx);
+   { Lancer une application l affiche aussitot, isolee, comme le ferait    }
+   { vraiment Windows 95 (demande explicite de l utilisateur, 2026-09-18). }
+   If Slot > 0 Then Win95SetActiveTask(Slot);
    FullRepaintNeeded := True;
-   DrawAllWidgets;
-   ShowNewFileDialog(NewFileDlg);
    Exit;
   End;
  End;
@@ -208926,7 +209375,14 @@ Begin
    Exit;
   End Else If Item = 2 Then Begin { MS-DOS }
    Win95CloseAllOverlays;
-   Win95OpenMsDosTerminal;
+   { Une tache par invite MS-DOS ouverte, meme traitement que Bloc-notes   }
+   { (demande explicite de l utilisateur) - le Terminal DEVENV restant     }
+   { unique, toutes les taches MS-DOS disparaissent ensemble a sa fermeture}
+   { (voir DrawWin95Taskbar). Win95SetActiveTask ouvre et isole le Terminal}
+   { lui-meme (voir son Case WIN95_TASK_MSDOS) - inutile d appeler          }
+   { Win95OpenMsDosTerminal separement ici. }
+   Slot := Win95AddTask(WIN95_TASK_MSDOS, 'MS-DOS', -1);
+   If Slot > 0 Then Win95SetActiveTask(Slot);
    Exit;
   End;
  End;
@@ -208935,6 +209391,15 @@ Begin
   1: Win95ProgMenuOpen := True;                     { Programmes }
   2: Begin                                          { Documents }
       Win95CloseAllOverlays;
+      { Documents/Parametres/Rechercher/Aide ouvrent des boites DEVENV      }
+      { NATIVES (FileDlg/OptionsDlg/FindReplaceDlg/MessageBox), dessinees   }
+      { seulement par la vue normale de l IDE (pas par                    }
+      { Win95DrawIsolatedView) - basculer explicitement vers la tache      }
+      { DEVENV D ABORD, sinon DrawAllWidgets se contenterait de redessiner }
+      { la vue isolee courante (bureau ou une autre tache) et la boite ne  }
+      { serait jamais visible (BOGUE REEL trouve en concevant l isolation  }
+      { des taches, 2026-09-18). }
+      Win95SetActiveTask(WIN95_ACTIVETASK_DEVENV);
       FullRepaintNeeded := True;
       DrawAllWidgets;
       InitFileDialog(FileDlg, False);
@@ -208942,11 +209407,14 @@ Begin
       FileDlg.Base.Visible := True;
       DrawFileDialog(FileDlg);
      End;
-  3: Begin Win95CloseAllOverlays; FullRepaintNeeded := True; DrawAllWidgets;
+  3: Begin Win95CloseAllOverlays; Win95SetActiveTask(WIN95_ACTIVETASK_DEVENV);
+      FullRepaintNeeded := True; DrawAllWidgets;
       ShowOptionsDialog(OptionsDlg); End;                            { Parametres }
-  4: Begin Win95CloseAllOverlays; FullRepaintNeeded := True; DrawAllWidgets;
+  4: Begin Win95CloseAllOverlays; Win95SetActiveTask(WIN95_ACTIVETASK_DEVENV);
+      FullRepaintNeeded := True; DrawAllWidgets;
       ShowFindDialog(FindReplaceDlg); End;                           { Rechercher }
-  5: Begin Win95CloseAllOverlays; FullRepaintNeeded := True; DrawAllWidgets;
+  5: Begin Win95CloseAllOverlays; Win95SetActiveTask(WIN95_ACTIVETASK_DEVENV);
+      FullRepaintNeeded := True; DrawAllWidgets;
       Win95ShowAbout; End;                                           { Aide }
   6: Begin                                          { Executer... }
       Win95CloseAllOverlays;
@@ -209536,11 +210004,152 @@ Begin
 End;
 
 { --- Repartiteur d evenements principal du shell Windows 95 --- }
+{ Chrome de fenetre du Bloc-notes isole (barre de titre + barre de menu),  }
+{ pour ressembler a une VRAIE fenetre Windows 95 plutot qu a du texte brut }
+{ (demande explicite de l utilisateur, 2026-09-18/19 : "devrait etre dans  }
+{ une fenetre maximisee avec le meme genre de menu que le Bloc-notes de    }
+{ Windows"). Seul le menu Fichier est reellement fonctionnel (Nouveau/     }
+{ Fermer) - Edition/Recherche/Aide restent des etiquettes decoratives      }
+{ (l accent de la demande porte sur l APPARENCE d ensemble, pas sur une    }
+{ reimplantation complete du Bloc-notes de Windows) - voir                 }
+{ Win95NotepadChromeMouseDown pour la logique de clic. }
+Const
+ Win95NotepadFileItems: Array[0..1] Of String = ('Nouveau', 'Fermer');
+
+Procedure Win95DrawNotepadChrome;
+Var
+ MX: Integer;
+ Title: String;
+Begin
+ MX := GetScreenWidth - 1;
+ If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
+  Title := WinMgr.Windows[WinMgr.ActiveIdx].Title
+ Else
+  Title := 'Sans titre';
+
+ { Barre de titre, comme le vrai Bloc-notes Windows 95 }
+ SetFillStyle(SolidFill, W95_BLUE);
+ Bar(0, 0, MX, WIN95_NOTEPAD_TITLEH - 1);
+ Win95DrawIcon(4, 4);
+ SetColor(W95_WHITE);
+ OutTextXY(18, 7, Title + ' - Bloc-notes');
+
+ { Bouton fermer (fonctionnel, voir Win95CloseIsolatedNotepad) }
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(MX - 18, 3, MX - 3, WIN95_NOTEPAD_TITLEH - 4);
+ Win95Draw3DBorder(MX - 18, 3, MX - 3, WIN95_NOTEPAD_TITLEH - 4, True);
+ SetColor(W95_BLACK);
+ OutTextXY(MX - 15, 4, 'X');
+
+ { Barre de menu }
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(0, WIN95_NOTEPAD_TITLEH, MX, WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH - 1);
+ SetColor(W95_WHITE);
+ Line(0, WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH - 1, MX,
+  WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH - 1);
+
+ If Win95NotepadFileMenuOpen Then Begin
+  SetFillStyle(SolidFill, W95_BLUE);
+  Bar(4, WIN95_NOTEPAD_TITLEH + 1, 68, WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH - 2);
+  SetColor(W95_WHITE);
+ End Else
+  SetColor(W95_BLACK);
+ OutTextXY(8, WIN95_NOTEPAD_TITLEH + 3, 'Fichier');
+
+ SetColor(W95_BLACK);
+ OutTextXY(76, WIN95_NOTEPAD_TITLEH + 3, 'Edition');
+ OutTextXY(148, WIN95_NOTEPAD_TITLEH + 3, 'Recherche');
+ OutTextXY(228, WIN95_NOTEPAD_TITLEH + 3, 'Aide');
+End;
+
+{ Le menu Fichier deroule doit etre dessine APRES DrawEditor (voir son     }
+{ appel dans Win95DrawIsolatedView) - BOGUE REEL trouve en testant en      }
+{ direct (2026-09-19) : dessine dans Win95DrawNotepadChrome (donc AVANT    }
+{ DrawEditor), le fond blanc de la zone de texte de l editeur (qui         }
+{ commence exactement a la meme position Y) le recouvrait aussitot, le     }
+{ rendant invisible bien que "Fichier" restait affiche en surbrillance. }
+Procedure Win95DrawNotepadFileMenu;
+Begin
+ If Win95NotepadFileMenuOpen Then
+  Win95DrawFlyoutMenu(4, WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH, 110, 10,
+   Win95NotepadFileItems, Win95NotepadFileMenuHover);
+End;
+
+Function Win95IsOnNotepadCloseButton(MX, MY: Integer): Boolean;
+Var
+ ScreenMX: Integer;
+Begin
+ ScreenMX := GetScreenWidth - 1;
+ Win95IsOnNotepadCloseButton := (MX >= ScreenMX - 18) And (MX <= ScreenMX - 3) And
+  (MY >= 3) And (MY <= WIN95_NOTEPAD_TITLEH - 4);
+End;
+
+Function Win95IsOnNotepadFileLabel(MX, MY: Integer): Boolean;
+Begin
+ Win95IsOnNotepadFileLabel := (MX >= 4) And (MX <= 68) And
+  (MY >= WIN95_NOTEPAD_TITLEH + 1) And (MY <= WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH - 2);
+End;
+
+{ Ferme le Bloc-notes isole courant (bouton X de la barre de titre, ou     }
+{ Fichier > Fermer) - redocke proprement AVANT de fermer la fenetre        }
+{ (Win95SetActiveTask), puis reutilise CloseEditorWindow (qui retire aussi }
+{ la tache, voir son propre appel a Win95OnEditorWindowClosing) - retour   }
+{ sur la tache DEVENV, comme le ferait Windows en fermant la derniere      }
+{ fenetre visible d une application. }
+Procedure Win95CloseIsolatedNotepad;
+Var
+ WinIdx: Integer;
+Begin
+ If Not ((Win95ActiveTask >= 1) And (Win95ActiveTask <= WIN95_MAX_TASKS) And
+    Win95TaskActive[Win95ActiveTask] And
+    (Win95TaskKind[Win95ActiveTask] = WIN95_TASK_NOTEPAD)) Then Exit;
+ WinIdx := Win95TaskWinIdx[Win95ActiveTask];
+ Win95NotepadFileMenuOpen := False;
+ Win95SetActiveTask(WIN95_ACTIVETASK_DEVENV);
+ If (WinIdx >= 0) And (WinIdx < WinMgr.WinCount) Then
+  CloseEditorWindow(WinIdx);
+ FullRepaintNeeded := True;
+End;
+
+Procedure Win95NotepadChromeMouseDown(MX, MY: Integer);
+Var
+ Item, Slot: Integer;
+Begin
+ If Win95NotepadFileMenuOpen Then Begin
+  Item := Win95FlyoutHitTest(4, WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH, 110, 2, MX, MY);
+  Win95NotepadFileMenuOpen := False;
+  If Item = 1 Then Begin { Nouveau - meme sequence que Demarrer > Bloc-notes }
+   If EditorReady Then SyncActiveWindowOut;
+   StartPage.Visible := False;
+   CreateEditorWindow('');
+   EditorReady := True;
+   Slot := Win95AddTask(WIN95_TASK_NOTEPAD,
+    WinMgr.Windows[WinMgr.ActiveIdx].Title, WinMgr.ActiveIdx);
+   If Slot > 0 Then Win95SetActiveTask(Slot);
+  End Else If Item = 2 Then { Fermer }
+   Win95CloseIsolatedNotepad;
+  Exit;
+ End;
+ If Win95IsOnNotepadCloseButton(MX, MY) Then Begin
+  Win95CloseIsolatedNotepad;
+  Exit;
+ End;
+ If Win95IsOnNotepadFileLabel(MX, MY) Then Begin
+  Win95NotepadFileMenuOpen := True;
+  Exit;
+ End;
+ { Clic ailleurs dans l entete (barre de titre, ou etiquettes decoratives  }
+ { Edition/Recherche/Aide) : rien a faire, sinon fermer un menu Fichier    }
+ { deja ouvert. }
+ Win95NotepadFileMenuOpen := False;
+End;
+
 Function Win95HandleEvent(Var Ev: TEvent): Boolean;
 Var
  MX, MY: Integer;
- InTaskbarStrip, Overlay: Boolean;
+ InTaskbarStrip, Overlay, InNotepadChrome: Boolean;
  Sec100Dummy: Word;
+ TaskHit: Integer;
 Begin
  Win95HandleEvent := False;
  MX := Ev.MouseX;
@@ -209548,13 +210157,24 @@ Begin
  InTaskbarStrip := MY >= GetScreenHeight;
  Overlay := Win95StartMenuOpen Or Win95RunDlgVisible Or
   Win95ShutdownDlgVisible Or Win95DateTimeDlgVisible;
+ { Chrome de fenetre du Bloc-notes isole (barre de titre/menu, voir         }
+ { Win95DrawNotepadChrome) - le "Or Win95NotepadFileMenuOpen" couvre aussi  }
+ { le menu Fichier deroule, qui s etend SOUS cette bande. }
+ InNotepadChrome := Win95ActiveEditorIsIsolated And
+  ((MY < WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH) Or Win95NotepadFileMenuOpen);
 
  If Ev.Kind = EV_MOUSE_MOVE Then Begin
   If Overlay Then Begin
    Win95UpdateHover(MX, MY);
    Win95HandleEvent := True;
   End Else If InTaskbarStrip Then
+   Win95HandleEvent := True
+  Else If InNotepadChrome Then Begin
+   If Win95NotepadFileMenuOpen Then
+    Win95NotepadFileMenuHover := Win95FlyoutHitTest(4,
+     WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH, 110, 2, MX, MY);
    Win95HandleEvent := True;
+  End;
   Exit;
  End;
 
@@ -209589,12 +210209,24 @@ Begin
    Win95HandleEvent := True;
    Exit;
   End;
+  If InNotepadChrome Then Begin
+   Win95NotepadChromeMouseDown(MX, MY);
+   Win95HandleEvent := True;
+   Exit;
+  End;
   If InTaskbarStrip Then Begin
-   If Win95IsOnClock(MX, MY) Then Begin
-    Win95DateTimeDlgVisible := True;
-    Win95DateTimeTab := 1;
-    Win95TimeManuallyModified := False;
-    GetTime(Win95SelHour, Win95SelMin, Win95SelSec, Sec100Dummy);
+   If Win95IsOnDevenvTask(MX, MY) Then
+    Win95SetActiveTask(WIN95_ACTIVETASK_DEVENV)
+   Else Begin
+    TaskHit := Win95TaskbarHitTest(MX, MY);
+    If TaskHit > 0 Then
+     Win95SetActiveTask(TaskHit)
+    Else If Win95IsOnClock(MX, MY) Then Begin
+     Win95DateTimeDlgVisible := True;
+     Win95DateTimeTab := 1;
+     Win95TimeManuallyModified := False;
+     GetTime(Win95SelHour, Win95SelMin, Win95SelSec, Sec100Dummy);
+    End;
    End;
    Win95HandleEvent := True;
    Exit;
@@ -209632,13 +210264,58 @@ Begin
    Win95HandleEvent := True;
    Exit;
   End;
+  If Win95NotepadFileMenuOpen Then Begin
+   If Ev.KeyChar = #27 Then Win95NotepadFileMenuOpen := False;
+   Win95HandleEvent := True;
+   Exit;
+  End;
  End;
+End;
+
+{ Rendu de la vue isolee (bureau, ou UNE SEULE fenetre plein ecran) - voir }
+{ la section "Isolation des taches" plus haut pour la conception complete.}
+{ Appelee par DrawAllWidgets AVANT tout le reste (bypasse entierement le   }
+{ chrome normal de l IDE : pas de menu, pas de barre d outils, pas d       }
+{ explorateur - juste la tache active, comme une vraie application         }
+{ Windows 95 independante) des que Win95ActiveTask n est pas               }
+{ WIN95_ACTIVETASK_DEVENV. }
+Procedure Win95DrawIsolatedView;
+Begin
+ SetFillStyle(SolidFill, W95_CYAN);
+ Bar(0, 0, GetScreenWidth, GetScreenHeight);
+ If (Win95ActiveTask >= 1) And (Win95ActiveTask <= WIN95_MAX_TASKS) And
+    Win95TaskActive[Win95ActiveTask] Then Begin
+  Case Win95TaskKind[Win95ActiveTask] Of
+   WIN95_TASK_NOTEPAD:
+    If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then Begin
+     Win95DrawNotepadChrome;
+     DrawEditor(ActiveEditor);
+     Win95DrawNotepadFileMenu;
+    End;
+   WIN95_TASK_MSDOS: DrawTerminalPanel(TermPanels[ActiveShell]);
+  End;
+ End;
+ DrawWin95Taskbar;
+ If Win95DateTimeDlgVisible Then DrawWin95DateTimeDialog
+ Else If Win95RunDlgVisible Then DrawWin95RunDialog
+ Else If Win95ShutdownDlgVisible Then DrawWin95ShutdownDialog
+ Else If Win95StartMenuOpen Then DrawWin95StartMenu;
 End;
 
 { --- Dessiner tous les widgets de l IDE --- }
 
 Procedure DrawAllWidgets;
 Begin
+ { /TASKBARWIN95 (2026-09-18, demande explicite de l utilisateur : "comme  }
+ { le ferait Windows 95") : chaque tache est une application ISOLEE - une  }
+ { seule fenetre visible a la fois, le bureau si aucune n est active.      }
+ { Court-circuite tout le reste de cette procedure (chrome complet de      }
+ { l IDE) tant que la tache active n est pas WIN95_ACTIVETASK_DEVENV. }
+ If Opts.TaskbarWin95 And (Win95ActiveTask <> WIN95_ACTIVETASK_DEVENV) Then Begin
+  Win95DrawIsolatedView;
+  Exit;
+ End;
+
  If StartPage.Visible Then Begin
   ClearScreen(CLR_BACKGROUND);
   DrawStartPage(StartPage, MRUList);
@@ -214083,14 +214760,28 @@ Begin
   HandleDebugPanelEvent(DbgPanel, BPMgr);
   Exit;
  End;
- { Evenements pour la barre de menus }
- HandleMenuEvent(Ev);
- { Si un menu vient d etre ouvert, ne pas redessiner la toolbar par dessus }
- If MenuActive Then Exit;
- { Evenements pour la barre d outils }
- HandleToolBarEvent(Ev);
- { Evenements pour les onglets d editeurs }
- HandleTabEvent(Ev);
+ { /TASKBARWIN95 : menu/barre d outils/onglets ne sont plus DESSINES en    }
+ { vue isolee (Win95DrawIsolatedView les remplace entierement) mais leurs  }
+ { zones de clic (ScrZoomBtnHitTest, boutons d outils, onglets...)          }
+ { restaient actives sur leurs coordonnees NORMALES/dockees - qui peuvent  }
+ { tomber n importe ou dans le contenu plein ecran affiche a la place       }
+ { (BOGUE REEL signale par l utilisateur, 2026-09-19 : fermer le Terminal   }
+ { isole demandait de "changer la taille de l ecran" - son icone de        }
+ { fermeture, au coin superieur droit de l ecran en plein ecran, tombe      }
+ { exactement sur ScrZoomBtnHitTest, coin superieur droit de la barre de   }
+ { menus normale, jamais dessinee mais toujours active). On saute donc      }
+ { entierement ce chrome normal en vue isolee - le contenu (editeur/        }
+ { terminal) reste gere plus bas, inchange. }
+ If Not (Opts.TaskbarWin95 And (Win95ActiveTask <> WIN95_ACTIVETASK_DEVENV)) Then Begin
+  { Evenements pour la barre de menus }
+  HandleMenuEvent(Ev);
+  { Si un menu vient d etre ouvert, ne pas redessiner la toolbar par dessus }
+  If MenuActive Then Exit;
+  { Evenements pour la barre d outils }
+  HandleToolBarEvent(Ev);
+  { Evenements pour les onglets d editeurs }
+  HandleTabEvent(Ev);
+ End;
  { BOGUE REEL (2026-08-08) : ExplorerHasFocus n etait mis a jour (True     }
  { dans l explorateur, False sinon) que par le bloc plus bas, APRES la          }
  { gestion du Terminal/panneau de sortie ci-dessous - qui fait TOUJOURS          }
@@ -214495,6 +215186,15 @@ Begin
  Win95TimeManuallyModified := False;
  Win95LastClockMinute    := -1;
  Win95LastAnalogSecond   := -1;
+ Win95InitTasks;
+ { REVU (2026-09-19, demande explicite de l utilisateur) : au demarrage,   }
+ { c est la page d accueil de DEVENV qui doit s afficher, PAS le bureau -  }
+ { WIN95_ACTIVETASK_DESKTOP reste utilise comme etat de repli (ex. si une  }
+ { tache active se retrouve invalide), mais n est plus jamais l etat de    }
+ { depart. }
+ Win95ActiveTask := WIN95_ACTIVETASK_DEVENV;
+ Win95NotepadFileMenuOpen := False;
+ Win95NotepadFileMenuHover := 0;
  TerminalHasFocus := False;
  QuitRequested := False;
  FullRepaintNeeded := False;
