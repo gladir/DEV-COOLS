@@ -14292,6 +14292,18 @@ Begin
   { Clic sur le bouton de zoom ecran (plein ecran / VGA 640x480) }
   If ScrZoomBtnHitTest(Ev.MouseX, Ev.MouseY) Then Begin
    ToggleScreenZoom;
+   { BOGUE REEL signale par l utilisateur (2026-09-19) : "il ouvre la      }
+   { boite de dialogue mais n est plus utilisable pour cliquer sur oui    }
+   { ou non" - en realite le clic fonctionnait deja (CloseDialog est      }
+   { bien appele), mais rien ne redessinait l ecran apres coup si         }
+   { ToggleScreenZoom ne fait QUE fermer sa boite de message modale       }
+   { (reponse Non/Annuler) : DrawAllWidgets ne nettoie la zone editeur    }
+   { (ClearScreen) que si FullRepaintNeeded est actif, et ne redessine    }
+   { RIEN a cet endroit tant qu aucune fenetre n est active (EditorReady) }
+   { - les pixels de la boite de message restaient donc figes a l ecran,  }
+   { donnant l illusion qu elle etait toujours ouverte et inutilisable.   }
+   { Meme cause/remede que le bogue EXIT du Terminal documente plus bas.  }
+   FullRepaintNeeded := True;
    Exit;
   End;
   { Clic sur la barre de menus }
@@ -80551,7 +80563,7 @@ Begin
  WriteLn('  -w, -W         Active les avertissements (equivaut a use warnings;)');
  WriteLn('  -c             Verifie la syntaxe (chargement) sans executer le script');
  WriteLn('  -v, -V         Affiche la version');
- WriteLn('  -h, -?, --help Affiche cette aide');
+ WriteLn('  -h, -?, --help, /?  Affiche cette aide');
  WriteLn('  --             Fin des options');
  WriteLn;
  WriteLn('Limitations propres a ce terminal (aucune entree standard/pipe) :');
@@ -80659,6 +80671,13 @@ Begin
   CurA := PerlCliArgs[PArgI];
   If (Not EndOfOptions) And (CurA = '--') Then Begin
    EndOfOptions := True;
+   Inc(PArgI);
+  End Else If (Not EndOfOptions) And (CurA = '/?') Then Begin
+   { /? (2026-09-19, demande explicite de l utilisateur) : convention DOS  }
+   { pour l aide, en plus de -h/-?/--help - ne correspond pas au prefixe   }
+   { '-' teste juste en dessous, d ou ce cas separe. }
+   PerlShowHelp;
+   PerlAbort := True;
    Inc(PArgI);
   End Else If (Not EndOfOptions) And (Length(CurA) >= 2) And (CurA[1] = '-') And
    (Pos(CurA[2], 'npacwWSsvVhl0eEIMmiF?') > 0) Then Begin
@@ -141756,7 +141775,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 251;
+ PS_CMD_ALIASES = 252;
  PSCmdNames: Array[1..PS_CMD_ALIASES] Of String[45] = (
   'EXIT',
   'CD','CHDIR','SET-LOCATION',
@@ -141986,7 +142005,8 @@ Const
   'START-OS9PROGRAM',
   'START-WIN32PROGRAM','START-WIN32APPLICATION',
   'START-CRAY1PROGRAM',
-  'NEW-EMULATORGIF'
+  'NEW-EMULATORGIF',
+  'PERL'
  );
  PSCmdIDs: Array[1..PS_CMD_ALIASES] Of Byte = (
   1,
@@ -142216,7 +142236,8 @@ Const
   226,
   227,227,
   228,
-  229
+  229,
+  230
  );
 
 Function TermLookupPSCmd(S: String): Byte;
@@ -142626,6 +142647,8 @@ Begin
     TermCmd_Masm(TP, ParamStr)
    Else If CurrCmd = 'LINK' Then
     TermCmd_Link(TP, ParamStr)
+   Else If CurrCmd = 'PERL' Then
+    TermCmd_Perl(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -142980,6 +143003,7 @@ Begin
     { New-EmulatorGif (2026-09-12, demande explicite) : capture GIF anime }
     { de l'onglet emulateur actuellement actif. }
     229: TermCmd_NewEmulatorGif(TP, ParamStr);    { NEW-EMULATORGIF }
+    230: TermCmd_Perl(TP, ParamStr);              { PERL }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -143299,6 +143323,8 @@ Begin
    TermCmd_Masm(TP, ParamStr)
   Else If CurrCmd = 'LINK' Then
    TermCmd_Link(TP, ParamStr)
+  Else If CurrCmd = 'PERL' Then
+   TermCmd_Perl(TP, ParamStr)
   Else If CurrCmd = 'DATE' Then
    TermCmd_DATE(TP)
   Else If CurrCmd = 'TIME' Then
@@ -143464,6 +143490,8 @@ Begin
     TermCmd_Masm(TP, ParamStr)
    Else If CurrCmd = 'LINK' Then
     TermCmd_Link(TP, ParamStr)
+   Else If CurrCmd = 'PERL' Then
+    TermCmd_Perl(TP, ParamStr)
    Else If CurrCmd = 'DATE' Then
     TermCmd_DATE(TP)
    Else If CurrCmd = 'TIME' Then
@@ -209269,6 +209297,14 @@ Begin
    ActivateWindow(I);
    Exit;
   End;
+ { BOGUE REEL signale par l utilisateur (2026-09-19) : la barre d etat     }
+ { (Ln/Col/langage/nom de fichier) gardait l affichage du dernier Bloc-    }
+ { notes ferme - EditorReady:=False seul ne suffit pas, UpdateStatusBar    }
+ { (boucle principale) se base sur WinMgr.ActiveIdx, jamais invalide ici,  }
+ { et continuait donc de lire l ancienne fenetre Bloc-notes (toujours      }
+ { presente dans WinMgr.Windows[], simplement non affichee). Meme          }
+ { convention que CloseEditorWindow quand WinCount tombe a 0. }
+ WinMgr.ActiveIdx := -1;
  EditorReady := False;
 End;
 
