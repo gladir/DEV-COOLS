@@ -13210,6 +13210,10 @@ Procedure DrawAllWidgets; Forward;
 { Declaration anticipee : HandleStartDebugging est defini plus loin }
 Procedure HandleStartDebugging; Forward;
 
+{ Declaration anticipee : ToggleOutputPanel est defini plus loin (2026-09-19,  }
+{ necessaire pour brancher le tag de menu 301 "Sortie", jusqu ici oublie). }
+Procedure ToggleOutputPanel(Var OP: TOutputPanel); Forward;
+
 { Declaration anticipee : RunDisassemblerOnEmulatorBinary est definie plus loin }
 Procedure RunDisassemblerOnEmulatorBinary; Forward;
 
@@ -14175,6 +14179,20 @@ Begin
        End;
   911: Begin { Aide > Bienvenue : revenir a la page de demarrage }
         StartPage.Visible := True;
+        FullRepaintNeeded := True;
+       End;
+  301: Begin { Affichage > Sortie (Ctrl+Alt+O) }
+        { BOGUE REEL trouve en testant en direct le correctif F5/Play        }
+        { (2026-09-19) : ce tag est enregistre dans le menu (AddMenuItem,    }
+        { voir plus haut) depuis toujours mais n avait ici AUCUNE branche -  }
+        { cliquer sur "Sortie" ne faisait donc litteralement rien, meme      }
+        { defaut que 300/305 avant leur propre correctif du 2026-09-14. }
+        ToggleOutputPanel(OutputPanel);
+       End;
+  302: Begin { Affichage > Liste d erreurs (Ctrl+\+E) }
+        { Meme bogue/correctif que 301 ci-dessus. }
+        ErrorList.Visible := Not ErrorList.Visible;
+        ErrorList.NeedRepaint := True;
         FullRepaintNeeded := True;
        End;
   303: Begin { Terminal }
@@ -40142,8 +40160,16 @@ End;
 
 Procedure ToggleOutputPanel(Var OP: TOutputPanel);
 Begin
+ { BOGUE REEL trouve en testant en direct le correctif F5/Play (2026-09-19) }
+ { : meme defaut que ToggleScreenZoom (voir HandleMenuEvent) - fermer le    }
+ { panneau via double-clic sur sa barre d onglets ne redessinait JAMAIS     }
+ { l ecran par-dessus, laissant les pixels du panneau figes a l affichage   }
+ { bien qu il soit deja invisible en interne (OP.Visible=False) : le        }
+ { panneau semblait "reste ouvert" alors qu il ne reagissait plus au        }
+ { moindre clic (HandleOutputEvent sort immediatement si OP.Visible=False). }
  OP.Visible := Not OP.Visible;
  OP.NeedRepaint := True;
+ FullRepaintNeeded := True;
 End;
 
 { --- Gerer les evenements du panneau de sortie --- }
@@ -205868,6 +205894,11 @@ End;
 Procedure StartWithoutDebugging(Var BPM: TBreakpointManager;
  Var OP: TOutputPanel);
 Begin
+ { Meme correctif que HandleStartDebugging (F5) - voir sa note : restaurer }
+ { le panneau de sortie s il a ete ferme, avant d y ecrire quoi que ce     }
+ { soit. }
+ OP.Visible := True;
+ OP.ActiveTab := OTK_BUILD;
  If BPM.ExecutablePath = '' Then Begin
   AppendOutput(OP,
    'Erreur: aucun executable defini. Compilez d abord le projet.',
@@ -205905,6 +205936,10 @@ Procedure StopDebugging(Var BPM: TBreakpointManager;
  Var OP: TOutputPanel);
 Begin
  If BPM.State = DS_IDLE Then Exit;
+ { Meme correctif que HandleStartDebugging (F5) - restaurer le panneau de }
+ { sortie s il a ete ferme. }
+ OP.Visible := True;
+ OP.ActiveTab := OTK_BUILD;
  BPM.State := DS_STOPPED;
  AppendOutput(OP, 'Debogage arrete.', Ord(OTK_BUILD));
  BPM.State := DS_IDLE;
@@ -205915,6 +205950,10 @@ End;
 Procedure StepOver(Var BPM: TBreakpointManager;
  Var OP: TOutputPanel);
 Begin
+ { Meme correctif que HandleStartDebugging (F5) - restaurer le panneau de }
+ { sortie s il a ete ferme. }
+ OP.Visible := True;
+ OP.ActiveTab := OTK_BUILD;
  AppendOutput(OP,
   'Pas a pas principal (Step Over) non supporte.',
   Ord(OTK_BUILD));
@@ -205925,6 +205964,10 @@ End;
 Procedure StepInto(Var BPM: TBreakpointManager;
  Var OP: TOutputPanel);
 Begin
+ { Meme correctif que HandleStartDebugging (F5) - restaurer le panneau de }
+ { sortie s il a ete ferme. }
+ OP.Visible := True;
+ OP.ActiveTab := OTK_BUILD;
  AppendOutput(OP,
   'Pas a pas detaille (Step Into) non supporte.',
   Ord(OTK_BUILD));
@@ -206759,6 +206802,16 @@ Begin
  { Extraire le repertoire du fichier source }
  SrcDir := ExtractFilePath(SourceFile);
  { Preparer le panneau de sortie }
+ { BOGUE REEL signale par l utilisateur (2026-09-19) : "lorsque j'appuie   }
+ { sur F5 ou l'icone Play et que la fenetre de sortie/de build est        }
+ { fermee, elle devrait se restaurer" - meme classe de bogue deja          }
+ { corrigee pour COMMENT (voir plus haut, TermCmd_COMMENT) : fermer le     }
+ { panneau (double-clic sur sa barre d onglets) met OutputPanel.Visible a  }
+ { False, et rien ici ne le remettait a True avant d y ecrire la sortie de }
+ { build - le panneau restait invisible meme si du contenu venait d y etre }
+ { ajoute. }
+ OutputPanel.Visible := True;
+ OutputPanel.ActiveTab := OTK_BUILD;
  ClearOutput(OutputPanel, Ord(OTK_BUILD));
  ClearErrors(ErrorList);
  TempFile := '_buildout.tmp';
