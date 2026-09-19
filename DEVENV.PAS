@@ -4046,6 +4046,8 @@ Type
   SelIndex : Integer;               { index selectionne dans liste   }
   InputText: String[127];           { champ de saisie nom fichier    }
   InputCursor: Integer;             { position curseur saisie        }
+  InputScrollOfs: Integer;          { defilement horizontal (voir     }
+                                     { DrawFileInput/TInputBox.ScrollOfs) }
   IsSaveMode: Boolean;              { True = enregistrer, False = ouvrir }
   FolderMode: Boolean;              { True = selection de dossier   }
  End;
@@ -13179,6 +13181,7 @@ Begin
  AddMenuSeparator(MainMenuBar.Menus[6]);
  AddMenuItem(MainMenuBar.Menus[6], 'Ligne de commande externe', '', 720);
  AddMenuItem(MainMenuBar.Menus[6], 'COMMENT', '', 721);
+ AddMenuItem(MainMenuBar.Menus[6], 'RePascal', '', 722);
  MainMenuBar.MenuCount := 7;
 
  { Menu Fenetre }
@@ -13514,6 +13517,7 @@ Procedure SaveFile(Var Buf: TTextBuffer; AFileName: String); Forward;
 Procedure HandleSaveCurrentFile; Forward;
 Procedure HandleSaveAll; Forward;
 Procedure HandleRunCommentTool; Forward;
+Procedure HandleRunRePascalTool; Forward;
 Procedure CreateExtManagerWindow; Forward;
 Procedure CreateSqlObjectExplorerWindow; Forward;
 { Etape 3 (Explorateur d objets SQL Server) : SqlCmdEnsureMasterMdf a       }
@@ -14160,6 +14164,7 @@ Begin
         FullRepaintNeeded := True;
        End;
   721: HandleRunCommentTool; { Outils > COMMENT }
+  722: HandleRunRePascalTool; { Outils > RePascal }
   900: Begin { Aide > A propos de DEVENV }
         ShowMessageBox('A propos de DEVENV',
          'DEVENV - Clone de Visual Studio en mode graphique' + #10 +
@@ -150124,6 +150129,7 @@ Begin
  FD.SelIndex := -1;
  FD.InputText := '';
  FD.InputCursor := 0;
+ FD.InputScrollOfs := 0;
  FD.FolderMode := False;
  For I := 0 To MAX_DLG_FILES - 1 Do
   InitFileListEntry(FD.FileList[I]);
@@ -150229,23 +150235,54 @@ End;
 
 Procedure DrawFileInput(Var FD: TFileDialog);
 Var
- IX, IY, IW: Integer;
+ IX, IY, IW, AvailW, VisEnd: Integer;
+ VisText: String;
 Begin
  IX := FD.Base.X + DLG_PADDING;
  IY := FD.Base.Y + FD.Base.Height - DLG_PADDING - DLG_BUTTON_HEIGHT
   - DLG_PADDING - DLG_FILTER_HEIGHT - DLG_PADDING - DLG_INPUT_HEIGHT;
  IW := FD.Base.Width - 2 * DLG_PADDING;
+ { BOGUE REEL signale par l utilisateur (2026-09-19) : "la saisie du     }
+ { texte devrait se deplacer vers la gauche lorsque la ligne est trop    }
+ { longue, et non pas defoncer la boite de dialogue" - contrairement a   }
+ { TInputBox (voir DrawInputField, "Renommer"/"Nouvelle connexion") qui  }
+ { defile deja correctement via ScrollOfs, ce champ de la boite Ouvrir/  }
+ { Enregistrer dessinait FD.InputText en entier, sans jamais le clipper  }
+ { ni le faire defiler - un chemin plus long que le champ debordait donc }
+ { visuellement par-dessus le reste de la boite de dialogue. Meme         }
+ { algorithme que DrawInputField, applique ici a FD.InputScrollOfs. }
+ AvailW := IW - 8;
+ If TextWidth(FD.InputText) <= AvailW Then
+  FD.InputScrollOfs := 0
+ Else Begin
+  If FD.InputCursor < FD.InputScrollOfs Then FD.InputScrollOfs := FD.InputCursor;
+  While (FD.InputCursor > FD.InputScrollOfs) And
+   (TextWidth(Copy(FD.InputText, FD.InputScrollOfs + 1,
+    FD.InputCursor - FD.InputScrollOfs)) > AvailW) Do
+   Inc(FD.InputScrollOfs);
+ End;
+ If FD.InputScrollOfs > Length(FD.InputText) Then
+  FD.InputScrollOfs := Length(FD.InputText);
+ If FD.InputScrollOfs < 0 Then FD.InputScrollOfs := 0;
+ VisEnd := Length(FD.InputText);
+ While (VisEnd > FD.InputScrollOfs) And
+  (TextWidth(Copy(FD.InputText, FD.InputScrollOfs + 1,
+   VisEnd - FD.InputScrollOfs)) > AvailW) Do
+  Dec(VisEnd);
+ VisText := Copy(FD.InputText, FD.InputScrollOfs + 1, VisEnd - FD.InputScrollOfs);
  SetFillStyle(SolidFill, CLR_EDITOR_BG);
  Bar(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
  SetColor(CLR_BORDER);
  Rectangle(IX, IY, IX + IW - 1, IY + DLG_INPUT_HEIGHT - 1);
  SetColor(CLR_EDITOR_TEXT);
- OutTextXY(IX + 4, IY + 3, FD.InputText);
- { Curseur }
+ OutTextXY(IX + 4, IY + 3, VisText);
+ { Curseur - position relative au debut de la portion visible affichee }
  SetColor(CLR_CURSOR);
- Line(IX + 4 + TextWidth(Copy(FD.InputText, 1, FD.InputCursor)),
+ Line(IX + 4 + TextWidth(Copy(FD.InputText, FD.InputScrollOfs + 1,
+   FD.InputCursor - FD.InputScrollOfs)),
   IY + 2,
-  IX + 4 + TextWidth(Copy(FD.InputText, 1, FD.InputCursor)),
+  IX + 4 + TextWidth(Copy(FD.InputText, FD.InputScrollOfs + 1,
+   FD.InputCursor - FD.InputScrollOfs)),
   IY + DLG_INPUT_HEIGHT - 3);
 End;
 
@@ -206841,11 +206878,24 @@ Begin
  { SaveAllWindows deja utilisee par "Enregistrer tout", Ctrl+Maj+S). }
  SaveAllWindows;
  { Determiner le fichier source a compiler }
+ { BOGUE REEL signale par l utilisateur (2026-09-19) : "quand j'ai         }
+ { plusieurs onglets d'editeur de texte d'ouvert et que je presse F5 a     }
+ { chaque onglet, seul le resultat d'un des editeurs sort... peu importe   }
+ { lequel des onglets que j'execute" - Opts.SourceFile n est mis a jour     }
+ { QUE lors de la toute premiere ouverture d un NOUVEAU fichier (ou de     }
+ { l argument de ligne de commande initial) ; passer d un onglet DEJA      }
+ { ouvert a un autre (clic sur son onglet) ne le touche jamais. Comme      }
+ { Opts.SourceFile avait la PRIORITE sur l onglet actif, F5 ciblait donc    }
+ { toujours le premier fichier ouvert, quel que soit l onglet reellement   }
+ { affiche/actif. L onglet actif (WinMgr.ActiveIdx) est desormais           }
+ { prioritaire - Opts.SourceFile ne sert plus que de repli avant la        }
+ { creation de la toute premiere fenetre d editeur (cas theorique, deja     }
+ { couvert par CreateEditorWindow au demarrage). }
  SourceFile := '';
- If Opts.SourceFile <> '' Then
-  SourceFile := Opts.SourceFile
- Else If EditorReady And (WinMgr.ActiveIdx >= 0) Then
-  SourceFile := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ If EditorReady And (WinMgr.ActiveIdx >= 0) Then
+  SourceFile := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+ Else If Opts.SourceFile <> '' Then
+  SourceFile := Opts.SourceFile;
  If SourceFile = '' Then Begin
   AppendOutput(OutputPanel,
    'Erreur : aucun fichier source ouvert.',
@@ -207954,11 +208004,14 @@ Begin
    Ord(OTK_BUILD));
   Exit;
  End;
+ { Meme correctif que HandleStartDebugging (F5) ci-dessus : l onglet actif }
+ { doit primer sur Opts.SourceFile, sinon Enregistrer cible toujours le    }
+ { premier fichier ouvert au lieu de l onglet reellement actif. }
  FN := '';
- If Opts.SourceFile <> '' Then
-  FN := Opts.SourceFile
- Else If WinMgr.ActiveIdx >= 0 Then
-  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ If WinMgr.ActiveIdx >= 0 Then
+  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+ Else If Opts.SourceFile <> '' Then
+  FN := Opts.SourceFile;
  If FN = '' Then Begin
   AppendOutput(OutputPanel, 'Aucun nom de fichier.',
    Ord(OTK_BUILD));
@@ -207982,6 +208035,26 @@ Begin
  {$ELSE}
  FullPath := FSearch(Name, GetEnv('PATH'));
  {$ENDIF}
+ { BOGUE REEL trouve en testant RePascal en direct (2026-09-19) :         }
+ { FSearch (unite DOS) suit la semantique Turbo Pascal historique - s il   }
+ { trouve le fichier dans le repertoire COURANT (typiquement quand         }
+ { GetEnv('PATH') contient une entree vide, tres courant sur Windows), il  }
+ { renvoie le nom NU, sans aucun chemin (contrairement a une vraie         }
+ { correspondance dans un dossier de PATH, ou le chemin complet est        }
+ { renvoye). Un nom nu passe tel quel dans CmdLine puis "cmd /C ..." peut   }
+ { echouer avec "'X.exe' n'est pas reconnu..." si le repertoire courant du }
+ { sous-processus cmd.exe ne correspond pas exactement (constate en        }
+ { lancant RePascal - REPASCAL.exe existe bel et bien a cote de DEVENV.exe,}
+ { mais le nom nu renvoye par FSearch echouait). Meme discipline que le    }
+ { repertoire courant explicite juste en dessous : ne jamais faire         }
+ { confiance a un resultat sans separateur de chemin, le transformer en    }
+ { chemin absolu. }
+ If (FullPath <> '') And
+    (Pos('\', FullPath) = 0) And (Pos('/', FullPath) = 0) Then Begin
+  GetDir(0, CurDir);
+  If CurDir[Length(CurDir)] <> '\' Then CurDir := CurDir + '\';
+  FullPath := CurDir + FullPath;
+ End;
  If FullPath <> '' Then Begin
   FindToolExe := FullPath;
   Exit;
@@ -208050,11 +208123,13 @@ Begin
    Ord(OTK_BUILD));
   Exit;
  End;
+ { Meme correctif que HandleStartDebugging (F5) : l onglet actif doit     }
+ { primer sur Opts.SourceFile. }
  FN := '';
- If Opts.SourceFile <> '' Then
-  FN := Opts.SourceFile
- Else If WinMgr.ActiveIdx >= 0 Then
-  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ If WinMgr.ActiveIdx >= 0 Then
+  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+ Else If Opts.SourceFile <> '' Then
+  FN := Opts.SourceFile;
  If FN = '' Then Begin
   AppendOutput(OutputPanel, 'Aucun nom de fichier pour COMMENT.',
    Ord(OTK_BUILD));
@@ -208122,6 +208197,111 @@ Begin
  Else
   AppendOutputEx(OutputPanel,
    '------ COMMENT a echoue (code ' + IntToStr(ExitCode) +
+   ') : ' + FN + ' ------',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+ FullRepaintNeeded := True;
+End;
+
+{ --- Outils > RePascal : reformater le fichier Pascal actif --- }
+{ (2026-09-19, demande explicite de l'utilisateur : ajouter "RePascal"     }
+{ apres "COMMENT" dans le menu Outils, lancant REPASCAL.EXE sur l'onglet   }
+{ actif puis rechargeant l'editeur avec le resultat) - meme structure,     }
+{ meme moteur ExecuteCompiler/ReadOutputFile et meme rechargement          }
+{ automatique que HandleRunCommentTool ci-dessus (REPASCAL.PAS reformate   }
+{ le fichier SUR PLACE et conserve l'original en .BAK, voir sa propre      }
+{ Usage : "Syntaxe : REPASCAL fichier.pas [-DEADCODE]"). }
+Procedure HandleRunRePascalTool;
+Const
+ RePascalTempFile = 'REPASCAL.TMP';
+Var
+ FN, ToolPath, CmdLine: String;
+ ExitCode: Integer;
+ SavedCursorLine: LongInt;
+Begin
+ If Not EditorReady Then Begin
+  AppendOutput(OutputPanel, 'Aucun fichier ouvert pour RePascal.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ If (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX) Then Begin
+  AppendOutput(OutputPanel,
+   'RePascal ne s''applique pas a un fichier ouvert en hexadecimal.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ If (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) Then Begin
+  AppendOutput(OutputPanel,
+   'RePascal ne s''applique pas a un fichier de table ouvert en grille.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+ { Meme correctif que HandleStartDebugging (F5) : l onglet actif doit     }
+ { primer sur Opts.SourceFile. }
+ FN := '';
+ If WinMgr.ActiveIdx >= 0 Then
+  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+ Else If Opts.SourceFile <> '' Then
+  FN := Opts.SourceFile;
+ If FN = '' Then Begin
+  AppendOutput(OutputPanel, 'Aucun nom de fichier pour RePascal.',
+   Ord(OTK_BUILD));
+  Exit;
+ End;
+
+ ClearOutput(OutputPanel, Ord(OTK_BUILD));
+ OutputPanel.ActiveTab := OTK_BUILD;
+ OutputPanel.Visible := True;
+ AppendOutput(OutputPanel,
+  '------ RePascal : ' + FN + ' ------', Ord(OTK_BUILD));
+
+ { Le fichier doit refleter le contenu en cours d edition : RePascal
+   travaille sur le fichier disque, pas sur le tampon memoire. }
+ SaveFile(ActiveEditor.Buffer, FN);
+ If WinMgr.ActiveIdx >= 0 Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+
+ ToolPath := FindToolExe('REPASCAL');
+ If ToolPath = '' Then Begin
+  AppendOutputEx(OutputPanel,
+   'REPASCAL.EXE introuvable (PATH, repertoire courant, ' +
+   'repertoire de DEVENV.EXE).',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  FullRepaintNeeded := True;
+  Exit;
+ End;
+
+ { Pas de guillemets ici : meme raison qu'HandleRunCommentTool ci-dessus
+   (ExecuteCompiler/cmd.exe, voir son commentaire pour le detail). }
+ CmdLine := ToolPath + ' ' + FN;
+ AppendOutput(OutputPanel, '> ' + CmdLine, Ord(OTK_BUILD));
+ ExitCode := ExecuteCompiler(CmdLine, RePascalTempFile);
+ ReadOutputFile(RePascalTempFile, OutputPanel, Ord(OTK_BUILD));
+ CleanupTempFile(RePascalTempFile);
+
+ { Recharger l editeur avec le resultat : REPASCAL reformate SUR PLACE
+   (et garde l'original en .BAK) - que ca ait reussi ou non, le fichier
+   disque est dans un etat valide, donc recharger est toujours sans
+   risque, exactement comme pour COMMENT ci-dessus. }
+ LoadFile(ActiveEditor.Buffer, FN);
+ SavedCursorLine := ActiveEditor.CursorLine;
+ If SavedCursorLine >= ActiveEditor.Buffer.LineCount Then
+  SavedCursorLine := ActiveEditor.Buffer.LineCount - 1;
+ If SavedCursorLine < 0 Then SavedCursorLine := 0;
+ ActiveEditor.CursorLine := SavedCursorLine;
+ ActiveEditor.CursorCol := 1;
+ ActiveEditor.ScrollLine := 0;
+ If WinMgr.ActiveIdx >= 0 Then
+  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+
+ If ExitCode = 0 Then
+  AppendOutputEx(OutputPanel,
+   '------ RePascal termine : ' + FN + ' (editeur recharge) ------',
+   Ord(OTK_BUILD), OLK_SUCCESS, '', 0, 0)
+ Else
+  AppendOutputEx(OutputPanel,
+   '------ RePascal a echoue (code ' + IntToStr(ExitCode) +
    ') : ' + FN + ' ------',
    Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
  FullRepaintNeeded := True;
