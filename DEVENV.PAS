@@ -95200,6 +95200,19 @@ Const
  { MSG_META_NULL=0, MSG_META_INITIALIZE=1, MSG_META_RESERVED_1=2,         }
  { MSG_META_DUMMY=3, MSG_META_APP_STARTUP=4, MSG_META_ATTACH=5. }
  GEOS_MSG_META_ATTACH = 5;
+ { Stage 10 (suite, 2026-09-20, demande explicite - "continue le Stage    }
+ { 10") : metaC.def documente EXPLICITEMENT (commentaire de tete de        }
+ { MSG_META_APP_STARTUP lui-meme, deja lu lors de la derivation ci-dessus) }
+ { que le noyau PC/GEOS reel envoie TOUJOURS MSG_META_APP_STARTUP a la      }
+ { ProcessClass AVANT MSG_META_ATTACH : "This is related to MSG_META_      }
+ { ATTACH and is sent by the generic UI to the GenApplication object       }
+ { *before* it sends MSG_META_ATTACH to it." - meme valeur reelle 4 deja    }
+ { derivee (position 5 sur 6 dans la liste sequentielle ci-dessus), pas     }
+ { une nouvelle invention. Convention de parametres reelle documentee :     }
+ { "Pass: dx - handle of AppLaunchBlock" - AUCUN AppLaunchBlock n'est       }
+ { modelise dans cet amorceur (simplification disclosee, comme CX/DX=0     }
+ { deja assumes pour MSG_META_ATTACH) : dx est envoye a 0. }
+ GEOS_MSG_META_APP_STARTUP = 4;
 Type
  TGeosLibEntry = Record
   Name: String[8];
@@ -202335,20 +202348,25 @@ Begin NesActive := False;
   { ATTACH ci-dessous) est desormais le VRAI MSG_META_ATTACH=5, derive des  }
   { sources REELLES du compilateur GeoWorks (Tools/esp/symbol.c + object.c) }
   { et verifie contre Include/Objects/metaC.def (voir la disclosure         }
-  { complete a la declaration de la constante). Il reste neanmoins deux     }
-  { simplifications assumees : (1) l'amorceur appelle directement           }
+  { complete a la declaration de la constante). }
+  { Stage 10 suite (2026-09-20, demande explicite - "continue le Stage      }
+  { 10") : l'amorceur envoie desormais MSG_META_APP_STARTUP AVANT           }
+  { MSG_META_ATTACH, exactement l'ORDRE REEL documente par metaC.def lui-   }
+  { meme (voir la disclosure de GEOS_MSG_META_APP_STARTUP) - DS:SI (le      }
+  { ProcessClass) restent inchanges entre les deux envois, seuls AX/CX/DX   }
+  { sont rechargAs avant chaque CALL FAR. Simplifications assumees          }
+  { restantes (inchangees) : (1) l'amorceur appelle directement             }
   { ObjCallInstance sur ProcessClass sans passer par le vrai protocole de   }
   { creation de thread/heap/UI complet du noyau PC/GEOS (juste un thread 0  }
   { cooperatif, voir Stage 6/7) ; (2) un VRAI geode tiers pourrait donc      }
   { echouer pour d'autres raisons (bibliotheques Ui/Graphics manquantes,    }
-  { objets non grown-out) meme si le numero de message est desormais        }
-  { correct - seuls des geodes de test simples construits par ce chantier   }
-  { sont garantis fonctionner de bout en bout pour l'instant. }
+  { objets non grown-out) meme si l'ordre/les numeros de message sont       }
+  { desormais corrects - seuls des geodes de test simples construits par    }
+  { ce chantier sont garantis fonctionner de bout en bout pour l'instant. }
   If (Geos_AppAttr And $8000) <> 0 Then Begin
    GeosProcClassRes := Geos_ProcClassRes;
    If (GeosProcClassRes >= 0) And (GeosProcClassRes < Integer(Geos_NumSeg)) Then Begin
     GeosBootSeg := Geos_NextFreeSeg;
-    Geos_NextFreeSeg := Geos_NextFreeSeg + 1; { 16 octets, largement assez }
     GeosAttachSlot := Geos_ResolveTrapSlot(P.CPU, True, 0,
      GEOS_KERN_OBJCALLINSTANCE);
     If GeosAttachSlot >= 0 Then Begin
@@ -202360,6 +202378,19 @@ Begin NesActive := False;
      Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $D8); Inc(GeosI);
      Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $BE); Inc(GeosI); { MOV SI,ofs }
      Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, Geos_ProcClassOfs); Inc(GeosI, 2);
+     { Envoi 1/2 : MSG_META_APP_STARTUP (dx=0, aucun AppLaunchBlock modelise)}
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $B8); Inc(GeosI); { MOV AX,msg }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, GEOS_MSG_META_APP_STARTUP);
+     Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $B9); Inc(GeosI); { MOV CX,0 }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, 0); Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $BA); Inc(GeosI); { MOV DX,0 }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, 0); Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $9A); Inc(GeosI); { CALL FAR }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI,
+      Word(GeosAttachSlot * GEOS_TRAP_SLOT_SIZE)); Inc(GeosI, 2);
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, Geos_TrapSeg); Inc(GeosI, 2);
+     { Envoi 2/2 : MSG_META_ATTACH }
      Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $B8); Inc(GeosI); { MOV AX,msg }
      Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, GEOS_MSG_META_ATTACH);
      Inc(GeosI, 2);
@@ -202372,6 +202403,20 @@ Begin NesActive := False;
       Word(GeosAttachSlot * GEOS_TRAP_SLOT_SIZE)); Inc(GeosI, 2);
      Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, Geos_TrapSeg); Inc(GeosI, 2);
      Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $CB); { RETF }
+     { BOGUE REEL corrige ici (2026-09-20, trouve en revisant ce code pour   }
+     { ajouter le 2e envoi) : la reservation FIXE de "1 paragraphe (16       }
+     { octets)" precedente etait DEJA insuffisante pour le seul envoi        }
+     { ATTACH (23 octets reels) et l'est plus encore maintenant (37 octets   }
+     { pour les 2 envois) - Geos_ThreadCreate alloue sa PROPRE pile a partir }
+     { de Geos_NextFreeSeg juste apres cet appel, ce qui aurait pu la faire  }
+     { chevaucher la fin de cet amorceur sans jamais se manifester tant que  }
+     { la pile ne descendait pas assez profond pendant les tests precedents }
+     { (meme categorie de bogue silencieux que celui deja trouve/corrige au  }
+     { Stage 7 pour Geos_ThreadCreate lui-meme). Corrige en reservant        }
+     { desormais la taille REELLEMENT ecrite (GeosI octets), arrondie au     }
+     { paragraphe superieur - meme formule "(Len+15) Shr 4" que partout      }
+     { ailleurs dans ce fichier - plutot qu'un chiffre fixe devine. }
+     Geos_NextFreeSeg := Geos_NextFreeSeg + Word((LongInt(GeosI) + 15) Shr 4);
      If Geos_ThreadCreate(P.CPU, 0, 0, GeosBootSeg, 0, 256, 0, GeosBootSeg,
         GeosInitThread, GeosThErr) Then Begin
       Geos_LoadContext(P, GeosInitThread);
@@ -202381,10 +202426,11 @@ Begin NesActive := False;
       EmuVScr_WriteLn(P, 'ProcessClass detectee (ressource ' +
        IntToStr(GeosProcClassRes) + ', depl. $' +
        HexWord(Geos_ProcClassOfs) + ') - amorceur cree, ObjCallInstance ' +
-       'appele avec le VRAI numero MSG_META_ATTACH ($' +
-       HexWord(GEOS_MSG_META_ATTACH) + ', derive des sources reelles du ' +
-       'compilateur GeoWorks - voir la disclosure Stage 11) en tant que ' +
-       'thread 0 (Stage 7).');
+       'appele avec MSG_META_APP_STARTUP ($' +
+       HexWord(GEOS_MSG_META_APP_STARTUP) + ') PUIS MSG_META_ATTACH ($' +
+       HexWord(GEOS_MSG_META_ATTACH) + '), meme ordre que le VRAI noyau ' +
+       'PC/GEOS (voir la disclosure Stage 10/11) en tant que thread 0 ' +
+       '(Stage 7).');
       EmuVScr_WriteLn(P, 'Simplifications restantes : thread 0 cooperatif ' +
        'seul (pas le vrai protocole complet du noyau), bibliotheques ' +
        'Ui/Graphics non implantees - un VRAI geode tiers peut donc encore ' +
