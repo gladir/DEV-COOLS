@@ -539,13 +539,17 @@ Begin
    if U[2]='L'Then Inc(N,8);RegisterNumber:=N
   End;Exit
  End;
- if Kind='L'Then P:=3 else P:=2;
+ if Kind in['L','Q']Then P:=3 else P:=2;
  if Kind='L'Then Begin
   if Copy(U,1,2)<>'RR'Then Exit
+ End else if Kind='Q'Then Begin
+  if Copy(U,1,2)<>'RQ'Then Exit
  End else if U[1]<>'R'Then Exit;
  Val(Copy(U,P,255),N,E);if E<>0 Then Exit;
  if Kind='L'Then Begin
   if(N>=0)and(N<=14)and((N and 1)=0)Then RegisterNumber:=N
+ End else if Kind='Q'Then Begin
+  if(N>=0)and(N<=12)and((N and 3)=0)Then RegisterNumber:=N
  End
  else if(N>=0)and(N<=15)Then RegisterNumber:=N
 End;
@@ -762,12 +766,34 @@ Begin
  else Diagnostic('directive inconnue: '+OpcodeField)
 End;
 
+Procedure EncodeUnaryRegister(Base:Word;Kind:Char);Forward;
+Function IndirectRegister(S:String;Var R:Integer):Boolean;Forward;
+Procedure EncodeMulDiv(BaseRR,BaseImm:Word;DestKind,SourceKind:Char);Forward;
+Procedure EncodeBitInstruction(BaseReg,BaseImm:Word;Kind:Char);Forward;
+Procedure EncodeShiftRotate(Base:Word;Kind:Char;RightShift:Boolean);Forward;
+Procedure EncodeCall;Forward;
+Procedure EncodeRelative12;Forward;
+Procedure EncodeDJNZ(ByteForm:Boolean);Forward;
+Procedure EncodePushPop(IsPop:Boolean);Forward;
+Procedure EncodePushPopLong(IsPop:Boolean);Forward;
+Procedure EncodeTCC(ByteForm:Boolean);Forward;
+Procedure EncodeFlags(Base:Word);Forward;
+Procedure EncodeLDCTL(ByteForm:Boolean);Forward;
+Procedure EncodeString3(Base:Word;FirstInWord2:Boolean;TailNibble:Byte);Forward;
+Procedure EncodeIO(IsOut,ByteForm,Special:Boolean);Forward;
+Procedure EncodeLDA;Forward;
+Procedure EncodeLDAR;Forward;
+Procedure EncodeLDR;Forward;
+Procedure EncodeLDM;Forward;
+Procedure EncodeCompareString(Base:Word);Forward;
+Procedure EncodeIncDec(IsDec,ByteForm:Boolean);Forward;
+
 Procedure ProcessInstruction;
 Var
  V:LongInt;
  F:Boolean;
  R:Integer;
- S,A:String;
+ S:String;
 Begin
  if(OpcodeField='LD')or(OpcodeField='LDB')or(OpcodeField='LDL')Then EncodeLoad
  else if OpcodeField='ADD'Then EncodeRegReg(OpcodeField,$8100,'W')
@@ -777,14 +803,149 @@ Begin
  else if OpcodeField='ADCB'Then EncodeRegReg(OpcodeField,$B400,'B')
  else if OpcodeField='SUB'Then EncodeRegReg(OpcodeField,$A100,'W')
  else if OpcodeField='SUBB'Then EncodeRegReg(OpcodeField,$A000,'B')
+ else if OpcodeField='SUBL'Then EncodeRegReg(OpcodeField,$9200,'L')
  else if OpcodeField='CP'Then EncodeRegReg(OpcodeField,$A300,'W')
  else if OpcodeField='CPB'Then EncodeRegReg(OpcodeField,$A200,'B')
+ else if OpcodeField='CPL'Then EncodeRegReg(OpcodeField,$9000,'L')
  else if OpcodeField='AND'Then EncodeRegReg(OpcodeField,$8300,'W')
  else if OpcodeField='ANDB'Then EncodeRegReg(OpcodeField,$8200,'B')
  else if OpcodeField='OR'Then EncodeRegReg(OpcodeField,$8500,'W')
  else if OpcodeField='ORB'Then EncodeRegReg(OpcodeField,$8400,'B')
  else if OpcodeField='XOR'Then EncodeRegReg(OpcodeField,$8700,'W')
  else if OpcodeField='XORB'Then EncodeRegReg(OpcodeField,$8600,'B')
+ else if OpcodeField='SBC'Then EncodeRegReg(OpcodeField,$B700,'W')
+ else if OpcodeField='SBCB'Then EncodeRegReg(OpcodeField,$B600,'B')
+ else if OpcodeField='EX'Then EncodeRegReg(OpcodeField,$AD00,'W')
+ else if OpcodeField='EXB'Then EncodeRegReg(OpcodeField,$AC00,'B')
+ else if OpcodeField='RLDB'Then EncodeRegReg(OpcodeField,$BE00,'B')
+ else if OpcodeField='RRDB'Then EncodeRegReg(OpcodeField,$BC00,'B')
+ else if OpcodeField='NEG'Then EncodeUnaryRegister($8D02,'W')
+ else if OpcodeField='NEGB'Then EncodeUnaryRegister($8C02,'B')
+ else if OpcodeField='CLR'Then EncodeUnaryRegister($8D08,'W')
+ else if OpcodeField='CLRB'Then EncodeUnaryRegister($8C08,'B')
+ else if OpcodeField='COM'Then EncodeUnaryRegister($8D00,'W')
+ else if OpcodeField='COMB'Then EncodeUnaryRegister($8C00,'B')
+ else if OpcodeField='TEST'Then EncodeUnaryRegister($8D04,'W')
+ else if OpcodeField='TESTB'Then EncodeUnaryRegister($8C04,'B')
+ else if OpcodeField='TESTL'Then EncodeUnaryRegister($9C08,'L')
+ else if OpcodeField='TSET'Then EncodeUnaryRegister($8D06,'W')
+ else if OpcodeField='TSETB'Then EncodeUnaryRegister($8C06,'B')
+ else if OpcodeField='DAB'Then EncodeUnaryRegister($B000,'B')
+ else if OpcodeField='EXTS'Then EncodeUnaryRegister($B10A,'L')
+ else if OpcodeField='EXTSB'Then EncodeUnaryRegister($B100,'W')
+ else if OpcodeField='EXTSL'Then EncodeUnaryRegister($B107,'Q')
+ else if OpcodeField='MULT'Then EncodeMulDiv($9900,$1900,'L','W')
+ else if OpcodeField='DIV'Then EncodeMulDiv($9B00,$1B00,'L','W')
+ else if OpcodeField='MULTL'Then EncodeMulDiv($9800,$1800,'Q','L')
+ else if OpcodeField='DIVL'Then EncodeMulDiv($9A00,$1A00,'Q','L')
+ else if OpcodeField='BIT'Then EncodeBitInstruction($2700,$A700,'W')
+ else if OpcodeField='BITB'Then EncodeBitInstruction($2600,$A600,'B')
+ else if OpcodeField='SET'Then EncodeBitInstruction($2500,$A500,'W')
+ else if OpcodeField='SETB'Then EncodeBitInstruction($2400,$A400,'B')
+ else if OpcodeField='RES'Then EncodeBitInstruction($2300,$A300,'W')
+ else if OpcodeField='RESB'Then EncodeBitInstruction($2200,$A200,'B')
+ else if OpcodeField='RL'Then EncodeShiftRotate($B300,'W',False)
+ else if OpcodeField='RLB'Then EncodeShiftRotate($B200,'B',False)
+ else if OpcodeField='RLC'Then EncodeShiftRotate($B308,'W',False)
+ else if OpcodeField='RLCB'Then EncodeShiftRotate($B208,'B',False)
+ else if OpcodeField='RR'Then EncodeShiftRotate($B304,'W',True)
+ else if OpcodeField='RRB'Then EncodeShiftRotate($B204,'B',True)
+ else if OpcodeField='RRC'Then EncodeShiftRotate($B30C,'W',True)
+ else if OpcodeField='RRCB'Then EncodeShiftRotate($B20C,'B',True)
+ else if OpcodeField='SLA'Then EncodeShiftRotate($B309,'W',False)
+ else if OpcodeField='SLAB'Then EncodeShiftRotate($B209,'B',False)
+ else if OpcodeField='SLL'Then EncodeShiftRotate($B301,'W',False)
+ else if OpcodeField='SLLB'Then EncodeShiftRotate($B201,'B',False)
+ else if OpcodeField='SRA'Then EncodeShiftRotate($B309,'W',True)
+ else if OpcodeField='SRAB'Then EncodeShiftRotate($B209,'B',True)
+ else if OpcodeField='SRL'Then EncodeShiftRotate($B301,'W',True)
+ else if OpcodeField='SRLB'Then EncodeShiftRotate($B201,'B',True)
+ else if OpcodeField='SLAL'Then EncodeShiftRotate($B30D,'L',False)
+ else if OpcodeField='SLLL'Then EncodeShiftRotate($B305,'L',False)
+ else if OpcodeField='SRAL'Then EncodeShiftRotate($B30D,'L',True)
+ else if OpcodeField='SRLL'Then EncodeShiftRotate($B305,'L',True)
+ else if OpcodeField='CALL'Then EncodeCall
+ else if OpcodeField='CALR'Then EncodeRelative12
+ else if OpcodeField='DJNZ'Then EncodeDJNZ(False)
+ else if OpcodeField='DBJNZ'Then EncodeDJNZ(True)
+ else if OpcodeField='PUSH'Then EncodePushPop(False)
+ else if OpcodeField='POP'Then EncodePushPop(True)
+ else if OpcodeField='PUSHL'Then EncodePushPopLong(False)
+ else if OpcodeField='POPL'Then EncodePushPopLong(True)
+ else if OpcodeField='TCC'Then EncodeTCC(False)
+ else if OpcodeField='TCCB'Then EncodeTCC(True)
+ else if OpcodeField='SETFLG'Then EncodeFlags($8D01)
+ else if OpcodeField='RESFLG'Then EncodeFlags($8D03)
+ else if OpcodeField='COMFLG'Then EncodeFlags($8D05)
+ else if OpcodeField='LDCTL'Then EncodeLDCTL(False)
+ else if OpcodeField='LDCTLB'Then EncodeLDCTL(True)
+ else if OpcodeField='LDI'Then EncodeString3($BB01,True,8)
+ else if OpcodeField='LDIB'Then EncodeString3($BA01,True,8)
+ else if OpcodeField='LDIR'Then EncodeString3($BB01,True,0)
+ else if OpcodeField='LDIRB'Then EncodeString3($BA01,True,0)
+ else if OpcodeField='LDD'Then EncodeString3($BB09,True,8)
+ else if OpcodeField='LDDB'Then EncodeString3($BA09,True,8)
+ else if OpcodeField='LDDR'Then EncodeString3($BB09,True,0)
+ else if OpcodeField='LDDRB'Then EncodeString3($BA09,True,0)
+ else if OpcodeField='TRIB'Then EncodeString3($B800,False,0)
+ else if OpcodeField='TRIRB'Then EncodeString3($B804,False,0)
+ else if OpcodeField='TRDB'Then EncodeString3($B808,False,0)
+ else if OpcodeField='TRDRB'Then EncodeString3($B80C,False,0)
+ else if OpcodeField='TRTIB'Then EncodeString3($B802,False,0)
+ else if OpcodeField='TRTIRB'Then EncodeString3($B806,False,$E)
+ else if OpcodeField='TRTDB'Then EncodeString3($B80A,False,0)
+ else if OpcodeField='TRTDRB'Then EncodeString3($B80E,False,$E)
+ else if OpcodeField='INI'Then EncodeString3($3B00,True,8)
+ else if OpcodeField='INIB'Then EncodeString3($3A00,True,8)
+ else if OpcodeField='INIR'Then EncodeString3($3B00,True,0)
+ else if OpcodeField='INIRB'Then EncodeString3($3A00,True,0)
+ else if OpcodeField='IND'Then EncodeString3($3B08,True,8)
+ else if OpcodeField='INDB'Then EncodeString3($3A08,True,8)
+ else if OpcodeField='INDR'Then EncodeString3($3B08,True,0)
+ else if OpcodeField='INDRB'Then EncodeString3($3A08,True,0)
+ else if OpcodeField='OUTI'Then EncodeString3($3B02,True,8)
+ else if OpcodeField='OUTIB'Then EncodeString3($3A02,True,8)
+ else if OpcodeField='OUTD'Then EncodeString3($3B0A,True,8)
+ else if OpcodeField='OUTDB'Then EncodeString3($3A0A,True,8)
+ else if OpcodeField='SINI'Then EncodeString3($3B01,True,8)
+ else if OpcodeField='SINIB'Then EncodeString3($3A01,True,8)
+ else if OpcodeField='SIND'Then EncodeString3($3B09,True,8)
+ else if OpcodeField='SINDB'Then EncodeString3($3A09,True,8)
+ else if OpcodeField='SOUTI'Then EncodeString3($3B03,True,8)
+ else if OpcodeField='SOUTIB'Then EncodeString3($3A03,True,8)
+ else if OpcodeField='SOUTD'Then EncodeString3($3B0B,True,8)
+ else if OpcodeField='SOUTDB'Then EncodeString3($3A0B,True,8)
+ else if OpcodeField='IN'Then EncodeIO(False,False,False)
+ else if OpcodeField='INB'Then EncodeIO(False,True,False)
+ else if OpcodeField='OUT'Then EncodeIO(True,False,False)
+ else if OpcodeField='OUTB'Then EncodeIO(True,True,False)
+ else if OpcodeField='SIN'Then EncodeIO(False,False,True)
+ else if OpcodeField='SINB'Then EncodeIO(False,True,True)
+ else if OpcodeField='SOUT'Then EncodeIO(True,False,True)
+ else if OpcodeField='SOUTB'Then EncodeIO(True,True,True)
+ else if OpcodeField='LDK'Then EncodeBitInstruction(0,$BD00,'W')
+ else if OpcodeField='LDPS'Then Begin
+  S:=TrimString(OperandField);if not IndirectRegister(S,R)Then Diagnostic('LDPS exige @registre')
+  else EmitWord($3900 or Word(R shl 4))
+ End
+ else if OpcodeField='LDA'Then EncodeLDA
+ else if OpcodeField='LDAR'Then EncodeLDAR
+ else if OpcodeField='LDR'Then EncodeLDR
+ else if OpcodeField='LDM'Then EncodeLDM
+ else if OpcodeField='CPI'Then EncodeCompareString($BB00)
+ else if OpcodeField='CPIB'Then EncodeCompareString($BA00)
+ else if OpcodeField='CPIR'Then EncodeCompareString($BB04)
+ else if OpcodeField='CPIRB'Then EncodeCompareString($BA04)
+ else if OpcodeField='CPD'Then EncodeCompareString($BB08)
+ else if OpcodeField='CPDB'Then EncodeCompareString($BA08)
+ else if OpcodeField='CPDR'Then EncodeCompareString($BB0C)
+ else if OpcodeField='CPDRB'Then EncodeCompareString($BA0C)
+ else if OpcodeField='MREQ'Then EncodeUnaryRegister($7B0D,'W')
+ else if OpcodeField='MRES'Then EmitWord($7B09)
+ else if OpcodeField='MBIT'Then EmitWord($7B0A)
+ else if OpcodeField='MSET'Then EmitWord($7B08)
+ else if OpcodeField='DI'Then EmitWord($7C03)
+ else if OpcodeField='EI'Then EmitWord($7C07)
  else if OpcodeField='NOP'Then EmitWord($8D07)
  else if OpcodeField='HALT'Then EmitWord($7A00)
  else if OpcodeField='IRET'Then EmitWord($7B00)
@@ -794,16 +955,10 @@ Begin
   V:=Eval(S,F);if(V<0)or(V>255)Then Diagnostic('numero SC hors plage');
   EmitWord($7F00 or Byte(V))
  End
- else if(OpcodeField='INC')or(OpcodeField='DEC')Then Begin
-  S:=OperandField;A:=NextOperand(S);R:=RegisterNumber(A,'W');A:=NextOperand(S);
-  if(R<0)or(A='')Then Diagnostic('registre et increment attendus')else
-  Begin
-   if A[1]='#'Then Delete(A,1,1);V:=Eval(A,F);
-   if(V<1)or(V>16)Then Diagnostic('increment hors plage 1..16');
-   if OpcodeField='INC'Then EmitWord($0B00 or Word((V-1)shl 4)or R)
-   else EmitWord($0A00 or Word((V-1)shl 4)or R)
-  End
- End
+ else if OpcodeField='INC'Then EncodeIncDec(False,False)
+ else if OpcodeField='DEC'Then EncodeIncDec(True,False)
+ else if OpcodeField='INCB'Then EncodeIncDec(False,True)
+ else if OpcodeField='DECB'Then EncodeIncDec(True,True)
  else Diagnostic('instruction inconnue ou forme non implementee: '+OpcodeField)
 End;
 
@@ -858,6 +1013,303 @@ Begin
  if Pass=1 Then Begin
   TextSize:=Location[SecText];DataSize:=Location[SecData];BssSize:=Location[SecBss]
  End
+End;
+
+Function IndirectRegister(S:String;Var R:Integer):Boolean;
+Begin
+ S:=TrimString(S);IndirectRegister:=False;R:=-1;
+ if(S='')or(S[1]<>'@')Then Exit;Delete(S,1,1);R:=RegisterNumber(S,'W');
+ IndirectRegister:=R>=0
+End;
+
+Procedure EncodeUnaryRegister(Base:Word;Kind:Char);
+Var R:Integer;
+Begin
+ R:=RegisterNumber(OperandField,Kind);
+ if R<0 Then Diagnostic('registre attendu')else EmitWord(Base or Word(R shl 4))
+End;
+
+Procedure EncodeMulDiv(BaseRR,BaseImm:Word;DestKind,SourceKind:Char);
+Var S,A,B:String;Rd,Rs:Integer;V:LongInt;F:Boolean;RelBase:Word;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if(A='')or(B='')or(S<>'')Then Begin Diagnostic('deux operandes attendus');Exit End;
+ Rd:=RegisterNumber(A,DestKind);if Rd<0 Then Begin Diagnostic('registre destination incorrect');Exit End;
+ Rs:=RegisterNumber(B,SourceKind);
+ if Rs>=0 Then Begin EmitWord(BaseRR or Word(Rs shl 4)or Word(Rd));Exit End;
+ if B[1]='#'Then Begin
+  Delete(B,1,1);V:=EvalReloc(B,F,RelBase);EmitWord(BaseImm or Word(Rd));
+  if SourceKind='L'Then EmitLongReloc(V,RAA32M,RelBase)
+  else if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,RelBase)
+  else EmitWordReloc(Word(V),RAA16M,RelBase);Exit
+ End;
+ Diagnostic('registre ou valeur immediate attendu')
+End;
+
+Procedure EncodeBitInstruction(BaseReg,BaseImm:Word;Kind:Char);
+Var S,A,B:String;R,N:Integer;V:LongInt;F:Boolean;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);R:=RegisterNumber(A,Kind);
+ if(R<0)or(B='')or(S<>'')Then Begin Diagnostic('registre et numero de bit attendus');Exit End;
+ if B[1]='#'Then Begin
+  Delete(B,1,1);V:=Eval(B,F);if(V<0)or(V>15)Then Diagnostic('numero de bit hors plage');
+  EmitWord(BaseImm or Word(R shl 4)or Word(V and 15))
+ End else Begin
+  N:=RegisterNumber(B,'W');if N<0 Then Diagnostic('registre de bit attendu')else Begin
+   EmitWord(BaseReg or Word(N));EmitWord(Word(R shl 8))
+  End
+ End
+End;
+
+Procedure EncodeShiftRotate(Base:Word;Kind:Char;RightShift:Boolean);
+Var S,A,B:String;R:Integer;V:LongInt;F:Boolean;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);R:=RegisterNumber(A,Kind);
+ if R<0 Then Begin Diagnostic('registre attendu');Exit End;
+ if B=''Then V:=1 else Begin
+  if B[1]='#'Then Delete(B,1,1);V:=Eval(B,F)
+ End;
+ if S<>''Then Diagnostic('trop d''operandes');
+ if(V<1)or(V>2)Then Begin
+  { Les formes de decalage acceptent aussi un compte signe sur 16 bits. }
+  if RightShift Then V:=-V;
+  EmitWord(Base or Word(R shl 4));EmitWord(Word(V))
+ End else Begin
+  EmitWord(Base or Word(R shl 4)or Word((V-1)shl 1))
+ End
+End;
+
+Procedure EmitDirectAddress(V:LongInt;Base:Word;ForceShort:Boolean);
+Begin
+ if Opt.Segmented Then Begin
+  if ForceShort Then EmitWordReloc(SegmentedShortValue(V,Base),RAZSS,Base)
+  else EmitLongReloc(SegmentedLongValue(V,Base),RAZLS,Base)
+ End else EmitWordReloc(Word(V),RAA16M,Base)
+End;
+
+Procedure EncodeCall;
+Var S:String;R:Integer;V:LongInt;F,ShortAddress:Boolean;Base:Word;
+Begin
+ S:=TrimString(OperandField);
+ if IndirectRegister(S,R)Then Begin EmitWord($1F00 or Word(R shl 4));Exit End;
+ ShortAddress:=(S<>'')and(S[1]='|');if ShortAddress Then Delete(S,1,1);
+ V:=EvalReloc(S,F,Base);EmitWord($5F00);EmitDirectAddress(V,Base,ShortAddress)
+End;
+
+Procedure EncodeRelative12;
+Var V,D:LongInt;F:Boolean;Base:Word;
+Begin
+ V:=EvalReloc(OperandField,F,Base);D:=Location[CurrentSection]+2-V;
+ if(Pass=2)and(Base<>CurrentSection)Then Diagnostic('appel relatif vers une autre section');
+ if(Pass=2)and(((D and 1)<>0)or(D< -4096)or(D>4094))Then
+  Diagnostic('appel relatif hors plage');
+ EmitWord($D000 or Word((D div 2)and $0FFF))
+End;
+
+Procedure EncodeDJNZ(ByteForm:Boolean);
+Var S,A,B:String;R:Integer;V,D:LongInt;F:Boolean;Base:Word;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if ByteForm Then R:=RegisterNumber(A,'B')else R:=RegisterNumber(A,'W');
+ V:=EvalReloc(B,F,Base);D:=Location[CurrentSection]+2-V;
+ if(R<0)or(B='')Then Begin Diagnostic('registre et destination attendus');Exit End;
+ if(Pass=2)and((Base<>CurrentSection)or((D and 1)<>0)or(D<0)or(D>254))Then
+  Diagnostic('destination DJNZ hors plage');
+ if ByteForm Then EmitWord($F000 or Word(R shl 8)or Word((D div 2)and $7F))
+ else EmitWord($F080 or Word(R shl 8)or Word((D div 2)and $7F))
+End;
+
+Procedure EncodePushPop(IsPop:Boolean);
+Var S,A,B:String;RP,RV:Integer;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if IsPop Then Begin
+  RV:=RegisterNumber(A,'W');if not IndirectRegister(B,RP)Then RP:=-1;
+  if(RV<0)or(RP<0)Then Diagnostic('POP exige registre,@registre')
+  else EmitWord($9700 or Word(RP shl 4)or Word(RV))
+ End else Begin
+  if not IndirectRegister(A,RP)Then RP:=-1;RV:=RegisterNumber(B,'W');
+  if(RV<0)or(RP<0)Then Diagnostic('PUSH exige @registre,registre')
+  else EmitWord($9300 or Word(RP shl 4)or Word(RV))
+ End
+End;
+
+Procedure EncodePushPopLong(IsPop:Boolean);
+Var S,A,B:String;RP,RV:Integer;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if IsPop Then Begin
+  RV:=RegisterNumber(A,'L');if not IndirectRegister(B,RP)Then RP:=-1;
+  if(RV<0)or(RP<0)Then Diagnostic('POPL exige registre long,@registre')
+  else EmitWord($9500 or Word(RP shl 4)or Word(RV))
+ End else Begin
+  if not IndirectRegister(A,RP)Then RP:=-1;RV:=RegisterNumber(B,'L');
+  if(RV<0)or(RP<0)Then Diagnostic('PUSHL exige @registre,registre long')
+  else EmitWord($9100 or Word(RP shl 4)or Word(RV))
+ End
+End;
+
+Procedure EncodeTCC(ByteForm:Boolean);
+Var S,A,B:String;C,R:Integer;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);C:=ConditionNumber(A);
+ if ByteForm Then R:=RegisterNumber(B,'B')else R:=RegisterNumber(B,'W');
+ if(C<0)or(R<0)or(S<>'')Then Diagnostic('TCC exige condition,registre')
+ else if ByteForm Then EmitWord($AE00 or Word(R shl 4)or Word(C))
+ else EmitWord($AF00 or Word(R shl 4)or Word(C))
+End;
+
+Procedure EncodeFlags(Base:Word);
+Var S,A,U:String;Bits:Word;
+Begin
+ S:=OperandField;Bits:=0;
+ While S<>''do Begin
+  A:=NextOperand(S);U:=UpperString(A);
+  if(U='V')or(U='P')Then Bits:=Bits or $10
+  else if U='S'Then Bits:=Bits or $20
+  else if U='Z'Then Bits:=Bits or $40
+  else if U='C'Then Bits:=Bits or $80
+  else Diagnostic('flag incorrect: '+A)
+ End;
+ if Bits=0 Then Diagnostic('au moins un flag est requis');EmitWord(Base or Bits)
+End;
+
+Function ControlRegisterNumber(S:String):Integer;
+Var U:String;
+Begin
+ U:=UpperString(TrimString(S));ControlRegisterNumber:=-1;
+ if U='FCW'Then ControlRegisterNumber:=2
+ else if U='REFRESH'Then ControlRegisterNumber:=3
+ else if U='PSAPSEG'Then ControlRegisterNumber:=4
+ else if(U='PSAPOFF')or(U='PSAP')Then ControlRegisterNumber:=5
+ else if U='NSPSEG'Then ControlRegisterNumber:=6
+ else if(U='NSPOFF')or(U='NSP')Then ControlRegisterNumber:=7
+End;
+
+Procedure EncodeLDCTL(ByteForm:Boolean);
+Var S,A,B:String;R,C:Integer;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if ByteForm Then Begin
+  if UpperString(A)='FLAGS'Then Begin R:=RegisterNumber(B,'B');if R>=0 Then EmitWord($8C09 or Word(R shl 4)) End
+  else if UpperString(B)='FLAGS'Then Begin R:=RegisterNumber(A,'B');if R>=0 Then EmitWord($8C01 or Word(R shl 4)) End
+  else R:=-1;
+  if R<0 Then Diagnostic('LDCTLB exige FLAGS et un registre octet');Exit
+ End;
+ C:=ControlRegisterNumber(A);R:=RegisterNumber(B,'W');
+ if(C>=0)and(R>=0)Then Begin EmitWord($7D00 or Word(R shl 4)or Word(C));Exit End;
+ R:=RegisterNumber(A,'W');C:=ControlRegisterNumber(B);
+ if(C>=0)and(R>=0)Then EmitWord($7D08 or Word(R shl 4)or Word(C))
+ else Diagnostic('operandes LDCTL incorrects')
+End;
+
+Procedure EncodeString3(Base:Word;FirstInWord2:Boolean;TailNibble:Byte);
+Var S,A,B,C:String;R1,R2,R3:Integer;W1,W2:Word;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);C:=NextOperand(S);
+ if not IndirectRegister(A,R1)Then R1:=-1;if not IndirectRegister(B,R2)Then R2:=-1;
+ R3:=RegisterNumber(C,'W');if(R1<0)or(R2<0)or(R3<0)or(S<>'')Then Begin
+  Diagnostic('trois registres valides attendus');Exit
+ End;
+ W1:=Base;W2:=0;
+ if FirstInWord2 Then Begin
+  W1:=W1 or Word(R2 shl 4);W2:=Word(R1 shl 12)or Word(R3 shl 8)or TailNibble
+ End else Begin
+  W1:=W1 or Word(R1 shl 4);W2:=Word(R2 shl 12)or Word(R3 shl 8)or TailNibble
+ End;
+ EmitWord(W1);EmitWord(W2)
+End;
+
+Procedure EncodeIO(IsOut,ByteForm,Special:Boolean);
+Var S,A,B,Addr:String;R,RI:Integer;V:LongInt;F:Boolean;RelBase:Word;Base:Word;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if IsOut Then Begin Addr:=A;if ByteForm Then R:=RegisterNumber(B,'B')else R:=RegisterNumber(B,'W') End
+ else Begin if ByteForm Then R:=RegisterNumber(A,'B')else R:=RegisterNumber(A,'W');Addr:=B End;
+ if(R<0)or(Addr='')or(S<>'')Then Begin Diagnostic('operandes d''entree-sortie incorrects');Exit End;
+ if IndirectRegister(Addr,RI)and not Special Then Begin
+  if ByteForm Then Base:=$3C00 else Base:=$3D00;
+  if IsOut Then Base:=Base or $0200;
+  EmitWord(Base or Word(R)or Word(RI shl 4));Exit
+ End;
+ V:=EvalReloc(Addr,F,RelBase);
+ if ByteForm Then Base:=$3A04 else Base:=$3B04;
+ if Special Then Inc(Base)else if IsOut Then Inc(Base,2);
+ EmitWord(Base or Word(R shl 4));EmitWordReloc(Word(V),RAA16M,RelBase)
+End;
+
+Procedure EncodeLDA;
+Var S,A,B:String;R:Integer;V:LongInt;F,ShortAddress:Boolean;RelBase:Word;K:Char;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);if Opt.Segmented Then K:='L'else K:='W';
+ R:=RegisterNumber(A,K);ShortAddress:=(B<>'')and(B[1]='|');if ShortAddress Then Delete(B,1,1);
+ if(R<0)or(B='')or(S<>'')Then Begin Diagnostic('LDA exige registre-adresse,adresse');Exit End;
+ V:=EvalReloc(B,F,RelBase);EmitWord($7600 or Word(R));EmitDirectAddress(V,RelBase,ShortAddress)
+End;
+
+Procedure EncodeLDAR;
+Var S,A,B:String;R:Integer;V,D:LongInt;F:Boolean;RelBase:Word;K:Char;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);if Opt.Segmented Then K:='L'else K:='W';
+ R:=RegisterNumber(A,K);V:=EvalReloc(B,F,RelBase);D:=V-(Location[CurrentSection]+4);
+ if(R<0)or(B='')or(S<>'')Then Begin Diagnostic('LDAR exige registre-adresse,destination');Exit End;
+ if(Pass=2)and((RelBase<>CurrentSection)or((D and 1)<>0)or(D< -32768)or(D>32767))Then
+  Diagnostic('destination LDAR hors plage');
+ EmitWord($3400 or Word(R));EmitWord(Word(D))
+End;
+
+Procedure EncodeLDR;
+Var S,A,B,E:String;R:Integer;V,D:LongInt;F:Boolean;RelBase:Word;Store:Boolean;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);R:=RegisterNumber(A,'W');Store:=R<0;
+ if Store Then Begin E:=A;R:=RegisterNumber(B,'W') End else E:=B;
+ if(R<0)or(E='')or(S<>'')Then Begin Diagnostic('LDR exige registre et destination relative');Exit End;
+ V:=EvalReloc(E,F,RelBase);D:=V-(Location[CurrentSection]+4);
+ if(Pass=2)and((RelBase<>CurrentSection)or((D and 1)<>0)or(D< -32768)or(D>32767))Then
+  Diagnostic('destination LDR hors plage');
+ if Store Then EmitWord($3300 or Word(R))else EmitWord($3100 or Word(R));EmitWord(Word(D))
+End;
+
+Procedure EncodeLDM;
+Var S,A,B,C:String;RM,RStart:Integer;V:LongInt;F,Store:Boolean;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);C:=NextOperand(S);
+ if(A='')or(B='')or(C='')Then Begin Diagnostic('LDM exige trois operandes');Exit End;
+ Store:=A[1]<>'@';
+ if Store Then Begin RStart:=RegisterNumber(A,'W');if not IndirectRegister(B,RM)Then RM:=-1 End
+ else Begin if not IndirectRegister(A,RM)Then RM:=-1;RStart:=RegisterNumber(B,'W') End;
+ if(C<>'')and(C[1]='#')Then Delete(C,1,1);V:=Eval(C,F);
+ if(RM<0)or(RStart<0)or(V<1)or(V>16)or(S<>'')Then Begin
+  Diagnostic('LDM exige registre/@registre et compte 1..16');Exit
+ End;
+ if Store Then EmitWord($1C01 or Word(RM shl 4))else EmitWord($1C09 or Word(RM shl 4));
+ EmitWord(Word(RStart shl 8)or Word(V-1))
+End;
+
+Procedure EncodeCompareString(Base:Word);
+Var S,A,B,C,D:String;R1,R2,R3,CC:Integer;W2:Word;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);C:=NextOperand(S);D:=NextOperand(S);
+ if(Base and $FF00)=$BA00 Then R1:=RegisterNumber(A,'B')else R1:=RegisterNumber(A,'W');
+ if not IndirectRegister(B,R2)Then R2:=-1;R3:=RegisterNumber(C,'W');
+ CC:=ConditionNumber(D);
+ if(R1<0)or(R2<0)or(R3<0)or(CC<0)or(S<>'')Then Begin
+  Diagnostic('instruction de comparaison de chaine: registre,@registre,registre,condition attendus');Exit
+ End;
+ W2:=Word(R1 shl 12)or Word(R3 shl 8)or Word(CC);EmitWord(Base or Word(R2 shl 4));EmitWord(W2)
+End;
+
+Procedure EncodeIncDec(IsDec,ByteForm:Boolean);
+Var S,A,B:String;R:Integer;V:LongInt;F:Boolean;Base:Word;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if ByteForm Then R:=RegisterNumber(A,'B')else R:=RegisterNumber(A,'W');
+ if B=''Then V:=1 else Begin if B[1]='#'Then Delete(B,1,1);V:=Eval(B,F) End;
+ if(R<0)or(S<>'')Then Begin Diagnostic('registre et increment attendus');Exit End;
+ if(V<1)or(V>16)Then Diagnostic('increment hors plage 1..16');
+ if ByteForm Then Begin if IsDec Then Base:=$AA00 else Base:=$A800 End
+ else Begin if IsDec Then Base:=$AB00 else Base:=$A900 End;
+ EmitWord(Base or Word(R shl 4)or Word(V-1))
 End;
 
 Procedure AssignObjectBases;
