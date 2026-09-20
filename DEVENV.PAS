@@ -95411,6 +95411,417 @@ Begin
  Geos_LoadGeode := True;
 End;
 
+
+{ ============================================================
+  Chantier PC/GEOS-GeoWorks, Stage 2 (2026-09-19, demande explicite de
+  l'utilisateur - implantation reelle d'un sous-ensemble d'API GeoWorks :
+  ArrayQuickSort, ChunkArrayCreate/Append/Delete/DeleteRange/
+  ElementResize/ElementToPtr, plus les 6 routines Cell* et
+  CheckForDamagedES demandees mais NON implantees ici - voir la
+  disclosure complete ci-dessous).
+
+  SOURCE DE VERITE : depot open-source bluewaysw/pcgeos (FreeGEOS, code
+  source reel de PC/GEOS) - Include/chunkarr.def (interface publique,
+  conventions PASS/RETURN par registre) et Library/Kernel/LMem/
+  lmemChunkArray.asm + lmemCode.asm (implementation reelle, structures
+  LMemBlockHeader/LMC_size verifiees), jamais redevinees.
+
+  DISCLOSURE Stage 2 (perimetre honnetement limite, dans l'esprit deja
+  etabli par Stage 1) :
+   - CellDirty/CellGetDBItem/CellGetExtent/CellLock/CellReplace/
+     CellUnlock : NON implantees. cell.def montre que CellDirty/CellUnlock
+     sont de simples alias de DBDirty/DBUnlock (bibliotheque DBase), et
+     CellLock/CellGetDBItem/CellGetExtent sont dans Library/Cell/cellCell.asm
+     - mais TOUTES dependent du sous-systeme DBase (Library/Kernel/DBase/*,
+     blocs memoire virtuelle avec groupes/handles/mappage disque), un
+     chantier aussi consequent que LMem lui-meme, non encore modelise dans
+     ce fichier. Plutot que d'inventer un DBase factice, ces 6 routines
+     sont explicitement exclues de ce Stage 2 (a reprendre dans un futur
+     Stage 3 "DBase").
+   - CheckForDamagedES : AUCUNE source (implementation ou interface
+     documentee) retrouvee dans le depot bluewaysw/pcgeos malgre une
+     recherche approfondie (fichiers heap.def/heapInt.def/
+     heapErrorCheck.asm, index alphabetique du manuel SDK archive) - very
+     probablement une macro de debogage interne tres ancienne (EC "error
+     checking") deja retiree du code ouvert. Non implantee plutot que
+     devinee.
+   - Tableaux a elements de TAILLE VARIABLE (CAH_elementSize=0, table
+     d'offsets supplementaire - section "Chunk arrays can have variable
+     sized elements" de chunkarr.def) : HORS DE PORTEE. Seuls les
+     tableaux a elements de taille FIXE sont supportes (couvre l'usage le
+     plus courant et rend ChunkArrayElementResize - documentee comme
+     "valide UNIQUEMENT pour les elements de taille variable" -
+     naturellement non applicable, pas un trou cache).
+   - L'allocateur GeosLMem_* ci-dessous gere les DONNEES/POIGNEES/LISTE
+     LIBRE reelles d'un tas LMem deja present dans un fichier .GEO
+     charge (memes champs LMBH_* verifies), mais simplifie deux points
+     PAR RAPPORT au vrai GeoWorks (disclosure, pas un bogue cache) :
+     recherche "premier ajuste" sans fusion de blocs libres adjacents
+     (le vrai LMemFree fusionne), et AUCUN agrandissement dynamique de
+     la table de poignees (le vrai LMemAlloc appelle CreateMoreHandles) -
+     la table de poignees deja presente dans le fichier .GEO d'origine
+     est utilisee TELLE QUELLE, sans grandir.
+  ============================================================ }
+Const
+ LMBH_HANDLE     = 0;
+ LMBH_OFFSET     = 2;
+ LMBH_FLAGS      = 4;
+ LMBH_LMEMTYPE   = 6;
+ LMBH_BLOCKSIZE  = 8;
+ LMBH_NHANDLES   = $0A;
+ LMBH_FREELIST   = $0C;
+ LMBH_TOTALFREE  = $0E;
+ CAH_COUNT       = 0;
+ CAH_ELEMENTSIZE = 2;
+ CAH_CUROFFSET   = 4;
+ CAH_OFFSET      = 6;
+ CHUNK_ARRAY_HEADER_SIZE = 8;
+ CA_LAST_ELEMENT = $FF00;
+
+{ Alloue Size octets de DONNEES bruts dans le tas LMem HeapSeg (parcours   }
+{ "premier ajuste" de la liste libre chainee LMBH_freeList - chaque noeud }
+{ libre est [Word suivant][Word taille], EXACTEMENT lmemCode.asm/LMC_size,}
+{ voir la disclosure de tete). Ne touche AUCUNE poignee - reserve a       }
+{ GeosLMem_Alloc/GeosLMem_ResizeChunk ci-dessous. Retourne DataOfs :      }
+{ offset du premier octet de DONNEES (le mot de taille vit juste avant,   }
+{ a DataOfs-2, convention "*ds:si" standard GeoWorks). }
+Function GeosLMem_AllocSpace(Var C: TEmuCPU; HeapSeg, Size: Word;
+ Var DataOfs: Word; Var ErrMsg: String): Boolean;
+Var
+ PrevNode, Node, NextNode, NodeSize: Word;
+ NeedSize, TotalFree: LongInt;
+ LeftoverNode, LeftoverSize: Word;
+Begin
+ GeosLMem_AllocSpace := False;
+ DataOfs := 0;
+ ErrMsg := '';
+ NeedSize := LongInt(Size) + 2;
+ If (NeedSize And 1) <> 0 Then NeedSize := NeedSize + 1;
+ If NeedSize > 65535 Then Begin
+  ErrMsg := 'taille demandee trop grande (' + IntToStr(Size) + ' octets)';
+  Exit;
+ End;
+ PrevNode := 0;
+ Node := Emu_ReadWord(C, HeapSeg, LMBH_FREELIST);
+ NodeSize := 0;
+ While Node <> 0 Do Begin
+  NodeSize := Emu_ReadWord(C, HeapSeg, Word(Node + 2));
+  If LongInt(NodeSize) >= NeedSize Then Break;
+  PrevNode := Node;
+  Node := Emu_ReadWord(C, HeapSeg, Node);
+ End;
+ If Node = 0 Then Begin
+  ErrMsg := 'memoire insuffisante dans ce tas LMem (' + IntToStr(Size) +
+   ' octets demandes, $' + HexWord(HeapSeg) + ')';
+  Exit;
+ End;
+ NextNode := Emu_ReadWord(C, HeapSeg, Node);
+ If (LongInt(NodeSize) - NeedSize) >= 4 Then Begin
+  { Scinde : les NeedSize premiers octets du noeud deviennent le chunk    }
+  { alloue, le reste redevient un (plus petit) noeud libre. }
+  LeftoverNode := Word(Node + NeedSize);
+  LeftoverSize := Word(LongInt(NodeSize) - NeedSize);
+  Emu_WriteWord(C, HeapSeg, LeftoverNode, NextNode);
+  Emu_WriteWord(C, HeapSeg, Word(LeftoverNode + 2), LeftoverSize);
+  If PrevNode = 0 Then Emu_WriteWord(C, HeapSeg, LMBH_FREELIST, LeftoverNode)
+  Else Emu_WriteWord(C, HeapSeg, PrevNode, LeftoverNode);
+ End Else Begin
+  { Bloc consomme integralement (reste < 4 octets, trop petit pour un    }
+  { noeud libre valide [suivant][taille]) - simplement retire la liste. }
+  If PrevNode = 0 Then Emu_WriteWord(C, HeapSeg, LMBH_FREELIST, NextNode)
+  Else Emu_WriteWord(C, HeapSeg, PrevNode, NextNode);
+ End;
+ Emu_WriteWord(C, HeapSeg, Node, Size); { mot de taille = taille LOGIQUE demandee }
+ DataOfs := Word(Node + 2);
+ TotalFree := Emu_ReadWord(C, HeapSeg, LMBH_TOTALFREE) - LongInt(NodeSize);
+ If TotalFree < 0 Then TotalFree := 0;
+ Emu_WriteWord(C, HeapSeg, LMBH_TOTALFREE, Word(TotalFree));
+ GeosLMem_AllocSpace := True;
+End;
+
+{ Remet DataOfs (obtenu via GeosLMem_AllocSpace) en tete de la liste     }
+{ libre - AUCUNE fusion avec un voisin libre adjacent (simplification    }
+{ disclosee ci-dessus). }
+Procedure GeosLMem_FreeSpace(Var C: TEmuCPU; HeapSeg, DataOfs: Word);
+Var
+ NodeStart, ChunkSize, OldHead: Word;
+ TotalFree: LongInt;
+Begin
+ NodeStart := Word(DataOfs - 2);
+ ChunkSize := Emu_ReadWord(C, HeapSeg, NodeStart);
+ OldHead := Emu_ReadWord(C, HeapSeg, LMBH_FREELIST);
+ Emu_WriteWord(C, HeapSeg, NodeStart, OldHead);
+ Emu_WriteWord(C, HeapSeg, Word(NodeStart + 2), Word(ChunkSize + 2));
+ Emu_WriteWord(C, HeapSeg, LMBH_FREELIST, NodeStart);
+ TotalFree := Emu_ReadWord(C, HeapSeg, LMBH_TOTALFREE) + LongInt(ChunkSize) + 2;
+ If TotalFree > 65535 Then TotalFree := 65535;
+ Emu_WriteWord(C, HeapSeg, LMBH_TOTALFREE, Word(TotalFree));
+End;
+
+{ Alloue une poignee LIBRE (mot nul) dans la table de HeapSeg (recherche  }
+{ sequentielle, EXACTEMENT le "repne scasw" de LMemAlloc) et lui associe  }
+{ Size octets fraichement alloues via GeosLMem_AllocSpace ci-dessus.      }
+{ ChunkHandle retourne = OFFSET DE L'EMPLACEMENT DE POIGNEE lui-meme      }
+{ (convention GeoWorks "*ds:si" : *ChunkHandle = offset reel des          }
+{ donnees) - jamais un simple index. }
+Function GeosLMem_Alloc(Var C: TEmuCPU; HeapSeg, Size: Word;
+ Var ChunkHandle: Word; Var ErrMsg: String): Boolean;
+Var
+ HandleOfs, NHandles, I, Slot, DataOfs: Word;
+Begin
+ GeosLMem_Alloc := False;
+ ChunkHandle := 0;
+ HandleOfs := Emu_ReadWord(C, HeapSeg, LMBH_OFFSET);
+ NHandles := Emu_ReadWord(C, HeapSeg, LMBH_NHANDLES);
+ Slot := $FFFF;
+ For I := 0 To NHandles - 1 Do
+  If Emu_ReadWord(C, HeapSeg, Word(HandleOfs + I * 2)) = 0 Then Begin
+   Slot := Word(HandleOfs + I * 2);
+   Break;
+  End;
+ If Slot = $FFFF Then Begin
+  ErrMsg := 'table de poignees pleine (' + IntToStr(NHandles) +
+   ') - aucun agrandissement dynamique en Stage 2';
+  Exit;
+ End;
+ If Not GeosLMem_AllocSpace(C, HeapSeg, Size, DataOfs, ErrMsg) Then Exit;
+ Emu_WriteWord(C, HeapSeg, Slot, DataOfs);
+ ChunkHandle := Slot;
+ GeosLMem_Alloc := True;
+End;
+
+Function GeosLMem_Deref(Var C: TEmuCPU; HeapSeg, ChunkHandle: Word): Word;
+Begin
+ GeosLMem_Deref := Emu_ReadWord(C, HeapSeg, ChunkHandle);
+End;
+
+Procedure GeosLMem_Free(Var C: TEmuCPU; HeapSeg, ChunkHandle: Word);
+Var
+ DataOfs: Word;
+Begin
+ DataOfs := GeosLMem_Deref(C, HeapSeg, ChunkHandle);
+ If DataOfs = 0 Then Exit; { deja libre }
+ GeosLMem_FreeSpace(C, HeapSeg, DataOfs);
+ Emu_WriteWord(C, HeapSeg, ChunkHandle, 0);
+End;
+
+{ Redimensionne le chunk designe par ChunkHandle. Retrecir se fait EN     }
+{ PLACE (le mot de taille est simplement reduit - le surplus reste        }
+{ "perdu" a l'interieur du chunk jusqu'a sa prochaine liberation, meme    }
+{ discipline que le "reste < 4 octets" de GeosLMem_AllocSpace) ; grandir   }
+{ alloue un nouvel espace, copie les anciennes donnees, libere l'ancien   }
+{ espace et met a jour la poignee EN PLACE (elle ne change jamais de      }
+{ valeur - c'est tout l'interet d'une poignee indirecte). }
+Function GeosLMem_ResizeChunk(Var C: TEmuCPU; HeapSeg, ChunkHandle,
+ NewSize: Word; Var ErrMsg: String): Boolean;
+Var
+ OldDataOfs, OldSize, NewDataOfs, I: Word;
+Begin
+ GeosLMem_ResizeChunk := False;
+ OldDataOfs := GeosLMem_Deref(C, HeapSeg, ChunkHandle);
+ If OldDataOfs = 0 Then Begin
+  ErrMsg := 'poignee invalide/deja libre';
+  Exit;
+ End;
+ OldSize := Emu_ReadWord(C, HeapSeg, Word(OldDataOfs - 2));
+ If NewSize <= OldSize Then Begin
+  Emu_WriteWord(C, HeapSeg, Word(OldDataOfs - 2), NewSize);
+  GeosLMem_ResizeChunk := True;
+  Exit;
+ End;
+ If Not GeosLMem_AllocSpace(C, HeapSeg, NewSize, NewDataOfs, ErrMsg) Then Exit;
+ For I := 0 To OldSize - 1 Do
+  Emu_WriteByte(C, HeapSeg, Word(NewDataOfs + I), Emu_ReadByte(C, HeapSeg, Word(OldDataOfs + I)));
+ For I := OldSize To NewSize - 1 Do
+  Emu_WriteByte(C, HeapSeg, Word(NewDataOfs + I), 0);
+ GeosLMem_FreeSpace(C, HeapSeg, OldDataOfs);
+ Emu_WriteWord(C, HeapSeg, ChunkHandle, NewDataOfs);
+ GeosLMem_ResizeChunk := True;
+End;
+
+{ ============================================================
+  ChunkArray (Include/chunkarr.def) - tableaux a elements de taille FIXE
+  uniquement (CAH_elementSize<>0), voir la disclosure de tete. Chaque
+  routine reproduit fidelement la convention PASS/RETURN reelle du .def
+  d'origine (ArrayHandle = "*ds:si", meme poignee indirecte que ci-dessus).
+  ============================================================ }
+
+{ Pass : HeapSeg/ElementSize/HeaderSize (0=defaut 8 = size ChunkArrayHeader)}
+{ Return : ArrayHandle - meme convention que ChunkArrayCreate:far (Pass ds  }
+{ = bloc, bx = taille element, cx = taille entete, si = 0 pour un nouveau   }
+{ chunk ; ce Stage 2 alloue TOUJOURS un nouveau chunk, si<>0/reutilisation  }
+{ d'un chunk existant hors de portee). }
+Function GeosChunkArrayCreate(Var C: TEmuCPU; HeapSeg, ElementSize,
+ HeaderSize: Word; Var ArrayHandle: Word; Var ErrMsg: String): Boolean;
+Var
+ HSize, ArrOfs, I: Word;
+Begin
+ GeosChunkArrayCreate := False;
+ HSize := HeaderSize;
+ If HSize = 0 Then HSize := CHUNK_ARRAY_HEADER_SIZE;
+ If HSize < CHUNK_ARRAY_HEADER_SIZE Then Begin
+  ErrMsg := 'taille d''entete trop petite (< ' +
+   IntToStr(CHUNK_ARRAY_HEADER_SIZE) + ' octets)';
+  Exit;
+ End;
+ If Not GeosLMem_Alloc(C, HeapSeg, HSize, ArrayHandle, ErrMsg) Then Exit;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle);
+ Emu_WriteWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT), 0);
+ Emu_WriteWord(C, HeapSeg, Word(ArrOfs + CAH_ELEMENTSIZE), ElementSize);
+ Emu_WriteWord(C, HeapSeg, Word(ArrOfs + CAH_CUROFFSET), 0);
+ Emu_WriteWord(C, HeapSeg, Word(ArrOfs + CAH_OFFSET), HSize);
+ For I := CHUNK_ARRAY_HEADER_SIZE To HSize - 1 Do
+  Emu_WriteByte(C, HeapSeg, Word(ArrOfs + I), 0);
+ GeosChunkArrayCreate := True;
+End;
+
+{ Pass : *ds:si=array (ArrayHandle) ; Return : ds:di=nouvel element (ici,  }
+{ NewElemOfs, offset ABSOLU dans HeapSeg) - ajoute un element de taille    }
+{ CAH_elementSize (mis a zero) en agrandissant le chunk du tableau lui-    }
+{ meme (les elements vivent DANS le meme chunk que l'entete, juste apres  }
+{ - c'est ce qui distingue un ChunkArray d'un simple tableau de poignees).}
+Function GeosChunkArrayAppend(Var C: TEmuCPU; HeapSeg, ArrayHandle: Word;
+ Var NewElemOfs: Word; Var ErrMsg: String): Boolean;
+Var
+ ArrOfs, Count, ElemSize, HdrOfs, NewTotal, I: Word;
+Begin
+ GeosChunkArrayAppend := False;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle);
+ If ArrOfs = 0 Then Begin ErrMsg := 'poignee de tableau invalide'; Exit; End;
+ Count := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT));
+ ElemSize := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_ELEMENTSIZE));
+ If ElemSize = 0 Then Begin
+  ErrMsg := 'tableaux a elements de taille variable non supportes ' +
+   '(CAH_elementSize=0) - voir la disclosure Stage 2';
+  Exit;
+ End;
+ HdrOfs := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_OFFSET));
+ NewTotal := Word(LongInt(HdrOfs) + LongInt(Count + 1) * ElemSize);
+ If Not GeosLMem_ResizeChunk(C, HeapSeg, ArrayHandle, NewTotal, ErrMsg) Then Exit;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle); { a pu se deplacer }
+ NewElemOfs := Word(ArrOfs + HdrOfs + LongInt(Count) * ElemSize);
+ For I := 0 To ElemSize - 1 Do
+  Emu_WriteByte(C, HeapSeg, Word(NewElemOfs + I), 0);
+ Emu_WriteWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT), Count + 1);
+ GeosChunkArrayAppend := True;
+End;
+
+{ Pass : *ds:si=array, ax=numero d'element (ou CA_LAST_ELEMENT) ; Return : }
+{ ds:di=element (ici, offset absolu), carry=hors bornes. }
+Function GeosChunkArrayElementToPtr(Var C: TEmuCPU; HeapSeg, ArrayHandle,
+ ElemIndex: Word; Var ElemOfs: Word; Var ErrMsg: String): Boolean;
+Var
+ ArrOfs, Count, ElemSize, HdrOfs, Idx: Word;
+Begin
+ GeosChunkArrayElementToPtr := False;
+ ElemOfs := 0;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle);
+ If ArrOfs = 0 Then Begin ErrMsg := 'poignee de tableau invalide'; Exit; End;
+ Count := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT));
+ ElemSize := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_ELEMENTSIZE));
+ HdrOfs := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_OFFSET));
+ If Count = 0 Then Begin
+  ErrMsg := 'tableau vide';
+  Exit;
+ End;
+ Idx := ElemIndex;
+ If Idx = CA_LAST_ELEMENT Then Idx := Count - 1;
+ If Idx >= Count Then Begin
+  ErrMsg := 'element ' + IntToStr(Idx) + ' hors bornes (0..' +
+   IntToStr(Count - 1) + ')';
+  Exit;
+ End;
+ ElemOfs := Word(ArrOfs + HdrOfs + LongInt(Idx) * ElemSize);
+ GeosChunkArrayElementToPtr := True;
+End;
+
+{ Pass : *ds:si=array, ds:di=element (ici, l'INDICE, plus pratique depuis }
+{ une commande texte que de retaper un offset) ; supprime l'element et    }
+{ tasse les suivants (memmove), retrecit le chunk d'un ElemSize. }
+Function GeosChunkArrayDelete(Var C: TEmuCPU; HeapSeg, ArrayHandle,
+ ElemIndex: Word; Var ErrMsg: String): Boolean;
+Var
+ ArrOfs, Count, ElemSize, HdrOfs, MoveOfs, MoveBytes, I, NewTotal: Word;
+Begin
+ GeosChunkArrayDelete := False;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle);
+ If ArrOfs = 0 Then Begin ErrMsg := 'poignee de tableau invalide'; Exit; End;
+ Count := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT));
+ ElemSize := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_ELEMENTSIZE));
+ HdrOfs := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_OFFSET));
+ If ElemSize = 0 Then Begin
+  ErrMsg := 'tableaux a elements de taille variable non supportes'; Exit;
+ End;
+ If ElemIndex >= Count Then Begin
+  ErrMsg := 'element ' + IntToStr(ElemIndex) + ' hors bornes (0..' +
+   IntToStr(Count - 1) + ')';
+  Exit;
+ End;
+ If ElemIndex < Count - 1 Then Begin
+  MoveOfs := Word(ArrOfs + HdrOfs + LongInt(ElemIndex) * ElemSize);
+  MoveBytes := Word(LongInt(Count - 1 - ElemIndex) * ElemSize);
+  For I := 0 To MoveBytes - 1 Do
+   Emu_WriteByte(C, HeapSeg, Word(MoveOfs + I),
+    Emu_ReadByte(C, HeapSeg, Word(MoveOfs + ElemSize + I)));
+ End;
+ NewTotal := Word(LongInt(HdrOfs) + LongInt(Count - 1) * ElemSize);
+ If Not GeosLMem_ResizeChunk(C, HeapSeg, ArrayHandle, NewTotal, ErrMsg) Then Exit;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle);
+ Emu_WriteWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT), Count - 1);
+ GeosChunkArrayDelete := True;
+End;
+
+{ Pass : *ds:si=array, ax=premier element, cx=nombre a supprimer. }
+Function GeosChunkArrayDeleteRange(Var C: TEmuCPU; HeapSeg, ArrayHandle,
+ FirstIndex, DeleteCount: Word; Var ErrMsg: String): Boolean;
+Var
+ ArrOfs, Count, ElemSize, HdrOfs, MoveOfs, MoveBytes, I, NewTotal: Word;
+Begin
+ GeosChunkArrayDeleteRange := False;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle);
+ If ArrOfs = 0 Then Begin ErrMsg := 'poignee de tableau invalide'; Exit; End;
+ Count := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT));
+ ElemSize := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_ELEMENTSIZE));
+ HdrOfs := Emu_ReadWord(C, HeapSeg, Word(ArrOfs + CAH_OFFSET));
+ If ElemSize = 0 Then Begin
+  ErrMsg := 'tableaux a elements de taille variable non supportes'; Exit;
+ End;
+ If (DeleteCount = 0) Or (LongInt(FirstIndex) + DeleteCount > Count) Then Begin
+  ErrMsg := 'intervalle [' + IntToStr(FirstIndex) + '..' +
+   IntToStr(FirstIndex + DeleteCount - 1) + '] hors bornes (0..' +
+   IntToStr(Count - 1) + ')';
+  Exit;
+ End;
+ If FirstIndex + DeleteCount < Count Then Begin
+  MoveOfs := Word(ArrOfs + HdrOfs + LongInt(FirstIndex) * ElemSize);
+  MoveBytes := Word(LongInt(Count - FirstIndex - DeleteCount) * ElemSize);
+  For I := 0 To MoveBytes - 1 Do
+   Emu_WriteByte(C, HeapSeg, Word(MoveOfs + I),
+    Emu_ReadByte(C, HeapSeg, Word(MoveOfs + LongInt(DeleteCount) * ElemSize + I)));
+ End;
+ NewTotal := Word(LongInt(HdrOfs) + LongInt(Count - DeleteCount) * ElemSize);
+ If Not GeosLMem_ResizeChunk(C, HeapSeg, ArrayHandle, NewTotal, ErrMsg) Then Exit;
+ ArrOfs := GeosLMem_Deref(C, HeapSeg, ArrayHandle);
+ Emu_WriteWord(C, HeapSeg, Word(ArrOfs + CAH_COUNT), Count - DeleteCount);
+ GeosChunkArrayDeleteRange := True;
+End;
+
+{ ChunkArrayElementResize (chunkarr.def) : "This is only valid for chunk  }
+{ arrays with variable sized elements" - ce Stage 2 ne supporte QUE les   }
+{ tableaux a elements FIXES (voir la disclosure de tete), donc cette      }
+{ routine n'a HONNETEMENT rien a faire ici : ce n'est pas un trou cache,  }
+{ c'est la consequence directe et documentee de son propre contrat        }
+{ d'origine. }
+Function GeosChunkArrayElementResize(Var ErrMsg: String): Boolean;
+Begin
+ ErrMsg := 'ChunkArrayElementResize : valide uniquement pour les tableaux ' +
+  'a elements de taille VARIABLE (CAH_elementSize=0), non supportes par ' +
+  'ce Stage 2 (voir chunkarr.def) - non applicable a un tableau a ' +
+  'elements fixes.';
+ GeosChunkArrayElementResize := False;
+End;
+
+
 { Chantier Windows 16 bits, Stage 5 (2026-08-29) : recherche une ressource  }
 { NE par (TypeID, ResID) - format VERIFIE via l'OSDev wiki NE ("Resource    }
 { Table" - AlignmentShiftCount puis une suite de blocs [TypeID:Word]        }
@@ -96767,6 +97178,125 @@ Begin
  End;
  Win16_CallWndProc := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
 End;
+
+
+{ ArrayQuickSort (chunkarr.def, voir la disclosure Stage 2 en tete de la   }
+{ section GeosLMem/ChunkArray plus haut) - REEL algorithme de tri en      }
+{ place, mais la comparaison entre deux elements est TOUJOURS deleguee au }
+{ VRAI callback fourni par l'appelant (QSP_compareCallback), execute via  }
+{ Dpmi_RunRealProc EXACTEMENT comme Win16_CallWndProc ci-dessus (meme      }
+{ mecanisme "executer Emu_StepOne en boucle bornee jusqu'a un sentinel de }
+{ retour synthetique") - convention VERIFIEE via chunkarr.def : ds:si=1er }
+{ element, es:di=2eme element, bx=valeur utilisateur passee a             }
+{ ArrayQuickSort, resultat dans les FANIONS (jl/je/jg). Simplification     }
+{ disclosee : strategie de pivot/seuil d'insertion du VRAI GeoWorks (voir }
+{ ChunkArrayQuickSort dans lmemChunkArray.asm - median-de-trois + bascule }
+{ vers un tri par insertion sous un seuil) NON reproduite a l'identique -  }
+{ un tri rapide standard (partition de Lomuto, pivot median-de-trois       }
+{ simple) est utilise a la place ; le RESULTAT (ordre croissant final,     }
+{ base sur les VRAIES comparaisons du programme invite) est identique,     }
+{ seule la strategie interne d'implementation differe. QSP_lockCallback/   }
+{ QSP_unlockCallback ne sont PAS appeles (nos elements vivent a une        }
+{ position FIXE dans un chunk LMem deja charge, aucun mecanisme de         }
+{ verrouillage VM/deplacement n'est modelise par ce Stage 2). }
+Function GeosCompareElements(Var P: TEmulatorPanel; CompSeg, CompOfs,
+ ArrSeg: Word; OfsA, OfsB, BxValue: Word): Integer;
+Begin
+ P.CPU.Segs.DS := ArrSeg; P.CPU.Regs.SI := OfsA;
+ P.CPU.Segs.ES := ArrSeg; P.CPU.Regs.DI := OfsB;
+ P.CPU.Regs.BX := BxValue;
+ Dpmi_RunRealProc(P, CompSeg, CompOfs, False);
+ If EFG_ZF In P.CPU.Flags.s Then GeosCompareElements := 0
+ Else If (EFG_SF In P.CPU.Flags.s) <> (EFG_OF In P.CPU.Flags.s) Then
+  GeosCompareElements := -1
+ Else GeosCompareElements := 1;
+End;
+
+Procedure GeosSwapElements(Var C: TEmuCPU; HeapSeg, OfsA, OfsB, ElemSize: Word);
+Var
+ I: Word;
+ Tmp: Byte;
+Begin
+ If OfsA = OfsB Then Exit;
+ For I := 0 To ElemSize - 1 Do Begin
+  Tmp := Emu_ReadByte(C, HeapSeg, Word(OfsA + I));
+  Emu_WriteByte(C, HeapSeg, Word(OfsA + I), Emu_ReadByte(C, HeapSeg, Word(OfsB + I)));
+  Emu_WriteByte(C, HeapSeg, Word(OfsB + I), Tmp);
+ End;
+End;
+
+{ Partition de Lomuto avec pivot median-de-trois (premier/milieu/dernier   }
+{ echanges en tete avant partitionnement, meme idee que le "choisir la     }
+{ mediane" documente pour le VRAI ChunkArrayQuickSort, sans reproduire son }
+{ code exact - voir le commentaire de tete). Bornee a GEOS_QSORT_MAX_DEPTH }
+{ recursions (garde-fou, comme tous les autres chantiers de ce fichier qui }
+{ executent du code invite arbitraire - jamais atteinte en pratique pour   }
+{ un tableau de taille raisonnable, evite juste un debordement de pile     }
+{ Pascal si jamais le callback invite renvoie des comparaisons             }
+{ incoherentes/non transitives). }
+Const
+ GEOS_QSORT_MAX_DEPTH = 64;
+
+Procedure GeosQuickSortRange(Var P: TEmulatorPanel; HeapSeg, ArrOfs, ElemSize,
+ CompSeg, CompOfs, BxValue: Word; Lo, Hi: Integer; Depth: Integer);
+Var
+ Mid, PivotOfs, StoreIdx, I: Integer;
+ OfsI, OfsJ, OfsPivot, OfsStore: Word;
+Begin
+ If (Lo >= Hi) Or (Depth >= GEOS_QSORT_MAX_DEPTH) Then Exit;
+ Mid := Lo + (Hi - Lo) Div 2;
+ OfsI := Word(ArrOfs + LongInt(Lo) * ElemSize);
+ OfsJ := Word(ArrOfs + LongInt(Mid) * ElemSize);
+ If GeosCompareElements(P, CompSeg, CompOfs, HeapSeg, OfsJ, OfsI, BxValue) < 0 Then
+  GeosSwapElements(P.CPU, HeapSeg, OfsI, OfsJ, ElemSize);
+ OfsJ := Word(ArrOfs + LongInt(Hi) * ElemSize);
+ If GeosCompareElements(P, CompSeg, CompOfs, HeapSeg, OfsJ, OfsI, BxValue) < 0 Then
+  GeosSwapElements(P.CPU, HeapSeg, OfsI, OfsJ, ElemSize);
+ OfsI := Word(ArrOfs + LongInt(Mid) * ElemSize);
+ OfsJ := Word(ArrOfs + LongInt(Hi) * ElemSize);
+ If GeosCompareElements(P, CompSeg, CompOfs, HeapSeg, OfsJ, OfsI, BxValue) < 0 Then
+  GeosSwapElements(P.CPU, HeapSeg, OfsI, OfsJ, ElemSize);
+ { Le pivot (mediane) est maintenant en Mid - le placer en Hi-1 (hors du  }
+ { chemin) pour une partition de Lomuto classique. }
+ OfsPivot := Word(ArrOfs + LongInt(Hi - 1) * ElemSize);
+ OfsI := Word(ArrOfs + LongInt(Mid) * ElemSize);
+ GeosSwapElements(P.CPU, HeapSeg, OfsI, OfsPivot, ElemSize);
+ StoreIdx := Lo;
+ For I := Lo To Hi - 2 Do Begin
+  OfsI := Word(ArrOfs + LongInt(I) * ElemSize);
+  If GeosCompareElements(P, CompSeg, CompOfs, HeapSeg, OfsI, OfsPivot, BxValue) < 0 Then Begin
+   OfsStore := Word(ArrOfs + LongInt(StoreIdx) * ElemSize);
+   GeosSwapElements(P.CPU, HeapSeg, OfsI, OfsStore, ElemSize);
+   Inc(StoreIdx);
+  End;
+ End;
+ OfsStore := Word(ArrOfs + LongInt(StoreIdx) * ElemSize);
+ GeosSwapElements(P.CPU, HeapSeg, OfsStore, OfsPivot, ElemSize);
+ GeosQuickSortRange(P, HeapSeg, ArrOfs, ElemSize, CompSeg, CompOfs, BxValue,
+  Lo, StoreIdx - 1, Depth + 1);
+ GeosQuickSortRange(P, HeapSeg, ArrOfs, ElemSize, CompSeg, CompOfs, BxValue,
+  StoreIdx + 1, Hi, Depth + 1);
+End;
+
+{ Pass : ds:si=array (ArrOfs, absolu dans HeapSeg), ax=taille element,     }
+{ cx=nombre d'elements, ss:bp=QuickSortParameters (ici, CompSeg:CompOfs =  }
+{ QSP_compareCallback), bx=valeur utilisateur - signature exacte           }
+{ ArrayQuickSort:far de chunkarr.def, "Return: nothing". }
+Function GeosArrayQuickSort(Var P: TEmulatorPanel; HeapSeg, ArrOfs, ElemSize,
+ Count, CompSeg, CompOfs, BxValue: Word; Var ErrMsg: String): Boolean;
+Begin
+ GeosArrayQuickSort := False;
+ If ElemSize = 0 Then Begin ErrMsg := 'taille d''element nulle'; Exit; End;
+ If (CompSeg = 0) Then Begin
+  ErrMsg := 'QSP_compareCallback requis (segment nul)';
+  Exit;
+ End;
+ If Count > 1 Then
+  GeosQuickSortRange(P, HeapSeg, ArrOfs, ElemSize, CompSeg, CompOfs,
+   BxValue, 0, Count - 1, 0);
+ GeosArrayQuickSort := True;
+End;
+
 
 { Appelle SYNCHRONE un VRAI callback FONTENUMPROC16 (SEGPTR lplf, SEGPTR    }
 { lptm, UINT16 nFontType, LPARAM lParam) - signature VERIFIEE via le VRAI   }
@@ -132593,6 +133123,24 @@ Begin
    '  Get-OS9Memory [-Address n [-Length n]]    Resume ou vidage hexa memoire');
   HelpEmit(
    '  Get-OS9Device                              Chemins I$Open/Create ouverts');
+  HelpEmit( '');
+  HelpEmit( '--- Interroger l''emulateur PC/GEOS-GeoWorks (2026-09-19, Stage 2) ---');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ChunkArrayCreate -ElementSize n [-HeaderSize n]');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ChunkArrayAppend -Array $poignee');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ChunkArrayElementToPtr -Array $p [-Index n]');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ChunkArrayDelete -Array $poignee -Index n');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ChunkArrayDeleteRange -Array $p -Index n -Count n');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ArrayQuickSort -Address n -ElementSize n -Count n');
+  HelpEmit(
+   '    ... [-CompareAddress n] [-Value n]   (comparateur par defaut si omis)');
+  HelpEmit(
+   '  ... [-Resource n]   (indice de ressource "tas LMem", auto-detecte sinon)');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -142747,6 +143295,275 @@ Begin
 End;
 
 
+{ Invoke-GeoWorksAPI (PowerShell dev, 2026-09-19, demande explicite -      }
+{ Stage 2 : "implanter quelques API de GeoWorks") - meme motif exact que   }
+{ Invoke-OS9SystemCall (voir plus haut) : appelle REELLEMENT une des       }
+{ routines GeosLMem/ChunkArray/ArrayQuickSort implantees ci-dessus, sur   }
+{ la memoire emulee VIVANTE de l'onglet GeoWorks actif (EmuPanel.CPU),     }
+{ puisqu'aucun geode charge par ce Stage 1/2 n'a de point d'entree CPU     }
+{ classique pour les exercer lui-meme (voir Geos_LoadGeode) - c'est donc  }
+{ le SEUL moyen de les verifier en direct pour l'instant. }
+Function GeosFindLMemResource(DefaultRes: Integer): Integer;
+Var
+ I: Integer;
+Begin
+ GeosFindLMemResource := -1;
+ If (DefaultRes >= 0) And (DefaultRes < Integer(Geos_NumSeg)) Then Begin
+  GeosFindLMemResource := DefaultRes;
+  Exit;
+ End;
+ For I := 0 To Integer(Geos_NumSeg) - 1 Do
+  If (Geos_Seg[I].Flags And 8) <> 0 Then Begin
+   GeosFindLMemResource := I;
+   Exit;
+  End;
+End;
+
+Procedure TermCmd_InvokeGeoWorksAPI(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ GEOS_SCRATCH_SEG = $E000; { segment prive pour le comparateur par defaut }
+Var
+ UpParams, ApiName: String;
+ ApiPos, ResPos, FlagPos: Integer;
+ ResIdx: Integer;
+ HeapSeg: Word;
+ ErrMsg, Arg: String;
+ ArrHandle, ElemSize, HdrSize, NewElemOfs, ElemOfs, Idx, Cnt: Word;
+ CompSeg, CompOfs, BxVal, ArrOfs, Count, NumElems: Word;
+ ErrC: Integer;
+Begin
+ If (WinMgr.ActiveIdx < 0) Or
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind <> WK_EMU) Or
+    (Not EmuPanel.Loaded) Or (EmuPanel.TargetCPU <> '-CGEOS') Then Begin
+  TermAddLine(TP, 'Invoke-GeoWorksAPI : aucun onglet PC/GEOS-GeoWorks actif ' +
+   '(utilisez Start-GeoWorksProgram pour en charger un).');
+  Exit;
+ End;
+ UpParams := TermStrToUpper(ParamStr);
+ ApiPos := System.Pos('-API', UpParams);
+ If ApiPos = 0 Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api nom [-Resource n] [...]');
+  TermAddLine(TP, '  Api : ChunkArrayCreate | ChunkArrayAppend | ChunkArrayDelete |');
+  TermAddLine(TP, '        ChunkArrayDeleteRange | ChunkArrayElementToPtr |');
+  TermAddLine(TP, '        ChunkArrayElementResize | ArrayQuickSort');
+  Exit;
+ End;
+ ApiName := TermStrToUpper(TrimStr(TermExtractParam(Copy(ParamStr,
+  ApiPos + 4, Length(ParamStr)), 1)));
+ ResIdx := -1;
+ ResPos := System.Pos('-RESOURCE', UpParams);
+ If ResPos > 0 Then Begin
+  Arg := TermExtractParam(Copy(ParamStr, ResPos + 9, Length(ParamStr)), 1);
+  Val(Arg, ResIdx, ErrC);
+  If ErrC <> 0 Then ResIdx := -1;
+ End;
+ ResIdx := GeosFindLMemResource(ResIdx);
+ If ResIdx < 0 Then Begin
+  TermAddLine(TP, 'Invoke-GeoWorksAPI : aucune ressource "tas LMem" ' +
+   'trouvee dans ce geode (-Resource n pour forcer un indice).');
+  Exit;
+ End;
+ HeapSeg := Geos_Seg[ResIdx].SegBase;
+
+ If ApiName = 'CHUNKARRAYCREATE' Then Begin
+  ElemSize := 0; HdrSize := 0;
+  FlagPos := System.Pos('-ELEMENTSIZE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 12, Length(ParamStr)), 1);
+   Val(Arg, ElemSize, ErrC);
+  End;
+  FlagPos := System.Pos('-HEADERSIZE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 11, Length(ParamStr)), 1);
+   Val(Arg, HdrSize, ErrC);
+  End;
+  If ElemSize = 0 Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ChunkArrayCreate ' +
+    '-ElementSize n [-HeaderSize n] [-Resource n]');
+   Exit;
+  End;
+  If GeosChunkArrayCreate(EmuPanel.CPU, HeapSeg, ElemSize, HdrSize,
+     ArrHandle, ErrMsg) Then
+   TermAddLine(TP, 'ChunkArrayCreate : poignee de tableau = $' +
+    HexWord(ArrHandle) + ' (ressource ' + IntToStr(ResIdx) +
+    ', segment $' + HexWord(HeapSeg) + ', element ' + IntToStr(ElemSize) +
+    ' octets)')
+  Else
+   TermAddLine(TP, 'ChunkArrayCreate : echec - ' + ErrMsg);
+  Exit;
+ End;
+
+ If ApiName = 'CHUNKARRAYAPPEND' Then Begin
+  ArrHandle := 0;
+  FlagPos := System.Pos('-ARRAY', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ArrHandle, ErrC);
+  End;
+  If ArrHandle = 0 Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ChunkArrayAppend ' +
+    '-Array $poignee [-Resource n]');
+   Exit;
+  End;
+  If GeosChunkArrayAppend(EmuPanel.CPU, HeapSeg, ArrHandle, NewElemOfs, ErrMsg) Then
+   TermAddLine(TP, 'ChunkArrayAppend : nouvel element a l''offset $' +
+    HexWord(NewElemOfs) + ' (mis a zero)')
+  Else
+   TermAddLine(TP, 'ChunkArrayAppend : echec - ' + ErrMsg);
+  Exit;
+ End;
+
+ If ApiName = 'CHUNKARRAYELEMENTTOPTR' Then Begin
+  ArrHandle := 0; Idx := 0;
+  FlagPos := System.Pos('-ARRAY', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ArrHandle, ErrC);
+  End;
+  FlagPos := System.Pos('-INDEX', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, Idx, ErrC);
+  End;
+  If ArrHandle = 0 Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ChunkArrayElementToPtr ' +
+    '-Array $poignee [-Index n] [-Resource n]');
+   Exit;
+  End;
+  If GeosChunkArrayElementToPtr(EmuPanel.CPU, HeapSeg, ArrHandle, Idx,
+     ElemOfs, ErrMsg) Then
+   TermAddLine(TP, 'ChunkArrayElementToPtr : element ' + IntToStr(Idx) +
+    ' a l''offset $' + HexWord(ElemOfs))
+  Else
+   TermAddLine(TP, 'ChunkArrayElementToPtr : echec - ' + ErrMsg);
+  Exit;
+ End;
+
+ If ApiName = 'CHUNKARRAYDELETE' Then Begin
+  ArrHandle := 0; Idx := 0;
+  FlagPos := System.Pos('-ARRAY', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ArrHandle, ErrC);
+  End;
+  FlagPos := System.Pos('-INDEX', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, Idx, ErrC);
+  End;
+  If ArrHandle = 0 Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ChunkArrayDelete ' +
+    '-Array $poignee -Index n [-Resource n]');
+   Exit;
+  End;
+  If GeosChunkArrayDelete(EmuPanel.CPU, HeapSeg, ArrHandle, Idx, ErrMsg) Then
+   TermAddLine(TP, 'ChunkArrayDelete : element ' + IntToStr(Idx) + ' supprime')
+  Else
+   TermAddLine(TP, 'ChunkArrayDelete : echec - ' + ErrMsg);
+  Exit;
+ End;
+
+ If ApiName = 'CHUNKARRAYDELETERANGE' Then Begin
+  ArrHandle := 0; Idx := 0; Cnt := 0;
+  FlagPos := System.Pos('-ARRAY', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ArrHandle, ErrC);
+  End;
+  FlagPos := System.Pos('-INDEX', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, Idx, ErrC);
+  End;
+  FlagPos := System.Pos('-COUNT', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, Cnt, ErrC);
+  End;
+  If (ArrHandle = 0) Or (Cnt = 0) Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ChunkArrayDeleteRange ' +
+    '-Array $poignee -Index n -Count n [-Resource n]');
+   Exit;
+  End;
+  If GeosChunkArrayDeleteRange(EmuPanel.CPU, HeapSeg, ArrHandle, Idx, Cnt,
+     ErrMsg) Then
+   TermAddLine(TP, 'ChunkArrayDeleteRange : ' + IntToStr(Cnt) +
+    ' element(s) supprime(s) a partir de ' + IntToStr(Idx))
+  Else
+   TermAddLine(TP, 'ChunkArrayDeleteRange : echec - ' + ErrMsg);
+  Exit;
+ End;
+
+ If ApiName = 'CHUNKARRAYELEMENTRESIZE' Then Begin
+  GeosChunkArrayElementResize(ErrMsg);
+  TermAddLine(TP, 'ChunkArrayElementResize : ' + ErrMsg);
+  Exit;
+ End;
+
+ If ApiName = 'ARRAYQUICKSORT' Then Begin
+  ArrOfs := 0; ElemSize := 0; Count := 0; CompSeg := 0; CompOfs := 0; BxVal := 0;
+  FlagPos := System.Pos('-ADDRESS', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 8, Length(ParamStr)), 1);
+   Val(Arg, ArrOfs, ErrC);
+  End;
+  FlagPos := System.Pos('-ELEMENTSIZE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 12, Length(ParamStr)), 1);
+   Val(Arg, ElemSize, ErrC);
+  End;
+  FlagPos := System.Pos('-COUNT', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, Count, ErrC);
+  End;
+  FlagPos := System.Pos('-COMPAREADDRESS', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 15, Length(ParamStr)), 1);
+   Val(Arg, CompOfs, ErrC);
+   CompSeg := HeapSeg;
+  End;
+  FlagPos := System.Pos('-VALUE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, BxVal, ErrC);
+  End;
+  If (ArrOfs = 0) Or (ElemSize = 0) Or (Count = 0) Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ArrayQuickSort ' +
+    '-Address n -ElementSize n -Count n [-CompareAddress n] [-Value n]');
+   Exit;
+  End;
+  If CompSeg = 0 Then Begin
+   { Aucun comparateur fourni : ecrit un comparateur reel minimal (compare }
+   { le premier octet de chaque element, non signe) dans un segment       }
+   { prive de demonstration - permet de VRAIMENT exercer le mecanisme de  }
+   { rappel Dpmi_RunRealProc meme sans geode en cours d'execution. }
+   Emu_WriteByte(EmuPanel.CPU, GEOS_SCRATCH_SEG, 0, $8A); { MOV AL,[SI] }
+   Emu_WriteByte(EmuPanel.CPU, GEOS_SCRATCH_SEG, 1, $04);
+   Emu_WriteByte(EmuPanel.CPU, GEOS_SCRATCH_SEG, 2, $3A); { CMP AL,[DI] }
+   Emu_WriteByte(EmuPanel.CPU, GEOS_SCRATCH_SEG, 3, $05);
+   Emu_WriteByte(EmuPanel.CPU, GEOS_SCRATCH_SEG, 4, $CB); { RETF }
+   CompSeg := GEOS_SCRATCH_SEG;
+   CompOfs := 0;
+   TermAddLine(TP, '(aucun -CompareAddress : comparateur par defaut ' +
+    'utilise - compare le 1er octet de chaque element, non signe)');
+  End;
+  NumElems := Count;
+  If GeosArrayQuickSort(EmuPanel, HeapSeg, ArrOfs, ElemSize, NumElems,
+     CompSeg, CompOfs, BxVal, ErrMsg) Then
+   TermAddLine(TP, 'ArrayQuickSort : ' + IntToStr(Count) +
+    ' element(s) tries (segment $' + HexWord(HeapSeg) + ', offset $' +
+    HexWord(ArrOfs) + ')')
+  Else
+   TermAddLine(TP, 'ArrayQuickSort : echec - ' + ErrMsg);
+  Exit;
+ End;
+
+ TermAddLine(TP, 'Invoke-GeoWorksAPI : API "' + ApiName + '" non reconnue ou ' +
+  'non implantee (voir HELP pour la liste).');
+End;
+
+
 { ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
 { ============================================================ }
@@ -142763,7 +143580,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 257;
+ PS_CMD_ALIASES = 258;
  PSCmd: Array[1..PS_CMD_ALIASES] Of Record
   Name: String[45];
   ID: Byte;
@@ -142920,6 +143737,7 @@ Const
   (Name:'GRANT-ORACLEPRIVILEGE'; ID:222),
   (Name:'HELP'; ID:61),
   (Name:'IMPORT-MDBCDATA'; ID:149),
+  (Name:'INVOKE-GEOWORKSAPI'; ID:236),
   (Name:'INVOKE-JIRAISSUETRANSITION'; ID:120),
   (Name:'INVOKE-MCPTOOL'; ID:109),
   (Name:'INVOKE-MDBCAGGREGATE'; ID:147),
@@ -143812,6 +144630,9 @@ Begin
     { Start-GeoWorksProgram (2026-09-19, demande explicite) : emulateur     }
     { PC/GEOS-GeoWorks Stage 1, voir TermCmd_StartGeoWorksProgram. }
     235: TermCmd_StartGeoWorksProgram(TP, ParamStr); { START-GEOWORKSPROGRAM }
+    { Invoke-GeoWorksAPI (2026-09-19, demande explicite) : Stage 2, voir    }
+    { TermCmd_InvokeGeoWorksAPI. }
+    236: TermCmd_InvokeGeoWorksAPI(TP, ParamStr); { INVOKE-GEOWORKSAPI }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
