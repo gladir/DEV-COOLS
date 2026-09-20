@@ -268,6 +268,13 @@ Begin
  SegmentedLongValue:=LongInt($80000000)or(LongInt(S)shl 24)or(V and $FFFF)
 End;
 
+Function SegmentedShortValue(V:LongInt;Base:Word):Word;
+Var S:Word;
+Begin
+ if Base>$7F Then S:=$7F else S:=Base;
+ SegmentedShortValue:=(S shl 8)or Word(V and $FF)
+End;
+
 Function IsIdentStart(C:Char):Boolean;Begin
  IsIdentStart:=C in['A'..'Z','a'..'z','_','.','$']
 End;
@@ -641,9 +648,11 @@ Begin
  End;
  V:=EvalReloc(B,F,Base);
  if OpcodeField='JR'Then Begin
-  if(Base<>0)and((not F)and((FindSymbol(B)=Nil)or(FindSymbol(B)^.Section<>CurrentSection)))Then
+  if(Pass=2)and(Base<>CurrentSection)Then
    Diagnostic('saut relatif vers une autre section');
-  D:=(V-(Location[CurrentSection]+2))div 2;
+  D:=V-(Location[CurrentSection]+2);
+  if(Pass=2)and((D and 1)<>0)Then Diagnostic('adresse de saut relatif impaire');
+  D:=D div 2;
   if(Pass=2)and not F and((D< -128)or(D>127))Then Diagnostic('saut relatif hors plage');
   EmitWord($E000 or Word(C shl 8)or(Byte(D)))
  End else
@@ -689,6 +698,7 @@ Var
  F:Boolean;
  S,A:String;
  P:PSymbol;
+ Base:Word;
 Begin
  if(OpcodeField='TEXT')or(OpcodeField='.TEXT')or(OpcodeField='CSEG')Then CurrentSection:=
  SecText
@@ -704,6 +714,12 @@ Begin
  2)
  else if(OpcodeField='DL')or(OpcodeField='DEFL')or(OpcodeField='.LONG')Then DataDirective(
  4)
+ else if(OpcodeField='SADDR')or(OpcodeField='.SADDR')Then Begin
+  if not Opt.Segmented Then Diagnostic('SADDR exige la cible Z8001 segmentee');
+  V:=EvalReloc(OperandField,F,Base);
+  if(Pass=2)and not F and((V<0)or(V>255))Then Diagnostic('offset segmente court hors plage');
+  EmitWordReloc(SegmentedShortValue(V,Base),RAZSS,Base)
+ End
  else if(OpcodeField='DS')or(OpcodeField='DEFS')or(OpcodeField='.SPACE')or(OpcodeField=
  'BLOCK')Then Begin
   V:=Eval(OperandField,F);
@@ -801,6 +817,7 @@ Begin
  or
  (U='DW')or(U='DEFW')or(U='.WORD')or(U='DL')or(U='DEFL')or(U='.LONG')or(U='DS')or(U=
  'DEFS')or
+ (U='SADDR')or(U='.SADDR')or
  (U='.SPACE')or(U='BLOCK')or(U='EVEN')or(U='.EVEN')or(U='ALIGN')or(U='.ALIGN')or(U='ORG')
  or
  (U='.ORG')or(U='GLOBAL')or(U='.GLOBAL')or(U='PUBLIC')or(U='EXTERN')or(U='.EXTERN')or
