@@ -1,0 +1,990 @@
+==============================================================================
+       ZILOG Z8001 - ARCHITECTURE ET PROGRAMMATION EN ASSEMBLEUR
+                    Reference technique PLZ/ASM
+==============================================================================
+
+Version du document : 1.0
+Date                : septembre 2026
+Processeur          : Zilog Z8001, famille Z8000
+Syntaxe de reference: Zilog PLZ/ASM
+
+
+==============================================================================
+1. OBJET DU DOCUMENT
+==============================================================================
+
+Ce document decrit le Zilog Z8001 du point de vue du programmeur assembleur :
+architecture visible, registres, adresses segmentees, types, indicateurs,
+modes d'adressage, syntaxe PLZ/ASM, familles d'instructions, interruptions,
+appels de procedures, entrees-sorties, directives et precautions d'encodage.
+
+Le Z8001 appartient a la famille Z8000. Ce n'est ni un Z80 etendu, ni un
+processeur compatible binairement avec le Z80. Le Z8001 est la version
+segmentee a boitier 48 broches; le Z8002 est la version non segmentee a
+boitier 40 broches. Les deux partagent l'essentiel du jeu d'instructions.
+
+La notation assembleur varie entre PLZ/ASM, les outils Unix/COFF, GNU as et
+les assembleurs de constructeurs secondaires. Les exemples ci-dessous
+emploient prioritairement la notation originale Zilog. Il ne faut jamais
+supposer qu'une directive PLZ/ASM est acceptee telle quelle par GNU as.
+
+
+==============================================================================
+2. VUE D'ENSEMBLE DU Z8001
+==============================================================================
+
+  - unite arithmetique et bus de donnees de 16 bits;
+  - seize registres generaux de 16 bits;
+  - operations sur bits, chiffres BCD, octets, mots et longs de 32 bits;
+  - quadruples de 64 bits dans le fichier de registres;
+  - espace logique segmente de 8 Mio par espace d'adressage;
+  - 128 segments au maximum, chacun pouvant contenir 64 Kio;
+  - espaces logiques distincts : code systeme, donnees systeme, code normal
+    et donnees normales;
+  - deux modes de privilege : System et Normal;
+  - deux piles implicites, une par mode, plus toute pile logicielle placee
+    dans un registre general;
+  - espaces d'E/S Normal et Special, toujours adresses sur 16 bits;
+  - instructions de chaines, multiplication et division signees;
+  - interruptions vectorisees et non vectorisees;
+  - interface EPU (Extended Processing Unit).
+
+Les mots sont ranges en ordre gros-boutiste : l'octet de poids fort se trouve
+a l'adresse la plus basse. Une adresse de mot ou de long doit normalement
+etre paire. Un acces non aligne est possible dans certains cas mais coute
+plus de cycles; le code portable aligne tous les mots et longs sur une
+adresse paire. Un quadruple de 64 bits n'est pas un type directement
+adressable en memoire, seulement un groupement de registres.
+
+
+==============================================================================
+3. REGISTRES
+==============================================================================
+
+3.1 Registres mots
+------------------
+
+Les seize registres generaux de 16 bits sont notes R0 a R15.
+
+  R0 ... R15      mots de 16 bits
+
+Presque tous peuvent contenir une valeur ou une adresse. Certaines formes
+d'adressage interdisent cependant R0 comme registre de base. R15 est utilise
+comme pointeur de pile implicite en mode non segmente. Sur le Z8001 segmente,
+RR14, c'est-a-dire la paire R14:R15, est le pointeur de pile implicite.
+
+3.2 Registres octets
+--------------------
+
+Les huit premiers mots sont divisibles en octets :
+
+  RH0 ... RH7      octet de poids fort de R0 ... R7
+  RL0 ... RL7      octet de poids faible de R0 ... R7
+
+Il n'existe pas RH8, RL8, etc. Une instruction suffixee B doit employer un
+registre octet lorsque son operande est un registre.
+
+3.3 Paires longues
+------------------
+
+Les registres longs de 32 bits sont des paires commencant par un numero pair :
+
+  RR0  = R0:R1       RR2  = R2:R3
+  RR4  = R4:R5       RR6  = R6:R7
+  RR8  = R8:R9       RR10 = R10:R11
+  RR12 = R12:R13     RR14 = R14:R15
+
+Le registre de numero pair contient les 16 bits de poids fort. Une operation
+longue suffixee L exige un RR pair correctement aligne.
+
+3.4 Quadruples
+--------------
+
+Les groupes de 64 bits commencent sur un multiple de quatre :
+
+  RQ0  = R0:R1:R2:R3
+  RQ4  = R4:R5:R6:R7
+  RQ8  = R8:R9:R10:R11
+  RQ12 = R12:R13:R14:R15
+
+Ils servent surtout de dividende ou de resultat pour certaines variantes de
+multiplication/division. Leur premier mot est le mot le plus significatif.
+
+3.5 Registres de controle
+-------------------------
+
+Le Z8001 expose, par LDCTL/LDCTLB et les mecanismes systeme, notamment :
+
+  FCW       Flag and Control Word;
+  REFRESH   controle du rafraichissement dynamique;
+  PSA       pointeur de Program Status Area;
+  NSP       pointeur de pile du mode Normal;
+  PC        compteur programme segmente;
+
+Les noms exacts acceptes comme operandes symboliques dependent de la version
+de PLZ/ASM. L'acces a ces registres est privilegie lorsque leur modification
+change l'etat de la machine.
+
+
+==============================================================================
+4. FLAG AND CONTROL WORD (FCW)
+==============================================================================
+
+Le FCW combine indicateurs arithmetiques et bits de controle. Les indicateurs
+visibles sont :
+
+  C       Carry : retenue/emprunt non signe;
+  Z       Zero : resultat nul;
+  S       Sign : bit de signe du resultat;
+  P/V     parite pour certaines operations, debordement signe pour d'autres;
+  D       Decimal Adjust, memorise la direction d'une operation BCD;
+  H       Half Carry, retenue entre demi-octets pour le BCD.
+
+Les instructions de controle des flags peuvent positionner, effacer ou
+complementer C, Z, S et P/V. D et H sont essentiellement entretenus par le
+processeur pour les corrections decimales.
+
+Le FCW contient aussi les autorisations d'interruptions, le mode System/Normal
+et le choix d'adressage segmente/non segmente. Les bits reserves doivent etre
+ecrits a zero. Modifier le FCW sans masque documente peut changer de pile,
+d'espace d'adressage ou de niveau de privilege.
+
+
+==============================================================================
+5. ADRESSAGE SEGMENTE DU Z8001
+==============================================================================
+
+5.1 Adresse logique
+-------------------
+
+Une adresse logique Z8001 comprend :
+
+  segment : 7 bits, valeur 0..127
+  offset  : 16 bits, valeur 0..65535
+
+La capacite logique est donc 128 * 65536 = 8 388 608 octets par espace. Une
+adresse de programme ou une adresse de donnees segmentee tient normalement
+dans une paire de registres RRn. Sa representation longue en memoire occupe
+32 bits : un marqueur d'adresse segmentee et le numero de segment dans le mot
+de poids fort, puis l'offset dans le mot de poids faible. Les bits reserves
+de la representation doivent rester nuls.
+
+Le materiel peut aussi employer une forme courte lorsque le segment est deja
+determine par le contexte. Une adresse courte ne doit pas etre confondue avec
+un pointeur complet sauvegarde dans une structure partagee.
+
+5.2 Debordement de segment
+--------------------------
+
+L'arithmetique d'adresse modifie normalement l'offset; elle ne transforme pas
+implicitement un depassement de 0FFFFh en passage au segment suivant. Un
+segment est une unite logique, pas une simple fenetre arbitraire dans une
+adresse lineaire de 23 bits. Le materiel peut declencher un Segment Trap lors
+d'un acces interdit ou d'un franchissement non valide.
+
+5.3 Mode non segmente du Z8001
+------------------------------
+
+Le Z8001 sait executer du code Z8002 en mode non segmente. Les adresses sont
+alors des mots de 16 bits et le pointeur de pile est R15. Ce mode est utile au
+demarrage et pour partager du logiciel, mais il ne donne acces qu'a 64 Kio
+par espace logique.
+
+5.4 Espaces code et donnees
+---------------------------
+
+Le bus indique la nature d'un cycle. Une logique externe ou une Z8010 MMU
+peut donc distinguer :
+
+  - code System;
+  - donnees System;
+  - code Normal;
+  - donnees Normal.
+
+Une adresse numeriquement identique peut designer des octets differents dans
+ces espaces. Le linker et le chargeur doivent conserver la classe CODE/DATA
+d'une section.
+
+
+==============================================================================
+6. TYPES DE DONNEES ET CONVENTIONS DE TAILLE
+==============================================================================
+
+  bit               bit 0..7 d'un octet ou 0..15 d'un mot;
+  chiffre BCD       demi-octet de 4 bits;
+  byte              8 bits, registre RHn ou RLn;
+  word              16 bits, registre Rn;
+  long word         32 bits, paire RRn paire;
+  register quad     64 bits, RQ0/RQ4/RQ8/RQ12;
+  chaine d'octets   bloc memoire traite par instruction repetitive;
+  chaine de mots    bloc memoire traite par instruction repetitive.
+
+Convention des suffixes :
+
+  aucun suffixe     mot de 16 bits          ADD R0,R1
+  B                  octet de 8 bits         ADDB RH0,RL1
+  L                  long de 32 bits         ADDL RR0,RR2
+
+Le suffixe appartient au mnemonic. Il ne s'agit pas d'une directive de taille
+placee sur l'operande comme sur certains assembleurs Motorola.
+
+
+==============================================================================
+7. SYNTAXE PLZ/ASM
+==============================================================================
+
+7.1 Forme d'une instruction
+---------------------------
+
+Une instruction source comprend jusqu'a quatre champs :
+
+  etiquette(s) :  mnemonic  operande_destination, operande_source  !comment!
+
+Exemple :
+
+  INIT_COUNT:  LD R5,#255       !Initialiser le compteur!
+
+La destination precede toujours la source. Une instruction peut n'avoir aucun
+operande, ou en avoir jusqu'a quatre pour certaines chaines.
+
+Dans le PLZ/ASM original, espace, virgule, point-virgule, tabulation, retour,
+saut de ligne et saut de page sont des separateurs. Un retour a la ligne ne
+termine donc pas necessairement une instruction. Par clarte et portabilite,
+il est recommande de placer une instruction par ligne et de separer les
+operandes par une virgule.
+
+7.2 Identificateurs et etiquettes
+---------------------------------
+
+Un identificateur PLZ/ASM original :
+
+  - commence par une lettre;
+  - continue avec lettres, chiffres ou soulignement;
+  - peut atteindre 127 caracteres;
+  - distingue majuscules et minuscules;
+  - ne doit pas etre un mot reserve.
+
+Une etiquette est suivie de deux-points. Plusieurs etiquettes peuvent
+preceder la meme instruction :
+
+  AGAIN: RETRY:  DJNZ R3,AGAIN
+
+7.3 Constantes
+--------------
+
+Le prefixe # indique une donnee immediate :
+
+  LD R0,#10
+  LD R1,#VALUE
+  ADD R2,#(LIMIT-BASE)/2
+
+Les radicaux et notations de chaines dependent de l'edition de l'assembleur.
+Un source destine a plusieurs outils doit expliciter les declarations de
+constantes et verifier la notation hexadecimale de l'outil cible. Une adresse
+employee sans # est une adresse memoire; avec # elle est la valeur numerique
+de cette adresse.
+
+7.4 Commentaires
+----------------
+
+Les exemples officiels entourent couramment un commentaire de points
+d'exclamation :
+
+  ADD R0,R1      !addition de deux mots!
+
+Les dialectes Unix emploient souvent une autre marque. Ne pas melanger la
+syntaxe de commentaire d'un assembleur avec celle d'un autre.
+
+
+==============================================================================
+8. MODES D'ADRESSAGE
+==============================================================================
+
+Les formes ci-dessous montrent la notation PLZ/ASM usuelle. Certaines
+instructions n'acceptent qu'un sous-ensemble de ces modes.
+
+8.1 Immediat
+------------
+
+  LD R4,#1234
+  ANDB RL0,#0FFH
+
+La valeur est incorporee a l'instruction. Sa largeur doit correspondre au
+mnemonic. L'assembleur doit diagnostiquer une constante hors plage plutot que
+la tronquer silencieusement.
+
+8.2 Registre
+------------
+
+  LD R4,R5
+  LD.L RR4,RR8       !ecriture dialectale; PLZ/ASM emploie LDL!
+  LDL RR4,RR8
+
+Le registre doit etre compatible avec la taille : RH/RL pour B, Rn pour mot,
+RR pair pour L.
+
+8.3 Direct
+----------
+
+  LD R4,COUNT
+  LD COUNT,R4
+
+L'adresse effective est contenue dans l'instruction ou dans un enregistrement
+de relogement. En Z8001 elle peut etre segmentee.
+
+8.4 Indirect par registre
+-------------------------
+
+  LD R4,@R8           !non segmente!
+  LD R4,@RR8          !pointeur segmente complet!
+
+Le symbole @ signifie que le registre contient l'adresse, et non la valeur de
+l'operande. En mode segmente, une paire RR paire contient le pointeur.
+
+8.5 Indexe
+----------
+
+  LD R4,TABLE(R7)
+
+L'adresse directe TABLE est additionnee au registre index. L'index est une
+quantite non segmentee appliquee a l'offset.
+
+8.6 Base
+--------
+
+  LD R4,DISPLACEMENT(RR8)
+
+Le pointeur de base segmente n'a pas besoin d'avoir un numero de segment connu
+a l'assemblage. R0/RR0 est reserve dans certaines formes et ne doit pas etre
+choisi comme base sans verifier la fiche de l'instruction.
+
+8.7 Base indexee
+----------------
+
+La base indexee combine adresse de base, deplacement et index. Elle est
+principalement disponible sur la famille LD. Elle convient aux tableaux de
+structures, mais sa syntaxe exacte doit etre verifiee pour le PLZ/ASM utilise.
+
+8.8 Relatif au compteur programme
+---------------------------------
+
+JR, DJNZ, DBJNZ et CALR codent une destination relative. Le deplacement est
+compte dans l'unite definie par l'opcode, depuis la position suivant
+l'instruction. Les cibles alignees augmentent la portee utile. L'assembleur
+doit refuser une cible hors plage; il ne faut pas tronquer le deplacement.
+
+
+==============================================================================
+9. CODES DE CONDITION
+==============================================================================
+
+Les branchements, retours et tests conditionnels utilisent les conditions
+suivantes. Les synonymes exacts peuvent varier selon l'assembleur.
+
+  F                 toujours faux
+  LT                signe : inferieur              S xor V = 1
+  LE                signe : inferieur ou egal      Z or (S xor V)
+  ULE               non signe : inferieur/egal     C or Z
+  OV / PE           overflow / parite paire         V/P = 1
+  MI                moins                           S = 1
+  Z / EQ            zero / egal                     Z = 1
+  C / ULT           retenue / non signe inferieur   C = 1
+  T                 toujours vrai
+  GE                signe : superieur/egal          S xor V = 0
+  GT                signe : superieur               not Z and S xor V = 0
+  UGT               non signe : superieur           not C and not Z
+  NOV / PO          sans overflow / parite impaire  V/P = 0
+  PL                plus ou zero                    S = 0
+  NZ / NE           non nul / different             Z = 0
+  NC / UGE          sans retenue / non signe >=     C = 0
+
+Exemples :
+
+  CP   R0,R1
+  JR   LT,SMALLER
+  RET  NZ
+
+Attention : apres une soustraction, le sens exact de C pour les comparaisons
+non signees doit etre celui defini par le Z8000, et non celui memorise pour un
+autre processeur.
+
+
+==============================================================================
+10. REFERENCE DES FAMILLES D'INSTRUCTIONS
+==============================================================================
+
+Cette section donne les mnemonics architecturaux. Une forme B travaille sur
+8 bits, une forme sans suffixe sur 16 bits et une forme L sur 32 bits lorsque
+la variante existe. Les flags notes "affectes" dependent de la taille et de
+l'operation; consulter la table d'opcode pour les cas reserves.
+
+10.1 Transfert de donnees
+-------------------------
+
+  LD, LDB, LDL       charger/copier un octet, mot ou long
+  LDA                charger une adresse effective
+  LDAR               charger une adresse relative au PC
+  LDK                charger une petite constante codee dans l'opcode
+  LDM                transferer plusieurs registres consecutifs
+  LDPS               charger un nouvel etat programme depuis la memoire
+  LDCTL, LDCTLB      transferer un registre de controle/FCW
+  PUSH, PUSHL        empiler un mot ou un long
+  POP, POPL          depiler un mot ou un long
+  EX, EXB            echanger registre et operande
+
+LDM indique le premier registre, l'adresse et le nombre de registres. Le sens
+du transfert depend de la forme source/destination. Les registres sont ranges
+dans leur ordre numerique.
+
+LDPS est privilegie et charge un Program Status Block; une erreur dans le FCW
+ou le PC peut immediatement changer de mode ou provoquer un trap.
+
+10.2 Arithmetique
+-----------------
+
+  ADD, ADDB, ADDL       destination := destination + source
+  ADC, ADCB             addition avec Carry
+  SUB, SUBB, SUBL       destination := destination - source
+  SBC, SBCB             soustraction avec Carry/emprunt
+  INC, INCB             incrementer d'une petite valeur
+  DEC, DECB             decrementer d'une petite valeur
+  NEG, NEGB, NEGL       complement a deux
+  MULT                  multiplication signee 16 x 16 vers 32 bits
+  MULTL                 multiplication signee longue selon forme registre
+  DIV                   division signee d'un dividende long par un mot
+  DIVL                  division signee etendue utilisant RR/RQ
+
+MULT et DIV imposent des registres groupes et alignes. Pour DIV, verifier la
+position documentee du quotient et du reste dans la paire. Les cas division
+par zero et quotient non representable provoquent un trap ou un etat defini
+par le processeur; ils ne doivent pas etre ignores.
+
+10.3 Comparaison et test
+------------------------
+
+  CP, CPB, CPL          comparer destination - source sans conserver resultat
+  TEST, TESTB, TESTL    tester une valeur et actualiser Z/S/P-V
+  TCC, TCCB             materialiser un code de condition
+
+CP est normalement suivi d'un JP, JR, RET ou TCC conditionnel.
+
+10.4 Logique
+------------
+
+  AND, ANDB            ET binaire
+  OR, ORB              OU binaire
+  XOR, XORB            OU exclusif
+  COM, COMB            complement a un
+  CLR, CLRB             mettre a zero
+
+Les variantes disponibles sur longs ne sont pas uniformes selon l'operation;
+ne pas inventer un suffixe L sans consulter la table PLZ/ASM.
+
+10.5 Bits
+---------
+
+  BIT, BITB            tester un bit
+  SET, SETB            positionner un bit
+  RES, RESB            remettre un bit a zero
+
+Le numero de bit est 0..15 pour un mot et 0..7 pour un octet. BIT n'ecrit pas
+l'operande. Les formes a numero immediat et a numero en registre ne sont pas
+necessairement codees de la meme maniere.
+
+10.6 Decalages et rotations
+---------------------------
+
+  SLA, SLAB, SLAL      decalage arithmetique gauche
+  SRA, SRAB, SRAL      decalage arithmetique droit, conserve le signe
+  SLL, SLLB, SLLL      decalage logique gauche
+  SRL, SRLB, SRLL      decalage logique droit
+  RL, RLB              rotation gauche
+  RR, RRB              rotation droite
+  RLC, RLCB            rotation gauche a travers Carry
+  RRC, RRCB            rotation droite a travers Carry
+
+Le compte peut etre implicite, immediat ou fourni par registre selon la
+forme. Les comptes negatifs ne sont pas un moyen portable d'inverser le sens.
+Carry recoit normalement le dernier bit sorti.
+
+10.7 Extension de signe
+-----------------------
+
+  EXTSB                etendre un octet signe en mot
+  EXTS                 etendre un mot signe en long
+  EXTSL                etendre un long signe en quadruple
+
+La destination doit etre un registre ou groupe correctement aligne.
+
+10.8 Decimal code BCD
+---------------------
+
+Les operations decimales utilisent les flags H et D et une instruction de
+correction decimale. Elles travaillent sur des chiffres BCD empaquetes. Il
+faut appliquer la correction immediatement apres l'addition ou soustraction
+qui a produit H/D; une instruction intermediaire pourrait detruire les flags.
+
+10.9 Controle de programme
+--------------------------
+
+  JP condition,cible       saut absolu, condition facultative
+  JR condition,cible       saut relatif court
+  CALL cible               appel absolu
+  CALR cible               appel relatif
+  RET condition            retour de procedure
+  DJNZ Rn,cible            decrementer mot et sauter si non nul
+  DBJNZ RLn,cible          decrementer octet et sauter si non nul
+  NOP                      aucune operation architecturale
+  HALT                     suspendre jusqu'a evenement autorise
+  SC #n                    appel systeme/trap logiciel
+
+CALL/CALR empilent l'adresse de retour sur la pile courante. Sur Z8001
+segmente, cette adresse est longue. RET la depile. Une routine qui change de
+mode ou de FCW doit employer le mecanisme de retour d'interruption approprie,
+pas un simple RET.
+
+10.10 Entrees-sorties
+---------------------
+
+  IN, INB              lire port vers registre/memoire
+  OUT, OUTB            ecrire registre/memoire vers port
+  INI, INIB            entree puis increment
+  IND, INDB            entree puis decrement
+  INIR, INIRB          entree incrementee repetitive
+  INDR, INDRB          entree decrementee repetitive
+  OUTI, OUTIB          sortie puis increment
+  OUTD, OUTDB          sortie puis decrement
+  OTIR, OTIRB          sortie incrementee repetitive
+  OTDR, OTDRB          sortie decrementee repetitive
+
+Les adresses de ports ont 16 bits meme en mode segmente. Le Z8000 distingue
+les espaces d'E/S Normal et Special. Les instructions d'E/S sont privilegiees
+dans les configurations protegees. Les mnemonics repetitifs peuvent varier
+legerement entre editions; verifier notamment OTIR/OTDR dans la table cible.
+
+10.11 Chaines memoire
+---------------------
+
+  CPI, CPIB            comparer puis incrementer les pointeurs
+  CPD, CPDB            comparer puis decrementer
+  CPIR, CPIRB          comparer/incrementer et repeter
+  CPDR, CPDRB          comparer/decrementer et repeter
+  LDI, LDIB            charger chaine en avancant
+  LDD, LDDB            charger chaine en reculant
+  LDIR, LDIRB          charger/incrementer et repeter
+  LDDR, LDDRB          charger/decrementer et repeter
+  TRI*, TRD*           traduire une chaine, avant/arriere, eventuellement
+                       repetitivement et avec variantes octet
+
+Les instructions de chaine utilisent des registres imposes par l'encodage :
+pointeurs source/destination, compteur et parfois table de traduction. Les
+operandes PLZ/ASM rendent ces registres explicites. Une interruption peut
+survenir entre iterations d'une forme repetitive; les registres de travail
+doivent donc faire partie du contexte sauvegarde.
+
+10.12 Controle CPU et interruptions
+------------------------------------
+
+  DI masque une ou plusieurs classes d'interruption.
+  EI autorise une ou plusieurs classes d'interruption.
+  IRET restaure l'etat empile par une interruption/trap.
+  LDCTL/LDCTLB lit ou modifie les registres de controle.
+  LDPS charge un bloc complet d'etat programme.
+
+Ces instructions sont privilegiees lorsqu'elles modifient l'etat protege.
+Le masque fourni a EI/DI doit selectionner explicitement la classe voulue;
+eviter de reactiver une interruption avant que la pile et le peripherique
+soient dans un etat coherent.
+
+10.13 Multiprocesseur et EPU
+----------------------------
+
+Le Z8000 possede des mecanismes de synchronisation/exclusion et des opcodes
+reserves aux Extended Processing Units. Une EPU observe le flot d'instruction,
+execute une operation specialisee et dialogue avec la CPU. Les champs reserves
+d'un opcode EPU ne doivent pas servir d'extension locale sans maitriser le
+protocole materiel et les traps d'instruction non implementee.
+
+
+==============================================================================
+11. PILES ET CONVENTIONS D'APPEL
+==============================================================================
+
+La pile croit vers les adresses decroissantes. PUSH decremente le pointeur
+avant ou pendant le rangement selon la definition architecturale; POP lit le
+sommet puis l'avance. Les donnees doivent rester alignees.
+
+En mode non segmente :
+
+  SP = R15
+
+En mode segmente :
+
+  SP = RR14
+
+Le Z8001 conserve un pointeur de pile Normal separe afin qu'une interruption
+entrant en mode System puisse utiliser une pile systeme protegee. Le materiel
+sauvegarde l'etat necessaire dans un bloc de contexte sur la pile systeme.
+
+Le processeur n'impose pas une ABI complete. Une convention de logiciel doit
+definir : registres volatils, registres preserves, ordre des arguments,
+nettoyage de pile, retour 16/32 bits et structure du cadre. Exemple minimal
+non normatif :
+
+  ! appelant !
+  PUSH @RR14,R2
+  CALL PROCEDURE
+  INC  R15,#2             !forme non segmentee seulement, selon dialecte!
+
+  ! appele !
+PROCEDURE:
+  PUSH @RR14,R8
+  ...
+  POP  R8,@RR14
+  RET
+
+Un vrai programme doit employer les formes PUSH/POP exactes de son assembleur
+et ne jamais ajuster uniquement R15 lorsque RR14 est un pointeur segmente.
+
+
+==============================================================================
+12. INTERRUPTIONS, TRAPS ET PROGRAM STATUS AREA
+==============================================================================
+
+Les grandes classes comprennent :
+
+  - reset;
+  - trap d'instruction non implementee;
+  - appel systeme SC;
+  - trap de segmentation;
+  - interruption non masquable NMI;
+  - interruption non vectorisee NVI;
+  - interruption vectorisee VI.
+
+La Program Status Area (PSA) contient les vecteurs/blocs d'etat utilises pour
+trouver le nouveau FCW et le nouveau PC. Son adresse est un parametre systeme
+et son organisation depend du mode segmente. Pour une interruption vectorisee,
+une information fournie lors de l'acquittement selectionne l'entree voulue.
+
+Sequence conceptuelle :
+
+  1. terminer ou suspendre proprement l'instruction courante;
+  2. choisir la pile System;
+  3. sauvegarder FCW et PC de l'ancien contexte;
+  4. charger FCW et PC depuis le bloc de la PSA;
+  5. executer le gestionnaire en mode System;
+  6. acquitter la cause materielle;
+  7. executer IRET.
+
+Un RET ordinaire ne restaure pas le FCW. Une PSA mal alignee, un pointeur de
+pile invalide ou un gestionnaire place dans le mauvais espace peut rendre le
+systeme irrecuperable.
+
+
+==============================================================================
+13. DIRECTIVES ET STRUCTURATION PLZ/ASM
+==============================================================================
+
+PLZ/ASM ne se limite pas aux opcodes. Il accepte des declarations, sections,
+procedures et certains construits de haut niveau. Les mots exacts varient avec
+la version, mais la reference Zilog comprend notamment les concepts suivants :
+
+  MODULE              debut d'un module objet;
+  ENDMODULE           fin du module;
+  PROCEDURE            declaration de procedure;
+  END                  fin de bloc selon contexte;
+  CONSTANT             declarations de constantes;
+  BYTE, WORD, LONG     objets/scalaires de taille donnee;
+  ARRAY, RECORD        declarations structurees;
+  GLOBAL               symbole exporte;
+  EXTERNAL             symbole importe;
+  SECTION              section nommee et relogeable;
+  CODE / DATA          classe de section ou contenu;
+  ABSOLUTE             placement non relogeable;
+  DO, WHILE, IF        construits PLZ traduits par l'assembleur;
+
+Par defaut, le module est normalement divise en sections de code et de
+donnees. Des sections nommees permettent au linker de grouper ou separer code,
+donnees constantes et donnees modifiables, voire de les placer dans des
+segments Z8001 differents.
+
+Exemple illustratif :
+
+  MODULE Demo
+
+  CONSTANT
+    Limit := 100
+
+  GLOBAL Start
+  EXTERNAL PutChar
+
+  CODE
+Start:
+    LD   R0,#Limit
+Loop:
+    CALL PutChar
+    DJNZ R0,Loop
+    RET
+
+  ENDMODULE
+
+Cet exemple illustre la structure; il faut adapter les directives CODE et
+ENDMODULE a l'edition exacte du Zilog Development System.
+
+
+==============================================================================
+14. RELOGEMENT ET EDITION DE LIENS
+==============================================================================
+
+Un objet Z8001 doit distinguer au moins :
+
+  - constante absolue;
+  - offset relogeable dans une section;
+  - adresse segmentee complete;
+  - reference PC-relative;
+  - symbole externe;
+  - classe CODE ou DATA;
+  - forme courte ou longue d'adresse.
+
+Le linker affecte les sections aux segments et corrige segment et offset. Une
+relocalisation ne peut pas etre traitee comme une simple addition 32 bits :
+les bits reserves et le marqueur de l'adresse segmentee ont une signification.
+Il doit aussi verifier qu'une section ne depasse pas 64 Kio et qu'un relatif
+reste dans la plage de son opcode.
+
+Les symboles GLOBAL sont publies; EXTERNAL cree une reference a resoudre. Un
+programme absolu peut imposer un segment et un offset, tandis qu'un module de
+bibliotheque devrait rester relogeable.
+
+
+==============================================================================
+15. ENCODAGE DES INSTRUCTIONS
+==============================================================================
+
+Une instruction Z8000 occupe un ou plusieurs mots de 16 bits. Le premier mot
+contient le groupe d'opcode et, selon la forme, les numeros de registres, la
+condition ou une petite constante. Les mots suivants portent immediats,
+adresses, deplacements ou champs supplementaires.
+
+Regles importantes pour un assembleur :
+
+  - emettre chaque mot en ordre gros-boutiste;
+  - exiger un numero pair pour RR et un multiple de quatre pour RQ;
+  - choisir la forme B/W/L depuis le mnemonic, pas depuis la valeur;
+  - conserver les bits reserves a zero;
+  - calculer les relatifs depuis la base definie par l'opcode;
+  - verifier l'alignement et toutes les plages avant emission;
+  - stabiliser la taille des instructions entre les passes;
+  - creer le bon type de relogement pour une adresse segmentee;
+  - ne pas transformer automatiquement une adresse directe segmentee en
+    forme courte lorsque le segment n'est pas garanti;
+  - signaler les instructions privilegiees si le profil de sortie l'interdit.
+
+Le jeu comprend environ 105 types d'instructions dans la documentation
+PLZ/ASM ancienne, donnant plus de 410 combinaisons utiles de taille et de mode.
+Les publications ulterieures comptent parfois 110 types et 414 combinaisons :
+la difference vient de la revision et de la facon de compter les variantes.
+
+
+==============================================================================
+16. EXEMPLES DE PROGRAMMATION
+==============================================================================
+
+16.1 Addition d'un tableau de mots
+----------------------------------
+
+  ! R1 = nombre de mots, R2 = somme, pointeur adapte au mode cible !
+  CLR R2
+SUM_LOOP:
+  ADD R2,@R4
+  INC R4,#2
+  DJNZ R1,SUM_LOOP
+
+En mode segmente, employer un pointeur RR et une instruction d'adresse qui
+preserve correctement le segment; l'exemple R4 est non segmente.
+
+16.2 Comparaison signee
+-----------------------
+
+  CP R0,R1
+  JR LT,R0_SMALLER
+  JR GT,R0_GREATER
+  ! egal !
+
+16.3 Appel relatif
+------------------
+
+  CALR LOCAL_ROUTINE
+  ...
+LOCAL_ROUTINE:
+  INC R0,#1
+  RET
+
+CALR est compact mais sa portee est limitee. Le linker doit produire une
+erreur si la routine sort de cette portee, ou creer explicitement un relais.
+
+16.4 Copie manuelle gros-boutiste
+---------------------------------
+
+  LDB RH0,@R4
+  LDB @R5,RH0
+  INC R4,#1
+  INC R5,#1
+
+Une instruction de chaine LDI/LDIR est preferable pour un bloc important.
+
+
+==============================================================================
+17. PIEGES ET ERREURS FREQUENTES
+==============================================================================
+
+  1. Confondre Z8001 et Z80. Les opcodes et registres sont sans rapport.
+  2. Employer Rn quand une adresse segmentee exige RRn.
+  3. Employer une paire impaire, par exemple RR3.
+  4. Modifier R15 seul alors que la pile est RR14 en mode segmente.
+  5. Oublier que la destination est le premier operande.
+  6. Ecrire un mot immediat hors plage et accepter sa troncature.
+  7. Confondre une adresse avec son contenu en omettant ou ajoutant @.
+  8. Supposer qu'une addition d'offset franchit automatiquement un segment.
+  9. Sauvegarder une adresse complete dans seulement 16 bits.
+ 10. Utiliser RET a la place de IRET.
+ 11. Executer IN/OUT ou LDCTL en mode Normal.
+ 12. Confondre overflow signe V et Carry non signe C.
+ 13. Ne pas aligner les mots, longs, PSA ou piles.
+ 14. Encoder les mots en petit-boutiste.
+ 15. Employer la syntaxe GNU dans un source PLZ/ASM ou inversement.
+ 16. Laisser un linker traiter une adresse segmentee comme un entier banal.
+ 17. Oublier que l'espace CODE peut etre distinct de l'espace DATA.
+ 18. Supposer qu'un quadruple de registres est directement adressable en
+     memoire comme un type 64 bits.
+
+
+==============================================================================
+18. CONSEILS POUR ECRIRE UN ASSEMBLEUR Z8001
+==============================================================================
+
+Un assembleur fiable devrait etre multipasse et representer explicitement :
+
+  TTypeOperande = (immediat, registre_octet, registre_mot, registre_long,
+                   registre_quad, direct, indirect, indexe, base,
+                   base_indexe, condition, controle);
+
+  TClasseValeur = (absolue, section_relative, externe, pc_relative,
+                   adresse_segmentee);
+
+Il doit ensuite :
+
+  1. analyser sans perdre la classe de relogement d'une expression;
+  2. selectionner une forme legale dans une table declarative d'opcodes;
+  3. calculer sa longueur sans emission pendant la premiere passe;
+  4. resoudre les symboles et verifier la phase;
+  5. emettre mots et enregistrements de relogement;
+  6. produire des diagnostics indiquant ligne, colonne et operande fautif;
+  7. refuser toute combinaison reservee meme si elle peut etre encodee;
+  8. offrir explicitement les profils Z8001 segmente et Z8002/non segmente.
+
+Tests indispensables : limites -128/127, -32768/32767 et 0/65535; tous les
+registres frontieres; adresses 00:0000, 00:FFFF, 7F:0000 et 7F:FFFF;
+relatifs minimum/maximum; alignement; division par zero; sections traversant
+64 Kio; symboles externes dans chacun des modes d'adresse; code systeme et
+normal; empilement segmente.
+
+
+==============================================================================
+19. DIFFERENCES ENTRE DIALECTES
+==============================================================================
+
+PLZ/ASM Zilog
+  Syntaxe de reference de ce document, # pour immediat, @ pour indirect,
+  destination avant source, commentaires !...!, declarations de haut niveau.
+
+Assembleurs Unix historiques
+  Peuvent employer une syntaxe proche mais des directives d'objet a.out/COFF,
+  des noms de sections et une expression des constantes differents.
+
+GNU as
+  La prise en charge du Z8000 depend de la version de binutils et de la cible.
+  Les pseudo-operations, prefixes de constantes et noms de relogements ne sont
+  pas ceux du Zilog Development System.
+
+Avant de porter un source, identifier quatre choses separement : syntaxe des
+instructions, syntaxe des expressions, directives de sections et format
+d'objet. Une instruction identique ne garantit pas un objet compatible.
+
+19.1 Inventaire des mnemonics PLZ/ASM reserves
+----------------------------------------------
+
+L'inventaire suivant est utile a un lexeur d'assembleur. Il inclut les formes
+de taille et les instructions Special I/O; toutes ne sont pas valides avec
+tous les modes d'operande :
+
+  ADC ADCB ADD ADDB ADDL AND ANDB
+  BIT BITB BITS CALL CALR CLR CLRB COM COMB COMFLG
+  CP CPB CPL CPD CPDB CPDR CPDRB CPI CPIB CPIR CPIRB
+  CPSD CPSDB CPSDR CPSDRB CPSI CPSIB CPSIR CPSIRB
+  DAB DBJNZ DEC DECB DI DIV DIVL DJNZ EI EX EXB
+  EXTS EXTSB EXTSL HALT
+  IN INB INC INCB IND INDB INDR INDRB INI INIB INIR INIRB IRET
+  JP JR
+  LD LDA LDAR LDB LDCTL LDCTLB LDD LDDB LDDR LDDRB LDI LDIB
+  LDIR LDIRB LDK LDL LDM LDPS LDR LDRB LDRL
+  MBIT MREQ MRES MSET MULT MULTL NEG NEGB NOP OR ORB
+  OTDR OTDRB OTIR OTIRB OUT OUTB OUTD OUTDB OUTI OUTIB
+  POP POPL PUSH PUSHL
+  RES RESB RESFLG RET
+  RL RLB RLC RLCB RLDB RR RRB RRC RRCB RRDB
+  SBC SBCB SC
+  SDA SDAB SDAL SDL SDLB SDLL SET SETB SETFLG
+  SIN SINB SIND SINDB SINDR SINDRB SINI SINIB SINIR SINIRB
+  SLA SLAB SLAL SLL SLLB SLLL
+  SOTDR SOTDRB SOTIR SOTIRB
+  SOUT SOUTB SOUTD SOUTDB SOUTI SOUTIB
+  SRA SRAB SRAL SRL SRLB SRLL SUB SUBB SUBL SWAP
+  TCC TCCB TEST TESTB TESTL TRDB TRDRB TRIB TRIRB
+  TRTDB TRTDRB TRTIB TRTIRB TSET TSETB XOR XORB
+
+Les variantes BITS, CPB, RLB, LDRB ou certains noms ci-dessus apparaissent
+selon l'edition et l'OCR des manuels; une table d'encodage doit retenir
+uniquement les formes confirmees pour sa revision. A l'inverse, les familles
+CPSD/CPSI, TRT*, Special I/O et multi-micro sont souvent oubliees par les
+assembleurs incomplets alors qu'elles font partie du PLZ/ASM Z8000.
+
+Les registres speciaux reserves par le PLZ/ASM original sont :
+
+  FCW, FLAGS, NSP, NSPOFF, NSPSEG,
+  PSAP, PSAPOFF, PSAPSEG, REFRESH
+
+Les fonctions SEG(expression) et OFFSET(expression) extraient respectivement
+le segment et l'offset d'une adresse. La grammaire originale represente une
+adresse segmentee explicite par deux expressions encadrees par les chevrons
+doubles propres a la typographie Zilog. Comme ces glyphes sont souvent perdus
+par OCR et rarement acceptes tels quels par les assembleurs modernes, il faut
+consulter la syntaxe de l'outil utilise avant d'ecrire une constante segmentee.
+
+
+==============================================================================
+20. SOURCES TECHNIQUES
+==============================================================================
+
+Sources primaires utilisees pour etablir cette reference :
+
+  - Zilog, Z8000 PLZ/ASM Assembly Language Programming Manual,
+    document E3-3055, disponible en copie numerisee :
+    https://oldcomputers.dyndns.org/public/pub/rechner/zilog/zds/manuals/
+    z8000asm.pdf
+
+  - Zilog, Z8000 CPU Technical Manual, editions 1980/1981/1983 :
+    https://www.bitsavers.org/components/zilog/z8000/Z8000Tech.pdf
+
+  - Zilog, Z8001/Z8002 Z8000 CPU Product Specification, dans le Z8000 Family
+    Data Book.
+
+Les manuels originaux restent l'autorite pour les diagrammes bit par bit des
+opcodes, les cycles d'horloge, l'etat exact de chaque flag et les differences
+entre revisions du silicium. Ce document evite volontairement de recopier les
+centaines de diagrammes d'encodage; une implementation d'assembleur doit les
+extraire de l'edition correspondant au processeur vise.
+
+==============================================================================
+FIN DU DOCUMENT
+==============================================================================
