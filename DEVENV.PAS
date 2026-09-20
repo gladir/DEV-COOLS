@@ -88983,17 +88983,57 @@ Begin
  CreateEmulatorTab(RomPath, '-CNES', '');
 End;
 
+{ TermCmd_PSCRIPT est defini bien plus bas (interprete PascalScript        }
+{ complet) mais doit deja etre appelable ICI (GEOS/Start-GeoWorksProgram   }
+{ ci-dessous, 2026-09-20, demande explicite : /PASCALSCRIPT:fichier) -     }
+{ declaration Forward, meme motif que toute autre reference anticipee de   }
+{ ce fichier (voir CreateEmulatorTab/TermFindRomByExt plus haut). }
+Procedure TermCmd_PSCRIPT(Var TP: TTerminalPanel; ParamStr: String); Forward;
+
+{ Extrait un eventuel jeton /PASCALSCRIPT:<fichier> (2026-09-20, demande   }
+{ explicite de l'utilisateur - "executer un PascalScript avant de lancer   }
+{ un programme dans l'emulateur GeoWorks") PARMI les jetons de ParamStr    }
+{ a partir du 2e (le premier est toujours le nom du fichier .geo) -        }
+{ EXACT MEME idiome que l'indicateur de ligne de commande /PASCALSCRIPT:   }
+{ (4 comparaisons litterales /- x majuscule/minuscule, voir son gestion-   }
+{ naire CLI plus haut dans ce fichier), applique ici a l'echelle d'une     }
+{ seule commande Terminal plutot qu'a l'argv global. Retourne '' si aucun  }
+{ tel jeton n'est present (flag optionnel). }
+Function TermGeosExtractPascalScript(ParamStr: String): String;
+Var
+ TokN: Integer;
+ Tok: String;
+Begin
+ TermGeosExtractPascalScript := '';
+ TokN := 2;
+ Tok := TermExtractParam(ParamStr, TokN);
+ While Tok <> '' Do Begin
+  If (Length(Tok) >= 14) And
+     ((Copy(Tok, 1, 14) = '/PASCALSCRIPT:') Or (Copy(Tok, 1, 14) = '/pascalscript:') Or
+      (Copy(Tok, 1, 14) = '-PASCALSCRIPT:') Or (Copy(Tok, 1, 14) = '-pascalscript:')) Then Begin
+   TermGeosExtractPascalScript :=
+    YamlUnquote(Copy(Tok, 15, Length(Tok) - 14));
+   Exit;
+  End;
+  Inc(TokN);
+  Tok := TermExtractParam(ParamStr, TokN);
+ End;
+End;
+
 { GEOS (2026-09-19, demande explicite de l'utilisateur - "Invite de        }
 { commande") : meme motif exact que NES/WIN16 ci-dessus - lance            }
 { l'emulateur PC/GEOS-GeoWorks (voir Geos_LoadGeode/ShowEmulatorPanel)     }
-{ sur un fichier .geo du systeme hote. }
+{ sur un fichier .geo du systeme hote. Stage PascalScript (2026-09-20,     }
+{ demande explicite) : /PASCALSCRIPT:fichier execute ce script AVANT de    }
+{ creer l'onglet emulateur (meme moteur PSCRIPT que la commande PSCRIPT    }
+{ elle-meme - voir TermGeosExtractPascalScript ci-dessus). }
 Procedure TermCmd_GEOS(Var TP: TTerminalPanel; ParamStr: String);
 Var
- CurrParam, Dir, RomPath: String;
+ CurrParam, Dir, RomPath, ScriptPath: String;
 Begin
  CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
  If CurrParam = '' Then Begin
-  TermAddLine(TP, 'Syntaxe : GEOS fichier.geo');
+  TermAddLine(TP, 'Syntaxe : GEOS fichier.geo [/PASCALSCRIPT:script.psc]');
   Exit;
  End;
  If TP.VirtDrive >= 0 Then Begin
@@ -89006,6 +89046,14 @@ Begin
  If RomPath = '' Then Begin
   TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
   Exit;
+ End;
+ ScriptPath := TermGeosExtractPascalScript(ParamStr);
+ If ScriptPath <> '' Then Begin
+  If Not FileExists(ScriptPath) Then Begin
+   TermAddLine(TP, 'GEOS : fichier PascalScript introuvable : ' + ScriptPath);
+   Exit;
+  End;
+  TermCmd_PSCRIPT(TP, ScriptPath);
  End;
  CreateEmulatorTab(RomPath, '-CGEOS', '');
 End;
@@ -126094,6 +126142,10 @@ End;
 Procedure PscEvalE(Var V:TPscValue);Forward;
 Procedure PscEvalText(S:String;Var V:TPscValue);Forward;
 Procedure PscCallRoutine(Name,ArgText:String;WantResult:Boolean;Var V:TPscValue);Forward;
+{ Definie bien plus bas (unite GeoGraph, 2026-09-20, demande explicite),    }
+{ mais deja appelee ICI par PscPrimary/PscExecSimple - meme motif Forward   }
+{ que les 3 declarations ci-dessus. }
+Function PscTryGeoGraphCall(U,S:String;Var V:TPscValue):Boolean;Forward;
 
 { ------------------------------------------------------------------------ }
 { Objets Database/DatabaseConnection/RecordSet (2026-09-08, demande        }
@@ -126595,6 +126647,11 @@ Begin
    V:=PscDbConnect(A.Text);
    Exit;
   End;
+  { Unites GeoWorks/GeoGraph/etc. (2026-09-20, demande explicite) - contexte}
+  { EXPRESSION (fonctions avec valeur de retour, ex. GrCreateState(...) ou   }
+  { GrGetCurPosX(...) utilisees dans une affectation/condition). Voir        }
+  { PscTryGeoGraphCall et sa disclosure complete plus bas. }
+  If PscTryGeoGraphCall(U,S,V) Then Exit;
   { Fonctions arithmetiques/ordinales standard de Pascal (2026-09-19,       }
   { demande explicite de l'utilisateur : "PascalScript ne supporte pas la  }
   { fonction Abs, ArcTan, Cos, Exp, Frac, Hi, Int, Ln, Lo, Odd, Ord, Pred,  }
@@ -127162,6 +127219,12 @@ Begin
   N:=PscTrimS(Copy(S,1,P-1));
   A:=Copy(S,P+1,255);
   If A[Length(A)]=')'Then Delete(A,Length(A),1);
+  { Unites GeoWorks/GeoGraph/etc. (2026-09-20, demande explicite) - contexte}
+  { INSTRUCTION (procedures SANS valeur de retour, ex. GrDrawLine(...);     }
+  { utilisee seule sur sa ligne) - AVANT le repli PscCallRoutine (qui ne     }
+  { cherche que des Procedure/Function DEFINIES DANS LE SCRIPT de           }
+  { l'utilisateur et echouerait toujours ici). }
+  If PscTryGeoGraphCall(PscUp(N),A,V) Then Exit;
   PscCallRoutine(N,A,False,V);
   Exit;
  End;
@@ -127400,6 +127463,718 @@ Begin
  End;
 End;
 
+{ ========================================================================= }
+{ Clause "Uses" PSCRIPT (2026-09-20, demande explicite de l'utilisateur -   }
+{ unites GeoWorks/GeoKernel/GeoMem/GeoFile/GeoGraph/GeoUI/GeoObj/GeoText/   }
+{ GeoPrint pour piloter l'emulateur PC/GEOS-GeoWorks depuis un script).     }
+{ DISCLOSURE IMPORTANTE : ce moteur PSCRIPT (voir son en-tete plus haut)    }
+{ n'a JAMAIS eu de vrai systeme d'unites/Uses ni de vrai systeme de types   }
+{ (chaque valeur est TPscValue = Text/Num/Numeric, aucun record reel) -     }
+{ toutes les fonctions "integrees" existantes (Database.Connect, Abs, Sin, }
+{ WScript.Echo...) etaient JUSQU'ICI globalement toujours disponibles,      }
+{ reconnues par simple comparaison de chaine dans PscPrimary/PscExecSimple,}
+{ sans aucune clause Uses. Ce chantier ajoute donc, pour la premiere fois,  }
+{ un VRAI mecanisme de clause Uses (general, pas seulement pour GeoWorks) : }
+{ PscInitUsesClause balaie le script UNE fois apres le chargement (meme     }
+{ moment que PscInitDeclarations) a la recherche d'une ligne "Uses A, B;"   }
+{ et active un drapeau booleen par unite reconnue - les fonctions natives   }
+{ des unites Geo* (voir PscTryGeoGraphCall plus bas) ne sont alors           }
+{ reconnues QUE si le drapeau correspondant est actif, exactement comme un  }
+{ vrai Uses limiterait la portee des identificateurs. Les unites autres que }
+{ GeoGraph (GeoWorks/GeoKernel/GeoMem/GeoFile/GeoUI/GeoObj/GeoText/         }
+{ GeoPrint) sont reconnues dans la clause Uses des maintenant (pour ne pas  }
+{ devoir revenir modifier ce scanner a chaque nouvelle unite Geo* implantee }
+{ etape par etape) mais n'exposent encore AUCUNE fonction native - seule    }
+{ GeoGraph (entierement specifiee par l'utilisateur) est cablee dans ce     }
+{ chantier ; les 8 autres suivront une par une, meme methodologie. }
+Var
+ PscUsesGeoWorks, PscUsesGeoKernel, PscUsesGeoMem, PscUsesGeoFile,
+ PscUsesGeoGraph, PscUsesGeoUI, PscUsesGeoObj, PscUsesGeoText,
+ PscUsesGeoPrint: Boolean;
+
+Procedure PscInitUsesClause;
+Var
+ I: Integer;
+ S, Up, UnitsPart, Tok: String;
+ SemiPos: Integer;
+Begin
+ PscUsesGeoWorks := False; PscUsesGeoKernel := False; PscUsesGeoMem := False;
+ PscUsesGeoFile := False; PscUsesGeoGraph := False; PscUsesGeoUI := False;
+ PscUsesGeoObj := False; PscUsesGeoText := False; PscUsesGeoPrint := False;
+ For I := 1 To PscLineCount Do Begin
+  S := PscClean(PscLS(I));
+  Up := PscUp(S);
+  If PscStarts(Up, 'USES ') Then Begin
+   UnitsPart := PscTrimS(Copy(S, 6, Length(S) - 5));
+   SemiPos := Pos(';', UnitsPart);
+   If SemiPos > 0 Then UnitsPart := Copy(UnitsPart, 1, SemiPos - 1);
+   While UnitsPart <> '' Do Begin
+    Tok := PscUp(PscTrimS(PscNextItem(UnitsPart, ',')));
+    If Tok = 'GEOWORKS' Then PscUsesGeoWorks := True
+    Else If Tok = 'GEOKERNEL' Then PscUsesGeoKernel := True
+    Else If Tok = 'GEOMEM' Then PscUsesGeoMem := True
+    Else If Tok = 'GEOFILE' Then PscUsesGeoFile := True
+    Else If Tok = 'GEOGRAPH' Then PscUsesGeoGraph := True
+    Else If Tok = 'GEOUI' Then PscUsesGeoUI := True
+    Else If Tok = 'GEOOBJ' Then PscUsesGeoObj := True
+    Else If Tok = 'GEOTEXT' Then PscUsesGeoText := True
+    Else If Tok = 'GEOPRINT' Then PscUsesGeoPrint := True;
+   End;
+  End;
+ End;
+End;
+
+{ ========================================================================= }
+{ Unite GeoGraph (2026-09-20, demande explicite de l'utilisateur, interface }
+{ complete fournie integralement - API graphique de PC/GEOS-GeoWorks).      }
+{ SOURCE DE VERITE reutilisee : le VRAI framebuffer VGA deja construit pour }
+{ le chantier Win16 (Emu_VidSetPixel/Emu_VidSetMode, mode 13h 256 couleurs  }
+{ indexees, EmuVideo.DAC = VRAI DAC materiel 256*3 octets 6 bits, voir      }
+{ Emu_VidInitDefaultDAC) et le VRAI rendu de texte bitmap deja construit    }
+{ pour GDI TextOut (Win16_DrawChar5x7, police 5x7 reelle). AUCUN nouveau    }
+{ sous-systeme graphique invente : GeoGraph dessine dans le MEME            }
+{ framebuffer que GEOS_KERN_GRSETPIXEL (Stage 9 de l'emulateur GeoWorks) -  }
+{ un onglet "-CGEOS" actif est donc requis (meme garde que Invoke-          }
+{ GeoWorksAPI), sinon la fonction rapporte l'absence d'onglet et ne dessine }
+{ rien (jamais un plantage silencieux).                                    }
+{                                                                           }
+{ DISCLOSURES (simplifications assumees, pas des bogues caches) :          }
+{  - Records TGeoPoint/TGeoRect/TGeoColor : PSCRIPT n'a AUCUN type record   }
+{    reel (TPscValue = Text/Num/Numeric uniquement) - la plupart des        }
+{    fonctions GeoGraph fournies utilisent deja des parametres scalaires    }
+{    plats (Left,Top,Right,Bottom...), sauf GrGetCurPos qui retournait un   }
+{    TGeoPoint : DECOUPEE en GrGetCurPosX/GrGetCurPosY (choix explicite de  }
+{    l'utilisateur), chacune un simple scalaire.                            }
+{  - Couleurs : GrSet*Color prennent Red/Green/Blue (Byte, 0..255) comme    }
+{    la VRAIE API GEOS, converties vers l'index de palette VGA le PLUS      }
+{    PROCHE (distance euclidienne au carre, espace 6 bits reel du DAC       }
+{    materiel, voir PscGeoNearestDAC) - une VRAIE correspondance RGB, pas   }
+{    un raccourci invente (contrairement a la simplification deja          }
+{    disclosee ailleurs pour GDI.EXE GetNearestColor, qui n'avait PAS ce    }
+{    DAC dynamique disponible a l'epoque de son propre chantier).          }
+{  - Transformations (GrApplyTranslation/Scale/Rotation) : composees dans   }
+{    l'ordre Echelle -> Rotation -> Translation (convention affine          }
+{    standard), appliquees a CHAQUE point dessine ; GrApplyScale recoit un  }
+{    LongInt "fixe 16.16" comme la VRAIE API GEOS (WWFixedAsDWord) mais est }
+{    ici simplement divise par 65536.0 en Real PSCRIPT (aucun type fixe     }
+{    reel dans PSCRIPT) ; GrApplyRotation recoit un angle en DEGRES         }
+{    (simplification disclosee - la vraie API utilise une unite d'angle     }
+{    fixe differente).                                                      }
+{  - GrDrawPolygon/GrFillPolygon/GrDrawBitmap "Points"/"Bitmap" (Pointer    }
+{    dans l'interface fournie) : PSCRIPT n'a NI pointeur NI tableau reel -   }
+{    reutilise la convention Nom[Index] deja existante de PSCRIPT (voir     }
+{    ARRAY[lo..hi]/SETLENGTH plus haut) : Points doit nommer un tableau     }
+{    Pts[0..2*Count-1] = X0,Y0,X1,Y1... ; Bitmap doit nommer un tableau      }
+{    Bmp[0]=Largeur, Bmp[1]=Hauteur, Bmp[2..] = octets d'index de palette   }
+{    VGA (PAS du RGB 24 bits - encore une fois pas de format de ressource   }
+{    bitmap GEOS reel invente ici, une convention simple suffisante pour    }
+{    tester un script).                                                    }
+{  - GrSaveState/GrRestoreState : UN SEUL niveau de sauvegarde par          }
+{    GStateHandle (pas une pile arbitrairement profonde comme le vrai       }
+{    GEOS) - un 2e GrSaveState avant un GrRestoreState ecrase le premier.   }
+{  - GrBeginUpdate/GrEndUpdate : NO-OP disclose (le framebuffer ici dessine }
+{    toujours immediatement, aucun systeme de region sale/double tampon a   }
+{    grouper - contrairement au vrai GEOS qui batche reellement le rendu). }
+{  - GrSetFont/GrDrawText/GrDrawChar : la taille/l'ID de police sont         }
+{    memorises mais UNE SEULE police bitmap 5x7 (Win16_DrawChar5x7, deja    }
+{    reelle et existante) est reellement dessinee - aucune ressource de     }
+{    police GEOS reelle chargee (hors de portee de ce chantier).            }
+{ ========================================================================= }
+
+Const
+ PSC_GEO_GS_MAX   = 8;
+ PSC_GEO_POLY_MAX = 64;
+
+Type
+ TPscGeoGState = Record
+  InUse             : Boolean;
+  Window            : Word;
+  CurX, CurY        : Integer;
+  LineR, LineG, LineB : Byte;
+  AreaR, AreaG, AreaB : Byte;
+  TextR, TextG, TextB : Byte;
+  LineWidth         : Word;
+  LineStyle         : Word;
+  FontID, FontSize  : Word;
+  TransX, TransY    : Real;
+  ScaleX, ScaleY    : Real;
+  AngleDeg          : Real;
+  HasSaved          : Boolean;
+ End;
+
+Var
+ PscGeoGS      : Array[1..PSC_GEO_GS_MAX] Of TPscGeoGState;
+ PscGeoGSSaved : Array[1..PSC_GEO_GS_MAX] Of TPscGeoGState;
+
+Function PscGeoActiveOK: Boolean;
+Var
+ Ok: Boolean;
+Begin
+ Ok := (WinMgr.ActiveIdx >= 0) And (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) And
+  EmuPanel.Loaded And (EmuPanel.TargetCPU = '-CGEOS');
+ If Not Ok Then
+  PscWL('GeoGraph : aucun onglet PC/GEOS-GeoWorks actif (utilisez GEOS ou ' +
+   'Start-GeoWorksProgram pour en charger un).');
+ PscGeoActiveOK := Ok;
+End;
+
+Function PscGeoValidGS(Slot: Integer): Boolean;
+Var
+ Ok: Boolean;
+Begin
+ Ok := (Slot >= 1) And (Slot <= PSC_GEO_GS_MAX) And PscGeoGS[Slot].InUse;
+ If Not Ok Then
+  PscWL('GeoGraph : GStateHandle invalide (' + IntToStr(Slot) + ').');
+ PscGeoValidGS := Ok;
+End;
+
+Procedure PscGeoDefaultGS(Slot: Integer);
+Begin
+ With PscGeoGS[Slot] Do Begin
+  InUse := True;
+  CurX := 0; CurY := 0;
+  LineR := 0; LineG := 0; LineB := 0;
+  AreaR := 255; AreaG := 255; AreaB := 255;
+  TextR := 0; TextG := 0; TextB := 0;
+  LineWidth := 1; LineStyle := 0;
+  FontID := 0; FontSize := 9;
+  TransX := 0; TransY := 0;
+  ScaleX := 1; ScaleY := 1;
+  AngleDeg := 0;
+  HasSaved := False;
+ End;
+End;
+
+Function PscGeoAllocGS: Integer;
+Var I: Integer;
+Begin
+ PscGeoAllocGS := 0;
+ For I := 1 To PSC_GEO_GS_MAX Do
+  If Not PscGeoGS[I].InUse Then Begin
+   PscGeoDefaultGS(I);
+   PscGeoAllocGS := I;
+   Exit;
+  End;
+End;
+
+Function PscGeoNearestDAC(R, G, B: Byte): Byte;
+Var
+ R6, G6, B6, I, DR, DG, DB, Dist, Best, BestIdx: LongInt;
+Begin
+ R6 := R Shr 2; G6 := G Shr 2; B6 := B Shr 2;
+ Best := MaxLongInt; BestIdx := 0;
+ For I := 0 To 255 Do Begin
+  DR := LongInt(EmuVideo.DAC[I*3+0]) - R6;
+  DG := LongInt(EmuVideo.DAC[I*3+1]) - G6;
+  DB := LongInt(EmuVideo.DAC[I*3+2]) - B6;
+  Dist := DR*DR + DG*DG + DB*DB;
+  If Dist < Best Then Begin Best := Dist; BestIdx := I; End;
+ End;
+ PscGeoNearestDAC := Byte(BestIdx);
+End;
+
+Procedure PscGeoXForm(Var GS: TPscGeoGState; X, Y: Integer; Var OX, OY: Integer);
+Var
+ Rad, Xs, Ys, Xr, Yr: Real;
+Begin
+ Xs := X * GS.ScaleX;
+ Ys := Y * GS.ScaleY;
+ If GS.AngleDeg <> 0 Then Begin
+  Rad := GS.AngleDeg * Pi / 180.0;
+  Xr := Xs * Cos(Rad) - Ys * Sin(Rad);
+  Yr := Xs * Sin(Rad) + Ys * Cos(Rad);
+ End Else Begin
+  Xr := Xs; Yr := Ys;
+ End;
+ OX := Round(Xr + GS.TransX);
+ OY := Round(Yr + GS.TransY);
+End;
+
+Procedure PscGeoLineRaw(Var GS: TPscGeoGState; X1, Y1, X2, Y2: Integer; Idx: Byte);
+Var
+ AX1, AY1, AX2, AY2: Integer;
+ DX, DY, SX, SY, Err, E2, Step: LongInt;
+Begin
+ PscGeoXForm(GS, X1, Y1, AX1, AY1);
+ PscGeoXForm(GS, X2, Y2, AX2, AY2);
+ DX := Abs(AX2 - AX1); If AX1 < AX2 Then SX := 1 Else SX := -1;
+ DY := -Abs(AY2 - AY1); If AY1 < AY2 Then SY := 1 Else SY := -1;
+ Err := DX + DY;
+ Step := 0;
+ While True Do Begin
+  If (GS.LineStyle = 0) Or
+     ((GS.LineStyle = 1) And ((Step Mod 4) < 2)) Or
+     ((GS.LineStyle = 2) And ((Step Mod 2) = 0)) Then
+   Emu_VidSetPixel(AX1, AY1, Idx);
+  Inc(Step);
+  If (AX1 = AX2) And (AY1 = AY2) Then Break;
+  E2 := 2 * Err;
+  If E2 >= DY Then Begin Err := Err + DY; AX1 := AX1 + SX; End;
+  If E2 <= DX Then Begin Err := Err + DX; AY1 := AY1 + SY; End;
+ End;
+End;
+
+Procedure PscGeoRectRaw(Var GS: TPscGeoGState; L, T, R, B: Integer; Idx: Byte; Fill: Boolean);
+Var Y: Integer;
+Begin
+ If Fill Then Begin
+  For Y := T To B Do PscGeoLineRaw(GS, L, Y, R, Y, Idx);
+ End Else Begin
+  PscGeoLineRaw(GS, L, T, R, T, Idx);
+  PscGeoLineRaw(GS, L, B, R, B, Idx);
+  PscGeoLineRaw(GS, L, T, L, B, Idx);
+  PscGeoLineRaw(GS, R, T, R, B, Idx);
+ End;
+End;
+
+Procedure PscGeoEllipseRaw(Var GS: TPscGeoGState; L, T, R, B: Integer; Idx: Byte; Fill: Boolean);
+Var
+ CX, CY, RX, RY, Ang, PX, PY, PPX, PPY, LX, Y: Integer;
+ Rad: Real;
+ First: Boolean;
+Begin
+ CX := (L + R) Div 2; CY := (T + B) Div 2;
+ RX := Abs(R - L) Div 2; RY := Abs(B - T) Div 2;
+ If Fill Then Begin
+  For Y := -RY To RY Do Begin
+   If RY = 0 Then LX := RX
+   Else LX := Round(RX * Sqrt(1 - Sqr(Y / RY)));
+   PscGeoLineRaw(GS, CX - LX, CY + Y, CX + LX, CY + Y, Idx);
+  End;
+ End Else Begin
+  First := True; PPX := 0; PPY := 0;
+  For Ang := 0 To 360 Do Begin
+   Rad := Ang * Pi / 180.0;
+   PX := CX + Round(RX * Cos(Rad));
+   PY := CY + Round(RY * Sin(Rad));
+   If Not First Then PscGeoLineRaw(GS, PPX, PPY, PX, PY, Idx);
+   PPX := PX; PPY := PY; First := False;
+  End;
+ End;
+End;
+
+Procedure PscGeoArcRaw(Var GS: TPscGeoGState; L, T, R, B, StartA, EndA: Integer; Idx: Byte);
+Var
+ CX, CY, RX, RY, Ang, PX, PY, PPX, PPY: Integer;
+ Rad: Real;
+ First: Boolean;
+Begin
+ CX := (L + R) Div 2; CY := (T + B) Div 2;
+ RX := Abs(R - L) Div 2; RY := Abs(B - T) Div 2;
+ First := True; PPX := 0; PPY := 0;
+ Ang := StartA;
+ While Ang <= EndA Do Begin
+  Rad := Ang * Pi / 180.0;
+  PX := CX + Round(RX * Cos(Rad));
+  PY := CY + Round(RY * Sin(Rad));
+  If Not First Then PscGeoLineRaw(GS, PPX, PPY, PX, PY, Idx);
+  PPX := PX; PPY := PY; First := False;
+  Inc(Ang);
+ End;
+End;
+
+Procedure PscGeoPolygonRaw(Var GS: TPscGeoGState; Base: String; Count: Integer;
+ Idx: Byte; Fill: Boolean);
+Var
+ I, J, MinY, MaxY, Y, NX, XCount, X1, Y1, X2, Y2, Tmp: Integer;
+ Xs, Ys, XIntersect: Array[0..PSC_GEO_POLY_MAX-1] Of Integer;
+ V: TPscValue;
+Begin
+ If Count > PSC_GEO_POLY_MAX Then Count := PSC_GEO_POLY_MAX;
+ If Count < 2 Then Exit;
+ For I := 0 To Count - 1 Do Begin
+  PscGetV(Base + '[' + IntToStr(2 * I) + ']', V);
+  Xs[I] := Trunc(V.Num);
+  PscGetV(Base + '[' + IntToStr(2 * I + 1) + ']', V);
+  Ys[I] := Trunc(V.Num);
+ End;
+ If Not Fill Then Begin
+  For I := 0 To Count - 1 Do Begin
+   J := (I + 1) Mod Count;
+   PscGeoLineRaw(GS, Xs[I], Ys[I], Xs[J], Ys[J], Idx);
+  End;
+  Exit;
+ End;
+ MinY := Ys[0]; MaxY := Ys[0];
+ For I := 1 To Count - 1 Do Begin
+  If Ys[I] < MinY Then MinY := Ys[I];
+  If Ys[I] > MaxY Then MaxY := Ys[I];
+ End;
+ For Y := MinY To MaxY Do Begin
+  XCount := 0;
+  For I := 0 To Count - 1 Do Begin
+   J := (I + 1) Mod Count;
+   Y1 := Ys[I]; Y2 := Ys[J]; X1 := Xs[I]; X2 := Xs[J];
+   If Y1 <> Y2 Then
+    If ((Y >= Y1) And (Y < Y2)) Or ((Y >= Y2) And (Y < Y1)) Then
+     If XCount < PSC_GEO_POLY_MAX Then Begin
+      NX := X1 + Round((Y - Y1) / (Y2 - Y1) * (X2 - X1));
+      XIntersect[XCount] := NX; Inc(XCount);
+     End;
+  End;
+  For I := 0 To XCount - 2 Do
+   For J := 0 To XCount - 2 - I Do
+    If XIntersect[J] > XIntersect[J + 1] Then Begin
+     Tmp := XIntersect[J]; XIntersect[J] := XIntersect[J + 1]; XIntersect[J + 1] := Tmp;
+    End;
+  I := 0;
+  While I + 1 < XCount Do Begin
+   PscGeoLineRaw(GS, XIntersect[I], Y, XIntersect[I + 1], Y, Idx);
+   Inc(I, 2);
+  End;
+ End;
+End;
+
+Procedure PscGeoBitmapRaw(Var GS: TPscGeoGState; X0, Y0: Integer; Base: String);
+Var
+ V: TPscValue;
+ W, H, X, Y, OX, OY: Integer;
+ Idx: Byte;
+Begin
+ PscGetV(Base + '[0]', V); W := Trunc(V.Num);
+ PscGetV(Base + '[1]', V); H := Trunc(V.Num);
+ If (W <= 0) Or (H <= 0) Or (W * H > 4096) Then Exit;
+ For Y := 0 To H - 1 Do
+  For X := 0 To W - 1 Do Begin
+   PscGetV(Base + '[' + IntToStr(2 + Y * W + X) + ']', V);
+   Idx := Byte(Trunc(V.Num));
+   PscGeoXForm(GS, X0 + X, Y0 + Y, OX, OY);
+   Emu_VidSetPixel(OX, OY, Idx);
+  End;
+End;
+
+Procedure PscGeoDrawTextRaw(Var GS: TPscGeoGState; X, Y: Integer; Const Txt: String);
+Var
+ I, OX, OY: Integer;
+ Fg, Bg: Byte;
+Begin
+ Fg := PscGeoNearestDAC(GS.TextR, GS.TextG, GS.TextB);
+ Bg := PscGeoNearestDAC(GS.AreaR, GS.AreaG, GS.AreaB);
+ PscGeoXForm(GS, X, Y, OX, OY);
+ For I := 1 To Length(Txt) Do Begin
+  Win16_DrawChar5x7(OX, OY, Txt[I], Fg, Bg);
+  OX := OX + 6;
+ End;
+End;
+
+{ Point d'entree unique, appele depuis PscPrimary (contexte expression,     }
+{ fonctions avec valeur de retour) ET PscExecSimple (contexte instruction,  }
+{ procedures sans valeur de retour) - meme reutilisation a deux points      }
+{ d'appel que PscTryObjectAccess plus haut. U = nom de fonction DEJA mis en }
+{ majuscules, S = texte BRUT des arguments (jamais evalue globalement,      }
+{ certains parametres comme "Points"/"Bitmap" ont besoin du NOM de variable }
+{ litteral, pas de sa valeur - voir la disclosure ci-dessus). }
+Function PscTryGeoGraphCall(U, S: String; Var V: TPscValue): Boolean;
+Var
+ Raw, A1, A2, A3, A4, A5, A6, A7: String;
+ N1, N2, N3, N4, N5, N6, N7: TPscValue;
+ Slot: Integer;
+ Idx: Byte;
+Begin
+ PscTryGeoGraphCall := False;
+ PscVNum(0, V);
+ If Not PscUsesGeoGraph Then Exit;
+ Raw := S;
+ A1 := PscNextItem(Raw, ','); A2 := PscNextItem(Raw, ','); A3 := PscNextItem(Raw, ',');
+ A4 := PscNextItem(Raw, ','); A5 := PscNextItem(Raw, ','); A6 := PscNextItem(Raw, ',');
+ A7 := PscNextItem(Raw, ',');
+
+ If U = 'GRCREATESTATE' Then Begin
+  PscTryGeoGraphCall := True;
+  If Not PscGeoActiveOK Then Exit;
+  Slot := PscGeoAllocGS;
+  If Slot = 0 Then Begin
+   PscWL('GeoGraph : plus de GStateHandle disponible (' +
+    IntToStr(PSC_GEO_GS_MAX) + ' max).');
+   Exit;
+  End;
+  If Not EmuVideo.IsGraphic Then Emu_VidSetMode($13, EmuPanel);
+  PscEvalText(A1, N1);
+  PscGeoGS[Slot].Window := Word(Trunc(N1.Num));
+  PscVNum(Slot, V);
+  Exit;
+ End;
+
+ If U = 'GRDESTROYSTATE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1);
+  If PscGeoValidGS(Trunc(N1.Num)) Then PscGeoGS[Trunc(N1.Num)].InUse := False;
+  Exit;
+ End;
+
+ If U = 'GRSAVESTATE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoValidGS(Slot) Then Begin
+   PscGeoGSSaved[Slot] := PscGeoGS[Slot];
+   PscGeoGS[Slot].HasSaved := True;
+  End;
+  Exit;
+ End;
+
+ If U = 'GRRESTORESTATE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoValidGS(Slot) And PscGeoGSSaved[Slot].HasSaved Then
+   PscGeoGS[Slot] := PscGeoGSSaved[Slot];
+  Exit;
+ End;
+
+ If (U = 'GRBEGINUPDATE') Or (U = 'GREENDUPDATE') Then Begin
+  { NO-OP disclose : voir la disclosure de tete (aucun systeme de region    }
+  { sale/double tampon a grouper dans ce framebuffer). }
+  PscTryGeoGraphCall := True;
+  Exit;
+ End;
+
+ If U = 'GRMOVETO' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3);
+  PscGeoGS[Slot].CurX := Trunc(N2.Num);
+  PscGeoGS[Slot].CurY := Trunc(N3.Num);
+  Exit;
+ End;
+
+ If U = 'GRGETCURPOSX' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoValidGS(Slot) Then PscVNum(PscGeoGS[Slot].CurX, V);
+  Exit;
+ End;
+
+ If U = 'GRGETCURPOSY' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoValidGS(Slot) Then PscVNum(PscGeoGS[Slot].CurY, V);
+  Exit;
+ End;
+
+ If U = 'GRDRAWLINE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4); PscEvalText(A5, N5);
+  Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB);
+  PscGeoLineRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), Trunc(N4.Num), Trunc(N5.Num), Idx);
+  Exit;
+ End;
+
+ If U = 'GRDRAWLINETO' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3);
+  Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB);
+  PscGeoLineRaw(PscGeoGS[Slot], PscGeoGS[Slot].CurX, PscGeoGS[Slot].CurY,
+   Trunc(N2.Num), Trunc(N3.Num), Idx);
+  PscGeoGS[Slot].CurX := Trunc(N2.Num);
+  PscGeoGS[Slot].CurY := Trunc(N3.Num);
+  Exit;
+ End;
+
+ If U = 'GRDRAWHLINE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4);
+  Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB);
+  PscGeoLineRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N4.Num), Trunc(N3.Num), Trunc(N4.Num), Idx);
+  Exit;
+ End;
+
+ If U = 'GRDRAWVLINE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4);
+  Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB);
+  PscGeoLineRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), Trunc(N2.Num), Trunc(N4.Num), Idx);
+  Exit;
+ End;
+
+ If (U = 'GRDRAWRECT') Or (U = 'GRFILLRECT') Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4); PscEvalText(A5, N5);
+  If U = 'GRDRAWRECT' Then
+   Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB)
+  Else
+   Idx := PscGeoNearestDAC(PscGeoGS[Slot].AreaR, PscGeoGS[Slot].AreaG, PscGeoGS[Slot].AreaB);
+  PscGeoRectRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), Trunc(N4.Num), Trunc(N5.Num),
+   Idx, U = 'GRFILLRECT');
+  Exit;
+ End;
+
+ If (U = 'GRDRAWELLIPSE') Or (U = 'GRFILLELLIPSE') Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4); PscEvalText(A5, N5);
+  If U = 'GRDRAWELLIPSE' Then
+   Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB)
+  Else
+   Idx := PscGeoNearestDAC(PscGeoGS[Slot].AreaR, PscGeoGS[Slot].AreaG, PscGeoGS[Slot].AreaB);
+  PscGeoEllipseRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), Trunc(N4.Num), Trunc(N5.Num),
+   Idx, U = 'GRFILLELLIPSE');
+  Exit;
+ End;
+
+ If U = 'GRDRAWARC' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4); PscEvalText(A5, N5);
+  PscEvalText(A6, N6); PscEvalText(A7, N7);
+  Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB);
+  PscGeoArcRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), Trunc(N4.Num), Trunc(N5.Num),
+   Trunc(N6.Num), Trunc(N7.Num), Idx);
+  Exit;
+ End;
+
+ If (U = 'GRDRAWPOLYGON') Or (U = 'GRFILLPOLYGON') Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2);
+  If U = 'GRDRAWPOLYGON' Then
+   Idx := PscGeoNearestDAC(PscGeoGS[Slot].LineR, PscGeoGS[Slot].LineG, PscGeoGS[Slot].LineB)
+  Else
+   Idx := PscGeoNearestDAC(PscGeoGS[Slot].AreaR, PscGeoGS[Slot].AreaG, PscGeoGS[Slot].AreaB);
+  PscGeoPolygonRaw(PscGeoGS[Slot], PscTrimS(A3), Trunc(N2.Num), Idx, U = 'GRFILLPOLYGON');
+  Exit;
+ End;
+
+ If (U = 'GRSETLINECOLOR') Or (U = 'GRSETAREACOLOR') Or (U = 'GRSETTEXTCOLOR') Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4);
+  If U = 'GRSETLINECOLOR' Then Begin
+   PscGeoGS[Slot].LineR := Byte(Trunc(N2.Num));
+   PscGeoGS[Slot].LineG := Byte(Trunc(N3.Num));
+   PscGeoGS[Slot].LineB := Byte(Trunc(N4.Num));
+  End Else If U = 'GRSETAREACOLOR' Then Begin
+   PscGeoGS[Slot].AreaR := Byte(Trunc(N2.Num));
+   PscGeoGS[Slot].AreaG := Byte(Trunc(N3.Num));
+   PscGeoGS[Slot].AreaB := Byte(Trunc(N4.Num));
+  End Else Begin
+   PscGeoGS[Slot].TextR := Byte(Trunc(N2.Num));
+   PscGeoGS[Slot].TextG := Byte(Trunc(N3.Num));
+   PscGeoGS[Slot].TextB := Byte(Trunc(N4.Num));
+  End;
+  Exit;
+ End;
+
+ If U = 'GRSETLINEWIDTH' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2);
+  PscGeoGS[Slot].LineWidth := Word(Trunc(N2.Num));
+  Exit;
+ End;
+
+ If U = 'GRSETLINESTYLE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2);
+  PscGeoGS[Slot].LineStyle := Word(Trunc(N2.Num));
+  Exit;
+ End;
+
+ If U = 'GRDRAWTEXT' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4);
+  PscGeoDrawTextRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), N4.Text);
+  Exit;
+ End;
+
+ If U = 'GRDRAWCHAR' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3); PscEvalText(A4, N4);
+  If Length(N4.Text) >= 1 Then
+   PscGeoDrawTextRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), N4.Text[1]);
+  Exit;
+ End;
+
+ If U = 'GRSETFONT' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3);
+  PscGeoGS[Slot].FontID := Word(Trunc(N2.Num));
+  PscGeoGS[Slot].FontSize := Word(Trunc(N3.Num));
+  Exit;
+ End;
+
+ If U = 'GRDRAWBITMAP' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3);
+  PscGeoBitmapRaw(PscGeoGS[Slot], Trunc(N2.Num), Trunc(N3.Num), PscTrimS(A4));
+  Exit;
+ End;
+
+ If U = 'GRAPPLYTRANSLATION' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3);
+  PscGeoGS[Slot].TransX := PscGeoGS[Slot].TransX + N2.Num;
+  PscGeoGS[Slot].TransY := PscGeoGS[Slot].TransY + N3.Num;
+  Exit;
+ End;
+
+ If U = 'GRAPPLYSCALE' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3);
+  PscGeoGS[Slot].ScaleX := N2.Num / 65536.0;
+  PscGeoGS[Slot].ScaleY := N3.Num / 65536.0;
+  Exit;
+ End;
+
+ If U = 'GRAPPLYROTATION' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscEvalText(A2, N2);
+  PscGeoGS[Slot].AngleDeg := N2.Num;
+  Exit;
+ End;
+
+ If U = 'GRSETNULLTRANSFORM' Then Begin
+  PscTryGeoGraphCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoValidGS(Slot) Then Exit;
+  PscGeoGS[Slot].TransX := 0; PscGeoGS[Slot].TransY := 0;
+  PscGeoGS[Slot].ScaleX := 1; PscGeoGS[Slot].ScaleY := 1;
+  PscGeoGS[Slot].AngleDeg := 0;
+  Exit;
+ End;
+End;
+
 { --- PSCRIPT --- (point d'entree commun aux 3 shells) }
 
 Procedure TermCmd_PSCRIPT(Var TP: TTerminalPanel; ParamStr: String);
@@ -127451,6 +128226,7 @@ Begin
   PscLoad;
   If Not PscTerminated Then Begin
    PscInitDeclarations;
+   PscInitUsesClause;
    M := PscMainBegin;
    If M = 0 Then Begin
     PscWL('PSCRIPT: bloc principal BEGIN introuvable.');
@@ -134247,7 +135023,11 @@ Begin
   HelpEmit(
    '  OS2 fichier[.exe]            Emulateur OS/2 LX');
   HelpEmit(
-   '  GEOS fichier[.geo]           PC/GEOS-GeoWorks (Stage 3, execution reelle)');
+   '  GEOS fichier[.geo] [/PASCALSCRIPT:script.psc]');
+  HelpEmit(
+   '                                PC/GEOS-GeoWorks (Stage 3, execution reelle) ;');
+  HelpEmit(
+   '                                /PASCALSCRIPT: execute un script avant le lancement');
   HelpEmit( '');
   HelpEmit( '--- Diagnostic OS/2 LX (chantier -COS2LX) ---');
   HelpEmit(
