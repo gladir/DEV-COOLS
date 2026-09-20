@@ -7616,6 +7616,14 @@ Var
  { de l utilisateur) - voir TermSaveTextConfirmed/TermSaveImageConfirmed.   }
  FileDlgForTermSave    : Boolean;
  FileDlgForImageSave   : Boolean;
+ { Idem pour "Executer le VBScript.../PascalScript..." du menu contextuel   }
+ { de l'EMULATEUR (2026-09-20, demande explicite) - voir                   }
+ { RunVBScriptOnEmulator/RunPascalScriptOnEmulator. Booleens SEPARES de     }
+ { FileDlgForVBScriptMacro/FileDlgForPascalScriptMacro ci-dessus (editeur)  }
+ { car la destination de sortie differe (OutputPanel via PsPipelineCapture,}
+ { pas la macro ligne-par-ligne de l'editeur). }
+ FileDlgForEmuVBScript    : Boolean;
+ FileDlgForEmuPascalScript: Boolean;
  { Selection souris de texte dans le panneau Terminal (2026-09-01) -        }
  { StartLine/EndLine sont des index de RANGEE VISIBLE (0-based, relatifs a  }
  { la fenetre actuellement affichee - voir TP.VisRowText), pas des index    }
@@ -126159,6 +126167,14 @@ Procedure PscCallRoutine(Name,ArgText:String;WantResult:Boolean;Var V:TPscValue)
 { mais deja appelee ICI par PscPrimary/PscExecSimple - meme motif Forward   }
 { que les 3 declarations ci-dessus. }
 Function PscTryGeoGraphCall(U,S:String;Var V:TPscValue):Boolean;Forward;
+{ Idem (instructions de pilotage emulateur, 2026-09-20, demande explicite -}
+{ MoveMouse/ClickMouse/etc.), definie juste apres PscTryGeoGraphCall. }
+Function PscTryEmuControlCall(U,S:String;Var V:TPscValue):Boolean;Forward;
+{ Emu_MouseFireEvents n'a jusqu'ici jamais ete appelee avant sa propre      }
+{ definition reelle (bien plus bas) - Forward necessaire pour              }
+{ PscEmu_MouseSetLogical ci-dessous (MoveMouse/ClickMouse). }
+Procedure Emu_MouseFireEvents(Var P: TEmulatorPanel; Mask: Word;
+ CX_, DX_, SI_, DI_: Word); Forward;
 
 { ------------------------------------------------------------------------ }
 { Objets Database/DatabaseConnection/RecordSet (2026-09-08, demande        }
@@ -126665,6 +126681,10 @@ Begin
   { GrGetCurPosX(...) utilisees dans une affectation/condition). Voir        }
   { PscTryGeoGraphCall et sa disclosure complete plus bas. }
   If PscTryGeoGraphCall(U,S,V) Then Exit;
+  { Instructions de pilotage emulateur (2026-09-20, demande explicite) -     }
+  { contexte EXPRESSION (GetMouseButton/GetMouseXPos/GetMouseYPos). Voir     }
+  { PscTryEmuControlCall et sa disclosure complete plus bas. }
+  If PscTryEmuControlCall(U,S,V) Then Exit;
   { Fonctions arithmetiques/ordinales standard de Pascal (2026-09-19,       }
   { demande explicite de l'utilisateur : "PascalScript ne supporte pas la  }
   { fonction Abs, ArcTan, Cos, Exp, Frac, Hi, Int, Ln, Lo, Odd, Ord, Pred,  }
@@ -127238,6 +127258,9 @@ Begin
   { cherche que des Procedure/Function DEFINIES DANS LE SCRIPT de           }
   { l'utilisateur et echouerait toujours ici). }
   If PscTryGeoGraphCall(PscUp(N),A,V) Then Exit;
+  { Idem (instructions de pilotage emulateur) - contexte INSTRUCTION         }
+  { (MoveMouse/ClickMouse/Delay/CopyTo-/PasteToEmulatorClipboard). }
+  If PscTryEmuControlCall(PscUp(N),A,V) Then Exit;
   PscCallRoutine(N,A,False,V);
   Exit;
  End;
@@ -128184,6 +128207,197 @@ Begin
   PscGeoGS[Slot].TransX := 0; PscGeoGS[Slot].TransY := 0;
   PscGeoGS[Slot].ScaleX := 1; PscGeoGS[Slot].ScaleY := 1;
   PscGeoGS[Slot].AngleDeg := 0;
+  Exit;
+ End;
+End;
+
+{ ========================================================================= }
+{ Instructions PascalScript de pilotage de l'emulateur (2026-09-20, demande }
+{ explicite de l'utilisateur, menu contextuel "souris non capturee" -       }
+{ MoveMouse/ClickMouse/GetMouseButton/GetMouseXPos/GetMouseYPos/Delay/      }
+{ CopyToEmulatorClipboard/PasteToEmulatorClipboard). CONTRAIREMENT aux      }
+{ unites Geo* ci-dessus, ces fonctions sont GLOBALEMENT disponibles (comme  }
+{ Abs/Sin/WriteLn) - AUCUNE clause Uses requise - puisqu'elles ne sont pas  }
+{ specifiques a GeoWorks mais a N'IMPORTE QUEL panneau emulateur actif      }
+{ (verifie a CHAQUE appel via PscEmuActiveOK, meme motif que PscGeoActiveOK }
+{ plus haut).                                                              }
+{                                                                           }
+{ DISCLOSURES :                                                            }
+{  - MoveMouse/ClickMouse/GetMouseXPos/YPos/Button : reutilisent le VRAI    }
+{    pilote souris INT 33h deja existant (globales EmuMouseX/Y/Btns,       }
+{    EmuMouse_UpdateFromHost) - decision explicite de l'utilisateur (voir   }
+{    AskUserQuestion) : UNIQUEMENT pour les cibles DOS (-CD/-CP), qui ont    }
+{    deja ce pilote reel cable. Pour toute autre cible (Win16/GeoWorks/...) }
+{    ces fonctions rapportent honnetement "non supporte pour cette cible"   }
+{    plutot que d'inventer un mecanisme. PscEmu_MouseSetLogical ci-dessous  }
+{    reprend EXACTEMENT la logique de EmuMouse_UpdateFromHost APRES sa       }
+{    conversion pixels-hote->coordonnees-logiques (jamais dupliquee avant   }
+{    conversion) puisque MoveMouse/ClickMouse recoivent deja des            }
+{    coordonnees LOGIQUES invite directement (memes coordonnees que          }
+{    GetMouseXPos/YPos lisent) - une nouvelle fonction plutot que de         }
+{    modifier EmuMouse_UpdateFromHost lui-meme (deja utilise par la VRAIE    }
+{    souris hote, aucun risque de regression sur ce chemin existant).       }
+{    Convention Button (ClickMouse) : 0=gauche, 1=droit, 2=milieu (bit      }
+{    EmuMouseBtns = 1 Shl Button, meme encodage que le pilote lui-meme).    }
+{  - Delay(ms) : reutilise WinSleep (deja utilise ailleurs dans ce fichier, }
+{    ex. Terminal OS-9/COS) - un VRAI delai bloquant (l'interprete PSCRIPT  }
+{    est mono-thread synchrone, comme WriteLn/tout le reste).               }
+{  - CopyToEmulatorClipboard/PasteToEmulatorClipboard : la recherche         }
+{    prealable a ce chantier a montre que le Clipboard USER.EXE de Win16    }
+{    (12 ordinaux deja implantes) lit/ecrit DIRECTEMENT le presse-papier    }
+{    REEL de Windows a CHAQUE appel invite (aucun stockage interne          }
+{    separe) - ces 2 fonctions sont donc de simples alias EXPLICITES de     }
+{    GetRealClipboardText/SetRealClipboardText (deja utilises par le        }
+{    Terminal/PasChat/la Grille) pour la cible -CWIN16, utiles pour la       }
+{    lisibilite/le controle du moment precis dans un script meme si deja    }
+{    "automatique" - choix explicite de l'utilisateur (voir                 }
+{    AskUserQuestion). Pour toute autre cible (aucun presse-papier reel     }
+{    modelise), rapporte honnetement l'absence plutot qu'un faux succes.    }
+{ ========================================================================= }
+
+Function PscEmuActiveOK: Boolean;
+Var
+ Ok: Boolean;
+Begin
+ Ok := (WinMgr.ActiveIdx >= 0) And (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) And
+  EmuPanel.Loaded;
+ If Not Ok Then
+  PscWL('Commande emulateur : aucun onglet emulateur actif.');
+ PscEmuActiveOK := Ok;
+End;
+
+Function PscEmuIsDOSTarget: Boolean;
+Begin
+ PscEmuIsDOSTarget := (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP');
+End;
+
+{ Reprend la logique de EmuMouse_UpdateFromHost (voir sa disclosure ci-     }
+{ dessus) mais a partir de coordonnees LOGIQUES invite deja connues (pas de }
+{ conversion pixels-hote necessaire). }
+Procedure PscEmu_MouseSetLogical(Var P: TEmulatorPanel; LX, LY: Integer; NewBtns: Byte);
+Var
+ Changed: Byte;
+ BIdx: Integer;
+ EvMask: Word;
+ DeltaMickX, DeltaMickY: Integer;
+Begin
+ If Not EmuMouseInst Then Exit;
+ EvMask := 0;
+ DeltaMickX := LX - EmuMouseX;
+ DeltaMickY := LY - EmuMouseY;
+ If (DeltaMickX <> 0) Or (DeltaMickY <> 0) Then EvMask := EvMask Or 1;
+ EmuMouseMickX := EmuMouseMickX + DeltaMickX;
+ EmuMouseMickY := EmuMouseMickY + DeltaMickY;
+ If LX < EmuMouseXMin Then LX := EmuMouseXMin;
+ If LX > EmuMouseXMax Then LX := EmuMouseXMax;
+ If LY < EmuMouseYMin Then LY := EmuMouseYMin;
+ If LY > EmuMouseYMax Then LY := EmuMouseYMax;
+ EmuMouseX := LX;
+ EmuMouseY := LY;
+ Changed := EmuMouseBtns Xor NewBtns;
+ For BIdx := 0 To 2 Do Begin
+  If (Changed And (1 Shl BIdx)) <> 0 Then Begin
+   If (NewBtns And (1 Shl BIdx)) <> 0 Then Begin
+    Inc(EmuMousePressCnt[BIdx]); EmuMousePressX[BIdx] := LX; EmuMousePressY[BIdx] := LY;
+    EvMask := EvMask Or (1 Shl (1 + BIdx * 2));
+   End Else Begin
+    Inc(EmuMouseRelCnt[BIdx]); EmuMouseRelX[BIdx] := LX; EmuMouseRelY[BIdx] := LY;
+    EvMask := EvMask Or (1 Shl (2 + BIdx * 2));
+   End;
+  End;
+ End;
+ EmuMouseBtns := NewBtns And $07;
+ If EmuMouseActive And (Not EmuMouseSoftDisabled) Then
+  Emu_MouseFireEvents(P, EvMask, Word(EmuMouseX), Word(EmuMouseY),
+   Word(DeltaMickX), Word(DeltaMickY));
+End;
+
+Function PscTryEmuControlCall(U, S: String; Var V: TPscValue): Boolean;
+Var
+ Raw, A1, A2, A3: String;
+ N1, N2, N3: TPscValue;
+ BitMask: Byte;
+Begin
+ PscTryEmuControlCall := False;
+ PscVNum(0, V);
+ Raw := S;
+ A1 := PscNextItem(Raw, ','); A2 := PscNextItem(Raw, ','); A3 := PscNextItem(Raw, ',');
+
+ If U = 'MOVEMOUSE' Then Begin
+  PscTryEmuControlCall := True;
+  If Not PscEmuActiveOK Then Exit;
+  If Not PscEmuIsDOSTarget Then Begin
+   PscWL('MoveMouse : non supporte pour la cible ' + EmuPanel.TargetCPU + ' (DOS uniquement).');
+   Exit;
+  End;
+  PscEvalText(A1, N1); PscEvalText(A2, N2);
+  PscEmu_MouseSetLogical(EmuPanel, Trunc(N1.Num), Trunc(N2.Num), EmuMouseBtns);
+  Exit;
+ End;
+
+ If U = 'CLICKMOUSE' Then Begin
+  PscTryEmuControlCall := True;
+  If Not PscEmuActiveOK Then Exit;
+  If Not PscEmuIsDOSTarget Then Begin
+   PscWL('ClickMouse : non supporte pour la cible ' + EmuPanel.TargetCPU + ' (DOS uniquement).');
+   Exit;
+  End;
+  PscEvalText(A1, N1); PscEvalText(A2, N2); PscEvalText(A3, N3);
+  BitMask := Byte(1 Shl (Trunc(N3.Num) And 3));
+  PscEmu_MouseSetLogical(EmuPanel, Trunc(N1.Num), Trunc(N2.Num), EmuMouseBtns Or BitMask);
+  PscEmu_MouseSetLogical(EmuPanel, Trunc(N1.Num), Trunc(N2.Num), EmuMouseBtns And Not BitMask);
+  Exit;
+ End;
+
+ If U = 'GETMOUSEBUTTON' Then Begin
+  PscTryEmuControlCall := True;
+  If Not PscEmuActiveOK Then Exit;
+  PscVNum(EmuMouseBtns, V);
+  Exit;
+ End;
+
+ If U = 'GETMOUSEXPOS' Then Begin
+  PscTryEmuControlCall := True;
+  If Not PscEmuActiveOK Then Exit;
+  PscVNum(EmuMouseX, V);
+  Exit;
+ End;
+
+ If U = 'GETMOUSEYPOS' Then Begin
+  PscTryEmuControlCall := True;
+  If Not PscEmuActiveOK Then Exit;
+  PscVNum(EmuMouseY, V);
+  Exit;
+ End;
+
+ If U = 'DELAY' Then Begin
+  PscTryEmuControlCall := True;
+  PscEvalText(A1, N1);
+  WinSleep(Trunc(N1.Num));
+  Exit;
+ End;
+
+ If U = 'COPYTOEMULATORCLIPBOARD' Then Begin
+  PscTryEmuControlCall := True;
+  If Not PscEmuActiveOK Then Exit;
+  If EmuPanel.TargetCPU <> '-CWIN16' Then Begin
+   PscWL('CopyToEmulatorClipboard : aucun presse-papier reel modelise pour ' +
+    'la cible ' + EmuPanel.TargetCPU + '.');
+   Exit;
+  End;
+  SetRealClipboardText(GetRealClipboardText);
+  Exit;
+ End;
+
+ If U = 'PASTETOEMULATORCLIPBOARD' Then Begin
+  PscTryEmuControlCall := True;
+  If Not PscEmuActiveOK Then Exit;
+  If EmuPanel.TargetCPU <> '-CWIN16' Then Begin
+   PscWL('PasteToEmulatorClipboard : aucun presse-papier reel modelise pour ' +
+    'la cible ' + EmuPanel.TargetCPU + '.');
+   Exit;
+  End;
+  SetRealClipboardText(GetRealClipboardText);
   Exit;
  End;
 End;
@@ -157536,6 +157750,177 @@ Begin
  FileDlgForPascalScriptMacro := True;
  FileDlg.Base.Visible := True;
  DrawFileDialog(FileDlg);
+End;
+
+{ ============================================================
+  Menu contextuel de l'EMULATEUR quand la souris n'est PAS capturee
+  (2026-09-20, demande explicite de l'utilisateur) : clic droit alors que
+  EmuHasFocus=False ouvre ce menu au lieu de reprendre le focus/transmettre
+  le clic a l'invite (voir DispatchEvent, nouvelle branche juste avant le
+  "Else Begin" generique qui gere EmuPanel.Base.Visible). Meme motif EXACT
+  que ShowEditorContextMenu/CtxTag 800-809 ci-dessus, nouvelle plage de
+  tags 1000-1003.
+  ============================================================ }
+
+Procedure ShowEmulatorContextMenu(Var CM: TContextMenu; MX, MY: Integer);
+Begin
+ InitContextMenu(CM);
+ CM.X := MX;
+ CM.Y := MY;
+ CM.Width := 220;
+ AddContextItem(CM, 'Coller du texte', 1000);
+ AddContextItem(CM, 'Envoi Ctrl+Alt+Suppr', 1001);
+ AddContextSeparator(CM);
+ AddContextItem(CM, 'Executer le VBScript...', 1002);
+ AddContextItem(CM, 'Executer le PascalScript...', 1003);
+ CM.Visible := True;
+ DrawContextMenu(CM);
+End;
+
+{ "Coller du texte" (CtxTag 1000) : lit le VRAI presse-papier hote (meme   }
+{ SetRealClipboardText/GetRealClipboardText que Terminal/PasChat/Grille,   }
+{ voir CtxTag 911 plus haut) et le "tape" caractere par caractere dans     }
+{ l'invite emulee via EmuVScr_PushKey - EXACTEMENT le meme mecanisme       }
+{ (mot = ScanCode Shl 8 Or Ascii, ascii seul pour un caractere imprimable) }
+{ deja utilise par HandleEmulatorPanelEvent pour une VRAIE frappe clavier  }
+{ hote (EV_KEY_CHAR) - jamais un nouveau chemin invente. #13/#10 (CRLF ou  }
+{ LF seul) deviennent un seul Entree (#13), backend-agnostique (le tampon  }
+{ clavier BIOS haut niveau EmuVScr_PushKey n'est pas filtre par TargetCPU, }
+{ voir sa propre disclosure). }
+Procedure EmuCtxPasteText;
+Var
+ ClipText: String;
+ I: Integer;
+Begin
+ If Not EmuPanel.Loaded Then Exit;
+ ClipText := GetRealClipboardText;
+ For I := 1 To Length(ClipText) Do Begin
+  If ClipText[I] = #10 Then Continue; { LF d'un CRLF deja gere par le #13 }
+  If ClipText[I] = #13 Then
+   EmuVScr_PushKey(EmuPanel, 13)
+  Else
+   EmuVScr_PushKey(EmuPanel, Byte(ClipText[I]));
+ End;
+End;
+
+{ "Envoi Ctrl+Alt+Suppr" (CtxTag 1001) : AUCUN mecanisme d'injection de     }
+{ combinaison de touches n'existait avant ce chantier - choix explicite de }
+{ l'utilisateur (voir AskUserQuestion) : injection BIOS "brute", memes     }
+{ scancodes REELS AT (Ctrl=$1D, Alt=$38, Suppr=$53) que documentes par      }
+{ n'importe quelle table de scancodes PC standard, pousses make PUIS break }
+{ (ScanCode Or $80, convention reelle de fin de frappe) via le MEME         }
+{ EmuVScr_PushKey/encodage "ScanCode Shl 8" que EV_KEY_DOWN utilise deja    }
+{ pour une VRAIE touche hote (voir HandleEmulatorPanelEvent). DISCLOSURE :  }
+{ un VRAI PC intercepte Ctrl+Alt+Suppr au niveau materiel AVANT le tampon   }
+{ BIOS (declenchement direct d'INT 19h) - cette injection simplifiee la     }
+{ pousse au contraire DANS le tampon comme 3 frappes ordinaires et laisse   }
+{ le systeme invite (DOS/Windows deja emule) y reagir comme il le ferait    }
+{ pour toute autre sequence de touches, sans re-implanter cette logique     }
+{ materielle bas niveau (hors de portee de cette demande). }
+Procedure EmuCtxSendCtrlAltDel;
+Const
+ SC_CTRL = $1D;
+ SC_ALT  = $38;
+ SC_DEL  = $53;
+Begin
+ If Not EmuPanel.Loaded Then Exit;
+ EmuVScr_PushKey(EmuPanel, Word(SC_CTRL) Shl 8);
+ EmuVScr_PushKey(EmuPanel, Word(SC_ALT) Shl 8);
+ EmuVScr_PushKey(EmuPanel, Word(SC_DEL) Shl 8);
+ EmuVScr_PushKey(EmuPanel, Word(SC_DEL Or $80) Shl 8);
+ EmuVScr_PushKey(EmuPanel, Word(SC_ALT Or $80) Shl 8);
+ EmuVScr_PushKey(EmuPanel, Word(SC_CTRL Or $80) Shl 8);
+End;
+
+{ "Executer le VBScript.../PascalScript..." (CtxTag 1002/1003) : memes      }
+{ boites Ouvrir filtrees .vbs/.psc que ShowVBScriptMacroOpenDialog/         }
+{ ShowPascalScriptMacroOpenDialog ci-dessus, mais redirigees vers           }
+{ RunVBScriptOnEmulator/RunPascalScriptOnEmulator (execution UNIQUE, pas la }
+{ macro ligne-par-ligne de l'editeur) via des booleens SEPARES              }
+{ (FileDlgForEmuVBScript/FileDlgForEmuPascalScript). }
+Procedure ShowEmulatorVBScriptOpenDialog;
+Begin
+ InitFileDialog(FileDlg, False);
+ AddFileFilter(FileDlg, 'Fichiers VBScript (*.vbs)', '*.vbs');
+ FileDlg.FilterIndex := 0;
+ LoadDirectoryFiles(FileDlg);
+ FileDlgForEmuVBScript := True;
+ FileDlg.Base.Visible := True;
+ DrawFileDialog(FileDlg);
+End;
+
+Procedure ShowEmulatorPascalScriptOpenDialog;
+Begin
+ InitFileDialog(FileDlg, False);
+ AddFileFilter(FileDlg, 'Fichiers PascalScript (*.psc)', '*.psc');
+ FileDlg.FilterIndex := 0;
+ LoadDirectoryFiles(FileDlg);
+ FileDlgForEmuPascalScript := True;
+ FileDlg.Base.Visible := True;
+ DrawFileDialog(FileDlg);
+End;
+
+{ Execution UNIQUE (pas macro ligne-par-ligne) d'un script depuis le menu  }
+{ contextuel de l'emulateur - reutilise EXACTEMENT le mecanisme deja       }
+{ existant PsPipelineCapture/PsPipelineLines (voir DummyTP plus loin dans  }
+{ ce fichier, deja utilise par le F5 sur un .psc) : TermCmd_CSCRIPT/       }
+{ TermCmd_PSCRIPT n'ecrivent jamais reellement dans DummyTP (non           }
+{ initialise) tant que la capture est active - TermAddLineColor ressort    }
+{ AVANT tout acces a TP des que PsPipelineCapture=True (voir sa toute       }
+{ premiere ligne). La sortie capturee est ensuite recopiee dans            }
+{ OutputPanel, memes conventions OTK_BUILD/OTK_DEBUG que le F5 .psc. }
+Procedure RunVBScriptOnEmulator(ScriptPath: String);
+Var
+ DummyTP: TTerminalPanel;
+ I: Integer;
+Begin
+ AppendOutput(OutputPanel,
+  '------ Execution VBScript (emulateur) : ' + ScriptPath + ' ------',
+  Ord(OTK_BUILD));
+ ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+ PsPipelineCapture := True;
+ PsPipelineLineCount := 0;
+ TermCmd_CSCRIPT(DummyTP, ScriptPath);
+ PsPipelineCapture := False;
+ For I := 1 To PsPipelineLineCount Do
+  AppendOutput(OutputPanel, PsPipelineLines[I], Ord(OTK_DEBUG));
+ SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+ If CsExitCode = 0 Then
+  AppendOutput(OutputPanel,
+   '========== Execution : 1 succeeded, 0 failed ==========', Ord(OTK_BUILD))
+ Else
+  AppendOutput(OutputPanel,
+   '========== Execution : 0 succeeded, 1 failed ==========', Ord(OTK_BUILD));
+End;
+
+{ Instructions PascalScript SUPPLEMENTAIRES disponibles ici (MoveMouse/     }
+{ ClickMouse/GetMouseButton/GetMouseXPos/GetMouseYPos/Delay/CopyTo-/        }
+{ PasteToEmulatorClipboard) : voir PscTryEmuControlCall plus bas (built-in  }
+{ PSCRIPT global, comme Abs/Sin - PAS gate par une clause Uses, disponible  }
+{ dans N'IMPORTE QUEL script PascalScript, y compris la commande Terminal   }
+{ PSCRIPT, tant qu'un onglet emulateur est actif). }
+Procedure RunPascalScriptOnEmulator(ScriptPath: String);
+Var
+ DummyTP: TTerminalPanel;
+ I: Integer;
+Begin
+ AppendOutput(OutputPanel,
+  '------ Execution PascalScript (emulateur) : ' + ScriptPath + ' ------',
+  Ord(OTK_BUILD));
+ ClearOutput(OutputPanel, Ord(OTK_DEBUG));
+ PsPipelineCapture := True;
+ PsPipelineLineCount := 0;
+ TermCmd_PSCRIPT(DummyTP, ScriptPath);
+ PsPipelineCapture := False;
+ For I := 1 To PsPipelineLineCount Do
+  AppendOutput(OutputPanel, PsPipelineLines[I], Ord(OTK_DEBUG));
+ SetActiveOutputTab(OutputPanel, OTK_DEBUG);
+ If PscExitCode = 0 Then
+  AppendOutput(OutputPanel,
+   '========== Execution : 1 succeeded, 0 failed ==========', Ord(OTK_BUILD))
+ Else
+  AppendOutput(OutputPanel,
+   '========== Execution : 0 succeeded, 1 failed ==========', Ord(OTK_BUILD));
 End;
 
 { --- Initialiser le dialogue Proprietes du projet --- }
@@ -218594,6 +218979,12 @@ Begin
      807: OpenFileAtCursor; { Ouvrir le fichier au curseur }
      808: ShowVBScriptMacroOpenDialog; { Executer le VBScript... }
      809: ShowPascalScriptMacroOpenDialog; { Executer le PascalScript... }
+     { Menu contextuel de l'emulateur, souris non capturee (2026-09-20,       }
+     { demande explicite) - voir ShowEmulatorContextMenu. }
+     1000: EmuCtxPasteText; { Coller du texte }
+     1001: EmuCtxSendCtrlAltDel; { Envoi Ctrl+Alt+Suppr }
+     1002: ShowEmulatorVBScriptOpenDialog; { Executer le VBScript... }
+     1003: ShowEmulatorPascalScriptOpenDialog; { Executer le PascalScript... }
      500: Begin { Ouvrir }
       If (CtxMenu.NodeIdx >= 0) And
          (CtxMenu.NodeIdx < SolExplorer.NodeCount) Then Begin
@@ -218908,6 +219299,12 @@ Begin
      TermSaveTextConfirmed(TermPanels[ActiveShell], FileDlg.SelectedFile)
     Else If FileDlgForImageSave Then
      TermSaveImageConfirmed(TermPanels[ActiveShell], FileDlg.SelectedFile)
+    { "Executer le VBScript.../PascalScript..." du menu contextuel de       }
+    { l'EMULATEUR (2026-09-20, demande explicite) - voir CtxTag 1002/1003.  }
+    Else If FileDlgForEmuVBScript Then
+     RunVBScriptOnEmulator(FileDlg.SelectedFile)
+    Else If FileDlgForEmuPascalScript Then
+     RunPascalScriptOnEmulator(FileDlg.SelectedFile)
     Else If FileDlg.FolderMode Then
      HandleOpenFolderConfirmed
     Else
@@ -218917,6 +219314,8 @@ Begin
    FileDlgForPascalScriptMacro := False;
    FileDlgForTermSave := False;
    FileDlgForImageSave := False;
+   FileDlgForEmuVBScript := False;
+   FileDlgForEmuPascalScript := False;
    FileDlg.FolderMode := False;
    FullRepaintNeeded := True;
   End;
@@ -219082,6 +219481,20 @@ Begin
     { clic DEHORS du panneau (branche precedente) continue de relacher le   }
     { focus normalement ; seul un clic DEDANS pendant que le focus est deja }
     { perdu doit desormais le regagner plutot que d etre avale ici. }
+   End Else If EmuPanel.Loaded And Not EmuHasFocus And
+              (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseBtn = MB_RIGHT) Then Begin
+    { Menu contextuel "souris non capturee" (2026-09-20, demande explicite) }
+    { : un clic DROIT DANS le panneau alors que la souris n'est PAS         }
+    { capturee (EmuHasFocus=False) ouvre ShowEmulatorContextMenu au lieu de }
+    { reprendre le focus/transmettre le clic a l'invite - voir Case CtxTag  }
+    { 1000-1003. Place ICI (apres la branche "hors du panneau" et la        }
+    { branche EmuDbg.Paused ci-dessus, avant le "Else" generique qui suit)  }
+    { pour qu'un clic droit DEHORS du panneau continue de simplement        }
+    { relacher le focus (branche precedente, deja testee en premier), et    }
+    { qu'un clic droit pendant que le debogueur est en pause continue de    }
+    { simplement reprendre l'execution (branche EmuDbg.Paused ci-dessus,    }
+    { deja testee en premier) sans jamais afficher ce menu par surprise. }
+    ShowEmulatorContextMenu(CtxMenu, Ev.MouseX, Ev.MouseY);
    End Else Begin
     If EmuPanel.Loaded And (Ev.Kind = EV_MOUSE_DOWN) Then EmuHasFocus := True;
     HandleEmulatorPanelEvent(EmuPanel, Ev);
