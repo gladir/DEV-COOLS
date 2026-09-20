@@ -19,6 +19,7 @@ Const
 
 Type
  TPSYSTEMTarget=(ptAppleHeath,ptUCSDPascalII,ptUCSDPSystemIII,ptUCSDPSystemIV);
+ TPSYSTEMBatchMode=(pbNone,pbCompile,pbRun);
  TVolumeKind=(vkNone,vkConsole,vkDisk,vkPrinter,vkRemoteIn,vkRemoteOut);
  TVolumeEntry=Record
   UnitNo:Byte;Name,HostPath:String;Kind:TVolumeKind;Online,BlockDevice:Boolean
@@ -35,6 +36,7 @@ Var
  CurrentTarget:TPSYSTEMTarget;
  OriginalErrors:Boolean;
  CheckCodeRequested:Boolean;
+ BatchMode:TPSYSTEMBatchMode;
 
 Function TrimString(S:String):String;Begin
  While(Length(S)>0)and(S[1]in[' ',#9])do Delete(S,1,1);
@@ -2253,8 +2255,7 @@ Begin
  $93,$94:
  Begin
  B:=PCode_Fetch(PCode_PC);N:=PCode_Fetch(PCode_PC+1);Inc(PCode_PC,2);
- if(B=0)and PCode_Segments[0].Present Then PCode_CallExternalSegment(0,N,Op=$94)
- else if B=0 Then PCode_CallUnit0(N)
+ if B=0 Then PCode_CallUnit0(N)
   else if B=PCode_CurrentSegment Then PCode_CallProcedure(N,0,Op=$94)
   else PCode_CallExternalSegment(B,N,Op=$94)
  End;
@@ -2533,7 +2534,8 @@ Begin
   if PCode_IIProcedureNative(ProcNum)Then
    PCode_RuntimeError(500,'procedure native '+PCode_IntToStr(ProcNum)+
     ' non executable sur cette machine hote')
-  else PCode_RuntimeError(301,'procedure UCSD II/III invalide');Exit
+  else PCode_RuntimeError(301,'procedure UCSD II/III '+PCode_IntToStr(ProcNum)+
+   ' invalide');Exit
  End;
  if GlobalCall Then StaticLink:=PCode_Base
  else if LexLevel=0 Then StaticLink:=PCode_MP else StaticLink:=PCode_StaticBase(LexLevel);
@@ -3148,8 +3150,7 @@ Begin
  { CXP unite,proc }
  B := PCode_Fetch(PCode_PC + 1); N := PCode_Fetch(PCode_PC + 2);
  PCode_PC := PCode_PC + 3;
- If(B=0)and PCode_Segments[0].Present Then PCode_CallExternalSegment(0,N,True)
- Else If B = 0 Then PCode_CallUnit0(N)
+ If B = 0 Then PCode_CallUnit0(N)
  Else if B=PCode_CurrentSegment Then PCode_CallProcedure(N,0,True)
  Else PCode_CallExternalSegment(B,N,True);
 End;
@@ -9126,6 +9127,8 @@ Procedure Help;Begin
  WriteLn('/ORGINALERR  Afficher les messages d''erreur UCSD originaux en anglais');
  WriteLn('/LIST         Afficher le listing du source compile');
  WriteLn('/CHECKCODE   Verifier les segments et dictionnaires sans executer');
+ WriteLn('/BATCHCOMPILE Compiler le source indique puis terminer');
+ WriteLn('/BATCHRUN     Executer le fichier CODE indique puis terminer');
  WriteLn('/RANGECHECK[+|-]  Activer/desactiver les controles de bornes de la VM');
  WriteLn('/OVERFLOWCHECK[+|-]  Activer/desactiver les debordements entiers 16 bits');
  WriteLn('/VOLUME:n=chemin  Associer un numero d''unite disque a un repertoire hote');
@@ -9177,7 +9180,7 @@ Begin
  FilerDate:=A+'/'+B+'/'+C;
  OriginalErrors:=False;CPListing:=False;
  PCode_RangeChecking:=True;PCode_OverflowChecking:=False;
- CheckCodeRequested:=False;
+ CheckCodeRequested:=False;BatchMode:=pbNone;
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
   if(S='/?')or(S='-?')or(UpperString(S)='HELP')Then Begin
@@ -9186,6 +9189,8 @@ Begin
    Help;
    Halt(0)
   End else if UpperString(S)='/CHECKCODE'Then CheckCodeRequested:=True
+  else if UpperString(S)='/BATCHCOMPILE'Then BatchMode:=pbCompile
+  else if UpperString(S)='/BATCHRUN'Then BatchMode:=pbRun
   else if(UpperString(S)='/RANGECHECK')or(UpperString(S)='/RANGECHECK+')Then
    PCode_RangeChecking:=True
   else if UpperString(S)='/RANGECHECK-'Then PCode_RangeChecking:=False
@@ -9210,7 +9215,7 @@ Begin
   Begin
    WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/VOLUME:n=chemin]');
    WriteLn('          [/ORGINALERR] [/LIST] [/CHECKCODE] [/RANGECHECK[+|-]]');
-   WriteLn('          [/OVERFLOWCHECK[+|-]]');
+   WriteLn('          [/OVERFLOWCHECK[+|-]] [/BATCHCOMPILE|/BATCHRUN]');
    Halt(1)
   End
  End;
@@ -9218,6 +9223,15 @@ Begin
  if CheckCodeRequested Then Begin
   if WorkFile=''Then Begin WriteLn('/CHECKCODE exige un fichier CODE.');Halt(1) End;
   if CheckUCSDCodeFile(WorkFile)Then Halt(0)else Halt(1)
+ End;
+ if BatchMode=pbCompile Then Begin
+  if WorkFile=''Then Begin WriteLn('/BATCHCOMPILE exige un fichier Pascal.');Halt(1) End;
+  WorkFile:=ResolveUCSDName(WorkFile);ProgramFile:=AssociatedCodeName(WorkFile);
+  I:=CompilePascalPCode(WorkFile,ProgramFile);Halt(I)
+ End;
+ if BatchMode=pbRun Then Begin
+  if WorkFile=''Then Begin WriteLn('/BATCHRUN exige un fichier CODE.');Halt(1) End;
+  WorkFile:=ResolveUCSDName(WorkFile);I:=ExecutePCodeFile(WorkFile);Halt(I)
  End;
  if WorkFile=''Then Begin
   WorkFile:=ResolveUCSDName('SYSTEM:SYSTEM.WRK.TEXT');

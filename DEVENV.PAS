@@ -89040,6 +89040,20 @@ Var
  CurrParam, Dir, RomPath, ScriptPath: String;
 Begin
  CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ { /? (2026-09-20, demande explicite) : aide detaillee, AVANT le controle   }
+ { "parametre vide" ci-dessous (memes deux commandes, meme flag). }
+ If CurrParam = '/?' Then Begin
+  TermAddLine(TP, 'GEOS : lance l''emulateur PC/GEOS-GeoWorks (Stage 11, ' +
+   'execution reelle) sur un fichier .geo du systeme hote.');
+  TermAddLine(TP, '');
+  TermAddLine(TP, 'Syntaxe : GEOS fichier.geo [/PASCALSCRIPT:script.psc]');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '  fichier.geo                  Geode PC/GEOS a charger ' +
+   '(chemin du systeme hote uniquement, disque virtuel non supporte).');
+  TermAddLine(TP, '  /PASCALSCRIPT:script.psc      Execute ce script ' +
+   'PascalScript AVANT de creer l''onglet emulateur.');
+  Exit;
+ End;
  If CurrParam = '' Then Begin
   TermAddLine(TP, 'Syntaxe : GEOS fichier.geo [/PASCALSCRIPT:script.psc]');
   Exit;
@@ -89156,6 +89170,22 @@ Var
  CurrParam, Dir, ExePath: String;
 Begin
  CurrParam := TermExtractParam(ParamStr, 1);
+ { /? (2026-09-20, demande explicite) : aide detaillee - UNE SEULE          }
+ { implementation partagee par WIN/WIN16 (Invite de commande/Norton         }
+ { Commander) ET Start-Win16*/Invoke-Win16* (PowerShell dev, meme fonction, }
+ { voir PSCmd ID 58) - couvre les 3 shells d'un coup, aucun autre           }
+ { changement necessaire. }
+ If CurrParam = '/?' Then Begin
+  TermAddLine(TP, 'WIN / WIN16 : lance l''emulateur Windows 16 bits (NE) ' +
+   'sur un executable .exe du systeme hote.');
+  TermAddLine(TP, '');
+  TermAddLine(TP, 'Syntaxe : WIN fichier.exe');
+  TermAddLine(TP, '          WIN16 fichier.exe   (alias exact)');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '  fichier.exe   Executable Win16 (NE) a charger ' +
+   '(chemin du systeme hote uniquement, disque virtuel non supporte).');
+  Exit;
+ End;
  If CurrParam = '' Then Begin
   TermAddLine(TP, 'Syntaxe : WIN16 fichier.exe');
   Exit;
@@ -126170,6 +126200,9 @@ Function PscTryGeoGraphCall(U,S:String;Var V:TPscValue):Boolean;Forward;
 { Idem (instructions de pilotage emulateur, 2026-09-20, demande explicite -}
 { MoveMouse/ClickMouse/etc.), definie juste apres PscTryGeoGraphCall. }
 Function PscTryEmuControlCall(U,S:String;Var V:TPscValue):Boolean;Forward;
+{ Idem (unite GeoKernel, 2026-09-20, demande explicite), definie juste      }
+{ avant le point d'entree PSCRIPT. }
+Function PscTryGeoKernelCall(U,S:String;Var V:TPscValue):Boolean;Forward;
 { Emu_MouseFireEvents n'a jusqu'ici jamais ete appelee avant sa propre      }
 { definition reelle (bien plus bas) - Forward necessaire pour              }
 { PscEmu_MouseSetLogical ci-dessous (MoveMouse/ClickMouse). }
@@ -126685,6 +126718,8 @@ Begin
   { contexte EXPRESSION (GetMouseButton/GetMouseXPos/GetMouseYPos). Voir     }
   { PscTryEmuControlCall et sa disclosure complete plus bas. }
   If PscTryEmuControlCall(U,S,V) Then Exit;
+  { Unite GeoKernel (2026-09-20, demande explicite) - contexte EXPRESSION.   }
+  If PscTryGeoKernelCall(U,S,V) Then Exit;
   { Fonctions arithmetiques/ordinales standard de Pascal (2026-09-19,       }
   { demande explicite de l'utilisateur : "PascalScript ne supporte pas la  }
   { fonction Abs, ArcTan, Cos, Exp, Frac, Hi, Int, Ln, Lo, Odd, Ord, Pred,  }
@@ -127261,6 +127296,8 @@ Begin
   { Idem (instructions de pilotage emulateur) - contexte INSTRUCTION         }
   { (MoveMouse/ClickMouse/Delay/CopyTo-/PasteToEmulatorClipboard). }
   If PscTryEmuControlCall(PscUp(N),A,V) Then Exit;
+  { Unite GeoKernel (2026-09-20, demande explicite) - contexte INSTRUCTION.  }
+  If PscTryGeoKernelCall(PscUp(N),A,V) Then Exit;
   PscCallRoutine(N,A,False,V);
   Exit;
  End;
@@ -128398,6 +128435,450 @@ Begin
    Exit;
   End;
   SetRealClipboardText(GetRealClipboardText);
+  Exit;
+ End;
+End;
+
+{ ========================================================================= }
+{ Unite GeoKernel (2026-09-20, demande explicite de l'utilisateur,          }
+{ interface complete fournie integralement - services du noyau PC/GEOS).    }
+{ Gatee par PscUsesGeoKernel (clause Uses, voir PscInitUsesClause plus       }
+{ haut), meme motif exact que GeoGraph/PscUsesGeoGraph.                     }
+{                                                                           }
+{ DISCLOSURE DE PORTEE (essentielle) : contrairement a GeoGraph (ou un       }
+{ script PascalScript hote pilote naturellement un peripherique DE SORTIE   }
+{ - l'ecran), la VRAIE API GeoKernel est concue pour etre appelee PAR DU     }
+{ CODE TOURNANT DANS L'INVITE EMULEE (un programme GEOS 8086), PAS par un   }
+{ script hote externe. Ce chantier reprend donc EXACTEMENT la meme          }
+{ convention deja etablie par Invoke-GeoWorksAPI (Stage 2 et suivants) :    }
+{ le script agit comme un harnais de test EXTERNE qui appelle directement   }
+{ les MEMES fonctions Pascal internes que le noyau emule utiliserait,       }
+{ operant sur le SEUL geode actuellement charge (aucun support multi-       }
+{ geode reel).                                                             }
+{                                                                           }
+{ FONCTIONS EXPLICITEMENT EXCLUES de cette premiere passe (portee           }
+{ honnetement limitee, PAS des trous caches) - aucune source verifiee ne    }
+{ documente leurs constantes reelles (GITT_*/MGIT_* InfoType, format reel   }
+{ de SYSCONFIG, etc.) ou leur infrastructure sous-jacente (livraison        }
+{ reelle de messages/evenements) n'est pas encore construite :              }
+{ GeodeGetInfo, GeodeLoad, GeodeFree, MemGetInfo, MemGetOwner, EventAlloc,  }
+{ EventFree, MessageSend, TimerGetDateAndTime (record var-parametre),       }
+{ TimerStart, TimerStop, SysGetConfig, SysGetECLevel.                       }
+{                                                                           }
+{ ADAPTATIONS D'INTERFACE (PSCRIPT n'a NI pointeur NI record reel, meme      }
+{ disclosure que GrDrawPolygon/GrDrawBitmap pour GeoGraph) :                }
+{  - Optr (Handle,Chunk) : jamais utilise ici (uniquement les fonctions     }
+{    EXCLUES ci-dessus en avaient besoin).                                 }
+{  - ThreadCreate StartRoutine:Pointer -> EntrySeg,EntryOfs (2 mots plats)  }
+{    au lieu d'un seul pointeur far.                                       }
+{  - ThreadDestroy(ErrorCode,AckObject,AckData) : la VRAIE fonction ne       }
+{    prend AUCUN handle de thread (elle detruit TOUJOURS le thread          }
+{    APPELANT) - PascalScript n'etant pas lui-meme un thread invite, un      }
+{    parametre Thread:ThreadHandle explicite est AJOUTE en tete ;           }
+{    AckObject/AckData sont acceptes mais IGNORES (aucune livraison de      }
+{    message d'accuse reel modelisee).                                     }
+{  - MemLock retourne le SEGMENT (Word) plutot qu'un vrai Pointer far        }
+{    Pascal (l'offset est toujours 0 pour un bloc alloue par ce MemAlloc).  }
+{  - FileRead(Handle,Count):String / FileWrite(Handle,Texte):Word           }
+{    remplacent "var Buffer"/"const Buffer" (aucun type tampon brut dans     }
+{    PSCRIPT) - memes noms de fonction, liste de parametres adaptee.        }
+{                                                                           }
+{ REEL (pas invente) :                                                     }
+{  - MemAlloc/MemReAlloc/MemFree/MemLock/MemUnlock : NOUVEL allocateur de    }
+{    blocs par bump sur Geos_NextFreeSeg (EXACTEMENT le meme mecanisme deja }
+{    utilise pour CHAQUE autre segment de ce fichier - Stage 1 chargement,   }
+{    Stage 3 trappes, Stage 7 piles de threads, Stage 10 amorceur) - PAS    }
+{    GeosLMem_Alloc (Stage 2), qui alloue des CHUNKS a l'INTERIEUR d'une     }
+{    ressource LMem existante : la vraie API GeoKernel MemAlloc cree au      }
+{    contraire un tout NOUVEAU bloc/handle systeme, distinction reelle      }
+{    documentee entre les deux familles d'allocateurs GEOS. Handle = indice }
+{    d'emplacement (1..32), PAS le segment brut. Disclosure : ce bump        }
+{    allocateur ne recupere JAMAIS l'espace (MemFree marque juste           }
+{    l'emplacement libre) - identique au comportement DEJA etabli de tout    }
+{    le reste de ce fichier, pas une nouvelle simplification.               }
+{  - ThreadCreate/ThreadDestroy/ThreadModify/ThreadGetError : reutilisent    }
+{    REELLEMENT Geos_ThreadCreate (Stage 6) et Geos_Thread[].State.          }
+{  - ThreadAllocSem/FreeSem/PSem/PTimedSem/VSem : VRAI semaphore a compteur  }
+{    (allocation/liberation/increment reels) MAIS attente NON BLOQUANTE     }
+{    disclosee : PascalScript s'execute HORS du CPU emule (pas un vrai       }
+{    thread invite qui pourrait ceder la main a l'ordonnanceur) - ThreadPSem}
+{    retourne immediatement 0 (succes, decremente) ou 1 (aurait bloque),    }
+{    jamais une fausse attente.                                            }
+{  - TimerSleep : reutilise WinSleep (deja utilise ailleurs dans ce          }
+{    fichier) - Ticks traites comme des millisecondes (simplification       }
+{    disclosee, la vraie unite "jiffy" GEOS est differente).                }
+{  - FileOpen/FileCreate/FileClose/FileRead/FileWrite/FilePos/FileDelete :   }
+{    VRAIS fichiers du systeme hote (Assign/Reset/Rewrite/BlockRead/         }
+{    BlockWrite/Close/Erase deja utilises partout ailleurs dans ce fichier) }
+{    - AUCUN systeme de fichiers GEOS reel modelise (disclosure identique   }
+{    a "disque virtuel non supporte" deja etablie pour GEOS/WIN16/etc).      }
+{  - GeodeGetProcessHandle/GeodeGetCodeProcessHandle : handle FIXE (1)       }
+{    representant "le seul geode actuellement charge" (disclosure : aucun   }
+{    support multi-geode reel).                                            }
+{  - SysGetPenMode : False CONSTANT et honnete (cet emulateur ne modelise    }
+{    aucune entree stylet).                                                }
+{ ========================================================================= }
+
+Const
+ PSC_GEOKERN_MEM_MAX = 32;
+ PSC_GEOKERN_SEM_MAX = 16;
+ PSC_GEOKERN_FILE_MAX = 16;
+
+Type
+ TPscGeoKernMemBlock = Record
+  InUse : Boolean;
+  Seg   : Word;
+  Size  : Word;
+ End;
+ TPscGeoKernSem = Record
+  InUse : Boolean;
+  Count : Integer;
+ End;
+
+Var
+ PscGeoKernMem   : Array[1..PSC_GEOKERN_MEM_MAX] Of TPscGeoKernMemBlock;
+ PscGeoKernSem   : Array[1..PSC_GEOKERN_SEM_MAX] Of TPscGeoKernSem;
+ PscGeoKernFiles : Array[1..PSC_GEOKERN_FILE_MAX] Of File;
+ PscGeoKernFileInUse : Array[1..PSC_GEOKERN_FILE_MAX] Of Boolean;
+ PscGeoKernLastError : Word;
+
+Function PscGeoKernAllocBlock(Size: Word; ZeroInit: Boolean): Integer;
+Var
+ I, J: Integer;
+ NewSeg: Word;
+Begin
+ PscGeoKernAllocBlock := 0;
+ For I := 1 To PSC_GEOKERN_MEM_MAX Do
+  If Not PscGeoKernMem[I].InUse Then Begin
+   NewSeg := Geos_NextFreeSeg;
+   Geos_NextFreeSeg := Geos_NextFreeSeg + Word((LongInt(Size) + 15) Shr 4);
+   PscGeoKernMem[I].InUse := True;
+   PscGeoKernMem[I].Seg := NewSeg;
+   PscGeoKernMem[I].Size := Size;
+   If ZeroInit Then
+    For J := 0 To Integer(Size) - 1 Do Emu_WriteByte(EmuPanel.CPU, NewSeg, Word(J), 0);
+   PscGeoKernAllocBlock := I;
+   Exit;
+  End;
+End;
+
+Function PscGeoKernValidMem(Slot: Integer): Boolean;
+Var Ok: Boolean;
+Begin
+ Ok := (Slot >= 1) And (Slot <= PSC_GEOKERN_MEM_MAX) And PscGeoKernMem[Slot].InUse;
+ If Not Ok Then PscWL('GeoKernel : MemHandle invalide (' + IntToStr(Slot) + ').');
+ PscGeoKernValidMem := Ok;
+End;
+
+Function PscGeoKernValidSem(Slot: Integer): Boolean;
+Var Ok: Boolean;
+Begin
+ Ok := (Slot >= 1) And (Slot <= PSC_GEOKERN_SEM_MAX) And PscGeoKernSem[Slot].InUse;
+ If Not Ok Then PscWL('GeoKernel : SemaphoreHandle invalide (' + IntToStr(Slot) + ').');
+ PscGeoKernValidSem := Ok;
+End;
+
+Function PscGeoKernValidFile(Slot: Integer): Boolean;
+Var Ok: Boolean;
+Begin
+ Ok := (Slot >= 1) And (Slot <= PSC_GEOKERN_FILE_MAX) And PscGeoKernFileInUse[Slot];
+ If Not Ok Then PscWL('GeoKernel : FileHandle invalide (' + IntToStr(Slot) + ').');
+ PscGeoKernValidFile := Ok;
+End;
+
+Function PscTryGeoKernelCall(U, S: String; Var V: TPscValue): Boolean;
+Var
+ Raw, A1, A2, A3, A4, A5, A6: String;
+ N1, N2, N3, N4, N5, N6: TPscValue;
+ Slot, Slot2, OldSize, CopyLen, I: Integer;
+ IOErr: Integer;
+ Buf: Array[0..255] Of Byte;
+ BufStr: String;
+ BytesDone: Word;
+ FPosL: LongInt;
+ ThHandle: Integer;
+ ThErrMsg: String;
+Begin
+ PscTryGeoKernelCall := False;
+ PscVNum(0, V);
+ If Not PscUsesGeoKernel Then Exit;
+ Raw := S;
+ A1 := PscNextItem(Raw, ','); A2 := PscNextItem(Raw, ','); A3 := PscNextItem(Raw, ',');
+ A4 := PscNextItem(Raw, ','); A5 := PscNextItem(Raw, ','); A6 := PscNextItem(Raw, ',');
+
+ If U = 'MEMALLOC' Then Begin
+  PscTryGeoKernelCall := True;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A1, N1); PscEvalText(A2, N2);
+  Slot := PscGeoKernAllocBlock(Word(Trunc(N1.Num)), (Trunc(N2.Num) And $0001) <> 0);
+  If Slot = 0 Then Begin
+   PscWL('MemAlloc : plus de MemHandle disponible (' + IntToStr(PSC_GEOKERN_MEM_MAX) + ' max).');
+   Exit;
+  End;
+  PscVNum(Slot, V);
+  Exit;
+ End;
+
+ If U = 'MEMREALLOC' Then Begin
+  PscTryGeoKernelCall := True;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoKernValidMem(Slot) Then Exit;
+  PscEvalText(A2, N2); PscEvalText(A3, N3);
+  OldSize := PscGeoKernMem[Slot].Size;
+  Slot2 := PscGeoKernAllocBlock(Word(Trunc(N2.Num)), (Trunc(N3.Num) And $0001) <> 0);
+  If Slot2 = 0 Then Begin
+   PscWL('MemReAlloc : plus de MemHandle disponible.');
+   Exit;
+  End;
+  CopyLen := OldSize;
+  If Trunc(N2.Num) < CopyLen Then CopyLen := Trunc(N2.Num);
+  For I := 0 To CopyLen - 1 Do
+   Emu_WriteByte(EmuPanel.CPU, PscGeoKernMem[Slot2].Seg, Word(I),
+    Emu_ReadByte(EmuPanel.CPU, PscGeoKernMem[Slot].Seg, Word(I)));
+  PscGeoKernMem[Slot].InUse := False;
+  PscVNum(Slot2, V);
+  Exit;
+ End;
+
+ If U = 'MEMFREE' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoKernValidMem(Slot) Then PscGeoKernMem[Slot].InUse := False;
+  Exit;
+ End;
+
+ If U = 'MEMLOCK' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoKernValidMem(Slot) Then Exit;
+  PscVNum(PscGeoKernMem[Slot].Seg, V);
+  Exit;
+ End;
+
+ If U = 'MEMUNLOCK' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1);
+  PscGeoKernValidMem(Trunc(N1.Num)); { validation seule, disclosure : rien a deverrouiller }
+  Exit;
+ End;
+
+ If (U = 'GEODEGETPROCESSHANDLE') Or (U = 'GEODEGETCODEPROCESSHANDLE') Then Begin
+  PscTryGeoKernelCall := True;
+  If Not PscGeoActiveOK Then Exit;
+  PscVNum(1, V); { handle FIXE : un seul geode charge, voir disclosure de tete }
+  Exit;
+ End;
+
+ If U = 'THREADCREATE' Then Begin
+  PscTryGeoKernelCall := True;
+  If Not PscGeoActiveOK Then Exit;
+  PscEvalText(A1, N1); PscEvalText(A2, N2); PscEvalText(A3, N3);
+  PscEvalText(A4, N4); PscEvalText(A5, N5); PscEvalText(A6, N6);
+  { A1=Priority A2=ValueToPass A3=EntrySeg A4=EntryOfs A5=StackSize A6=Owner }
+  If Geos_ThreadCreate(EmuPanel.CPU, Byte(Trunc(N1.Num)), Word(Trunc(N2.Num)),
+     Word(Trunc(N3.Num)), Word(Trunc(N4.Num)), Word(Trunc(N5.Num)),
+     Word(Trunc(N6.Num)), Word(Trunc(N6.Num)), ThHandle, ThErrMsg) Then
+   PscVNum(ThHandle, V)
+  Else
+   PscWL('ThreadCreate : ' + ThErrMsg);
+  Exit;
+ End;
+
+ If U = 'THREADDESTROY' Then Begin
+  PscTryGeoKernelCall := True;
+  { A1=Thread (AJOUTE, voir disclosure de tete) A2=ErrorCode A3/A4=AckObject }
+  { (IGNORES) A5=AckData (IGNORE) }
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If (Slot >= 0) And (Slot < GEOS_MAX_THREADS) And
+     (Geos_Thread[Slot].State <> GTS_FREE) Then Begin
+   PscEvalText(A2, N2);
+   PscGeoKernLastError := Word(Trunc(N2.Num));
+   Geos_Thread[Slot].State := GTS_TERMINATED;
+  End Else
+   PscWL('ThreadDestroy : ThreadHandle invalide (' + IntToStr(Slot) + ').');
+  Exit;
+ End;
+
+ If U = 'THREADGETERROR' Then Begin
+  PscTryGeoKernelCall := True;
+  PscVNum(PscGeoKernLastError, V);
+  Exit;
+ End;
+
+ If U = 'THREADMODIFY' Then Begin
+  PscTryGeoKernelCall := True;
+  { Accepte et valide le handle - AUCUN ordonnancement par priorite dans    }
+  { cet emulateur (meme disclosure deja etablie par Geos_ThreadCreate lui-  }
+  { meme, Stage 6 : "Priority acceptee mais non exploitee"). }
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not ((Slot >= 0) And (Slot < GEOS_MAX_THREADS) And
+          (Geos_Thread[Slot].State <> GTS_FREE)) Then
+   PscWL('ThreadModify : ThreadHandle invalide (' + IntToStr(Slot) + ').');
+  Exit;
+ End;
+
+ If U = 'THREADALLOCSEM' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1);
+  Slot := 0;
+  For I := 1 To PSC_GEOKERN_SEM_MAX Do
+   If Not PscGeoKernSem[I].InUse Then Begin Slot := I; Break; End;
+  If Slot = 0 Then Begin
+   PscWL('ThreadAllocSem : plus de SemaphoreHandle disponible (' +
+    IntToStr(PSC_GEOKERN_SEM_MAX) + ' max).');
+   Exit;
+  End;
+  PscGeoKernSem[Slot].InUse := True;
+  PscGeoKernSem[Slot].Count := Trunc(N1.Num);
+  PscVNum(Slot, V);
+  Exit;
+ End;
+
+ If U = 'THREADFREESEM' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoKernValidSem(Slot) Then PscGeoKernSem[Slot].InUse := False;
+  Exit;
+ End;
+
+ If (U = 'THREADPSEM') Or (U = 'THREADPTIMEDSEM') Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoKernValidSem(Slot) Then Exit;
+  If PscGeoKernSem[Slot].Count > 0 Then Begin
+   Dec(PscGeoKernSem[Slot].Count);
+   PscVNum(0, V); { succes }
+  End Else
+   PscVNum(1, V); { aurait bloque - jamais une fausse attente, voir disclosure }
+  Exit;
+ End;
+
+ If U = 'THREADVSEM' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoKernValidSem(Slot) Then Inc(PscGeoKernSem[Slot].Count);
+  Exit;
+ End;
+
+ If U = 'TIMERGETCOUNT' Then Begin
+  PscTryGeoKernelCall := True;
+  PscVNum(EmuPanel.TotalSteps, V); { compteur REEL, pas d'horloge jiffy modelisee }
+  Exit;
+ End;
+
+ If U = 'TIMERSLEEP' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1);
+  WinSleep(Trunc(N1.Num));
+  Exit;
+ End;
+
+ If U = 'FILEOPEN' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1);
+  Slot := 0;
+  For I := 1 To PSC_GEOKERN_FILE_MAX Do
+   If Not PscGeoKernFileInUse[I] Then Begin Slot := I; Break; End;
+  If Slot = 0 Then Begin
+   PscWL('FileOpen : plus de FileHandle disponible (' + IntToStr(PSC_GEOKERN_FILE_MAX) + ' max).');
+   Exit;
+  End;
+  Assign(PscGeoKernFiles[Slot], N1.Text);
+  {$I-} Reset(PscGeoKernFiles[Slot], 1); {$I+}
+  IOErr := IOResult;
+  If IOErr <> 0 Then Begin
+   PscWL('FileOpen : ' + N1.Text + ' introuvable ou inaccessible.');
+   Exit;
+  End;
+  PscGeoKernFileInUse[Slot] := True;
+  PscVNum(Slot, V);
+  Exit;
+ End;
+
+ If U = 'FILECREATE' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1);
+  Slot := 0;
+  For I := 1 To PSC_GEOKERN_FILE_MAX Do
+   If Not PscGeoKernFileInUse[I] Then Begin Slot := I; Break; End;
+  If Slot = 0 Then Begin
+   PscWL('FileCreate : plus de FileHandle disponible (' + IntToStr(PSC_GEOKERN_FILE_MAX) + ' max).');
+   Exit;
+  End;
+  Assign(PscGeoKernFiles[Slot], N1.Text);
+  {$I-} Rewrite(PscGeoKernFiles[Slot], 1); {$I+}
+  IOErr := IOResult;
+  If IOErr <> 0 Then Begin
+   PscWL('FileCreate : impossible de creer ' + N1.Text + '.');
+   Exit;
+  End;
+  PscGeoKernFileInUse[Slot] := True;
+  PscVNum(Slot, V);
+  Exit;
+ End;
+
+ If U = 'FILECLOSE' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If PscGeoKernValidFile(Slot) Then Begin
+   {$I-} Close(PscGeoKernFiles[Slot]); {$I+}
+   IOErr := IOResult;
+   PscGeoKernFileInUse[Slot] := False;
+  End;
+  Exit;
+ End;
+
+ If U = 'FILEREAD' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoKernValidFile(Slot) Then Exit;
+  PscEvalText(A2, N2);
+  CopyLen := Trunc(N2.Num);
+  If CopyLen > 255 Then CopyLen := 255;
+  If CopyLen < 0 Then CopyLen := 0;
+  {$I-} BlockRead(PscGeoKernFiles[Slot], Buf, CopyLen, BytesDone); {$I+}
+  IOErr := IOResult;
+  BufStr := '';
+  For I := 0 To Integer(BytesDone) - 1 Do BufStr := BufStr + Chr(Buf[I]);
+  PscVText(BufStr, V);
+  Exit;
+ End;
+
+ If U = 'FILEWRITE' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoKernValidFile(Slot) Then Exit;
+  PscEvalText(A2, N2);
+  For I := 1 To Length(N2.Text) Do Buf[I - 1] := Byte(N2.Text[I]);
+  {$I-} BlockWrite(PscGeoKernFiles[Slot], Buf, Length(N2.Text), BytesDone); {$I+}
+  IOErr := IOResult;
+  PscVNum(BytesDone, V);
+  Exit;
+ End;
+
+ If U = 'FILEPOS' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1); Slot := Trunc(N1.Num);
+  If Not PscGeoKernValidFile(Slot) Then Exit;
+  FPosL := FilePos(PscGeoKernFiles[Slot]);
+  PscVNum(FPosL, V);
+  Exit;
+ End;
+
+ If U = 'FILEDELETE' Then Begin
+  PscTryGeoKernelCall := True;
+  PscEvalText(A1, N1);
+  Assign(PscGeoKernFiles[1], N1.Text); { emplacement 1 temporairement reutilise, non ouvert }
+  {$I-} Erase(PscGeoKernFiles[1]); {$I+}
+  IOErr := IOResult;
+  If IOErr <> 0 Then PscWL('FileDelete : impossible de supprimer ' + N1.Text + '.');
+  Exit;
+ End;
+
+ If U = 'SYSGETPENMODE' Then Begin
+  PscTryGeoKernelCall := True;
+  PscVText('False', V); V.Num := 0; { honnete : aucune entree stylet modelisee }
   Exit;
  End;
 End;
