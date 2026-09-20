@@ -355,6 +355,7 @@ Procedure ExprSkip(Var E:TExprParser);Begin
  While(E.P<=Length(E.S))and(E.S[E.P]in[' ',#9])do Inc(E.P)
 End;
 Function ParseExprOr(Var E:TExprParser):LongInt;Forward;
+Function ParseUnary(Var E:TExprParser):LongInt;Forward;
 
 Function ParseNumber(Var E:TExprParser):LongInt;
 Var
@@ -374,6 +375,16 @@ Begin
   else Inc(E.P);
   ParseNumber:=V;Exit
  End;
+ if C='['Then Begin
+  if not Opt.Segmented Then Diagnostic('adresse [segment]offset reservee aux sources .8KS');
+  Inc(E.P);V:=ParseExprOr(E);ExprSkip(E);
+  if(E.P>Length(E.S))or(E.S[E.P]<>']')Then Diagnostic('crochet fermant attendu')
+  else Inc(E.P);
+  if(Pass=2)and((V<0)or(V>$7F))Then Diagnostic('numero de segment hors plage 0..127');
+  Base:=V;V:=ParseUnary(E);
+  if(Pass=2)and((V<0)or(V>$FFFF))Then Diagnostic('offset segmente hors plage 0..65535');
+  ParseNumber:=LongInt($80000000)or(LongInt(Base and $7F)shl 24)or(V and $FFFF);Exit
+ End;
  if C=''''Then Begin
   Inc(E.P);if E.P<=Length(E.S)Then Begin
    V:=Ord(E.S[E.P]);Inc(E.P)
@@ -383,7 +394,10 @@ Begin
  if C='$'Then Begin
   Inc(E.P);Start:=E.P;
   While(E.P<=Length(E.S))and(UpCase(E.S[E.P])in['0'..'9','A'..'F'])do Inc(E.P);
-  T:=Copy(E.S,Start,E.P-Start);Val('$'+T,V,Code);if Code<>0 Then V:=0;ParseNumber:=V;Exit
+  T:=Copy(E.S,Start,E.P-Start);
+  if T=''Then V:=Location[CurrentSection]else Begin
+   Val('$'+T,V,Code);if Code<>0 Then V:=0
+  End;ParseNumber:=V;Exit
  End;
  if C in['0'..'9']Then Begin
   Start:=E.P;
@@ -441,6 +455,7 @@ Var
  MinusBetween:Boolean;
 Begin
  EvalReloc:=Eval(S,ForwardRef);Base:=0;FirstP:=Nil;Count:=0;MinusBetween:=False;I:=1;
+ if TrimString(S)='$'Then Begin Base:=CurrentSection;Exit End;
  While I<=Length(S)do Begin
   if S[I]=''''Then Begin Inc(I);if I<=Length(S)Then Inc(I);if(I<=Length(S))and(S[I]='''')Then Inc(I) End
   else if S[I]='$'Then Begin
@@ -462,7 +477,9 @@ Begin
  End else if Count>1 Then Diagnostic('expression relogeable trop complexe')
 End;
 
-Function ParseUnary(Var E:TExprParser):LongInt;Begin
+Function ParseUnary(Var E:TExprParser):LongInt;
+Var P0:Integer;U:String;V:LongInt;
+Begin
  ExprSkip(E);if(E.P<=Length(E.S))and(E.S[E.P]='+')Then Begin
   Inc(E.P);ParseUnary:=ParseUnary(E)
  End
@@ -471,6 +488,14 @@ Function ParseUnary(Var E:TExprParser):LongInt;Begin
  End
  else if(E.P<=Length(E.S))and(E.S[E.P]='~')Then Begin
   Inc(E.P);ParseUnary:=not ParseUnary(E)
+ End
+ else if(E.P<=Length(E.S))and IsIdentStart(E.S[E.P])Then Begin
+  P0:=E.P;While(E.P<=Length(E.S))and IsIdentChar(E.S[E.P])do Inc(E.P);
+  U:=UpperString(Copy(E.S,P0,E.P-P0));
+  if(U='SEG')or(U='OFFSET')Then Begin
+   V:=ParseUnary(E);
+   if U='SEG'Then ParseUnary:=(LongInt(V)shr 24)and $7F else ParseUnary:=V and $FFFF
+  End else Begin E.P:=P0;ParseUnary:=ParseNumber(E) End
  End
  else ParseUnary:=ParseNumber(E)
 End;
@@ -766,6 +791,145 @@ Begin
  else Diagnostic('directive inconnue: '+OpcodeField)
 End;
 
+Procedure EmitDirectAddress(V:LongInt;Base:Word;ForceShort:Boolean);Forward;
+
+Type
+ TOperandKind=(okInvalid,okRegister,okImmediate,okIndirect,okDirect,okIndexed,okBase,
+  okBaseIndex);
+ TOperand=Record
+  Kind:TOperandKind;
+  Reg,IndexReg:Integer;
+  Value:LongInt;
+  RelBase:Word;
+  ForwardRef,ForceShort:Boolean
+ End;
+
+Procedure ParseOperand(S:String;RegKind:Char;Var O:TOperand);
+Var P:Integer;Left,Inside:String;
+Begin
+ FillChar(O,SizeOf(O),0);O.Kind:=okInvalid;O.Reg:=-1;O.IndexReg:=-1;S:=TrimString(S);
+ if S=''Then Exit;
+ O.Reg:=RegisterNumber(S,RegKind);if O.Reg>=0 Then Begin O.Kind:=okRegister;Exit End;
+ if S[1]='#'Then Begin
+  Delete(S,1,1);O.Value:=EvalReloc(S,O.ForwardRef,O.RelBase);O.Kind:=okImmediate;Exit
+ End;
+ if S[1]='@'Then Begin
+  Delete(S,1,1);O.Reg:=RegisterNumber(S,'W');
+  if O.Reg<0 Then Begin
+   O.Reg:=RegisterNumber(S,'L');
+   if(O.Reg>=0)and not Opt.Segmented Then Begin
+    Diagnostic('pointeur @RRn reserve au Z8001 segmente');O.Reg:=-1
+   End
+  End;
+  if O.Reg>=0 Then O.Kind:=okIndirect;Exit
+ End;
+ if S[1]='|'Then Begin
+  if not Opt.Segmented Then Diagnostic('adresse segmentee courte interdite dans un source .8KN');
+  O.ForceShort:=True;Delete(S,1,1);S:=TrimString(S)
+ End;
+ P:=Pos('(',S);
+ if(P>1)and(S[Length(S)]=')')Then Begin
+  Left:=TrimString(Copy(S,1,P-1));Inside:=TrimString(Copy(S,P+1,Length(S)-P-1));
+  if Opt.Segmented Then O.Reg:=RegisterNumber(Left,'L')else O.Reg:=RegisterNumber(Left,'W');
+  if O.Reg>=0 Then Begin
+   if(Inside<>'')and(Inside[1]='#')Then Begin
+    Delete(Inside,1,1);O.Value:=EvalReloc(Inside,O.ForwardRef,O.RelBase);O.Kind:=okBase
+   End else Begin
+    O.IndexReg:=RegisterNumber(Inside,'W');if O.IndexReg>=0 Then O.Kind:=okBaseIndex
+   End;Exit
+  End;
+  O.IndexReg:=RegisterNumber(Inside,'W');if O.IndexReg<0 Then Begin O.Kind:=okInvalid;Exit End;
+  O.Value:=EvalReloc(Left,O.ForwardRef,O.RelBase);O.Kind:=okIndexed;Exit
+ End;
+ O.Value:=EvalReloc(S,O.ForwardRef,O.RelBase);O.Kind:=okDirect
+End;
+
+Procedure EmitOperandAddress(Var O:TOperand);
+Begin
+ Case O.Kind of
+ okDirect,okIndexed:EmitDirectAddress(O.Value,O.RelBase,O.ForceShort);
+ okBase:EmitWordReloc(Word(O.Value),RAA16M,O.RelBase);
+ okBaseIndex:EmitWord(Word(O.IndexReg shl 8))
+ End
+End;
+
+Procedure EmitImmediateValue(Size:Integer;V:LongInt;RelBase:Word;DuplicateByte:Boolean);
+Begin
+ if Size=1 Then Begin
+  EmitByteReloc(Byte(V),RAA8,RelBase);
+  if DuplicateByte Then EmitByteReloc(Byte(V),RAA8,RelBase)
+ End else if Size=2 Then Begin
+  if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,RelBase)
+  else EmitWordReloc(Word(V),RAA16M,RelBase)
+ End else if Opt.Segmented and(RelBase<>0)Then
+  EmitLongReloc(SegmentedLongValue(V,RelBase),RAZLS,RelBase)
+ else EmitLongReloc(V,RAA32M,RelBase)
+End;
+
+Procedure EncodeALU(RegKind:Char;Size:Integer;BaseRR,BaseImm,BaseMem:Word);
+Var S,A,B:String;D,Src:TOperand;W:Word;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);ParseOperand(A,RegKind,D);
+ ParseOperand(B,RegKind,Src);
+ if(D.Kind<>okRegister)or(S<>'')Then Begin Diagnostic('registre destination attendu');Exit End;
+ Case Src.Kind of
+ okRegister:EmitWord(BaseRR or Word(Src.Reg shl 4)or Word(D.Reg));
+ okImmediate:Begin
+  EmitWord(BaseImm or Word(D.Reg));EmitImmediateValue(Size,Src.Value,Src.RelBase,Size=1)
+ End;
+ okIndirect:EmitWord(BaseImm or Word(Src.Reg shl 4)or Word(D.Reg));
+ okDirect,okIndexed:Begin
+  W:=BaseMem or Word(D.Reg);if Src.Kind=okIndexed Then W:=W or Word(Src.IndexReg shl 4);
+  EmitWord(W);EmitOperandAddress(Src)
+ End;
+ else Diagnostic('mode source non permis pour cette instruction')
+ End
+End;
+
+Procedure EncodeLoadFull;
+Var S,A,B:String;D,Src:TOperand;K:Char;Size:Integer;RR,Imm,Mem,Based,BIndex:Word;W:Word;
+Begin
+ if OpcodeField='LDB'Then Begin K:='B';Size:=1;RR:=$A000;Imm:=$2000;Mem:=$6000;Based:=$3000;BIndex:=$7000 End
+ else if OpcodeField='LDL'Then Begin K:='L';Size:=4;RR:=$9400;Imm:=$1400;Mem:=$5400;Based:=$3500;BIndex:=$7500 End
+ else Begin K:='W';Size:=2;RR:=$A100;Imm:=$2100;Mem:=$6100;Based:=$3100;BIndex:=$7100 End;
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);ParseOperand(A,K,D);ParseOperand(B,K,Src);
+ if(A='')or(B='')or(S<>'')Then Begin Diagnostic('LD exige deux operandes');Exit End;
+ if D.Kind=okRegister Then Case Src.Kind of
+  okRegister:EmitWord(RR or Word(Src.Reg shl 4)or Word(D.Reg));
+  okImmediate:if Size=1 Then Begin
+   EmitByte($C0 or Byte(D.Reg));EmitByteReloc(Byte(Src.Value),RAA8,Src.RelBase)
+  End else Begin
+   EmitWord(Imm or Word(D.Reg));EmitImmediateValue(Size,Src.Value,Src.RelBase,False)
+  End;
+  okIndirect:EmitWord(Imm or Word(Src.Reg shl 4)or Word(D.Reg));
+  okDirect,okIndexed:Begin W:=Mem or Word(D.Reg);if Src.Kind=okIndexed Then W:=W or Word(Src.IndexReg shl 4);
+   EmitWord(W);EmitOperandAddress(Src) End;
+  okBase:Begin EmitWord(Based or Word(Src.Reg shl 4)or Word(D.Reg));EmitOperandAddress(Src) End;
+  okBaseIndex:Begin EmitWord(BIndex or Word(Src.Reg shl 4)or Word(D.Reg));EmitOperandAddress(Src) End;
+  else Diagnostic('mode source LD incorrect')
+ End else if Src.Kind=okRegister Then Begin
+  if Size=1 Then Begin Imm:=$2E00;Mem:=$6E00;Based:=$3200;BIndex:=$7200 End
+  else if Size=4 Then Begin Imm:=$1D00;Mem:=$5D00;Based:=$3700;BIndex:=$7700 End
+  else Begin Imm:=$2F00;Mem:=$6F00;Based:=$3300;BIndex:=$7300 End;
+  Case D.Kind of
+  okIndirect:EmitWord(Imm or Word(D.Reg shl 4)or Word(Src.Reg));
+  okDirect,okIndexed:Begin W:=Mem or Word(Src.Reg);if D.Kind=okIndexed Then W:=W or Word(D.IndexReg shl 4);
+   EmitWord(W);EmitOperandAddress(D) End;
+  okBase:Begin EmitWord(Based or Word(D.Reg shl 4)or Word(Src.Reg));EmitOperandAddress(D) End;
+  okBaseIndex:Begin EmitWord(BIndex or Word(D.Reg shl 4)or Word(Src.Reg));EmitOperandAddress(D) End;
+  else Diagnostic('mode destination LD incorrect')
+  End
+ End else if Src.Kind=okImmediate Then Begin
+  if Size=4 Then Begin Diagnostic('immediat long vers memoire non defini par le Z8000');Exit End;
+  if Size=1 Then Begin Imm:=$0C05;Mem:=$4C05 End else Begin Imm:=$0D05;Mem:=$4D05 End;
+  if D.Kind=okIndirect Then EmitWord(Imm or Word(D.Reg shl 4))
+  else if D.Kind in[okDirect,okIndexed]Then Begin
+   W:=Mem;if D.Kind=okIndexed Then W:=W or Word(D.IndexReg shl 4);EmitWord(W);EmitOperandAddress(D)
+  End else Begin Diagnostic('mode destination pour immediat incorrect');Exit End;
+  EmitImmediateValue(Size,Src.Value,Src.RelBase,Size=1)
+ End else Diagnostic('combinaison d''operandes LD non prise en charge')
+End;
+
 Procedure EncodeUnaryRegister(Base:Word;Kind:Char);Forward;
 Function IndirectRegister(S:String;Var R:Integer):Boolean;Forward;
 Procedure EncodeMulDiv(BaseRR,BaseImm:Word;DestKind,SourceKind:Char);Forward;
@@ -795,24 +959,24 @@ Var
  R:Integer;
  S:String;
 Begin
- if(OpcodeField='LD')or(OpcodeField='LDB')or(OpcodeField='LDL')Then EncodeLoad
- else if OpcodeField='ADD'Then EncodeRegReg(OpcodeField,$8100,'W')
- else if OpcodeField='ADDB'Then EncodeRegReg(OpcodeField,$8000,'B')
- else if OpcodeField='ADDL'Then EncodeRegReg(OpcodeField,$9600,'L')
+ if(OpcodeField='LD')or(OpcodeField='LDB')or(OpcodeField='LDL')Then EncodeLoadFull
+ else if OpcodeField='ADD'Then EncodeALU('W',2,$8100,$0100,$4100)
+ else if OpcodeField='ADDB'Then EncodeALU('B',1,$8000,$0000,$4000)
+ else if OpcodeField='ADDL'Then EncodeALU('L',4,$9600,$1600,$5600)
  else if OpcodeField='ADC'Then EncodeRegReg(OpcodeField,$B500,'W')
  else if OpcodeField='ADCB'Then EncodeRegReg(OpcodeField,$B400,'B')
- else if OpcodeField='SUB'Then EncodeRegReg(OpcodeField,$A100,'W')
- else if OpcodeField='SUBB'Then EncodeRegReg(OpcodeField,$A000,'B')
- else if OpcodeField='SUBL'Then EncodeRegReg(OpcodeField,$9200,'L')
- else if OpcodeField='CP'Then EncodeRegReg(OpcodeField,$A300,'W')
- else if OpcodeField='CPB'Then EncodeRegReg(OpcodeField,$A200,'B')
- else if OpcodeField='CPL'Then EncodeRegReg(OpcodeField,$9000,'L')
- else if OpcodeField='AND'Then EncodeRegReg(OpcodeField,$8300,'W')
- else if OpcodeField='ANDB'Then EncodeRegReg(OpcodeField,$8200,'B')
- else if OpcodeField='OR'Then EncodeRegReg(OpcodeField,$8500,'W')
- else if OpcodeField='ORB'Then EncodeRegReg(OpcodeField,$8400,'B')
- else if OpcodeField='XOR'Then EncodeRegReg(OpcodeField,$8700,'W')
- else if OpcodeField='XORB'Then EncodeRegReg(OpcodeField,$8600,'B')
+ else if OpcodeField='SUB'Then EncodeALU('W',2,$8300,$0300,$4300)
+ else if OpcodeField='SUBB'Then EncodeALU('B',1,$8200,$0200,$4200)
+ else if OpcodeField='SUBL'Then EncodeALU('L',4,$9200,$1200,$5200)
+ else if OpcodeField='CP'Then EncodeALU('W',2,$8B00,$0B00,$4B00)
+ else if OpcodeField='CPB'Then EncodeALU('B',1,$8A00,$0A00,$4A00)
+ else if OpcodeField='CPL'Then EncodeALU('L',4,$9000,$1000,$5000)
+ else if OpcodeField='AND'Then EncodeALU('W',2,$8700,$0700,$4700)
+ else if OpcodeField='ANDB'Then EncodeALU('B',1,$8600,$0600,$4600)
+ else if OpcodeField='OR'Then EncodeALU('W',2,$8500,$0500,$4500)
+ else if OpcodeField='ORB'Then EncodeALU('B',1,$8400,$0400,$4400)
+ else if OpcodeField='XOR'Then EncodeALU('W',2,$8900,$0900,$4900)
+ else if OpcodeField='XORB'Then EncodeALU('B',1,$8800,$0800,$4800)
  else if OpcodeField='SBC'Then EncodeRegReg(OpcodeField,$B700,'W')
  else if OpcodeField='SBCB'Then EncodeRegReg(OpcodeField,$B600,'B')
  else if OpcodeField='EX'Then EncodeRegReg(OpcodeField,$AD00,'W')
@@ -1080,9 +1244,14 @@ Begin
 End;
 
 Procedure EmitDirectAddress(V:LongInt;Base:Word;ForceShort:Boolean);
+Var S:Word;
 Begin
  if Opt.Segmented Then Begin
-  if ForceShort Then EmitWordReloc(SegmentedShortValue(V,Base),RAZSS,Base)
+  if(Base=0)and((LongInt(V)and LongInt($80000000))<>0)Then Begin
+   if ForceShort Then Begin
+    S:=Word((LongInt(V)shr 24)and $7F);EmitWord((S shl 8)or Word(V and $FF))
+   End else EmitLong(V)
+  End else if ForceShort Then EmitWordReloc(SegmentedShortValue(V,Base),RAZSS,Base)
   else EmitLongReloc(SegmentedLongValue(V,Base),RAZLS,Base)
  End else EmitWordReloc(Word(V),RAA16M,Base)
 End;
