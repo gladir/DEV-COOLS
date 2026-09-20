@@ -95137,6 +95137,21 @@ Const
  { proprement plutot que de sauter dans de la memoire non initialisee.     }
  { Placee juste APRES la derniere trappe possible dans Geos_TrapSeg. }
  GEOS_EXIT_STUB_OFS = GEOS_MAX_TRAP_SLOTS * GEOS_TRAP_SLOT_SIZE;
+ { Stage 11 : vraie valeur de MSG_META_ATTACH, derivee des VRAIES sources }
+ { du compilateur GeoWorks (Tools/esp/symbol.c fonction Sym_Enter, cas    }
+ { SYM_METHOD : sym->u.method.common.value = methods->u.eType.nextVal;    }
+ { methods->u.eType.nextVal += methods->u.eType.incr - un simple compteur }
+ { sequentiel par classe) et de Tools/esp/object.c fonction               }
+ { Obj_DeclareClass (pour MetaClass, racine sans superclasse : mbase=0,   }
+ { Sym_Enter(..., SYM_ETYPE, mbase, 1, 2) -> debut=0, increment=1).       }
+ { Confirmee par Include/Objects/metaC.def lui-meme : MSG_META_NULL       }
+ { message private, .assert (MSG_META_NULL eq FIRST_META_GCN_LIST_TYPE)   }
+ { -> MSG_META_NULL=0. La liste ORDONNEE des 6 premiers "message" de      }
+ { MetaClass dans metaC.def (verifiee ligne par ligne, aucune compilation }
+ { conditionnelle, aucun import de plage exportee entre les deux) est :   }
+ { MSG_META_NULL=0, MSG_META_INITIALIZE=1, MSG_META_RESERVED_1=2,         }
+ { MSG_META_DUMMY=3, MSG_META_APP_STARTUP=4, MSG_META_ATTACH=5. }
+ GEOS_MSG_META_ATTACH = 5;
 Type
  TGeosLibEntry = Record
   Name: String[8];
@@ -97556,23 +97571,554 @@ End;
   sur un systeme de blocs-groupe PAGINES (voir dbaseCode.asm) bien plus
   riche que la simplification du Stage 4 - risque de convention erronee
   trop eleve pour etre honnetement invente ici. }
+
+{ ============================================================
+  Chantier PC/GEOS-GeoWorks, Stage 6 (2026-09-19, demande explicite -
+  "ordonnanceur + files d'abord" pour permettre, a terme, de voir
+  reellement l'installeur GEO\INSTFE.GEO demarrer) - fondations REELLES
+  du noyau multi-thread : creation de thread (ThreadCreate) et files de
+  messages par geode (GeodeAllocQueue/ObjMessage en mode file force).
+
+  SOURCE DE VERITE : Library/Kernel/Thread/threadThread.asm (bluewaysw/
+  pcgeos, VERIFIE) - ThreadCreate y est intégralement documente (PASS/
+  RETURN/convention de demarrage du nouveau thread).
+
+  DECOUVERTE CAPITALE (2026-09-19, en reponse a la demande de l'
+  utilisateur de "voir la fenetre d'installation") : MSG_META_ATTACH
+  n'est PAS livre par un appel direct - objectProcess.asm montre qu'il
+  est POSE SUR UNE FILE D'ATTENTE D'EVENEMENTS propre a un thread
+  (ObjMessage avec MF_FORCE_QUEUE), livre seulement quand ce thread s'y
+  attache. Une application PC/GEOS repose donc sur un VRAI noyau
+  preemptif multi-thread avant meme le systeme d'objets - Stage 6 en
+  pose les fondations DONNEES/CYCLE DE VIE (creation de thread reelle,
+  files de messages reelles), Stage 7 (a venir) branchera ces threads
+  dans la boucle d'execution CPU reelle (commutation de contexte).
+
+  DISCLOSURE (perimetre honnetement limite) :
+   - Convention de demarrage REELLE et verifiee (ThreadCreate : ds=es=
+     dgroup du geode proprietaire, cx=valeur passee, dx=bp=0, si=
+     poignee du proprietaire, di=LCT_NEW_CLIENT_THREAD).
+   - AUCUNE ThreadPrivateData (TPD) n'est modelisee (chaine de
+     gestionnaires d'exception, "batching" de notifications FS, etc.) -
+     ce sont des structures de bas niveau utilisees par d'AUTRES appels
+     noyau non implantes, pas necessaires pour la creation/le cycle de
+     vie de base d'un thread lui-meme.
+   - GeodeAllocQueue : AUCUNE convention de registres reelle retrouvee
+     dans les sources disponibles (contrairement a ThreadCreate,
+     exhaustivement documente) - structure de file (anneau borne,
+     8 messages) INVENTEE mais raisonnable et clairement disclosee.
+   - Ordonnancement COOPERATIF SEUL (pas de commutation preemptive par
+     minuterie - la boucle de pas 8086 partagee par TOUS les chantiers
+     de ce fichier, DOS_RunOneChunk, ne gere qu'un seul contexte CPU a
+     la fois ; une vraie preemption exigerait de la modifier pour TOUS
+     les autres backends, hors de portee de ce seul chantier). Un
+     thread REVEILLE (message arrive sur sa file) passe seulement a
+     l'etat PRET - la vraie commutation de P.CPU vers son contexte
+     sauvegarde est le travail du Stage 7 (a venir), PAS encore fait
+     ici : Geos_Thread[].Saved* sont remplis mais RIEN ne les recharge
+     encore dans P.CPU. }
+Const
+ GEOS_MAX_THREADS = 16;
+ GEOS_MAX_QUEUES = 16;
+ GEOS_QUEUE_CAPACITY = 8;
+ GTS_FREE = 0;
+ GTS_READY = 1;
+ GTS_BLOCKED = 2;
+ GTS_TERMINATED = 3;
+ { Convention de demarrage documentee (threadThread.asm) : DI = valeur   }
+ { "LCT_NEW_CLIENT_THREAD" - la constante EXACTE n'a pas ete retrouvee   }
+ { dans les sources disponibles (probablement definie dans un .def       }
+ { Thread non recupere) ; 1 est utilise comme valeur non nulle           }
+ { disclosee, PAS la vraie constante GeoWorks confirmee. }
+ GEOS_LCT_NEW_CLIENT_THREAD = 1;
+Type
+ TGeosMessage = Record
+  MsgNum, CxData, DxData, BpData: Word;
+ End;
+ TGeosQueue = Record
+  InUse: Boolean;
+  Owner: Word;
+  Head, Tail, Count: Integer;
+  Msgs: Array[0..GEOS_QUEUE_CAPACITY - 1] Of TGeosMessage;
+  WaitingThread: Integer; { -1 = aucun ; sinon indice dans Geos_Thread[] }
+ End;
+ TGeosThread = Record
+  State: Byte;
+  Owner: Word;
+  StackSeg: Word;
+  QueueIdx: Integer;
+  SavedCS, SavedIP, SavedSS, SavedSP: Word;
+  SavedAX, SavedBX, SavedCX, SavedDX, SavedSI, SavedDI, SavedBP: Word;
+  SavedDS, SavedES: Word;
+ End;
+Var
+ Geos_Thread: Array[0..GEOS_MAX_THREADS - 1] Of TGeosThread;
+ Geos_Queue: Array[0..GEOS_MAX_QUEUES - 1] Of TGeosQueue;
+ Geos_CurThread: Integer; { Stage 7 : thread dont le contexte est CHARGE }
+                          { dans P.CPU en ce moment, -1 si aucun. }
+
+Procedure Geos_SchedulerReset;
+Var
+ I: Integer;
+Begin
+ For I := 0 To GEOS_MAX_THREADS - 1 Do Geos_Thread[I].State := GTS_FREE;
+ For I := 0 To GEOS_MAX_QUEUES - 1 Do Geos_Queue[I].InUse := False;
+ Geos_CurThread := -1;
+End;
+
+{ ThreadCreate (threadThread.asm, VERIFIE) - Pass reel : al=priorite     }
+{ (acceptee mais non exploitee, aucun ordonnancement par priorite en     }
+{ Stage 6), bx=valeur transmise en cx au nouveau thread, cx:dx=routine   }
+{ de depart, di=taille de pile, bp=proprietaire. Ce Stage 6 ajoute       }
+{ DgroupSeg (ds=es du nouveau thread) car ThreadCreate le prend TEL QUEL }
+{ du thread appelant reel - nous n'avons pas de "thread appelant", donc  }
+{ le caller doit le fournir explicitement. }
+Function Geos_ThreadCreate(Var C: TEmuCPU; Priority: Byte; BxVal: Word;
+ EntrySeg, EntryOfs, ReqStackSize, OwnerHandle, DgroupSeg: Word;
+ Var ThreadHandle: Integer; Var ErrMsg: String): Boolean;
+Var
+ I, Slot: Integer;
+ NewStackSeg, UseStackSize: Word;
+Begin
+ Geos_ThreadCreate := False;
+ UseStackSize := ReqStackSize;
+ If UseStackSize = 0 Then UseStackSize := 1024;
+ Slot := -1;
+ For I := 0 To GEOS_MAX_THREADS - 1 Do
+  If Geos_Thread[I].State = GTS_FREE Then Begin Slot := I; Break; End;
+ If Slot = -1 Then Begin
+  ErrMsg := 'table de threads pleine (' + IntToStr(GEOS_MAX_THREADS) + ')';
+  Exit;
+ End;
+ NewStackSeg := Geos_NextFreeSeg;
+ Geos_NextFreeSeg := Geos_NextFreeSeg +
+  Word((LongInt(UseStackSize) + 15) Shr 4);
+ { BOGUE REEL corrige (2026-09-19, trouve en testant ce Stage 7 en direct  }
+ { - "division par zero apres 19 instructions") : seul le thread initial  }
+ { (cree a la main dans ShowEmulatorPanel) avait sa pile pre-amorcee avec  }
+ { l'adresse de retour GEOS_EXIT_STUB (voir ce meme mecanisme, convention }
+ { PSP DOS) - un thread cree ICI (ordinal 5, voir Geos_DispatchCall)       }
+ { n'avait RIEN au sommet de sa pile : son premier RETF depilait donc de   }
+ { la memoire non initialisee (le filler $F6 d'Emu_InitComputer, "F6F6"    }
+ { se decodant comme une division qui echoue reellement). Chaque thread    }
+ { recoit desormais la MEME pre-amorce, plus besoin de le faire a part     }
+ { pour le thread initial (voir l'appel Geos_SaveContext supplementaire    }
+ { juste apres Geos_LoadContext dans ShowEmulatorPanel, devenu superflu    }
+ { mais inoffensif). }
+ Emu_WriteWord(C, NewStackSeg, Word(UseStackSize - 4), GEOS_EXIT_STUB_OFS);
+ Emu_WriteWord(C, NewStackSeg, Word(UseStackSize - 2), Geos_TrapSeg);
+ Geos_Thread[Slot].State := GTS_READY;
+ Geos_Thread[Slot].Owner := OwnerHandle;
+ Geos_Thread[Slot].StackSeg := NewStackSeg;
+ Geos_Thread[Slot].QueueIdx := -1;
+ Geos_Thread[Slot].SavedCS := EntrySeg;
+ Geos_Thread[Slot].SavedIP := EntryOfs;
+ Geos_Thread[Slot].SavedSS := NewStackSeg;
+ Geos_Thread[Slot].SavedSP := Word(UseStackSize - 4);
+ Geos_Thread[Slot].SavedDS := DgroupSeg;
+ Geos_Thread[Slot].SavedES := DgroupSeg;
+ Geos_Thread[Slot].SavedCX := BxVal;
+ Geos_Thread[Slot].SavedDX := 0;
+ Geos_Thread[Slot].SavedBP := 0;
+ Geos_Thread[Slot].SavedSI := OwnerHandle;
+ Geos_Thread[Slot].SavedDI := GEOS_LCT_NEW_CLIENT_THREAD;
+ Geos_Thread[Slot].SavedAX := 0;
+ Geos_Thread[Slot].SavedBX := 0;
+ ThreadHandle := Slot;
+ Geos_ThreadCreate := True;
+End;
+
+{ GeodeAllocQueue (structure/convention INVENTEE, voir la disclosure de }
+{ tete - aucune source verifiee retrouvee pour cette routine precise). }
+Function Geos_GeodeAllocQueue(OwnerHandle: Word; Var QueueHandle: Integer;
+ Var ErrMsg: String): Boolean;
+Var
+ I, Slot: Integer;
+Begin
+ Geos_GeodeAllocQueue := False;
+ Slot := -1;
+ For I := 0 To GEOS_MAX_QUEUES - 1 Do
+  If Not Geos_Queue[I].InUse Then Begin Slot := I; Break; End;
+ If Slot = -1 Then Begin
+  ErrMsg := 'table de files pleine (' + IntToStr(GEOS_MAX_QUEUES) + ')';
+  Exit;
+ End;
+ Geos_Queue[Slot].InUse := True;
+ Geos_Queue[Slot].Owner := OwnerHandle;
+ Geos_Queue[Slot].Head := 0;
+ Geos_Queue[Slot].Tail := 0;
+ Geos_Queue[Slot].Count := 0;
+ Geos_Queue[Slot].WaitingThread := -1;
+ QueueHandle := Slot;
+ Geos_GeodeAllocQueue := True;
+End;
+
+{ ObjMessage en mode "file forcee" (MF_FORCE_QUEUE) - depose le message  }
+{ sur la file cible ; si un thread y est deja bloque (Geos_ThreadWait,   }
+{ voir plus bas), le REVEILLE (etat -> PRET). Convention de champs       }
+{ (MsgNum/CxData/DxData/BpData) alignee sur "cx, dx, bp - other data"    }
+{ documente pour ObjCallInstanceNoLock/methodes - PAS une structure      }
+{ ObjMessage reelle retrouvee (voir disclosure). }
+Function Geos_ObjMessageQueue(QueueHandle: Integer; MsgNum, CxData, DxData,
+ BpData: Word; Var ErrMsg: String): Boolean;
+Var
+ Woken: Integer;
+Begin
+ Geos_ObjMessageQueue := False;
+ If (QueueHandle < 0) Or (QueueHandle >= GEOS_MAX_QUEUES) Or
+    (Not Geos_Queue[QueueHandle].InUse) Then Begin
+  ErrMsg := 'poignee de file invalide';
+  Exit;
+ End;
+ With Geos_Queue[QueueHandle] Do Begin
+  If Count >= GEOS_QUEUE_CAPACITY Then Begin
+   ErrMsg := 'file pleine (' + IntToStr(GEOS_QUEUE_CAPACITY) + ' messages)';
+   Exit;
+  End;
+  Msgs[Tail].MsgNum := MsgNum;
+  Msgs[Tail].CxData := CxData;
+  Msgs[Tail].DxData := DxData;
+  Msgs[Tail].BpData := BpData;
+  Tail := (Tail + 1) Mod GEOS_QUEUE_CAPACITY;
+  Inc(Count);
+  Woken := WaitingThread;
+  WaitingThread := -1;
+ End;
+ If (Woken >= 0) And (Geos_Thread[Woken].State = GTS_BLOCKED) Then
+  Geos_Thread[Woken].State := GTS_READY;
+ Geos_ObjMessageQueue := True;
+End;
+
+{ Retire (non bloquant) le prochain message d'une file - utilise par     }
+{ Invoke-GeoWorksAPI pour verifier le contenu reel d'une file sans        }
+{ ordonnanceur (le Stage 7 remplacera ceci par un vrai blocage/reveil     }
+{ de thread lors de l'execution CPU). }
+Function Geos_QueueReceive(QueueHandle: Integer; Var Msg: TGeosMessage;
+ Var HasMsg: Boolean; Var ErrMsg: String): Boolean;
+Begin
+ Geos_QueueReceive := False;
+ HasMsg := False;
+ If (QueueHandle < 0) Or (QueueHandle >= GEOS_MAX_QUEUES) Or
+    (Not Geos_Queue[QueueHandle].InUse) Then Begin
+  ErrMsg := 'poignee de file invalide';
+  Exit;
+ End;
+ With Geos_Queue[QueueHandle] Do Begin
+  If Count = 0 Then Begin
+   Geos_QueueReceive := True; { file vide, pas une erreur }
+   Exit;
+  End;
+  Msg := Msgs[Head];
+  Head := (Head + 1) Mod GEOS_QUEUE_CAPACITY;
+  Dec(Count);
+ End;
+ HasMsg := True;
+ Geos_QueueReceive := True;
+End;
+
+{ Marque un thread comme BLOQUE en attente de sa file (utilise si aucun  }
+{ message n'est deja present - voir Geos_QueueReceive pour le cas         }
+{ immediat). Associe aussi la file au thread pour que                    }
+{ Geos_ObjMessageQueue sache qui reveiller. }
+Function Geos_ThreadWaitQueue(ThreadHandle, QueueHandle: Integer;
+ Var ErrMsg: String): Boolean;
+Begin
+ Geos_ThreadWaitQueue := False;
+ If (ThreadHandle < 0) Or (ThreadHandle >= GEOS_MAX_THREADS) Or
+    (Geos_Thread[ThreadHandle].State = GTS_FREE) Then Begin
+  ErrMsg := 'poignee de thread invalide';
+  Exit;
+ End;
+ If (QueueHandle < 0) Or (QueueHandle >= GEOS_MAX_QUEUES) Or
+    (Not Geos_Queue[QueueHandle].InUse) Then Begin
+  ErrMsg := 'poignee de file invalide';
+  Exit;
+ End;
+ Geos_Thread[ThreadHandle].State := GTS_BLOCKED;
+ Geos_Thread[ThreadHandle].QueueIdx := QueueHandle;
+ Geos_Queue[QueueHandle].WaitingThread := ThreadHandle;
+ Geos_ThreadWaitQueue := True;
+End;
+
+{ ============================================================
+  Chantier PC/GEOS-GeoWorks, Stage 7 (2026-09-19, demande explicite -
+  "Stage 7") : BRANCHE enfin les threads du Stage 6 dans la VRAIE boucle
+  d'execution CPU - un thread qui se bloque sur sa file (appel noyau
+  ordinal 8, voir plus bas) sauvegarde reellement son contexte 8086
+  COMPLET (tous les registres/segments/IP/SP, pas seulement CS:IP comme
+  le Stage 3 seul) et cede la main a un autre thread PRET, dont le
+  contexte sauvegarde est RECHARGE dans P.CPU - une vraie commutation
+  cooperative. Un thread qui se termine (RETF vers GEOS_EXIT_STUB, donc
+  INT 20h) essaie de meme de reveiller un autre thread PRET plutot que
+  d'arreter systematiquement toute l'emulation.
+
+  DISCLOSURE (inchangee, voir Stage 6) : commutation COOPERATIVE
+  uniquement (round-robin, un thread ne cede la main qu'a un point de
+  blocage explicite - ordinal 8 - jamais par preemption temporisee, la
+  boucle de pas 8086 partagee DOS_RunOneChunk ne gerant qu'un seul
+  contexte a la fois pour TOUS les chantiers de ce fichier). }
+
+{ Copie l'etat VIVANT de P.CPU dans Geos_Thread[Idx].Saved* - a utiliser }
+{ juste avant de faire ceder la main a ce thread (blocage ou creation    }
+{ initiale). }
+Procedure Geos_SaveContext(Var P: TEmulatorPanel; Idx: Integer);
+Begin
+ Geos_Thread[Idx].SavedCS := P.CPU.Segs.CS;
+ Geos_Thread[Idx].SavedIP := P.CPU.IP;
+ Geos_Thread[Idx].SavedSS := P.CPU.Segs.SS;
+ Geos_Thread[Idx].SavedSP := P.CPU.Regs.SP;
+ Geos_Thread[Idx].SavedDS := P.CPU.Segs.DS;
+ Geos_Thread[Idx].SavedES := P.CPU.Segs.ES;
+ Geos_Thread[Idx].SavedAX := P.CPU.Regs.AX;
+ Geos_Thread[Idx].SavedBX := P.CPU.Regs.BX;
+ Geos_Thread[Idx].SavedCX := P.CPU.Regs.CX;
+ Geos_Thread[Idx].SavedDX := P.CPU.Regs.DX;
+ Geos_Thread[Idx].SavedSI := P.CPU.Regs.SI;
+ Geos_Thread[Idx].SavedDI := P.CPU.Regs.DI;
+ Geos_Thread[Idx].SavedBP := P.CPU.Regs.BP;
+End;
+
+{ Recharge Geos_Thread[Idx].Saved* dans P.CPU (l'inverse exact de         }
+{ Geos_SaveContext) et fait de ce thread le contexte courant. }
+Procedure Geos_LoadContext(Var P: TEmulatorPanel; Idx: Integer);
+Begin
+ P.CPU.Segs.CS := Geos_Thread[Idx].SavedCS;
+ P.CPU.IP := Geos_Thread[Idx].SavedIP;
+ P.CPU.Segs.SS := Geos_Thread[Idx].SavedSS;
+ P.CPU.Regs.SP := Geos_Thread[Idx].SavedSP;
+ P.CPU.Segs.DS := Geos_Thread[Idx].SavedDS;
+ P.CPU.Segs.ES := Geos_Thread[Idx].SavedES;
+ P.CPU.Regs.AX := Geos_Thread[Idx].SavedAX;
+ P.CPU.Regs.BX := Geos_Thread[Idx].SavedBX;
+ P.CPU.Regs.CX := Geos_Thread[Idx].SavedCX;
+ P.CPU.Regs.DX := Geos_Thread[Idx].SavedDX;
+ P.CPU.Regs.SI := Geos_Thread[Idx].SavedSI;
+ P.CPU.Regs.DI := Geos_Thread[Idx].SavedDI;
+ P.CPU.Regs.BP := Geos_Thread[Idx].SavedBP;
+ Geos_CurThread := Idx;
+End;
+
+{ Ordonnanceur cooperatif round-robin (voir la disclosure de tete) :     }
+{ cherche le prochain thread PRET en partant juste apres Geos_CurThread,  }
+{ recharge son contexte dans P.CPU. Renvoie False si AUCUN thread n'est  }
+{ pret (tous bloques ou termines - fin reelle de toute l'execution). }
+Function Geos_ScheduleNext(Var P: TEmulatorPanel): Boolean;
+Var
+ I, Start, Idx: Integer;
+Begin
+ Geos_ScheduleNext := False;
+ If Geos_CurThread < 0 Then Start := 0 Else Start := Geos_CurThread;
+ For I := 1 To GEOS_MAX_THREADS Do Begin
+  Idx := (Start + I) Mod GEOS_MAX_THREADS;
+  If Geos_Thread[Idx].State = GTS_READY Then Begin
+   Geos_LoadContext(P, Idx);
+   Geos_ScheduleNext := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ Un thread ATTEINT REELLEMENT GEOS_EXIT_STUB (RETF -> INT 20h, voir      }
+{ ShowEmulatorPanel/IsGeos) - le marque TERMINE puis essaie de reveiller  }
+{ un autre thread PRET plutot que d'arreter systematiquement toute        }
+{ l'emulation (comportement Stage 3 seul, avant ce chantier). }
+Procedure Geos_ThreadTerminate(Var P: TEmulatorPanel);
+Begin
+ If Geos_CurThread >= 0 Then
+  Geos_Thread[Geos_CurThread].State := GTS_TERMINATED;
+ If Geos_ScheduleNext(P) Then Begin
+  P.StatusMsg := 'Thread ' + IntToStr(Geos_CurThread) +
+   ' termine - commutation vers un autre thread pret (Stage 7)';
+  Exit;
+ End;
+ P.CPU.Fault := sfEndProgram;
+ P.StatusMsg := 'Tous les threads GeoWorks sont termines (Stage 7)';
+End;
+
+{ ============================================================
+  Chantier PC/GEOS-GeoWorks, Stage 8 (2026-09-19, demande explicite -
+  "Stage 8") : le systeme d'objets - ObjCallInstanceNoLock, la primitive
+  de dispatch de methode qui sous-tend TOUT le systeme de messages
+  GeoWorks (y compris, in fine, MSG_META_ATTACH).
+
+  SOURCE DE VERITE : Library/Kernel/Object/objectClass.asm (bluewaysw/
+  pcgeos, VERIFIE - ObjCallInstanceNoLock lui-meme documente le contrat
+  PASS/RETURN complet) et Include/object.def (ClassStruct, VERIFIE) -
+  l'arithmetique de calcul d'adresse de routine ("bx = ((di-bp-
+  (Class_methodTable+2)+cx)*2)+di") a ete RECALCULEE independamment et
+  algebriquement confirmee equivalente a "table des numeros de methode
+  (N mots) suivie de la table des routines (N pointeurs distants)",
+  disposition directement apres l'entete ClassStruct de 16 octets.
+
+  ClassStruct (16 octets, VERIFIE object.def) :
+    +00 Class_superClass (fptr : offset puis segment)
+    +04 Class_masterOffset (word)
+    +06 Class_methodCount (word) = N
+    +08 Class_instanceSize (word)
+    +0A Class_vdRelocTable (word)
+    +0C Class_relocTable (word)
+    +0E Class_flags (byte - CLASSF_HAS_DEFAULT=$80, CLASSF_C_HANDLERS=$02,
+        VERIFIES via l'assertion source "CheckHack <mask
+        CLASSF_HAS_DEFAULT eq 0x80>")
+    +0F Class_masterMethods (byte)
+    +10 table des numeros de methode (N mots)
+    +10+2N table des routines (N pointeurs distants, offset puis segment)
+  Gestionnaire par defaut (si CLASSF_HAS_DEFAULT) : pointeur distant aux
+  4 octets JUSTE AVANT Class_superClass (adressage "es:[bp-4]" verifie).
+
+  DISCLOSURE (perimetre honnetement limite) :
+   - Classes MASTER (composites/multi-parties) et VARIANTES (superclasse
+     resolue dynamiquement) : NON supportees - seul le chemin "classe
+     simple" (Class_masterOffset=0) est implante. Class_masterMethods
+     n'est donc jamais consultee comme filtre (elle n'affecte QUE
+     l'optimisation multi-master, jamais la correction du parcours
+     simple, verifie algebriquement ci-dessus).
+   - CLASSF_C_HANDLERS (convention d'appel C plutot que la convention
+     registre standard) : NON supporte - detecte et honnetement refuse.
+   - CLASSF_HAS_RELOC (dword de relogement apres la table des routines) :
+     jamais consulte (aucune sauvegarde/relogement d'objet modelise).
+   - ProcCallModuleRoutine (le vrai mecanisme intermediaire qui re-charge
+     une ressource DISCARDABLE avant l'appel) : REMPLACE par un CALL FAR
+     direct (Dpmi_RunRealProc, deja eprouve) - simplification honnete,
+     coherente avec le Stage 1 (aucune ressource n'est jamais dechargee
+     dans ce chantier).
+   - Convention "superclasse absente" : segment=0 (convention deja
+     etablie ailleurs dans ce fichier pour "classe non affectee" - la
+     VRAIE convention GeoWorks utilise une constante VARIANT_CLASS non
+     retrouvee dans les sources disponibles). }
+Const
+ GEOS_CLASS_SUPERCLASS = 0;
+ GEOS_CLASS_MASTEROFFSET = 4;
+ GEOS_CLASS_METHODCOUNT = 6;
+ GEOS_CLASS_FLAGS = $E;
+ GEOS_CLASS_METHODTABLE = $10;
+ GEOS_CLASSF_HAS_DEFAULT = $80;
+ GEOS_CLASSF_C_HANDLERS = $02;
+ GEOS_MAX_SUPERCLASS_DEPTH = 32; { garde-fou anti-boucle, jamais atteint }
+                                 { par une vraie chaine de classes. }
+
+{ ObjCallInstanceNoLock (objectClass.asm, VERIFIE) - voir la disclosure  }
+{ de tete pour le sous-ensemble exact implante. Pass : ObjSeg:ObjHandle  }
+{ = *ds:si (poignee GeosLMem de l'objet), MethodNum=ax, Cx/Dx/Bp=autres  }
+{ donnees. Appelle REELLEMENT la routine de methode trouvee (VRAI CALL   }
+{ FAR via Dpmi_RunRealProc, deja eprouve par ArrayQuickSort) avec la      }
+{ convention documentee (es=segment classe, ds:bx=ds:di=donnees          }
+{ d'instance, ax=methode, cx/dx/bp=donnees). Found=False si aucune       }
+{ methode trouvee ET aucun gestionnaire par defaut (comportement          }
+{ documente "carry clear" de la vraie routine - pas une erreur). }
+Function Geos_ObjCallInstance(Var P: TEmulatorPanel; ObjSeg, ObjHandle,
+ MethodNum, CxVal, DxVal, BpVal: Word; Var Found: Boolean;
+ Var ErrMsg: String): Boolean;
+Var
+ InstOfs, ClassOfs, ClassSeg, NextOfs, NextSeg: Word;
+ N, I, Flags: Word;
+ RoutineOfs, RoutineSeg: Word;
+ Depth: Integer;
+Begin
+ Geos_ObjCallInstance := False;
+ Found := False;
+ InstOfs := GeosLMem_Deref(P.CPU, ObjSeg, ObjHandle);
+ If InstOfs = 0 Then Begin
+  ErrMsg := 'poignee d''objet invalide';
+  Exit;
+ End;
+ ClassOfs := Emu_ReadWord(P.CPU, ObjSeg, InstOfs);       { MB_class.offset }
+ ClassSeg := Emu_ReadWord(P.CPU, ObjSeg, Word(InstOfs + 2)); { MB_class.segment }
+ If ClassSeg = 0 Then Begin
+  ErrMsg := 'objet sans classe (MB_class nul)';
+  Exit;
+ End;
+ For Depth := 1 To GEOS_MAX_SUPERCLASS_DEPTH Do Begin
+  N := Emu_ReadWord(P.CPU, ClassSeg, Word(ClassOfs + GEOS_CLASS_METHODCOUNT));
+  Flags := Emu_ReadByte(P.CPU, ClassSeg, Word(ClassOfs + GEOS_CLASS_FLAGS));
+  If (Flags And GEOS_CLASSF_C_HANDLERS) <> 0 Then Begin
+   ErrMsg := 'classe a gestionnaires C (CLASSF_C_HANDLERS) non supportee';
+   Exit;
+  End;
+  For I := 0 To Integer(N) - 1 Do
+   If Emu_ReadWord(P.CPU, ClassSeg,
+      Word(ClassOfs + GEOS_CLASS_METHODTABLE + I * 2)) = MethodNum Then Begin
+    RoutineOfs := Emu_ReadWord(P.CPU, ClassSeg,
+     Word(ClassOfs + GEOS_CLASS_METHODTABLE + N * 2 + I * 4));
+    RoutineSeg := Emu_ReadWord(P.CPU, ClassSeg,
+     Word(ClassOfs + GEOS_CLASS_METHODTABLE + N * 2 + I * 4 + 2));
+    P.CPU.Segs.ES := ClassSeg;
+    P.CPU.Segs.DS := ObjSeg;
+    P.CPU.Regs.BX := InstOfs;
+    P.CPU.Regs.DI := InstOfs; { Class_masterOffset=0 suppose, voir disclosure }
+    P.CPU.Regs.SI := ObjHandle;
+    P.CPU.Regs.AX := MethodNum;
+    P.CPU.Regs.CX := CxVal;
+    P.CPU.Regs.DX := DxVal;
+    P.CPU.Regs.BP := BpVal;
+    Dpmi_RunRealProc(P, RoutineSeg, RoutineOfs, False);
+    Found := True;
+    Geos_ObjCallInstance := True;
+    Exit;
+   End;
+  { Non trouve dans cette classe : gestionnaire par defaut (4 octets      }
+  { juste avant Class_superClass), sinon remonter a la superclasse. }
+  If (Flags And GEOS_CLASSF_HAS_DEFAULT) <> 0 Then Begin
+   RoutineOfs := Emu_ReadWord(P.CPU, ClassSeg, Word(ClassOfs - 4));
+   RoutineSeg := Emu_ReadWord(P.CPU, ClassSeg, Word(ClassOfs - 2));
+   P.CPU.Segs.ES := ClassSeg;
+   P.CPU.Segs.DS := ObjSeg;
+   P.CPU.Regs.BX := InstOfs;
+   P.CPU.Regs.DI := InstOfs;
+   P.CPU.Regs.SI := ObjHandle;
+   P.CPU.Regs.AX := MethodNum;
+   P.CPU.Regs.CX := CxVal;
+   P.CPU.Regs.DX := DxVal;
+   P.CPU.Regs.BP := BpVal;
+   Dpmi_RunRealProc(P, RoutineSeg, RoutineOfs, False);
+   Found := True;
+   Geos_ObjCallInstance := True;
+   Exit;
+  End;
+  NextOfs := Emu_ReadWord(P.CPU, ClassSeg,
+   Word(ClassOfs + GEOS_CLASS_SUPERCLASS));
+  NextSeg := Emu_ReadWord(P.CPU, ClassSeg,
+   Word(ClassOfs + GEOS_CLASS_SUPERCLASS + 2));
+  If NextSeg = 0 Then Begin
+   { Aucune superclasse : comportement documente "carry clear, aucune     }
+   { methode appelee" - pas une erreur. }
+   Geos_ObjCallInstance := True;
+   Exit;
+  End;
+  ClassOfs := NextOfs;
+  ClassSeg := NextSeg;
+ End;
+ ErrMsg := 'chaine de superclasses trop profonde ou cyclique (garde-fou)';
+End;
+
 Const
  GEOS_KERN_CHUNKARRAYCREATE = 1;
  GEOS_KERN_CHUNKARRAYAPPEND = 2;
  GEOS_KERN_CHUNKARRAYELEMENTTOPTR = 3;
  GEOS_KERN_ARRAYQUICKSORT = 4;
+ GEOS_KERN_THREADCREATE = 5;
+ GEOS_KERN_GEODEALLOCQUEUE = 6;
+ GEOS_KERN_OBJMESSAGE = 7;
+ GEOS_KERN_THREADWAITQUEUE = 8;
+ GEOS_KERN_OBJCALLINSTANCE = 9;
+ GEOS_KERN_GRINITSCREEN = 10;
+ GEOS_KERN_GRSETPIXEL = 11;
 
-{ Gestionnaire de la trappe INT GEOS_TRAP_INT (Stage 3/5) - atteint        }
+{ Gestionnaire de la trappe INT GEOS_TRAP_INT (Stage 3/5/7) - atteint      }
 { UNIQUEMENT via un thunk ecrit par Geos_ResolveTrapSlot. Les appels        }
-{ "bibliotheque" (cible non-noyau) et les ordinaux noyau AUTRES que les 4  }
-{ ci-dessus restent HONNETEMENT signales puis stoppent l'emulation (memes }
-{ discipline que Win16_Halt) - voir la disclosure de tete pour pourquoi.  }
+{ "bibliotheque" (cible non-noyau) et les ordinaux noyau AUTRES que ceux   }
+{ ci-dessous restent HONNETEMENT signales puis stoppent l'emulation (meme }
+{ discipline que Win16_Halt) - voir la disclosure de tete du chantier     }
+{ pour pourquoi (aucune table d'ordinaux GeoWorks reelle retrouvee). }
 Procedure Geos_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
 Var
  LibName, ErrMsg: String;
  ArrHandle, ElemOfs, NewElemOfs, ArrOfs, ElemSize: Word;
  CompOfs, CompSeg: Word;
  Ok: Boolean;
+ ThHandle, ThQueueHandle: Integer;
+ ObjFound: Boolean;
+ GrX, GrY: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Geos_TrapSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -97632,12 +98178,107 @@ Begin
     If Not Ok Then Include(P.CPU.Flags.s, EFG_CF)
     Else Exclude(P.CPU.Flags.s, EFG_CF);
    End;
+   GEOS_KERN_THREADCREATE: Begin
+    { Convention INVENTEE Stage 7 (auto-documentee - simplifiee par        }
+    { rapport a la vraie ThreadCreate, voir Geos_ThreadCreate) : ax=       }
+    { valeur transmise au nouveau thread (recue par lui en CX au demarrage,}
+    { convention REELLE), bx:cx=point d'entree (seg:ofs), dx=taille de     }
+    { pile (0=defaut). Le nouveau thread herite du proprietaire/dgroup du  }
+    { thread APPELANT (le vrai proprietaire/dgroup ne sont pas modelises   }
+    { separement). Return : ax=poignee de thread (ECRASE la valeur         }
+    { d'entree ci-dessus, comme le veut la convention reelle de retour de  }
+    { ThreadCreate), carry=erreur. }
+    Ok := Geos_ThreadCreate(P.CPU, 0, P.CPU.Regs.AX, P.CPU.Regs.BX,
+     P.CPU.Regs.CX, P.CPU.Regs.DX, Word(Geos_CurThread), P.CPU.Segs.DS,
+     ThHandle, ErrMsg);
+    If Ok Then Begin
+     P.CPU.Regs.AX := Word(ThHandle);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Include(P.CPU.Flags.s, EFG_CF);
+   End;
+   GEOS_KERN_GEODEALLOCQUEUE: Begin
+    { Convention INVENTEE Stage 7 : aucun parametre (le proprietaire =     }
+    { le thread appelant). Return : ax=poignee de file, carry=erreur. }
+    Ok := Geos_GeodeAllocQueue(Word(Geos_CurThread), ThQueueHandle, ErrMsg);
+    If Ok Then Begin
+     P.CPU.Regs.AX := Word(ThQueueHandle);
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Include(P.CPU.Flags.s, EFG_CF);
+   End;
+   GEOS_KERN_OBJMESSAGE: Begin
+    { Convention INVENTEE Stage 7 : bx=poignee de file, cx=numero de        }
+    { message, dx=donnee (simplifie - un seul mot de donnee, PAS les        }
+    { cx/dx/bp separes de la vraie convention "other data" par methode).   }
+    { Return : carry=erreur. }
+    Ok := Geos_ObjMessageQueue(P.CPU.Regs.BX, P.CPU.Regs.CX, P.CPU.Regs.DX,
+     0, 0, ErrMsg);
+    If Ok Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Include(P.CPU.Flags.s, EFG_CF);
+   End;
+   GEOS_KERN_THREADWAITQUEUE: Begin
+    { Convention INVENTEE Stage 7 : bx=poignee de file. C'est LE point de   }
+    { blocage/commutation reel de ce chantier - contrairement aux autres   }
+    { ordinaux, ne fait PAS le retour synthetique standard ci-dessous      }
+    { (voir apres le Case) : le thread APPELANT sauvegarde son propre       }
+    { contexte (avec l'IP DEJA APRES ce CALL FAR, grace au retour           }
+    { synthetique execute AVANT le blocage) puis cede la main. }
+    P.CPU.IP := Emu_PopWord(P.CPU);
+    P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+    If Geos_CurThread >= 0 Then Begin
+     Geos_SaveContext(P, Geos_CurThread);
+     Ok := Geos_ThreadWaitQueue(Geos_CurThread, P.CPU.Regs.BX, ErrMsg);
+    End;
+    If Not Geos_ScheduleNext(P) Then Begin
+     P.CPU.Fault := sfEndProgram;
+     P.StatusMsg := 'Interblocage GeoWorks : plus aucun thread pret (Stage 7)';
+    End;
+    Exit; { surtout ne pas re-depiler/re-sauter plus bas : deja fait ici }
+   End;
+   GEOS_KERN_OBJCALLINSTANCE: Begin
+    { Convention INVENTEE Stage 8 (le vrai ObjCallInstanceNoLock est       }
+    { atteint par une trappe CPU 30h/appel direct dans le vrai GeoWorks,   }
+    { jamais par un CALL FAR explicite comme nos autres ordinaux - voir   }
+    { la disclosure de tete de Geos_ObjCallInstance) : *ds:si=objet (SI=   }
+    { poignee), ax=numero de methode, cx/dx/bp=autres donnees (convention }
+    { REELLE, inchangee). Return : carry=aucune methode trouvee (ni        }
+    { superclasse ni gestionnaire par defaut) - PAS une erreur. }
+    Ok := Geos_ObjCallInstance(P, P.CPU.Segs.DS, P.CPU.Regs.SI,
+     P.CPU.Regs.AX, P.CPU.Regs.CX, P.CPU.Regs.DX, P.CPU.Regs.BP,
+     ObjFound, ErrMsg);
+    If Not Ok Then Begin
+     P.CPU.Fault := sfEndProgram;
+     P.StatusMsg := 'ObjCallInstance : ' + ErrMsg;
+     Exit;
+    End;
+    If ObjFound Then Exclude(P.CPU.Flags.s, EFG_CF)
+    Else Include(P.CPU.Flags.s, EFG_CF);
+   End;
+   GEOS_KERN_GRINITSCREEN: Begin
+    { Stage 9 (2026-09-20, demande explicite - "demo graphique de bout en }
+    { bout") : PAS un vrai appel Graphics.geo (aucune convention reelle    }
+    { retrouvee, voir la disclosure) - bascule DIRECTEMENT le mode video   }
+    { VGA reel (Emu_VidSetMode, deja eprouve par le chantier Win16) et      }
+    { peint un fond uni (bleu, index 1) pour rendre le dessin qui suit      }
+    { visible. Aucun parametre. }
+    Emu_VidSetMode($13, P);
+    For GrY := 0 To 199 Do
+     For GrX := 0 To 319 Do
+      Emu_VidSetPixel(GrX, GrY, 1);
+   End;
+   GEOS_KERN_GRSETPIXEL: Begin
+    { Stage 9 : bx=x, cx=y, dl=couleur (index VGA 0-255, mode $13 deja      }
+    { actif via l'ordinal 10) - appelle DIRECTEMENT Emu_VidSetPixel (meme   }
+    { framebuffer reel que Win16/DOS, aucune simulation separee). }
+    Emu_VidSetPixel(SmallInt(P.CPU.Regs.BX), SmallInt(P.CPU.Regs.CX),
+     Byte(P.CPU.Regs.DX And $FF));
+   End;
    Else Begin
     P.CPU.Fault := sfEndProgram;
     P.StatusMsg := 'Appel noyau PC/GEOS #' + IntToStr(Geos_TrapRoutine[Slot]) +
-     ' non implante (Stage 5 : seuls ChunkArrayCreate/Append/' +
-     'ElementToPtr/ArrayQuickSort le sont, avec une numerotation ' +
-     'INVENTEE - voir la disclosure)';
+     ' non implante (Stage 9 : ChunkArray*/ArrayQuickSort/ThreadCreate/' +
+     'GeodeAllocQueue/ObjMessage/ThreadWaitQueue/ObjCallInstance/' +
+     'GrInitScreen/GrSetPixel seulement, avec une numerotation INVENTEE ' +
+     '- voir la disclosure)';
     Exit;
    End;
   End;
@@ -97658,6 +98299,7 @@ Begin
   IntToStr(Geos_TrapRoutine[Slot]) + ' non implante (Stage 3, voir ' +
   'Invoke-GeoWorksAPI)';
 End;
+
 
 { Appelle SYNCHRONE un VRAI callback FONTENUMPROC16 (SEGPTR lplf, SEGPTR    }
 { lptm, UINT16 nFontType, LPARAM lParam) - signature VERIFIEE via le VRAI   }
@@ -133514,6 +134156,26 @@ Begin
    '  Invoke-GeoWorksAPI -Api DBFree -Group $groupe -Item $item');
   HelpEmit(
    '  Invoke-GeoWorksAPI -Api DBUnlock | DBDirty | CellUnlock | CellDirty');
+  HelpEmit( '');
+  HelpEmit( '--- Noyau multi-thread (2026-09-19, Stage 6 - fondations) ---');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ThreadCreate -EntrySeg n -EntryOfs n');
+  HelpEmit(
+   '    ... [-StackSize n] [-Owner n] [-Dgroup n] [-Value n]');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api GeodeAllocQueue [-Owner n]');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ObjMessage -Queue n -Msg n [-Cx n][-Dx n][-Bp n]');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api QueueReceive -Queue n');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ThreadWaitQueue -Thread n -Queue n');
+  HelpEmit( '');
+  HelpEmit( '--- Systeme d''objets (2026-09-19, Stage 8 - dispatch de methode) ---');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api ObjCallInstance [-Resource n]');
+  HelpEmit(
+   '    (construit un objet/classe/methode de test et l''appelle reellement)');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -143706,6 +144368,14 @@ Var
  ArrHandle, ElemSize, HdrSize, NewElemOfs, ElemOfs, Idx, Cnt: Word;
  CompSeg, CompOfs, BxVal, ArrOfs, Count, NumElems: Word;
  DBGroupSize, DBNHandles, DBGroupSeg, DBItemSize, DBItemHandle, DBDataOfs: Word;
+ ThBxVal, ThEntrySeg, ThEntryOfs, ThStackSize, ThOwner, ThDgroupSeg: Word;
+ ThHandle, ThQueueHandle: Integer;
+ ThMsgNum, ThCxData, ThDxData, ThBpData: Word;
+ ThMsg: TGeosMessage;
+ ThHasMsg: Boolean;
+ ObjMethodNum, ObjRoutineHandle, ObjRoutineOfs: Word;
+ ObjClassHandle, ObjClassOfs, ObjHandle2, ObjInstOfs: Word;
+ ObjFound2: Boolean;
  ErrC: Integer;
 Begin
  If (WinMgr.ActiveIdx < 0) Or
@@ -143723,11 +144393,242 @@ Begin
   TermAddLine(TP, '        ChunkArrayDeleteRange | ChunkArrayElementToPtr |');
   TermAddLine(TP, '        ChunkArrayElementResize | ArrayQuickSort |');
   TermAddLine(TP, '        DBGroupAlloc | DBAlloc | DBLock | DBUnlock | DBDirty | DBFree |');
-  TermAddLine(TP, '        CellUnlock | CellDirty');
+  TermAddLine(TP, '        CellUnlock | CellDirty | ThreadCreate | GeodeAllocQueue |');
+  TermAddLine(TP, '        ObjMessage | QueueReceive | ThreadWaitQueue | ObjCallInstance');
   Exit;
  End;
  ApiName := TermStrToUpper(TrimStr(TermExtractParam(Copy(ParamStr,
   ApiPos + 4, Length(ParamStr)), 1)));
+ { Thread/Queue (Stage 6) : fondations du noyau multi-thread, traitees    }
+ { AVANT la resolution de ressource - voir la disclosure de tete de la    }
+ { section Geos_ThreadCreate/Geos_GeodeAllocQueue plus haut (aucune       }
+ { commutation de contexte CPU reelle encore, Stage 7 a venir). }
+ If (ApiName = 'THREADCREATE') Then Begin
+  ThBxVal := 0; ThEntrySeg := 0; ThEntryOfs := 0;
+  ThStackSize := 0; ThOwner := 0; ThDgroupSeg := 0;
+  FlagPos := System.Pos('-ENTRYSEG', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 9, Length(ParamStr)), 1);
+   Val(Arg, ThEntrySeg, ErrC);
+  End;
+  FlagPos := System.Pos('-ENTRYOFS', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 9, Length(ParamStr)), 1);
+   Val(Arg, ThEntryOfs, ErrC);
+  End;
+  FlagPos := System.Pos('-STACKSIZE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 10, Length(ParamStr)), 1);
+   Val(Arg, ThStackSize, ErrC);
+  End;
+  FlagPos := System.Pos('-OWNER', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ThOwner, ErrC);
+  End;
+  FlagPos := System.Pos('-DGROUP', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 7, Length(ParamStr)), 1);
+   Val(Arg, ThDgroupSeg, ErrC);
+  End;
+  FlagPos := System.Pos('-VALUE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ThBxVal, ErrC);
+  End;
+  If (ThEntrySeg = 0) Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ThreadCreate ' +
+    '-EntrySeg n -EntryOfs n [-StackSize n] [-Owner n] [-Dgroup n] ' +
+    '[-Value n]');
+   Exit;
+  End;
+  If Geos_ThreadCreate(EmuPanel.CPU, 0, ThBxVal, ThEntrySeg, ThEntryOfs,
+     ThStackSize, ThOwner, ThDgroupSeg, ThHandle, ErrMsg) Then
+   TermAddLine(TP, 'ThreadCreate : thread = $' + HexWord(Word(ThHandle)) +
+    ' (pile $' + HexWord(Geos_Thread[ThHandle].StackSeg) + ')')
+  Else
+   TermAddLine(TP, 'ThreadCreate : echec - ' + ErrMsg);
+  Exit;
+ End;
+ If (ApiName = 'GEODEALLOCQUEUE') Then Begin
+  ThOwner := 0;
+  FlagPos := System.Pos('-OWNER', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ThOwner, ErrC);
+  End;
+  If Geos_GeodeAllocQueue(ThOwner, ThQueueHandle, ErrMsg) Then
+   TermAddLine(TP, 'GeodeAllocQueue : file = $' + HexWord(Word(ThQueueHandle)))
+  Else
+   TermAddLine(TP, 'GeodeAllocQueue : echec - ' + ErrMsg);
+  Exit;
+ End;
+ If (ApiName = 'OBJMESSAGE') Then Begin
+  ThQueueHandle := -1; ThMsgNum := 0; ThCxData := 0; ThDxData := 0; ThBpData := 0;
+  FlagPos := System.Pos('-QUEUE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ThQueueHandle, ErrC);
+  End;
+  FlagPos := System.Pos('-MSG', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 4, Length(ParamStr)), 1);
+   Val(Arg, ThMsgNum, ErrC);
+  End;
+  FlagPos := System.Pos('-CX', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 3, Length(ParamStr)), 1);
+   Val(Arg, ThCxData, ErrC);
+  End;
+  FlagPos := System.Pos('-DX', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 3, Length(ParamStr)), 1);
+   Val(Arg, ThDxData, ErrC);
+  End;
+  FlagPos := System.Pos('-BP', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 3, Length(ParamStr)), 1);
+   Val(Arg, ThBpData, ErrC);
+  End;
+  If ThQueueHandle < 0 Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ObjMessage -Queue n ' +
+    '-Msg n [-Cx n] [-Dx n] [-Bp n]');
+   Exit;
+  End;
+  If Geos_ObjMessageQueue(ThQueueHandle, ThMsgNum, ThCxData, ThDxData,
+     ThBpData, ErrMsg) Then
+   TermAddLine(TP, 'ObjMessage : message #' + IntToStr(ThMsgNum) +
+    ' depose sur la file $' + HexWord(Word(ThQueueHandle)))
+  Else
+   TermAddLine(TP, 'ObjMessage : echec - ' + ErrMsg);
+  Exit;
+ End;
+ If (ApiName = 'QUEUERECEIVE') Then Begin
+  ThQueueHandle := -1;
+  FlagPos := System.Pos('-QUEUE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ThQueueHandle, ErrC);
+  End;
+  If ThQueueHandle < 0 Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api QueueReceive -Queue n');
+   Exit;
+  End;
+  If Geos_QueueReceive(ThQueueHandle, ThMsg, ThHasMsg, ErrMsg) Then Begin
+   If ThHasMsg Then
+    TermAddLine(TP, 'QueueReceive : message #' + IntToStr(ThMsg.MsgNum) +
+     ' cx=$' + HexWord(ThMsg.CxData) + ' dx=$' + HexWord(ThMsg.DxData) +
+     ' bp=$' + HexWord(ThMsg.BpData))
+   Else
+    TermAddLine(TP, 'QueueReceive : file $' + HexWord(Word(ThQueueHandle)) +
+     ' vide');
+  End Else
+   TermAddLine(TP, 'QueueReceive : echec - ' + ErrMsg);
+  Exit;
+ End;
+ If (ApiName = 'THREADWAITQUEUE') Then Begin
+  ThHandle := -1; ThQueueHandle := -1;
+  FlagPos := System.Pos('-THREAD', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 7, Length(ParamStr)), 1);
+   Val(Arg, ThHandle, ErrC);
+  End;
+  FlagPos := System.Pos('-QUEUE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, ThQueueHandle, ErrC);
+  End;
+  If (ThHandle < 0) Or (ThQueueHandle < 0) Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api ThreadWaitQueue ' +
+    '-Thread n -Queue n');
+   Exit;
+  End;
+  If Geos_ThreadWaitQueue(ThHandle, ThQueueHandle, ErrMsg) Then
+   TermAddLine(TP, 'ThreadWaitQueue : thread $' + HexWord(Word(ThHandle)) +
+    ' bloque sur la file $' + HexWord(Word(ThQueueHandle)))
+  Else
+   TermAddLine(TP, 'ThreadWaitQueue : echec - ' + ErrMsg);
+  Exit;
+ End;
+ { ObjCallInstance (Stage 8) : construit un OBJET + une CLASSE reels dans  }
+ { une ressource "tas LMem" (un seul methode de test, numero $0064,       }
+ { routine = "MOV AX,1234h ; RETF" ecrite dans le meme tas) puis appelle  }
+ { Geos_ObjCallInstance dessus - auto-suffisant, aucun fichier .GEO de     }
+ { test externe requis (contrairement a ArrayQuickSort qui a besoin d'un  }
+ { module .GEO reel pour le comparateur - ici la "routine" est assez      }
+ { petite pour etre fabriquee a la volee, comme le comparateur par        }
+ { defaut d'ArrayQuickSort). }
+ If (ApiName = 'OBJCALLINSTANCE') Then Begin
+  ResIdx := -1;
+  ResPos := System.Pos('-RESOURCE', UpParams);
+  If ResPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, ResPos + 9, Length(ParamStr)), 1);
+   Val(Arg, ResIdx, ErrC);
+   If ErrC <> 0 Then ResIdx := -1;
+  End;
+  ResIdx := GeosFindLMemResource(ResIdx);
+  If ResIdx < 0 Then Begin
+   TermAddLine(TP, 'Invoke-GeoWorksAPI : aucune ressource "tas LMem" ' +
+    'trouvee dans ce geode (-Resource n pour forcer un indice).');
+   Exit;
+  End;
+  HeapSeg := Geos_Seg[ResIdx].SegBase;
+  ObjMethodNum := $0064; { 100 decimal - numero de methode de test arbitraire }
+  If Not GeosLMem_Alloc(EmuPanel.CPU, HeapSeg, 4, ObjRoutineHandle, ErrMsg) Then Begin
+   TermAddLine(TP, 'ObjCallInstance : echec (routine de test) - ' + ErrMsg);
+   Exit;
+  End;
+  ObjRoutineOfs := GeosLMem_Deref(EmuPanel.CPU, HeapSeg, ObjRoutineHandle);
+  Emu_WriteByte(EmuPanel.CPU, HeapSeg, ObjRoutineOfs, $B8);       { MOV AX, }
+  Emu_WriteByte(EmuPanel.CPU, HeapSeg, Word(ObjRoutineOfs + 1), $34); { imm16 = }
+  Emu_WriteByte(EmuPanel.CPU, HeapSeg, Word(ObjRoutineOfs + 2), $12); {  $1234  }
+  Emu_WriteByte(EmuPanel.CPU, HeapSeg, Word(ObjRoutineOfs + 3), $CB); { RETF }
+  If Not GeosLMem_Alloc(EmuPanel.CPU, HeapSeg, 22, ObjClassHandle, ErrMsg) Then Begin
+   TermAddLine(TP, 'ObjCallInstance : echec (classe de test) - ' + ErrMsg);
+   Exit;
+  End;
+  ObjClassOfs := GeosLMem_Deref(EmuPanel.CPU, HeapSeg, ObjClassHandle);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_SUPERCLASS), 0);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_SUPERCLASS + 2), 0);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_MASTEROFFSET), 0);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_METHODCOUNT), 1);
+  Emu_WriteByte(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_FLAGS), 0);
+  Emu_WriteByte(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_FLAGS + 1), $FF);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_METHODTABLE),
+   ObjMethodNum);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_METHODTABLE + 2),
+   ObjRoutineOfs);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjClassOfs + GEOS_CLASS_METHODTABLE + 4),
+   HeapSeg);
+  If Not GeosLMem_Alloc(EmuPanel.CPU, HeapSeg, 4, ObjHandle2, ErrMsg) Then Begin
+   TermAddLine(TP, 'ObjCallInstance : echec (objet de test) - ' + ErrMsg);
+   Exit;
+  End;
+  ObjInstOfs := GeosLMem_Deref(EmuPanel.CPU, HeapSeg, ObjHandle2);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, ObjInstOfs, ObjClassOfs);
+  Emu_WriteWord(EmuPanel.CPU, HeapSeg, Word(ObjInstOfs + 2), HeapSeg);
+  If Geos_ObjCallInstance(EmuPanel, HeapSeg, ObjHandle2, ObjMethodNum, 0, 0, 0,
+     ObjFound2, ErrMsg) Then Begin
+   If ObjFound2 Then
+    TermAddLine(TP, 'ObjCallInstance : methode $' + HexWord(ObjMethodNum) +
+     ' trouvee et executee - AX apres appel = $' + HexWord(EmuPanel.CPU.Regs.AX) +
+     ' (attendu $1234)')
+   Else
+    TermAddLine(TP, 'ObjCallInstance : methode $' + HexWord(ObjMethodNum) +
+     ' NON trouvee (inattendu pour ce test)');
+   TermAddLine(TP, 'Test complementaire (methode $03E7, absente) : ');
+   If Geos_ObjCallInstance(EmuPanel, HeapSeg, ObjHandle2, $03E7, 0, 0, 0,
+      ObjFound2, ErrMsg) Then Begin
+    If ObjFound2 Then
+     TermAddLine(TP, '  trouvee (inattendu)')
+    Else
+     TermAddLine(TP, '  non trouvee, comme attendu (aucune superclasse/' +
+      'gestionnaire par defaut)');
+   End;
+  End Else
+   TermAddLine(TP, 'ObjCallInstance : echec - ' + ErrMsg);
+  Exit;
+ End;
  { DBase (Stage 4) : traite AVANT la resolution de ressource ci-dessous -  }
  { DBGroupAlloc/DBAlloc/DBLock/DBUnlock/DBDirty/DBFree (et les alias       }
  { CellDirty/CellUnlock, voir cell.def) operent sur un SEGMENT DEDIE       }
@@ -158786,8 +159687,8 @@ Begin
    On rend pixel par pixel via PutPixel BGI. Le scale est calcule
    pour fitter dans la zone editeur disponible.
    ============================================================ }
- If ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP') Or (P.TargetCPU = '-CWIN16')) And
-    EmuVideo.IsGraphic Then Begin
+ If ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP') Or (P.TargetCPU = '-CWIN16') Or
+     (P.TargetCPU = '-CGEOS')) And EmuVideo.IsGraphic Then Begin
   { Correctif scintillement, 2eme partie (2026-09-12, demande utilisateur :  }
   { "rafraichir l ecran quand il y a un changement plutot que tout le temps }
   { comme un abrutis") : ce bloc redessinait l integralite de l ecran        }
@@ -180095,7 +180996,9 @@ Begin
     End;
    End;
   $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else Emu_DoInt1A(P);
-  $20: If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20) Else P.CPU.Fault := sfEndProgram;
+  $20: If Geos_Active Then Geos_ThreadTerminate(P)
+       Else If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20)
+       Else P.CPU.Fault := sfEndProgram;
   $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Begin
    { InDOS (SDA+01h) : incremente pour la duree de l appel, exactement      }
    { comme le vrai noyau DOS - c est CE compteur que INT 21h AH=34h renvoie }
@@ -199144,7 +200047,12 @@ Var
  IsPE32: Boolean;
  IsGeos: Boolean;
  GeosEntryRes: Integer;
- GeosEntryOfs, GeosStackSeg: Word;
+ GeosEntryOfs: Word;
+ GeosInitThread: Integer;
+ GeosThErr: String;
+ GeosProcClassRes, GeosAttachSlot: Integer;
+ GeosBootSeg: Word;
+ GeosI: Word;
  TraceI, TraceN: LongInt;
  TraceLine: String;
  CPUName: String;
@@ -200574,6 +201482,7 @@ Begin NesActive := False;
    Emu_Done(P.CPU);
    Exit;
   End;
+  Geos_SchedulerReset; { Stage 6 : table de threads/files vierge par chargement }
   P.CurFg := 10;
   EmuVScr_WriteLn(P, 'Geode PC/GEOS charge avec succes.');
   P.CurFg := 7;
@@ -200587,39 +201496,130 @@ Begin NesActive := False;
    GeosEntryRes := Geos_LibInitRes; GeosEntryOfs := Geos_LibInitOfs;
   End;
   If (GeosEntryRes >= 0) And (GeosEntryRes < Integer(Geos_NumSeg)) Then Begin
-   { Stage 3 : execution reelle - pile privee juste apres Geos_TrapSeg      }
-   { (256 octets, largement suffisant pour atteindre le premier appel        }
-   { noyau/bibliotheque ou un RETF propre - aucun geode reel n'a de gros     }
-   { travail purement local a faire avant son premier appel systeme). Pile  }
-   { pre-amorcee avec l'adresse de retour "fin propre" (voir                }
-   { GEOS_EXIT_STUB_OFS) exactement comme la convention PSP DOS reelle       }
-   { (INT 20h a l'adresse de retour initiale). }
-   GeosStackSeg := Geos_NextFreeSeg;
-   Geos_NextFreeSeg := Geos_NextFreeSeg + 16; { 256 octets }
-   P.CPU.Segs.SS := GeosStackSeg;
-   P.CPU.Regs.SP := 256;
-   Emu_PushWord(P.CPU, Geos_TrapSeg);
-   Emu_PushWord(P.CPU, GEOS_EXIT_STUB_OFS);
-   P.CPU.Segs.CS := Geos_Seg[GeosEntryRes].SegBase;
-   P.CPU.IP := GeosEntryOfs;
+   { Stage 7 (2026-09-19) : le point d'entree devient desormais le premier }
+   { THREAD reel (voir Geos_ThreadCreate/Geos_LoadContext), plutot que de   }
+   { positionner P.CPU directement (comportement Stage 3 seul) - meme      }
+   { pile privee de 256 octets, meme pre-amorcage GEOS_EXIT_STUB (INT 20h  }
+   { propre, voir Geos_ThreadTerminate) que Stage 3, mais geres desormais   }
+   { par le cycle de vie normal d'un thread (round-robin, blocage sur      }
+   { file - voir Geos_DispatchCall, ordinal 8). }
+   If Not Geos_ThreadCreate(P.CPU, 0, 0, Geos_Seg[GeosEntryRes].SegBase,
+      GeosEntryOfs, 256, 0, Geos_Seg[GeosEntryRes].SegBase, GeosInitThread,
+      GeosThErr) Then Begin
+    P.CurFg := 12;
+    EmuVScr_WriteLn(P, 'Erreur : impossible de creer le thread initial - ' +
+     GeosThErr);
+    P.CurFg := OldFg; P.CurBg := OldBg;
+    P.Running := False;
+    P.Fault := sfEndProgram;
+    P.StatusMsg := 'Echec de creation du thread initial (Stage 7)';
+    Emu_Done(P.CPU);
+    Exit;
+   End;
+   { Geos_ThreadCreate pre-amorce DEJA la pile de CE thread avec l'adresse }
+   { de retour GEOS_EXIT_STUB (voir son commentaire - corrige au Stage 7   }
+   { pour que TOUS les threads en beneficient, pas seulement celui-ci) -   }
+   { rien a pousser a la main ici. }
+   Geos_LoadContext(P, GeosInitThread);
    P.CPU.Fault := sfNone;
    Geos_Active := True;
    P.CurFg := 14;
    EmuVScr_WriteLn(P, 'Point d''entree reel detecte (ressource ' +
     IntToStr(GeosEntryRes) + ', offset $' + HexWord(GeosEntryOfs) + ') - ' +
-    'execution demarree (Stage 3).');
+    'execution demarree en tant que thread 0 (Stage 7).');
    EmuVScr_WriteLn(P, 'Convention exacte de passage de parametres du ' +
     'pilote/initialisation non modelisee (registres a 0 au demarrage) ;');
-   EmuVScr_WriteLn(P, 'tout appel noyau/bibliotheque REEL sera honnetement ' +
-    'signale puis l''emulation s''arretera proprement.');
+   EmuVScr_WriteLn(P, 'tout appel noyau/bibliotheque REEL non implante ' +
+    'sera honnetement signale puis l''emulation s''arretera proprement.');
    P.CurFg := 7;
    EmuVScr_WriteLn(P, '');
    P.CurBg := OldBg;
    P.Running := True;
    P.Loaded := True;
-   P.StatusMsg := 'Execution PC/GEOS en cours (Stage 3)';
+   P.StatusMsg := 'Execution PC/GEOS en cours (thread 0, Stage 7)';
    DrawEmulatorPanel(P);
    Exit;
+  End;
+  { Stage 10 (2026-09-20) : les Applications (le type le PLUS courant -    }
+  { GSDUMP.GEO/INSTFE.GEO en sont toutes les deux) n'avaient jusqu'ici      }
+  { JAMAIS d'execution du tout, contrairement aux Pilotes/Bibliotheques     }
+  { (Stage 3). Ce chantier fabrique un petit "amorceur" (quelques          }
+  { instructions ecrites DIRECTEMENT en memoire emulee, jamais issues du    }
+  { fichier .GEO lui-meme - AUCUNE fausse action sur le fichier d'origine)  }
+  { qui charge ds:si = ProcessClass (Ress:Dep DEJA extraits et VERIFIES au  }
+  { Stage 1 - section 7.2 du format : bit $8000 des attributs du geode,     }
+  { memes champs que DriverTable/LibInit ci-dessus) et invoque REELLEMENT   }
+  { ObjCallInstance (Stage 8) dessus, exactement comme le ferait le VRAI    }
+  { noyau PC/GEOS en envoyant MSG_META_ATTACH.                              }
+  { Stage 11 (2026-09-20) : le numero de message utilise (GEOS_MSG_META_    }
+  { ATTACH ci-dessous) est desormais le VRAI MSG_META_ATTACH=5, derive des  }
+  { sources REELLES du compilateur GeoWorks (Tools/esp/symbol.c + object.c) }
+  { et verifie contre Include/Objects/metaC.def (voir la disclosure         }
+  { complete a la declaration de la constante). Il reste neanmoins deux     }
+  { simplifications assumees : (1) l'amorceur appelle directement           }
+  { ObjCallInstance sur ProcessClass sans passer par le vrai protocole de   }
+  { creation de thread/heap/UI complet du noyau PC/GEOS (juste un thread 0  }
+  { cooperatif, voir Stage 6/7) ; (2) un VRAI geode tiers pourrait donc      }
+  { echouer pour d'autres raisons (bibliotheques Ui/Graphics manquantes,    }
+  { objets non grown-out) meme si le numero de message est desormais        }
+  { correct - seuls des geodes de test simples construits par ce chantier   }
+  { sont garantis fonctionner de bout en bout pour l'instant. }
+  If (Geos_AppAttr And $8000) <> 0 Then Begin
+   GeosProcClassRes := Geos_ProcClassRes;
+   If (GeosProcClassRes >= 0) And (GeosProcClassRes < Integer(Geos_NumSeg)) Then Begin
+    GeosBootSeg := Geos_NextFreeSeg;
+    Geos_NextFreeSeg := Geos_NextFreeSeg + 1; { 16 octets, largement assez }
+    GeosAttachSlot := Geos_ResolveTrapSlot(P.CPU, True, 0,
+     GEOS_KERN_OBJCALLINSTANCE);
+    If GeosAttachSlot >= 0 Then Begin
+     GeosI := 0;
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $B8); Inc(GeosI); { MOV AX,seg }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, Geos_Seg[GeosProcClassRes].SegBase);
+     Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $8E); Inc(GeosI); { MOV DS,AX }
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $D8); Inc(GeosI);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $BE); Inc(GeosI); { MOV SI,ofs }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, Geos_ProcClassOfs); Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $B8); Inc(GeosI); { MOV AX,msg }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, GEOS_MSG_META_ATTACH);
+     Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $B9); Inc(GeosI); { MOV CX,0 }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, 0); Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $BA); Inc(GeosI); { MOV DX,0 }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, 0); Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $9A); Inc(GeosI); { CALL FAR }
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI,
+      Word(GeosAttachSlot * GEOS_TRAP_SLOT_SIZE)); Inc(GeosI, 2);
+     Emu_WriteWord(P.CPU, GeosBootSeg, GeosI, Geos_TrapSeg); Inc(GeosI, 2);
+     Emu_WriteByte(P.CPU, GeosBootSeg, GeosI, $CB); { RETF }
+     If Geos_ThreadCreate(P.CPU, 0, 0, GeosBootSeg, 0, 256, 0, GeosBootSeg,
+        GeosInitThread, GeosThErr) Then Begin
+      Geos_LoadContext(P, GeosInitThread);
+      P.CPU.Fault := sfNone;
+      Geos_Active := True;
+      P.CurFg := 14;
+      EmuVScr_WriteLn(P, 'ProcessClass detectee (ressource ' +
+       IntToStr(GeosProcClassRes) + ', depl. $' +
+       HexWord(Geos_ProcClassOfs) + ') - amorceur cree, ObjCallInstance ' +
+       'appele avec le VRAI numero MSG_META_ATTACH ($' +
+       HexWord(GEOS_MSG_META_ATTACH) + ', derive des sources reelles du ' +
+       'compilateur GeoWorks - voir la disclosure Stage 11) en tant que ' +
+       'thread 0 (Stage 7).');
+      EmuVScr_WriteLn(P, 'Simplifications restantes : thread 0 cooperatif ' +
+       'seul (pas le vrai protocole complet du noyau), bibliotheques ' +
+       'Ui/Graphics non implantees - un VRAI geode tiers peut donc encore ' +
+       'echouer plus loin (methode manquante, objet non grown-out).');
+      P.CurFg := 7;
+      EmuVScr_WriteLn(P, '');
+      P.CurBg := OldBg;
+      P.Running := True;
+      P.Loaded := True;
+      P.StatusMsg := 'Execution PC/GEOS Application en cours (thread 0, Stage 10)';
+      DrawEmulatorPanel(P);
+      Exit;
+     End;
+    End;
+   End;
   End;
   P.CurFg := 14;
   EmuVScr_WriteLn(P,
