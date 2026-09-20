@@ -450,7 +450,7 @@ Type
   Memory:PPCodeMemory;
   LastUse:LongInt
  End;
- TPCodeRuntimeFile=Record
+TPCodeRuntimeFile=Record
  Used,Opened,TextMode,Writing:Boolean;
  Name:String[127];
  T:Text;
@@ -460,6 +460,20 @@ Type
  RecordWords,Flags:Integer;
  LastError:Integer
 End;
+TPCodeTaskState=(ptsUnused,ptsReady,ptsRunning,ptsWaiting,ptsStopped);
+TPCodeTask=Record
+ State:TPCodeTaskState;
+ ProcessId,ParentId:Integer;
+ PC,SP,MP,Base,StackLow,StackHigh:LongInt;
+ SegmentNo,ProcedureNo:Integer;
+ WaitSemaphore:LongInt;
+ WakeOrder:LongInt
+End;
+
+Const
+ PCODE_MAX_TASKS=7;
+ PCODE_TASK_STACK_WORDS=512;
+ PCODE_TASK_QUANTUM=256;
 
 Var
  PCode_Mem:PPCodeMemory;
@@ -484,6 +498,10 @@ Var
  PCode_RangeChecking,PCode_OverflowChecking:Boolean;
  PCode_Halted:Boolean;
  PCode_ExitCode:Integer;
+ PCode_Tasks:Array[0..PCODE_MAX_TASKS-1]of TPCodeTask;
+ PCode_CurrentTask,PCode_TaskCount,PCode_TaskTicks:Integer;
+ PCode_ScheduleClock:LongInt;
+ PCode_ConcurrencyActive,PCode_YieldRequested:Boolean;
 
 Function PCode_IntToStr(V:LongInt):String;
 Var
@@ -504,6 +522,12 @@ Procedure PCode_DataSet(A:LongInt;V:LongInt);Forward;
 Procedure PCode_DataSetWord(A:LongInt;V:Word);Forward;
 Procedure PCode_RuntimeError(Code:Integer;Const Msg:String);Forward;
 Function PCode_Fetch(Ofs:LongInt):Byte;Forward;
+Procedure PCode_CallProcedure(ProcNum,LexLevel:Integer;GlobalCall:Boolean);Forward;
+Procedure PCode_CallExternalSegment(SegmentNo,ProcNum:Integer;GlobalCall:Boolean);Forward;
+Function PCode_StartTask(ProcNum:Integer):Integer;Forward;
+Procedure PCode_WaitSemaphore(Address:LongInt);Forward;
+Procedure PCode_SignalSemaphore(Address:LongInt);Forward;
+Procedure PCode_StopTask(ProcessId:Integer);Forward;
 
 Function PCode_StringLength(A:LongInt):Integer;
 Var
@@ -1000,6 +1024,9 @@ if not PCode_HasProcDictionary and(LoadedSize>=12)and
  End
 End;
 if PCode_HasProcDictionary Then Begin
+ { Les attributs et le dictionnaire font partie du segment adresse par le
+   chargeur, meme s'ils se trouvent apres la derniere instruction. }
+ PCode_CodeSize:=LoadedSize;
  Write('Fichier CODE UCSD historique charge: ');
  if PCode_HistoricalII Then WriteLn('ABI II/III, ',PCode_ProcCount,' procedure(s).')
  else WriteLn('ABI IV, ',PCode_ProcCount,' procedure(s).')
@@ -1162,7 +1189,8 @@ End;
 Procedure PCode_Push(V: LongInt);Begin
  If PCode_Halted Then Exit;
  If PCode_HasProcDictionary Then Begin
-  If PCode_SP>0 Then Begin
+  If (not PCode_ConcurrencyActive and(PCode_SP>0))or
+   (PCode_ConcurrencyActive and(PCode_SP>PCode_Tasks[PCode_CurrentTask].StackLow))Then Begin
    Dec(PCode_SP);PCode_Data^[PCode_SP]:=V
   End
   Else
@@ -1181,7 +1209,8 @@ End;
 
 Function PCode_Pop: LongInt;Begin
  If PCode_HasProcDictionary Then Begin
-  If PCode_SP<=High(PCode_Data^)Then Begin
+  If (not PCode_ConcurrencyActive and(PCode_SP<=High(PCode_Data^)))or
+   (PCode_ConcurrencyActive and(PCode_SP<=PCode_Tasks[PCode_CurrentTask].StackHigh))Then Begin
    PCode_Pop:=PCode_Data^[PCode_SP];Inc(PCode_SP)
   End Else
   Begin
@@ -1907,6 +1936,27 @@ Begin
  N:=PCode_Pop;D:=PCode_Pop;V:=PCode_Pop;A:=PCode_DataAt(D);
  if A<>0 Then PCode_DataSet(A+N,V)
 End;
+110:
+Begin
+ { START: numero de procedure -> identificateur du nouveau processus. }
+ N:=PCode_Pop;PCode_Push(PCode_StartTask(N))
+End;
+111:
+Begin
+ { WAIT: l'adresse designe le compteur du semaphore partage. }
+ A:=PCode_Pop;PCode_WaitSemaphore(A)
+End;
+112:
+Begin
+ { SIGNAL: reveille le plus ancien processus en attente, sinon incremente. }
+ A:=PCode_Pop;PCode_SignalSemaphore(A)
+End;
+113:
+Begin
+ { STOP(0) arrete le processus courant; une autre valeur designe un PID. }
+ N:=PCode_Pop;PCode_StopTask(N)
+End;
+114:PCode_Push(PCode_CurrentTask+1);
 Else
 PCode_RuntimeError(305,'CSP '+PCode_IntToStr(CspNum)+' inconnue');
 End;
@@ -2015,9 +2065,6 @@ End;
 { Adresses de donnees en mots; adresses de code en octets. Un MSCW occupe }
 { cinq mots: MSSTAT, MSDYN, IPC, MSENV et MPROC.                           }
 
-Procedure PCode_CallProcedure(ProcNum,LexLevel:Integer;GlobalCall:Boolean);Forward;
-Procedure PCode_CallExternalSegment(SegmentNo,ProcNum:Integer;GlobalCall:Boolean);Forward;
-
 Function PCode_IVWord(Ofs:LongInt):Integer;Begin
  if PCode_CodeBigEndian Then PCode_IVWord:=(PCode_Fetch(Ofs)shl 8)or PCode_Fetch(Ofs+1)
  else PCode_IVWord:=PCode_Fetch(Ofs)or(PCode_Fetch(Ofs+1)shl 8)
@@ -2080,7 +2127,10 @@ Begin
   PCode_Halted:=True;PCode_ExitCode:=0;Exit
  End;
  PCode_SP:=OldMP+5+Count;
- if PCode_SP>High(PCode_Data^)+1 Then PCode_SP:=High(PCode_Data^)+1;
+ if PCode_ConcurrencyActive Then Begin
+  if PCode_SP>PCode_Tasks[PCode_CurrentTask].StackHigh+1 Then
+   PCode_SP:=PCode_Tasks[PCode_CurrentTask].StackHigh+1
+ End else if PCode_SP>High(PCode_Data^)+1 Then PCode_SP:=High(PCode_Data^)+1;
  CallerSegment:=(PCode_DataAt(OldMP+MSCW_ENV)shr 8)and $FF;
  if(CallerSegment<>PCode_CurrentSegment)and not PCode_LoadSegment(CallerSegment)Then Begin
   PCode_RuntimeError(304,'impossible de restaurer le segment appelant');Exit
@@ -2115,6 +2165,9 @@ Begin
  End;
  if(Op>=$68)and(Op<=$6F)Then Begin
   PCode_DataSet(PCode_MP+5+(Op-$68)+1,PCode_Pop);Exit
+ End;
+ if(Op>=$70)and(Op<=$77)Then Begin
+  PCode_DataSet(PCode_Base+5+(Op-$70)+1,PCode_Pop);Exit
  End;
  if(Op>=$78)and(Op<=$7F)Then Begin
   A:=PCode_Pop;PCode_Push(PCode_DataAt(A+Op-$78));Exit
@@ -2478,7 +2531,8 @@ Begin
  Entry:=PCode_IIProcAddress(ProcNum,Locals);
  if Entry<0 Then Begin
   if PCode_IIProcedureNative(ProcNum)Then
-   PCode_RuntimeError(500,'procedure native non executable sur cette machine hote')
+   PCode_RuntimeError(500,'procedure native '+PCode_IntToStr(ProcNum)+
+    ' non executable sur cette machine hote')
   else PCode_RuntimeError(301,'procedure UCSD II/III invalide');Exit
  End;
  if GlobalCall Then StaticLink:=PCode_Base
@@ -2507,6 +2561,128 @@ Begin
  End;
  PCode_ReturnSegmentOverride:=CallerSegment;
  PCode_CallProcedure(ProcNum,0,GlobalCall);PCode_ReturnSegmentOverride:=-1
+End;
+
+Procedure PCode_SaveTaskContext(Index:Integer);
+Begin
+ if(Index<0)or(Index>=PCODE_MAX_TASKS)Then Exit;
+ PCode_Tasks[Index].PC:=PCode_PC;PCode_Tasks[Index].SP:=PCode_SP;
+ PCode_Tasks[Index].MP:=PCode_MP;PCode_Tasks[Index].Base:=PCode_Base;
+ PCode_Tasks[Index].SegmentNo:=PCode_CurrentSegment;
+ PCode_Tasks[Index].ProcedureNo:=PCode_CurrentProc
+End;
+
+Function PCode_LoadTaskContext(Index:Integer):Boolean;
+Begin
+ PCode_LoadTaskContext:=False;
+ if(Index<0)or(Index>=PCODE_MAX_TASKS)or
+  not(PCode_Tasks[Index].State in[ptsReady,ptsRunning])Then Exit;
+ if PCode_Tasks[Index].SegmentNo<>PCode_CurrentSegment Then
+  if not PCode_LoadSegment(PCode_Tasks[Index].SegmentNo)Then Begin
+   PCode_RuntimeError(304,'segment du processus absent');Exit
+  End;
+ PCode_CurrentTask:=Index;PCode_PC:=PCode_Tasks[Index].PC;PCode_SP:=PCode_Tasks[Index].SP;
+ PCode_MP:=PCode_Tasks[Index].MP;PCode_Base:=PCode_Tasks[Index].Base;
+ PCode_CurrentProc:=PCode_Tasks[Index].ProcedureNo;
+ PCode_Tasks[Index].State:=ptsRunning;PCode_Halted:=False;PCode_TaskTicks:=0;
+ PCode_LoadTaskContext:=True;PCode_UpdateSyscom
+End;
+
+Function PCode_StartTask(ProcNum:Integer):Integer;
+Var
+ I,OldTask,OldSegment,OldProc:Integer;
+ OldPC,OldSP,OldMP,OldBase:LongInt;
+ OldHalted:Boolean;
+Begin
+ PCode_StartTask:=0;
+ if not PCode_HasProcDictionary or(ProcNum<1)or(ProcNum>PCode_ProcCount)Then Begin
+  PCode_RuntimeError(301,'procedure de processus invalide');Exit
+ End;
+ I:=1;While(I<PCODE_MAX_TASKS)and(PCode_Tasks[I].State<>ptsUnused)and
+  (PCode_Tasks[I].State<>ptsStopped)do Inc(I);
+ if I>=PCODE_MAX_TASKS Then Begin
+  PCode_RuntimeError(193,'nombre maximal de processus atteint');Exit
+ End;
+ PCode_SaveTaskContext(PCode_CurrentTask);OldTask:=PCode_CurrentTask;
+ OldPC:=PCode_PC;OldSP:=PCode_SP;OldMP:=PCode_MP;OldBase:=PCode_Base;
+ OldSegment:=PCode_CurrentSegment;OldProc:=PCode_CurrentProc;OldHalted:=PCode_Halted;
+ FillChar(PCode_Tasks[I],SizeOf(TPCodeTask),0);
+ PCode_Tasks[I].State:=ptsRunning;PCode_Tasks[I].ProcessId:=I+1;
+ PCode_Tasks[I].ParentId:=OldTask+1;
+ PCode_Tasks[I].StackHigh:=High(PCode_Data^)-LongInt(I)*PCODE_TASK_STACK_WORDS;
+ PCode_Tasks[I].StackLow:=PCode_Tasks[I].StackHigh-PCODE_TASK_STACK_WORDS+1;
+ PCode_CurrentTask:=I;PCode_SP:=PCode_Tasks[I].StackHigh+1;PCode_MP:=0;PCode_Base:=0;
+ PCode_PC:=0;PCode_CurrentProc:=0;PCode_Halted:=False;
+ PCode_CallProcedure(ProcNum,0,True);
+ if PCode_Halted Then Begin
+  PCode_Tasks[I].State:=ptsUnused;PCode_CurrentTask:=OldTask;
+  PCode_PC:=OldPC;PCode_SP:=OldSP;PCode_MP:=OldMP;PCode_Base:=OldBase;
+  PCode_CurrentProc:=OldProc;PCode_Halted:=OldHalted;Exit
+ End;
+ PCode_SaveTaskContext(I);PCode_Tasks[I].State:=ptsReady;
+ Inc(PCode_TaskCount);PCode_CurrentTask:=OldTask;
+ if PCode_CurrentSegment<>OldSegment Then PCode_LoadSegment(OldSegment);
+ PCode_PC:=OldPC;PCode_SP:=OldSP;PCode_MP:=OldMP;PCode_Base:=OldBase;
+ PCode_CurrentProc:=OldProc;PCode_Halted:=OldHalted;
+ PCode_StartTask:=I+1;PCode_UpdateSyscom
+End;
+
+Procedure PCode_WaitSemaphore(Address:LongInt);
+Var V:LongInt;
+Begin
+ if(Address<0)or(Address>High(PCode_Data^))Then Begin
+  PCode_RuntimeError(304,'adresse de semaphore invalide');Exit
+ End;
+ V:=PCode_DataAt(Address);
+ if V>0 Then PCode_DataSet(Address,V-1)
+ else Begin
+  PCode_Tasks[PCode_CurrentTask].State:=ptsWaiting;
+  PCode_Tasks[PCode_CurrentTask].WaitSemaphore:=Address;
+  Inc(PCode_ScheduleClock);PCode_Tasks[PCode_CurrentTask].WakeOrder:=PCode_ScheduleClock;
+  PCode_YieldRequested:=True
+ End
+End;
+
+Procedure PCode_SignalSemaphore(Address:LongInt);
+Var I,Best:Integer;Order:LongInt;
+Begin
+ if(Address<0)or(Address>High(PCode_Data^))Then Begin
+  PCode_RuntimeError(304,'adresse de semaphore invalide');Exit
+ End;
+ Best:=-1;Order:=MaxLongInt;
+ For I:=0 to PCODE_MAX_TASKS-1 do
+  if(PCode_Tasks[I].State=ptsWaiting)and(PCode_Tasks[I].WaitSemaphore=Address)and
+   (PCode_Tasks[I].WakeOrder<Order)Then Begin Best:=I;Order:=PCode_Tasks[I].WakeOrder End;
+ if Best>=0 Then Begin
+  PCode_Tasks[Best].WaitSemaphore:=-1;PCode_Tasks[Best].State:=ptsReady
+ End else if PCode_DataAt(Address)<32767 Then
+  PCode_DataSet(Address,PCode_DataAt(Address)+1)
+ else PCode_RuntimeError(303,'debordement du semaphore')
+End;
+
+Procedure PCode_StopTask(ProcessId:Integer);
+Var I:Integer;
+Begin
+ if ProcessId=0 Then I:=PCode_CurrentTask else I:=ProcessId-1;
+ if(I<0)or(I>=PCODE_MAX_TASKS)or(PCode_Tasks[I].State=ptsUnused)Then Begin
+  PCode_RuntimeError(304,'identificateur de processus invalide');Exit
+ End;
+ PCode_Tasks[I].State:=ptsStopped;
+ if I=PCode_CurrentTask Then Begin PCode_Halted:=True;PCode_YieldRequested:=True End
+End;
+
+Function PCode_ScheduleNext:Boolean;
+Var I,N:Integer;
+Begin
+ PCode_ScheduleNext:=False;PCode_SaveTaskContext(PCode_CurrentTask);
+ if PCode_Tasks[PCode_CurrentTask].State=ptsRunning Then
+  PCode_Tasks[PCode_CurrentTask].State:=ptsReady;
+ For N:=1 to PCODE_MAX_TASKS do Begin
+  I:=(PCode_CurrentTask+N)mod PCODE_MAX_TASKS;
+  if PCode_Tasks[I].State=ptsReady Then Begin
+   PCode_ScheduleNext:=PCode_LoadTaskContext(I);PCode_YieldRequested:=False;Exit
+  End
+ End
 End;
 
 Function PCode_SetRelation(A,B:LongInt):Integer;
@@ -3046,6 +3222,7 @@ End;
 Function ExecutePCodeFile(Const FileName:String):Integer;
 Const
  MaxCycles=10000000;
+Var I:Integer;
 Begin
  ExecutePCodeFile:=1;GetMem(PCode_Mem,SizeOf(TPCodeMemory));
  GetMem(PCode_Data,SizeOf(TPCodeData));
@@ -3062,6 +3239,15 @@ Begin
  if PCode_HasProcDictionary Then PCode_SP:=High(PCode_Data^)+1;
  PCode_Base:=0;PCode_CurrentProc:=0;
  PCode_Cycles:=0;PCode_Halted:=False;PCode_ExitCode:=0;
+ PCode_ConcurrencyActive:=PCode_HasProcDictionary;PCode_CurrentTask:=0;
+ PCode_TaskCount:=1;PCode_TaskTicks:=0;PCode_ScheduleClock:=0;PCode_YieldRequested:=False;
+ For I:=0 to PCODE_MAX_TASKS-1 do Begin
+  FillChar(PCode_Tasks[I],SizeOf(TPCodeTask),0);PCode_Tasks[I].State:=ptsUnused;
+  PCode_Tasks[I].WaitSemaphore:=-1
+ End;
+ PCode_Tasks[0].State:=ptsRunning;PCode_Tasks[0].ProcessId:=1;
+ PCode_Tasks[0].StackHigh:=High(PCode_Data^);
+ PCode_Tasks[0].StackLow:=PCode_Tasks[0].StackHigh-PCODE_TASK_STACK_WORDS+1;
  PCode_UpdateSyscom;
  if PCode_HasProcDictionary Then Begin
   if PCode_ProcCount<1 Then Begin
@@ -3070,7 +3256,19 @@ Begin
   End else PCode_CallProcedure(1,0,True)
  End;
  While not PCode_Halted and(PCode_Cycles<MaxCycles)do Begin
-  PCode_Step;Inc(PCode_Cycles);PCode_UpdateSyscom
+  PCode_Step;Inc(PCode_Cycles);Inc(PCode_TaskTicks);PCode_UpdateSyscom;
+  if PCode_Halted and(PCode_CurrentTask<>0)Then Begin
+   PCode_Tasks[PCode_CurrentTask].State:=ptsStopped;Dec(PCode_TaskCount);
+   PCode_Halted:=False;
+   if not PCode_ScheduleNext Then Begin
+    PCode_RuntimeError(304,'interblocage: aucun processus pret');Break
+   End
+  End else if not PCode_Halted and(PCode_YieldRequested or
+   (PCode_TaskTicks>=PCODE_TASK_QUANTUM))Then
+   if not PCode_ScheduleNext and
+    (PCode_Tasks[PCode_CurrentTask].State<>ptsRunning)Then Begin
+     PCode_RuntimeError(304,'interblocage de processus');Break
+   End
  End;
  if not PCode_Halted Then Begin
   WriteLn('[limite d''instructions p-Code atteinte]');PCode_ExitCode:=1
@@ -3921,7 +4119,7 @@ Type
  PPasParameter=^TPasParameter;
  TPasTypeKind=(ptkInteger,ptkBoolean,ptkChar,ptkReal,ptkEnumeration,
  ptkSubrange,ptkArray,ptkRecord,ptkVariantRecord,ptkPointer,ptkFile,
- ptkSet,ptkString,ptkProcedure,ptkFunction,ptkAlias);
+ ptkSet,ptkString,ptkProcedure,ptkFunction,ptkSemaphore,ptkProcessId,ptkAlias);
  TPasField=Record
  Name:String[31];
  FieldType:PPasType;
@@ -3956,7 +4154,7 @@ TPasRoutine=Record
 Name:String[31];
 ProcNumber,LexicalLevel,ParameterWords,LocalWords:Integer;
 DeclarationLine:Integer;
-IsFunction,IsForward,IsExternal,IsSeparate,IsDefined:Boolean;
+IsFunction,IsProcess,IsForward,IsExternal,IsSeparate,IsDefined:Boolean;
 ExternalSegment,ExternalProcedure:Integer;
 ResultType:PPasType;
 Parameters:PPasParameter;
@@ -4117,7 +4315,10 @@ Function CPAssignmentCompatible(Dest,Source:PPasType):Boolean;Begin
  else if(Dest^.Kind=ptkString)and(Source^.Kind in[ptkString,ptkChar])
  Then  CPAssignmentCompatible:=True
  else if(Dest^.Kind=Source^.Kind)and(Dest^.Kind in[ptkInteger,ptkBoolean,
- ptkChar,ptkReal,ptkEnumeration,ptkPointer])Then CPAssignmentCompatible:=True
+ ptkChar,ptkReal,ptkEnumeration,ptkPointer,ptkSemaphore,ptkProcessId])Then
+ CPAssignmentCompatible:=True
+ else if(Dest^.Kind in[ptkSemaphore,ptkProcessId])and(Source^.Kind=ptkInteger)Then
+ CPAssignmentCompatible:=True
  else if(Dest^.Kind=ptkSet)and(Source^.Kind=ptkSet)and
  (CPAssignmentCompatible(Dest^.ElementType,Source^.ElementType)or
   CPAssignmentCompatible(Source^.ElementType,Dest^.ElementType))Then CPAssignmentCompatible:=True
@@ -4131,7 +4332,8 @@ End;
 Function CPIsOrdinalType(T:PPasType):Boolean;
 Begin
  T:=CPBaseType(T);CPIsOrdinalType:=(T<>Nil)and
-  (T^.Kind in[ptkInteger,ptkBoolean,ptkChar,ptkEnumeration,ptkSubrange])
+  (T^.Kind in[ptkInteger,ptkBoolean,ptkChar,ptkEnumeration,ptkSubrange,
+   ptkProcessId])
 End;
 
 Function CPIsTextType(T:PPasType):Boolean;Begin
@@ -4909,7 +5111,8 @@ Begin
  if(P>=0)and(CPSource^[P]=Ord(';'))Then Begin CPError:=False;Exit End;
  While(CPToken<>'EOF')and(CPToken<>';')and not CPIs('LABEL')and
   not CPIs('CONST')and not CPIs('TYPE')and not CPIs('VAR')and
-  not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPIs('BEGIN')do CPNext;
+  not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPIs('PROCESS')and
+  not CPIs('BEGIN')do CPNext;
  if CPToken=';'Then CPNext;
  CPError:=False
 End;
@@ -5286,6 +5489,7 @@ Begin
  if not CPIs('TYPE')Then Exit;CPNext;
  While(CPToken='ID')and not CPIs('VAR')and not CPIs('CONST')and
  not CPIs('BEGIN')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and
+ not CPIs('PROCESS')and
  not CPTooManyDiagnostics do Begin
   Name:=CPText;CPNext;CPNeed('=');T:=CPParseType;
   Named:=CPFindType(Name);
@@ -5502,7 +5706,8 @@ Var
 Begin
  if not CPIs('CONST')Then Exit;CPNext;
  While(CPToken='ID')and not CPIs('TYPE')and not CPIs('VAR')and not CPIs('LABEL')and
- not CPIs('BEGIN')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')
+ not CPIs('BEGIN')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and
+ not CPIs('PROCESS')
  and not CPTooManyDiagnostics do Begin
   Name:=CPText;CPNext;CPNeed('=');V:=CPEvalConstExpression;
   P:=CPFind(Name);if(P=Nil)or(P^.Scope<>CPCurrentRoutine)Then Begin
@@ -5708,15 +5913,18 @@ Var
  Name,PN:String;
  ParamNames:Array[1..64]of String[31];
  Depth,ParamCount,ParamIndex:Integer;
- IsFunc,ByRef,WasForward,HadParamSpec,HadResultSpec:Boolean;
+ IsFunc,IsProcess,ByRef,WasForward,HadParamSpec,HadResultSpec:Boolean;
 Begin
- IsFunc:=CPIs('FUNCTION');CPNext;
+ IsProcess:=CPIs('PROCESS');IsFunc:=CPIs('FUNCTION');CPNext;
  if CPToken<>'ID'Then Begin
   CPFail('nom de routine attendu');Exit
  End;
  Name:=CPText;R:=CPFindRoutine(Name,Parent);
  WasForward:=(R<>Nil)and R^.IsForward;HadParamSpec:=False;HadResultSpec:=False;
  if R=Nil Then R:=CPAddRoutine(Name,Parent,IsFunc);
+ R^.IsProcess:=IsProcess;
+ if IsProcess and(Parent<>Nil)Then
+  CPFailCode(62,'PROCESS interdit a ce niveau d''imbrication');
  if R^.DeclarationLine=0 Then R^.DeclarationLine:=CPLine;
  CPNext;
  Tail:=R^.Parameters;
@@ -5741,6 +5949,8 @@ Begin
    Typ:=CPFindType(CPText);if Typ=Nil Then Typ:=CPFindType('INTEGER');CPNext;
    if(CPBaseType(Typ)<>Nil)and(CPBaseType(Typ)^.Kind=ptkFile)and not ByRef Then
     CPFailCode(121,'un fichier ne peut pas etre passe par valeur');
+   if(CPBaseType(Typ)<>Nil)and(CPBaseType(Typ)^.Kind=ptkSemaphore)and not ByRef Then
+    CPFailCode(175,'un semaphore ne peut pas etre passe par valeur');
    if not WasForward Then
    For ParamIndex:=1 to ParamCount do Begin
     PN:=ParamNames[ParamIndex];
@@ -5802,7 +6012,7 @@ Begin
   if CPIs('USES')Then CPFailCode(189,'USES interdit dans une routine');
   if CPIs('CONST')Then CPParseConstSection else
   if CPIs('TYPE')Then CPParseTypeSection else
-  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(R)else CPNext
+  if CPIs('PROCEDURE')or CPIs('FUNCTION')or CPIs('PROCESS')Then CPScanRoutine(R)else CPNext
  End;
  if CPIs('BEGIN')Then Begin
   Depth:=1;CPNext;
@@ -5832,10 +6042,11 @@ Begin
   CPError:=False;
   if CPIs('CONST')Then CPParseConstSection else
   if CPIs('TYPE')Then CPParseTypeSection else
-  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then CPScanRoutine(Nil)else CPNext;
+  if CPIs('PROCEDURE')or CPIs('FUNCTION')or CPIs('PROCESS')Then CPScanRoutine(Nil)else CPNext;
   if CPError Then Begin
    While(CPToken<>'EOF')and(CPToken<>';')and not CPIs('CONST')and not CPIs('TYPE')and
-   not CPIs('VAR')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPIs('BEGIN')
+   not CPIs('VAR')and not CPIs('PROCEDURE')and not CPIs('FUNCTION')and
+   not CPIs('PROCESS')and not CPIs('BEGIN')
    do CPNext;
    if CPToken=';'Then CPNext
   End
@@ -6760,6 +6971,54 @@ Begin
    if CPBaseType(T)=Nil Then CPConst(1)else CPConst(CPBaseType(T)^.SizeWords)
   End;CPNeed(')');CPEmitCSP(82)
  End
+ else if CPIs('WAIT')or CPIs('SIGNAL')Then Begin
+  Name:=CPText;CPNext;CPNeed('(');
+  if CPToken<>'ID'Then CPFailCode(60,'variable SEMAPHORE attendue')else Begin
+   P:=CPFind(CPText);T:=Nil;if P<>Nil Then T:=CPBaseType(P^.SymbolType);
+   if(P=Nil)or(T=Nil)or(T^.Kind<>ptkSemaphore)Then
+    CPFailCode(60,'le type doit etre SEMAPHORE')
+   else CPAddressSymbol(P);
+   CPNext
+  End;CPNeed(')');if Name='WAIT'Then CPEmitCSP(111)else CPEmitCSP(112)
+ End
+ else if CPIs('START')Then Begin
+  if CPCurrentRoutine<>Nil Then
+   CPFailCode(63,'seule la tache principale peut demarrer un processus');
+  CPNext;CPNeed('(');
+  if CPToken<>'ID'Then CPFailCode(61,'PROCESSID ou PROCESS attendu')else Begin
+   Name:=CPText;R:=CPVisibleRoutine(Name);P:=CPFind(Name);CPNext;
+   if(R<>Nil)and R^.IsProcess Then Begin
+    if R^.Parameters<>Nil Then CPFailCode(126,
+     'les parametres de PROCESS ne sont pas pris en charge par START');
+    CPConst(R^.ProcNumber);CPEmitCSP(110);Tmp:=CPAllocateTemp;CPStoreSymbol(Tmp)
+   End else Begin
+    T:=Nil;if P<>Nil Then T:=CPBaseType(P^.SymbolType);
+    if(P=Nil)or(T=Nil)or(T^.Kind<>ptkProcessId)Then
+     CPFailCode(61,'le type doit etre PROCESSID')
+    else CPAddressSymbol(P);
+    CPNeed(',');
+    if CPToken<>'ID'Then CPFailCode(103,'nom de PROCESS attendu')else Begin
+     R:=CPVisibleRoutine(CPText);CPNext;
+     if(R=Nil)or not R^.IsProcess Then CPFailCode(103,'PROCESS attendu')
+     else Begin
+      if R^.Parameters<>Nil Then CPFailCode(126,
+       'les parametres de PROCESS ne sont pas pris en charge par START');
+      CPConst(R^.ProcNumber);CPEmitCSP(110);CPOp(154,$C4)
+     End
+    End
+   End
+  End;CPNeed(')')
+ End
+ else if CPIs('STOP')Then Begin
+  CPNext;
+  if CPToken='('Then Begin
+   CPNext;CPExpression;
+   T:=CPBaseType(CPLastExpressionType);
+   if(T=Nil)or(T^.Kind<>ptkProcessId)Then
+    CPFailCode(61,'le type doit etre PROCESSID');CPNeed(')')
+  End else CPConst(0);
+  CPEmitCSP(113)
+ End
  else if CPIs('HALT')Then Begin
   CPNext;if CPToken='('Then Begin
    CPNext;CPExpression;CPNeed(')')
@@ -6907,7 +7166,8 @@ Begin
    CPNext;CPDefineLabel(Name);CPStatement;Exit
   End;
   if(P=Nil)and(R<>Nil)Then Begin
-   CPEmitActualParameters(R);CPEmitRoutineCall(R)
+   if R^.IsProcess Then CPFailCode(103,'un PROCESS doit etre lance avec START')
+   else Begin CPEmitActualParameters(R);CPEmitRoutineCall(R) End
   End else if(P=Nil)and((Name='ABS')or(Name='SQR')or(Name='ODD')or
    (Name='SUCC')or(Name='PRED')or(Name='ORD')or(Name='CHR'))Then
    CPFailCode(150,'affectation a une fonction standard interdite')
@@ -6959,7 +7219,7 @@ Begin
  End;
  CPCurrentRoutine:=R;CPPos:=R^.SourcePosition;CPNext;
  While(CPToken<>'EOF')and not CPIs('BEGIN')and not CPError do Begin
-  if CPIs('PROCEDURE')or CPIs('FUNCTION')Then Begin
+  if CPIs('PROCEDURE')or CPIs('FUNCTION')or CPIs('PROCESS')Then Begin
    CPNext;
    if CPToken<>'ID'Then Begin
     CPFail('nom de routine imbriquee attendu');Exit
@@ -6975,7 +7235,7 @@ Begin
   else if CPIs('VAR')Then Begin
    CPNext;
    While(CPToken='ID')and not CPIs('BEGIN')and not CPIs('PROCEDURE')and
-   not CPIs('FUNCTION')and not CPIs('CONST')and not CPIs('TYPE')and
+   not CPIs('FUNCTION')and not CPIs('PROCESS')and not CPIs('CONST')and not CPIs('TYPE')and
    not CPError do Begin
     N:=0;
     Repeat Inc(N);Names[N]:=CPText;CPNext;
@@ -7225,7 +7485,7 @@ Begin
  SegmentName:=UpperString(SegmentName);
  if Length(SegmentName)>8 Then SegmentName:=Copy(SegmentName,1,8);
  For I:=1 to Length(SegmentName)do Header[63+I]:=Ord(SegmentName[I]);
- if CPNextProcedure>=1 Then
+ if(CPNextProcedure>=1)and(CurrentTarget=ptUCSDPSystemIV)Then
  For I:=1 to Length(SegmentName)do PCode_Mem^[3+I]:=Ord(SegmentName[I]);
  ImportCount:=0;Q:=CPRelocations;
  While Q<>Nil do Begin
@@ -7881,6 +8141,9 @@ Begin
  Typ:=CPAddType('INTEGER',ptkInteger,1);Typ^.LowBound:=-32768;Typ^.HighBound:=32767;
  Typ:=CPAddType('BOOLEAN',ptkBoolean,1);Typ^.LowBound:=0;Typ^.HighBound:=1;
  Typ:=CPAddType('CHAR',ptkChar,1);Typ^.LowBound:=0;Typ^.HighBound:=255;
+ Typ:=CPAddType('SEMAPHORE',ptkSemaphore,1);Typ^.LowBound:=0;Typ^.HighBound:=32767;
+ Typ:=CPAddType('PROCESSID',ptkProcessId,1);Typ^.LowBound:=0;Typ^.HighBound:=
+  PCODE_MAX_TASKS;
  { Une cellule TPCodeData contient 32 bits: un REAL IEEE simple occupe donc
    une cellule VM, tout en restant serialise comme valeur 32 bits. }
  CPAddType('REAL',ptkReal,1);
@@ -7921,7 +8184,8 @@ Begin
  if CPIs('VAR')Then Begin
   CPNext;
   While(CPToken='ID')and not CPIs('BEGIN')and
-  not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPError do Begin
+  not CPIs('PROCEDURE')and not CPIs('FUNCTION')and not CPIs('PROCESS')and
+  not CPError do Begin
    NC:=0;
    Repeat Inc(NC);Names[NC]:=CPText;CPNext;
    if CPToken=','Then CPNext else Break Until NC=64;
@@ -7938,7 +8202,7 @@ Begin
  SavedPos:=CPTokenPos;SavedLine:=CPLine;CPGenerateAllRoutines;
  if CPError Then Goto 99;
  CPCurrentRoutine:=Nil;CPPos:=SavedPos;CPLine:=SavedLine;CPNext;
- While CPIs('PROCEDURE')or CPIs('FUNCTION')do Begin
+ While CPIs('PROCEDURE')or CPIs('FUNCTION')or CPIs('PROCESS')do Begin
   CPNext;
   if CPToken<>'ID'Then Begin
    CPFail('nom de routine attendu');Break
@@ -8015,6 +8279,7 @@ Begin
  else if(Op>=$30)and(Op<=$3F)Then S:='SLDO '+PCode_IntToStr(Op-$2F)
  else if(Op>=$60)and(Op<=$67)Then S:='SLLA '+PCode_IntToStr(Op-$5F)
  else if(Op>=$68)and(Op<=$6F)Then S:='SSTL '+PCode_IntToStr(Op-$67)
+ else if(Op>=$70)and(Op<=$77)Then S:='SSTO '+PCode_IntToStr(Op-$6F)
  else if(Op>=$78)and(Op<=$7F)Then S:='SIND '+PCode_IntToStr(Op-$78)
  else Case Op of
  $80:
