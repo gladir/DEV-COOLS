@@ -13,13 +13,15 @@ Uses Dos;
 
 Const
  Version='1.0';
- MagicSegmented=$EE00;
- MagicNonSegmented=$EE02;
  MaxSectionSize=65535;
  SecAbsolute=0;
  SecText=1;
  SecData=2;
  SecBss=3;
+ { Types de blocs et codes de relogement du format DRI UNIDOT. }
+ OBOST=1; OBSEC=3; OBGLO=4; OBLOC=5; OBTXT=6; OBTRA=8; OBMOD=12; OBOND=11;
+ RAA8=$4000; RAA16M=$2000; RAA32M=$A000; RAZSS=$6000; RAZLS=$E000; RAZOF=$3000;
+ RBUND=255; RBEXT=256; RBMSK=$0FFF;
 
 Type
  TByteBlock=Array[0..16383]of Byte;
@@ -32,7 +34,16 @@ Type
  Defined,Global,External:Boolean;
  DefLine:LongInt;
  References:String;
+ ObjectBase:Word;
  Next:PSymbol
+End;
+PRelocation=^TRelocation;
+TRelocation=Record
+ Section:Byte;
+ Offset:LongInt;
+ Action,Base:Word;
+ Width:Byte;
+ Next:PRelocation
 End;
 TOptions=Record
 SourceName,ObjectName,ListName:String;
@@ -46,6 +57,7 @@ Var
  CurrentSection:Byte;
  Location:Array[0..3]of LongInt;
  Symbols:PSymbol;
+ Relocations,LastRelocation:PRelocation;
  Pass,LineNumber,ErrorCount,WarningCount:Integer;
  Source:Text;
  ListFile:Text;
@@ -54,6 +66,9 @@ Var
  LineBytes:Array[0..31]of Byte;
  LineByteCount:Integer;
  StopAssembly:Boolean;
+ HasTransfer:Boolean;
+ TransferAddress:LongInt;
+ TransferBase:Word;
 
 Function UpperString(S:String):String;
 Var
@@ -106,8 +121,11 @@ End;
 Procedure Usage;Begin
  WriteLn('ASZ8K ',Version,
  ' - Cette commande permet de lancer l''assembleur Zilog Z8001/Z8002 pour CP/M-8000');
+ WriteLn;
  WriteLn('Syntaxe : ASZ8K [-o fichier] [-lux] fichier.8k{n|s}');
- WriteLn('  -o nom  produit nom.RL');
+ WriteLn;
+ WriteLn('  -o nom  produit un objet relogeable UNIDOT (extension .OBJ par defaut)');
+ WriteLn('            .O vient de XCON, .RL de LDSK et .Z8K est executable');
  WriteLn('  -l      produit un listing fichier.LST');
  WriteLn('  -u      considere les symboles indefinis comme globaux externes');
  WriteLn('  -x      ajoute les references croisees au listing (implique -l)');
@@ -174,11 +192,36 @@ End;
 Procedure FreeSymbols;
 Var
  P,N:PSymbol;
+ R,RN:PRelocation;
 Begin
  P:=Symbols;
  While P<>Nil do Begin
   N:=P^.Next;Dispose(P);P:=N
- End;Symbols:=Nil
+ End;Symbols:=Nil;
+ R:=Relocations;While R<>Nil do Begin RN:=R^.Next;Dispose(R);R:=RN End;
+ Relocations:=Nil;LastRelocation:=Nil
+End;
+
+Function ModuleName(S:String):String;
+Var I,P:Integer;
+Begin
+ P:=0;For I:=Length(S)downto 1 do if S[I]in['\','/',':']Then Begin P:=I;Break End;
+ if P<>0 Then Delete(S,1,P);S:=BaseName(S);if Length(S)>8 Then Delete(S,9,255);
+ ModuleName:=S
+End;
+
+Procedure AddRelocation(Action,Base:Word);
+Var R:PRelocation;
+Begin
+ if(Pass<>2)or(Base=0)Then Exit;
+ New(R);if R=Nil Then Fatal('memoire pleine');
+ R^.Section:=CurrentSection;R^.Offset:=Location[CurrentSection];
+ R^.Action:=Action;R^.Base:=Base and RBMSK;
+ if Action=RAA8 Then R^.Width:=1 else if(Action=RAA32M)or(Action=RAZLS)Then R^.Width:=4
+ else R^.Width:=2;
+ R^.Next:=Nil;
+ if LastRelocation=Nil Then Relocations:=R else LastRelocation^.Next:=R;
+ LastRelocation:=R
 End;
 
 Procedure EmitByte(B:Byte);Begin
@@ -204,6 +247,25 @@ End;
 
 Procedure EmitLong(L:LongInt);Begin
  EmitWord(Word(LongInt(L)shr 16));EmitWord(Word(L))
+End;
+
+Procedure EmitByteReloc(B:Byte;Action,Base:Word);Begin
+ AddRelocation(Action,Base);EmitByte(B)
+End;
+
+Procedure EmitWordReloc(W:Word;Action,Base:Word);Begin
+ AddRelocation(Action,Base);EmitWord(W)
+End;
+
+Procedure EmitLongReloc(L:LongInt;Action,Base:Word);Begin
+ AddRelocation(Action,Base);EmitLong(L)
+End;
+
+Function SegmentedLongValue(V:LongInt;Base:Word):LongInt;
+Var S:Word;
+Begin
+ if Base>$7F Then S:=$7F else S:=Base;
+ SegmentedLongValue:=LongInt($80000000)or(LongInt(S)shl 24)or(V and $FFFF)
 End;
 
 Function IsIdentStart(C:Char):Boolean;Begin
@@ -349,7 +411,7 @@ Begin
   Begin
    V:=0;E.ForwardRef:=True;
    if Pass=2 Then Begin
-    if Opt.UndefinedGlobal Then Begin
+    if Opt.UndefinedGlobal or P^.External Then Begin
      P^.Global:=True;P^.External:=True
     End
     else Diagnostic('symbole indefini: '+T)
@@ -357,6 +419,40 @@ Begin
   End;ParseNumber:=V;Exit
  End;
  Diagnostic('terme incorrect dans expression');Inc(E.P);ParseNumber:=0
+End;
+
+Function Eval(Const S:String;Var ForwardRef:Boolean):LongInt;Forward;
+
+{ Evalue l'expression et conserve sa base UNIDOT. Les expressions usuelles
+  symbole+constante restent relogeables; la difference de deux symboles de la
+  meme section devient absolue. }
+Function EvalReloc(Const S:String;Var ForwardRef:Boolean;Var Base:Word):LongInt;
+Var
+ I,J,Count:Integer;
+ T:String;
+ P,FirstP:PSymbol;
+ MinusBetween:Boolean;
+Begin
+ EvalReloc:=Eval(S,ForwardRef);Base:=0;FirstP:=Nil;Count:=0;MinusBetween:=False;I:=1;
+ While I<=Length(S)do Begin
+  if S[I]=''''Then Begin Inc(I);if I<=Length(S)Then Inc(I);if(I<=Length(S))and(S[I]='''')Then Inc(I) End
+  else if S[I]='$'Then Begin
+   Inc(I);While(I<=Length(S))and(UpCase(S[I])in['0'..'9','A'..'F'])do Inc(I)
+  End
+  else if IsIdentStart(S[I])Then Begin
+   J:=I;Inc(I);While(I<=Length(S))and IsIdentChar(S[I])do Inc(I);
+   T:=Copy(S,J,I-J);P:=FindSymbol(T);
+   if P<>Nil Then Begin
+    Inc(Count);if FirstP=Nil Then FirstP:=P
+   End
+  End else Begin if(S[I]='-')and(Count=1)Then MinusBetween:=True;Inc(I) End
+ End;
+ if Count=1 Then Begin
+  if FirstP^.Defined Then Base:=FirstP^.Section else Base:=FirstP^.ObjectBase
+ End else if(Count=2)and MinusBetween and(FirstP<>Nil)Then Begin
+  { Le parseur a deja calcule la difference; elle ne requiert aucun relogement. }
+  Base:=0
+ End else if Count>1 Then Diagnostic('expression relogeable trop complexe')
 End;
 
 Function ParseUnary(Var E:TExprParser):LongInt;Begin
@@ -485,7 +581,7 @@ Var
  V:LongInt;
  F:Boolean;
  K:Char;
- Base:Word;
+ Base,RelBase:Word;
 Begin
  S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);if(A='')or(B='')or(S<>'')Then Begin
   Diagnostic('LD exige deux operandes');Exit
@@ -504,16 +600,21 @@ Begin
   EmitWord(Base or Word(Rs shl 4)or Word(Rd));Exit
  End;
  if(Rd>=0)and(Length(B)>0)and(B[1]='#')Then Begin
-  Delete(B,1,1);V:=Eval(B,F);
+  Delete(B,1,1);V:=EvalReloc(B,F,RelBase);
   if K='B'Then Begin
-   EmitWord($2100 or Rd);EmitByte(Byte(V));EmitByte(0)
+   EmitWord($2100 or Rd);EmitByteReloc(Byte(V),RAA8,RelBase);EmitByte(0)
   End
   else if K='L'Then Begin
-   EmitWord($1400 or Rd);EmitLong(V)
+   EmitWord($1400 or Rd);
+   if Opt.Segmented and(RelBase<>0)Then
+    EmitLongReloc(SegmentedLongValue(V,RelBase),RAZLS,RelBase)
+   else EmitLongReloc(V,RAA32M,RelBase)
   End
   else
   Begin
-   EmitWord($2100 or Rd);EmitWord(Word(V))
+   EmitWord($2100 or Rd);
+   if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,RelBase)
+   else EmitWordReloc(Word(V),RAA16M,RelBase)
   End;Exit
  End;
  Diagnostic('forme LD non prise en charge ou operande incorrect')
@@ -525,6 +626,7 @@ Var
  C:Integer;
  V,D:LongInt;
  F:Boolean;
+ Base:Word;
 Begin
  S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
  if B=''Then Begin
@@ -537,14 +639,18 @@ Begin
  if OpcodeField='RET'Then Begin
   EmitWord($9E00 or Word(C shl 4)or 8);Exit
  End;
- V:=Eval(B,F);
+ V:=EvalReloc(B,F,Base);
  if OpcodeField='JR'Then Begin
+  if(Base<>0)and((not F)and((FindSymbol(B)=Nil)or(FindSymbol(B)^.Section<>CurrentSection)))Then
+   Diagnostic('saut relatif vers une autre section');
   D:=(V-(Location[CurrentSection]+2))div 2;
   if(Pass=2)and not F and((D< -128)or(D>127))Then Diagnostic('saut relatif hors plage');
   EmitWord($E000 or Word(C shl 8)or(Byte(D)))
  End else
  Begin
-  EmitWord($5E00 or Word(C shl 4));EmitWord(Word(V))
+  EmitWord($5E00 or Word(C shl 4));
+  if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,Base)
+  else EmitWordReloc(Word(V),RAA16M,Base)
  End
 End;
 
@@ -554,6 +660,7 @@ Var
  V:LongInt;
  F:Boolean;
  I:Integer;
+ Base:Word;
 Begin
  S:=OperandField;
  While S<>''do Begin
@@ -562,13 +669,16 @@ Begin
   For I:=2 to Length(A)-1 do EmitByte(Ord(A[I]))
   else
   Begin
-   V:=Eval(A,F);if Size=1 Then Begin
+   V:=EvalReloc(A,F,Base);if Size=1 Then Begin
     if(Pass=2)and not F and((V< -128)or(V>255))Then Diagnostic('octet hors plage');
-    EmitByte(Byte(V))
+    EmitByteReloc(Byte(V),RAA8,Base)
    End else if Size=2 Then Begin
     if(Pass=2)and not F and((V< -32768)or(V>65535))Then Diagnostic('mot hors plage');
-    EmitWord(Word(V))
-   End else EmitLong(V)
+    if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,Base)
+    else EmitWordReloc(Word(V),RAA16M,Base)
+   End else if Opt.Segmented and(Base<>0)Then
+    EmitLongReloc(SegmentedLongValue(V,Base),RAZLS,Base)
+   else EmitLongReloc(V,RAA32M,Base)
   End
  End
 End;
@@ -625,8 +735,12 @@ Begin
    A:=NextOperand(S);P:=GetSymbol(A);P^.Global:=True;P^.External:=True
   End
  End
- else if(OpcodeField='END')or(OpcodeField='.END')or(OpcodeField='ENDMODULE')
- Then StopAssembly:=True
+ else if(OpcodeField='END')or(OpcodeField='.END')or(OpcodeField='ENDMODULE')Then Begin
+  if OperandField<>''Then Begin
+   TransferAddress:=EvalReloc(OperandField,F,TransferBase);HasTransfer:=True
+  End;
+  StopAssembly:=True
+ End
  else if(OpcodeField='MODULE')or(OpcodeField='CODE')or(OpcodeField='SECTION')Then Begin
  End
  else Diagnostic('directive inconnue: '+OpcodeField)
@@ -729,6 +843,27 @@ Begin
  End
 End;
 
+Procedure AssignObjectBases;
+Var P,Q:PSymbol;N:Word;
+Begin
+ N:=RBEXT;P:=Symbols;
+ While P<>Nil do Begin
+  if not P^.Defined Then Begin
+   if Opt.UndefinedGlobal Then Begin P^.Global:=True;P^.External:=True End;
+   if P^.External Then Begin
+    if N>=RBMSK Then Fatal('trop de references externes');
+    P^.ObjectBase:=N;Inc(N)
+   End
+  End else P^.ObjectBase:=P^.Section;
+  Q:=P^.Next;While Q<>Nil do Begin
+   if(Copy(P^.Name,1,8)=Copy(Q^.Name,1,8))and(P^.Name<>Q^.Name)Then
+    Fatal('collision de noms UNIDOT sur 8 caracteres: '+P^.Name+' / '+Q^.Name);
+   Q:=Q^.Next
+  End;
+  P:=P^.Next
+ End
+End;
+
 Procedure WriteBE16(Var F:File;W:Word);
 Var
  B:Array[0..1]of Byte;
@@ -744,49 +879,115 @@ Begin
  BlockWrite(F,B,4)
 End;
 
-Function SymbolTableSize:LongInt;
-Var
- P:PSymbol;
+Type TObjectBuffer=Array[0..254]of Byte;
+
+Procedure PutLE16(Var B:TObjectBuffer;Var N:Integer;W:Word);Begin
+ B[N]:=Byte(W);Inc(N);B[N]:=Byte(W shr 8);Inc(N)
+End;
+
+Procedure PutLE32(Var B:TObjectBuffer;Var N:Integer;L:LongInt);Begin
+ PutLE16(B,N,Word(L));PutLE16(B,N,Word(LongInt(L)shr 16))
+End;
+
+Procedure PutObjectName(Var B:TObjectBuffer;Var N:Integer;S:String);
+Var I,L:Integer;
 Begin
- SymbolTableSize:=0;P:=Symbols;
- While P<>Nil do Begin
-  if P^.Global or P^.External Then Inc(SymbolTableSize,7+Length(P^.Name));P:=P^.Next
+ L:=Length(S);if L>8 Then L:=8;
+ For I:=1 to L do Begin B[N]:=Ord(S[I]);Inc(N) End;B[N]:=0;Inc(N)
+End;
+
+Procedure WriteObjectBlock(Var F:File;BlockType:Byte;Var B:TObjectBuffer;N:Integer);
+Var T,L:Byte;Written:Word;
+Begin
+ T:=BlockType;L:=Byte(N);BlockWrite(F,T,1,Written);BlockWrite(F,L,1,Written);
+ if N<>0 Then BlockWrite(F,B,N,Written)
+End;
+
+Function ObjectImageByte(Section:Byte;Offset:LongInt):Byte;
+Begin
+ if Section=SecText Then ObjectImageByte:=TextImage[Offset div 16384]^[Offset mod 16384]
+ else ObjectImageByte:=DataImage[Offset div 16384]^[Offset mod 16384]
+End;
+
+Procedure WriteTextSection(Var F:File;Section:Byte;Size:LongInt);
+Var
+ B:TObjectBuffer;
+ Pos:LongInt;
+ Chunk,N,RC,I:Integer;
+ R:PRelocation;
+Begin
+ Pos:=0;
+ While Pos<Size do Begin
+  Chunk:=Size-Pos;if Chunk>249 Then Chunk:=249;
+  Repeat
+   R:=Relocations;
+   While R<>Nil do Begin
+    if(R^.Section=Section)and(R^.Offset>=Pos)and(R^.Offset<Pos+Chunk)and
+     (R^.Offset+R^.Width>Pos+Chunk)Then Chunk:=R^.Offset-Pos;
+    R:=R^.Next
+   End;
+   RC:=0;R:=Relocations;
+   While R<>Nil do Begin
+    if(R^.Section=Section)and(R^.Offset>=Pos)and(R^.Offset<Pos+Chunk)Then Inc(RC);
+    R:=R^.Next
+   End;
+   if 6+Chunk+3*RC>255 Then Dec(Chunk)else Break
+  Until Chunk=0;
+  if Chunk=0 Then Fatal('bloc UNIDOT de relogement trop grand');
+  N:=0;PutLE32(B,N,Pos);B[N]:=Section;Inc(N);B[N]:=Chunk;Inc(N);
+  For I:=0 to Chunk-1 do Begin B[N]:=ObjectImageByte(Section,Pos+I);Inc(N) End;
+  R:=Relocations;
+  While R<>Nil do Begin
+   if(R^.Section=Section)and(R^.Offset>=Pos)and(R^.Offset<Pos+Chunk)Then Begin
+    B[N]:=Byte(6+R^.Offset-Pos);Inc(N);PutLE16(B,N,R^.Action or(R^.Base and RBMSK))
+   End;
+   R:=R^.Next
+  End;
+  WriteObjectBlock(F,OBTXT,B,N);Inc(Pos,Chunk)
  End
 End;
 
+Procedure WriteSymbolBlocks(Var F:File;BlockType:Byte;WantGlobal:Boolean);
+Var B:TObjectBuffer;N,Need:Integer;P:PSymbol;IsGlobal:Boolean;
+Begin
+ N:=0;P:=Symbols;
+ While P<>Nil do Begin
+  IsGlobal:=P^.Global or P^.External;
+  if IsGlobal=WantGlobal Then Begin
+   Need:=6+Length(P^.Name);if Need>14 Then Need:=14;
+   if N+Need>255 Then Begin WriteObjectBlock(F,BlockType,B,N);N:=0 End;
+   if P^.Defined Then Begin PutLE32(B,N,P^.Value);B[N]:=P^.Section End
+   else Begin PutLE32(B,N,0);B[N]:=RBUND End;
+   Inc(N);PutObjectName(B,N,P^.Name)
+  End;
+  P:=P^.Next
+ End;
+ if N<>0 Then WriteObjectBlock(F,BlockType,B,N)
+End;
+
 Procedure WriteObject;
-Var
- F:File;
- P:PSymbol;
- N:Byte;
- Flags:Word;
- SymSize,Remain:LongInt;
- Written,Count:Word;
- I:Integer;
+Var F:File;B:TObjectBuffer;N:Integer;S:String;
 Begin
  Assign(F,Opt.ObjectName);Rewrite(F,1);
  if IOResult<>0 Then Fatal('creation impossible: '+Opt.ObjectName);
- if Opt.Segmented Then WriteBE16(F,MagicSegmented)else WriteBE16(F,MagicNonSegmented);
- WriteBE16(F,2);SymSize:=SymbolTableSize;
- WriteBE32(F,TextSize+DataSize);WriteBE32(F,0);WriteBE32(F,SymSize);
- Remain:=TextSize;I:=0;
- While Remain>0 do Begin
-  Count:=16384;if Remain<Count Then Count:=Remain;
-  BlockWrite(F,TextImage[I]^,Count,Written);Dec(Remain,Count);Inc(I)
+ N:=0;WriteObjectBlock(F,OBOST,B,N);
+ S:=ModuleName(Opt.SourceName);N:=0;PutObjectName(B,N,S);WriteObjectBlock(F,OBMOD,B,N);
+ N:=0;
+ B[N]:=1;Inc(N);B[N]:=32;Inc(N);B[N]:=0;Inc(N);PutObjectName(B,N,'__text');
+ B[N]:=1;Inc(N);B[N]:=32;Inc(N);B[N]:=0;Inc(N);PutObjectName(B,N,'__data');
+ B[N]:=1;Inc(N);B[N]:=32;Inc(N);B[N]:=0;Inc(N);PutObjectName(B,N,'__bss');
+ WriteObjectBlock(F,OBSEC,B,N);
+ WriteSymbolBlocks(F,OBGLO,True);WriteSymbolBlocks(F,OBLOC,False);
+ WriteTextSection(F,SecText,TextSize);WriteTextSection(F,SecData,DataSize);
+ { Comme l'assembleur DRI, matérialiser la marque de fin du BSS par un
+   OBTXT vide placé à son compteur final. }
+ N:=0;PutLE32(B,N,BssSize);B[N]:=SecBss;Inc(N);B[N]:=0;Inc(N);
+ WriteObjectBlock(F,OBTXT,B,N);
+ if HasTransfer Then Begin
+  N:=0;PutLE32(B,N,TransferAddress);PutLE16(B,N,TransferBase);
+  WriteObjectBlock(F,OBTRA,B,N)
  End;
- Remain:=DataSize;I:=0;
- While Remain>0 do Begin
-  Count:=16384;if Remain<Count Then Count:=Remain;
-  BlockWrite(F,DataImage[I]^,Count,Written);Dec(Remain,Count);Inc(I)
- End;
- P:=Symbols;
- While P<>Nil do Begin
-  if P^.Global or P^.External Then Begin
-   N:=Length(P^.Name);BlockWrite(F,N,1);BlockWrite(F,P^.Name[1],N);Flags:=P^.Section;
-   if P^.Defined Then Flags:=Flags or $0100;if P^.Global Then Flags:=Flags or $0200;
-   if P^.External Then Flags:=Flags or $0400;WriteBE16(F,Flags);WriteBE32(F,P^.Value)
-  End;P:=P^.Next
- End;
+ N:=0;WriteObjectBlock(F,OBOND,B,N);
  Close(F);if IOResult<>0 Then Fatal('erreur d''ecriture objet')
 End;
 
@@ -840,8 +1041,11 @@ End;
 U:=Extension(Opt.SourceName);
 if(U<>'.8KN')and(U<>'.8KS')Then Fatal('extension .8KN ou .8KS attendue');
 Opt.Segmented:=U='.8KS';OutBase:=BaseName(Opt.SourceName);
-if Opt.ObjectName=''Then Opt.ObjectName:=OutBase+'.RL'else if Extension(Opt.ObjectName)=
-''Then Opt.ObjectName:=Opt.ObjectName+'.RL';
+if Opt.ObjectName=''Then Opt.ObjectName:=OutBase+'.OBJ'else if Extension(Opt.ObjectName)=
+''Then Opt.ObjectName:=Opt.ObjectName+'.OBJ';
+U:=Extension(Opt.ObjectName);
+if(U='.O')or(U='.RL')or(U='.Z8K')Then Fatal(U+
+ ' n''est pas un conteneur UNIDOT brut; utilisez .OBJ puis XCON/LDSK');
 Opt.ListName:=OutBase+'.LST'
 End;
 
@@ -872,7 +1076,8 @@ Begin
 End;
 
 BEGIN
- Symbols:=Nil;FillChar(TextImage,SizeOf(TextImage),0);
+ Symbols:=Nil;Relocations:=Nil;LastRelocation:=Nil;HasTransfer:=False;
+ TransferAddress:=0;TransferBase:=0;FillChar(TextImage,SizeOf(TextImage),0);
  FillChar(DataImage,SizeOf(DataImage),0);
  ListOpen:=False;ErrorCount:=0;WarningCount:=0;
  ParseCommandLine;AllocateImages;Assign(Source,Opt.SourceName);Reset(Source);
@@ -885,7 +1090,7 @@ BEGIN
   ListOpen:=True;WriteLn(ListFile,'ASZ8K ',Version,'  ',Opt.SourceName,'  ',
   'Z800',Ord(not Opt.Segmented)+1);WriteLn(ListFile)
  End;
- AssemblePass(1);if ErrorCount=0 Then AssemblePass(2);
+ AssemblePass(1);AssignObjectBases;if ErrorCount=0 Then AssemblePass(2);
  WriteCrossReference;
  if ErrorCount=0 Then Begin
   WriteObject;WriteLn('ASZ8K: ',Opt.SourceName,' -> ',Opt.ObjectName,
