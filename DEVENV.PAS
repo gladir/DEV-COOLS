@@ -88983,6 +88983,33 @@ Begin
  CreateEmulatorTab(RomPath, '-CNES', '');
 End;
 
+{ GEOS (2026-09-19, demande explicite de l'utilisateur - "Invite de        }
+{ commande") : meme motif exact que NES/WIN16 ci-dessus - lance            }
+{ l'emulateur PC/GEOS-GeoWorks (voir Geos_LoadGeode/ShowEmulatorPanel)     }
+{ sur un fichier .geo du systeme hote. }
+Procedure TermCmd_GEOS(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : GEOS fichier.geo');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'GEOS : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ RomPath := TermFindRomByExt(Dir, CurrParam, 'GEO');
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CGEOS', '');
+End;
+
 { --- ATARI2600 / ATARI2600VCS, C64 / COMMODORE64, COCO3, WIN / WIN16 --- }
 { (2026-08-29, demande explicite de l utilisateur, meme principe et meme  }
 { portee que NES ci-dessus - hote uniquement, resolution du repertoire     }
@@ -95089,6 +95116,27 @@ End;
 Const
  GEOS_MAX_LIB = 32;
  GEOS_MAX_SEG = 96;
+ { Stage 3 (2026-09-19, demande explicite - "continue le Stage 3 de       }
+ { l'emulateur GeoWorks") : execution CPU reelle pour les geodes PILOTE/  }
+ { BIBLIOTHEQUE (point d'entree direct, voir la disclosure de tete) - les }
+ { relogements vers le noyau ($00) et les bibliotheques importees ($10)  }
+ { pour les FORMES 0/4 (pointeur distant complet, chunkarr.def section    }
+ { 10 - les seules ou l'adresse cible est un pointeur appelable entier,    }
+ { PAS un simple offset ou segment qui exigerait de connaitre son          }
+ { appariement) sont desormais REELLEMENT resolues vers un thunk prive,     }
+ { EXACT meme mecanisme que Win16_ResolveImportSlot/Win16_TrapSeg (INT     }
+ { prive + index de slot + RETF) - jamais un vrai numero d'interruption.   }
+ GEOS_TRAP_INT = $F9;             { F8/FB/FC/FD/FE deja pris par Win16/DPMI/etc. }
+ GEOS_TRAP_SLOT_SIZE = 5;         { CD F9 <slot:word> CB, identique a Win16 }
+ GEOS_MAX_TRAP_SLOTS = 512;
+ { Stage 3 : convention "fin de programme" REELLE et deja etablie (INT     }
+ { 20h, non hookee -> P.CPU.Fault:=sfEndProgram, voir Emu_DoInt/$20) -     }
+ { EXACTEMENT la meme astuce que la vraie PSP DOS (adresse de retour       }
+ { initiale pointant sur "CD 20") - reutilisee ici pour qu'un point        }
+ { d'entree PILOTE/BIBLIOTHEQUE qui fait un simple RETF s'arrete           }
+ { proprement plutot que de sauter dans de la memoire non initialisee.     }
+ { Placee juste APRES la derniere trappe possible dans Geos_TrapSeg. }
+ GEOS_EXIT_STUB_OFS = GEOS_MAX_TRAP_SLOTS * GEOS_TRAP_SLOT_SIZE;
 Type
  TGeosLibEntry = Record
   Name: String[8];
@@ -95123,6 +95171,12 @@ Var
   Geos_RelocOtherCount: LongInt;
  Geos_LibRelocCount: Array[0..GEOS_MAX_LIB - 1] Of LongInt;
  Geos_NextFreeSeg: Word;
+ Geos_TrapSeg: Word;
+ Geos_TrapSlotCount: Integer;
+ Geos_TrapIsKernel: Array[0..GEOS_MAX_TRAP_SLOTS - 1] Of Boolean;
+ Geos_TrapLibOrd: Array[0..GEOS_MAX_TRAP_SLOTS - 1] Of Byte;
+ Geos_TrapRoutine: Array[0..GEOS_MAX_TRAP_SLOTS - 1] Of Word;
+ Geos_Active: Boolean; { Stage 3 : True entre le chargement et la fin d'execution }
 
 { Lit une chaine de longueur fixe depuis le fichier ouvert F a la position }
 { Pos, tronquee au premier octet nul - meme convention que FixedString de  }
@@ -95169,6 +95223,77 @@ Begin
   (LongInt(Buf[2]) Shl 16) Or (LongInt(Buf[3]) Shl 24);
 End;
 
+{ Stage 3 : resout (ou reutilise) un slot de trappe pour la routine        }
+{ (IsKernel, LibOrd, RoutineNum) - memes principes exacts que              }
+{ Win16_ResolveImportSlot (voir plus loin dans ce fichier), transposes ici }
+{ pour le noyau/les bibliotheques PC/GEOS : thunk de 5 octets              }
+{ CD F9 <slot:word> CB dans Geos_TrapSeg (prive/synthetique, voir          }
+{ GEOS_TRAP_INT ci-dessus). }
+Function Geos_ResolveTrapSlot(Var C: TEmuCPU; IsKernel: Boolean; LibOrd: Byte;
+ RoutineNum: Word): Integer;
+Var
+ I, Slot: Integer;
+ ThunkOfs: Word;
+Begin
+ For I := 0 To Geos_TrapSlotCount - 1 Do
+  If (Geos_TrapIsKernel[I] = IsKernel) And (Geos_TrapLibOrd[I] = LibOrd) And
+     (Geos_TrapRoutine[I] = RoutineNum) Then Begin
+   Geos_ResolveTrapSlot := I;
+   Exit;
+  End;
+ If Geos_TrapSlotCount >= GEOS_MAX_TRAP_SLOTS Then Begin
+  Geos_ResolveTrapSlot := -1;
+  Exit;
+ End;
+ Slot := Geos_TrapSlotCount;
+ Geos_TrapIsKernel[Slot] := IsKernel;
+ Geos_TrapLibOrd[Slot] := LibOrd;
+ Geos_TrapRoutine[Slot] := RoutineNum;
+ Inc(Geos_TrapSlotCount);
+ ThunkOfs := Word(Slot * GEOS_TRAP_SLOT_SIZE);
+ Emu_WriteByte(C, Geos_TrapSeg, ThunkOfs, $CD);
+ Emu_WriteByte(C, Geos_TrapSeg, Word(ThunkOfs + 1), GEOS_TRAP_INT);
+ Emu_WriteByte(C, Geos_TrapSeg, Word(ThunkOfs + 2), Byte(Slot And $FF));
+ Emu_WriteByte(C, Geos_TrapSeg, Word(ThunkOfs + 3), Byte((Slot Shr 8) And $FF));
+ Emu_WriteByte(C, Geos_TrapSeg, Word(ThunkOfs + 4), $CB);
+ Geos_ResolveTrapSlot := Slot;
+End;
+
+{ Gestionnaire de la trappe INT GEOS_TRAP_INT (Stage 3) - atteint          }
+{ UNIQUEMENT via un thunk ecrit par Geos_ResolveTrapSlot (voir ce           }
+{ commentaire pour le detail du mecanisme, identique a Win16_DispatchCall  }
+{ / $F8). AUCUNE bibliotheque Kernel/Ui/Graphics reelle n'est implantee     }
+{ (Stage 2/3 se sont concentres sur LMem/ChunkArray/ArrayQuickSort,         }
+{ testables isolement via Invoke-GeoWorksAPI - voir la disclosure de tete   }
+{ du chantier) : tout appel qui atteint reellement cette trappe est donc    }
+{ HONNETEMENT rapporte puis l'emulation s'arrete proprement (meme           }
+{ discipline que Win16_Halt), plutot que de fabriquer un retour/une         }
+{ valeur inventee. }
+Procedure Geos_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
+Var
+ LibName: String;
+Begin
+ If (Slot < 0) Or (Slot >= Geos_TrapSlotCount) Then Begin
+  P.CPU.Fault := sfEndProgram;
+  P.StatusMsg := 'GeoWorks : slot de trappe invalide (' + IntToStr(Slot) + ')';
+  Exit;
+ End;
+ P.CPU.Fault := sfEndProgram;
+ If Geos_TrapIsKernel[Slot] Then
+  P.StatusMsg := 'Appel noyau PC/GEOS #' + IntToStr(Geos_TrapRoutine[Slot]) +
+   ' non implante (Stage 3 : LMem/ChunkArray/ArrayQuickSort seulement, ' +
+   'voir Invoke-GeoWorksAPI)'
+ Else Begin
+  If Geos_TrapLibOrd[Slot] < Geos_NumLib Then
+   LibName := Geos_Lib[Geos_TrapLibOrd[Slot]].Name
+  Else
+   LibName := 'bibliotheque#' + IntToStr(Geos_TrapLibOrd[Slot]);
+  P.StatusMsg := 'Appel bibliotheque "' + LibName + '" routine #' +
+   IntToStr(Geos_TrapRoutine[Slot]) + ' non implante (Stage 3, voir ' +
+   'Invoke-GeoWorksAPI)';
+ End;
+End;
+
 { Chargeur reel Stage 1 - voir le commentaire de tete ci-dessus pour la    }
 { portee honnetement disclosee. Meme structure generale que Win16_LoadNE  }
 { (segments reels dans C.Memory, meme allocateur "bump" de segments), mais}
@@ -95190,6 +95315,8 @@ Var
  RelForm, RelTarget: Byte;
  LibOrdinal: Byte;
  SegIdx: Word;
+ RoutineNum: Word;
+ TrapSlot: Integer;
  TargetAddr: LongInt;
  Buf: Array[0..65535] Of Byte;
  BytesRead: Word;
@@ -95198,6 +95325,15 @@ Begin
  Geos_LastError := '';
  Geos_NextFreeSeg := $1000; { meme base que Win16_NextFreeSeg - jamais les }
                              { deux chantiers actifs dans le meme onglet }
+ { Stage 3 : reserve le segment de trappes AVANT tout segment ressource,   }
+ { pour qu'aucun segment reel ne puisse jamais y empieter - meme motif     }
+ { exact que Win16_TrapSeg. }
+ Geos_TrapSlotCount := 0;
+ Geos_TrapSeg := Geos_NextFreeSeg;
+ Geos_NextFreeSeg := Geos_NextFreeSeg +
+  Word(((GEOS_EXIT_STUB_OFS + 2) + 15) Shr 4);
+ Emu_WriteByte(C, Geos_TrapSeg, GEOS_EXIT_STUB_OFS, $CD);      { INT 20h : }
+ Emu_WriteByte(C, Geos_TrapSeg, GEOS_EXIT_STUB_OFS + 1, $20);  { fin propre }
  For I := 0 To GEOS_MAX_LIB - 1 Do Geos_LibRelocCount[I] := 0;
  {$I-}
  Assign(F, Path);
@@ -95379,11 +95515,37 @@ Begin
    RelForm := Byte(RelType And $0F);
    RelTarget := Byte(RelType And $30);
    Case RelTarget Of
-    $00: Inc(Geos_RelocKernelCount);
+    $00: Begin
+     Inc(Geos_RelocKernelCount);
+     { Stage 3 : seules les formes 0/4 (pointeur distant COMPLET, section   }
+     { 10 du format) sont resolues vers un thunk de trappe reel - les       }
+     { formes 1/2/3 (offset seul/segment seul/handle) exigeraient de        }
+     { connaitre leur appariement avec une autre entree de la meme table,   }
+     { hors de portee, restent seulement comptees (RoutineNum = contenu     }
+     { AVANT correction, utilise uniquement pour distinguer les slots). }
+     If (RelForm = 0) Or (RelForm = 4) Then Begin
+      RoutineNum := Emu_ReadWord(C, Geos_Seg[I].SegBase, RelOfs);
+      TrapSlot := Geos_ResolveTrapSlot(C, True, 0, RoutineNum);
+      If TrapSlot >= 0 Then Begin
+       Emu_WriteWord(C, Geos_Seg[I].SegBase, RelOfs,
+        Word(TrapSlot * GEOS_TRAP_SLOT_SIZE));
+       Emu_WriteWord(C, Geos_Seg[I].SegBase, Word(RelOfs + 2), Geos_TrapSeg);
+      End;
+     End;
+    End;
     $10: Begin
      Inc(Geos_RelocLibCount);
      LibOrdinal := Byte(RelType Shr 8);
      If LibOrdinal < Geos_NumLib Then Inc(Geos_LibRelocCount[LibOrdinal]);
+     If (RelForm = 0) Or (RelForm = 4) Then Begin
+      RoutineNum := Emu_ReadWord(C, Geos_Seg[I].SegBase, RelOfs);
+      TrapSlot := Geos_ResolveTrapSlot(C, False, LibOrdinal, RoutineNum);
+      If TrapSlot >= 0 Then Begin
+       Emu_WriteWord(C, Geos_Seg[I].SegBase, RelOfs,
+        Word(TrapSlot * GEOS_TRAP_SLOT_SIZE));
+       Emu_WriteWord(C, Geos_Seg[I].SegBase, Word(RelOfs + 2), Geos_TrapSeg);
+      End;
+     End;
     End;
     $20: Begin
      Inc(Geos_RelocProgCount);
@@ -133211,6 +133373,8 @@ Begin
    '  LINUX fichier                Emulateur Linux x86-64 (ELF64)');
   HelpEmit(
    '  OS2 fichier[.exe]            Emulateur OS/2 LX');
+  HelpEmit(
+   '  GEOS fichier[.geo]           PC/GEOS-GeoWorks (Stage 3, execution reelle)');
   HelpEmit( '');
   HelpEmit( '--- Diagnostic OS/2 LX (chantier -COS2LX) ---');
   HelpEmit(
@@ -144300,6 +144464,8 @@ Begin
     TermCmd_OS2(TP, ParamStr)
    Else If CurrCmd = 'NES' Then
     TermCmd_NES(TP, ParamStr)
+   Else If CurrCmd = 'GEOS' Then
+    TermCmd_GEOS(TP, ParamStr)
    Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
     TermCmd_Atari2600(TP, ParamStr)
    Else If (CurrCmd = 'C64') Or (CurrCmd = 'COMMODORE64') Then
@@ -144984,6 +145150,8 @@ Begin
    TermCmd_OS2(TP, ParamStr)
   Else If CurrCmd = 'NES' Then
    TermCmd_NES(TP, ParamStr)
+  Else If CurrCmd = 'GEOS' Then
+   TermCmd_GEOS(TP, ParamStr)
   Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
    TermCmd_Atari2600(TP, ParamStr)
   Else If (CurrCmd = 'C64') Or (CurrCmd = 'COMMODORE64') Then
@@ -179816,6 +179984,13 @@ Begin
    { de securite si jamais atteint par erreur. }
    Win16_DispatchCall(P, Emu_ReadWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP));
   End;
+  $F9: Begin
+   { Chantier PC/GEOS-GeoWorks, Stage 3 (2026-09-19) : point d entree de     }
+   { trappe noyau/bibliotheque - meme convention EXACTE que $F8 ci-dessus    }
+   { (thunks CD F9 <slot:Word> CB ecrits par Geos_ResolveTrapSlot). }
+   If Geos_Active Then
+    Geos_DispatchCall(P, Emu_ReadWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP));
+  End;
   $FB: If EmuDpmi.Active Then Dpmi_Switch(P); { trampoline de commutation    }
        { reel -> protege DPMI, voir Dpmi_Switch/Emu_DpmiInit. Jamais         }
        { atteint par du logiciel DOS reel. }
@@ -198649,6 +198824,8 @@ Var
  IsARM64: Boolean;
  IsPE32: Boolean;
  IsGeos: Boolean;
+ GeosEntryRes: Integer;
+ GeosEntryOfs, GeosStackSeg: Word;
  TraceI, TraceN: LongInt;
  TraceLine: String;
  CPUName: String;
@@ -200041,11 +200218,19 @@ Begin NesActive := False;
   Exit;
  End;
  If IsGeos Then Begin
-  { Chantier PC/GEOS-GeoWorks, Stage 1 (2026-09-19) - voir le commentaire   }
-  { de tete de Geos_LoadGeode pour la portee honnetement disclosee : le     }
-  { geode est reellement charge/analyse/relogue (relogements "programme    }
-  { courant"), mais son code n'est PAS execute (aucune application .GEO    }
-  { reelle n'a de point d'entree CPU classique - voir ce meme commentaire).}
+  { Chantier PC/GEOS-GeoWorks, Stage 1/2/3 (2026-09-19) - voir le           }
+  { commentaire de tete de Geos_LoadGeode pour la portee honnetement        }
+  { disclosee. Le geode est toujours reellement charge/analyse/relogue      }
+  { (relogements "programme courant" REELS, "noyau"/"bibliotheque"          }
+  { resolus vers des trappes reelles pour les formes 0/4 - Stage 3). Une    }
+  { Application (aucun point d'entree CPU classique, voir le rapport        }
+  { affiche plus bas) reste analysee seulement, comme au Stage 1/2 ; un     }
+  { PILOTE ($2000) ou une BIBLIOTHEQUE avec initialisation ($4000)          }
+  { demarre desormais une VRAIE execution CPU (Stage 3) a partir de son     }
+  { point d'entree reel, jusqu'au premier appel noyau/bibliotheque          }
+  { (trappe honnete, voir Geos_DispatchCall) ou une fin propre (INT 20h,    }
+  { voir GEOS_EXIT_STUB_OFS). }
+  Geos_Active := False;
   Emu_InitComputer(P.CPU);
   If Not P.CPU.MemReady Then Begin
    P.CurFg := 12;
@@ -200076,26 +200261,55 @@ Begin NesActive := False;
   EmuVScr_WriteLn(P, '');
   Geos_PrintDiagnostics(P);
   EmuVScr_WriteLn(P, '');
-  P.CurFg := 14;
-  If (Geos_AppAttr And ($4000 Or $2000)) <> 0 Then
-   EmuVScr_WriteLn(P,
-    'Ce geode a un point d''entree direct (pilote/initialisation de')
-  Else
-   EmuVScr_WriteLn(P,
-    'Ce geode est une application : son demarrage reel passe par un');
-  If (Geos_AppAttr And ($4000 Or $2000)) <> 0 Then
-   EmuVScr_WriteLn(P,
-    'bibliotheque) mais son execution CPU reste hors de portee de ce')
-  Else
-   EmuVScr_WriteLn(P,
-    'message objet (MSG_META_ATTACH) envoye par le noyau PC/GEOS a sa');
-  If (Geos_AppAttr And ($4000 Or $2000)) <> 0 Then
-   EmuVScr_WriteLn(P, 'Stage 1 (aucune bibliotheque Kernel/Ui reelle).')
-  Else Begin
-   EmuVScr_WriteLn(P,
-    'ProcessClass - un systeme de fenetrage/objets complet, hors de');
-   EmuVScr_WriteLn(P, 'portee de ce Stage 1 (voir le rapport ci-dessus).');
+  GeosEntryRes := -1; GeosEntryOfs := 0;
+  If (Geos_AppAttr And $2000) <> 0 Then Begin
+   GeosEntryRes := Geos_DrvTableRes; GeosEntryOfs := Geos_DrvTableOfs;
+  End Else If (Geos_AppAttr And $4000) <> 0 Then Begin
+   GeosEntryRes := Geos_LibInitRes; GeosEntryOfs := Geos_LibInitOfs;
   End;
+  If (GeosEntryRes >= 0) And (GeosEntryRes < Integer(Geos_NumSeg)) Then Begin
+   { Stage 3 : execution reelle - pile privee juste apres Geos_TrapSeg      }
+   { (256 octets, largement suffisant pour atteindre le premier appel        }
+   { noyau/bibliotheque ou un RETF propre - aucun geode reel n'a de gros     }
+   { travail purement local a faire avant son premier appel systeme). Pile  }
+   { pre-amorcee avec l'adresse de retour "fin propre" (voir                }
+   { GEOS_EXIT_STUB_OFS) exactement comme la convention PSP DOS reelle       }
+   { (INT 20h a l'adresse de retour initiale). }
+   GeosStackSeg := Geos_NextFreeSeg;
+   Geos_NextFreeSeg := Geos_NextFreeSeg + 16; { 256 octets }
+   P.CPU.Segs.SS := GeosStackSeg;
+   P.CPU.Regs.SP := 256;
+   Emu_PushWord(P.CPU, Geos_TrapSeg);
+   Emu_PushWord(P.CPU, GEOS_EXIT_STUB_OFS);
+   P.CPU.Segs.CS := Geos_Seg[GeosEntryRes].SegBase;
+   P.CPU.IP := GeosEntryOfs;
+   P.CPU.Fault := sfNone;
+   Geos_Active := True;
+   P.CurFg := 14;
+   EmuVScr_WriteLn(P, 'Point d''entree reel detecte (ressource ' +
+    IntToStr(GeosEntryRes) + ', offset $' + HexWord(GeosEntryOfs) + ') - ' +
+    'execution demarree (Stage 3).');
+   EmuVScr_WriteLn(P, 'Convention exacte de passage de parametres du ' +
+    'pilote/initialisation non modelisee (registres a 0 au demarrage) ;');
+   EmuVScr_WriteLn(P, 'tout appel noyau/bibliotheque REEL sera honnetement ' +
+    'signale puis l''emulation s''arretera proprement.');
+   P.CurFg := 7;
+   EmuVScr_WriteLn(P, '');
+   P.CurBg := OldBg;
+   P.Running := True;
+   P.Loaded := True;
+   P.StatusMsg := 'Execution PC/GEOS en cours (Stage 3)';
+   DrawEmulatorPanel(P);
+   Exit;
+  End;
+  P.CurFg := 14;
+  EmuVScr_WriteLn(P,
+   'Ce geode est une application : son demarrage reel passe par un');
+  EmuVScr_WriteLn(P,
+   'message objet (MSG_META_ATTACH) envoye par le noyau PC/GEOS a sa');
+  EmuVScr_WriteLn(P,
+   'ProcessClass - un systeme de fenetrage/objets complet, hors de');
+  EmuVScr_WriteLn(P, 'portee de ce chantier (voir le rapport ci-dessus).');
   P.CurFg := 7;
   EmuVScr_WriteLn(P, '');
   { Stage 2 (2026-09-19, demande explicite) : contrairement au Stage 1 seul  }
@@ -200978,7 +201192,7 @@ Begin
   Exit;
  End;
  If P.Loaded And ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP') Or
-    (P.TargetCPU = '-CWIN16')) Then Begin
+    (P.TargetCPU = '-CWIN16') Or (P.TargetCPU = '-CGEOS')) Then Begin
   If Not P.Running Then Exit;
   { Meme motif que les autres backends Stage 1. Contrairement a eux, ce   }
   { backend a DEJA son propre pompage d evenements interne (voir           }
