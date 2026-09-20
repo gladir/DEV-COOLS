@@ -95259,41 +95259,6 @@ Begin
  Geos_ResolveTrapSlot := Slot;
 End;
 
-{ Gestionnaire de la trappe INT GEOS_TRAP_INT (Stage 3) - atteint          }
-{ UNIQUEMENT via un thunk ecrit par Geos_ResolveTrapSlot (voir ce           }
-{ commentaire pour le detail du mecanisme, identique a Win16_DispatchCall  }
-{ / $F8). AUCUNE bibliotheque Kernel/Ui/Graphics reelle n'est implantee     }
-{ (Stage 2/3 se sont concentres sur LMem/ChunkArray/ArrayQuickSort,         }
-{ testables isolement via Invoke-GeoWorksAPI - voir la disclosure de tete   }
-{ du chantier) : tout appel qui atteint reellement cette trappe est donc    }
-{ HONNETEMENT rapporte puis l'emulation s'arrete proprement (meme           }
-{ discipline que Win16_Halt), plutot que de fabriquer un retour/une         }
-{ valeur inventee. }
-Procedure Geos_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
-Var
- LibName: String;
-Begin
- If (Slot < 0) Or (Slot >= Geos_TrapSlotCount) Then Begin
-  P.CPU.Fault := sfEndProgram;
-  P.StatusMsg := 'GeoWorks : slot de trappe invalide (' + IntToStr(Slot) + ')';
-  Exit;
- End;
- P.CPU.Fault := sfEndProgram;
- If Geos_TrapIsKernel[Slot] Then
-  P.StatusMsg := 'Appel noyau PC/GEOS #' + IntToStr(Geos_TrapRoutine[Slot]) +
-   ' non implante (Stage 3 : LMem/ChunkArray/ArrayQuickSort seulement, ' +
-   'voir Invoke-GeoWorksAPI)'
- Else Begin
-  If Geos_TrapLibOrd[Slot] < Geos_NumLib Then
-   LibName := Geos_Lib[Geos_TrapLibOrd[Slot]].Name
-  Else
-   LibName := 'bibliotheque#' + IntToStr(Geos_TrapLibOrd[Slot]);
-  P.StatusMsg := 'Appel bibliotheque "' + LibName + '" routine #' +
-   IntToStr(Geos_TrapRoutine[Slot]) + ' non implante (Stage 3, voir ' +
-   'Invoke-GeoWorksAPI)';
- End;
-End;
-
 { Chargeur reel Stage 1 - voir le commentaire de tete ci-dessus pour la    }
 { portee honnetement disclosee. Meme structure generale que Win16_LoadNE  }
 { (segments reels dans C.Memory, meme allocateur "bump" de segments), mais}
@@ -95799,6 +95764,108 @@ Begin
  GeosLMem_FreeSpace(C, HeapSeg, OldDataOfs);
  Emu_WriteWord(C, HeapSeg, ChunkHandle, NewDataOfs);
  GeosLMem_ResizeChunk := True;
+End;
+
+{ ============================================================
+  Chantier PC/GEOS-GeoWorks, Stage 4 (2026-09-19, demande explicite -
+  "continue le Stage 4") : sous-ensemble du gestionnaire de base de
+  donnees (Include/dbase.def, Library/Kernel/DBase/dbaseCode.asm,
+  VERIFIES via bluewaysw/pcgeos) - complete les 2 des 6 routines Cell*
+  demandees au Stage 2 qui se sont averees etre de simples ALIAS :
+  "CellUnlock equ DBUnlock" / "CellDirty equ DBDirty" (cell.def, ligne
+  167-168) - AUCUNE structure specifique au tableur necessaire pour ces
+  deux-la.
+
+  DISCLOSURE (perimetre honnetement limite, dans le meme esprit que les
+  stages precedents) :
+   - Un "fichier VM" reel GeoWorks est un fichier DISQUE separe avec
+     pagination/versions de sauvegarde (VMOpen/VMUpdate/VMSave/DBRevert,
+     voir l'en-tete de dbaseCode.asm) - HORS DE PORTEE (aucun fichier
+     disque n'est cree). Un "groupe" (DBGroupAlloc) est ici simule par un
+     SEGMENT REEL DEDIE dans la memoire emulee, avec son propre
+     LMemBlockHeader (memes champs LMBH_* que GeosLMem_* ci-dessus,
+     initialises A LA VOLEE plutot que lus depuis un fichier) - le
+     "handle de groupe" retourne EST ce segment, jamais un vrai handle
+     VM pagine. Les "items" a l'interieur reutilisent TEL QUEL
+     GeosLMem_Alloc/Deref/Free (deja verifies au Stage 2), sans aucune
+     modification.
+   - DBUnlock/DBDirty sont de VRAIS no-op ici (nos items sont TOUJOURS
+     residents en memoire emulee, jamais pagines/deplaces - rien a
+     verrouiller ou marquer sale) - convention honnetement disclosee,
+     pas un oubli. La vraie API prend un POINTEUR deja resolu (pas un
+     couple groupe/item) ; par commodite pour Invoke-GeoWorksAPI, la
+     forme groupe/item est acceptee directement.
+   - CellReplace/CellLock/CellGetDBItem/CellGetExtent restent NON
+     implantees : leur code reel (Library/Cell/cellCell.asm, verifie)
+     exige un pointeur ds:si vers un CellFunctionParameters deja
+     construit PAR le moteur tableur (avec un fichier VM ouvert) et une
+     correspondance ligne/colonne -> item (ForceCellDBItem/
+     CheckCellDBItem) dont la structure interne n'a pas ete retrouvee
+     dans les sources disponibles - non devinee. }
+
+{ Cree un nouveau "groupe" (segment dedie avec son propre LMemBlockHeader}
+{ - voir la disclosure ci-dessus) - GroupSize octets utiles, NHandles     }
+{ poignees. }
+Function Geos_DBGroupAlloc(Var C: TEmuCPU; GroupSize, NHandles: Word;
+ Var GroupSeg: Word; Var ErrMsg: String): Boolean;
+Var
+ HdrSize, FreeOfs, FreeSize, TotalSize, I: Word;
+Begin
+ Geos_DBGroupAlloc := False;
+ If NHandles = 0 Then NHandles := 16;
+ If GroupSize = 0 Then GroupSize := 512;
+ HdrSize := 16;
+ FreeOfs := Word(HdrSize + NHandles * 2);
+ If LongInt(FreeOfs) + GroupSize > 65535 Then Begin
+  ErrMsg := 'groupe trop grand (' + IntToStr(GroupSize) + ' octets + ' +
+   IntToStr(NHandles) + ' poignees)';
+  Exit;
+ End;
+ FreeSize := GroupSize;
+ TotalSize := Word(FreeOfs + FreeSize);
+ GroupSeg := Geos_NextFreeSeg;
+ Geos_NextFreeSeg := Geos_NextFreeSeg + Word((LongInt(TotalSize) + 15) Shr 4);
+ Emu_WriteWord(C, GroupSeg, LMBH_HANDLE, 0);
+ Emu_WriteWord(C, GroupSeg, LMBH_OFFSET, HdrSize);
+ Emu_WriteWord(C, GroupSeg, LMBH_FLAGS, 0);
+ Emu_WriteWord(C, GroupSeg, LMBH_LMEMTYPE, 0);
+ Emu_WriteWord(C, GroupSeg, LMBH_BLOCKSIZE, TotalSize);
+ Emu_WriteWord(C, GroupSeg, LMBH_NHANDLES, NHandles);
+ Emu_WriteWord(C, GroupSeg, LMBH_FREELIST, FreeOfs);
+ Emu_WriteWord(C, GroupSeg, LMBH_TOTALFREE, FreeSize);
+ For I := 0 To NHandles - 1 Do
+  Emu_WriteWord(C, GroupSeg, Word(HdrSize + I * 2), 0);
+ Emu_WriteWord(C, GroupSeg, FreeOfs, 0);
+ Emu_WriteWord(C, GroupSeg, Word(FreeOfs + 2), FreeSize);
+ Geos_DBGroupAlloc := True;
+End;
+
+{ DBAlloc(bx=fichier[ignore, voir disclosure], ax=groupe, cx=taille) ->   }
+{ ax=groupe(inchange), di=item - ici, groupe=segment reel, item=poignee   }
+{ GeosLMem, reutilise TEL QUEL. }
+Function Geos_DBAlloc(Var C: TEmuCPU; GroupSeg, Size: Word;
+ Var ItemHandle: Word; Var ErrMsg: String): Boolean;
+Begin
+ Geos_DBAlloc := GeosLMem_Alloc(C, GroupSeg, Size, ItemHandle, ErrMsg);
+End;
+
+{ DBLock(bx=fichier, ax=groupe, di=item) -> es:*di=pointeur - ici,        }
+{ DataOfs retourne (meme segment que GroupSeg). }
+Function Geos_DBLock(Var C: TEmuCPU; GroupSeg, ItemHandle: Word;
+ Var DataOfs: Word; Var ErrMsg: String): Boolean;
+Begin
+ Geos_DBLock := False;
+ DataOfs := GeosLMem_Deref(C, GroupSeg, ItemHandle);
+ If DataOfs = 0 Then Begin
+  ErrMsg := 'item invalide ou deja libere';
+  Exit;
+ End;
+ Geos_DBLock := True;
+End;
+
+Procedure Geos_DBFree(Var C: TEmuCPU; GroupSeg, ItemHandle: Word);
+Begin
+ GeosLMem_Free(C, GroupSeg, ItemHandle);
 End;
 
 { ============================================================
@@ -97459,6 +97526,138 @@ Begin
  GeosArrayQuickSort := True;
 End;
 
+{ ============================================================
+  Chantier PC/GEOS-GeoWorks, Stage 5 (2026-09-19, demande explicite -
+  "continue le Stage 5") : CONNECTE enfin le mecanisme de trappe reel du
+  Stage 3 aux implementations reelles LMem/ChunkArray/ArrayQuickSort du
+  Stage 2 - un point d'entree PILOTE/BIBLIOTHEQUE (Stage 3) qui appelle
+  le "noyau" via un de ces 4 ordinaux EXECUTE desormais reellement la
+  fonction Pascal correspondante et REVIENT (au lieu de toujours
+  s'arreter), exactement comme Win16_DispatchCall le fait deja pour les
+  ordinaux KERNEL/GDI/USER reellement implantes.
+
+  DISCLOSURE CAPITALE (perimetre honnetement limite) : contrairement aux
+  ordinaux KERNEL/GDI/USER de Win16 (verifies via krnl386.exe16.spec, un
+  fichier SPEC PUBLIC reel documentant la numerotation officielle), AUCUNE
+  table d'ordinaux officielle du VRAI noyau PC/GEOS n'a ete retrouvee
+  (dbase.def/chunkarr.def documentent les CONVENTIONS DE REGISTRES de
+  chaque routine, jamais son numero d'ordinal reel - celui-ci est fixe
+  par le VRAI Kernel.geo, absent des sources ouvertes disponibles). Les 4
+  numeros GEOS_KERN_* ci-dessous sont donc une numerotation INVENTEE par
+  ce chantier, PAS la vraie numerotation GeoWorks : un geode compile par
+  un VRAI outil GeoWorks (comme GSDUMP.GEO/INSTFE.GEO deja dans ce depot)
+  reference le noyau avec des numeros DIFFERENTS et continuera donc a
+  s'arreter honnetement (voir le repli Else ci-dessous, comportement
+  Stage 3 inchange) - seuls des modules de test CONSTRUITS PAR ce
+  chantier (avec ces memes numeros invented) peuvent exercer ce
+  dispatcher reel. DBGroupAlloc/DBAlloc (Stage 4) restent EXCLUS d'ici :
+  leur convention de registres REELLE (dbase.def) n'est pas documentee
+  (contrairement a chunkarr.def, exhaustif), et la vraie DBAlloc s'appuie
+  sur un systeme de blocs-groupe PAGINES (voir dbaseCode.asm) bien plus
+  riche que la simplification du Stage 4 - risque de convention erronee
+  trop eleve pour etre honnetement invente ici. }
+Const
+ GEOS_KERN_CHUNKARRAYCREATE = 1;
+ GEOS_KERN_CHUNKARRAYAPPEND = 2;
+ GEOS_KERN_CHUNKARRAYELEMENTTOPTR = 3;
+ GEOS_KERN_ARRAYQUICKSORT = 4;
+
+{ Gestionnaire de la trappe INT GEOS_TRAP_INT (Stage 3/5) - atteint        }
+{ UNIQUEMENT via un thunk ecrit par Geos_ResolveTrapSlot. Les appels        }
+{ "bibliotheque" (cible non-noyau) et les ordinaux noyau AUTRES que les 4  }
+{ ci-dessus restent HONNETEMENT signales puis stoppent l'emulation (memes }
+{ discipline que Win16_Halt) - voir la disclosure de tete pour pourquoi.  }
+Procedure Geos_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
+Var
+ LibName, ErrMsg: String;
+ ArrHandle, ElemOfs, NewElemOfs, ArrOfs, ElemSize: Word;
+ CompOfs, CompSeg: Word;
+ Ok: Boolean;
+Begin
+ If (Slot < 0) Or (Slot >= Geos_TrapSlotCount) Then Begin
+  P.CPU.Fault := sfEndProgram;
+  P.StatusMsg := 'GeoWorks : slot de trappe invalide (' + IntToStr(Slot) + ')';
+  Exit;
+ End;
+ If Geos_TrapIsKernel[Slot] Then Begin
+  Case Geos_TrapRoutine[Slot] Of
+   GEOS_KERN_CHUNKARRAYCREATE: Begin
+    { Pass : ds=bloc, bx=taille element, cx=taille entete, si=0 (reutiliser}
+    { un chunk existant hors de portee), al=flags (ignore). Return :       }
+    { *ds:si=tableau (ici, SI <- poignee). Carry = erreur (extension       }
+    { Stage 5, non documentee par chunkarr.def pour cette routine). }
+    Ok := GeosChunkArrayCreate(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.BX,
+     P.CPU.Regs.CX, ArrHandle, ErrMsg);
+    If Ok Then Begin
+     P.CPU.Regs.SI := ArrHandle;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Include(P.CPU.Flags.s, EFG_CF);
+   End;
+   GEOS_KERN_CHUNKARRAYAPPEND: Begin
+    { Pass : *ds:si=tableau (SI=poignee), ax=taille (variable, ignore).    }
+    { Return : ds:di=nouvel element. }
+    Ok := GeosChunkArrayAppend(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI,
+     NewElemOfs, ErrMsg);
+    If Ok Then Begin
+     P.CPU.Regs.DI := NewElemOfs;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Include(P.CPU.Flags.s, EFG_CF);
+   End;
+   GEOS_KERN_CHUNKARRAYELEMENTTOPTR: Begin
+    { Pass : *ds:si=tableau (SI=poignee), ax=numero d'element. Return :    }
+    { carry POSITIONNE si hors bornes (convention REELLE, voir            }
+    { chunkarr.def - inverse de l'extension Stage 5 ci-dessus), cx=taille  }
+    { element, ds:di=element. }
+    Ok := GeosChunkArrayElementToPtr(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI,
+     P.CPU.Regs.AX, ElemOfs, ErrMsg);
+    If Ok Then Begin
+     P.CPU.Regs.DI := ElemOfs;
+     ArrOfs := GeosLMem_Deref(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.SI);
+     ElemSize := Emu_ReadWord(P.CPU, P.CPU.Segs.DS, Word(ArrOfs + CAH_ELEMENTSIZE));
+     P.CPU.Regs.CX := ElemSize;
+     Exclude(P.CPU.Flags.s, EFG_CF);
+    End Else Include(P.CPU.Flags.s, EFG_CF);
+   End;
+   GEOS_KERN_ARRAYQUICKSORT: Begin
+    { Pass : ds:si=tableau (SI=OFFSET ABSOLU, PAS une poignee indirecte -  }
+    { seule cette routine utilise "ds:si" sans etoile, voir chunkarr.def), }
+    { ax=taille element, cx=nombre d'elements, ss:bp=QuickSortParameters   }
+    { (QSP_compareCallback fptr = 1er champ : offset au mot ss:[bp+0],     }
+    { segment au mot ss:[bp+2]), bx=valeur pour le rappel. Return : rien   }
+    { (voir chunkarr.def - aucune gestion de carry pour cette routine). }
+    CompOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, P.CPU.Regs.BP);
+    CompSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.BP + 2));
+    Ok := GeosArrayQuickSort(P, P.CPU.Segs.DS, P.CPU.Regs.SI, P.CPU.Regs.AX,
+     P.CPU.Regs.CX, CompSeg, CompOfs, P.CPU.Regs.BX, ErrMsg);
+    If Not Ok Then Include(P.CPU.Flags.s, EFG_CF)
+    Else Exclude(P.CPU.Flags.s, EFG_CF);
+   End;
+   Else Begin
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'Appel noyau PC/GEOS #' + IntToStr(Geos_TrapRoutine[Slot]) +
+     ' non implante (Stage 5 : seuls ChunkArrayCreate/Append/' +
+     'ElementToPtr/ArrayQuickSort le sont, avec une numerotation ' +
+     'INVENTEE - voir la disclosure)';
+    Exit;
+   End;
+  End;
+  { Retour synthetique - meme motif exact que Win16_DispatchCall (depile   }
+  { l'adresse de retour du VRAI CALL FAR d'origine, voir Geos_ResolveTrap- }
+  { Slot/GEOS_TRAP_INT : aucun mot supplementaire n'a jamais ete empile    }
+  { par ce mecanisme, donc rien d'autre a depiler ici). }
+  P.CPU.IP := Emu_PopWord(P.CPU);
+  P.CPU.Segs.CS := Emu_PopWord(P.CPU);
+  Exit;
+ End;
+ P.CPU.Fault := sfEndProgram;
+ If Geos_TrapLibOrd[Slot] < Geos_NumLib Then
+  LibName := Geos_Lib[Geos_TrapLibOrd[Slot]].Name
+ Else
+  LibName := 'bibliotheque#' + IntToStr(Geos_TrapLibOrd[Slot]);
+ P.StatusMsg := 'Appel bibliotheque "' + LibName + '" routine #' +
+  IntToStr(Geos_TrapRoutine[Slot]) + ' non implante (Stage 3, voir ' +
+  'Invoke-GeoWorksAPI)';
+End;
 
 { Appelle SYNCHRONE un VRAI callback FONTENUMPROC16 (SEGPTR lplf, SEGPTR    }
 { lptm, UINT16 nFontType, LPARAM lParam) - signature VERIFIEE via le VRAI   }
@@ -133303,6 +133502,18 @@ Begin
    '    ... [-CompareAddress n] [-Value n]   (comparateur par defaut si omis)');
   HelpEmit(
    '  ... [-Resource n]   (indice de ressource "tas LMem", auto-detecte sinon)');
+  HelpEmit( '');
+  HelpEmit( '--- DBase / Cell (2026-09-19, Stage 4) ---');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api DBGroupAlloc [-GroupSize n] [-NHandles n]');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api DBAlloc -Group $groupe -Size n');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api DBLock -Group $groupe -Item $item');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api DBFree -Group $groupe -Item $item');
+  HelpEmit(
+   '  Invoke-GeoWorksAPI -Api DBUnlock | DBDirty | CellUnlock | CellDirty');
  End;
  { LOG/BOOT : disponibles dans SK_CMD/SK_POWERSHELL/SK_NCOMMANDER/SK_OS2REXX }
  { seulement (PAS SK_BASH/SK_AMIGADOS - verifie par lecture directe de       }
@@ -143494,6 +143705,7 @@ Var
  ErrMsg, Arg: String;
  ArrHandle, ElemSize, HdrSize, NewElemOfs, ElemOfs, Idx, Cnt: Word;
  CompSeg, CompOfs, BxVal, ArrOfs, Count, NumElems: Word;
+ DBGroupSize, DBNHandles, DBGroupSeg, DBItemSize, DBItemHandle, DBDataOfs: Word;
  ErrC: Integer;
 Begin
  If (WinMgr.ActiveIdx < 0) Or
@@ -143509,11 +143721,118 @@ Begin
   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api nom [-Resource n] [...]');
   TermAddLine(TP, '  Api : ChunkArrayCreate | ChunkArrayAppend | ChunkArrayDelete |');
   TermAddLine(TP, '        ChunkArrayDeleteRange | ChunkArrayElementToPtr |');
-  TermAddLine(TP, '        ChunkArrayElementResize | ArrayQuickSort');
+  TermAddLine(TP, '        ChunkArrayElementResize | ArrayQuickSort |');
+  TermAddLine(TP, '        DBGroupAlloc | DBAlloc | DBLock | DBUnlock | DBDirty | DBFree |');
+  TermAddLine(TP, '        CellUnlock | CellDirty');
   Exit;
  End;
  ApiName := TermStrToUpper(TrimStr(TermExtractParam(Copy(ParamStr,
   ApiPos + 4, Length(ParamStr)), 1)));
+ { DBase (Stage 4) : traite AVANT la resolution de ressource ci-dessous -  }
+ { DBGroupAlloc/DBAlloc/DBLock/DBUnlock/DBDirty/DBFree (et les alias       }
+ { CellDirty/CellUnlock, voir cell.def) operent sur un SEGMENT DEDIE       }
+ { (le "groupe"), jamais sur une ressource "tas LMem" du geode - voir la  }
+ { disclosure de tete de la section GeosLMem/DBase plus haut. }
+ If (ApiName = 'DBGROUPALLOC') Then Begin
+  DBGroupSize := 0; DBNHandles := 0;
+  FlagPos := System.Pos('-GROUPSIZE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 10, Length(ParamStr)), 1);
+   Val(Arg, DBGroupSize, ErrC);
+  End;
+  FlagPos := System.Pos('-NHANDLES', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 9, Length(ParamStr)), 1);
+   Val(Arg, DBNHandles, ErrC);
+  End;
+  If Geos_DBGroupAlloc(EmuPanel.CPU, DBGroupSize, DBNHandles, DBGroupSeg,
+     ErrMsg) Then
+   TermAddLine(TP, 'DBGroupAlloc : groupe = segment $' + HexWord(DBGroupSeg))
+  Else
+   TermAddLine(TP, 'DBGroupAlloc : echec - ' + ErrMsg);
+  Exit;
+ End;
+ If (ApiName = 'DBALLOC') Then Begin
+  DBGroupSeg := 0; DBItemSize := 0;
+  FlagPos := System.Pos('-GROUP', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, DBGroupSeg, ErrC);
+  End;
+  FlagPos := System.Pos('-SIZE', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 5, Length(ParamStr)), 1);
+   Val(Arg, DBItemSize, ErrC);
+  End;
+  If (DBGroupSeg = 0) Or (DBItemSize = 0) Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api DBAlloc ' +
+    '-Group $groupe -Size n');
+   Exit;
+  End;
+  If Geos_DBAlloc(EmuPanel.CPU, DBGroupSeg, DBItemSize, DBItemHandle,
+     ErrMsg) Then
+   TermAddLine(TP, 'DBAlloc : item = $' + HexWord(DBItemHandle) +
+    ' (groupe $' + HexWord(DBGroupSeg) + ', ' + IntToStr(DBItemSize) +
+    ' octets)')
+  Else
+   TermAddLine(TP, 'DBAlloc : echec - ' + ErrMsg);
+  Exit;
+ End;
+ If (ApiName = 'DBLOCK') Then Begin
+  DBGroupSeg := 0; DBItemHandle := 0;
+  FlagPos := System.Pos('-GROUP', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, DBGroupSeg, ErrC);
+  End;
+  FlagPos := System.Pos('-ITEM', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 5, Length(ParamStr)), 1);
+   Val(Arg, DBItemHandle, ErrC);
+  End;
+  If (DBGroupSeg = 0) Or (DBItemHandle = 0) Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api DBLock ' +
+    '-Group $groupe -Item $item');
+   Exit;
+  End;
+  If Geos_DBLock(EmuPanel.CPU, DBGroupSeg, DBItemHandle, DBDataOfs,
+     ErrMsg) Then
+   TermAddLine(TP, 'DBLock : donnees a $' + HexWord(DBGroupSeg) + ':$' +
+    HexWord(DBDataOfs))
+  Else
+   TermAddLine(TP, 'DBLock : echec - ' + ErrMsg);
+  Exit;
+ End;
+ If (ApiName = 'DBUNLOCK') Or (ApiName = 'CELLUNLOCK') Or
+    (ApiName = 'DBDIRTY') Or (ApiName = 'CELLDIRTY') Then Begin
+  { CellUnlock equ DBUnlock / CellDirty equ DBDirty (cell.def) - VRAIS     }
+  { no-op ici (voir la disclosure de tete : aucune pagination/eviction     }
+  { n'est modelisee, un item reste toujours resident). }
+  TermAddLine(TP, ApiName + ' : aucun effet (item toujours resident, ' +
+   'voir la disclosure Stage 4).');
+  Exit;
+ End;
+ If (ApiName = 'DBFREE') Then Begin
+  DBGroupSeg := 0; DBItemHandle := 0;
+  FlagPos := System.Pos('-GROUP', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1);
+   Val(Arg, DBGroupSeg, ErrC);
+  End;
+  FlagPos := System.Pos('-ITEM', UpParams);
+  If FlagPos > 0 Then Begin
+   Arg := TermExtractParam(Copy(ParamStr, FlagPos + 5, Length(ParamStr)), 1);
+   Val(Arg, DBItemHandle, ErrC);
+  End;
+  If (DBGroupSeg = 0) Or (DBItemHandle = 0) Then Begin
+   TermAddLine(TP, 'Syntaxe : Invoke-GeoWorksAPI -Api DBFree ' +
+    '-Group $groupe -Item $item');
+   Exit;
+  End;
+  Geos_DBFree(EmuPanel.CPU, DBGroupSeg, DBItemHandle);
+  TermAddLine(TP, 'DBFree : item $' + HexWord(DBItemHandle) + ' libere');
+  Exit;
+ End;
  ResIdx := -1;
  ResPos := System.Pos('-RESOURCE', UpParams);
  If ResPos > 0 Then Begin
