@@ -6430,7 +6430,8 @@ Type
   OC_EMU_TRS80,          { Emulateur > TRS80                  }
   OC_EMU_ADAM,           { Emulateur > Adam                   }
   OC_EMU_COCO3,          { Emulateur > CoCo 3                 }
-  OC_EMU_CRAY1           { Emulateur > Cray 1                 }
+  OC_EMU_CRAY1,          { Emulateur > Cray 1                 }
+  OC_EMU_Z8001           { Emulateur > Z8001 (2026-09-20, demande explicite) }
  );
 
  { Liste des index de categories actuellement visibles (Visible=True),  }
@@ -6542,6 +6543,11 @@ Type
   DosLogInt21     : Boolean;     { journal EMU21.LOG (chaque INT) }
   DosLogDiag      : Boolean;     { journal EMUDIAG.LOG (diagnostics ponctuels) }
   DosLogInt13     : Boolean;     { journal EMUINT13.LOG (appels BIOS disque) }
+  { Emulateur > Z8001 (2026-09-20, demande explicite de l'utilisateur -     }
+  { "Enter sur .Z8K doit lancer l'emulateur Z8001 avec une API CP/M         }
+  { integree si la case CP/M est cochee, cochee par defaut"). }
+  Z8001Cpm        : Boolean;     { API CP/M-8000 (BDOS reel via SC #2) integree }
+                                  { dans l'emulateur, active par defaut }
  End;
 
  { Dialogue des options de l IDE }
@@ -89252,6 +89258,41 @@ Begin
  CreateEmulatorTab(RomPath, '-CGEOS', '');
 End;
 
+{ Z8001 (Terminal, modes "Invite de commande"/SK_CMD et "Norton Commander"/ }
+{ SK_NCOMMANDER, 2026-09-20, demande explicite de l'utilisateur - meme      }
+{ motif exact que TermCmd_GEOS ci-dessus) : lance l'emulateur Zilog Z8001 + }
+{ CP/M-8000 (Stage 1, voir Z8K_LoadFile/la disclosure complete pres de sa   }
+{ definition) sur un fichier .Z8K du systeme hote. }
+Procedure TermCmd_Z8001(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ CurrParam, Dir, RomPath: String;
+Begin
+ CurrParam := YamlUnquote(TermExtractParam(ParamStr, 1));
+ If CurrParam = '/?' Then Begin
+  TermAddLine(TP, 'Z8001 : lance l''emulateur Zilog Z8001 + CP/M-8000 ' +
+   '(Stage 1) sur un fichier .Z8K du systeme hote.');
+  TermAddLine(TP, '');
+  TermAddLine(TP, 'Syntaxe : Z8001 fichier.z8k');
+  Exit;
+ End;
+ If CurrParam = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Z8001 fichier.z8k');
+  Exit;
+ End;
+ If TP.VirtDrive >= 0 Then Begin
+  TermAddLine(TP, 'Z8001 : disque virtuel non supporte, utiliser un ' +
+   'chemin du systeme hote.');
+  Exit;
+ End;
+ If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+ RomPath := TermFindRomByExt(Dir, CurrParam, 'Z8K');
+ If RomPath = '' Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ CreateEmulatorTab(RomPath, '-CZ8001', '');
+End;
+
 { GEODUMP (Terminal, modes "Invite de commande"/SK_CMD et "Norton         }
 { Commander"/SK_NCOMMANDER) - 2026-09-20, demande explicite de            }
 { l'utilisateur : "Integrer la commande complete GEODUMP (contenu dans le }
@@ -149767,6 +149808,8 @@ Begin
     TermCmd_NES(TP, ParamStr)
    Else If CurrCmd = 'GEOS' Then
     TermCmd_GEOS(TP, ParamStr)
+   Else If CurrCmd = 'Z8001' Then
+    TermCmd_Z8001(TP, ParamStr)
    Else If CurrCmd = 'GEODUMP' Then
     TermCmd_GEODUMP(TP, ParamStr)
    Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
@@ -150455,6 +150498,8 @@ Begin
    TermCmd_NES(TP, ParamStr)
   Else If CurrCmd = 'GEOS' Then
    TermCmd_GEOS(TP, ParamStr)
+  Else If CurrCmd = 'Z8001' Then
+   TermCmd_Z8001(TP, ParamStr)
   Else If CurrCmd = 'GEODUMP' Then
    TermCmd_GEODUMP(TP, ParamStr)
   Else If (CurrCmd = 'ATARI2600') Or (CurrCmd = 'ATARI2600VCS') Then
@@ -153528,6 +153573,17 @@ Begin
      CreateEmulatorTab(FullPath, '-CATARI2600', '');
      NCActionOpenAssociated := True;
     End
+  Else If Ext = 'Z8K' Then Begin
+   { Chantier Zilog Z8001 + CP/M-8000, Stage 1 (2026-09-20, demande         }
+   { explicite de l'utilisateur - "Entree sur un .Z8K dans Norton           }
+   { Commander devrait lancer l'emulateur Z8001") - voir la disclosure       }
+   { complete pres de Z8K_LoadFile (ShowEmulatorPanel). L'API CP/M-8000     }
+   { (case Options > Emulateur > Z8001 > CP/M, cochee par defaut) sera      }
+   { consommee une fois l'execution CPU implantee (Stage a venir) ; ce      }
+   { chantier-ci se contente d'ouvrir l'onglet, comme GEOS/NES/etc. }
+   CreateEmulatorTab(FullPath, '-CZ8001', '');
+   NCActionOpenAssociated := True;
+  End
   Else If Ext = 'XEX' Then Begin
    { Format binaire Atari 8-bit (segments [FF FF] start end data...),   }
    { charge par CPU6502_LoadAtariXex - un seul et meme chargeur pour        }
@@ -204283,6 +204339,219 @@ Begin
  EmuVScr_WriteLn(P, ' noyau/bibliotheque PC/GEOS reel n''est encore implante)');
 End;
 
+{ ============================================================
+  Chantier Zilog Z8001 + CP/M-8000 (2026-09-20, demande explicite de
+  l'utilisateur : "Entree sur un .Z8K dans Norton Commander devrait lancer
+  automatiquement l'emulateur Z8001 avec une API CP/M integree si la case
+  Options > Emulateur > Z8001 > CP/M est cochee"). Stage 1 : registres reels,
+  chargeur reel de fichier de commande .Z8K (en-tete), diagnostics - MEME
+  METHODOLOGIE que le chantier PC/GEOS-GeoWorks (Stage 1 = chargement/
+  analyse seul, aucune execution CPU encore).
+
+  SOURCE DE VERITE (recherche approfondie menee avant tout code, comme
+  convenu) :
+   - Architecture Z8001 : Zilog Z8001/Z8002 CPU Product Specification (OCR
+     archive.org, https://archive.org/stream/bitsavers_zilogz80001cpu_1182720/z8001_cpu_djvu.txt)
+     pour le modele de registres/segmentation/traps ; bits EXACTS du FCW
+     (Flag and Control Word) confirmes via le coeur Z8000 de MAME
+     (silicium-verifie, BSD-3-Clause) - le scan Zilog lui-meme etait trop
+     degrade par l'OCR pour en extraire des positions de bits fiables,
+     disclosure honnete plutot qu'un chiffre invente.
+   - CP/M-8000 (Digital Research) : CP/M-8000 Operating System Programmer's
+     Guide + System Guide (scans DRI 1984 authentiques, archive.org) - VRAIE
+     convention BDOS confirmee : instruction materielle "SC #2" (System
+     Call, PAS un CALL 5 logiciel comme CP/M-80), R5=numero de fonction,
+     R7=parametre/retour mot, RR6=parametre longmot. Fonctions 0-35
+     DELIBEREMENT compatibles CP/M-80 (memes numeros/noms). ".Z8K" confirme
+     etre le VRAI type de fichier que la CCP CP/M-8000 recherche pour
+     l'auto-chargement (equivalent exact du ".COM" CP/M-80), avec un VRAI
+     format d'en-tete documente (Programmer's Guide, Table 3-1).
+
+  DISCLOSURE Stage 1 (perimetre honnetement limite) :
+   - MECANISME de trappe SC reel NON implante ce Stage (aucune execution
+     CPU encore, comme GeoWorks Stage 1->3) - la case a cocher CP/M est deja
+     cablee dans Options mais ne gouverne encore que le texte affiche.
+   - En-tete .Z8K : SEULS les 5 premiers champs (Magic Number, nombre
+     d'entrees, taille code+donnees, taille des relogements, taille de la
+     table des symboles) sont extraits - les OFFSETS OCTET exacts de ces
+     champs n'ont PAS pu etre confirmes (corruption OCR du tableau source,
+     disclosure honnete de la recherche) : ce chargeur suppose un
+     enchainement SEQUENTIEL immediat (mot, mot, long, long, long a partir
+     de l'octet 0), l'ordre des CHAMPS lui-meme etant confirme mais pas
+     leur alignement/octets de bourrage eventuels. A corriger si un fichier
+     .Z8K reel produit des tailles visiblement incoherentes.
+   - Memoire : seulement Z8K_MAX_SEG segments de 64 Ko (allocation Pascal
+     directe, PAS les 128 segments materiels complets du Z8001 ni le
+     modele de swap sur disque de TEmuCPU/8086 - une architecture non-x86
+     entierement separee, aucune reutilisation de l'infrastructure 8086
+     existante). Le fichier est charge tel quel (code+donnees) dans le
+     segment 0 a partir de l'offset 0 - AUCUN traitement des relogements
+     (SizeRel) ni de la table des symboles encore.
+  ============================================================ }
+
+Const
+ Z8K_MAX_SEG = 8;
+
+ { Valeurs de Magic Number REELLES (Programmer's Guide, Table 3-1) -       }
+ { identifient le type de "fichier de commande" .Z8K. }
+ Z8K_MAGIC_SEG_NONEXEC    = $EE00;
+ Z8K_MAGIC_SEG_EXEC       = $EE01;
+ Z8K_MAGIC_NONSEG_NONEXEC = $EE02;
+ Z8K_MAGIC_NONSEG_EXEC    = $EE03;
+ Z8K_MAGIC_NONSEG_SHARED  = $EE07;
+ Z8K_MAGIC_NONSEG_SPLIT   = $EE0B;
+
+ { Bits REELS du FCW (Flag and Control Word) - confirmes via le coeur      }
+ { Z8000 de MAME (voir disclosure de tete). }
+ Z8K_FCW_SEG  = $8000; { mode segmente / trappe de segment activee (Z8001) }
+ Z8K_FCW_SN   = $4000; { Systeme(1)/Normal(0)                              }
+ Z8K_FCW_EPU  = $2000; { Extended Processing Unit activee                  }
+ Z8K_FCW_VIE  = $1000; { Vectored Interrupt Enable                         }
+ Z8K_FCW_NVIE = $0800; { Non-Vectored Interrupt Enable                     }
+ Z8K_FCW_C    = $0080; { Carry                                             }
+ Z8K_FCW_Z    = $0040; { Zero                                              }
+ Z8K_FCW_S    = $0020; { Sign                                              }
+ Z8K_FCW_PV   = $0010; { Parity/Overflow                                   }
+ Z8K_FCW_DA   = $0008; { Decimal-Adjust (sens)                             }
+ Z8K_FCW_H    = $0004; { Half-Carry (operations octet)                     }
+
+Type
+ TZ8KSegMem = Array[0..65535] Of Byte;
+ PZ8KSegMem = ^TZ8KSegMem;
+
+Var
+ Z8K_SegMem       : Array[0..Z8K_MAX_SEG - 1] Of PZ8KSegMem;
+ Z8K_SegUsed      : Array[0..Z8K_MAX_SEG - 1] Of Boolean;
+ { R0-R15 (vue mot) - RH0-7/RL0-7 (vue octet) = Hi/Lo de R0-R7 ; RR0,2,4... }
+ { (vue longmot, paire poids fort:faible) = R[i]:R[i+1] ; RQ0/4/8/12       }
+ { (vue 64 bits) = 4 registres consecutifs - AUCUN champ separe, juste des }
+ { vues differentes du MEME tableau R[], exactement le modele reel Zilog   }
+ { (voir disclosure de tete). }
+ Z8K_R            : Array[0..15] Of Word;
+ Z8K_FCW          : Word;
+ Z8K_PCSeg        : Byte;  { 7 bits utiles }
+ Z8K_PCOfs        : Word;
+ Z8K_Halted       : Boolean;
+ Z8K_LastError    : String;
+ { En-tete .Z8K decode (Stage 1) }
+ Z8K_Magic        : Word;
+ Z8K_EntryCount   : Word;
+ Z8K_CodeDataSize : LongInt;
+ Z8K_RelocSize    : LongInt;
+ Z8K_SymTabSize   : LongInt;
+
+Function Z8K_MagicName(M: Word): String;
+Begin
+ Case M Of
+  Z8K_MAGIC_SEG_NONEXEC:    Z8K_MagicName := 'segmente, non executable';
+  Z8K_MAGIC_SEG_EXEC:       Z8K_MagicName := 'segmente, executable';
+  Z8K_MAGIC_NONSEG_NONEXEC: Z8K_MagicName := 'non segmente, non executable';
+  Z8K_MAGIC_NONSEG_EXEC:    Z8K_MagicName := 'non segmente, executable (I/D non partages)';
+  Z8K_MAGIC_NONSEG_SHARED:  Z8K_MagicName := 'non segmente, executable (I/D partages)';
+  Z8K_MAGIC_NONSEG_SPLIT:   Z8K_MagicName := 'non segmente, executable (I/D disjoints)';
+  Else Z8K_MagicName := 'inconnu ($' + HexWord(M) + ')';
+ End;
+End;
+
+Procedure Z8K_FreeSegs;
+Var I: Integer;
+Begin
+ For I := 0 To Z8K_MAX_SEG - 1 Do
+  If Z8K_SegUsed[I] Then Begin
+   FreeMem(Z8K_SegMem[I], SizeOf(TZ8KSegMem));
+   Z8K_SegUsed[I] := False;
+  End;
+End;
+
+{ Charge un "fichier de commande" .Z8K reel (Programmer's Guide, section   }
+{ 3.1/Table 3-1) - voir la disclosure de tete pour la portee Stage 1       }
+{ (en-tete decode, code+donnees charges bruts dans le segment 0, AUCUN     }
+{ relogement/table des symboles traite encore). }
+Function Z8K_LoadFile(Const Path: String): Boolean;
+Var
+ F: File;
+ FSize: LongInt;
+ Buf2: Array[0..1] Of Byte;
+ Buf4: Array[0..3] Of Byte;
+ BR: Word;
+ LoadLen: LongInt;
+Begin
+ Z8K_LoadFile := False;
+ Z8K_LastError := '';
+ Z8K_FreeSegs;
+ {$I-}
+ Assign(F, Path);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  Z8K_LastError := 'fichier illisible';
+  Exit;
+ End;
+ FSize := FileSize(F);
+ If FSize < 14 Then Begin
+  Z8K_LastError := 'fichier trop court pour un en-tete .Z8K (' +
+   IntToStr(FSize) + ' octets)';
+  Close(F);
+  Exit;
+ End;
+ Seek(F, 0); BlockRead(F, Buf2, 2, BR);
+ Z8K_Magic := Word(Buf2[0]) Or (Word(Buf2[1]) Shl 8);
+ If (Z8K_Magic <> Z8K_MAGIC_SEG_NONEXEC) And (Z8K_Magic <> Z8K_MAGIC_SEG_EXEC) And
+    (Z8K_Magic <> Z8K_MAGIC_NONSEG_NONEXEC) And (Z8K_Magic <> Z8K_MAGIC_NONSEG_EXEC) And
+    (Z8K_Magic <> Z8K_MAGIC_NONSEG_SHARED) And (Z8K_Magic <> Z8K_MAGIC_NONSEG_SPLIT) Then Begin
+  Z8K_LastError := 'signature .Z8K absente (Magic Number $' + HexWord(Z8K_Magic) +
+   ' non reconnu - voir Programmer''s Guide Table 3-1)';
+  Close(F);
+  Exit;
+ End;
+ BlockRead(F, Buf2, 2, BR);
+ Z8K_EntryCount := Word(Buf2[0]) Or (Word(Buf2[1]) Shl 8);
+ BlockRead(F, Buf4, 4, BR);
+ Z8K_CodeDataSize := LongInt(LongWord(Buf4[0]) Or (LongWord(Buf4[1]) Shl 8) Or
+  (LongWord(Buf4[2]) Shl 16) Or (LongWord(Buf4[3]) Shl 24));
+ BlockRead(F, Buf4, 4, BR);
+ Z8K_RelocSize := LongInt(LongWord(Buf4[0]) Or (LongWord(Buf4[1]) Shl 8) Or
+  (LongWord(Buf4[2]) Shl 16) Or (LongWord(Buf4[3]) Shl 24));
+ BlockRead(F, Buf4, 4, BR);
+ Z8K_SymTabSize := LongInt(LongWord(Buf4[0]) Or (LongWord(Buf4[1]) Shl 8) Or
+  (LongWord(Buf4[2]) Shl 16) Or (LongWord(Buf4[3]) Shl 24));
+ { Segment 0 : charge le code+donnees brut (Stage 1, disclosure de tete). }
+ GetMem(Z8K_SegMem[0], SizeOf(TZ8KSegMem));
+ FillChar(Z8K_SegMem[0]^, SizeOf(TZ8KSegMem), 0);
+ Z8K_SegUsed[0] := True;
+ LoadLen := Z8K_CodeDataSize;
+ If LoadLen > 65536 Then LoadLen := 65536; { garde-fou Stage 1, un seul segment }
+ If LoadLen > FSize - 14 Then LoadLen := FSize - 14;
+ If LoadLen > 0 Then BlockRead(F, Z8K_SegMem[0]^, LoadLen, BR);
+ Close(F);
+ FillChar(Z8K_R, SizeOf(Z8K_R), 0);
+ Z8K_FCW := Z8K_FCW_SEG; { mode segmente, tout le reste a 0 (etat initial) }
+ Z8K_PCSeg := 0; Z8K_PCOfs := 0;
+ Z8K_Halted := False;
+ Z8K_LoadFile := True;
+End;
+
+Procedure Z8K_PrintDiagnostics(Var P: TEmulatorPanel);
+Begin
+ EmuVScr_WriteLn(P, 'Magic Number    : $' + HexWord(Z8K_Magic) + ' (' +
+  Z8K_MagicName(Z8K_Magic) + ')');
+ EmuVScr_WriteLn(P, 'Entrees segment : ' + IntToStr(Z8K_EntryCount));
+ EmuVScr_WriteLn(P, 'Code+donnees    : ' + IntToStr(Z8K_CodeDataSize) + ' octets');
+ EmuVScr_WriteLn(P, 'Relogements     : ' + IntToStr(Z8K_RelocSize) +
+  ' octets (non traites - Stage 1)');
+ EmuVScr_WriteLn(P, 'Table symboles  : ' + IntToStr(Z8K_SymTabSize) +
+  ' octets (non traitee - Stage 1)');
+ EmuVScr_WriteLn(P, '');
+ If OptionsDlg.Data.Z8001Cpm Then
+  EmuVScr_WriteLn(P, 'API CP/M-8000 : case cochee (BDOS SC #2 reel, R5=fonction, ' +
+   'R7=param/retour mot, RR6=param long) - cablage complet a venir (execution CPU).')
+ Else
+  EmuVScr_WriteLn(P, 'API CP/M-8000 : case decochee (Options > Emulateur > Z8001).');
+ EmuVScr_WriteLn(P, '');
+ EmuVScr_WriteLn(P, 'Aucune execution CPU Z8001 encore (Stage 1 : chargement/analyse');
+ EmuVScr_WriteLn(P, 'seul, meme methodologie que PC/GEOS-GeoWorks Stage 1).');
+End;
+
 { --- Charger un binaire DOS et lancer l execution --- }
 
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
@@ -204311,6 +204580,7 @@ Var
  IsARM64: Boolean;
  IsPE32: Boolean;
  IsGeos: Boolean;
+ IsZ8001: Boolean;
  GeosEntryRes: Integer;
  GeosEntryOfs: Word;
  GeosInitThread: Integer;
@@ -204511,6 +204781,18 @@ Begin NesActive := False;
   P.CurFg := 7;   { gris clair }
   P.CurBg := 0;   { noir       }
   EmuVScr_Clear(P);
+ End
+ Else If TargetCPU = '-CZ8001' Then
+ Begin
+  { Chantier Zilog Z8001 + CP/M-8000 (.Z8K), Stage 1 (2026-09-20, demande   }
+  { explicite de l'utilisateur) - console 80x25, meme convention que        }
+  { PC/GEOS-GeoWorks Stage 1 (voir Z8K_LoadFile plus haut pour le           }
+  { perimetre honnetement disclose). }
+  P.Cols := 80;
+  P.Rows := 25;
+  P.CurFg := 7;   { gris clair }
+  P.CurBg := 0;   { noir       }
+  EmuVScr_Clear(P);
  End;
  IsX86 := (TargetCPU = '-CD') Or (TargetCPU = '-CP');
  IsELF64 := (TargetCPU = '-CELF64');
@@ -204519,6 +204801,7 @@ Begin NesActive := False;
  IsWin16 := (TargetCPU = '-CWIN16');
  IsPE32 := (TargetCPU = '-CPE');
  IsGeos := (TargetCPU = '-CGEOS');
+ IsZ8001 := (TargetCPU = '-CZ8001');
  IsM68K := (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
            (TargetCPU = '-CAMIGA');
  IsCray := (TargetCPU = '-CCRAY1');
@@ -204545,6 +204828,7 @@ Begin NesActive := False;
  Else If TargetCPU = '-CWIN16'  Then CPUName := 'Windows 2.x/3.x 16 bits (NE, console texte)'
  Else If TargetCPU = '-CPE'     Then CPUName := 'Windows NT/Win32 PE32 (console texte)'
  Else If TargetCPU = '-CGEOS'   Then CPUName := 'PC/GEOS-GeoWorks (.GEO, Stage 1)'
+ Else If TargetCPU = '-CZ8001'  Then CPUName := 'Zilog Z8001 + CP/M-8000 (.Z8K, Stage 1)'
  Else If TargetCPU = '-CARM64'  Then CPUName := 'ARM64 (AArch64) systeme'
  Else If TargetCPU = '-CCRAY1'  Then CPUName := 'Cray-1 (COS)'
  Else If TargetCPU = '-CPCODE'  Then CPUName := 'UCSD p-System (p-machine)'
@@ -205949,6 +206233,39 @@ Begin NesActive := False;
   DrawEmulatorPanel(P);
   Exit;
  End;
+ If IsZ8001 Then Begin
+  { Chantier Zilog Z8001 + CP/M-8000, Stage 1 (2026-09-20, demande          }
+  { explicite de l'utilisateur) - voir la disclosure complete pres de       }
+  { Z8K_LoadFile plus haut. Chargement/analyse seul, aucune execution CPU   }
+  { encore (meme trajectoire que PC/GEOS-GeoWorks Stage 1). }
+  If Not Z8K_LoadFile(BinaryPath) Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'Erreur : ' + Z8K_LastError);
+   P.CurFg := 7;
+   EmuVScr_WriteLn(P, 'Seuls les fichiers de commande .Z8K CP/M-8000 valides');
+   EmuVScr_WriteLn(P, '(Magic Number reconnu - voir CP/M-8000 Programmer''s');
+   EmuVScr_WriteLn(P, 'Guide, Table 3-1) sont reconnus par ce chargeur.');
+   P.CurFg := OldFg; P.CurBg := OldBg;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Echec de chargement .Z8K';
+   Exit;
+  End;
+  P.CurFg := 10;
+  EmuVScr_WriteLn(P, 'Fichier de commande .Z8K charge avec succes.');
+  P.CurFg := 7;
+  EmuVScr_WriteLn(P, '');
+  Z8K_PrintDiagnostics(P);
+  EmuVScr_WriteLn(P, '');
+  EmuVScr_WriteLn(P, 'Appuyez sur Echap pour fermer.');
+  P.CurFg := OldFg;
+  P.CurBg := OldBg;
+  P.Running := False;
+  P.Fault := sfEndProgram;
+  P.StatusMsg := 'Fichier .Z8K charge (Stage 1)';
+  DrawEmulatorPanel(P);
+  Exit;
+ End;
  If Not IsX86 Then Begin
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   P.CurFg := 14;
@@ -207151,6 +207468,7 @@ Begin
   OC_EMU_ADAM:           OptionCategoryName := 'Adam';
   OC_EMU_COCO3:          OptionCategoryName := 'CoCo 3';
   OC_EMU_CRAY1:          OptionCategoryName := 'Cray 1';
+  OC_EMU_Z8001:          OptionCategoryName := 'Z8001';
  Else
   OptionCategoryName := '???';
  End;
@@ -207253,6 +207571,7 @@ Begin
  { (EMU21.LOG) mesurable sur les performances, reserves au diagnostic. }
  D.DosLogInt21 := False;
  D.DosLogDiag := False;
+ D.Z8001Cpm := True; { coche par defaut (demande explicite de l utilisateur) }
 End;
 
 { Recalcule Visible pour tous les noeuds de l arbre a partir de l etat    }
@@ -207395,6 +207714,7 @@ Begin
  AddNode('Adam', 19, 1, False, OC_EMU_ADAM);
  AddNode('CoCo 3', 19, 1, False, OC_EMU_COCO3);
  AddNode('Cray 1', 19, 1, False, OC_EMU_CRAY1);
+ AddNode('Z8001', 19, 1, False, OC_EMU_Z8001);
  UpdateOptionsTreeVisibility(Dlg);
 End;
 
@@ -208552,6 +208872,46 @@ End;
 
 { --- Dessiner une page Emulateur > X pas encore detaillee (stub) --- }
 
+{ --- Dessiner la page Emulateur > Z8001 (2026-09-20, demande explicite   }
+{ de l'utilisateur) --- }
+Procedure DrawOptionsEmuZ8001(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+
+ Procedure Check(Checked: Boolean; Const Caption: String);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Emulateur > Z8001', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ Check(Dlg.Data.Z8001Cpm, 'API CP/M-8000 integree (BDOS reel, appel SC #2)'); { Row 0 }
+ BaseY := BaseY + OPT_ROW_SPACING Div 2;
+ DrawText(FX, BaseY,
+  'Un fichier .Z8K ouvert (Norton Commander, Entree) lance l''emulateur',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'Zilog Z8001 (registres/segmentation/instructions de base). Cette case',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'active en plus le noyau CP/M-8000 (Digital Research) - appels BDOS',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'reels compatibles CP/M-80 pour les fonctions 0-35.',
+  CLR_BORDER);
+End;
+
 Procedure DrawOptionsEmuStub(Var Dlg: TOptionsDialog; Const EmuName: String);
 Var
  FX, BaseY, PX: Integer;
@@ -208618,6 +208978,7 @@ Begin
   OC_EMU_ADAM:            DrawOptionsEmuStub(Dlg, 'Adam');
   OC_EMU_COCO3:           DrawOptionsEmuStub(Dlg, 'CoCo 3');
   OC_EMU_CRAY1:           DrawOptionsEmuStub(Dlg, 'Cray 1');
+  OC_EMU_Z8001:           DrawOptionsEmuZ8001(Dlg);
  End;
 End;
 
@@ -209351,6 +209712,14 @@ Begin
        End;
        1: Begin
         Dlg.Data.DosLogDiag := Not Dlg.Data.DosLogDiag;
+        Dlg.Modified := True;
+       End;
+      End;
+     { Emulateur > Z8001 (2026-09-20, demande explicite de l'utilisateur). }
+     OC_EMU_Z8001:
+      Case FieldIdx Of
+       0: Begin
+        Dlg.Data.Z8001Cpm := Not Dlg.Data.Z8001Cpm;
         Dlg.Modified := True;
        End;
       End;

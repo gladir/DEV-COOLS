@@ -254,10 +254,9 @@ Type
  TEditLine=Record Text:String;Next:PEditLine End;
 Var
  Head,Tail,P,Q,N:PEditLine;
- F:Text;
- S,Cmd,Arg,Answer:String;
- LineNo,Count,Code,I:Integer;
- Dirty,Done,Loaded:Boolean;
+ S,Cmd,Arg,Answer,LastCommand,LastSearch:String;
+ LineNo,CurrentLine,PageLength,Count,Code,I:Integer;
+ Dirty,Done,Loaded,PagedText:Boolean;
 
 Function LineAt(N:Integer):PEditLine;
 Var X:PEditLine;K:Integer;
@@ -312,19 +311,126 @@ Begin
  Tail:=Head;if Tail<>Nil Then While Tail^.Next<>Nil do Tail:=Tail^.Next;Dirty:=True
 End;
 
+Function FindText(Const Wanted:String;StartLine:Integer):Integer;
+Var X:PEditLine;K,Pass:Integer;U:String;
+Begin
+ FindText:=0;if Wanted=''Then Exit;U:=UpperString(Wanted);
+ For Pass:=0 to 1 do Begin
+  if Pass=0 Then K:=StartLine else K:=1;X:=LineAt(K);
+  While X<>Nil do Begin
+   if Pos(U,UpperString(X^.Text))<>0 Then Begin FindText:=K;Exit End;
+   X:=X^.Next;Inc(K)
+  End;
+  if StartLine<=1 Then Break
+ End
+End;
+
+Function ReplaceTextInLine(X:PEditLine;Const OldText,NewText:String;All:Boolean):Integer;
+Var At:Integer;UOld,UText:String;
+Begin
+ ReplaceTextInLine:=0;if(X=Nil)or(OldText='')Then Exit;
+ Repeat
+  UOld:=UpperString(OldText);UText:=UpperString(X^.Text);At:=Pos(UOld,UText);
+  if At=0 Then Break;
+  Delete(X^.Text,At,Length(OldText));Insert(NewText,X^.Text,At);
+  Inc(ReplaceTextInLine);Dirty:=True
+ Until not All
+End;
+
+Procedure MoveLines(First,Last,Destination:Integer);
+Var BeforeFirst,FirstNode,LastNode,AfterLast,BeforeDest:PEditLine;Moved:Integer;
+Begin
+ if(First<1)or(Last<First)or(Last>LineNo)or(Destination<0)or(Destination>LineNo)or
+  ((Destination>=First)and(Destination<=Last))Then Begin
+  WriteLn('Intervalle ou destination incorrect.');Exit
+ End;
+ if First=1 Then BeforeFirst:=Nil else BeforeFirst:=LineAt(First-1);
+ if BeforeFirst=Nil Then FirstNode:=Head else FirstNode:=BeforeFirst^.Next;
+ LastNode:=LineAt(Last);AfterLast:=LastNode^.Next;
+ if BeforeFirst=Nil Then Head:=AfterLast else BeforeFirst^.Next:=AfterLast;
+ Moved:=Last-First+1;
+ if Destination>Last Then Dec(Destination,Moved);
+ if Destination=0 Then Begin LastNode^.Next:=Head;Head:=FirstNode End
+ else Begin
+  BeforeDest:=LineAt(Destination);LastNode^.Next:=BeforeDest^.Next;
+  BeforeDest^.Next:=FirstNode
+ End;
+ Tail:=Head;if Tail<>Nil Then While Tail^.Next<>Nil do Tail:=Tail^.Next;
+ CurrentLine:=Destination+1;if CurrentLine>LineNo Then CurrentLine:=LineNo;Dirty:=True
+End;
+
+Function LoadTextFile(Const Name:String;InsertAt:Integer;ReplaceBuffer:Boolean):Boolean;
+Var BF:File;Size,Posi:LongInt;B,NextB:Byte;ReadCount:Word;Line:String;Run,K:Integer;
+ X,Old:PEditLine;LooksPaged:Boolean;
+Begin
+ LoadTextFile:=False;Assign(BF,Name);Reset(BF,1);if IOResult<>0 Then Exit;
+ Size:=FileSize(BF);LooksPaged:=(Size>=1024)and((Size mod 1024)=0);Posi:=0;
+ if LooksPaged Then Begin
+  { L'en-tete de la forme paginee est un bloc reserve contenant normalement
+    des NUL. Un premier bloc purement textuel reste un fichier hote normal. }
+  K:=0;While(K<1024)and(K<Size)do Begin
+   BlockRead(BF,B,1,ReadCount);if(ReadCount<>1)or(IOResult<>0)Then Break;
+   if B=0 Then Begin Posi:=1024;Break End;Inc(K)
+  End;Seek(BF,Posi);if IOResult<>0 Then Begin Close(BF);Exit End
+ End;
+ if ReplaceBuffer Then Begin
+  X:=Head;While X<>Nil do Begin Old:=X;X:=X^.Next;Dispose(Old) End;
+  Head:=Nil;Tail:=Nil;LineNo:=0;InsertAt:=0
+ End;
+ Line:='';Posi:=FilePos(BF);
+ While Posi<Size do Begin
+  BlockRead(BF,B,1,ReadCount);if(IOResult<>0)or(ReadCount<>1)Then Break;Inc(Posi);
+  if B=0 Then Continue;
+  if B=16 Then Begin
+   if Posi>=Size Then Break;BlockRead(BF,NextB,1,ReadCount);Inc(Posi);
+   if NextB>=32 Then Run:=NextB-32 else Run:=NextB;
+   For K:=1 to Run do if Length(Line)<255 Then Line:=Line+' '
+  End else if B=13 Then Begin
+   Inc(InsertAt);InsertLine(InsertAt,Line);Line:='';Dirty:=False
+  End else if B<>10 Then if Length(Line)<255 Then Line:=Line+Chr(B)
+ End;
+ if Line<>''Then Begin Inc(InsertAt);InsertLine(InsertAt,Line) End;
+ Close(BF);if IOResult<>0 Then Begin End;
+ PagedText:=LooksPaged and(Posi>=1024);Dirty:=False;LoadTextFile:=True
+End;
+
+Function WriteTextFile(Const Name:String;AsPaged:Boolean):Boolean;
+Var BF:File;X:PEditLine;B:Byte;W:Word;Position:LongInt;J,K,Run,TotalRun,Chunk:Integer;
+
+Procedure PutByte(V:Byte);Begin BlockWrite(BF,V,1,W);if(IOResult<>0)or(W<>1)Then Code:=1 End;
+Begin
+ WriteTextFile:=False;Assign(BF,Name);Rewrite(BF,1);if IOResult<>0 Then Exit;
+ Code:=0;Position:=0;
+ if AsPaged Then Begin B:=0;For J:=1 to 1024 do PutByte(B);Position:=1024 End;
+ X:=Head;
+ While(X<>Nil)and(Code=0)do Begin
+  J:=1;
+  While J<=Length(X^.Text)do Begin
+   if X^.Text[J]=' 'Then Begin
+    TotalRun:=0;While(J+TotalRun<=Length(X^.Text))and
+     (X^.Text[J+TotalRun]=' ')do Inc(TotalRun);Run:=TotalRun;
+    While Run>0 do Begin
+     Chunk:=Run;if Chunk>223 Then Chunk:=223;
+     if AsPaged and(Chunk>=3)Then Begin PutByte(16);PutByte(Chunk+32);Inc(Position,2) End
+     else Begin For K:=1 to Chunk do PutByte(32);Inc(Position,Chunk) End;
+     Dec(Run,Chunk)
+    End;Inc(J,TotalRun)
+   End else Begin PutByte(Ord(X^.Text[J]));Inc(Position);Inc(J) End
+  End;PutByte(13);Inc(Position);X:=X^.Next
+ End;
+ if AsPaged Then Begin B:=0;While(Position mod 1024<>0)and(Code=0)do Begin PutByte(B);Inc(Position) End End;
+ Close(BF);if(Code=0)and(IOResult=0)Then WriteTextFile:=True
+End;
+
 Function SaveFile:Boolean;
-Var X:PEditLine;E:Integer;HadCode:Boolean;
+Var E:Integer;HadCode:Boolean;
 Begin
  SaveFile:=False;
  if(UpperString(FExpand(WorkFile))=UpperString(FExpand(ResolveUCSDName('SYSTEM:SYSTEM.WRK.TEXT'))))and
  FileExists(WorkFile)Then if not CopyHostFile(WorkFile,'SYSTEM:SYSTEM.WRK.BACK')Then
    WriteLn('Avertissement: impossible de creer SYSTEM.WRK.BACK.');
  HadCode:=FileExists(AssociatedCodeName(WorkFile));
- Assign(F,WorkFile);Rewrite(F);E:=IOResult;if E<>0 Then Begin
-  WriteLn('Impossible de creer ',WorkFile,' (erreur ',E,').');Exit
- End;
- X:=Head;While X<>Nil do Begin WriteLn(F,X^.Text);E:=IOResult;if E<>0 Then Break;X:=X^.Next End;
- Close(F);if E=0 Then E:=IOResult;
+ if not WriteTextFile(WorkFile,PagedText)Then E:=1 else E:=0;
  if E<>0 Then WriteLn('Erreur d''ecriture ',E,'.')else Begin
   ProgramFile:=AssociatedCodeName(WorkFile);if HadCode Then RemoveHostFile(ProgramFile);
   Dirty:=False;SaveFile:=True;WriteLn(LineNo,' ligne(s) sauvegardee(s).');
@@ -334,59 +440,142 @@ End;
 
 Procedure EditorHelp;
 Begin
- WriteLn('L [ligne] [nombre]  Lister le texte');
+ WriteLn('B / E                Aller au debut / a la fin du tampon');
+ WriteLn('L [ligne] [nombre]  Lister une page du texte');
  WriteLn('I ligne texte        Inserer avant une ligne');
  WriteLn('A texte              Ajouter une ligne a la fin');
- WriteLn('R ligne texte        Remplacer une ligne');
+ WriteLn('C ligne texte        Changer une ligne');
  WriteLn('D ligne [nombre]     Supprimer une ou plusieurs lignes');
- WriteLn('F texte              Rechercher du texte');
- WriteLn('W                    Sauvegarder');
- WriteLn('Q                    Quitter (Q! abandonne les changements)');
+ WriteLn('F texte / N          Rechercher / repeter la recherche');
+ WriteLn('X ancien|nouveau [A] Echanger une occurrence ou toutes');
+ WriteLn('M debut fin apres    Deplacer un groupe de lignes');
+ WriteLn('R fichier            Lire et inserer un autre fichier');
+ WriteLn('W [fichier]          Ecrire sans quitter');
+ WriteLn('U                    Update: ecrire le travail et quitter');
+ WriteLn('V                    Mode plein ecran SYSTEM.EDITOR');
+ WriteLn('S PAGED ON|OFF       Format texte UCSD pagine ou fichier hote');
+ WriteLn('=                    Repeter la derniere commande');
+ WriteLn('Q / Q!               Quitter / abandonner les changements');
  WriteLn('?                    Afficher cette aide')
+End;
+
+Procedure FullScreenEditor;
+Var Key:Char;Top,Rows,K:Integer;X:PEditLine;T,InputLine:String;
+
+Procedure Paint;
+Begin
+ Write(#27'[2J'#27'[H');Rows:=21;
+ Top:=CurrentLine-Rows div 2;if Top<1 Then Top:=1;X:=LineAt(Top);K:=Top;
+ While(X<>Nil)and(K<Top+Rows)do Begin
+  if K=CurrentLine Then Write('>')else Write(' ');
+  WriteLn(K:5,' ',Copy(X^.Text,1,73));X:=X^.Next;Inc(K)
+ End;
+ While K<Top+Rows do Begin WriteLn;Inc(K) End;
+ WriteLn('SYSTEM.EDITOR ',CurrentLine,'/',LineNo,
+  '  U/D/P+/P- E/I/A/X F W UPDATE Q');
+ Write('Ecran> ')
+End;
+
+Procedure PromptBottom(Const LabelText:String;Var Value:String);
+Begin Write(LabelText);ReadLn(Value) End;
+Begin
+ if LineNo=0 Then Begin InsertLine(1,'');Dirty:=False End;
+ if CurrentLine<1 Then CurrentLine:=1;Paint;
+ Repeat
+  ReadLn(InputLine);InputLine:=UpperString(TrimString(InputLine));Key:=#0;
+  if InputLine<>''Then Key:=InputLine[1];
+  if InputLine='UPDATE'Then Begin if SaveFile Then Begin Done:=True;Key:=#27 End End
+  else if(InputLine='U')or(InputLine='UP')Then Begin if CurrentLine>1 Then Dec(CurrentLine);Key:=#0 End
+  else if(InputLine='D')or(InputLine='DOWN')Then Begin
+   if CurrentLine<LineNo Then Inc(CurrentLine);Key:=#0
+  End else if(InputLine='P-')or(InputLine='PGUP')Then Begin
+   Dec(CurrentLine,PageLength);if CurrentLine<1 Then CurrentLine:=1;Key:=#0
+  End else if(InputLine='P+')or(InputLine='PGDN')Then Begin
+   Inc(CurrentLine,PageLength);if CurrentLine>LineNo Then CurrentLine:=LineNo;Key:=#0
+  End else Case UpCase(Key)of
+  'E':Begin T:=LineAt(CurrentLine)^.Text;PromptBottom('Ligne: ',T);
+       LineAt(CurrentLine)^.Text:=T;Dirty:=True End;
+  'I':Begin T:='';PromptBottom('Inserer: ',T);InsertLine(CurrentLine,T) End;
+  'A':Begin T:='';PromptBottom('Ajouter: ',T);InsertLine(CurrentLine+1,T);Inc(CurrentLine) End;
+  'X':Begin DeleteLines(CurrentLine,1);if CurrentLine>LineNo Then CurrentLine:=LineNo End;
+  'F':Begin T:=LastSearch;PromptBottom('Chercher: ',T);if T<>''Then Begin
+        LastSearch:=T;K:=FindText(T,CurrentLine+1);if K<>0 Then CurrentLine:=K End End;
+  'W':SaveFile;
+  'Q':Key:=#27;
+  End;
+  if Key<>#27 Then Paint
+ Until Key=#27;Write(#27'[2J'#27'[H')
 End;
 Begin
  if WorkFile=''Then AskFile('Fichier a editer',WorkFile);if WorkFile=''Then Exit;
- Head:=Nil;Tail:=Nil;LineNo:=0;Dirty:=False;Loaded:=False;
- Assign(F,WorkFile);Reset(F);
- if IOResult=0 Then Begin
-  Loaded:=True;
-  While not Eof(F)do Begin ReadLn(F,S);Code:=IOResult;if Code<>0 Then Break;
-   New(P);P^.Text:=S;P^.Next:=Nil;if Head=Nil Then Head:=P else Tail^.Next:=P;
-   Tail:=P;Inc(LineNo)
-  End;Close(F);Code:=IOResult;
-  if Code<>0 Then WriteLn('Avertissement: lecture incomplete du fichier.')
- End;
+ Head:=Nil;Tail:=Nil;LineNo:=0;CurrentLine:=1;PageLength:=20;Dirty:=False;
+ Loaded:=False;PagedText:=False;LastCommand:='';LastSearch:='';
+ if FileExists(WorkFile)Then Loaded:=LoadTextFile(WorkFile,0,True);
  if Loaded Then WriteLn(LineNo,' ligne(s) chargee(s).')
  else WriteLn('Nouveau fichier: ',WorkFile);
  EditorHelp;Done:=False;
  Repeat
   Write('Edit> ');ReadLn(S);S:=LeftTrim(S);if S=''Then Continue;
+  if S='='Then S:=LastCommand else LastCommand:=S;
   SplitCommand(S,Cmd,Arg);
   if(Cmd='?')or(Cmd='H')Then EditorHelp
   else if Cmd='L'Then Begin
-   I:=ReadNumber(Arg,1);Count:=ReadNumber(Arg,20);
-   if I<1 Then WriteLn('Numero de ligne incorrect.')else ShowLines(I,Count)
+   I:=ReadNumber(Arg,CurrentLine);Count:=ReadNumber(Arg,PageLength);
+   if I<1 Then WriteLn('Numero de ligne incorrect.')else Begin
+    CurrentLine:=I;ShowLines(I,Count) End
   End
+  else if Cmd='B'Then Begin CurrentLine:=1;ShowLines(CurrentLine,PageLength) End
+  else if Cmd='E'Then Begin CurrentLine:=LineNo;ShowLines(CurrentLine,1) End
   else if Cmd='I'Then Begin
    I:=ReadNumber(Arg,-1);if I<1 Then WriteLn('Syntaxe: I ligne texte')
    else InsertLine(I,Arg)
   End
   else if Cmd='A'Then InsertLine(LineNo+1,Arg)
-  else if Cmd='R'Then Begin
+  else if Cmd='C'Then Begin
    I:=ReadNumber(Arg,-1);P:=LineAt(I);if P=Nil Then WriteLn('Ligne inexistante.')
-   else Begin P^.Text:=Arg;Dirty:=True End
+   else Begin P^.Text:=Arg;CurrentLine:=I;Dirty:=True End
   End
   else if Cmd='D'Then Begin
    I:=ReadNumber(Arg,-1);Count:=ReadNumber(Arg,1);
    if(I<1)or(LineAt(I)=Nil)Then WriteLn('Ligne inexistante.')else DeleteLines(I,Count)
   End
   else if Cmd='F'Then Begin
-   P:=Head;I:=1;Count:=0;
-   While P<>Nil do Begin if Pos(UpperString(Arg),UpperString(P^.Text))<>0 Then Begin
-    WriteLn(I:5,'  ',P^.Text);Inc(Count) End;P:=P^.Next;Inc(I) End;
-   WriteLn(Count,' occurrence(s).')
+   if Arg<>''Then LastSearch:=Arg;I:=FindText(LastSearch,CurrentLine+1);
+   if I=0 Then WriteLn('Texte introuvable.')else Begin CurrentLine:=I;ShowLines(I,1) End
   End
-  else if Cmd='W'Then Begin if SaveFile Then ProgramFile:=AssociatedCodeName(WorkFile) End
+  else if Cmd='N'Then Begin I:=FindText(LastSearch,CurrentLine+1);
+   if I=0 Then WriteLn('Texte introuvable.')else Begin CurrentLine:=I;ShowLines(I,1) End End
+  else if Cmd='X'Then Begin
+   I:=Pos('|',Arg);if I=0 Then WriteLn('Syntaxe: X ancien|nouveau [A]')else Begin
+    S:=Copy(Arg,1,I-1);Answer:=Copy(Arg,I+1,255);Count:=0;
+    if(Length(Answer)>=2)and(UpperString(Copy(Answer,Length(Answer)-1,2))=' A')Then Begin
+     Delete(Answer,Length(Answer)-1,2);P:=Head;
+     While P<>Nil do Begin Inc(Count,ReplaceTextInLine(P,S,Answer,True));P:=P^.Next End
+    End else Count:=ReplaceTextInLine(LineAt(CurrentLine),S,Answer,False);
+    WriteLn(Count,' echange(s).')
+   End
+  End
+  else if Cmd='M'Then Begin I:=ReadNumber(Arg,-1);Count:=ReadNumber(Arg,-1);
+   Code:=ReadNumber(Arg,-1);MoveLines(I,Count,Code) End
+  else if Cmd='R'Then Begin
+   Arg:=TrimString(Arg);if Arg=''Then WriteLn('Syntaxe: R fichier')
+   else if LoadTextFile(ResolveUCSDName(Arg),CurrentLine,False)Then Begin
+    Dirty:=True;WriteLn('Fichier insere.') End else WriteLn('Lecture impossible.')
+  End
+  else if Cmd='W'Then Begin
+   Arg:=TrimString(Arg);
+   if Arg=''Then Begin if SaveFile Then ProgramFile:=AssociatedCodeName(WorkFile) End
+   else if WriteTextFile(ResolveUCSDName(Arg),PagedText)Then WriteLn('Fichier ecrit.')
+   else WriteLn('Ecriture impossible.')
+  End
+  else if Cmd='U'Then Begin if SaveFile Then Done:=True End
+  else if Cmd='V'Then FullScreenEditor
+  else if Cmd='S'Then Begin
+   Arg:=UpperString(TrimString(Arg));
+   if(Arg='PAGED ON')or(Arg='PAGE ON')Then PagedText:=True
+   else if(Arg='PAGED OFF')or(Arg='PAGE OFF')Then PagedText:=False
+   else WriteLn('Syntaxe: S PAGED ON|OFF')
+  End
   else if Cmd='Q!'Then Done:=True
   else if Cmd='Q'Then Begin
    if Dirty Then Begin Write('Sauvegarder les changements (O/N/Annuler) ? ');ReadLn(Answer);
