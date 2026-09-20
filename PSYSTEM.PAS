@@ -16,13 +16,17 @@ Const
  MSCW_STATIC=0;MSCW_DYNAMIC=1;MSCW_IPC=2;MSCW_ENV=3;MSCW_PROC=4;
  FIB_HANDLE=0;FIB_WINDOW=1;FIB_FLAGS=2;FIB_RECSIZE=3;FIB_ERROR=4;
  FIB_POSLOW=5;FIB_POSHIGH=6;FIB_UNIT=7;FIB_WORDS=8;
+ IOE_BAD_ADDRESS=4;IOE_BAD_UNIT=9;IOE_NO_MEDIA=10;IOE_WRITE_PROTECTED=11;
+ IOE_MEDIA_CHANGED=12;IOE_END_OF_FILE=100;IOE_WRITE_ERROR=101;
 
 Type
  TPSYSTEMTarget=(ptAppleHeath,ptUCSDPascalII,ptUCSDPSystemIII,ptUCSDPSystemIV);
  TPSYSTEMBatchMode=(pbNone,pbCompile,pbRun);
  TVolumeKind=(vkNone,vkConsole,vkDisk,vkPrinter,vkRemoteIn,vkRemoteOut);
  TVolumeEntry=Record
-  UnitNo:Byte;Name,HostPath:String;Kind:TVolumeKind;Online,BlockDevice:Boolean
+  UnitNo:Word;Name,HostPath,DriverName:String;Kind:TVolumeKind;
+  Online,BlockDevice,Removable,MediaChanged,ReadOnly:Boolean;
+  StreamPosition,MediaStamp:LongInt
  End;
  TSingleBits=Record Case Boolean of False:(S:Single);
  True:(L:LongInt)
@@ -30,8 +34,9 @@ End;
 
 Var
  WorkFile,ProgramFile,WorkTitle,FilerPrefix,FilerRoot,FilerDate:String;
- Volumes:Array[1..12]of TVolumeEntry;
+ Volumes:Array[1..256]of TVolumeEntry;
  VolumeCount:Integer;
+ VolumeConfigChanged:Boolean;
  Finished:Boolean;
  CurrentTarget:TPSYSTEMTarget;
  OriginalErrors:Boolean;
@@ -123,6 +128,32 @@ Begin
  else JoinPath:=A+'\'+B
 End;
 
+Function HostEntryInfo(Const Name:String;Var IsDirectory:Boolean;Var Stamp:LongInt):Boolean;
+Var Info:SearchRec;
+Begin
+ FindFirst(Name,AnyFile,Info);HostEntryInfo:=DosError=0;
+ if HostEntryInfo Then Begin
+  IsDirectory:=(Info.Attr and Directory)<>0;Stamp:=Info.Time xor Info.Size
+ End else Begin IsDirectory:=False;Stamp:=0 End
+End;
+
+Function VolumeKindName(K:TVolumeKind):String;
+Begin
+ Case K of
+  vkConsole:VolumeKindName:='CONSOLE';vkDisk:VolumeKindName:='DISK';
+  vkPrinter:VolumeKindName:='PRINTER';vkRemoteIn:VolumeKindName:='REMIN';
+  vkRemoteOut:VolumeKindName:='REMOUT';else VolumeKindName:='NONE'
+ End
+End;
+
+Function ParseVolumeKind(S:String;Var K:TVolumeKind):Boolean;
+Begin
+ S:=UpperString(TrimString(S));ParseVolumeKind:=True;
+ if S='CONSOLE'Then K:=vkConsole else if S='DISK'Then K:=vkDisk
+ else if S='PRINTER'Then K:=vkPrinter else if S='REMIN'Then K:=vkRemoteIn
+ else if S='REMOUT'Then K:=vkRemoteOut else Begin K:=vkNone;ParseVolumeKind:=False End
+End;
+
 Function FindVolume(Const Spec:String):Integer;
 Var I,E,N:Integer;U:String;
 Begin
@@ -142,9 +173,12 @@ Begin
  if(U='CONSOLE:')or(U='CONSOLE')or(U='SYSTERM:')or(U='SYSTERM')Then Begin
   ResolveUCSDName:='CON';Exit
  End;
- if(U='PRINTER:')or(U='PRINTER')Then Begin ResolveUCSDName:='PRN';Exit End;
- if(U='REMIN:')or(U='REMIN')Then Begin ResolveUCSDName:='SYSTEM.REMIN';Exit End;
- if(U='REMOUT:')or(U='REMOUT')Then Begin ResolveUCSDName:='SYSTEM.REMOUT';Exit End;
+ if(U='PRINTER:')or(U='PRINTER')Then Begin V:=FindVolume('PRINTER');
+  if V<>0 Then ResolveUCSDName:=Volumes[V].HostPath else ResolveUCSDName:='SYSTEM.PRINTER';Exit End;
+ if(U='REMIN:')or(U='REMIN')Then Begin V:=FindVolume('REMIN');
+  if V<>0 Then ResolveUCSDName:=Volumes[V].HostPath else ResolveUCSDName:='SYSTEM.REMIN';Exit End;
+ if(U='REMOUT:')or(U='REMOUT')Then Begin V:=FindVolume('REMOUT');
+  if V<>0 Then ResolveUCSDName:=Volumes[V].HostPath else ResolveUCSDName:='SYSTEM.REMOUT';Exit End;
  { Un nom DOS X:\... n'est pas un identificateur de volume UCSD. }
  if(Length(S)>=3)and(S[2]=':')and(S[1]in['A'..'Z','a'..'z'])and(S[3]in['\','/'])Then Begin
   ResolveUCSDName:=S;Exit
@@ -165,43 +199,173 @@ Begin
  End
 End;
 
-Procedure AddVolume(UnitNo:Byte;Const Name,HostPath:String;Kind:TVolumeKind;BlockDevice:Boolean);
-Var Info:SearchRec;
+Procedure SaveMiscInfo;Forward;
+Function NextField(Var S:String):String;Forward;
+
+Function NextComma(Var S:String):String;
+Var P:Integer;
+Begin P:=Pos(',',S);if P=0 Then Begin NextComma:=S;S:='' End
+ else Begin NextComma:=Copy(S,1,P-1);Delete(S,1,P) End
+End;
+
+Procedure AddVolume(UnitNo:Word;Const Name,HostPath:String;Kind:TVolumeKind;BlockDevice:Boolean);
+Var I:Integer;IsDir:Boolean;Stamp:LongInt;
 Begin
- if VolumeCount>=High(Volumes)Then Exit;Inc(VolumeCount);Volumes[VolumeCount].UnitNo:=UnitNo;
- Volumes[VolumeCount].Name:=UpperString(Name);Volumes[VolumeCount].HostPath:=HostPath;
- Volumes[VolumeCount].Kind:=Kind;Volumes[VolumeCount].BlockDevice:=BlockDevice;
+ I:=1;while(I<=VolumeCount)and(Volumes[I].UnitNo<>UnitNo)do Inc(I);
+ if I>VolumeCount Then Begin if VolumeCount>=High(Volumes)Then Exit;Inc(VolumeCount);I:=VolumeCount End;
+ FillChar(Volumes[I],SizeOf(Volumes[I]),0);Volumes[I].UnitNo:=UnitNo;
+ Volumes[I].Name:=UpperString(Name);Volumes[I].HostPath:=HostPath;
+ Volumes[I].Kind:=Kind;Volumes[I].BlockDevice:=BlockDevice;
+ Volumes[I].DriverName:='GENERIC';Volumes[I].StreamPosition:=0;
  if Kind=vkDisk Then Begin
-  FindFirst(HostPath,Directory,Info);
-  Volumes[VolumeCount].Online:=(DosError=0)and((Info.Attr and Directory)<>0)
- End else Volumes[VolumeCount].Online:=True
+  Volumes[I].Online:=HostEntryInfo(HostPath,IsDir,Stamp);
+  Volumes[I].BlockDevice:=Volumes[I].Online and not IsDir;Volumes[I].MediaStamp:=Stamp
+ End else Volumes[I].Online:=True
+End;
+
+Procedure ApplyTargetDrivers;
+Var I:Integer;D:String;
+Begin
+ Case CurrentTarget of
+  ptAppleHeath:D:='APPLE-SBIOS';ptUCSDPascalII:D:='UCSD-II-SBIOS';
+  ptUCSDPSystemIII:D:='UCSD-III-SBIOS';else D:='UCSD-IV-SBIOS'
+ End;
+ For I:=1 to VolumeCount do if Volumes[I].UnitNo<128 Then Volumes[I].DriverName:=D
+ else if Volumes[I].DriverName=''Then Volumes[I].DriverName:='USER'
+End;
+
+Function ConfigureDevice(S:String):Boolean;
+Var P,E,N,V:Integer;U,R,Nm,Ks,Path,Flag:String;K:TVolumeKind;IsDir:Boolean;Stamp:LongInt;
+Begin
+ ConfigureDevice:=False;P:=Pos('=',S);if P=0 Then Exit;U:=Copy(S,1,P-1);
+ if(U<>'')and(U[1]='#')Then Delete(U,1,1);Val(U,N,E);
+ if(E<>0)or(N<128)or(N>255)Then Exit;R:=Copy(S,P+1,255);
+ Nm:=NextComma(R);Ks:=NextComma(R);Path:=NextComma(R);
+ if(Nm='')or not ParseVolumeKind(Ks,K)Then Exit;
+ if Path=''Then Begin if K=vkConsole Then Path:='CON'else Exit End;
+ if K=vkDisk Then Begin Path:=FExpand(Path);if not HostEntryInfo(Path,IsDir,Stamp)Then Exit End;
+ AddVolume(N,Nm,Path,K,(K=vkDisk)and not IsDir);V:=FindVolume('#'+U);if V=0 Then Exit;
+ Volumes[V].DriverName:='USER';
+ while R<>''do Begin Flag:=UpperString(NextComma(R));
+  if Flag='REMOVABLE'Then Volumes[V].Removable:=True
+  else if(Flag='RO')or(Flag='READONLY')Then Volumes[V].ReadOnly:=True
+  else if Copy(Flag,1,7)='DRIVER='Then Volumes[V].DriverName:=Copy(Flag,8,255)
+ End;
+ VolumeConfigChanged:=True;SaveMiscInfo;ConfigureDevice:=True
+End;
+
+Function RefreshMedia(V:Integer):Integer;
+Var IsDir:Boolean;Stamp:LongInt;Exists:Boolean;
+Begin
+ RefreshMedia:=0;if(V<1)or(V>VolumeCount)Then Begin RefreshMedia:=9;Exit End;
+ if Volumes[V].Kind<>vkDisk Then Exit;Exists:=HostEntryInfo(Volumes[V].HostPath,IsDir,Stamp);
+ if not Exists Then Begin Volumes[V].Online:=False;RefreshMedia:=IOE_NO_MEDIA;Exit End;
+ if Volumes[V].Removable and Volumes[V].Online and(Volumes[V].MediaStamp<>0)and
+  (Volumes[V].MediaStamp<>Stamp)Then Begin
+  Volumes[V].MediaStamp:=Stamp;Volumes[V].MediaChanged:=True;RefreshMedia:=IOE_MEDIA_CHANGED;Exit
+ End;
+ Volumes[V].Online:=True;Volumes[V].MediaStamp:=Stamp
+End;
+
+Function MiscInfoName:String;
+Var V:Integer;
+Begin
+ V:=FindVolume('SYSTEM');
+ if(V<>0)and(Volumes[V].Kind=vkDisk)and not Volumes[V].BlockDevice Then
+  MiscInfoName:=JoinPath(Volumes[V].HostPath,'SYSTEM.MISCINFO')
+ else MiscInfoName:='SYSTEM.MISCINFO'
+End;
+
+Procedure SaveMiscInfo;
+Var T:Text;I:Integer;
+Begin
+ if not VolumeConfigChanged Then Exit;Assign(T,MiscInfoName);Rewrite(T);
+ if IOResult<>0 Then Exit;WriteLn(T,'PSYSTEM-MISCINFO 1');WriteLn(T,'PREFIX=',FilerPrefix);
+ WriteLn(T,'ROOT=',FilerRoot);
+ For I:=1 to VolumeCount do WriteLn(T,'UNIT=',Volumes[I].UnitNo,'|',Volumes[I].Name,'|',
+  VolumeKindName(Volumes[I].Kind),'|',Volumes[I].HostPath,'|',Ord(Volumes[I].BlockDevice),'|',
+  Ord(Volumes[I].Removable),'|',Ord(Volumes[I].ReadOnly),'|',Volumes[I].DriverName);
+ Close(T);if IOResult=0 Then VolumeConfigChanged:=False
+End;
+
+Function NextField(Var S:String):String;
+Var P:Integer;
+Begin P:=Pos('|',S);if P=0 Then Begin NextField:=S;S:='' End
+ else Begin NextField:=Copy(S,1,P-1);Delete(S,1,P);End End;
+
+Procedure LoadMiscInfo;
+Var T:Text;L,R,Nm,Ks,Path,Ds:String;E,N:Integer;K:TVolumeKind;V:Integer;
+Begin
+ Assign(T,MiscInfoName);Reset(T);if IOResult<>0 Then Exit;
+ while not Eof(T)do Begin ReadLn(T,L);if IOResult<>0 Then Break;
+  if Copy(UpperString(L),1,7)='PREFIX='Then FilerPrefix:=Copy(L,8,255)
+  else if Copy(UpperString(L),1,5)='ROOT='Then FilerRoot:=Copy(L,6,255)
+  else if Copy(UpperString(L),1,5)='UNIT='Then Begin
+   R:=Copy(L,6,255);Ds:=NextField(R);Val(Ds,N,E);Nm:=NextField(R);Ks:=NextField(R);
+   Path:=NextField(R);if(E=0)and(N>=0)and(N<=255)and ParseVolumeKind(Ks,K)Then Begin
+    AddVolume(N,Nm,Path,K,False);V:=FindVolume('#'+Ds);
+    if V<>0 Then Begin NextField(R);Ds:=NextField(R);Volumes[V].Removable:=Ds='1';
+     Ds:=NextField(R);Volumes[V].ReadOnly:=Ds='1';Ds:=NextField(R);
+     if Ds<>''Then Volumes[V].DriverName:=Ds
+    End
+   End
+  End
+ End;Close(T);if IOResult<>0 Then Begin End;VolumeConfigChanged:=False
 End;
 
 Procedure InitializeVolumes;
-Var P,P4,P5,P9:String;
+Var P,P4,P5,P9,PIn,POut,PPrint:String;
 Begin
- VolumeCount:=0;GetDir(0,P);FilerRoot:=P;
+ VolumeCount:=0;VolumeConfigChanged:=False;GetDir(0,P);FilerRoot:='SYSTEM';
  P4:=GetEnv('PSYSTEM_VOLUME4');if P4=''Then P4:=P;
  P5:=GetEnv('PSYSTEM_VOLUME5');if P5=''Then P5:=P;
  P9:=GetEnv('PSYSTEM_VOLUME9');if P9=''Then P9:=JoinPath(P,'RAMDISK');
+ PIn:=GetEnv('PSYSTEM_REMIN');if PIn=''Then PIn:=JoinPath(P,'SYSTEM.REMIN');
+ POut:=GetEnv('PSYSTEM_REMOUT');if POut=''Then POut:=JoinPath(P,'SYSTEM.REMOUT');
+ PPrint:=GetEnv('PSYSTEM_PRINTER');if PPrint=''Then PPrint:=JoinPath(P,'SYSTEM.PRINTER');
  AddVolume(1,'CONSOLE','CON',vkConsole,False);AddVolume(2,'SYSTERM','CON',vkConsole,False);
  AddVolume(4,'SYSTEM',P4,vkDisk,True);AddVolume(5,'WORK',P5,vkDisk,True);
- AddVolume(6,'PRINTER','PRN',vkPrinter,False);
- AddVolume(7,'REMIN',JoinPath(P,'SYSTEM.REMIN'),vkRemoteIn,False);
- AddVolume(8,'REMOUT',JoinPath(P,'SYSTEM.REMOUT'),vkRemoteOut,False);
+ AddVolume(6,'PRINTER',PPrint,vkPrinter,False);
+ AddVolume(7,'REMIN',PIn,vkRemoteIn,False);AddVolume(8,'REMOUT',POut,vkRemoteOut,False);
  AddVolume(9,'RAM',P9,vkDisk,True);
- FilerPrefix:='SYSTEM'
+ FilerPrefix:='SYSTEM';LoadMiscInfo
 End;
 
 Function ConfigureVolume(S:String):Boolean;
-Var P,E,N,V:Integer;U,Path:String;Info:SearchRec;
+Var P,E,N,V:Integer;U,Path:String;IsDir:Boolean;Stamp:LongInt;
 Begin
  ConfigureVolume:=False;P:=Pos('=',S);if P=0 Then Exit;
  U:=Copy(S,1,P-1);Path:=Copy(S,P+1,255);if(U<>'')and(U[1]='#')Then Delete(U,1,1);
- Val(U,N,E);if(E<>0)or(N<0)or(N>127)or(Path='')Then Exit;V:=FindVolume('#'+U);if V=0 Then Exit;
- if Volumes[V].Kind<>vkDisk Then Exit;Volumes[V].HostPath:=FExpand(Path);
- FindFirst(Volumes[V].HostPath,Directory,Info);
- Volumes[V].Online:=(DosError=0)and((Info.Attr and Directory)<>0);ConfigureVolume:=Volumes[V].Online
+ Val(U,N,E);if(E<>0)or(N<0)or(N>127)or(Path='')Then Exit;Path:=FExpand(Path);
+ if not HostEntryInfo(Path,IsDir,Stamp)Then Exit;V:=FindVolume('#'+U);
+ if V=0 Then Begin AddVolume(N,'VOL'+U,Path,vkDisk,not IsDir);V:=FindVolume('#'+U) End;
+ if(V=0)or(Volumes[V].Kind<>vkDisk)Then Exit;Volumes[V].HostPath:=Path;
+ Volumes[V].Online:=True;Volumes[V].BlockDevice:=not IsDir;Volumes[V].MediaStamp:=Stamp;
+ Volumes[V].MediaChanged:=False;VolumeConfigChanged:=True;SaveMiscInfo;ConfigureVolume:=True
+End;
+
+Function SetRootVolume(S:String):Boolean;
+Var V,E,N:Integer;
+Begin
+ if(S<>'')and(S[Length(S)]=':')Then Delete(S,Length(S),1);V:=FindVolume(S);
+ if V=0 Then Begin Val(S,N,E);if E=0 Then V:=FindVolume('#'+S) End;
+ SetRootVolume:=(V<>0)and(Volumes[V].Kind=vkDisk)and Volumes[V].Online;
+ if SetRootVolume Then Begin FilerRoot:=Volumes[V].Name;VolumeConfigChanged:=True;SaveMiscInfo End
+End;
+
+Function ChangeMedia(S:String;Eject:Boolean):Boolean;
+Var P,V:Integer;Spec,Path:String;IsDir:Boolean;Stamp:LongInt;
+Begin
+ ChangeMedia:=False;P:=Pos('=',S);
+ if Eject Then Spec:=S else Begin if P=0 Then Exit;Spec:=Copy(S,1,P-1);Path:=Copy(S,P+1,255) End;
+ V:=FindVolume(Spec);if(V=0)or(Volumes[V].Kind<>vkDisk)or not Volumes[V].Removable Then Exit;
+ if Eject Then Begin Volumes[V].Online:=False;Volumes[V].MediaChanged:=True;
+  Volumes[V].StreamPosition:=0
+ End else Begin Path:=FExpand(Path);if not HostEntryInfo(Path,IsDir,Stamp)Then Exit;
+  Volumes[V].HostPath:=Path;Volumes[V].BlockDevice:=not IsDir;Volumes[V].Online:=True;
+  Volumes[V].MediaStamp:=Stamp;Volumes[V].MediaChanged:=True;Volumes[V].StreamPosition:=0
+ End;
+ VolumeConfigChanged:=True;SaveMiscInfo;ChangeMedia:=True
 End;
 
 Function AssociatedCodeName(Const Name:String):String;
@@ -1526,28 +1690,40 @@ Var I,V,E:Integer;C:Char;F:File;N:Word;B:Byte;Offset:LongInt;
 Begin
  E:=0;V:=PCode_UnitIndex(UnitNo);
  if(ByteCount<0)or(BufferAddress<0)or(BufferAddress+ByteCount>High(PCode_Data^)+1)Then
-  E:=4
- else if(V=0)or not Volumes[V].Online Then E:=9
- else Case Volumes[V].Kind of
-  vkConsole,vkRemoteIn:
+  E:=IOE_BAD_ADDRESS
+ else if V=0 Then E:=IOE_BAD_UNIT
+ else Begin E:=RefreshMedia(V);if(E=0)and not Volumes[V].Online Then E:=IOE_NO_MEDIA End;
+ if E=0 Then Case Volumes[V].Kind of
+  vkConsole:
   For I:=0 to ByteCount-1 do Begin
-   if Eof(Input)Then Begin E:=100;Break End;
+   if Eof(Input)Then Begin E:=IOE_END_OF_FILE;Break End;
    Read(C);E:=IOResult;if E<>0 Then Break;
    PCode_DataSet(BufferAddress+I,Ord(C)and PCode_SYSCOM.CharMask)
+  End;
+  vkRemoteIn:
+  Begin
+   Assign(F,Volumes[V].HostPath);Reset(F,1);E:=IOResult;
+   if E=0 Then Begin Seek(F,Volumes[V].StreamPosition);E:=IOResult;
+    For I:=0 to ByteCount-1 do if E=0 Then Begin BlockRead(F,B,1,N);E:=IOResult;
+     if(E=0)and(N=1)Then Begin PCode_DataSet(BufferAddress+I,B);Inc(Volumes[V].StreamPosition) End
+     else if E=0 Then E:=IOE_END_OF_FILE
+    End;Close(F);if E=0 Then E:=IOResult
+   End
   End;
   vkDisk:
   Begin
    { Une unite disque est brute uniquement lorsque HostPath designe une image. }
+   if not Volumes[V].BlockDevice Then E:=IOE_BAD_UNIT else Begin
    Assign(F,Volumes[V].HostPath);Reset(F,1);E:=IOResult;
    if E=0 Then Begin
     Offset:=BlockNo*512;Seek(F,Offset);E:=IOResult;
     For I:=0 to ByteCount-1 do if E=0 Then Begin
      BlockRead(F,B,1,N);E:=IOResult;
-     if(E=0)and(N=1)Then PCode_DataSet(BufferAddress+I,B)else if E=0 Then E:=100
+     if(E=0)and(N=1)Then PCode_DataSet(BufferAddress+I,B)else if E=0 Then E:=IOE_END_OF_FILE
     End;Close(F);if E=0 Then E:=IOResult
-   End
+   End End
   End;
-  else E:=9
+  else E:=IOE_BAD_UNIT
  End;
  PCode_IOError(0,E)
 End;
@@ -1557,23 +1733,37 @@ Procedure PCode_UnitWrite(UnitNo:Integer;BufferAddress,ByteCount,BlockNo:LongInt
 Var I,V,E:Integer;F:File;N:Word;B:Byte;Offset:LongInt;
 Begin
  E:=0;V:=PCode_UnitIndex(UnitNo);
- if(ByteCount<0)or(BufferAddress<0)or(BufferAddress+ByteCount>High(PCode_Data^)+1)Then E:=4
- else if(V=0)or not Volumes[V].Online Then E:=9
- else Case Volumes[V].Kind of
-  vkConsole,vkPrinter,vkRemoteOut:
+ if(ByteCount<0)or(BufferAddress<0)or(BufferAddress+ByteCount>High(PCode_Data^)+1)Then E:=IOE_BAD_ADDRESS
+ else if V=0 Then E:=IOE_BAD_UNIT
+ else Begin E:=RefreshMedia(V);if(E=0)and not Volumes[V].Online Then E:=IOE_NO_MEDIA;
+  if(E=0)and Volumes[V].ReadOnly Then E:=IOE_WRITE_PROTECTED
+ End;
+ if E=0 Then Case Volumes[V].Kind of
+  vkConsole:
   For I:=0 to ByteCount-1 do PCode_PutChar(Chr(Byte(PCode_DataAt(BufferAddress+I))));
+  vkPrinter,vkRemoteOut:
+  Begin
+   Assign(F,Volumes[V].HostPath);Reset(F,1);E:=IOResult;
+   if E<>0 Then Begin Rewrite(F,1);E:=IOResult End;
+   if E=0 Then Begin Seek(F,FileSize(F));E:=IOResult;
+    For I:=0 to ByteCount-1 do if E=0 Then Begin B:=Byte(PCode_DataAt(BufferAddress+I));
+     BlockWrite(F,B,1,N);E:=IOResult;if(E=0)and(N<>1)Then E:=IOE_WRITE_ERROR
+    End;Close(F);if E=0 Then E:=IOResult
+   End
+  End;
   vkDisk:
   Begin
+   if not Volumes[V].BlockDevice Then E:=IOE_BAD_UNIT else Begin
    Assign(F,Volumes[V].HostPath);Reset(F,1);E:=IOResult;
    if E=0 Then Begin
     Offset:=BlockNo*512;Seek(F,Offset);E:=IOResult;
     For I:=0 to ByteCount-1 do if E=0 Then Begin
      B:=Byte(PCode_DataAt(BufferAddress+I));BlockWrite(F,B,1,N);E:=IOResult;
-     if(E=0)and(N<>1)Then E:=101
+     if(E=0)and(N<>1)Then E:=IOE_WRITE_ERROR
     End;Close(F);if E=0 Then E:=IOResult
-   End
+   End End
   End;
-  else E:=9
+  else E:=IOE_BAD_UNIT
  End;
  PCode_IOError(0,E)
 End;
@@ -2162,7 +2352,8 @@ Begin
  PCode_SYSCOM.StackPointer:=PCode_SP;PCode_SYSCOM.MarkPointer:=PCode_MP;
  PCode_SYSCOM.HeapPointer:=PCode_StringHeap;V:=FindVolume(FilerPrefix);
  if V<>0 Then PCode_SYSCOM.PrefixUnit:=Volumes[V].UnitNo else PCode_SYSCOM.PrefixUnit:=4;
- PCode_SYSCOM.RootUnit:=4;
+ V:=FindVolume(FilerRoot);
+ if V<>0 Then PCode_SYSCOM.RootUnit:=Volumes[V].UnitNo else PCode_SYSCOM.RootUnit:=4;
  GetTime(H,M,S,HS);Ticks:=LongInt(H)*360000+LongInt(M)*6000+LongInt(S)*100+HS;
  PCode_SYSCOM.ClockLow:=Word(Ticks);PCode_SYSCOM.ClockHigh:=Word(Ticks shr 16);
  { Fenetre SYSCOM du segment SYSTEM, accessible par LDE/STE segment zero. }
@@ -9075,16 +9266,19 @@ Begin
 End;
 
 Procedure VolumeCommand;
-Var
- DirectoryName:String;I:Integer;Mark:Char;
+Var DirectoryName,Flags:String;I,V:Integer;Mark:Char;
 Begin
- WriteLn('Volumes en ligne:');
- For I:=1 to VolumeCount do if Volumes[I].Online Then Begin
+ WriteLn('Volumes et peripheriques:');
+ For I:=1 to VolumeCount do Begin
   if Volumes[I].BlockDevice Then Mark:='#'else Mark:=' ';
-  WriteLn(Volumes[I].UnitNo:3,' ',Mark,' ',Volumes[I].Name,':  ',Volumes[I].HostPath)
+  Flags:='';if not Volumes[I].Online Then Flags:=Flags+' hors ligne';
+  if Volumes[I].Removable Then Flags:=Flags+' amovible';
+  if Volumes[I].ReadOnly Then Flags:=Flags+' lecture seule';
+  WriteLn(Volumes[I].UnitNo:3,' ',Mark,' ',Volumes[I].Name,':  ',Volumes[I].HostPath,
+   ' [',Volumes[I].DriverName,']',Flags)
  End;
- DirectoryName:=Volumes[FindVolume('SYSTEM')].HostPath;
- WriteLn('Volume racine - SYSTEM: (',DirectoryName,')');
+ V:=FindVolume(FilerRoot);if V<>0 Then DirectoryName:=Volumes[V].HostPath else DirectoryName:='?';
+ WriteLn('Volume racine - ',FilerRoot,': (',DirectoryName,')');
  WriteLn('Prefixe       - ',FilerPrefix,':');
  WriteLn('Libre: ',DiskFree(0),' octets; capacite: ',DiskSize(0),' octets.')
 End;
@@ -9130,7 +9324,8 @@ Begin
  if Name[Length(Name)]=':'Then Delete(Name,Length(Name),1);V:=FindVolume(Name);
  if(V=0)or not Volumes[V].Online or(Volumes[V].Kind<>vkDisk)Then
   WriteLn('Volume de prefixe inconnu ou non structure.')
- else Begin FilerPrefix:=Volumes[V].Name;WriteLn('Prefixe: ',FilerPrefix,':') End
+ else Begin FilerPrefix:=Volumes[V].Name;VolumeConfigChanged:=True;SaveMiscInfo;
+  WriteLn('Prefixe: ',FilerPrefix,':') End
 End;
 
 Procedure DateCommand;
@@ -9321,7 +9516,12 @@ Procedure Help;Begin
  WriteLn('/RANGECHECK[+|-]  Activer/desactiver les controles de bornes de la VM');
  WriteLn('/OVERFLOWCHECK[+|-]  Activer/desactiver les debordements entiers 16 bits');
  WriteLn('/VOLUME:n=chemin  Associer un numero d''unite disque a un repertoire hote');
- WriteLn('Variables: PSYSTEM_VOLUME4, PSYSTEM_VOLUME5 et PSYSTEM_VOLUME9.');
+ WriteLn('/DEVICE:n=nom,type,chemin[,REMOVABLE][,RO][,DRIVER=nom]  Definir #128..#255');
+ WriteLn('/REMOVABLE:n=chemin  Configurer ou monter un volume amovible');
+ WriteLn('/EJECT:n et /ROOT:volume  Ejecter un media ou choisir le volume racine');
+ WriteLn('Variables: PSYSTEM_VOLUME4, PSYSTEM_VOLUME5, PSYSTEM_VOLUME9,');
+ WriteLn('PSYSTEM_REMIN, PSYSTEM_REMOUT et PSYSTEM_PRINTER.');
+ WriteLn('La configuration est conservee dans SYSTEM.MISCINFO.');
  WriteLn('PSYSTEM_LIBRARY indique le repertoire des unites SYSTEM et bibliotheques .CODE.');
  WriteLn('Sans nom de fichier, le travail courant est SYSTEM.WRK.TEXT / SYSTEM.WRK.CODE.');
  WriteLn('Le gestionnaire F fournit G(et, N(ouveau, S(auver et W(hat.');
@@ -9358,14 +9558,14 @@ End;
 
 Procedure CommandLine;
 Var
- I:Integer;
+ I,V:Integer;
  S,A,B,C:String;
  Y,M,D,Dow:Word;
 Begin
  { Le jeu d'opcodes de la machine virtuelle et de l'assembleur integres
    correspond par defaut a UCSD Pascal II.0/II.1. }
  WorkFile:='';ProgramFile:='';WorkTitle:='';CurrentTarget:=ptUCSDPascalII;
- InitializeVolumes;GetDate(Y,M,D,Dow);Str(D,A);Str(M,B);Str(Y,C);
+ InitializeVolumes;ApplyTargetDrivers;GetDate(Y,M,D,Dow);Str(D,A);Str(M,B);Str(Y,C);
  FilerDate:=A+'/'+B+'/'+C;
  OriginalErrors:=False;CPListing:=False;
  PCode_RangeChecking:=True;PCode_OverflowChecking:=False;
@@ -9389,7 +9589,25 @@ Begin
   else if Copy(UpperString(S),1,8)='/VOLUME:'Then Begin
    if not ConfigureVolume(Copy(S,9,255))Then Begin
     WriteLn('Association de volume incorrecte ou repertoire inaccessible: ',Copy(S,9,255));Halt(1)
+   End;ApplyTargetDrivers;VolumeConfigChanged:=True;SaveMiscInfo
+  End
+  else if Copy(UpperString(S),1,8)='/DEVICE:'Then Begin
+   if not ConfigureDevice(Copy(S,9,255))Then Begin
+    WriteLn('Definition de peripherique incorrecte: ',Copy(S,9,255));Halt(1)
    End
+  End
+  else if Copy(UpperString(S),1,11)='/REMOVABLE:'Then Begin
+   A:=Copy(S,12,255);if not ConfigureVolume(A)Then Begin
+    WriteLn('Volume amovible incorrect: ',A);Halt(1)
+   End;B:=Copy(A,1,Pos('=',A)-1);if(B<>'')and(B[1]<>'#')Then B:='#'+B;
+   V:=FindVolume(B);if V<>0 Then Begin Volumes[V].Removable:=True;ApplyTargetDrivers;
+    VolumeConfigChanged:=True;SaveMiscInfo End
+  End
+  else if Copy(UpperString(S),1,7)='/EJECT:'Then Begin
+   if not ChangeMedia(Copy(S,8,255),True)Then Begin WriteLn('Ejection impossible: ',Copy(S,8,255));Halt(1) End
+  End
+  else if Copy(UpperString(S),1,6)='/ROOT:'Then Begin
+   if not SetRootVolume(Copy(S,7,255))Then Begin WriteLn('Volume racine incorrect: ',Copy(S,7,255));Halt(1) End
   End
   else if(UpperString(S)='/LIST')or(UpperString(S)='-LIST')Then CPListing:=True
   else if(UpperString(S)='/ORGINALERR')or(UpperString(S)='/ORIGINALERR')Then
@@ -9398,11 +9616,12 @@ Begin
   (Copy(UpperString(S),1,8)='-TARGET:')Then Begin
    if not SelectTarget(Copy(S,9,255))Then Begin
     WriteLn('Cible p-System inconnue: ',Copy(S,9,255));Halt(1)
-   End
+   End else ApplyTargetDrivers
   End else if WorkFile=''Then WorkFile:=S
   else
   Begin
    WriteLn('Syntaxe : PSYSTEM [fichier] [/TARGET:cible] [/VOLUME:n=chemin]');
+   WriteLn('          [/DEVICE:n=nom,type,chemin] [/REMOVABLE:n=chemin]');
    WriteLn('          [/ORGINALERR] [/LIST] [/CHECKCODE] [/RANGECHECK[+|-]]');
    WriteLn('          [/OVERFLOWCHECK[+|-]] [/BATCHCOMPILE|/BATCHRUN]');
    Halt(1)
