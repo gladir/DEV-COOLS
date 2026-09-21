@@ -6694,11 +6694,60 @@ End;
 { Resoudre le chemin d'une feuille de style externe (href de <link>)
   par rapport a l'URL/fichier courant - meme principe que
   BMPBuildImagePath pour les images (cf. plus loin dans ce fichier). }
+{ BOGUE REEL corrige (2026-09-21, signale par l'utilisateur - "il ne       }
+{ semble pas charger les CSS lorsqu'il provient d'un URL") : cette         }
+{ fonction traitait TOUJOURS Src/CurrentURL comme des chemins de FICHIER   }
+{ locaux, meme quand la page courante venait d'une VRAIE URL http(s)://    }
+{ - un href commencant par '/' (racine du site, tres courant, ex.          }
+{ "/CODER/style.css") etait renvoye TEL QUEL puis passe a                  }
+{ LoadTextFileAsString, qui cherchait un fichier local inexistant et       }
+{ echouait silencieusement (Length(ExternalCSS)=0, aucune erreur           }
+{ visible). Corrige en resolvant Src en URL ABSOLUE (origine schema://hote }
+{ + chemin racine, ou repertoire de CurrentURL + chemin relatif) des que   }
+{ CurrentURL est elle-meme une URL distante - voir CSSExtractFromDocument  }
+{ ci-dessous pour le telechargement reel via Browser_HttpGet qui consomme  }
+{ ensuite ce resultat. }
 Function CSSBuildStylesheetPath(Const Src: String): String;
 Var
  BasePath: String;
- I: Integer;
+ I, SchemeEnd, HostEnd: Integer;
+ Origin: String;
+ LowerCurrent: String;
 Begin
+ { Src deja une URL absolue (http/https) - aucune resolution necessaire. }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or
+    (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Then Begin
+  CSSBuildStylesheetPath := Src;
+  Exit;
+ End;
+
+ LowerCurrent := HTMLLowerCase(CurrentURL);
+ If (Copy(LowerCurrent, 1, 7) = 'http://') Or (Copy(LowerCurrent, 1, 8) = 'https://') Then Begin
+  If (Length(Src) > 0) And (Src[1] = '/') Then Begin
+   { href "racine du site" : origine (schema://hote[:port]) + chemin. }
+   SchemeEnd := Pos('://', CurrentURL);
+   Origin := CurrentURL;
+   If SchemeEnd > 0 Then Begin
+    HostEnd := SchemeEnd + 3;
+    While (HostEnd <= Length(CurrentURL)) And (CurrentURL[HostEnd] <> '/') Do Inc(HostEnd);
+    Origin := Copy(CurrentURL, 1, HostEnd - 1);
+   End;
+   CSSBuildStylesheetPath := Origin + Src;
+   Exit;
+  End;
+  { href relatif : repertoire de la page courante (jusqu'au dernier '/'). }
+  BasePath := CurrentURL;
+  For I := Length(BasePath) DownTo 1 Do Begin
+   If BasePath[I] = '/' Then Begin
+    BasePath := Copy(BasePath, 1, I);
+    Break;
+   End;
+  End;
+  CSSBuildStylesheetPath := BasePath + Src;
+  Exit;
+ End;
+
+ { Page locale (fichier hote) - comportement INCHANGE d'avant ce correctif. }
  If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
      ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
   CSSBuildStylesheetPath := Src;
@@ -6754,6 +6803,9 @@ Var
  StyleContent: AnsiString;
  RelAttr, HrefAttr, CSSPath: String;
  ExternalCSS: AnsiString;
+ {$IFDEF WINDOWS}
+ CSSStatusCode: LongInt;
+ {$ENDIF}
 Begin
  { Feuilles de style en ligne : <style>...</style> }
  List := DOMGetElementsByTagName('style');
@@ -6775,7 +6827,18 @@ Begin
    HrefAttr := GetHTMLAttribute(Item^.Node, 'href');
    If Length(HrefAttr) > 0 Then Begin
     CSSPath := CSSBuildStylesheetPath(HrefAttr);
-    ExternalCSS := LoadTextFileAsString(CSSPath);
+    ExternalCSS := '';
+    If (Copy(HTMLLowerCase(CSSPath), 1, 7) = 'http://') Or
+       (Copy(HTMLLowerCase(CSSPath), 1, 8) = 'https://') Then Begin
+     { Feuille de style distante - telechargement REEL via WinInet (voir la }
+     { disclosure de CSSBuildStylesheetPath ci-dessus) ; hors Windows, la    }
+     { feuille est simplement ignoree (disclosed, meme limitation que le    }
+     { chargement de page elle-meme). }
+     {$IFDEF WINDOWS}
+     Browser_HttpGet(CSSPath, ExternalCSS, CSSStatusCode);
+     {$ENDIF}
+    End Else
+     ExternalCSS := LoadTextFileAsString(CSSPath);
    If Length(ExternalCSS) > 0 Then
      CSSParseStylesheet(ExternalCSS);
    End;
@@ -16955,10 +17018,22 @@ Begin
  HTML.DataLength := 0;
 End;
 
+{ BOGUE REEL corrige (2026-09-21, signale par l'utilisateur - plantage      }
+{ "ERangeError: Range check error" a l'execution avec le controle de       }
+{ plage active, ex. depuis l'IDE Free Pascal) : I/CopyCount etaient         }
+{ declares Integer, qui vaut seulement 16 bits en mode TP (-32768..32767,   }
+{ voir la meme categorie de bogue deja rencontree ailleurs dans ce depot -  }
+{ feedback_integer_16bit) - une page HTML reelle de plus de 32 Ko (le cas   }
+{ concret signale : https://www.gladir.com fait 34312 octets) deborde       }
+{ silencieusement "Length(S) - I + 1" (34312 > 32767) sans le controle de   }
+{ plage (ce qui MASQUAIT le bogue lors d'une compilation en ligne de        }
+{ commande standard, sans -Cr) mais plante des que ce controle est actif.   }
+{ HTML.DataLength etait deja correctement LongInt - seules ces 2 variables  }
+{ locales avaient le mauvais type. }
 Function SetHTMLSourceFromString(Const S: String;
                                  Var HTML: HTMLSourceBuffer): Boolean;
 Var
- I, CopyCount: Integer;
+ I, CopyCount: LongInt;
  Chunk: HTMLBufferChunkPtr;
 Begin
  FreeHTMLSource(HTML);
