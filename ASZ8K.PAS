@@ -85,8 +85,11 @@ Var
  ListOpen:Boolean;
  CurrentLine,LabelField,OpcodeField,OperandField:String;
  CurrentInputName:String;
- LineBytes:Array[0..31]of Byte;
+ LineBytes:Array[0..255]of Byte;
  LineByteCount:Integer;
+ LineErrorText:String;
+ ListingPage,ListingLines,CurrentIncludeDepth:Integer;
+ ListingTitle:String;
  StopAssembly:Boolean;
  HasTransfer:Boolean;
  TransferAddress:LongInt;
@@ -178,7 +181,7 @@ End;
 Procedure Diagnostic(Const S:String);Begin
  if Pass=2 Then Begin
   Inc(ErrorCount);WriteLn(CurrentInputName,'(',LineNumber,'): ',S);
-  if ListOpen Then WriteLn(ListFile,'**** ',S)
+  if LineErrorText=''Then LineErrorText:=S
  End
 End;
 
@@ -1253,6 +1256,7 @@ Begin
  else Begin
   P^.Defined:=True;P^.Global:=True;P^.Section:=SecBss;P^.Value:=Location[SecBss];
   P^.ObjectName:=SymbolObjectName(N);
+  if Pass=1 Then P^.DefLine:=LineNumber;
   Inc(Location[SecBss],V)
  End
 End;
@@ -1556,9 +1560,11 @@ End;
 Procedure EmitImmediateValue(Size:Integer;V:LongInt;RelBase:Word;DuplicateByte:Boolean);
 Begin
  if Size=1 Then Begin
+  if(Pass=2)and(RelBase=0)and((V< -128)or(V>255))Then Diagnostic('immediat 8 bits hors plage');
   EmitByteReloc(Byte(V),RAA8,RelBase);
   if DuplicateByte Then EmitByteReloc(Byte(V),RAA8,RelBase)
  End else if Size=2 Then Begin
+  if(Pass=2)and(RelBase=0)and((V< -32768)or(V>65535))Then Diagnostic('immediat 16 bits hors plage');
   if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,RelBase)
   else EmitWordReloc(Word(V),RAA16M,RelBase)
  End else if Opt.Segmented and(RelBase<>0)Then
@@ -1597,6 +1603,8 @@ Begin
  if D.Kind=okRegister Then Case Src.Kind of
   okRegister:EmitWord(RR or Word(Src.Reg shl 4)or Word(D.Reg));
   okImmediate:if Size=1 Then Begin
+   if(Pass=2)and(Src.RelBase=0)and((Src.Value< -128)or(Src.Value>255))Then
+    Diagnostic('immediat 8 bits hors plage');
    EmitByte($C0 or Byte(D.Reg));EmitByteReloc(Byte(Src.Value),RAA8,Src.RelBase)
   End else Begin
    EmitWord(Imm or Word(D.Reg));EmitImmediateValue(Size,Src.Value,Src.RelBase,False)
@@ -1915,15 +1923,73 @@ Begin
  End
 End;
 
-Procedure WriteListingLine(StartAddress:LongInt);
-Var
- I:Integer;
- Bytes:String;
+Function ListingSectionName(Section:Byte):String;
 Begin
- if not ListOpen Then Exit;Bytes:='';
- For I:=0 to LineByteCount-1 do Bytes:=Bytes+HexByte(LineBytes[I])+' ';
- While Length(Bytes)<24 do Bytes:=Bytes+' ';
- WriteLn(ListFile,LineNumber:5,' ',HexWord(Word(StartAddress)),' ',Bytes,CurrentLine)
+ if Section=RBUND Then Begin ListingSectionName:='X';Exit End;
+ Case Section of SecText:ListingSectionName:='T';SecData:ListingSectionName:='D';
+ SecBss:ListingSectionName:='B';else ListingSectionName:='A'End
+End;
+
+Function ListingAddress(Section:Byte;Address:LongInt):String;
+Begin
+ if Opt.Segmented Then ListingAddress:=HexByte(Section)+':'+HexWord(Word(Address))
+ else ListingAddress:=HexWord(Word(Address))
+End;
+
+Procedure ListingNewPage;
+Var Y,M,D,DW,H,MI,S,HS:Word;
+Begin
+ if not ListOpen Then Exit;Inc(ListingPage);if ListingPage>1 Then Write(ListFile,#12);
+ GetDate(Y,M,D,DW);GetTime(H,MI,S,HS);
+ WriteLn(ListFile,'ASZ8K ',Version,'  ',Opt.SourceName,'  ',Y:4,'-',M:2,'-',D:2,
+  ' ',H:2,':',MI:2,'  Page ',ListingPage);
+ WriteLn(ListFile,ListingTitle);
+ if Opt.Segmented Then
+  WriteLn(ListFile,'Err PgLn Seg:Adr  Objet     Relog.       Source')
+ else WriteLn(ListFile,'Err PgLn Adr   Objet     Relog.       Source');
+ WriteLn(ListFile,'--- ---- ------- --------- ------------ --------------------------------');
+ ListingLines:=5
+End;
+
+Procedure ListingCheckPage;
+Begin
+ if(ListingPage=0)or(ListingLines>=58)Then ListingNewPage
+End;
+
+Function ListingRelocations(Section:Byte;First,Count:LongInt):String;
+Var R:PRelocation;S:String;
+Begin
+ S:='';R:=Relocations;
+ While R<>Nil do Begin
+  if(R^.Section=Section)and(R^.Offset>=First)and(R^.Offset<First+Count)Then Begin
+   if S<>''Then S:=S+',';
+   S:=S+'+'+HexByte(Byte(R^.Offset-First))+'='+HexWord(R^.Action or(R^.Base and RBMSK))
+  End;R:=R^.Next
+ End;ListingRelocations:=S
+End;
+
+Procedure WriteListingLine(StartSection:Byte;StartAddress:LongInt);
+Var I,J,Count:Integer;Bytes,Reloc,SourceMark,ErrMark:String;Address:LongInt;
+Begin
+ if not ListOpen Then Exit;I:=0;Address:=StartAddress;
+ Repeat
+  ListingCheckPage;Bytes:='';Count:=LineByteCount-I;if Count>4 Then Count:=4;
+  For J:=0 to Count-1 do Bytes:=Bytes+HexByte(LineBytes[I+J]);
+  While Length(Bytes)<8 do Bytes:=Bytes+' ';
+  if Count=0 Then Reloc:=''else Reloc:=ListingRelocations(StartSection,Address,Count);
+  While Length(Reloc)<12 do Reloc:=Reloc+' ';
+  if I=0 Then Begin
+   if LineErrorText<>''Then ErrMark:=' E 'else ErrMark:='   ';
+   Str(CurrentIncludeDepth,SourceMark);SourceMark:=SourceMark+'/'+Copy(CurrentInputName,1,18)+':';
+   WriteLn(ListFile,ErrMark,(ListingLines+1):4,' ',ListingAddress(StartSection,Address),' ',
+    Bytes,' ',Reloc,' ',SourceMark,LineNumber,' ',CurrentLine)
+  End else WriteLn(ListFile,'   ',(ListingLines+1):4,' ',ListingAddress(StartSection,Address),' ',
+   Bytes,' ',Reloc,' +');
+  Inc(ListingLines);Inc(Address,Count);Inc(I,Count)
+ Until(I>=LineByteCount)and((I>0)or(LineByteCount=0));
+ if LineErrorText<>''Then Begin
+  ListingCheckPage;WriteLn(ListFile,'*** E: ',LineErrorText);Inc(ListingLines)
+ End
 End;
 
 Procedure AssemblePass(PassNo:Integer);
@@ -1931,8 +1997,8 @@ Var
  IncludeNames:Array[1..8]of String;
 
  Procedure AssembleFile(Const FileName:String;Depth:Integer);
- Var F:Text;StartAddress:LongInt;SavedLine:Integer;SavedText,SavedName,Name:String;
-     I:Integer;
+ Var F:Text;StartAddress:LongInt;StartSection:Byte;SavedLine,SavedDepth:Integer;
+     SavedText,SavedName,Name:String;I:Integer;
  Begin
   if Depth>8 Then Begin Diagnostic('profondeur INCLUDE superieure a huit');Exit End;
   For I:=1 to Depth-1 do if UpperString(IncludeNames[I])=UpperString(FileName)Then Begin
@@ -1941,10 +2007,11 @@ Var
   IncludeNames[Depth]:=FileName;Assign(F,FileName);Reset(F);
   if IOResult<>0 Then Begin Diagnostic('lecture impossible: '+FileName);Exit End;
   SavedLine:=LineNumber;SavedText:=CurrentLine;SavedName:=CurrentInputName;
-  LineNumber:=0;CurrentInputName:=FileName;
+  SavedDepth:=CurrentIncludeDepth;LineNumber:=0;CurrentInputName:=FileName;CurrentIncludeDepth:=Depth-1;
   While not Eof(F)and not StopAssembly do Begin
    ReadLn(F,CurrentLine);if IOResult<>0 Then Begin Diagnostic('erreur de lecture');Break End;
-   Inc(LineNumber);LineByteCount:=0;StartAddress:=Location[CurrentSection];SplitLine(CurrentLine);
+   Inc(LineNumber);LineByteCount:=0;LineErrorText:='';StartSection:=CurrentSection;
+   StartAddress:=Location[CurrentSection];SplitLine(CurrentLine);
    if IsConditionalDirective(OpcodeField)Then HandleConditionalDirective
    else if ConditionalEnabled Then Begin
     if(OpcodeField='INCLUDE')or(OpcodeField='.INPUT')Then Begin
@@ -1955,7 +2022,7 @@ Var
      if Name=''Then Diagnostic('INCLUDE exige un fichier')else Begin
       Name:=ResolveCPMPath(Name);
       if not TextFileExists(Name)Then Name:=DirectoryPart(FileName)+Name;
-      AssembleFile(Name,Depth+1)
+      AssembleFile(Name,Depth+1);LineByteCount:=0;LineErrorText:=''
      End
     End else Begin
      if(LabelField<>'')and(LabelField[1]<>'.')Then CurrentGlobal:=LabelField;
@@ -1965,10 +2032,11 @@ Var
      else ProcessInstruction
     End
    End;
-   if Pass=2 Then WriteListingLine(StartAddress)
+   if Pass=2 Then WriteListingLine(StartSection,StartAddress)
   End;
   Close(F);if IOResult<>0 Then Diagnostic('erreur de fermeture du source');
-  LineNumber:=SavedLine;CurrentLine:=SavedText;CurrentInputName:=SavedName
+  LineNumber:=SavedLine;CurrentLine:=SavedText;CurrentInputName:=SavedName;
+  CurrentIncludeDepth:=SavedDepth
  End;
 Begin
  Pass:=PassNo;Location[SecText]:=0;Location[SecData]:=0;Location[SecBss]:=0;
@@ -2441,21 +2509,46 @@ End;
 Procedure WriteCrossReference;
 Var
  P:PSymbol;
- R:PReference;LastFile:String;
+ R:PReference;LastFile,Flags,ValueText:String;Column:Integer;
 Begin
- if not ListOpen or not Opt.CrossReference Then Exit;WriteLn(ListFile);
- WriteLn(ListFile,'TABLE DES REFERENCES CROISEES');
- WriteLn(ListFile,'Symbole                          Valeur Sect Definition References');
+ if not ListOpen or not Opt.CrossReference Then Exit;
+ ListingTitle:='Cross Reference Listing';ListingLines:=58;ListingCheckPage;
+ WriteLn(ListFile,'Symbole                          Valeur     Cl Flags Definition References');Inc(ListingLines);
  P:=Symbols;
  While P<>Nil do Begin
-  Write(ListFile,P^.Name:32,' ',HexWord(Word(P^.Value)),' ',P^.Section:4,' ');
+  ListingCheckPage;Flags:='';if P^.Global Then Flags:=Flags+'G'else Flags:=Flags+'-';
+  if P^.External and not P^.Defined Then Flags:=Flags+'X'else Flags:=Flags+'-';
+  ValueText:=HexWord(Word(LongInt(P^.Value)shr 16))+HexWord(Word(P^.Value));
+  Write(ListFile,Copy(P^.Name,1,32):32,' ',ValueText,' ',ListingSectionName(P^.Section),
+   P^.Section:2,' ',Flags:2,' ');
   if P^.Defined Then Write(ListFile,P^.DefLine:10)else Write(ListFile,'     EXTERN');
-  R:=P^.References;LastFile:='';
+  R:=P^.References;LastFile:='';Column:=62;
   While R<>Nil do Begin
-   if R^.FileName<>LastFile Then Begin Write(ListFile,' [',R^.FileName,']');LastFile:=R^.FileName End;
-   Write(ListFile,' ',R^.Line);R:=R^.Next
-  End;WriteLn(ListFile);P:=P^.Next
+   if Column>112 Then Begin WriteLn(ListFile);Inc(ListingLines);ListingCheckPage;
+    Write(ListFile,'                                                              ');Column:=62
+   End;
+   if R^.FileName<>LastFile Then Begin
+    Write(ListFile,' [',Copy(R^.FileName,1,16),']');Inc(Column,19);LastFile:=R^.FileName
+   End;
+   Write(ListFile,' ',R^.Line);Inc(Column,6);R:=R^.Next
+  End;WriteLn(ListFile);Inc(ListingLines);P:=P^.Next
  End
+End;
+
+Procedure WriteListingStatistics;
+Var P:PSymbol;R:PRelocation;SymbolsCount,GlobalsCount,ExternalsCount,RelocCount:LongInt;
+Begin
+ if not ListOpen Then Exit;SymbolsCount:=0;GlobalsCount:=0;ExternalsCount:=0;RelocCount:=0;
+ P:=Symbols;While P<>Nil do Begin Inc(SymbolsCount);if P^.Global Then Inc(GlobalsCount);
+  if P^.External and not P^.Defined Then Inc(ExternalsCount);P:=P^.Next End;
+ R:=Relocations;While R<>Nil do Begin Inc(RelocCount);R:=R^.Next End;
+ ListingTitle:='Assembly Statistics';ListingLines:=58;ListingCheckPage;
+ WriteLn(ListFile,'Target             : Z800',Ord(not Opt.Segmented)+1);Inc(ListingLines);
+ WriteLn(ListFile,'TEXT / DATA / BSS  : ',TextSize,' / ',DataSize,' / ',BssSize,' octets');Inc(ListingLines);
+ WriteLn(ListFile,'Symboles           : ',SymbolsCount,' (',GlobalsCount,' publics, ',ExternalsCount,' externes)');Inc(ListingLines);
+ WriteLn(ListFile,'Relogements        : ',RelocCount);Inc(ListingLines);
+ WriteLn(ListFile,'Pages du listing   : ',ListingPage);Inc(ListingLines);
+ WriteLn(ListFile,'Erreurs/Avert.     : ',ErrorCount,' / ',WarningCount);Inc(ListingLines)
 End;
 
 Procedure ParseCommandLine;
@@ -2564,11 +2657,10 @@ BEGIN
  if Opt.Listing Then Begin
   Assign(ListFile,Opt.ListName);Rewrite(ListFile);
   if IOResult<>0 Then Fatal('creation listing impossible');
-  ListOpen:=True;WriteLn(ListFile,'ASZ8K ',Version,'  ',Opt.SourceName,'  ',
-  'Z800',Ord(not Opt.Segmented)+1);WriteLn(ListFile)
+  ListOpen:=True;ListingPage:=0;ListingLines:=58;ListingTitle:='Assembly Listing'
  End;
  AssemblePass(1);AssignObjectBases;if ErrorCount=0 Then AssemblePass(2);
- WriteCrossReference;
+ WriteCrossReference;WriteListingStatistics;
  if ErrorCount=0 Then Begin
   WriteObject;WriteLn('ASZ8K: ',Opt.SourceName,' -> ',Opt.ObjectName,
   ' (TEXT=',TextSize,', DATA=',DataSize,', BSS=',BssSize,')')

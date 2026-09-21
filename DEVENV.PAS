@@ -206025,6 +206025,38 @@ End;
      existante). Le fichier est charge tel quel (code+donnees) dans le
      segment 0 a partir de l'offset 0 - AUCUN traitement des relogements
      (SizeRel) ni de la table des symboles encore.
+
+  Stage 6 (2026-09-21, demande explicite - "faudrait finaliser ca aussi" en
+  reponse aux lignes "non traites/non traitee - Stage 1" encore visibles a
+  l'ecran) : l'incertitude OCR ci-dessus sur les offsets d'en-tete est
+  LEVEE - une copie lisible du CP/M-8000 Programmer's Guide a ete obtenue
+  (archive.org, https://archive.org/download/cpm-8000-programmers-guide/
+  CPM8000_Programmers_Guide_djvu.txt, texte OCR complet, Chapitre 3 "The
+  CP/M-8000 Command File"). Figure 3-2 CONFIRME l'hypothese sequentielle
+  deja utilisee (offsets 00H/02H/04H/08H/0CH = mot/mot/long/long/long, 16
+  octets au total) - AUCUN changement necessaire a la lecture de l'en-tete
+  lui-meme, mais 1 BOGUE REEL trouve et corrige (voir la disclosure de tete
+  de Z8K_LoadFile) : le tableau "Segment Information" (Section 3.2, 5
+  octets/entree x Z8K_EntryCount) se trouve TOUJOURS entre l'en-tete et le
+  code+donnees, et etait entierement saute au Stage 1 - decalage silencieux
+  du code+donnees pour tout fichier .Z8K reellement produit par un lieur
+  DRI. AJOUTE : analyse REELLE (plus seulement un compte d'octets ignore)
+  des 3 sections Section 3.2/3.3/3.4 - voir Z8K_LoadFile/Z8K_PrintDiagnostics
+  ci-dessous. Les valeurs numeriques des TYPES de relogement (Table 3-3,
+  seuls 0/1/2 sont incertains, 5/6/7 confirmes) et des TYPES de symbole
+  (Table 3-4, seuls 1/4 confirmes via l'exemple NMZ8K du manuel, 0/2
+  inferes) restent partiellement une inference structurelle disclosed aux
+  constantes Z8K_RELOC_*/Z8K_SYMTYPE_* ci-dessous - PAS une lecture directe
+  du manuel (sa colonne numerique de ces 2 tableaux a ete perdue a l'OCR).
+  L'APPLICATION des relogements reste volontairement un NO-OP pour les
+  types locaux (segment 0 = seul segment charge, adresse de chargement
+  toujours egale a l'adresse de liaison dans ce modele) - PAS un algorithme
+  de correction invente ; les types externes sont signales, pas resolus
+  (aucun lieur/format multi-module reel n'existe dans ce depot - ASZ8K.PAS
+  produit son PROPRE format .O intermediaire UNIDOT, different de ce format
+  de fichier de commande lie, confirme en lisant ASZ8K.PAS directement : sa
+  Procedure WriteObject ecrit des blocs OBOST/OBMOD/OBSEC/OBGLO/OBLOC/OBTXT/
+  OBTRA/OBOND, aucun rapport avec le format de Chapitre 3 ici).
   ============================================================ }
 
 Const
@@ -206053,9 +206085,59 @@ Const
  Z8K_FCW_DA   = $0008; { Decimal-Adjust (sens)                             }
  Z8K_FCW_H    = $0004; { Half-Carry (operations octet)                     }
 
+{ Table 3-2 (Segment type values), reelles - CP/M-8000 Programmer's Guide,   }
+{ Section 3.2 (voir la disclosure Stage 6 pres de Z8K_LoadFile). }
+Const
+ Z8K_SEGTYPE_BSS        = 1;
+ Z8K_SEGTYPE_STACK      = 2;
+ Z8K_SEGTYPE_TEXT       = 3;
+ Z8K_SEGTYPE_CONST      = 4;
+ Z8K_SEGTYPE_DATA       = 5;
+ Z8K_SEGTYPE_MIXED      = 6;
+ Z8K_SEGTYPE_MIXED_PROT = 7;
+
+ { Table 3-3 (Relocation type values) - SEULS les types 5/6/7 (externes) et }
+ { la description textuelle "les 3 premiers types" sont confirmes tels     }
+ { quels dans le texte source (colonne numerique des types 0-2 perdue a    }
+ { l'OCR) ; 0/1/2 sont une inference STRUCTURELLE (ordre de la liste +     }
+ { correspondance avec le trou 3-4 avant les types externes 5-7), pas une  }
+ { valeur lue directement - disclosure honnete de cette limite. }
+ Z8K_RELOC_OFFSET16     = 0;  { ajuste un offset 16 bits seul }
+ Z8K_RELOC_SHORT_SEGOFS = 1;  { ajuste une forme courte (16 bits) segment+offset }
+ Z8K_RELOC_LONG_SEGOFS  = 2;  { ajuste une forme longue (32 bits) segment+offset }
+ Z8K_RELOC_EXT_OFFSET16 = 5;  { XOF confirme : offset 16 bits, item externe }
+ Z8K_RELOC_EXT_SHORT    = 6;  { segment court, item externe }
+ Z8K_RELOC_EXT_LONG     = 7;  { segment long, item externe }
+
+ { Table 3-4 (Symbol type values) - 1 (Undefined External) et 4 (Segment   }
+ { Name) sont CONFIRMES directement via l'exemple NMZ8K reel du manuel     }
+ { ("3216 255 1 4 ARG2" = segment 255/externe, type 1, valeur 4 ; "31E6 0  }
+ { 4 0 __text" = type 4 pour une entree "nom de segment") ; 0 (Local) et 2 }
+ { (Global Definition) sont une inference STRUCTURELLE (ordre de liste,    }
+ { meme trou avant le 4 que Table 3-3) - disclosure honnete. }
+ Z8K_SYMTYPE_LOCAL  = 0;
+ Z8K_SYMTYPE_UNDEF_EXT = 1;
+ Z8K_SYMTYPE_GLOBAL = 2;
+ Z8K_SYMTYPE_SEGNAME = 4;
+
+ Z8K_MAX_SEGINFO = 64;
+ Z8K_MAX_RELOC   = 2048;
+ Z8K_MAX_SYM     = 512;
+
 Type
  TZ8KSegMem = Array[0..65535] Of Byte;
  PZ8KSegMem = ^TZ8KSegMem;
+
+ { Structures reelles Stage 6 (Section 3.2/3.3/3.4 du Programmer's Guide). }
+ TZ8KSegInfo = Record
+  SegNum: Byte; SegType: Byte; ExecLen: Word; ArrayElem: Byte;
+ End;
+ TZ8KReloc = Record
+  SegNum: Byte; RelocType: Byte; Loc: Word; SymOrSeg: Word;
+ End;
+ TZ8KSymbol = Record
+  SegNum: Byte; SymType: Byte; Value: Word; Name: String[8];
+ End;
 
 Var
  Z8K_SegMem       : Array[0..Z8K_MAX_SEG - 1] Of PZ8KSegMem;
@@ -206077,6 +206159,14 @@ Var
  Z8K_CodeDataSize : LongInt;
  Z8K_RelocSize    : LongInt;
  Z8K_SymTabSize   : LongInt;
+ { Stage 6 (2026-09-21) : contenu REEL analyse des 3 sections precedemment  }
+ { ignorees (voir Z8K_LoadFile/la disclosure Stage 6 complete). }
+ Z8K_SegInfo      : Array[0..Z8K_MAX_SEGINFO - 1] Of TZ8KSegInfo;
+ Z8K_SegInfoCount : Integer;
+ Z8K_Reloc        : Array[0..Z8K_MAX_RELOC - 1] Of TZ8KReloc;
+ Z8K_RelocCount   : Integer;
+ Z8K_Sym          : Array[0..Z8K_MAX_SYM - 1] Of TZ8KSymbol;
+ Z8K_SymCount     : Integer;
 
 Function Z8K_MagicName(M: Word): String;
 Begin
@@ -206101,10 +206191,11 @@ Begin
   End;
 End;
 
-{ Charge un "fichier de commande" .Z8K reel (Programmer's Guide, section   }
-{ 3.1/Table 3-1) - voir la disclosure de tete pour la portee Stage 1       }
-{ (en-tete decode, code+donnees charges bruts dans le segment 0, AUCUN     }
-{ relogement/table des symboles traite encore).                           }
+{ Charge un "fichier de commande" .Z8K reel (Programmer's Guide, Chapitre  }
+{ 3 en entier - voir la disclosure Stage 6 complete pres de Z8K_StepOne     }
+{ pour les sources et le detail des 3 sections desormais REELLEMENT        }
+{ analysees ci-dessous (information de segment / relogements / table des   }
+{ symboles), au lieu d'etre simplement ignorees comme au Stage 1.          }
 { BOGUE REEL corrige au Stage 2 (2026-09-20, trouve en verifiant           }
 { l'architecture reelle avant d'ecrire le decodeur CPU) : le Z8000/Z8001    }
 { EST GROS-BOUTISTE (big-endian) - confirme directement dans le coeur      }
@@ -206114,7 +206205,17 @@ End;
 { partout ailleurs dans ce fichier, jamais reverifiee pour cette            }
 { architecture DIFFERENTE) - le test synthetique de Stage 1 "fonctionnait"  }
 { uniquement parce que le generateur Python utilisait LUI AUSSI le petit-   }
-{ boutiste par coincidence, jamais confronte a un VRAI fichier .Z8K. }
+{ boutiste par coincidence, jamais confronte a un VRAI fichier .Z8K.        }
+{ 2e BOGUE REEL corrige au Stage 6 (2026-09-21, trouve en obtenant enfin    }
+{ une copie LISIBLE du manuel DRI - voir disclosure complete) : le Stage 1  }
+{ lisait le code+donnees JUSTE APRES l'en-tete de 16 octets, en sautant     }
+{ ENTIEREMENT le tableau "Segment Information" (Section 3.2) qui se trouve }
+{ pourtant TOUJOURS entre l'en-tete et le code+donnees des lors que         }
+{ Z8K_EntryCount > 0 - un decalage silencieux de EntryCount*5 octets sur    }
+{ TOUT fichier .Z8K reellement produit par un lieur DRI (jamais detecte    }
+{ car aucun lieur Z8000 reel n'existe dans ce depot ; les generateurs      }
+{ Python de test des Stages 1-5 etaient auto-coherents avec cet ancien     }
+{ decalage errone, jamais confrontes a un vrai fichier lie). }
 Function Z8K_LoadFile(Const Path: String): Boolean;
 Var
  F: File;
@@ -206123,10 +206224,18 @@ Var
  Buf4: Array[0..3] Of Byte;
  BR: Word;
  LoadLen: LongInt;
+ I: Integer;
+ Pos5: LongInt;
+ NameBuf: Array[0..7] Of Byte;
+ NameStr: String[8];
+ J: Integer;
 Begin
  Z8K_LoadFile := False;
  Z8K_LastError := '';
  Z8K_FreeSegs;
+ Z8K_SegInfoCount := 0;
+ Z8K_RelocCount := 0;
+ Z8K_SymCount := 0;
  {$I-}
  Assign(F, Path);
  Reset(F, 1);
@@ -206136,7 +206245,7 @@ Begin
   Exit;
  End;
  FSize := FileSize(F);
- If FSize < 14 Then Begin
+ If FSize < 16 Then Begin
   Z8K_LastError := 'fichier trop court pour un en-tete .Z8K (' +
    IntToStr(FSize) + ' octets)';
   Close(F);
@@ -206163,14 +206272,94 @@ Begin
  BlockRead(F, Buf4, 4, BR);
  Z8K_SymTabSize := LongInt((LongWord(Buf4[0]) Shl 24) Or (LongWord(Buf4[1]) Shl 16) Or
   (LongWord(Buf4[2]) Shl 8) Or LongWord(Buf4[3]));
- { Segment 0 : charge le code+donnees brut (Stage 1, disclosure de tete). }
+ Pos5 := 16;
+ { Section 3.2 "Segment Information" (Stage 6) : Z8K_EntryCount entrees de  }
+ { 5 octets REELLES (numero de segment/type/longueur d'execution mot/      }
+ { element de tableau) - se trouve TOUJOURS ici, entre l'en-tete et le      }
+ { code+donnees (voir la disclosure de tete de fonction pour le bogue      }
+ { corrige). Plafond Z8K_MAX_SEGINFO disclosed (le reste est saute mais     }
+ { comptabilise correctement dans Pos5 pour ne pas desaligner le code). }
+ For I := 0 To Z8K_EntryCount - 1 Do Begin
+  If Pos5 + 5 > FSize Then Break;
+  BlockRead(F, Buf4, 1, BR); { segment number }
+  If I < Z8K_MAX_SEGINFO Then Z8K_SegInfo[I].SegNum := Buf4[0];
+  BlockRead(F, Buf4, 1, BR); { segment type }
+  If I < Z8K_MAX_SEGINFO Then Z8K_SegInfo[I].SegType := Buf4[0];
+  BlockRead(F, Buf2, 2, BR); { execution length (mot) }
+  If I < Z8K_MAX_SEGINFO Then Z8K_SegInfo[I].ExecLen := (Word(Buf2[0]) Shl 8) Or Word(Buf2[1]);
+  BlockRead(F, Buf4, 1, BR); { array element }
+  If I < Z8K_MAX_SEGINFO Then Z8K_SegInfo[I].ArrayElem := Buf4[0];
+  If I < Z8K_MAX_SEGINFO Then Z8K_SegInfoCount := I + 1;
+  Inc(Pos5, 5);
+ End;
+ { Segment 0 : charge le code+donnees brut (a partir de Pos5, PAS de        }
+ { l'octet 16 fixe comme au Stage 1 - voir le bogue corrige ci-dessus). }
  GetMem(Z8K_SegMem[0], SizeOf(TZ8KSegMem));
  FillChar(Z8K_SegMem[0]^, SizeOf(TZ8KSegMem), 0);
  Z8K_SegUsed[0] := True;
  LoadLen := Z8K_CodeDataSize;
- If LoadLen > 65536 Then LoadLen := 65536; { garde-fou Stage 1, un seul segment }
- If LoadLen > FSize - 14 Then LoadLen := FSize - 14;
+ If LoadLen > 65536 Then LoadLen := 65536; { garde-fou, un seul segment modelise }
+ If LoadLen > FSize - Pos5 Then LoadLen := FSize - Pos5;
  If LoadLen > 0 Then BlockRead(F, Z8K_SegMem[0]^, LoadLen, BR);
+ Inc(Pos5, LoadLen);
+ { Section 3.3 "Relocation Data Section" (Stage 6) : enregistrements REELS  }
+ { de 6 octets (segment/type/emplacement mot/index-symbole-ou-segment mot) }
+ { - analyses et conserves pour affichage/inspection. APPLICATION : ce      }
+ { chargeur place TOUJOURS le fichier au segment 0, offset 0 (charge=lie   }
+ { pour le seul segment modelise) - un ajustement de relogement n'a de      }
+ { sens que si l'adresse de chargement DIFFERE de l'adresse de liaison,     }
+ { ce qui n'est structurellement jamais le cas ici ; appliquer une          }
+ { correction serait donc un NO-OP correct pour les types locaux (0/1/2,    }
+ { segment 0), disclosure honnete plutot qu'un algorithme invente. Les      }
+ { types externes (5/6/7, references au-dela du seul segment charge) ne     }
+ { peuvent pas etre resolus par ce modele mono-segment - non traites, pas   }
+ { silencieusement faux (Z8K_PrintDiagnostics les signale). }
+ If Z8K_RelocSize > 0 Then Begin
+  J := 0;
+  While (J + 6 <= Z8K_RelocSize) And (Pos5 + 6 <= FSize) Do Begin
+   BlockRead(F, Buf4, 1, BR);
+   If Z8K_RelocCount < Z8K_MAX_RELOC Then Z8K_Reloc[Z8K_RelocCount].SegNum := Buf4[0];
+   BlockRead(F, Buf4, 1, BR);
+   If Z8K_RelocCount < Z8K_MAX_RELOC Then Z8K_Reloc[Z8K_RelocCount].RelocType := Buf4[0];
+   BlockRead(F, Buf2, 2, BR);
+   If Z8K_RelocCount < Z8K_MAX_RELOC Then
+    Z8K_Reloc[Z8K_RelocCount].Loc := (Word(Buf2[0]) Shl 8) Or Word(Buf2[1]);
+   BlockRead(F, Buf2, 2, BR);
+   If Z8K_RelocCount < Z8K_MAX_RELOC Then Begin
+    Z8K_Reloc[Z8K_RelocCount].SymOrSeg := (Word(Buf2[0]) Shl 8) Or Word(Buf2[1]);
+    Inc(Z8K_RelocCount);
+   End;
+   Inc(J, 6); Inc(Pos5, 6);
+  End;
+  { Reste sur un multiple non entier de 6 (fichier tronque/corrompu) :      }
+  { saute le reliquat sans planter, Pos5 avance de toute facon plus bas. }
+  If (J < Z8K_RelocSize) And (Pos5 + (Z8K_RelocSize - J) <= FSize) Then
+   Pos5 := Pos5 + (Z8K_RelocSize - J);
+ End;
+ { Section 3.4 "Symbol Table" (Stage 6) : entrees REELLES de 12 octets      }
+ { (segment 1 octet + type 1 octet + valeur 1 mot + nom 8 octets, complete  }
+ { de nuls) - analysees et conservees pour affichage (Z8K_PrintDiagnostics  }
+ { imite XDUMP -S/NMZ8K). }
+ If Z8K_SymTabSize > 0 Then Begin
+  J := 0;
+  While (J + 12 <= Z8K_SymTabSize) And (Pos5 + 12 <= FSize) Do Begin
+   BlockRead(F, Buf4, 1, BR);
+   If Z8K_SymCount < Z8K_MAX_SYM Then Z8K_Sym[Z8K_SymCount].SegNum := Buf4[0];
+   BlockRead(F, Buf4, 1, BR);
+   If Z8K_SymCount < Z8K_MAX_SYM Then Z8K_Sym[Z8K_SymCount].SymType := Buf4[0];
+   BlockRead(F, Buf2, 2, BR);
+   If Z8K_SymCount < Z8K_MAX_SYM Then
+    Z8K_Sym[Z8K_SymCount].Value := (Word(Buf2[0]) Shl 8) Or Word(Buf2[1]);
+   BlockRead(F, NameBuf, 8, BR);
+   NameStr := '';
+   For I := 0 To 7 Do If NameBuf[I] <> 0 Then NameStr := NameStr + Chr(NameBuf[I]);
+   If Z8K_SymCount < Z8K_MAX_SYM Then Begin
+    Z8K_Sym[Z8K_SymCount].Name := NameStr;
+    Inc(Z8K_SymCount);
+   End;
+   Inc(J, 12); Inc(Pos5, 12);
+  End;
+ End;
  Close(F);
  FillChar(Z8K_R, SizeOf(Z8K_R), 0);
  Z8K_FCW := Z8K_FCW_SEG; { mode segmente, tout le reste a 0 (etat initial) }
@@ -206179,16 +206368,81 @@ Begin
  Z8K_LoadFile := True;
 End;
 
+{ Table 3-2/3-3/3-4 (noms d'affichage) - voir les constantes Z8K_SEGTYPE_*/ }
+{ Z8K_RELOC_*/Z8K_SYMTYPE_* ci-dessus pour la disclosure sur ce qui est     }
+{ confirme vs infere. }
+Function Z8K_SegTypeName(T: Byte): String;
+Begin
+ Case T Of
+  Z8K_SEGTYPE_BSS:        Z8K_SegTypeName := 'bss (non initialise)';
+  Z8K_SEGTYPE_STACK:      Z8K_SegTypeName := 'pile';
+  Z8K_SEGTYPE_TEXT:       Z8K_SegTypeName := 'texte/code';
+  Z8K_SEGTYPE_CONST:      Z8K_SegTypeName := 'pool de constantes';
+  Z8K_SEGTYPE_DATA:       Z8K_SegTypeName := 'donnees initialisees';
+  Z8K_SEGTYPE_MIXED:      Z8K_SegTypeName := 'code/donnees mixte';
+  Z8K_SEGTYPE_MIXED_PROT: Z8K_SegTypeName := 'code/donnees mixte (protegeable)';
+  Else Z8K_SegTypeName := 'inconnu (' + IntToStr(T) + ')';
+ End;
+End;
+
+Function Z8K_RelocTypeName(T: Byte): String;
+Begin
+ Case T Of
+  Z8K_RELOC_OFFSET16:     Z8K_RelocTypeName := 'offset 16 bits';
+  Z8K_RELOC_SHORT_SEGOFS: Z8K_RelocTypeName := 'segment+offset court';
+  Z8K_RELOC_LONG_SEGOFS:  Z8K_RelocTypeName := 'segment+offset long';
+  Z8K_RELOC_EXT_OFFSET16: Z8K_RelocTypeName := 'XOF externe (offset 16 bits)';
+  Z8K_RELOC_EXT_SHORT:    Z8K_RelocTypeName := 'segment court externe';
+  Z8K_RELOC_EXT_LONG:     Z8K_RelocTypeName := 'segment long externe';
+  Else Z8K_RelocTypeName := 'inconnu (' + IntToStr(T) + ')';
+ End;
+End;
+
+Function Z8K_SymTypeName(T: Byte): String;
+Begin
+ Case T Of
+  Z8K_SYMTYPE_LOCAL:     Z8K_SymTypeName := 'local (debug)';
+  Z8K_SYMTYPE_UNDEF_EXT: Z8K_SymTypeName := 'externe non defini';
+  Z8K_SYMTYPE_GLOBAL:    Z8K_SymTypeName := 'global';
+  Z8K_SYMTYPE_SEGNAME:   Z8K_SymTypeName := 'nom de segment';
+  Else Z8K_SymTypeName := 'inconnu (' + IntToStr(T) + ')';
+ End;
+End;
+
 Procedure Z8K_PrintDiagnostics(Var P: TEmulatorPanel);
+Var
+ I: Integer;
+ ExtCount: Integer;
 Begin
  EmuVScr_WriteLn(P, 'Magic Number    : $' + HexWord(Z8K_Magic) + ' (' +
   Z8K_MagicName(Z8K_Magic) + ')');
- EmuVScr_WriteLn(P, 'Entrees segment : ' + IntToStr(Z8K_EntryCount));
+ EmuVScr_WriteLn(P, 'Entrees segment : ' + IntToStr(Z8K_EntryCount) +
+  ' (' + IntToStr(Z8K_SegInfoCount) + ' analysees)');
+ For I := 0 To Z8K_SegInfoCount - 1 Do
+  EmuVScr_WriteLn(P, '  #' + IntToStr(Z8K_SegInfo[I].SegNum) + ' : ' +
+   Z8K_SegTypeName(Z8K_SegInfo[I].SegType) + ', longueur=' +
+   IntToStr(Z8K_SegInfo[I].ExecLen) + ' octets');
  EmuVScr_WriteLn(P, 'Code+donnees    : ' + IntToStr(Z8K_CodeDataSize) + ' octets');
- EmuVScr_WriteLn(P, 'Relogements     : ' + IntToStr(Z8K_RelocSize) +
-  ' octets (non traites - Stage 1)');
- EmuVScr_WriteLn(P, 'Table symboles  : ' + IntToStr(Z8K_SymTabSize) +
-  ' octets (non traitee - Stage 1)');
+ EmuVScr_WriteLn(P, 'Relogements     : ' + IntToStr(Z8K_RelocSize) + ' octets (' +
+  IntToStr(Z8K_RelocCount) + ' enregistrements analyses)');
+ If Z8K_RelocCount > 0 Then Begin
+  ExtCount := 0;
+  For I := 0 To Z8K_RelocCount - 1 Do
+   If Z8K_Reloc[I].RelocType >= Z8K_RELOC_EXT_OFFSET16 Then Inc(ExtCount);
+  If ExtCount > 0 Then
+   EmuVScr_WriteLn(P, '  (' + IntToStr(ExtCount) + ' externe(s) - non ' +
+    'resolus, modele mono-segment ; le reste = ajustement local, NO-OP ' +
+    'ici car adresse de chargement = adresse de liaison, segment 0).')
+  Else
+   EmuVScr_WriteLn(P, '  (tous locaux au segment 0 - ajustement NO-OP, ' +
+    'adresse de chargement = adresse de liaison).');
+ End;
+ EmuVScr_WriteLn(P, 'Table symboles  : ' + IntToStr(Z8K_SymTabSize) + ' octets (' +
+  IntToStr(Z8K_SymCount) + ' symboles analyses)');
+ For I := 0 To Z8K_SymCount - 1 Do
+  EmuVScr_WriteLn(P, '  ' + Z8K_Sym[I].Name + ' : segment=' +
+   IntToStr(Z8K_Sym[I].SegNum) + ', ' + Z8K_SymTypeName(Z8K_Sym[I].SymType) +
+   ', valeur=$' + HexWord(Z8K_Sym[I].Value));
  EmuVScr_WriteLn(P, '');
  If OptionsDlg.Data.Z8001Cpm Then
   EmuVScr_WriteLn(P, 'API CP/M-8000 : case cochee (BDOS SC #2 reel, R5=fonction, ' +
@@ -206361,6 +206615,24 @@ Begin
   If Wide Then Begin If LongWord(R) < LongWord(A) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End
   Else Begin If (R And $FF) < (A And $FF) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End;
  End;
+ { DA/H (Stage 5, 2026-09-21) : uniquement pour les formes OCTET - ces 2    }
+ { drapeaux n'ont de sens reel que pour ADD/ADC/SUB/SBC octet (utilises    }
+ { ensuite par DAB) ; confirme via MAME (CLR_DA/SET_DA + CHK_ADDB_H/        }
+ { CHK_SUBB_H, z8000ops.hxx). Applique ici a TOUTE forme octet passant par }
+ { cette fonction partagee (y compris CP/INC/DEC) - CP ne les affecte PAS  }
+ { reellement sur le vrai silicium, mais DAB n'a de sens qu'apres un       }
+ { veritable ADD/SUB en pratique, disclosure honnete de cette             }
+ { sur-application mineure plutot qu'une fonction dupliquee juste pour CP. }
+ If Not Wide Then Begin
+  Z8K_FCW := Z8K_FCW And Not Z8K_FCW_H;
+  If IsSub Then Begin
+   Z8K_FCW := Z8K_FCW Or Z8K_FCW_DA;
+   If (R And $0F) > (A And $0F) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_H;
+  End Else Begin
+   Z8K_FCW := Z8K_FCW And Not Z8K_FCW_DA;
+   If (R And $0F) < (A And $0F) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_H;
+  End;
+ End;
 End;
 
 { ============================================================
@@ -206524,6 +206796,55 @@ Begin
  Z8K_RotateRight := CarryBit;
 End;
 
+{ RLC/RRC (rotation A TRAVERS la retenue, Stage 5) - HORS PERIMETRE de     }
+{ Stage 3/4 (chaine de retenue multi-pas), comblee ici : le bit shifte IN  }
+{ au premier pas est la retenue COURANTE (Z8K_FCW_C, PAS un bit du mot     }
+{ lui-meme) - confirme via MAME (RLCB/RRCB, z8000ops.hxx : `GET_C` utilise}
+{ comme bit d'entree du 1er pas, le bit de sortie du 1er pas devient       }
+{ l'entree du 2e pas pour le compte=2). }
+Function Z8K_RotateLeftCarry(Var Val: Word; Wide: Boolean; Count: Integer): Boolean;
+Var
+ SignBit: Word;
+ I: Integer;
+ Prev: Word;
+ CarryIn, CarryBit: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ CarryIn := (Z8K_FCW And Z8K_FCW_C) <> 0;
+ CarryBit := False;
+ For I := 1 To Count Do Begin
+  Prev := Val;
+  CarryBit := (Val And SignBit) <> 0;
+  If Wide Then Val := Word(LongWord(Val) Shl 1)
+  Else Val := Word((LongWord(Val) Shl 1) And $FF);
+  If CarryIn Then Val := Val Or 1;
+  CarryIn := CarryBit;
+  If ((Val Xor Prev) And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+ End;
+ Z8K_RotateLeftCarry := CarryBit;
+End;
+
+Function Z8K_RotateRightCarry(Var Val: Word; Wide: Boolean; Count: Integer): Boolean;
+Var
+ SignBit: Word;
+ I: Integer;
+ Prev: Word;
+ CarryIn, CarryBit: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ CarryIn := (Z8K_FCW And Z8K_FCW_C) <> 0;
+ CarryBit := False;
+ For I := 1 To Count Do Begin
+  Prev := Val;
+  CarryBit := (Val And 1) <> 0;
+  Val := Val Shr 1;
+  If CarryIn Then Val := Val Or SignBit;
+  CarryIn := CarryBit;
+  If ((Val Xor Prev) And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+ End;
+ Z8K_RotateRightCarry := CarryBit;
+End;
+
 { Trappe BDOS CP/M-8000 reelle (SC #2 UNIQUEMENT - voir disclosure de tete   }
 { pour #1/#3 non implantes). R5=fonction (deja pose par le programme avant   }
 { le SC, convention REELLE Programmer's Guide 4.1.1), R7=parametre/retour    }
@@ -206592,6 +206913,7 @@ Var
  Target: Word;
  LDividend: LongWord;
  LQuot, LRem: LongWord;
+ OrigC: Boolean;
 Begin
  If Z8K_Halted Then Exit;
  StartOfs := Z8K_PCOfs;
@@ -206650,31 +206972,152 @@ Begin
   Z8K_WriteByte(Z8K_PCSeg, Z8K_R[Rd], Z8K_GetRB(Rs));
   Exit;
  End;
- { LD Rd,addr / LD addr,Rs / LDB Rbd,addr / LDB addr,Rbs (adresse DIRECTE   }
- { non segmentee, Z61/Z6F/Z60/Z6E MAME) - forme SANS registre d'index       }
- { uniquement (bits4-7=0) ; la forme indexee addr(Rx) reste hors perimetre.}
- If (Op0 And $FFF0) = $6100 Then Begin { LD Rd,addr }
-  Rd := Byte(Op0 And $0F);
+ { LD Rd,addr(Rx) / LD addr(Rx),Rs / LDB Rbd,addr(Rx) / LDB addr(Rx),Rbs   }
+ { (adresse DIRECTE non segmentee, +INDEXATION Stage 5 - Z61/Z6F/Z60/Z6E   }
+ { MAME) - bits4-7=0 -> pas d'index (Stage 4) ; bits4-7=registre non nul   }
+ { -> adresse EFFECTIVE = addr+R[index] (confirme via MAME,                }
+ { Z61_ssN0_dddd_addr, meme mot de base que la forme sans index, EXACTEMENT}
+ { le meme principe de partage que Stage 4 pour @Rs/#imm). }
+ If (Op0 And $FF00) = $6100 Then Begin { LD Rd,addr / Rd,addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
   Z8K_R[Rd] := Z8K_ReadWord(Z8K_PCSeg, Imm16);
   Exit;
  End;
- If (Op0 And $FFF0) = $6F00 Then Begin { LD addr,Rs }
-  Rs := Byte(Op0 And $0F);
+ If (Op0 And $FF00) = $6F00 Then Begin { LD addr,Rs / addr(Rx),Rs }
+  Rs := Byte(Op0 And $0F); Rd := Byte((Op0 Shr 4) And $0F);
   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rd <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rd]);
   Z8K_WriteWord(Z8K_PCSeg, Imm16, Z8K_R[Rs]);
   Exit;
  End;
- If (Op0 And $FFF0) = $6000 Then Begin { LDB Rbd,addr }
-  Rd := Byte(Op0 And $0F);
+ If (Op0 And $FF00) = $6000 Then Begin { LDB Rbd,addr / Rbd,addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
   Z8K_SetRB(Rd, Z8K_ReadByte(Z8K_PCSeg, Imm16));
   Exit;
  End;
- If (Op0 And $FFF0) = $6E00 Then Begin { LDB addr,Rbs }
-  Rs := Byte(Op0 And $0F);
+ If (Op0 And $FF00) = $6E00 Then Begin { LDB addr,Rbs / addr(Rx),Rbs }
+  Rs := Byte(Op0 And $0F); Rd := Byte((Op0 Shr 4) And $0F);
   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rd <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rd]);
   Z8K_WriteByte(Z8K_PCSeg, Imm16, Z8K_GetRB(Rs));
+  Exit;
+ End;
+
+ { Stage 5 (suite) : ADD/SUB/CP/AND/OR/XOR (mot+octet) Rd,addr / Rd,addr(Rx) }
+ { - forme adresse-directe de la famille ALU, seule forme de memoire de     }
+ { cette famille ENCORE absente apres Stage 4 (qui ne couvrait que          }
+ { l'indirect-registre @Rs). Base = (base-immediat) Or $4000, confirme via  }
+ { MAME (Z40..Z4B dans z8000ops.hxx, mappage sequentiel ADDB/ADD/SUBB/SUB/  }
+ { ORB/OR/ANDB/AND/XORB/XOR/CPB/CP) - meme convention bits4-7=index (0=aucun}
+ { index) que LD ci-dessus. }
+ If (Op0 And $FF00) = $4000 Then Begin { ADDB Rbd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_ReadByte(Z8K_PCSeg, Imm16); Rb := Byte(Ab + Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, False, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4100 Then Begin { ADD Rd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  A := Z8K_R[Rd]; B := Z8K_ReadWord(Z8K_PCSeg, Imm16); R := Word(LongWord(A) + LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, False, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4200 Then Begin { SUBB Rbd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_ReadByte(Z8K_PCSeg, Imm16); Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4300 Then Begin { SUB Rd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  A := Z8K_R[Rd]; B := Z8K_ReadWord(Z8K_PCSeg, Imm16); R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4400 Then Begin { ORB Rbd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  Rb := Z8K_GetRB(Rd) Or Z8K_ReadByte(Z8K_PCSeg, Imm16);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4500 Then Begin { OR Rd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  R := Z8K_R[Rd] Or Z8K_ReadWord(Z8K_PCSeg, Imm16);
+  Z8K_SetFlagsLogic(R, True, False);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4600 Then Begin { ANDB Rbd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  Rb := Z8K_GetRB(Rd) And Z8K_ReadByte(Z8K_PCSeg, Imm16);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4700 Then Begin { AND Rd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  R := Z8K_R[Rd] And Z8K_ReadWord(Z8K_PCSeg, Imm16);
+  Z8K_SetFlagsLogic(R, True, False);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4800 Then Begin { XORB Rbd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  Rb := Z8K_GetRB(Rd) Xor Z8K_ReadByte(Z8K_PCSeg, Imm16);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4900 Then Begin { XOR Rd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  R := Z8K_R[Rd] Xor Z8K_ReadWord(Z8K_PCSeg, Imm16);
+  Z8K_SetFlagsLogic(R, True, False);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4A00 Then Begin { CPB Rbd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_ReadByte(Z8K_PCSeg, Imm16); Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $4B00 Then Begin { CP Rd,addr / addr(Rx) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  If Rs <> 0 Then Imm16 := Word(Imm16 + Z8K_R[Rs]);
+  A := Z8K_R[Rd]; B := Z8K_ReadWord(Z8K_PCSeg, Imm16); R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
   Exit;
  End;
 
@@ -206757,7 +207200,35 @@ Begin
    non resolue ce Stage) ; adressage BASE (via un registre segment) ;
    toute la famille ALU en adresse directe (ADD/SUB/CP/etc Rd,addr - seule
    la forme indirect-registre est couverte, pas la forme adresse directe
-   pour la famille ALU, contrairement a LD qui a les deux). ============= }
+   pour la famille ALU, contrairement a LD qui a les deux).
+
+   Stage 5 (2026-09-21, demande explicite - "Termine tous les Stages") :
+   comble les 2 lacunes "adressage" disclosed Stage 4 ci-dessus. AJOUTE :
+   adressage INDEXE addr(Rx) pour LD/LDB (les 4 blocs $6100/$6F00/$6000/
+   $6E00 ci-dessous, masque elargi de $FFF0 a $FF00 - bits4-7 non nul =
+   registre d'index ajoute a l'adresse suivant l'instruction, meme
+   convention "0=absent" que l'indirect-registre Stage 4) ; adressage
+   DIRECT+INDEXE pour toute la famille ALU (ADDB/ADD/SUBB/SUB/ORB/OR/ANDB/
+   AND/XORB/XOR/CPB/CP Rd,addr / Rd,addr(Rx), base = (base-immediat) Or
+   $4000, confirme via MAME - mappage sequentiel Z40..Z4B dans
+   z8000ops.hxx). AJOUTE egalement : RLC/RRC/RLCB/RRCB (rotation A TRAVERS
+   la retenue - Z8K_FCW_C chainee comme bit entrant du 1er pas, bit
+   sortant du pas precedent comme bit entrant du 2e pas, confirme via MAME
+   RLCB/RRCB) ; DAB (ajustement decimal - necessite les drapeaux DA/H reels,
+   ajoutes a Z8K_SetFlagsAdd pour les operations OCTET uniquement, formules
+   exactes de MAME CHK_ADDB_H/CHK_SUBB_H/CLR_DA/SET_DA - legere imprecision
+   disclosed : ce drapeau est aussi (a tort mais sans consequence pratique)
+   mis a jour par CP/INC/DEC qui partagent la meme fonction) ; EXTSB/EXTS/
+   EXTSL (extension de signe octet->mot / mot->long / long->quad, gardes de
+   bornes reelles sur Rd pour EXTS (Rd=15 interdit) et EXTSL (Rd>12
+   interdit)). DELIBEREMENT TOUJOURS HORS PERIMETRE : adressage BASE (via
+   un registre segment) ; blocs/chaines (LDI/LDD/LDIR/LDDR, CPI/CPD/CPIR/
+   CPDR, TRIB/TRDB/TRTIB/TRTDB, INI/IND/INIR/INDR, OUTI/OUTD/OUTIR/OUTDR,
+   SINI/SIND/SOUTI/SOUTD) ; BDOS au-dela des fonctions 0/2/9 (pas d'entree
+   console, pas de fichiers) ; enregistrements de relocation (Z8K_RelocSize,
+   toujours ignores) ; IN/OUT/SIN/SOUT (aucun port d'E/S reel) ; IRET/MREQ/
+   MRES/MBIT/MSET (privilegies/multiprocesseur, sans contexte reel).
+   ============= }
 
  { --- ALU octet (ADD/SUB/CP deja presents en forme MOT ; AND/OR/XOR      }
  { n'existaient sous AUCUNE forme avant ce Stage) - reg-reg ($FF00) et     }
@@ -207061,6 +207532,70 @@ Begin
   Exit;
  End;
 
+ { Stage 5 : DAB/EXTSB/EXTS/EXTSL (registre unaire, EncodeUnaryRegister)   }
+ { HORS PERIMETRE Stage 3, comblees ici. DAB depend REELLEMENT des         }
+ { drapeaux DA/H (voir Z8K_SetFlagsAdd, mis a jour Stage 5 pour les        }
+ { calculer sur les formes OCTET) - algorithme REEL confirme via MAME      }
+ { (ZB0_dddd_0000, z8000ops.hxx) : ajustement +/-$06 sur le nibble bas si  }
+ { H ou nibble>9, puis +/-$60 sur le nibble haut si C ou nibble>9. EXTS/   }
+ { EXTSB/EXTSL etendent le signe d'une valeur PLUS PETITE dans une PLUS    }
+ { GRANDE vue registre (octet->mot->long->quad) - convention de paire      }
+ { RRn=Rn(fort):Rn+1(faible) deja etablie (BDOS RR6). }
+ If (Op0 And $FF0F) = $B000 Then Begin { DAB Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Ab := Z8K_GetRB(Rd);
+  { BOGUE REEL corrige (Stage 5, 2026-09-21, trouve en construisant le      }
+  { programme de test) : C doit etre lu AVANT d'etre efface ci-dessous -    }
+  { la version initiale effacait C puis le relisait, le condamnant a        }
+  { toujours lire faux et a ne jamais appliquer l'ajustement du nibble haut }
+  { via la retenue d'un ADD/SUB precedent. }
+  OrigC := (Z8K_FCW And Z8K_FCW_C) <> 0;
+  If (Z8K_FCW And Z8K_FCW_H <> 0) Or ((Ab And $0F) > 9) Then Begin
+   If (Z8K_FCW And Z8K_FCW_DA) <> 0 Then Ab := Byte(Ab - $06) Else Ab := Byte(Ab + $06);
+  End;
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S);
+  If OrigC Or (((Ab Shr 4) And $0F) > 9) Then Begin
+   If (Z8K_FCW And Z8K_FCW_DA) <> 0 Then Ab := Byte(Ab - $60) Else Ab := Byte(Ab + $60);
+   Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End;
+  If Ab = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (Ab And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_SetRB(Rd, Ab);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $B100 Then Begin { EXTSB Rd (octet -> mot) }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  If (Z8K_R[Rd] And $80) <> 0 Then Z8K_R[Rd] := (Z8K_R[Rd] And $00FF) Or $FF00
+  Else Z8K_R[Rd] := Z8K_R[Rd] And $00FF;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $B10A Then Begin { EXTS Rd (mot -> long, paire Rd:Rd+1) }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  If Rd = 15 Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'Z8001 : EXTS avec Rd=R15 (paire hors limites).');
+   Z8K_Halted := True;
+   Exit;
+  End;
+  If (Z8K_R[Rd + 1] And $8000) <> 0 Then Z8K_R[Rd] := $FFFF Else Z8K_R[Rd] := $0000;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $B107 Then Begin { EXTSL Rd (long -> quad, Rd..Rd+3) }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  If Rd > 12 Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'Z8001 : EXTSL avec Rd trop grand (quadruplet hors limites).');
+   Z8K_Halted := True;
+   Exit;
+  End;
+  If (Z8K_R[Rd + 2] And $8000) <> 0 Then Begin
+   Z8K_R[Rd] := $FFFF; Z8K_R[Rd + 1] := $FFFF;
+  End Else Begin
+   Z8K_R[Rd] := $0000; Z8K_R[Rd + 1] := $0000;
+  End;
+  Exit;
+ End;
+
  { --- BIT/SET/RES, forme immediate uniquement (numero de bit 0-15 dans    }
  { le nibble bas, EncodeBitInstruction). --- }
  If (Op0 And $FF00) = $A700 Then Begin { BIT Rd,#n }
@@ -207139,6 +207674,54 @@ Begin
   VW := Z8K_GetRB(Rd);
   Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
   If Z8K_RotateRight(VW, False, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  If (VW And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_SetRB(Rd, Byte(VW));
+  Exit;
+ End;
+ { Stage 5 (2026-09-21, "Termine tous les Stages") : RLC/RRC (rotation A   }
+ { TRAVERS la retenue) - HORS PERIMETRE Stage 3, voir Z8K_RotateLeftCarry/ }
+ { RightCarry juste avant Z8K_DispatchBDOS pour la disclosure complete     }
+ { (chaine de retenue confirmee via MAME, PAS devinee). }
+ If (Op0 And $FF0D) = $B308 Then Begin { RLC Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_R[Rd];
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateLeftCarry(VW, True, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C
+  Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_C;
+  If VW = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $8000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_R[Rd] := VW;
+  Exit;
+ End;
+ If (Op0 And $FF0D) = $B208 Then Begin { RLCB Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_GetRB(Rd);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateLeftCarry(VW, False, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C
+  Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_C;
+  If (VW And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_SetRB(Rd, Byte(VW));
+  Exit;
+ End;
+ If (Op0 And $FF0D) = $B30C Then Begin { RRC Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_R[Rd];
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateRightCarry(VW, True, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C
+  Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_C;
+  If VW = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $8000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_R[Rd] := VW;
+  Exit;
+ End;
+ If (Op0 And $FF0D) = $B20C Then Begin { RRCB Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_GetRB(Rd);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateRightCarry(VW, False, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C
+  Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_C;
   If (VW And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
   If (VW And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
   Z8K_SetRB(Rd, Byte(VW));
@@ -207481,7 +208064,7 @@ Begin
  { Instruction non couverte ce Stage : echec HONNETE (voir disclosure). }
  P.CurFg := 12;
  EmuVScr_WriteLn(P, 'Z8001 : instruction non implantee $' + HexWord(Op0) +
-  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 4).');
+  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 5).');
  Z8K_Halted := True;
 End;
 
