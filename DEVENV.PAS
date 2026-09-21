@@ -206617,11 +206617,64 @@ Begin
   Exit;
  End;
 
- If (Op0 And $FF00) = $2100 Then Begin { LD Rd,#imm16 (Z21, MAME) }
+ If (Op0 And $FF00) = $2100 Then Begin { LD Rd,#imm16 / LD Rd,@Rs (Z21, MAME) }
+  { BOGUE/LACUNE REELLE evitee (Stage 4, 2026-09-21) : le mot de base $2100 }
+  { EST PARTAGE entre la forme immediate (bits4-7=0000, un mot imm16 suit)  }
+  { et la forme indirecte-registre @Rs (bits4-7=pointeur, AUCUN mot ne     }
+  { suit) - confirme via MAME (Z21_0000_dddd_imm16 vs Z21_ssN0_dddd,        }
+  { z8000ops.hxx) : R0 est reserve/exclu comme pointeur dans cette forme    }
+  { courte precisement pour lever l'ambiguite avec la forme immediate,     }
+  { jamais un cas reel a gerer ici. }
   Rd := Byte(Op0 And $0F);
-  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs);
-  Z8K_PCOfs := Word(Z8K_PCOfs + 2);
-  Z8K_R[Rd] := Imm16;
+  Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs);
+   Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+   Z8K_R[Rd] := Imm16;
+  End Else
+   Z8K_R[Rd] := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $2F00 Then Begin { LD @Rd,Rs (Z2F, MAME) }
+  Rs := Byte(Op0 And $0F); Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_WriteWord(Z8K_PCSeg, Z8K_R[Rd], Z8K_R[Rs]);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $2000 Then Begin { LDB Rbd,@Rs (Z20, MAME) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs <> 0 Then Z8K_SetRB(Rd, Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]));
+  Exit;
+ End;
+ If (Op0 And $FF00) = $2E00 Then Begin { LDB @Rd,Rbs (Z2E, MAME) }
+  Rs := Byte(Op0 And $0F); Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_WriteByte(Z8K_PCSeg, Z8K_R[Rd], Z8K_GetRB(Rs));
+  Exit;
+ End;
+ { LD Rd,addr / LD addr,Rs / LDB Rbd,addr / LDB addr,Rbs (adresse DIRECTE   }
+ { non segmentee, Z61/Z6F/Z60/Z6E MAME) - forme SANS registre d'index       }
+ { uniquement (bits4-7=0) ; la forme indexee addr(Rx) reste hors perimetre.}
+ If (Op0 And $FFF0) = $6100 Then Begin { LD Rd,addr }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Z8K_R[Rd] := Z8K_ReadWord(Z8K_PCSeg, Imm16);
+  Exit;
+ End;
+ If (Op0 And $FFF0) = $6F00 Then Begin { LD addr,Rs }
+  Rs := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Z8K_WriteWord(Z8K_PCSeg, Imm16, Z8K_R[Rs]);
+  Exit;
+ End;
+ If (Op0 And $FFF0) = $6000 Then Begin { LDB Rbd,addr }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Z8K_SetRB(Rd, Z8K_ReadByte(Z8K_PCSeg, Imm16));
+  Exit;
+ End;
+ If (Op0 And $FFF0) = $6E00 Then Begin { LDB addr,Rbs }
+  Rs := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Z8K_WriteByte(Z8K_PCSeg, Imm16, Z8K_GetRB(Rs));
   Exit;
  End;
 
@@ -206679,7 +206732,32 @@ Begin
    (TRIB/TRDB/INI/OUTI/etc) ; CPI/CPD/CPIR/CPDR ; IN/OUT/SIN/SOUT (aucun
    port d'E/S reel n'existe dans ce shell hote) ; IRET/MREQ/MRES/MBIT/MSET
    (privilegies/multiprocesseur, sans contexte reel a modeliser - echec
-   honnete) ; JP adresse directe/indexee (mode memoire). ============= }
+   honnete) ; JP adresse directe/indexee (mode memoire).
+
+   Stage 4 (2026-09-21, demande explicite - "Continue le Stage 4 pour
+   Z8000 + CP/M") : comble la plus grosse lacune disclosed de Stage 3 -
+   l'adressage MEMOIRE pour LD/LDB et pour la famille ALU (ADD/SUB/CP/AND/
+   OR/XOR, formes mot+octet). AJOUTE : LD Rd,@Rs / LD @Rd,Rs / LDB Rbd,@Rs
+   / LDB @Rd,Rbs (indirect-registre) ; LD Rd,addr / LD addr,Rs / LDB
+   Rbd,addr / LDB addr,Rbs (adresse DIRECTE non segmentee, SANS registre
+   d'index) ; ADD/SUB/CP/AND/OR/XOR (+formes octet) Rd,@Rs (indirect-
+   registre). DECOUVERTE IMPORTANTE confirmee via MAME (z8000ops.hxx,
+   Z00-Z21 etc) : le mot de base de CHAQUE forme immediate (LD/ADD/SUB/CP/
+   AND/OR/XOR, deja Stage 2/3) est en realite PARTAGE avec sa forme
+   indirect-registre - bits4-7=0000 signifie "immediat, un mot suit",
+   bits4-7=pointeur NON NUL signifie "valeur en memoire via ce registre,
+   AUCUN mot ne suit" - R0 est reserve/exclu comme pointeur dans ces
+   formes courtes precisement pour lever cette ambiguite (jamais un cas
+   reel a gerer). Cette decouverte a permis d'ETENDRE les blocs existants
+   (verifier bits4-7 avant de decider immediat-vs-indirect) plutot que
+   d'ajouter des blocs entierement nouveaux pour la plupart des cas.
+   DELIBEREMENT HORS PERIMETRE (idem Stage 3, toujours vrai) : adressage
+   INDEXE addr(Rx)/Rd(Rx) (bits4-7 seraient alors un registre d'index en
+   PLUS de l'adresse, pas juste 0-vs-pointeur - ambiguite supplementaire
+   non resolue ce Stage) ; adressage BASE (via un registre segment) ;
+   toute la famille ALU en adresse directe (ADD/SUB/CP/etc Rd,addr - seule
+   la forme indirect-registre est couverte, pas la forme adresse directe
+   pour la famille ALU, contrairement a LD qui a les deux). ============= }
 
  { --- ALU octet (ADD/SUB/CP deja presents en forme MOT ; AND/OR/XOR      }
  { n'existaient sous AUCUNE forme avant ce Stage) - reg-reg ($FF00) et     }
@@ -206727,49 +206805,71 @@ Begin
   Z8K_SetRB(Rd, Rb);
   Exit;
  End;
- If (Op0 And $FF00) = $0000 Then Begin { ADDB Rd,#imm8 }
-  Rd := Byte(Op0 And $0F);
-  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
-  Ab := Z8K_GetRB(Rd); Bb := Byte(Op1 And $FF); Rb := Byte(Ab + Bb);
+ { Stage 4 (2026-09-21) : ADDB/SUBB/CPB/ANDB/ORB/XORB Rd,@Rs (indirect-     }
+ { registre) AJOUTE - meme mot de base PARTAGE que Rd,#imm8 (bits4-7=0     }
+ { immediat/mot suit, bits4-7=pointeur non nul sinon), confirme via MAME   }
+ { (Z00_0000_dddd_imm8 vs Z00_ssN0_dddd) exactement comme LD ci-dessus. }
+ If (Op0 And $FF00) = $0000 Then Begin { ADDB Rd,#imm8 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+   Bb := Byte(Op1 And $FF);
+  End Else Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Ab := Z8K_GetRB(Rd); Rb := Byte(Ab + Bb);
   Z8K_SetFlagsAdd(Ab, Bb, Rb, False, False);
   Z8K_SetRB(Rd, Rb);
   Exit;
  End;
- If (Op0 And $FF00) = $0200 Then Begin { SUBB Rd,#imm8 }
-  Rd := Byte(Op0 And $0F);
-  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
-  Ab := Z8K_GetRB(Rd); Bb := Byte(Op1 And $FF); Rb := Byte(Ab - Bb);
+ If (Op0 And $FF00) = $0200 Then Begin { SUBB Rd,#imm8 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+   Bb := Byte(Op1 And $FF);
+  End Else Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Ab := Z8K_GetRB(Rd); Rb := Byte(Ab - Bb);
   Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
   Z8K_SetRB(Rd, Rb);
   Exit;
  End;
- If (Op0 And $FF00) = $0A00 Then Begin { CPB Rd,#imm8 }
-  Rd := Byte(Op0 And $0F);
-  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
-  Ab := Z8K_GetRB(Rd); Bb := Byte(Op1 And $FF); Rb := Byte(Ab - Bb);
+ If (Op0 And $FF00) = $0A00 Then Begin { CPB Rd,#imm8 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+   Bb := Byte(Op1 And $FF);
+  End Else Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Ab := Z8K_GetRB(Rd); Rb := Byte(Ab - Bb);
   Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
   Exit;
  End;
- If (Op0 And $FF00) = $0600 Then Begin { ANDB Rd,#imm8 }
-  Rd := Byte(Op0 And $0F);
-  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
-  Rb := Z8K_GetRB(Rd) And Byte(Op1 And $FF);
+ If (Op0 And $FF00) = $0600 Then Begin { ANDB Rd,#imm8 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+   Bb := Byte(Op1 And $FF);
+  End Else Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Rb := Z8K_GetRB(Rd) And Bb;
   Z8K_SetFlagsLogic(Rb, False, True);
   Z8K_SetRB(Rd, Rb);
   Exit;
  End;
- If (Op0 And $FF00) = $0400 Then Begin { ORB Rd,#imm8 }
-  Rd := Byte(Op0 And $0F);
-  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
-  Rb := Z8K_GetRB(Rd) Or Byte(Op1 And $FF);
+ If (Op0 And $FF00) = $0400 Then Begin { ORB Rd,#imm8 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+   Bb := Byte(Op1 And $FF);
+  End Else Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Rb := Z8K_GetRB(Rd) Or Bb;
   Z8K_SetFlagsLogic(Rb, False, True);
   Z8K_SetRB(Rd, Rb);
   Exit;
  End;
- If (Op0 And $FF00) = $0800 Then Begin { XORB Rd,#imm8 }
-  Rd := Byte(Op0 And $0F);
-  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
-  Rb := Z8K_GetRB(Rd) Xor Byte(Op1 And $FF);
+ If (Op0 And $FF00) = $0800 Then Begin { XORB Rd,#imm8 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+   Bb := Byte(Op1 And $FF);
+  End Else Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Rb := Z8K_GetRB(Rd) Xor Bb;
   Z8K_SetFlagsLogic(Rb, False, True);
   Z8K_SetRB(Rd, Rb);
   Exit;
@@ -206791,21 +206891,29 @@ Begin
   R := Z8K_R[Rd] Xor Z8K_R[Rs]; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
   Exit;
  End;
- If (Op0 And $FF00) = $0700 Then Begin { AND Rd,#imm16 }
-  Rd := Byte(Op0 And $0F);
-  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+ { Stage 4 : AND/OR/XOR Rd,@Rs (indirect-registre) AJOUTE, meme partage    }
+ { de mot de base que la forme immediate (voir ADDB ci-dessus). }
+ If (Op0 And $FF00) = $0700 Then Begin { AND Rd,#imm16 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  End Else Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
   R := Z8K_R[Rd] And Imm16; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
   Exit;
  End;
- If (Op0 And $FF00) = $0500 Then Begin { OR Rd,#imm16 }
-  Rd := Byte(Op0 And $0F);
-  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+ If (Op0 And $FF00) = $0500 Then Begin { OR Rd,#imm16 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  End Else Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
   R := Z8K_R[Rd] Or Imm16; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
   Exit;
  End;
- If (Op0 And $FF00) = $0900 Then Begin { XOR Rd,#imm16 }
-  Rd := Byte(Op0 And $0F);
-  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+ If (Op0 And $FF00) = $0900 Then Begin { XOR Rd,#imm16 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  End Else Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
   R := Z8K_R[Rd] Xor Imm16; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
   Exit;
  End;
@@ -207328,26 +207436,34 @@ Begin
   Exit;
  End;
 
- { ADD/SUB/CP Rd,#imm16 (EncodeALU BaseImm). }
- If (Op0 And $FF00) = $0100 Then Begin { ADD Rd,#imm16 }
-  Rd := Byte(Op0 And $0F);
-  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+ { ADD/SUB/CP Rd,#imm16 / Rd,@Rs (EncodeALU BaseImm) - forme indirect-      }
+ { registre AJOUTEE Stage 4, meme partage de mot de base que les blocs     }
+ { octet/logiques ci-dessus (voir la disclosure pres de LD Rd,@Rs). }
+ If (Op0 And $FF00) = $0100 Then Begin { ADD Rd,#imm16 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  End Else Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
   A := Z8K_R[Rd]; R := Word(LongWord(A) + LongWord(Imm16));
   Z8K_SetFlagsAdd(A, Imm16, R, False, True);
   Z8K_R[Rd] := R;
   Exit;
  End;
- If (Op0 And $FF00) = $0300 Then Begin { SUB Rd,#imm16 }
-  Rd := Byte(Op0 And $0F);
-  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+ If (Op0 And $FF00) = $0300 Then Begin { SUB Rd,#imm16 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  End Else Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
   A := Z8K_R[Rd]; R := Word(LongWord(A) - LongWord(Imm16));
   Z8K_SetFlagsAdd(A, Imm16, R, True, True);
   Z8K_R[Rd] := R;
   Exit;
  End;
- If (Op0 And $FF00) = $0B00 Then Begin { CP Rd,#imm16 }
-  Rd := Byte(Op0 And $0F);
-  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+ If (Op0 And $FF00) = $0B00 Then Begin { CP Rd,#imm16 / Rd,@Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rs = 0 Then Begin
+   Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  End Else Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
   A := Z8K_R[Rd]; R := Word(LongWord(A) - LongWord(Imm16));
   Z8K_SetFlagsAdd(A, Imm16, R, True, True);
   Exit;
@@ -207365,7 +207481,7 @@ Begin
  { Instruction non couverte ce Stage : echec HONNETE (voir disclosure). }
  P.CurFg := 12;
  EmuVScr_WriteLn(P, 'Z8001 : instruction non implantee $' + HexWord(Op0) +
-  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 3).');
+  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 4).');
  Z8K_Halted := True;
 End;
 

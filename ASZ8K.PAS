@@ -53,7 +53,7 @@ TRelocation=Record
 End;
 TOptions=Record
 SourceName,ObjectName,ListName,PredefName:String;
-Listing,CrossReference,UndefinedGlobal,Segmented:Boolean
+Listing,CrossReference,UndefinedGlobal,Segmented,SegmentedExplicit,OutputExplicit:Boolean
 End;
 PPredefFormat=^TPredefFormat;
 TPredefFormat=Record
@@ -159,14 +159,15 @@ Procedure Usage;Begin
  WriteLn('ASZ8K ',Version,
  ' - Cette commande permet de lancer l''assembleur Zilog Z8001/Z8002 pour CP/M-8000');
  WriteLn;
- WriteLn('Syntaxe : ASZ8K [-o fichier] [-p ASZ8K.PD] [-lux] fichier.8k{n|s}');
+ WriteLn('Syntaxe : ASZ8K [-o fichier] [-p ASZ8K.PD] [-luxs] fichier.8k{n|s}');
  WriteLn;
- WriteLn('  -o nom  produit un objet relogeable UNIDOT (extension .OBJ par defaut)');
+ WriteLn('  -o nom  nom exact de l''objet relogeable UNIDOT');
  WriteLn('  -p nom  utilise ce fichier de predefinitions Digital Research');
  WriteLn('            .O vient de XCON, .RL de LDSK et .Z8K est executable');
  WriteLn('  -l      produit un listing fichier.LST');
  WriteLn('  -u      considere les symboles indefinis comme globaux externes');
  WriteLn('  -x      ajoute les references croisees au listing (implique -l)');
+ WriteLn('  -s      force la cible segmentee Z8001 et exige un source .8KS');
  WriteLn('  .8KN    objet Z8002/non segmente; .8KS objet Z8001 segmente')
 End;
 
@@ -307,6 +308,17 @@ Begin
  End
 End;
 
+Function ResolveCPMPath(Const Name:String):String;
+Var Root,Rest:String;C:Char;
+Begin
+ ResolveCPMPath:=Name;
+ if(Length(Name)<2)or(Name[2]<>':')or not(Name[1]in['A'..'Z','a'..'z'])Then Exit;
+ C:=UpCase(Name[1]);Root:=GetEnv('CPM_'+C);if Root=''Then Exit;
+ Rest:=Copy(Name,3,255);
+ if(Root<>'')and not(Root[Length(Root)]in['\','/'])Then Root:=Root+'\';
+ ResolveCPMPath:=Root+Rest
+End;
+
 Function TextFileExists(Const Name:String):Boolean;
 Var F:Text;Ok:Boolean;
 Begin
@@ -406,6 +418,7 @@ Begin
   if not TextFileExists(Candidate)Then Candidate:=DirectoryPart(Opt.SourceName)+'ASZ8K.PD';
   if not TextFileExists(Candidate)Then Candidate:=DirectoryPart(Opt.SourceName)+'asz8k.pd'
  End;
+ Candidate:=ResolveCPMPath(Candidate);
  if not TextFileExists(Candidate)Then Fatal('fichier de predefinitions ASZ8K.PD introuvable');
  Opt.PredefName:=Candidate;Assign(F,Candidate);Reset(F);
  if IOResult<>0 Then Fatal('lecture impossible du fichier ASZ8K.PD');
@@ -1940,6 +1953,7 @@ Var
       Delete(Name,Length(Name),1);Delete(Name,1,1)
      End;
      if Name=''Then Diagnostic('INCLUDE exige un fichier')else Begin
+      Name:=ResolveCPMPath(Name);
       if not TextFileExists(Name)Then Name:=DirectoryPart(FileName)+Name;
       AssembleFile(Name,Depth+1)
      End
@@ -2446,8 +2460,8 @@ End;
 
 Procedure ParseCommandLine;
 Var
- I:Integer;
- S,U,OutBase:String;
+ I,J:Integer;
+ S,U,OutBase,Rest:String;
 Begin
  FillChar(Opt,SizeOf(Opt),0);I:=1;
  While I<=ParamCount do Begin
@@ -2455,39 +2469,53 @@ Begin
   if(U='/?')or(U='-?')or(U='--HELP')Then Begin
    Usage;Halt(0)
   End
-  else if(U='-O')Then Begin
-   Inc(I);if I>ParamCount Then Fatal('-o exige un nom');Opt.ObjectName:=ParamStr(I)
-  End
-  else if(U='-P')Then Begin
-   Inc(I);if I>ParamCount Then Fatal('-p exige un nom');Opt.PredefName:=ParamStr(I)
-  End
-  else if(Copy(U,1,2)='-O')and(Length(S)>2)Then Opt.ObjectName:=Copy(S,3,255)
   else if(S<>'')and(S[1]='-')Then Begin
-   Delete(U,1,1);
-   While U<>''do Begin
-    Case U[1]of 'L':Opt.Listing:=True;'U':Opt.UndefinedGlobal:=True;
-    'X':
-    Begin
-     Opt.CrossReference:=True;Opt.Listing:=True
-    End;
-    else Fatal('option inconnue: -'+U[1])
-   End;Delete(U,1,1)
-  End
- End else if Opt.SourceName=''Then Opt.SourceName:=S else Fatal(
- 'plusieurs fichiers source');Inc(I)
-End;
+   if Length(S)=1 Then Fatal('Usage: asz8k [-o outfile] [-luxs] file.8k{n|s}');
+   J:=2;
+   While J<=Length(S)do Begin
+    Case UpCase(S[J])of
+     'L':Opt.Listing:=True;
+     'U':Opt.UndefinedGlobal:=True;
+     'X':Begin Opt.CrossReference:=True;Opt.Listing:=True End;
+     'S':Begin Opt.Segmented:=True;Opt.SegmentedExplicit:=True End;
+     'O','P':Begin
+      Rest:=Copy(S,J+1,255);
+      if Rest=''Then Begin
+       Inc(I);if I>ParamCount Then Fatal('-'+UpCase(S[J])+' exige un nom');Rest:=ParamStr(I)
+      End;
+      if UpCase(S[J])='O'Then Begin
+       if Opt.OutputExplicit Then Fatal('option -o indiquee plusieurs fois');
+       Opt.ObjectName:=Rest;Opt.OutputExplicit:=True
+      End else Begin
+       if Opt.PredefName<>''Then Fatal('option -p indiquee plusieurs fois');Opt.PredefName:=Rest
+      End;
+      J:=Length(S)
+     End;
+     else Fatal('option inconnue: -'+UpCase(S[J]))
+    End;Inc(J)
+   End
+  End else if Opt.SourceName=''Then Opt.SourceName:=S else Fatal('plusieurs fichiers source');
+  Inc(I)
+ End;
 if Opt.SourceName=''Then Begin
  Usage;Halt(1)
 End;
 U:=Extension(Opt.SourceName);
 if(U<>'.8KN')and(U<>'.8KS')Then Fatal('extension .8KN ou .8KS attendue');
-Opt.Segmented:=U='.8KS';OutBase:=BaseName(Opt.SourceName);
-if Opt.ObjectName=''Then Opt.ObjectName:=OutBase+'.OBJ'else if Extension(Opt.ObjectName)=
-''Then Opt.ObjectName:=Opt.ObjectName+'.OBJ';
-U:=Extension(Opt.ObjectName);
-if(U='.O')or(U='.RL')or(U='.Z8K')Then Fatal(U+
- ' n''est pas un conteneur UNIDOT brut; utilisez .OBJ puis XCON/LDSK');
-Opt.ListName:=OutBase+'.LST'
+if Opt.SegmentedExplicit and(U<>'.8KS')Then
+ Fatal('Segmented source file must end with ''.8ks''');
+if not Opt.SegmentedExplicit Then Opt.Segmented:=U='.8KS';
+if(not Opt.Segmented)and(U<>'.8KN')Then
+ Fatal('Nonsegmented source file must end with ''.8kn''');
+OutBase:=BaseName(Opt.SourceName);
+{ Comme ASZ8K original, -o conserve exactement le nom donne. Sans -o,
+  seule l'extension du source est remplacee par .OBJ. }
+if not Opt.OutputExplicit Then Opt.ObjectName:=OutBase+'.OBJ';
+if Opt.ObjectName=''Then Fatal('-o exige un nom de fichier non vide');
+Opt.ListName:=OutBase+'.LST';
+Opt.SourceName:=ResolveCPMPath(Opt.SourceName);
+Opt.ObjectName:=ResolveCPMPath(Opt.ObjectName);
+Opt.ListName:=ResolveCPMPath(Opt.ListName)
 End;
 
 Procedure AllocateImages;
