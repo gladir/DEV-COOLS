@@ -208602,7 +208602,7 @@ Begin
  { Instruction non couverte ce Stage : echec HONNETE (voir disclosure). }
  P.CurFg := 12;
  EmuVScr_WriteLn(P, 'Z8001 : instruction non implantee $' + HexWord(Op0) +
-  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 7).');
+  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 8).');
  Z8K_Halted := True;
 End;
 
