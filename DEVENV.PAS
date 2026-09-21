@@ -41439,6 +41439,88 @@ End;
 { de portee sans le DPB reel de cette image precise (aucune source ne le     }
 { fournit), mais couvre la convention la plus repandue plutot que de ne      }
 { rien tenter. }
+{ BOGUE REEL (2026-09-21, signale par l'utilisateur sur une VRAIE image     }
+{ "cpm8k.img" - Entree sur COPY.Z8K ouvrait bien l'emulateur Z8001 (fix     }
+{ precedent) mais avec un fichier tronque, "Magic Number $0000") :          }
+{ H8D_ExtractCPMByName supposait des blocs CP/M de 1 Ko fixes (8            }
+{ enregistrements de 128 octets/bloc) - une convention purement Heath/      }
+{ Zenith historique, jamais verifiee pour un disque CP/M "d'origine         }
+{ generique" (voir la disclosure de H8D_DetectCPM juste au-dessus : cette   }
+{ image N'EST PAS forcement une geometrie Heath/Zenith connue). Aucun DPB   }
+{ n'est stocke sur un disque CP/M (il vit uniquement dans le BIOS, inconnu  }
+{ ici) - la taille de bloc reelle (BLS) ne peut donc PAS etre lue           }
+{ directement, seulement INFEREE. Methode retenue, VERIFIEE a la main       }
+{ avant d'etre codee (pas une simple supposition) : le repertoire CP/M      }
+{ REEL de "cpm8k.img" a ete extrait et analyse octet-a-octet (11 entrees    }
+{ reelles, fichiers COPY.Z8K/CPM.SYS/DDT.Z8K/etc.) - la taille AFFICHEE     }
+{ par H8D_ListCPM (formule standard CP/M `(ExtNum*128+Rc)*128`, INDEPENDANTE}
+{ de la taille de bloc, deja correcte) a ete confrontee au nombre REEL de   }
+{ pointeurs AL[] non-nuls stockes dans chaque entree de repertoire, pour    }
+{ chacune des 5 tailles de bloc standard DPB reelles (1024/2048/4096/8192/  }
+{ 16384, avec le masque d'extension EXM = BLS/1024-1 correspondant - relation}
+{ CP/M standard reelle, pas inventee). SEULE BLS=2048/EXM=1 explique         }
+{ EXACTEMENT (erreur totale nulle) les 11 entrees reelles de ce disque       }
+{ (ex. COPY.Z8K : EX=1,RC=61 -> (1 mod 2)*16384+61*128=24192 octets locaux,  }
+{ ceil(24192/2048)=12 blocs, EXACTEMENT les 12 pointeurs AL[] non-nuls        }
+{ stockes) - confirme aussi sur CPM.SYS (15 blocs) et DDT.Z8K (2 entrees,     }
+{ 16+12=28 blocs) simultanement. H8D_DetectCPMBlockSize ci-dessous code ce   }
+{ MEME calcul empirique de facon GENERALE (pas juste "2048" en dur) afin de  }
+{ fonctionner correctement sur d'autres disques CP/M generiques de geometrie }
+{ differente, pas seulement celui-ci - defaut BLS=1024/EXM=0 (comportement   }
+{ IDENTIQUE a avant ce correctif) si le repertoire ne contient aucune         }
+{ entree exploitable (disque vide/illisible). Voir project_devenv_          }
+{ z8001_cpm8000.md pour le detail complet de cette investigation. }
+Function H8D_DetectCPMBlockSize(Idx: Byte; DirSec: LongInt): Word;
+Const
+ NCand = 5;
+ Cands: Array[0..NCand - 1] Of Word = (1024, 2048, 4096, 8192, 16384);
+Var
+ Buf: Array[0..255] Of Byte;
+ S, I, K: Integer;
+ U, C: Byte;
+ OkName: Boolean;
+ Ex, Rc: Byte;
+ AlCount: Integer;
+ CandI, BestI: Integer;
+ Bls, Exm: Word;
+ LocalBytes: LongInt;
+ PredBlocks: Integer;
+ Err: Array[0..NCand - 1] Of LongInt;
+Begin
+ For CandI := 0 To NCand - 1 Do Err[CandI] := 0;
+ For S := 0 To 7 Do Begin
+  If LongInt(DirSec + S + 1) * H8D_SECSIZE > EmuFloppySize[Idx] Then Break;
+  If Not H8D_ReadSector(Idx, DirSec + S, Buf) Then Break;
+  For I := 0 To 7 Do Begin
+   U := Buf[I * 32];
+   If U > $0F Then Continue;
+   OkName := True;
+   For K := 1 To 11 Do Begin
+    C := Buf[I * 32 + K] And $7F;
+    If (C < $20) Or (C >= $7F) Then OkName := False;
+   End;
+   If Not OkName Then Continue;
+   Ex := Buf[I * 32 + 12];
+   Rc := Buf[I * 32 + 15];
+   AlCount := 0;
+   For K := 0 To 15 Do If Buf[I * 32 + 16 + K] <> 0 Then Inc(AlCount);
+   If AlCount = 0 Then Continue; { entree sans bloc alloue, ininformative }
+   For CandI := 0 To NCand - 1 Do Begin
+    Bls := Cands[CandI];
+    Exm := (Bls Div 1024) - 1;
+    LocalBytes := (LongInt(Ex Mod (Exm + 1)) * 16384) + (LongInt(Rc) * 128);
+    PredBlocks := (LocalBytes + LongInt(Bls) - 1) Div LongInt(Bls);
+    If PredBlocks > 16 Then PredBlocks := 16;
+    Err[CandI] := Err[CandI] + Abs(PredBlocks - AlCount);
+   End;
+  End;
+ End;
+ BestI := 0;
+ For CandI := 1 To NCand - 1 Do
+  If Err[CandI] < Err[BestI] Then BestI := CandI;
+ H8D_DetectCPMBlockSize := Cands[BestI];
+End;
+
 Function H8D_ExtractCPMByName(Idx: Byte; Const Name: String;
  Var OutPath: String): Boolean;
 Const
@@ -41446,6 +41528,7 @@ Const
 Type
  TCpmExtRec = Record
   ExtNum, Rc: Integer;
+  Ex: Byte;
   AL: Array[0..15] Of Byte;
  End;
 Var
@@ -41465,6 +41548,9 @@ Var
  SecBuf: Array[0..255] Of Byte;
  BR: Word;
  DataStartSec: LongInt;
+ Bls, Exm, SecsPerBlock: Word;
+ DirBlocks: LongInt;
+ LocalBytes: LongInt;
 Begin
  H8D_ExtractCPMByName := False;
  If Not H8D_DetectCPM(Idx, DirSec) Then Exit;
@@ -41493,6 +41579,7 @@ Begin
    HaveTarget := True; TargetUser := U;
    If NExt >= CPM_MAX_EXTENTS Then Continue;
    Exts[NExt].ExtNum := (Buf[I * 32 + 14] And $3F) * 32 + (Buf[I * 32 + 12] And $1F);
+   Exts[NExt].Ex := Buf[I * 32 + 12];
    Exts[NExt].Rc := Buf[I * 32 + 15];
    For K := 0 To 15 Do Exts[NExt].AL[K] := Buf[I * 32 + 16 + K];
    Inc(NExt);
@@ -41511,14 +41598,33 @@ Begin
  OutPath := OutPath + 'DEVENV_NC_H8D_CPM.TMP';
  {$I-} Assign(F, OutPath); Rewrite(F, 1); {$I+}
  If IOResult <> 0 Then Exit;
- DataStartSec := DirSec + 8;
+ { Taille de bloc REELLE inferee (voir la disclosure complete juste avant   }
+ { H8D_DetectCPMBlockSize ci-dessus) - remplace l'ancienne supposition fixe }
+ { "1 Ko/8 enregistrements par bloc". }
+ Bls := H8D_DetectCPMBlockSize(Idx, DirSec);
+ Exm := (Bls Div 1024) - 1;
+ SecsPerBlock := Bls Div H8D_SECSIZE;
+ { Repertoire toujours suppose long de 8 secteurs (64 entrees, meme         }
+ { convention que H8D_ScanCpmDirSector/H8D_ListCPM ci-dessus) - converti en }
+ { blocs de la VRAIE taille pour localiser le debut de la zone de donnees  }
+ { (etait cense etre "+8" fixe, correct seulement pour BLS=1024 ou 2048     }
+ { par coincidence arithmetique, PAS pour 4096+). }
+ DirBlocks := (8 * LongInt(H8D_SECSIZE) + LongInt(Bls) - 1) Div Bls;
+ DataStartSec := DirSec + DirBlocks * SecsPerBlock;
  For N := 0 To NExt - 1 Do Begin
-  BlocksInExt := (Exts[N].Rc + 7) Div 8; { Ceil(Rc/8), 8 enregistrements/bloc 1 Ko }
+  { BOGUE REEL corrige : Rc seul ne suffit pas des que EXM>0 (blocs > 1 Ko) }
+  { - une entree de repertoire peut alors regrouper PLUSIEURS extents       }
+  { logiques de 16 Ko, et Rc ne compte que les enregistrements du DERNIER   }
+  { extent logique du groupe. LocalBytes reconstruit le total REEL couvert }
+  { par CETTE entree (les extents precedents du meme groupe sont           }
+  { implicitement pleins) avant de le convertir en nombre de blocs. }
+  LocalBytes := (LongInt(Exts[N].Ex Mod (Exm + 1)) * 16384) + (LongInt(Exts[N].Rc) * 128);
+  BlocksInExt := (LocalBytes + LongInt(Bls) - 1) Div Bls;
   If BlocksInExt > 16 Then BlocksInExt := 16;
   For K := 0 To BlocksInExt - 1 Do Begin
    If Exts[N].AL[K] = 0 Then Continue; { bloc non alloue }
-   For S := 0 To 3 Do Begin
-    If Not H8D_ReadSector(Idx, DataStartSec + LongInt(Exts[N].AL[K]) * 4 + S, SecBuf) Then Begin
+   For S := 0 To SecsPerBlock - 1 Do Begin
+    If Not H8D_ReadSector(Idx, DataStartSec + LongInt(Exts[N].AL[K]) * SecsPerBlock + S, SecBuf) Then Begin
      FillChar(SecBuf, H8D_SECSIZE, $1A); { remplissage EOF CP/M standard }
     End;
     BlockWrite(F, SecBuf, H8D_SECSIZE, BR);
