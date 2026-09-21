@@ -155029,6 +155029,127 @@ Begin
      End;
     End;
    End;
+  End
+  { BOGUE REEL corrige (2026-09-21, signale par l utilisateur : "Entree     }
+  { sur un .Z8K dans Norton Commander [sur un disque virtuel] ne lance pas }
+  { l emulateur Z8001") : le bloc .Z8K existait UNIQUEMENT dans la         }
+  { branche "systeme de fichiers HOTE" (PaneSlot<0) plus bas dans cette    }
+  { fonction, jamais dans cette branche generique "disque virtuel FAT"     }
+  { (PaneSlot>=0, ex. /DISK0:"cpm8k.img") - meme categorie de trou deja    }
+  { documentee pour HPFS/OS-9 ci-dessus, jamais comblee pour Z8K a         }
+  { l'ouverture du chantier Z8001. Meme mecanisme d'extraction que COM/EXE}
+  { juste au-dessus (Fat_FindPath + Fat_ExtractToTempFile). }
+  Else If Ext = 'Z8K' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CZ8001', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  { BOGUE REEL corrige (2026-09-21, question directe de l'utilisateur -     }
+  { "est-ce que le meme bogue existe pour les autres extensions comme       }
+  { .A26, .PAK ?") : OUI - NES/PAK/ABS/A26/XEX/ACC/GEO/PRG/CODE-PC-P-PCF    }
+  { souffraient TOUS du meme trou que .Z8K ci-dessus (geres UNIQUEMENT dans }
+  { la branche "systeme de fichiers HOTE" plus bas, jamais ici). Meme       }
+  { mecanisme d'extraction Fat_FindPath+Fat_ExtractToTempFile pour chacun. }
+  Else If Ext = 'NES' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CNES', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If Ext = 'PAK' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CCOCO3', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If Ext = 'ABS' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CCRAY1', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If Ext = 'A26' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CATARI2600', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If Ext = 'XEX' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CATARI800', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If Ext = 'ACC' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CATARIST', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If Ext = 'GEO' Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CGEOS', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If Ext = 'PRG' Then Begin
+   { .PRG virtuel : meme ambiguite C64/Atari ST que le cas hote plus bas -  }
+   { NCIsAtariSTPrg doit tester le fichier EXTRAIT (TempPath), aucun chemin}
+   { hote direct n'existe pour une entree sur disque virtuel. }
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     If NCIsAtariSTPrg(TempPath) Then
+      CreateEmulatorTab(TempPath, '-CATARIST', '')
+     Else
+      CreateEmulatorTab(TempPath, '-CC64', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
+  End
+  Else If (Ext = 'CODE') Or (Ext = 'PC') Or (Ext = 'P') Or (Ext = 'PCF') Then Begin
+   If Fat_FindPath(Byte(NCState.PaneSlot[Side]),
+      NCFullPath(NCState.Panes[Side].Path, E.Name), Attr, Cluster, Sz) And
+      ((Attr And $10) = 0) Then Begin
+    If Fat_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), Cluster, Sz, E.Name, TempPath) Then Begin
+     CreateEmulatorTab(TempPath, '-CPCODE', '');
+     NCActionOpenAssociated := True;
+    End;
+   End;
   End;
   Exit;
  End;

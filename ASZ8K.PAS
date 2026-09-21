@@ -27,13 +27,19 @@ Type
  TByteBlock=Array[0..16383]of Byte;
  PByteBlock=^TByteBlock;
  PSymbol=^TSymbol;
+ PReference=^TReference;
+ TReference=Record
+  Line:LongInt;
+  FileName:String;
+  Next:PReference
+ End;
  TSymbol=Record
- Name:String;
+ Name,ObjectName:String;
  Value:LongInt;
  Section:Byte;
  Defined,Global,External:Boolean;
  DefLine:LongInt;
- References:String;
+ References,LastReference:PReference;
  ObjectBase:Word;
  Next:PSymbol
 End;
@@ -98,6 +104,8 @@ Var
  StructureKind:Array[1..32]of Char;
  StructureStart,StructureFalse,StructureEnd:Array[1..32]of String;
  StructureHasElse:Array[1..32]of Boolean;
+ ScopeDepth:Integer;
+ ScopeNames:Array[0..16]of String;
 
 Function UpperString(S:String):String;
 Var
@@ -179,49 +187,97 @@ Procedure Warning(Const S:String);Begin
  End
 End;
 
+Function ScopePrefix(Level:Integer):String;
+Var I:Integer;S:String;
+Begin
+ S:='';For I:=0 to Level do if ScopeNames[I]<>''Then S:=S+ScopeNames[I]+'.';
+ ScopePrefix:=S
+End;
+
 Function QualifiedSymbolName(Const Name:String):String;
 Begin
  if(Length(Name)>0)and(Name[1]='.')and(CurrentGlobal<>'')Then
-  QualifiedSymbolName:=CurrentGlobal+Name
- else QualifiedSymbolName:=Name
+  QualifiedSymbolName:=ScopePrefix(ScopeDepth)+CurrentGlobal+Name
+ else QualifiedSymbolName:=ScopePrefix(ScopeDepth)+Name
+End;
+
+Function FindExactSymbol(Const Name:String):PSymbol;
+Var P:PSymbol;
+Begin
+ P:=Symbols;While(P<>Nil)and(P^.Name<>Name)do P:=P^.Next;FindExactSymbol:=P
 End;
 
 Function FindSymbol(Const Name:String):PSymbol;
-Var
- P:PSymbol;Q:String;
+Var P:PSymbol;I:Integer;Q:String;
 Begin
- Q:=QualifiedSymbolName(Name);P:=Symbols;
- While(P<>Nil)and(P^.Name<>Q)do P:=P^.Next;FindSymbol:=P
+ if(Length(Name)>0)and(Name[1]='.')and(CurrentGlobal<>'')Then Begin
+  P:=FindExactSymbol(ScopePrefix(ScopeDepth)+CurrentGlobal+Name);
+  if P<>Nil Then Begin FindSymbol:=P;Exit End
+ End;
+ For I:=ScopeDepth downto 0 do Begin
+  Q:=ScopePrefix(I)+Name;P:=FindExactSymbol(Q);
+  if P<>Nil Then Begin FindSymbol:=P;Exit End
+ End;
+ FindSymbol:=FindExactSymbol(Name)
+End;
+
+Function SymbolObjectName(Const FullName:String):String;
+Var H:Word;I:Integer;S:String;
+Begin
+ S:=FullName;if Length(S)<=8 Then Begin SymbolObjectName:=S;Exit End;
+ H:=0;For I:=1 to Length(S)do H:=Word((H shl 5)xor(H shr 11)xor Ord(S[I]));
+ SymbolObjectName:=Copy(S,1,3)+'$'+HexWord(H)
 End;
 
 Function GetSymbol(Const Name:String):PSymbol;
-Var
- P:PSymbol;
+Var P,Previous,Following:PSymbol;Q:String;
 Begin
- P:=FindSymbol(Name);if P=Nil Then Begin
-  New(P);if P=Nil Then Fatal('memoire pleine');
-  FillChar(P^,SizeOf(P^),0);P^.Name:=QualifiedSymbolName(Name);P^.Next:=Symbols;Symbols:=P
- End;GetSymbol:=P
+ P:=FindSymbol(Name);if P<>Nil Then Begin GetSymbol:=P;Exit End;
+ Q:=QualifiedSymbolName(Name);New(P);if P=Nil Then Fatal('memoire pleine');
+ FillChar(P^,SizeOf(P^),0);P^.Name:=Q;P^.ObjectName:=SymbolObjectName(Q);
+ Previous:=Nil;Following:=Symbols;
+ While(Following<>Nil)and(Following^.Name<Q)do Begin Previous:=Following;Following:=Following^.Next End;
+ P^.Next:=Following;if Previous=Nil Then Symbols:=P else Previous^.Next:=P;GetSymbol:=P
+End;
+
+Function GetDefinitionSymbol(Const Name:String):PSymbol;
+Var P,Previous,Following:PSymbol;Q:String;
+Begin
+ Q:=QualifiedSymbolName(Name);P:=FindExactSymbol(Q);
+ if P<>Nil Then Begin GetDefinitionSymbol:=P;Exit End;
+ New(P);if P=Nil Then Fatal('memoire pleine');FillChar(P^,SizeOf(P^),0);
+ P^.Name:=Q;P^.ObjectName:=SymbolObjectName(Q);Previous:=Nil;Following:=Symbols;
+ While(Following<>Nil)and(Following^.Name<Q)do Begin Previous:=Following;Following:=Following^.Next End;
+ P^.Next:=Following;if Previous=Nil Then Symbols:=P else Previous^.Next:=P;
+ GetDefinitionSymbol:=P
 End;
 
 Procedure AddReference(P:PSymbol);
 Var
- N:String;
+ R:PReference;
 Begin
- if(Pass<>2)or(P=Nil)Then Exit;Str(LineNumber,N);
- if Length(P^.References)+Length(N)+1<255 Then P^.References:=P^.References+' '+N
+ if(Pass<>2)or(P=Nil)Then Exit;New(R);if R=Nil Then Fatal('memoire pleine');
+ R^.Line:=LineNumber;R^.FileName:=CurrentInputName;R^.Next:=Nil;
+ if P^.References=Nil Then P^.References:=R else P^.LastReference^.Next:=R;
+ P^.LastReference:=R
+End;
+
+Procedure DefinitionDiagnostic(Const S:String);
+Begin
+ if Pass=1 Then Begin Inc(ErrorCount);WriteLn(CurrentInputName,'(',LineNumber,'): ',S) End
+ else Diagnostic(S)
 End;
 
 Procedure DefineSymbol(Const Name:String;Value:LongInt;Section:Byte);
 Var
  P:PSymbol;
 Begin
- if Name=''Then Exit;P:=GetSymbol(Name);
+ if Name=''Then Exit;P:=GetDefinitionSymbol(Name);
  if Pass=1 Then Begin
   if P^.Defined Then Begin
-   Diagnostic('symbole defini plusieurs fois: '+Name);Exit
+   DefinitionDiagnostic('symbole defini plusieurs fois: '+Name);Exit
   End;
-  P^.Defined:=True;P^.Value:=Value;P^.Section:=Section;P^.DefLine:=LineNumber
+  P^.Defined:=True;P^.External:=False;P^.Value:=Value;P^.Section:=Section;P^.DefLine:=LineNumber
  End else if(not P^.Defined)or(P^.Value<>Value)or(P^.Section<>Section)Then  Diagnostic(
  'erreur de phase pour '+Name)
 End;
@@ -230,10 +286,13 @@ Procedure FreeSymbols;
 Var
  P,N:PSymbol;
  R,RN:PRelocation;
+ X,XN:PReference;
 Begin
  P:=Symbols;
  While P<>Nil do Begin
-  N:=P^.Next;Dispose(P);P:=N
+  N:=P^.Next;X:=P^.References;
+  While X<>Nil do Begin XN:=X^.Next;Dispose(X);X:=XN End;
+  Dispose(P);P:=N
  End;Symbols:=Nil;
  R:=Relocations;While R<>Nil do Begin RN:=R^.Next;Dispose(R);R:=RN End;
  Relocations:=Nil;LastRelocation:=Nil
@@ -1142,7 +1201,7 @@ Begin
 End;
 
 Procedure SelectNamedSection;
-Var S,Name,A,U:String;Section:Byte;
+Var S,Name,A,U:String;Section:Byte;P:PSymbol;
 Begin
  S:=OperandField;Name:=NextOperand(S);A:=NextOperand(S);U:=UpperString(A);
  if Name=''Then Begin Diagnostic('SECTION exige un nom');Exit End;
@@ -1150,6 +1209,12 @@ Begin
  else if(U='BSS')or(U='COMMON')or(U='UNINITIALIZED')Then Section:=SecBss
  else Section:=SecText;
  CurrentSection:=Section;SectionObjectName[Section]:=Name;
+ P:=FindSymbol(Name);
+ if Pass=1 Then Begin
+  if P=Nil Then DefineSymbol(Name,0,Section)
+  else if(not P^.Defined)or(P^.Section<>Section)or(P^.Value<>0)Then
+   DefinitionDiagnostic('conflit de symbole de section: '+Name)
+ End else DefineSymbol(Name,0,Section);
  SectionAttributes[Section]:=0;
  While S<>''do Begin
   U:=UpperString(NextOperand(S));
@@ -1174,6 +1239,7 @@ Begin
  if(P^.Defined)and(P^.Section<>SecBss)Then Diagnostic('COMMON incompatible avec '+N)
  else Begin
   P^.Defined:=True;P^.Global:=True;P^.Section:=SecBss;P^.Value:=Location[SecBss];
+  P^.ObjectName:=SymbolObjectName(N);
   Inc(Location[SecBss],V)
  End
 End;
@@ -1344,9 +1410,14 @@ Begin
  else if OpcodeField='RECORD'Then StructuredDeclaration(False)
  else if OpcodeField='PROCEDURE'Then Begin
   S:=LabelField;if S=''Then S:=TrimString(OperandField);
-  if S=''Then Diagnostic('PROCEDURE exige un nom')else CurrentGlobal:=S
+  if S=''Then Diagnostic('PROCEDURE exige un nom')
+  else if ScopeDepth=16 Then Diagnostic('portees trop imbriquees')
+  else Begin Inc(ScopeDepth);ScopeNames[ScopeDepth]:=S;CurrentGlobal:='' End
  End
- else if OpcodeField='ENDPROC'Then CurrentGlobal:=''
+ else if OpcodeField='ENDPROC'Then Begin
+  if ScopeDepth=0 Then Diagnostic('ENDPROC sans PROCEDURE')
+  else Begin ScopeNames[ScopeDepth]:='';Dec(ScopeDepth);CurrentGlobal:='' End
+ End
  else if(OpcodeField='DS')or(OpcodeField='DEFS')or(OpcodeField='.SPACE')or(OpcodeField=
  'BLOCK')Then Begin
   V:=Eval(OperandField,F);
@@ -1367,25 +1438,32 @@ Begin
  End
  else if(OpcodeField='GLOBAL')or(OpcodeField='.GLOBAL')or(OpcodeField='PUBLIC')Then Begin
   S:=OperandField;
-  While S<>''do Begin
-   A:=NextOperand(S);P:=GetSymbol(A);P^.Global:=True
+ While S<>''do Begin
+   A:=NextOperand(S);P:=GetSymbol(A);
+   if(Pass=1)and P^.External and P^.Defined Then DefinitionDiagnostic('conflit GLOBAL/EXTERNAL: '+A);
+   P^.Global:=True;P^.ObjectName:=SymbolObjectName(A)
   End
  End
  else if(OpcodeField='EXTERN')or(OpcodeField='.EXTERN')or(OpcodeField='EXTERNAL')
  Then Begin
   S:=OperandField;
   While S<>''do Begin
-   A:=NextOperand(S);P:=GetSymbol(A);P^.Global:=True;P^.External:=True
+   A:=NextOperand(S);P:=GetSymbol(A);
+   if(Pass=1)and P^.Defined Then DefinitionDiagnostic('symbole deja defini declare EXTERNAL: '+A)
+   else Begin P^.Global:=True;P^.External:=True;P^.ObjectName:=SymbolObjectName(A) End
   End
  End
  else if OpcodeField='MODULE'Then Begin
   S:=TrimString(OperandField);if S=''Then S:=LabelField;
   if S=''Then Diagnostic('MODULE exige un nom')
   else if ModuleActive Then Diagnostic('MODULE imbrique interdit')
-  else Begin ModuleActive:=True;ModuleClosed:=False;ObjectModuleName:=S End
+  else Begin ModuleActive:=True;ModuleClosed:=False;ObjectModuleName:=S;
+   ScopeNames[0]:=S;ScopeDepth:=0
+  End
  End
  else if OpcodeField='ENDMODULE'Then Begin
   if not ModuleActive Then Diagnostic('ENDMODULE sans MODULE');
+  if ScopeDepth<>0 Then Diagnostic('PROCEDURE non fermee avant ENDMODULE');
   ModuleActive:=False;ModuleClosed:=True;StopAssembly:=True
  End
  else if(OpcodeField='SECTION')or(OpcodeField='.SECT')Then SelectNamedSection
@@ -1882,7 +1960,7 @@ Begin
  Pass:=PassNo;Location[SecText]:=0;Location[SecData]:=0;Location[SecBss]:=0;
  CurrentSection:=SecText;LineNumber:=0;StopAssembly:=False;ConditionalDepth:=0;
  ConditionalEnabled:=True;ModuleActive:=False;ModuleClosed:=False;CurrentGlobal:='';
- StructureDepth:=0;StructureSerial:=0;
+ StructureDepth:=0;StructureSerial:=0;ScopeDepth:=0;FillChar(ScopeNames,SizeOf(ScopeNames),0);
  AssembleFile(Opt.SourceName,1);
  if ConditionalDepth<>0 Then Diagnostic('ENDIF manquant');
  if StructureDepth<>0 Then Diagnostic('fin de structure PLZ manquante');
@@ -2207,8 +2285,8 @@ Begin
    End
   End else P^.ObjectBase:=P^.Section;
   Q:=P^.Next;While Q<>Nil do Begin
-   if(Copy(P^.Name,1,8)=Copy(Q^.Name,1,8))and(P^.Name<>Q^.Name)Then
-    Fatal('collision de noms UNIDOT sur 8 caracteres: '+P^.Name+' / '+Q^.Name);
+   if(P^.ObjectName=Q^.ObjectName)and(P^.Name<>Q^.Name)Then
+    Fatal('collision de noms objet UNIDOT: '+P^.Name+' / '+Q^.Name);
    Q:=Q^.Next
   End;
   P:=P^.Next
@@ -2305,11 +2383,11 @@ Begin
  While P<>Nil do Begin
   IsGlobal:=P^.Global or P^.External;
   if IsGlobal=WantGlobal Then Begin
-   Need:=6+Length(P^.Name);if Need>14 Then Need:=14;
+   Need:=6+Length(P^.ObjectName);if Need>14 Then Need:=14;
    if N+Need>255 Then Begin WriteObjectBlock(F,BlockType,B,N);N:=0 End;
    if P^.Defined Then Begin PutLE32(B,N,P^.Value);B[N]:=P^.Section End
    else Begin PutLE32(B,N,0);B[N]:=RBUND End;
-   Inc(N);PutObjectName(B,N,P^.Name)
+   Inc(N);PutObjectName(B,N,P^.ObjectName)
   End;
   P:=P^.Next
  End;
@@ -2349,6 +2427,7 @@ End;
 Procedure WriteCrossReference;
 Var
  P:PSymbol;
+ R:PReference;LastFile:String;
 Begin
  if not ListOpen or not Opt.CrossReference Then Exit;WriteLn(ListFile);
  WriteLn(ListFile,'TABLE DES REFERENCES CROISEES');
@@ -2357,7 +2436,11 @@ Begin
  While P<>Nil do Begin
   Write(ListFile,P^.Name:32,' ',HexWord(Word(P^.Value)),' ',P^.Section:4,' ');
   if P^.Defined Then Write(ListFile,P^.DefLine:10)else Write(ListFile,'     EXTERN');
-  WriteLn(ListFile,P^.References);P:=P^.Next
+  R:=P^.References;LastFile:='';
+  While R<>Nil do Begin
+   if R^.FileName<>LastFile Then Begin Write(ListFile,' [',R^.FileName,']');LastFile:=R^.FileName End;
+   Write(ListFile,' ',R^.Line);R:=R^.Next
+  End;WriteLn(ListFile);P:=P^.Next
  End
 End;
 
