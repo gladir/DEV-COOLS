@@ -1349,6 +1349,183 @@ Begin
  HTMLLowerCase := S;
 End;
 
+{ ============================================================
+  Client HTTP(S) reel via WinInet (2026-09-21, demande explicite de
+  l'utilisateur - "browser https://www.gladir.com" affichait "Le
+  telechargement HTTP/HTTPS n'est pas encore implemente" au lieu de
+  charger la page) - MEME mecanisme (memes appels WinInet, meme
+  contournement de l'interblocage HTTPS) que DEVENV.PAS utilise deja pour
+  Connect-McpServer/curl (voir Mcp_HttpRequest/CurlHttpRequest/
+  Mcp_ParseUrl dans DEVENV.PAS - portes ici a l'identique, pas reinventes).
+  Uniquement sous Windows pour l'instant, dans une directive de
+  compilation conditionnelle WINDOWS - EXACTEMENT comme demande
+  explicitement par l'utilisateur ("meme si pour le moment, ce n'est
+  supporte que dans une directive conditionnelle pour Windows") ; aucun
+  equivalent Winsock/libc direct n'est fourni pour les autres plateformes
+  ici, disclosed.
+  ============================================================ }
+{$IFDEF WINDOWS}
+Function Browser_InternetOpenA(lpszAgent: PChar; dwAccessType: LongWord;
+         lpszProxyName, lpszProxyBypass: PChar; dwFlags: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetOpenA';
+Function Browser_InternetConnectA(hInternet: LongInt; lpszServerName: PChar;
+         nServerPort: Word; lpszUserName, lpszPassword: PChar;
+         dwService: LongWord; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetConnectA';
+Function Browser_HttpOpenRequestA(hConnect: LongInt; lpszVerb, lpszObjectName: PChar;
+         lpszVersion: PChar; lpszReferer: PChar; lplpszAcceptTypes: Pointer;
+         dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'HttpOpenRequestA';
+Function Browser_HttpSendRequestA(hRequest: LongInt; lpszHeaders: PChar;
+         dwHeadersLength: LongWord; lpOptional: Pointer;
+         dwOptionalLength: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'HttpSendRequestA';
+Function Browser_InternetReadFile(hFile: LongInt; Var lpBuffer; dwNumberOfBytesToRead: LongWord;
+         Var dwNumberOfBytesRead: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetReadFile';
+Function Browser_InternetCloseHandle(hInternet: LongInt): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetCloseHandle';
+Function Browser_HttpQueryInfoA(hRequest: LongInt; dwInfoLevel: LongWord;
+         Var lpBuffer; Var lpdwBufferLength: LongWord;
+         Var lpdwIndex: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'HttpQueryInfoA';
+{ Necessaire pour HTTPS (voir Browser_HttpGet plus bas) : sans ceci,       }
+{ HttpSendRequestA sur une requete https:// peut se bloquer INDEFINIMENT - }
+{ la verification de revocation de certificat (CRL/OCSP) de WinInet a      }
+{ besoin de pomper les messages du thread appelant, or ce meme thread est  }
+{ bloque a l'interieur de HttpSendRequestA - meme interblocage deja        }
+{ documente et evite dans DEVENV.PAS (CurlHttpRequest). }
+Function Browser_InternetSetOptionA(hInternet: LongInt; dwOption: LongWord;
+         Var lpBuffer; dwBufferLength: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetSetOptionA';
+
+Const
+ BROWSER_INTERNET_OPEN_TYPE_DIRECT  = 1;
+ BROWSER_INTERNET_SERVICE_HTTP      = 3;
+ BROWSER_INTERNET_FLAG_RELOAD       = LongWord($80000000);
+ BROWSER_INTERNET_FLAG_SECURE       = LongWord($00800000);
+ BROWSER_HTTP_QUERY_STATUS_CODE     = 19;
+ BROWSER_HTTP_QUERY_FLAG_NUMBER     = LongWord($20000000);
+ BROWSER_OPTION_SECURITY_FLAGS      = 31;
+ BROWSER_SECURITY_FLAG_IGNORE_REVOC = LongWord($00000080);
+
+{ Decoupe une URL http(s):// en hote/port/chemin - meme logique que        }
+{ Mcp_ParseUrl de DEVENV.PAS, adaptee pour reutiliser HTMLLowerCase (deja  }
+{ definie juste au-dessus) au lieu de TermStrToUpper (specifique a         }
+{ DEVENV.PAS, absente ici). }
+Procedure Browser_ParseUrl(Url: String; Var UseHttps: Boolean; Var HostName: String;
+ Var Port: Word; Var UrlPath: String; Var Ok: Boolean);
+Var
+ Rest: String;
+ PortStr: String;
+ SlashPos, ColonPos, ErrCode: Integer;
+ PortVal: LongInt;
+Begin
+ Ok := False;
+ UseHttps := False;
+ HostName := '';
+ Port := 80;
+ UrlPath := '/';
+ If Copy(HTMLLowerCase(Url), 1, 8) = 'https://' Then Begin
+  UseHttps := True;
+  Port := 443;
+  Rest := Copy(Url, 9, Length(Url));
+ End Else If Copy(HTMLLowerCase(Url), 1, 7) = 'http://' Then Begin
+  Rest := Copy(Url, 8, Length(Url));
+ End Else Exit;
+ SlashPos := Pos('/', Rest);
+ If SlashPos = 0 Then Begin
+  HostName := Rest;
+  UrlPath := '/';
+ End Else Begin
+  HostName := Copy(Rest, 1, SlashPos - 1);
+  UrlPath := Copy(Rest, SlashPos, Length(Rest));
+ End;
+ ColonPos := Pos(':', HostName);
+ If ColonPos > 0 Then Begin
+  PortStr := Copy(HostName, ColonPos + 1, Length(HostName));
+  HostName := Copy(HostName, 1, ColonPos - 1);
+  Val(PortStr, PortVal, ErrCode);
+  If (ErrCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then Port := PortVal;
+ End;
+ Ok := HostName <> '';
+End;
+
+{ Requete HTTP GET synchrone reelle via WinInet - meme transport que       }
+{ CurlHttpRequest de DEVENV.PAS (ouvre/ferme une connexion par appel, pas  }
+{ de pool - suffisant pour une navigation interactive au clavier/souris    }
+{ dans ce navigateur). }
+Function Browser_HttpGet(Url: String; Var ResponseBody: String;
+ Var StatusCode: LongInt): Boolean;
+Var
+ UseHttps, UrlOk: Boolean;
+ HostName, UrlPath: String;
+ Port: Word;
+ hInet, hConnect, hRequest: LongInt;
+ OpenFlags, SecFlags: LongWord;
+ SendOk: LongBool;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: String;
+ J: Integer;
+ StatusBuf: Array[0..31] Of Byte;
+ StatusLen, StatusIdx: LongWord;
+Begin
+ Browser_HttpGet := False;
+ ResponseBody := '';
+ StatusCode := 0;
+ Browser_ParseUrl(Url, UseHttps, HostName, Port, UrlPath, UrlOk);
+ If Not UrlOk Then Exit;
+ hInet := Browser_InternetOpenA('DEVENV-BROWSER/1.0', BROWSER_INTERNET_OPEN_TYPE_DIRECT,
+  Nil, Nil, 0);
+ If hInet = 0 Then Exit;
+ hConnect := Browser_InternetConnectA(hInet, PChar(HostName), Port, Nil, Nil,
+  BROWSER_INTERNET_SERVICE_HTTP, 0, 0);
+ If hConnect = 0 Then Begin
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then OpenFlags := BROWSER_INTERNET_FLAG_SECURE Or BROWSER_INTERNET_FLAG_RELOAD
+             Else OpenFlags := BROWSER_INTERNET_FLAG_RELOAD;
+ hRequest := Browser_HttpOpenRequestA(hConnect, 'GET', PChar(UrlPath), Nil, Nil,
+  Nil, OpenFlags, 0);
+ If hRequest = 0 Then Begin
+  Browser_InternetCloseHandle(hConnect);
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then Begin
+  SecFlags := BROWSER_SECURITY_FLAG_IGNORE_REVOC;
+  Browser_InternetSetOptionA(hRequest, BROWSER_OPTION_SECURITY_FLAGS, SecFlags, SizeOf(SecFlags));
+ End;
+ SendOk := Browser_HttpSendRequestA(hRequest, Nil, 0, Nil, 0);
+ If Not SendOk Then Begin
+  Browser_InternetCloseHandle(hRequest);
+  Browser_InternetCloseHandle(hConnect);
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ StatusLen := SizeOf(StatusBuf);
+ StatusIdx := 0;
+ FillChar(StatusBuf, SizeOf(StatusBuf), 0);
+ If Browser_HttpQueryInfoA(hRequest, BROWSER_HTTP_QUERY_STATUS_CODE Or BROWSER_HTTP_QUERY_FLAG_NUMBER,
+    StatusBuf, StatusLen, StatusIdx) Then
+  StatusCode := PLongInt(@StatusBuf)^;
+ Repeat
+  BytesRead := 0;
+  If Not Browser_InternetReadFile(hRequest, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J - 1];
+  ResponseBody := ResponseBody + Chunk;
+ Until False;
+ Browser_InternetCloseHandle(hRequest);
+ Browser_InternetCloseHandle(hConnect);
+ Browser_InternetCloseHandle(hInet);
+ Browser_HttpGet := True;
+End;
+{$ENDIF}
+
 { Convertir un code ISO-8859-1/Unicode courant vers le jeu de caracteres
   utilise par la cible. Turbo Pascal DOS utilise normalement la page 850. }
 { Convertir un code point Unicode/Latin-1 (caractere brut du fichier
@@ -17112,13 +17289,42 @@ Var
  HTML: HTMLSourceBuffer;
  FileName: String;
  MessageText: String;
+ {$IFDEF WINDOWS}
+ PageBody: String;
+ StatusCode: LongInt;
+ GetOk: Boolean;
+ {$ENDIF}
 Begin
  InitHTMLSource(HTML);
  If IsRemoteURL(CurrentURL) Then Begin
+  {$IFDEF WINDOWS}
+  { Telechargement HTTP/HTTPS REEL (voir Browser_HttpGet ci-dessus,       }
+  { demande explicite de l'utilisateur - remplace l'ancien message        }
+  { "pas encore implemente" qui s'affichait toujours ici avant, meme pour }
+  { une URL valide). }
+  GetOk := Browser_HttpGet(CurrentURL, PageBody, StatusCode);
+  If GetOk And (Length(PageBody) > 0) Then Begin
+   If SetHTMLSourceFromString(PageBody, HTML) Then
+    TestHTMLRender(HTML);
+  End Else Begin
+   MessageText := '<html><body><h2>Erreur de chargement</h2><p>' + CurrentURL + '</p><p>';
+   If Not GetOk Then
+    MessageText := MessageText +
+     'Impossible de se connecter (DNS, reseau, ou URL invalide).'
+   Else
+    MessageText := MessageText + 'Code de statut HTTP : ' + IntToStr(StatusCode) +
+     ' (reponse vide).';
+   MessageText := MessageText + '</p></body></html>';
+   If SetHTMLSourceFromString(MessageText, HTML) Then
+    TestHTMLRender(HTML);
+  End;
+  {$ELSE}
   MessageText := '<html><body><h2>Adresse URL</h2><p>' + CurrentURL +
-                 '</p><p>Le telechargement HTTP/HTTPS n''est pas encore implemente.</p></body></html>';
+                 '</p><p>Le telechargement HTTP/HTTPS n''est disponible que sous ' +
+                 'Windows pour l''instant (client WinInet).</p></body></html>';
   If SetHTMLSourceFromString(MessageText, HTML) Then
    TestHTMLRender(HTML);
+  {$ENDIF}
   FreeHTMLSource(HTML);
   Exit;
  End;
