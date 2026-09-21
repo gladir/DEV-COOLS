@@ -2017,7 +2017,7 @@ Const
  TERM_SELECT_WIDTH     = 180;     { largeur du selecteur deroulant }
  TERM_SELECT_HEIGHT    = 18;      { hauteur du selecteur ferme     }
  TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
- TERM_SELECT_COUNT     = 10;      { nombre total de shells du selecteur }
+ TERM_SELECT_COUNT     = 12;      { nombre total de shells du selecteur }
  TERM_SELECT_SBAR_W    = 14;      { largeur barre defilement du selecteur }
  TERM_SCROLLBAR_WIDTH  = 14;      { largeur barre defilement term  }
  TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
@@ -3530,7 +3530,7 @@ Type
 
  { Type de shell du terminal }
  TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_GULAM, SK_AMIGADOS, SK_NCOMMANDER,
-  SK_OS2REXX, SK_OS9, SK_CPM, SK_COS);
+  SK_OS2REXX, SK_OS9, SK_FLEX, SK_CPM, SK_VMS, SK_COS);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
@@ -92463,6 +92463,274 @@ Begin
 End;
 
 { ============================================================
+  Shell Terminal "FLEX" (SK_FLEX, 2026-09-21, demande explicite de
+  l'utilisateur - shell insere entre OS-9 et CP/M, ~43 commandes fournies
+  (TSC FLEX 6800/6809) - meme discipline que OS-9/CP-M-80 ci-dessus :
+  reutilise les handlers TermCmd_* generiques 1:1 quand ils existent
+  (COPY/DELETE/RENAME/LIST->TYPE/DATE/ECHO), nouveau code TermCmd_FLEX_*
+  reel pour CAT/APPEND/TOUCH/EXEC/FIX/XOUT/PROT/VER (voir chaque
+  procedure), accuse de reception honnete pour tout ce qui depend d'un
+  materiel des annees 1980 sans equivalent (CalComp Marksman, EPROM
+  programmer MP-R, unites DMAF/MF-68) ou d'un modele memoire/impression
+  que ce shell HOTE ne modelise pas (JUMP/GET/SAVE simplifies, P.COR/PO/
+  PSP/RM/SBOX stubs). }
+Var
+ FlexDefaultDrive: String;   { ASN : lecteur systeme/travail declare }
+ FlexVerifyMode: Boolean;    { VERIFY : mode de verification d'ecriture declare }
+ FlexTtyMode: String;        { TTYSET : parametres terminal declares }
+
+{ --- CAT (format FLEX authentique simplifie - reutilise Fat_ListDir sur   }
+{ disque virtuel comme TermCmd_OS9_DIR/TermCmd_CPM_DIR, sinon FindFirst/   }
+{ FindNext hote). --- }
+Procedure TermCmd_FLEX_CAT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Info: SearchRec;
+ FirstParam, AbsP: String;
+ Idx: Byte;
+ IsRoot: Boolean;
+ StartCl: LongInt;
+ Count: Integer;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
+   TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie.');
+   Exit;
+  End;
+  Fat_ListDir(Idx, IsRoot, StartCl, TP, 0);
+  Exit;
+ End;
+ Count := 0;
+ FindFirst('*.*', AnyFile, Info);
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) <> Directory Then Begin
+   TermAddLine(TP, UpCaseStr(Info.Name));
+   Inc(Count);
+  End;
+  FindNext(Info);
+ End;
+ If Count = 0 Then TermAddLine(TP, 'NO FILES');
+End;
+
+{ --- APPEND (concatenation reelle de N fichiers vers un fichier de        }
+{ sortie, meme principe que TermCmd_OS9_MERGE). --- }
+Procedure TermCmd_FLEX_APPEND(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ ArgCount, I: Integer;
+ Args: Array[1..40] Of String;
+ InF, OutF: File Of Byte;
+ B: Byte;
+ Err: Word;
+ TotalBytes: LongInt;
+Begin
+ ArgCount := 0;
+ While (TermExtractParam(ParamStr, ArgCount + 1) <> '') And (ArgCount < 40) Do Begin
+  Inc(ArgCount);
+  Args[ArgCount] := TermExtractParam(ParamStr, ArgCount);
+ End;
+ If ArgCount < 2 Then Begin
+  TermAddLine(TP, 'Syntaxe : APPEND fichier1 [fichier2 ...] destination');
+  Exit;
+ End;
+ {$I-} Assign(OutF, Args[ArgCount]); Rewrite(OutF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ TotalBytes := 0;
+ For I := 1 To ArgCount - 1 Do Begin
+  {$I-} Assign(InF, Args[I]); Reset(InF); {$I+}
+  If IOResult <> 0 Then Begin
+   TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie : ' + Args[I]);
+   Continue;
+  End;
+  While Not EOF(InF) Do Begin
+   Read(InF, B);
+   Write(OutF, B);
+   Inc(TotalBytes);
+  End;
+  Close(InF);
+ End;
+ Close(OutF);
+ TermAddLine(TP, IntToStr(ArgCount - 1) + ' fichier(s) ajoute(s), ' +
+  IntToStr(TotalBytes) + ' octets ecrits dans ' + Args[ArgCount] + '.');
+End;
+
+{ --- TOUCH (change reellement la date de derniere modification du        }
+{ fichier a la date/heure COURANTE de l'hote - ouverture en ecriture      }
+{ (Append, sans ecrire un seul octet) suffit a faire mettre a jour la      }
+{ date par le systeme de fichiers hote, sans dependre d'un acces bas       }
+{ niveau au descripteur de fichier). --- }
+Procedure TermCmd_FLEX_TOUCH(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FName: String;
+ F: Text;
+ Err: Word;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : TOUCH fichier');
+  Exit;
+ End;
+ Assign(F, FName);
+ {$I-} Append(F); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Close(F);
+ TermAddLine(TP, FName + ' : date de modification mise a jour.');
+End;
+
+{ --- EXEC (execute reellement un fichier de commandes FLEX, ligne par     }
+{ ligne, via TermExecuteCommand - meme principe que SHELL/OS-9). --- }
+Procedure TermCmd_FLEX_EXEC(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Handle: Text;
+ Err: Word;
+ FName, CurrLine: String;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : EXEC fichier-de-commandes');
+  Exit;
+ End;
+ Assign(Handle, FName);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  If TermTrim(CurrLine) <> '' Then
+   TermExecuteCommand(TP, CurrLine);
+ End;
+ Close(Handle);
+End;
+
+{ --- FIX (modifie reellement UN octet d'un fichier binaire a un offset    }
+{ donne - "FIX fichier offset valeur-hexa" - un vrai FIX FLEX interactif   }
+{ permet d'examiner/modifier en boucle, simplifie ici a un seul octet par  }
+{ appel, disclosed). --- }
+Procedure TermCmd_FLEX_FIX(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FName, OfsS, ValS: String;
+ Ofs: LongInt;
+ NewVal: Integer;
+ ErrCode: Integer;
+ F: File Of Byte;
+ Err: Word;
+ OldVal: Byte;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ OfsS := TermExtractParam(ParamStr, 2);
+ ValS := TermExtractParam(ParamStr, 3);
+ If (FName = '') Or (OfsS = '') Or (ValS = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : FIX fichier offset valeur-hexa (un octet, simplifie)');
+  Exit;
+ End;
+ Val(OfsS, Ofs, ErrCode);
+ If ErrCode <> 0 Then Begin
+  TermAddLine(TP, 'FIX : offset invalide.');
+  Exit;
+ End;
+ Val('$' + ValS, NewVal, ErrCode);
+ If (ErrCode <> 0) Or (NewVal < 0) Or (NewVal > 255) Then Begin
+  TermAddLine(TP, 'FIX : valeur hexadecimale invalide (00-FF attendu).');
+  Exit;
+ End;
+ {$I-} Assign(F, FName); Reset(F); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ If Ofs >= FileSize(F) Then Begin
+  TermAddLine(TP, 'FIX : offset au-dela de la fin du fichier.');
+  Close(F);
+  Exit;
+ End;
+ Seek(F, Ofs);
+ Read(F, OldVal);
+ Seek(F, Ofs);
+ Write(F, Byte(NewVal));
+ Close(F);
+ TermAddLine(TP, FName + '[$' + HexByte(Byte(Ofs)) + '] : $' + HexByte(OldVal) +
+  ' -> $' + HexByte(Byte(NewVal)) + '.');
+End;
+
+{ --- XOUT (supprime reellement tous les fichiers ".OUT" du repertoire     }
+{ courant). --- }
+Procedure TermCmd_FLEX_XOUT(Var TP: TTerminalPanel);
+Var
+ Info: SearchRec;
+ F: File;
+ Count: Integer;
+Begin
+ Count := 0;
+ FindFirst('*.OUT', AnyFile, Info);
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) <> Directory Then Begin
+   Assign(F, Info.Name);
+   {$I-} Erase(F); {$I+}
+   If IOResult = 0 Then Inc(Count);
+  End;
+  FindNext(Info);
+ End;
+ TermAddLine(TP, IntToStr(Count) + ' fichier(s) ".OUT" supprime(s).');
+End;
+
+{ --- PROT (protection reelle mais simplifiee : bascule l'attribut hote    }
+{ LECTURE SEULE - un vrai code de protection FLEX (0-255, 4 niveaux        }
+{ read/write/catalog/delete par bit) n'a pas d'equivalent direct sur un    }
+{ fichier hote, disclosed). --- }
+Procedure TermCmd_FLEX_PROT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FName, Code: String;
+ F: File;
+ Err: Word;
+ CurAttr: Word;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ Code := UpCaseStr(TermExtractParam(ParamStr, 2));
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : PROT fichier [R|W]  (R=lecture seule, W=lecture-ecriture)');
+  Exit;
+ End;
+ Assign(F, FName);
+ GetFAttr(F, CurAttr);
+ Err := DosError;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
+  Exit;
+ End;
+ If Code = 'R' Then Begin
+  SetFAttr(F, CurAttr Or ReadOnly);
+  TermAddLine(TP, FName + ' : protege en ecriture (simplifie - attribut hote R/O).');
+ End Else If Code = 'W' Then Begin
+  SetFAttr(F, CurAttr And Not ReadOnly);
+  TermAddLine(TP, FName + ' : lecture-ecriture (simplifie - attribut hote R/O leve).');
+ End Else
+  TermAddLine(TP, FName + ' : protection = ' +
+   IntToStr(Ord((CurAttr And ReadOnly) <> 0)) + ' (0=R/W, 1=R/O).');
+End;
+
+{ --- HELP (liste des commandes du shell FLEX) --- }
+Procedure TermCmd_FLEX_HELP(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP, 'FLEX shell built-in commands :');
+ TermAddLine(TP, '  APPEND ASN BUILD C4MAT CAT CLEAN COPY DATE DELETE ECHO');
+ TermAddLine(TP, '  EXEC FIX GET I JUMP LINK LIST MON N NEWDISK O P P.COR');
+ TermAddLine(TP, '  PO PROT PSP Q QCHECK READPROM RENAME RM S SAVE SAVE.LOW');
+ TermAddLine(TP, '  SBOX SP STARTUP TOUCH TTYSET UCAL USEMF VER VERIFY');
+ TermAddLine(TP, '  WRITPROM XOUT Y');
+End;
+
+{ ============================================================
   Shell Terminal "CP/M-80" (SK_CPM, 2026-09-20, demande explicite de
   l'utilisateur - shell insere entre OS-9 et COS, 15 commandes fournies :
   DDT/DIR/DUMP/ED/ERA/LOAD/PIP/REN/SAVE/STAT/SUBMIT/SYSGEN/TYPE/USER/XSUB.
@@ -92903,6 +93171,424 @@ Begin
  TermAddLine(TP, 'CP/M-80 shell built-in commands :');
  TermAddLine(TP, '  DDT DIR DUMP ED ERA LOAD PIP REN SAVE STAT SUBMIT');
  TermAddLine(TP, '  SYSGEN TYPE USER XSUB');
+End;
+
+{ ============================================================
+  Shell Terminal "VMS (VAX)" (SK_VMS, 2026-09-21, demande explicite de
+  l'utilisateur - shell insere entre CP/M et COS, ~100 verbes DCL fournis
+  (beaucoup de doublons reels - ANALYZE/AUDIT, ANALYZE/CRASH_DUMP etc sont
+  le MEME verbe DCL "ANALYZE" avec des QUALIFICATEURS "/xxx" differents,
+  PAS des commandes separees - convention DCL authentique reprise ici :
+  le "/" separe le verbe de son qualificateur, comme les switches "/x" du
+  shell CMD deja gere par TermExtractParam plus haut). Meme discipline
+  que FLEX/CP-M-80 ci-dessus : reutilise les handlers TermCmd_* generiques
+  1:1 quand ils existent (COPY/DELETE/RENAME/TYPE/EDIT), nouveau code
+  TermCmd_VMS_* reel pour DIRECTORY/APPEND/CREATE/DIFFERENCES/SEARCH/SORT/
+  CHECKSUM/DUMP/PRINT/SUBMIT/WAIT (voir chaque procedure), une VRAIE
+  table de noms logiques (ASSIGN/DEASSIGN/DEFINE/SHOW LOGICAL - simple
+  table Nom->Valeur en memoire, PAS le vrai LNM$ multi-table hierarchique
+  de VMS, disclosed), et un accuse de reception honnete pour tout ce qui
+  depend d'une infrastructure VMS reelle absente de ce shell HOTE (files
+  d'attente/BATCH, gestion de processus multi-utilisateur, structures de
+  fichiers RMS/ODS-2, compilateurs BASIC/COBOL/FORTRAN/MACRO/PASCAL/JAVA,
+  execution de procedures DCL avec branchement GOTO/GOSUB/IF-THEN - ce
+  dernier point etant le plus gros ecart honnetement disclosed : ce shell
+  execute une ligne a la fois, il n'a PAS de moteur d'etiquettes/
+  branchement pour de vraies procedures .COM). }
+Const
+ VMS_LOGNAME_MAX = 32;
+Var
+ VmsLogNames: Array[1..VMS_LOGNAME_MAX] Of String;
+ VmsLogValues: Array[1..VMS_LOGNAME_MAX] Of String;
+ VmsLogCount: Integer;
+ VmsAllocCount: Integer;   { ALLOCATE/DEALLOCATE : compteur de peripheriques reserves }
+ VmsDefaultDisk: String;   { SET DEFAULT : disque/repertoire par defaut declare }
+
+{ --- Table de noms logiques (reelle, en memoire) : recherche/insertion. --- }
+Function VmsLogFind(Const Name: String): Integer;
+Var
+ I: Integer;
+Begin
+ VmsLogFind := 0;
+ For I := 1 To VmsLogCount Do
+  If UpCaseStr(VmsLogNames[I]) = UpCaseStr(Name) Then Begin
+   VmsLogFind := I;
+   Exit;
+  End;
+End;
+
+Procedure VmsLogSet(Const Name, Value: String);
+Var
+ Idx: Integer;
+Begin
+ Idx := VmsLogFind(Name);
+ If Idx = 0 Then Begin
+  If VmsLogCount >= VMS_LOGNAME_MAX Then Exit;
+  Inc(VmsLogCount);
+  Idx := VmsLogCount;
+  VmsLogNames[Idx] := Name;
+ End;
+ VmsLogValues[Idx] := Value;
+End;
+
+{ --- DIRECTORY (format VMS authentique simplifie : en-tete "Directory",   }
+{ liste de fichiers en MAJUSCULES avec ";1" (numero de version - toujours  }
+{ 1, aucun historique de versions n'est modelise, disclosed), total. --- }
+Procedure TermCmd_VMS_DIRECTORY(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Info: SearchRec;
+ Dir: String;
+ Count: Integer;
+Begin
+ GetDir(0, Dir);
+ TermAddLine(TP, '');
+ TermAddLine(TP, 'Directory ' + UpCaseStr(Dir));
+ TermAddLine(TP, '');
+ Count := 0;
+ FindFirst('*.*', AnyFile, Info);
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) <> Directory Then Begin
+   TermAddLine(TP, UpCaseStr(Info.Name) + ';1');
+   Inc(Count);
+  End;
+  FindNext(Info);
+ End;
+ TermAddLine(TP, '');
+ TermAddLine(TP, 'Total of ' + IntToStr(Count) + ' file(s).');
+End;
+
+{ --- APPEND (concatenation reelle de N fichiers, meme principe que        }
+{ TermCmd_OS9_MERGE/TermCmd_FLEX_APPEND). --- }
+Procedure TermCmd_VMS_APPEND(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ ArgCount, I: Integer;
+ Args: Array[1..40] Of String;
+ InF, OutF: File Of Byte;
+ B: Byte;
+ Err: Word;
+ TotalBytes: LongInt;
+Begin
+ ArgCount := 0;
+ While (TermExtractParam(ParamStr, ArgCount + 1) <> '') And (ArgCount < 40) Do Begin
+  Inc(ArgCount);
+  Args[ArgCount] := TermExtractParam(ParamStr, ArgCount);
+ End;
+ If ArgCount < 2 Then Begin
+  TermAddLine(TP, 'Syntaxe : APPEND fichier1 [fichier2 ...] destination');
+  Exit;
+ End;
+ {$I-} Assign(OutF, Args[ArgCount]); Rewrite(OutF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ TotalBytes := 0;
+ For I := 1 To ArgCount - 1 Do Begin
+  {$I-} Assign(InF, Args[I]); Reset(InF); {$I+}
+  If IOResult <> 0 Then Begin
+   TermAddLine(TP, '%COPY-E, error opening ' + Args[I]);
+   Continue;
+  End;
+  While Not EOF(InF) Do Begin
+   Read(InF, B);
+   Write(OutF, B);
+   Inc(TotalBytes);
+  End;
+  Close(InF);
+ End;
+ Close(OutF);
+ TermAddLine(TP, IntToStr(ArgCount - 1) + ' fichier(s) ajoute(s) dans ' + Args[ArgCount] + '.');
+End;
+
+{ --- CREATE (base : fichier vide ; /DIRECTORY : cree un repertoire hote   }
+{ reel). --- }
+Procedure TermCmd_VMS_CREATE(Var TP: TTerminalPanel; ParamStr: String; IsDir: Boolean);
+Var
+ FName: String;
+ F: Text;
+ Err: Word;
+Begin
+ FName := TermTrim(ParamStr);
+ If FName = '' Then Begin
+  If IsDir Then TermAddLine(TP, 'Syntaxe : CREATE/DIRECTORY repertoire')
+  Else TermAddLine(TP, 'Syntaxe : CREATE fichier');
+  Exit;
+ End;
+ If IsDir Then Begin
+  {$I-} MkDir(FName); {$I+}
+  Err := IOResult;
+  If Err = 0 Then TermAddLine(TP, 'Repertoire ' + FName + ' cree.')
+  Else TermAddLine(TP, TermGetErrorMessage(Err));
+ End Else Begin
+  Assign(F, FName);
+  {$I-} Rewrite(F); {$I+}
+  Err := IOResult;
+  If Err = 0 Then Begin
+   Close(F);
+   TermAddLine(TP, FName + ';1 cree (fichier vide).');
+  End Else TermAddLine(TP, TermGetErrorMessage(Err));
+ End;
+End;
+
+{ --- DIFFERENCES (comparaison ligne-a-ligne reelle de 2 fichiers texte,   }
+{ format simplifie - le vrai DIFFERENCES VMS produit un rapport plus       }
+{ elabore avec numeros de bloc RMS, disclosed simplifie). --- }
+Procedure TermCmd_VMS_DIFFERENCES(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ F1, F2: Text;
+ L1, L2: String;
+ LineNo: LongInt;
+ Err: Word;
+ DiffCount: LongInt;
+Begin
+ If (TermExtractParam(ParamStr, 1) = '') Or (TermExtractParam(ParamStr, 2) = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : DIFFERENCES fichier1 fichier2');
+  Exit;
+ End;
+ Assign(F1, TermExtractParam(ParamStr, 1));
+ {$I-} Reset(F1); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ Assign(F2, TermExtractParam(ParamStr, 2));
+ {$I-} Reset(F2); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin Close(F1); TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ LineNo := 0; DiffCount := 0;
+ While (Not EOF(F1)) Or (Not EOF(F2)) Do Begin
+  Inc(LineNo);
+  If Not EOF(F1) Then ReadLn(F1, L1) Else L1 := '';
+  If Not EOF(F2) Then ReadLn(F2, L2) Else L2 := '';
+  If L1 <> L2 Then Begin
+   TermAddLine(TP, IntToStr(LineNo) + 'c' + IntToStr(LineNo));
+   TermAddLine(TP, '< ' + L1);
+   TermAddLine(TP, '---');
+   TermAddLine(TP, '> ' + L2);
+   Inc(DiffCount);
+  End;
+ End;
+ Close(F1); Close(F2);
+ If DiffCount = 0 Then TermAddLine(TP, 'Les fichiers sont identiques.')
+ Else TermAddLine(TP, IntToStr(DiffCount) + ' ligne(s) differente(s).');
+End;
+
+{ --- SEARCH (recherche reelle d'une chaine, sensible a la casse desactivee}
+{ par defaut comme le vrai SEARCH VMS). --- }
+Procedure TermCmd_VMS_SEARCH(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FName, Needle, Line: String;
+ F: Text;
+ Err: Word;
+ LineNo: LongInt;
+ Hits: LongInt;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ Needle := TermExtractParam(ParamStr, 2);
+ If (FName = '') Or (Needle = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : SEARCH fichier chaine');
+  Exit;
+ End;
+ Assign(F, FName);
+ {$I-} Reset(F); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ LineNo := 0; Hits := 0;
+ While Not EOF(F) Do Begin
+  ReadLn(F, Line);
+  Inc(LineNo);
+  If Pos(UpCaseStr(Needle), UpCaseStr(Line)) > 0 Then Begin
+   TermAddLine(TP, Line);
+   Inc(Hits);
+  End;
+ End;
+ Close(F);
+ If Hits = 0 Then TermAddLine(TP, '%SEARCH-I-NOMATCHES, no strings matched');
+End;
+
+{ --- SORT (tri reel des lignes d'un fichier texte, ordre lexicographique  }
+{ ASCII - tri a bulles, fichiers de taille modeste attendus). --- }
+Procedure TermCmd_VMS_SORT(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ MAXLINES = 2000;
+Var
+ InF, OutF: Text;
+ Lines: Array[1..MAXLINES] Of String;
+ N, I, J: Integer;
+ Tmp: String;
+ Err: Word;
+ InName, OutName: String;
+Begin
+ InName := TermExtractParam(ParamStr, 1);
+ OutName := TermExtractParam(ParamStr, 2);
+ If (InName = '') Or (OutName = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : SORT fichier-entree fichier-sortie');
+  Exit;
+ End;
+ Assign(InF, InName);
+ {$I-} Reset(InF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ N := 0;
+ While (Not EOF(InF)) And (N < MAXLINES) Do Begin
+  Inc(N);
+  ReadLn(InF, Lines[N]);
+ End;
+ Close(InF);
+ For I := 1 To N - 1 Do
+  For J := 1 To N - I Do
+   If Lines[J] > Lines[J + 1] Then Begin
+    Tmp := Lines[J]; Lines[J] := Lines[J + 1]; Lines[J + 1] := Tmp;
+   End;
+ Assign(OutF, OutName);
+ {$I-} Rewrite(OutF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ For I := 1 To N Do WriteLn(OutF, Lines[I]);
+ Close(OutF);
+ TermAddLine(TP, IntToStr(N) + ' ligne(s) triee(s) dans ' + OutName + '.');
+End;
+
+{ --- CHECKSUM (somme de controle reelle - addition 32 bits modulo $FFFFFFFF}
+{ octet par octet, PAS l'algorithme exact XOR-rotate documente par VMS     }
+{ (non retrouve avec certitude), disclosed simplifie). --- }
+Procedure TermCmd_VMS_CHECKSUM(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ FName: String;
+ F: File Of Byte;
+ B: Byte;
+ Sum: LongWord;
+ Err: Word;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : CHECKSUM fichier');
+  Exit;
+ End;
+ {$I-} Assign(F, FName); Reset(F); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ Sum := 0;
+ While Not EOF(F) Do Begin
+  Read(F, B);
+  Sum := Sum + LongWord(B);
+ End;
+ Close(F);
+ TermAddLine(TP, FName + ';1' + #9 + HexLong(LongInt(Sum)) + ' (checksum simplifie, ' +
+  'PAS l''algorithme exact VMS).');
+End;
+
+{ --- DUMP (hexdump reel, meme format que TermCmd_CPM_DUMP voisin). --- }
+Procedure TermCmd_VMS_DUMP(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ F: File Of Byte;
+ Err: Word;
+ FName, HexPart, AscPart, S: String;
+ Buf: Array[0..15] Of Byte;
+ N, I: Integer;
+ Addr: LongInt;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : DUMP fichier');
+  Exit;
+ End;
+ {$I-} Assign(F, FName); Reset(F); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ Addr := 0;
+ While Not EOF(F) Do Begin
+  N := 0;
+  While (N < 16) And (Not EOF(F)) Do Begin
+   Read(F, Buf[N]);
+   Inc(N);
+  End;
+  HexPart := ''; AscPart := '';
+  For I := 0 To N - 1 Do Begin
+   HexPart := HexPart + HexByte(Buf[I]) + ' ';
+   If (Buf[I] >= 32) And (Buf[I] <= 126) Then AscPart := AscPart + Chr(Buf[I])
+   Else AscPart := AscPart + '.';
+  End;
+  While Length(HexPart) < 48 Do HexPart := HexPart + ' ';
+  Str(Addr:8, S);
+  TermAddLine(TP, S + '  ' + HexPart + ' ' + AscPart);
+  Addr := Addr + N;
+ End;
+ Close(F);
+End;
+
+{ --- PRINT ("imprimante" simulee = echo dans le terminal, disclosed       }
+{ simplifie, meme principe que PIP LST:/CP-M-80 et P/S/Q/SP FLEX). --- }
+Procedure TermCmd_VMS_PRINT(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ If TermTrim(ParamStr) = '' Then
+  TermAddLine(TP, 'Syntaxe : PRINT fichier')
+ Else
+  TermCmd_TYPE(TP, ParamStr);
+End;
+
+{ --- SUBMIT (execution reelle ligne par ligne d'une procedure .COM, meme  }
+{ principe que EXEC/FLEX - un vrai SUBMIT VMS place le travail dans une   }
+{ file BATCH asynchrone, non modelisee, disclosed - execution SYNCHRONE   }
+{ ici). --- }
+Procedure TermCmd_VMS_SUBMIT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Handle: Text;
+ Err: Word;
+ FName, CurrLine: String;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : SUBMIT fichier.COM');
+  Exit;
+ End;
+ If Pos('.', FName) = 0 Then FName := FName + '.COM';
+ Assign(Handle, FName);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin TermAddLine(TP, TermGetErrorMessage(Err)); Exit; End;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  If (TermTrim(CurrLine) <> '') And (Copy(TermTrim(CurrLine), 1, 1) <> '$') Then
+   TermExecuteCommand(TP, CurrLine)
+  Else If Copy(TermTrim(CurrLine), 1, 1) = '$' Then
+   TermExecuteCommand(TP, Copy(TermTrim(CurrLine), 2, 255));
+ End;
+ Close(Handle);
+ TermAddLine(TP, 'Job ' + FName + ' termine (execution synchrone simplifiee).');
+End;
+
+{ --- RECALL (affiche reellement l'historique des commandes deja tapees,  }
+{ TP.TermHistory - meme tableau que la navigation Haut/Bas du clavier). --- }
+Procedure TermCmd_VMS_RECALL(Var TP: TTerminalPanel);
+Var
+ I: Integer;
+Begin
+ If TP.NumberHistory = 0 Then
+  TermAddLine(TP, '%DCL-I-RECNOCMD, no commands recalled')
+ Else
+  For I := 1 To TP.NumberHistory Do
+   TermAddLine(TP, IntToStr(I) + '  ' + TP.TermHistory[I]);
+End;
+
+{ --- HELP (liste des verbes DCL du shell VMS) --- }
+Procedure TermCmd_VMS_HELP(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP, 'VMS shell built-in DCL verbs :');
+ TermAddLine(TP, '  ALLOCATE ANALYZE APPEND ASSIGN ATTACH BACKUP BASIC CALL');
+ TermAddLine(TP, '  CANCEL CHECKSUM CLOSE COBOL CONNECT CONTINUE CONVERT COPY');
+ TermAddLine(TP, '  CREATE DEALLOCATE DEASSIGN DEBUG DECK DECRYPT DEFINE');
+ TermAddLine(TP, '  DELETE DEPOSIT DIFFERENCES DIRECTORY DISABLE DISCONNECT');
+ TermAddLine(TP, '  DISMOUNT DUMP EDIT ENABLE ENCRYPT ENDSUBROUTINE EOD EOJ');
+ TermAddLine(TP, '  EXAMINE EXCHANGE EXIT FONT FORTRAN GOSUB GOTO HELP IF');
+ TermAddLine(TP, '  INITIALIZE INQUIRE INSTALL JAVA JOB LIBRARY LICENSE LINK');
+ TermAddLine(TP, '  LOGOUT MACRO MAIL MCR MERGE MESSAGE MONITOR MOUNT NCS ON');
+ TermAddLine(TP, '  OPEN PASSWORD PASCAL PATCH PHONE PIPE PPPD PRINT PRODUCT');
+ TermAddLine(TP, '  PURGE READ RECALL RENAME REPLY REQUEST RETURN RUN RUNOFF');
+ TermAddLine(TP, '  SEARCH SET SHOW SORT SPAWN START STOP SUBMIT SUBROUTINE');
+ TermAddLine(TP, '  SYNCHRONIZE TYPE UNLOCK VIEW WAIT WRITE XAUTH');
+ TermAddLine(TP, '(les qualificateurs "/xxx" reels de ANALYZE/CREATE/DELETE/');
+ TermAddLine(TP, ' EDIT/START/STOP etc sont acceptes en parametre, pas ');
+ TermAddLine(TP, ' comme des verbes separes - convention DCL authentique).');
 End;
 
 { Start-Cray1Program (2026-09-12, demande explicite de l'utilisateur -      }
@@ -117717,7 +118403,9 @@ Begin
   SK_AMIGADOS:   FName := 'terminal-amiga.log';
   SK_OS2REXX:    FName := 'terminal-os2.log';
   SK_OS9:        FName := 'terminal-os9.log';
+  SK_FLEX:       FName := 'terminal-flex.log';
   SK_CPM:        FName := 'terminal-cpm.log';
+  SK_VMS:        FName := 'terminal-vms.log';
   SK_COS:        FName := 'terminal-cos.log';
  Else
   FName := 'terminal.log';
@@ -149929,6 +150617,15 @@ Var
  CosLogF: Text;
  CosSnapI: Integer;
  CpmUserArg, CpmUserErr: Integer;
+ FlexBuildF: File;
+ FlexOnOff: String;
+ FlexGetInfo: SearchRec;
+ VmsQual, VmsSetArg, VmsShowArg: String;
+ VmsQIdx, VmsQI: Integer;
+ VmsWaitN, VmsWaitErr: Integer;
+ VmsQErr: Word;
+ VmsYear, VmsMonth, VmsDay, VmsDow: Word;
+ VmsHour, VmsMin, VmsSec, VmsSec100: Word;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -151298,6 +151995,120 @@ Begin
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
   End;
+  SK_FLEX: Begin
+   { FLEX (Technical Systems Consultants, 6800/6809) - demande explicite   }
+   { de l'utilisateur (2026-09-21), ~43 commandes fournies. Voir la        }
+   { disclosure complete pres de TermCmd_FLEX_CAT (juste avant             }
+   { Start-Cray1Program plus haut) pour le detail exact de chaque          }
+   { commande (reelle/simplifiee/stub). }
+   If CurrCmd = 'COPY' Then TermCmd_COPY(TP, ParamStr)
+   Else If CurrCmd = 'DELETE' Then TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'RENAME' Then TermCmd_REN(TP, ParamStr)
+   Else If CurrCmd = 'LIST' Then TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'DATE' Then TermCmd_DATE(TP)
+   Else If CurrCmd = 'ECHO' Then TermCmd_ECHO(TP, ParamStr)
+   Else If CurrCmd = 'CAT' Then TermCmd_FLEX_CAT(TP, ParamStr)
+   Else If CurrCmd = 'APPEND' Then TermCmd_FLEX_APPEND(TP, ParamStr)
+   Else If CurrCmd = 'TOUCH' Then TermCmd_FLEX_TOUCH(TP, ParamStr)
+   Else If CurrCmd = 'EXEC' Then TermCmd_FLEX_EXEC(TP, ParamStr)
+   Else If CurrCmd = 'FIX' Then TermCmd_FLEX_FIX(TP, ParamStr)
+   Else If CurrCmd = 'XOUT' Then TermCmd_FLEX_XOUT(TP)
+   Else If CurrCmd = 'PROT' Then TermCmd_FLEX_PROT(TP, ParamStr)
+   Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then TermCmd_FLEX_HELP(TP)
+   Else If CurrCmd = 'VER' Then
+    TermAddLine(TP, 'FLEX (TM) - Technical Systems Consultants - emulation DEVENV.')
+   Else If CurrCmd = 'ASN' Then Begin
+    If TermTrim(ParamStr) <> '' Then FlexDefaultDrive := TermTrim(ParamStr);
+    TermAddLine(TP, 'ASN : unite systeme/travail = ' +
+     '''' + FlexDefaultDrive + '''.');
+   End
+   Else If CurrCmd = 'VERIFY' Then Begin
+    If UpCaseStr(TermTrim(ParamStr)) = 'ON' Then FlexVerifyMode := True
+    Else If UpCaseStr(TermTrim(ParamStr)) = 'OFF' Then FlexVerifyMode := False;
+    If FlexVerifyMode Then FlexOnOff := 'ON' Else FlexOnOff := 'OFF';
+    TermAddLine(TP, 'VERIFY : ' + FlexOnOff +
+     ' (bookkeeping - aucune verification d''ecriture physique reelle).');
+   End
+   Else If CurrCmd = 'TTYSET' Then Begin
+    If TermTrim(ParamStr) <> '' Then FlexTtyMode := TermTrim(ParamStr);
+    If FlexTtyMode = '' Then TermAddLine(TP, 'TTYSET : parametres par defaut.')
+    Else TermAddLine(TP, 'TTYSET : ' + FlexTtyMode);
+   End
+   Else If CurrCmd = 'STARTUP' Then Begin
+    If FileExists('STARTUP.TXT') Then
+     TermCmd_FLEX_EXEC(TP, 'STARTUP.TXT')
+    Else
+     TermAddLine(TP, 'STARTUP : aucun fichier STARTUP.TXT dans le repertoire courant.');
+   End
+   Else If (CurrCmd = 'P') Or (CurrCmd = 'S') Or (CurrCmd = 'Q') Or
+           (CurrCmd = 'SP') Then Begin
+    { "Imprimante" simulee = echo du fichier dans le terminal (disclosed   }
+    { simplifie), meme principe que PIP LST: du shell CP/M-80 voisin. }
+    If TermTrim(ParamStr) = '' Then
+     TermAddLine(TP, 'Syntaxe : ' + CurrCmd + ' fichier')
+    Else
+     TermCmd_TYPE(TP, ParamStr);
+   End
+   Else If (CurrCmd = 'Y') Or (CurrCmd = 'N') Then Begin
+    { Prefixe reel FLEX "repond automatiquement aux invites" - ce shell     }
+    { ne pose aucune invite de confirmation interactive, donc la commande   }
+    { restante est simplement executee telle quelle (disclosed). }
+    If TermTrim(ParamStr) <> '' Then TermExecuteCommand(TP, ParamStr)
+    Else TermAddLine(TP, 'Syntaxe : ' + CurrCmd + ' commande');
+   End
+   Else If CurrCmd = 'QCHECK' Then
+    TermAddLine(TP, 'QCHECK : file d''attente d''impression vide (PSP non ' +
+     'supporte par ce terminal).')
+   Else If (CurrCmd = 'BUILD') Then Begin
+    { Simplifie : cree un fichier VIDE, meme discipline honnete que BUILD/ }
+    { OS-9 (aucune capture interactive ligne-par-ligne). }
+    If TermTrim(ParamStr) = '' Then
+     TermAddLine(TP, 'Syntaxe : BUILD fichier')
+    Else Begin
+     Assign(FlexBuildF, TermTrim(ParamStr));
+     {$I-} Rewrite(FlexBuildF); {$I+}
+     If IOResult = 0 Then Begin
+      Close(FlexBuildF);
+      TermAddLine(TP, 'BUILD (simplifie) : fichier vide ''' +
+       TermTrim(ParamStr) + ''' cree.');
+     End Else
+      TermAddLine(TP, 'BUILD : impossible de creer le fichier.');
+    End;
+   End
+   Else If CurrCmd = 'GET' Then Begin
+    FindFirst(TermTrim(ParamStr), AnyFile, FlexGetInfo);
+    If DosError <> 0 Then
+     TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.')
+    Else
+     TermAddLine(TP, 'GET (simplifie) : ''' + TermTrim(ParamStr) +
+      ''' pret (' + IntToStr(FlexGetInfo.Size) +
+      ' octet(s)) - aucune memoire de processus reelle n''est modelisee ' +
+      'par ce terminal, voir JUMP.');
+   End
+   Else If (CurrCmd = 'SAVE') Or (CurrCmd = 'SAVE.LOW') Then Begin
+    TermAddLine(TP, CurrCmd + ' : commande reconnue, mais non supportee - ' +
+     'aucune memoire de processus reelle n''est tracee par ce terminal ' +
+     '(voir GET).')
+   End
+   Else If CurrCmd = 'JUMP' Then
+    TermAddLine(TP, 'JUMP : necessite un programme deja charge en memoire ' +
+     '(voir GET) - aucun modele memoire executable reel n''est associe a ' +
+     'ce shell HOTE.')
+   Else If (CurrCmd = 'C4MAT') Or (CurrCmd = 'CLEAN') Or
+           (CurrCmd = 'NEWDISK') Or (CurrCmd = 'READPROM') Or
+           (CurrCmd = 'WRITPROM') Or (CurrCmd = 'UCAL') Or
+           (CurrCmd = 'USEMF') Or (CurrCmd = 'MON') Or
+           (CurrCmd = 'LINK') Or (CurrCmd = 'P.COR') Or
+           (CurrCmd = 'PO') Or (CurrCmd = 'PSP') Or
+           (CurrCmd = 'RM') Or (CurrCmd = 'SBOX') Or
+           (CurrCmd = 'I') Or (CurrCmd = 'O') Then
+    TermAddLine(TP, CurrCmd + ' : commande reconnue, mais non supportee - ' +
+     'aucun materiel/peripherique 1980 (CalComp Marksman, DMAF/MF-68, ' +
+     'programmeur EPROM MP-R) ni redirection console reelle n''est ' +
+     'modelise par ce terminal.')
+   Else
+    TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
+  End;
   SK_CPM: Begin
    { CP/M-80 (Digital Research) - demande explicite de l'utilisateur       }
    { (2026-09-20), 15 commandes fournies. Commandes fichier reelles :      }
@@ -151348,6 +152159,173 @@ Begin
      'HOTE.')
    Else
     TermAddLine(TP, CurrCmd + '?');
+  End;
+  SK_VMS: Begin
+   { VAX/VMS DCL - demande explicite de l'utilisateur (2026-09-21), ~100   }
+   { verbes fournis. Voir la disclosure complete pres de                   }
+   { TermCmd_VMS_DIRECTORY (juste avant Start-Cray1Program plus haut) pour }
+   { le detail exact de chaque commande (reelle/simplifiee/stub) et la     }
+   { convention "/qualificateur" DCL (VmsQual extrait ici une seule fois - }
+   { simplification : un seul qualificateur par ligne, le vrai DCL en      }
+   { autorise plusieurs). }
+   VmsQual := '';
+   If (TermTrim(ParamStr) <> '') And (TermTrim(ParamStr)[1] = '/') Then Begin
+    VmsQual := UpCaseStr(TermExtractParam(ParamStr, 1));
+    Delete(VmsQual, 1, 1);
+    ParamStr := TermTrimL(Copy(ParamStr,
+     Pos(TermExtractParam(ParamStr, 1), ParamStr) +
+     Length(TermExtractParam(ParamStr, 1)), 255));
+   End;
+   If CurrCmd = 'COPY' Then TermCmd_COPY(TP, ParamStr)
+   Else If CurrCmd = 'DELETE' Then TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'RENAME' Then TermCmd_REN(TP, ParamStr)
+   Else If CurrCmd = 'TYPE' Then TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'EDIT' Then TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'DIRECTORY' Then TermCmd_VMS_DIRECTORY(TP, ParamStr)
+   Else If CurrCmd = 'APPEND' Then TermCmd_VMS_APPEND(TP, ParamStr)
+   Else If CurrCmd = 'CREATE' Then
+    TermCmd_VMS_CREATE(TP, ParamStr, VmsQual = 'DIRECTORY')
+   Else If CurrCmd = 'DIFFERENCES' Then TermCmd_VMS_DIFFERENCES(TP, ParamStr)
+   Else If CurrCmd = 'SEARCH' Then TermCmd_VMS_SEARCH(TP, ParamStr)
+   Else If CurrCmd = 'SORT' Then TermCmd_VMS_SORT(TP, ParamStr)
+   Else If CurrCmd = 'CHECKSUM' Then TermCmd_VMS_CHECKSUM(TP, ParamStr)
+   Else If CurrCmd = 'DUMP' Then TermCmd_VMS_DUMP(TP, ParamStr)
+   Else If CurrCmd = 'PRINT' Then TermCmd_VMS_PRINT(TP, ParamStr)
+   Else If CurrCmd = 'SUBMIT' Then TermCmd_VMS_SUBMIT(TP, ParamStr)
+   Else If (CurrCmd = 'HELP') Then TermCmd_VMS_HELP(TP)
+   Else If CurrCmd = 'PURGE' Then
+    TermAddLine(TP, 'PURGE : aucune ancienne version a purger (aucun ' +
+     'historique de versions de fichier n''est modelise par ce terminal).')
+   Else If CurrCmd = 'WAIT' Then Begin
+    { Plafonne a 10s (pas les 0-59:59:59.99 reels de VMS) : ce terminal    }
+    { n'a aucun modele multi-processus, un WAIT bloquerait l'IDE ENTIER    }
+    { pendant sa duree - disclosed, plafond volontairement bas. }
+    Val(TermTrim(ParamStr), VmsWaitN, VmsWaitErr);
+    If (VmsWaitErr <> 0) Or (VmsWaitN < 0) Or (VmsWaitN > 10) Then
+     TermAddLine(TP, 'Syntaxe : WAIT secondes (0-10, plafonne - bloque tout l''IDE)')
+    Else Begin
+     Delay(VmsWaitN * 1000);
+     TermAddLine(TP, 'WAIT : ' + IntToStr(VmsWaitN) + ' seconde(s) ecoulee(s).');
+    End;
+   End
+   Else If CurrCmd = 'RECALL' Then TermCmd_VMS_RECALL(TP)
+   Else If (CurrCmd = 'ASSIGN') Or (CurrCmd = 'DEFINE') Then Begin
+    If TermExtractParam(ParamStr, 2) = '' Then
+     TermAddLine(TP, 'Syntaxe : ' + CurrCmd + ' equivalence nom-logique')
+    Else Begin
+     VmsLogSet(TermExtractParam(ParamStr, 2), TermExtractParam(ParamStr, 1));
+     TermAddLine(TP, CurrCmd + ' : ''' + UpCaseStr(TermExtractParam(ParamStr, 2)) +
+      ''' = ''' + TermExtractParam(ParamStr, 1) + '''.');
+    End;
+   End
+   Else If CurrCmd = 'DEASSIGN' Then Begin
+    VmsQIdx := VmsLogFind(TermTrim(ParamStr));
+    If VmsQIdx = 0 Then
+     TermAddLine(TP, '%DCL-W-UNDEFPSECT, undefined logical name')
+    Else Begin
+     For VmsQI := VmsQIdx To VmsLogCount - 1 Do Begin
+      VmsLogNames[VmsQI] := VmsLogNames[VmsQI + 1];
+      VmsLogValues[VmsQI] := VmsLogValues[VmsQI + 1];
+     End;
+     Dec(VmsLogCount);
+     TermAddLine(TP, 'DEASSIGN : ''' + UpCaseStr(TermTrim(ParamStr)) + ''' supprime.');
+    End;
+   End
+   Else If CurrCmd = 'ALLOCATE' Then Begin
+    Inc(VmsAllocCount);
+    TermAddLine(TP, 'ALLOCATE : peripherique ''' + TermTrim(ParamStr) +
+     ''' reserve (' + IntToStr(VmsAllocCount) + ' au total cette session).');
+   End
+   Else If CurrCmd = 'DEALLOCATE' Then Begin
+    If VmsAllocCount > 0 Then Dec(VmsAllocCount);
+    TermAddLine(TP, 'DEALLOCATE : peripherique ''' + TermTrim(ParamStr) + ''' libere.');
+   End
+   Else If CurrCmd = 'SET' Then Begin
+    If UpCaseStr(TermExtractParam(ParamStr, 1)) = 'DEFAULT' Then Begin
+     VmsSetArg := TermTrim(Copy(TermTrim(ParamStr), 8, 255));
+     If VmsSetArg = '' Then TermAddLine(TP, 'Syntaxe : SET DEFAULT repertoire')
+     Else Begin
+      {$I-} ChDir(VmsSetArg); {$I+}
+      VmsQErr := IOResult;
+      If VmsQErr = 0 Then Begin
+       GetDir(0, VmsDefaultDisk);
+       TermAddLine(TP, 'SET DEFAULT : ' + VmsDefaultDisk);
+      End Else TermAddLine(TP, TermGetErrorMessage(VmsQErr));
+     End;
+    End Else
+     TermAddLine(TP, 'SET ' + TermTrim(ParamStr) +
+      ' : parametre accepte (bookkeeping, voir SET DEFAULT pour la seule ' +
+      'forme reelle).');
+   End
+   Else If CurrCmd = 'SHOW' Then Begin
+    VmsShowArg := UpCaseStr(TermExtractParam(ParamStr, 1));
+    If VmsShowArg = 'TIME' Then Begin
+     GetDate(VmsYear, VmsMonth, VmsDay, VmsDow);
+     GetTime(VmsHour, VmsMin, VmsSec, VmsSec100);
+     TermAddLine(TP, TermPadZeroLeft(VmsDay, 2) + '-' + TermPadZeroLeft(VmsMonth, 2) +
+      '-' + TermPadZeroLeft(VmsYear, 4) + ' ' + TermPadZeroLeft(VmsHour, 2) + ':' +
+      TermPadZeroLeft(VmsMin, 2) + ':' + TermPadZeroLeft(VmsSec, 2));
+    End
+    Else If (VmsShowArg = 'DEFAULT') Or (VmsShowArg = '') Then Begin
+     GetDir(0, VmsDefaultDisk);
+     TermAddLine(TP, VmsDefaultDisk);
+    End Else If VmsShowArg = 'LOGICAL' Then Begin
+     If VmsLogCount = 0 Then TermAddLine(TP, '%DCL-I-NOLOGNAM, no logical names found')
+     Else For VmsQI := 1 To VmsLogCount Do
+      TermAddLine(TP, '  "' + VmsLogNames[VmsQI] + '" = "' + VmsLogValues[VmsQI] + '"');
+    End Else
+     TermAddLine(TP, 'SHOW ' + TermExtractParam(ParamStr, 1) +
+      ' : commande reconnue, mais non supportee (voir SHOW TIME/DEFAULT/LOGICAL).');
+   End
+   Else If CurrCmd = 'WRITE' Then Begin
+    { WRITE canal,texte necessite un canal ouvert par OPEN (non modelise   }
+    { ici, voir OPEN/CLOSE plus bas) - simplifie a un echo direct du       }
+    { deuxieme argument sur SYS$OUTPUT (le terminal), disclosed. }
+    TermAddLine(TP, TermTrim(Copy(ParamStr,
+     Length(TermExtractParam(ParamStr, 1)) + 1, 255)));
+   End
+   Else If (CurrCmd = 'EXIT') Or (CurrCmd = 'LOGOUT') Then
+    TermAddLine(TP, CurrCmd + ' : fermeture de session non applicable a ce ' +
+     'terminal (utilisez le bouton de fermeture de l''onglet Terminal).')
+   Else If (CurrCmd = 'BASIC') Or (CurrCmd = 'COBOL') Or (CurrCmd = 'FORTRAN') Or
+           (CurrCmd = 'MACRO') Or (CurrCmd = 'PASCAL') Or (CurrCmd = 'JAVA') Then
+    TermAddLine(TP, CurrCmd + ' : commande reconnue, mais non supportee - ' +
+     'aucun compilateur ' + CurrCmd + ' n''est cable a ce shell (DEVENV ' +
+     'possede des compilateurs reels sous forme d''outils separes, non ' +
+     'relies a ce terminal DCL).')
+   Else If (CurrCmd = 'GOSUB') Or (CurrCmd = 'GOTO') Or (CurrCmd = 'IF') Or
+           (CurrCmd = 'ON') Or (CurrCmd = 'RETURN') Or (CurrCmd = 'SUBROUTINE') Or
+           (CurrCmd = 'ENDSUBROUTINE') Or (CurrCmd = 'CALL') Or
+           (CurrCmd = 'INQUIRE') Then
+    TermAddLine(TP, CurrCmd + ' : commande reconnue, mais non supportee - ' +
+     'ce terminal execute une ligne de commande a la fois, sans moteur ' +
+     'd''etiquettes/branchement pour de vraies procedures .COM.')
+   Else If (CurrCmd = 'ANALYZE') Or (CurrCmd = 'BACKUP') Or (CurrCmd = 'ATTACH') Or
+           (CurrCmd = 'CONNECT') Or (CurrCmd = 'DISCONNECT') Or (CurrCmd = 'SPAWN') Or
+           (CurrCmd = 'CANCEL') Or (CurrCmd = 'CONVERT') Or (CurrCmd = 'DEBUG') Or
+           (CurrCmd = 'DECK') Or (CurrCmd = 'DECRYPT') Or (CurrCmd = 'ENCRYPT') Or
+           (CurrCmd = 'DEPOSIT') Or (CurrCmd = 'EXAMINE') Or (CurrCmd = 'DISMOUNT') Or
+           (CurrCmd = 'MOUNT') Or (CurrCmd = 'INITIALIZE') Or (CurrCmd = 'EXCHANGE') Or
+           (CurrCmd = 'FONT') Or (CurrCmd = 'INSTALL') Or (CurrCmd = 'LIBRARY') Or
+           (CurrCmd = 'LICENSE') Or (CurrCmd = 'LINK') Or (CurrCmd = 'MCR') Or
+           (CurrCmd = 'PATCH') Or (CurrCmd = 'PRODUCT') Or (CurrCmd = 'MESSAGE') Or
+           (CurrCmd = 'MONITOR') Or (CurrCmd = 'NCS') Or (CurrCmd = 'PASSWORD') Or
+           (CurrCmd = 'PHONE') Or (CurrCmd = 'PIPE') Or (CurrCmd = 'PPPD') Or
+           (CurrCmd = 'REPLY') Or (CurrCmd = 'REQUEST') Or (CurrCmd = 'RUN') Or
+           (CurrCmd = 'RUNOFF') Or (CurrCmd = 'UNLOCK') Or (CurrCmd = 'VIEW') Or
+           (CurrCmd = 'XAUTH') Or (CurrCmd = 'JOB') Or (CurrCmd = 'EOJ') Or
+           (CurrCmd = 'EOD') Or (CurrCmd = 'MERGE') Or (CurrCmd = 'MAIL') Or
+           (CurrCmd = 'OPEN') Or (CurrCmd = 'CLOSE') Or (CurrCmd = 'READ') Or
+           (CurrCmd = 'ENABLE') Or (CurrCmd = 'DISABLE') Or
+           (CurrCmd = 'START') Or (CurrCmd = 'STOP') Or
+           (CurrCmd = 'SYNCHRONIZE') Then
+    TermAddLine(TP, CurrCmd + ' : commande reconnue, mais non supportee - ' +
+     'aucune infrastructure VMS reelle correspondante (files BATCH, ' +
+     'gestion multi-processus, structures RMS/ODS-2, materiel reseau) ' +
+     'n''est modelisee par ce shell HOTE.')
+   Else
+    TermAddLine(TP, '%DCL-W-IVVERB, unrecognized command verb - check ' +
+     'validity and spelling - ' + CurrCmd);
   End;
   SK_COS: Begin
    { COS (Cray Operating System, Cray-1, 1976) - demande explicite de       }
@@ -151631,7 +152609,9 @@ Begin
   SK_AMIGADOS:   TermCmdHistFile := 'devenv-amiga.hist';
   SK_OS2REXX:    TermCmdHistFile := 'devenv-os2.hist';
   SK_OS9:        TermCmdHistFile := 'devenv-os9.hist';
+  SK_FLEX:       TermCmdHistFile := 'devenv-flex.hist';
   SK_CPM:        TermCmdHistFile := 'devenv-cpm.hist';
+  SK_VMS:        TermCmdHistFile := 'devenv-vms.hist';
   SK_COS:        TermCmdHistFile := 'devenv-cos.hist';
  Else
   TermCmdHistFile := 'devenv-term.hist';
@@ -151762,7 +152742,9 @@ Begin
  InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
  InitTerminalPanel(TermPanels[SK_OS2REXX], SK_OS2REXX);
  InitTerminalPanel(TermPanels[SK_OS9], SK_OS9);
+ InitTerminalPanel(TermPanels[SK_FLEX], SK_FLEX);
  InitTerminalPanel(TermPanels[SK_CPM], SK_CPM);
+ InitTerminalPanel(TermPanels[SK_VMS], SK_VMS);
  InitTerminalPanel(TermPanels[SK_COS], SK_COS);
  { Comme l original sur DOS reel (et comme les 4 autres shells de ce      }
  { panneau) : demarrer sur le repertoire courant de la machine hote,           }
@@ -155383,8 +156365,10 @@ Begin
   5: TermSelectCaption := 'Norton Commander';
   6: TermSelectCaption := 'OS/2 & REXX';
   7: TermSelectCaption := 'OS-9 (CoCo 3)';
-  8: TermSelectCaption := 'CP/M-80';
-  9: TermSelectCaption := 'COS (Cray-1)';
+  8: TermSelectCaption := 'FLEX';
+  9: TermSelectCaption := 'CP/M-80';
+  10: TermSelectCaption := 'VMS (VAX)';
+  11: TermSelectCaption := 'COS (Cray-1)';
   Else TermSelectCaption := '';
  End;
 End;
@@ -155435,8 +156419,10 @@ Begin
   5: NewShell := SK_NCOMMANDER;
   6: NewShell := SK_OS2REXX;
   7: NewShell := SK_OS9;
-  8: NewShell := SK_CPM;
-  9: NewShell := SK_COS;
+  8: NewShell := SK_FLEX;
+  9: NewShell := SK_CPM;
+  10: NewShell := SK_VMS;
+  11: NewShell := SK_COS;
   Else NewShell := ActiveShell;
  End;
  TermSelectOpen := False;
@@ -155465,9 +156451,15 @@ Begin
     SK_OS9:
      TermAddLine(TermPanels[SK_OS9],
       'OS-9/6809 Level Two. Tapez HELP pour la liste des commandes.');
+    SK_FLEX:
+     TermAddLine(TermPanels[SK_FLEX],
+      'FLEX (TM) - Technical Systems Consultants. Tapez HELP pour la liste des commandes.');
     SK_CPM:
      TermAddLine(TermPanels[SK_CPM],
       'CP/M-80 (TM) VERS 2.2. Tapez HELP pour la liste des commandes.');
+    SK_VMS:
+     TermAddLine(TermPanels[SK_VMS],
+      'VAX/VMS (TM). Tapez HELP pour la liste des commandes.');
     SK_COS:
      TermAddLine(TermPanels[SK_COS],
       'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
@@ -155552,7 +156544,9 @@ Begin
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
   SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
   SK_OS9:        SelLabel := 'OS-9 (CoCo 3)';
+  SK_FLEX:       SelLabel := 'FLEX';
   SK_CPM:        SelLabel := 'CP/M-80';
+  SK_VMS:        SelLabel := 'VMS (VAX)';
   SK_COS:        SelLabel := 'COS (Cray-1)';
  End;
  SetColor(15);
@@ -155730,12 +156724,22 @@ Begin
     { "PS1"-like), simplifiee ici (aucune personnalisation via "shell -p" }
     { n'est simulee). }
     PromptStr := PromptStr + ' $ ' + TP.InputLine + '_';
+   SK_FLEX:
+    { Prompt FLEX reel : un simple point "." (convention authentique       }
+    { TSC FLEX documentee), aucun chemin affiche - PAS de personnalisation }
+    { additionnelle simulee. }
+    PromptStr := '.' + TP.InputLine + '_';
    SK_CPM:
     { Prompt CCP reel : lettre de lecteur suivie de ">" (ex: "A>"), AUCUN }
     { chemin affiche (convention CP/M 2.2 authentique, contrairement a    }
     { CMD/PowerShell) - lettre du lecteur HOTE courant reutilisee, meme   }
     { principe que Gulam (1ere lettre de PromptStr) juste au-dessus. }
     PromptStr := UpCaseStr(Copy(PromptStr, 1, 1)) + '>' + TP.InputLine + '_';
+   SK_VMS:
+    { Prompt DCL reel : simple "$" (convention VAX/VMS authentique),        }
+    { aucun chemin affiche par defaut (SET PROMPT permettrait de le         }
+    { personnaliser sur un vrai VMS, non simule ici). }
+    PromptStr := '$ ' + TP.InputLine + '_';
    SK_COS:
     { Syntaxe reelle COS : commandes separees par des virgules, ligne     }
     { terminee par un point (ex: STATUS,ALL.) - prompt simplifie, aucune  }
@@ -156179,8 +157183,10 @@ Begin
      SK_NCOMMANDER: TermSelectIdx := 5;
      SK_OS2REXX:    TermSelectIdx := 6;
      SK_OS9:        TermSelectIdx := 7;
-     SK_CPM:        TermSelectIdx := 8;
-     SK_COS:        TermSelectIdx := 9;
+     SK_FLEX:       TermSelectIdx := 8;
+     SK_CPM:        TermSelectIdx := 9;
+     SK_VMS:        TermSelectIdx := 10;
+     SK_COS:        TermSelectIdx := 11;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -205158,6 +206164,24 @@ Begin
  Z8K_WriteByte(Seg, Word(Ofs + 1), Byte(V And $FF));
 End;
 
+{ Accesseurs REGISTRE-OCTET (RHn/RLn) - Stage 3 (2026-09-21), convention     }
+{ REELLE confirmee via MAME (z8000cpu.h, macro RB : champ registre 0-7 =    }
+{ RH0-RH7 = octet de poids FORT de R0-R7 ; champ 8-15 = RL0-RL7 = octet de  }
+{ poids FAIBLE) - CORRIGE ici un BOGUE REEL du decodeur LDB de Stage 2 (qui }
+{ avait les deux inversees, jamais exerce en pratique par le test "Hi!" qui}
+{ n'utilisait que la forme MOT). }
+Function Z8K_GetRB(Field: Byte): Byte;
+Begin
+ If Field <= 7 Then Z8K_GetRB := Byte(Z8K_R[Field] Shr 8)
+ Else Z8K_GetRB := Byte(Z8K_R[Field - 8] And $FF);
+End;
+
+Procedure Z8K_SetRB(Field: Byte; V: Byte);
+Begin
+ If Field <= 7 Then Z8K_R[Field] := (Z8K_R[Field] And $00FF) Or (Word(V) Shl 8)
+ Else Z8K_R[Field - 8] := (Z8K_R[Field - 8] And $FF00) Or Word(V);
+End;
+
 { Teste le code condition (0-15) REEL, croise MAME (macros CC0-CCF,          }
 { z8000cpu.h) et ASZ8K.PAS (ConditionNumber) - accord parfait des 2 sources. }
 Function Z8K_TestCC(CC: Byte): Boolean;
@@ -205218,6 +206242,167 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Aides drapeaux Stage 3 (2026-09-21, "Implemente toutes les instructions
+  de l'emulateur Z8000") - SOURCE DE VERITE : code REEL de MAME (pas
+  seulement ses commentaires de tete, qui se sont averes parfois faux -
+  ex. SRAB annonce "CZSV--" mais son corps ne positionne JAMAIS V) lu
+  directement (ANDB/ORB/XORB/COMB/NEGB/TESTB/RLB/RLCB/SLLB/SRLB etc,
+  src/devices/cpu/z8000/z8000ops.hxx). ============================ }
+
+{ AND/OR/XOR/TEST : Z/S positionnes normalement ; forme OCTET SEULEMENT
+  positionne aussi P (parite, meme bit PV que V) ; C JAMAIS touche (ni
+  efface ni positionne) - confirme par CLR_ZS/CLR_ZSP (pas CLR_CZSV) dans
+  TOUTES ces fonctions MAME. }
+Procedure Z8K_SetFlagsLogic(R: Word; Wide, WithParity: Boolean);
+Var
+ SignBit: Word;
+ I: Integer;
+ Ones: Integer;
+Begin
+ Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_Z Or Z8K_FCW_S);
+ If WithParity Then Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV;
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ If Wide Then Begin If R = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z; End
+ Else Begin If (R And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z; End;
+ If (R And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+ If WithParity Then Begin
+  Ones := 0;
+  For I := 0 To 7 Do If (R And (1 Shl I)) <> 0 Then Inc(Ones);
+  If (Ones And 1) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV; { P : parite PAIRE }
+ End;
+End;
+
+{ NEG : C positionne si l'operande d'origine <> 0, V si le resultat vaut    }
+{ exactement le plus negatif representable (operande = $80/$8000, ne peut   }
+{ pas etre nie) - formule REELLE MAME (result>0)/(result=S08/S16), PAS la   }
+{ formule generique de soustraction (0-operande) reutilisee par erreur. }
+Procedure Z8K_SetFlagsNeg(OrigOperand, R: Word; Wide: Boolean);
+Var
+ SignBit: Word;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+ If Wide Then Begin If R = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z; End
+ Else Begin If (R And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z; End;
+ If (R And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+ If Wide Then Begin If OrigOperand <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End
+ Else Begin If (OrigOperand And $FF) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End;
+ If R = SignBit Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+End;
+
+{ Decalages/rotations - boucle BIT A BIT (Count pas), IDENTIQUE a la        }
+{ structure reelle de MAME (v |= (result^prev)&signbit A CHAQUE pas, pas    }
+{ une formule "vue d'ensemble" approximative) - Z/S/C mis par l'appelant    }
+{ APRES l'appel (comme CHK_XXX_ZS+SET_C separes dans MAME), V mis ICI       }
+{ (cumule sur tous les pas, exactement comme SET_V apres la boucle MAME).   }
+{ Utilisee identique pour SLA et SLL (les DEUX ont un corps MAME identique  }
+{ - aucune distinction arithmetique/logique n'existe pour un decalage       }
+{ GAUCHE, seul un decalage DROIT en a une - sign-extension vs zero-fill). }
+Function Z8K_ShiftLeft(Var Val: Word; Wide: Boolean; Count: Integer): Boolean;
+Var
+ SignBit: Word;
+ I: Integer;
+ Prev: Word;
+ CarryBit: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ CarryBit := False;
+ For I := 1 To Count Do Begin
+  Prev := Val;
+  CarryBit := (Val And SignBit) <> 0;
+  If Wide Then Val := Word(LongWord(Val) Shl 1)
+  Else Val := Word((LongWord(Val) Shl 1) And $FF);
+  If ((Val Xor Prev) And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+ End;
+ Z8K_ShiftLeft := CarryBit;
+End;
+
+{ SRA (arithmetique, extension de signe) - MAME ne calcule JAMAIS V pour    }
+{ cette forme (code lu directement, PAS le commentaire de tete errone) -   }
+{ reste donc a 0 (efface, jamais positionne) ici. }
+Function Z8K_ShiftRightArith(Var Val: Word; Wide: Boolean; Count: Integer): Boolean;
+Var
+ SignBit: Word;
+ I: Integer;
+ WasNeg: Boolean;
+ CarryBit: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ WasNeg := (Val And SignBit) <> 0;
+ CarryBit := False;
+ For I := 1 To Count Do Begin
+  CarryBit := (Val And 1) <> 0;
+  Val := Val Shr 1;
+  If WasNeg Then Val := Val Or SignBit;
+ End;
+ Z8K_ShiftRightArith := CarryBit;
+End;
+
+{ SRL (logique, remplissage a zero) - V EST calcule (confirme via le code   }
+{ REEL de SRLB/SRLW, contrairement a ce que son nom "logique" suggererait). }
+Function Z8K_ShiftRightLogic(Var Val: Word; Wide: Boolean; Count: Integer): Boolean;
+Var
+ SignBit: Word;
+ I: Integer;
+ Prev: Word;
+ CarryBit: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ CarryBit := False;
+ For I := 1 To Count Do Begin
+  Prev := Val;
+  CarryBit := (Val And 1) <> 0;
+  Val := Val Shr 1;
+  If ((Val Xor Prev) And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+ End;
+ Z8K_ShiftRightLogic := CarryBit;
+End;
+
+{ RL/RR (rotation simple, PAS a travers la retenue) - forme courte UNIQUEMENT}
+{ (Count=1 ou 2, seule forme reelle existante pour une rotation pure, voir   }
+{ disclosure de tete pres de Z8K_StepOne : RLC/RRC - rotation A TRAVERS la   }
+{ retenue - restent hors perimetre ce Stage, chaine de retenue multi-pas non}
+{ implantee). }
+Function Z8K_RotateLeft(Var Val: Word; Wide: Boolean; Count: Integer): Boolean;
+Var
+ SignBit: Word;
+ I: Integer;
+ Prev: Word;
+ CarryBit: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ CarryBit := False;
+ For I := 1 To Count Do Begin
+  Prev := Val;
+  CarryBit := (Val And SignBit) <> 0;
+  If Wide Then Val := Word(LongWord(Val) Shl 1)
+  Else Val := Word((LongWord(Val) Shl 1) And $FF);
+  If CarryBit Then Val := Val Or 1;
+  If ((Val Xor Prev) And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+ End;
+ Z8K_RotateLeft := CarryBit;
+End;
+
+Function Z8K_RotateRight(Var Val: Word; Wide: Boolean; Count: Integer): Boolean;
+Var
+ SignBit: Word;
+ I: Integer;
+ Prev: Word;
+ CarryBit: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ CarryBit := False;
+ For I := 1 To Count Do Begin
+  Prev := Val;
+  CarryBit := (Val And 1) <> 0;
+  Val := Val Shr 1;
+  If CarryBit Then Val := Val Or SignBit;
+  If ((Val Xor Prev) And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+ End;
+ Z8K_RotateRight := CarryBit;
+End;
+
 { Trappe BDOS CP/M-8000 reelle (SC #2 UNIQUEMENT - voir disclosure de tete   }
 { pour #1/#3 non implantes). R5=fonction (deja pose par le programme avant   }
 { le SC, convention REELLE Programmer's Guide 4.1.1), R7=parametre/retour    }
@@ -205265,11 +206450,27 @@ End;
 { execution silencieusement incorrecte). }
 Procedure Z8K_StepOne(Var P: TEmulatorPanel);
 Var
- Op0: Word;
+ Op0, Op1: Word;
  Rd, Rs, CC: Byte;
  Imm16: Word;
  A, B, R: Word;
  StartOfs: Word;
+ { Stage 3 (2026-09-21) - variables supplementaires pour le jeu             }
+ { d'instructions etendu (voir la disclosure juste avant le corps). }
+ Imm8: Byte;
+ Ab, Bb, Rb: Byte;
+ CarryIn: Byte;
+ LSum: LongWord;
+ LDiff: LongInt;
+ Cnt: Integer;
+ VW: Word;
+ BitN: Byte;
+ RP, RV: Byte;
+ Field12: Word;
+ RawD: LongInt;
+ Target: Word;
+ LDividend: LongWord;
+ LQuot, LRem: LongWord;
 Begin
  If Z8K_Halted Then Exit;
  StartOfs := Z8K_PCOfs;
@@ -205303,12 +206504,685 @@ Begin
   Exit;
  End;
 
- If (Op0 And $F000) = $C000 Then Begin { LDB Rbd,#imm8 forme courte (ZC, MAME) }
-  Rd := Byte((Op0 Shr 8) And $0F);
-  If Rd <= 7 Then Z8K_R[Rd] := (Z8K_R[Rd] And $FF00) Or Word(Op0 And $FF)
-  Else Z8K_R[Rd - 8] := (Z8K_R[Rd - 8] And $00FF) Or (Word(Op0 And $FF) Shl 8);
+ { LD Rd,Rs / LDB Rd,Rs (transfert registre-registre, EncodeLoadFull RR :  }
+ { $A100 mot/$A000 octet) - OMISSION REELLE de Stage 2 corrigee ici        }
+ { (Stage 3) : l'instruction de MOUVEMENT la plus courante d'un programme  }
+ { reel n'existait sous AUCUNE forme avant ce Stage (seul LD Rd,#imm16     }
+ { etait couvert). }
+ If (Op0 And $FF00) = $A100 Then Begin { LD Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Z8K_R[Rd] := Z8K_R[Rs];
   Exit;
  End;
+ If (Op0 And $FF00) = $A000 Then Begin { LDB Rbd,Rbs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Z8K_SetRB(Rd, Z8K_GetRB(Rs));
+  Exit;
+ End;
+
+ If (Op0 And $F000) = $C000 Then Begin { LDB Rbd,#imm8 forme courte (ZC, MAME) }
+  { BOGUE REEL corrige (Stage 3, 2026-09-21) : Z8K_SetRB/Z8K_GetRB (voir    }
+  { juste apres Z8K_WriteWord) encodent la convention REELLE confirmee via  }
+  { MAME (RB, z8000cpu.h) - champ 0-7=RH (octet FORT), 8-15=RL (octet       }
+  { FAIBLE) - Stage 2 avait les deux inversees, jamais exerce par le test   }
+  { "Hi!" (forme MOT uniquement). }
+  Rd := Byte((Op0 Shr 8) And $0F);
+  Z8K_SetRB(Rd, Byte(Op0 And $FF));
+  Exit;
+ End;
+
+ { ============================================================
+   Stage 3 (2026-09-21, demande explicite - "Implemente toutes les
+   instructions de l'emulateur Z8000") : extension massive du sous-ensemble
+   couvert, memes 2 sources croisees que Stage 2 (MAME silicium-verifie +
+   ASZ8K.PAS, voir la disclosure de tete du fichier). AJOUTE : formes
+   OCTET des ALU deja presentes (ADD/SUB/CP) + AND/OR/XOR (mot+octet) +
+   ADC/SBC/EX (registre-registre uniquement, EncodeRegReg) + INC/DEC +
+   NEG/COM/CLR/TEST/TSET (registre unaire) + BIT/SET/RES (forme immediate
+   uniquement) + decalages/rotations RL/RR/SLA=SLL/SRA/SRL (voir
+   Z8K_RotateLeft/Right/ShiftLeft/Right* juste avant Z8K_DispatchBDOS) +
+   TCC + SETFLG/RESFLG/COMFLG + LDCTL (FCW uniquement) + LDK + MULT/DIV +
+   PUSH/POP (pointeur EXPLICITE, EncodePushPop - PAS un registre systeme
+   implicite) + CALL/CALR/RET (pointeur SYSTEME IMPLICITE R15, confirme
+   via MAME PUSHW(SP,...)/POPW(SP) - simplifie en pile PLATE dans le seul
+   segment 0 existant, coherent avec la simplification "un seul segment"
+   deja disclosed depuis Stage 1) + JP @Rd + DJNZ/DBJNZ + NOP/DI/EI.
+   DELIBEREMENT HORS PERIMETRE (disclosure honnete, pas une omission
+   silencieuse) : tout mode d'adressage MEMOIRE pour les ALU/LD (direct/
+   indexe/indirect/base - deja hors perimetre Stage 2) ; RLC/RRC (rotation
+   A TRAVERS la retenue - chaine de retenue multi-pas non implantee) ;
+   BIT/SET/RES forme "registre" (2 mots) ; MULT/DIV forme immediate (voir
+   ci-dessous, seule la forme registre-registre est implantee) ; DAB
+   (ajustement decimal) ; EXTS/EXTSB/EXTSL ; LDA/LDAR/LDR/LDM (adressage
+   memoire) ; LDI/LDD/LDIR/LDDR et toute la famille de blocs de chaines
+   (TRIB/TRDB/INI/OUTI/etc) ; CPI/CPD/CPIR/CPDR ; IN/OUT/SIN/SOUT (aucun
+   port d'E/S reel n'existe dans ce shell hote) ; IRET/MREQ/MRES/MBIT/MSET
+   (privilegies/multiprocesseur, sans contexte reel a modeliser - echec
+   honnete) ; JP adresse directe/indexee (mode memoire). ============= }
+
+ { --- ALU octet (ADD/SUB/CP deja presents en forme MOT ; AND/OR/XOR      }
+ { n'existaient sous AUCUNE forme avant ce Stage) - reg-reg ($FF00) et     }
+ { reg-imm8 ($FF00, immediate DUPLIQUEE sur les 2 octets du mot suivant   }
+ { par EmitImmediateValue(...,DuplicateByte=Size=1) d'ASZ8K - peu importe }
+ { donc quel octet du mot suivant est lu ici, les deux sont identiques). --- }
+ If (Op0 And $FF00) = $8000 Then Begin { ADDB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_GetRB(Rs); Rb := Byte(Ab + Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, False, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8200 Then Begin { SUBB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_GetRB(Rs); Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8A00 Then Begin { CPB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_GetRB(Rs); Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8600 Then Begin { ANDB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Rb := Z8K_GetRB(Rd) And Z8K_GetRB(Rs);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8400 Then Begin { ORB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Rb := Z8K_GetRB(Rd) Or Z8K_GetRB(Rs);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8800 Then Begin { XORB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Rb := Z8K_GetRB(Rd) Xor Z8K_GetRB(Rs);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0000 Then Begin { ADDB Rd,#imm8 }
+  Rd := Byte(Op0 And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Ab := Z8K_GetRB(Rd); Bb := Byte(Op1 And $FF); Rb := Byte(Ab + Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, False, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0200 Then Begin { SUBB Rd,#imm8 }
+  Rd := Byte(Op0 And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Ab := Z8K_GetRB(Rd); Bb := Byte(Op1 And $FF); Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0A00 Then Begin { CPB Rd,#imm8 }
+  Rd := Byte(Op0 And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Ab := Z8K_GetRB(Rd); Bb := Byte(Op1 And $FF); Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0600 Then Begin { ANDB Rd,#imm8 }
+  Rd := Byte(Op0 And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rb := Z8K_GetRB(Rd) And Byte(Op1 And $FF);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0400 Then Begin { ORB Rd,#imm8 }
+  Rd := Byte(Op0 And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rb := Z8K_GetRB(Rd) Or Byte(Op1 And $FF);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0800 Then Begin { XORB Rd,#imm8 }
+  Rd := Byte(Op0 And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rb := Z8K_GetRB(Rd) Xor Byte(Op1 And $FF);
+  Z8K_SetFlagsLogic(Rb, False, True);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+
+ { --- AND/OR/XOR MOT (reg-reg et reg-imm16). --- }
+ If (Op0 And $FF00) = $8700 Then Begin { AND Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  R := Z8K_R[Rd] And Z8K_R[Rs]; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8500 Then Begin { OR Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  R := Z8K_R[Rd] Or Z8K_R[Rs]; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8900 Then Begin { XOR Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  R := Z8K_R[Rd] Xor Z8K_R[Rs]; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0700 Then Begin { AND Rd,#imm16 }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  R := Z8K_R[Rd] And Imm16; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0500 Then Begin { OR Rd,#imm16 }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  R := Z8K_R[Rd] Or Imm16; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0900 Then Begin { XOR Rd,#imm16 }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  R := Z8K_R[Rd] Xor Imm16; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
+  Exit;
+ End;
+
+ { --- ADC/SBC/EX (registre-registre uniquement, EncodeRegReg). --- }
+ If (Op0 And $FF00) = $B500 Then Begin { ADC Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  CarryIn := Ord((Z8K_FCW And Z8K_FCW_C) <> 0);
+  LSum := LongWord(Z8K_R[Rd]) + LongWord(Z8K_R[Rs]) + LongWord(CarryIn);
+  R := Word(LSum);
+  Z8K_SetFlagsAdd(Z8K_R[Rd], Word(LongWord(Z8K_R[Rs]) + LongWord(CarryIn)), R, False, True);
+  If LSum > $FFFF Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $B400 Then Begin { ADCB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  CarryIn := Ord((Z8K_FCW And Z8K_FCW_C) <> 0);
+  Ab := Z8K_GetRB(Rd); Bb := Byte(Z8K_GetRB(Rs) + CarryIn); Rb := Byte(Ab + Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, False, False);
+  If (Word(Ab) + Word(Z8K_GetRB(Rs)) + Word(CarryIn)) > 255 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $B700 Then Begin { SBC Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  CarryIn := Ord((Z8K_FCW And Z8K_FCW_C) <> 0);
+  LDiff := LongInt(Z8K_R[Rd]) - LongInt(Z8K_R[Rs]) - LongInt(CarryIn);
+  R := Word(LDiff);
+  Z8K_SetFlagsAdd(Z8K_R[Rd], Word(LongInt(Z8K_R[Rs]) + LongInt(CarryIn)), R, True, True);
+  If LDiff < 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $B600 Then Begin { SBCB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  CarryIn := Ord((Z8K_FCW And Z8K_FCW_C) <> 0);
+  Ab := Z8K_GetRB(Rd);
+  LDiff := LongInt(Ab) - LongInt(Z8K_GetRB(Rs)) - LongInt(CarryIn);
+  Rb := Byte(LDiff);
+  Z8K_SetFlagsAdd(Ab, Byte(Z8K_GetRB(Rs) + CarryIn), Rb, True, False);
+  If LDiff < 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $AD00 Then Begin { EX Rd,Rs (echange) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  R := Z8K_R[Rd]; Z8K_R[Rd] := Z8K_R[Rs]; Z8K_R[Rs] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $AC00 Then Begin { EXB Rd,Rs (echange octet) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  Rb := Z8K_GetRB(Rd); Z8K_SetRB(Rd, Z8K_GetRB(Rs)); Z8K_SetRB(Rs, Rb);
+  Exit;
+ End;
+
+ { --- INC/DEC (compte 1-16 embarque dans le mot, EncodeIncDec) - BOGUE     }
+ { REEL corrige (trouve en testant en direct, diagnostic Z8KS3DIAG.LOG) :  }
+ { Rd et le compte etaient INVERSES - EncodeIncDec emet                    }
+ { `Base or (R shl 4) or (V-1)` : le REGISTRE occupe bits4-7 (PAS bits0-3),}
+ { le compte-1 occupe bits0-3 (PAS bits4-7). --- }
+ If (Op0 And $FF00) = $A900 Then Begin { INC Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := Op0 And $0F; Inc(Cnt);
+  A := Z8K_R[Rd]; R := Word(LongWord(A) + LongWord(Cnt));
+  Z8K_SetFlagsAdd(A, Word(Cnt), R, False, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $AB00 Then Begin { DEC Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := Op0 And $0F; Inc(Cnt);
+  A := Z8K_R[Rd]; R := Word(LongWord(A) - LongWord(Cnt));
+  Z8K_SetFlagsAdd(A, Word(Cnt), R, True, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $A800 Then Begin { INCB Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := Op0 And $0F; Inc(Cnt);
+  Ab := Z8K_GetRB(Rd); Rb := Byte(Ab + Cnt);
+  Z8K_SetFlagsAdd(Ab, Byte(Cnt), Rb, False, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $AA00 Then Begin { DECB Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := Op0 And $0F; Inc(Cnt);
+  Ab := Z8K_GetRB(Rd); Rb := Byte(Ab - Cnt);
+  Z8K_SetFlagsAdd(Ab, Byte(Cnt), Rb, True, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+
+ { --- Registre unaire (mask $FF0F, EncodeUnaryRegister) : NEG/NEGB/CLR/   }
+ { CLRB/COM/COMB/TEST/TESTB/TSET/TSETB. --- }
+ If (Op0 And $FF0F) = $8D02 Then Begin { NEG Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  A := Z8K_R[Rd]; R := Word(0 - LongInt(A));
+  Z8K_SetFlagsNeg(A, R, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8C02 Then Begin { NEGB Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Ab := Z8K_GetRB(Rd); Rb := Byte(0 - LongInt(Ab));
+  Z8K_SetFlagsNeg(Ab, Rb, False);
+  Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8D08 Then Begin { CLR Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_R[Rd] := 0;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8C08 Then Begin { CLRB Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_SetRB(Rd, 0);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8D00 Then Begin { COM Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  R := Not Z8K_R[Rd]; Z8K_SetFlagsLogic(R, True, False); Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8C00 Then Begin { COMB Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Rb := Not Z8K_GetRB(Rd); Z8K_SetFlagsLogic(Rb, False, True); Z8K_SetRB(Rd, Rb);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8D04 Then Begin { TEST Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_SetFlagsLogic(Z8K_R[Rd], True, False);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8C04 Then Begin { TESTB Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_SetFlagsLogic(Word(Z8K_GetRB(Rd)), False, True);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8D06 Then Begin { TSET Rd (teste puis force a $FFFF) }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_SetFlagsLogic(Z8K_R[Rd], True, False); Z8K_R[Rd] := $FFFF;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8C06 Then Begin { TSETB Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_SetFlagsLogic(Word(Z8K_GetRB(Rd)), False, True); Z8K_SetRB(Rd, $FF);
+  Exit;
+ End;
+
+ { --- BIT/SET/RES, forme immediate uniquement (numero de bit 0-15 dans    }
+ { le nibble bas, EncodeBitInstruction). --- }
+ If (Op0 And $FF00) = $A700 Then Begin { BIT Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); BitN := Byte(Op0 And $0F);
+  Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  If (Z8K_R[Rd] And (1 Shl BitN)) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $A600 Then Begin { BITB Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); BitN := Byte(Op0 And $0F) And 7;
+  Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  If (Z8K_GetRB(Rd) And (1 Shl BitN)) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $A500 Then Begin { SET Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); BitN := Byte(Op0 And $0F);
+  Z8K_R[Rd] := Z8K_R[Rd] Or (1 Shl BitN);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $A400 Then Begin { SETB Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); BitN := Byte(Op0 And $0F) And 7;
+  Z8K_SetRB(Rd, Z8K_GetRB(Rd) Or (1 Shl BitN));
+  Exit;
+ End;
+ If (Op0 And $FF00) = $A300 Then Begin { RES Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); BitN := Byte(Op0 And $0F);
+  Z8K_R[Rd] := Z8K_R[Rd] And Not Word(1 Shl BitN);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $A200 Then Begin { RESB Rd,#n }
+  Rd := Byte((Op0 Shr 4) And $0F); BitN := Byte(Op0 And $0F) And 7;
+  Z8K_SetRB(Rd, Z8K_GetRB(Rd) And Not Byte(1 Shl BitN));
+  Exit;
+ End;
+
+ { --- Decalages/rotations (voir Z8K_RotateLeft/Right/ShiftLeft/            }
+ { ShiftRightArith/Logic juste avant Z8K_DispatchBDOS pour la disclosure    }
+ { complete). RL/RR : nibble bas fixe (0/4), bit1=compte-1 (0 ou 1) ->      }
+ { compte reel 1 ou 2 (EncodeShiftRotate). SLA/SLL/SRA/SRL : nibble bas     }
+ { fixe (9/1), suivis d'un mot imm8 signe (SIGNE = direction reelle, voir   }
+ { ZB3_dddd_1001_imm8/ZB2_dddd_1001_imm8, MAME) - PAS la forme courte       }
+ { erronee d'ASZ8K pour ces 4 mnemoniques (voir la disclosure de tete du    }
+ { fichier, desaccord honnetement signale). --- }
+ If (Op0 And $FF0D) = $B300 Then Begin { RL Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_R[Rd];
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateLeft(VW, True, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  If VW = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $8000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_R[Rd] := VW;
+  Exit;
+ End;
+ If (Op0 And $FF0D) = $B200 Then Begin { RLB Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_GetRB(Rd);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateLeft(VW, False, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  If (VW And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_SetRB(Rd, Byte(VW));
+  Exit;
+ End;
+ If (Op0 And $FF0D) = $B304 Then Begin { RR Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_R[Rd];
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateRight(VW, True, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  If VW = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $8000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_R[Rd] := VW;
+  Exit;
+ End;
+ If (Op0 And $FF0D) = $B204 Then Begin { RRB Rd,#1or2 }
+  Rd := Byte((Op0 Shr 4) And $0F); Cnt := ((Op0 Shr 1) And 1) + 1;
+  VW := Z8K_GetRB(Rd);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If Z8K_RotateRight(VW, False, Cnt) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  If (VW And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_SetRB(Rd, Byte(VW));
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $B309 Then Begin { SLA/SRA Rd,#imm8signe }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Imm8 := Byte(Op1 And $FF);
+  VW := Z8K_R[Rd];
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If (Imm8 And $80) <> 0 Then Begin
+   If Z8K_ShiftRightArith(VW, True, 256 - Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End Else Begin
+   If Z8K_ShiftLeft(VW, True, Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End;
+  If VW = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $8000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_R[Rd] := VW;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $B209 Then Begin { SLAB/SRAB Rd,#imm8signe }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Imm8 := Byte(Op1 And $FF);
+  VW := Z8K_GetRB(Rd);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If (Imm8 And $80) <> 0 Then Begin
+   If Z8K_ShiftRightArith(VW, False, 256 - Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End Else Begin
+   If Z8K_ShiftLeft(VW, False, Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End;
+  If (VW And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_SetRB(Rd, Byte(VW));
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $B301 Then Begin { SLL/SRL Rd,#imm8signe }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Imm8 := Byte(Op1 And $FF);
+  VW := Z8K_R[Rd];
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If (Imm8 And $80) <> 0 Then Begin
+   If Z8K_ShiftRightLogic(VW, True, 256 - Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End Else Begin
+   If Z8K_ShiftLeft(VW, True, Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End;
+  If VW = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $8000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_R[Rd] := VW;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $B201 Then Begin { SLLB/SRLB Rd,#imm8signe }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Imm8 := Byte(Op1 And $FF);
+  VW := Z8K_GetRB(Rd);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+  If (Imm8 And $80) <> 0 Then Begin
+   If Z8K_ShiftRightLogic(VW, False, 256 - Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End Else Begin
+   If Z8K_ShiftLeft(VW, False, Imm8) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C;
+  End;
+  If (VW And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (VW And $80) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Z8K_SetRB(Rd, Byte(VW));
+  Exit;
+ End;
+
+ { --- TCC/TCCB (charge 1 dans Rd si la condition est vraie, LAISSE Rd     }
+ { INCHANGE sinon - convention reelle Z8000, PAS une mise a zero). --- }
+ If (Op0 And $FF00) = $AF00 Then Begin { TCC cc,Rd }
+  Rd := Byte((Op0 Shr 4) And $0F); CC := Byte(Op0 And $0F);
+  If Z8K_TestCC(CC) Then Z8K_R[Rd] := 1;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $AE00 Then Begin { TCCB cc,Rd }
+  Rd := Byte((Op0 Shr 4) And $0F); CC := Byte(Op0 And $0F);
+  If Z8K_TestCC(CC) Then Z8K_SetRB(Rd, 1);
+  Exit;
+ End;
+
+ { --- SETFLG/RESFLG/COMFLG (EncodeFlags : V=$10,S=$20,Z=$40,C=$80). --- }
+ If (Op0 And $FF0F) = $8D01 Then Begin { SETFLG }
+  Z8K_FCW := Z8K_FCW Or (Op0 And $F0);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8D03 Then Begin { RESFLG }
+  Z8K_FCW := Z8K_FCW And Not (Op0 And $F0);
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $8D05 Then Begin { COMFLG }
+  Z8K_FCW := Z8K_FCW Xor (Op0 And $F0);
+  Exit;
+ End;
+
+ { --- LDK Rd,#imm4 (charge une petite constante 0-15). --- }
+ If (Op0 And $FF00) = $BD00 Then Begin
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_R[Rd] := Word(Op0 And $0F);
+  Exit;
+ End;
+
+ { --- LDCTL : uniquement FCW (registre de controle #2, seul modelise ici -}
+ { REFRESH/PSAPSEG/PSAPOFF/NSPSEG/NSPOFF honnetement absents, echec        }
+ { normal via le "non implantee" ci-dessous). BOGUE EVITE : le masque doit }
+ { isoler bits15-8 + bit3 (selecteur de sens, EncodeLDCTL $7D00/$7D08) -   }
+ { PAS bits4-7 (registre R, libre) - $FFF0 (utilise par erreur dans un     }
+ { premier temps) aurait exige R=0 ; le numero de registre de controle     }
+ { C occupe seulement bits0-2 (0-7), PAS tout le nibble bas (bit3 deja pris}
+ { par le selecteur de sens). --- }
+ If (Op0 And $FF08) = $7D00 Then Begin { LDCTL FCW,Rs (Rs -> FCW) }
+  If (Op0 And $07) = 2 Then Begin
+   Rs := Byte((Op0 Shr 4) And $0F); Z8K_FCW := Z8K_R[Rs]; Exit;
+  End;
+ End;
+ If (Op0 And $FF08) = $7D08 Then Begin { LDCTL Rd,FCW (FCW -> Rd) }
+  If (Op0 And $07) = 2 Then Begin
+   Rd := Byte((Op0 Shr 4) And $0F); Z8K_R[Rd] := Z8K_FCW; Exit;
+  End;
+ End;
+
+ { --- MULT/DIV (registre-registre uniquement, EncodeMulDiv - convention   }
+ { REELLE : Rd:Rd+1 forment la paire 32 bits, Rd+1 tient le multiplicande  }
+ { AVANT/le quotient APRES, Rd tient le poids fort du produit/le reste -   }
+ { Rd=15 honnetement refuse, la paire deborderait du tableau Z8K_R). --- }
+ If (Op0 And $FF00) = $9900 Then Begin { MULT Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rd = 15 Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'Z8001 : MULT avec Rd=R15 (paire hors limites).');
+   Z8K_Halted := True;
+   Exit;
+  End;
+  LSum := LongWord(Z8K_R[Rd + 1]) * LongWord(Z8K_R[Rs]);
+  Z8K_R[Rd] := Word(LSum Shr 16); Z8K_R[Rd + 1] := Word(LSum And $FFFF);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_Z Or Z8K_FCW_S);
+  If LSum = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+  If (LSum And $80000000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $9B00 Then Begin { DIV Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  If Rd = 15 Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'Z8001 : DIV avec Rd=R15 (paire hors limites).');
+   Z8K_Halted := True;
+   Exit;
+  End;
+  If Z8K_R[Rs] = 0 Then Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'Z8001 : DIV par zero.');
+   Z8K_Halted := True;
+   Exit;
+  End;
+  LDividend := (LongWord(Z8K_R[Rd]) Shl 16) Or LongWord(Z8K_R[Rd + 1]);
+  LQuot := LDividend Div LongWord(Z8K_R[Rs]);
+  LRem := LDividend Mod LongWord(Z8K_R[Rs]);
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_PV Or Z8K_FCW_Z Or Z8K_FCW_S);
+  If LQuot > $FFFF Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV { depassement, quotient tronque }
+  Else Begin
+   Z8K_R[Rd] := Word(LRem); Z8K_R[Rd + 1] := Word(LQuot);
+   If LQuot = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+   If (LQuot And $8000) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+  End;
+  Exit;
+ End;
+
+ { --- PUSH/POP (pointeur de pile EXPLICITE @Rp, EncodePushPop - PAS un    }
+ { registre systeme implicite, voir CALL/CALR/RET plus bas pour ce cas).  }
+ { Pre-decrement (PUSH)/post-increment (POP) de 2, confirme via MAME       }
+ { (PUSHW/POPW, z8000ops.hxx). --- }
+ If (Op0 And $FF00) = $9300 Then Begin { PUSH @Rp,Rs }
+  RP := Byte((Op0 Shr 4) And $0F); RV := Byte(Op0 And $0F);
+  Z8K_R[RP] := Word(Z8K_R[RP] - 2);
+  Z8K_WriteWord(Z8K_PCSeg, Z8K_R[RP], Z8K_R[RV]);
+  Exit;
+ End;
+ If (Op0 And $FF00) = $9700 Then Begin { POP Rd,@Rp }
+  RP := Byte((Op0 Shr 4) And $0F); RV := Byte(Op0 And $0F);
+  Z8K_R[RV] := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[RP]);
+  Z8K_R[RP] := Word(Z8K_R[RP] + 2);
+  Exit;
+ End;
+
+ { --- JP @Rd (saut indirect via registre, EncodeJumpFull - la forme       }
+ { adresse directe/indexee reste hors perimetre, mode memoire). --- }
+ If (Op0 And $FF0F) = $1E08 Then Begin { JP @Rd (inconditionnel) }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Z8K_PCOfs := Z8K_R[Rd];
+  Exit;
+ End;
+ If (Op0 And $FF00) = $1E00 Then Begin { JP cc,@Rd }
+  CC := Byte(Op0 And $0F); Rd := Byte((Op0 Shr 4) And $0F);
+  If Z8K_TestCC(CC) Then Z8K_PCOfs := Z8K_R[Rd];
+  Exit;
+ End;
+
+ { --- CALL @Rd / CALR dsp12 / RET cc (pile SYSTEME IMPLICITE - simplifiee }
+ { en pile PLATE dans le seul segment 0 existant, R15 comme pointeur,      }
+ { coherent avec la simplification "un seul segment" deja disclosed depuis}
+ { Stage 1 ; la vraie convention segmentee utiliserait RR14, voir MAME     }
+ { PUSHL(SP,make_segmented_addr(m_pc))). --- }
+ If (Op0 And $FF0F) = $1F00 Then Begin { CALL @Rd }
+  Rd := Byte((Op0 Shr 4) And $0F);
+  Target := Z8K_R[Rd];
+  Z8K_R[15] := Word(Z8K_R[15] - 2);
+  Z8K_WriteWord(Z8K_PCSeg, Z8K_R[15], Z8K_PCOfs);
+  Z8K_PCOfs := Target;
+  Exit;
+ End;
+ If (Op0 And $F000) = $D000 Then Begin { CALR dsp12 }
+  Field12 := Op0 And $0FFF;
+  If Field12 >= 2048 Then RawD := LongInt(Field12) - 4096 Else RawD := LongInt(Field12);
+  Target := Word(StartOfs + 2 - RawD * 2);
+  Z8K_R[15] := Word(Z8K_R[15] - 2);
+  Z8K_WriteWord(Z8K_PCSeg, Z8K_R[15], Z8K_PCOfs);
+  Z8K_PCOfs := Target;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $9E00 Then Begin { RET cc }
+  CC := Byte(Op0 And $0F);
+  If Z8K_TestCC(CC) Then Begin
+   Z8K_PCOfs := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[15]);
+   Z8K_R[15] := Word(Z8K_R[15] + 2);
+  End;
+  Exit;
+ End;
+
+ { --- DJNZ/DBJNZ (decremente Rd, saute en arriere si <>0). BOGUE EVITE :   }
+ { le masque doit isoler UNIQUEMENT les bits15-12 (fixes, $F) + le bit7    }
+ { (selecteur mot/octet) - PAS les bits8-10 (registre R, 3 bits, 0-7) ni    }
+ { les bits0-6 (deplacement) - $FF80 (utilise par erreur dans un premier   }
+ { temps) aurait exige R=0 et rejete tout autre registre. --- }
+ If (Op0 And $F080) = $F080 Then Begin { DJNZ Rd,dest (mot) }
+  Rd := Byte((Op0 Shr 8) And $07);
+  Z8K_R[Rd] := Word(Z8K_R[Rd] - 1);
+  If Z8K_R[Rd] <> 0 Then
+   Z8K_PCOfs := Word(StartOfs + 2 - (Op0 And $7F) * 2);
+  Exit;
+ End;
+ If (Op0 And $F080) = $F000 Then Begin { DBJNZ Rd,dest (octet) }
+  Rd := Byte((Op0 Shr 8) And $07);
+  Z8K_SetRB(Rd, Byte(Z8K_GetRB(Rd) - 1));
+  If Z8K_GetRB(Rd) <> 0 Then
+   Z8K_PCOfs := Word(StartOfs + 2 - (Op0 And $7F) * 2);
+  Exit;
+ End;
+
+ { --- NOP/DI/EI (mots fixes, EmitWord direct dans ASZ8K - aucun operande).}
+ { IRET/MREQ/MRES/MBIT/MSET : privilegies/multiprocesseur, aucun contexte  }
+ { reel (pile d'interruption, second CPU) a modeliser ici - echec honnete, }
+ { PAS un comportement invente. --- }
+ If Op0 = $8D07 Then Exit; { NOP }
+ If Op0 = $7C03 Then Begin { DI (toutes les interruptions) }
+  Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_VIE Or Z8K_FCW_NVIE);
+  Exit;
+ End;
+ If Op0 = $7C07 Then Begin { EI (toutes les interruptions) }
+  Z8K_FCW := Z8K_FCW Or Z8K_FCW_VIE Or Z8K_FCW_NVIE;
+  Exit;
+ End;
+ If (Op0 = $7B00) Or (Op0 = $7B09) Or (Op0 = $7B0A) Or (Op0 = $7B08) Then Begin
+  P.CurFg := 12;
+  EmuVScr_WriteLn(P, 'Z8001 : IRET/MRES/MBIT/MSET necessitent un contexte ' +
+   '(pile d''interruption/second CPU) non modelise par cet emulateur.');
+  Z8K_Halted := True;
+  Exit;
+ End;
+
+ { JR cc,adresse (ASZ8K.PAS EncodeJump : mot $E000|(cc Shl 8)|((depl) div  }
+ { 2) signe sur 8 bits) - seule forme de saut implantee ce Stage. }
 
  { ADD/SUB/CP registre-registre (EncodeALU BaseRR, ASZ8K.PAS, croise avec  }
  { le motif Z8x_ssss_dddd de MAME). }
@@ -205370,7 +207244,7 @@ Begin
  { Instruction non couverte ce Stage : echec HONNETE (voir disclosure). }
  P.CurFg := 12;
  EmuVScr_WriteLn(P, 'Z8001 : instruction non implantee $' + HexWord(Op0) +
-  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 2).');
+  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 3).');
  Z8K_Halted := True;
 End;
 

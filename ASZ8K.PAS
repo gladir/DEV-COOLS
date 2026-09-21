@@ -544,10 +544,20 @@ Begin
 End;
 
 Type
- TExprParser=Record S:String;
+TExprParser=Record S:String;
  P:Integer;
  ForwardRef:Boolean
 End;
+TRelocClass=(rcAbsolute,rcSection,rcExternal,rcInvalid);
+TExpressionValue=Record
+ Value:LongInt;
+ RelocClass:TRelocClass;
+ Base:Word;
+ ForwardRef:Boolean
+End;
+TTypedExprParser=Record S:String;P:Integer End;
+
+Function EvaluateTyped(Const S:String):TExpressionValue;Forward;
 
 Procedure ExprSkip(Var E:TExprParser);Begin
  While(E.P<=Length(E.S))and(E.S[E.P]in[' ',#9])do Inc(E.P)
@@ -668,32 +678,10 @@ Function Eval(Const S:String;Var ForwardRef:Boolean):LongInt;Forward;
   meme section devient absolue. }
 Function EvalReloc(Const S:String;Var ForwardRef:Boolean;Var Base:Word):LongInt;
 Var
- I,J,Count:Integer;
- T:String;
- P,FirstP:PSymbol;
- MinusBetween:Boolean;
+ A:TExpressionValue;
 Begin
- EvalReloc:=Eval(S,ForwardRef);Base:=0;FirstP:=Nil;Count:=0;MinusBetween:=False;I:=1;
- if TrimString(S)='$'Then Begin Base:=CurrentSection;Exit End;
- While I<=Length(S)do Begin
-  if S[I]=''''Then Begin Inc(I);if I<=Length(S)Then Inc(I);if(I<=Length(S))and(S[I]='''')Then Inc(I) End
-  else if S[I]='$'Then Begin
-   Inc(I);While(I<=Length(S))and(UpCase(S[I])in['0'..'9','A'..'F'])do Inc(I)
-  End
-  else if IsIdentStart(S[I])Then Begin
-   J:=I;Inc(I);While(I<=Length(S))and IsIdentChar(S[I])do Inc(I);
-   T:=Copy(S,J,I-J);P:=FindSymbol(T);
-   if P<>Nil Then Begin
-    Inc(Count);if FirstP=Nil Then FirstP:=P
-   End
-  End else Begin if(S[I]='-')and(Count=1)Then MinusBetween:=True;Inc(I) End
- End;
- if Count=1 Then Begin
-  if FirstP^.Defined Then Base:=FirstP^.Section else Base:=FirstP^.ObjectBase
- End else if(Count=2)and MinusBetween and(FirstP<>Nil)Then Begin
-  { Le parseur a deja calcule la difference; elle ne requiert aucun relogement. }
-  Base:=0
- End else if Count>1 Then Diagnostic('expression relogeable trop complexe')
+ A:=EvaluateTyped(S);EvalReloc:=A.Value;ForwardRef:=A.ForwardRef;
+ if A.RelocClass in[rcSection,rcExternal]Then Base:=A.Base else Base:=0
 End;
 
 Function ParseUnary(Var E:TExprParser):LongInt;
@@ -762,13 +750,9 @@ End;
 
 Function Eval(Const S:String;Var ForwardRef:Boolean):LongInt;
 Var
- E:TExprParser;
- V:LongInt;
+ A:TExpressionValue;
 Begin
- E.S:=TrimString(S);E.P:=1;E.ForwardRef:=False;V:=ParseExprOr(E);ExprSkip(E);
- if E.P<=Length(E.S)Then Diagnostic('caracteres superflus dans expression: '+Copy(E.S,E.P,
- 255));
- ForwardRef:=E.ForwardRef;Eval:=V
+ A:=EvaluateTyped(S);ForwardRef:=A.ForwardRef;Eval:=A.Value
 End;
 
 Function RegisterNumber(S:String;Kind:Char):Integer;
@@ -909,6 +893,252 @@ Begin
    else EmitLongReloc(V,RAA32M,Base)
   End
  End
+End;
+
+Function AbsoluteExpression(V:LongInt):TExpressionValue;
+Begin
+ AbsoluteExpression.Value:=V;AbsoluteExpression.RelocClass:=rcAbsolute;
+ AbsoluteExpression.Base:=0;AbsoluteExpression.ForwardRef:=False
+End;
+
+Procedure TypedSkip(Var E:TTypedExprParser);Begin
+ While(E.P<=Length(E.S))and(E.S[E.P]in[' ',#9])do Inc(E.P)
+End;
+
+Function MatchWord(Var E:TTypedExprParser;Const WordName:String):Boolean;
+Var L:Integer;
+Begin
+ TypedSkip(E);L:=Length(WordName);MatchWord:=False;
+ if UpperString(Copy(E.S,E.P,L))<>WordName Then Exit;
+ if(E.P+L<=Length(E.S))and IsIdentChar(E.S[E.P+L])Then Exit;
+ Inc(E.P,L);MatchWord:=True
+End;
+
+Function TypedOr(Var E:TTypedExprParser):TExpressionValue;Forward;
+Function TypedUnary(Var E:TTypedExprParser):TExpressionValue;Forward;
+
+Procedure RequireAbsolute(Var A:TExpressionValue;Const Operation:String);
+Begin
+ if A.RelocClass<>rcAbsolute Then Begin
+  Diagnostic(Operation+' interdit sur une valeur relogeable');A.RelocClass:=rcInvalid
+ End
+End;
+
+Function TypedPrimary(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;Start,Code,I:Integer;T,U:String;V:LongInt;C,Q:Char;
+    P:PSymbol;K:PPredefName;
+Begin
+ TypedSkip(E);A:=AbsoluteExpression(0);
+ if E.P>Length(E.S)Then Begin Diagnostic('expression attendue');TypedPrimary:=A;Exit End;
+ C:=E.S[E.P];
+ if C='('Then Begin
+  Inc(E.P);A:=TypedOr(E);TypedSkip(E);
+  if(E.P>Length(E.S))or(E.S[E.P]<>')')Then Diagnostic('parenthese fermante attendue')
+  else Inc(E.P);TypedPrimary:=A;Exit
+ End;
+ if C='['Then Begin
+  Inc(E.P);A:=TypedOr(E);TypedSkip(E);
+  if(E.P>Length(E.S))or(E.S[E.P]<>']')Then Diagnostic('crochet fermant attendu')
+  else Inc(E.P);B:=TypedUnary(E);RequireAbsolute(A,'segment explicite');
+  RequireAbsolute(B,'offset segmente explicite');
+  if(Pass=2)and((A.Value<0)or(A.Value>$7F))Then Diagnostic('numero de segment hors plage');
+  if(Pass=2)and((B.Value<0)or(B.Value>$FFFF))Then Diagnostic('offset segmente hors plage');
+  A:=AbsoluteExpression(LongInt($80000000)or((A.Value and $7F)shl 24)or(B.Value and $FFFF));
+  TypedPrimary:=A;Exit
+ End;
+ if(C='''')or(C='"')Then Begin
+  Q:=C;Inc(E.P);V:=0;I:=0;
+  While(E.P<=Length(E.S))and(E.S[E.P]<>Q)do Begin
+   if I=4 Then Diagnostic('constante caractere superieure a quatre octets')
+   else Begin V:=(V shl 8)or Ord(E.S[E.P]);Inc(I) End;Inc(E.P)
+  End;
+  if(E.P>Length(E.S))Then Diagnostic('chaine non terminee')else Inc(E.P);
+  TypedPrimary:=AbsoluteExpression(V);Exit
+ End;
+ if C='$'Then Begin
+  Inc(E.P);Start:=E.P;While(E.P<=Length(E.S))and(UpCase(E.S[E.P])in['0'..'9','A'..'F'])do Inc(E.P);
+  if E.P=Start Then Begin A.Value:=Location[CurrentSection];A.RelocClass:=rcSection;A.Base:=CurrentSection End
+  else Begin T:='$'+Copy(E.S,Start,E.P-Start);Val(T,V,Code);
+   if Code<>0 Then Begin Diagnostic('constante hexadecimale incorrecte');V:=0 End;A.Value:=V
+  End;TypedPrimary:=A;Exit
+ End;
+ if C in['0'..'9']Then Begin
+  Start:=E.P;While(E.P<=Length(E.S))and IsIdentChar(E.S[E.P])do Inc(E.P);
+ T:=UpperString(Copy(E.S,Start,E.P-Start));
+  if(Length(T)>1)and(T[Length(T)]='H')Then Begin Delete(T,Length(T),1);T:='$'+T End;
+  if(Length(T)>1)and(T[Length(T)]='B')Then Begin
+   Delete(T,Length(T),1);V:=0;Code:=0;
+   For I:=1 to Length(T)do if T[I]in['0','1']Then V:=V*2+Ord(T[I])-48 else Code:=I
+  End else Val(T,V,Code);
+  if Code<>0 Then Begin Diagnostic('nombre incorrect: '+T);V:=0 End;
+  TypedPrimary:=AbsoluteExpression(V);Exit
+ End;
+ if IsIdentStart(C)Then Begin
+  Start:=E.P;While(E.P<=Length(E.S))and IsIdentChar(E.S[E.P])do Inc(E.P);
+  T:=Copy(E.S,Start,E.P-Start);U:=UpperString(T);
+  if U='SIZEOF'Then Begin
+   TypedSkip(E);if(E.P>Length(E.S))or(E.S[E.P]<>'(')Then Begin
+    Diagnostic('SIZEOF exige un type');TypedPrimary:=A;Exit
+   End;Inc(E.P);TypedSkip(E);Start:=E.P;
+   While(E.P<=Length(E.S))and IsIdentChar(E.S[E.P])do Inc(E.P);
+   U:=Copy(E.S,Start,E.P-Start);TypedSkip(E);
+   if(E.P>Length(E.S))or(E.S[E.P]<>')')Then Diagnostic('parenthese attendue apres SIZEOF')else Inc(E.P);
+   U:=UpperString(U);
+   if(U='BYTE')or(U='CHAR')Then V:=1
+   else if(U='LONG')or(U='DWORD')Then V:=4
+   else if U='QUAD'Then V:=8
+   else if(U='WORD')or(U='INTEGER')or(U='ADDRESS')Then V:=2
+   else Begin Diagnostic('type SIZEOF inconnu: '+U);V:=0 End;
+   TypedPrimary:=AbsoluteExpression(V);Exit
+  End;
+  K:=FindPredefName(T,3);if K<>Nil Then Begin TypedPrimary:=AbsoluteExpression(K^.Value);Exit End;
+  P:=GetSymbol(T);AddReference(P);A.Value:=P^.Value;
+  if P^.Defined Then Begin
+   if P^.Section=SecAbsolute Then A.RelocClass:=rcAbsolute
+   else Begin A.RelocClass:=rcSection;A.Base:=P^.Section End
+  End else Begin
+   A.ForwardRef:=True;A.RelocClass:=rcExternal;A.Base:=P^.ObjectBase;
+   if Pass=2 Then if Opt.UndefinedGlobal or P^.External Then Begin
+    P^.Global:=True;P^.External:=True;A.Base:=P^.ObjectBase
+   End else Diagnostic('symbole indefini: '+T)
+  End;TypedPrimary:=A;Exit
+ End;
+ Diagnostic('terme incorrect dans expression');Inc(E.P);A.RelocClass:=rcInvalid;TypedPrimary:=A
+End;
+
+Function TypedUnary(Var E:TTypedExprParser):TExpressionValue;
+Var A:TExpressionValue;
+Begin
+ TypedSkip(E);
+ if(E.P<=Length(E.S))and(E.S[E.P]='+')Then Begin Inc(E.P);A:=TypedUnary(E) End
+ else if(E.P<=Length(E.S))and(E.S[E.P]='-')Then Begin
+  Inc(E.P);A:=TypedUnary(E);RequireAbsolute(A,'negation');A.Value:=-A.Value
+ End else if(E.P<=Length(E.S))and(E.S[E.P]='~')Then Begin
+  Inc(E.P);A:=TypedUnary(E);RequireAbsolute(A,'complement');A.Value:=not A.Value
+ End else if MatchWord(E,'LNOT')Then Begin
+  A:=TypedUnary(E);RequireAbsolute(A,'LNOT');A.Value:=not A.Value
+ End else if MatchWord(E,'SEG')Then Begin
+  A:=TypedUnary(E);
+  if A.RelocClass=rcExternal Then Diagnostic('SEG d''un symbole externe non resolu');
+  if A.RelocClass=rcAbsolute Then A.Value:=(LongInt(A.Value)shr 24)and $7F
+  else A.Value:=A.Base and $7F;A.RelocClass:=rcAbsolute;A.Base:=0
+ End else if MatchWord(E,'OFFSET')Then Begin
+  A:=TypedUnary(E);A.Value:=A.Value and $FFFF
+ End else A:=TypedPrimary(E);
+ TypedUnary:=A
+End;
+
+Function TypedMul(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;Op:String;C:Char;R:Real;
+Begin
+ A:=TypedUnary(E);
+ While True do Begin
+  TypedSkip(E);Op:='';if E.P<=Length(E.S)Then Begin C:=E.S[E.P];if C in['*','/','%']Then Begin Op:=C;Inc(E.P) End End;
+  if(Op='')and MatchWord(E,'MOD')Then Op:='M';if Op=''Then Break;
+  B:=TypedUnary(E);RequireAbsolute(A,Op);RequireAbsolute(B,Op);
+  if Op='*'Then Begin
+   R:=A.Value;R:=R*B.Value;if(R>2147483647.0)or(R< -2147483648.0)Then Diagnostic('debordement 32 bits');
+   A.Value:=A.Value*B.Value
+  End else if B.Value=0 Then Begin Diagnostic('division par zero');A.Value:=0 End
+  else if Op='/'Then A.Value:=A.Value div B.Value else A.Value:=A.Value mod B.Value;
+  A.ForwardRef:=A.ForwardRef or B.ForwardRef
+ End;TypedMul:=A
+End;
+
+Function TypedAdd(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;Op:Char;R:Real;
+Begin
+ A:=TypedMul(E);
+ While True do Begin TypedSkip(E);if(E.P>Length(E.S))or not(E.S[E.P]in['+','-'])Then Break;
+  Op:=E.S[E.P];Inc(E.P);B:=TypedMul(E);
+  if Op='+'Then Begin
+   if(A.RelocClass<>rcAbsolute)and(B.RelocClass<>rcAbsolute)Then Begin Diagnostic('addition de deux valeurs relogeables');A.RelocClass:=rcInvalid End
+   else if A.RelocClass=rcAbsolute Then Begin A.RelocClass:=B.RelocClass;A.Base:=B.Base End;
+   R:=A.Value;R:=R+B.Value;if(R>2147483647.0)or(R< -2147483648.0)Then Diagnostic('debordement 32 bits');A.Value:=A.Value+B.Value
+  End else Begin
+   if(A.RelocClass=rcAbsolute)and(B.RelocClass<>rcAbsolute)Then Begin Diagnostic('valeur absolue moins valeur relogeable');A.RelocClass:=rcInvalid End
+   else if(A.RelocClass<>rcAbsolute)and(B.RelocClass<>rcAbsolute)Then Begin
+    if(A.RelocClass=B.RelocClass)and(A.Base=B.Base)Then Begin A.RelocClass:=rcAbsolute;A.Base:=0 End
+    else Begin Diagnostic('difference de symboles de sections distinctes');A.RelocClass:=rcInvalid End
+   End;
+   R:=A.Value;R:=R-B.Value;if(R>2147483647.0)or(R< -2147483648.0)Then Diagnostic('debordement 32 bits');A.Value:=A.Value-B.Value
+  End;A.ForwardRef:=A.ForwardRef or B.ForwardRef
+ End;TypedAdd:=A
+End;
+
+Function TypedShift(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;Left:Boolean;
+Begin
+ A:=TypedAdd(E);
+ While True do Begin
+  if MatchWord(E,'SHL')Then Left:=True else if MatchWord(E,'SHR')Then Left:=False else Break;
+  B:=TypedAdd(E);RequireAbsolute(A,'decalage');RequireAbsolute(B,'decalage');
+  if(B.Value<0)or(B.Value>31)Then Diagnostic('compte de decalage hors plage')
+  else if Left Then A.Value:=A.Value shl B.Value else A.Value:=LongInt(LongWord(A.Value)shr B.Value);
+  A.ForwardRef:=A.ForwardRef or B.ForwardRef
+ End;TypedShift:=A
+End;
+
+Function TypedRelation(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;Op:String;
+Begin
+ A:=TypedShift(E);TypedSkip(E);Op:='';
+ if Copy(E.S,E.P,2)='<>'Then Op:='<>'else if Copy(E.S,E.P,2)='!='Then Op:='<>'
+ else if Copy(E.S,E.P,2)='<='Then Op:='<='else if Copy(E.S,E.P,2)='>='Then Op:='>='
+ else if(E.P<=Length(E.S))and(E.S[E.P]in['=','<','>'])Then Op:=E.S[E.P];
+ if Op<>''Then Begin
+  Inc(E.P,Length(Op));B:=TypedShift(E);
+  A.ForwardRef:=A.ForwardRef or B.ForwardRef;
+  if(A.RelocClass<>B.RelocClass)or(A.Base<>B.Base)Then Diagnostic('comparaison de classes relogeables incompatibles');
+  if Op='='Then A.Value:=Ord(A.Value=B.Value)else if Op='<>'Then A.Value:=Ord(A.Value<>B.Value)
+  else if Op='<'Then A.Value:=Ord(A.Value<B.Value)else if Op='<='Then A.Value:=Ord(A.Value<=B.Value)
+  else if Op='>'Then A.Value:=Ord(A.Value>B.Value)else A.Value:=Ord(A.Value>=B.Value);
+  if A.Value<>0 Then A.Value:=-1;A.RelocClass:=rcAbsolute;A.Base:=0
+ End;TypedRelation:=A
+End;
+
+Function TypedAnd(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;
+Begin
+ A:=TypedRelation(E);
+ While True do Begin TypedSkip(E);
+  if(E.P<=Length(E.S))and(E.S[E.P]='&')Then Inc(E.P)
+  else if not MatchWord(E,'LAND')Then Break;
+  B:=TypedRelation(E);RequireAbsolute(A,'operation logique');RequireAbsolute(B,'operation logique');
+  A.Value:=A.Value and B.Value;A.ForwardRef:=A.ForwardRef or B.ForwardRef
+ End;TypedAnd:=A
+End;
+
+Function TypedXor(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;
+Begin
+ A:=TypedAnd(E);
+ While True do Begin TypedSkip(E);
+  if(E.P<=Length(E.S))and(E.S[E.P]='^')Then Inc(E.P)
+  else if not MatchWord(E,'LXOR')Then Break;
+  B:=TypedAnd(E);RequireAbsolute(A,'operation logique');RequireAbsolute(B,'operation logique');
+  A.Value:=A.Value xor B.Value;A.ForwardRef:=A.ForwardRef or B.ForwardRef
+ End;TypedXor:=A
+End;
+
+Function TypedOr(Var E:TTypedExprParser):TExpressionValue;
+Var A,B:TExpressionValue;
+Begin
+ A:=TypedXor(E);
+ While True do Begin TypedSkip(E);
+  if(E.P<=Length(E.S))and(E.S[E.P]='|')Then Inc(E.P)
+  else if not MatchWord(E,'LOR')Then Break;
+  B:=TypedXor(E);RequireAbsolute(A,'operation logique');RequireAbsolute(B,'operation logique');
+  A.Value:=A.Value or B.Value;A.ForwardRef:=A.ForwardRef or B.ForwardRef
+ End;TypedOr:=A
+End;
+
+Function EvaluateTyped(Const S:String):TExpressionValue;
+Var E:TTypedExprParser;A:TExpressionValue;
+Begin
+ E.S:=TrimString(S);E.P:=1;A:=TypedOr(E);TypedSkip(E);
+ if E.P<=Length(E.S)Then Diagnostic('caracteres superflus dans expression: '+Copy(E.S,E.P,255));
+ EvaluateTyped:=A
 End;
 
 Procedure SelectNamedSection;
