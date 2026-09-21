@@ -154897,11 +154897,89 @@ Begin
   Exit;
  End;
  If (NCState.PaneSlot[Side] >= 0) And FatVol[NCState.PaneSlot[Side]].IsH8D Then Begin
-  { Image .H8D : seuls les fichiers .CODE (p-code UCSD p-System) sont      }
-  { executables - extraits vers un fichier hote temporaire (HDOS ou UCSD,  }
-  { voir H8D_ExtractToTempFile) puis lances par l emulateur -CPCODE, meme  }
-  { mecanisme que le .PRG D64 ci-dessus. }
-  If UpCaseStr(NCExtractExt(E.Name)) = 'CODE' Then Begin
+  { Image .H8D : a l'origine seuls les fichiers .CODE (p-code UCSD          }
+  { p-System) etaient executables - extraits vers un fichier hote temporaire}
+  { (HDOS ou UCSD, voir H8D_ExtractToTempFile) puis lances par l emulateur  }
+  { -CPCODE, meme mecanisme que le .PRG D64 ci-dessus.                      }
+  { BOGUE REEL corrige (2026-09-21, signale par l'utilisateur sur une VRAIE }
+  { image .H8D montee "cpm8k.img" contenant COPY.Z8K, CPM.SYS, DDT.Z8K,     }
+  { PIP.Z8K, STAT.Z8K, XDUMP.Z8K - les VRAIS utilitaires SAMPLES CP/M-8000) }
+  { : cette branche ne connaissait QUE .CODE - meme categorie de trou deja  }
+  { documentee ci-dessus pour D64 (.PRG uniquement) et ci-dessous pour HPFS}
+  { (.COM/.EXE uniquement) puis pour la branche FAT generique (.Z8K et 8    }
+  { autres extensions ajoutees le meme jour) - jamais comblee pour H8D.     }
+  { Meme mecanisme d'extraction (H8D_ExtractToTempFile, par NOM de fichier, }
+  { pas besoin de Fat_FindPath/Cluster/Sz comme la branche FAT generique -  }
+  { H8D n'est pas un volume FAT) applique a TOUTES les extensions deja      }
+  { reconnues ailleurs dans cette fonction. }
+  Ext := UpCaseStr(NCExtractExt(E.Name));
+  If Ext = 'CODE' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CPCODE', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'Z8K' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CZ8001', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'NES' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CNES', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'PAK' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CCOCO3', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'ABS' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CCRAY1', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'A26' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CATARI2600', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'XEX' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CATARI800', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'ACC' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CATARIST', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'GEO' Then Begin
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    CreateEmulatorTab(TempPath, '-CGEOS', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If Ext = 'PRG' Then Begin
+   { meme ambiguite C64/Atari ST que les autres sites .PRG - teste le       }
+   { fichier EXTRAIT (TempPath), aucun chemin hote direct n'existe pour     }
+   { une entree sur une image .H8D. }
+   If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
+    If NCIsAtariSTPrg(TempPath) Then
+     CreateEmulatorTab(TempPath, '-CATARIST', '')
+    Else
+     CreateEmulatorTab(TempPath, '-CC64', '');
+    NCActionOpenAssociated := True;
+   End;
+  End
+  Else If (Ext = 'PC') Or (Ext = 'P') Or (Ext = 'PCF') Then Begin
    If H8D_ExtractToTempFile(Byte(NCState.PaneSlot[Side]), E.Name, TempPath) Then Begin
     CreateEmulatorTab(TempPath, '-CPCODE', '');
     NCActionOpenAssociated := True;
