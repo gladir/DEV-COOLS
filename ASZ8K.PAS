@@ -46,9 +46,24 @@ TRelocation=Record
  Next:PRelocation
 End;
 TOptions=Record
-SourceName,ObjectName,ListName:String;
+SourceName,ObjectName,ListName,PredefName:String;
 Listing,CrossReference,UndefinedGlobal,Segmented:Boolean
 End;
+PPredefFormat=^TPredefFormat;
+TPredefFormat=Record
+ Operand:Array[0..3]of Word;
+ Skeleton,Flags:Word;
+ Next:PPredefFormat
+End;
+PPredefName=^TPredefName;
+TPredefName=Record
+ Name:String;
+ Kind:Byte; { 1=instruction, 2=directive, 3=symbole predefini }
+ Value:LongInt;
+ Formats:PPredefFormat;
+ Next:PPredefName
+End;
+TPredefTokenArray=Array[0..31]of String;
 
 Var
  Opt:TOptions;
@@ -63,12 +78,26 @@ Var
  ListFile:Text;
  ListOpen:Boolean;
  CurrentLine,LabelField,OpcodeField,OperandField:String;
+ CurrentInputName:String;
  LineBytes:Array[0..31]of Byte;
  LineByteCount:Integer;
  StopAssembly:Boolean;
  HasTransfer:Boolean;
  TransferAddress:LongInt;
  TransferBase:Word;
+ Predefinitions:PPredefName;
+ PredefInstructionCount,PredefDirectiveCount,PredefSymbolCount:Integer;
+ ModuleActive,ModuleClosed:Boolean;
+ ObjectModuleName,CurrentGlobal:String;
+ SectionObjectName:Array[1..3]of String;
+ SectionAttributes:Array[1..3]of Byte;
+ ConditionalDepth:Integer;
+ ConditionalParent,ConditionalValue,ConditionalElse:Array[1..32]of Boolean;
+ ConditionalEnabled:Boolean;
+ StructureDepth,StructureSerial:Integer;
+ StructureKind:Array[1..32]of Char;
+ StructureStart,StructureFalse,StructureEnd:Array[1..32]of String;
+ StructureHasElse:Array[1..32]of Boolean;
 
 Function UpperString(S:String):String;
 Var
@@ -122,9 +151,10 @@ Procedure Usage;Begin
  WriteLn('ASZ8K ',Version,
  ' - Cette commande permet de lancer l''assembleur Zilog Z8001/Z8002 pour CP/M-8000');
  WriteLn;
- WriteLn('Syntaxe : ASZ8K [-o fichier] [-lux] fichier.8k{n|s}');
+ WriteLn('Syntaxe : ASZ8K [-o fichier] [-p ASZ8K.PD] [-lux] fichier.8k{n|s}');
  WriteLn;
  WriteLn('  -o nom  produit un objet relogeable UNIDOT (extension .OBJ par defaut)');
+ WriteLn('  -p nom  utilise ce fichier de predefinitions Digital Research');
  WriteLn('            .O vient de XCON, .RL de LDSK et .Z8K est executable');
  WriteLn('  -l      produit un listing fichier.LST');
  WriteLn('  -u      considere les symboles indefinis comme globaux externes');
@@ -138,7 +168,7 @@ End;
 
 Procedure Diagnostic(Const S:String);Begin
  if Pass=2 Then Begin
-  Inc(ErrorCount);WriteLn(Opt.SourceName,'(',LineNumber,'): ',S);
+  Inc(ErrorCount);WriteLn(CurrentInputName,'(',LineNumber,'): ',S);
   if ListOpen Then WriteLn(ListFile,'**** ',S)
  End
 End;
@@ -149,12 +179,19 @@ Procedure Warning(Const S:String);Begin
  End
 End;
 
+Function QualifiedSymbolName(Const Name:String):String;
+Begin
+ if(Length(Name)>0)and(Name[1]='.')and(CurrentGlobal<>'')Then
+  QualifiedSymbolName:=CurrentGlobal+Name
+ else QualifiedSymbolName:=Name
+End;
+
 Function FindSymbol(Const Name:String):PSymbol;
 Var
- P:PSymbol;
+ P:PSymbol;Q:String;
 Begin
- P:=Symbols;
- While(P<>Nil)and(P^.Name<>Name)do P:=P^.Next;FindSymbol:=P
+ Q:=QualifiedSymbolName(Name);P:=Symbols;
+ While(P<>Nil)and(P^.Name<>Q)do P:=P^.Next;FindSymbol:=P
 End;
 
 Function GetSymbol(Const Name:String):PSymbol;
@@ -163,7 +200,7 @@ Var
 Begin
  P:=FindSymbol(Name);if P=Nil Then Begin
   New(P);if P=Nil Then Fatal('memoire pleine');
-  FillChar(P^,SizeOf(P^),0);P^.Name:=Name;P^.Next:=Symbols;Symbols:=P
+  FillChar(P^,SizeOf(P^),0);P^.Name:=QualifiedSymbolName(Name);P^.Next:=Symbols;Symbols:=P
  End;GetSymbol:=P
 End;
 
@@ -200,6 +237,159 @@ Begin
  End;Symbols:=Nil;
  R:=Relocations;While R<>Nil do Begin RN:=R^.Next;Dispose(R);R:=RN End;
  Relocations:=Nil;LastRelocation:=Nil
+End;
+
+Function DirectoryPart(S:String):String;
+Var I:Integer;
+Begin
+ DirectoryPart:='';
+ For I:=Length(S)downto 1 do if S[I]in['\','/',':']Then Begin
+  DirectoryPart:=Copy(S,1,I);Exit
+ End
+End;
+
+Function TextFileExists(Const Name:String):Boolean;
+Var F:Text;Ok:Boolean;
+Begin
+ Assign(F,Name);Reset(F);Ok:=IOResult=0;TextFileExists:=Ok;
+ if Ok Then Begin Close(F);if IOResult<>0 Then Begin End End
+End;
+
+Function FindPredefName(Const Name:String;Kind:Byte):PPredefName;
+Var P:PPredefName;U:String;
+Begin
+ U:=UpperString(Name);P:=Predefinitions;
+ While P<>Nil do Begin
+  if(P^.Kind=Kind)and(P^.Name=U)Then Begin FindPredefName:=P;Exit End;
+  P:=P^.Next
+ End;
+ FindPredefName:=Nil
+End;
+
+Function ParsePredefNumber(Const Token:String;Var Value:LongInt):Boolean;
+Var S:String;Code:Integer;
+Begin
+ S:=UpperString(Token);
+ if(Length(S)>1)and(S[Length(S)]='H')Then Begin
+  Delete(S,Length(S),1);S:='$'+S
+ End;
+ Val(S,Value,Code);ParsePredefNumber:=Code=0
+End;
+
+Procedure SplitPredefTokens(S:String;Var Tokens:TPredefTokenArray;Var Count:Integer);
+Var I,J:Integer;
+Begin
+ I:=Pos(';',S);if I<>0 Then Delete(S,I,255);Count:=0;I:=1;
+ While I<=Length(S)do Begin
+  While(I<=Length(S))and(S[I]in[' ',#9])do Inc(I);if I>Length(S)Then Break;
+  J:=I;While(J<=Length(S))and not(S[J]in[' ',#9])do Inc(J);
+  if Count<=31 Then Begin Tokens[Count]:=Copy(S,I,J-I);Inc(Count) End;
+  I:=J
+ End
+End;
+
+Function ClonePredefFormats(P:PPredefFormat):PPredefFormat;
+Var First,Last,Q:PPredefFormat;
+Begin
+ First:=Nil;Last:=Nil;
+ While P<>Nil do Begin
+  New(Q);if Q=Nil Then Fatal('memoire pleine pendant le chargement ASZ8K.PD');
+  Q^:=P^;Q^.Next:=Nil;
+  if First=Nil Then First:=Q else Last^.Next:=Q;Last:=Q;P:=P^.Next
+ End;
+ ClonePredefFormats:=First
+End;
+
+Procedure FreePredefFormats(P:PPredefFormat);
+Var N:PPredefFormat;
+Begin
+ While P<>Nil do Begin N:=P^.Next;Dispose(P);P:=N End
+End;
+
+Procedure AddPredef(Const Name:String;Kind:Byte;Value:LongInt;Formats:PPredefFormat;
+ LineNo:Integer);
+Var P:PPredefName;
+Begin
+ { Le fichier DRI publie volontairement chaque nom en minuscules et en
+   majuscules. La table du clone est insensible a la casse: garder une seule
+   entree pour ces deux graphies. }
+ if FindPredefName(Name,Kind)<>Nil Then Exit;
+ New(P);if P=Nil Then Fatal('memoire pleine pendant le chargement ASZ8K.PD');
+ FillChar(P^,SizeOf(P^),0);P^.Name:=UpperString(Name);P^.Kind:=Kind;P^.Value:=Value;
+ if Formats<>Nil Then P^.Formats:=ClonePredefFormats(Formats);
+ P^.Next:=Predefinitions;Predefinitions:=P;
+ Case Kind of
+  1:Inc(PredefInstructionCount);2:Inc(PredefDirectiveCount);3:Inc(PredefSymbolCount)
+ End
+End;
+
+Procedure PredefError(LineNo:Integer;Const S:String);
+Var N:String;
+Begin
+ Str(LineNo,N);Fatal('ASZ8K.PD ligne '+N+': '+S)
+End;
+
+Procedure LoadPredefinitions;
+Var
+ F:Text;Line:String;Tokens:TPredefTokenArray;
+ Count,Section,LineNo,I:Integer;V:LongInt;Fmt,FirstFmt,LastFmt:PPredefFormat;
+ Candidate,EnvName:String;
+Begin
+ Candidate:=Opt.PredefName;
+ if Candidate=''Then Begin
+  EnvName:=GetEnv('ASZ8KPD');if EnvName<>''Then Candidate:=EnvName
+ End;
+ if Candidate=''Then Begin
+ Candidate:='ASZ8K.PD';
+  if not TextFileExists(Candidate)Then Candidate:='asz8k.pd';
+  if not TextFileExists(Candidate)Then Candidate:=DirectoryPart(ParamStr(0))+'ASZ8K.PD';
+  if not TextFileExists(Candidate)Then Candidate:=DirectoryPart(ParamStr(0))+'asz8k.pd';
+  if not TextFileExists(Candidate)Then Candidate:=DirectoryPart(Opt.SourceName)+'ASZ8K.PD';
+  if not TextFileExists(Candidate)Then Candidate:=DirectoryPart(Opt.SourceName)+'asz8k.pd'
+ End;
+ if not TextFileExists(Candidate)Then Fatal('fichier de predefinitions ASZ8K.PD introuvable');
+ Opt.PredefName:=Candidate;Assign(F,Candidate);Reset(F);
+ if IOResult<>0 Then Fatal('lecture impossible du fichier ASZ8K.PD');
+ Section:=1;LineNo:=0;FirstFmt:=Nil;LastFmt:=Nil;
+ While not Eof(F)do Begin
+ ReadLn(F,Line);if IOResult<>0 Then PredefError(LineNo,'erreur de lecture');Inc(LineNo);
+  if Pos(#26,Line)<>0 Then Delete(Line,Pos(#26,Line),255);
+  if(TrimString(Line)<>'')and(TrimString(Line)[1]=';')Then Continue;
+  SplitPredefTokens(Line,Tokens,Count);
+  if Count=0 Then Begin
+   if Section=1 Then Begin
+    if FirstFmt<>Nil Then PredefError(LineNo,'mnemonique absent apres une description');Section:=2
+   End else if Section=2 Then Section:=3;
+   Continue
+  End;
+  if Section=1 Then Begin
+   if Count<6 Then PredefError(LineNo,'six champs numeriques attendus');
+   New(Fmt);if Fmt=Nil Then Fatal('memoire pleine pendant le chargement ASZ8K.PD');
+   FillChar(Fmt^,SizeOf(Fmt^),0);
+   For I:=0 to 3 do Begin
+    if not ParsePredefNumber(Tokens[I],V)or(V<0)or(V>$FFFF)Then
+     PredefError(LineNo,'descripteur d''operande incorrect: '+Tokens[I]);
+    Fmt^.Operand[I]:=Word(V)
+   End;
+   if not ParsePredefNumber(Tokens[4],V)or(V<0)or(V>$FFFF)Then
+    PredefError(LineNo,'squelette d''instruction incorrect');Fmt^.Skeleton:=Word(V);
+   if not ParsePredefNumber(Tokens[5],V)or(V<0)or(V>$FFFF)Then
+    PredefError(LineNo,'indicateurs d''instruction incorrects');Fmt^.Flags:=Word(V);
+   if FirstFmt=Nil Then FirstFmt:=Fmt else LastFmt^.Next:=Fmt;LastFmt:=Fmt;
+   if Count>6 Then Begin
+    For I:=6 to Count-1 do AddPredef(Tokens[I],1,0,FirstFmt,LineNo);
+    FreePredefFormats(FirstFmt);FirstFmt:=Nil;LastFmt:=Nil
+   End
+  End else Begin
+   if(Count<2)or not ParsePredefNumber(Tokens[0],V)Then
+    PredefError(LineNo,'valeur et nom predefini attendus');
+   For I:=1 to Count-1 do AddPredef(Tokens[I],Section,V,Nil,LineNo)
+  End
+ End;
+ Close(F);if IOResult<>0 Then Fatal('erreur de fermeture de ASZ8K.PD');
+ if FirstFmt<>Nil Then PredefError(LineNo,'description d''instruction inachevee');
+ if(PredefInstructionCount=0)or(PredefDirectiveCount=0)or(PredefSymbolCount=0)Then
+  Fatal('ASZ8K.PD incomplet ou corrompu')
 End;
 
 Function ModuleName(S:String):String;
@@ -321,9 +511,17 @@ Begin
  if(LabelField='')and(OpcodeField<>'')Then Begin
   P:=1;
   While(P<=Length(OperandField))and not(OperandField[P]in[' ',#9])do Inc(P);
-  if(UpperString(Copy(OperandField,1,P-1))='EQU')or(Copy(OperandField,1,P-1)='=')
+  if(UpperString(Copy(OperandField,1,P-1))='EQU')or(Copy(OperandField,1,P-1)='=')or
+   (UpperString(Copy(OperandField,1,P-1))='CONSTANT')or
+   (UpperString(Copy(OperandField,1,P-1))='BYTE')or
+   (UpperString(Copy(OperandField,1,P-1))='WORD')or
+   (UpperString(Copy(OperandField,1,P-1))='LONG')or
+   (UpperString(Copy(OperandField,1,P-1))='ARRAY')or
+   (UpperString(Copy(OperandField,1,P-1))='RECORD')or
+   (UpperString(Copy(OperandField,1,P-1))='PROCEDURE')
   Then Begin
-   LabelField:=FirstWord;OpcodeField:='EQU';Delete(OperandField,1,P-1);
+   LabelField:=FirstWord;OpcodeField:=UpperString(Copy(OperandField,1,P-1));
+   if OpcodeField='='Then OpcodeField:='EQU';Delete(OperandField,1,P-1);
    OperandField:=TrimString(OperandField)
   End
  End
@@ -363,6 +561,7 @@ Var
  T,U:String;
  V:LongInt;
  P:PSymbol;
+ K:PPredefName;
  Base:Integer;
  C:Char;
 Begin
@@ -427,7 +626,27 @@ Begin
  if IsIdentStart(C)Then Begin
   Start:=E.P;
   While(E.P<=Length(E.S))and IsIdentChar(E.S[E.P])do Inc(E.P);
-  T:=Copy(E.S,Start,E.P-Start);P:=GetSymbol(T);AddReference(P);
+  T:=Copy(E.S,Start,E.P-Start);
+  if(UpperString(T)='SIZEOF')Then Begin
+   ExprSkip(E);
+   if(E.P>Length(E.S))or(E.S[E.P]<>'(')Then Begin
+    Diagnostic('SIZEOF exige un type entre parentheses');ParseNumber:=0;Exit
+   End;
+   Inc(E.P);ExprSkip(E);Start:=E.P;
+   While(E.P<=Length(E.S))and IsIdentChar(E.S[E.P])do Inc(E.P);
+   U:=UpperString(Copy(E.S,Start,E.P-Start));ExprSkip(E);
+   if(E.P>Length(E.S))or(E.S[E.P]<>')')Then
+    Diagnostic('parenthese fermante attendue apres SIZEOF')else Inc(E.P);
+   if(U='BYTE')or(U='CHAR')Then V:=1
+   else if(U='LONG')or(U='DWORD')Then V:=4
+   else if U='QUAD'Then V:=8
+   else if(U='WORD')or(U='INTEGER')or(U='ADDRESS')Then V:=2
+   else Begin Diagnostic('type SIZEOF inconnu: '+U);V:=0 End;
+   ParseNumber:=V;Exit
+  End;
+  K:=FindPredefName(T,3);
+  if K<>Nil Then Begin ParseNumber:=K^.Value;Exit End;
+  P:=GetSymbol(T);AddReference(P);
   if P^.Defined Then V:=P^.Value else
   Begin
    V:=0;E.ForwardRef:=True;
@@ -556,8 +775,10 @@ Function RegisterNumber(S:String;Kind:Char):Integer;
 Var
  N,E,P:Integer;
  U:String;
+ K:PPredefName;
 Begin
  U:=UpperString(TrimString(S));RegisterNumber:=-1;
+ K:=FindPredefName(U,3);if K=Nil Then Exit;
  if Kind='B'Then Begin
   if(Length(U)<3)or not((Copy(U,1,2)='RH')or(Copy(U,1,2)='RL'))Then Exit;
   Val(Copy(U,3,255),N,E);if(E=0)and(N>=0)and(N<=7)Then Begin
@@ -582,8 +803,13 @@ End;
 Function ConditionNumber(S:String):Integer;
 Var
  U:String;
+ P:PPredefName;
 Begin
  U:=UpperString(TrimString(S));ConditionNumber:=-1;
+ P:=FindPredefName(U,3);
+ if(P<>Nil)and((P^.Value and $FF00)=$1400)Then Begin
+  ConditionNumber:=P^.Value and 15;Exit
+ End;
  if(U='F')Then ConditionNumber:=0 else if U='LT'Then ConditionNumber:=1
  else if U='LE'Then ConditionNumber:=2 else if U='ULE'Then ConditionNumber:=3
  else if(U='OV')or(U='PE')Then ConditionNumber:=4 else if U='MI'Then ConditionNumber:=5
@@ -656,42 +882,6 @@ Begin
  Diagnostic('forme LD non prise en charge ou operande incorrect')
 End;
 
-Procedure EncodeJump;
-Var
- S,A,B:String;
- C:Integer;
- V,D:LongInt;
- F:Boolean;
- Base:Word;
-Begin
- S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
- if B=''Then Begin
-  B:=A;if OpcodeField='RET'Then C:=8 else C:=8
- End
- else C:=ConditionNumber(A);
- if C<0 Then Begin
-  Diagnostic('condition incorrecte');Exit
- End;
- if OpcodeField='RET'Then Begin
-  EmitWord($9E00 or Word(C shl 4)or 8);Exit
- End;
- V:=EvalReloc(B,F,Base);
- if OpcodeField='JR'Then Begin
-  if(Pass=2)and(Base<>CurrentSection)Then
-   Diagnostic('saut relatif vers une autre section');
-  D:=V-(Location[CurrentSection]+2);
-  if(Pass=2)and((D and 1)<>0)Then Diagnostic('adresse de saut relatif impaire');
-  D:=D div 2;
-  if(Pass=2)and not F and((D< -128)or(D>127))Then Diagnostic('saut relatif hors plage');
-  EmitWord($E000 or Word(C shl 8)or(Byte(D)))
- End else
- Begin
-  EmitWord($5E00 or Word(C shl 4));
-  if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,Base)
-  else EmitWordReloc(Word(V),RAA16M,Base)
- End
-End;
-
 Procedure DataDirective(Size:Integer);
 Var
  S,A:String;
@@ -721,15 +911,175 @@ Begin
  End
 End;
 
+Procedure SelectNamedSection;
+Var S,Name,A,U:String;Section:Byte;
+Begin
+ S:=OperandField;Name:=NextOperand(S);A:=NextOperand(S);U:=UpperString(A);
+ if Name=''Then Begin Diagnostic('SECTION exige un nom');Exit End;
+ if(U='DATA')or(U='WRITE')Then Section:=SecData
+ else if(U='BSS')or(U='COMMON')or(U='UNINITIALIZED')Then Section:=SecBss
+ else Section:=SecText;
+ CurrentSection:=Section;SectionObjectName[Section]:=Name;
+ SectionAttributes[Section]:=0;
+ While S<>''do Begin
+  U:=UpperString(NextOperand(S));
+  if U='GLOBAL'Then SectionAttributes[Section]:=SectionAttributes[Section]or 1
+  else if U='READONLY'Then SectionAttributes[Section]:=SectionAttributes[Section]or 2
+  else if U='PURE'Then SectionAttributes[Section]:=SectionAttributes[Section]or 4
+  else if U='COMMON'Then SectionAttributes[Section]:=SectionAttributes[Section]or 8
+  else if U='ABSOLUTE'Then SectionAttributes[Section]:=SectionAttributes[Section]or 16
+  else Diagnostic('attribut de section inconnu: '+U)
+ End;
+ if Opt.Segmented and(Length(Name)>8)Then
+  Diagnostic('nom de section segmente limite a huit caracteres')
+End;
+
+Procedure DeclareCommon;
+Var S,N,T:String;V:LongInt;F:Boolean;P:PSymbol;
+Begin
+ S:=OperandField;N:=NextOperand(S);T:=NextOperand(S);
+ if(N='')or(T='')Then Begin Diagnostic('COMMON exige nom,taille');Exit End;
+ V:=Eval(T,F);if V<0 Then Begin Diagnostic('taille COMMON negative');Exit End;
+ P:=GetSymbol(N);
+ if(P^.Defined)and(P^.Section<>SecBss)Then Diagnostic('COMMON incompatible avec '+N)
+ else Begin
+  P^.Defined:=True;P^.Global:=True;P^.Section:=SecBss;P^.Value:=Location[SecBss];
+  Inc(Location[SecBss],V)
+ End
+End;
+
+Function DeclarationSize(Const Name:String):LongInt;
+Var U:String;
+Begin
+ U:=UpperString(TrimString(Name));
+ if(U='BYTE')or(U='CHAR')Then DeclarationSize:=1
+ else if(U='LONG')or(U='DWORD')Then DeclarationSize:=4
+ else if U='QUAD'Then DeclarationSize:=8
+ else DeclarationSize:=2
+End;
+
+Procedure TypedDeclaration(Size:Integer);
+Var S:String;
+Begin
+ S:=TrimString(OperandField);
+ if(S='')Then Inc(Location[CurrentSection],Size)
+ else DataDirective(Size)
+End;
+
+Procedure StructuredDeclaration(IsArray:Boolean);
+Var S,A,B:String;Count,Size:LongInt;F:Boolean;
+Begin
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
+ if IsArray Then Begin
+  Count:=Eval(A,F);if B=''Then B:='BYTE';Size:=DeclarationSize(B);
+  if Count<0 Then Diagnostic('dimension de tableau negative')
+  else if Count>65535 div Size Then Diagnostic('tableau trop grand')
+  else Inc(Location[CurrentSection],Count*Size)
+ End else Begin
+  if A=''Then A:=B;Size:=Eval(A,F);
+  if Size<0 Then Diagnostic('taille RECORD negative')else Inc(Location[CurrentSection],Size)
+ End
+End;
+
+Function NewStructureLabel(Const Suffix:String):String;
+Var N:String;
+Begin
+ Inc(StructureSerial);Str(StructureSerial,N);NewStructureLabel:='_Z'+N+Suffix
+End;
+
+Procedure EmitStructureJump(Const Condition,Destination:String;Invert:Boolean);
+Var C:Integer;V:LongInt;F:Boolean;Base:Word;W:Word;
+Begin
+ if Condition=''Then C:=8 else Begin
+  C:=ConditionNumber(Condition);
+  if C<0 Then Begin Diagnostic('condition structuree inconnue: '+Condition);C:=8 End;
+  if Invert Then C:=C xor 8
+ End;
+ V:=EvalReloc(Destination,F,Base);W:=$5E00 or Word(C);
+ EmitWord(W);
+ if Opt.Segmented Then EmitWordReloc(Word(V),RAZOF,Base)
+ else EmitWordReloc(Word(V),RAA16M,Base)
+End;
+
+Procedure BeginStructuredBlock(Kind:Char);
+Var C:String;
+Begin
+ if StructureDepth=32 Then Begin Diagnostic('structures trop imbriquees');Exit End;
+ Inc(StructureDepth);StructureKind[StructureDepth]:=Kind;StructureHasElse[StructureDepth]:=False;
+ StructureStart[StructureDepth]:=NewStructureLabel('S');
+ StructureFalse[StructureDepth]:=NewStructureLabel('F');
+ StructureEnd[StructureDepth]:=NewStructureLabel('E');C:=TrimString(OperandField);
+ if Kind in['D','R']Then Begin
+  DefineSymbol(StructureStart[StructureDepth],Location[CurrentSection],CurrentSection);
+  if(Kind='D')and(C<>'')Then EmitStructureJump(C,StructureEnd[StructureDepth],True)
+ End
+ else EmitStructureJump(C,StructureFalse[StructureDepth],True)
+End;
+
+Procedure EndStructuredBlock(Kind:Char);
+Var C:String;
+Begin
+ if(StructureDepth=0)or(StructureKind[StructureDepth]<>Kind)Then Begin
+  Diagnostic('fin de structure sans debut correspondant');Exit
+ End;
+ C:=TrimString(OperandField);
+ if Kind='D'Then Begin
+  EmitStructureJump(C,StructureStart[StructureDepth],False);
+  DefineSymbol(StructureEnd[StructureDepth],Location[CurrentSection],CurrentSection)
+ End
+ else if Kind='R'Then Begin
+  EmitStructureJump(C,StructureStart[StructureDepth],True);
+  DefineSymbol(StructureEnd[StructureDepth],Location[CurrentSection],CurrentSection)
+ End
+ else Begin
+  if StructureHasElse[StructureDepth]Then
+   DefineSymbol(StructureEnd[StructureDepth],Location[CurrentSection],CurrentSection)
+  else DefineSymbol(StructureFalse[StructureDepth],Location[CurrentSection],CurrentSection)
+ End;
+ Dec(StructureDepth)
+End;
+
+Procedure StructuredElse;
+Begin
+ if(StructureDepth=0)or not(StructureKind[StructureDepth]in['I','C'])Then Begin
+  Diagnostic('ELSE sans IF ou CASE');Exit
+ End;
+ if StructureHasElse[StructureDepth]Then Begin Diagnostic('ELSE repete');Exit End;
+ EmitStructureJump('',StructureEnd[StructureDepth],False);
+ DefineSymbol(StructureFalse[StructureDepth],Location[CurrentSection],CurrentSection);
+ StructureHasElse[StructureDepth]:=True
+End;
+
+Procedure StructuredExit;
+Var I:Integer;
+Begin
+ I:=StructureDepth;While(I>0)and not(StructureKind[I]in['D','R'])do Dec(I);
+ if I=0 Then Diagnostic('EXIT hors d''une boucle')
+ else EmitStructureJump('',StructureEnd[I],False)
+End;
+
 Procedure ProcessDirective;
 Var
  V:LongInt;
  F:Boolean;
  S,A:String;
  P:PSymbol;
- Base:Word;
+ Base:Word;I:Integer;
 Begin
- if(OpcodeField='TEXT')or(OpcodeField='.TEXT')or(OpcodeField='CSEG')Then CurrentSection:=
+ if OpcodeField='IF'Then BeginStructuredBlock('I')
+ else if OpcodeField='CASE'Then BeginStructuredBlock('C')
+ else if OpcodeField='ELSE'Then StructuredElse
+ else if(OpcodeField='FI')or(OpcodeField='ENDIF')Then EndStructuredBlock('I')
+ else if OpcodeField='ENDCASE'Then EndStructuredBlock('C')
+ else if OpcodeField='DO'Then BeginStructuredBlock('D')
+ else if OpcodeField='OD'Then EndStructuredBlock('D')
+ else if OpcodeField='REPEAT'Then BeginStructuredBlock('R')
+ else if OpcodeField='UNTIL'Then Begin
+  if TrimString(OperandField)=''Then Diagnostic('UNTIL exige une condition');
+  EndStructuredBlock('R')
+ end
+ else if OpcodeField='EXIT'Then StructuredExit
+ else if(OpcodeField='TEXT')or(OpcodeField='.TEXT')or(OpcodeField='CSEG')Then CurrentSection:=
  SecText
  else if(OpcodeField='DATA')or(OpcodeField='.DATA')or(OpcodeField='DSEG')
  Then CurrentSection:=SecData
@@ -749,6 +1099,24 @@ Begin
   if(Pass=2)and not F and((V<0)or(V>255))Then Diagnostic('offset segmente court hors plage');
   EmitWordReloc(SegmentedShortValue(V,Base),RAZSS,Base)
  End
+ else if OpcodeField='CONSTANT'Then Begin
+  S:=TrimString(OperandField);I:=Pos(':=',S);
+  if I<>0 Then S:=Copy(S,I+2,255)else Begin
+   I:=Pos('=',S);if I<>0 Then S:=Copy(S,I+1,255)
+  End;
+  if S=''Then Diagnostic('valeur CONSTANT attendue')
+  else Begin V:=Eval(TrimString(S),F);DefineSymbol(LabelField,V,SecAbsolute) End
+ End
+ else if OpcodeField='BYTE'Then TypedDeclaration(1)
+ else if OpcodeField='WORD'Then TypedDeclaration(2)
+ else if OpcodeField='LONG'Then TypedDeclaration(4)
+ else if OpcodeField='ARRAY'Then StructuredDeclaration(True)
+ else if OpcodeField='RECORD'Then StructuredDeclaration(False)
+ else if OpcodeField='PROCEDURE'Then Begin
+  S:=LabelField;if S=''Then S:=TrimString(OperandField);
+  if S=''Then Diagnostic('PROCEDURE exige un nom')else CurrentGlobal:=S
+ End
+ else if OpcodeField='ENDPROC'Then CurrentGlobal:=''
  else if(OpcodeField='DS')or(OpcodeField='DEFS')or(OpcodeField='.SPACE')or(OpcodeField=
  'BLOCK')Then Begin
   V:=Eval(OperandField,F);
@@ -780,14 +1148,25 @@ Begin
    A:=NextOperand(S);P:=GetSymbol(A);P^.Global:=True;P^.External:=True
   End
  End
- else if(OpcodeField='END')or(OpcodeField='.END')or(OpcodeField='ENDMODULE')Then Begin
+ else if OpcodeField='MODULE'Then Begin
+  S:=TrimString(OperandField);if S=''Then S:=LabelField;
+  if S=''Then Diagnostic('MODULE exige un nom')
+  else if ModuleActive Then Diagnostic('MODULE imbrique interdit')
+  else Begin ModuleActive:=True;ModuleClosed:=False;ObjectModuleName:=S End
+ End
+ else if OpcodeField='ENDMODULE'Then Begin
+  if not ModuleActive Then Diagnostic('ENDMODULE sans MODULE');
+  ModuleActive:=False;ModuleClosed:=True;StopAssembly:=True
+ End
+ else if(OpcodeField='SECTION')or(OpcodeField='.SECT')Then SelectNamedSection
+ else if(OpcodeField='COMMON')or(OpcodeField='.COMMON')Then DeclareCommon
+ else if(OpcodeField='END')or(OpcodeField='.END')Then Begin
   if OperandField<>''Then Begin
    TransferAddress:=EvalReloc(OperandField,F,TransferBase);HasTransfer:=True
   End;
   StopAssembly:=True
  End
- else if(OpcodeField='MODULE')or(OpcodeField='CODE')or(OpcodeField='SECTION')Then Begin
- End
+ else if OpcodeField='CODE'Then CurrentSection:=SecText
  else Diagnostic('directive inconnue: '+OpcodeField)
 End;
 
@@ -930,6 +1309,38 @@ Begin
  End else Diagnostic('combinaison d''operandes LD non prise en charge')
 End;
 
+Procedure EncodeJumpFull;
+Var S,A,B,Target:String;C:Integer;V,D:LongInt;F,Conditional:Boolean;RelBase:Word;O:TOperand;W:Word;
+Begin
+ if OpcodeField='RET'Then Begin
+  S:=TrimString(OperandField);
+  if S=''Then EmitWord($9E08)else Begin
+   C:=ConditionNumber(S);if C<0 Then Diagnostic('condition RET incorrecte')
+   else EmitWord($9E00 or Word(C))
+  End;Exit
+ End;
+ S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);Conditional:=B<>'';
+ if Conditional Then Begin C:=ConditionNumber(A);Target:=B End
+ else Begin C:=8;Target:=A End;
+ if(C<0)or(Target='')or(S<>'')Then Begin Diagnostic('operandes de saut incorrects');Exit End;
+ if OpcodeField='JR'Then Begin
+  V:=EvalReloc(Target,F,RelBase);D:=V-(Location[CurrentSection]+2);
+  if(Pass=2)and(RelBase<>CurrentSection)Then Diagnostic('saut relatif vers une autre section');
+  if(Pass=2)and(((D and 1)<>0)or(D< -256)or(D>254))Then Diagnostic('saut relatif hors plage');
+  D:=D div 2;if Conditional Then W:=$E000 or Word(C shl 8)else W:=$E800;
+  EmitWord(W or Word(Byte(D)));Exit
+ End;
+ ParseOperand(Target,'W',O);
+ if O.Kind=okIndirect Then Begin
+  if Conditional Then W:=$1E00 or Word(C)else W:=$1E08;
+  EmitWord(W or Word(O.Reg shl 4))
+ End else if O.Kind in[okDirect,okIndexed]Then Begin
+  if Conditional Then W:=$5E00 or Word(C)else W:=$5E08;
+  if O.Kind=okIndexed Then W:=W or Word(O.IndexReg shl 4);
+  EmitWord(W);EmitOperandAddress(O)
+ End else Diagnostic('JP exige @registre, adresse ou adresse indexee')
+End;
+
 Procedure EncodeUnaryRegister(Base:Word;Kind:Char);Forward;
 Function IndirectRegister(S:String;Var R:Integer):Boolean;Forward;
 Procedure EncodeMulDiv(BaseRR,BaseImm:Word;DestKind,SourceKind:Char);Forward;
@@ -959,6 +1370,9 @@ Var
  R:Integer;
  S:String;
 Begin
+ if FindPredefName(OpcodeField,1)=Nil Then Begin
+  Diagnostic('mnemonique absent de ASZ8K.PD: '+OpcodeField);Exit
+ End;
  if(OpcodeField='LD')or(OpcodeField='LDB')or(OpcodeField='LDL')Then EncodeLoadFull
  else if OpcodeField='ADD'Then EncodeALU('W',2,$8100,$0100,$4100)
  else if OpcodeField='ADDB'Then EncodeALU('B',1,$8000,$0000,$4000)
@@ -1113,7 +1527,7 @@ Begin
  else if OpcodeField='NOP'Then EmitWord($8D07)
  else if OpcodeField='HALT'Then EmitWord($7A00)
  else if OpcodeField='IRET'Then EmitWord($7B00)
- else if(OpcodeField='JR')or(OpcodeField='JP')or(OpcodeField='RET')Then EncodeJump
+ else if(OpcodeField='JR')or(OpcodeField='JP')or(OpcodeField='RET')Then EncodeJumpFull
  else if OpcodeField='SC'Then Begin
   S:=OperandField;if(S<>'')and(S[1]='#')Then Delete(S,1,1);
   V:=Eval(S,F);if(V<0)or(V>255)Then Diagnostic('numero SC hors plage');
@@ -1131,7 +1545,7 @@ Var
  U:String;
 Begin
  U:=UpperString(S);
- IsDirective:=(U='TEXT')or(U='.TEXT')or(U='CSEG')or(U='DATA')or(U='.DATA')or
+ IsDirective:=(FindPredefName(U,2)<>Nil)or(U='TEXT')or(U='.TEXT')or(U='CSEG')or(U='DATA')or(U='.DATA')or
  (U='DSEG')or(U='BSS')or(U='.BSS')or(U='EQU')or(U='=')or(U='DB')or(U='DEFB')or(U='.BYTE')
  or
  (U='DW')or(U='DEFW')or(U='.WORD')or(U='DL')or(U='DEFL')or(U='.LONG')or(U='DS')or(U=
@@ -1141,7 +1555,43 @@ Begin
  or
  (U='.ORG')or(U='GLOBAL')or(U='.GLOBAL')or(U='PUBLIC')or(U='EXTERN')or(U='.EXTERN')or
  (U='EXTERNAL')or(U='END')or(U='.END')or(U='ENDMODULE')or(U='MODULE')or(U='CODE')or(U=
- 'SECTION')
+ 'SECTION')or(U='COMMON')or(U='.COMMON')or(U='INCLUDE')or(U='.INPUT')or
+ (U='IF')or(U='.IF')or(U='IFDEF')or(U='IFNDEF')or(U='ELSE')or(U='.ELSE')or
+ (U='ENDIF')or(U='.ENDIF')or(U='FI')or(U='DO')or(U='OD')or(U='REPEAT')or
+ (U='UNTIL')or(U='EXIT')or(U='CASE')or(U='ENDCASE')or
+ (U='PROCEDURE')or(U='ENDPROC')or(U='CONSTANT')or
+ (U='BYTE')or(U='WORD')or(U='LONG')or(U='ARRAY')or(U='RECORD')
+End;
+
+Function IsConditionalDirective(Const U:String):Boolean;
+Begin
+ IsConditionalDirective:=(U='.IF')or(U='IFDEF')or(U='IFNDEF')or
+ (U='.ELSE')or(U='.ENDIF')
+End;
+
+Procedure HandleConditionalDirective;
+Var F,Value:Boolean;V:LongInt;U:String;
+Begin
+ U:=OpcodeField;
+ if(U='.IF')or(U='IFDEF')or(U='IFNDEF')Then Begin
+  if ConditionalDepth=32 Then Begin Diagnostic('conditionnels trop imbriques');Exit End;
+  Inc(ConditionalDepth);ConditionalParent[ConditionalDepth]:=ConditionalEnabled;
+  if not ConditionalEnabled Then Value:=False
+  else if(U='IFDEF')or(U='IFNDEF')Then Begin
+   Value:=FindSymbol(TrimString(OperandField))<>Nil;
+   if U='IFNDEF'Then Value:=not Value
+  End else Begin V:=Eval(OperandField,F);Value:=V<>0 End;
+  ConditionalValue[ConditionalDepth]:=Value;ConditionalElse[ConditionalDepth]:=False;
+  ConditionalEnabled:=ConditionalParent[ConditionalDepth]and Value
+ End else if U='.ELSE'Then Begin
+  if ConditionalDepth=0 Then Begin Diagnostic('ELSE sans IF');Exit End;
+  if ConditionalElse[ConditionalDepth]Then Begin Diagnostic('ELSE repete');Exit End;
+  ConditionalElse[ConditionalDepth]:=True;
+  ConditionalEnabled:=ConditionalParent[ConditionalDepth]and not ConditionalValue[ConditionalDepth]
+ End else Begin
+  if ConditionalDepth=0 Then Begin Diagnostic('ENDIF sans IF');Exit End;
+  ConditionalEnabled:=ConditionalParent[ConditionalDepth];Dec(ConditionalDepth)
+ End
 End;
 
 Procedure WriteListingLine(StartAddress:LongInt);
@@ -1157,23 +1607,56 @@ End;
 
 Procedure AssemblePass(PassNo:Integer);
 Var
- StartAddress:LongInt;
+ IncludeNames:Array[1..8]of String;
+
+ Procedure AssembleFile(Const FileName:String;Depth:Integer);
+ Var F:Text;StartAddress:LongInt;SavedLine:Integer;SavedText,SavedName,Name:String;
+     I:Integer;
+ Begin
+  if Depth>8 Then Begin Diagnostic('profondeur INCLUDE superieure a huit');Exit End;
+  For I:=1 to Depth-1 do if UpperString(IncludeNames[I])=UpperString(FileName)Then Begin
+   Diagnostic('inclusion cyclique de '+FileName);Exit
+  End;
+  IncludeNames[Depth]:=FileName;Assign(F,FileName);Reset(F);
+  if IOResult<>0 Then Begin Diagnostic('lecture impossible: '+FileName);Exit End;
+  SavedLine:=LineNumber;SavedText:=CurrentLine;SavedName:=CurrentInputName;
+  LineNumber:=0;CurrentInputName:=FileName;
+  While not Eof(F)and not StopAssembly do Begin
+   ReadLn(F,CurrentLine);if IOResult<>0 Then Begin Diagnostic('erreur de lecture');Break End;
+   Inc(LineNumber);LineByteCount:=0;StartAddress:=Location[CurrentSection];SplitLine(CurrentLine);
+   if IsConditionalDirective(OpcodeField)Then HandleConditionalDirective
+   else if ConditionalEnabled Then Begin
+    if(OpcodeField='INCLUDE')or(OpcodeField='.INPUT')Then Begin
+     Name:=TrimString(OperandField);
+     if(Length(Name)>=2)and(Name[1]in['''','"'])and(Name[Length(Name)]=Name[1])Then Begin
+      Delete(Name,Length(Name),1);Delete(Name,1,1)
+     End;
+     if Name=''Then Diagnostic('INCLUDE exige un fichier')else Begin
+      if not TextFileExists(Name)Then Name:=DirectoryPart(FileName)+Name;
+      AssembleFile(Name,Depth+1)
+     End
+    End else Begin
+     if(LabelField<>'')and(LabelField[1]<>'.')Then CurrentGlobal:=LabelField;
+     if(LabelField<>'')and not((OpcodeField='EQU')or(OpcodeField='=')or
+      (OpcodeField='CONSTANT'))Then DefineSymbol(LabelField,Location[CurrentSection],CurrentSection);
+     if OpcodeField<>''Then if IsDirective(OpcodeField)Then ProcessDirective
+     else ProcessInstruction
+    End
+   End;
+   if Pass=2 Then WriteListingLine(StartAddress)
+  End;
+  Close(F);if IOResult<>0 Then Diagnostic('erreur de fermeture du source');
+  LineNumber:=SavedLine;CurrentLine:=SavedText;CurrentInputName:=SavedName
+ End;
 Begin
  Pass:=PassNo;Location[SecText]:=0;Location[SecData]:=0;Location[SecBss]:=0;
- CurrentSection:=SecText;LineNumber:=0;StopAssembly:=False;Reset(Source);
- if IOResult<>0 Then Fatal('lecture impossible: '+Opt.SourceName);
- While not Eof(Source)and not StopAssembly do Begin
-  ReadLn(Source,CurrentLine);if IOResult<>0 Then Begin
-   Diagnostic('erreur de lecture');Break
-  End;
-  Inc(LineNumber);LineByteCount:=0;StartAddress:=Location[CurrentSection];
-  SplitLine(CurrentLine);
-  if(LabelField<>'')and not((OpcodeField='EQU')or(OpcodeField='='))Then   DefineSymbol(
-  LabelField,Location[CurrentSection],CurrentSection);
-  if OpcodeField<>''Then if IsDirective(OpcodeField)
-  Then ProcessDirective else ProcessInstruction;
-  if Pass=2 Then WriteListingLine(StartAddress)
- End;Close(Source);if IOResult<>0 Then Diagnostic('erreur de fermeture du source');
+ CurrentSection:=SecText;LineNumber:=0;StopAssembly:=False;ConditionalDepth:=0;
+ ConditionalEnabled:=True;ModuleActive:=False;ModuleClosed:=False;CurrentGlobal:='';
+ StructureDepth:=0;StructureSerial:=0;
+ AssembleFile(Opt.SourceName,1);
+ if ConditionalDepth<>0 Then Diagnostic('ENDIF manquant');
+ if StructureDepth<>0 Then Diagnostic('fin de structure PLZ manquante');
+ if ModuleActive and not ModuleClosed Then Diagnostic('ENDMODULE manquant');
  if Pass=1 Then Begin
   TextSize:=Location[SecText];DataSize:=Location[SecData];BssSize:=Location[SecBss]
  End
@@ -1609,11 +2092,15 @@ Begin
  Assign(F,Opt.ObjectName);Rewrite(F,1);
  if IOResult<>0 Then Fatal('creation impossible: '+Opt.ObjectName);
  N:=0;WriteObjectBlock(F,OBOST,B,N);
- S:=ModuleName(Opt.SourceName);N:=0;PutObjectName(B,N,S);WriteObjectBlock(F,OBMOD,B,N);
+ S:=ObjectModuleName;if S=''Then S:=ModuleName(Opt.SourceName);
+ N:=0;PutObjectName(B,N,S);WriteObjectBlock(F,OBMOD,B,N);
  N:=0;
- B[N]:=1;Inc(N);B[N]:=32;Inc(N);B[N]:=0;Inc(N);PutObjectName(B,N,'__text');
- B[N]:=1;Inc(N);B[N]:=32;Inc(N);B[N]:=0;Inc(N);PutObjectName(B,N,'__data');
- B[N]:=1;Inc(N);B[N]:=32;Inc(N);B[N]:=0;Inc(N);PutObjectName(B,N,'__bss');
+ B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[1];Inc(N);B[N]:=0;Inc(N);
+ PutObjectName(B,N,SectionObjectName[1]);
+ B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[2];Inc(N);B[N]:=0;Inc(N);
+ PutObjectName(B,N,SectionObjectName[2]);
+ B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[3];Inc(N);B[N]:=0;Inc(N);
+ PutObjectName(B,N,SectionObjectName[3]);
  WriteObjectBlock(F,OBSEC,B,N);
  WriteSymbolBlocks(F,OBGLO,True);WriteSymbolBlocks(F,OBLOC,False);
  WriteTextSection(F,SecText,TextSize);WriteTextSection(F,SecData,DataSize);
@@ -1657,6 +2144,9 @@ Begin
   End
   else if(U='-O')Then Begin
    Inc(I);if I>ParamCount Then Fatal('-o exige un nom');Opt.ObjectName:=ParamStr(I)
+  End
+  else if(U='-P')Then Begin
+   Inc(I);if I>ParamCount Then Fatal('-p exige un nom');Opt.PredefName:=ParamStr(I)
   End
   else if(Copy(U,1,2)='-O')and(Length(S)>2)Then Opt.ObjectName:=Copy(S,3,255)
   else if(S<>'')and(S[1]='-')Then Begin
@@ -1702,6 +2192,7 @@ End;
 Procedure Cleanup;
 Var
  I:Integer;
+ P,N:PPredefName;
 Begin
  if ListOpen Then Begin
   Close(ListFile);if IOResult<>0 Then Begin
@@ -1710,15 +2201,22 @@ Begin
  For I:=0 to 3 do Begin
   if TextImage[I]<>Nil Then FreeMem(TextImage[I],SizeOf(TByteBlock));
   if DataImage[I]<>Nil Then FreeMem(DataImage[I],SizeOf(TByteBlock))
- End;FreeSymbols
+ End;FreeSymbols;
+ P:=Predefinitions;While P<>Nil do Begin
+  N:=P^.Next;FreePredefFormats(P^.Formats);Dispose(P);P:=N
+ End;Predefinitions:=Nil
 End;
 
 BEGIN
  Symbols:=Nil;Relocations:=Nil;LastRelocation:=Nil;HasTransfer:=False;
+ Predefinitions:=Nil;PredefInstructionCount:=0;PredefDirectiveCount:=0;
+ PredefSymbolCount:=0;
+ ObjectModuleName:='';SectionObjectName[1]:='__text';SectionObjectName[2]:='__data';
+ SectionObjectName[3]:='__bss';FillChar(SectionAttributes,SizeOf(SectionAttributes),0);
  TransferAddress:=0;TransferBase:=0;FillChar(TextImage,SizeOf(TextImage),0);
  FillChar(DataImage,SizeOf(DataImage),0);
  ListOpen:=False;ErrorCount:=0;WarningCount:=0;
- ParseCommandLine;AllocateImages;Assign(Source,Opt.SourceName);Reset(Source);
+ ParseCommandLine;LoadPredefinitions;AllocateImages;Assign(Source,Opt.SourceName);Reset(Source);
  if IOResult<>0 Then Fatal('fichier source introuvable: '+Opt.SourceName);Close(Source);
  if IOResult<>0 Then Begin
  End;

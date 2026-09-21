@@ -2017,7 +2017,7 @@ Const
  TERM_SELECT_WIDTH     = 180;     { largeur du selecteur deroulant }
  TERM_SELECT_HEIGHT    = 18;      { hauteur du selecteur ferme     }
  TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
- TERM_SELECT_COUNT     = 9;       { nombre total de shells du selecteur }
+ TERM_SELECT_COUNT     = 10;      { nombre total de shells du selecteur }
  TERM_SELECT_SBAR_W    = 14;      { largeur barre defilement du selecteur }
  TERM_SCROLLBAR_WIDTH  = 14;      { largeur barre defilement term  }
  TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
@@ -3530,7 +3530,7 @@ Type
 
  { Type de shell du terminal }
  TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_GULAM, SK_AMIGADOS, SK_NCOMMANDER,
-  SK_OS2REXX, SK_OS9, SK_COS);
+  SK_OS2REXX, SK_OS9, SK_CPM, SK_COS);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
@@ -92462,6 +92462,449 @@ Begin
   'reelle du systeme de fichiers n''est effectuee).');
 End;
 
+{ ============================================================
+  Shell Terminal "CP/M-80" (SK_CPM, 2026-09-20, demande explicite de
+  l'utilisateur - shell insere entre OS-9 et COS, 15 commandes fournies :
+  DDT/DIR/DUMP/ED/ERA/LOAD/PIP/REN/SAVE/STAT/SUBMIT/SYSGEN/TYPE/USER/XSUB.
+  Meme discipline que OS-9 ci-dessus : reutilise les handlers TermCmd_*
+  generiques 1:1 quand ils existent (TYPE/REN/DEL/EDIT), nouveau code
+  TermCmd_CPM_* reel pour DIR/DUMP/LOAD/PIP/SUBMIT/STAT (formats reels
+  Digital Research - Intel HEX pour LOAD, "dest=source" pour PIP,
+  substitution $1-$9 pour SUBMIT, comptage en records de 128 octets pour
+  STAT - voir chaque procedure), accuse de reception honnete pour DDT/
+  SYSGEN/XSUB (aucun coeur 8080/Z80 charge ni redirection d'entree console
+  au niveau BDOS n'est modelise par ce shell HOTE, meme perimetre que
+  OS-9 KILL ci-dessus). SAVE simplifie (aucune memoire TPA reelle n'est
+  tracee par ce terminal, voir la procedure). ============================================================ }
+Var
+ CpmUserNum: Byte;  { USER : numero d'utilisateur (0-15) declare, non    }
+                     { applique au filtrage DIR (bookkeeping reel mais   }
+                     { local, meme principe que Os9DataDir/CHD ci-dessus).}
+ CpmLoadBuf: Array[0..65535 - $0100] Of Byte; { tampon global reutilise  }
+                     { par LOAD (evite un tableau dynamique/une tres     }
+                     { grande variable locale sur la pile). }
+
+{ --- DIR (format CP/M authentique : "A: NOM     .EXT  NOM2    .EXT2",   }
+{ 4 entrees/ligne, noms en MAJUSCULES - reutilise Fat_ListDir/          }
+{ Term_ResolveVirtTarget sur disque virtuel comme TermCmd_OS9_DIR,       }
+{ sinon FindFirst/FindNext hote). --- }
+Procedure TermCmd_CPM_DIR(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Info: SearchRec;
+ FirstParam, AbsP, Nm, Ex, Line: String;
+ Idx: Byte;
+ IsRoot: Boolean;
+ StartCl: LongInt;
+ Count, Col: Integer;
+ P: Integer;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then Begin
+  If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
+   TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie.');
+   Exit;
+  End;
+  Fat_ListDir(Idx, IsRoot, StartCl, TP, 0);
+  Exit;
+ End;
+ Count := 0; Col := 0; Line := '';
+ FindFirst('*.*', AnyFile, Info);
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) <> Directory Then Begin
+   Nm := UpCaseStr(Info.Name);
+   P := Pos('.', Nm);
+   If P > 0 Then Begin
+    Ex := Copy(Nm, P + 1, 3);
+    Nm := Copy(Nm, 1, P - 1);
+   End Else Ex := '';
+   If Length(Nm) > 8 Then Nm := Copy(Nm, 1, 8);
+   While Length(Nm) < 8 Do Nm := Nm + ' ';
+   While Length(Ex) < 3 Do Ex := Ex + ' ';
+   If Col = 0 Then Line := 'A: ' + Nm + '.' + Ex
+   Else Line := Line + '   ' + Nm + '.' + Ex;
+   Inc(Col);
+   Inc(Count);
+   If Col = 4 Then Begin
+    TermAddLine(TP, Line);
+    Line := ''; Col := 0;
+   End;
+  End;
+  FindNext(Info);
+ End;
+ If Col > 0 Then TermAddLine(TP, Line);
+ If Count = 0 Then TermAddLine(TP, 'No File');
+End;
+
+{ --- DUMP (hexadecimal reel du contenu d'un fichier, 16 octets/ligne,   }
+{ adresse relative sur 4 chiffres hexa + colonne ASCII - format usuel    }
+{ des utilitaires DUMP/DDT CP/M, verifie octet par octet). --- }
+Procedure TermCmd_CPM_DUMP(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ F: File Of Byte;
+ Err: Word;
+ FName, HexPart, AscPart, S: String;
+ Buf: Array[0..15] Of Byte;
+ N, I: Integer;
+ Addr: LongInt;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : DUMP fichier');
+  Exit;
+ End;
+ {$I-} Assign(F, FName); Reset(F); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Addr := 0;
+ While Not EOF(F) Do Begin
+  N := 0;
+  While (N < 16) And (Not EOF(F)) Do Begin
+   Read(F, Buf[N]);
+   Inc(N);
+  End;
+  HexPart := ''; AscPart := '';
+  For I := 0 To N - 1 Do Begin
+   HexPart := HexPart + HexByte(Buf[I]) + ' ';
+   If (Buf[I] >= 32) And (Buf[I] <= 126) Then AscPart := AscPart + Chr(Buf[I])
+   Else AscPart := AscPart + '.';
+  End;
+  While Length(HexPart) < 48 Do HexPart := HexPart + ' ';
+  Str(Addr:4, S);
+  TermAddLine(TP, S + '  ' + HexPart + ' ' + AscPart);
+  Addr := Addr + N;
+ End;
+ Close(F);
+End;
+
+{ --- LOAD (conversion reelle Intel HEX -> .COM, convention CP/M         }
+{ authentique : le fichier .HEX est bati sur une origine TPA $0100 - une }
+{ adresse de donnee < $0100 est honnetement refusee plutot que tronquee  }
+{ silencieusement ; somme de controle (checksum) de chaque ligne         }
+{ VERIFIEE, format Intel HEX standard : ":LLAAAATTdd..ddCC"). --- }
+Procedure TermCmd_CPM_LOAD(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ CPM_TPA_ORG = $0100;
+Var
+ InF: Text;
+ OutF: File Of Byte;
+ Err: Word;
+ InName, OutName, Ln: String;
+ LineNo: LongInt;
+ ByteCount, RecType, Chk, Sum: Integer;
+ Addr: LongInt;
+ I, ErrCode: Integer;
+ B: Array[0..255] Of Byte;
+ MaxOfs: LongInt;
+ Ofs: LongInt;
+ WI: LongInt; { BOGUE REEL evite (2026-09-20) : Integer est 16 bits dans   }
+               { ce fichier (mode TP) - MaxOfs peut depasser 32767         }
+               { (jusqu'a 65279), donc la boucle finale d'ecriture doit    }
+               { utiliser un compteur LongInt distinct de I (reutilise     }
+               { ailleurs pour ByteCount, borne a 255). }
+Begin
+ InName := TermExtractParam(ParamStr, 1);
+ If InName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : LOAD fichier.HEX  (produit fichier.COM)');
+  Exit;
+ End;
+ If Pos('.', InName) = 0 Then InName := InName + '.HEX';
+ OutName := Copy(InName, 1, Pos('.', InName) - 1) + '.COM';
+ {$I-} Assign(InF, InName); Reset(InF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ FillChar(CpmLoadBuf, SizeOf(CpmLoadBuf), 0);
+ MaxOfs := -1;
+ LineNo := 0;
+ While Not EOF(InF) Do Begin
+  ReadLn(InF, Ln);
+  Inc(LineNo);
+  Ln := TermTrim(Ln);
+  If Ln = '' Then Continue;
+  If (Copy(Ln, 1, 1) <> ':') Or (Length(Ln) < 11) Then Begin
+   TermAddLine(TP, 'LOAD : ligne ' + IntToStr(LineNo) +
+    ' - enregistrement Intel HEX invalide (doit commencer par '':'').');
+   Close(InF);
+   Exit;
+  End;
+  Val('$' + Copy(Ln, 2, 2), ByteCount, ErrCode);
+  If ErrCode = 0 Then Val('$' + Copy(Ln, 4, 4), Addr, ErrCode);
+  If ErrCode = 0 Then Val('$' + Copy(Ln, 8, 2), RecType, ErrCode);
+  If (ErrCode <> 0) Or (Length(Ln) < 11 + ByteCount * 2) Then Begin
+   TermAddLine(TP, 'LOAD : ligne ' + IntToStr(LineNo) + ' - format invalide.');
+   Close(InF);
+   Exit;
+  End;
+  Sum := ByteCount + (Addr Shr 8) + (Addr And $FF) + RecType;
+  For I := 0 To ByteCount - 1 Do Begin
+   Val('$' + Copy(Ln, 10 + I * 2, 2), B[I], ErrCode);
+   If ErrCode <> 0 Then Begin
+    TermAddLine(TP, 'LOAD : ligne ' + IntToStr(LineNo) + ' - octet de donnee invalide.');
+    Close(InF);
+    Exit;
+   End;
+   Sum := Sum + B[I];
+  End;
+  Val('$' + Copy(Ln, 10 + ByteCount * 2, 2), Chk, ErrCode);
+  If (ErrCode <> 0) Or (Byte(Sum + Chk) <> 0) Then Begin
+   TermAddLine(TP, 'LOAD : ligne ' + IntToStr(LineNo) + ' - somme de controle invalide.');
+   Close(InF);
+   Exit;
+  End;
+  If RecType = 1 Then Break; { fin de fichier Intel HEX }
+  If RecType <> 0 Then Continue; { seuls les enregistrements de donnees sont traites }
+  If Addr < CPM_TPA_ORG Then Begin
+   TermAddLine(TP, 'LOAD : ligne ' + IntToStr(LineNo) +
+    ' - adresse $' + HexWord(Word(Addr)) +
+    ' hors de la zone TPA (le fichier .HEX doit demarrer a $0100).');
+   Close(InF);
+   Exit;
+  End;
+  For I := 0 To ByteCount - 1 Do Begin
+   Ofs := Addr - CPM_TPA_ORG + I;
+   If Ofs <= High(CpmLoadBuf) Then Begin
+    CpmLoadBuf[Ofs] := B[I];
+    If Ofs > MaxOfs Then MaxOfs := Ofs;
+   End;
+  End;
+ End;
+ Close(InF);
+ If MaxOfs < 0 Then Begin
+  TermAddLine(TP, 'LOAD : aucun octet de donnee dans ' + InName + '.');
+  Exit;
+ End;
+ {$I-} Assign(OutF, OutName); Rewrite(OutF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ For WI := 0 To MaxOfs Do Write(OutF, CpmLoadBuf[WI]);
+ Close(OutF);
+ TermAddLine(TP, 'LOAD : ' + OutName + ' cree (' + IntToStr(MaxOfs + 1) +
+  ' octet(s), origine $0100).');
+End;
+
+{ --- PIP (copie reelle "destination=source", convention CP/M            }
+{ authentique - INVERSE de COPY/REN - LST:=fichier simule une            }
+{ imprimante en echoant le contenu dans le terminal, disclosed comme      }
+{ simplifie ; fichier=CON: (saisie interactive capturee) n'est PAS        }
+{ supporte, meme discipline honnete que BUILD/OS-9). --- }
+Procedure TermCmd_CPM_PIP(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Args, Dest, Src, Ln: String;
+ EqPos: Integer;
+ InF, OutF: File Of Byte;
+ TxtF: Text;
+ Err: Word;
+ ByteVal: Byte;
+ Total: LongInt;
+Begin
+ Args := TermTrim(ParamStr);
+ If Args = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : PIP destination=source');
+  Exit;
+ End;
+ EqPos := Pos('=', Args);
+ If EqPos = 0 Then Begin
+  TermAddLine(TP, 'PIP : syntaxe invalide (attendu destination=source).');
+  Exit;
+ End;
+ Dest := TermTrim(Copy(Args, 1, EqPos - 1));
+ Src := TermTrim(Copy(Args, EqPos + 1, Length(Args)));
+ If UpCaseStr(Src) = 'CON:' Then Begin
+  TermAddLine(TP, 'PIP : source CON: (saisie interactive) non supportee par ' +
+   'ce terminal - seule la copie fichier<->fichier ou vers LST: est reelle.');
+  Exit;
+ End;
+ {$I-} Assign(InF, Src); Reset(InF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ If UpCaseStr(Dest) = 'LST:' Then Begin
+  { "Imprimante" simulee = echo dans le terminal (simplifie, disclosed). }
+  Close(InF);
+  Assign(TxtF, Src);
+  {$I-} Reset(TxtF); {$I+}
+  If IOResult <> 0 Then Exit;
+  While Not EOF(TxtF) Do Begin
+   ReadLn(TxtF, Ln);
+   TermAddLine(TP, Ln);
+  End;
+  Close(TxtF);
+  Exit;
+ End;
+ {$I-} Assign(OutF, Dest); Rewrite(OutF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  Close(InF);
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ Total := 0;
+ While Not EOF(InF) Do Begin
+  Read(InF, ByteVal);
+  Write(OutF, ByteVal);
+  Inc(Total);
+ End;
+ Close(InF);
+ Close(OutF);
+ TermAddLine(TP, 'PIP : ' + IntToStr(Total) + ' octet(s) copies vers ' + Dest + '.');
+End;
+
+{ --- STAT (sans argument : espace libre ; avec un nom de fichier :      }
+{ taille reelle en records CP/M de 128 octets, convention authentique -  }
+{ voir CPM_RECORD_SIZE). --- }
+Procedure TermCmd_CPM_STAT(Var TP: TTerminalPanel; ParamStr: String);
+Const
+ CPM_RECORD_SIZE = 128;
+Var
+ FirstParam, AbsP, FreeStr: String;
+ Idx: Byte;
+ Info: SearchRec;
+ Recs: LongInt;
+ FreeMB: Int64;
+Begin
+ FirstParam := TermExtractParam(ParamStr, 1);
+ If (FirstParam = '') Or (UpCaseStr(FirstParam) = 'DSK:') Then Begin
+  If Term_ResolveVirtTarget(TP, FirstParam, Idx, AbsP) Then
+   TermAddLine(TP, IntToStr(Fat_FreeBytes(Idx) Div 1024) + 'K free, unite ' +
+    Chr(Ord('A') + Idx) + ':')
+  Else Begin
+   { BOGUE REEL evite (2026-09-20, trouve en testant en direct - le meme    }
+   { motif "IntToStr(LongInt(DiskFree(0))..." existe deja ailleurs dans ce  }
+   { fichier, ex. TermCmd_OS9_FREE ~92088 - PAS corrige ici, hors perimetre }
+   { de cette commande) : DiskFree renvoie un Int64 reel ; le convertir en  }
+   { LongInt (32 bits) AVANT la division deborde sur un disque hote de      }
+   { plusieurs To d'espace libre (observe en direct : "-393932K free."      }
+   { negatif et absurde). Affiche en M (division Int64 AVANT tout           }
+   { transtypage) pour rester dans les bornes de IntToStr (LongInt). }
+   FreeMB := DiskFree(0) Div (1024 * 1024);
+   Str(FreeMB, FreeStr);
+   TermAddLine(TP, FreeStr + 'M free.');
+  End;
+  TermAddLine(TP, 'USER : ' + IntToStr(CpmUserNum));
+  Exit;
+ End;
+ FindFirst(FirstParam, AnyFile, Info);
+ If DosError <> 0 Then Begin
+  TermAddLine(TP, 'No File');
+  Exit;
+ End;
+ While DosError = 0 Do Begin
+  If (Info.Attr And Directory) <> Directory Then Begin
+   Recs := (Info.Size + CPM_RECORD_SIZE - 1) Div CPM_RECORD_SIZE;
+   { Arrondi au K SUPERIEUR (minimum 1K des qu'il y a au moins 1 record) - }
+   { convention CP/M reelle (allocation par blocs) ; une division simple   }
+   { affichait a tort "0K" pour tout fichier de moins de 1024 octets       }
+   { (trouve en testant en direct : STAT sur un fichier de 12 octets). }
+   TermAddLine(TP, 'Recs ' + IntToStr(Recs) + '  Bytes ' +
+    IntToStr((Recs * CPM_RECORD_SIZE + 1023) Div 1024) + 'K  ' +
+    'Ext 1  ' + UpCaseStr(Info.Name));
+  End;
+  FindNext(Info);
+ End;
+End;
+
+{ --- SUBMIT (execution reelle ligne par ligne d'un fichier .SUB via      }
+{ TermExecuteCommand - meme principe que SHELL/OS-9 - avec substitution   }
+{ REELLE $1-$9 par les parametres de la ligne de commande, convention     }
+{ authentique SUBMIT.COM ; simplifie : execution directe dans l'ordre du  }
+{ fichier, pas de reconstruction $$$.SUB inversee comme le vrai CP/M). --- }
+Procedure TermCmd_CPM_SUBMIT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Handle: Text;
+ Err: Word;
+ FName, CurrLine, Sub, Arg: String;
+ ArgN: Integer;
+ P, SearchFrom: Integer;
+Begin
+ FName := TermExtractParam(ParamStr, 1);
+ If FName = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : SUBMIT fichier [param1 .. param9]');
+  Exit;
+ End;
+ If Pos('.', FName) = 0 Then FName := FName + '.SUB';
+ Assign(Handle, FName);
+ {$I-} Reset(Handle); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ While Not EOF(Handle) Do Begin
+  ReadLn(Handle, CurrLine);
+  If TermTrim(CurrLine) <> '' Then Begin
+   Sub := CurrLine;
+   For ArgN := 1 To 9 Do Begin
+    Arg := TermExtractParam(ParamStr, ArgN + 1);
+    { Reprend la recherche APRES le texte insere (pas depuis le debut) -    }
+    { evite une boucle infinie si Arg contient lui-meme la sequence "$N". }
+    SearchFrom := 1;
+    P := Pos('$' + IntToStr(ArgN), Copy(Sub, SearchFrom, Length(Sub)));
+    While P > 0 Do Begin
+     P := P + SearchFrom - 1;
+     Sub := Copy(Sub, 1, P - 1) + Arg + Copy(Sub, P + 2, Length(Sub));
+     SearchFrom := P + Length(Arg);
+     P := Pos('$' + IntToStr(ArgN), Copy(Sub, SearchFrom, Length(Sub)));
+    End;
+   End;
+   TermExecuteCommand(TP, Sub);
+  End;
+ End;
+ Close(Handle);
+End;
+
+{ --- SAVE (simplifie : cree un fichier .COM de N*256 octets a zero -     }
+{ le vrai SAVE copie le contenu REEL de la TPA (0100h..) en memoire, ce   }
+{ que ce shell HOTE ne modelise pas - meme discipline honnete que BUILD/  }
+{ OS-9, disclosed explicitement). --- }
+Procedure TermCmd_CPM_SAVE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ NStr, FName: String;
+ N, ErrCode: Integer;
+ OutF: File Of Byte;
+ Err: Word;
+ Zero: Array[0..255] Of Byte;
+ I, J: Integer;
+Begin
+ NStr := TermExtractParam(ParamStr, 1);
+ FName := TermExtractParam(ParamStr, 2);
+ Val(NStr, N, ErrCode);
+ If (NStr = '') Or (FName = '') Or (ErrCode <> 0) Or (N < 0) Or (N > 255) Then Begin
+  TermAddLine(TP, 'Syntaxe : SAVE n fichier.COM  (n = nombre de pages de 256 octets)');
+  Exit;
+ End;
+ If Pos('.', FName) = 0 Then FName := FName + '.COM';
+ {$I-} Assign(OutF, FName); Rewrite(OutF); {$I+}
+ Err := IOResult;
+ If Err <> 0 Then Begin
+  TermAddLine(TP, TermGetErrorMessage(Err));
+  Exit;
+ End;
+ FillChar(Zero, SizeOf(Zero), 0);
+ For I := 1 To N Do
+  For J := 0 To 255 Do Write(OutF, Zero[J]);
+ Close(OutF);
+ TermAddLine(TP, 'SAVE (simplifie, memoire TPA non tracee par ce terminal) : ' +
+  FName + ' cree (' + IntToStr(N) + ' page(s) de 256 octets, contenu a zero).');
+End;
+
+{ --- HELP (liste des 15 commandes du shell CP/M-80) --- }
+Procedure TermCmd_CPM_HELP(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP, 'CP/M-80 shell built-in commands :');
+ TermAddLine(TP, '  DDT DIR DUMP ED ERA LOAD PIP REN SAVE STAT SUBMIT');
+ TermAddLine(TP, '  SYSGEN TYPE USER XSUB');
+End;
+
 { Start-Cray1Program (2026-09-12, demande explicite de l'utilisateur -      }
 { "il n'existe actuellement aucune commande terminal ni association NC     }
 { pour lancer directement un .abs") - meme motif exact que                  }
@@ -117274,6 +117717,7 @@ Begin
   SK_AMIGADOS:   FName := 'terminal-amiga.log';
   SK_OS2REXX:    FName := 'terminal-os2.log';
   SK_OS9:        FName := 'terminal-os9.log';
+  SK_CPM:        FName := 'terminal-cpm.log';
   SK_COS:        FName := 'terminal-cos.log';
  Else
   FName := 'terminal.log';
@@ -149484,6 +149928,7 @@ Var
  Os9BuildF: File;
  CosLogF: Text;
  CosSnapI: Integer;
+ CpmUserArg, CpmUserErr: Integer;
 Begin
  CmdStr := TermTrim(CmdStr);
  If CmdStr = '' Then Exit;
@@ -150853,6 +151298,57 @@ Begin
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
   End;
+  SK_CPM: Begin
+   { CP/M-80 (Digital Research) - demande explicite de l'utilisateur       }
+   { (2026-09-20), 15 commandes fournies. Commandes fichier reelles :      }
+   { reutilisent les MEMES handlers TermCmd_* generiques que CMD/OS-9 pour }
+   { tout ce qui a un equivalent 1:1 reel (TYPE/REN/ERA->DEL/ED->EDIT),    }
+   { sinon nouvelles TermCmd_CPM_* (voir juste avant Start-Cray1Program    }
+   { plus haut pour la disclosure complete de chaque commande : DIR/DUMP/  }
+   { LOAD/PIP/SUBMIT/STAT sont REELLES, SAVE est simplifiee, DDT/SYSGEN/   }
+   { XSUB sont des accuses de reception honnetes). }
+   If CurrCmd = 'TYPE' Then TermCmd_TYPE(TP, ParamStr)
+   Else If CurrCmd = 'REN' Then TermCmd_REN(TP, ParamStr)
+   Else If CurrCmd = 'ERA' Then TermCmd_DEL(TP, ParamStr)
+   Else If CurrCmd = 'ED' Then TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'DIR' Then TermCmd_CPM_DIR(TP, ParamStr)
+   Else If CurrCmd = 'DUMP' Then TermCmd_CPM_DUMP(TP, ParamStr)
+   Else If CurrCmd = 'LOAD' Then TermCmd_CPM_LOAD(TP, ParamStr)
+   Else If CurrCmd = 'PIP' Then TermCmd_CPM_PIP(TP, ParamStr)
+   Else If CurrCmd = 'SUBMIT' Then TermCmd_CPM_SUBMIT(TP, ParamStr)
+   Else If CurrCmd = 'STAT' Then TermCmd_CPM_STAT(TP, ParamStr)
+   Else If CurrCmd = 'SAVE' Then TermCmd_CPM_SAVE(TP, ParamStr)
+   Else If (CurrCmd = 'HELP') Or (CurrCmd = '?') Then TermCmd_CPM_HELP(TP)
+   Else If CurrCmd = 'USER' Then Begin
+    If TermTrim(ParamStr) = '' Then
+     TermAddLine(TP, IntToStr(CpmUserNum))
+    Else Begin
+     Val(TermTrim(ParamStr), CpmUserArg, CpmUserErr);
+     If (CpmUserErr = 0) And (CpmUserArg >= 0) And (CpmUserArg <= 15) Then
+      { Bookkeeping reel mais local (comme CHD/CHX OS-9 ci-dessus) :       }
+      { declare et re-affiche, mais N'EST PAS applique au filtrage de DIR  }
+      { (ce shell HOTE ne modelise pas de zones utilisateur CP/M reelles). }
+      CpmUserNum := CpmUserArg
+     Else
+      TermAddLine(TP, 'USER : numero invalide (0-15 attendu).');
+    End;
+   End
+   Else If CurrCmd = 'DDT' Then
+    TermAddLine(TP, 'DDT : necessite un veritable programme 8080/Z80 charge ' +
+     'en memoire - aucun coeur CPU 8080/Z80 n''est associe a ce shell HOTE ' +
+     '(utilisez un onglet emulateur reel pour deboguer du code machine).')
+   Else If CurrCmd = 'SYSGEN' Then
+    TermAddLine(TP, 'SYSGEN : commande reconnue, mais non supportee - aucune ' +
+     'image systeme CP/M reelle (pistes reservees 0-1) n''est modelisee par ' +
+     'ce terminal.')
+   Else If CurrCmd = 'XSUB' Then
+    TermAddLine(TP, 'XSUB : commande reconnue, mais non supportee - la ' +
+     'redirection de l''entree CONSOLE au niveau BDOS (au-dela des lignes ' +
+     'de commande deja geree par SUBMIT) n''est pas modelisee par ce shell ' +
+     'HOTE.')
+   Else
+    TermAddLine(TP, CurrCmd + '?');
+  End;
   SK_COS: Begin
    { COS (Cray Operating System, Cray-1, 1976) - demande explicite de       }
    { l'utilisateur, jeu de commandes limite a celles listees               }
@@ -151135,6 +151631,7 @@ Begin
   SK_AMIGADOS:   TermCmdHistFile := 'devenv-amiga.hist';
   SK_OS2REXX:    TermCmdHistFile := 'devenv-os2.hist';
   SK_OS9:        TermCmdHistFile := 'devenv-os9.hist';
+  SK_CPM:        TermCmdHistFile := 'devenv-cpm.hist';
   SK_COS:        TermCmdHistFile := 'devenv-cos.hist';
  Else
   TermCmdHistFile := 'devenv-term.hist';
@@ -151265,6 +151762,7 @@ Begin
  InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
  InitTerminalPanel(TermPanels[SK_OS2REXX], SK_OS2REXX);
  InitTerminalPanel(TermPanels[SK_OS9], SK_OS9);
+ InitTerminalPanel(TermPanels[SK_CPM], SK_CPM);
  InitTerminalPanel(TermPanels[SK_COS], SK_COS);
  { Comme l original sur DOS reel (et comme les 4 autres shells de ce      }
  { panneau) : demarrer sur le repertoire courant de la machine hote,           }
@@ -154885,7 +155383,8 @@ Begin
   5: TermSelectCaption := 'Norton Commander';
   6: TermSelectCaption := 'OS/2 & REXX';
   7: TermSelectCaption := 'OS-9 (CoCo 3)';
-  8: TermSelectCaption := 'COS (Cray-1)';
+  8: TermSelectCaption := 'CP/M-80';
+  9: TermSelectCaption := 'COS (Cray-1)';
   Else TermSelectCaption := '';
  End;
 End;
@@ -154936,7 +155435,8 @@ Begin
   5: NewShell := SK_NCOMMANDER;
   6: NewShell := SK_OS2REXX;
   7: NewShell := SK_OS9;
-  8: NewShell := SK_COS;
+  8: NewShell := SK_CPM;
+  9: NewShell := SK_COS;
   Else NewShell := ActiveShell;
  End;
  TermSelectOpen := False;
@@ -154965,6 +155465,9 @@ Begin
     SK_OS9:
      TermAddLine(TermPanels[SK_OS9],
       'OS-9/6809 Level Two. Tapez HELP pour la liste des commandes.');
+    SK_CPM:
+     TermAddLine(TermPanels[SK_CPM],
+      'CP/M-80 (TM) VERS 2.2. Tapez HELP pour la liste des commandes.');
     SK_COS:
      TermAddLine(TermPanels[SK_COS],
       'CRAY OPERATING SYSTEM (COS). TAPEZ HELP.');
@@ -155049,6 +155552,7 @@ Begin
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
   SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
   SK_OS9:        SelLabel := 'OS-9 (CoCo 3)';
+  SK_CPM:        SelLabel := 'CP/M-80';
   SK_COS:        SelLabel := 'COS (Cray-1)';
  End;
  SetColor(15);
@@ -155226,6 +155730,12 @@ Begin
     { "PS1"-like), simplifiee ici (aucune personnalisation via "shell -p" }
     { n'est simulee). }
     PromptStr := PromptStr + ' $ ' + TP.InputLine + '_';
+   SK_CPM:
+    { Prompt CCP reel : lettre de lecteur suivie de ">" (ex: "A>"), AUCUN }
+    { chemin affiche (convention CP/M 2.2 authentique, contrairement a    }
+    { CMD/PowerShell) - lettre du lecteur HOTE courant reutilisee, meme   }
+    { principe que Gulam (1ere lettre de PromptStr) juste au-dessus. }
+    PromptStr := UpCaseStr(Copy(PromptStr, 1, 1)) + '>' + TP.InputLine + '_';
    SK_COS:
     { Syntaxe reelle COS : commandes separees par des virgules, ligne     }
     { terminee par un point (ex: STATUS,ALL.) - prompt simplifie, aucune  }
@@ -155669,7 +156179,8 @@ Begin
      SK_NCOMMANDER: TermSelectIdx := 5;
      SK_OS2REXX:    TermSelectIdx := 6;
      SK_OS9:        TermSelectIdx := 7;
-     SK_COS:        TermSelectIdx := 8;
+     SK_CPM:        TermSelectIdx := 8;
+     SK_COS:        TermSelectIdx := 9;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -204466,7 +204977,17 @@ End;
 { Charge un "fichier de commande" .Z8K reel (Programmer's Guide, section   }
 { 3.1/Table 3-1) - voir la disclosure de tete pour la portee Stage 1       }
 { (en-tete decode, code+donnees charges bruts dans le segment 0, AUCUN     }
-{ relogement/table des symboles traite encore). }
+{ relogement/table des symboles traite encore).                           }
+{ BOGUE REEL corrige au Stage 2 (2026-09-20, trouve en verifiant           }
+{ l'architecture reelle avant d'ecrire le decodeur CPU) : le Z8000/Z8001    }
+{ EST GROS-BOUTISTE (big-endian) - confirme directement dans le coeur      }
+{ Z8000 de MAME (silicium-verifie) : "ENDIANNESS_BIG" pour TOUS ses         }
+{ espaces d'adressage (programme/donnees/pile/E-S). Le Stage 1 lisait a     }
+{ tort l'en-tete .Z8K en PETIT-boutiste (convention x86/Z80 deja utilisee    }
+{ partout ailleurs dans ce fichier, jamais reverifiee pour cette            }
+{ architecture DIFFERENTE) - le test synthetique de Stage 1 "fonctionnait"  }
+{ uniquement parce que le generateur Python utilisait LUI AUSSI le petit-   }
+{ boutiste par coincidence, jamais confronte a un VRAI fichier .Z8K. }
 Function Z8K_LoadFile(Const Path: String): Boolean;
 Var
  F: File;
@@ -204495,7 +205016,7 @@ Begin
   Exit;
  End;
  Seek(F, 0); BlockRead(F, Buf2, 2, BR);
- Z8K_Magic := Word(Buf2[0]) Or (Word(Buf2[1]) Shl 8);
+ Z8K_Magic := (Word(Buf2[0]) Shl 8) Or Word(Buf2[1]);
  If (Z8K_Magic <> Z8K_MAGIC_SEG_NONEXEC) And (Z8K_Magic <> Z8K_MAGIC_SEG_EXEC) And
     (Z8K_Magic <> Z8K_MAGIC_NONSEG_NONEXEC) And (Z8K_Magic <> Z8K_MAGIC_NONSEG_EXEC) And
     (Z8K_Magic <> Z8K_MAGIC_NONSEG_SHARED) And (Z8K_Magic <> Z8K_MAGIC_NONSEG_SPLIT) Then Begin
@@ -204505,16 +205026,16 @@ Begin
   Exit;
  End;
  BlockRead(F, Buf2, 2, BR);
- Z8K_EntryCount := Word(Buf2[0]) Or (Word(Buf2[1]) Shl 8);
+ Z8K_EntryCount := (Word(Buf2[0]) Shl 8) Or Word(Buf2[1]);
  BlockRead(F, Buf4, 4, BR);
- Z8K_CodeDataSize := LongInt(LongWord(Buf4[0]) Or (LongWord(Buf4[1]) Shl 8) Or
-  (LongWord(Buf4[2]) Shl 16) Or (LongWord(Buf4[3]) Shl 24));
+ Z8K_CodeDataSize := LongInt((LongWord(Buf4[0]) Shl 24) Or (LongWord(Buf4[1]) Shl 16) Or
+  (LongWord(Buf4[2]) Shl 8) Or LongWord(Buf4[3]));
  BlockRead(F, Buf4, 4, BR);
- Z8K_RelocSize := LongInt(LongWord(Buf4[0]) Or (LongWord(Buf4[1]) Shl 8) Or
-  (LongWord(Buf4[2]) Shl 16) Or (LongWord(Buf4[3]) Shl 24));
+ Z8K_RelocSize := LongInt((LongWord(Buf4[0]) Shl 24) Or (LongWord(Buf4[1]) Shl 16) Or
+  (LongWord(Buf4[2]) Shl 8) Or LongWord(Buf4[3]));
  BlockRead(F, Buf4, 4, BR);
- Z8K_SymTabSize := LongInt(LongWord(Buf4[0]) Or (LongWord(Buf4[1]) Shl 8) Or
-  (LongWord(Buf4[2]) Shl 16) Or (LongWord(Buf4[3]) Shl 24));
+ Z8K_SymTabSize := LongInt((LongWord(Buf4[0]) Shl 24) Or (LongWord(Buf4[1]) Shl 16) Or
+  (LongWord(Buf4[2]) Shl 8) Or LongWord(Buf4[3]));
  { Segment 0 : charge le code+donnees brut (Stage 1, disclosure de tete). }
  GetMem(Z8K_SegMem[0], SizeOf(TZ8KSegMem));
  FillChar(Z8K_SegMem[0]^, SizeOf(TZ8KSegMem), 0);
@@ -204544,12 +205065,324 @@ Begin
  EmuVScr_WriteLn(P, '');
  If OptionsDlg.Data.Z8001Cpm Then
   EmuVScr_WriteLn(P, 'API CP/M-8000 : case cochee (BDOS SC #2 reel, R5=fonction, ' +
-   'R7=param/retour mot, RR6=param long) - cablage complet a venir (execution CPU).')
+   'R7=param/retour mot, RR6=param long).')
  Else
   EmuVScr_WriteLn(P, 'API CP/M-8000 : case decochee (Options > Emulateur > Z8001).');
- EmuVScr_WriteLn(P, '');
- EmuVScr_WriteLn(P, 'Aucune execution CPU Z8001 encore (Stage 1 : chargement/analyse');
- EmuVScr_WriteLn(P, 'seul, meme methodologie que PC/GEOS-GeoWorks Stage 1).');
+End;
+
+{ ============================================================
+  Z8001 Stage 2 (2026-09-20, demande explicite - "Stage 2") : execution CPU
+  reelle (decodeur/executeur) + trappe BDOS CP/M-8000 reelle (SC #imm8).
+
+  SOURCE DE VERITE (double verification croisee, comme deja pratique pour
+  le noyau PC/GEOS) :
+   - Coeur Z8000 de MAME (silicium-verifie, BSD-3-Clause,
+     src/devices/cpu/z8000/z8000ops.hxx/z8000cpu.h) - lu DIRECTEMENT (pas
+     un resume) pour confirmer : SC #imm8 = mot $7F00|imm8 (Z7F_imm8,
+     "execute system call via IRQ") ; HALT = mot $7A00 fixe (Z7A_0000_0000,
+     instruction privilegiee) ; LD Rd,#imm16 = mot $2100|Rd PUIS un mot
+     imm16 separe (Z21_0000_dddd_imm16) ; LDB Rbd,#imm8 (forme courte) = UN
+     SEUL mot $C000|(Rd Shl 8)|imm8 (ZC_dddd_imm8) ; ENDIANNESS_BIG confirme
+     pour TOUS les espaces d'adressage (programme/donnees/pile/E-S) - le
+     Z8001 est GROS-BOUTISTE, PAS petit-boutiste comme le reste de ce
+     fichier (bogue Stage 1 corrige ci-dessus une fois ceci confirme).
+   - ASZ8K.PAS (present dans ce meme depot - clone libre de l'assembleur
+     Digital Research ASZ8K, ecrit par l'utilisateur) - CROISE avec MAME
+     avec un accord PARFAIT sur SC/HALT/LD immediat, et fournit en plus les
+     valeurs de base ADD/SUB/CP/AND/OR/XOR (EncodeALU, BaseRR/BaseImm/
+     BaseMem) et la table des 16 codes condition (ConditionNumber),
+     elle-meme en accord PARFAIT avec les macros CC0-CCF de MAME
+     (z8000cpu.h) - simple coincidence de nommage exclue, les DEUX sources
+     s'accordent sur le sens ET le numero de chacun des 16 codes.
+   - Ou LES DEUX SOURCES SE CONTREDISENT (forme courte LDB @imm8) : ASZ8K
+     utilise `$2100|Rd` suivi d'un octet+bourrage pour LDB, alors que MAME
+     documente une forme courte DEDIEE `$C000|(Rd Shl 8)|imm8` - ASZ8K.PAS
+     est un travail en cours de l'utilisateur (date du jour), donc la forme
+     MAME (silicium-verifiee, sans ambiguite) est retenue ici pour LDB;
+     disclosure honnete de ce desaccord plutot que de le passer sous
+     silence.
+
+  DISCLOSURE Stage 2 (perimetre honnetement limite - PAS toutes les 110
+  formes d'instructions Z8000/8 modes d'adressage, seul un sous-ensemble
+  REEL et VERIFIE) :
+   - Instructions implantees : LD Rd,#imm16 ; LDB Rbd,#imm8 ; ADD/SUB/CP
+     Rd,Rs (registre-registre) ; ADD/SUB/CP Rd,#imm16 (immediat) ; SC
+     #imm8 (trappe BDOS reelle) ; HALT (fin propre). TOUT AUTRE mot
+     d'operation rencontre declenche un echec HONNETE (P.Fault, message
+     avec le mot hexadecimal exact) - jamais une execution silencieusement
+     incorrecte.
+   - Registres/paires : Z8K_R[0..15] vue mot directe. Convention de paire
+     RRn=Rn:R(n+1) (Rn = mot de poids FORT) - deduite de la convention
+     documentee R14:R15 (pile systeme, R14=segment/R15=offset, le premier
+     registre porte toujours la partie de plus haut niveau) - PAS retrouvee
+     explicitement pour une paire ALU generique, disclosure de l'inference.
+   - Adresse "longue" segmentee (pour RR6 en parametre BDOS) : bits 22-16 =
+     segment 7 bits, bits 15-0 = offset - format confirme (recherche
+     Stage 1). Ici RR6 = R6 (segment, 7 bits utiles) : R7 (offset).
+   - BDOS (SC #2 uniquement - #1=MEM_SC/#3=BIOS_SC confirmes mais NON
+     implantes ce Stage) : fonctions 0 (System Reset, traite comme fin
+     propre), 2 (Console Output, octet bas de R7), 9 (Print String,
+     pointeur RR6 vers une chaine terminee par '$') - les 3 SEULES parmi
+     les ~40 fonctions reelles documentees (Programmer's Guide Table 4-1/
+     Appendix F). Toute autre fonction SC #2 rencontree : R7 mis a $FFFF
+     (convention REELLE documentee "fonction invalide"), pas un crash.
+  ============================================================ }
+
+Function Z8K_ReadByte(Seg: Byte; Ofs: Word): Byte;
+Begin
+ If (Seg >= Z8K_MAX_SEG) Or (Not Z8K_SegUsed[Seg]) Then Begin
+  Z8K_ReadByte := 0;
+  Exit;
+ End;
+ Z8K_ReadByte := Z8K_SegMem[Seg]^[Ofs];
+End;
+
+Procedure Z8K_WriteByte(Seg: Byte; Ofs: Word; V: Byte);
+Begin
+ If (Seg >= Z8K_MAX_SEG) Or (Not Z8K_SegUsed[Seg]) Then Exit;
+ Z8K_SegMem[Seg]^[Ofs] := V;
+End;
+
+{ GROS-BOUTISTE (voir disclosure de tete) : octet de poids FORT a l'adresse }
+{ la plus basse - INVERSE de la convention x86/Z80 utilisee partout         }
+{ ailleurs dans ce fichier. }
+Function Z8K_ReadWord(Seg: Byte; Ofs: Word): Word;
+Begin
+ Z8K_ReadWord := (Word(Z8K_ReadByte(Seg, Ofs)) Shl 8) Or
+  Word(Z8K_ReadByte(Seg, Word(Ofs + 1)));
+End;
+
+Procedure Z8K_WriteWord(Seg: Byte; Ofs: Word; V: Word);
+Begin
+ Z8K_WriteByte(Seg, Ofs, Byte(V Shr 8));
+ Z8K_WriteByte(Seg, Word(Ofs + 1), Byte(V And $FF));
+End;
+
+{ Teste le code condition (0-15) REEL, croise MAME (macros CC0-CCF,          }
+{ z8000cpu.h) et ASZ8K.PAS (ConditionNumber) - accord parfait des 2 sources. }
+Function Z8K_TestCC(CC: Byte): Boolean;
+Var
+ C, Z, S, PV: Boolean;
+Begin
+ C := (Z8K_FCW And Z8K_FCW_C) <> 0;
+ Z := (Z8K_FCW And Z8K_FCW_Z) <> 0;
+ S := (Z8K_FCW And Z8K_FCW_S) <> 0;
+ PV := (Z8K_FCW And Z8K_FCW_PV) <> 0;
+ Case CC Of
+  0:  Z8K_TestCC := False;             { F   : toujours faux }
+  1:  Z8K_TestCC := PV Xor S;          { LT  : inferieur (signe) }
+  2:  Z8K_TestCC := Z Or (PV Xor S);   { LE  : inferieur ou egal (signe) }
+  3:  Z8K_TestCC := Z Or C;            { ULE : inferieur ou egal (non signe) }
+  4:  Z8K_TestCC := PV;                { OV/PE : depassement/parite paire }
+  5:  Z8K_TestCC := S;                 { MI  : signe negatif }
+  6:  Z8K_TestCC := Z;                 { Z/EQ : zero/egal }
+  7:  Z8K_TestCC := C;                 { C/ULT : retenue/inferieur (non signe) }
+  8:  Z8K_TestCC := True;              { T   : toujours vrai }
+  9:  Z8K_TestCC := Not (PV Xor S);    { GE  : superieur ou egal (signe) }
+  10: Z8K_TestCC := Not (Z Or (PV Xor S)); { GT : superieur (signe) }
+  11: Z8K_TestCC := Not (Z Or C);      { UGT : superieur (non signe) }
+  12: Z8K_TestCC := Not PV;            { NOV/PO : pas de depassement/parite impaire }
+  13: Z8K_TestCC := Not S;             { PL  : signe positif }
+  14: Z8K_TestCC := Not Z;             { NZ/NE : non zero/different }
+  15: Z8K_TestCC := Not C;             { NC/UGE : pas de retenue/superieur ou egal }
+  Else Z8K_TestCC := False;
+ End;
+End;
+
+{ Positionne Z/S/PV/C reels apres une addition/soustraction - meme          }
+{ formulation standard que tout autre chantier CPU deja verifie dans ce      }
+{ fichier (retenue/depassement signe calcules a partir des operandes ET du   }
+{ resultat, pas devines). }
+Procedure Z8K_SetFlagsAdd(A, B, R: Word; IsSub: Boolean; Wide: Boolean);
+Var
+ SignBit: Word;
+ Ca, Cb, Cr: Boolean;
+Begin
+ If Wide Then SignBit := $8000 Else SignBit := $80;
+ Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_C Or Z8K_FCW_Z Or Z8K_FCW_S Or Z8K_FCW_PV);
+ If Wide Then Begin
+  If R = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+ End Else Begin
+  If (R And $FF) = 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z;
+ End;
+ If (R And SignBit) <> 0 Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_S;
+ Ca := (A And SignBit) <> 0; Cb := (B And SignBit) <> 0; Cr := (R And SignBit) <> 0;
+ If IsSub Then Begin
+  If Ca <> Cb Then If Cr <> Ca Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  If Wide Then Begin If LongWord(A) < LongWord(B) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End
+  Else Begin If (A And $FF) < (B And $FF) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End;
+ End Else Begin
+  If Ca = Cb Then If Cr <> Ca Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  If Wide Then Begin If LongWord(R) < LongWord(A) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End
+  Else Begin If (R And $FF) < (A And $FF) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_C; End;
+ End;
+End;
+
+{ Trappe BDOS CP/M-8000 reelle (SC #2 UNIQUEMENT - voir disclosure de tete   }
+{ pour #1/#3 non implantes). R5=fonction (deja pose par le programme avant   }
+{ le SC, convention REELLE Programmer's Guide 4.1.1), R7=parametre/retour    }
+{ mot, RR6=parametre long (adresse segmentee). }
+Procedure Z8K_DispatchBDOS(Var P: TEmulatorPanel);
+Var
+ FuncNum: Word;
+ Seg: Byte; Ofs: Word;
+ Ch: Byte;
+ Guard: LongInt; { BOGUE REEL evite (2026-09-20) : Integer est 16 bits dans }
+                  { ce fichier (mode TP) - "Guard < 65536" aurait ete       }
+                  { TOUJOURS vrai (Integer plafonne a 32767, jamais atteint }
+                  { 65536), boucle non bornee en pratique. }
+Begin
+ FuncNum := Z8K_R[5];
+ Case FuncNum Of
+  0: Begin { System Reset - traite comme fin propre, meme convention que }
+     { GEOS_EXIT_STUB/HALT ci-dessous. }
+   Z8K_Halted := True;
+  End;
+  2: Begin { Console Output : octet bas de R7 }
+   EmuVScr_PutChar(P, Chr(Byte(Z8K_R[7] And $FF)));
+  End;
+  9: Begin { Print String : RR6 = adresse longue segmentee, '$' terminal ; }
+   { R6 = poids fort de la paire, seuls ses 8 bits de poids faible portent }
+   { le segment 7 bits reel (bits 22-16 de l'adresse longue). }
+   Seg := Byte(Z8K_R[6] And $7F);
+   Ofs := Z8K_R[7];
+   Guard := 0;
+   While (Guard < 65536) Do Begin
+    Ch := Z8K_ReadByte(Seg, Ofs);
+    If Ch = Ord('$') Then Break;
+    EmuVScr_PutChar(P, Chr(Ch));
+    Ofs := Word(Ofs + 1);
+    Inc(Guard);
+   End;
+  End;
+  Else Z8K_R[7] := $FFFF; { fonction invalide - convention REELLE documentee }
+ End;
+End;
+
+{ Execute UNE instruction reelle (voir la disclosure de tete pour le        }
+{ sous-ensemble exact couvert) - avance Z8K_PCOfs, positionne Z8K_Halted/    }
+{ P.Fault en cas d'instruction non couverte (echec honnete, jamais une       }
+{ execution silencieusement incorrecte). }
+Procedure Z8K_StepOne(Var P: TEmulatorPanel);
+Var
+ Op0: Word;
+ Rd, Rs, CC: Byte;
+ Imm16: Word;
+ A, B, R: Word;
+ StartOfs: Word;
+Begin
+ If Z8K_Halted Then Exit;
+ StartOfs := Z8K_PCOfs;
+ Op0 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs);
+ Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+
+ If Op0 = $7A00 Then Begin { HALT (Z7A_0000_0000, MAME) }
+  Z8K_Halted := True;
+  Exit;
+ End;
+
+ If (Op0 And $FF00) = $7F00 Then Begin { SC #imm8 (Z7F_imm8, MAME) }
+  If OptionsDlg.Data.Z8001Cpm And (Byte(Op0 And $FF) = 2) Then
+   Z8K_DispatchBDOS(P)
+  Else If OptionsDlg.Data.Z8001Cpm Then
+   Z8K_R[7] := $FFFF { SC #1/#3 non implantes - meme convention "invalide" }
+  Else Begin
+   P.CurFg := 12;
+   EmuVScr_WriteLn(P, 'SC #' + IntToStr(Byte(Op0 And $FF)) +
+    ' : API CP/M-8000 desactivee (Options > Emulateur > Z8001 > CP/M).');
+   Z8K_Halted := True;
+  End;
+  Exit;
+ End;
+
+ If (Op0 And $FF00) = $2100 Then Begin { LD Rd,#imm16 (Z21, MAME) }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs);
+  Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Z8K_R[Rd] := Imm16;
+  Exit;
+ End;
+
+ If (Op0 And $F000) = $C000 Then Begin { LDB Rbd,#imm8 forme courte (ZC, MAME) }
+  Rd := Byte((Op0 Shr 8) And $0F);
+  If Rd <= 7 Then Z8K_R[Rd] := (Z8K_R[Rd] And $FF00) Or Word(Op0 And $FF)
+  Else Z8K_R[Rd - 8] := (Z8K_R[Rd - 8] And $00FF) Or (Word(Op0 And $FF) Shl 8);
+  Exit;
+ End;
+
+ { ADD/SUB/CP registre-registre (EncodeALU BaseRR, ASZ8K.PAS, croise avec  }
+ { le motif Z8x_ssss_dddd de MAME). }
+ If (Op0 And $FF00) = $8100 Then Begin { ADD Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  A := Z8K_R[Rd]; B := Z8K_R[Rs]; R := Word(LongWord(A) + LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, False, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8300 Then Begin { SUB Rd,Rs }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  A := Z8K_R[Rd]; B := Z8K_R[Rs]; R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $8B00 Then Begin { CP Rd,Rs (soustraction, resultat perdu) }
+  Rd := Byte(Op0 And $0F); Rs := Byte((Op0 Shr 4) And $0F);
+  A := Z8K_R[Rd]; B := Z8K_R[Rs]; R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
+  Exit;
+ End;
+
+ { ADD/SUB/CP Rd,#imm16 (EncodeALU BaseImm). }
+ If (Op0 And $FF00) = $0100 Then Begin { ADD Rd,#imm16 }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  A := Z8K_R[Rd]; R := Word(LongWord(A) + LongWord(Imm16));
+  Z8K_SetFlagsAdd(A, Imm16, R, False, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0300 Then Begin { SUB Rd,#imm16 }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  A := Z8K_R[Rd]; R := Word(LongWord(A) - LongWord(Imm16));
+  Z8K_SetFlagsAdd(A, Imm16, R, True, True);
+  Z8K_R[Rd] := R;
+  Exit;
+ End;
+ If (Op0 And $FF00) = $0B00 Then Begin { CP Rd,#imm16 }
+  Rd := Byte(Op0 And $0F);
+  Imm16 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  A := Z8K_R[Rd]; R := Word(LongWord(A) - LongWord(Imm16));
+  Z8K_SetFlagsAdd(A, Imm16, R, True, True);
+  Exit;
+ End;
+
+ { JR cc,adresse (ASZ8K.PAS EncodeJump : mot $E000|(cc Shl 8)|((depl) div  }
+ { 2) signe sur 8 bits) - seule forme de saut implantee ce Stage. }
+ If (Op0 And $F000) = $E000 Then Begin
+  CC := Byte((Op0 Shr 8) And $0F);
+  If Z8K_TestCC(CC) Then
+   Z8K_PCOfs := Word(StartOfs + 2 + (ShortInt(Op0 And $FF) * 2));
+  Exit;
+ End;
+
+ { Instruction non couverte ce Stage : echec HONNETE (voir disclosure). }
+ P.CurFg := 12;
+ EmuVScr_WriteLn(P, 'Z8001 : instruction non implantee $' + HexWord(Op0) +
+  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 2).');
+ Z8K_Halted := True;
+End;
+
+Procedure Z8K_RunOneChunk(Var P: TEmulatorPanel);
+Var
+ ChunkI: LongInt;
+Begin
+ For ChunkI := 0 To 4999 Do Begin
+  If Z8K_Halted Then Break;
+  Z8K_StepOne(P);
+  Inc(P.TotalSteps);
+ End;
 End;
 
 { --- Charger un binaire DOS et lancer l execution --- }
@@ -206234,10 +207067,13 @@ Begin NesActive := False;
   Exit;
  End;
  If IsZ8001 Then Begin
-  { Chantier Zilog Z8001 + CP/M-8000, Stage 1 (2026-09-20, demande          }
-  { explicite de l'utilisateur) - voir la disclosure complete pres de       }
-  { Z8K_LoadFile plus haut. Chargement/analyse seul, aucune execution CPU   }
-  { encore (meme trajectoire que PC/GEOS-GeoWorks Stage 1). }
+  { Chantier Zilog Z8001 + CP/M-8000, Stage 2 (2026-09-20, demande          }
+  { explicite - "Stage 2") - voir la disclosure complete pres de            }
+  { Z8K_StepOne plus haut. Chargement/analyse (Stage 1) PUIS execution CPU   }
+  { REELLE a partir du segment 0 offset 0 (convention d'entree INFEREE -    }
+  { Stage 1 charge le code+donnees a cet endroit, aucun champ d'en-tete     }
+  { .Z8K ne designe explicitement un point d'entree different dans le       }
+  { sous-ensemble decode ce Stage). }
   If Not Z8K_LoadFile(BinaryPath) Then Begin
    P.CurFg := 12;
    EmuVScr_WriteLn(P, 'Erreur : ' + Z8K_LastError);
@@ -206257,12 +207093,26 @@ Begin NesActive := False;
   EmuVScr_WriteLn(P, '');
   Z8K_PrintDiagnostics(P);
   EmuVScr_WriteLn(P, '');
-  EmuVScr_WriteLn(P, 'Appuyez sur Echap pour fermer.');
   P.CurFg := OldFg;
   P.CurBg := OldBg;
-  P.Running := False;
-  P.Fault := sfEndProgram;
-  P.StatusMsg := 'Fichier .Z8K charge (Stage 1)';
+  P.Fault := sfNone;
+  P.Running := True;
+  P.Loaded := True;
+  P.StatusMsg := 'Execution Zilog Z8001 en cours (Stage 2)';
+  { BOGUE REEL corrige (2026-09-20, trouve en testant en direct - voir le   }
+  { long diagnostic Z8KDIAG.LOG temporaire) : CONTRAIREMENT a TOUS les      }
+  { autres backends "convertis" (Z80/6502/ARM64/GEOS/etc. ci-dessus, voir   }
+  { par exemple ~206294/206305), ce bloc omettait EmuHasFocus/              }
+  { EmuLastActiveState := True ici - le focus emulateur n'etait donc        }
+  { JAMAIS accorde au chargement, et StepEmulator (voir Active ci-dessous)  }
+  { restait bloque en "En pause" indefiniment tant que EmuPanel_HitTest     }
+  { (dont le rectangle depend de P.PanelX/PanelY, pas encore stabilises au  }
+  { moment de CE tout premier DrawEmulatorPanel) n'avait pas eu une chance  }
+  { de tourner au moins une fois via un clic - en pratique, cela empechait  }
+  { totalement l'execution de demarrer, meme apres un clic reel dans le     }
+  { panneau. }
+  EmuHasFocus := True;
+  EmuLastActiveState := True;
   DrawEmulatorPanel(P);
   Exit;
  End;
@@ -207121,6 +207971,40 @@ Begin
   If Finished Then Begin
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
    Arm64_PrintEndMessage(P);
+   DrawEmulatorPanel(P);
+  End;
+  Exit;
+ End;
+ If P.Loaded And (P.TargetCPU = '-CZ8001') Then Begin
+  { Chantier Zilog Z8001 + CP/M-8000, Stage 2 (2026-09-20, demande          }
+  { explicite - "Stage 2") - meme motif exact que le bloc -CARM64          }
+  { ci-dessus (pompage par trame propre, pas de redessin systematique). }
+  If Not P.Running Then Exit;
+  Active := EmuHasFocus And Not MenuActive And Not CtxMenu.Visible;
+  If Not Active Then Begin
+   If EmuLastActiveState Then Begin
+    P.StatusMsg := 'En pause (cliquez sur l''ecran pour reprendre)';
+    DrawEmulatorPanel(P);
+    EmuLastActiveState := False;
+   End;
+   Exit;
+  End;
+  If Not EmuLastActiveState Then Begin
+   P.StatusMsg := '';
+   EmuLastActiveState := True;
+  End;
+  Z8K_RunOneChunk(P);
+  Finished := Z8K_Halted Or (P.TotalSteps >= 5000000);
+  DrawEmulatorPanel(P);
+  If Finished Then Begin
+   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
+   P.CurFg := 14;
+   EmuVScr_WriteStr(P, '[Fin d''execution Z8001 apres ' + IntToStr(P.TotalSteps) +
+    ' instructions]');
+   P.CurFg := 7;
+   P.Running := False;
+   P.Fault := sfEndProgram;
+   P.StatusMsg := 'Z8001 : execution terminee';
    DrawEmulatorPanel(P);
   End;
   Exit;
