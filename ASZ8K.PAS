@@ -22,8 +22,10 @@ Const
  OBOST=1; OBSEC=3; OBGLO=4; OBLOC=5; OBTXT=6; OBTRA=8; OBMOD=12; OBOND=11;
  RAA8=$4000; RAA16M=$2000; RAA32M=$A000; RAZSS=$6000; RAZLS=$E000; RAZOF=$3000;
  RBUND=255; RBEXT=256; RBMSK=$0FFF;
+ MaxErrors=100;
 
 Type
+ TDiagnosticSeverity=(dsWarning,dsError,dsFatal);
  TByteBlock=Array[0..16383]of Byte;
  PByteBlock=^TByteBlock;
  PSymbol=^TSymbol;
@@ -90,6 +92,12 @@ Var
  LineErrorText:String;
  ListingPage,ListingLines,CurrentIncludeDepth:Integer;
  ListingTitle:String;
+ LineErrorCodes:String;
+ CurrentDiagnosticColumn:Integer;
+ ObjectWriteActive:Boolean;
+ TemporaryObjectName:String;
+ ObjectOutput:File;
+ ObjectFileOpen:Boolean;
  StopAssembly:Boolean;
  HasTransfer:Boolean;
  TransferAddress:LongInt;
@@ -174,21 +182,68 @@ Procedure Usage;Begin
  WriteLn('  .8KN    objet Z8002/non segmente; .8KS objet Z8001 segmente')
 End;
 
+Procedure DeleteFileQuiet(Const Name:String);
+Var F:File;
+Begin
+ if Name=''Then Exit;Assign(F,Name);Erase(F);if IOResult<>0 Then Begin End
+End;
+
+Function DiagnosticColumn:Integer;
+Var P:Integer;
+Begin
+ P:=0;if OperandField<>''Then P:=Pos(UpperString(OperandField),UpperString(CurrentLine));
+ if(P=0)and(OpcodeField<>'')Then P:=Pos(UpperString(OpcodeField),UpperString(CurrentLine));
+ if P=0 Then P:=1;DiagnosticColumn:=P
+End;
+
+Function HistoricalErrorCode(Const S:String):Char;
+Var U:String;
+Begin
+ U:=UpperString(S);HistoricalErrorCode:='S';
+ if(Pos('INDEFINI',U)>0)or(Pos('UNDEFINED',U)>0)Then HistoricalErrorCode:='U'
+ else if(Pos('PLUSIEURS FOIS',U)>0)or(Pos('REDEFIN',U)>0)Then HistoricalErrorCode:='M'
+ else if Pos('PHASE',U)>0 Then HistoricalErrorCode:='P'
+ else if Pos('REGISTRE',U)>0 Then HistoricalErrorCode:='R'
+ else if(Pos('MODE',U)>0)or(Pos('ADRESSE',U)>0)or(Pos('HORS PLAGE',U)>0)Then HistoricalErrorCode:='A'
+ else if(Pos('SEGMENT',U)>0)or(Pos('SECTION',U)>0)Then HistoricalErrorCode:='G'
+ else if(Pos('RELOG',U)>0)or(Pos('EXTERNAL',U)>0)or(Pos('EXTERNE',U)>0)Then HistoricalErrorCode:='V'
+ else if(Pos('INSTRUCTION',U)>0)or(Pos('MNEMONIQUE',U)>0)or(Pos('OPCODE',U)>0)Then HistoricalErrorCode:='O'
+ else if Pos('LABEL',U)>0 Then HistoricalErrorCode:='L'
+ else if(Pos('CONDITION',U)>0)or(Pos('ELSE',U)>0)or(Pos('ENDIF',U)>0)Then HistoricalErrorCode:='C'
+ else if(Pos('EXPRESSION',U)>0)or(Pos('NOMBRE',U)>0)or(Pos('DIVISION',U)>0)or
+  (Pos('PARENTHESE',U)>0)Then HistoricalErrorCode:='E'
+End;
+
+Procedure ReportDiagnostic(Severity:TDiagnosticSeverity;Code:Char;Column:Integer;
+ Const S:String;Force:Boolean);
+Var Kind:String;
+Begin
+ if(not Force)and(Pass<>2)Then Exit;if Column<=0 Then Column:=DiagnosticColumn;
+ Case Severity of
+  dsWarning:Begin Inc(WarningCount);Kind:='warning' End;
+  dsError:Begin Inc(ErrorCount);Kind:='error' End;
+  else Begin Inc(ErrorCount);Kind:='fatal' End
+ End;
+ WriteLn(CurrentInputName,'(',LineNumber,',',Column,'): ',Kind,' ',Code,': ',S);
+ if Length(LineErrorCodes)<3 Then LineErrorCodes:=LineErrorCodes+Code;
+ if LineErrorText=''Then LineErrorText:=S;
+ if(ErrorCount>=MaxErrors)and not StopAssembly Then Begin
+  StopAssembly:=True;WriteLn('ASZ8K: fatal F: too many errors (',MaxErrors,')')
+ End
+End;
+
 Procedure Fatal(Const S:String);Begin
- WriteLn('ASZ8K: ',S);Halt(1)
+ if ObjectFileOpen Then Begin Close(ObjectOutput);if IOResult<>0 Then Begin End;ObjectFileOpen:=False End;
+ if ObjectWriteActive Then DeleteFileQuiet(TemporaryObjectName);
+ WriteLn('ASZ8K: fatal F: ',S);Halt(1)
 End;
 
 Procedure Diagnostic(Const S:String);Begin
- if Pass=2 Then Begin
-  Inc(ErrorCount);WriteLn(CurrentInputName,'(',LineNumber,'): ',S);
-  if LineErrorText=''Then LineErrorText:=S
- End
+ ReportDiagnostic(dsError,HistoricalErrorCode(S),DiagnosticColumn,S,False)
 End;
 
 Procedure Warning(Const S:String);Begin
- if Pass=2 Then Begin
-  Inc(WarningCount);WriteLn(Opt.SourceName,'(',LineNumber,'): avertissement: ',S)
- End
+ ReportDiagnostic(dsWarning,'W',DiagnosticColumn,S,False)
 End;
 
 Function ScopePrefix(Level:Integer):String;
@@ -2477,13 +2532,15 @@ Begin
 End;
 
 Procedure WriteObject;
-Var F:File;B:TObjectBuffer;N:Integer;S:String;
+Var B:TObjectBuffer;N:Integer;S:String;Old:File;
 Begin
- Assign(F,Opt.ObjectName);Rewrite(F,1);
- if IOResult<>0 Then Fatal('creation impossible: '+Opt.ObjectName);
- N:=0;WriteObjectBlock(F,OBOST,B,N);
+ TemporaryObjectName:=Opt.ObjectName+'.$$$';DeleteFileQuiet(TemporaryObjectName);
+ Assign(ObjectOutput,TemporaryObjectName);Rewrite(ObjectOutput,1);
+ if IOResult<>0 Then Fatal('creation impossible: '+TemporaryObjectName);
+ ObjectWriteActive:=True;ObjectFileOpen:=True;
+ N:=0;WriteObjectBlock(ObjectOutput,OBOST,B,N);
  S:=ObjectModuleName;if S=''Then S:=ModuleName(Opt.SourceName);
- N:=0;PutObjectName(B,N,S);WriteObjectBlock(F,OBMOD,B,N);
+ N:=0;PutObjectName(B,N,S);WriteObjectBlock(ObjectOutput,OBMOD,B,N);
  N:=0;
  B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[1];Inc(N);B[N]:=0;Inc(N);
  PutObjectName(B,N,SectionObjectName[1]);
@@ -2491,19 +2548,24 @@ Begin
  PutObjectName(B,N,SectionObjectName[2]);
  B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[3];Inc(N);B[N]:=0;Inc(N);
  PutObjectName(B,N,SectionObjectName[3]);
- WriteObjectBlock(F,OBSEC,B,N);
- WriteSymbolBlocks(F,OBGLO,True);WriteSymbolBlocks(F,OBLOC,False);
- WriteTextSection(F,SecText,TextSize);WriteTextSection(F,SecData,DataSize);
+ WriteObjectBlock(ObjectOutput,OBSEC,B,N);
+ WriteSymbolBlocks(ObjectOutput,OBGLO,True);WriteSymbolBlocks(ObjectOutput,OBLOC,False);
+ WriteTextSection(ObjectOutput,SecText,TextSize);WriteTextSection(ObjectOutput,SecData,DataSize);
  { Comme l'assembleur DRI, matérialiser la marque de fin du BSS par un
    OBTXT vide placé à son compteur final. }
  N:=0;PutLE32(B,N,BssSize);B[N]:=SecBss;Inc(N);B[N]:=0;Inc(N);
- WriteObjectBlock(F,OBTXT,B,N);
+ WriteObjectBlock(ObjectOutput,OBTXT,B,N);
  if HasTransfer Then Begin
   N:=0;PutLE32(B,N,TransferAddress);PutLE16(B,N,TransferBase);
-  WriteObjectBlock(F,OBTRA,B,N)
+  WriteObjectBlock(ObjectOutput,OBTRA,B,N)
  End;
- N:=0;WriteObjectBlock(F,OBOND,B,N);
- Close(F);if IOResult<>0 Then Fatal('erreur d''ecriture objet')
+ N:=0;WriteObjectBlock(ObjectOutput,OBOND,B,N);
+ Close(ObjectOutput);ObjectFileOpen:=False;
+ if IOResult<>0 Then Fatal('erreur d''ecriture objet');
+ Assign(Old,Opt.ObjectName);Erase(Old);if IOResult<>0 Then Begin End;
+ Assign(ObjectOutput,TemporaryObjectName);Rename(ObjectOutput,Opt.ObjectName);
+ if IOResult<>0 Then Fatal('renommage impossible vers '+Opt.ObjectName);
+ ObjectWriteActive:=False;TemporaryObjectName:=''
 End;
 
 Procedure WriteCrossReference;
@@ -2650,6 +2712,7 @@ BEGIN
  TransferAddress:=0;TransferBase:=0;FillChar(TextImage,SizeOf(TextImage),0);
  FillChar(DataImage,SizeOf(DataImage),0);
  ListOpen:=False;ErrorCount:=0;WarningCount:=0;
+ ObjectWriteActive:=False;ObjectFileOpen:=False;TemporaryObjectName:='';
  ParseCommandLine;LoadPredefinitions;AllocateImages;Assign(Source,Opt.SourceName);Reset(Source);
  if IOResult<>0 Then Fatal('fichier source introuvable: '+Opt.SourceName);Close(Source);
  if IOResult<>0 Then Begin
@@ -2664,10 +2727,6 @@ BEGIN
  if ErrorCount=0 Then Begin
   WriteObject;WriteLn('ASZ8K: ',Opt.SourceName,' -> ',Opt.ObjectName,
   ' (TEXT=',TextSize,', DATA=',DataSize,', BSS=',BssSize,')')
- End else
- Begin
-  Assign(Source,Opt.ObjectName);Erase(Source);if IOResult<>0 Then Begin
-  End
  End;
  if WarningCount<>0 Then WriteLn(WarningCount,' avertissement(s)');
  if ErrorCount<>0 Then WriteLn(ErrorCount,' erreur(s)');Cleanup;

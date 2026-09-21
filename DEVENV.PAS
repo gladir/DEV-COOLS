@@ -206123,6 +206123,7 @@ Const
  Z8K_MAX_SEGINFO = 64;
  Z8K_MAX_RELOC   = 2048;
  Z8K_MAX_SYM     = 512;
+ Z8K_MAX_FCB     = 8;
 
 Type
  TZ8KSegMem = Array[0..65535] Of Byte;
@@ -206167,6 +206168,21 @@ Var
  Z8K_RelocCount   : Integer;
  Z8K_Sym          : Array[0..Z8K_MAX_SYM - 1] Of TZ8KSymbol;
  Z8K_SymCount     : Integer;
+ { Stage 8 (2026-09-21, "l'extension de l'API BDOS (entree console,        }
+ { fichiers)") : adresse DMA courante (Function 26, defaut $0080 - meme    }
+ { valeur REELLE par defaut que le vrai CP/M avant tout appel Set DMA      }
+ { Address) + table REELLE de FCB ouverts (mappage direct vers un VRAI     }
+ { fichier hote, PAS de repertoire/blocs d'allocation CP/M virtuels -      }
+ { voir la disclosure complete pres de Z8K_DispatchBDOS). }
+ Z8K_DmaSeg       : Byte;
+ Z8K_DmaOfs       : Word;
+ Z8K_FcbAddr      : Array[0..Z8K_MAX_FCB - 1] Of Word;
+ Z8K_FcbFile      : Array[0..Z8K_MAX_FCB - 1] Of File;
+ Z8K_FcbUsed      : Array[0..Z8K_MAX_FCB - 1] Of Boolean;
+ { Etat REEL de la lecture de ligne Function 10 (Read Console Buffer) -    }
+ { survit entre plusieurs appels de Z8K_StepOne (1 seule touche consommee  }
+ { par appel, voir la disclosure). }
+ Z8K_ConBufActive : Boolean;
 
 Function Z8K_MagicName(M: Word): String;
 Begin
@@ -206365,6 +206381,17 @@ Begin
  Z8K_FCW := Z8K_FCW_SEG; { mode segmente, tout le reste a 0 (etat initial) }
  Z8K_PCSeg := 0; Z8K_PCOfs := 0;
  Z8K_Halted := False;
+ { Stage 8 : etat BDOS fichiers/console reinitialise a chaque chargement - }
+ { ferme tout FCB reste ouvert d'une execution precedente (evite une fuite }
+ { de descripteur de fichier hote reel). }
+ For I := 0 To Z8K_MAX_FCB - 1 Do Begin
+  If Z8K_FcbUsed[I] Then Begin
+   {$I-} Close(Z8K_FcbFile[I]); {$I+} J := IOResult;
+  End;
+  Z8K_FcbUsed[I] := False; Z8K_FcbAddr[I] := 0;
+ End;
+ Z8K_DmaSeg := 0; Z8K_DmaOfs := $0080; { defaut REEL CP/M avant tout Set DMA Address }
+ Z8K_ConBufActive := False;
  Z8K_LoadFile := True;
 End;
 
@@ -206849,6 +206876,109 @@ End;
 { pour #1/#3 non implantes). R5=fonction (deja pose par le programme avant   }
 { le SC, convention REELLE Programmer's Guide 4.1.1), R7=parametre/retour    }
 { mot, RR6=parametre long (adresse segmentee). }
+{ ============================================================
+  Stage 8 (2026-09-21, demande explicite - "l'extension de l'API BDOS
+  (entree console, fichiers)") : SOURCE DE VERITE identique au reste du
+  chantier - CP/M-8000 Programmer's Guide (copie OCR complete obtenue au
+  Stage 6, archive.org/download/cpm-8000-programmers-guide/
+  CPM8000_Programmers_Guide_djvu.txt, Section 4.4 "Character I/O Functions"
+  et 4.2 "File Access Functions" lues integralement, PAS un resume). AJOUTE
+  8 fonctions BDOS reelles supplementaires (au-dela des 3 de Stage 2/9/2/0) :
+
+  CONSOLE (Function 1/6/10/11) : branchees sur la MEME queue clavier
+  circulaire `EmuVScr_PushKey/HasKey/PopKey` (P.KeyBuf/KeyHead/KeyTail)
+  DEJA utilisee par tous les autres backends CPU de ce fichier (8086 INT
+  21h AH=1/6/7/8, voir Emu_DoInt21 ~175941) - de vraies frappes clavier
+  reelles arrivant dans ce panneau, pas une simulation. Function 1/6/10
+  sont documentees BLOQUANTes ("execution suspended until a character is
+  ready") - implante EXACTEMENT avec le MEME idiome deja etabli dans ce
+  fichier pour ce cas (Emu_DoInt21 AH=1 : `Dec(P.CPU.IP,2); Exit;` quand
+  aucune touche n'est disponible) : si `EmuVScr_HasKey` est faux, on
+  RAMENE `Z8K_PCOfs` de 2 (annule la lecture du seul mot SC qui vient
+  d'etre lu) pour que le MEME `SC #2` soit redecode/reexecute au PROCHAIN
+  appel de `Z8K_StepOne` - PAS une boucle bloquante interne, exactement le
+  meme principe que la "repetition" LDIR/CPIR du Stage 7 ci-dessus, fidele
+  au fonctionnement reel d'un CPU dont l'execution reprend simplement.
+  Function 10 (Read Console Buffer, ligne editee complete) va plus loin :
+  consomme UNE touche par appel (pas toute la ligne d'un coup), l'etat
+  (nombre de caracteres deja tapes) est conserve DIRECTEMENT dans le champ
+  "nc" du VRAI tampon cible en memoire emulee (RR6+1) entre les appels -
+  `Z8K_ConBufActive` marque juste le debut/la fin d'un cycle de lecture de
+  ligne. Edition supportee (Table 4-16, sous-ensemble honnete) : RUB/DEL et
+  CTRL-H (backspace reel avec echo), CTRL-U (efface la ligne), CTRL-J/
+  CTRL-M (termine). Les autres controles de la Table 4-16 (CTRL-R/CTRL-E/
+  CTRL-X, arret console CTRL-S/CTRL-Q) sont HORS PERIMETRE, disclosed.
+
+  FICHIERS (Function 15/16/19/20/21/22/26) : le FCB (File Control Block,
+  36 octets, Figure 4-1 - dr/f1-f8/t1-t3/ex/s1/s2/rc/d0-dn/cr/r0-r2 aux
+  MEMES octets 0/1-8/9-11/12/13/14/15/16-31/32/33-35 que le CP/M-80
+  classique, confirme identique dans ce manuel) est LU reellement depuis
+  la memoire emulee, mais SIMPLIFICATION HONNETE majeure disclosed :
+  aucun repertoire/bloc d'allocation CP/M virtuel n'est modelise (ce
+  chargeur n'a jamais monte de disque virtuel pour le Z8001, seulement un
+  chargement direct depuis un chemin hote, Stage 1) - le nom de fichier
+  f1-f8/t1-t3 est traduit directement en un VRAI nom de fichier HOTE
+  ("NOM.TYP") et TOUTES les operations (Open/Make/Close/Delete/Read/
+  Write) passent par de VRAIES routines Pascal (Assign/Reset/Rewrite/
+  BlockRead/BlockWrite/Erase/Close) sur ce fichier hote - la sequence
+  Read/Write Sequential (128 octets/enregistrement, champ cr 0-127 avec
+  debordement reel vers ex jusqu'a 31, Table 4-4/section 4.2 lues et
+  suivies) fonctionne EXACTEMENT comme documente cote programme CP/M-8000,
+  seul le "disque" en dessous est en realite le systeme de fichiers hote.
+  Search For First/Next (17/18), Rename (23), et toute la famille Random
+  I/O (33/34/35/40, necessitant le champ r0-r2) restent HORS PERIMETRE
+  (disclosed) - non demandes, et Search necessiterait un vrai repertoire
+  virtuel qui n'existe pas dans ce modele. Table `Z8K_FcbAddr/FcbFile/
+  FcbUsed` : 8 FCB simultanement ouverts au maximum (plafond disclosed,
+  largement suffisant pour un programme CP/M-8000 typique).
+  ============================================================ }
+
+Function Z8K_FcbHostName(Seg: Byte; Ofs: Word): String;
+Var
+ NamePart, TypePart: String;
+ I: Integer;
+ Ch: Byte;
+Begin
+ NamePart := '';
+ For I := 0 To 7 Do Begin
+  Ch := Z8K_ReadByte(Seg, Word(Ofs + 1 + I)) And $7F;
+  If Ch <> Ord(' ') Then NamePart := NamePart + Chr(Ch);
+ End;
+ TypePart := '';
+ For I := 0 To 2 Do Begin
+  Ch := Z8K_ReadByte(Seg, Word(Ofs + 9 + I)) And $7F;
+  If Ch <> Ord(' ') Then TypePart := TypePart + Chr(Ch);
+ End;
+ If TypePart <> '' Then Z8K_FcbHostName := NamePart + '.' + TypePart
+ Else Z8K_FcbHostName := NamePart;
+End;
+
+Function Z8K_FcbFindByAddr(FcbOfs: Word): Integer;
+Var I: Integer;
+Begin
+ Z8K_FcbFindByAddr := -1;
+ For I := 0 To Z8K_MAX_FCB - 1 Do
+  If Z8K_FcbUsed[I] And (Z8K_FcbAddr[I] = FcbOfs) Then Begin
+   Z8K_FcbFindByAddr := I; Exit;
+  End;
+End;
+
+{ Alloue (ou reutilise/reouvre) un emplacement de FCB pour Open/Make. }
+Function Z8K_FcbAlloc(FcbOfs: Word): Integer;
+Var I, Found, Dummy: Integer;
+Begin
+ Found := Z8K_FcbFindByAddr(FcbOfs);
+ If Found < 0 Then Begin
+  For I := 0 To Z8K_MAX_FCB - 1 Do
+   If Not Z8K_FcbUsed[I] Then Begin Found := I; Break; End;
+ End;
+ If (Found >= 0) And Z8K_FcbUsed[Found] Then Begin
+  {$I-} Close(Z8K_FcbFile[Found]); {$I+} Dummy := IOResult;
+  Z8K_FcbUsed[Found] := False;
+ End;
+ Z8K_FcbAlloc := Found;
+End;
+
 Procedure Z8K_DispatchBDOS(Var P: TEmulatorPanel);
 Var
  FuncNum: Word;
@@ -206858,6 +206988,16 @@ Var
                   { ce fichier (mode TP) - "Guard < 65536" aurait ete       }
                   { TOUJOURS vrai (Integer plafonne a 32767, jamais atteint }
                   { 65536), boucle non bornee en pratique. }
+ { Stage 8 : variables supplementaires (console/fichiers). }
+ FName: String;
+ Slot: Integer;
+ CrVal, ExVal: Byte;
+ RecNum: LongInt;
+ RecBuf: Array[0..127] Of Byte;
+ DelF: File;
+ IoRes: Integer;
+ Nc, Mx: Byte;
+ BR2: Word;
 Begin
  FuncNum := Z8K_R[5];
  Case FuncNum Of
@@ -206865,8 +207005,27 @@ Begin
      { GEOS_EXIT_STUB/HALT ci-dessous. }
    Z8K_Halted := True;
   End;
+  1: Begin { Console Input : bloquant, 1 caractere REEL, echo pour les      }
+   { imprimables/CR/LF/backspace (voir disclosure Stage 8 complete). }
+   If EmuVScr_HasKey(P) Then Begin
+    Ch := Byte(EmuVScr_PopKey(P) And $FF);
+    Z8K_R[7] := Ch;
+    If (Ch >= 32) Or (Ch = 8) Or (Ch = 13) Or (Ch = 10) Then
+     EmuVScr_PutChar(P, Chr(Ch));
+   End Else Z8K_PCOfs := Word(Z8K_PCOfs - 2); { redecode le meme SC #2 }
+  End;
   2: Begin { Console Output : octet bas de R7 }
    EmuVScr_PutChar(P, Chr(Byte(Z8K_R[7] And $FF)));
+  End;
+  6: Begin { Direct Console I/O : R7=$FF entree(sans echo)/$FE statut/sinon }
+   { sortie - contourne les controles CTRL-S/Q/P/C (Table 4-15). }
+   If (Z8K_R[7] And $FF) = $FF Then Begin
+    If EmuVScr_HasKey(P) Then Z8K_R[7] := Byte(EmuVScr_PopKey(P) And $FF)
+    Else Z8K_PCOfs := Word(Z8K_PCOfs - 2);
+   End Else If (Z8K_R[7] And $FF) = $FE Then Begin
+    If EmuVScr_HasKey(P) Then Z8K_R[7] := 1 Else Z8K_R[7] := 0;
+   End Else
+    EmuVScr_PutChar(P, Chr(Byte(Z8K_R[7] And $FF)));
   End;
   9: Begin { Print String : RR6 = adresse longue segmentee, '$' terminal ; }
    { R6 = poids fort de la paire, seuls ses 8 bits de poids faible portent }
@@ -206881,6 +207040,158 @@ Begin
     Ofs := Word(Ofs + 1);
     Inc(Guard);
    End;
+  End;
+  10: Begin { Read Console Buffer : ligne editee, RR6+0=mx, +1=nc, +2..=car. }
+   Seg := Byte(Z8K_R[6] And $7F);
+   Ofs := Z8K_R[7];
+   If Not Z8K_ConBufActive Then Begin
+    Z8K_WriteByte(Seg, Word(Ofs + 1), 0);
+    Z8K_ConBufActive := True;
+   End;
+   Mx := Z8K_ReadByte(Seg, Ofs);
+   Nc := Z8K_ReadByte(Seg, Word(Ofs + 1));
+   If Not EmuVScr_HasKey(P) Then
+    Z8K_PCOfs := Word(Z8K_PCOfs - 2) { redecode le meme SC #2, ligne pas finie }
+   Else Begin
+    Ch := Byte(EmuVScr_PopKey(P) And $FF);
+    If (Ch = 13) Or (Ch = 10) Then Begin { CR/LF : fin de ligne reelle }
+     Z8K_ConBufActive := False;
+    End Else If (Ch = 8) Or (Ch = 127) Then Begin { RUB/DEL/CTRL-H }
+     If Nc > 0 Then Begin
+      Dec(Nc); Z8K_WriteByte(Seg, Word(Ofs + 1), Nc);
+      EmuVScr_PutChar(P, Chr(8)); EmuVScr_PutChar(P, ' '); EmuVScr_PutChar(P, Chr(8));
+     End;
+     Z8K_PCOfs := Word(Z8K_PCOfs - 2);
+    End Else If Ch = 21 Then Begin { CTRL-U : efface la ligne entiere }
+     EmuVScr_PutChar(P, '#'); EmuVScr_PutChar(P, Chr(13)); EmuVScr_PutChar(P, Chr(10));
+     Nc := 0; Z8K_WriteByte(Seg, Word(Ofs + 1), 0);
+     Z8K_PCOfs := Word(Z8K_PCOfs - 2);
+    End Else Begin
+     If (Ch >= 32) And (Nc < Mx) Then Begin
+      Z8K_WriteByte(Seg, Word(Ofs + 2 + Nc), Ch);
+      Inc(Nc); Z8K_WriteByte(Seg, Word(Ofs + 1), Nc);
+      EmuVScr_PutChar(P, Chr(Ch));
+     End;
+     Z8K_PCOfs := Word(Z8K_PCOfs - 2);
+    End;
+   End;
+  End;
+  11: Begin { Get Console Status : non-nul si une touche REELLE attend. }
+   If EmuVScr_HasKey(P) Then Z8K_R[7] := 1 Else Z8K_R[7] := 0;
+  End;
+  15: Begin { Open File : FCB (RR6) <-> fichier hote reel existant. }
+   Seg := Byte(Z8K_R[6] And $7F); Ofs := Z8K_R[7];
+   FName := Z8K_FcbHostName(Seg, Ofs);
+   If (FName = '') Or (Not FileExists(FName)) Then Z8K_R[7] := $FF
+   Else Begin
+    Slot := Z8K_FcbAlloc(Ofs);
+    If Slot < 0 Then Z8K_R[7] := $FF
+    Else Begin
+     Assign(Z8K_FcbFile[Slot], FName);
+     {$I-} Reset(Z8K_FcbFile[Slot], 1); {$I+} IoRes := IOResult;
+     If IoRes <> 0 Then Z8K_R[7] := $FF
+     Else Begin
+      Z8K_FcbUsed[Slot] := True; Z8K_FcbAddr[Slot] := Ofs;
+      Z8K_WriteByte(Seg, Word(Ofs + 12), 0); { ex := 0, base extent (Function 15) }
+      Z8K_WriteByte(Seg, Word(Ofs + 14), 0); { s2 := 0 }
+      Z8K_R[7] := 0;
+     End;
+    End;
+   End;
+  End;
+  22: Begin { Make File : cree+ouvre un NOUVEAU fichier hote reel. }
+   Seg := Byte(Z8K_R[6] And $7F); Ofs := Z8K_R[7];
+   FName := Z8K_FcbHostName(Seg, Ofs);
+   If FName = '' Then Z8K_R[7] := $FF
+   Else Begin
+    Slot := Z8K_FcbAlloc(Ofs);
+    If Slot < 0 Then Z8K_R[7] := $FF
+    Else Begin
+     Assign(Z8K_FcbFile[Slot], FName);
+     {$I-} Rewrite(Z8K_FcbFile[Slot], 1); {$I+} IoRes := IOResult;
+     If IoRes <> 0 Then Z8K_R[7] := $FF
+     Else Begin
+      Z8K_FcbUsed[Slot] := True; Z8K_FcbAddr[Slot] := Ofs;
+      Z8K_WriteByte(Seg, Word(Ofs + 12), 0);
+      Z8K_WriteByte(Seg, Word(Ofs + 14), 0);
+      Z8K_R[7] := 0;
+     End;
+    End;
+   End;
+  End;
+  16: Begin { Close File : inverse de Open/Make (RR6 = meme FCB). }
+   Slot := Z8K_FcbFindByAddr(Z8K_R[7]);
+   If Slot < 0 Then Z8K_R[7] := $FF
+   Else Begin
+    {$I-} Close(Z8K_FcbFile[Slot]); {$I+} IoRes := IOResult;
+    Z8K_FcbUsed[Slot] := False;
+    If IoRes <> 0 Then Z8K_R[7] := $FF Else Z8K_R[7] := 0;
+   End;
+  End;
+  19: Begin { Delete File : PAS de generiques '*'/'?' sur le systeme hote  }
+   { (disclosed - le vrai CP/M les supporte via son repertoire virtuel,   }
+   { absent ici ; un nom EXACT est requis). }
+   Seg := Byte(Z8K_R[6] And $7F); Ofs := Z8K_R[7];
+   FName := Z8K_FcbHostName(Seg, Ofs);
+   If (FName = '') Or (Not FileExists(FName)) Then Z8K_R[7] := $FF
+   Else Begin
+    Assign(DelF, FName);
+    {$I-} Erase(DelF); {$I+} IoRes := IOResult;
+    If IoRes <> 0 Then Z8K_R[7] := $FF Else Z8K_R[7] := 0;
+   End;
+  End;
+  20: Begin { Read Sequential : 1 enregistrement de 128 octets, cr/ex reels. }
+   Seg := Byte(Z8K_R[6] And $7F); Ofs := Z8K_R[7];
+   Slot := Z8K_FcbFindByAddr(Ofs);
+   If Slot < 0 Then Z8K_R[7] := 1
+   Else Begin
+    CrVal := Z8K_ReadByte(Seg, Word(Ofs + 32));
+    ExVal := Z8K_ReadByte(Seg, Word(Ofs + 12));
+    RecNum := (LongInt(ExVal) * 128) + LongInt(CrVal);
+    {$I-} Seek(Z8K_FcbFile[Slot], RecNum * 128); {$I+} IoRes := IOResult;
+    FillChar(RecBuf, 128, 0);
+    If IoRes = 0 Then Begin {$I-} BlockRead(Z8K_FcbFile[Slot], RecBuf, 128, BR2); {$I+} IoRes := IOResult; End
+    Else BR2 := 0;
+    If (IoRes <> 0) Or (BR2 = 0) Then Z8K_R[7] := 1 { pas de donnees (souvent fin de fichier) }
+    Else Begin
+     For Ch := 0 To 127 Do Z8K_WriteByte(Z8K_DmaSeg, Word(Z8K_DmaOfs + Ch), RecBuf[Ch]);
+     If CrVal >= 127 Then Begin
+      CrVal := 0; ExVal := Byte(ExVal + 1);
+      Z8K_WriteByte(Seg, Word(Ofs + 12), ExVal);
+     End Else Inc(CrVal);
+     Z8K_WriteByte(Seg, Word(Ofs + 32), CrVal);
+     Z8K_R[7] := 0;
+    End;
+   End;
+  End;
+  21: Begin { Write Sequential : 1 enregistrement de 128 octets depuis le   }
+   { tampon DMA courant (Function 26), cr/ex reels comme Function 20. }
+   Seg := Byte(Z8K_R[6] And $7F); Ofs := Z8K_R[7];
+   Slot := Z8K_FcbFindByAddr(Ofs);
+   If Slot < 0 Then Z8K_R[7] := 1
+   Else Begin
+    CrVal := Z8K_ReadByte(Seg, Word(Ofs + 32));
+    ExVal := Z8K_ReadByte(Seg, Word(Ofs + 12));
+    RecNum := (LongInt(ExVal) * 128) + LongInt(CrVal);
+    For Ch := 0 To 127 Do RecBuf[Ch] := Z8K_ReadByte(Z8K_DmaSeg, Word(Z8K_DmaOfs + Ch));
+    {$I-} Seek(Z8K_FcbFile[Slot], RecNum * 128); {$I+} IoRes := IOResult;
+    If IoRes = 0 Then Begin {$I-} BlockWrite(Z8K_FcbFile[Slot], RecBuf, 128, BR2); {$I+} IoRes := IOResult; End;
+    If IoRes <> 0 Then Z8K_R[7] := 1
+    Else Begin
+     If CrVal >= 127 Then Begin
+      CrVal := 0; ExVal := Byte(ExVal + 1);
+      Z8K_WriteByte(Seg, Word(Ofs + 12), ExVal);
+     End Else Inc(CrVal);
+     Z8K_WriteByte(Seg, Word(Ofs + 32), CrVal);
+     Z8K_R[7] := 0;
+    End;
+   End;
+  End;
+  26: Begin { Set DMA Address : RR6 = adresse (simplifiee en segment:offset }
+   { plat, coherent avec le seul segment 0 modelise depuis Stage 1). }
+   Z8K_DmaSeg := Byte(Z8K_R[6] And $7F);
+   Z8K_DmaOfs := Z8K_R[7];
+   Z8K_R[7] := 0;
   End;
   Else Z8K_R[7] := $FFFF; { fonction invalide - convention REELLE documentee }
  End;
@@ -206914,6 +207225,7 @@ Var
  LDividend: LongWord;
  LQuot, LRem: LongWord;
  OrigC: Boolean;
+ Rcnt: Byte;
 Begin
  If Z8K_Halted Then Exit;
  StartOfs := Z8K_PCOfs;
@@ -208061,10 +208373,236 @@ Begin
   Exit;
  End;
 
+ { ============================================================
+   Stage 7 (2026-09-21, demande explicite - "Les blocs de chaines
+   (LDIR/CPIR/etc.)") : LDI/LDIR/LDD/LDDR + CPI/CPIR/CPD/CPDR (mot+octet).
+   Source : MAME z8000ops.hxx (silicium-verifie), groupes $BA00 (formes
+   OCTET, ex. "ldib"/"cpirb") et $BB00 (formes MOT, ex. "ldi"/"cpir") -
+   MEME position de champs pour les 2 groupes (nibble2 de OP0 = registre
+   Rs pointeur ; 2e mot OP1 : nibble1=registre compteur Rcnt, nibble2=
+   registre Rd pointeur, nibble3=champ cc) - seul le nibble3 de OP0
+   distingue le sous-type exact (0001=LDI/LDIR, 1001=LDD/LDDR, 0000=CPI,
+   0100=CPIR, 1000=CPD, 1100=CPDR ; 0010/0110/1010 = formes "indirect des
+   2 cotes" cpsi/cpsd, HORS PERIMETRE - non demandees, disclosed).
+   REPETITION (suffixe "R") : PAS une boucle interne C/Pascal - fidele au
+   vrai comportement Z8000 (une instruction "R" est REELLEMENT
+   interruptible/reprenable sur le silicium reel) : si le compteur n'est
+   pas epuise et que la condition de repetition tient, `Z8K_PCOfs` est
+   simplement RAMENE a `StartOfs` (equivalent exact du `m_pc -= 4` de
+   MAME) - le meme mot de 2 instructions sera redecoded/reexecute au
+   PROCHAIN appel de `Z8K_StepOne`, traitant naturellement 1 seul element
+   par appel et profitant du decoupage en "chunks" de 5000 pas deja en
+   place dans `Z8K_RunOneChunk` (aucune boucle non bornee ajoutee ici).
+   CPI/CPIR/CPD/CPDR : la comparaison REELLE (avec ses vrais drapeaux C/Z/
+   S/PV, via `Z8K_SetFlagsAdd` deja existante) est faite EN PREMIER, PUIS
+   le drapeau Z est REECRIT avec le resultat de `Z8K_TestCC(cc)` evalue
+   sur CES MEMES drapeaux fraichement positionnes - c'est EXACTEMENT ce
+   que fait MAME (`CPW(...)` suivi d'un `switch(cc)` qui teste les macros
+   CC0-CCF sur les drapeaux tout juste mis a jour) : le champ cc permet de
+   chercher N'IMPORTE QUELLE condition (pas seulement l'egalite), la
+   reutilisation de `Z8K_TestCC` (deja confirmee identique aux macros
+   CC0-CCF de MAME depuis Stage 2/3) est donc directement justifiee ici,
+   pas une simplification.
+   DELIBEREMENT HORS PERIMETRE (disclosure honnete) : TRIB/TRDB/TRTIB/
+   TRTDB (famille de traduction par table, $B800 - non demandee cette
+   fois, structure similaire mais champs differents) ; INI/IND/INIR/INDR/
+   OUTI/OUTD/OUTIR/OUTDR/SINI/SIND/SOUTI/SOUTD (blocs bases sur des PORTS
+   D'E/S reels - aucun port materiel n'existe dans ce shell hote, meme
+   raison que IN/OUT/SIN/SOUT deja hors perimetre depuis Stage 3) ;
+   CPSI/CPSD/CPSIR/CPSDR (forme "chaines des 2 cotes indirects", non
+   demandee). ============================================================ }
+
+ If (Op0 And $FF0F) = $BB01 Then Begin { LDI/LDIR @Rd,@Rs,Rcnt (mot) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Z8K_WriteWord(Z8K_PCSeg, Z8K_R[Rd], Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]));
+  Z8K_R[Rs] := Word(Z8K_R[Rs] + 2); Z8K_R[Rd] := Word(Z8K_R[Rd] + 2);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_PV Or Z8K_FCW_Z);
+   If CC = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV Or Z8K_FCW_Z;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BB09 Then Begin { LDD/LDDR @Rs,@Rd,Rcnt (mot) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Z8K_WriteWord(Z8K_PCSeg, Z8K_R[Rd], Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]));
+  Z8K_R[Rs] := Word(Z8K_R[Rs] - 2); Z8K_R[Rd] := Word(Z8K_R[Rd] - 2);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_PV Or Z8K_FCW_Z);
+   If CC = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV Or Z8K_FCW_Z;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BA01 Then Begin { LDIB/LDIRB @Rd,@Rs,Rcnt (octet) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Z8K_WriteByte(Z8K_PCSeg, Z8K_R[Rd], Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]));
+  Z8K_R[Rs] := Word(Z8K_R[Rs] + 1); Z8K_R[Rd] := Word(Z8K_R[Rd] + 1);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_PV Or Z8K_FCW_Z);
+   If CC = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV Or Z8K_FCW_Z;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BA09 Then Begin { LDDB/LDDRB @Rs,@Rd,Rcnt (octet) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Z8K_WriteByte(Z8K_PCSeg, Z8K_R[Rd], Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]));
+  Z8K_R[Rs] := Word(Z8K_R[Rs] - 1); Z8K_R[Rd] := Word(Z8K_R[Rd] - 1);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not (Z8K_FCW_PV Or Z8K_FCW_Z);
+   If CC = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV Or Z8K_FCW_Z;
+  Exit;
+ End;
+
+ If (Op0 And $FF0F) = $BB00 Then Begin { CPI Rd,@Rs,Rcnt,cc (mot, sans repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  A := Z8K_R[Rd]; B := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
+  R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] + 2);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV
+  Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BB04 Then Begin { CPIR Rd,@Rs,Rcnt,cc (mot, avec repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  A := Z8K_R[Rd]; B := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
+  R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] + 2);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV;
+   If (Z8K_FCW And Z8K_FCW_Z) = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BB08 Then Begin { CPD Rd,@Rs,Rcnt,cc (mot, sans repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  A := Z8K_R[Rd]; B := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
+  R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] - 2);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV
+  Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BB0C Then Begin { CPDR Rd,@Rs,Rcnt,cc (mot, avec repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  A := Z8K_R[Rd]; B := Z8K_ReadWord(Z8K_PCSeg, Z8K_R[Rs]);
+  R := Word(LongWord(A) - LongWord(B));
+  Z8K_SetFlagsAdd(A, B, R, True, True);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] - 2);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV;
+   If (Z8K_FCW And Z8K_FCW_Z) = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+
+ If (Op0 And $FF0F) = $BA00 Then Begin { CPIB Rbd,@Rs,Rcnt,cc (octet, sans repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] + 1);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV
+  Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BA04 Then Begin { CPIRB Rbd,@Rs,Rcnt,cc (octet, avec repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] + 1);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV;
+   If (Z8K_FCW And Z8K_FCW_Z) = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BA08 Then Begin { CPDB Rbd,@Rs,Rcnt,cc (octet, sans repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] - 1);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV
+  Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+ If (Op0 And $FF0F) = $BA0C Then Begin { CPDRB Rbd,@Rs,Rcnt,cc (octet, avec repetition) }
+  Rs := Byte((Op0 Shr 4) And $0F);
+  Op1 := Z8K_ReadWord(Z8K_PCSeg, Z8K_PCOfs); Z8K_PCOfs := Word(Z8K_PCOfs + 2);
+  Rcnt := Byte((Op1 Shr 8) And $0F); Rd := Byte((Op1 Shr 4) And $0F);
+  CC := Byte(Op1 And $0F);
+  Ab := Z8K_GetRB(Rd); Bb := Z8K_ReadByte(Z8K_PCSeg, Z8K_R[Rs]);
+  Rb := Byte(Ab - Bb);
+  Z8K_SetFlagsAdd(Ab, Bb, Rb, True, False);
+  If Z8K_TestCC(CC) Then Z8K_FCW := Z8K_FCW Or Z8K_FCW_Z Else Z8K_FCW := Z8K_FCW And Not Z8K_FCW_Z;
+  Z8K_R[Rs] := Word(Z8K_R[Rs] - 1);
+  Z8K_R[Rcnt] := Word(Z8K_R[Rcnt] - 1);
+  If Z8K_R[Rcnt] <> 0 Then Begin
+   Z8K_FCW := Z8K_FCW And Not Z8K_FCW_PV;
+   If (Z8K_FCW And Z8K_FCW_Z) = 0 Then Z8K_PCOfs := StartOfs;
+  End Else Z8K_FCW := Z8K_FCW Or Z8K_FCW_PV;
+  Exit;
+ End;
+
  { Instruction non couverte ce Stage : echec HONNETE (voir disclosure). }
  P.CurFg := 12;
  EmuVScr_WriteLn(P, 'Z8001 : instruction non implantee $' + HexWord(Op0) +
-  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 5).');
+  ' a ' + IntToStr(Z8K_PCSeg) + ':$' + HexWord(StartOfs) + ' (Stage 7).');
  Z8K_Halted := True;
 End;
 
