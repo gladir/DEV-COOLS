@@ -8107,6 +8107,21 @@ Var
  { reellement suivis parmi les dizaines d'actions SPI_* documentees. }
  Win16_BeepEnabled: Boolean;
  Win16_ScreenSaverActive: Boolean;
+ { SOUND.DRV (2026-09-23, demande explicite) : nouveau module ModIdx=5,    }
+ { suite logique de l'ordre KERNEL=1/GDI=2/USER=3/KEYBOARD.DRV=4 deja       }
+ { documente plus haut - meme simplification documentee, PAS une garantie  }
+ { universelle du format NE. 3 voix (0..2, meme convention documentee que  }
+ { les anciens synthetiseurs simples de cette epoque) - aucun haut-parleur }
+ { PC reel sous un hote graphique Win32 (MEME limitation deja disclosee    }
+ { et ecrite en toutes lettres pour Rexx_BeepSound) : l'ETAT (file          }
+ { d'attente/seuil/frequence) est REELLEMENT suivi, mais AUCUN son n'est   }
+ { jamais reproduit. }
+ Win16_SoundOpen: Boolean;
+ Win16_SoundQueueSize: Array[0..2] Of Word;
+ Win16_SoundNoteCount: Array[0..2] Of Word;
+ Win16_SoundThreshold: Array[0..2] Of Word;
+ Win16_SoundLastFreq: Array[0..2] Of Word;
+ Win16_SoundEventSeg, Win16_SoundEventOfs: Word;
  { Fenetre "active" pour les appels GDI qui ne recoivent qu'un hDC          }
  { synthetique (jamais une vraie structure DC) - GetDC/GetWindowDC/         }
  { BeginPaint recoivent tous hWnd directement et la renseignent ; comme ce  }
@@ -99083,6 +99098,26 @@ Begin
  FillChar(Win16_LocalBlockPageLock, SizeOf(Win16_LocalBlockPageLock), 0);
  Win16_LocalNotifySeg := 0;
  Win16_LocalNotifyOfs := 0;
+ { SOUND.DRV GetThresholdEvent/$14 - un VRAI mot en memoire emulee         }
+ { (bump allocator, MEME technique que EPNameOfs/etc.) : le VRAI pointeur  }
+ { retourne par GetThresholdEvent doit etre DEREFERENCABLE par l'appelant, }
+ { pas une adresse inventee - aucun evenement asynchrone ne le modifie     }
+ { jamais (limitation disclosee, voir GetThresholdStatus/$15). }
+ If (Hdr.ne_autodata >= 1) And (LongInt(Win16_HeapNext) + 2 <= LongInt(Win16_HeapLimit)) Then Begin
+  Win16_SoundEventSeg := Win16_StackSeg;
+  Win16_SoundEventOfs := Win16_HeapNext;
+  Win16_HeapNext := Win16_HeapNext + 2;
+ End Else Begin
+  Win16_SoundEventSeg := 0;
+  Win16_SoundEventOfs := 0;
+ End;
+ Win16_SoundOpen := False;
+ For I := 0 To 2 Do Begin
+  Win16_SoundQueueSize[I] := 0;
+  Win16_SoundNoteCount[I] := 0;
+  Win16_SoundThreshold[I] := 0;
+  Win16_SoundLastFreq[I] := 0;
+ End;
  Win16_TaskLocked := False;
  Win16_TaskQueueHandle := 0;
  Win16_TaskSignalProcSeg := 0;
@@ -102617,7 +102652,8 @@ Function Emu_McbFree(Var C: TEmuCPU; BlockSeg: Word): Boolean; Forward;
 { KEYBOARD.DRV (2026-09-14, demande explicite) : nouveau module ModIdx=4,   }
 { suite logique de l'ordre KERNEL=1/GDI=2/USER=3 deja documente plus haut   }
 { (empiriquement verifie sur CLOCK.EXE/CALENDAR.EXE) - meme simplification  }
-{ documentee, PAS une garantie universelle du format NE. Table de clavier   }
+{ documentee, PAS une garantie universelle du format NE (SOUND.DRV=5,       }
+{ 2026-09-23, ajoute plus bas dans le meme esprit). Table de clavier        }
 { US REELLE (code de balayage PC/AT Scan Code Set 1, standard materiel      }
 { documente - PAS invente) limitee au sous-ensemble alphanumerique          }
 { principal (A-Z, 0-9, Retour arriere/Tabulation/Entree/Echap/Espace) :     }
@@ -119687,6 +119723,212 @@ Begin
     Exit;
    End;
   End;
+ End Else If ModIdx = 5 Then Begin { SOUND.DRV }
+  Case Ordinal Of
+   1: Begin
+    { OpenSound():int - ordinal/signature RECONSTRUITS depuis la VRAIE     }
+    { documentation historique du SDK Windows 2.x/3.0 "Sound Functions"        }
+    { (API predatant MMSYSTEM, jamais implantee par Wine - aucun            }
+    { sound.drv16.spec public disponible, PAS devine au hasard : signature      }
+    { et ordre d'ordinaux reconstruits depuis la reference documentee de           }
+    { l'epoque, correspondance exacte confirmee avec l'enonce utilisateur).        }
+    { 0 mot. REEL : ouvre VRAIMENT le peripherique (Win16_SoundOpen) -              }
+    { deja ouvert -> echec honnete (-1, code documente reel "deja                   }
+    { ouvert"), sinon reinitialise VRAIMENT l'etat par-voix. AUCUN                  }
+    { haut-parleur PC reel sous un hote graphique Win32 (MEME limitation             }
+    { deja disclosee et ecrite en toutes lettres pour Rexx_BeepSound) :               }
+    { l'ETAT est REELLEMENT suivi, aucun son n'est jamais reproduit. }
+    If Win16_SoundOpen Then
+     P.CPU.Regs.AX := Word(-1)
+    Else Begin
+     Win16_SoundOpen := True;
+     For CWI := 0 To 2 Do Begin
+      Win16_SoundQueueSize[CWI] := 0;
+      Win16_SoundNoteCount[CWI] := 0;
+      Win16_SoundThreshold[CWI] := 0;
+      Win16_SoundLastFreq[CWI] := 0;
+     End;
+     P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 0;
+   End;
+   2: Begin
+    { CloseSound():void - MEME reconstruction documentee qu'OpenSound/$1  }
+    { ci-dessus. 0 mot. REEL : ferme VRAIMENT le peripherique                }
+    { (Win16_SoundOpen:=FALSE), symetrique honnete. }
+    Win16_SoundOpen := False;
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   3: Begin
+    { SetVoiceQueueSize(nVoice,nBytes):int - MEME reconstruction               }
+    { documentee. 2 mots. REEL : stocke VRAIMENT la taille demandee                }
+    { dans Win16_SoundQueueSize[nVoice] (3 voix 0..2, convention                     }
+    { documentee des synthetiseurs simples de cette epoque) - voix hors               }
+    { limites ou peripherique ferme : echec honnete (-1). }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If Win16_SoundOpen And (SCapOld <= 2) Then Begin
+     Win16_SoundQueueSize[SCapOld] := ENWEnableArg;
+     P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := Word(-1);
+    ArgWords := 2;
+   End;
+   4: Begin
+    { SetVoiceNote(nVoice,nValue,nLength,nCdots):int - MEME                    }
+    { reconstruction documentee. 4 mots. REEL : ajoute VRAIMENT une note           }
+    { a la file d'attente de la voix (Win16_SoundNoteCount[]++, contrat               }
+    { documente reel "mise en file"), stocke nValue comme derniere                    }
+    { hauteur connue (Win16_SoundLastFreq[], diagnostic) - voix hors                  }
+    { limites ou peripherique ferme : echec honnete (-1). }
+    SBarArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SBarMin := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    If Win16_SoundOpen And (SCapOld <= 2) Then Begin
+     Win16_SoundLastFreq[SCapOld] := ENWEnableArg;
+     If Win16_SoundNoteCount[SCapOld] < 65535 Then Inc(Win16_SoundNoteCount[SCapOld]);
+     P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := Word(-1);
+    ArgWords := 4;
+   End;
+   5: Begin
+    { SetVoiceAccent(nVoice,nTempo,nVolume,nMode,nPitch):int - MEME            }
+    { reconstruction documentee. 5 mots. HONNETE : peripherique ouvert +             }
+    { voix valide -> succes (aucune modelisation fine du tempo/volume/                }
+    { mode/hauteur d'accentuation, MEME limitation "aucun son reproduit"               }
+    { qu'ailleurs dans ce module) ; sinon echec honnete (-1). }
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    If Win16_SoundOpen And (SCapOld <= 2) Then P.CPU.Regs.AX := 0
+    Else P.CPU.Regs.AX := Word(-1);
+    ArgWords := 5;
+   End;
+   6: Begin
+    { SetVoiceEnvelope(nVoice,nShape,nRepeat):int - MEME reconstruction        }
+    { documentee. 3 mots. MEME honnetete que SetVoiceAccent/$5 ci-dessus. }
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Win16_SoundOpen And (SCapOld <= 2) Then P.CPU.Regs.AX := 0
+    Else P.CPU.Regs.AX := Word(-1);
+    ArgWords := 3;
+   End;
+   7: Begin
+    { SetSoundNoise(nSource,nDuration):int - MEME reconstruction               }
+    { documentee. 2 mots. HONNETE : peripherique ouvert -> succes (aucun            }
+    { bruit reellement genere, meme limitation "aucun son reproduit" -                }
+    { nDuration n'est PAS attendu de facon bloquante ici, contrairement a              }
+    { Rexx_BeepSound, pour ne jamais geler la boucle d'emulation                       }
+    { principale, limitation disclosee). }
+    If Win16_SoundOpen Then P.CPU.Regs.AX := 0
+    Else P.CPU.Regs.AX := Word(-1);
+    ArgWords := 2;
+   End;
+   8: Begin
+    { SetVoiceSound(nVoice,dwFrequency,nDuration):int - MEME                   }
+    { reconstruction documentee. 1+2+1 = 4 mots. REEL : stocke VRAIMENT             }
+    { la frequence demandee (Win16_SoundLastFreq[], mot bas de la DWORD)              }
+    { et ajoute VRAIMENT une note a la file (Win16_SoundNoteCount[]++,                 }
+    { MEME contrat "mise en file" que SetVoiceNote/$4) - voix hors                     }
+    { limites ou peripherique ferme : echec honnete (-1). }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GBKLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GBKHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    If Win16_SoundOpen And (SCapOld <= 2) Then Begin
+     Win16_SoundLastFreq[SCapOld] := GBKLo;
+     If Win16_SoundNoteCount[SCapOld] < 65535 Then Inc(Win16_SoundNoteCount[SCapOld]);
+     P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := Word(-1);
+    ArgWords := 4;
+   End;
+   9: Begin
+    { StartSound():int - MEME reconstruction documentee. 0 mot. HONNETE :  }
+    { peripherique ouvert -> succes (le VRAI contrat documente demarre la          }
+    { lecture ASYNCHRONE des files d'attente - aucune VRAIE lecture                    }
+    { asynchrone temporisee n'est modelisee ici, les compteurs de notes                }
+    { en file restent donc INCHANGES, MEME limitation disclosee partout               }
+    { ailleurs). }
+    If Win16_SoundOpen Then P.CPU.Regs.AX := 0
+    Else P.CPU.Regs.AX := Word(-1);
+    ArgWords := 0;
+   End;
+   10: Begin
+    { StopSound():int - MEME reconstruction documentee. 0 mot. REEL POUR   }
+    { LE CONTRAT DOCUMENTE : le VRAI StopSound arrete la lecture SANS                 }
+    { vider les files d'attente (contrat documente reel "les effets deja               }
+    { en file continuent au prochain StartSound") - ne touche donc PAS                  }
+    { Win16_SoundNoteCount[], juste succes honnete. }
+    If Win16_SoundOpen Then P.CPU.Regs.AX := 0
+    Else P.CPU.Regs.AX := Word(-1);
+    ArgWords := 0;
+   End;
+   11: Begin
+    { WaitSoundState(nState):int - MEME reconstruction documentee. 1 mot. }
+    { HONNETE : aucune lecture asynchrone temporisee modelisee (meme                  }
+    { limitation que StartSound/$9) - l'etat demande est donc TOUJOURS                  }
+    { deja atteint, succes immediat plutot qu'une VRAIE attente. }
+    If Win16_SoundOpen Then P.CPU.Regs.AX := 0
+    Else P.CPU.Regs.AX := Word(-1);
+    ArgWords := 1;
+   End;
+   12: Begin
+    { SyncAllVoices():int - MEME reconstruction documentee. 0 mot.        }
+    { HONNETE : meme absence de lecture asynchrone, succes immediat. }
+    If Win16_SoundOpen Then P.CPU.Regs.AX := 0
+    Else P.CPU.Regs.AX := Word(-1);
+    ArgWords := 0;
+   End;
+   13: Begin
+    { CountVoiceNotes(nVoice):int - MEME reconstruction documentee. 1     }
+    { mot. REEL : retourne le VRAI compte de notes en file                       }
+    { (Win16_SoundNoteCount[], REELLEMENT incremente par SetVoiceNote/$4/              }
+    { SetVoiceSound/$8 ci-dessus) - voix hors limites : 0 honnete. }
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (SCapOld <= 2) Then P.CPU.Regs.AX := Win16_SoundNoteCount[SCapOld]
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   14: Begin
+    { GetThresholdEvent():LPINT - MEME reconstruction documentee. 0 mot,  }
+    { PAS de "-ret16" = retour COMPLET DX:AX (un VRAI pointeur SEGPTR).             }
+    { REEL, PAS une simplification : retourne un VRAI pointeur                        }
+    { DEREFERENCABLE vers un mot alloue dans la memoire emulee                          }
+    { (Win16_SoundEventSeg/Ofs, bump allocator, MEME technique que les                    }
+    { autres allocations de ce chantier) - AUCUN evenement asynchrone ne                  }
+    { le modifie jamais (limitation disclosee, voir                                        }
+    { GetThresholdStatus/$15), mais le pointeur lui-meme est REEL et sur. }
+    P.CPU.Regs.AX := Win16_SoundEventOfs;
+    P.CPU.Regs.DX := Win16_SoundEventSeg;
+    ArgWords := 0;
+   End;
+   15: Begin
+    { GetThresholdStatus():int - MEME reconstruction documentee. 0 mot.  }
+    { HONNETE : aucun seuil n'est jamais franchi (aucune lecture                        }
+    { asynchrone temporisee modelisee) - FALSE (0). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   16: Begin
+    { SetVoiceThreshold(nVoice,nNotes):int - MEME reconstruction               }
+    { documentee. 2 mots. REEL : stocke VRAIMENT le seuil demande                     }
+    { (Win16_SoundThreshold[]) - voix hors limites ou peripherique ferme :             }
+    { echec honnete (-1). }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If Win16_SoundOpen And (SCapOld <= 2) Then Begin
+     Win16_SoundThreshold[SCapOld] := ENWEnableArg;
+     P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := Word(-1);
+    ArgWords := 2;
+   End;
+   Else Begin
+    Win16_Halt(P, 'SOUND', Ordinal);
+    Exit;
+   End;
+  End;
  End Else Begin
   Win16_Halt(P, 'module #' + IntToStr(ModIdx), Ordinal);
   Exit;
@@ -124871,6 +125113,8 @@ Begin
     If Win16_ImportModIdx[TrapSlot] = 1 Then TrapModName := 'KERNEL'
     Else If Win16_ImportModIdx[TrapSlot] = 2 Then TrapModName := 'GDI'
     Else If Win16_ImportModIdx[TrapSlot] = 3 Then TrapModName := 'USER'
+    Else If Win16_ImportModIdx[TrapSlot] = 4 Then TrapModName := 'KEYBOARD'
+    Else If Win16_ImportModIdx[TrapSlot] = 5 Then TrapModName := 'SOUND'
     Else TrapModName := 'module#' + IntToStr(Win16_ImportModIdx[TrapSlot]);
     If Win16_ImportIsOrd[TrapSlot] Then
      TrapAnnot := ' CALL ' + TrapModName + '.' + IntToStr(Win16_ImportValue[TrapSlot])
@@ -192419,6 +192663,8 @@ Begin
      If Win16_ImportModIdx[TrSlot] = 1 Then TrModName := 'KERNEL'
      Else If Win16_ImportModIdx[TrSlot] = 2 Then TrModName := 'GDI'
      Else If Win16_ImportModIdx[TrSlot] = 3 Then TrModName := 'USER'
+     Else If Win16_ImportModIdx[TrSlot] = 4 Then TrModName := 'KEYBOARD'
+     Else If Win16_ImportModIdx[TrSlot] = 5 Then TrModName := 'SOUND'
      Else TrModName := 'module#' + IntToStr(Win16_ImportModIdx[TrSlot]);
      If Win16_ImportIsOrd[TrSlot] Then
       TrAnnot := ' CALL ' + TrModName + '.' + IntToStr(Win16_ImportValue[TrSlot])

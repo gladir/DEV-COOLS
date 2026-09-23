@@ -1467,7 +1467,10 @@ Begin
     Error(FileName,'reouverture de l''archive impossible');FreeModule(M);Exit
    End;
    if ErrorCount=BeforeErrors Then Begin
-    if ModuleResolvesNeeded(M)Then Begin
+    { Une archive peut melanger Z8001 et Z8002. Les membres de l'autre cible
+      sont ignores, comme dans trysim() du LD8K original. }
+    if((not TargetKnown)or(not M.TargetKnown)or(TargetSegmented=M.TargetSegmented))and
+    ModuleResolvesNeeded(M)Then Begin
      if not AcceptModule(M)Then FreeModule(M)
     End else FreeModule(M)
    End else Begin FreeModule(M);Break End
