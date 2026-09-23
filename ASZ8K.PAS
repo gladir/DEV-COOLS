@@ -2661,8 +2661,44 @@ End;
 Procedure WriteObjectBlock(Var F:File;BlockType:Byte;Var B:TObjectBuffer;N:Integer);
 Var T,L:Byte;Written:Word;
 Begin
- T:=BlockType;L:=Byte(N);BlockWrite(F,T,1,Written);BlockWrite(F,L,1,Written);
- if N<>0 Then BlockWrite(F,B,N,Written)
+ T:=BlockType;L:=Byte(N);BlockWrite(F,T,1,Written);
+ if Written<>1 Then Fatal('ecriture incomplete du type de bloc UNIDOT');
+ BlockWrite(F,L,1,Written);if Written<>1 Then Fatal('ecriture incomplete de la taille UNIDOT');
+ if N<>0 Then Begin
+  BlockWrite(F,B,N,Written);if Written<>N Then Fatal('ecriture incomplete du contenu UNIDOT')
+ End
+End;
+
+Procedure ValidateObjectFile(Const Name:String);
+Var F:File;B:TObjectBuffer;Kind,Len:Byte;ReadCount:Word;Position,Total:LongInt;
+ FirstBlock,Ended:Boolean;
+Begin
+ Assign(F,Name);Reset(F,1);if IOResult<>0 Then Fatal('relecture impossible de l''objet temporaire');
+ Total:=FileSize(F);Position:=0;FirstBlock:=True;Ended:=False;
+ While Position<Total do Begin
+  if Total-Position<2 Then Begin Close(F);Fatal('en-tete de bloc UNIDOT tronque') End;
+  BlockRead(F,Kind,1,ReadCount);if ReadCount<>1 Then Begin Close(F);Fatal('lecture du type UNIDOT impossible') End;
+  BlockRead(F,Len,1,ReadCount);if ReadCount<>1 Then Begin Close(F);Fatal('lecture de la taille UNIDOT impossible') End;
+  Inc(Position,2);
+  if Position+Len>Total Then Begin Close(F);Fatal('bloc UNIDOT au-dela de la fin du fichier') End;
+  if Len<>0 Then Begin
+   BlockRead(F,B,Len,ReadCount);if ReadCount<>Len Then Begin Close(F);Fatal('bloc UNIDOT tronque') End
+  End;
+  if FirstBlock and(Kind<>OBOST)Then Begin Close(F);Fatal('marque de debut UNIDOT absente') End;
+  FirstBlock:=False;
+  if Kind=OBTXT Then Begin
+   if Len<6 Then Begin Close(F);Fatal('bloc texte UNIDOT trop court') End;
+   if FindSectionByNumber(B[4])=Nil Then Begin Close(F);Fatal('bloc texte lie a un segment inconnu') End;
+   if 6+B[5]>Len Then Begin Close(F);Fatal('taille de texte UNIDOT incoherente') End
+  End;
+  Inc(Position,Len);
+  if Kind=OBOND Then Begin
+   if Len<>0 Then Begin Close(F);Fatal('marque de fin UNIDOT incorrecte') End;
+   Ended:=True;if Position<>Total Then Begin Close(F);Fatal('donnees apres la fin UNIDOT') End
+  End
+ End;
+ Close(F);if IOResult<>0 Then Fatal('fermeture impossible apres validation UNIDOT');
+ if FirstBlock or not Ended Then Fatal('objet UNIDOT incomplet')
 End;
 
 Function ObjectImageByte(Section:Byte;Offset:LongInt):Byte;
@@ -2766,6 +2802,7 @@ Begin
  N:=0;WriteObjectBlock(ObjectOutput,OBOND,B,N);
  Close(ObjectOutput);ObjectFileOpen:=False;
  if IOResult<>0 Then Fatal('erreur d''ecriture objet');
+ ValidateObjectFile(TemporaryObjectName);
  BackupName:=Opt.ObjectName+'.$OLD';DeleteFileQuiet(BackupName);
  HadOld:=TextFileExists(Opt.ObjectName);
  if HadOld Then Begin
