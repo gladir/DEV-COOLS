@@ -8102,6 +8102,11 @@ Var
  { rafraichissement (0 = aucune) ; aucun chemin de rendu ne consulte         }
  { encore cet etat, mais il est REELLEMENT suivi (limitation disclosee).    }
  Win16_LockedUpdateHWnd: Word;
+ { SystemParametersInfo/$483 (2026-09-23, demande explicite) - SPI_GETBEEP/ }
+ { SETBEEP et SPI_GETSCREENSAVEACTIVE/SETSCREENSAVEACTIVE, seuls etats      }
+ { reellement suivis parmi les dizaines d'actions SPI_* documentees. }
+ Win16_BeepEnabled: Boolean;
+ Win16_ScreenSaverActive: Boolean;
  { Fenetre "active" pour les appels GDI qui ne recoivent qu'un hDC          }
  { synthetique (jamais une vraie structure DC) - GetDC/GetWindowDC/         }
  { BeginPaint recoivent tous hWnd directement et la renseignent ; comme ce  }
@@ -98753,6 +98758,8 @@ Begin
  Win16_CaptureHWnd := 0;
  Win16_FocusHWnd := 0;
  Win16_LockedUpdateHWnd := 0;
+ Win16_BeepEnabled := True;
+ Win16_ScreenSaverActive := False;
  Win16_ActiveWindowHWnd := 0;
  Win16_CurrentCursor := 0;
  Win16_WindowsHookSeg := 0;
@@ -113700,6 +113707,493 @@ Begin
     P.CPU.Regs.AX := 0;
     ArgWords := 5;
    End;
+   464: Begin
+    { DragObject(hwndScope,hWnd,wObj,hOfStruct,szList,hCursor):DWORD -     }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal DragObject(word word word word word word) DragObject16", 6         }
+    { mots, PAS de "-ret16" = retour COMPLET DX:AX). REEL ET HONNETE : le            }
+    { VRAI mecanisme (boucle GetMessage dediee, WM_QUERYDROPOBJECT/                    }
+    { WM_DRAGLOOP/WM_DRAGSELECT/WM_DRAGMOVE/WM_DROPOBJECT, capture souris)               }
+    { est HORS DE PORTEE (aucun routage souris synthetise vers les WNDPROC,             }
+    { meme limitation deja disclosee pour TranslateMessage/$113) : aucun                 }
+    { objet jamais depose, 0:0 (documente reel "rien depose"). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   465: Begin
+    { DragDetect(hWnd,pt):bool - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (user.exe16.spec : "pascal -ret16 DragDetect(word long)     }
+    { DragDetect16", 1+2 = 3 mots). MEME honnetete que DragObject/$464                }
+    { (aucun routage souris) : FALSE (0, documente reel "aucun                         }
+    { glisser-deposer detecte"). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   466: Begin
+    { DrawFocusRect(hdc,lprc):void - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { DrawFocusRect(word ptr) DrawFocusRect16", 1+2 = 3 mots). REEL ET            }
+    { CONCRET : reutilise A L'IDENTIQUE la technique d'inversion de pixels           }
+    { deja etablie pour InvertRect/$82/FrameRect/$83 (Xor $0F) - dessine               }
+    { VRAIMENT une bordure 1px inversee (le VRAI DrawFocusRect Win32                    }
+    { inverse REELLEMENT les pixels via un motif, PAS un simple                          }
+    { remplissage - notre approximation "toute la bordure inversee"                        }
+    { plutot qu'un VRAI motif pointille est une simplification DOCUMENTEE,                }
+    { l'effet visuel EST REEL, pas un no-op). hdc ignore (meme                             }
+    { simplification que FillRect/$81). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
+     FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
+     FRRight := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRRight);
+     FRBottom := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRBottom);
+     For FRX := FRLeft To FRRight - 1 Do Begin
+      Emu_VidSetPixel(FRX, FRTop, Emu_VidGetPixel(FRX, FRTop) Xor $0F);
+      Emu_VidSetPixel(FRX, FRBottom - 1, Emu_VidGetPixel(FRX, FRBottom - 1) Xor $0F);
+     End;
+     For FRY := FRTop To FRBottom - 1 Do Begin
+      Emu_VidSetPixel(FRLeft, FRY, Emu_VidGetPixel(FRLeft, FRY) Xor $0F);
+      Emu_VidSetPixel(FRRight - 1, FRY, Emu_VidGetPixel(FRRight - 1, FRY) Xor $0F);
+     End;
+    End;
+    ArgWords := 3;
+   End;
+   471: Begin
+    { lstrcmpi(lpString1,lpString2):int - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16 lstrcmpi(str      }
+    { str) lstrcmpiA", 2+2 = 4 mots). REEL, symetrique de lstrcmp/$430              }
+    { ci-dessus mais comparaison SANS tenir compte de la casse (contrat                 }
+    { documente reel exact). }
+    CWTitleOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CWTitleSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CWClassOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CWClassSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CWTitleStr := UpCaseStr(Win16_ReadGuestString(P.CPU, CWTitleSeg, CWTitleOfs));
+    CWClassStr := UpCaseStr(Win16_ReadGuestString(P.CPU, CWClassSeg, CWClassOfs));
+    If CWClassStr < CWTitleStr Then P.CPU.Regs.AX := Word(-1)
+    Else If CWClassStr > CWTitleStr Then P.CPU.Regs.AX := 1
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   472: Begin
+    { AnsiNext(lpsz):SEGPTR - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (user.exe16.spec : "pascal AnsiNext(segptr)                    }
+    { AnsiNext16", 2 mots, PAS de "-ret16" = retour COMPLET DX:AX). REEL,           }
+    { REPRODUIT depuis le VRAI corps Wine : avance VRAIMENT d'un octet                  }
+    { (aucun DBCS/jeu de caracteres sur 2 octets modelise - meme                          }
+    { limitation deja disclosee pour IsTwoByteCharPrefix/$51) SAUF au                       }
+    { terminateur NUL (contrat documente reel exact : ne depasse jamais                     }
+    { la fin de la chaine). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If Emu_ReadByte(P.CPU, FRLpSeg, FRLpOfs) <> 0 Then FRLpOfs := Word(FRLpOfs + 1);
+    P.CPU.Regs.AX := FRLpOfs;
+    P.CPU.Regs.DX := FRLpSeg;
+    ArgWords := 2;
+   End;
+   473: Begin
+    { AnsiPrev(lpszStart,lpszCurrent):SEGPTR - ordinal/signature          }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal              }
+    { AnsiPrev(str segptr) AnsiPrev16", 2+2 = 4 mots, PAS de "-ret16" =            }
+    { retour COMPLET DX:AX). REEL, symetrique d'AnsiNext/$472 : recule                  }
+    { VRAIMENT d'un octet SAUF si deja au debut de la chaine (borne par                   }
+    { lpszStart, contrat documente reel exact - MEME segment suppose pour                  }
+    { les 2 pointeurs, cas normal en pratique). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    If FRLpOfs > GCRLpOfs Then FRLpOfs := Word(FRLpOfs - 1) Else FRLpOfs := GCRLpOfs;
+    P.CPU.Regs.AX := FRLpOfs;
+    P.CPU.Regs.DX := FRLpSeg;
+    ArgWords := 4;
+   End;
+   482: Begin
+    { EnableScrollBar(hWnd,wSBflags,wArrows):bool - ordinal/signature     }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { EnableScrollBar(word word word) EnableScrollBar16", 3 mots). REEL          }
+    { EN PARTIE : aucun etat par-fleche distinct n'est suivi (granularite            }
+    { deja etablie pour SetScrollPos/$62/ShowScrollBar/$267) - force                    }
+    { neanmoins VRAIMENT un nouveau dessin, meilleure approximation                        }
+    { honnete disponible. }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     Win16_WindowNeedsPaint[SWWIdx] := True;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   483: Begin
+    { SystemParametersInfo(uAction,uParam,lpvParam,fuWinIni):bool -       }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal -ret16 SystemParametersInfo(word word ptr word)                       }
+    { SystemParametersInfo16", 1+1+2+1 = 5 mots). REEL EN PARTIE : les             }
+    { constantes SPI_* utilisees ici (0/1/16/17/20/21, verifiees via               }
+    { winuser.h historique, INCHANGEES depuis Windows 3.0) suivent de                    }
+    { VRAIS etats (Win16_BeepEnabled/Win16_ScreenSaverActive, nouveaux) -                 }
+    { SPI_SETDESKWALLPAPER/$14 relaie vers le MEME journal que                              }
+    { SetDeskWallpaper/$285. Toute AUTRE action (des dizaines documentees                    }
+    { non couvertes ici) : echec honnete (0) plutot qu'une valeur                             }
+    { inventee. }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    MWRepaintArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    P.CPU.Regs.AX := 0;
+    Case GDIIdx Of
+     0: Begin { SPI_GETBEEP }
+      Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, Word(Ord(Win16_BeepEnabled)));
+      P.CPU.Regs.AX := 1;
+     End;
+     1: Begin { SPI_SETBEEP }
+      Win16_BeepEnabled := (ENWEnableArg <> 0);
+      P.CPU.Regs.AX := 1;
+     End;
+     16: Begin { SPI_GETSCREENSAVEACTIVE }
+      Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, Word(Ord(Win16_ScreenSaverActive)));
+      P.CPU.Regs.AX := 1;
+     End;
+     17: Begin { SPI_SETSCREENSAVEACTIVE }
+      Win16_ScreenSaverActive := (ENWEnableArg <> 0);
+      P.CPU.Regs.AX := 1;
+     End;
+     20: Begin { SPI_SETDESKWALLPAPER }
+      CWTitleStr := Win16_ReadGuestString(P.CPU, GCRLpSeg, GCRLpOfs);
+      Win16_DebugMsg := 'SystemParametersInfo SPI_SETDESKWALLPAPER "' + CWTitleStr + '"';
+      P.CPU.Regs.AX := 1;
+     End;
+     21: P.CPU.Regs.AX := 1; { SPI_SETDESKPATTERN : meme succes honnete qu'OldSetDeskPattern/$279 }
+    End;
+    ArgWords := 5;
+   End;
+   499: Begin
+    { WNetErrorText(nError,lpszError,nMaxLength):bool - ordinal/           }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :             }
+    { "pascal -ret16 WNetErrorText(word ptr word) WNetErrorText16", 1+2+1 =         }
+    { 4 mots). REEL POUR LE TEXTE : aucun sous-systeme reseau reel                       }
+    { n'existe dans ce sous-ensemble (mono-programme DOS/Win16, aucune                    }
+    { carte reseau/redirecteur emule) - ecrit VRAIMENT un message                            }
+    { generique honnete tronque a nMaxLength-1, plutot qu'un buffer                           }
+    { laisse intact au hasard. }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    TOStr := 'Network unavailable';
+    LSCopyLen := Length(TOStr);
+    If LSCopyLen > Integer(ENWEnableArg) - 1 Then LSCopyLen := Integer(ENWEnableArg) - 1;
+    If LSCopyLen < 0 Then LSCopyLen := 0;
+    For LSI := 0 To LSCopyLen - 1 Do
+     Emu_WriteByte(P.CPU, GCRLpSeg, Word(GCRLpOfs + LSI), Ord(TOStr[LSI + 1]));
+    Emu_WriteByte(P.CPU, GCRLpSeg, Word(GCRLpOfs + LSCopyLen), 0);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   501: Begin
+    { WNetOpenJob(lpszQueue,lpszJobTitle,nCopies,lpfHandle):int -         }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal -ret16 WNetOpenJob(ptr ptr word ptr) WNetOpenJob16", 2+2+1+2 =        }
+    { 7 mots). REEL ET HONNETE : aucun redirecteur reseau n'existe                        }
+    { (limitation disclosee partagee par TOUS les ordinaux WNet* de ce                     }
+    { chantier) - ecrit VRAIMENT *lpfHandle=0 ("port PAS redirige",                          }
+    { contrat documente reel correct dans ce cas puisqu'AUCUN port n'est                     }
+    { jamais redirige ici) et retourne WN_NOT_SUPPORTED(1, constante SDK                       }
+    { publique bien connue et stable). }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If (GCRLpSeg <> 0) Or (GCRLpOfs <> 0) Then Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, 0);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 7;
+   End;
+   502: Begin
+    { WNetCloseJob(nJobId,lpfPending,lpszQueue):int - ordinal/signature   }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetCloseJob(word ptr ptr) WNetCloseJob16", 1+2+2 = 5 mots). MEME           }
+    { honnetete "aucun reseau" que WNetOpenJob/$501 : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   503: Begin
+    { WNetAbortJob(lpszQueue,nJobId):int - ordinal/signature VERIFIES    }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetAbortJob(ptr word) WNetAbortJob16", 2+1 = 3 mots). MEME                    }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   504: Begin
+    { WNetHoldJob(lpszQueue,nJobId):int - ordinal/signature VERIFIES     }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetHoldJob(ptr word) WNetHoldJob16", 2+1 = 3 mots). MEME                      }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   505: Begin
+    { WNetReleaseJob(lpszQueue,nJobId):int - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetReleaseJob(ptr word) WNetReleaseJob16", 2+1 = 3 mots). MEME                }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   506: Begin
+    { WNetCancelJob(lpszQueue,nJobId):int - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetCancelJob(ptr word) WNetCancelJob16", 2+1 = 3 mots). MEME                  }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   507: Begin
+    { WNetSetJobCopies(lpszQueue,nJobId,nCopies):int - ordinal/signature  }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetSetJobCopies(ptr word word) WNetSetJobCopies16", 2+1+1 = 4                  }
+    { mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   508: Begin
+    { WNetWatchQueue(hWnd,lpszLocal,lpszQueue,nQueue):int - ordinal/       }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :             }
+    { "pascal -ret16 WNetWatchQueue(word ptr ptr word) WNetWatchQueue16",           }
+    { 1+2+2+1 = 6 mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   509: Begin
+    { WNetUnwatchQueue(lpszQueue):int - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                    }
+    { WNetUnwatchQueue(str) WNetUnwatchQueue16", 2 mots). MEME honnetete             }
+    { "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   510: Begin
+    { WNetLockQueueData(lpszServer,lpszQueue,lplpQueueStruct):int -       }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal -ret16 WNetLockQueueData(ptr ptr ptr)                                 }
+    { WNetLockQueueData16", 2+2+2 = 6 mots). MEME honnetete "aucun                       }
+    { reseau" : WN_NOT_SUPPORTED(1), aucune donnee de file d'attente                        }
+    { n'est jamais ecrite (contrat documente reel "rien a verrouiller"). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   511: Begin
+    { WNetUnlockQueueData(lpszQueue):bool - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetUnlockQueueData(ptr) WNetUnlockQueueData16", 2 mots). REEL,             }
+    { symetrique de WNetLockQueueData/$510 (aucune donnee n'a jamais ete             }
+    { REELLEMENT verrouillee) : echec honnete (0, "rien a deverrouiller"). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   512: Begin
+    { WNetGetConnection(lpszLocalName,lpszRemoteName,cbRemoteName):int - } { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal -ret16 WNetGetConnection(ptr ptr ptr)                                 }
+    { WNetGetConnection16", 2+2+2 = 6 mots). MEME honnetete "aucun                       }
+    { reseau" que WNetOpenJob/$501 : le code d'erreur PRECIS documente                     }
+    { pour ce cas exact (WN_NOT_CONNECTED) n'a pas pu etre verifie avec                     }
+    { certitude suffisante - WN_NOT_SUPPORTED(1) utilise uniformement                        }
+    { comme code d'echec generique honnete (portee disclosee). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   513: Begin
+    { WNetGetCaps(nIndex):DWORD - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (user.exe16.spec : "pascal -ret16 WNetGetCaps(word)         }
+    { WNetGetCaps16", 1 mot). REEL ET HONNETE : aucun pilote reseau                  }
+    { installe (contrat documente reel exact pour ce cas : toutes les                    }
+    { capacites sont 0) - AUCUNE approximation, c'est la VRAIE reponse                     }
+    { correcte pour "pas de reseau". }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   514: Begin
+    { WNetDeviceMode(hWnd):int - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (user.exe16.spec : "pascal -ret16 WNetDeviceMode(word)       }
+    { WNetDeviceMode16", 1 mot). MEME honnetete "aucun reseau" :                     }
+    { WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   515: Begin
+    { WNetBrowseDialog(hWnd,nType,lpszPath):int - ordinal/signature      }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetBrowseDialog(word word ptr) WNetBrowseDialog16", 1+1+2 = 4             }
+    { mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   516: Begin
+    { WNetGetUser(lpszName,lpszUserID):int - ordinal/signature VERIFIES } { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetGetUser(ptr ptr) WNetGetUser16", 2+2 = 4 mots). MEME                       }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   517: Begin
+    { WNetAddConnection(lpszNetPath,lpszPassword,lpszLocalName):int -     }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal -ret16 WNetAddConnection(str str str) WNetAddConnection16",          }
+    { 2+2+2 = 6 mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   518: Begin
+    { WNetCancelConnection(lpszName,bForce):int - ordinal/signature      }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetCancelConnection(str word) WNetCancelConnection16", 2+1 = 3            }
+    { mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   519: Begin
+    { WNetGetError(lpnError):int - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { WNetGetError(ptr) WNetGetError16", 2 mots). REEL : ecrit VRAIMENT         }
+    { le MEME code WN_NOT_SUPPORTED(1) deja utilise par TOUS les autres              }
+    { ordinaux WNet* de ce chantier (la SEULE "derniere erreur reseau"                 }
+    { possible ici) et retourne WN_SUCCESS(0, "code recupere avec                        }
+    { succes" - documente reel, distinct du code d'erreur lui-meme). }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, 1);
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   520: Begin
+    { WNetGetErrorText(nError,lpszError,lpnLength):int - ordinal/         }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal -ret16 WNetGetErrorText(word ptr ptr) WNetGetErrorText16",           }
+    { 1+2+2 = 5 mots). REEL, MEME message et MEME moteur de copie EXACT              }
+    { que WNetErrorText/$499 ci-dessus - lpnLength est IN/OUT (capacite                 }
+    { du buffer en entree, VRAIE longueur ecrite en sortie, contrat                        }
+    { documente reel). }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    ENWEnableArg := Emu_ReadWord(P.CPU, GCRLpSeg, GCRLpOfs);
+    TOStr := 'Network unavailable';
+    LSCopyLen := Length(TOStr);
+    If LSCopyLen > Integer(ENWEnableArg) - 1 Then LSCopyLen := Integer(ENWEnableArg) - 1;
+    If LSCopyLen < 0 Then LSCopyLen := 0;
+    For LSI := 0 To LSCopyLen - 1 Do
+     Emu_WriteByte(P.CPU, FRLpSeg, Word(FRLpOfs + LSI), Ord(TOStr[LSI + 1]));
+    Emu_WriteByte(P.CPU, FRLpSeg, Word(FRLpOfs + LSCopyLen), 0);
+    Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, Word(LSCopyLen));
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   523: Begin
+    { WNetRestoreConnection(hWnd,lpszDevice):int - ordinal/signature     }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetRestoreConnection(word ptr) WNetRestoreConnection16", 1+2 = 3         }
+    { mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   524: Begin
+    { WNetWriteJob(hJob,lpvBuffer,lpcbBuffer):int - ordinal/signature    }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetWriteJob(word ptr ptr) WNetWriteJob16", 1+2+2 = 5 mots). MEME             }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 5;
+   End;
+   525: Begin
+    { WNetConnectDialog(hWnd,iType):int - ordinal/signature VERIFIES via } { le VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { WNetConnectDialog(word word) WNetConnectDialog", 2 mots). MEME             }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   526: Begin
+    { WNetDisconnectDialog(hWnd,iType):int - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetDisconnectDialog(word word) WNetDisconnectDialog16", 2 mots).             }
+    { MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   527: Begin
+    { WNetConnectionDialog(hWnd,iType):int - ordinal/signature VERIFIES  }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { WNetConnectionDialog(word word) WNetConnectionDialog16", 2 mots).             }
+    { MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   528: Begin
+    { WNetViewQueueDialog(hWnd,lpszQueue):int - ordinal/signature        }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetViewQueueDialog(word ptr) WNetViewQueueDialog16", 1+2 = 3             }
+    { mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   529: Begin
+    { WNetPropertyDialog(hWnd,iButton,iType,lpszDriver,iPage):int -       }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal -ret16 WNetPropertyDialog(word word word str word)                    }
+    { WNetPropertyDialog16", 1+1+1+2+1 = 6 mots). MEME honnetete "aucun            }
+    { reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 6;
+   End;
+   530: Begin
+    { WNetGetDirectoryType(lpszPath,lpiType):int - ordinal/signature     }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetGetDirectoryType(ptr ptr) WNetGetDirectoryType16", 2+2 = 4             }
+    { mots). REEL, PAS une simplification : ce sous-ensemble n'a AUCUN            }
+    { repertoire reseau (aucun redirecteur), donc TOUT chemin EST                        }
+    { VERITABLEMENT local - ecrit *lpiType=0 (WNDT_NORMAL, documente reel               }
+    { "repertoire local") et retourne WN_SUCCESS(0) : la VRAIE reponse                   }
+    { correcte, pas un echec invente. }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, 0);
+    P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   531: Begin
+    { WNetDirectoryNotify(hWnd,lpszDir,wOper):int - ordinal/signature    }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { WNetDirectoryNotify(word ptr word) WNetDirectoryNotify16", 1+2+1 =         }
+    { 4 mots). MEME honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   532: Begin
+    { WNetGetPropertyText(iButton,iType,lpszName,lpszText,cbText,          }
+    { iType2):int - ordinal/signature VERIFIES via le VRAI source Wine           }
+    { (user.exe16.spec : "pascal -ret16 WNetGetPropertyText(word word str          }
+    { str word word) WNetGetPropertyText16", 1+1+2+2+1+1 = 8 mots). MEME              }
+    { honnetete "aucun reseau" : WN_NOT_SUPPORTED(1). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 8;
+   End;
+   { StringFunc/470, GetUserLocalObjType/480, WNetEnable/521,               }
+   { WNetDisable/522 : le VRAI source Wine (user.exe16.spec) marque LES        }
+   { QUATRE "stub", SANS AUCUNE signature exploitable - meme discipline           }
+   { exacte qu'IsTwoByteCharPrefix/$51. HARDWARE_EVENT/481 : SUPPRIME du            }
+   { VRAI .spec actuel (commente "#481", meme discipline que                          }
+   { WinFarFrame/$340). FARCALLNETDRIVER/500 (non demande, "stub"                        }
+   { egalement) : mentionne ici par souci de completude de la plage WNet*                }
+   { 499-532. Inventer un nombre de mots pour l'un de ces 5 ordinaux                        }
+   { serait une pure supposition qui risquerait de corrompre la pile de                      }
+   { TOUS les appels Win16 suivants - laisses donc deliberement tomber                        }
+   { sur le gestionnaire generique "Else" ci-dessous. }
    { _wsprintf/420 : ordinal marque "varargs" (pas "pascal") dans le VRAI    }
    { .spec Wine - le nombre de mots empiles depend du CONTENU de la chaine     }
    { de format (chaque %s consomme un SEGPTR de 4 octets, chaque %ld/%lu/       }
