@@ -6290,6 +6290,11 @@ Const
  { Stage 6b (2026-08-30) : minuteurs SetTimer/KillTimer, meme limitation      }
  { mono-programme. }
  WIN16_MAX_TIMERS     = 8;
+ { Liste de proprietes de fenetre SetProp/GetProp/RemoveProp/EnumProps       }
+ { (2026-09-23, demande explicite) - UNE seule table plate partagee par      }
+ { TOUTES les fenetres (hWnd fait partie de chaque entree), meme convention  }
+ { "tableaux paralleles de taille fixe" que WIN16_MAX_TIMERS ci-dessus. }
+ WIN16_MAX_PROPS      = 16;
  { Constantes ABI Windows publiques et fixes (winuser.h) - meme categorie de }
  { certitude que les constantes SM_* deja utilisees sans verification         }
  { supplementaire dans ce chantier. }
@@ -8016,6 +8021,20 @@ Var
  Win16_TimerID         : Array[0..WIN16_MAX_TIMERS - 1] Of Word;
  Win16_TimerElapseTicks: Array[0..WIN16_MAX_TIMERS - 1] Of LongInt;
  Win16_TimerNextDueTick: Array[0..WIN16_MAX_TIMERS - 1] Of LongInt;
+ { SetProp/GetProp/RemoveProp/EnumProps (ordinaux USER 24-27, 2026-09-23,   }
+ { demande explicite) - meme convention "tableaux paralleles de taille      }
+ { fixe" que Win16_Timer* ci-dessus. }
+ Win16_PropCount       : Integer;
+ Win16_PropHWnd        : Array[0..WIN16_MAX_PROPS - 1] Of Word;
+ Win16_PropName        : Array[0..WIN16_MAX_PROPS - 1] Of String;
+ Win16_PropData        : Array[0..WIN16_MAX_PROPS - 1] Of Word;
+ { SetCapture/ReleaseCapture ($18/$19), SetFocus/GetFocus ($22/$23),        }
+ { SetDoubleClickTime/GetDoubleClickTime ($20/$21) - mono-fenetre/mono-     }
+ { tache, un seul detenteur possible a la fois, meme esprit que             }
+ { Win16_ActiveDCWindow. }
+ Win16_CaptureHWnd     : Word;
+ Win16_FocusHWnd       : Word;
+ Win16_DblClickTime    : Word;
  { Fenetre "active" pour les appels GDI qui ne recoivent qu'un hDC          }
  { synthetique (jamais une vraie structure DC) - GetDC/GetWindowDC/         }
  { BeginPaint recoivent tous hWnd directement et la renseignent ; comme ce  }
@@ -98660,6 +98679,10 @@ Begin
  Win16_MsgQueueTail := 0;
  Win16_MsgQueueCount := 0;
  Win16_TimerCount := 0;
+ Win16_PropCount := 0;
+ Win16_CaptureHWnd := 0;
+ Win16_FocusHWnd := 0;
+ Win16_DblClickTime := 500; { defaut reel documente SDK Windows (500 ms) }
  Win16_ActiveDCWindow := -1;
  Win16_PenX := 0;
  Win16_PenY := 0;
@@ -102325,6 +102348,20 @@ Begin
  Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
 End;
 
+{ Appelle SYNCHRONE un VRAI callback PROPENUMPROC16 (HWND hwnd, SEGPTR      }
+{ lpszString, HANDLE hData) - signature VERIFIEE via le VRAI source Wine    }
+{ (user.exe16.spec, EnumProps ordinal 27, 2026-09-23, demande explicite). }
+Function Win16_CallPropEnumProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
+ HWndArg, StrSeg, StrOfs, HData: Word): Word;
+Begin
+ Emu_PushWord(P.CPU, HWndArg);
+ Emu_PushWord(P.CPU, StrSeg);
+ Emu_PushWord(P.CPU, StrOfs);
+ Emu_PushWord(P.CPU, HData);
+ Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+ Win16_CallPropEnumProc := P.CPU.Regs.AX;
+End;
+
 { Coeur de GetMessage/PeekMessage (ordinaux USER 108/109) - priorite REELLE }
 { Windows (entree file > repaint > minuteur), meme ordre de priorite que    }
 { documente pour les messages "generes"/bas niveau. Retourne False           }
@@ -102603,6 +102640,32 @@ Var
  CWX, CWY, CWW, CWH: Word;
  CWClassStr, CWTitleStr: String;
  CWClassIdx, CWI, CWIdx: Integer;
+ { USER.EXE MessageBox/OldExitWindows/ExitWindows/GetTickCount/              }
+ { GetTimerResolution/GetCursorPos/SetCapture/SetDoubleClickTime/            }
+ { SetFocus/SetProp-GetProp-RemoveProp-EnumProps/ClientToScreen/             }
+ { ScreenToClient/WindowFromPoint (2026-09-23, demande explicite,            }
+ { ordinaux 1-30). }
+ MBHWndArg, MBTextSeg, MBTextOfs, MBCapSeg, MBCapOfs, MBType: Word;
+ MBText, MBCap: String;
+ MBButtonSet: Word;
+ GTCTicks: LongInt;
+ GCPLpSeg, GCPLpOfs: Word;
+ SCapOld: Word;
+ SDblClickArg: Word;
+ SFocusOld: Word;
+ PropHWndArg, PropStrSeg, PropStrOfs, PropDataArg: Word;
+ PropStr: String;
+ PropIdx: Integer;
+ EPFuncSeg, EPFuncOfs: Word;
+ EPResult: LongInt;
+ EPNameOfs: Word;
+ EPNameLen: Integer;
+ CTSHWndArg, CTSLpSeg, CTSLpOfs: Word;
+ CTSX, CTSY: SmallInt;
+ CTSWIdx: Integer;
+ WFPXLo, WFPYHi: Word;
+ WFPX, WFPY: SmallInt;
+ WFPIdx: Integer;
  { Stage 6b (2026-08-30) : minuteurs, boucle de messages, WNDPROC, GDI. }
  TmrHWndArg, TmrIDArg, TmrElapseArg: Word;
  TmrIdx, TmrFoundIdx: Integer;
@@ -107314,7 +107377,7 @@ Begin
     Win16_PostMessage(0, WIN16_WM_QUIT, 0, 0, 0);
     ArgWords := 1;
    End;
-   10: Begin
+   10, 11: Begin
     { SetTimer(hWnd,nIDEvent,uElapse,lpTimerFunc):UINT - ordinal VERIFIE     }
     { via user.exe16.spec (3 mots + 1 segptr = 5 mots). Stage 6b            }
     { (2026-08-30) : REELLEMENT implante - table fixe (meme esprit que       }
@@ -107324,7 +107387,12 @@ Begin
     { ignore - jamais utilise par CLOCK.EXE (NULL, la fenetre recoit          }
     { WM_TIMER via sa WNDPROC normale, cas de loin le plus courant). Si      }
     { nIDEvent=0, un identifiant synthetique est genere (rarement utilise    }
-    { par de vraies apps, mais couvert honnetement). }
+    { par de vraies apps, mais couvert honnetement). SetSystemTimer/$11      }
+    { ("BEAR11" dans le VRAI .spec Wine - alias interne bidon, PAS un vrai   }
+    { nom d'API documente) partage la MEME signature EXACTE (word word       }
+    { word segptr) et le MEME moteur de minuteur interne dans le VRAI        }
+    { Windows (Wine route les deux vers l'equivalent de SetTimer16) -        }
+    { reproduit ici a l'IDENTIQUE, meme table Win16_Timer*. }
     TmrHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
     TmrIDArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
     TmrElapseArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
@@ -107904,6 +107972,424 @@ Begin
     If (CBFormat = 1) And (Win_GetClipboardData(CF_TEXT_WINOLDAP) <> 0) Then P.CPU.Regs.AX := 1;
     {$ENDIF}
     ArgWords := 1;
+   End;
+   1: Begin
+    { MessageBox(hWnd,lpText,lpCaption,uType):int - ordinal/signature       }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16     }
+    { MessageBox(word str str word) MessageBox16", 1+2+2+1 = 6 mots).        }
+    { REEL POUR LA PARTIE DIAGNOSTIC (lit VRAIMENT lpText/lpCaption et les    }
+    { journalise dans Win16_DebugMsg, meme relais deja etabli pour             }
+    { OutputDebugString/DiagOutput) - le RENDU d'une VRAIE boite de              }
+    { dialogue MODALE avec boutons cliquables est HORS DE PORTEE (aucun          }
+    { systeme de controles/boutons USER modelise, meme limitation deja           }
+    { disclosee pour LoadCursor/LoadIcon/LoadBitmap/ChangeMenu ci-dessus).        }
+    { Simplification DOCUMENTEE plutot qu'un blocage : retourne l'ID du            }
+    { PREMIER bouton (le bouton par defaut documente reel de chaque              }
+    { ensemble MB_*) selon uType And $0F - IDOK(1) pour MB_OK/MB_OKCANCEL,          }
+    { IDABORT(3) pour MB_ABORTRETRYIGNORE, IDYES(6) pour MB_YESNO/                  }
+    { MB_YESNOCANCEL, IDRETRY(4) pour MB_RETRYCANCEL - les drapeaux                  }
+    { MB_DEFBUTTON2/3 (bouton par defaut different du premier) ne sont PAS          }
+    { honores (limitation disclosee). }
+    MBType := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    MBCapOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    MBCapSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    MBTextOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    MBTextSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    MBHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    MBText := Win16_ReadGuestString(P.CPU, MBTextSeg, MBTextOfs);
+    MBCap := Win16_ReadGuestString(P.CPU, MBCapSeg, MBCapOfs);
+    Win16_DebugMsg := 'MessageBox hWnd=' + HexWord(MBHWndArg) + ' caption="' +
+     MBCap + '" text="' + MBText + '" uType=' + HexWord(MBType);
+    MBButtonSet := MBType And $0F;
+    Case MBButtonSet Of
+     2: P.CPU.Regs.AX := 3; { MB_ABORTRETRYIGNORE -> IDABORT }
+     3, 4: P.CPU.Regs.AX := 6; { MB_YESNOCANCEL/MB_YESNO -> IDYES }
+     5: P.CPU.Regs.AX := 4; { MB_RETRYCANCEL -> IDRETRY }
+     Else P.CPU.Regs.AX := 1; { MB_OK/MB_OKCANCEL -> IDOK }
+    End;
+    ArgWords := 6;
+   End;
+   2: Begin
+    { OldExitWindows():void - ordinal/signature VERIFIES via le VRAI        }
+    { source Wine (user.exe16.spec : "pascal -ret16 OldExitWindows()          }
+    { OldExitWindows16", 0 mot). REEL : l'enonce de l'utilisateur decrit       }
+    { litteralement le VRAI contrat documente (invoque INT 21h/AH=4Ch) -      }
+    { la MEME traduction honnete deja etablie pour ExitKernel/KERNEL.EXE/$2   }
+    { (sfEndProgram, la SEULE fin de programme propre qu'un emulateur           }
+    { mono-programme puisse honnetement offrir). }
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'OldExitWindows : fin de Windows demandee';
+    ArgWords := 0;
+   End;
+   { EnableOEMLayer/3 et DisableOEMLayer/4 : ordinaux marques "stub" SANS     }
+   { AUCUNE signature exploitable dans le VRAI source Wine (user.exe16.spec) }
+   { - meme discipline que FatalExit/KERNEL.EXE/$1/CallProcInstance/$53 :     }
+   { inventer un nombre de mots ici serait une pure supposition qui             }
+   { risquerait de corrompre la pile de TOUS les appels Win16 suivants -         }
+   { laissent donc deliberement tomber sur le gestionnaire generique             }
+   { "Else" ci-dessous. }
+   7: Begin
+    { ExitWindows(dwReserved,wReturnCode):bool - ordinal/signature           }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { ExitWindows(long word) ExitWindows16", 2+1 = 3 mots). MEME               }
+    { traduction honnete qu'OldExitWindows/$2 ci-dessus et                       }
+    { qu'ExitKernel/KERNEL.EXE/$2 (sfEndProgram) - quel que soit le               }
+    { VRAI sous-mode demande (redemarrer Windows seul/tout le systeme/             }
+    { revenir au DOS), ce sous-ensemble mono-programme ne peut offrir             }
+    { qu'UNE seule fin propre honnete. dwReserved/wReturnCode n'ont pas             }
+    { besoin d'etre lus (aucune branche ne depend de leur valeur). }
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'ExitWindows : fin de Windows demandee';
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   13, 15: Begin
+    { GetTickCount():DWORD / GetCurrentTime():DWORD - ordinaux/signature    }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal              }
+    { GetTickCount() GetTickCount" ordinal 13 ET "pascal GetCurrentTime()       }
+    { GetTickCount" ordinal 15 - le commentaire du VRAI fichier .spec               }
+    { precise LUI-MEME "GetCurrentTime is effectively identical to                  }
+    { GetTickCount" : LE MEME point d'entree exact, pas 2 implantations              }
+    { distinctes meme dans le VRAI Wine - reproduit ici avec le MEME corps            }
+    { EXACT). 0 mot, PAS de "-ret16" = retour COMPLET DX:AX. REEL : reutilise         }
+    { EmuTickCounter (compteur de tics BIOS reel, ~18.2/s) converti en               }
+    { millisecondes via le MEME facteur ~55 ms/tic deja etabli pour                  }
+    { SetTimer/$10 (uElapse Div 55) - la conversion INVERSE exacte, pas               }
+    { une valeur inventee independante. }
+    GTCTicks := LongInt(EmuTickCounter) * 55;
+    P.CPU.Regs.AX := Word(GTCTicks And $FFFF);
+    P.CPU.Regs.DX := Word((GTCTicks Shr 16) And $FFFF);
+    ArgWords := 0;
+   End;
+   14: Begin
+    { GetTimerResolution():DWORD - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (user.exe16.spec : "pascal GetTimerResolution()             }
+    { GetTimerResolution16", 0 mot, PAS de "-ret16" = retour COMPLET             }
+    { DX:AX, en microsecondes par tic documente reel). REEL : la VRAIE           }
+    { granularite de minuterie de ce sous-ensemble EST le tic BIOS               }
+    { ~55 ms (MEME facteur exact deja etabli pour SetTimer/$10 et                  }
+    { GetTickCount/$13 ci-dessus, PAS une valeur distincte inventee) =              }
+    { 55000 microsecondes. }
+    P.CPU.Regs.AX := 55000;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 0;
+   End;
+   16: Begin
+    { ClipCursor(lpRect):bool - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (user.exe16.spec : "pascal -ret16 ClipCursor(ptr)            }
+    { ClipCursor16", 2 mots). REEL ET CONCRET : Windows 3.x standard-mode        }
+    { delegue REELLEMENT ce contrat au VRAI pilote souris DOS (INT 33h) -        }
+    { ce sous-ensemble EMULE deja reellement ce pilote (EmuMouseXMin/Max/         }
+    { YMin/Max, le MEME etat consomme par le VRAI gestionnaire de                  }
+    { deplacement souris et par INT 33h AH=07h/08h) : fixe ces 4 memes                }
+    { bornes depuis le VRAI RECT lu en memoire emulee - PAS une simulation           }
+    { distincte. lpRect NUL (seg=ofs=0, convention documentee reelle              }
+    { "supprimer le clip") restaure les bornes plein-ecran (MEME logique              }
+    { EXACTE que la reinitialisation INT33h AX=0000h, voir ce code plus              }
+    { haut). RECT.right/bottom (EXCLUSIFS, convention Win16 standard) sont            }
+    { convertis en bornes INCLUSIVES (-1) pour INT 33h. }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If (FRLpSeg = 0) And (FRLpOfs = 0) Then Begin
+     EmuMouseXMin := 0;
+     EmuMouseYMin := 0;
+     If EmuVideo.IsGraphic Then Begin
+      EmuMouseXMax := EmuVideo.Width - 1;
+      EmuMouseYMax := EmuVideo.Height - 1;
+     End Else Begin
+      EmuMouseXMax := EmuVideo.TextCols * 8 - 1;
+      EmuMouseYMax := EmuVideo.TextRows * 8 - 1;
+     End;
+    End Else Begin
+     FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+     FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+     FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+     FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+     EmuMouseXMin := FRLeft;
+     EmuMouseYMin := FRTop;
+     EmuMouseXMax := FRRight - 1;
+     EmuMouseYMax := FRBottom - 1;
+    End;
+    If EmuMouseX < EmuMouseXMin Then EmuMouseX := EmuMouseXMin;
+    If EmuMouseX > EmuMouseXMax Then EmuMouseX := EmuMouseXMax;
+    If EmuMouseY < EmuMouseYMin Then EmuMouseY := EmuMouseYMin;
+    If EmuMouseY > EmuMouseYMax Then EmuMouseY := EmuMouseYMax;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   17: Begin
+    { GetCursorPos(lpPoint):bool - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (user.exe16.spec : "pascal -ret16 GetCursorPos(ptr)          }
+    { GetCursorPos16", 2 mots). REEL ET CONCRET, symetrique de ClipCursor/     }
+    { $16 ci-dessus : ecrit VRAIMENT le VRAI POINT (EmuMouseX,EmuMouseY,          }
+    { le MEME etat souris emule consomme par INT 33h AH=03h) - PAS une              }
+    { position figee inventee. }
+    GCPLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCPLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Emu_WriteWord(P.CPU, GCPLpSeg, GCPLpOfs, Word(EmuMouseX));
+    Emu_WriteWord(P.CPU, GCPLpSeg, Word(GCPLpOfs + 2), Word(EmuMouseY));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   18: Begin
+    { SetCapture(hWnd):HWND - ordinal/signature VERIFIES via le VRAI        }
+    { source Wine (user.exe16.spec : "pascal -ret16 SetCapture(word)           }
+    { SetCapture16", 1 mot). REEL : stocke VRAIMENT la fenetre captante          }
+    { (Win16_CaptureHWnd, mono-fenetre/mono-tache - un seul detenteur              }
+    { possible a la fois, meme esprit que Win16_ActiveDCWindow) et                  }
+    { retourne l'ANCIENNE (contrat reel documente), mais aucun VRAI                  }
+    { routage d'evenements souris vers cette fenetre n'est modelise                  }
+    { (aucun clavier/souris route vers les WNDPROC dans ce sous-ensemble,             }
+    { meme limitation deja disclosee pour TranslateMessage/$113). }
+    SCapOld := Win16_CaptureHWnd;
+    Win16_CaptureHWnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := SCapOld;
+    ArgWords := 1;
+   End;
+   19: Begin
+    { ReleaseCapture():bool - ordinal/signature VERIFIES via le VRAI        }
+    { source Wine (user.exe16.spec : "pascal -ret16 ReleaseCapture()           }
+    { ReleaseCapture16", 0 mot). REEL, symetrique de SetCapture/$18              }
+    { ci-dessus : vide VRAIMENT Win16_CaptureHWnd. }
+    Win16_CaptureHWnd := 0;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 0;
+   End;
+   20: Begin
+    { SetDoubleClickTime(wInterval):bool - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                    }
+    { SetDoubleClickTime(word) SetDoubleClickTime16", 1 mot). REEL :             }
+    { stocke VRAIMENT Win16_DblClickTime - wInterval=0 (convention                  }
+    { documentee reelle) restaure le VRAI defaut SDK Windows (500 ms,                }
+    { MEME valeur deja utilisee a l'initialisation). }
+    SDblClickArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If SDblClickArg = 0 Then Win16_DblClickTime := 500
+    Else Win16_DblClickTime := SDblClickArg;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   21: Begin
+    { GetDoubleClickTime():UINT - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (user.exe16.spec : "pascal -ret16                            }
+    { GetDoubleClickTime() GetDoubleClickTime16", 0 mot). REEL,                    }
+    { symetrique de SetDoubleClickTime/$20 ci-dessus : retourne la VRAIE            }
+    { valeur stockee (Win16_DblClickTime). }
+    P.CPU.Regs.AX := Win16_DblClickTime;
+    ArgWords := 0;
+   End;
+   22: Begin
+    { SetFocus(hWnd):HWND - ordinal/signature VERIFIES via le VRAI          }
+    { source Wine (user.exe16.spec : "pascal -ret16 SetFocus(word)             }
+    { SetFocus16", 1 mot). REEL : stocke VRAIMENT la fenetre focalisee            }
+    { (Win16_FocusHWnd, mono-tache - un seul detenteur possible a la fois,           }
+    { meme esprit que SetCapture/$18) et retourne l'ANCIENNE (contrat                }
+    { reel documente) - aucun VRAI WM_SETFOCUS/WM_KILLFOCUS n'est                    }
+    { synthetise (aucun clavier route dans ce sous-ensemble de toute                  }
+    { facon, meme limitation que TranslateMessage/$113). }
+    SFocusOld := Win16_FocusHWnd;
+    Win16_FocusHWnd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := SFocusOld;
+    ArgWords := 1;
+   End;
+   23: Begin
+    { GetFocus():HWND - ordinal/signature VERIFIES via le VRAI source      }
+    { Wine (user.exe16.spec : "pascal -ret16 GetFocus() GetFocus16", 0        }
+    { mot). REEL, symetrique de SetFocus/$22 ci-dessus : retourne la VRAIE       }
+    { valeur stockee (Win16_FocusHWnd). }
+    P.CPU.Regs.AX := Win16_FocusHWnd;
+    ArgWords := 0;
+   End;
+   24: Begin
+    { RemoveProp(hWnd,lpString):HANDLE - ordinal/signature VERIFIES via     }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                    }
+    { RemoveProp(word ptr) RemoveProp16", 1+2 = 3 mots). REEL ET CONCRET :        }
+    { cherche VRAIMENT l'entree (hWnd,nom) dans Win16_Prop* (table plate             }
+    { partagee, WIN16_MAX_PROPS entrees) et la retire si trouvee,                    }
+    { retournant le VRAI hData qui y etait stocke (contrat documente                 }
+    { reel) ; entree introuvable -> 0 (documente reel "propriete                     }
+    { inexistante"). }
+    PropStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    PropStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PropHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    PropStr := UpCaseStr(Win16_ReadGuestString(P.CPU, PropStrSeg, PropStrOfs));
+    PropIdx := -1;
+    For CWI := 0 To Win16_PropCount - 1 Do
+     If (Win16_PropHWnd[CWI] = PropHWndArg) And
+        (UpCaseStr(Win16_PropName[CWI]) = PropStr) Then PropIdx := CWI;
+    If PropIdx >= 0 Then Begin
+     PropDataArg := Win16_PropData[PropIdx];
+     For CWI := PropIdx To Win16_PropCount - 2 Do Begin
+      Win16_PropHWnd[CWI] := Win16_PropHWnd[CWI + 1];
+      Win16_PropName[CWI] := Win16_PropName[CWI + 1];
+      Win16_PropData[CWI] := Win16_PropData[CWI + 1];
+     End;
+     Dec(Win16_PropCount);
+     P.CPU.Regs.AX := PropDataArg;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   25: Begin
+    { GetProp(hWnd,lpString):HANDLE - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16 GetProp(word          }
+    { str) GetProp16", 1+2 = 3 mots). REEL, MEME table Win16_Prop*             }
+    { qu'RemoveProp/$24 ci-dessus mais SANS retirer l'entree (simple              }
+    { consultation, contrat documente reel). }
+    PropStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    PropStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PropHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    PropStr := UpCaseStr(Win16_ReadGuestString(P.CPU, PropStrSeg, PropStrOfs));
+    PropIdx := -1;
+    For CWI := 0 To Win16_PropCount - 1 Do
+     If (Win16_PropHWnd[CWI] = PropHWndArg) And
+        (UpCaseStr(Win16_PropName[CWI]) = PropStr) Then PropIdx := CWI;
+    If PropIdx >= 0 Then P.CPU.Regs.AX := Win16_PropData[PropIdx]
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   26: Begin
+    { SetProp(hWnd,lpString,hData):bool - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16 SetProp(word      }
+    { str word) SetProp16", 1+2+1 = 4 mots). REEL : entree (hWnd,nom)             }
+    { deja presente -> met REELLEMENT a jour son hData (contrat documente          }
+    { reel "remplace l'existante") ; sinon cree une VRAIE nouvelle entree          }
+    { dans Win16_Prop*. Table pleine (WIN16_MAX_PROPS) : echec honnete             }
+    { (0), aucune approximation. }
+    PropDataArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    PropStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PropStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    PropHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    PropStr := UpCaseStr(Win16_ReadGuestString(P.CPU, PropStrSeg, PropStrOfs));
+    PropIdx := -1;
+    For CWI := 0 To Win16_PropCount - 1 Do
+     If (Win16_PropHWnd[CWI] = PropHWndArg) And
+        (UpCaseStr(Win16_PropName[CWI]) = PropStr) Then PropIdx := CWI;
+    If PropIdx >= 0 Then Begin
+     Win16_PropData[PropIdx] := PropDataArg;
+     P.CPU.Regs.AX := 1;
+    End Else If Win16_PropCount < WIN16_MAX_PROPS Then Begin
+     Win16_PropHWnd[Win16_PropCount] := PropHWndArg;
+     Win16_PropName[Win16_PropCount] := PropStr;
+     Win16_PropData[Win16_PropCount] := PropDataArg;
+     Inc(Win16_PropCount);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   27: Begin
+    { EnumProps(hWnd,lpEnumFunc):int - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16 EnumProps(word       }
+    { segptr) EnumProps16", 1+2 = 3 mots). REEL ET CONCRET : parcourt          }
+    { VRAIMENT Win16_Prop* pour hWnd et appelle un VRAI callback                 }
+    { PROPENUMPROC16 SYNCHRONE (Win16_CallPropEnumProc, nouveau helper                }
+    { factorise ci-dessus, meme technique que Win16_CallEnumFontsProc)                }
+    { pour chacune - le nom (String Pascal en memoire hote) est ecrit                 }
+    { dans une VRAIE chaine ASCIIZ temporaire du tas Win16 (bump                      }
+    { allocator, jamais recupere - meme simplification documentee que                 }
+    { partout ailleurs) pour obtenir un VRAI pointeur far exploitable par              }
+    { le callback invite. Arret des que le callback retourne FALSE                     }
+    { (contrat reel documente) - retourne la DERNIERE valeur du callback,              }
+    { ou 0 si aucune propriete (contrat reel documente egalement). }
+    EPFuncOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    EPFuncSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    PropHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    EPResult := 0;
+    For CWI := 0 To Win16_PropCount - 1 Do
+     If Win16_PropHWnd[CWI] = PropHWndArg Then Begin
+      EPNameLen := Length(Win16_PropName[CWI]);
+      If (LongInt(Win16_HeapNext) + EPNameLen + 1) <= LongInt(Win16_HeapLimit) Then Begin
+       EPNameOfs := Win16_HeapNext;
+       For CWIdx := 1 To EPNameLen Do
+        Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EPNameOfs + CWIdx - 1),
+         Byte(Ord(Win16_PropName[CWI][CWIdx])));
+       Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EPNameOfs + EPNameLen), 0);
+       Win16_HeapNext := Win16_HeapNext + Word(EPNameLen) + 1;
+       EPResult := Win16_CallPropEnumProc(P, EPFuncSeg, EPFuncOfs,
+        PropHWndArg, Win16_StackSeg, EPNameOfs, Win16_PropData[CWI]);
+       If EPResult = 0 Then Break;
+      End;
+     End;
+    P.CPU.Regs.AX := Word(EPResult);
+    ArgWords := 3;
+   End;
+   28: Begin
+    { ClientToScreen(hWnd,lpPoint):bool - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                   }
+    { ClientToScreen(word ptr) ClientToScreen16", 1+2 = 3 mots). REEL ET         }
+    { CONCRET : retrouve la VRAIE fenetre par hWnd et applique la MEME               }
+    { conversion CLIENT->ABSOLU deja etablie partout ailleurs pour le                 }
+    { rendu GDI (Win16_WindowX/Y[idx]+1, voir MoveTo/LineTo/FillRect/etc.)              }
+    { - PAS un calcul distinct invente. Fenetre inconnue : point INCHANGE,             }
+    { echec honnete (0). }
+    CTSLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CTSLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CTSHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CTSWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = CTSHWndArg Then CTSWIdx := CWI;
+    If CTSWIdx >= 0 Then Begin
+     CTSX := SmallInt(Emu_ReadWord(P.CPU, CTSLpSeg, CTSLpOfs));
+     CTSY := SmallInt(Emu_ReadWord(P.CPU, CTSLpSeg, Word(CTSLpOfs + 2)));
+     CTSX := SmallInt(Win16_WindowX[CTSWIdx] + 1 + CTSX);
+     CTSY := SmallInt(Win16_WindowY[CTSWIdx] + 1 + CTSY);
+     Emu_WriteWord(P.CPU, CTSLpSeg, CTSLpOfs, Word(CTSX));
+     Emu_WriteWord(P.CPU, CTSLpSeg, Word(CTSLpOfs + 2), Word(CTSY));
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   29: Begin
+    { ScreenToClient(hWnd,lpPoint):bool - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                   }
+    { ScreenToClient(word ptr) ScreenToClient16", 1+2 = 3 mots). REEL,           }
+    { transformation INVERSE exacte de ClientToScreen/$28 ci-dessus (MEME           }
+    { conversion Win16_WindowX/Y[idx]+1, soustraite au lieu d'ajoutee). }
+    CTSLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CTSLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CTSHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CTSWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = CTSHWndArg Then CTSWIdx := CWI;
+    If CTSWIdx >= 0 Then Begin
+     CTSX := SmallInt(Emu_ReadWord(P.CPU, CTSLpSeg, CTSLpOfs));
+     CTSY := SmallInt(Emu_ReadWord(P.CPU, CTSLpSeg, Word(CTSLpOfs + 2)));
+     CTSX := SmallInt(CTSX - (Win16_WindowX[CTSWIdx] + 1));
+     CTSY := SmallInt(CTSY - (Win16_WindowY[CTSWIdx] + 1));
+     Emu_WriteWord(P.CPU, CTSLpSeg, CTSLpOfs, Word(CTSX));
+     Emu_WriteWord(P.CPU, CTSLpSeg, Word(CTSLpOfs + 2), Word(CTSY));
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   30: Begin
+    { WindowFromPoint(pt):HWND - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (user.exe16.spec : "pascal -ret16 WindowFromPoint(long)      }
+    { WindowFromPoint16", 1 LONG = 2 mots, pt = POINT empaquete via               }
+    { MAKELONG(x,y) documente reel). REEL : parcourt VRAIMENT                        }
+    { Win16_Windows[] EN ORDRE INVERSE de creation (approximation                    }
+    { documentee de l'ordre Z reel - la derniere creee est la plus                    }
+    { probable au-dessus) et teste le VRAI rectangle EXTERIEUR                        }
+    { (Win16_WindowX/Y/W/H, le MEME stocke par CreateWindow/$41, PAS le                }
+    { rectangle client +1 utilise pour le rendu GDI). Aucune fenetre                   }
+    { DESKTOP distincte modelisee (limitation disclosee) : retourne 0                  }
+    { honnetement si aucune fenetre ne contient le point, plutot qu'un                 }
+    { handle de bureau invente. }
+    WFPXLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    WFPYHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    WFPX := SmallInt(WFPXLo);
+    WFPY := SmallInt(WFPYHi);
+    WFPIdx := -1;
+    For CWI := Win16_WindowCount - 1 DownTo 0 Do
+     If (WFPIdx < 0) And
+        (WFPX >= Win16_WindowX[CWI]) And (WFPX < Win16_WindowX[CWI] + Win16_WindowW[CWI]) And
+        (WFPY >= Win16_WindowY[CWI]) And (WFPY < Win16_WindowY[CWI] + Win16_WindowH[CWI]) Then
+      WFPIdx := CWI;
+    If WFPIdx >= 0 Then P.CPU.Regs.AX := Win16_WindowHWnd[WFPIdx]
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 2;
    End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
