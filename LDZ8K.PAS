@@ -42,11 +42,31 @@ Const
  RBUND=255;
  RBEXT=256;
  RBMSK=$0FFF;
- X_SU_MAGIC=$EE00;X_SX_MAGIC=$EE01;X_NU_MAGIC=$EE02;X_NXN_MAGIC=$EE03;
- X_NUS_MAGIC=$EE06;X_NXS_MAGIC=$EE07;X_NUI_MAGIC=$EE0A;X_NXI_MAGIC=$EE0B;
- X_SG_BSS=1;X_SG_STK=2;X_SG_COD=3;X_SG_CON=4;X_SG_DAT=5;X_SG_MXU=6;X_SG_MXP=7;
- X_RL_OFF=1;X_RL_SSG=2;X_RL_LSG=3;X_RL_XOF=5;X_RL_XSSG=6;X_RL_XLSG=7;
- X_SY_LOC=1;X_SY_UNX=2;X_SY_GLB=3;X_SY_SEG=4;
+ X_SU_MAGIC=$EE00;
+ X_SX_MAGIC=$EE01;
+ X_NU_MAGIC=$EE02;
+ X_NXN_MAGIC=$EE03;
+ X_NUS_MAGIC=$EE06;
+ X_NXS_MAGIC=$EE07;
+ X_NUI_MAGIC=$EE0A;
+ X_NXI_MAGIC=$EE0B;
+ X_SG_BSS=1;
+ X_SG_STK=2;
+ X_SG_COD=3;
+ X_SG_CON=4;
+ X_SG_DAT=5;
+ X_SG_MXU=6;
+ X_SG_MXP=7;
+ X_RL_OFF=1;
+ X_RL_SSG=2;
+ X_RL_LSG=3;
+ X_RL_XOF=5;
+ X_RL_XSSG=6;
+ X_RL_XLSG=7;
+ X_SY_LOC=1;
+ X_SY_UNX=2;
+ X_SY_GLB=3;
+ X_SY_SEG=4;
  MaxErrors=100;
 
 Type
@@ -500,121 +520,218 @@ Begin
  else Error(FileName,'type de bloc UNIDOT inconnu')
 End
 End;Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture');
-if TargetKnown and(TargetSegmented<>SegmentedSeen)Then
- Error(FileName,'melange de modules Z8001 et Z8002')
-else Begin TargetKnown:=True;TargetSegmented:=SegmentedSeen End
+if TargetKnown and(TargetSegmented<>SegmentedSeen)Then Error(FileName,
+'melange de modules Z8001 et Z8002')
+else
+Begin
+ TargetKnown:=True;TargetSegmented:=SegmentedSeen
+End
 End;
 
 Function ReadBEWordFile(Var F:File;Var Ok:Boolean):Word;
-Var B:Array[0..1]of Byte;N:Word;
-Begin BlockRead(F,B,2,N);if N<>2 Then Ok:=False;ReadBEWordFile:=Word(B[0])shl 8 or B[1] End;
+Var
+ B:Array[0..1]of Byte;
+ N:Word;
+Begin
+ BlockRead(F,B,2,N);if N<>2 Then Ok:=False;ReadBEWordFile:=Word(B[0])shl 8 or B[1]
+End;
 
 Function ReadBELongFile(Var F:File;Var Ok:Boolean):LongInt;
-Var A,B:Word;
-Begin A:=ReadBEWordFile(F,Ok);B:=ReadBEWordFile(F,Ok);ReadBELongFile:=LongInt(A)shl 16 or B End;
+Var
+ A,B:Word;
+Begin
+ A:=ReadBEWordFile(F,Ok);B:=ReadBEWordFile(F,Ok);ReadBELongFile:=LongInt(A)shl 16 or B
+End;
 
 Function DefaultSegmentName(SegmentType:Byte;Index:Integer):String;
-Var N:String;
+Var
+ N:String;
 Begin
  Str(Index,N);Case SegmentType of
-  X_SG_COD:DefaultSegmentName:='__text'+N;
-  X_SG_CON:DefaultSegmentName:='__con'+N;
-  X_SG_DAT:DefaultSegmentName:='__data'+N;
-  X_SG_BSS:DefaultSegmentName:='__bss'+N;
-  X_SG_STK:DefaultSegmentName:='__stack'+N;
-  else DefaultSegmentName:='__mixed'+N
- End
+ X_SG_COD:DefaultSegmentName:='__text'+N;
+ X_SG_CON:DefaultSegmentName:='__con'+N;
+ X_SG_DAT:DefaultSegmentName:='__data'+N;
+ X_SG_BSS:DefaultSegmentName:='__bss'+N;
+ X_SG_STK:DefaultSegmentName:='__stack'+N;
+ else DefaultSegmentName:='__mixed'+N
+End
 End;
 
 Procedure ReadXOut(Const FileName:String;Var M:TModule);
-Var F:File;Ok,Segmented:Boolean;Magic,NSeg:Word;InitSize,RelocSize,SymbolSize,ExpectedSize:LongInt;
- I,J,SegmentIndex,SymbolIndex:Integer;Assigned,SegmentType:Byte;SegmentLength:Word;
- S,LastS:PObjSection;Y,LastY:PObjSymbol;T,LastT:PText;R,LastR:PReloc;
- InitRead,Left,Chunk,Location:LongInt;Flag:Byte;Base:Word;Name:String;Buf:Array[0..248]of Byte;N:Word;
+Var
+ F:File;
+ Ok,Segmented:Boolean;
+ Magic,NSeg:Word;
+ InitSize,RelocSize,SymbolSize,ExpectedSize:LongInt;
+ I,J,SegmentIndex,SymbolIndex:Integer;
+ Assigned,SegmentType:Byte;
+ SegmentLength:Word;
+ S,LastS:PObjSection;
+ Y,LastY:PObjSymbol;
+ T,LastT:PText;
+ R,LastR:PReloc;
+ InitRead,Left,Chunk,Location:LongInt;
+ Flag:Byte;
+ Base:Word;
+ Name:String;
+ Buf:Array[0..248]of Byte;
+ N:Word;
 Begin
  FillChar(M,SizeOf(M),0);M.FileName:=FileName;Assign(F,FileName);Reset(F,1);
- if IOResult<>0 Then Begin Error(FileName,'ouverture impossible');Exit End;Ok:=True;
+ if IOResult<>0 Then Begin
+  Error(FileName,'ouverture impossible');Exit
+ End;Ok:=True;
  Magic:=ReadBEWordFile(F,Ok);NSeg:=ReadBEWordFile(F,Ok);InitSize:=ReadBELongFile(F,Ok);
  RelocSize:=ReadBELongFile(F,Ok);SymbolSize:=ReadBELongFile(F,Ok);
- if not Ok Then Begin Close(F);Error(FileName,'en-tete x.out tronque');Exit End;
+ if not Ok Then Begin
+  Close(F);Error(FileName,'en-tete x.out tronque');Exit
+ End;
  Segmented:=(Magic=X_SU_MAGIC)or(Magic=X_SX_MAGIC);
  if not Segmented and not((Magic=X_NU_MAGIC)or(Magic=X_NXN_MAGIC)or
- (Magic=X_NUS_MAGIC)or(Magic=X_NXS_MAGIC)or(Magic=X_NUI_MAGIC)or(Magic=X_NXI_MAGIC))Then Begin
+ (Magic=X_NUS_MAGIC)or(Magic=X_NXS_MAGIC)or(Magic=X_NUI_MAGIC)or(Magic=X_NXI_MAGIC))
+ Then Begin
   Close(F);Error(FileName,'mot magique x.out inconnu');Exit
  End;
- M.IsExecutable:=(Magic=X_SX_MAGIC)or(Magic=X_NXN_MAGIC)or(Magic=X_NXS_MAGIC)or(Magic=X_NXI_MAGIC);
- if M.IsExecutable Then Begin Close(F);Error(FileName,'un executable x.out ne peut pas etre relie comme objet');Exit End;
- if(RelocSize<0)or(SymbolSize<0)or((RelocSize mod 6)<>0)or((SymbolSize mod 12)<>0)Then Begin
+ M.IsExecutable:=(Magic=X_SX_MAGIC)or(Magic=X_NXN_MAGIC)or(Magic=X_NXS_MAGIC)or(Magic=
+ X_NXI_MAGIC);
+ if M.IsExecutable Then Begin
+  Close(F);Error(FileName,'un executable x.out ne peut pas etre relie comme objet');Exit
+ End;
+ if(RelocSize<0)or(SymbolSize<0)or((RelocSize mod 6)<>0)or((SymbolSize mod 12)<>0)
+ Then Begin
   Close(F);Error(FileName,'tailles de tables x.out incorrectes');Exit
  End;
  ExpectedSize:=16+LongInt(NSeg)*4+InitSize+RelocSize+SymbolSize;
- if ExpectedSize<>FileSize(F)Then Begin Close(F);Error(FileName,'taille globale x.out incoherente');Exit End;
- if TargetKnown and(TargetSegmented<>Segmented)Then Error(FileName,'melange de modules Z8001 et Z8002')
- else Begin TargetKnown:=True;TargetSegmented:=Segmented End;
- if(NSeg=0)or(NSeg>254)Then Begin Close(F);Error(FileName,'nombre de segments x.out incorrect');Exit End;
- LastS:=Nil;For I:=0 to NSeg-1 do Begin
-  BlockRead(F,Assigned,1,N);if N<>1 Then Ok:=False;BlockRead(F,SegmentType,1,N);if N<>1 Then Ok:=False;
-  SegmentLength:=ReadBEWordFile(F,Ok);New(S);if S=Nil Then Fatal('memoire pleine');FillChar(S^,SizeOf(S^),0);
-  if not(SegmentType in[X_SG_BSS,X_SG_STK,X_SG_COD,X_SG_CON,X_SG_DAT,X_SG_MXU,X_SG_MXP])Then
-   Error(FileName,'type de segment x.out inconnu');
-  S^.Number:=I+1;S^.AssignedNumber:=Assigned;S^.SegmentType:=SegmentType;S^.Size:=SegmentLength;
+ if ExpectedSize<>FileSize(F)Then Begin
+  Close(F);Error(FileName,'taille globale x.out incoherente');Exit
+ End;
+ if TargetKnown and(TargetSegmented<>Segmented)Then Error(FileName,
+ 'melange de modules Z8001 et Z8002')
+ else
+ Begin
+  TargetKnown:=True;TargetSegmented:=Segmented
+ End;
+ if(NSeg=0)or(NSeg>254)Then Begin
+  Close(F);Error(FileName,'nombre de segments x.out incorrect');Exit
+ End;
+ LastS:=Nil;
+ For I:=0 to NSeg-1 do Begin
+  BlockRead(F,Assigned,1,N);if N<>1 Then Ok:=False;BlockRead(F,SegmentType,1,N);
+  if N<>1 Then Ok:=False;
+  SegmentLength:=ReadBEWordFile(F,Ok);New(S);if S=Nil Then Fatal('memoire pleine');
+  FillChar(S^,SizeOf(S^),0);
+  if not(SegmentType in[X_SG_BSS,X_SG_STK,X_SG_COD,X_SG_CON,X_SG_DAT,X_SG_MXU,X_SG_MXP])
+  Then   Error(FileName,'type de segment x.out inconnu');
+  S^.Number:=I+1;S^.AssignedNumber:=Assigned;S^.SegmentType:=SegmentType;
+  S^.Size:=SegmentLength;
   S^.IsBss:=SegmentType in[X_SG_BSS,X_SG_STK];S^.Name:=DefaultSegmentName(SegmentType,I);
   if LastS=Nil Then M.Sections:=S else LastS^.Next:=S;LastS:=S
  End;
- if not Ok Then Begin Close(F);Error(FileName,'descripteurs x.out tronques');Exit End;
+ if not Ok Then Begin
+  Close(F);Error(FileName,'descripteurs x.out tronques');Exit
+ End;
  InitRead:=0;LastT:=Nil;S:=M.Sections;
  While S<>Nil do Begin
   if not S^.IsBss Then Begin
-   Left:=S^.Size;Location:=0;While Left>0 do Begin
+   Left:=S^.Size;Location:=0;
+   While Left>0 do Begin
     Chunk:=Left;if Chunk>249 Then Chunk:=249;BlockRead(F,Buf,Chunk,N);
-    if N<>Chunk Then Begin Ok:=False;Break End;New(T);if T=Nil Then Fatal('memoire pleine');FillChar(T^,SizeOf(T^),0);
-    T^.Section:=S^.Number;T^.Offset:=Location;T^.Count:=Chunk;For J:=0 to Chunk-1 do T^.Data[J]:=Buf[J];
-    if LastT=Nil Then M.Texts:=T else LastT^.Next:=T;LastT:=T;Inc(Location,Chunk);Inc(InitRead,Chunk);Dec(Left,Chunk)
+    if N<>Chunk Then Begin
+     Ok:=False;Break
+    End;New(T);if T=Nil Then Fatal('memoire pleine');FillChar(T^,SizeOf(T^),0);
+    T^.Section:=S^.Number;T^.Offset:=Location;T^.Count:=Chunk;
+    For J:=0 to Chunk-1 do T^.Data[J]:=Buf[J];
+    if LastT=Nil Then M.Texts:=T else LastT^.Next:=T;LastT:=T;Inc(Location,Chunk);
+    Inc(InitRead,Chunk);Dec(Left,Chunk)
    End
   End;S:=S^.Next
  End;
- if(not Ok)or(InitRead<>InitSize)Then Begin Close(F);Error(FileName,'zone initialisee x.out incoherente');Exit End;
+ if(not Ok)or(InitRead<>InitSize)Then Begin
+  Close(F);Error(FileName,'zone initialisee x.out incoherente');Exit
+ End;
  { Les relogements x.out sont convertis dans des blocs texte artificiels. }
  For I:=1 to RelocSize div 6 do Begin
-  BlockRead(F,Assigned,1,N);if N<>1 Then Ok:=False;BlockRead(F,Flag,1,N);if N<>1 Then Ok:=False;
+  BlockRead(F,Assigned,1,N);if N<>1 Then Ok:=False;BlockRead(F,Flag,1,N);
+  if N<>1 Then Ok:=False;
   Location:=ReadBEWordFile(F,Ok);Base:=ReadBEWordFile(F,Ok);SegmentIndex:=Assigned+1;
-  S:=FindObjSection(M,SegmentIndex);if S=Nil Then Begin Error(FileName,'segment de relogement x.out inconnu');Continue End;
-  T:=M.Texts;While(T<>Nil)and not((T^.Section=SegmentIndex)and(Location>=T^.Offset)and(Location<T^.Offset+T^.Count))do T:=T^.Next;
-  if T=Nil Then Begin Error(FileName,'relogement x.out hors des donnees');Continue End;
-  New(R);if R=Nil Then Fatal('memoire pleine');FillChar(R^,SizeOf(R^),0);R^.Offset:=Location-T^.Offset;
+  S:=FindObjSection(M,SegmentIndex);if S=Nil Then Begin
+   Error(FileName,'segment de relogement x.out inconnu');Continue
+  End;
+  T:=M.Texts;
+  While(T<>Nil)and not((T^.Section=SegmentIndex)and(Location>=T^.Offset)and(Location<
+  T^.Offset+T^.Count))do T:=T^.Next;
+  if T=Nil Then Begin
+   Error(FileName,'relogement x.out hors des donnees');Continue
+  End;
+  New(R);if R=Nil Then Fatal('memoire pleine');FillChar(R^,SizeOf(R^),0);
+  R^.Offset:=Location-T^.Offset;
   Case Flag of
-   X_RL_OFF,X_RL_XOF:Begin if Segmented Then R^.Action:=RAZOF else R^.Action:=RAA16M;R^.Width:=2 End;
-   X_RL_SSG,X_RL_XSSG:Begin R^.Action:=RAZSS;R^.Width:=2 End;
-   X_RL_LSG,X_RL_XLSG:Begin R^.Action:=RAZLS;R^.Width:=4 End;
-   else Begin Error(FileName,'type de relogement x.out inconnu');R^.Action:=0 End
+  X_RL_OFF,X_RL_XOF:
+  Begin
+   if Segmented Then R^.Action:=RAZOF else R^.Action:=RAA16M;R^.Width:=2
   End;
-  if Flag in[X_RL_XOF,X_RL_XSSG,X_RL_XLSG]Then R^.Base:=RBEXT+Base else R^.Base:=Base+1;
-  LastR:=T^.Relocs;if LastR=Nil Then T^.Relocs:=R else Begin While LastR^.Next<>Nil do LastR:=LastR^.Next;LastR^.Next:=R End
- End;
- if(RelocSize mod 6)<>0 Then Error(FileName,'taille de relogement x.out incorrecte');
- LastY:=Nil;For SymbolIndex:=0 to SymbolSize div 12-1 do Begin
-  BlockRead(F,Assigned,1,N);if N<>1 Then Ok:=False;BlockRead(F,Flag,1,N);if N<>1 Then Ok:=False;
-  SegmentLength:=ReadBEWordFile(F,Ok);Name:='';For J:=1 to 8 do Begin BlockRead(F,SegmentType,1,N);if N<>1 Then Ok:=False;
-   if SegmentType<>0 Then Name:=Name+Chr(SegmentType)
+  X_RL_SSG,X_RL_XSSG:
+  Begin
+   R^.Action:=RAZSS;R^.Width:=2
   End;
-  if Flag=X_SY_SEG Then Begin S:=FindObjSection(M,Assigned+1);if S<>Nil Then S^.Name:=Name End
-  else Begin New(Y);if Y=Nil Then Fatal('memoire pleine');FillChar(Y^,SizeOf(Y^),0);Y^.Name:=Name;Y^.Value:=SegmentLength;
-   Y^.Global:=Flag in[X_SY_UNX,X_SY_GLB];Y^.Defined:=Flag<>X_SY_UNX;
-   if Assigned=255 Then Y^.Section:=0 else Y^.Section:=Assigned+1;
-   if not Y^.Defined Then Y^.ExternalBase:=RBEXT+SymbolIndex;
-   if LastY=Nil Then M.Symbols:=Y else LastY^.Next:=Y;LastY:=Y
+  X_RL_LSG,X_RL_XLSG:
+  Begin
+   R^.Action:=RAZLS;R^.Width:=4
+  End;
+  else
+  Begin
+   Error(FileName,'type de relogement x.out inconnu');R^.Action:=0
   End
  End;
- if(SymbolSize mod 12)<>0 Then Error(FileName,'taille de symboles x.out incorrecte');
- if not Ok Then Error(FileName,'fichier x.out tronque');Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture')
+ if Flag in[X_RL_XOF,X_RL_XSSG,X_RL_XLSG]Then R^.Base:=RBEXT+Base else R^.Base:=Base+1;
+ LastR:=T^.Relocs;if LastR=Nil Then T^.Relocs:=R else
+ Begin
+  While LastR^.Next<>Nil do LastR:=LastR^.Next;LastR^.Next:=R
+ End
+End;
+if(RelocSize mod 6)<>0 Then Error(FileName,'taille de relogement x.out incorrecte');
+LastY:=Nil;
+For SymbolIndex:=0 to SymbolSize div 12-1 do Begin
+ BlockRead(F,Assigned,1,N);if N<>1 Then Ok:=False;BlockRead(F,Flag,1,N);
+ if N<>1 Then Ok:=False;
+ SegmentLength:=ReadBEWordFile(F,Ok);Name:='';
+ For J:=1 to 8 do Begin
+  BlockRead(F,SegmentType,1,N);if N<>1 Then Ok:=False;
+  if SegmentType<>0 Then Name:=Name+Chr(SegmentType)
+ End;
+ if Flag=X_SY_SEG Then Begin
+  S:=FindObjSection(M,Assigned+1);if S<>Nil Then S^.Name:=Name
+ End
+ else
+ Begin
+  New(Y);if Y=Nil Then Fatal('memoire pleine');FillChar(Y^,SizeOf(Y^),0);Y^.Name:=Name;
+  Y^.Value:=SegmentLength;
+  Y^.Global:=Flag in[X_SY_UNX,X_SY_GLB];Y^.Defined:=Flag<>X_SY_UNX;
+  if Assigned=255 Then Y^.Section:=0 else Y^.Section:=Assigned+1;
+  if not Y^.Defined Then Y^.ExternalBase:=RBEXT+SymbolIndex;
+  if LastY=Nil Then M.Symbols:=Y else LastY^.Next:=Y;LastY:=Y
+ End
+End;
+if(SymbolSize mod 12)<>0 Then Error(FileName,'taille de symboles x.out incorrecte');
+if not Ok Then Error(FileName,'fichier x.out tronque');Close(F);
+if IOResult<>0 Then Error(FileName,'erreur de fermeture')
 End;
 
 Procedure ReadObject(Const FileName:String;Var M:TModule);
-Var F:File;B:Array[0..1]of Byte;N:Word;Magic:Word;
+Var
+ F:File;
+ B:Array[0..1]of Byte;
+ N:Word;
+ Magic:Word;
 Begin
- Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin FillChar(M,SizeOf(M),0);M.FileName:=FileName;Error(FileName,'ouverture impossible');Exit End;
- BlockRead(F,B,2,N);Close(F);if IOResult<>0 Then Begin End;
- if N<>2 Then Begin FillChar(M,SizeOf(M),0);M.FileName:=FileName;Error(FileName,'fichier trop court');Exit End;
+ Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin
+  FillChar(M,SizeOf(M),0);M.FileName:=FileName;Error(FileName,'ouverture impossible');Exit
+ End;
+ BlockRead(F,B,2,N);Close(F);if IOResult<>0 Then Begin
+ End;
+ if N<>2 Then Begin
+  FillChar(M,SizeOf(M),0);M.FileName:=FileName;Error(FileName,'fichier trop court');Exit
+ End;
  Magic:=Word(B[0])shl 8 or B[1];
  if(Magic=X_SU_MAGIC)or(Magic=X_SX_MAGIC)or(Magic=X_NU_MAGIC)or(Magic=X_NXN_MAGIC)or
  (Magic=X_NUS_MAGIC)or(Magic=X_NXS_MAGIC)or(Magic=X_NUI_MAGIC)or(Magic=X_NXI_MAGIC)
@@ -643,19 +760,24 @@ Begin
    if Y^.Section=0 Then Begin
     G:=GetGlobal(Y^.Name);
     if G^.Defined Then Error(M.FileName,'symbole defini plusieurs fois: '+Y^.Name)
-    else Begin G^.Defined:=True;G^.Absolute:=True;G^.Value:=Y^.Value End
-   End else Begin
-   S:=FindObjSection(M,Y^.Section);
-   if S=Nil Then Error(M.FileName,'symbole dans un segment inconnu: '+Y^.Name)
-   else
-   Begin
-    G:=GetGlobal(Y^.Name);
-    if G^.Defined Then Error(M.FileName,'symbole defini plusieurs fois: '+Y^.Name)
     else
     Begin
-     G^.Defined:=True;G^.Section:=S^.OutputSection;G^.Value:=S^.OutputBase+Y^.Value
+     G^.Defined:=True;G^.Absolute:=True;G^.Value:=Y^.Value
     End
-   End End
+   End else
+   Begin
+    S:=FindObjSection(M,Y^.Section);
+    if S=Nil Then Error(M.FileName,'symbole dans un segment inconnu: '+Y^.Name)
+    else
+    Begin
+     G:=GetGlobal(Y^.Name);
+     if G^.Defined Then Error(M.FileName,'symbole defini plusieurs fois: '+Y^.Name)
+     else
+     Begin
+      G^.Defined:=True;G^.Section:=S^.OutputSection;G^.Value:=S^.OutputBase+Y^.Value
+     End
+    End
+   End
   End else if Y^.Global Then GetGlobal(Y^.Name);Y:=Y^.Next
  End;
  if M.HasTransfer and not HasTransfer Then Begin
@@ -797,7 +919,7 @@ Var
 Begin
  S:=OutSections;
  While S<>Nil do Begin
- U:=UpperString(S^.Name);
+  U:=UpperString(S^.Name);
   if S^.SegmentType=0 Then Begin
    if S^.IsBss or(Pos('BSS',U)<>0)Then S^.SegmentType:=X_SG_BSS
    else if Pos('STACK',U)<>0 Then S^.SegmentType:=X_SG_STK
@@ -812,10 +934,12 @@ Begin
  End;
  if Opt.StackSize>0 Then Begin
   Stack:=FindOutSection('__stack',0);Stack^.IsBss:=True;
- if Stack^.Size<Opt.StackSize Then Stack^.Size:=Opt.StackSize
+  if Stack^.Size<Opt.StackSize Then Stack^.Size:=Opt.StackSize
  End;
- N:=0;S:=OutSections;While S<>Nil do Begin
-  if S^.SegmentType=0 Then if S^.IsBss Then S^.SegmentType:=X_SG_STK else S^.SegmentType:=X_SG_MXU;
+ N:=0;S:=OutSections;
+ While S<>Nil do Begin
+  if S^.SegmentType=0 Then if S^.IsBss Then S^.SegmentType:=X_SG_STK else S^.SegmentType:=
+  X_SG_MXU;
   if N>127 Then Fatal('x.out ne peut contenir plus de 128 segments');
   if S^.Size>$FFFF Then Fatal('segment x.out superieur a 64 Kio: '+S^.Name);
   S^.AssignedNumber:=N;Inc(N);S:=S^.Next
@@ -964,126 +1088,231 @@ Begin
 End;
 
 Procedure RawByte(V:Byte);
-Var N:Word;
-Begin BlockWrite(OutputFile,V,1,N);if N<>1 Then Fatal('erreur d''ecriture x.out') End;
+Var
+ N:Word;
+Begin
+ BlockWrite(OutputFile,V,1,N);if N<>1 Then Fatal('erreur d''ecriture x.out')
+End;
 
-Procedure RawWord(V:Word);
-Begin RawByte(V shr 8);RawByte(V) End;
+Procedure RawWord(V:Word);Begin
+ RawByte(V shr 8);RawByte(V)
+End;
 
-Procedure RawLong(V:LongInt);
-Begin RawWord(Word(LongInt(V)shr 16));RawWord(Word(V)) End;
+Procedure RawLong(V:LongInt);Begin
+ RawWord(Word(LongInt(V)shr 16));RawWord(Word(V))
+End;
 
 Function FindOutByNumber(N:Word):POutSection;
-Var S:POutSection;
-Begin S:=OutSections;While(S<>Nil)and(S^.Number<>N)do S:=S^.Next;FindOutByNumber:=S End;
+Var
+ S:POutSection;
+Begin
+ S:=OutSections;
+ While(S<>Nil)and(S^.Number<>N)do S:=S^.Next;FindOutByNumber:=S
+End;
 
 Function FindGlobalByBase(N:Word):PGlobal;
-Var G:PGlobal;
-Begin G:=Globals;While(G<>Nil)and(G^.ObjectBase<>N)do G:=G^.Next;FindGlobalByBase:=G End;
+Var
+ G:PGlobal;
+Begin
+ G:=Globals;
+ While(G<>Nil)and(G^.ObjectBase<>N)do G:=G^.Next;FindGlobalByBase:=G
+End;
 
 Function UndefinedGlobals:Boolean;
-Var G:PGlobal;
-Begin G:=Globals;While G<>Nil do Begin if not G^.Defined Then Begin UndefinedGlobals:=True;Exit End;G:=G^.Next End;
+Var
+ G:PGlobal;
+Begin
+ G:=Globals;
+ While G<>Nil do Begin
+  if not G^.Defined Then Begin
+   UndefinedGlobals:=True;Exit
+  End;G:=G^.Next
+ End;
  UndefinedGlobals:=False
 End;
 
 Procedure PrepareExecutable;
-Var S,T:POutSection;R:PReloc;Base,CodeBase,DataBase:LongInt;
+Var
+ S,T:POutSection;
+ R:PReloc;
+ Base,CodeBase,DataBase:LongInt;
 Begin
  Base:=0;CodeBase:=0;DataBase:=0;S:=OutSections;
  While S<>Nil do Begin
   if TargetSegmented Then S^.LoadBase:=0
   else if Opt.SplitID Then Begin
-   if S^.SegmentType in[X_SG_COD,X_SG_CON]Then Begin S^.LoadBase:=CodeBase;Inc(CodeBase,S^.Size)End
-   else Begin S^.LoadBase:=DataBase;Inc(DataBase,S^.Size)End
-  End else Begin S^.LoadBase:=Base;Inc(Base,S^.Size) End;
+   if S^.SegmentType in[X_SG_COD,X_SG_CON]Then Begin
+    S^.LoadBase:=CodeBase;Inc(CodeBase,S^.Size)
+   End
+   else
+   Begin
+    S^.LoadBase:=DataBase;Inc(DataBase,S^.Size)
+   End
+  End else
+  Begin
+   S^.LoadBase:=Base;Inc(Base,S^.Size)
+  End;
   S:=S^.Next
  End;
- R:=Relocations;While R<>Nil do Begin
-  T:=FindOutByNumber(R^.Base);if T=Nil Then Fatal('base de relogement de sortie inconnue');
-  if TargetSegmented and(R^.Action=RAZSS)Then
-   WriteBE16Image(R^.Section,R^.Offset,(ReadBE16(R^.Section,R^.Offset)and $80FF)or
-   (Word(T^.AssignedNumber and $7F)shl 8))
-  else if TargetSegmented and(R^.Action=RAZLS)Then
-   WriteBE32Image(R^.Section,R^.Offset,(ReadBE32(R^.Section,R^.Offset)and LongInt($80FFFFFF))or
-   (LongInt(T^.AssignedNumber and $7F)shl 24))
+ R:=Relocations;
+ While R<>Nil do Begin
+  T:=FindOutByNumber(R^.Base);
+  if T=Nil Then Fatal('base de relogement de sortie inconnue');
+  if TargetSegmented and(R^.Action=RAZSS)Then   WriteBE16Image(R^.Section,R^.Offset,(
+  ReadBE16(R^.Section,R^.Offset)and $80FF)or
+  (Word(T^.AssignedNumber and $7F)shl 8))
+  else if TargetSegmented and(R^.Action=RAZLS)Then   WriteBE32Image(R^.Section,R^.Offset,(
+  ReadBE32(R^.Section,R^.Offset)and LongInt($80FFFFFF))or
+  (LongInt(T^.AssignedNumber and $7F)shl 24))
   else ApplyAddend(R^.Section,R^.Offset,R^.Action,T^.LoadBase);
   R:=R^.Next
  End
 End;
 
 Procedure AssignXOutSymbolIndices(SegmentCount:Word);
-Var G:PGlobal;N:Word;
-Begin N:=SegmentCount;G:=Globals;While G<>Nil do Begin G^.SymbolIndex:=N;Inc(N);G:=G^.Next End End;
+Var
+ G:PGlobal;
+ N:Word;
+Begin
+ N:=SegmentCount;G:=Globals;
+ While G<>Nil do Begin
+  G^.SymbolIndex:=N;Inc(N);G:=G^.Next
+ End
+End;
 
 Procedure WriteXName(S:String);
-Var I:Integer;
-Begin For I:=1 to 8 do if I<=Length(S)Then RawByte(Ord(S[I]))else RawByte(0) End;
+Var
+ I:Integer;
+Begin
+ For I:=1 to 8 do if I<=Length(S)Then RawByte(Ord(S[I]))else RawByte(0)
+End;
 
 Procedure WriteXOut;
-Var S:POutSection;G:PGlobal;R:PReloc;Old:File;Backup:String;HadOld,Executable:Boolean;
- Magic,SegmentCount,SymbolCount:Word;InitSize,RelocSize,SymbolSize:LongInt;Flag:Byte;Location:LongInt;
+Var
+ S:POutSection;
+ G:PGlobal;
+ R:PReloc;
+ Old:File;
+ Backup:String;
+ HadOld,Executable:Boolean;
+ Magic,SegmentCount,SymbolCount:Word;
+ InitSize,RelocSize,SymbolSize:LongInt;
+ Flag:Byte;
+ Location:LongInt;
 Begin
  Executable:=not Opt.Relocatable and not UndefinedGlobals;
- SegmentCount:=0;InitSize:=0;S:=OutSections;While S<>Nil do Begin
+ SegmentCount:=0;InitSize:=0;S:=OutSections;
+ While S<>Nil do Begin
   Inc(SegmentCount);if not S^.IsBss Then Inc(InitSize,S^.Size);S:=S^.Next
  End;
  AssignXOutSymbolIndices(SegmentCount);
- if Executable Then Begin PrepareExecutable;RelocSize:=0 End
- else Begin RelocSize:=0;R:=Relocations;While R<>Nil do Begin Inc(RelocSize,6);R:=R^.Next End End;
+ if Executable Then Begin
+  PrepareExecutable;RelocSize:=0
+ End
+ else
+ Begin
+  RelocSize:=0;R:=Relocations;
+  While R<>Nil do Begin
+   Inc(RelocSize,6);R:=R^.Next
+  End
+ End;
  SymbolCount:=0;if not(Opt.Strip and Executable)Then Begin
-  SymbolCount:=SegmentCount;G:=Globals;While G<>Nil do Begin Inc(SymbolCount);G:=G^.Next End
+  SymbolCount:=SegmentCount;G:=Globals;
+  While G<>Nil do Begin
+   Inc(SymbolCount);G:=G^.Next
+  End
  End;SymbolSize:=LongInt(SymbolCount)*12;
  if TargetSegmented Then if Executable Then Magic:=X_SX_MAGIC else Magic:=X_SU_MAGIC
  else if Opt.SplitID Then if Executable Then Magic:=X_NXI_MAGIC else Magic:=X_NUI_MAGIC
  else if Opt.ReadOnly Then if Executable Then Magic:=X_NXS_MAGIC else Magic:=X_NUS_MAGIC
  else if Executable Then Magic:=X_NXN_MAGIC else Magic:=X_NU_MAGIC;
- TemporaryName:=Opt.OutputName+'.$$$';DeleteQuiet(TemporaryName);Assign(OutputFile,TemporaryName);Rewrite(OutputFile,1);
+ TemporaryName:=Opt.OutputName+'.$$$';DeleteQuiet(TemporaryName);
+ Assign(OutputFile,TemporaryName);Rewrite(OutputFile,1);
  if IOResult<>0 Then Fatal('creation impossible: '+TemporaryName);OutputOpen:=True;
- RawWord(Magic);RawWord(SegmentCount);RawLong(InitSize);RawLong(RelocSize);RawLong(SymbolSize);
- S:=OutSections;While S<>Nil do Begin
+ RawWord(Magic);RawWord(SegmentCount);RawLong(InitSize);RawLong(RelocSize);
+ RawLong(SymbolSize);
+ S:=OutSections;
+ While S<>Nil do Begin
   if TargetSegmented Then RawByte(S^.AssignedNumber)else RawByte(255);
   RawByte(S^.SegmentType);RawWord(Word(S^.Size));S:=S^.Next
  End;
- S:=OutSections;While S<>Nil do Begin
-  if not S^.IsBss Then Begin Location:=0;While Location<S^.Size do Begin RawByte(GetImageByte(S,Location));Inc(Location)End End;
+ S:=OutSections;
+ While S<>Nil do Begin
+  if not S^.IsBss Then Begin
+   Location:=0;
+   While Location<S^.Size do Begin
+    RawByte(GetImageByte(S,Location));Inc(Location)
+   End
+  End;
   S:=S^.Next
  End;
- if not Executable Then Begin R:=Relocations;While R<>Nil do Begin
-  RawByte(R^.Section^.AssignedNumber);Location:=R^.Offset;
-  Case R^.Action of
+ if not Executable Then Begin
+  R:=Relocations;
+  While R<>Nil do Begin
+   RawByte(R^.Section^.AssignedNumber);Location:=R^.Offset;
+   Case R^.Action of
    RAA16,RAA16M,RAZOF:Flag:=X_RL_OFF;
-   RAA32,RAA32M:Begin Flag:=X_RL_OFF;Inc(Location,2)End;
+   RAA32,RAA32M:
+   Begin
+    Flag:=X_RL_OFF;Inc(Location,2)
+   End;
    RAZSS:Flag:=X_RL_SSG;RAZLS:Flag:=X_RL_LSG;
    else Fatal('relogement non representable dans x.out')
   End;
   if R^.Base>=RBEXT Then Begin
-   G:=FindGlobalByBase(R^.Base);if G=Nil Then Fatal('symbole externe de relogement inconnu');Inc(Flag,4);
-   RawByte(Flag);if Location>$FFFF Then Fatal('position de relogement x.out hors limite');RawWord(Location);RawWord(G^.SymbolIndex)
-  End else Begin
-   S:=FindOutByNumber(R^.Base);if S=Nil Then Fatal('segment cible de relogement inconnu');RawByte(Flag);
-   if Location>$FFFF Then Fatal('position de relogement x.out hors limite');RawWord(Location);RawWord(S^.AssignedNumber)
+   G:=FindGlobalByBase(R^.Base);
+   if G=Nil Then Fatal('symbole externe de relogement inconnu');Inc(Flag,4);
+   RawByte(Flag);if Location>$FFFF Then Fatal('position de relogement x.out hors limite');
+   RawWord(Location);RawWord(G^.SymbolIndex)
+  End else
+  Begin
+   S:=FindOutByNumber(R^.Base);if S=Nil Then Fatal('segment cible de relogement inconnu');
+   RawByte(Flag);
+   if Location>$FFFF Then Fatal('position de relogement x.out hors limite');
+   RawWord(Location);RawWord(S^.AssignedNumber)
   End;R:=R^.Next
- End End;
- if SymbolCount<>0 Then Begin
-  S:=OutSections;While S<>Nil do Begin RawByte(S^.AssignedNumber);RawByte(X_SY_SEG);RawWord(0);WriteXName(S^.Name);S:=S^.Next End;
-  G:=Globals;While G<>Nil do Begin
-   if not G^.Defined Then Begin RawByte(255);RawByte(X_SY_UNX);RawWord(0)End
-   else Begin
-    if(G^.Value<0)or(G^.Value>$FFFF)Then Fatal('valeur de symbole x.out hors limite: '+G^.Name);
-    if G^.Absolute Then Begin RawByte(255);RawByte(X_SY_GLB);RawWord(Word(G^.Value))End
-    else Begin RawByte(G^.Section^.AssignedNumber);RawByte(X_SY_GLB);RawWord(Word(G^.Value))End
-   End;
-   WriteXName(G^.Name);G:=G^.Next
+ End
+End;
+if SymbolCount<>0 Then Begin
+ S:=OutSections;
+ While S<>Nil do Begin
+  RawByte(S^.AssignedNumber);RawByte(X_SY_SEG);RawWord(0);WriteXName(S^.Name);S:=S^.Next
+ End;
+ G:=Globals;
+ While G<>Nil do Begin
+  if not G^.Defined Then Begin
+   RawByte(255);RawByte(X_SY_UNX);RawWord(0)
+  End
+  else
+  Begin
+   if(G^.Value<0)or(G^.Value>$FFFF)Then Fatal('valeur de symbole x.out hors limite: '+
+   G^.Name);
+   if G^.Absolute Then Begin
+    RawByte(255);RawByte(X_SY_GLB);RawWord(Word(G^.Value))
+   End
+   else
+   Begin
+    RawByte(G^.Section^.AssignedNumber);RawByte(X_SY_GLB);RawWord(Word(G^.Value))
+   End
+  End;
+  WriteXName(G^.Name);G:=G^.Next
+ End
+End;
+Close(OutputFile);OutputOpen:=False;if IOResult<>0 Then Fatal('fermeture impossible');
+Backup:=Opt.OutputName+'.$OLD';DeleteQuiet(Backup);HadOld:=FileExists(Opt.OutputName);
+if HadOld Then Begin
+ Assign(Old,Opt.OutputName);Rename(Old,Backup);
+ if IOResult<>0 Then Fatal('sauvegarde de l''ancienne sortie impossible')
+End;
+Assign(OutputFile,TemporaryName);Rename(OutputFile,Opt.OutputName);
+if IOResult<>0 Then Begin
+ if HadOld Then Begin
+  Assign(Old,Backup);Rename(Old,Opt.OutputName);if IOResult<>0 Then Begin
   End
  End;
- Close(OutputFile);OutputOpen:=False;if IOResult<>0 Then Fatal('fermeture impossible');
- Backup:=Opt.OutputName+'.$OLD';DeleteQuiet(Backup);HadOld:=FileExists(Opt.OutputName);
- if HadOld Then Begin Assign(Old,Opt.OutputName);Rename(Old,Backup);if IOResult<>0 Then Fatal('sauvegarde de l''ancienne sortie impossible')End;
- Assign(OutputFile,TemporaryName);Rename(OutputFile,Opt.OutputName);
- if IOResult<>0 Then Begin if HadOld Then Begin Assign(Old,Backup);Rename(Old,Opt.OutputName);if IOResult<>0 Then Begin End End;
-  Fatal('installation de la sortie impossible')End;
- if HadOld Then DeleteQuiet(Backup);TemporaryName:=''
+ Fatal('installation de la sortie impossible')
+End;
+if HadOld Then DeleteQuiet(Backup);TemporaryName:=''
 End;
 
 Procedure FreeModule(Var M:TModule);
