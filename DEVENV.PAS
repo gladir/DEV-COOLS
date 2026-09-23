@@ -7914,6 +7914,11 @@ Var
  { appele (LoadResource/$61 utilise toujours son propre chargeur reel        }
  { integre), meme honnetete que Win16_LocalNotifySeg/Ofs. }
  Win16_ResourceHandlerSeg, Win16_ResourceHandlerOfs: Word;
+ { Callback TOOLHELP (ToolHelpHook/$341, 2026-09-23, demande explicite) -   }
+ { stocke mais jamais reellement appele (aucun VRAI moteur TOOLHELP.DLL     }
+ { de notification d'evenements systeme dans ce sous-ensemble), meme        }
+ { honnetete que Win16_ResourceHandlerSeg/Ofs ci-dessus. }
+ Win16_ToolHelpHookSeg, Win16_ToolHelpHookOfs: Word;
  { SetErrorMode/$107 (2026-09-14, demande explicite) - stocke le VRAI       }
  { mode d'erreur courant (aucun consommateur reel ne le verifie encore       }
  { dans ce sous-ensemble - meme honnetete deja etablie pour                  }
@@ -98954,6 +98959,8 @@ Begin
  Win16_AtomCount := 0;
  Win16_ResourceHandlerSeg := 0;
  Win16_ResourceHandlerOfs := 0;
+ Win16_ToolHelpHookSeg := 0;
+ Win16_ToolHelpHookOfs := 0;
  Win16_ErrorMode := 0;
  Win16_TempFileCounter := 0;
  Win16_FileCdrSeg := 0;
@@ -103026,6 +103033,32 @@ Var
  DBOSpecSeg, DBOSpecOfs: Word;
  DBOSpec: String;
  K329Seg, K329Ofs, K329Len, K329I: Word;
+ { IsBadReadPtr/IsBadWritePtr/IsBadCodePtr/IsBadStringPtr/HasGPHandler/     }
+ { IsBadHugeReadPtr/IsBadHugeWritePtr (2026-09-23, demande explicite,      }
+ { ordinaux 334-338/346/347). }
+ IBPSeg, IBPOfs: Word;
+ IBPMax: Word;
+ IBPFound: Boolean;
+ IBPI: Integer;
+ { ToolHelpHook (ordinal 341). }
+ THHSeg, THHOfs, THHOldSeg, THHOldOfs: Word;
+ { hmemcpy (ordinal 348). }
+ HMDstSeg, HMDstOfs, HMSrcSeg, HMSrcOfs: Word;
+ HMCountHi, HMCountLo: Word;
+ HMCount, HMSrcLin, HMDstLin, HMI: LongInt;
+ HMByteVal: Byte;
+ { _hread/_hwrite, variantes HUGE partageant le meme jeu de variables      }
+ { (ordinaux 349/350) - meme discipline de reutilisation deja etablie      }
+ { pour LRBuf/LRI/LRBytesRead entre _lread/$82 et _lwrite/$86. }
+ HRWHandle: Word;
+ HRWBufSeg, HRWBufOfs: Word;
+ HRWCountHi, HRWCountLo: Word;
+ HRWCount, HRWTotal, HRWChunk, HRWBaseLin: LongInt;
+ { lstrcpyn (ordinal 353). }
+ LCNDstSeg, LCNDstOfs, LCNSrcSeg, LCNSrcOfs: Word;
+ LCNMax: Word;
+ LCNSrcStr: String;
+ LCNLen, LCNJ: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -106387,6 +106420,365 @@ Begin
      Emu_WriteByte(P.CPU, K329Seg, Word(K329Ofs + K329I), $F9);
     P.CPU.Regs.AX := 0;
     ArgWords := 3;
+   End;
+   { Ordinaux 330/331/333 : ABSENTS du VRAI source Wine (krnl386.exe16.spec, }
+   { rien n'est declare a ces numeros entre K329/$329 et THHOOK/$332) -       }
+   { retombent honnetement sur le gestionnaire generique Win16_Halt.          }
+   { THHOOK/332 : "variable" (donnee TOOLHELP, 8 mots), PAS une fonction       }
+   { appelable - DELIBEREMENT NON IMPLANTE (meme discipline que __GP/$342     }
+   { plus bas). }
+   334: Begin
+    { IsBadReadPtr(lp,cb):BOOL - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 IsBadReadPtr(segptr   }
+    { word) IsBadReadPtr16", 2+1 = 3 mots, retour 16 bits AX seul). REEL ET   }
+    { HONNETE : ce sous-ensemble modelise toute la memoire emulee comme un    }
+    { seul tampon PLAT (Emu_ReadAbsBlock/Emu_Addr) SANS VRAIE table de        }
+    { droits d'acces par segment - aucune faute de protection generale par    }
+    { pointeur n'est jamais levee ici (meme limitation deja disclosee pour    }
+    { HasGPHandler/$338 plus bas) : tout pointeur reste donc TOUJOURS          }
+    { "lisible" - retourne honnetement FALSE (0), jamais une detection         }
+    { inventee de "mauvais pointeur". lp/cb n'ont pas besoin d'etre lus        }
+    { (aucune branche ne depend de leur valeur). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   335: Begin
+    { IsBadWritePtr(lp,cb):BOOL - ordinal/signature VERIFIES via le VRAI     }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 IsBadWritePtr(segptr  }
+    { word) IsBadWritePtr16", 2+1 = 3 mots). MEME honnetete exacte           }
+    { qu'IsBadReadPtr/$334 ci-dessus (aucune table de droits d'ecriture par   }
+    { segment modelisee) : retourne toujours FALSE (0). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   336: Begin
+    { IsBadCodePtr(lpfn):BOOL - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 IsBadCodePtr(segptr)  }
+    { IsBadCodePtr16", 2 mots). MEME honnetete exacte qu'IsBadReadPtr/$334    }
+    { (aucun droit d'execution par segment modelise) : retourne toujours     }
+    { FALSE (0). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   337: Begin
+    { IsBadStringPtr(lpsz,cchMax):BOOL - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { IsBadStringPtr(segptr word) IsBadStringPtr16", 2+1 = 3 mots). REEL     }
+    { ET CONCRET (a la difference des 3 ordinaux precedents) : la seule       }
+    { partie du contrat documente que ce sous-ensemble PEUT honnetement        }
+    { verifier est la presence d'un VRAI terminateur nul dans les cchMax       }
+    { premiers octets (lit REELLEMENT la memoire emulee octet par octet) -     }
+    { aucun terminateur trouve avant cchMax -> TRUE (mauvais pointeur,          }
+    { documente reel), sinon FALSE. }
+    IBPMax := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    IBPOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    IBPSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    IBPFound := False;
+    For IBPI := 0 To Integer(IBPMax) - 1 Do
+     If Emu_ReadByte(P.CPU, IBPSeg, Word(IBPOfs + IBPI)) = 0 Then Begin
+      IBPFound := True;
+      Break;
+     End;
+    If IBPFound Then P.CPU.Regs.AX := 0 Else P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   338: Begin
+    { HasGPHandler(lp):BOOL - ordinal/signature VERIFIES via le VRAI        }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 HasGPHandler(segptr) }
+    { HasGPHandler16", 2 mots). REEL ET HONNETE : aucune VRAIE chaine de     }
+    { gestionnaires de faute de protection generale (SetSigHandler/$140      }
+    { modelise deja un seul "mode de signal" different, PAS une chaine de     }
+    { gestionnaires par adresse) n'existe dans ce sous-ensemble - retourne     }
+    { honnetement FALSE (0), aucun gestionnaire installe pour quelque          }
+    { adresse que ce soit. lp n'a pas besoin d'etre lu. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   339: Begin
+    { DiagQuery():BOOL - ordinal/signature VERIFIES via le VRAI source      }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 DiagQuery() DiagQuery16", 0  }
+    { mot). REEL ET HONNETE : ce sous-ensemble charge toujours directement   }
+    { le fichier .EXE Win16 cible (Win16_LoadNE), jamais via un              }
+    { bootstrapper "WIN.COM /B" - retourne donc honnetement FALSE (0),        }
+    { jamais lance avec /B. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   340: Begin
+    { DiagOutput(str):void - ordinal/signature VERIFIES via le VRAI source  }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 DiagOutput(str)              }
+    { DiagOutput16", 2 mots). REEL ET HONNETE, symetrique de DiagQuery/$339 }
+    { ci-dessus : le VRAI comportement documente est un no-op quand           }
+    { Windows n'a PAS ete lance avec /B (BOOTLOG.TXT n'est alors jamais        }
+    { ouvert) - puisque DiagQuery est TOUJOURS FALSE ici, ce cas s'applique     }
+    { systematiquement. str n'a pas besoin d'etre lu (aucun fichier n'est       }
+    { jamais ecrit). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   341: Begin
+    { ToolHelpHook(lpfnHook):FARPROC - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal ToolHelpHook(ptr)       }
+    { ToolHelpHook16", 1 pointeur LOIN (2 mots), PAS de "-ret16" = retour     }
+    { COMPLET DX:AX). REEL : stocke VRAIMENT le nouveau gestionnaire           }
+    { d'evenement TOOLHELP (Win16_ToolHelpHookSeg/Ofs) et retourne              }
+    { l'ANCIEN - mais ne l'appelle JAMAIS (aucun VRAI moteur TOOLHELP.DLL       }
+    { de notification d'evenements systeme dans ce sous-ensemble, meme          }
+    { honnetete deja etablie pour SetResourceHandler/$67). }
+    THHOldSeg := Win16_ToolHelpHookSeg;
+    THHOldOfs := Win16_ToolHelpHookOfs;
+    THHOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    THHSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Win16_ToolHelpHookSeg := THHSeg;
+    Win16_ToolHelpHookOfs := THHOfs;
+    P.CPU.Regs.AX := THHOldOfs;
+    P.CPU.Regs.DX := THHOldSeg;
+    ArgWords := 2;
+   End;
+   { __GP/342 : le VRAI source Wine (krnl386.exe16.spec) le marque           }
+   { "variable __GP(0 0)" - une DONNEE (pointeur vers une table de            }
+   { structures de validation de parametres de certains modules Windows,       }
+   { comme le decrit l'enonce), PAS une fonction appelable. Un programme       }
+   { reel y accede TOUJOURS par lecture memoire directe (apres                 }
+   { GetProcAddress), jamais par un CALL - DELIBEREMENT NON IMPLANTE ici       }
+   { (ce Case ne traite que des CALL vers des trappes d'import) ; un VRAI       }
+   { CALL vers cet ordinal serait de toute facon un bogue du programme          }
+   { invite lui-meme (sauter dans une donnee), fidelement reproduit en            }
+   { retombant sur le gestionnaire generique Win16_Halt ci-dessous. }
+   { RegisterWinOldApHook/343 et GetWinOldApHooks/344 : ordinaux marques       }
+   { "stub" SANS AUCUNE signature exploitable dans le VRAI source Wine          }
+   { (krnl386.exe16.spec) - meme discipline que FatalExit/$1/                    }
+   { CallProcInstance/$53/OpenPathName/$75/DeletePathName/$76 : inventer un      }
+   { nombre de mots ici serait une pure supposition qui risquerait de              }
+   { corrompre la pile de TOUS les appels Win16 suivants - laisse donc              }
+   { deliberement tomber sur le gestionnaire generique "Else" ci-dessous. }
+   345: Begin
+    { IsSharedSelector(sel):BOOL - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16                       }
+    { IsSharedSelector(word) IsSharedSelector16", 1 mot). REEL ET HONNETE :   }
+    { un selecteur "partage" designe un segment de code/donnees d'une VRAIE   }
+    { DLL chargee par plusieurs taches - ce sous-ensemble est STRICTEMENT      }
+    { mono-programme/mono-DLL (meme limitation deja disclosee partout           }
+    { ailleurs) : aucun selecteur n'est jamais partage, retourne honnetement    }
+    { FALSE (0). sel n'a pas besoin d'etre lu. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   346: Begin
+    { IsBadHugeReadPtr(lp,cb):BOOL - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { IsBadHugeReadPtr(segptr long) IsBadHugeReadPtr16", 2+2 = 4 mots).       }
+    { MEME honnetete exacte qu'IsBadReadPtr/$334 (simple variante HUGE ou      }
+    { cb est un LONG au lieu d'un WORD, aucune difference de fond sur            }
+    { l'absence de table de droits d'acces modelisee) : retourne toujours       }
+    { FALSE (0). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   347: Begin
+    { IsBadHugeWritePtr(lp,cb):BOOL - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                  }
+    { IsBadHugeWritePtr(segptr long) IsBadHugeWritePtr16", 2+2 = 4 mots).      }
+    { MEME honnetete exacte qu'IsBadWritePtr/$335, variante HUGE : retourne     }
+    { toujours FALSE (0). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   348: Begin
+    { hmemcpy(hpvDest,hpvSource,cbCopy):void - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal hmemcpy(ptr      }
+    { ptr long) hmemcpy16", 2+2+2 = 6 mots, PAS de "-ret16" mais AX sans       }
+    { signification documentee - fixe a 0 par convention). REEL ET             }
+    { CONCRET : copie VRAIMENT hpvSource vers hpvDest OCTET PAR OCTET via       }
+    { Emu_ReadByte/Emu_WriteByte, en normalisant l'adresse LINEAIRE               }
+    { (seg*16+ofs) a CHAQUE octet - la VRAIE raison d'etre de "h"memcpy           }
+    { face a un simple memcpy segmente est justement de franchir les              }
+    { limites de 64Ko d'un seul segment (copies > 65535 octets), ce que              }
+    { cette normalisation reproduit fidelement. }
+    HMCountLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    HMCountHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    HMSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    HMSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    HMDstOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    HMDstSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    HMCount := (LongInt(HMCountHi) Shl 16) Or LongInt(HMCountLo);
+    HMSrcLin := (LongInt(HMSrcSeg) Shl 4) + HMSrcOfs;
+    HMDstLin := (LongInt(HMDstSeg) Shl 4) + HMDstOfs;
+    For HMI := 0 To HMCount - 1 Do Begin
+     HMByteVal := Emu_ReadByte(P.CPU, Word((HMSrcLin + HMI) Shr 4), Word((HMSrcLin + HMI) And 15));
+     Emu_WriteByte(P.CPU, Word((HMDstLin + HMI) Shr 4), Word((HMDstLin + HMI) And 15), HMByteVal);
+    End;
+    P.CPU.Regs.AX := 0;
+    ArgWords := 6;
+   End;
+   349: Begin
+    { _hread(hFile,hpvBuffer,cbCopy):LONG - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (krnl386.exe16.spec : "pascal _hread(word segptr  }
+    { long) WIN16_hread", 1+2+2 = 5 mots, PAS de "-ret16" = retour             }
+    { COMPLET DX:AX). REEL ET CONCRET : variante HUGE de _lread/$82 (MEME       }
+    { table de handles fichier DOS partagee EmuFileH/EmuFileOpen), lisant       }
+    { par blocs de SizeOf(LRBuf) octets (LRBuf/LRBytesRead reutilises) et        }
+    { ECRIVANT dans la memoire emulee via une adresse LINEAIRE normalisee          }
+    { a chaque octet (meme technique que hmemcpy/$348) pour franchir              }
+    { correctement les limites de 64Ko d'un seul segment. Handle invalide :         }
+    { HFILE_ERROR ($FFFFFFFF, documente reel). }
+    HRWCountLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    HRWCountHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    HRWBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    HRWBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    HRWHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    HRWCount := (LongInt(HRWCountHi) Shl 16) Or LongInt(HRWCountLo);
+    If (HRWHandle < 5) Or (HRWHandle > 31) Or (Not EmuFileOpen[HRWHandle]) Then Begin
+     P.CPU.Regs.AX := $FFFF;
+     P.CPU.Regs.DX := $FFFF;
+    End Else Begin
+     HRWBaseLin := (LongInt(HRWBufSeg) Shl 4) + HRWBufOfs;
+     HRWTotal := 0;
+     While HRWTotal < HRWCount Do Begin
+      HRWChunk := HRWCount - HRWTotal;
+      If HRWChunk > SizeOf(LRBuf) Then HRWChunk := SizeOf(LRBuf);
+      BlockRead(EmuFileH[HRWHandle], LRBuf, Word(HRWChunk), LRBytesRead);
+      For LRI := 0 To Integer(LRBytesRead) - 1 Do
+       Emu_WriteByte(P.CPU, Word((HRWBaseLin + HRWTotal + LRI) Shr 4), Word((HRWBaseLin + HRWTotal + LRI) And 15), LRBuf[LRI]);
+      HRWTotal := HRWTotal + LRBytesRead;
+      If LRBytesRead < Word(HRWChunk) Then Break;
+     End;
+     P.CPU.Regs.AX := Word(HRWTotal And $FFFF);
+     P.CPU.Regs.DX := Word((HRWTotal Shr 16) And $FFFF);
+    End;
+    ArgWords := 5;
+   End;
+   350: Begin
+    { _hwrite(hFile,hpvBuffer,cbCopy):LONG - ordinal/signature VERIFIES     }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal _hwrite(word     }
+    { ptr long) _hwrite16", 1+2+2 = 5 mots, PAS de "-ret16" = retour            }
+    { COMPLET DX:AX). REEL ET CONCRET : variante HUGE de _lwrite/$86 (MEME       }
+    { table de handles fichier DOS partagee), lisant la memoire emulee via       }
+    { une adresse LINEAIRE normalisee a chaque octet (meme technique que          }
+    { _hread/$349) puis ecrivant par blocs de SizeOf(LRBuf) octets (LRBuf           }
+    { reutilise) dans le VRAI fichier hote. Handle invalide : HFILE_ERROR           }
+    { ($FFFFFFFF, documente reel). }
+    HRWCountLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    HRWCountHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    HRWBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    HRWBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    HRWHandle := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    HRWCount := (LongInt(HRWCountHi) Shl 16) Or LongInt(HRWCountLo);
+    If (HRWHandle < 5) Or (HRWHandle > 31) Or (Not EmuFileOpen[HRWHandle]) Then Begin
+     P.CPU.Regs.AX := $FFFF;
+     P.CPU.Regs.DX := $FFFF;
+    End Else Begin
+     HRWBaseLin := (LongInt(HRWBufSeg) Shl 4) + HRWBufOfs;
+     HRWTotal := 0;
+     While HRWTotal < HRWCount Do Begin
+      HRWChunk := HRWCount - HRWTotal;
+      If HRWChunk > SizeOf(LRBuf) Then HRWChunk := SizeOf(LRBuf);
+      For LRI := 0 To Integer(HRWChunk) - 1 Do
+       LRBuf[LRI] := Emu_ReadByte(P.CPU, Word((HRWBaseLin + HRWTotal + LRI) Shr 4), Word((HRWBaseLin + HRWTotal + LRI) And 15));
+      BlockWrite(EmuFileH[HRWHandle], LRBuf, Word(HRWChunk));
+      HRWTotal := HRWTotal + HRWChunk;
+     End;
+     P.CPU.Regs.AX := Word(HRWTotal And $FFFF);
+     P.CPU.Regs.DX := Word((HRWTotal Shr 16) And $FFFF);
+    End;
+    ArgWords := 5;
+   End;
+   351: Begin
+    { BUNNY_351():void - ordinal/signature VERIFIES via le VRAI source     }
+    { Wine (krnl386.exe16.spec : "pascal -ret16 BUNNY_351() KERNEL_nop", 0  }
+    { mot). Le VRAI Wine lui-meme route cet ordinal vers un no-op            }
+    { GENERIQUE (KERNEL_nop) - reproduit A L'IDENTIQUE, meme routage reel     }
+    { que EnableDos/$41/DisableDos/$42. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 0;
+   End;
+   { lstrcatn/352 : demande NON explicite (absente de la liste fournie      }
+   { par l'utilisateur) - non implante dans ce lot, retombe sur le            }
+   { gestionnaire generique. }
+   353: Begin
+    { lstrcpyn(lpString1,lpString2,iMaxLength):LPSTR - ordinal/signature    }
+    { VERIFIES via le VRAI source Wine (krnl386.exe16.spec : "pascal         }
+    { lstrcpyn(segptr str word) lstrcpyn16", 2+2+1 = 5 mots, PAS de           }
+    { "-ret16" = retour COMPLET DX:AX). REEL : MEME moteur de copie que        }
+    { lstrcpy/$88 mais TRONQUE VRAIMENT a iMaxLength-1 caracteres plus le       }
+    { terminateur nul (documente reel exact, contrairement a lstrcpy qui        }
+    { copie la chaine entiere sans limite), retourne lpString1 INCHANGE. }
+    LCNMax := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LCNSrcOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LCNSrcSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    LCNDstOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    LCNDstSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    LCNSrcStr := Win16_ReadGuestString(P.CPU, LCNSrcSeg, LCNSrcOfs);
+    LCNLen := Length(LCNSrcStr);
+    If LCNLen > Integer(LCNMax) - 1 Then LCNLen := Integer(LCNMax) - 1;
+    If LCNLen < 0 Then LCNLen := 0;
+    For LCNJ := 1 To LCNLen Do
+     Emu_WriteByte(P.CPU, LCNDstSeg, Word(LCNDstOfs + LCNJ - 1), Byte(Ord(LCNSrcStr[LCNJ])));
+    If Integer(LCNMax) > 0 Then
+     Emu_WriteByte(P.CPU, LCNDstSeg, Word(LCNDstOfs + LCNLen), 0);
+    P.CPU.Regs.AX := LCNDstOfs;
+    P.CPU.Regs.DX := LCNDstSeg;
+    ArgWords := 5;
+   End;
+   354: Begin
+    { GetAppCompatFlags(hTask):DWORD - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal                         }
+    { GetAppCompatFlags(word) GetAppCompatFlags16", 1 mot, PAS de "-ret16"    }
+    { = retour COMPLET DX:AX). REEL ET HONNETE : aucune base de                }
+    { compatibilite Windows 3.1 n'est modelisee dans ce sous-ensemble -          }
+    { retourne honnetement 0:0 (aucun drapeau de compatibilite actif), le          }
+    { comportement documente reel pour toute tache sans entree de                    }
+    { compatibilite speciale. hTask n'a pas besoin d'etre lu. }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 1;
+   End;
+   355: Begin
+    { GetWinDebugInfo(lpWinDebugInfo,flags):BOOL - ordinal/signature        }
+    { VERIFIES via le VRAI source Wine (krnl386.exe16.spec : "pascal          }
+    { -ret16 GetWinDebugInfo(ptr word) GetWinDebugInfo16", 2+1 = 3 mots).        }
+    { REEL ET HONNETE : cette paire d'ordinaux ne fonctionne que face a un          }
+    { noyau Windows 3.1 SPECIAL de deboguage (WIN386.EXE compile en                  }
+    { version debug) - documente reel qu'un noyau RETAIL (comme celui que              }
+    { ce sous-ensemble modelise partout ailleurs) retourne TOUJOURS FALSE               }
+    { ici, ni plus ni moins : rapporte honnetement 0. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   356: Begin
+    { SetWinDebugInfo(lpWinDebugInfo):BOOL - ordinal/signature VERIFIES     }
+    { via le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16            }
+    { SetWinDebugInfo(ptr) SetWinDebugInfo16", 2 mots). MEME honnetete            }
+    { exacte que GetWinDebugInfo/$355 ci-dessus (noyau RETAIL, jamais                }
+    { debug) : rapporte honnetement 0 (FALSE). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   403: Begin
+    { FarSetOwner(hBlock,hOwner):void - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal -ret16                   }
+    { FarSetOwner(word word) FarSetOwner16 # aka K403", 2 mots). REEL ET          }
+    { HONNETE : ce sous-ensemble est STRICTEMENT mono-tache (meme                    }
+    { limitation deja disclosee partout ailleurs - IsTask/$320,                        }
+    { GetModuleHandle/$47, etc.) - le SEUL proprietaire possible d'un                   }
+    { quelconque bloc de tas global est TOUJOURS l'unique tache chargee,                  }
+    { changer son "proprietaire" n'a donc aucun effet observable reel :                    }
+    { no-op honnete. hBlock/hOwner n'ont pas besoin d'etre lus. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   404: Begin
+    { FarGetOwner(hBlock):HANDLE - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (krnl386.exe16.spec : "pascal -ret16 FarGetOwner(word)      }
+    { FarGetOwner16 # aka K404", 1 mot). REEL POUR LA SIMPLIFICATION            }
+    { mono-tache deja etablie (symetrique honnete de FarSetOwner/$403               }
+    { ci-dessus) : le SEUL proprietaire possible de n'importe quel bloc de              }
+    { tas global est TOUJOURS l'unique tache chargee (Win16_StackSeg, MEME                }
+    { identite deja utilisee par GetCurrentTask/$36/IsTask/$320) - retourne                 }
+    { cette VRAIE valeur inconditionnellement, pas une approximation.               }
+    { hBlock n'a pas besoin d'etre lu. }
+    P.CPU.Regs.AX := Win16_StackSeg;
+    ArgWords := 1;
    End;
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);

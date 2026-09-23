@@ -67,6 +67,8 @@ Const
  X_SY_UNX=2;
  X_SY_GLB=3;
  X_SY_SEG=4;
+ AR8K_MAGIC=$FF65;
+ AR8K_HEADER_SIZE=26;
  MaxErrors=100;
 
 Type
@@ -138,7 +140,7 @@ Name,FileName:String;
 Sections:PObjSection;
 Symbols:PObjSymbol;
 Texts:PText;
-HasTransfer,IsExecutable:Boolean;
+HasTransfer,IsExecutable,TargetKnown,TargetSegmented:Boolean;
 TransferValue:LongInt;
 TransferBase:Word
 End;
@@ -168,6 +170,8 @@ Var
  TransferValue:LongInt;
  TransferBase:Word;
  TargetKnown,TargetSegmented:Boolean;
+ Modules,LastModule:PModuleNode;
+ ModuleCount:LongInt;
 
 Function UpperString(S:String):String;
 Var
@@ -247,6 +251,8 @@ Procedure Usage;Begin
  WriteLn('  -i          espace instructions/donnees separe');
  WriteLn('  -n          texte partage, donnees alignees sur 8 Kio');
  WriteLn('  -t taille   taille de pile demandee');
+ WriteLn('  -lxx        recherche la bibliotheque AR8K libxx.a');
+ WriteLn('              chemins: repertoire courant, LIB, LIBRARY et repertoire lib');
  WriteLn('  Entrees x.out de XCON et objets UNIDOT acceptes; sortie x.out big-endian.');
  WriteLn('  Les fichiers sans extension recoivent .OBJ.')
 End;
@@ -258,6 +264,8 @@ Begin
  New(P);if P=Nil Then Fatal('memoire pleine');P^.Name:=Name;P^.Next:=Nil;
  if Last=Nil Then First:=P else Last^.Next:=P;Last:=P
 End;
+
+Function ResolveLibrary(Const Abbreviation:String):String;Forward;
 
 Procedure ParseCommandLine;
 Var
@@ -285,6 +293,8 @@ Begin
    Inc(I);if I>ParamCount Then Fatal('-u exige un symbole');
    AddInput(ParamStr(I),ForcedUndefined,LastForced)
   End
+  else if(Length(S)>2)and(S[1]='-')and(UpCase(S[2])='L')Then
+   AddInput(ResolveLibrary(Copy(S,3,Length(S))),Inputs,LastInput)
   else if(S<>'')and(S[1]='-')Then Fatal('option inconnue: '+S)
   else
   Begin
@@ -520,12 +530,39 @@ Begin
  else Error(FileName,'type de bloc UNIDOT inconnu')
 End
 End;Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture');
-if TargetKnown and(TargetSegmented<>SegmentedSeen)Then Error(FileName,
-'melange de modules Z8001 et Z8002')
-else
+M.TargetKnown:=True;M.TargetSegmented:=SegmentedSeen
+End;
+
+Function JoinPath(Const PathPart,FilePart:String):String;
 Begin
- TargetKnown:=True;TargetSegmented:=SegmentedSeen
-End
+ if PathPart=''Then JoinPath:=FilePart
+ else if PathPart[Length(PathPart)]in['\','/',':']Then JoinPath:=PathPart+FilePart
+ else JoinPath:=PathPart+'\'+FilePart
+End;
+
+Function SearchLibraryPath(Const FileName,PathList:String):String;
+Var P,Q:Integer;Part,Candidate:String;
+Begin
+ P:=1;While P<=Length(PathList)+1 do Begin
+  Q:=P;While(Q<=Length(PathList))and(PathList[Q]<>';')do Inc(Q);
+  Part:=TrimString(Copy(PathList,P,Q-P));Candidate:=JoinPath(Part,FileName);
+  if(Part<>'')and FileExists(Candidate)Then Begin SearchLibraryPath:=Candidate;Exit End;
+  P:=Q+1
+ End;SearchLibraryPath:=''
+End;
+
+Function ResolveLibrary(Const Abbreviation:String):String;
+Var Name,Candidate:String;Dir,Base,Ext:String[255];
+Begin
+ Name:='lib'+Abbreviation+'.a';if FileExists(Name)Then Begin ResolveLibrary:=Name;Exit End;
+ Candidate:=SearchLibraryPath(Name,GetEnv('LIB'));
+ if Candidate=''Then Candidate:=SearchLibraryPath(Name,GetEnv('LIBRARY'));
+ if Candidate=''Then Begin
+  FSplit(ParamStr(0),Dir,Base,Ext);Candidate:=JoinPath(JoinPath(Dir,'lib'),Name);
+  if not FileExists(Candidate)Then Candidate:=''
+ End;
+ if Candidate=''Then Begin Candidate:=JoinPath('\lib',Name);if not FileExists(Candidate)Then Candidate:=''End;
+ if Candidate=''Then Fatal('bibliotheque introuvable: '+Name);ResolveLibrary:=Candidate
 End;
 
 Function ReadBEWordFile(Var F:File;Var Ok:Boolean):Word;
@@ -557,7 +594,7 @@ Begin
 End
 End;
 
-Procedure ReadXOut(Const FileName:String;Var M:TModule);
+Procedure ReadXOutAt(Const FileName:String;Start,MemberSize:LongInt;Var M:TModule);
 Var
  F:File;
  Ok,Segmented:Boolean;
@@ -580,6 +617,13 @@ Begin
  FillChar(M,SizeOf(M),0);M.FileName:=FileName;Assign(F,FileName);Reset(F,1);
  if IOResult<>0 Then Begin
   Error(FileName,'ouverture impossible');Exit
+ End;
+ if MemberSize<0 Then MemberSize:=FileSize(F);
+ if(Start<0)or(MemberSize<16)or(Start>FileSize(F)-MemberSize)Then Begin
+  Close(F);Error(FileName,'limites du membre x.out incorrectes');Exit
+ End;
+ Seek(F,Start);if IOResult<>0 Then Begin
+  Close(F);Error(FileName,'positionnement x.out impossible');Exit
  End;Ok:=True;
  Magic:=ReadBEWordFile(F,Ok);NSeg:=ReadBEWordFile(F,Ok);InitSize:=ReadBELongFile(F,Ok);
  RelocSize:=ReadBELongFile(F,Ok);SymbolSize:=ReadBELongFile(F,Ok);
@@ -602,15 +646,10 @@ Begin
   Close(F);Error(FileName,'tailles de tables x.out incorrectes');Exit
  End;
  ExpectedSize:=16+LongInt(NSeg)*4+InitSize+RelocSize+SymbolSize;
- if ExpectedSize<>FileSize(F)Then Begin
+ if ExpectedSize<>MemberSize Then Begin
   Close(F);Error(FileName,'taille globale x.out incoherente');Exit
  End;
- if TargetKnown and(TargetSegmented<>Segmented)Then Error(FileName,
- 'melange de modules Z8001 et Z8002')
- else
- Begin
-  TargetKnown:=True;TargetSegmented:=Segmented
- End;
+ M.TargetKnown:=True;M.TargetSegmented:=Segmented;
  if(NSeg=0)or(NSeg>254)Then Begin
   Close(F);Error(FileName,'nombre de segments x.out incorrect');Exit
  End;
@@ -715,6 +754,11 @@ End;
 if(SymbolSize mod 12)<>0 Then Error(FileName,'taille de symboles x.out incorrecte');
 if not Ok Then Error(FileName,'fichier x.out tronque');Close(F);
 if IOResult<>0 Then Error(FileName,'erreur de fermeture')
+End;
+
+Procedure ReadXOut(Const FileName:String;Var M:TModule);
+Begin
+ ReadXOutAt(FileName,0,-1,M)
 End;
 
 Procedure ReadObject(Const FileName:String;Var M:TModule);
@@ -1339,6 +1383,100 @@ Begin
  End
 End;
 
+Function ModuleResolvesNeeded(Var M:TModule):Boolean;
+Var Y:PObjSymbol;G:PGlobal;
+Begin
+ Y:=M.Symbols;While Y<>Nil do Begin
+  if Y^.Global and Y^.Defined Then Begin
+   G:=FindGlobal(Y^.Name);if(G<>Nil)and not G^.Defined Then Begin
+    ModuleResolvesNeeded:=True;Exit
+   End
+  End;Y:=Y^.Next
+ End;ModuleResolvesNeeded:=False
+End;
+
+Function AcceptModule(Var M:TModule):Boolean;
+Var MN:PModuleNode;
+Begin
+ AcceptModule:=False;
+ if M.TargetKnown Then Begin
+  if TargetKnown and(TargetSegmented<>M.TargetSegmented)Then Begin
+   Error(M.FileName,'melange de modules Z8001 et Z8002');Exit
+  End;
+  TargetKnown:=True;TargetSegmented:=M.TargetSegmented
+ End;
+ LayoutModule(M);if ErrorCount<>0 Then Exit;
+ New(MN);if MN=Nil Then Fatal('memoire pleine');MN^.Item:=M;MN^.Next:=Nil;
+ if LastModule=Nil Then Modules:=MN else LastModule^.Next:=MN;LastModule:=MN;
+ Inc(ModuleCount);FillChar(M,SizeOf(M),0);AcceptModule:=True
+End;
+
+Function IsArchiveFile(Const FileName:String):Boolean;
+Var F:File;B:Array[0..1]of Byte;N:Word;
+Begin
+ Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin IsArchiveFile:=False;Exit End;
+ BlockRead(F,B,2,N);Close(F);if IOResult<>0 Then Begin End;
+ IsArchiveFile:=(N=2)and(((B[0]=$FF)and(B[1]=$65))or((B[0]=$65)and(B[1]=$FF)))
+End;
+
+Function ArchiveLong(Const H:TBuffer;P:Integer;LittleEndian:Boolean):LongInt;
+Begin
+ if LittleEndian Then ArchiveLong:=LongInt(H[P])or(LongInt(H[P+1])shl 8)or
+  (LongInt(H[P+2])shl 16)or(LongInt(H[P+3])shl 24)
+ else ArchiveLong:=(LongInt(H[P])shl 24)or(LongInt(H[P+1])shl 16)or
+  (LongInt(H[P+2])shl 8)or H[P+3]
+End;
+
+Function ArchiveMemberName(Const H:TBuffer):String;
+Var I:Integer;S:String;
+Begin S:='';I:=0;While(I<14)and(H[I]<>0)do Begin S:=S+Chr(H[I]);Inc(I)End;
+ ArchiveMemberName:=S
+End;
+
+Function IsArchiveIndex(Const Name:String):Boolean;
+Var U:String;
+Begin
+ U:=UpperString(Name);IsArchiveIndex:=(U='__.SYMDEF')or(U='__.SYMDEF SORT')or
+  (U='/')or(U='/SYM64/')or(U='SYMDEF')
+End;
+
+Procedure ProcessArchive(Const FileName:String);
+Var F:File;H:TBuffer;B:Array[0..1]of Byte;N:Word;Total,Position,DataPosition,MemberSize:LongInt;
+ LittleEndian:Boolean;MemberName,DisplayName:String;M:TModule;BeforeErrors:Integer;
+Begin
+ Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin Error(FileName,'ouverture impossible');Exit End;
+ Total:=FileSize(F);BlockRead(F,B,2,N);if(N<>2)or not(((B[0]=$FF)and(B[1]=$65))or
+ ((B[0]=$65)and(B[1]=$FF)))Then Begin Close(F);Error(FileName,'magic AR8K incorrect');Exit End;
+ LittleEndian:=(B[0]=$65);Position:=2;
+ While Position<Total do Begin
+  if not UndefinedGlobals Then Break;
+  if Position>Total-AR8K_HEADER_SIZE Then Begin Error(FileName,'en-tete de membre AR8K tronque');Break End;
+  Seek(F,Position);BlockRead(F,H,AR8K_HEADER_SIZE,N);if N<>AR8K_HEADER_SIZE Then Begin
+   Error(FileName,'lecture d''en-tete AR8K impossible');Break
+  End;
+  MemberName:=ArchiveMemberName(H);if MemberName=''Then Break;
+  MemberSize:=ArchiveLong(H,22,LittleEndian);DataPosition:=Position+AR8K_HEADER_SIZE;
+  if(MemberSize<0)or(DataPosition>Total-MemberSize)Then Begin
+   Error(FileName,'taille de membre AR8K incorrecte: '+MemberName);Break
+  End;
+  if not IsArchiveIndex(MemberName)Then Begin
+   DisplayName:=FileName+'('+MemberName+')';BeforeErrors:=ErrorCount;
+   Close(F);if IOResult<>0 Then Begin Error(FileName,'erreur de fermeture temporaire');Break End;
+   ReadXOutAt(FileName,DataPosition,MemberSize,M);M.FileName:=DisplayName;
+   Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin
+    Error(FileName,'reouverture de l''archive impossible');FreeModule(M);Exit
+   End;
+   if ErrorCount=BeforeErrors Then Begin
+    if ModuleResolvesNeeded(M)Then Begin
+     if not AcceptModule(M)Then FreeModule(M)
+    End else FreeModule(M)
+   End else Begin FreeModule(M);Break End
+  End;
+  Position:=DataPosition+MemberSize;if(Position and 1)<>0 Then Inc(Position)
+ End;
+ Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture de l''archive')
+End;
+
 Procedure AddForcedUndefined;
 Var
  P:PInput;
@@ -1351,8 +1489,8 @@ End;
 
 Var
  P:PInput;
- Modules,LastModule,MN,MNext:PModuleNode;
- ModuleCount:LongInt;
+ MN,MNext:PModuleNode;
+ M:TModule;
 
 BEGIN
  Inputs:=Nil;LastInput:=Nil;ForcedUndefined:=Nil;LastForced:=Nil;OutSections:=Nil;
@@ -1364,11 +1502,13 @@ BEGIN
  TargetKnown:=False;TargetSegmented:=False;
  ParseCommandLine;AddForcedUndefined;P:=Inputs;
  While P<>Nil do Begin
-  New(MN);if MN=Nil Then Fatal('memoire pleine');FillChar(MN^,SizeOf(MN^),0);
-  ReadObject(P^.Name,MN^.Item);if ErrorCount=0 Then Begin
-   LayoutModule(MN^.Item);if LastModule=Nil Then Modules:=MN else LastModule^.Next:=MN;
-   LastModule:=MN;Inc(ModuleCount)
-  End else Dispose(MN);P:=P^.Next
+  if IsArchiveFile(P^.Name)Then ProcessArchive(P^.Name)
+  else Begin
+   ReadObject(P^.Name,M);
+   if ErrorCount=0 Then Begin if not AcceptModule(M)Then FreeModule(M)End
+   else FreeModule(M)
+  End;
+  if ErrorCount<>0 Then Break;P:=P^.Next
  End;
  ApplyLayoutOptions;
  AssignExternalBases;
