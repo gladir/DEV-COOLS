@@ -11338,6 +11338,7 @@ Function Pe_ReadDWord(Addr: LongInt): LongInt; Forward;
 Procedure Emu_InitComputer(Var C: TEmuCPU); Forward;
 Function Win16_LoadNE(Var C: TEmuCPU; Const Path: String): Boolean; Forward;
 Function Emu_ReadByte(Var C: TEmuCPU; Seg, Ofs: Word): Byte; Forward;
+Function Emu_Addr(Var C: TEmuCPU; Seg, Ofs: Word): LongInt; Forward;
 Function EmuDbg_Disasm8086(Seg, Ofs: Word; Var Size: Integer): String; Forward;
 Function Emu_ReadWord(Var C: TEmuCPU; Seg, Ofs: Word): Word; Forward;
 Procedure Win16_SetupEntryRegs(Var C: TEmuCPU); Forward;
@@ -103059,6 +103060,9 @@ Var
  LCNMax: Word;
  LCNSrcStr: String;
  LCNLen, LCNJ: Integer;
+ { GetVDMPointer32W (ordinal 516). }
+ GVPSeg, GVPOfs: Word;
+ GVPLin: LongInt;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -106780,6 +106784,239 @@ Begin
     P.CPU.Regs.AX := Win16_StackSeg;
     ArgWords := 1;
    End;
+   500: Begin
+    { WOW16Call(...):DWORD - ordinal/signature VERIFIES via le VRAI source }
+    { Wine (krnl386.exe16.spec : "500 varargs WOW16Call(word word word)      }
+    { WOW16Call", partie FIXE de 3 mots - "varargs" = SEULE cette partie      }
+    { fixe est depilee par l'appele, le reste variable reste a la charge de   }
+    { l'appelant, meme convention deja etablie pour _DebugOutput/$328).        }
+    { REEL ET HONNETE : ce point d'entree sert exclusivement au pont WOW        }
+    { (appeler du code 16 bits DEPUIS un processus Win32/WOW32.DLL) - ce         }
+    { sous-ensemble est un PUR emulateur 8086/80386 reel-mode SANS AUCUN            }
+    { sous-systeme Win32/WOW modelise (aucun VRAI processus 32 bits              }
+    { n'existe ici) : un programme 16 bits ordinaire n'a structurellement            }
+    { aucune raison reelle d'appeler cet ordinal - echoue honnetement (0:0)          }
+    { plutot que d'inventer un resultat de thunk. }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 3;
+   End;
+   { KDDBGOUT/501, WOWGETNEXTVDMCOMMAND/502,                                  }
+   { WOWREGISTERSHELLWINDOWHANDLE/503, WOWLOADMODULE/504,                       }
+   { WOWQUERYPERFORMANCECOUNTER/505 : ordinaux marques "stub" SANS AUCUNE          }
+   { signature exploitable dans le VRAI source Wine (krnl386.exe16.spec) -          }
+   { meme discipline que FatalExit/$1/CallProcInstance/$53 : inventer un              }
+   { nombre de mots ici serait une pure supposition qui risquerait de                    }
+   { corrompre la pile de TOUS les appels Win16 suivants - laissent donc                   }
+   { deliberement tomber sur le gestionnaire generique "Else" ci-dessous.                   }
+   { Ordinal 506 (WOWCURSORICONOP dans le VRAI .spec Wine, "stub" lui                        }
+   { aussi) est ABSENT de la demande explicite de l'utilisateur (qui                          }
+   { numerote plutot son propre WOWCURSORICONOP a 507) - egalement laisse                       }
+   { tomber sur le gestionnaire generique, pour la MEME raison (stub sans                        }
+   { signature). }
+   { WOWCURSORICONOP/507, WOWFAILEDEXEC/508, WOWCLOSECOMPORT/509 : la          }
+   { numerotation demandee par l'utilisateur decale ces 3 noms d'UN                }
+   { ordinal par rapport au VRAI .spec Wine officiel (qui les place a              }
+   { 506/507/508 et commente meme explicitement ce decalage comme un                 }
+   { "conflict"/"something broken here" entre plusieurs sources historiques)          }
+   { - mais TOUS restent "stub" SANS AUCUNE signature exploitable quelle que              }
+   { soit la numerotation retenue : MEME discipline, DELIBEREMENT NON                     }
+   { IMPLANTES. Ordinal 510 (non demande, non nomme dans le VRAI .spec               }
+   { non plus) : idem, absent. }
+   { WOWKILLREMOTETASK/511, WOWQUERYDEBUG/512 : MEME discipline exacte,        }
+   { "stub" SANS AUCUNE signature exploitable dans le VRAI .spec Wine -            }
+   { DELIBEREMENT NON IMPLANTES. }
+   513: Begin
+    { LoadLibraryEx32W(lpLibFileName,hFile,dwFlags):HMODULE - ordinal/      }
+    { signature VERIFIES via le VRAI source Wine (krnl386.exe16.spec :       }
+    { "pascal LoadLibraryEx32W(ptr long long) LoadLibraryEx32W16", 2+2+2 =    }
+    { 6 mots, PAS de "-ret16" = retour COMPLET DX:AX). REEL ET HONNETE :       }
+    { ce point d'entree charge une VRAIE DLL 32 bits PE (Win32) - ce             }
+    { sous-ensemble ne modelise AUCUN chargeur PE/32 bits (uniquement le           }
+    { chargeur NE 16 bits Win16_LoadNE, meme limitation mono-programme               }
+    { deja disclosee partout ailleurs) : echoue honnetement (0:0, "module              }
+    { introuvable"), jamais un succes invente. }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   514: Begin
+    { FreeLibrary32W(hLibModule):BOOL - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal FreeLibrary32W(long)     }
+    { FreeLibrary32W16", 1 LONG = 2 mots, PAS de "-ret16" = retour             }
+    { COMPLET DX:AX). REEL, symetrique honnete de LoadLibraryEx32W/$513         }
+    { ci-dessus : puisqu'aucune VRAIE DLL 32 bits ne peut jamais avoir              }
+    { ete chargee dans ce sous-ensemble, il n'y a litteralement rien a               }
+    { liberer - echoue honnetement (0:0). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 2;
+   End;
+   515: Begin
+    { GetProcAddress32W(hModule,lpProcName):FARPROC32 - ordinal/signature  }
+    { VERIFIES via le VRAI source Wine (krnl386.exe16.spec : "pascal         }
+    { GetProcAddress32W(long str) GetProcAddress32W16", 2+2 = 4 mots, PAS     }
+    { de "-ret16" = retour COMPLET DX:AX). MEME honnetete exacte que           }
+    { LoadLibraryEx32W/$513 (aucun module 32 bits ne peut jamais exister          }
+    { ici) : echoue honnetement (0:0, "procedure introuvable"). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 4;
+   End;
+   516: Begin
+    { GetVDMPointer32W(lp,fMode):DWORD - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (krnl386.exe16.spec : "pascal                          }
+    { GetVDMPointer32W(segptr word) GetVDMPointer32W16", 2+1 = 3 mots,          }
+    { PAS de "-ret16" = retour COMPLET DX:AX). REEL ET CONCRET, a la              }
+    { difference des ordinaux 513-515 ci-dessus : le VRAI contrat documente          }
+    { (convertir un pointeur segmente 16 bits en un VRAI pointeur LINEAIRE             }
+    { 32 bits plat exploitable par du code WOW32) EST directement                        }
+    { modelisable ici, ce sous-ensemble ayant un VRAI espace d'adressage                  }
+    { reel-mode plat sous-jacent (Emu_Addr, la MEME fonction utilisee par                   }
+    { CHAQUE acces memoire emule) - retourne la VRAIE adresse lineaire                        }
+    { correspondante, pas une approximation. fMode (distinctions                             }
+    { d'alignement/type de conversion documentees reelles) n'a pas besoin                        }
+    { d'etre lu (une seule et unique adresse lineaire existe par seg:ofs                          }
+    { dans ce sous-ensemble, quel que soit le mode demande). }
+    GVPOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GVPSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GVPLin := Emu_Addr(P.CPU, GVPSeg, GVPOfs);
+    P.CPU.Regs.AX := Word(GVPLin And $FFFF);
+    P.CPU.Regs.DX := Word((GVPLin Shr 16) And $FFFF);
+    ArgWords := 3;
+   End;
+   517: Begin
+    { CallProc32W(...):DWORD - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (krnl386.exe16.spec : "517 varargs CallProc32W(long        }
+    { long long) CallProc32W16", partie FIXE de 3 LONGs = 6 mots -             }
+    { "varargs" = SEULE cette partie fixe est depilee par l'appele, meme         }
+    { convention que WOW16Call/$500 ci-dessus. MEME honnetete exacte que           }
+    { LoadLibraryEx32W/$513 (appeler une VRAIE procedure 32 bits est                }
+    { structurellement impossible sans aucun sous-systeme WOW modelise) :               }
+    { echoue honnetement (0:0). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   518: Begin
+    { _CallProcEx32W(...):DWORD - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (krnl386.exe16.spec : "518 varargs _CallProcEx32W(long     }
+    { long long) CallProcEx32W16", partie FIXE de 3 LONGs = 6 mots -           }
+    { MEME nature "varargs" que CallProc32W/$517 ci-dessus. MEME                }
+    { honnetete exacte (aucun sous-systeme WOW modelise) : echoue                  }
+    { honnetement (0:0). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   { EXITKERNELTHUNK/519 : ordinal marque "stub" SANS AUCUNE signature       }
+   { exploitable dans le VRAI source Wine - MEME discipline, DELIBEREMENT     }
+   { NON IMPLANTE. }
+   520: Begin
+    { __MOD_KERNEL - ordinal VERIFIE via le VRAI source Wine                }
+    { (krnl386.exe16.spec : "520 equate __MOD_KERNEL 4200") - PAS une         }
+    { fonction, une CONSTANTE DE DONNEES exportee (meme nature "equate"        }
+    { que __ROMBIOS/$173/__WINFLAGS/$178 d'un lot precedent) : un identifiant   }
+    { de MODULE interne au generateur de thunks WOW de Wine lui-meme, SANS       }
+    { AUCUNE signification reel-mode reelle (contrairement a __A000H/$174           }
+    { etc.) - le commentaire du VRAI fichier .spec precise lui-meme que              }
+    { "the current values are invented" : reproduit ici la VALEUR EXACTE               }
+    { deja verifiee dans le VRAI fichier .spec, aucune meilleure                          }
+    { alternative reelle n'existe pour ce cas. Fourni par prudence                          }
+    { defensive si un far CALL y survenait (comme pour __ROMBIOS/$173). }
+    P.CPU.Regs.AX := 4200;
+    ArgWords := 0;
+   End;
+   521: Begin
+    { __MOD_DKERNEL - ordinal VERIFIE via le VRAI source Wine               }
+    { (krnl386.exe16.spec : "521 equate __MOD_DKERNEL 4201") - meme nature    }
+    { "equate" que __MOD_KERNEL/$520 ci-dessus, MEME raisonnement (valeur       }
+    { arbitraire documentee du VRAI .spec, reproduite telle quelle). }
+    P.CPU.Regs.AX := 4201;
+    ArgWords := 0;
+   End;
+   522: Begin
+    { __MOD_USER - ordinal VERIFIE via le VRAI source Wine                  }
+    { (krnl386.exe16.spec : "522 equate __MOD_USER 4203") - meme nature        }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4203;
+    ArgWords := 0;
+   End;
+   523: Begin
+    { __MOD_DUSER - ordinal VERIFIE via le VRAI source Wine                 }
+    { (krnl386.exe16.spec : "523 equate __MOD_DUSER 4204") - meme nature        }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4204;
+    ArgWords := 0;
+   End;
+   524: Begin
+    { __MOD_GDI - ordinal VERIFIE via le VRAI source Wine                   }
+    { (krnl386.exe16.spec : "524 equate __MOD_GDI 4205") - meme nature          }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4205;
+    ArgWords := 0;
+   End;
+   525: Begin
+    { __MOD_DGDI - ordinal VERIFIE via le VRAI source Wine                  }
+    { (krnl386.exe16.spec : "525 equate __MOD_DGDI 4206") - meme nature         }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4206;
+    ArgWords := 0;
+   End;
+   526: Begin
+    { __MOD_KEYBOARD - ordinal VERIFIE via le VRAI source Wine              }
+    { (krnl386.exe16.spec : "526 equate __MOD_KEYBOARD 4207") - meme nature     }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4207;
+    ArgWords := 0;
+   End;
+   527: Begin
+    { __MOD_SOUND - ordinal VERIFIE via le VRAI source Wine                 }
+    { (krnl386.exe16.spec : "527 equate __MOD_SOUND 4208") - meme nature        }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4208;
+    ArgWords := 0;
+   End;
+   528: Begin
+    { __MOD_SHELL - ordinal VERIFIE via le VRAI source Wine                 }
+    { (krnl386.exe16.spec : "528 equate __MOD_SHELL 4209") - meme nature        }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4209;
+    ArgWords := 0;
+   End;
+   529: Begin
+    { __MOD_WINSOCK - ordinal VERIFIE via le VRAI source Wine               }
+    { (krnl386.exe16.spec : "529 equate __MOD_WINSOCK 4210") - meme nature      }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4210;
+    ArgWords := 0;
+   End;
+   530: Begin
+    { __MOD_TOOLHELP - ordinal VERIFIE via le VRAI source Wine              }
+    { (krnl386.exe16.spec : "530 equate __MOD_TOOLHELP 4211") - meme nature     }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4211;
+    ArgWords := 0;
+   End;
+   531: Begin
+    { __MOD_MMEDIA - ordinal VERIFIE via le VRAI source Wine                }
+    { (krnl386.exe16.spec : "531 equate __MOD_MMEDIA 4212") - meme nature       }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4212;
+    ArgWords := 0;
+   End;
+   532: Begin
+    { __MOD_COMMDLG - ordinal VERIFIE via le VRAI source Wine               }
+    { (krnl386.exe16.spec : "532 equate __MOD_COMMDLG 4213") - meme nature      }
+    { "equate" que __MOD_KERNEL/$520, MEME raisonnement. }
+    P.CPU.Regs.AX := 4213;
+    ArgWords := 0;
+   End;
+   { EXITWINDOWSEXECCONTINUE/540 et WOWSETEXITONLASTAPP/541 : ordinaux       }
+   { marques "stub" (KERNEL_540/WOWSETEXITONLASTAPP) SANS AUCUNE signature    }
+   { exploitable dans le VRAI source Wine (krnl386.exe16.spec) - MEME           }
+   { discipline que KDDBGOUT/$501 et consorts plus haut : DELIBEREMENT              }
+   { NON IMPLANTES. }
    Else Begin
     Win16_Halt(P, 'KERNEL', Ordinal);
     Exit;
