@@ -191,6 +191,7 @@ End;
 Function DiagnosticColumn:Integer;
 Var P:Integer;
 Begin
+ if CurrentDiagnosticColumn>0 Then Begin DiagnosticColumn:=CurrentDiagnosticColumn;Exit End;
  P:=0;if OperandField<>''Then P:=Pos(UpperString(OperandField),UpperString(CurrentLine));
  if(P=0)and(OpcodeField<>'')Then P:=Pos(UpperString(OpcodeField),UpperString(CurrentLine));
  if P=0 Then P:=1;DiagnosticColumn:=P
@@ -203,10 +204,10 @@ Begin
  if(Pos('INDEFINI',U)>0)or(Pos('UNDEFINED',U)>0)Then HistoricalErrorCode:='U'
  else if(Pos('PLUSIEURS FOIS',U)>0)or(Pos('REDEFIN',U)>0)Then HistoricalErrorCode:='M'
  else if Pos('PHASE',U)>0 Then HistoricalErrorCode:='P'
- else if Pos('REGISTRE',U)>0 Then HistoricalErrorCode:='R'
+ else if Pos('REGISTRE',U)>0 Then HistoricalErrorCode:='A'
  else if(Pos('MODE',U)>0)or(Pos('ADRESSE',U)>0)or(Pos('HORS PLAGE',U)>0)Then HistoricalErrorCode:='A'
- else if(Pos('SEGMENT',U)>0)or(Pos('SECTION',U)>0)Then HistoricalErrorCode:='G'
- else if(Pos('RELOG',U)>0)or(Pos('EXTERNAL',U)>0)or(Pos('EXTERNE',U)>0)Then HistoricalErrorCode:='V'
+ else if(Pos('SEGMENT',U)>0)or(Pos('SECTION',U)>0)Then HistoricalErrorCode:='A'
+ else if(Pos('RELOG',U)>0)or(Pos('EXTERNAL',U)>0)or(Pos('EXTERNE',U)>0)Then HistoricalErrorCode:='E'
  else if(Pos('INSTRUCTION',U)>0)or(Pos('MNEMONIQUE',U)>0)or(Pos('OPCODE',U)>0)Then HistoricalErrorCode:='O'
  else if Pos('LABEL',U)>0 Then HistoricalErrorCode:='L'
  else if(Pos('CONDITION',U)>0)or(Pos('ELSE',U)>0)or(Pos('ENDIF',U)>0)Then HistoricalErrorCode:='C'
@@ -323,7 +324,7 @@ End;
 
 Procedure DefinitionDiagnostic(Const S:String);
 Begin
- if Pass=1 Then Begin Inc(ErrorCount);WriteLn(CurrentInputName,'(',LineNumber,'): ',S) End
+ if Pass=1 Then ReportDiagnostic(dsError,HistoricalErrorCode(S),DiagnosticColumn,S,True)
  else Diagnostic(S)
 End;
 
@@ -1547,6 +1548,14 @@ Begin
   StopAssembly:=True
  End
  else if OpcodeField='CODE'Then CurrentSection:=SecText
+ else if OpcodeField='.ERROR'Then Begin
+  S:=TrimString(OperandField);if S=''Then S:='E';
+  ReportDiagnostic(dsError,UpCase(S[1]),DiagnosticColumn,'directive .ERROR '+S,False)
+ End
+ else if OpcodeField='.WARN'Then Begin
+  S:=TrimString(OperandField);if S=''Then S:='W';
+  ReportDiagnostic(dsWarning,UpCase(S[1]),DiagnosticColumn,'directive .WARN '+S,False)
+ End
  else Diagnostic('directive inconnue: '+OpcodeField)
 End;
 
@@ -1560,15 +1569,50 @@ Type
   Reg,IndexReg:Integer;
   Value:LongInt;
   RelBase:Word;
-  ForwardRef,ForceShort:Boolean
+ ForwardRef,ForceShort:Boolean
  End;
 
+Function LooksLikeRegisterName(S:String):Boolean;
+Var U,N:String;I,E,V:Integer;
+Begin
+ U:=UpperString(TrimString(S));LooksLikeRegisterName:=False;
+ if(U='FCW')or(U='FLAGS')or(U='NSP')or(U='NSPSEG')or(U='NSPOFF')or
+   (U='PSAP')or(U='PSAPSEG')or(U='PSAPOFF')or(U='REFRESH')Then Begin
+  LooksLikeRegisterName:=True;Exit
+ End;
+ I:=1;
+ if Copy(U,1,2)='RH'Then I:=3
+ else if Copy(U,1,2)='RL'Then I:=3
+ else if Copy(U,1,2)='RR'Then I:=3
+ else if Copy(U,1,2)='RQ'Then I:=3
+ else if Copy(U,1,1)='R'Then I:=2
+ else Exit;
+ N:=Copy(U,I,255);if N=''Then Exit;
+ Val(N,V,E);LooksLikeRegisterName:=(E=0)and(V>=0)
+End;
+
+Procedure SetDiagnosticColumnFor(S:String);
+Var P:Integer;
+Begin
+ P:=Pos(UpperString(TrimString(S)),UpperString(CurrentLine));
+ if P>0 Then CurrentDiagnosticColumn:=P
+End;
+
+Procedure BadRegisterOperand(S:String);
+Begin
+ SetDiagnosticColumnFor(S);
+ ReportDiagnostic(dsError,'A',DiagnosticColumn,
+  'registre incorrect ou hors plage: '+TrimString(S),False)
+End;
+
 Procedure ParseOperand(S:String;RegKind:Char;Var O:TOperand);
-Var P:Integer;Left,Inside:String;
+Var P:Integer;Left,Inside,Original:String;
 Begin
  FillChar(O,SizeOf(O),0);O.Kind:=okInvalid;O.Reg:=-1;O.IndexReg:=-1;S:=TrimString(S);
+ Original:=S;
  if S=''Then Exit;
  O.Reg:=RegisterNumber(S,RegKind);if O.Reg>=0 Then Begin O.Kind:=okRegister;Exit End;
+ if LooksLikeRegisterName(S)Then Begin BadRegisterOperand(S);Exit End;
  if S[1]='#'Then Begin
   Delete(S,1,1);O.Value:=EvalReloc(S,O.ForwardRef,O.RelBase);O.Kind:=okImmediate;Exit
  End;
@@ -1580,7 +1624,9 @@ Begin
     Diagnostic('pointeur @RRn reserve au Z8001 segmente');O.Reg:=-1
    End
   End;
-  if O.Reg>=0 Then O.Kind:=okIndirect;Exit
+  if O.Reg>=0 Then O.Kind:=okIndirect
+  else Begin SetDiagnosticColumnFor(Original);BadRegisterOperand(Original) End;
+  Exit
  End;
  if S[1]='|'Then Begin
   if not Opt.Segmented Then Diagnostic('adresse segmentee courte interdite dans un source .8KN');
@@ -1595,9 +1641,14 @@ Begin
     Delete(Inside,1,1);O.Value:=EvalReloc(Inside,O.ForwardRef,O.RelBase);O.Kind:=okBase
    End else Begin
     O.IndexReg:=RegisterNumber(Inside,'W');if O.IndexReg>=0 Then O.Kind:=okBaseIndex
+    else if LooksLikeRegisterName(Inside)Then BadRegisterOperand(Inside)
    End;Exit
   End;
-  O.IndexReg:=RegisterNumber(Inside,'W');if O.IndexReg<0 Then Begin O.Kind:=okInvalid;Exit End;
+  O.IndexReg:=RegisterNumber(Inside,'W');if O.IndexReg<0 Then Begin
+   if LooksLikeRegisterName(Inside)Then BadRegisterOperand(Inside)
+   else Begin SetDiagnosticColumnFor(Original);Diagnostic('mode d''adressage indexe incorrect') End;
+   O.Kind:=okInvalid;Exit
+  End;
   O.Value:=EvalReloc(Left,O.ForwardRef,O.RelBase);O.Kind:=okIndexed;Exit
  End;
  O.Value:=EvalReloc(S,O.ForwardRef,O.RelBase);O.Kind:=okDirect
@@ -2034,7 +2085,7 @@ Begin
   if Count=0 Then Reloc:=''else Reloc:=ListingRelocations(StartSection,Address,Count);
   While Length(Reloc)<12 do Reloc:=Reloc+' ';
   if I=0 Then Begin
-   if LineErrorText<>''Then ErrMark:=' E 'else ErrMark:='   ';
+   ErrMark:=Copy(LineErrorCodes+'   ',1,3);
    Str(CurrentIncludeDepth,SourceMark);SourceMark:=SourceMark+'/'+Copy(CurrentInputName,1,18)+':';
    WriteLn(ListFile,ErrMark,(ListingLines+1):4,' ',ListingAddress(StartSection,Address),' ',
     Bytes,' ',Reloc,' ',SourceMark,LineNumber,' ',CurrentLine)
@@ -2043,7 +2094,7 @@ Begin
   Inc(ListingLines);Inc(Address,Count);Inc(I,Count)
  Until(I>=LineByteCount)and((I>0)or(LineByteCount=0));
  if LineErrorText<>''Then Begin
-  ListingCheckPage;WriteLn(ListFile,'*** E: ',LineErrorText);Inc(ListingLines)
+  ListingCheckPage;WriteLn(ListFile,'*** ',LineErrorCodes,': ',LineErrorText);Inc(ListingLines)
  End
 End;
 
@@ -2065,7 +2116,8 @@ Var
   SavedDepth:=CurrentIncludeDepth;LineNumber:=0;CurrentInputName:=FileName;CurrentIncludeDepth:=Depth-1;
   While not Eof(F)and not StopAssembly do Begin
    ReadLn(F,CurrentLine);if IOResult<>0 Then Begin Diagnostic('erreur de lecture');Break End;
-   Inc(LineNumber);LineByteCount:=0;LineErrorText:='';StartSection:=CurrentSection;
+   Inc(LineNumber);LineByteCount:=0;LineErrorText:='';LineErrorCodes:='';
+   CurrentDiagnosticColumn:=0;StartSection:=CurrentSection;
    StartAddress:=Location[CurrentSection];SplitLine(CurrentLine);
    if IsConditionalDirective(OpcodeField)Then HandleConditionalDirective
    else if ConditionalEnabled Then Begin
@@ -2077,7 +2129,7 @@ Var
      if Name=''Then Diagnostic('INCLUDE exige un fichier')else Begin
       Name:=ResolveCPMPath(Name);
       if not TextFileExists(Name)Then Name:=DirectoryPart(FileName)+Name;
-      AssembleFile(Name,Depth+1);LineByteCount:=0;LineErrorText:=''
+      AssembleFile(Name,Depth+1);LineByteCount:=0;LineErrorText:='';LineErrorCodes:=''
      End
     End else Begin
      if(LabelField<>'')and(LabelField[1]<>'.')Then CurrentGlobal:=LabelField;
@@ -2532,7 +2584,7 @@ Begin
 End;
 
 Procedure WriteObject;
-Var B:TObjectBuffer;N:Integer;S:String;Old:File;
+Var B:TObjectBuffer;N:Integer;S,BackupName:String;Old:File;HadOld:Boolean;
 Begin
  TemporaryObjectName:=Opt.ObjectName+'.$$$';DeleteFileQuiet(TemporaryObjectName);
  Assign(ObjectOutput,TemporaryObjectName);Rewrite(ObjectOutput,1);
@@ -2562,9 +2614,20 @@ Begin
  N:=0;WriteObjectBlock(ObjectOutput,OBOND,B,N);
  Close(ObjectOutput);ObjectFileOpen:=False;
  if IOResult<>0 Then Fatal('erreur d''ecriture objet');
- Assign(Old,Opt.ObjectName);Erase(Old);if IOResult<>0 Then Begin End;
+ BackupName:=Opt.ObjectName+'.$OLD';DeleteFileQuiet(BackupName);
+ HadOld:=TextFileExists(Opt.ObjectName);
+ if HadOld Then Begin
+  Assign(Old,Opt.ObjectName);Rename(Old,BackupName);
+  if IOResult<>0 Then Fatal('sauvegarde impossible de l''ancien objet')
+ End;
  Assign(ObjectOutput,TemporaryObjectName);Rename(ObjectOutput,Opt.ObjectName);
- if IOResult<>0 Then Fatal('renommage impossible vers '+Opt.ObjectName);
+ if IOResult<>0 Then Begin
+  if HadOld Then Begin
+   Assign(Old,BackupName);Rename(Old,Opt.ObjectName);if IOResult<>0 Then Begin End
+  End;
+  Fatal('renommage impossible vers '+Opt.ObjectName)
+ End;
+ if HadOld Then DeleteFileQuiet(BackupName);
  ObjectWriteActive:=False;TemporaryObjectName:=''
 End;
 
