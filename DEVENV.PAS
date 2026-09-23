@@ -101215,7 +101215,7 @@ End;
 { 5 bits utiles par octet (bit 4 = colonne la plus a gauche), 7 octets      }
 { (lignes) par glyphe, 37 glyphes (0..25=A-Z, 26..35=0-9, 36=espace). }
 Const
- Win16_Font5x7: Array[0..36, 0..6] Of Byte = (
+ Win16_Font5x7: Array[0..43, 0..6] Of Byte = (
   (14,17,17,31,17,17,17),  { A }
   (30,17,17,30,17,17,30),  { B }
   (15,16,16,16,16,16,15),  { C }
@@ -101252,7 +101252,18 @@ Const
   (31,1,2,4,4,4,4),        { 7 }
   (14,17,17,14,17,17,14),  { 8 }
   (14,17,17,15,1,2,12),    { 9 }
-  (0,0,0,0,0,0,0)          { espace / tout caractere non couvert }
+  (0,0,0,0,0,0,0),         { espace / tout caractere non couvert }
+  { Symboles ajoutes (2026-09-23, demande explicite - boutons de           }
+  { CALC.EXE invisibles : +,-,*,/,=,.,% tombaient tous sur l'index 36      }
+  { "espace", meme limitation que le reste de cette police MAISON, PAS     }
+  { une reproduction de police Windows authentique. }
+  (0,4,4,31,4,4,0),        { + }
+  (0,0,0,31,0,0,0),        { - }
+  (0,21,14,31,14,21,0),    { * }
+  (1,2,2,4,8,8,16),        { / }
+  (0,0,31,0,31,0,0),       { = }
+  (0,0,0,0,0,0,4),         { . }
+  (25,26,4,4,4,11,19)      { % }
  );
 
 { Traduit un caractere ASCII vers un index dans Win16_Font5x7 (36=espace,   }
@@ -101262,7 +101273,16 @@ Begin
  Ch := UpCase(Ch);
  If (Ch >= 'A') And (Ch <= 'Z') Then Win16_Font5x7Index := Ord(Ch) - Ord('A')
  Else If (Ch >= '0') And (Ch <= '9') Then Win16_Font5x7Index := 26 + Ord(Ch) - Ord('0')
- Else Win16_Font5x7Index := 36;
+ Else Case Ch Of
+  '+': Win16_Font5x7Index := 37;
+  '-': Win16_Font5x7Index := 38;
+  '*': Win16_Font5x7Index := 39;
+  '/': Win16_Font5x7Index := 40;
+  '=': Win16_Font5x7Index := 41;
+  '.': Win16_Font5x7Index := 42;
+  '%': Win16_Font5x7Index := 43;
+  Else Win16_Font5x7Index := 36;
+ End;
 End;
 
 { Trace UN caractere avec Win16_Font5x7 - utilise par Win16_DrawTextOut      }
