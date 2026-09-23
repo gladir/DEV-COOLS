@@ -194727,7 +194727,21 @@ Begin
    rappelle indefiniment via le trampoline. }
  If Emu_IntIsHooked(P, 0) Then
   Emu_FireHwInt(P, 0)
- Else
+ Else If Win16_LoadedPath <> '' Then Begin
+  { BOGUE REEL CORRIGE (2026-09-23, demande explicite - CALC.EXE plantait  }
+  { sur une VRAIE division par zero, l'utilisateur voyait "division par     }
+  { zero" comme une panne fatale de TOUT l'emulateur) : le VRAI KERNEL       }
+  { Windows 3.x n'installe JAMAIS de VRAI gestionnaire INT0 cote invite       }
+  { (contrairement a TP4/DOS qui le fait pour son "Runtime error 200") -       }
+  { sur le VRAI Windows, un #DE non intercepte ferme SEULEMENT le               }
+  { programme fautif, JAMAIS tout l'environnement. Traduit ici en fin de         }
+  { programme PROPRE (sfEndProgram, MEME mecanisme deja etabli pour                }
+  { ExitWindows/$7/OldExitWindows/$2) plutot qu'un blocage fatal de TOUT             }
+  { l'emulateur - seul ce sous-ensemble mono-programme ne peut de toute               }
+  { facon pas "revenir a un bureau Windows" apres coup. }
+  P.CPU.Fault := sfEndProgram;
+  P.StatusMsg := 'Division par zero : le programme Windows a ete ferme';
+ End Else
   P.CPU.Fault := sfDivision0;
 End;
 
@@ -195472,9 +195486,14 @@ Begin
      { rapporte au lieu de "division par zero" pour AAM base=0) : le          }
      { commentaire disait deja la bonne intention (#DE) mais le code          }
      { positionnait sfInvalidCode au lieu de sfDivision0. }
+     { BOGUE REEL CORRIGE (2026-09-23) : ce site positionnait le Fault ET     }
+     { avancait IP sans jamais passer par Emu_Div0Trap, donc sans jamais       }
+     { dispatcher INT0 ni beneficier de la fin de programme propre en Win16 -  }
+     { IP doit rester sur l instruction fautive (pas d'Inc ici) pour que le    }
+     { trap calcule une adresse de retour correcte, comme les sites F6/F7. }
      Emu_Div0Snapshot(P, $D4, 0, Imm8, P.CPU.IP);
      P.CPU.Fault := sfDivision0;
-     Inc(P.CPU.IP, 2);
+     Emu_Div0Trap(P);
     End Else Begin
      P.CPU.Regs.AH := P.CPU.Regs.AL Div Imm8;
      P.CPU.Regs.AL := P.CPU.Regs.AL Mod Imm8;
