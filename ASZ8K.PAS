@@ -8,12 +8,12 @@
 Program ASZ8K;
 
 {$A-,B-,I-,R-,S-}
+{$IFDEF FPC}{$H+}{$ENDIF}
 
 Uses Dos;
 
 Const
  Version='1.0';
- MaxSectionSize=65535;
  SecAbsolute=0;
  SecText=1;
  SecData=2;
@@ -28,6 +28,20 @@ Type
  TDiagnosticSeverity=(dsWarning,dsError,dsFatal);
  TByteBlock=Array[0..16383]of Byte;
  PByteBlock=^TByteBlock;
+ PImageBlock=^TImageBlock;
+ TImageBlock=Record
+  Index:LongInt;
+  Data:TByteBlock;
+  Next:PImageBlock
+ End;
+ PSection=^TSection;
+ TSection=Record
+  Number,Kind,Attributes:Byte;
+  Name:String;
+  Location,Size:LongInt;
+  FirstImage,LastImage:PImageBlock;
+  Next:PSection
+ End;
  PSymbol=^TSymbol;
  PReference=^TReference;
  TReference=Record
@@ -75,10 +89,8 @@ TPredefTokenArray=Array[0..31]of String;
 
 Var
  Opt:TOptions;
- TextImage,DataImage:Array[0..3]of PByteBlock;
- TextSize,DataSize,BssSize:LongInt;
  CurrentSection:Byte;
- Location:Array[0..3]of LongInt;
+ Sections,LastSection:PSection;
  Symbols:PSymbol;
  Relocations,LastRelocation:PRelocation;
  Pass,LineNumber,ErrorCount,WarningCount:Integer;
@@ -87,8 +99,8 @@ Var
  ListOpen:Boolean;
  CurrentLine,LabelField,OpcodeField,OperandField:String;
  CurrentInputName:String;
- LineBytes:Array[0..255]of Byte;
- LineByteCount:Integer;
+ LineImageFirst,LineImageLast:PImageBlock;
+ LineByteCount:LongInt;
  LineErrorText:String;
  ListingPage,ListingLines,CurrentIncludeDepth:Integer;
  ListingTitle:String;
@@ -106,8 +118,6 @@ Var
  PredefInstructionCount,PredefDirectiveCount,PredefSymbolCount:Integer;
  ModuleActive,ModuleClosed:Boolean;
  ObjectModuleName,CurrentGlobal:String;
- SectionObjectName:Array[1..3]of String;
- SectionAttributes:Array[1..3]of Byte;
  ConditionalDepth:Integer;
  ConditionalParent,ConditionalValue,ConditionalElse:Array[1..32]of Boolean;
  ConditionalEnabled:Boolean;
@@ -153,7 +163,7 @@ Begin
   P:=I;Break
  End
  else if S[I]in['\','/',':']Then Break;
- if P<>0 Then Delete(S,P,255);BaseName:=S
+ if P<>0 Then Delete(S,P,Length(S));BaseName:=S
 End;
 
 Function Extension(S:String):String;
@@ -162,7 +172,7 @@ Var
 Begin
  Extension:='';
  For I:=Length(S)downto 1 do if S[I]='.'Then Begin
-  Extension:=UpperString(Copy(S,I,255));Exit
+  Extension:=UpperString(Copy(S,I,Length(S)));Exit
  End else if S[I]in['\','/',':']Then Exit
 End;
 
@@ -245,6 +255,139 @@ End;
 
 Procedure Warning(Const S:String);Begin
  ReportDiagnostic(dsWarning,'W',DiagnosticColumn,S,False)
+End;
+
+Function FindSectionByNumber(Number:Byte):PSection;
+Var P:PSection;
+Begin
+ P:=Sections;While(P<>Nil)and(P^.Number<>Number)do P:=P^.Next;
+ FindSectionByNumber:=P
+End;
+
+Function FindSectionByName(Const Name:String):PSection;
+Var P:PSection;U:String;
+Begin
+ U:=UpperString(Name);P:=Sections;
+ While(P<>Nil)and(UpperString(P^.Name)<>U)do P:=P^.Next;
+ FindSectionByName:=P
+End;
+
+Function AddSection(Number,Kind:Byte;Const Name:String):PSection;
+Var P:PSection;
+Begin
+ New(P);if P=Nil Then Fatal('memoire pleine pour la table des segments');
+ FillChar(P^,SizeOf(P^),0);P^.Number:=Number;P^.Kind:=Kind;P^.Name:=Name;
+ if LastSection=Nil Then Sections:=P else LastSection^.Next:=P;
+ LastSection:=P;AddSection:=P
+End;
+
+Function NewNamedSection(Kind:Byte;Const Name:String):PSection;
+Var P:PSection;N:Integer;
+Begin
+ P:=FindSectionByName(Name);if P<>Nil Then Begin NewNamedSection:=P;Exit End;
+ N:=1;P:=Sections;While P<>Nil do Begin if P^.Number>=N Then N:=P^.Number+1;P:=P^.Next End;
+ if N>=RBUND Then Fatal('trop de segments dans le module');
+ NewNamedSection:=AddSection(N,Kind,Name)
+End;
+
+Function SectionLocation(Number:Byte):PLongInt;
+Var P:PSection;
+Begin
+ P:=FindSectionByNumber(Number);if P=Nil Then Fatal('numero de segment interne inconnu');
+ SectionLocation:=@P^.Location
+End;
+
+Function SectionKind(Number:Byte):Byte;
+Var P:PSection;
+Begin
+ P:=FindSectionByNumber(Number);if P=Nil Then Fatal('numero de segment interne inconnu');
+ SectionKind:=P^.Kind
+End;
+
+Function TotalSectionSize(Kind:Byte):LongInt;
+Var P:PSection;N:LongInt;
+Begin
+ N:=0;P:=Sections;While P<>Nil do Begin
+  if P^.Kind=Kind Then Begin
+   if N>2147483647-P^.Size Then Begin TotalSectionSize:=2147483647;Exit End;
+   Inc(N,P^.Size)
+  End;
+  P:=P^.Next
+ End;
+ TotalSectionSize:=N
+End;
+
+Procedure AdvanceSection(Number:Byte;Amount:LongInt);
+Var L:PLongInt;
+Begin
+ L:=SectionLocation(Number);
+ if Amount<0 Then Begin Diagnostic('taille de segment negative');Exit End;
+ if L^>2147483647-Amount Then Begin Diagnostic('taille de segment superieure a 2 Gio');Exit End;
+ Inc(L^,Amount)
+End;
+
+Procedure FreeSectionImages(P:PSection);
+Var B,N:PImageBlock;
+Begin
+ B:=P^.FirstImage;While B<>Nil do Begin N:=B^.Next;Dispose(B);B:=N End;
+ P^.FirstImage:=Nil;P^.LastImage:=Nil
+End;
+
+Function FindImageBlock(P:PSection;Index:LongInt;CreateIt:Boolean):PImageBlock;
+Var B,N:PImageBlock;
+Begin
+ B:=P^.FirstImage;While(B<>Nil)and(B^.Index<>Index)do B:=B^.Next;
+ if(B=Nil)and CreateIt Then Begin
+  New(N);if N=Nil Then Fatal('memoire pleine pour l''image du segment');
+  FillChar(N^,SizeOf(N^),0);N^.Index:=Index;
+  if P^.LastImage=Nil Then P^.FirstImage:=N else P^.LastImage^.Next:=N;
+  P^.LastImage:=N;B:=N
+ End;
+ FindImageBlock:=B
+End;
+
+Procedure PutSectionByte(Number:Byte;Offset:LongInt;B:Byte);
+Var P:PSection;Block:PImageBlock;
+Begin
+ if Offset<0 Then Fatal('offset de segment negatif');P:=FindSectionByNumber(Number);
+ if P=Nil Then Fatal('segment interne absent');Block:=FindImageBlock(P,Offset div 16384,True);
+ Block^.Data[Offset mod 16384]:=B
+End;
+
+Function GetSectionByte(Number:Byte;Offset:LongInt):Byte;
+Var P:PSection;Block:PImageBlock;
+Begin
+ P:=FindSectionByNumber(Number);if P=Nil Then Fatal('segment interne absent');
+ Block:=FindImageBlock(P,Offset div 16384,False);
+ if Block=Nil Then GetSectionByte:=0 else GetSectionByte:=Block^.Data[Offset mod 16384]
+End;
+
+Procedure FreeLineImage;
+Var B,N:PImageBlock;
+Begin
+ B:=LineImageFirst;While B<>Nil do Begin N:=B^.Next;Dispose(B);B:=N End;
+ LineImageFirst:=Nil;LineImageLast:=Nil;LineByteCount:=0
+End;
+
+Procedure PutLineByte(Offset:LongInt;Value:Byte);
+Var B:PImageBlock;Index:LongInt;
+Begin
+ Index:=Offset div 16384;B:=LineImageFirst;
+ While(B<>Nil)and(B^.Index<>Index)do B:=B^.Next;
+ if B=Nil Then Begin
+  New(B);if B=Nil Then Fatal('memoire pleine pour le listing');
+  FillChar(B^,SizeOf(B^),0);B^.Index:=Index;
+  if LineImageLast=Nil Then LineImageFirst:=B else LineImageLast^.Next:=B;
+  LineImageLast:=B
+ End;
+ B^.Data[Offset mod 16384]:=Value
+End;
+
+Function GetLineByte(Offset:LongInt):Byte;
+Var B:PImageBlock;
+Begin
+ B:=LineImageFirst;While(B<>Nil)and(B^.Index<>Offset div 16384)do B:=B^.Next;
+ if B=Nil Then GetLineByte:=0 else GetLineByte:=B^.Data[Offset mod 16384]
 End;
 
 Function ScopePrefix(Level:Integer):String;
@@ -373,7 +516,7 @@ Begin
  ResolveCPMPath:=Name;
  if(Length(Name)<2)or(Name[2]<>':')or not(Name[1]in['A'..'Z','a'..'z'])Then Exit;
  C:=UpCase(Name[1]);Root:=GetEnv('CPM_'+C);if Root=''Then Exit;
- Rest:=Copy(Name,3,255);
+ Rest:=Copy(Name,3,Length(Name));
  if(Root<>'')and not(Root[Length(Root)]in['\','/'])Then Root:=Root+'\';
  ResolveCPMPath:=Root+Rest
 End;
@@ -409,7 +552,7 @@ End;
 Procedure SplitPredefTokens(S:String;Var Tokens:TPredefTokenArray;Var Count:Integer);
 Var I,J:Integer;
 Begin
- I:=Pos(';',S);if I<>0 Then Delete(S,I,255);Count:=0;I:=1;
+ I:=Pos(';',S);if I<>0 Then Delete(S,I,Length(S));Count:=0;I:=1;
  While I<=Length(S)do Begin
   While(I<=Length(S))and(S[I]in[' ',#9])do Inc(I);if I>Length(S)Then Break;
   J:=I;While(J<=Length(S))and not(S[J]in[' ',#9])do Inc(J);
@@ -484,7 +627,7 @@ Begin
  Section:=1;LineNo:=0;FirstFmt:=Nil;LastFmt:=Nil;
  While not Eof(F)do Begin
  ReadLn(F,Line);if IOResult<>0 Then PredefError(LineNo,'erreur de lecture');Inc(LineNo);
-  if Pos(#26,Line)<>0 Then Delete(Line,Pos(#26,Line),255);
+  if Pos(#26,Line)<>0 Then Delete(Line,Pos(#26,Line),Length(Line));
   if(TrimString(Line)<>'')and(TrimString(Line)[1]=';')Then Continue;
   SplitPredefTokens(Line,Tokens,Count);
   if Count=0 Then Begin
@@ -527,7 +670,7 @@ Function ModuleName(S:String):String;
 Var I,P:Integer;
 Begin
  P:=0;For I:=Length(S)downto 1 do if S[I]in['\','/',':']Then Begin P:=I;Break End;
- if P<>0 Then Delete(S,1,P);S:=BaseName(S);if Length(S)>8 Then Delete(S,9,255);
+ if P<>0 Then Delete(S,1,P);S:=BaseName(S);if Length(S)>8 Then Delete(S,9,Length(S));
  ModuleName:=S
 End;
 
@@ -536,7 +679,7 @@ Var R:PRelocation;
 Begin
  if(Pass<>2)or(Base=0)Then Exit;
  New(R);if R=Nil Then Fatal('memoire pleine');
- R^.Section:=CurrentSection;R^.Offset:=Location[CurrentSection];
+ R^.Section:=CurrentSection;R^.Offset:=SectionLocation(CurrentSection)^;
  R^.Action:=Action;R^.Base:=Base and RBMSK;
  if Action=RAA8 Then R^.Width:=1 else if(Action=RAA32M)or(Action=RAZLS)Then R^.Width:=4
  else R^.Width:=2;
@@ -547,19 +690,11 @@ End;
 
 Procedure EmitByte(B:Byte);Begin
  if Pass=2 Then Begin
-  if LineByteCount<SizeOf(LineBytes)Then Begin
-   LineBytes[LineByteCount]:=B;Inc(LineByteCount)
-  End;
-  Case CurrentSection of
-  SecText:if Location[SecText]<=
-  MaxSectionSize Then    TextImage[Location[SecText]div 16384]^[Location[SecText]mod 16384]:=B;
-  SecData:if Location[SecData]<=
-  MaxSectionSize Then    DataImage[Location[SecData]div 16384]^[Location[SecData]mod 16384]:=B;
-  SecBss:Diagnostic('emission de donnees dans BSS');
- End
-End;
-Inc(Location[CurrentSection]);
-if Location[CurrentSection]>65536 Then Diagnostic('section superieure a 64 Kio')
+  PutLineByte(LineByteCount,B);Inc(LineByteCount);
+  if SectionKind(CurrentSection)=SecBss Then Diagnostic('emission de donnees dans BSS')
+  else PutSectionByte(CurrentSection,SectionLocation(CurrentSection)^,B)
+ End;
+AdvanceSection(CurrentSection,1)
 End;
 
 Procedure EmitWord(W:Word);Begin
@@ -613,7 +748,7 @@ Begin
  While I<=Length(S)do Begin
   if S[I]='"'Then Quoted:=not Quoted
   else if not Quoted and(S[I]in[';','!'])Then Begin
-   Delete(S,I,255);Break
+   Delete(S,I,Length(S));Break
   End;
   Inc(I)
  End;StripComment:=S
@@ -637,7 +772,7 @@ Begin
  While(I<=Length(S))and not(S[I]in[' ',#9])do Inc(I);
  FirstWord:=Copy(S,P,I-P);OpcodeField:=UpperString(FirstWord);
  While(I<=Length(S))and(S[I]in[' ',#9])do Inc(I);
- OperandField:=TrimString(Copy(S,I,255));
+ OperandField:=TrimString(Copy(S,I,Length(S)));
  { DRI accepte aussi: nom equ expression, sans deux-points. }
  if(LabelField='')and(OpcodeField<>'')Then Begin
   P:=1;
@@ -735,7 +870,7 @@ Begin
   Inc(E.P);Start:=E.P;
   While(E.P<=Length(E.S))and(UpCase(E.S[E.P])in['0'..'9','A'..'F'])do Inc(E.P);
   T:=Copy(E.S,Start,E.P-Start);
-  if T=''Then V:=Location[CurrentSection]else Begin
+  if T=''Then V:=SectionLocation(CurrentSection)^ else Begin
    Val('$'+T,V,Code);if Code<>0 Then V:=0
   End;ParseNumber:=V;Exit
  End;
@@ -896,7 +1031,7 @@ Begin
  K:=FindPredefName(U,3);if K=Nil Then Exit;
  if Kind='B'Then Begin
   if(Length(U)<3)or not((Copy(U,1,2)='RH')or(Copy(U,1,2)='RL'))Then Exit;
-  Val(Copy(U,3,255),N,E);if(E=0)and(N>=0)and(N<=7)Then Begin
+  Val(Copy(U,3,Length(U)),N,E);if(E=0)and(N>=0)and(N<=7)Then Begin
    if U[2]='L'Then Inc(N,8);RegisterNumber:=N
   End;Exit
  End;
@@ -906,7 +1041,7 @@ Begin
  End else if Kind='Q'Then Begin
   if Copy(U,1,2)<>'RQ'Then Exit
  End else if U[1]<>'R'Then Exit;
- Val(Copy(U,P,255),N,E);if E<>0 Then Exit;
+ Val(Copy(U,P,Length(U)),N,E);if E<>0 Then Exit;
  if Kind='L'Then Begin
   if(N>=0)and(N<=14)and((N and 1)=0)Then RegisterNumber:=N
  End else if Kind='Q'Then Begin
@@ -1088,7 +1223,7 @@ Begin
  End;
  if C='$'Then Begin
   Inc(E.P);Start:=E.P;While(E.P<=Length(E.S))and(UpCase(E.S[E.P])in['0'..'9','A'..'F'])do Inc(E.P);
-  if E.P=Start Then Begin A.Value:=Location[CurrentSection];A.RelocClass:=rcSection;A.Base:=CurrentSection End
+  if E.P=Start Then Begin A.Value:=SectionLocation(CurrentSection)^;A.RelocClass:=rcSection;A.Base:=CurrentSection End
   else Begin T:='$'+Copy(E.S,Start,E.P-Start);Val(T,V,Code);
    if Code<>0 Then Begin Diagnostic('constante hexadecimale incorrecte');V:=0 End;A.Value:=V
   End;TypedPrimary:=A;Exit
@@ -1268,33 +1403,34 @@ Function EvaluateTyped(Const S:String):TExpressionValue;
 Var E:TTypedExprParser;A:TExpressionValue;
 Begin
  E.S:=TrimString(S);E.P:=1;A:=TypedOr(E);TypedSkip(E);
- if E.P<=Length(E.S)Then Diagnostic('caracteres superflus dans expression: '+Copy(E.S,E.P,255));
+ if E.P<=Length(E.S)Then Diagnostic('caracteres superflus dans expression: '+Copy(E.S,E.P,Length(E.S)));
  EvaluateTyped:=A
 End;
 
 Procedure SelectNamedSection;
-Var S,Name,A,U:String;Section:Byte;P:PSymbol;
+Var S,Name,A,U:String;Kind:Byte;P:PSymbol;Seg:PSection;
 Begin
  S:=OperandField;Name:=NextOperand(S);A:=NextOperand(S);U:=UpperString(A);
  if Name=''Then Begin Diagnostic('SECTION exige un nom');Exit End;
- if(U='DATA')or(U='WRITE')Then Section:=SecData
- else if(U='BSS')or(U='COMMON')or(U='UNINITIALIZED')Then Section:=SecBss
- else Section:=SecText;
- CurrentSection:=Section;SectionObjectName[Section]:=Name;
+ if(U='DATA')or(U='WRITE')Then Kind:=SecData
+ else if(U='BSS')or(U='COMMON')or(U='UNINITIALIZED')Then Kind:=SecBss
+ else Kind:=SecText;
+ Seg:=NewNamedSection(Kind,Name);CurrentSection:=Seg^.Number;
+ if Seg^.Kind<>Kind Then Diagnostic('type de segment incompatible pour '+Name);
  P:=FindSymbol(Name);
  if Pass=1 Then Begin
-  if P=Nil Then DefineSymbol(Name,0,Section)
-  else if(not P^.Defined)or(P^.Section<>Section)or(P^.Value<>0)Then
+  if P=Nil Then DefineSymbol(Name,0,CurrentSection)
+  else if(not P^.Defined)or(P^.Section<>CurrentSection)or(P^.Value<>0)Then
    DefinitionDiagnostic('conflit de symbole de section: '+Name)
- End else DefineSymbol(Name,0,Section);
- SectionAttributes[Section]:=0;
+ End else DefineSymbol(Name,0,CurrentSection);
+ Seg^.Attributes:=0;
  While S<>''do Begin
   U:=UpperString(NextOperand(S));
-  if U='GLOBAL'Then SectionAttributes[Section]:=SectionAttributes[Section]or 1
-  else if U='READONLY'Then SectionAttributes[Section]:=SectionAttributes[Section]or 2
-  else if U='PURE'Then SectionAttributes[Section]:=SectionAttributes[Section]or 4
-  else if U='COMMON'Then SectionAttributes[Section]:=SectionAttributes[Section]or 8
-  else if U='ABSOLUTE'Then SectionAttributes[Section]:=SectionAttributes[Section]or 16
+  if U='GLOBAL'Then Seg^.Attributes:=Seg^.Attributes or 1
+  else if U='READONLY'Then Seg^.Attributes:=Seg^.Attributes or 2
+  else if U='PURE'Then Seg^.Attributes:=Seg^.Attributes or 4
+  else if U='COMMON'Then Seg^.Attributes:=Seg^.Attributes or 8
+  else if U='ABSOLUTE'Then Seg^.Attributes:=Seg^.Attributes or 16
   else Diagnostic('attribut de section inconnu: '+U)
  End;
  if Opt.Segmented and(Length(Name)>8)Then
@@ -1310,10 +1446,10 @@ Begin
  P:=GetSymbol(N);
  if(P^.Defined)and(P^.Section<>SecBss)Then Diagnostic('COMMON incompatible avec '+N)
  else Begin
-  P^.Defined:=True;P^.Global:=True;P^.Section:=SecBss;P^.Value:=Location[SecBss];
+  P^.Defined:=True;P^.Global:=True;P^.Section:=SecBss;P^.Value:=SectionLocation(SecBss)^;
   P^.ObjectName:=SymbolObjectName(N);
   if Pass=1 Then P^.DefLine:=LineNumber;
-  Inc(Location[SecBss],V)
+  AdvanceSection(SecBss,V)
  End
 End;
 
@@ -1331,7 +1467,7 @@ Procedure TypedDeclaration(Size:Integer);
 Var S:String;
 Begin
  S:=TrimString(OperandField);
- if(S='')Then Inc(Location[CurrentSection],Size)
+ if(S='')Then AdvanceSection(CurrentSection,Size)
  else DataDirective(Size)
 End;
 
@@ -1342,11 +1478,12 @@ Begin
  if IsArray Then Begin
   Count:=Eval(A,F);if B=''Then B:='BYTE';Size:=DeclarationSize(B);
   if Count<0 Then Diagnostic('dimension de tableau negative')
-  else if Count>65535 div Size Then Diagnostic('tableau trop grand')
-  else Inc(Location[CurrentSection],Count*Size)
+  else if Count>2147483647 div Size Then Diagnostic('tableau trop grand')
+  else if Count>2147483647 div Size Then Diagnostic('tableau trop grand')
+  else AdvanceSection(CurrentSection,Count*Size)
  End else Begin
   if A=''Then A:=B;Size:=Eval(A,F);
-  if Size<0 Then Diagnostic('taille RECORD negative')else Inc(Location[CurrentSection],Size)
+  if Size<0 Then Diagnostic('taille RECORD negative')else AdvanceSection(CurrentSection,Size)
  End
 End;
 
@@ -1379,7 +1516,7 @@ Begin
  StructureFalse[StructureDepth]:=NewStructureLabel('F');
  StructureEnd[StructureDepth]:=NewStructureLabel('E');C:=TrimString(OperandField);
  if Kind in['D','R']Then Begin
-  DefineSymbol(StructureStart[StructureDepth],Location[CurrentSection],CurrentSection);
+  DefineSymbol(StructureStart[StructureDepth],SectionLocation(CurrentSection)^,CurrentSection);
   if(Kind='D')and(C<>'')Then EmitStructureJump(C,StructureEnd[StructureDepth],True)
  End
  else EmitStructureJump(C,StructureFalse[StructureDepth],True)
@@ -1394,16 +1531,16 @@ Begin
  C:=TrimString(OperandField);
  if Kind='D'Then Begin
   EmitStructureJump(C,StructureStart[StructureDepth],False);
-  DefineSymbol(StructureEnd[StructureDepth],Location[CurrentSection],CurrentSection)
+  DefineSymbol(StructureEnd[StructureDepth],SectionLocation(CurrentSection)^,CurrentSection)
  End
  else if Kind='R'Then Begin
   EmitStructureJump(C,StructureStart[StructureDepth],True);
-  DefineSymbol(StructureEnd[StructureDepth],Location[CurrentSection],CurrentSection)
+  DefineSymbol(StructureEnd[StructureDepth],SectionLocation(CurrentSection)^,CurrentSection)
  End
  else Begin
   if StructureHasElse[StructureDepth]Then
-   DefineSymbol(StructureEnd[StructureDepth],Location[CurrentSection],CurrentSection)
-  else DefineSymbol(StructureFalse[StructureDepth],Location[CurrentSection],CurrentSection)
+   DefineSymbol(StructureEnd[StructureDepth],SectionLocation(CurrentSection)^,CurrentSection)
+  else DefineSymbol(StructureFalse[StructureDepth],SectionLocation(CurrentSection)^,CurrentSection)
  End;
  Dec(StructureDepth)
 End;
@@ -1415,7 +1552,7 @@ Begin
  End;
  if StructureHasElse[StructureDepth]Then Begin Diagnostic('ELSE repete');Exit End;
  EmitStructureJump('',StructureEnd[StructureDepth],False);
- DefineSymbol(StructureFalse[StructureDepth],Location[CurrentSection],CurrentSection);
+ DefineSymbol(StructureFalse[StructureDepth],SectionLocation(CurrentSection)^,CurrentSection);
  StructureHasElse[StructureDepth]:=True
 End;
 
@@ -1470,8 +1607,8 @@ Begin
  End
  else if OpcodeField='CONSTANT'Then Begin
   S:=TrimString(OperandField);I:=Pos(':=',S);
-  if I<>0 Then S:=Copy(S,I+2,255)else Begin
-   I:=Pos('=',S);if I<>0 Then S:=Copy(S,I+1,255)
+  if I<>0 Then S:=Copy(S,I+2,Length(S))else Begin
+   I:=Pos('=',S);if I<>0 Then S:=Copy(S,I+1,Length(S))
   End;
   if S=''Then Diagnostic('valeur CONSTANT attendue')
   else Begin V:=Eval(TrimString(S),F);DefineSymbol(LabelField,V,SecAbsolute) End
@@ -1494,20 +1631,20 @@ Begin
  else if(OpcodeField='DS')or(OpcodeField='DEFS')or(OpcodeField='.SPACE')or(OpcodeField=
  'BLOCK')Then Begin
   V:=Eval(OperandField,F);
-  if V<0 Then Diagnostic('taille negative')else Inc(Location[CurrentSection],V)
+  if V<0 Then Diagnostic('taille negative')else AdvanceSection(CurrentSection,V)
  End
  else if(OpcodeField='EVEN')or(OpcodeField='.EVEN')Then Begin
-  if(Location[CurrentSection]and 1)<>0 Then EmitByte(0)
+  if(SectionLocation(CurrentSection)^ and 1)<>0 Then EmitByte(0)
  End
  else if(OpcodeField='ALIGN')or(OpcodeField='.ALIGN')Then Begin
   V:=Eval(OperandField,F);
   if V<=0 Then Diagnostic('alignement incorrect')else
-  While(Location[CurrentSection]mod V)<>0 do EmitByte(0)
+  While(SectionLocation(CurrentSection)^ mod V)<>0 do EmitByte(0)
  End
  else if(OpcodeField='ORG')or(OpcodeField='.ORG')Then Begin
   V:=Eval(OperandField,F);
-  if V<Location[CurrentSection]Then Diagnostic('ORG en arriere')else
-  While Location[CurrentSection]<V do EmitByte(0)
+  if V<SectionLocation(CurrentSection)^ Then Diagnostic('ORG en arriere')else
+  While SectionLocation(CurrentSection)^<V do EmitByte(0)
  End
  else if(OpcodeField='GLOBAL')or(OpcodeField='.GLOBAL')or(OpcodeField='PUBLIC')Then Begin
   S:=OperandField;
@@ -1587,7 +1724,7 @@ Begin
  else if Copy(U,1,2)='RQ'Then I:=3
  else if Copy(U,1,1)='R'Then I:=2
  else Exit;
- N:=Copy(U,I,255);if N=''Then Exit;
+ N:=Copy(U,I,Length(U));if N=''Then Exit;
  Val(N,V,E);LooksLikeRegisterName:=(E=0)and(V>=0)
 End;
 
@@ -1759,7 +1896,7 @@ Begin
  else Begin C:=8;Target:=A End;
  if(C<0)or(Target='')or(S<>'')Then Begin Diagnostic('operandes de saut incorrects');Exit End;
  if OpcodeField='JR'Then Begin
-  V:=EvalReloc(Target,F,RelBase);D:=V-(Location[CurrentSection]+2);
+  V:=EvalReloc(Target,F,RelBase);D:=V-(SectionLocation(CurrentSection)^+2);
   if(Pass=2)and(RelBase<>CurrentSection)Then Diagnostic('saut relatif vers une autre section');
   if(Pass=2)and(((D and 1)<>0)or(D< -256)or(D>254))Then Diagnostic('saut relatif hors plage');
   D:=D div 2;if Conditional Then W:=$E000 or Word(C shl 8)else W:=$E800;
@@ -2032,7 +2169,8 @@ End;
 Function ListingSectionName(Section:Byte):String;
 Begin
  if Section=RBUND Then Begin ListingSectionName:='X';Exit End;
- Case Section of SecText:ListingSectionName:='T';SecData:ListingSectionName:='D';
+ if Section=SecAbsolute Then Begin ListingSectionName:='A';Exit End;
+ Case SectionKind(Section)of SecText:ListingSectionName:='T';SecData:ListingSectionName:='D';
  SecBss:ListingSectionName:='B';else ListingSectionName:='A'End
 End;
 
@@ -2075,12 +2213,12 @@ Begin
 End;
 
 Procedure WriteListingLine(StartSection:Byte;StartAddress:LongInt);
-Var I,J,Count:Integer;Bytes,Reloc,SourceMark,ErrMark:String;Address:LongInt;
+Var J,Count:Integer;I:LongInt;Bytes,Reloc,SourceMark,ErrMark:String;Address:LongInt;
 Begin
  if not ListOpen Then Exit;I:=0;Address:=StartAddress;
  Repeat
   ListingCheckPage;Bytes:='';Count:=LineByteCount-I;if Count>4 Then Count:=4;
-  For J:=0 to Count-1 do Bytes:=Bytes+HexByte(LineBytes[I+J]);
+  For J:=0 to Count-1 do Bytes:=Bytes+HexByte(GetLineByte(I+J));
   While Length(Bytes)<8 do Bytes:=Bytes+' ';
   if Count=0 Then Reloc:=''else Reloc:=ListingRelocations(StartSection,Address,Count);
   While Length(Reloc)<12 do Reloc:=Reloc+' ';
@@ -2101,6 +2239,7 @@ End;
 Procedure AssemblePass(PassNo:Integer);
 Var
  IncludeNames:Array[1..8]of String;
+ PSectionItem:PSection;
 
  Procedure AssembleFile(Const FileName:String;Depth:Integer);
  Var F:Text;StartAddress:LongInt;StartSection:Byte;SavedLine,SavedDepth:Integer;
@@ -2116,9 +2255,9 @@ Var
   SavedDepth:=CurrentIncludeDepth;LineNumber:=0;CurrentInputName:=FileName;CurrentIncludeDepth:=Depth-1;
   While not Eof(F)and not StopAssembly do Begin
    ReadLn(F,CurrentLine);if IOResult<>0 Then Begin Diagnostic('erreur de lecture');Break End;
-   Inc(LineNumber);LineByteCount:=0;LineErrorText:='';LineErrorCodes:='';
+   Inc(LineNumber);FreeLineImage;LineErrorText:='';LineErrorCodes:='';
    CurrentDiagnosticColumn:=0;StartSection:=CurrentSection;
-   StartAddress:=Location[CurrentSection];SplitLine(CurrentLine);
+   StartAddress:=SectionLocation(CurrentSection)^;SplitLine(CurrentLine);
    if IsConditionalDirective(OpcodeField)Then HandleConditionalDirective
    else if ConditionalEnabled Then Begin
     if(OpcodeField='INCLUDE')or(OpcodeField='.INPUT')Then Begin
@@ -2129,12 +2268,12 @@ Var
      if Name=''Then Diagnostic('INCLUDE exige un fichier')else Begin
       Name:=ResolveCPMPath(Name);
       if not TextFileExists(Name)Then Name:=DirectoryPart(FileName)+Name;
-      AssembleFile(Name,Depth+1);LineByteCount:=0;LineErrorText:='';LineErrorCodes:=''
+      AssembleFile(Name,Depth+1);FreeLineImage;LineErrorText:='';LineErrorCodes:=''
      End
     End else Begin
      if(LabelField<>'')and(LabelField[1]<>'.')Then CurrentGlobal:=LabelField;
      if(LabelField<>'')and not((OpcodeField='EQU')or(OpcodeField='=')or
-      (OpcodeField='CONSTANT'))Then DefineSymbol(LabelField,Location[CurrentSection],CurrentSection);
+      (OpcodeField='CONSTANT'))Then DefineSymbol(LabelField,SectionLocation(CurrentSection)^,CurrentSection);
      if OpcodeField<>''Then if IsDirective(OpcodeField)Then ProcessDirective
      else ProcessInstruction
     End
@@ -2146,7 +2285,12 @@ Var
   CurrentIncludeDepth:=SavedDepth
  End;
 Begin
- Pass:=PassNo;Location[SecText]:=0;Location[SecData]:=0;Location[SecBss]:=0;
+ Pass:=PassNo;PSectionItem:=Sections;
+ While PSectionItem<>Nil do Begin
+  PSectionItem^.Location:=0;
+  if PassNo=2 Then FreeSectionImages(PSectionItem);
+  PSectionItem:=PSectionItem^.Next
+ End;
  CurrentSection:=SecText;LineNumber:=0;StopAssembly:=False;ConditionalDepth:=0;
  ConditionalEnabled:=True;ModuleActive:=False;ModuleClosed:=False;CurrentGlobal:='';
  StructureDepth:=0;StructureSerial:=0;ScopeDepth:=0;FillChar(ScopeNames,SizeOf(ScopeNames),0);
@@ -2154,8 +2298,8 @@ Begin
  if ConditionalDepth<>0 Then Diagnostic('ENDIF manquant');
  if StructureDepth<>0 Then Diagnostic('fin de structure PLZ manquante');
  if ModuleActive and not ModuleClosed Then Diagnostic('ENDMODULE manquant');
- if Pass=1 Then Begin
-  TextSize:=Location[SecText];DataSize:=Location[SecData];BssSize:=Location[SecBss]
+ PSectionItem:=Sections;While PSectionItem<>Nil do Begin
+  PSectionItem^.Size:=PSectionItem^.Location;PSectionItem:=PSectionItem^.Next
  End
 End;
 
@@ -2248,7 +2392,7 @@ End;
 Procedure EncodeRelative12;
 Var V,D:LongInt;F:Boolean;Base:Word;
 Begin
- V:=EvalReloc(OperandField,F,Base);D:=Location[CurrentSection]+2-V;
+ V:=EvalReloc(OperandField,F,Base);D:=SectionLocation(CurrentSection)^+2-V;
  if(Pass=2)and(Base<>CurrentSection)Then Diagnostic('appel relatif vers une autre section');
  if(Pass=2)and(((D and 1)<>0)or(D< -4096)or(D>4094))Then
   Diagnostic('appel relatif hors plage');
@@ -2260,7 +2404,7 @@ Var S,A,B:String;R:Integer;V,D:LongInt;F:Boolean;Base:Word;
 Begin
  S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);
  if ByteForm Then R:=RegisterNumber(A,'B')else R:=RegisterNumber(A,'W');
- V:=EvalReloc(B,F,Base);D:=Location[CurrentSection]+2-V;
+ V:=EvalReloc(B,F,Base);D:=SectionLocation(CurrentSection)^+2-V;
  if(R<0)or(B='')Then Begin Diagnostic('registre et destination attendus');Exit End;
  if(Pass=2)and((Base<>CurrentSection)or((D and 1)<>0)or(D<0)or(D>254))Then
   Diagnostic('destination DJNZ hors plage');
@@ -2400,7 +2544,7 @@ Procedure EncodeLDAR;
 Var S,A,B:String;R:Integer;V,D:LongInt;F:Boolean;RelBase:Word;K:Char;
 Begin
  S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);if Opt.Segmented Then K:='L'else K:='W';
- R:=RegisterNumber(A,K);V:=EvalReloc(B,F,RelBase);D:=V-(Location[CurrentSection]+4);
+ R:=RegisterNumber(A,K);V:=EvalReloc(B,F,RelBase);D:=V-(SectionLocation(CurrentSection)^+4);
  if(R<0)or(B='')or(S<>'')Then Begin Diagnostic('LDAR exige registre-adresse,destination');Exit End;
  if(Pass=2)and((RelBase<>CurrentSection)or((D and 1)<>0)or(D< -32768)or(D>32767))Then
   Diagnostic('destination LDAR hors plage');
@@ -2413,7 +2557,7 @@ Begin
  S:=OperandField;A:=NextOperand(S);B:=NextOperand(S);R:=RegisterNumber(A,'W');Store:=R<0;
  if Store Then Begin E:=A;R:=RegisterNumber(B,'W') End else E:=B;
  if(R<0)or(E='')or(S<>'')Then Begin Diagnostic('LDR exige registre et destination relative');Exit End;
- V:=EvalReloc(E,F,RelBase);D:=V-(Location[CurrentSection]+4);
+ V:=EvalReloc(E,F,RelBase);D:=V-(SectionLocation(CurrentSection)^+4);
  if(Pass=2)and((RelBase<>CurrentSection)or((D and 1)<>0)or(D< -32768)or(D>32767))Then
   Diagnostic('destination LDR hors plage');
  if Store Then EmitWord($3300 or Word(R))else EmitWord($3100 or Word(R));EmitWord(Word(D))
@@ -2523,8 +2667,20 @@ End;
 
 Function ObjectImageByte(Section:Byte;Offset:LongInt):Byte;
 Begin
- if Section=SecText Then ObjectImageByte:=TextImage[Offset div 16384]^[Offset mod 16384]
- else ObjectImageByte:=DataImage[Offset div 16384]^[Offset mod 16384]
+ ObjectImageByte:=GetSectionByte(Section,Offset)
+End;
+
+Procedure WriteSectionDescriptors(Var F:File);
+Var B:TObjectBuffer;N,Need:Integer;P:PSection;
+Begin
+ N:=0;P:=Sections;
+ While P<>Nil do Begin
+  Need:=4+Length(P^.Name);if Need>12 Then Need:=12;
+  if N+Need>255 Then Begin WriteObjectBlock(F,OBSEC,B,N);N:=0 End;
+  B[N]:=P^.Number;Inc(N);B[N]:=32 or P^.Attributes;Inc(N);B[N]:=0;Inc(N);
+  PutObjectName(B,N,P^.Name);P:=P^.Next
+ End;
+ if N<>0 Then WriteObjectBlock(F,OBSEC,B,N)
 End;
 
 Procedure WriteTextSection(Var F:File;Section:Byte;Size:LongInt);
@@ -2584,7 +2740,7 @@ Begin
 End;
 
 Procedure WriteObject;
-Var B:TObjectBuffer;N:Integer;S,BackupName:String;Old:File;HadOld:Boolean;
+Var B:TObjectBuffer;N:Integer;S,BackupName:String;Old:File;HadOld:Boolean;Seg:PSection;
 Begin
  TemporaryObjectName:=Opt.ObjectName+'.$$$';DeleteFileQuiet(TemporaryObjectName);
  Assign(ObjectOutput,TemporaryObjectName);Rewrite(ObjectOutput,1);
@@ -2593,20 +2749,16 @@ Begin
  N:=0;WriteObjectBlock(ObjectOutput,OBOST,B,N);
  S:=ObjectModuleName;if S=''Then S:=ModuleName(Opt.SourceName);
  N:=0;PutObjectName(B,N,S);WriteObjectBlock(ObjectOutput,OBMOD,B,N);
- N:=0;
- B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[1];Inc(N);B[N]:=0;Inc(N);
- PutObjectName(B,N,SectionObjectName[1]);
- B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[2];Inc(N);B[N]:=0;Inc(N);
- PutObjectName(B,N,SectionObjectName[2]);
- B[N]:=1;Inc(N);B[N]:=32 or SectionAttributes[3];Inc(N);B[N]:=0;Inc(N);
- PutObjectName(B,N,SectionObjectName[3]);
- WriteObjectBlock(ObjectOutput,OBSEC,B,N);
+ WriteSectionDescriptors(ObjectOutput);
  WriteSymbolBlocks(ObjectOutput,OBGLO,True);WriteSymbolBlocks(ObjectOutput,OBLOC,False);
- WriteTextSection(ObjectOutput,SecText,TextSize);WriteTextSection(ObjectOutput,SecData,DataSize);
- { Comme l'assembleur DRI, matérialiser la marque de fin du BSS par un
-   OBTXT vide placé à son compteur final. }
- N:=0;PutLE32(B,N,BssSize);B[N]:=SecBss;Inc(N);B[N]:=0;Inc(N);
- WriteObjectBlock(ObjectOutput,OBTXT,B,N);
+ Seg:=Sections;While Seg<>Nil do Begin
+  if Seg^.Kind=SecBss Then Begin
+   { Une marque OBTXT vide matérialise la taille de chaque segment BSS. }
+   N:=0;PutLE32(B,N,Seg^.Size);B[N]:=Seg^.Number;Inc(N);B[N]:=0;Inc(N);
+   WriteObjectBlock(ObjectOutput,OBTXT,B,N)
+  End else WriteTextSection(ObjectOutput,Seg^.Number,Seg^.Size);
+  Seg:=Seg^.Next
+ End;
  if HasTransfer Then Begin
   N:=0;PutLE32(B,N,TransferAddress);PutLE16(B,N,TransferBase);
   WriteObjectBlock(ObjectOutput,OBTRA,B,N)
@@ -2661,15 +2813,21 @@ Begin
 End;
 
 Procedure WriteListingStatistics;
-Var P:PSymbol;R:PRelocation;SymbolsCount,GlobalsCount,ExternalsCount,RelocCount:LongInt;
+Var P:PSymbol;R:PRelocation;Seg:PSection;
+ SymbolsCount,GlobalsCount,ExternalsCount,RelocCount,SegmentCount:LongInt;
 Begin
  if not ListOpen Then Exit;SymbolsCount:=0;GlobalsCount:=0;ExternalsCount:=0;RelocCount:=0;
+ SegmentCount:=0;
  P:=Symbols;While P<>Nil do Begin Inc(SymbolsCount);if P^.Global Then Inc(GlobalsCount);
   if P^.External and not P^.Defined Then Inc(ExternalsCount);P:=P^.Next End;
  R:=Relocations;While R<>Nil do Begin Inc(RelocCount);R:=R^.Next End;
  ListingTitle:='Assembly Statistics';ListingLines:=58;ListingCheckPage;
  WriteLn(ListFile,'Target             : Z800',Ord(not Opt.Segmented)+1);Inc(ListingLines);
- WriteLn(ListFile,'TEXT / DATA / BSS  : ',TextSize,' / ',DataSize,' / ',BssSize,' octets');Inc(ListingLines);
+ Seg:=Sections;While Seg<>Nil do Begin
+  Inc(SegmentCount);WriteLn(ListFile,'Segment ',Seg^.Number:3,' ',Copy(Seg^.Name,1,24):24,
+   ' : ',Seg^.Size,' octets');Inc(ListingLines);Seg:=Seg^.Next
+ End;
+ WriteLn(ListFile,'Nombre de segments : ',SegmentCount);Inc(ListingLines);
  WriteLn(ListFile,'Symboles           : ',SymbolsCount,' (',GlobalsCount,' publics, ',ExternalsCount,' externes)');Inc(ListingLines);
  WriteLn(ListFile,'Relogements        : ',RelocCount);Inc(ListingLines);
  WriteLn(ListFile,'Pages du listing   : ',ListingPage);Inc(ListingLines);
@@ -2697,7 +2855,7 @@ Begin
      'X':Begin Opt.CrossReference:=True;Opt.Listing:=True End;
      'S':Begin Opt.Segmented:=True;Opt.SegmentedExplicit:=True End;
      'O','P':Begin
-      Rest:=Copy(S,J+1,255);
+      Rest:=Copy(S,J+1,Length(S));
       if Rest=''Then Begin
        Inc(I);if I>ParamCount Then Fatal('-'+UpCase(S[J])+' exige un nom');Rest:=ParamStr(I)
       End;
@@ -2736,31 +2894,24 @@ Opt.ObjectName:=ResolveCPMPath(Opt.ObjectName);
 Opt.ListName:=ResolveCPMPath(Opt.ListName)
 End;
 
-Procedure AllocateImages;
-Var
- I:Integer;
+Procedure InitializeSections;
 Begin
- For I:=0 to 3 do Begin
-  GetMem(TextImage[I],SizeOf(TByteBlock));GetMem(DataImage[I],SizeOf(TByteBlock));
-  if(TextImage[I]=Nil)or(DataImage[I]=Nil)Then Fatal('memoire pleine');
-  FillChar(TextImage[I]^,SizeOf(TByteBlock),0);
-  FillChar(DataImage[I]^,SizeOf(TByteBlock),0)
- End
+ Sections:=Nil;LastSection:=Nil;
+ AddSection(SecText,SecText,'__text');AddSection(SecData,SecData,'__data');
+ AddSection(SecBss,SecBss,'__bss')
 End;
 
 Procedure Cleanup;
 Var
- I:Integer;
  P,N:PPredefName;
+ S,SN:PSection;
 Begin
  if ListOpen Then Begin
   Close(ListFile);if IOResult<>0 Then Begin
   End
  End;
- For I:=0 to 3 do Begin
-  if TextImage[I]<>Nil Then FreeMem(TextImage[I],SizeOf(TByteBlock));
-  if DataImage[I]<>Nil Then FreeMem(DataImage[I],SizeOf(TByteBlock))
- End;FreeSymbols;
+ S:=Sections;While S<>Nil do Begin SN:=S^.Next;FreeSectionImages(S);Dispose(S);S:=SN End;
+ Sections:=Nil;LastSection:=Nil;FreeLineImage;FreeSymbols;
  P:=Predefinitions;While P<>Nil do Begin
   N:=P^.Next;FreePredefFormats(P^.Formats);Dispose(P);P:=N
  End;Predefinitions:=Nil
@@ -2770,13 +2921,11 @@ BEGIN
  Symbols:=Nil;Relocations:=Nil;LastRelocation:=Nil;HasTransfer:=False;
  Predefinitions:=Nil;PredefInstructionCount:=0;PredefDirectiveCount:=0;
  PredefSymbolCount:=0;
- ObjectModuleName:='';SectionObjectName[1]:='__text';SectionObjectName[2]:='__data';
- SectionObjectName[3]:='__bss';FillChar(SectionAttributes,SizeOf(SectionAttributes),0);
- TransferAddress:=0;TransferBase:=0;FillChar(TextImage,SizeOf(TextImage),0);
- FillChar(DataImage,SizeOf(DataImage),0);
+ ObjectModuleName:='';TransferAddress:=0;TransferBase:=0;Sections:=Nil;LastSection:=Nil;
  ListOpen:=False;ErrorCount:=0;WarningCount:=0;
+ LineImageFirst:=Nil;LineImageLast:=Nil;LineByteCount:=0;
  ObjectWriteActive:=False;ObjectFileOpen:=False;TemporaryObjectName:='';
- ParseCommandLine;LoadPredefinitions;AllocateImages;Assign(Source,Opt.SourceName);Reset(Source);
+ ParseCommandLine;LoadPredefinitions;InitializeSections;Assign(Source,Opt.SourceName);Reset(Source);
  if IOResult<>0 Then Fatal('fichier source introuvable: '+Opt.SourceName);Close(Source);
  if IOResult<>0 Then Begin
  End;
@@ -2789,7 +2938,8 @@ BEGIN
  WriteCrossReference;WriteListingStatistics;
  if ErrorCount=0 Then Begin
   WriteObject;WriteLn('ASZ8K: ',Opt.SourceName,' -> ',Opt.ObjectName,
-  ' (TEXT=',TextSize,', DATA=',DataSize,', BSS=',BssSize,')')
+  ' (',TotalSectionSize(SecText),' octets de code, ',TotalSectionSize(SecData),
+  ' octets de donnees, ',TotalSectionSize(SecBss),' octets BSS)')
  End;
  if WarningCount<>0 Then WriteLn(WarningCount,' avertissement(s)');
  if ErrorCount<>0 Then WriteLn(ErrorCount,' erreur(s)');Cleanup;
