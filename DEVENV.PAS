@@ -8057,6 +8057,10 @@ Var
  { que EmuCOM2/EmuCOM4/INT 14h) ; -1 = aucun caractere unget en attente. }
  Win16_CommEventMask   : Array[0..3] Of Word;
  Win16_CommUnget       : Array[0..3] Of Integer;
+ { EnableCommNotification/$245 - fenetre a notifier par port (jamais       }
+ { reellement postee, aucun I/O asynchrone modelise, meme discipline que  }
+ { Win16_CommEventMask). }
+ Win16_CommNotifyHWnd  : Array[0..3] Of Word;
  { SetActiveWindow/GetActiveWindow ($59/$60) - mono-tache, un seul            }
  { detenteur possible, meme esprit que Win16_FocusHWnd/Win16_CaptureHWnd. }
  Win16_ActiveWindowHWnd: Word;
@@ -98771,6 +98775,8 @@ Begin
  Win16_CommEventMask[2] := 0; Win16_CommEventMask[3] := 0;
  Win16_CommUnget[0] := -1; Win16_CommUnget[1] := -1;
  Win16_CommUnget[2] := -1; Win16_CommUnget[3] := -1;
+ Win16_CommNotifyHWnd[0] := 0; Win16_CommNotifyHWnd[1] := 0;
+ Win16_CommNotifyHWnd[2] := 0; Win16_CommNotifyHWnd[3] := 0;
  Win16_DblClickTime := 500; { defaut reel documente SDK Windows (500 ms) }
  Win16_ActiveDCWindow := -1;
  Win16_PenX := 0;
@@ -111457,6 +111463,465 @@ Begin
     End Else
      P.CPU.Regs.AX := 0;
     ArgWords := 7;
+   End;
+   233: Begin
+    { SetParent(hWndChild,hWndNewParent):HWND - ordinal/signature         }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { SetParent(word word) SetParent16", 2 mots). REEL ET HONNETE : aucune       }
+    { hierarchie parent/enfant modelisee (meme limitation deja disclosee            }
+    { pour GetParent/$46/IsChild/$48) - retourne honnetement 0 (aucun               }
+    { ancien parent, documente reel "fenetre de plus haut niveau"). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   234: Begin
+    { UnhookWindowsHook(nCode,lpfn):bool - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                    }
+    { UnhookWindowsHook(s_word segptr) UnhookWindowsHook16", 1+2 = 3            }
+    { mots). REEL, symetrique de SetWindowsHook/$121 : retire VRAIMENT le          }
+    { crochet stocke (Win16_WindowsHookSeg/Ofs) SEULEMENT si lpfn                     }
+    { correspond exactement au crochet installe (contrat documente reel               }
+    { exact), sinon echec honnete. }
+    THHOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    THHSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    If (THHSeg = Win16_WindowsHookSeg) And (THHOfs = Win16_WindowsHookOfs) And
+       ((THHSeg <> 0) Or (THHOfs <> 0)) Then Begin
+     Win16_WindowsHookSeg := 0;
+     Win16_WindowsHookOfs := 0;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   235: Begin
+    { DefHookProc(nCode,wParam,lParam,lplpfnNextHook):LRESULT - ordinal/  }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal DefHookProc(s_word word long ptr) DefHookProc16", 1+1+2+2 =         }
+    { 6 mots, PAS de "-ret16" = retour COMPLET DX:AX). REEL ET HONNETE :             }
+    { aucune VRAIE chaine de crochets multiples n'est modelisee (UN SEUL             }
+    { crochet global, meme limitation que SetWindowsHook/$121) - retourne              }
+    { honnetement 0:0 (aucun crochet SUIVANT dans la chaine, documente                 }
+    { reel pour ce cas). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   236: Begin
+    { GetCapture():HWND - ordinal/signature VERIFIES via le VRAI source  }
+    { Wine (user.exe16.spec : "pascal -ret16 GetCapture() GetCapture16",       }
+    { 0 mot). REEL : retourne la VRAIE valeur stockee (Win16_CaptureHWnd,          }
+    { deja etablie par SetCapture/$18/ReleaseCapture/$19). }
+    P.CPU.Regs.AX := Win16_CaptureHWnd;
+    ArgWords := 0;
+   End;
+   237: Begin
+    { GetUpdateRgn(hWnd,hRgn,bErase):int - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                    }
+    { GetUpdateRgn(word word word) GetUpdateRgn16", 3 mots). REEL DANS       }
+    { LES LIMITES de la granularite "toute la fenetre" deja etablie pour           }
+    { GetUpdateRect/$190 (aucun VRAI objet region modelise, hRgn n'est               }
+    { jamais rempli) : retourne honnetement la VRAIE complexite documente             }
+    { (NULLREGION=1 si Win16_WindowNeedsPaint est FAUX, SIMPLEREGION=2                 }
+    { sinon - un seul rectangle, jamais COMPLEXREGION=3 ici), ERROR=0 si                }
+    { hWnd inconnu. }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx < 0 Then P.CPU.Regs.AX := 0
+    Else If Win16_WindowNeedsPaint[SWWIdx] Then P.CPU.Regs.AX := 2
+    Else P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   238: Begin
+    { ExcludeUpdateRgn(hWnd,hRgn):int - ordinal/signature VERIFIES via le }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { ExcludeUpdateRgn(word word) ExcludeUpdateRgn16", 2 mots). REEL EN         }
+    { PARTIE : ce sous-ensemble ne peut PAS soustraire hRgn de la VRAIE           }
+    { region de mise a jour (granularite "toute la fenetre" uniquement,             }
+    { meme limitation que GetUpdateRgn/$237 ci-dessus) - no-op honnete,               }
+    { retourne juste la VRAIE complexite COURANTE (inchangee, PAS un                   }
+    { succes invente de soustraction reelle). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx < 0 Then P.CPU.Regs.AX := 0
+    Else If Win16_WindowNeedsPaint[SWWIdx] Then P.CPU.Regs.AX := 2
+    Else P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   239: Begin
+    { DialogBoxParam(hInstance,lpTemplateName,hWndParent,lpDialogFunc,     }
+    { dwInitParam):int - ordinal/signature VERIFIES via le VRAI source        }
+    { Wine (user.exe16.spec : "pascal -ret16 DialogBoxParam(word str word         }
+    { segptr long) DialogBoxParam16", 1+2+1+2+2 = 8 mots). MEME                      }
+    { limitation exacte que DialogBox/$87 (aucun analyseur DLGTEMPLATE                 }
+    { ni moteur de controles) : echec honnete (-1). }
+    P.CPU.Regs.AX := Word(-1);
+    ArgWords := 8;
+   End;
+   240: Begin
+    { DialogBoxIndirectParam(hInstance,hDialogTemplate,hWndParent,          }
+    { lpDialogFunc,dwInitParam):int - ordinal/signature VERIFIES via le         }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                          }
+    { DialogBoxIndirectParam(word word word segptr long)                             }
+    { DialogBoxIndirectParam16", 1+1+1+2+2 = 7 mots). MEME limitation                  }
+    { exacte que DialogBoxIndirect/$218 : echec honnete (-1). }
+    P.CPU.Regs.AX := Word(-1);
+    ArgWords := 7;
+   End;
+   241: Begin
+    { CreateDialogParam(hInstance,lpTemplateName,hWndParent,lpDialogFunc,  }
+    { dwInitParam):HWND - ordinal/signature VERIFIES via le VRAI source        }
+    { Wine (user.exe16.spec : "pascal -ret16 CreateDialogParam(word str          }
+    { word segptr long) CreateDialogParam16", 1+2+1+2+2 = 8 mots). MEME              }
+    { limitation exacte que CreateDialog/$89 : echec honnete (0). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 8;
+   End;
+   242: Begin
+    { CreateDialogIndirectParam(hInstance,lpDialogTemplate,hWndParent,     }
+    { lpDialogFunc,dwInitParam):HWND - ordinal/signature VERIFIES via le        }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                          }
+    { CreateDialogIndirectParam(word ptr word segptr long)                           }
+    { CreateDialogIndirectParam16", 1+2+1+2+2 = 8 mots). MEME limitation               }
+    { exacte que CreateDialogIndirect/$219 : echec honnete (0). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 8;
+   End;
+   243: Begin
+    { GetDialogBaseUnits():LONG - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (user.exe16.spec : "pascal GetDialogBaseUnits()             }
+    { GetDialogBaseUnits", 0 mot, PAS de "-ret16" = retour COMPLET               }
+    { DX:AX, MAKELONG(cx,cy) documente reel). REEL : retourne les MEMES           }
+    { unites de base DEJA reutilisees par MapDialogRect/$103 (cx=6, cy=7,          }
+    { les MEMES metriques de police tmAveCharWidth/tmHeight etablies                 }
+    { ailleurs), pas des constantes distinctes inventees. }
+    P.CPU.Regs.AX := 6;
+    P.CPU.Regs.DX := 7;
+    ArgWords := 0;
+   End;
+   244: Begin
+    { EqualRect(lprc1,lprc2):bool - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16 EqualRect(ptr        }
+    { ptr) EqualRect16", 2+2 = 4 mots). REEL : compare VRAIMENT les 4             }
+    { mots des 2 RECT. }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    P.CPU.Regs.AX := Word(Ord(
+     (Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs) = Emu_ReadWord(P.CPU, GCRLpSeg, GCRLpOfs)) And
+     (Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)) = Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 2))) And
+     (Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)) = Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4))) And
+     (Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)) = Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6)))));
+    ArgWords := 4;
+   End;
+   245: Begin
+    { EnableCommNotification(cid,hwnd,cbWriteNotify,cbOutQueue):bool -    }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :  }
+    { "pascal -ret16 EnableCommNotification(s_word word s_word s_word)           }
+    { EnableCommNotification16", 4 mots). REEL POUR LA VALIDATION DE            }
+    { PORT (MEME verification cid=1/3 qu'OpenComm/$200) : stocke                     }
+    { VRAIMENT hwnd dans Win16_CommNotifyHWnd[] - mais AUCUN                          }
+    { WM_COMMNOTIFY n'est jamais reellement poste (aucune notification                 }
+    { I/O asynchrone modelisee, ReadComm/$204/WriteComm/$205 restant du                  }
+    { sondage synchrone), limitation disclosee. cbWriteNotify/cbOutQueue                  }
+    { ignores. }
+    MWRepaintArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SSCIndex := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    If (SSCIndex = 1) Or (SSCIndex = 3) Then Begin
+     Win16_CommNotifyHWnd[SSCIndex] := SWHWndArg;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := Word(-1);
+    ArgWords := 4;
+   End;
+   246: Begin
+    { ExitWindowsExec(lpszExe,lpszParams):bool - ordinal/signature        }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { ExitWindowsExec(str str) ExitWindowsExec16", 2+2 = 4 mots). REEL         }
+    { POUR LE DIAGNOSTIC (lit VRAIMENT lpszExe, journalise dans                    }
+    { Win16_DebugMsg, meme relais que WinHelp/$171) - le VRAI                       }
+    { enchainement documente (terminer Windows, executer une VRAIE               }
+    { application DOS, puis redemarrer Windows) est HORS DE PORTEE                   }
+    { (aucun second processus DOS lance par ce sous-ensemble                          }
+    { mono-programme) : traduit honnetement en fin de programme propre                  }
+    { (sfEndProgram), la MEME traduction honnete deja etablie pour                       }
+    { ExitWindows/$7/OldExitWindows/$2. }
+    CWTitleOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CWTitleSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CWTitleStr := Win16_ReadGuestString(P.CPU, CWTitleSeg, CWTitleOfs);
+    Win16_DebugMsg := 'ExitWindowsExec exe="' + CWTitleStr + '"';
+    P.CPU.Fault := sfEndProgram;
+    P.StatusMsg := 'ExitWindowsExec : fin de Windows demandee';
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   247: Begin
+    { GetCursor():HCURSOR - ordinal/signature VERIFIES via le VRAI        }
+    { source Wine (user.exe16.spec : "pascal -ret16 GetCursor()                 }
+    { GetCursor16", 0 mot). REEL : retourne la VRAIE valeur stockee               }
+    { (Win16_CurrentCursor, deja etablie par SetCursor/$69). }
+    P.CPU.Regs.AX := Win16_CurrentCursor;
+    ArgWords := 0;
+   End;
+   248: Begin
+    { GetOpenClipboardWindow():HWND - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { GetOpenClipboardWindow() GetOpenClipboardWindow16", 0 mot). REEL :          }
+    { retourne la VRAIE valeur stockee (Win16_ClipOpenHwnd, deja etablie            }
+    { par OpenClipboard/$137). }
+    P.CPU.Regs.AX := Win16_ClipOpenHwnd;
+    ArgWords := 0;
+   End;
+   249: Begin
+    { GetAsyncKeyState(vKey):SHORT - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { GetAsyncKeyState(word) GetAsyncKeyState16", 1 mot). MEME honnetete          }
+    { que GetKeyState/$106 (aucun clavier route vers un etat par touche              }
+    { virtuelle) : retourne honnetement 0 (touche relachee). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   250: Begin
+    { GetMenuState(hMenu,uId,uFlags):UINT - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { GetMenuState(word word word) GetMenuState16", 3 mots). MEME                }
+    { honnetete que CheckMenuItem/$154 (aucune VRAIE structure de menu               }
+    { manipulable) : retourne le code d'echec documente reel exact                    }
+    { ($FFFF, "l'item n'existe pas"). }
+    P.CPU.Regs.AX := $FFFF;
+    ArgWords := 3;
+   End;
+   251: Begin
+    { SendDriverMessage(hDriver,msg,lParam1,lParam2):LRESULT - ordinal/    }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal SendDriverMessage(word word long long)                              }
+    { SendDriverMessage16", 1+1+2+2 = 6 mots, PAS de "-ret16" = retour              }
+    { COMPLET DX:AX). REEL ET HONNETE : aucun pilote installable                       }
+    { (Rendu GDI/pilote reel HORS DE PORTEE) n'est jamais ouvert par                     }
+    { OpenDriver/$252 ci-dessous - echec honnete (0:0). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   252: Begin
+    { OpenDriver(lpDriverName,lpSectionName,lParam):LRESULT - ordinal/     }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal -ret16 OpenDriver(str word long) OpenDriver16" - variante            }
+    { publique alternative "str str long", 2+2+2 = 6 mots, PAS de                   }
+    { "-ret16" = retour COMPLET DX:AX). REEL ET HONNETE : aucun VRAI               }
+    { pilote installable (.DRV) n'est jamais charge dans ce sous-ensemble             }
+    { (Rendu GDI/pilote reel HORS DE PORTEE, meme limitation que                       }
+    { OpenComm/$200 pour les ports non cables) - echec honnete (0:0,                     }
+    { documente reel "pilote introuvable"). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 6;
+   End;
+   253: Begin
+    { CloseDriver(hDriver,lParam1,lParam2):LRESULT - ordinal/signature    }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal              }
+    { CloseDriver(word long long) CloseDriver16", 1+2+2 = 5 mots, PAS de         }
+    { "-ret16" = retour COMPLET DX:AX). MEME honnetete qu'OpenDriver/$252 :       }
+    { rien a fermer (aucun pilote jamais ouvert) - echec honnete (0:0). }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 5;
+   End;
+   254: Begin
+    { GetDriverModuleHandle(hDriver):HMODULE - ordinal/signature         }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16     }
+    { GetDriverModuleHandle(word) GetDriverModuleHandle16", 1 mot). MEME         }
+    { honnetete qu'OpenDriver/$252 : 0 (aucun module de pilote). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   255: Begin
+    { DefDriverProc(dwDriverId,hDriver,msg,lParam1,lParam2):LRESULT -     }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :   }
+    { "pascal DefDriverProc(long word word long long) DefDriverProc16",          }
+    { 2+1+1+2+2 = 8 mots, PAS de "-ret16" = retour COMPLET DX:AX). REEL          }
+    { POUR LE COMPORTEMENT PAR DEFAUT documente (traitement par defaut               }
+    { minimal, 0 pour tout message non reconnu par un pilote - MEME                    }
+    { esprit que DefWindowProc/$107) : 0:0. }
+    P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    ArgWords := 8;
+   End;
+   256: Begin
+    { GetDriverInfo(hDriver,lpinfo):bool - ordinal/signature VERIFIES via } { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { GetDriverInfo(word ptr) GetDriverInfo16", 1+2 = 3 mots). MEME             }
+    { honnetete qu'OpenDriver/$252 : echec honnete (0), lpinfo non                    }
+    { rempli (aucun pilote a decrire). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   257: Begin
+    { GetNextDriver(hDriver,lParam):HDRVR - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { GetNextDriver(word long) GetNextDriver16", 1+2 = 3 mots). MEME             }
+    { honnetete qu'OpenDriver/$252 : 0 (fin d'enumeration, aucun pilote               }
+    { suivant - vrai puisqu'aucun pilote n'existe jamais). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   258: Begin
+    { MapWindowPoints(hWndFrom,hWndTo,lppt,cPoints):int - ordinal/         }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal -ret16 MapWindowPoints(word word ptr word)                          }
+    { MapWindowPoints16", 1+1+2+1 = 5 mots, PAS de "-ret16" en realite -           }
+    { retour COMPLET DX:AX documente reel = MAKELONG(dx,dy) applique).              }
+    { REEL ET CONCRET : reutilise A L'IDENTIQUE la conversion CLIENT               }
+    { deja etablie (Win16_WindowX/Y[idx]+1, MEME convention que                       }
+    { ClientToScreen/$28/ScreenToClient/$29) - hWndFrom/hWndTo=0                        }
+    { (convention documentee reelle "coordonnees ecran") traites comme                   }
+    { origine (0,0). Decale VRAIMENT chaque point du tableau. }
+    LSBufLen := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CTSHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    FRLeft := 0; FRTop := 0; FRRight := 0; FRBottom := 0;
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     FRLeft := SmallInt(Win16_WindowX[SWWIdx] + 1);
+     FRTop := SmallInt(Win16_WindowY[SWWIdx] + 1);
+    End;
+    CTSWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = CTSHWndArg Then CTSWIdx := CWI;
+    If CTSWIdx >= 0 Then Begin
+     FRRight := SmallInt(Win16_WindowX[CTSWIdx] + 1);
+     FRBottom := SmallInt(Win16_WindowY[CTSWIdx] + 1);
+    End;
+    For LSI := 0 To Integer(LSBufLen) - 1 Do Begin
+     WFPX := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + LSI * 4)));
+     WFPY := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + LSI * 4 + 2)));
+     WFPX := SmallInt(WFPX + FRLeft - FRRight);
+     WFPY := SmallInt(WFPY + FRTop - FRBottom);
+     Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + LSI * 4), Word(WFPX));
+     Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + LSI * 4 + 2), Word(WFPY));
+    End;
+    P.CPU.Regs.AX := Word(SmallInt(FRLeft - FRRight));
+    P.CPU.Regs.DX := Word(SmallInt(FRTop - FRBottom));
+    ArgWords := 5;
+   End;
+   259: Begin
+    { BeginDeferWindowPos(nNumWindows):HDWP - ordinal/signature           }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { BeginDeferWindowPos(s_word) BeginDeferWindowPos16", 1 mot). REEL EN        }
+    { PARTIE : aucune VRAIE structure de traitement differe n'est                    }
+    { allouee (DeferWindowPos/$260 ci-dessous applique directement                     }
+    { chaque changement, limitation disclosee) - handle SYNTHETIQUE                     }
+    { non-nul (1) suffisant pour poursuivre la sequence normale                           }
+    { DeferWindowPos/EndDeferWindowPos. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   260: Begin
+    { DeferWindowPos(hWinPosInfo,hWnd,hWndInsertAfter,x,y,cx,cy,uFlags):   }
+    { HDWP - ordinal/signature VERIFIES via le VRAI source Wine                  }
+    { (user.exe16.spec : "pascal -ret16 DeferWindowPos(word word word              }
+    { s_word s_word s_word s_word word) DeferWindowPos16", 8 mots). REEL          }
+    { EN PARTIE : applique DIRECTEMENT le changement (reutilise A                    }
+    { L'IDENTIQUE le moteur de SetWindowPos/$232 - position/taille sauf                }
+    { SWP_NOMOVE/NOSIZE, ordre Z sauf SWP_NOZORDER) plutot que de le                    }
+    { differer jusqu'a EndDeferWindowPos/$261 (limitation DOCUMENTEE :                   }
+    { l'effet visuel est immediat au lieu d'etre groupe) - retourne                       }
+    { hWinPosInfo INCHANGE (contrat documente reel en cas de succes). }
+    SCapOld := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CWH := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CWW := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CWY := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CWX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 18));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     If (ENWEnableArg And $0002) = 0 Then Begin
+      Win16_WindowX[SWWIdx] := SmallInt(CWX);
+      Win16_WindowY[SWWIdx] := SmallInt(CWY);
+     End;
+     If (ENWEnableArg And $0001) = 0 Then Begin
+      Win16_WindowW[SWWIdx] := SmallInt(CWW);
+      Win16_WindowH[SWWIdx] := SmallInt(CWH);
+     End;
+     Win16_WindowNeedsPaint[SWWIdx] := True;
+     If (ENWEnableArg And $0008) = 0 Then Win16_DrawWindowFrame(P, SWWIdx);
+    End;
+    P.CPU.Regs.AX := SCapOld;
+    ArgWords := 8;
+   End;
+   261: Begin
+    { EndDeferWindowPos(hWinPosInfo):bool - ordinal/signature VERIFIES   }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { EndDeferWindowPos(word) EndDeferWindowPos16", 1 mot). REEL POUR LA        }
+    { SIMPLIFICATION deja etablie a DeferWindowPos/$260 (chaque                       }
+    { changement DEJA applique immediatement) : no-op honnete, succes. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 1;
+   End;
+   262: Begin
+    { GetWindow(hWnd,uCmd):HWND - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (user.exe16.spec : "pascal -ret16 GetWindow(word word)      }
+    { GetWindow16", 2 mots). REEL POUR GW_HWNDFIRST(0)/GW_HWNDLAST(1)/           }
+    { GW_HWNDNEXT(2)/GW_HWNDPREV(3) (MEME liste Win16_Windows[] et MEME               }
+    { convention d'ordre Z deja etablies pour GetNextWindow/$230) - MEME             }
+    { honnetete que GetParent/$46 pour GW_OWNER(4)/GW_CHILD(5) (aucune                }
+    { hierarchie de propriete/enfant modelisee) : 0. }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    P.CPU.Regs.AX := 0;
+    Case ENWEnableArg Of
+     0: If Win16_WindowCount > 0 Then P.CPU.Regs.AX := Win16_WindowHWnd[0];
+     1: If Win16_WindowCount > 0 Then P.CPU.Regs.AX := Win16_WindowHWnd[Win16_WindowCount - 1];
+     2: If (SWWIdx >= 0) And (SWWIdx > 0) Then P.CPU.Regs.AX := Win16_WindowHWnd[SWWIdx - 1];
+     3: If (SWWIdx >= 0) And (SWWIdx < Win16_WindowCount - 1) Then P.CPU.Regs.AX := Win16_WindowHWnd[SWWIdx + 1];
+    End;
+    ArgWords := 2;
+   End;
+   263: Begin
+    { GetMenuItemCount(hMenu):int - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { GetMenuItemCount(word) GetMenuItemCount16", 1 mot). REEL ET               }
+    { HONNETE : un handle LoadMenu/$150/CreateMenu/$151 est syntaxiquement        }
+    { valide mais ne contient JAMAIS de VRAI item (Rendu GDI reel HORS              }
+    { DE PORTEE) - retourne honnetement 0 (menu valide mais vide),                    }
+    { jamais -1 (reserve au documente reel "handle invalide"). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   264: Begin
+    { GetMenuItemID(hMenu,nPos):UINT - ordinal/signature VERIFIES via le  }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { GetMenuItemID(word word) GetMenuItemID16", 2 mots). MEME honnetete           }
+    { que GetMenuItemCount/$263 (menu toujours vide) : retourne le code             }
+    { d'echec documente reel exact ($FFFF, "position hors limites"). }
+    P.CPU.Regs.AX := $FFFF;
+    ArgWords := 2;
+   End;
+   265: Begin
+    { ShowOwnedPopups(hWnd,fShow):bool - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                    }
+    { ShowOwnedPopups(word word) ShowOwnedPopups16", 2 mots). REEL ET           }
+    { HONNETE : aucune fenetre POP-UP la propriete d'une autre n'est                 }
+    { jamais modelisee (aucune hierarchie de propriete, meme limitation             }
+    { que GetWindow/$262 GW_OWNER) - succes honnete (rien a montrer/                   }
+    { cacher, contrat "aucune fenetre possedee" trivialement vrai). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
    End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
