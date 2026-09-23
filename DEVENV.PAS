@@ -8001,6 +8001,14 @@ Var
  Win16_WindowH         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
  Win16_WindowNeedsPaint: Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
  Win16_WindowSizeSent  : Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
+ { IsIconic/CloseWindow/OpenIcon ($31/$43/$44), EnableWindow/                }
+ { IsWindowEnabled ($34/$35) - ordinaux 31-60, 2026-09-23, demande           }
+ { explicite - meme convention "tableaux paralleles" que ci-dessus. }
+ Win16_WindowIconic    : Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
+ Win16_WindowDisabled  : Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
+ { SetActiveWindow/GetActiveWindow ($59/$60) - mono-tache, un seul            }
+ { detenteur possible, meme esprit que Win16_FocusHWnd/Win16_CaptureHWnd. }
+ Win16_ActiveWindowHWnd: Word;
  Win16_NextHWnd        : Word;
  Win16_MsgQueueHWnd    : Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
  Win16_MsgQueueMsg     : Array[0..WIN16_MAX_MSGQUEUE - 1] Of Word;
@@ -98682,6 +98690,7 @@ Begin
  Win16_PropCount := 0;
  Win16_CaptureHWnd := 0;
  Win16_FocusHWnd := 0;
+ Win16_ActiveWindowHWnd := 0;
  Win16_DblClickTime := 500; { defaut reel documente SDK Windows (500 ms) }
  Win16_ActiveDCWindow := -1;
  Win16_PenX := 0;
@@ -102362,6 +102371,19 @@ Begin
  Win16_CallPropEnumProc := P.CPU.Regs.AX;
 End;
 
+{ Appelle SYNCHRONE un VRAI callback WNDENUMPROC16 (HWND hwnd, LPARAM       }
+{ lParam) - signature VERIFIEE via le VRAI source Wine (user.exe16.spec,    }
+{ EnumWindows ordinal 54, 2026-09-23, demande explicite). }
+Function Win16_CallEnumWindowsProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
+ HWndArg, LParamHi, LParamLo: Word): Word;
+Begin
+ Emu_PushWord(P.CPU, HWndArg);
+ Emu_PushWord(P.CPU, LParamHi);
+ Emu_PushWord(P.CPU, LParamLo);
+ Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+ Win16_CallEnumWindowsProc := P.CPU.Regs.AX;
+End;
+
 { Coeur de GetMessage/PeekMessage (ordinaux USER 108/109) - priorite REELLE }
 { Windows (entree file > repaint > minuteur), meme ordre de priorite que    }
 { documente pour les messages "generes"/bas niveau. Retourne False           }
@@ -102666,6 +102688,17 @@ Var
  WFPXLo, WFPYHi: Word;
  WFPX, WFPY: SmallInt;
  WFPIdx: Integer;
+ { USER.EXE IsIconic/GetWindowRect/EnableWindow/GetWindowText/                }
+ { SetWindowText/CloseWindow/OpenIcon/BringWindowToTop/FindWindow/            }
+ { EnumWindows/MoveWindow/GetClassName/SetActiveWindow (ordinaux 31-60,       }
+ { 2026-09-23, demande explicite) - reutilise au maximum les variables        }
+ { deja declarees (CWX/CWY/CWW/CWH/CWClassSeg/etc., GCRLpSeg/Ofs,             }
+ { LSBufSeg/Ofs/Len/LSI/LSCopyLen, SWHWndArg/SWWIdx, DMWIdx, EPFuncSeg/Ofs,   }
+ { EFParamHi/Lo, EPResult) - meme discipline de reutilisation deja etablie    }
+ { partout ailleurs dans ce Case. }
+ ENWEnableArg: Word;
+ OldBoolState: Boolean;
+ MWRepaintArg: Word;
  { Stage 6b (2026-08-30) : minuteurs, boucle de messages, WNDPROC, GDI. }
  TmrHWndArg, TmrIDArg, TmrElapseArg: Word;
  TmrIdx, TmrFoundIdx: Integer;
@@ -107272,6 +107305,8 @@ Begin
      Win16_WindowH[CWIdx] := SmallInt(CWH);
      Win16_WindowNeedsPaint[CWIdx] := True;
      Win16_WindowSizeSent[CWIdx] := False;
+     Win16_WindowIconic[CWIdx] := False;
+     Win16_WindowDisabled[CWIdx] := False;
      Inc(Win16_WindowCount);
      Win16_DrawWindowFrame(P, CWIdx);
      P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
@@ -108390,6 +108425,505 @@ Begin
     If WFPIdx >= 0 Then P.CPU.Regs.AX := Win16_WindowHWnd[WFPIdx]
     Else P.CPU.Regs.AX := 0;
     ArgWords := 2;
+   End;
+   31: Begin
+    { IsIconic(hWnd):bool - ordinal/signature VERIFIES via le VRAI          }
+    { source Wine (user.exe16.spec : "pascal -ret16 IsIconic(word)             }
+    { IsIconic16", 1 mot). REEL : interroge VRAIMENT Win16_WindowIconic[]        }
+    { (nouvel etat, mis a jour REELLEMENT par CloseWindow/$43 et                    }
+    { OpenIcon/$44 ci-dessous) - PAS une constante inventee. Handle                    }
+    { inconnu : FALSE (documente reel). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then P.CPU.Regs.AX := Word(Ord(Win16_WindowIconic[SWWIdx]))
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   32: Begin
+    { GetWindowRect(hWnd,lpRect):bool - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                      }
+    { GetWindowRect(word ptr) GetWindowRect16", 1+2 = 3 mots). REEL :             }
+    { ecrit le VRAI rectangle EXTERIEUR (Win16_WindowX/Y/W/H, le MEME              }
+    { stocke par CreateWindow/$41 - CONTRAIREMENT a GetClientRect/$33 qui          }
+    { rapporte (0,0,largeur,hauteur) relatif) - deja en coordonnees                 }
+    { ABSOLUES/ecran dans ce modele (CreateWindow ne stocke jamais de                }
+    { coordonnees relatives a un parent, aucune hierarchie de fenetres               }
+    { modelisee). Handle inconnu : RECT (0,0,0,0), echec honnete (0). }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, Word(Win16_WindowX[SWWIdx]));
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 2), Word(Win16_WindowY[SWWIdx]));
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4), Word(Win16_WindowX[SWWIdx] + Win16_WindowW[SWWIdx]));
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6), Word(Win16_WindowY[SWWIdx] + Win16_WindowH[SWWIdx]));
+     P.CPU.Regs.AX := 1;
+    End Else Begin
+     Emu_WriteWord(P.CPU, GCRLpSeg, GCRLpOfs, 0);
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 2), 0);
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4), 0);
+     Emu_WriteWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6), 0);
+     P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 3;
+   End;
+   34: Begin
+    { EnableWindow(hWnd,bEnable):bool - ordinal/signature VERIFIES via le   }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                      }
+    { EnableWindow(word word) EnableWindow16", 2 mots). REEL : stocke              }
+    { VRAIMENT Win16_WindowDisabled[] - contrat documente reel (souvent               }
+    { source de confusion) : retourne un booleen NON-NUL si la fenetre                }
+    { etait DEJA desactivee AVANT cet appel, 0 si elle etait deja                     }
+    { activee - PAS un simple echo de bEnable. Aucun VRAI routage                     }
+    { clavier/souris n'est bloque par cet etat (aucun clavier/souris                   }
+    { route vers les WNDPROC dans ce sous-ensemble de toute facon, meme                }
+    { limitation deja disclosee pour TranslateMessage/$113). }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     OldBoolState := Win16_WindowDisabled[SWWIdx];
+     Win16_WindowDisabled[SWWIdx] := (ENWEnableArg = 0);
+     P.CPU.Regs.AX := Word(Ord(OldBoolState));
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   35: Begin
+    { IsWindowEnabled(hWnd):bool - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (user.exe16.spec : "pascal -ret16                           }
+    { IsWindowEnabled(word) IsWindowEnabled16", 1 mot). REEL,                     }
+    { symetrique d'EnableWindow/$34 ci-dessus : retourne l'INVERSE de              }
+    { Win16_WindowDisabled[]. Handle inconnu : FALSE (documente reel). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then P.CPU.Regs.AX := Word(Ord(Not Win16_WindowDisabled[SWWIdx]))
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   36: Begin
+    { GetWindowText(hWnd,lpString,nMaxCount):int - ordinal/signature       }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { GetWindowText(word segptr word) GetWindowText16", 1+2+1 = 4 mots).       }
+    { REEL : copie VRAIMENT le VRAI titre (Win16_WindowTitle[], le MEME            }
+    { stocke par CreateWindow/$41/SetWindowText/$37) tronque a                      }
+    { nMaxCount-1 caracteres, retourne la VRAIE longueur ecrite (meme                }
+    { moteur de copie que LoadString/$176). Handle inconnu : 0, rien                 }
+    { n'est ecrit (documente reel). }
+    LSBufLen := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LSBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LSBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     LSCopyLen := Length(Win16_WindowTitle[SWWIdx]);
+     If LSCopyLen > Integer(LSBufLen) - 1 Then LSCopyLen := Integer(LSBufLen) - 1;
+     If LSCopyLen < 0 Then LSCopyLen := 0;
+     For LSI := 0 To LSCopyLen - 1 Do
+      Emu_WriteByte(P.CPU, LSBufSeg, Word(LSBufOfs + LSI), Byte(Ord(Win16_WindowTitle[SWWIdx][LSI + 1])));
+     Emu_WriteByte(P.CPU, LSBufSeg, Word(LSBufOfs + LSCopyLen), 0);
+     P.CPU.Regs.AX := Word(LSCopyLen);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   37: Begin
+    { SetWindowText(hWnd,lpString):bool - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                   }
+    { SetWindowText(word segstr) SetWindowText16", 1+2 = 3 mots). REEL :         }
+    { remplace VRAIMENT Win16_WindowTitle[] et redessine REELLEMENT le              }
+    { cadre (Win16_DrawWindowFrame, la MEME routine deja utilisee par                }
+    { CreateWindow/$41) pour que le NOUVEAU titre soit visible dans la                }
+    { barre de titre - PAS un simple changement d'etat invisible. }
+    CWTitleOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CWTitleSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     Win16_WindowTitle[SWWIdx] := Win16_ReadGuestString(P.CPU, CWTitleSeg, CWTitleOfs);
+     Win16_DrawWindowFrame(P, SWWIdx);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 3;
+   End;
+   38: Begin
+    { GetWindowTextLength(hWnd):int - ordinal/signature VERIFIES via le    }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { GetWindowTextLength(word) GetWindowTextLength16", 1 mot). REEL,             }
+    { symetrique de GetWindowText/$36 ci-dessus : retourne la VRAIE                  }
+    { longueur de Win16_WindowTitle[]. Handle inconnu : 0. }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then P.CPU.Regs.AX := Word(Length(Win16_WindowTitle[SWWIdx]))
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   43: Begin
+    { CloseWindow(hWnd):bool - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (user.exe16.spec : "pascal -ret16 CloseWindow(word)         }
+    { CloseWindow16", 1 mot). REEL : documente comme "minimise SANS               }
+    { detruire" - fixe VRAIMENT Win16_WindowIconic[] a TRUE (interroge par        }
+    { IsIconic/$31 ci-dessus), symetrique de OpenIcon/$44. Aucun VRAI               }
+    { deplacement visuel vers une case d'icones du bureau n'est                     }
+    { modelise (Rendu GDI reel HORS DE PORTEE, meme discipline que                  }
+    { LoadIcon/$174). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     Win16_WindowIconic[SWWIdx] := True;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   44: Begin
+    { OpenIcon(hWnd):bool - ordinal/signature VERIFIES via le VRAI         }
+    { source Wine (user.exe16.spec : "pascal -ret16 OpenIcon(word)            }
+    { OpenIcon16", 1 mot). REEL, symetrique de CloseWindow/$43 ci-dessus :        }
+    { retourne un booleen NON-NUL si la fenetre ETAIT iconifiee avant cet          }
+    { appel (contrat documente reel), puis la restaure REELLEMENT               }
+    { (Win16_WindowIconic[]:=FALSE). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     OldBoolState := Win16_WindowIconic[SWWIdx];
+     Win16_WindowIconic[SWWIdx] := False;
+     P.CPU.Regs.AX := Word(Ord(OldBoolState));
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   45: Begin
+    { BringWindowToTop(hWnd):bool - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                      }
+    { BringWindowToTop(word) BringWindowToTop16", 1 mot). REEL ET                  }
+    { CONCRET : ce sous-ensemble utilise DEJA REELLEMENT "dernier cree =         }
+    { plus haut a l'ecran" comme ordre Z (voir WindowFromPoint/$30                  }
+    { ci-dessus, parcours en ordre INVERSE de creation) - deplace donc                }
+    { VRAIMENT l'entree trouvee a la FIN des tableaux paralleles                     }
+    { Win16_Window* (decalage des entrees suivantes), un VRAI changement            }
+    { d'ordre Z observable par WindowFromPoint, PAS un succes sans effet. }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If (SWWIdx >= 0) And (SWWIdx < Win16_WindowCount - 1) Then Begin
+     DMHWnd := Win16_WindowHWnd[SWWIdx];
+     DMClassIdx := Win16_WindowClassIdx[SWWIdx];
+     CWTitleStr := Win16_WindowTitle[SWWIdx];
+     CWX := Word(Win16_WindowX[SWWIdx]);
+     CWY := Word(Win16_WindowY[SWWIdx]);
+     CWW := Word(Win16_WindowW[SWWIdx]);
+     CWH := Word(Win16_WindowH[SWWIdx]);
+     OldBoolState := Win16_WindowIconic[SWWIdx];
+     For CWIdx := SWWIdx To Win16_WindowCount - 2 Do Begin
+      Win16_WindowHWnd[CWIdx] := Win16_WindowHWnd[CWIdx + 1];
+      Win16_WindowClassIdx[CWIdx] := Win16_WindowClassIdx[CWIdx + 1];
+      Win16_WindowTitle[CWIdx] := Win16_WindowTitle[CWIdx + 1];
+      Win16_WindowX[CWIdx] := Win16_WindowX[CWIdx + 1];
+      Win16_WindowY[CWIdx] := Win16_WindowY[CWIdx + 1];
+      Win16_WindowW[CWIdx] := Win16_WindowW[CWIdx + 1];
+      Win16_WindowH[CWIdx] := Win16_WindowH[CWIdx + 1];
+      Win16_WindowNeedsPaint[CWIdx] := Win16_WindowNeedsPaint[CWIdx + 1];
+      Win16_WindowSizeSent[CWIdx] := Win16_WindowSizeSent[CWIdx + 1];
+      Win16_WindowIconic[CWIdx] := Win16_WindowIconic[CWIdx + 1];
+      Win16_WindowDisabled[CWIdx] := Win16_WindowDisabled[CWIdx + 1];
+     End;
+     CWIdx := Win16_WindowCount - 1;
+     Win16_WindowHWnd[CWIdx] := DMHWnd;
+     Win16_WindowClassIdx[CWIdx] := DMClassIdx;
+     Win16_WindowTitle[CWIdx] := CWTitleStr;
+     Win16_WindowX[CWIdx] := SmallInt(CWX);
+     Win16_WindowY[CWIdx] := SmallInt(CWY);
+     Win16_WindowW[CWIdx] := SmallInt(CWW);
+     Win16_WindowH[CWIdx] := SmallInt(CWH);
+     Win16_WindowNeedsPaint[CWIdx] := True;
+     Win16_WindowSizeSent[CWIdx] := True;
+     Win16_WindowIconic[CWIdx] := OldBoolState;
+     Win16_WindowDisabled[CWIdx] := False;
+     If Win16_ActiveDCWindow = SWWIdx Then Win16_ActiveDCWindow := CWIdx
+     Else If Win16_ActiveDCWindow > SWWIdx Then Dec(Win16_ActiveDCWindow);
+     P.CPU.Regs.AX := 1;
+    End Else If SWWIdx >= 0 Then
+     P.CPU.Regs.AX := 1 { deja au sommet }
+    Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   46: Begin
+    { GetParent(hWnd):HWND - ordinal/signature VERIFIES via le VRAI        }
+    { source Wine (user.exe16.spec : "pascal -ret16 GetParent(word)           }
+    { GetParent16", 1 mot). REEL ET HONNETE : ce sous-ensemble ne                    }
+    { modelise AUCUNE hierarchie parent/enfant (CreateWindow/$41 ne                  }
+    { retient jamais hWndParent - toutes les fenetres sont des fenetres              }
+    { de plus haut niveau ici) - retourne honnetement 0 (documente reel               }
+    { exact "aucun parent" pour une fenetre de plus haut niveau), jamais               }
+    { une hierarchie inventee. hWnd n'a pas besoin d'etre lu. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   47: Begin
+    { IsWindow(hWnd):bool - ordinal/signature VERIFIES via le VRAI         }
+    { source Wine (user.exe16.spec : "pascal -ret16 IsWindow(word)            }
+    { IsWindow16", 1 mot). REEL : cherche VRAIMENT le handle dans                    }
+    { Win16_WindowHWnd[]. }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    P.CPU.Regs.AX := Word(Ord(SWWIdx >= 0));
+    ArgWords := 1;
+   End;
+   48: Begin
+    { IsChild(hWndParent,hWndChild):bool - ordinal/signature VERIFIES via  }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                   }
+    { IsChild(word word) IsChild16", 2 mots). MEME honnetete exacte que         }
+    { GetParent/$46 ci-dessus (aucune hierarchie parent/enfant modelisee) :        }
+    { retourne toujours FALSE (0), aucune fenetre n'est jamais l'enfant                }
+    { d'une autre ici. }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   49: Begin
+    { IsWindowVisible(hWnd):bool - ordinal/signature VERIFIES via le VRAI }
+    { source Wine (user.exe16.spec : "pascal -ret16                           }
+    { IsWindowVisible(word) IsWindowVisible16", 1 mot). REEL POUR LA               }
+    { SIMPLIFICATION deja etablie a ShowWindow/$42 ("toujours visible des         }
+    { sa creation dans ce modele") : une fenetre EXISTANTE est donc                  }
+    { TOUJOURS visible ici - cherche VRAIMENT le handle, honnete plutot               }
+    { qu'un TRUE inconditionnel (un handle INCONNU est honnetement                    }
+    { FALSE, documente reel egalement). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    P.CPU.Regs.AX := Word(Ord(SWWIdx >= 0));
+    ArgWords := 1;
+   End;
+   50: Begin
+    { FindWindow(lpClassName,lpWindowName):HWND - ordinal/signature        }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { FindWindow(str str) FindWindow16", 2+2 = 4 mots). REEL : parcourt          }
+    { VRAIMENT Win16_Windows[] - CHAQUE pointeur NUL (seg=ofs=0,                     }
+    { convention documentee reelle "ne pas filtrer sur ce critere") est                }
+    { honore independamment (classe seule, titre seul, ou les deux              }
+    { ensemble), comparaison SANS la casse (meme discipline que                     }
+    { RegisterClass/CreateWindow). Retourne le PREMIER match trouve, 0                }
+    { si aucun (documente reel). }
+    CWTitleOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CWTitleSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CWClassOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CWClassSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CWClassStr := '';
+    If (CWClassSeg <> 0) Or (CWClassOfs <> 0) Then
+     CWClassStr := UpCaseStr(Win16_ReadGuestString(P.CPU, CWClassSeg, CWClassOfs));
+    CWTitleStr := '';
+    If (CWTitleSeg <> 0) Or (CWTitleOfs <> 0) Then
+     CWTitleStr := UpCaseStr(Win16_ReadGuestString(P.CPU, CWTitleSeg, CWTitleOfs));
+    CWClassIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If (CWClassIdx < 0) And
+        ((CWClassStr = '') Or (UpCaseStr(Win16_WndClassName[Win16_WindowClassIdx[CWI]]) = CWClassStr)) And
+        ((CWTitleStr = '') Or (UpCaseStr(Win16_WindowTitle[CWI]) = CWTitleStr)) Then
+      CWClassIdx := CWI;
+    If CWClassIdx >= 0 Then P.CPU.Regs.AX := Win16_WindowHWnd[CWClassIdx]
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   { IsTwoByteCharPrefix/51 : le VRAI source Wine (user.exe16.spec) marque }
+   { cet ordinal "stub BEAR51" - SANS AUCUNE signature exploitable (le      }
+   { nom documente "IsTwoByteCharPrefix" n'apparait que comme simple          }
+   { commentaire de reference historique, PAS un vrai "pascal ..."             }
+   { verifiable) - meme discipline que RegisterWinOldApHook/                     }
+   { KERNEL.EXE/$343 : inventer un nombre de mots ici serait une pure               }
+   { supposition qui risquerait de corrompre la pile de TOUS les appels             }
+   { Win16 suivants - laisse donc deliberement tomber sur le                        }
+   { gestionnaire generique "Else" ci-dessous. }
+   52: Begin
+    { AnyPopup():bool - ordinal/signature VERIFIES via le VRAI source     }
+    { Wine (user.exe16.spec : "pascal -ret16 AnyPopup() AnyPopup16", 0        }
+    { mot). REEL POUR L'APPROXIMATION documentee (ce sous-ensemble ne             }
+    { distingue pas les fenetres POPUP des fenetres superposees                     }
+    { ordinaires, aucune hierarchie de style de fenetre modelisee) :                 }
+    { "il existe au moins une fenetre" est la meilleure approximation                }
+    { honnete disponible - Win16_WindowCount>0. }
+    P.CPU.Regs.AX := Word(Ord(Win16_WindowCount > 0));
+    ArgWords := 0;
+   End;
+   53: Begin
+    { DestroyWindow(hWnd):bool - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (user.exe16.spec : "pascal -ret16 DestroyWindow(word)      }
+    { DestroyWindow16", 1 mot). REEL ET CONCRET : envoie VRAIMENT un            }
+    { WM_DESTROY SYNCHRONE (Win16_CallWndProc, contrat documente reel               }
+    { "DestroyWindow envoie WM_DESTROY avant de detruire") puis retire               }
+    { REELLEMENT l'entree des tableaux paralleles Win16_Window* (decalage           }
+    { des suivantes) - Win16_ActiveDCWindow/Win16_CaptureHWnd/                       }
+    { Win16_FocusHWnd/Win16_ActiveWindowHWnd sont VRAIMENT nettoyes s'ils            }
+    { pointaient sur la fenetre detruite (ActiveDCWindow etant un INDEX             }
+    { et non un handle, il est aussi decale de -1 si necessaire pour                 }
+    { rester valide apres le retrait). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     DMClassIdx := Win16_WindowClassIdx[SWWIdx];
+     Win16_CallWndProc(P, Win16_WndClassProcSeg[DMClassIdx],
+      Win16_WndClassProcOfs[DMClassIdx], SWHWndArg, WIN16_WM_DESTROY, 0, 0, 0);
+     For CWIdx := SWWIdx To Win16_WindowCount - 2 Do Begin
+      Win16_WindowHWnd[CWIdx] := Win16_WindowHWnd[CWIdx + 1];
+      Win16_WindowClassIdx[CWIdx] := Win16_WindowClassIdx[CWIdx + 1];
+      Win16_WindowTitle[CWIdx] := Win16_WindowTitle[CWIdx + 1];
+      Win16_WindowX[CWIdx] := Win16_WindowX[CWIdx + 1];
+      Win16_WindowY[CWIdx] := Win16_WindowY[CWIdx + 1];
+      Win16_WindowW[CWIdx] := Win16_WindowW[CWIdx + 1];
+      Win16_WindowH[CWIdx] := Win16_WindowH[CWIdx + 1];
+      Win16_WindowNeedsPaint[CWIdx] := Win16_WindowNeedsPaint[CWIdx + 1];
+      Win16_WindowSizeSent[CWIdx] := Win16_WindowSizeSent[CWIdx + 1];
+      Win16_WindowIconic[CWIdx] := Win16_WindowIconic[CWIdx + 1];
+      Win16_WindowDisabled[CWIdx] := Win16_WindowDisabled[CWIdx + 1];
+     End;
+     Dec(Win16_WindowCount);
+     If Win16_ActiveDCWindow = SWWIdx Then Win16_ActiveDCWindow := -1
+     Else If Win16_ActiveDCWindow > SWWIdx Then Dec(Win16_ActiveDCWindow);
+     If Win16_CaptureHWnd = SWHWndArg Then Win16_CaptureHWnd := 0;
+     If Win16_FocusHWnd = SWHWndArg Then Win16_FocusHWnd := 0;
+     If Win16_ActiveWindowHWnd = SWHWndArg Then Win16_ActiveWindowHWnd := 0;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
+   54: Begin
+    { EnumWindows(lpEnumFunc,lParam):bool - ordinal/signature VERIFIES     }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { EnumWindows(segptr long) EnumWindows16", 2+2 = 4 mots). REEL ET            }
+    { CONCRET : appelle un VRAI callback WNDENUMPROC16 SYNCHRONE                     }
+    { (Win16_CallEnumWindowsProc, nouveau helper factorise ci-dessus,                 }
+    { meme technique que Win16_CallEnumFontsProc) pour CHAQUE fenetre                 }
+    { existante (toutes de plus haut niveau ici, aucune hierarchie                    }
+    { modelisee) - arret des que le callback retourne FALSE (contrat                  }
+    { reel documente). }
+    EFParamLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    EFParamHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EPFuncOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    EPFuncSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    EPResult := 1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If EPResult <> 0 Then
+      EPResult := Win16_CallEnumWindowsProc(P, EPFuncSeg, EPFuncOfs,
+       Win16_WindowHWnd[CWI], EFParamHi, EFParamLo);
+    P.CPU.Regs.AX := Word(Ord(EPResult <> 0));
+    ArgWords := 4;
+   End;
+   55: Begin
+    { EnumChildWindows(hWndParent,lpEnumFunc,lParam):bool - ordinal/       }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal -ret16 EnumChildWindows(word segptr long) EnumChildWindows16",    }
+    { 1+2+2 = 5 mots). MEME honnetete exacte que GetParent/$46/IsChild/$48         }
+    { (aucune hierarchie parent/enfant modelisee) : AUCUNE fenetre n'a                }
+    { jamais de VRAI enfant ici - le callback n'est donc JAMAIS invoque,               }
+    { retour honnete FALSE (0, documente reel "aucun enfant enumere"). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   56: Begin
+    { MoveWindow(hWnd,x,y,nWidth,nHeight,bRepaint):bool - ordinal/          }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :             }
+    { "pascal -ret16 MoveWindow(word word word word word word)                   }
+    { MoveWindow16", 6 mots). REEL : met VRAIMENT a jour                             }
+    { Win16_WindowX/Y/W/H[] et redessine REELLEMENT le cadre                          }
+    { (Win16_DrawWindowFrame, meme routine que SetWindowText/$37) si                   }
+    { bRepaint est non-nul (contrat documente reel) - aucun VRAI                        }
+    { WM_MOVE/WM_SIZE synthetise (limitation deja disclosee, WM_SIZE                    }
+    { n'est envoye qu'une fois par ShowWindow/$42 dans ce sous-ensemble). }
+    MWRepaintArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    CWH := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CWW := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CWY := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CWX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     Win16_WindowX[SWWIdx] := SmallInt(CWX);
+     Win16_WindowY[SWWIdx] := SmallInt(CWY);
+     Win16_WindowW[SWWIdx] := SmallInt(CWW);
+     Win16_WindowH[SWWIdx] := SmallInt(CWH);
+     Win16_WindowNeedsPaint[SWWIdx] := True;
+     If MWRepaintArg <> 0 Then Win16_DrawWindowFrame(P, SWWIdx);
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 6;
+   End;
+   58: Begin
+    { GetClassName(hWnd,lpClassName,nMaxCount):int - ordinal/signature     }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { GetClassName(word ptr word) GetClassName16", 1+2+1 = 4 mots). REEL :         }
+    { copie VRAIMENT Win16_WndClassName[] (via Win16_WindowClassIdx[],                }
+    { deja resolu par CreateWindow/$41) tronque a nMaxCount-1 caracteres,             }
+    { MEME moteur de copie que GetWindowText/$36. Handle inconnu : 0. }
+    LSBufLen := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    LSBufOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    LSBufSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     CWClassStr := Win16_WndClassName[Win16_WindowClassIdx[SWWIdx]];
+     LSCopyLen := Length(CWClassStr);
+     If LSCopyLen > Integer(LSBufLen) - 1 Then LSCopyLen := Integer(LSBufLen) - 1;
+     If LSCopyLen < 0 Then LSCopyLen := 0;
+     For LSI := 0 To LSCopyLen - 1 Do
+      Emu_WriteByte(P.CPU, LSBufSeg, Word(LSBufOfs + LSI), Byte(Ord(CWClassStr[LSI + 1])));
+     Emu_WriteByte(P.CPU, LSBufSeg, Word(LSBufOfs + LSCopyLen), 0);
+     P.CPU.Regs.AX := Word(LSCopyLen);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   59: Begin
+    { SetActiveWindow(hWnd):HWND - ordinal/signature VERIFIES via le       }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { SetActiveWindow(word) SetActiveWindow16", 1 mot). REEL : stocke              }
+    { VRAIMENT Win16_ActiveWindowHWnd (mono-tache - un seul detenteur              }
+    { possible, meme esprit que SetFocus/$22) et retourne l'ANCIENNE                 }
+    { (contrat documente reel). }
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := Win16_ActiveWindowHWnd;
+    Win16_ActiveWindowHWnd := SWHWndArg;
+    ArgWords := 1;
+   End;
+   60: Begin
+    { GetActiveWindow():HWND - ordinal/signature VERIFIES via le VRAI     }
+    { source Wine (user.exe16.spec : "pascal -ret16 GetActiveWindow()          }
+    { GetActiveWindow16", 0 mot). REEL, symetrique de SetActiveWindow/$59        }
+    { ci-dessus : retourne la VRAIE valeur stockee. }
+    P.CPU.Regs.AX := Win16_ActiveWindowHWnd;
+    ArgWords := 0;
    End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
