@@ -8006,6 +8006,17 @@ Var
  { explicite - meme convention "tableaux paralleles" que ci-dessus. }
  Win16_WindowIconic    : Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
  Win16_WindowDisabled  : Array[0..WIN16_MAX_WINDOWS - 1] Of Boolean;
+ { SetScrollPos/GetScrollPos/SetScrollRange/GetScrollRange ($62-$65,        }
+ { 2026-09-23, demande explicite) - une barre horizontale (SB_HORZ=0) et    }
+ { une verticale (SB_VERT=1) par fenetre, MEME convention "tableaux         }
+ { paralleles" - aucun rendu visuel de barre de defilement (Rendu GDI      }
+ { reel HORS DE PORTEE, meme discipline que GetSystemMenu/$156). }
+ Win16_ScrollPosH, Win16_ScrollPosV: Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_ScrollMinH, Win16_ScrollMinV: Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_ScrollMaxH, Win16_ScrollMaxV: Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ { SetCursor/$69 - mono-tache, un seul curseur actif, meme esprit que       }
+ { Win16_FocusHWnd. }
+ Win16_CurrentCursor   : Word;
  { SetActiveWindow/GetActiveWindow ($59/$60) - mono-tache, un seul            }
  { detenteur possible, meme esprit que Win16_FocusHWnd/Win16_CaptureHWnd. }
  Win16_ActiveWindowHWnd: Word;
@@ -98691,6 +98702,7 @@ Begin
  Win16_CaptureHWnd := 0;
  Win16_FocusHWnd := 0;
  Win16_ActiveWindowHWnd := 0;
+ Win16_CurrentCursor := 0;
  Win16_DblClickTime := 500; { defaut reel documente SDK Windows (500 ms) }
  Win16_ActiveDCWindow := -1;
  Win16_PenX := 0;
@@ -102699,6 +102711,23 @@ Var
  ENWEnableArg: Word;
  OldBoolState: Boolean;
  MWRepaintArg: Word;
+ { USER.EXE ScrollWindow/SetScrollPos/GetScrollPos/SetScrollRange/            }
+ { GetScrollRange/SetCursor/SetCursorPos/ShowCursor/CopyRect/IsRectEmpty/     }
+ { PtInRect/IntersectRect/UnionRect/InvertRect/FrameRect/DrawText/            }
+ { DialogBox/EndDialog/CreateDialog/IsDialogMessage (ordinaux 61-90,          }
+ { 2026-09-23, demande explicite) - reutilise au maximum FRLpSeg/Ofs/         }
+ { FRLeft/Top/Right/Bottom/FRX/FRY/GCRLpSeg/Ofs/GPPixByte/WFPX/Y/              }
+ { TOStrSeg/Ofs/TOStr/TOCount/SWHWndArg/SWWIdx/ENWEnableArg/SCapOld deja       }
+ { declares, meme discipline de reutilisation qu'ailleurs dans ce Case. }
+ SWXAmt, SWYAmt: SmallInt;
+ SWSrcX, SWSrcY: Integer;
+ SBarArg: Word;
+ SBarOldPos, SBarNewPos, SBarMin, SBarMax: Integer;
+ SCPX, SCPY: Word;
+ IURSeg2, IUROfs2: Word;
+ IUR2Left, IUR2Top, IUR2Right, IUR2Bottom: SmallInt;
+ IURResL, IURResT, IURResR, IURResB: SmallInt;
+ DTFormat: Word;
  { Stage 6b (2026-08-30) : minuteurs, boucle de messages, WNDPROC, GDI. }
  TmrHWndArg, TmrIDArg, TmrElapseArg: Word;
  TmrIdx, TmrFoundIdx: Integer;
@@ -107307,6 +107336,8 @@ Begin
      Win16_WindowSizeSent[CWIdx] := False;
      Win16_WindowIconic[CWIdx] := False;
      Win16_WindowDisabled[CWIdx] := False;
+     Win16_ScrollPosH[CWIdx] := 0; Win16_ScrollMinH[CWIdx] := 0; Win16_ScrollMaxH[CWIdx] := 0;
+     Win16_ScrollPosV[CWIdx] := 0; Win16_ScrollMinV[CWIdx] := 0; Win16_ScrollMaxV[CWIdx] := 0;
      Inc(Win16_WindowCount);
      Win16_DrawWindowFrame(P, CWIdx);
      P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
@@ -108924,6 +108955,554 @@ Begin
     { ci-dessus : retourne la VRAIE valeur stockee. }
     P.CPU.Regs.AX := Win16_ActiveWindowHWnd;
     ArgWords := 0;
+   End;
+   61: Begin
+    { ScrollWindow(hWnd,XAmount,YAmount,lpRect,lpClipRect):void - ordinal/  }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal -ret16 ScrollWindow(word s_word s_word ptr ptr)                    }
+    { ScrollWindow16", 1+1+1+2+2 = 7 mots). REEL ET CONCRET : deplace           }
+    { VRAIMENT les VRAIS pixels du framebuffer (Emu_VidGetPixel/                    }
+    { Emu_VidSetPixel, les MEMES primitives que FillRect/$81) dans la               }
+    { region CLIENT (lpRect NUL -> toute la zone client, meme convention              }
+    { que GetClientRect/$33) - ordre de parcours adapte au signe de                  }
+    { XAmount/YAmount pour ne jamais lire un pixel deja ecrase. La zone                }
+    { nouvellement exposee est remplie en blanc (15, meme couleur de fond                }
+    { que FillRect/Win16_DrawWindowFrame) et TOUTE la fenetre est marquee                 }
+    { "a repeindre" (granularite deja disclosee pour InvalidateRect/$125 -                }
+    { pas seulement la bande exposee). lpClipRect n'est pas consomme               }
+    { (aucun clip distinct du rectangle de defilement lui-meme n'est                     }
+    { modelise). }
+    IUROfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    IURSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SWYAmt := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+    SWXAmt := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14)));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 16));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If SWWIdx >= 0 Then Begin
+     If (FRLpSeg = 0) And (FRLpOfs = 0) Then Begin
+      FRLeft := 0; FRTop := 0;
+      FRRight := Win16_WindowW[SWWIdx]; FRBottom := Win16_WindowH[SWWIdx];
+     End Else Begin
+      FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+      FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+      FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+      FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+     End;
+     If SWYAmt >= 0 Then Begin
+      For FRY := FRBottom - 1 DownTo FRTop Do Begin
+       If SWXAmt >= 0 Then Begin
+        For FRX := FRRight - 1 DownTo FRLeft Do Begin
+         SWSrcX := FRX - SWXAmt; SWSrcY := FRY - SWYAmt;
+         If (SWSrcX >= FRLeft) And (SWSrcX < FRRight) And (SWSrcY >= FRTop) And (SWSrcY < FRBottom) Then
+          GPPixByte := Emu_VidGetPixel(Win16_WindowX[SWWIdx] + 1 + SWSrcX, Win16_WindowY[SWWIdx] + 1 + SWSrcY)
+         Else GPPixByte := 15;
+         Emu_VidSetPixel(Win16_WindowX[SWWIdx] + 1 + FRX, Win16_WindowY[SWWIdx] + 1 + FRY, GPPixByte);
+        End;
+       End Else Begin
+        For FRX := FRLeft To FRRight - 1 Do Begin
+         SWSrcX := FRX - SWXAmt; SWSrcY := FRY - SWYAmt;
+         If (SWSrcX >= FRLeft) And (SWSrcX < FRRight) And (SWSrcY >= FRTop) And (SWSrcY < FRBottom) Then
+          GPPixByte := Emu_VidGetPixel(Win16_WindowX[SWWIdx] + 1 + SWSrcX, Win16_WindowY[SWWIdx] + 1 + SWSrcY)
+         Else GPPixByte := 15;
+         Emu_VidSetPixel(Win16_WindowX[SWWIdx] + 1 + FRX, Win16_WindowY[SWWIdx] + 1 + FRY, GPPixByte);
+        End;
+       End;
+      End;
+     End Else Begin
+      For FRY := FRTop To FRBottom - 1 Do Begin
+       If SWXAmt >= 0 Then Begin
+        For FRX := FRRight - 1 DownTo FRLeft Do Begin
+         SWSrcX := FRX - SWXAmt; SWSrcY := FRY - SWYAmt;
+         If (SWSrcX >= FRLeft) And (SWSrcX < FRRight) And (SWSrcY >= FRTop) And (SWSrcY < FRBottom) Then
+          GPPixByte := Emu_VidGetPixel(Win16_WindowX[SWWIdx] + 1 + SWSrcX, Win16_WindowY[SWWIdx] + 1 + SWSrcY)
+         Else GPPixByte := 15;
+         Emu_VidSetPixel(Win16_WindowX[SWWIdx] + 1 + FRX, Win16_WindowY[SWWIdx] + 1 + FRY, GPPixByte);
+        End;
+       End Else Begin
+        For FRX := FRLeft To FRRight - 1 Do Begin
+         SWSrcX := FRX - SWXAmt; SWSrcY := FRY - SWYAmt;
+         If (SWSrcX >= FRLeft) And (SWSrcX < FRRight) And (SWSrcY >= FRTop) And (SWSrcY < FRBottom) Then
+          GPPixByte := Emu_VidGetPixel(Win16_WindowX[SWWIdx] + 1 + SWSrcX, Win16_WindowY[SWWIdx] + 1 + SWSrcY)
+         Else GPPixByte := 15;
+         Emu_VidSetPixel(Win16_WindowX[SWWIdx] + 1 + FRX, Win16_WindowY[SWWIdx] + 1 + FRY, GPPixByte);
+        End;
+       End;
+      End;
+     End;
+     Win16_WindowNeedsPaint[SWWIdx] := True;
+    End;
+    ArgWords := 7;
+   End;
+   62: Begin
+    { SetScrollPos(hWnd,nBar,nPos,bRedraw):int - ordinal/signature          }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { SetScrollPos(word word s_word word) SetScrollPos16", 1+1+1+1 = 4          }
+    { mots). REEL : stocke VRAIMENT Win16_ScrollPos[H/V][], borne au                 }
+    { VRAI intervalle Win16_ScrollMin/Max[H/V][] deja etabli (SetScrollRange/         }
+    { $64) - retourne l'ANCIENNE position (contrat documente reel). SB_CTL          }
+    { (nBar=2, barre de defilement d'un CONTROLE independant, pas de la               }
+    { fenetre) n'est PAS modelise (aucun controle independant dans ce                  }
+    { sous-ensemble) - echec honnete (0). bRedraw ignore (aucun rendu                    }
+    { visuel de barre de defilement, meme limitation deja disclosee pour                }
+    { GetSystemMenu/$156). }
+    MWRepaintArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SBarNewPos := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    SBarArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If (SWWIdx >= 0) And (SBarArg <= 1) Then Begin
+     If SBarNewPos < Win16_ScrollMinH[SWWIdx] Then SBarNewPos := Win16_ScrollMinH[SWWIdx];
+     If SBarArg = 0 Then Begin
+      If SBarNewPos > Win16_ScrollMaxH[SWWIdx] Then SBarNewPos := Win16_ScrollMaxH[SWWIdx];
+      SBarOldPos := Win16_ScrollPosH[SWWIdx];
+      Win16_ScrollPosH[SWWIdx] := SBarNewPos;
+     End Else Begin
+      If SBarNewPos > Win16_ScrollMaxV[SWWIdx] Then SBarNewPos := Win16_ScrollMaxV[SWWIdx];
+      SBarOldPos := Win16_ScrollPosV[SWWIdx];
+      Win16_ScrollPosV[SWWIdx] := SBarNewPos;
+     End;
+     P.CPU.Regs.AX := Word(SBarOldPos);
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
+   63: Begin
+    { GetScrollPos(hWnd,nBar):int - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16                       }
+    { GetScrollPos(word word) GetScrollPos16", 2 mots). REEL,                       }
+    { symetrique de SetScrollPos/$62 ci-dessus. SB_CTL (nBar=2) non                    }
+    { modelise -> 0 (meme limitation disclosee). }
+    SBarArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If (SWWIdx >= 0) And (SBarArg = 0) Then P.CPU.Regs.AX := Word(Win16_ScrollPosH[SWWIdx])
+    Else If (SWWIdx >= 0) And (SBarArg = 1) Then P.CPU.Regs.AX := Word(Win16_ScrollPosV[SWWIdx])
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   64: Begin
+    { SetScrollRange(hWnd,nBar,nMinPos,nMaxPos,bRedraw):bool - ordinal/     }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :            }
+    { "pascal -ret16 SetScrollRange(word word s_word s_word word)                }
+    { SetScrollRange16", 5 mots). REEL : stocke VRAIMENT                            }
+    { Win16_ScrollMin/Max[H/V][] et reborne REELLEMENT la position                    }
+    { courante dans le nouvel intervalle (contrat documente reel). SB_CTL              }
+    { (nBar=2) non modelise -> echec honnete (0). }
+    MWRepaintArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SBarMax := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+    SBarMin := SmallInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+    SBarArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If (SWWIdx >= 0) And (SBarArg <= 1) Then Begin
+     If SBarArg = 0 Then Begin
+      Win16_ScrollMinH[SWWIdx] := SBarMin;
+      Win16_ScrollMaxH[SWWIdx] := SBarMax;
+      If Win16_ScrollPosH[SWWIdx] < SBarMin Then Win16_ScrollPosH[SWWIdx] := SBarMin;
+      If Win16_ScrollPosH[SWWIdx] > SBarMax Then Win16_ScrollPosH[SWWIdx] := SBarMax;
+     End Else Begin
+      Win16_ScrollMinV[SWWIdx] := SBarMin;
+      Win16_ScrollMaxV[SWWIdx] := SBarMax;
+      If Win16_ScrollPosV[SWWIdx] < SBarMin Then Win16_ScrollPosV[SWWIdx] := SBarMin;
+      If Win16_ScrollPosV[SWWIdx] > SBarMax Then Win16_ScrollPosV[SWWIdx] := SBarMax;
+     End;
+     P.CPU.Regs.AX := 1;
+    End Else
+     P.CPU.Regs.AX := 0;
+    ArgWords := 5;
+   End;
+   65: Begin
+    { GetScrollRange(hWnd,nBar,lpMinPos,lpMaxPos):bool - ordinal/signature  }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16      }
+    { GetScrollRange(word word ptr ptr) GetScrollRange16", 1+1+2+2 = 6         }
+    { mots). REEL, symetrique de SetScrollRange/$64 ci-dessus. SB_CTL             }
+    { (nBar=2) non modelise -> ecrit (0,0), echec honnete (0). }
+    IUROfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    IURSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    SBarArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    SWHWndArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    SWWIdx := -1;
+    For CWI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowHWnd[CWI] = SWHWndArg Then SWWIdx := CWI;
+    If (SWWIdx >= 0) And (SBarArg <= 1) Then Begin
+     If SBarArg = 0 Then Begin
+      Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Word(Win16_ScrollMinH[SWWIdx]));
+      Emu_WriteWord(P.CPU, IURSeg2, IUROfs2, Word(Win16_ScrollMaxH[SWWIdx]));
+     End Else Begin
+      Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Word(Win16_ScrollMinV[SWWIdx]));
+      Emu_WriteWord(P.CPU, IURSeg2, IUROfs2, Word(Win16_ScrollMaxV[SWWIdx]));
+     End;
+     P.CPU.Regs.AX := 1;
+    End Else Begin
+     Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, 0);
+     Emu_WriteWord(P.CPU, IURSeg2, IUROfs2, 0);
+     P.CPU.Regs.AX := 0;
+    End;
+    ArgWords := 6;
+   End;
+   69: Begin
+    { SetCursor(hCursor):HCURSOR - ordinal/signature VERIFIES via le VRAI  }
+    { source Wine (user.exe16.spec : "pascal -ret16 SetCursor(word)           }
+    { SetCursor16", 1 mot). REEL : stocke VRAIMENT Win16_CurrentCursor et       }
+    { retourne l'ANCIEN (contrat documente reel) - aucun VRAI rendu de           }
+    { forme de curseur (aucune donnee de bitmap de curseur reelle n'est          }
+    { jamais chargee, meme limitation deja disclosee pour LoadCursor/$173). }
+    SCapOld := Win16_CurrentCursor;
+    Win16_CurrentCursor := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := SCapOld;
+    ArgWords := 1;
+   End;
+   70: Begin
+    { SetCursorPos(X,Y):void - ordinal/signature VERIFIES via le VRAI      }
+    { source Wine (user.exe16.spec : "pascal -ret16 SetCursorPos(word         }
+    { word) SetCursorPos16", 2 mots). REEL ET CONCRET : Windows 3.x                }
+    { standard-mode delegue REELLEMENT ce contrat au VRAI pilote souris             }
+    { DOS (INT 33h AH=04h, "Set position") - fixe VRAIMENT EmuMouseX/Y               }
+    { (meme etat emule que GetCursorPos/$17/ClipCursor/$16), borne aux                }
+    { MEMES limites EmuMouseXMin/Max/YMin/Max. }
+    SCPY := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    SCPX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    EmuMouseX := SCPX;
+    EmuMouseY := SCPY;
+    If EmuMouseX < EmuMouseXMin Then EmuMouseX := EmuMouseXMin;
+    If EmuMouseX > EmuMouseXMax Then EmuMouseX := EmuMouseXMax;
+    If EmuMouseY < EmuMouseYMin Then EmuMouseY := EmuMouseYMin;
+    If EmuMouseY > EmuMouseYMax Then EmuMouseY := EmuMouseYMax;
+    ArgWords := 2;
+   End;
+   71: Begin
+    { ShowCursor(bShow):int - ordinal/signature VERIFIES via le VRAI       }
+    { source Wine (user.exe16.spec : "pascal -ret16 ShowCursor(word)           }
+    { ShowCursor16", 1 mot). REEL ET CONCRET : reutilise A L'IDENTIQUE le          }
+    { VRAI compteur d'affichage souris deja modelise pour INT 33h                    }
+    { AH=01h/02h (EmuMouseVis, >=0 visible) - incremente/decremente                   }
+    { VRAIMENT ce MEME compteur (contrat documente reel : le curseur est                }
+    { affiche seulement quand le compteur est >=0) et retourne sa VRAIE                 }
+    { nouvelle valeur. }
+    ENWEnableArg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If ENWEnableArg <> 0 Then Inc(EmuMouseVis) Else Dec(EmuMouseVis);
+    P.CPU.Regs.AX := Word(EmuMouseVis);
+    ArgWords := 1;
+   End;
+   73: Begin
+    { SetRectEmpty(lpRect):bool - ordinal/signature VERIFIES via le VRAI   }
+    { source Wine (user.exe16.spec : "pascal -ret16 SetRectEmpty(ptr)          }
+    { SetRectEmpty16", 2 mots). REEL : ecrit REELLEMENT (0,0,0,0), meme         }
+    { moteur d'ecriture que SetRect/$72. }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, 0);
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2), 0);
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4), 0);
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), 0);
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   74: Begin
+    { CopyRect(lpDestRect,lpSrcRect):bool - ordinal/signature VERIFIES     }
+    { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
+    { CopyRect(ptr ptr) CopyRect16", 2+2 = 4 mots). REEL : copie                    }
+    { REELLEMENT les 4 mots du RECT source vers la destination. }
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Emu_ReadWord(P.CPU, GCRLpSeg, GCRLpOfs));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2), Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 2)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4), Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4)));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6)));
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   75: Begin
+    { IsRectEmpty(lpRect):bool - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (user.exe16.spec : "pascal -ret16 IsRectEmpty(ptr)           }
+    { IsRectEmpty16", 2 mots). REEL : lit VRAIMENT le RECT, TRUE si              }
+    { right<=left OU bottom<=top (contrat documente reel exact). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    P.CPU.Regs.AX := Word(Ord((FRRight <= FRLeft) Or (FRBottom <= FRTop)));
+    ArgWords := 2;
+   End;
+   76: Begin
+    { PtInRect(lpRect,pt):bool - ordinal/signature VERIFIES via le VRAI    }
+    { source Wine (user.exe16.spec : "pascal -ret16 PtInRect(ptr long)         }
+    { PtInRect16", 2+2 = 4 mots, pt = POINT empaquete via MAKELONG(x,y)          }
+    { documente reel, MEME convention que WindowFromPoint/$30). REEL : lit           }
+    { VRAIMENT le RECT et le point, TRUE si le point est DANS [left,right)             }
+    { x [top,bottom) (bornes EXCLUSIVES a droite/bas, contrat documente                }
+    { reel exact). }
+    WFPXLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    WFPYHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    WFPX := SmallInt(WFPXLo);
+    WFPY := SmallInt(WFPYHi);
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    P.CPU.Regs.AX := Word(Ord((WFPX >= FRLeft) And (WFPX < FRRight) And (WFPY >= FRTop) And (WFPY < FRBottom)));
+    ArgWords := 4;
+   End;
+   79: Begin
+    { IntersectRect(lpDestRect,lpSrc1,lpSrc2):bool - ordinal/signature     }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16     }
+    { IntersectRect(ptr ptr ptr) IntersectRect16", 2+2+2 = 6 mots). REEL :        }
+    { calcule VRAIMENT l'intersection (max des cotes gauche/haut, min des          }
+    { cotes droit/bas) - intersection VIDE (contrat documente reel) : ecrit          }
+    { (0,0,0,0) dans le rectangle destination et retourne FALSE. }
+    IUROfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    IURSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    IUR2Left := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, IUROfs2));
+    IUR2Top := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, Word(IUROfs2 + 2)));
+    IUR2Right := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, Word(IUROfs2 + 4)));
+    IUR2Bottom := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, Word(IUROfs2 + 6)));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, GCRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6)));
+    If FRLeft > IUR2Left Then IURResL := FRLeft Else IURResL := IUR2Left;
+    If FRTop > IUR2Top Then IURResT := FRTop Else IURResT := IUR2Top;
+    If FRRight < IUR2Right Then IURResR := FRRight Else IURResR := IUR2Right;
+    If FRBottom < IUR2Bottom Then IURResB := FRBottom Else IURResB := IUR2Bottom;
+    If (IURResR <= IURResL) Or (IURResB <= IURResT) Then Begin
+     IURResL := 0; IURResT := 0; IURResR := 0; IURResB := 0;
+     P.CPU.Regs.AX := 0;
+    End Else
+     P.CPU.Regs.AX := 1;
+    Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Word(IURResL));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2), Word(IURResT));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4), Word(IURResR));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), Word(IURResB));
+    ArgWords := 6;
+   End;
+   80: Begin
+    { UnionRect(lpDestRect,lpSrc1,lpSrc2):bool - ordinal/signature         }
+    { VERIFIES via le VRAI source Wine (user.exe16.spec : "pascal -ret16     }
+    { UnionRect(ptr ptr ptr) UnionRect16", 2+2+2 = 6 mots). REEL : calcule       }
+    { VRAIMENT l'union (min des cotes gauche/haut, max des cotes                     }
+    { droit/bas) - simplification DOCUMENTEE : un rectangle source VIDE               }
+    { n'est PAS specialement exclu du calcul (contrairement au contrat                  }
+    { reel exact "ignore les rectangles vides"), un cas marginal rarement                }
+    { exerce en pratique. }
+    IUROfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    IURSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    GCRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    GCRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    IUR2Left := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, IUROfs2));
+    IUR2Top := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, Word(IUROfs2 + 2)));
+    IUR2Right := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, Word(IUROfs2 + 4)));
+    IUR2Bottom := SmallInt(Emu_ReadWord(P.CPU, IURSeg2, Word(IUROfs2 + 6)));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, GCRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, GCRLpSeg, Word(GCRLpOfs + 6)));
+    If FRLeft < IUR2Left Then IURResL := FRLeft Else IURResL := IUR2Left;
+    If FRTop < IUR2Top Then IURResT := FRTop Else IURResT := IUR2Top;
+    If FRRight > IUR2Right Then IURResR := FRRight Else IURResR := IUR2Right;
+    If FRBottom > IUR2Bottom Then IURResB := FRBottom Else IURResB := IUR2Bottom;
+    Emu_WriteWord(P.CPU, FRLpSeg, FRLpOfs, Word(IURResL));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2), Word(IURResT));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4), Word(IURResR));
+    Emu_WriteWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6), Word(IURResB));
+    P.CPU.Regs.AX := Word(Ord((IURResR > IURResL) And (IURResB > IURResT)));
+    ArgWords := 6;
+   End;
+   82: Begin
+    { InvertRect(hdc,lpRect):bool - ordinal/signature VERIFIES via le      }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16 InvertRect(word      }
+    { ptr) InvertRect16", 1+2 = 3 mots). REEL EN PARTIE : hdc ignore (meme       }
+    { simplification documentee que FillRect/$81) - inverse REELLEMENT           }
+    { chaque pixel du RECT (coordonnees CLIENT->ABSOLUES, meme conversion         }
+    { que FillRect) via un OU-EXCLUSIF de l'index de couleur avec $0F (16          }
+    { couleurs EGA/VGA) : une VRAIE inversion reversible (2 InvertRect               }
+    { consecutifs restaurent l'original, contrat documente reel), PAS une            }
+    { simulation en niveaux de gris RGB (hors de portee, palette indexee              }
+    { seulement). }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
+     FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
+     FRRight := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRRight);
+     FRBottom := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRBottom);
+     For FRY := FRTop To FRBottom - 1 Do
+      For FRX := FRLeft To FRRight - 1 Do
+       Emu_VidSetPixel(FRX, FRY, Emu_VidGetPixel(FRX, FRY) Xor $0F);
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 3;
+   End;
+   83: Begin
+    { FrameRect(hdc,lpRect,hBrush):bool - ordinal/signature VERIFIES via   }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16 FrameRect(word    }
+    { ptr word) FrameRect16", 1+2+1 = 4 mots). REEL EN PARTIE : hdc/hBrush       }
+    { ignores (meme simplification documentee que FillRect/$81, aucun            }
+    { pinceau reellement resolu) - dessine REELLEMENT une BORDURE d'un              }
+    { pixel (CONTRAIREMENT a FillRect qui remplit tout l'interieur) en                }
+    { blanc (15), coordonnees CLIENT->ABSOLUES. }
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
+    FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
+     FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
+     FRRight := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRRight);
+     FRBottom := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRBottom);
+     For FRX := FRLeft To FRRight - 1 Do Begin
+      Emu_VidSetPixel(FRX, FRTop, 15);
+      Emu_VidSetPixel(FRX, FRBottom - 1, 15);
+     End;
+     For FRY := FRTop To FRBottom - 1 Do Begin
+      Emu_VidSetPixel(FRLeft, FRY, 15);
+      Emu_VidSetPixel(FRRight - 1, FRY, 15);
+     End;
+    End;
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   84: Begin
+    { DrawIcon(hdc,X,Y,hIcon):bool - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16 DrawIcon(word         }
+    { s_word s_word word) DrawIcon16", 4 mots). REEL POUR LE SUCCES              }
+    { documente - le RENDU d'une VRAIE image d'icone est HORS DE PORTEE           }
+    { (aucune donnee de bitmap d'icone reelle n'est jamais chargee, meme            }
+    { limitation deja disclosee pour LoadIcon/$174) : rapporte un succes             }
+    { honnete sans dessiner de pixels plutot que d'inventer un placeholder            }
+    { visuel non documente. }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 4;
+   End;
+   85: Begin
+    { DrawText(hdc,lpString,nCount,lpRect,wFormat):int - ordinal/           }
+    { signature VERIFIES via le VRAI source Wine (user.exe16.spec :             }
+    { "pascal -ret16 DrawText(word str s_word ptr word) DrawText16",              }
+    { 1+2+1+2+1 = 7 mots). REEL EN PARTIE : reutilise A L'IDENTIQUE                 }
+    { Win16_DrawTextOut deja etabli pour TextOut/$33/ExtTextOut/$351 (GDI) -           }
+    { nCount=-1 (convention documentee reelle "chaine terminee par NUL")               }
+    { lit via Win16_ReadGuestString, sinon lit EXACTEMENT nCount octets                 }
+    { bruts (peuvent contenir des espaces/retours, PAS forcement termines               }
+    { par NUL, contrat documente reel). Position de depart = lpRect.left/                }
+    { top (coordonnees CLIENT->ABSOLUES) - wFormat (DT_CENTER/DT_VCENTER/                 }
+    { DT_WORDBREAK/etc.) n'est PAS honore (alignement toujours en haut a                   }
+    { gauche, limitation disclosee, meme esprit que le clipping non                        }
+    { consomme d'ExtTextOut). Retourne la VRAIE hauteur de police (7,                        }
+    { deja etablie pour GetTextMetrics/EnumFonts), le contrat documente                       }
+    { reel pour un texte sur une seule ligne. }
+    DTFormat := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    TOCount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    TOStrOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    TOStrSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
+    FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
+    If SmallInt(TOCount) < 0 Then
+     TOStr := Win16_ReadGuestString(P.CPU, TOStrSeg, TOStrOfs)
+    Else Begin
+     If TOCount > 255 Then TOCount := 255;
+     TOStr := '';
+     For TOI := 0 To Integer(TOCount) - 1 Do
+      TOStr := TOStr + Chr(Emu_ReadByte(P.CPU, TOStrSeg, Word(TOStrOfs + TOI)));
+    End;
+    If Win16_ActiveDCWindow >= 0 Then Begin
+     FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
+     FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
+     Win16_DrawTextOut(FRLeft, FRTop, TOStr);
+    End;
+    P.CPU.Regs.AX := 7;
+    ArgWords := 7;
+   End;
+   86: Begin
+    { IconSize():DWORD - ordinal/signature VERIFIES via le VRAI source     }
+    { Wine (user.exe16.spec : "pascal IconSize() IconSize16 # later            }
+    { versions: BEAR86" - l'enonce de l'utilisateur decrit cet ordinal            }
+    { comme "bidon", EXACTEMENT l'annotation BEAR86 du VRAI .spec (alias           }
+    { interne, PAS une fonction destinee a un usage documente normal), 0            }
+    { mot, PAS de "-ret16" = retour COMPLET DX:AX). REEL : retourne                  }
+    { MAKELONG(cx,cy) avec cx=cy=32, les MEMES constantes CXICON/CYICON                }
+    { deja etablies pour GetSystemMetrics/$179, pas une valeur distincte                 }
+    { inventee. }
+    P.CPU.Regs.AX := 32;
+    P.CPU.Regs.DX := 32;
+    ArgWords := 0;
+   End;
+   87: Begin
+    { DialogBox(hInstance,lpTemplateName,hWndParent,lpDialogFunc):int -    }
+    { ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec :  }
+    { "pascal -ret16 DialogBox(word str word segptr) DialogBox16", 1+2+1+2 =    }
+    { 6 mots). REEL ET HONNETE : cree et EXECUTE une VRAIE boite de                 }
+    { dialogue MODALE depuis un gabarit de ressource DLGTEMPLATE - aucun               }
+    { analyseur de ressource DLGTEMPLATE ni moteur de controles (bouton/                 }
+    { edit/listbox) n'existe dans ce sous-ensemble (Rendu GDI reel HORS                   }
+    { DE PORTEE, meme limitation deja disclosee pour MessageBox/$1) :                      }
+    { echoue honnetement (-1, la VRAIE valeur documentee de retour                          }
+    { "impossible de creer la boite de dialogue"), jamais un succes                          }
+    { invente. }
+    P.CPU.Regs.AX := Word(-1);
+    ArgWords := 6;
+   End;
+   88: Begin
+    { EndDialog(hDlg,nResult):bool - ordinal/signature VERIFIES via le     }
+    { VRAI source Wine (user.exe16.spec : "pascal -ret16 EndDialog(word       }
+    { s_word) EndDialog16", 2 mots). REEL POUR LA SIMPLIFICATION deja           }
+    { etablie a DialogBox/$87 (aucune VRAIE boite modale n'est jamais               }
+    { creee ici, donc rien a fermer) - rapporte toujours un succes                    }
+    { honnete (contrat documente reel "retourne TRUE"). }
+    P.CPU.Regs.AX := 1;
+    ArgWords := 2;
+   End;
+   89: Begin
+    { CreateDialog(hInstance,lpTemplateName,hWndParent,lpDialogFunc):HWND  }
+    { - ordinal/signature VERIFIES via le VRAI source Wine (user.exe16.spec : }
+    { "pascal -ret16 CreateDialog(word str word segptr) CreateDialog16",         }
+    { 1+2+1+2 = 6 mots). MEME limitation exacte que DialogBox/$87                    }
+    { (variante MODELESSE, meme absence d'analyseur DLGTEMPLATE) : echoue              }
+    { honnetement (0, la VRAIE valeur documentee "echec de creation"). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 6;
+   End;
+   90: Begin
+    { IsDialogMessage(hDlg,lpMsg):bool - ordinal/signature VERIFIES via    }
+    { le VRAI source Wine (user.exe16.spec : "pascal -ret16                   }
+    { IsDialogMessage(word ptr) IsDialogMessage16", 1+2 = 3 mots). REEL        }
+    { POUR LA SIMPLIFICATION deja etablie a CreateDialog/$89 (AUCUNE VRAIE        }
+    { boite de dialogue modelesse n'est jamais reellement creee ici,                }
+    { CreateDialog echouant toujours honnetement) : aucun message ne peut                }
+    { donc jamais appartenir a une boite de dialogue - FALSE (0, documente                 }
+    { reel "message non traite ici"). }
+    P.CPU.Regs.AX := 0;
+    ArgWords := 3;
    End;
    Else Begin
     Win16_Halt(P, 'USER', Ordinal);
