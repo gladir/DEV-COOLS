@@ -8493,6 +8493,17 @@ Var
  EmuDiv0IP      : Word;
  EmuDiv0Op      : Byte;     { F6 ou F7 }
  EmuDiv0SubOp   : Byte;     { 6=DIV, 7=IDIV }
+ { Journal circulaire des DERNIERS appels API Win16 (2026-09-23, diagnostic }
+ { "pourquoi CX/AX=0 a ce DIV" - complement du EmuTraceBuf ci-dessus qui ne  }
+ { trace que les opcodes 8086 bruts, illisible pour retrouver QUEL appel    }
+ { KERNEL/GDI/USER a precede un plantage. Vide/reinitialise dans            }
+ { Win16_LoadNE, rempli au tout debut de Win16_DispatchCall, dechiffre au   }
+ { besoin dans DOS_PrintEndMessage (EMUDIAG.LOG). }
+ Win16_ApiTraceBuf: Array[0..255] Of Record
+  ModIdx, Ordinal, Arg1: Word;
+ End;
+ Win16_ApiTraceIdx  : Integer;
+ Win16_ApiTraceCount: Integer;
  { EmuCpu286Plus (2026-09-04, demande explicite de l utilisateur suite a la  }
  { decouverte, via le corpus SST286 D0-D3 sur silicium 80286 reel, de DEUX   }
  { vrais changements de comportement Group2 (D0-D3) entre 8086/8088 et       }
@@ -99118,6 +99129,8 @@ Begin
   Win16_SoundThreshold[I] := 0;
   Win16_SoundLastFreq[I] := 0;
  End;
+ Win16_ApiTraceIdx := 0;
+ Win16_ApiTraceCount := 0;
  Win16_TaskLocked := False;
  Win16_TaskQueueHandle := 0;
  Win16_TaskSignalProcSeg := 0;
@@ -102764,6 +102777,25 @@ Begin
  End;
 End;
 
+{ Journal circulaire des derniers appels API Win16 (voir declaration de     }
+{ Win16_ApiTraceBuf) - appele au tout debut de Win16_DispatchCall, avant    }
+{ tout traitement d ordinal, pour retrouver la SEQUENCE d'appels qui a      }
+{ mene a un plantage (bien plus lisible que le trace d'opcodes 8086 bruts   }
+{ pour repondre a "quel appel a retourne 0 la ou le programme ne s'y        }
+{ attendait pas"). }
+Procedure Win16_ApiTraceLog(Var P: TEmulatorPanel; ModIdx, Ordinal: Word);
+Begin
+ Win16_ApiTraceBuf[Win16_ApiTraceIdx].ModIdx := ModIdx;
+ Win16_ApiTraceBuf[Win16_ApiTraceIdx].Ordinal := Ordinal;
+ { dernier mot empile (souvent le parametre le plus diagnostique - ex.       }
+ { nIndex de GetDeviceCaps) - lecture large, valeur sans signification pour }
+ { les appels sans argument, mais jamais dangereuse (memoire deja mappee).  }
+ Win16_ApiTraceBuf[Win16_ApiTraceIdx].Arg1 :=
+  Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+ Win16_ApiTraceIdx := (Win16_ApiTraceIdx + 1) And 255;
+ If Win16_ApiTraceCount < 256 Then Inc(Win16_ApiTraceCount);
+End;
+
 Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
 Var
  ModIdx, Ordinal: Word;
@@ -103341,6 +103373,7 @@ Begin
  ModIdx := Win16_ImportModIdx[Slot];
  IsOrd := Win16_ImportIsOrd[Slot];
  Ordinal := Win16_ImportValue[Slot];
+ Win16_ApiTraceLog(P, ModIdx, Ordinal);
  ArgWords := 0;
  If (Not IsOrd) Then Begin
   Win16_Halt(P, 'import par nom (module #' + IntToStr(ModIdx) + ')', 0);
@@ -115747,11 +115780,15 @@ Begin
     { programme calcule a partir de ces valeurs correspondent ainsi         }
     { DIRECTEMENT aux pixels reels du framebuffer, sans mise a l'echelle.   }
     { Index non couvert -> 0 (honnete, non modelise) - SAUF HORZSIZE/       }
-    { VERTSIZE (dimensions PHYSIQUES en mm) : un VRAI pilote ne retourne    }
-    { JAMAIS 0 pour ces 2 index (bogue reel trouve au Stage 5 - WIN16RUN a  }
-    { montre CLOCK.EXE diviser par cette valeur dans son calcul d'echelle,  }
-    { plantant sur une VRAIE division par zero cote 8086 des que le 0 par   }
-    { defaut etait utilise comme denominateur). }
+    { VERTSIZE (dimensions PHYSIQUES en mm) et ASPECTX/ASPECTY/ASPECTXY :    }
+    { un VRAI pilote ne retourne JAMAIS 0 pour ces index (bogue reel trouve  }
+    { au Stage 5 pour HORZSIZE/VERTSIZE via CLOCK.EXE ; MEME bogue retrouve  }
+    { le 2026-09-23 pour ASPECTX/ASPECTY via CALC.EXE, qui divise par ces    }
+    { valeurs pour son calcul d'echelle de bouton et plantait sur une VRAIE  }
+    { division par zero cote 8086 des que le 0 par defaut etait utilise      }
+    { comme denominateur). Valeurs standard d'un VRAI pilote VGA (documentees}
+    { dans le SDK Windows et reprises par Wine) : ASPECTX=ASPECTY=36,        }
+    { ASPECTXY=51 (diagonale relative, sqrt(36^2+36^2)~=51). }
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Case GDIIdx Of
      2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
@@ -115764,6 +115801,9 @@ Begin
      24: P.CPU.Regs.AX := 256;  { NUMCOLORS - mode $13 = 256 couleurs }
      88: P.CPU.Regs.AX := 96;   { LOGPIXELSX }
      90: P.CPU.Regs.AX := 96;   { LOGPIXELSY }
+     40: P.CPU.Regs.AX := 36;   { ASPECTX }
+     42: P.CPU.Regs.AX := 36;   { ASPECTY }
+     44: P.CPU.Regs.AX := 51;   { ASPECTXY }
      Else P.CPU.Regs.AX := 0;
     End;
     ArgWords := 2;
@@ -194722,26 +194762,28 @@ End;
   Le caller doit avoir DEJA avance IP au-dela du DIV. }
 Procedure Emu_Div0Trap(Var P: TEmulatorPanel);
 Begin
+ { BOGUE REEL CORRIGE (2026-09-23, demande explicite - le correctif Win16   }
+ { precedent ne se declenchait JAMAIS) : Emu_IntIsHooked(P,0) etait teste    }
+ { EN PREMIER, or le vecteur INT0 d'un programme Win16 n'est jamais          }
+ { initialise (memoire emulee potentiellement non remise a zero entre deux   }
+ { chargements) - la moindre valeur residuelle qui ne correspond pas au       }
+ { trampoline par defaut faisait croire a un VRAI handler invite et            }
+ { sautait vers une adresse arbitraire au lieu d'atteindre la branche Win16.  }
+ { Le VRAI KERNEL Windows 3.x n'installe de toute facon JAMAIS de VRAI         }
+ { gestionnaire INT0 cote invite (contrairement a TP4/DOS, qui le fait pour    }
+ { son "Runtime error 200") - un #DE non intercepte y ferme SEULEMENT le       }
+ { programme fautif, jamais tout l'environnement. Le cas Win16 doit donc       }
+ { etre teste EN PREMIER, avant tout regard sur l etat du vecteur invite. }
+ If Win16_LoadedPath <> '' Then Begin
+  P.CPU.Fault := sfEndProgram;
+  P.StatusMsg := 'Division par zero : le programme Windows a ete ferme';
+ End
  { Le vecteur par defaut pointe vers notre propre trampoline F000:0300 ;
    il ne faut pas le traiter comme un handler invite, sinon INT 0 se
    rappelle indefiniment via le trampoline. }
- If Emu_IntIsHooked(P, 0) Then
+ Else If Emu_IntIsHooked(P, 0) Then
   Emu_FireHwInt(P, 0)
- Else If Win16_LoadedPath <> '' Then Begin
-  { BOGUE REEL CORRIGE (2026-09-23, demande explicite - CALC.EXE plantait  }
-  { sur une VRAIE division par zero, l'utilisateur voyait "division par     }
-  { zero" comme une panne fatale de TOUT l'emulateur) : le VRAI KERNEL       }
-  { Windows 3.x n'installe JAMAIS de VRAI gestionnaire INT0 cote invite       }
-  { (contrairement a TP4/DOS qui le fait pour son "Runtime error 200") -       }
-  { sur le VRAI Windows, un #DE non intercepte ferme SEULEMENT le               }
-  { programme fautif, JAMAIS tout l'environnement. Traduit ici en fin de         }
-  { programme PROPRE (sfEndProgram, MEME mecanisme deja etabli pour                }
-  { ExitWindows/$7/OldExitWindows/$2) plutot qu'un blocage fatal de TOUT             }
-  { l'emulateur - seul ce sous-ensemble mono-programme ne peut de toute               }
-  { facon pas "revenir a un bureau Windows" apres coup. }
-  P.CPU.Fault := sfEndProgram;
-  P.StatusMsg := 'Division par zero : le programme Windows a ete ferme';
- End Else
+ Else
   P.CPU.Fault := sfDivision0;
 End;
 
@@ -212975,6 +213017,27 @@ Begin
      Word(EmuDiv0IP + Idx_R))), ' ');
    WriteLn(LogF_R);
   End;
+  { Win16 uniquement (2026-09-23) : la sequence des DERNIERS appels API      }
+  { est bien plus lisible que le trace d'opcodes bruts pour repondre a       }
+  { "quel appel a retourne une valeur inattendue juste avant ce DIV". }
+  If Win16_LoadedPath <> '' Then Begin
+   WriteLn(LogF_R, 'DERNIERS APPELS API WIN16 (', Win16_ApiTraceCount,
+    ', ordre chronologique) :');
+   For Idx_R := 0 To Win16_ApiTraceCount - 1 Do Begin
+    KK_R := (Win16_ApiTraceIdx + Idx_R - Win16_ApiTraceCount + 256) And 255;
+    Write(LogF_R, '  ');
+    Case Win16_ApiTraceBuf[KK_R].ModIdx Of
+     1: Write(LogF_R, 'KERNEL');
+     2: Write(LogF_R, 'GDI');
+     3: Write(LogF_R, 'USER');
+     4: Write(LogF_R, 'KEYBOARD');
+     5: Write(LogF_R, 'SOUND');
+     Else Write(LogF_R, 'module#', Win16_ApiTraceBuf[KK_R].ModIdx);
+    End;
+    WriteLn(LogF_R, '.', Win16_ApiTraceBuf[KK_R].Ordinal,
+     ' arg1=', HexWord(Win16_ApiTraceBuf[KK_R].Arg1));
+   End;
+  End;
   WriteLn(LogF_R, 'Trace circulaire (last 8192 avant arret) :');
   For Idx_R := -8192 To -1 Do Begin
    KK_R := (EmuTraceIdx + Idx_R + 8192) And $1FFF;
@@ -217404,6 +217467,16 @@ Begin NesActive := False;
   { factorisee dans Win16_SetupEntryRegs (partagee avec WIN16RUN, Stage 5). }
   Win16_SetupEntryRegs(P.CPU);
   P.CPU.Fault := sfNone;
+  { Stage 6 (2026-09-23, demande explicite de l'utilisateur - "un vrai      }
+  { rendu graphique, de vrais boutons") : les primitives GDI (LineTo/       }
+  { Ellipse/TextOut/BitBlt...) ecrivent DEJA de vrais pixels dans           }
+  { EmuVideo.Mem via Emu_VidSetPixel, mais rien n'affichait ce framebuffer  }
+  { cote panneau -CWIN16 (EmuVScr texte uniquement) - le blit pixel de      }
+  { DrawEmulatorPanel (partage avec -CD/-CP en mode graphique VGA) couvre   }
+  { deja -CWIN16 des que EmuVideo.IsGraphic est vrai. Basculer en mode      }
+  { $13 (320x200x256) au chargement suffit donc a rendre visible tout ce    }
+  { que GDI dessine, sans dupliquer le mecanisme de rendu. }
+  Emu_VidSetMode($13, P);
   { Meme init peripherique 8086 que le backend DOS -CD juste plus bas       }
   { (DOS_RunOneChunk, partage sans changement par les deux backends,        }
   { s attend a un BDA/IVT/etc. valides - voir le commentaire de tete de     }
