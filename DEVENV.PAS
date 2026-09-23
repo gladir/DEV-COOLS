@@ -101198,7 +101198,7 @@ Begin
     $00000042: Emu_VidSetPixel(PX, PY, 0);                              { BLACKNESS }
     $00FF0062: Emu_VidSetPixel(PX, PY, 15);                             { WHITENESS }
     $00550009, $005A0049: Emu_VidSetPixel(PX, PY, Emu_VidGetPixel(PX, PY) Xor $FF); { DSTINVERT, PATINVERT (approxime) }
-    Else Emu_VidSetPixel(PX, PY, 0);                                    { PATCOPY et tout le reste : noir fixe, disclose }
+    Else Emu_VidSetPixel(PX, PY, Byte(Win16_LastBrushColor And $FF));    { PATCOPY et tout le reste - VRAIE couleur de pinceau (2026-09-23) }
    End;
 End;
 
@@ -115187,6 +115187,26 @@ Begin
     { retourne juste un handle synthetique non-nul (l'objet "precedemment  }
     { selectionne" reel importe rarement au code appelant, qui l'utilise   }
     { seulement pour le re-selectionner plus tard en fin de dessin). }
+    { BOGUE REEL CORRIGE (2026-09-23, trouve via CALC.EXE - boutons noirs   }
+    { au lieu de gris, meme famille que ASPECTX/ASPECTY) : un objet stock    }
+    { (GetStockObject/$87, handle $F0xx) EST desormais reconnu ici et met     }
+    { REELLEMENT a jour Win16_LastBrushColor/LastPenColor - sinon           }
+    { LTGRAY_BRUSH etc. selectionne restait invisible et les remplissages    }
+    { (Win16_PatBlt, PATCOPY) gardaient leur defaut noir fixe. Un handle      }
+    { "normal" (CreateSolidBrush/CreatePenIndirect/etc., toujours =1) ne     }
+    { tombe jamais dans cette plage $F000-$F0FF, aucune ambiguite possible. }
+    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If (GDIIdx And $FF00) = $F000 Then Begin
+     Case GDIIdx And $FF Of
+      0: Win16_LastBrushColor := 15;  { WHITE_BRUSH }
+      1: Win16_LastBrushColor := 7;   { LTGRAY_BRUSH }
+      2: Win16_LastBrushColor := 24;  { GRAY_BRUSH }
+      3: Win16_LastBrushColor := 8;   { DKGRAY_BRUSH }
+      4: Win16_LastBrushColor := 0;   { BLACK_BRUSH }
+      6: Win16_LastPenColor := 15;    { WHITE_PEN }
+      7: Win16_LastPenColor := 0;     { BLACK_PEN }
+     End;
+    End;
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
@@ -115880,9 +115900,14 @@ Begin
    End;
    87: Begin
     { GetStockObject(nIndex):handle - ordinal VERIFIE via gdi.exe16.spec.  }
-    { Meme simplification : handle synthetique non-nul quel que soit       }
-    { l'objet standard demande (pinceau/stylo/police systeme). }
-    P.CPU.Regs.AX := 1;
+    { BOGUE REEL CORRIGE (2026-09-23, meme decouverte que SelectObject/$45  }
+    { ci-dessus) : encode desormais nIndex dans le handle retourne ($F000 + }
+    { nIndex, plage jamais utilisee par les AUTRES handles synthetiques,     }
+    { toujours =1) pour que SelectObject puisse reconnaitre un objet stock   }
+    { (pinceau/stylo) et en appliquer la VRAIE couleur documentee, au lieu   }
+    { de rester indistinguable de n'importe quel autre handle synthetique. }
+    GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := Word($F000 + GDIIdx);
     ArgWords := 1;
    End;
    88: Begin

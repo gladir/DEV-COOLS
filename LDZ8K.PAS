@@ -69,6 +69,7 @@ Const
  X_SY_SEG=4;
  AR8K_MAGIC=$FF65;
  AR8K_HEADER_SIZE=26;
+ MaxSegmentSize=65535;
  MaxErrors=100;
 
 Type
@@ -84,10 +85,10 @@ Next:PImage
 End;
 POutSection=^TOutSection;
 TOutSection=Record
-Number,Attributes,SegmentType,AssignedNumber:Byte;
+Number,Attributes,SegmentType,AssignedNumber,Ordinal:Byte;
 Name:String;
 Size,LoadBase:LongInt;
-IsBss:Boolean;
+IsBss,Fixed,Common,Reserved:Boolean;
 FirstImage,LastImage:PImage;
 Next:POutSection
 End;
@@ -106,6 +107,7 @@ Name:String;
 Defined,Absolute:Boolean;
 Section:POutSection;
 Value:LongInt;
+CommonSize:LongInt;
 ObjectBase,SymbolIndex:Word;
 Next:PGlobal
 End;
@@ -150,7 +152,7 @@ Next:PModuleNode
 End;
 TOptions=Record
 OutputName:String;
-Relocatable,Strip,SplitID,ReadOnly:Boolean;
+Relocatable,Strip,SplitID,ReadOnly,Preassign:Boolean;
 StackSize:LongInt
 End;
 
@@ -251,6 +253,7 @@ Procedure Usage;Begin
  WriteLn('  -i          espace instructions/donnees separe');
  WriteLn('  -n          texte partage, donnees alignees sur 8 Kio');
  WriteLn('  -t taille   taille de pile demandee');
+ WriteLn('  -w          reserve 0=TEXT, 1=CONST, 2=DATA et 3=BSS');
  WriteLn('  -lxx        recherche la bibliotheque AR8K libxx.a');
  WriteLn('              chemins: repertoire courant, LIB, LIBRARY et repertoire lib');
  WriteLn('  Entrees x.out de XCON et objets UNIDOT acceptes; sortie x.out big-endian.');
@@ -285,6 +288,7 @@ Begin
   else if U='-S'Then Opt.Strip:=True
   else if U='-I'Then Opt.SplitID:=True
   else if U='-N'Then Opt.ReadOnly:=True
+  else if U='-W'Then Opt.Preassign:=True
   else if U='-T'Then Begin
    Inc(I);if I>ParamCount Then Fatal('-t exige une taille');
    Val(ParamStr(I),Opt.StackSize,Code);if Code<>0 Then Fatal('taille de pile incorrecte')
@@ -531,6 +535,76 @@ Begin
 End
 End;Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture');
 M.TargetKnown:=True;M.TargetSegmented:=SegmentedSeen
+End;
+
+Function CreateOutSection(Const Name:String;Attributes,SegmentType:Byte):POutSection;
+Var P:POutSection;
+Begin
+ New(P);if P=Nil Then Fatal('memoire pleine');FillChar(P^,SizeOf(P^),0);
+ if NextSectionNumber>=RBUND Then Fatal('trop de segments de sortie');
+ P^.Number:=NextSectionNumber;Inc(NextSectionNumber);P^.Name:=Name;
+ P^.Attributes:=Attributes;P^.SegmentType:=SegmentType;P^.AssignedNumber:=255;
+ if LastOutSection=Nil Then OutSections:=P else LastOutSection^.Next:=P;
+ LastOutSection:=P;CreateOutSection:=P
+End;
+
+Function IsCommonName(Const Name:String):Boolean;
+Var U:String;
+Begin U:=UpperString(Name);IsCommonName:=(U='COMMON')or(Pos('COMMON$',U)=1)or(Pos('__COMMON',U)=1)End;
+
+Procedure NormalizeObjSection(S:PObjSection);
+Var U:String;
+Begin
+ U:=UpperString(S^.Name);
+ if S^.SegmentType=0 Then Begin
+  if S^.IsBss or(Pos('BSS',U)<>0)or IsCommonName(U)Then S^.SegmentType:=X_SG_BSS
+  else if Pos('STACK',U)<>0 Then S^.SegmentType:=X_SG_STK
+  else if Pos('CONST',U)<>0 Then S^.SegmentType:=X_SG_CON
+  else if Pos('DATA',U)<>0 Then S^.SegmentType:=X_SG_DAT
+  else if(Pos('TEXT',U)<>0)or(Pos('CODE',U)<>0)Then S^.SegmentType:=X_SG_COD
+  else S^.SegmentType:=X_SG_MXU
+ End
+End;
+
+Function CompatibleSegmentType(A,B:Byte):Boolean;
+Begin CompatibleSegmentType:=(A=0)or(B=0)or(A=B)End;
+
+Function AllocateOutSection(S:PObjSection):POutSection;
+Var P,Best:POutSection;FixedInput,CommonInput:Boolean;Physical:Byte;Suffix:String;N:Integer;
+Begin
+ NormalizeObjSection(S);FixedInput:=S^.AssignedNumber<>255;
+ if FixedInput Then Begin Physical:=S^.AssignedNumber and $7F;FixedInput:=Physical<>127 End;
+ CommonInput:=IsCommonName(S^.Name);Best:=Nil;P:=OutSections;
+ While P<>Nil do Begin
+  if FixedInput and P^.Fixed and(P^.AssignedNumber=Physical)and
+  ((not Opt.SplitID)or((P^.SegmentType=X_SG_COD)=(S^.SegmentType=X_SG_COD)))Then Begin
+   if not CompatibleSegmentType(P^.SegmentType,S^.SegmentType)Then
+    Error(S^.Name,'collision de numero de segment fixe')
+   else if P^.Size+(P^.Size and 1)+S^.Size>MaxSegmentSize Then
+    Error(S^.Name,'debordement d''un segment fixe')
+   else Begin AllocateOutSection:=P;Exit End;
+   AllocateOutSection:=P;Exit
+  End;
+  if CommonInput and P^.Common and(UpperString(P^.Name)=UpperString(S^.Name))Then Begin
+   AllocateOutSection:=P;Exit
+  End;
+  if(not FixedInput)and P^.Fixed and CompatibleSegmentType(P^.SegmentType,S^.SegmentType)and
+   (P^.Size+(P^.Size and 1)+S^.Size<=MaxSegmentSize)Then Begin AllocateOutSection:=P;Exit End;
+  if(not P^.Fixed)and not P^.Common and CompatibleSegmentType(P^.SegmentType,S^.SegmentType)and
+   (UpperString(P^.Name)=UpperString(S^.Name))and
+   (P^.Size+(P^.Size and 1)+S^.Size<=MaxSegmentSize)Then Best:=P;
+  P:=P^.Next
+ End;
+ if Best<>Nil Then Begin AllocateOutSection:=Best;Exit End;
+ Suffix:='';N:=1;P:=OutSections;
+ While P<>Nil do Begin if UpperString(P^.Name)=UpperString(S^.Name+Suffix)Then Begin
+  Str(N,Suffix);Suffix:='$'+Suffix;Inc(N);P:=OutSections
+ End else P:=P^.Next End;
+ Best:=CreateOutSection(S^.Name+Suffix,S^.Attributes,S^.SegmentType);
+ Best^.IsBss:=S^.IsBss or(S^.SegmentType in[X_SG_BSS,X_SG_STK]);
+ Best^.Common:=CommonInput;Best^.Reserved:=S^.SegmentType=X_SG_STK;
+ if FixedInput Then Begin Best^.Fixed:=True;Best^.AssignedNumber:=Physical End;
+ AllocateOutSection:=Best
 End;
 
 Function JoinPath(Const PathPart,FilePart:String):String;
@@ -790,13 +864,22 @@ Var
 Begin
  S:=M.Sections;
  While S<>Nil do Begin
-  S^.OutputSection:=FindOutSection(S^.Name,S^.Attributes);
-  if S^.OutputSection^.SegmentType=0 Then S^.OutputSection^.SegmentType:=S^.SegmentType;
-  S^.OutputBase:=S^.OutputSection^.Size;
+  if S^.Size>MaxSegmentSize Then Begin
+   Error(M.FileName,'segment d''entree superieur a 64 Kio: '+S^.Name);S:=S^.Next;Continue
+  End;
+  S^.OutputSection:=AllocateOutSection(S);
+  if S^.OutputSection^.Common Then Begin
+   S^.OutputBase:=0;if S^.Size>S^.OutputSection^.Size Then S^.OutputSection^.Size:=S^.Size
+  End else Begin
+   if(S^.OutputSection^.Size and 1)<>0 Then Inc(S^.OutputSection^.Size);
+   S^.OutputBase:=S^.OutputSection^.Size;
+   if S^.Size>MaxSegmentSize-S^.OutputSection^.Size Then
+    Error(M.FileName,'debordement du segment de sortie: '+S^.OutputSection^.Name)
+   else Inc(S^.OutputSection^.Size,S^.Size)
+  End;
   if(S^.IsBss or(Pos('BSS',UpperString(S^.Name))<>0))
   and not S^.HasBytes Then S^.OutputSection^.IsBss:=True;
-  if S^.Size>2147483647-S^.OutputSection^.Size Then Fatal('segment de sortie trop grand');
-  Inc(S^.OutputSection^.Size,S^.Size);S:=S^.Next
+  S:=S^.Next
  End;
  Y:=M.Symbols;
  While Y<>Nil do Begin
@@ -822,7 +905,9 @@ Begin
      End
     End
    End
-  End else if Y^.Global Then GetGlobal(Y^.Name);Y:=Y^.Next
+  End else if Y^.Global Then Begin
+   G:=GetGlobal(Y^.Name);if Y^.Value>G^.CommonSize Then G^.CommonSize:=Y^.Value
+  End;Y:=Y^.Next
  End;
  if M.HasTransfer and not HasTransfer Then Begin
   S:=FindObjSection(M,Byte(M.TransferBase));
@@ -955,11 +1040,79 @@ Begin
  End
 End;
 
+Procedure InitializePreassignedSegments;
+Var S:POutSection;
+ Procedure AddFixed(Const Name:String;Typ,Physical:Byte);
+ Begin S:=CreateOutSection(Name,0,Typ);S^.Fixed:=True;S^.AssignedNumber:=Physical;
+  S^.IsBss:=Typ in[X_SG_BSS,X_SG_STK]
+ End;
+Begin
+ if not Opt.Preassign Then Exit;
+ AddFixed('_text',X_SG_COD,0);AddFixed('_cons',X_SG_CON,1);
+ AddFixed('_data',X_SG_DAT,2);AddFixed('_bss',X_SG_BSS,3)
+End;
+
+Procedure AllocateCommonSymbols;
+Var G:PGlobal;S:POutSection;Base:LongInt;
+Begin
+ if Opt.Relocatable Then Exit;G:=Globals;
+ While G<>Nil do Begin
+  if(not G^.Defined)and(G^.CommonSize>0)Then Begin
+   S:=FindOutSection('__common',0);S^.SegmentType:=X_SG_BSS;S^.IsBss:=True;S^.Common:=True;
+   if G^.CommonSize>1 Then if(S^.Size and 1)<>0 Then Inc(S^.Size);
+   Base:=S^.Size;if G^.CommonSize>MaxSegmentSize-Base Then
+    Error(G^.Name,'espace COMMON superieur a 64 Kio')
+   else Begin G^.Defined:=True;G^.Section:=S;G^.Value:=Base;Inc(S^.Size,G^.CommonSize)End
+  End;G:=G^.Next
+ End
+End;
+
+Procedure RemoveEmptyAndOrderSections;
+Var P,N,FixedFirst,FixedLast,AutoFirst,AutoLast:POutSection;
+Begin
+ FixedFirst:=Nil;FixedLast:=Nil;AutoFirst:=Nil;AutoLast:=Nil;P:=OutSections;
+ While P<>Nil do Begin
+  N:=P^.Next;P^.Next:=Nil;
+  if(P^.Size=0)and not P^.Reserved Then Dispose(P)
+  else if P^.Fixed Then Begin
+   if FixedLast=Nil Then FixedFirst:=P else FixedLast^.Next:=P;FixedLast:=P
+  End else Begin if AutoLast=Nil Then AutoFirst:=P else AutoLast^.Next:=P;AutoLast:=P End;
+  P:=N
+ End;
+ if FixedLast<>Nil Then FixedLast^.Next:=AutoFirst;
+ if FixedFirst<>Nil Then OutSections:=FixedFirst else OutSections:=AutoFirst;
+ if AutoLast<>Nil Then LastOutSection:=AutoLast else LastOutSection:=FixedLast
+End;
+
+Procedure AssignSegmentNumbers;
+Var UsedCode,UsedData:Array[0..126]of Boolean;S:POutSection;N,I:Integer;CodeSpace:Boolean;
+Begin
+ FillChar(UsedCode,SizeOf(UsedCode),0);FillChar(UsedData,SizeOf(UsedData),0);
+ S:=OutSections;While S<>Nil do Begin
+  if S^.Fixed Then Begin
+   if S^.AssignedNumber>126 Then Fatal('numero fixe Z8001 reserve ou invalide');
+   CodeSpace:=Opt.SplitID and(S^.SegmentType=X_SG_COD);
+   if CodeSpace Then Begin if UsedCode[S^.AssignedNumber]Then Fatal('collision de segments fixes');UsedCode[S^.AssignedNumber]:=True End
+   else Begin if UsedData[S^.AssignedNumber]Then Fatal('collision de segments fixes');UsedData[S^.AssignedNumber]:=True End
+  End;S:=S^.Next
+ End;
+ N:=0;S:=OutSections;While S<>Nil do Begin
+  if N>127 Then Fatal('x.out ne peut contenir plus de 128 segments');S^.Ordinal:=N;Inc(N);
+  if TargetSegmented and not S^.Fixed Then Begin
+   CodeSpace:=Opt.SplitID and(S^.SegmentType=X_SG_COD);I:=0;
+   if CodeSpace Then Begin While(I<=126)and UsedCode[I]do Inc(I)End
+   else Begin While(I<=126)and UsedData[I]do Inc(I)End;
+   if I>126 Then Fatal('plus aucun numero de segment Z8001 disponible');S^.AssignedNumber:=I;
+   if CodeSpace Then UsedCode[I]:=True else UsedData[I]:=True
+  End else if not TargetSegmented Then S^.AssignedNumber:=255;
+  S:=S^.Next
+ End
+End;
+
 Procedure ApplyLayoutOptions;
 Var
  S,Stack:POutSection;
  U:String;
- N:Integer;
 Begin
  S:=OutSections;
  While S<>Nil do Begin
@@ -978,16 +1131,16 @@ Begin
  End;
  if Opt.StackSize>0 Then Begin
   Stack:=FindOutSection('__stack',0);Stack^.IsBss:=True;
+  Stack^.SegmentType:=X_SG_STK;Stack^.Reserved:=True;
   if Stack^.Size<Opt.StackSize Then Stack^.Size:=Opt.StackSize
  End;
- N:=0;S:=OutSections;
+ RemoveEmptyAndOrderSections;S:=OutSections;
  While S<>Nil do Begin
   if S^.SegmentType=0 Then if S^.IsBss Then S^.SegmentType:=X_SG_STK else S^.SegmentType:=
   X_SG_MXU;
-  if N>127 Then Fatal('x.out ne peut contenir plus de 128 segments');
   if S^.Size>$FFFF Then Fatal('segment x.out superieur a 64 Kio: '+S^.Name);
-  S^.AssignedNumber:=N;Inc(N);S:=S^.Next
- End
+  S:=S^.Next
+ End;AssignSegmentNumbers
 End;
 
 Procedure PutLE16(Var B:TBuffer;Var N:Integer;V:Word);Begin
@@ -1293,7 +1446,7 @@ Begin
  if not Executable Then Begin
   R:=Relocations;
   While R<>Nil do Begin
-   RawByte(R^.Section^.AssignedNumber);Location:=R^.Offset;
+   RawByte(R^.Section^.Ordinal);Location:=R^.Offset;
    Case R^.Action of
    RAA16,RAA16M,RAZOF:Flag:=X_RL_OFF;
    RAA32,RAA32M:
@@ -1313,14 +1466,14 @@ Begin
    S:=FindOutByNumber(R^.Base);if S=Nil Then Fatal('segment cible de relogement inconnu');
    RawByte(Flag);
    if Location>$FFFF Then Fatal('position de relogement x.out hors limite');
-   RawWord(Location);RawWord(S^.AssignedNumber)
+   RawWord(Location);RawWord(S^.Ordinal)
   End;R:=R^.Next
  End
 End;
 if SymbolCount<>0 Then Begin
  S:=OutSections;
  While S<>Nil do Begin
-  RawByte(S^.AssignedNumber);RawByte(X_SY_SEG);RawWord(0);WriteXName(S^.Name);S:=S^.Next
+  RawByte(S^.Ordinal);RawByte(X_SY_SEG);RawWord(0);WriteXName(S^.Name);S:=S^.Next
  End;
  G:=Globals;
  While G<>Nil do Begin
@@ -1336,7 +1489,7 @@ if SymbolCount<>0 Then Begin
    End
    else
    Begin
-    RawByte(G^.Section^.AssignedNumber);RawByte(X_SY_GLB);RawWord(Word(G^.Value))
+    RawByte(G^.Section^.Ordinal);RawByte(X_SY_GLB);RawWord(Word(G^.Value))
    End
   End;
   WriteXName(G^.Name);G:=G^.Next
@@ -1503,7 +1656,7 @@ BEGIN
  LastModule:=Nil;
  HasTransfer:=False;TransferValue:=0;TransferBase:=0;
  TargetKnown:=False;TargetSegmented:=False;
- ParseCommandLine;AddForcedUndefined;P:=Inputs;
+ ParseCommandLine;InitializePreassignedSegments;AddForcedUndefined;P:=Inputs;
  While P<>Nil do Begin
   if IsArchiveFile(P^.Name)Then ProcessArchive(P^.Name)
   else Begin
@@ -1513,7 +1666,7 @@ BEGIN
   End;
   if ErrorCount<>0 Then Break;P:=P^.Next
  End;
- ApplyLayoutOptions;
+ AllocateCommonSymbols;ApplyLayoutOptions;
  AssignExternalBases;
  MN:=Modules;
  While(MN<>Nil)and(ErrorCount=0)do Begin
