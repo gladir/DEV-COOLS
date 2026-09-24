@@ -6286,6 +6286,15 @@ Const
  { a rendre la barre TOUJOURS visible sans toucher aux ~37 conversions       }
  { CLIENT->ABSOLU deja etablies (Win16_WindowY+1) dans tout ce chantier. }
  WIN16_TITLEBAR_H     = 9;
+ { Barre de menu reelle (2026-09-24, demande explicite - "le menu Edit ne  }
+ { s'affiche pas") - MEME discipline NON-INVASIVE que WIN16_TITLEBAR_H     }
+ { ci-dessus : reservee AU-DESSUS de la boite bordure+client existante,     }
+ { entre le bas de la barre de titre et Win16_WindowY, donc AUCUNE des      }
+ { ~128 conversions CLIENT->ABSOLU (Win16_WindowY+1) n'a besoin d'etre       }
+ { retouchee. }
+ WIN16_MENUBAR_H      = 9;
+ WIN16_MAX_MENUS      = 8;
+ WIN16_MAX_MENU_ITEMS = 8;
  WIN16_MAX_MSGQUEUE   = 32;
  { Stage 6b (2026-08-30) : minuteurs SetTimer/KillTimer, meme limitation      }
  { mono-programme. }
@@ -8034,6 +8043,15 @@ Var
  { CreateMenu/$151 - compteur reel croissant, meme esprit que               }
  { Win16_SelectorNext (AllocSelector/$175 KERNEL.EXE). }
  Win16_MenuNextHandle  : Word;
+ { Vrais items de menu texte (2026-09-24, demande explicite - "le menu     }
+ { Edit ne s'affiche pas") - resolus depuis la VRAIE ressource RT_MENU     }
+ { ($8004) par Win16_ParseMenuResource, un slot par handle retourne par     }
+ { LoadMenu/$150. Table plate a taille fixe, meme discipline que           }
+ { WIN16_MAX_TIMERS/WIN16_MAX_PROPS. }
+ Win16_MenuSlotHandle  : Array[0..WIN16_MAX_MENUS - 1] Of Word;
+ Win16_MenuSlotCount   : Integer;
+ Win16_MenuItemCount   : Array[0..WIN16_MAX_MENUS - 1] Of Integer;
+ Win16_MenuItemText    : Array[0..WIN16_MAX_MENUS - 1, 0..WIN16_MAX_MENU_ITEMS - 1] Of String;
  { GetMenu/SetMenu ($157/$158, 2026-09-23, demande explicite) - un seul      }
  { menu par fenetre, aucun rendu (Rendu GDI reel HORS DE PORTEE, meme       }
  { discipline que GetSystemMenu/$156). }
@@ -98805,6 +98823,7 @@ Begin
  Win16_WindowsHookSeg := 0;
  Win16_WindowsHookOfs := 0;
  Win16_MenuNextHandle := 1;
+ Win16_MenuSlotCount := 0;
  Win16_CaretHWnd := 0;
  Win16_CaretWidth := 0;
  Win16_CaretHeight := 0;
@@ -100259,6 +100278,104 @@ Begin
  Close(F);
 End;
 
+{ Parseur de ressource RT_MENU ($8004, 2026-09-24, demande explicite -      }
+{ "le menu Edit ne s'affiche pas") - format MENUITEMTEMPLATE reel           }
+{ (MENUHEADER wVersion+cbHeaderSize suivi d'items MENUITEM recursifs,       }
+{ chaque popup etant immediatement suivi de son sous-menu, liste terminee   }
+{ par le bit MF_END=$0080 sur le DERNIER item) - documente publiquement     }
+{ (format binaire .EXE Windows, jamais change depuis Win 1.0). Seuls les    }
+{ textes des items de PREMIER NIVEAU sont retenus (assez pour une VRAIE     }
+{ barre de menu horizontale) - le contenu des sous-menus deroulants est     }
+{ saute octet-pres mais jamais affiche (aucun clic-ouverture de menu        }
+{ deroulant implante, Rendu GDI reel HORS DE PORTEE pour CETTE partie). }
+Var
+ Win16_MenuParseBuf     : Array[0..2047] Of Byte;
+ Win16_MenuParseLen     : Integer;
+ Win16_MenuParsePos     : Integer;
+ Win16_MenuParseOutCnt  : Integer;
+ Win16_MenuParseOutText : Array[0..WIN16_MAX_MENU_ITEMS - 1] Of String;
+
+Function Win16_MenuReadText: String;
+Var S: String;
+Begin
+ S := '';
+ While (Win16_MenuParsePos < Win16_MenuParseLen) And
+       (Win16_MenuParseBuf[Win16_MenuParsePos] <> 0) Do Begin
+  S := S + Chr(Win16_MenuParseBuf[Win16_MenuParsePos]);
+  Inc(Win16_MenuParsePos);
+ End;
+ If Win16_MenuParsePos < Win16_MenuParseLen Then Inc(Win16_MenuParsePos);
+ Win16_MenuReadText := S;
+End;
+
+Procedure Win16_MenuParseList(CollectTop: Boolean);
+Var
+ Opt: Word;
+ IsLast, IsPopup: Boolean;
+ Txt: String;
+Begin
+ Repeat
+  If Win16_MenuParsePos + 2 > Win16_MenuParseLen Then Exit;
+  Opt := Win16_MenuParseBuf[Win16_MenuParsePos] Or
+   (Word(Win16_MenuParseBuf[Win16_MenuParsePos + 1]) Shl 8);
+  Inc(Win16_MenuParsePos, 2);
+  IsPopup := (Opt And $0010) <> 0;
+  IsLast := (Opt And $0080) <> 0;
+  If Not IsPopup Then Inc(Win16_MenuParsePos, 2); { mtID, absent pour un popup }
+  Txt := Win16_MenuReadText;
+  If CollectTop And (Win16_MenuParseOutCnt < WIN16_MAX_MENU_ITEMS) Then Begin
+   Win16_MenuParseOutText[Win16_MenuParseOutCnt] := Txt;
+   Inc(Win16_MenuParseOutCnt);
+  End;
+  If IsPopup Then Win16_MenuParseList(False); { sous-menu : saute, jamais collecte }
+ Until IsLast;
+End;
+
+Function Win16_ParseMenuResource(ResId: Word): Word;
+Var
+ ResOfs, ResLen: LongInt;
+ F: File;
+ BytesRead: Word;
+ I: Integer;
+Begin
+ Win16_ParseMenuResource := 0;
+ If Not Win16_FindResource($8004, ResId, ResOfs, ResLen) Then Exit;
+ If ResLen > SizeOf(Win16_MenuParseBuf) Then ResLen := SizeOf(Win16_MenuParseBuf);
+ If Win16_MenuSlotCount >= WIN16_MAX_MENUS Then Exit;
+ {$I-} Assign(F, Win16_LoadedPath); Reset(F, 1);
+ If IOResult <> 0 Then Exit;
+ Seek(F, ResOfs);
+ BlockRead(F, Win16_MenuParseBuf, Word(ResLen), BytesRead);
+ Close(F);
+ {$I+} If IOResult <> 0 Then Exit;
+ Win16_MenuParseLen := BytesRead;
+ Win16_MenuParsePos := 4; { MENUHEADER : wVersion(mot) + cbHeaderSize(mot) }
+ Win16_MenuParseOutCnt := 0;
+ Win16_MenuParseList(True);
+ Win16_MenuSlotHandle[Win16_MenuSlotCount] := Win16_MenuNextHandle;
+ Win16_MenuItemCount[Win16_MenuSlotCount] := Win16_MenuParseOutCnt;
+ For I := 0 To Win16_MenuParseOutCnt - 1 Do
+  Win16_MenuItemText[Win16_MenuSlotCount, I] := Win16_MenuParseOutText[I];
+ Win16_ParseMenuResource := Win16_MenuNextHandle;
+ Inc(Win16_MenuNextHandle);
+ Inc(Win16_MenuSlotCount);
+End;
+
+{ Retrouve le slot (Win16_MenuItemCount/Text) associe a un handle HMENU     }
+{ retourne par Win16_ParseMenuResource - -1 si ce handle n'a pas ete           }
+{ resolu depuis une VRAIE ressource (ex. CreateMenu/$151, jamais peuple). }
+Function Win16_FindMenuSlot(Handle: Word): Integer;
+Var I: Integer;
+Begin
+ Win16_FindMenuSlot := -1;
+ If Handle = 0 Then Exit;
+ For I := 0 To Win16_MenuSlotCount - 1 Do
+  If Win16_MenuSlotHandle[I] = Handle Then Begin
+   Win16_FindMenuSlot := I;
+   Exit;
+  End;
+End;
+
 { Chantier Stage 5 (suite, 2026-08-29) : un champ Type/ID de la table de   }
 { ressources dont le bit $8000 est ABSENT n'est pas un entier - c'est un   }
 { OFFSET, relatif au DEBUT de la table de ressources, vers une chaine      }
@@ -100680,12 +100797,20 @@ Var
  X, Y: Integer;
  TY1, TY2, TXR: Integer;
  TChI: Integer;
+ MenuH, MenuSlot, MBY1, MBX, MI: Integer;
+ MItem: String;
 Begin
  If (WIndex < 0) Or (WIndex >= Win16_WindowCount) Then Exit;
  X1 := Win16_WindowX[WIndex];
  Y1 := Win16_WindowY[WIndex];
  X2 := X1 + Win16_WindowW[WIndex] - 1;
  Y2 := Y1 + Win16_WindowH[WIndex] - 1;
+ { Barre de menu reelle (2026-09-24, demande explicite - "le menu Edit ne  }
+ { s'affiche pas") - reservee juste au-dessus de la boite (donc juste sous }
+ { la barre de titre, qui remonte d'autant), MEME discipline non-invasive  }
+ { que la barre de titre ci-dessous (voir CreateWindow/$41, CWMenuH). }
+ MenuSlot := Win16_FindMenuSlot(Win16_WindowMenu[WIndex]);
+ If MenuSlot >= 0 Then MenuH := WIN16_MENUBAR_H Else MenuH := 0;
  { Barre de titre BLEUE dessinee AU-DESSUS de la boite bordure+client        }
  { existante (2026-09-12, demande explicite) - DELIBEREMENT NON-INVASIF :   }
  { Win16_WindowX/Y continuent de designer exactement la MEME chose qu avant  }
@@ -100697,9 +100822,9 @@ Begin
  { risque pour ce simple ajout visuel. Necessite une marge d au moins         }
  { WIN16_TITLEBAR_H pixels au-dessus de Win16_WindowY - CreateWindow/$41      }
  { utilise deja Y=10 par defaut (CW_USEDEFAULT, $8000), largement suffisant. }
- If Y1 >= WIN16_TITLEBAR_H Then Begin
-  TY1 := Y1 - WIN16_TITLEBAR_H;
-  TY2 := Y1 - 1;
+ If Y1 >= WIN16_TITLEBAR_H + MenuH Then Begin
+  TY1 := Y1 - MenuH - WIN16_TITLEBAR_H;
+  TY2 := Y1 - MenuH - 1;
   For Y := TY1 To TY2 Do
    For X := X1 To X2 Do
     Emu_VidSetPixel(X, Y, 1); { bleu }
@@ -100722,6 +100847,26 @@ Begin
   For TChI := 1 To Length(Win16_WindowTitle[WIndex]) Do
    Win16_DrawChar5x7(X1 + 10 + (TChI - 1) * 6, TY1 + 1,
     Win16_WindowTitle[WIndex][TChI], 15, 1);
+ End;
+ { Barre de menu GRISE, juste au-dessus de la boite (sous la barre de       }
+ { titre remontee ci-dessus) - texte des items de premier niveau REELS       }
+ { (Win16_MenuItemText), "&" (mnemonique clavier) simplement omis (aucun     }
+ { soulignement modelise). }
+ If MenuH > 0 Then Begin
+  MBY1 := Y1 - MenuH;
+  For Y := MBY1 To Y1 - 1 Do
+   For X := X1 To X2 Do
+    Emu_VidSetPixel(X, Y, 7); { gris clair }
+  MBX := X1 + 4;
+  For MI := 0 To Win16_MenuItemCount[MenuSlot] - 1 Do Begin
+   MItem := Win16_MenuItemText[MenuSlot, MI];
+   For TChI := 1 To Length(MItem) Do
+    If MItem[TChI] <> '&' Then Begin
+     Win16_DrawChar5x7(MBX, MBY1 + 1, MItem[TChI], 0, 7);
+     MBX := MBX + 6;
+    End;
+   MBX := MBX + 6;
+  End;
  End;
  { Fond de la zone client (2026-08-30, signale par l'utilisateur : "le    }
  { fond devrait etre blanc par defaut" - un vrai Windows 2.x/3.x remplit   }
@@ -102964,6 +103109,8 @@ Var
  CWX, CWY, CWW, CWH: Word;
  CWClassStr, CWTitleStr: String;
  CWClassIdx, CWI, CWIdx: Integer;
+ CWHMenu: Word;
+ CWMenuH: Integer;
  { USER.EXE MessageBox/OldExitWindows/ExitWindows/GetTickCount/              }
  { GetTimerResolution/GetCursorPos/SetCapture/SetDoubleClickTime/            }
  { SetFocus/SetProp-GetProp-RemoveProp-EnumProps/ClientToScreen/             }
@@ -108243,6 +108390,14 @@ Begin
      If CWY = $8000 Then CWY := 10;
      If (CWW = $8000) Or (CWW = 0) Then CWW := 280;
      If (CWH = $8000) Or (CWH = 0) Then CWH := 160;
+     { Barre de menu reelle (2026-09-24, demande explicite) : hMenu (SP+10, }
+     { jamais lu jusqu'ici) resolu via Win16_ParseMenuResource/LoadMenu -     }
+     { reserve WIN16_MENUBAR_H pixels de marge SUPPLEMENTAIRE au-dessus,      }
+     { EXACTEMENT comme WIN16_TITLEBAR_H ci-dessous (meme discipline non-      }
+     { invasive, aucune conversion CLIENT->ABSOLU retouchee). }
+     CWHMenu := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+     If Win16_FindMenuSlot(CWHMenu) >= 0 Then CWMenuH := WIN16_MENUBAR_H
+     Else CWMenuH := 0;
      { Marge REELLE pour la barre de titre (2026-09-12, demande explicite,   }
      { capture d ecran Windows 2.x/3.x fournie comme reference) : un CWY      }
      { EXPLICITE (pas $8000/CW_USEDEFAULT) peut demander une position trop    }
@@ -108252,7 +108407,7 @@ Begin
      { la fenetre vers le bas plutot que de dessiner une barre tronquee ou    }
      { de l omettre - meme esprit que le "plausible par defaut" deja           }
      { applique 2 lignes plus haut pour $8000. }
-     If SmallInt(CWY) < WIN16_TITLEBAR_H Then CWY := WIN16_TITLEBAR_H;
+     If SmallInt(CWY) < WIN16_TITLEBAR_H + CWMenuH Then CWY := WIN16_TITLEBAR_H + CWMenuH;
      Win16_WindowX[CWIdx] := SmallInt(CWX);
      Win16_WindowY[CWIdx] := SmallInt(CWY);
      Win16_WindowW[CWIdx] := SmallInt(CWW);
@@ -108263,7 +108418,7 @@ Begin
      Win16_WindowDisabled[CWIdx] := False;
      Win16_ScrollPosH[CWIdx] := 0; Win16_ScrollMinH[CWIdx] := 0; Win16_ScrollMaxH[CWIdx] := 0;
      Win16_ScrollPosV[CWIdx] := 0; Win16_ScrollMinV[CWIdx] := 0; Win16_ScrollMaxV[CWIdx] := 0;
-     Win16_WindowMenu[CWIdx] := 0;
+     Win16_WindowMenu[CWIdx] := CWHMenu;
      Inc(Win16_WindowCount);
      Win16_DrawWindowFrame(P, CWIdx);
      P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
@@ -110317,14 +110472,17 @@ Begin
    150: Begin
     { LoadMenu(hInstance,lpMenuName):HMENU - ordinal/signature VERIFIES   }
     { via le VRAI source Wine (user.exe16.spec : "pascal -ret16               }
-    { LoadMenu(word str) LoadMenu16", 1+2 = 3 mots). MEME simplification         }
-    { EXACTE deja etablie pour LoadCursor/LoadIcon/LoadBitmap/$173-175 :             }
-    { aucun VRAI analyseur de ressource MENU dans ce sous-ensemble               }
-    { (Rendu GDI reel HORS DE PORTEE) - retourne un handle SYNTHETIQUE                }
-    { non-nul (le mot bas du pointeur/MAKEINTRESOURCE passe) plutot                   }
-    { qu'un echec qui casserait le code appelant suivant (SetMenu, pas               }
-    { encore demande). }
-    P.CPU.Regs.AX := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    { LoadMenu(word str) LoadMenu16", 1+2 = 3 mots). BOGUE REEL CORRIGE      }
+    { (2026-09-24, "le menu Edit ne s'affiche pas") : analyse desormais       }
+    { REELLEMENT la ressource RT_MENU (Win16_ParseMenuResource) quand           }
+    { lpMenuName est un ID entier MAKEINTRESOURCE (segment nul, l'offset       }
+    { EST l'ID - meme convention deja verifiee pour LoadString/$176) -            }
+    { repli sur l'ancien handle SYNTHETIQUE (le mot bas du pointeur) si          }
+    { la ressource est absente/non standard, pour ne jamais casser              }
+    { l'appelant (SetMenu) meme sans texte reel a afficher. }
+    LSResId := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    P.CPU.Regs.AX := Win16_ParseMenuResource(LSResId);
+    If P.CPU.Regs.AX = 0 Then P.CPU.Regs.AX := LSResId;
     If P.CPU.Regs.AX = 0 Then P.CPU.Regs.AX := 1;
     ArgWords := 3;
    End;
