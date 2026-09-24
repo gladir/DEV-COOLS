@@ -102616,8 +102616,7 @@ End;
 Function Win16_GetMessage(Var P: TEmulatorPanel; Var OutHWnd, OutMsg,
  OutWParam, OutLParamLo, OutLParamHi: Word): Boolean;
 Var
- WIdx, TIdx, DueIdx: Integer;
- Guard: LongInt;
+ WIdx, TIdx: Integer;
 Begin
  If Win16_MsgQueueCount > 0 Then Begin
   OutHWnd := Win16_MsgQueueHWnd[Win16_MsgQueueHead];
@@ -102638,51 +102637,36 @@ Begin
    Win16_GetMessage := True;
    Exit;
   End;
- { Rien d'immediatement disponible : un vrai GetMessage BLOQUE ici jusqu'a  }
- { la prochaine entree/minuteur/repaint. Aucune autre tache ne peut         }
- { s'executer pendant ce temps dans ce modele mono-programme, et le         }
- { clavier/souris ne sont pas routes (Stage 6e) - la SEULE chose qui peut   }
- { arriver a echeance est donc un minuteur deja enregistre. On avance       }
- { reellement l'horloge simulee (meme compteur EmuTickCounter/Emu_TimerTick }
- { que le tic BIOS reel, AUCUNE execution CPU pendant cette attente         }
- { puisqu'il n'y a litteralement rien d'autre a executer) jusqu'a ce qu'un  }
- { minuteur arrive a echeance. Boucle bornee (meme discipline que            }
- { Dpmi_RunRealProc) : si aucun minuteur n'est meme enregistre, ce blocage  }
- { ne pourrait jamais se terminer - arret honnete plutot qu'une boucle       }
- { infinie simulee. }
- If Win16_TimerCount = 0 Then Begin
-  Win16_LastError := 'GetMessage : file vide et aucun minuteur actif ' +
-   '- blocage reel non simule (clavier/souris non routes, Stage 6e).';
-  Win16_Halt(P, 'USER', 108);
-  Win16_GetMessage := False;
-  Exit;
- End;
- DueIdx := -1;
- Guard := 0;
- Repeat
-  For TIdx := 0 To Win16_TimerCount - 1 Do
-   If EmuTickCounter >= Win16_TimerNextDueTick[TIdx] Then Begin
-    DueIdx := TIdx;
-    Break;
-   End;
-  If DueIdx < 0 Then Begin
-   Emu_TimerTick(P);
-   Inc(Guard);
+ { Minuteur deja enregistre arrive a echeance MAINTENANT (EmuTickCounter    }
+ { avance naturellement via le tic BIOS reel de DOS_RunOneChunk, JAMAIS     }
+ { artificiellement avance ici desormais - voir le correctif ci-dessous). }
+ For TIdx := 0 To Win16_TimerCount - 1 Do
+  If EmuTickCounter >= Win16_TimerNextDueTick[TIdx] Then Begin
+   Win16_TimerNextDueTick[TIdx] := Win16_TimerNextDueTick[TIdx] +
+    Win16_TimerElapseTicks[TIdx];
+   OutHWnd := Win16_TimerHWnd[TIdx];
+   OutMsg := WIN16_WM_TIMER;
+   OutWParam := Win16_TimerID[TIdx];
+   OutLParamLo := 0; OutLParamHi := 0;
+   Win16_GetMessage := True;
+   Exit;
   End;
- Until (DueIdx >= 0) Or (Guard >= 5000000);
- If DueIdx < 0 Then Begin
-  Win16_LastError := 'GetMessage : aucun minuteur jamais arrive a ' +
-   'echeance (garde-fou de ' + IntToStr(Guard) + ' tics atteint).';
-  Win16_Halt(P, 'USER', 108);
-  Win16_GetMessage := False;
-  Exit;
- End;
- Win16_TimerNextDueTick[DueIdx] := Win16_TimerNextDueTick[DueIdx] +
-  Win16_TimerElapseTicks[DueIdx];
- OutHWnd := Win16_TimerHWnd[DueIdx];
- OutMsg := WIN16_WM_TIMER;
- OutWParam := Win16_TimerID[DueIdx];
- OutLParamLo := 0; OutLParamHi := 0;
+ { BOGUE REEL CORRIGE (2026-09-23, la souris EST desormais routee, voir     }
+ { Win16_HandleMouseEvent) : ce cas "rien de pret" appelait Win16_Halt,     }
+ { terminant TOUT le programme des la premiere fois que la file etait      }
+ { vide - c'est a dire quasi immediatement au demarrage, bien avant que     }
+ { l'utilisateur ait pu cliquer une seule fois (l'ancien commentaire         }
+ { disait honnetement "clavier/souris non routes" - ce n'est plus vrai      }
+ { pour la souris). Un vrai GetMessage BLOQUE simplement en attendant le     }
+ { prochain evenement, il n'echoue jamais juste parce que rien n'est        }
+ { encore arrive. On retourne desormais un WM_NULL (message=0) honnete,     }
+ { que tout WNDPROC ignore silencieusement via DefWindowProc (comportement }
+ { documente standard) - la boucle hote (DOS_RunOneChunk, rappelee a        }
+ { CHAQUE trame affichee) redonne naturellement une nouvelle chance a       }
+ { chaque appel suivant, le temps qu'un vrai clic/minuteur arrive. }
+ If Win16_WindowCount > 0 Then OutHWnd := Win16_WindowHWnd[0] Else OutHWnd := 0;
+ OutMsg := 0; { WM_NULL }
+ OutWParam := 0; OutLParamLo := 0; OutLParamHi := 0;
  Win16_GetMessage := True;
 End;
 
