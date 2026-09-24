@@ -17358,12 +17358,256 @@ Begin
                 (Copy(LowerURL, 1, 8) = 'https://');
 End;
 
+{ Detecter le prefixe d'URL "view-source:" (ex: "view-source:https://..."
+  ou "view-source:C:\page.html"), demande explicitement par l'utilisateur
+  pour afficher le code source HTML brut en syntaxe coloree au lieu de le
+  rendre normalement - voir BuildHTMLSourceView plus bas. }
+Function IsViewSourceURL(Const URL: String): Boolean;
+Begin
+ IsViewSourceURL := Copy(HTMLLowerCase(URL), 1, 12) = 'view-source:';
+End;
+
+{ Retire le prefixe "view-source:" (12 caracteres) pour obtenir l'URL/le
+  chemin reel a charger - ce prefixe n'est qu'un indicateur d'affichage,
+  jamais transmis au serveur ni au systeme de fichiers. }
+Function StripViewSourcePrefix(Const URL: String): String;
+Begin
+ StripViewSourcePrefix := Copy(URL, 13, Length(URL) - 12);
+End;
+
+{ ============================================================
+  Coloration syntaxique du code source HTML brut pour "view-source:"
+  (comme les navigateurs reels). Principe : le source original est
+  ENCODE en HTML (< > & echappes pour un affichage LITTERAL) puis
+  chaque token (balise/attribut/valeur/commentaire) est enveloppe dans
+  un <span style="color:...">, avant d'etre passe au moteur de rendu
+  HTML EXISTANT (meme principe que les pages d'erreur synthetiques de
+  DisplayCurrentTarget ci-dessous) : aucun nouveau moteur de rendu/
+  dessin n'est necessaire.
+  ============================================================ }
+Const
+ VIEWSOURCE_COLOR_TAG     = '#0000CC'; { balises et ponctuation < / > }
+ VIEWSOURCE_COLOR_ATTR    = '#AA0000'; { noms d'attributs }
+ VIEWSOURCE_COLOR_VALUE   = '#008800'; { valeurs d'attributs (avec guillemets) }
+ VIEWSOURCE_COLOR_COMMENT = '#808080'; { commentaires et declarations <!...> }
+
+{ Echapper < > & pour un affichage LITTERAL du texte source (sinon il
+  serait re-interprete comme des balises par le moteur de rendu) -
+  HTMLDecodeEntities fera la conversion inverse au moment de l'affichage. }
+Function HTMLViewSourceEscape(Const S: String): String;
+Var
+ I: LongInt;
+ ResultText: String;
+Begin
+ ResultText := '';
+ For I := 1 To Length(S) Do Begin
+  Case S[I] Of
+   '<': ResultText := ResultText + '&lt;';
+   '>': ResultText := ResultText + '&gt;';
+   '&': ResultText := ResultText + '&amp;';
+   Else ResultText := ResultText + S[I];
+  End;
+ End;
+ HTMLViewSourceEscape := ResultText;
+End;
+
+{ Envelopper un fragment de source BRUT (pas encore echappe) dans un
+  span colore. }
+Function VSColorSpan(Const RawText, ColorHex: String): String;
+Begin
+ If Length(RawText) = 0 Then Begin
+  VSColorSpan := '';
+  Exit;
+ End;
+ VSColorSpan := '<span style="color:' + ColorHex + '">' +
+                HTMLViewSourceEscape(RawText) + '</span>';
+End;
+
+{ Trouver le '>' qui ferme la balise commencant en StartPos (S[StartPos]='<'),
+  en ignorant les '>' a l'interieur d'une valeur d'attribut entre guillemets
+  (ex: <a title="a > b">). Retourne Length(S) si la balise n'est jamais
+  fermee (HTML tronque/malforme). }
+Function HTMLFindTagEnd(Const S: String; StartPos: LongInt): LongInt;
+Var
+ I: LongInt;
+ InQuote: Char;
+Begin
+ InQuote := #0;
+ I := StartPos + 1;
+ While I <= Length(S) Do Begin
+  If InQuote <> #0 Then Begin
+   If S[I] = InQuote Then InQuote := #0;
+  End Else Begin
+   If (S[I] = '"') Or (S[I] = '''') Then InQuote := S[I]
+   Else If S[I] = '>' Then Begin
+    HTMLFindTagEnd := I;
+    Exit;
+   End;
+  End;
+  Inc(I);
+ End;
+ HTMLFindTagEnd := Length(S);
+End;
+
+{ Coloration syntaxique d'une balise complete "<...>"/"</...>" (delimiteurs,
+  nom, attributs et valeurs). Les declarations <!...> (DOCTYPE, etc - les
+  commentaires <!-- --> sont traites a part par BuildHTMLSourceView) sont
+  simplement colorees en bloc comme un commentaire. }
+Function HighlightTagContent(Const TagContent: String): String;
+Var
+ P, AttrStart, ValStart: LongInt;
+ ResultStr: String;
+ QuoteChar: Char;
+Begin
+ If (Length(TagContent) >= 2) And (TagContent[1] = '<') And (TagContent[2] = '!') Then Begin
+  HighlightTagContent := VSColorSpan(TagContent, VIEWSOURCE_COLOR_COMMENT);
+  Exit;
+ End;
+
+ ResultStr := '';
+ P := 1;
+ If (P <= Length(TagContent)) And (TagContent[P] = '<') Then Begin
+  ResultStr := ResultStr + VSColorSpan('<', VIEWSOURCE_COLOR_TAG);
+  Inc(P);
+ End;
+ If (P <= Length(TagContent)) And (TagContent[P] = '/') Then Begin
+  ResultStr := ResultStr + VSColorSpan('/', VIEWSOURCE_COLOR_TAG);
+  Inc(P);
+ End;
+
+ { Nom de balise }
+ AttrStart := P;
+ While (P <= Length(TagContent)) And
+       (TagContent[P] In ['A'..'Z', 'a'..'z', '0'..'9', '-', '_', ':']) Do Inc(P);
+ If P > AttrStart Then
+  ResultStr := ResultStr + VSColorSpan(Copy(TagContent, AttrStart, P - AttrStart), VIEWSOURCE_COLOR_TAG);
+
+ { Attributs jusqu'a la fin de la balise }
+ While P <= Length(TagContent) Do Begin
+  If TagContent[P] In [' ', #9, #10, #13] Then Begin
+   AttrStart := P;
+   While (P <= Length(TagContent)) And (TagContent[P] In [' ', #9, #10, #13]) Do Inc(P);
+   ResultStr := ResultStr + HTMLViewSourceEscape(Copy(TagContent, AttrStart, P - AttrStart));
+  End
+  Else If TagContent[P] = '>' Then Begin
+   ResultStr := ResultStr + VSColorSpan('>', VIEWSOURCE_COLOR_TAG);
+   Inc(P);
+  End
+  Else If (TagContent[P] = '/') And (P = Length(TagContent) - 1) And
+          (TagContent[P + 1] = '>') Then Begin
+   ResultStr := ResultStr + VSColorSpan('/>', VIEWSOURCE_COLOR_TAG);
+   P := P + 2;
+  End
+  Else If TagContent[P] = '/' Then Begin
+   ResultStr := ResultStr + VSColorSpan('/', VIEWSOURCE_COLOR_TAG);
+   Inc(P);
+  End
+  Else Begin
+   { Nom d'attribut }
+   AttrStart := P;
+   While (P <= Length(TagContent)) And
+         Not (TagContent[P] In [' ', #9, #10, #13, '=', '>', '/']) Do Inc(P);
+   If P > AttrStart Then
+    ResultStr := ResultStr + VSColorSpan(Copy(TagContent, AttrStart, P - AttrStart), VIEWSOURCE_COLOR_ATTR);
+
+   If (P <= Length(TagContent)) And (TagContent[P] = '=') Then Begin
+    ResultStr := ResultStr + HTMLViewSourceEscape('=');
+    Inc(P);
+    If (P <= Length(TagContent)) And (TagContent[P] In ['"', '''']) Then Begin
+     QuoteChar := TagContent[P];
+     ValStart := P;
+     Inc(P);
+     While (P <= Length(TagContent)) And (TagContent[P] <> QuoteChar) Do Inc(P);
+     If P <= Length(TagContent) Then Inc(P); { inclure le guillemet fermant }
+     ResultStr := ResultStr + VSColorSpan(Copy(TagContent, ValStart, P - ValStart), VIEWSOURCE_COLOR_VALUE);
+    End Else Begin
+     ValStart := P;
+     While (P <= Length(TagContent)) And
+           Not (TagContent[P] In [' ', #9, #10, #13, '>', '/']) Do Inc(P);
+     If P > ValStart Then
+      ResultStr := ResultStr + VSColorSpan(Copy(TagContent, ValStart, P - ValStart), VIEWSOURCE_COLOR_VALUE);
+    End;
+   End;
+  End;
+ End;
+
+ HighlightTagContent := ResultStr;
+End;
+
+{ Construire un document HTML synthetique affichant RawSource (le code
+  source HTML brut d'une page) en <pre> avec coloration syntaxique -
+  utilise par DisplayCurrentTarget pour le prefixe "view-source:". Le
+  contenu des balises <script>/<style> n'est pas retokenise comme du
+  HTML (leur JS/CSS peut contenir '<'/'>' sans rapport avec des
+  balises) : seule la balise fermante correspondante est recherchee. }
+Function BuildHTMLSourceView(Const RawSource, DisplayURL: String): String;
+Var
+ ResultStr: String;
+ I, J, Len, CommentEnd, TagEnd, ClosePos, SearchLen: LongInt;
+ TagContent, LowerTagStart, CloseNeedle: String;
+ IsScriptOrStyle: Boolean;
+Begin
+ ResultStr := '<html><head><title>view-source:' + HTMLViewSourceEscape(DisplayURL) +
+              '</title></head><body><pre>';
+ Len := Length(RawSource);
+ I := 1;
+ While I <= Len Do Begin
+  If RawSource[I] = '<' Then Begin
+   If Copy(RawSource, I, 4) = '<!--' Then Begin
+    CommentEnd := System.Pos('-->', Copy(RawSource, I, Len - I + 1));
+    If CommentEnd = 0 Then Begin
+     ResultStr := ResultStr + VSColorSpan(Copy(RawSource, I, Len - I + 1), VIEWSOURCE_COLOR_COMMENT);
+     I := Len + 1;
+    End Else Begin
+     ResultStr := ResultStr + VSColorSpan(Copy(RawSource, I, CommentEnd + 2), VIEWSOURCE_COLOR_COMMENT);
+     I := I + CommentEnd + 2;
+    End;
+   End Else Begin
+    TagEnd := HTMLFindTagEnd(RawSource, I);
+    TagContent := Copy(RawSource, I, TagEnd - I + 1);
+    LowerTagStart := HTMLLowerCase(Copy(TagContent, 1, 7));
+    IsScriptOrStyle := (Copy(LowerTagStart, 1, 7) = '<script') Or
+                       (Copy(LowerTagStart, 1, 6) = '<style');
+    ResultStr := ResultStr + HighlightTagContent(TagContent);
+    I := TagEnd + 1;
+
+    If IsScriptOrStyle Then Begin
+     If Copy(LowerTagStart, 1, 7) = '<script' Then CloseNeedle := '</script'
+     Else CloseNeedle := '</style';
+     SearchLen := Len - I + 1;
+     If SearchLen > 0 Then
+      ClosePos := System.Pos(CloseNeedle, HTMLLowerCase(Copy(RawSource, I, SearchLen)))
+     Else
+      ClosePos := 0;
+     If ClosePos = 0 Then Begin
+      ResultStr := ResultStr + HTMLViewSourceEscape(Copy(RawSource, I, SearchLen));
+      I := Len + 1;
+     End Else Begin
+      ResultStr := ResultStr + HTMLViewSourceEscape(Copy(RawSource, I, ClosePos - 1));
+      I := I + ClosePos - 1;
+     End;
+    End;
+   End;
+  End Else Begin
+   J := I;
+   While (J <= Len) And (RawSource[J] <> '<') Do Inc(J);
+   ResultStr := ResultStr + HTMLViewSourceEscape(Copy(RawSource, I, J - I));
+   I := J;
+  End;
+ End;
+ ResultStr := ResultStr + '</pre></body></html>';
+ BuildHTMLSourceView := ResultStr;
+End;
+
 { Charger et afficher la cible courante. }
 Procedure DisplayCurrentTarget;
 Var
  HTML: HTMLSourceBuffer;
  FileName: String;
  MessageText: String;
+ InnerURL, SourceText: String;
+ SourceOk: Boolean;
+ SourceHTML: HTMLSourceBuffer;
  {$IFDEF WINDOWS}
  PageBody: String;
  StatusCode: LongInt;
@@ -17371,6 +17615,40 @@ Var
  {$ENDIF}
 Begin
  InitHTMLSource(HTML);
+
+ { Prefixe "view-source:" - afficher le code source HTML brut en syntaxe
+   coloree au lieu de le rendre normalement (voir BuildHTMLSourceView). }
+ If IsViewSourceURL(CurrentURL) Then Begin
+  InnerURL := StripViewSourcePrefix(CurrentURL);
+  SourceText := '';
+  SourceOk := False;
+  If IsRemoteURL(InnerURL) Then Begin
+   {$IFDEF WINDOWS}
+   SourceOk := Browser_HttpGet(InnerURL, SourceText, StatusCode) And (Length(SourceText) > 0);
+   {$ENDIF}
+  End Else Begin
+   FileName := InnerURL;
+   If Copy(HTMLLowerCase(FileName), 1, 7) = 'file://' Then
+    Delete(FileName, 1, 7);
+   InitHTMLSource(SourceHTML);
+   SourceOk := LoadHTMLFile(FileName, SourceHTML);
+   If SourceOk Then
+    SourceText := HTMLSourceCopy(SourceHTML, 1, SourceHTML.DataLength);
+   FreeHTMLSource(SourceHTML);
+  End;
+
+  If SourceOk Then
+   MessageText := BuildHTMLSourceView(SourceText, InnerURL)
+  Else
+   MessageText := '<html><body><h2>Erreur de chargement</h2><p>Impossible d''afficher la ' +
+    'source de : ' + InnerURL + '</p></body></html>';
+
+  If SetHTMLSourceFromString(MessageText, HTML) Then
+   TestHTMLRender(HTML);
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
  If IsRemoteURL(CurrentURL) Then Begin
   {$IFDEF WINDOWS}
   { Telechargement HTTP/HTTPS REEL (voir Browser_HttpGet ci-dessus,       }
@@ -17945,10 +18223,10 @@ Var
  BasePath: String;
  I: Integer;
 Begin
- { Chemin deja absolu (autre lecteur, ou commence par / ou \) : le
-   retourner tel quel. }
+ { Chemin deja absolu (autre lecteur, ou commence par / ou \), ou prefixe
+   "view-source:" : le retourner tel quel. }
  If (Length(Href) > 0) And ((Href[1] = '/') Or (Href[1] = '\') Or
-     ((Length(Href) > 2) And (Href[2] = ':'))) Then Begin
+     ((Length(Href) > 2) And (Href[2] = ':')) Or IsViewSourceURL(Href)) Then Begin
   ResolveLinkHref := Href;
   Exit;
  End;
@@ -17979,8 +18257,8 @@ Begin
 
  { Traiter les differents types d'URL }
  If (Copy(TargetURL, 1, 7) = 'http://') Or
-    (Copy(TargetURL, 1, 8) = 'https://') Then Begin
-  { URL absolue - naviguer directement }
+    (Copy(TargetURL, 1, 8) = 'https://') Or IsViewSourceURL(TargetURL) Then Begin
+  { URL absolue (ou prefixe view-source:) - naviguer directement }
   NavigateTo(TargetURL);
  End
  Else If Copy(TargetURL, 1, 1) = '/' Then Begin
@@ -18198,6 +18476,7 @@ Begin
  WriteConsoleLine('');
  WriteConsoleLine('Exemples:');
  WriteConsoleLine('  BROWSER https://www.example.com/');
+ WriteConsoleLine('  BROWSER view-source:https://www.example.com/');
  WriteConsoleLine('  BROWSER FILE index.html');
 End;
 
