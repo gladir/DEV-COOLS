@@ -5928,62 +5928,92 @@ Begin
  CSSReadToken := Token;
 End;
 
-{ Obtenir l'ID d'une propriete CSS a partir de son nom }
+Type
+ CSSPropertyEntry = Record
+  Name: String[20];
+  Id: Byte;
+ End;
+
+Const
+ CSS_PROPERTY_COUNT = 48;
+ { Table des proprietes CSS supportees, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de CSSGetPropertyId
+   ci-dessous (ancien code : 48 comparaisons Si/SinonSi sequentielles). }
+ CSSPropertyTable: Array[0..CSS_PROPERTY_COUNT - 1] Of CSSPropertyEntry = (
+  (Name: 'background';           Id: CSS_PROP_BACKGROUND),
+  (Name: 'background-color';     Id: CSS_PROP_BACKGROUND_COLOR),
+  (Name: 'background-image';     Id: CSS_PROP_BACKGROUND_IMAGE),
+  (Name: 'background-position';  Id: CSS_PROP_BACKGROUND_POSITION),
+  (Name: 'border';               Id: CSS_PROP_BORDER),
+  (Name: 'border-bottom';        Id: CSS_PROP_BORDER_BOTTOM),
+  (Name: 'border-color';         Id: CSS_PROP_BORDER_COLOR),
+  (Name: 'border-left';          Id: CSS_PROP_BORDER_LEFT),
+  (Name: 'border-right';         Id: CSS_PROP_BORDER_RIGHT),
+  (Name: 'border-style';         Id: CSS_PROP_BORDER_STYLE),
+  (Name: 'border-top';           Id: CSS_PROP_BORDER_TOP),
+  (Name: 'border-width';         Id: CSS_PROP_BORDER_WIDTH),
+  (Name: 'bottom';               Id: CSS_PROP_BOTTOM),
+  (Name: 'clear';                Id: CSS_PROP_CLEAR),
+  (Name: 'color';                Id: CSS_PROP_COLOR),
+  (Name: 'cursor';               Id: CSS_PROP_CURSOR),
+  (Name: 'display';              Id: CSS_PROP_DISPLAY),
+  (Name: 'float';                Id: CSS_PROP_FLOAT),
+  (Name: 'font-family';          Id: CSS_PROP_FONT_FAMILY),
+  (Name: 'font-size';            Id: CSS_PROP_FONT_SIZE),
+  (Name: 'font-style';           Id: CSS_PROP_FONT_STYLE),
+  (Name: 'font-weight';          Id: CSS_PROP_FONT_WEIGHT),
+  (Name: 'height';               Id: CSS_PROP_HEIGHT),
+  (Name: 'left';                 Id: CSS_PROP_LEFT),
+  (Name: 'line-height';          Id: CSS_PROP_LINE_HEIGHT),
+  (Name: 'list-style';           Id: CSS_PROP_LIST_STYLE),
+  (Name: 'list-style-type';      Id: CSS_PROP_LIST_STYLE_TYPE),
+  (Name: 'margin';               Id: CSS_PROP_MARGIN),
+  (Name: 'margin-bottom';        Id: CSS_PROP_MARGIN_BOTTOM),
+  (Name: 'margin-left';          Id: CSS_PROP_MARGIN_LEFT),
+  (Name: 'margin-right';         Id: CSS_PROP_MARGIN_RIGHT),
+  (Name: 'margin-top';           Id: CSS_PROP_MARGIN_TOP),
+  (Name: 'opacity';              Id: CSS_PROP_OPACITY),
+  (Name: 'overflow';             Id: CSS_PROP_OVERFLOW),
+  (Name: 'padding';              Id: CSS_PROP_PADDING),
+  (Name: 'padding-bottom';       Id: CSS_PROP_PADDING_BOTTOM),
+  (Name: 'padding-left';         Id: CSS_PROP_PADDING_LEFT),
+  (Name: 'padding-right';        Id: CSS_PROP_PADDING_RIGHT),
+  (Name: 'padding-top';          Id: CSS_PROP_PADDING_TOP),
+  (Name: 'position';             Id: CSS_PROP_POSITION),
+  (Name: 'right';                Id: CSS_PROP_RIGHT),
+  (Name: 'text-align';           Id: CSS_PROP_TEXT_ALIGN),
+  (Name: 'text-decoration';      Id: CSS_PROP_TEXT_DECORATION),
+  (Name: 'top';                  Id: CSS_PROP_TOP),
+  (Name: 'vertical-align';       Id: CSS_PROP_VERTICAL_ALIGN),
+  (Name: 'visibility';           Id: CSS_PROP_VISIBILITY),
+  (Name: 'white-space';          Id: CSS_PROP_WHITE_SPACE),
+  (Name: 'width';                Id: CSS_PROP_WIDTH)
+ );
+
+{ Obtenir l'ID d'une propriete CSS a partir de son nom - recherche
+  dichotomique dans CSSPropertyTable (ci-dessus) au lieu des 48
+  comparaisons Si/SinonSi sequentielles d'avant. }
 Function CSSGetPropertyId(Const Name: String): Byte;
 Var
  LowerName: String;
+ Lo, Hi, Mid: Integer;
 Begin
  LowerName := HTMLLowerCase(Name);
+ CSSGetPropertyId := CSS_PROP_UNKNOWN;
 
- If LowerName = 'color' Then CSSGetPropertyId := CSS_PROP_COLOR
- Else If LowerName = 'background-color' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_COLOR
- Else If LowerName = 'background' Then CSSGetPropertyId := CSS_PROP_BACKGROUND
- Else If LowerName = 'background-position' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_POSITION
- Else If LowerName = 'opacity' Then CSSGetPropertyId := CSS_PROP_OPACITY
- Else If LowerName = 'background-image' Then CSSGetPropertyId := CSS_PROP_BACKGROUND_IMAGE
- Else If LowerName = 'font-size' Then CSSGetPropertyId := CSS_PROP_FONT_SIZE
- Else If LowerName = 'font-weight' Then CSSGetPropertyId := CSS_PROP_FONT_WEIGHT
- Else If LowerName = 'font-style' Then CSSGetPropertyId := CSS_PROP_FONT_STYLE
- Else If LowerName = 'font-family' Then CSSGetPropertyId := CSS_PROP_FONT_FAMILY
- Else If LowerName = 'text-decoration' Then CSSGetPropertyId := CSS_PROP_TEXT_DECORATION
- Else If LowerName = 'text-align' Then CSSGetPropertyId := CSS_PROP_TEXT_ALIGN
- Else If LowerName = 'display' Then CSSGetPropertyId := CSS_PROP_DISPLAY
- Else If LowerName = 'visibility' Then CSSGetPropertyId := CSS_PROP_VISIBILITY
- Else If LowerName = 'width' Then CSSGetPropertyId := CSS_PROP_WIDTH
- Else If LowerName = 'height' Then CSSGetPropertyId := CSS_PROP_HEIGHT
- Else If LowerName = 'margin' Then CSSGetPropertyId := CSS_PROP_MARGIN
- Else If LowerName = 'margin-top' Then CSSGetPropertyId := CSS_PROP_MARGIN_TOP
- Else If LowerName = 'margin-right' Then CSSGetPropertyId := CSS_PROP_MARGIN_RIGHT
- Else If LowerName = 'margin-bottom' Then CSSGetPropertyId := CSS_PROP_MARGIN_BOTTOM
- Else If LowerName = 'margin-left' Then CSSGetPropertyId := CSS_PROP_MARGIN_LEFT
- Else If LowerName = 'padding' Then CSSGetPropertyId := CSS_PROP_PADDING
- Else If LowerName = 'padding-top' Then CSSGetPropertyId := CSS_PROP_PADDING_TOP
- Else If LowerName = 'padding-right' Then CSSGetPropertyId := CSS_PROP_PADDING_RIGHT
- Else If LowerName = 'padding-bottom' Then CSSGetPropertyId := CSS_PROP_PADDING_BOTTOM
- Else If LowerName = 'padding-left' Then CSSGetPropertyId := CSS_PROP_PADDING_LEFT
- Else If LowerName = 'border' Then CSSGetPropertyId := CSS_PROP_BORDER
- Else If LowerName = 'border-color' Then CSSGetPropertyId := CSS_PROP_BORDER_COLOR
- Else If LowerName = 'border-width' Then CSSGetPropertyId := CSS_PROP_BORDER_WIDTH
- Else If LowerName = 'border-style' Then CSSGetPropertyId := CSS_PROP_BORDER_STYLE
- Else If LowerName = 'border-top' Then CSSGetPropertyId := CSS_PROP_BORDER_TOP
- Else If LowerName = 'border-right' Then CSSGetPropertyId := CSS_PROP_BORDER_RIGHT
- Else If LowerName = 'border-bottom' Then CSSGetPropertyId := CSS_PROP_BORDER_BOTTOM
- Else If LowerName = 'border-left' Then CSSGetPropertyId := CSS_PROP_BORDER_LEFT
- Else If LowerName = 'position' Then CSSGetPropertyId := CSS_PROP_POSITION
- Else If LowerName = 'top' Then CSSGetPropertyId := CSS_PROP_TOP
- Else If LowerName = 'right' Then CSSGetPropertyId := CSS_PROP_RIGHT
- Else If LowerName = 'left' Then CSSGetPropertyId := CSS_PROP_LEFT
- Else If LowerName = 'bottom' Then CSSGetPropertyId := CSS_PROP_BOTTOM
- Else If LowerName = 'float' Then CSSGetPropertyId := CSS_PROP_FLOAT
- Else If LowerName = 'clear' Then CSSGetPropertyId := CSS_PROP_CLEAR
- Else If LowerName = 'line-height' Then CSSGetPropertyId := CSS_PROP_LINE_HEIGHT
- Else If LowerName = 'overflow' Then CSSGetPropertyId := CSS_PROP_OVERFLOW
- Else If LowerName = 'cursor' Then CSSGetPropertyId := CSS_PROP_CURSOR
- Else If LowerName = 'list-style' Then CSSGetPropertyId := CSS_PROP_LIST_STYLE
- Else If LowerName = 'list-style-type' Then CSSGetPropertyId := CSS_PROP_LIST_STYLE_TYPE
- Else If LowerName = 'vertical-align' Then CSSGetPropertyId := CSS_PROP_VERTICAL_ALIGN
- Else If LowerName = 'white-space' Then CSSGetPropertyId := CSS_PROP_WHITE_SPACE
- Else CSSGetPropertyId := CSS_PROP_UNKNOWN;
+ Lo := 0;
+ Hi := CSS_PROPERTY_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If CSSPropertyTable[Mid].Name = LowerName Then Begin
+   CSSGetPropertyId := CSSPropertyTable[Mid].Id;
+   Exit;
+  End
+  Else If CSSPropertyTable[Mid].Name < LowerName Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
 End;
 
 { Parser une partie de selecteur simple }
