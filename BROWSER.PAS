@@ -2981,6 +2981,7 @@ Function JSEvaluate(Const Script: String): JSValue; Forward;
 Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String); Forward;
 Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String; Forward;
 Procedure NavigateTo(URL: String); Forward;
+Procedure DisplayCurrentTarget; Forward;
 Function ResolveLinkHref(Const Href: String): String; Forward;
 Function DOMGetElementById(Id: String): HTMLNodePtr; Forward;
 Function DOMGetBody: HTMLNodePtr; Forward;
@@ -16597,8 +16598,9 @@ End;
 Procedure HandleRefreshButtonClick;
 Begin
  If Not RefreshButtonEnabled Then Exit;
- { Recharger la page courante }
- { La navigation sera implementee quand le chargement de pages sera disponible }
+ { Recharger la page courante SANS toucher a l'historique (contrairement a
+   NavigateTo) - un rafraichissement n'est pas une nouvelle navigation. }
+ DisplayCurrentTarget;
 End;
 
 { Procedure pour initialiser le bouton Actualiser }
@@ -17798,9 +17800,15 @@ Begin
     Dec(URLCursorPos);
    End;
   End;
-  13: Begin { Enter - Valider l'URL }
+  13: Begin { Enter - Valider l'URL et (re)charger la page }
    URLBarFocused := False;
-   { Ici on pourrait appeler une procedure de navigation }
+   { URL inchangee depuis la page affichee : simple actualisation, sans
+     empiler une nouvelle entree d'historique (comme HandleRefreshButtonClick).
+     URL modifiee (ou aucun historique encore) : vraie navigation. }
+   If (HistoryCount > 0) And (CurrentURL = History[HistoryIndex]) Then
+    DisplayCurrentTarget
+   Else
+    NavigateTo(CurrentURL);
   End;
   27: Begin { Escape - Annuler la saisie }
    URLBarFocused := False;
