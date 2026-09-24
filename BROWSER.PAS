@@ -7233,7 +7233,7 @@ Begin
  Info.PaddingBottomPx := -1;
  Info.HasBorder := False;
  Info.BorderWidthPx := 0;
- Info.BorderColorIdx := 0;
+ Info.BorderColorIdx := HTMLBlackColorIndex; { jamais 0 en dur : voir InitializeGraphics }
  Info.HasBgBox := False;
  Info.BgBoxColorIdx := 0;
 
@@ -7667,7 +7667,7 @@ Begin
  Bar(RENDER_AREA_X, RENDER_AREA_Y,
      RENDER_AREA_X + RENDER_AREA_WIDTH,
      RENDER_AREA_Y + RENDER_AREA_HEIGHT);
- SetColor(0);
+ SetColor(HTMLBlackColorIndex); { jamais 0 en dur : voir InitializeGraphics }
  Rectangle(RENDER_AREA_X, RENDER_AREA_Y,
            RENDER_AREA_X + RENDER_AREA_WIDTH,
            RENDER_AREA_Y + RENDER_AREA_HEIGHT);
@@ -17960,8 +17960,14 @@ Begin
   Halt(1);
  End;
  InitializeHTMLPalette;
+ { PAS de SetBkColor(RENDER_BG_COLOR) ici : SetBkColor reprogramme l'entree
+   de palette 0 avec cette couleur (ici blanc), ce qui ecrasait le noir
+   pourtant deja programme par InitializeHTMLPalette - HTMLBlackColorIndex
+   vaut 0 en VGA 16 couleurs (hors -maxscreen), donc TOUT texte "noir"
+   (barre d'URL comprise) devenait blanc sur fond blanc, invisible. Le
+   fond de page (RENDER_BG_COLOR=15) est deja peint explicitement par
+   Bar()/SetFillStyle partout ou necessaire, sans dependre du bk-color. }
  SetColor(White);
- SetBkColor(RENDER_BG_COLOR);
  SetLineStyle(SolidLn, 0, NormWidth);
  SetTextStyle(DefaultFont, HorizDir, 1);
  SetTextJustify(LeftText, TopText);
