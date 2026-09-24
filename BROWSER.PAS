@@ -1526,6 +1526,77 @@ Begin
 End;
 {$ENDIF}
 
+{ Nom de fichier local temporaire reutilise pour telecharger UNE image a la
+  fois (chargement/decodage synchrones, pas de concurrence possible) - voir
+  ResolveImageLoadPath/ReleaseImageLoadPath ci-dessous. }
+Const
+ BROWSER_IMG_TEMP_FILE = 'BROWSERIMG.TMP';
+
+{ Si Path est une URL http/https, la telecharger (via Browser_HttpGet) dans
+  un fichier local TEMPORAIRE et retourner ce chemin dans LoadPath, pour
+  reutiliser tel quel les decodeurs BMP/GIF/JPEG/PNG/SVG existants (qui ne
+  savent lire qu'un fichier local) - demande explicite de l'utilisateur :
+  "browser https://www.gladir.com/" n'affichait aucune image car
+  *BuildImagePath renvoyait deja une URL http(s):// correcte, mais
+  *LoadFromFile tentait ensuite de l'ouvrir comme un chemin de fichier
+  local (toujours en echec). Sinon (chemin deja local), LoadPath := Path
+  tel quel - comportement inchange pour une page chargee depuis un fichier. }
+Function ResolveImageLoadPath(Const Path: String; Var LoadPath: String): Boolean;
+{$IFDEF WINDOWS}
+Var
+ ImgBody: AnsiString;
+ StatusCode: LongInt;
+ F: File;
+ BytesWritten: LongInt;
+{$ENDIF}
+Begin
+ If Not ((Copy(HTMLLowerCase(Path), 1, 7) = 'http://') Or
+         (Copy(HTMLLowerCase(Path), 1, 8) = 'https://')) Then Begin
+  LoadPath := Path;
+  ResolveImageLoadPath := True;
+  Exit;
+ End;
+ {$IFDEF WINDOWS}
+ ResolveImageLoadPath := False;
+ LoadPath := '';
+ If Not Browser_HttpGet(Path, ImgBody, StatusCode) Then Exit;
+ If Length(ImgBody) = 0 Then Exit;
+ LoadPath := BROWSER_IMG_TEMP_FILE;
+ Assign(F, LoadPath);
+ {$I-}
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  LoadPath := '';
+  Exit;
+ End;
+ BlockWrite(F, ImgBody[1], Length(ImgBody), BytesWritten);
+ Close(F);
+ ResolveImageLoadPath := LongInt(BytesWritten) = Length(ImgBody);
+ {$ELSE}
+ LoadPath := '';
+ ResolveImageLoadPath := False;
+ {$ENDIF}
+End;
+
+{ Supprimer le fichier temporaire cree par ResolveImageLoadPath (sans effet
+  si LoadPath n'a jamais ete cree, ex. echec de telechargement). }
+Procedure ReleaseImageLoadPath(Const LoadPath: String);
+{$IFDEF WINDOWS}
+Var
+ F: File;
+{$ENDIF}
+Begin
+ {$IFDEF WINDOWS}
+ If LoadPath <> BROWSER_IMG_TEMP_FILE Then Exit;
+ Assign(F, LoadPath);
+ {$I-}
+ Erase(F);
+ {$I+}
+ If IOResult <> 0 Then ; { deja absent : rien a faire }
+ {$ENDIF}
+End;
+
 { Convertir un code ISO-8859-1/Unicode courant vers le jeu de caracteres
   utilise par la cible. Turbo Pascal DOS utilise normalement la page 850. }
 { Convertir un code point Unicode/Latin-1 (caractere brut du fichier
@@ -10959,6 +11030,15 @@ Var
  LowerBase: String;
  I, RootPos: Integer;
 Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  BMPBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
  { Un chemin /... est absolu du point de vue du site Web, pas du disque.
    Pour une page locale servie depuis IIS, le rattacher a wwwroot. }
  If (Length(Src) > 0) And (Src[1] In ['/', '\']) Then Begin
@@ -11913,6 +11993,15 @@ Var
  BasePath: String;
  I: Integer;
 Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  GIFBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
  { Si c'est un chemin absolu, le retourner tel quel }
  If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
      ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
@@ -12932,6 +13021,15 @@ Var
  BasePath: String;
  I: Integer;
 Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  JPEGBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
  If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
      ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
   JPEGBuildImagePath := Src;
@@ -14046,6 +14144,15 @@ Var
  BasePath: String;
  I: Integer;
 Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  PNGBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
  If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
      ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
   PNGBuildImagePath := Src;
@@ -15290,6 +15397,15 @@ Var
  BasePath: String;
  I: Integer;
 Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  SVGBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
  If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
      ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
   SVGBuildImagePath := Src;
@@ -15325,6 +15441,8 @@ Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  Src, Alt, WidthAttr, HeightAttr: String;
  ImgPath, ImgExt: String;
+ LoadPath: String;
+ LoadOk: Boolean;
  BMPImg: BMPImage;
  GIFImg: GIFImage;
  JPEGImg: JPEGImage;
@@ -15393,7 +15511,9 @@ Begin
    BMPImg := BMPImageCache[CacheIdx].Image;
   End
   Else Begin
-   If Not BMPLoadFromFile(ImgPath, BMPImg) Then Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And BMPLoadFromFile(LoadPath, BMPImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -15443,7 +15563,9 @@ Begin
    GIFImg := GIFImageCache[CacheIdx].Image;
   End
   Else Begin
-   If Not GIFLoadFromFile(ImgPath, GIFImg) Then Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And GIFLoadFromFile(LoadPath, GIFImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -15493,7 +15615,9 @@ Begin
    JPEGImg := JPEGImageCache[CacheIdx].Image;
   End
   Else Begin
-   If Not JPEGLoadFromFile(ImgPath, JPEGImg) Then Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And JPEGLoadFromFile(LoadPath, JPEGImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -15543,7 +15667,9 @@ Begin
    PNGImg := PNGImageCache[CacheIdx].Image;
   End
   Else Begin
-   If Not PNGLoadFromFile(ImgPath, PNGImg) Then Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And PNGLoadFromFile(LoadPath, PNGImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -15593,7 +15719,9 @@ Begin
    SVGImg := SVGImageCache[CacheIdx].Image;
   End
   Else Begin
-   If Not SVGLoadFromFile(ImgPath, SVGImg) Then Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And SVGLoadFromFile(LoadPath, SVGImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -15639,6 +15767,7 @@ End;
 Procedure RenderCSSBackgroundSprite(Const Style: DOMStyle; X, Y: Integer);
 Var
  Bg, LowerBg, Src, PosText, Token: String;
+ LoadPath: String;
  P1, P2, SpacePos, Code: Integer;
  BgX, BgY, W, H, SrcX, SrcY, DX, DY, CacheIndex: Integer;
  Img: PNGImage;
@@ -15688,7 +15817,11 @@ Begin
  Src := BMPBuildImagePath(Src);
  CacheIndex := PNGFindInCache(Src);
  If CacheIndex = 0 Then Begin
-  If Not PNGLoadFromFile(Src, Img) Then Exit;
+  If Not (ResolveImageLoadPath(Src, LoadPath) And PNGLoadFromFile(LoadPath, Img)) Then Begin
+   ReleaseImageLoadPath(LoadPath);
+   Exit;
+  End;
+  ReleaseImageLoadPath(LoadPath);
   CacheIndex := PNGAddToCache(Src, Img);
   If CacheIndex = 0 Then Begin PNGFreeImage(Img); Exit; End;
  End;
