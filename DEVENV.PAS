@@ -8413,7 +8413,11 @@ Var
  Win16_WndProcTraceOn  : Boolean;
  Win16_WndProcTraceDone: Boolean;
  Win16_WndProcTraceFile: Text;
- { Diagnostic temporaire (2026-08-30, suite) : journal DEDIE des appels    }
+ { Diagnostic temporaire (2026-09-23, "pourquoi le chiffre ne s'ecrit       }
+ { jamais dans le buffer d'affichage") : dump BINAIRE brut (pas du texte    }
+ { hexa) du WNDPROC entier au tout premier WM_LBUTTONDOWN, exploitable      }
+ { directement par DIS8086.PAS/DISEXE.PAS pour un VRAI desassemblage. }
+ Win16_BtnWndProcDumped: Boolean;
  { GDI de dessin reel (MoveTo/LineTo/Ellipse/Rectangle/FillRect) - invisible}
  { autrement pour la MEME raison que ci-dessus (appels imbriques dans      }
  { Win16_CallWndProc). Contrairement au tracer pas-a-pas ci-dessus (limite }
@@ -98836,6 +98840,7 @@ Begin
  Win16_ClipViewerHwnd := 0;
  Win16_WndProcTraceOn := False;
  Win16_WndProcTraceDone := False;
+ Win16_BtnWndProcDumped := False;
  Win16_GdiTraceOn := False;
  Win16_GdiTraceCount := 0;
  Win16_GdiTraceMax := 80;
@@ -100774,6 +100779,7 @@ Var
  WIdx, I: Integer;
  ClientX, ClientY: Integer;
  Msg: Word;
+ LogF: Text;
 Begin
  If (Win16_WindowCount <= 0) Or (Not EmuVideo.IsGraphic) Then Exit;
  GfxW := EmuVideo.Width; GfxH := EmuVideo.Height;
@@ -100784,6 +100790,19 @@ Begin
  GridY := P.PanelY + 24;
  ScrX := (HostX - GridX) Div Scale;
  ScrY := (HostY - GridY) Div Scale;
+ { BOGUE REEL CORRIGE (2026-09-23, "WM_LBUTTONUP ne valide jamais le clic") :}
+ { GetCursorPos/$17 (et tout autre appel qui lit EmuMouseX/Y) renvoyait une  }
+ { position FIGEE (jamais mise a jour pour -CWIN16, seulement pour -CD/-CP  }
+ { via EmuMouse_UpdateFromHost) - un WNDPROC qui revalide "la souris est-    }
+ { elle encore sur le bouton ?" via GetCursorPos au lieu du lParam du         }
+ { message echouait donc TOUJOURS ce test et abandonnait le clic. EmuMouseX/}
+ { Y (et EmuMouseBtns, MEME bit0 que le protocole DOS INT 33h) sont donc     }
+ { desormais tenus a jour ICI AUSSI, en coordonnees ECRAN logiques (ScrX/Y, }
+ { MEME convention que EmuMouse_UpdateFromHost - PAS les coordonnees         }
+ { CLIENT, GetCursorPos est documente en coordonnees ECRAN). }
+ EmuMouseX := ScrX; EmuMouseY := ScrY;
+ If Kind = 1 Then EmuMouseBtns := EmuMouseBtns Or 1
+ Else If Kind = 2 Then EmuMouseBtns := EmuMouseBtns And $FE;
  { Un seul programme Win16 charge a la fois (Win16_LoadedPath) - la 1ere    }
  { fenetre dont le rectangle contient ce pixel suffit ; repli sur la        }
  { fenetre 0 si aucune ne correspond exactement (bord arrondi, marge...). }
@@ -100802,6 +100821,23 @@ Begin
   1: Msg := WIN16_WM_LBUTTONDOWN;
   2: Msg := WIN16_WM_LBUTTONUP;
   Else Msg := WIN16_WM_MOUSEMOVE;
+ End;
+ { Diagnostic temporaire (2026-09-23, "seuls 4/1/0 semblent reagir") -       }
+ { journal INCONDITIONNEL (down/up seulement, pas les move, pour rester      }
+ { lisible) de chaque conversion hote->client reellement calculee, pour     }
+ { comparer au bouton visuellement clique sans avoir a deviner. }
+ If Kind <> 0 Then Begin
+  {$I-} Assign(LogF, 'MOUSEWIN16.LOG'); Append(LogF);
+  If IOResult <> 0 Then Begin Assign(LogF, 'MOUSEWIN16.LOG'); Rewrite(LogF); End;
+  If IOResult = 0 Then Begin
+   WriteLn(LogF, 'Kind=', Kind, ' Host=', HostX, ',', HostY,
+    ' Scr=', ScrX, ',', ScrY, ' WIdx=', WIdx,
+    ' WinXY=', Win16_WindowX[WIdx], ',', Win16_WindowY[WIdx],
+    ' WinWH=', Win16_WindowW[WIdx], ',', Win16_WindowH[WIdx],
+    ' Client=', ClientX, ',', ClientY, ' HWnd=', HexWord(Win16_WindowHWnd[WIdx]));
+   Close(LogF);
+  End;
+  {$I+} If IOResult <> 0 Then ;
  End;
  Win16_PostMessage(Win16_WindowHWnd[WIdx], Msg, WIN16_MK_LBUTTON,
   Word(ClientX), Word(ClientY));
@@ -102859,6 +102895,41 @@ Begin
  If Win16_ApiTraceCount < 256 Then Inc(Win16_ApiTraceCount);
 End;
 
+{ Diagnostic temporaire (2026-09-23, demande explicite - desassembler le    }
+{ WNDPROC via DIS8086.PAS/DISEXE.PAS) : dump BINAIRE brut (pas du texte      }
+{ hexa) exploitable directement par `DIS8086 fichier.bin`. Procedure         }
+{ SEPAREE (plutot qu'inline dans Win16_DispatchCall, deja enorme) pour       }
+{ eviter d'alourdir davantage cette seule procedure. }
+Procedure Win16_DumpCalcDebug(Var P: TEmulatorPanel; ProcSeg, ProcOfs: Word);
+Var
+ DumpFile: File;
+ DumpTxtFile: Text;
+ DumpByte: Byte;
+ DumpI: Integer;
+Begin
+ {$I-} Assign(DumpFile, 'CALCWNDPROC.BIN'); Rewrite(DumpFile, 1);
+ If IOResult = 0 Then Begin
+  For DumpI := 0 To 2047 Do Begin
+   DumpByte := Emu_ReadByte(P.CPU, ProcSeg, Word(ProcOfs + DumpI));
+   BlockWrite(DumpFile, DumpByte, 1);
+  End;
+  Close(DumpFile);
+ End;
+ {$I+} If IOResult <> 0 Then ;
+ { Table des imports (Slot -> Module.Ordinal) - le seul moyen de savoir a    }
+ { quelle VRAIE API correspond un "CALL FAR 1000:XXXX" vu au desassemblage :}
+ { Slot = XXXX Div WIN16_TRAP_SLOT_SIZE(5). }
+ {$I-} Assign(DumpTxtFile, 'CALCIMPORTS.LOG'); Rewrite(DumpTxtFile);
+ If IOResult = 0 Then Begin
+  For DumpI := 0 To Win16_ImportSlotCount - 1 Do
+   WriteLn(DumpTxtFile, 'Slot=', DumpI, ' (thunk 1000:', HexWord(Word(DumpI * 5)),
+    ') ModIdx=', Win16_ImportModIdx[DumpI], ' IsOrd=', Win16_ImportIsOrd[DumpI],
+    ' Value=', Win16_ImportValue[DumpI]);
+  Close(DumpTxtFile);
+ End;
+ {$I+} If IOResult <> 0 Then ;
+End;
+
 Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
 Var
  ModIdx, Ordinal: Word;
@@ -102884,6 +102955,8 @@ Var
  LRBuf: Array[0..4095] Of Byte;
  LRI: Integer;
  GDIIdx: Word;
+ MouseDbgF: Text;
+ ApiDumpI, ApiDumpKK: Integer;
  RCWndClassSeg, RCWndClassOfs: Word;
  RCNameSeg, RCNameOfs: Word;
  RCIdx: Integer;
@@ -109653,6 +109726,20 @@ Begin
      If Win16_WindowHWnd[CWI] = DMHWnd Then DMWIdx := CWI;
     If DMWIdx >= 0 Then Begin
      DMClassIdx := Win16_WindowClassIdx[DMWIdx];
+     { Diagnostic temporaire (2026-09-23, demande explicite - desassembler   }
+     { le WNDPROC via DIS8086.PAS) : dump BINAIRE brut (2048 octets a partir  }
+     { du point d'entree REEL, pas du texte hexa) une SEULE fois, au tout     }
+     { premier WM_LBUTTONDOWN - fichier directement exploitable par           }
+     { `DIS8086 CALCWNDPROC.BIN` (offset 0 du fichier = CS:IP du WNDPROC). }
+     { Diagnostic temporaire (2026-09-23, demande explicite - desassembler   }
+     { le WNDPROC via DIS8086.PAS) : dump BINAIRE brut du WNDPROC et de la   }
+     { sous-routine de traitement du chiffre (voir Win16_DumpCalcDebug),     }
+     { une SEULE fois, au tout premier WM_LBUTTONDOWN. }
+     If (DMMsg = WIN16_WM_LBUTTONDOWN) And (Not Win16_BtnWndProcDumped) Then Begin
+      Win16_BtnWndProcDumped := True;
+      Win16_DumpCalcDebug(P, Win16_WndClassProcSeg[DMClassIdx],
+       Win16_WndClassProcOfs[DMClassIdx]);
+     End;
      DMResult := Win16_CallWndProc(P, Win16_WndClassProcSeg[DMClassIdx],
       Win16_WndClassProcOfs[DMClassIdx], DMHWnd, DMMsg, DMWParam,
       DMLParamLo, DMLParamHi);
@@ -109666,6 +109753,40 @@ Begin
       IntToStr(Dpmi_LastRunRealProcIter) + ' pas reels)';
      P.CPU.Regs.DX := Word((DMResult Shr 16) And $FFFF);
      P.CPU.Regs.AX := Word(DMResult And $FFFF);
+     { Diagnostic temporaire (2026-09-23, "les boutons ne semblent pas       }
+     { reagir") : confirme si le WNDPROC recoit VRAIMENT WM_LBUTTONDOWN/UP   }
+     { et ce qu'il retourne - Win16_DebugMsg n'est jamais lu hors WIN16RUN.  }
+     If (DMMsg = WIN16_WM_LBUTTONDOWN) Or (DMMsg = WIN16_WM_LBUTTONUP) Then Begin
+      {$I-} Assign(MouseDbgF, 'MOUSEWIN16.LOG'); Append(MouseDbgF);
+      If IOResult <> 0 Then Begin Assign(MouseDbgF, 'MOUSEWIN16.LOG'); Rewrite(MouseDbgF); End;
+      If IOResult = 0 Then Begin
+       WriteLn(MouseDbgF, '  DISPATCH msg=', HexWord(DMMsg), ' wParam=',
+        HexWord(DMWParam), ' lParam=', HexWord(DMLParamHi), ':',
+        HexWord(DMLParamLo), ' -> WNDPROC ',
+        HexWord(Win16_WndClassProcSeg[DMClassIdx]), ':',
+        HexWord(Win16_WndClassProcOfs[DMClassIdx]), ' (',
+        Dpmi_LastRunRealProcIter, ' pas) resultat=', HexWord(P.CPU.Regs.DX),
+        ':', HexWord(P.CPU.Regs.AX));
+       { Meme decouverte que ci-dessus (383/40 pas identiques et aucun        }
+       { TextOut) : lister TOUS les appels API reellement faits PENDANT ce   }
+       { WNDPROC (Win16_ApiTraceBuf, deja rempli par chaque appel) pour       }
+       { savoir s'il appelle InvalidateRect/SetWindowText/rien du tout. }
+       For ApiDumpI := 0 To 14 Do Begin
+        ApiDumpKK := (Win16_ApiTraceIdx + ApiDumpI - 15 + 256) And 255;
+        Write(MouseDbgF, '    api[', ApiDumpI, ']=');
+        Case Win16_ApiTraceBuf[ApiDumpKK].ModIdx Of
+         1: Write(MouseDbgF, 'KERNEL');
+         2: Write(MouseDbgF, 'GDI');
+         3: Write(MouseDbgF, 'USER');
+         Else Write(MouseDbgF, 'mod#', Win16_ApiTraceBuf[ApiDumpKK].ModIdx);
+        End;
+        WriteLn(MouseDbgF, '.', Win16_ApiTraceBuf[ApiDumpKK].Ordinal,
+         ' arg1=', HexWord(Win16_ApiTraceBuf[ApiDumpKK].Arg1));
+       End;
+       Close(MouseDbgF);
+      End;
+      {$I+} If IOResult <> 0 Then ;
+     End;
     End Else Begin
      Win16_DebugMsg := 'DispatchMessage : fenetre inconnue hwnd=' +
       HexWord(DMHWnd);
@@ -115024,6 +115145,29 @@ Begin
      GdiY1 := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + GdiY1);
      Win16_DrawTextOut(GdiX1, GdiY1, TOStr);
     End;
+    { Diagnostic temporaire (2026-09-23, "le chiffre clique ne s'affiche      }
+    { jamais") : confirme si TextOut est meme APPELE apres un clic, et avec  }
+    { quelle chaine/position/couleur. }
+    {$I-} Assign(MouseDbgF, 'MOUSEWIN16.LOG'); Append(MouseDbgF);
+    If IOResult <> 0 Then Begin Assign(MouseDbgF, 'MOUSEWIN16.LOG'); Rewrite(MouseDbgF); End;
+    If IOResult = 0 Then Begin
+     WriteLn(MouseDbgF, '    TEXTOUT "', TOStr, '" @', GdiX1, ',', GdiY1,
+      ' FgColor=', Win16_CurrentTextColor And $FF,
+      ' BkColor=', Win16_CurrentBkColor And $FF,
+      ' BkMode=', Win16_CurrentBkMode);
+     { nCount=0 suspect (2026-09-23) : dumper les 16 premiers octets REELS   }
+     { au pointeur lpString, MEME quand nCount=0, pour voir si une VRAIE     }
+     { chaine ASCIIZ non-vide y sommeille (bogue dans le calcul de nCount    }
+     { cote invite) ou si le buffer est REELLEMENT vide (bogue ailleurs). }
+     Write(MouseDbgF, '      lpString=', HexWord(TOStrSeg), ':',
+      HexWord(TOStrOfs), ' nCount=', TOCount, ' octets=');
+     For ApiDumpI := 0 To 15 Do
+      Write(MouseDbgF, HexByte(Emu_ReadByte(P.CPU, TOStrSeg,
+       Word(TOStrOfs + ApiDumpI))), ' ');
+     WriteLn(MouseDbgF);
+     Close(MouseDbgF);
+    End;
+    {$I+} If IOResult <> 0 Then ;
     P.CPU.Regs.AX := 1;
     ArgWords := 6;
    End;
