@@ -6304,6 +6304,16 @@ Const
  WIN16_WM_PAINT   = $000F;
  WIN16_WM_TIMER   = $0113;
  WIN16_WM_QUIT    = $0012;
+ { Routage souris (2026-09-23, demande explicite - rendre CALC.EXE           }
+ { cliquable) - constantes ABI Windows publiques et fixes (winuser.h),       }
+ { meme certitude que les WIN16_WM_* ci-dessus. }
+ WIN16_WM_MOUSEMOVE   = $0200;
+ WIN16_WM_LBUTTONDOWN = $0201;
+ WIN16_WM_LBUTTONUP   = $0202;
+ WIN16_WM_RBUTTONDOWN = $0204;
+ WIN16_WM_RBUTTONUP   = $0205;
+ WIN16_MK_LBUTTON     = $0001;
+ WIN16_MK_RBUTTON     = $0002;
 
 Const
  LXOBJ_READABLE   = $0001;
@@ -100746,6 +100756,55 @@ Begin
  Win16_MsgQueueLParamHi[Win16_MsgQueueTail] := LParamHi;
  Win16_MsgQueueTail := (Win16_MsgQueueTail + 1) Mod WIN16_MAX_MSGQUEUE;
  Inc(Win16_MsgQueueCount);
+End;
+
+{ Convertit un clic HOTE (coordonnees ecran IDE) en message souris Win16    }
+{ REEL poste dans la file de la fenetre Win16 concernee - MEME conversion   }
+{ Grille/Echelle que EmuMouse_UpdateFromHost (mode graphique VGA $13, voir   }
+{ DrawEmulatorPanel) pour rester coherent avec ce qui est reellement         }
+{ affiche a l'ecran. Kind: 0=move, 1=down, 2=up. Seul le bouton GAUCHE est   }
+{ modelise (2026-09-23, demande explicite - rendre CALC.EXE cliquable) :    }
+{ CALC.EXE et la quasi-totalite des apps de cette epoque dessinent leurs     }
+{ boutons a la main et ne testent QUE WM_LBUTTONDOWN/UP contre leurs           }
+{ propres rectangles, jamais le bouton droit/du milieu. }
+Procedure Win16_HandleMouseEvent(Var P: TEmulatorPanel; HostX, HostY, Kind: Integer);
+Var
+ GfxW, GfxH, Scale, GridX, GridY: Integer;
+ ScrX, ScrY: Integer;
+ WIdx, I: Integer;
+ ClientX, ClientY: Integer;
+ Msg: Word;
+Begin
+ If (Win16_WindowCount <= 0) Or (Not EmuVideo.IsGraphic) Then Exit;
+ GfxW := EmuVideo.Width; GfxH := EmuVideo.Height;
+ Scale := 1;
+ If GfxW <= 320 Then Scale := 2;
+ If GfxW <= 160 Then Scale := 4;
+ GridX := P.PanelX;
+ GridY := P.PanelY + 24;
+ ScrX := (HostX - GridX) Div Scale;
+ ScrY := (HostY - GridY) Div Scale;
+ { Un seul programme Win16 charge a la fois (Win16_LoadedPath) - la 1ere    }
+ { fenetre dont le rectangle contient ce pixel suffit ; repli sur la        }
+ { fenetre 0 si aucune ne correspond exactement (bord arrondi, marge...). }
+ WIdx := -1;
+ For I := 0 To Win16_WindowCount - 1 Do
+  If (WIdx < 0) And
+     (ScrX >= Win16_WindowX[I]) And (ScrX <= Win16_WindowX[I] + Win16_WindowW[I]) And
+     (ScrY >= Win16_WindowY[I]) And (ScrY <= Win16_WindowY[I] + Win16_WindowH[I]) Then
+   WIdx := I;
+ If WIdx < 0 Then WIdx := 0;
+ { Coordonnees CLIENT (MEME convention +1 que le rendu GDI/RoundRect, voir   }
+ { Win16_WindowX/Y+1 dans le dispatch GDI ci-dessous). }
+ ClientX := ScrX - (Win16_WindowX[WIdx] + 1);
+ ClientY := ScrY - (Win16_WindowY[WIdx] + 1);
+ Case Kind Of
+  1: Msg := WIN16_WM_LBUTTONDOWN;
+  2: Msg := WIN16_WM_LBUTTONUP;
+  Else Msg := WIN16_WM_MOUSEMOVE;
+ End;
+ Win16_PostMessage(Win16_WindowHWnd[WIdx], Msg, WIN16_MK_LBUTTON,
+  Word(ClientX), Word(ClientY));
 End;
 
 { Stage 6b (2026-08-30) : Dpmi_RunRealProc (~75511) est le mecanisme deja   }
@@ -218963,6 +219022,7 @@ Procedure HandleEmulatorPanelEvent(Var P: TEmulatorPanel;
 Var
  K: Byte;
  IsDOSTarget: Boolean;
+ IsWin16Target: Boolean;
 Begin
  { Correctif Stage 1 (2026-08-15) : la souris emulee DOS (EmuMouse_Update-  }
  { FromHost) etait mise a jour depuis le pompage d evenements INTERNE de    }
@@ -218975,6 +219035,7 @@ Begin
  { deja garanti hit-test + focus corrects) elimine la course - DOS_Run-     }
  { OneChunk ne fait plus AUCUN PollEvents pour la souris. }
  IsDOSTarget := (P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP');
+ IsWin16Target := (P.TargetCPU = '-CWIN16');
  Case Ev.Kind Of
   EV_KEY_CHAR:
    Begin
@@ -219044,22 +219105,32 @@ Begin
     End;
     If IsDOSTarget Then
      EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns);
+    If IsWin16Target Then
+     Win16_HandleMouseEvent(P, Ev.MouseX, Ev.MouseY, 0);
    End;
   EV_MOUSE_DOWN:
-   If IsDOSTarget Then Begin
-    Case Ev.MouseBtn Of
-     MB_LEFT  : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 1);
-     MB_RIGHT : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 2);
-     MB_MIDDLE: EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 4);
+   Begin
+    If IsDOSTarget Then Begin
+     Case Ev.MouseBtn Of
+      MB_LEFT  : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 1);
+      MB_RIGHT : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 2);
+      MB_MIDDLE: EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns Or 4);
+     End;
     End;
+    If IsWin16Target And (Ev.MouseBtn = MB_LEFT) Then
+     Win16_HandleMouseEvent(P, Ev.MouseX, Ev.MouseY, 1);
    End;
   EV_MOUSE_UP:
-   If IsDOSTarget Then Begin
-    Case Ev.MouseBtn Of
-     MB_LEFT  : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FE);
-     MB_RIGHT : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FD);
-     MB_MIDDLE: EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FB);
+   Begin
+    If IsDOSTarget Then Begin
+     Case Ev.MouseBtn Of
+      MB_LEFT  : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FE);
+      MB_RIGHT : EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FD);
+      MB_MIDDLE: EmuMouse_UpdateFromHost(P, Ev.MouseX, Ev.MouseY, EmuMouseBtns And $FB);
+     End;
     End;
+    If IsWin16Target And (Ev.MouseBtn = MB_LEFT) Then
+     Win16_HandleMouseEvent(P, Ev.MouseX, Ev.MouseY, 2);
    End;
  End;
 End;
