@@ -8010,6 +8010,14 @@ Var
  Win16_WndClassProcSeg : Array[0..WIN16_MAX_WNDCLASSES - 1] Of Word;
  Win16_WndClassProcOfs : Array[0..WIN16_MAX_WNDCLASSES - 1] Of Word;
  Win16_WndClassBg      : Array[0..WIN16_MAX_WNDCLASSES - 1] Of Word;
+ { Menu PAR DEFAUT de la classe (lpszMenuName de WNDCLASS, 2026-09-24,      }
+ { "le menu Edit ne s'affiche toujours pas") : jamais lu jusqu'ici -         }
+ { CreateWindow/$41 ne recoit un hMenu explicite QUE si l'appelant en        }
+ { passe un ; la quasi-totalite des apps simples (CALC.EXE compris)          }
+ { attachent plutot leur menu au NIVEAU DE LA CLASSE (RegisterClass) et      }
+ { passent hMenu=NULL, s'attendant a ce que le systeme resolve ce menu      }
+ { par defaut - jamais modelise avant ce correctif. }
+ Win16_WndClassMenu    : Array[0..WIN16_MAX_WNDCLASSES - 1] Of Word;
  Win16_WindowCount     : Integer;
  Win16_WindowHWnd      : Array[0..WIN16_MAX_WINDOWS - 1] Of Word;
  Win16_WindowClassIdx  : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
@@ -100278,6 +100286,14 @@ Begin
  Close(F);
 End;
 
+{ Forward : Win16_FindResourceGeneric n'est definie que plus bas dans ce   }
+{ fichier (apres Win16_ResourceIdMatches) mais Win16_ParseMenuResourceEx    }
+{ ci-dessous en a besoin des maintenant pour resoudre un nom de menu        }
+{ CHAINE (pas seulement MAKEINTRESOURCE entier). }
+Function Win16_FindResourceGeneric(TypeIsInt: Boolean; TypeInt: Word;
+ Const TypeStr: String; NameIsInt: Boolean; NameInt: Word;
+ Const NameStr: String; Var ResFileOfs, ResLen: LongInt): Boolean; Forward;
+
 { Parseur de ressource RT_MENU ($8004, 2026-09-24, demande explicite -      }
 { "le menu Edit ne s'affiche pas") - format MENUITEMTEMPLATE reel           }
 { (MENUHEADER wVersion+cbHeaderSize suivi d'items MENUITEM recursifs,       }
@@ -100331,15 +100347,81 @@ Begin
  Until IsLast;
 End;
 
-Function Win16_ParseMenuResource(ResId: Word): Word;
+{ Diagnostic temporaire (2026-09-24, "je ne vois toujours pas Edit", 2e     }
+{ passe - du texte de sous-menu apparait dans la barre) : dump BRUT +       }
+{ parcours annote pour voir EXACTEMENT ou l'analyse MENUITEMTEMPLATE        }
+{ derape par rapport a ce qui etait attendu. }
+Procedure Win16_LogMenuDump(ResOfs, ResLen: LongInt; BytesRead: Word);
+Var
+ LogF: Text;
+ I: Integer;
+ Pos: Integer;
+ Opt: Word;
+ IsPopup, IsLast: Boolean;
+ Depth: Integer;
+ Txt: String;
+Begin
+ {$I-} Assign(LogF, 'MENUDUMP.LOG'); Rewrite(LogF);
+ If IOResult <> 0 Then Exit;
+ WriteLn(LogF, 'ResOfs=', ResOfs, ' ResLen=', ResLen, ' BytesRead=', BytesRead);
+ Write(LogF, 'HEX: ');
+ For I := 0 To BytesRead - 1 Do Write(LogF, HexByte(Win16_MenuParseBuf[I]), ' ');
+ WriteLn(LogF);
+ WriteLn(LogF, 'WALK:');
+ { BOGUE REEL CORRIGE (2026-09-24, confirme par ce meme dump hexa) :       }
+ { AUCUN MENUHEADER de 4 octets ne precede le premier MENUITEMTEMPLATE      }
+ { dans les donnees de ressource RT_MENU telles que retournees ici           }
+ { (Win16_FindResource/ResOfs pointe DEJA sur le tout premier item, pas      }
+ { sur un en-tete wVersion/cbHeaderSize) - verifie octet-pres : sans           }
+ { sauter ces 4 octets, le tout premier mot decode EXACTEMENT              }
+ { mtOption=$2690 (popup+dernier) suivi du texte "Edit", parfaitement       }
+ { coherent. }
+ Pos := 0;
+ Depth := 0;
+ While Pos + 2 <= BytesRead Do Begin
+  Opt := Win16_MenuParseBuf[Pos] Or (Word(Win16_MenuParseBuf[Pos + 1]) Shl 8);
+  Inc(Pos, 2);
+  IsPopup := (Opt And $0010) <> 0;
+  IsLast := (Opt And $0080) <> 0;
+  Txt := '';
+  If Not IsPopup Then Begin
+   Write(LogF, '  id=', Word(Win16_MenuParseBuf[Pos] Or
+    (Word(Win16_MenuParseBuf[Pos + 1]) Shl 8)));
+   Inc(Pos, 2);
+  End;
+  While (Pos < BytesRead) And (Win16_MenuParseBuf[Pos] <> 0) Do Begin
+   Txt := Txt + Chr(Win16_MenuParseBuf[Pos]);
+   Inc(Pos);
+  End;
+  If Pos < BytesRead Then Inc(Pos);
+  WriteLn(LogF, '  depth=', Depth, ' opt=', HexWord(Opt), ' popup=', IsPopup,
+   ' last=', IsLast, ' text="', Txt, '"');
+  If IsPopup Then Inc(Depth)
+  Else If IsLast And (Depth > 0) Then Dec(Depth);
+ End;
+ Close(LogF);
+End;
+
+Function Win16_ParseMenuResourceEx(NameIsInt: Boolean; NameInt: Word;
+ Const NameStr: String): Word;
 Var
  ResOfs, ResLen: LongInt;
  F: File;
  BytesRead: Word;
  I: Integer;
 Begin
- Win16_ParseMenuResource := 0;
- If Not Win16_FindResource($8004, ResId, ResOfs, ResLen) Then Exit;
+ Win16_ParseMenuResourceEx := 0;
+ { BOGUE REEL CORRIGE (2026-09-24, "le menu Edit ne s'affiche toujours     }
+ { pas") : un champ ID entier dans la table de ressources porte TOUJOURS   }
+ { le bit $8000 (c'est justement ce qui le distingue d'un OFFSET vers une  }
+ { chaine, voir Win16_ResourceIdMatches) - Win16_FindResourceGeneric/       }
+ { Win16_ResourceIdMatches compare RawField (bit $8000 INCLUS) directement }
+ { a QueryInt SANS jamais l'ajouter lui-meme (meme convention deja           }
+ { imposee au SEUL autre appelant existant, LoadString, qui fait lui-meme   }
+ { "$8000 Or (...)") - l'appel ici passait le MAKEINTRESOURCE brut (ex. 1)   }
+ { sans ce bit, echouant TOUJOURS la comparaison. }
+ If Not Win16_FindResourceGeneric(True, $8004, '', NameIsInt,
+  Word($8000 Or NameInt), NameStr, ResOfs, ResLen) Then Exit;
  If ResLen > SizeOf(Win16_MenuParseBuf) Then ResLen := SizeOf(Win16_MenuParseBuf);
  If Win16_MenuSlotCount >= WIN16_MAX_MENUS Then Exit;
  {$I-} Assign(F, Win16_LoadedPath); Reset(F, 1);
@@ -100349,16 +100431,49 @@ Begin
  Close(F);
  {$I+} If IOResult <> 0 Then Exit;
  Win16_MenuParseLen := BytesRead;
- Win16_MenuParsePos := 4; { MENUHEADER : wVersion(mot) + cbHeaderSize(mot) }
+ Win16_MenuParsePos := 0; { AUCUN MENUHEADER a sauter ici, voir Win16_LogMenuDump }
  Win16_MenuParseOutCnt := 0;
  Win16_MenuParseList(True);
+ { Diagnostic temporaire (2026-09-24, "je ne vois toujours pas Edit",     }
+ { 2e passe - texte de sous-menu apparait dans la barre) - dump brut       }
+ { pour verifier ou l'analyse MENUITEMTEMPLATE derape reellement. }
+ Win16_LogMenuDump(ResOfs, ResLen, BytesRead);
  Win16_MenuSlotHandle[Win16_MenuSlotCount] := Win16_MenuNextHandle;
  Win16_MenuItemCount[Win16_MenuSlotCount] := Win16_MenuParseOutCnt;
  For I := 0 To Win16_MenuParseOutCnt - 1 Do
   Win16_MenuItemText[Win16_MenuSlotCount, I] := Win16_MenuParseOutText[I];
- Win16_ParseMenuResource := Win16_MenuNextHandle;
+ Win16_ParseMenuResourceEx := Win16_MenuNextHandle;
  Inc(Win16_MenuNextHandle);
  Inc(Win16_MenuSlotCount);
+End;
+
+{ BOGUE REEL CORRIGE (2026-09-24, "le menu Edit ne s'affiche toujours     }
+{ pas") : un MENU peut etre nomme par une VRAIE chaine (observe            }
+{ REELLEMENT sur CLOCK.EXE pour d'autres ressources personnalisees, voir   }
+{ Win16_ResourceIdMatches) et pas seulement par un ID entier MAKEINTRESOURCE}
+{ - Win16_ParseMenuResource (entier seul) reste dispo pour LoadMenu/$150   }
+{ qui ne recoit qu'un mot ici (repli deja en place s'il echoue). }
+Function Win16_ParseMenuResource(ResId: Word): Word;
+Begin
+ Win16_ParseMenuResource := Win16_ParseMenuResourceEx(True, ResId, '');
+End;
+
+{ Diagnostic temporaire (2026-09-24, "le menu Edit ne s'affiche toujours    }
+{ pas") : confirme ce que RegisterClass a REELLEMENT lu pour lpszMenuName   }
+{ et ce que la resolution a produit - procedure SEPAREE (voir la lecon       }
+{ Win16_DispatchCall deja trop grosse) pour ne rien ajouter a son corps. }
+Procedure Win16_LogClassMenu(MenuNameSeg, MenuNameOfs, ResolvedMenu: Word;
+ Const NameStrIfAny: String);
+Var LogF: Text;
+Begin
+ {$I-} Assign(LogF, 'CLASSMENU.LOG'); Append(LogF);
+ If IOResult <> 0 Then Begin Assign(LogF, 'CLASSMENU.LOG'); Rewrite(LogF); End;
+ If IOResult = 0 Then Begin
+  WriteLn(LogF, 'lpszMenuName=', HexWord(MenuNameSeg), ':', HexWord(MenuNameOfs),
+   ' nameStr="', NameStrIfAny, '" -> hMenu=', HexWord(ResolvedMenu));
+  Close(LogF);
+ End;
+ {$I+} If IOResult <> 0 Then ;
 End;
 
 { Retrouve le slot (Win16_MenuItemCount/Text) associe a un handle HMENU     }
@@ -103104,6 +103219,7 @@ Var
  ApiDumpI, ApiDumpKK: Integer;
  RCWndClassSeg, RCWndClassOfs: Word;
  RCNameSeg, RCNameOfs: Word;
+ RCMenuNameSeg, RCMenuNameOfs: Word;
  RCIdx: Integer;
  CWClassSeg, CWClassOfs, CWTitleSeg, CWTitleOfs: Word;
  CWX, CWY, CWW, CWH: Word;
@@ -108394,8 +108510,14 @@ Begin
      { jamais lu jusqu'ici) resolu via Win16_ParseMenuResource/LoadMenu -     }
      { reserve WIN16_MENUBAR_H pixels de marge SUPPLEMENTAIRE au-dessus,      }
      { EXACTEMENT comme WIN16_TITLEBAR_H ci-dessous (meme discipline non-      }
-     { invasive, aucune conversion CLIENT->ABSOLU retouchee). }
+     { invasive, aucune conversion CLIENT->ABSOLU retouchee). Repli sur le     }
+     { menu PAR DEFAUT de la classe (Win16_WndClassMenu, RegisterClass) si    }
+     { hMenu est NUL - BOGUE REEL CORRIGE (2026-09-24, "le menu Edit ne        }
+     { s'affiche toujours pas") : CALC.EXE, comme la quasi-totalite des        }
+     { apps simples, n'a JAMAIS passe de hMenu explicite - il compte sur ce    }
+     { repli automatique, exactement comme le VRAI Windows le fait. }
      CWHMenu := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+     If (CWHMenu = 0) And (CWClassIdx >= 0) Then CWHMenu := Win16_WndClassMenu[CWClassIdx];
      If Win16_FindMenuSlot(CWHMenu) >= 0 Then CWMenuH := WIN16_MENUBAR_H
      Else CWMenuH := 0;
      { Marge REELLE pour la barre de titre (2026-09-12, demande explicite,   }
@@ -108780,9 +108902,28 @@ Begin
      Win16_WndClassProcOfs[RCIdx] := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 2));
      Win16_WndClassProcSeg[RCIdx] := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 4));
      Win16_WndClassBg[RCIdx] := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 16));
+     { BOGUE REEL CORRIGE (2026-09-24, "le menu Edit ne s'affiche toujours   }
+     { pas") : lpszMenuName (offset 18, SEGPTR) n'etait JAMAIS lu - la       }
+     { quasi-totalite des apps simples (CALC.EXE compris) attachent leur     }
+     { menu au NIVEAU DE LA CLASSE et passent hMenu=NULL a CreateWindow,     }
+     { s'attendant a ce que ce menu par defaut soit resolu automatiquement.  }
+     { Convention MAKEINTRESOURCE (segment nul = l'offset EST l'ID entier)   }
+     { deja verifiee pour LoadMenu/LoadString. }
+     RCMenuNameOfs := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 18));
+     RCMenuNameSeg := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 20));
+     If (RCMenuNameOfs = 0) And (RCMenuNameSeg = 0) Then
+      Win16_WndClassMenu[RCIdx] := 0 { aucun menu par defaut (pointeur NUL) }
+     Else If RCMenuNameSeg = 0 Then
+      Win16_WndClassMenu[RCIdx] := Win16_ParseMenuResourceEx(True, RCMenuNameOfs, '')
+     Else { nom REEL (chaine), pas un ID MAKEINTRESOURCE - observe reellement }
+      { sur d'autres ressources personnalisees de cette epoque (CLOCK.EXE). }
+      Win16_WndClassMenu[RCIdx] := Win16_ParseMenuResourceEx(False, 0,
+       Win16_ReadGuestString(P.CPU, RCMenuNameSeg, RCMenuNameOfs));
      RCNameOfs := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 22));
      RCNameSeg := Emu_ReadWord(P.CPU, RCWndClassSeg, Word(RCWndClassOfs + 24));
      Win16_WndClassName[RCIdx] := Win16_ReadGuestString(P.CPU, RCNameSeg, RCNameOfs);
+     Win16_LogClassMenu(RCMenuNameSeg, RCMenuNameOfs, Win16_WndClassMenu[RCIdx],
+      Win16_WndClassName[RCIdx]);
      Win16_DebugMsg := 'RegisterClass name="' + Win16_WndClassName[RCIdx] +
       '" proc=' + HexWord(Win16_WndClassProcSeg[RCIdx]) + ':' +
       HexWord(Win16_WndClassProcOfs[RCIdx]) +
