@@ -73,7 +73,9 @@ Const
  MaxSegmentSize=65535;
  SharedBoundary=8192;
  DefaultStackSize=256;
- MaxErrors=100;
+ { Le LD8K historique abandonnait le lien apres une courte rafale
+   d'erreurs afin de ne pas produire des centaines de diagnostics derives. }
+ MaxErrors=25;
 
 Type
  TBuffer=Array[0..254]of Byte;
@@ -181,7 +183,7 @@ TModuleNode=Record Item:TModule;
 Next:PModuleNode
 End;
 TOptions=Record
- OutputName:String;
+ OutputName,MapName:String;
  Relocatable,Strip,SplitID,ReadOnly,Preassign,StackSpecified,MapFile:Boolean;
  StackSize:LongInt
 End;
@@ -202,7 +204,7 @@ Var
  Globals:PGlobal;
  LocalSymbols,LastLocalSymbol:PLocalSymbol;
  Relocations,LastRelocation:PReloc;
- ErrorCount:Integer;
+ ErrorCount,WarningCount:Integer;
  NextSectionNumber:Integer;
  OutputFile:File;
  OutputOpen:Boolean;
@@ -215,6 +217,11 @@ Var
  Modules,LastModule:PModuleNode;
  EntryPoints,LastEntryPoint:PEntryPoint;
  ModuleCount:LongInt;
+ DiagnosticContext:String;
+
+Procedure FreeModule(Var M:TModule);Forward;
+Procedure CleanupAll;Forward;
+Function CheckedAddressAdd(A,B:LongInt;Const What:String):LongInt;Forward;
 
 Function UpperString(S:String):String;
 Var
@@ -273,12 +280,22 @@ Procedure Fatal(Const S:String);Begin
   Close(OutputFile);if IOResult<>0 Then Begin
   End;OutputOpen:=False
  End;
- DeleteQuiet(TemporaryName);WriteLn('LDZ8K: erreur fatale: ',S);Halt(1)
+ DeleteQuiet(TemporaryName);WriteLn('LD8K: fatal error -- ',S);CleanupAll;Halt(1)
+End;
+
+Function DiagnosticName(Const FileName:String):String;
+Begin
+ if DiagnosticContext<>''Then DiagnosticName:=DiagnosticContext
+ else DiagnosticName:=FileName
+End;
+
+Procedure Warning(Const FileName,S:String);Begin
+ Inc(WarningCount);WriteLn('LD8K: ',DiagnosticName(FileName),': warning -- ',S)
 End;
 
 Procedure Error(Const FileName,S:String);Begin
- Inc(ErrorCount);WriteLn('LDZ8K: ',FileName,': erreur: ',S);
- if ErrorCount>=MaxErrors Then Fatal('trop d''erreurs')
+ Inc(ErrorCount);WriteLn('LD8K: ',DiagnosticName(FileName),': error -- ',S);
+ if ErrorCount>=MaxErrors Then Fatal('too many errors')
 End;
 
 Procedure Usage;Begin
@@ -301,6 +318,7 @@ Procedure Usage;Begin
  WriteLn('  -d"ligne"   applique directement une ligne de description');
  WriteLn('  -lxx        recherche la bibliotheque AR8K libxx.a');
  WriteLn('  -m          affiche la map des segments, symboles et references');
+ WriteLn('  -m=fichier  ecrit cette map dans le fichier indique');
  WriteLn('              chemins: repertoire courant, LIB, LIBRARY et repertoire lib');
  WriteLn('  Entrees x.out de XCON et objets UNIDOT acceptes; sortie x.out big-endian.');
  WriteLn('  Les fichiers sans extension recoivent .OBJ.')
@@ -342,6 +360,10 @@ Begin
   else if U='-I'Then Opt.SplitID:=True
   else if U='-N'Then Opt.ReadOnly:=True
   else if U='-M'Then Opt.MapFile:=True
+  else if(Length(S)>3)and(Copy(U,1,3)='-M=')Then Begin
+   Opt.MapFile:=True;Opt.MapName:=Copy(S,4,Length(S));
+   if Opt.MapName=''Then Fatal('-m= exige un nom de fichier')
+  End
   else if U='-W'Then Opt.Preassign:=True
   else if U='-D'Then Begin
    Inc(I);if I>ParamCount Then Fatal('-d exige un fichier de descriptions');
@@ -747,8 +769,9 @@ Begin
  else Error(FileName,'type de bloc UNIDOT inconnu')
 End
 End;
-if not SeenStart Then Error(FileName,'OBOST absent');
-if not SeenEnd Then Error(FileName,'OBOND absent');
+if Ok and not SeenStart Then Error(FileName,'OBOST absent');
+if Ok and not SeenEnd Then Error(FileName,'OBOND absent');
+if SeenStart and SeenEnd and not SeenModule Then Warning(FileName,'OBMOD absent');
 { Les bases 1..254 designent des sections. 255 est reserve et les bases
   a partir de 256 designent obligatoirement une entree externe. }
 OldT:=M.Texts;
@@ -991,7 +1014,10 @@ Begin
  Then Begin
   Close(F);Error(FileName,'tailles de tables x.out incorrectes');Exit
  End;
- ExpectedSize:=16+LongInt(NSeg)*4+InitSize+RelocSize+SymbolSize;
+ ExpectedSize:=CheckedAddressAdd(16,LongInt(NSeg)*4,'x.out segment dictionary');
+ ExpectedSize:=CheckedAddressAdd(ExpectedSize,InitSize,'x.out initialized area');
+ ExpectedSize:=CheckedAddressAdd(ExpectedSize,RelocSize,'x.out relocation table');
+ ExpectedSize:=CheckedAddressAdd(ExpectedSize,SymbolSize,'x.out symbol table');
  if ExpectedSize<>MemberSize Then Begin
   Close(F);Error(FileName,'taille globale x.out incoherente');Exit
  End;
@@ -1041,6 +1067,7 @@ Begin
   BlockRead(F,Assigned,1,N);if N<>1 Then Ok:=False;BlockRead(F,Flag,1,N);
   if N<>1 Then Ok:=False;
   Location:=ReadBEWordFile(F,Ok);Base:=ReadBEWordFile(F,Ok);SegmentIndex:=Assigned+1;
+  if not Ok Then Begin Error(FileName,'relogement x.out tronque');Break End;
   S:=FindObjSection(M,SegmentIndex);if S=Nil Then Begin
    Error(FileName,'segment de relogement x.out inconnu');Continue
   End;
@@ -1088,6 +1115,7 @@ For SymbolIndex:=0 to SymbolSize div 12-1 do Begin
   BlockRead(F,SegmentType,1,N);if N<>1 Then Ok:=False;
   if SegmentType<>0 Then Name:=Name+Chr(SegmentType)
  End;
+ if not Ok Then Begin Error(FileName,'symbole x.out tronque');Break End;
  if Flag=X_SY_SEG Then Begin
   S:=FindObjSection(M,Assigned+1);if S<>Nil Then S^.Name:=Name
  End
@@ -1126,7 +1154,9 @@ Begin
  Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin
   FillChar(M,SizeOf(M),0);M.FileName:=FileName;Error(FileName,'ouverture impossible');Exit
  End;
- BlockRead(F,B,2,N);Close(F);if IOResult<>0 Then Begin
+ BlockRead(F,B,2,N);if(N<>2)and(IOResult<>0)Then Begin End;
+ Close(F);if IOResult<>0 Then Begin
+  FillChar(M,SizeOf(M),0);M.FileName:=FileName;Error(FileName,'erreur de fermeture');Exit
  End;
  if N<>2 Then Begin
   FillChar(M,SizeOf(M),0);M.FileName:=FileName;Error(FileName,'fichier trop court');Exit
@@ -1143,6 +1173,12 @@ Begin
  New(E);if E=Nil Then Fatal('memoire pleine');E^.Section:=S;E^.Value:=Value;E^.Addend:=Addend;
  E^.ExternalName:=Copy(ExternalName,1,8);E^.Origin:=Origin;E^.Next:=Nil;
  if LastEntryPoint=Nil Then EntryPoints:=E else LastEntryPoint^.Next:=E;LastEntryPoint:=E
+End;
+
+Function CheckedAddressAdd(A,B:LongInt;Const What:String):LongInt;
+Begin
+ if(A<0)or(B<0)or(A>2147483647-B)Then Fatal('32-bit overflow -- '+What);
+ CheckedAddressAdd:=A+B
 End;
 
 Procedure LayoutModule(Var M:TModule);
@@ -1185,7 +1221,8 @@ Begin
      End else Begin
       S:=FindObjSection(M,Z^.Section);
       if S=Nil Then Error(M.FileName,'cible indirecte dans un segment inconnu')else Begin
-       G^.Defined:=True;G^.Section:=S^.OutputSection;G^.Value:=S^.OutputBase+Z^.Value;
+       G^.Defined:=True;G^.Section:=S^.OutputSection;
+       G^.Value:=CheckedAddressAdd(S^.OutputBase,Z^.Value,'indirect symbol '+Y^.Name);
        G^.DefinedIn:=M.FileName
       End
      End
@@ -1210,7 +1247,8 @@ Begin
      if G^.Defined Then Error(M.FileName,'symbole defini plusieurs fois: '+Y^.Name)
      else
      Begin
-      G^.Defined:=True;G^.Section:=S^.OutputSection;G^.Value:=S^.OutputBase+Y^.Value;
+      G^.Defined:=True;G^.Section:=S^.OutputSection;
+      G^.Value:=CheckedAddressAdd(S^.OutputBase,Y^.Value,'symbol '+Y^.Name);
       if M.Name<>''Then G^.DefinedIn:=M.Name else G^.DefinedIn:=M.FileName
      End
     End
@@ -1224,7 +1262,8 @@ Begin
    else Begin
     New(L);if L=Nil Then Fatal('memoire pleine');L^.Name:=Y^.Name;
     if S=Nil Then Begin L^.Section:=Nil;L^.Value:=Y^.Value End
-    else Begin L^.Section:=S^.OutputSection;L^.Value:=S^.OutputBase+Y^.Value End;
+    else Begin L^.Section:=S^.OutputSection;
+     L^.Value:=CheckedAddressAdd(S^.OutputBase,Y^.Value,'local symbol '+Y^.Name) End;
     L^.Next:=Nil;
     if LastLocalSymbol=Nil Then LocalSymbols:=L else LastLocalSymbol^.Next:=L;
     LastLocalSymbol:=L
@@ -1239,7 +1278,8 @@ Begin
   End else Begin
    S:=FindObjSection(M,Byte(M.TransferBase));
    if S=Nil Then Error(M.FileName,'base du point d''entree inconnue')
-   else AddEntryPoint(S^.OutputSection,S^.OutputBase+M.TransferValue,0,'',M.FileName)
+   else AddEntryPoint(S^.OutputSection,
+    CheckedAddressAdd(S^.OutputBase,M.TransferValue,'entry point'),0,'',M.FileName)
   End
  End
 End;
@@ -1372,8 +1412,9 @@ Begin
  T:=M.Texts;
  While T<>Nil do Begin
   S:=FindObjSection(M,T^.Section);if S<>Nil Then Begin
-   OutOffset:=S^.OutputBase+T^.Offset;
-   For I:=0 to T^.Count-1 do PutImageByte(S^.OutputSection,OutOffset+I,T^.Data[I]);
+   OutOffset:=CheckedAddressAdd(S^.OutputBase,T^.Offset,'text block address');
+   For I:=0 to T^.Count-1 do PutImageByte(S^.OutputSection,
+    CheckedAddressAdd(OutOffset,I,'text byte address'),T^.Data[I]);
    R:=T^.Relocs;
    While R<>Nil do Begin
     Addend:=0;NewBase:=0;
@@ -1406,8 +1447,10 @@ Begin
       Addend:=Target^.OutputBase;NewBase:=Target^.OutputSection^.Number
      End
     End;
-    ApplyAddend(S^.OutputSection,OutOffset+R^.Offset,R^.Action,Addend);
-    if NewBase<>0 Then AddOutputRelocation(S^.OutputSection,OutOffset+R^.Offset,R^.Action,
+    ApplyAddend(S^.OutputSection,CheckedAddressAdd(OutOffset,R^.Offset,
+     'relocation address'),R^.Action,Addend);
+    if NewBase<>0 Then AddOutputRelocation(S^.OutputSection,
+    CheckedAddressAdd(OutOffset,R^.Offset,'relocation output address'),R^.Action,
     NewBase,R^.Width);
     R:=R^.Next
    End
@@ -1784,22 +1827,46 @@ Begin
 End;
 
 Procedure PrintLoadMap;
-Var S:POutSection;G:PGlobal;R:PReference;
+Var S:POutSection;G:PGlobal;R:PReference;MapText:Text;ToFile:Boolean;
 Begin
  if not Opt.MapFile Then Exit;
- WriteLn('Load map for ',Opt.OutputName);WriteLn;WriteLn('Segments:');
+ ToFile:=Opt.MapName<>'';
+ if ToFile Then Begin
+  Assign(MapText,Opt.MapName);Rewrite(MapText);
+  if IOResult<>0 Then Fatal('cannot create map file: '+Opt.MapName)
+ End;
+ if ToFile Then Begin
+  WriteLn(MapText,'Load map for ',Opt.OutputName);WriteLn(MapText);WriteLn(MapText,'Segments:')
+ End else Begin WriteLn('Load map for ',Opt.OutputName);WriteLn;WriteLn('Segments:') End;
  S:=OutSections;While S<>Nil do Begin
-  WriteLn(' ',S^.AssignedNumber:3,' ',Copy(S^.Name,1,8):8,' type=',S^.SegmentType,
+  if ToFile Then WriteLn(MapText,' ',S^.AssignedNumber:3,' ',Copy(S^.Name,1,8):8,
+   ' type=',S^.SegmentType,' size=',S^.Size,' base=',S^.LoadBase)
+  else WriteLn(' ',S^.AssignedNumber:3,' ',Copy(S^.Name,1,8):8,' type=',S^.SegmentType,
    ' size=',S^.Size,' base=',S^.LoadBase);S:=S^.Next
  End;
- WriteLn;WriteLn('Symbols:');G:=Globals;
+ if ToFile Then Begin WriteLn(MapText);WriteLn(MapText,'Symbols:') End
+ else Begin WriteLn;WriteLn('Symbols:') End;G:=Globals;
  While G<>Nil do Begin
-  Write(' ',G^.Name:8,' ',SymbolSectionName(G):6,' ',G^.Value:6);
-  if G^.CommonSize<>0 Then Write(' COMMON=',G^.CommonSize);
-  if G^.DefinedIn<>''Then Write(' defined=',G^.DefinedIn);
-  R:=G^.References;if R<>Nil Then Write(' refs=');
-  While R<>Nil do Begin Write(R^.ModuleName);if R^.Next<>Nil Then Write(',');R:=R^.Next End;
-  WriteLn;G:=G^.Next
+  if ToFile Then Write(MapText,' ',G^.Name:8,' ',SymbolSectionName(G):6,' ',G^.Value:6)
+  else Write(' ',G^.Name:8,' ',SymbolSectionName(G):6,' ',G^.Value:6);
+  if G^.CommonSize<>0 Then if ToFile Then Write(MapText,' COMMON=',G^.CommonSize)
+   else Write(' COMMON=',G^.CommonSize);
+  if G^.DefinedIn<>''Then if ToFile Then Write(MapText,' defined=',G^.DefinedIn)
+   else Write(' defined=',G^.DefinedIn);
+  R:=G^.References;if R<>Nil Then if ToFile Then Write(MapText,' refs=')else Write(' refs=');
+  While R<>Nil do Begin
+   if ToFile Then Write(MapText,R^.ModuleName)else Write(R^.ModuleName);
+   if R^.Next<>Nil Then if ToFile Then Write(MapText,',')else Write(',');R:=R^.Next
+  End;
+  if ToFile Then WriteLn(MapText)else WriteLn;G:=G^.Next
+ End;
+ if ToFile Then Begin
+  if IOResult<>0 Then Begin Close(MapText);if IOResult<>0 Then Begin End;
+   DeleteQuiet(Opt.MapName);Fatal('cannot write map file: '+Opt.MapName)
+  End;
+  Close(MapText);if IOResult<>0 Then Begin
+   DeleteQuiet(Opt.MapName);Fatal('cannot close map file: '+Opt.MapName)
+  End
  End
 End;
 
@@ -2253,6 +2320,49 @@ Begin
  End
 End;
 
+Procedure CleanupAll;
+Var
+ I,INext:PInput;
+ D,DNext:PDescriptor;
+ A,ANext:PSegmentAlias;
+ S,SNext:POutSection;
+ Im,ImNext:PImage;
+ G,GNext:PGlobal;
+ Ref,RefNext:PReference;
+ L,LNext:PLocalSymbol;
+ R,RNext:PReloc;
+ E,ENext:PEntryPoint;
+ MN,MNNext:PModuleNode;
+Begin
+ MN:=Modules;While MN<>Nil do Begin
+  MNNext:=MN^.Next;FreeModule(MN^.Item);Dispose(MN);MN:=MNNext
+ End;Modules:=Nil;LastModule:=Nil;
+ I:=Inputs;While I<>Nil do Begin INext:=I^.Next;Dispose(I);I:=INext End;
+ Inputs:=Nil;LastInput:=Nil;
+ I:=ForcedUndefined;While I<>Nil do Begin INext:=I^.Next;Dispose(I);I:=INext End;
+ ForcedUndefined:=Nil;LastForced:=Nil;
+ D:=Descriptors;While D<>Nil do Begin DNext:=D^.Next;Dispose(D);D:=DNext End;
+ Descriptors:=Nil;LastDescriptor:=Nil;
+ A:=SegmentAliases;While A<>Nil do Begin ANext:=A^.Next;Dispose(A);A:=ANext End;
+ SegmentAliases:=Nil;
+ R:=Relocations;While R<>Nil do Begin RNext:=R^.Next;Dispose(R);R:=RNext End;
+ Relocations:=Nil;LastRelocation:=Nil;
+ L:=LocalSymbols;While L<>Nil do Begin LNext:=L^.Next;Dispose(L);L:=LNext End;
+ LocalSymbols:=Nil;LastLocalSymbol:=Nil;
+ G:=Globals;While G<>Nil do Begin
+  GNext:=G^.Next;Ref:=G^.References;
+  While Ref<>Nil do Begin RefNext:=Ref^.Next;Dispose(Ref);Ref:=RefNext End;
+  Dispose(G);G:=GNext
+ End;Globals:=Nil;
+ E:=EntryPoints;While E<>Nil do Begin ENext:=E^.Next;Dispose(E);E:=ENext End;
+ EntryPoints:=Nil;LastEntryPoint:=Nil;
+ S:=OutSections;While S<>Nil do Begin
+  SNext:=S^.Next;Im:=S^.FirstImage;
+  While Im<>Nil do Begin ImNext:=Im^.Next;Dispose(Im);Im:=ImNext End;
+  Dispose(S);S:=SNext
+ End;OutSections:=Nil;LastOutSection:=Nil
+End;
+
 Function ModuleResolvesNeeded(Var M:TModule):Boolean;
 Var Y:PObjSymbol;G:PGlobal;
 Begin
@@ -2282,11 +2392,13 @@ Begin
 End;
 
 Function IsArchiveFile(Const FileName:String):Boolean;
-Var F:File;B:Array[0..1]of Byte;N:Word;
+Var F:File;B:Array[0..1]of Byte;N:Word;CloseOk:Boolean;
 Begin
  Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin IsArchiveFile:=False;Exit End;
- BlockRead(F,B,2,N);Close(F);if IOResult<>0 Then Begin End;
- IsArchiveFile:=(N=2)and(((B[0]=$FF)and(B[1]=$65))or((B[0]=$65)and(B[1]=$FF)))
+ BlockRead(F,B,2,N);if IOResult<>0 Then N:=0;
+ Close(F);CloseOk:=IOResult=0;
+ IsArchiveFile:=CloseOk and(N=2)and(((B[0]=$FF)and(B[1]=$65))or
+  ((B[0]=$65)and(B[1]=$FF)))
 End;
 
 Function ArchiveLong(Const H:TBuffer;P:Integer;LittleEndian:Boolean):LongInt;
@@ -2320,8 +2432,9 @@ Begin
  LittleEndian:=(B[0]=$65);Position:=2;
  While Position<Total do Begin
   if not UndefinedGlobals Then Break;
-  if Position>Total-AR8K_HEADER_SIZE Then Begin Error(FileName,'en-tete de membre AR8K tronque');Break End;
-  Seek(F,Position);BlockRead(F,H,AR8K_HEADER_SIZE,N);if N<>AR8K_HEADER_SIZE Then Begin
+ if Position>Total-AR8K_HEADER_SIZE Then Begin Error(FileName,'en-tete de membre AR8K tronque');Break End;
+  Seek(F,Position);if IOResult<>0 Then Begin Error(FileName,'recherche du membre AR8K impossible');Break End;
+  BlockRead(F,H,AR8K_HEADER_SIZE,N);if N<>AR8K_HEADER_SIZE Then Begin
    Error(FileName,'lecture d''en-tete AR8K impossible');Break
   End;
   MemberName:=ArchiveMemberName(H);if MemberName=''Then Break;
@@ -2332,7 +2445,8 @@ Begin
   if not IsArchiveIndex(MemberName)Then Begin
    DisplayName:=FileName+'('+MemberName+')';BeforeErrors:=ErrorCount;
    Close(F);if IOResult<>0 Then Begin Error(FileName,'erreur de fermeture temporaire');Break End;
-   ReadXOutAt(FileName,DataPosition,MemberSize,M);M.FileName:=DisplayName;
+   DiagnosticContext:=DisplayName;ReadXOutAt(FileName,DataPosition,MemberSize,M);
+   DiagnosticContext:='';M.FileName:=DisplayName;
    Assign(F,FileName);Reset(F,1);if IOResult<>0 Then Begin
     Error(FileName,'reouverture de l''archive impossible');FreeModule(M);Exit
    End;
@@ -2362,7 +2476,7 @@ End;
 
 Var
  P:PInput;
- MN,MNext:PModuleNode;
+ MN:PModuleNode;
  M:TModule;
 
 BEGIN
@@ -2370,7 +2484,7 @@ BEGIN
  Descriptors:=Nil;LastDescriptor:=Nil;SegmentAliases:=Nil;
  LastOutSection:=Nil;
  Globals:=Nil;LocalSymbols:=Nil;LastLocalSymbol:=Nil;
- Relocations:=Nil;LastRelocation:=Nil;ErrorCount:=0;
+ Relocations:=Nil;LastRelocation:=Nil;ErrorCount:=0;WarningCount:=0;DiagnosticContext:='';
  NextSectionNumber:=1;OutputOpen:=False;TemporaryName:='';ModuleCount:=0;Modules:=Nil;
  LastModule:=Nil;
  EntryPoints:=Nil;LastEntryPoint:=Nil;
@@ -2387,24 +2501,23 @@ BEGIN
  End;
  if ErrorCount<>0 Then Break;P:=P^.Next
  End;
- if not TargetKnown Then Begin
+ if(ErrorCount=0)and not TargetKnown Then Begin
   { Un UNIDOT sans aucun relogement discriminant ne porte pas de champ CPU.
     La convention historique par defaut est alors le Z8002 non segmente. }
   TargetKnown:=True;TargetSegmented:=False
  End;
- AllocateCommonSymbols;ApplyLayoutOptions;ResolveRuntimeSymbols;ResolveEntryPoints;SortGlobals;
- AssignExternalBases;
- MN:=Modules;
- While(MN<>Nil)and(ErrorCount=0)do Begin
-  CopyAndRelocateModule(MN^.Item);MN:=MN^.Next
+ if ErrorCount=0 Then Begin
+  AllocateCommonSymbols;ApplyLayoutOptions;ResolveRuntimeSymbols;ResolveEntryPoints;SortGlobals;
+  AssignExternalBases;
+  MN:=Modules;
+  While(MN<>Nil)and(ErrorCount=0)do Begin
+   CopyAndRelocateModule(MN^.Item);MN:=MN^.Next
+  End
  End;
  if(ErrorCount=0)Then Begin WriteXOut;PrintLoadMap End;
- MN:=Modules;
- While MN<>Nil do Begin
-  MNext:=MN^.Next;FreeModule(MN^.Item);Dispose(MN);MN:=MNext
- End;
  if ErrorCount<>0 Then Begin
-  WriteLn(ErrorCount,' erreur(s)');Halt(1)
+  WriteLn(ErrorCount,' erreur(s), ',WarningCount,' avertissement(s)');CleanupAll;Halt(1)
  End;
- WriteLn('LDZ8K: ',ModuleCount,' module(s) lies dans ',Opt.OutputName);Halt(0)
+ WriteLn('LDZ8K: ',ModuleCount,' module(s) lies dans ',Opt.OutputName);
+ if WarningCount<>0 Then WriteLn(WarningCount,' avertissement(s)');CleanupAll;Halt(0)
 END.
