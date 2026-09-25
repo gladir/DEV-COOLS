@@ -185,6 +185,13 @@ TOptions=Record
  Relocatable,Strip,SplitID,ReadOnly,Preassign,StackSpecified,MapFile:Boolean;
  StackSize:LongInt
 End;
+PEntryPoint=^TEntryPoint;
+TEntryPoint=Record
+ Section:POutSection;
+ Value,Addend:LongInt;
+ ExternalName,Origin:String;
+ Next:PEntryPoint
+End;
 
 Var
  Opt:TOptions;
@@ -206,6 +213,7 @@ Var
  TransferBase:Word;
  TargetKnown,TargetSegmented:Boolean;
  Modules,LastModule:PModuleNode;
+ EntryPoints,LastEntryPoint:PEntryPoint;
  ModuleCount:LongInt;
 
 Function UpperString(S:String):String;
@@ -971,6 +979,14 @@ Begin
  Then ReadXOut(FileName,M)else ReadUnidot(FileName,M)
 End;
 
+Procedure AddEntryPoint(S:POutSection;Value,Addend:LongInt;Const ExternalName,Origin:String);
+Var E:PEntryPoint;
+Begin
+ New(E);if E=Nil Then Fatal('memoire pleine');E^.Section:=S;E^.Value:=Value;E^.Addend:=Addend;
+ E^.ExternalName:=Copy(ExternalName,1,8);E^.Origin:=Origin;E^.Next:=Nil;
+ if LastEntryPoint=Nil Then EntryPoints:=E else LastEntryPoint^.Next:=E;LastEntryPoint:=E
+End;
+
 Procedure LayoutModule(Var M:TModule);
 Var
  S:PObjSection;
@@ -1057,12 +1073,15 @@ Begin
    End
   End;Y:=Y^.Next
  End;
- if M.HasTransfer and not HasTransfer Then Begin
-  S:=FindObjSection(M,Byte(M.TransferBase));
-  if S=Nil Then Error(M.FileName,'base du point d''entree inconnue')else
-  Begin
-   HasTransfer:=True;TransferValue:=S^.OutputBase+M.TransferValue;
-   TransferBase:=S^.OutputSection^.Number
+ if M.HasTransfer Then Begin
+  if M.TransferBase>=RBEXT Then Begin
+   Y:=M.Symbols;While(Y<>Nil)and(Y^.ExternalBase<>M.TransferBase)do Y:=Y^.Next;
+   if Y=Nil Then Error(M.FileName,'indice externe du point d''entree inconnu')
+   else AddEntryPoint(Nil,0,M.TransferValue,Y^.Name,M.FileName)
+  End else Begin
+   S:=FindObjSection(M,Byte(M.TransferBase));
+   if S=Nil Then Error(M.FileName,'base du point d''entree inconnue')
+   else AddEntryPoint(S^.OutputSection,S^.OutputBase+M.TransferValue,0,'',M.FileName)
   End
  End
 End;
@@ -1526,6 +1545,57 @@ Begin
  ResolveRuntimeBoundary('_etext',X_SG_COD,X_SG_COD);
  ResolveRuntimeBoundary('_edata',X_SG_DAT,X_SG_CON);
  ResolveRuntimeBoundary('_end',X_SG_BSS,X_SG_STK)
+End;
+
+Function ExecutableSection(S:POutSection):Boolean;
+Begin
+ ExecutableSection:=(S<>Nil)and(S^.SegmentType in[X_SG_COD,X_SG_MXU,X_SG_MXP])and
+ ((S^.Attributes and 1)=0)
+End;
+
+Procedure ResolveEntryPoints;
+Var E:PEntryPoint;G:PGlobal;S,ChosenSection:POutSection;V,ChosenValue:LongInt;Chosen:Boolean;
+Begin
+ Chosen:=False;ChosenSection:=Nil;ChosenValue:=0;E:=EntryPoints;
+ While E<>Nil do Begin
+  S:=E^.Section;V:=E^.Value;
+  if E^.ExternalName<>''Then Begin
+   G:=FindGlobal(E^.ExternalName);
+   if(G=Nil)or not G^.Defined Then Begin
+    if not Opt.Relocatable Then Error(E^.Origin,'point d''entree externe non defini: '+E^.ExternalName);
+    E:=E^.Next;Continue
+   End;
+   if G^.Absolute Then Begin
+    Error(E^.Origin,'le point d''entree externe est absolu');E:=E^.Next;Continue
+   End;
+   S:=G^.Section;V:=G^.Value+E^.Addend
+  End;
+  if not ExecutableSection(S)Then Error(E^.Origin,'point d''entree hors d''une section executable')
+  else if(V<0)or(V>=S^.Size)Then Error(E^.Origin,'point d''entree hors des limites de sa section')
+  else if not Chosen Then Begin Chosen:=True;ChosenSection:=S;ChosenValue:=V End
+  else if(ChosenSection<>S)or(ChosenValue<>V)Then
+   Error(E^.Origin,'plusieurs points d''entree incompatibles');
+  E:=E^.Next
+ End;
+ if not Chosen and not Opt.Relocatable Then Begin
+  S:=OutSections;While(S<>Nil)and not ExecutableSection(S)do S:=S^.Next;
+  if S=Nil Then Error(Opt.OutputName,'aucune section executable pour le point d''entree implicite')
+  else Begin Chosen:=True;ChosenSection:=S;ChosenValue:=0 End
+ End;
+ HasTransfer:=Chosen;
+ if Chosen Then Begin
+  TransferBase:=ChosenSection^.Number;TransferValue:=ChosenValue;
+  { x.out n'a pas de champ d'entree: _start est la representation
+    inter-module compatible avec la convention de demarrage CP/M-8000. }
+  G:=GetGlobal('_start');
+  if G^.Defined Then Begin
+   if G^.Absolute or(G^.Section<>ChosenSection)or(G^.Value<>ChosenValue)Then
+    Error(Opt.OutputName,'_start incompatible avec le point d''entree')
+  End else Begin
+   G^.Defined:=True;G^.Absolute:=False;G^.Section:=ChosenSection;G^.Value:=ChosenValue;
+   G^.DefinedIn:='LDZ8K'
+  End
+ End
 End;
 
 Procedure SortGlobals;
@@ -2145,6 +2215,7 @@ BEGIN
  Relocations:=Nil;LastRelocation:=Nil;ErrorCount:=0;
  NextSectionNumber:=1;OutputOpen:=False;TemporaryName:='';ModuleCount:=0;Modules:=Nil;
  LastModule:=Nil;
+ EntryPoints:=Nil;LastEntryPoint:=Nil;
  HasTransfer:=False;TransferValue:=0;TransferBase:=0;
  TargetKnown:=False;TargetSegmented:=False;
  ParseCommandLine;InitializePreassignedSegments;ProcessSegmentDescriptions;
@@ -2163,7 +2234,7 @@ BEGIN
     La convention historique par defaut est alors le Z8002 non segmente. }
   TargetKnown:=True;TargetSegmented:=False
  End;
- AllocateCommonSymbols;ApplyLayoutOptions;ResolveRuntimeSymbols;SortGlobals;
+ AllocateCommonSymbols;ApplyLayoutOptions;ResolveRuntimeSymbols;ResolveEntryPoints;SortGlobals;
  AssignExternalBases;
  MN:=Modules;
  While(MN<>Nil)and(ErrorCount=0)do Begin
