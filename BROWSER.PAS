@@ -16787,26 +16787,25 @@ Begin
  DrawVScrollBar;
  DrawHScrollBar;
 
- { Le chrome du navigateur est une couche fixe qui doit rester peinte
-   par-dessus le document - mais SEULEMENT quand quelque chose a pu
-   reellement l'atteindre. La redessiner a chaque passe legere de survol
-   (SkipNextRenderAreaClear, voir RescrollPageAfterHover) provoquait un
-   effacement/redessin de la barre d'URL et des 4 boutons a CHAQUE
-   deplacement de souris au-dessus d'un menu (ex: page d'accueil avec
-   menu JSCookMenu) - signale par l'utilisateur comme un lag important,
-   pour un simple survol qui ne touche jamais cette zone. On ne force le
-   redessin pendant une passe de survol que si un sous-menu absolu a
-   reellement debord dans la bande verticale de la barre d'outils
-   (LastOverlayY1 < RENDER_AREA_Y) - seul cas reel ou elle pouvait etre
-   recouverte, sinon inutile. }
- If (Not SkipNextRenderAreaClear) Or
-    (LastOverlayRectValid And (LastOverlayY1 < RENDER_AREA_Y)) Then Begin
-  DrawURLBar;
-  DrawBackButton;
-  DrawForwardButton;
-  DrawRefreshButton;
-  DrawFavoriteButton;
- End;
+ { Le chrome du navigateur (barre d'URL + 4 boutons) est une couche fixe
+   qui doit TOUJOURS etre repeinte apres le document, meme pendant une
+   passe legere de survol (SkipNextRenderAreaClear) - un essai precedent
+   avait saute ce redessin pendant le survol en supposant que rien ne
+   pouvait jamais peindre au-dessus de RENDER_AREA_Y, mais un vrai
+   rendu de page (JSCookMenu, sous-menus, etc.) pouvait quand meme
+   recouvrir cette zone par un chemin qui ne passe pas par les
+   enveloppes Bar/Rectangle/OutTextXY protegees par YInVisibleBand -
+   sans ce redessin systematique, la barre d'URL et ses boutons
+   restaient alors DEFINITIVEMENT effaces des le premier survol
+   (regression signalee par l'utilisateur). La vraie cause du lag
+   d'origine (CSSExtractFromDocument re-telechargeant le CSS externe a
+   chaque survol) est corrigee plus haut, independamment de ce
+   redessin - il n'y a donc plus besoin de le sauter ici. }
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
 End;
 
 { Procedure pour tester le rendu avec du HTML }
