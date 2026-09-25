@@ -478,7 +478,8 @@ Var
  B:TBuffer;
  N:Word;
  P,I:Integer;
- Ok,SegmentedSeen:Boolean;
+ Ok:Boolean;
+ TargetKind:Integer;
  S:PObjSection;
  Y:PObjSymbol;
  T:PText;
@@ -493,7 +494,9 @@ Begin
   Error(FileName,'ouverture impossible');Exit
  End;
  Total:=FileSize(F);Position:=0;Ok:=True;LastS:=Nil;LastY:=Nil;LastT:=Nil;
- ExternalNumber:=RBEXT;SegmentedSeen:=False;
+ ExternalNumber:=RBEXT;TargetKind:=-1;
+ if UpperString(Extension(FileName))='.8KS'Then TargetKind:=1
+ else if UpperString(Extension(FileName))='.8KN'Then TargetKind:=0;
  While(Position<Total)and Ok do Begin
   Kind:=ReadByte(F,Position,Total,Ok);Len:=ReadByte(F,Position,Total,Ok);
   if not Ok or(Position+Len>Total)Then Begin
@@ -558,7 +561,13 @@ Begin
       End;
       New(R);if R=Nil Then Fatal('memoire pleine');FillChar(R^,SizeOf(R^),0);
       R^.Offset:=B[P]-6;R^.Action:=LE16(B,P+1)and RAMSK;R^.Base:=LE16(B,P+1)and RBMSK;
-      if(R^.Action=RAZOF)or(R^.Action=RAZSS)or(R^.Action=RAZLS)Then SegmentedSeen:=True;
+      if(R^.Action=RAZOF)or(R^.Action=RAZSS)or(R^.Action=RAZLS)Then Begin
+       if TargetKind=0 Then Error(FileName,'melange de relogements Z8001 et Z8002 dans le module');
+       TargetKind:=1
+      End else if((R^.Action=RAA16M)or(R^.Action=RAA32M))and(R^.Base<>0)Then Begin
+       if TargetKind=1 Then Error(FileName,'melange de relogements Z8001 et Z8002 dans le module');
+       TargetKind:=0
+      End;
       Case R^.Action of RAA8:R^.Width:=1;RAA32,RAA32M,RAZLS:R^.Width:=4;else R^.Width:=2
      End;
      if(R^.Offset<0)or(R^.Offset+R^.Width>T^.Count)Then Error(FileName,
@@ -583,7 +592,7 @@ Begin
  else Error(FileName,'type de bloc UNIDOT inconnu')
 End
 End;Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture');
-M.TargetKnown:=True;M.TargetSegmented:=SegmentedSeen
+M.TargetKnown:=TargetKind>=0;M.TargetSegmented:=TargetKind=1
 End;
 
 Function CreateOutSection(Const Name:String;Attributes,SegmentType:Byte):POutSection;
@@ -818,6 +827,8 @@ Begin
   if N<>1 Then Ok:=False;
   SegmentLength:=ReadBEWordFile(F,Ok);New(S);if S=Nil Then Fatal('memoire pleine');
   FillChar(S^,SizeOf(S^),0);
+  if(Assigned<>255)and(Assigned>126)Then
+   Error(FileName,'numero de segment physique x.out hors plage 0..126');
   if not(SegmentType in[X_SG_BSS,X_SG_STK,X_SG_COD,X_SG_CON,X_SG_DAT,X_SG_MXU,X_SG_MXP])
   Then   Error(FileName,'type de segment x.out inconnu');
   S^.Number:=I+1;S^.AssignedNumber:=Assigned;S^.SegmentType:=SegmentType;
@@ -870,10 +881,12 @@ Begin
   End;
   X_RL_SSG,X_RL_XSSG:
   Begin
+   if not Segmented Then Error(FileName,'pointeur segmente court dans un objet Z8002');
    R^.Action:=RAZSS;R^.Width:=2
   End;
   X_RL_LSG,X_RL_XLSG:
   Begin
+   if not Segmented Then Error(FileName,'pointeur segmente long dans un objet Z8002');
    R^.Action:=RAZLS;R^.Width:=4
   End;
   else
@@ -1395,6 +1408,8 @@ Var
  U:String;
  RequestedStack:LongInt;
 Begin
+ if TargetSegmented and Opt.SplitID Then
+  Fatal('-i est reserve aux programmes Z8002 non segmentes');
  if Opt.ReadOnly and TargetSegmented Then
   Fatal('-n est incompatible avec un chargement segmente Z8001');
  if Opt.ReadOnly and Opt.SplitID Then
@@ -2022,8 +2037,13 @@ BEGIN
    ReadObject(P^.Name,M);
    if ErrorCount=0 Then Begin if not AcceptModule(M)Then FreeModule(M)End
    else FreeModule(M)
-  End;
-  if ErrorCount<>0 Then Break;P:=P^.Next
+ End;
+ if ErrorCount<>0 Then Break;P:=P^.Next
+ End;
+ if not TargetKnown Then Begin
+  { Un UNIDOT sans aucun relogement discriminant ne porte pas de champ CPU.
+    La convention historique par defaut est alors le Z8002 non segmente. }
+  TargetKnown:=True;TargetSegmented:=False
  End;
  AllocateCommonSymbols;ApplyLayoutOptions;
  AssignExternalBases;
