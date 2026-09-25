@@ -50,184 +50,184 @@ Const
  ciDecAX=$48;{"DEC AX",88+}
  ciDecBP=$4D;{"DEC BP",88+}
  ciDecBX=$4B;{"DEC BX",88+}
- ciDecCX=$49;{®DEC CX¯,88+}
- ciDecDI=$4F;{®DEC DI¯,88+}
- ciDecDX=$4A;{®DEC DX¯,88+}
- ciDecSI=$4E;{®DEC SI¯,88+}
- ciDecSP=$4C;{®DEC SP¯,88+}
- ciDS=$3E;{®DS¯,88+}
- ciES=$26;{®ES¯,88+}
- ciFS=$64;{®FS¯,386+}
- ciGS=$65;{®GS¯,386+}
- ciHLT=$F4;{®HLT¯,88+}
- ciIncAX=$40;{®INC AX¯,88+}
- ciIncBP=$45;{®INC BP¯,88+}
- ciIncBX=$43;{®INC BX¯,88+}
- ciIncCX=$41;{®INC CX¯,88+}
- ciIncDI=$47;{®INC DI¯,88+}
- ciIncDX=$42;{®INC DX¯,88+}
- ciIncSI=$46;{®INC SI¯,88+}
- ciIncSP=$44;{®INC SP¯,88+}
- ciInsB=$6C;{®INSB¯,88+}
- ciInsW=$6D;{®INSW¯,88+}
- ciInt=$CD;{®INT ??h¯,88+}
- ciIntO=$CE;{®INTO¯,88+}
- ciIRet=$CF;{®IRET¯,88+}
- ciJBE=$76;{®JBE ?¯,88+}
- ciJC=$72;{®JC ?¯,88+}
- ciJG=$7E;{®JG ?¯,88+}
- ciJL=$7C;{®JL ?¯,88+}
- ciJMP_Word=$E9;{®JMP ????¯,88+}
- ciJNBE=$77;{®JNBE ?¯,88+}
- ciJNC=$73;{®JNC ?¯,88+}
- ciJNG=$7F;{®JNG ?¯,88+}
- ciJNL=$7D;{®JNL ?¯,88+}
- ciJNO=$71;{®JNO ?¯,88+}
- ciJNP=$7B;{®JNP ?¯,88+}
- ciJNS=$79;{®JNS ?¯,88+}
- ciJNZ=$75;{®JNZ ?¯,88+}
- ciJO=$70;{®JO ?¯,88+}
- ciJP=$7A;{®JP ?¯,88+}
- ciJS=$78;{®JS ?¯,88+}
- ciJZ=$74;{®JZ ?¯,88+}
- ciLAHF=$9F;{®LAHF¯,88+}
- ciLAR=$020F;{®LAR¯,386+}
- ciLeave=$C9;{®LEAVE¯,286+}
- ciLDS=$C5;{®LDS reg,mem¯,88+}
- ciLES=$C4;{®LES reg,mem¯,88+}
- ciLFS=$B40F;{®LFS reg,mem¯,386+}
- ciLGS=$B50F;{®LGS reg,mem¯,386+}
- ciLock=$F0;{®LOCK ?¯,88+}
- ciLODSB=$AC;{®LODSB¯,88+}
- ciLODSD=$AD66;{®LODSD¯,386+}
- ciLODSW=$AD;{®LODSW¯,88+}
- ciLSL=$030F;{®LSL ?¯,386+}
- ciLSS=$B20F;{®LSS reg,mem¯,386+}
- ciMovAL_=$A0;{®MOV AL,[addr]¯,286+}
- ciMovAL_Byte=$B0;{®MOV AL,??¯,88+}
- ciMovAX_=$A1;{®MOV AX,[addr]¯,286+}
- ciMovAX_Word=$B8;{®MOV AX,????¯, 88+}
- ciMovAH_AL=$E08A;{®MOV AH,AL¯,88+}
- ciMovBP_SP=$EC8B;{®MOV BP,SP¯,88+}
- ciMovBX_CX=$D98B;{®MOV BX,CX¯,88+}
- ciMovCX_BX=$CB8B;{®MOV CX,BX¯,88+}
- ciMovDX_Word=$BA;{®MOV DX,????¯,88+}
- ciMovEAX_ES_DI=$058B6626;{®MOV EAX,ES:[DI]¯,386+}
- ciMovES_DI_EAX=$05896626;{®MOV ES:[DI],EAX¯,386+}
- ciMovSB=$A4;{®MOVSB¯,88+}
- ciMovSD=$A566;{®MOVSD¯,386+}
- ciMovSW=$A5;{®MOVSW¯,88+}
- ciNOP=$90;{®NOP¯,88+}
- ciOutDX_AL=$EE;{®OUT DX,AL¯,88+}
- ciOutDX_AX=$EF;{®OUT DX,AX¯,88+}
- ciOutSB=$6E;{®OUTSB¯,286+}
- ciOutSD=$6F66;{®OUTSD¯,386+}
- ciOutSW=$6F;{®OUTSW¯,286+}
- ciPopAX=$58;{®POP AX¯,88+}
- ciPopBP=$5D;{®POP BP¯,88+}
- ciPopBX=$5B;{®POP BX¯,88+}
- ciPopCX=$59;{®POP CX¯,88+}
- ciPopDX=$5A;{®POP DX¯,88+}
- ciPopDI=$5F;{®POP DI¯,88+}
- ciPopDS=$1F;{®POP DS¯,88+}
- ciPopEAX=$5866;{®POP EAX¯,386+}
- ciPopEBX=$5B66;{®POP EBX¯,386+}
- ciPopECX=$5966;{®POP ECX¯,386+}
- ciPopEDI=$66+(ciPopDI shl 8);{®PUSH EDI¯,386+}
- ciPopEDX=$5A66;{®POP EDX¯,386+}
- ciPopFS=$A10F;{®PUSH FS¯,386+}
- ciPopGS=$A90F;{®PUSH GS¯,386+}
- ciPopES=$07;{®POP ES¯,88+}
- ciPopSI=$5E;{®POP SI¯,88+}
- ciPopSP=$5C;{®POP SP¯,88+}
- ciPopSS=$17;{®POP SS¯,88+}
- ciPopA=$61;{®POPA¯,286+}
- ciPopF=$9D;{®POPF¯,88+}
- ciPushA=$60;{®PUSHA¯,286+}
- ciPushAX=$50;{®PUSH AX¯,88+}
- ciPushBP=$55;{®PUSH BP¯,88+}
- ciPushBX=$53;{®PUSH BX¯,88+}
- ciPushCS=$0E;{®PUSH CS¯,88+}
- ciPushCX=$51;{®PUSH CX¯,88+}
- ciPushDI=$57;{®PUSH DI¯,88+}
- ciPushDS=$1E;{®PUSH DS¯,88+}
- ciPushDX=$52;{®PUSH DX¯,88+}
- ciPushEAX=$5066;{®PUSH EAX¯,386+}
- ciPushEBX=$5366;{®PUSH EBX¯,386+}
- ciPushECX=$5166;{®PUSH ECX¯,386+}
- ciPushEDX=$5266;{®PUSH EDX¯,386+}
- ciPushEDI=$66+(ciPushDI shl 8);{®PUSH EDI¯,386+}
- ciPushES=$06;{®PUSH ES¯,88+}
- ciPushFS=$A00F;{®PUSH FS¯,386+}
- ciPushGS=$A80F;{®PUSH GS¯, 386+}
- ciPushMemB=$6A;{®PUSH ??¯, 286+}
- ciPushSI=$56;{®PUSH SI¯,88+}
- ciPushSP=$54;{®PUSH SP¯,88+}
- ciPushSS=$16;{®PUSH SS¯,88+}
- ciPushF=$9C;{®PUSHF¯,88+}
- ciRepNZ=$F2;{®REPNZ ?¯,88+}
- ciRep=$F3;{®REP ?¯,88+}
- ciRetF=$CB;{®RETF¯,88+}
- ciRetN=$C3;{®RETN¯,88+}
- ciRet=ciRetN;{®RETN¯ou®RETF¯,88+}
- ciSAHF=$9E;{®SAHF¯,88+}
- ciSbbAL_=$1C;{®SBB AL,??h¯,286+}
- ciSbbAX_=$1D;{®SBB AX,????h¯,286+}
- ciSCASB=$AE;{®SCASB¯,88+}
- ciSCASD=$AF66;{®SCASS¯,386+}
- ciSCASW=$AF;{®SCASW¯,88+}
- ciSHR_AX_=$E8C1;{®SHR AX,?¯,88+}
- ciSHR_CX_=$E9C1;{®SHR CX,?¯,88+}
- ciSubAL_=$2C;{ ®SUB AL,??h¯,286+}
- ciSubAX_=$2D;{®SUB AX,????h¯,286+}
- ciSS=$36;{®SS¯,88+}
- ciSTC=$F9;{®STC¯,88+}
- ciSTD=$FD;{®STD¯,88+}
- ciSTI=$FB;{®STI¯,88+}
- ciSTOSB=$AA;{®STOSB¯,88+}
- ciSTOSD=$AB66;{®STOSD¯,386+}
- ciSTOSW=$AB;{®STOSW¯,88+}
- ciXchgAXnBP=$95;{®XCHG AX,BP¯,88+}
- ciXchgAXnBX=$93;{®XCHG AX,BX¯,88+}
- ciXchgAXnCX=$91;{®XCHG AX,CX¯,88+}
- ciXchgAXnDI=$97;{®XCHG AX,DI¯,88+}
- ciXchgAXnDX=$92;{®XCHG AX,DX¯,88+}
- ciXchgAXnSI=$96;{®XCHG AX,SI¯,88+}
- ciXchgAXnSP=$94;{®XCHG AX,SP¯,88+}
- ciXchgEAX_DS_SI=$048B663E;{®XCHG EAX,DS:[SI]¯,386+}
- ciXlat=$D7;{®XLAT¯,88+}
- ciXOR_=$81;{®XOR ?,?¯,88+}
- ciXOR_AL_=$34;{®XOR AL,??h¯,286+}
- ciXOR_AX_=$35;{®XOR AX,????h¯,286+}
+ ciDecCX=$49;{"DEC CX",88+}
+ ciDecDI=$4F;{"DEC DI",88+}
+ ciDecDX=$4A;{"DEC DX",88+}
+ ciDecSI=$4E;{"DEC SI",88+}
+ ciDecSP=$4C;{"DEC SP",88+}
+ ciDS=$3E;{"DS",88+}
+ ciES=$26;{"ES",88+}
+ ciFS=$64;{"FS",386+}
+ ciGS=$65;{"GS",386+}
+ ciHLT=$F4;{"HLT",88+}
+ ciIncAX=$40;{"INC AX",88+}
+ ciIncBP=$45;{"INC BP",88+}
+ ciIncBX=$43;{"INC BX",88+}
+ ciIncCX=$41;{"INC CX",88+}
+ ciIncDI=$47;{"INC DI",88+}
+ ciIncDX=$42;{"INC DX",88+}
+ ciIncSI=$46;{"INC SI",88+}
+ ciIncSP=$44;{"INC SP",88+}
+ ciInsB=$6C;{"INSB",88+}
+ ciInsW=$6D;{"INSW",88+}
+ ciInt=$CD;{"INT ??h",88+}
+ ciIntO=$CE;{"INTO",88+}
+ ciIRet=$CF;{"IRET",88+}
+ ciJBE=$76;{"JBE ?",88+}
+ ciJC=$72;{"JC ?",88+}
+ ciJG=$7E;{"JG ?",88+}
+ ciJL=$7C;{"JL ?",88+}
+ ciJMP_Word=$E9;{"JMP ????",88+}
+ ciJNBE=$77;{"JNBE ?",88+}
+ ciJNC=$73;{"JNC ?",88+}
+ ciJNG=$7F;{"JNG ?",88+}
+ ciJNL=$7D;{"JNL ?",88+}
+ ciJNO=$71;{"JNO ?",88+}
+ ciJNP=$7B;{"JNP ?",88+}
+ ciJNS=$79;{"JNS ?",88+}
+ ciJNZ=$75;{"JNZ ?",88+}
+ ciJO=$70;{"JO ?",88+}
+ ciJP=$7A;{"JP ?",88+}
+ ciJS=$78;{"JS ?",88+}
+ ciJZ=$74;{"JZ ?",88+}
+ ciLAHF=$9F;{"LAHF",88+}
+ ciLAR=$020F;{"LAR",386+}
+ ciLeave=$C9;{"LEAVE",286+}
+ ciLDS=$C5;{"LDS reg,mem",88+}
+ ciLES=$C4;{"LES reg,mem",88+}
+ ciLFS=$B40F;{"LFS reg,mem",386+}
+ ciLGS=$B50F;{"LGS reg,mem",386+}
+ ciLock=$F0;{"LOCK ?",88+}
+ ciLODSB=$AC;{"LODSB",88+}
+ ciLODSD=$AD66;{"LODSD",386+}
+ ciLODSW=$AD;{"LODSW",88+}
+ ciLSL=$030F;{"LSL ?",386+}
+ ciLSS=$B20F;{"LSS reg,mem",386+}
+ ciMovAL_=$A0;{"MOV AL,[addr]",286+}
+ ciMovAL_Byte=$B0;{"MOV AL,??",88+}
+ ciMovAX_=$A1;{"MOV AX,[addr]",286+}
+ ciMovAX_Word=$B8;{"MOV AX,????", 88+}
+ ciMovAH_AL=$E08A;{"MOV AH,AL",88+}
+ ciMovBP_SP=$EC8B;{"MOV BP,SP",88+}
+ ciMovBX_CX=$D98B;{"MOV BX,CX",88+}
+ ciMovCX_BX=$CB8B;{"MOV CX,BX",88+}
+ ciMovDX_Word=$BA;{"MOV DX,????",88+}
+ ciMovEAX_ES_DI=$058B6626;{"MOV EAX,ES:[DI]",386+}
+ ciMovES_DI_EAX=$05896626;{"MOV ES:[DI],EAX",386+}
+ ciMovSB=$A4;{"MOVSB",88+}
+ ciMovSD=$A566;{"MOVSD",386+}
+ ciMovSW=$A5;{"MOVSW",88+}
+ ciNOP=$90;{"NOP"»,88+}
+ ciOutDX_AL=$EE;{"OUT DX,AL",88+}
+ ciOutDX_AX=$EF;{"OUT DX,AX",88+}
+ ciOutSB=$6E;{"OUTSB",286+}
+ ciOutSD=$6F66;{"OUTSD",386+}
+ ciOutSW=$6F;{┬«OUTSW┬»,286+}
+ ciPopAX=$58;{┬«POP AX┬»,88+}
+ ciPopBP=$5D;{┬«POP BP┬»,88+}
+ ciPopBX=$5B;{┬«POP BX┬»,88+}
+ ciPopCX=$59;{┬«POP CX┬»,88+}
+ ciPopDX=$5A;{┬«POP DX┬»,88+}
+ ciPopDI=$5F;{┬«POP DI┬»,88+}
+ ciPopDS=$1F;{┬«POP DS┬»,88+}
+ ciPopEAX=$5866;{┬«POP EAX┬»,386+}
+ ciPopEBX=$5B66;{┬«POP EBX┬»,386+}
+ ciPopECX=$5966;{┬«POP ECX┬»,386+}
+ ciPopEDI=$66+(ciPopDI shl 8);{┬«PUSH EDI┬»,386+}
+ ciPopEDX=$5A66;{┬«POP EDX┬»,386+}
+ ciPopFS=$A10F;{┬«PUSH FS┬»,386+}
+ ciPopGS=$A90F;{┬«PUSH GS┬»,386+}
+ ciPopES=$07;{┬«POP ES┬»,88+}
+ ciPopSI=$5E;{┬«POP SI┬»,88+}
+ ciPopSP=$5C;{┬«POP SP┬»,88+}
+ ciPopSS=$17;{┬«POP SS┬»,88+}
+ ciPopA=$61;{┬«POPA┬»,286+}
+ ciPopF=$9D;{┬«POPF┬»,88+}
+ ciPushA=$60;{┬«PUSHA┬»,286+}
+ ciPushAX=$50;{┬«PUSH AX┬»,88+}
+ ciPushBP=$55;{┬«PUSH BP┬»,88+}
+ ciPushBX=$53;{┬«PUSH BX┬»,88+}
+ ciPushCS=$0E;{┬«PUSH CS┬»,88+}
+ ciPushCX=$51;{┬«PUSH CX┬»,88+}
+ ciPushDI=$57;{┬«PUSH DI┬»,88+}
+ ciPushDS=$1E;{┬«PUSH DS┬»,88+}
+ ciPushDX=$52;{┬«PUSH DX┬»,88+}
+ ciPushEAX=$5066;{┬«PUSH EAX┬»,386+}
+ ciPushEBX=$5366;{┬«PUSH EBX┬»,386+}
+ ciPushECX=$5166;{┬«PUSH ECX┬»,386+}
+ ciPushEDX=$5266;{┬«PUSH EDX┬»,386+}
+ ciPushEDI=$66+(ciPushDI shl 8);{┬«PUSH EDI┬»,386+}
+ ciPushES=$06;{┬«PUSH ES┬»,88+}
+ ciPushFS=$A00F;{┬«PUSH FS┬»,386+}
+ ciPushGS=$A80F;{┬«PUSH GS┬», 386+}
+ ciPushMemB=$6A;{┬«PUSH ??┬», 286+}
+ ciPushSI=$56;{┬«PUSH SI┬»,88+}
+ ciPushSP=$54;{┬«PUSH SP┬»,88+}
+ ciPushSS=$16;{┬«PUSH SS┬»,88+}
+ ciPushF=$9C;{┬«PUSHF┬»,88+}
+ ciRepNZ=$F2;{┬«REPNZ ?┬»,88+}
+ ciRep=$F3;{┬«REP ?┬»,88+}
+ ciRetF=$CB;{┬«RETF┬»,88+}
+ ciRetN=$C3;{┬«RETN┬»,88+}
+ ciRet=ciRetN;{┬«RETN┬»ou┬«RETF┬»,88+}
+ ciSAHF=$9E;{┬«SAHF┬»,88+}
+ ciSbbAL_=$1C;{┬«SBB AL,??h┬»,286+}
+ ciSbbAX_=$1D;{┬«SBB AX,????h┬»,286+}
+ ciSCASB=$AE;{┬«SCASB┬»,88+}
+ ciSCASD=$AF66;{┬«SCASS┬»,386+}
+ ciSCASW=$AF;{┬«SCASW┬»,88+}
+ ciSHR_AX_=$E8C1;{┬«SHR AX,?┬»,88+}
+ ciSHR_CX_=$E9C1;{┬«SHR CX,?┬»,88+}
+ ciSubAL_=$2C;{ ┬«SUB AL,??h┬»,286+}
+ ciSubAX_=$2D;{┬«SUB AX,????h┬»,286+}
+ ciSS=$36;{┬«SS┬»,88+}
+ ciSTC=$F9;{┬«STC┬»,88+}
+ ciSTD=$FD;{┬«STD┬»,88+}
+ ciSTI=$FB;{┬«STI┬»,88+}
+ ciSTOSB=$AA;{┬«STOSB┬»,88+}
+ ciSTOSD=$AB66;{┬«STOSD┬»,386+}
+ ciSTOSW=$AB;{┬«STOSW┬»,88+}
+ ciXchgAXnBP=$95;{┬«XCHG AX,BP┬»,88+}
+ ciXchgAXnBX=$93;{┬«XCHG AX,BX┬»,88+}
+ ciXchgAXnCX=$91;{┬«XCHG AX,CX┬»,88+}
+ ciXchgAXnDI=$97;{┬«XCHG AX,DI┬»,88+}
+ ciXchgAXnDX=$92;{┬«XCHG AX,DX┬»,88+}
+ ciXchgAXnSI=$96;{┬«XCHG AX,SI┬»,88+}
+ ciXchgAXnSP=$94;{┬«XCHG AX,SP┬»,88+}
+ ciXchgEAX_DS_SI=$048B663E;{┬«XCHG EAX,DS:[SI]┬»,386+}
+ ciXlat=$D7;{┬«XLAT┬»,88+}
+ ciXOR_=$81;{┬«XOR ?,?┬»,88+}
+ ciXOR_AL_=$34;{┬«XOR AL,??h┬»,286+}
+ ciXOR_AX_=$35;{┬«XOR AX,????h┬»,286+}
 
 Const
  {Constante de type de disque (Interruption 13h)}
  dtNoDrive=0;{Lecteur introuvable}
- dtDD525=1;{Lecteur: 5,25" Double Densit‚}
- dtHD525=2;{Lecteur: 5,25" Haute Densit‚}
- dtDD35=3;{Lecteur: 3,5" Double Densit‚}
- dtHD35=4;{Lecteur: 3,5" Haute Densit‚}
+ dtDD525=1;{Lecteur: 5,25" Double DensitΓÇÜ}
+ dtHD525=2;{Lecteur: 5,25" Haute DensitΓÇÜ}
+ dtDD35=3;{Lecteur: 3,5" Double DensitΓÇÜ}
+ dtHD35=4;{Lecteur: 3,5" Haute DensitΓÇÜ}
 
  {Officieusement...}
  dTryMax=5;{Nombre d'essais maximal}
 
 Type
- {Structure pour une piste double densit‚}
+ {Structure pour une piste double densitΓÇÜ}
  DdptType=Array[0..10]of Byte;
  DdptPtr=^DdptType;
- {ParamŠtres physiques de formatage}
+ {Param┼átres physiques de formatage}
  PhysDataType=Record
-  Faces,        {Nombre de faces demand‚}
+  Faces,        {Nombre de faces demandΓÇÜ}
   Tracks,       {Nombre Pistes par Face}
   Sec:Byte;     {Secteurs par Piste}
-  DDPT:DdptPtr; {Pointeur sur table paramŠtres du lecteur de disquette}
+  DDPT:DdptPtr; {Pointeur sur table param┼átres du lecteur de disquette}
  End;
 
 Type
- {ParamŠtres de formatage DOS}
+ {Param┼átres de formatage DOS}
  LogDataType=Record
   Media,Cluster,{Octet de support/Nombre Secteurs par Cluster}
-  FAT,RootSize:Byte;{Nombre Secteurs pour la FAT/Entr‚es dans le r‚pertoire racine}
+  FAT,RootSize:Byte;{Nombre Secteurs pour la FAT/EntrΓÇÜes dans le rΓÇÜpertoire racine}
  End;
 
  {Structure d'un tampon d'une piste logique de format DOS}
@@ -340,7 +340,8 @@ Var
  InFile:Boolean;
  KS:Word;
  VolumeLabel:String;
- ForceFormat,NoVerify:Boolean;
+ ForceFormat,NoVerify,UnconditionalFormat,TracksSpecified:Boolean;
+ RequestedTracks:Byte;
 
 Function StrToUpper(S:String):String;
 Var
@@ -370,14 +371,23 @@ Begin
 End;
 
 Function ParseOptions(First:Integer;Var FormatSize:String):Boolean;
-Var I:Integer;S,U:String;
+Var I,Code,TrackValue:Integer;S,U,N:String;
 Begin
  ParseOptions:=False;FormatSize:='';ForceFormat:=False;NoVerify:=False;VolumeLabel:='';
+ UnconditionalFormat:=False;TracksSpecified:=False;RequestedTracks:=0;
  For I:=First to ParamCount do Begin
   S:=ParamStr(I);U:=StrToUpper(S);
   If Copy(U,1,3)='/V:'Then Begin
    If not SetVolumeLabel(Copy(S,4,255))Then Exit
-  End Else If U='/F'Then ForceFormat:=True
+  End Else If Copy(U,1,3)='/T:'Then Begin
+   N:=Copy(S,4,255);Val(N,TrackValue,Code);
+   If(Code<>0)or(TrackValue<1)or(TrackValue>255)Then Begin
+    WriteLn('Le nombre de pistes doit etre compris entre 1 et 255.');Exit
+   End;
+   If TracksSpecified Then Begin WriteLn('Le nombre de pistes est indique plusieurs fois.');Exit End;
+   TracksSpecified:=True;RequestedTracks:=TrackValue
+  End Else If U='/U'Then UnconditionalFormat:=True
+  Else If U='/F'Then ForceFormat:=True
   Else If U='NV'Then NoVerify:=True
   Else If(U='360')or(U='720')or(U='1200')or(U='1440')Then Begin
    If FormatSize<>''Then Begin WriteLn('Le format est indique plusieurs fois.');Exit End;
@@ -385,6 +395,26 @@ Begin
   End Else Begin WriteLn('Parametre inconnu: ',S);Exit End
  End;
  ParseOptions:=True
+End;
+
+Function ApplyTrackOption(Var PData:PhysDataType;LData:LogDataType):Boolean;
+Var TotalSectors,RootSectors,DataSectors,Clusters,FatEntries:LongInt;
+Begin
+ ApplyTrackOption:=False;
+ If TracksSpecified Then PData.Tracks:=RequestedTracks;
+ TotalSectors:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
+ RootSectors:=(LongInt(LData.RootSize)*32+511)div 512;
+ DataSectors:=TotalSectors-1-LongInt(LData.FAT)*2-RootSectors;
+ If DataSectors<1Then Begin
+  WriteLn('Le nombre de pistes ne laisse aucune zone de donnees.');Exit
+ End;
+ Clusters:=(DataSectors+LData.Cluster-1)div LData.Cluster;
+ FatEntries:=(LongInt(LData.FAT)*512*2)div 3-2;
+ If Clusters>FatEntries Then Begin
+  WriteLn('Le nombre de pistes depasse la capacite de la FAT12 de ce format.');Exit
+ End;
+ If TotalSectors>65535Then Begin WriteLn('Le disque depasse 65535 secteurs.');Exit End;
+ ApplyTrackOption:=True
 End;
 
 Function Get4matParam(S:String;DrvType:Byte;Var PData:PhysDataType;Var LData:LogDataType):Boolean;
@@ -596,7 +626,7 @@ Begin
  TrackBuf[1,12]:=Lo(512);
  TrackBuf[1,13]:=Hi(512);
  TrackBuf[1,14]:=LData.Cluster;  { Longueur de l'unite d'allocation }
- TrackBuf[1,18]:=LData.RootSize; { Nombre Entrees dans répertoires }
+ TrackBuf[1,18]:=LData.RootSize; { Nombre Entrees dans r├⌐pertoires }
  TrackBuf[1,20]:=lo(NmSec);      { Nombre total de secteur }
  TrackBuf[1,21]:=hi(NmSec);      { sur la disquette }
  TrackBuf[1,22]:=LData.Media;    { Descripteur support }
@@ -663,26 +693,30 @@ BEGIN
    _Germany:Begin
     WriteLn('Formate un disque pour une utilisation sous DOS.');
     WriteLn;
-    WriteLn('FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:Name]');
-    WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name]');
+    WriteLn('FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:Name] [/T:n] [/U]');
+    WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name] [/T:n] [/U]');
    End;
    _English:Begin
     WriteLn('Formats a disk for use with DOS.');
     WriteLn;
-    WriteLn('Syntax: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:label]');
-    WriteLn('        FORMAT file [360|720|1200|1440] [/V:label]');
+    WriteLn('Syntax: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:label] [/T:n] [/U]');
+    WriteLn('        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/U]');
     WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
+    WriteLn('  /T:n      Specifies the number of tracks.');
+    WriteLn('  /U        Performs an unconditional full format.');
    End;
    Else Begin
-    WriteLn('FORMAT - Cette commande permet de formater un unit‚ de disquette.');
+    WriteLn('FORMAT - Cette commande permet de formater un unit'+#130+' de disquette.');
     WriteLn;
-    WriteLn('Syntaxe: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:nom]');
-    WriteLn('         FORMAT fichier [360|720|1200|1440] [/V:nom]');
+    WriteLn('Syntaxe: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:nom] [/T:n] [/U]');
+    WriteLn('         FORMAT fichier [360|720|1200|1440] [/V:nom] [/T:n] [/U]');
     WriteLn;
     WriteLn('fichier  Utiliser le fichier sp'+#130+'cifi'+#130+' comme disquette');
     WriteLn('     NV  Pas de v'+#130+'rification');
     WriteLn('     /F  Force a utiliser ce format');
     WriteLn(' /V:nom  Indique le nom du volume (11 caracteres maximum)');
+    WriteLn('    /T:n  Indique le nombre de pistes du disque');
+    WriteLn('      /U  Effectue un formatage complet et inconditionnel');
    End;
   End;
  End
@@ -698,7 +732,8 @@ BEGIN
     If Param=''Then Case AktDrvType of
      dtDD525:Param:='360';dtHD525:Param:='1200';dtDD35:Param:='720';dtHD35:Param:='1440'
     End;
-    If Get4matParam(Param,AktDrvType,PData,LData)Then Begin
+    If Get4matParam(Param,AktDrvType,PData,LData)and ApplyTrackOption(PData,LData)Then Begin
+     If UnconditionalFormat Then WriteLn('Formatage complet et inconditionnel.');
      InitDsk(AktDrv,PData);
      GetIntVec($1E,AncDDPT);
      SetIntVec($1E,PData.DDPT);
@@ -739,6 +774,7 @@ BEGIN
    WriteLn('Formatage du fichier d''image : ',Param);
    {$I-}Assign(FileImg,Param);
    Rewrite(FileImg,1);{$I+}
+   If IOResult<>0Then Begin WriteLn('Impossible de creer le fichier image.');Halt(5)End;
    PData:=PHYS1440;
    LData:=LOG1440;
    If not ParseOptions(2,Param)Then Begin Close(FileImg);Halt(4)End;
@@ -767,6 +803,9 @@ BEGIN
      KS:=1440;
     End
    End;
+   If not ApplyTrackOption(PData,LData)Then Begin Close(FileImg);Halt(4)End;
+   KS:=LongInt(PData.Tracks)*PData.Faces*PData.Sec div 2;
+   If UnconditionalFormat Then WriteLn('Formatage complet et inconditionnel.');
    Seek(FileImg,0);
    WriteLn('Ecriture du secteur de d'+#130+'marrage et des FAT');
    Ok:=Logical4mat(AktDrv,PData,LData);
