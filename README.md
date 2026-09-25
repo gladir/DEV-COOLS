@@ -593,6 +593,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Kotlin pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>LDZ8K.PAS</b></td>
+			<td>Cette commande permet de lancer l'éditeur de liens Z8000 x.out pour CP/M-8000.</td>
+		</tr>
+		<tr>
 			<td><b>LIB.PAS</b></td>
 			<td>Cette commande permet de lancer le gestionnaire de bibliothèques compatible Microsoft.</td>
 		</tr>
