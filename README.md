@@ -463,6 +463,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de convertir un fichier de code source Pascal en minuscule, majuscule ou capitale. Cette commande est inspiré de la commande CONVERT du Pascal pour FLEX.</td>
 		</tr>
 		<tr>
+			<td><b>CRAYRUN.PAS</b></td>
+			<td>Cette commande permnet de lancer l'émulateur Cray-1.</td>
+		</tr>
+		<tr>
 			<td><b>CREF.PAS</b></td>
 			<td>Cette commande permet de produire une liste de symboles croisés.</td>
 		</tr>
