@@ -575,6 +575,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de convertir les chaines de caractères DRAW du langage de programmation BASIC en instruction du langage de programmation LOGO.</td>
 		</tr>
 		<tr>
+			<td><b>DUMPBIN.PAS</b></td>
+			<td>Cette commande permet d'analyser et d'afficher en detail le contenu des fichiers binaires Windows, tels que les executables (.exe), les bibliotheques dynamiques (.dll), les fichiers objets (.obj) et les bibliotheques statiques (.lib), afin d'en examiner les en-tetes, les symboles, les importations, les exportations, les informations PDB et le code machine.</td>
+		</tr>
+		<tr>
 			<td><b>FNT2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir des fichiers de polices de caractères .FNT en code source Pascal.</td>
 		</tr>
@@ -585,6 +589,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>F77CW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Fortran 77 pour l'assembleur du microprocesseur 80386 pour Windows 32 bits.</td>
+		</tr>
+		<tr>
+			<td><b>GEODUMP.PAS</b></td>
+			<td>Cette commande permet d'analyser des formats de fichiers PC/GEOS.</td>
 		</tr>
 		<tr>
 			<td><b>GOCW32.PAS</b></td>
