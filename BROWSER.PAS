@@ -16774,15 +16774,26 @@ Begin
  DrawVScrollBar;
  DrawHScrollBar;
 
- { Le chrome du navigateur est une couche fixe et doit toujours etre
-   peint apres le document. Certains rendus provoques par JavaScript,
-   le survol ou le defilement ne repassaient pas par NavigateTo et
-   pouvaient laisser la barre d'adresse et ses boutons recouverts. }
- DrawURLBar;
- DrawBackButton;
- DrawForwardButton;
- DrawRefreshButton;
- DrawFavoriteButton;
+ { Le chrome du navigateur est une couche fixe qui doit rester peinte
+   par-dessus le document - mais SEULEMENT quand quelque chose a pu
+   reellement l'atteindre. La redessiner a chaque passe legere de survol
+   (SkipNextRenderAreaClear, voir RescrollPageAfterHover) provoquait un
+   effacement/redessin de la barre d'URL et des 4 boutons a CHAQUE
+   deplacement de souris au-dessus d'un menu (ex: page d'accueil avec
+   menu JSCookMenu) - signale par l'utilisateur comme un lag important,
+   pour un simple survol qui ne touche jamais cette zone. On ne force le
+   redessin pendant une passe de survol que si un sous-menu absolu a
+   reellement debord dans la bande verticale de la barre d'outils
+   (LastOverlayY1 < RENDER_AREA_Y) - seul cas reel ou elle pouvait etre
+   recouverte, sinon inutile. }
+ If (Not SkipNextRenderAreaClear) Or
+    (LastOverlayRectValid And (LastOverlayY1 < RENDER_AREA_Y)) Then Begin
+  DrawURLBar;
+  DrawBackButton;
+  DrawForwardButton;
+  DrawRefreshButton;
+  DrawFavoriteButton;
+ End;
 End;
 
 { Procedure pour tester le rendu avec du HTML }
