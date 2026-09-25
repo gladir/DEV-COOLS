@@ -251,6 +251,7 @@ Const
  TAG_BDO = 152;
  TAG_MAP = 153;
  TAG_AREA = 154;
+ TAG_CENTER = 155;
 
  { Balise inconnue }
  TAG_UNKNOWN = 255;
@@ -1900,7 +1901,7 @@ Type
  End;
 
 Const
- HTML_TAG_COUNT = 116;
+ HTML_TAG_COUNT = 117;
  { Table des balises HTML supportees, triee par ordre ALPHABETIQUE -
    condition necessaire a la recherche dichotomique de GetTagType
    ci-dessous (meme principe que CSSPropertyTable/CSSGetPropertyId). }
@@ -1923,6 +1924,7 @@ Const
   (Name: 'button';       Id: TAG_BUTTON),
   (Name: 'canvas';       Id: TAG_CANVAS),
   (Name: 'caption';      Id: TAG_CAPTION),
+  (Name: 'center';       Id: TAG_CENTER),
   (Name: 'cite';         Id: TAG_CITE),
   (Name: 'code';         Id: TAG_CODE),
   (Name: 'col';          Id: TAG_COL),
@@ -8302,6 +8304,43 @@ Begin
                    (Y1 <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
 End;
 
+Function MeasureInlineContentWidth(Node:HTMLNodePtr):Integer;
+Var
+ Child:HTMLNodePtr;
+ W,Part,Code:Integer;
+ S,T:String;
+Begin
+ MeasureInlineContentWidth:=0;If Node=Nil Then Exit;
+ If Node^.NodeType=HTML_NODE_TEXT Then Begin
+  MeasureInlineContentWidth:=GetTextWidth(Node^.Content);Exit
+ End;
+ Case Node^.TagType of
+  TAG_IMG:Begin
+   S:=GetNodeAttribute(Node,'width');Val(S,W,Code);
+   If(Code<>0)or(W<1)Then W:=GetTextWidth(GetNodeAttribute(Node,'alt'));
+   MeasureInlineContentWidth:=W;Exit
+  End;
+  TAG_INPUT:Begin
+   T:=HTMLLowerCase(GetNodeAttribute(Node,'type'));
+   If T='hidden'Then W:=0
+   Else If(T='submit')or(T='button')or(T='reset')Then Begin
+    S:=GetNodeAttribute(Node,'value');If S=''Then S:='Bouton';
+    W:=GetTextWidth(S)+2*BUTTON_PADDING_X+6
+   End Else If T='checkbox'Then W:=CHECKBOX_SIZE+6
+   Else If T='radio'Then W:=RADIO_SIZE+6
+   Else W:=INPUT_WIDTH+6;
+   MeasureInlineContentWidth:=W;Exit
+  End
+ End;
+ W:=0;Child:=Node^.FirstChild;
+ While Child<>Nil do Begin
+  Part:=MeasureInlineContentWidth(Child);
+  If W>30000-Part Then W:=30000 Else Inc(W,Part);
+  Child:=Child^.NextSibling
+ End;
+ MeasureInlineContentWidth:=W
+End;
+
 { Decaler Ctx.X selon text-align (centre/droite) avant de rendre le
   contenu d'un element de bloc. Approximation : on mesure la largeur
   du texte de TOUT le sous-arbre (DOMGetTextContent) et on suppose
@@ -8316,7 +8355,9 @@ Var
 Begin
  If Ctx.TextAlignMode = ALIGN_LEFT Then Exit;
  LineStart := Ctx.X;
- ContentWidth := GetTextWidth(DOMGetTextContent(Node));
+ { Mesurer aussi IMG, INPUT et BUTTON : DOMGetTextContent ne voit que le
+   texte et donnait donc une largeur nulle pour le logo Google. }
+ ContentWidth := MeasureInlineContentWidth(Node);
  AvailWidth := Ctx.MaxX - LineStart;
  If ContentWidth >= AvailWidth Then Exit; { ne tient pas sur une ligne : laisser le wrap normal }
  If Ctx.TextAlignMode = ALIGN_CENTER Then
@@ -8762,6 +8803,20 @@ Procedure RenderTagSpan(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Begin
  { SPAN est un element inline - pas de saut de ligne }
  RenderChildren(Node, Ctx);
+End;
+
+{ CENTER est obsolete en HTML5 mais demeure utilise dans les pages de
+  compatibilite envoyees aux navigateurs simples, notamment par Google. }
+Procedure RenderTagCenter(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldAlign: Byte;
+Begin
+ OldAlign := Ctx.TextAlignMode;
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then RenderNewLine(Ctx);
+ Ctx.TextAlignMode := ALIGN_CENTER;
+ RenderChildren(Node, Ctx);
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then RenderNewLine(Ctx);
+ Ctx.TextAlignMode := OldAlign
 End;
 
 { Procedure pour rendre la balise SECTION (HTML5 bloc semantique) }
@@ -10514,6 +10569,8 @@ Begin
  Ctx.InForm := True;
 
  { Rendre les enfants du formulaire }
+ If WantsBlock And(Ctx.TextAlignMode<>ALIGN_LEFT)Then
+  ApplyTextAlignOffset(Ctx,Node);
  RenderChildren(Node, Ctx);
 
  { Restaurer l'etat }
@@ -16076,8 +16133,38 @@ End;
   PNGImage/SVGImage n'etaient pas encore declares, donc la branche
   active pour FPC (la seule reellement compilee ici) se contentait
   d'un bouchon affichant systematiquement "[image]"/le texte
-  alternatif, sans jamais decoder ni dessiner la moindre image -
-  quel que soit le format. }
+   alternatif, sans jamais decoder ni dessiner la moindre image -
+   quel que soit le format. }
+Procedure AlignReplacedElement(Var Ctx: RenderContext; Node: HTMLNodePtr;
+ ElementWidth: Integer);
+Var
+ LineStart, AvailableWidth: Integer;
+ ImgStyle: DOMStyle;
+ AutoMargins: Boolean;
+Begin
+ AutoMargins := False;
+ If CSSEnabled Then Begin
+  CSSResolveCascade(Node, ImgStyle);
+  AutoMargins :=
+   (HTMLLowerCase(ImgStyle.MarginLeft) = 'auto') And
+   (HTMLLowerCase(ImgStyle.MarginRight) = 'auto');
+  If Not AutoMargins Then
+   AutoMargins := (System.Pos('auto', HTMLLowerCase(ImgStyle.Margin)) > 0);
+ End;
+ If(Not AutoMargins)and(Ctx.TextAlignMode=ALIGN_LEFT)Then Exit;
+ { Ne recentrer que le premier objet de la ligne. Les objets inline qui le
+   suivent conservent ainsi leur disposition horizontale normale. }
+ If(Node<>Nil)and(Node^.PreviousSibling<>Nil)and not AutoMargins Then Exit;
+ If Ctx.InTable Then LineStart:=Ctx.TableCellContentX
+ Else LineStart:=RenderOriginX+RENDER_MARGIN_LEFT+(Ctx.BlockLevel*10);
+ AvailableWidth:=Ctx.MaxX-LineStart;
+ If ElementWidth>=AvailableWidth Then Exit;
+ If AutoMargins or(Ctx.TextAlignMode=ALIGN_CENTER)Then
+  Ctx.X:=LineStart+(AvailableWidth-ElementWidth)div 2
+ Else If Ctx.TextAlignMode=ALIGN_RIGHT Then
+  Ctx.X:=LineStart+AvailableWidth-ElementWidth
+End;
+
 Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  Src, Alt, WidthAttr, HeightAttr: String;
@@ -16182,6 +16269,7 @@ Begin
    DrawHeight := ImgHeight;
 
   If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
 
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
@@ -16234,6 +16322,7 @@ Begin
    DrawHeight := ImgHeight;
 
   If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
 
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
@@ -16286,6 +16375,7 @@ Begin
    DrawHeight := ImgHeight;
 
   If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
 
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
@@ -16338,6 +16428,7 @@ Begin
    DrawHeight := ImgHeight;
 
   If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
 
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
@@ -16390,6 +16481,7 @@ Begin
    DrawHeight := ImgHeight;
 
   If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
 
   If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
   If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
@@ -16581,6 +16673,17 @@ Begin
 
  End;
 
+ { Compatibilite HTML 2/3.2 : align=center/right sur DIV, P, FORM,
+   TD, etc. produit le meme contexte heritable que text-align CSS. }
+ If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
+  If HTMLLowerCase(GetNodeAttribute(Node, 'align')) = 'center' Then
+   Ctx.TextAlignMode := ALIGN_CENTER
+  Else If HTMLLowerCase(GetNodeAttribute(Node, 'align')) = 'right' Then
+   Ctx.TextAlignMode := ALIGN_RIGHT
+  Else If HTMLLowerCase(GetNodeAttribute(Node, 'align')) = 'left' Then
+   Ctx.TextAlignMode := ALIGN_LEFT;
+ End;
+
  Case Node^.NodeType Of
   HTML_NODE_TEXT: Begin
    { Noeud texte - afficher le contenu }
@@ -16602,7 +16705,8 @@ Begin
     TAG_ASIDE:    RenderTagAside(Node, Ctx);
     TAG_HEADER:   RenderTagHeader(Node, Ctx);
     TAG_FOOTER:   RenderTagFooter(Node, Ctx);
-    TAG_MAIN:     RenderTagMain(Node, Ctx);
+     TAG_MAIN:     RenderTagMain(Node, Ctx);
+     TAG_CENTER:   RenderTagCenter(Node, Ctx);
 
     { Balises de texte - Titres }
     TAG_H1:       RenderTagH1(Node, Ctx);
