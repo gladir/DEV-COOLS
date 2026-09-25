@@ -457,6 +457,20 @@ Begin
  End;GetGlobal:=P
 End;
 
+Function GetCheckedName(Const B:TBuffer;Var P:Integer;Limit:Integer;
+ Var Terminated:Boolean):String;
+Var
+ S:String;
+Begin
+ S:='';
+ While(P<Limit)and(B[P]<>0)do Begin
+  S:=S+Chr(B[P]);Inc(P)
+ End;
+ Terminated:=(P<Limit)and(B[P]=0);
+ if Terminated Then Inc(P);
+ GetCheckedName:=S
+End;
+
 Procedure PutImageByte(S:POutSection;Offset:LongInt;Value:Byte);
 Var
  P,N:PImage;
@@ -498,7 +512,7 @@ Var
  B:TBuffer;
  N:Word;
  P,I:Integer;
- Ok:Boolean;
+ Ok,SeenStart,SeenEnd,SeenModule,SeenTransfer,NameTerminated:Boolean;
  TargetKind:Integer;
  S:PObjSection;
  Y:PObjSymbol;
@@ -506,14 +520,20 @@ Var
  LastS:PObjSection;
  LastY:PObjSymbol;
  LastT:PText;
- R,LastR:PReloc;
+ R,Q,LastR:PReloc;
+ OldT:PText;
  ExternalNumber:Word;
+ SecNumber,SecAttributes:Byte;
+ SecName:String;
+ BlockEnd,OldEnd,RelocStart,RelocEnd,OldRelocStart,OldRelocEnd:LongInt;
+ FoundBase:Boolean;
 Begin
  FillChar(M,SizeOf(M),0);M.FileName:=FileName;Assign(F,FileName);Reset(F,1);
  if IOResult<>0 Then Begin
   Error(FileName,'ouverture impossible');Exit
  End;
  Total:=FileSize(F);Position:=0;Ok:=True;LastS:=Nil;LastY:=Nil;LastT:=Nil;
+ SeenStart:=False;SeenEnd:=False;SeenModule:=False;SeenTransfer:=False;
  ExternalNumber:=RBEXT;TargetKind:=-1;
  if UpperString(Extension(FileName))='.8KS'Then TargetKind:=1
  else if UpperString(Extension(FileName))='.8KN'Then TargetKind:=0;
@@ -528,10 +548,32 @@ Begin
   if not Ok Then Begin
    Error(FileName,'erreur de lecture');Break
   End;
+  if not SeenStart Then Begin
+   if Kind<>OBOST Then Begin
+    Error(FileName,'OBOST absent ou non place en premier');Ok:=False
+   End
+  End else if SeenEnd Then Begin
+   Error(FileName,'bloc present apres OBOND');Ok:=False
+  End;
+  if not Ok Then Break;
   Case Kind of
+  OBOST:
+  Begin
+   if SeenStart Then Begin Error(FileName,'OBOST en double');Ok:=False End
+   else if Len<>0 Then Begin Error(FileName,'OBOST doit etre vide');Ok:=False End
+   else SeenStart:=True
+  End;
   OBMOD:
   Begin
-   P:=0;M.Name:=GetName(B,P,Len)
+   if SeenModule Then Begin Error(FileName,'OBMOD en double');Ok:=False End
+   else if(M.Sections<>Nil)or(M.Symbols<>Nil)or(M.Texts<>Nil)Then Begin
+    Error(FileName,'OBMOD place apres le contenu du module');Ok:=False
+   End else Begin
+    P:=0;M.Name:=GetCheckedName(B,P,Len,NameTerminated);
+    if not NameTerminated Then Begin Error(FileName,'nom OBMOD non termine');Ok:=False End
+    else if P<>Len Then Begin Error(FileName,'donnees superflues dans OBMOD');Ok:=False End
+    else SeenModule:=True
+   End
   End;
   OBSEC:
   Begin
@@ -540,11 +582,23 @@ Begin
     if P+3>Len Then Begin
      Error(FileName,'descripteur de segment tronque');Break
     End;
-    New(S);if S=Nil Then Fatal('memoire pleine');FillChar(S^,SizeOf(S^),0);
-    S^.Number:=B[P];S^.Attributes:=B[P+1];Inc(P,3);S^.Name:=GetName(B,P,Len);
-    if S^.Name=''Then Begin
-     Error(FileName,'nom de segment vide');Dispose(S);Break
+    SecNumber:=B[P];SecAttributes:=B[P+1];Inc(P,3);
+    SecName:=GetCheckedName(B,P,Len,NameTerminated);
+    if not NameTerminated Then Begin Error(FileName,'nom de segment non termine');Ok:=False;Break End;
+    if(SecNumber=0)or(SecNumber=RBUND)Then Begin
+     Error(FileName,'numero de segment reserve');Ok:=False;Break
     End;
+    if FindObjSection(M,SecNumber)<>Nil Then Begin
+     Error(FileName,'numero de segment en double');Ok:=False;Break
+    End;
+    { Les bits 0..4 sont les attributs UNIDOT historiques. Le bit 5 est
+      emis par certains outils DRI pour marquer une definition de section. }
+    if(SecAttributes and $C0)<>0 Then Begin
+     Error(FileName,'attributs de segment invalides');Ok:=False;Break
+    End;
+    New(S);if S=Nil Then Fatal('memoire pleine');FillChar(S^,SizeOf(S^),0);
+    S^.Number:=SecNumber;S^.Attributes:=SecAttributes;S^.Name:=SecName;
+    if S^.Name=''Then Begin Error(FileName,'nom de segment vide');Dispose(S);Ok:=False;Break End;
     if LastS=Nil Then M.Sections:=S else LastS^.Next:=S;LastS:=S
    End
   End;
@@ -556,7 +610,16 @@ Begin
      Error(FileName,'symbole tronque');Break
     End;
     New(Y);if Y=Nil Then Fatal('memoire pleine');FillChar(Y^,SizeOf(Y^),0);
-    Y^.Value:=LE32(B,P);Y^.Section:=B[P+4];Inc(P,5);Y^.Name:=GetName(B,P,Len);
+    Y^.Value:=LE32(B,P);Y^.Section:=B[P+4];Inc(P,5);
+    Y^.Name:=GetCheckedName(B,P,Len,NameTerminated);
+    if not NameTerminated Then Begin
+     Error(FileName,'nom de symbole non termine');Dispose(Y);Ok:=False;Break
+    End;
+    if Y^.Name=''Then Begin Error(FileName,'nom de symbole vide');Dispose(Y);Ok:=False;Break End;
+    if(Y^.Section<>0)and(Y^.Section<>RBUND)and
+     (FindObjSection(M,Y^.Section)=Nil)Then Begin
+     Error(FileName,'symbole associe a un segment inconnu');Dispose(Y);Ok:=False;Break
+    End;
     Y^.Global:=Kind=OBGLO;
     Y^.Defined:=Y^.Section<>RBUND;if(not Y^.Defined)and(Kind=OBGLO)Then Begin
      Y^.ExternalBase:=ExternalNumber;Inc(ExternalNumber)
@@ -574,6 +637,21 @@ Begin
      Error(FileName,'taille de texte incorrecte');Dispose(T)
     End else
     Begin
+     if FindObjSection(M,T^.Section)=Nil Then Begin
+      Error(FileName,'segment de texte inconnu');Dispose(T);Ok:=False
+     End else if(T^.Offset<0)or(T^.Offset+LongInt(T^.Count)>MaxSegmentSize+1)Then Begin
+      Error(FileName,'bloc texte hors des limites du segment');Dispose(T);Ok:=False
+     End else Begin
+     BlockEnd:=T^.Offset+T^.Count;OldT:=M.Texts;
+     While OldT<>Nil do Begin
+      OldEnd:=OldT^.Offset+OldT^.Count;
+      if(OldT^.Section=T^.Section)and(T^.Count<>0)and(OldT^.Count<>0)and
+       (T^.Offset<OldEnd)and(OldT^.Offset<BlockEnd)Then Begin
+       Error(FileName,'chevauchement de blocs texte');Ok:=False
+      End;
+      OldT:=OldT^.Next
+     End;
+     if not Ok Then Begin Dispose(T);Break End;
      For I:=0 to T^.Count-1 do T^.Data[I]:=B[6+I];P:=6+T^.Count;LastR:=Nil;
      While P<Len do Begin
       if P+3>Len Then Begin
@@ -592,6 +670,26 @@ Begin
      End;
      if(R^.Offset<0)or(R^.Offset+R^.Width>T^.Count)Then Error(FileName,
      'relogement hors du bloc');
+     RelocStart:=T^.Offset+R^.Offset;RelocEnd:=RelocStart+R^.Width;
+     Q:=T^.Relocs;
+     While Q<>Nil do Begin
+      OldRelocStart:=T^.Offset+Q^.Offset;OldRelocEnd:=OldRelocStart+Q^.Width;
+      if(RelocStart<OldRelocEnd)and(OldRelocStart<RelocEnd)Then Begin
+       Error(FileName,'relogements qui se chevauchent');Ok:=False
+      End;Q:=Q^.Next
+     End;
+     OldT:=M.Texts;
+     While OldT<>Nil do Begin
+      if OldT^.Section=T^.Section Then Begin
+       Q:=OldT^.Relocs;
+       While Q<>Nil do Begin
+        OldRelocStart:=OldT^.Offset+Q^.Offset;OldRelocEnd:=OldRelocStart+Q^.Width;
+        if(RelocStart<OldRelocEnd)and(OldRelocStart<RelocEnd)Then Begin
+         Error(FileName,'relogements qui se chevauchent');Ok:=False
+        End;Q:=Q^.Next
+       End
+      End;OldT:=OldT^.Next
+     End;
      if LastR=Nil Then T^.Relocs:=R else LastR^.Next:=R;LastR:=R;Inc(P,3)
     End;
     if LastT=Nil Then M.Texts:=T else LastT^.Next:=T;LastT:=T;
@@ -602,16 +700,76 @@ Begin
      if T^.Count<>0 Then S^.HasBytes:=True else if T^.Offset<>0 Then S^.IsBss:=True;
      if T^.Offset+T^.Count>S^.Size Then S^.Size:=T^.Offset+T^.Count
     End
+    End
    End
   End
  End;
- OBTRA:if Len>=6 Then Begin
-  M.HasTransfer:=True;M.TransferValue:=LE32(B,0);M.TransferBase:=LE16(B,4)
+ OBBSZ:
+ Begin
+  if(Len=0)or((Len mod 5)<>0)Then Begin Error(FileName,'bloc OBBSZ mal forme');Ok:=False End
+  else Begin
+   P:=0;
+   While(P<Len)and Ok do Begin
+    S:=FindObjSection(M,B[P+4]);
+    if S=Nil Then Begin Error(FileName,'OBBSZ vise un segment inconnu');Ok:=False End
+    else if S^.HasBytes Then Begin Error(FileName,'OBBSZ vise un segment initialise');Ok:=False End
+    else Begin
+     BlockEnd:=LE32(B,P);
+     if(BlockEnd<0)or(BlockEnd>MaxSegmentSize)Then Begin
+      Error(FileName,'taille BSS hors limites');Ok:=False
+     End else Begin S^.IsBss:=True;if BlockEnd>S^.Size Then S^.Size:=BlockEnd End
+    End;
+    Inc(P,5)
+   End
+  End
  End;
- OBOST,OBOND:;
+ OBTRA:
+ Begin
+  if SeenTransfer Then Begin Error(FileName,'OBTRA en double');Ok:=False End
+  else if Len<>6 Then Begin Error(FileName,'bloc OBTRA mal forme');Ok:=False End
+  else Begin
+   M.HasTransfer:=True;M.TransferValue:=LE32(B,0);M.TransferBase:=LE16(B,4);
+   SeenTransfer:=True
+  End
+ End;
+ OBLST,OBLIX,OBLND:
+ Begin
+  Error(FileName,'bloc de bibliotheque UNIDOT interdit dans un module individuel');Ok:=False
+ End;
+ OBOND:
+ Begin
+  if Len<>0 Then Begin Error(FileName,'OBOND doit etre vide');Ok:=False End
+  else Begin
+   SeenEnd:=True;
+   if Position<>Total Then Begin Error(FileName,'donnees presentes apres OBOND');Ok:=False End
+  End
+ End;
  else Error(FileName,'type de bloc UNIDOT inconnu')
 End
-End;Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture');
+End;
+if not SeenStart Then Error(FileName,'OBOST absent');
+if not SeenEnd Then Error(FileName,'OBOND absent');
+{ Les bases 1..254 designent des sections. 255 est reserve et les bases
+  a partir de 256 designent obligatoirement une entree externe. }
+OldT:=M.Texts;
+While OldT<>Nil do Begin
+ R:=OldT^.Relocs;
+ While R<>Nil do Begin
+  if R^.Base=RBUND Then Error(FileName,'base de relogement reservee')
+  else if(R^.Base>0)and(R^.Base<RBUND)Then Begin
+   if FindObjSection(M,R^.Base)=Nil Then Error(FileName,'base de relogement de segment inconnue')
+  End else if R^.Base>=RBEXT Then Begin
+   FoundBase:=False;Y:=M.Symbols;
+   While Y<>Nil do Begin
+    if(not Y^.Defined)and Y^.Global and(Y^.ExternalBase=R^.Base)Then FoundBase:=True;
+    Y:=Y^.Next
+   End;
+   if not FoundBase Then Error(FileName,'reference externe hors table')
+  End;
+  R:=R^.Next
+ End;OldT:=OldT^.Next
+End;
+Close(F);if IOResult<>0 Then Error(FileName,'erreur de fermeture');
 M.TargetKnown:=TargetKind>=0;M.TargetSegmented:=TargetKind=1
 End;
 
