@@ -841,6 +841,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de retourner les informations de version d'une unité Free Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>PSCRIPT.PAS</b></td>
+			<td>Cette commande permet de lancer l'interpreteur de PascalScript.</td>
+		</tr>
+		<tr>
 			<td><b>PSP86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de PSP (Pascal Server Pages) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
