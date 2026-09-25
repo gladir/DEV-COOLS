@@ -13,6 +13,8 @@ Uses DOS;
 
 Const
  MaxFormatFATBytes=4608;
+ DOS_MSDOS=0;DOS_PCDOS=1;DOS_DRDOS=2;DOS_FREEDOS=3;DOS_RXDOS=4;
+ DOS_WIN95=5;DOS_PTSDOS=6;DOS_OS2=7;DOS_WINNT=8;
  {Adresse d'assembleur pour le micro-processeur Intel (Cpu Intel)}
  ciBXnSI=$00;{"[BX+SI]",88+}
  ciBXnDI=$01;{"[BX+DI]",88+}
@@ -348,6 +350,8 @@ Var
  ForceFormat,NoVerify,UnconditionalFormat,TracksSpecified:Boolean;
  RequestedTracks:Byte;
  SystemTransfer:Boolean;
+ DosFamily,SysFileCount:Byte;
+ SysFiles:Array[1..3]of String;
 
 Function StrToUpper(S:String):String;
 Var
@@ -376,11 +380,65 @@ Begin
  VolumeLabel:=S;SetVolumeLabel:=True
 End;
 
+Procedure SetupSystemFamily(Family:Byte);
+Begin
+ DosFamily:=Family;SysFiles[1]:='';SysFiles[2]:='';SysFiles[3]:='';
+ Case Family of
+  DOS_MSDOS,DOS_WIN95:Begin
+   SysFiles[1]:='IO.SYS';SysFiles[2]:='MSDOS.SYS';SysFiles[3]:='COMMAND.COM';SysFileCount:=3
+  End;
+  DOS_PCDOS,DOS_DRDOS:Begin
+   SysFiles[1]:='IBMBIO.COM';SysFiles[2]:='IBMDOS.COM';SysFiles[3]:='COMMAND.COM';SysFileCount:=3
+  End;
+  DOS_FREEDOS:Begin SysFiles[1]:='KERNEL.SYS';SysFiles[2]:='COMMAND.COM';SysFileCount:=2 End;
+  DOS_RXDOS:Begin
+   SysFiles[1]:='RXDOSBIO.SYS';SysFiles[2]:='RXDOS.SYS';SysFiles[3]:='COMMAND.COM';SysFileCount:=3
+  End;
+  DOS_PTSDOS:Begin
+   SysFiles[1]:='PTSBIO.SYS';SysFiles[2]:='PTSDOS.SYS';SysFiles[3]:='COMMAND.COM';SysFileCount:=3
+  End;
+  DOS_OS2:Begin SysFiles[1]:='OS2BOOT';SysFiles[2]:='OS2LDR';SysFiles[3]:='OS2KRNL';SysFileCount:=3 End;
+  DOS_WINNT:Begin
+   SysFiles[1]:='NTLDR';SysFiles[2]:='NTDETECT.COM';SysFiles[3]:='BOOT.INI';SysFileCount:=3
+  End
+ End
+End;
+
+Function ParseSystemFamily(S:String):Boolean;
+Var U:String;
+Begin
+ U:=StrToUpper(S);ParseSystemFamily:=True;
+ If(U='MS-DOS')or(U='MSDOS')or(U='MS')Then SetupSystemFamily(DOS_MSDOS)
+ Else If(U='PC-DOS')or(U='PCDOS')or(U='PC')or(U='IBM')Then SetupSystemFamily(DOS_PCDOS)
+ Else If(U='DR-DOS')or(U='DRDOS')or(U='DR')Then SetupSystemFamily(DOS_DRDOS)
+ Else If(U='FREEDOS')or(U='FREE')or(U='FDOS')Then SetupSystemFamily(DOS_FREEDOS)
+ Else If(U='RXDOS')or(U='RX')Then SetupSystemFamily(DOS_RXDOS)
+ Else If(U='WIN95')or(U='WIN9X')or(U='W95')or(U='MSDOS7')or(U='MS-DOS7')Then
+  SetupSystemFamily(DOS_WIN95)
+ Else If(U='PTS-DOS')or(U='PTSDOS')or(U='PTS')Then SetupSystemFamily(DOS_PTSDOS)
+ Else If(U='OS/2')or(U='OS2')or(U='IBMOS2')Then SetupSystemFamily(DOS_OS2)
+ Else If(U='NT')or(U='WINNT')or(U='WIN-NT')or(U='WIN2K')or(U='W2K')or
+  (U='WINXP')or(U='XP')or(U='WIN2000')Then SetupSystemFamily(DOS_WINNT)
+ Else ParseSystemFamily:=False
+End;
+
+Function SystemFamilyName:String;
+Begin
+ Case DosFamily of
+  DOS_MSDOS:SystemFamilyName:='MS-DOS';DOS_PCDOS:SystemFamilyName:='PC-DOS';
+  DOS_DRDOS:SystemFamilyName:='DR-DOS';DOS_FREEDOS:SystemFamilyName:='FreeDOS';
+  DOS_RXDOS:SystemFamilyName:='RxDOS';DOS_WIN95:SystemFamilyName:='Win95';
+  DOS_PTSDOS:SystemFamilyName:='PTS-DOS';DOS_OS2:SystemFamilyName:='OS/2';
+  DOS_WINNT:SystemFamilyName:='WinNT';Else SystemFamilyName:='?'
+ End
+End;
+
 Function ParseOptions(First:Integer;Var FormatSize:String):Boolean;
 Var I,Code,TrackValue:Integer;S,U,N:String;
 Begin
  ParseOptions:=False;FormatSize:='';ForceFormat:=False;NoVerify:=False;VolumeLabel:='';
  UnconditionalFormat:=False;TracksSpecified:=False;RequestedTracks:=0;SystemTransfer:=False;
+ SetupSystemFamily(DOS_MSDOS);
  For I:=First to ParamCount do Begin
   S:=ParamStr(I);U:=StrToUpper(S);
   If Copy(U,1,3)='/V:'Then Begin
@@ -393,7 +451,11 @@ Begin
    If TracksSpecified Then Begin WriteLn('Le nombre de pistes est indique plusieurs fois.');Exit End;
    TracksSpecified:=True;RequestedTracks:=TrackValue
   End Else If U='/U'Then UnconditionalFormat:=True
-  Else If U='/S'Then SystemTransfer:=True
+  Else If Copy(U,1,3)='/S:'Then Begin
+   If not ParseSystemFamily(Copy(S,4,255))Then Begin
+    WriteLn('Famille de systeme inconnue: ',Copy(S,4,255));Exit
+   End;SystemTransfer:=True
+  End Else If U='/S'Then SystemTransfer:=True
   Else If U='/F'Then ForceFormat:=True
   Else If U='NV'Then NoVerify:=True
   Else If(U='360')or(U='720')or(U='1200')or(U='1440')Then Begin
@@ -622,20 +684,18 @@ Begin
 End;
 
 Function SystemFilesAvailable:Boolean;
-Const Names:Array[1..3]of String[11]=('IO.SYS','MSDOS.SYS','COMMAND.COM');
 Var F:File;I:Byte;
 Begin
  SystemFilesAvailable:=False;
- For I:=1to 3do Begin
-  Assign(F,Names[I]);Reset(F,1);
-  If IOResult<>0Then Begin WriteLn('Fichier de demarrage introuvable: ',Names[I]);Exit End;
-  Close(F);If IOResult<>0Then Begin WriteLn('Erreur de lecture: ',Names[I]);Exit End
+ For I:=1to SysFileCount do Begin
+  Assign(F,SysFiles[I]);Reset(F,1);
+  If IOResult<>0Then Begin WriteLn('Fichier de demarrage introuvable: ',SysFiles[I]);Exit End;
+  Close(F);If IOResult<>0Then Begin WriteLn('Erreur de lecture: ',SysFiles[I]);Exit End
  End;
  SystemFilesAvailable:=True
 End;
 
 Function TransferSystemFiles(PData:PhysDataType;LData:LogDataType):Boolean;
-Const Names:Array[1..3]of String[11]=('IO.SYS','MSDOS.SYS','COMMAND.COM');
 Var
  FAT:PFatBuffer;Root,Buffer:TSectorBuffer;Src:File;
  I,J,K,CopyNumber:Integer;Got:Word;FileSizeValue,Remaining,ClusterBytes:LongInt;
@@ -645,6 +705,7 @@ Var
 Begin
  TransferSystemFiles:=False;
  If not SystemFilesAvailable Then Exit;
+ WriteLn('Transfert du systeme ',SystemFamilyName,'.');
  GetMem(FAT,MaxFormatFATBytes);If FAT=Nil Then Begin WriteLn('Memoire insuffisante pour la FAT.');Exit End;
  FillChar(FAT^,MaxFormatFATBytes,0);FillChar(Root,SizeOf(Root),0);
  FAT^[0]:=LData.Media;FAT^[1]:=$FF;FAT^[2]:=$FF;
@@ -660,13 +721,13 @@ Begin
  TotalSectors:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
  MaximumClusters:=(TotalSectors-DataStart)div LData.Cluster;
  ClusterBytes:=LongInt(LData.Cluster)*512;NextCluster:=2;
- For I:=1to 3do Begin
-  Assign(Src,Names[I]);Reset(Src,1);
+ For I:=1to SysFileCount do Begin
+  Assign(Src,SysFiles[I]);Reset(Src,1);
   If IOResult<>0Then Begin FreeMem(FAT,MaxFormatFATBytes);Exit End;
   FileSizeValue:=FileSize(Src);ClustersNeeded:=(FileSizeValue+ClusterBytes-1)div ClusterBytes;
   If(LongInt(NextCluster)+ClustersNeeded>4085)or
    (LongInt(NextCluster-2)+ClustersNeeded>MaximumClusters)Then Begin
-   Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Espace FAT12 insuffisant pour ',Names[I]);Exit
+   Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Espace FAT12 insuffisant pour ',SysFiles[I]);Exit
   End;
   If ClustersNeeded=0 Then FirstCluster:=0 Else FirstCluster:=NextCluster;
   Remaining:=FileSizeValue;
@@ -678,18 +739,19 @@ Begin
     FillChar(Buffer,SizeOf(Buffer),0);Got:=0;
     If Remaining>0Then Begin BlockRead(Src,Buffer,512,Got);If IOResult<>0Then Got:=0 End;
     If(Got=0)and(Remaining>0)Then Begin
-     Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur de lecture: ',Names[I]);Exit
+     Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur de lecture: ',SysFiles[I]);Exit
     End;
     SectorNumber:=DataStart+LongInt(CurrentCluster-2)*LData.Cluster+CopyNumber;
     If not WriteLogicalSector(PData,SectorNumber,Buffer)Then Begin
-     Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur d''ecriture de ',Names[I]);Exit
+     Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur d''ecriture de ',SysFiles[I]);Exit
     End;
     Dec(Remaining,Got)
    End
   End;
   Close(Src);If IOResult<>0Then Begin FreeMem(FAT,MaxFormatFATBytes);Exit End;
-  EntryOffset:=K*32;PutDirectoryName(Root[EntryOffset],Names[I]);
-  If I<3 Then Attr:=$27 Else Attr:=$20;Root[EntryOffset+11]:=Attr;
+  EntryOffset:=K*32;PutDirectoryName(Root[EntryOffset],SysFiles[I]);
+  If StrToUpper(SysFiles[I])='COMMAND.COM'Then Attr:=$20 Else Attr:=$27;
+  Root[EntryOffset+11]:=Attr;
   Root[EntryOffset+22]:=Lo(DirTime);Root[EntryOffset+23]:=Hi(DirTime);
   Root[EntryOffset+24]:=Lo(DirDate);Root[EntryOffset+25]:=Hi(DirDate);
   Root[EntryOffset+26]:=Lo(FirstCluster);Root[EntryOffset+27]:=Hi(FirstCluster);
@@ -837,6 +899,8 @@ BEGIN
     WriteLn('  /T:n      Specifies the number of tracks.');
     WriteLn('  /U        Performs an unconditional full format.');
     WriteLn('  /S        Copies IO.SYS, MSDOS.SYS and COMMAND.COM.');
+    WriteLn('  /S:family Selects MS-DOS, PC-DOS, DR-DOS, FreeDOS, RxDOS,');
+    WriteLn('             Win95, PTS-DOS, OS/2 or WinNT.');
    End;
    Else Begin
     WriteLn('FORMAT - Cette commande permet de formater un unit'+#130+' de disquette.');
@@ -851,6 +915,16 @@ BEGIN
     WriteLn('    /T:n  Indique le nombre de pistes du disque');
     WriteLn('      /U  Effectue un formatage complet et inconditionnel');
     WriteLn('      /S  Copie IO.SYS, MSDOS.SYS et COMMAND.COM');
+    WriteLn(' /S:famille  Selectionne la famille DOS (defaut: MS-DOS) :');
+    WriteLn('   MS-DOS   -> IO.SYS, MSDOS.SYS, COMMAND.COM');
+    WriteLn('   PC-DOS   -> IBMBIO.COM, IBMDOS.COM, COMMAND.COM');
+    WriteLn('   DR-DOS   -> IBMBIO.COM, IBMDOS.COM, COMMAND.COM');
+    WriteLn('   FreeDOS  -> KERNEL.SYS, COMMAND.COM');
+    WriteLn('   RxDOS    -> RXDOSBIO.SYS, RXDOS.SYS, COMMAND.COM');
+    WriteLn('   Win95    -> IO.SYS, MSDOS.SYS, COMMAND.COM');
+    WriteLn('   PTS-DOS  -> PTSBIO.SYS, PTSDOS.SYS, COMMAND.COM');
+    WriteLn('   OS/2     -> OS2BOOT, OS2LDR, OS2KRNL');
+    WriteLn('   WinNT    -> NTLDR, NTDETECT.COM, BOOT.INI');
    End;
   End;
  End
