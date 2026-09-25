@@ -113,7 +113,7 @@ L'application DEVENV possède plusieurs terminaux pour répondre aux différente
 		<td></td>
 	</tr>
 	<tr>	
-		<td><b>COS</b></td>td
+		<td><b>COS</b></td>
 		<td>Cray 1</td>
 		<td>Emulateur Cray 1</td>
 		<td>CAL</td>
