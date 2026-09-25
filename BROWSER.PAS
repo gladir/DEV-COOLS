@@ -314,7 +314,7 @@ Const
  TABLE_MARGIN = 8;             { Marge autour du tableau }
  TABLE_BORDER_COLOR = 8;       { Couleur des bordures (gris fonce) }
  TABLE_HEADER_BG = 7;          { Couleur de fond des en-tetes (gris clair) }
- MAX_TABLE_COLS = 20;          { Nombre maximum de colonnes }
+ MAX_TABLE_COLS = 200;         { Nombre maximum de colonnes }
 
  { Parametres pour les formulaires }
  FORM_MARGIN = 6;              { Marge autour du formulaire }
