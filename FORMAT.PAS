@@ -347,9 +347,10 @@ Var
  InFile:Boolean;
  KS:Word;
  VolumeLabel:String;
- ForceFormat,NoVerify,UnconditionalFormat,TracksSpecified:Boolean;
- RequestedTracks:Byte;
+ ForceFormat,NoVerify,UnconditionalFormat,QuickFormat,TracksSpecified,SectorsSpecified:Boolean;
+ RequestedTracks,RequestedSectors:Byte;
  SystemTransfer:Boolean;
+ ExistingQuickImage:Boolean;
  DosFamily,SysFileCount:Byte;
  SysFiles:Array[1..3]of String;
 
@@ -434,23 +435,32 @@ Begin
 End;
 
 Function ParseOptions(First:Integer;Var FormatSize:String):Boolean;
-Var I,Code,TrackValue:Integer;S,U,N:String;
+Var I,Code,NumericValue:Integer;S,U,N:String;
 Begin
  ParseOptions:=False;FormatSize:='';ForceFormat:=False;NoVerify:=False;VolumeLabel:='';
- UnconditionalFormat:=False;TracksSpecified:=False;RequestedTracks:=0;SystemTransfer:=False;
+ UnconditionalFormat:=False;QuickFormat:=False;TracksSpecified:=False;RequestedTracks:=0;
+ SectorsSpecified:=False;RequestedSectors:=0;SystemTransfer:=False;
  SetupSystemFamily(DOS_MSDOS);
  For I:=First to ParamCount do Begin
   S:=ParamStr(I);U:=StrToUpper(S);
   If Copy(U,1,3)='/V:'Then Begin
    If not SetVolumeLabel(Copy(S,4,255))Then Exit
   End Else If Copy(U,1,3)='/T:'Then Begin
-   N:=Copy(S,4,255);Val(N,TrackValue,Code);
-   If(Code<>0)or(TrackValue<1)or(TrackValue>255)Then Begin
+   N:=Copy(S,4,255);Val(N,NumericValue,Code);
+   If(Code<>0)or(NumericValue<1)or(NumericValue>255)Then Begin
     WriteLn('Le nombre de pistes doit etre compris entre 1 et 255.');Exit
    End;
    If TracksSpecified Then Begin WriteLn('Le nombre de pistes est indique plusieurs fois.');Exit End;
-   TracksSpecified:=True;RequestedTracks:=TrackValue
+   TracksSpecified:=True;RequestedTracks:=NumericValue
+  End Else If Copy(U,1,3)='/N:'Then Begin
+   N:=Copy(S,4,255);Val(N,NumericValue,Code);
+   If(Code<>0)or(NumericValue<1)or(NumericValue>18)Then Begin
+    WriteLn('Le nombre de secteurs par piste doit etre compris entre 1 et 18.');Exit
+   End;
+   If SectorsSpecified Then Begin WriteLn('Le nombre de secteurs est indique plusieurs fois.');Exit End;
+   SectorsSpecified:=True;RequestedSectors:=NumericValue
   End Else If U='/U'Then UnconditionalFormat:=True
+  Else If U='/Q'Then QuickFormat:=True
   Else If Copy(U,1,3)='/S:'Then Begin
    If not ParseSystemFamily(Copy(S,4,255))Then Begin
     WriteLn('Famille de systeme inconnue: ',Copy(S,4,255));Exit
@@ -463,6 +473,9 @@ Begin
    FormatSize:=U
   End Else Begin WriteLn('Parametre inconnu: ',S);Exit End
  End;
+ If QuickFormat and UnconditionalFormat Then Begin
+  WriteLn('Les options /Q et /U sont incompatibles.');Exit
+ End;
  ParseOptions:=True
 End;
 
@@ -471,6 +484,7 @@ Var TotalSectors,RootSectors,DataSectors,Clusters,FatEntries:LongInt;
 Begin
  ApplyTrackOption:=False;
  If TracksSpecified Then PData.Tracks:=RequestedTracks;
+ If SectorsSpecified Then Begin PData.Sec:=RequestedSectors;PData.DDPT^[4]:=RequestedSectors End;
  TotalSectors:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
  RootSectors:=(LongInt(LData.RootSize)*32+511)div 512;
  DataSectors:=TotalSectors-1-LongInt(LData.FAT)*2-RootSectors;
@@ -815,8 +829,10 @@ Begin
  System.Move(BootMsg[1],TrackBuf[1,103],Byte(BootMsg[0]));
  TrackBuf[1,511]:=$55;
  TrackBuf[2,0]:=$AA;
+ TrackBuf[1,510]:=$55;
+ TrackBuf[1,511]:=$AA;
   { Secteur de demarrage: Partie variable }
- NmSec:=PData.Tracks*PData.Sec*Pdata.Faces;
+ NmSec:=PData.Tracks;NmSec:=NmSec*PData.Sec;NmSec:=NmSec*Pdata.Faces;
  TrackBuf[1,12]:=Lo(512);
  TrackBuf[1,13]:=Hi(512);
  TrackBuf[1,14]:=LData.Cluster;  { Longueur de l'unite d'allocation }
@@ -827,6 +843,16 @@ Begin
  TrackBuf[1,23]:=LData.FAT;      { Longueur des FAT }
  TrackBuf[1,25]:=PData.Sec;      { Secteurs par piste }
  TrackBuf[1,27]:=PData.Faces;    { Nombre de faces }
+ { Reecriture du BPB aux offsets DOS reels (0-based). }
+ TrackBuf[1,11]:=Lo(512);TrackBuf[1,12]:=Hi(512);
+ TrackBuf[1,13]:=LData.Cluster;
+ TrackBuf[1,14]:=1;TrackBuf[1,15]:=0;TrackBuf[1,16]:=2;
+ TrackBuf[1,17]:=LData.RootSize;TrackBuf[1,18]:=0;
+ TrackBuf[1,19]:=Lo(NmSec);TrackBuf[1,20]:=Hi(NmSec);
+ TrackBuf[1,21]:=LData.Media;
+ TrackBuf[1,22]:=LData.FAT;TrackBuf[1,23]:=0;
+ TrackBuf[1,24]:=PData.Sec;TrackBuf[1,25]:=0;
+ TrackBuf[1,26]:=PData.Faces;TrackBuf[1,27]:=0;
   { Creer FAT et sa copie (contient 00) }
  TrackBuf[2,1]:=LData.Media;
  TrackBuf[2,2]:=$FF;
@@ -887,16 +913,18 @@ BEGIN
    _Germany:Begin
     WriteLn('Formate un disque pour une utilisation sous DOS.');
     WriteLn;
-    WriteLn('FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:Name] [/T:n] [/U] [/S]');
-    WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name] [/T:n] [/U] [/S]');
+    WriteLn('FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:Name] [/T:n] [/N:n] [/Q] [/U] [/S]');
+    WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name] [/T:n] [/N:n] [/Q] [/U] [/S]');
    End;
    _English:Begin
     WriteLn('Formats a disk for use with DOS.');
     WriteLn;
-    WriteLn('Syntax: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:label] [/T:n] [/U] [/S]');
-    WriteLn('        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/U] [/S]');
+    WriteLn('Syntax: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
+    WriteLn('        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
     WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
     WriteLn('  /T:n      Specifies the number of tracks.');
+    WriteLn('  /N:n      Specifies the number of sectors per track.');
+    WriteLn('  /Q        Performs a quick format of filesystem tables only.');
     WriteLn('  /U        Performs an unconditional full format.');
     WriteLn('  /S        Copies IO.SYS, MSDOS.SYS and COMMAND.COM.');
     WriteLn('  /S:family Selects MS-DOS, PC-DOS, DR-DOS, FreeDOS, RxDOS,');
@@ -905,14 +933,17 @@ BEGIN
    Else Begin
     WriteLn('FORMAT - Cette commande permet de formater un unit'+#130+' de disquette.');
     WriteLn;
-    WriteLn('Syntaxe: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:nom] [/T:n] [/U] [/S]');
-    WriteLn('         FORMAT fichier [360|720|1200|1440] [/V:nom] [/T:n] [/U] [/S]');
+    WriteLn('Syntaxe: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:nom] [/T:n] [/N:n] [/Q] [/U] [/S]');
+    WriteLn('         FORMAT fichier [360|720|1200|1440] [/V:nom] [/T:n] [/N:n] [/Q] [/U] [/S]');
     WriteLn;
     WriteLn('fichier  Utiliser le fichier sp'+#130+'cifi'+#130+' comme disquette');
     WriteLn('     NV  Pas de v'+#130+'rification');
     WriteLn('     /F  Force a utiliser ce format');
     WriteLn(' /V:nom  Indique le nom du volume (11 caracteres maximum)');
     WriteLn('    /T:n  Indique le nombre de pistes du disque');
+    WriteLn('    /N:n  Indique le nombre de secteurs par piste');
+    WriteLn('      /Q  Reinitialise rapidement le secteur de demarrage, les FAT');
+    WriteLn('          et le repertoire racine sans parcourir toutes les pistes');
     WriteLn('      /U  Effectue un formatage complet et inconditionnel');
     WriteLn('      /S  Copie IO.SYS, MSDOS.SYS et COMMAND.COM');
     WriteLn(' /S:famille  Selectionne la famille DOS (defaut: MS-DOS) :');
@@ -946,7 +977,8 @@ BEGIN
      InitDsk(AktDrv,PData);
      GetIntVec($1E,AncDDPT);
      SetIntVec($1E,PData.DDPT);
-     Ok:=Phys4mat(AktDrv,PData,not NoVerify);
+     If QuickFormat Then Begin WriteLn('Formatage rapide des tables du disque.');Ok:=True End
+     Else Ok:=Phys4mat(AktDrv,PData,not NoVerify);
      If(Ok)Then Begin
       WriteLn;
       Writeln('Ecriture du secteur de demarrage et des FAT ');
@@ -985,8 +1017,12 @@ BEGIN
    If not ParseOptions(2,Param)Then Halt(4);
    If SystemTransfer and not SystemFilesAvailable Then Halt(6);
    WriteLn('Formatage du fichier d''image : ',ImageName);
+   ExistingQuickImage:=False;
    {$I-}Assign(FileImg,ImageName);
-   Rewrite(FileImg,1);{$I+}
+   If QuickFormat Then Begin
+    FileMode:=2;Reset(FileImg,1);
+    If IOResult=0Then ExistingQuickImage:=True Else Rewrite(FileImg,1)
+   End Else Rewrite(FileImg,1);{$I+}
    If IOResult<>0Then Begin WriteLn('Impossible de creer le fichier image.');Halt(5)End;
    PData:=PHYS1440;
    LData:=LOG1440;
@@ -1017,6 +1053,11 @@ BEGIN
    End;
    If not ApplyTrackOption(PData,LData)Then Begin Close(FileImg);Halt(4)End;
    KS:=LongInt(PData.Tracks)*PData.Faces*PData.Sec div 2;
+   If ExistingQuickImage and(FileSize(FileImg)<>LongInt(KS)*1024)Then Begin
+    WriteLn('La taille de l''image existante ne correspond pas a la geometrie /T et /N.');
+    Close(FileImg);Halt(4)
+   End;
+   If QuickFormat Then WriteLn('Formatage rapide des tables de l''image.');
    If UnconditionalFormat Then WriteLn('Formatage complet et inconditionnel.');
    Seek(FileImg,0);
    WriteLn('Ecriture du secteur de d'+#130+'marrage et des FAT');
