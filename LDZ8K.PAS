@@ -125,6 +125,13 @@ CommonSize:LongInt;
 ObjectBase,SymbolIndex:Word;
 Next:PGlobal
 End;
+PLocalSymbol=^TLocalSymbol;
+TLocalSymbol=Record
+ Name:String;
+ Section:POutSection;
+ Value:LongInt;
+ Next:PLocalSymbol
+End;
 PObjSymbol=^TObjSymbol;
 TObjSymbol=Record
 Name:String;
@@ -177,6 +184,7 @@ Var
  SegmentAliases:PSegmentAlias;
  OutSections,LastOutSection:POutSection;
  Globals:PGlobal;
+ LocalSymbols,LastLocalSymbol:PLocalSymbol;
  Relocations,LastRelocation:PReloc;
  ErrorCount:Integer;
  NextSectionNumber:Integer;
@@ -263,7 +271,7 @@ Procedure Usage;Begin
  WriteLn('Syntaxe : LDZ8K [options] fichier1 [fichier2 ...]');
  WriteLn;
  WriteLn('  -o fichier  nom du fichier produit (x.out par defaut)');
- WriteLn('  -r          conserve les references non resolues');
+ WriteLn('  -r          produit un objet x.out relogeable et conserve les externes');
  WriteLn('  -s          supprime les symboles locaux et la table publique finale');
  WriteLn('  -u symbole  ajoute une reference externe forcee');
  WriteLn('  -i          espace instructions/donnees separe');
@@ -897,7 +905,9 @@ For SymbolIndex:=0 to SymbolSize div 12-1 do Begin
   Y^.Value:=SegmentLength;
   Y^.Global:=Flag in[X_SY_UNX,X_SY_GLB];Y^.Defined:=Flag<>X_SY_UNX;
   if Assigned=255 Then Y^.Section:=0 else Y^.Section:=Assigned+1;
-  if not Y^.Defined Then Y^.ExternalBase:=RBEXT+SymbolIndex;
+  { X_RL_X* contient l'indice de toute entree de symbole, y compris une
+    definition globale deja satisfaite dans un objet produit avec -r. }
+  Y^.ExternalBase:=RBEXT+SymbolIndex;
   if LastY=Nil Then M.Symbols:=Y else LastY^.Next:=Y;LastY:=Y
  End
 End;
@@ -937,6 +947,7 @@ Var
  S:PObjSection;
  Y:PObjSymbol;
  G:PGlobal;
+ L:PLocalSymbol;
 Begin
  S:=M.Sections;
  While S<>Nil do Begin
@@ -983,6 +994,18 @@ Begin
    End
   End else if Y^.Global Then Begin
    G:=GetGlobal(Y^.Name);if Y^.Value>G^.CommonSize Then G^.CommonSize:=Y^.Value
+  End else if Y^.Defined Then Begin
+   if Y^.Section=0 Then S:=Nil else S:=FindObjSection(M,Y^.Section);
+   if(Y^.Section<>0)and(S=Nil)Then
+    Error(M.FileName,'symbole local dans un segment inconnu: '+Y^.Name)
+   else Begin
+    New(L);if L=Nil Then Fatal('memoire pleine');L^.Name:=Y^.Name;
+    if S=Nil Then Begin L^.Section:=Nil;L^.Value:=Y^.Value End
+    else Begin L^.Section:=S^.OutputSection;L^.Value:=S^.OutputBase+Y^.Value End;
+    L^.Next:=Nil;
+    if LastLocalSymbol=Nil Then LocalSymbols:=L else LastLocalSymbol^.Next:=L;
+    LastLocalSymbol:=L
+   End
   End;Y:=Y^.Next
  End;
  if M.HasTransfer and not HasTransfer Then Begin
@@ -1069,10 +1092,16 @@ Begin
      Y:=FindExternalSymbol(M,R^.Base);
      if Y=Nil Then Error(M.FileName,'indice externe inconnu')else
      Begin
-      G:=FindGlobal(Y^.Name);
-      if(G=Nil)or not G^.Defined Then Begin
+     G:=FindGlobal(Y^.Name);
+      if G=Nil Then Error(M.FileName,'symbole externe absent de la table globale')
+      else if Opt.Relocatable Then Begin
+       { LD8K -r conserve une reference externe, meme si sa definition est
+         deja presente dans ce lien partiel. Le prochain lien la resoudra. }
+       NewBase:=G^.ObjectBase
+      End
+      else if not G^.Defined Then Begin
        if not Opt.Relocatable Then Error(M.FileName,'symbole non defini: '+Y^.Name);
-       if G<>Nil Then NewBase:=G^.ObjectBase
+       NewBase:=G^.ObjectBase
       End else
       Begin
        Addend:=G^.Value;if not G^.Absolute Then NewBase:=G^.Section^.Number
@@ -1102,7 +1131,7 @@ Var
 Begin
  N:=RBEXT;G:=Globals;
  While G<>Nil do Begin
-  if not G^.Defined Then Begin
+  if Opt.Relocatable or not G^.Defined Then Begin
    G^.ObjectBase:=N;Inc(N);if N>=RBMSK Then Fatal('trop de symboles externes')
   End;
   G:=G^.Next
@@ -1635,6 +1664,7 @@ Procedure WriteXOut;
 Var
  S:POutSection;
  G:PGlobal;
+ L:PLocalSymbol;
  R:PReloc;
  Old:File;
  Backup:String;
@@ -1644,6 +1674,9 @@ Var
  Flag:Byte;
  Location,FinalSymbolValue:LongInt;
 Begin
+ { x.out ne contient aucun champ de point d'entree. OBTRA n'est donc pas
+   serialise: le demarrage est choisi par le module initial et ses symboles
+   publics (_start, startup, etc.), comme dans la chaine CP/M-8000. }
  Executable:=not Opt.Relocatable and not UndefinedGlobals;
  SegmentCount:=0;InitSize:=0;S:=OutSections;
  While S<>Nil do Begin
@@ -1664,7 +1697,8 @@ Begin
   SymbolCount:=SegmentCount;G:=Globals;
   While G<>Nil do Begin
    Inc(SymbolCount);G:=G^.Next
-  End
+  End;
+  L:=LocalSymbols;While L<>Nil do Begin Inc(SymbolCount);L:=L^.Next End
  End;SymbolSize:=LongInt(SymbolCount)*12;
  if TargetSegmented Then if Executable Then Magic:=X_SX_MAGIC else Magic:=X_SU_MAGIC
  else if Opt.SplitID Then if Executable Then Magic:=X_NXI_MAGIC else Magic:=X_NUI_MAGIC
@@ -1725,7 +1759,11 @@ if SymbolCount<>0 Then Begin
  G:=Globals;
  While G<>Nil do Begin
   if not G^.Defined Then Begin
-   RawByte(255);RawByte(X_SY_UNX);RawWord(0)
+   RawByte(255);RawByte(X_SY_UNX);
+   if Opt.Relocatable Then Begin
+    if G^.CommonSize>$FFFF Then Fatal('COMMON x.out hors limite: '+G^.Name);
+    RawWord(Word(G^.CommonSize))
+   End else RawWord(0)
   End
   else
   Begin
@@ -1743,6 +1781,14 @@ if SymbolCount<>0 Then Begin
    End
   End;
   WriteXName(G^.Name);G:=G^.Next
+ End;
+ L:=LocalSymbols;
+ While L<>Nil do Begin
+  if(L^.Value<0)or(L^.Value>$FFFF)Then
+   Fatal('valeur de symbole local x.out hors limite: '+L^.Name);
+  if L^.Section=Nil Then RawByte(255)else RawByte(L^.Section^.Ordinal);
+  RawByte(X_SY_LOC);RawWord(Word(L^.Value));
+  WriteXName(L^.Name);L:=L^.Next
  End
 End;
 Close(OutputFile);OutputOpen:=False;if IOResult<>0 Then Fatal('fermeture impossible');
@@ -1902,7 +1948,8 @@ BEGIN
  Inputs:=Nil;LastInput:=Nil;ForcedUndefined:=Nil;LastForced:=Nil;OutSections:=Nil;
  Descriptors:=Nil;LastDescriptor:=Nil;SegmentAliases:=Nil;
  LastOutSection:=Nil;
- Globals:=Nil;Relocations:=Nil;LastRelocation:=Nil;ErrorCount:=0;
+ Globals:=Nil;LocalSymbols:=Nil;LastLocalSymbol:=Nil;
+ Relocations:=Nil;LastRelocation:=Nil;ErrorCount:=0;
  NextSectionNumber:=1;OutputOpen:=False;TemporaryName:='';ModuleCount:=0;Modules:=Nil;
  LastModule:=Nil;
  HasTransfer:=False;TransferValue:=0;TransferBase:=0;
