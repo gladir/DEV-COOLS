@@ -825,6 +825,9 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de compiler du PSP (Pascal Server Pages) pour de l'assembleur du microprocesseur 80386 (en véritable exécutable Windows 32 bits de format EXE PE Windows).</td>
 		</tr>
 		<tr>
+			<td><b>PSYSTEM.PAS</b></td>
+			<td>Cette commande permet lancer l'environnement de commande UCSD p-System.</td>
+		<tr>
 			<td><b>PYTHCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Python pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
