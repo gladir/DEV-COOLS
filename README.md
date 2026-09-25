@@ -479,6 +479,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>CSCRIPT.PAS</b></td>
+			<td>Cette commande permet de lancer l'interpréteur de VBScript console.</td>
+		</tr>
+		<tr>
 			<td><b>CSMITH.PAS</b></td>
 			<td>Cette commande permet de lancer un générateur de code C aleatoire.</td>
 		</tr>
