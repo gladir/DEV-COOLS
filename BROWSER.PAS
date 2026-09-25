@@ -3537,6 +3537,68 @@ End;
   sont reconnues explicitement ; toute autre propriete est lue dans
   JSExpando, le sac de proprietes arbitraires pose par du JS (ex:
   obj.cmPrefix dans JSCookMenu.js). }
+Const
+ { Identifiants des proprietes JS reconnues par JSGetNodeProperty -
+   0 = inconnue (repli sur Node^.JSExpando, voir plus bas). }
+ JS_NODEPROP_CLASSNAME    = 1;
+ JS_NODEPROP_ID           = 2;
+ JS_NODEPROP_STYLE        = 3;
+ JS_NODEPROP_LEFT         = 4;
+ JS_NODEPROP_TOP          = 5;
+ JS_NODEPROP_VISIBILITY   = 6;
+ JS_NODEPROP_OFFSETWIDTH  = 7;
+ JS_NODEPROP_OFFSETHEIGHT = 8;
+ JS_NODEPROP_OFFSETLEFT   = 9;
+ JS_NODEPROP_OFFSETTOP    = 10;
+ JS_NODEPROP_OFFSETPARENT = 11;
+ JS_NODEPROP_COUNT = 11;
+
+Type
+ JSNodePropertyEntry = Record
+  Name: String[15];
+  Id: Byte;
+ End;
+
+Const
+ { Triee par ordre ALPHABETIQUE - condition necessaire a la recherche
+   dichotomique de JSGetNodePropertyId ci-dessous (meme principe que
+   CSSPropertyTable/HTMLTagTable/JSKeywordTable). }
+ JSNodePropertyTable: Array[0..JS_NODEPROP_COUNT - 1] Of JSNodePropertyEntry = (
+  (Name: 'classname';    Id: JS_NODEPROP_CLASSNAME),
+  (Name: 'id';           Id: JS_NODEPROP_ID),
+  (Name: 'left';         Id: JS_NODEPROP_LEFT),
+  (Name: 'offsetheight'; Id: JS_NODEPROP_OFFSETHEIGHT),
+  (Name: 'offsetleft';   Id: JS_NODEPROP_OFFSETLEFT),
+  (Name: 'offsetparent'; Id: JS_NODEPROP_OFFSETPARENT),
+  (Name: 'offsettop';    Id: JS_NODEPROP_OFFSETTOP),
+  (Name: 'offsetwidth';  Id: JS_NODEPROP_OFFSETWIDTH),
+  (Name: 'style';        Id: JS_NODEPROP_STYLE),
+  (Name: 'top';          Id: JS_NODEPROP_TOP),
+  (Name: 'visibility';   Id: JS_NODEPROP_VISIBILITY)
+ );
+
+{ Recherche dichotomique dans JSNodePropertyTable - retourne 0 si
+  LowerProp (deja en minuscules) n'est pas une des proprietes connues. }
+Function JSGetNodePropertyId(Const LowerProp: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ JSGetNodePropertyId := 0;
+ Lo := 0;
+ Hi := JS_NODEPROP_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSNodePropertyTable[Mid].Name = LowerProp Then Begin
+   JSGetNodePropertyId := JSNodePropertyTable[Mid].Id;
+   Exit;
+  End
+  Else If JSNodePropertyTable[Mid].Name < LowerProp Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
 Function JSGetNodeProperty(Node: HTMLNodePtr; Const PropName: String): JSValue;
 Var
  LowerProp: String;
@@ -3544,65 +3606,128 @@ Begin
  JSGetNodeProperty := JSUndefined;
  If Node = Nil Then Exit;
  LowerProp := HTMLLowerCase(PropName);
- If LowerProp = 'classname' Then
-  JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'class'))
- Else If LowerProp = 'id' Then
-  JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'id'))
- Else If LowerProp = 'style' Then
-  { Pseudo-objet "style" : meme noeud, voir le chainage .style.X plus
-    bas qui retombe sur les noms left/top/visibility ci-dessous. }
-  JSGetNodeProperty := JSNodeValue(Node)
- Else If LowerProp = 'left' Then
-  JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'left'))
- Else If LowerProp = 'top' Then
-  JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'top'))
- Else If LowerProp = 'visibility' Then
-  JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'visibility'))
- Else If LowerProp = 'offsetwidth' Then
-  JSGetNodeProperty := JSNumber(JSGetNodeBoxWidth(Node))
- Else If LowerProp = 'offsetheight' Then
-  JSGetNodeProperty := JSNumber(JSGetNodeBoxHeight(Node))
- Else If LowerProp = 'offsetleft' Then
-  JSGetNodeProperty := JSNumber(JSGetNodeBoxX(Node))
- Else If LowerProp = 'offsettop' Then
-  JSGetNodeProperty := JSNumber(JSGetNodeBoxY(Node))
- Else If LowerProp = 'offsetparent' Then
-  JSGetNodeProperty := JSNodeValue(Node^.Parent)
- Else If Node^.JSExpando <> Nil Then
-  JSGetNodeProperty := JSObjectGetProp(Node^.JSExpando, PropName);
+ Case JSGetNodePropertyId(LowerProp) Of
+  JS_NODEPROP_CLASSNAME:
+   JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'class'));
+  JS_NODEPROP_ID:
+   JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'id'));
+  JS_NODEPROP_STYLE:
+   { Pseudo-objet "style" : meme noeud, voir le chainage .style.X plus
+     bas qui retombe sur les noms left/top/visibility ci-dessous. }
+   JSGetNodeProperty := JSNodeValue(Node);
+  JS_NODEPROP_LEFT:
+   JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'left'));
+  JS_NODEPROP_TOP:
+   JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'top'));
+  JS_NODEPROP_VISIBILITY:
+   JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'visibility'));
+  JS_NODEPROP_OFFSETWIDTH:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxWidth(Node));
+  JS_NODEPROP_OFFSETHEIGHT:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxHeight(Node));
+  JS_NODEPROP_OFFSETLEFT:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxX(Node));
+  JS_NODEPROP_OFFSETTOP:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxY(Node));
+  JS_NODEPROP_OFFSETPARENT:
+   JSGetNodeProperty := JSNodeValue(Node^.Parent);
+  Else
+   If Node^.JSExpando <> Nil Then
+    JSGetNodeProperty := JSObjectGetProp(Node^.JSExpando, PropName);
+ End;
 End;
 
 { Definir une propriete d'un noeud DOM utilise comme objet JavaScript -
   contrepartie en ecriture de JSGetNodeProperty. className/style.X
   sont routes vers les vrais attributs HTML (class/style) ; tout le
   reste devient une propriete expando arbitraire dans JSExpando. }
+Const
+ { Identifiants des proprietes JS reconnues par JSSetNodeProperty -
+   0 = inconnue (repli sur Node^.JSExpando, voir plus bas). }
+ JS_SETPROP_CLASSNAME       = 1;
+ JS_SETPROP_ID              = 2;
+ JS_SETPROP_LEFT            = 3;
+ JS_SETPROP_TOP             = 4;
+ JS_SETPROP_VISIBILITY      = 5;
+ JS_SETPROP_COLOR           = 6;
+ JS_SETPROP_BACKGROUNDCOLOR = 7;
+ JS_SETPROP_BGCOLOR         = 8;
+ JS_SETPROP_INNERHTML       = 9;
+ JS_SETPROP_COUNT = 9;
+
+Type
+ JSSetPropertyEntry = Record
+  Name: String[15];
+  Id: Byte;
+ End;
+
+Const
+ { Triee par ordre ALPHABETIQUE - condition necessaire a la recherche
+   dichotomique de JSGetSetPropertyId ci-dessous (meme principe que
+   CSSPropertyTable/HTMLTagTable/JSKeywordTable/JSNodePropertyTable). }
+ JSSetPropertyTable: Array[0..JS_SETPROP_COUNT - 1] Of JSSetPropertyEntry = (
+  (Name: 'backgroundcolor'; Id: JS_SETPROP_BACKGROUNDCOLOR),
+  (Name: 'bgcolor';         Id: JS_SETPROP_BGCOLOR),
+  (Name: 'classname';       Id: JS_SETPROP_CLASSNAME),
+  (Name: 'color';           Id: JS_SETPROP_COLOR),
+  (Name: 'id';              Id: JS_SETPROP_ID),
+  (Name: 'innerhtml';       Id: JS_SETPROP_INNERHTML),
+  (Name: 'left';            Id: JS_SETPROP_LEFT),
+  (Name: 'top';             Id: JS_SETPROP_TOP),
+  (Name: 'visibility';      Id: JS_SETPROP_VISIBILITY)
+ );
+
+{ Recherche dichotomique dans JSSetPropertyTable - retourne 0 si
+  LowerProp (deja en minuscules) n'est pas une des proprietes connues. }
+Function JSGetSetPropertyId(Const LowerProp: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ JSGetSetPropertyId := 0;
+ Lo := 0;
+ Hi := JS_SETPROP_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSSetPropertyTable[Mid].Name = LowerProp Then Begin
+   JSGetSetPropertyId := JSSetPropertyTable[Mid].Id;
+   Exit;
+  End
+  Else If JSSetPropertyTable[Mid].Name < LowerProp Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
 Procedure JSSetNodeProperty(Node: HTMLNodePtr; Const PropName: String; Value: JSValue);
 Var
  LowerProp: String;
 Begin
  If Node = Nil Then Exit;
  LowerProp := HTMLLowerCase(PropName);
- If LowerProp = 'classname' Then
-  DOMSetAttribute(Node, 'class', JSValueToString(Value))
- Else If LowerProp = 'id' Then
-  DOMSetAttribute(Node, 'id', JSValueToString(Value))
- Else If LowerProp = 'left' Then
-  JSSetStyleProp(Node, 'left', JSValueToString(Value))
- Else If LowerProp = 'top' Then
-  JSSetStyleProp(Node, 'top', JSValueToString(Value))
- Else If LowerProp = 'visibility' Then
-  JSSetStyleProp(Node, 'visibility', JSValueToString(Value))
- Else If LowerProp = 'color' Then
-  JSSetStyleProp(Node, 'color', JSValueToString(Value))
- Else If LowerProp = 'backgroundcolor' Then
-  JSSetStyleProp(Node, 'background-color', JSValueToString(Value))
- Else If LowerProp = 'bgcolor' Then
-  DOMSetAttribute(Node, 'bgcolor', JSValueToString(Value))
- Else If LowerProp = 'innerhtml' Then
-  JSSetInnerHTML(Node, JSValueToString(Value))
- Else Begin
-  If Node^.JSExpando = Nil Then Node^.JSExpando := JSNewObject(False);
-  JSObjectSetProp(Node^.JSExpando, PropName, Value);
+ Case JSGetSetPropertyId(LowerProp) Of
+  JS_SETPROP_CLASSNAME:
+   DOMSetAttribute(Node, 'class', JSValueToString(Value));
+  JS_SETPROP_ID:
+   DOMSetAttribute(Node, 'id', JSValueToString(Value));
+  JS_SETPROP_LEFT:
+   JSSetStyleProp(Node, 'left', JSValueToString(Value));
+  JS_SETPROP_TOP:
+   JSSetStyleProp(Node, 'top', JSValueToString(Value));
+  JS_SETPROP_VISIBILITY:
+   JSSetStyleProp(Node, 'visibility', JSValueToString(Value));
+  JS_SETPROP_COLOR:
+   JSSetStyleProp(Node, 'color', JSValueToString(Value));
+  JS_SETPROP_BACKGROUNDCOLOR:
+   JSSetStyleProp(Node, 'background-color', JSValueToString(Value));
+  JS_SETPROP_BGCOLOR:
+   DOMSetAttribute(Node, 'bgcolor', JSValueToString(Value));
+  JS_SETPROP_INNERHTML:
+   JSSetInnerHTML(Node, JSValueToString(Value));
+  Else Begin
+   If Node^.JSExpando = Nil Then Node^.JSExpando := JSNewObject(False);
+   JSObjectSetProp(Node^.JSExpando, PropName, Value);
+  End;
  End;
 End;
 
