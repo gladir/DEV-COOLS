@@ -70,6 +70,7 @@ Const
  AR8K_MAGIC=$FF65;
  AR8K_HEADER_SIZE=26;
  MaxSegmentSize=65535;
+ SharedBoundary=8192;
  MaxErrors=100;
 
 Type
@@ -598,6 +599,15 @@ End;
 Function CompatibleSegmentType(A,B:Byte):Boolean;
 Begin CompatibleSegmentType:=(A=0)or(B=0)or(A=B)End;
 
+Function IsInstructionType(Typ:Byte):Boolean;
+Begin IsInstructionType:=Typ=X_SG_COD End;
+
+Function SameAddressSpace(A,B:POutSection):Boolean;
+Begin
+ if not Opt.SplitID Then SameAddressSpace:=True
+ else SameAddressSpace:=IsInstructionType(A^.SegmentType)=IsInstructionType(B^.SegmentType)
+End;
+
 Function FindSegmentAlias(Const Name:String):PSegmentAlias;
 Var A:PSegmentAlias;U:String;
 Begin U:=UpperString(Name);A:=SegmentAliases;
@@ -633,7 +643,7 @@ Begin
  End;
  While P<>Nil do Begin
   if FixedInput and P^.Fixed and(P^.AssignedNumber=Physical)and
-  ((not Opt.SplitID)or((P^.SegmentType=X_SG_COD)=(S^.SegmentType=X_SG_COD)))Then Begin
+  ((not Opt.SplitID)or(IsInstructionType(P^.SegmentType)=IsInstructionType(S^.SegmentType)))Then Begin
    if not CompatibleSegmentType(P^.SegmentType,S^.SegmentType)Then
     Error(S^.Name,'collision de numero de segment fixe')
    else if P^.Size+(P^.Size and 1)+S^.Size>MaxSegmentSize Then
@@ -1117,9 +1127,9 @@ End;
 Function DefineFixedSegment(Physical,Typ:Byte;Const SuggestedName:String):POutSection;
 Var P:POutSection;CodeSpace,OtherCode:Boolean;N:String;
 Begin
- CodeSpace:=Opt.SplitID and(Typ=X_SG_COD);P:=OutSections;
+ CodeSpace:=Opt.SplitID and IsInstructionType(Typ);P:=OutSections;
  While P<>Nil do Begin
-  OtherCode:=Opt.SplitID and(P^.SegmentType=X_SG_COD);
+  OtherCode:=Opt.SplitID and IsInstructionType(P^.SegmentType);
   if P^.Fixed and(P^.AssignedNumber=Physical)and(CodeSpace=OtherCode)Then Begin
    if not CompatibleSegmentType(P^.SegmentType,Typ)Then
     Fatal('collision de type sur le segment fixe '+SuggestedName);
@@ -1237,21 +1247,55 @@ Begin
  S:=OutSections;While S<>Nil do Begin
   if S^.Fixed Then Begin
    if S^.AssignedNumber>126 Then Fatal('numero fixe Z8001 reserve ou invalide');
-   CodeSpace:=Opt.SplitID and(S^.SegmentType=X_SG_COD);
+   CodeSpace:=Opt.SplitID and IsInstructionType(S^.SegmentType);
    if CodeSpace Then Begin if UsedCode[S^.AssignedNumber]Then Fatal('collision de segments fixes');UsedCode[S^.AssignedNumber]:=True End
    else Begin if UsedData[S^.AssignedNumber]Then Fatal('collision de segments fixes');UsedData[S^.AssignedNumber]:=True End
   End;S:=S^.Next
  End;
  N:=0;S:=OutSections;While S<>Nil do Begin
   if N>127 Then Fatal('x.out ne peut contenir plus de 128 segments');S^.Ordinal:=N;Inc(N);
-  if TargetSegmented and not S^.Fixed Then Begin
-   CodeSpace:=Opt.SplitID and(S^.SegmentType=X_SG_COD);I:=0;
+  if not S^.Fixed Then Begin
+   CodeSpace:=Opt.SplitID and IsInstructionType(S^.SegmentType);I:=0;
    if CodeSpace Then Begin While(I<=126)and UsedCode[I]do Inc(I)End
    else Begin While(I<=126)and UsedData[I]do Inc(I)End;
    if I>126 Then Fatal('plus aucun numero de segment Z8001 disponible');S^.AssignedNumber:=I;
    if CodeSpace Then UsedCode[I]:=True else UsedData[I]:=True
-  End else if not TargetSegmented Then S^.AssignedNumber:=255;
+  End;
   S:=S^.Next
+ End
+End;
+
+Procedure ValidateSplitAddressSpaces;
+Var
+ A,B,T:POutSection;
+ R:PReloc;
+Begin
+ if not Opt.SplitID Then Exit;
+ { Un meme numero physique peut designer un segment CODE et un segment DATA,
+   mais jamais deux segments appartenant au meme espace d'adressage. }
+ A:=OutSections;
+ While A<>Nil do Begin
+  B:=A^.Next;
+  While B<>Nil do Begin
+   if SameAddressSpace(A,B)and(A^.AssignedNumber=B^.AssignedNumber)Then
+    Fatal('numero de segment duplique dans le meme espace instructions/donnees');
+   B:=B^.Next
+  End;
+  A:=A^.Next
+ End;
+ { Une reference entre CODE et DATA est licite sur le Z8000. On controle
+   cependant sa cible ici: le numero reutilise ne doit jamais servir a
+   choisir la cible, qui reste le descripteur logique du fichier objet. }
+ R:=Relocations;
+ While R<>Nil do Begin
+  if R^.Base<RBEXT Then Begin
+   T:=OutSections;
+   While(T<>Nil)and(T^.Number<>R^.Base)do T:=T^.Next;
+   if T=Nil Then Fatal('reference entre espaces vers un segment inconnu');
+   if T^.AssignedNumber>126 Then
+    Fatal('reference vers un numero de segment Z8001 reserve')
+  End;
+  R:=R^.Next
  End
 End;
 
@@ -1260,6 +1304,10 @@ Var
  S,Stack:POutSection;
  U:String;
 Begin
+ if Opt.ReadOnly and TargetSegmented Then
+  Fatal('-n est incompatible avec un chargement segmente Z8001');
+ if Opt.ReadOnly and Opt.SplitID Then
+  Fatal('-n et -i designent deux organisations memoire incompatibles');
  S:=OutSections;
  While S<>Nil do Begin
   U:=UpperString(S^.Name);
@@ -1286,7 +1334,7 @@ Begin
   X_SG_MXU;
   if S^.Size>$FFFF Then Fatal('segment x.out superieur a 64 Kio: '+S^.Name);
   S:=S^.Next
- End;AssignSegmentNumbers
+ End;AssignSegmentNumbers;ValidateSplitAddressSpaces
 End;
 
 Procedure PutLE16(Var B:TBuffer;Var N:Integer;V:Word);Begin
@@ -1478,13 +1526,14 @@ Procedure PrepareExecutable;
 Var
  S,T:POutSection;
  R:PReloc;
- Base,CodeBase,DataBase:LongInt;
+ Base,CodeBase,DataBase,V:LongInt;
+ DataStarted:Boolean;
 Begin
- Base:=0;CodeBase:=0;DataBase:=0;S:=OutSections;
+ Base:=0;CodeBase:=0;DataBase:=0;DataStarted:=False;S:=OutSections;
  While S<>Nil do Begin
   if TargetSegmented Then S^.LoadBase:=0
   else if Opt.SplitID Then Begin
-   if S^.SegmentType in[X_SG_COD,X_SG_CON]Then Begin
+   if IsInstructionType(S^.SegmentType)Then Begin
     S^.LoadBase:=CodeBase;Inc(CodeBase,S^.Size)
    End
    else
@@ -1493,14 +1542,41 @@ Begin
    End
   End else
   Begin
+   if Opt.ReadOnly Then Begin
+    if IsInstructionType(S^.SegmentType)Then Begin
+     if DataStarted Then
+      Fatal('segment de texte rencontre apres les donnees partageables')
+    End else if not DataStarted Then Begin
+     if Base>MaxSegmentSize-(SharedBoundary-1)Then
+      Fatal('alignement partageable au-dela de 64 Kio');
+     Base:=(Base+SharedBoundary-1)and not LongInt(SharedBoundary-1);
+     DataStarted:=True
+    End
+   End;
    S^.LoadBase:=Base;Inc(Base,S^.Size)
   End;
   S:=S^.Next
+ End;
+ if not TargetSegmented Then Begin
+  if Opt.SplitID Then Begin
+   if CodeBase>MaxSegmentSize Then Fatal('espace instructions superieur a 64 Kio');
+   if DataBase>MaxSegmentSize Then Fatal('espace donnees superieur a 64 Kio')
+  End else if Base>MaxSegmentSize Then Fatal('image non segmentee superieure a 64 Kio')
  End;
  R:=Relocations;
  While R<>Nil do Begin
   T:=FindOutByNumber(R^.Base);
   if T=Nil Then Fatal('base de relogement de sortie inconnue');
+  if Opt.SplitID and not TargetSegmented Then Begin
+   Case R^.Action of
+   RAA8:Begin V:=GetImageByte(R^.Section,R^.Offset)+T^.LoadBase;
+    if(V<0)or(V>$FF)Then Fatal('reference 8 bits hors de son espace instructions/donnees')
+   End;
+   RAA16,RAA16M,RAZOF:Begin V:=ReadBE16(R^.Section,R^.Offset)+T^.LoadBase;
+    if(V<0)or(V>$FFFF)Then Fatal('reference 16 bits hors de son espace instructions/donnees')
+   End
+   End
+  End;
   if TargetSegmented and(R^.Action=RAZSS)Then   WriteBE16Image(R^.Section,R^.Offset,(
   ReadBE16(R^.Section,R^.Offset)and $80FF)or
   (Word(T^.AssignedNumber and $7F)shl 8))
@@ -1541,7 +1617,7 @@ Var
  Magic,SegmentCount,SymbolCount:Word;
  InitSize,RelocSize,SymbolSize:LongInt;
  Flag:Byte;
- Location:LongInt;
+ Location,FinalSymbolValue:LongInt;
 Begin
  Executable:=not Opt.Relocatable and not UndefinedGlobals;
  SegmentCount:=0;InitSize:=0;S:=OutSections;
@@ -1576,7 +1652,7 @@ Begin
  RawLong(SymbolSize);
  S:=OutSections;
  While S<>Nil do Begin
-  if TargetSegmented Then RawByte(S^.AssignedNumber)else RawByte(255);
+  if Executable Then RawByte(S^.AssignedNumber)else RawByte(255);
   RawByte(S^.SegmentType);RawWord(Word(S^.Size));S:=S^.Next
  End;
  S:=OutSections;
@@ -1628,14 +1704,17 @@ if SymbolCount<>0 Then Begin
   End
   else
   Begin
-   if(G^.Value<0)or(G^.Value>$FFFF)Then Fatal('valeur de symbole x.out hors limite: '+
-   G^.Name);
+   FinalSymbolValue:=G^.Value;
+   if Executable and not TargetSegmented and not G^.Absolute Then
+    Inc(FinalSymbolValue,G^.Section^.LoadBase);
+   if(FinalSymbolValue<0)or(FinalSymbolValue>$FFFF)Then
+    Fatal('valeur de symbole x.out hors limite: '+G^.Name);
    if G^.Absolute Then Begin
-    RawByte(255);RawByte(X_SY_GLB);RawWord(Word(G^.Value))
+    RawByte(255);RawByte(X_SY_GLB);RawWord(Word(FinalSymbolValue))
    End
    else
    Begin
-    RawByte(G^.Section^.Ordinal);RawByte(X_SY_GLB);RawWord(Word(G^.Value))
+    RawByte(G^.Section^.Ordinal);RawByte(X_SY_GLB);RawWord(Word(FinalSymbolValue))
    End
   End;
   WriteXName(G^.Name);G:=G^.Next
