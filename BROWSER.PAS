@@ -14328,10 +14328,19 @@ Var
  I, X, Y: Integer;
  Header: PNGHeader;
  CompDataLen: LongInt;
- CompData: Array[0..65535] Of Byte;
+ {$IFDEF FPC}
+ CompData: Array Of Byte;
+ {$ELSE}
+ CompData: Array[0..65519] Of Byte;
+ {$ENDIF}
  CompDataPos: LongInt;
- DecompData: Array[0..65535] Of Byte;
+ {$IFDEF FPC}
+ DecompData: Array Of Byte;
+ {$ELSE}
+ DecompData: Array[0..65519] Of Byte;
+ {$ENDIF}
  DecompLen: LongInt;
+ CompCapacity, DecompCapacity: LongInt;
  BytesPerPixel, RowBytes: Integer;
  CurrRow, PrevRow: Array[0..4095] Of Byte;
  FilterType: Byte;
@@ -14349,6 +14358,17 @@ Begin
  Img.AlphaData := Nil;
  Img.HasTransparent := False;
  Img.TransparentIndex := -1;
+ {$IFDEF FPC}
+ { L'entree reste bornee par DeflateInBuffer; seule la sortie et les pixels
+   doivent depasser un segment DOS pour les images courantes. }
+ SetLength(CompData, 65536);
+ SetLength(DecompData, 1);
+ CompCapacity := Length(CompData);
+ DecompCapacity := Length(DecompData);
+ {$ELSE}
+ CompCapacity := 65520;
+ DecompCapacity := 65520;
+ {$ENDIF}
 
  { Ouvrir le fichier }
  {$I-}
@@ -14441,7 +14461,7 @@ Begin
 
   Else If ChunkType = PNG_CHUNK_IDAT Then Begin
    { Donnees compressees - accumuler }
-   If CompDataPos + ChunkLen <= 65536 Then Begin
+   If CompDataPos + ChunkLen <= CompCapacity Then Begin
     BlockRead(F, CompData[CompDataPos], ChunkLen, BytesRead);
     Inc(CompDataPos, ChunkLen);
    End
@@ -14474,12 +14494,8 @@ Begin
  { Decompresser les donnees (sauter l'en-tete zlib de 2 octets) }
  If CompDataPos < 3 Then Exit;
 
- Move(CompData[2], DeflateInBuffer, CompDataPos - 2);
- DeflateInLen := CompDataPos - 2;
-
- If Not DeflateDecompressBlock(DecompData, DecompLen, 65536) Then Exit;
-
- { Calculer les octets par pixel }
+ { Calculer les octets par pixel avant d'allouer la sortie DEFLATE. Le
+   logo Google 272x92 depasse deja l'ancienne limite DOS de 65520 octets. }
  Case Img.ColorType Of
   PNG_COLOR_GRAYSCALE: BytesPerPixel := 1;
   PNG_COLOR_RGB: BytesPerPixel := 3;
@@ -14488,12 +14504,24 @@ Begin
   PNG_COLOR_RGBA: BytesPerPixel := 4;
   Else Exit;
  End;
+ {$IFDEF FPC}
+ SetLength(DecompData, LongInt(Img.Height) *
+  (LongInt(Img.Width) * BytesPerPixel + 1) + 1024);
+ DecompCapacity := Length(DecompData);
+ {$ENDIF}
+
+ Move(CompData[2], DeflateInBuffer, CompDataPos - 2);
+ DeflateInLen := CompDataPos - 2;
+
+ If Not DeflateDecompressBlock(DecompData, DecompLen, DecompCapacity) Then Exit;
 
  RowBytes := Img.Width * BytesPerPixel;
 
  { Allouer la memoire pour les pixels RGB }
  Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
+ {$IFNDEF FPC}
  If Img.DataSize > 65520 Then Exit;
+ {$ENDIF}
 
  GetMem(Img.Data, Img.DataSize);
  If Img.Data = Nil Then Exit;
@@ -16644,6 +16672,11 @@ Begin
 
     { Scripts JavaScript }
     TAG_SCRIPT:   RenderTagScript(Node, Ctx);
+
+    { Metadonnees et feuilles de style: leur texte appartient au moteur
+      CSS/DOM et ne doit jamais apparaitre dans la page rendue. Des pages
+      modernes placent parfois STYLE dans BODY. }
+    TAG_STYLE, TAG_TITLE, TAG_META, TAG_LINK, TAG_BASE: Begin End;
 
     { Images }
     TAG_IMG:      RenderTagImg(Node, Ctx);
