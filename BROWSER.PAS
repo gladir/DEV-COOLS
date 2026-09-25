@@ -2922,28 +2922,63 @@ Begin
 End;
 
 { Obtenir le type de mot-cle JavaScript }
+Type
+ JSKeywordEntry = Record
+  Name: String[10];
+  Id: Byte;
+ End;
+
+Const
+ JS_KEYWORD_COUNT = 19;
+ { Table des mots-cles JavaScript, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de JSGetKeywordType
+   ci-dessous (meme principe que CSSPropertyTable/HTMLTagTable). }
+ JSKeywordTable: Array[0..JS_KEYWORD_COUNT - 1] Of JSKeywordEntry = (
+  (Name: 'break';     Id: JS_KW_BREAK),
+  (Name: 'const';     Id: JS_KW_CONST),
+  (Name: 'continue';  Id: JS_KW_CONTINUE),
+  (Name: 'do';        Id: JS_KW_DO),
+  (Name: 'else';      Id: JS_KW_ELSE),
+  (Name: 'false';     Id: JS_KW_FALSE),
+  (Name: 'for';       Id: JS_KW_FOR),
+  (Name: 'function';  Id: JS_KW_FUNCTION),
+  (Name: 'if';        Id: JS_KW_IF),
+  (Name: 'let';       Id: JS_KW_LET),
+  (Name: 'new';       Id: JS_KW_NEW),
+  (Name: 'null';      Id: JS_KW_NULL),
+  (Name: 'return';    Id: JS_KW_RETURN),
+  (Name: 'this';      Id: JS_KW_THIS),
+  (Name: 'true';      Id: JS_KW_TRUE),
+  (Name: 'typeof';    Id: JS_KW_TYPEOF),
+  (Name: 'undefined'; Id: JS_KW_UNDEFINED),
+  (Name: 'var';       Id: JS_KW_VAR),
+  (Name: 'while';     Id: JS_KW_WHILE)
+ );
+
+{ Obtenir le type d'un mot-cle JavaScript - recherche dichotomique dans
+  JSKeywordTable (ci-dessus) au lieu des 19 comparaisons Si/SinonSi
+  d'avant (meme principe que CSSGetPropertyId/GetTagType). Sensible a
+  la casse (JS l'est), donc AUCUN passage en minuscules ici - inchange
+  par rapport a l'ancien code. }
 Function JSGetKeywordType(S: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
 Begin
- If S = 'var' Then JSGetKeywordType := JS_KW_VAR
- Else If S = 'let' Then JSGetKeywordType := JS_KW_LET
- Else If S = 'const' Then JSGetKeywordType := JS_KW_CONST
- Else If S = 'function' Then JSGetKeywordType := JS_KW_FUNCTION
- Else If S = 'if' Then JSGetKeywordType := JS_KW_IF
- Else If S = 'else' Then JSGetKeywordType := JS_KW_ELSE
- Else If S = 'for' Then JSGetKeywordType := JS_KW_FOR
- Else If S = 'while' Then JSGetKeywordType := JS_KW_WHILE
- Else If S = 'do' Then JSGetKeywordType := JS_KW_DO
- Else If S = 'return' Then JSGetKeywordType := JS_KW_RETURN
- Else If S = 'break' Then JSGetKeywordType := JS_KW_BREAK
- Else If S = 'continue' Then JSGetKeywordType := JS_KW_CONTINUE
- Else If S = 'true' Then JSGetKeywordType := JS_KW_TRUE
- Else If S = 'false' Then JSGetKeywordType := JS_KW_FALSE
- Else If S = 'null' Then JSGetKeywordType := JS_KW_NULL
- Else If S = 'undefined' Then JSGetKeywordType := JS_KW_UNDEFINED
- Else If S = 'new' Then JSGetKeywordType := JS_KW_NEW
- Else If S = 'this' Then JSGetKeywordType := JS_KW_THIS
- Else If S = 'typeof' Then JSGetKeywordType := JS_KW_TYPEOF
- Else JSGetKeywordType := 0;
+ JSGetKeywordType := 0;
+
+ Lo := 0;
+ Hi := JS_KEYWORD_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSKeywordTable[Mid].Name = S Then Begin
+   JSGetKeywordType := JSKeywordTable[Mid].Id;
+   Exit;
+  End
+  Else If JSKeywordTable[Mid].Name < S Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
 End;
 
 { Verifier si une chaine est un mot-cle JavaScript }
