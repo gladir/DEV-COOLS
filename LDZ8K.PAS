@@ -75,8 +75,14 @@ Const
 Type
  TBuffer=Array[0..254]of Byte;
  PInput=^TInput;
- TInput=Record Name:String;
- Next:PInput
+TInput=Record Name:String;
+Next:PInput
+End;
+PDescriptor=^TDescriptor;
+TDescriptor=Record
+ Text:String;
+ FromFile:Boolean;
+ Next:PDescriptor
 End;
 PImage=^TImage;
 TImage=Record Index:LongInt;
@@ -91,6 +97,12 @@ Size,LoadBase:LongInt;
 IsBss,Fixed,Common,Reserved:Boolean;
 FirstImage,LastImage:PImage;
 Next:POutSection
+End;
+PSegmentAlias=^TSegmentAlias;
+TSegmentAlias=Record
+ Name:String;
+ Segment:POutSection;
+ Next:PSegmentAlias
 End;
 PObjSection=^TObjSection;
 TObjSection=Record
@@ -159,6 +171,8 @@ End;
 Var
  Opt:TOptions;
  Inputs,LastInput:PInput;
+ Descriptors,LastDescriptor:PDescriptor;
+ SegmentAliases:PSegmentAlias;
  OutSections,LastOutSection:POutSection;
  Globals:PGlobal;
  Relocations,LastRelocation:PReloc;
@@ -254,6 +268,8 @@ Procedure Usage;Begin
  WriteLn('  -n          texte partage, donnees alignees sur 8 Kio');
  WriteLn('  -t taille   taille de pile demandee');
  WriteLn('  -w          reserve 0=TEXT, 1=CONST, 2=DATA et 3=BSS');
+ WriteLn('  -d fichier  lit les descriptions de segments dans un fichier');
+ WriteLn('  -d"ligne"   applique directement une ligne de description');
  WriteLn('  -lxx        recherche la bibliotheque AR8K libxx.a');
  WriteLn('              chemins: repertoire courant, LIB, LIBRARY et repertoire lib');
  WriteLn('  Entrees x.out de XCON et objets UNIDOT acceptes; sortie x.out big-endian.');
@@ -266,6 +282,13 @@ Var
 Begin
  New(P);if P=Nil Then Fatal('memoire pleine');P^.Name:=Name;P^.Next:=Nil;
  if Last=Nil Then First:=P else Last^.Next:=P;Last:=P
+End;
+
+Procedure AddDescriptor(Const Text:String;FromFile:Boolean);
+Var P:PDescriptor;
+Begin
+ New(P);if P=Nil Then Fatal('memoire pleine');P^.Text:=Text;P^.FromFile:=FromFile;P^.Next:=Nil;
+ if LastDescriptor=Nil Then Descriptors:=P else LastDescriptor^.Next:=P;LastDescriptor:=P
 End;
 
 Function ResolveLibrary(Const Abbreviation:String):String;Forward;
@@ -289,6 +312,12 @@ Begin
   else if U='-I'Then Opt.SplitID:=True
   else if U='-N'Then Opt.ReadOnly:=True
   else if U='-W'Then Opt.Preassign:=True
+  else if U='-D'Then Begin
+   Inc(I);if I>ParamCount Then Fatal('-d exige un fichier de descriptions');
+   AddDescriptor(ParamStr(I),True)
+  End
+  else if(Length(S)>2)and(S[1]='-')and(UpCase(S[2])='D')Then
+   AddDescriptor(Copy(S,3,Length(S)),False)
   else if U='-T'Then Begin
    Inc(I);if I>ParamCount Then Fatal('-t exige une taille');
    Val(ParamStr(I),Opt.StackSize,Code);if Code<>0 Then Fatal('taille de pile incorrecte')
@@ -569,12 +598,39 @@ End;
 Function CompatibleSegmentType(A,B:Byte):Boolean;
 Begin CompatibleSegmentType:=(A=0)or(B=0)or(A=B)End;
 
+Function FindSegmentAlias(Const Name:String):PSegmentAlias;
+Var A:PSegmentAlias;U:String;
+Begin U:=UpperString(Name);A:=SegmentAliases;
+ While(A<>Nil)and(UpperString(A^.Name)<>U)do A:=A^.Next;FindSegmentAlias:=A
+End;
+
+Procedure AddSegmentAlias(Const Name:String;S:POutSection);
+Var A:PSegmentAlias;
+Begin
+ if Name=''Then Exit;A:=FindSegmentAlias(Name);
+ if A<>Nil Then Begin
+  if A^.Segment<>S Then Error(Name,'alias de segment defini plusieurs fois');Exit
+ End;
+ New(A);if A=Nil Then Fatal('memoire pleine');A^.Name:=Name;A^.Segment:=S;
+ A^.Next:=SegmentAliases;SegmentAliases:=A
+End;
+
 Function AllocateOutSection(S:PObjSection):POutSection;
-Var P,Best:POutSection;FixedInput,CommonInput:Boolean;Physical:Byte;Suffix:String;N:Integer;
+Var P,Best:POutSection;A:PSegmentAlias;FixedInput,CommonInput:Boolean;Physical:Byte;Suffix:String;N:Integer;
 Begin
  NormalizeObjSection(S);FixedInput:=S^.AssignedNumber<>255;
  if FixedInput Then Begin Physical:=S^.AssignedNumber and $7F;FixedInput:=Physical<>127 End;
  CommonInput:=IsCommonName(S^.Name);Best:=Nil;P:=OutSections;
+ A:=FindSegmentAlias(S^.Name);
+ if A<>Nil Then Begin
+  P:=A^.Segment;
+  if not CompatibleSegmentType(P^.SegmentType,S^.SegmentType)Then
+   Error(S^.Name,'type incompatible avec sa description de segment')
+  else if P^.Size+(P^.Size and 1)+S^.Size>MaxSegmentSize Then
+   Error(S^.Name,'debordement du segment impose par -d')
+  else Begin if P^.SegmentType=0 Then P^.SegmentType:=S^.SegmentType;AllocateOutSection:=P;Exit End;
+  AllocateOutSection:=P;Exit
+ End;
  While P<>Nil do Begin
   if FixedInput and P^.Fixed and(P^.AssignedNumber=Physical)and
   ((not Opt.SplitID)or((P^.SegmentType=X_SG_COD)=(S^.SegmentType=X_SG_COD)))Then Begin
@@ -1037,6 +1093,96 @@ Begin
    if not G^.Defined Then Fatal(
    '-s ne peut pas supprimer une table externe encore necessaire');G:=G^.Next
   End
+ End
+End;
+
+Function DescriptorType(Const S:String):Byte;
+Var U:String;
+Begin
+ U:=UpperString(S);
+ if(U='T')or(U='TEXT')Then DescriptorType:=X_SG_COD
+ else if(U='D')or(U='DATA')Then DescriptorType:=X_SG_DAT
+ else if(U='B')or(U='BSS')Then DescriptorType:=X_SG_BSS
+ else if(U='C')or(U='CONS')or(U='CONST')Then DescriptorType:=X_SG_CON
+ else DescriptorType:=0
+End;
+
+Function DescriptorNumber(Const S,Context:String):Integer;
+Var N,Code:Integer;
+Begin
+ Val(S,N,Code);if(Code<>0)or(N<0)or(N>126)Then Fatal('description de segment incorrecte ('+
+ Context+'): numero 0..126 attendu');DescriptorNumber:=N
+End;
+
+Function DefineFixedSegment(Physical,Typ:Byte;Const SuggestedName:String):POutSection;
+Var P:POutSection;CodeSpace,OtherCode:Boolean;N:String;
+Begin
+ CodeSpace:=Opt.SplitID and(Typ=X_SG_COD);P:=OutSections;
+ While P<>Nil do Begin
+  OtherCode:=Opt.SplitID and(P^.SegmentType=X_SG_COD);
+  if P^.Fixed and(P^.AssignedNumber=Physical)and(CodeSpace=OtherCode)Then Begin
+   if not CompatibleSegmentType(P^.SegmentType,Typ)Then
+    Fatal('collision de type sur le segment fixe '+SuggestedName);
+   if(P^.SegmentType=0)and(Typ<>0)Then P^.SegmentType:=Typ;
+   DefineFixedSegment:=P;Exit
+  End;P:=P^.Next
+ End;
+ N:=SuggestedName;if N=''Then Begin Str(Physical,N);N:='__seg'+N End;
+ P:=CreateOutSection(N,0,Typ);P^.Fixed:=True;P^.AssignedNumber:=Physical;
+ P^.IsBss:=Typ in[X_SG_BSS,X_SG_STK];DefineFixedSegment:=P
+End;
+
+Procedure ParseDescriptorLine(Line:String;LineNumber:Integer;Const Origin:String);
+Var I,P,Comma,Dash,FirstValue,LastValue,StepValue,N:Integer;Left,Right,Token,TypeToken,
+ Name,Context:String;Typ:Byte;S:POutSection;
+Begin
+ P:=Pos(';',Line);if P<>0 Then Delete(Line,P,Length(Line));P:=Pos('#',Line);
+ if P<>0 Then Delete(Line,P,Length(Line));I:=1;
+ While I<=Length(Line)do if Line[I]in[' ',#9]Then Delete(Line,I,1)else Inc(I);
+ if Line=''Then Exit;Str(LineNumber,Context);Context:=Origin+':'+Context;
+ P:=Pos('=',Line);if P=0 Then Fatal('description de segment incorrecte ('+Context+'): = attendu');
+ Left:=Copy(Line,1,P-1);Right:=Copy(Line,P+1,Length(Line));
+ if(Left='')or(Right='')Then Fatal('description de segment incomplete ('+Context+')');
+ if UpCase(Left[1])in['A'..'Z','_']Then Begin
+  Typ:=DescriptorType(Left);if Typ=0 Then Fatal('type de segment inconnu ('+Context+'): '+Left);
+  While Right<>''do Begin
+   Comma:=Pos(',',Right);if Comma=0 Then Begin Token:=Right;Right:=''End
+   else Begin Token:=Copy(Right,1,Comma-1);Delete(Right,1,Comma)End;
+   Dash:=Pos('-',Token);
+   if Dash=0 Then Begin FirstValue:=DescriptorNumber(Token,Context);LastValue:=FirstValue End
+   else Begin FirstValue:=DescriptorNumber(Copy(Token,1,Dash-1),Context);
+    LastValue:=DescriptorNumber(Copy(Token,Dash+1,Length(Token)),Context)End;
+   if FirstValue<=LastValue Then StepValue:=1 else StepValue:=-1;N:=FirstValue;
+   Repeat DefineFixedSegment(N,Typ,'');if N=LastValue Then Break;Inc(N,StepValue)Until False
+  End
+ End else Begin
+  Comma:=Pos(',',Left);if Comma=0 Then Begin Token:=Left;TypeToken:=''End
+  else Begin Token:=Copy(Left,1,Comma-1);TypeToken:=Copy(Left,Comma+1,Length(Left))End;
+  N:=DescriptorNumber(Token,Context);Typ:=0;
+  if TypeToken<>''Then Begin Typ:=DescriptorType(TypeToken);
+   if Typ=0 Then Fatal('type de segment inconnu ('+Context+'): '+TypeToken)
+  End;
+  Comma:=Pos(',',Right);if Comma=0 Then Name:=Right else Name:=Copy(Right,1,Comma-1);
+  S:=DefineFixedSegment(N,Typ,Name);
+  While Right<>''do Begin
+   Comma:=Pos(',',Right);if Comma=0 Then Begin Name:=Right;Right:=''End
+   else Begin Name:=Copy(Right,1,Comma-1);Delete(Right,1,Comma)End;
+   if Name=''Then Fatal('alias de segment vide ('+Context+')');AddSegmentAlias(Name,S)
+  End
+ End
+End;
+
+Procedure ProcessSegmentDescriptions;
+Var D:PDescriptor;F:Text;Line:String;LineNumber:Integer;
+Begin
+ D:=Descriptors;While D<>Nil do Begin
+  if D^.FromFile Then Begin
+   Assign(F,D^.Text);Reset(F);if IOResult<>0 Then Fatal('lecture impossible du fichier -d: '+D^.Text);
+   LineNumber:=1;While not Eof(F)do Begin ReadLn(F,Line);
+    if IOResult<>0 Then Fatal('erreur de lecture du fichier -d: '+D^.Text);
+    ParseDescriptorLine(Line,LineNumber,D^.Text);Inc(LineNumber)
+   End;Close(F);if IOResult<>0 Then Fatal('erreur de fermeture du fichier -d: '+D^.Text)
+  End else ParseDescriptorLine(D^.Text,1,'-d');D:=D^.Next
  End
 End;
 
@@ -1650,13 +1796,15 @@ Var
 
 BEGIN
  Inputs:=Nil;LastInput:=Nil;ForcedUndefined:=Nil;LastForced:=Nil;OutSections:=Nil;
+ Descriptors:=Nil;LastDescriptor:=Nil;SegmentAliases:=Nil;
  LastOutSection:=Nil;
  Globals:=Nil;Relocations:=Nil;LastRelocation:=Nil;ErrorCount:=0;
  NextSectionNumber:=1;OutputOpen:=False;TemporaryName:='';ModuleCount:=0;Modules:=Nil;
  LastModule:=Nil;
  HasTransfer:=False;TransferValue:=0;TransferBase:=0;
  TargetKnown:=False;TargetSegmented:=False;
- ParseCommandLine;InitializePreassignedSegments;AddForcedUndefined;P:=Inputs;
+ ParseCommandLine;InitializePreassignedSegments;ProcessSegmentDescriptions;
+ AddForcedUndefined;P:=Inputs;
  While P<>Nil do Begin
   if IsArchiveFile(P^.Name)Then ProcessArchive(P^.Name)
   else Begin
