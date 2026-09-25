@@ -649,6 +649,8 @@ Var
  CreateImage:Boolean;
  ImageTypeSpecified:Boolean;
  CreateSizeMB:LongInt;
+ AllocationSizeSpecified:Boolean;
+ RequestedAllocationSize:LongInt;
  ImageDataOffset,ImageVolumeStart,ImageVirtualSectors:LongInt;
  ImageContainer:(IC_RAW,IC_VDI);
 
@@ -762,10 +764,19 @@ Begin
  SingleSide:=False;Format360In1200:=False;EightSectors:=False;BootReserve:=False;
  SetupSystemFamily(DOS_MSDOS);
  CreateImage:=False;CreateSizeMB:=0;ImageContainer:=IC_RAW;ImageTypeSpecified:=False;
+ AllocationSizeSpecified:=False;RequestedAllocationSize:=0;
  RequestedFileSystem:=FS_AUTO;ActiveFATBits:=12;
  For I:=First to ParamCount do Begin
   S:=ParamStr(I);U:=StrToUpper(S);
-  If U='/CREATE'Then CreateImage:=True
+  If Copy(U,1,3)='/A:'Then Begin
+   N:=Copy(U,4,255);Val(N,CreateValue,Code);
+   If(Code<>0)or(CreateValue<512)or(CreateValue>32768)or
+    ((CreateValue mod 512)<>0)or
+    ((CreateValue and(CreateValue-1))<>0)Then Begin
+    WriteLn('/A doit etre une puissance de deux entre 512 et 32768 octets.');Exit
+   End;
+   AllocationSizeSpecified:=True;RequestedAllocationSize:=CreateValue
+  End Else If U='/CREATE'Then CreateImage:=True
   Else If Copy(U,1,8)='/CREATE:'Then Begin
    N:=Copy(U,9,255);
    If(Length(N)>0)and(N[Length(N)]='M')Then Delete(N,Length(N),1);
@@ -873,6 +884,10 @@ Begin
  If(RequestedFileSystem=FS_HPFS)and(SystemTransfer or BootReserve)Then Begin
   WriteLn('/S et /B ne sont pas disponibles pour HPFS.');Exit
  End;
+ If(RequestedFileSystem=FS_HPFS)and AllocationSizeSpecified and
+  (RequestedAllocationSize<>512)Then Begin
+  WriteLn('HPFS utilise des unites d''allocation de 512 octets.');Exit
+ End;
  If BootReserve and SystemTransfer Then Begin
   WriteLn('Les options /B et /S sont incompatibles.');Exit
  End;
@@ -918,15 +933,19 @@ Begin
   'NTFS exige une MFT et des fichiers de metadonnees non pris en charge sur disquette.')
  End;Exit
 End;
+If AllocationSizeSpecified Then LData.Cluster:=RequestedAllocationSize div 512;
 ActiveFATBits:=12;
 If RequestedFileSystem=FS_FAT16 Then ActiveFATBits:=16
 Else If RequestedFileSystem=FS_AUTO Then Begin
- RootSectors:=(LongInt(LData.RootSize)*32+511)div 512;
- Clusters:=(TotalSectors-1-LongInt(LData.FAT)*2-RootSectors)div LData.Cluster;
- If Clusters>=4085Then ActiveFATBits:=16
+ If(VolumeTotalSectors>0)and(TotalSectors>=8192)Then ActiveFATBits:=16
+ Else Begin
+  RootSectors:=(LongInt(LData.RootSize)*32+511)div 512;
+  Clusters:=(TotalSectors-1-LongInt(LData.FAT)*2-RootSectors)div LData.Cluster;
+  If Clusters>=4085Then ActiveFATBits:=16
+ End
 End;
 If ActiveFATBits=16 Then Begin
- LData.Media:=$F8;LData.Cluster:=1;
+ LData.Media:=$F8;If not AllocationSizeSpecified Then LData.Cluster:=1;
  If HardDiskMode Then LData.RootSize:=512 Else LData.RootSize:=$E0;
  Repeat
   FatSectors:=1;
@@ -938,6 +957,7 @@ If ActiveFATBits=16 Then Begin
    If FatSectors=OldFat Then Break
   End;
   If(Clusters<65525)and(FatSectors<=65535)Then Break;
+  If AllocationSizeSpecified Then Break;
   LData.Cluster:=LData.Cluster*2
  Until LData.Cluster>64;
  If(Clusters<4085)or(Clusters>=65525)or(FatSectors>65535)Then Begin
@@ -1985,6 +2005,7 @@ BEGIN
    '        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
    WriteLn('        FORMAT disk.img /CREATE:sizeMB [/TYPE:RAW|VDI] [/FS:FAT16]');
    WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
+   WriteLn('  /A:size   Specifies the allocation-unit size: 512 to 32768 bytes.');
    WriteLn('  /FS:name  Selects FAT, FAT12, FAT16 or HPFS. FAT32, exFAT and NTFS');
    WriteLn('             are diagnosed; HPFS requires a hard-disk partition/image.');
    WriteLn('  /F:size   Selects floppy size: 160, 180, 320, 360, 720,');
@@ -2027,6 +2048,7 @@ BEGIN
    WriteLn(' /F:taille  Format de disquette: 160, 180, 320, 360, 720,');
    WriteLn('            1200, 1440 ou 2880 Ko (lecteur seulement)');
    WriteLn(' /V:nom  Indique le nom du volume (11 caracteres maximum)');
+   WriteLn(' /A:taille  Taille d''unite d''allocation: 512 a 32768 octets');
    WriteLn(' /FS:systeme  FAT, FAT12, FAT16 ou HPFS');
    WriteLn('              HPFS exige une partition ou image de disque dur >= 4 Mo');
    WriteLn('              FAT32, exFAT et NTFS sont reconnus mais non implementes');
