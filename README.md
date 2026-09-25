@@ -362,6 +362,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td><b>BCPLCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur BCPL vers l'assembleur du microprocesseur 80386 pour Windows 32 bits (Win32 PE).</td>
 		</tr>
+		<tr>
+			<td><b>BIN2A26.PAS</b></td>
+			<td>Cette commande permet de convertir la ROM Atari 2600 de format de fichier avec l'extension ".BIN" vers ".A26".</td>
+		</tr>
         <tr>
 			<td><b>BIN2BGI.PAS</b></td>
 			<td>Cette programme permet l'écriture d'entête de la portion du pilote BGI.</td>
