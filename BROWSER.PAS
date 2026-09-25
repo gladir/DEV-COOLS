@@ -738,6 +738,14 @@ Type
  TElementBoxInfo = Record
   MarginTopPx: Integer;
   MarginBottomPx: Integer;
+  { MarginLeftPx/MarginRightPx (2026-09-25, demande explicite de           }
+  { l'utilisateur - application generique du margin horizontal pour les   }
+  { elements inline-block) : -1 = non specifie, meme convention que        }
+  { MarginTopPx/MarginBottomPx ci-dessus. Voir RenderHTMLNode pour leur     }
+  { application reelle (avance/recule Ctx.X avant/apres le rendu d'un      }
+  { element qui NE veut PAS de mise en page bloc). }
+  MarginLeftPx: Integer;
+  MarginRightPx: Integer;
   PaddingTopPx: Integer;
   PaddingBottomPx: Integer;
   HasBorder: Boolean;
@@ -7795,13 +7803,66 @@ Begin
   CSSParseDimension := Round(NumVal);
 End;
 
+{ Decompose un raccourci CSS a 1-4 valeurs (margin/padding) selon la       }
+{ regle CSS standard (1 valeur = les 4 cotes ; 2 = haut/bas puis           }
+{ gauche/droite ; 3 = haut, gauche/droite, bas ; 4 = haut,droite,bas,      }
+{ gauche) et renvoie la valeur du cote demande, convertie en pixels via    }
+{ CSSParseDimension. Side : 0=haut, 1=droite, 2=bas, 3=gauche.             }
+{ BOGUE REEL corrige (2026-09-25, demande explicite de l'utilisateur -     }
+{ "implemente l'application generique du margin (au moins horizontal)     }
+{ pour les elements inline-block") : CSSParseDimension seule ne lit QUE    }
+{ le premier nombre d'un raccourci a plusieurs valeurs (disclosed dans     }
+{ son propre commentaire, juste au-dessus) - correct pour le cote HAUT     }
+{ seulement, mais FAUX pour droite/bas/gauche des qu'un raccourci a 2      }
+{ valeurs ou plus est utilise (ex: le cote gauche d'un                     }
+{ "margin:12px 8px 12px 10px" valait a tort 12 - la valeur du HAUT -       }
+{ au lieu de 10 - la vraie valeur du cote gauche). }
+Function CSSParseShorthandSide(Const Shorthand: String; Side: Byte;
+ DefaultPx: Integer): Integer;
+Var
+ Tokens: Array[0..3] Of String;
+ NTokens: Integer;
+ P, TokStart: Integer;
+ S: String;
+Begin
+ CSSParseShorthandSide := DefaultPx;
+ S := Trim(Shorthand);
+ If Length(S) = 0 Then Exit;
+ NTokens := 0;
+ TokStart := 1;
+ For P := 1 To Length(S) + 1 Do Begin
+  If (P > Length(S)) Or (S[P] = ' ') Then Begin
+   If (P > TokStart) And (NTokens < 4) Then Begin
+    Tokens[NTokens] := Copy(S, TokStart, P - TokStart);
+    Inc(NTokens);
+   End;
+   TokStart := P + 1;
+  End;
+ End;
+ If NTokens = 0 Then Exit;
+ Case NTokens Of
+  1: CSSParseShorthandSide := CSSParseDimension(Tokens[0], DefaultPx);
+  2: Case Side Of
+      0, 2: CSSParseShorthandSide := CSSParseDimension(Tokens[0], DefaultPx); { haut/bas }
+      Else  CSSParseShorthandSide := CSSParseDimension(Tokens[1], DefaultPx); { gauche/droite }
+     End;
+  3: Case Side Of
+      0: CSSParseShorthandSide := CSSParseDimension(Tokens[0], DefaultPx);
+      2: CSSParseShorthandSide := CSSParseDimension(Tokens[2], DefaultPx);
+      Else CSSParseShorthandSide := CSSParseDimension(Tokens[1], DefaultPx); { gauche/droite }
+     End;
+  Else { 4 valeurs : ordre CSS standard haut,droite,bas,gauche = Side 0..3 }
+   CSSParseShorthandSide := CSSParseDimension(Tokens[Side], DefaultPx);
+ End;
+End;
+
 { Calculer la boite CSS (marges/padding/bordure/fond) d'un element a
   partir de son style resolu. -1 dans MarginTopPx/.../PaddingBottomPx
   signifie "non specifie", le gestionnaire de balise garde alors sa
   propre constante d'espacement par defaut. Le raccourci (Margin,
-  Padding, Border) est utilise si le cote specifique n'est pas defini ;
-  CSSParseDimension gere correctement le cas d'un raccourci a plusieurs
-  valeurs (ex: "4px 8px") en ne lisant que le premier nombre. }
+  Padding, Border) est utilise si le cote specifique n'est pas defini,
+  via CSSParseShorthandSide ci-dessus (gere correctement un raccourci a
+  1-4 valeurs, ex: "4px 8px" ou "12px 8px 12px 10px"). }
 Function ComputeElementBoxInfo(Const Style: DOMStyle): TElementBoxInfo;
 Var
  Info: TElementBoxInfo;
@@ -7811,6 +7872,8 @@ Var
 Begin
  Info.MarginTopPx := -1;
  Info.MarginBottomPx := -1;
+ Info.MarginLeftPx := -1;
+ Info.MarginRightPx := -1;
  Info.PaddingTopPx := -1;
  Info.PaddingBottomPx := -1;
  Info.HasBorder := False;
@@ -7822,12 +7885,22 @@ Begin
  If Length(Style.MarginTop) > 0 Then
   Info.MarginTopPx := CSSParseDimension(Style.MarginTop, 0)
  Else If Length(Style.Margin) > 0 Then
-  Info.MarginTopPx := CSSParseDimension(Style.Margin, 0);
+  Info.MarginTopPx := CSSParseShorthandSide(Style.Margin, 0, 0);
+
+ If Length(Style.MarginLeft) > 0 Then
+  Info.MarginLeftPx := CSSParseDimension(Style.MarginLeft, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginLeftPx := CSSParseShorthandSide(Style.Margin, 3, 0);
+
+ If Length(Style.MarginRight) > 0 Then
+  Info.MarginRightPx := CSSParseDimension(Style.MarginRight, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginRightPx := CSSParseShorthandSide(Style.Margin, 1, 0);
 
  If Length(Style.MarginBottom) > 0 Then
   Info.MarginBottomPx := CSSParseDimension(Style.MarginBottom, 0)
  Else If Length(Style.Margin) > 0 Then
-  Info.MarginBottomPx := CSSParseDimension(Style.Margin, 0);
+  Info.MarginBottomPx := CSSParseShorthandSide(Style.Margin, 2, 0);
 
  If Length(Style.PaddingTop) > 0 Then
   Info.PaddingTopPx := CSSParseDimension(Style.PaddingTop, 0)
@@ -7837,7 +7910,7 @@ Begin
  If Length(Style.PaddingBottom) > 0 Then
   Info.PaddingBottomPx := CSSParseDimension(Style.PaddingBottom, 0)
  Else If Length(Style.Padding) > 0 Then
-  Info.PaddingBottomPx := CSSParseDimension(Style.Padding, 0);
+  Info.PaddingBottomPx := CSSParseShorthandSide(Style.Padding, 2, 0);
 
  { Bordure : largeur et couleur, depuis les sous-proprietes ou le
    raccourci "border: 1px solid #003366" }
@@ -16646,6 +16719,8 @@ Begin
  CurrentElementListStyleNone := False;
  CurrentElementBox.MarginTopPx := -1;
  CurrentElementBox.MarginBottomPx := -1;
+ CurrentElementBox.MarginLeftPx := -1;
+ CurrentElementBox.MarginRightPx := -1;
  CurrentElementBox.PaddingTopPx := -1;
  CurrentElementBox.PaddingBottomPx := -1;
  CurrentElementBox.HasBorder := False;
@@ -16700,6 +16775,26 @@ Begin
   Else If HTMLLowerCase(GetNodeAttribute(Node, 'align')) = 'left' Then
    Ctx.TextAlignMode := ALIGN_LEFT;
  End;
+
+ { Application GENERIQUE du margin horizontal (2026-09-25, demande        }
+ { explicite de l'utilisateur - "implemente l'application generique du    }
+ { margin (au moins horizontal) pour les elements inline-block") : avant  }
+ { ce correctif, seul le margin VERTICAL (haut/bas, pour l'empilement des }
+ { blocs) etait applique quelque part (RenderBlockSpacing, cas par cas    }
+ { pour ARTICLE/IMG/BODY) - AUCUN element rendu en ligne (inline/inline-  }
+ { block, ex. deux <a>/<div> adjacents dans une barre de navigation)      }
+ { n'avancait jamais Ctx.X pour son propre margin-left/right, meme quand  }
+ { le CSS en demandait un explicitement (cause reelle du bogue signale :  }
+ { deux liens de navigation Google se retrouvaient colles l'un a l'autre  }
+ { sans le moindre espace). Applique ICI, au point UNIQUE de dispatch de  }
+ { tous les types de balise, pour en beneficier automatiquement PARTOUT   }
+ { (DIV/SPAN/A/LI/etc) sans dupliquer la logique dans chaque             }
+ { Procedure RenderTagXxx individuelle - seulement pour le cas NON-bloc   }
+ { (CurrentElementWantsBlock=False), le margin horizontal d'un element de }
+ { bloc restant hors de ce correctif (deja gere separement pour le        }
+ { centrage margin:auto de ARTICLE/IMG/BODY). }
+ If (Not CurrentElementWantsBlock) And (CurrentElementBox.MarginLeftPx > 0) Then
+  Inc(Ctx.X, CurrentElementBox.MarginLeftPx);
 
  Case Node^.NodeType Of
   HTML_NODE_TEXT: Begin
@@ -16825,6 +16920,11 @@ Begin
    { Commentaire - ne rien afficher }
   End;
  End;
+
+ { Margin-right, symetrique de l'avance margin-left ci-dessus - voir sa   }
+ { disclosure complete. }
+ If (Not CurrentElementWantsBlock) And (CurrentElementBox.MarginRightPx > 0) Then
+  Inc(Ctx.X, CurrentElementBox.MarginRightPx);
 
  If Length(BoxIdAttr) > 0 Then
   SetJSNodeBox(Node, BoxStartX, BoxStartY, Ctx.MaxX - BoxStartX, (Ctx.Y - BoxStartY) + Ctx.LineHeight);
