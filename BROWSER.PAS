@@ -4031,6 +4031,71 @@ Begin
  JSTryDocumentElementAssignment := True;
 End;
 
+Const
+ { Identifiants des fonctions natives globales reconnues par
+   JSEvalPrimary (appel VarName(...)) - 0 = inconnue (repli sur
+   JSFindFunction, voir plus bas). Sensible a la casse comme le
+   JavaScript reel (alert <> Alert), donc AUCUN passage en minuscules -
+   comportement inchange par rapport a l'ancien code. }
+ JS_GLOBALFN_ALERT        = 1;
+ JS_GLOBALFN_EVAL         = 2;
+ JS_GLOBALFN_CLEARTIMEOUT = 3;
+ JS_GLOBALFN_PARSEINT     = 4;
+ JS_GLOBALFN_PARSEFLOAT   = 5;
+ JS_GLOBALFN_STRING       = 6;
+ JS_GLOBALFN_NUMBER       = 7;
+ JS_GLOBALFN_BOOLEAN      = 8;
+ JS_GLOBALFN_ARRAY        = 9;
+ JS_GLOBALFN_OBJECT       = 10;
+ JS_GLOBALFN_COUNT = 10;
+
+Type
+ JSGlobalFunctionEntry = Record
+  Name: String[15];
+  Id: Byte;
+ End;
+
+Const
+ { Triee par ordre ALPHABETIQUE au sens ASCII (majuscules avant
+   minuscules) - condition necessaire a la recherche dichotomique de
+   JSFindGlobalFunctionId ci-dessous (meme principe que
+   CSSPropertyTable/HTMLTagTable/JSKeywordTable). }
+ JSGlobalFunctionTable: Array[0..JS_GLOBALFN_COUNT - 1] Of JSGlobalFunctionEntry = (
+  (Name: 'Array';        Id: JS_GLOBALFN_ARRAY),
+  (Name: 'Boolean';      Id: JS_GLOBALFN_BOOLEAN),
+  (Name: 'Number';       Id: JS_GLOBALFN_NUMBER),
+  (Name: 'Object';       Id: JS_GLOBALFN_OBJECT),
+  (Name: 'String';       Id: JS_GLOBALFN_STRING),
+  (Name: 'alert';        Id: JS_GLOBALFN_ALERT),
+  (Name: 'clearTimeout'; Id: JS_GLOBALFN_CLEARTIMEOUT),
+  (Name: 'eval';         Id: JS_GLOBALFN_EVAL),
+  (Name: 'parseFloat';   Id: JS_GLOBALFN_PARSEFLOAT),
+  (Name: 'parseInt';     Id: JS_GLOBALFN_PARSEINT)
+ );
+
+{ Recherche dichotomique dans JSGlobalFunctionTable - retourne 0 si Name
+  n'est pas une des fonctions natives connues (comparaison EXACTE,
+  sensible a la casse). }
+Function JSFindGlobalFunctionId(Const Name: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ JSFindGlobalFunctionId := 0;
+ Lo := 0;
+ Hi := JS_GLOBALFN_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSGlobalFunctionTable[Mid].Name = Name Then Begin
+   JSFindGlobalFunctionId := JSGlobalFunctionTable[Mid].Id;
+   Exit;
+  End
+  Else If JSGlobalFunctionTable[Mid].Name < Name Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
 Function JSEvalPrimary(Const Script: String; Var Pos: LongInt): JSValue;
 Var
  Token: JSToken;
@@ -4090,50 +4155,52 @@ Begin
     JSReadCallArgs(Script, Pos, Args, ArgCount);
     If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
 
-    If VarName = 'alert' Then Begin
-     If ArgCount > 0 Then JSNativeAlert(JSValueToString(Args[0]));
-     Result := JSUndefined;
-    End
-    Else If VarName = 'eval' Then Begin
-     If ArgCount > 0 Then Result := JSEvaluate(JSValueToString(Args[0]))
-     Else Result := JSUndefined;
-    End
-    Else If VarName = 'clearTimeout' Then Begin
-     JSClearTimeout;
-     Result := JSUndefined;
-    End
-    Else If VarName = 'parseInt' Then Begin
-     If ArgCount > 0 Then Result := JSNumber(Trunc(JSValueToNumber(Args[0])))
-     Else Result := JSNumber(0);
-    End
-    Else If VarName = 'parseFloat' Then Begin
-     If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
-     Else Result := JSNumber(0);
-    End
-    Else If VarName = 'String' Then Begin
-     If ArgCount > 0 Then Result := JSString(JSValueToString(Args[0]))
-     Else Result := JSString('');
-    End
-    Else If VarName = 'Number' Then Begin
-     If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
-     Else Result := JSNumber(0);
-    End
-    Else If VarName = 'Boolean' Then Begin
-     If ArgCount > 0 Then Result := JSBool(JSValueToBool(Args[0]))
-     Else Result := JSBool(False);
-    End
-    Else If VarName = 'Array' Then
-     Result := JSObjectValue(JSNewObject(True))
-    Else If VarName = 'Object' Then
-     Result := JSObjectValue(JSNewObject(False))
-    Else Begin
-     { Fonction utilisateur }
-     FuncIdx := JSFindFunction(VarName);
-     If FuncIdx > 0 Then
-      Result := JSCallUserFunction(FuncIdx, Args, ArgCount)
+    Case JSFindGlobalFunctionId(VarName) Of
+     JS_GLOBALFN_ALERT: Begin
+      If ArgCount > 0 Then JSNativeAlert(JSValueToString(Args[0]));
+      Result := JSUndefined;
+     End;
+     JS_GLOBALFN_EVAL: Begin
+      If ArgCount > 0 Then Result := JSEvaluate(JSValueToString(Args[0]))
+      Else Result := JSUndefined;
+     End;
+     JS_GLOBALFN_CLEARTIMEOUT: Begin
+      JSClearTimeout;
+      Result := JSUndefined;
+     End;
+     JS_GLOBALFN_PARSEINT: Begin
+      If ArgCount > 0 Then Result := JSNumber(Trunc(JSValueToNumber(Args[0])))
+      Else Result := JSNumber(0);
+     End;
+     JS_GLOBALFN_PARSEFLOAT: Begin
+      If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
+      Else Result := JSNumber(0);
+     End;
+     JS_GLOBALFN_STRING: Begin
+      If ArgCount > 0 Then Result := JSString(JSValueToString(Args[0]))
+      Else Result := JSString('');
+     End;
+     JS_GLOBALFN_NUMBER: Begin
+      If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
+      Else Result := JSNumber(0);
+     End;
+     JS_GLOBALFN_BOOLEAN: Begin
+      If ArgCount > 0 Then Result := JSBool(JSValueToBool(Args[0]))
+      Else Result := JSBool(False);
+     End;
+     JS_GLOBALFN_ARRAY:
+      Result := JSObjectValue(JSNewObject(True));
+     JS_GLOBALFN_OBJECT:
+      Result := JSObjectValue(JSNewObject(False));
      Else Begin
-      JSCtx.HasError := True;
-      JSCtx.ErrorMsg := 'ReferenceError: ' + VarName + ' is not defined';
+      { Fonction utilisateur }
+      FuncIdx := JSFindFunction(VarName);
+      If FuncIdx > 0 Then
+       Result := JSCallUserFunction(FuncIdx, Args, ArgCount)
+      Else Begin
+       JSCtx.HasError := True;
+       JSCtx.ErrorMsg := 'ReferenceError: ' + VarName + ' is not defined';
+      End;
      End;
     End;
    End
