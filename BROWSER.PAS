@@ -1889,151 +1889,160 @@ Begin
 End;
 
 { Fonction pour obtenir le type de balise a partir du nom }
+Type
+ HTMLTagEntry = Record
+  Name: String[20];
+  Id: Byte;
+ End;
+
+Const
+ HTML_TAG_COUNT = 116;
+ { Table des balises HTML supportees, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de GetTagType
+   ci-dessous (meme principe que CSSPropertyTable/CSSGetPropertyId). }
+ HTMLTagTable: Array[0..HTML_TAG_COUNT - 1] Of HTMLTagEntry = (
+  (Name: 'a';            Id: TAG_A),
+  (Name: 'abbr';         Id: TAG_ABBR),
+  (Name: 'address';      Id: TAG_ADDRESS),
+  (Name: 'area';         Id: TAG_AREA),
+  (Name: 'article';      Id: TAG_ARTICLE),
+  (Name: 'aside';        Id: TAG_ASIDE),
+  (Name: 'audio';        Id: TAG_AUDIO),
+  (Name: 'b';            Id: TAG_B),
+  (Name: 'base';         Id: TAG_BASE),
+  (Name: 'bdi';          Id: TAG_BDI),
+  (Name: 'bdo';          Id: TAG_BDO),
+  (Name: 'big';          Id: TAG_BIG),
+  (Name: 'blockquote';   Id: TAG_BLOCKQUOTE),
+  (Name: 'body';         Id: TAG_BODY),
+  (Name: 'br';           Id: TAG_BR),
+  (Name: 'button';       Id: TAG_BUTTON),
+  (Name: 'canvas';       Id: TAG_CANVAS),
+  (Name: 'caption';      Id: TAG_CAPTION),
+  (Name: 'cite';         Id: TAG_CITE),
+  (Name: 'code';         Id: TAG_CODE),
+  (Name: 'col';          Id: TAG_COL),
+  (Name: 'colgroup';     Id: TAG_COLGROUP),
+  (Name: 'data';         Id: TAG_DATA),
+  (Name: 'datalist';     Id: TAG_DATALIST),
+  (Name: 'dd';           Id: TAG_DD),
+  (Name: 'del';          Id: TAG_DEL),
+  (Name: 'details';      Id: TAG_DETAILS),
+  (Name: 'dfn';          Id: TAG_DFN),
+  (Name: 'dialog';       Id: TAG_DIALOG),
+  (Name: 'div';          Id: TAG_DIV),
+  (Name: 'dl';           Id: TAG_DL),
+  (Name: 'dt';           Id: TAG_DT),
+  (Name: 'em';           Id: TAG_EM),
+  (Name: 'embed';        Id: TAG_EMBED),
+  (Name: 'fieldset';     Id: TAG_FIELDSET),
+  (Name: 'figcaption';   Id: TAG_FIGCAPTION),
+  (Name: 'figure';       Id: TAG_FIGURE),
+  (Name: 'footer';       Id: TAG_FOOTER),
+  (Name: 'form';         Id: TAG_FORM),
+  (Name: 'h1';           Id: TAG_H1),
+  (Name: 'h2';           Id: TAG_H2),
+  (Name: 'h3';           Id: TAG_H3),
+  (Name: 'h4';           Id: TAG_H4),
+  (Name: 'h5';           Id: TAG_H5),
+  (Name: 'h6';           Id: TAG_H6),
+  (Name: 'head';         Id: TAG_HEAD),
+  (Name: 'header';       Id: TAG_HEADER),
+  (Name: 'hr';           Id: TAG_HR),
+  (Name: 'html';         Id: TAG_HTML),
+  (Name: 'i';            Id: TAG_I),
+  (Name: 'iframe';       Id: TAG_IFRAME),
+  (Name: 'img';          Id: TAG_IMG),
+  (Name: 'input';        Id: TAG_INPUT),
+  (Name: 'ins';          Id: TAG_INS),
+  (Name: 'kbd';          Id: TAG_KBD),
+  (Name: 'label';        Id: TAG_LABEL),
+  (Name: 'legend';       Id: TAG_LEGEND),
+  (Name: 'li';           Id: TAG_LI),
+  (Name: 'link';         Id: TAG_LINK),
+  (Name: 'main';         Id: TAG_MAIN),
+  (Name: 'map';          Id: TAG_MAP),
+  (Name: 'mark';         Id: TAG_MARK),
+  (Name: 'menu';         Id: TAG_MENU),
+  (Name: 'meta';         Id: TAG_META),
+  (Name: 'meter';        Id: TAG_METER),
+  (Name: 'nav';          Id: TAG_NAV),
+  (Name: 'noscript';     Id: TAG_NOSCRIPT),
+  (Name: 'object';       Id: TAG_OBJECT),
+  (Name: 'ol';           Id: TAG_OL),
+  (Name: 'optgroup';     Id: TAG_OPTGROUP),
+  (Name: 'option';       Id: TAG_OPTION),
+  (Name: 'output';       Id: TAG_OUTPUT),
+  (Name: 'p';            Id: TAG_P),
+  (Name: 'param';        Id: TAG_PARAM),
+  (Name: 'picture';      Id: TAG_PICTURE),
+  (Name: 'pre';          Id: TAG_PRE),
+  (Name: 'progress';     Id: TAG_PROGRESS),
+  (Name: 'q';            Id: TAG_Q),
+  (Name: 'rb';           Id: TAG_RB),
+  (Name: 'rp';           Id: TAG_RP),
+  (Name: 'rt';           Id: TAG_RT),
+  (Name: 'rtc';          Id: TAG_RTC),
+  (Name: 'ruby';         Id: TAG_RUBY),
+  (Name: 's';            Id: TAG_S),
+  (Name: 'samp';         Id: TAG_SAMP),
+  (Name: 'script';       Id: TAG_SCRIPT),
+  (Name: 'section';      Id: TAG_SECTION),
+  (Name: 'select';       Id: TAG_SELECT),
+  (Name: 'slot';         Id: TAG_SLOT),
+  (Name: 'small';        Id: TAG_SMALL),
+  (Name: 'source';       Id: TAG_SOURCE),
+  (Name: 'span';         Id: TAG_SPAN),
+  (Name: 'strike';       Id: TAG_STRIKE),
+  (Name: 'strong';       Id: TAG_STRONG),
+  (Name: 'style';        Id: TAG_STYLE),
+  (Name: 'sub';          Id: TAG_SUB),
+  (Name: 'summary';      Id: TAG_SUMMARY),
+  (Name: 'sup';          Id: TAG_SUP),
+  (Name: 'svg';          Id: TAG_SVG),
+  (Name: 'table';        Id: TAG_TABLE),
+  (Name: 'tbody';        Id: TAG_TBODY),
+  (Name: 'td';           Id: TAG_TD),
+  (Name: 'template';     Id: TAG_TEMPLATE),
+  (Name: 'textarea';     Id: TAG_TEXTAREA),
+  (Name: 'tfoot';        Id: TAG_TFOOT),
+  (Name: 'th';           Id: TAG_TH),
+  (Name: 'thead';        Id: TAG_THEAD),
+  (Name: 'time';         Id: TAG_TIME),
+  (Name: 'title';        Id: TAG_TITLE),
+  (Name: 'tr';           Id: TAG_TR),
+  (Name: 'track';        Id: TAG_TRACK),
+  (Name: 'u';            Id: TAG_U),
+  (Name: 'ul';           Id: TAG_UL),
+  (Name: 'var';          Id: TAG_VAR),
+  (Name: 'video';        Id: TAG_VIDEO),
+  (Name: 'wbr';          Id: TAG_WBR)
+ );
+
+{ Obtenir le type d'une balise HTML a partir de son nom - recherche
+  dichotomique dans HTMLTagTable (ci-dessus) au lieu des 116
+  comparaisons Si/SinonSi d'avant (meme principe que CSSGetPropertyId). }
 Function GetTagType(Const TagName: String): Byte;
 Var
  LowerName: String;
+ Lo, Hi, Mid: Integer;
 Begin
  LowerName := HTMLLowerCase(TagName);
+ GetTagType := TAG_UNKNOWN;
 
- { Balises de structure }
- If LowerName = 'html' Then GetTagType := TAG_HTML
- Else If LowerName = 'head' Then GetTagType := TAG_HEAD
- Else If LowerName = 'body' Then GetTagType := TAG_BODY
- Else If LowerName = 'div' Then GetTagType := TAG_DIV
- Else If LowerName = 'span' Then GetTagType := TAG_SPAN
- Else If LowerName = 'section' Then GetTagType := TAG_SECTION
- Else If LowerName = 'article' Then GetTagType := TAG_ARTICLE
- Else If LowerName = 'nav' Then GetTagType := TAG_NAV
- Else If LowerName = 'aside' Then GetTagType := TAG_ASIDE
- Else If LowerName = 'header' Then GetTagType := TAG_HEADER
- Else If LowerName = 'footer' Then GetTagType := TAG_FOOTER
- Else If LowerName = 'main' Then GetTagType := TAG_MAIN
-
- { Titres }
- Else If LowerName = 'h1' Then GetTagType := TAG_H1
- Else If LowerName = 'h2' Then GetTagType := TAG_H2
- Else If LowerName = 'h3' Then GetTagType := TAG_H3
- Else If LowerName = 'h4' Then GetTagType := TAG_H4
- Else If LowerName = 'h5' Then GetTagType := TAG_H5
- Else If LowerName = 'h6' Then GetTagType := TAG_H6
-
- { Balises de texte }
- Else If LowerName = 'p' Then GetTagType := TAG_P
- Else If LowerName = 'br' Then GetTagType := TAG_BR
- Else If LowerName = 'hr' Then GetTagType := TAG_HR
- Else If LowerName = 'strong' Then GetTagType := TAG_STRONG
- Else If LowerName = 'b' Then GetTagType := TAG_B
- Else If LowerName = 'em' Then GetTagType := TAG_EM
- Else If LowerName = 'i' Then GetTagType := TAG_I
- Else If LowerName = 'u' Then GetTagType := TAG_U
- Else If LowerName = 's' Then GetTagType := TAG_S
- Else If LowerName = 'strike' Then GetTagType := TAG_STRIKE
- Else If LowerName = 'del' Then GetTagType := TAG_DEL
- Else If LowerName = 'ins' Then GetTagType := TAG_INS
- Else If LowerName = 'sub' Then GetTagType := TAG_SUB
- Else If LowerName = 'sup' Then GetTagType := TAG_SUP
- Else If LowerName = 'small' Then GetTagType := TAG_SMALL
- Else If LowerName = 'big' Then GetTagType := TAG_BIG
- Else If LowerName = 'mark' Then GetTagType := TAG_MARK
- Else If LowerName = 'abbr' Then GetTagType := TAG_ABBR
- Else If LowerName = 'cite' Then GetTagType := TAG_CITE
- Else If LowerName = 'dfn' Then GetTagType := TAG_DFN
- Else If LowerName = 'code' Then GetTagType := TAG_CODE
- Else If LowerName = 'pre' Then GetTagType := TAG_PRE
- Else If LowerName = 'kbd' Then GetTagType := TAG_KBD
- Else If LowerName = 'samp' Then GetTagType := TAG_SAMP
- Else If LowerName = 'var' Then GetTagType := TAG_VAR
- Else If LowerName = 'q' Then GetTagType := TAG_Q
- Else If LowerName = 'blockquote' Then GetTagType := TAG_BLOCKQUOTE
-
- { Liens et media }
- Else If LowerName = 'a' Then GetTagType := TAG_A
- Else If LowerName = 'img' Then GetTagType := TAG_IMG
- Else If LowerName = 'audio' Then GetTagType := TAG_AUDIO
- Else If LowerName = 'video' Then GetTagType := TAG_VIDEO
- Else If LowerName = 'source' Then GetTagType := TAG_SOURCE
- Else If LowerName = 'track' Then GetTagType := TAG_TRACK
- Else If LowerName = 'embed' Then GetTagType := TAG_EMBED
- Else If LowerName = 'object' Then GetTagType := TAG_OBJECT
- Else If LowerName = 'param' Then GetTagType := TAG_PARAM
- Else If LowerName = 'iframe' Then GetTagType := TAG_IFRAME
- Else If LowerName = 'canvas' Then GetTagType := TAG_CANVAS
- Else If LowerName = 'svg' Then GetTagType := TAG_SVG
- Else If LowerName = 'picture' Then GetTagType := TAG_PICTURE
- Else If LowerName = 'figure' Then GetTagType := TAG_FIGURE
- Else If LowerName = 'figcaption' Then GetTagType := TAG_FIGCAPTION
-
- { Listes }
- Else If LowerName = 'ul' Then GetTagType := TAG_UL
- Else If LowerName = 'ol' Then GetTagType := TAG_OL
- Else If LowerName = 'li' Then GetTagType := TAG_LI
- Else If LowerName = 'dl' Then GetTagType := TAG_DL
- Else If LowerName = 'dt' Then GetTagType := TAG_DT
- Else If LowerName = 'dd' Then GetTagType := TAG_DD
- Else If LowerName = 'menu' Then GetTagType := TAG_MENU
-
- { Tableaux }
- Else If LowerName = 'table' Then GetTagType := TAG_TABLE
- Else If LowerName = 'tr' Then GetTagType := TAG_TR
- Else If LowerName = 'td' Then GetTagType := TAG_TD
- Else If LowerName = 'th' Then GetTagType := TAG_TH
- Else If LowerName = 'thead' Then GetTagType := TAG_THEAD
- Else If LowerName = 'tbody' Then GetTagType := TAG_TBODY
- Else If LowerName = 'tfoot' Then GetTagType := TAG_TFOOT
- Else If LowerName = 'caption' Then GetTagType := TAG_CAPTION
- Else If LowerName = 'colgroup' Then GetTagType := TAG_COLGROUP
- Else If LowerName = 'col' Then GetTagType := TAG_COL
-
- { Formulaires }
- Else If LowerName = 'form' Then GetTagType := TAG_FORM
- Else If LowerName = 'input' Then GetTagType := TAG_INPUT
- Else If LowerName = 'button' Then GetTagType := TAG_BUTTON
- Else If LowerName = 'select' Then GetTagType := TAG_SELECT
- Else If LowerName = 'option' Then GetTagType := TAG_OPTION
- Else If LowerName = 'optgroup' Then GetTagType := TAG_OPTGROUP
- Else If LowerName = 'textarea' Then GetTagType := TAG_TEXTAREA
- Else If LowerName = 'label' Then GetTagType := TAG_LABEL
- Else If LowerName = 'fieldset' Then GetTagType := TAG_FIELDSET
- Else If LowerName = 'legend' Then GetTagType := TAG_LEGEND
- Else If LowerName = 'datalist' Then GetTagType := TAG_DATALIST
- Else If LowerName = 'output' Then GetTagType := TAG_OUTPUT
- Else If LowerName = 'progress' Then GetTagType := TAG_PROGRESS
- Else If LowerName = 'meter' Then GetTagType := TAG_METER
-
- { Metadonnees }
- Else If LowerName = 'title' Then GetTagType := TAG_TITLE
- Else If LowerName = 'meta' Then GetTagType := TAG_META
- Else If LowerName = 'link' Then GetTagType := TAG_LINK
- Else If LowerName = 'style' Then GetTagType := TAG_STYLE
- Else If LowerName = 'script' Then GetTagType := TAG_SCRIPT
- Else If LowerName = 'noscript' Then GetTagType := TAG_NOSCRIPT
- Else If LowerName = 'base' Then GetTagType := TAG_BASE
- Else If LowerName = 'template' Then GetTagType := TAG_TEMPLATE
- Else If LowerName = 'slot' Then GetTagType := TAG_SLOT
-
- { Semantique }
- Else If LowerName = 'address' Then GetTagType := TAG_ADDRESS
- Else If LowerName = 'time' Then GetTagType := TAG_TIME
- Else If LowerName = 'data' Then GetTagType := TAG_DATA
- Else If LowerName = 'details' Then GetTagType := TAG_DETAILS
- Else If LowerName = 'summary' Then GetTagType := TAG_SUMMARY
- Else If LowerName = 'dialog' Then GetTagType := TAG_DIALOG
-
- { Ruby }
- Else If LowerName = 'ruby' Then GetTagType := TAG_RUBY
- Else If LowerName = 'rt' Then GetTagType := TAG_RT
- Else If LowerName = 'rp' Then GetTagType := TAG_RP
- Else If LowerName = 'rb' Then GetTagType := TAG_RB
- Else If LowerName = 'rtc' Then GetTagType := TAG_RTC
-
- { Autres }
- Else If LowerName = 'wbr' Then GetTagType := TAG_WBR
- Else If LowerName = 'bdi' Then GetTagType := TAG_BDI
- Else If LowerName = 'bdo' Then GetTagType := TAG_BDO
- Else If LowerName = 'map' Then GetTagType := TAG_MAP
- Else If LowerName = 'area' Then GetTagType := TAG_AREA
-
- Else GetTagType := TAG_UNKNOWN;
+ Lo := 0;
+ Hi := HTML_TAG_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If HTMLTagTable[Mid].Name = LowerName Then Begin
+   GetTagType := HTMLTagTable[Mid].Id;
+   Exit;
+  End
+  Else If HTMLTagTable[Mid].Name < LowerName Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
 End;
 
 { Procedure pour creer un nouveau noeud HTML }
