@@ -7237,6 +7237,12 @@ Var
  CSSStatusCode: LongInt;
  {$ENDIF}
 Begin
+ { Repartir d'une feuille de style VIDE a chaque appel - sans ce reset,
+   chaque appel (ex: un rechargement de page reutilisant la meme
+   CSSGlobalStylesheet globale) rajoutait ses regles A LA SUITE des
+   precedentes au lieu de les remplacer, jusqu'a saturer MAX_CSS_RULES. }
+ CSSGlobalStylesheet.RuleCount := 0;
+
  { Feuilles de style en ligne : <style>...</style> }
  List := DOMGetElementsByTagName('style');
  Item := List.First;
@@ -16641,8 +16647,15 @@ Begin
  { Activer l'application automatique des styles CSS }
  CSSAutoApply := True;
 
- { Extraire et parser les styles CSS des balises <style> }
- If CSSEnabled Then
+ { Extraire et parser les styles CSS des balises <style>/<link> - PAS
+   pendant une simple passe de survol (SkipNextRenderAreaClear) : la
+   feuille de style elle-meme ne change jamais parce que la souris
+   bouge, seules des classes CSS sur des noeuds existants le peuvent.
+   Reparser (et, pour une feuille externe, RETELECHARGER PAR LE RESEAU
+   via Browser_HttpGet) l'integralite du CSS a CHAQUE survol - signale
+   par l'utilisateur comme un lag majeur persistant meme apres avoir
+   corrige le redessin du chrome - en etait la vraie cause. }
+ If CSSEnabled And (Not SkipNextRenderAreaClear) Then
   CSSExtractFromDocument;
 
  { Reinitialiser les zones de liens }
