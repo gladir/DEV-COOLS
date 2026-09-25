@@ -2603,7 +2603,15 @@ BEGIN
   End;
  End;
 End
-Else
+ Else
+If ParamStr(1)='--version'Then Begin
+ WriteLn('FORMAT 1.0 - Clone Pascal de MSDOS-0, PCDOS-0, ',
+         'OS2-0, DEV-COOLS et corail ');
+ WriteLn('Licence MIT');
+ WriteLn;
+ WriteLn('crit par Sylvain Maltais');
+End
+ Else
 If ParamCount>=1Then Begin
  InFile:=False;
  Param:=ParamStr(1);
