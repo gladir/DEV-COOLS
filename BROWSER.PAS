@@ -1094,6 +1094,22 @@ Var
  URLCursorPos: Integer;
  URLBarFocused: Boolean;
 
+ { Champ de formulaire HTML actuellement en saisie (2026-09-25, demande    }
+ { explicite de l'utilisateur - "le champ de saisie... ne fonctionne pas  }
+ { ou le curseur n'est pas present") : AUCUN input/bouton HTML n'etait     }
+ { jusqu'ici cliquable ni saisissable, seul le CHROME du navigateur (barre }
+ { d'URL) avait un mecanisme de focus/curseur. FocusedInputX/Y/           }
+ { IsPassword memorisent la position ecran REELLE du champ au moment du    }
+ { clic (calculee par le rendu de page, pas rejouable autrement), pour      }
+ { permettre un redessin CIBLE (juste ce widget, comme DrawURLBar le fait   }
+ { deja pour le chrome) a chaque frappe plutot qu'un rendu complet de la    }
+ { page entiere (qui invaliderait FocusedInputNode - l'arbre DOM est        }
+ { detruit/reconstruit a chaque nouveau rendu). }
+ FocusedInputNode: HTMLNodePtr;
+ FocusedInputCursorPos: Integer;
+ FocusedInputX, FocusedInputY: Integer;
+ FocusedInputIsPassword: Boolean;
+
  { Variables pour le bouton Precedent }
  BackButtonEnabled: Boolean;
 
@@ -7165,6 +7181,7 @@ Var
  I, SchemeEnd, HostEnd: Integer;
  Origin: String;
  LowerCurrent: String;
+ Found: Boolean;
 Begin
  { Src deja une URL absolue (http/https) - aucune resolution necessaire. }
  If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or
@@ -7215,13 +7232,27 @@ Begin
   Exit;
  End;
 
+ { BOGUE REEL corrige (2026-09-25, trouve en verifiant la soumission de     }
+ { formulaire - action="result.html" depuis une page locale ouverte par un  }
+ { simple nom de fichier SANS repertoire, ex. "form_test.html", produisait  }
+ { "form_test.htmlresult.html" au lieu de "result.html") : si CurrentURL ne  }
+ { contient AUCUN separateur '/' ou '\' (fichier ouvert par son simple nom, }
+ { repertoire courant du processus implicite), la boucle ci-dessous ne      }
+ { trouvait jamais de separateur et laissait BasePath EGAL A CurrentURL     }
+ { EN ENTIER (nom de fichier inclus) au lieu de le vider - le nom de        }
+ { l'ancienne page se retrouvait alors concatene EN PREFIXE du nouveau       }
+ { chemin relatif. Corrige en ne conservant BasePath que si un separateur    }
+ { a reellement ete trouve. }
  BasePath := CurrentURL;
+ Found := False;
  For I := Length(BasePath) DownTo 1 Do Begin
   If BasePath[I] In ['/', '\'] Then Begin
    BasePath := Copy(BasePath, 1, I);
+   Found := True;
    Break;
   End;
  End;
+ If Not Found Then BasePath := '';
 
  CSSBuildStylesheetPath := BasePath + Src;
 End;
@@ -10791,22 +10822,33 @@ Begin
  { Verifier si checked }
  Checked := (GetNodeAttribute(Node, 'checked') <> '');
 
+ { BOGUE REEL corrige (2026-09-25, signale par l'utilisateur - "le champ  }
+ { de saisie... ne fonctionne pas ou le curseur n'est pas present" / "le   }
+ { bouton Recherche Google ne semble pas fonctionner") : AUCUNE des        }
+ { branches ci-dessous n'enregistrait de zone interactive (AddInteractive-}
+ { Area) - un clic sur un champ ou un bouton ne pouvait donc RIEN          }
+ { declencher, quel que soit son type. HandleMouseClick route desormais    }
+ { ces zones vers FocusInputField (champs texte)/ToggleCheckedInput        }
+ { (case/radio)/SubmitEnclosingForm (submit) - voir leur disclosure. }
  { Rendre selon le type }
  If (InputType = 'text') Or (InputType = 'password') Or (InputType = 'email') Or
     (InputType = 'number') Or (InputType = 'search') Or (InputType = 'tel') Or
     (InputType = 'url') Then Begin
   { Champ de saisie }
   DrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, InputType = 'password');
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + INPUT_WIDTH, Ctx.Y + INPUT_HEIGHT, Node);
   Inc(Ctx.X, INPUT_WIDTH + 6);
  End
  Else If InputType = 'checkbox' Then Begin
   { Case a cocher }
   DrawCheckbox(Ctx.X, Ctx.Y, Checked);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + CHECKBOX_SIZE, Ctx.Y + CHECKBOX_SIZE, Node);
   Inc(Ctx.X, CHECKBOX_SIZE + 6);
  End
  Else If InputType = 'radio' Then Begin
   { Bouton radio }
   DrawRadioButton(Ctx.X, Ctx.Y, Checked);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + RADIO_SIZE, Ctx.Y + RADIO_SIZE, Node);
   Inc(Ctx.X, RADIO_SIZE + 6);
  End
  Else If (InputType = 'submit') Or (InputType = 'button') Or (InputType = 'reset') Then Begin
@@ -10818,6 +10860,8 @@ Begin
   End;
   DrawButton(Ctx.X, Ctx.Y, InputValue);
   W := TextWidth(InputValue) + (2 * BUTTON_PADDING_X);
+  H := TextHeight(InputValue) + (2 * BUTTON_PADDING_Y);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H, Node);
   Inc(Ctx.X, W + 6);
  End
  Else If InputType = 'hidden' Then Begin
@@ -10826,6 +10870,7 @@ Begin
  Else Begin
   { Type inconnu - afficher comme texte }
   DrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, False);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + INPUT_WIDTH, Ctx.Y + INPUT_HEIGHT, Node);
   Inc(Ctx.X, INPUT_WIDTH + 6);
  End;
 
@@ -10857,6 +10902,11 @@ Begin
  { Dessiner le bouton }
  DrawButton(Ctx.X, Ctx.Y, ButtonText);
  W := TextWidth(ButtonText) + (2 * BUTTON_PADDING_X);
+ { BOGUE REEL corrige (2026-09-25) : meme trou que RenderTagInput ci-      }
+ { dessus (voir sa disclosure) - aucune zone interactive n'etait           }
+ { enregistree pour <button>, le rendant totalement non-cliquable. }
+ AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + W,
+  Ctx.Y + TextHeight(ButtonText) + (2 * BUTTON_PADDING_Y), Node);
  Inc(Ctx.X, W + 6);
 
  { Gerer le debordement de ligne }
@@ -19330,15 +19380,301 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Interactivite REELLE des formulaires (2026-09-25, demande explicite de
+  l'utilisateur - "le champ de saisie... ne fonctionne pas ou le curseur
+  n'est pas present" + "le bouton Recherche Google ne semble pas
+  fonctionner ou il semble pas tenir compte de la balise FORM") : AVANT ce
+  correctif, RenderTagInput/RenderTagButton dessinaient des pixels mais
+  n'enregistraient JAMAIS de zone interactive (AddInteractiveArea) - un
+  clic ne pouvait donc RIEN declencher, quel que soit le type de champ.
+  ============================================================ }
+
+{ Encodage "application/x-www-form-urlencoded" (espace -> '+', reste des
+  caracteres non-alphanumeriques en %XX hexadecimal) - AUCUN encodeur de
+  ce type n'existait dans ce fichier avant (recherche prealable :
+  encodeURIComponent/URLEncode absents), necessaire des qu'un champ de
+  recherche contient un espace ou un caractere special. }
+Function URLEncodeFormValue(Const S: String): String;
+Const
+ HexDigits: String[16] = '0123456789ABCDEF';
+Var
+ I: Integer;
+ C: Char;
+ R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do Begin
+  C := S[I];
+  If (C In ['A'..'Z', 'a'..'z', '0'..'9', '-', '_', '.', '~']) Then
+   R := R + C
+  Else If C = ' ' Then
+   R := R + '+'
+  Else
+   R := R + '%' + HexDigits[(Ord(C) Shr 4) + 1] + HexDigits[(Ord(C) And $0F) + 1];
+ End;
+ URLEncodeFormValue := R;
+End;
+
+{ Remonte les ancetres jusqu'au FORM englobant (ou Nil si aucun - un
+  bouton/champ hors de tout FORM ne peut rien soumettre). }
+Function FindEnclosingForm(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ While (Node <> Nil) And (Node^.TagType <> TAG_FORM) Do
+  Node := Node^.Parent;
+ FindEnclosingForm := Node;
+End;
+
+{ Parcours RECURSIF de tout le sous-arbre d'un FORM, accumulant
+  "nom=valeur&..." pour chaque INPUT/TEXTAREA/SELECT nomme - les types
+  submit/button/reset/image sont exclus (le bouton cliquable lui-meme n'a
+  pas besoin d'apparaitre dans la requete pour qu'un formulaire de
+  recherche simple fonctionne, meme convention que la plupart des
+  formulaires reels). Les case a cocher/boutons radio NON coches sont
+  omis (convention HTML reelle : un checkbox decoche n'envoie rien). }
+Procedure CollectFormFields(Node: HTMLNodePtr; Var Query: String);
+Var
+ Child: HTMLNodePtr;
+ FName, FType, FValue: String;
+ IsChecked: Boolean;
+Begin
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  If Child^.NodeType = HTML_NODE_ELEMENT Then Begin
+   If (Child^.TagType = TAG_INPUT) Or (Child^.TagType = TAG_TEXTAREA) Then Begin
+    FName := GetNodeAttribute(Child, 'name');
+    FType := HTMLLowerCase(GetNodeAttribute(Child, 'type'));
+    If (Length(FName) > 0) And (FType <> 'submit') And (FType <> 'button') And
+       (FType <> 'reset') And (FType <> 'image') Then Begin
+     If (FType = 'checkbox') Or (FType = 'radio') Then Begin
+      IsChecked := GetNodeAttribute(Child, 'checked') <> '';
+      If IsChecked Then Begin
+       FValue := GetNodeAttribute(Child, 'value');
+       If FValue = '' Then FValue := 'on';
+       If Query <> '' Then Query := Query + '&';
+       Query := Query + URLEncodeFormValue(FName) + '=' + URLEncodeFormValue(FValue);
+      End;
+     End Else Begin
+      If Child^.TagType = TAG_TEXTAREA Then
+       FValue := DOMGetTextContent(Child)
+      Else
+       FValue := GetNodeAttribute(Child, 'value');
+      If Query <> '' Then Query := Query + '&';
+      Query := Query + URLEncodeFormValue(FName) + '=' + URLEncodeFormValue(FValue);
+     End;
+    End;
+   End;
+   { Ne PAS descendre dans un FORM imbrique (invalide en HTML mais mieux }
+   { vaut ne pas melanger deux formulaires distincts par accident). }
+   If Child^.TagType <> TAG_FORM Then CollectFormFields(Child, Query);
+  End;
+  Child := Child^.NextSibling;
+ End;
+End;
+
+{ Soumission REELLE d'un formulaire : construit l'URL (action + '?' +
+  champs nommes encodes) et navigue reellement, EXACTEMENT comme un vrai
+  clic de soumission. method="post" est traite de la meme facon que GET
+  (accroche les champs en requete d'URL) - SIMPLIFICATION DISCLOSED : ce
+  navigateur n'assemble aucun corps de requete HTTP POST reel (Browser_
+  HttpGet est GET seul, voir sa disclosure), beaucoup de formulaires reels
+  simples (dont la recherche Google) acceptent neanmoins les deux. }
+Procedure SubmitEnclosingForm(ClickedNode: HTMLNodePtr);
+Var
+ FormNode: HTMLNodePtr;
+ Action, Query, FullURL: String;
+Begin
+ FormNode := FindEnclosingForm(ClickedNode);
+ If FormNode = Nil Then Exit;
+ Action := GetNodeAttribute(FormNode, 'action');
+ If Action = '' Then Action := CurrentURL
+ Else Action := ResolveLinkHref(Action);
+ Query := '';
+ CollectFormFields(FormNode, Query);
+ If Query <> '' Then Begin
+  If System.Pos('?', Action) > 0 Then FullURL := Action + '&' + Query
+  Else FullURL := Action + '?' + Query;
+ End Else FullURL := Action;
+ NavigateTo(FullURL);
+End;
+
+{ Bascule reelle d'une case a cocher/bouton radio - l'etat DOM ('checked')
+  est toujours mis a jour correctement (ce qui compte pour une soumission
+  de formulaire ulterieure). Pour un groupe de boutons radio de meme
+  "name", decoche aussi les autres membres du groupe cote DOM (comportement
+  HTML reel : un seul bouton radio coche par groupe) - SIMPLIFICATION
+  DISCLOSED : seul CE widget (WidgetX/WidgetY, sa propre position ecran
+  deja connue de HandleMouseClick) est redessine immediatement ; d'autres
+  boutons radio du MEME groupe ailleurs sur la page garde un affichage
+  perime jusqu'au prochain chargement complet (leur etat DOM reel est
+  neanmoins deja correct) - pas de mecanisme de rendu cible par noeud pour
+  un widget arbitraire situe ailleurs dans l'arbre. }
+Procedure ToggleCheckedInput(Node: HTMLNodePtr; WidgetX, WidgetY: Integer);
+Var
+ FormNode: HTMLNodePtr;
+ GroupName: String;
+
+ Procedure UncheckSameGroup(N: HTMLNodePtr);
+ Var C: HTMLNodePtr;
+ Begin
+  C := N^.FirstChild;
+  While C <> Nil Do Begin
+   If (C^.NodeType = HTML_NODE_ELEMENT) And (C^.TagType = TAG_INPUT) And
+      (HTMLLowerCase(GetNodeAttribute(C, 'type')) = 'radio') And
+      (GetNodeAttribute(C, 'name') = GroupName) And (C <> Node) Then
+    DOMRemoveAttribute(C, 'checked');
+   If C^.TagType <> TAG_FORM Then UncheckSameGroup(C);
+   C := C^.NextSibling;
+  End;
+ End;
+
+Begin
+ If HTMLLowerCase(GetNodeAttribute(Node, 'type')) = 'radio' Then Begin
+  GroupName := GetNodeAttribute(Node, 'name');
+  FormNode := FindEnclosingForm(Node);
+  If (FormNode <> Nil) And (Length(GroupName) > 0) Then UncheckSameGroup(FormNode);
+  DOMSetAttribute(Node, 'checked', 'checked');
+  DrawRadioButton(WidgetX, WidgetY, True);
+ End Else Begin
+  { Case a cocher : bascule simple. }
+  If GetNodeAttribute(Node, 'checked') <> '' Then Begin
+   DOMRemoveAttribute(Node, 'checked');
+   DrawCheckbox(WidgetX, WidgetY, False);
+  End Else Begin
+   DOMSetAttribute(Node, 'checked', 'checked');
+   DrawCheckbox(WidgetX, WidgetY, True);
+  End;
+ End;
+End;
+
+{ Donne le focus de saisie clavier a un champ INPUT texte/mot de passe -
+  UNIQUEMENT ces types ont un curseur/une saisie (checkbox/radio/submit
+  n'en ont pas besoin, deja geres par ToggleCheckedInput/
+  SubmitEnclosingForm). Retire le focus de la barre d'URL (un seul champ
+  actif a la fois). ClickX sert a placer le curseur au caractere le plus
+  proche du point clique, meme convention que la barre d'URL
+  (8 pixels/caractere, police fixe). }
+Procedure FocusInputField(Node: HTMLNodePtr; FieldX, FieldY, ClickX: Integer);
+Var
+ CurVal: String;
+Begin
+ URLBarFocused := False;
+ FocusedInputNode := Node;
+ FocusedInputX := FieldX;
+ FocusedInputY := FieldY;
+ FocusedInputIsPassword := HTMLLowerCase(GetNodeAttribute(Node, 'type')) = 'password';
+ CurVal := GetNodeAttribute(Node, 'value');
+ FocusedInputCursorPos := (ClickX - FieldX - INPUT_PADDING) Div 8;
+ If FocusedInputCursorPos > Length(CurVal) Then FocusedInputCursorPos := Length(CurVal);
+ If FocusedInputCursorPos < 0 Then FocusedInputCursorPos := 0;
+ DrawInputField(FieldX, FieldY, INPUT_WIDTH, INPUT_HEIGHT, CurVal, FocusedInputIsPassword);
+ SetColor(INPUT_TEXT_COLOR);
+ Line(FieldX + INPUT_PADDING + (FocusedInputCursorPos * 8), FieldY + 2,
+      FieldX + INPUT_PADDING + (FocusedInputCursorPos * 8), FieldY + INPUT_HEIGHT - 2);
+End;
+
+{ Retire le focus d'un champ (clic ailleurs sur la page) - redessine le    }
+{ champ SANS son curseur. }
+Procedure ClearInputFocus;
+Begin
+ If FocusedInputNode <> Nil Then
+  DrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
+   GetNodeAttribute(FocusedInputNode, 'value'), FocusedInputIsPassword);
+ FocusedInputNode := Nil;
+End;
+
+{ Redessine le champ de saisie actuellement focus (widget + curseur) -    }
+{ factorise pour eviter de dupliquer ce dessin a chaque frappe. }
+Procedure RedrawFocusedInput;
+Var CurVal: String;
+Begin
+ If FocusedInputNode = Nil Then Exit;
+ CurVal := GetNodeAttribute(FocusedInputNode, 'value');
+ DrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
+  CurVal, FocusedInputIsPassword);
+ SetColor(INPUT_TEXT_COLOR);
+ Line(FocusedInputX + INPUT_PADDING + (FocusedInputCursorPos * 8), FocusedInputY + 2,
+      FocusedInputX + INPUT_PADDING + (FocusedInputCursorPos * 8), FocusedInputY + INPUT_HEIGHT - 2);
+End;
+
+{ Saisie clavier REELLE dans un champ INPUT texte/mot de passe focus -    }
+{ meme structure que HandleURLInput (barre d'URL), operant sur l'attribut }
+{ DOM 'value' du noeud focus (via DOMSetAttribute) au lieu de CurrentURL, }
+{ et redessinant SEULEMENT ce widget (RedrawFocusedInput) plutot que      }
+{ toute la page. Entree (13) soumet reellement le FORM englobant, comme   }
+{ un vrai navigateur - repond directement au 2e symptome signale ("le     }
+{ bouton ... ne semble pas fonctionner") : appuyer sur Entree dans le      }
+{ champ fonctionne desormais meme si le clic sur le bouton lui-meme est    }
+{ rate. }
+Procedure HandleFormInputKey(Key: Char);
+Var CurVal: String;
+Begin
+ If FocusedInputNode = Nil Then Exit;
+ CurVal := GetNodeAttribute(FocusedInputNode, 'value');
+ Case Ord(Key) Of
+  8: Begin { Backspace }
+   If (FocusedInputCursorPos > 0) And (Length(CurVal) > 0) Then Begin
+    Delete(CurVal, FocusedInputCursorPos, 1);
+    Dec(FocusedInputCursorPos);
+    DOMSetAttribute(FocusedInputNode, 'value', CurVal);
+   End;
+  End;
+  13: Begin { Entree - soumet le FORM englobant, meme convention qu'un vrai navigateur }
+   SubmitEnclosingForm(FocusedInputNode);
+   FocusedInputNode := Nil; { la page a change, ce noeud n'existe plus }
+   Exit;
+  End;
+  27: Begin { Echap - retire le focus sans soumettre }
+   ClearInputFocus;
+   Exit;
+  End;
+  Else Begin { Caractere normal }
+   If (Key >= #32) And (Key <= #126) Then Begin
+    If Length(CurVal) < 254 Then Begin { String[255] : plafond de HTMLAttribute.Value }
+     Inc(FocusedInputCursorPos);
+     Insert(Key, CurVal, FocusedInputCursorPos);
+     DOMSetAttribute(FocusedInputNode, 'value', CurVal);
+    End;
+   End;
+  End;
+ End;
+ RedrawFocusedInput;
+End;
+
+{ Touches speciales (fleches/Home/End/Suppr) dans un champ focus - meme   }
+{ structure que HandleURLSpecialKey. }
+Procedure HandleFormInputSpecialKey(ScanCode: Byte);
+Var CurVal: String;
+Begin
+ If FocusedInputNode = Nil Then Exit;
+ CurVal := GetNodeAttribute(FocusedInputNode, 'value');
+ Case ScanCode Of
+  75: If FocusedInputCursorPos > 0 Then Dec(FocusedInputCursorPos);       { Fleche gauche }
+  77: If FocusedInputCursorPos < Length(CurVal) Then Inc(FocusedInputCursorPos); { Fleche droite }
+  71: FocusedInputCursorPos := 0;                                          { Home }
+  79: FocusedInputCursorPos := Length(CurVal);                            { End }
+  83: Begin { Suppr }
+   If FocusedInputCursorPos < Length(CurVal) Then Begin
+    Delete(CurVal, FocusedInputCursorPos + 1, 1);
+    DOMSetAttribute(FocusedInputNode, 'value', CurVal);
+   End;
+  End;
+ End;
+ RedrawFocusedInput;
+End;
+
 { Procedure pour gerer les clics de souris sur l'interface }
 Procedure HandleMouseClick(X, Y: Integer);
 Var
  LinkIdx: Integer;
  InteractiveNode: HTMLNodePtr;
+ InteractiveIdx: Integer;
+ ClickedType: String;
 Begin
  { Verifier si le clic est dans la barre d'URL }
  If IsClickInURLBar(X, Y) Then Begin
   URLBarFocused := True;
+  ClearInputFocus;
   { Calculer la position du curseur dans l'URL }
   URLCursorPos := (X - URL_BAR_X - 5) Div 8;
   If URLCursorPos > Length(CurrentURL) Then
@@ -19352,6 +19688,22 @@ Begin
   URLBarFocused := False;
   DrawURLBar;
  End;
+ { BOGUE REEL corrige (2026-09-25, trouve en verifiant le correctif des    }
+ { formulaires ci-dessus) : DrawURLBar repeint TOUTE la bande d'outils     }
+ { (voir sa propre disclosure - necessaire pour effacer un residu de page  }
+ { qui aurait pu deborder dessus), mais EFFACE du meme coup les boutons     }
+ { Precedent/Suivant/Actualiser/Favori sans les redessiner - NavigateTo et  }
+ { la passe de survol (ProcessMouseHover) le font deja correctement juste   }
+ { apres leur propre DrawURLBar (meme sequence exacte), mais ce chemin-ci   }
+ { (present depuis la toute premiere version de HandleMouseClick) ne         }
+ { l'avait jamais fait. Reste invisible tant qu'aucun clic ne pouvait        }
+ { EVITER de declencher une navigation complete (qui redessine tout de      }
+ { toute facon) - un clic dans un champ de formulaire (voir plus haut,      }
+ { FocusInputField) est le premier cas ou cela devient reellement visible. }
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
 
  { Verifier si le clic est dans le bouton Precedent }
  If IsClickInBackButton(X, Y) Then Begin
@@ -19381,19 +19733,55 @@ Begin
  If IsInRenderArea(X, Y) Then Begin
   LinkIdx := FindLinkAtPosition(X, Y);
   If LinkIdx > 0 Then Begin
+   ClearInputFocus;
    HandleLinkClick(LinkIdx);
   End
   Else Begin
    { Verifier si le clic est sur une zone interactive (ex: cellule TD
-     utilisee comme onglet avec onclick="..."). }
-   InteractiveNode := FindInteractiveNodeAtPosition(X, Y);
-   If InteractiveNode <> Nil Then Begin
+     utilisee comme onglet avec onclick="...", OU un champ/bouton de
+     formulaire reel - voir la disclosure complete pres de
+     SubmitEnclosingForm/FocusInputField/ToggleCheckedInput ci-dessus). }
+   InteractiveIdx := FindInteractiveAreaAtPosition(X, Y);
+   If InteractiveIdx > 0 Then Begin
+    InteractiveNode := InteractiveAreas[InteractiveIdx].Node;
     { JSCookMenu effectue la navigation dans onmouseup, pas onclick. }
     MousePressedInteractiveNode := InteractiveNode;
     DispatchInlineEventHandler(InteractiveNode, 'onmousedown');
     DispatchInlineEventHandler(InteractiveNode, 'onclick');
-   End Else
+    If (InteractiveNode <> Nil) And (InteractiveNode^.NodeType = HTML_NODE_ELEMENT) Then Begin
+     If InteractiveNode^.TagType = TAG_INPUT Then Begin
+      ClickedType := HTMLLowerCase(GetNodeAttribute(InteractiveNode, 'type'));
+      If (ClickedType = '') Or (ClickedType = 'text') Or (ClickedType = 'password') Or
+         (ClickedType = 'email') Or (ClickedType = 'number') Or (ClickedType = 'search') Or
+         (ClickedType = 'tel') Or (ClickedType = 'url') Then
+       FocusInputField(InteractiveNode, InteractiveAreas[InteractiveIdx].X1,
+        InteractiveAreas[InteractiveIdx].Y1, X)
+      Else If ClickedType = 'submit' Then Begin
+       ClearInputFocus;
+       SubmitEnclosingForm(InteractiveNode);
+      End
+      Else If (ClickedType = 'checkbox') Or (ClickedType = 'radio') Then Begin
+       ClearInputFocus;
+       ToggleCheckedInput(InteractiveNode, InteractiveAreas[InteractiveIdx].X1,
+        InteractiveAreas[InteractiveIdx].Y1);
+      End
+      Else ClearInputFocus;
+     End
+     Else If InteractiveNode^.TagType = TAG_BUTTON Then Begin
+      { <button> sans attribut type, a l'interieur d'un FORM, est un      }
+      { SUBMIT par defaut (convention HTML reelle - contrairement a       }
+      { <input> ou 'text' est le defaut). }
+      ClickedType := HTMLLowerCase(GetNodeAttribute(InteractiveNode, 'type'));
+      ClearInputFocus;
+      If (ClickedType = '') Or (ClickedType = 'submit') Then
+       SubmitEnclosingForm(InteractiveNode);
+     End
+     Else ClearInputFocus;
+    End;
+   End Else Begin
     MousePressedInteractiveNode := Nil;
+    ClearInputFocus;
+   End;
   End;
  End;
 End;
@@ -19710,10 +20098,21 @@ BEGIN
    If Key = #0 Then Begin
     { Touche speciale }
     Key := ReadKey;
-    HandleURLSpecialKey(Ord(Key));
-   End
+    { Un champ de formulaire HTML focus (voir FocusInputField, demande      }
+    { explicite de l'utilisateur) est prioritaire sur la barre d'URL - les  }
+    { deux s'excluent deja mutuellement (ClearInputFocus/URLBarFocused:=    }
+    { False a chaque prise de focus). }
+    If FocusedInputNode <> Nil Then
+     HandleFormInputSpecialKey(Ord(Key))
     Else
-   HandleURLInput(Key);
+     HandleURLSpecialKey(Ord(Key));
+   End
+    Else Begin
+    If FocusedInputNode <> Nil Then
+     HandleFormInputKey(Key)
+    Else
+     HandleURLInput(Key);
+   End;
   End;
  Until Key = #27;
  { Cacher la souris avant de fermer }
