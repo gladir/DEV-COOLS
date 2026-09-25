@@ -892,6 +892,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de reformater un fichier source Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>REXX.PAS</b></td>
+			<td>Cette commande permet de lancer le langage de programmation REXX.</td>
+		</tr>
+		<tr>
 			<td><b>RGB2HTML.PAS</b></td>
 			<td>Cette commande permet de convertir les trois valeurs RGB (RVB) en code couleur HTML.</td>
 		</tr>
