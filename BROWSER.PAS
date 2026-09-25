@@ -2583,10 +2583,18 @@ Begin
  CountElementsByTag := Count;
 End;
 
+{ BOGUE REEL corrige (2026-09-25, meme categorie que SetHTMLSourceFromString }
+{ - voir feedback_integer_16bit) : StartPos/EndPos etaient declares Integer, }
+{ 16 bits seulement en mode TP (-32768..32767) - une chaine reelle de plus  }
+{ de 32 Ko passee a Trim (appelee depuis ParseHTML sur du contenu HTML/     }
+{ texte reel, ex. en cliquant un lien qui charge une page volumineuse)      }
+{ deborde silencieusement "EndPos := Length(S)" sans controle de plage,     }
+{ mais plante avec le controle de plage actif (signale par l'utilisateur,   }
+{ compilation depuis l'IDE Free Pascal). }
 { Fonction Trim pour supprimer les espaces en debut et fin }
 Function Trim(Const S: String): String;
 Var
- StartPos, EndPos: Integer;
+ StartPos, EndPos: LongInt;
 Begin
  StartPos := 1;
  EndPos := Length(S);
@@ -7159,6 +7167,15 @@ Begin
 
  LowerCurrent := HTMLLowerCase(CurrentURL);
  If (Copy(LowerCurrent, 1, 7) = 'http://') Or (Copy(LowerCurrent, 1, 8) = 'https://') Then Begin
+  If (Length(Src) > 1) And (Src[1] = '/') And (Src[2] = '/') Then Begin
+   { href "protocole-relatif" ("//hote/chemin") : reprend le SCHEMA de la  }
+   { page courante (http/https) sans reutiliser son hote - a distinguer du }
+   { cas "racine du site" juste en dessous (1 seul '/'), sinon l'origine   }
+   { complete serait doublement prefixee ("https://hoteA//hoteB/..."). }
+   If Copy(LowerCurrent, 1, 8) = 'https://' Then CSSBuildStylesheetPath := 'https:' + Src
+   Else CSSBuildStylesheetPath := 'http:' + Src;
+   Exit;
+  End;
   If (Length(Src) > 0) And (Src[1] = '/') Then Begin
    { href "racine du site" : origine (schema://hote[:port]) + chemin. }
    SchemeEnd := Pos('://', CurrentURL);
@@ -19147,28 +19164,25 @@ End;
   cette resolution, un lien relatif est cherche par rapport au
   repertoire de travail du PROCESSUS (celui ou BROWSER.exe a ete
   lance), pas par rapport a la page actuellement affichee. }
+{ BOGUE REEL corrige (2026-09-25, signale par l'utilisateur - clic sur     }
+{ "Advanced search" depuis https://www.google.ca/ (un lien "racine du      }
+{ site", ex. href="/advanced_search") renvoyait "page introuvable") :      }
+{ cette fonction renvoyait un tel href TEL QUEL (juste "/advanced_search", }
+{ sans schema/hote), qu'IsRemoteURL rejette ensuite (ne commence pas par   }
+{ http(s)://) - DisplayCurrentTarget tombait alors dans le chargement de   }
+{ FICHIER LOCAL, qui echoue forcement pour un chemin pareil. Reutilise     }
+{ desormais CSSBuildStylesheetPath (deja corrigee pour ce cas exact -      }
+{ href racine-du-site resolu avec l'origine schema://hote de la page       }
+{ courante quand celle-ci est distante - deja utilisee avec succes par     }
+{ BMPBuildImagePath/GIFBuildImagePath/etc pour les images) plutot que sa    }
+{ propre logique dupliquee qui n'avait jamais recu ce correctif. }
 Function ResolveLinkHref(Const Href: String): String;
-Var
- BasePath: String;
- I: Integer;
 Begin
- { Chemin deja absolu (autre lecteur, ou commence par / ou \), ou prefixe
-   "view-source:" : le retourner tel quel. }
- If (Length(Href) > 0) And ((Href[1] = '/') Or (Href[1] = '\') Or
-     ((Length(Href) > 2) And (Href[2] = ':')) Or IsViewSourceURL(Href)) Then Begin
+ If IsViewSourceURL(Href) Then Begin
   ResolveLinkHref := Href;
   Exit;
  End;
-
- BasePath := CurrentURL;
- For I := Length(BasePath) DownTo 1 Do Begin
-  If BasePath[I] In ['/', '\'] Then Begin
-   BasePath := Copy(BasePath, 1, I);
-   Break;
-  End;
- End;
-
- ResolveLinkHref := BasePath + Href;
+ ResolveLinkHref := CSSBuildStylesheetPath(Href);
 End;
 
 Procedure HandleLinkClick(LinkIndex: Integer);
@@ -19190,12 +19204,6 @@ Begin
   { URL absolue (ou prefixe view-source:) - naviguer directement }
   NavigateTo(TargetURL);
  End
- Else If Copy(TargetURL, 1, 1) = '/' Then Begin
-  { URL relative a la racine du site }
-  { Extraire le protocole et le domaine de l'URL courante }
-  { Pour l'instant, on utilise l'URL telle quelle }
-  NavigateTo(TargetURL);
- End
  Else If Copy(TargetURL, 1, 1) = '#' Then Begin
   { Ancre dans la meme page - ne pas naviguer pour l'instant }
   { TODO: Implementer le saut vers l'ancre }
@@ -19208,10 +19216,16 @@ Begin
   { Lien telephone - ne pas naviguer }
  End
  Else Begin
-  { URL relative - combiner avec le repertoire de la page courante
-    (ex: "A86/reference.htm" depuis une page situee dans CODER/ doit
-    pointer vers CODER/A86/reference.htm, pas vers le repertoire de
-    travail du processus). }
+  { URL relative (racine du site "/xxx", protocole-relatif "//xxx", ou
+    relative au repertoire courant, ex. "A86/reference.htm" depuis une
+    page situee dans CODER/ doit pointer vers CODER/A86/reference.htm,
+    pas vers le repertoire de travail du processus) - BOGUE REEL corrige
+    (2026-09-25, signale par l'utilisateur : un clic sur "Advanced
+    search" depuis Google renvoyait "page introuvable") : le cas
+    "racine du site" avait sa PROPRE branche ci-dessus qui navigait vers
+    TargetURL tel quel (sans schema/hote), ce qu'IsRemoteURL rejetait
+    ensuite - supprimee, ResolveLinkHref (voir sa disclosure) gere
+    desormais ce cas correctement lui aussi. }
   NavigateTo(ResolveLinkHref(TargetURL));
  End;
 End;
