@@ -916,8 +916,12 @@ Type
   TextDecoration: String[32];
   Display: String[16];
   Visibility: String[16];
-  Width: String[16];
-  Height: String[16];
+  { String[64] et non [16] : une valeur width:calc((100% - 130px -
+    20px)/2) (rencontree par ex. sur gladir.com pour ses colonnes
+    .newsBlock/.searchBlock) depasse 16 caracteres et etait tronquee
+    silencieusement, rendant calc() impossible a analyser correctement. }
+  Width: String[64];
+  Height: String[64];
   Margin: String[32];
   Padding: String[32];
   Border: String[32];
@@ -7608,6 +7612,123 @@ Begin
  End;
 End;
 
+{ ============================================================
+  Evaluateur minimal de calc() CSS : +, -, *, / et parentheses, avec
+  des operandes en px/%/em/rem/pt (memes unites que CSSParseDimension
+  ci-dessous). ContainerPx sert de base pour convertir les pourcentages,
+  exactement comme le parametre DefaultPx de CSSParseDimension. Necessaire
+  pour des regles reelles comme .newsBlock/.searchBlock de gladir.com :
+  width:calc((100% - 130px - 20px)/2). }
+Function CSSCalcParseExpr(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real; Forward;
+
+Procedure CSSCalcSkipSpaces(Const S: String; Var Pos: Integer);
+Begin
+ While (Pos <= Length(S)) And (S[Pos] = ' ') Do Inc(Pos);
+End;
+
+Function CSSCalcParseNumber(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Var
+ StartPos: Integer;
+ NumStr, UnitStr: String;
+ NumVal: Real;
+ Code: Integer;
+Begin
+ CSSCalcParseNumber := 0.0;
+ CSSCalcSkipSpaces(S, Pos);
+ StartPos := Pos;
+ If (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Then Inc(Pos);
+ While (Pos <= Length(S)) And (S[Pos] In ['0'..'9', '.']) Do Inc(Pos);
+ NumStr := Copy(S, StartPos, Pos - StartPos);
+ Val(NumStr, NumVal, Code);
+ If Code <> 0 Then Exit;
+ StartPos := Pos;
+ While (Pos <= Length(S)) And (S[Pos] In ['A'..'Z', 'a'..'z', '%']) Do Inc(Pos);
+ UnitStr := HTMLLowerCase(Copy(S, StartPos, Pos - StartPos));
+ If UnitStr = '%' Then
+  CSSCalcParseNumber := (NumVal / 100) * ContainerPx
+ Else If (UnitStr = 'em') Or (UnitStr = 'rem') Then
+  CSSCalcParseNumber := NumVal * 16
+ Else If UnitStr = 'pt' Then
+  CSSCalcParseNumber := NumVal * 1.33
+ Else
+  CSSCalcParseNumber := NumVal; { px ou sans unite }
+End;
+
+Function CSSCalcParseFactor(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Begin
+ CSSCalcSkipSpaces(S, Pos);
+ If (Pos <= Length(S)) And (S[Pos] = '(') Then Begin
+  Inc(Pos);
+  CSSCalcParseFactor := CSSCalcParseExpr(S, Pos, ContainerPx);
+  CSSCalcSkipSpaces(S, Pos);
+  If (Pos <= Length(S)) And (S[Pos] = ')') Then Inc(Pos);
+ End
+ Else
+  CSSCalcParseFactor := CSSCalcParseNumber(S, Pos, ContainerPx);
+End;
+
+Function CSSCalcParseTerm(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Var
+ Value, RHS: Real;
+ Op: Char;
+Begin
+ Value := CSSCalcParseFactor(S, Pos, ContainerPx);
+ CSSCalcSkipSpaces(S, Pos);
+ While (Pos <= Length(S)) And (S[Pos] In ['*', '/']) Do Begin
+  Op := S[Pos];
+  Inc(Pos);
+  RHS := CSSCalcParseFactor(S, Pos, ContainerPx);
+  If Op = '*' Then Value := Value * RHS
+  Else If RHS <> 0 Then Value := Value / RHS;
+  CSSCalcSkipSpaces(S, Pos);
+ End;
+ CSSCalcParseTerm := Value;
+End;
+
+Function CSSCalcParseExpr(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Var
+ Value, RHS: Real;
+ Op: Char;
+Begin
+ Value := CSSCalcParseTerm(S, Pos, ContainerPx);
+ CSSCalcSkipSpaces(S, Pos);
+ While (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Do Begin
+  Op := S[Pos];
+  Inc(Pos);
+  RHS := CSSCalcParseTerm(S, Pos, ContainerPx);
+  If Op = '+' Then Value := Value + RHS Else Value := Value - RHS;
+  CSSCalcSkipSpaces(S, Pos);
+ End;
+ CSSCalcParseExpr := Value;
+End;
+
+{ Evaluer "calc(...)" en pixels. Recherche la parenthese fermante qui
+  correspond au "calc(" d'ouverture en comptant la profondeur, car
+  l'expression contient elle-meme des parentheses imbriquees. }
+Function CSSEvalCalc(Const Expr: String; ContainerPx: Integer): Integer;
+Var
+ Inner: String;
+ Depth, I, ParenStart: Integer;
+ Pos: Integer;
+Begin
+ CSSEvalCalc := 0;
+ ParenStart := System.Pos('(', Expr);
+ If ParenStart = 0 Then Exit;
+ Depth := 0;
+ I := ParenStart;
+ While I <= Length(Expr) Do Begin
+  If Expr[I] = '(' Then Inc(Depth)
+  Else If Expr[I] = ')' Then Begin
+   Dec(Depth);
+   If Depth = 0 Then Break;
+  End;
+  Inc(I);
+ End;
+ Inner := Copy(Expr, ParenStart + 1, I - ParenStart - 1);
+ Pos := 1;
+ CSSEvalCalc := Round(CSSCalcParseExpr(Inner, Pos, ContainerPx));
+End;
+
 { Parser une valeur de dimension CSS (px, em, %, etc.) et retourner en pixels }
 Function CSSParseDimension(Const Value: String; DefaultPx: Integer): Integer;
 Var
@@ -7618,6 +7739,12 @@ Var
 Begin
  CSSParseDimension := DefaultPx;
  If Length(Value) = 0 Then Exit;
+
+ { calc(...) : evaluateur dedie ci-dessus (+ - * / et parentheses). }
+ If Copy(HTMLLowerCase(Trim(Value)), 1, 5) = 'calc(' Then Begin
+  CSSParseDimension := CSSEvalCalc(Trim(Value), DefaultPx);
+  Exit;
+ End;
 
  { Extraire la partie numerique }
  NumStr := '';
@@ -8365,15 +8492,137 @@ End;
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
 Procedure RenderCSSBackgroundSprite(Const Style: DOMStyle; X, Y: Integer); Forward;
 
+{ display:table-cell (souvent accompagne de float:left, ex: .newsBlock/
+  .searchBlock/.biglogo de gladir.com) demande explicitement plusieurs
+  freres cote a cote plutot qu'empiles verticalement - jusqu'ici ignore
+  par le moteur (seul le TagType par defaut etait consulte, jamais
+  Style.Display), si bien que ces DIV/SECTION s'empilaient toujours en
+  pleine largeur comme des blocs ordinaires. }
+Function CSSChildWantsTableCellFlow(Child: HTMLNodePtr): Boolean;
+Var
+ ChildStyle: DOMStyle;
+Begin
+ CSSChildWantsTableCellFlow := False;
+ If Not CSSEnabled Then Exit;
+ If Child^.NodeType <> HTML_NODE_ELEMENT Then Exit;
+ CSSResolveCascade(Child, ChildStyle);
+ If CSSIsElementHidden(ChildStyle) Then Exit;
+ If HTMLLowerCase(ChildStyle.PositionProp) = 'absolute' Then Exit;
+ CSSChildWantsTableCellFlow := HTMLLowerCase(ChildStyle.Display) = 'table-cell';
+End;
+
+{ Rendre une serie de freres consecutifs display:table-cell comme une
+  rangee de tableau implicite : reutilise l'infrastructure Ctx.InTable/
+  TableCellContentX deja fiable (RenderNewLine renvoie alors Ctx.X au
+  debut du contenu de la cellule au lieu de la marge de la page - voir
+  RenderNewLine), sans passer par un vrai <table>/<tr>/<td>. Largeur de
+  chaque cellule = sa propriete CSS width (px/%/calc()), ou le reste de
+  la rangee si non specifiee (derniere cellule typiquement). }
+Procedure RenderTableCellRow(FirstCell, LastCell: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Cell: HTMLNodePtr;
+ CellStyle: DOMStyle;
+ RowY, RowStartX, CellX, CellWidth, RowWidth, MaxRowBottom, PadLeft: Integer;
+ OldInTable, OldTableDrawBorders: Boolean;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth: Integer;
+ OldTableCellPadding, OldTableCellSpacing, OldTableColIndex: Integer;
+ OldTableRowY, OldTableRowHeight, OldTableCellX, OldTableX: Integer;
+Begin
+ RowY := Ctx.Y;
+ RowStartX := Ctx.X;
+ RowWidth := Ctx.MaxX - RowStartX;
+ If RowWidth < 1 Then RowWidth := 1;
+
+ OldInTable := Ctx.InTable;
+ OldTableDrawBorders := Ctx.TableDrawBorders;
+ OldMaxX := Ctx.MaxX;
+ OldTableCellContentX := Ctx.TableCellContentX;
+ OldTableCellWidth := Ctx.TableCellWidth;
+ OldTableCellPadding := Ctx.TableCellPadding;
+ OldTableCellSpacing := Ctx.TableCellSpacing;
+ OldTableColIndex := Ctx.TableColIndex;
+ OldTableRowY := Ctx.TableRowY;
+ OldTableRowHeight := Ctx.TableRowHeight;
+ OldTableCellX := Ctx.TableCellX;
+ OldTableX := Ctx.TableX;
+
+ Ctx.InTable := True;
+ Ctx.TableDrawBorders := False;
+ Ctx.TableCellPadding := 0;
+ Ctx.TableCellSpacing := 0;
+ Ctx.TableX := RowStartX;
+ Ctx.TableRowY := RowY;
+ Ctx.TableRowHeight := Ctx.LineHeight;
+
+ MaxRowBottom := RowY;
+ CellX := RowStartX;
+ Cell := FirstCell;
+ Repeat
+  CSSResolveCascade(Cell, CellStyle);
+  If Length(CellStyle.Width) > 0 Then
+   CellWidth := CSSParseDimension(CellStyle.Width, RowWidth)
+  Else
+   CellWidth := RowWidth - (CellX - RowStartX); { reste de la rangee }
+  If CellWidth < 1 Then CellWidth := 1;
+  If CellX + CellWidth > OldMaxX Then CellWidth := OldMaxX - CellX;
+  If CellWidth < 1 Then CellWidth := 1;
+
+  PadLeft := CSSParseDimension(CellStyle.PaddingLeft, 0);
+  If Length(CellStyle.Padding) > 0 Then
+   PadLeft := CSSParseDimension(CellStyle.Padding, 0);
+
+  Ctx.X := CellX + PadLeft;
+  Ctx.Y := RowY;
+  Ctx.MaxX := CellX + CellWidth;
+  Ctx.TableCellX := CellX;
+  Ctx.TableCellWidth := CellWidth;
+  Ctx.TableCellContentX := Ctx.X;
+
+  RenderHTMLNode(Cell, Ctx);
+  FlushJustifiedLine(Ctx, False);
+
+  If Ctx.Y + Ctx.LineHeight > MaxRowBottom Then MaxRowBottom := Ctx.Y + Ctx.LineHeight;
+
+  CellX := CellX + CellWidth;
+  If Cell = LastCell Then Break;
+  Cell := Cell^.NextSibling;
+ Until Cell = Nil;
+
+ Ctx.InTable := OldInTable;
+ Ctx.TableDrawBorders := OldTableDrawBorders;
+ Ctx.MaxX := OldMaxX;
+ Ctx.TableCellContentX := OldTableCellContentX;
+ Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.TableCellPadding := OldTableCellPadding;
+ Ctx.TableCellSpacing := OldTableCellSpacing;
+ Ctx.TableColIndex := OldTableColIndex;
+ Ctx.TableRowY := OldTableRowY;
+ Ctx.TableRowHeight := OldTableRowHeight;
+ Ctx.TableCellX := OldTableCellX;
+ Ctx.TableX := OldTableX;
+
+ Ctx.X := RowStartX;
+ Ctx.Y := MaxRowBottom;
+End;
+
 { Procedure pour rendre les enfants d'un noeud }
 Procedure RenderChildren(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
- Child: HTMLNodePtr;
+ Child, RunEnd: HTMLNodePtr;
 Begin
  Child := Node^.FirstChild;
  While Child <> Nil Do Begin
-  RenderHTMLNode(Child, Ctx);
-  Child := Child^.NextSibling;
+  If (Not RenderingAbsoluteOverlay) And CSSChildWantsTableCellFlow(Child) Then Begin
+   RunEnd := Child;
+   While (RunEnd^.NextSibling <> Nil) And
+         CSSChildWantsTableCellFlow(RunEnd^.NextSibling) Do
+    RunEnd := RunEnd^.NextSibling;
+   RenderTableCellRow(Child, RunEnd, Ctx);
+   Child := RunEnd^.NextSibling;
+  End Else Begin
+   RenderHTMLNode(Child, Ctx);
+   Child := Child^.NextSibling;
+  End;
  End;
 End;
 
