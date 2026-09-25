@@ -2117,7 +2117,7 @@ Var
   HiInt, LoInt: LongInt;
 Begin
   AllocConstantPool(Count);
-  
+
   { Entree 0 non utilisee }
   CP^[0].Tag := CP_NONE;
   CP^[0].StrVal := '';
@@ -2126,7 +2126,7 @@ Begin
   CP^[0].Ref1 := 0;
   CP^[0].Ref2 := 0;
   CP^[0].IsDouble := False;
-  
+
   I := 1;
   While I < Count Do Begin
     { Lire le tag }
@@ -2138,7 +2138,7 @@ Begin
     CP^[I].Ref1 := 0;
     CP^[I].Ref2 := 0;
     CP^[I].IsDouble := False;
-    
+
     Case Tag of
       CP_UTF8: Begin
         { Lire longueur U2 puis octets }
@@ -2150,12 +2150,12 @@ Begin
             CP^[I].StrVal := CP^[I].StrVal + Chr(B);
         End;
       End;
-      
+
       CP_INTEGER: Begin
         { Lire 4 octets big-endian }
         CP^[I].IntVal := ReadU4;
       End;
-      
+
       CP_FLOAT: Begin
         { Lire 4 octets (IEEE 754 single) }
         B1 := ReadU1; B2 := ReadU1; B3 := ReadU1; B4 := ReadU1;
@@ -2164,7 +2164,7 @@ Begin
                          (LongInt(B3) shl 8) or LongInt(B4);
         CP^[I].FloatVal := 0; { TODO: conversion IEEE 754 }
       End;
-      
+
       CP_LONG: Begin
         { Lire 8 octets, occupe 2 slots }
         HiInt := ReadU4;
@@ -2184,7 +2184,7 @@ Begin
           CP^[I].IsDouble := False;
         End;
       End;
-      
+
       CP_DOUBLE: Begin
         { Lire 8 octets (IEEE 754 double), occupe 2 slots }
         HiInt := ReadU4;
@@ -2204,38 +2204,38 @@ Begin
           CP^[I].IsDouble := False;
         End;
       End;
-      
+
       CP_CLASS, CP_STRING, CP_METHODTYPE: Begin
         { Lire 1 index U2 }
         CP^[I].Ref1 := ReadU2;
       End;
-      
+
       CP_FIELDREF, CP_METHODREF, CP_INTERFACEMETHODREF, CP_NAMEANDTYPE: Begin
         { Lire 2 index U2 }
         CP^[I].Ref1 := ReadU2;
         CP^[I].Ref2 := ReadU2;
       End;
-      
+
       CP_METHODHANDLE: Begin
         { Lire 1 octet (kind) + 1 index U2 }
         CP^[I].IntVal := ReadU1; { reference_kind }
         CP^[I].Ref1 := ReadU2;   { reference_index }
       End;
-      
+
       CP_INVOKEDYNAMIC: Begin
         { Lire 2 index U2 (bootstrap_method_attr_index + name_and_type_index) }
         CP^[I].Ref1 := ReadU2;
         CP^[I].Ref2 := ReadU2;
       End;
-      
+
       Else Begin
         Error('Tag Constant Pool inconnu: ' + IntToStr_(Tag) + ' a l''index ' + IntToStr_(I));
       End;
     End;
-    
+
     Inc(I);
   End;
-  
+
   Info('Constant Pool lu: ' + IntToStr_(Count - 1) + ' entrees');
 End;
 
@@ -2248,7 +2248,7 @@ Begin
     Exit;
   End;
   If CP^[Idx].Tag <> CP_UTF8 Then Begin
-    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas UTF8 (tag=' + 
+    Error('Entree CP #' + IntToStr_(Idx) + ' n''est pas UTF8 (tag=' +
           IntToStr_(CP^[Idx].Tag) + ')');
     CPGetUtf8 := '';
     Exit;
@@ -2496,11 +2496,11 @@ Var
   I: Integer;
 Begin
   InitClassInfo;
-  
+
   { Lire AccessFlags (U2) }
   Flags := ReadU2;
   ClassInfo.AccessFlags := Flags;
-  
+
   { Decoder les flags d'acces }
   ClassInfo.IsPublic := (Flags and ACC_PUBLIC) <> 0;
   ClassInfo.IsFinal := (Flags and ACC_FINAL) <> 0;
@@ -2509,25 +2509,25 @@ Begin
   ClassInfo.IsSynthetic := (Flags and ACC_SYNTHETIC) <> 0;
   ClassInfo.IsAnnotation := (Flags and ACC_ANNOTATION) <> 0;
   ClassInfo.IsEnum := (Flags and ACC_ENUM) <> 0;
-  
+
   { Lire this_class (U2) -> index CP_CLASS }
   ThisIdx := ReadU2;
   If ThisIdx > 0 Then
     ClassInfo.ThisClass := CPGetClassName(ThisIdx)
   Else
     ClassInfo.ThisClass := '';
-    
+
   { Lire super_class (U2) -> index CP_CLASS (0 pour java/lang/Object) }
   SuperIdx := ReadU2;
   If SuperIdx > 0 Then
     ClassInfo.SuperClass := CPGetClassName(SuperIdx)
   Else
     ClassInfo.SuperClass := '';
-    
+
   { Lire interfaces_count (U2) }
   IfCount := ReadU2;
   ClassInfo.InterfaceCount := IfCount;
-  
+
   { Lire chaque interface (U2 -> index CP_CLASS) }
   If IfCount > 0 Then
   For I := 0 to IfCount - 1 Do Begin
@@ -2542,7 +2542,7 @@ Begin
       IfIdx := ReadU2;
     End;
   End;
-  
+
   If Opts.Verbose Then Begin
     Info('Classe: ' + ClassInfo.ThisClass);
     If ClassInfo.SuperClass <> '' Then
@@ -2575,10 +2575,10 @@ Begin
     { Lire attribute_name_index (U2) et attribute_length (U4) }
     NameIdx := ReadU2;
     AttrLen := ReadU4;
-    
+
     { Recuperer le nom de l'attribut }
     AttrName := CPGetUtf8(NameIdx);
-    
+
     If AttrName = 'SourceFile' Then Begin
       { SourceFile: 2 octets = index UTF8 du nom de fichier }
       SrcIdx := ReadU2;
@@ -2600,7 +2600,7 @@ Var
   FlagStr: String;
 Begin
   WriteLn('=== Class Info ===');
-  
+
   { Construire la chaine des flags }
   FlagStr := '';
   If ClassInfo.IsPublic Then FlagStr := FlagStr + 'public ';
@@ -2610,18 +2610,18 @@ Begin
   If ClassInfo.IsEnum Then FlagStr := FlagStr + 'enum ';
   If ClassInfo.IsAnnotation Then FlagStr := FlagStr + '@interface ';
   If ClassInfo.IsSynthetic Then FlagStr := FlagStr + 'synthetic ';
-  
+
   WriteLn('Flags: ', FlagStr, '($', HexWord(ClassInfo.AccessFlags), ')');
   WriteLn('This:  ', ClassInfo.ThisClass);
   WriteLn('       ', InternalToJavaName(ClassInfo.ThisClass));
   WriteLn('Super: ', ClassInfo.SuperClass);
-  
+
   If ClassInfo.InterfaceCount > 0 Then Begin
     WriteLn('Interfaces (', ClassInfo.InterfaceCount, '):');
     For I := 0 to ClassInfo.InterfaceCount - 1 Do
       WriteLn('  ', I + 1, '. ', ClassInfo.Interfaces[I]);
   End;
-  
+
   If ClassInfo.SourceFile <> '' Then
     WriteLn('Source: ', ClassInfo.SourceFile);
 End;
@@ -2669,13 +2669,13 @@ Begin
   Result_ := '';
   ArrayDim := 0;
   P := 1;
-  
+
   { Compter les dimensions de tableau }
   While (P <= Length(Desc)) And (Desc[P] = '[') Do Begin
     Inc(ArrayDim);
     Inc(P);
   End;
-  
+
   If P <= Length(Desc) Then Begin
     Case Desc[P] of
       'V': Result_ := 'void';
@@ -2706,13 +2706,13 @@ Begin
     End;
   End Else
     Result_ := 'unknown';
-  
+
   { Ajouter les dimensions de tableau }
   While ArrayDim > 0 Do Begin
     Result_ := Result_ + '[]';
     Dec(ArrayDim);
   End;
-  
+
   DecodeTypeDescriptor := Result_;
 End;
 
@@ -2726,13 +2726,13 @@ Begin
   Result_ := '';
   ArrayDim := 0;
   P := 1;
-  
+
   { Compter les dimensions de tableau }
   While (P <= Length(Desc)) And (Desc[P] = '[') Do Begin
     Inc(ArrayDim);
     Inc(P);
   End;
-  
+
   If P <= Length(Desc) Then Begin
     Case Desc[P] of
       'V': Result_ := 'void';
@@ -2760,13 +2760,13 @@ Begin
     End;
   End Else
     Result_ := 'unknown';
-  
+
   { Ajouter les dimensions de tableau }
   While ArrayDim > 0 Do Begin
     Result_ := Result_ + '[]';
     Dec(ArrayDim);
   End;
-  
+
   DecodeTypeDescriptorFull := Result_;
 End;
 
@@ -2803,14 +2803,14 @@ Var
   ConstIdx, SigIdx: Word;
 Begin
   AttrCount := ReadU2;
-  
+
   For I := 1 to AttrCount Do Begin
     AttrNameIdx := ReadU2;
     AttrLen := ReadU4;
-    
+
     { Resoudre le nom de l'attribut }
     AttrName := CPGetUtf8(AttrNameIdx);
-    
+
     If AttrName = 'ConstantValue' Then Begin
       { Attribut ConstantValue : index U2 vers la valeur }
       ConstIdx := ReadU2;
@@ -2846,26 +2846,26 @@ Var
 Begin
   Count := ReadU2;
   FieldCount := Count;
-  
+
   If Count > MAX_FIELDS Then Begin
     Warning('Trop de champs (' + IntToStr_(Count) + '), limite = ' + IntToStr_(MAX_FIELDS));
     Count := MAX_FIELDS;
   End;
-  
+
   If Count = 0 Then Exit;
-  
+
   For I := 0 to Count - 1 Do Begin
     { Lire les informations de base du champ }
     AccessFlags := ReadU2;
     NameIdx := ReadU2;
     DescIdx := ReadU2;
-    
+
     { Stocker dans la structure }
     Fields[I].AccessFlags := AccessFlags;
     Fields[I].Name := CPGetUtf8(NameIdx);
     Fields[I].Descriptor := CPGetUtf8(DescIdx);
     Fields[I].JavaType := DecodeTypeDescriptor(Fields[I].Descriptor);
-    
+
     { Decoder les flags d'acces }
     Fields[I].IsPublic    := (AccessFlags And ACC_PUBLIC) <> 0;
     Fields[I].IsPrivate   := (AccessFlags And ACC_PRIVATE) <> 0;
@@ -2876,13 +2876,13 @@ Begin
     Fields[I].IsTransient := (AccessFlags And ACC_TRANSIENT) <> 0;
     Fields[I].IsSynthetic := (AccessFlags And ACC_SYNTHETIC) <> 0;
     Fields[I].IsEnum      := (AccessFlags And ACC_ENUM) <> 0;
-    
+
     { Initialiser les attributs }
     Fields[I].ConstValue    := '';
     Fields[I].HasConstValue := False;
     Fields[I].IsDeprecated  := False;
     Fields[I].Signature     := '';
-    
+
     { Lire les attributs du champ }
     ReadFieldAttributes(Fields[I]);
   End;
@@ -2897,12 +2897,12 @@ Begin
   If Field.IsPublic Then S := S + 'public '
   Else If Field.IsPrivate Then S := S + 'private '
   Else If Field.IsProtected Then S := S + 'protected ';
-  
+
   If Field.IsStatic Then S := S + 'static ';
   If Field.IsFinal Then S := S + 'final ';
   If Field.IsVolatile Then S := S + 'volatile ';
   If Field.IsTransient Then S := S + 'transient ';
-  
+
   GetFieldAccessStr := S;
 End;
 
@@ -2924,13 +2924,13 @@ Var
   FlagStr: String;
 Begin
   WriteLn('=== Fields (', FieldCount, ') ===');
-  
+
   For I := 0 to FieldCount - 1 Do Begin
     WriteLn('Field #', I, ':');
     WriteLn('  Name:       ', Fields[I].Name);
     WriteLn('  Descriptor: ', Fields[I].Descriptor);
     WriteLn('  Type:       ', Fields[I].JavaType);
-    
+
     { Construire la chaine des flags }
     FlagStr := '';
     If Fields[I].IsPublic Then FlagStr := FlagStr + 'public ';
@@ -2942,16 +2942,16 @@ Begin
     If Fields[I].IsTransient Then FlagStr := FlagStr + 'transient ';
     If Fields[I].IsSynthetic Then FlagStr := FlagStr + 'synthetic ';
     If Fields[I].IsEnum Then FlagStr := FlagStr + 'enum ';
-    
+
     WriteLn('  Flags:      ', FlagStr, '($', HexWord(Fields[I].AccessFlags), ')');
-    
+
     If Fields[I].HasConstValue Then
       WriteLn('  ConstValue: ', Fields[I].ConstValue);
     If Fields[I].IsDeprecated Then
       WriteLn('  Deprecated: true');
     If Fields[I].Signature <> '' Then
       WriteLn('  Signature:  ', Fields[I].Signature);
-    
+
     WriteLn('  Java:       ', FieldToJavaString(Fields[I]));
     WriteLn;
   End;
@@ -3014,7 +3014,7 @@ Begin
   P := 1;
   Len := Length(Desc);
   InParams := False;
-  
+
   While P <= Len Do Begin
     If Desc[P] = '(' Then Begin
       InParams := True;
@@ -3031,9 +3031,9 @@ Begin
         Inc(ArrayDim);
         Inc(P);
       End;
-      
+
       If P > Len Then Break;
-      
+
       TypeStr := '';
       Case Desc[P] of
         'V': Begin TypeStr := 'void'; Inc(P); End;
@@ -3061,13 +3061,13 @@ Begin
       Else
         Inc(P); { Caractere inconnu, on saute }
       End;
-      
+
       { Ajouter les dimensions de tableau }
       While ArrayDim > 0 Do Begin
         TypeStr := TypeStr + '[]';
         Dec(ArrayDim);
       End;
-      
+
       If TypeStr <> '' Then Begin
         If InParams Then Begin
           If ParamCount < MAX_PARAMS Then Begin
@@ -3109,18 +3109,18 @@ Var
   ExcCount, ExcIdx, SigIdx: Word;
 Begin
   AttrCount := ReadU2;
-  
+
   For I := 1 to AttrCount Do Begin
     AttrNameIdx := ReadU2;
     AttrLen := ReadU4;
     AttrName := CPGetUtf8(AttrNameIdx);
-    
+
     If AttrName = 'Code' Then Begin
       { Lire MaxStack, MaxLocals, CodeLen, code, exc_table, sub_attrs }
       M.MaxStack := ReadU2;
       M.MaxLocals := ReadU2;
       M.CodeLen := ReadU4;
-      
+
       If M.CodeLen > 0 Then Begin
         If M.CodeLen > MAX_CODE_SIZE Then Begin
           Warning('Code trop grand');
@@ -3133,7 +3133,7 @@ Begin
           BlockRead(ClassFile, M.Code^, M.CodeLen);
         End;
       End;
-      
+
       { Lire la table des exceptions }
       ExcCount := ReadU2;
       M.ExcCount := ExcCount;
@@ -3156,7 +3156,7 @@ Begin
         End;
         M.ExcCount := MAX_EXCEPTIONS;
       End;
-      
+
       { Lire les sous-attributs du Code (LineNumberTable, LocalVariableTable) }
       ReadCodeSubAttributes(M);
     End
@@ -3201,12 +3201,12 @@ Var
   NameIdx, DescIdx: Word;
 Begin
   SubAttrCount := ReadU2;
-  
+
   For I := 1 to SubAttrCount Do Begin
     SubAttrNameIdx := ReadU2;
     SubAttrLen := ReadU4;
     SubAttrName := CPGetUtf8(SubAttrNameIdx);
-    
+
     If SubAttrName = 'LineNumberTable' Then Begin
       TableLen := ReadU2;
       M.LineCount := TableLen;
@@ -3258,28 +3258,28 @@ Var
 Begin
   Count := ReadU2;
   MethodCount := Count;
-  
+
   If Count > MAX_METHODS Then Begin
     Warning('Trop de methodes (' + IntToStr_(Count) + '), limite = ' + IntToStr_(MAX_METHODS));
     Count := MAX_METHODS;
   End;
-  
+
   If Count = 0 Then Exit;
-  
+
   For I := 0 to Count - 1 Do Begin
     { Initialiser la methode }
     InitMethod(Methods[I]);
-    
+
     { Lire les informations de base }
     AccessFlags := ReadU2;
     NameIdx := ReadU2;
     DescIdx := ReadU2;
-    
+
     Methods[I].AccessFlags := AccessFlags;
     Methods[I].Name := CPGetUtf8(NameIdx);
     Methods[I].Descriptor := CPGetUtf8(DescIdx);
     Methods[I].JavaSignature := BuildJavaSignature(Methods[I].Name, Methods[I].Descriptor);
-    
+
     { Decoder les flags d'acces }
     Methods[I].IsPublic       := (AccessFlags And ACC_PUBLIC) <> 0;
     Methods[I].IsPrivate      := (AccessFlags And ACC_PRIVATE) <> 0;
@@ -3293,7 +3293,7 @@ Begin
     Methods[I].IsBridge       := (AccessFlags And $0040) <> 0; { ACC_BRIDGE }
     Methods[I].IsVarArgs      := (AccessFlags And $0080) <> 0; { ACC_VARARGS }
     Methods[I].IsSynthetic    := (AccessFlags And ACC_SYNTHETIC) <> 0;
-    
+
     { Lire les attributs de la methode }
     ReadMethodAttributes(Methods[I]);
   End;
@@ -3309,10 +3309,10 @@ Begin
     GetLineNumber := -1;
     Exit;
   End;
-  
+
   BestLine := -1;
   BestPC := -1;
-  
+
   { Trouver l'entree avec le plus grand StartPC <= PC }
   For I := 0 to M.LineCount - 1 Do Begin
     If (M.LineTable[I].StartPC <= PC) And
@@ -3321,7 +3321,7 @@ Begin
       BestLine := M.LineTable[I].LineNum;
     End;
   End;
-  
+
   GetLineNumber := BestLine;
 End;
 
@@ -3334,14 +3334,14 @@ Begin
   If M.IsPublic Then S := S + 'public '
   Else If M.IsPrivate Then S := S + 'private '
   Else If M.IsProtected Then S := S + 'protected ';
-  
+
   If M.IsStatic Then S := S + 'static ';
   If M.IsFinal Then S := S + 'final ';
   If M.IsSynchronized Then S := S + 'synchronized ';
   If M.IsNative Then S := S + 'native ';
   If M.IsAbstract Then S := S + 'abstract ';
   If M.IsStrict Then S := S + 'strictfp ';
-  
+
   GetMethodAccessStr := S;
 End;
 
@@ -3352,7 +3352,7 @@ Var
   I: Integer;
 Begin
   S := GetMethodAccessStr(M) + M.JavaSignature;
-  
+
   { Ajouter les exceptions throws }
   If M.ThrowsCount > 0 Then Begin
     S := S + ' throws ';
@@ -3361,7 +3361,7 @@ Begin
       S := S + M.Throws[I];
     End;
   End;
-  
+
   MethodToJavaString := S;
 End;
 
@@ -3372,13 +3372,13 @@ Var
   FlagStr: String;
 Begin
   WriteLn('=== Methods (', MethodCount, ') ===');
-  
+
   For I := 0 to MethodCount - 1 Do Begin
     WriteLn('Method #', I, ':');
     WriteLn('  Name:       ', Methods[I].Name);
     WriteLn('  Descriptor: ', Methods[I].Descriptor);
     WriteLn('  Signature:  ', Methods[I].JavaSignature);
-    
+
     { Construire la chaine des flags }
     FlagStr := '';
     If Methods[I].IsPublic Then FlagStr := FlagStr + 'public ';
@@ -3393,9 +3393,9 @@ Begin
     If Methods[I].IsBridge Then FlagStr := FlagStr + 'bridge ';
     If Methods[I].IsVarArgs Then FlagStr := FlagStr + 'varargs ';
     If Methods[I].IsSynthetic Then FlagStr := FlagStr + 'synthetic ';
-    
+
     WriteLn('  Flags:      ', FlagStr, '($', HexWord(Methods[I].AccessFlags), ')');
-    
+
     If Not Methods[I].IsNative And Not Methods[I].IsAbstract Then Begin
       WriteLn('  MaxStack:   ', Methods[I].MaxStack);
       WriteLn('  MaxLocals:  ', Methods[I].MaxLocals);
@@ -3404,7 +3404,7 @@ Begin
       WriteLn('  LineTable:  ', Methods[I].LineCount, ' entries');
       WriteLn('  LocalVars:  ', Methods[I].LocalCount, ' entries');
     End;
-    
+
     If Methods[I].ThrowsCount > 0 Then Begin
       Write('  Throws:     ');
       For J := 0 to Methods[I].ThrowsCount - 1 Do Begin
@@ -3413,12 +3413,12 @@ Begin
       End;
       WriteLn;
     End;
-    
+
     If Methods[I].IsDeprecated Then
       WriteLn('  Deprecated: true');
     If Methods[I].Signature <> '' Then
       WriteLn('  GenSig:     ', Methods[I].Signature);
-    
+
     WriteLn('  Java:       ', MethodToJavaString(Methods[I]));
     WriteLn;
   End;
@@ -3487,7 +3487,7 @@ Begin
     OP_LDC:           GetInstrMnemonic := 'ldc';
     OP_LDC_W:         GetInstrMnemonic := 'ldc_w';
     OP_LDC2_W:        GetInstrMnemonic := 'ldc2_w';
-    
+
     { Chargement variables locales }
     OP_ILOAD:         GetInstrMnemonic := 'iload';
     OP_LLOAD:         GetInstrMnemonic := 'lload';
@@ -3514,7 +3514,7 @@ Begin
     OP_ALOAD_1:       GetInstrMnemonic := 'aload_1';
     OP_ALOAD_2:       GetInstrMnemonic := 'aload_2';
     OP_ALOAD_3:       GetInstrMnemonic := 'aload_3';
-    
+
     { Chargement depuis tableau }
     OP_IALOAD:        GetInstrMnemonic := 'iaload';
     OP_LALOAD:        GetInstrMnemonic := 'laload';
@@ -3524,7 +3524,7 @@ Begin
     OP_BALOAD:        GetInstrMnemonic := 'baload';
     OP_CALOAD:        GetInstrMnemonic := 'caload';
     OP_SALOAD:        GetInstrMnemonic := 'saload';
-    
+
     { Stockage variables locales }
     OP_ISTORE:        GetInstrMnemonic := 'istore';
     OP_LSTORE:        GetInstrMnemonic := 'lstore';
@@ -3551,7 +3551,7 @@ Begin
     OP_ASTORE_1:      GetInstrMnemonic := 'astore_1';
     OP_ASTORE_2:      GetInstrMnemonic := 'astore_2';
     OP_ASTORE_3:      GetInstrMnemonic := 'astore_3';
-    
+
     { Stockage dans tableau }
     OP_IASTORE:       GetInstrMnemonic := 'iastore';
     OP_LASTORE:       GetInstrMnemonic := 'lastore';
@@ -3561,7 +3561,7 @@ Begin
     OP_BASTORE:       GetInstrMnemonic := 'bastore';
     OP_CASTORE:       GetInstrMnemonic := 'castore';
     OP_SASTORE:       GetInstrMnemonic := 'sastore';
-    
+
     { Manipulation de pile }
     OP_POP:           GetInstrMnemonic := 'pop';
     OP_POP2:          GetInstrMnemonic := 'pop2';
@@ -3572,7 +3572,7 @@ Begin
     OP_DUP2_X1:       GetInstrMnemonic := 'dup2_x1';
     OP_DUP2_X2:       GetInstrMnemonic := 'dup2_x2';
     OP_SWAP:          GetInstrMnemonic := 'swap';
-    
+
     { Arithmetique }
     OP_IADD:          GetInstrMnemonic := 'iadd';
     OP_LADD:          GetInstrMnemonic := 'ladd';
@@ -3611,7 +3611,7 @@ Begin
     OP_IXOR:          GetInstrMnemonic := 'ixor';
     OP_LXOR:          GetInstrMnemonic := 'lxor';
     OP_IINC:          GetInstrMnemonic := 'iinc';
-    
+
     { Conversion }
     OP_I2L:           GetInstrMnemonic := 'i2l';
     OP_I2F:           GetInstrMnemonic := 'i2f';
@@ -3628,14 +3628,14 @@ Begin
     OP_I2B:           GetInstrMnemonic := 'i2b';
     OP_I2C:           GetInstrMnemonic := 'i2c';
     OP_I2S:           GetInstrMnemonic := 'i2s';
-    
+
     { Comparaison }
     OP_LCMP:          GetInstrMnemonic := 'lcmp';
     OP_FCMPL:         GetInstrMnemonic := 'fcmpl';
     OP_FCMPG:         GetInstrMnemonic := 'fcmpg';
     OP_DCMPL:         GetInstrMnemonic := 'dcmpl';
     OP_DCMPG:         GetInstrMnemonic := 'dcmpg';
-    
+
     { Branchement conditionnel }
     OP_IFEQ:          GetInstrMnemonic := 'ifeq';
     OP_IFNE:          GetInstrMnemonic := 'ifne';
@@ -3651,14 +3651,14 @@ Begin
     OP_IF_ICMPLE:     GetInstrMnemonic := 'if_icmple';
     OP_IF_ACMPEQ:     GetInstrMnemonic := 'if_acmpeq';
     OP_IF_ACMPNE:     GetInstrMnemonic := 'if_acmpne';
-    
+
     { Branchement inconditionnel }
     OP_GOTO:          GetInstrMnemonic := 'goto';
     OP_JSR:           GetInstrMnemonic := 'jsr';
     OP_RET:           GetInstrMnemonic := 'ret';
     OP_TABLESWITCH:   GetInstrMnemonic := 'tableswitch';
     OP_LOOKUPSWITCH:  GetInstrMnemonic := 'lookupswitch';
-    
+
     { Retour }
     OP_IRETURN:       GetInstrMnemonic := 'ireturn';
     OP_LRETURN:       GetInstrMnemonic := 'lreturn';
@@ -3666,35 +3666,35 @@ Begin
     OP_DRETURN:       GetInstrMnemonic := 'dreturn';
     OP_ARETURN:       GetInstrMnemonic := 'areturn';
     OP_RETURN:        GetInstrMnemonic := 'return';
-    
+
     { Acces aux champs }
     OP_GETSTATIC:     GetInstrMnemonic := 'getstatic';
     OP_PUTSTATIC:     GetInstrMnemonic := 'putstatic';
     OP_GETFIELD:      GetInstrMnemonic := 'getfield';
     OP_PUTFIELD:      GetInstrMnemonic := 'putfield';
-    
+
     { Invocation de methode }
     OP_INVOKEVIRTUAL:   GetInstrMnemonic := 'invokevirtual';
     OP_INVOKESPECIAL:   GetInstrMnemonic := 'invokespecial';
     OP_INVOKESTATIC:    GetInstrMnemonic := 'invokestatic';
     OP_INVOKEINTERFACE: GetInstrMnemonic := 'invokeinterface';
     OP_INVOKEDYNAMIC:   GetInstrMnemonic := 'invokedynamic';
-    
+
     { Creation d'objets }
     OP_NEW:             GetInstrMnemonic := 'new';
     OP_NEWARRAY:        GetInstrMnemonic := 'newarray';
     OP_ANEWARRAY:       GetInstrMnemonic := 'anewarray';
     OP_ARRAYLENGTH:     GetInstrMnemonic := 'arraylength';
-    
+
     { Exception et types }
     OP_ATHROW:          GetInstrMnemonic := 'athrow';
     OP_CHECKCAST:       GetInstrMnemonic := 'checkcast';
     OP_INSTANCEOF:      GetInstrMnemonic := 'instanceof';
-    
+
     { Synchronisation }
     OP_MONITORENTER:    GetInstrMnemonic := 'monitorenter';
     OP_MONITOREXIT:     GetInstrMnemonic := 'monitorexit';
-    
+
     { Speciaux }
     OP_WIDE:            GetInstrMnemonic := 'wide';
     OP_MULTIANEWARRAY:  GetInstrMnemonic := 'multianewarray';
@@ -3702,12 +3702,12 @@ Begin
     OP_IFNONNULL:       GetInstrMnemonic := 'ifnonnull';
     OP_GOTO_W:          GetInstrMnemonic := 'goto_w';
     OP_JSR_W:           GetInstrMnemonic := 'jsr_w';
-    
+
     { Reserves }
     OP_BREAKPOINT:      GetInstrMnemonic := 'breakpoint';
     OP_IMPDEP1:         GetInstrMnemonic := 'impdep1';
     OP_IMPDEP2:         GetInstrMnemonic := 'impdep2';
-    
+
   Else
     GetInstrMnemonic := 'unknown_' + IntToStr_(Op);
   End;
@@ -3753,7 +3753,7 @@ Begin
   B2 := GetCodeByte(Code, Offset + 1);
   B3 := GetCodeByte(Code, Offset + 2);
   B4 := GetCodeByte(Code, Offset + 3);
-  GetCodeInt := LongInt(LongInt(B1) shl 24 or LongInt(B2) shl 16 or 
+  GetCodeInt := LongInt(LongInt(B1) shl 24 or LongInt(B2) shl 16 or
                         LongInt(B3) shl 8 or LongInt(B4));
 End;
 
@@ -3765,7 +3765,7 @@ Var
 Begin
   Case Op Of
     { Instructions sans operande (1 octet) }
-    OP_NOP, OP_ACONST_NULL, 
+    OP_NOP, OP_ACONST_NULL,
     OP_ICONST_M1, OP_ICONST_0, OP_ICONST_1, OP_ICONST_2, OP_ICONST_3, OP_ICONST_4, OP_ICONST_5,
     OP_LCONST_0, OP_LCONST_1,
     OP_FCONST_0, OP_FCONST_1, OP_FCONST_2,
@@ -3794,14 +3794,14 @@ Begin
     OP_IRETURN, OP_LRETURN, OP_FRETURN, OP_DRETURN, OP_ARETURN, OP_RETURN,
     OP_ARRAYLENGTH, OP_ATHROW, OP_MONITORENTER, OP_MONITOREXIT:
       GetInstrSize := 1;
-    
+
     { Instructions avec 1 octet d'operande (2 octets total) }
-    OP_BIPUSH, OP_LDC, 
+    OP_BIPUSH, OP_LDC,
     OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD,
     OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE,
     OP_RET, OP_NEWARRAY:
       GetInstrSize := 2;
-    
+
     { Instructions avec 2 octets d'operande (3 octets total) }
     OP_SIPUSH, OP_LDC_W, OP_LDC2_W, OP_IINC,
     OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
@@ -3813,17 +3813,17 @@ Begin
     OP_NEW, OP_ANEWARRAY, OP_CHECKCAST, OP_INSTANCEOF,
     OP_IFNULL, OP_IFNONNULL:
       GetInstrSize := 3;
-    
+
     { Instructions avec 3+ octets d'operande }
     OP_MULTIANEWARRAY:
       GetInstrSize := 4;
-    
+
     OP_INVOKEINTERFACE, OP_INVOKEDYNAMIC:
       GetInstrSize := 5;
-    
+
     OP_GOTO_W, OP_JSR_W:
       GetInstrSize := 5;
-    
+
     { wide : depend du sous-opcode }
     OP_WIDE: Begin
       SubOp := GetCodeByte(Code, PC + 1);
@@ -3832,7 +3832,7 @@ Begin
       Else
         GetInstrSize := 4; { wide load/store index }
     End;
-    
+
     { tableswitch : taille variable avec padding }
     OP_TABLESWITCH: Begin
       { Padding pour aligner sur 4 octets }
@@ -3844,7 +3844,7 @@ Begin
       { Taille = 1 + padding + 12 + (high - low + 1) * 4 }
       GetInstrSize := 1 + Padding + 12 + (HighVal - LowVal + 1) * 4;
     End;
-    
+
     { lookupswitch : taille variable avec padding }
     OP_LOOKUPSWITCH: Begin
       { Padding pour aligner sur 4 octets }
@@ -3855,7 +3855,7 @@ Begin
       { Taille = 1 + padding + 8 + npairs * 8 }
       GetInstrSize := 1 + Padding + 8 + NPairs * 8;
     End;
-    
+
   Else
     { Opcode inconnu : on suppose 1 octet }
     GetInstrSize := 1;
@@ -3874,19 +3874,19 @@ Var
 Begin
   If Instructions = Nil Then AllocInstructions;
   InstrCount := 0;
-  
+
   If (M.Code = Nil) or (M.CodeLen = 0) Then Exit;
-  
+
   PC := 0;
   While PC < M.CodeLen Do Begin
     If InstrCount >= MAX_INSTRUCTIONS Then Begin
       Warning('Trop d''instructions dans la methode ' + M.Name);
       Exit;
     End;
-    
+
     Op := GetCodeByte(M.Code, PC);
     Size := GetInstrSize(Op, PC, M.Code);
-    
+
     { Initialiser l'instruction }
     Instr.PC := PC;
     Instr.Opcode := Op;
@@ -3897,82 +3897,82 @@ Begin
     Instr.Size := Size;
     Instr.CpRef := '';
     Instr.LineNum := GetLineNumber(M, PC);
-    
+
     { Decoder les operandes selon l'opcode }
     Case Op Of
       { Operande byte signe }
       OP_BIPUSH:
         Instr.Op1 := ShortInt(GetCodeByte(M.Code, PC + 1));
-      
+
       { Operande short signe }
       OP_SIPUSH:
         Instr.Op1 := GetCodeShort(M.Code, PC + 1);
-      
+
       { Index CP 8-bit }
       OP_LDC:
         Instr.Op1 := GetCodeByte(M.Code, PC + 1);
-      
+
       { Index CP 16-bit }
       OP_LDC_W, OP_LDC2_W, OP_NEW, OP_ANEWARRAY, OP_CHECKCAST, OP_INSTANCEOF: Begin
         Idx := GetCodeWord(M.Code, PC + 1);
         Instr.Op1 := Idx;
         Instr.CpRef := CPGetClassName(Idx);
       End;
-      
+
       { Index variable locale 8-bit }
       OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD,
       OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE,
       OP_RET:
         Instr.Op1 := GetCodeByte(M.Code, PC + 1);
-      
+
       { iinc : index + const }
       OP_IINC: Begin
         Instr.Op1 := GetCodeByte(M.Code, PC + 1);      { index }
         Instr.Op2 := ShortInt(GetCodeByte(M.Code, PC + 2)); { const }
       End;
-      
+
       { newarray : type primitif }
       OP_NEWARRAY:
         Instr.Op1 := GetCodeByte(M.Code, PC + 1);
-      
+
       { Branchement conditionnel/inconditionnel 16-bit }
       OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
       OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT, OP_IF_ICMPGE, OP_IF_ICMPGT, OP_IF_ICMPLE,
       OP_IF_ACMPEQ, OP_IF_ACMPNE, OP_IFNULL, OP_IFNONNULL,
       OP_GOTO, OP_JSR:
         Instr.Op1 := LongInt(PC) + GetCodeShort(M.Code, PC + 1);
-      
+
       { Branchement 32-bit }
       OP_GOTO_W, OP_JSR_W:
         Instr.Op1 := LongInt(PC) + GetCodeInt(M.Code, PC + 1);
-      
+
       { Acces aux champs }
       OP_GETSTATIC, OP_PUTSTATIC, OP_GETFIELD, OP_PUTFIELD: Begin
         Idx := GetCodeWord(M.Code, PC + 1);
         Instr.Op1 := Idx;
         Instr.CpRef := CPGetMemberRefStr(Idx);
       End;
-      
+
       { Invocation de methode }
       OP_INVOKEVIRTUAL, OP_INVOKESPECIAL, OP_INVOKESTATIC: Begin
         Idx := GetCodeWord(M.Code, PC + 1);
         Instr.Op1 := Idx;
         Instr.CpRef := CPGetMemberRefStr(Idx);
       End;
-      
+
       OP_INVOKEINTERFACE: Begin
         Idx := GetCodeWord(M.Code, PC + 1);
         Instr.Op1 := Idx;
         Instr.Op2 := GetCodeByte(M.Code, PC + 3);  { count }
         Instr.CpRef := CPGetMemberRefStr(Idx);
       End;
-      
+
       OP_INVOKEDYNAMIC: Begin
         Idx := GetCodeWord(M.Code, PC + 1);
         Instr.Op1 := Idx;
         { 2 octets de zeros apres }
       End;
-      
+
       { multianewarray }
       OP_MULTIANEWARRAY: Begin
         Idx := GetCodeWord(M.Code, PC + 1);
@@ -3980,7 +3980,7 @@ Begin
         Instr.Op2 := GetCodeByte(M.Code, PC + 3);  { dimensions }
         Instr.CpRef := CPGetClassName(Idx);
       End;
-      
+
       { wide }
       OP_WIDE: Begin
         SubOp := GetCodeByte(M.Code, PC + 1);
@@ -3989,7 +3989,7 @@ Begin
         If SubOp = OP_IINC Then
           Instr.Op2 := GetCodeShort(M.Code, PC + 4); { const }
       End;
-      
+
       { tableswitch }
       OP_TABLESWITCH: Begin
         Padding := 4 - ((PC + 1) mod 4);
@@ -4001,7 +4001,7 @@ Begin
         Instr.Op2 := HighVal;
         Instr.Op3 := LongInt(PC) + DefOff;
       End;
-      
+
       { lookupswitch }
       OP_LOOKUPSWITCH: Begin
         Padding := 4 - ((PC + 1) mod 4);
@@ -4012,11 +4012,11 @@ Begin
         Instr.Op2 := LongInt(PC) + DefOff;
       End;
     End;
-    
+
     { Ajouter l'instruction au tableau }
     Instructions^[InstrCount] := Instr;
     Inc(InstrCount);
-    
+
     { Avancer au prochain opcode }
     PC := PC + LongWord(Size);
   End;
@@ -4032,44 +4032,44 @@ Begin
   For I := 0 to InstrCount - 1 Do Begin
     Instr := Instructions^[I];
     Write(HexWord(Word(Instr.PC)), ': ', Instr.Mnemonic);
-    
+
     Case Instr.Opcode Of
       OP_BIPUSH, OP_SIPUSH,
       OP_ILOAD, OP_LLOAD, OP_FLOAD, OP_DLOAD, OP_ALOAD,
       OP_ISTORE, OP_LSTORE, OP_FSTORE, OP_DSTORE, OP_ASTORE,
       OP_RET, OP_NEWARRAY, OP_LDC:
         Write(' ', Instr.Op1);
-      
+
       OP_IINC:
         Write(' ', Instr.Op1, ' ', Instr.Op2);
-      
+
       OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
       OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT, OP_IF_ICMPGE, OP_IF_ICMPGT, OP_IF_ICMPLE,
       OP_IF_ACMPEQ, OP_IF_ACMPNE, OP_IFNULL, OP_IFNONNULL,
       OP_GOTO, OP_JSR, OP_GOTO_W, OP_JSR_W:
         Write(' -> ', HexWord(Word(Instr.Op1)));
-      
+
       OP_LDC_W, OP_LDC2_W, OP_NEW, OP_ANEWARRAY, OP_CHECKCAST, OP_INSTANCEOF,
       OP_GETSTATIC, OP_PUTSTATIC, OP_GETFIELD, OP_PUTFIELD,
       OP_INVOKEVIRTUAL, OP_INVOKESPECIAL, OP_INVOKESTATIC:
         Write(' #', Instr.Op1, ' // ', Instr.CpRef);
-      
+
       OP_INVOKEINTERFACE:
         Write(' #', Instr.Op1, ' ', Instr.Op2, ' // ', Instr.CpRef);
-      
+
       OP_MULTIANEWARRAY:
         Write(' #', Instr.Op1, ' ', Instr.Op2, ' // ', Instr.CpRef);
-      
+
       OP_TABLESWITCH:
         Write(' low=', Instr.Op1, ' high=', Instr.Op2, ' default=', HexWord(Word(Instr.Op3)));
-      
+
       OP_LOOKUPSWITCH:
         Write(' npairs=', Instr.Op1, ' default=', HexWord(Word(Instr.Op2)));
     End;
-    
+
     If Instr.LineNum > 0 Then
       Write(' ; line ', Instr.LineNum);
-    
+
     WriteLn;
   End;
   WriteLn;
@@ -4204,7 +4204,7 @@ Var
 Begin
   IsBranchTarget := False;
   If Instructions = Nil Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     { Branchements conditionnels et inconditionnels }
@@ -4284,19 +4284,19 @@ Begin
     IsBlockLeader := True;
     Exit;
   End;
-  
+
   { Cible de branchement }
   If IsBranchTarget(PC) Then Begin
     IsBlockLeader := True;
     Exit;
   End;
-  
+
   { Debut de gestionnaire d'exception }
   If IsExceptionHandler(M, PC) Then Begin
     IsBlockLeader := True;
     Exit;
   End;
-  
+
   IsBlockLeader := False;
 End;
 
@@ -4307,7 +4307,7 @@ Var
 Begin
   FindCFGNodeByPC := -1;
   If CFGNodes = Nil Then Exit;
-  
+
   For I := 0 to CFGNodeCount - 1 Do Begin
     If (PC >= CFGNodes^[I].StartPC) and (PC <= CFGNodes^[I].EndPC) Then Begin
       FindCFGNodeByPC := I;
@@ -4323,7 +4323,7 @@ Var
 Begin
   FindCFGNodeByStartPC := -1;
   If CFGNodes = Nil Then Exit;
-  
+
   For I := 0 to CFGNodeCount - 1 Do Begin
     If CFGNodes^[I].StartPC = PC Then Begin
       FindCFGNodeByStartPC := I;
@@ -4344,7 +4344,7 @@ Var
   SuccIdx: Integer;
   Found: Boolean;
   E: Integer;
-  
+
   Procedure AddLeader(P: LongWord);
   Var
     L: Integer;
@@ -4363,7 +4363,7 @@ Var
       Inc(LeaderCount);
     End;
   End;
-  
+
   Procedure SortLeaders;
   Var
     A, B: Integer;
@@ -4379,7 +4379,7 @@ Var
       End;
     End;
   End;
-  
+
 Begin
   { Initialiser }
   AllocCFG;
@@ -4387,19 +4387,19 @@ Begin
   CFGUnreachable := 0;
   CFGBackEdges := 0;
   LeaderCount := 0;
-  
+
   If (Instructions = Nil) or (InstrCount = 0) Then Exit;
-  
+
   { ===== PHASE 1 : Identifier tous les leaders de blocs de base ===== }
-  
+
   { PC=0 est toujours un leader (point d'entree) }
   AddLeader(0);
-  
+
   { Parcourir les instructions pour trouver les leaders }
   For I := 0 to InstrCount - 1 Do Begin
     PC := Instructions^[I].PC;
     Op := Instructions^[I].Opcode;
-    
+
     { Si c'est un branchement, la cible est un leader }
     If (Op >= OP_IFEQ) and (Op <= OP_IF_ACMPNE) Then Begin
       Target := LongInt(PC) + Instructions^[I].Op1;
@@ -4445,29 +4445,29 @@ Begin
       If (I + 1 < InstrCount) Then AddLeader(NextPC);
     End;
   End;
-  
+
   { Ajouter les debuts de gestionnaires d'exception }
   For E := 0 to M.ExcCount - 1 Do Begin
     AddLeader(M.ExcTable[E].HandlerPC);
   End;
-  
+
   { Trier les leaders par PC croissant }
   SortLeaders;
-  
+
   { ===== PHASE 2 : Creer les noeuds CFG ===== }
-  
+
   For I := 0 to LeaderCount - 1 Do Begin
     If CFGNodeCount >= MAX_CFG_NODES Then Break;
-    
+
     InitCFGNode(CFGNodes^[CFGNodeCount]);
     CFGNodes^[CFGNodeCount].ID := CFGNodeCount;
     CFGNodes^[CFGNodeCount].StartPC := Leaders[I];
-    
+
     { Trouver le EndPC (debut du prochain bloc - 1, ou fin du code) }
     If I < LeaderCount - 1 Then Begin
       { Trouver la derniere instruction avant le prochain leader }
       For J := InstrCount - 1 downto 0 Do Begin
-        If (Instructions^[J].PC >= Leaders[I]) and 
+        If (Instructions^[J].PC >= Leaders[I]) and
            (Instructions^[J].PC < Leaders[I+1]) Then Begin
           CFGNodes^[CFGNodeCount].EndPC := Instructions^[J].PC;
           Break;
@@ -4478,7 +4478,7 @@ Begin
       { Dernier bloc : va jusqu'a la fin du code }
       CFGNodes^[CFGNodeCount].EndPC := Instructions^[InstrCount-1].PC;
     End;
-    
+
     { Trouver InstStart et InstEnd }
     CFGNodes^[CFGNodeCount].InstStart := -1;
     CFGNodes^[CFGNodeCount].InstEnd := -1;
@@ -4490,29 +4490,29 @@ Begin
         CFGNodes^[CFGNodeCount].InstEnd := J;
       End;
     End;
-    
+
     { Marquer si c'est l'entree (PC=0) }
     CFGNodes^[CFGNodeCount].IsEntry := (Leaders[I] = 0);
-    
+
     { Marquer si c'est un gestionnaire d'exception }
     CFGNodes^[CFGNodeCount].IsException := IsExceptionHandler(M, Leaders[I]);
-    
+
     Inc(CFGNodeCount);
   End;
-  
+
   { ===== PHASE 3 : Lier les successeurs ===== }
-  
+
   For I := 0 to CFGNodeCount - 1 Do Begin
     If CFGNodes^[I].InstEnd < 0 Then Continue;
-    
+
     { Obtenir la derniere instruction du bloc }
     J := CFGNodes^[I].InstEnd;
     Op := Instructions^[J].Opcode;
     PC := Instructions^[J].PC;
-    
+
     { Marquer si c'est un bloc de sortie }
     CFGNodes^[I].IsExit := (Op >= OP_IRETURN) and (Op <= OP_RETURN);
-    
+
     { Determiner les successeurs selon le type d'instruction }
     If (Op >= OP_IFEQ) and (Op <= OP_IF_ACMPNE) Then Begin
       { Branchement conditionnel : 2 successeurs }
@@ -4592,9 +4592,9 @@ Begin
       End;
     End;
   End;
-  
+
   { ===== PHASE 4 : Calculer les predecesseurs ===== }
-  
+
   For I := 0 to CFGNodeCount - 1 Do Begin
     For J := 0 to CFGNodes^[I].SuccCount - 1 Do Begin
       SuccIdx := CFGNodes^[I].Succs[J];
@@ -4613,9 +4613,9 @@ Begin
   If CFGNodes = Nil Then Exit;
   If (NodeIdx < 0) or (NodeIdx >= CFGNodeCount) Then Exit;
   If CFGNodes^[NodeIdx].Visited Then Exit;
-  
+
   CFGNodes^[NodeIdx].Visited := True;
-  
+
   { Visiter tous les successeurs }
   For I := 0 to CFGNodes^[NodeIdx].SuccCount - 1 Do Begin
     SuccIdx := CFGNodes^[NodeIdx].Succs[I];
@@ -4633,12 +4633,12 @@ Begin
   CFGUnreachable := 0;
   If CFGNodes = Nil Then Exit;
   If CFGNodeCount = 0 Then Exit;
-  
+
   { Reinitialiser les flags Visited }
   For I := 0 to CFGNodeCount - 1 Do Begin
     CFGNodes^[I].Visited := False;
   End;
-  
+
   { Trouver le noeud d'entree (IsEntry=True ou premier noeud) }
   EntryNode := -1;
   For I := 0 to CFGNodeCount - 1 Do Begin
@@ -4648,17 +4648,17 @@ Begin
     End;
   End;
   If EntryNode < 0 Then EntryNode := 0;
-  
+
   { Parcours DFS depuis le noeud d'entree }
   CFGVisitDFS(EntryNode);
-  
+
   { Aussi visiter les gestionnaires d'exception (accessibles par exception) }
   For I := 0 to CFGNodeCount - 1 Do Begin
     If CFGNodes^[I].IsException and not CFGNodes^[I].Visited Then Begin
       CFGVisitDFS(I);
     End;
   End;
-  
+
   { Compter les blocs non visites (code mort) }
   For I := 0 to CFGNodeCount - 1 Do Begin
     If not CFGNodes^[I].Visited Then Begin
@@ -4673,17 +4673,17 @@ Var
   I, J, SuccIdx: Integer;
   DFSOrder: Array[0..MAX_CFG_NODES-1] of Integer;
   DFSCounter: Integer;
-  
+
   Procedure DFSNumbering(NodeIdx: Integer);
   Var
     K, S: Integer;
   Begin
     If (NodeIdx < 0) or (NodeIdx >= CFGNodeCount) Then Exit;
     If DFSOrder[NodeIdx] >= 0 Then Exit;
-    
+
     DFSOrder[NodeIdx] := DFSCounter;
     Inc(DFSCounter);
-    
+
     For K := 0 to CFGNodes^[NodeIdx].SuccCount - 1 Do Begin
       S := CFGNodes^[NodeIdx].Succs[K];
       If (S >= 0) and (S < CFGNodeCount) Then Begin
@@ -4691,18 +4691,18 @@ Var
       End;
     End;
   End;
-  
+
 Begin
   CFGBackEdges := 0;
   If CFGNodes = Nil Then Exit;
   If CFGNodeCount = 0 Then Exit;
-  
+
   { Initialiser le numerotage DFS }
   For I := 0 to CFGNodeCount - 1 Do Begin
     DFSOrder[I] := -1;
     CFGNodes^[I].IsBackEdge := False;
   End;
-  
+
   { Numeroter les noeuds en ordre DFS }
   DFSCounter := 0;
   For I := 0 to CFGNodeCount - 1 Do Begin
@@ -4711,7 +4711,7 @@ Begin
       Break;
     End;
   End;
-  
+
   { Une arete arriere va d'un noeud vers un noeud visite plus tot }
   For I := 0 to CFGNodeCount - 1 Do Begin
     For J := 0 to CFGNodes^[I].SuccCount - 1 Do Begin
@@ -4735,7 +4735,7 @@ Var
   I, J, P: Integer;
   Changed: Boolean;
   NewDom: Integer;
-  
+
   Function Intersect(B1, B2: Integer): Integer;
   Var
     Finger1, Finger2: Integer;
@@ -4758,11 +4758,11 @@ Var
     End;
     Intersect := Finger1;
   End;
-  
+
 Begin
   If CFGNodes = Nil Then Exit;
   If CFGNodeCount = 0 Then Exit;
-  
+
   { Initialiser : le noeud d'entree se domine lui-meme, les autres ont DomBy=-1 }
   For I := 0 to CFGNodeCount - 1 Do Begin
     If CFGNodes^[I].IsEntry Then
@@ -4770,16 +4770,16 @@ Begin
     Else
       CFGNodes^[I].DomBy := -1;
   End;
-  
+
   { Iterer jusqu'a convergence }
   Changed := True;
   While Changed Do Begin
     Changed := False;
-    
+
     For I := 0 to CFGNodeCount - 1 Do Begin
       If CFGNodes^[I].IsEntry Then Continue;
       If CFGNodes^[I].PredCount = 0 Then Continue;
-      
+
       { Trouver le premier predecesseur avec un dominateur calcule }
       NewDom := -1;
       For J := 0 to CFGNodes^[I].PredCount - 1 Do Begin
@@ -4789,9 +4789,9 @@ Begin
           Break;
         End;
       End;
-      
+
       If NewDom < 0 Then Continue;
-      
+
       { Intersection avec les autres predecesseurs }
       For J := 0 to CFGNodes^[I].PredCount - 1 Do Begin
         P := CFGNodes^[I].Preds[J];
@@ -4801,7 +4801,7 @@ Begin
           End;
         End;
       End;
-      
+
       If CFGNodes^[I].DomBy <> NewDom Then Begin
         CFGNodes^[I].DomBy := NewDom;
         Changed := True;
@@ -4819,22 +4819,22 @@ Begin
     WriteLn('CFG: (non alloue)');
     Exit;
   End;
-  
+
   WriteLn('=== CFG : ', CFGNodeCount, ' noeuds ===');
   WriteLn('Blocs inaccessibles: ', CFGUnreachable);
   WriteLn('Aretes arriere (boucles): ', CFGBackEdges);
   WriteLn;
-  
+
   For I := 0 to CFGNodeCount - 1 Do Begin
     Write('  [', I, '] PC ', CFGNodes^[I].StartPC, '-', CFGNodes^[I].EndPC);
     Write(' Inst[', CFGNodes^[I].InstStart, '-', CFGNodes^[I].InstEnd, ']');
-    
+
     If CFGNodes^[I].IsEntry Then Write(' ENTRY');
     If CFGNodes^[I].IsExit Then Write(' EXIT');
     If CFGNodes^[I].IsException Then Write(' HANDLER');
     If CFGNodes^[I].IsBackEdge Then Write(' LOOP');
     If not CFGNodes^[I].Visited Then Write(' DEAD');
-    
+
     Write(' Succs=[');
     For J := 0 to CFGNodes^[I].SuccCount - 1 Do Begin
       If J > 0 Then Write(',');
@@ -4846,10 +4846,10 @@ Begin
       Write(CFGNodes^[I].Preds[J]);
     End;
     Write(']');
-    
+
     If CFGNodes^[I].DomBy >= 0 Then
       Write(' Dom=', CFGNodes^[I].DomBy);
-    
+
     WriteLn;
   End;
   WriteLn;
@@ -4973,13 +4973,13 @@ Begin
   NullTotalDeref := 0;
   NullCurrentPC := 0;
   NullCurrentLine := 0;
-  
+
   For I := 0 to MAX_NULL_STACK - 1 Do
     NullStack[I] := VAL_UNKNOWN;
-  
+
   For I := 0 to MAX_NULL_LOCALS - 1 Do
     NullLocals[I] := VAL_UNKNOWN;
-  
+
   For I := 0 to MAX_NULL_BUGS - 1 Do Begin
     NullBugs[I].BugType := NP_NONE;
     NullBugs[I].PC := 0;
@@ -5142,58 +5142,58 @@ Begin
   NullCurrentPC := Instr.PC;
   NullCurrentLine := Instr.LineNum;
   Inc(NullTotalChecks);
-  
+
   OpName := Instr.Mnemonic;
-  
+
   { Gestion des constantes et chargements }
   Case Op of
     OP_ACONST_NULL: Begin
       NullPush(VAL_NULL);
     End;
-    
+
     OP_NEW, OP_NEWARRAY, OP_ANEWARRAY, OP_MULTIANEWARRAY: Begin
       { new produit toujours une reference non-null }
       NullPush(VAL_NONNULL);
     End;
-    
+
     OP_LDC, OP_LDC_W: Begin
       { Chargement d'une constante du CP - String non-null }
       NullPush(VAL_NONNULL);
     End;
-    
+
     OP_ALOAD_0: Begin
       { this n'est jamais null (sauf erreur fatale) }
       If NullLoadLocal(0) = VAL_UNKNOWN Then
         NullStoreLocal(0, VAL_NONNULL);
       NullPush(NullLoadLocal(0));
     End;
-    
+
     OP_ALOAD_1: NullPush(NullLoadLocal(1));
     OP_ALOAD_2: NullPush(NullLoadLocal(2));
     OP_ALOAD_3: NullPush(NullLoadLocal(3));
     OP_ALOAD:   NullPush(NullLoadLocal(Instr.Op1));
-    
+
     OP_ASTORE_0: NullStoreLocal(0, NullPop);
     OP_ASTORE_1: NullStoreLocal(1, NullPop);
     OP_ASTORE_2: NullStoreLocal(2, NullPop);
     OP_ASTORE_3: NullStoreLocal(3, NullPop);
     OP_ASTORE:   NullStoreLocal(Instr.Op1, NullPop);
-    
+
     { Instructions de pile }
     OP_DUP: Begin
       RefVal := NullPeek;
       NullPush(RefVal);
     End;
-    
+
     OP_POP: Begin
       NullPop;
     End;
-    
+
     OP_POP2: Begin
       NullPop;
       NullPop;
     End;
-    
+
     OP_SWAP: Begin
       { Echanger les deux sommets }
       If NullStackTop >= 2 Then Begin
@@ -5202,7 +5202,7 @@ Begin
         NullStack[NullStackTop - 2] := RefVal;
       End;
     End;
-    
+
     { Dereferences - verifier la valeur de reference }
     OP_GETFIELD: Begin
       Inc(NullTotalDeref);
@@ -5213,7 +5213,7 @@ Begin
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'getfield');
       NullPush(VAL_UNKNOWN); { Le champ charge a une valeur inconnue }
     End;
-    
+
     OP_PUTFIELD: Begin
       Inc(NullTotalDeref);
       NullPop; { Valeur a stocker }
@@ -5223,15 +5223,15 @@ Begin
       Else If RefVal = VAL_MAYBE Then
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'putfield');
     End;
-    
+
     OP_GETSTATIC: Begin
       NullPush(VAL_UNKNOWN); { Valeur du champ statique inconnue }
     End;
-    
+
     OP_PUTSTATIC: Begin
       NullPop;
     End;
-    
+
     OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE: Begin
       Inc(NullTotalDeref);
       { Le recepteur est sous les arguments - simplification: regarder le sommet }
@@ -5245,7 +5245,7 @@ Begin
       If NullStackTop > 0 Then Dec(NullStackTop);
       NullPush(VAL_UNKNOWN);
     End;
-    
+
     OP_INVOKESPECIAL: Begin
       Inc(NullTotalDeref);
       RefVal := NullPeek;
@@ -5256,13 +5256,13 @@ Begin
       If NullStackTop > 0 Then Dec(NullStackTop);
       NullPush(VAL_UNKNOWN);
     End;
-    
+
     OP_INVOKESTATIC: Begin
       { Pas de dereference - mais depiler les arguments }
       If NullStackTop > 0 Then Dec(NullStackTop);
       NullPush(VAL_UNKNOWN);
     End;
-    
+
     OP_ARRAYLENGTH: Begin
       Inc(NullTotalDeref);
       RefVal := NullPop;
@@ -5272,7 +5272,7 @@ Begin
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'arraylength');
       NullPush(VAL_NONNULL); { Resultat int, pas de ref }
     End;
-    
+
     OP_ATHROW: Begin
       Inc(NullTotalDeref);
       RefVal := NullPop;
@@ -5281,7 +5281,7 @@ Begin
       Else If RefVal = VAL_MAYBE Then
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'athrow');
     End;
-    
+
     OP_MONITORENTER, OP_MONITOREXIT: Begin
       Inc(NullTotalDeref);
       RefVal := NullPop;
@@ -5290,7 +5290,7 @@ Begin
       Else If RefVal = VAL_MAYBE Then
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'monitor');
     End;
-    
+
     OP_AALOAD: Begin
       Inc(NullTotalDeref);
       NullPop; { index }
@@ -5301,7 +5301,7 @@ Begin
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'aaload');
       NullPush(VAL_UNKNOWN); { Element charge, nullite inconnue }
     End;
-    
+
     OP_IALOAD, OP_LALOAD, OP_FALOAD, OP_DALOAD, OP_BALOAD, OP_CALOAD, OP_SALOAD: Begin
       Inc(NullTotalDeref);
       NullPop; { index }
@@ -5312,7 +5312,7 @@ Begin
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'xaload');
       NullPush(VAL_NONNULL); { Primitif, pas de ref }
     End;
-    
+
     OP_AASTORE: Begin
       Inc(NullTotalDeref);
       NullPop; { valeur }
@@ -5323,7 +5323,7 @@ Begin
       Else If RefVal = VAL_MAYBE Then
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'aastore');
     End;
-    
+
     OP_IASTORE, OP_LASTORE, OP_FASTORE, OP_DASTORE, OP_BASTORE, OP_CASTORE, OP_SASTORE: Begin
       Inc(NullTotalDeref);
       NullPop; { valeur }
@@ -5334,59 +5334,59 @@ Begin
       Else If RefVal = VAL_MAYBE Then
         AddNullBug(NP_NULL_ON_SOME_PATH, Instr.PC, Instr.LineNum, 'xastore');
     End;
-    
+
     { Branchements conditionnels sur nullite }
     OP_IFNULL: Begin
       RefVal := NullPop;
       { Apres ifnull, si on continue, la ref est non-null }
       { La propagation dans les branches est simplifiee ici }
     End;
-    
+
     OP_IFNONNULL: Begin
       RefVal := NullPop;
       { Apres ifnonnull, si on continue, la ref pourrait etre null }
     End;
-    
+
     OP_IF_ACMPEQ, OP_IF_ACMPNE: Begin
       NullPop;
       NullPop;
     End;
-    
+
     OP_ARETURN: Begin
       NullPop;
     End;
-    
+
     OP_CHECKCAST: Begin
       { Ne change pas la nullite de la reference }
     End;
-    
+
     OP_INSTANCEOF: Begin
       NullPop;
       NullPush(VAL_NONNULL); { Resultat boolean }
     End;
-    
+
     { Autres instructions qui manipulent des primitifs }
-    OP_ICONST_M1, OP_ICONST_0, OP_ICONST_1, OP_ICONST_2, 
+    OP_ICONST_M1, OP_ICONST_0, OP_ICONST_1, OP_ICONST_2,
     OP_ICONST_3, OP_ICONST_4, OP_ICONST_5,
     OP_LCONST_0, OP_LCONST_1, OP_FCONST_0, OP_FCONST_1, OP_FCONST_2,
     OP_DCONST_0, OP_DCONST_1, OP_BIPUSH, OP_SIPUSH: Begin
       { Constantes primitives, pas de ref }
     End;
-    
+
     OP_ILOAD, OP_ILOAD_0, OP_ILOAD_1, OP_ILOAD_2, OP_ILOAD_3,
     OP_LLOAD, OP_LLOAD_0, OP_LLOAD_1, OP_LLOAD_2, OP_LLOAD_3,
     OP_FLOAD, OP_FLOAD_0, OP_FLOAD_1, OP_FLOAD_2, OP_FLOAD_3,
     OP_DLOAD, OP_DLOAD_0, OP_DLOAD_1, OP_DLOAD_2, OP_DLOAD_3: Begin
       { Chargement primitif }
     End;
-    
+
     OP_ISTORE, OP_ISTORE_0, OP_ISTORE_1, OP_ISTORE_2, OP_ISTORE_3,
     OP_LSTORE, OP_LSTORE_0, OP_LSTORE_1, OP_LSTORE_2, OP_LSTORE_3,
     OP_FSTORE, OP_FSTORE_0, OP_FSTORE_1, OP_FSTORE_2, OP_FSTORE_3,
     OP_DSTORE, OP_DSTORE_0, OP_DSTORE_1, OP_DSTORE_2, OP_DSTORE_3: Begin
       { Stockage primitif }
     End;
-    
+
     { Pas de traitement special pour les autres opcodes }
   End;
 End;
@@ -5400,19 +5400,19 @@ Begin
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   { Initialiser l'etat pour cette methode }
   InitNullState;
-  
+
   { Marquer this comme non-null pour methodes d'instance }
   If not Methods[MethodIdx].IsStatic Then
     NullStoreLocal(0, VAL_NONNULL);
-  
+
   { Analyser chaque instruction sequentiellement }
   For I := 0 to InstrCount - 1 Do Begin
     AnalyzeNullForInstr(Instructions^[I]);
   End;
-  
+
   { Enregistrer les bugs detectes }
   For I := 0 to NullBugCount - 1 Do Begin
     Case NullBugs[I].BugType of
@@ -5423,7 +5423,7 @@ Begin
     Else
       BugTypeName := 'NP_UNKNOWN';
     End;
-    
+
     AddBug(BugTypeName, CAT_CORRECTNESS, SEV_HIGH,
            ClassInfo.ThisClass, Methods[MethodIdx].Name, '',
            NullBugs[I].LineNum,
@@ -5445,14 +5445,14 @@ Begin
   WriteLn('Total checks: ', NullTotalChecks);
   WriteLn('Total derefs: ', NullTotalDeref);
   WriteLn;
-  
+
   If NullStackTop > 0 Then Begin
     WriteLn('Stack:');
     For I := NullStackTop - 1 downto 0 Do
       WriteLn('  [', I, '] ', NullTypeName(NullStack[I]));
     WriteLn;
   End;
-  
+
   If NullLocalCount > 0 Then Begin
     WriteLn('Locals:');
     For I := 0 to NullLocalCount - 1 Do
@@ -5460,7 +5460,7 @@ Begin
         WriteLn('  [', I, '] ', NullTypeName(NullLocals[I]));
     WriteLn;
   End;
-  
+
   If NullBugCount > 0 Then Begin
     WriteLn('Bugs:');
     For I := 0 to NullBugCount - 1 Do
@@ -5578,7 +5578,7 @@ Begin
   ResTotalLeaks := 0;
   ResCurrentPC := 0;
   ResCurrentLine := 0;
-  
+
   For I := 0 to MAX_RES_TRACKED - 1 Do Begin
     Resources[I].VarIdx := -1;
     Resources[I].ClassName := '';
@@ -5589,7 +5589,7 @@ Begin
     Resources[I].InTryBlock := False;
     Resources[I].HasFinally := False;
   End;
-  
+
   For I := 0 to MAX_RES_BUGS - 1 Do Begin
     ResLeakBugs[I].BugType := RL_NONE;
     ResLeakBugs[I].PC := 0;
@@ -5637,7 +5637,7 @@ End;
 Function IsCloseableClass(ClassName: String): Boolean;
 Begin
   IsCloseableClass := False;
-  
+
   { Classes du package java/io }
   If (ClassName = 'java/io/InputStream') or
      (ClassName = 'java/io/FileInputStream') or
@@ -5699,7 +5699,7 @@ Var
 Begin
   ExtractClassFromMethodRef := '';
   If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
-    If (CP^[CpIdx].Tag = CP_METHODREF) or 
+    If (CP^[CpIdx].Tag = CP_METHODREF) or
        (CP^[CpIdx].Tag = CP_INTERFACEMETHODREF) Then Begin
       ClassIdx := CP^[CpIdx].Ref1;
       NatIdx := CP^[CpIdx].Ref2;
@@ -5719,7 +5719,7 @@ Var
 Begin
   ExtractMethodNameFromRef := '';
   If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
-    If (CP^[CpIdx].Tag = CP_METHODREF) or 
+    If (CP^[CpIdx].Tag = CP_METHODREF) or
        (CP^[CpIdx].Tag = CP_INTERFACEMETHODREF) Then Begin
       NatIdx := CP^[CpIdx].Ref2;
       If (NatIdx > 0) and (NatIdx < CPCount) Then Begin
@@ -5739,7 +5739,7 @@ Var
 Begin
   ExtractMethodDescFromRef := '';
   If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
-    If (CP^[CpIdx].Tag = CP_METHODREF) or 
+    If (CP^[CpIdx].Tag = CP_METHODREF) or
        (CP^[CpIdx].Tag = CP_INTERFACEMETHODREF) Then Begin
       NatIdx := CP^[CpIdx].Ref2;
       If (NatIdx > 0) and (NatIdx < CPCount) Then Begin
@@ -5788,7 +5788,7 @@ Begin
 End;
 
 { --- TODO 10 : Enregistrer un bug de fuite de ressource --- }
-Procedure AddResLeakBug(BugType: Integer; PC: LongWord; LineNum: Integer; 
+Procedure AddResLeakBug(BugType: Integer; PC: LongWord; LineNum: Integer;
                         ClassName: String; VarIdx: Integer);
 Begin
   If ResLeakBugCount < MAX_RES_BUGS Then Begin
@@ -5803,7 +5803,7 @@ Begin
 End;
 
 { --- TODO 10 : Chercher un appel close() dans le bytecode --- }
-Function FindCloseCall(MethIdx: Integer; VarIdx: Integer; 
+Function FindCloseCall(MethIdx: Integer; VarIdx: Integer;
                        StartPC, EndPC: LongWord): Boolean;
 Var
   I: Integer;
@@ -5814,14 +5814,14 @@ Var
 Begin
   FindCloseCall := False;
   LoadedVar := -1;
-  
+
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     If (Instructions^[I].PC >= StartPC) and (Instructions^[I].PC <= EndPC) Then Begin
       Op := Instructions^[I].Opcode;
-      
+
       { Tracker les aload pour savoir quelle variable est chargee }
       If (Op >= OP_ALOAD_0) and (Op <= OP_ALOAD_3) Then
         LoadedVar := Op - OP_ALOAD_0
@@ -5832,7 +5832,7 @@ Begin
         CpIdx := Word(Instructions^[I].Op1);
         MName := ExtractMethodNameFromRef(CpIdx);
         MDesc := ExtractMethodDescFromRef(CpIdx);
-        
+
         If IsCloseMethod(MName, MDesc) and (LoadedVar = VarIdx) Then Begin
           FindCloseCall := True;
           Exit;
@@ -5848,11 +5848,11 @@ Var
   I: Integer;
 Begin
   IsInExceptionHandler := False;
-  
+
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   For I := 0 to Methods[MethIdx].ExcCount - 1 Do Begin
-    If (PC >= Methods[MethIdx].ExcTable[I].StartPC) and 
+    If (PC >= Methods[MethIdx].ExcTable[I].StartPC) and
        (PC < Methods[MethIdx].ExcTable[I].EndPC) Then Begin
       IsInExceptionHandler := True;
       Exit;
@@ -5866,9 +5866,9 @@ Var
   I: Integer;
 Begin
   HasFinallyHandler := False;
-  
+
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   For I := 0 to Methods[MethIdx].ExcCount - 1 Do Begin
     { Un finally handler a catch_type = 0 }
     If (Methods[MethIdx].ExcTable[I].CatchType = 0) and
@@ -5893,14 +5893,14 @@ Var
 Begin
   If Instructions = Nil Then Exit;
   If (InstrIdx < 0) or (InstrIdx >= InstrCount) Then Exit;
-  
+
   Op := Instructions^[InstrIdx].Opcode;
   PC := Instructions^[InstrIdx].PC;
   LineNum := Instructions^[InstrIdx].LineNum;
-  
+
   ResCurrentPC := PC;
   ResCurrentLine := LineNum;
-  
+
   { Detecter new <classe ressource> }
   If Op = OP_NEW Then Begin
     CpIdx := Word(Instructions^[InstrIdx].Op1);
@@ -5917,14 +5917,14 @@ Begin
       End;
     End;
   End
-  
+
   { Detecter invokespecial (constructeur) sur classe ressource }
   Else If Op = OP_INVOKESPECIAL Then Begin
     CpIdx := Word(Instructions^[InstrIdx].Op1);
     MName := ExtractMethodNameFromRef(CpIdx);
     MDesc := ExtractMethodDescFromRef(CpIdx);
     ClassName := ExtractClassFromMethodRef(CpIdx);
-    
+
     If (MName = '<init>') and IsCloseableClass(ClassName) Then Begin
       { Chercher l'astore suivant }
       If (InstrIdx + 1 < InstrCount) Then Begin
@@ -5940,13 +5940,13 @@ Begin
       End;
     End;
   End
-  
+
   { Detecter invokevirtual/invokeinterface close() }
   Else If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
     CpIdx := Word(Instructions^[InstrIdx].Op1);
     MName := ExtractMethodNameFromRef(CpIdx);
     MDesc := ExtractMethodDescFromRef(CpIdx);
-    
+
     If IsCloseMethod(MName, MDesc) Then Begin
       { Chercher l'aload precedent pour identifier la variable }
       If InstrIdx > 0 Then Begin
@@ -5975,36 +5975,36 @@ Begin
   If Methods[MethIdx].CodeLen = 0 Then Exit;
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   { Reinitialiser le tracking des ressources pour cette methode }
   ResourceCount := 0;
   ResLeakBugCount := 0;
-  
+
   { Passe 1 : Analyser toutes les instructions }
   For I := 0 to InstrCount - 1 Do Begin
     AnalyzeInstrForResourceLeak(MethIdx, I);
   End;
-  
+
   { Passe 2 : Verifier que toutes les ressources ouvertes sont fermees }
   For I := 0 to ResourceCount - 1 Do Begin
     If Resources[I].State = RS_OPEN Then Begin
       { Chercher si close() est appele quelque part apres l'ouverture }
-      HasClose := FindCloseCall(MethIdx, Resources[I].VarIdx, 
+      HasClose := FindCloseCall(MethIdx, Resources[I].VarIdx,
                                 Resources[I].OpenPC, Methods[MethIdx].CodeLen);
-      
+
       If Not HasClose Then Begin
         { Verifier si c'est dans un bloc try avec finally }
         If HasFinallyHandler(MethIdx, Resources[I].OpenPC) Then
           BugType := RL_UNSATISFIED_OBLIG_EXCEPT
         Else
           BugType := RL_OPEN_STREAM;
-        
+
         AddResLeakBug(BugType, Resources[I].OpenPC, Resources[I].LineNum,
                       Resources[I].ClassName, Resources[I].VarIdx);
-        
+
         { Ajouter aussi au rapport global }
         AddBug(ResLeakBugTypeName(BugType), CAT_CORRECTNESS, SEV_MEDIUM,
-               InternalToJavaName(ClassInfo.ThisClass), 
+               InternalToJavaName(ClassInfo.ThisClass),
                Methods[MethIdx].Name, '',
                Resources[I].LineNum,
                'Resource ' + Resources[I].ClassName + ' may not be closed');
@@ -6029,7 +6029,7 @@ Begin
   WriteLn('Current PC     : ', ResCurrentPC);
   WriteLn('Current Line   : ', ResCurrentLine);
   WriteLn;
-  
+
   If ResourceCount > 0 Then Begin
     WriteLn('--- Tracked Resources ---');
     For I := 0 to ResourceCount - 1 Do Begin
@@ -6041,7 +6041,7 @@ Begin
     End;
     WriteLn;
   End;
-  
+
   If ResLeakBugCount > 0 Then Begin
     WriteLn('--- Resource Leak Bugs ---');
     For I := 0 to ResLeakBugCount - 1 Do Begin
@@ -6132,7 +6132,7 @@ Begin
   LoopTotalDeadStores := 0;
   LoopCurrentPC := 0;
   LoopCurrentLine := 0;
-  
+
   { Reinitialiser la table des bugs }
   For I := 0 to MAX_LOOP_BUGS - 1 Do Begin
     LoopBugs[I].BugType := LP_NONE;
@@ -6142,7 +6142,7 @@ Begin
     LoopBugs[I].VarIdx := -1;
     LoopBugs[I].MethodName := '';
   End;
-  
+
   { Reinitialiser la table des dead stores }
   For I := 0 to MAX_DEAD_STORES - 1 Do Begin
     DeadStores[I].VarIdx := -1;
@@ -6187,7 +6187,7 @@ Begin
     LoopBugs[LoopBugCount].VarIdx := VarIdx;
     LoopBugs[LoopBugCount].MethodName := MethodName;
     Inc(LoopBugCount);
-    
+
     { Incrementer le compteur approprie }
     Case BugType of
       IL_INFINITE_LOOP, IL_CONTAINER_MODIFIED:
@@ -6300,7 +6300,7 @@ Begin
   HasExitFromBlock := False;
   If (BlockID < 0) or (BlockID >= CFGNodeCount) or (CFGNodes = Nil) Then Exit;
   If Instructions = Nil Then Exit;
-  
+
   { Parcourir les instructions du bloc }
   For InstIdx := CFGNodes^[BlockID].InstStart to CFGNodes^[BlockID].InstEnd Do Begin
     If (InstIdx >= 0) and (InstIdx < InstrCount) Then Begin
@@ -6328,13 +6328,13 @@ Var
 Begin
   If (CFGNodes = Nil) or (CFGNodeCount <= 0) Then Exit;
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Parcourir tous les blocs avec arete arriere (tetes de boucle) }
   For BlockID := 0 to CFGNodeCount - 1 Do Begin
     If CFGNodes^[BlockID].IsBackEdge Then Begin
       { Ce bloc est une tete de boucle - verifier s'il y a une sortie }
       HasExit := False;
-      
+
       { Verifier les successeurs du bloc }
       For J := 0 to CFGNodes^[BlockID].SuccCount - 1 Do Begin
         SuccID := CFGNodes^[BlockID].Succs[J];
@@ -6343,12 +6343,12 @@ Begin
           HasExit := True;
         End;
       End;
-      
+
       { Verifier le bloc lui-meme }
       If HasExitFromBlock(BlockID) Then Begin
         HasExit := True;
       End;
-      
+
       { Si pas de sortie detectee, signaler une boucle potentiellement infinie }
       If not HasExit and (CFGNodes^[BlockID].SuccCount > 0) Then Begin
         StartPC := CFGNodes^[BlockID].StartPC;
@@ -6374,27 +6374,27 @@ Var
 Begin
   If (Instructions = Nil) or (InstrCount <= 0) Then Exit;
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   MethodName := Methods[MethIdx].Name;
   ClassName := ClassInfo.ThisClass;
   HasCondition := False;
-  
+
   { Parcourir les instructions pour trouver les appels recursifs }
   For InstIdx := 0 to InstrCount - 1 Do Begin
     Opcode := Instructions^[InstIdx].Opcode;
-    
+
     { Detecter les conditions (if*) }
     If IsBranchOpcode(Opcode) Then Begin
       HasCondition := True;
     End;
-    
+
     { Detecter les appels de methode }
     If (Opcode = OP_INVOKEVIRTUAL) or (Opcode = OP_INVOKESPECIAL) or
        (Opcode = OP_INVOKESTATIC) or (Opcode = OP_INVOKEINTERFACE) Then Begin
       CpIdx := Word(Instructions^[InstIdx].Op1);
       CalledMethod := ExtractMethodNameFromRef(CpIdx);
       CalledClass := ExtractClassFromMethodRef(CpIdx);
-      
+
       { Appel recursif ? }
       If (CalledMethod = MethodName) and (CalledClass = ClassName) Then Begin
         { Si pas de condition avant cet appel, c'est suspect }
@@ -6417,7 +6417,7 @@ Var
 Begin
   If (CFGNodes = Nil) or (CFGNodeCount <= 0) Then Exit;
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Parcourir tous les blocs pour trouver ceux non visites }
   For BlockID := 0 to CFGNodeCount - 1 Do Begin
     { Un bloc non visite et non-entree est du code mort }
@@ -6425,7 +6425,7 @@ Begin
        not CFGNodes^[BlockID].IsException Then Begin
       StartPC := CFGNodes^[BlockID].StartPC;
       LineNum := GetLineNumber(Methods[MethIdx], Word(StartPC));
-      
+
       { Ne pas signaler si c'est un bloc vide }
       If CFGNodes^[BlockID].InstStart <= CFGNodes^[BlockID].InstEnd Then Begin
         AddLoopBug(USELESS_CODE, StartPC, LineNum, BlockID, -1,
@@ -6445,10 +6445,10 @@ Var
 Begin
   If (Instructions = Nil) or (InstrCount <= 0) Then Exit;
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Reinitialiser les dead stores }
   DeadStoreCount := 0;
-  
+
   { Premiere passe : collecter tous les stores }
   For InstIdx := 0 to InstrCount - 1 Do Begin
     Opcode := Instructions^[InstIdx].Opcode;
@@ -6460,7 +6460,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Deuxieme passe : marquer les variables lues }
   For InstIdx := 0 to InstrCount - 1 Do Begin
     Opcode := Instructions^[InstIdx].Opcode;
@@ -6471,7 +6471,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Troisieme passe : signaler les stores non lus }
   For I := 0 to DeadStoreCount - 1 Do Begin
     If not DeadStores[I].IsRead Then Begin
@@ -6494,25 +6494,25 @@ Var
 Begin
   If (Instructions = Nil) or (InstrCount <= 0) Then Exit;
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Verifier si methode void }
   If Pos(')V', Methods[MethIdx].Descriptor) = 0 Then Exit;
-  
+
   { Verifier si la methode ne contient que aload_0 + return }
   HasUsefulCode := False;
   For InstIdx := 0 to InstrCount - 1 Do Begin
     Opcode := Instructions^[InstIdx].Opcode;
-    
+
     { Ignorer aload_0 (this) et return }
     If (Opcode <> OP_ALOAD_0) and (Opcode <> OP_RETURN) and
        (Opcode <> OP_NOP) Then Begin
       HasUsefulCode := True;
     End;
   End;
-  
+
   { Si methode vide (juste return), signaler }
   If not HasUsefulCode and (InstrCount <= 2) Then Begin
-    AddLoopBug(UC_USELESS_VOID_METHOD, 0, 
+    AddLoopBug(UC_USELESS_VOID_METHOD, 0,
                GetLineNumber(Methods[MethIdx], 0), -1, -1, Methods[MethIdx].Name);
   End;
 End;
@@ -6521,16 +6521,16 @@ End;
 Procedure AnalyzeMethodForLoopBugs(MethIdx: Integer);
 Begin
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Reinitialiser l'etat pour cette methode }
   InitLoopState;
-  
+
   { Decoder les instructions si pas deja fait }
   If (Instructions = Nil) or (InstrCount = 0) Then Begin
     AllocInstructions;
     DecodeInstructions(Methods[MethIdx]);
   End;
-  
+
   { Lancer tous les detecteurs }
   DetectInfiniteLoops(MethIdx);
   DetectInfiniteRecursion(MethIdx);
@@ -6556,7 +6556,7 @@ Begin
   WriteLn('Current PC       : ', LoopCurrentPC);
   WriteLn('Current Line     : ', LoopCurrentLine);
   WriteLn;
-  
+
   If LoopBugCount > 0 Then Begin
     WriteLn('--- Loop/Dead Code Bugs ---');
     For I := 0 to LoopBugCount - 1 Do Begin
@@ -6567,7 +6567,7 @@ Begin
     End;
     WriteLn;
   End;
-  
+
   If DeadStoreCount > 0 Then Begin
     WriteLn('--- Dead Stores ---');
     For I := 0 to DeadStoreCount - 1 Do Begin
@@ -6669,7 +6669,7 @@ Begin
   BPHasFinalize := False;
   BPFinalizePublic := False;
   BPImplementsCloneable := False;
-  
+
   { Reinitialiser la table des bugs }
   For I := 0 to MAX_BP_BUGS - 1 Do Begin
     BPBugs[I].BugType := BP_NONE;
@@ -6679,7 +6679,7 @@ Begin
     BPBugs[I].MethodName := '';
     BPBugs[I].TypeName := '';
   End;
-  
+
   { Reinitialiser la table des checkcast }
   For I := 0 to MAX_BP_CASTS - 1 Do Begin
     BPCasts[I].PC := 0;
@@ -6793,12 +6793,12 @@ Begin
   { Un catch block vide contient seulement astore (store exception) et
     eventuellement aload + athrow, ou juste un return/goto }
   IsCatchBlockEmpty := False;
-  
+
   If (Instructions = Nil) or (InstrCount = 0) Then Exit;
-  
+
   CodeLen := EndPC - StartPC;
   HasCode := False;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     If (Instructions^[I].PC >= StartPC) and (Instructions^[I].PC < EndPC) Then Begin
       { Verifier si c'est une instruction significative }
@@ -6811,7 +6811,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Si tres peu de code et pas d'instruction significative, le catch est vide }
   If (CodeLen <= 5) and (not HasCode) Then
     IsCatchBlockEmpty := True;
@@ -6907,10 +6907,10 @@ Var
 Begin
   If (Instructions = Nil) or (InstrCount = 0) Then Exit;
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Reinitialiser les checkcast trackes pour cette methode }
   BPCastCount := 0;
-  
+
   { Premiere passe : collecter tous les instanceof }
   For I := 0 to InstrCount - 1 Do Begin
     Inst := Instructions^[I];
@@ -6923,7 +6923,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Deuxieme passe : analyser les instructions }
   PrevOpcode := OP_NOP;
   For I := 0 to InstrCount - 1 Do Begin
@@ -6931,14 +6931,14 @@ Begin
     BPCurrentPC := Inst.PC;
     LineNum := GetLineNumber(Methods[MethIdx], Inst.PC);
     BPCurrentLine := LineNum;
-    
+
     Case Inst.Opcode of
       OP_CHECKCAST: Begin
         { Verifier si un instanceof precede ce checkcast }
         CpIdx := Inst.Op1;
         If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
           TargetType := CPGetClassName(CpIdx);
-          
+
           { Chercher si un instanceof pour ce type a ete vu avant }
           FoundInstanceof := False;
           For J := 0 to I - 1 Do Begin
@@ -6952,7 +6952,7 @@ Begin
               End;
             End;
           End;
-          
+
           If not FoundInstanceof Then Begin
             { Cast sans instanceof prealable = bug potentiel }
             AddBadPracticeBug(BC_UNCONFIRMED_CAST, Inst.PC, LineNum,
@@ -6962,7 +6962,7 @@ Begin
           End;
         End;
       End;
-      
+
       OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE: Begin
         { Verifier les appels a read() ou skip() }
         CpIdx := Inst.Op1;
@@ -6971,7 +6971,7 @@ Begin
           MethodName := '';
           Descriptor := '';
           CPGetMemberRef(CpIdx, ClassName, MethodName, Descriptor);
-          
+
           { Detecter read() dont le retour n'est pas verifie }
           If IsReadMethod(ClassName, MethodName, Descriptor) Then Begin
             { Verifier si l'instruction suivante est pop (ignore le resultat) }
@@ -6984,7 +6984,7 @@ Begin
               End;
             End;
           End;
-          
+
           { Detecter skip() dont le retour n'est pas verifie }
           If IsSkipMethod(ClassName, MethodName, Descriptor) Then Begin
             If (I + 1 < InstrCount) Then Begin
@@ -6999,10 +6999,10 @@ Begin
         End;
       End;
     End;
-    
+
     PrevOpcode := Inst.Opcode;
   End;
-  
+
   { Analyser les blocs catch pour les exceptions ignorees }
   For I := 0 to Methods[MethIdx].ExcCount - 1 Do Begin
     If IsCatchBlockEmpty(Methods[MethIdx].ExcTable[I].HandlerPC,
@@ -7029,31 +7029,31 @@ Begin
   BPHasFinalize := HasFinalizeMethod(FinalizeIsPublic);
   BPFinalizePublic := FinalizeIsPublic;
   BPImplementsCloneable := ImplementsCloneable;
-  
+
   { Verifier clone() sans Cloneable }
   If BPHasClone and (not BPImplementsCloneable) Then Begin
     AddBadPracticeBug(CN_IMPLEMENTS_CLONE_BUT_NOT_CLONEABLE, 0, 0,
                       ClassInfo.ThisClass, 'clone', '');
   End;
-  
+
   { Verifier equals() sans hashCode() }
   If BPHasEquals and (not BPHasHashCode) Then Begin
     AddBadPracticeBug(HE_EQUALS_USE_OBJECT_HASHCODE, 0, 0,
                       ClassInfo.ThisClass, 'equals', '');
   End;
-  
+
   { Verifier hashCode() sans equals() }
   If BPHasHashCode and (not BPHasEquals) Then Begin
     AddBadPracticeBug(HE_HASHCODE_USE_OBJECT_EQUALS, 0, 0,
                       ClassInfo.ThisClass, 'hashCode', '');
   End;
-  
+
   { Verifier finalize() public }
   If BPHasFinalize and BPFinalizePublic Then Begin
     AddBadPracticeBug(FI_PUBLIC_SHOULD_BE_PROTECTED, 0, 0,
                       ClassInfo.ThisClass, 'finalize', '');
   End;
-  
+
   { Verifier sous-classe avec champs supplementaires sans equals() }
   { Note: cette detection complete necessite d'analyser la super-classe }
   { Pour l'instant, on detecte seulement les classes avec champs et super != Object }
@@ -7074,9 +7074,9 @@ Procedure AnalyzeMethodForBadPractices(MethIdx: Integer);
 Begin
   If not BPInitialized Then
     InitBadPracticesState;
-    
+
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Decoder les instructions si pas deja fait }
   If (Instructions = Nil) or (InstrCount = 0) Then Begin
     If Methods[MethIdx].CodeLen > 0 Then Begin
@@ -7084,7 +7084,7 @@ Begin
       DecodeInstructions(Methods[MethIdx]);
     End;
   End;
-  
+
   { Detecter les mauvaises pratiques dans cette methode }
   DetectBadPractices(MethIdx);
 End;
@@ -7108,7 +7108,7 @@ Begin
   WriteLn('Has Finalize: ', BPHasFinalize);
   WriteLn('Finalize Public: ', BPFinalizePublic);
   WriteLn('Implements Cloneable: ', BPImplementsCloneable);
-  
+
   If BPBugCount > 0 Then Begin
     WriteLn('--- Bugs ---');
     For I := 0 to BPBugCount - 1 Do Begin
@@ -7206,7 +7206,7 @@ Begin
   BCTotalBadCollection := 0;
   BCCurrentPC := 0;
   BCCurrentLine := 0;
-  
+
   For I := 0 to MAX_BC_BUGS - 1 Do Begin
     BCBugs[I].BugType := BC_NONE;
     BCBugs[I].PC := 0;
@@ -7216,7 +7216,7 @@ Begin
     BCBugs[I].Type1 := '';
     BCBugs[I].Type2 := '';
   End;
-  
+
   For I := 0 to MAX_BC_STACK_TYPES - 1 Do Begin
     BCStackTypes[I].StackType := ST_UNKNOWN;
     BCStackTypes[I].TypeName := '';
@@ -7280,7 +7280,7 @@ Begin
     Delete(D, 1, 1);
   If (Length(D) > 0) and (D[Length(D)] = ';') Then
     Delete(D, Length(D), 1);
-  
+
   { Comparer avec les formes possibles de String }
   IsStringType := (D = 'java/lang/String') or
                   (D = 'Ljava/lang/String;') or
@@ -7299,7 +7299,7 @@ Begin
     Delete(C, 1, 1);
   If (Length(C) > 0) and (C[Length(C)] = ';') Then
     Delete(C, Length(C), 1);
-  
+
   IsWrapperType := (C = 'java/lang/Integer') or
                    (C = 'java/lang/Long') or
                    (C = 'java/lang/Short') or
@@ -7321,7 +7321,7 @@ Begin
     Delete(C, 1, 1);
   If (Length(C) > 0) and (C[Length(C)] = ';') Then
     Delete(C, Length(C), 1);
-  
+
   IsCollectionType := (Pos('java/util/List', C) > 0) or
                       (Pos('java/util/Set', C) > 0) or
                       (Pos('java/util/Map', C) > 0) or
@@ -7353,7 +7353,7 @@ Begin
     DescriptorToStackType := ST_UNKNOWN;
     Exit;
   End;
-  
+
   Case Desc[1] of
     'B', 'C', 'I', 'S', 'Z': DescriptorToStackType := ST_INT;
     'J': DescriptorToStackType := ST_LONG;
@@ -7438,25 +7438,25 @@ Begin
   If (Length(T1) > 0) and (T1[Length(T1)] = ';') Then Delete(T1, Length(T1), 1);
   If (Length(T2) > 0) and (T2[1] = 'L') Then Delete(T2, 1, 1);
   If (Length(T2) > 0) and (T2[Length(T2)] = ';') Then Delete(T2, Length(T2), 1);
-  
+
   { Meme type = relies }
   If T1 = T2 Then Begin
     AreTypesRelated := True;
     Exit;
   End;
-  
+
   { Object est relie a tout }
   If (T1 = 'java/lang/Object') or (T2 = 'java/lang/Object') Then Begin
     AreTypesRelated := True;
     Exit;
   End;
-  
+
   { Si l'un est vide ou inconnu }
   If (T1 = '') or (T2 = '') Then Begin
     AreTypesRelated := True;  { On ne sait pas, donc on presume relie }
     Exit;
   End;
-  
+
   { Cas simples de types non-relies (heuristique) }
   { String vs autres types specifiques }
   If (T1 = 'java/lang/String') and IsWrapperType(T2) Then Begin
@@ -7467,7 +7467,7 @@ Begin
     AreTypesRelated := False;
     Exit;
   End;
-  
+
   { Par defaut, on presume relies (analyse simplifiee) }
   AreTypesRelated := True;
 End;
@@ -7486,27 +7486,27 @@ Var
 Begin
   If not BCInitialized Then
     InitBadCompState;
-    
+
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   { Reinitialiser la pile de types pour cette methode }
   BCClearStack;
-  
+
   { Parcourir les instructions }
   For I := 0 to InstrCount - 1 Do Begin
     Inst := Instructions^[I];
     BCCurrentPC := Inst.PC;
     LineNum := GetLineNumber(Methods[MethIdx], Inst.PC);
     BCCurrentLine := LineNum;
-    
+
     Case Inst.Opcode of
       { Instructions qui poussent null }
       OP_ACONST_NULL: Begin
         BCPushType(ST_NULL, '', Inst.PC, False);
       End;
-      
+
       { Instructions new }
       OP_NEW: Begin
         CpIdx := Inst.Op1;
@@ -7522,7 +7522,7 @@ Begin
             BCPushType(ST_REF, ClassName, Inst.PC, True);
         End;
       End;
-      
+
       { Instructions de chargement de constante String }
       OP_LDC, OP_LDC_W: Begin
         CpIdx := Inst.Op1;
@@ -7534,13 +7534,13 @@ Begin
             BCPushType(ST_UNKNOWN, '', Inst.PC, False);
         End;
       End;
-      
+
       { Instructions de chargement de variables locales (references) }
       OP_ALOAD, OP_ALOAD_0, OP_ALOAD_1, OP_ALOAD_2, OP_ALOAD_3: Begin
         { Sans analyse de flux de donnees, on ne connait pas le type }
         BCPushType(ST_REF, '', Inst.PC, False);
       End;
-      
+
       { Instructions d'appel de methode }
       OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE, OP_INVOKESPECIAL, OP_INVOKESTATIC: Begin
         CpIdx := Inst.Op1;
@@ -7549,7 +7549,7 @@ Begin
           MethodName := '';
           Descriptor := '';
           CPGetMemberRef(CpIdx, ClassName, MethodName, Descriptor);
-          
+
           { Analyser le type de retour du descripteur }
           Pos1 := Pos(')', Descriptor);
           If Pos1 > 0 Then Begin
@@ -7568,7 +7568,7 @@ Begin
                 BCPushType(ST_REF, ReturnType, Inst.PC, False);
             End;
           End;
-          
+
           { Detecter les appels get/contains avec mauvais type }
           If IsCollectionType(ClassName) and IsCollectionGetMethod(MethodName) Then Begin
             { Verifier si l'argument est du bon type }
@@ -7578,7 +7578,7 @@ Begin
           End;
         End;
       End;
-      
+
       { Instructions getfield et getstatic }
       OP_GETFIELD, OP_GETSTATIC: Begin
         CpIdx := Inst.Op1;
@@ -7587,7 +7587,7 @@ Begin
           MethodName := '';  { En fait c'est le nom du champ }
           Descriptor := '';
           CPGetMemberRef(CpIdx, ClassName, MethodName, Descriptor);
-          
+
           If IsStringType(Descriptor) Then
             BCPushType(ST_STRING, Descriptor, Inst.PC, False)
           Else If IsWrapperType(Descriptor) Then
@@ -7600,7 +7600,7 @@ Begin
             BCPushType(ST_REF, Descriptor, Inst.PC, False);
         End;
       End;
-      
+
       { Instructions de chargement de tableau (aaload pousse une reference) }
       OP_AALOAD: Begin
         { Pop index, pop arrayref, push element }
@@ -7608,15 +7608,15 @@ Begin
         BCPopType;  { arrayref }
         BCPushType(ST_REF, '', Inst.PC, False);  { element }
       End;
-      
+
       { Instructions de comparaison de references if_acmpeq / if_acmpne }
       OP_IF_ACMPEQ, OP_IF_ACMPNE: Begin
         Inc(BCTotalCompares);
-        
+
         { Depiler les deux types compares }
         Type2Info := BCPopType;
         Type1Info := BCPopType;
-        
+
         { Verifier si on compare des Strings avec == }
         If (Type1Info.StackType = ST_STRING) or (Type2Info.StackType = ST_STRING) Then Begin
           { Comparaison de String avec == }
@@ -7625,7 +7625,7 @@ Begin
                         Type1Info.TypeName, Type2Info.TypeName);
           Inc(BCTotalBadString);
         End
-        
+
         { Verifier si on compare des wrappers avec == }
         Else If (Type1Info.StackType = ST_WRAPPER) or (Type2Info.StackType = ST_WRAPPER) Then Begin
           { Comparaison de wrapper avec == }
@@ -7635,7 +7635,7 @@ Begin
                         Type1Info.TypeName, Type2Info.TypeName);
           Inc(BCTotalBadWrapper);
         End
-        
+
         { Verifier si on compare array avec non-array }
         Else If ((Type1Info.StackType = ST_ARRAY) and (Type2Info.StackType <> ST_ARRAY) and
                  (Type2Info.StackType <> ST_NULL) and (Type2Info.StackType <> ST_UNKNOWN)) or
@@ -7646,7 +7646,7 @@ Begin
                         Type1Info.TypeName, Type2Info.TypeName);
           Inc(BCTotalUnrelated);
         End
-        
+
         { Verifier si on compare deux arrays avec == }
         Else If (Type1Info.StackType = ST_ARRAY) and (Type2Info.StackType = ST_ARRAY) Then Begin
           AddBadCompBug(EC_BAD_ARRAY_COMPARE, Inst.PC, LineNum,
@@ -7654,7 +7654,7 @@ Begin
                         Type1Info.TypeName, Type2Info.TypeName);
           Inc(BCTotalUnrelated);
         End
-        
+
         { Verifier si les types sont non-relies }
         Else If (Type1Info.StackType = ST_REF) and (Type2Info.StackType = ST_REF) Then Begin
           If not AreTypesRelated(Type1Info.TypeName, Type2Info.TypeName) Then Begin
@@ -7665,18 +7665,18 @@ Begin
           End;
         End;
       End;
-      
+
       { Pop simple - depile un element }
       OP_POP: Begin
         BCPopType;
       End;
-      
+
       { Pop2 - depile deux elements (ou un long/double) }
       OP_POP2: Begin
         BCPopType;
         BCPopType;
       End;
-      
+
       { Dup - duplique le sommet }
       OP_DUP: Begin
         If BCStackTypeTop > 0 Then Begin
@@ -7684,7 +7684,7 @@ Begin
           BCPushType(Type1Info.StackType, Type1Info.TypeName, Type1Info.SourcePC, Type1Info.IsNew);
         End;
       End;
-      
+
       { Swap - echange les deux sommets }
       OP_SWAP: Begin
         If BCStackTypeTop >= 2 Then Begin
@@ -7694,19 +7694,19 @@ Begin
           BCStackTypes[BCStackTypeTop - 2] := Type1Info;
         End;
       End;
-      
+
       { Instructions de stockage (astore) - depilent }
       OP_ASTORE, OP_ASTORE_0, OP_ASTORE_1, OP_ASTORE_2, OP_ASTORE_3: Begin
         BCPopType;
       End;
-      
+
       { Instructions de stockage tableau (aastore) }
       OP_AASTORE: Begin
         BCPopType;  { value }
         BCPopType;  { index }
         BCPopType;  { arrayref }
       End;
-      
+
       { Instructions de saut conditionnel - peuvent bifurquer }
       OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE, OP_IFGT, OP_IFLE,
       OP_IF_ICMPEQ, OP_IF_ICMPNE, OP_IF_ICMPLT, OP_IF_ICMPGE,
@@ -7720,17 +7720,17 @@ Begin
           BCPopType;
         End;
       End;
-      
+
       { Instructions ifnull/ifnonnull }
       OP_IFNULL, OP_IFNONNULL: Begin
         BCPopType;
       End;
-      
+
       { Return - on peut vider la pile }
       OP_RETURN, OP_ARETURN, OP_IRETURN, OP_LRETURN, OP_FRETURN, OP_DRETURN: Begin
         BCClearStack;
       End;
-      
+
       { Athrow - on peut vider la pile }
       OP_ATHROW: Begin
         BCClearStack;
@@ -7744,9 +7744,9 @@ Procedure AnalyzeMethodForBadComparisons(MethIdx: Integer);
 Begin
   If not BCInitialized Then
     InitBadCompState;
-    
+
   If (MethIdx < 0) or (MethIdx >= MethodCount) Then Exit;
-  
+
   { Decoder les instructions si pas deja fait }
   If (Instructions = Nil) or (InstrCount = 0) Then Begin
     If Methods[MethIdx].CodeLen > 0 Then Begin
@@ -7754,7 +7754,7 @@ Begin
       DecodeInstructions(Methods[MethIdx]);
     End;
   End;
-  
+
   { Detecter les comparaisons incorrectes }
   DetectBadComparisons(MethIdx);
 End;
@@ -7774,7 +7774,7 @@ Begin
   WriteLn('Total Bad Wrapper: ', BCTotalBadWrapper);
   WriteLn('Total Unrelated: ', BCTotalUnrelated);
   WriteLn('Total Bad Collection: ', BCTotalBadCollection);
-  
+
   If BCBugCount > 0 Then Begin
     WriteLn('--- Bugs ---');
     For I := 0 to BCBugCount - 1 Do Begin
@@ -7881,7 +7881,7 @@ Begin
   PFTotalUncalledMethods := 0;
   PFCurrentPC := 0;
   PFCurrentLine := 0;
-  
+
   For I := 0 to MAX_PF_BUGS - 1 Do Begin
     PFBugs[I].BugType := PF_NONE;
     PFBugs[I].PC := 0;
@@ -7891,7 +7891,7 @@ Begin
     PFBugs[I].MemberName := '';
     PFBugs[I].Details := '';
   End;
-  
+
   For I := 0 to MAX_PF_MEMBERS - 1 Do Begin
     PFPrivateMembers[I].MemberType := 0;
     PFPrivateMembers[I].Name := '';
@@ -7903,7 +7903,7 @@ Begin
     PFPrivateMembers[I].FieldIdx := -1;
     PFPrivateMembers[I].MethodIdx := -1;
   End;
-  
+
   For I := 0 to MAX_PF_CONCAT_LOOP - 1 Do Begin
     PFConcatLoops[I].PC := 0;
     PFConcatLoops[I].LineNum := 0;
@@ -7988,7 +7988,7 @@ Procedure AddPerfBug(BugType: Integer; PC: LongWord; LineNum: Integer;
                      ClassName, MethodName, MemberName, Details: String);
 Begin
   If PFBugCount >= MAX_PF_BUGS Then Exit;
-  
+
   PFBugs[PFBugCount].BugType := BugType;
   PFBugs[PFBugCount].PC := PC;
   PFBugs[PFBugCount].LineNum := LineNum;
@@ -7997,7 +7997,7 @@ Begin
   PFBugs[PFBugCount].MemberName := MemberName;
   PFBugs[PFBugCount].Details := Details;
   Inc(PFBugCount);
-  
+
   Case BugType of
     SBSC_USE_STRINGBUFFER_CONCATENATION: Inc(PFTotalConcatLoop);
     DMI_BLOCKING_METHODS_ON_URL:         Inc(PFTotalURLBlocking);
@@ -8016,7 +8016,7 @@ Var
   AccessFlags: Word;
 Begin
   PFMemberCount := 0;
-  
+
   { Collecter les champs prives }
   For I := 0 to FieldCount - 1 Do Begin
     If PFMemberCount >= MAX_PF_MEMBERS Then Break;
@@ -8034,7 +8034,7 @@ Begin
       Inc(PFMemberCount);
     End;
   End;
-  
+
   { Collecter les methodes privees }
   For I := 0 to MethodCount - 1 Do Begin
     If PFMemberCount >= MAX_PF_MEMBERS Then Break;
@@ -8063,7 +8063,7 @@ Var
   I: Integer;
 Begin
   For I := 0 to PFMemberCount - 1 Do Begin
-    If (PFPrivateMembers[I].Name = Name) and 
+    If (PFPrivateMembers[I].Name = Name) and
        (PFPrivateMembers[I].Descriptor = Descriptor) Then Begin
       If IsRead Then PFPrivateMembers[I].IsRead := True;
       If IsWrite Then PFPrivateMembers[I].IsWritten := True;
@@ -8080,7 +8080,7 @@ Var
 Begin
   IsInLoop := False;
   If CFGNodes = nil Then Exit;
-  
+
   For I := 0 to CFGNodeCount - 1 Do Begin
     If CFGNodes^[I].IsBackEdge Then Begin
       If (PC >= CFGNodes^[I].StartPC) and (PC <= CFGNodes^[I].EndPC) Then Begin
@@ -8103,12 +8103,12 @@ Var
 Begin
   If Instructions = nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     PC := Instructions^[I].PC;
     LineNum := GetLineNumber(Methods[MethIdx], Word(PC));
-    
+
     { Chercher invokevirtual String.concat ou StringBuilder.append }
     If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
       CPIdx := Instructions^[I].Op1;
@@ -8117,7 +8117,7 @@ Begin
         MethodName := '';
         Descriptor := '';
         CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
-        
+
         { String.concat dans une boucle }
         If (ClassName = 'java/lang/String') and (MethodName = 'concat') Then Begin
           If IsInLoop(PC) Then Begin
@@ -8126,7 +8126,7 @@ Begin
                       'String.concat', 'String concatenation in loop');
           End;
         End;
-        
+
         { + operateur sur String (via StringBuilder) sans reutilisation }
         If IsStringBuilderType(ClassName) and (MethodName = 'append') Then Begin
           If IsInLoop(PC) Then Begin
@@ -8159,12 +8159,12 @@ Var
 Begin
   If Instructions = nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     PC := Instructions^[I].PC;
     LineNum := GetLineNumber(Methods[MethIdx], Word(PC));
-    
+
     If (Op = OP_INVOKEVIRTUAL) or (Op = OP_INVOKEINTERFACE) Then Begin
       CPIdx := Instructions^[I].Op1;
       If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
@@ -8172,7 +8172,7 @@ Begin
         MethodName := '';
         Descriptor := '';
         CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
-        
+
         If IsURLType(ClassName) and IsURLBlockingMethod(MethodName) Then Begin
           AddPerfBug(DMI_BLOCKING_METHODS_ON_URL, PC, LineNum,
                     ClassInfo.ThisClass, Methods[MethIdx].Name,
@@ -8196,12 +8196,12 @@ Var
 Begin
   If Instructions = nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     PC := Instructions^[I].PC;
     LineNum := GetLineNumber(Methods[MethIdx], Word(PC));
-    
+
     If (Op = OP_INVOKEINTERFACE) or (Op = OP_INVOKEVIRTUAL) Then Begin
       CPIdx := Instructions^[I].Op1;
       If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
@@ -8209,7 +8209,7 @@ Begin
         MethodName := '';
         Descriptor := '';
         CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
-        
+
         { Collection.toArray(T[]) }
         If (MethodName = 'toArray') and (Pos('Collection', ClassName) > 0) Then Begin
           { Verifier si l'argument est new T[0] }
@@ -8246,16 +8246,16 @@ Var
 Begin
   If Instructions = nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   HasKeySet := False;
   HasGet := False;
   KeySetPC := 0;
   KeySetLine := 0;
-  
+
   { Premiere passe : chercher keySet() }
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
-    
+
     If (Op = OP_INVOKEINTERFACE) or (Op = OP_INVOKEVIRTUAL) Then Begin
       CPIdx := Instructions^[I].Op1;
       If (CPIdx > 0) and (CPIdx < CPCount) Then Begin
@@ -8263,12 +8263,12 @@ Begin
         MethodName := '';
         Descriptor := '';
         CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
-        
+
         If IsMapType(ClassName) and IsMapKeySetMethod(MethodName) Then Begin
           HasKeySet := True;
           KeySetPC := Instructions^[I].PC;
           KeySetLine := GetLineNumber(Methods[MethIdx], Word(KeySetPC));
-          
+
           { Chercher un get() apres keySet() dans la meme methode }
           For J := I + 1 to InstrCount - 1 Do Begin
             If (Instructions^[J].Opcode = OP_INVOKEINTERFACE) or
@@ -8286,13 +8286,13 @@ Begin
               End;
             End;
           End;
-          
+
           If HasGet Then Begin
             AddPerfBug(WMI_WRONG_MAP_ITERATOR, KeySetPC, KeySetLine,
                       ClassInfo.ThisClass, Methods[MethIdx].Name,
                       'keySet', 'Use entrySet() instead of keySet() + get()');
           End;
-          
+
           Break; { Une seule detection par methode }
         End;
       End;
@@ -8310,13 +8310,13 @@ Var
 Begin
   If Instructions = nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     Op := Instructions^[I].Opcode;
     CPIdx := Instructions^[I].Op1;
-    
+
     If (CPIdx = 0) or (CPIdx >= CPCount) Then Continue;
-    
+
     Case Op of
       OP_GETFIELD, OP_GETSTATIC: Begin
         ClassName := '';
@@ -8350,7 +8350,7 @@ Var
 Begin
   { Collecter tous les membres prives }
   CollectPrivateMembers;
-  
+
   { Scanner toutes les methodes pour les references }
   For I := 0 to MethodCount - 1 Do Begin
     If Methods[I].Code <> nil Then Begin
@@ -8358,7 +8358,7 @@ Begin
       ScanMemberReferences(I);
     End;
   End;
-  
+
   { Signaler les membres non utilises }
   For I := 0 to PFMemberCount - 1 Do Begin
     If PFPrivateMembers[I].MemberType = 0 Then Begin
@@ -8401,19 +8401,19 @@ Begin
   If MethIdx < 0 Then Exit;
   If MethIdx >= MethodCount Then Exit;
   If Methods[MethIdx].Code = nil Then Exit;
-  
+
   { Decoder les instructions }
   DecodeInstructions(Methods[MethIdx]);
-  
+
   { Detecter les concatenations de String dans les boucles }
   DetectStringConcatInLoop(MethIdx);
-  
+
   { Detecter les appels bloquants sur URL }
   DetectURLBlockingCalls(MethIdx);
-  
+
   { Detecter toArray inefficace }
   DetectInefficientToArray(MethIdx);
-  
+
   { Detecter l'utilisation de keySet() au lieu de entrySet() }
   DetectWrongMapIterator(MethIdx);
 End;
@@ -8431,12 +8431,12 @@ Var
   I: Integer;
 Begin
   If not PFInitialized Then InitPerfState;
-  
+
   { Analyser chaque methode }
   For I := 0 to MethodCount - 1 Do Begin
     AnalyzeMethodForPerformance(I);
   End;
-  
+
   { Detecter les membres prives non utilises (analyse au niveau classe) }
   DetectUnusedPrivateMembers;
 End;
@@ -8459,7 +8459,7 @@ Begin
   WriteLn('Total Unwritten Fields: ', PFTotalUnwrittenFields);
   WriteLn('Total Wrong Map Iter: ', PFTotalWrongMapIter);
   WriteLn('Total Uncalled Methods: ', PFTotalUncalledMethods);
-  
+
   If PFBugCount > 0 Then Begin
     WriteLn('--- Performance Bugs ---');
     For I := 0 to PFBugCount - 1 Do Begin
@@ -8471,7 +8471,7 @@ Begin
               ' Details=', PFBugs[I].Details);
     End;
   End;
-  
+
   If PFMemberCount > 0 Then Begin
     WriteLn('--- Private Members ---');
     For I := 0 to PFMemberCount - 1 Do Begin
@@ -8609,7 +8609,7 @@ Begin
   MTCurrentLine := 0;
   MTInSyncMethod := False;
   MTInSyncBlock := False;
-  
+
   For I := 0 to MAX_MT_BUGS - 1 Do Begin
     MTBugs[I].BugType := MT_NONE;
     MTBugs[I].PC := 0;
@@ -8619,7 +8619,7 @@ Begin
     MTBugs[I].FieldName := '';
     MTBugs[I].Details := '';
   End;
-  
+
   For I := 0 to MAX_MT_FIELDS - 1 Do Begin
     MTFieldAccesses[I].FieldIdx := -1;
     MTFieldAccesses[I].FieldName := '';
@@ -8700,8 +8700,8 @@ End;
 Function IsWaitMethod(MethodName, Descriptor: String): Boolean;
 Begin
   IsWaitMethod := (MethodName = 'wait') and
-                  ((Descriptor = '()V') or 
-                   (Descriptor = '(J)V') or 
+                  ((Descriptor = '()V') or
+                   (Descriptor = '(J)V') or
                    (Descriptor = '(JI)V'));
 End;
 
@@ -8740,7 +8740,7 @@ Begin
       Exit;
     End;
   End;
-  
+
   { Ajouter un nouveau champ }
   If MTFieldCount < MAX_MT_FIELDS Then Begin
     MTFieldAccesses[MTFieldCount].FieldIdx := FieldIdx;
@@ -8765,7 +8765,7 @@ Procedure AddConcurrencyBug(BugType: Integer; PC: LongWord; LineNum: Integer;
                            ClassName, MethodName, FieldName, Details: String);
 Begin
   If MTBugCount >= MAX_MT_BUGS Then Exit;
-  
+
   MTBugs[MTBugCount].BugType := BugType;
   MTBugs[MTBugCount].PC := PC;
   MTBugs[MTBugCount].LineNum := LineNum;
@@ -8773,9 +8773,9 @@ Begin
   MTBugs[MTBugCount].MethodName := MethodName;
   MTBugs[MTBugCount].FieldName := FieldName;
   MTBugs[MTBugCount].Details := Details;
-  
+
   Inc(MTBugCount);
-  
+
   { Mettre a jour les compteurs globaux }
   Case BugType of
     ESYNC_EMPTY_SYNC:        Inc(MTTotalEmptySync);
@@ -8801,11 +8801,11 @@ Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
-  
+
   FoundMonitorEnter := False;
   MonitorEnterPC := 0;
   EmptyCount := 0;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     If Instructions^[I].Opcode = OP_MONITORENTER Then Begin
       FoundMonitorEnter := True;
@@ -8826,7 +8826,7 @@ Begin
       End
       Else Begin
         { Compter les instructions significatives (ignorer aload, astore, dup) }
-        If Not (Instructions^[I].Opcode in [OP_ALOAD_0, OP_ALOAD_1, 
+        If Not (Instructions^[I].Opcode in [OP_ALOAD_0, OP_ALOAD_1,
                 OP_ALOAD_2, OP_ALOAD_3, OP_ALOAD,
                 OP_ASTORE_0, OP_ASTORE_1, OP_ASTORE_2, OP_ASTORE_3, OP_ASTORE,
                 OP_DUP, OP_POP, OP_NOP]) Then
@@ -8848,7 +8848,7 @@ Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     { Detecter invokevirtual Object.wait() }
     If (Instructions^[I].Opcode = OP_INVOKEVIRTUAL) Then Begin
@@ -8858,7 +8858,7 @@ Begin
         MethodName := '';
         Descriptor := '';
         CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
-        
+
         { Verifier si c'est un appel a wait() }
         If IsWaitMethod(MethodName, Descriptor) Then Begin
           { Verifier si on est dans une boucle (chercher un goto en arriere) }
@@ -8876,7 +8876,7 @@ Begin
                 OP_DRETURN, OP_ARETURN, OP_RETURN, OP_ATHROW] Then
               Break;
           End;
-          
+
           { Aussi verifier les sauts conditionnels en arriere avant le wait }
           For J := I - 1 downto 0 Do Begin
             If (Instructions^[J].Opcode in [OP_IFEQ, OP_IFNE, OP_IFLT, OP_IFGE,
@@ -8888,7 +8888,7 @@ Begin
                 InLoop := True;
             End;
           End;
-          
+
           If Not InLoop Then Begin
             LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
             AddConcurrencyBug(UW_UNCOND_WAIT, Instructions^[I].PC, LineNum,
@@ -8914,7 +8914,7 @@ Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     { Detecter invokeinterface/invokevirtual Condition.await() }
     If (Instructions^[I].Opcode in [OP_INVOKEVIRTUAL, OP_INVOKEINTERFACE]) Then Begin
@@ -8924,7 +8924,7 @@ Begin
         MethodName := '';
         Descriptor := '';
         CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
-        
+
         If IsAwaitMethod(ClassName, MethodName) Then Begin
           { Verifier si on est dans une boucle }
           InLoop := False;
@@ -8939,7 +8939,7 @@ Begin
                 OP_DRETURN, OP_ARETURN, OP_RETURN, OP_ATHROW] Then
               Break;
           End;
-          
+
           If Not InLoop Then Begin
             LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
             AddConcurrencyBug(WA_AWAIT_NOT_IN_LOOP, Instructions^[I].PC, LineNum,
@@ -8965,7 +8965,7 @@ Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     { Detecter invokevirtual Object.notify() ou notifyAll() }
     If (Instructions^[I].Opcode = OP_INVOKEVIRTUAL) Then Begin
@@ -8975,7 +8975,7 @@ Begin
         MethodName := '';
         Descriptor := '';
         CPGetMemberRef(CPIdx, ClassName, MethodName, Descriptor);
-        
+
         If IsNotifyMethod(MethodName, Descriptor) Then Begin
           { Verifier si un champ a ete ecrit avant le notify }
           HasFieldWrite := False;
@@ -8988,7 +8988,7 @@ Begin
             If Instructions^[J].Opcode in [OP_MONITORENTER, OP_MONITOREXIT] Then
               Break;
           End;
-          
+
           If Not HasFieldWrite Then Begin
             LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
             AddConcurrencyBug(NN_NAKED_NOTIFY, Instructions^[I].PC, LineNum,
@@ -8996,7 +8996,7 @@ Begin
               Methods[MethodIdx].Name, '',
               'notify() appele sans mise a jour d''un etat partage');
           End;
-          
+
           { Suggerer notifyAll() au lieu de notify() }
           LineNum := GetLineNumber(Methods[MethodIdx], Word(Instructions^[I].PC));
           AddConcurrencyBug(NO_NOTIFY_NOT_NOTIFYALL, Instructions^[I].PC, LineNum,
@@ -9023,7 +9023,7 @@ Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
-  
+
   { Pattern typique de double-checked locking:
     1. if (field == null)        // Premier test
     2.   synchronized(this)      // monitorenter
@@ -9031,12 +9031,12 @@ Begin
     4.       field = new ...     // Initialisation
     5.   end synchronized        // monitorexit
   }
-  
+
   NullCheckPC := 0;
   NullCheckCpIdx := 0;
   FoundMonitor := False;
   SecondNullCheck := False;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     { Detecter getfield suivi de ifnull/ifnonnull }
     If Instructions^[I].Opcode in [OP_GETFIELD, OP_GETSTATIC] Then Begin
@@ -9097,7 +9097,7 @@ Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     If Instructions^[I].Opcode in [OP_GETFIELD, OP_GETSTATIC] Then Begin
       CPIdx := Instructions^[I].Op1;
@@ -9152,7 +9152,7 @@ Begin
         '', MTFieldAccesses[I].FieldName,
         'Champ accede avec et sans synchronisation');
     End;
-    
+
     { Verifier setter sync mais getter non sync }
     If MTFieldAccesses[I].SetterSync and (Not MTFieldAccesses[I].GetterSync) Then Begin
       AddConcurrencyBug(UG_SYNC_SET_UNSYNC_GET, 0, 0,
@@ -9170,7 +9170,7 @@ Var
 Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   For I := 0 to InstrCount - 1 Do Begin
     { Detecter monitorenter/monitorexit explicites (sans synchronized) }
     { Dans une classe utilisant JSR166 (Lock), c'est suspect }
@@ -9189,31 +9189,31 @@ Var
 Begin
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
   If Methods[MethodIdx].CodeLen = 0 Then Exit;
-  
+
   IsSync := IsSynchronizedMethod(MethodIdx);
   MTInSyncMethod := IsSync;
-  
+
   { Decoder les instructions si pas deja fait }
   DecodeInstructions(Methods[MethodIdx]);
-  
+
   { Tracker les acces aux champs }
   TrackFieldAccess(MethodIdx, IsSync);
-  
+
   { Detecter les blocs synchronized vides }
   DetectEmptySyncBlock(MethodIdx);
-  
+
   { Detecter wait() sans boucle }
   DetectWaitNotInLoop(MethodIdx);
-  
+
   { Detecter await() sans boucle }
   DetectAwaitNotInLoop(MethodIdx);
-  
+
   { Detecter notify() nu }
   DetectNakedNotify(MethodIdx);
-  
+
   { Detecter double-checked locking }
   DetectDoubleCheckedLocking(MethodIdx);
-  
+
   { Detecter utilisation directe de monitor }
   DetectDirectMonitorUse(MethodIdx);
 End;
@@ -9224,12 +9224,12 @@ Var
   I: Integer;
 Begin
   InitConcurrencyState;
-  
+
   { Analyser toutes les methodes }
   For I := 0 to MethodCount - 1 Do Begin
     AnalyzeMethodForConcurrency(I);
   End;
-  
+
   { Detecter les inconsistances entre methodes }
   DetectInconsistentSync(-1);
 End;
@@ -9250,7 +9250,7 @@ Begin
   WriteLn('Total inconsistent : ', MTTotalInconsistentSync);
   WriteLn('Total sync/unsync  : ', MTTotalSyncSetUnsyncGet);
   WriteLn;
-  
+
   If MTBugCount > 0 Then Begin
     WriteLn('--- Bugs de concurrence detectes ---');
     For I := 0 to MTBugCount - 1 Do Begin
@@ -9361,7 +9361,7 @@ Begin
   EXInTryBlock := False;
   EXInCatchBlock := False;
   EXInFinallyBlock := False;
-  
+
   For I := 0 to MAX_EX_BUGS - 1 Do Begin
     EXBugs[I].BugType := EXH_NONE;
     EXBugs[I].PC := 0;
@@ -9371,7 +9371,7 @@ Begin
     EXBugs[I].CatchType := '';
     EXBugs[I].Details := '';
   End;
-  
+
   For I := 0 to MAX_EX_CATCH_INFO - 1 Do Begin
     EXCatchInfos[I].StartPC := 0;
     EXCatchInfos[I].EndPC := 0;
@@ -9383,7 +9383,7 @@ Begin
     EXCatchInfos[I].IsTooWide := False;
     EXCatchInfos[I].ExcTableIdx := -1;
   End;
-  
+
   For I := 0 to MAX_EX_FINALLY_INFO - 1 Do Begin
     EXFinallyInfos[I].StartPC := 0;
     EXFinallyInfos[I].EndPC := 0;
@@ -9448,7 +9448,7 @@ End;
 { --- TODO 17 : Detecter si c'est une methode equals --- }
 Function IsEqualsMethod(MethodName, Descriptor: String): Boolean;
 Begin
-  IsEqualsMethod := (MethodName = 'equals') and 
+  IsEqualsMethod := (MethodName = 'equals') and
                     (Descriptor = '(Ljava/lang/Object;)Z');
 End;
 
@@ -9485,7 +9485,7 @@ Begin
   IsSuperEqualsCall := False;
   If (InstrIdx < 0) or (InstrIdx >= InstrCount) Then Exit;
   If Instructions^[InstrIdx].Opcode <> OP_INVOKESPECIAL Then Exit;
-  
+
   { Op1 contient l'index dans le constant pool }
   CpIdx := Instructions^[InstrIdx].Op1;
   If (CpIdx > 0) and (CpIdx < CPCount) Then Begin
@@ -9497,7 +9497,7 @@ Begin
       { Ref1 = class_index, Ref2 = name_and_type_index }
       ClassIdx := CP^[CpIdx].Ref1;
       NatIdx := CP^[CpIdx].Ref2;
-      
+
       { Obtenir le nom de classe }
       If (ClassIdx > 0) and (ClassIdx < CPCount) Then Begin
         If CP^[ClassIdx].Tag = CP_CLASS Then Begin
@@ -9509,19 +9509,19 @@ Begin
           End;
         End;
       End;
-      
+
       { Obtenir le nom et descripteur de methode }
       If (NatIdx > 0) and (NatIdx < CPCount) Then Begin
         If CP^[NatIdx].Tag = CP_NAMEANDTYPE Then Begin
           { Ref1 = name_index, Ref2 = descriptor_index }
           NameIdx := CP^[NatIdx].Ref1;
           DescIdx := CP^[NatIdx].Ref2;
-          
+
           If (NameIdx > 0) and (NameIdx < CPCount) Then Begin
             If CP^[NameIdx].Tag = CP_UTF8 Then
               MemberName := CP^[NameIdx].StrVal;
           End;
-          
+
           If (DescIdx > 0) and (DescIdx < CPCount) Then Begin
             If CP^[DescIdx].Tag = CP_UTF8 Then
               MemberDesc := CP^[DescIdx].StrVal;
@@ -9529,7 +9529,7 @@ Begin
         End;
       End;
     End;
-    
+
     { Verifier que c'est super.equals() }
     CurrentClass := ClassInfo.ThisClass;
     If (MemberClass <> '') and (MemberClass <> CurrentClass) and
@@ -9544,7 +9544,7 @@ Procedure AddExHandlingBug(BugType: Integer; PC: LongWord; LineNum: Integer;
                            CatchType, Details: String);
 Begin
   If EXBugCount >= MAX_EX_BUGS Then Exit;
-  
+
   EXBugs[EXBugCount].BugType := BugType;
   EXBugs[EXBugCount].PC := PC;
   EXBugs[EXBugCount].LineNum := LineNum;
@@ -9557,9 +9557,9 @@ Begin
   End;
   EXBugs[EXBugCount].CatchType := CatchType;
   EXBugs[EXBugCount].Details := Details;
-  
+
   Inc(EXBugCount);
-  
+
   { Incrementer les compteurs selon le type }
   Case BugType of
     EXH_THROWN_IGNORED: Inc(EXTotalIgnored);
@@ -9573,7 +9573,7 @@ Begin
 End;
 
 { --- TODO 17 : Analyser un bloc catch pour determiner s'il ignore l'exception --- }
-Procedure AnalyzeCatchBlock(MethodIdx: Integer; HandlerPC: LongWord; 
+Procedure AnalyzeCatchBlock(MethodIdx: Integer; HandlerPC: LongWord;
                             CatchType: String; ExcIdx: Integer);
 Var
   I, StartInstr, InstrLen: Integer;
@@ -9583,7 +9583,7 @@ Var
   LineNum: Integer;
 Begin
   If (Instructions = nil) or (InstrCount = 0) Then Exit;
-  
+
   { Trouver l'instruction au HandlerPC }
   StartInstr := -1;
   For I := 0 to InstrCount - 1 Do Begin
@@ -9592,37 +9592,37 @@ Begin
       Break;
     End;
   End;
-  
+
   If StartInstr < 0 Then Exit;
-  
+
   LineNum := GetLineNumber(Methods[MethodIdx], HandlerPC);
   IsPopOnly := False;
   IsPopReturn := False;
-  
+
   { Compter les instructions dans le catch handler }
   { Un catch minimal est : astore (stocker exception) ou pop (ignorer) }
   { suivi d'autres instructions ou return }
-  
+
   InstrLen := 0;
   I := StartInstr;
   While (I < InstrCount) and (InstrLen < 10) Do Begin
     PC := Instructions^[I].PC;
-    
+
     { Sortir si on atteint un autre handler ou une branche arriere }
-    If (InstrLen > 0) and (IsBranchOpcode(Instructions^[I].Opcode) or 
+    If (InstrLen > 0) and (IsBranchOpcode(Instructions^[I].Opcode) or
         IsReturnOpcode(Instructions^[I].Opcode) or
         (Instructions^[I].Opcode = OP_ATHROW)) Then Begin
       Break;
     End;
-    
+
     Inc(InstrLen);
     Inc(I);
   End;
-  
+
   { Detecter les patterns de catch ignore }
   If (StartInstr < InstrCount) Then Begin
     Opcode1 := Instructions^[StartInstr].Opcode;
-    
+
     { Pattern 1: pop seul ou pop + goto/return }
     If IsPopOpcode(Opcode1) Then Begin
       If (InstrLen = 1) Then Begin
@@ -9634,9 +9634,9 @@ Begin
         End;
       End;
     End;
-    
+
     { Pattern 2: astore suivi uniquement de return }
-    If IsAstoreOpcode(Opcode1) and (InstrLen = 2) and 
+    If IsAstoreOpcode(Opcode1) and (InstrLen = 2) and
        (StartInstr + 1 < InstrCount) Then Begin
       Opcode2 := Instructions^[StartInstr + 1].Opcode;
       If IsReturnOpcode(Opcode2) Then Begin
@@ -9644,7 +9644,7 @@ Begin
       End;
     End;
   End;
-  
+
   { Enregistrer le catch block }
   If EXCatchCount < MAX_EX_CATCH_INFO Then Begin
     EXCatchInfos[EXCatchCount].StartPC := 0; { sera rempli depuis exc table }
@@ -9658,7 +9658,7 @@ Begin
     EXCatchInfos[EXCatchCount].ExcTableIdx := ExcIdx;
     Inc(EXCatchCount);
   End;
-  
+
   { Reporter les bugs detectes }
   If IsPopOnly Then Begin
     AddExHandlingBug(EXH_POP_ONLY, HandlerPC, LineNum, CatchType,
@@ -9667,7 +9667,7 @@ Begin
     AddExHandlingBug(EXH_THROWN_IGNORED, HandlerPC, LineNum, CatchType,
                      'Exception capturee et ignoree silencieusement');
   End;
-  
+
   { Reporter catch trop large }
   If IsCatchThrowable(CatchType) Then Begin
     AddExHandlingBug(EXH_CATCH_THROWABLE, HandlerPC, LineNum, CatchType,
@@ -9679,7 +9679,7 @@ Begin
 End;
 
 { --- TODO 17 : Analyser les blocs finally pour detecter return --- }
-Procedure AnalyzeFinallyBlock(MethodIdx: Integer; HandlerPC: LongWord; 
+Procedure AnalyzeFinallyBlock(MethodIdx: Integer; HandlerPC: LongWord;
                               ExcIdx: Integer);
 Var
   I, StartInstr: Integer;
@@ -9689,7 +9689,7 @@ Var
   EndPC: LongWord;
 Begin
   If (Instructions = nil) or (InstrCount = 0) Then Exit;
-  
+
   { Trouver l'instruction au HandlerPC }
   StartInstr := -1;
   For I := 0 to InstrCount - 1 Do Begin
@@ -9698,31 +9698,31 @@ Begin
       Break;
     End;
   End;
-  
+
   If StartInstr < 0 Then Exit;
-  
+
   HasReturn := False;
   ReturnPC := 0;
   EndPC := HandlerPC;
-  
+
   { Scanner le bloc finally pour trouver un return }
   I := StartInstr;
   While I < InstrCount Do Begin
     PC := Instructions^[I].PC;
     EndPC := PC;
-    
+
     If IsReturnOpcode(Instructions^[I].Opcode) Then Begin
       HasReturn := True;
       ReturnPC := PC;
       Break;
     End;
-    
+
     { Sortir si on atteint athrow (fin normale du finally) }
     If Instructions^[I].Opcode = OP_ATHROW Then Break;
-    
+
     Inc(I);
   End;
-  
+
   { Enregistrer le finally block }
   If EXFinallyCount < MAX_EX_FINALLY_INFO Then Begin
     EXFinallyInfos[EXFinallyCount].StartPC := HandlerPC;
@@ -9732,7 +9732,7 @@ Begin
     EXFinallyInfos[EXFinallyCount].ExcTableIdx := ExcIdx;
     Inc(EXFinallyCount);
   End;
-  
+
   { Reporter le bug si return dans finally }
   If HasReturn Then Begin
     LineNum := GetLineNumber(Methods[MethodIdx], ReturnPC);
@@ -9751,16 +9751,16 @@ Var
 Begin
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
   If (Instructions = nil) or (InstrCount = 0) Then Exit;
-  
+
   { Verifier que c'est bien une methode equals }
   If not IsEqualsMethod(Methods[MethodIdx].Name, Methods[MethodIdx].Descriptor) Then
     Exit;
-    
+
   { Verifier que ce n'est pas la classe Object elle-meme }
   CurrentClass := ClassInfo.ThisClass;
   If (CurrentClass = 'java/lang/Object') or (CurrentClass = 'Object') Then Exit;
   If Pos('java/lang/Object', CurrentClass) > 0 Then Exit;
-  
+
   { Chercher un appel super.equals() }
   HasSuperEquals := False;
   For I := 0 to InstrCount - 1 Do Begin
@@ -9769,7 +9769,7 @@ Begin
       Break;
     End;
   End;
-  
+
   { Reporter si pas d'appel super.equals() }
   If not HasSuperEquals Then Begin
     LineNum := GetLineNumber(Methods[MethodIdx], 0);
@@ -9789,23 +9789,23 @@ Var
   LineNum: Integer;
 Begin
   If (Instructions = nil) or (InstrCount = 0) Then Exit;
-  
+
   { Initialiser }
   For I := 0 to 63 Do Begin
     VarUsed[I] := False;
     VarDerefPC[I] := 0;
   End;
-  
+
   { Scanner les instructions }
   For I := 0 to InstrCount - 1 Do Begin
     PC := Instructions^[I].PC;
-    
+
     { Detecter un dereferencement (getfield, invokevirtual apres aload) }
     If (I > 0) and ((Instructions^[I].Opcode = OP_GETFIELD) or
         (Instructions^[I].Opcode = OP_INVOKEVIRTUAL) or
         (Instructions^[I].Opcode = OP_INVOKEINTERFACE)) Then Begin
       { L'instruction precedente devrait avoir charge une reference }
-      If (Instructions^[I-1].Opcode >= OP_ALOAD_0) and 
+      If (Instructions^[I-1].Opcode >= OP_ALOAD_0) and
          (Instructions^[I-1].Opcode <= OP_ALOAD_3) Then Begin
         VarIdx := Instructions^[I-1].Opcode - OP_ALOAD_0;
         If (VarIdx >= 0) and (VarIdx < 64) Then Begin
@@ -9824,13 +9824,13 @@ Begin
         End;
       End;
     End;
-    
+
     { Detecter un null check (ifnull, ifnonnull, ou comparaison avec aconst_null) }
-    If (Instructions^[I].Opcode = OP_IFNULL) or 
+    If (Instructions^[I].Opcode = OP_IFNULL) or
        (Instructions^[I].Opcode = OP_IFNONNULL) Then Begin
       { Verifier si la variable a deja ete dereferencee }
       If (I > 0) Then Begin
-        If (Instructions^[I-1].Opcode >= OP_ALOAD_0) and 
+        If (Instructions^[I-1].Opcode >= OP_ALOAD_0) and
            (Instructions^[I-1].Opcode <= OP_ALOAD_3) Then Begin
           VarIdx := Instructions^[I-1].Opcode - OP_ALOAD_0;
           If (VarIdx >= 0) and (VarIdx < 64) and VarUsed[VarIdx] Then Begin
@@ -9858,27 +9858,27 @@ Var
   CatchType: String;
 Begin
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
-  
+
   { Reinitialiser les compteurs locaux }
   EXCatchCount := 0;
   EXFinallyCount := 0;
-  
+
   { Analyser la table d'exceptions de la methode }
   For I := 0 to Methods[MethodIdx].ExcCount - 1 Do Begin
     CatchType := Methods[MethodIdx].ExcTable[I].CatchName;
-    
+
     { Detecter si c'est un finally (catch all) }
     If IsCatchAll(CatchType) Then Begin
       AnalyzeFinallyBlock(MethodIdx, Methods[MethodIdx].ExcTable[I].HandlerPC, I);
     End Else Begin
-      AnalyzeCatchBlock(MethodIdx, Methods[MethodIdx].ExcTable[I].HandlerPC, 
+      AnalyzeCatchBlock(MethodIdx, Methods[MethodIdx].ExcTable[I].HandlerPC,
                         CatchType, I);
     End;
   End;
-  
+
   { Detecter equals() sans super.equals() }
   DetectEqualsNoSuper(MethodIdx);
-  
+
   { Detecter les null check redondants }
   DetectRedundantNullCheck(MethodIdx);
 End;
@@ -9891,21 +9891,21 @@ Var
 Begin
   If (MethodIdx < 0) or (MethodIdx >= MethodCount) Then Exit;
   If Methods[MethodIdx].CodeLen = 0 Then Exit; { Methode abstraite ou native }
-  
+
   { Sauvegarder l'etat courant }
   OldPC := EXCurrentPC;
   OldLine := EXCurrentLine;
-  
+
   { Decoder les instructions si pas deja fait }
   If (Instructions = nil) or (InstrCount = 0) Then Begin
     AllocInstructions;
     DecodeInstructions(Methods[MethodIdx]);
   End;
-  
+
   { Mettre a jour le nom de methode dans les bugs }
   { Lancer la detection }
   DetectExceptionHandlingIssues(MethodIdx);
-  
+
   { Restaurer l'etat }
   EXCurrentPC := OldPC;
   EXCurrentLine := OldLine;
@@ -9917,7 +9917,7 @@ Var
   I: Integer;
 Begin
   InitExHandlingState;
-  
+
   { Analyser toutes les methodes }
   For I := 0 to MethodCount - 1 Do Begin
     AnalyzeMethodForExceptions(I);
@@ -9941,7 +9941,7 @@ Begin
   WriteLn('Total pop only     : ', EXTotalPopOnly);
   WriteLn('Total no super eq  : ', EXTotalNoSuperEquals);
   WriteLn;
-  
+
   If EXBugCount > 0 Then Begin
     WriteLn('--- Bugs d''exceptions detectes ---');
     For I := 0 to EXBugCount - 1 Do Begin
@@ -11015,13 +11015,13 @@ Begin
   MethName := '';
   Desc := '';
   If (CP = Nil) or (CPIdx < 1) or (CPIdx >= CPCount) Then Exit;
-  
+
   { Tag 10 = Methodref, Tag 11 = InterfaceMethodref }
   If (CP^[CPIdx].Tag = 10) or (CP^[CPIdx].Tag = 11) Then
   Begin
     ClassIdx := CP^[CPIdx].Ref1;
     NATIdx := CP^[CPIdx].Ref2;
-    
+
     { Obtenir le nom de la classe }
     If (ClassIdx >= 1) and (ClassIdx < CPCount) Then
     Begin
@@ -11033,7 +11033,7 @@ Begin
             ClsName := CP^[NameIdx].StrVal;
       End;
     End;
-    
+
     { Obtenir le nom et descripteur de la methode }
     If (NATIdx >= 1) and (NATIdx < CPCount) Then
     Begin
@@ -11059,7 +11059,7 @@ Var
 Begin
   GetNewClassName := '';
   If (CP = Nil) or (CPIdx < 1) or (CPIdx >= CPCount) Then Exit;
-  
+
   { Tag 7 = Class }
   If CP^[CPIdx].Tag = 7 Then
   Begin
@@ -11085,11 +11085,11 @@ Var
 Begin
   If Instructions = Nil Then Exit;
   If InstrCount = 0 Then Exit;
-  
+
   LastNewClass := '';
   LastNewPC := 0;
   LastNewLine := 0;
-  
+
   For I := 0 to InstrCount - 1 do
   Begin
     Opcode := Instructions^[I].Opcode;
@@ -11097,7 +11097,7 @@ Begin
     LineNum := Instructions^[I].LineNum;
     I18NCurrentPC := PC;
     I18NCurrentLine := LineNum;
-    
+
     { Tracker les OP_NEW pour detecter les constructeurs de wrapper }
     If Opcode = OP_NEW Then  { 187 = new }
     Begin
@@ -11106,7 +11106,7 @@ Begin
       LastNewPC := PC;
       LastNewLine := LineNum;
     End;
-    
+
     { Detecter les appels de methodes (invokevirtual, invokespecial, invokestatic) }
     If (Opcode = OP_INVOKEVIRTUAL) or   { 182 }
        (Opcode = OP_INVOKESPECIAL) or   { 183 }
@@ -11115,7 +11115,7 @@ Begin
     Begin
       CPIdx := Instructions^[I].Op1;
       GetMethodRefInfo(CPIdx, ClsName, MethName, Desc);
-      
+
       { String.getBytes() sans charset }
       If IsStringGetBytesNoArg(ClsName, MethName, Desc) Then
       Begin
@@ -11125,7 +11125,7 @@ Begin
         TrackI18NCall(IC_CAT_GETBYTES, PC, LineNum, ClsName, MethName, Desc,
                       False, False);
       End;
-      
+
       { toUpperCase/toLowerCase sans Locale }
       If IsStringCaseConvertNoLocale(ClsName, MethName, Desc) Then
       Begin
@@ -11135,7 +11135,7 @@ Begin
         TrackI18NCall(IC_CAT_CASE_CONV, PC, LineNum, ClsName, MethName, Desc,
                       False, False);
       End;
-      
+
       { new String([B) sans charset }
       If IsNewStringBytesNoCharset(ClsName, MethName, Desc) Then
       Begin
@@ -11145,7 +11145,7 @@ Begin
         TrackI18NCall(IC_CAT_NEW_STRING, PC, LineNum, ClsName, MethName, Desc,
                       False, False);
       End;
-      
+
       { new String(String) inutile }
       If IsNewStringFromString(ClsName, MethName, Desc) Then
       Begin
@@ -11155,7 +11155,7 @@ Begin
         TrackI18NCall(IC_CAT_NEW_STRING, PC, LineNum, ClsName, MethName, Desc,
                       False, False);
       End;
-      
+
       { Constructeurs de primitive wrapper (Integer, Long, etc.) }
       If IsPrimitiveBoxingCtor(ClsName, MethName, Desc) Then
       Begin
@@ -11165,7 +11165,7 @@ Begin
         TrackI18NCall(IC_CAT_BOXING, PC, LineNum, ClsName, MethName, Desc,
                       False, False);
       End;
-      
+
       { Constructeurs Double/Float }
       If IsFloatPointBoxingCtor(ClsName, MethName, Desc) Then
       Begin
@@ -11175,7 +11175,7 @@ Begin
         TrackI18NCall(IC_CAT_BOXING, PC, LineNum, ClsName, MethName, Desc,
                       False, False);
       End;
-      
+
       { String.format sans Locale }
       If IsStringFormatNoLocale(ClsName, MethName, Desc) Then
       Begin
@@ -11194,11 +11194,11 @@ Procedure AnalyzeMethodForI18N(MethIdx: Integer);
 Begin
   If Not I18NInitialized Then
     InitI18NState;
-  
+
   { Reinitialiser les bugs pour cette methode }
   I18NBugCount := 0;
   I18NCallCount := 0;
-  
+
   { Decoder les instructions si necessaire }
   If (MethIdx >= 0) and (MethIdx < MethodCount) Then
   Begin
@@ -11217,7 +11217,7 @@ Var
 Begin
   If Not I18NInitialized Then
     InitI18NState;
-  
+
   For M := 0 to MethodCount - 1 do
     AnalyzeMethodForI18N(M);
 End;
@@ -14828,7 +14828,7 @@ Var
   Ext: String;
 Begin
   { Normaliser le chemin }
-  If (DirPath <> '') and (DirPath[Length(DirPath)] <> '\') and 
+  If (DirPath <> '') and (DirPath[Length(DirPath)] <> '\') and
      (DirPath[Length(DirPath)] <> '/') Then
     DirPath := DirPath + '\';
   { Chercher les fichiers .class }
@@ -14940,8 +14940,8 @@ Begin
   WriteLn('Nombre de cibles  : ', MnTargetCount);
   For I := 0 to MnTargetCount - 1 do
   Begin
-    WriteLn('  Cible ', I, ': ', MnTargets[I].Path, 
-            ' (', MnTargetTypeName(MnTargets[I].TargetType), 
+    WriteLn('  Cible ', I, ': ', MnTargets[I].Path,
+            ' (', MnTargetTypeName(MnTargets[I].TargetType),
             ', ', MnTargets[I].ClassCount, ' classes, ',
             MnTargets[I].BugCount, ' bugs)');
   End;
@@ -15046,6 +15046,18 @@ End;
 { ============================================================================ }
 
 Begin
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+    WriteLn('SPOTBUGS - Cette commande permet de lancer ',
+            'l''analyseur statique de bytecode Java.');
+    WriteLn;
+    WriteLn('Version ', MN_VERSION);
+    WriteLn;
+    WriteLn('Syntaxe: SPOTBUGS [options] <fichiers.class|repertoires>');
+    WriteLn;
+    WriteLn('Utilisez -help pour plus d''informations.');
+    Halt;
+ End;
   { Initialiser tous les modules }
   InitGlobals;
   InitMnState;
