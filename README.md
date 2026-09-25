@@ -44,41 +44,79 @@ L'application DEVENV possède plusieurs terminaux pour répondre aux différente
 		<th>Terminal</th>
 		<th>Plateforme visé</th>
 		<th>Emulateur</th>
+		<th>Compilateur</th>
 	</tr>
 	<tr>
 		<td><b>Invite de commande</b></td>
 		<td>DOS, Windows 2, Windows 3</td>
 		<td>Emulateur DOS, Emulateur Windows 2</td>
+		<td>MASM</td>
 	</tr>
 	<tr>
 		<td><b>PowerShell dev</b></td>
 		<td>Windows/Linux</td>
 		<td>Système d'exploitation courant</td>
+		<td></td>		
 	</tr>
 	<tr>
 		<td><b>Guläm</b></td>
 		<td>Atari ST</td>
 		<td>Emulateur Atari ST</td>
+		<td>AS68</td>		
 	</tr>
 	<tr>
 		<td><b>AmigaDOS</b></td>
 		<td>Amiga</td>
 		<td>Emulateur Amiga</td>
+		<td></td>		
 	</tr>
 	<tr>
 		<td><b>Bash</b></td>
 		<td>Linux et UNIX</td>
 		<td>Emulateur Linux</td>
+		<td></td>		
 	</tr>
 	<tr>
 		<td><b>Norton Commander</b></td>
 		<td>Tous les emulateurs</td>
 		<td>Emulateurs OS/2, Linux, DOS, CoCo 3, Commodore 64, NES</td>
+		<td>MASM</td>		
 	</tr>
 	<tr>
 		<td><b>OS/2 &amp; REXX</b></td>
 		<td>OS/2</td>
 		<td>Emulateur OS/2</td>
+		<td>MASM</td>		
+	</tr>
+	<tr>
+		<td><b>OS-9</b></td>
+		<td>CoCo 3 (Color Computer 3) de Tandy/Radio Shack</td>
+		<td>Emulateur OS-9</td>
+		<td>ASM</td>
+	</tr>
+	<tr>
+		<td><b>FLEX</b></td>
+		<td>6809, CoCo,...</td>
+		<td>Emulateur 6809</td>
+		<td></td>
+	</tr>
+	<tr>
+		<td><b>CP/M-80</b></td>
+		<td>8080, Z80, Z8000,...</td>
+		<td>Emulateur Z8000</td>
+		<td></td>
+	</tr>
+	<tr>
+		<td><b>VMS</b></td>
+		<td>VAX</td>
+		<td>Emulateur VMS</td>
+		<td></td>
+	</tr>
+	<tr>	
+		<td><b>COS</b></td>
+		<td>Cray 1</td>
+		<td>Emulateur Cray 1</td>
+		<td>CAL</td>
 	</tr>
 </table>
 
@@ -299,6 +337,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>ASMZ80.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur Z80.</td>
+		</tr>
+		<tr>
+			<td><b>ASZ8K.PAS</b></td>
+			<td>Cette commande permet de lancer l'assembleur Zilog Z8001/Z8002 pour CP/M-8000.</td>
 		</tr>
 		<tr>
 			<td><b>AWK86.PAS</b></td>
@@ -593,6 +635,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Kotlin pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>LDZ8K.PAS</b></td>
+			<td>Cette commande permet de lancer l'éditeur de liens Z8000 x.out pour CP/M-8000.</td>
+		</tr>
+		<tr>
 			<td><b>LIB.PAS</b></td>
 			<td>Cette commande permet de lancer le gestionnaire de bibliothèques compatible Microsoft.</td>
 		</tr>
@@ -778,6 +824,9 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td><b>PSPCW32.PAS</b></td>
 			<td>Cette commande permet de compiler du PSP (Pascal Server Pages) pour de l'assembleur du microprocesseur 80386 (en véritable exécutable Windows 32 bits de format EXE PE Windows).</td>
 		</tr>
+		<tr>
+			<td><b>PSYSTEM.PAS</b></td>
+			<td>Cette commande permet de lancer l'environnement de commande UCSD p-System.</td>
 		<tr>
 			<td><b>PYTHCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Python pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
