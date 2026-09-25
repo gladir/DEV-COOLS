@@ -2094,7 +2094,8 @@ BEGIN
  If TmpLanguage<>''Then Begin
   If TmpLanguage[1]='"'Then TmpLanguage:=Copy(TmpLanguage,2,255);
   If StrToUpper(Copy(TmpLanguage,1,2))='EN'Then Language:=_English Else
-  If StrToUpper(Copy(TmpLanguage,1,2))='GR'Then Language:=_Germany Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='DE')or
+   (StrToUpper(Copy(TmpLanguage,1,2))='GR')Then Language:=_Germany Else
   If StrToUpper(Copy(TmpLanguage,1,2))='IT'Then Language:=_Italian Else
   If StrToUpper(Copy(TmpLanguage,1,2))='SP'Then Language:=_Spain;
  End;
@@ -2103,11 +2104,48 @@ BEGIN
   Case Language of
   _Germany:
   Begin
-   WriteLn('Formate un disque pour une utilisation sous DOS.');
+   WriteLn('Formatiert einen Datentraeger fuer die Verwendung unter DOS.');
    WriteLn;
-   WriteLn(
-   'FORMAT [A:|B:] [format] [NV] [/F:Groesse] [/V:Name] [/T:n] [/N:n] [/Q] [/U] [/S]');
-   WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name] [/T:n] [/N:n] [/Q] [/U] [/S]');
+   WriteLn('Syntax: FORMAT Laufwerk: [Format] [NV] [/F:Groesse] [/V:Name]');
+   WriteLn('               [/T:n] [/N:n] [/Q] [/U] [/S]');
+   WriteLn('        FORMAT Datei [160|180|320|360|720|1200|1440|2880] [Optionen]');
+   WriteLn('        FORMAT Platte.img /CREATE:GroesseMB [/TYPE:RAW|VDI] [/FS:FAT16]');
+   WriteLn;
+   WriteLn(' Datei        Verwendet die angegebene Datei als Diskettenabbild');
+   WriteLn(' C: bis Z:    Formatiert unter echtem DOS eine FAT12/FAT16/FAT32-');
+   WriteLn('              oder HPFS-Partition; das aktive Laufwerk wird abgelehnt');
+   WriteLn(' NV           Deaktiviert die Ueberpruefung');
+   WriteLn(' /1           Formatiert nur eine Diskettenseite');
+   WriteLn(' /4           Formatiert 360 KB in einem 1,2-MB-Laufwerk');
+   WriteLn(' /8           Verwendet acht Sektoren pro Spur');
+   WriteLn(' /A:Groesse   Groesse der Zuordnungseinheit: 512 bis 32768 Byte');
+   WriteLn(' /B           Reserviert zusammenhaengenden Platz fuer Startdateien');
+   WriteLn('              und kann nicht gemeinsam mit /S verwendet werden');
+   WriteLn(' /CREATE      Erstellt ein neues Diskettenabbild');
+   WriteLn(' /CREATE:MB   Erstellt ein Festplattenabbild mit MBR und Partition');
+   WriteLn(' /F           Erzwingt das angegebene Diskettenformat');
+   WriteLn(' /F:Groesse   160, 180, 320, 360, 720, 1200, 1440 oder 2880 KB');
+   WriteLn(' /FS:System   FAT, FAT12, FAT16, FAT32 oder HPFS');
+   WriteLn('              FAT32 und HPFS benoetigen eine Festplatte oder ein Abbild');
+   WriteLn('              exFAT und NTFS werden erkannt, aber nicht implementiert');
+   WriteLn(' /N:n         Anzahl der Sektoren pro Spur');
+   WriteLn(' /Q           Schnellformatierung der Dateisystemtabellen');
+   WriteLn(' /S           Kopiert IO.SYS, MSDOS.SYS und COMMAND.COM');
+   WriteLn(' /S:Familie   Waehlt die DOS-Familie (Vorgabe: MS-DOS):');
+   WriteLn('               MS-DOS   -> IO.SYS, MSDOS.SYS, COMMAND.COM');
+   WriteLn('               PC-DOS   -> IBMBIO.COM, IBMDOS.COM, COMMAND.COM');
+   WriteLn('               DR-DOS   -> IBMBIO.COM, IBMDOS.COM, COMMAND.COM');
+   WriteLn('               FreeDOS  -> KERNEL.SYS, COMMAND.COM');
+   WriteLn('               RxDOS    -> RXDOSBIO.SYS, RXDOS.SYS, COMMAND.COM');
+   WriteLn('               Win95    -> IO.SYS, MSDOS.SYS, COMMAND.COM');
+   WriteLn('               PTS-DOS  -> PTSBIO.SYS, PTSDOS.SYS, COMMAND.COM');
+   WriteLn('               OS/2     -> OS2BOOT, OS2LDR, OS2KRNL');
+   WriteLn('               WinNT    -> NTLDR, NTDETECT.COM, BOOT.INI');
+   WriteLn(' /T:n         Anzahl der Spuren');
+   WriteLn(' /TYPE:VDI    Erstellt ein festes VirtualBox-VDI-Abbild');
+   WriteLn(' /TYPE:RAW    Erstellt ein RAW-Abbild (Vorgabe)');
+   WriteLn(' /U           Vollstaendige, nicht rueckgaengige Formatierung');
+   WriteLn(' /V:Name      Datentraegername mit hoechstens 11 Zeichen');
   End;
   _English:
   Begin
