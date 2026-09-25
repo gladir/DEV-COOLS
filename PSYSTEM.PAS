@@ -1641,7 +1641,7 @@ Begin
  End;
  13:
  Begin
- { write integer } V := PCode_Pop; Str(V, S); PCode_Write(S); 
+ { write integer } V := PCode_Pop; Str(V, S); PCode_Write(S);
  End;
  16:
  Begin
@@ -1651,7 +1651,7 @@ Begin
  End;
  17:
  Begin
- { write char } PCode_PutChar(Chr(Byte(PCode_Pop And $FF))); 
+ { write char } PCode_PutChar(Chr(Byte(PCode_Pop And $FF)));
  End;
  19:
  Begin
@@ -1669,7 +1669,7 @@ Begin
  End;
  22:
  Begin
- { writeln } PCode_PutChar(#13); PCode_PutChar(#10); 
+ { writeln } PCode_PutChar(#13); PCode_PutChar(#10);
  End;
  Else
  PCode_RuntimeError(305,'procedure SYSTEM '+PCode_IntToStr(ProcNum)+' inconnue');
@@ -1800,7 +1800,7 @@ Begin
  End;
  4:
  Begin
- { exit } N := PCode_Pop; PCode_Halted := True; PCode_ExitCode := N; 
+ { exit } N := PCode_Pop; PCode_Halted := True; PCode_ExitCode := N;
  End;
  18:
  Begin
@@ -9573,7 +9573,7 @@ Begin
  For I:=1 to ParamCount do Begin
   S:=ParamStr(I);
   if(S='/?')or(S='-?')or(UpperString(S)='HELP')Then Begin
-   WriteLn('PSYSTEM ',Version,' - Cette commande permet lancer ',
+   WriteLn('PSYSTEM ',Version,' - Cette commande permet de lancer ',
    'l''environnement de commande UCSD p-System.');
    Help;
    Halt(0)
