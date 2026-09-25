@@ -591,6 +591,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Fortran 77 pour l'assembleur du microprocesseur 80386 pour Windows 32 bits.</td>
 		</tr>
 		<tr>
+			<td><b>GEODUMP.PAS</b></td>
+			<td>Cette commande permet d'analyser des formats de fichiers PC/GEOS.</td>
+		</tr>
+		<tr>
 			<td><b>GOCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Go pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
