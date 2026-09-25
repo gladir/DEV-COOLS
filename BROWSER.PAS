@@ -5779,27 +5779,61 @@ Begin
 End;
 
 { Convertir un nom d'evenement en type }
+Type
+ DOMEventNameEntry = Record
+  Name: String[10];
+  Id: Byte;
+ End;
+
+Const
+ DOM_EVENT_COUNT = 15;
+ { Table des noms d'evenements DOM, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de
+   DOMNameToEventType ci-dessous (meme principe que CSSPropertyTable/
+   HTMLTagTable/JSKeywordTable). }
+ DOMEventNameTable: Array[0..DOM_EVENT_COUNT - 1] Of DOMEventNameEntry = (
+  (Name: 'blur';       Id: DOM_EVENT_BLUR),
+  (Name: 'change';     Id: DOM_EVENT_CHANGE),
+  (Name: 'click';      Id: DOM_EVENT_CLICK),
+  (Name: 'dblclick';   Id: DOM_EVENT_DBLCLICK),
+  (Name: 'focus';      Id: DOM_EVENT_FOCUS),
+  (Name: 'keydown';    Id: DOM_EVENT_KEYDOWN),
+  (Name: 'keypress';   Id: DOM_EVENT_KEYPRESS),
+  (Name: 'keyup';      Id: DOM_EVENT_KEYUP),
+  (Name: 'load';       Id: DOM_EVENT_LOAD),
+  (Name: 'mousedown';  Id: DOM_EVENT_MOUSEDOWN),
+  (Name: 'mouseout';   Id: DOM_EVENT_MOUSEOUT),
+  (Name: 'mouseover';  Id: DOM_EVENT_MOUSEOVER),
+  (Name: 'mouseup';    Id: DOM_EVENT_MOUSEUP),
+  (Name: 'submit';     Id: DOM_EVENT_SUBMIT),
+  (Name: 'unload';     Id: DOM_EVENT_UNLOAD)
+ );
+
+{ Obtenir le type d'evenement DOM a partir de son nom - recherche
+  dichotomique dans DOMEventNameTable (ci-dessus) au lieu des 15
+  comparaisons Si/SinonSi d'avant (meme principe que
+  CSSGetPropertyId/GetTagType/JSGetKeywordType). }
 Function DOMNameToEventType(Name: String): Byte;
 Var
  LowerName: String;
+ Lo, Hi, Mid: Integer;
 Begin
  LowerName := HTMLLowerCase(Name);
- If LowerName = 'click' Then DOMNameToEventType := DOM_EVENT_CLICK
- Else If LowerName = 'dblclick' Then DOMNameToEventType := DOM_EVENT_DBLCLICK
- Else If LowerName = 'mousedown' Then DOMNameToEventType := DOM_EVENT_MOUSEDOWN
- Else If LowerName = 'mouseup' Then DOMNameToEventType := DOM_EVENT_MOUSEUP
- Else If LowerName = 'mouseover' Then DOMNameToEventType := DOM_EVENT_MOUSEOVER
- Else If LowerName = 'mouseout' Then DOMNameToEventType := DOM_EVENT_MOUSEOUT
- Else If LowerName = 'keydown' Then DOMNameToEventType := DOM_EVENT_KEYDOWN
- Else If LowerName = 'keyup' Then DOMNameToEventType := DOM_EVENT_KEYUP
- Else If LowerName = 'keypress' Then DOMNameToEventType := DOM_EVENT_KEYPRESS
- Else If LowerName = 'load' Then DOMNameToEventType := DOM_EVENT_LOAD
- Else If LowerName = 'unload' Then DOMNameToEventType := DOM_EVENT_UNLOAD
- Else If LowerName = 'submit' Then DOMNameToEventType := DOM_EVENT_SUBMIT
- Else If LowerName = 'change' Then DOMNameToEventType := DOM_EVENT_CHANGE
- Else If LowerName = 'focus' Then DOMNameToEventType := DOM_EVENT_FOCUS
- Else If LowerName = 'blur' Then DOMNameToEventType := DOM_EVENT_BLUR
- Else DOMNameToEventType := 0;
+ DOMNameToEventType := 0;
+
+ Lo := 0;
+ Hi := DOM_EVENT_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If DOMEventNameTable[Mid].Name = LowerName Then Begin
+   DOMNameToEventType := DOMEventNameTable[Mid].Id;
+   Exit;
+  End
+  Else If DOMEventNameTable[Mid].Name < LowerName Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
 End;
 
 { Executer un selecteur CSS simple (querySelector - supporte #id, .class, tag) }
