@@ -863,9 +863,15 @@ Begin
  EightSectors or Format360In1200)Then Begin
   WriteLn('/T, /N, /1, /4 et /8 sont reserves aux disquettes.');Exit
  End;
- If RequestedFileSystem in[FS_FAT32,FS_EXFAT,FS_NTFS,FS_HPFS]Then Begin
+ If RequestedFileSystem in[FS_FAT32,FS_EXFAT,FS_NTFS]Then Begin
   WriteLn(
   'Le systeme demande exige des metadonnees de disque dur non prises en charge par ce formateur de disquettes.');Exit
+ End;
+ If(RequestedFileSystem=FS_HPFS)and not(InFile or HardDiskMode)Then Begin
+  WriteLn('HPFS est reserve aux partitions et aux images de disque dur.');Exit
+ End;
+ If(RequestedFileSystem=FS_HPFS)and(SystemTransfer or BootReserve)Then Begin
+  WriteLn('/S et /B ne sont pas disponibles pour HPFS.');Exit
  End;
  If BootReserve and SystemTransfer Then Begin
   WriteLn('Les options /B et /S sont incompatibles.');Exit
@@ -896,16 +902,20 @@ Begin
  ConfigureFileSystem:=False;
  If VolumeTotalSectors>0Then TotalSectors:=VolumeTotalSectors
  Else TotalSectors:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
- If RequestedFileSystem in[FS_FAT32,FS_EXFAT,FS_NTFS,FS_HPFS]Then Begin
+ If RequestedFileSystem=FS_HPFS Then Begin
+  If TotalSectors<8192Then Begin
+   WriteLn('HPFS exige une partition d''au moins 4 Mo.');Exit
+  End;
+  ConfigureFileSystem:=True;Exit
+ End;
+ If RequestedFileSystem in[FS_FAT32,FS_EXFAT,FS_NTFS]Then Begin
   Case RequestedFileSystem of
   FS_FAT32:WriteLn(
   'FAT32 exige au moins 65525 clusters et n''est pas compatible avec cette disquette.');
   FS_EXFAT:WriteLn(
   'exFAT exige des tables bitmap et UpCase non prises en charge sur disquette.');
   FS_NTFS:WriteLn(
-  'NTFS exige une MFT et des fichiers de metadonnees non pris en charge sur disquette.');
-  FS_HPFS:WriteLn(
-  'HPFS exige ses secteurs SuperBlock et SpareBlock non pris en charge sur disquette.')
+  'NTFS exige une MFT et des fichiers de metadonnees non pris en charge sur disquette.')
  End;Exit
 End;
 ActiveFATBits:=12;
@@ -1169,6 +1179,17 @@ Procedure PutLongLE(Var Buffer:TSectorBuffer;Offset:Word;Value:LongInt);Begin
  Buffer[Offset+2]:=Byte(Value shr 16);Buffer[Offset+3]:=Byte(Value shr 24)
 End;
 
+Procedure PutWordRaw(Var Buffer;Offset,Value:Word);
+Var B:Array[0..2047]of Byte Absolute Buffer;
+Begin B[Offset]:=Lo(Value);B[Offset+1]:=Hi(Value) End;
+
+Procedure PutLongRaw(Var Buffer;Offset:Word;Value:LongInt);
+Var B:Array[0..2047]of Byte Absolute Buffer;
+Begin
+ B[Offset]:=Byte(Value);B[Offset+1]:=Byte(Value shr 8);
+ B[Offset+2]:=Byte(Value shr 16);B[Offset+3]:=Byte(Value shr 24)
+End;
+
 Function GetLongLE(Var Buffer:TSectorBuffer;Offset:Word):LongInt;Forward;
 
 Function ImageSectorOffset(SectorNumber:LongInt):LongInt;Begin
@@ -1257,7 +1278,8 @@ Begin
  End;
  FillChar(MBR,SizeOf(MBR),0);MBR[446]:=$80;
  MBR[447]:=1;MBR[448]:=1;MBR[449]:=0;
- If RequestedFileSystem=FS_FAT12 Then MBR[450]:=$01
+ If RequestedFileSystem=FS_HPFS Then MBR[450]:=$07
+ Else If RequestedFileSystem=FS_FAT12 Then MBR[450]:=$01
  Else If SizeMB<32Then MBR[450]:=$04 Else MBR[450]:=$06;
  MBR[451]:=15;MBR[452]:=$FF;MBR[453]:=$FF;
  PutLongLE(MBR,454,63);PutLongLE(MBR,458,ImageVirtualSectors-63);
@@ -1290,6 +1312,15 @@ Begin
  PData:=PHYS1440;PData.Sec:=63;PData.Faces:=16;PData.Tracks:=1;
  LData:=LOG1440;LData.Media:=$F8;LData.RootSize:=512;
  PrepareOpenedHardDiskImage:=True
+End;
+
+Function UpdateImagePartitionType(PartitionType:Byte):Boolean;
+Var Written:Word;
+Begin
+ Seek(FileImg,ImageDataOffset+450);
+ If IOResult<>0Then Begin UpdateImagePartitionType:=False;Exit End;
+ BlockWrite(FileImg,PartitionType,1,Written);
+ UpdateImagePartitionType:=(Written=1)and(IOResult=0)
 End;
 
 Function ReadLogicalSector(SectorNumber:LongInt;Var Buffer):Boolean;
@@ -1335,7 +1366,8 @@ Begin
  End;
  VolumeTotalSectors:=Total;
  VolumeHiddenSectors:=GetLongLE(Boot,28);
- If(GetWordLE(Boot,17)=0)or(GetWordLE(Boot,22)=0)Then Begin
+ If(RequestedFileSystem<>FS_HPFS)and
+  ((GetWordLE(Boot,17)=0)or(GetWordLE(Boot,22)=0))Then Begin
   WriteLn('Cette partition utilise FAT32 ou un BPB non pris en charge.');
   WriteLn('Seules les partitions FAT12/FAT16 existantes peuvent etre reformatees.');Exit
  End;
@@ -1629,6 +1661,167 @@ Begin
  Phys4mat:=true;
 End;
 
+Function FormatHPFS(PData:PhysDataType):Boolean;
+Const
+ HPFSBandSectors=16384;
+Var
+ Sec:TSectorBuffer;
+ Bitmap,DNode:Array[0..2047]of Byte;
+ Total,BandCount,BitmapDirStart,BitmapDirSectors:LongInt;
+ BadBlockStart,HotfixStart,DirBandStart,DirBandEnd,DirBandSectors:LongInt;
+ DirBitmap,RootFNode,RootDNode,MapSector:LongInt;
+ Band,I,J,ValidBits,BitNo:LongInt;
+ LabelText,HPFSSignature:String;
+
+ Function BitmapSectorForBand(B:LongInt):LongInt;
+ Var BandStart,BandEnd:LongInt;
+ Begin
+  BandStart:=B*HPFSBandSectors;
+  BandEnd:=BandStart+HPFSBandSectors;
+  If BandEnd>Total Then BandEnd:=Total;
+  If B=0Then BitmapSectorForBand:=18
+  Else If(B and 1)=0Then BitmapSectorForBand:=BandStart
+  Else BitmapSectorForBand:=BandEnd-4
+ End;
+
+ Function RangesOverlap(A1,A2,B1,B2:LongInt):Boolean;Begin
+  RangesOverlap:=(A1<=B2)and(B1<=A2)
+ End;
+
+ Function IsAllocated(S:LongInt):Boolean;
+ Var K,M:LongInt;
+ Begin
+  IsAllocated:=True;
+  If(S<0)or(S>=Total)Then Exit;
+  If S<=39Then Exit;
+  If(S>=BitmapDirStart)and(S<BitmapDirStart+BitmapDirSectors)Then Exit;
+  If(S>=BadBlockStart)and(S<BadBlockStart+4)Then Exit;
+  If(S>=HotfixStart)and(S<HotfixStart+4)Then Exit;
+  If(S=RootFNode)or((S>=DirBitmap)and(S<DirBitmap+4))or
+   ((S>=DirBandStart)and(S<=DirBandEnd))Then Exit;
+  For K:=0to BandCount-1do Begin
+   M:=BitmapSectorForBand(K);
+   If(S>=M)and(S<M+4)Then Exit
+  End;
+  IsAllocated:=False
+ End;
+
+ Procedure ClearBitmapBit(Var B;N:LongInt);
+ Var A:Array[0..2047]of Byte Absolute B;
+ Begin A[N div 8]:=A[N div 8]and not(Byte(1shl(N and 7))) End;
+
+ Function WriteFour(StartSector:LongInt;Var B):Boolean;
+ Var K:Integer;A:Array[0..2047]of Byte Absolute B;
+ Begin
+  WriteFour:=False;
+  For K:=0to 3do
+   If not WriteLogicalSector(PData,StartSector+K,A[K*512])Then Exit;
+  WriteFour:=True
+ End;
+
+Begin
+ FormatHPFS:=False;Total:=VolumeTotalSectors;
+ If Total=0Then Total:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
+ If Total<8192Then Begin WriteLn('Volume trop petit pour HPFS.');Exit End;
+ BandCount:=(Total+HPFSBandSectors-1)div HPFSBandSectors;
+ BitmapDirStart:=22;BitmapDirSectors:=(BandCount*4+511)div 512;
+ BadBlockStart:=BitmapDirStart+BitmapDirSectors;
+ If BadBlockStart<24Then BadBlockStart:=24;
+ HotfixStart:=BadBlockStart+4;
+ DirBandSectors:=256;
+ If Total<32768Then DirBandSectors:=128;
+ DirBandStart:=((Total div 2-DirBandSectors div 2)div 4)*4;
+ If DirBandStart<128Then DirBandStart:=128;
+ Repeat
+  DirBandEnd:=DirBandStart+DirBandSectors-1;
+  J:=0;
+  For I:=0to BandCount-1do Begin
+   MapSector:=BitmapSectorForBand(I);
+   If RangesOverlap(DirBandStart-5,DirBandEnd,MapSector,MapSector+3)Then J:=1
+  End;
+  If J<>0Then Inc(DirBandStart,16)
+ Until J=0;
+ DirBandEnd:=DirBandStart+DirBandSectors-1;
+ If DirBandEnd>=Total-8Then Begin WriteLn('Disposition HPFS impossible sur ce volume.');Exit End;
+ DirBitmap:=DirBandStart-4;RootFNode:=DirBandStart-5;RootDNode:=DirBandStart;
+
+ FillChar(Sec,SizeOf(Sec),0);Sec[0]:=$EB;Sec[1]:=$3C;Sec[2]:=$90;
+ Sec[3]:=Ord('I');Sec[4]:=Ord('B');Sec[5]:=Ord('M');Sec[6]:=Ord(' ');
+ Sec[7]:=Ord('H');Sec[8]:=Ord('P');Sec[9]:=Ord('F');Sec[10]:=Ord('S');
+ PutWordLE(Sec,11,512);Sec[13]:=0;PutWordLE(Sec,14,0);Sec[16]:=0;
+ PutWordLE(Sec,17,0);PutWordLE(Sec,19,0);Sec[21]:=$F8;PutWordLE(Sec,22,0);
+ PutWordLE(Sec,24,PData.Sec);PutWordLE(Sec,26,PData.Faces);
+ PutLongLE(Sec,28,VolumeHiddenSectors);PutLongLE(Sec,32,Total);
+ Sec[36]:=$80;Sec[38]:=$29;PutLongLE(Sec,39,LongInt(Total xor $48504653));
+ If VolumeLabel=''Then LabelText:='NO NAME    'Else LabelText:=VolumeLabel;
+ HPFSSignature:='HPFS    ';
+ While Length(LabelText)<11do LabelText:=LabelText+' ';
+ For I:=1to 11do Sec[42+I]:=Ord(LabelText[I]);
+ For I:=1to 8do Sec[53+I]:=Ord(HPFSSignature[I]);
+ Sec[510]:=$55;Sec[511]:=$AA;
+ If not WriteLogicalSector(PData,0,Sec)Then Exit;
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=1to 15do If not WriteLogicalSector(PData,I,Sec)Then Exit;
+
+ FillChar(Sec,SizeOf(Sec),0);
+ PutLongLE(Sec,0,LongInt($F995E849));PutLongLE(Sec,4,LongInt($FA53E9C5));
+ Sec[8]:=2;Sec[9]:=2;PutLongLE(Sec,12,RootFNode);PutLongLE(Sec,16,Total);
+ PutLongLE(Sec,24,BitmapDirStart);PutLongLE(Sec,32,BadBlockStart);
+ PutLongLE(Sec,48,DirBandSectors);PutLongLE(Sec,52,DirBandStart);
+ PutLongLE(Sec,56,DirBandEnd);PutLongLE(Sec,60,DirBitmap);
+ For I:=1to Length(LabelText)do If I<=32Then Sec[63+I]:=Ord(LabelText[I]);
+ PutLongLE(Sec,96,32);
+ If not WriteLogicalSector(PData,16,Sec)Then Exit;
+ FillChar(Sec,SizeOf(Sec),0);
+ PutLongLE(Sec,0,LongInt($F9911849));PutLongLE(Sec,4,LongInt($FA5229C5));
+ PutLongLE(Sec,12,HotfixStart);
+ If QuickFormat Then Sec[8]:=$20;
+ If not WriteLogicalSector(PData,17,Sec)Then Exit;
+
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=0to BitmapDirSectors-1do Begin
+  For J:=0to 127do Begin
+   Band:=I*128+J;
+   If Band<BandCount Then PutLongLE(Sec,J*4,BitmapSectorForBand(Band))
+  End;
+  If not WriteLogicalSector(PData,BitmapDirStart+I,Sec)Then Exit;
+  FillChar(Sec,SizeOf(Sec),0)
+ End;
+ For I:=0to 7do
+  If not WriteLogicalSector(PData,BadBlockStart+I,Sec)Then Exit;
+
+ For Band:=0to BandCount-1do Begin
+  FillChar(Bitmap,SizeOf(Bitmap),$FF);
+  ValidBits:=Total-Band*HPFSBandSectors;
+  If ValidBits>HPFSBandSectors Then ValidBits:=HPFSBandSectors;
+  For BitNo:=ValidBits to HPFSBandSectors-1do ClearBitmapBit(Bitmap,BitNo);
+  For BitNo:=0to ValidBits-1do
+   If IsAllocated(Band*HPFSBandSectors+BitNo)Then ClearBitmapBit(Bitmap,BitNo);
+  If not WriteFour(BitmapSectorForBand(Band),Bitmap)Then Exit
+ End;
+
+ FillChar(Bitmap,SizeOf(Bitmap),$FF);ClearBitmapBit(Bitmap,0);
+ For BitNo:=DirBandSectors div 4to HPFSBandSectors-1do
+  ClearBitmapBit(Bitmap,BitNo);
+ If not WriteFour(DirBitmap,Bitmap)Then Exit;
+ FillChar(Sec,SizeOf(Sec),0);
+ PutLongLE(Sec,0,LongInt($F7E40AAE));Sec[12]:=1;Sec[13]:=Ord('\');
+ PutLongLE(Sec,28,RootFNode);PutWordLE(Sec,54,$0100);
+ Sec[56]:=$20;Sec[60]:=7;Sec[61]:=1;PutWordLE(Sec,62,20);
+ PutLongLE(Sec,64,0);PutLongLE(Sec,68,4);PutLongLE(Sec,72,RootDNode);
+ PutWordLE(Sec,184,196);
+ If not WriteLogicalSector(PData,RootFNode,Sec)Then Exit;
+
+ FillChar(DNode,SizeOf(DNode),0);PutLongRaw(DNode,0,LongInt($77E40AAE));
+ PutLongRaw(DNode,4,86);DNode[8]:=1;PutLongRaw(DNode,12,RootFNode);
+ PutLongRaw(DNode,16,RootDNode);
+ PutWordRaw(DNode,20,34);DNode[22]:=$01;DNode[23]:=$10;
+ PutLongRaw(DNode,24,RootFNode);DNode[50]:=2;DNode[51]:=1;DNode[52]:=1;
+ PutWordRaw(DNode,54,32);DNode[56]:=$08;DNode[84]:=1;DNode[85]:=$FF;
+ If not WriteFour(RootDNode,DNode)Then Exit;
+ FormatHPFS:=True
+End;
+
 Function Logical4mat(Drive:Byte;PData:PhysDataType;LData:LogDataType):Boolean;
 Var
  Status:Byte;
@@ -1639,6 +1832,9 @@ Var
  TrackBuf:TrackBufType;
  ByteWrited:Word;
 Begin
+ If RequestedFileSystem=FS_HPFS Then Begin
+  Logical4mat:=FormatHPFS(PData);Exit
+ End;
  If HardDiskMode or(InFile and(ImageVolumeStart>0))Then FillChar(TrackBuf,512,0)
  Else FillChar(TrackBuf,Word(PData.Sec)*512,0); { Vide tampon }
   { Secteur de demarrage: Partie fixe }
@@ -1789,8 +1985,8 @@ BEGIN
    '        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
    WriteLn('        FORMAT disk.img /CREATE:sizeMB [/TYPE:RAW|VDI] [/FS:FAT16]');
    WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
-   WriteLn('  /FS:name  Selects FAT, FAT12 or FAT16. FAT32, exFAT, NTFS and');
-   WriteLn('             HPFS are diagnosed when incompatible with floppy media.');
+   WriteLn('  /FS:name  Selects FAT, FAT12, FAT16 or HPFS. FAT32, exFAT and NTFS');
+   WriteLn('             are diagnosed; HPFS requires a hard-disk partition/image.');
    WriteLn('  /F:size   Selects floppy size: 160, 180, 320, 360, 720,');
    WriteLn('             1200, 1440 or 2880 KB (floppy drives only).');
    WriteLn('  /T:n      Specifies the number of tracks.');
@@ -1831,9 +2027,9 @@ BEGIN
    WriteLn(' /F:taille  Format de disquette: 160, 180, 320, 360, 720,');
    WriteLn('            1200, 1440 ou 2880 Ko (lecteur seulement)');
    WriteLn(' /V:nom  Indique le nom du volume (11 caracteres maximum)');
-   WriteLn(' /FS:systeme  FAT, FAT12, FAT16, FAT32, exFAT, NTFS ou HPFS');
-   WriteLn('              Les formats exigeant des metadonnees de disque dur');
-   WriteLn('              sont refuses sur une geometrie de disquette.');
+   WriteLn(' /FS:systeme  FAT, FAT12, FAT16 ou HPFS');
+   WriteLn('              HPFS exige une partition ou image de disque dur >= 4 Mo');
+   WriteLn('              FAT32, exFAT et NTFS sont reconnus mais non implementes');
    WriteLn('    /T:n  Indique le nombre de pistes du disque');
    WriteLn('    /N:n  Indique le nombre de secteurs par piste');
    WriteLn('      /Q  Reinitialise rapidement le secteur de demarrage, les FAT');
@@ -1990,6 +2186,9 @@ Begin
    Close(FileImg);Halt(4)
   End;
   If not ConfigureFileSystem(PData,LData)Then Begin Close(FileImg);Halt(4) End;
+  If(RequestedFileSystem=FS_HPFS)and not UpdateImagePartitionType($07)Then Begin
+   Close(FileImg);WriteLn('Impossible de modifier le type de partition HPFS.');Halt(5)
+  End;
   Ok:=Logical4mat(AktDrv,PData,LData);
   If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
   Close(FileImg);
@@ -2003,6 +2202,9 @@ Begin
     ImageVirtualSectors:=FileSize(FileImg)div 512;
     If not PrepareOpenedHardDiskImage(PData,LData)Then Begin Close(FileImg);Halt(4) End;
     If not ConfigureFileSystem(PData,LData)Then Begin Close(FileImg);Halt(4) End;
+    If(RequestedFileSystem=FS_HPFS)and not UpdateImagePartitionType($07)Then Begin
+     Close(FileImg);WriteLn('Impossible de modifier le type de partition HPFS.');Halt(5)
+    End;
     Ok:=Logical4mat(AktDrv,PData,LData);
     If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
     Close(FileImg);
