@@ -12,6 +12,7 @@ Program Format;
 Uses DOS;
 
 Const
+ MaxFormatFATBytes=4608;
  {Adresse d'assembleur pour le micro-processeur Intel (Cpu Intel)}
  ciBXnSI=$00;{"[BX+SI]",88+}
  ciBXnDI=$01;{"[BX+DI]",88+}
@@ -232,6 +233,9 @@ Type
 
  {Structure d'un tampon d'une piste logique de format DOS}
  TrackBufType=Array[1..18,0..511]of Byte;{Tampon par piste}
+ TFatBuffer=Array[0..MaxFormatFATBytes-1]of Byte;
+ PFatBuffer=^TFatBuffer;
+ TSectorBuffer=Array[0..511]of Byte;
 
  (*Fonctions et Procedures:*)
 {$IFDEF FPC}
@@ -336,12 +340,14 @@ Var
  Ok:Boolean;        { Drapeau pour execution du programme }
  EndCode:Word;      { Valeur retournee au process appele }
  Param:String;      { pour evaluation de la ligne de commande }
+ ImageName:String;
  FileImg:File;
  InFile:Boolean;
  KS:Word;
  VolumeLabel:String;
  ForceFormat,NoVerify,UnconditionalFormat,TracksSpecified:Boolean;
  RequestedTracks:Byte;
+ SystemTransfer:Boolean;
 
 Function StrToUpper(S:String):String;
 Var
@@ -374,7 +380,7 @@ Function ParseOptions(First:Integer;Var FormatSize:String):Boolean;
 Var I,Code,TrackValue:Integer;S,U,N:String;
 Begin
  ParseOptions:=False;FormatSize:='';ForceFormat:=False;NoVerify:=False;VolumeLabel:='';
- UnconditionalFormat:=False;TracksSpecified:=False;RequestedTracks:=0;
+ UnconditionalFormat:=False;TracksSpecified:=False;RequestedTracks:=0;SystemTransfer:=False;
  For I:=First to ParamCount do Begin
   S:=ParamStr(I);U:=StrToUpper(S);
   If Copy(U,1,3)='/V:'Then Begin
@@ -387,6 +393,7 @@ Begin
    If TracksSpecified Then Begin WriteLn('Le nombre de pistes est indique plusieurs fois.');Exit End;
    TracksSpecified:=True;RequestedTracks:=TrackValue
   End Else If U='/U'Then UnconditionalFormat:=True
+  Else If U='/S'Then SystemTransfer:=True
   Else If U='/F'Then ForceFormat:=True
   Else If U='NV'Then NoVerify:=True
   Else If(U='360')or(U='720')or(U='1200')or(U='1440')Then Begin
@@ -577,6 +584,131 @@ Begin
  End
 End;
 
+Function WriteLogicalSector(PData:PhysDataType;SectorNumber:LongInt;Var Buffer):Boolean;
+Var Remaining:LongInt;Track,Face,Sector,Status:Byte;Written:Word;
+Begin
+ If InFile Then Begin
+  Seek(FileImg,SectorNumber*512);
+  If IOResult<>0Then Begin WriteLogicalSector:=False;Exit End;
+  BlockWrite(FileImg,Buffer,512,Written);
+  WriteLogicalSector:=(Written=512)and(IOResult=0)
+ End Else Begin
+  Track:=SectorNumber div(LongInt(PData.Sec)*PData.Faces);
+  Remaining:=SectorNumber mod(LongInt(PData.Sec)*PData.Faces);
+  Face:=Remaining div PData.Sec;Sector:=Remaining mod PData.Sec+1;
+  Status:=WriteTrack(AktDrv,Face,Track,Sector,1,Buffer);
+  WriteLogicalSector:=Status=0
+ End
+End;
+
+Procedure SetFAT12Entry(FAT:PFatBuffer;Cluster,Value:Word);
+Var Offset:Word;V:Word;
+Begin
+ Offset:=Cluster+(Cluster div 2);
+ V:=FAT^[Offset]or(Word(FAT^[Offset+1])shl 8);
+ If(Cluster and 1)=0Then V:=(V and $F000)or(Value and $0FFF)
+ Else V:=(V and $000F)or((Value and $0FFF)shl 4);
+ FAT^[Offset]:=Lo(V);FAT^[Offset+1]:=Hi(V)
+End;
+
+Procedure PutDirectoryName(Var Entry;Const Name:String);
+Var P:^Byte;I,Dot:Byte;Base,Ext:String;
+Begin
+ P:=@Entry;For I:=0to 10do Begin P^:=Ord(' ');Inc(P)End;
+ Dot:=Pos('.',Name);If Dot=0Then Begin Base:=Name;Ext:=''End
+ Else Begin Base:=Copy(Name,1,Dot-1);Ext:=Copy(Name,Dot+1,3)End;
+ P:=@Entry;For I:=1to Length(Base)do If I<=8Then Begin P^:=Ord(UpCase(Base[I]));Inc(P)End;
+ P:=@Entry;Inc(P,8);For I:=1to Length(Ext)do If I<=3Then Begin P^:=Ord(UpCase(Ext[I]));Inc(P)End
+End;
+
+Function SystemFilesAvailable:Boolean;
+Const Names:Array[1..3]of String[11]=('IO.SYS','MSDOS.SYS','COMMAND.COM');
+Var F:File;I:Byte;
+Begin
+ SystemFilesAvailable:=False;
+ For I:=1to 3do Begin
+  Assign(F,Names[I]);Reset(F,1);
+  If IOResult<>0Then Begin WriteLn('Fichier de demarrage introuvable: ',Names[I]);Exit End;
+  Close(F);If IOResult<>0Then Begin WriteLn('Erreur de lecture: ',Names[I]);Exit End
+ End;
+ SystemFilesAvailable:=True
+End;
+
+Function TransferSystemFiles(PData:PhysDataType;LData:LogDataType):Boolean;
+Const Names:Array[1..3]of String[11]=('IO.SYS','MSDOS.SYS','COMMAND.COM');
+Var
+ FAT:PFatBuffer;Root,Buffer:TSectorBuffer;Src:File;
+ I,J,K,CopyNumber:Integer;Got:Word;FileSizeValue,Remaining,ClusterBytes:LongInt;
+ RootSectors,DataStart,SectorNumber,TotalSectors,MaximumClusters:LongInt;ClustersNeeded:Word;
+ FirstCluster,CurrentCluster,NextCluster:Word;EntryOffset:Word;
+ Y,Mo,D,Dow,H,Mi,Se,S100,DirDate,DirTime:Word;Attr:Byte;
+Begin
+ TransferSystemFiles:=False;
+ If not SystemFilesAvailable Then Exit;
+ GetMem(FAT,MaxFormatFATBytes);If FAT=Nil Then Begin WriteLn('Memoire insuffisante pour la FAT.');Exit End;
+ FillChar(FAT^,MaxFormatFATBytes,0);FillChar(Root,SizeOf(Root),0);
+ FAT^[0]:=LData.Media;FAT^[1]:=$FF;FAT^[2]:=$FF;
+ If VolumeLabel<>''Then Begin
+  For I:=1to 11do Root[I-1]:=Ord(VolumeLabel[I]);Root[11]:=$08;K:=1
+ End Else K:=0;
+ GetDate(Y,Mo,D,Dow);GetTime(H,Mi,Se,S100);
+ If Y<1980Then Y:=1980;
+ DirDate:=((Y-1980)shl 9)or(Mo shl 5)or D;
+ DirTime:=(H shl 11)or(Mi shl 5)or(Se div 2);
+ RootSectors:=(LongInt(LData.RootSize)*32+511)div 512;
+ DataStart:=1+LongInt(LData.FAT)*2+RootSectors;
+ TotalSectors:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
+ MaximumClusters:=(TotalSectors-DataStart)div LData.Cluster;
+ ClusterBytes:=LongInt(LData.Cluster)*512;NextCluster:=2;
+ For I:=1to 3do Begin
+  Assign(Src,Names[I]);Reset(Src,1);
+  If IOResult<>0Then Begin FreeMem(FAT,MaxFormatFATBytes);Exit End;
+  FileSizeValue:=FileSize(Src);ClustersNeeded:=(FileSizeValue+ClusterBytes-1)div ClusterBytes;
+  If(LongInt(NextCluster)+ClustersNeeded>4085)or
+   (LongInt(NextCluster-2)+ClustersNeeded>MaximumClusters)Then Begin
+   Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Espace FAT12 insuffisant pour ',Names[I]);Exit
+  End;
+  If ClustersNeeded=0 Then FirstCluster:=0 Else FirstCluster:=NextCluster;
+  Remaining:=FileSizeValue;
+  For J:=0to ClustersNeeded-1do Begin
+   CurrentCluster:=NextCluster;Inc(NextCluster);
+   If J=ClustersNeeded-1Then SetFAT12Entry(FAT,CurrentCluster,$FFF)
+   Else SetFAT12Entry(FAT,CurrentCluster,NextCluster);
+   For CopyNumber:=0to LData.Cluster-1do Begin
+    FillChar(Buffer,SizeOf(Buffer),0);Got:=0;
+    If Remaining>0Then Begin BlockRead(Src,Buffer,512,Got);If IOResult<>0Then Got:=0 End;
+    If(Got=0)and(Remaining>0)Then Begin
+     Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur de lecture: ',Names[I]);Exit
+    End;
+    SectorNumber:=DataStart+LongInt(CurrentCluster-2)*LData.Cluster+CopyNumber;
+    If not WriteLogicalSector(PData,SectorNumber,Buffer)Then Begin
+     Close(Src);FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur d''ecriture de ',Names[I]);Exit
+    End;
+    Dec(Remaining,Got)
+   End
+  End;
+  Close(Src);If IOResult<>0Then Begin FreeMem(FAT,MaxFormatFATBytes);Exit End;
+  EntryOffset:=K*32;PutDirectoryName(Root[EntryOffset],Names[I]);
+  If I<3 Then Attr:=$27 Else Attr:=$20;Root[EntryOffset+11]:=Attr;
+  Root[EntryOffset+22]:=Lo(DirTime);Root[EntryOffset+23]:=Hi(DirTime);
+  Root[EntryOffset+24]:=Lo(DirDate);Root[EntryOffset+25]:=Hi(DirDate);
+  Root[EntryOffset+26]:=Lo(FirstCluster);Root[EntryOffset+27]:=Hi(FirstCluster);
+  Root[EntryOffset+28]:=Byte(FileSizeValue);Root[EntryOffset+29]:=Byte(FileSizeValue shr 8);
+  Root[EntryOffset+30]:=Byte(FileSizeValue shr 16);Root[EntryOffset+31]:=Byte(FileSizeValue shr 24);
+  Inc(K)
+ End;
+ For CopyNumber:=0to 1do For I:=0to LData.FAT-1do Begin
+  SectorNumber:=1+LongInt(CopyNumber)*LData.FAT+I;
+  If not WriteLogicalSector(PData,SectorNumber,FAT^[I*512])Then Begin
+   FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur d''ecriture de la FAT.');Exit
+  End
+ End;
+ If not WriteLogicalSector(PData,1+LongInt(LData.FAT)*2,Root)Then Begin
+  FreeMem(FAT,MaxFormatFATBytes);WriteLn('Erreur d''ecriture du repertoire racine.');Exit
+ End;
+ FreeMem(FAT,MaxFormatFATBytes);TransferSystemFiles:=True
+End;
+
 Function Phys4mat(Drv:Byte;PData:PhysDataType;Verify:Boolean):Boolean;
 Var
  Try,T,F,Status:Byte;
@@ -693,23 +825,24 @@ BEGIN
    _Germany:Begin
     WriteLn('Formate un disque pour une utilisation sous DOS.');
     WriteLn;
-    WriteLn('FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:Name] [/T:n] [/U]');
-    WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name] [/T:n] [/U]');
+    WriteLn('FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:Name] [/T:n] [/U] [/S]');
+    WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name] [/T:n] [/U] [/S]');
    End;
    _English:Begin
     WriteLn('Formats a disk for use with DOS.');
     WriteLn;
-    WriteLn('Syntax: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:label] [/T:n] [/U]');
-    WriteLn('        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/U]');
+    WriteLn('Syntax: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:label] [/T:n] [/U] [/S]');
+    WriteLn('        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/U] [/S]');
     WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
     WriteLn('  /T:n      Specifies the number of tracks.');
     WriteLn('  /U        Performs an unconditional full format.');
+    WriteLn('  /S        Copies IO.SYS, MSDOS.SYS and COMMAND.COM.');
    End;
    Else Begin
     WriteLn('FORMAT - Cette commande permet de formater un unit'+#130+' de disquette.');
     WriteLn;
-    WriteLn('Syntaxe: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:nom] [/T:n] [/U]');
-    WriteLn('         FORMAT fichier [360|720|1200|1440] [/V:nom] [/T:n] [/U]');
+    WriteLn('Syntaxe: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:nom] [/T:n] [/U] [/S]');
+    WriteLn('         FORMAT fichier [360|720|1200|1440] [/V:nom] [/T:n] [/U] [/S]');
     WriteLn;
     WriteLn('fichier  Utiliser le fichier sp'+#130+'cifi'+#130+' comme disquette');
     WriteLn('     NV  Pas de v'+#130+'rification');
@@ -717,6 +850,7 @@ BEGIN
     WriteLn(' /V:nom  Indique le nom du volume (11 caracteres maximum)');
     WriteLn('    /T:n  Indique le nombre de pistes du disque');
     WriteLn('      /U  Effectue un formatage complet et inconditionnel');
+    WriteLn('      /S  Copie IO.SYS, MSDOS.SYS et COMMAND.COM');
    End;
   End;
  End
@@ -733,6 +867,7 @@ BEGIN
      dtDD525:Param:='360';dtHD525:Param:='1200';dtDD35:Param:='720';dtHD35:Param:='1440'
     End;
     If Get4matParam(Param,AktDrvType,PData,LData)and ApplyTrackOption(PData,LData)Then Begin
+     If SystemTransfer and not SystemFilesAvailable Then Halt(6);
      If UnconditionalFormat Then WriteLn('Formatage complet et inconditionnel.');
      InitDsk(AktDrv,PData);
      GetIntVec($1E,AncDDPT);
@@ -741,7 +876,8 @@ BEGIN
      If(Ok)Then Begin
       WriteLn;
       Writeln('Ecriture du secteur de demarrage et des FAT ');
-      Ok:=Logical4mat(AktDrv,PData,LData)
+      Ok:=Logical4mat(AktDrv,PData,LData);
+      If Ok and SystemTransfer Then Ok:=TransferSystemFiles(PData,LData)
      End;
      If(Ok)Then Begin
       WriteLn;
@@ -771,13 +907,15 @@ BEGIN
   Begin
    InFile:=True;
    KS:=1440;
-   WriteLn('Formatage du fichier d''image : ',Param);
-   {$I-}Assign(FileImg,Param);
+   ImageName:=Param;
+   If not ParseOptions(2,Param)Then Halt(4);
+   If SystemTransfer and not SystemFilesAvailable Then Halt(6);
+   WriteLn('Formatage du fichier d''image : ',ImageName);
+   {$I-}Assign(FileImg,ImageName);
    Rewrite(FileImg,1);{$I+}
    If IOResult<>0Then Begin WriteLn('Impossible de creer le fichier image.');Halt(5)End;
    PData:=PHYS1440;
    LData:=LOG1440;
-   If not ParseOptions(2,Param)Then Begin Close(FileImg);Halt(4)End;
    If Param<>''Then Begin
     If Param='360'Then Begin
      PData:=PHYS360;
@@ -809,9 +947,11 @@ BEGIN
    Seek(FileImg,0);
    WriteLn('Ecriture du secteur de d'+#130+'marrage et des FAT');
    Ok:=Logical4mat(AktDrv,PData,LData);
+   If Ok and SystemTransfer Then Ok:=TransferSystemFiles(PData,LData);
    Seek(FileImg,KS*1024);
    Truncate(FileImg);
    Close(FileImg);
+   If not Ok Then Begin WriteLn('Une erreur a interrompu le formatage ou le transfert systeme.');Halt(1)End;
   End;
  End
   Else
