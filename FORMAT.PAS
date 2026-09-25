@@ -874,12 +874,18 @@ Begin
  EightSectors or Format360In1200)Then Begin
   WriteLn('/T, /N, /1, /4 et /8 sont reserves aux disquettes.');Exit
  End;
- If RequestedFileSystem in[FS_FAT32,FS_EXFAT,FS_NTFS]Then Begin
+ If RequestedFileSystem in[FS_EXFAT,FS_NTFS]Then Begin
   WriteLn(
   'Le systeme demande exige des metadonnees de disque dur non prises en charge par ce formateur de disquettes.');Exit
  End;
  If(RequestedFileSystem=FS_HPFS)and not(InFile or HardDiskMode)Then Begin
   WriteLn('HPFS est reserve aux partitions et aux images de disque dur.');Exit
+ End;
+ If(RequestedFileSystem=FS_FAT32)and not(InFile or HardDiskMode)Then Begin
+  WriteLn('FAT32 est reserve aux partitions et aux images de disque dur.');Exit
+ End;
+ If(RequestedFileSystem=FS_FAT32)and(SystemTransfer or BootReserve)Then Begin
+  WriteLn('/S et /B ne sont pas encore disponibles pour FAT32.');Exit
  End;
  If(RequestedFileSystem=FS_HPFS)and(SystemTransfer or BootReserve)Then Begin
   WriteLn('/S et /B ne sont pas disponibles pour HPFS.');Exit
@@ -923,10 +929,29 @@ Begin
   End;
   ConfigureFileSystem:=True;Exit
  End;
- If RequestedFileSystem in[FS_FAT32,FS_EXFAT,FS_NTFS]Then Begin
+ If RequestedFileSystem=FS_FAT32 Then Begin
+  LData.Media:=$F8;LData.RootSize:=0;
+  If AllocationSizeSpecified Then LData.Cluster:=RequestedAllocationSize div 512
+  Else Begin
+   LData.Cluster:=1;
+   If TotalSectors>532480Then LData.Cluster:=8
+  End;
+  FatSectors:=1;
+  For I:=1to 32do Begin
+   DataSectors:=TotalSectors-32-FatSectors*2;
+   Clusters:=DataSectors div LData.Cluster;OldFat:=FatSectors;
+   FatSectors:=((Clusters+2)*4+511)div 512;
+   If FatSectors=OldFat Then Break
+  End;
+  DataSectors:=TotalSectors-32-FatSectors*2;
+  Clusters:=DataSectors div LData.Cluster;
+  If(Clusters<65525)or(Clusters>$0FFFFFF5)or(FatSectors>65535)Then Begin
+   WriteLn('La geometrie ne convient pas a FAT32 (au moins 65525 clusters requis).');Exit
+  End;
+  LData.FAT:=FatSectors;ActiveFATBits:=32;ConfigureFileSystem:=True;Exit
+ End;
+ If RequestedFileSystem in[FS_EXFAT,FS_NTFS]Then Begin
   Case RequestedFileSystem of
-  FS_FAT32:WriteLn(
-  'FAT32 exige au moins 65525 clusters et n''est pas compatible avec cette disquette.');
   FS_EXFAT:WriteLn(
   'exFAT exige des tables bitmap et UpCase non prises en charge sur disquette.');
   FS_NTFS:WriteLn(
@@ -1299,6 +1324,7 @@ Begin
  FillChar(MBR,SizeOf(MBR),0);MBR[446]:=$80;
  MBR[447]:=1;MBR[448]:=1;MBR[449]:=0;
  If RequestedFileSystem=FS_HPFS Then MBR[450]:=$07
+ Else If RequestedFileSystem=FS_FAT32 Then MBR[450]:=$0C
  Else If RequestedFileSystem=FS_FAT12 Then MBR[450]:=$01
  Else If SizeMB<32Then MBR[450]:=$04 Else MBR[450]:=$06;
  MBR[451]:=15;MBR[452]:=$FF;MBR[453]:=$FF;
@@ -1386,7 +1412,7 @@ Begin
  End;
  VolumeTotalSectors:=Total;
  VolumeHiddenSectors:=GetLongLE(Boot,28);
- If(RequestedFileSystem<>FS_HPFS)and
+ If not(RequestedFileSystem in[FS_HPFS,FS_FAT32])and
   ((GetWordLE(Boot,17)=0)or(GetWordLE(Boot,22)=0))Then Begin
   WriteLn('Cette partition utilise FAT32 ou un BPB non pris en charge.');
   WriteLn('Seules les partitions FAT12/FAT16 existantes peuvent etre reformatees.');Exit
@@ -1681,6 +1707,67 @@ Begin
  Phys4mat:=true;
 End;
 
+Function FormatFAT32(PData:PhysDataType;LData:LogDataType):Boolean;
+Var
+ Sec:TSectorBuffer;
+ Total,DataSectors,Clusters,FreeClusters,DataStart,SectorNumber:LongInt;
+ CopyNo,I:LongInt;
+ LabelText,FSSignature:String;
+Begin
+ FormatFAT32:=False;Total:=VolumeTotalSectors;
+ If Total=0Then Total:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
+ DataStart:=32+LongInt(LData.FAT)*2;
+ DataSectors:=Total-DataStart;Clusters:=DataSectors div LData.Cluster;
+ If Clusters<65525Then Begin WriteLn('Volume trop petit pour FAT32.');Exit End;
+ FillChar(Sec,SizeOf(Sec),0);
+ For SectorNumber:=0to 31do
+  If not WriteLogicalSector(PData,SectorNumber,Sec)Then Exit;
+
+ Sec[0]:=$EB;Sec[1]:=$58;Sec[2]:=$90;
+ FSSignature:='MSWIN4.1';For I:=1to 8do Sec[2+I]:=Ord(FSSignature[I]);
+ PutWordLE(Sec,11,512);Sec[13]:=LData.Cluster;PutWordLE(Sec,14,32);
+ Sec[16]:=2;PutWordLE(Sec,17,0);PutWordLE(Sec,19,0);Sec[21]:=$F8;
+ PutWordLE(Sec,22,0);PutWordLE(Sec,24,PData.Sec);PutWordLE(Sec,26,PData.Faces);
+ PutLongLE(Sec,28,VolumeHiddenSectors);PutLongLE(Sec,32,Total);
+ PutLongLE(Sec,36,LData.FAT);PutWordLE(Sec,40,0);PutWordLE(Sec,42,0);
+ PutLongLE(Sec,44,2);PutWordLE(Sec,48,1);PutWordLE(Sec,50,6);
+ Sec[64]:=$80;Sec[66]:=$29;PutLongLE(Sec,67,LongInt(Total xor $32415446));
+ If VolumeLabel=''Then LabelText:='NO NAME    'Else LabelText:=VolumeLabel;
+ While Length(LabelText)<11do LabelText:=LabelText+' ';
+ For I:=1to 11do Sec[70+I]:=Ord(LabelText[I]);
+ FSSignature:='FAT32   ';For I:=1to 8do Sec[82+I]:=Ord(FSSignature[I]);
+ Sec[510]:=$55;Sec[511]:=$AA;
+ If not WriteLogicalSector(PData,0,Sec)Then Exit;
+ If not WriteLogicalSector(PData,6,Sec)Then Exit;
+
+ FillChar(Sec,SizeOf(Sec),0);PutLongLE(Sec,0,$41615252);
+ PutLongLE(Sec,484,$61417272);FreeClusters:=Clusters-1;
+ PutLongLE(Sec,488,FreeClusters);PutLongLE(Sec,492,3);
+ Sec[508]:=0;Sec[509]:=0;Sec[510]:=$55;Sec[511]:=$AA;
+ If not WriteLogicalSector(PData,1,Sec)Then Exit;
+ If not WriteLogicalSector(PData,7,Sec)Then Exit;
+
+ For CopyNo:=0to 1do Begin
+  For I:=0to LData.FAT-1do Begin
+   FillChar(Sec,SizeOf(Sec),0);
+   If I=0Then Begin
+    PutLongLE(Sec,0,$0FFFFFF8);PutLongLE(Sec,4,LongInt($FFFFFFFF));
+    PutLongLE(Sec,8,$0FFFFFFF)
+   End;
+   If not WriteLogicalSector(PData,32+CopyNo*LData.FAT+I,Sec)Then Exit
+  End
+ End;
+ FillChar(Sec,SizeOf(Sec),0);
+ If VolumeLabel<>''Then Begin
+  For I:=1to 11do Sec[I-1]:=Ord(LabelText[I]);Sec[11]:=$08
+ End;
+ If not WriteLogicalSector(PData,DataStart,Sec)Then Exit;
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=1to LData.Cluster-1do
+  If not WriteLogicalSector(PData,DataStart+I,Sec)Then Exit;
+ FormatFAT32:=True
+End;
+
 Function FormatHPFS(PData:PhysDataType):Boolean;
 Const
  HPFSBandSectors=16384;
@@ -1852,6 +1939,9 @@ Var
  TrackBuf:TrackBufType;
  ByteWrited:Word;
 Begin
+ If RequestedFileSystem=FS_FAT32 Then Begin
+  Logical4mat:=FormatFAT32(PData,LData);Exit
+ End;
  If RequestedFileSystem=FS_HPFS Then Begin
   Logical4mat:=FormatHPFS(PData);Exit
  End;
@@ -2006,8 +2096,8 @@ BEGIN
    WriteLn('        FORMAT disk.img /CREATE:sizeMB [/TYPE:RAW|VDI] [/FS:FAT16]');
    WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
    WriteLn('  /A:size   Specifies the allocation-unit size: 512 to 32768 bytes.');
-   WriteLn('  /FS:name  Selects FAT, FAT12, FAT16 or HPFS. FAT32, exFAT and NTFS');
-   WriteLn('             are diagnosed; HPFS requires a hard-disk partition/image.');
+   WriteLn('  /FS:name  Selects FAT, FAT12, FAT16, FAT32 or HPFS.');
+   WriteLn('             FAT32 and HPFS require a hard-disk partition/image.');
    WriteLn('  /F:size   Selects floppy size: 160, 180, 320, 360, 720,');
    WriteLn('             1200, 1440 or 2880 KB (floppy drives only).');
    WriteLn('  /T:n      Specifies the number of tracks.');
@@ -2049,9 +2139,9 @@ BEGIN
    WriteLn('            1200, 1440 ou 2880 Ko (lecteur seulement)');
    WriteLn(' /V:nom  Indique le nom du volume (11 caracteres maximum)');
    WriteLn(' /A:taille  Taille d''unite d''allocation: 512 a 32768 octets');
-   WriteLn(' /FS:systeme  FAT, FAT12, FAT16 ou HPFS');
-   WriteLn('              HPFS exige une partition ou image de disque dur >= 4 Mo');
-   WriteLn('              FAT32, exFAT et NTFS sont reconnus mais non implementes');
+   WriteLn(' /FS:systeme  FAT, FAT12, FAT16, FAT32 ou HPFS');
+   WriteLn('              FAT32 et HPFS exigent une partition/image de disque dur');
+   WriteLn('              exFAT et NTFS sont reconnus mais non implementes');
    WriteLn('    /T:n  Indique le nombre de pistes du disque');
    WriteLn('    /N:n  Indique le nombre de secteurs par piste');
    WriteLn('      /Q  Reinitialise rapidement le secteur de demarrage, les FAT');
@@ -2211,6 +2301,9 @@ Begin
   If(RequestedFileSystem=FS_HPFS)and not UpdateImagePartitionType($07)Then Begin
    Close(FileImg);WriteLn('Impossible de modifier le type de partition HPFS.');Halt(5)
   End;
+  If(RequestedFileSystem=FS_FAT32)and not UpdateImagePartitionType($0C)Then Begin
+   Close(FileImg);WriteLn('Impossible de modifier le type de partition FAT32.');Halt(5)
+  End;
   Ok:=Logical4mat(AktDrv,PData,LData);
   If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
   Close(FileImg);
@@ -2226,6 +2319,9 @@ Begin
     If not ConfigureFileSystem(PData,LData)Then Begin Close(FileImg);Halt(4) End;
     If(RequestedFileSystem=FS_HPFS)and not UpdateImagePartitionType($07)Then Begin
      Close(FileImg);WriteLn('Impossible de modifier le type de partition HPFS.');Halt(5)
+    End;
+    If(RequestedFileSystem=FS_FAT32)and not UpdateImagePartitionType($0C)Then Begin
+     Close(FileImg);WriteLn('Impossible de modifier le type de partition FAT32.');Halt(5)
     End;
     Ok:=Logical4mat(AktDrv,PData,LData);
     If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
