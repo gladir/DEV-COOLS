@@ -826,7 +826,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>PSYSTEM.PAS</b></td>
-			<td>Cette commande permet lancer l'environnement de commande UCSD p-System.</td>
+			<td>Cette commande permet de lancer l'environnement de commande UCSD p-System.</td>
 		<tr>
 			<td><b>PYTHCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Python pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
