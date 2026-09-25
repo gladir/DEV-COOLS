@@ -16919,6 +16919,21 @@ Begin
  SetTextStyle(DefaultFont, HorizDir, 1);
  SetTextJustify(LeftText, TopText);
 
+ { Repeindre TOUTE la bande de la barre d'outils (toute la largeur de
+   l'ecran, de Y=0 a RENDER_AREA_Y), pas seulement le rectangle de la
+   barre d'URL elle-meme. Les espaces ENTRE les widgets (URL/boutons)
+   n'etaient jamais repeints par personne : si un element de page (ex:
+   un menu CSS position:absolute pres du haut de la page, comme sur la
+   page d'accueil reelle) parvenait a peindre au-dessus de
+   RENDER_AREA_Y, ce residu restait visible en PERMANENCE dans ces
+   interstices - signale par l'utilisateur avec une capture d'ecran
+   montrant du cyan (fond de la page) visible entre les boutons et la
+   barre d'URL. Repeindre toute la bande a chaque frame garantit qu'AUCUN
+   residu de page ne peut jamais y subsister, quelle qu'en soit la cause
+   exacte cote rendu de page. }
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(0, 0, GetMaxX, RENDER_AREA_Y - 1);
+
  { Dessiner le fond de la barre d'URL }
  SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
  Bar(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
