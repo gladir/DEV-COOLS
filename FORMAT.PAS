@@ -646,6 +646,11 @@ Var
  SysFiles:Array[1..3]of String;
  RequestedFileSystem,ActiveFATBits:Byte;
  Confirmation:String;
+ CreateImage:Boolean;
+ ImageTypeSpecified:Boolean;
+ CreateSizeMB:LongInt;
+ ImageDataOffset,ImageVolumeStart,ImageVirtualSectors:LongInt;
+ ImageContainer:(IC_RAW,IC_VDI);
 
 Function StrToUpper(S:String):String;
 Var
@@ -748,6 +753,7 @@ End;
 Function ParseOptions(First:Integer;Var FormatSize:String):Boolean;
 Var
  I,Code,NumericValue:Integer;
+ CreateValue:LongInt;
  S,U,N:String;
 Begin
  ParseOptions:=False;FormatSize:='';ForceFormat:=False;NoVerify:=False;VolumeLabel:='';
@@ -755,10 +761,26 @@ Begin
  SectorsSpecified:=False;RequestedSectors:=0;SystemTransfer:=False;
  SingleSide:=False;Format360In1200:=False;EightSectors:=False;BootReserve:=False;
  SetupSystemFamily(DOS_MSDOS);
+ CreateImage:=False;CreateSizeMB:=0;ImageContainer:=IC_RAW;ImageTypeSpecified:=False;
  RequestedFileSystem:=FS_AUTO;ActiveFATBits:=12;
  For I:=First to ParamCount do Begin
   S:=ParamStr(I);U:=StrToUpper(S);
-  If Copy(U,1,4)='/FS:'Then Begin
+  If U='/CREATE'Then CreateImage:=True
+  Else If Copy(U,1,8)='/CREATE:'Then Begin
+   N:=Copy(U,9,255);
+   If(Length(N)>0)and(N[Length(N)]='M')Then Delete(N,Length(N),1);
+   Val(N,CreateValue,Code);
+   If(Code<>0)or(CreateValue<1)or(CreateValue>2047)Then Begin
+    WriteLn('La taille /CREATE doit etre comprise entre 1 et 2047 Mo.');Exit
+   End;
+   CreateImage:=True;CreateSizeMB:=CreateValue
+  End Else If Copy(U,1,6)='/TYPE:'Then Begin
+   N:=Copy(U,7,255);
+  If N='RAW'Then ImageContainer:=IC_RAW
+  Else If(N='VDI')or(N='VIRTUALBOX')Then ImageContainer:=IC_VDI
+  Else Begin WriteLn('Type d''image inconnu: ',N);Exit End
+   ;ImageTypeSpecified:=True
+  End Else If Copy(U,1,4)='/FS:'Then Begin
    N:=Copy(U,5,255);
    If N='FAT'Then RequestedFileSystem:=FS_AUTO
    Else If N='FAT12'Then RequestedFileSystem:=FS_FAT12
@@ -905,10 +927,10 @@ If ActiveFATBits=16 Then Begin
    FatSectors:=((Clusters+2)*2+511)div 512;
    If FatSectors=OldFat Then Break
   End;
-  If(Clusters<65525)and(FatSectors*512<=MaxFormatFATBytes)Then Break;
+  If(Clusters<65525)and(FatSectors<=65535)Then Break;
   LData.Cluster:=LData.Cluster*2
  Until LData.Cluster>64;
- If(Clusters<4085)or(Clusters>=65525)or(FatSectors*512>MaxFormatFATBytes)Then Begin
+ If(Clusters<4085)or(Clusters>=65525)or(FatSectors>65535)Then Begin
   WriteLn('La geometrie ne convient pas a FAT16 (4085 a 65524 clusters requis).');Exit
  End;LData.FAT:=FatSectors
 End;
@@ -1138,12 +1160,144 @@ Begin
 End;
 {$ENDIF}
 
+Procedure PutWordLE(Var Buffer:TSectorBuffer;Offset,Value:Word);Begin
+ Buffer[Offset]:=Lo(Value);Buffer[Offset+1]:=Hi(Value)
+End;
+
+Procedure PutLongLE(Var Buffer:TSectorBuffer;Offset:Word;Value:LongInt);Begin
+ Buffer[Offset]:=Byte(Value);Buffer[Offset+1]:=Byte(Value shr 8);
+ Buffer[Offset+2]:=Byte(Value shr 16);Buffer[Offset+3]:=Byte(Value shr 24)
+End;
+
+Function GetLongLE(Var Buffer:TSectorBuffer;Offset:Word):LongInt;Forward;
+
+Function ImageSectorOffset(SectorNumber:LongInt):LongInt;Begin
+ ImageSectorOffset:=ImageDataOffset+(ImageVolumeStart+SectorNumber)*512
+End;
+
+Function DetectFixedVDI:Boolean;
+Var
+ Header:TSectorBuffer;
+ Got:Word;
+ DiskBytes:LongInt;
+Begin
+ DetectFixedVDI:=False;ImageDataOffset:=0;ImageVirtualSectors:=0;
+ Seek(FileImg,0);BlockRead(FileImg,Header,512,Got);
+ If(Got<>512)or(IOResult<>0)Then Exit;
+ If(Header[64]<>$7F)or(Header[65]<>$10)or(Header[66]<>$DA)or
+  (Header[67]<>$BE)Then Exit;
+ If GetLongLE(Header,76)<>2Then Begin
+  WriteLn('Seules les images VDI fixes sont actuellement prises en charge.');Exit
+ End;
+ ImageDataOffset:=GetLongLE(Header,344);
+ If GetLongLE(Header,372)<>0Then Begin
+  WriteLn('Cette image VDI depasse la limite de 2 Gio de Turbo Pascal.');Exit
+ End;
+ DiskBytes:=GetLongLE(Header,368);
+ If(ImageDataOffset<512)or(DiskBytes<512)Then Exit;
+ ImageVirtualSectors:=DiskBytes div 512;ImageContainer:=IC_VDI;
+ DetectFixedVDI:=True
+End;
+
+Function CreateDiskImageContainer(SizeMB:LongInt):Boolean;
+Const
+ VDIBlockSize=1048576;
+Var
+ Header,MBR:TSectorBuffer;
+ ZeroBlock:TSectorBuffer;
+ Blocks,I,MapBytes,Written:LongInt;
+ DataBytes,Remaining:LongInt;
+ Count:Word;
+ Y,Mo,D,Dow,H,Mi,Se,S100:Word;
+ Signature:String;
+Begin
+ CreateDiskImageContainer:=False;
+ If SizeMB<1Then Exit;
+ DataBytes:=SizeMB*1024*1024;ImageVirtualSectors:=DataBytes div 512;
+ If ImageVirtualSectors<=63Then Begin
+  WriteLn('Image trop petite pour contenir une partition de disque dur.');Exit
+ End;
+ Rewrite(FileImg,1);If IOResult<>0Then Exit;
+ ImageDataOffset:=0;
+ If ImageContainer=IC_VDI Then Begin
+  FillChar(Header,SizeOf(Header),0);
+  Signature:='<<< Oracle VM VirtualBox Disk Image >>>'+#10;
+  For I:=1to Length(Signature)do Header[I-1]:=Ord(Signature[I]);
+  PutLongLE(Header,64,LongInt($BEDA107F));PutLongLE(Header,68,$00010001);
+  PutLongLE(Header,72,400);PutLongLE(Header,76,2);
+  Blocks:=(DataBytes+VDIBlockSize-1)div VDIBlockSize;
+  MapBytes:=Blocks*4;ImageDataOffset:=512+((MapBytes+511)div 512)*512;
+  PutLongLE(Header,340,512);PutLongLE(Header,344,ImageDataOffset);
+  PutLongLE(Header,348,ImageVirtualSectors div(16*63));PutLongLE(Header,352,16);
+  PutLongLE(Header,356,63);PutLongLE(Header,360,512);
+  PutLongLE(Header,368,DataBytes);PutLongLE(Header,372,0);
+  PutLongLE(Header,376,VDIBlockSize);PutLongLE(Header,384,Blocks);
+  PutLongLE(Header,388,Blocks);
+  GetDate(Y,Mo,D,Dow);GetTime(H,Mi,Se,S100);Randomize;
+  For I:=0to 15do Header[392+I]:=Byte(Random(256));
+  Header[398]:=(Header[398]and $0F)or $40;Header[400]:=(Header[400]and $3F)or $80;
+  BlockWrite(FileImg,Header,512,Count);If(Count<>512)or(IOResult<>0)Then Begin Close(FileImg);Exit End;
+  For I:=0to Blocks-1do Begin
+   PutLongLE(Header,0,I);BlockWrite(FileImg,Header,4,Count);
+   If(Count<>4)or(IOResult<>0)Then Begin Close(FileImg);Exit End
+  End;
+  FillChar(Header,SizeOf(Header),0);
+  While FilePos(FileImg)<ImageDataOffset do Begin
+   Written:=ImageDataOffset-FilePos(FileImg);If Written>512Then Written:=512;
+   BlockWrite(FileImg,Header,Written,Count);
+   If Count<>Written Then Begin Close(FileImg);Exit End
+  End
+ End;
+ FillChar(ZeroBlock,SizeOf(ZeroBlock),0);Remaining:=DataBytes;
+ While Remaining>0do Begin
+  Written:=SizeOf(ZeroBlock);If Remaining<Written Then Written:=Remaining;
+  BlockWrite(FileImg,ZeroBlock,Written,Count);
+  If(Count<>Written)or(IOResult<>0)Then Begin Close(FileImg);Exit End;
+  Dec(Remaining,Written)
+ End;
+ FillChar(MBR,SizeOf(MBR),0);MBR[446]:=$80;
+ MBR[447]:=1;MBR[448]:=1;MBR[449]:=0;
+ If RequestedFileSystem=FS_FAT12 Then MBR[450]:=$01
+ Else If SizeMB<32Then MBR[450]:=$04 Else MBR[450]:=$06;
+ MBR[451]:=15;MBR[452]:=$FF;MBR[453]:=$FF;
+ PutLongLE(MBR,454,63);PutLongLE(MBR,458,ImageVirtualSectors-63);
+ MBR[510]:=$55;MBR[511]:=$AA;
+ Seek(FileImg,ImageDataOffset);BlockWrite(FileImg,MBR,512,Count);
+ If(Count<>512)or(IOResult<>0)Then Begin Close(FileImg);Exit End;
+ ImageVolumeStart:=63;VolumeHiddenSectors:=63;
+ VolumeTotalSectors:=ImageVirtualSectors-63;
+ CreateDiskImageContainer:=True
+End;
+
+Function PrepareOpenedHardDiskImage(Var PData:PhysDataType;
+ Var LData:LogDataType):Boolean;
+Var
+ MBR:TSectorBuffer;
+ Got:Word;
+ PartStart,PartSize:LongInt;
+Begin
+ PrepareOpenedHardDiskImage:=False;
+ Seek(FileImg,ImageDataOffset);BlockRead(FileImg,MBR,512,Got);
+ If(Got<>512)or(IOResult<>0)or(MBR[510]<>$55)or(MBR[511]<>$AA)Then Begin
+  WriteLn('L''image de disque dur ne contient pas un MBR valide.');Exit
+ End;
+ PartStart:=GetLongLE(MBR,454);PartSize:=GetLongLE(MBR,458);
+ If(PartStart<1)or(PartSize<1)or(PartStart+PartSize>ImageVirtualSectors)Then Begin
+  WriteLn('La premiere partition de l''image est absente ou invalide.');Exit
+ End;
+ ImageVolumeStart:=PartStart;VolumeHiddenSectors:=PartStart;
+ VolumeTotalSectors:=PartSize;
+ PData:=PHYS1440;PData.Sec:=63;PData.Faces:=16;PData.Tracks:=1;
+ LData:=LOG1440;LData.Media:=$F8;LData.RootSize:=512;
+ PrepareOpenedHardDiskImage:=True
+End;
+
 Function ReadLogicalSector(SectorNumber:LongInt;Var Buffer):Boolean;
 Var
  Got:Word;
 Begin
  If InFile Then Begin
-  Seek(FileImg,SectorNumber*512);
+  Seek(FileImg,ImageSectorOffset(SectorNumber));
   If IOResult<>0Then Begin ReadLogicalSector:=False;Exit End;
   BlockRead(FileImg,Buffer,512,Got);
   ReadLogicalSector:=(Got=512)and(IOResult=0)
@@ -1219,7 +1373,7 @@ Begin
  If HardDiskMode Then
   WriteVolumeLabel:=WriteLogicalSector(PData,RootSector,Buffer)
  Else If InFile Then Begin
-  Seek(FileImg,LongInt(RootSector)*512);
+  Seek(FileImg,ImageSectorOffset(RootSector));
   If IOResult<>0Then Begin
    WriteVolumeLabel:=False;Exit
   End;
@@ -1242,7 +1396,7 @@ Var
  Written:Word;
 Begin
  If InFile Then Begin
-  Seek(FileImg,SectorNumber*512);
+  Seek(FileImg,ImageSectorOffset(SectorNumber));
   If IOResult<>0Then Begin
    WriteLogicalSector:=False;Exit
   End;
@@ -1349,6 +1503,9 @@ Var
 Begin
  TransferSystemFiles:=False;
  If not SystemFilesAvailable Then Exit;
+ If LongInt(LData.FAT)*512>MaxFormatFATBytes Then Begin
+  WriteLn('La FAT est trop grande pour le tampon de transfert systeme Turbo Pascal.');Exit
+ End;
  If BootReserve Then WriteLn('Reservation pour le systeme ',SystemFamilyName,'.')
  Else WriteLn('Transfert du systeme ',SystemFamilyName,'.');
  GetMem(FAT,MaxFormatFATBytes);If FAT=Nil Then Begin
@@ -1482,7 +1639,7 @@ Var
  TrackBuf:TrackBufType;
  ByteWrited:Word;
 Begin
- If HardDiskMode Then FillChar(TrackBuf,512,0)
+ If HardDiskMode or(InFile and(ImageVolumeStart>0))Then FillChar(TrackBuf,512,0)
  Else FillChar(TrackBuf,Word(PData.Sec)*512,0); { Vide tampon }
   { Secteur de demarrage: Partie fixe }
  System.Move(Maskboot,TrackBuf,102);
@@ -1542,7 +1699,7 @@ Begin
   TrackBuf[2,3]:=$FF;
   If LData.FAT+2<=PData.Sec Then TrackBuf[LData.FAT+2,3]:=$FF
  End;
- If HardDiskMode Then Begin
+ If HardDiskMode or(InFile and(ImageVolumeStart>0))Then Begin
   If WriteLogicalSector(PData,0,TrackBuf[1,0])Then Status:=0 Else Status:=1
  End
  Else If(InFile)Then Begin
@@ -1557,7 +1714,7 @@ Begin
  else
  Begin
  FillChar(TrackBuf,512,0);
-  If HardDiskMode Then Begin
+  If HardDiskMode or(InFile and(ImageVolumeStart>0))Then Begin
    MetaSectors:=1+LongInt(LData.FAT)*2+
     (LongInt(LData.RootSize)*32+511)div 512;
    SectorNumber:=1;
@@ -1630,6 +1787,7 @@ BEGIN
    'Syntax: FORMAT drive: [format] [NV] [/F:size] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
    WriteLn(
    '        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
+   WriteLn('        FORMAT disk.img /CREATE:sizeMB [/TYPE:RAW|VDI] [/FS:FAT16]');
    WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
    WriteLn('  /FS:name  Selects FAT, FAT12 or FAT16. FAT32, exFAT, NTFS and');
    WriteLn('             HPFS are diagnosed when incompatible with floppy media.');
@@ -1648,6 +1806,8 @@ BEGIN
    WriteLn('             Win95, PTS-DOS, OS/2 or WinNT.');
    WriteLn('  C:..Z:    Under real DOS, logically formats an existing FAT12/FAT16');
    WriteLn('             partition. The active DOS drive is always refused.');
+   WriteLn('  /CREATE[:MB] Creates a new floppy image or hard-disk image.');
+   WriteLn('  /TYPE:VDI Creates a fixed VirtualBox VDI image; RAW is the default.');
   End;
   Else
   Begin
@@ -1657,10 +1817,15 @@ BEGIN
    'Syntaxe: FORMAT unite: [format] [NV] [/F:taille] [/V:nom] [/T:n] [/N:n] [/Q] [/U] [/S]');
    WriteLn(
    '         FORMAT fichier [360|720|1200|1440] [/V:nom] [/T:n] [/N:n] [/Q] [/U] [/S]');
+   WriteLn('         FORMAT disque.img /CREATE:tailleMo [/TYPE:RAW|VDI] [/FS:FAT16]');
    WriteLn;
    WriteLn('fichier  Utiliser le fichier sp'+#130+'cifi'+#130+' comme disquette');
    WriteLn(' C: a Z:  Sous DOS reel, formate logiquement une partition FAT12/FAT16');
    WriteLn('           existante; le lecteur DOS actif est toujours refuse');
+   WriteLn(' /CREATE  Cree explicitement une nouvelle image de disquette');
+   WriteLn(' /CREATE:Mo  Cree une image de disque dur avec MBR et partition FAT');
+   WriteLn(' /TYPE:VDI   Cree une image VDI fixe compatible VirtualBox');
+   WriteLn(' /TYPE:RAW   Cree une image disque brute (valeur par defaut)');
    WriteLn('     NV  Pas de v'+#130+'rification');
    WriteLn('     /F  Force a utiliser ce format');
    WriteLn(' /F:taille  Format de disquette: 160, 180, 320, 360, 720,');
@@ -1790,8 +1955,63 @@ Begin
  KS:=1440;
  ImageName:=Param;
  If not ParseOptions(2,Param)Then Halt(4);
+ If not ImageTypeSpecified Then
+  If StrToUpper(Copy(ImageName,Length(ImageName)-3,4))='.VDI'Then ImageContainer:=IC_VDI;
  If(SystemTransfer or BootReserve)and not SystemFilesAvailable Then Halt(6);
  WriteLn('Formatage du fichier d''image : ',ImageName);
+ ImageDataOffset:=0;ImageVolumeStart:=0;ImageVirtualSectors:=0;
+ If(ImageContainer=IC_VDI)and(CreateImage)and(CreateSizeMB=0)Then Begin
+  WriteLn('/CREATE:taille_en_Mo est obligatoire pour creer une image VDI.');Halt(4)
+ End;
+ If CreateSizeMB>0Then Begin
+  {$I-}Assign(FileImg,ImageName);Reset(FileImg,1);{$I+}
+  If IOResult=0Then Begin
+   Close(FileImg);WriteLn('Le fichier existe deja; /CREATE refuse de l''ecraser.');Halt(5)
+  End;
+  Assign(FileImg,ImageName);
+  If not CreateDiskImageContainer(CreateSizeMB)Then Begin
+   WriteLn('Impossible de creer le conteneur d''image.');Halt(5)
+  End;
+  PData:=PHYS1440;PData.Sec:=63;PData.Faces:=16;PData.Tracks:=1;
+  LData:=LOG1440;LData.Media:=$F8;LData.RootSize:=512;
+  If not ConfigureFileSystem(PData,LData)Then Begin Close(FileImg);Halt(4) End;
+  WriteLn('Image de disque dur creee: ',CreateSizeMB,' Mo, conteneur ',
+   StrToUpper(Copy(ImageName,Length(ImageName)-3,4)),'.');
+  Ok:=Logical4mat(AktDrv,PData,LData);
+  If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
+  Close(FileImg);
+  If not Ok Then Begin WriteLn('Erreur pendant le formatage de l''image.');Halt(1) End;
+  WriteLn('Image creee et formatee.');Halt(0)
+ End;
+ If(ImageContainer=IC_VDI)and not CreateImage Then Begin
+  {$I-}Assign(FileImg,ImageName);FileMode:=2;Reset(FileImg,1);{$I+}
+  If IOResult<>0Then Begin WriteLn('Impossible d''ouvrir l''image VDI.');Halt(5) End;
+  If not DetectFixedVDI or not PrepareOpenedHardDiskImage(PData,LData)Then Begin
+   Close(FileImg);Halt(4)
+  End;
+  If not ConfigureFileSystem(PData,LData)Then Begin Close(FileImg);Halt(4) End;
+  Ok:=Logical4mat(AktDrv,PData,LData);
+  If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
+  Close(FileImg);
+  If not Ok Then Begin WriteLn('Erreur pendant le formatage VDI.');Halt(1) End;
+  WriteLn('Image VDI formatee.');Halt(0)
+ End;
+ If(ImageContainer=IC_RAW)and not CreateImage Then Begin
+  {$I-}Assign(FileImg,ImageName);FileMode:=2;Reset(FileImg,1);{$I+}
+  If IOResult=0Then Begin
+   If FileSize(FileImg)>LongInt(2880)*1024Then Begin
+    ImageVirtualSectors:=FileSize(FileImg)div 512;
+    If not PrepareOpenedHardDiskImage(PData,LData)Then Begin Close(FileImg);Halt(4) End;
+    If not ConfigureFileSystem(PData,LData)Then Begin Close(FileImg);Halt(4) End;
+    Ok:=Logical4mat(AktDrv,PData,LData);
+    If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
+    Close(FileImg);
+    If not Ok Then Begin WriteLn('Erreur pendant le formatage RAW.');Halt(1) End;
+    WriteLn('Image RAW de disque dur formatee.');Halt(0)
+   End;
+   Close(FileImg)
+  End
+ End;
  ExistingQuickImage:=False;
    {$I-}Assign(FileImg,ImageName);
  If QuickFormat Then Begin
