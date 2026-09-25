@@ -234,7 +234,7 @@ Type
  End;
 
  {Structure d'un tampon d'une piste logique de format DOS}
- TrackBufType=Array[1..18,0..511]of Byte;{Tampon par piste}
+ TrackBufType=Array[1..36,0..511]of Byte;{Tampon par piste}
  TFatBuffer=Array[0..MaxFormatFATBytes-1]of Byte;
  PFatBuffer=^TFatBuffer;
  TSectorBuffer=Array[0..511]of Byte;
@@ -319,17 +319,29 @@ Const
        'Veuillez changer de disquette et taper une touche'#13#10;
 
  DDPT360:DdptType=($DF,$02,$25,$02,$09,$2A,$FF,$50,$F6,$0F,$08);
+ DDPT160:DdptType=($DF,$02,$25,$02,$08,$2A,$FF,$50,$F6,$0F,$08);
+ DDPT180:DdptType=($DF,$02,$25,$02,$09,$2A,$FF,$50,$F6,$0F,$08);
+ DDPT320:DdptType=($DF,$02,$25,$02,$08,$2A,$FF,$50,$F6,$0F,$08);
  DDPT1200:DdptType=($DF,$02,$25,$02,$0F,$1B,$FF,$54,$F6,$0F,$08);
  DDPT720:DdptType=($DF,$02,$25,$02,$09,$2A,$FF,$50,$F6,$0F,$08);
  DDPT1440:DdptType=($DF,$02,$25,$02,$12,$1B,$FF,$6C,$F6,$0F,$08);
+ DDPT2880:DdptType=($DF,$02,$25,$02,$24,$1B,$FF,$54,$F6,$0F,$08);
+ LOG160:LogDataType=(Media:$FE;Cluster:1;FAT:1;RootSize:$40);
+ LOG180:LogDataType=(Media:$FC;Cluster:1;FAT:2;RootSize:$40);
+ LOG320:LogDataType=(Media:$FF;Cluster:2;FAT:1;RootSize:$70);
  LOG360:LogDataType=(Media:$FD;Cluster:2;FAT:2;RootSize:$70);
  LOG1200:LogDataType=(Media:$F9;Cluster:1;FAT:7;RootSize:$E0);
  LOG720:LogDataType=(Media:$F9;Cluster:2;FAT:3;RootSize:$70);
  LOG1440:LogDataType=(Media:$F0;Cluster:1;FAT:9;RootSize:$E0);
+ LOG2880:LogDataType=(Media:$F0;Cluster:2;FAT:9;RootSize:$E0);
+ PHYS160:PhysDataType=(Faces:1;Tracks:40;Sec:8;DDPT:@DDPT160);
+ PHYS180:PhysDataType=(Faces:1;Tracks:40;Sec:9;DDPT:@DDPT180);
+ PHYS320:PhysDataType=(Faces:2;Tracks:40;Sec:8;DDPT:@DDPT320);
  PHYS360:PhysDataType=(Faces:2;Tracks:40;Sec:9;DDPT:@DDPT360);
  PHYS1200:PhysDataType=(Faces:2;Tracks:80;Sec:15; DDPT:@DDPT1200);
  PHYS1440:PhysDataType=(Faces:2;Tracks:80;Sec:18; DDPT:@DDPT1440);
  PHYS720:PhysDataType=(Faces:2;Tracks:80;Sec:9;DDPT:@DDPT720);
+ PHYS2880:PhysDataType=(Faces:2;Tracks:80;Sec:36;DDPT:@DDPT2880);
 
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain);
@@ -454,8 +466,8 @@ Begin
    TracksSpecified:=True;RequestedTracks:=NumericValue
   End Else If Copy(U,1,3)='/N:'Then Begin
    N:=Copy(S,4,255);Val(N,NumericValue,Code);
-   If(Code<>0)or(NumericValue<1)or(NumericValue>18)Then Begin
-    WriteLn('Le nombre de secteurs par piste doit etre compris entre 1 et 18.');Exit
+   If(Code<>0)or(NumericValue<1)or(NumericValue>36)Then Begin
+    WriteLn('Le nombre de secteurs par piste doit etre compris entre 1 et 36.');Exit
    End;
    If SectorsSpecified Then Begin WriteLn('Le nombre de secteurs est indique plusieurs fois.');Exit End;
    SectorsSpecified:=True;RequestedSectors:=NumericValue
@@ -466,9 +478,18 @@ Begin
     WriteLn('Famille de systeme inconnue: ',Copy(S,4,255));Exit
    End;SystemTransfer:=True
   End Else If U='/S'Then SystemTransfer:=True
+  Else If Copy(U,1,3)='/F:'Then Begin
+   If InFile Then Begin WriteLn('/F:taille est reserve aux unites de disquette.');Exit End;
+   N:=Copy(U,4,255);
+   If not((N='160')or(N='180')or(N='320')or(N='360')or(N='720')or
+    (N='1200')or(N='1440')or(N='2880'))Then Begin WriteLn('Taille /F inconnue: ',N);Exit End;
+   If FormatSize<>''Then Begin WriteLn('Le format est indique plusieurs fois.');Exit End;
+   FormatSize:=N;ForceFormat:=True
+  End
   Else If U='/F'Then ForceFormat:=True
   Else If U='NV'Then NoVerify:=True
-  Else If(U='360')or(U='720')or(U='1200')or(U='1440')Then Begin
+  Else If(U='160')or(U='180')or(U='320')or(U='360')or(U='720')or
+   (U='1200')or(U='1440')or(U='2880')Then Begin
    If FormatSize<>''Then Begin WriteLn('Le format est indique plusieurs fois.');Exit End;
    FormatSize:=U
   End Else Begin WriteLn('Parametre inconnu: ',S);Exit End
@@ -503,16 +524,25 @@ End;
 Function Get4matParam(S:String;DrvType:Byte;Var PData:PhysDataType;Var LData:LogDataType):Boolean;
 Begin
  Get4matParam:=true;
- If S='1200'Then
+ If S='160'Then
+  If(DrvType=dtHD525)or(DrvType=dtDD525)or ForceFormat Then Begin PData:=PHYS160;LData:=LOG160 End
+  Else Get4matParam:=False
+ Else If S='180'Then
+  If(DrvType=dtHD525)or(DrvType=dtDD525)or ForceFormat Then Begin PData:=PHYS180;LData:=LOG180 End
+  Else Get4matParam:=False
+ Else If S='320'Then
+  If(DrvType=dtHD525)or(DrvType=dtDD525)or ForceFormat Then Begin PData:=PHYS320;LData:=LOG320 End
+  Else Get4matParam:=False
+ Else If S='1200'Then
   If(DrvType=dtHD525)Then Begin PData:=PHYS1200;LData:=LOG1200;End
-		     Else Get4matParam:=false
+  Else If ForceFormat Then Begin PData:=PHYS1200;LData:=LOG1200 End Else Get4matParam:=false
   Else
  If S='360'Then
-  If(DrvType=dtHD525)or(DrvType=dtDD525)Then Begin PData:=PHYS360; LData:=LOG360; End
+  If(DrvType=dtHD525)or(DrvType=dtDD525)or ForceFormat Then Begin PData:=PHYS360; LData:=LOG360; End
 					Else Get4matParam:=false
   Else
  If S='1440'Then
-  If(DrvType=dtHD35)Then Begin
+  If(DrvType=dtHD35)or ForceFormat Then Begin
    PData:=PHYS1440;
    LData:=LOG1440;
   End
@@ -533,6 +563,10 @@ Begin
    Else
   Get4matParam:=False
  End
+  Else
+ If S='2880'Then
+  If(DrvType=dtHD35)or ForceFormat Then Begin PData:=PHYS2880;LData:=LOG2880 End
+  Else Get4matParam:=False
   Else
  Get4matParam:=false;
 End;
@@ -561,7 +595,7 @@ Type
  End;
 Var
  Regs:Registers;
- AreaData:Array[1..18]of FormatTyp;
+ AreaData:Array[1..36]of FormatTyp;
  I,Try:Byte;
 Begin
  For I:=1to(Nm)do With AreaData[I]do Begin
@@ -913,15 +947,17 @@ BEGIN
    _Germany:Begin
     WriteLn('Formate un disque pour une utilisation sous DOS.');
     WriteLn;
-    WriteLn('FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:Name] [/T:n] [/N:n] [/Q] [/U] [/S]');
+    WriteLn('FORMAT [A:|B:] [format] [NV] [/F:Groesse] [/V:Name] [/T:n] [/N:n] [/Q] [/U] [/S]');
     WriteLn('FORMAT Dateiname [360|720|1200|1440] [/V:Name] [/T:n] [/N:n] [/Q] [/U] [/S]');
    End;
    _English:Begin
     WriteLn('Formats a disk for use with DOS.');
     WriteLn;
-    WriteLn('Syntax: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
+    WriteLn('Syntax: FORMAT [A:|B:] [format] [NV] [/F:size] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
     WriteLn('        FORMAT file [360|720|1200|1440] [/V:label] [/T:n] [/N:n] [/Q] [/U] [/S]');
     WriteLn('  /V:label  Specifies the volume label (11 characters maximum).');
+    WriteLn('  /F:size   Selects floppy size: 160, 180, 320, 360, 720,');
+    WriteLn('             1200, 1440 or 2880 KB (floppy drives only).');
     WriteLn('  /T:n      Specifies the number of tracks.');
     WriteLn('  /N:n      Specifies the number of sectors per track.');
     WriteLn('  /Q        Performs a quick format of filesystem tables only.');
@@ -933,12 +969,14 @@ BEGIN
    Else Begin
     WriteLn('FORMAT - Cette commande permet de formater un unit'+#130+' de disquette.');
     WriteLn;
-    WriteLn('Syntaxe: FORMAT [A:|B:] [360|720|1200|1440] [NV] [/F] [/V:nom] [/T:n] [/N:n] [/Q] [/U] [/S]');
+    WriteLn('Syntaxe: FORMAT [A:|B:] [format] [NV] [/F:taille] [/V:nom] [/T:n] [/N:n] [/Q] [/U] [/S]');
     WriteLn('         FORMAT fichier [360|720|1200|1440] [/V:nom] [/T:n] [/N:n] [/Q] [/U] [/S]');
     WriteLn;
     WriteLn('fichier  Utiliser le fichier sp'+#130+'cifi'+#130+' comme disquette');
     WriteLn('     NV  Pas de v'+#130+'rification');
     WriteLn('     /F  Force a utiliser ce format');
+    WriteLn(' /F:taille  Format de disquette: 160, 180, 320, 360, 720,');
+    WriteLn('            1200, 1440 ou 2880 Ko (lecteur seulement)');
     WriteLn(' /V:nom  Indique le nom du volume (11 caracteres maximum)');
     WriteLn('    /T:n  Indique le nombre de pistes du disque');
     WriteLn('    /N:n  Indique le nombre de secteurs par piste');
@@ -1027,7 +1065,10 @@ BEGIN
    PData:=PHYS1440;
    LData:=LOG1440;
    If Param<>''Then Begin
-    If Param='360'Then Begin
+    If Param='160'Then Begin PData:=PHYS160;LData:=LOG160;KS:=160 End
+    Else If Param='180'Then Begin PData:=PHYS180;LData:=LOG180;KS:=180 End
+    Else If Param='320'Then Begin PData:=PHYS320;LData:=LOG320;KS:=320 End
+    Else If Param='360'Then Begin
      PData:=PHYS360;
      LData:=LOG360;
      KS:=360;
@@ -1049,6 +1090,10 @@ BEGIN
      PData:=PHYS1440;
      LData:=LOG1440;
      KS:=1440;
+    End
+     Else
+    If Param='2880'Then Begin
+     PData:=PHYS2880;LData:=LOG2880;KS:=2880;
     End
    End;
    If not ApplyTrackOption(PData,LData)Then Begin Close(FileImg);Halt(4)End;
