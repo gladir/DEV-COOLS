@@ -67,6 +67,7 @@ Const
  X_SY_UNX=2;
  X_SY_GLB=3;
  X_SY_SEG=4;
+ X_SY_IND=5;
  AR8K_MAGIC=$FF65;
  AR8K_HEADER_SIZE=26;
  MaxSegmentSize=65535;
@@ -116,6 +117,11 @@ OutputSection:POutSection;
 Next:PObjSection
 End;
 PGlobal=^TGlobal;
+PReference=^TReference;
+TReference=Record
+ ModuleName:String;
+ Next:PReference
+End;
 TGlobal=Record
 Name:String;
 Defined,Absolute:Boolean;
@@ -123,6 +129,8 @@ Section:POutSection;
 Value:LongInt;
 CommonSize:LongInt;
 ObjectBase,SymbolIndex:Word;
+DefinedIn:String;
+References:PReference;
 Next:PGlobal
 End;
 PLocalSymbol=^TLocalSymbol;
@@ -136,9 +144,10 @@ PObjSymbol=^TObjSymbol;
 TObjSymbol=Record
 Name:String;
 Defined,Global:Boolean;
+Kind:Byte;
 Section:Byte;
 Value:LongInt;
-ExternalBase:Word;
+ExternalBase,TableIndex:Word;
 Next:PObjSymbol
 End;
 PReloc=^TReloc;
@@ -173,7 +182,7 @@ Next:PModuleNode
 End;
 TOptions=Record
  OutputName:String;
- Relocatable,Strip,SplitID,ReadOnly,Preassign,StackSpecified:Boolean;
+ Relocatable,Strip,SplitID,ReadOnly,Preassign,StackSpecified,MapFile:Boolean;
  StackSize:LongInt
 End;
 
@@ -283,6 +292,7 @@ Procedure Usage;Begin
  WriteLn('  -d fichier  lit les descriptions de segments dans un fichier');
  WriteLn('  -d"ligne"   applique directement une ligne de description');
  WriteLn('  -lxx        recherche la bibliotheque AR8K libxx.a');
+ WriteLn('  -m          affiche la map des segments, symboles et references');
  WriteLn('              chemins: repertoire courant, LIB, LIBRARY et repertoire lib');
  WriteLn('  Entrees x.out de XCON et objets UNIDOT acceptes; sortie x.out big-endian.');
  WriteLn('  Les fichiers sans extension recoivent .OBJ.')
@@ -323,6 +333,7 @@ Begin
   else if U='-S'Then Opt.Strip:=True
   else if U='-I'Then Opt.SplitID:=True
   else if U='-N'Then Opt.ReadOnly:=True
+  else if U='-M'Then Opt.MapFile:=True
   else if U='-W'Then Opt.Preassign:=True
   else if U='-D'Then Begin
    Inc(I);if I>ParamCount Then Fatal('-d exige un fichier de descriptions');
@@ -423,17 +434,18 @@ Var
  P:PGlobal;
  U:String;
 Begin
- U:=UpperString(Name);P:=Globals;
+ U:=UpperString(Copy(Name,1,8));P:=Globals;
  While(P<>Nil)and(UpperString(P^.Name)<>U)do P:=P^.Next;FindGlobal:=P
 End;
 
 Function GetGlobal(Const Name:String):PGlobal;
 Var
  P:PGlobal;
+ N:String;
 Begin
- P:=FindGlobal(Name);if P=Nil Then Begin
+ N:=Copy(Name,1,8);P:=FindGlobal(N);if P=Nil Then Begin
   New(P);if P=Nil Then Fatal('memoire pleine');
-  FillChar(P^,SizeOf(P^),0);P^.Name:=Name;P^.Next:=Globals;Globals:=P
+  FillChar(P^,SizeOf(P^),0);P^.Name:=N;P^.Next:=Globals;Globals:=P
  End;GetGlobal:=P
 End;
 
@@ -916,8 +928,11 @@ For SymbolIndex:=0 to SymbolSize div 12-1 do Begin
  else
  Begin
   New(Y);if Y=Nil Then Fatal('memoire pleine');FillChar(Y^,SizeOf(Y^),0);Y^.Name:=Name;
-  Y^.Value:=SegmentLength;
-  Y^.Global:=Flag in[X_SY_UNX,X_SY_GLB];Y^.Defined:=Flag<>X_SY_UNX;
+  Y^.Value:=SegmentLength;Y^.Kind:=Flag;Y^.TableIndex:=SymbolIndex;
+  if not(Flag in[X_SY_LOC,X_SY_UNX,X_SY_GLB,X_SY_IND])Then
+   Error(FileName,'classe de symbole x.out inconnue');
+  Y^.Global:=Flag in[X_SY_UNX,X_SY_GLB,X_SY_IND];
+  Y^.Defined:=Flag in[X_SY_LOC,X_SY_GLB];
   if Assigned=255 Then Y^.Section:=0 else Y^.Section:=Assigned+1;
   { X_RL_X* contient l'indice de toute entree de symbole, y compris une
     definition globale deja satisfaite dans un objet produit avec -r. }
@@ -959,7 +974,7 @@ End;
 Procedure LayoutModule(Var M:TModule);
 Var
  S:PObjSection;
- Y:PObjSymbol;
+ Y,Z:PObjSymbol;
  G:PGlobal;
  L:PLocalSymbol;
 Begin
@@ -984,13 +999,32 @@ Begin
  End;
  Y:=M.Symbols;
  While Y<>Nil do Begin
-  if Y^.Global and Y^.Defined Then Begin
+  if Y^.Kind=X_SY_IND Then Begin
+   Z:=M.Symbols;While(Z<>Nil)and(Z^.TableIndex<>Y^.Value)do Z:=Z^.Next;
+   if(Z=Nil)or(Z=Y)Then Error(M.FileName,'symbole indirect invalide: '+Y^.Name)
+   else Begin
+    G:=GetGlobal(Y^.Name);
+    if Z^.Defined Then Begin
+     if G^.Defined Then Error(M.FileName,'symbole indirect defini plusieurs fois: '+Y^.Name)
+     else if Z^.Section=0 Then Begin
+      G^.Defined:=True;G^.Absolute:=True;G^.Value:=Z^.Value;G^.DefinedIn:=M.FileName
+     End else Begin
+      S:=FindObjSection(M,Z^.Section);
+      if S=Nil Then Error(M.FileName,'cible indirecte dans un segment inconnu')else Begin
+       G^.Defined:=True;G^.Section:=S^.OutputSection;G^.Value:=S^.OutputBase+Z^.Value;
+       G^.DefinedIn:=M.FileName
+      End
+     End
+    End else if Z^.Value>G^.CommonSize Then G^.CommonSize:=Z^.Value
+   End
+  End else if Y^.Global and Y^.Defined Then Begin
    if Y^.Section=0 Then Begin
     G:=GetGlobal(Y^.Name);
     if G^.Defined Then Error(M.FileName,'symbole defini plusieurs fois: '+Y^.Name)
     else
     Begin
-     G^.Defined:=True;G^.Absolute:=True;G^.Value:=Y^.Value
+     G^.Defined:=True;G^.Absolute:=True;G^.Value:=Y^.Value;
+     if M.Name<>''Then G^.DefinedIn:=M.Name else G^.DefinedIn:=M.FileName
     End
    End else
    Begin
@@ -1002,7 +1036,8 @@ Begin
      if G^.Defined Then Error(M.FileName,'symbole defini plusieurs fois: '+Y^.Name)
      else
      Begin
-      G^.Defined:=True;G^.Section:=S^.OutputSection;G^.Value:=S^.OutputBase+Y^.Value
+      G^.Defined:=True;G^.Section:=S^.OutputSection;G^.Value:=S^.OutputBase+Y^.Value;
+      if M.Name<>''Then G^.DefinedIn:=M.Name else G^.DefinedIn:=M.FileName
      End
     End
    End
@@ -1046,6 +1081,19 @@ End;
 
 Function ReadBE32(S:POutSection;O:LongInt):LongInt;Begin
  ReadBE32:=LongInt(ReadBE16(S,O))shl 16 or ReadBE16(S,O+2)
+End;
+
+Procedure AddSymbolReference(G:PGlobal;Const ModuleName:String);
+Var P,Q:PReference;
+Begin
+ if G=Nil Then Exit;P:=G^.References;
+ While P<>Nil do Begin
+  if UpperString(P^.ModuleName)=UpperString(ModuleName)Then Exit;P:=P^.Next
+ End;
+ New(P);if P=Nil Then Fatal('memoire pleine');P^.ModuleName:=ModuleName;P^.Next:=Nil;
+ if G^.References=Nil Then G^.References:=P else Begin
+  Q:=G^.References;While Q^.Next<>Nil do Q:=Q^.Next;Q^.Next:=P
+ End
 End;
 
 Function ReadLE16Image(S:POutSection;O:LongInt):Word;Begin
@@ -1170,6 +1218,8 @@ Begin
       Begin
        Addend:=G^.Value;if not G^.Absolute Then NewBase:=G^.Section^.Number
       End
+      ;if M.Name<>''Then AddSymbolReference(G,M.Name)
+       else AddSymbolReference(G,M.FileName)
      End
     End else if R^.Base<>0 Then Begin
      Target:=FindObjSection(M,Byte(R^.Base));
@@ -1455,6 +1505,74 @@ Begin
   if S^.Size>$FFFF Then Fatal('segment x.out superieur a 64 Kio: '+S^.Name);
   S:=S^.Next
  End;AssignSegmentNumbers;ValidateSplitAddressSpaces
+End;
+
+Procedure ResolveRuntimeBoundary(Const Name:String;Wanted1,Wanted2:Byte);
+Var G:PGlobal;S,Best:POutSection;
+Begin
+ G:=FindGlobal(Name);if(G=Nil)or G^.Defined Then Exit;Best:=Nil;S:=OutSections;
+ While S<>Nil do Begin
+  if(S^.SegmentType=Wanted1)or(S^.SegmentType=Wanted2)Then Best:=S;
+  S:=S^.Next
+ End;
+ if Best<>Nil Then Begin
+  G^.Defined:=True;G^.Absolute:=False;G^.Section:=Best;G^.Value:=Best^.Size;
+  G^.DefinedIn:='LDZ8K'
+ End
+End;
+
+Procedure ResolveRuntimeSymbols;
+Begin
+ ResolveRuntimeBoundary('_etext',X_SG_COD,X_SG_COD);
+ ResolveRuntimeBoundary('_edata',X_SG_DAT,X_SG_CON);
+ ResolveRuntimeBoundary('_end',X_SG_BSS,X_SG_STK)
+End;
+
+Procedure SortGlobals;
+Var P,N,Sorted,Q:PGlobal;
+Begin
+ Sorted:=Nil;P:=Globals;
+ While P<>Nil do Begin
+  N:=P^.Next;
+  if(Sorted=Nil)or(UpperString(P^.Name)<UpperString(Sorted^.Name))Then Begin
+   P^.Next:=Sorted;Sorted:=P
+  End else Begin
+   Q:=Sorted;
+   While(Q^.Next<>Nil)and(UpperString(Q^.Next^.Name)<=UpperString(P^.Name))do Q:=Q^.Next;
+   P^.Next:=Q^.Next;Q^.Next:=P
+  End;P:=N
+ End;Globals:=Sorted
+End;
+
+Function SymbolSectionName(G:PGlobal):String;
+Begin
+ if not G^.Defined Then SymbolSectionName:='UNDEF'
+ else if G^.Absolute Then SymbolSectionName:='ABS'
+ else Case G^.Section^.SegmentType of
+  X_SG_COD:SymbolSectionName:='TEXT';X_SG_CON:SymbolSectionName:='CONST';
+  X_SG_DAT:SymbolSectionName:='DATA';X_SG_BSS:SymbolSectionName:='BSS';
+  X_SG_STK:SymbolSectionName:='STACK';else SymbolSectionName:='MIXED'
+ End
+End;
+
+Procedure PrintLoadMap;
+Var S:POutSection;G:PGlobal;R:PReference;
+Begin
+ if not Opt.MapFile Then Exit;
+ WriteLn('Load map for ',Opt.OutputName);WriteLn;WriteLn('Segments:');
+ S:=OutSections;While S<>Nil do Begin
+  WriteLn(' ',S^.AssignedNumber:3,' ',Copy(S^.Name,1,8):8,' type=',S^.SegmentType,
+   ' size=',S^.Size,' base=',S^.LoadBase);S:=S^.Next
+ End;
+ WriteLn;WriteLn('Symbols:');G:=Globals;
+ While G<>Nil do Begin
+  Write(' ',G^.Name:8,' ',SymbolSectionName(G):6,' ',G^.Value:6);
+  if G^.CommonSize<>0 Then Write(' COMMON=',G^.CommonSize);
+  if G^.DefinedIn<>''Then Write(' defined=',G^.DefinedIn);
+  R:=G^.References;if R<>Nil Then Write(' refs=');
+  While R<>Nil do Begin Write(R^.ModuleName);if R^.Next<>Nil Then Write(',');R:=R^.Next End;
+  WriteLn;G:=G^.Next
+ End
 End;
 
 Procedure PutLE16(Var B:TBuffer;Var N:Integer;V:Word);Begin
@@ -2045,13 +2163,13 @@ BEGIN
     La convention historique par defaut est alors le Z8002 non segmente. }
   TargetKnown:=True;TargetSegmented:=False
  End;
- AllocateCommonSymbols;ApplyLayoutOptions;
+ AllocateCommonSymbols;ApplyLayoutOptions;ResolveRuntimeSymbols;SortGlobals;
  AssignExternalBases;
  MN:=Modules;
  While(MN<>Nil)and(ErrorCount=0)do Begin
   CopyAndRelocateModule(MN^.Item);MN:=MN^.Next
  End;
- if(ErrorCount=0)Then WriteXOut;
+ if(ErrorCount=0)Then Begin WriteXOut;PrintLoadMap End;
  MN:=Modules;
  While MN<>Nil do Begin
   MNext:=MN^.Next;FreeModule(MN^.Item);Dispose(MN);MN:=MNext
