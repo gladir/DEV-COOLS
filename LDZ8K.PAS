@@ -272,7 +272,8 @@ Procedure Usage;Begin
  WriteLn;
  WriteLn('  -o fichier  nom du fichier produit (x.out par defaut)');
  WriteLn('  -r          produit un objet x.out relogeable et conserve les externes');
- WriteLn('  -s          supprime les symboles locaux et la table publique finale');
+ WriteLn('  -s          retire symboles, debogage et relogements du resultat final');
+ WriteLn('              avec -r, la table indispensable aux relogements est conservee');
  WriteLn('  -u symbole  ajoute une reference externe forcee');
  WriteLn('  -i          espace instructions/donnees separe');
  WriteLn('  -n          texte partage, donnees alignees sur 8 Kio');
@@ -1034,6 +1035,14 @@ Function ReadBE32(S:POutSection;O:LongInt):LongInt;Begin
  ReadBE32:=LongInt(ReadBE16(S,O))shl 16 or ReadBE16(S,O+2)
 End;
 
+Function ReadLE16Image(S:POutSection;O:LongInt):Word;Begin
+ ReadLE16Image:=Word(GetImageByte(S,O))or(Word(GetImageByte(S,O+1))shl 8)
+End;
+
+Function ReadLE32Image(S:POutSection;O:LongInt):LongInt;Begin
+ ReadLE32Image:=LongInt(ReadLE16Image(S,O))or(LongInt(ReadLE16Image(S,O+2))shl 16)
+End;
+
 Procedure WriteBE16Image(S:POutSection;O:LongInt;V:Word);Begin
  PutImageByte(S,O,V shr 8);PutImageByte(S,O+1,V)
 End;
@@ -1042,31 +1051,73 @@ Procedure WriteBE32Image(S:POutSection;O:LongInt;V:LongInt);Begin
  WriteBE16Image(S,O,Word(LongInt(V)shr 16));WriteBE16Image(S,O+2,Word(V))
 End;
 
+Procedure WriteLE16Image(S:POutSection;O:LongInt;V:Word);Begin
+ PutImageByte(S,O,V);PutImageByte(S,O+1,V shr 8)
+End;
+
+Procedure WriteLE32Image(S:POutSection;O:LongInt;V:LongInt);Begin
+ WriteLE16Image(S,O,Word(V));WriteLE16Image(S,O+2,Word(LongInt(V)shr 16))
+End;
+
+Function AddWordChecked(V:Word;Addend:LongInt;Const What:String):Word;
+Var Sum:LongInt;
+Begin
+ Sum:=LongInt(V)+Addend;
+ if(Sum<0)or(Sum>$FFFF)Then Fatal('debordement de relogement 16 bits: '+What);
+ AddWordChecked:=Word(Sum)
+End;
+
+Function AddLongChecked(V:LongInt;Addend:LongInt;Const What:String):LongInt;
+Var Lo,Hi:Word;Sum:LongInt;
+Begin
+ if Addend<0 Then Fatal('addition negative de relogement 32 bits: '+What);
+ Lo:=Word(V);Hi:=Word(LongInt(V)shr 16);Sum:=LongInt(Lo)+(Addend and $FFFF);
+ Lo:=Word(Sum);Sum:=LongInt(Hi)+(Addend shr 16)+(Sum shr 16);
+ if Sum>$FFFF Then Fatal('debordement de relogement 32 bits: '+What);
+ AddLongChecked:=(LongInt(Word(Sum))shl 16)or Lo
+End;
+
 Procedure ApplyAddend(S:POutSection;O:LongInt;Action:Word;Addend:LongInt);
 Var
  V:LongInt;
  W:Word;
 Begin
  Case Action of
- RAA8:PutImageByte(S,O,Byte(GetImageByte(S,O)+Addend));
- RAA16,RAA16M,RAZOF:
- Begin
-  W:=ReadBE16(S,O);WriteBE16Image(S,O,Word(W+Addend))
+ RAA8:Begin
+  V:=LongInt(GetImageByte(S,O))+Addend;
+  if(V<0)or(V>$FF)Then Fatal('debordement de relogement 8 bits');
+  PutImageByte(S,O,Byte(V))
  End;
- RAA32,RAA32M:
+ RAA16:WriteLE16Image(S,O,AddWordChecked(ReadLE16Image(S,O),Addend,'RAA16'));
+ RAA16M,RAZOF:
  Begin
-  V:=ReadBE32(S,O);WriteBE32Image(S,O,V+Addend)
+  W:=ReadBE16(S,O);WriteBE16Image(S,O,AddWordChecked(W,Addend,'RAA16M/RAZOF'))
+ End;
+ RAA32:WriteLE32Image(S,O,AddLongChecked(ReadLE32Image(S,O),Addend,'RAA32'));
+ RAA32M:
+ Begin
+  V:=ReadBE32(S,O);WriteBE32Image(S,O,AddLongChecked(V,Addend,'RAA32M'))
  End;
  RAZSS:
  Begin
-  W:=ReadBE16(S,O);W:=(W and $FF00)or Word((W+Addend)and $FF);WriteBE16Image(S,O,W)
+  W:=ReadBE16(S,O);
+  if(W and $8000)<>0 Then Fatal('forme courte Z8001 invalide');
+  V:=LongInt(W and $FF)+Addend;
+  if(V<0)or(V>$FF)Then Fatal('debordement de l''offset segmente court Z8001');
+  W:=(W and $FF00)or Word(V);WriteBE16Image(S,O,W)
  End;
  RAZLS:
  Begin
-  V:=ReadBE32(S,O);V:=(V and LongInt($FFFF0000))or((V+Addend)and $FFFF);
-  WriteBE32Image(S,O,V)
+  V:=ReadBE32(S,O);
+  if(V and LongInt($80000000))=0 Then Fatal('marqueur d''adresse longue Z8001 absent');
+  if(V and LongInt($00FF0000))<>0 Then Fatal('bits reserves d''adresse longue Z8001 non nuls');
+  W:=AddWordChecked(Word(V),Addend,'adresse longue Z8001');
+  V:=(V and LongInt($FFFF0000))or W;WriteBE32Image(S,O,V)
+ End;
+ RASEG:WriteLE16Image(S,O,AddWordChecked(ReadLE16Image(S,O),Addend shr 4,'RASEG'));
+ RAOFF:WriteLE16Image(S,O,AddWordChecked(ReadLE16Image(S,O),Addend and $FFFF,'RAOFF'));
+ else Fatal('action de relogement non prise en charge')
  End
-End
 End;
 
 Procedure CopyAndRelocateModule(Var M:TModule);
@@ -1136,7 +1187,7 @@ Begin
   End;
   G:=G^.Next
  End;
- if Opt.Strip Then Begin
+ if Opt.Strip and not Opt.Relocatable Then Begin
   G:=Globals;
   While G<>Nil do Begin
    if not G^.Defined Then Fatal(
@@ -1626,7 +1677,10 @@ Begin
    RAA8:Begin V:=GetImageByte(R^.Section,R^.Offset)+T^.LoadBase;
     if(V<0)or(V>$FF)Then Fatal('reference 8 bits hors de son espace instructions/donnees')
    End;
-   RAA16,RAA16M,RAZOF:Begin V:=ReadBE16(R^.Section,R^.Offset)+T^.LoadBase;
+   RAA16:Begin V:=ReadLE16Image(R^.Section,R^.Offset)+T^.LoadBase;
+    if(V<0)or(V>$FFFF)Then Fatal('reference 16 bits hors de son espace instructions/donnees')
+   End;
+   RAA16M,RAZOF:Begin V:=ReadBE16(R^.Section,R^.Offset)+T^.LoadBase;
     if(V<0)or(V>$FFFF)Then Fatal('reference 16 bits hors de son espace instructions/donnees')
    End
    End
@@ -1635,7 +1689,7 @@ Begin
   ReadBE16(R^.Section,R^.Offset)and $80FF)or
   (Word(T^.AssignedNumber and $7F)shl 8))
   else if TargetSegmented and(R^.Action=RAZLS)Then   WriteBE32Image(R^.Section,R^.Offset,(
-  ReadBE32(R^.Section,R^.Offset)and LongInt($80FFFFFF))or
+  ReadBE32(R^.Section,R^.Offset)and LongInt($8000FFFF))or
   (LongInt(T^.AssignedNumber and $7F)shl 24))
   else ApplyAddend(R^.Section,R^.Offset,R^.Action,T^.LoadBase);
   R:=R^.Next
@@ -1668,7 +1722,7 @@ Var
  R:PReloc;
  Old:File;
  Backup:String;
- HadOld,Executable:Boolean;
+ HadOld,Executable,KeepSymbols,KeepRelocations:Boolean;
  Magic,SegmentCount,SymbolCount:Word;
  InitSize,RelocSize,SymbolSize:LongInt;
  Flag:Byte;
@@ -1678,12 +1732,16 @@ Begin
    serialise: le demarrage est choisi par le module initial et ses symboles
    publics (_start, startup, etc.), comme dans la chaine CP/M-8000. }
  Executable:=not Opt.Relocatable and not UndefinedGlobals;
+ KeepRelocations:=Opt.Relocatable;
+ { Dans LD8K original: strip && !saverel supprime la table. -r a donc
+   priorite sur -s car les X_RL_X* ont besoin des indices de symboles. }
+ KeepSymbols:=Opt.Relocatable or not Opt.Strip;
  SegmentCount:=0;InitSize:=0;S:=OutSections;
  While S<>Nil do Begin
   Inc(SegmentCount);if not S^.IsBss Then Inc(InitSize,S^.Size);S:=S^.Next
  End;
  AssignXOutSymbolIndices(SegmentCount);
- if Executable Then Begin
+ if not KeepRelocations Then Begin
   PrepareExecutable;RelocSize:=0
  End
  else
@@ -1693,7 +1751,7 @@ Begin
    Inc(RelocSize,6);R:=R^.Next
   End
  End;
- SymbolCount:=0;if not(Opt.Strip and Executable)Then Begin
+ SymbolCount:=0;if KeepSymbols Then Begin
   SymbolCount:=SegmentCount;G:=Globals;
   While G<>Nil do Begin
    Inc(SymbolCount);G:=G^.Next
@@ -1724,17 +1782,19 @@ Begin
   End;
   S:=S^.Next
  End;
- if not Executable Then Begin
+ if KeepRelocations Then Begin
   R:=Relocations;
   While R<>Nil do Begin
    RawByte(R^.Section^.Ordinal);Location:=R^.Offset;
    Case R^.Action of
-   RAA16,RAA16M,RAZOF:Flag:=X_RL_OFF;
-   RAA32,RAA32M:
+   RAA16M,RAZOF:Flag:=X_RL_OFF;
+   RAA32M:
    Begin
     Flag:=X_RL_OFF;Inc(Location,2)
    End;
    RAZSS:Flag:=X_RL_SSG;RAZLS:Flag:=X_RL_LSG;
+   RAA8,RAA16,RAA32,RASEG,RAOFF:
+    Fatal('relogement UNIDOT non representable dans x.out Z8000');
    else Fatal('relogement non representable dans x.out')
   End;
   if R^.Base>=RBEXT Then Begin
