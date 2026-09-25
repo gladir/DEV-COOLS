@@ -80,6 +80,21 @@ L'application DEVENV possède plusieurs terminaux pour répondre aux différente
 		<td>OS/2</td>
 		<td>Emulateur OS/2</td>
 	</tr>
+	<tr>
+		<td><b>OS-9</b></td>
+		<td>CoCo 3 (Color Computer 3) de Tandy/Radio Shack</td>
+		<td>Emulateur OS-9</td>
+	</tr>
+	<tr>
+		<td><b>VMS</b></td>
+		<td>VAX</td>
+		<td>Emulateur VMS</td>
+	</tr>
+	<tr>	
+		<td><b>COS</b></td>td
+		<td>Cray 1</td>
+		<td>Emulateur Cray 1</td>
+	</tr>
 </table>
 
 Il possède un navigateur Web nommé BROWSER :
