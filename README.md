@@ -841,6 +841,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de retourner les informations de version d'une unité Free Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>PSCRIPT.PAS</b></td>
+			<td>Cette commande permet de lancer l'interpreteur de PascalScript.</td>
+		</tr>
+		<tr>
 			<td><b>PSP86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de PSP (Pascal Server Pages) pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
@@ -886,6 +890,14 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>REPASCAL.PAS</b></td>
 			<td>Cette commande permet de reformater un fichier source Pascal.</td>
+		</tr>
+		<tr>
+			<td><b>REXX.PAS</b></td>
+			<td>Cette commande permet de lancer le langage de programmation REXX.</td>
+		</tr>
+		<tr>
+			<td><b>REXX86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur REXX pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
 			<td><b>RGB2HTML.PAS</b></td>
