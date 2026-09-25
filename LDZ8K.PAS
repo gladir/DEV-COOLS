@@ -71,6 +71,7 @@ Const
  AR8K_HEADER_SIZE=26;
  MaxSegmentSize=65535;
  SharedBoundary=8192;
+ DefaultStackSize=256;
  MaxErrors=100;
 
 Type
@@ -164,9 +165,9 @@ TModuleNode=Record Item:TModule;
 Next:PModuleNode
 End;
 TOptions=Record
-OutputName:String;
-Relocatable,Strip,SplitID,ReadOnly,Preassign:Boolean;
-StackSize:LongInt
+ OutputName:String;
+ Relocatable,Strip,SplitID,ReadOnly,Preassign,StackSpecified:Boolean;
+ StackSize:LongInt
 End;
 
 Var
@@ -267,7 +268,8 @@ Procedure Usage;Begin
  WriteLn('  -u symbole  ajoute une reference externe forcee');
  WriteLn('  -i          espace instructions/donnees separe');
  WriteLn('  -n          texte partage, donnees alignees sur 8 Kio');
- WriteLn('  -t taille   taille de pile demandee');
+ WriteLn('  -t taille   pile en octets (decimal, arrondie au mot, maximum 65534)');
+ WriteLn('              defaut chargeur Z8002: 256; Z8001: segment explicite de 256');
  WriteLn('  -w          reserve 0=TEXT, 1=CONST, 2=DATA et 3=BSS');
  WriteLn('  -d fichier  lit les descriptions de segments dans un fichier');
  WriteLn('  -d"ligne"   applique directement une ligne de description');
@@ -296,7 +298,7 @@ Function ResolveLibrary(Const Abbreviation:String):String;Forward;
 
 Procedure ParseCommandLine;
 Var
- I,Code:Integer;
+ I,J,Code:Integer;
  S,U:String;
 Begin
  FillChar(Opt,SizeOf(Opt),0);Opt.OutputName:='x.out';I:=1;
@@ -321,7 +323,15 @@ Begin
    AddDescriptor(Copy(S,3,Length(S)),False)
   else if U='-T'Then Begin
    Inc(I);if I>ParamCount Then Fatal('-t exige une taille');
-   Val(ParamStr(I),Opt.StackSize,Code);if Code<>0 Then Fatal('taille de pile incorrecte')
+   S:=ParamStr(I);
+   if S=''Then Fatal('taille de pile incorrecte');
+   For J:=1 to Length(S)do if not(S[J]in['0'..'9'])Then
+    Fatal('taille de pile incorrecte: '+S);
+   Val(S,Opt.StackSize,Code);
+   if(Code<>0)or(Opt.StackSize<0)or(Opt.StackSize>65534)Then
+    Fatal('taille de pile hors limite (0..65534)');
+   if(Opt.StackSize and 1)<>0 Then Inc(Opt.StackSize);
+   Opt.StackSpecified:=True
   End
   else if U='-U'Then Begin
    Inc(I);if I>ParamCount Then Fatal('-u exige un symbole');
@@ -1303,6 +1313,7 @@ Procedure ApplyLayoutOptions;
 Var
  S,Stack:POutSection;
  U:String;
+ RequestedStack:LongInt;
 Begin
  if Opt.ReadOnly and TargetSegmented Then
   Fatal('-n est incompatible avec un chargement segmente Z8001');
@@ -1323,10 +1334,24 @@ Begin
   S^.Attributes or 2;
   S:=S^.Next
  End;
- if Opt.StackSize>0 Then Begin
-  Stack:=FindOutSection('__stack',0);Stack^.IsBss:=True;
-  Stack^.SegmentType:=X_SG_STK;Stack^.Reserved:=True;
-  if Stack^.Size<Opt.StackSize Then Stack^.Size:=Opt.StackSize
+ { x.out ne possede pas de champ de pile dans x_hdr. La convention
+   historique est un descripteur x_sg de type X_SG_STK. Le chargeur
+   Z8002 reserve 256 octets si ce descripteur est absent; un programme
+   segmente Z8001 doit au contraire posseder explicitement son segment. }
+ Stack:=Nil;S:=OutSections;
+ While(S<>Nil)and(Stack=Nil)do Begin
+  if S^.SegmentType=X_SG_STK Then Stack:=S else S:=S^.Next
+ End;
+ RequestedStack:=0;
+ if Opt.StackSpecified Then RequestedStack:=Opt.StackSize
+ else if TargetSegmented and(Stack=Nil)Then RequestedStack:=DefaultStackSize;
+ if RequestedStack>0 Then Begin
+  if Stack=Nil Then Stack:=FindOutSection('__stack',0);
+  Stack^.IsBss:=True;Stack^.SegmentType:=X_SG_STK;Stack^.Reserved:=True;
+  if Stack^.Size>MaxSegmentSize-RequestedStack Then
+   Fatal('segment de pile superieur a la limite historique de 64 Kio');
+  Inc(Stack^.Size,RequestedStack);
+  if(Stack^.Size and 1)<>0 Then Inc(Stack^.Size)
  End;
  RemoveEmptyAndOrderSections;S:=OutSections;
  While S<>Nil do Begin
