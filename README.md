@@ -719,6 +719,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le transpilateur Node.js (JavaScript) vers Java.</td>
 		</tr>
 		<tr>
+			<td><b>NM.PAS</b></td>
+			<td>Cette commande permet d'afficher la table des symboles d'un fichier objet, d'une bibliothèque statique ou d'un exécutable.</td>
+		</tr>
+		<tr>
 			<td><b>OBERON86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Oberon pour l'assembleur du microprocesseur 8086.</td>
 		</td>
