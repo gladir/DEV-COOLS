@@ -7008,10 +7008,89 @@ Begin
  CSSParseRGBFunc := CSSRGBToIndex(Vals[1], Vals[2], Vals[3]);
 End;
 
+Const
+ { 'black' est resolu au moment de l'appel via HTMLBlackColorIndex, une
+   VARIABLE d'execution (0 en VGA 16 couleurs, 16 en D8bit - voir
+   InitializeHTMLPalette) - impossible a mettre dans une constante
+   typee CSSNamedColorTable ci-dessous. Cette valeur sentinelle, hors de
+   la plage valide -1..15 d'un index de couleur, marque cette entree
+   pour que CSSColorToIndex la resolve a part apres la recherche. }
+ CSS_COLOR_BLACK_SENTINEL = -2;
+
+Type
+ CSSNamedColorEntry = Record
+  Name: String[15];
+  Idx: Integer;
+ End;
+
+Const
+ CSS_NAMED_COLOR_COUNT = 27;
+ { Table des couleurs nommees CSS/HTML, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de
+   CSSFindNamedColor ci-dessous (meme principe que CSSPropertyTable/
+   HTMLTagTable). Les doublons d'index (blue/navy, cyan/teal,
+   red/maroon, magenta/purple, brown/olive/orange, lightgray/silver,
+   darkgray/gray, lightgreen/lime, lightcyan/aqua,
+   lightmagenta/fuchsia) reproduisent exactement le mapping de
+   l'ancien code. }
+ CSSNamedColorTable: Array[0..CSS_NAMED_COLOR_COUNT - 1] Of CSSNamedColorEntry = (
+  (Name: 'aqua';         Idx: 11),
+  (Name: 'black';        Idx: CSS_COLOR_BLACK_SENTINEL),
+  (Name: 'blue';         Idx: 1),
+  (Name: 'brown';        Idx: 6),
+  (Name: 'cyan';         Idx: 3),
+  (Name: 'darkgray';     Idx: 8),
+  (Name: 'fuchsia';      Idx: 13),
+  (Name: 'gray';         Idx: 8),
+  (Name: 'green';        Idx: 2),
+  (Name: 'lightblue';    Idx: 9),
+  (Name: 'lightcyan';    Idx: 11),
+  (Name: 'lightgray';    Idx: 7),
+  (Name: 'lightgreen';   Idx: 10),
+  (Name: 'lightmagenta'; Idx: 13),
+  (Name: 'lightred';     Idx: 12),
+  (Name: 'lime';         Idx: 10),
+  (Name: 'magenta';      Idx: 5),
+  (Name: 'maroon';       Idx: 4),
+  (Name: 'navy';         Idx: 1),
+  (Name: 'olive';        Idx: 6),
+  (Name: 'orange';       Idx: 6),
+  (Name: 'purple';       Idx: 5),
+  (Name: 'red';          Idx: 4),
+  (Name: 'silver';       Idx: 7),
+  (Name: 'teal';         Idx: 3),
+  (Name: 'white';        Idx: 15),
+  (Name: 'yellow';       Idx: 14)
+ );
+
+{ Recherche dichotomique dans CSSNamedColorTable - retourne False si
+  LowerColor (deja en minuscules) n'est pas une couleur nommee connue. }
+Function CSSFindNamedColor(Const LowerColor: String; Var Idx: Integer): Boolean;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ CSSFindNamedColor := False;
+ Lo := 0;
+ Hi := CSS_NAMED_COLOR_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If CSSNamedColorTable[Mid].Name = LowerColor Then Begin
+   Idx := CSSNamedColorTable[Mid].Idx;
+   CSSFindNamedColor := True;
+   Exit;
+  End
+  Else If CSSNamedColorTable[Mid].Name < LowerColor Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
 Function CSSColorToIndex(Const ColorStr: String): Integer;
 Var
  LowerColor: String;
  HexResult: Integer;
+ NamedIdx: Integer;
 Begin
  { Couleurs hexadecimales (#RGB / #RRGGBB) - format le plus courant en
    CSS reel, totalement absent ici auparavant : toute couleur definie
@@ -7030,36 +7109,15 @@ Begin
 
  LowerColor := HTMLLowerCase(ColorStr);
 
- { Couleurs nommees }
- If LowerColor = 'black' Then CSSColorToIndex := HTMLBlackColorIndex
- Else If LowerColor = 'blue' Then CSSColorToIndex := 1
- Else If LowerColor = 'green' Then CSSColorToIndex := 2
- Else If LowerColor = 'cyan' Then CSSColorToIndex := 3
- Else If LowerColor = 'red' Then CSSColorToIndex := 4
- Else If LowerColor = 'magenta' Then CSSColorToIndex := 5
- Else If LowerColor = 'brown' Then CSSColorToIndex := 6
- Else If LowerColor = 'lightgray' Then CSSColorToIndex := 7
- Else If LowerColor = 'darkgray' Then CSSColorToIndex := 8
- Else If LowerColor = 'lightblue' Then CSSColorToIndex := 9
- Else If LowerColor = 'lightgreen' Then CSSColorToIndex := 10
- Else If LowerColor = 'lightcyan' Then CSSColorToIndex := 11
- Else If LowerColor = 'lightred' Then CSSColorToIndex := 12
- Else If LowerColor = 'lightmagenta' Then CSSColorToIndex := 13
- Else If LowerColor = 'yellow' Then CSSColorToIndex := 14
- Else If LowerColor = 'white' Then CSSColorToIndex := 15
- { Couleurs HTML standard }
- Else If LowerColor = 'navy' Then CSSColorToIndex := 1
- Else If LowerColor = 'teal' Then CSSColorToIndex := 3
- Else If LowerColor = 'maroon' Then CSSColorToIndex := 4
- Else If LowerColor = 'purple' Then CSSColorToIndex := 5
- Else If LowerColor = 'olive' Then CSSColorToIndex := 6
- Else If LowerColor = 'silver' Then CSSColorToIndex := 7
- Else If LowerColor = 'gray' Then CSSColorToIndex := 8
- Else If LowerColor = 'lime' Then CSSColorToIndex := 10
- Else If LowerColor = 'aqua' Then CSSColorToIndex := 11
- Else If LowerColor = 'fuchsia' Then CSSColorToIndex := 13
- Else If LowerColor = 'orange' Then CSSColorToIndex := 6
- Else CSSColorToIndex := -1;
+ { Couleurs nommees (CSS + HTML standard) - recherche dichotomique au
+   lieu des 27 comparaisons Si/SinonSi d'avant. }
+ If CSSFindNamedColor(LowerColor, NamedIdx) Then Begin
+  If NamedIdx = CSS_COLOR_BLACK_SENTINEL Then
+   CSSColorToIndex := HTMLBlackColorIndex
+  Else
+   CSSColorToIndex := NamedIdx;
+ End Else
+  CSSColorToIndex := -1;
 End;
 
 { Extraire le CSS des balises <style> du document }
