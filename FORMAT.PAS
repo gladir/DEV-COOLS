@@ -652,6 +652,7 @@ Var
  AllocationSizeSpecified:Boolean;
  RequestedAllocationSize:LongInt;
  ImageDataOffset,ImageVolumeStart,ImageVirtualSectors:LongInt;
+ ExFatFatOffset,ExFatFatLength,ExFatHeapOffset,ExFatClusterCount:LongInt;
  ImageContainer:(IC_RAW,IC_VDI);
 
 Function StrToUpper(S:String):String;
@@ -877,9 +878,15 @@ Begin
  EightSectors or Format360In1200)Then Begin
   WriteLn('/T, /N, /1, /4 et /8 sont reserves aux disquettes.');Exit
  End;
- If RequestedFileSystem in[FS_EXFAT,FS_NTFS]Then Begin
+ If RequestedFileSystem=FS_NTFS Then Begin
   WriteLn(
   'Le systeme demande exige des metadonnees de disque dur non prises en charge par ce formateur de disquettes.');Exit
+ End;
+ If(RequestedFileSystem=FS_EXFAT)and not(InFile or HardDiskMode)Then Begin
+  WriteLn('exFAT est reserve aux partitions et aux images de disque dur.');Exit
+ End;
+ If(RequestedFileSystem=FS_EXFAT)and(SystemTransfer or BootReserve)Then Begin
+  WriteLn('/S et /B ne sont pas encore disponibles pour exFAT.');Exit
  End;
  If(RequestedFileSystem=FS_HPFS)and not(InFile or HardDiskMode)Then Begin
   WriteLn('HPFS est reserve aux partitions et aux images de disque dur.');Exit
@@ -932,6 +939,28 @@ Begin
   End;
   ConfigureFileSystem:=True;Exit
  End;
+ If RequestedFileSystem=FS_EXFAT Then Begin
+  LData.Media:=$F8;LData.RootSize:=0;
+  If AllocationSizeSpecified Then LData.Cluster:=RequestedAllocationSize div 512
+  Else LData.Cluster:=8;
+  ExFatFatOffset:=24;ExFatFatLength:=1;ExFatHeapOffset:=32;
+  For I:=1to 32do Begin
+   ExFatHeapOffset:=ExFatFatOffset+ExFatFatLength;
+   ExFatHeapOffset:=((ExFatHeapOffset+LData.Cluster-1)div LData.Cluster)*LData.Cluster;
+   ExFatClusterCount:=(TotalSectors-ExFatHeapOffset)div LData.Cluster;
+   OldFat:=ExFatFatLength;
+   ExFatFatLength:=((ExFatClusterCount+2)*4+511)div 512;
+   If ExFatFatLength=OldFat Then Break
+  End;
+  ExFatHeapOffset:=ExFatFatOffset+ExFatFatLength;
+  ExFatHeapOffset:=((ExFatHeapOffset+LData.Cluster-1)div LData.Cluster)*LData.Cluster;
+  ExFatClusterCount:=(TotalSectors-ExFatHeapOffset)div LData.Cluster;
+  If(ExFatClusterCount<3)or(ExFatClusterCount>$0FFFFFF5)or
+   (ExFatFatLength>65535)Then Begin
+   WriteLn('La geometrie ne convient pas a exFAT.');Exit
+  End;
+  LData.FAT:=ExFatFatLength;ActiveFATBits:=64;ConfigureFileSystem:=True;Exit
+ End;
  If RequestedFileSystem=FS_FAT32 Then Begin
   LData.Media:=$F8;LData.RootSize:=0;
   If AllocationSizeSpecified Then LData.Cluster:=RequestedAllocationSize div 512
@@ -954,10 +983,8 @@ Begin
   End;
   LData.FAT:=FatSectors;ActiveFATBits:=32;ConfigureFileSystem:=True;Exit
  End;
- If RequestedFileSystem in[FS_EXFAT,FS_NTFS]Then Begin
+ If RequestedFileSystem=FS_NTFS Then Begin
   Case RequestedFileSystem of
-  FS_EXFAT:WriteLn(
-  'exFAT exige des tables bitmap et UpCase non prises en charge sur disquette.');
   FS_NTFS:WriteLn(
   'NTFS exige une MFT et des fichiers de metadonnees non pris en charge sur disquette.')
  End;Exit
@@ -1340,7 +1367,7 @@ Begin
  End;
  FillChar(MBR,SizeOf(MBR),0);MBR[446]:=$80;
  MBR[447]:=1;MBR[448]:=1;MBR[449]:=0;
- If RequestedFileSystem=FS_HPFS Then MBR[450]:=$07
+ If RequestedFileSystem in[FS_HPFS,FS_EXFAT]Then MBR[450]:=$07
  Else If RequestedFileSystem=FS_FAT32 Then MBR[450]:=$0C
  Else If RequestedFileSystem=FS_FAT12 Then MBR[450]:=$01
  Else If SizeMB<32Then MBR[450]:=$04 Else MBR[450]:=$06;
@@ -1422,36 +1449,54 @@ Var
  Boot:TSectorBuffer;
  Total:LongInt;
  GeometryValue:Word;
+ ExistingExFAT:Boolean;
 Begin
  PrepareHardDisk:=False;
  If not ReadLogicalSector(0,Boot)Then Begin
   WriteLn('Impossible de lire le secteur de demarrage de ',Chr(Drive+65),':.');Exit
  End;
- If GetWordLE(Boot,11)<>512Then Begin
+ ExistingExFAT:=(Boot[3]=Ord('E'))and(Boot[4]=Ord('X'))and
+ (Boot[5]=Ord('F'))and(Boot[6]=Ord('A'))and(Boot[7]=Ord('T'))and
+ (Boot[8]=Ord(' '))and(Boot[9]=Ord(' '))and(Boot[10]=Ord(' '));
+ If(not ExistingExFAT)and(GetWordLE(Boot,11)<>512)Then Begin
   WriteLn(
   'La partition doit d''abord etre creee par FDISK avec des secteurs de 512 octets.');Exit
  End;
- Total:=GetWordLE(Boot,19);If Total=0Then Total:=GetLongLE(Boot,32);
+ If ExistingExFAT Then Begin
+  If(Boot[108]<>9)or(GetLongLE(Boot,76)<>0)Then Begin
+   WriteLn('Le volume exFAT doit utiliser des secteurs de 512 octets et faire moins de 2 Go.');
+   Exit
+  End;
+  Total:=GetLongLE(Boot,72);VolumeHiddenSectors:=GetLongLE(Boot,64)
+ End Else Begin
+  Total:=GetWordLE(Boot,19);If Total=0Then Total:=GetLongLE(Boot,32);
+  VolumeHiddenSectors:=GetLongLE(Boot,28)
+ End;
  If Total<1Then Begin
   WriteLn('Le BPB ne contient pas une taille de partition valide.');Exit
  End;
  VolumeTotalSectors:=Total;
- VolumeHiddenSectors:=GetLongLE(Boot,28);
- If not(RequestedFileSystem in[FS_HPFS,FS_FAT32])and
+ If not(RequestedFileSystem in[FS_HPFS,FS_FAT32,FS_EXFAT])and
  ((GetWordLE(Boot,17)=0)or(GetWordLE(Boot,22)=0))Then Begin
   WriteLn('Cette partition utilise FAT32 ou un BPB non pris en charge.');
   WriteLn('Seules les partitions FAT12/FAT16 existantes peuvent etre reformatees.');Exit
  End;
- PData:=PHYS1440;GeometryValue:=GetWordLE(Boot,24);
+ PData:=PHYS1440;
+ If ExistingExFAT Then GeometryValue:=63 Else GeometryValue:=GetWordLE(Boot,24);
  If GeometryValue>255Then GeometryValue:=255;PData.Sec:=GeometryValue;
- GeometryValue:=GetWordLE(Boot,26);
+ If ExistingExFAT Then GeometryValue:=16 Else GeometryValue:=GetWordLE(Boot,26);
  If GeometryValue>255Then GeometryValue:=255;PData.Faces:=GeometryValue;
  If PData.Sec=0Then PData.Sec:=63;
  If PData.Faces=0Then PData.Faces:=16;
  PData.Tracks:=1;PData.DDPT:=@DDPT1440;
- LData.Media:=Boot[21];If LData.Media=0Then LData.Media:=$F8;
- LData.Cluster:=Boot[13];If LData.Cluster=0Then LData.Cluster:=1;
- LData.FAT:=GetWordLE(Boot,22);LData.RootSize:=GetWordLE(Boot,17);
+ If ExistingExFAT Then Begin
+  LData.Media:=$F8;LData.Cluster:=1 shl Boot[109];
+  LData.FAT:=0;LData.RootSize:=512
+ End Else Begin
+  LData.Media:=Boot[21];If LData.Media=0Then LData.Media:=$F8;
+  LData.Cluster:=Boot[13];If LData.Cluster=0Then LData.Cluster:=1;
+  LData.FAT:=GetWordLE(Boot,22);LData.RootSize:=GetWordLE(Boot,17)
+ End;
  If LData.RootSize=0Then LData.RootSize:=512;
  PrepareHardDisk:=True
 End;
@@ -1730,6 +1775,129 @@ Begin
  Phys4mat:=true;
 End;
 
+Function ExFatChecksumStep(Value:LongInt;B:Byte):LongInt;Begin
+ ExFatChecksumStep:=LongInt((Value shr 1)+((Value and 1)shl 31)+B)
+End;
+
+Function FormatExFAT(PData:PhysDataType;LData:LogDataType):Boolean;
+Var
+ Sec:TSectorBuffer;
+ Total,ClusterBytes,BitmapBytes,BitmapClusters,UpCaseClusters:LongInt;
+ BitmapFirst,UpCaseFirst,RootCluster,UsedClusters,DataSector:LongInt;
+ BootChecksum,UpCaseChecksum:LongInt;
+ I,J,K,EntryIndex:LongInt;
+ Shift:Byte;
+ LabelText,Signature:String;
+
+ Procedure PutQWordLow(Var B:TSectorBuffer;Offset:Word;Value:LongInt);Begin
+  PutLongLE(B,Offset,Value);PutLongLE(B,Offset+4,0)
+ End;
+
+ Procedure AddBootSectorToChecksum(Var B:TSectorBuffer;SectorIndex:Byte);
+ Var N:Word;
+ Begin
+  For N:=0to 511do
+   If not((SectorIndex=0)and((N=106)or(N=107)or(N=112)))Then
+    BootChecksum:=ExFatChecksumStep(BootChecksum,B[N])
+ End;
+
+Begin
+ FormatExFAT:=False;Total:=VolumeTotalSectors;
+ If Total=0Then Total:=LongInt(PData.Tracks)*PData.Faces*PData.Sec;
+ ClusterBytes:=LongInt(LData.Cluster)*512;
+ BitmapBytes:=(ExFatClusterCount+7)div 8;
+ BitmapClusters:=(BitmapBytes+ClusterBytes-1)div ClusterBytes;
+ UpCaseClusters:=(60+ClusterBytes-1)div ClusterBytes;
+ BitmapFirst:=2;UpCaseFirst:=BitmapFirst+BitmapClusters;
+ RootCluster:=UpCaseFirst+UpCaseClusters;UsedClusters:=RootCluster-1;
+ If UsedClusters>ExFatClusterCount Then Begin WriteLn('Volume exFAT trop petit.');Exit End;
+
+ FillChar(Sec,SizeOf(Sec),0);BootChecksum:=0;
+ Sec[0]:=$EB;Sec[1]:=$76;Sec[2]:=$90;Signature:='EXFAT   ';
+ For I:=1to 8do Sec[2+I]:=Ord(Signature[I]);
+ PutQWordLow(Sec,64,VolumeHiddenSectors);PutQWordLow(Sec,72,Total);
+ PutLongLE(Sec,80,ExFatFatOffset);PutLongLE(Sec,84,ExFatFatLength);
+ PutLongLE(Sec,88,ExFatHeapOffset);PutLongLE(Sec,92,ExFatClusterCount);
+ PutLongLE(Sec,96,RootCluster);PutLongLE(Sec,100,LongInt(Total xor $54414658));
+ PutWordLE(Sec,104,$0100);PutWordLE(Sec,106,0);Sec[108]:=9;
+ Shift:=0;K:=LData.Cluster;While K>1do Begin Inc(Shift);K:=K div 2 End;
+ Sec[109]:=Shift;Sec[110]:=1;Sec[111]:=$80;
+ Sec[112]:=Byte((UsedClusters*100)div ExFatClusterCount);
+ Sec[510]:=$55;Sec[511]:=$AA;AddBootSectorToChecksum(Sec,0);
+ If not WriteLogicalSector(PData,0,Sec)Then Exit;
+ If not WriteLogicalSector(PData,12,Sec)Then Exit;
+ For I:=1to 10do Begin
+  FillChar(Sec,SizeOf(Sec),0);
+  If I<=8Then Begin Sec[510]:=$55;Sec[511]:=$AA End;
+  AddBootSectorToChecksum(Sec,I);
+  If not WriteLogicalSector(PData,I,Sec)Then Exit;
+  If not WriteLogicalSector(PData,I+12,Sec)Then Exit
+ End;
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=0to 127do PutLongLE(Sec,I*4,BootChecksum);
+ If not WriteLogicalSector(PData,11,Sec)Then Exit;
+ If not WriteLogicalSector(PData,23,Sec)Then Exit;
+
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=24to ExFatFatOffset-1do
+  If not WriteLogicalSector(PData,I,Sec)Then Exit;
+ For I:=0to ExFatFatLength-1do Begin
+  FillChar(Sec,SizeOf(Sec),0);
+  For J:=0to 127do Begin
+   EntryIndex:=I*128+J;
+   If EntryIndex=0Then PutLongLE(Sec,J*4,LongInt($FFFFFFF8))
+   Else If EntryIndex=1Then PutLongLE(Sec,J*4,LongInt($FFFFFFFF))
+   Else If(EntryIndex>=2)and(EntryIndex<=RootCluster)Then Begin
+    If(EntryIndex=BitmapFirst+BitmapClusters-1)or
+     (EntryIndex=UpCaseFirst+UpCaseClusters-1)or
+     (EntryIndex=RootCluster)Then PutLongLE(Sec,J*4,LongInt($FFFFFFFF))
+    Else PutLongLE(Sec,J*4,EntryIndex+1)
+   End
+  End;
+  If not WriteLogicalSector(PData,ExFatFatOffset+I,Sec)Then Exit
+ End;
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=ExFatFatOffset+ExFatFatLength to ExFatHeapOffset-1do
+  If not WriteLogicalSector(PData,I,Sec)Then Exit;
+
+ For I:=0to BitmapClusters*LData.Cluster-1do Begin
+  FillChar(Sec,SizeOf(Sec),0);
+  If I=0Then For J:=0to UsedClusters-1do
+   Sec[J div 8]:=Sec[J div 8]or Byte(1shl(J and 7));
+  DataSector:=ExFatHeapOffset+I;
+  If not WriteLogicalSector(PData,DataSector,Sec)Then Exit
+ End;
+
+ FillChar(Sec,SizeOf(Sec),0);K:=0;
+ PutWordLE(Sec,K,$FFFF);Inc(K,2);PutWordLE(Sec,K,$0061);Inc(K,2);
+ For I:=Ord('A')to Ord('Z')do Begin PutWordLE(Sec,K,I);Inc(K,2) End;
+ PutWordLE(Sec,K,$FFFF);Inc(K,2);PutWordLE(Sec,K,$FF85);Inc(K,2);
+ UpCaseChecksum:=0;For I:=0to K-1do
+  UpCaseChecksum:=ExFatChecksumStep(UpCaseChecksum,Sec[I]);
+ DataSector:=ExFatHeapOffset+(UpCaseFirst-2)*LData.Cluster;
+ If not WriteLogicalSector(PData,DataSector,Sec)Then Exit;
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=1to UpCaseClusters*LData.Cluster-1do
+  If not WriteLogicalSector(PData,DataSector+I,Sec)Then Exit;
+
+ FillChar(Sec,SizeOf(Sec),0);Sec[0]:=$81;Sec[1]:=0;
+ PutLongLE(Sec,20,BitmapFirst);PutQWordLow(Sec,24,BitmapBytes);
+ Sec[32]:=$82;PutLongLE(Sec,36,UpCaseChecksum);
+ PutLongLE(Sec,52,UpCaseFirst);PutQWordLow(Sec,56,60);
+ If VolumeLabel<>''Then Begin
+  LabelText:=VolumeLabel;While(Length(LabelText)>0)and
+   (LabelText[Length(LabelText)]=' ')do Delete(LabelText,Length(LabelText),1);
+  Sec[64]:=$83;Sec[65]:=Length(LabelText);
+  For I:=1to Length(LabelText)do PutWordLE(Sec,64+I*2,Ord(LabelText[I]))
+ End;
+ DataSector:=ExFatHeapOffset+(RootCluster-2)*LData.Cluster;
+ If not WriteLogicalSector(PData,DataSector,Sec)Then Exit;
+ FillChar(Sec,SizeOf(Sec),0);
+ For I:=1to LData.Cluster-1do
+  If not WriteLogicalSector(PData,DataSector+I,Sec)Then Exit;
+ FormatExFAT:=True
+End;
+
 Function FormatFAT32(PData:PhysDataType;LData:LogDataType):Boolean;
 Var
  Sec:TSectorBuffer;
@@ -1962,6 +2130,9 @@ Var
  TrackBuf:TrackBufType;
  ByteWrited:Word;
 Begin
+ If RequestedFileSystem=FS_EXFAT Then Begin
+  Logical4mat:=FormatExFAT(PData,LData);Exit
+ End;
  If RequestedFileSystem=FS_FAT32 Then Begin
   Logical4mat:=FormatFAT32(PData,LData);Exit
  End;
@@ -2125,9 +2296,9 @@ BEGIN
    WriteLn(' /CREATE:MB   Erstellt ein Festplattenabbild mit MBR und Partition');
    WriteLn(' /F           Erzwingt das angegebene Diskettenformat');
    WriteLn(' /F:Groesse   160, 180, 320, 360, 720, 1200, 1440 oder 2880 KB');
-   WriteLn(' /FS:System   FAT, FAT12, FAT16, FAT32 oder HPFS');
-   WriteLn('              FAT32 und HPFS benoetigen eine Festplatte oder ein Abbild');
-   WriteLn('              exFAT und NTFS werden erkannt, aber nicht implementiert');
+   WriteLn(' /FS:System   FAT, FAT12, FAT16, FAT32, exFAT oder HPFS');
+   WriteLn('              FAT32, exFAT und HPFS benoetigen eine Festplatte/Abbild');
+   WriteLn('              NTFS wird erkannt, ist aber nicht implementiert');
    WriteLn(' /N:n         Anzahl der Sektoren pro Spur');
    WriteLn(' /Q           Schnellformatierung der Dateisystemtabellen');
    WriteLn(' /S           Kopiert IO.SYS, MSDOS.SYS und COMMAND.COM');
@@ -2166,8 +2337,8 @@ BEGIN
    WriteLn('  /CREATE[:MB] Creates a new floppy image or hard-disk image.');
    WriteLn('  /F:size   Selects floppy size: 160, 180, 320, 360, 720,');
    WriteLn('             1200, 1440 or 2880 KB (floppy drives only).');
-   WriteLn('  /FS:name  Selects FAT, FAT12, FAT16, FAT32 or HPFS.');
-   WriteLn('             FAT32 and HPFS require a hard-disk partition/image.');
+   WriteLn('  /FS:name  Selects FAT, FAT12, FAT16, FAT32, exFAT or HPFS.');
+   WriteLn('             FAT32, exFAT and HPFS require a hard-disk partition/image.');
    WriteLn('  /N:n      Specifies the number of sectors per track.');
    WriteLn('  /Q        Performs a quick format of filesystem tables only.');
    WriteLn('  /S        Copies IO.SYS, MSDOS.SYS and COMMAND.COM.');
@@ -2203,9 +2374,9 @@ BEGIN
    WriteLn(' /F           Force a utiliser ce format');
    WriteLn(' /F:taille    Format de disquette: 160, 180, 320, 360, 720,');
    WriteLn('              1200, 1440 ou 2880 Ko (lecteur seulement)');
-   WriteLn(' /FS:systeme  FAT, FAT12, FAT16, FAT32 ou HPFS');
-   WriteLn('              FAT32 et HPFS exigent une partition/image de disque dur');
-   WriteLn('              exFAT et NTFS sont reconnus mais non implementes');
+   WriteLn(' /FS:systeme  FAT, FAT12, FAT16, FAT32, exFAT ou HPFS');
+   WriteLn('              FAT32, exFAT et HPFS exigent un disque dur ou une image');
+   WriteLn('              NTFS est reconnu mais non implemente');
    WriteLn(' /N:n         Indique le nombre de secteurs par piste');
    WriteLn(' /Q           Reinitialise rapidement le secteur de demarrage, les FAT');
    WriteLn('              et le repertoire racine sans parcourir toutes les pistes');
@@ -2375,6 +2546,9 @@ Begin
   If(RequestedFileSystem=FS_FAT32)and not UpdateImagePartitionType($0C)Then Begin
    Close(FileImg);WriteLn('Impossible de modifier le type de partition FAT32.');Halt(5)
   End;
+  If(RequestedFileSystem=FS_EXFAT)and not UpdateImagePartitionType($07)Then Begin
+   Close(FileImg);WriteLn('Impossible de modifier le type de partition exFAT.');Halt(5)
+  End;
   Ok:=Logical4mat(AktDrv,PData,LData);
   If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
   Close(FileImg);
@@ -2399,6 +2573,9 @@ Begin
     End;
     If(RequestedFileSystem=FS_FAT32)and not UpdateImagePartitionType($0C)Then Begin
      Close(FileImg);WriteLn('Impossible de modifier le type de partition FAT32.');Halt(5)
+    End;
+    If(RequestedFileSystem=FS_EXFAT)and not UpdateImagePartitionType($07)Then Begin
+     Close(FileImg);WriteLn('Impossible de modifier le type de partition exFAT.');Halt(5)
     End;
     Ok:=Logical4mat(AktDrv,PData,LData);
     If Ok and(SystemTransfer or BootReserve)Then Ok:=TransferSystemFiles(PData,LData);
