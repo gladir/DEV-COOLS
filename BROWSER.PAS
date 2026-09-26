@@ -20472,13 +20472,158 @@ Begin
  BuildHTMLSourceView := ResultStr;
 End;
 
+{ ============================================================
+  Lecteur RSS/Atom. Les flux XML sont transformes en un document HTML
+  ordinaire afin de reutiliser le moteur de rendu, les liens, l'historique
+  et l'Inspecteur existants. Aucun nom d'extension particulier n'est requis.
+  ============================================================ }
+Function XMLFindCI(Const S,Needle:String;StartAt:LongInt):LongInt;
+Var I,J,L,N:LongInt;Match:Boolean;
+Begin
+ XMLFindCI:=0;L:=Length(S);N:=Length(Needle);
+ If(StartAt<1)Or(N=0)Then StartAt:=1;
+ I:=StartAt;
+ While I<=L-N+1Do Begin
+  Match:=True;J:=1;
+  While(J<=N)And Match Do Begin
+   Match:=UpCase(S[I+J-1])=UpCase(Needle[J]);Inc(J)
+  End;
+  If Match Then Begin XMLFindCI:=I;Exit End;
+  Inc(I)
+ End
+End;
+
+Function XMLStripCDATA(Const S:String):String;
+Var T:String;
+Begin
+ T:=Trim(S);
+ If(Length(T)>=12)And(Copy(T,1,9)='<![CDATA[')And
+   (Copy(T,Length(T)-2,3)=']]>')Then
+  T:=Copy(T,10,Length(T)-12);
+ XMLStripCDATA:=T
+End;
+
+Function XMLTagValue(Const S,TagName:String;StartAt,LimitAt:LongInt;
+ Var NextAt:LongInt):String;
+Var P,Q,R:LongInt;OpenNeedle,CloseNeedle:String;
+Begin
+ XMLTagValue:='';NextAt:=StartAt;
+ If LimitAt<=0Then LimitAt:=Length(S);
+ OpenNeedle:='<'+TagName;CloseNeedle:='</'+TagName+'>';
+ P:=XMLFindCI(S,OpenNeedle,StartAt);
+ If(P=0)Or(P>LimitAt)Then Exit;
+ { Le caractere suivant le nom doit terminer celui-ci; evite que <titleX>
+   soit pris pour <title>. }
+ R:=P+Length(OpenNeedle);
+ If(R<=Length(S))And Not(S[R]In[' ',#9,#10,#13,'>','/'])Then Exit;
+ Q:=P;
+ While(Q<=LimitAt)And(S[Q]<>'>')Do Inc(Q);
+ If Q>LimitAt Then Exit;
+ R:=XMLFindCI(S,CloseNeedle,Q+1);
+ If(R=0)Or(R>LimitAt)Then Exit;
+ XMLTagValue:=XMLStripCDATA(Copy(S,Q+1,R-Q-1));
+ NextAt:=R+Length(CloseNeedle)
+End;
+
+Function XMLPlainText(Const S:String):String;
+Var I:LongInt;InTag:Boolean;R:String;
+Begin
+ R:='';InTag:=False;
+ For I:=1To Length(S)Do Begin
+  If S[I]='<'Then InTag:=True
+  Else If S[I]='>'Then InTag:=False
+  Else If Not InTag Then R:=R+S[I]
+ End;
+ XMLPlainText:=Trim(HTMLDecodeEntities(R))
+End;
+
+Function IsRSSDocument(Const S:String):Boolean;
+Var P:LongInt;
+Begin
+ P:=1;
+ While(P<=Length(S))And(S[P]In[' ',#9,#10,#13,#$EF,#$BB,#$BF])Do Inc(P);
+ IsRSSDocument:=(XMLFindCI(S,'<rss',P)>0)Or
+  (XMLFindCI(S,'<rdf:rdf',P)>0)Or(XMLFindCI(S,'<feed',P)>0)
+End;
+
+Function RSSAtomLink(Const Block:String):String;
+Var P,Q:LongInt;Tag,ResultLink:String;
+Begin
+ ResultLink:='';P:=XMLFindCI(Block,'<link',1);
+ While P>0Do Begin
+  Q:=P;While(Q<=Length(Block))And(Block[Q]<>'>')Do Inc(Q);
+  If Q>Length(Block)Then Exit;
+  Tag:=Copy(Block,P,Q-P+1);
+  ResultLink:=SVGGetAttribute(Tag,'href');
+  If ResultLink<>''Then Begin RSSAtomLink:=ResultLink;Exit End;
+  P:=XMLFindCI(Block,'<link',Q+1)
+ End;
+ RSSAtomLink:=ResultLink
+End;
+
+Function BuildRSSDocument(Const Source,FeedURL:String):String;
+Var IsAtom:Boolean;EntryTag,CloseEntry,FeedTitle,FeedDesc:String;
+ P,Q,N,Dummy:LongInt;Block,TitleText,LinkText,DateText:String;
+ DescText,AuthorText,ResultText:String;
+Begin
+ IsAtom:=XMLFindCI(Source,'<feed',1)>0;
+ If IsAtom Then Begin EntryTag:='<entry';CloseEntry:='</entry>' End
+ Else Begin EntryTag:='<item';CloseEntry:='</item>' End;
+ FeedTitle:=XMLPlainText(XMLTagValue(Source,'title',1,Length(Source),Dummy));
+ FeedDesc:=XMLPlainText(XMLTagValue(Source,'description',1,Length(Source),Dummy));
+ If FeedDesc=''Then FeedDesc:=XMLPlainText(XMLTagValue(Source,'subtitle',1,Length(Source),Dummy));
+ If FeedTitle=''Then FeedTitle:='Flux RSS';
+ ResultText:='<html><head><title>'+HTMLViewSourceEscape(FeedTitle)+
+  '</title></head><body><h1>'+HTMLViewSourceEscape(FeedTitle)+'</h1>';
+ If FeedDesc<>''Then ResultText:=ResultText+'<p>'+HTMLViewSourceEscape(FeedDesc)+'</p>';
+ ResultText:=ResultText+'<p><small>Source : '+HTMLViewSourceEscape(FeedURL)+
+  '</small></p><hr>';
+ P:=1;N:=0;
+ Repeat
+  P:=XMLFindCI(Source,EntryTag,P);
+  If P=0Then Break;
+  Q:=XMLFindCI(Source,CloseEntry,P+Length(EntryTag));
+  If Q=0Then Break;
+  Block:=Copy(Source,P,Q-P+Length(CloseEntry));Inc(N);
+  TitleText:=XMLPlainText(XMLTagValue(Block,'title',1,Length(Block),Dummy));
+  LinkText:=XMLPlainText(XMLTagValue(Block,'link',1,Length(Block),Dummy));
+  If IsAtom Then Begin
+   LinkText:=RSSAtomLink(Block);
+   If LinkText=''Then LinkText:=XMLPlainText(XMLTagValue(Block,'id',1,Length(Block),Dummy))
+  End;
+  DateText:=XMLPlainText(XMLTagValue(Block,'pubDate',1,Length(Block),Dummy));
+  If DateText=''Then DateText:=XMLPlainText(XMLTagValue(Block,'updated',1,Length(Block),Dummy));
+  If DateText=''Then DateText:=XMLPlainText(XMLTagValue(Block,'published',1,Length(Block),Dummy));
+  AuthorText:=XMLPlainText(XMLTagValue(Block,'author',1,Length(Block),Dummy));
+  DescText:=XMLPlainText(XMLTagValue(Block,'description',1,Length(Block),Dummy));
+  If DescText=''Then DescText:=XMLPlainText(XMLTagValue(Block,'summary',1,Length(Block),Dummy));
+  If DescText=''Then DescText:=XMLPlainText(XMLTagValue(Block,'content',1,Length(Block),Dummy));
+  If TitleText=''Then TitleText:='Article '+IntToStr(N);
+  ResultText:=ResultText+'<h2>';
+  If LinkText<>''Then ResultText:=ResultText+'<a href="'+HTMLViewSourceEscape(LinkText)+'">';
+  ResultText:=ResultText+HTMLViewSourceEscape(TitleText);
+  If LinkText<>''Then ResultText:=ResultText+'</a>';
+  ResultText:=ResultText+'</h2>';
+  If(DateText<>'')Or(AuthorText<>'')Then Begin
+   ResultText:=ResultText+'<p><small>'+HTMLViewSourceEscape(DateText);
+   If AuthorText<>''Then ResultText:=ResultText+' '+HTMLViewSourceEscape(AuthorText);
+   ResultText:=ResultText+'</small></p>'
+  End;
+  If DescText<>''Then ResultText:=ResultText+'<p>'+HTMLViewSourceEscape(DescText)+'</p>';
+  P:=Q+Length(CloseEntry);
+ Until N>=500;
+ If N=0Then ResultText:=ResultText+'<p>Aucun article dans ce flux.</p>';
+ ResultText:=ResultText+'</body></html>';
+ BuildRSSDocument:=ResultText
+End;
+
 { Charger et afficher la cible courante. }
 Procedure DisplayCurrentTarget;
 Var
  HTML: HTMLSourceBuffer;
  FileName: String;
  MessageText: String;
- InnerURL, SourceText: String;
+ InnerURL, SourceText,LoadedText: String;
  SourceOk: Boolean;
  SourceHTML: HTMLSourceBuffer;
  {$IFDEF WINDOWS}
@@ -20536,6 +20681,7 @@ Begin
   { une URL valide). }
   GetOk := Browser_HttpGet(CurrentURL, PageBody, StatusCode);
   If GetOk And (Length(PageBody) > 0) Then Begin
+   If IsRSSDocument(PageBody)Then PageBody:=BuildRSSDocument(PageBody,CurrentURL);
    If SetHTMLSourceFromString(PageBody, HTML) Then
     TestHTMLRender(HTML);
   End Else Begin
@@ -20565,8 +20711,14 @@ Begin
  If Copy(HTMLLowerCase(FileName), 1, 7) = 'file://' Then
   Delete(FileName, 1, 7);
 
- If LoadHTMLFile(FileName, HTML) Then
+ If LoadHTMLFile(FileName, HTML) Then Begin
+  LoadedText:=HTMLSourceCopy(HTML,1,HTML.DataLength);
+  If IsRSSDocument(LoadedText)Then Begin
+   LoadedText:=BuildRSSDocument(LoadedText,CurrentURL);
+   SetHTMLSourceFromString(LoadedText,HTML)
+  End;
   TestHTMLRender(HTML)
+ End
  Else Begin
   MessageText := '<html><body><h2>Erreur</h2><p>Impossible d''ouvrir le fichier : ' +
                  FileName + '</p></body></html>';
@@ -21918,7 +22070,7 @@ BEGIN
  If TestMode Then Begin
   { Regression du clic Google "Advanced search": un href racine doit
     devenir une URL HTTP(S) absolue, jamais un chemin de fichier local. }
-  If Not IsViewSourceURL(CurrentURL) Then Begin
+  If IsRemoteURL(CurrentURL)And(Not IsViewSourceURL(CurrentURL))Then Begin
    ResolvedTestURL:=ResolveLinkHref('/advanced_search?hl=en');
    If not IsRemoteURL(ResolvedTestURL)Then Begin
     WriteConsoleLine('ECHEC test URL: '+ResolvedTestURL);
