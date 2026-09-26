@@ -1380,7 +1380,7 @@ Function Trim(Const S: String): String; Forward;
 { Fonction pour convertir une chaine en minuscules }
 Function HTMLLowerCase(S: String): String;
 Var
- I: Integer;
+ I: LongInt;
 Begin
  For I := 1 To Length(S) Do
   If (S[I] >= 'A') And (S[I] <= 'Z') Then
@@ -1392,7 +1392,7 @@ End;
   utilisees. Ils suivent la methode de DEVENV.PAS et restent compatibles
   avec Turbo Pascal 7. }
 Function HTMLUpperCase(S:String):String;
-Var I:Integer;
+Var I:LongInt;
 Begin
  For I:=1to Length(S)do S[I]:=UpCase(S[I]);
  HTMLUpperCase:=S
@@ -8629,7 +8629,8 @@ End;
 
 Procedure RenderText(Var Ctx: RenderContext; Const Text: String);
 Var
- I, StartWord, EndWord, WordWidth: Integer;
+ I, StartWord, EndWord: LongInt;
+ WordWidth: Integer;
  Word: String;
 Begin
  If Ctx.InHead Then Exit; { Ne pas afficher le contenu de head }
@@ -21136,10 +21137,12 @@ BEGIN
  If TestMode Then Begin
   { Regression du clic Google "Advanced search": un href racine doit
     devenir une URL HTTP(S) absolue, jamais un chemin de fichier local. }
-  ResolvedTestURL:=ResolveLinkHref('/advanced_search?hl=en');
-  If not IsRemoteURL(ResolvedTestURL)Then Begin
-   WriteConsoleLine('ECHEC test URL: '+ResolvedTestURL);
-   If MouseAvailable Then HideMouse;CloseGraph;Halt(2)
+  If Not IsViewSourceURL(CurrentURL) Then Begin
+   ResolvedTestURL:=ResolveLinkHref('/advanced_search?hl=en');
+   If not IsRemoteURL(ResolvedTestURL)Then Begin
+    WriteConsoleLine('ECHEC test URL: '+ResolvedTestURL);
+    If MouseAvailable Then HideMouse;CloseGraph;Halt(2)
+   End;
   End;
   { Re-naviguer vers la meme page pour exercer un second appel a
     CSSParseStylesheet alors que la table de regles est deja pleine
