@@ -1552,7 +1552,7 @@ Begin
  Ok := HostName <> '';
 End;
 
-Procedure DevToolsLogNetwork(Const URL, Method: String; Status, Size: LongInt); Forward;
+Procedure DevToolsLogNetwork(Const URL, RequestMethod: String; ResponseStatus, ResponseSize: LongInt); Forward;
 Procedure DevToolsAddConsole(Const S: String); Forward;
 
 { Requete HTTP GET synchrone reelle via WinInet - meme transport que       }
@@ -18749,7 +18749,7 @@ Begin
  Else DevToolsURLType:='other'
 End;
 
-Procedure DevToolsLogNetwork(Const URL,Method:String;Status,Size:LongInt);
+Procedure DevToolsLogNetwork(Const URL,RequestMethod:String;ResponseStatus,ResponseSize:LongInt);
 Var UseHttps,Ok:Boolean;Host,Path:String;Port:Word;P:LongInt;I:Integer;
 Begin
  Browser_ParseUrl(URL,UseHttps,Host,Port,Path,Ok);
@@ -18760,11 +18760,11 @@ Begin
  End;
  Inc(DevNetworkCount);
  With DevNetworkEntries[DevNetworkCount]Do Begin
-  DevNetworkEntries[DevNetworkCount].Status:=Status;
-  DevNetworkEntries[DevNetworkCount].Method:=Copy(Method,1,80);Domain:=Copy(Host,1,80);
+  DevNetworkEntries[DevNetworkCount].Status:=ResponseStatus;
+  DevNetworkEntries[DevNetworkCount].Method:=Copy(RequestMethod,1,80);Domain:=Copy(Host,1,80);
   P:=Length(Path);While(P>0)And(Path[P]<>'/')Do Dec(P);
   FileName:=Copy(Path,P+1,80);If FileName=''Then FileName:='/';
-  ContentType:=DevToolsURLType(Path);DevNetworkEntries[DevNetworkCount].Size:=Size
+  ContentType:=DevToolsURLType(Path);DevNetworkEntries[DevNetworkCount].Size:=ResponseSize
  End
 End;
 
@@ -18858,7 +18858,8 @@ Function DevToolsTabRight(Index:Integer):Integer;
 Begin DevToolsTabRight:=DevToolsTabLeft(Index)+TextWidth(DevToolsTabName(Index))+11 End;
 
 Procedure DrawDevTools;
-Var Top,Y,I,Lines,First,TabLeft,TabRight:Integer;S:String;St:DOMStyle;
+Var Top,Y,I,Lines,First,TabLeft,TabRight:Integer;
+    C1,C2,C3,C4,C5,C6,C7:Integer;St:DOMStyle;
 Begin
  If Not DevToolsOpen Then Exit;
  Top:=DevToolsPanelTop;
@@ -18898,11 +18899,26 @@ Begin
    OutTextXY(8,Y,'> '+Copy(DevConsoleInput,1,(GetMaxX-30)Div 8));If DevConsoleFocused Then Line(24+Length(DevConsoleInput)*8,Y+10,30+Length(DevConsoleInput)*8,Y+10)
   End;
   DEVTOOLS_TAB_NETWORK:Begin
-   OutTextXY(4,Y,'Etat  Methode  Domaine              Fichier             Type        Taille');Inc(Y,13);
+   { Colonnes proportionnelles a la largeur du panneau. Les memes bornes
+     servent aux titres, aux valeurs et aux separateurs verticaux. }
+   C1:=0;C2:=48;C3:=112;C4:=(GetMaxX*35)Div 100;
+   C5:=(GetMaxX*55)Div 100;C6:=(GetMaxX*69)Div 100;C7:=GetMaxX;
+   SetColor(HTMLBlackColorIndex);
+   Line(C2,Y-5,C2,GetMaxY);Line(C3,Y-5,C3,GetMaxY);
+   Line(C4,Y-5,C4,GetMaxY);Line(C5,Y-5,C5,GetMaxY);Line(C6,Y-5,C6,GetMaxY);
+   OutTextXY(C1+4,Y,'Etat');OutTextXY(C2+4,Y,'Methode');
+   OutTextXY(C3+4,Y,'Domaine');OutTextXY(C4+4,Y,'Fichier');
+   OutTextXY(C5+4,Y,'Type');OutTextXY(C6+4,Y,'Taille');
+   Inc(Y,13);Line(C1,Y-2,C7,Y-2);
    First:=DevNetworkCount-11;If First<1Then First:=1;
    For I:=First To DevNetworkCount Do With DevNetworkEntries[I]Do Begin
-    S:=IntToStr(Status)+'    '+Method+'      '+Copy(Domain,1,18)+'  '+Copy(FileName,1,18)+'  '+Copy(ContentType,1,10)+'  '+IntToStr(Size);
-    OutTextXY(4,Y,Copy(S,1,(GetMaxX-8)Div 8));Inc(Y,12)
+    OutTextXY(C1+4,Y,Copy(IntToStr(Status),1,(C2-C1-8)Div 8));
+    OutTextXY(C2+4,Y,Copy(Method,1,(C3-C2-8)Div 8));
+    OutTextXY(C3+4,Y,Copy(Domain,1,(C4-C3-8)Div 8));
+    OutTextXY(C4+4,Y,Copy(FileName,1,(C5-C4-8)Div 8));
+    OutTextXY(C5+4,Y,Copy(ContentType,1,(C6-C5-8)Div 8));
+    OutTextXY(C6+4,Y,Copy(IntToStr(Size),1,(C7-C6-8)Div 8));
+    Inc(Y,12)
    End
   End
  End;
