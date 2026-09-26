@@ -678,6 +678,12 @@ DevNetworkEntry = Record
  Size: LongInt;
 End;
 
+DevInspectorRow = Record
+ Y1,Y2,SignX1,SignX2:Integer;
+ Node:HTMLNodePtr;
+ HasChildren:Boolean;
+End;
+
  { Boite de mise en page (position/taille) d'un element ID'e, telle
    que calculee lors du dernier rendu - permet d'implementer
    offsetWidth/offsetHeight/offsetLeft/offsetTop cote JS (utilises par
@@ -1144,6 +1150,10 @@ DevElementAreas: Array[1..2048] Of DevElementArea;
 DevElementAreaCount: Integer;
 DevInspectorScrollX, DevInspectorFirstLine: Integer;
 DevInspectorTotalLines, DevInspectorContentWidth: Integer;
+DevCollapsedNodes:Array[1..2048]Of HTMLNodePtr;
+DevCollapsedCount:Integer;
+DevInspectorRows:Array[1..128]Of DevInspectorRow;
+DevInspectorRowCount:Integer;
 
  { Variables pour le bouton Precedent }
  BackButtonEnabled: Boolean;
@@ -17487,6 +17497,8 @@ Begin
   DevSelectedNode := Nil;
   DevInspectorScrollX := 0;
   DevInspectorFirstLine := 0;
+  DevCollapsedCount := 0;
+  DevInspectorRowCount := 0;
   JSEventTargetNode := Nil;
   JSClearTimeout;
 
@@ -18825,6 +18837,26 @@ Begin
  DevToolsNodeCaption:=Copy(S+'>',1,75)
 End;
 
+Function DevToolsNodeCollapsed(Node:HTMLNodePtr):Boolean;
+Var I:Integer;
+Begin
+ DevToolsNodeCollapsed:=False;
+ For I:=1 To DevCollapsedCount Do If DevCollapsedNodes[I]=Node Then Begin
+  DevToolsNodeCollapsed:=True;Exit
+ End
+End;
+
+Procedure DevToolsToggleNode(Node:HTMLNodePtr);
+Var I,J:Integer;
+Begin
+ If(Node=Nil)Or(Node^.FirstChild=Nil)Then Exit;
+ For I:=1 To DevCollapsedCount Do If DevCollapsedNodes[I]=Node Then Begin
+  For J:=I To DevCollapsedCount-1 Do DevCollapsedNodes[J]:=DevCollapsedNodes[J+1];
+  Dec(DevCollapsedCount);Exit
+ End;
+ If DevCollapsedCount<2048Then Begin Inc(DevCollapsedCount);DevCollapsedNodes[DevCollapsedCount]:=Node End
+End;
+
 Procedure DevToolsOutSyntax(Var X:Integer;Y:Integer;Const S:String;
                             NormalColor:Integer;Selected:Boolean);
 Var T:String;MaxChars,W:Integer;
@@ -18848,12 +18880,13 @@ End;
 
 Procedure DevToolsDrawDOM(Node:HTMLNodePtr;Depth:Integer;Var Y,Lines:Integer;
                           MaxLines:Integer);
-Var C:HTMLNodePtr;A:HTMLAttributePtr;S:String;X,LineWidth:Integer;
-    Selected,DisplayLine:Boolean;
+Var C:HTMLNodePtr;A:HTMLAttributePtr;S:String;X,LineWidth,SignX:Integer;
+    Selected,DisplayLine,HasChildren,Collapsed:Boolean;
 Begin
  If Node=Nil Then Exit;
  If Node^.NodeType=HTML_NODE_ELEMENT Then Begin
-  LineWidth:=8+Depth*16+TextWidth('<'+Node^.TagName+'>');
+  HasChildren:=Node^.FirstChild<>Nil;Collapsed:=DevToolsNodeCollapsed(Node);
+  LineWidth:=20+Depth*16+TextWidth('<'+Node^.TagName+'>');
   A:=Node^.FirstAttribute;
   While A<>Nil Do Begin
    Inc(LineWidth,TextWidth(' '+A^.Name));
@@ -18866,7 +18899,20 @@ Begin
   If DisplayLine Then Begin
    Selected:=Node=DevSelectedNode;
    If Selected Then Begin SetFillStyle(SolidFill,1);Bar(5,Y-1,GetMaxX-20,Y+9)End;
-   X:=8+Depth*16-DevInspectorScrollX;
+   X:=8+Depth*16-DevInspectorScrollX;SignX:=X;
+   If HasChildren Then Begin
+    If Collapsed Then DevToolsOutSyntax(X,Y,'+',DarkGray,Selected)
+    Else DevToolsOutSyntax(X,Y,'-',DarkGray,Selected)
+   End Else DevToolsOutSyntax(X,Y,' ',DarkGray,Selected);
+   DevToolsOutSyntax(X,Y,' ',HTMLBlackColorIndex,Selected);
+   If DevInspectorRowCount<128Then Begin
+    Inc(DevInspectorRowCount);
+    With DevInspectorRows[DevInspectorRowCount]Do Begin
+     Y1:=Y-1;Y2:=Y+9;SignX1:=SignX;SignX2:=SignX+TextWidth('++')
+    End;
+    DevInspectorRows[DevInspectorRowCount].Node:=Node;
+    DevInspectorRows[DevInspectorRowCount].HasChildren:=HasChildren
+   End;
    DevToolsOutSyntax(X,Y,'<',LightBlue,Selected);
    DevToolsOutSyntax(X,Y,Node^.TagName,LightBlue,Selected);
    A:=Node^.FirstAttribute;
@@ -18907,9 +18953,10 @@ Begin
   Inc(Lines)
  End;
  C:=Node^.FirstChild;
- While C<>Nil Do Begin
-  DevToolsDrawDOM(C,Depth+1,Y,Lines,MaxLines);C:=C^.NextSibling
- End
+ If Not((Node^.NodeType=HTML_NODE_ELEMENT)And DevToolsNodeCollapsed(Node))Then
+  While C<>Nil Do Begin
+   DevToolsDrawDOM(C,Depth+1,Y,Lines,MaxLines);C:=C^.NextSibling
+  End
 End;
 
 Function DevToolsTabName(Index:Integer):String;
@@ -18997,6 +19044,7 @@ Begin
    MaxInspectorLines:=(GetMaxY-Y-14)Div 11;
    If MaxInspectorLines<1Then MaxInspectorLines:=1;
    DevInspectorContentWidth:=0;
+   DevInspectorRowCount:=0;
    DevToolsDrawDOM(HTMLDocument,0,Y,Lines,MaxInspectorLines);
    DevInspectorTotalLines:=Lines;
    If DevInspectorFirstLine>DevInspectorTotalLines-MaxInspectorLines Then
@@ -19056,7 +19104,7 @@ End;
 
 Function DevToolsHandleInspectorScrollClick(X,Y:Integer):Boolean;
 Const S=14;
-Var Top,Bottom,VX,HY,VisibleLines,MaxFirst,MaxXScroll,ViewWidth:Integer;
+Var Top,Bottom,VX,HY,VisibleLines,MaxFirst,MaxXScroll,ViewWidth,I:Integer;
 Begin
  DevToolsHandleInspectorScrollClick:=False;
  If DevToolsTab<>DEVTOOLS_TAB_INSPECTOR Then Exit;
@@ -19067,6 +19115,13 @@ Begin
  MaxFirst:=DevInspectorTotalLines-VisibleLines;If MaxFirst<0Then MaxFirst:=0;
  ViewWidth:=GetMaxX-20;MaxXScroll:=DevInspectorContentWidth-ViewWidth;
  If MaxXScroll<0Then MaxXScroll:=0;
+ For I:=1 To DevInspectorRowCount Do With DevInspectorRows[I]Do
+  If(Y>=Y1)And(Y<=Y2)Then Begin
+   DevSelectedNode:=DevInspectorRows[I].Node;
+   If HasChildren And(X>=SignX1)And(X<=SignX2)Then
+    DevToolsToggleNode(DevInspectorRows[I].Node);
+   DevToolsHandleInspectorScrollClick:=True;DrawDevTools;Exit
+  End;
  If(X>=VX)And(Y>=Top)And(Y<=Bottom)Then Begin
   If Y<=Top+S Then Dec(DevInspectorFirstLine)
   Else If Y>=Bottom-S Then Inc(DevInspectorFirstLine)
@@ -21633,6 +21688,11 @@ BEGIN
    ScrollPageBy(0, RENDER_AREA_HEIGHT);
   { Ouvrir et dessiner tous les onglets des outils de developpement. }
   DevToolsSetOpen(True);
+  DevToolsTab:=DEVTOOLS_TAB_INSPECTOR;DrawDevTools;
+  If DevInspectorRowCount>0Then Begin
+   DevToolsToggleNode(DevInspectorRows[1].Node);DrawDevTools;
+   DevToolsToggleNode(DevInspectorRows[1].Node);DrawDevTools
+  End;
   For ScrollTestI:=DEVTOOLS_TAB_INSPECTOR To DEVTOOLS_TAB_NETWORK Do Begin
    DevToolsTab:=ScrollTestI;DrawDevTools
   End;
