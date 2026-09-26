@@ -1110,6 +1110,15 @@ Var
  FocusedInputX, FocusedInputY: Integer;
  FocusedInputIsPassword: Boolean;
 
+ { Menu contextuel (clic droit sur la zone de rendu) - demande explicite
+   de l'utilisateur (2026-09-25) : Precedent/Suivant/Actualiser/Voir le
+   code source/Enregistrer sous/Creer un code QR. ContextMenuX/Y est le
+   coin superieur gauche reellement dessine (peut differer du point de
+   clic si celui-ci etait trop pres d'un bord de l'ecran). }
+ ContextMenuOpen: Boolean;
+ ContextMenuX, ContextMenuY: Integer;
+ ContextMenuHoverIndex: Integer;
+
  { Variables pour le bouton Precedent }
  BackButtonEnabled: Boolean;
 
@@ -1427,6 +1436,50 @@ Function Browser_HttpQueryInfoA(hRequest: LongInt; dwInfoLevel: LongWord;
 Function Browser_InternetSetOptionA(hInternet: LongInt; dwOption: LongWord;
          Var lpBuffer; dwBufferLength: LongWord): LongBool;
          StdCall; External 'wininet.dll' Name 'InternetSetOptionA';
+
+{ Boite de dialogue Windows reelle "Enregistrer sous..." (menu contextuel,
+  demande explicite de l'utilisateur). OPENFILENAMEA reproduit ici la
+  structure Win32 telle que definie depuis Windows 2000/_WIN32_WINNT>=0x0500
+  (avec pvReserved/dwReserved/FlagsEx en fin de structure) : omettre ces 3
+  derniers champs desynchroniserait SizeOf(TOpenFileNameA) de la taille que
+  comdlg32.dll attend reellement pour lStructSize. hwndOwner/hInstance sont
+  laisses a 0 (aucune fenetre proprietaire native n'est exposee par le
+  moteur graphique de BROWSER.PAS) - la boite reste fonctionnelle mais non
+  rattachee modalement a la fenetre du navigateur, simplification assumee. }
+Type
+ TOpenFileNameA = Record
+  lStructSize: LongWord;
+  hwndOwner: LongInt;
+  hInstance: LongInt;
+  lpstrFilter: PChar;
+  lpstrCustomFilter: PChar;
+  nMaxCustFilter: LongWord;
+  nFilterIndex: LongWord;
+  lpstrFile: PChar;
+  nMaxFile: LongWord;
+  lpstrFileTitle: PChar;
+  nMaxFileTitle: LongWord;
+  lpstrInitialDir: PChar;
+  lpstrTitle: PChar;
+  Flags: LongWord;
+  nFileOffset: Word;
+  nFileExtension: Word;
+  lpstrDefExt: PChar;
+  lCustData: LongInt;
+  lpfnHook: Pointer;
+  lpTemplateName: PChar;
+  pvReserved: Pointer;
+  dwReserved: LongWord;
+  FlagsEx: LongWord;
+ End;
+
+Function Browser_GetSaveFileNameA(Var OFN: TOpenFileNameA): LongBool;
+         StdCall; External 'comdlg32.dll' Name 'GetSaveFileNameA';
+
+Const
+ OFN_OVERWRITEPROMPT = LongWord($00000002);
+ OFN_PATHMUSTEXIST    = LongWord($00000800);
+ OFN_HIDEREADONLY     = LongWord($00000004);
 
 Const
  BROWSER_INTERNET_OPEN_TYPE_DIRECT  = 1;
@@ -3144,6 +3197,11 @@ Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer); Forward;
 Function LoadHTMLFile(Const FileName: String; Var HTML: HTMLSourceBuffer): Boolean; Forward;
 Procedure RescrollPage; Forward;
 Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String); Forward;
+{ Necessaires au menu contextuel (ContextMenuSaveAs/ContextMenuViewSource,
+  voir plus haut) ; definies bien plus loin dans le fichier. }
+Function IsRemoteURL(Const URL: String): Boolean; Forward;
+Function IsViewSourceURL(Const URL: String): Boolean; Forward;
+Function StripViewSourcePrefix(Const URL: String): String; Forward;
 Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String); Forward;
 Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt); Forward;
 Procedure JSClearTimeout; Forward;
@@ -17822,6 +17880,848 @@ Begin
 End;
 
 { =====================================================
+  GENERATEUR DE CODE QR (menu contextuel - "Creer un code
+  QR pour cette page", demande explicite de l'utilisateur,
+  2026-09-25)
+  =====================================================
+  Implementation reelle conforme a ISO/IEC 18004, verifiee pendant le
+  developpement contre le code source de la bibliotheque de reference
+  QR-Code-generator de Project Nayuki (licence MIT, code public a
+  https://github.com/nayuki/QR-Code-generator, fichier c/qrcodegen.c) :
+  formules de masque, regles de penalite (N1-N4) et leur mecanisme
+  d'historique de motifs "en forme de repere", polynome/algorithme
+  Reed-Solomon sur GF(256) (racine 0x11D), zigzag de placement des
+  donnees, positions des motifs d'alignement et chaines d'information
+  de format (niveau L, verifiees aussi contre le tutoriel public
+  Thonky.com) proviennent toutes de cette verification, afin de ne
+  fabriquer aucune table/constante de la norme.
+
+  SIMPLIFICATION ASSUMEE ET DIVULGUEE : seules les versions 1 a 5 (mode
+  octet, correction de niveau L, un seul bloc Reed-Solomon - la norme
+  n'exige un decoupage en plusieurs blocs entrelaces qu'a partir de la
+  version 6 en niveau L) sont supportees, soit 17/32/53/78/106 octets
+  utiles maximum selon la version choisie automatiquement. Au-dela, un
+  message d'erreur reel est affiche plutot que de tronquer l'URL en
+  silence (ce qui produirait un code QR pointant vers une adresse
+  fausse). Le rendu final n'a pas ete verifie avec un vrai lecteur/
+  decodeur QR dans cet environnement (aucun n'y est disponible) - la
+  conformite a ete controlee algorithme par algorithme contre la
+  reference ci-dessus, pas par une lecture physique du resultat. }
+
+Const
+ { Mots de code de correction d'erreur par bloc, niveau L, versions 1-5
+   (un seul bloc pour chacune - voir la simplification ci-dessus). }
+ QR_ECC_PER_BLOCK_L: Array[1..5] Of Integer = (7, 10, 15, 20, 26);
+ { Deuxieme coordonnee des motifs d'alignement (la premiere est toujours
+   6) ; version 1 n'a aucun motif d'alignement. }
+ QR_ALIGN_COORD2: Array[2..5] Of Integer = (18, 22, 26, 30);
+ { Chaines d'information de format (15 bits, deja completes avec leur
+   BCH et le masque XOR fixe) pour le niveau de correction L, indexees
+   par le motif de masque 0-7 - reprises telles quelles de la table
+   verifiee plutot que recalculees, pour eliminer tout risque d'erreur
+   dans l'implementation du BCH. }
+ QR_FORMAT_STRINGS_L: Array[0..7] Of String[15] = (
+  '111011111000100', '111001011110011', '111110110101010', '111100010011101',
+  '110011000101111', '110001100011000', '110110001000001', '110100101110110');
+
+Type
+ TQRByteBuf = Array[0..319] Of Byte;
+ TQRGenBuf = Array[0..29] Of Byte;
+ TQRHistory = Array[0..6] Of Integer;
+ { 0..36 couvre toutes les tailles de version 1 (21x21) a version 5 (37x37). }
+ TQRMatrix = Array[0..36, 0..36] Of Byte;   { 0 = clair, 1 = sombre }
+ TQRFuncMap = Array[0..36, 0..36] Of Boolean; { True = motif de fonction (jamais masque) }
+
+{ Nombre total de mots de code (donnees + correction) disponibles pour
+  Version, avant separation en blocs - formule verifiee (getNumRawDataModules
+  de la reference ci-dessus), divisee par 8 (les eventuels bits restants
+  inutilises, 0 a 7 selon la version, sont ignores comme le fait aussi
+  la reference). }
+Function QRTotalCodewords(Version: Integer): Integer;
+Var
+ RawBits: LongInt;
+ NumAlign: Integer;
+Begin
+ RawBits := LongInt(16 * Version + 128) * Version + 64;
+ If Version >= 2 Then Begin
+  NumAlign := Version Div 7 + 2;
+  RawBits := RawBits - (LongInt(25 * NumAlign - 10) * NumAlign - 55);
+ End;
+ QRTotalCodewords := RawBits Div 8;
+End;
+
+Function QRDataCodewords(Version: Integer): Integer;
+Begin
+ QRDataCodewords := QRTotalCodewords(Version) - QR_ECC_PER_BLOCK_L[Version];
+End;
+
+{ Capacite utile reelle en octets (mode octet) : mots de code de donnees,
+  moins l'indicateur de mode (4 bits) et l'indicateur de longueur (8 bits,
+  valable pour les versions 1-9 seulement - hors de portee ici). }
+Function QRByteCapacity(Version: Integer): Integer;
+Begin
+ QRByteCapacity := (QRDataCodewords(Version) * 8 - 4 - 8) Div 8;
+End;
+
+{ Plus petite version (1-5) capable de contenir DataLen octets ; 0 si
+  aucune version supportee n'y suffit (voir la simplification ci-dessus). }
+Function QRChooseVersion(DataLen: Integer): Integer;
+Var
+ V: Integer;
+Begin
+ QRChooseVersion := 0;
+ For V := 1 To 5 Do
+  If DataLen <= QRByteCapacity(V) Then Begin
+   QRChooseVersion := V;
+   Exit;
+  End;
+End;
+
+Procedure QRAppendBits(Var Buf: TQRByteBuf; Var BitLen: Integer; Value: LongInt; NumBits: Integer);
+Var
+ I: Integer;
+Begin
+ For I := NumBits - 1 DownTo 0 Do Begin
+  If ((Value Shr I) And 1) <> 0 Then
+   Buf[BitLen Shr 3] := Buf[BitLen Shr 3] Or ($80 Shr (BitLen And 7));
+  Inc(BitLen);
+ End;
+End;
+
+{ Construit les mots de code de DONNEES (mode octet, terminateur et
+  bourrage 0xEC/0x11 inclus) pour Version ; renvoie leur nombre. }
+Function QREncodeDataCodewords(Const S: String; Version: Integer; Var Buf: TQRByteBuf): Integer;
+Var
+ BitLen: Integer;
+ DataCw, I, TermBits: Integer;
+ PadIsEC: Boolean;
+Begin
+ FillChar(Buf, SizeOf(Buf), 0);
+ BitLen := 0;
+ QRAppendBits(Buf, BitLen, 4, 4);              { indicateur de mode : octet }
+ QRAppendBits(Buf, BitLen, Length(S), 8);      { indicateur de longueur }
+ For I := 1 To Length(S) Do
+  QRAppendBits(Buf, BitLen, Ord(S[I]), 8);
+
+ DataCw := QRDataCodewords(Version);
+
+ TermBits := (DataCw * 8) - BitLen;
+ If TermBits > 4 Then TermBits := 4;
+ If TermBits > 0 Then QRAppendBits(Buf, BitLen, 0, TermBits);
+ If (BitLen Mod 8) <> 0 Then QRAppendBits(Buf, BitLen, 0, 8 - (BitLen Mod 8));
+
+ PadIsEC := True;
+ While (BitLen Div 8) < DataCw Do Begin
+  If PadIsEC Then QRAppendBits(Buf, BitLen, $EC, 8)
+  Else QRAppendBits(Buf, BitLen, $11, 8);
+  PadIsEC := Not PadIsEC;
+ End;
+ QREncodeDataCodewords := DataCw;
+End;
+
+{ Multiplication dans GF(256) avec le polynome reducteur 0x11D utilise par
+  la norme QR (x^8+x^4+x^3+x^2+1) - port direct de reedSolomonMultiply. }
+Function QRGFMultiply(X, Y: Byte): Byte;
+Var
+ Z: LongInt;
+ I: Integer;
+Begin
+ Z := 0;
+ For I := 7 DownTo 0 Do Begin
+  Z := (Z Shl 1) Xor ((Z Shr 7) * $11D);
+  Z := Z And $FF;
+  If ((Y Shr I) And 1) <> 0 Then Z := Z Xor X;
+ End;
+ QRGFMultiply := Byte(Z);
+End;
+
+Procedure QRComputeGenerator(Degree: Integer; Var Gen: TQRGenBuf);
+Var
+ I, J: Integer;
+ Root: Byte;
+Begin
+ FillChar(Gen, SizeOf(Gen), 0);
+ Gen[Degree - 1] := 1;
+ Root := 1;
+ For I := 0 To Degree - 1 Do Begin
+  For J := 0 To Degree - 1 Do Begin
+   Gen[J] := QRGFMultiply(Gen[J], Root);
+   If J + 1 < Degree Then Gen[J] := Gen[J] Xor Gen[J + 1];
+  End;
+  Root := QRGFMultiply(Root, 2);
+ End;
+End;
+
+Procedure QRComputeRemainder(Const Data: TQRByteBuf; DataLen: Integer;
+ Const Gen: TQRGenBuf; Degree: Integer; Var Rem: TQRGenBuf);
+Var
+ I, J: Integer;
+ Factor: Byte;
+Begin
+ FillChar(Rem, SizeOf(Rem), 0);
+ For I := 0 To DataLen - 1 Do Begin
+  Factor := Data[I] Xor Rem[0];
+  For J := 0 To Degree - 2 Do Rem[J] := Rem[J + 1];
+  Rem[Degree - 1] := 0;
+  For J := 0 To Degree - 1 Do
+   Rem[J] := Rem[J] Xor QRGFMultiply(Gen[J], Factor);
+ End;
+End;
+
+Procedure QRSetIfValid(Var M: TQRMatrix; Size, X, Y: Integer; Val: Byte);
+Begin
+ If (X >= 0) And (X < Size) And (Y >= 0) And (Y < Size) Then
+  M[Y, X] := Val;
+End;
+
+Function QRFormatBit(MaskId, I: Integer): Boolean;
+Begin
+ { QR_FORMAT_STRINGS_L est ecrite bit de poids fort (bit 14) a gauche,
+   bit de poids faible (bit 0) a droite - comme toute ecriture usuelle
+   d'un nombre binaire - d'ou l'index inverse 15-I (chaine 1-indexee). }
+ QRFormatBit := QR_FORMAT_STRINGS_L[MaskId][15 - I] = '1';
+End;
+
+Procedure QRFinderAddHistory(RunLen: Integer; Var Hist: TQRHistory; Size: Integer);
+Var
+ K: Integer;
+Begin
+ If Hist[0] = 0 Then Inc(RunLen, Size);
+ For K := 6 DownTo 1 Do Hist[K] := Hist[K - 1];
+ Hist[0] := RunLen;
+End;
+
+Function QRFinderCountPatterns(Const Hist: TQRHistory): Integer;
+Var
+ N: Integer;
+ Core: Boolean;
+ Cnt: Integer;
+Begin
+ N := Hist[1];
+ Core := (N > 0) And (Hist[2] = N) And (Hist[3] = N * 3) And (Hist[4] = N) And (Hist[5] = N);
+ Cnt := 0;
+ If Core And (Hist[0] >= N * 4) And (Hist[6] >= N) Then Inc(Cnt);
+ If Core And (Hist[6] >= N * 4) And (Hist[0] >= N) Then Inc(Cnt);
+ QRFinderCountPatterns := Cnt;
+End;
+
+Function QRFinderTerminateAndCount(CurColorDark: Boolean; CurRunLen: Integer;
+ Var Hist: TQRHistory; Size: Integer): Integer;
+Begin
+ If CurColorDark Then Begin
+  QRFinderAddHistory(CurRunLen, Hist, Size);
+  CurRunLen := 0;
+ End;
+ Inc(CurRunLen, Size);
+ QRFinderAddHistory(CurRunLen, Hist, Size);
+ QRFinderTerminateAndCount := QRFinderCountPatterns(Hist);
+End;
+
+{ Score de penalite (regles N1-N4) utilise pour choisir automatiquement
+  le meilleur des 8 masques - port direct de getPenaltyScore. }
+Function QRPenaltyScore(Const M: TQRMatrix; Size: Integer): LongInt;
+Var
+ X, Y: Integer;
+ RunColorDark, ColorHere: Boolean;
+ RunLen: Integer;
+ Hist: TQRHistory;
+ Res: LongInt;
+ Dark, Total, K: LongInt;
+Begin
+ Res := 0;
+
+ For Y := 0 To Size - 1 Do Begin
+  RunColorDark := False;
+  RunLen := 0;
+  FillChar(Hist, SizeOf(Hist), 0);
+  For X := 0 To Size - 1 Do Begin
+   ColorHere := (M[Y, X] <> 0);
+   If ColorHere = RunColorDark Then Begin
+    Inc(RunLen);
+    If RunLen = 5 Then Inc(Res, 3)
+    Else If RunLen > 5 Then Inc(Res);
+   End Else Begin
+    QRFinderAddHistory(RunLen, Hist, Size);
+    If Not RunColorDark Then Inc(Res, QRFinderCountPatterns(Hist) * 40);
+    RunColorDark := ColorHere;
+    RunLen := 1;
+   End;
+  End;
+  Inc(Res, QRFinderTerminateAndCount(RunColorDark, RunLen, Hist, Size) * 40);
+ End;
+
+ For X := 0 To Size - 1 Do Begin
+  RunColorDark := False;
+  RunLen := 0;
+  FillChar(Hist, SizeOf(Hist), 0);
+  For Y := 0 To Size - 1 Do Begin
+   ColorHere := (M[Y, X] <> 0);
+   If ColorHere = RunColorDark Then Begin
+    Inc(RunLen);
+    If RunLen = 5 Then Inc(Res, 3)
+    Else If RunLen > 5 Then Inc(Res);
+   End Else Begin
+    QRFinderAddHistory(RunLen, Hist, Size);
+    If Not RunColorDark Then Inc(Res, QRFinderCountPatterns(Hist) * 40);
+    RunColorDark := ColorHere;
+    RunLen := 1;
+   End;
+  End;
+  Inc(Res, QRFinderTerminateAndCount(RunColorDark, RunLen, Hist, Size) * 40);
+ End;
+
+ For Y := 0 To Size - 2 Do
+  For X := 0 To Size - 2 Do
+   If (M[Y, X] = M[Y, X + 1]) And (M[Y, X] = M[Y + 1, X]) And (M[Y, X] = M[Y + 1, X + 1]) Then
+    Inc(Res, 3);
+
+ Dark := 0;
+ For Y := 0 To Size - 1 Do
+  For X := 0 To Size - 1 Do
+   If M[Y, X] <> 0 Then Inc(Dark);
+ Total := LongInt(Size) * Size;
+ K := (Abs(Dark * 20 - Total * 10) + Total - 1) Div Total - 1;
+ If K < 0 Then K := 0; { mathematiquement inatteignable (Size est toujours impair) }
+ Inc(Res, K * 10);
+
+ QRPenaltyScore := Res;
+End;
+
+{ Construit la matrice finale (motifs de fonction + donnees + meilleur
+  masque + information de format) pour Version/Codewords - port direct
+  de initializeFunctionModules/drawCodewords/drawLightFunctionModules/
+  applyMask/drawFormatBits, dans le meme ordre que la reference. }
+Procedure QRBuildMatrix(Version: Integer; Const Codewords: TQRByteBuf; TotalCw: Integer;
+ Var OutM: TQRMatrix; Var Size: Integer);
+Var
+ Base, Trial, Best: TQRMatrix;
+ FM: TQRFuncMap;
+ X, Y, Dx, Dy, Dist: Integer;
+ AlignCount, AI, AJ, AX, AY: Integer;
+ AlignPos: Array[0..1] Of Integer;
+ Right, Vert, J2, BitIdx, DataI: Integer;
+ Upward: Boolean;
+ Invert: Boolean;
+ MaskTry: Integer;
+ Score, BestScore: LongInt;
+Begin
+ Size := 4 * Version + 17;
+ FillChar(Base, SizeOf(Base), 0);
+ FillChar(FM, SizeOf(FM), False);
+
+ { --- motifs de synchronisation (tout sombre pour l'instant) --- }
+ For X := 0 To Size - 1 Do Begin Base[6, X] := 1; FM[6, X] := True; End;
+ For Y := 0 To Size - 1 Do Begin Base[Y, 6] := 1; FM[Y, 6] := True; End;
+
+ { --- 3 zones reperage+separateur+bande d'information de format --- }
+ For Dy := 0 To 8 Do For Dx := 0 To 8 Do Begin
+  Base[Dy, Dx] := 1; FM[Dy, Dx] := True;                                 { haut-gauche : 9x9 }
+ End;
+ For Dy := 0 To 8 Do For Dx := 0 To 7 Do Begin
+  Base[Dy, Size - 8 + Dx] := 1; FM[Dy, Size - 8 + Dx] := True;           { haut-droite : 8x9 }
+ End;
+ For Dy := 0 To 7 Do For Dx := 0 To 8 Do Begin
+  Base[Size - 8 + Dy, Dx] := 1; FM[Size - 8 + Dy, Dx] := True;           { bas-gauche : 9x8 }
+ End;
+
+ { --- emplacements des motifs d'alignement (encore tout sombre) --- }
+ AlignCount := 0;
+ If Version > 1 Then Begin
+  AlignCount := 2;
+  AlignPos[0] := 6;
+  AlignPos[1] := QR_ALIGN_COORD2[Version];
+ End;
+ For AI := 0 To AlignCount - 1 Do
+  For AJ := 0 To AlignCount - 1 Do Begin
+   If (AI = 0) And (AJ = 0) Then Continue;
+   If (AI = 0) And (AJ = AlignCount - 1) Then Continue;
+   If (AI = AlignCount - 1) And (AJ = 0) Then Continue;
+   For Dy := -2 To 2 Do For Dx := -2 To 2 Do Begin
+    AX := AlignPos[AI] + Dx; AY := AlignPos[AJ] + Dy;
+    Base[AY, AX] := 1; FM[AY, AX] := True;
+   End;
+  End;
+
+ { --- module sombre fixe (voir QRFormatBit plus bas pour le reste) --- }
+ Base[Size - 8, 8] := 1; FM[Size - 8, 8] := True;
+
+ { --- zigzag de placement des mots de code (saute les cellules deja
+   marquees comme motif de fonction) --- }
+ DataI := 0;
+ Right := Size - 1;
+ While Right >= 1 Do Begin
+  If Right = 6 Then Right := 5;
+  For Vert := 0 To Size - 1 Do
+   For J2 := 0 To 1 Do Begin
+    X := Right - J2;
+    Upward := ((Right + 1) And 2) = 0;
+    If Upward Then Y := Size - 1 - Vert Else Y := Vert;
+    If (Not FM[Y, X]) And (DataI < TotalCw * 8) Then Begin
+     BitIdx := (Codewords[DataI Shr 3] Shr (7 - (DataI And 7))) And 1;
+     Base[Y, X] := BitIdx;
+     Inc(DataI);
+    End;
+   End;
+  Right := Right - 2;
+ End;
+
+ { --- eclaircir les anneaux reels des motifs (apres placement des
+   donnees : ces cellules restent marquees FM, jamais touchees par le
+   zigzag ci-dessus) --- }
+ X := 7;
+ While X < Size - 7 Do Begin
+  Base[6, X] := 0;
+  Base[X, 6] := 0;
+  X := X + 2;
+ End;
+
+ For Dy := -4 To 4 Do
+  For Dx := -4 To 4 Do Begin
+   Dist := Abs(Dx); If Abs(Dy) > Dist Then Dist := Abs(Dy);
+   If (Dist = 2) Or (Dist = 4) Then Begin
+    QRSetIfValid(Base, Size, 3 + Dx, 3 + Dy, 0);
+    QRSetIfValid(Base, Size, Size - 4 + Dx, 3 + Dy, 0);
+    QRSetIfValid(Base, Size, 3 + Dx, Size - 4 + Dy, 0);
+   End;
+  End;
+
+ For AI := 0 To AlignCount - 1 Do
+  For AJ := 0 To AlignCount - 1 Do Begin
+   If (AI = 0) And (AJ = 0) Then Continue;
+   If (AI = 0) And (AJ = AlignCount - 1) Then Continue;
+   If (AI = AlignCount - 1) And (AJ = 0) Then Continue;
+   For Dy := -1 To 1 Do For Dx := -1 To 1 Do Begin
+    AX := AlignPos[AI] + Dx; AY := AlignPos[AJ] + Dy;
+    If (Dx = 0) And (Dy = 0) Then Base[AY, AX] := 1 Else Base[AY, AX] := 0;
+   End;
+  End;
+
+ { --- essayer les 8 masques, garder celui de plus faible penalite --- }
+ BestScore := -1;
+ Best := Base;
+ For MaskTry := 0 To 7 Do Begin
+  Trial := Base;
+  For Y := 0 To Size - 1 Do
+   For X := 0 To Size - 1 Do Begin
+    If FM[Y, X] Then Continue;
+    Case MaskTry Of
+     0: Invert := ((X + Y) Mod 2) = 0;
+     1: Invert := (Y Mod 2) = 0;
+     2: Invert := (X Mod 3) = 0;
+     3: Invert := ((X + Y) Mod 3) = 0;
+     4: Invert := (((X Div 3) + (Y Div 2)) Mod 2) = 0;
+     5: Invert := ((X * Y) Mod 2 + (X * Y) Mod 3) = 0;
+     6: Invert := (((X * Y) Mod 2 + (X * Y) Mod 3) Mod 2) = 0;
+     Else Invert := ((((X + Y) Mod 2) + ((X * Y) Mod 3)) Mod 2) = 0; { masque 7 }
+    End;
+    If Invert Then Trial[Y, X] := 1 - Trial[Y, X];
+   End;
+
+  For BitIdx := 0 To 5 Do
+   Trial[BitIdx, 8] := Ord(QRFormatBit(MaskTry, BitIdx));
+  Trial[7, 8] := Ord(QRFormatBit(MaskTry, 6));
+  Trial[8, 8] := Ord(QRFormatBit(MaskTry, 7));
+  Trial[8, 7] := Ord(QRFormatBit(MaskTry, 8));
+  For BitIdx := 9 To 14 Do
+   Trial[8, 14 - BitIdx] := Ord(QRFormatBit(MaskTry, BitIdx));
+  For BitIdx := 0 To 7 Do
+   Trial[8, Size - 1 - BitIdx] := Ord(QRFormatBit(MaskTry, BitIdx));
+  For BitIdx := 8 To 14 Do
+   Trial[Size - 15 + BitIdx, 8] := Ord(QRFormatBit(MaskTry, BitIdx));
+  Trial[Size - 8, 8] := 1;
+
+  Score := QRPenaltyScore(Trial, Size);
+  If (BestScore < 0) Or (Score < BestScore) Then Begin
+   BestScore := Score;
+   Best := Trial;
+  End;
+ End;
+
+ OutM := Best;
+End;
+
+{ Point d'entree : encode URL (mode octet, niveau L) dans OutM/Size.
+  Renvoie False si URL depasse la capacite de la version 5 (106 octets). }
+Function QREncodeURL(Const URLText: String; Var OutM: TQRMatrix; Var Size: Integer): Boolean;
+Var
+ Version, DataCw, EccDeg, TotalCw, I: Integer;
+ DataBuf, AllCw: TQRByteBuf;
+ Gen, Rem: TQRGenBuf;
+Begin
+ QREncodeURL := False;
+ Version := QRChooseVersion(Length(URLText));
+ If Version = 0 Then Exit;
+
+ DataCw := QREncodeDataCodewords(URLText, Version, DataBuf);
+ EccDeg := QR_ECC_PER_BLOCK_L[Version];
+ QRComputeGenerator(EccDeg, Gen);
+ QRComputeRemainder(DataBuf, DataCw, Gen, EccDeg, Rem);
+
+ FillChar(AllCw, SizeOf(AllCw), 0);
+ For I := 0 To DataCw - 1 Do AllCw[I] := DataBuf[I];
+ For I := 0 To EccDeg - 1 Do AllCw[DataCw + I] := Rem[I];
+ TotalCw := DataCw + EccDeg;
+
+ QRBuildMatrix(Version, AllCw, TotalCw, OutM, Size);
+ QREncodeURL := True;
+End;
+
+{ Dessine la matrice avec une zone tranquille reelle de 4 modules (exigee
+  par la norme pour une lecture fiable - ne pas l'omettre). }
+Procedure QRDrawModules(Const M: TQRMatrix; Size, OriginX, OriginY, Scale: Integer);
+Var
+ X, Y: Integer;
+Begin
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(OriginX, OriginY, OriginX + (Size + 8) * Scale, OriginY + (Size + 8) * Scale);
+ SetFillStyle(SolidFill, HTMLBlackColorIndex);
+ For Y := 0 To Size - 1 Do
+  For X := 0 To Size - 1 Do
+   If M[Y, X] <> 0 Then
+    Bar(OriginX + (X + 4) * Scale, OriginY + (Y + 4) * Scale,
+        OriginX + (X + 5) * Scale - 1, OriginY + (Y + 5) * Scale - 1);
+End;
+
+{ Boite de message generique (utilisee par le menu contextuel) - attend
+  un clic ou une touche, puis restaure l'affichage. }
+Procedure QRShowMessageBox(Const Title, Msg: String);
+Var
+ BoxW, BoxH, OriginX, OriginY: Integer;
+ DoneWaiting: Boolean;
+ DismissKey: Char;
+Begin
+ BoxW := 420; BoxH := 90;
+ OriginX := RENDER_AREA_X + ((RENDER_AREA_WIDTH - BoxW) Div 2);
+ OriginY := RENDER_AREA_Y + ((RENDER_AREA_HEIGHT - BoxH) Div 2);
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetColor(HTMLBlackColorIndex);
+ Rectangle(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+ SetColor(HTMLBlackColorIndex);
+ OutTextXY(OriginX + 10, OriginY + 10, Title);
+ OutTextXY(OriginX + 10, OriginY + 38, Msg);
+ OutTextXY(OriginX + 10, OriginY + 65, '(cliquez ou appuyez sur une touche pour fermer)');
+
+ DoneWaiting := False;
+ If MouseAvailable Then GetMouseState(MouseX, MouseY, LastMouseButton);
+ Repeat
+  If KeyPressed Then Begin
+   DismissKey := ReadKey;
+   DoneWaiting := True;
+  End Else If MouseAvailable Then Begin
+   GetMouseState(MouseX, MouseY, MouseButton);
+   If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then
+    DoneWaiting := True;
+   LastMouseButton := MouseButton;
+  End;
+ Until DoneWaiting;
+
+ { Repeindre aussi le chrome (boutons Precedent/Suivant/Actualiser/
+   Favori) : RescrollPage seul ne redessine que la zone de rendu de la
+   page, laissant ces boutons vides - meme bogue et meme correctif que
+   RepaintAfterContextMenu plus bas (definie apres ce point, donc non
+   reutilisable ici sans declaration Forward supplementaire). }
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ RescrollPage;
+End;
+
+{ Action du menu contextuel "Creer un code QR pour cette page". }
+Procedure ContextMenuCreateQRCode;
+Const
+ QR_DIALOG_TITLE = 'Code QR - clic ou touche pour fermer';
+Var
+ M: TQRMatrix;
+ Size, Scale, BoxW, BoxH, GridW, TitleW, OriginX, OriginY: Integer;
+ Ok: Boolean;
+ DoneWaiting: Boolean;
+ DismissKey: Char;
+Begin
+ Ok := QREncodeURL(CurrentURL, M, Size);
+ If Not Ok Then Begin
+  QRShowMessageBox('Code QR', 'Adresse trop longue pour un code QR (maximum 106 caracteres).');
+  Exit;
+ End;
+
+ Scale := 6;
+ GridW := (Size + 8) * Scale;
+ TitleW := Length(QR_DIALOG_TITLE) * 8 + 16;
+ If TitleW > GridW Then BoxW := TitleW Else BoxW := GridW;
+ BoxH := (Size + 8) * Scale + 26;
+ OriginX := RENDER_AREA_X + ((RENDER_AREA_WIDTH - BoxW) Div 2);
+ OriginY := RENDER_AREA_Y + ((RENDER_AREA_HEIGHT - BoxH) Div 2);
+ If OriginX < RENDER_AREA_X Then OriginX := RENDER_AREA_X;
+ If OriginY < RENDER_AREA_Y Then OriginY := RENDER_AREA_Y;
+
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetColor(HTMLBlackColorIndex);
+ Rectangle(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+ SetColor(HTMLBlackColorIndex);
+ OutTextXY(OriginX + 8, OriginY + 6, QR_DIALOG_TITLE);
+
+ QRDrawModules(M, Size, OriginX + ((BoxW - GridW) Div 2), OriginY + 24, Scale);
+
+ DoneWaiting := False;
+ If MouseAvailable Then GetMouseState(MouseX, MouseY, LastMouseButton);
+ Repeat
+  If KeyPressed Then Begin
+   DismissKey := ReadKey;
+   DoneWaiting := True;
+  End Else If MouseAvailable Then Begin
+   GetMouseState(MouseX, MouseY, MouseButton);
+   If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then
+    DoneWaiting := True;
+   LastMouseButton := MouseButton;
+  End;
+ Until DoneWaiting;
+
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ RescrollPage;
+End;
+
+{ Action du menu contextuel "Enregistrer sous...". Recupere le code
+  source de la page courante EXACTEMENT comme le fait deja le prefixe
+  "view-source:" (voir DisplayCurrentTarget) - le HTML brut n'est pas
+  conserve apres l'analyse syntaxique normale d'une page (seul le DOM
+  l'est), donc la page est re-obtenue (nouvelle requete HTTP reelle, ou
+  nouvelle lecture de fichier local). }
+Procedure ContextMenuSaveAs;
+Var
+ InnerURL, LocalFileName, SourceText: String;
+ SourceOk: Boolean;
+ SourceHTML: HTMLSourceBuffer;
+ {$IFDEF WINDOWS}
+ StatusCode: LongInt;
+ FNBuf: Array[0..259] Of Char;
+ OFN: TOpenFileNameA;
+ F: Text;
+ {$ENDIF}
+Begin
+ InnerURL := CurrentURL;
+ If IsViewSourceURL(InnerURL) Then InnerURL := StripViewSourcePrefix(InnerURL);
+ SourceText := '';
+ SourceOk := False;
+
+ If IsRemoteURL(InnerURL) Then Begin
+  {$IFDEF WINDOWS}
+  SourceOk := Browser_HttpGet(InnerURL, SourceText, StatusCode) And (Length(SourceText) > 0);
+  {$ENDIF}
+ End Else Begin
+  LocalFileName := InnerURL;
+  If Copy(HTMLLowerCase(LocalFileName), 1, 7) = 'file://' Then Delete(LocalFileName, 1, 7);
+  InitHTMLSource(SourceHTML);
+  SourceOk := LoadHTMLFile(LocalFileName, SourceHTML);
+  If SourceOk Then SourceText := HTMLSourceCopy(SourceHTML, 1, SourceHTML.DataLength);
+  FreeHTMLSource(SourceHTML);
+ End;
+
+ If Not SourceOk Then Begin
+  QRShowMessageBox('Enregistrer sous...', 'Impossible de recuperer le contenu de la page.');
+  Exit;
+ End;
+
+ {$IFDEF WINDOWS}
+ FillChar(FNBuf, SizeOf(FNBuf), 0);
+ FillChar(OFN, SizeOf(OFN), 0);
+ OFN.lStructSize := SizeOf(OFN);
+ OFN.lpstrFilter := 'Pages HTML (*.html)'#0'*.html'#0'Tous les fichiers (*.*)'#0'*.*'#0#0;
+ OFN.lpstrFile := @FNBuf;
+ OFN.nMaxFile := SizeOf(FNBuf);
+ OFN.lpstrDefExt := 'html';
+ OFN.Flags := OFN_OVERWRITEPROMPT Or OFN_HIDEREADONLY;
+
+ If Browser_GetSaveFileNameA(OFN) Then Begin
+  Assign(F, StrPas(FNBuf));
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then Begin
+   Write(F, SourceText);
+   Close(F);
+  End Else
+   QRShowMessageBox('Enregistrer sous...', 'Echec de l''ecriture du fichier.');
+ End;
+ {$ELSE}
+ QRShowMessageBox('Enregistrer sous...', 'Fonction "Enregistrer sous..." disponible uniquement sous Windows.');
+ {$ENDIF}
+End;
+
+{ =====================================================
+  MENU CONTEXTUEL (clic droit sur la zone de rendu)
+  =====================================================
+  Demande explicite de l'utilisateur (2026-09-25) : Precedent/Suivant/
+  Actualiser/Voir le code source/Enregistrer sous.../Creer un code QR
+  pour cette page. Aucune infrastructure de menu deroulant ne preexistait
+  dans BROWSER.PAS (le rendu de <select> reste statique, sans liste
+  ouvrante) - ce mecanisme est entierement nouveau, mais reutilise le
+  meme style de dessin (SetFillStyle/Bar/Rectangle/OutTextXY) que le
+  chrome existant (DrawURLBar, DrawBackButton, etc.) et le meme motif de
+  restauration par re-rendu complet (RescrollPage) deja utilise ailleurs
+  pour les survols de menus JS en position absolue. }
+
+Const
+ CONTEXT_MENU_ITEM_COUNT = 6;
+ CONTEXT_MENU_ITEM_HEIGHT = 22;
+ CONTEXT_MENU_WIDTH = 300;
+
+Function ContextMenuLabel(Idx: Integer): String;
+Begin
+ Case Idx Of
+  1: ContextMenuLabel := 'Precedent';
+  2: ContextMenuLabel := 'Suivant';
+  3: ContextMenuLabel := 'Actualiser';
+  4: ContextMenuLabel := 'Voir le code source';
+  5: ContextMenuLabel := 'Enregistrer sous...';
+  6: ContextMenuLabel := 'Creer un code QR pour cette page';
+  Else ContextMenuLabel := '';
+ End;
+End;
+
+{ Une ligne separatrice fine est dessinee juste APRES ces index (regroupe
+  navigation / affichage-source / enregistrement-partage, comme la
+  plupart des navigateurs reels). }
+Function ContextMenuHasSeparatorAfter(Idx: Integer): Boolean;
+Begin
+ ContextMenuHasSeparatorAfter := (Idx = 3) Or (Idx = 4);
+End;
+
+Function ContextMenuHeight: Integer;
+Var
+ H, I: Integer;
+Begin
+ H := 4;
+ For I := 1 To CONTEXT_MENU_ITEM_COUNT Do Begin
+  Inc(H, CONTEXT_MENU_ITEM_HEIGHT);
+  If ContextMenuHasSeparatorAfter(I) Then Inc(H, 5);
+ End;
+ ContextMenuHeight := H;
+End;
+
+{ Renvoie 1..CONTEXT_MENU_ITEM_COUNT (item survole/clique), ou 0. }
+Function ContextMenuItemAt(PX, PY: Integer): Integer;
+Var
+ Y, I: Integer;
+Begin
+ ContextMenuItemAt := 0;
+ If (PX < ContextMenuX) Or (PX > ContextMenuX + CONTEXT_MENU_WIDTH) Then Exit;
+ Y := ContextMenuY + 4;
+ For I := 1 To CONTEXT_MENU_ITEM_COUNT Do Begin
+  If (PY >= Y) And (PY < Y + CONTEXT_MENU_ITEM_HEIGHT) Then Begin
+   ContextMenuItemAt := I;
+   Exit;
+  End;
+  Inc(Y, CONTEXT_MENU_ITEM_HEIGHT);
+  If ContextMenuHasSeparatorAfter(I) Then Inc(Y, 5);
+ End;
+End;
+
+Procedure DrawContextMenu;
+Var
+ Y, I, TextY: Integer;
+Begin
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(ContextMenuX, ContextMenuY, ContextMenuX + CONTEXT_MENU_WIDTH, ContextMenuY + ContextMenuHeight);
+ SetColor(HTMLBlackColorIndex);
+ Rectangle(ContextMenuX, ContextMenuY, ContextMenuX + CONTEXT_MENU_WIDTH, ContextMenuY + ContextMenuHeight);
+
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+
+ Y := ContextMenuY + 4;
+ For I := 1 To CONTEXT_MENU_ITEM_COUNT Do Begin
+  If I = ContextMenuHoverIndex Then Begin
+   SetFillStyle(SolidFill, 1); { bleu - mise en surbrillance, style menu Windows usuel }
+   Bar(ContextMenuX + 1, Y, ContextMenuX + CONTEXT_MENU_WIDTH - 1, Y + CONTEXT_MENU_ITEM_HEIGHT - 1);
+   SetColor(15); { blanc }
+  End Else
+   SetColor(HTMLBlackColorIndex);
+  TextY := Y + ((CONTEXT_MENU_ITEM_HEIGHT - 8) Div 2);
+  OutTextXY(ContextMenuX + 8, TextY, ContextMenuLabel(I));
+  Inc(Y, CONTEXT_MENU_ITEM_HEIGHT);
+  If ContextMenuHasSeparatorAfter(I) Then Begin
+   SetColor(COLOR_BTN_DISABLED);
+   Line(ContextMenuX + 4, Y + 2, ContextMenuX + CONTEXT_MENU_WIDTH - 4, Y + 2);
+   Inc(Y, 5);
+  End;
+ End;
+End;
+
+Procedure OpenContextMenu(PX, PY: Integer);
+Begin
+ ContextMenuX := PX;
+ ContextMenuY := PY;
+ If ContextMenuX + CONTEXT_MENU_WIDTH > GetMaxX Then
+  ContextMenuX := GetMaxX - CONTEXT_MENU_WIDTH;
+ If ContextMenuX < 0 Then ContextMenuX := 0;
+ If ContextMenuY + ContextMenuHeight > GetMaxY Then
+  ContextMenuY := GetMaxY - ContextMenuHeight;
+ If ContextMenuY < RENDER_AREA_Y Then ContextMenuY := RENDER_AREA_Y;
+ ContextMenuHoverIndex := 0;
+ ContextMenuOpen := True;
+ DrawContextMenu;
+End;
+
+{ Met a jour la surbrillance survolee ; redessine seulement si elle a
+  change (evite un scintillement inutile a chaque iteration). }
+Procedure UpdateContextMenuHover(PX, PY: Integer);
+Var
+ NewHover: Integer;
+Begin
+ NewHover := ContextMenuItemAt(PX, PY);
+ If NewHover <> ContextMenuHoverIndex Then Begin
+  ContextMenuHoverIndex := NewHover;
+  DrawContextMenu;
+ End;
+End;
+
+{ Repeint le chrome + la page pour effacer le menu (ou toute boite de
+  dialogue) - meme sequence que celle deja utilisee ailleurs dans
+  HandleMouseClick apres une action ne declenchant pas de navigation. }
+Procedure RepaintAfterContextMenu;
+Begin
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ RescrollPage;
+End;
+
+Procedure ContextMenuViewSource;
+Begin
+ If IsViewSourceURL(CurrentURL) Then Exit; { deja en mode source - rien a faire }
+ NavigateTo('view-source:' + CurrentURL);
+End;
+
+{ Dispatché par HandleMouseClick lorsque le menu est ouvert et qu'un
+  clic gauche vient d'arriver (item choisi, ou clic hors du menu pour
+  simplement le fermer). }
+Procedure ExecuteContextMenuAction(Idx: Integer);
+Begin
+ Case Idx Of
+  1: HandleBackButtonClick;
+  2: HandleForwardButtonClick;
+  3: HandleRefreshButtonClick;
+  4: ContextMenuViewSource;
+  5: Begin RescrollPage; ContextMenuSaveAs; End;
+  6: Begin RescrollPage; ContextMenuCreateQRCode; End;
+  Else RescrollPage;
+ End;
+End;
+
+{ =====================================================
   BARRES DE DEFILEMENT DE LA ZONE DE RENDU
   ===================================================== }
 
@@ -19670,7 +20570,24 @@ Var
  InteractiveNode: HTMLNodePtr;
  InteractiveIdx: Integer;
  ClickedType: String;
+ CtxItemIdx: Integer;
 Begin
+ { Le menu contextuel (clic droit), s'il est ouvert, absorbe ce clic
+   gauche en entier - qu'il tombe sur un item (execute cet item) ou en
+   dehors (le referme simplement) - avant tout autre traitement normal
+   du clic (barre d'URL, boutons, liens...). }
+ If ContextMenuOpen Then Begin
+  CtxItemIdx := ContextMenuItemAt(X, Y);
+  ContextMenuOpen := False;
+  DrawURLBar;
+  DrawBackButton;
+  DrawForwardButton;
+  DrawRefreshButton;
+  DrawFavoriteButton;
+  ExecuteContextMenuAction(CtxItemIdx);
+  Exit;
+ End;
+
  { Verifier si le clic est dans la barre d'URL }
  If IsClickInURLBar(X, Y) Then Begin
   URLBarFocused := True;
@@ -19852,6 +20769,23 @@ Begin
  { Obtenir l'etat actuel de la souris }
  GetMouseState(MouseX, MouseY, MouseButton);
 
+ { Le menu contextuel, pendant qu'il est ouvert, remplace entierement le
+   survol/clic normal de la page (sinon un survol de lien dessous
+   redessinerait par-dessus le menu). Le clic gauche est route par
+   HandleMouseClick (voir sa propre verification ContextMenuOpen en
+   tout debut de fonction, qui l'execute puis le referme). }
+ If ContextMenuOpen Then Begin
+  UpdateContextMenuHover(MouseX, MouseY);
+  If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
+     ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
+   HideMouse;
+   HandleMouseClick(MouseX, MouseY);
+   ShowMouse;
+  End;
+  LastMouseButton := MouseButton;
+  Exit;
+ End;
+
  ProcessMouseHover;
 
  { Detecter un clic (transition de non-presse a presse) }
@@ -19860,6 +20794,19 @@ Begin
   HideMouse;
  HandleMouseClick(MouseX, MouseY);
   ShowMouse;
+ End;
+
+ { Clic droit sur la zone de rendu : ouvrir le menu contextuel (demande
+   explicite de l'utilisateur, 2026-09-25). Hors de la zone de rendu
+   (barre d'URL, boutons...), ignore - ces widgets ont deja leur propre
+   comportement natif de clic gauche uniquement. }
+ If ((MouseButton And MOUSE_RIGHT_BUTTON) <> 0) And
+    ((LastMouseButton And MOUSE_RIGHT_BUTTON) = 0) Then Begin
+  If IsInRenderArea(MouseX, MouseY) Then Begin
+   HideMouse;
+   OpenContextMenu(MouseX, MouseY);
+   ShowMouse;
+  End;
  End;
 
  { Completer la sequence DOM mousedown/mouseup. Garder la cible pressee
@@ -20102,13 +21049,23 @@ BEGIN
     { explicite de l'utilisateur) est prioritaire sur la barre d'URL - les  }
     { deux s'excluent deja mutuellement (ClearInputFocus/URLBarFocused:=    }
     { False a chaque prise de focus). }
-    If FocusedInputNode <> Nil Then
+    If ContextMenuOpen Then Begin
+     ContextMenuOpen := False;
+     RepaintAfterContextMenu;
+    End Else If FocusedInputNode <> Nil Then
      HandleFormInputSpecialKey(Ord(Key))
     Else
      HandleURLSpecialKey(Ord(Key));
    End
     Else Begin
-    If FocusedInputNode <> Nil Then
+    { Menu contextuel ouvert : Echap (ou toute autre touche) le referme
+      sans fermer le navigateur - Key est neutralisee pour que le test
+      "Until Key = #27" ci-dessous ne quitte pas si c'etait Echap. }
+    If ContextMenuOpen Then Begin
+     ContextMenuOpen := False;
+     RepaintAfterContextMenu;
+     Key := #0;
+    End Else If FocusedInputNode <> Nil Then
      HandleFormInputKey(Key)
     Else
      HandleURLInput(Key);
