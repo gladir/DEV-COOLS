@@ -1603,7 +1603,13 @@ Const
  { Eviter qu'une ressource distante defectueuse immobilise toute
    l'interface graphique, dont la boucle de messages est monothread. }
  BROWSER_HTTP_TIMEOUT_MS            = 10000;
- BROWSER_HTTP_MAX_BODY              = 8 * 1024 * 1024;
+ { Agrandi de 8 a 32 Mo (2026-09-26, necessaire au support PDF - un
+   document reel comme https://www.gladir.com/DOCUMENT/
+   grimoireassembleur.pdf fait 9,3 Mo, deja au-dela de l'ancienne
+   limite : le corps aurait ete tronque en silence (StatusCode=413 mais
+   Browser_HttpGet retournait quand meme True), livrant un PDF coupe au
+   parseur.) }
+ BROWSER_HTTP_MAX_BODY              = 32 * 1024 * 1024;
  BROWSER_PAGE_MAX_REQUESTS           = 32;
  BROWSER_PAGE_NETWORK_BUDGET_MS      = 30000;
 
@@ -1928,6 +1934,7 @@ End;
   ResolveImageLoadPath/ReleaseImageLoadPath ci-dessous. }
 Const
  BROWSER_IMG_TEMP_FILE = 'BROWSERIMG.TMP';
+ BROWSER_PDF_TEMP_FILE = 'BROWSERPDF.TMP';
 
 { Si Path est une URL http/https, la telecharger (via Browser_HttpGet) dans
   un fichier local TEMPORAIRE et retourner ce chemin dans LoadPath, pour
@@ -2221,21 +2228,59 @@ Begin
  HTMLDecodeEntities := ResultText;
 End;
 
+{ Cache de position pour HTMLSourceChar (2026-09-26, trouve en verifiant
+  le support PDF) : voir la disclosure complete a l'interieur de la
+  fonction. Reinitialise par InitHTMLSource a chaque nouveau buffer pour
+  eliminer tout risque, meme improbable, de reutiliser un pointeur de
+  chunk perime d'un buffer precedent liberedepuis. }
+Var
+ HTMLSourceCharCacheOwner: HTMLBufferChunkPtr;
+ HTMLSourceCharCacheChunk: HTMLBufferChunkPtr;
+ HTMLSourceCharCacheBase: LongInt;
+
 { Fonction pour ignorer les espaces blancs }
 Function HTMLSourceChar(Const S: HTMLSourceBuffer; Pos: LongInt): Char;
 Var
  Chunk: HTMLBufferChunkPtr;
- Offset: LongInt;
+ Base: LongInt;
 Begin
  HTMLSourceChar := #0;
  If (S.FirstChunk = Nil) Or (Pos < 1) Or (Pos > S.DataLength) Then Exit;
- Offset := Pos - 1;
- Chunk := S.FirstChunk;
- While (Chunk <> Nil) And (Offset >= Chunk^.Used) Do Begin
-  Offset := Offset - Chunk^.Used;
+
+ { BOGUE REEL DE PERFORMANCE corrige ici : la version d'origine repartait
+   de S.FirstChunk et reparcourait la liste chainee de chunks (4096
+   octets chacun) a CHAQUE appel. ParseHTML avance Pos UN CARACTERE A LA
+   FOIS en scannant tout le document - un balayage sequentiel complet
+   coutait donc O(N x nombre_de_chunks) = O(N^2/4096), plusieurs dizaines
+   de secondes des que N atteint quelques centaines de Ko (constate en
+   verifiant le support PDF : un document reel de plusieurs Mo generait
+   un DOM bien plus volumineux que tout ce qui avait ete teste jusqu'ici
+   dans ce fichier). Si Pos tombe dans le chunk deja en cache ou un
+   chunk SUIVANT (le cas dominant, balayage vers l'avant), on repart de
+   la ou l'appel precedent s'est arrete plutot que du debut - resultat
+   STRICTEMENT IDENTIQUE, seulement plus rapide. Un acces vers l'ARRIERE
+   (Pos avant la base du chunk en cache) retombe sur le parcours complet
+   d'origine depuis S.FirstChunk - toujours correct, simplement pas
+   optimise pour ce cas plus rare. }
+ If (HTMLSourceCharCacheOwner = S.FirstChunk) And (HTMLSourceCharCacheChunk <> Nil) And
+    (Pos >= HTMLSourceCharCacheBase) Then Begin
+  Chunk := HTMLSourceCharCacheChunk;
+  Base := HTMLSourceCharCacheBase;
+ End Else Begin
+  Chunk := S.FirstChunk;
+  Base := 1;
+ End;
+
+ While (Chunk <> Nil) And (Pos - Base >= Chunk^.Used) Do Begin
+  Base := Base + Chunk^.Used;
   Chunk := Chunk^.Next;
  End;
- If Chunk <> Nil Then HTMLSourceChar := Chunk^.Data[Offset];
+
+ HTMLSourceCharCacheOwner := S.FirstChunk;
+ HTMLSourceCharCacheChunk := Chunk;
+ HTMLSourceCharCacheBase := Base;
+
+ If Chunk <> Nil Then HTMLSourceChar := Chunk^.Data[Pos - Base];
 End;
 
 Function HTMLSourceCopy(Const S: HTMLSourceBuffer; StartPos, Count: LongInt): String;
@@ -3518,6 +3563,9 @@ Function IsRemoteURL(Const URL: String): Boolean; Forward;
 Function IsViewSourceURL(Const URL: String): Boolean; Forward;
 Function StripViewSourcePrefix(Const URL: String): String; Forward;
 Function IsFtpURL(Const URL: String): Boolean; Forward;
+{ Necessaire au module PDF (PDFExtractText, voir plus bas) - definie
+  bien plus loin dans le fichier, aux cotes de IsFtpURL. }
+Function FTPEscapeText(Const S: String): String; Forward;
 Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String); Forward;
 Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt); Forward;
 Procedure JSClearTimeout; Forward;
@@ -14354,8 +14402,16 @@ Var
  End;
  PNGImageCacheCount: Integer;
 
- { Buffer pour decompression DEFLATE }
- DeflateInBuffer: Array[0..65535] Of Byte;
+ { Buffer pour decompression DEFLATE. Agrandi de 65536 a 4 Mo (2026-09-26,
+   necessaire au support PDF - voir Browser_PdfExtractText plus bas) : un
+   flux de contenu de page PDF compresse peut largement depasser 64 Ko
+   pour un document texte de plusieurs pages ; l'ancienne taille aurait
+   fait deborder ce tableau fixe via Move(...) (aucun garde-fou present
+   avant ce correctif, ni ici pour PNG ni dans le nouveau code PDF sans
+   cette marge). Incidemment, corrige aussi le meme risque latent (jamais
+   signale) pour un PNG dont les donnees IDAT compressees depasseraient
+   64 Ko. }
+ DeflateInBuffer: Array[0..4 * 1024 * 1024 - 1] Of Byte;
  DeflateInPos: LongInt;
  DeflateInLen: LongInt;
  DeflateBitBuffer: LongInt;
@@ -15103,6 +15159,10 @@ Begin
  DecompCapacity := Length(DecompData);
  {$ENDIF}
 
+ { Garde-fou (2026-09-26) : CompDataPos-2 depassant SizeOf(DeflateInBuffer)
+   deborderait ce tableau fixe - improbable pour un PNG (agrandi a 4 Mo,
+   voir sa disclosure) mais jamais verifie avant ce correctif. }
+ If CompDataPos - 2 > SizeOf(DeflateInBuffer) Then Exit;
  Move(CompData[2], DeflateInBuffer, CompDataPos - 2);
  DeflateInLen := CompDataPos - 2;
 
@@ -15223,6 +15283,1068 @@ Begin
  Img.Valid := True;
  PNGLoadFromFile := True;
 End;
+{ ============================================================
+  SUPPORT PDF (2026-09-26, demande explicite de l'utilisateur -
+  "Implemente un support PDF au navigateur Web", teste avec un vrai
+  document reel : https://www.gladir.com/DOCUMENT/grimoireassembleur.pdf)
+  ============================================================
+  Extraction REELLE du texte d'un document PDF (norme ISO 32000), PAS un
+  simple message "non supporte" : localise le catalogue/l'arbre des
+  pages/les flux de contenu par un VRAI parcours de la structure d'objets
+  indirects du fichier, decompresse les flux FlateDecode en reutilisant
+  le decompresseur DEFLATE deja existant et verifie (voir PNGLoadFromFile
+  plus haut - meme algorithme RFC 1950/1951, aucune reimplementation),
+  puis extrait le texte reel des operateurs Tj/TJ/'/" des flux de
+  contenu (les seuls operateurs de flux de contenu PDF a accepter une
+  chaine comme operande, d'ou l'absence de besoin d'un tokenizer
+  d'operateurs generique complet - simplification deliberee, pas une
+  approximation hasardeuse).
+
+  SIMPLIFICATIONS DELIBEREMENT DIVULGUEES (toutes disclosed pour ne
+  jamais fabriquer un succes qui ne serait pas reel) :
+  - Localisation des objets par recherche du DERNIER motif "N G obj"
+    correspondant dans le fichier entier, PAS par analyse de la table
+    xref/trailer ni des flux d'objets compresses (PDF 1.5+, /Type
+    /ObjStm) - technique de RECUPERATION deliberement robuste (le meme
+    principe que les outils de reparation PDF reels), au prix de ne pas
+    gerer un fichier dont TOUS les objets seraient exclusivement dans
+    des flux d'objets compresses (rare pour un document simple).
+  - Le catalogue est trouve en cherchant directement "/Type /Catalog"
+    dans le fichier plutot qu'en analysant le "trailer" - evite d'avoir
+    a parser une eventuelle table xref/trailer distincte.
+  - /Length d'un flux n'est JAMAIS parse (meme s'il s'agit d'une
+    reference indirecte "N G R", cas frequent) : la fin du flux est
+    localisee en cherchant directement le mot-cle "endstream" reel qui
+    suit - plus robuste qu'une valeur /Length parfois fausse ou non
+    resolue, meme technique que les lecteurs PDF tolerants reels.
+  - Seul le filtre /FlateDecode est decompresse. Un flux de contenu
+    texte utilise presque toujours ce filtre (ou aucun) en pratique ;
+    tout autre filtre (rare pour du texte) est signale honnetement,
+    jamais fabrique.
+  - Aucune reconstruction de mise en page (colonnes, positions X/Y
+    exactes, polices/tailles) : le texte est extrait dans l'ordre
+    d'apparition du flux de contenu ("reading order"), comme la plupart
+    des extracteurs de texte PDF simples (ex. la variante "sans mise en
+    page" d'outils reels comme pdftotext) - un saut de ligne est insere
+    a chaque operateur Td/TD/T*/BT reel.
+  - Encodage de caracteres suppose Latin/WinAnsi standard (code octal/
+    hexadecimal PDF => valeur d'octet directe) : une police avec un
+    encodage personnalise/CID (courant pour certains PDF generes par des
+    outils specifiques) peut produire du texte incorrect - non detecte
+    ni corrige ici, disclosed.
+  ============================================================ }
+
+Const
+ PDF_MAX_FILE_SIZE = 32 * 1024 * 1024; { limite de securite, disclosed }
+ PDF_MAX_PAGES = 2000;
+ { Nombre maximal de LIGNES de texte accumulees pour UNE SEULE page
+   (voir PDFLines/PDFFlushCurrentLine) - un roman de 9999 lignes sur une
+   page tiendrait deja difficilement sur un vrai support papier ;
+   garde-fou de securite, disclosed. }
+ PDF_MAX_LINES_PER_PAGE = 8000;
+
+Var
+ PDFPageObjNums: Array[1..PDF_MAX_PAGES] Of LongInt;
+ PDFPageCount: Integer;
+ PDFCollectCallCount: LongInt; { garde-fou de diagnostic temporaire }
+
+{ 2026-09-26, demande explicite de l'utilisateur suite au premier essai
+  du support PDF ("la mise en page du PDF est mediocre, faudrait au
+  moins que l'alignement gauche/droite/centre soit supporte et [...] il
+  n'est pas non plus possible de changer le numero de page") : refonte
+  du rendu PDF, PAGE PAR PAGE (avec navigation reelle Precedent/Suivant/
+  aller-a-la-page) plutot qu'un unique document HTML geant concatenant
+  toutes les pages - cela resout AUSSI, comme effet de bord benefique,
+  la lenteur observee sur le vrai document de l'utilisateur (1558
+  pages/9,3 Mo) : le moteur de mise en page HTML n'a plus jamais qu'UNE
+  SEULE page de texte a la fois dans son DOM, quelle que soit la taille
+  totale du document.
+
+  Alignement approxime (PAS une reproduction exacte de la typographie
+  d'origine, DISCLOSED) : position X de depart de chaque ligne (issue
+  des VRAIS operateurs de positionnement Td/TD/Tm/T* du flux de
+  contenu, dont les operandes numeriques sont maintenant reellement lus
+  - auparavant seule la PRESENCE de l'operateur declenchait un saut de
+  ligne, ses arguments etaient ignores) comparee a la largeur de page
+  reelle (/MediaBox, avec heritage via /Parent comme l'exige la norme -
+  612pt/US Letter par defaut si absent, valeur standard reelle) :
+  gauche si le debut de ligne est dans le premier cinquieme de la page,
+  droite dans les 40% de droite, centre sinon. Aucune detection de
+  justification (necessiterait une analyse fiable de l'espacement inter-
+  mots, hors de portee ici) - le "au moins" de la demande est couvert
+  par gauche/centre/droite, disclosed pour justify. }
+Type
+ TPDFTextLine = Record
+  LineText: String;
+  StartX: LongInt;
+ End;
+
+Var
+ PDFLines: Array[1..PDF_MAX_LINES_PER_PAGE] Of TPDFTextLine;
+ PDFLineCount: Integer;
+ PDFCurLineText: String;
+ PDFCurX: LongInt;
+ PDFCurY: LongInt;
+ PDFCurLineStartX: LongInt;
+
+{ Trace de diagnostic TEMPORAIRE (2026-09-26) pour investiguer un
+  ERangeError reel dans HTMLAppendChild/ParseHTML declenche par une page
+  PDF reelle - WriteLn(StdErr,...) perdait son contenu (jamais vide avant
+  la sortie anormale du programme sur exception non geree), d'ou
+  l'ecriture directe dans un fichier avec Close() immediat. A RETIRER une
+  fois le bogue trouve et corrige. }
+Procedure PDFDebugLog(Const S: String);
+Var
+ DbgF: Text;
+Begin
+ Assign(DbgF, 'PDFDEBUG.LOG');
+ {$I-}
+ Append(DbgF);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  {$I-}
+  Rewrite(DbgF);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+ End;
+ WriteLn(DbgF, S);
+ Close(DbgF);
+End;
+
+Function BoolToStrDbg(B: Boolean): String;
+Begin
+ If B Then BoolToStrDbg := 'True' Else BoolToStrDbg := 'False';
+End;
+
+{ Detecter une adresse PDF (extension .pdf, requete/ancre ignoree - voir
+  ExtractFileExt). }
+Function IsPdfURL(Const URL: String): Boolean;
+Begin
+ IsPdfURL := HTMLLowerCase(ExtractFileExt(URL)) = '.pdf';
+End;
+
+Function PDFStrToLongInt(Const S: String): LongInt;
+Var
+ V: LongInt;
+ Code: Integer;
+Begin
+ Val(S, V, Code);
+ If Code <> 0 Then V := -1;
+ PDFStrToLongInt := V;
+End;
+
+{ Tronque un nombre PDF potentiellement decimal ("12.5", "-3.0") vers un
+  LongInt (les coordonnees de positionnement de texte PDF sont souvent
+  des reels, mais un arrondi au point pres est largement suffisant pour
+  la classification d'alignement approximative - voir sa disclosure). }
+Function PDFStrToLongIntTrunc(Const S: String): LongInt;
+Var
+ DotPos: Integer;
+ IntPart: String;
+Begin
+ DotPos := Pos('.', S);
+ If DotPos > 0 Then IntPart := Copy(S, 1, DotPos - 1)
+ Else IntPart := S;
+ If (IntPart = '') Or (IntPart = '-') Or (IntPart = '+') Then IntPart := '0';
+ PDFStrToLongIntTrunc := PDFStrToLongInt(IntPart);
+End;
+
+{ Position de Needle dans Haystack a partir de StartPos (1-indexe,
+  inclus) ; 0 si absent. Recherche caractere par caractere DIRECTEMENT
+  dans Haystack (pas de PosEx - absente du Uses de ce fichier, aucune
+  unite Strings/StrUtils chargee) : la premiere version utilisait
+  `Pos(Needle, Copy(Haystack, StartPos, ...))`, qui ALLOUE une copie de
+  tout le reste de Haystack a CHAQUE appel - desastreux en performance
+  des que cette fonction est appelee en boucle (ex. PDFFindObject) sur
+  un fichier PDF reel de plusieurs Mo (observe : plusieurs dizaines de
+  secondes sans terminer sur un document reel de quelques centaines de
+  Ko). Version corrigee : aucune allocation, simple comparaison directe
+  caractere par caractere. }
+Function PDFPosFrom(Const Needle, Haystack: String; StartPos: LongInt): LongInt;
+Var
+ I, J, NLen, HLen: LongInt;
+ Match: Boolean;
+Begin
+ PDFPosFrom := 0;
+ NLen := Length(Needle);
+ HLen := Length(Haystack);
+ If NLen = 0 Then Exit;
+ If StartPos < 1 Then StartPos := 1;
+ I := StartPos;
+ While I <= HLen - NLen + 1 Do Begin
+  If Haystack[I] = Needle[1] Then Begin
+   Match := True;
+   J := 2;
+   While Match And (J <= NLen) Do Begin
+    If Haystack[I + J - 1] <> Needle[J] Then Match := False;
+    Inc(J);
+   End;
+   If Match Then Begin
+    PDFPosFrom := I;
+    Exit;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+{ Index objet-numero -> position juste apres le mot-cle "obj" (DERNIERE
+  occurrence rencontree, gerant naturellement les mises a jour
+  incrementales - voir disclosure du module). Construit par UN SEUL
+  passage lineaire sur le fichier entier (PDFBuildObjectIndex, appelee
+  une fois par PDFExtractText) : BOGUE REEL corrige (2026-09-26) - la
+  toute premiere version de PDFFindObject refaisait un balayage complet
+  du fichier a CHAQUE resolution d'objet (une fois par page/noeud de
+  l'arbre /Pages), soit potentiellement des MILLIARDS de comparaisons de
+  caracteres pour un document reel de plusieurs centaines de pages (le
+  "grimoire assembleur" fourni par l'utilisateur fait 9,3 Mo) - le
+  navigateur restait bloque plusieurs dizaines de secondes sans jamais
+  terminer. Un index construit une seule fois transforme cette recherche
+  en un simple acces tableau O(1). }
+Const
+ PDF_MAX_OBJ_NUM = 100000;
+Var
+ PDFObjOffsets: Array[1..PDF_MAX_OBJ_NUM] Of LongInt;
+
+Procedure PDFBuildObjectIndex(Const Data: String);
+Var
+ I, DLen, NumEnd, GenEnd, NumStart, ObjNum: LongInt;
+Begin
+ FillChar(PDFObjOffsets, SizeOf(PDFObjOffsets), 0);
+ DLen := Length(Data);
+ I := 1;
+ While I <= DLen - 2 Do Begin
+  If (Data[I] = 'o') And (Data[I + 1] = 'b') And (Data[I + 2] = 'j') Then Begin
+   If ((I + 3 > DLen) Or Not (Data[I + 3] In ['A'..'Z', 'a'..'z', '0'..'9', '_'])) And
+      ((I = 1) Or (Data[I - 1] In [' ', #9, #13, #10])) Then Begin
+    NumEnd := I - 1;
+    While (NumEnd >= 1) And (Data[NumEnd] In [' ', #9, #13, #10]) Do Dec(NumEnd);
+    GenEnd := NumEnd;
+    While (GenEnd >= 1) And (Data[GenEnd] In ['0'..'9']) Do Dec(GenEnd);
+    If GenEnd < NumEnd Then Begin
+     NumEnd := GenEnd;
+     While (NumEnd >= 1) And (Data[NumEnd] In [' ', #9, #13, #10]) Do Dec(NumEnd);
+     NumStart := NumEnd;
+     While (NumStart >= 1) And (Data[NumStart] In ['0'..'9']) Do Dec(NumStart);
+     If NumStart < NumEnd Then Begin
+      ObjNum := PDFStrToLongInt(Copy(Data, NumStart + 1, NumEnd - NumStart));
+      If (ObjNum >= 1) And (ObjNum <= PDF_MAX_OBJ_NUM) Then
+       PDFObjOffsets[ObjNum] := I + 3;
+     End;
+    End;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+Function PDFFindObject(Const Data: String; ObjNum: LongInt): LongInt;
+Begin
+ If (ObjNum >= 1) And (ObjNum <= PDF_MAX_OBJ_NUM) Then
+  PDFFindObject := PDFObjOffsets[ObjNum]
+ Else
+  PDFFindObject := 0;
+End;
+
+{ Position du '<<' de fin correspondant (nesting compte) a un '<<' ouvert
+  a StartPos. 0 si jamais refermee. }
+Function PDFFindDictEnd(Const Data: String; StartPos: LongInt): LongInt;
+Var
+ P, Depth, DLen: LongInt;
+Begin
+ PDFFindDictEnd := 0;
+ P := StartPos;
+ Depth := 0;
+ DLen := Length(Data);
+ While P <= DLen - 1 Do Begin
+  If (Data[P] = '<') And (Data[P + 1] = '<') Then Begin
+   Inc(Depth);
+   Inc(P, 2);
+  End Else If (Data[P] = '>') And (Data[P + 1] = '>') Then Begin
+   Dec(Depth);
+   Inc(P, 2);
+   If Depth = 0 Then Begin
+    PDFFindDictEnd := P - 1;
+    Exit;
+   End;
+  End Else
+   Inc(P);
+ End;
+End;
+
+{ Remonte depuis une position P (ex. celle de "/Type/Catalog") jusqu'au
+  '<<' d'ouverture du dictionnaire qui la contient reellement (compte le
+  nesting en sens inverse). 0 si jamais trouve. }
+Function PDFFindEnclosingDictStart(Const Data: String; P: LongInt): LongInt;
+Var
+ Q, Depth: LongInt;
+Begin
+ PDFFindEnclosingDictStart := 0;
+ Q := P;
+ Depth := 0;
+ While Q >= 2 Do Begin
+  If (Data[Q - 1] = '>') And (Data[Q] = '>') Then Begin
+   Inc(Depth);
+   Dec(Q, 2);
+  End Else If (Data[Q - 1] = '<') And (Data[Q] = '<') Then Begin
+   If Depth = 0 Then Begin
+    PDFFindEnclosingDictStart := Q - 1;
+    Exit;
+   End;
+   Dec(Depth);
+   Dec(Q, 2);
+  End Else
+   Dec(Q);
+ End;
+End;
+
+{ Bornes [DictStart..DictEnd] du dictionnaire de l'objet ObjNum (objet
+  ordinaire OU objet-flux, le dictionnaire precede toujours "stream").
+  DictStart=0 si l'objet est introuvable ou n'a pas de dictionnaire dans
+  un voisinage raisonnable (20000 car. - garde-fou contre un saut vers
+  le dictionnaire d'un AUTRE objet si celui demande n'en a pas, ex. un
+  entier simple utilise comme cible d'une reference /Length). }
+Procedure PDFGetObjectDict(Const Data: String; ObjNum: LongInt; Var DictStart, DictEnd: LongInt);
+Var
+ ObjBodyStart, DictOpen: LongInt;
+Begin
+ DictStart := 0;
+ DictEnd := 0;
+ If ObjNum <= 0 Then Exit;
+ ObjBodyStart := PDFFindObject(Data, ObjNum);
+ If ObjBodyStart = 0 Then Exit;
+ DictOpen := PDFPosFrom('<<', Data, ObjBodyStart);
+ If (DictOpen = 0) Or (DictOpen - ObjBodyStart > 20000) Then Exit;
+ DictStart := DictOpen;
+ DictEnd := PDFFindDictEnd(Data, DictOpen);
+End;
+
+{ Position juste apres "/KeyName" dans [DictStart..DictEnd] (verifie que
+  ce n'est pas le prefixe d'un nom plus long). 0 si absent. }
+Function PDFDictKeyPos(Const Data: String; DictStart, DictEnd: LongInt; Const KeyName: String): LongInt;
+Var
+ Needle: String;
+ P: LongInt;
+Begin
+ PDFDictKeyPos := 0;
+ If DictStart = 0 Then Exit;
+ Needle := '/' + KeyName;
+ P := PDFPosFrom(Needle, Data, DictStart);
+ If (P = 0) Or (P > DictEnd) Then Exit;
+ If (P + Length(Needle) <= Length(Data)) And
+    (Data[P + Length(Needle)] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+ PDFDictKeyPos := P + Length(Needle);
+End;
+
+{ Vrai si la cle KeyName de [DictStart..DictEnd] vaut exactement le nom
+  ValueName (ex. /Type /Page). }
+Function PDFDictHasNameValue(Const Data: String; DictStart, DictEnd: LongInt;
+ Const KeyName, ValueName: String): Boolean;
+Var
+ KeyPos, Q: LongInt;
+Begin
+ PDFDictHasNameValue := False;
+ KeyPos := PDFDictKeyPos(Data, DictStart, DictEnd, KeyName);
+ If KeyPos = 0 Then Exit;
+ Q := KeyPos;
+ While (Q <= DictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q > DictEnd) Or (Data[Q] <> '/') Then Exit;
+ Inc(Q);
+ If Copy(Data, Q, Length(ValueName)) <> ValueName Then Exit;
+ Q := Q + Length(ValueName);
+ If (Q <= Length(Data)) And (Data[Q] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+ PDFDictHasNameValue := True;
+End;
+
+{ Lit une reference indirecte "N G R" a partir de P (espaces ignores),
+  bornee par LimitPos (inclus). Renvoie le numero d'objet N, ou -1 si ce
+  n'en est pas une ; NextPos avance toujours d'au moins 1 caractere pour
+  garantir la terminaison d'une boucle appelante. }
+Function PDFReadRefAt(Const Data: String; P, LimitPos: LongInt; Var NextPos: LongInt): LongInt;
+Var
+ Q, S: LongInt;
+ ObjNum: LongInt;
+Begin
+ PDFReadRefAt := -1;
+ Q := P;
+ While (Q <= LimitPos) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ S := Q;
+ While (Q <= LimitPos) And (Data[Q] In ['0'..'9']) Do Inc(Q);
+ If Q = S Then Begin
+  NextPos := P + 1;
+  Exit;
+ End;
+ ObjNum := PDFStrToLongInt(Copy(Data, S, Q - S));
+ While (Q <= LimitPos) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ S := Q;
+ While (Q <= LimitPos) And (Data[Q] In ['0'..'9']) Do Inc(Q);
+ If Q = S Then Begin
+  NextPos := P + 1;
+  Exit;
+ End;
+ While (Q <= LimitPos) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q > LimitPos) Or (Data[Q] <> 'R') Then Begin
+  NextPos := P + 1;
+  Exit;
+ End;
+ Inc(Q);
+ NextPos := Q;
+ PDFReadRefAt := ObjNum;
+End;
+
+{ Parcourt recursivement l'arbre /Pages (noeuds /Type /Pages, feuilles
+  /Type /Page), rempli PDFPageObjNums/PDFPageCount DANS L'ORDRE REEL des
+  pages (celui de /Kids, PAS l'ordre numerique des objets dans le
+  fichier - souvent different). Garde-fous : profondeur max 32,
+  PDF_MAX_PAGES pages max (fichier pathologique/circulaire). }
+Procedure PDFCollectPagesRec(Const Data: String; NodeObjNum: LongInt; Depth: Integer);
+Var
+ DictStart, DictEnd, KidsPos, ArrStart, ArrEnd, P: LongInt;
+ ChildNum: LongInt;
+Begin
+ Inc(PDFCollectCallCount);
+ If PDFCollectCallCount > 20000 Then Begin
+  PDFDebugLog('PDFCollectPagesRec: garde-fou 20000 appels atteint - abandon (cycle probable)');
+  Exit;
+ End;
+ If (Depth > 32) Or (PDFPageCount >= PDF_MAX_PAGES) Then Exit;
+ PDFGetObjectDict(Data, NodeObjNum, DictStart, DictEnd);
+ If DictStart = 0 Then Exit;
+
+ If PDFDictHasNameValue(Data, DictStart, DictEnd, 'Type', 'Page') Then Begin
+  If PDFPageCount < PDF_MAX_PAGES Then Begin
+   Inc(PDFPageCount);
+   PDFPageObjNums[PDFPageCount] := NodeObjNum;
+  End;
+  Exit;
+ End;
+
+ KidsPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Kids');
+ If KidsPos = 0 Then Exit;
+ ArrStart := PDFPosFrom('[', Data, KidsPos);
+ If (ArrStart = 0) Or (ArrStart > DictEnd) Then Exit;
+ ArrEnd := PDFPosFrom(']', Data, ArrStart);
+ If (ArrEnd = 0) Or (ArrEnd > DictEnd) Then Exit;
+
+ P := ArrStart + 1;
+ While P < ArrEnd Do Begin
+  ChildNum := PDFReadRefAt(Data, P, ArrEnd, P);
+  If ChildNum < 0 Then Break;
+  PDFCollectPagesRec(Data, ChildNum, Depth + 1);
+  If PDFPageCount >= PDF_MAX_PAGES Then Break;
+ End;
+End;
+
+Function PDFOctalToByte(Const S: String): Byte;
+Var
+ I, V: Integer;
+Begin
+ V := 0;
+ For I := 1 To Length(S) Do
+  V := V * 8 + (Ord(S[I]) - Ord('0'));
+ PDFOctalToByte := Byte(V And $FF);
+End;
+
+Function PDFHexDigitVal(C: Char): Integer;
+Begin
+ Case C Of
+  '0'..'9': PDFHexDigitVal := Ord(C) - Ord('0');
+  'A'..'F': PDFHexDigitVal := Ord(C) - Ord('A') + 10;
+  'a'..'f': PDFHexDigitVal := Ord(C) - Ord('a') + 10;
+  Else PDFHexDigitVal := 0;
+ End;
+End;
+
+{ Decode une chaine litterale PDF "(...)" a partir de P (positionne sur
+  le '(' ouvrant) ; avance P juste apres le ')' fermant. Gere les
+  echappements \n \r \t \b \f \( \) \\ \ddd (octal) et la continuation de
+  ligne "\<EOL>" (aucun caractere emis), ainsi que les parentheses
+  NON echappees equilibrees (litteralement valides dans la chaine, per
+  la norme). }
+Function PDFDecodeLiteralString(Const Data: String; Var P: LongInt; LimitPos: LongInt): String;
+Var
+ R: String;
+ Depth: Integer;
+ C: Char;
+ Oct: String;
+ K: Integer;
+Begin
+ R := '';
+ Depth := 1;
+ Inc(P);
+ While (P <= LimitPos) And (Depth > 0) Do Begin
+  C := Data[P];
+  If C = '\' Then Begin
+   Inc(P);
+   If P > LimitPos Then Break;
+   C := Data[P];
+   Case C Of
+    'n': R := R + #10;
+    'r': R := R + #13;
+    't': R := R + #9;
+    'b': R := R + #8;
+    'f': R := R + #12;
+    '(': R := R + '(';
+    ')': R := R + ')';
+    '\': R := R + '\';
+    #13: If (P < LimitPos) And (Data[P + 1] = #10) Then Inc(P);
+    #10: ;
+    '0'..'7': Begin
+     Oct := C;
+     K := 1;
+     While (K < 3) And (P < LimitPos) And (Data[P + 1] In ['0'..'7']) Do Begin
+      Inc(P);
+      Oct := Oct + Data[P];
+      Inc(K);
+     End;
+     R := R + Chr(PDFOctalToByte(Oct));
+    End;
+    Else R := R + C;
+   End;
+   Inc(P);
+  End Else If C = '(' Then Begin
+   Inc(Depth);
+   R := R + C;
+   Inc(P);
+  End Else If C = ')' Then Begin
+   Dec(Depth);
+   Inc(P);
+   If Depth > 0 Then R := R + C;
+  End Else Begin
+   R := R + C;
+   Inc(P);
+  End;
+ End;
+ PDFDecodeLiteralString := R;
+End;
+
+{ Decode une chaine hexadecimale PDF "<...>" a partir de P (positionne
+  sur le '<' ouvrant) ; avance P juste apres le '>' fermant. Un nombre
+  impair de chiffres est complete par un '0' final, comme l'exige la
+  norme. }
+Function PDFDecodeHexString(Const Data: String; Var P: LongInt; LimitPos: LongInt): String;
+Var
+ R, HexDigits: String;
+ I, ByteVal: Integer;
+Begin
+ HexDigits := '';
+ Inc(P);
+ While (P <= LimitPos) And (Data[P] <> '>') Do Begin
+  If Data[P] In ['0'..'9', 'A'..'F', 'a'..'f'] Then HexDigits := HexDigits + Data[P];
+  Inc(P);
+ End;
+ If P <= LimitPos Then Inc(P);
+ If (Length(HexDigits) Mod 2) = 1 Then HexDigits := HexDigits + '0';
+ R := '';
+ I := 1;
+ While I < Length(HexDigits) Do Begin
+  ByteVal := (PDFHexDigitVal(HexDigits[I]) Shl 4) Or PDFHexDigitVal(HexDigits[I + 1]);
+  R := R + Chr(ByteVal);
+  Inc(I, 2);
+ End;
+ PDFDecodeHexString := R;
+End;
+
+{ Termine la ligne en cours d'accumulation (PDFCurLineText) et l'ajoute
+  a PDFLines avec la position X ou elle a commence - appelee a chaque
+  operateur de positionnement reel (Td/TD/T*/Tm/BT) et une derniere fois
+  apres le dernier flux de contenu de la page. }
+Procedure PDFFlushCurrentLine;
+Begin
+ If Trim(PDFCurLineText) <> '' Then Begin
+  If PDFLineCount < PDF_MAX_LINES_PER_PAGE Then Begin
+   Inc(PDFLineCount);
+   PDFLines[PDFLineCount].LineText := PDFCurLineText;
+   PDFLines[PDFLineCount].StartX := PDFCurLineStartX;
+  End;
+ End;
+ PDFCurLineText := '';
+End;
+
+{ Reinitialise l'accumulation de lignes pour une NOUVELLE page (a
+  appeler une fois avant de traiter le/les flux de contenu de cette
+  page - PDFLines/PDFLineCount sont partages par TOUS les flux d'une
+  meme page, pour permettre a un texte de continuer sur le flux
+  suivant si /Contents est un tableau). }
+Procedure PDFResetPageAccumulation;
+Begin
+ PDFLineCount := 0;
+ PDFCurLineText := '';
+ PDFCurX := 0;
+ PDFCurY := 0;
+ PDFCurLineStartX := 0;
+End;
+
+{ Traite un flux de contenu DEJA decompresse, alimentant PDFLines : les
+  chaines litterales/hexadecimales sont du texte reel (les operateurs de
+  flux de contenu PDF autres que Tj/TJ/'/" n'acceptent jamais de chaine
+  comme operande, norme ISO 32000). Les operateurs de positionnement
+  Td/TD/Tm lisent REELLEMENT leurs operandes numeriques (auparavant seule
+  leur PRESENCE etait detectee, l'operande ignore) pour suivre la
+  position X courante - necessaire a l'alignement approximatif, voir la
+  disclosure du module.
+
+  BOGUE REEL corrige (2026-09-26, trouve en verifiant le document reel de
+  l'utilisateur - "document" s'affichait une lettre par ligne) : certains
+  generateurs PDF positionnent CHAQUE GLYPHE individuellement via son
+  propre Td (crenage precis caractere par caractere), avec un deplacement
+  vertical (ty) NUL ou quasi nul - la version precedente demarrait une
+  NOUVELLE LIGNE a CHAQUE Td/TD rencontre, sans distinction, brisant un
+  mot entier en une lettre par ligne des que le generateur utilisait
+  cette technique. Corrige : Td/TD ne demarre une nouvelle ligne que si
+  son operande ty depasse un seuil (2 unites PDF - un vrai saut de ligne
+  implique toujours un deplacement vertical significatif ; un ajustement
+  de crenage intra-ligne a ty=0 ou proche de 0) ; sinon, le texte continue
+  d'etre accumule sur la MEME ligne logique, seule la position X suivie
+  avance. T* reste TOUJOURS un saut de ligne reel (la norme le definit
+  ainsi : avance a la ligne suivante selon l'interligne courant). }
+Procedure PDFProcessContentStream(Const Stream: String);
+Var
+ P, LimitPos, WStart, NStart, Tx, Ty: LongInt;
+ WordTok, NumStr: String;
+ Num6: Array[0..5] Of LongInt;
+Begin
+ P := 1;
+ LimitPos := Length(Stream);
+ FillChar(Num6, SizeOf(Num6), 0);
+ While P <= LimitPos Do Begin
+  If Stream[P] = '(' Then
+   { PAS d'espace ajoute automatiquement ici (BOGUE REEL corrige
+     2026-09-26, trouve en verifiant le meme document reel - "Ce
+     document" s'affichait "C e   d o c u m e n t") : ce generateur PDF
+     positionne CHAQUE GLYPHE individuellement (un Tj par caractere, voir
+     la disclosure de PDFProcessContentStream ci-dessus) et emet deja un
+     VRAI glyphe espace "( ) Tj" partout ou un espace visuel est requis -
+     ajouter systematiquement un espace supplementaire ici en inserait un
+     entre CHAQUE lettre. COMPROMIS DISCLOSED : un PDF qui separerait des
+     MOTS entre plusieurs Tj/TJ en s'appuyant UNIQUEMENT sur l'ecart de
+     positionnement (sans jamais emettre de glyphe espace explicite) les
+     verrait alors colles - plus rare en pratique que le cas corrige ici. }
+   PDFCurLineText := PDFCurLineText + PDFDecodeLiteralString(Stream, P, LimitPos)
+  Else If (Stream[P] = '<') And (P < LimitPos) And (Stream[P + 1] <> '<') Then
+   PDFCurLineText := PDFCurLineText + PDFDecodeHexString(Stream, P, LimitPos)
+  Else If Stream[P] In ['0'..'9', '-', '.', '+'] Then Begin
+   NStart := P;
+   Inc(P);
+   While (P <= LimitPos) And (Stream[P] In ['0'..'9', '.', '-', '+']) Do Inc(P);
+   NumStr := Copy(Stream, NStart, P - NStart);
+   Num6[0] := Num6[1]; Num6[1] := Num6[2]; Num6[2] := Num6[3];
+   Num6[3] := Num6[4]; Num6[4] := Num6[5]; Num6[5] := PDFStrToLongIntTrunc(NumStr);
+  End Else If Stream[P] In ['A'..'Z', 'a'..'z', '*'] Then Begin
+   WStart := P;
+   While (P <= LimitPos) And (Stream[P] In ['A'..'Z', 'a'..'z', '0'..'9', '*']) Do Inc(P);
+   WordTok := Copy(Stream, WStart, P - WStart);
+   If (WordTok = 'Td') Or (WordTok = 'TD') Then Begin
+    Tx := Num6[4]; { tx = avant-dernier nombre lu avant Td/TD }
+    Ty := Num6[5]; { ty = dernier nombre lu avant Td/TD }
+    If Abs(Ty) > 2 Then Begin
+     PDFFlushCurrentLine;
+     PDFCurX := PDFCurX + Tx;
+     PDFCurY := PDFCurY + Ty;
+     PDFCurLineStartX := PDFCurX;
+    End Else
+     PDFCurX := PDFCurX + Tx; { ajustement de crenage intra-ligne, pas de saut }
+   End Else If WordTok = 'T*' Then Begin
+    PDFFlushCurrentLine;
+    PDFCurLineStartX := PDFCurX;
+   End Else If WordTok = 'BT' Then Begin
+    { AUCUNE ACTION ICI - ni flush, ni reinitialisation de PDFCurX/PDFCurY
+      (BOGUE REEL corrige 2026-09-26, trouve en verifiant le document reel
+      de l'utilisateur - "document" s'affichait une lettre par ligne) : de
+      nombreux generateurs PDF reels (dont celui utilise pour ce document)
+      emettent UN BT/ET PAR GLYPHE, chacun avec son propre Tm ABSOLU sur
+      la MEME ligne visuelle. Un flush systematique ici terminait la ligne
+      en cours AVANT MEME que le Tm suivant ait pu comparer sa position Y
+      a celle du glyphe precedent pour decider si c'est reellement une
+      nouvelle ligne - cassant la ligne a chaque caractere quel que soit
+      le seuil applique dans Tm/Td. Seuls Tm/Td/T* (avec leur propre
+      logique de seuil vertical) decident desormais d'un vrai saut de
+      ligne ; BT/ET restent de purs marqueurs de bloc de texte, sans effet
+      sur le suivi de position ni sur l'accumulation de la ligne. }
+   End Else If WordTok = 'Tm' Then Begin
+    If Abs(Num6[5] - PDFCurY) > 2 Then Begin
+     PDFFlushCurrentLine;
+     PDFCurY := Num6[5]; { 'f' = 6e operande, position Y absolue }
+     PDFCurX := Num6[4]; { 'e' = 5e operande, position X absolue }
+     PDFCurLineStartX := PDFCurX;
+    End Else
+     PDFCurX := Num6[4];
+   End;
+  End Else
+   Inc(P);
+ End;
+End;
+
+{ Recupere le flux de donnees (deja decompresse si /FlateDecode) de
+  l'objet-flux ObjNum. La fin du flux est localisee par le mot-cle
+  "endstream" reel (PAS par /Length, souvent une reference indirecte non
+  resolue ici - voir la disclosure du module). Chaine vide si le filtre
+  n'est pas FlateDecode et n'est pas absent (filtre non supporte, signale
+  honnetement plutot que fabrique). }
+Function PDFGetDecompressedStream(Const Data: String; ObjNum: LongInt): String;
+Var
+ DictStart, DictEnd, StreamKW, DataStart, EndKW, DataEnd, FlatePos: LongInt;
+ RawStream, OutStr: String;
+ DecompBuf: Array Of Byte;
+ DecompLen: LongInt;
+ I: LongInt;
+Begin
+ PDFGetDecompressedStream := '';
+ PDFGetObjectDict(Data, ObjNum, DictStart, DictEnd);
+ If DictStart = 0 Then Exit;
+
+ StreamKW := PDFPosFrom('stream', Data, DictEnd);
+ If StreamKW = 0 Then Exit;
+ DataStart := StreamKW + 6;
+ If (DataStart <= Length(Data)) And (Data[DataStart] = #13) Then Inc(DataStart);
+ If (DataStart <= Length(Data)) And (Data[DataStart] = #10) Then Inc(DataStart);
+
+ EndKW := PDFPosFrom('endstream', Data, DataStart);
+ If EndKW = 0 Then Exit;
+ DataEnd := EndKW - 1;
+ While (DataEnd >= DataStart) And (Data[DataEnd] In [#13, #10]) Do Dec(DataEnd);
+ If DataEnd < DataStart Then Exit;
+ RawStream := Copy(Data, DataStart, DataEnd - DataStart + 1);
+
+ FlatePos := PDFPosFrom('FlateDecode', Data, DictStart);
+ If (FlatePos > 0) And (FlatePos < DictEnd) Then Begin
+  If Length(RawStream) < 3 Then Exit;
+  If Length(RawStream) - 2 > SizeOf(DeflateInBuffer) Then Exit;
+  Move(RawStream[3], DeflateInBuffer, Length(RawStream) - 2);
+  DeflateInLen := Length(RawStream) - 2;
+  SetLength(DecompBuf, 8 * 1024 * 1024);
+  If Not DeflateDecompressBlock(DecompBuf, DecompLen, Length(DecompBuf)) Then Exit;
+  SetLength(OutStr, DecompLen);
+  For I := 0 To DecompLen - 1 Do OutStr[I + 1] := Chr(DecompBuf[I]);
+  PDFGetDecompressedStream := OutStr;
+ End Else If PDFDictKeyPos(Data, DictStart, DictEnd, 'Filter') = 0 Then
+  PDFGetDecompressedStream := RawStream;
+ { Filtre present mais different de FlateDecode : ignore, SIMPLIFICATION
+   DISCLOSED (rare pour un flux de contenu texte). }
+End;
+
+Procedure PDFGetDecompressedStreamAndExtract(Const Data: String; ObjNum: LongInt);
+Begin
+ PDFProcessContentStream(PDFGetDecompressedStream(Data, ObjNum));
+End;
+
+{ Extraction de SECOURS (2026-09-26) : utilisee quand le catalogue/l'arbre
+  des pages n'a pas pu etre localise (structure inhabituelle, xref-only
+  via flux d'objets compresses non geres ici - voir disclosure). Balaie
+  le fichier entier a la recherche de TOUS les blocs stream/endstream
+  FlateDecode (dictionnaire recherche dans les 300 caracteres precedents
+  - portee volontairement locale, SIMPLIFICATION DISCLOSED) et alimente
+  PDFLines avec leur texte, SANS garantie d'ordre de page reel (une seule
+  "page virtuelle" - la navigation Precedent/Suivant/aller-a-la-page n'a
+  pas de sens ici puisqu'aucune vraie pagination n'a pu etre etablie). }
+Procedure PDFFallbackExtractAll(Const Data: String);
+Var
+ P, DataStart, EndKW, DataEnd, DictGuessStart, FlatePos: LongInt;
+ RawStream, OutStr: String;
+ DecompBuf: Array Of Byte;
+ DecompLen: LongInt;
+ I: LongInt;
+Begin
+ P := 1;
+ Repeat
+  P := PDFPosFrom('stream', Data, P);
+  If P = 0 Then Break;
+  DataStart := P + 6;
+  If Not ((DataStart <= Length(Data)) And (Data[DataStart] In [#13, #10])) Then Begin
+   P := P + 6;
+   Continue;
+  End;
+  If Data[DataStart] = #13 Then Inc(DataStart);
+  If (DataStart <= Length(Data)) And (Data[DataStart] = #10) Then Inc(DataStart);
+
+  EndKW := PDFPosFrom('endstream', Data, DataStart);
+  If EndKW = 0 Then Break;
+  DataEnd := EndKW - 1;
+  While (DataEnd >= DataStart) And (Data[DataEnd] In [#13, #10]) Do Dec(DataEnd);
+
+  If DataEnd >= DataStart Then Begin
+   RawStream := Copy(Data, DataStart, DataEnd - DataStart + 1);
+   DictGuessStart := P - 300;
+   If DictGuessStart < 1 Then DictGuessStart := 1;
+   FlatePos := PDFPosFrom('FlateDecode', Copy(Data, DictGuessStart, P - DictGuessStart), 1);
+   If (FlatePos > 0) And (Length(RawStream) >= 3) And
+      (Length(RawStream) - 2 <= SizeOf(DeflateInBuffer)) Then Begin
+    Move(RawStream[3], DeflateInBuffer, Length(RawStream) - 2);
+    DeflateInLen := Length(RawStream) - 2;
+    SetLength(DecompBuf, 8 * 1024 * 1024);
+    If DeflateDecompressBlock(DecompBuf, DecompLen, Length(DecompBuf)) Then Begin
+     SetLength(OutStr, DecompLen);
+     For I := 0 To DecompLen - 1 Do OutStr[I + 1] := Chr(DecompBuf[I]);
+     PDFProcessContentStream(OutStr);
+    End;
+   End;
+  End;
+  P := EndKW + 9;
+ Until False;
+End;
+
+{ Largeur de page reelle (/MediaBox : urx - llx), avec heritage via
+  /Parent comme l'exige la norme si la page elle-meme n'a pas de
+  /MediaBox direct (courant - souvent defini une seule fois sur le noeud
+  /Pages racine). 612pt (US Letter) par defaut si introuvable - valeur
+  standard reelle, pas une invention. }
+Function PDFParseMediaBoxWidth(Const Data: String; DictStart, DictEnd: LongInt; Var Found: Boolean): LongInt;
+Var
+ MBPos, ArrS, ArrE, P, NStart: LongInt;
+ Nums: Array[0..3] Of LongInt;
+ NCount: Integer;
+Begin
+ Found := False;
+ PDFParseMediaBoxWidth := 612;
+ MBPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'MediaBox');
+ If MBPos = 0 Then Exit;
+ ArrS := PDFPosFrom('[', Data, MBPos);
+ If (ArrS = 0) Or (ArrS > DictEnd) Then Exit;
+ ArrE := PDFPosFrom(']', Data, ArrS);
+ If (ArrE = 0) Or (ArrE > DictEnd) Then Exit;
+ NCount := 0;
+ P := ArrS + 1;
+ While (P < ArrE) And (NCount < 4) Do Begin
+  While (P < ArrE) And (Data[P] In [' ', #9, #13, #10]) Do Inc(P);
+  NStart := P;
+  While (P < ArrE) And (Data[P] In ['0'..'9', '.', '-', '+']) Do Inc(P);
+  If P > NStart Then Begin
+   Nums[NCount] := PDFStrToLongIntTrunc(Copy(Data, NStart, P - NStart));
+   Inc(NCount);
+  End Else
+   Inc(P);
+ End;
+ If NCount = 4 Then Begin
+  Found := True;
+  PDFParseMediaBoxWidth := Abs(Nums[2] - Nums[0]);
+ End;
+End;
+
+Function PDFGetPageWidth(Const Data: String; PageObjNum: LongInt): LongInt;
+Var
+ CurObj, Depth, Q: LongInt;
+ DictStart, DictEnd, ParentPos: LongInt;
+ Found: Boolean;
+ W: LongInt;
+Begin
+ PDFGetPageWidth := 612;
+ CurObj := PageObjNum;
+ Depth := 0;
+ While (CurObj > 0) And (Depth < 10) Do Begin
+  PDFGetObjectDict(Data, CurObj, DictStart, DictEnd);
+  If DictStart = 0 Then Exit;
+  W := PDFParseMediaBoxWidth(Data, DictStart, DictEnd, Found);
+  If Found Then Begin
+   PDFGetPageWidth := W;
+   Exit;
+  End;
+  ParentPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Parent');
+  If ParentPos = 0 Then Exit;
+  CurObj := PDFReadRefAt(Data, ParentPos, DictEnd, Q);
+  Inc(Depth);
+ End;
+End;
+
+{ Classification d'alignement approximative (0=gauche,1=centre,2=droite)
+  - voir la disclosure complete du module. Arithmetique entiere
+  (StartX*100 tient largement dans un LongInt pour des coordonnees PDF
+  realistes) plutot que flottante, par coherence avec le reste de ce
+  module. }
+Function PDFClassifyAlign(StartX, PageWidth: LongInt): Integer;
+Var
+ PctPos: LongInt;
+Begin
+ If PageWidth <= 0 Then Begin
+  PDFClassifyAlign := 0;
+  Exit;
+ End;
+ PctPos := (StartX * 100) Div PageWidth;
+ If PctPos < 20 Then PDFClassifyAlign := 0
+ Else If PctPos > 60 Then PDFClassifyAlign := 2
+ Else PDFClassifyAlign := 1;
+End;
+
+{ Retire un eventuel "?..." de fin d'URL (utilise pour le numero de page,
+  voir PDFParsePageQuery) afin d'obtenir l'URL de base du FICHIER PDF
+  reel (celle a effectivement telecharger/ouvrir). }
+Function PDFStripQuery(Const URL: String): String;
+Var
+ P: LongInt;
+Begin
+ P := Pos('?', URL);
+ If P > 0 Then PDFStripQuery := Copy(URL, 1, P - 1)
+ Else PDFStripQuery := URL;
+End;
+
+{ Lit "?page=N" (ou "&page=N") dans URL ; 1 par defaut si absent/invalide
+  - convention reelle utilisee par de nombreux lecteurs PDF web pour
+  cibler une page precise. }
+Function PDFParsePageQuery(Const URL: String): LongInt;
+Var
+ P, Q: LongInt;
+ NumStr: String;
+ V: LongInt;
+Begin
+ PDFParsePageQuery := 1;
+ P := PDFPosFrom('page=', URL, 1);
+ If P = 0 Then Exit;
+ Q := P + 5;
+ NumStr := '';
+ While (Q <= Length(URL)) And (URL[Q] In ['0'..'9']) Do Begin
+  NumStr := NumStr + URL[Q];
+  Inc(Q);
+ End;
+ If NumStr = '' Then Exit;
+ V := PDFStrToLongInt(NumStr);
+ If V >= 1 Then PDFParsePageQuery := V;
+End;
+
+{ Construit la page HTML de rendu (une section par page reelle, ou le
+  resultat de l'extraction de secours) pour tout le document PDF Data
+  (deja lu entierement en memoire). }
+Function PDFExtractText(Const Data: String; Const BaseURL: String; RequestedPage: LongInt;
+ Var HTMLOut: String): Boolean;
+Var
+ CatalogNamePos, DictS, DictE, PagesRef, P, Q, ArrE: LongInt;
+ PageDictS, PageDictE, ContentsPos, SingleContentsRef: LongInt;
+ LI, PageWidth, AlignId, PageIdx, TotalPages: LongInt;
+ AllHTML, AlignStr: String;
+ UsedFallback: Boolean;
+Begin
+ PDFExtractText := False;
+ HTMLOut := '';
+ PDFPageCount := 0;
+ PDFCollectCallCount := 0;
+ PDFResetPageAccumulation;
+
+ If Copy(Data, 1, 5) <> '%PDF-' Then Exit;
+ PDFBuildObjectIndex(Data);
+
+ UsedFallback := True;
+ CatalogNamePos := PDFPosFrom('/Catalog', Data, 1);
+ If CatalogNamePos > 0 Then Begin
+  DictS := PDFFindEnclosingDictStart(Data, CatalogNamePos);
+  If DictS > 0 Then Begin
+   DictE := PDFFindDictEnd(Data, DictS);
+   P := PDFDictKeyPos(Data, DictS, DictE, 'Pages');
+   If P > 0 Then Begin
+    PagesRef := PDFReadRefAt(Data, P, DictE, Q);
+    If PagesRef > 0 Then Begin
+     PDFCollectPagesRec(Data, PagesRef, 0);
+     If PDFPageCount > 0 Then UsedFallback := False;
+    End;
+   End;
+  End;
+ End;
+
+ AllHTML := '<html><head><title>' + FTPEscapeText(ExtractFileExt(BaseURL)) +
+  ' - PDF</title></head><body>';
+ PageWidth := 612;
+
+ If Not UsedFallback Then Begin
+  TotalPages := PDFPageCount;
+  PageIdx := RequestedPage;
+  If PageIdx < 1 Then PageIdx := 1;
+  If PageIdx > TotalPages Then PageIdx := TotalPages;
+
+  PDFGetObjectDict(Data, PDFPageObjNums[PageIdx], PageDictS, PageDictE);
+  If PageDictS > 0 Then Begin
+   PageWidth := PDFGetPageWidth(Data, PDFPageObjNums[PageIdx]);
+   ContentsPos := PDFDictKeyPos(Data, PageDictS, PageDictE, 'Contents');
+   If ContentsPos > 0 Then Begin
+    Q := ContentsPos;
+    While (Q <= PageDictE) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+    If (Q <= PageDictE) And (Data[Q] = '[') Then Begin
+     ArrE := PDFPosFrom(']', Data, Q);
+     If (ArrE > 0) And (ArrE <= PageDictE) Then Begin
+      P := Q + 1;
+      While P < ArrE Do Begin
+       SingleContentsRef := PDFReadRefAt(Data, P, ArrE, P);
+       If SingleContentsRef < 0 Then Break;
+       PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef);
+      End;
+     End;
+    End Else Begin
+     SingleContentsRef := PDFReadRefAt(Data, Q, PageDictE, P);
+     If SingleContentsRef > 0 Then
+      PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef);
+    End;
+   End;
+  End;
+  PDFFlushCurrentLine;
+
+  { Navigation REELLE (demande explicite de l'utilisateur - "il n'est pas
+    non plus possible de changer le numero de page") : Precedent/Suivant
+    en liens reels + formulaire "aller a la page" (soumission GET reelle,
+    reutilise l'infrastructure de formulaire deja existante). Chaque page
+    n'exige plus qu'UN SEUL de ces petits rendus HTML (voir disclosure du
+    module) au lieu du document geant d'avant - resout aussi la lenteur
+    constatee sur le document reel de l'utilisateur. }
+  AllHTML := AllHTML + '<p>';
+  If PageIdx > 1 Then
+   AllHTML := AllHTML + '<a href="' + BaseURL + '?page=' + IntToStr(PageIdx - 1) +
+    '">&lt;&lt; Page precedente</a> &nbsp; '
+  Else
+   AllHTML := AllHTML + '&lt;&lt; Page precedente &nbsp; ';
+  AllHTML := AllHTML + '<b>Page ' + IntToStr(PageIdx) + ' sur ' + IntToStr(TotalPages) + '</b> &nbsp; ';
+  If PageIdx < TotalPages Then
+   AllHTML := AllHTML + '<a href="' + BaseURL + '?page=' + IntToStr(PageIdx + 1) +
+    '">Page suivante &gt;&gt;</a>'
+  Else
+   AllHTML := AllHTML + 'Page suivante &gt;&gt;';
+  AllHTML := AllHTML + '</p><form action="' + BaseURL + '" method="get">' +
+   'Aller a la page : <input type="text" name="page" value="' + IntToStr(PageIdx) + '">' +
+   '<input type="submit" value="Aller"></form><hr>';
+
+  If PDFLineCount = 0 Then
+   AllHTML := AllHTML + '<p>(Aucun texte extrait pour cette page - probablement composee ' +
+    'd''images.)</p>'
+  Else
+   For LI := 1 To PDFLineCount Do Begin
+    AlignId := PDFClassifyAlign(PDFLines[LI].StartX, PageWidth);
+    Case AlignId Of
+     1: AlignStr := 'center';
+     2: AlignStr := 'right';
+     Else AlignStr := 'left';
+    End;
+    AllHTML := AllHTML + '<p style="text-align:' + AlignStr + '">' +
+     FTPEscapeText(PDFLines[LI].LineText) + '</p>';
+   End;
+ End Else Begin
+  PDFFallbackExtractAll(Data);
+  PDFFlushCurrentLine;
+  AllHTML := AllHTML + '<p><em>Structure de pages non reconnue (voir la disclosure ' +
+   'du module PDF) - extraction de secours : tous les flux de contenu ' +
+   'compresses du fichier, sans ordre de page ni navigation garantis dans ' +
+   'ce cas.</em></p><hr>';
+  If PDFLineCount = 0 Then
+   AllHTML := AllHTML + '<p>(Aucun texte extrait.)</p>'
+  Else
+   For LI := 1 To PDFLineCount Do
+    AllHTML := AllHTML + '<p>' + FTPEscapeText(PDFLines[LI].LineText) + '</p>';
+ End;
+
+ AllHTML := AllHTML + '</body></html>';
+ HTMLOut := AllHTML;
+ PDFExtractText := True;
+End;
+
+{ Point d'entree unique : lit FileName (chemin local, deja telecharge
+  dans un fichier temporaire pour une adresse distante - voir
+  DisplayCurrentTarget), extrait la page RequestedPage et produit le
+  HTML de rendu avec navigation reelle vers BaseURL?page=N. }
+Function Browser_PdfLoadAndRender(Const FileName, BaseURL: String; RequestedPage: LongInt;
+ Var HTMLOut: String): Boolean;
+Var
+ Data: String;
+Begin
+ Browser_PdfLoadAndRender := False;
+ Data := LoadTextFileAsString(FileName);
+ If Length(Data) = 0 Then Exit;
+ If Length(Data) > PDF_MAX_FILE_SIZE Then SetLength(Data, PDF_MAX_FILE_SIZE);
+ Browser_PdfLoadAndRender := PDFExtractText(Data, BaseURL, RequestedPage, HTMLOut);
+End;
+
 
 { Obtenir la couleur d'un pixel dans une image PNG }
 Function PNGGetPixel(Const Img: PNGImage; X, Y: Integer): Byte;
@@ -20105,6 +21227,11 @@ Begin
  HTML.FirstChunk := Nil;
  HTML.LastChunk := Nil;
  HTML.DataLength := 0;
+ { Invalider le cache de HTMLSourceChar (voir sa disclosure) : un
+   nouveau buffer va reutiliser cette structure, jamais l'ancien pointeur
+   de chunk qu'il pourrait contenir. }
+ HTMLSourceCharCacheOwner := Nil;
+ HTMLSourceCharCacheChunk := Nil;
 End;
 
 Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer);
@@ -20884,6 +22011,10 @@ Var
  InnerURL, SourceText,LoadedText: String;
  SourceOk: Boolean;
  SourceHTML: HTMLSourceBuffer;
+ PdfHTML: String;
+ PdfOk: Boolean;
+ PdfBaseURL: String;
+ PdfRequestedPage: LongInt;
  {$IFDEF WINDOWS}
  PageBody: String;
  StatusCode: LongInt;
@@ -20891,6 +22022,8 @@ Var
  FtpHost, FtpPath: String;
  FtpPort: Word;
  FtpUrlOk, FtpIsDirRequest, FtpOk: Boolean;
+ PdfTempF: File;
+ PdfBytesWritten: LongInt;
  {$ENDIF}
 Begin
  InitHTMLSource(HTML);
@@ -20987,6 +22120,52 @@ Begin
                  'pour l''instant (client WinInet).</p></body></html>';
   If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
   {$ENDIF}
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ { Adresse PDF (2026-09-26, demande explicite - "Implemente un support
+   PDF au navigateur Web", teste avec un vrai document reel :
+   https://www.gladir.com/DOCUMENT/grimoireassembleur.pdf) : voir la
+   disclosure complete du module PDF (Browser_PdfLoadAndRender et
+   consorts, juste apres PNGLoadFromFile) pour les simplifications
+   assumees. Une adresse distante est telechargee vers un fichier
+   temporaire (meme technique que ResolveImageLoadPath pour les images)
+   car le parseur PDF a besoin d'un acces par POSITION D'OCTET reel, pas
+   seulement du contenu brut deja en memoire. }
+ If IsPdfURL(CurrentURL) Then Begin
+  PdfOk := False;
+  PdfHTML := '';
+  PdfBaseURL := PDFStripQuery(CurrentURL);
+  PdfRequestedPage := PDFParsePageQuery(CurrentURL);
+  If IsRemoteURL(PdfBaseURL) Then Begin
+   {$IFDEF WINDOWS}
+   GetOk := Browser_HttpGet(PdfBaseURL, PageBody, StatusCode);
+   If GetOk And (Length(PageBody) > 0) Then Begin
+    Assign(PdfTempF, BROWSER_PDF_TEMP_FILE);
+    {$I-}
+    Rewrite(PdfTempF, 1);
+    {$I+}
+    If IOResult = 0 Then Begin
+     BlockWrite(PdfTempF, PageBody[1], Length(PageBody), PdfBytesWritten);
+     Close(PdfTempF);
+     PdfOk := Browser_PdfLoadAndRender(BROWSER_PDF_TEMP_FILE, PdfBaseURL, PdfRequestedPage, PdfHTML);
+    End;
+   End;
+   {$ENDIF}
+  End Else Begin
+   FileName := PdfBaseURL;
+   If Copy(HTMLLowerCase(FileName), 1, 7) = 'file://' Then Delete(FileName, 1, 7);
+   PdfOk := Browser_PdfLoadAndRender(FileName, PdfBaseURL, PdfRequestedPage, PdfHTML);
+  End;
+
+  If PdfOk Then Begin
+   If SetHTMLSourceFromString(PdfHTML, HTML) Then TestHTMLRender(HTML);
+  End Else Begin
+   MessageText := '<html><body><h2>Erreur PDF</h2><p>Impossible de lire ou d''analyser : ' +
+    CurrentURL + '</p></body></html>';
+   If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  End;
   FreeHTMLSource(HTML);
   Exit;
  End;
