@@ -18834,10 +18834,31 @@ Begin
  C:=Node^.FirstChild;While(C<>Nil)And(Lines<14)Do Begin DevToolsDrawDOM(C,Depth+1,Y,Lines);C:=C^.NextSibling End
 End;
 
+Function DevToolsTabName(Index:Integer):String;
+Begin
+ Case Index Of
+  DEVTOOLS_TAB_INSPECTOR:DevToolsTabName:='Inspecteur';
+  DEVTOOLS_TAB_DEBUGGER:DevToolsTabName:='Debogueur';
+  DEVTOOLS_TAB_STYLE:DevToolsTabName:='Editeur style';
+  DEVTOOLS_TAB_CONSOLE:DevToolsTabName:='Console';
+  DEVTOOLS_TAB_NETWORK:DevToolsTabName:='Reseau';
+  Else DevToolsTabName:=''
+ End
+End;
+
+Function DevToolsTabLeft(Index:Integer):Integer;
+Var I,X:Integer;
+Begin
+ X:=38;
+ For I:=1 To Index-1 Do Inc(X,TextWidth(DevToolsTabName(I))+12);
+ DevToolsTabLeft:=X
+End;
+
+Function DevToolsTabRight(Index:Integer):Integer;
+Begin DevToolsTabRight:=DevToolsTabLeft(Index)+TextWidth(DevToolsTabName(Index))+11 End;
+
 Procedure DrawDevTools;
-Const TabX:Array[1..5]Of Integer=(38,130,222,342,418);
-      TabName:Array[1..5]Of String[16]=('Inspecteur','Debogueur','Editeur style','Console','Reseau');
-Var Top,Y,I,Lines,First:Integer;S:String;St:DOMStyle;
+Var Top,Y,I,Lines,First,TabLeft,TabRight:Integer;S:String;St:DOMStyle;
 Begin
  If Not DevToolsOpen Then Exit;
  Top:=DevToolsPanelTop;
@@ -18848,8 +18869,9 @@ Begin
  Else Begin SetFillStyle(SolidFill,White);Bar(4,Top+2,31,Top+21);SetColor(HTMLBlackColorIndex)End;
  Rectangle(4,Top+2,31,Top+21);OutTextXY(11,Top+7,'<>');
  For I:=1 To 5 Do Begin
-  If DevToolsTab=I Then Begin SetFillStyle(SolidFill,White);Bar(TabX[I],Top+2,TabX[I]+84,Top+22)End;
-  SetColor(HTMLBlackColorIndex);OutTextXY(TabX[I]+4,Top+8,TabName[I])
+  TabLeft:=DevToolsTabLeft(I);TabRight:=DevToolsTabRight(I);
+  If DevToolsTab=I Then Begin SetFillStyle(SolidFill,White);Bar(TabLeft,Top+2,TabRight,Top+22)End;
+  SetColor(HTMLBlackColorIndex);OutTextXY(TabLeft+6,Top+8,DevToolsTabName(I))
  End;
  OutTextXY(GetMaxX-18,Top+7,'X');Line(0,Top+DEVTOOLS_TAB_HEIGHT,GetMaxX,Top+DEVTOOLS_TAB_HEIGHT);
  Y:=Top+30;SetColor(HTMLBlackColorIndex);
@@ -18891,7 +18913,6 @@ Begin
 End;
 
 Function DevToolsHandleClick(X,Y:Integer):Boolean;
-Const TabX:Array[1..5]Of Integer=(38,130,222,342,418);
 Var I:Integer;N:HTMLNodePtr;
 Begin
  DevToolsHandleClick:=False;
@@ -18901,7 +18922,8 @@ Begin
   If(Y<DevToolsPanelTop+24)Then Begin
    If X<34Then DevElementPicker:=Not DevElementPicker
    Else If X>GetMaxX-30Then Begin DevToolsSetOpen(False);Exit End
-   Else For I:=1 To 5 Do If(X>=TabX[I])And(X<TabX[I]+88)Then DevToolsTab:=I
+   Else For I:=1 To 5 Do
+    If(X>=DevToolsTabLeft(I))And(X<=DevToolsTabRight(I))Then DevToolsTab:=I
   End Else If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then DevConsoleFocused:=True;
   DrawDevTools;Exit
  End;
