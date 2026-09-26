@@ -1144,6 +1144,7 @@ ContextMenuHoverIndex: Integer;
 
 { Outils de developpement integres (F12 / menu Inspecter). }
 DevToolsOpen, DevElementPicker, DevConsoleFocused: Boolean;
+SuppressDevToolsRedraw:Boolean;
 PreviousF12Down:Boolean;
 DevToolsTab, DevToolsFullRenderHeight: Integer;
 DevSelectedNode: HTMLNodePtr;
@@ -1490,6 +1491,10 @@ End;
   ici, disclosed.
   ============================================================ }
 {$IFDEF WINDOWS}
+Var
+ BrowserPageRequestCount:Integer;
+ BrowserPageLoadStarted:LongInt;
+
 Function Browser_InternetOpenA(lpszAgent: PChar; dwAccessType: LongWord;
          lpszProxyName, lpszProxyBypass: PChar; dwFlags: LongWord): LongInt;
          StdCall; External 'wininet.dll' Name 'InternetOpenA';
@@ -1531,8 +1536,17 @@ Const
  BROWSER_INTERNET_FLAG_SECURE       = LongWord($00800000);
  BROWSER_HTTP_QUERY_STATUS_CODE     = 19;
  BROWSER_HTTP_QUERY_FLAG_NUMBER     = LongWord($20000000);
+ BROWSER_OPTION_CONNECT_TIMEOUT     = 2;
+ BROWSER_OPTION_SEND_TIMEOUT        = 5;
+ BROWSER_OPTION_RECEIVE_TIMEOUT     = 6;
  BROWSER_OPTION_SECURITY_FLAGS      = 31;
  BROWSER_SECURITY_FLAG_IGNORE_REVOC = LongWord($00000080);
+ { Eviter qu'une ressource distante defectueuse immobilise toute
+   l'interface graphique, dont la boucle de messages est monothread. }
+ BROWSER_HTTP_TIMEOUT_MS            = 10000;
+ BROWSER_HTTP_MAX_BODY              = 8 * 1024 * 1024;
+ BROWSER_PAGE_MAX_REQUESTS           = 32;
+ BROWSER_PAGE_NETWORK_BUDGET_MS      = 30000;
 
 { Decoupe une URL http(s):// en hote/port/chemin - meme logique que        }
 { Mcp_ParseUrl de DEVENV.PAS, adaptee pour reutiliser HTMLLowerCase (deja  }
@@ -1591,6 +1605,7 @@ Var
  Port: Word;
  hInet, hConnect, hRequest: LongInt;
  OpenFlags, SecFlags: LongWord;
+ TimeoutValue:LongInt;
  SendOk: LongBool;
  Buf: Array[0..4095] Of Char;
  BytesRead: LongWord;
@@ -1602,11 +1617,31 @@ Begin
  Browser_HttpGet := False;
  ResponseBody := '';
  StatusCode := 0;
+ { Une page moderne peut annoncer des dizaines de ressources lentes ou
+   inaccessibles. Dans cette interface monothread, leur chargement en serie
+   bloquerait clavier et souris pendant plusieurs minutes. }
+ Inc(BrowserPageRequestCount);
+ TimeoutValue:=BrowserGetTickCount-BrowserPageLoadStarted;
+ If TimeoutValue<0Then Inc(TimeoutValue,86400000);
+ If(BrowserPageRequestCount>BROWSER_PAGE_MAX_REQUESTS)Or
+   ((BrowserPageLoadStarted<>0)And
+    (TimeoutValue>BROWSER_PAGE_NETWORK_BUDGET_MS))Then Begin
+  StatusCode:=408;
+  DevToolsLogNetwork(Url,'GET',StatusCode,0);
+  Exit
+ End;
  Browser_ParseUrl(Url, UseHttps, HostName, Port, UrlPath, UrlOk);
  If Not UrlOk Then Exit;
  hInet := Browser_InternetOpenA('DEVENV-BROWSER/1.0', BROWSER_INTERNET_OPEN_TYPE_DIRECT,
   Nil, Nil, 0);
  If hInet = 0 Then Exit;
+ TimeoutValue:=BROWSER_HTTP_TIMEOUT_MS;
+ Browser_InternetSetOptionA(hInet,BROWSER_OPTION_CONNECT_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet,BROWSER_OPTION_SEND_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet,BROWSER_OPTION_RECEIVE_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
  hConnect := Browser_InternetConnectA(hInet, PChar(HostName), Port, Nil, Nil,
   BROWSER_INTERNET_SERVICE_HTTP, 0, 0);
  If hConnect = 0 Then Begin
@@ -1622,6 +1657,11 @@ Begin
   Browser_InternetCloseHandle(hInet);
   Exit;
  End;
+ TimeoutValue:=BROWSER_HTTP_TIMEOUT_MS;
+ Browser_InternetSetOptionA(hRequest,BROWSER_OPTION_SEND_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hRequest,BROWSER_OPTION_RECEIVE_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
  If UseHttps Then Begin
   SecFlags := BROWSER_SECURITY_FLAG_IGNORE_REVOC;
   Browser_InternetSetOptionA(hRequest, BROWSER_OPTION_SECURITY_FLAGS, SecFlags, SizeOf(SecFlags));
@@ -1645,6 +1685,10 @@ Begin
   If BytesRead = 0 Then Break;
   SetLength(Chunk, BytesRead);
   For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J - 1];
+  If Length(ResponseBody)>BROWSER_HTTP_MAX_BODY-LongInt(BytesRead)Then Begin
+   StatusCode:=413;
+   Break
+  End;
   ResponseBody := ResponseBody + Chunk;
  Until False;
  Browser_InternetCloseHandle(hRequest);
@@ -17489,7 +17533,7 @@ Begin
  DrawForwardButton;
  DrawRefreshButton;
  DrawFavoriteButton;
- DrawDevTools;
+ If Not SuppressDevToolsRedraw Then DrawDevTools;
 End;
 
 { Procedure pour tester le rendu avec du HTML }
@@ -17568,7 +17612,9 @@ Procedure RescrollPage;
 Begin
  If HTMLDocument = Nil Then Exit;
  ExecuteDocumentScripts := False;
+ SuppressDevToolsRedraw:=True;
  RenderHTMLDocument(HTMLDocument);
+ SuppressDevToolsRedraw:=False;
 End;
 
 { Rafraichissement utilise exclusivement par le survol des menus. Le DOM est
@@ -17583,8 +17629,10 @@ Begin
   Bar(LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2);
  End;
  SkipNextRenderAreaClear := True;
+ SuppressDevToolsRedraw:=True;
  ExecuteDocumentScripts := False;
  RenderHTMLDocument(HTMLDocument);
+ SuppressDevToolsRedraw:=False;
  SkipNextRenderAreaClear := False;
 End;
 
@@ -18932,6 +18980,28 @@ Begin
  OutTextXY(X,Y,T);Inc(X,TextWidth(T))
 End;
 
+{ TextWidth de certains pilotes BGI parcourt toute la chaine. Les pages
+  modernes placent parfois plusieurs centaines de kilo-octets de JavaScript
+  dans un noeud texte ou un attribut : mesurer ce texte integral donnait
+  l'impression que le navigateur etait bloque. L'Inspecteur ne peut de toute
+  facon representer utilement une ligne plus large que cette borne. }
+Function DevToolsBoundedTextWidth(Const S:String):Integer;
+Const DEVTOOLS_WIDTH_CHARS=2048;
+      DEVTOOLS_WIDTH_LIMIT=30000;
+Var T:String;W,CharWidth:Integer;
+Begin
+ If Length(S)<=DEVTOOLS_WIDTH_CHARS Then T:=S
+ Else T:=Copy(S,1,DEVTOOLS_WIDTH_CHARS);
+ W:=TextWidth(T);
+ If Length(S)>DEVTOOLS_WIDTH_CHARS Then Begin
+  CharWidth:=TextWidth('M');If CharWidth<1Then CharWidth:=8;
+  If Length(S)>=DEVTOOLS_WIDTH_LIMIT Div CharWidth Then W:=DEVTOOLS_WIDTH_LIMIT
+  Else W:=Length(S)*CharWidth
+ End;
+ If W>DEVTOOLS_WIDTH_LIMIT Then W:=DEVTOOLS_WIDTH_LIMIT;
+ DevToolsBoundedTextWidth:=W
+End;
+
 Procedure DevToolsDrawDOM(Node:HTMLNodePtr;Depth:Integer;Var Y,Lines:Integer;
                           MaxLines:Integer);
 Var C:HTMLNodePtr;A:HTMLAttributePtr;S:String;X,LineWidth,SignX:Integer;
@@ -18940,11 +19010,13 @@ Begin
  If Node=Nil Then Exit;
  If Node^.NodeType=HTML_NODE_ELEMENT Then Begin
   HasChildren:=Node^.FirstChild<>Nil;Collapsed:=DevToolsNodeCollapsed(Node);
-  LineWidth:=20+Depth*16+TextWidth('<'+Node^.TagName+'>');
+  LineWidth:=20+Depth*16+DevToolsBoundedTextWidth('<'+Node^.TagName+'>');
   A:=Node^.FirstAttribute;
   While A<>Nil Do Begin
-   Inc(LineWidth,TextWidth(' '+A^.Name));
-   If A^.Value<>''Then Inc(LineWidth,TextWidth('="'+A^.Value+'"'));
+   If LineWidth<30000Then Inc(LineWidth,DevToolsBoundedTextWidth(' '+A^.Name));
+   If(A^.Value<>'')And(LineWidth<30000)Then
+    Inc(LineWidth,DevToolsBoundedTextWidth('="'+A^.Value+'"'));
+   If LineWidth>30000Then LineWidth:=30000;
    A:=A^.Next
   End;
   If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
@@ -18986,7 +19058,8 @@ Begin
  End Else If Node^.NodeType=HTML_NODE_TEXT Then Begin
   S:=Trim(Node^.Content);
   If S<>''Then Begin
-   LineWidth:=8+Depth*16+TextWidth('"'+S+'"');
+   LineWidth:=8+Depth*16+DevToolsBoundedTextWidth(S)+TextWidth('""');
+   If LineWidth>30000Then LineWidth:=30000;
    If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
    If(Lines>=DevInspectorFirstLine)And(Lines<DevInspectorFirstLine+MaxLines)Then Begin
     X:=8+Depth*16-DevInspectorScrollX;
@@ -18998,7 +19071,8 @@ Begin
   End
  End Else If Node^.NodeType=HTML_NODE_COMMENT Then Begin
   S:='<!-- '+Trim(Node^.Content)+' -->';
-  LineWidth:=8+Depth*16+TextWidth(S);
+  LineWidth:=8+Depth*16+DevToolsBoundedTextWidth(S);
+  If LineWidth>30000Then LineWidth:=30000;
   If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
   If(Lines>=DevInspectorFirstLine)And(Lines<DevInspectorFirstLine+MaxLines)Then Begin
    X:=8+Depth*16-DevInspectorScrollX;
@@ -20414,6 +20488,12 @@ Var
  {$ENDIF}
 Begin
  InitHTMLSource(HTML);
+ {$IFDEF WINDOWS}
+ { Nouveau budget reseau pour cette navigation. Les sous-ressources CSS et
+   images consommeront le meme budget au lieu de pouvoir bloquer en serie. }
+ BrowserPageRequestCount:=0;
+ BrowserPageLoadStarted:=BrowserGetTickCount;
+ {$ENDIF}
 
  { Prefixe "view-source:" - afficher le code source HTML brut en syntaxe
    coloree au lieu de le rendre normalement (voir BuildHTMLSourceView). }
