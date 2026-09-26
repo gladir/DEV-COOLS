@@ -1139,6 +1139,7 @@ ContextMenuHoverIndex: Integer;
 
 { Outils de developpement integres (F12 / menu Inspecter). }
 DevToolsOpen, DevElementPicker, DevConsoleFocused: Boolean;
+PreviousF12Down:Boolean;
 DevToolsTab, DevToolsFullRenderHeight: Integer;
 DevSelectedNode: HTMLNodePtr;
 DevConsoleInput: String;
@@ -18829,6 +18830,23 @@ End;
 Procedure DevToolsToggle;
 Begin DevToolsSetOpen(Not DevToolsOpen)End;
 
+{$IFDEF FPC}
+Function BrowserGetAsyncKeyState(VKey:LongInt):SmallInt;StdCall;
+ External 'user32.dll' Name 'GetAsyncKeyState';
+{$ENDIF}
+
+Procedure DevToolsPollF12;
+{$IFDEF FPC}
+Var Down:Boolean;
+{$ENDIF}
+Begin
+ {$IFDEF FPC}
+ Down:=(Word(BrowserGetAsyncKeyState($7B))And $8000)<>0; { VK_F12 }
+ If Down And(Not PreviousF12Down)Then DevToolsToggle;
+ PreviousF12Down:=Down
+ {$ENDIF}
+End;
+
 Function DevToolsNodeCaption(Node:HTMLNodePtr):String;
 Var S,V:String;
 Begin
@@ -18984,6 +19002,50 @@ End;
 Function DevToolsTabRight(Index:Integer):Integer;
 Begin DevToolsTabRight:=DevToolsTabLeft(Index)+TextWidth(DevToolsTabName(Index))+11 End;
 
+Function DevToolsJSKeyword(Const S:String):Boolean;
+Var L:String;
+Begin
+ L:=HTMLLowerCase(S);
+ DevToolsJSKeyword:=(L='var')Or(L='let')Or(L='const')Or(L='function')Or
+  (L='if')Or(L='else')Or(L='for')Or(L='while')Or(L='do')Or
+  (L='return')Or(L='break')Or(L='continue')Or(L='new')Or
+  (L='typeof')Or(L='true')Or(L='false')Or(L='null')Or
+  (L='undefined')Or(L='this')Or(L='document')Or(L='window')Or
+  (L='console')
+End;
+
+Procedure DevToolsDrawJavaScript(Var X:Integer;Y:Integer;Const Source:String);
+Var I,J:Integer;T:String;Q:Char;
+Begin
+ I:=1;
+ While(I<=Length(Source))And(X<GetMaxX-8)Do Begin
+  If Source[I]In['A'..'Z','a'..'z','_','$']Then Begin
+   J:=I+1;While(J<=Length(Source))And(Source[J]In['A'..'Z','a'..'z','0'..'9','_','$'])Do Inc(J);
+   T:=Copy(Source,I,J-I);
+   If DevToolsJSKeyword(T)Then DevToolsOutSyntax(X,Y,T,LightBlue,False)
+   Else DevToolsOutSyntax(X,Y,T,HTMLBlackColorIndex,False);I:=J
+  End Else If Source[I]In['0'..'9']Then Begin
+   J:=I+1;While(J<=Length(Source))And(Source[J]In['0'..'9','.','x','X','a'..'f','A'..'F'])Do Inc(J);
+   DevToolsOutSyntax(X,Y,Copy(Source,I,J-I),Cyan,False);I:=J
+  End Else If Source[I]In['''','"']Then Begin
+   Q:=Source[I];J:=I+1;
+   While J<=Length(Source)Do Begin
+    If Source[J]='\'Then Inc(J)
+    Else If Source[J]=Q Then Begin Inc(J);Break End;
+    Inc(J)
+   End;
+   DevToolsOutSyntax(X,Y,Copy(Source,I,J-I),Green,False);I:=J
+  End Else If(I<Length(Source))And(Source[I]='/')And(Source[I+1]='/')Then Begin
+   DevToolsOutSyntax(X,Y,Copy(Source,I,Length(Source)-I+1),DarkGray,False);Exit
+  End Else Begin
+   If Source[I]In['+','-','*','/','%','=','!','<','>','&','|','?',':']Then
+    DevToolsOutSyntax(X,Y,Source[I],Red,False)
+   Else DevToolsOutSyntax(X,Y,Source[I],HTMLBlackColorIndex,False);
+   Inc(I)
+  End
+ End
+End;
+
 Procedure DrawDevToolsInspectorScrollBars(VisibleLines:Integer);
 Const S=14;
 Var Top,Bottom,VX,TrackTop,TrackBottom,ThumbTop,ThumbBottom:Integer;
@@ -19071,10 +19133,17 @@ Begin
   End;
   DEVTOOLS_TAB_CONSOLE:Begin
    First:=DevConsoleLineCount-9;If First<1Then First:=1;
-   For I:=First To DevConsoleLineCount Do Begin OutTextXY(8,Y,Copy(DevConsoleLines[I],1,(GetMaxX-20)Div 8));Inc(Y,12)End;
+   For I:=First To DevConsoleLineCount Do Begin
+    If Copy(DevConsoleLines[I],1,3)='>> 'Then Begin
+     TabLeft:=8;DevToolsOutSyntax(TabLeft,Y,'>> ',LightBlue,False);
+     DevToolsDrawJavaScript(TabLeft,Y,Copy(DevConsoleLines[I],4,Length(DevConsoleLines[I])-3))
+    End Else Begin SetColor(HTMLBlackColorIndex);OutTextXY(8,Y,Copy(DevConsoleLines[I],1,(GetMaxX-20)Div 8))End;
+    Inc(Y,12)
+   End;
    Y:=GetMaxY-24;SetFillStyle(SolidFill,White);Bar(4,Y,GetMaxX-5,GetMaxY-3);
    SetColor(HTMLBlackColorIndex);Rectangle(4,Y,GetMaxX-5,GetMaxY-3);
-   OutTextXY(8,Y+5,'>> '+Copy(DevConsoleInput,1,(GetMaxX-38)Div 8));
+   TabLeft:=8;DevToolsOutSyntax(TabLeft,Y+5,'>> ',LightBlue,False);
+   DevToolsDrawJavaScript(TabLeft,Y+5,DevConsoleInput);
    If DevConsoleFocused And DevConsoleCursorVisible Then Begin
     I:=8+TextWidth('>> '+DevConsoleInput);
     Line(I,Y+4,I,Y+15)
@@ -21456,6 +21525,7 @@ End;
 { Procedure pour traiter les evenements de la souris }
 Procedure ProcessMouseInput;
 Begin
+ DevToolsPollF12;
  { Verifier le minuteur JS en attente (setTimeout) a chaque iteration
    de la boucle principale, independamment de la souris - voir
    JSCheckTimeout. }
@@ -21769,7 +21839,7 @@ BEGIN
   { Traiter les evenements du clavier }
   If KeyPressed Then Begin
    Key := ReadKey;
-   If Key = #0 Then Begin
+   If (Key = #0) Or (Key = #224) Then Begin
     { Touche speciale }
     Key := ReadKey;
     { Un champ de formulaire HTML focus (voir FocusInputField, demande      }
@@ -21779,15 +21849,18 @@ BEGIN
     If ContextMenuOpen Then Begin
      ContextMenuOpen := False;
      RepaintAfterContextMenu;
-    End Else If Ord(Key) = 134 Then
-     DevToolsToggle
+    End Else If (Ord(Key) = 134) Or (Ord(Key) = 123) Then
+     Begin
+      {$IFNDEF FPC}DevToolsToggle{$ENDIF}
+     End
     Else If DevConsoleFocused Then Begin End
     Else If FocusedInputNode <> Nil Then
      HandleFormInputSpecialKey(Ord(Key))
     Else
      HandleURLSpecialKey(Ord(Key));
-   End
-    Else Begin
+   End Else If Ord(Key)=134Then Begin
+    {$IFNDEF FPC}DevToolsToggle;{$ENDIF}Key:=#0
+   End Else Begin
     { Menu contextuel ouvert : Echap (ou toute autre touche) le referme
       sans fermer le navigateur - Key est neutralisee pour que le test
       "Until Key = #27" ci-dessous ne quitte pas si c'etait Echap. }
