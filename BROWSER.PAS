@@ -1330,6 +1330,7 @@ DevCSSSourceCount,DevCSSSelected,DevCSSFirstLine:Integer;
  CSSGlobalStylesheet: CSSStylesheet;  { Feuille de style globale }
  CSSParseError: String;               { Message d'erreur de parsing }
  CSSEnabled: Boolean;                 { CSS active ou non }
+ CSSPreparedForRender:Boolean;        { feuille deja extraite pour cette navigation }
 
 Var
  { True pendant le parcours du document (RenderHTMLNode au sommet),
@@ -7851,7 +7852,7 @@ Begin
  Item := List.First;
  While Item <> Nil Do Begin
   RelAttr := HTMLLowerCase(GetHTMLAttribute(Item^.Node, 'rel'));
-  If RelAttr = 'stylesheet' Then Begin
+  If System.Pos('stylesheet',RelAttr)>0Then Begin
    HrefAttr := GetHTMLAttribute(Item^.Node, 'href');
    If Length(HrefAttr) > 0 Then Begin
     CSSPath := CSSBuildStylesheetPath(HrefAttr);
@@ -18967,8 +18968,12 @@ Begin
    via Browser_HttpGet) l'integralite du CSS a CHAQUE survol - signale
    par l'utilisateur comme un lag majeur persistant meme apres avoir
    corrige le redessin du chrome - en etait la vraie cause. }
- If CSSEnabled And (Not SkipNextRenderAreaClear) Then
-  CSSExtractFromDocument;
+ If CSSEnabled And(Not SkipNextRenderAreaClear)Then Begin
+  If CSSPreparedForRender Then
+   CSSPreparedForRender:=False
+  Else
+   CSSExtractFromDocument
+ End;
 
  { Reinitialiser les zones de liens }
  ClearLinkAreas;
@@ -19183,6 +19188,16 @@ Begin
   DevToolsBindDocument(HTMLDocument);
   ScrollX := 0;
   ScrollY := 0;
+  { Les feuilles ont priorite sur les scripts et images externes. Avant
+    cette extraction, ExecuteDocumentScriptNodes pouvait consommer le
+    budget reseau de la page puis CSSExtractFromDocument echouait; le rendu
+    paraissait alors totalement sans CSS. Le drapeau empeche aussi le
+    second telechargement identique au debut de RenderHTMLDocument. }
+  CSSPreparedForRender:=False;
+  If CSSEnabled Then Begin
+   CSSExtractFromDocument;
+   CSSPreparedForRender:=True
+  End;
   { Construire le DOM dynamique avant de calculer ses boites. }
   ExecuteDocumentScripts := True;
   InitRenderContext(ScriptCtx);
