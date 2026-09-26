@@ -684,6 +684,11 @@ DevInspectorRow = Record
  HasChildren:Boolean;
 End;
 
+DevCSSSource = Record
+ Name:String[255];
+ Content:AnsiString;
+End;
+
  { Boite de mise en page (position/taille) d'un element ID'e, telle
    que calculee lors du dernier rendu - permet d'implementer
    offsetWidth/offsetHeight/offsetLeft/offsetTop cote JS (utilises par
@@ -1142,6 +1147,8 @@ DevToolsOpen, DevElementPicker, DevConsoleFocused: Boolean;
 PreviousF12Down:Boolean;
 DevToolsTab, DevToolsFullRenderHeight: Integer;
 DevSelectedNode: HTMLNodePtr;
+DevInspectorDocument:HTMLNodePtr;
+DevDocumentSerial:LongInt;
 DevConsoleInput: String;
 DevConsoleLines: Array[1..100] Of String;
 DevConsoleLineCount: Integer;
@@ -1157,6 +1164,8 @@ DevCollapsedNodes:Array[1..2048]Of HTMLNodePtr;
 DevCollapsedCount:Integer;
 DevInspectorRows:Array[1..128]Of DevInspectorRow;
 DevInspectorRowCount:Integer;
+DevCSSSources:Array[1..32]Of DevCSSSource;
+DevCSSSourceCount,DevCSSSelected,DevCSSFirstLine:Integer;
 
  { Variables pour le bouton Precedent }
  BackButtonEnabled: Boolean;
@@ -7383,6 +7392,14 @@ Begin
  LoadTextFileAsString := Total;
 End;
 
+Procedure DevToolsAddCSSSource(Const Name:String;Const Content:AnsiString);
+Begin
+ If(Length(Content)=0)Or(DevCSSSourceCount>=32)Then Exit;
+ Inc(DevCSSSourceCount);DevCSSSources[DevCSSSourceCount].Name:=Copy(Name,1,255);
+ DevCSSSources[DevCSSSourceCount].Content:=Content;
+ If DevCSSSelected=0Then DevCSSSelected:=1
+End;
+
 Procedure CSSExtractFromDocument;
 Var
  List: DOMNodeList;
@@ -7392,21 +7409,26 @@ Var
  ExternalCSS: AnsiString;
  {$IFDEF WINDOWS}
  CSSStatusCode: LongInt;
- {$ENDIF}
+  {$ENDIF}
+ InlineStyleNumber:Integer;
 Begin
  { Repartir d'une feuille de style VIDE a chaque appel - sans ce reset,
    chaque appel (ex: un rechargement de page reutilisant la meme
    CSSGlobalStylesheet globale) rajoutait ses regles A LA SUITE des
    precedentes au lieu de les remplacer, jusqu'a saturer MAX_CSS_RULES. }
  CSSGlobalStylesheet.RuleCount := 0;
+ DevCSSSourceCount:=0;DevCSSSelected:=0;DevCSSFirstLine:=0;InlineStyleNumber:=0;
 
  { Feuilles de style en ligne : <style>...</style> }
  List := DOMGetElementsByTagName('style');
  Item := List.First;
  While Item <> Nil Do Begin
   StyleContent := DOMGetTextContent(Item^.Node);
-  If Length(StyleContent) > 0 Then
+  If Length(StyleContent) > 0 Then Begin
+   Inc(InlineStyleNumber);
+   DevToolsAddCSSSource('<style> #'+IntToStr(InlineStyleNumber),StyleContent);
    CSSParseStylesheet(StyleContent);
+  End;
   Item := Item^.Next;
  End;
  DOMFreeNodeList(List);
@@ -7432,8 +7454,10 @@ Begin
      {$ENDIF}
     End Else
      ExternalCSS := LoadTextFileAsString(CSSPath);
-   If Length(ExternalCSS) > 0 Then
-     CSSParseStylesheet(ExternalCSS);
+    If Length(ExternalCSS) > 0 Then Begin
+      DevToolsAddCSSSource(HrefAttr,ExternalCSS);
+      CSSParseStylesheet(ExternalCSS);
+    End;
    End;
   End;
   Item := Item^.Next;
@@ -17125,6 +17149,7 @@ Procedure DrawFavoriteButton; Forward;
 Procedure ShowMouse;Forward;
 Procedure HideMouse;Forward;
 Procedure DrawDevTools; Forward;
+Procedure DevToolsBindDocument(Doc:HTMLNodePtr); Forward;
 
 { Procedure pour rendre un document HTML complet }
 { Afficher par-dessus tout le reste les elements CSS position:absolute
@@ -17497,11 +17522,8 @@ Begin
     l'execution synchrone d'un gestionnaire (jamais a travers une
     navigation), mais on le remet aussi a Nil par precaution. }
   HoveredInteractiveNode := Nil;
-  DevSelectedNode := Nil;
-  DevInspectorScrollX := 0;
-  DevInspectorFirstLine := 0;
-  DevCollapsedCount := 0;
-  DevInspectorRowCount := 0;
+  { Detacher explicitement l'inspecteur AVANT de liberer l'ancien arbre. }
+  DevToolsBindDocument(Nil);
   JSEventTargetNode := Nil;
   JSClearTimeout;
 
@@ -17526,6 +17548,9 @@ Begin
     remplace. }
   If HTMLDocument <> Nil Then FreeHTMLNode(HTMLDocument);
   HTMLDocument := Doc;
+  { Le panneau doit suivre exactement le nouveau DOM, y compris lorsqu'une
+    navigation a ete declenchee depuis un gestionnaire JavaScript imbrique. }
+  DevToolsBindDocument(HTMLDocument);
   ScrollX := 0;
   ScrollY := 0;
   { Construire le DOM dynamique avant de calculer ses boites. }
@@ -18812,6 +18837,15 @@ Begin
    If(X>=X1)And(X<=X2)And(Y>=Y1)And(Y<=Y2)Then Begin DevToolsElementAt:=Node;Exit End
 End;
 
+Procedure DevToolsBindDocument(Doc:HTMLNodePtr);
+Begin
+ DevInspectorDocument:=Doc;Inc(DevDocumentSerial);
+ DevSelectedNode:=Nil;DevInspectorScrollX:=0;DevInspectorFirstLine:=0;
+ DevInspectorTotalLines:=0;DevInspectorContentWidth:=0;
+ DevCollapsedCount:=0;DevInspectorRowCount:=0;DevElementAreaCount:=0;
+ DevCSSSourceCount:=0;DevCSSSelected:=0;DevCSSFirstLine:=0
+End;
+
 Procedure DevToolsSetOpen(OpenIt:Boolean);
 Var H:Integer;
 Begin
@@ -19083,9 +19117,64 @@ Begin
  SetFillStyle(SolidFill,DarkGray);Bar(ThumbLeft,HY+3,ThumbRight,GetMaxY-3)
 End;
 
+Procedure DevToolsDrawCSSLine(X,Y:Integer;Const LineText:String;LineNumber:Integer);
+Var P,LX:Integer;LeftPart,RightPart:String;
+Begin
+ SetColor(DarkGray);OutTextXY(X,Y,IntToStr(LineNumber));
+ LX:=X+40;P:=Pos('/*',LineText);
+ If P>0Then Begin
+  If P>1Then Begin SetColor(LightBlue);OutTextXY(LX,Y,Copy(LineText,1,P-1));Inc(LX,TextWidth(Copy(LineText,1,P-1)))End;
+  SetColor(DarkGray);OutTextXY(LX,Y,Copy(LineText,P,Length(LineText)-P+1));Exit
+ End;
+ P:=Pos(':',LineText);
+ If(P>0)And(Pos('{',LineText)=0)Then Begin
+  LeftPart:=Copy(LineText,1,P);RightPart:=Copy(LineText,P+1,Length(LineText)-P);
+  SetColor(Red);OutTextXY(LX,Y,LeftPart);Inc(LX,TextWidth(LeftPart));
+  SetColor(Green);OutTextXY(LX,Y,RightPart)
+ End Else Begin
+  SetColor(LightBlue);OutTextXY(LX,Y,LineText)
+ End
+End;
+
+Procedure DevToolsDrawStyleEditor(ContentTop:Integer);
+Var LeftW,I,Y,MaxRows,LineNo:Integer;P,StartPos,SourceLen:LongInt;
+    LineText:String;Source:AnsiString;
+Begin
+ LeftW:=GetMaxX Div 4;If LeftW<160Then LeftW:=160;If LeftW>260Then LeftW:=260;
+ SetFillStyle(SolidFill,White);Bar(0,ContentTop-4,LeftW,GetMaxY);
+ SetColor(HTMLBlackColorIndex);Line(LeftW,ContentTop-4,LeftW,GetMaxY);
+ Y:=ContentTop;
+ If DevCSSSourceCount=0Then Begin
+  SetColor(DarkGray);OutTextXY(6,Y,'Aucune feuille CSS');Exit
+ End;
+ For I:=1 To DevCSSSourceCount Do Begin
+  If I=DevCSSSelected Then Begin SetFillStyle(SolidFill,1);Bar(2,Y-1,LeftW-2,Y+10);SetColor(White)End
+  Else SetColor(HTMLBlackColorIndex);
+  OutTextXY(6,Y,Copy(DevCSSSources[I].Name,1,(LeftW-12)Div 8));Inc(Y,13);
+  If Y>GetMaxY-12Then Break
+ End;
+ If(DevCSSSelected<1)Or(DevCSSSelected>DevCSSSourceCount)Then Exit;
+ Source:=DevCSSSources[DevCSSSelected].Content;SourceLen:=Length(Source);
+ MaxRows:=(GetMaxY-ContentTop-3)Div 12;Y:=ContentTop;LineNo:=1;StartPos:=1;
+ While(StartPos<=SourceLen)And(LineNo<=DevCSSFirstLine)Do Begin
+  While(StartPos<=SourceLen)And Not(Source[StartPos]In[#10,#13])Do Inc(StartPos);
+  If(StartPos<=SourceLen)And(Source[StartPos]=#13)Then Inc(StartPos);
+  If(StartPos<=SourceLen)And(Source[StartPos]=#10)Then Inc(StartPos);Inc(LineNo)
+ End;
+ I:=0;
+ While(StartPos<=SourceLen)And(I<MaxRows)Do Begin
+  P:=StartPos;While(P<=SourceLen)And Not(Source[P]In[#10,#13])Do Inc(P);
+  LineText:=Copy(Source,StartPos,P-StartPos);
+  LineText:=Copy(LineText,1,(GetMaxX-LeftW-55)Div 8);
+  DevToolsDrawCSSLine(LeftW+6,Y,LineText,LineNo);Inc(Y,12);Inc(I);Inc(LineNo);
+  StartPos:=P;If(StartPos<=SourceLen)And(Source[StartPos]=#13)Then Inc(StartPos);
+  If(StartPos<=SourceLen)And(Source[StartPos]=#10)Then Inc(StartPos)
+ End
+End;
+
 Procedure DrawDevTools;
 Var Top,Y,I,Lines,First,TabLeft,TabRight,MaxInspectorLines:Integer;
-    C1,C2,C3,C4,C5,C6,C7:Integer;St:DOMStyle;
+    C1,C2,C3,C4,C5,C6,C7:Integer;
 Begin
  If Not DevToolsOpen Then Exit;
  Top:=DevToolsPanelTop;
@@ -19105,12 +19194,13 @@ Begin
  Y:=Top+30;SetColor(HTMLBlackColorIndex);
  Case DevToolsTab Of
   DEVTOOLS_TAB_INSPECTOR:Begin
+   If DevInspectorDocument<>HTMLDocument Then DevToolsBindDocument(HTMLDocument);
    Lines:=0;
    MaxInspectorLines:=(GetMaxY-Y-14)Div 11;
    If MaxInspectorLines<1Then MaxInspectorLines:=1;
    DevInspectorContentWidth:=0;
    DevInspectorRowCount:=0;
-   DevToolsDrawDOM(HTMLDocument,0,Y,Lines,MaxInspectorLines);
+   DevToolsDrawDOM(DevInspectorDocument,0,Y,Lines,MaxInspectorLines);
    DevInspectorTotalLines:=Lines;
    If DevInspectorFirstLine>DevInspectorTotalLines-MaxInspectorLines Then
     DevInspectorFirstLine:=DevInspectorTotalLines-MaxInspectorLines;
@@ -19124,12 +19214,7 @@ Begin
    Else OutTextXY(8,Y,'Aucune exception JavaScript. Points d arret: F12 pour fermer.')
   End;
   DEVTOOLS_TAB_STYLE:Begin
-   OutTextXY(8,Y,'Styles calcules - '+DevToolsNodeCaption(DevSelectedNode));Inc(Y,14);
-   If DevSelectedNode<>Nil Then Begin CSSResolveCascade(DevSelectedNode,St);
-    OutTextXY(8,Y,'display: '+St.Display);Inc(Y,12);OutTextXY(8,Y,'color: '+St.Color);Inc(Y,12);
-    OutTextXY(8,Y,'background: '+St.BackgroundColor);Inc(Y,12);OutTextXY(8,Y,'width: '+St.Width+'  height: '+St.Height);Inc(Y,12);
-    OutTextXY(8,Y,'margin: '+St.Margin+'  padding: '+St.Padding)
-   End
+   DevToolsDrawStyleEditor(Y)
   End;
   DEVTOOLS_TAB_CONSOLE:Begin
    First:=DevConsoleLineCount-9;If First<1Then First:=1;
@@ -19220,7 +19305,7 @@ Begin
 End;
 
 Function DevToolsHandleClick(X,Y:Integer):Boolean;
-Var I:Integer;N:HTMLNodePtr;
+Var I,StyleLeftW,StyleIndex:Integer;N:HTMLNodePtr;
 Begin
  DevToolsHandleClick:=False;
  If Not DevToolsOpen Then Exit;
@@ -19237,6 +19322,16 @@ Begin
     DevConsoleLastBlink:=BrowserGetTickCount
    End
   End Else If DevToolsHandleInspectorScrollClick(X,Y)Then Exit
+  Else If(DevToolsTab=DEVTOOLS_TAB_STYLE)And(Y>=DevToolsPanelTop+30)Then Begin
+   StyleLeftW:=GetMaxX Div 4;If StyleLeftW<160Then StyleLeftW:=160;
+   If StyleLeftW>260Then StyleLeftW:=260;
+   If X<StyleLeftW Then Begin
+    StyleIndex:=((Y-(DevToolsPanelTop+30))Div 13)+1;
+    If(StyleIndex>=1)And(StyleIndex<=DevCSSSourceCount)Then Begin
+     DevCSSSelected:=StyleIndex;DevCSSFirstLine:=0
+    End
+   End
+  End
   Else If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then DevConsoleFocused:=True;
   DrawDevTools;Exit
  End;
@@ -21716,6 +21811,7 @@ Var
  TestMode: Boolean;
  ScrollTestI: Integer;
  ResolvedTestURL:String;
+ TestDocumentSerial:LongInt;
 
 BEGIN
  ParseCommandLine(InitialTarget, TestMode);
@@ -21754,7 +21850,13 @@ BEGIN
     (cas reel d'un clic sur un lien apres le chargement d'une 1ere
     page) : c'est ce second appel qui a revele le debordement 16 bits
     de Pos corrige ci-dessus. }
+  TestDocumentSerial:=DevDocumentSerial;
   NavigateTo(CurrentURL);
+  If(DevDocumentSerial<=TestDocumentSerial)Or
+    (DevInspectorDocument<>HTMLDocument)Then Begin
+   WriteConsoleLine('ECHEC test remplacement DOM inspecteur');
+   If MouseAvailable Then HideMouse;CloseGraph;Halt(4)
+  End;
   { Exercer le survol de toutes les zones interactives detectees (ex:
     les onglets/menus d'une page reelle utilisant des gestionnaires
     onmouseover/onmouseout), pour detecter toute exception dans
