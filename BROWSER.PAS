@@ -17075,6 +17075,8 @@ Procedure DrawBackButton; Forward;
 Procedure DrawForwardButton; Forward;
 Procedure DrawRefreshButton; Forward;
 Procedure DrawFavoriteButton; Forward;
+Procedure ShowMouse;Forward;
+Procedure HideMouse;Forward;
 
 { Procedure pour rendre un document HTML complet }
 { Afficher par-dessus tout le reste les elements CSS position:absolute
@@ -18507,12 +18509,14 @@ Var X,Y,W,H,YesX,NoX:Integer;Done,Answer:Boolean;K:Char;
 Begin
  W:=430;H:=105;X:=(GetMaxX-W)div 2;Y:=(GetMaxY-H)div 2;
  YesX:=X+W-180;NoX:=X+W-90;
+ If MouseAvailable Then HideMouse;
  SetFillStyle(SolidFill,COLOR_URL_BAR_BG);Bar(X,Y,X+W,Y+H);
  SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+H);
  OutTextXY(X+10,Y+10,'Confirmer le remplacement');
  OutTextXY(X+10,Y+36,'Le fichier existe deja : '+FileName);
  DrawGraphDialogButton(YesX,Y+70,75,'Oui');
  DrawGraphDialogButton(NoX,Y+70,75,'Non');
+ If MouseAvailable Then ShowMouse;
  Done:=False;Answer:=False;
  If MouseAvailable Then GetMouseState(MouseX,MouseY,LastMouseButton);
  Repeat
@@ -18563,8 +18567,13 @@ Begin
  FileName:=DefaultName;GetDir(0,CurrentDir);
  Done:=False;Accepted:=False;NeedRedraw:=True;
  If MouseAvailable Then GetMouseState(MouseX,MouseY,LastMouseButton);
+ { L'action du menu contextuel est appelee pendant que ProcessMouseInput
+   a masque le curseur. Retablir d'abord ce niveau, puis entourer chaque
+   redessin Graph par HideMouse/ShowMouse. }
+ If MouseAvailable Then ShowMouse;
  Repeat
   If NeedRedraw Then Begin
+   If MouseAvailable Then HideMouse;
    SetFillStyle(SolidFill,COLOR_URL_BAR_BG);Bar(X,Y,X+W,Y+H);
    SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+H);
    SetTextStyle(DefaultFont,HorizDir,1);SetTextJustify(LeftText,TopText);
@@ -18581,6 +18590,7 @@ Begin
    Line(I,InputY+4,I,InputY+18);
    DrawGraphDialogButton(OkX,Y+112,80,'Enregistrer');
    DrawGraphDialogButton(CancelX,Y+112,80,'Annuler');
+   If MouseAvailable Then ShowMouse;
    NeedRedraw:=False
   End;
   If KeyPressed Then Begin
@@ -18611,6 +18621,7 @@ Begin
   Accepted:=BrowserGraphConfirmOverwrite(FileName);
  If Accepted Then BrowserGraphSaveDialog:=FileName
  Else BrowserGraphSaveDialog:='';
+ If MouseAvailable Then HideMouse;
  DrawURLBar;DrawBackButton;DrawForwardButton;DrawRefreshButton;
  DrawFavoriteButton;RescrollPage
 End;
