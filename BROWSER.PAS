@@ -1477,50 +1477,6 @@ Function Browser_InternetSetOptionA(hInternet: LongInt; dwOption: LongWord;
          Var lpBuffer; dwBufferLength: LongWord): LongBool;
          StdCall; External 'wininet.dll' Name 'InternetSetOptionA';
 
-{ Boite de dialogue Windows reelle "Enregistrer sous..." (menu contextuel,
-  demande explicite de l'utilisateur). OPENFILENAMEA reproduit ici la
-  structure Win32 telle que definie depuis Windows 2000/_WIN32_WINNT>=0x0500
-  (avec pvReserved/dwReserved/FlagsEx en fin de structure) : omettre ces 3
-  derniers champs desynchroniserait SizeOf(TOpenFileNameA) de la taille que
-  comdlg32.dll attend reellement pour lStructSize. hwndOwner/hInstance sont
-  laisses a 0 (aucune fenetre proprietaire native n'est exposee par le
-  moteur graphique de BROWSER.PAS) - la boite reste fonctionnelle mais non
-  rattachee modalement a la fenetre du navigateur, simplification assumee. }
-Type
- TOpenFileNameA = Record
-  lStructSize: LongWord;
-  hwndOwner: LongInt;
-  hInstance: LongInt;
-  lpstrFilter: PChar;
-  lpstrCustomFilter: PChar;
-  nMaxCustFilter: LongWord;
-  nFilterIndex: LongWord;
-  lpstrFile: PChar;
-  nMaxFile: LongWord;
-  lpstrFileTitle: PChar;
-  nMaxFileTitle: LongWord;
-  lpstrInitialDir: PChar;
-  lpstrTitle: PChar;
-  Flags: LongWord;
-  nFileOffset: Word;
-  nFileExtension: Word;
-  lpstrDefExt: PChar;
-  lCustData: LongInt;
-  lpfnHook: Pointer;
-  lpTemplateName: PChar;
-  pvReserved: Pointer;
-  dwReserved: LongWord;
-  FlagsEx: LongWord;
- End;
-
-Function Browser_GetSaveFileNameA(Var OFN: TOpenFileNameA): LongBool;
-         StdCall; External 'comdlg32.dll' Name 'GetSaveFileNameA';
-
-Const
- OFN_OVERWRITEPROMPT = LongWord($00000002);
- OFN_PATHMUSTEXIST    = LongWord($00000800);
- OFN_HIDEREADONLY     = LongWord($00000004);
-
 Const
  BROWSER_INTERNET_OPEN_TYPE_DIRECT  = 1;
  BROWSER_INTERNET_SERVICE_HTTP      = 3;
@@ -18531,6 +18487,134 @@ Begin
  RescrollPage;
 End;
 
+Function BrowserFileExists(Const FileName:String):Boolean;
+Var F:File;Exists:Boolean;
+Begin
+ Assign(F,FileName);{$I-}Reset(F,1);{$I+};Exists:=IOResult=0;
+ If Exists Then Close(F);BrowserFileExists:=Exists
+End;
+
+Procedure DrawGraphDialogButton(X,Y,W:Integer;Const Caption:String);
+Begin
+ SetFillStyle(SolidFill,LightGray);Bar(X,Y,X+W,Y+22);
+ SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+22);
+ SetTextJustify(CenterText,CenterText);OutTextXY(X+W div 2,Y+11,Caption);
+ SetTextJustify(LeftText,TopText)
+End;
+
+Function BrowserGraphConfirmOverwrite(Const FileName:String):Boolean;
+Var X,Y,W,H,YesX,NoX:Integer;Done,Answer:Boolean;K:Char;
+Begin
+ W:=430;H:=105;X:=(GetMaxX-W)div 2;Y:=(GetMaxY-H)div 2;
+ YesX:=X+W-180;NoX:=X+W-90;
+ SetFillStyle(SolidFill,COLOR_URL_BAR_BG);Bar(X,Y,X+W,Y+H);
+ SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+H);
+ OutTextXY(X+10,Y+10,'Confirmer le remplacement');
+ OutTextXY(X+10,Y+36,'Le fichier existe deja : '+FileName);
+ DrawGraphDialogButton(YesX,Y+70,75,'Oui');
+ DrawGraphDialogButton(NoX,Y+70,75,'Non');
+ Done:=False;Answer:=False;
+ If MouseAvailable Then GetMouseState(MouseX,MouseY,LastMouseButton);
+ Repeat
+  If KeyPressed Then Begin
+   K:=ReadKey;
+   If K=#13Then Begin Answer:=True;Done:=True End
+   Else If K=#27Then Done:=True
+  End Else If MouseAvailable Then Begin
+   GetMouseState(MouseX,MouseY,MouseButton);
+   If((MouseButton and MOUSE_LEFT_BUTTON)<>0)and
+     ((LastMouseButton and MOUSE_LEFT_BUTTON)=0)Then Begin
+    If(MouseY>=Y+70)and(MouseY<=Y+92)Then Begin
+     If(MouseX>=YesX)and(MouseX<=YesX+75)Then Begin Answer:=True;Done:=True End
+     Else If(MouseX>=NoX)and(MouseX<=NoX+75)Then Done:=True
+    End
+   End;
+   LastMouseButton:=MouseButton
+  End
+ Until Done;
+ BrowserGraphConfirmOverwrite:=Answer
+End;
+
+Function BrowserDefaultSaveName(Const URL:String):String;
+Var S:String;I,P:Integer;
+Begin
+ S:=URL;P:=Pos('?',S);If P>0Then Delete(S,P,Length(S));
+ P:=Pos('#',S);If P>0Then Delete(S,P,Length(S));
+ For I:=Length(S)downto 1do If(S[I]='/')or(S[I]='\')Then Begin
+  S:=Copy(S,I+1,Length(S));Break
+ End;
+ If S=''Then S:='index.html';
+ If ExtractFileExt(S)=''Then S:=S+'.html';
+ For I:=1to Length(S)do If S[I]in['\','/',':','*','?','"','<','>','|']Then S[I]:='_';
+ BrowserDefaultSaveName:=S
+End;
+
+Function BrowserGraphSaveDialog(Const DefaultName:String):String;
+Var
+ X,Y,W,H,InputX,InputY,InputW,OkX,CancelX,I:Integer;
+ FileName,VisibleName,CurrentDir:String;
+ Done,Accepted,NeedRedraw:Boolean;
+ K:Char;
+Begin
+ W:=500;If W>GetMaxX-20Then W:=GetMaxX-20;
+ H:=150;X:=(GetMaxX-W)div 2;Y:=(GetMaxY-H)div 2;
+ InputX:=X+12;InputY:=Y+62;InputW:=W-24;
+ OkX:=X+W-190;CancelX:=X+W-95;
+ FileName:=DefaultName;GetDir(0,CurrentDir);
+ Done:=False;Accepted:=False;NeedRedraw:=True;
+ If MouseAvailable Then GetMouseState(MouseX,MouseY,LastMouseButton);
+ Repeat
+  If NeedRedraw Then Begin
+   SetFillStyle(SolidFill,COLOR_URL_BAR_BG);Bar(X,Y,X+W,Y+H);
+   SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+H);
+   SetTextStyle(DefaultFont,HorizDir,1);SetTextJustify(LeftText,TopText);
+   OutTextXY(X+10,Y+9,'Enregistrer sous...');
+   OutTextXY(X+10,Y+31,'Dossier : '+CurrentDir);
+   SetFillStyle(SolidFill,RENDER_BG_COLOR);
+   Bar(InputX,InputY,InputX+InputW,InputY+22);
+   SetColor(HTMLBlackColorIndex);Rectangle(InputX,InputY,InputX+InputW,InputY+22);
+   VisibleName:=FileName;
+   While(Length(VisibleName)*8>InputW-12)and(Length(VisibleName)>1)do
+    Delete(VisibleName,1,1);
+   OutTextXY(InputX+4,InputY+5,VisibleName);
+   I:=InputX+4+Length(VisibleName)*8;
+   Line(I,InputY+4,I,InputY+18);
+   DrawGraphDialogButton(OkX,Y+112,80,'Enregistrer');
+   DrawGraphDialogButton(CancelX,Y+112,80,'Annuler');
+   NeedRedraw:=False
+  End;
+  If KeyPressed Then Begin
+   K:=ReadKey;
+   If K=#0Then Begin If KeyPressed Then K:=ReadKey End
+   Else If K=#27Then Done:=True
+   Else If K=#13Then Begin Accepted:=FileName<>'';Done:=Accepted End
+   Else If K=#8Then Begin
+    If Length(FileName)>0Then Delete(FileName,Length(FileName),1);
+    NeedRedraw:=True
+   End Else If(Ord(K)>=32)and(Length(FileName)<255)Then Begin
+    FileName:=FileName+K;NeedRedraw:=True
+   End
+  End Else If MouseAvailable Then Begin
+   GetMouseState(MouseX,MouseY,MouseButton);
+   If((MouseButton and MOUSE_LEFT_BUTTON)<>0)and
+     ((LastMouseButton and MOUSE_LEFT_BUTTON)=0)Then Begin
+    If(MouseY>=Y+112)and(MouseY<=Y+134)Then Begin
+     If(MouseX>=OkX)and(MouseX<=OkX+80)Then Begin
+      Accepted:=FileName<>'';Done:=Accepted
+     End Else If(MouseX>=CancelX)and(MouseX<=CancelX+80)Then Done:=True
+    End
+   End;
+   LastMouseButton:=MouseButton
+  End
+ Until Done;
+ If Accepted and BrowserFileExists(FileName)Then
+  Accepted:=BrowserGraphConfirmOverwrite(FileName);
+ If Accepted Then BrowserGraphSaveDialog:=FileName
+ Else BrowserGraphSaveDialog:='';
+ DrawURLBar;DrawBackButton;DrawForwardButton;DrawRefreshButton;
+ DrawFavoriteButton;RescrollPage
+End;
+
 { Action du menu contextuel "Enregistrer sous...". Recupere le code
   source de la page courante EXACTEMENT comme le fait deja le prefixe
   "view-source:" (voir DisplayCurrentTarget) - le HTML brut n'est pas
@@ -18539,15 +18623,11 @@ End;
   nouvelle lecture de fichier local). }
 Procedure ContextMenuSaveAs;
 Var
- InnerURL, LocalFileName, SourceText: String;
+ InnerURL, LocalFileName, SourceText,SaveFileName: String;
  SourceOk: Boolean;
  SourceHTML: HTMLSourceBuffer;
- {$IFDEF WINDOWS}
  StatusCode: LongInt;
- FNBuf: Array[0..259] Of Char;
- OFN: TOpenFileNameA;
  F: Text;
- {$ENDIF}
 Begin
  InnerURL := CurrentURL;
  If IsViewSourceURL(InnerURL) Then InnerURL := StripViewSourcePrefix(InnerURL);
@@ -18572,18 +18652,9 @@ Begin
   Exit;
  End;
 
- {$IFDEF WINDOWS}
- FillChar(FNBuf, SizeOf(FNBuf), 0);
- FillChar(OFN, SizeOf(OFN), 0);
- OFN.lStructSize := SizeOf(OFN);
- OFN.lpstrFilter := 'Pages HTML (*.html)'#0'*.html'#0'Tous les fichiers (*.*)'#0'*.*'#0#0;
- OFN.lpstrFile := @FNBuf;
- OFN.nMaxFile := SizeOf(FNBuf);
- OFN.lpstrDefExt := 'html';
- OFN.Flags := OFN_OVERWRITEPROMPT Or OFN_HIDEREADONLY;
-
- If Browser_GetSaveFileNameA(OFN) Then Begin
-  Assign(F, StrPas(FNBuf));
+ SaveFileName:=BrowserGraphSaveDialog(BrowserDefaultSaveName(InnerURL));
+ If SaveFileName<>''Then Begin
+  Assign(F,SaveFileName);
   {$I-}
   Rewrite(F);
   {$I+}
@@ -18592,10 +18663,7 @@ Begin
    Close(F);
   End Else
    QRShowMessageBox('Enregistrer sous...', 'Echec de l''ecriture du fichier.');
- End;
- {$ELSE}
- QRShowMessageBox('Enregistrer sous...', 'Fonction "Enregistrer sous..." disponible uniquement sous Windows.');
- {$ENDIF}
+ End
 End;
 
 { =====================================================
