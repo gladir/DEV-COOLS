@@ -1142,6 +1142,8 @@ DevNetworkEntries: Array[1..100] Of DevNetworkEntry;
 DevNetworkCount: Integer;
 DevElementAreas: Array[1..2048] Of DevElementArea;
 DevElementAreaCount: Integer;
+DevInspectorScrollX, DevInspectorFirstLine: Integer;
+DevInspectorTotalLines, DevInspectorContentWidth: Integer;
 
  { Variables pour le bouton Precedent }
  BackButtonEnabled: Boolean;
@@ -17483,6 +17485,8 @@ Begin
     navigation), mais on le remet aussi a Nil par precaution. }
   HoveredInteractiveNode := Nil;
   DevSelectedNode := Nil;
+  DevInspectorScrollX := 0;
+  DevInspectorFirstLine := 0;
   JSEventTargetNode := Nil;
   JSClearTimeout;
 
@@ -18821,17 +18825,91 @@ Begin
  DevToolsNodeCaption:=Copy(S+'>',1,75)
 End;
 
-Procedure DevToolsDrawDOM(Node:HTMLNodePtr;Depth:Integer;Var Y,Lines:Integer);
-Var C:HTMLNodePtr;S:String;
+Procedure DevToolsOutSyntax(Var X:Integer;Y:Integer;Const S:String;
+                            NormalColor:Integer;Selected:Boolean);
+Var T:String;MaxChars,W:Integer;
 Begin
- If(Node=Nil)Or(Lines>=14)Then Exit;
+ If X>=GetMaxX-20Then Exit;
+ W:=TextWidth('M');If W<1Then W:=8;
+ MaxChars:=(GetMaxX-X-20)Div W;If MaxChars<1Then Exit;
+ T:=Copy(S,1,MaxChars);
+ If Selected Then Begin
+  Case NormalColor Of
+   LightBlue:SetColor(LightCyan);
+   Red:SetColor(Yellow);
+   Green:SetColor(LightGreen);
+   DarkGray:SetColor(White);
+   Magenta:SetColor(LightMagenta);
+   Else SetColor(White)
+  End
+ End Else SetColor(NormalColor);
+ OutTextXY(X,Y,T);Inc(X,TextWidth(T))
+End;
+
+Procedure DevToolsDrawDOM(Node:HTMLNodePtr;Depth:Integer;Var Y,Lines:Integer;
+                          MaxLines:Integer);
+Var C:HTMLNodePtr;A:HTMLAttributePtr;S:String;X,LineWidth:Integer;
+    Selected,DisplayLine:Boolean;
+Begin
+ If Node=Nil Then Exit;
  If Node^.NodeType=HTML_NODE_ELEMENT Then Begin
-  S:=Copy('                ',1,Depth*2)+DevToolsNodeCaption(Node);
-  If Node=DevSelectedNode Then Begin SetFillStyle(SolidFill,1);Bar(5,Y-1,GetMaxX-5,Y+9);SetColor(15)End
-  Else SetColor(HTMLBlackColorIndex);
-  OutTextXY(8,Y,Copy(S,1,(GetMaxX-20)Div 8));Inc(Y,11);Inc(Lines)
+  LineWidth:=8+Depth*16+TextWidth('<'+Node^.TagName+'>');
+  A:=Node^.FirstAttribute;
+  While A<>Nil Do Begin
+   Inc(LineWidth,TextWidth(' '+A^.Name));
+   If A^.Value<>''Then Inc(LineWidth,TextWidth('="'+A^.Value+'"'));
+   A:=A^.Next
+  End;
+  If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
+  DisplayLine:=(Lines>=DevInspectorFirstLine)And
+               (Lines<DevInspectorFirstLine+MaxLines);
+  If DisplayLine Then Begin
+   Selected:=Node=DevSelectedNode;
+   If Selected Then Begin SetFillStyle(SolidFill,1);Bar(5,Y-1,GetMaxX-20,Y+9)End;
+   X:=8+Depth*16-DevInspectorScrollX;
+   DevToolsOutSyntax(X,Y,'<',LightBlue,Selected);
+   DevToolsOutSyntax(X,Y,Node^.TagName,LightBlue,Selected);
+   A:=Node^.FirstAttribute;
+   While(A<>Nil)And(X<GetMaxX-20)Do Begin
+    DevToolsOutSyntax(X,Y,' ',HTMLBlackColorIndex,Selected);
+    DevToolsOutSyntax(X,Y,A^.Name,Red,Selected);
+    If A^.Value<>''Then Begin
+     DevToolsOutSyntax(X,Y,'="',HTMLBlackColorIndex,Selected);
+     DevToolsOutSyntax(X,Y,A^.Value,Green,Selected);
+     DevToolsOutSyntax(X,Y,'"',HTMLBlackColorIndex,Selected)
+    End;
+    A:=A^.Next
+   End;
+   DevToolsOutSyntax(X,Y,'>',LightBlue,Selected);Inc(Y,11)
+  End;
+  Inc(Lines)
+ End Else If Node^.NodeType=HTML_NODE_TEXT Then Begin
+  S:=Trim(Node^.Content);
+  If S<>''Then Begin
+   LineWidth:=8+Depth*16+TextWidth('"'+S+'"');
+   If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
+   If(Lines>=DevInspectorFirstLine)And(Lines<DevInspectorFirstLine+MaxLines)Then Begin
+    X:=8+Depth*16-DevInspectorScrollX;
+    DevToolsOutSyntax(X,Y,'"',DarkGray,False);
+    DevToolsOutSyntax(X,Y,S,Magenta,False);
+    DevToolsOutSyntax(X,Y,'"',DarkGray,False);Inc(Y,11)
+   End;
+   Inc(Lines)
+  End
+ End Else If Node^.NodeType=HTML_NODE_COMMENT Then Begin
+  S:='<!-- '+Trim(Node^.Content)+' -->';
+  LineWidth:=8+Depth*16+TextWidth(S);
+  If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
+  If(Lines>=DevInspectorFirstLine)And(Lines<DevInspectorFirstLine+MaxLines)Then Begin
+   X:=8+Depth*16-DevInspectorScrollX;
+   DevToolsOutSyntax(X,Y,S,DarkGray,False);Inc(Y,11)
+  End;
+  Inc(Lines)
  End;
- C:=Node^.FirstChild;While(C<>Nil)And(Lines<14)Do Begin DevToolsDrawDOM(C,Depth+1,Y,Lines);C:=C^.NextSibling End
+ C:=Node^.FirstChild;
+ While C<>Nil Do Begin
+  DevToolsDrawDOM(C,Depth+1,Y,Lines,MaxLines);C:=C^.NextSibling
+ End
 End;
 
 Function DevToolsTabName(Index:Integer):String;
@@ -18857,8 +18935,45 @@ End;
 Function DevToolsTabRight(Index:Integer):Integer;
 Begin DevToolsTabRight:=DevToolsTabLeft(Index)+TextWidth(DevToolsTabName(Index))+11 End;
 
+Procedure DrawDevToolsInspectorScrollBars(VisibleLines:Integer);
+Const S=14;
+Var Top,Bottom,VX,TrackTop,TrackBottom,ThumbTop,ThumbBottom:Integer;
+    HY,TrackLeft,TrackRight,ThumbLeft,ThumbRight:Integer;
+    MaxFirst,MaxXScroll,ViewWidth:Integer;
+Begin
+ Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=GetMaxY-S;
+ VX:=GetMaxX-S;HY:=GetMaxY-S;
+ SetFillStyle(SolidFill,LightGray);SetColor(HTMLBlackColorIndex);
+ Bar(VX,Top,GetMaxX,GetMaxY);Rectangle(VX,Top,GetMaxX,GetMaxY);
+ Bar(0,HY,VX,GetMaxY);Rectangle(0,HY,VX,GetMaxY);
+ { Boutons haut et bas. }
+ Rectangle(VX,Top,GetMaxX,Top+S);Rectangle(VX,Bottom-S,GetMaxX,Bottom);
+ Line(VX+4,Top+9,VX+7,Top+5);Line(VX+7,Top+5,VX+10,Top+9);
+ Line(VX+4,Bottom-S+5,VX+7,Bottom-S+9);Line(VX+7,Bottom-S+9,VX+10,Bottom-S+5);
+ TrackTop:=Top+S+1;TrackBottom:=Bottom-S-1;
+ MaxFirst:=DevInspectorTotalLines-VisibleLines;If MaxFirst<0Then MaxFirst:=0;
+ If MaxFirst=0Then Begin ThumbTop:=TrackTop;ThumbBottom:=TrackBottom End
+ Else Begin
+  ThumbTop:=TrackTop+(LongInt(TrackBottom-TrackTop-10)*DevInspectorFirstLine)Div MaxFirst;
+  ThumbBottom:=ThumbTop+10
+ End;
+ SetFillStyle(SolidFill,DarkGray);Bar(VX+3,ThumbTop,VX+S-3,ThumbBottom);
+ { Boutons gauche et droite. }
+ Rectangle(0,HY,S,GetMaxY);Rectangle(VX-S,HY,VX,GetMaxY);
+ Line(9,HY+4,5,HY+7);Line(5,HY+7,9,HY+10);
+ Line(VX-S+5,HY+4,VX-S+9,HY+7);Line(VX-S+9,HY+7,VX-S+5,HY+10);
+ TrackLeft:=S+1;TrackRight:=VX-S-1;ViewWidth:=GetMaxX-20;
+ MaxXScroll:=DevInspectorContentWidth-ViewWidth;If MaxXScroll<0Then MaxXScroll:=0;
+ If MaxXScroll=0Then Begin ThumbLeft:=TrackLeft;ThumbRight:=TrackRight End
+ Else Begin
+  ThumbLeft:=TrackLeft+(LongInt(TrackRight-TrackLeft-18)*DevInspectorScrollX)Div MaxXScroll;
+  ThumbRight:=ThumbLeft+18
+ End;
+ SetFillStyle(SolidFill,DarkGray);Bar(ThumbLeft,HY+3,ThumbRight,GetMaxY-3)
+End;
+
 Procedure DrawDevTools;
-Var Top,Y,I,Lines,First,TabLeft,TabRight:Integer;
+Var Top,Y,I,Lines,First,TabLeft,TabRight,MaxInspectorLines:Integer;
     C1,C2,C3,C4,C5,C6,C7:Integer;St:DOMStyle;
 Begin
  If Not DevToolsOpen Then Exit;
@@ -18877,7 +18992,18 @@ Begin
  OutTextXY(GetMaxX-18,Top+7,'X');Line(0,Top+DEVTOOLS_TAB_HEIGHT,GetMaxX,Top+DEVTOOLS_TAB_HEIGHT);
  Y:=Top+30;SetColor(HTMLBlackColorIndex);
  Case DevToolsTab Of
-  DEVTOOLS_TAB_INSPECTOR:Begin Lines:=0;DevToolsDrawDOM(HTMLDocument,0,Y,Lines)End;
+  DEVTOOLS_TAB_INSPECTOR:Begin
+   Lines:=0;
+   MaxInspectorLines:=(GetMaxY-Y-14)Div 11;
+   If MaxInspectorLines<1Then MaxInspectorLines:=1;
+   DevInspectorContentWidth:=0;
+   DevToolsDrawDOM(HTMLDocument,0,Y,Lines,MaxInspectorLines);
+   DevInspectorTotalLines:=Lines;
+   If DevInspectorFirstLine>DevInspectorTotalLines-MaxInspectorLines Then
+    DevInspectorFirstLine:=DevInspectorTotalLines-MaxInspectorLines;
+   If DevInspectorFirstLine<0Then DevInspectorFirstLine:=0;
+   DrawDevToolsInspectorScrollBars(MaxInspectorLines)
+  End;
   DEVTOOLS_TAB_DEBUGGER:Begin
    OutTextXY(8,Y,'Sources JavaScript et execution');Inc(Y,14);
    OutTextXY(8,Y,'Etat: '+IntToStr(Ord(JSCtx.HasError))+'  fonctions: '+IntToStr(JSCtx.FuncCount));Inc(Y,14);
@@ -18928,6 +19054,39 @@ Begin
   End
 End;
 
+Function DevToolsHandleInspectorScrollClick(X,Y:Integer):Boolean;
+Const S=14;
+Var Top,Bottom,VX,HY,VisibleLines,MaxFirst,MaxXScroll,ViewWidth:Integer;
+Begin
+ DevToolsHandleInspectorScrollClick:=False;
+ If DevToolsTab<>DEVTOOLS_TAB_INSPECTOR Then Exit;
+ Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=GetMaxY-S;
+ VX:=GetMaxX-S;HY:=GetMaxY-S;
+ VisibleLines:=(GetMaxY-(DevToolsPanelTop+30)-S)Div 11;
+ If VisibleLines<1Then VisibleLines:=1;
+ MaxFirst:=DevInspectorTotalLines-VisibleLines;If MaxFirst<0Then MaxFirst:=0;
+ ViewWidth:=GetMaxX-20;MaxXScroll:=DevInspectorContentWidth-ViewWidth;
+ If MaxXScroll<0Then MaxXScroll:=0;
+ If(X>=VX)And(Y>=Top)And(Y<=Bottom)Then Begin
+  If Y<=Top+S Then Dec(DevInspectorFirstLine)
+  Else If Y>=Bottom-S Then Inc(DevInspectorFirstLine)
+  Else If Y<Top+((Bottom-Top)Div 2)Then Dec(DevInspectorFirstLine,VisibleLines)
+  Else Inc(DevInspectorFirstLine,VisibleLines);
+  If DevInspectorFirstLine<0Then DevInspectorFirstLine:=0;
+  If DevInspectorFirstLine>MaxFirst Then DevInspectorFirstLine:=MaxFirst;
+  DevToolsHandleInspectorScrollClick:=True;DrawDevTools;Exit
+ End;
+ If(Y>=HY)And(X>=0)And(X<=VX)Then Begin
+  If X<=S Then Dec(DevInspectorScrollX,32)
+  Else If X>=VX-S Then Inc(DevInspectorScrollX,32)
+  Else If X<VX Div 2Then Dec(DevInspectorScrollX,ViewWidth)
+  Else Inc(DevInspectorScrollX,ViewWidth);
+  If DevInspectorScrollX<0Then DevInspectorScrollX:=0;
+  If DevInspectorScrollX>MaxXScroll Then DevInspectorScrollX:=MaxXScroll;
+  DevToolsHandleInspectorScrollClick:=True;DrawDevTools
+ End
+End;
+
 Function DevToolsHandleClick(X,Y:Integer):Boolean;
 Var I:Integer;N:HTMLNodePtr;
 Begin
@@ -18940,7 +19099,8 @@ Begin
    Else If X>GetMaxX-30Then Begin DevToolsSetOpen(False);Exit End
    Else For I:=1 To 5 Do
     If(X>=DevToolsTabLeft(I))And(X<=DevToolsTabRight(I))Then DevToolsTab:=I
-  End Else If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then DevConsoleFocused:=True;
+  End Else If DevToolsHandleInspectorScrollClick(X,Y)Then Exit
+  Else If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then DevConsoleFocused:=True;
   DrawDevTools;Exit
  End;
  If DevElementPicker And (X>=RENDER_AREA_X)And(X<=RENDER_AREA_X+RENDER_AREA_WIDTH)And
