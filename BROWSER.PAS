@@ -1529,9 +1529,68 @@ Function Browser_InternetSetOptionA(hInternet: LongInt; dwOption: LongWord;
          Var lpBuffer; dwBufferLength: LongWord): LongBool;
          StdCall; External 'wininet.dll' Name 'InternetSetOptionA';
 
+{ Client FTP reel (2026-09-26, demande explicite - "implemente un support
+  complet pour les adresses FTP", teste avec le serveur public en lecture
+  seule test.rebex.net) : reutilise le MEME transport WinInet que le
+  client HTTP(S) ci-dessus (Browser_InternetConnectA/InternetReadFile/
+  InternetCloseHandle sont deja generiques et repris tels quels - seul
+  dwService change, INTERNET_SERVICE_FTP au lieu de INTERNET_SERVICE_HTTP),
+  plus 3 fonctions specifiquement FTP. WIN32_FIND_DATAA reproduit ici la
+  structure Win32 reelle (inchangee depuis Windows 95/NT4) utilisee par
+  FtpFindFirstFileA/InternetFindNextFileA pour enumerer un repertoire. }
+Type
+ TFileTime = Record
+  dwLowDateTime: LongWord;
+  dwHighDateTime: LongWord;
+ End;
+ TWin32FindDataA = Record
+  dwFileAttributes: LongWord;
+  ftCreationTime: TFileTime;
+  ftLastAccessTime: TFileTime;
+  ftLastWriteTime: TFileTime;
+  nFileSizeHigh: LongWord;
+  nFileSizeLow: LongWord;
+  dwReserved0: LongWord;
+  dwReserved1: LongWord;
+  cFileName: Array[0..259] Of Char;
+  cAlternateFileName: Array[0..13] Of Char;
+ End;
+
+Function Browser_FtpFindFirstFileA(hConnect: LongInt; lpszSearchFile: PChar;
+         Var lpFindFileData: TWin32FindDataA; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'FtpFindFirstFileA';
+Function Browser_InternetFindNextFileA(hFind: LongInt; Var lpvFindData: TWin32FindDataA): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetFindNextFileA';
+Function Browser_FtpOpenFileA(hConnect: LongInt; lpszFileName: PChar;
+         dwAccess: LongWord; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'FtpOpenFileA';
+
+{ Conversion manuelle (pas de dependance a l'unite Strings pour StrPas,
+  absente du Uses de ce fichier) d'un nom de fichier termine par un
+  caractere nul (cFileName de TWin32FindDataA) en String Pascal normale. }
+Function Browser_FtpFileNameToStr(Const A: Array Of Char): String;
+Var
+ I: Integer;
+ R: String;
+Begin
+ R := '';
+ I := 0;
+ While (I <= High(A)) And (A[I] <> #0) Do Begin
+  R := R + A[I];
+  Inc(I);
+ End;
+ Browser_FtpFileNameToStr := R;
+End;
+
 Const
  BROWSER_INTERNET_OPEN_TYPE_DIRECT  = 1;
  BROWSER_INTERNET_SERVICE_HTTP      = 3;
+ BROWSER_INTERNET_SERVICE_FTP       = 1;
+ BROWSER_FTP_TRANSFER_TYPE_BINARY   = LongWord($00000002);
+ BROWSER_INTERNET_FLAG_PASSIVE      = LongWord($08000000);
+ BROWSER_GENERIC_READ               = LongWord($80000000);
+ BROWSER_FILE_ATTRIBUTE_DIRECTORY   = LongWord($00000010);
+ BROWSER_FTP_MAX_ENTRIES            = 2000; { filet de securite - voir Browser_FtpListDirectory }
  BROWSER_INTERNET_FLAG_RELOAD       = LongWord($80000000);
  BROWSER_INTERNET_FLAG_SECURE       = LongWord($00800000);
  BROWSER_HTTP_QUERY_STATUS_CODE     = 19;
@@ -1696,6 +1755,171 @@ Begin
  Browser_InternetCloseHandle(hInet);
  DevToolsLogNetwork(Url, 'GET', StatusCode, Length(ResponseBody));
  Browser_HttpGet := True;
+End;
+
+{ Decoupe une URL ftp:// en hote/port/chemin. Contrairement a Browser_
+  ParseUrl (HTTP), UrlPath par defaut est '' (repertoire racine du
+  serveur) et non '/' - FtpFindFirstFileA accepte un chemin FTP relatif
+  au repertoire de connexion tel quel, sans '/' initial obligatoire. }
+Procedure Browser_FtpParseUrl(Url: String; Var HostName: String;
+ Var Port: Word; Var UrlPath: String; Var Ok: Boolean);
+Var
+ Rest: String;
+ PortStr: String;
+ SlashPos, ColonPos, ErrCode: Integer;
+ PortVal: LongInt;
+Begin
+ Ok := False;
+ HostName := '';
+ Port := 21;
+ UrlPath := '';
+ If Copy(HTMLLowerCase(Url), 1, 6) <> 'ftp://' Then Exit;
+ Rest := Copy(Url, 7, Length(Url));
+ SlashPos := Pos('/', Rest);
+ If SlashPos = 0 Then Begin
+  HostName := Rest;
+  UrlPath := '';
+ End Else Begin
+  HostName := Copy(Rest, 1, SlashPos - 1);
+  UrlPath := Copy(Rest, SlashPos + 1, Length(Rest));
+ End;
+ ColonPos := Pos(':', HostName);
+ If ColonPos > 0 Then Begin
+  PortStr := Copy(HostName, ColonPos + 1, Length(HostName));
+  HostName := Copy(HostName, 1, ColonPos - 1);
+  Val(PortStr, PortVal, ErrCode);
+  If (ErrCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then Port := PortVal;
+ End;
+ Ok := HostName <> '';
+End;
+
+{ Ouvre une connexion FTP anonyme (Nil/Nil pour utilisateur/mot de passe -
+  comportement documente de WinInet : identifiants "anonymous" par
+  defaut). Facteur commun a Browser_FtpListDirectory/Browser_FtpGetFile.
+  Retourne 0 en cas d'echec (hInet et/ou hConnect deja refermes). }
+Function Browser_FtpConnect(Const HostName: String; Port: Word; Var hInet: LongInt): LongInt;
+Var
+ TimeoutValue: LongInt;
+ hConn: LongInt;
+Begin
+ hInet := Browser_InternetOpenA('DEVENV-BROWSER/1.0', BROWSER_INTERNET_OPEN_TYPE_DIRECT, Nil, Nil, 0);
+ If hInet = 0 Then Begin
+  Browser_FtpConnect := 0;
+  Exit;
+ End;
+ TimeoutValue := BROWSER_HTTP_TIMEOUT_MS;
+ Browser_InternetSetOptionA(hInet, BROWSER_OPTION_CONNECT_TIMEOUT, TimeoutValue, SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet, BROWSER_OPTION_SEND_TIMEOUT, TimeoutValue, SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet, BROWSER_OPTION_RECEIVE_TIMEOUT, TimeoutValue, SizeOf(TimeoutValue));
+ hConn := Browser_InternetConnectA(hInet, PChar(HostName), Port, Nil, Nil,
+  BROWSER_INTERNET_SERVICE_FTP, BROWSER_INTERNET_FLAG_PASSIVE, 0);
+ If hConn = 0 Then Begin
+  Browser_InternetCloseHandle(hInet);
+  hInet := 0;
+ End;
+ Browser_FtpConnect := hConn;
+End;
+
+{ Recupere le contenu d'UN fichier distant (mode binaire - evite toute
+  translation CRLF qui corromprait un fichier non-texte). Meme idiome de
+  boucle de lecture que Browser_HttpGet. }
+Function Browser_FtpGetFile(Const HostName: String; Port: Word; Const UrlPath: String;
+ Var Content: String): Boolean;
+Var
+ hInet, hConnect, hFile: LongInt;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: String;
+ J: Integer;
+Begin
+ Browser_FtpGetFile := False;
+ Content := '';
+ hConnect := Browser_FtpConnect(HostName, Port, hInet);
+ If hConnect = 0 Then Exit;
+ hFile := Browser_FtpOpenFileA(hConnect, PChar(UrlPath), BROWSER_GENERIC_READ,
+  BROWSER_FTP_TRANSFER_TYPE_BINARY Or BROWSER_INTERNET_FLAG_RELOAD, 0);
+ If hFile = 0 Then Begin
+  Browser_InternetCloseHandle(hConnect);
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ Repeat
+  BytesRead := 0;
+  If Not Browser_InternetReadFile(hFile, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J - 1];
+  If Length(Content) > BROWSER_HTTP_MAX_BODY - LongInt(BytesRead) Then Break;
+  Content := Content + Chunk;
+ Until False;
+ Browser_InternetCloseHandle(hFile);
+ Browser_InternetCloseHandle(hConnect);
+ Browser_InternetCloseHandle(hInet);
+ Browser_FtpGetFile := True;
+End;
+
+{ Enumere un repertoire distant (FtpFindFirstFileA + InternetFindNextFileA)
+  et construit une page HTML synthetique listant chaque entree comme un
+  vrai lien cliquable (URL ftp:// ABSOLUE - evite toute ambiguite de
+  resolution relative pour ".."/sous-dossiers, voir la disclosure de
+  CSSBuildStylesheetPath plus haut). SIMPLIFICATION DISCLOSED : taille de
+  fichier tronquee a 32 bits (nFileSizeLow seul, nFileSizeHigh ignore -
+  un fichier de plus de 4 Go dans une simple page listee est improbable
+  ici) ; BROWSER_FTP_MAX_ENTRIES est un filet de securite contre un
+  repertoire pathologiquement enorme, pas une limite documentee de FTP. }
+Function Browser_FtpListDirectory(Const HostName: String; Port: Word; Const UrlPath: String;
+ Var Listing: String): Boolean;
+Var
+ hInet, hConnect, hFind: LongInt;
+ FindData: TWin32FindDataA;
+ SearchPat, DirPath, Origin, EntryName, EntryHref, SizeText: String;
+ IsDir, HasMore: Boolean;
+ EntryCount: Integer;
+Begin
+ Browser_FtpListDirectory := False;
+ Listing := '';
+ hConnect := Browser_FtpConnect(HostName, Port, hInet);
+ If hConnect = 0 Then Exit;
+
+ DirPath := UrlPath;
+ If (Length(DirPath) > 0) And (DirPath[Length(DirPath)] <> '/') Then DirPath := DirPath + '/';
+ SearchPat := DirPath + '*';
+
+ If Port = 21 Then Origin := 'ftp://' + HostName
+ Else Origin := 'ftp://' + HostName + ':' + IntToStr(Port);
+
+ Listing := '<html><head><title>Index de ' + Origin + '/' + DirPath + '</title></head>' +
+  '<body><h2>Index de ' + Origin + '/' + DirPath + '</h2><pre>';
+ If DirPath <> '' Then
+  Listing := Listing + '<a href="' + Origin + '/">Racine du serveur</a><br><br>';
+
+ hFind := Browser_FtpFindFirstFileA(hConnect, PChar(SearchPat), FindData, 0, 0);
+ If hFind <> 0 Then Begin
+  HasMore := True;
+  EntryCount := 0;
+  While HasMore And (EntryCount < BROWSER_FTP_MAX_ENTRIES) Do Begin
+   EntryName := Browser_FtpFileNameToStr(FindData.cFileName);
+   If (EntryName <> '.') And (EntryName <> '..') And (EntryName <> '') Then Begin
+    IsDir := (FindData.dwFileAttributes And BROWSER_FILE_ATTRIBUTE_DIRECTORY) <> 0;
+    EntryHref := Origin + '/' + DirPath + EntryName;
+    If IsDir Then Begin
+     EntryHref := EntryHref + '/';
+     SizeText := '[REP]';
+    End Else
+     SizeText := IntToStr(LongInt(FindData.nFileSizeLow)) + ' octets';
+    Listing := Listing + '<a href="' + EntryHref + '">' + EntryName +
+     '</a>' + '        ' + SizeText + '<br>';
+    Inc(EntryCount);
+   End;
+   HasMore := Browser_InternetFindNextFileA(hFind, FindData);
+  End;
+  Browser_InternetCloseHandle(hFind);
+ End;
+
+ Listing := Listing + '</pre></body></html>';
+ Browser_InternetCloseHandle(hConnect);
+ Browser_InternetCloseHandle(hInet);
+ Browser_FtpListDirectory := True;
 End;
 {$ENDIF}
 
@@ -3293,6 +3517,7 @@ Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String); Forward;
 Function IsRemoteURL(Const URL: String): Boolean; Forward;
 Function IsViewSourceURL(Const URL: String): Boolean; Forward;
 Function StripViewSourcePrefix(Const URL: String): String; Forward;
+Function IsFtpURL(Const URL: String): Boolean; Forward;
 Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String); Forward;
 Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt); Forward;
 Procedure JSClearTimeout; Forward;
@@ -7331,9 +7556,15 @@ Var
  LowerCurrent: String;
  Found: Boolean;
 Begin
- { Src deja une URL absolue (http/https) - aucune resolution necessaire. }
+ { Src deja une URL absolue (http/https/ftp) - aucune resolution
+   necessaire. ftp:// ajoutee 2026-09-26 : le listing de repertoire FTP
+   (voir Browser_FtpListDirectory) genere toujours des liens ftp://
+   DEJA absolus, pour eviter toute ambiguite de resolution relative -
+   sans cette entree, ils auraient ete mal reinterpretes comme un
+   chemin de fichier local plus bas dans cette fonction. }
  If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or
-    (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Then Begin
+    (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(Src), 1, 6) = 'ftp://') Then Begin
   CSSBuildStylesheetPath := Src;
   Exit;
  End;
@@ -20231,6 +20462,33 @@ Begin
                 (Copy(LowerURL, 1, 8) = 'https://');
 End;
 
+{ Detecter le prefixe d'URL "ftp://" (2026-09-26, demande explicite -
+  "implemente un support complet pour les adresses FTP"). }
+Function IsFtpURL(Const URL: String): Boolean;
+Begin
+ IsFtpURL := Copy(HTMLLowerCase(URL), 1, 6) = 'ftp://';
+End;
+
+{ Echappement HTML minimal (&/</>) pour afficher tel quel, en texte
+  brut dans un <pre>, un fichier recupere par FTP (voir Browser_
+  FtpGetFile) - evite qu'un '<' litteral dans le fichier soit
+  reinterprete comme une balise HTML. }
+Function FTPEscapeText(Const S: String): String;
+Var
+ I: LongInt;
+ R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do
+  Case S[I] Of
+   '&': R := R + '&amp;';
+   '<': R := R + '&lt;';
+   '>': R := R + '&gt;';
+   Else R := R + S[I];
+  End;
+ FTPEscapeText := R;
+End;
+
 { Detecter le prefixe d'URL "view-source:" (ex: "view-source:https://..."
   ou "view-source:C:\page.html"), demande explicitement par l'utilisateur
   pour afficher le code source HTML brut en syntaxe coloree au lieu de le
@@ -20630,6 +20888,9 @@ Var
  PageBody: String;
  StatusCode: LongInt;
  GetOk: Boolean;
+ FtpHost, FtpPath: String;
+ FtpPort: Word;
+ FtpUrlOk, FtpIsDirRequest, FtpOk: Boolean;
  {$ENDIF}
 Begin
  InitHTMLSource(HTML);
@@ -20669,6 +20930,63 @@ Begin
 
   If SetHTMLSourceFromString(MessageText, HTML) Then
    TestHTMLRender(HTML);
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ { Adresse FTP (2026-09-26, demande explicite - "implemente un support
+   complet pour les adresses FTP", teste avec ftp://test.rebex.net) :
+   repertoire (UrlPath vide ou terminant par '/') affiche comme une page
+   de listing HTML synthetique avec de vrais liens cliquables ; sinon
+   tente d'abord un fichier, puis retente comme repertoire SANS slash
+   final si l'ouverture du fichier echoue (heuristique - un serveur FTP
+   reel accepte les deux formes, aucune commande FEAT/MLSD n'est
+   utilisee ici pour distinguer explicitement, SIMPLIFICATION DISCLOSED).
+   Un fichier recupere est affiche comme TEXTE BRUT echappe (aucun
+   detecteur de type MIME/binaire reel - SIMPLIFICATION DISCLOSED,
+   suffisant pour parcourir un serveur FTP comme test.rebex.net). }
+ If IsFtpURL(CurrentURL) Then Begin
+  {$IFDEF WINDOWS}
+  Browser_FtpParseUrl(CurrentURL, FtpHost, FtpPort, FtpPath, FtpUrlOk);
+  If Not FtpUrlOk Then Begin
+   MessageText := '<html><body><h2>Adresse FTP invalide</h2><p>' + CurrentURL + '</p></body></html>';
+  End Else Begin
+   FtpIsDirRequest := (FtpPath = '') Or (FtpPath[Length(FtpPath)] = '/');
+   If FtpIsDirRequest Then Begin
+    FtpOk := Browser_FtpListDirectory(FtpHost, FtpPort, FtpPath, PageBody);
+    If FtpOk Then Begin
+     If SetHTMLSourceFromString(PageBody, HTML) Then TestHTMLRender(HTML);
+     FreeHTMLSource(HTML);
+     Exit;
+    End;
+    MessageText := '<html><body><h2>Erreur FTP</h2><p>Impossible de lister : ' +
+     CurrentURL + '</p></body></html>';
+   End Else Begin
+    FtpOk := Browser_FtpGetFile(FtpHost, FtpPort, FtpPath, PageBody);
+    If FtpOk Then Begin
+     MessageText := '<html><body><pre>' + FTPEscapeText(PageBody) + '</pre></body></html>';
+     If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+     FreeHTMLSource(HTML);
+     Exit;
+    End;
+    { Peut-etre un repertoire reference sans '/' final - retenter comme tel. }
+    FtpOk := Browser_FtpListDirectory(FtpHost, FtpPort, FtpPath + '/', PageBody);
+    If FtpOk Then Begin
+     If SetHTMLSourceFromString(PageBody, HTML) Then TestHTMLRender(HTML);
+     FreeHTMLSource(HTML);
+     Exit;
+    End;
+    MessageText := '<html><body><h2>Erreur FTP</h2><p>Impossible d''ouvrir : ' +
+     CurrentURL + '</p></body></html>';
+   End;
+  End;
+  If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  {$ELSE}
+  MessageText := '<html><body><h2>Adresse FTP</h2><p>' + CurrentURL +
+                 '</p><p>Le support FTP n''est disponible que sous Windows ' +
+                 'pour l''instant (client WinInet).</p></body></html>';
+  If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  {$ENDIF}
   FreeHTMLSource(HTML);
   Exit;
  End;
