@@ -661,11 +661,22 @@ Type
    attributs du noeud (GetNodeAttribute) ; on ne stocke ici que le
    rectangle et le noeud, pour aller les relire au moment du clic ou
    du survol. }
- InteractiveArea = Record
-  X1, Y1, X2, Y2: Integer;
-  Node: HTMLNodePtr;
-  Active: Boolean;
- End;
+InteractiveArea = Record
+ X1, Y1, X2, Y2: Integer;
+ Node: HTMLNodePtr;
+ Active: Boolean;
+End;
+
+DevElementArea = Record
+ X1, Y1, X2, Y2: Integer;
+ Node: HTMLNodePtr;
+End;
+
+DevNetworkEntry = Record
+ Status: LongInt;
+ Method, Domain, FileName, ContentType: String[80];
+ Size: LongInt;
+End;
 
  { Boite de mise en page (position/taille) d'un element ID'e, telle
    que calculee lors du dernier rendu - permet d'implementer
@@ -1116,9 +1127,21 @@ Var
    code source/Enregistrer sous/Creer un code QR. ContextMenuX/Y est le
    coin superieur gauche reellement dessine (peut differer du point de
    clic si celui-ci etait trop pres d'un bord de l'ecran). }
- ContextMenuOpen: Boolean;
- ContextMenuX, ContextMenuY: Integer;
- ContextMenuHoverIndex: Integer;
+ContextMenuOpen: Boolean;
+ContextMenuX, ContextMenuY: Integer;
+ContextMenuHoverIndex: Integer;
+
+{ Outils de developpement integres (F12 / menu Inspecter). }
+DevToolsOpen, DevElementPicker, DevConsoleFocused: Boolean;
+DevToolsTab, DevToolsFullRenderHeight: Integer;
+DevSelectedNode: HTMLNodePtr;
+DevConsoleInput: String;
+DevConsoleLines: Array[1..100] Of String;
+DevConsoleLineCount: Integer;
+DevNetworkEntries: Array[1..100] Of DevNetworkEntry;
+DevNetworkCount: Integer;
+DevElementAreas: Array[1..2048] Of DevElementArea;
+DevElementAreaCount: Integer;
 
  { Variables pour le bouton Precedent }
  BackButtonEnabled: Boolean;
@@ -1529,6 +1552,9 @@ Begin
  Ok := HostName <> '';
 End;
 
+Procedure DevToolsLogNetwork(Const URL, Method: String; Status, Size: LongInt); Forward;
+Procedure DevToolsAddConsole(Const S: String); Forward;
+
 { Requete HTTP GET synchrone reelle via WinInet - meme transport que       }
 { CurlHttpRequest de DEVENV.PAS (ouvre/ferme une connexion par appel, pas  }
 { de pool - suffisant pour une navigation interactive au clavier/souris    }
@@ -1600,6 +1626,7 @@ Begin
  Browser_InternetCloseHandle(hRequest);
  Browser_InternetCloseHandle(hConnect);
  Browser_InternetCloseHandle(hInet);
+ DevToolsLogNetwork(Url, 'GET', StatusCode, Length(ResponseBody));
  Browser_HttpGet := True;
 End;
 {$ENDIF}
@@ -3250,8 +3277,7 @@ End;
 { Fonction native: console.log() }
 Procedure JSNativeConsoleLog(Msg: String);
 Begin
- { Dans une vraie implementation, on ecrirait dans une console }
- { Pour l'instant, on ne fait rien de visible }
+ DevToolsAddConsole(Msg);
 End;
 
 { Fonction native: document.write() }
@@ -8706,6 +8732,7 @@ Begin
 End;
 
 { Declaration forward pour la recursion }
+Procedure DevToolsTrackElement(Node: HTMLNodePtr; X1,Y1,X2,Y2:Integer); Forward;
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
 Procedure RenderCSSBackgroundSprite(Const Style: DOMStyle; X, Y: Integer); Forward;
 
@@ -17034,6 +17061,10 @@ Begin
  If Length(BoxIdAttr) > 0 Then
   SetJSNodeBox(Node, BoxStartX, BoxStartY, Ctx.MaxX - BoxStartX, (Ctx.Y - BoxStartY) + Ctx.LineHeight);
 
+ If Node^.NodeType = HTML_NODE_ELEMENT Then
+  DevToolsTrackElement(Node, BoxStartX, BoxStartY, Ctx.MaxX,
+                       Ctx.Y + Ctx.LineHeight);
+
  { Les gestionnaires inline peuvent appartenir a n'importe quel element,
    pas seulement TD/TH/TR. Dans le menu de la page d'accueil, onmouseover
    et onmouseout sont portes par DIV.displayImage. A l'interieur d'une
@@ -17078,6 +17109,7 @@ Procedure DrawRefreshButton; Forward;
 Procedure DrawFavoriteButton; Forward;
 Procedure ShowMouse;Forward;
 Procedure HideMouse;Forward;
+Procedure DrawDevTools; Forward;
 
 { Procedure pour rendre un document HTML complet }
 { Afficher par-dessus tout le reste les elements CSS position:absolute
@@ -17272,6 +17304,7 @@ Begin
  ClearLinkAreas;
  ClearInteractiveAreas;
  ClearJSNodeBoxes;
+ DevElementAreaCount := 0;
  AbsolutePositionedCount := 0;
  RenderingAbsoluteOverlay := False;
 
@@ -17416,6 +17449,7 @@ Begin
  DrawForwardButton;
  DrawRefreshButton;
  DrawFavoriteButton;
+ DrawDevTools;
 End;
 
 { Procedure pour tester le rendu avec du HTML }
@@ -17448,6 +17482,7 @@ Begin
     l'execution synchrone d'un gestionnaire (jamais a travers une
     navigation), mais on le remet aussi a Nil par precaution. }
   HoveredInteractiveNode := Nil;
+  DevSelectedNode := Nil;
   JSEventTargetNode := Nil;
   JSClearTimeout;
 
@@ -18679,6 +18714,221 @@ Begin
 End;
 
 { =====================================================
+  OUTILS DE DEVELOPPEMENT INTEGRES
+  ===================================================== }
+
+Const
+ DEVTOOLS_TAB_INSPECTOR = 1;
+ DEVTOOLS_TAB_DEBUGGER = 2;
+ DEVTOOLS_TAB_STYLE = 3;
+ DEVTOOLS_TAB_CONSOLE = 4;
+ DEVTOOLS_TAB_NETWORK = 5;
+ DEVTOOLS_TAB_HEIGHT = 24;
+
+Function DevToolsPanelTop:Integer;
+Begin DevToolsPanelTop:=RENDER_AREA_Y+RENDER_AREA_HEIGHT+1 End;
+
+Procedure DevToolsAddConsole(Const S:String);
+Var I:Integer;
+Begin
+ If DevConsoleLineCount=100 Then Begin
+  For I:=1 To 99 Do DevConsoleLines[I]:=DevConsoleLines[I+1];
+  DevConsoleLineCount:=99
+ End;
+ Inc(DevConsoleLineCount);DevConsoleLines[DevConsoleLineCount]:=S
+End;
+
+Function DevToolsURLType(Const URL:String):String;
+Var E:String;
+Begin
+ E:=HTMLLowerCase(ExtractFileExt(URL));
+ If (E='.png')Or(E='.gif')Or(E='.jpg')Or(E='.jpeg')Or(E='.bmp')Or(E='.svg')Then DevToolsURLType:='image'
+ Else If E='.css'Then DevToolsURLType:='stylesheet'
+ Else If E='.js'Then DevToolsURLType:='script'
+ Else If (E='.htm')Or(E='.html')Or(E='')Then DevToolsURLType:='document'
+ Else DevToolsURLType:='other'
+End;
+
+Procedure DevToolsLogNetwork(Const URL,Method:String;Status,Size:LongInt);
+Var UseHttps,Ok:Boolean;Host,Path:String;Port:Word;P:LongInt;I:Integer;
+Begin
+ Browser_ParseUrl(URL,UseHttps,Host,Port,Path,Ok);
+ If Not Ok Then Exit;
+ If DevNetworkCount=100 Then Begin
+  For I:=1 To 99 Do DevNetworkEntries[I]:=DevNetworkEntries[I+1];
+  DevNetworkCount:=99
+ End;
+ Inc(DevNetworkCount);
+ With DevNetworkEntries[DevNetworkCount]Do Begin
+  DevNetworkEntries[DevNetworkCount].Status:=Status;
+  DevNetworkEntries[DevNetworkCount].Method:=Copy(Method,1,80);Domain:=Copy(Host,1,80);
+  P:=Length(Path);While(P>0)And(Path[P]<>'/')Do Dec(P);
+  FileName:=Copy(Path,P+1,80);If FileName=''Then FileName:='/';
+  ContentType:=DevToolsURLType(Path);DevNetworkEntries[DevNetworkCount].Size:=Size
+ End
+End;
+
+Procedure DevToolsTrackElement(Node:HTMLNodePtr;X1,Y1,X2,Y2:Integer);
+Begin
+ If Not DevToolsOpen Then Exit;
+ If (X2<X1)Or(Y2<Y1)Then Exit;
+ If DevElementAreaCount<2048 Then Begin
+  Inc(DevElementAreaCount);
+  With DevElementAreas[DevElementAreaCount]Do Begin
+   DevElementAreas[DevElementAreaCount].X1:=X1;
+   DevElementAreas[DevElementAreaCount].Y1:=Y1;
+   DevElementAreas[DevElementAreaCount].X2:=X2;
+   DevElementAreas[DevElementAreaCount].Y2:=Y2;
+   DevElementAreas[DevElementAreaCount].Node:=Node
+  End
+ End
+End;
+
+Function DevToolsElementAt(X,Y:Integer):HTMLNodePtr;
+Var I:Integer;
+Begin
+ DevToolsElementAt:=Nil;
+ For I:=DevElementAreaCount DownTo 1 Do
+  With DevElementAreas[I]Do
+   If(X>=X1)And(X<=X2)And(Y>=Y1)And(Y<=Y2)Then Begin DevToolsElementAt:=Node;Exit End
+End;
+
+Procedure DevToolsSetOpen(OpenIt:Boolean);
+Var H:Integer;
+Begin
+ If DevToolsOpen=OpenIt Then Exit;
+ DevToolsOpen:=OpenIt;DevConsoleFocused:=False;DevElementPicker:=False;
+ If OpenIt Then Begin
+  If DevToolsFullRenderHeight=0 Then DevToolsFullRenderHeight:=RENDER_AREA_HEIGHT;
+  H:=GetMaxY Div 3;If H<170 Then H:=170;If H>300 Then H:=300;
+  RENDER_AREA_HEIGHT:=DevToolsFullRenderHeight-H;
+  If RENDER_AREA_HEIGHT<100 Then RENDER_AREA_HEIGHT:=100;
+  If DevToolsTab=0 Then DevToolsTab:=DEVTOOLS_TAB_INSPECTOR
+ End Else RENDER_AREA_HEIGHT:=DevToolsFullRenderHeight;
+ RescrollPage
+End;
+
+Procedure DevToolsToggle;
+Begin DevToolsSetOpen(Not DevToolsOpen)End;
+
+Function DevToolsNodeCaption(Node:HTMLNodePtr):String;
+Var S,V:String;
+Begin
+ If Node=Nil Then Begin DevToolsNodeCaption:='(aucun element)';Exit End;
+ If Node^.NodeType=HTML_NODE_TEXT Then Begin DevToolsNodeCaption:='#text '+Copy(Trim(Node^.Content),1,45);Exit End;
+ S:='<'+Node^.TagName;V:=GetNodeAttribute(Node,'id');If V<>''Then S:=S+'#'+V;
+ V:=GetNodeAttribute(Node,'class');If V<>''Then S:=S+'.'+V;
+ DevToolsNodeCaption:=Copy(S+'>',1,75)
+End;
+
+Procedure DevToolsDrawDOM(Node:HTMLNodePtr;Depth:Integer;Var Y,Lines:Integer);
+Var C:HTMLNodePtr;S:String;
+Begin
+ If(Node=Nil)Or(Lines>=14)Then Exit;
+ If Node^.NodeType=HTML_NODE_ELEMENT Then Begin
+  S:=Copy('                ',1,Depth*2)+DevToolsNodeCaption(Node);
+  If Node=DevSelectedNode Then Begin SetFillStyle(SolidFill,1);Bar(5,Y-1,GetMaxX-5,Y+9);SetColor(15)End
+  Else SetColor(HTMLBlackColorIndex);
+  OutTextXY(8,Y,Copy(S,1,(GetMaxX-20)Div 8));Inc(Y,11);Inc(Lines)
+ End;
+ C:=Node^.FirstChild;While(C<>Nil)And(Lines<14)Do Begin DevToolsDrawDOM(C,Depth+1,Y,Lines);C:=C^.NextSibling End
+End;
+
+Procedure DrawDevTools;
+Const TabX:Array[1..5]Of Integer=(38,130,222,342,418);
+      TabName:Array[1..5]Of String[16]=('Inspecteur','Debogueur','Editeur style','Console','Reseau');
+Var Top,Y,I,Lines,First:Integer;S:String;St:DOMStyle;
+Begin
+ If Not DevToolsOpen Then Exit;
+ Top:=DevToolsPanelTop;
+ SetFillStyle(SolidFill,LightGray);Bar(0,Top,GetMaxX,GetMaxY);
+ SetColor(HTMLBlackColorIndex);Line(0,Top,GetMaxX,Top);
+ { selecteur d'element }
+ If DevElementPicker Then Begin SetFillStyle(SolidFill,1);Bar(4,Top+2,31,Top+21);SetColor(15)End
+ Else Begin SetFillStyle(SolidFill,White);Bar(4,Top+2,31,Top+21);SetColor(HTMLBlackColorIndex)End;
+ Rectangle(4,Top+2,31,Top+21);OutTextXY(11,Top+7,'<>');
+ For I:=1 To 5 Do Begin
+  If DevToolsTab=I Then Begin SetFillStyle(SolidFill,White);Bar(TabX[I],Top+2,TabX[I]+84,Top+22)End;
+  SetColor(HTMLBlackColorIndex);OutTextXY(TabX[I]+4,Top+8,TabName[I])
+ End;
+ OutTextXY(GetMaxX-18,Top+7,'X');Line(0,Top+DEVTOOLS_TAB_HEIGHT,GetMaxX,Top+DEVTOOLS_TAB_HEIGHT);
+ Y:=Top+30;SetColor(HTMLBlackColorIndex);
+ Case DevToolsTab Of
+  DEVTOOLS_TAB_INSPECTOR:Begin Lines:=0;DevToolsDrawDOM(HTMLDocument,0,Y,Lines)End;
+  DEVTOOLS_TAB_DEBUGGER:Begin
+   OutTextXY(8,Y,'Sources JavaScript et execution');Inc(Y,14);
+   OutTextXY(8,Y,'Etat: '+IntToStr(Ord(JSCtx.HasError))+'  fonctions: '+IntToStr(JSCtx.FuncCount));Inc(Y,14);
+   If JSCtx.HasError Then OutTextXY(8,Y,'Erreur: '+Copy(JSCtx.ErrorMsg,1,70))
+   Else OutTextXY(8,Y,'Aucune exception JavaScript. Points d arret: F12 pour fermer.')
+  End;
+  DEVTOOLS_TAB_STYLE:Begin
+   OutTextXY(8,Y,'Styles calcules - '+DevToolsNodeCaption(DevSelectedNode));Inc(Y,14);
+   If DevSelectedNode<>Nil Then Begin CSSResolveCascade(DevSelectedNode,St);
+    OutTextXY(8,Y,'display: '+St.Display);Inc(Y,12);OutTextXY(8,Y,'color: '+St.Color);Inc(Y,12);
+    OutTextXY(8,Y,'background: '+St.BackgroundColor);Inc(Y,12);OutTextXY(8,Y,'width: '+St.Width+'  height: '+St.Height);Inc(Y,12);
+    OutTextXY(8,Y,'margin: '+St.Margin+'  padding: '+St.Padding)
+   End
+  End;
+  DEVTOOLS_TAB_CONSOLE:Begin
+   First:=DevConsoleLineCount-9;If First<1Then First:=1;
+   For I:=First To DevConsoleLineCount Do Begin OutTextXY(8,Y,Copy(DevConsoleLines[I],1,(GetMaxX-20)Div 8));Inc(Y,12)End;
+   Y:=GetMaxY-18;SetFillStyle(SolidFill,White);Bar(4,Y-2,GetMaxX-5,GetMaxY-3);SetColor(HTMLBlackColorIndex);
+   OutTextXY(8,Y,'> '+Copy(DevConsoleInput,1,(GetMaxX-30)Div 8));If DevConsoleFocused Then Line(24+Length(DevConsoleInput)*8,Y+10,30+Length(DevConsoleInput)*8,Y+10)
+  End;
+  DEVTOOLS_TAB_NETWORK:Begin
+   OutTextXY(4,Y,'Etat  Methode  Domaine              Fichier             Type        Taille');Inc(Y,13);
+   First:=DevNetworkCount-11;If First<1Then First:=1;
+   For I:=First To DevNetworkCount Do With DevNetworkEntries[I]Do Begin
+    S:=IntToStr(Status)+'    '+Method+'      '+Copy(Domain,1,18)+'  '+Copy(FileName,1,18)+'  '+Copy(ContentType,1,10)+'  '+IntToStr(Size);
+    OutTextXY(4,Y,Copy(S,1,(GetMaxX-8)Div 8));Inc(Y,12)
+   End
+  End
+ End;
+ If(DevSelectedNode<>Nil)And(DevElementPicker)Then
+  For I:=1 To DevElementAreaCount Do If DevElementAreas[I].Node=DevSelectedNode Then Begin
+   SetColor(Yellow);Rectangle(DevElementAreas[I].X1,DevElementAreas[I].Y1,DevElementAreas[I].X2,DevElementAreas[I].Y2);Break
+  End
+End;
+
+Function DevToolsHandleClick(X,Y:Integer):Boolean;
+Const TabX:Array[1..5]Of Integer=(38,130,222,342,418);
+Var I:Integer;N:HTMLNodePtr;
+Begin
+ DevToolsHandleClick:=False;
+ If Not DevToolsOpen Then Exit;
+ If Y>=DevToolsPanelTop Then Begin
+  DevToolsHandleClick:=True;DevConsoleFocused:=False;
+  If(Y<DevToolsPanelTop+24)Then Begin
+   If X<34Then DevElementPicker:=Not DevElementPicker
+   Else If X>GetMaxX-30Then Begin DevToolsSetOpen(False);Exit End
+   Else For I:=1 To 5 Do If(X>=TabX[I])And(X<TabX[I]+88)Then DevToolsTab:=I
+  End Else If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then DevConsoleFocused:=True;
+  DrawDevTools;Exit
+ End;
+ If DevElementPicker And (X>=RENDER_AREA_X)And(X<=RENDER_AREA_X+RENDER_AREA_WIDTH)And
+    (Y>=RENDER_AREA_Y)And(Y<=RENDER_AREA_Y+RENDER_AREA_HEIGHT) Then Begin
+  N:=DevToolsElementAt(X,Y);If N<>Nil Then Begin DevSelectedNode:=N;DevToolsTab:=DEVTOOLS_TAB_INSPECTOR;DevElementPicker:=False;DrawDevTools End;
+  DevToolsHandleClick:=True
+ End
+End;
+
+Procedure DevToolsConsoleKey(K:Char);
+Var V:JSValue;S:String;
+Begin
+ If Not DevConsoleFocused Then Exit;
+ Case Ord(K)Of
+  8:If Length(DevConsoleInput)>0Then Delete(DevConsoleInput,Length(DevConsoleInput),1);
+  13:Begin
+   S:=DevConsoleInput;DevToolsAddConsole('> '+S);JSCtx.HasError:=False;V:=JSEvaluate(S);
+   If JSCtx.HasError Then DevToolsAddConsole('Erreur: '+JSCtx.ErrorMsg)
+   Else DevToolsAddConsole(JSValueToString(V));DevConsoleInput:=''
+  End;
+  27:DevConsoleFocused:=False;
+  Else If(K>=#32)And(K<=#126)Then DevConsoleInput:=DevConsoleInput+K
+ End;DrawDevTools
+End;
+
+{ =====================================================
   MENU CONTEXTUEL (clic droit sur la zone de rendu)
   =====================================================
   Demande explicite de l'utilisateur (2026-09-25) : Precedent/Suivant/
@@ -18692,7 +18942,7 @@ End;
   pour les survols de menus JS en position absolue. }
 
 Const
- CONTEXT_MENU_ITEM_COUNT = 6;
+ CONTEXT_MENU_ITEM_COUNT = 7;
  CONTEXT_MENU_ITEM_HEIGHT = 22;
  CONTEXT_MENU_WIDTH = 300;
 
@@ -18705,6 +18955,7 @@ Begin
   4: ContextMenuLabel := 'Voir le code source';
   5: ContextMenuLabel := 'Enregistrer sous...';
   6: ContextMenuLabel := 'Creer un code QR pour cette page';
+  7: ContextMenuLabel := 'Inspecter...                         F12';
   Else ContextMenuLabel := '';
  End;
 End;
@@ -18714,7 +18965,7 @@ End;
   plupart des navigateurs reels). }
 Function ContextMenuHasSeparatorAfter(Idx: Integer): Boolean;
 Begin
- ContextMenuHasSeparatorAfter := (Idx = 3) Or (Idx = 4);
+ ContextMenuHasSeparatorAfter := (Idx = 3) Or (Idx = 4) Or (Idx = 6);
 End;
 
 Function ContextMenuHeight: Integer;
@@ -18837,6 +19088,7 @@ Begin
   4: ContextMenuViewSource;
   5: Begin RescrollPage; ContextMenuSaveAs; End;
   6: Begin RescrollPage; ContextMenuCreateQRCode; End;
+  7: DevToolsSetOpen(True);
   Else RescrollPage;
  End;
 End;
@@ -20098,6 +20350,7 @@ Begin
    HTML que dans son coin superieur gauche. }
  RENDER_AREA_WIDTH := GetMaxX - RENDER_AREA_X - 5;
  RENDER_AREA_HEIGHT := GetMaxY - RENDER_AREA_Y - 5;
+ DevToolsFullRenderHeight := RENDER_AREA_HEIGHT;
 End;
 
 {$IFNDEF FPC}
@@ -20751,6 +21004,8 @@ Begin
   Exit;
  End;
 
+ If DevToolsHandleClick(X,Y) Then Exit;
+
  { Verifier si le clic est dans la barre d'URL }
  If IsClickInURLBar(X, Y) Then Begin
   URLBarFocused := True;
@@ -21178,6 +21433,14 @@ BEGIN
     la barre d'adresse a chaque defilement. }
   For ScrollTestI := 1 To 10 Do
    ScrollPageBy(0, RENDER_AREA_HEIGHT);
+  { Ouvrir et dessiner tous les onglets des outils de developpement. }
+  DevToolsSetOpen(True);
+  For ScrollTestI:=DEVTOOLS_TAB_INSPECTOR To DEVTOOLS_TAB_NETWORK Do Begin
+   DevToolsTab:=ScrollTestI;DrawDevTools
+  End;
+  DevToolsTab:=DEVTOOLS_TAB_CONSOLE;DevConsoleFocused:=True;
+  DevConsoleInput:='1+1';DevToolsConsoleKey(#13);
+  DevToolsSetOpen(False);
   { Si la page contient une cellule TD/TH avec onclick/onmouseover/
     onmouseout (ex: un onglet de navigation), exercer le survol puis
     le clic pour detecter toute exception dans DispatchInlineEventHandler
@@ -21225,7 +21488,10 @@ BEGIN
     If ContextMenuOpen Then Begin
      ContextMenuOpen := False;
      RepaintAfterContextMenu;
-    End Else If FocusedInputNode <> Nil Then
+    End Else If Ord(Key) = 134 Then
+     DevToolsToggle
+    Else If DevConsoleFocused Then Begin End
+    Else If FocusedInputNode <> Nil Then
      HandleFormInputSpecialKey(Ord(Key))
     Else
      HandleURLSpecialKey(Ord(Key));
@@ -21238,7 +21504,9 @@ BEGIN
      ContextMenuOpen := False;
      RepaintAfterContextMenu;
      Key := #0;
-    End Else If FocusedInputNode <> Nil Then
+    End Else If DevConsoleFocused Then
+     DevToolsConsoleKey(Key)
+    Else If FocusedInputNode <> Nil Then
      HandleFormInputKey(Key)
     Else
      HandleURLInput(Key);
