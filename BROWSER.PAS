@@ -1219,6 +1219,8 @@ DevInspectorRows:Array[1..128]Of DevInspectorRow;
 DevInspectorRowCount:Integer;
 DevCSSSources:Array[1..32]Of DevCSSSource;
 DevCSSSourceCount,DevCSSSelected,DevCSSFirstLine:Integer;
+FailedImageURLs:Array[1..128]Of String[255];
+FailedImageURLCount:Integer;
 
  { Variables pour le bouton Precedent }
  BackButtonEnabled: Boolean;
@@ -1989,6 +1991,22 @@ Const
  BROWSER_IMG_TEMP_FILE = 'BROWSERIMG.TMP';
  BROWSER_PDF_TEMP_FILE = 'BROWSERPDF.TMP';
 
+Function ImageURLPreviouslyFailed(Const URL:String):Boolean;
+Var I:Integer;
+Begin
+ ImageURLPreviouslyFailed:=False;
+ For I:=1To FailedImageURLCount Do
+  If FailedImageURLs[I]=URL Then Begin ImageURLPreviouslyFailed:=True;Exit End
+End;
+
+Procedure RememberFailedImageURL(Const URL:String);
+Begin
+ If(URL='')Or ImageURLPreviouslyFailed(URL)Then Exit;
+ If FailedImageURLCount<128Then Begin
+  Inc(FailedImageURLCount);FailedImageURLs[FailedImageURLCount]:=Copy(URL,1,255)
+ End
+End;
+
 { Si Path est une URL http/https, la telecharger (via Browser_HttpGet) dans
   un fichier local TEMPORAIRE et retourner ce chemin dans LoadPath, pour
   reutiliser tel quel les decodeurs BMP/GIF/JPEG/PNG/SVG existants (qui ne
@@ -2005,6 +2023,7 @@ Var
  StatusCode: LongInt;
  F: File;
  BytesWritten: LongInt;
+ WrittenOK:Boolean;
 {$ENDIF}
 Begin
  If Not ((Copy(HTMLLowerCase(Path), 1, 7) = 'http://') Or
@@ -2029,7 +2048,8 @@ Begin
  End;
  BlockWrite(F, ImgBody[1], Length(ImgBody), BytesWritten);
  Close(F);
- ResolveImageLoadPath := LongInt(BytesWritten) = Length(ImgBody);
+ WrittenOK:=LongInt(BytesWritten)=Length(ImgBody);
+ ResolveImageLoadPath:=WrittenOK;
  {$ELSE}
  LoadPath := '';
  ResolveImageLoadPath := False;
@@ -18052,6 +18072,11 @@ Begin
 
  { Construire le chemin complet de l'image }
  ImgPath := BMPBuildImagePath(Src);
+ If ImageURLPreviouslyFailed(ImgPath)Then Begin
+  If Alt<>''Then RenderText(Ctx,'['+Alt+']')
+  Else RenderText(Ctx,'[IMG: '+Src+']');
+  Exit
+ End;
 
  { Determiner le type d'image }
  IsBMP := False;
@@ -18093,6 +18118,7 @@ Begin
    LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And BMPLoadFromFile(LoadPath, BMPImg);
    ReleaseImageLoadPath(LoadPath);
    If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -18146,6 +18172,7 @@ Begin
    LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And GIFLoadFromFile(LoadPath, GIFImg);
    ReleaseImageLoadPath(LoadPath);
    If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -18199,6 +18226,7 @@ Begin
    LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And JPEGLoadFromFile(LoadPath, JPEGImg);
    ReleaseImageLoadPath(LoadPath);
    If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -18252,6 +18280,7 @@ Begin
    LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And PNGLoadFromFile(LoadPath, PNGImg);
    ReleaseImageLoadPath(LoadPath);
    If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -18305,6 +18334,7 @@ Begin
    LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And SVGLoadFromFile(LoadPath, SVGImg);
    ReleaseImageLoadPath(LoadPath);
    If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
     If Length(Alt) > 0 Then
      RenderText(Ctx, '[' + Alt + ']')
     Else
@@ -18400,9 +18430,11 @@ Begin
  H := CSSParseDimension(Style.Height, 0);
  If (W <= 0) Or (H <= 0) Then Exit;
  Src := BMPBuildImagePath(Src);
+ If ImageURLPreviouslyFailed(Src)Then Exit;
  CacheIndex := PNGFindInCache(Src);
  If CacheIndex = 0 Then Begin
   If Not (ResolveImageLoadPath(Src, LoadPath) And PNGLoadFromFile(LoadPath, Img)) Then Begin
+   RememberFailedImageURL(Src);
    ReleaseImageLoadPath(LoadPath);
    Exit;
   End;
@@ -22275,6 +22307,7 @@ Var
  {$ENDIF}
 Begin
  InitHTMLSource(HTML);
+ FailedImageURLCount:=0;
  {$IFDEF WINDOWS}
  { Nouveau budget reseau pour cette navigation. Les sous-ressources CSS et
    images consommeront le meme budget au lieu de pouvoir bloquer en serie. }
