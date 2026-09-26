@@ -15377,6 +15377,8 @@ Type
  TPDFTextLine = Record
   LineText: String;
   StartX: LongInt;
+  IsBold: Boolean;
+  IsItalic: Boolean;
  End;
 
 Var
@@ -15386,6 +15388,18 @@ Var
  PDFCurX: LongInt;
  PDFCurY: LongInt;
  PDFCurLineStartX: LongInt;
+ { Style de police courant (2026-09-26, demande explicite de l'utilisateur
+   - "detecter gras/italique via le nom de police") : PDFCurFontName est
+   le NOM DE RESSOURCE ("F1", "F2"...) donne par le dernier operateur Tf
+   rencontre - resolu en un vrai nom de police (/BaseFont, ex.
+   "Arial-BoldMT") via les /Resources de la page (avec heritage /Parent),
+   voir PDFResolveFontStyle. Gras/italique approxime par la PRESENCE des
+   mots "Bold"/"Italic"/"Oblique" dans ce nom - convention PostScript/PDF
+   reelle et courante, pas une invention, mais pas garantie a 100% (un
+   nom de police tres inhabituel pourrait ne pas la respecter). }
+ PDFCurFontName: String;
+ PDFCurFontBold: Boolean;
+ PDFCurFontItalic: Boolean;
 
 { Trace de diagnostic TEMPORAIRE (2026-09-26) pour investiguer un
   ERangeError reel dans HTMLAppendChild/ParseHTML declenche par une page
