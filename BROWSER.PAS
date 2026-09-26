@@ -20227,12 +20227,57 @@ End;
 { BMPBuildImagePath/GIFBuildImagePath/etc pour les images) plutot que sa    }
 { propre logique dupliquee qui n'avait jamais recu ce correctif. }
 Function ResolveLinkHref(Const Href: String): String;
+Var
+ LowerHref,LowerCurrent,Origin,BasePath,Scheme,ResultURL:String;
+ SchemeEnd,HostEnd,I,P:Integer;
 Begin
- If IsViewSourceURL(Href) Then Begin
+ LowerHref:=HTMLLowerCase(Href);
+ If IsViewSourceURL(Href)or(Copy(LowerHref,1,7)='http://')or
+    (Copy(LowerHref,1,8)='https://')or(Copy(LowerHref,1,7)='mailto:')or
+    (Copy(LowerHref,1,4)='tel:')or(Copy(LowerHref,1,5)='data:')Then Begin
   ResolveLinkHref := Href;
   Exit;
  End;
- ResolveLinkHref := CSSBuildStylesheetPath(Href);
+ LowerCurrent:=HTMLLowerCase(CurrentURL);
+ If(Copy(LowerCurrent,1,7)<>'http://')and
+   (Copy(LowerCurrent,1,8)<>'https://')Then Begin
+  ResolveLinkHref:=CSSBuildStylesheetPath(Href);Exit
+ End;
+ SchemeEnd:=Pos('://',CurrentURL);Scheme:=Copy(CurrentURL,1,SchemeEnd-1);
+ HostEnd:=SchemeEnd+3;
+ While(HostEnd<=Length(CurrentURL))and(CurrentURL[HostEnd]<>'/')do Inc(HostEnd);
+ If HostEnd>Length(CurrentURL)Then Origin:=CurrentURL
+ Else Origin:=Copy(CurrentURL,1,HostEnd-1);
+ If Copy(Href,1,2)='//'Then Begin
+  ResolveLinkHref:=Scheme+':'+Href;Exit
+ End;
+ If Copy(Href,1,1)='/'Then Begin
+  ResolveLinkHref:=Origin+Href;Exit
+ End;
+ BasePath:=CurrentURL;P:=Pos('#',BasePath);
+ If P>0Then Delete(BasePath,P,Length(BasePath));
+ If Copy(Href,1,1)='#'Then Begin ResolveLinkHref:=BasePath+Href;Exit End;
+ P:=Pos('?',BasePath);If P>0Then Delete(BasePath,P,Length(BasePath));
+ If Copy(Href,1,1)='?'Then Begin ResolveLinkHref:=BasePath+Href;Exit End;
+ For I:=Length(BasePath)downto 1do If BasePath[I]='/'Then Begin
+  BasePath:=Copy(BasePath,1,I);Break
+ End;
+ ResultURL:=BasePath+Href;
+ { Normaliser les segments /./ et /../ sans toucher au double slash du
+   schema. Une boucle suffit pour les chemins relatifs imbriques. }
+ Repeat
+  P:=Pos('/./',ResultURL);
+  If P>SchemeEnd+2Then Delete(ResultURL,P,2)
+ Until(P=0)or(P<=SchemeEnd+2);
+ Repeat
+  P:=Pos('/../',ResultURL);
+  If P>SchemeEnd+2Then Begin
+   I:=P-1;While(I>SchemeEnd+2)and(ResultURL[I]<>'/')do Dec(I);
+   If I>SchemeEnd+2Then Delete(ResultURL,I,P+3-I)
+   Else P:=0
+  End
+ Until(P=0)or(P<=SchemeEnd+2);
+ ResolveLinkHref:=ResultURL
 End;
 
 Procedure HandleLinkClick(LinkIndex: Integer);
@@ -20247,16 +20292,14 @@ Begin
 
  { Verifier si l'URL est vide }
  If TargetURL = '' Then Exit;
+ If Copy(TargetURL,1,1)='#'Then Exit;
+ TargetURL:=ResolveLinkHref(TargetURL);
 
  { Traiter les differents types d'URL }
  If (Copy(TargetURL, 1, 7) = 'http://') Or
     (Copy(TargetURL, 1, 8) = 'https://') Or IsViewSourceURL(TargetURL) Then Begin
   { URL absolue (ou prefixe view-source:) - naviguer directement }
   NavigateTo(TargetURL);
- End
- Else If Copy(TargetURL, 1, 1) = '#' Then Begin
-  { Ancre dans la meme page - ne pas naviguer pour l'instant }
-  { TODO: Implementer le saut vers l'ancre }
  End
  Else If (Copy(TargetURL, 1, 7) = 'mailto:') Then Begin
   { Lien email - ne pas naviguer }
@@ -20276,7 +20319,7 @@ Begin
     TargetURL tel quel (sans schema/hote), ce qu'IsRemoteURL rejetait
     ensuite - supprimee, ResolveLinkHref (voir sa disclosure) gere
     desormais ce cas correctement lui aussi. }
-  NavigateTo(ResolveLinkHref(TargetURL));
+  NavigateTo(TargetURL);
  End;
 End;
 
@@ -20947,6 +20990,7 @@ Var
  InitialTarget: String;
  TestMode: Boolean;
  ScrollTestI: Integer;
+ ResolvedTestURL:String;
 
 BEGIN
  ParseCommandLine(InitialTarget, TestMode);
@@ -20971,6 +21015,13 @@ BEGIN
  DrawRefreshButton;
  DrawFavoriteButton;
  If TestMode Then Begin
+  { Regression du clic Google "Advanced search": un href racine doit
+    devenir une URL HTTP(S) absolue, jamais un chemin de fichier local. }
+  ResolvedTestURL:=ResolveLinkHref('/advanced_search?hl=en');
+  If not IsRemoteURL(ResolvedTestURL)Then Begin
+   WriteConsoleLine('ECHEC test URL: '+ResolvedTestURL);
+   If MouseAvailable Then HideMouse;CloseGraph;Halt(2)
+  End;
   { Re-naviguer vers la meme page pour exercer un second appel a
     CSSParseStylesheet alors que la table de regles est deja pleine
     (cas reel d'un clic sur un lien apres le chargement d'une 1ere
