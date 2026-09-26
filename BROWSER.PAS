@@ -1144,6 +1144,8 @@ DevSelectedNode: HTMLNodePtr;
 DevConsoleInput: String;
 DevConsoleLines: Array[1..100] Of String;
 DevConsoleLineCount: Integer;
+DevConsoleCursorVisible:Boolean;
+DevConsoleLastBlink:LongInt;
 DevNetworkEntries: Array[1..100] Of DevNetworkEntry;
 DevNetworkCount: Integer;
 DevElementAreas: Array[1..2048] Of DevElementArea;
@@ -19025,6 +19027,7 @@ Var Top,Y,I,Lines,First,TabLeft,TabRight,MaxInspectorLines:Integer;
 Begin
  If Not DevToolsOpen Then Exit;
  Top:=DevToolsPanelTop;
+ SetTextStyle(DefaultFont,HorizDir,1);SetTextJustify(LeftText,TopText);
  SetFillStyle(SolidFill,LightGray);Bar(0,Top,GetMaxX,GetMaxY);
  SetColor(HTMLBlackColorIndex);Line(0,Top,GetMaxX,Top);
  { selecteur d'element }
@@ -19069,8 +19072,13 @@ Begin
   DEVTOOLS_TAB_CONSOLE:Begin
    First:=DevConsoleLineCount-9;If First<1Then First:=1;
    For I:=First To DevConsoleLineCount Do Begin OutTextXY(8,Y,Copy(DevConsoleLines[I],1,(GetMaxX-20)Div 8));Inc(Y,12)End;
-   Y:=GetMaxY-18;SetFillStyle(SolidFill,White);Bar(4,Y-2,GetMaxX-5,GetMaxY-3);SetColor(HTMLBlackColorIndex);
-   OutTextXY(8,Y,'> '+Copy(DevConsoleInput,1,(GetMaxX-30)Div 8));If DevConsoleFocused Then Line(24+Length(DevConsoleInput)*8,Y+10,30+Length(DevConsoleInput)*8,Y+10)
+   Y:=GetMaxY-24;SetFillStyle(SolidFill,White);Bar(4,Y,GetMaxX-5,GetMaxY-3);
+   SetColor(HTMLBlackColorIndex);Rectangle(4,Y,GetMaxX-5,GetMaxY-3);
+   OutTextXY(8,Y+5,'>> '+Copy(DevConsoleInput,1,(GetMaxX-38)Div 8));
+   If DevConsoleFocused And DevConsoleCursorVisible Then Begin
+    I:=8+TextWidth('>> '+DevConsoleInput);
+    Line(I,Y+4,I,Y+15)
+   End
   End;
   DEVTOOLS_TAB_NETWORK:Begin
    { Colonnes proportionnelles a la largeur du panneau. Les memes bornes
@@ -19154,6 +19162,11 @@ Begin
    Else If X>GetMaxX-30Then Begin DevToolsSetOpen(False);Exit End
    Else For I:=1 To 5 Do
     If(X>=DevToolsTabLeft(I))And(X<=DevToolsTabRight(I))Then DevToolsTab:=I
+   ;
+   If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then Begin
+    DevConsoleFocused:=True;DevConsoleCursorVisible:=True;
+    DevConsoleLastBlink:=BrowserGetTickCount
+   End
   End Else If DevToolsHandleInspectorScrollClick(X,Y)Then Exit
   Else If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then DevConsoleFocused:=True;
   DrawDevTools;Exit
@@ -19172,13 +19185,26 @@ Begin
  Case Ord(K)Of
   8:If Length(DevConsoleInput)>0Then Delete(DevConsoleInput,Length(DevConsoleInput),1);
   13:Begin
-   S:=DevConsoleInput;DevToolsAddConsole('> '+S);JSCtx.HasError:=False;V:=JSEvaluate(S);
+   S:=DevConsoleInput;DevToolsAddConsole('>> '+S);JSCtx.HasError:=False;V:=JSEvaluate(S);
    If JSCtx.HasError Then DevToolsAddConsole('Erreur: '+JSCtx.ErrorMsg)
    Else DevToolsAddConsole(JSValueToString(V));DevConsoleInput:=''
   End;
   27:DevConsoleFocused:=False;
   Else If(K>=#32)And(K<=#126)Then DevConsoleInput:=DevConsoleInput+K
- End;DrawDevTools
+ End;
+ DevConsoleCursorVisible:=True;DevConsoleLastBlink:=BrowserGetTickCount;
+ DrawDevTools
+End;
+
+Procedure DevToolsUpdateConsoleCursor;
+Var NowTick:LongInt;
+Begin
+ If Not(DevToolsOpen And(DevToolsTab=DEVTOOLS_TAB_CONSOLE)And DevConsoleFocused)Then Exit;
+ NowTick:=BrowserGetTickCount;
+ If(NowTick<DevConsoleLastBlink)Or(NowTick-DevConsoleLastBlink>=500)Then Begin
+  DevConsoleCursorVisible:=Not DevConsoleCursorVisible;
+  DevConsoleLastBlink:=NowTick;DrawDevTools
+ End
 End;
 
 { =====================================================
@@ -21434,6 +21460,7 @@ Begin
    de la boucle principale, independamment de la souris - voir
    JSCheckTimeout. }
  JSCheckTimeout;
+ DevToolsUpdateConsoleCursor;
 
  If Not MouseAvailable Then Exit;
 
@@ -21698,6 +21725,12 @@ BEGIN
   End;
   DevToolsTab:=DEVTOOLS_TAB_CONSOLE;DevConsoleFocused:=True;
   DevConsoleInput:='1+1';DevToolsConsoleKey(#13);
+  If DevConsoleLineCount<2Then Begin
+   WriteConsoleLine('ECHEC test console JavaScript');
+   If MouseAvailable Then HideMouse;CloseGraph;Halt(3)
+  End;
+  DevConsoleLastBlink:=BrowserGetTickCount-500;
+  DevToolsUpdateConsoleCursor;
   DevToolsSetOpen(False);
   { Si la page contient une cellule TD/TH avec onclick/onmouseover/
     onmouseout (ex: un onglet de navigation), exercer le survol puis
@@ -21762,8 +21795,10 @@ BEGIN
      ContextMenuOpen := False;
      RepaintAfterContextMenu;
      Key := #0;
-    End Else If DevConsoleFocused Then
-     DevToolsConsoleKey(Key)
+    End Else If DevConsoleFocused Then Begin
+     DevToolsConsoleKey(Key);
+     If Key=#27Then Key:=#0
+    End
     Else If FocusedInputNode <> Nil Then
      HandleFormInputKey(Key)
     Else
