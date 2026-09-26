@@ -592,6 +592,35 @@ Const
  CSS_PROP_BORDER_RIGHT = 46;
  CSS_PROP_BORDER_BOTTOM = 47;
  CSS_PROP_BORDER_LEFT = 48;
+ CSS_PROP_BACKGROUND_REPEAT = 49;
+ CSS_PROP_BACKGROUND_ATTACHMENT = 50;
+ CSS_PROP_BORDER_BOTTOM_COLOR = 51;
+ CSS_PROP_BORDER_BOTTOM_STYLE = 52;
+ CSS_PROP_BORDER_BOTTOM_WIDTH = 53;
+ CSS_PROP_BORDER_LEFT_COLOR = 54;
+ CSS_PROP_BORDER_LEFT_STYLE = 55;
+ CSS_PROP_BORDER_LEFT_WIDTH = 56;
+ CSS_PROP_BORDER_RIGHT_COLOR = 57;
+ CSS_PROP_BORDER_RIGHT_STYLE = 58;
+ CSS_PROP_BORDER_RIGHT_WIDTH = 59;
+ CSS_PROP_BORDER_TOP_COLOR = 60;
+ CSS_PROP_BORDER_TOP_STYLE = 61;
+ CSS_PROP_BORDER_TOP_WIDTH = 62;
+ CSS_PROP_FONT = 63;
+ CSS_PROP_FONT_VARIANT = 64;
+ CSS_PROP_LETTER_SPACING = 65;
+ CSS_PROP_WORD_SPACING = 66;
+ CSS_PROP_TEXT_INDENT = 67;
+ CSS_PROP_TEXT_TRANSFORM = 68;
+ CSS_PROP_LIST_STYLE_IMAGE = 69;
+ CSS_PROP_LIST_STYLE_POSITION = 70;
+ CSS_PROP_MAX_HEIGHT = 71;
+ CSS_PROP_MAX_WIDTH = 72;
+ CSS_PROP_MIN_HEIGHT = 73;
+ CSS_PROP_MIN_WIDTH = 74;
+ CSS_PROP_OVERFLOW_X = 75;
+ CSS_PROP_OVERFLOW_Y = 76;
+ CSS_PROP_Z_INDEX = 77;
  CSS_PROP_UNKNOWN = 255;
 
 Type
@@ -741,6 +770,9 @@ End;
   CurrentLinkHref: String[255]; { URL du lien en cours de rendu }
   NoWrap: Boolean;           { CSS white-space: nowrap }
   TextAlignMode: Byte;       { CSS text-align : ALIGN_* }
+  LetterSpacingPx:Integer;
+  WordSpacingPx:Integer;
+  TextTransformMode:Byte;    { 0 aucun, 1 majuscules, 2 minuscules, 3 capitale }
   End;
 
  { Mot differe d'une ligne justifiee. Le rendu est retarde jusqu'au retour
@@ -941,10 +973,14 @@ End;
  BackgroundColor: String[32];
   BackgroundPosition: String[32];
   BackgroundImage: String[255];
+  BackgroundRepeat: String[16];
+  BackgroundAttachment: String[16];
   Opacity: String[16];
   FontSize: String[16];
   FontWeight: String[16];
   FontStyle: String[16];
+  Font: String[64];
+  FontVariant: String[16];
   TextDecoration: String[32];
   Display: String[16];
   Visibility: String[16];
@@ -972,6 +1008,19 @@ End;
   VerticalAlign: String[16];
   WhiteSpace: String[16];
   Overflow: String[16];
+  OverflowX: String[16];
+  OverflowY: String[16];
+  LetterSpacing: String[16];
+  WordSpacing: String[16];
+  TextIndent: String[16];
+  TextTransform: String[16];
+  ListStyleImage: String[255];
+  ListStylePosition: String[16];
+  MaxHeight: String[32];
+  MaxWidth: String[32];
+  MinHeight: String[32];
+  MinWidth: String[32];
+  ZIndex: String[16];
   MarginTop: String[16];
   MarginRight: String[16];
   MarginBottom: String[16];
@@ -987,6 +1036,9 @@ End;
   BorderRight: String[32];
   BorderBottom: String[32];
   BorderLeft: String[32];
+  BorderTopColor,BorderRightColor,BorderBottomColor,BorderLeftColor:String[32];
+  BorderTopStyle,BorderRightStyle,BorderBottomStyle,BorderLeftStyle:String[16];
+  BorderTopWidth,BorderRightWidth,BorderBottomWidth,BorderLeftWidth:String[16];
  End;
 
  { =====================================================
@@ -6659,27 +6711,41 @@ End;
 
 Type
  CSSPropertyEntry = Record
-  Name: String[20];
+  Name: String[24];
   Id: Byte;
  End;
 
 Const
- CSS_PROPERTY_COUNT = 48;
+ CSS_PROPERTY_COUNT = 77;
  { Table des proprietes CSS supportees, triee par ordre ALPHABETIQUE -
    condition necessaire a la recherche dichotomique de CSSGetPropertyId
    ci-dessous (ancien code : 48 comparaisons Si/SinonSi sequentielles). }
  CSSPropertyTable: Array[0..CSS_PROPERTY_COUNT - 1] Of CSSPropertyEntry = (
   (Name: 'background';           Id: CSS_PROP_BACKGROUND),
+  (Name: 'background-attachment';Id: CSS_PROP_BACKGROUND_ATTACHMENT),
   (Name: 'background-color';     Id: CSS_PROP_BACKGROUND_COLOR),
   (Name: 'background-image';     Id: CSS_PROP_BACKGROUND_IMAGE),
   (Name: 'background-position';  Id: CSS_PROP_BACKGROUND_POSITION),
+  (Name: 'background-repeat';    Id: CSS_PROP_BACKGROUND_REPEAT),
   (Name: 'border';               Id: CSS_PROP_BORDER),
   (Name: 'border-bottom';        Id: CSS_PROP_BORDER_BOTTOM),
+  (Name: 'border-bottom-color';  Id: CSS_PROP_BORDER_BOTTOM_COLOR),
+  (Name: 'border-bottom-style';  Id: CSS_PROP_BORDER_BOTTOM_STYLE),
+  (Name: 'border-bottom-width';  Id: CSS_PROP_BORDER_BOTTOM_WIDTH),
   (Name: 'border-color';         Id: CSS_PROP_BORDER_COLOR),
   (Name: 'border-left';          Id: CSS_PROP_BORDER_LEFT),
+  (Name: 'border-left-color';    Id: CSS_PROP_BORDER_LEFT_COLOR),
+  (Name: 'border-left-style';    Id: CSS_PROP_BORDER_LEFT_STYLE),
+  (Name: 'border-left-width';    Id: CSS_PROP_BORDER_LEFT_WIDTH),
   (Name: 'border-right';         Id: CSS_PROP_BORDER_RIGHT),
+  (Name: 'border-right-color';   Id: CSS_PROP_BORDER_RIGHT_COLOR),
+  (Name: 'border-right-style';   Id: CSS_PROP_BORDER_RIGHT_STYLE),
+  (Name: 'border-right-width';   Id: CSS_PROP_BORDER_RIGHT_WIDTH),
   (Name: 'border-style';         Id: CSS_PROP_BORDER_STYLE),
   (Name: 'border-top';           Id: CSS_PROP_BORDER_TOP),
+  (Name: 'border-top-color';     Id: CSS_PROP_BORDER_TOP_COLOR),
+  (Name: 'border-top-style';     Id: CSS_PROP_BORDER_TOP_STYLE),
+  (Name: 'border-top-width';     Id: CSS_PROP_BORDER_TOP_WIDTH),
   (Name: 'border-width';         Id: CSS_PROP_BORDER_WIDTH),
   (Name: 'bottom';               Id: CSS_PROP_BOTTOM),
   (Name: 'clear';                Id: CSS_PROP_CLEAR),
@@ -6687,22 +6753,33 @@ Const
   (Name: 'cursor';               Id: CSS_PROP_CURSOR),
   (Name: 'display';              Id: CSS_PROP_DISPLAY),
   (Name: 'float';                Id: CSS_PROP_FLOAT),
+  (Name: 'font';                 Id: CSS_PROP_FONT),
   (Name: 'font-family';          Id: CSS_PROP_FONT_FAMILY),
   (Name: 'font-size';            Id: CSS_PROP_FONT_SIZE),
   (Name: 'font-style';           Id: CSS_PROP_FONT_STYLE),
+  (Name: 'font-variant';         Id: CSS_PROP_FONT_VARIANT),
   (Name: 'font-weight';          Id: CSS_PROP_FONT_WEIGHT),
   (Name: 'height';               Id: CSS_PROP_HEIGHT),
   (Name: 'left';                 Id: CSS_PROP_LEFT),
+  (Name: 'letter-spacing';       Id: CSS_PROP_LETTER_SPACING),
   (Name: 'line-height';          Id: CSS_PROP_LINE_HEIGHT),
   (Name: 'list-style';           Id: CSS_PROP_LIST_STYLE),
+  (Name: 'list-style-image';     Id: CSS_PROP_LIST_STYLE_IMAGE),
+  (Name: 'list-style-position';  Id: CSS_PROP_LIST_STYLE_POSITION),
   (Name: 'list-style-type';      Id: CSS_PROP_LIST_STYLE_TYPE),
   (Name: 'margin';               Id: CSS_PROP_MARGIN),
   (Name: 'margin-bottom';        Id: CSS_PROP_MARGIN_BOTTOM),
   (Name: 'margin-left';          Id: CSS_PROP_MARGIN_LEFT),
   (Name: 'margin-right';         Id: CSS_PROP_MARGIN_RIGHT),
   (Name: 'margin-top';           Id: CSS_PROP_MARGIN_TOP),
+  (Name: 'max-height';           Id: CSS_PROP_MAX_HEIGHT),
+  (Name: 'max-width';            Id: CSS_PROP_MAX_WIDTH),
+  (Name: 'min-height';           Id: CSS_PROP_MIN_HEIGHT),
+  (Name: 'min-width';            Id: CSS_PROP_MIN_WIDTH),
   (Name: 'opacity';              Id: CSS_PROP_OPACITY),
   (Name: 'overflow';             Id: CSS_PROP_OVERFLOW),
+  (Name: 'overflow-x';           Id: CSS_PROP_OVERFLOW_X),
+  (Name: 'overflow-y';           Id: CSS_PROP_OVERFLOW_Y),
   (Name: 'padding';              Id: CSS_PROP_PADDING),
   (Name: 'padding-bottom';       Id: CSS_PROP_PADDING_BOTTOM),
   (Name: 'padding-left';         Id: CSS_PROP_PADDING_LEFT),
@@ -6712,11 +6789,15 @@ Const
   (Name: 'right';                Id: CSS_PROP_RIGHT),
   (Name: 'text-align';           Id: CSS_PROP_TEXT_ALIGN),
   (Name: 'text-decoration';      Id: CSS_PROP_TEXT_DECORATION),
+  (Name: 'text-indent';          Id: CSS_PROP_TEXT_INDENT),
+  (Name: 'text-transform';       Id: CSS_PROP_TEXT_TRANSFORM),
   (Name: 'top';                  Id: CSS_PROP_TOP),
   (Name: 'vertical-align';       Id: CSS_PROP_VERTICAL_ALIGN),
   (Name: 'visibility';           Id: CSS_PROP_VISIBILITY),
   (Name: 'white-space';          Id: CSS_PROP_WHITE_SPACE),
-  (Name: 'width';                Id: CSS_PROP_WIDTH)
+  (Name: 'width';                Id: CSS_PROP_WIDTH),
+  (Name: 'word-spacing';         Id: CSS_PROP_WORD_SPACING),
+  (Name: 'z-index';              Id: CSS_PROP_Z_INDEX)
  );
 
 { Obtenir l'ID d'une propriete CSS a partir de son nom - recherche
@@ -7095,11 +7176,15 @@ Begin
     Style.BackgroundImage := Value;
   End;
   CSS_PROP_BACKGROUND_POSITION: Style.BackgroundPosition := Value;
+  CSS_PROP_BACKGROUND_REPEAT: Style.BackgroundRepeat := Value;
+  CSS_PROP_BACKGROUND_ATTACHMENT: Style.BackgroundAttachment := Value;
   CSS_PROP_OPACITY: Style.Opacity := Value;
   CSS_PROP_BACKGROUND_IMAGE: Style.BackgroundImage := Value;
   CSS_PROP_FONT_SIZE: Style.FontSize := Value;
   CSS_PROP_FONT_WEIGHT: Style.FontWeight := Value;
   CSS_PROP_FONT_STYLE: Style.FontStyle := Value;
+  CSS_PROP_FONT: Style.Font := Value;
+  CSS_PROP_FONT_VARIANT: Style.FontVariant := Value;
   CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Value;
   CSS_PROP_TEXT_ALIGN: Style.TextAlign := Value;
   CSS_PROP_DISPLAY: Style.Display := Value;
@@ -7124,6 +7209,18 @@ Begin
   CSS_PROP_BORDER_RIGHT: Style.BorderRight := Value;
   CSS_PROP_BORDER_BOTTOM: Style.BorderBottom := Value;
   CSS_PROP_BORDER_LEFT: Style.BorderLeft := Value;
+  CSS_PROP_BORDER_TOP_COLOR: Style.BorderTopColor := Value;
+  CSS_PROP_BORDER_TOP_STYLE: Style.BorderTopStyle := Value;
+  CSS_PROP_BORDER_TOP_WIDTH: Style.BorderTopWidth := Value;
+  CSS_PROP_BORDER_RIGHT_COLOR: Style.BorderRightColor := Value;
+  CSS_PROP_BORDER_RIGHT_STYLE: Style.BorderRightStyle := Value;
+  CSS_PROP_BORDER_RIGHT_WIDTH: Style.BorderRightWidth := Value;
+  CSS_PROP_BORDER_BOTTOM_COLOR: Style.BorderBottomColor := Value;
+  CSS_PROP_BORDER_BOTTOM_STYLE: Style.BorderBottomStyle := Value;
+  CSS_PROP_BORDER_BOTTOM_WIDTH: Style.BorderBottomWidth := Value;
+  CSS_PROP_BORDER_LEFT_COLOR: Style.BorderLeftColor := Value;
+  CSS_PROP_BORDER_LEFT_STYLE: Style.BorderLeftStyle := Value;
+  CSS_PROP_BORDER_LEFT_WIDTH: Style.BorderLeftWidth := Value;
   CSS_PROP_POSITION: Style.PositionProp := Value;
   CSS_PROP_TOP: Style.TopProp := Value;
   CSS_PROP_RIGHT: Style.RightProp := Value;
@@ -7133,8 +7230,21 @@ Begin
   CSS_PROP_CLEAR: Style.ClearProp := Value;
   CSS_PROP_LINE_HEIGHT: Style.LineHeight := Value;
   CSS_PROP_OVERFLOW: Style.Overflow := Value;
+  CSS_PROP_OVERFLOW_X: Style.OverflowX := Value;
+  CSS_PROP_OVERFLOW_Y: Style.OverflowY := Value;
   CSS_PROP_LIST_STYLE: Style.ListStyle := Value;
   CSS_PROP_LIST_STYLE_TYPE: Style.ListStyleType := Value;
+  CSS_PROP_LIST_STYLE_IMAGE: Style.ListStyleImage := Value;
+  CSS_PROP_LIST_STYLE_POSITION: Style.ListStylePosition := Value;
+  CSS_PROP_LETTER_SPACING: Style.LetterSpacing := Value;
+  CSS_PROP_WORD_SPACING: Style.WordSpacing := Value;
+  CSS_PROP_TEXT_INDENT: Style.TextIndent := Value;
+  CSS_PROP_TEXT_TRANSFORM: Style.TextTransform := Value;
+  CSS_PROP_MAX_HEIGHT: Style.MaxHeight := Value;
+  CSS_PROP_MAX_WIDTH: Style.MaxWidth := Value;
+  CSS_PROP_MIN_HEIGHT: Style.MinHeight := Value;
+  CSS_PROP_MIN_WIDTH: Style.MinWidth := Value;
+  CSS_PROP_Z_INDEX: Style.ZIndex := Value;
   CSS_PROP_VERTICAL_ALIGN: Style.VerticalAlign := Value;
   CSS_PROP_WHITE_SPACE: Style.WhiteSpace := Value;
  End;
@@ -7266,6 +7376,7 @@ Var
  InlineStyle: String;
 Begin
  { Initialiser avec valeurs par defaut }
+ FillChar(Style,SizeOf(Style),0);
  Style.Color := '';
  Style.BackgroundColor := '';
  Style.BackgroundPosition := '';
@@ -7295,29 +7406,8 @@ Begin
    If CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
     { Appliquer les proprietes }
     For K := 1 To CSSGlobalStylesheet.Rules[I].PropertyCount Do Begin
-     Case CSSGlobalStylesheet.Rules[I].Properties[K].PropId Of
-      CSS_PROP_COLOR: Style.Color := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_BACKGROUND: Begin
-       Style.BackgroundColor := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-       If System.Pos('url(', HTMLLowerCase(CSSGlobalStylesheet.Rules[I].Properties[K].Value)) > 0 Then
-        Style.BackgroundImage := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      End;
-      CSS_PROP_BACKGROUND_POSITION: Style.BackgroundPosition := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_OPACITY: Style.Opacity := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_BACKGROUND_IMAGE: Style.BackgroundImage := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_FONT_SIZE: Style.FontSize := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_FONT_WEIGHT: Style.FontWeight := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_FONT_STYLE: Style.FontStyle := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_TEXT_DECORATION: Style.TextDecoration := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_DISPLAY: Style.Display := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_VISIBILITY: Style.Visibility := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_WIDTH: Style.Width := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_HEIGHT: Style.Height := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_MARGIN: Style.Margin := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_PADDING: Style.Padding := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-      CSS_PROP_BORDER: Style.Border := CSSGlobalStylesheet.Rules[I].Properties[K].Value;
-     End;
+     CSSAssignProperty(CSSGlobalStylesheet.Rules[I].Properties[K].PropId,
+      CSSGlobalStylesheet.Rules[I].Properties[K].Value,Style);
     End;
     Break;
    End;
@@ -7800,6 +7890,10 @@ Begin
   CSS_PROP_FONT_SIZE,
   CSS_PROP_FONT_WEIGHT,
   CSS_PROP_FONT_STYLE,
+  CSS_PROP_FONT_VARIANT,
+  CSS_PROP_LETTER_SPACING,
+  CSS_PROP_WORD_SPACING,
+  CSS_PROP_TEXT_TRANSFORM,
   CSS_PROP_FONT_FAMILY,
   CSS_PROP_TEXT_DECORATION,
   CSS_PROP_TEXT_ALIGN,
@@ -7864,6 +7958,11 @@ Begin
  If (Length(ChildStyle.TextDecoration) = 0) And (Length(ParentStyle.TextDecoration) > 0) Then
   ChildStyle.TextDecoration := ParentStyle.TextDecoration;
 
+ If(ChildStyle.FontVariant='')Then ChildStyle.FontVariant:=ParentStyle.FontVariant;
+ If(ChildStyle.LetterSpacing='')Then ChildStyle.LetterSpacing:=ParentStyle.LetterSpacing;
+ If(ChildStyle.WordSpacing='')Then ChildStyle.WordSpacing:=ParentStyle.WordSpacing;
+ If(ChildStyle.TextTransform='')Then ChildStyle.TextTransform:=ParentStyle.TextTransform;
+
  { Visibility herite si non defini }
  If (Length(ChildStyle.Visibility) = 0) And (Length(ParentStyle.Visibility) > 0) Then
   ChildStyle.Visibility := ParentStyle.Visibility;
@@ -7882,6 +7981,7 @@ Var
  InlineStyle: String;
 Begin
  { Initialiser avec valeurs par defaut }
+ FillChar(Style,SizeOf(Style),0);
  Style.Color := '';
  Style.BackgroundColor := '';
  Style.BackgroundPosition := '';
@@ -7984,11 +8084,13 @@ Begin
   CSSParseInlineStyle(InlineStyle, Style);
 End;
 
+Function CSSParseDimension(Const Value:String;DefaultPx:Integer):Integer;Forward;
+
 { Appliquer les styles CSS au contexte de rendu }
 Procedure CSSApplyStylesToContext(Const Style: DOMStyle; Var Ctx: RenderContext);
 Var
  ColorIndex: Integer;
- FontWeightLower, FontStyleLower: String;
+ FontWeightLower, FontStyleLower,FontLower,TransformLower: String;
 Begin
  { Appliquer la couleur du texte }
  If Length(Style.Color) > 0 Then Begin
@@ -8022,6 +8124,25 @@ Begin
   Else If FontStyleLower = 'normal' Then
    Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_ITALIC);
  End;
+
+ { Raccourci font : les variantes graphiques disponibles sont limitees,
+   mais italic/oblique, bold et small-caps sont honores. }
+ If Style.Font<>''Then Begin
+  FontLower:=HTMLLowerCase(Style.Font);
+  If System.Pos('bold',FontLower)>0Then Ctx.TextStyle:=Ctx.TextStyle Or TEXT_STYLE_BOLD;
+  If(System.Pos('italic',FontLower)>0)Or(System.Pos('oblique',FontLower)>0)Then
+   Ctx.TextStyle:=Ctx.TextStyle Or TEXT_STYLE_ITALIC
+ End;
+ If HTMLLowerCase(Style.FontVariant)='small-caps'Then Ctx.TextTransformMode:=1;
+ If(Style.LetterSpacing<>'')And(HTMLLowerCase(Style.LetterSpacing)<>'normal')Then
+  Ctx.LetterSpacingPx:=CSSParseDimension(Style.LetterSpacing,0);
+ If(Style.WordSpacing<>'')And(HTMLLowerCase(Style.WordSpacing)<>'normal')Then
+  Ctx.WordSpacingPx:=CSSParseDimension(Style.WordSpacing,0);
+ TransformLower:=HTMLLowerCase(Style.TextTransform);
+ If TransformLower='uppercase'Then Ctx.TextTransformMode:=1
+ Else If TransformLower='lowercase'Then Ctx.TextTransformMode:=2
+ Else If TransformLower='capitalize'Then Ctx.TextTransformMode:=3
+ Else If TransformLower='none'Then Ctx.TextTransformMode:=0;
 
  { Appliquer text-decoration (underline et/ou line-through, separes
    par un espace en CSS, ex: "underline line-through") }
@@ -8391,6 +8512,17 @@ Begin
   Info.BorderWidthPx := CSSParseDimension(Style.BorderWidth, 0)
  Else If Length(Style.Border) > 0 Then
   Info.BorderWidthPx := CSSParseDimension(Style.Border, 0);
+ { Les boites BGI ne conservaient auparavant qu'un contour uniforme.
+   Une largeur laterale explicite doit neanmoins activer la bordure; la
+   plus grande largeur est retenue pour le contour rasterise. }
+ If CSSParseDimension(Style.BorderTopWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderTopWidth,0);
+ If CSSParseDimension(Style.BorderRightWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderRightWidth,0);
+ If CSSParseDimension(Style.BorderBottomWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderBottomWidth,0);
+ If CSSParseDimension(Style.BorderLeftWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderLeftWidth,0);
 
  If Length(Style.BorderColor) > 0 Then Begin
   TryColor := CSSColorToIndex(Style.BorderColor);
@@ -8409,10 +8541,18 @@ Begin
    P := System.Pos(' ', BorderTokens);
   End;
  End;
+ If Style.BorderTopColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderTopColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
+ If Style.BorderRightColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderRightColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
+ If Style.BorderBottomColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderBottomColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
+ If Style.BorderLeftColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderLeftColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
 
  Info.HasBorder := Info.BorderWidthPx > 0;
  If Length(Style.BorderStyle) > 0 Then
   Info.HasBorder := Info.HasBorder And (HTMLLowerCase(Style.BorderStyle) <> 'none');
+ If(HTMLLowerCase(Style.BorderTopStyle)='none')And
+   (HTMLLowerCase(Style.BorderRightStyle)='none')And
+   (HTMLLowerCase(Style.BorderBottomStyle)='none')And
+   (HTMLLowerCase(Style.BorderLeftStyle)='none')Then Info.HasBorder:=False;
 
  { Fond plein de la boite (pas seulement derriere les mots, voir
    RenderStyledWord) : seulement si la balise est un bloc avec une
@@ -8496,6 +8636,9 @@ Begin
  Ctx.CurrentLinkHref := '';
  Ctx.NoWrap := False;
  Ctx.TextAlignMode := ALIGN_LEFT;
+ Ctx.LetterSpacingPx:=0;
+ Ctx.WordSpacingPx:=0;
+ Ctx.TextTransformMode:=0;
 End;
 
 { Procedure pour reinitialiser les zones de liens }
@@ -8938,7 +9081,8 @@ End;
   moment de dessiner - le texte sortait toujours "normal". }
 Procedure RenderStyledWord(Var Ctx: RenderContext; Const Word: String; WordWidth: Integer);
 Var
- UnderlineY, StrikeY: Integer;
+ UnderlineY, StrikeY,I,DrawX: Integer;
+ Ch:String;
 Begin
  { Fond du mot, si different du fond de page par defaut }
  If Ctx.BgColor <> RENDER_BG_COLOR Then Begin
@@ -8947,10 +9091,18 @@ Begin
  End;
 
  SetColor(Ctx.TextColor);
- OutTextXY(Ctx.X, Ctx.Y, Word);
+ If Ctx.LetterSpacingPx=0Then OutTextXY(Ctx.X,Ctx.Y,Word)
+ Else Begin
+  DrawX:=Ctx.X;
+  For I:=1To Length(Word)Do Begin
+   Ch:=Word[I];OutTextXY(DrawX,Ctx.Y,Ch);
+   If(Ctx.TextStyle And TEXT_STYLE_BOLD)<>0Then OutTextXY(DrawX+1,Ctx.Y,Ch);
+   Inc(DrawX,GetTextWidth(Ch)+Ctx.LetterSpacingPx)
+  End
+ End;
  { Gras simule par un second trace decale de 1 pixel : la police
    bitmap par defaut n'a pas de variante grasse. }
- If (Ctx.TextStyle And TEXT_STYLE_BOLD) <> 0 Then
+ If((Ctx.TextStyle And TEXT_STYLE_BOLD)<>0)And(Ctx.LetterSpacingPx=0)Then
   OutTextXY(Ctx.X + 1, Ctx.Y, Word);
 
  If (Ctx.TextStyle And TEXT_STYLE_UNDERLINE) <> 0 Then Begin
@@ -9038,7 +9190,7 @@ Begin
    End
    Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then Begin
     { Espace entre les mots }
-    Ctx.X := Ctx.X + 8;
+    Ctx.X := Ctx.X + 8+Ctx.WordSpacingPx;
    End;
    Inc(I);
   End;
@@ -9051,7 +9203,13 @@ Begin
    Inc(I);
   EndWord := I - 1;
   Word := Copy(Text, StartWord, EndWord - StartWord + 1);
+  Case Ctx.TextTransformMode Of
+   1:For StartWord:=1To Length(Word)Do Word[StartWord]:=UpCase(Word[StartWord]);
+   2:Word:=HTMLLowerCase(Word);
+   3:If Length(Word)>0Then Word[1]:=UpCase(Word[1])
+  End;
   WordWidth := GetTextWidth(Word);
+  If Length(Word)>1Then Inc(WordWidth,(Length(Word)-1)*Ctx.LetterSpacingPx);
 
   { Retour a la ligne si le mot ne tient pas (sauf white-space:nowrap,
     qui demande explicitement de ne jamais retourner a la ligne -
@@ -9306,6 +9464,8 @@ Begin
    background CSS decoupe dans une feuille de sprites. Le peindre avant le
    contenu garantit qu'une seconde passe du tableau ne l'efface pas. }
  CSSResolveCascade(Node, DivStyle);
+ If WantsBlock And(DivStyle.TextIndent<>'')Then
+  Inc(Ctx.X,CSSParseDimension(DivStyle.TextIndent,0));
 
  { Un DIV de type bloc occupe par defaut toute la largeur disponible.
    Auparavant son background-color n'etait jamais peint: seuls ses mots
@@ -9316,6 +9476,12 @@ Begin
   BoxEndX := Ctx.MaxX;
   If Length(DivStyle.Width) > 0 Then Begin
    RequestedWidth := CSSParseDimension(DivStyle.Width, Ctx.MaxX - BoxStartX);
+   If(DivStyle.MinWidth<>'')And
+     (RequestedWidth<CSSParseDimension(DivStyle.MinWidth,RequestedWidth))Then
+    RequestedWidth:=CSSParseDimension(DivStyle.MinWidth,RequestedWidth);
+   If(DivStyle.MaxWidth<>'')And
+     (RequestedWidth>CSSParseDimension(DivStyle.MaxWidth,RequestedWidth))Then
+    RequestedWidth:=CSSParseDimension(DivStyle.MaxWidth,RequestedWidth);
    If RequestedWidth >= 0 Then BoxEndX := BoxStartX + RequestedWidth;
    If BoxEndX > Ctx.MaxX Then BoxEndX := Ctx.MaxX;
   End;
@@ -9328,6 +9494,12 @@ Begin
   TableMeasurePass := OldMeasurePass;
   AbsolutePositionedCount := SavedAbsoluteCount;
   BoxEndY := MeasureCtx.Y + PaddingBottomPx;
+  If(DivStyle.MinHeight<>'')And
+    (BoxEndY<BoxStartY+CSSParseDimension(DivStyle.MinHeight,0))Then
+   BoxEndY:=BoxStartY+CSSParseDimension(DivStyle.MinHeight,0);
+  If(DivStyle.MaxHeight<>'')And
+    (BoxEndY>BoxStartY+CSSParseDimension(DivStyle.MaxHeight,BoxEndY-BoxStartY))Then
+   BoxEndY:=BoxStartY+CSSParseDimension(DivStyle.MaxHeight,BoxEndY-BoxStartY);
   If BoxEndY < BoxStartY + Ctx.LineHeight Then
    BoxEndY := BoxStartY + Ctx.LineHeight;
   If Box.HasBgBox And (Not TableMeasurePass) And
@@ -9345,6 +9517,12 @@ Begin
     (CSSParseDimension(DivStyle.Height, 0) > 0) And
     (Ctx.Y < BoxStartY + CSSParseDimension(DivStyle.Height, 0)) Then
   Ctx.Y := BoxStartY + CSSParseDimension(DivStyle.Height, 0);
+ If WantsBlock And(DivStyle.MinHeight<>'')And
+   (Ctx.Y<BoxStartY+CSSParseDimension(DivStyle.MinHeight,0))Then
+  Ctx.Y:=BoxStartY+CSSParseDimension(DivStyle.MinHeight,0);
+ If WantsBlock And(DivStyle.MaxHeight<>'')And
+   (Ctx.Y>BoxStartY+CSSParseDimension(DivStyle.MaxHeight,Ctx.Y-BoxStartY))Then
+  Ctx.Y:=BoxStartY+CSSParseDimension(DivStyle.MaxHeight,Ctx.Y-BoxStartY);
 
  If WantsBlock Then Begin
   If PaddingBottomPx > 0 Then Ctx.Y := Ctx.Y + PaddingBottomPx;
@@ -18174,7 +18352,8 @@ Var
  Bg, LowerBg, Src, PosText, Token: String;
  LoadPath: String;
  P1, P2, SpacePos, Code: Integer;
- BgX, BgY, W, H, SrcX, SrcY, DX, DY, CacheIndex: Integer;
+ BgX, BgY, W, H, SrcX, SrcY, DX, DY,PX,PY, CacheIndex: Integer;
+ RepeatX,RepeatY:Boolean;
  Img: PNGImage;
  PixelColor, Alpha: Byte;
 Begin
@@ -18232,21 +18411,36 @@ Begin
  End;
  SrcX := -BgX;
  SrcY := -BgY;
+ LowerBg:=HTMLLowerCase(Style.BackgroundRepeat);
+ RepeatX:=(LowerBg='repeat')Or(LowerBg='repeat-x');
+ RepeatY:=(LowerBg='repeat')Or(LowerBg='repeat-y');
+ If LowerBg=''Then Begin RepeatX:=True;RepeatY:=True End;
+ If HTMLLowerCase(Style.BackgroundAttachment)='fixed'Then Begin
+  Inc(SrcX,ScrollX);Inc(SrcY,ScrollY)
+ End;
  For DY := 0 To H - 1 Do
-  For DX := 0 To W - 1 Do
-   If (SrcX + DX >= 0) And
-      (SrcX + DX < PNGImageCache[CacheIndex].Image.Width) And
-      (SrcY + DY >= 0) And
-      (SrcY + DY < PNGImageCache[CacheIndex].Image.Height) Then Begin
+  For DX := 0 To W - 1 Do Begin
+   PX:=SrcX+DX;PY:=SrcY+DY;
+   If RepeatX And(PNGImageCache[CacheIndex].Image.Width>0)Then Begin
+    PX:=PX Mod PNGImageCache[CacheIndex].Image.Width;
+    If PX<0Then Inc(PX,PNGImageCache[CacheIndex].Image.Width)
+   End;
+   If RepeatY And(PNGImageCache[CacheIndex].Image.Height>0)Then Begin
+    PY:=PY Mod PNGImageCache[CacheIndex].Image.Height;
+    If PY<0Then Inc(PY,PNGImageCache[CacheIndex].Image.Height)
+   End;
+   If(PX>=0)And(PX<PNGImageCache[CacheIndex].Image.Width)And
+     (PY>=0)And(PY<PNGImageCache[CacheIndex].Image.Height)Then Begin
     If PNGImageCache[CacheIndex].Image.HasAlpha Then
-     Alpha := PNGGetAlpha(PNGImageCache[CacheIndex].Image, SrcX + DX, SrcY + DY)
+     Alpha := PNGGetAlpha(PNGImageCache[CacheIndex].Image,PX,PY)
     Else
      Alpha := 255;
     If Alpha > 128 Then Begin
-     PixelColor := PNGGetPixel(PNGImageCache[CacheIndex].Image, SrcX + DX, SrcY + DY);
+     PixelColor := PNGGetPixel(PNGImageCache[CacheIndex].Image,PX,PY);
      PutPixel(X + DX, Y + DY, PixelColor);
     End;
    End;
+End;
 End;
 
 { Variable globale pour activer/desactiver l'application CSS automatique }
@@ -18261,6 +18455,8 @@ Var
  OldTextStyle: Byte;
  OldNoWrap: Boolean;
  OldTextAlignMode: Byte;
+ OldLetterSpacing,OldWordSpacing:Integer;
+ OldTextTransform:Byte;
  BoxIdAttr: String;
  BoxStartX, BoxStartY: Integer;
  HasInlineHandler: Boolean;
@@ -18293,6 +18489,9 @@ Begin
  OldTextStyle := Ctx.TextStyle;
  OldNoWrap := Ctx.NoWrap;
  OldTextAlignMode := Ctx.TextAlignMode;
+ OldLetterSpacing:=Ctx.LetterSpacingPx;
+ OldWordSpacing:=Ctx.WordSpacingPx;
+ OldTextTransform:=Ctx.TextTransformMode;
 
  { Par defaut (CSS desactive ou noeud texte) : comportement de bloc
    selon la balise seule, comme avant l'introduction du CSS. }
@@ -18545,6 +18744,9 @@ Begin
   Ctx.TextStyle := OldTextStyle;
   Ctx.NoWrap := OldNoWrap;
   Ctx.TextAlignMode := OldTextAlignMode;
+  Ctx.LetterSpacingPx:=OldLetterSpacing;
+  Ctx.WordSpacingPx:=OldWordSpacing;
+  Ctx.TextTransformMode:=OldTextTransform;
  End;
 End;
 
@@ -18581,7 +18783,10 @@ Procedure DevToolsBindDocument(Doc:HTMLNodePtr); Forward;
   (ex: le menu complet d'un site genere par JSCookMenu.js). }
 Procedure RenderAbsolutePositionedOverlays(Const BaseCtx: RenderContext);
 Var
- I: Integer;
+ I,J: Integer;
+ TmpNode:HTMLNodePtr;
+ ZA,ZB,Code:Integer;
+ ZText:String;
  NodeStyle: DOMStyle;
  OverlayCtx: RenderContext;
  OverlayWidth, OverlayHeight, RightPx, BottomPx: Integer;
@@ -18592,6 +18797,20 @@ Var
  ChildStyle: DOMStyle;
  NaturalWidth, ChildWidth: Integer;
 Begin
+ { Les elements positionnes sont peints du plus petit au plus grand
+   z-index; l'ordre du document departage les valeurs identiques. }
+ For I:=1To AbsolutePositionedCount-1Do
+  For J:=I+1To AbsolutePositionedCount Do Begin
+   CSSResolveCascade(AbsolutePositionedNodes[I],NodeStyle);
+   ZText:=NodeStyle.ZIndex;Val(ZText,ZA,Code);If Code<>0Then ZA:=0;
+   CSSResolveCascade(AbsolutePositionedNodes[J],NodeStyle);
+   ZText:=NodeStyle.ZIndex;Val(ZText,ZB,Code);If Code<>0Then ZB:=0;
+   If ZA>ZB Then Begin
+    TmpNode:=AbsolutePositionedNodes[I];
+    AbsolutePositionedNodes[I]:=AbsolutePositionedNodes[J];
+    AbsolutePositionedNodes[J]:=TmpNode
+   End
+  End;
  For I := 1 To AbsolutePositionedCount Do Begin
   CSSResolveCascade(AbsolutePositionedNodes[I], NodeStyle);
   If Not CSSIsElementHidden(NodeStyle) Then Begin
@@ -23579,6 +23798,14 @@ BEGIN
  DrawRefreshButton;
  DrawFavoriteButton;
  If TestMode Then Begin
+  { La recherche est dichotomique : toute nouvelle entree doit rester
+    strictement triee et son nom ne doit pas etre tronque. }
+  For ScrollTestI:=0To CSS_PROPERTY_COUNT-1Do
+   If CSSGetPropertyId(CSSPropertyTable[ScrollTestI].Name)<>
+      CSSPropertyTable[ScrollTestI].Id Then Begin
+    WriteConsoleLine('ECHEC table CSS: '+CSSPropertyTable[ScrollTestI].Name);
+    If MouseAvailable Then HideMouse;CloseGraph;Halt(5)
+   End;
   { Regression du clic Google "Advanced search": un href racine doit
     devenir une URL HTTP(S) absolue, jamais un chemin de fichier local. }
   If IsRemoteURL(CurrentURL)And(Not IsViewSourceURL(CurrentURL))Then Begin
