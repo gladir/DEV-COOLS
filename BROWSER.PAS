@@ -47,10 +47,11 @@ Program BROWSER;
   {$H+}
 {$ENDIF}
 
-Uses {$IFDEF FPC}
-      Crt,PtcGraph,PtcCrt,PtcMouse,SysUtils
+Uses DOS,
+     {$IFDEF FPC}
+      Crt,PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
-      Crt,Graph,Dos
+      Crt,Graph
      {$ENDIF};
 
 Const
@@ -1385,6 +1386,45 @@ Begin
   If (S[I] >= 'A') And (S[I] <= 'Z') Then
    S[I] := Chr(Ord(S[I]) + 32);
  HTMLLowerCase := S;
+End;
+
+{ Equivalents locaux des quelques routines de bibliotheque auparavant
+  utilisees. Ils suivent la methode de DEVENV.PAS et restent compatibles
+  avec Turbo Pascal 7. }
+Function HTMLUpperCase(S:String):String;
+Var I:Integer;
+Begin
+ For I:=1to Length(S)do S[I]:=UpCase(S[I]);
+ HTMLUpperCase:=S
+End;
+
+Function IntToStr(N:LongInt):String;
+Var S:String;
+Begin
+ Str(N,S);IntToStr:=S
+End;
+
+Function ExtractFileExt(FileName:String):String;
+Var I,CutPos:Integer;
+Begin
+ CutPos:=Length(FileName);
+ For I:=1to Length(FileName)do
+  If(FileName[I]='?')or(FileName[I]='#')Then Begin CutPos:=I-1;Break End;
+ For I:=CutPos downto 1do Begin
+  If FileName[I]='.'Then Begin
+   ExtractFileExt:=Copy(FileName,I,CutPos-I+1);Exit
+  End;
+  If(FileName[I]='\')or(FileName[I]='/')Then Break
+ End;
+ ExtractFileExt:=''
+End;
+
+Function BrowserGetTickCount:LongInt;
+Var HourValue,MinuteValue,SecondValue,Hundredths:Word;
+Begin
+ GetTime(HourValue,MinuteValue,SecondValue,Hundredths);
+ BrowserGetTickCount:=((LongInt(HourValue)*60+MinuteValue)*60+
+  SecondValue)*1000+LongInt(Hundredths)*10
 End;
 
 { ============================================================
@@ -3892,7 +3932,7 @@ Begin
    Exit;
   End;
   If LowerName = 'touppercase' Then Begin
-   JSCallMethod := JSString(UpperCase(S));
+   JSCallMethod := JSString(HTMLUpperCase(S));
    Exit;
   End;
   If LowerName = 'tolowercase' Then Begin
@@ -8347,7 +8387,7 @@ Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt);
 Begin
  JSTimeoutActive := True;
  JSTimeoutHandler := Handler;
- JSTimeoutFireAtTick := LongInt(GetTickCount64) + DelayMs;
+ JSTimeoutFireAtTick := BrowserGetTickCount + DelayMs;
 End;
 
 Procedure JSClearTimeout;
@@ -8364,7 +8404,7 @@ Var
  Handler: String;
 Begin
  If Not JSTimeoutActive Then Exit;
- If LongInt(GetTickCount64) < JSTimeoutFireAtTick Then Exit;
+ If BrowserGetTickCount < JSTimeoutFireAtTick Then Exit;
  Handler := JSTimeoutHandler;
  JSTimeoutActive := False;
  JSTimeoutHandler := '';
