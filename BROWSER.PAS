@@ -1297,6 +1297,9 @@ AbsolutePositionedNodes: Array[1..200] Of HTMLNodePtr;
 AbsoluteAnchorX, AbsoluteAnchorY, AbsoluteAnchorMaxX: Array[1..200] Of Integer;
 AbsolutePositionedCount: Integer;
 AbsoluteClipDepth: Integer;
+PositionAnchorValid: Boolean;
+PositionAnchorX, PositionAnchorY, PositionAnchorMaxX: Integer;
+ RenderingImplicitTableCellRoot: Boolean;
  RenderingAbsoluteOverlay: Boolean;
 
  { Minuterie a emplacement unique pour setTimeout/clearTimeout cote JS
@@ -9298,6 +9301,17 @@ Begin
  CSSChildWantsTableCellFlow := HTMLLowerCase(ChildStyle.Display) = 'table-cell';
 End;
 
+Function CSSIgnorableBetweenTableCells(Node:HTMLNodePtr):Boolean;
+Begin
+ CSSIgnorableBetweenTableCells:=False;
+ If Node=Nil Then Exit;
+ If Node^.NodeType=HTML_NODE_COMMENT Then Begin
+  CSSIgnorableBetweenTableCells:=True;Exit
+ End;
+ If(Node^.NodeType=HTML_NODE_TEXT)And(Trim(Node^.Content)='')Then
+  CSSIgnorableBetweenTableCells:=True
+End;
+
 { Rendre une serie de freres consecutifs display:table-cell comme une
   rangee de tableau implicite : reutilise l'infrastructure Ctx.InTable/
   TableCellContentX deja fiable (RenderNewLine renvoie alors Ctx.X au
@@ -9373,7 +9387,9 @@ Begin
   Ctx.TableCellWidth := CellWidth;
   Ctx.TableCellContentX := Ctx.X;
 
+  RenderingImplicitTableCellRoot := True;
   RenderHTMLNode(Cell, Ctx);
+  RenderingImplicitTableCellRoot := False;
   FlushJustifiedLine(Ctx, False);
 
   If Ctx.Y + Ctx.LineHeight > MaxRowBottom Then MaxRowBottom := Ctx.Y + Ctx.LineHeight;
@@ -9381,6 +9397,7 @@ Begin
   CellX := CellX + CellWidth;
   If Cell = LastCell Then Break;
   Cell := Cell^.NextSibling;
+  While CSSIgnorableBetweenTableCells(Cell)Do Cell:=Cell^.NextSibling;
  Until Cell = Nil;
 
  Ctx.InTable := OldInTable;
@@ -9404,17 +9421,21 @@ End;
 { Procedure pour rendre les enfants d'un noeud }
 Procedure RenderChildren(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
- Child, RunEnd: HTMLNodePtr;
+ Child, RunEnd, Probe: HTMLNodePtr;
 Begin
  Child := Node^.FirstChild;
  While Child <> Nil Do Begin
   If (Not RenderingAbsoluteOverlay) And CSSChildWantsTableCellFlow(Child) Then Begin
    RunEnd := Child;
-   While (RunEnd^.NextSibling <> Nil) And
-         CSSChildWantsTableCellFlow(RunEnd^.NextSibling) Do
-    RunEnd := RunEnd^.NextSibling;
+   Probe:=RunEnd^.NextSibling;
+   While CSSIgnorableBetweenTableCells(Probe)Do Probe:=Probe^.NextSibling;
+   While(Probe<>Nil)And CSSChildWantsTableCellFlow(Probe)Do Begin
+    RunEnd:=Probe;
+    Probe:=RunEnd^.NextSibling;
+    While CSSIgnorableBetweenTableCells(Probe)Do Probe:=Probe^.NextSibling
+   End;
    RenderTableCellRow(Child, RunEnd, Ctx);
-   Child := RunEnd^.NextSibling;
+   Child := Probe;
   End Else Begin
    RenderHTMLNode(Child, Ctx);
    Child := Child^.NextSibling;
@@ -9467,11 +9488,17 @@ Var
  MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
  BoxStartX, BoxStartY, BoxEndX, BoxEndY, RequestedWidth: Integer;
  OldMaxX, OldMaxY, FixedHeight, SavedClipDepth: Integer;
+ OldPositionAnchorValid: Boolean;
+ OldPositionAnchorX, OldPositionAnchorY, OldPositionAnchorMaxX: Integer;
  MeasureCtx: RenderContext;
  OldMeasurePass: Boolean;
  SavedAbsoluteCount: Integer;
  ClipOverflow: Boolean;
 Begin
+ OldPositionAnchorValid:=PositionAnchorValid;
+ OldPositionAnchorX:=PositionAnchorX;
+ OldPositionAnchorY:=PositionAnchorY;
+ OldPositionAnchorMaxX:=PositionAnchorMaxX;
  WantsBlock := CurrentElementWantsBlock;
  Box := CurrentElementBox;
  If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := RENDER_DIV_MARGIN;
@@ -9483,8 +9510,13 @@ Begin
    apres - sauf si le CSS demande display:inline/inline-block. }
  If WantsBlock Then Begin
   If (Not RenderingAbsoluteOverlay) And
+     (Not RenderingImplicitTableCellRoot) And
      (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
    RenderNewLine(Ctx);
+  { Le DIV qui constitue lui-meme la cellule implicite ne commence pas
+    une nouvelle ligne; ses descendants retrouvent ensuite le flux bloc
+    normal a l'interieur de cette cellule. }
+  RenderingImplicitTableCellRoot:=False;
   Inc(Ctx.BlockLevel);
   If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginTopPx);
   If RenderingAbsoluteOverlay Then BoxStartX := Ctx.X
@@ -9526,6 +9558,12 @@ Begin
     RequestedWidth:=CSSParseDimension(DivStyle.MaxWidth,RequestedWidth);
    If RequestedWidth >= 0 Then BoxEndX := BoxStartX + RequestedWidth;
    If BoxEndX > Ctx.MaxX Then BoxEndX := Ctx.MaxX;
+  End;
+  If HTMLLowerCase(DivStyle.PositionProp)='relative'Then Begin
+   PositionAnchorValid:=True;
+   PositionAnchorX:=BoxStartX;
+   PositionAnchorY:=BoxStartY;
+   PositionAnchorMaxX:=BoxEndX
   End;
   MeasureCtx := Ctx;
   MeasureCtx.MaxX := BoxEndX;
@@ -9601,6 +9639,10 @@ Begin
   Dec(Ctx.BlockLevel);
   RenderBlockSpacing(Ctx, MarginBottomPx);
  End;
+ PositionAnchorValid:=OldPositionAnchorValid;
+ PositionAnchorX:=OldPositionAnchorX;
+ PositionAnchorY:=OldPositionAnchorY;
+ PositionAnchorMaxX:=OldPositionAnchorMaxX;
 End;
 
 { Procedure pour rendre la balise SPAN (inline) }
@@ -9771,6 +9813,8 @@ Var
  HeaderStyle: DOMStyle;
  HeaderBox: TElementBoxInfo;
  HeaderX1, HeaderY1, HeaderX2, HeaderHeight: Integer;
+ OldPositionAnchorValid:Boolean;
+ OldPositionAnchorX,OldPositionAnchorY,OldPositionAnchorMaxX:Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
@@ -9788,7 +9832,21 @@ Begin
   SetFillStyle(SolidFill, HeaderBox.BgBoxColorIdx);
   Bar(HeaderX1, HeaderY1, HeaderX2, HeaderY1 + HeaderHeight);
  End;
+ OldPositionAnchorValid:=PositionAnchorValid;
+ OldPositionAnchorX:=PositionAnchorX;
+ OldPositionAnchorY:=PositionAnchorY;
+ OldPositionAnchorMaxX:=PositionAnchorMaxX;
+ If HTMLLowerCase(HeaderStyle.PositionProp)='relative'Then Begin
+  PositionAnchorValid:=True;
+  PositionAnchorX:=HeaderX1;
+  PositionAnchorY:=HeaderY1;
+  PositionAnchorMaxX:=HeaderX2
+ End;
  RenderChildren(Node, Ctx);
+ PositionAnchorValid:=OldPositionAnchorValid;
+ PositionAnchorX:=OldPositionAnchorX;
+ PositionAnchorY:=OldPositionAnchorY;
+ PositionAnchorMaxX:=OldPositionAnchorMaxX;
  If WantsBlock Then Begin
   { height et overflow:hidden fixent la hauteur de la barre : les H2
     display:none et les listes absolues ne doivent pas l'agrandir. }
@@ -18640,9 +18698,15 @@ Begin
       (AbsolutePositionedCount < High(AbsolutePositionedNodes)) Then Begin
    Inc(AbsolutePositionedCount);
    AbsolutePositionedNodes[AbsolutePositionedCount] := Node;
-   AbsoluteAnchorX[AbsolutePositionedCount] := Ctx.X;
-   AbsoluteAnchorY[AbsolutePositionedCount] := Ctx.Y;
-   AbsoluteAnchorMaxX[AbsolutePositionedCount] := Ctx.MaxX;
+   If PositionAnchorValid Then Begin
+    AbsoluteAnchorX[AbsolutePositionedCount] := PositionAnchorX;
+    AbsoluteAnchorY[AbsolutePositionedCount] := PositionAnchorY;
+    AbsoluteAnchorMaxX[AbsolutePositionedCount] := PositionAnchorMaxX
+   End Else Begin
+    AbsoluteAnchorX[AbsolutePositionedCount] := Ctx.X;
+    AbsoluteAnchorY[AbsolutePositionedCount] := Ctx.Y;
+    AbsoluteAnchorMaxX[AbsolutePositionedCount] := Ctx.MaxX
+   End;
    End;
    Exit;
   End;
