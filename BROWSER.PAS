@@ -744,6 +744,7 @@ End;
   InHead: Boolean;           { Dans la section head (ne pas afficher) }
   InBody: Boolean;           { Dans la section body }
   BlockLevel: Integer;       { Niveau d'imbrication des blocs }
+  BlockContentX: Integer;    { Bord gauche du conteneur bloc courant }
   TextStyle: Byte;           { Style de texte (gras, italique, etc.) }
   InPreformatted: Boolean;   { Dans une balise pre (conserver espaces) }
   ListType: Byte;            { Type de liste courante (UL, OL, DL) }
@@ -8625,6 +8626,7 @@ Begin
  RenderOriginY := RENDER_AREA_Y - ScrollY;
  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
  Ctx.Y := RenderOriginY + RENDER_MARGIN_TOP;
+ Ctx.BlockContentX:=Ctx.X;
  Ctx.MaxX := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) - RENDER_MARGIN_LEFT;
  { Parcourir tout le document a chaque passe. L'ancien plafond situe 2000
    pixels sous la fenetre ne donnait qu'une hauteur partielle qui changeait
@@ -8637,6 +8639,7 @@ Begin
  Ctx.InHead := False;
  Ctx.InBody := False;
  Ctx.BlockLevel := 0;
+ Ctx.BlockContentX:=Ctx.X;
  Ctx.TextStyle := TEXT_STYLE_NORMAL;
  Ctx.InPreformatted := False;
  Ctx.ListType := LIST_TYPE_NONE;
@@ -8987,7 +8990,7 @@ Begin
  If Ctx.InTable Then
   Ctx.X := Ctx.TableCellContentX
  Else
-  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+  Ctx.X := Ctx.BlockContentX;
  Ctx.Y := Ctx.Y + Ctx.LineHeight;
 End;
 
@@ -9004,7 +9007,7 @@ Begin
  If Ctx.InTable Then
   Ctx.X := Ctx.TableCellContentX
  Else
-  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+  Ctx.X := Ctx.BlockContentX;
 End;
 
 { Fonction pour calculer la largeur d'un texte }
@@ -9528,7 +9531,7 @@ Begin
     .INX de newsBlock et searchBlock au meme X : la seconde repeignait la
     premiere et leurs H3 absolus apparaissaient au-dessus du logo. }
   Else If Ctx.InTable Then BoxStartX:=Ctx.TableCellContentX
-  Else BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT;
+  Else BoxStartX := Ctx.BlockContentX;
   BoxStartY := Ctx.Y;
   If PaddingTopPx > 0 Then Ctx.Y := Ctx.Y + PaddingTopPx;
   ApplyTextAlignOffset(Ctx, Node);
@@ -9699,7 +9702,7 @@ Var
  ArticleStyle: DOMStyle;
  MarginTopPx, MarginBottomPx, MarginLeftPx, MarginRightPx: Integer;
  PaddingTopPx, PaddingBottomPx, PaddingLeftPx, PaddingRightPx: Integer;
- BoxStartX, BoxStartY, BoxEndX, BoxEndY, OldMaxX: Integer;
+ BoxStartX, BoxStartY, BoxEndX, BoxEndY, OldMaxX,OldBlockContentX: Integer;
  MeasureCtx: RenderContext;
  OldMeasurePass: Boolean;
  SavedAbsoluteCount: Integer;
@@ -9727,12 +9730,14 @@ Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
   RenderBlockSpacing(Ctx, MarginTopPx);
-  BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT + MarginLeftPx;
+  OldBlockContentX:=Ctx.BlockContentX;
+  BoxStartX := OldBlockContentX + MarginLeftPx;
   BoxStartY := Ctx.Y;
   BoxEndX := Ctx.MaxX - MarginRightPx;
   If BoxEndX < BoxStartX Then BoxEndX := BoxStartX;
   OldMaxX := Ctx.MaxX;
   Ctx.X := BoxStartX + PaddingLeftPx;
+  Ctx.BlockContentX:=Ctx.X;
   Ctx.MaxX := BoxEndX - PaddingRightPx;
   If Ctx.MaxX < Ctx.X Then Ctx.MaxX := Ctx.X;
   If PaddingTopPx > 0 Then Inc(Ctx.Y, PaddingTopPx);
@@ -9765,7 +9770,8 @@ Begin
    SetColor(Ctx.TextColor);
   End;
   Ctx.MaxX := OldMaxX;
-  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
+  Ctx.BlockContentX:=OldBlockContentX;
+  Ctx.X := OldBlockContentX;
   If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginBottomPx);
  End;
 End;
@@ -9919,7 +9925,7 @@ Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
   RenderBlockSpacing(Ctx, MarginTopPx);
-  BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT;
+  BoxStartX := Ctx.BlockContentX;
   BoxStartY := Ctx.Y;
   ApplyTextAlignOffset(Ctx, Node);
  End;
@@ -19347,6 +19353,7 @@ Begin
                   BodyMarginTop + BodyBorderInset + BodyPaddingTop;
  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
  Ctx.Y := RenderOriginY + RENDER_MARGIN_TOP;
+ Ctx.BlockContentX:=Ctx.X;
  Ctx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE -
              BodyMarginRight - BodyBorderInset - BodyPaddingRight;
 
