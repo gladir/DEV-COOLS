@@ -19481,6 +19481,11 @@ Begin
  SuppressDevToolsRedraw:=True;
  RenderHTMLDocument(HTMLDocument);
  SuppressDevToolsRedraw:=False;
+ { RenderHTMLDocument ne dessine volontairement pas le panneau pendant
+   le recalcul de la page. Il faut cependant le repeindre APRES cette
+   passe; sinon DevToolsSetOpen reduit bien le viewport, mais F12 et le
+   menu Inspecter donnent visuellement l'impression de ne rien faire. }
+ If DevToolsOpen Then DrawDevTools;
 End;
 
 { Rafraichissement utilise exclusivement par le survol des menus. Le DOM est
@@ -19500,6 +19505,7 @@ Begin
  RenderHTMLDocument(HTMLDocument);
  SuppressDevToolsRedraw:=False;
  SkipNextRenderAreaClear := False;
+ If DevToolsOpen Then DrawDevTools;
 End;
 
 { =====================================================
