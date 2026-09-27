@@ -236263,6 +236263,24276 @@ Begin
 End;
 
 
+
+{ ============================================================ }
+{ DEBUT bloc importe de BROWSER.PAS (code inerte, phase B)      }
+{ Rien n'appelle encore ce code - cablage WinMgr en phase F/G.  }
+{ BROWSER.PAS suppose des String longues (AnsiString) - voir son}
+{ en-tete d'origine ; ce fichier est en mode ShortString (H moins) par }
+{ defaut (ligne 976), d'ou le H plus local le temps du bloc.    }
+{ ============================================================ }
+{$H+}
+
+Const
+ BROWSER_BUILD_ID = '20260620-STACKFIX-5';
+
+ { Constantes pour la barre d'URL }
+ URL_BAR_X = 5;
+ URL_BAR_Y = 5;
+ URL_BAR_HEIGHT = 20;
+ URL_MAX_LENGTH = 255;
+
+ { Constantes pour le bouton Precedent }
+ BACK_BTN_Y = 5;
+ BACK_BTN_WIDTH = 30;
+ BACK_BTN_HEIGHT = 20;
+
+ { Constantes pour le bouton Suivant }
+ FORWARD_BTN_Y = 5;
+ FORWARD_BTN_WIDTH = 30;
+ FORWARD_BTN_HEIGHT = 20;
+
+ { Constantes pour le bouton Actualiser }
+ REFRESH_BTN_Y = 5;
+ REFRESH_BTN_WIDTH = 30;
+ REFRESH_BTN_HEIGHT = 20;
+
+ { Constantes pour le bouton Favori }
+ FAVORITE_BTN_Y = 5;
+ FAVORITE_BTN_WIDTH = 30;
+ FAVORITE_BTN_HEIGHT = 20;
+
+ { Constantes pour les favoris }
+ MAX_FAVORITES = 100;
+
+ { Constantes pour l'historique de navigation }
+ MAX_HISTORY = 100;
+
+ { Couleurs de l'interface }
+ COLOR_URL_BAR_BG = 15;       { Blanc }
+ COLOR_URL_BAR_BORDER = 0;    { Noir }
+ COLOR_URL_BAR_TEXT = 0;      { Noir }
+ COLOR_URL_BAR_CURSOR = 0;    { Noir }
+ COLOR_BTN_BG = 7;            { Gris clair }
+ COLOR_BTN_BORDER = 0;        { Noir }
+ COLOR_BTN_TEXT = 0;          { Noir }
+ COLOR_BTN_DISABLED = 8;      { Gris fonce }
+
+ { Constantes pour les boutons de la souris }
+ MOUSE_LEFT_BUTTON = 1;
+ MOUSE_RIGHT_BUTTON = 2;
+ MOUSE_MIDDLE_BUTTON = 4;
+
+ { =====================================================
+   Constantes pour le parseur HTML (HTML 1.0 a HTML5)
+   ===================================================== }
+
+ { Types de noeuds HTML }
+ HTML_NODE_ELEMENT = 1;      { Element HTML (balise) }
+ HTML_NODE_TEXT = 2;         { Noeud texte }
+ HTML_NODE_COMMENT = 3;      { Commentaire HTML }
+ HTML_NODE_DOCTYPE = 4;      { Declaration DOCTYPE }
+ HTML_NODE_CDATA = 5;        { Section CDATA }
+
+ { Types de balises HTML - Structure }
+ TAG_HTML = 1;
+ TAG_HEAD = 2;
+ TAG_BODY = 3;
+ TAG_DIV = 4;
+ TAG_SPAN = 5;
+ TAG_SECTION = 6;
+ TAG_ARTICLE = 7;
+ TAG_NAV = 8;
+ TAG_ASIDE = 9;
+ TAG_HEADER = 10;
+ TAG_FOOTER = 11;
+ TAG_MAIN = 12;
+
+ { Types de balises HTML - Titres }
+ TAG_H1 = 20;
+ TAG_H2 = 21;
+ TAG_H3 = 22;
+ TAG_H4 = 23;
+ TAG_H5 = 24;
+ TAG_H6 = 25;
+
+ { Types de balises HTML - Texte }
+ TAG_P = 30;
+ TAG_BR = 31;
+ TAG_HR = 32;
+ TAG_STRONG = 33;
+ TAG_B = 34;
+ TAG_EM = 35;
+ TAG_I = 36;
+ TAG_U = 37;
+ TAG_S = 38;
+ TAG_STRIKE = 39;
+ TAG_DEL = 40;
+ TAG_INS = 41;
+ TAG_SUB = 42;
+ TAG_SUP = 43;
+ TAG_SMALL = 44;
+ TAG_BIG = 45;
+ TAG_MARK = 46;
+ TAG_ABBR = 47;
+ TAG_CITE = 48;
+ TAG_DFN = 49;
+ TAG_CODE = 50;
+ TAG_PRE = 51;
+ TAG_KBD = 52;
+ TAG_SAMP = 53;
+ TAG_VAR = 54;
+ TAG_Q = 55;
+ TAG_BLOCKQUOTE = 56;
+ TAG_FONT = 57;              { HTML historique: color/face/size }
+
+ { Types de balises HTML - Liens et media }
+ TAG_A = 60;
+ TAG_IMG = 61;
+ TAG_AUDIO = 62;
+ TAG_VIDEO = 63;
+ TAG_SOURCE = 64;
+ TAG_TRACK = 65;
+ TAG_EMBED = 66;
+ TAG_OBJECT = 67;
+ TAG_PARAM = 68;
+ TAG_IFRAME = 69;
+ TAG_CANVAS = 70;
+ TAG_SVG = 71;
+ TAG_PICTURE = 72;
+ TAG_FIGURE = 73;
+ TAG_FIGCAPTION = 74;
+
+ { Types de balises HTML - Listes }
+ TAG_UL = 80;
+ TAG_OL = 81;
+ TAG_LI = 82;
+ TAG_DL = 83;
+ TAG_DT = 84;
+ TAG_DD = 85;
+ TAG_MENU = 86;
+
+ { Types de balises HTML - Tableaux }
+ TAG_TABLE = 90;
+ TAG_TR = 91;
+ TAG_TD = 92;
+ TAG_TH = 93;
+ TAG_THEAD = 94;
+ TAG_TBODY = 95;
+ TAG_TFOOT = 96;
+ TAG_CAPTION = 97;
+ TAG_COLGROUP = 98;
+ TAG_COL = 99;
+
+ { Types de balises HTML - Formulaires }
+ TAG_FORM = 100;
+ TAG_INPUT = 101;
+ TAG_BUTTON = 102;
+ TAG_SELECT = 103;
+ TAG_OPTION = 104;
+ TAG_OPTGROUP = 105;
+ TAG_TEXTAREA = 106;
+ TAG_LABEL = 107;
+ TAG_FIELDSET = 108;
+ TAG_LEGEND = 109;
+ TAG_DATALIST = 110;
+ TAG_OUTPUT = 111;
+ TAG_PROGRESS = 112;
+ TAG_METER = 113;
+
+ { Types de balises HTML - Metadonnees }
+ TAG_TITLE = 120;
+ TAG_META = 121;
+ TAG_LINK = 122;
+ TAG_STYLE = 123;
+ TAG_SCRIPT = 124;
+ TAG_NOSCRIPT = 125;
+ TAG_BASE = 126;
+ TAG_TEMPLATE = 127;
+ TAG_SLOT = 128;
+
+ { Types de balises HTML - Semantique }
+ TAG_ADDRESS = 130;
+ TAG_TIME = 131;
+ TAG_DATA = 132;
+ TAG_DETAILS = 133;
+ TAG_SUMMARY = 134;
+ TAG_DIALOG = 135;
+
+ { Types de balises HTML - Ruby (annotations asiatiques) }
+ TAG_RUBY = 140;
+ TAG_RT = 141;
+ TAG_RP = 142;
+ TAG_RB = 143;
+ TAG_RTC = 144;
+
+ { Types de balises HTML - Autres }
+ TAG_WBR = 150;
+ TAG_BDI = 151;
+ TAG_BDO = 152;
+ TAG_MAP = 153;
+ TAG_AREA = 154;
+ TAG_CENTER = 155;
+
+ { Balise inconnue }
+ TAG_UNKNOWN = 255;
+
+ { Nombre maximum d'attributs par balise }
+ MAX_ATTRIBUTES = 32;
+
+ { Nombre maximum d'enfants par noeud }
+ MAX_CHILDREN = 256;
+
+ { =====================================================
+   Constantes pour le rendu HTML
+   ===================================================== }
+
+ { Zone de rendu du contenu HTML }
+ RENDER_AREA_X = 5;
+ RENDER_AREA_Y = 30;           { Sous la barre d'URL }
+ { RENDER_AREA_WIDTH/HEIGHT : valeurs par defaut pour le mode VGA
+   640x480 ; recalculees dans BrowserInitLayoutAndPalette selon la resolution
+   reelle (notamment en mode -maxscreen), voir plus bas. }
+
+ { Barres de defilement de la zone de rendu }
+ SCROLLBAR_SIZE = 16;          { Epaisseur des barres / cote des boutons fleche }
+ SCROLLBAR_MIN_THUMB = 12;     { Taille minimale de la poignee }
+ SCROLL_LINE_STEP = 16;        { Pas de defilement par clic sur une fleche }
+ SCROLL_MEASURE_MARGIN = 2000; { Marge d'anticipation pour mesurer le contenu restant }
+ RENDER_LAYOUT_MAX_Y = 30000;  { Limite TP7 pour mesurer tout le document }
+
+ { Marges et espacements }
+ RENDER_MARGIN_LEFT = 10;
+ RENDER_MARGIN_TOP = 5;
+ RENDER_LINE_HEIGHT = 16;
+ RENDER_PARAGRAPH_SPACING = 8;
+ RENDER_DIV_MARGIN = 4;
+
+ { Tailles de ligne pour les titres }
+ RENDER_H1_HEIGHT = 32;
+ RENDER_H2_HEIGHT = 28;
+ RENDER_H3_HEIGHT = 24;
+ RENDER_H4_HEIGHT = 20;
+ RENDER_H5_HEIGHT = 18;
+ RENDER_H6_HEIGHT = 16;
+
+ { Parametres pour les listes }
+ RENDER_LIST_INDENT = 20;      { Indentation par niveau de liste }
+ RENDER_LIST_SPACING = 2;      { Espacement entre elements de liste }
+ RENDER_DT_SPACING = 4;        { Espacement avant terme de definition }
+ RENDER_DD_INDENT = 30;        { Indentation pour les definitions }
+
+ { Types de listes }
+ LIST_TYPE_NONE = 0;
+ LIST_TYPE_UL = 1;             { Liste non ordonnee }
+ LIST_TYPE_OL = 2;             { Liste ordonnee }
+ LIST_TYPE_DL = 3;             { Liste de definitions }
+
+ { Parametres pour les tableaux }
+ TABLE_CELL_PADDING = 4;       { Padding interieur des cellules }
+ TABLE_BORDER_WIDTH = 1;       { Epaisseur des bordures }
+ TABLE_CELL_MIN_WIDTH = 40;    { Largeur minimale d'une cellule }
+ TABLE_CELL_SPACING = 2;       { Espacement entre cellules }
+ TABLE_MARGIN = 8;             { Marge autour du tableau }
+ TABLE_BORDER_COLOR = 8;       { Couleur des bordures (gris fonce) }
+ TABLE_HEADER_BG = 7;          { Couleur de fond des en-tetes (gris clair) }
+ MAX_TABLE_COLS = 200;         { Nombre maximum de colonnes }
+
+ { Parametres pour les formulaires }
+ FORM_MARGIN = 6;              { Marge autour du formulaire }
+ INPUT_WIDTH = 120;            { Largeur par defaut d'un champ input }
+ INPUT_HEIGHT = 16;            { Hauteur d'un champ input }
+ INPUT_PADDING = 3;            { Padding interieur des inputs }
+ INPUT_BORDER_COLOR = 8;       { Couleur de bordure (gris fonce) }
+ INPUT_BG_COLOR = 15;          { Couleur de fond (blanc) }
+ INPUT_TEXT_COLOR = 0;         { Couleur du texte (noir) }
+ BUTTON_PADDING_X = 8;         { Padding horizontal des boutons }
+ BUTTON_PADDING_Y = 4;         { Padding vertical des boutons }
+ BUTTON_BG_COLOR = 7;          { Couleur de fond des boutons (gris clair) }
+ BUTTON_BORDER_COLOR = 8;      { Couleur de bordure des boutons }
+ BUTTON_SHADOW_COLOR = 8;      { Couleur de l'ombre }
+ CHECKBOX_SIZE = 12;           { Taille des cases a cocher }
+ RADIO_SIZE = 12;              { Taille des boutons radio }
+ SELECT_WIDTH = 100;           { Largeur par defaut d'un select }
+ SELECT_ARROW_WIDTH = 16;      { Largeur de la fleche du select }
+ TEXTAREA_WIDTH = 200;         { Largeur par defaut d'un textarea }
+ TEXTAREA_HEIGHT = 60;         { Hauteur par defaut d'un textarea }
+ TEXTAREA_ROWS_DEFAULT = 4;    { Nombre de lignes par defaut }
+ TEXTAREA_COLS_DEFAULT = 20;   { Nombre de colonnes par defaut }
+
+ { Couleurs de rendu }
+ RENDER_BG_COLOR = 15;         { Blanc }
+ RENDER_TEXT_COLOR = 0;        { Noir BGI; remappe dynamiquement en D8bit }
+ RENDER_LINK_COLOR = 1;        { Bleu }
+ RENDER_LINK_VISITED_COLOR = 5;{ Violet/Magenta }
+ RENDER_LINK_ACTIVE_COLOR = 4; { Rouge }
+
+ { Parametres pour les liens }
+ { Le rendu parcourt tout le document depuis le debut a chaque appel
+   (y compris a chaque defilement), donc les liens du haut de page
+   remplissaient toujours ce tableau en premier : au-dela de la
+   limite, les liens plus bas (ceux qu'on atteint justement en
+   defilant) n'etaient jamais enregistres comme zones cliquables. Une
+   vraie page (tableau de reference) peut depasser le millier de
+   liens, d'ou cette marge confortable. }
+ MAX_LINKS = 4000;             { Nombre maximum de liens sur une page }
+
+ { Styles de texte (flags combinables) }
+ TEXT_STYLE_NORMAL = 0;
+ TEXT_STYLE_BOLD = 1;
+ TEXT_STYLE_ITALIC = 2;
+ TEXT_STYLE_UNDERLINE = 4;
+ TEXT_STYLE_STRIKE = 8;
+ TEXT_STYLE_CODE = 16;
+
+ { Modes de text-align CSS }
+ ALIGN_LEFT = 0;
+ ALIGN_CENTER = 1;
+ ALIGN_RIGHT = 2;
+ ALIGN_JUSTIFY = 3;
+ MAX_JUSTIFY_WORDS = 128;
+
+ { =====================================================
+   Constantes pour l'interpreteur JavaScript
+   ===================================================== }
+
+ { Types de tokens JavaScript }
+ JS_TOK_EOF = 0;
+ JS_TOK_NUMBER = 1;
+ JS_TOK_STRING = 2;
+ JS_TOK_IDENTIFIER = 3;
+ JS_TOK_KEYWORD = 4;
+ JS_TOK_OPERATOR = 5;
+ JS_TOK_PUNCTUATOR = 6;
+ JS_TOK_BOOLEAN = 7;
+ JS_TOK_NULL = 8;
+ JS_TOK_UNDEFINED = 9;
+
+ { Types de valeurs JavaScript }
+ JS_VAL_UNDEFINED = 0;
+ JS_VAL_NULL = 1;
+ JS_VAL_BOOLEAN = 2;
+ JS_VAL_NUMBER = 3;
+ JS_VAL_STRING = 4;
+ JS_VAL_OBJECT = 5;
+ JS_VAL_FUNCTION = 6;
+ JS_VAL_ARRAY = 7;
+ { Tableau de segments de chaine (string builder) : utilise
+   automatiquement quand une chaine JS depasse STRBUF_THRESHOLD via +=
+   (ex: cmDraw construisant 169 Ko de HTML). Evite toute allocation
+   contigüe de 50-170 Ko lors de la construction : seule la
+   concatenation finale (lors de obj.innerHTML = str) necessite un seul
+   grand bloc, pris dans la zone de croissance (wilderness) du tas. }
+ JS_VAL_STRBUF = 9;
+ STRBUF_THRESHOLD = 4096;   { Chaines > 4 Ko passent en mode STRBUF }
+ JS_VAL_NODE = 8;            { Reference a un noeud DOM (document.getElementById, this, ...) }
+
+ { Types d'operations JavaScript }
+ JS_OP_ADD = 1;
+ JS_OP_SUB = 2;
+ JS_OP_MUL = 3;
+ JS_OP_DIV = 4;
+ JS_OP_MOD = 5;
+ JS_OP_EQ = 6;
+ JS_OP_NEQ = 7;
+ JS_OP_LT = 8;
+ JS_OP_GT = 9;
+ JS_OP_LTE = 10;
+ JS_OP_GTE = 11;
+ JS_OP_AND = 12;
+ JS_OP_OR = 13;
+ JS_OP_NOT = 14;
+ JS_OP_ASSIGN = 15;
+ JS_OP_STRICT_EQ = 16;
+ JS_OP_STRICT_NEQ = 17;
+
+ { Mots-cles JavaScript }
+ JS_KW_VAR = 1;
+ JS_KW_LET = 2;
+ JS_KW_CONST = 3;
+ JS_KW_FUNCTION = 4;
+ JS_KW_IF = 5;
+ JS_KW_ELSE = 6;
+ JS_KW_FOR = 7;
+ JS_KW_WHILE = 8;
+ JS_KW_DO = 9;
+ JS_KW_RETURN = 10;
+ JS_KW_BREAK = 11;
+ JS_KW_CONTINUE = 12;
+ JS_KW_TRUE = 13;
+ JS_KW_FALSE = 14;
+ JS_KW_NULL = 15;
+ JS_KW_UNDEFINED = 16;
+ JS_KW_NEW = 17;
+ JS_KW_THIS = 18;
+ JS_KW_TYPEOF = 19;
+
+ { Limites de l'interpreteur JavaScript }
+ MAX_JS_VARS = 256;              { Nombre maximum de variables }
+ MAX_JS_STACK = 64;              { Taille maximale de la pile }
+ MAX_JS_SCRIPT_SIZE = 32000;     { Taille maximale d'un script }
+ MAX_JS_STRING_LEN = 1024;       { Longueur maximale d'une chaine }
+ MAX_JS_FUNCTIONS = 64;          { Nombre maximum de fonctions }
+
+ { =====================================================
+   Constantes pour le DOM (Document Object Model)
+   ===================================================== }
+
+ { Types de noeuds DOM }
+ DOM_NODE_ELEMENT = 1;           { Element HTML }
+ DOM_NODE_TEXT = 3;              { Noeud texte }
+ DOM_NODE_COMMENT = 8;           { Commentaire }
+ DOM_NODE_DOCUMENT = 9;          { Document }
+ DOM_NODE_DOCUMENT_FRAGMENT = 11;{ Fragment de document }
+
+ { Limites du DOM }
+ MAX_DOM_EVENT_LISTENERS = 32;   { Nombre maximum de gestionnaires d'evenements }
+
+ { Types d'evenements DOM }
+ DOM_EVENT_CLICK = 1;
+ DOM_EVENT_DBLCLICK = 2;
+ DOM_EVENT_MOUSEDOWN = 3;
+ DOM_EVENT_MOUSEUP = 4;
+ DOM_EVENT_MOUSEOVER = 5;
+ DOM_EVENT_MOUSEOUT = 6;
+ DOM_EVENT_KEYDOWN = 7;
+ DOM_EVENT_KEYUP = 8;
+ DOM_EVENT_KEYPRESS = 9;
+ DOM_EVENT_LOAD = 10;
+ DOM_EVENT_UNLOAD = 11;
+ DOM_EVENT_SUBMIT = 12;
+ DOM_EVENT_CHANGE = 13;
+ DOM_EVENT_FOCUS = 14;
+ DOM_EVENT_BLUR = 15;
+
+ { =====================================================
+   Constantes pour le parseur CSS
+   ===================================================== }
+
+ { Types de tokens CSS }
+ CSS_TOK_EOF = 0;
+ CSS_TOK_IDENT = 1;          { Identifiant (nom de propriete, nom de classe, etc.) }
+ CSS_TOK_STRING = 2;         { Chaine entre guillemets }
+ CSS_TOK_NUMBER = 3;         { Nombre (entier ou decimal) }
+ CSS_TOK_PERCENTAGE = 4;     { Pourcentage (10%) }
+ CSS_TOK_DIMENSION = 5;      { Dimension avec unite (10px, 2em, etc.) }
+ CSS_TOK_HASH = 6;           { #id ou #couleur }
+ CSS_TOK_DOT = 7;            { . (selecteur de classe) }
+ CSS_TOK_COLON = 8;          { : (pseudo-classe ou propriete:valeur) }
+ CSS_TOK_SEMICOLON = 9;      { ; (fin de declaration) }
+ CSS_TOK_LBRACE = 10;        { accolade (debut de bloc) }
+ CSS_TOK_RBRACE = 11;        { accolade (fin de bloc) }
+ CSS_TOK_LPAREN = 12;        { ( (debut de fonction) }
+ CSS_TOK_RPAREN = 13;        { ) (fin de fonction) }
+ CSS_TOK_COMMA = 14;         { , (separateur) }
+ CSS_TOK_WHITESPACE = 15;    { Espace blanc }
+ CSS_TOK_COMMENT = 16;       { Commentaire /* */ }
+ CSS_TOK_GT = 17;            { > (selecteur enfant direct) }
+ CSS_TOK_PLUS = 18;          { + (selecteur frere adjacent) }
+ CSS_TOK_TILDE = 19;         { ~ (selecteur frere general) }
+ CSS_TOK_STAR = 20;          { * (selecteur universel) }
+ CSS_TOK_LBRACKET = 21;      { [ (selecteur d'attribut) }
+ CSS_TOK_RBRACKET = 22;      { ] (fin selecteur d'attribut) }
+ CSS_TOK_AT = 23;            { @ (at-rule comme @media, @import) }
+ CSS_TOK_IMPORTANT = 24;     { !important }
+ CSS_TOK_URL = 25;           { url(...) }
+ CSS_TOK_FUNCTION = 26;      { nom-fonction( }
+
+ { Types de selecteurs CSS }
+ CSS_SEL_TAG = 1;            { Selecteur de balise (div, p, etc.) }
+ CSS_SEL_CLASS = 2;          { Selecteur de classe (.classname) }
+ CSS_SEL_ID = 3;             { Selecteur d'ID (#idname) }
+ CSS_SEL_UNIVERSAL = 4;      { Selecteur universel (*) }
+ CSS_SEL_ATTRIBUTE = 5;      { Selecteur d'attribut ([attr], [attr=val]) }
+ CSS_SEL_PSEUDO_CLASS = 6;   { Pseudo-classe (:hover, :first-child) }
+ CSS_SEL_PSEUDO_ELEMENT = 7; { Pseudo-element (::before, ::after) }
+
+ { Combinateurs CSS }
+ CSS_COMB_NONE = 0;          { Pas de combinateur (premier selecteur) }
+ CSS_COMB_DESCENDANT = 1;    { Espace (descendant) }
+ CSS_COMB_CHILD = 2;         { > (enfant direct) }
+ CSS_COMB_ADJACENT = 3;      { + (frere adjacent) }
+ CSS_COMB_SIBLING = 4;       { ~ (frere general) }
+
+ { Limites du parseur CSS }
+ { menu.css contient plusieurs centaines de classes sprite. Avec 256,
+   les definitions situees vers la fin de la feuille disparaissaient selon
+   l'ordre de chargement et leurs icones semblaient clignoter puis manquer. }
+ MAX_CSS_RULES = 1024;       { Nombre maximum de regles CSS }
+ MAX_CSS_SELECTORS = 16;     { Selecteurs maximum par regle }
+ MAX_CSS_PROPERTIES = 64;    { Proprietes maximum par regle }
+ MAX_CSS_SELECTOR_PARTS = 8; { Parties maximum par selecteur compose }
+
+ { Indices des proprietes CSS supportees }
+ CSS_PROP_COLOR = 1;
+ CSS_PROP_BACKGROUND_COLOR = 2;
+ CSS_PROP_BACKGROUND = 3;
+ CSS_PROP_FONT_SIZE = 4;
+ CSS_PROP_FONT_WEIGHT = 5;
+ CSS_PROP_FONT_STYLE = 6;
+ CSS_PROP_FONT_FAMILY = 7;
+ CSS_PROP_TEXT_DECORATION = 8;
+ CSS_PROP_TEXT_ALIGN = 9;
+ CSS_PROP_DISPLAY = 10;
+ CSS_PROP_VISIBILITY = 11;
+ CSS_PROP_WIDTH = 12;
+ CSS_PROP_HEIGHT = 13;
+ CSS_PROP_MARGIN = 14;
+ CSS_PROP_MARGIN_TOP = 15;
+ CSS_PROP_MARGIN_RIGHT = 16;
+ CSS_PROP_MARGIN_BOTTOM = 17;
+ CSS_PROP_MARGIN_LEFT = 18;
+ CSS_PROP_PADDING = 19;
+ CSS_PROP_PADDING_TOP = 20;
+ CSS_PROP_PADDING_RIGHT = 21;
+ CSS_PROP_PADDING_BOTTOM = 22;
+ CSS_PROP_PADDING_LEFT = 23;
+ CSS_PROP_BORDER = 24;
+ CSS_PROP_BORDER_COLOR = 25;
+ CSS_PROP_BORDER_WIDTH = 26;
+ CSS_PROP_BORDER_STYLE = 27;
+ CSS_PROP_POSITION = 28;
+ CSS_PROP_TOP = 29;
+ CSS_PROP_RIGHT = 30;
+ CSS_PROP_LEFT = 31;
+ CSS_PROP_BOTTOM = 32;
+ CSS_PROP_FLOAT = 33;
+ CSS_PROP_CLEAR = 34;
+ CSS_PROP_LINE_HEIGHT = 35;
+ CSS_PROP_OVERFLOW = 36;
+ CSS_PROP_CURSOR = 37;
+ CSS_PROP_LIST_STYLE = 38;
+ CSS_PROP_LIST_STYLE_TYPE = 39;
+ CSS_PROP_VERTICAL_ALIGN = 40;
+ CSS_PROP_WHITE_SPACE = 41;
+ CSS_PROP_BACKGROUND_POSITION = 42;
+ CSS_PROP_OPACITY = 43;
+  CSS_PROP_BACKGROUND_IMAGE = 44;
+ CSS_PROP_BORDER_TOP = 45;
+ CSS_PROP_BORDER_RIGHT = 46;
+ CSS_PROP_BORDER_BOTTOM = 47;
+ CSS_PROP_BORDER_LEFT = 48;
+ CSS_PROP_BACKGROUND_REPEAT = 49;
+ CSS_PROP_BACKGROUND_ATTACHMENT = 50;
+ CSS_PROP_BORDER_BOTTOM_COLOR = 51;
+ CSS_PROP_BORDER_BOTTOM_STYLE = 52;
+ CSS_PROP_BORDER_BOTTOM_WIDTH = 53;
+ CSS_PROP_BORDER_LEFT_COLOR = 54;
+ CSS_PROP_BORDER_LEFT_STYLE = 55;
+ CSS_PROP_BORDER_LEFT_WIDTH = 56;
+ CSS_PROP_BORDER_RIGHT_COLOR = 57;
+ CSS_PROP_BORDER_RIGHT_STYLE = 58;
+ CSS_PROP_BORDER_RIGHT_WIDTH = 59;
+ CSS_PROP_BORDER_TOP_COLOR = 60;
+ CSS_PROP_BORDER_TOP_STYLE = 61;
+ CSS_PROP_BORDER_TOP_WIDTH = 62;
+ CSS_PROP_FONT = 63;
+ CSS_PROP_FONT_VARIANT = 64;
+ CSS_PROP_LETTER_SPACING = 65;
+ CSS_PROP_WORD_SPACING = 66;
+ CSS_PROP_TEXT_INDENT = 67;
+ CSS_PROP_TEXT_TRANSFORM = 68;
+ CSS_PROP_LIST_STYLE_IMAGE = 69;
+ CSS_PROP_LIST_STYLE_POSITION = 70;
+ CSS_PROP_MAX_HEIGHT = 71;
+ CSS_PROP_MAX_WIDTH = 72;
+ CSS_PROP_MIN_HEIGHT = 73;
+ CSS_PROP_MIN_WIDTH = 74;
+ CSS_PROP_OVERFLOW_X = 75;
+ CSS_PROP_OVERFLOW_Y = 76;
+ CSS_PROP_Z_INDEX = 77;
+ CSS_PROP_UNKNOWN = 255;
+
+Type
+ HTMLBufferChunkPtr = ^HTMLBufferChunk;
+ HTMLBufferChunk = Record
+  Data: Array[0..4095] Of Char;
+  Used: Word;
+  Next: HTMLBufferChunkPtr;
+ End;
+ HTMLSourceBuffer = Record
+  FirstChunk: HTMLBufferChunkPtr;
+  LastChunk: HTMLBufferChunkPtr;
+  DataLength: LongInt;
+ End;
+
+ CSSUnitString = String[8];
+
+ { Attribut HTML stocke dans une liste chainee }
+ HTMLAttributePtr = ^HTMLAttribute;
+ HTMLAttribute = Record
+  Name: String[64];
+  Value: String[255];
+  Next: HTMLAttributePtr;
+ End;
+
+ { Pointeur vers un noeud HTML (declaration forward) }
+ HTMLNodePtr = ^HTMLNode;
+
+ { Pointeurs pour le systeme d'objets/tableaux JavaScript (declarations
+   forward - definis plus loin, voir JSObjectRec/JSProperty pres de
+   JSValue). Un HTMLNode a besoin de JSObjectPtr pour ses proprietes
+   "expando" arbitraires posees par du JS (obj.cmPrefix = ..., utilise
+   par exemple par JSCookMenu.js) - distinctes des vrais attributs
+   HTML. }
+ JSObjectPtr = ^JSObjectRec;
+ JSPropertyPtr = ^JSPropertyRec;
+
+ { Type pour un noeud HTML }
+ HTMLNode = Record
+  NodeType: Byte;            { Type de noeud (element, texte, commentaire, etc.) }
+  TagType: Byte;             { Type de balise (TAG_P, TAG_DIV, etc.) }
+  TagName: String[32];       { Nom de la balise originale }
+  Content: String;           { Contenu texte pour les noeuds texte }
+  FirstAttribute: HTMLAttributePtr;
+  LastAttribute: HTMLAttributePtr;
+  AttributeCount: Integer;
+  JSExpando: JSObjectPtr;    { Proprietes JS arbitraires (Nil si aucune) }
+  FirstChild: HTMLNodePtr;
+  LastChild: HTMLNodePtr;
+  PreviousSibling: HTMLNodePtr;
+  NextSibling: HTMLNodePtr;
+  ChildCount: Integer;
+  Parent: HTMLNodePtr;       { Pointeur vers le noeud parent }
+ End;
+
+ { Structure pour stocker les zones de liens cliquables }
+ LinkArea = Record
+  X1, Y1, X2, Y2: Integer;   { Rectangle de la zone cliquable }
+  Href: String[255];         { URL du lien }
+  Title: String[128];        { Titre du lien (attribut title) }
+  Active: Boolean;           { Zone active ou non }
+ End;
+
+ { Zone interactive associee a un noeud HTML portant un attribut
+   onclick/onmouseover/onmouseout (ex: une cellule TD/TH utilisee
+   comme bouton/onglet). Les scripts eux-memes restent dans les
+   attributs du noeud (GetNodeAttribute) ; on ne stocke ici que le
+   rectangle et le noeud, pour aller les relire au moment du clic ou
+   du survol. }
+InteractiveArea = Record
+ X1, Y1, X2, Y2: Integer;
+ Node: HTMLNodePtr;
+ Active: Boolean;
+End;
+
+DevElementArea = Record
+ X1, Y1, X2, Y2: Integer;
+ Node: HTMLNodePtr;
+End;
+
+DevNetworkEntry = Record
+ Status: LongInt;
+ Method, Domain, FileName, ContentType: String[80];
+ Size: LongInt;
+End;
+
+DevInspectorRow = Record
+ Y1,Y2,SignX1,SignX2:Integer;
+ Node:HTMLNodePtr;
+ HasChildren:Boolean;
+End;
+
+DevCSSSource = Record
+ Name:String[255];
+ Content:AnsiString;
+End;
+
+ { Boite de mise en page (position/taille) d'un element ID'e, telle
+   que calculee lors du dernier rendu - permet d'implementer
+   offsetWidth/offsetHeight/offsetLeft/offsetTop cote JS (utilises par
+   exemple par JSCookMenu.js pour positionner ses sous-menus), alors
+   que le moteur de rendu lui-meme ne conserve normalement aucune
+   boite apres l'avoir dessinee (tout est recalcule a la volee a
+   chaque passage). Seuls les elements portant un attribut id sont
+   suivis (c'est la seule facon dont ce script accede a un element). }
+ JSNodeBox = Record
+  Node: HTMLNodePtr;
+  X, Y, Width, Height: Integer;
+  Active: Boolean;
+ End;
+
+ { Contexte de rendu HTML }
+ RenderContext = Record
+  X: Integer;                { Position X courante }
+  Y: Integer;                { Position Y courante }
+  MaxX: Integer;             { Limite droite de la zone }
+  MaxY: Integer;             { Limite basse de la zone }
+  LineHeight: Integer;       { Hauteur de ligne courante }
+  TextColor: Integer;        { Couleur du texte courante }
+  BgColor: Integer;          { Couleur de fond courante }
+  InHead: Boolean;           { Dans la section head (ne pas afficher) }
+  InBody: Boolean;           { Dans la section body }
+  BlockLevel: Integer;       { Niveau d'imbrication des blocs }
+  BlockContentX: Integer;    { Bord gauche du conteneur bloc courant }
+  TextStyle: Byte;           { Style de texte (gras, italique, etc.) }
+  InPreformatted: Boolean;   { Dans une balise pre (conserver espaces) }
+  ListType: Byte;            { Type de liste courante (UL, OL, DL) }
+  ListLevel: Integer;        { Niveau d'imbrication des listes }
+  ListItemNumber: Integer;   { Numero de l'element courant dans OL }
+  InTable: Boolean;          { Dans un tableau }
+  InTableHeader: Boolean;    { Dans l'en-tete du tableau (thead/th) }
+  TableX: Integer;           { Position X de depart du tableau }
+  TableCellX: Integer;       { Position X de la cellule courante }
+  TableCellWidth: Integer;   { Largeur de la cellule courante }
+  TableColumnWidths: Array[1..MAX_TABLE_COLS] Of Integer; { Largeur propre a chaque colonne }
+  TableRowSpanRemaining: Array[1..MAX_TABLE_COLS] Of Integer; { Lignes encore occupees par rowspan }
+  TableColIndex: Integer;    { Index de la colonne courante }
+  TableRowY: Integer;        { Position Y de debut de la ligne }
+  TableRowHeight: Integer;   { Hauteur de la ligne courante }
+  TableCellPadding: Integer; { cellpadding du tableau courant }
+  TableCellSpacing: Integer; { cellspacing du tableau courant }
+  TableCellContentX: Integer; { X de depart du contenu de la cellule en cours (pour le retour a la ligne) }
+  TableDrawBorders: Boolean; { Grille demandee par border/CSS sur le TABLE courant }
+  InForm: Boolean;           { Dans un formulaire }
+  InSelect: Boolean;         { Dans un element select }
+  SelectOptionIndex: Integer;{ Index de l'option courante dans select }
+  InLink: Boolean;           { Dans un lien hypertexte }
+  CurrentLinkHref: String[255]; { URL du lien en cours de rendu }
+  NoWrap: Boolean;           { CSS white-space: nowrap }
+  TextAlignMode: Byte;       { CSS text-align : ALIGN_* }
+  LetterSpacingPx:Integer;
+  WordSpacingPx:Integer;
+  TextTransformMode:Byte;    { 0 aucun, 1 majuscules, 2 minuscules, 3 capitale }
+  End;
+
+ { Mot differe d'une ligne justifiee. Le rendu est retarde jusqu'au retour
+   automatique afin de connaitre l'espace exact a repartir entre les mots,
+   y compris lorsque la ligne traverse B/I/A/SPAN. }
+ JustifyWordRec = Record
+  Text: String;
+  Width: Integer;
+  TextColor, BgColor: Integer;
+  TextStyle: Byte;
+  LinkHref: String[255];
+ End;
+
+ { Marges/padding/bordure/fond resolus en pixels pour l'element dont
+   le rendu est en cours - meme principe de capture immediate que
+   CurrentElementWantsBlock (-1 = non specifie par le CSS, le
+   gestionnaire de balise garde alors sa propre constante par defaut). }
+ TElementBoxInfo = Record
+  MarginTopPx: Integer;
+  MarginBottomPx: Integer;
+  { MarginLeftPx/MarginRightPx (2026-09-25, demande explicite de           }
+  { l'utilisateur - application generique du margin horizontal pour les   }
+  { elements inline-block) : -1 = non specifie, meme convention que        }
+  { MarginTopPx/MarginBottomPx ci-dessus. Voir RenderHTMLNode pour leur     }
+  { application reelle (avance/recule Ctx.X avant/apres le rendu d'un      }
+  { element qui NE veut PAS de mise en page bloc). }
+  MarginLeftPx: Integer;
+  MarginRightPx: Integer;
+  PaddingTopPx: Integer;
+  PaddingBottomPx: Integer;
+  HasBorder: Boolean;
+  BorderWidthPx: Integer;
+  BorderColorIdx: Integer;
+  HasBgBox: Boolean;
+  BgBoxColorIdx: Integer;
+ End;
+
+ { =====================================================
+   Types pour l'interpreteur JavaScript
+   ===================================================== }
+
+ { Valeur JavaScript }
+ JSValue = Record
+  ValType: Byte;              { Type de la valeur (JS_VAL_*) }
+  BoolVal: Boolean;           { Valeur booleenne }
+  NumVal: Real;               { Valeur numerique }
+  StrVal: String;             { Valeur chaine }
+  ObjVal: JSObjectPtr;        { Reference (objet/tableau), si ValType = JS_VAL_OBJECT/ARRAY }
+  NodeVal: HTMLNodePtr;       { Reference a un noeud DOM, si ValType = JS_VAL_NODE }
+ End;
+
+ { Une propriete d'un objet/tableau JavaScript - liste chainee, sur le
+   meme principe que HTMLAttribute. Pour un tableau, Name est l'index
+   sous forme de chaine ('0', '1', ...). }
+ JSPropertyRec = Record
+  Name: String;
+  Value: JSValue;
+  Next: JSPropertyPtr;
+ End;
+
+ { Un objet ou tableau JavaScript (litteral objet, litteral tableau,
+   new Object(), new Array()). Un tableau est juste un objet dont les
+   proprietes sont des indices numeriques plus un suivi explicite de
+   la longueur. }
+ JSObjectRec = Record
+  FirstProp: JSPropertyPtr;
+  IsArray: Boolean;
+  ArrLen: Integer;            { Pertinent seulement si IsArray }
+ End;
+
+ { Ensemble de caracteres-separateurs pour JSSkipToBalanced }
+ JSCharSet = Set Of Char;
+
+ { Token JavaScript }
+ JSToken = Record
+  TokType: Byte;              { Type du token (JS_TOK_*) }
+  TokValue: String;           { Valeur textuelle du token }
+  NumValue: Real;             { Valeur numerique (si nombre) }
+  KeywordType: Byte;          { Type de mot-cle (si JS_TOK_KEYWORD) }
+  { Comme pour CSSToken, Column contient actuellement la position absolue
+    dans la source. Integer ne depasse pas 32767 en mode Turbo Pascal et
+    deborde sur les gros scripts tels que JSCookMenu.js. }
+  Line: LongInt;              { Numero de ligne }
+  Column: LongInt;            { Position/colonne dans la source JavaScript }
+ End;
+
+ { Variables locales de JSEvaluate, allouees sur le TAS (New/Dispose)
+   pour eviter la fragmentation de la pile d'appel lors des appels
+   recursifs (chaque frame JSEvaluate n'utilise ainsi que ~12 octets
+   de pile : le pointeur L + adresse de retour, au lieu de ~300+ octets
+   de variables locales sur la pile). }
+ TJSEvalLocals = Record
+  Pos: LongInt;
+  Token: JSToken;
+  VarName: String;
+  Value: JSValue;
+  IsConst: Boolean;
+  FuncName: String;
+  FuncBody: String;
+  BraceLevel: Integer;
+  StartPos: LongInt;
+  ParamStr: String;
+  I, J: Integer;
+  CondExpr: String;
+  ThenBlock: String;
+  ElseBlock: String;
+  CondValue: JSValue;
+  PropToken: JSToken;
+  Container: JSValue;
+  KeyName: String;
+  HasFinalStep: Boolean;
+  IndexVal: JSValue;
+  IdxStartPos: LongInt;
+  FallbackExpr: String;
+  FallbackPos: LongInt;
+  LoopInit: String;
+  LoopCond: String;
+  LoopIncr: String;
+  LoopBody: String;
+  LoopGuard: LongInt;
+  IncDecOp: String;
+  IncDecVal: Real;
+ End;
+ PJSEvalLocals = ^TJSEvalLocals;
+
+ { Variable JavaScript }
+ JSVariable = Record
+  Name: String[64];           { Nom de la variable }
+  Value: JSValue;             { Valeur de la variable }
+  IsConst: Boolean;           { Variable constante (const) }
+ End;
+
+ { Fonction JavaScript utilisateur }
+ JSFunctionDef = Record
+  Name: String[64];           { Nom de la fonction }
+  Body: String;               { Corps de la fonction (code source) }
+  ParamCount: Integer;        { Nombre de parametres }
+  ParamNames: Array[1..10] Of String[32]; { Noms des parametres }
+ End;
+
+ { Contexte d'execution JavaScript }
+ JSContext = Record
+  Variables: Array[1..MAX_JS_VARS] Of JSVariable;
+  VarCount: Integer;
+  Functions: Array[1..MAX_JS_FUNCTIONS] Of JSFunctionDef;
+  FuncCount: Integer;
+  Stack: Array[1..MAX_JS_STACK] Of JSValue;
+  StackTop: Integer;
+  ErrorMsg: String;           { Message d'erreur }
+  HasError: Boolean;          { Indicateur d'erreur }
+  DocumentOutput: String;     { Sortie de document.write }
+ End;
+
+ { =====================================================
+   Types pour le DOM (Document Object Model)
+   ===================================================== }
+
+ { Pointeur vers un element DOM (meme que HTMLNode pour l'instant) }
+ DOMElementPtr = HTMLNodePtr;
+
+ { Maillon d'une liste de resultats DOM. Les noeuds HTML references restent la
+   propriete du document; seuls ces maillons sont alloues par la requete. }
+ DOMNodeListItemPtr = ^DOMNodeListItem;
+ DOMNodeListItem = Record
+  Node: HTMLNodePtr;
+  Next: DOMNodeListItemPtr;
+ End;
+
+ { Liste chainee sans plafond fixe (resultat de getElementsByTagName, etc.). }
+ DOMNodeList = Record
+  First: DOMNodeListItemPtr;
+  Last: DOMNodeListItemPtr;
+  Length: LongInt;
+ End;
+
+ { Gestionnaire d'evenement DOM }
+ DOMEventListener = Record
+  EventType: Byte;            { Type d'evenement (DOM_EVENT_*) }
+  Handler: String;            { Code JavaScript du gestionnaire }
+  Element: HTMLNodePtr;       { Element cible }
+  Active: Boolean;            { Gestionnaire actif }
+ End;
+
+ { Evenement DOM }
+ DOMEvent = Record
+  EventType: Byte;            { Type d'evenement }
+  Target: HTMLNodePtr;        { Element cible }
+  CurrentTarget: HTMLNodePtr; { Element courant }
+  Bubbles: Boolean;           { L'evenement propage-t-il? }
+  Cancelable: Boolean;        { L'evenement peut-il etre annule? }
+  DefaultPrevented: Boolean;  { L'action par defaut a-t-elle ete annulee? }
+  StopPropagation: Boolean;   { La propagation doit-elle s'arreter? }
+ End;
+
+ { Style CSS d'un element DOM }
+ DOMStyle = Record
+  Color: String[32];
+ BackgroundColor: String[32];
+  BackgroundPosition: String[32];
+  BackgroundImage: String[255];
+  BackgroundRepeat: String[16];
+  BackgroundAttachment: String[16];
+  Opacity: String[16];
+  FontSize: String[16];
+  FontWeight: String[16];
+  FontStyle: String[16];
+  Font: String[64];
+  FontVariant: String[16];
+  TextDecoration: String[32];
+  Display: String[16];
+  Visibility: String[16];
+  { String[64] et non [16] : une valeur width:calc((100% - 130px -
+    20px)/2) (rencontree par ex. sur gladir.com pour ses colonnes
+    .newsBlock/.searchBlock) depasse 16 caracteres et etait tronquee
+    silencieusement, rendant calc() impossible a analyser correctement. }
+  Width: String[64];
+  Height: String[64];
+  Margin: String[32];
+  Padding: String[32];
+  Border: String[32];
+  { Etendu pour un support CSS plus complet }
+  TextAlign: String[16];
+  LineHeight: String[16];
+  Float: String[16];
+  ClearProp: String[16];
+  PositionProp: String[16];
+  TopProp: String[16];
+  RightProp: String[16];
+  BottomProp: String[16];
+  LeftProp: String[16];
+  ListStyle: String[32];
+  ListStyleType: String[16];
+  VerticalAlign: String[16];
+  WhiteSpace: String[16];
+  Overflow: String[16];
+  OverflowX: String[16];
+  OverflowY: String[16];
+  LetterSpacing: String[16];
+  WordSpacing: String[16];
+  TextIndent: String[16];
+  TextTransform: String[16];
+  ListStyleImage: String[255];
+  ListStylePosition: String[16];
+  MaxHeight: String[32];
+  MaxWidth: String[32];
+  MinHeight: String[32];
+  MinWidth: String[32];
+  ZIndex: String[16];
+  MarginTop: String[16];
+  MarginRight: String[16];
+  MarginBottom: String[16];
+  MarginLeft: String[16];
+  PaddingTop: String[16];
+  PaddingRight: String[16];
+  PaddingBottom: String[16];
+  PaddingLeft: String[16];
+  BorderColor: String[32];
+  BorderWidth: String[16];
+  BorderStyle: String[16];
+  BorderTop: String[32];
+  BorderRight: String[32];
+  BorderBottom: String[32];
+  BorderLeft: String[32];
+  BorderTopColor,BorderRightColor,BorderBottomColor,BorderLeftColor:String[32];
+  BorderTopStyle,BorderRightStyle,BorderBottomStyle,BorderLeftStyle:String[16];
+  BorderTopWidth,BorderRightWidth,BorderBottomWidth,BorderLeftWidth:String[16];
+ End;
+
+ { =====================================================
+   Types pour le parseur CSS
+   ===================================================== }
+
+ { Token CSS }
+ CSSToken = Record
+  TokType: Byte;              { Type du token (CSS_TOK_*) }
+ Value: String;              { Valeur textuelle du token }
+ NumValue: Real;             { Valeur numerique (si nombre) }
+ UnitValue: CSSUnitString;   { Unite (px, em, %, etc.) }
+  { En mode compatible Turbo Pascal, Integer reste signe sur 16 bits.
+    Column recoit ici la
+    position absolue dans la feuille CSS concatenee et depasse donc 32767
+    sur cdmhtml5.css. LongInt est necessaire sur FPC comme sur TP7. }
+  Line: LongInt;              { Numero de ligne }
+  Column: LongInt;            { Position/colonne dans la source CSS }
+ End;
+
+ { Partie d'un selecteur CSS compose }
+ CSSSelectorPart = Record
+  PartType: Byte;             { Type (CSS_SEL_*) }
+  Value: String[64];          { Valeur (nom de balise, classe, id) }
+  Combinator: Byte;           { Combinateur precedent (CSS_COMB_*) }
+  AttrName: String[32];       { Nom d'attribut (pour selecteur d'attribut) }
+  AttrValue: String[64];      { Valeur d'attribut }
+  AttrOp: Byte;               { Operateur d'attribut (=, ~=, |=, etc.) }
+ End;
+
+ { Selecteur CSS complet (peut etre compose de plusieurs parties) }
+ CSSSelector = Record
+  Parts: Array[1..MAX_CSS_SELECTOR_PARTS] Of CSSSelectorPart;
+  PartCount: Integer;
+  Specificity: LongInt;       { Specificite (pour cascade) }
+ End;
+
+ { Propriete CSS }
+ CSSProperty = Record
+  PropId: Byte;               { ID de la propriete (CSS_PROP_*) }
+  PropName: String[32];       { Nom de la propriete }
+  Value: String;              { Valeur de la propriete }
+  Important: Boolean;         { Flag !important }
+ End;
+
+ { Regle CSS (selecteurs + declarations) }
+ CSSRule = Record
+  Selectors: Array[1..MAX_CSS_SELECTORS] Of CSSSelector;
+  SelectorCount: Integer;
+  Properties: Array[1..MAX_CSS_PROPERTIES] Of CSSProperty;
+  PropertyCount: Integer;
+ End;
+
+ { Feuille de style CSS }
+ CSSStylesheet = Record
+  Rules: Array[1..MAX_CSS_RULES] Of CSSRule;
+  RuleCount: Integer;
+ End;
+
+ { Pointeur vers une feuille de style }
+ CSSStylesheetPtr = ^CSSStylesheet;
+
+Var
+
+ { Geometrie horizontale de la barre de navigation. En 640x480 ces
+   valeurs retrouvent pratiquement les anciennes positions; en mode
+   -maxscreen elles sont recalculees selon GetMaxX. }
+ URL_BAR_WIDTH: Integer;
+ BACK_BTN_X: Integer;
+ FORWARD_BTN_X: Integer;
+ REFRESH_BTN_X: Integer;
+ FAVORITE_BTN_X: Integer;
+
+ { Dimensions de la zone de rendu HTML, calculees selon la resolution
+   graphique reelle (voir BrowserInitLayoutAndPalette). Valeurs par defaut =
+   mode VGA 640x480. }
+ RENDER_AREA_WIDTH: Integer;
+ RENDER_AREA_HEIGHT: Integer;
+
+ { Defilement de la page (voir RenderText/InitRenderContext/RenderHTMLDocument) }
+ ScrollX: Integer;             { decalage horizontal courant, >= 0 }
+ ScrollY: Integer;             { decalage vertical courant, >= 0 }
+ DocumentContentHeight: LongInt; { hauteur totale, independante de ScrollY }
+ MaxScrollY: LongInt;          { DocumentContentHeight - hauteur visible }
+ CanScrollUp: Boolean;
+ CanScrollDown: Boolean;
+ CanScrollLeft: Boolean;
+ CanScrollRight: Boolean;
+ { True uniquement pendant le premier rendu d'un nouveau document. Un
+   defilement repeint le DOM existant et ne doit surtout pas reexecuter les
+   balises SCRIPT (sinon JSCookMenu.js recree fonctions, objets et menus a
+   chaque pression de fleche jusqu'a epuiser le tas). Les gestionnaires
+   d'evenements et setTimeout appellent JSExecuteScript directement et ne
+   sont donc pas bloques par ce drapeau. }
+ ExecuteDocumentScripts: Boolean;
+ JustifyWords: Array[1..MAX_JUSTIFY_WORDS] Of JustifyWordRec;
+ JustifyWordCount: Integer;
+ JustifyLineStartX, JustifyLineY: Integer;
+ ContentOverflowX: Integer;    { X maximal atteint pendant le rendu (mots non coupables) }
+ RenderOriginX: Integer;       { = RENDER_AREA_X - ScrollX, ancre du contenu }
+ RenderOriginY: Integer;       { = RENDER_AREA_Y - ScrollY, ancre du contenu }
+
+ { Resultat CSS "display" du noeud dont le rendu est en cours, lu par
+   chaque RenderTagXXX juste avant tout appel recursif (RenderChildren
+   peut re-ecrire ce drapeau pour un descendant entre-temps : chaque
+   gestionnaire doit le capturer dans une variable locale avant de
+   rendre ses enfants). True = comportement de bloc (saut de ligne
+   avant/apres), False = le CSS a demande display:inline/inline-block,
+   donc le contenu doit continuer sur la meme ligne malgre le
+   comportement par defaut de la balise. }
+ CurrentElementWantsBlock: Boolean;
+
+ { CSS list-style/list-style-type:none du <li> dont le rendu est en
+   cours - meme principe et meme prudence de capture que
+   CurrentElementWantsBlock (lu une seule fois, au tout debut de
+   RenderTagLI, avant tout appel recursif). }
+ CurrentElementListStyleNone: Boolean;
+
+ { Boite CSS (marges/padding/bordure/fond) de l'element dont le rendu
+   est en cours - voir TElementBoxInfo. }
+ CurrentElementBox: TElementBoxInfo;
+
+ { Variables globales pour la barre d'URL }
+ CurrentURL: String;
+ URLCursorPos: Integer;
+ URLBarFocused: Boolean;
+
+ { Champ de formulaire HTML actuellement en saisie (2026-09-25, demande    }
+ { explicite de l'utilisateur - "le champ de saisie... ne fonctionne pas  }
+ { ou le curseur n'est pas present") : AUCUN input/bouton HTML n'etait     }
+ { jusqu'ici cliquable ni saisissable, seul le CHROME du navigateur (barre }
+ { d'URL) avait un mecanisme de focus/curseur. FocusedInputX/Y/           }
+ { IsPassword memorisent la position ecran REELLE du champ au moment du    }
+ { clic (calculee par le rendu de page, pas rejouable autrement), pour      }
+ { permettre un redessin CIBLE (juste ce widget, comme DrawURLBar le fait   }
+ { deja pour le chrome) a chaque frappe plutot qu'un rendu complet de la    }
+ { page entiere (qui invaliderait FocusedInputNode - l'arbre DOM est        }
+ { detruit/reconstruit a chaque nouveau rendu). }
+ FocusedInputNode: HTMLNodePtr;
+ FocusedInputCursorPos: Integer;
+ FocusedInputX, FocusedInputY: Integer;
+ FocusedInputIsPassword: Boolean;
+
+ { Menu contextuel (clic droit sur la zone de rendu) - demande explicite
+   de l'utilisateur (2026-09-25) : Precedent/Suivant/Actualiser/Voir le
+   code source/Enregistrer sous/Creer un code QR. ContextMenuX/Y est le
+   coin superieur gauche reellement dessine (peut differer du point de
+   clic si celui-ci etait trop pres d'un bord de l'ecran). }
+ContextMenuOpen: Boolean;
+ContextMenuX, ContextMenuY: Integer;
+ContextMenuHoverIndex: Integer;
+
+{ Outils de developpement integres (F12 / menu Inspecter). }
+DevToolsOpen, DevElementPicker, DevConsoleFocused: Boolean;
+SuppressDevToolsRedraw:Boolean;
+PreviousF12Down:Boolean;
+DevToolsTab, DevToolsFullRenderHeight: Integer;
+DevSelectedNode: HTMLNodePtr;
+DevInspectorDocument:HTMLNodePtr;
+DevDocumentSerial:LongInt;
+DevConsoleInput: String;
+DevConsoleLines: Array[1..100] Of String;
+DevConsoleLineCount: Integer;
+DevConsoleCursorVisible:Boolean;
+DevConsoleLastBlink:LongInt;
+DevNetworkEntries: Array[1..100] Of DevNetworkEntry;
+DevNetworkCount: Integer;
+DevElementAreas: Array[1..2048] Of DevElementArea;
+DevElementAreaCount: Integer;
+DevInspectorScrollX, DevInspectorFirstLine: Integer;
+DevInspectorTotalLines, DevInspectorContentWidth: Integer;
+DevCollapsedNodes:Array[1..2048]Of HTMLNodePtr;
+DevCollapsedCount:Integer;
+DevInspectorRows:Array[1..128]Of DevInspectorRow;
+DevInspectorRowCount:Integer;
+DevCSSSources:Array[1..32]Of DevCSSSource;
+DevCSSSourceCount,DevCSSSelected,DevCSSFirstLine:Integer;
+FailedImageURLs:Array[1..128]Of String[255];
+FailedImageURLCount:Integer;
+
+ { Variables pour le bouton Precedent }
+ BackButtonEnabled: Boolean;
+
+ { Variables pour le bouton Suivant }
+ ForwardButtonEnabled: Boolean;
+
+ { Variables pour le bouton Actualiser }
+ RefreshButtonEnabled: Boolean;
+
+ { Variables pour le bouton Favori et les marque-pages }
+ FavoriteButtonEnabled: Boolean;
+ Favorites: Array[1..MAX_FAVORITES] Of String;
+ FavoriteCount: Integer;
+
+ { Variables pour l'historique de navigation }
+ BrowserHistory: Array[1..MAX_HISTORY] Of String;
+ BrowserHistoryCount: Integer;
+ BrowserHistoryIndex: Integer;
+
+ { Variables pour le support de la souris }
+ MouseAvailable: Boolean;
+ BrowserMouseX, BrowserMouseY: LongInt;
+ MouseButton: LongInt;
+ LastMouseButton: LongInt;
+ MousePressedInteractiveNode: HTMLNodePtr;
+ HTMLBlackColorIndex: Integer; { 0 en VGA 16 couleurs, 16 en D8bit }
+
+ { Variables pour le parseur HTML }
+ HTMLDocument: HTMLNodePtr;   { Racine du document HTML parse }
+ HTMLParseError: String;      { Message d'erreur de parsing }
+
+ { Variables pour les zones de liens cliquables }
+ LinkAreas: Array[1..MAX_LINKS] Of LinkArea;
+ LinkCount: Integer;
+
+ { Variables pour les zones interactives (onclick/onmouseover/
+   onmouseout sur des elements autres que les liens - actuellement
+   seules les cellules TD/TH les enregistrent, voir RenderTagTD/TH). }
+ InteractiveAreas: Array[1..MAX_LINKS] Of InteractiveArea;
+ InteractiveAreaCount: Integer;
+ HoveredInteractiveNode: HTMLNodePtr; { Noeud actuellement survole, pour declencher onmouseout au depart }
+ HoverAnchorValid: Boolean;
+ HoverAnchorX1, HoverAnchorY1, HoverAnchorX2, HoverAnchorY2: Integer;
+
+ { Un deplacement entre deux cellules declenche normalement deux
+   gestionnaires (mouseout puis mouseover). Ils doivent former une seule
+   transaction visuelle : sinon chacun efface et redessine la page, ce qui
+   produit le scintillement tres visible des menus JavaScript. }
+ DeferEventRedraw: Boolean;
+ EventRedrawPending: Boolean;
+
+ { Etat du rendu incremental des menus positionnes en absolu. La page reste
+   en place pendant un survol ; seule l'ancienne empreinte du sous-menu est
+   effacee avant de repeindre le document sans ClearRenderArea global. }
+ SkipNextRenderAreaClear: Boolean;
+ LastBodyBgColor: Integer;
+ LastOverlayRectValid: Boolean;
+ LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2: Integer;
+
+ { Boites de mise en page des elements ID'es (voir JSNodeBox) }
+ JSNodeBoxes: Array[1..MAX_LINKS] Of JSNodeBox;
+ JSNodeBoxCount: Integer;
+
+ { Elements CSS position:absolute rencontres pendant la passe normale
+   de rendu (RenderHTMLNode resout deja le CSS de chaque element ;
+   on profite de ce resultat au lieu de reparcourir tout l'arbre et
+   de re-resoudre le CSS une seconde fois juste pour les retrouver -
+   voir RenderAbsolutePositionedOverlays). En pratique, tres peu
+   d'elements d'une page reelle sont position:absolute (ex: les
+   sous-menus de JSCookMenu.js), meme quand l'arbre entier comporte
+   des milliers de noeuds. }
+AbsolutePositionedNodes: Array[1..200] Of HTMLNodePtr;
+AbsoluteAnchorX, AbsoluteAnchorY, AbsoluteAnchorMaxX: Array[1..200] Of Integer;
+AbsolutePositionedCount: Integer;
+AbsoluteClipDepth: Integer;
+PositionAnchorValid: Boolean;
+PositionAnchorX, PositionAnchorY, PositionAnchorMaxX: Integer;
+ RenderingImplicitTableCellRoot: Boolean;
+ RenderingAbsoluteOverlay: Boolean;
+
+ { Minuterie a emplacement unique pour setTimeout/clearTimeout cote JS
+   (JSCookMenu.js n'utilise jamais qu'un seul minuteur a la fois, dans
+   _cmTimeOut) : il n'y a pas de boucle d'evenements dans BROWSER.PAS,
+   donc ce minuteur est verifie "au mieux" a chaque iteration de
+   ProcessMouseInput plutot que d'etre declenche par une vraie horloge
+   asynchrone. }
+ JSTimeoutActive: Boolean;
+ JSTimeoutHandler: String;
+ JSTimeoutFireAtTick: LongInt; { Comparer a GetTickCountApprox }
+
+ { Signaux de controle de boucle JS (break/continue) : JSEvaluate est
+   recursif (le corps d'une boucle for/while est lui-meme evalue par
+   un appel imbrique a JSEvaluate), donc ces deux instructions ne
+   peuvent pas se traduire par un simple Exit local - elles doivent
+   remonter via un drapeau global, verifie a la fois par la boucle
+   principale de JSEvaluate (pour arreter d'executer les instructions
+   suivantes du bloc courant) et par l'implementation de for/while
+   elle-meme (pour savoir si elle doit interrompre completement
+   l'iteration, ou seulement passer a la suivante). }
+ JSBreakFlag: Boolean;
+ JSContinueFlag: Boolean;
+
+ { Variables pour l'interpreteur JavaScript }
+ JSCtx: JSContext;            { Contexte d'execution JavaScript }
+ JSEnabled: Boolean;          { JavaScript active ou non }
+ JSLastAlert: String;         { Dernier message d'alerte }
+
+ { Variables pour le DOM }
+ DOMEventListeners: Array[1..MAX_DOM_EVENT_LISTENERS] Of DOMEventListener;
+ DOMEventListenerCount: Integer;
+
+ { Variables pour le parseur CSS }
+ CSSGlobalStylesheet: CSSStylesheet;  { Feuille de style globale }
+ CSSParseError: String;               { Message d'erreur de parsing }
+ CSSEnabled: Boolean;                 { CSS active ou non }
+ CSSPreparedForRender:Boolean;        { feuille deja extraite pour cette navigation }
+
+Var
+ { True pendant le parcours du document (RenderHTMLNode au sommet),
+   pour que les enveloppes ci-dessous sachent qu'elles doivent
+   decouper a la zone de rendu - la barre d'adresse et la barre de
+   defilement, dessinees hors de ce parcours, ne sont pas affectees. }
+ InContentRenderPass: Boolean;
+
+ { True pendant la passe de mesure d'une rangee de tableau (voir
+   RenderTagTR) : on rejoue tout le rendu d'une rangee une premiere
+   fois sans rien dessiner, uniquement pour decouvrir la hauteur
+   reellement necessaire (texte d'une cellule qui deborde sur
+   plusieurs lignes), avant de la dessiner pour de vrai a la bonne
+   taille. Les enveloppes ci-dessous et AddLinkArea deviennent des
+   no-op pendant cette passe. }
+ TableMeasurePass: Boolean;
+
+ { Noeud DOM sur lequel "this" pointe pendant l'execution d'un
+   gestionnaire d'evenement inline (onclick/onmouseover/onmouseout) -
+   voir JSEvaluate (cas particulier this.className = ...) et
+   DispatchInlineEventHandler. }
+ JSEventTargetNode: HTMLNodePtr;
+
+{ Etendre l'empreinte du menu absolu avec les coordonnees REELLEMENT
+  envoyees au pilote graphique. Cela inclut les cellules transparentes :
+  meme si elles ne peignent aucun fond, le rectangle englobant leurs textes
+  et leurs lignes permettra de restaurer toute la surface qu'elles couvrent. }
+Procedure TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2: Integer);
+Var
+ T: Integer;
+Begin
+ If Not RenderingAbsoluteOverlay Then Exit;
+ If X2 < X1 Then Begin T := X1; X1 := X2; X2 := T; End;
+ If Y2 < Y1 Then Begin T := Y1; Y1 := Y2; Y2 := T; End;
+ If Not LastOverlayRectValid Then Begin
+  LastOverlayX1 := X1;
+  LastOverlayY1 := Y1;
+  LastOverlayX2 := X2;
+  LastOverlayY2 := Y2;
+  LastOverlayRectValid := True;
+ End Else Begin
+  If X1 < LastOverlayX1 Then LastOverlayX1 := X1;
+  If Y1 < LastOverlayY1 Then LastOverlayY1 := Y1;
+  If X2 > LastOverlayX2 Then LastOverlayX2 := X2;
+  If Y2 > LastOverlayY2 Then LastOverlayY2 := Y2;
+ End;
+End;
+
+{ Enveloppes des primitives de dessin qui decoupent automatiquement a
+  la bande verticale visible (entre la barre d'URL et la barre de
+  defilement horizontale) pendant le rendu du contenu. Une rangee de
+  tableau (ou tout autre element) a cheval sur le bord superieur de
+  la zone de rendu est PARTIELLEMENT visible : se contenter de
+  decider "dessiner ou pas" (comme le faisait une simple verification
+  de chevauchement) ne suffit pas, le rectangle entier se dessinait
+  alors quand meme, debordant sur la barre d'adresse a chaque
+  defilement. Ici, on ramene Y1/Y2 (ou on saute l'appel) avant de
+  transmettre a la primitive reelle de PtcGraph, qui n'a pas de
+  region de decoupage active par defaut. }
+Procedure OutTextXY(X, Y: Integer; Const Text: String);
+Begin
+ If TableMeasurePass Then Exit;
+ If InContentRenderPass And
+    ((Y < RENDER_AREA_Y) Or (Y > RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE))) Then
+  Exit;
+ TrackAbsoluteOverlayPaint(X - 2, Y - 2,
+                           X + PtcGraph.TextWidth(Text) + 2,
+                           Y + PtcGraph.TextHeight(Text) + 2);
+ PtcGraph.OutTextXY(X, Y, Text);
+End;
+
+Procedure Bar(X1, Y1, X2, Y2: Integer);
+Var
+ VisibleBottom: Integer;
+Begin
+ If TableMeasurePass Then Exit;
+ If InContentRenderPass Then Begin
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
+  If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
+  If Y2 > VisibleBottom Then Y2 := VisibleBottom;
+ End;
+ TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
+ PtcGraph.Bar(X1, Y1, X2, Y2);
+End;
+
+Procedure Rectangle(X1, Y1, X2, Y2: Integer);
+Var
+ VisibleBottom: Integer;
+Begin
+ If TableMeasurePass Then Exit;
+ If InContentRenderPass Then Begin
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
+  If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
+  If Y2 > VisibleBottom Then Y2 := VisibleBottom;
+ End;
+ TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
+ PtcGraph.Rectangle(X1, Y1, X2, Y2);
+End;
+
+Procedure Line(X1, Y1, X2, Y2: Integer);
+Var
+ VisibleBottom: Integer;
+Begin
+ If TableMeasurePass Then Exit;
+ If InContentRenderPass Then Begin
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (Y1 < RENDER_AREA_Y) And (Y2 < RENDER_AREA_Y) Then Exit;
+  If (Y1 > VisibleBottom) And (Y2 > VisibleBottom) Then Exit;
+  If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
+  If Y2 < RENDER_AREA_Y Then Y2 := RENDER_AREA_Y;
+  If Y1 > VisibleBottom Then Y1 := VisibleBottom;
+  If Y2 > VisibleBottom Then Y2 := VisibleBottom;
+ End;
+ TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
+ PtcGraph.Line(X1, Y1, X2, Y2);
+End;
+
+{ PutPixel est la primitive employee par tous les decodeurs d'images
+  (BMP, GIF, JPEG, PNG et SVG). Contrairement a Bar/Line, elle ne dispose
+  d'aucun decoupage dans PtcGraph : une image seulement partiellement
+  visible continuait donc a peindre ses lignes situees au-dessus de
+  RENDER_AREA_Y, par-dessus la barre de navigation. Centraliser le test ici
+  evite cinq implementations de decoupage legerement differentes. }
+Procedure PutPixel(X, Y: Integer; Color: Word);
+Var
+ VisibleRight, VisibleBottom: Integer;
+Begin
+ If TableMeasurePass Then Exit;
+ If InContentRenderPass Then Begin
+  VisibleRight := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE);
+  VisibleBottom := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+  If (X < RENDER_AREA_X) Or (X > VisibleRight) Or
+     (Y < RENDER_AREA_Y) Or (Y > VisibleBottom) Then Exit;
+ End;
+ TrackAbsoluteOverlayPaint(X, Y, X, Y);
+ PtcGraph.PutPixel(X, Y, Color);
+End;
+
+{ =====================================================
+  PARSEUR HTML - Fonctions et procedures
+  ===================================================== }
+
+{ Declaree ici car elle est utilisee par le parseur avant son implementation. }
+Function BrowserTrimStr(Const S: String): String; Forward;
+
+{ Fonction pour convertir une chaine en minuscules }
+Function HTMLLowerCase(S: String): String;
+Var
+ I: LongInt;
+Begin
+ For I := 1 To Length(S) Do
+  If (S[I] >= 'A') And (S[I] <= 'Z') Then
+   S[I] := Chr(Ord(S[I]) + 32);
+ HTMLLowerCase := S;
+End;
+
+{ Equivalents locaux des quelques routines de bibliotheque auparavant
+  utilisees. Ils suivent la methode de DEVENV.PAS et restent compatibles
+  avec Turbo Pascal 7. }
+Function HTMLUpperCase(S:String):String;
+Var I:LongInt;
+Begin
+ For I:=1to Length(S)do S[I]:=UpCase(S[I]);
+ HTMLUpperCase:=S
+End;
+
+Function BrowserExtractFileExt(FileName:String):String;
+Var I,CutPos:Integer;
+Begin
+ CutPos:=Length(FileName);
+ For I:=1to Length(FileName)do
+  If(FileName[I]='?')or(FileName[I]='#')Then Begin CutPos:=I-1;Break End;
+ For I:=CutPos downto 1do Begin
+  If FileName[I]='.'Then Begin
+   BrowserExtractFileExt:=Copy(FileName,I,CutPos-I+1);Exit
+  End;
+  If(FileName[I]='\')or(FileName[I]='/')Then Break
+ End;
+ BrowserExtractFileExt:=''
+End;
+
+Function BrowserGetTickCount:LongInt;
+Var HourValue,MinuteValue,SecondValue,Hundredths:Word;
+Begin
+ GetTime(HourValue,MinuteValue,SecondValue,Hundredths);
+ BrowserGetTickCount:=((LongInt(HourValue)*60+MinuteValue)*60+
+  SecondValue)*1000+LongInt(Hundredths)*10
+End;
+
+{ ============================================================
+  Client HTTP(S) reel via WinInet (2026-09-21, demande explicite de
+  l'utilisateur - "browser https://www.gladir.com" affichait "Le
+  telechargement HTTP/HTTPS n'est pas encore implemente" au lieu de
+  charger la page) - MEME mecanisme (memes appels WinInet, meme
+  contournement de l'interblocage HTTPS) que DEVENV.PAS utilise deja pour
+  Connect-McpServer/curl (voir Mcp_HttpRequest/CurlHttpRequest/
+  Mcp_ParseUrl dans DEVENV.PAS - portes ici a l'identique, pas reinventes).
+  Uniquement sous Windows pour l'instant, dans une directive de
+  compilation conditionnelle WINDOWS - EXACTEMENT comme demande
+  explicitement par l'utilisateur ("meme si pour le moment, ce n'est
+  supporte que dans une directive conditionnelle pour Windows") ; aucun
+  equivalent Winsock/libc direct n'est fourni pour les autres plateformes
+  ici, disclosed.
+  ============================================================ }
+{$IFDEF WINDOWS}
+Var
+ BrowserPageRequestCount:Integer;
+ BrowserPageLoadStarted:LongInt;
+
+Function Browser_InternetOpenA(lpszAgent: PChar; dwAccessType: LongWord;
+         lpszProxyName, lpszProxyBypass: PChar; dwFlags: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetOpenA';
+Function Browser_InternetConnectA(hInternet: LongInt; lpszServerName: PChar;
+         nServerPort: Word; lpszUserName, lpszPassword: PChar;
+         dwService: LongWord; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetConnectA';
+Function Browser_HttpOpenRequestA(hConnect: LongInt; lpszVerb, lpszObjectName: PChar;
+         lpszVersion: PChar; lpszReferer: PChar; lplpszAcceptTypes: Pointer;
+         dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'HttpOpenRequestA';
+Function Browser_HttpSendRequestA(hRequest: LongInt; lpszHeaders: PChar;
+         dwHeadersLength: LongWord; lpOptional: Pointer;
+         dwOptionalLength: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'HttpSendRequestA';
+Function Browser_InternetReadFile(hFile: LongInt; Var lpBuffer; dwNumberOfBytesToRead: LongWord;
+         Var dwNumberOfBytesRead: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetReadFile';
+Function Browser_InternetCloseHandle(hInternet: LongInt): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetCloseHandle';
+Function Browser_HttpQueryInfoA(hRequest: LongInt; dwInfoLevel: LongWord;
+         Var lpBuffer; Var lpdwBufferLength: LongWord;
+         Var lpdwIndex: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'HttpQueryInfoA';
+{ Necessaire pour HTTPS (voir Browser_HttpGet plus bas) : sans ceci,       }
+{ HttpSendRequestA sur une requete https:// peut se bloquer INDEFINIMENT - }
+{ la verification de revocation de certificat (CRL/OCSP) de WinInet a      }
+{ besoin de pomper les messages du thread appelant, or ce meme thread est  }
+{ bloque a l'interieur de HttpSendRequestA - meme interblocage deja        }
+{ documente et evite dans DEVENV.PAS (CurlHttpRequest). }
+Function Browser_InternetSetOptionA(hInternet: LongInt; dwOption: LongWord;
+         Var lpBuffer; dwBufferLength: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetSetOptionA';
+
+{ Client FTP reel (2026-09-26, demande explicite - "implemente un support
+  complet pour les adresses FTP", teste avec le serveur public en lecture
+  seule test.rebex.net) : reutilise le MEME transport WinInet que le
+  client HTTP(S) ci-dessus (Browser_InternetConnectA/InternetReadFile/
+  InternetCloseHandle sont deja generiques et repris tels quels - seul
+  dwService change, INTERNET_SERVICE_FTP au lieu de INTERNET_SERVICE_HTTP),
+  plus 3 fonctions specifiquement FTP. WIN32_FIND_DATAA reproduit ici la
+  structure Win32 reelle (inchangee depuis Windows 95/NT4) utilisee par
+  FtpFindFirstFileA/InternetFindNextFileA pour enumerer un repertoire. }
+Type
+ TFileTime = Record
+  dwLowDateTime: LongWord;
+  dwHighDateTime: LongWord;
+ End;
+ TWin32FindDataA = Record
+  dwFileAttributes: LongWord;
+  ftCreationTime: TFileTime;
+  ftLastAccessTime: TFileTime;
+  ftLastWriteTime: TFileTime;
+  nFileSizeHigh: LongWord;
+  nFileSizeLow: LongWord;
+  dwReserved0: LongWord;
+  dwReserved1: LongWord;
+  cFileName: Array[0..259] Of Char;
+  cAlternateFileName: Array[0..13] Of Char;
+ End;
+
+Function Browser_FtpFindFirstFileA(hConnect: LongInt; lpszSearchFile: PChar;
+         Var lpFindFileData: TWin32FindDataA; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'FtpFindFirstFileA';
+Function Browser_InternetFindNextFileA(hFind: LongInt; Var lpvFindData: TWin32FindDataA): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetFindNextFileA';
+Function Browser_FtpOpenFileA(hConnect: LongInt; lpszFileName: PChar;
+         dwAccess: LongWord; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'FtpOpenFileA';
+
+{ Conversion manuelle (pas de dependance a l'unite Strings pour StrPas,
+  absente du Uses de ce fichier) d'un nom de fichier termine par un
+  caractere nul (cFileName de TWin32FindDataA) en String Pascal normale. }
+Function Browser_FtpFileNameToStr(Const A: Array Of Char): String;
+Var
+ I: Integer;
+ R: String;
+Begin
+ R := '';
+ I := 0;
+ While (I <= High(A)) And (A[I] <> #0) Do Begin
+  R := R + A[I];
+  Inc(I);
+ End;
+ Browser_FtpFileNameToStr := R;
+End;
+
+Const
+ BROWSER_INTERNET_OPEN_TYPE_DIRECT  = 1;
+ BROWSER_INTERNET_SERVICE_HTTP      = 3;
+ BROWSER_INTERNET_SERVICE_FTP       = 1;
+ BROWSER_FTP_TRANSFER_TYPE_BINARY   = LongWord($00000002);
+ BROWSER_INTERNET_FLAG_PASSIVE      = LongWord($08000000);
+ BROWSER_GENERIC_READ               = LongWord($80000000);
+ BROWSER_FILE_ATTRIBUTE_DIRECTORY   = LongWord($00000010);
+ BROWSER_FTP_MAX_ENTRIES            = 2000; { filet de securite - voir Browser_FtpListDirectory }
+ BROWSER_INTERNET_FLAG_RELOAD       = LongWord($80000000);
+ BROWSER_INTERNET_FLAG_SECURE       = LongWord($00800000);
+ BROWSER_HTTP_QUERY_STATUS_CODE     = 19;
+ BROWSER_HTTP_QUERY_FLAG_NUMBER     = LongWord($20000000);
+ BROWSER_OPTION_CONNECT_TIMEOUT     = 2;
+ BROWSER_OPTION_SEND_TIMEOUT        = 5;
+ BROWSER_OPTION_RECEIVE_TIMEOUT     = 6;
+ BROWSER_OPTION_SECURITY_FLAGS      = 31;
+ BROWSER_SECURITY_FLAG_IGNORE_REVOC = LongWord($00000080);
+ { Eviter qu'une ressource distante defectueuse immobilise toute
+   l'interface graphique, dont la boucle de messages est monothread. }
+ BROWSER_HTTP_TIMEOUT_MS            = 10000;
+ { Agrandi de 8 a 32 Mo (2026-09-26, necessaire au support PDF - un
+   document reel comme https://www.gladir.com/DOCUMENT/
+   grimoireassembleur.pdf fait 9,3 Mo, deja au-dela de l'ancienne
+   limite : le corps aurait ete tronque en silence (StatusCode=413 mais
+   Browser_HttpGet retournait quand meme True), livrant un PDF coupe au
+   parseur.) }
+ BROWSER_HTTP_MAX_BODY              = 32 * 1024 * 1024;
+ BROWSER_PAGE_MAX_REQUESTS           = 32;
+ BROWSER_PAGE_NETWORK_BUDGET_MS      = 30000;
+
+{ Decoupe une URL http(s):// en hote/port/chemin - meme logique que        }
+{ Mcp_ParseUrl de DEVENV.PAS, adaptee pour reutiliser HTMLLowerCase (deja  }
+{ definie juste au-dessus) au lieu de TermStrToUpper (specifique a         }
+{ DEVENV.PAS, absente ici). }
+Procedure Browser_ParseUrl(Url: String; Var UseHttps: Boolean; Var HostName: String;
+ Var Port: Word; Var UrlPath: String; Var Ok: Boolean);
+Var
+ Rest: String;
+ PortStr: String;
+ SlashPos, ColonPos, ErrCode: Integer;
+ PortVal: LongInt;
+Begin
+ Ok := False;
+ UseHttps := False;
+ HostName := '';
+ Port := 80;
+ UrlPath := '/';
+ If Copy(HTMLLowerCase(Url), 1, 8) = 'https://' Then Begin
+  UseHttps := True;
+  Port := 443;
+  Rest := Copy(Url, 9, Length(Url));
+ End Else If Copy(HTMLLowerCase(Url), 1, 7) = 'http://' Then Begin
+  Rest := Copy(Url, 8, Length(Url));
+ End Else Exit;
+ SlashPos := Pos('/', Rest);
+ If SlashPos = 0 Then Begin
+  HostName := Rest;
+  UrlPath := '/';
+ End Else Begin
+  HostName := Copy(Rest, 1, SlashPos - 1);
+  UrlPath := Copy(Rest, SlashPos, Length(Rest));
+ End;
+ ColonPos := Pos(':', HostName);
+ If ColonPos > 0 Then Begin
+  PortStr := Copy(HostName, ColonPos + 1, Length(HostName));
+  HostName := Copy(HostName, 1, ColonPos - 1);
+  Val(PortStr, PortVal, ErrCode);
+  If (ErrCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then Port := PortVal;
+ End;
+ Ok := HostName <> '';
+End;
+
+Procedure DevToolsLogNetwork(Const URL, RequestMethod: String; ResponseStatus, ResponseSize: LongInt); Forward;
+Procedure DevToolsAddConsole(Const S: String); Forward;
+
+{ Requete HTTP GET synchrone reelle via WinInet - meme transport que       }
+{ CurlHttpRequest de DEVENV.PAS (ouvre/ferme une connexion par appel, pas  }
+{ de pool - suffisant pour une navigation interactive au clavier/souris    }
+{ dans ce navigateur). }
+Function Browser_HttpGet(Url: String; Var ResponseBody: String;
+ Var StatusCode: LongInt): Boolean;
+Var
+ UseHttps, UrlOk: Boolean;
+ HostName, UrlPath: String;
+ Port: Word;
+ hInet, hConnect, hRequest: LongInt;
+ OpenFlags, SecFlags: LongWord;
+ TimeoutValue:LongInt;
+ SendOk: LongBool;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: String;
+ J: Integer;
+ StatusBuf: Array[0..31] Of Byte;
+ StatusLen, StatusIdx: LongWord;
+Begin
+ Browser_HttpGet := False;
+ ResponseBody := '';
+ StatusCode := 0;
+ { Une page moderne peut annoncer des dizaines de ressources lentes ou
+   inaccessibles. Dans cette interface monothread, leur chargement en serie
+   bloquerait clavier et souris pendant plusieurs minutes. }
+ Inc(BrowserPageRequestCount);
+ TimeoutValue:=BrowserGetTickCount-BrowserPageLoadStarted;
+ If TimeoutValue<0Then Inc(TimeoutValue,86400000);
+ If(BrowserPageRequestCount>BROWSER_PAGE_MAX_REQUESTS)Or
+   ((BrowserPageLoadStarted<>0)And
+    (TimeoutValue>BROWSER_PAGE_NETWORK_BUDGET_MS))Then Begin
+  StatusCode:=408;
+  DevToolsLogNetwork(Url,'GET',StatusCode,0);
+  Exit
+ End;
+ Browser_ParseUrl(Url, UseHttps, HostName, Port, UrlPath, UrlOk);
+ If Not UrlOk Then Exit;
+ hInet := Browser_InternetOpenA('DEVENV-BROWSER/1.0', BROWSER_INTERNET_OPEN_TYPE_DIRECT,
+  Nil, Nil, 0);
+ If hInet = 0 Then Exit;
+ TimeoutValue:=BROWSER_HTTP_TIMEOUT_MS;
+ Browser_InternetSetOptionA(hInet,BROWSER_OPTION_CONNECT_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet,BROWSER_OPTION_SEND_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet,BROWSER_OPTION_RECEIVE_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ hConnect := Browser_InternetConnectA(hInet, PChar(HostName), Port, Nil, Nil,
+  BROWSER_INTERNET_SERVICE_HTTP, 0, 0);
+ If hConnect = 0 Then Begin
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ If UseHttps Then OpenFlags := BROWSER_INTERNET_FLAG_SECURE Or BROWSER_INTERNET_FLAG_RELOAD
+             Else OpenFlags := BROWSER_INTERNET_FLAG_RELOAD;
+ hRequest := Browser_HttpOpenRequestA(hConnect, 'GET', PChar(UrlPath), Nil, Nil,
+  Nil, OpenFlags, 0);
+ If hRequest = 0 Then Begin
+  Browser_InternetCloseHandle(hConnect);
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ TimeoutValue:=BROWSER_HTTP_TIMEOUT_MS;
+ Browser_InternetSetOptionA(hRequest,BROWSER_OPTION_SEND_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hRequest,BROWSER_OPTION_RECEIVE_TIMEOUT,
+  TimeoutValue,SizeOf(TimeoutValue));
+ If UseHttps Then Begin
+  SecFlags := BROWSER_SECURITY_FLAG_IGNORE_REVOC;
+  Browser_InternetSetOptionA(hRequest, BROWSER_OPTION_SECURITY_FLAGS, SecFlags, SizeOf(SecFlags));
+ End;
+ SendOk := Browser_HttpSendRequestA(hRequest, Nil, 0, Nil, 0);
+ If Not SendOk Then Begin
+  Browser_InternetCloseHandle(hRequest);
+  Browser_InternetCloseHandle(hConnect);
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ StatusLen := SizeOf(StatusBuf);
+ StatusIdx := 0;
+ FillChar(StatusBuf, SizeOf(StatusBuf), 0);
+ If Browser_HttpQueryInfoA(hRequest, BROWSER_HTTP_QUERY_STATUS_CODE Or BROWSER_HTTP_QUERY_FLAG_NUMBER,
+    StatusBuf, StatusLen, StatusIdx) Then
+  StatusCode := PLongInt(@StatusBuf)^;
+ Repeat
+  BytesRead := 0;
+  If Not Browser_InternetReadFile(hRequest, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J - 1];
+  If Length(ResponseBody)>BROWSER_HTTP_MAX_BODY-LongInt(BytesRead)Then Begin
+   StatusCode:=413;
+   Break
+  End;
+  ResponseBody := ResponseBody + Chunk;
+ Until False;
+ Browser_InternetCloseHandle(hRequest);
+ Browser_InternetCloseHandle(hConnect);
+ Browser_InternetCloseHandle(hInet);
+ DevToolsLogNetwork(Url, 'GET', StatusCode, Length(ResponseBody));
+ Browser_HttpGet := True;
+End;
+
+{ Decoupe une URL ftp:// en hote/port/chemin. Contrairement a Browser_
+  ParseUrl (HTTP), UrlPath par defaut est '' (repertoire racine du
+  serveur) et non '/' - FtpFindFirstFileA accepte un chemin FTP relatif
+  au repertoire de connexion tel quel, sans '/' initial obligatoire. }
+Procedure Browser_FtpParseUrl(Url: String; Var HostName: String;
+ Var Port: Word; Var UrlPath: String; Var Ok: Boolean);
+Var
+ Rest: String;
+ PortStr: String;
+ SlashPos, ColonPos, ErrCode: Integer;
+ PortVal: LongInt;
+Begin
+ Ok := False;
+ HostName := '';
+ Port := 21;
+ UrlPath := '';
+ If Copy(HTMLLowerCase(Url), 1, 6) <> 'ftp://' Then Exit;
+ Rest := Copy(Url, 7, Length(Url));
+ SlashPos := Pos('/', Rest);
+ If SlashPos = 0 Then Begin
+  HostName := Rest;
+  UrlPath := '';
+ End Else Begin
+  HostName := Copy(Rest, 1, SlashPos - 1);
+  UrlPath := Copy(Rest, SlashPos + 1, Length(Rest));
+ End;
+ ColonPos := Pos(':', HostName);
+ If ColonPos > 0 Then Begin
+  PortStr := Copy(HostName, ColonPos + 1, Length(HostName));
+  HostName := Copy(HostName, 1, ColonPos - 1);
+  Val(PortStr, PortVal, ErrCode);
+  If (ErrCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then Port := PortVal;
+ End;
+ Ok := HostName <> '';
+End;
+
+{ Ouvre une connexion FTP anonyme (Nil/Nil pour utilisateur/mot de passe -
+  comportement documente de WinInet : identifiants "anonymous" par
+  defaut). Facteur commun a Browser_FtpListDirectory/Browser_FtpGetFile.
+  Retourne 0 en cas d'echec (hInet et/ou hConnect deja refermes). }
+Function Browser_FtpConnect(Const HostName: String; Port: Word; Var hInet: LongInt): LongInt;
+Var
+ TimeoutValue: LongInt;
+ hConn: LongInt;
+Begin
+ hInet := Browser_InternetOpenA('DEVENV-BROWSER/1.0', BROWSER_INTERNET_OPEN_TYPE_DIRECT, Nil, Nil, 0);
+ If hInet = 0 Then Begin
+  Browser_FtpConnect := 0;
+  Exit;
+ End;
+ TimeoutValue := BROWSER_HTTP_TIMEOUT_MS;
+ Browser_InternetSetOptionA(hInet, BROWSER_OPTION_CONNECT_TIMEOUT, TimeoutValue, SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet, BROWSER_OPTION_SEND_TIMEOUT, TimeoutValue, SizeOf(TimeoutValue));
+ Browser_InternetSetOptionA(hInet, BROWSER_OPTION_RECEIVE_TIMEOUT, TimeoutValue, SizeOf(TimeoutValue));
+ hConn := Browser_InternetConnectA(hInet, PChar(HostName), Port, Nil, Nil,
+  BROWSER_INTERNET_SERVICE_FTP, BROWSER_INTERNET_FLAG_PASSIVE, 0);
+ If hConn = 0 Then Begin
+  Browser_InternetCloseHandle(hInet);
+  hInet := 0;
+ End;
+ Browser_FtpConnect := hConn;
+End;
+
+{ Recupere le contenu d'UN fichier distant (mode binaire - evite toute
+  translation CRLF qui corromprait un fichier non-texte). Meme idiome de
+  boucle de lecture que Browser_HttpGet. }
+Function Browser_FtpGetFile(Const HostName: String; Port: Word; Const UrlPath: String;
+ Var Content: String): Boolean;
+Var
+ hInet, hConnect, hFile: LongInt;
+ Buf: Array[0..4095] Of Char;
+ BytesRead: LongWord;
+ Chunk: String;
+ J: Integer;
+Begin
+ Browser_FtpGetFile := False;
+ Content := '';
+ hConnect := Browser_FtpConnect(HostName, Port, hInet);
+ If hConnect = 0 Then Exit;
+ hFile := Browser_FtpOpenFileA(hConnect, PChar(UrlPath), BROWSER_GENERIC_READ,
+  BROWSER_FTP_TRANSFER_TYPE_BINARY Or BROWSER_INTERNET_FLAG_RELOAD, 0);
+ If hFile = 0 Then Begin
+  Browser_InternetCloseHandle(hConnect);
+  Browser_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ Repeat
+  BytesRead := 0;
+  If Not Browser_InternetReadFile(hFile, Buf, SizeOf(Buf), BytesRead) Then Break;
+  If BytesRead = 0 Then Break;
+  SetLength(Chunk, BytesRead);
+  For J := 1 To LongInt(BytesRead) Do Chunk[J] := Buf[J - 1];
+  If Length(Content) > BROWSER_HTTP_MAX_BODY - LongInt(BytesRead) Then Break;
+  Content := Content + Chunk;
+ Until False;
+ Browser_InternetCloseHandle(hFile);
+ Browser_InternetCloseHandle(hConnect);
+ Browser_InternetCloseHandle(hInet);
+ Browser_FtpGetFile := True;
+End;
+
+{ Enumere un repertoire distant (FtpFindFirstFileA + InternetFindNextFileA)
+  et construit une page HTML synthetique listant chaque entree comme un
+  vrai lien cliquable (URL ftp:// ABSOLUE - evite toute ambiguite de
+  resolution relative pour ".."/sous-dossiers, voir la disclosure de
+  CSSBuildStylesheetPath plus haut). SIMPLIFICATION DISCLOSED : taille de
+  fichier tronquee a 32 bits (nFileSizeLow seul, nFileSizeHigh ignore -
+  un fichier de plus de 4 Go dans une simple page listee est improbable
+  ici) ; BROWSER_FTP_MAX_ENTRIES est un filet de securite contre un
+  repertoire pathologiquement enorme, pas une limite documentee de FTP. }
+Function Browser_FtpListDirectory(Const HostName: String; Port: Word; Const UrlPath: String;
+ Var Listing: String): Boolean;
+Var
+ hInet, hConnect, hFind: LongInt;
+ FindData: TWin32FindDataA;
+ SearchPat, DirPath, Origin, EntryName, EntryHref, SizeText: String;
+ IsDir, HasMore: Boolean;
+ EntryCount: Integer;
+Begin
+ Browser_FtpListDirectory := False;
+ Listing := '';
+ hConnect := Browser_FtpConnect(HostName, Port, hInet);
+ If hConnect = 0 Then Exit;
+
+ DirPath := UrlPath;
+ If (Length(DirPath) > 0) And (DirPath[Length(DirPath)] <> '/') Then DirPath := DirPath + '/';
+ SearchPat := DirPath + '*';
+
+ If Port = 21 Then Origin := 'ftp://' + HostName
+ Else Origin := 'ftp://' + HostName + ':' + IntToStr(Port);
+
+ Listing := '<html><head><title>Index de ' + Origin + '/' + DirPath + '</title></head>' +
+  '<body><h2>Index de ' + Origin + '/' + DirPath + '</h2><pre>';
+ If DirPath <> '' Then
+  Listing := Listing + '<a href="' + Origin + '/">Racine du serveur</a><br><br>';
+
+ hFind := Browser_FtpFindFirstFileA(hConnect, PChar(SearchPat), FindData, 0, 0);
+ If hFind <> 0 Then Begin
+  HasMore := True;
+  EntryCount := 0;
+  While HasMore And (EntryCount < BROWSER_FTP_MAX_ENTRIES) Do Begin
+   EntryName := Browser_FtpFileNameToStr(FindData.cFileName);
+   If (EntryName <> '.') And (EntryName <> '..') And (EntryName <> '') Then Begin
+    IsDir := (FindData.dwFileAttributes And BROWSER_FILE_ATTRIBUTE_DIRECTORY) <> 0;
+    EntryHref := Origin + '/' + DirPath + EntryName;
+    If IsDir Then Begin
+     EntryHref := EntryHref + '/';
+     SizeText := '[REP]';
+    End Else
+     SizeText := IntToStr(LongInt(FindData.nFileSizeLow)) + ' octets';
+    Listing := Listing + '<a href="' + EntryHref + '">' + EntryName +
+     '</a>' + '        ' + SizeText + '<br>';
+    Inc(EntryCount);
+   End;
+   HasMore := Browser_InternetFindNextFileA(hFind, FindData);
+  End;
+  Browser_InternetCloseHandle(hFind);
+ End;
+
+ Listing := Listing + '</pre></body></html>';
+ Browser_InternetCloseHandle(hConnect);
+ Browser_InternetCloseHandle(hInet);
+ Browser_FtpListDirectory := True;
+End;
+{$ENDIF}
+
+{ Nom de fichier local temporaire reutilise pour telecharger UNE image a la
+  fois (chargement/decodage synchrones, pas de concurrence possible) - voir
+  ResolveImageLoadPath/ReleaseImageLoadPath ci-dessous. }
+Const
+ BROWSER_IMG_TEMP_FILE = 'BROWSERIMG.TMP';
+ BROWSER_PDF_TEMP_FILE = 'BROWSERPDF.TMP';
+
+Function ImageURLPreviouslyFailed(Const URL:String):Boolean;
+Var I:Integer;
+Begin
+ ImageURLPreviouslyFailed:=False;
+ For I:=1To FailedImageURLCount Do
+  If FailedImageURLs[I]=URL Then Begin ImageURLPreviouslyFailed:=True;Exit End
+End;
+
+Procedure RememberFailedImageURL(Const URL:String);
+Begin
+ If(URL='')Or ImageURLPreviouslyFailed(URL)Then Exit;
+ If FailedImageURLCount<128Then Begin
+  Inc(FailedImageURLCount);FailedImageURLs[FailedImageURLCount]:=Copy(URL,1,255)
+ End
+End;
+
+{ Si Path est une URL http/https, la telecharger (via Browser_HttpGet) dans
+  un fichier local TEMPORAIRE et retourner ce chemin dans LoadPath, pour
+  reutiliser tel quel les decodeurs BMP/GIF/JPEG/PNG/SVG existants (qui ne
+  savent lire qu'un fichier local) - demande explicite de l'utilisateur :
+  "browser https://www.gladir.com/" n'affichait aucune image car
+  *BuildImagePath renvoyait deja une URL http(s):// correcte, mais
+  *LoadFromFile tentait ensuite de l'ouvrir comme un chemin de fichier
+  local (toujours en echec). Sinon (chemin deja local), LoadPath := Path
+  tel quel - comportement inchange pour une page chargee depuis un fichier. }
+Function ResolveImageLoadPath(Const Path: String; Var LoadPath: String): Boolean;
+{$IFDEF WINDOWS}
+Var
+ ImgBody: AnsiString;
+ StatusCode: LongInt;
+ F: File;
+ BytesWritten: LongInt;
+ WrittenOK:Boolean;
+{$ENDIF}
+Begin
+ If Not ((Copy(HTMLLowerCase(Path), 1, 7) = 'http://') Or
+         (Copy(HTMLLowerCase(Path), 1, 8) = 'https://')) Then Begin
+  LoadPath := Path;
+  ResolveImageLoadPath := True;
+  Exit;
+ End;
+ {$IFDEF WINDOWS}
+ ResolveImageLoadPath := False;
+ LoadPath := '';
+ If Not Browser_HttpGet(Path, ImgBody, StatusCode) Then Exit;
+ If Length(ImgBody) = 0 Then Exit;
+ LoadPath := BROWSER_IMG_TEMP_FILE;
+ Assign(F, LoadPath);
+ {$I-}
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  LoadPath := '';
+  Exit;
+ End;
+ BlockWrite(F, ImgBody[1], Length(ImgBody), BytesWritten);
+ Close(F);
+ WrittenOK:=LongInt(BytesWritten)=Length(ImgBody);
+ ResolveImageLoadPath:=WrittenOK;
+ {$ELSE}
+ LoadPath := '';
+ ResolveImageLoadPath := False;
+ {$ENDIF}
+End;
+
+{ Supprimer le fichier temporaire cree par ResolveImageLoadPath (sans effet
+  si LoadPath n'a jamais ete cree, ex. echec de telechargement). }
+Procedure ReleaseImageLoadPath(Const LoadPath: String);
+{$IFDEF WINDOWS}
+Var
+ F: File;
+{$ENDIF}
+Begin
+ {$IFDEF WINDOWS}
+ If LoadPath <> BROWSER_IMG_TEMP_FILE Then Exit;
+ Assign(F, LoadPath);
+ {$I-}
+ Erase(F);
+ {$I+}
+ If IOResult <> 0 Then ; { deja absent : rien a faire }
+ {$ENDIF}
+End;
+
+{ Convertir un code ISO-8859-1/Unicode courant vers le jeu de caracteres
+  utilise par la cible. Turbo Pascal DOS utilise normalement la page 850. }
+{ Convertir un code point Unicode/Latin-1 (caractere brut du fichier
+  source, lu en ISO-8859-1/Windows-1252 comme l'annoncent les pages de
+  ce site, ou point de code decode depuis une entite HTML comme
+  &eacute;/&#233;) vers l'octet CP437 qui affiche le MEME glyphe avec
+  la police bitmap par defaut de PtcGraph/BGI. Sans cette conversion,
+  l'octet brut hexadecimal E9 (e accentue en Latin-1) est interprete
+  tel quel par la police CP437, ou cet octet est la lettre grecque
+  theta - exactement le symptome observe : des lettres accentuees
+  remplacees par des symboles grecs/mathematiques sans rapport. Cette
+  table etait deja ecrite correctement dans ce fichier, mais reservee
+  a la branche non-FPC ; la branche FPC (celle reellement compilee
+  ici) se contentait d'un Chr(CodePoint) qui ne convertit rien. }
+Function HTMLCodePointToChar(CodePoint: LongInt): Char;
+Begin
+ Case CodePoint Of
+  160: HTMLCodePointToChar := ' ';
+  192: HTMLCodePointToChar := Chr(183); { A grave }
+  193: HTMLCodePointToChar := Chr(65);  { A aigu - pas d'equivalent CP437 }
+  194: HTMLCodePointToChar := Chr(182); { A circonflexe }
+  195: HTMLCodePointToChar := Chr(65);  { A tilde - pas d'equivalent CP437 }
+  196: HTMLCodePointToChar := Chr(142); { A trema }
+  197: HTMLCodePointToChar := Chr(143); { A rond en chef }
+  198: HTMLCodePointToChar := Chr(146); { AE majuscule }
+  199: HTMLCodePointToChar := Chr(128); { C cedille }
+  200: HTMLCodePointToChar := Chr(212); { E grave }
+  201: HTMLCodePointToChar := Chr(144); { E aigu }
+  202: HTMLCodePointToChar := Chr(210); { E circonflexe }
+  203: HTMLCodePointToChar := Chr(69);  { E trema - pas d'equivalent CP437 }
+  204: HTMLCodePointToChar := Chr(73);  { I grave - pas d'equivalent CP437 }
+  205: HTMLCodePointToChar := Chr(73);  { I aigu - pas d'equivalent CP437 }
+  206: HTMLCodePointToChar := Chr(215); { I circonflexe }
+  207: HTMLCodePointToChar := Chr(216); { I trema }
+  209: HTMLCodePointToChar := Chr(165); { N tilde }
+  210: HTMLCodePointToChar := Chr(79);  { O grave - pas d'equivalent CP437 }
+  211: HTMLCodePointToChar := Chr(79);  { O aigu - pas d'equivalent CP437 }
+  212: HTMLCodePointToChar := Chr(226); { O circonflexe }
+  214: HTMLCodePointToChar := Chr(153); { O trema }
+  217: HTMLCodePointToChar := Chr(235); { U grave }
+  218: HTMLCodePointToChar := Chr(85);  { U aigu - pas d'equivalent CP437 }
+  219: HTMLCodePointToChar := Chr(234); { U circonflexe }
+  220: HTMLCodePointToChar := Chr(154); { U trema }
+  223: HTMLCodePointToChar := Chr(225); { s dur (eszett) }
+  224: HTMLCodePointToChar := Chr(133); { a grave }
+  225: HTMLCodePointToChar := Chr(160); { a aigu }
+  226: HTMLCodePointToChar := Chr(131); { a circonflexe }
+  227: HTMLCodePointToChar := Chr(97);  { a tilde - pas d'equivalent CP437 }
+  228: HTMLCodePointToChar := Chr(132); { a trema }
+  229: HTMLCodePointToChar := Chr(134); { a rond en chef }
+  230: HTMLCodePointToChar := Chr(145); { ae minuscule }
+  231: HTMLCodePointToChar := Chr(135); { c cedille }
+  232: HTMLCodePointToChar := Chr(138); { e grave }
+  233: HTMLCodePointToChar := Chr(130); { e aigu }
+  234: HTMLCodePointToChar := Chr(136); { e circonflexe }
+  235: HTMLCodePointToChar := Chr(137); { e trema }
+  236: HTMLCodePointToChar := Chr(141); { i grave }
+  237: HTMLCodePointToChar := Chr(161); { i aigu }
+  238: HTMLCodePointToChar := Chr(140); { i circonflexe }
+  239: HTMLCodePointToChar := Chr(139); { i trema }
+  241: HTMLCodePointToChar := Chr(164); { n tilde }
+  242: HTMLCodePointToChar := Chr(149); { o grave }
+  243: HTMLCodePointToChar := Chr(162); { o aigu }
+  244: HTMLCodePointToChar := Chr(147); { o circonflexe }
+  246: HTMLCodePointToChar := Chr(148); { o trema }
+  249: HTMLCodePointToChar := Chr(151); { u grave }
+  250: HTMLCodePointToChar := Chr(163); { u aigu }
+  251: HTMLCodePointToChar := Chr(150); { u circonflexe }
+  252: HTMLCodePointToChar := Chr(129); { u trema }
+  253: HTMLCodePointToChar := Chr(121); { y aigu - pas d'equivalent CP437 }
+  255: HTMLCodePointToChar := Chr(152); { y trema }
+  161: HTMLCodePointToChar := Chr(173); { point d'exclamation inverse }
+  162: HTMLCodePointToChar := Chr(155); { cent }
+  163: HTMLCodePointToChar := Chr(156); { livre sterling }
+  165: HTMLCodePointToChar := Chr(157); { yen }
+  169: HTMLCodePointToChar := Chr(184); { copyright - approximation }
+  170: HTMLCodePointToChar := Chr(166); { indicateur ordinal feminin }
+  171: HTMLCodePointToChar := Chr(174); { guillemet francais gauche }
+  172: HTMLCodePointToChar := Chr(170); { signe "non" }
+  174: HTMLCodePointToChar := Chr(169); { marque deposee - approximation }
+  176: HTMLCodePointToChar := Chr(248); { degre }
+  177: HTMLCodePointToChar := Chr(241); { plus ou moins }
+  178: HTMLCodePointToChar := Chr(253); { exposant 2 }
+  186: HTMLCodePointToChar := Chr(167); { indicateur ordinal masculin }
+  187: HTMLCodePointToChar := Chr(175); { guillemet francais droit }
+  191: HTMLCodePointToChar := Chr(168); { point d'interrogation inverse }
+  215: HTMLCodePointToChar := Chr(158); { signe de multiplication - approximation }
+  247: HTMLCodePointToChar := Chr(246); { signe de division }
+  8211, 8212: HTMLCodePointToChar := Chr(45); { tiret demi/cadratin -> trait d'union }
+  8216, 8217: HTMLCodePointToChar := Chr(39); { apostrophes courbes -> apostrophe simple }
+  8220, 8221: HTMLCodePointToChar := Chr(34); { guillemets courbes -> guillemet droit }
+  8226: HTMLCodePointToChar := Chr(7);  { puce }
+  8230: HTMLCodePointToChar := Chr(133);{ points de suspension (approxime, conflit rare avec a grave) }
+  Else
+   If (CodePoint >= 0) And (CodePoint <= 127) Then
+    HTMLCodePointToChar := Chr(CodePoint)
+   Else If (CodePoint >= 128) And (CodePoint <= 255) Then
+    HTMLCodePointToChar := Chr(CodePoint) { reste tel quel, faute de mieux }
+   Else
+    HTMLCodePointToChar := '?';
+ End;
+End;
+
+Function HTMLNamedEntityCode(Const EntityName: String): LongInt;
+Var
+ Name: String;
+Begin
+ If EntityName = 'Agrave' Then Begin HTMLNamedEntityCode := 192; Exit; End;
+ If EntityName = 'Acirc' Then Begin HTMLNamedEntityCode := 194; Exit; End;
+ If EntityName = 'Ccedil' Then Begin HTMLNamedEntityCode := 199; Exit; End;
+ If EntityName = 'Egrave' Then Begin HTMLNamedEntityCode := 200; Exit; End;
+ If EntityName = 'Eacute' Then Begin HTMLNamedEntityCode := 201; Exit; End;
+ If EntityName = 'Ecirc' Then Begin HTMLNamedEntityCode := 202; Exit; End;
+ If EntityName = 'Icirc' Then Begin HTMLNamedEntityCode := 206; Exit; End;
+ If EntityName = 'Ocirc' Then Begin HTMLNamedEntityCode := 212; Exit; End;
+ If EntityName = 'Ugrave' Then Begin HTMLNamedEntityCode := 217; Exit; End;
+ If EntityName = 'Ucirc' Then Begin HTMLNamedEntityCode := 219; Exit; End;
+ Name := HTMLLowerCase(EntityName);
+ HTMLNamedEntityCode := -1;
+ If Name = 'nbsp' Then HTMLNamedEntityCode := 160
+ Else If Name = 'amp' Then HTMLNamedEntityCode := 38
+ Else If Name = 'lt' Then HTMLNamedEntityCode := 60
+ Else If Name = 'gt' Then HTMLNamedEntityCode := 62
+ Else If Name = 'quot' Then HTMLNamedEntityCode := 34
+ Else If Name = 'apos' Then HTMLNamedEntityCode := 39
+ Else If Name = 'agrave' Then HTMLNamedEntityCode := 224
+ Else If Name = 'aacute' Then HTMLNamedEntityCode := 225
+ Else If Name = 'acirc' Then HTMLNamedEntityCode := 226
+ Else If Name = 'auml' Then HTMLNamedEntityCode := 228
+ Else If Name = 'ccedil' Then HTMLNamedEntityCode := 231
+ Else If Name = 'egrave' Then HTMLNamedEntityCode := 232
+ Else If Name = 'eacute' Then HTMLNamedEntityCode := 233
+ Else If Name = 'ecirc' Then HTMLNamedEntityCode := 234
+ Else If Name = 'euml' Then HTMLNamedEntityCode := 235
+ Else If Name = 'icirc' Then HTMLNamedEntityCode := 238
+ Else If Name = 'iuml' Then HTMLNamedEntityCode := 239
+ Else If Name = 'ocirc' Then HTMLNamedEntityCode := 244
+ Else If Name = 'ouml' Then HTMLNamedEntityCode := 246
+ Else If Name = 'ugrave' Then HTMLNamedEntityCode := 249
+ Else If Name = 'ucirc' Then HTMLNamedEntityCode := 251
+ Else If Name = 'uuml' Then HTMLNamedEntityCode := 252
+ Else If Name = 'laquo' Then HTMLNamedEntityCode := 171
+ Else If Name = 'raquo' Then HTMLNamedEntityCode := 187
+ Else If Name = 'copy' Then HTMLNamedEntityCode := 169
+ Else If Name = 'reg' Then HTMLNamedEntityCode := 174
+ Else If Name = 'deg' Then HTMLNamedEntityCode := 176;
+End;
+
+Function HTMLDecodeEntities(Const S: String): String;
+Var
+ I, SemiPos, J: LongInt;
+ Digit: Integer;
+ EntityName, ResultText: String;
+ CodePoint: LongInt;
+ IsNumeric, IsHex, ValidNumber: Boolean;
+Begin
+ ResultText := '';
+ I := 1;
+ { Plus de plafond a 255 caracteres depuis le passage a AnsiString
+   ($H+) : ce plafond datait de l'epoque ou String etait limitee a
+   255 caracteres (ShortString) et tronquait silencieusement tout
+   texte plus long (ex: le contenu d'un <script> generant du HTML
+   dynamiquement). }
+ While I <= Length(S) Do Begin
+  If S[I] <> '&' Then Begin
+   { Les octets bruts du fichier source (Latin-1/Windows-1252, comme
+     l'annoncent les pages de ce site) doivent subir la meme
+     conversion CP437 que les entites HTML decodees plus bas, sinon
+     un "e accentue" tape directement dans le fichier (sans passer
+     par &eacute;) ne serait jamais corrige. }
+   ResultText := ResultText + HTMLCodePointToChar(Ord(S[I]));
+   Inc(I);
+  End
+  Else Begin
+   SemiPos := I + 1;
+   While (SemiPos <= Length(S)) And (SemiPos - I <= 16) And
+         (S[SemiPos] <> ';') Do
+    Inc(SemiPos);
+   If (SemiPos > Length(S)) Or (S[SemiPos] <> ';') Then Begin
+    ResultText := ResultText + '&';
+    Inc(I);
+   End
+   Else Begin
+    EntityName := Copy(S, I + 1, SemiPos - I - 1);
+    IsNumeric := (Length(EntityName) > 1) And (EntityName[1] = '#');
+    CodePoint := -1;
+    If IsNumeric Then Begin
+     IsHex := (Length(EntityName) > 2) And
+              (EntityName[2] In ['x', 'X']);
+     If IsHex Then J := 3 Else J := 2;
+     CodePoint := 0;
+     ValidNumber := J <= Length(EntityName);
+     While ValidNumber And (J <= Length(EntityName)) Do Begin
+      If EntityName[J] In ['0'..'9'] Then
+       Digit := Ord(EntityName[J]) - Ord('0')
+      Else If IsHex And (EntityName[J] In ['a'..'f']) Then
+       Digit := Ord(EntityName[J]) - Ord('a') + 10
+      Else If IsHex And (EntityName[J] In ['A'..'F']) Then
+       Digit := Ord(EntityName[J]) - Ord('A') + 10
+      Else Begin
+       Digit := 0;
+       ValidNumber := False;
+      End;
+      If ValidNumber Then Begin
+       If IsHex Then CodePoint := CodePoint * 16 + Digit
+                Else CodePoint := CodePoint * 10 + Digit;
+      End;
+      Inc(J);
+     End;
+     If Not ValidNumber Then CodePoint := -1;
+    End
+    Else
+     CodePoint := HTMLNamedEntityCode(EntityName);
+
+    If CodePoint >= 0 Then Begin
+     If CodePoint = 160 Then ResultText := ResultText + ' '
+     Else ResultText := ResultText + HTMLCodePointToChar(CodePoint);
+    End
+    Else
+     ResultText := ResultText + Copy(S, I, SemiPos - I + 1);
+    I := SemiPos + 1;
+   End;
+  End;
+ End;
+ HTMLDecodeEntities := ResultText;
+End;
+
+{ Cache de position pour HTMLSourceChar (2026-09-26, trouve en verifiant
+  le support PDF) : voir la disclosure complete a l'interieur de la
+  fonction. Reinitialise par InitHTMLSource a chaque nouveau buffer pour
+  eliminer tout risque, meme improbable, de reutiliser un pointeur de
+  chunk perime d'un buffer precedent liberedepuis. }
+Var
+ HTMLSourceCharCacheOwner: HTMLBufferChunkPtr;
+ HTMLSourceCharCacheChunk: HTMLBufferChunkPtr;
+ HTMLSourceCharCacheBase: LongInt;
+
+{ Fonction pour ignorer les espaces blancs }
+Function HTMLSourceChar(Const S: HTMLSourceBuffer; Pos: LongInt): Char;
+Var
+ Chunk: HTMLBufferChunkPtr;
+ Base: LongInt;
+Begin
+ HTMLSourceChar := #0;
+ If (S.FirstChunk = Nil) Or (Pos < 1) Or (Pos > S.DataLength) Then Exit;
+
+ { BOGUE REEL DE PERFORMANCE corrige ici : la version d'origine repartait
+   de S.FirstChunk et reparcourait la liste chainee de chunks (4096
+   octets chacun) a CHAQUE appel. ParseHTML avance Pos UN CARACTERE A LA
+   FOIS en scannant tout le document - un balayage sequentiel complet
+   coutait donc O(N x nombre_de_chunks) = O(N^2/4096), plusieurs dizaines
+   de secondes des que N atteint quelques centaines de Ko (constate en
+   verifiant le support PDF : un document reel de plusieurs Mo generait
+   un DOM bien plus volumineux que tout ce qui avait ete teste jusqu'ici
+   dans ce fichier). Si Pos tombe dans le chunk deja en cache ou un
+   chunk SUIVANT (le cas dominant, balayage vers l'avant), on repart de
+   la ou l'appel precedent s'est arrete plutot que du debut - resultat
+   STRICTEMENT IDENTIQUE, seulement plus rapide. Un acces vers l'ARRIERE
+   (Pos avant la base du chunk en cache) retombe sur le parcours complet
+   d'origine depuis S.FirstChunk - toujours correct, simplement pas
+   optimise pour ce cas plus rare. }
+ If (HTMLSourceCharCacheOwner = S.FirstChunk) And (HTMLSourceCharCacheChunk <> Nil) And
+    (Pos >= HTMLSourceCharCacheBase) Then Begin
+  Chunk := HTMLSourceCharCacheChunk;
+  Base := HTMLSourceCharCacheBase;
+ End Else Begin
+  Chunk := S.FirstChunk;
+  Base := 1;
+ End;
+
+ While (Chunk <> Nil) And (Pos - Base >= Chunk^.Used) Do Begin
+  Base := Base + Chunk^.Used;
+  Chunk := Chunk^.Next;
+ End;
+
+ HTMLSourceCharCacheOwner := S.FirstChunk;
+ HTMLSourceCharCacheChunk := Chunk;
+ HTMLSourceCharCacheBase := Base;
+
+ If Chunk <> Nil Then HTMLSourceChar := Chunk^.Data[Pos - Base];
+End;
+
+Function HTMLSourceCopy(Const S: HTMLSourceBuffer; StartPos, Count: LongInt): String;
+Var
+ I, CopyCount: LongInt;
+ ResultText: String;
+Begin
+ ResultText := '';
+ If (S.FirstChunk = Nil) Or (StartPos < 1) Or (Count <= 0) Then Begin
+  HTMLSourceCopy := ResultText;
+  Exit;
+ End;
+ If StartPos + Count - 1 > S.DataLength Then
+  Count := S.DataLength - StartPos + 1;
+ { Plus de plafond a 255 caracteres depuis le passage a AnsiString
+   ($H+) : ce plafond datait de l'epoque ou String etait limitee a
+   255 caracteres (ShortString) et tronquait silencieusement tout
+   texte plus long entre deux balises (ex: le contenu d'un <script>
+   generant du HTML dynamiquement, qui depasse largement 255
+   caracteres pour un menu reel). }
+ CopyCount := Count;
+ For I := 0 To CopyCount - 1 Do
+  ResultText := ResultText + HTMLSourceChar(S, StartPos + I);
+ HTMLSourceCopy := ResultText;
+End;
+
+Function HTMLSkipWhitespace(Const S: HTMLSourceBuffer; Pos: LongInt): LongInt;
+Begin
+ While (Pos <= S.DataLength) And
+       (HTMLSourceChar(S, Pos) In [' ', #9, #10, #13]) Do
+  Inc(Pos);
+ HTMLSkipWhitespace := Pos;
+End;
+
+{ Fonction pour verifier si une balise est auto-fermante (void element) }
+Function IsVoidElement(Const TagName: String): Boolean;
+Var
+ LowerName: String;
+Begin
+ LowerName := HTMLLowerCase(TagName);
+ IsVoidElement := (LowerName = 'area') Or (LowerName = 'base') Or
+                  (LowerName = 'br') Or (LowerName = 'col') Or
+                  (LowerName = 'embed') Or (LowerName = 'hr') Or
+                  (LowerName = 'img') Or (LowerName = 'input') Or
+                  (LowerName = 'link') Or (LowerName = 'meta') Or
+                  (LowerName = 'param') Or (LowerName = 'source') Or
+                  (LowerName = 'track') Or (LowerName = 'wbr');
+End;
+
+{ Fonction pour obtenir le type de balise a partir du nom }
+Type
+ HTMLTagEntry = Record
+  Name: String[20];
+  Id: Byte;
+ End;
+
+Const
+ HTML_TAG_COUNT = 118;
+ { Table des balises HTML supportees, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de GetTagType
+   ci-dessous (meme principe que CSSPropertyTable/CSSGetPropertyId). }
+ HTMLTagTable: Array[0..HTML_TAG_COUNT - 1] Of HTMLTagEntry = (
+  (Name: 'a';            Id: TAG_A),
+  (Name: 'abbr';         Id: TAG_ABBR),
+  (Name: 'address';      Id: TAG_ADDRESS),
+  (Name: 'area';         Id: TAG_AREA),
+  (Name: 'article';      Id: TAG_ARTICLE),
+  (Name: 'aside';        Id: TAG_ASIDE),
+  (Name: 'audio';        Id: TAG_AUDIO),
+  (Name: 'b';            Id: TAG_B),
+  (Name: 'base';         Id: TAG_BASE),
+  (Name: 'bdi';          Id: TAG_BDI),
+  (Name: 'bdo';          Id: TAG_BDO),
+  (Name: 'big';          Id: TAG_BIG),
+  (Name: 'blockquote';   Id: TAG_BLOCKQUOTE),
+  (Name: 'body';         Id: TAG_BODY),
+  (Name: 'br';           Id: TAG_BR),
+  (Name: 'button';       Id: TAG_BUTTON),
+  (Name: 'canvas';       Id: TAG_CANVAS),
+  (Name: 'caption';      Id: TAG_CAPTION),
+  (Name: 'center';       Id: TAG_CENTER),
+  (Name: 'cite';         Id: TAG_CITE),
+  (Name: 'code';         Id: TAG_CODE),
+  (Name: 'col';          Id: TAG_COL),
+  (Name: 'colgroup';     Id: TAG_COLGROUP),
+  (Name: 'data';         Id: TAG_DATA),
+  (Name: 'datalist';     Id: TAG_DATALIST),
+  (Name: 'dd';           Id: TAG_DD),
+  (Name: 'del';          Id: TAG_DEL),
+  (Name: 'details';      Id: TAG_DETAILS),
+  (Name: 'dfn';          Id: TAG_DFN),
+  (Name: 'dialog';       Id: TAG_DIALOG),
+  (Name: 'div';          Id: TAG_DIV),
+  (Name: 'dl';           Id: TAG_DL),
+  (Name: 'dt';           Id: TAG_DT),
+  (Name: 'em';           Id: TAG_EM),
+  (Name: 'embed';        Id: TAG_EMBED),
+  (Name: 'fieldset';     Id: TAG_FIELDSET),
+ (Name: 'figcaption';   Id: TAG_FIGCAPTION),
+ (Name: 'figure';       Id: TAG_FIGURE),
+ (Name: 'font';         Id: TAG_FONT),
+ (Name: 'footer';       Id: TAG_FOOTER),
+  (Name: 'form';         Id: TAG_FORM),
+  (Name: 'h1';           Id: TAG_H1),
+  (Name: 'h2';           Id: TAG_H2),
+  (Name: 'h3';           Id: TAG_H3),
+  (Name: 'h4';           Id: TAG_H4),
+  (Name: 'h5';           Id: TAG_H5),
+  (Name: 'h6';           Id: TAG_H6),
+  (Name: 'head';         Id: TAG_HEAD),
+  (Name: 'header';       Id: TAG_HEADER),
+  (Name: 'hr';           Id: TAG_HR),
+  (Name: 'html';         Id: TAG_HTML),
+  (Name: 'i';            Id: TAG_I),
+  (Name: 'iframe';       Id: TAG_IFRAME),
+  (Name: 'img';          Id: TAG_IMG),
+  (Name: 'input';        Id: TAG_INPUT),
+  (Name: 'ins';          Id: TAG_INS),
+  (Name: 'kbd';          Id: TAG_KBD),
+  (Name: 'label';        Id: TAG_LABEL),
+  (Name: 'legend';       Id: TAG_LEGEND),
+  (Name: 'li';           Id: TAG_LI),
+  (Name: 'link';         Id: TAG_LINK),
+  (Name: 'main';         Id: TAG_MAIN),
+  (Name: 'map';          Id: TAG_MAP),
+  (Name: 'mark';         Id: TAG_MARK),
+  (Name: 'menu';         Id: TAG_MENU),
+  (Name: 'meta';         Id: TAG_META),
+  (Name: 'meter';        Id: TAG_METER),
+  (Name: 'nav';          Id: TAG_NAV),
+  (Name: 'noscript';     Id: TAG_NOSCRIPT),
+  (Name: 'object';       Id: TAG_OBJECT),
+  (Name: 'ol';           Id: TAG_OL),
+  (Name: 'optgroup';     Id: TAG_OPTGROUP),
+  (Name: 'option';       Id: TAG_OPTION),
+  (Name: 'output';       Id: TAG_OUTPUT),
+  (Name: 'p';            Id: TAG_P),
+  (Name: 'param';        Id: TAG_PARAM),
+  (Name: 'picture';      Id: TAG_PICTURE),
+  (Name: 'pre';          Id: TAG_PRE),
+  (Name: 'progress';     Id: TAG_PROGRESS),
+  (Name: 'q';            Id: TAG_Q),
+  (Name: 'rb';           Id: TAG_RB),
+  (Name: 'rp';           Id: TAG_RP),
+  (Name: 'rt';           Id: TAG_RT),
+  (Name: 'rtc';          Id: TAG_RTC),
+  (Name: 'ruby';         Id: TAG_RUBY),
+  (Name: 's';            Id: TAG_S),
+  (Name: 'samp';         Id: TAG_SAMP),
+  (Name: 'script';       Id: TAG_SCRIPT),
+  (Name: 'section';      Id: TAG_SECTION),
+  (Name: 'select';       Id: TAG_SELECT),
+  (Name: 'slot';         Id: TAG_SLOT),
+  (Name: 'small';        Id: TAG_SMALL),
+  (Name: 'source';       Id: TAG_SOURCE),
+  (Name: 'span';         Id: TAG_SPAN),
+  (Name: 'strike';       Id: TAG_STRIKE),
+  (Name: 'strong';       Id: TAG_STRONG),
+  (Name: 'style';        Id: TAG_STYLE),
+  (Name: 'sub';          Id: TAG_SUB),
+  (Name: 'summary';      Id: TAG_SUMMARY),
+  (Name: 'sup';          Id: TAG_SUP),
+  (Name: 'svg';          Id: TAG_SVG),
+  (Name: 'table';        Id: TAG_TABLE),
+  (Name: 'tbody';        Id: TAG_TBODY),
+  (Name: 'td';           Id: TAG_TD),
+  (Name: 'template';     Id: TAG_TEMPLATE),
+  (Name: 'textarea';     Id: TAG_TEXTAREA),
+  (Name: 'tfoot';        Id: TAG_TFOOT),
+  (Name: 'th';           Id: TAG_TH),
+  (Name: 'thead';        Id: TAG_THEAD),
+  (Name: 'time';         Id: TAG_TIME),
+  (Name: 'title';        Id: TAG_TITLE),
+  (Name: 'tr';           Id: TAG_TR),
+  (Name: 'track';        Id: TAG_TRACK),
+  (Name: 'u';            Id: TAG_U),
+  (Name: 'ul';           Id: TAG_UL),
+  (Name: 'var';          Id: TAG_VAR),
+  (Name: 'video';        Id: TAG_VIDEO),
+  (Name: 'wbr';          Id: TAG_WBR)
+ );
+
+{ Obtenir le type d'une balise HTML a partir de son nom - recherche
+  dichotomique dans HTMLTagTable (ci-dessus) au lieu des 116
+  comparaisons Si/SinonSi d'avant (meme principe que CSSGetPropertyId). }
+Function GetTagType(Const TagName: String): Byte;
+Var
+ LowerName: String;
+ Lo, Hi, Mid: Integer;
+Begin
+ LowerName := HTMLLowerCase(TagName);
+ GetTagType := TAG_UNKNOWN;
+
+ Lo := 0;
+ Hi := HTML_TAG_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If HTMLTagTable[Mid].Name = LowerName Then Begin
+   GetTagType := HTMLTagTable[Mid].Id;
+   Exit;
+  End
+  Else If HTMLTagTable[Mid].Name < LowerName Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+{ Procedure pour creer un nouveau noeud HTML }
+Function CreateHTMLNode: HTMLNodePtr;
+Var
+ Node: HTMLNodePtr;
+Begin
+ New(Node);
+ Node^.NodeType := HTML_NODE_ELEMENT;
+ Node^.TagType := TAG_UNKNOWN;
+ Node^.TagName := '';
+ Node^.Content := '';
+ Node^.FirstAttribute := Nil;
+ Node^.LastAttribute := Nil;
+ Node^.AttributeCount := 0;
+ Node^.JSExpando := Nil;
+ Node^.FirstChild := Nil;
+ Node^.LastChild := Nil;
+ Node^.PreviousSibling := Nil;
+ Node^.NextSibling := Nil;
+ Node^.ChildCount := 0;
+ Node^.Parent := Nil;
+ CreateHTMLNode := Node;
+End;
+
+Function HTMLAttributeAt(Node: HTMLNodePtr; Index: Integer): HTMLAttributePtr;
+Var
+ Attr: HTMLAttributePtr;
+ I: Integer;
+Begin
+ HTMLAttributeAt := Nil;
+ If (Node = Nil) Or (Index < 1) Then Exit;
+ Attr := Node^.FirstAttribute;
+ I := 1;
+ While (Attr <> Nil) And (I < Index) Do Begin
+  Attr := Attr^.Next;
+  Inc(I);
+ End;
+ HTMLAttributeAt := Attr;
+End;
+
+Function HTMLChildAt(Node: HTMLNodePtr; Index: Integer): HTMLNodePtr;
+Var
+ Child: HTMLNodePtr;
+ I: Integer;
+Begin
+ HTMLChildAt := Nil;
+ If (Node = Nil) Or (Index < 1) Then Exit;
+ Child := Node^.FirstChild;
+ I := 1;
+ While (Child <> Nil) And (I < Index) Do Begin
+  Child := Child^.NextSibling;
+  Inc(I);
+ End;
+ HTMLChildAt := Child;
+End;
+
+Procedure HTMLAddAttribute(Node: HTMLNodePtr; Const Name, Value: String);
+Var
+ Attr: HTMLAttributePtr;
+Begin
+ If Node = Nil Then Exit;
+ New(Attr);
+ Attr^.Name := Name;
+ Attr^.Value := Value;
+ Attr^.Next := Nil;
+ If Node^.LastAttribute = Nil Then
+  Node^.FirstAttribute := Attr
+ Else
+  Node^.LastAttribute^.Next := Attr;
+ Node^.LastAttribute := Attr;
+ Inc(Node^.AttributeCount);
+End;
+
+Procedure HTMLAppendChild(Parent, Child: HTMLNodePtr);
+Begin
+ If (Parent = Nil) Or (Child = Nil) Then Exit;
+ Child^.Parent := Parent;
+ Child^.PreviousSibling := Parent^.LastChild;
+ Child^.NextSibling := Nil;
+ If Parent^.LastChild = Nil Then
+  Parent^.FirstChild := Child
+ Else
+  Parent^.LastChild^.NextSibling := Child;
+ Parent^.LastChild := Child;
+ Inc(Parent^.ChildCount);
+End;
+
+Procedure HTMLFreeAttributes(Node: HTMLNodePtr);
+Var
+ Attr, NextAttr: HTMLAttributePtr;
+Begin
+ If Node = Nil Then Exit;
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  NextAttr := Attr^.Next;
+  Dispose(Attr);
+  Attr := NextAttr;
+ End;
+ Node^.FirstAttribute := Nil;
+ Node^.LastAttribute := Nil;
+ Node^.AttributeCount := 0;
+End;
+
+{ Procedure pour liberer un noeud HTML et ses enfants }
+Procedure FreeHTMLNode(Node: HTMLNodePtr);
+Var
+ Child, NextChild: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  FreeHTMLNode(Child);
+  Child := NextChild;
+ End;
+ HTMLFreeAttributes(Node);
+ Dispose(Node);
+End;
+
+{ Fonction pour extraire le nom d'une balise }
+Function ExtractTagName(Const S: HTMLSourceBuffer; Var Pos: LongInt): String;
+Var
+ StartPos: LongInt;
+ TagName: String;
+Begin
+ TagName := '';
+ Pos := HTMLSkipWhitespace(S, Pos);
+ StartPos := Pos;
+ While (Pos <= S.DataLength) And
+       Not (HTMLSourceChar(S, Pos) In [' ', '>', '/', #9, #10, #13, '=']) Do
+  Inc(Pos);
+ TagName := HTMLSourceCopy(S, StartPos, Pos - StartPos);
+ ExtractTagName := TagName;
+End;
+
+{ Fonction pour extraire la valeur d'un attribut }
+Function ExtractAttributeValue(Const S: HTMLSourceBuffer; Var Pos: LongInt): String;
+Var
+ Quote: Char;
+ StartPos: LongInt;
+ Value: String;
+Begin
+ Value := '';
+ Pos := HTMLSkipWhitespace(S, Pos);
+ If Pos > S.DataLength Then Begin
+  ExtractAttributeValue := '';
+  Exit;
+ End;
+ { Verifier si la valeur est entre guillemets }
+ If HTMLSourceChar(S, Pos) In ['"', ''''] Then Begin
+  Quote := HTMLSourceChar(S, Pos);
+  Inc(Pos);
+  StartPos := Pos;
+  While (Pos <= S.DataLength) And (HTMLSourceChar(S, Pos) <> Quote) Do
+   Inc(Pos);
+  Value := HTMLSourceCopy(S, StartPos, Pos - StartPos);
+  If Pos <= S.DataLength Then Inc(Pos); { Passer le guillemet fermant }
+ End
+ Else Begin
+  { Valeur sans guillemets }
+  StartPos := Pos;
+  While (Pos <= S.DataLength) And
+        Not (HTMLSourceChar(S, Pos) In [' ', '>', '/', #9, #10, #13]) Do
+   Inc(Pos);
+  Value := HTMLSourceCopy(S, StartPos, Pos - StartPos);
+ End;
+  ExtractAttributeValue := HTMLDecodeEntities(Value);
+End;
+
+{ Procedure pour parser les attributs d'une balise }
+Procedure ParseHTMLAttributes(Const S: HTMLSourceBuffer; Var Pos: LongInt;
+                              Node: HTMLNodePtr);
+Var
+ AttrName, AttrValue: String;
+Begin
+ While Pos <= S.DataLength Do Begin
+  Pos := HTMLSkipWhitespace(S, Pos);
+  If Pos > S.DataLength Then Exit;
+  If HTMLSourceChar(S, Pos) In ['>', '/'] Then Exit;
+
+  { Extraire le nom de l'attribut }
+  AttrName := ExtractTagName(S, Pos);
+  If AttrName = '' Then Exit;
+
+  Pos := HTMLSkipWhitespace(S, Pos);
+  AttrValue := '';
+
+  { Verifier s'il y a une valeur }
+  If (Pos <= S.DataLength) And (HTMLSourceChar(S, Pos) = '=') Then Begin
+   Inc(Pos);
+   AttrValue := ExtractAttributeValue(S, Pos);
+  End;
+
+  { Ajouter l'attribut au noeud }
+  HTMLAddAttribute(Node, HTMLLowerCase(AttrName), AttrValue);
+ End;
+End;
+
+{ Fermer implicitement le LI courant lorsqu'un nouveau <li> commence.
+  En HTML, </li> est facultatif. Sans cette recuperation, une liste dont
+  les fermetures sont absentes ou erronees devient une longue imbrication
+  de LI; le rendu et les zones de liens des elements suivants finissent
+  alors par appartenir au mauvais element. On ne traverse jamais la limite
+  de la liste UL/OL courante. }
+Procedure HTMLAutoCloseListItem(Var CurrentNode: HTMLNodePtr;
+                                Root: HTMLNodePtr;
+                                Var CurrentDepth: Integer);
+Var
+ SearchNode: HTMLNodePtr;
+ Tag: String;
+Begin
+ SearchNode := CurrentNode;
+ While SearchNode <> Root Do Begin
+  Tag := HTMLLowerCase(SearchNode^.TagName);
+  If Tag = 'li' Then Begin
+   While CurrentNode <> SearchNode^.Parent Do Begin
+    CurrentNode := CurrentNode^.Parent;
+    If CurrentDepth > 0 Then Dec(CurrentDepth);
+   End;
+   Exit;
+  End;
+  If (Tag = 'ul') Or (Tag = 'ol') Then Exit;
+  SearchNode := SearchNode^.Parent;
+ End;
+End;
+
+{ Reparer la forme frequente mais invalide <ul><li>...</li><ul>...</ul>.
+  Un navigateur rattache en pratique la sous-liste au LI precedent. Sans
+  cette normalisation elle reste soeur des LI; les fermetures facultatives
+  ou superflues qui suivent rendent alors la portee ambigue et le moteur de
+  rendu ne dispose plus d'une veritable structure recursive LI -> UL. }
+Procedure HTMLPrepareNestedList(Var CurrentNode: HTMLNodePtr;
+                                Root: HTMLNodePtr;
+                                Const NewTagName: String;
+                                Var CurrentDepth: Integer);
+Var
+ CurrentTag: String;
+ PreviousItem: HTMLNodePtr;
+Begin
+ If (CurrentNode = Nil) Or (CurrentNode = Root) Then Exit;
+ If (HTMLLowerCase(NewTagName) <> 'ul') And
+    (HTMLLowerCase(NewTagName) <> 'ol') Then Exit;
+ CurrentTag := HTMLLowerCase(CurrentNode^.TagName);
+ If (CurrentTag <> 'ul') And (CurrentTag <> 'ol') Then Exit;
+ PreviousItem := CurrentNode^.LastChild;
+ If (PreviousItem <> Nil) And (PreviousItem^.TagType = TAG_LI) And
+    (CurrentDepth < 32) Then Begin
+  CurrentNode := PreviousItem;
+  Inc(CurrentDepth);
+ End;
+End;
+
+{ Chercher une fermeture sans jamais franchir une limite UL/OL qui ne
+  correspond pas elle-meme a la balise demandee. Cette regle vaut aussi
+  pour </li> : une fermeture LI superflue situee apres une sous-liste ne
+  doit surtout pas traverser cette sous-liste et fermer un LI ancetre.
+  Cela depilerait ensuite la liste parente au prochain </ul> et toute la
+  suite du document serait rattachee au mauvais endroit.
+
+  Exemple tolere : <li>...</li></li></ul>. Le second </li> est simplement
+  ignore des que la recherche rencontre le UL courant. }
+Function HTMLFindClosingNodeInScope(CurrentNode, Root: HTMLNodePtr;
+                                    Const CloseTagName: String): HTMLNodePtr;
+Var
+ SearchNode: HTMLNodePtr;
+ Tag, CloseTag: String;
+Begin
+ HTMLFindClosingNodeInScope := Nil;
+ CloseTag := HTMLLowerCase(CloseTagName);
+ SearchNode := CurrentNode;
+ While SearchNode <> Root Do Begin
+  Tag := HTMLLowerCase(SearchNode^.TagName);
+  If Tag = CloseTag Then Begin
+   HTMLFindClosingNodeInScope := SearchNode;
+   Exit;
+  End;
+  { Le test d'egalite ci-dessus autorise naturellement </ul> a fermer le
+    UL courant (idem pour OL). Toute autre fermeture est hors contexte a
+    cette frontiere et doit etre ignoree localement. }
+  If (Tag = 'ul') Or (Tag = 'ol') Then Exit;
+  SearchNode := SearchNode^.Parent;
+ End;
+End;
+
+{ Fermer implicitement la cellule ou la rangee precedente. En HTML, un
+  nouveau TD/TH ferme la cellule ouverte et un nouveau TR ferme la rangee
+  ouverte. CODER/index.htm compte precisement sur cette recuperation entre
+  son TD principal et son TD lateral de 200 pixels. }
+Procedure HTMLAutoCloseTableElement(Var CurrentNode: HTMLNodePtr;
+                                    Root: HTMLNodePtr;
+                                    Const NewTagName: String;
+                                    Var CurrentDepth: Integer);
+Var
+ SearchNode, TargetNode: HTMLNodePtr;
+ Tag, NewTag: String;
+Begin
+ NewTag := HTMLLowerCase(NewTagName);
+ TargetNode := Nil;
+ SearchNode := CurrentNode;
+ While SearchNode <> Root Do Begin
+  Tag := HTMLLowerCase(SearchNode^.TagName);
+  If ((NewTag = 'td') Or (NewTag = 'th')) And
+     ((Tag = 'td') Or (Tag = 'th')) Then Begin
+   TargetNode := SearchNode;
+   Break;
+  End;
+  If (NewTag = 'tr') And (Tag = 'tr') Then Begin
+   TargetNode := SearchNode;
+   Break;
+  End;
+  If Tag = 'table' Then Break;
+  { Une nouvelle cellule ne doit pas chercher au-dela de sa rangee. }
+  If ((NewTag = 'td') Or (NewTag = 'th')) And (Tag = 'tr') Then Break;
+  SearchNode := SearchNode^.Parent;
+ End;
+
+ If TargetNode <> Nil Then
+  While CurrentNode <> TargetNode^.Parent Do Begin
+   CurrentNode := CurrentNode^.Parent;
+   If CurrentDepth > 0 Then Dec(CurrentDepth);
+  End;
+End;
+
+{ Fonction principale pour parser du HTML }
+Function ParseHTML(Const HTMLSource: HTMLSourceBuffer): HTMLNodePtr;
+Var
+ Pos, StartPos, EndTagPos: LongInt;
+ Root, CurrentNode, NewNode, TextNode, SearchNode: HTMLNodePtr;
+ TagName, CloseTagName, TextContent: String;
+ IsClosingTag, IsSelfClosing: Boolean;
+ CurrentDepth: Integer;
+Begin
+ Root := CreateHTMLNode;
+ Root^.NodeType := HTML_NODE_ELEMENT;
+ Root^.TagName := 'document';
+ Root^.TagType := TAG_UNKNOWN;
+ CurrentNode := Root;
+ CurrentDepth := 0;
+ Pos := 1;
+ HTMLParseError := '';
+
+ While Pos <= HTMLSource.DataLength Do Begin
+  { Chercher le debut d'une balise }
+  StartPos := Pos;
+  While (Pos <= HTMLSource.DataLength) And
+        (HTMLSourceChar(HTMLSource, Pos) <> '<') Do
+   Inc(Pos);
+
+  { Traiter le texte avant la balise }
+  If Pos > StartPos Then Begin
+   TextContent := HTMLDecodeEntities(
+                   HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos));
+   { Ignorer le texte qui ne contient que des espaces }
+   If BrowserTrimStr(TextContent) <> '' Then Begin
+    TextNode := CreateHTMLNode;
+    TextNode^.NodeType := HTML_NODE_TEXT;
+    TextNode^.Content := TextContent;
+    TextNode^.Parent := CurrentNode;
+    HTMLAppendChild(CurrentNode, TextNode);
+   End;
+  End;
+
+  If Pos > HTMLSource.DataLength Then Break;
+
+  { On est sur un '<' }
+  Inc(Pos);
+  If Pos > HTMLSource.DataLength Then Break;
+
+  { Verifier le type de balise }
+  If HTMLSourceChar(HTMLSource, Pos) = '!' Then Begin
+   { Commentaire ou DOCTYPE }
+   Inc(Pos);
+   If (Pos + 1 <= HTMLSource.DataLength) And
+      (HTMLSourceChar(HTMLSource, Pos) = '-') And
+      (HTMLSourceChar(HTMLSource, Pos + 1) = '-') Then Begin
+    { Commentaire HTML <!-- ... --> }
+    Inc(Pos, 2);
+    StartPos := Pos;
+    While (Pos + 2 <= HTMLSource.DataLength) And
+          Not ((HTMLSourceChar(HTMLSource, Pos) = '-') And
+               (HTMLSourceChar(HTMLSource, Pos + 1) = '-') And
+               (HTMLSourceChar(HTMLSource, Pos + 2) = '>')) Do
+     Inc(Pos);
+    NewNode := CreateHTMLNode;
+    NewNode^.NodeType := HTML_NODE_COMMENT;
+    NewNode^.Content := HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos);
+    NewNode^.Parent := CurrentNode;
+    HTMLAppendChild(CurrentNode, NewNode);
+    Inc(Pos, 3);
+   End
+   Else Begin
+    { DOCTYPE ou autre declaration }
+    While (Pos <= HTMLSource.DataLength) And
+          (HTMLSourceChar(HTMLSource, Pos) <> '>') Do
+     Inc(Pos);
+    Inc(Pos);
+   End;
+  End
+  Else If HTMLSourceChar(HTMLSource, Pos) = '/' Then Begin
+   { Balise fermante </tag> }
+   Inc(Pos);
+   CloseTagName := ExtractTagName(HTMLSource, Pos);
+   { Trouver le '>' }
+   While (Pos <= HTMLSource.DataLength) And
+         (HTMLSourceChar(HTMLSource, Pos) <> '>') Do
+    Inc(Pos);
+   Inc(Pos);
+   { HTML reel est souvent imparfait: chercher l'ancetre correspondant au
+     lieu de laisser chaque balise mal fermee augmenter la profondeur. }
+   SearchNode := HTMLFindClosingNodeInScope(CurrentNode, Root, CloseTagName);
+   If SearchNode <> Nil Then Begin
+    While CurrentNode <> SearchNode Do Begin
+     CurrentNode := CurrentNode^.Parent;
+     If CurrentDepth > 0 Then Dec(CurrentDepth);
+    End;
+    CurrentNode := SearchNode^.Parent;
+    If CurrentDepth > 0 Then Dec(CurrentDepth);
+   End;
+  End
+  Else Begin
+   { Balise ouvrante <tag ...> }
+   TagName := ExtractTagName(HTMLSource, Pos);
+   If TagName <> '' Then Begin
+   If HTMLLowerCase(TagName) = 'li' Then
+     HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
+    HTMLPrepareNestedList(CurrentNode, Root, TagName, CurrentDepth);
+    If (HTMLLowerCase(TagName) = 'td') Or
+       (HTMLLowerCase(TagName) = 'th') Or
+       (HTMLLowerCase(TagName) = 'tr') Then
+     HTMLAutoCloseTableElement(CurrentNode, Root, TagName, CurrentDepth);
+    NewNode := CreateHTMLNode;
+    NewNode^.NodeType := HTML_NODE_ELEMENT;
+    NewNode^.TagName := TagName;
+    NewNode^.TagType := GetTagType(TagName);
+    NewNode^.Parent := CurrentNode;
+
+    { Parser les attributs }
+    ParseHTMLAttributes(HTMLSource, Pos, NewNode);
+
+    { Verifier si c'est une balise auto-fermante }
+    Pos := HTMLSkipWhitespace(HTMLSource, Pos);
+    IsSelfClosing := False;
+    If (Pos <= HTMLSource.DataLength) And
+       (HTMLSourceChar(HTMLSource, Pos) = '/') Then Begin
+     IsSelfClosing := True;
+     Inc(Pos);
+    End;
+
+    { Trouver le '>' }
+    While (Pos <= HTMLSource.DataLength) And
+          (HTMLSourceChar(HTMLSource, Pos) <> '>') Do
+     Inc(Pos);
+    Inc(Pos);
+
+    { Ajouter le noeud comme enfant du noeud courant }
+    HTMLAppendChild(CurrentNode, NewNode);
+
+    { Si ce n'est pas une balise auto-fermante ou void, descendre dans le noeud }
+    If Not IsSelfClosing And Not IsVoidElement(TagName) And
+       (CurrentDepth < 32) Then Begin
+     CurrentNode := NewNode;
+     Inc(CurrentDepth);
+    End;
+   End;
+  End;
+ End;
+
+ ParseHTML := Root;
+End;
+
+{ Fonction pour obtenir un attribut d'un noeud HTML }
+Function GetHTMLAttribute(Node: HTMLNodePtr; Const AttrName: String): String;
+Var
+ Attr: HTMLAttributePtr;
+ LowerName: String;
+Begin
+ GetHTMLAttribute := '';
+ If Node = Nil Then Exit;
+ LowerName := HTMLLowerCase(AttrName);
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  If Attr^.Name = LowerName Then Begin
+   GetHTMLAttribute := Attr^.Value;
+   Exit;
+  End;
+  Attr := Attr^.Next;
+ End;
+End;
+
+{ Fonction pour trouver un element par son ID }
+Function FindElementById(Node: HTMLNodePtr; Const Id: String): HTMLNodePtr;
+Var
+ Found: HTMLNodePtr;
+ Child: HTMLNodePtr;
+Begin
+ FindElementById := Nil;
+ If Node = Nil Then Exit;
+ If GetHTMLAttribute(Node, 'id') = Id Then Begin
+  FindElementById := Node;
+  Exit;
+ End;
+ { Rechercher dans les enfants }
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  Found := FindElementById(Child, Id);
+  If Found <> Nil Then Begin
+   FindElementById := Found;
+   Exit;
+  End;
+  Child := Child^.NextSibling;
+ End;
+End;
+
+{ Fonction pour compter les elements avec un certain tag }
+Function CountElementsByTag(Node: HTMLNodePtr; TagType: Byte): Integer;
+Var
+ Count: Integer;
+ Child: HTMLNodePtr;
+Begin
+ Count := 0;
+ If Node = Nil Then Begin
+  CountElementsByTag := 0;
+  Exit;
+ End;
+ If Node^.TagType = TagType Then Inc(Count);
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  Count := Count + CountElementsByTag(Child, TagType);
+  Child := Child^.NextSibling;
+ End;
+ CountElementsByTag := Count;
+End;
+
+{ BOGUE REEL corrige (2026-09-25, meme categorie que SetHTMLSourceFromString }
+{ - voir feedback_integer_16bit) : StartPos/EndPos etaient declares Integer, }
+{ 16 bits seulement en mode TP (-32768..32767) - une chaine reelle de plus  }
+{ de 32 Ko passee a BrowserTrimStr (appelee depuis ParseHTML sur du contenu HTML/     }
+{ texte reel, ex. en cliquant un lien qui charge une page volumineuse)      }
+{ deborde silencieusement "EndPos := Length(S)" sans controle de plage,     }
+{ mais plante avec le controle de plage actif (signale par l'utilisateur,   }
+{ compilation depuis l'IDE Free Pascal). }
+{ Fonction BrowserTrimStr pour supprimer les espaces en debut et fin }
+Function BrowserTrimStr(Const S: String): String;
+Var
+ StartPos, EndPos: LongInt;
+Begin
+ StartPos := 1;
+ EndPos := Length(S);
+ While (StartPos <= EndPos) And (S[StartPos] In [' ', #9, #10, #13]) Do
+  Inc(StartPos);
+ While (EndPos >= StartPos) And (S[EndPos] In [' ', #9, #10, #13]) Do
+  Dec(EndPos);
+ If StartPos > EndPos Then
+  BrowserTrimStr := ''
+ Else
+  BrowserTrimStr := Copy(S, StartPos, EndPos - StartPos + 1);
+End;
+
+{ Procedure pour initialiser le parseur HTML }
+Procedure InitHTMLParser;
+Begin
+ HTMLDocument := Nil;
+ HTMLParseError := '';
+End;
+
+{ =====================================================
+  FIN PARSEUR HTML
+  ===================================================== }
+
+{ =====================================================
+  INTERPRETEUR JAVASCRIPT
+  ===================================================== }
+
+{ Initialiser le contexte JavaScript }
+Procedure InitJSContext;
+Var
+ I: Integer;
+Begin
+ JSCtx.VarCount := 0;
+ JSCtx.FuncCount := 0;
+ JSCtx.StackTop := 0;
+ JSCtx.ErrorMsg := '';
+ JSCtx.HasError := False;
+ JSCtx.DocumentOutput := '';
+ JSEnabled := True;
+ JSLastAlert := '';
+ JSBreakFlag := False;
+ JSContinueFlag := False;
+
+ For I := 1 To MAX_JS_VARS Do Begin
+  JSCtx.Variables[I].Name := '';
+  JSCtx.Variables[I].Value.ValType := JS_VAL_UNDEFINED;
+ End;
+
+ For I := 1 To MAX_JS_FUNCTIONS Do Begin
+  JSCtx.Functions[I].Name := '';
+  JSCtx.Functions[I].Body := '';
+  JSCtx.Functions[I].ParamCount := 0;
+ End;
+End;
+
+{ Creer une valeur JavaScript undefined }
+Function JSUndefined: JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_UNDEFINED;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
+ JSUndefined := V;
+End;
+
+{ Creer une valeur JavaScript null }
+Function JSNull: JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_NULL;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
+ JSNull := V;
+End;
+
+{ Creer une valeur JavaScript booleenne }
+Function JSBool(B: Boolean): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_BOOLEAN;
+ V.BoolVal := B;
+ V.NumVal := 0;
+ V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
+ JSBool := V;
+End;
+
+{ Creer une valeur JavaScript numerique }
+Function JSNumber(N: Real): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_NUMBER;
+ V.BoolVal := False;
+ V.NumVal := N;
+ V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
+ JSNumber := V;
+End;
+
+{ Creer une valeur JavaScript chaine }
+Function JSString(S: String): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_STRING;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := S;
+ V.ObjVal := Nil;
+ V.NodeVal := Nil;
+ JSString := V;
+End;
+
+{ Creer une valeur JavaScript objet/tableau a partir d'une reference
+  deja allouee (voir JSNewObject). }
+Function JSObjectValue(Obj: JSObjectPtr): JSValue;
+Var
+ V: JSValue;
+Begin
+ If (Obj <> Nil) And Obj^.IsArray Then
+  V.ValType := JS_VAL_ARRAY
+ Else
+  V.ValType := JS_VAL_OBJECT;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ V.ObjVal := Obj;
+ V.NodeVal := Nil;
+ JSObjectValue := V;
+End;
+
+{ Creer une valeur JavaScript referencant un noeud DOM (document.
+  getElementById, this dans un gestionnaire d'evenement, ...). }
+Function JSNodeValue(Node: HTMLNodePtr): JSValue;
+Var
+ V: JSValue;
+Begin
+ V.ValType := JS_VAL_NODE;
+ V.BoolVal := False;
+ V.NumVal := 0;
+ V.StrVal := '';
+ V.ObjVal := Nil;
+ V.NodeVal := Node;
+ JSNodeValue := V;
+End;
+
+{ Allouer un nouvel objet ou tableau JavaScript vide. }
+Function JSNewObject(IsArray: Boolean): JSObjectPtr;
+Var
+ Obj: JSObjectPtr;
+Begin
+ New(Obj);
+ Obj^.FirstProp := Nil;
+ Obj^.IsArray := IsArray;
+ Obj^.ArrLen := 0;
+ JSNewObject := Obj;
+End;
+
+{ Trouver la propriete nommee Name dans Obj (Nil si absente). }
+Function JSObjectFindProp(Obj: JSObjectPtr; Const Name: String): JSPropertyPtr;
+Var
+ P: JSPropertyPtr;
+Begin
+ JSObjectFindProp := Nil;
+ If Obj = Nil Then Exit;
+ P := Obj^.FirstProp;
+ While P <> Nil Do Begin
+  If P^.Name = Name Then Begin
+   JSObjectFindProp := P;
+   Exit;
+  End;
+  P := P^.Next;
+ End;
+End;
+
+{ Lire la propriete Name de Obj (JSUndefined si absente ou Obj=Nil). }
+Function JSObjectGetProp(Obj: JSObjectPtr; Const Name: String): JSValue;
+Var
+ P: JSPropertyPtr;
+Begin
+ P := JSObjectFindProp(Obj, Name);
+ If P <> Nil Then
+  JSObjectGetProp := P^.Value
+ Else
+  JSObjectGetProp := JSUndefined;
+End;
+
+{ Definir (ou creer) la propriete Name de Obj. Pour un tableau, si Name
+  est un indice numerique >= la longueur actuelle, ArrLen est mis a
+  jour (Name+1) - c'est ainsi que ".length" reste correct apres
+  arr[arr.length] = x, le motif "push" utilise partout dans
+  JSCookMenu.js. }
+Procedure JSObjectSetProp(Obj: JSObjectPtr; Const Name: String; Value: JSValue);
+Var
+ P: JSPropertyPtr;
+ IdxVal: Integer;
+ Code: Integer;
+Begin
+ If Obj = Nil Then Exit;
+ P := JSObjectFindProp(Obj, Name);
+ If P = Nil Then Begin
+  New(P);
+  P^.Name := Name;
+  P^.Next := Obj^.FirstProp;
+  Obj^.FirstProp := P;
+ End;
+ P^.Value := Value;
+ If Obj^.IsArray Then Begin
+  Val(Name, IdxVal, Code);
+  If (Code = 0) And (IdxVal >= Obj^.ArrLen) Then
+   Obj^.ArrLen := IdxVal + 1;
+ End;
+End;
+
+{ Convertir une valeur JavaScript en chaine }
+Function JSValueToString(V: JSValue): String;
+Var
+ S: String;
+ P: JSPropertyPtr;
+ TotalLen, I: LongInt;
+Begin
+ Case V.ValType Of
+  JS_VAL_UNDEFINED: JSValueToString := 'undefined';
+  JS_VAL_NULL: JSValueToString := 'null';
+  JS_VAL_BOOLEAN: If V.BoolVal Then JSValueToString := 'true' Else JSValueToString := 'false';
+  JS_VAL_NUMBER: Begin
+   Str(V.NumVal:0:6, S);
+   { Supprimer les zeros inutiles }
+   While (Length(S) > 1) And (S[Length(S)] = '0') And (Pos('.', S) > 0) Do
+    Delete(S, Length(S), 1);
+   If S[Length(S)] = '.' Then Delete(S, Length(S), 1);
+   JSValueToString := S;
+  End;
+  JS_VAL_STRING: JSValueToString := V.StrVal;
+  JS_VAL_STRBUF: Begin
+   { Concatener tous les segments en UNE SEULE allocation dans la zone
+     de croissance libre du tas (wilderness chunk) : parcourir les N
+     segments dans l'ordre (0..ArrLen-1) via JSObjectGetProp car les
+     segments ont ete ajoutes avec PREPEND (propriete '0' en queue de
+     liste, '1' avant, etc.) donc FirstProp -> N-1, ..., -> 0. }
+   If (V.ObjVal = Nil) Or (V.ObjVal^.ArrLen = 0) Then Begin
+    JSValueToString := '';
+    Exit;
+   End;
+   TotalLen := 0;
+   For I := 0 To V.ObjVal^.ArrLen - 1 Do Begin
+    P := JSObjectFindProp(V.ObjVal, IntToStr(I));
+    If (P <> Nil) And (P^.Value.ValType = JS_VAL_STRING) Then
+     Inc(TotalLen, Length(P^.Value.StrVal));
+   End;
+   SetLength(S, TotalLen);
+   TotalLen := 1; { reused as write cursor }
+   For I := 0 To V.ObjVal^.ArrLen - 1 Do Begin
+    P := JSObjectFindProp(V.ObjVal, IntToStr(I));
+    If (P <> Nil) And (P^.Value.ValType = JS_VAL_STRING) And (Length(P^.Value.StrVal) > 0) Then Begin
+     Move(P^.Value.StrVal[1], S[TotalLen], Length(P^.Value.StrVal));
+     Inc(TotalLen, Length(P^.Value.StrVal));
+    End;
+   End;
+   JSValueToString := S;
+  End;
+  JS_VAL_OBJECT: JSValueToString := '[object Object]';
+  JS_VAL_FUNCTION: JSValueToString := '[function]';
+  JS_VAL_ARRAY: JSValueToString := '[array]';
+  JS_VAL_NODE: If V.NodeVal <> Nil Then JSValueToString := '[object]' Else JSValueToString := 'null';
+  Else JSValueToString := '';
+ End;
+End;
+
+{ Convertir une valeur JavaScript en nombre }
+Function JSValueToNumber(V: JSValue): Real;
+Var
+ Code: Integer;
+ N: Real;
+Begin
+ Case V.ValType Of
+  JS_VAL_UNDEFINED: JSValueToNumber := 0;
+  JS_VAL_NULL: JSValueToNumber := 0;
+  JS_VAL_BOOLEAN: If V.BoolVal Then JSValueToNumber := 1 Else JSValueToNumber := 0;
+  JS_VAL_NUMBER: JSValueToNumber := V.NumVal;
+  JS_VAL_STRING: Begin
+   Val(V.StrVal, N, Code);
+   If Code = 0 Then JSValueToNumber := N Else JSValueToNumber := 0;
+  End;
+  Else JSValueToNumber := 0;
+ End;
+End;
+
+{ Convertir une valeur JavaScript en booleen }
+Function JSValueToBool(V: JSValue): Boolean;
+Begin
+ Case V.ValType Of
+  JS_VAL_UNDEFINED: JSValueToBool := False;
+  JS_VAL_NULL: JSValueToBool := False;
+  JS_VAL_BOOLEAN: JSValueToBool := V.BoolVal;
+  JS_VAL_NUMBER: JSValueToBool := V.NumVal <> 0;
+  JS_VAL_STRING: JSValueToBool := Length(V.StrVal) > 0;
+  JS_VAL_OBJECT, JS_VAL_ARRAY, JS_VAL_STRBUF: JSValueToBool := V.ObjVal <> Nil;
+  JS_VAL_NODE: JSValueToBool := V.NodeVal <> Nil;
+  Else JSValueToBool := True;
+ End;
+End;
+
+{ Verifier si un caractere est un chiffre }
+Function JSIsDigit(C: Char): Boolean;
+Begin
+ JSIsDigit := (C >= '0') And (C <= '9');
+End;
+
+{ Verifier si un caractere est une lettre }
+Function JSIsAlpha(C: Char): Boolean;
+Begin
+ JSIsAlpha := ((C >= 'a') And (C <= 'z')) Or ((C >= 'A') And (C <= 'Z')) Or (C = '_') Or (C = '$');
+End;
+
+{ Verifier si un caractere est alphanumerique }
+Function JSIsAlphaNum(C: Char): Boolean;
+Begin
+ JSIsAlphaNum := JSIsAlpha(C) Or JSIsDigit(C);
+End;
+
+{ Verifier si un caractere est un espace blanc }
+Function JSIsWhitespace(C: Char): Boolean;
+Begin
+ JSIsWhitespace := (C = ' ') Or (C = #9) Or (C = #10) Or (C = #13);
+End;
+
+{ Obtenir le type de mot-cle JavaScript }
+Type
+ JSKeywordEntry = Record
+  Name: String[10];
+  Id: Byte;
+ End;
+
+Const
+ JS_KEYWORD_COUNT = 19;
+ { Table des mots-cles JavaScript, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de JSGetKeywordType
+   ci-dessous (meme principe que CSSPropertyTable/HTMLTagTable). }
+ JSKeywordTable: Array[0..JS_KEYWORD_COUNT - 1] Of JSKeywordEntry = (
+  (Name: 'break';     Id: JS_KW_BREAK),
+  (Name: 'const';     Id: JS_KW_CONST),
+  (Name: 'continue';  Id: JS_KW_CONTINUE),
+  (Name: 'do';        Id: JS_KW_DO),
+  (Name: 'else';      Id: JS_KW_ELSE),
+  (Name: 'false';     Id: JS_KW_FALSE),
+  (Name: 'for';       Id: JS_KW_FOR),
+  (Name: 'function';  Id: JS_KW_FUNCTION),
+  (Name: 'if';        Id: JS_KW_IF),
+  (Name: 'let';       Id: JS_KW_LET),
+  (Name: 'new';       Id: JS_KW_NEW),
+  (Name: 'null';      Id: JS_KW_NULL),
+  (Name: 'return';    Id: JS_KW_RETURN),
+  (Name: 'this';      Id: JS_KW_THIS),
+  (Name: 'true';      Id: JS_KW_TRUE),
+  (Name: 'typeof';    Id: JS_KW_TYPEOF),
+  (Name: 'undefined'; Id: JS_KW_UNDEFINED),
+  (Name: 'var';       Id: JS_KW_VAR),
+  (Name: 'while';     Id: JS_KW_WHILE)
+ );
+
+{ Obtenir le type d'un mot-cle JavaScript - recherche dichotomique dans
+  JSKeywordTable (ci-dessus) au lieu des 19 comparaisons Si/SinonSi
+  d'avant (meme principe que CSSGetPropertyId/GetTagType). Sensible a
+  la casse (JS l'est), donc AUCUN passage en minuscules ici - inchange
+  par rapport a l'ancien code. }
+Function JSGetKeywordType(S: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ JSGetKeywordType := 0;
+
+ Lo := 0;
+ Hi := JS_KEYWORD_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSKeywordTable[Mid].Name = S Then Begin
+   JSGetKeywordType := JSKeywordTable[Mid].Id;
+   Exit;
+  End
+  Else If JSKeywordTable[Mid].Name < S Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+{ Verifier si une chaine est un mot-cle JavaScript }
+Function JSIsKeyword(S: String): Boolean;
+Begin
+ JSIsKeyword := JSGetKeywordType(S) <> 0;
+End;
+
+{ Chercher une variable par nom }
+Function JSFindVariable(Name: String): Integer;
+Var
+ I: Integer;
+Begin
+ { Recherche en ordre INVERSE (du plus recent au plus ancien) pour
+   que les variables locales d'une fonction imbriquee (ajoutees en
+   dernier dans le tableau) prennent precedence sur celles des
+   fonctions appelantes de meme nom. Sans cela, "var str='<div>'"
+   dans cmDrawSubMenu (appelee par cmDraw qui a son propre "var str")
+   trouvait et ecrasait la "str" de cmDraw plutot que de creer une
+   nouvelle variable locale - les deux boucles de generation HTML
+   s'entremèlaient et corrrompaient le HTML genere. }
+ JSFindVariable := 0;
+ For I := JSCtx.VarCount DownTo 1 Do Begin
+  If JSCtx.Variables[I].Name = Name Then Begin
+   JSFindVariable := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Creer TOUJOURS un nouveau slot de variable, sans chercher si une
+  variable du meme nom existe deja dans une portee englobante.
+  A utiliser pour :
+  - La liaison des parametres d'une fonction (chaque appel de
+    fonction doit avoir SES PROPRES slots pour ses parametres, meme
+    s'ils ont le meme nom qu'une variable de l'appelant).
+  - Les declarations "var x = ..." dans le corps d'une fonction (elles
+    doivent creer une variable locale, pas modifier une variable de
+    portee externe portant le meme nom).
+  Sans cette distinction, "prefix = '\''+prefix+'\''" dans cmActionItem
+  de JSCookMenu.js ecrasait la variable "prefix" de l'appelant cmDraw
+  (meme nom, recherche inversee trouvant le slot externe en premier)
+  plutot que de travailler sur le parametre local de cmActionItem. }
+Procedure JSForceNewVariable(Const Name: String; Value: JSValue; IsConst: Boolean);
+Begin
+ If JSCtx.VarCount < MAX_JS_VARS Then Begin
+  Inc(JSCtx.VarCount);
+  JSCtx.Variables[JSCtx.VarCount].Name := Name;
+  JSCtx.Variables[JSCtx.VarCount].Value := Value;
+  JSCtx.Variables[JSCtx.VarCount].IsConst := IsConst;
+ End;
+End;
+
+{ Definir ou mettre a jour une variable }
+Procedure JSSetVariable(Name: String; Value: JSValue; IsConst: Boolean);
+Var
+ Idx: Integer;
+Begin
+ Idx := JSFindVariable(Name);
+ If Idx > 0 Then Begin
+  { Variable existante }
+  If JSCtx.Variables[Idx].IsConst Then Begin
+   JSCtx.HasError := True;
+   JSCtx.ErrorMsg := 'TypeError: Assignment to constant variable: ' + Name;
+  End Else
+   JSCtx.Variables[Idx].Value := Value;
+ End Else Begin
+  { Nouvelle variable }
+  If JSCtx.VarCount < MAX_JS_VARS Then Begin
+   Inc(JSCtx.VarCount);
+   JSCtx.Variables[JSCtx.VarCount].Name := Name;
+   JSCtx.Variables[JSCtx.VarCount].Value := Value;
+   JSCtx.Variables[JSCtx.VarCount].IsConst := IsConst;
+  End Else Begin
+   JSCtx.HasError := True;
+   JSCtx.ErrorMsg := 'Error: Maximum number of variables exceeded';
+  End;
+ End;
+End;
+
+{ Obtenir la valeur d'une variable }
+Function JSGetVariable(Name: String): JSValue;
+Var
+ Idx: Integer;
+Begin
+ Idx := JSFindVariable(Name);
+ If Idx > 0 Then
+  JSGetVariable := JSCtx.Variables[Idx].Value
+ Else
+  JSGetVariable := JSUndefined;
+End;
+
+{ Chercher une fonction par nom }
+Function JSFindFunction(Name: String): Integer;
+Var
+ I: Integer;
+Begin
+ JSFindFunction := 0;
+ For I := 1 To JSCtx.FuncCount Do Begin
+  If JSCtx.Functions[I].Name = Name Then Begin
+   JSFindFunction := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Declaration forward pour l'evaluateur }
+Function JSEvaluate(Const Script: String): JSValue; Forward;
+
+{ Declarations forward pour les quelques affectations sur propriete
+  (this.className = ..., window.location = ...) que JSEvaluate
+  reconnait comme cas particuliers : ces procedures/fonctions sont
+  definies bien plus loin dans le fichier (navigation, DOM), mais
+  doivent etre appelables depuis l'evaluateur JS plus haut. }
+Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String); Forward;
+Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String; Forward;
+Procedure NavigateTo(URL: String); Forward;
+Procedure DisplayCurrentTarget; Forward;
+Function ResolveLinkHref(Const Href: String): String; Forward;
+Function DOMGetElementById(Id: String): HTMLNodePtr; Forward;
+Function DOMGetBody: HTMLNodePtr; Forward;
+Function DOMGetChildCount(Node: HTMLNodePtr): Integer; Forward;
+Procedure InitHTMLSource(Var HTML: HTMLSourceBuffer); Forward;
+Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer); Forward;
+Function LoadHTMLFile(Const FileName: String; Var HTML: HTMLSourceBuffer): Boolean; Forward;
+Procedure RescrollPage; Forward;
+Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String); Forward;
+{ Necessaires au menu contextuel (ContextMenuSaveAs/ContextMenuViewSource,
+  voir plus haut) ; definies bien plus loin dans le fichier. }
+Function IsRemoteURL(Const URL: String): Boolean; Forward;
+Function IsViewSourceURL(Const URL: String): Boolean; Forward;
+Function StripViewSourcePrefix(Const URL: String): String; Forward;
+Function IsFtpURL(Const URL: String): Boolean; Forward;
+{ Necessaire au module PDF (PDFExtractText, voir plus bas) - definie
+  bien plus loin dans le fichier, aux cotes de IsFtpURL. }
+Function FTPEscapeText(Const S: String): String; Forward;
+Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String); Forward;
+Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt); Forward;
+Procedure JSClearTimeout; Forward;
+Function JSGetNodeBoxX(Node: HTMLNodePtr): Integer; Forward;
+Function JSGetNodeBoxY(Node: HTMLNodePtr): Integer; Forward;
+Function JSGetNodeBoxWidth(Node: HTMLNodePtr): Integer; Forward;
+Function JSGetNodeBoxHeight(Node: HTMLNodePtr): Integer; Forward;
+
+{ Appeler une fonction utilisateur }
+Function JSCallUserFunction(FuncIdx: Integer; Args: Array Of JSValue; ArgCount: Integer): JSValue;
+Var
+ I: Integer;
+ OldVarCount: Integer;
+Begin
+ JSCallUserFunction := JSUndefined;
+ If (FuncIdx < 1) Or (FuncIdx > JSCtx.FuncCount) Then Exit;
+
+ { Sauvegarder l'etat des variables }
+ OldVarCount := JSCtx.VarCount;
+
+ { Lier les parametres comme NOUVEAUX slots de variables locales, sans
+   chercher s'ils existent deja dans une portee englobante - sinon
+   une fonction ayant un parametre du meme nom qu'une variable de
+   l'appelant ecraserait la variable de l'appelant (ex: cmActionItem
+   a un parametre "prefix" comme cmDraw son appelant, et reassigne
+   prefix = "'"+prefix+"'" pour construire du JS, ce qui corrompait
+   le "prefix" de cmDraw). }
+ For I := 1 To JSCtx.Functions[FuncIdx].ParamCount Do Begin
+  If I <= ArgCount Then
+   JSForceNewVariable(JSCtx.Functions[FuncIdx].ParamNames[I], Args[I-1], False)
+  Else
+   JSForceNewVariable(JSCtx.Functions[FuncIdx].ParamNames[I], JSUndefined, False);
+ End;
+
+ { Executer le corps de la fonction }
+ JSCallUserFunction := JSEvaluate(JSCtx.Functions[FuncIdx].Body);
+
+ { Restaurer l'etat des variables (cleanup des variables locales) }
+ JSCtx.VarCount := OldVarCount;
+End;
+
+{ Fonction native: alert() }
+Procedure JSNativeAlert(Msg: String);
+Begin
+ JSLastAlert := Msg;
+ { Dans une vraie implementation, on afficherait une boite de dialogue }
+ { Pour l'instant, on stocke juste le message }
+End;
+
+{ Fonction native: console.log() }
+Procedure JSNativeConsoleLog(Msg: String);
+Begin
+ DevToolsAddConsole(Msg);
+End;
+
+{ Fonction native: document.write() }
+Procedure JSNativeDocumentWrite(Content: String);
+Begin
+ JSCtx.DocumentOutput := JSCtx.DocumentOutput + Content;
+End;
+
+{ Ignorer les espaces blancs dans le script }
+Function JSSkipWhitespace(Const Script: String; Pos: LongInt): LongInt;
+Begin
+ While (Pos <= Length(Script)) And JSIsWhitespace(Script[Pos]) Do
+  Inc(Pos);
+ JSSkipWhitespace := Pos;
+End;
+
+{ Ignorer les commentaires JavaScript }
+Function JSSkipComments(Const Script: String; Pos: LongInt): LongInt;
+Var
+ PrevPos: LongInt;
+Begin
+ { Boucler jusqu'a ce qu'aucun nouvel espace/commentaire ne soit
+   consomme : un bloc de plusieurs lignes de commentaires // qui se
+   suivent (tres frequent en pratique, ex. les bandeaux de section
+   "////.../ Titre /...////") n'etait sinon que partiellement
+   ignore - seule la PREMIERE ligne // etait sautee, laissant le '/'
+   de la ligne // suivante etre lu comme un operateur de division par
+   JSGetNextToken, corrompant tout le reste du script (d'ou les
+   "Division by zero" et autres erreurs aberrantes sur du JS
+   parfaitement valide). }
+ Repeat
+  PrevPos := Pos;
+  Pos := JSSkipWhitespace(Script, Pos);
+  { Commentaire sur une ligne // }
+  If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '/') Then Begin
+   Inc(Pos, 2);
+   While (Pos <= Length(Script)) And (Script[Pos] <> #10) And (Script[Pos] <> #13) Do
+    Inc(Pos);
+  End
+  { Commentaire multi-lignes /* */ }
+  Else If (Pos <= Length(Script) - 1) And (Script[Pos] = '/') And (Script[Pos + 1] = '*') Then Begin
+   Inc(Pos, 2);
+   While (Pos <= Length(Script) - 1) And Not ((Script[Pos] = '*') And (Script[Pos + 1] = '/')) Do
+    Inc(Pos);
+   If Pos <= Length(Script) - 1 Then Inc(Pos, 2);
+  End;
+ Until Pos = PrevPos;
+ JSSkipComments := Pos;
+End;
+
+{ Decoder les sequences d'echappement d'une chaine JavaScript. Le lexer
+  savait sauter un guillemet precede de \ pour trouver la fin du token,
+  mais rendait ensuite la sous-chaine brute : src=\'IMAGES/...\' restait
+  donc litteralement antislash-apostrophe dans le HTML genere. }
+Function JSDecodeStringLiteral(Const S: String): String;
+Var
+ I: LongInt;
+ R: String;
+Begin
+ R := '';
+ I := 1;
+ While I <= Length(S) Do Begin
+  If (S[I] = '\') And (I < Length(S)) Then Begin
+   Inc(I);
+   Case S[I] Of
+    'n': R := R + #10;
+    'r': R := R + #13;
+    't': R := R + #9;
+    'b': R := R + #8;
+    'f': R := R + #12;
+    'v': R := R + #11;
+    #10: ; { continuation de ligne }
+    #13: Begin
+     If (I < Length(S)) And (S[I + 1] = #10) Then Inc(I);
+    End;
+    Else R := R + S[I]; { \', \", \\, etc. }
+   End;
+  End
+  Else
+   R := R + S[I];
+  Inc(I);
+ End;
+ JSDecodeStringLiteral := R;
+End;
+
+{ Obtenir le prochain token du script }
+Function JSGetNextToken(Const Script: String; Var Pos: LongInt): JSToken;
+Var
+ Token: JSToken;
+ StartPos: LongInt;
+ QuoteChar: Char;
+ NumStr: String;
+ Code: Integer;
+Begin
+ Token.TokType := JS_TOK_EOF;
+ Token.TokValue := '';
+ Token.NumValue := 0;
+ Token.KeywordType := 0;
+ Token.Line := 1;
+ Token.Column := Pos;
+
+ Pos := JSSkipComments(Script, Pos);
+
+ If Pos > Length(Script) Then Begin
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Nombre }
+ If JSIsDigit(Script[Pos]) Or
+    ((Script[Pos] = '.') And (Pos < Length(Script)) And JSIsDigit(Script[Pos + 1])) Then Begin
+  Token.TokType := JS_TOK_NUMBER;
+  StartPos := Pos;
+  While (Pos <= Length(Script)) And (JSIsDigit(Script[Pos]) Or (Script[Pos] = '.')) Do
+   Inc(Pos);
+  Token.TokValue := Copy(Script, StartPos, Pos - StartPos);
+  Val(Token.TokValue, Token.NumValue, Code);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Chaine de caracteres }
+ If (Script[Pos] = '''') Or (Script[Pos] = '"') Or (Script[Pos] = '`') Then Begin
+  Token.TokType := JS_TOK_STRING;
+  QuoteChar := Script[Pos];
+  Inc(Pos);
+  StartPos := Pos;
+  While (Pos <= Length(Script)) And (Script[Pos] <> QuoteChar) Do Begin
+   If (Script[Pos] = '\') And (Pos < Length(Script)) Then Inc(Pos);
+   Inc(Pos);
+  End;
+  Token.TokValue := JSDecodeStringLiteral(Copy(Script, StartPos, Pos - StartPos));
+  If Pos <= Length(Script) Then Inc(Pos);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Identifiant ou mot-cle }
+ If JSIsAlpha(Script[Pos]) Then Begin
+  StartPos := Pos;
+  While (Pos <= Length(Script)) And JSIsAlphaNum(Script[Pos]) Do
+   Inc(Pos);
+  Token.TokValue := Copy(Script, StartPos, Pos - StartPos);
+  Token.KeywordType := JSGetKeywordType(Token.TokValue);
+  If Token.KeywordType <> 0 Then Begin
+   Token.TokType := JS_TOK_KEYWORD;
+   If Token.KeywordType = JS_KW_TRUE Then Begin
+    Token.TokType := JS_TOK_BOOLEAN;
+    Token.NumValue := 1;
+   End Else If Token.KeywordType = JS_KW_FALSE Then Begin
+    Token.TokType := JS_TOK_BOOLEAN;
+    Token.NumValue := 0;
+   End Else If Token.KeywordType = JS_KW_NULL Then
+    Token.TokType := JS_TOK_NULL
+   Else If Token.KeywordType = JS_KW_UNDEFINED Then
+    Token.TokType := JS_TOK_UNDEFINED;
+  End Else
+   Token.TokType := JS_TOK_IDENTIFIER;
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Operateurs multi-caracteres }
+ If (Pos <= Length(Script) - 2) Then Begin
+  If (Script[Pos] = '=') And (Script[Pos+1] = '=') And (Script[Pos+2] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '===';
+   Inc(Pos, 3);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '!') And (Script[Pos+1] = '=') And (Script[Pos+2] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '!==';
+   Inc(Pos, 3);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+ End;
+
+ If (Pos <= Length(Script) - 1) Then Begin
+  If (Script[Pos] = '=') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '==';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '!') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '!=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '<') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '<=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '>') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '>=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '&') And (Script[Pos+1] = '&') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '&&';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '|') And (Script[Pos+1] = '|') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '||';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '+') And (Script[Pos+1] = '+') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '++';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '-') And (Script[Pos+1] = '-') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '--';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '+') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '+=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+  If (Script[Pos] = '-') And (Script[Pos+1] = '=') Then Begin
+   Token.TokType := JS_TOK_OPERATOR;
+   Token.TokValue := '-=';
+   Inc(Pos, 2);
+   JSGetNextToken := Token;
+   Exit;
+  End;
+ End;
+
+ { Operateurs et ponctuateurs simples }
+ If Script[Pos] In ['+', '-', '*', '/', '%', '=', '<', '>', '!'] Then Begin
+  Token.TokType := JS_TOK_OPERATOR;
+  Token.TokValue := Script[Pos];
+  Inc(Pos);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ If Script[Pos] In ['(', ')', '{', '}', '[', ']', ';', ',', '.', ':'] Then Begin
+  Token.TokType := JS_TOK_PUNCTUATOR;
+  Token.TokValue := Script[Pos];
+  Inc(Pos);
+  JSGetNextToken := Token;
+  Exit;
+ End;
+
+ { Caractere inconnu - avancer }
+ Inc(Pos);
+ JSGetNextToken := Token;
+End;
+
+{ Avancer Pos jusqu'au premier caractere de StopChars rencontre a une
+  profondeur de parentheses/crochets/accolades nulle et hors chaine
+  litterale (les separateurs a l'interieur d'une chaine ou d'une
+  sous-expression/sous-litteral imbrique ne comptent pas). Utilise
+  pour decouper les arguments d'appel et les elements de litteraux
+  objet/tableau, qui peuvent eux-memes contenir des virgules ou des
+  crochets imbriques (ex: cmDraw('id', myMenu, ...) ou un tableau de
+  menu imbrique sur plusieurs niveaux). }
+Procedure JSSkipToBalanced(Const Script: String; Var Pos: LongInt; StopChars: JSCharSet);
+Var
+ Depth: Integer;
+ InStr: Boolean;
+ StrCh: Char;
+Begin
+ Depth := 0;
+ InStr := False;
+ StrCh := #0;
+ While Pos <= Length(Script) Do Begin
+  If InStr Then Begin
+   If (Script[Pos] = '\') And (Pos < Length(Script)) Then Inc(Pos)
+   Else If Script[Pos] = StrCh Then InStr := False;
+  End
+  Else If (Script[Pos] = '''') Or (Script[Pos] = '"') Then Begin
+   InStr := True;
+   StrCh := Script[Pos];
+  End
+  Else If (Depth = 0) And (Script[Pos] In StopChars) Then
+   Exit
+  Else If Script[Pos] In ['(', '[', '{'] Then
+   Inc(Depth)
+  Else If Script[Pos] In [')', ']', '}'] Then Begin
+   If Depth > 0 Then Dec(Depth)
+   Else Exit; { fermeture inattendue a profondeur 0 : on s'arrete par securite }
+  End;
+  Inc(Pos);
+ End;
+End;
+
+{ Lire/ecrire une declaration de l'attribut style="prop:val;..." d'un
+  noeud - utilise pour style.left/top/visibility (positionnement des
+  sous-menus par JSCookMenu.js). }
+Function JSGetStyleProp(Node: HTMLNodePtr; Const StyleProp: String): String;
+Var
+ Decls, Decl, Name: String;
+ SepPos, ColonPos: Integer;
+Begin
+ JSGetStyleProp := '';
+ If Node = Nil Then Exit;
+ Decls := GetNodeAttribute(Node, 'style');
+ While Length(Decls) > 0 Do Begin
+  SepPos := Pos(';', Decls);
+  If SepPos = 0 Then SepPos := Length(Decls) + 1;
+  Decl := BrowserTrimStr(Copy(Decls, 1, SepPos - 1));
+  Delete(Decls, 1, SepPos);
+  ColonPos := Pos(':', Decl);
+  If ColonPos > 0 Then Begin
+   Name := BrowserTrimStr(Copy(Decl, 1, ColonPos - 1));
+   If HTMLLowerCase(Name) = HTMLLowerCase(StyleProp) Then Begin
+    JSGetStyleProp := BrowserTrimStr(Copy(Decl, ColonPos + 1, Length(Decl)));
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+Procedure JSSetStyleProp(Node: HTMLNodePtr; Const StyleProp, Value: String);
+Var
+ Decls, Decl, Name, NewStyle: String;
+ SepPos, ColonPos: Integer;
+ Found: Boolean;
+Begin
+ If Node = Nil Then Exit;
+ Decls := GetNodeAttribute(Node, 'style');
+ NewStyle := '';
+ Found := False;
+ While Length(Decls) > 0 Do Begin
+  SepPos := Pos(';', Decls);
+  If SepPos = 0 Then SepPos := Length(Decls) + 1;
+  Decl := BrowserTrimStr(Copy(Decls, 1, SepPos - 1));
+  Delete(Decls, 1, SepPos);
+  If Length(Decl) = 0 Then Continue;
+  ColonPos := Pos(':', Decl);
+  If ColonPos > 0 Then Name := BrowserTrimStr(Copy(Decl, 1, ColonPos - 1)) Else Name := '';
+  If HTMLLowerCase(Name) = HTMLLowerCase(StyleProp) Then Begin
+   NewStyle := NewStyle + StyleProp + ':' + Value + ';';
+   Found := True;
+  End
+  Else
+   NewStyle := NewStyle + Decl + ';';
+ End;
+ If Not Found Then
+  NewStyle := NewStyle + StyleProp + ':' + Value + ';';
+ DOMSetAttribute(Node, 'style', NewStyle);
+End;
+
+{ Lire une propriete d'un noeud DOM utilise comme objet JavaScript
+  (this dans un gestionnaire, document.getElementById(...), ...).
+  Les proprietes integrees usuelles (className, id, style.X via
+  JSGetStyleProp, offsetWidth/Height/Left/Top via le memo de boite)
+  sont reconnues explicitement ; toute autre propriete est lue dans
+  JSExpando, le sac de proprietes arbitraires pose par du JS (ex:
+  obj.cmPrefix dans JSCookMenu.js). }
+Const
+ { Identifiants des proprietes JS reconnues par JSGetNodeProperty -
+   0 = inconnue (repli sur Node^.JSExpando, voir plus bas). }
+ JS_NODEPROP_CLASSNAME    = 1;
+ JS_NODEPROP_ID           = 2;
+ JS_NODEPROP_STYLE        = 3;
+ JS_NODEPROP_LEFT         = 4;
+ JS_NODEPROP_TOP          = 5;
+ JS_NODEPROP_VISIBILITY   = 6;
+ JS_NODEPROP_OFFSETWIDTH  = 7;
+ JS_NODEPROP_OFFSETHEIGHT = 8;
+ JS_NODEPROP_OFFSETLEFT   = 9;
+ JS_NODEPROP_OFFSETTOP    = 10;
+ JS_NODEPROP_OFFSETPARENT = 11;
+ JS_NODEPROP_COUNT = 11;
+
+Type
+ JSNodePropertyEntry = Record
+  Name: String[15];
+  Id: Byte;
+ End;
+
+Const
+ { Triee par ordre ALPHABETIQUE - condition necessaire a la recherche
+   dichotomique de JSGetNodePropertyId ci-dessous (meme principe que
+   CSSPropertyTable/HTMLTagTable/JSKeywordTable). }
+ JSNodePropertyTable: Array[0..JS_NODEPROP_COUNT - 1] Of JSNodePropertyEntry = (
+  (Name: 'classname';    Id: JS_NODEPROP_CLASSNAME),
+  (Name: 'id';           Id: JS_NODEPROP_ID),
+  (Name: 'left';         Id: JS_NODEPROP_LEFT),
+  (Name: 'offsetheight'; Id: JS_NODEPROP_OFFSETHEIGHT),
+  (Name: 'offsetleft';   Id: JS_NODEPROP_OFFSETLEFT),
+  (Name: 'offsetparent'; Id: JS_NODEPROP_OFFSETPARENT),
+  (Name: 'offsettop';    Id: JS_NODEPROP_OFFSETTOP),
+  (Name: 'offsetwidth';  Id: JS_NODEPROP_OFFSETWIDTH),
+  (Name: 'style';        Id: JS_NODEPROP_STYLE),
+  (Name: 'top';          Id: JS_NODEPROP_TOP),
+  (Name: 'visibility';   Id: JS_NODEPROP_VISIBILITY)
+ );
+
+{ Recherche dichotomique dans JSNodePropertyTable - retourne 0 si
+  LowerProp (deja en minuscules) n'est pas une des proprietes connues. }
+Function JSGetNodePropertyId(Const LowerProp: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ JSGetNodePropertyId := 0;
+ Lo := 0;
+ Hi := JS_NODEPROP_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSNodePropertyTable[Mid].Name = LowerProp Then Begin
+   JSGetNodePropertyId := JSNodePropertyTable[Mid].Id;
+   Exit;
+  End
+  Else If JSNodePropertyTable[Mid].Name < LowerProp Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+Function JSGetNodeProperty(Node: HTMLNodePtr; Const PropName: String): JSValue;
+Var
+ LowerProp: String;
+Begin
+ JSGetNodeProperty := JSUndefined;
+ If Node = Nil Then Exit;
+ LowerProp := HTMLLowerCase(PropName);
+ Case JSGetNodePropertyId(LowerProp) Of
+  JS_NODEPROP_CLASSNAME:
+   JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'class'));
+  JS_NODEPROP_ID:
+   JSGetNodeProperty := JSString(GetNodeAttribute(Node, 'id'));
+  JS_NODEPROP_STYLE:
+   { Pseudo-objet "style" : meme noeud, voir le chainage .style.X plus
+     bas qui retombe sur les noms left/top/visibility ci-dessous. }
+   JSGetNodeProperty := JSNodeValue(Node);
+  JS_NODEPROP_LEFT:
+   JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'left'));
+  JS_NODEPROP_TOP:
+   JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'top'));
+  JS_NODEPROP_VISIBILITY:
+   JSGetNodeProperty := JSString(JSGetStyleProp(Node, 'visibility'));
+  JS_NODEPROP_OFFSETWIDTH:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxWidth(Node));
+  JS_NODEPROP_OFFSETHEIGHT:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxHeight(Node));
+  JS_NODEPROP_OFFSETLEFT:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxX(Node));
+  JS_NODEPROP_OFFSETTOP:
+   JSGetNodeProperty := JSNumber(JSGetNodeBoxY(Node));
+  JS_NODEPROP_OFFSETPARENT:
+   JSGetNodeProperty := JSNodeValue(Node^.Parent);
+  Else
+   If Node^.JSExpando <> Nil Then
+    JSGetNodeProperty := JSObjectGetProp(Node^.JSExpando, PropName);
+ End;
+End;
+
+{ Definir une propriete d'un noeud DOM utilise comme objet JavaScript -
+  contrepartie en ecriture de JSGetNodeProperty. className/style.X
+  sont routes vers les vrais attributs HTML (class/style) ; tout le
+  reste devient une propriete expando arbitraire dans JSExpando. }
+Const
+ { Identifiants des proprietes JS reconnues par JSSetNodeProperty -
+   0 = inconnue (repli sur Node^.JSExpando, voir plus bas). }
+ JS_SETPROP_CLASSNAME       = 1;
+ JS_SETPROP_ID              = 2;
+ JS_SETPROP_LEFT            = 3;
+ JS_SETPROP_TOP             = 4;
+ JS_SETPROP_VISIBILITY      = 5;
+ JS_SETPROP_COLOR           = 6;
+ JS_SETPROP_BACKGROUNDCOLOR = 7;
+ JS_SETPROP_BGCOLOR         = 8;
+ JS_SETPROP_INNERHTML       = 9;
+ JS_SETPROP_COUNT = 9;
+
+Type
+ JSSetPropertyEntry = Record
+  Name: String[15];
+  Id: Byte;
+ End;
+
+Const
+ { Triee par ordre ALPHABETIQUE - condition necessaire a la recherche
+   dichotomique de JSGetSetPropertyId ci-dessous (meme principe que
+   CSSPropertyTable/HTMLTagTable/JSKeywordTable/JSNodePropertyTable). }
+ JSSetPropertyTable: Array[0..JS_SETPROP_COUNT - 1] Of JSSetPropertyEntry = (
+  (Name: 'backgroundcolor'; Id: JS_SETPROP_BACKGROUNDCOLOR),
+  (Name: 'bgcolor';         Id: JS_SETPROP_BGCOLOR),
+  (Name: 'classname';       Id: JS_SETPROP_CLASSNAME),
+  (Name: 'color';           Id: JS_SETPROP_COLOR),
+  (Name: 'id';              Id: JS_SETPROP_ID),
+  (Name: 'innerhtml';       Id: JS_SETPROP_INNERHTML),
+  (Name: 'left';            Id: JS_SETPROP_LEFT),
+  (Name: 'top';             Id: JS_SETPROP_TOP),
+  (Name: 'visibility';      Id: JS_SETPROP_VISIBILITY)
+ );
+
+{ Recherche dichotomique dans JSSetPropertyTable - retourne 0 si
+  LowerProp (deja en minuscules) n'est pas une des proprietes connues. }
+Function JSGetSetPropertyId(Const LowerProp: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ JSGetSetPropertyId := 0;
+ Lo := 0;
+ Hi := JS_SETPROP_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSSetPropertyTable[Mid].Name = LowerProp Then Begin
+   JSGetSetPropertyId := JSSetPropertyTable[Mid].Id;
+   Exit;
+  End
+  Else If JSSetPropertyTable[Mid].Name < LowerProp Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+Procedure JSSetNodeProperty(Node: HTMLNodePtr; Const PropName: String; Value: JSValue);
+Var
+ LowerProp: String;
+Begin
+ If Node = Nil Then Exit;
+ LowerProp := HTMLLowerCase(PropName);
+ Case JSGetSetPropertyId(LowerProp) Of
+  JS_SETPROP_CLASSNAME:
+   DOMSetAttribute(Node, 'class', JSValueToString(Value));
+  JS_SETPROP_ID:
+   DOMSetAttribute(Node, 'id', JSValueToString(Value));
+  JS_SETPROP_LEFT:
+   JSSetStyleProp(Node, 'left', JSValueToString(Value));
+  JS_SETPROP_TOP:
+   JSSetStyleProp(Node, 'top', JSValueToString(Value));
+  JS_SETPROP_VISIBILITY:
+   JSSetStyleProp(Node, 'visibility', JSValueToString(Value));
+  JS_SETPROP_COLOR:
+   JSSetStyleProp(Node, 'color', JSValueToString(Value));
+  JS_SETPROP_BACKGROUNDCOLOR:
+   JSSetStyleProp(Node, 'background-color', JSValueToString(Value));
+  JS_SETPROP_BGCOLOR:
+   DOMSetAttribute(Node, 'bgcolor', JSValueToString(Value));
+  JS_SETPROP_INNERHTML:
+   JSSetInnerHTML(Node, JSValueToString(Value));
+  Else Begin
+   If Node^.JSExpando = Nil Then Node^.JSExpando := JSNewObject(False);
+   JSObjectSetProp(Node^.JSExpando, PropName, Value);
+  End;
+ End;
+End;
+
+{ Lire une propriete generique (obj.prop ou obj[index]) sur n'importe
+  quelle valeur JS - chaine (length), tableau/objet (length, sac de
+  proprietes), noeud DOM (JSGetNodeProperty), sinon undefined. }
+Function JSGetMemberValue(Base: JSValue; Const PropName: String): JSValue;
+Begin
+ Case Base.ValType Of
+  JS_VAL_STRING: Begin
+   If HTMLLowerCase(PropName) = 'length' Then
+    JSGetMemberValue := JSNumber(Length(Base.StrVal))
+   Else
+    JSGetMemberValue := JSUndefined;
+  End;
+  JS_VAL_ARRAY: Begin
+   If HTMLLowerCase(PropName) = 'length' Then Begin
+    If Base.ObjVal <> Nil Then JSGetMemberValue := JSNumber(Base.ObjVal^.ArrLen)
+    Else JSGetMemberValue := JSNumber(0);
+   End Else
+    JSGetMemberValue := JSObjectGetProp(Base.ObjVal, PropName);
+  End;
+  JS_VAL_OBJECT: JSGetMemberValue := JSObjectGetProp(Base.ObjVal, PropName);
+  JS_VAL_NODE: JSGetMemberValue := JSGetNodeProperty(Base.NodeVal, PropName);
+  Else JSGetMemberValue := JSUndefined;
+ End;
+End;
+
+{ Appeler une "methode" sur une valeur JS - seules les quelques
+  methodes de chaine et fonctions natives realmente utilisees par
+  JSCookMenu.js sont reconnues (charAt, substr) ; tout le reste
+  retourne undefined sans erreur (ce mini-interprete n'a pas de
+  veritable systeme de methodes generique). }
+Function JSCallMethod(Base: JSValue; Const MethodName: String; Const Args: Array Of JSValue; ArgCount: Integer): JSValue;
+Var
+ LowerName: String;
+ S: String;
+ StartIdx, LenArg: Integer;
+Begin
+ JSCallMethod := JSUndefined;
+ LowerName := HTMLLowerCase(MethodName);
+ If Base.ValType = JS_VAL_STRING Then Begin
+  S := Base.StrVal;
+  If (LowerName = 'charat') And (ArgCount > 0) Then Begin
+   StartIdx := Trunc(JSValueToNumber(Args[0])) + 1;
+   If (StartIdx >= 1) And (StartIdx <= Length(S)) Then
+    JSCallMethod := JSString(S[StartIdx])
+   Else
+    JSCallMethod := JSString('');
+   Exit;
+  End;
+  If LowerName = 'substr' Then Begin
+   StartIdx := 0;
+   If ArgCount > 0 Then StartIdx := Trunc(JSValueToNumber(Args[0]));
+   If StartIdx < 0 Then StartIdx := 0;
+   If ArgCount > 1 Then LenArg := Trunc(JSValueToNumber(Args[1]))
+   Else LenArg := Length(S) - StartIdx;
+   JSCallMethod := JSString(Copy(S, StartIdx + 1, LenArg));
+   Exit;
+  End;
+  If LowerName = 'indexof' Then Begin
+   If ArgCount > 0 Then
+    JSCallMethod := JSNumber(Pos(JSValueToString(Args[0]), S) - 1)
+   Else
+    JSCallMethod := JSNumber(-1);
+   Exit;
+  End;
+  If LowerName = 'touppercase' Then Begin
+   JSCallMethod := JSString(HTMLUpperCase(S));
+   Exit;
+  End;
+  If LowerName = 'tolowercase' Then Begin
+   JSCallMethod := JSString(HTMLLowerCase(S));
+   Exit;
+  End;
+ End;
+End;
+
+{ Evaluer un litteral tableau [a, b, c, ...]. Pos doit pointer juste
+  apres le '[' d'ouverture. Les elements sont des expressions
+  quelconques (y compris des litteraux imbriques), evaluees via
+  JSEvaluate comme les arguments d'appel de fonction. }
+Function JSEvalArrayLiteral(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Obj: JSObjectPtr;
+ Index: Integer;
+ StartPos: LongInt;
+ ElemVal: JSValue;
+Begin
+ Obj := JSNewObject(True);
+ Index := 0;
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] <> ']') Do Begin
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Begin
+   { Element omis : [a,,b] - traite comme undefined. }
+   JSObjectSetProp(Obj, IntToStr(Index), JSUndefined);
+   Inc(Index);
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+   Continue;
+  End;
+  StartPos := Pos;
+  JSSkipToBalanced(Script, Pos, [',', ']']);
+  ElemVal := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+  JSObjectSetProp(Obj, IntToStr(Index), ElemVal);
+  Inc(Index);
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Begin
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+  End;
+ End;
+ If (Pos <= Length(Script)) And (Script[Pos] = ']') Then Inc(Pos);
+ JSEvalArrayLiteral := JSObjectValue(Obj);
+End;
+
+{ Evaluer un litteral objet (paires cle/valeur separees par des
+  virgules). Pos doit pointer juste apres l'accolade ouvrante. }
+Function JSEvalObjectLiteral(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Obj: JSObjectPtr;
+ Token: JSToken;
+ KeyName: String;
+ StartPos: LongInt;
+ PropVal: JSValue;
+Begin
+ Obj := JSNewObject(False);
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] <> '}') Do Begin
+  Pos := JSSkipComments(Script, Pos);
+  Token := JSGetNextToken(Script, Pos);
+  If Token.TokType = JS_TOK_STRING Then KeyName := Token.TokValue
+  Else KeyName := Token.TokValue;
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ':') Then Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  StartPos := Pos;
+  JSSkipToBalanced(Script, Pos, [',', '}']);
+  PropVal := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+  JSObjectSetProp(Obj, KeyName, PropVal);
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Begin
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+  End;
+ End;
+ If (Pos <= Length(Script)) And (Script[Pos] = '}') Then Inc(Pos);
+ JSEvalObjectLiteral := JSObjectValue(Obj);
+End;
+
+{ Evaluer une expression primaire (nombre, chaine, variable, parentheses) }
+{ Lire et evaluer une liste d'arguments entre parentheses, Pos devant
+  pointer juste apres la parenthese ouvrante. Utilise JSSkipToBalanced
+  pour que des arguments contenant eux-memes des virgules imbriquees
+  (litteraux tableau/objet, autres appels) soient correctement
+  decoupes - l'ancien decoupage ne suivait que les parentheses. }
+Procedure JSReadCallArgs(Const Script: String; Var Pos: LongInt; Var Args: Array Of JSValue; Var ArgCount: Integer);
+Var
+ StartPos: LongInt;
+Begin
+ ArgCount := 0;
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] <> ')') Do Begin
+  If ArgCount <= High(Args) Then Begin
+   StartPos := Pos;
+   JSSkipToBalanced(Script, Pos, [',', ')']);
+   Args[ArgCount] := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+   Inc(ArgCount);
+  End Else
+   JSSkipToBalanced(Script, Pos, [',', ')']);
+  If (Pos <= Length(Script)) And (Script[Pos] = ',') Then Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+ End;
+End;
+
+{ Consommer une chaine d'acces postfixe (.prop, .methode(args),
+  [index]) sur une valeur de base deja resolue, aussi longue soit-
+  elle - ex: thisMenu.cmSubMenu[i].style.left. Chaque etape relit la
+  valeur courante via JSGetMemberValue (lecture simple) ou
+  JSCallMethod (si suivie d'une parenthese d'appel). }
+Function JSEvalPostfixChain(Const Script: String; Var Pos: LongInt; Base: JSValue): JSValue;
+Var
+ Current: JSValue;
+ PropName: String;
+ Token: JSToken;
+ IndexVal: JSValue;
+ StartPos: LongInt;
+ Args: Array[0..9] Of JSValue;
+ ArgCount: Integer;
+Begin
+ Current := Base;
+ Pos := JSSkipComments(Script, Pos);
+ While (Pos <= Length(Script)) And (Script[Pos] In ['.', '[']) And Not JSCtx.HasError Do Begin
+  If Script[Pos] = '.' Then Begin
+   Inc(Pos);
+   Pos := JSSkipComments(Script, Pos);
+   Token := JSGetNextToken(Script, Pos);
+   PropName := Token.TokValue;
+   Pos := JSSkipComments(Script, Pos);
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    Inc(Pos);
+    JSReadCallArgs(Script, Pos, Args, ArgCount);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+    Current := JSCallMethod(Current, PropName, Args, ArgCount);
+   End
+   Else
+    Current := JSGetMemberValue(Current, PropName);
+  End
+  Else Begin
+   Inc(Pos);
+   StartPos := Pos;
+   JSSkipToBalanced(Script, Pos, [']']);
+   IndexVal := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+   If (Pos <= Length(Script)) And (Script[Pos] = ']') Then Inc(Pos);
+   If IndexVal.ValType = JS_VAL_STRING Then
+    Current := JSGetMemberValue(Current, IndexVal.StrVal)
+   Else
+    Current := JSGetMemberValue(Current, JSValueToString(IndexVal));
+  End;
+  Pos := JSSkipComments(Script, Pos);
+ End;
+ JSEvalPostfixChain := Current;
+End;
+
+{ Traiter une affectation dont la cible commence par
+  document.getElementById(...).  "document" est un objet natif du
+  mini-interpreteur et non une variable JS ordinaire : le chemin generique
+  des l-values ne pouvait donc jamais atteindre innerHTML, bgColor ou
+  style.X.  Pos pointe juste apres le mot document. }
+Function JSTryDocumentElementAssignment(Const Script: String; Var Pos: LongInt): Boolean;
+Var
+ SavedPos: LongInt;
+ Token: JSToken;
+ Args: Array[0..9] Of JSValue;
+ ArgCount: Integer;
+ Container, Value: JSValue;
+ KeyName: String;
+ ValueStart: LongInt;
+ HasFinalStep: Boolean;
+Begin
+ JSTryDocumentElementAssignment := False;
+ SavedPos := Pos;
+ Pos := JSSkipComments(Script, Pos);
+ If (Pos > Length(Script)) Or (Script[Pos] <> '.') Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Inc(Pos);
+ Pos := JSSkipComments(Script, Pos);
+ Token := JSGetNextToken(Script, Pos);
+ If HTMLLowerCase(Token.TokValue) <> 'getelementbyid' Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Pos := JSSkipComments(Script, Pos);
+ If (Pos > Length(Script)) Or (Script[Pos] <> '(') Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Inc(Pos);
+ JSReadCallArgs(Script, Pos, Args, ArgCount);
+ If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+ If ArgCount = 0 Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Container := JSNodeValue(DOMGetElementById(JSValueToString(Args[0])));
+
+ Pos := JSSkipComments(Script, Pos);
+ HasFinalStep := False;
+ While (Pos <= Length(Script)) And (Script[Pos] = '.') Do Begin
+  Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  Token := JSGetNextToken(Script, Pos);
+  KeyName := Token.TokValue;
+  Pos := JSSkipComments(Script, Pos);
+  If (Pos <= Length(Script)) And (Script[Pos] = '.') Then
+   Container := JSGetMemberValue(Container, KeyName)
+  Else Begin
+   HasFinalStep := True;
+   Break;
+  End;
+ End;
+
+ If (Not HasFinalStep) Or (Pos > Length(Script)) Or
+    (Script[Pos] <> '=') Or
+    ((Pos < Length(Script)) And (Script[Pos + 1] = '=')) Then Begin
+  Pos := SavedPos;
+  Exit;
+ End;
+ Inc(Pos);
+ ValueStart := Pos;
+ JSSkipToBalanced(Script, Pos, [';']);
+ Value := JSEvaluate(Copy(Script, ValueStart, Pos - ValueStart));
+ Case Container.ValType Of
+  JS_VAL_NODE: JSSetNodeProperty(Container.NodeVal, KeyName, Value);
+  JS_VAL_OBJECT, JS_VAL_ARRAY: JSObjectSetProp(Container.ObjVal, KeyName, Value);
+ End;
+ If (Pos <= Length(Script)) And (Script[Pos] = ';') Then Inc(Pos);
+ JSTryDocumentElementAssignment := True;
+End;
+
+Const
+ { Identifiants des fonctions natives globales reconnues par
+   JSEvalPrimary (appel VarName(...)) - 0 = inconnue (repli sur
+   JSFindFunction, voir plus bas). Sensible a la casse comme le
+   JavaScript reel (alert <> Alert), donc AUCUN passage en minuscules -
+   comportement inchange par rapport a l'ancien code. }
+ JS_GLOBALFN_ALERT        = 1;
+ JS_GLOBALFN_EVAL         = 2;
+ JS_GLOBALFN_CLEARTIMEOUT = 3;
+ JS_GLOBALFN_PARSEINT     = 4;
+ JS_GLOBALFN_PARSEFLOAT   = 5;
+ JS_GLOBALFN_STRING       = 6;
+ JS_GLOBALFN_NUMBER       = 7;
+ JS_GLOBALFN_BOOLEAN      = 8;
+ JS_GLOBALFN_ARRAY        = 9;
+ JS_GLOBALFN_OBJECT       = 10;
+ JS_GLOBALFN_COUNT = 10;
+
+Type
+ JSGlobalFunctionEntry = Record
+  Name: String[15];
+  Id: Byte;
+ End;
+
+Const
+ { Triee par ordre ALPHABETIQUE au sens ASCII (majuscules avant
+   minuscules) - condition necessaire a la recherche dichotomique de
+   JSFindGlobalFunctionId ci-dessous (meme principe que
+   CSSPropertyTable/HTMLTagTable/JSKeywordTable). }
+ JSGlobalFunctionTable: Array[0..JS_GLOBALFN_COUNT - 1] Of JSGlobalFunctionEntry = (
+  (Name: 'Array';        Id: JS_GLOBALFN_ARRAY),
+  (Name: 'Boolean';      Id: JS_GLOBALFN_BOOLEAN),
+  (Name: 'Number';       Id: JS_GLOBALFN_NUMBER),
+  (Name: 'Object';       Id: JS_GLOBALFN_OBJECT),
+  (Name: 'String';       Id: JS_GLOBALFN_STRING),
+  (Name: 'alert';        Id: JS_GLOBALFN_ALERT),
+  (Name: 'clearTimeout'; Id: JS_GLOBALFN_CLEARTIMEOUT),
+  (Name: 'eval';         Id: JS_GLOBALFN_EVAL),
+  (Name: 'parseFloat';   Id: JS_GLOBALFN_PARSEFLOAT),
+  (Name: 'parseInt';     Id: JS_GLOBALFN_PARSEINT)
+ );
+
+{ Recherche dichotomique dans JSGlobalFunctionTable - retourne 0 si Name
+  n'est pas une des fonctions natives connues (comparaison EXACTE,
+  sensible a la casse). }
+Function JSFindGlobalFunctionId(Const Name: String): Byte;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ JSFindGlobalFunctionId := 0;
+ Lo := 0;
+ Hi := JS_GLOBALFN_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If JSGlobalFunctionTable[Mid].Name = Name Then Begin
+   JSFindGlobalFunctionId := JSGlobalFunctionTable[Mid].Id;
+   Exit;
+  End
+  Else If JSGlobalFunctionTable[Mid].Name < Name Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+Function JSEvalPrimary(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Token: JSToken;
+ VarName, MemberName: String;
+ FuncIdx: Integer;
+ Args: Array[0..9] Of JSValue;
+ ArgCount: Integer;
+ StartPos: LongInt;
+ Result: JSValue;
+ IncDecOp: String;
+ IncDecVal: Real;
+Begin
+ If JSCtx.HasError Then Begin
+  JSEvalPrimary := JSUndefined;
+  Exit;
+ End;
+
+ Result := JSUndefined;
+ Token := JSGetNextToken(Script, Pos);
+
+ Case Token.TokType Of
+  JS_TOK_NUMBER: Result := JSNumber(Token.NumValue);
+  JS_TOK_STRING: Result := JSString(Token.TokValue);
+  JS_TOK_BOOLEAN: Result := JSBool(Token.NumValue <> 0);
+  JS_TOK_NULL: Result := JSNull;
+  JS_TOK_UNDEFINED: Result := JSUndefined;
+
+  JS_TOK_KEYWORD: Begin
+   If Token.KeywordType = JS_KW_THIS Then
+    Result := JSNodeValue(JSEventTargetNode)
+   Else If Token.KeywordType = JS_KW_NEW Then Begin
+    { new Array(...) / new Object() - les arguments sont ignores : ni
+      l'un ni l'autre n'en a besoin dans JSCookMenu.js. }
+    Pos := JSSkipComments(Script, Pos);
+    Token := JSGetNextToken(Script, Pos);
+    VarName := Token.TokValue;
+    Pos := JSSkipComments(Script, Pos);
+    If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+     Inc(Pos);
+     JSSkipToBalanced(Script, Pos, [')']);
+     If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+    End;
+    If HTMLLowerCase(VarName) = 'array' Then
+     Result := JSObjectValue(JSNewObject(True))
+    Else
+     Result := JSObjectValue(JSNewObject(False));
+   End;
+  End;
+
+  JS_TOK_IDENTIFIER: Begin
+   VarName := Token.TokValue;
+   Pos := JSSkipComments(Script, Pos);
+
+   If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+    { Appel de fonction sur VarName lui-meme }
+    Inc(Pos);
+    JSReadCallArgs(Script, Pos, Args, ArgCount);
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+
+    Case JSFindGlobalFunctionId(VarName) Of
+     JS_GLOBALFN_ALERT: Begin
+      If ArgCount > 0 Then JSNativeAlert(JSValueToString(Args[0]));
+      Result := JSUndefined;
+     End;
+     JS_GLOBALFN_EVAL: Begin
+      If ArgCount > 0 Then Result := JSEvaluate(JSValueToString(Args[0]))
+      Else Result := JSUndefined;
+     End;
+     JS_GLOBALFN_CLEARTIMEOUT: Begin
+      JSClearTimeout;
+      Result := JSUndefined;
+     End;
+     JS_GLOBALFN_PARSEINT: Begin
+      If ArgCount > 0 Then Result := JSNumber(Trunc(JSValueToNumber(Args[0])))
+      Else Result := JSNumber(0);
+     End;
+     JS_GLOBALFN_PARSEFLOAT: Begin
+      If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
+      Else Result := JSNumber(0);
+     End;
+     JS_GLOBALFN_STRING: Begin
+      If ArgCount > 0 Then Result := JSString(JSValueToString(Args[0]))
+      Else Result := JSString('');
+     End;
+     JS_GLOBALFN_NUMBER: Begin
+      If ArgCount > 0 Then Result := JSNumber(JSValueToNumber(Args[0]))
+      Else Result := JSNumber(0);
+     End;
+     JS_GLOBALFN_BOOLEAN: Begin
+      If ArgCount > 0 Then Result := JSBool(JSValueToBool(Args[0]))
+      Else Result := JSBool(False);
+     End;
+     JS_GLOBALFN_ARRAY:
+      Result := JSObjectValue(JSNewObject(True));
+     JS_GLOBALFN_OBJECT:
+      Result := JSObjectValue(JSNewObject(False));
+     Else Begin
+      { Fonction utilisateur }
+      FuncIdx := JSFindFunction(VarName);
+      If FuncIdx > 0 Then
+       Result := JSCallUserFunction(FuncIdx, Args, ArgCount)
+      Else Begin
+       JSCtx.HasError := True;
+       JSCtx.ErrorMsg := 'ReferenceError: ' + VarName + ' is not defined';
+      End;
+     End;
+    End;
+   End
+
+   Else If ((VarName = 'console') Or (VarName = 'document') Or (VarName = 'window')) And
+           (Pos <= Length(Script)) And (Script[Pos] = '.') Then Begin
+    { Les quelques membres de console/document/window reellement
+      utilises par JSCookMenu.js - ces trois noms ne sont pas de
+      vraies valeurs JS stockees (pas d'objet "document" generique
+      dans ce mini-interprete), donc reconnus ici par leur nom litteral. }
+    Inc(Pos);
+    Pos := JSSkipComments(Script, Pos);
+    Token := JSGetNextToken(Script, Pos);
+    MemberName := HTMLLowerCase(Token.TokValue);
+    Pos := JSSkipComments(Script, Pos);
+
+    If (VarName = 'console') And (MemberName = 'log') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 0 Then JSNativeConsoleLog(JSValueToString(Args[0]));
+     End;
+    End
+    Else If (VarName = 'document') And (MemberName = 'write') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 0 Then JSNativeDocumentWrite(JSValueToString(Args[0]));
+     End;
+    End
+    Else If (VarName = 'document') And (MemberName = 'getelementbyid') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 0 Then
+       Result := JSNodeValue(DOMGetElementById(JSValueToString(Args[0])));
+     End;
+    End
+    Else If (VarName = 'document') And (MemberName = 'body') Then
+     Result := JSNodeValue(DOMGetBody)
+    Else If (VarName = 'window') And (MemberName = 'open') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      { window.open : ce navigateur n'a pas de fenetres multiples,
+        traite comme une navigation de la page courante (comportement
+        reel pour target='_self', le cas le plus frequent ici). }
+      If (ArgCount > 0) And (Length(JSValueToString(Args[0])) > 0) Then
+       NavigateTo(ResolveLinkHref(JSValueToString(Args[0])));
+     End;
+    End
+    Else If (VarName = 'window') And (MemberName = 'settimeout') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSReadCallArgs(Script, Pos, Args, ArgCount);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+      If ArgCount > 1 Then
+       JSSetTimeout(JSValueToString(Args[0]), Trunc(JSValueToNumber(Args[1])));
+     End;
+    End
+    Else If (VarName = 'window') And (MemberName = 'cleartimeout') Then Begin
+     If (Pos <= Length(Script)) And (Script[Pos] = '(') Then Begin
+      Inc(Pos);
+      JSSkipToBalanced(Script, Pos, [')']);
+      If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+     End;
+     JSClearTimeout;
+    End
+    Else If (VarName = 'window') And (MemberName = 'outerwidth') Then
+     Result := JSNumber(1920)
+    Else If (VarName = 'window') And (MemberName = 'innerwidth') Then
+     Result := JSNumber(1920)
+    Else If (VarName = 'window') And (MemberName = 'outerheight') Then
+     Result := JSNumber(1080)
+    Else If (VarName = 'window') And (MemberName = 'innerheight') Then
+     Result := JSNumber(1080)
+    Else If (VarName = 'window') And (MemberName = 'screen') Then Begin
+     { window.screen : pseudo-objet qui retourne les dimensions de
+       l'ecran. Une valeur de bureau raisonnable (1920x1080) est
+       suffisante pour que la detection mobile (screen.width <= 768)
+       evaluate a faux, ce qui evite que le menu s'enveloppe dans un
+       tableau de longueur 1 via myMenu = [myMenu]. }
+     Result := JSObjectValue(JSNewObject(False));
+     JSObjectSetProp(Result.ObjVal, 'width', JSNumber(1920));
+     JSObjectSetProp(Result.ObjVal, 'height', JSNumber(1080));
+    End;
+    { Tout autre membre (document.all, window.defaultStatus en
+      lecture, ...) : Result reste undefined - suffisant pour que les
+      "if (document.all)" du code IE-only soient correctement faux. }
+   End
+
+   Else Begin
+    { Variable simple - le chainage .prop / [index] / .methode(...)
+      est applique uniformement a la fin de cette fonction. }
+    Result := JSGetVariable(VarName);
+    { Suffixe ++ / -- (i++ / i--) : incrementer/decrementer la
+      variable APRES avoir lu sa valeur courante (semantique
+      postfixe) - utilise par exemple dans la clause d'increment
+      d'un for (i = 0; i < n; ++i) ou (... i++). }
+    If (Pos + 1 <= Length(Script)) And
+       (((Script[Pos] = '+') And (Script[Pos + 1] = '+')) Or
+        ((Script[Pos] = '-') And (Script[Pos + 1] = '-'))) Then Begin
+     IncDecVal := JSValueToNumber(Result);
+     If Script[Pos] = '+' Then IncDecVal := IncDecVal + 1 Else IncDecVal := IncDecVal - 1;
+     JSSetVariable(VarName, JSNumber(IncDecVal), False);
+     Inc(Pos, 2);
+    End;
+   End;
+  End;
+
+  JS_TOK_PUNCTUATOR: Begin
+   If Token.TokValue = '(' Then Begin
+    StartPos := Pos;
+    JSSkipToBalanced(Script, Pos, [')']);
+    Result := JSEvaluate(Copy(Script, StartPos, Pos - StartPos));
+    If (Pos <= Length(Script)) And (Script[Pos] = ')') Then Inc(Pos);
+   End
+   Else If Token.TokValue = '{' Then
+    Result := JSEvalObjectLiteral(Script, Pos)
+   Else If Token.TokValue = '[' Then
+    Result := JSEvalArrayLiteral(Script, Pos);
+  End;
+
+  JS_TOK_OPERATOR: Begin
+   { Operateur unaire - ou ! }
+   If Token.TokValue = '-' Then
+    Result := JSNumber(-JSValueToNumber(JSEvalPrimary(Script, Pos)))
+   Else If Token.TokValue = '!' Then
+    Result := JSBool(Not JSValueToBool(JSEvalPrimary(Script, Pos)))
+   Else If Token.TokValue = '+' Then
+    Result := JSNumber(JSValueToNumber(JSEvalPrimary(Script, Pos)))
+   Else If (Token.TokValue = '++') Or (Token.TokValue = '--') Then Begin
+    { Prefixe ++i / --i : incrementer/decrementer AVANT de lire la
+      valeur (semantique prefixe) - tout aussi utilise que la forme
+      suffixe dans les boucles for de JSCookMenu.js. }
+    IncDecOp := Token.TokValue;
+    Pos := JSSkipComments(Script, Pos);
+    Token := JSGetNextToken(Script, Pos);
+    If Token.TokType = JS_TOK_IDENTIFIER Then Begin
+     IncDecVal := JSValueToNumber(JSGetVariable(Token.TokValue));
+     If IncDecOp = '++' Then IncDecVal := IncDecVal + 1 Else IncDecVal := IncDecVal - 1;
+     JSSetVariable(Token.TokValue, JSNumber(IncDecVal), False);
+     Result := JSNumber(IncDecVal);
+    End;
+   End;
+  End;
+ End;
+
+ { Chaine d'acces postfixe (.prop, .methode(args), [index]), repetee
+   autant de fois que necessaire - couvre aussi bien "var.a.b[c]" que
+   la suite d'un appel document.getElementById(id).style.left. }
+ JSEvalPrimary := JSEvalPostfixChain(Script, Pos, Result);
+End;
+
+{ Evaluer une expression multiplicative (* / %) }
+Function JSEvalMultiplicative(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: LongInt;
+ Token: JSToken;
+Begin
+ Left := JSEvalPrimary(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalMultiplicative := Left;
+  Exit;
+ End;
+
+ While True Do Begin
+  SavePos := Pos;
+  Pos := JSSkipComments(Script, Pos);
+  If Pos > Length(Script) Then Break;
+
+  Token := JSGetNextToken(Script, Pos);
+  Op := Token.TokValue;
+
+  If (Op <> '*') And (Op <> '/') And (Op <> '%') Then Begin
+   Pos := SavePos;
+   Break;
+  End;
+
+  Right := JSEvalPrimary(Script, Pos);
+  If JSCtx.HasError Then Break;
+
+  If Op = '*' Then
+   Left := JSNumber(JSValueToNumber(Left) * JSValueToNumber(Right))
+  Else If Op = '/' Then Begin
+   If JSValueToNumber(Right) = 0 Then Begin
+    JSCtx.HasError := True;
+    JSCtx.ErrorMsg := 'Error: Division by zero';
+    Break;
+   End;
+   Left := JSNumber(JSValueToNumber(Left) / JSValueToNumber(Right));
+  End
+  Else If Op = '%' Then Begin
+   If Trunc(JSValueToNumber(Right)) = 0 Then Begin
+    JSCtx.HasError := True;
+    JSCtx.ErrorMsg := 'Error: Division by zero';
+    Break;
+   End;
+   Left := JSNumber(Trunc(JSValueToNumber(Left)) Mod Trunc(JSValueToNumber(Right)));
+  End;
+ End;
+
+ JSEvalMultiplicative := Left;
+End;
+
+{ Evaluer une expression additive (+ -) }
+Function JSEvalAdditive(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: LongInt;
+ Token: JSToken;
+Begin
+ Left := JSEvalMultiplicative(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalAdditive := Left;
+  Exit;
+ End;
+
+ While True Do Begin
+  SavePos := Pos;
+  Pos := JSSkipComments(Script, Pos);
+  If Pos > Length(Script) Then Break;
+
+  Token := JSGetNextToken(Script, Pos);
+  Op := Token.TokValue;
+
+  If (Op <> '+') And (Op <> '-') Then Begin
+   Pos := SavePos;
+   Break;
+  End;
+
+  Right := JSEvalMultiplicative(Script, Pos);
+  If JSCtx.HasError Then Break;
+
+  If Op = '+' Then Begin
+   { Concatenation si l'un des operandes est une chaine }
+   If (Left.ValType = JS_VAL_STRING) Or (Right.ValType = JS_VAL_STRING) Then
+    Left := JSString(JSValueToString(Left) + JSValueToString(Right))
+   Else
+    Left := JSNumber(JSValueToNumber(Left) + JSValueToNumber(Right));
+  End
+  Else If Op = '-' Then
+   Left := JSNumber(JSValueToNumber(Left) - JSValueToNumber(Right));
+ End;
+
+ JSEvalAdditive := Left;
+End;
+
+{ Evaluer une expression de comparaison (< > <= >= == != === !==) }
+Function JSEvalComparison(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: LongInt;
+ Token: JSToken;
+Begin
+ Left := JSEvalAdditive(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ SavePos := Pos;
+ Pos := JSSkipComments(Script, Pos);
+ If Pos > Length(Script) Then Begin
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ Token := JSGetNextToken(Script, Pos);
+ Op := Token.TokValue;
+
+ If (Op <> '<') And (Op <> '>') And (Op <> '<=') And (Op <> '>=') And
+    (Op <> '==') And (Op <> '!=') And (Op <> '===') And (Op <> '!==') Then Begin
+  Pos := SavePos;
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ Right := JSEvalAdditive(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalComparison := Left;
+  Exit;
+ End;
+
+ If Op = '<' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) < JSValueToNumber(Right))
+ Else If Op = '>' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) > JSValueToNumber(Right))
+ Else If Op = '<=' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) <= JSValueToNumber(Right))
+ Else If Op = '>=' Then
+  JSEvalComparison := JSBool(JSValueToNumber(Left) >= JSValueToNumber(Right))
+ Else If Op = '==' Then
+  JSEvalComparison := JSBool(JSValueToString(Left) = JSValueToString(Right))
+ Else If Op = '!=' Then
+  JSEvalComparison := JSBool(JSValueToString(Left) <> JSValueToString(Right))
+ Else If Op = '===' Then
+  JSEvalComparison := JSBool((Left.ValType = Right.ValType) And
+                             (JSValueToString(Left) = JSValueToString(Right)))
+ Else If Op = '!==' Then
+  JSEvalComparison := JSBool((Left.ValType <> Right.ValType) Or
+                             (JSValueToString(Left) <> JSValueToString(Right)))
+ Else
+  JSEvalComparison := Left;
+End;
+
+{ Evaluer une expression logique (&& ||) }
+Function JSEvalLogical(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ Left, Right: JSValue;
+ Op: String;
+ SavePos: LongInt;
+ Token: JSToken;
+Begin
+ Left := JSEvalComparison(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalLogical := Left;
+  Exit;
+ End;
+
+ While True Do Begin
+  SavePos := Pos;
+  Pos := JSSkipComments(Script, Pos);
+  If Pos > Length(Script) Then Break;
+
+  Token := JSGetNextToken(Script, Pos);
+  Op := Token.TokValue;
+
+  If (Op <> '&&') And (Op <> '||') Then Begin
+   Pos := SavePos;
+   Break;
+  End;
+
+  { Short-circuit evaluation }
+  If Op = '&&' Then Begin
+   If Not JSValueToBool(Left) Then Begin
+    JSEvalLogical := Left;
+    Exit;
+   End;
+  End Else If Op = '||' Then Begin
+   If JSValueToBool(Left) Then Begin
+    JSEvalLogical := Left;
+    Exit;
+   End;
+  End;
+
+  Right := JSEvalComparison(Script, Pos);
+  If JSCtx.HasError Then Break;
+
+  Left := Right;
+ End;
+
+ JSEvalLogical := Left;
+End;
+
+{ Evaluer une expression complete }
+{ Evaluer une expression complete, y compris l'operateur ternaire
+  cond ? a : b (frequent dans JSCookMenu.js, ex: idSub = hasChild ?
+  cmNewID() : null). Le texte passe a cette fonction est toujours une
+  sous-chaine deja decoupee par l'appelant a la frontiere exacte de
+  l'expression (argument d'appel, element de litteral, index entre
+  crochets, ...), donc la branche "sinon" s'etend simplement jusqu'a
+  la fin de Script - aucun caractere de Script au-dela de cette
+  expression n'appartient a l'appelant. }
+Function JSEvalExpression(Const Script: String; Var Pos: LongInt): JSValue;
+Var
+ CondVal: JSValue;
+ BranchStartPos: LongInt;
+ ThenText, ElseText: String;
+Begin
+ CondVal := JSEvalLogical(Script, Pos);
+ If JSCtx.HasError Then Begin
+  JSEvalExpression := CondVal;
+  Exit;
+ End;
+
+ Pos := JSSkipComments(Script, Pos);
+ If (Pos <= Length(Script)) And (Script[Pos] = '?') Then Begin
+  Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  BranchStartPos := Pos;
+  JSSkipToBalanced(Script, Pos, [':']);
+  ThenText := Copy(Script, BranchStartPos, Pos - BranchStartPos);
+  If (Pos <= Length(Script)) And (Script[Pos] = ':') Then Inc(Pos);
+  Pos := JSSkipComments(Script, Pos);
+  BranchStartPos := Pos;
+  JSSkipToBalanced(Script, Pos, []);
+  ElseText := Copy(Script, BranchStartPos, Pos - BranchStartPos);
+  If JSValueToBool(CondVal) Then
+   JSEvalExpression := JSEvaluate(ThenText)
+  Else
+   JSEvalExpression := JSEvaluate(ElseText);
+ End Else
+  JSEvalExpression := CondVal;
+End;
+
+{ Evaluer un script JavaScript }
+Function JSEvaluate(Const Script: String): JSValue;
+{ Toutes les variables locales allouees sur le TAS via L (PJSEvalLocals).
+  DoBody contient la logique ; ses Exit sortent de DoBody (pas de
+  JSEvaluate). EvalResult evite l'ambiguite de "JSEvaluate :=" depuis
+  une procedure imbriquee (FPC/record : comportement imprecis). }
+Var
+ L: PJSEvalLocals;
+ EvalResult: JSValue;
+
+ Procedure DoBody;
+ Begin
+  L^.Pos := 1;
+
+  While L^.Pos <= Length(Script) Do Begin
+   L^.Pos := JSSkipComments(Script, L^.Pos);
+   If L^.Pos > Length(Script) Then Break;
+
+   L^.StartPos := L^.Pos;
+   L^.Token := JSGetNextToken(Script, L^.Pos);
+
+   If L^.Token.TokType = JS_TOK_EOF Then Break;
+
+   { Declaration de variable (var, let, const) }
+   If (L^.Token.TokType = JS_TOK_KEYWORD) And
+      ((L^.Token.KeywordType = JS_KW_VAR) Or
+       (L^.Token.KeywordType = JS_KW_LET) Or
+       (L^.Token.KeywordType = JS_KW_CONST)) Then Begin
+    L^.IsConst := L^.Token.KeywordType = JS_KW_CONST;
+
+    L^.Token := JSGetNextToken(Script, L^.Pos);
+    If L^.Token.TokType <> JS_TOK_IDENTIFIER Then Begin
+     JSCtx.HasError := True;
+     JSCtx.ErrorMsg := 'SyntaxError: Expected identifier';
+     Exit;
+    End;
+    L^.VarName := L^.Token.TokValue;
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+    End Else
+     L^.Value := JSUndefined;
+
+    JSForceNewVariable(L^.VarName, L^.Value, L^.IsConst);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+   End
+
+   { Declaration de fonction }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_FUNCTION) Then Begin
+    L^.Token := JSGetNextToken(Script, L^.Pos);
+    If L^.Token.TokType <> JS_TOK_IDENTIFIER Then Begin
+     JSCtx.HasError := True;
+     JSCtx.ErrorMsg := 'SyntaxError: Expected function name';
+     Exit;
+    End;
+    L^.FuncName := L^.Token.TokValue;
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     While (L^.Pos <= Length(Script)) And (Script[L^.Pos] <> ')') Do
+      Inc(L^.Pos);
+     L^.ParamStr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End Else
+     L^.ParamStr := '';
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.FuncBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else
+     L^.FuncBody := '';
+
+    If JSCtx.FuncCount < MAX_JS_FUNCTIONS Then Begin
+     Inc(JSCtx.FuncCount);
+     JSCtx.Functions[JSCtx.FuncCount].Name := L^.FuncName;
+     JSCtx.Functions[JSCtx.FuncCount].Body := L^.FuncBody;
+     JSCtx.Functions[JSCtx.FuncCount].ParamCount := 0;
+
+     L^.I := 1;
+     L^.J := 0;
+     While L^.I <= Length(L^.ParamStr) Do Begin
+      While (L^.I <= Length(L^.ParamStr)) And (L^.ParamStr[L^.I] In [' ', ',']) Do Inc(L^.I);
+      L^.StartPos := L^.I;
+      While (L^.I <= Length(L^.ParamStr)) And Not (L^.ParamStr[L^.I] In [' ', ',']) Do Inc(L^.I);
+      If L^.I > L^.StartPos Then Begin
+       Inc(L^.J);
+       If L^.J <= 10 Then
+        JSCtx.Functions[JSCtx.FuncCount].ParamNames[L^.J] := Copy(L^.ParamStr, L^.StartPos, L^.I - L^.StartPos);
+      End;
+     End;
+     JSCtx.Functions[JSCtx.FuncCount].ParamCount := L^.J;
+    End;
+   End
+
+   { Instruction if }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_IF) Then Begin
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '(' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = ')' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.CondExpr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End Else
+     L^.CondExpr := '';
+
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.ThenBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else Begin
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.ThenBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+
+    L^.ElseBlock := '';
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    L^.StartPos := L^.Pos;
+    L^.Token := JSGetNextToken(Script, L^.Pos);
+    If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_ELSE) Then Begin
+     L^.Pos := JSSkipComments(Script, L^.Pos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+      Inc(L^.Pos);
+      L^.StartPos := L^.Pos;
+      L^.BraceLevel := 1;
+      While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+       If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+       Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+       If L^.BraceLevel > 0 Then Inc(L^.Pos);
+      End;
+      L^.ElseBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+     End Else Begin
+      L^.StartPos := L^.Pos;
+      JSSkipToBalanced(Script, L^.Pos, [';']);
+      L^.ElseBlock := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+     End;
+    End Else
+     L^.Pos := L^.StartPos;
+
+    L^.CondValue := JSEvaluate(L^.CondExpr);
+    If JSValueToBool(L^.CondValue) Then
+     EvalResult := JSEvaluate(L^.ThenBlock)
+    Else If Length(L^.ElseBlock) > 0 Then
+     EvalResult := JSEvaluate(L^.ElseBlock);
+   End
+
+   { Instruction return }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_RETURN) Then Begin
+    L^.StartPos := L^.Pos;
+    JSSkipToBalanced(Script, L^.Pos, [';']);
+    EvalResult := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    Exit;
+   End
+
+   { Instructions break/continue }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_BREAK) Then Begin
+    JSBreakFlag := True;
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    Exit;
+   End
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_CONTINUE) Then Begin
+    JSContinueFlag := True;
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    Exit;
+   End
+
+   { Instruction for }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_FOR) Then Begin
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    L^.LoopInit := ''; L^.LoopCond := ''; L^.LoopIncr := '';
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopInit := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopCond := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [')']);
+     L^.LoopIncr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End;
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else Begin
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+
+    JSEvaluate(L^.LoopInit);
+    L^.LoopGuard := 0;
+    While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(L^.LoopCond)) Do Begin
+     Inc(L^.LoopGuard);
+     If L^.LoopGuard > 200000 Then Begin
+      JSCtx.HasError := True;
+      JSCtx.ErrorMsg := 'Error: boucle for trop longue (garde-fou)';
+      Break;
+     End;
+     JSBreakFlag := False;
+     JSContinueFlag := False;
+     JSEvaluate(L^.LoopBody);
+     If JSCtx.HasError Then Break;
+     If JSBreakFlag Then Begin
+      JSBreakFlag := False;
+      Break;
+     End;
+     JSContinueFlag := False;
+     JSEvaluate(L^.LoopIncr);
+    End;
+   End
+
+   { Instruction while }
+   Else If (L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_WHILE) Then Begin
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    L^.LoopCond := '';
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '(') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [')']);
+     L^.LoopCond := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ')') Then Inc(L^.Pos);
+    End;
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '{') Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     L^.BraceLevel := 1;
+     While (L^.Pos <= Length(Script)) And (L^.BraceLevel > 0) Do Begin
+      If Script[L^.Pos] = '{' Then Inc(L^.BraceLevel)
+      Else If Script[L^.Pos] = '}' Then Dec(L^.BraceLevel);
+      If L^.BraceLevel > 0 Then Inc(L^.Pos);
+     End;
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '}') Then Inc(L^.Pos);
+    End Else Begin
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.LoopBody := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+
+    L^.LoopGuard := 0;
+    While (Not JSCtx.HasError) And JSValueToBool(JSEvaluate(L^.LoopCond)) Do Begin
+     Inc(L^.LoopGuard);
+     If L^.LoopGuard > 200000 Then Begin
+      JSCtx.HasError := True;
+      JSCtx.ErrorMsg := 'Error: boucle while trop longue (garde-fou)';
+      Break;
+     End;
+     JSBreakFlag := False;
+     JSContinueFlag := False;
+     JSEvaluate(L^.LoopBody);
+     If JSCtx.HasError Then Break;
+     If JSBreakFlag Then Begin
+      JSBreakFlag := False;
+      Break;
+     End;
+     JSContinueFlag := False;
+    End;
+   End
+
+   { Expression simple (affectation ou appel de fonction) }
+   Else If (L^.Token.TokType = JS_TOK_IDENTIFIER) Or
+           ((L^.Token.TokType = JS_TOK_KEYWORD) And (L^.Token.KeywordType = JS_KW_THIS)) Then Begin
+    L^.VarName := L^.Token.TokValue;
+    L^.Pos := JSSkipComments(Script, L^.Pos);
+
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] In ['.', '[']) Then Begin
+     If (HTMLLowerCase(L^.VarName) = 'document') And
+        JSTryDocumentElementAssignment(Script, L^.Pos) Then Begin
+      { L'affectation native a ete entierement consommee. }
+     End
+     Else If (Script[L^.Pos] = '.') And (L^.VarName = 'window') Then Begin
+      Inc(L^.Pos);
+      L^.Pos := JSSkipComments(Script, L^.Pos);
+      L^.PropToken := JSGetNextToken(Script, L^.Pos);
+      L^.Pos := JSSkipComments(Script, L^.Pos);
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') And
+         ((L^.Pos >= Length(Script)) Or (Script[L^.Pos+1] <> '=')) Then Begin
+       Inc(L^.Pos);
+       L^.StartPos := L^.Pos;
+       JSSkipToBalanced(Script, L^.Pos, [';']);
+       L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+       If HTMLLowerCase(L^.PropToken.TokValue) = 'location' Then
+        NavigateTo(ResolveLinkHref(JSValueToString(L^.Value)));
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End Else Begin
+       L^.Pos := L^.StartPos;
+       EvalResult := JSEvalExpression(Script, L^.Pos);
+       L^.Pos := JSSkipComments(Script, L^.Pos);
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End;
+     End
+     Else Begin
+      If HTMLLowerCase(L^.VarName) = 'this' Then
+       L^.Container := JSNodeValue(JSEventTargetNode)
+      Else
+       L^.Container := JSGetVariable(L^.VarName);
+
+      L^.HasFinalStep := False;
+      Repeat
+       If Script[L^.Pos] = '.' Then Begin
+        Inc(L^.Pos);
+        L^.Pos := JSSkipComments(Script, L^.Pos);
+        L^.PropToken := JSGetNextToken(Script, L^.Pos);
+        L^.KeyName := L^.PropToken.TokValue;
+       End
+       Else Begin
+        Inc(L^.Pos);
+        L^.IdxStartPos := L^.Pos;
+        JSSkipToBalanced(Script, L^.Pos, [']']);
+        L^.IndexVal := JSEvaluate(Copy(Script, L^.IdxStartPos, L^.Pos - L^.IdxStartPos));
+        If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ']') Then Inc(L^.Pos);
+        L^.KeyName := JSValueToString(L^.IndexVal);
+       End;
+       L^.Pos := JSSkipComments(Script, L^.Pos);
+
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] In ['.', '[']) Then
+        L^.Container := JSGetMemberValue(L^.Container, L^.KeyName)
+       Else
+        L^.HasFinalStep := True;
+      Until L^.HasFinalStep Or (L^.Pos > Length(Script));
+
+      If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') And
+         ((L^.Pos >= Length(Script)) Or (Script[L^.Pos+1] <> '=')) Then Begin
+       Inc(L^.Pos);
+       L^.StartPos := L^.Pos;
+       JSSkipToBalanced(Script, L^.Pos, [';']);
+       L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+       Case L^.Container.ValType Of
+        JS_VAL_NODE: JSSetNodeProperty(L^.Container.NodeVal, L^.KeyName, L^.Value);
+        JS_VAL_OBJECT, JS_VAL_ARRAY: JSObjectSetProp(L^.Container.ObjVal, L^.KeyName, L^.Value);
+       End;
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End Else Begin
+       L^.Pos := L^.StartPos;
+       EvalResult := JSEvalExpression(Script, L^.Pos);
+       L^.Pos := JSSkipComments(Script, L^.Pos);
+       If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+      End;
+     End;
+    End
+
+    { Affectation simple }
+    Else If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = '=') And
+       ((L^.Pos >= Length(Script)) Or (Script[L^.Pos+1] <> '=')) Then Begin
+     Inc(L^.Pos);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+     JSSetVariable(L^.VarName, L^.Value, False);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End
+    { Operateurs composes += -= *= /= }
+    Else If (L^.Pos + 1 <= Length(Script)) And
+            (Script[L^.Pos] In ['+', '-', '*', '/']) And
+            (Script[L^.Pos + 1] = '=') Then Begin
+     L^.IncDecOp := Script[L^.Pos] + '=';
+     Inc(L^.Pos, 2);
+     L^.StartPos := L^.Pos;
+     JSSkipToBalanced(Script, L^.Pos, [';']);
+     L^.Value := JSEvaluate(Copy(Script, L^.StartPos, L^.Pos - L^.StartPos));
+     If L^.IncDecOp = '+=' Then Begin
+      If (JSGetVariable(L^.VarName).ValType = JS_VAL_STRING) Or
+         (L^.Value.ValType = JS_VAL_STRING) Then Begin
+       L^.FallbackExpr := JSValueToString(L^.Value);
+       L^.KeyName := JSGetVariable(L^.VarName).StrVal;
+       JSSetVariable(L^.VarName, JSUndefined, False);
+       L^.FallbackPos := Length(L^.KeyName);
+       SetLength(L^.KeyName, L^.FallbackPos + Length(L^.FallbackExpr));
+       If Length(L^.FallbackExpr) > 0 Then
+        Move(L^.FallbackExpr[1], L^.KeyName[L^.FallbackPos + 1], Length(L^.FallbackExpr));
+       JSSetVariable(L^.VarName, JSString(L^.KeyName), False);
+      End
+      Else
+       JSSetVariable(L^.VarName, JSNumber(JSValueToNumber(JSGetVariable(L^.VarName)) + JSValueToNumber(L^.Value)), False);
+     End
+     Else If L^.IncDecOp = '-=' Then
+      JSSetVariable(L^.VarName, JSNumber(JSValueToNumber(JSGetVariable(L^.VarName)) - JSValueToNumber(L^.Value)), False)
+     Else If L^.IncDecOp = '*=' Then
+      JSSetVariable(L^.VarName, JSNumber(JSValueToNumber(JSGetVariable(L^.VarName)) * JSValueToNumber(L^.Value)), False)
+     Else If L^.IncDecOp = '/=' Then Begin
+      L^.IncDecVal := JSValueToNumber(JSGetVariable(L^.VarName));
+      If JSValueToNumber(L^.Value) <> 0 Then
+       JSSetVariable(L^.VarName, JSNumber(L^.IncDecVal / JSValueToNumber(L^.Value)), False);
+     End;
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End
+    Else Begin
+     L^.Pos := L^.StartPos;
+     EvalResult := JSEvalExpression(Script, L^.Pos);
+     L^.Pos := JSSkipComments(Script, L^.Pos);
+     If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+    End;
+   End
+
+   { Point-virgule seul }
+   Else If (L^.Token.TokType = JS_TOK_PUNCTUATOR) And (L^.Token.TokValue = ';') Then Begin
+   End
+
+   { Autre expression }
+   Else Begin
+    L^.Pos := L^.StartPos;
+    L^.StartPos := L^.Pos;
+    JSSkipToBalanced(Script, L^.Pos, [';']);
+    If L^.Pos > L^.StartPos Then Begin
+     L^.FallbackExpr := Copy(Script, L^.StartPos, L^.Pos - L^.StartPos);
+     L^.FallbackPos := 1;
+     EvalResult := JSEvalExpression(L^.FallbackExpr, L^.FallbackPos);
+    End;
+    If (L^.Pos <= Length(Script)) And (Script[L^.Pos] = ';') Then Inc(L^.Pos);
+   End;
+
+   If JSCtx.HasError Then Exit;
+  End;
+ End; { DoBody }
+
+Begin
+ JSEvaluate := JSUndefined;
+ If Length(Script) = 0 Then Exit;
+ If JSCtx.HasError Then Exit;
+ New(L);
+ EvalResult := JSUndefined;
+ DoBody;
+ JSEvaluate := EvalResult;
+ Dispose(L);
+End;
+
+{ Executer un script JavaScript }
+Procedure JSExecuteScript(Const Script: String);
+Begin
+ If Not JSEnabled Then Exit;
+ If Length(Script) = 0 Then Exit;
+
+ JSCtx.HasError := False;
+ JSCtx.ErrorMsg := '';
+ JSEvaluate(Script);
+End;
+
+{ Obtenir la sortie de document.write }
+Function JSGetDocumentOutput: String;
+Begin
+ JSGetDocumentOutput := JSCtx.DocumentOutput;
+End;
+
+{ Effacer la sortie de document.write }
+Procedure JSClearDocumentOutput;
+Begin
+ JSCtx.DocumentOutput := '';
+End;
+
+{ =====================================================
+  FIN INTERPRETEUR JAVASCRIPT
+  ===================================================== }
+
+{ =====================================================
+  DOM (Document Object Model) - Fonctions et procedures
+  ===================================================== }
+
+{ Initialiser le DOM }
+Procedure InitDOM;
+Var
+ I: Integer;
+Begin
+ DOMEventListenerCount := 0;
+ For I := 1 To MAX_DOM_EVENT_LISTENERS Do Begin
+  DOMEventListeners[I].Active := False;
+  DOMEventListeners[I].EventType := 0;
+  DOMEventListeners[I].Handler := '';
+  DOMEventListeners[I].Element := Nil;
+ End;
+ JSEventTargetNode := Nil;
+ HoveredInteractiveNode := Nil;
+End;
+
+{ Obtenir un attribut d'un noeud HTML }
+Function DOMGetAttribute(Node: HTMLNodePtr; AttrName: String): String;
+Var
+ Attr: HTMLAttributePtr;
+ LowerAttr, LowerName: String;
+Begin
+ DOMGetAttribute := '';
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
+  If LowerName = LowerAttr Then Begin
+   DOMGetAttribute := Attr^.Value;
+   Exit;
+  End;
+  Attr := Attr^.Next;
+ End;
+End;
+
+{ Definir un attribut sur un noeud HTML }
+Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String);
+Var
+ Attr: HTMLAttributePtr;
+ LowerAttr, LowerName: String;
+Begin
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
+  If LowerName = LowerAttr Then Begin
+   Attr^.Value := AttrValue;
+   Exit;
+  End;
+  Attr := Attr^.Next;
+ End;
+ HTMLAddAttribute(Node, HTMLLowerCase(AttrName), AttrValue);
+End;
+
+{ Supprimer un attribut d'un noeud HTML }
+Procedure DOMRemoveAttribute(Node: HTMLNodePtr; AttrName: String);
+Var
+ Attr, PreviousAttr: HTMLAttributePtr;
+ LowerAttr, LowerName: String;
+Begin
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+
+ PreviousAttr := Nil;
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
+  If LowerName = LowerAttr Then Begin
+   If PreviousAttr = Nil Then Node^.FirstAttribute := Attr^.Next
+   Else PreviousAttr^.Next := Attr^.Next;
+   If Node^.LastAttribute = Attr Then Node^.LastAttribute := PreviousAttr;
+   Dispose(Attr);
+   Dec(Node^.AttributeCount);
+   Exit;
+  End;
+  PreviousAttr := Attr;
+  Attr := Attr^.Next;
+ End;
+End;
+
+{ Verifier si un noeud a un attribut }
+Function DOMHasAttribute(Node: HTMLNodePtr; AttrName: String): Boolean;
+Var
+ Attr: HTMLAttributePtr;
+ LowerAttr, LowerName: String;
+Begin
+ DOMHasAttribute := False;
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  LowerName := HTMLLowerCase(Attr^.Name);
+  If LowerName = LowerAttr Then Begin
+   DOMHasAttribute := True;
+   Exit;
+  End;
+  Attr := Attr^.Next;
+ End;
+End;
+
+{ Fonction recursive pour chercher un element par ID }
+Function DOMGetElementByIdRecursive(Node: HTMLNodePtr; Id: String): HTMLNodePtr;
+Var
+ NodeId: String;
+ Result, Child: HTMLNodePtr;
+Begin
+ DOMGetElementByIdRecursive := Nil;
+ If Node = Nil Then Exit;
+
+ { Verifier l'ID de ce noeud }
+ NodeId := DOMGetAttribute(Node, 'id');
+ If NodeId = Id Then Begin
+  DOMGetElementByIdRecursive := Node;
+  Exit;
+ End;
+
+ { Parcourir les enfants }
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  Result := DOMGetElementByIdRecursive(Child, Id);
+  If Result <> Nil Then Begin
+   DOMGetElementByIdRecursive := Result;
+   Exit;
+  End;
+  Child := Child^.NextSibling;
+ End;
+End;
+
+{ Obtenir un element par son ID (document.getElementById) }
+Function DOMGetElementById(Id: String): HTMLNodePtr;
+Begin
+ DOMGetElementById := DOMGetElementByIdRecursive(HTMLDocument, Id);
+End;
+
+{ Initialiser une liste de resultats DOM vide. }
+Procedure DOMInitNodeList(Var List: DOMNodeList);
+Begin
+ List.First := Nil;
+ List.Last := Nil;
+ List.Length := 0;
+End;
+
+{ Ajouter un noeud en temps constant a la fin de la liste. }
+Procedure DOMAppendNode(Var List: DOMNodeList; Node: HTMLNodePtr);
+Var
+ Item: DOMNodeListItemPtr;
+Begin
+ New(Item);
+ Item^.Node := Node;
+ Item^.Next := Nil;
+ If List.Last = Nil Then
+  List.First := Item
+ Else
+  List.Last^.Next := Item;
+ List.Last := Item;
+ Inc(List.Length);
+End;
+
+{ Liberer les maillons d'une liste, mais jamais les noeuds du document. }
+Procedure DOMFreeNodeList(Var List: DOMNodeList);
+Var
+ Item, NextItem: DOMNodeListItemPtr;
+Begin
+ Item := List.First;
+ While Item <> Nil Do Begin
+  NextItem := Item^.Next;
+  Dispose(Item);
+  Item := NextItem;
+ End;
+ DOMInitNodeList(List);
+End;
+
+Function DOMFirstNode(Const List: DOMNodeList): HTMLNodePtr;
+Begin
+ If List.First <> Nil Then
+  DOMFirstNode := List.First^.Node
+ Else
+  DOMFirstNode := Nil;
+End;
+
+{ Procedure recursive pour chercher des elements par nom de balise }
+Procedure DOMGetElementsByTagNameRecursive(Node: HTMLNodePtr; TagName: String; Var List: DOMNodeList);
+Var
+ LowerTag, LowerNodeTag: String;
+ Current: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+
+ LowerTag := HTMLLowerCase(TagName);
+ Current := Node;
+ While Current <> Nil Do Begin
+  If Current^.NodeType = HTML_NODE_ELEMENT Then Begin
+   LowerNodeTag := HTMLLowerCase(Current^.TagName);
+   If (LowerTag = '*') Or (LowerNodeTag = LowerTag) Then
+    DOMAppendNode(List, Current);
+  End;
+
+  If Current^.FirstChild <> Nil Then
+   Current := Current^.FirstChild
+  Else Begin
+   While (Current <> Nil) And (Current <> Node) And
+         (Current^.NextSibling = Nil) Do
+    Current := Current^.Parent;
+   If Current = Node Then Current := Nil
+   Else If Current <> Nil Then Current := Current^.NextSibling;
+  End;
+ End;
+End;
+
+{ Obtenir des elements par nom de balise (document.getElementsByTagName) }
+Function DOMGetElementsByTagName(TagName: String): DOMNodeList;
+Var
+ List: DOMNodeList;
+Begin
+ DOMInitNodeList(List);
+ DOMGetElementsByTagNameRecursive(HTMLDocument, TagName, List);
+ DOMGetElementsByTagName := List;
+End;
+
+{ Verifier si un noeud a une classe specifique }
+Function DOMHasClass(Node: HTMLNodePtr; ClassName: String): Boolean;
+Var
+ ClassAttr: String;
+ I, StartPos: Integer;
+ CurrentClass: String;
+Begin
+ DOMHasClass := False;
+ If Node = Nil Then Exit;
+
+ ClassAttr := DOMGetAttribute(Node, 'class');
+ If ClassAttr = '' Then Exit;
+
+ { Parser les classes (separees par des espaces) }
+ StartPos := 1;
+ For I := 1 To Length(ClassAttr) + 1 Do Begin
+  If (I > Length(ClassAttr)) Or (ClassAttr[I] = ' ') Then Begin
+   If I > StartPos Then Begin
+    CurrentClass := Copy(ClassAttr, StartPos, I - StartPos);
+    If CurrentClass = ClassName Then Begin
+     DOMHasClass := True;
+     Exit;
+    End;
+   End;
+   StartPos := I + 1;
+  End;
+ End;
+End;
+
+{ Procedure recursive pour chercher des elements par classe }
+Procedure DOMGetElementsByClassNameRecursive(Node: HTMLNodePtr; ClassName: String; Var List: DOMNodeList);
+Var
+ Current: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+ Current := Node;
+ While Current <> Nil Do Begin
+  If DOMHasClass(Current, ClassName) Then Begin
+   DOMAppendNode(List, Current);
+  End;
+
+  If Current^.FirstChild <> Nil Then
+   Current := Current^.FirstChild
+  Else Begin
+   While (Current <> Nil) And (Current <> Node) And
+         (Current^.NextSibling = Nil) Do
+    Current := Current^.Parent;
+   If Current = Node Then Current := Nil
+   Else If Current <> Nil Then Current := Current^.NextSibling;
+  End;
+ End;
+End;
+
+{ Obtenir des elements par classe (document.getElementsByClassName) }
+Function DOMGetElementsByClassName(ClassName: String): DOMNodeList;
+Var
+ List: DOMNodeList;
+Begin
+ DOMInitNodeList(List);
+ DOMGetElementsByClassNameRecursive(HTMLDocument, ClassName, List);
+ DOMGetElementsByClassName := List;
+End;
+
+{ Obtenir le texte d'un noeud (innerText/textContent) }
+Function DOMGetTextContent(Node: HTMLNodePtr): AnsiString;
+Var
+ Result: AnsiString;
+ Child: HTMLNodePtr;
+Begin
+ Result := '';
+ If Node = Nil Then Begin
+  DOMGetTextContent := Result;
+  Exit;
+ End;
+
+ If Node^.NodeType = HTML_NODE_TEXT Then
+  Result := Node^.Content
+ Else Begin
+  Child := Node^.FirstChild;
+  While Child <> Nil Do Begin
+   Result := Result + DOMGetTextContent(Child);
+   Child := Child^.NextSibling;
+  End;
+ End;
+
+ DOMGetTextContent := Result;
+End;
+
+{ Definir le texte d'un noeud (innerText/textContent) }
+Procedure DOMSetTextContent(Node: HTMLNodePtr; Text: String);
+Var
+ Child, NextChild, TextNode: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+
+ { Supprimer tous les enfants existants }
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  FreeHTMLNode(Child);
+  Child := NextChild;
+ End;
+ Node^.FirstChild := Nil;
+ Node^.LastChild := Nil;
+ Node^.ChildCount := 0;
+
+ { Creer un nouveau noeud texte comme seul enfant }
+ If Length(Text) > 0 Then Begin
+  TextNode := CreateHTMLNode;
+  TextNode^.NodeType := HTML_NODE_TEXT;
+  TextNode^.TagType := 0;
+  TextNode^.Content := Text;
+  HTMLAppendChild(Node, TextNode);
+ End;
+End;
+
+{ Creer un nouvel element HTML (document.createElement) }
+Function DOMCreateElement(TagName: String): HTMLNodePtr;
+Var
+ NewNode: HTMLNodePtr;
+Begin
+ NewNode := CreateHTMLNode;
+ NewNode^.NodeType := HTML_NODE_ELEMENT;
+ NewNode^.TagType := GetTagType(TagName);
+ NewNode^.TagName := TagName;
+ NewNode^.Content := '';
+ DOMCreateElement := NewNode;
+End;
+
+{ Creer un noeud texte (document.createTextNode) }
+Function DOMCreateTextNode(Text: String): HTMLNodePtr;
+Var
+ NewNode: HTMLNodePtr;
+Begin
+ NewNode := CreateHTMLNode;
+ NewNode^.NodeType := HTML_NODE_TEXT;
+ NewNode^.TagType := 0;
+ NewNode^.TagName := '';
+ NewNode^.Content := Text;
+ DOMCreateTextNode := NewNode;
+End;
+
+{ Ajouter un enfant a un element (appendChild) }
+Function DOMAppendChild(Parent, Child: HTMLNodePtr): HTMLNodePtr;
+Begin
+ DOMAppendChild := Nil;
+ If (Parent = Nil) Or (Child = Nil) Then Exit;
+
+ HTMLAppendChild(Parent, Child);
+ DOMAppendChild := Child;
+End;
+
+{ Inserer un enfant avant un autre (insertBefore) }
+Function DOMInsertBefore(Parent, NewChild, RefChild: HTMLNodePtr): HTMLNodePtr;
+Begin
+ DOMInsertBefore := Nil;
+ If (Parent = Nil) Or (NewChild = Nil) Then Exit;
+
+ If RefChild = Nil Then Begin
+  { Inserer a la fin si pas de reference }
+  DOMInsertBefore := DOMAppendChild(Parent, NewChild);
+  Exit;
+ End;
+
+ If RefChild^.Parent <> Parent Then Exit;
+ NewChild^.Parent := Parent;
+ NewChild^.PreviousSibling := RefChild^.PreviousSibling;
+ NewChild^.NextSibling := RefChild;
+ If RefChild^.PreviousSibling <> Nil Then
+  RefChild^.PreviousSibling^.NextSibling := NewChild
+ Else
+  Parent^.FirstChild := NewChild;
+ RefChild^.PreviousSibling := NewChild;
+ Inc(Parent^.ChildCount);
+ DOMInsertBefore := NewChild;
+End;
+
+{ Supprimer un enfant (removeChild) }
+Function DOMRemoveChild(Parent, Child: HTMLNodePtr): HTMLNodePtr;
+Begin
+ DOMRemoveChild := Nil;
+ If (Parent = Nil) Or (Child = Nil) Then Exit;
+
+ If Child^.Parent <> Parent Then Exit;
+ If Child^.PreviousSibling <> Nil Then
+  Child^.PreviousSibling^.NextSibling := Child^.NextSibling
+ Else Parent^.FirstChild := Child^.NextSibling;
+ If Child^.NextSibling <> Nil Then
+  Child^.NextSibling^.PreviousSibling := Child^.PreviousSibling
+ Else Parent^.LastChild := Child^.PreviousSibling;
+ Dec(Parent^.ChildCount);
+ Child^.Parent := Nil;
+ Child^.PreviousSibling := Nil;
+ Child^.NextSibling := Nil;
+ DOMRemoveChild := Child;
+End;
+
+{ Remplacer un enfant (replaceChild) }
+Function DOMReplaceChild(Parent, NewChild, OldChild: HTMLNodePtr): HTMLNodePtr;
+Begin
+ DOMReplaceChild := Nil;
+ If (Parent = Nil) Or (NewChild = Nil) Or (OldChild = Nil) Then Exit;
+
+ If OldChild^.Parent <> Parent Then Exit;
+ NewChild^.Parent := Parent;
+ NewChild^.PreviousSibling := OldChild^.PreviousSibling;
+ NewChild^.NextSibling := OldChild^.NextSibling;
+ If NewChild^.PreviousSibling <> Nil Then
+  NewChild^.PreviousSibling^.NextSibling := NewChild
+ Else Parent^.FirstChild := NewChild;
+ If NewChild^.NextSibling <> Nil Then
+  NewChild^.NextSibling^.PreviousSibling := NewChild
+ Else Parent^.LastChild := NewChild;
+ OldChild^.Parent := Nil;
+ OldChild^.PreviousSibling := Nil;
+ OldChild^.NextSibling := Nil;
+ DOMReplaceChild := OldChild;
+End;
+
+{ Cloner un noeud (cloneNode) }
+Function DOMCloneNode(Node: HTMLNodePtr; Deep: Boolean): HTMLNodePtr;
+Var
+ Clone, ChildClone, Child: HTMLNodePtr;
+ Attr: HTMLAttributePtr;
+Begin
+ DOMCloneNode := Nil;
+ If Node = Nil Then Exit;
+
+ Clone := CreateHTMLNode;
+ Clone^.NodeType := Node^.NodeType;
+ Clone^.TagType := Node^.TagType;
+ Clone^.TagName := Node^.TagName;
+ Clone^.Content := Node^.Content;
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  HTMLAddAttribute(Clone, Attr^.Name, Attr^.Value);
+  Attr := Attr^.Next;
+ End;
+
+ { Cloner les enfants si demande }
+ If Deep Then Begin
+  Child := Node^.FirstChild;
+  While Child <> Nil Do Begin
+   ChildClone := DOMCloneNode(Child, True);
+   If ChildClone <> Nil Then Begin
+    HTMLAppendChild(Clone, ChildClone);
+   End;
+   Child := Child^.NextSibling;
+  End;
+ End;
+
+ DOMCloneNode := Clone;
+End;
+
+{ Obtenir le parent d'un noeud (parentNode/parentElement) }
+Function DOMGetParentNode(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ If Node = Nil Then
+  DOMGetParentNode := Nil
+ Else
+  DOMGetParentNode := Node^.Parent;
+End;
+
+{ Obtenir le premier enfant (firstChild) }
+Function DOMGetFirstChild(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ If (Node = Nil) Or (Node^.ChildCount = 0) Then
+  DOMGetFirstChild := Nil
+ Else
+  DOMGetFirstChild := Node^.FirstChild;
+End;
+
+{ Obtenir le dernier enfant (lastChild) }
+Function DOMGetLastChild(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ If (Node = Nil) Or (Node^.ChildCount = 0) Then
+  DOMGetLastChild := Nil
+ Else
+  DOMGetLastChild := Node^.LastChild;
+End;
+
+{ Obtenir le frere precedent (previousSibling) }
+Function DOMGetPreviousSibling(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ DOMGetPreviousSibling := Nil;
+ If Node = Nil Then Exit;
+
+ DOMGetPreviousSibling := Node^.PreviousSibling;
+End;
+
+{ Obtenir le frere suivant (nextSibling) }
+Function DOMGetNextSibling(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ DOMGetNextSibling := Nil;
+ If Node = Nil Then Exit;
+
+ DOMGetNextSibling := Node^.NextSibling;
+End;
+
+{ Obtenir le nombre d'enfants (childNodes.length) }
+Function DOMGetChildCount(Node: HTMLNodePtr): Integer;
+Begin
+ If Node = Nil Then
+  DOMGetChildCount := 0
+ Else
+  DOMGetChildCount := Node^.ChildCount;
+End;
+
+{ Verifier si un noeud a des enfants (hasChildNodes) }
+Function DOMHasChildNodes(Node: HTMLNodePtr): Boolean;
+Begin
+ If Node = Nil Then
+  DOMHasChildNodes := False
+ Else
+  DOMHasChildNodes := Node^.ChildCount > 0;
+End;
+
+{ Ajouter un gestionnaire d'evenement (addEventListener) }
+Procedure DOMAddEventListener(Element: HTMLNodePtr; EventType: Byte; Handler: String);
+Var
+ I: Integer;
+Begin
+ If Element = Nil Then Exit;
+ If DOMEventListenerCount >= MAX_DOM_EVENT_LISTENERS Then Exit;
+
+ { Verifier si ce gestionnaire existe deja }
+ For I := 1 To DOMEventListenerCount Do Begin
+  If DOMEventListeners[I].Active And
+     (DOMEventListeners[I].Element = Element) And
+     (DOMEventListeners[I].EventType = EventType) And
+     (DOMEventListeners[I].Handler = Handler) Then Exit;
+ End;
+
+ { Ajouter le gestionnaire }
+ Inc(DOMEventListenerCount);
+ DOMEventListeners[DOMEventListenerCount].EventType := EventType;
+ DOMEventListeners[DOMEventListenerCount].Handler := Handler;
+ DOMEventListeners[DOMEventListenerCount].Element := Element;
+ DOMEventListeners[DOMEventListenerCount].Active := True;
+End;
+
+{ Supprimer un gestionnaire d'evenement (removeEventListener) }
+Procedure DOMRemoveEventListener(Element: HTMLNodePtr; EventType: Byte; Handler: String);
+Var
+ I: Integer;
+Begin
+ For I := 1 To DOMEventListenerCount Do Begin
+  If DOMEventListeners[I].Active And
+     (DOMEventListeners[I].Element = Element) And
+     (DOMEventListeners[I].EventType = EventType) And
+     (DOMEventListeners[I].Handler = Handler) Then Begin
+   DOMEventListeners[I].Active := False;
+   Exit;
+  End;
+ End;
+End;
+
+{ Declencher un evenement sur un element (dispatchEvent) }
+Procedure DOMDispatchEvent(Element: HTMLNodePtr; EventType: Byte);
+Var
+ I: Integer;
+Begin
+ If Element = Nil Then Exit;
+
+ For I := 1 To DOMEventListenerCount Do Begin
+  If DOMEventListeners[I].Active And
+     (DOMEventListeners[I].Element = Element) And
+     (DOMEventListeners[I].EventType = EventType) Then Begin
+   { Executer le gestionnaire JavaScript }
+   JSExecuteScript(DOMEventListeners[I].Handler);
+  End;
+ End;
+End;
+
+{ Obtenir le body du document (document.body) }
+Function DOMGetBody: HTMLNodePtr;
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('body');
+ DOMGetBody := DOMFirstNode(List);
+ DOMFreeNodeList(List);
+End;
+
+{ Obtenir le head du document (document.head) }
+Function DOMGetHead: HTMLNodePtr;
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('head');
+ DOMGetHead := DOMFirstNode(List);
+ DOMFreeNodeList(List);
+End;
+
+{ Obtenir le titre du document (document.title) }
+Function DOMGetTitle: String;
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('title');
+ If List.First <> Nil Then
+  DOMGetTitle := DOMGetTextContent(List.First^.Node)
+ Else
+  DOMGetTitle := '';
+ DOMFreeNodeList(List);
+End;
+
+{ Definir le titre du document (document.title) }
+Procedure DOMSetTitle(Title: String);
+Var
+ List: DOMNodeList;
+Begin
+ List := DOMGetElementsByTagName('title');
+ If List.First <> Nil Then
+  DOMSetTextContent(List.First^.Node, Title);
+ DOMFreeNodeList(List);
+End;
+
+{ Convertir un type d'evenement en nom }
+Function DOMEventTypeToName(EventType: Byte): String;
+Begin
+ Case EventType Of
+  DOM_EVENT_CLICK:     DOMEventTypeToName := 'click';
+  DOM_EVENT_DBLCLICK:  DOMEventTypeToName := 'dblclick';
+  DOM_EVENT_MOUSEDOWN: DOMEventTypeToName := 'mousedown';
+  DOM_EVENT_MOUSEUP:   DOMEventTypeToName := 'mouseup';
+  DOM_EVENT_MOUSEOVER: DOMEventTypeToName := 'mouseover';
+  DOM_EVENT_MOUSEOUT:  DOMEventTypeToName := 'mouseout';
+  DOM_EVENT_KEYDOWN:   DOMEventTypeToName := 'keydown';
+  DOM_EVENT_KEYUP:     DOMEventTypeToName := 'keyup';
+  DOM_EVENT_KEYPRESS:  DOMEventTypeToName := 'keypress';
+  DOM_EVENT_LOAD:      DOMEventTypeToName := 'load';
+  DOM_EVENT_UNLOAD:    DOMEventTypeToName := 'unload';
+  DOM_EVENT_SUBMIT:    DOMEventTypeToName := 'submit';
+  DOM_EVENT_CHANGE:    DOMEventTypeToName := 'change';
+  DOM_EVENT_FOCUS:     DOMEventTypeToName := 'focus';
+  DOM_EVENT_BLUR:      DOMEventTypeToName := 'blur';
+  Else                 DOMEventTypeToName := '';
+ End;
+End;
+
+{ Convertir un nom d'evenement en type }
+Type
+ DOMEventNameEntry = Record
+  Name: String[10];
+  Id: Byte;
+ End;
+
+Const
+ DOM_EVENT_COUNT = 15;
+ { Table des noms d'evenements DOM, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de
+   DOMNameToEventType ci-dessous (meme principe que CSSPropertyTable/
+   HTMLTagTable/JSKeywordTable). }
+ DOMEventNameTable: Array[0..DOM_EVENT_COUNT - 1] Of DOMEventNameEntry = (
+  (Name: 'blur';       Id: DOM_EVENT_BLUR),
+  (Name: 'change';     Id: DOM_EVENT_CHANGE),
+  (Name: 'click';      Id: DOM_EVENT_CLICK),
+  (Name: 'dblclick';   Id: DOM_EVENT_DBLCLICK),
+  (Name: 'focus';      Id: DOM_EVENT_FOCUS),
+  (Name: 'keydown';    Id: DOM_EVENT_KEYDOWN),
+  (Name: 'keypress';   Id: DOM_EVENT_KEYPRESS),
+  (Name: 'keyup';      Id: DOM_EVENT_KEYUP),
+  (Name: 'load';       Id: DOM_EVENT_LOAD),
+  (Name: 'mousedown';  Id: DOM_EVENT_MOUSEDOWN),
+  (Name: 'mouseout';   Id: DOM_EVENT_MOUSEOUT),
+  (Name: 'mouseover';  Id: DOM_EVENT_MOUSEOVER),
+  (Name: 'mouseup';    Id: DOM_EVENT_MOUSEUP),
+  (Name: 'submit';     Id: DOM_EVENT_SUBMIT),
+  (Name: 'unload';     Id: DOM_EVENT_UNLOAD)
+ );
+
+{ Obtenir le type d'evenement DOM a partir de son nom - recherche
+  dichotomique dans DOMEventNameTable (ci-dessus) au lieu des 15
+  comparaisons Si/SinonSi d'avant (meme principe que
+  CSSGetPropertyId/GetTagType/JSGetKeywordType). }
+Function DOMNameToEventType(Name: String): Byte;
+Var
+ LowerName: String;
+ Lo, Hi, Mid: Integer;
+Begin
+ LowerName := HTMLLowerCase(Name);
+ DOMNameToEventType := 0;
+
+ Lo := 0;
+ Hi := DOM_EVENT_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If DOMEventNameTable[Mid].Name = LowerName Then Begin
+   DOMNameToEventType := DOMEventNameTable[Mid].Id;
+   Exit;
+  End
+  Else If DOMEventNameTable[Mid].Name < LowerName Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+{ Executer un selecteur CSS simple (querySelector - supporte #id, .class, tag) }
+Function DOMQuerySelector(Selector: String): HTMLNodePtr;
+Var
+ List: DOMNodeList;
+Begin
+ DOMQuerySelector := Nil;
+ If Length(Selector) = 0 Then Exit;
+
+ If Selector[1] = '#' Then Begin
+  { Selecteur ID }
+  DOMQuerySelector := DOMGetElementById(Copy(Selector, 2, Length(Selector) - 1));
+ End
+ Else If Selector[1] = '.' Then Begin
+  { Selecteur de classe }
+  List := DOMGetElementsByClassName(Copy(Selector, 2, Length(Selector) - 1));
+  DOMQuerySelector := DOMFirstNode(List);
+  DOMFreeNodeList(List);
+ End
+ Else Begin
+  { Selecteur de balise }
+  List := DOMGetElementsByTagName(Selector);
+  DOMQuerySelector := DOMFirstNode(List);
+  DOMFreeNodeList(List);
+ End;
+End;
+
+{ Executer un selecteur CSS simple (querySelectorAll) }
+Function DOMQuerySelectorAll(Selector: String): DOMNodeList;
+Var
+ List: DOMNodeList;
+ Element: HTMLNodePtr;
+Begin
+ DOMInitNodeList(List);
+
+ If Length(Selector) = 0 Then Begin
+  DOMQuerySelectorAll := List;
+  Exit;
+ End;
+
+ If Selector[1] = '#' Then Begin
+  { Selecteur ID - retourne un seul element }
+  Element := DOMGetElementById(Copy(Selector, 2, Length(Selector) - 1));
+  If Element <> Nil Then DOMAppendNode(List, Element);
+ End
+ Else If Selector[1] = '.' Then Begin
+  { Selecteur de classe }
+  List := DOMGetElementsByClassName(Copy(Selector, 2, Length(Selector) - 1));
+ End
+ Else Begin
+  { Selecteur de balise }
+  List := DOMGetElementsByTagName(Selector);
+ End;
+
+ DOMQuerySelectorAll := List;
+End;
+
+{ =====================================================
+  FIN DOM (Document Object Model)
+  ===================================================== }
+
+{ =====================================================
+  PARSEUR CSS - Fonctions et procedures
+  ===================================================== }
+
+{ Initialiser le parseur CSS }
+Procedure InitCSS;
+Var
+ I, J: Integer;
+Begin
+ CSSEnabled := True;
+ CSSParseError := '';
+ CSSGlobalStylesheet.RuleCount := 0;
+
+ For I := 1 To MAX_CSS_RULES Do Begin
+  CSSGlobalStylesheet.Rules[I].SelectorCount := 0;
+  CSSGlobalStylesheet.Rules[I].PropertyCount := 0;
+  For J := 1 To MAX_CSS_SELECTORS Do
+   CSSGlobalStylesheet.Rules[I].Selectors[J].PartCount := 0;
+ End;
+End;
+
+{ Ignorer les espaces blancs dans le CSS }
+{ NOTE IMPORTANTE : Pos est ici un LongInt (32 bits), pas Integer. La
+  directive de compatibilite Turbo Pascal de ce fichier fait qu'Integer
+  reste fidele a l'original et n'est que 16 bits (-32768..32767) !
+  Une feuille de style reelle depasse presque toujours cette limite
+  (49948 octets ici) : un compteur de position en Integer y deborde
+  silencieusement vers une valeur negative au-dela de l'octet 32767,
+  ce qui finit par indexer la chaine avec une position invalide et
+  declenche EAccessViolation. C'est la veritable cause des
+  plantages/blocages observes sur ce parseur (le filet de securite
+  GuardPos plus bas en attenuait le symptome sans corriger la cause). }
+Function CSSSkipWhitespace(Const S: AnsiString; Pos: LongInt): LongInt;
+Begin
+ While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do
+  Inc(Pos);
+ CSSSkipWhitespace := Pos;
+End;
+
+{ Ignorer les commentaires CSS /* */ }
+Function CSSSkipComment(Const S: AnsiString; Pos: LongInt): LongInt;
+Begin
+ If (Pos < Length(S)) And (S[Pos] = '/') And (S[Pos + 1] = '*') Then Begin
+  Inc(Pos, 2);
+  While (Pos < Length(S)) Do Begin
+   If (S[Pos] = '*') And (S[Pos + 1] = '/') Then Begin
+    Inc(Pos, 2);
+    Break;
+   End;
+   Inc(Pos);
+  End;
+ End;
+ CSSSkipComment := Pos;
+End;
+
+{ Ignorer espaces et commentaires }
+Function CSSSkipWhitespaceAndComments(Const S: AnsiString; Pos: LongInt): LongInt;
+Var
+ OldPos: LongInt;
+Begin
+ Repeat
+  OldPos := Pos;
+  Pos := CSSSkipWhitespace(S, Pos);
+  Pos := CSSSkipComment(S, Pos);
+ Until Pos = OldPos;
+ CSSSkipWhitespaceAndComments := Pos;
+End;
+
+{ Verifier si un caractere est valide pour un identifiant CSS }
+Function CSSIsIdentChar(C: Char; IsFirst: Boolean): Boolean;
+Begin
+ If IsFirst Then
+  CSSIsIdentChar := (C In ['A'..'Z', 'a'..'z', '_', '-']) Or (Ord(C) >= 128)
+ Else
+  CSSIsIdentChar := (C In ['A'..'Z', 'a'..'z', '0'..'9', '_', '-']) Or (Ord(C) >= 128);
+End;
+
+{ Lire un identifiant CSS }
+Function CSSReadIdent(Const S: AnsiString; Var Pos: LongInt): String;
+Var
+ Start: LongInt;
+Begin
+ CSSReadIdent := '';
+ If Pos > Length(S) Then Exit;
+ If Not CSSIsIdentChar(S[Pos], True) Then Exit;
+
+ Start := Pos;
+ Inc(Pos);
+ While (Pos <= Length(S)) And CSSIsIdentChar(S[Pos], False) Do
+  Inc(Pos);
+
+ CSSReadIdent := Copy(S, Start, Pos - Start);
+End;
+
+{ Lire une chaine entre guillemets }
+Function CSSReadString(Const S: AnsiString; Var Pos: LongInt): String;
+Var
+ Quote: Char;
+ Start: LongInt;
+Begin
+ CSSReadString := '';
+ If Pos > Length(S) Then Exit;
+ If Not (S[Pos] In ['"', '''']) Then Exit;
+
+ Quote := S[Pos];
+ Inc(Pos);
+ Start := Pos;
+
+ While (Pos <= Length(S)) And (S[Pos] <> Quote) Do Begin
+  { Gerer les echappements }
+  If (S[Pos] = '\') And (Pos < Length(S)) Then Inc(Pos);
+  Inc(Pos);
+ End;
+
+ CSSReadString := Copy(S, Start, Pos - Start);
+ If (Pos <= Length(S)) And (S[Pos] = Quote) Then Inc(Pos);
+End;
+
+{ Lire un nombre CSS (avec unite optionnelle) }
+Procedure CSSReadNumber(Const S: AnsiString; Var Pos: LongInt; Var NumVal: Real;
+                        Var UnitStr: CSSUnitString);
+Var
+ Start: LongInt;
+ NumStr: String;
+ Negative: Boolean;
+Begin
+ NumVal := 0;
+ UnitStr := '';
+ Negative := False;
+
+ { Signe optionnel }
+ If (Pos <= Length(S)) And (S[Pos] = '-') Then Begin
+  Negative := True;
+  Inc(Pos);
+ End
+ Else If (Pos <= Length(S)) And (S[Pos] = '+') Then
+  Inc(Pos);
+
+ { Partie entiere }
+ Start := Pos;
+ While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do
+  Inc(Pos);
+
+ { Partie decimale }
+ If (Pos <= Length(S)) And (S[Pos] = '.') Then Begin
+  Inc(Pos);
+  While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do
+   Inc(Pos);
+ End;
+
+ NumStr := Copy(S, Start, Pos - Start);
+ If Length(NumStr) > 0 Then Begin
+  Val(NumStr, NumVal, Start);
+  If Negative Then NumVal := -NumVal;
+ End;
+
+ { Unite }
+ Start := Pos;
+ While (Pos <= Length(S)) And (S[Pos] In ['A'..'Z', 'a'..'z', '%']) Do
+  Inc(Pos);
+ UnitStr := Copy(S, Start, Pos - Start);
+End;
+
+{ Lire un token CSS }
+Function CSSReadToken(Const S: AnsiString; Var Pos: LongInt): CSSToken;
+Var
+ Token: CSSToken;
+ C: Char;
+Begin
+ Token.TokType := CSS_TOK_EOF;
+ Token.Value := '';
+ Token.NumValue := 0;
+ Token.UnitValue := '';
+ Token.Line := 1;
+ Token.Column := Pos;
+
+ Pos := CSSSkipWhitespaceAndComments(S, Pos);
+
+ If Pos > Length(S) Then Begin
+  CSSReadToken := Token;
+  Exit;
+ End;
+
+ C := S[Pos];
+
+ Case C Of
+  '{': Begin
+   Token.TokType := CSS_TOK_LBRACE;
+   Token.Value := '{';
+   Inc(Pos);
+  End;
+  '}': Begin
+   Token.TokType := CSS_TOK_RBRACE;
+   Token.Value := '}';
+   Inc(Pos);
+  End;
+  '(': Begin
+   Token.TokType := CSS_TOK_LPAREN;
+   Token.Value := '(';
+   Inc(Pos);
+  End;
+  ')': Begin
+   Token.TokType := CSS_TOK_RPAREN;
+   Token.Value := ')';
+   Inc(Pos);
+  End;
+  '[': Begin
+   Token.TokType := CSS_TOK_LBRACKET;
+   Token.Value := '[';
+   Inc(Pos);
+  End;
+  ']': Begin
+   Token.TokType := CSS_TOK_RBRACKET;
+   Token.Value := ']';
+   Inc(Pos);
+  End;
+  ':': Begin
+   Token.TokType := CSS_TOK_COLON;
+   Token.Value := ':';
+   Inc(Pos);
+  End;
+  ';': Begin
+   Token.TokType := CSS_TOK_SEMICOLON;
+   Token.Value := ';';
+   Inc(Pos);
+  End;
+  ',': Begin
+   Token.TokType := CSS_TOK_COMMA;
+   Token.Value := ',';
+   Inc(Pos);
+  End;
+  '>': Begin
+   Token.TokType := CSS_TOK_GT;
+   Token.Value := '>';
+   Inc(Pos);
+  End;
+  '+': Begin
+   Token.TokType := CSS_TOK_PLUS;
+   Token.Value := '+';
+   Inc(Pos);
+  End;
+  '~': Begin
+   Token.TokType := CSS_TOK_TILDE;
+   Token.Value := '~';
+   Inc(Pos);
+  End;
+  '*': Begin
+   Token.TokType := CSS_TOK_STAR;
+   Token.Value := '*';
+   Inc(Pos);
+  End;
+  '@': Begin
+   Token.TokType := CSS_TOK_AT;
+   Token.Value := '@';
+   Inc(Pos);
+  End;
+  '.': Begin
+   Token.TokType := CSS_TOK_DOT;
+   Token.Value := '.';
+   Inc(Pos);
+  End;
+  '#': Begin
+   Token.TokType := CSS_TOK_HASH;
+   Inc(Pos);
+   Token.Value := '#' + CSSReadIdent(S, Pos);
+  End;
+  '"', '''': Begin
+   Token.TokType := CSS_TOK_STRING;
+   Token.Value := CSSReadString(S, Pos);
+  End;
+  '0'..'9', '-': Begin
+   If (C = '-') And (Pos < Length(S)) And Not (S[Pos + 1] In ['0'..'9', '.']) Then Begin
+    { C'est un identifiant commencant par - }
+    Token.TokType := CSS_TOK_IDENT;
+    Token.Value := CSSReadIdent(S, Pos);
+   End
+   Else Begin
+    CSSReadNumber(S, Pos, Token.NumValue, Token.UnitValue);
+    If Token.UnitValue = '%' Then
+     Token.TokType := CSS_TOK_PERCENTAGE
+    Else If Length(Token.UnitValue) > 0 Then
+     Token.TokType := CSS_TOK_DIMENSION
+    Else
+     Token.TokType := CSS_TOK_NUMBER;
+    Str(Token.NumValue:0:2, Token.Value);
+   End;
+  End;
+  Else Begin
+   If CSSIsIdentChar(C, True) Then Begin
+    Token.TokType := CSS_TOK_IDENT;
+    Token.Value := CSSReadIdent(S, Pos);
+   End
+   Else Begin
+    { Caractere inconnu, avancer }
+    Inc(Pos);
+   End;
+  End;
+ End;
+
+ CSSReadToken := Token;
+End;
+
+Type
+ CSSPropertyEntry = Record
+  Name: String[24];
+  Id: Byte;
+ End;
+
+Const
+ CSS_PROPERTY_COUNT = 77;
+ { Table des proprietes CSS supportees, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de CSSGetPropertyId
+   ci-dessous (ancien code : 48 comparaisons Si/SinonSi sequentielles). }
+ CSSPropertyTable: Array[0..CSS_PROPERTY_COUNT - 1] Of CSSPropertyEntry = (
+  (Name: 'background';           Id: CSS_PROP_BACKGROUND),
+  (Name: 'background-attachment';Id: CSS_PROP_BACKGROUND_ATTACHMENT),
+  (Name: 'background-color';     Id: CSS_PROP_BACKGROUND_COLOR),
+  (Name: 'background-image';     Id: CSS_PROP_BACKGROUND_IMAGE),
+  (Name: 'background-position';  Id: CSS_PROP_BACKGROUND_POSITION),
+  (Name: 'background-repeat';    Id: CSS_PROP_BACKGROUND_REPEAT),
+  (Name: 'border';               Id: CSS_PROP_BORDER),
+  (Name: 'border-bottom';        Id: CSS_PROP_BORDER_BOTTOM),
+  (Name: 'border-bottom-color';  Id: CSS_PROP_BORDER_BOTTOM_COLOR),
+  (Name: 'border-bottom-style';  Id: CSS_PROP_BORDER_BOTTOM_STYLE),
+  (Name: 'border-bottom-width';  Id: CSS_PROP_BORDER_BOTTOM_WIDTH),
+  (Name: 'border-color';         Id: CSS_PROP_BORDER_COLOR),
+  (Name: 'border-left';          Id: CSS_PROP_BORDER_LEFT),
+  (Name: 'border-left-color';    Id: CSS_PROP_BORDER_LEFT_COLOR),
+  (Name: 'border-left-style';    Id: CSS_PROP_BORDER_LEFT_STYLE),
+  (Name: 'border-left-width';    Id: CSS_PROP_BORDER_LEFT_WIDTH),
+  (Name: 'border-right';         Id: CSS_PROP_BORDER_RIGHT),
+  (Name: 'border-right-color';   Id: CSS_PROP_BORDER_RIGHT_COLOR),
+  (Name: 'border-right-style';   Id: CSS_PROP_BORDER_RIGHT_STYLE),
+  (Name: 'border-right-width';   Id: CSS_PROP_BORDER_RIGHT_WIDTH),
+  (Name: 'border-style';         Id: CSS_PROP_BORDER_STYLE),
+  (Name: 'border-top';           Id: CSS_PROP_BORDER_TOP),
+  (Name: 'border-top-color';     Id: CSS_PROP_BORDER_TOP_COLOR),
+  (Name: 'border-top-style';     Id: CSS_PROP_BORDER_TOP_STYLE),
+  (Name: 'border-top-width';     Id: CSS_PROP_BORDER_TOP_WIDTH),
+  (Name: 'border-width';         Id: CSS_PROP_BORDER_WIDTH),
+  (Name: 'bottom';               Id: CSS_PROP_BOTTOM),
+  (Name: 'clear';                Id: CSS_PROP_CLEAR),
+  (Name: 'color';                Id: CSS_PROP_COLOR),
+  (Name: 'cursor';               Id: CSS_PROP_CURSOR),
+  (Name: 'display';              Id: CSS_PROP_DISPLAY),
+  (Name: 'float';                Id: CSS_PROP_FLOAT),
+  (Name: 'font';                 Id: CSS_PROP_FONT),
+  (Name: 'font-family';          Id: CSS_PROP_FONT_FAMILY),
+  (Name: 'font-size';            Id: CSS_PROP_FONT_SIZE),
+  (Name: 'font-style';           Id: CSS_PROP_FONT_STYLE),
+  (Name: 'font-variant';         Id: CSS_PROP_FONT_VARIANT),
+  (Name: 'font-weight';          Id: CSS_PROP_FONT_WEIGHT),
+  (Name: 'height';               Id: CSS_PROP_HEIGHT),
+  (Name: 'left';                 Id: CSS_PROP_LEFT),
+  (Name: 'letter-spacing';       Id: CSS_PROP_LETTER_SPACING),
+  (Name: 'line-height';          Id: CSS_PROP_LINE_HEIGHT),
+  (Name: 'list-style';           Id: CSS_PROP_LIST_STYLE),
+  (Name: 'list-style-image';     Id: CSS_PROP_LIST_STYLE_IMAGE),
+  (Name: 'list-style-position';  Id: CSS_PROP_LIST_STYLE_POSITION),
+  (Name: 'list-style-type';      Id: CSS_PROP_LIST_STYLE_TYPE),
+  (Name: 'margin';               Id: CSS_PROP_MARGIN),
+  (Name: 'margin-bottom';        Id: CSS_PROP_MARGIN_BOTTOM),
+  (Name: 'margin-left';          Id: CSS_PROP_MARGIN_LEFT),
+  (Name: 'margin-right';         Id: CSS_PROP_MARGIN_RIGHT),
+  (Name: 'margin-top';           Id: CSS_PROP_MARGIN_TOP),
+  (Name: 'max-height';           Id: CSS_PROP_MAX_HEIGHT),
+  (Name: 'max-width';            Id: CSS_PROP_MAX_WIDTH),
+  (Name: 'min-height';           Id: CSS_PROP_MIN_HEIGHT),
+  (Name: 'min-width';            Id: CSS_PROP_MIN_WIDTH),
+  (Name: 'opacity';              Id: CSS_PROP_OPACITY),
+  (Name: 'overflow';             Id: CSS_PROP_OVERFLOW),
+  (Name: 'overflow-x';           Id: CSS_PROP_OVERFLOW_X),
+  (Name: 'overflow-y';           Id: CSS_PROP_OVERFLOW_Y),
+  (Name: 'padding';              Id: CSS_PROP_PADDING),
+  (Name: 'padding-bottom';       Id: CSS_PROP_PADDING_BOTTOM),
+  (Name: 'padding-left';         Id: CSS_PROP_PADDING_LEFT),
+  (Name: 'padding-right';        Id: CSS_PROP_PADDING_RIGHT),
+  (Name: 'padding-top';          Id: CSS_PROP_PADDING_TOP),
+  (Name: 'position';             Id: CSS_PROP_POSITION),
+  (Name: 'right';                Id: CSS_PROP_RIGHT),
+  (Name: 'text-align';           Id: CSS_PROP_TEXT_ALIGN),
+  (Name: 'text-decoration';      Id: CSS_PROP_TEXT_DECORATION),
+  (Name: 'text-indent';          Id: CSS_PROP_TEXT_INDENT),
+  (Name: 'text-transform';       Id: CSS_PROP_TEXT_TRANSFORM),
+  (Name: 'top';                  Id: CSS_PROP_TOP),
+  (Name: 'vertical-align';       Id: CSS_PROP_VERTICAL_ALIGN),
+  (Name: 'visibility';           Id: CSS_PROP_VISIBILITY),
+  (Name: 'white-space';          Id: CSS_PROP_WHITE_SPACE),
+  (Name: 'width';                Id: CSS_PROP_WIDTH),
+  (Name: 'word-spacing';         Id: CSS_PROP_WORD_SPACING),
+  (Name: 'z-index';              Id: CSS_PROP_Z_INDEX)
+ );
+
+{ Obtenir l'ID d'une propriete CSS a partir de son nom - recherche
+  dichotomique dans CSSPropertyTable (ci-dessus) au lieu des 48
+  comparaisons Si/SinonSi sequentielles d'avant. }
+Function CSSGetPropertyId(Const Name: String): Byte;
+Var
+ LowerName: String;
+ Lo, Hi, Mid: Integer;
+Begin
+ LowerName := HTMLLowerCase(Name);
+ CSSGetPropertyId := CSS_PROP_UNKNOWN;
+
+ Lo := 0;
+ Hi := CSS_PROPERTY_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If CSSPropertyTable[Mid].Name = LowerName Then Begin
+   CSSGetPropertyId := CSSPropertyTable[Mid].Id;
+   Exit;
+  End
+  Else If CSSPropertyTable[Mid].Name < LowerName Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+{ Parser une partie de selecteur simple }
+Function CSSParseSimpleSelector(Const S: AnsiString; Var Pos: LongInt): CSSSelectorPart;
+Var
+ Part: CSSSelectorPart;
+ Token: CSSToken;
+ StartPos: LongInt;
+Begin
+ Part.PartType := CSS_SEL_TAG;
+ Part.Value := '';
+ Part.Combinator := CSS_COMB_NONE;
+ Part.AttrName := '';
+ Part.AttrValue := '';
+ Part.AttrOp := 0;
+
+ Pos := CSSSkipWhitespaceAndComments(S, Pos);
+ If Pos > Length(S) Then Begin
+  CSSParseSimpleSelector := Part;
+  Exit;
+ End;
+
+ StartPos := Pos;
+ Token := CSSReadToken(S, Pos);
+
+ Case Token.TokType Of
+  CSS_TOK_HASH: Begin
+   Part.PartType := CSS_SEL_ID;
+   { Value est un String[64]. Une feuille CSS reelle peut contenir un
+     identificateur arbitrairement long; avec -Cr, la conversion implicite
+     AnsiString -> ShortString levait ERangeError au lieu de le tronquer. }
+   Part.Value := Copy(Token.Value, 2, 64);
+  End;
+  CSS_TOK_DOT: Begin
+   Part.PartType := CSS_SEL_CLASS;
+   Part.Value := Copy(CSSReadIdent(S, Pos), 1, 64);
+  End;
+  CSS_TOK_STAR: Begin
+   Part.PartType := CSS_SEL_UNIVERSAL;
+   Part.Value := '*';
+  End;
+  CSS_TOK_IDENT: Begin
+   Part.PartType := CSS_SEL_TAG;
+   Part.Value := Copy(HTMLLowerCase(Token.Value), 1, 64);
+  End;
+  CSS_TOK_COLON: Begin
+   { Pseudo-classe ou pseudo-element }
+   If (Pos <= Length(S)) And (S[Pos] = ':') Then Begin
+    Inc(Pos);
+    Part.PartType := CSS_SEL_PSEUDO_ELEMENT;
+   End
+   Else
+   Part.PartType := CSS_SEL_PSEUDO_CLASS;
+   Part.Value := Copy(CSSReadIdent(S, Pos), 1, 64);
+  End;
+  CSS_TOK_LBRACKET: Begin
+   { Selecteur d'attribut }
+   Part.PartType := CSS_SEL_ATTRIBUTE;
+   Part.AttrName := Copy(CSSReadIdent(S, Pos), 1, 32);
+   Pos := CSSSkipWhitespaceAndComments(S, Pos);
+
+   { Verifier operateur }
+   If (Pos <= Length(S)) And (S[Pos] In ['=', '~', '|', '^', '$', '*']) Then Begin
+    If S[Pos] = '=' Then Part.AttrOp := 1
+    Else If (S[Pos] = '~') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 2; Inc(Pos);
+    End
+    Else If (S[Pos] = '|') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 3; Inc(Pos);
+    End
+    Else If (S[Pos] = '^') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 4; Inc(Pos);
+    End
+    Else If (S[Pos] = '$') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 5; Inc(Pos);
+    End
+    Else If (S[Pos] = '*') And (Pos < Length(S)) And (S[Pos + 1] = '=') Then Begin
+     Part.AttrOp := 6; Inc(Pos);
+    End;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+    Token := CSSReadToken(S, Pos);
+    If Token.TokType = CSS_TOK_STRING Then
+     Part.AttrValue := Copy(Token.Value, 1, 64)
+    Else If Token.TokType = CSS_TOK_IDENT Then
+     Part.AttrValue := Copy(Token.Value, 1, 64);
+   End;
+
+   { Chercher ] }
+   While (Pos <= Length(S)) And (S[Pos] <> ']') Do Inc(Pos);
+   If Pos <= Length(S) Then Inc(Pos);
+  End;
+  Else Begin
+   { Pas de selecteur valide, restaurer position }
+   Pos := StartPos;
+  End;
+ End;
+
+ CSSParseSimpleSelector := Part;
+End;
+
+{ Parser un selecteur CSS complet }
+Function CSSParseSelector(Const S: AnsiString; Var Pos: LongInt): CSSSelector;
+Var
+ Sel: CSSSelector;
+ Part: CSSSelectorPart;
+ Combinator: Byte;
+ HasWhitespace: Boolean;
+ StartPos: LongInt;
+Begin
+ Sel.PartCount := 0;
+ Sel.Specificity := 0;
+
+ While Pos <= Length(S) Do Begin
+  StartPos := Pos;
+
+  { Detecter espaces (combinateur descendant) }
+  HasWhitespace := False;
+  While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Begin
+   HasWhitespace := True;
+   Inc(Pos);
+  End;
+
+  { Ignorer commentaires }
+  Pos := CSSSkipComment(S, Pos);
+
+  { Verifier fin de selecteur }
+  If (Pos > Length(S)) Or (S[Pos] In ['{', ',']) Then Break;
+
+  { Detecter combinateurs explicites }
+  Combinator := CSS_COMB_NONE;
+  If Sel.PartCount > 0 Then Begin
+   If S[Pos] = '>' Then Begin
+    Combinator := CSS_COMB_CHILD;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+   End
+   Else If S[Pos] = '+' Then Begin
+    Combinator := CSS_COMB_ADJACENT;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+   End
+   Else If S[Pos] = '~' Then Begin
+    Combinator := CSS_COMB_SIBLING;
+    Inc(Pos);
+    Pos := CSSSkipWhitespaceAndComments(S, Pos);
+   End
+   Else If HasWhitespace Then
+    Combinator := CSS_COMB_DESCENDANT;
+  End;
+
+  { Parser partie du selecteur }
+  Part := CSSParseSimpleSelector(S, Pos);
+  If Length(Part.Value) = 0 Then Break;
+
+  Part.Combinator := Combinator;
+
+  If Sel.PartCount < MAX_CSS_SELECTOR_PARTS Then Begin
+   Inc(Sel.PartCount);
+   Sel.Parts[Sel.PartCount] := Part;
+
+   { Calculer specificite }
+   Case Part.PartType Of
+    CSS_SEL_ID: Inc(Sel.Specificity, 10000);
+    CSS_SEL_CLASS, CSS_SEL_ATTRIBUTE, CSS_SEL_PSEUDO_CLASS: Inc(Sel.Specificity, 100);
+    CSS_SEL_TAG, CSS_SEL_PSEUDO_ELEMENT: Inc(Sel.Specificity, 1);
+   End;
+  End;
+ End;
+
+ CSSParseSelector := Sel;
+End;
+
+{ Parser les declarations CSS (proprietes) }
+Procedure CSSParseDeclarations(Const S: AnsiString; Var Pos: LongInt; Var Rule: CSSRule);
+Var
+ PropName, PropValue: String;
+ Token: CSSToken;
+ Important: Boolean;
+ StartValue: LongInt;
+Begin
+ { Chercher l'accolade ouvrante }
+ While (Pos <= Length(S)) And (S[Pos] <> '{') Do Inc(Pos);
+ If Pos <= Length(S) Then Inc(Pos);
+
+ While Pos <= Length(S) Do Begin
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos > Length(S)) Or (S[Pos] = '}') Then Break;
+
+  { Lire nom de propriete }
+  PropName := CSSReadIdent(S, Pos);
+  If Length(PropName) = 0 Then Begin
+   Inc(Pos);
+   Continue;
+  End;
+
+  { Chercher : }
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos <= Length(S)) And (S[Pos] = ':') Then Inc(Pos);
+
+  { Lire valeur }
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  StartValue := Pos;
+  PropValue := '';
+  Important := False;
+
+  While (Pos <= Length(S)) And Not (S[Pos] In [';', '}']) Do Begin
+   Inc(Pos);
+  End;
+
+  PropValue := BrowserTrimStr(Copy(S, StartValue, Pos - StartValue));
+
+  { Verifier !important }
+  If System.Pos('!important', HTMLLowerCase(PropValue)) > 0 Then Begin
+   Important := True;
+   PropValue := BrowserTrimStr(Copy(PropValue, 1, System.Pos('!important', HTMLLowerCase(PropValue)) - 1));
+  End;
+
+  { Ajouter propriete }
+  If (Length(PropName) > 0) And (Rule.PropertyCount < MAX_CSS_PROPERTIES) Then Begin
+   Inc(Rule.PropertyCount);
+   Rule.Properties[Rule.PropertyCount].PropId := CSSGetPropertyId(PropName);
+   { PropName est volontairement compact (String[32]) dans CSSRule pour
+     rester compatible avec Turbo Pascal. Tronquer explicitement les noms
+     inconnus trop longs evite l'exception de plage FPC; PropId a deja ete
+     calcule avec le nom complet juste au-dessus. }
+   Rule.Properties[Rule.PropertyCount].PropName := Copy(PropName, 1, 32);
+   Rule.Properties[Rule.PropertyCount].Value := PropValue;
+   Rule.Properties[Rule.PropertyCount].Important := Important;
+  End;
+
+  If (Pos <= Length(S)) And (S[Pos] = ';') Then Inc(Pos);
+ End;
+
+ If (Pos <= Length(S)) And (S[Pos] = '}') Then Inc(Pos);
+End;
+
+{ Parser une regle CSS directement dans sa destination. }
+Procedure CSSParseRule(Const S: AnsiString; Var Pos: LongInt; Var Rule: CSSRule);
+Var
+ Sel: CSSSelector;
+Begin
+ Rule.SelectorCount := 0;
+ Rule.PropertyCount := 0;
+
+ { Parser les selecteurs (separes par des virgules) }
+ While Pos <= Length(S) Do Begin
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos > Length(S)) Or (S[Pos] = '{') Then Break;
+
+  Sel := CSSParseSelector(S, Pos);
+  If Sel.PartCount > 0 Then Begin
+   If Rule.SelectorCount < MAX_CSS_SELECTORS Then Begin
+    Inc(Rule.SelectorCount);
+    Rule.Selectors[Rule.SelectorCount] := Sel;
+   End;
+  End;
+
+  Pos := CSSSkipWhitespaceAndComments(S, Pos);
+  If (Pos <= Length(S)) And (S[Pos] = ',') Then Begin
+   Inc(Pos);
+   Continue;
+  End;
+
+  Break;
+ End;
+
+ { Parser les declarations }
+ If Rule.SelectorCount > 0 Then
+  CSSParseDeclarations(S, Pos, Rule);
+
+End;
+
+{ Parser une feuille de style CSS complete }
+Procedure CSSParseStylesheet(Const CSS: AnsiString);
+Var
+ Pos: LongInt;
+ RuleIndex: Integer;
+ GuardPos: LongInt;
+ BraceLevel: Integer;
+Begin
+ Pos := 1;
+
+ While (Pos >= 1) And (Pos <= Length(CSS)) Do Begin
+  { Filet de securite : ce parseur ecrit a la main ne reconnait pas
+    toute la syntaxe CSS3 (ex: selecteurs non standards). Si un appel
+    plus bas ne fait aucun progres (ou corrompt Pos), on force
+    l'avancement d'au moins un caractere plutot que de boucler/planter
+    indefiniment sur une feuille de style reelle complexe. }
+  GuardPos := Pos;
+
+  Pos := CSSSkipWhitespaceAndComments(CSS, Pos);
+  If Pos > Length(CSS) Then Break;
+
+  { Ignorer les at-rules pour l'instant (sauf @charset) }
+  If CSS[Pos] = '@' Then Begin
+   Inc(Pos);
+   While (Pos <= Length(CSS)) And (CSS[Pos] <> ';') And (CSS[Pos] <> '{') Do
+    Inc(Pos);
+   If (Pos <= Length(CSS)) And (CSS[Pos] = '{') Then Begin
+    { At-rule avec bloc, par exemple @media : sauter le bloc en
+      comptant les accolades imbriquees, sinon la 1ere regle a
+      l'interieur du bloc referme prematurement le @media et derobe
+      le reste du fichier au lieu de la feuille de style globale. }
+    Inc(Pos);
+    BraceLevel := 1;
+    While (Pos <= Length(CSS)) And (BraceLevel > 0) Do Begin
+     If CSS[Pos] = '{' Then Inc(BraceLevel)
+     Else If CSS[Pos] = '}' Then Dec(BraceLevel);
+     Inc(Pos);
+    End;
+   End
+   Else If Pos <= Length(CSS) Then Inc(Pos);
+   GuardPos := -1; { progres garanti par les boucles ci-dessus }
+  End
+  Else Begin
+   { Parser directement dans la feuille globale pour eviter une CSSRule
+     locale de plusieurs dizaines de Ko sur la pile. }
+   If CSSGlobalStylesheet.RuleCount < MAX_CSS_RULES Then Begin
+    RuleIndex := CSSGlobalStylesheet.RuleCount + 1;
+    CSSParseRule(CSS, Pos, CSSGlobalStylesheet.Rules[RuleIndex]);
+    If CSSGlobalStylesheet.Rules[RuleIndex].SelectorCount > 0 Then
+     CSSGlobalStylesheet.RuleCount := RuleIndex;
+   End
+   Else Begin
+    While (Pos <= Length(CSS)) And (CSS[Pos] <> '}') Do Inc(Pos);
+    If Pos <= Length(CSS) Then Inc(Pos);
+   End;
+  End;
+
+  { Garde anti-blocage : si rien n'a fait progresser Pos (ou si Pos est
+    devenu invalide), on force un caractere d'avance. }
+  If (GuardPos >= 0) And ((Pos <= GuardPos) Or (Pos < 1)) Then
+   Pos := GuardPos + 1;
+ End;
+End;
+
+{ Affecter une propriete CSS resolue au champ correspondant du style.
+  Partagee par le style inline et les deux passes de cascade (normale
+  puis !important) pour eviter de dupliquer ce grand Case et faciliter
+  l'ajout futur de nouvelles proprietes en un seul endroit. }
+Procedure CSSAssignProperty(PropId: Byte; Const Value: String; Var Style: DOMStyle);
+Begin
+ Case PropId Of
+  CSS_PROP_COLOR: Style.Color := Value;
+  CSS_PROP_BACKGROUND_COLOR: Style.BackgroundColor := Value;
+  CSS_PROP_BACKGROUND: Begin
+   Style.BackgroundColor := Value;
+   If System.Pos('url(', HTMLLowerCase(Value)) > 0 Then
+    Style.BackgroundImage := Value;
+  End;
+  CSS_PROP_BACKGROUND_POSITION: Style.BackgroundPosition := Value;
+  CSS_PROP_BACKGROUND_REPEAT: Style.BackgroundRepeat := Value;
+  CSS_PROP_BACKGROUND_ATTACHMENT: Style.BackgroundAttachment := Value;
+  CSS_PROP_OPACITY: Style.Opacity := Value;
+  CSS_PROP_BACKGROUND_IMAGE: Style.BackgroundImage := Value;
+  CSS_PROP_FONT_SIZE: Style.FontSize := Value;
+  CSS_PROP_FONT_WEIGHT: Style.FontWeight := Value;
+  CSS_PROP_FONT_STYLE: Style.FontStyle := Value;
+  CSS_PROP_FONT: Style.Font := Value;
+  CSS_PROP_FONT_VARIANT: Style.FontVariant := Value;
+  CSS_PROP_TEXT_DECORATION: Style.TextDecoration := Value;
+  CSS_PROP_TEXT_ALIGN: Style.TextAlign := Value;
+  CSS_PROP_DISPLAY: Style.Display := Value;
+  CSS_PROP_VISIBILITY: Style.Visibility := Value;
+  CSS_PROP_WIDTH: Style.Width := Value;
+  CSS_PROP_HEIGHT: Style.Height := Value;
+  CSS_PROP_MARGIN: Style.Margin := Value;
+  CSS_PROP_MARGIN_TOP: Style.MarginTop := Value;
+  CSS_PROP_MARGIN_RIGHT: Style.MarginRight := Value;
+  CSS_PROP_MARGIN_BOTTOM: Style.MarginBottom := Value;
+  CSS_PROP_MARGIN_LEFT: Style.MarginLeft := Value;
+  CSS_PROP_PADDING: Style.Padding := Value;
+  CSS_PROP_PADDING_TOP: Style.PaddingTop := Value;
+  CSS_PROP_PADDING_RIGHT: Style.PaddingRight := Value;
+  CSS_PROP_PADDING_BOTTOM: Style.PaddingBottom := Value;
+  CSS_PROP_PADDING_LEFT: Style.PaddingLeft := Value;
+  CSS_PROP_BORDER: Style.Border := Value;
+  CSS_PROP_BORDER_COLOR: Style.BorderColor := Value;
+  CSS_PROP_BORDER_WIDTH: Style.BorderWidth := Value;
+  CSS_PROP_BORDER_STYLE: Style.BorderStyle := Value;
+  CSS_PROP_BORDER_TOP: Style.BorderTop := Value;
+  CSS_PROP_BORDER_RIGHT: Style.BorderRight := Value;
+  CSS_PROP_BORDER_BOTTOM: Style.BorderBottom := Value;
+  CSS_PROP_BORDER_LEFT: Style.BorderLeft := Value;
+  CSS_PROP_BORDER_TOP_COLOR: Style.BorderTopColor := Value;
+  CSS_PROP_BORDER_TOP_STYLE: Style.BorderTopStyle := Value;
+  CSS_PROP_BORDER_TOP_WIDTH: Style.BorderTopWidth := Value;
+  CSS_PROP_BORDER_RIGHT_COLOR: Style.BorderRightColor := Value;
+  CSS_PROP_BORDER_RIGHT_STYLE: Style.BorderRightStyle := Value;
+  CSS_PROP_BORDER_RIGHT_WIDTH: Style.BorderRightWidth := Value;
+  CSS_PROP_BORDER_BOTTOM_COLOR: Style.BorderBottomColor := Value;
+  CSS_PROP_BORDER_BOTTOM_STYLE: Style.BorderBottomStyle := Value;
+  CSS_PROP_BORDER_BOTTOM_WIDTH: Style.BorderBottomWidth := Value;
+  CSS_PROP_BORDER_LEFT_COLOR: Style.BorderLeftColor := Value;
+  CSS_PROP_BORDER_LEFT_STYLE: Style.BorderLeftStyle := Value;
+  CSS_PROP_BORDER_LEFT_WIDTH: Style.BorderLeftWidth := Value;
+  CSS_PROP_POSITION: Style.PositionProp := Value;
+  CSS_PROP_TOP: Style.TopProp := Value;
+  CSS_PROP_RIGHT: Style.RightProp := Value;
+  CSS_PROP_LEFT: Style.LeftProp := Value;
+  CSS_PROP_BOTTOM: Style.BottomProp := Value;
+  CSS_PROP_FLOAT: Style.Float := Value;
+  CSS_PROP_CLEAR: Style.ClearProp := Value;
+  CSS_PROP_LINE_HEIGHT: Style.LineHeight := Value;
+  CSS_PROP_OVERFLOW: Style.Overflow := Value;
+  CSS_PROP_OVERFLOW_X: Style.OverflowX := Value;
+  CSS_PROP_OVERFLOW_Y: Style.OverflowY := Value;
+  CSS_PROP_LIST_STYLE: Style.ListStyle := Value;
+  CSS_PROP_LIST_STYLE_TYPE: Style.ListStyleType := Value;
+  CSS_PROP_LIST_STYLE_IMAGE: Style.ListStyleImage := Value;
+  CSS_PROP_LIST_STYLE_POSITION: Style.ListStylePosition := Value;
+  CSS_PROP_LETTER_SPACING: Style.LetterSpacing := Value;
+  CSS_PROP_WORD_SPACING: Style.WordSpacing := Value;
+  CSS_PROP_TEXT_INDENT: Style.TextIndent := Value;
+  CSS_PROP_TEXT_TRANSFORM: Style.TextTransform := Value;
+  CSS_PROP_MAX_HEIGHT: Style.MaxHeight := Value;
+  CSS_PROP_MAX_WIDTH: Style.MaxWidth := Value;
+  CSS_PROP_MIN_HEIGHT: Style.MinHeight := Value;
+  CSS_PROP_MIN_WIDTH: Style.MinWidth := Value;
+  CSS_PROP_Z_INDEX: Style.ZIndex := Value;
+  CSS_PROP_VERTICAL_ALIGN: Style.VerticalAlign := Value;
+  CSS_PROP_WHITE_SPACE: Style.WhiteSpace := Value;
+ End;
+End;
+
+{ Parser un attribut style inline }
+Procedure CSSParseInlineStyle(Const StyleAttr: String; Var Style: DOMStyle);
+Var
+ Pos: LongInt;
+ PropName, PropValue: String;
+ StartValue: LongInt;
+Begin
+ Pos := 1;
+
+ While Pos <= Length(StyleAttr) Do Begin
+  Pos := CSSSkipWhitespaceAndComments(StyleAttr, Pos);
+  If Pos > Length(StyleAttr) Then Break;
+
+  { Lire nom de propriete }
+  PropName := HTMLLowerCase(CSSReadIdent(StyleAttr, Pos));
+  If Length(PropName) = 0 Then Begin
+   Inc(Pos);
+   Continue;
+  End;
+
+  { Chercher : }
+  Pos := CSSSkipWhitespaceAndComments(StyleAttr, Pos);
+  If (Pos <= Length(StyleAttr)) And (StyleAttr[Pos] = ':') Then Inc(Pos);
+
+  { Lire valeur }
+  Pos := CSSSkipWhitespaceAndComments(StyleAttr, Pos);
+  StartValue := Pos;
+  While (Pos <= Length(StyleAttr)) And Not (StyleAttr[Pos] In [';']) Do
+   Inc(Pos);
+  PropValue := BrowserTrimStr(Copy(StyleAttr, StartValue, Pos - StartValue));
+
+  { Appliquer la propriete au style - meme table que les feuilles de
+    style (CSSGetPropertyId/CSSAssignProperty), pour que le style
+    inline reconnaisse exactement les memes proprietes. }
+  CSSAssignProperty(CSSGetPropertyId(PropName), PropValue, Style);
+
+  If (Pos <= Length(StyleAttr)) And (StyleAttr[Pos] = ';') Then Inc(Pos);
+ End;
+End;
+
+{ Verifier si un selecteur correspond a un element }
+Function CSSMatchSelector(Const Sel: CSSSelector; Element: HTMLNodePtr): Boolean;
+Var
+ I: Integer;
+ Part: CSSSelectorPart;
+ Node: HTMLNodePtr;
+ ClassName, NodeClass: String;
+ Match: Boolean;
+Begin
+ CSSMatchSelector := False;
+ If Element = Nil Then Exit;
+ If Sel.PartCount = 0 Then Exit;
+
+ Node := Element;
+
+ { Parcourir les parties du selecteur de droite a gauche }
+ For I := Sel.PartCount DownTo 1 Do Begin
+  If Node = Nil Then Exit;
+  Part := Sel.Parts[I];
+
+  { Verifier la correspondance }
+  Repeat
+   Match := False;
+   Case Part.PartType Of
+    CSS_SEL_TAG: Begin
+     Match := HTMLLowerCase(Node^.TagName) = Part.Value;
+    End;
+    CSS_SEL_CLASS: Begin
+     NodeClass := DOMGetAttribute(Node, 'class');
+     Match := DOMHasClass(Node, Part.Value);
+    End;
+    CSS_SEL_ID: Begin
+     Match := DOMGetAttribute(Node, 'id') = Part.Value;
+    End;
+    CSS_SEL_UNIVERSAL: Begin
+     Match := True;
+    End;
+    CSS_SEL_ATTRIBUTE: Begin
+     Match := DOMHasAttribute(Node, Part.AttrName);
+     If Match And (Part.AttrOp > 0) Then
+      Match := DOMGetAttribute(Node, Part.AttrName) = Part.AttrValue;
+    End;
+   End;
+
+   If Not Match Then Begin
+    Case Part.Combinator Of
+     CSS_COMB_DESCENDANT: Begin
+      { Remonter dans l'arbre }
+      Node := Node^.Parent;
+      If Node = Nil Then Exit;
+     End;
+     Else Exit;
+    End;
+   End;
+  Until Match;
+
+  { Passer au noeud suivant selon le combinateur : Sel.Parts[I] (et
+    non Parts[I-1]) contient le combinateur qui relie la partie I a
+    la partie I-1, puisque c'est la valeur enregistree par
+    CSSParseSelector juste avant d'ajouter la partie I. Avec le
+    mauvais index, un selecteur compose comme "li.Foo" (Combinator =
+    CSS_COMB_NONE) etait traite comme un descendant ("li .Foo"),
+    remontant vers le parent au lieu de re-tester le meme element -
+    ce qui faisait silencieusement echouer la quasi-totalite des
+    selecteurs composes (balise+classe, balise+id, etc.). }
+  If I > 1 Then Begin
+   Case Sel.Parts[I].Combinator Of
+    CSS_COMB_NONE: { Selecteur compose : rester sur le meme element } ;
+    CSS_COMB_DESCENDANT: Node := Node^.Parent;
+    CSS_COMB_CHILD: Node := Node^.Parent;
+    CSS_COMB_ADJACENT: Node := DOMGetPreviousSibling(Node);
+    CSS_COMB_SIBLING: Node := DOMGetPreviousSibling(Node);
+   End;
+  End;
+ End;
+
+ CSSMatchSelector := True;
+End;
+
+{ Obtenir les styles CSS appliques a un element }
+Procedure CSSGetComputedStyle(Element: HTMLNodePtr; Var Style: DOMStyle);
+Var
+ I, J, K: Integer;
+ InlineStyle: String;
+Begin
+ { Initialiser avec valeurs par defaut }
+ FillChar(Style,SizeOf(Style),0);
+ Style.Color := '';
+ Style.BackgroundColor := '';
+ Style.BackgroundPosition := '';
+ Style.BackgroundImage := '';
+ Style.Opacity := '';
+ Style.FontSize := '';
+ Style.FontWeight := '';
+ Style.FontStyle := '';
+ Style.TextDecoration := '';
+ Style.Display := '';
+ Style.Visibility := '';
+ Style.Width := '';
+ Style.Height := '';
+ Style.Margin := '';
+ Style.Padding := '';
+ Style.Border := '';
+ Style.BorderTop := '';
+ Style.BorderRight := '';
+ Style.BorderBottom := '';
+ Style.BorderLeft := '';
+
+ If Element = Nil Then Exit;
+
+ { Appliquer les regles de la feuille de style }
+ For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
+  For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
+   If CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
+    { Appliquer les proprietes }
+    For K := 1 To CSSGlobalStylesheet.Rules[I].PropertyCount Do Begin
+     CSSAssignProperty(CSSGlobalStylesheet.Rules[I].Properties[K].PropId,
+      CSSGlobalStylesheet.Rules[I].Properties[K].Value,Style);
+    End;
+    Break;
+   End;
+  End;
+ End;
+
+ { Appliquer le style inline (priorite maximale) }
+ InlineStyle := DOMGetAttribute(Element, 'style');
+ If Length(InlineStyle) > 0 Then
+  CSSParseInlineStyle(InlineStyle, Style);
+End;
+
+{ Convertir une couleur CSS en index de couleur EGA/VGA }
+{ Table RGB de la palette EGA/VGA 16 couleurs standard (index = couleur
+  BGI 0..15), utilisee pour trouver la couleur la plus proche d'une
+  couleur CSS hexadecimale ou rgb(). }
+Const
+ EGAPaletteR: Array[0..15] Of Byte = (0,0,0,0,170,170,170,170,85,85,85,85,255,255,255,255);
+ EGAPaletteG: Array[0..15] Of Byte = (0,0,170,170,0,0,85,170,85,85,255,255,85,85,255,255);
+ EGAPaletteB: Array[0..15] Of Byte = (0,170,0,170,0,170,0,170,85,255,85,255,85,255,85,255);
+
+{ Trouver l'index EGA/VGA (0..15) le plus proche d'une couleur RGB 24
+  bits, par distance euclidienne au carre (pas besoin de racine pour
+  comparer). R/G/B prennent ici un Integer (pas un Byte) et sont
+  bornes explicitement a 0..255 : une valeur CSS rgb()/rgba() mal
+  formee (rare mais possible dans une feuille de style reelle de
+  plusieurs dizaines de Ko) peut sortir de cette plage, et la
+  conversion implicite vers un parametre Byte declenchait alors une
+  ERangeError - constate intermittemment, probablement selon le
+  contenu exact en cache au moment du parsing. }
+Function CSSRGBToIndex(R, G, B: Integer): Integer;
+Var
+ I, DR, DG, DB: Integer;
+ Dist, BestDist: LongInt;
+ BestIdx: Integer;
+Begin
+ If R < 0 Then R := 0 Else If R > 255 Then R := 255;
+ If G < 0 Then G := 0 Else If G > 255 Then G := 255;
+ If B < 0 Then B := 0 Else If B > 255 Then B := 255;
+ BestIdx := 0;
+ BestDist := MaxLongInt;
+ For I := 0 To 15 Do Begin
+  DR := R - EGAPaletteR[I];
+  DG := G - EGAPaletteG[I];
+  DB := B - EGAPaletteB[I];
+  Dist := LongInt(DR) * DR + LongInt(DG) * DG + LongInt(DB) * DB;
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestIdx := I;
+  End;
+ End;
+ If BestIdx = 0 Then CSSRGBToIndex := HTMLBlackColorIndex
+ Else CSSRGBToIndex := BestIdx;
+End;
+
+{ Convertir un chiffre hexadecimal en valeur 0..15, -1 si invalide }
+Function CSSHexDigit(C: Char): Integer;
+Begin
+ If C In ['0'..'9'] Then CSSHexDigit := Ord(C) - Ord('0')
+ Else If C In ['A'..'F'] Then CSSHexDigit := Ord(C) - Ord('A') + 10
+ Else If C In ['a'..'f'] Then CSSHexDigit := Ord(C) - Ord('a') + 10
+ Else CSSHexDigit := -1;
+End;
+
+{ Parser une couleur hexadecimale CSS (#RGB ou #RRGGBB) ; retourne -1
+  si la chaine n'est pas un hexadecimal valide. }
+Function CSSParseHexColor(Const ColorStr: String): Integer;
+Var
+ H: String;
+ R, G, B: Integer;
+ D1, D2, D3, D4, D5, D6: Integer;
+Begin
+ CSSParseHexColor := -1;
+ If (Length(ColorStr) = 0) Or (ColorStr[1] <> '#') Then Exit;
+ H := Copy(ColorStr, 2, Length(ColorStr) - 1);
+
+ If Length(H) = 3 Then Begin
+  D1 := CSSHexDigit(H[1]); D2 := CSSHexDigit(H[2]); D3 := CSSHexDigit(H[3]);
+  If (D1 < 0) Or (D2 < 0) Or (D3 < 0) Then Exit;
+  R := D1 * 16 + D1; G := D2 * 16 + D2; B := D3 * 16 + D3;
+ End Else If Length(H) = 6 Then Begin
+  D1 := CSSHexDigit(H[1]); D2 := CSSHexDigit(H[2]);
+  D3 := CSSHexDigit(H[3]); D4 := CSSHexDigit(H[4]);
+  D5 := CSSHexDigit(H[5]); D6 := CSSHexDigit(H[6]);
+  If (D1 < 0) Or (D2 < 0) Or (D3 < 0) Or (D4 < 0) Or (D5 < 0) Or (D6 < 0) Then Exit;
+  R := D1 * 16 + D2; G := D3 * 16 + D4; B := D5 * 16 + D6;
+ End Else
+  Exit;
+
+ CSSParseHexColor := CSSRGBToIndex(R, G, B);
+End;
+
+{ Parser une couleur CSS rgb(r,g,b) ou rgba(r,g,b,a) ; retourne -1 si
+  la chaine n'a pas ce format. }
+Function CSSParseRGBFunc(Const ColorStr: String): Integer;
+Var
+ LowerColor, NumStr: String;
+ P, I: Integer;
+ Vals: Array[1..3] Of Integer;
+ ValCount, Code: Integer;
+Begin
+ CSSParseRGBFunc := -1;
+ LowerColor := HTMLLowerCase(ColorStr);
+ P := System.Pos('(', LowerColor);
+ If ((System.Pos('rgb', LowerColor) <> 1) And (System.Pos('rgba', LowerColor) <> 1)) Or
+    (P = 0) Then Exit;
+
+ ValCount := 0;
+ I := P + 1;
+ While (I <= Length(LowerColor)) And (ValCount < 3) Do Begin
+  { En mode Turbo Pascal, AND peut evaluer ses deux operandes. Il ne faut
+    donc jamais combiner le test de borne et LowerColor[I] dans la meme
+    expression : une fonction rgb( mal formee faisait lire Length+1 et
+    provoquait ERangeError avec les controles d'execution de FPC. }
+  While I <= Length(LowerColor) Do Begin
+   If Not (LowerColor[I] In [' ', ',']) Then Break;
+   Inc(I);
+  End;
+  If I > Length(LowerColor) Then Exit;
+
+  NumStr := '';
+  While I <= Length(LowerColor) Do Begin
+   If Not (LowerColor[I] In ['0'..'9']) Then Break;
+   { Dix chiffres suffisent largement pour une composante. Cette limite
+     empeche aussi un entier CSS hostile de deborder Integer dans Val. }
+   If Length(NumStr) >= 10 Then Exit;
+   NumStr := NumStr + LowerColor[I];
+   Inc(I);
+  End;
+  If Length(NumStr) = 0 Then Break;
+  Inc(ValCount);
+  Val(NumStr, Vals[ValCount], Code);
+  If Code <> 0 Then Exit;
+  { CSS borne les composantes RGB dans l'intervalle representable. }
+  If Vals[ValCount] < 0 Then Vals[ValCount] := 0;
+  If Vals[ValCount] > 255 Then Vals[ValCount] := 255;
+
+  While I <= Length(LowerColor) Do Begin
+   If (LowerColor[I] = ',') Or (LowerColor[I] = ')') Then Break;
+   Inc(I);
+  End;
+  If I > Length(LowerColor) Then Exit;
+  If LowerColor[I] = ',' Then Inc(I);
+ End;
+ If ValCount < 3 Then Exit;
+
+ CSSParseRGBFunc := CSSRGBToIndex(Vals[1], Vals[2], Vals[3]);
+End;
+
+Const
+ { 'black' est resolu au moment de l'appel via HTMLBlackColorIndex, une
+   VARIABLE d'execution (0 en VGA 16 couleurs, 16 en D8bit - voir
+   InitializeHTMLPalette) - impossible a mettre dans une constante
+   typee CSSNamedColorTable ci-dessous. Cette valeur sentinelle, hors de
+   la plage valide -1..15 d'un index de couleur, marque cette entree
+   pour que CSSColorToIndex la resolve a part apres la recherche. }
+ CSS_COLOR_BLACK_SENTINEL = -2;
+
+Type
+ CSSNamedColorEntry = Record
+  Name: String[15];
+  Idx: Integer;
+ End;
+
+Const
+ CSS_NAMED_COLOR_COUNT = 27;
+ { Table des couleurs nommees CSS/HTML, triee par ordre ALPHABETIQUE -
+   condition necessaire a la recherche dichotomique de
+   CSSFindNamedColor ci-dessous (meme principe que CSSPropertyTable/
+   HTMLTagTable). Les doublons d'index (blue/navy, cyan/teal,
+   red/maroon, magenta/purple, brown/olive/orange, lightgray/silver,
+   darkgray/gray, lightgreen/lime, lightcyan/aqua,
+   lightmagenta/fuchsia) reproduisent exactement le mapping de
+   l'ancien code. }
+ CSSNamedColorTable: Array[0..CSS_NAMED_COLOR_COUNT - 1] Of CSSNamedColorEntry = (
+  (Name: 'aqua';         Idx: 11),
+  (Name: 'black';        Idx: CSS_COLOR_BLACK_SENTINEL),
+  (Name: 'blue';         Idx: 1),
+  (Name: 'brown';        Idx: 6),
+  (Name: 'cyan';         Idx: 3),
+  (Name: 'darkgray';     Idx: 8),
+  (Name: 'fuchsia';      Idx: 13),
+  (Name: 'gray';         Idx: 8),
+  (Name: 'green';        Idx: 2),
+  (Name: 'lightblue';    Idx: 9),
+  (Name: 'lightcyan';    Idx: 11),
+  (Name: 'lightgray';    Idx: 7),
+  (Name: 'lightgreen';   Idx: 10),
+  (Name: 'lightmagenta'; Idx: 13),
+  (Name: 'lightred';     Idx: 12),
+  (Name: 'lime';         Idx: 10),
+  (Name: 'magenta';      Idx: 5),
+  (Name: 'maroon';       Idx: 4),
+  (Name: 'navy';         Idx: 1),
+  (Name: 'olive';        Idx: 6),
+  (Name: 'orange';       Idx: 6),
+  (Name: 'purple';       Idx: 5),
+  (Name: 'red';          Idx: 4),
+  (Name: 'silver';       Idx: 7),
+  (Name: 'teal';         Idx: 3),
+  (Name: 'white';        Idx: 15),
+  (Name: 'yellow';       Idx: 14)
+ );
+
+{ Recherche dichotomique dans CSSNamedColorTable - retourne False si
+  LowerColor (deja en minuscules) n'est pas une couleur nommee connue. }
+Function CSSFindNamedColor(Const LowerColor: String; Var Idx: Integer): Boolean;
+Var
+ Lo, Hi, Mid: Integer;
+Begin
+ CSSFindNamedColor := False;
+ Lo := 0;
+ Hi := CSS_NAMED_COLOR_COUNT - 1;
+ While Lo <= Hi Do Begin
+  Mid := (Lo + Hi) Div 2;
+  If CSSNamedColorTable[Mid].Name = LowerColor Then Begin
+   Idx := CSSNamedColorTable[Mid].Idx;
+   CSSFindNamedColor := True;
+   Exit;
+  End
+  Else If CSSNamedColorTable[Mid].Name < LowerColor Then
+   Lo := Mid + 1
+  Else
+   Hi := Mid - 1;
+ End;
+End;
+
+Function CSSColorToIndex(Const ColorStr: String): Integer;
+Var
+ LowerColor: String;
+ HexResult: Integer;
+ NamedIdx: Integer;
+Begin
+ { Couleurs hexadecimales (#RGB / #RRGGBB) - format le plus courant en
+   CSS reel, totalement absent ici auparavant : toute couleur definie
+   en hexadecimal etait silencieusement ignoree. }
+ If (Length(ColorStr) > 0) And (ColorStr[1] = '#') Then Begin
+  HexResult := CSSParseHexColor(ColorStr);
+  CSSColorToIndex := HexResult;
+  Exit;
+ End;
+
+ { Fonctions rgb()/rgba() }
+ If (System.Pos('rgb', HTMLLowerCase(ColorStr)) = 1) Then Begin
+  CSSColorToIndex := CSSParseRGBFunc(ColorStr);
+  Exit;
+ End;
+
+ LowerColor := HTMLLowerCase(ColorStr);
+
+ { Couleurs nommees (CSS + HTML standard) - recherche dichotomique au
+   lieu des 27 comparaisons Si/SinonSi d'avant. }
+ If CSSFindNamedColor(LowerColor, NamedIdx) Then Begin
+  If NamedIdx = CSS_COLOR_BLACK_SENTINEL Then
+   CSSColorToIndex := HTMLBlackColorIndex
+  Else
+   CSSColorToIndex := NamedIdx;
+ End Else
+  CSSColorToIndex := -1;
+End;
+
+{ Extraire le CSS des balises <style> du document }
+{ Resoudre le chemin d'une feuille de style externe (href de <link>)
+  par rapport a l'URL/fichier courant - meme principe que
+  BMPBuildImagePath pour les images (cf. plus loin dans ce fichier). }
+{ BOGUE REEL corrige (2026-09-21, signale par l'utilisateur - "il ne       }
+{ semble pas charger les CSS lorsqu'il provient d'un URL") : cette         }
+{ fonction traitait TOUJOURS Src/CurrentURL comme des chemins de FICHIER   }
+{ locaux, meme quand la page courante venait d'une VRAIE URL http(s)://    }
+{ - un href commencant par '/' (racine du site, tres courant, ex.          }
+{ "/CODER/style.css") etait renvoye TEL QUEL puis passe a                  }
+{ LoadTextFileAsString, qui cherchait un fichier local inexistant et       }
+{ echouait silencieusement (Length(ExternalCSS)=0, aucune erreur           }
+{ visible). Corrige en resolvant Src en URL ABSOLUE (origine schema://hote }
+{ + chemin racine, ou repertoire de CurrentURL + chemin relatif) des que   }
+{ CurrentURL est elle-meme une URL distante - voir CSSExtractFromDocument  }
+{ ci-dessous pour le telechargement reel via Browser_HttpGet qui consomme  }
+{ ensuite ce resultat. }
+Function CSSBuildStylesheetPath(Const Src: String): String;
+Var
+ BasePath: String;
+ I, SchemeEnd, HostEnd: Integer;
+ Origin: String;
+ LowerCurrent: String;
+ Found: Boolean;
+Begin
+ { Src deja une URL absolue (http/https/ftp) - aucune resolution
+   necessaire. ftp:// ajoutee 2026-09-26 : le listing de repertoire FTP
+   (voir Browser_FtpListDirectory) genere toujours des liens ftp://
+   DEJA absolus, pour eviter toute ambiguite de resolution relative -
+   sans cette entree, ils auraient ete mal reinterpretes comme un
+   chemin de fichier local plus bas dans cette fonction. }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or
+    (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(Src), 1, 6) = 'ftp://') Then Begin
+  CSSBuildStylesheetPath := Src;
+  Exit;
+ End;
+
+ LowerCurrent := HTMLLowerCase(CurrentURL);
+ If (Copy(LowerCurrent, 1, 7) = 'http://') Or (Copy(LowerCurrent, 1, 8) = 'https://') Then Begin
+  If (Length(Src) > 1) And (Src[1] = '/') And (Src[2] = '/') Then Begin
+   { href "protocole-relatif" ("//hote/chemin") : reprend le SCHEMA de la  }
+   { page courante (http/https) sans reutiliser son hote - a distinguer du }
+   { cas "racine du site" juste en dessous (1 seul '/'), sinon l'origine   }
+   { complete serait doublement prefixee ("https://hoteA//hoteB/..."). }
+   If Copy(LowerCurrent, 1, 8) = 'https://' Then CSSBuildStylesheetPath := 'https:' + Src
+   Else CSSBuildStylesheetPath := 'http:' + Src;
+   Exit;
+  End;
+  If (Length(Src) > 0) And (Src[1] = '/') Then Begin
+   { href "racine du site" : origine (schema://hote[:port]) + chemin. }
+   SchemeEnd := Pos('://', CurrentURL);
+   Origin := CurrentURL;
+   If SchemeEnd > 0 Then Begin
+    HostEnd := SchemeEnd + 3;
+    While (HostEnd <= Length(CurrentURL)) And (CurrentURL[HostEnd] <> '/') Do Inc(HostEnd);
+    Origin := Copy(CurrentURL, 1, HostEnd - 1);
+   End;
+   CSSBuildStylesheetPath := Origin + Src;
+   Exit;
+  End;
+  { href relatif : repertoire de la page courante (jusqu'au dernier '/'). }
+  BasePath := CurrentURL;
+  For I := Length(BasePath) DownTo 1 Do Begin
+   If BasePath[I] = '/' Then Begin
+    BasePath := Copy(BasePath, 1, I);
+    Break;
+   End;
+  End;
+  CSSBuildStylesheetPath := BasePath + Src;
+  Exit;
+ End;
+
+ { Page locale (fichier hote) - comportement INCHANGE d'avant ce correctif. }
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  CSSBuildStylesheetPath := Src;
+  Exit;
+ End;
+
+ { BOGUE REEL corrige (2026-09-25, trouve en verifiant la soumission de     }
+ { formulaire - action="result.html" depuis une page locale ouverte par un  }
+ { simple nom de fichier SANS repertoire, ex. "form_test.html", produisait  }
+ { "form_test.htmlresult.html" au lieu de "result.html") : si CurrentURL ne  }
+ { contient AUCUN separateur '/' ou '\' (fichier ouvert par son simple nom, }
+ { repertoire courant du processus implicite), la boucle ci-dessous ne      }
+ { trouvait jamais de separateur et laissait BasePath EGAL A CurrentURL     }
+ { EN ENTIER (nom de fichier inclus) au lieu de le vider - le nom de        }
+ { l'ancienne page se retrouvait alors concatene EN PREFIXE du nouveau       }
+ { chemin relatif. Corrige en ne conservant BasePath que si un separateur    }
+ { a reellement ete trouve. }
+ BasePath := CurrentURL;
+ Found := False;
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Found := True;
+   Break;
+  End;
+ End;
+ If Not Found Then BasePath := '';
+
+ CSSBuildStylesheetPath := BasePath + Src;
+End;
+
+{ Charger un fichier texte entier (feuille de style externe) dans une
+  AnsiString, sans la limite de 255 caracteres des String courtes
+  (directive H moins de ce fichier) : indispensable car une feuille
+  de style reelle depasse presque toujours 255 octets. }
+Function LoadTextFileAsString(Const FileName: String): AnsiString;
+Var
+ F: File;
+ Buf: Array[1..4096] Of Char;
+ BytesRead: Word;
+ Total: AnsiString;
+Begin
+ Total := '';
+ Assign(F, FileName);
+ {$I-}
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  LoadTextFileAsString := '';
+  Exit;
+ End;
+ Repeat
+  BlockRead(F, Buf, SizeOf(Buf), BytesRead);
+  If BytesRead > 0 Then Begin
+   SetLength(Total, Length(Total) + BytesRead);
+   Move(Buf, Total[Length(Total) - BytesRead + 1], BytesRead);
+  End;
+ Until BytesRead < SizeOf(Buf);
+ Close(F);
+ LoadTextFileAsString := Total;
+End;
+
+Procedure DevToolsAddCSSSource(Const Name:String;Const Content:AnsiString);
+Begin
+ If(Length(Content)=0)Or(DevCSSSourceCount>=32)Then Exit;
+ Inc(DevCSSSourceCount);DevCSSSources[DevCSSSourceCount].Name:=Copy(Name,1,255);
+ DevCSSSources[DevCSSSourceCount].Content:=Content;
+ If DevCSSSelected=0Then DevCSSSelected:=1
+End;
+
+Procedure CSSExtractFromDocument;
+Var
+ List: DOMNodeList;
+ Item: DOMNodeListItemPtr;
+ StyleContent: AnsiString;
+ RelAttr, HrefAttr, CSSPath: String;
+ ExternalCSS: AnsiString;
+ {$IFDEF WINDOWS}
+ CSSStatusCode: LongInt;
+  {$ENDIF}
+ InlineStyleNumber:Integer;
+Begin
+ { Repartir d'une feuille de style VIDE a chaque appel - sans ce reset,
+   chaque appel (ex: un rechargement de page reutilisant la meme
+   CSSGlobalStylesheet globale) rajoutait ses regles A LA SUITE des
+   precedentes au lieu de les remplacer, jusqu'a saturer MAX_CSS_RULES. }
+ CSSGlobalStylesheet.RuleCount := 0;
+ DevCSSSourceCount:=0;DevCSSSelected:=0;DevCSSFirstLine:=0;InlineStyleNumber:=0;
+
+ { Feuilles de style en ligne : <style>...</style> }
+ List := DOMGetElementsByTagName('style');
+ Item := List.First;
+ While Item <> Nil Do Begin
+  StyleContent := DOMGetTextContent(Item^.Node);
+  If Length(StyleContent) > 0 Then Begin
+   Inc(InlineStyleNumber);
+   DevToolsAddCSSSource('<style> #'+IntToStr(InlineStyleNumber),StyleContent);
+   CSSParseStylesheet(StyleContent);
+  End;
+  Item := Item^.Next;
+ End;
+ DOMFreeNodeList(List);
+
+ { Feuilles de style externes : <link rel="stylesheet" href="..."> }
+ List := DOMGetElementsByTagName('link');
+ Item := List.First;
+ While Item <> Nil Do Begin
+  RelAttr := HTMLLowerCase(GetHTMLAttribute(Item^.Node, 'rel'));
+  If System.Pos('stylesheet',RelAttr)>0Then Begin
+   HrefAttr := GetHTMLAttribute(Item^.Node, 'href');
+   If Length(HrefAttr) > 0 Then Begin
+    CSSPath := CSSBuildStylesheetPath(HrefAttr);
+    ExternalCSS := '';
+    If (Copy(HTMLLowerCase(CSSPath), 1, 7) = 'http://') Or
+       (Copy(HTMLLowerCase(CSSPath), 1, 8) = 'https://') Then Begin
+     { Feuille de style distante - telechargement REEL via WinInet (voir la }
+     { disclosure de CSSBuildStylesheetPath ci-dessus) ; hors Windows, la    }
+     { feuille est simplement ignoree (disclosed, meme limitation que le    }
+     { chargement de page elle-meme). }
+     {$IFDEF WINDOWS}
+     Browser_HttpGet(CSSPath, ExternalCSS, CSSStatusCode);
+     {$ENDIF}
+    End Else
+     ExternalCSS := LoadTextFileAsString(CSSPath);
+    If Length(ExternalCSS) > 0 Then Begin
+      DevToolsAddCSSSource(HrefAttr,ExternalCSS);
+      CSSParseStylesheet(ExternalCSS);
+    End;
+   End;
+  End;
+  Item := Item^.Next;
+ End;
+ DOMFreeNodeList(List);
+End;
+
+{ =====================================================
+  APPLICATION DES STYLES CSS - Cascade et Heritage
+  ===================================================== }
+
+{ Proprietes CSS heritables (du parent vers l'enfant) }
+Function CSSIsInheritableProperty(PropId: Byte): Boolean;
+Begin
+ Case PropId Of
+  CSS_PROP_COLOR,
+  CSS_PROP_FONT_SIZE,
+  CSS_PROP_FONT_WEIGHT,
+  CSS_PROP_FONT_STYLE,
+  CSS_PROP_FONT_VARIANT,
+  CSS_PROP_LETTER_SPACING,
+  CSS_PROP_WORD_SPACING,
+  CSS_PROP_TEXT_TRANSFORM,
+  CSS_PROP_FONT_FAMILY,
+  CSS_PROP_TEXT_DECORATION,
+  CSS_PROP_TEXT_ALIGN,
+  CSS_PROP_LINE_HEIGHT,
+  CSS_PROP_LIST_STYLE,
+  CSS_PROP_LIST_STYLE_TYPE,
+  CSS_PROP_VISIBILITY,
+  CSS_PROP_WHITE_SPACE,
+  CSS_PROP_CURSOR:
+   CSSIsInheritableProperty := True;
+  Else
+   CSSIsInheritableProperty := False;
+ End;
+End;
+
+{ Structure pour stocker les regles correspondantes triees par specificite }
+Type
+ CSSMatchedRule = Record
+  RuleIndex: Integer;
+  SelectorIndex: Integer;
+  Specificity: LongInt;
+  SourceOrder: Integer;
+ End;
+
+{ Comparer deux regles pour le tri par cascade }
+Function CSSCompareRules(Const A, B: CSSMatchedRule): Integer;
+Begin
+ { !important a la priorite maximale (gere separement) }
+ { Sinon: specificite > ordre de source }
+ If A.Specificity > B.Specificity Then
+  CSSCompareRules := 1
+ Else If A.Specificity < B.Specificity Then
+  CSSCompareRules := -1
+ Else If A.SourceOrder > B.SourceOrder Then
+  CSSCompareRules := 1
+ Else If A.SourceOrder < B.SourceOrder Then
+  CSSCompareRules := -1
+ Else
+  CSSCompareRules := 0;
+End;
+
+{ Heriter les proprietes CSS du parent }
+Procedure CSSInheritStyle(Var ChildStyle: DOMStyle; Const ParentStyle: DOMStyle);
+Begin
+ { Color herite si non defini }
+ If (Length(ChildStyle.Color) = 0) And (Length(ParentStyle.Color) > 0) Then
+  ChildStyle.Color := ParentStyle.Color;
+
+ { Font-size herite si non defini }
+ If (Length(ChildStyle.FontSize) = 0) And (Length(ParentStyle.FontSize) > 0) Then
+  ChildStyle.FontSize := ParentStyle.FontSize;
+
+ { Font-weight herite si non defini }
+ If (Length(ChildStyle.FontWeight) = 0) And (Length(ParentStyle.FontWeight) > 0) Then
+  ChildStyle.FontWeight := ParentStyle.FontWeight;
+
+ { Font-style herite si non defini }
+ If (Length(ChildStyle.FontStyle) = 0) And (Length(ParentStyle.FontStyle) > 0) Then
+  ChildStyle.FontStyle := ParentStyle.FontStyle;
+
+ { Text-decoration herite si non defini }
+ If (Length(ChildStyle.TextDecoration) = 0) And (Length(ParentStyle.TextDecoration) > 0) Then
+  ChildStyle.TextDecoration := ParentStyle.TextDecoration;
+
+ If(ChildStyle.FontVariant='')Then ChildStyle.FontVariant:=ParentStyle.FontVariant;
+ If(ChildStyle.LetterSpacing='')Then ChildStyle.LetterSpacing:=ParentStyle.LetterSpacing;
+ If(ChildStyle.WordSpacing='')Then ChildStyle.WordSpacing:=ParentStyle.WordSpacing;
+ If(ChildStyle.TextTransform='')Then ChildStyle.TextTransform:=ParentStyle.TextTransform;
+
+ { Visibility herite si non defini }
+ If (Length(ChildStyle.Visibility) = 0) And (Length(ParentStyle.Visibility) > 0) Then
+  ChildStyle.Visibility := ParentStyle.Visibility;
+End;
+
+{ Resoudre la cascade CSS pour un element.
+  L'heritage est transporte par RenderContext pendant le parcours du DOM;
+  remonter recursivement tous les parents ici doublait la profondeur de pile. }
+
+Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle);
+Var
+ I, J, RuleIndex: Integer;
+ MatchedRules: Array[1..128] Of CSSMatchedRule;
+ MatchedCount: Integer;
+ Temp: CSSMatchedRule;
+ InlineStyle: String;
+Begin
+ { Initialiser avec valeurs par defaut }
+ FillChar(Style,SizeOf(Style),0);
+ Style.Color := '';
+ Style.BackgroundColor := '';
+ Style.BackgroundPosition := '';
+ Style.BackgroundImage := '';
+ Style.Opacity := '';
+ Style.FontSize := '';
+ Style.FontWeight := '';
+ Style.FontStyle := '';
+ Style.TextDecoration := '';
+ Style.Display := '';
+ Style.Visibility := '';
+ Style.Width := '';
+ Style.Height := '';
+ Style.Margin := '';
+ Style.Padding := '';
+ Style.Border := '';
+ Style.TextAlign := '';
+ Style.LineHeight := '';
+ Style.Float := '';
+ Style.ClearProp := '';
+ Style.PositionProp := '';
+ Style.TopProp := '';
+ Style.RightProp := '';
+ Style.BottomProp := '';
+ Style.LeftProp := '';
+ Style.ListStyle := '';
+ Style.ListStyleType := '';
+ Style.VerticalAlign := '';
+ Style.WhiteSpace := '';
+ Style.Overflow := '';
+ Style.MarginTop := '';
+ Style.MarginRight := '';
+ Style.MarginBottom := '';
+ Style.MarginLeft := '';
+ Style.PaddingTop := '';
+ Style.PaddingRight := '';
+ Style.PaddingBottom := '';
+ Style.PaddingLeft := '';
+ Style.BorderColor := '';
+ Style.BorderWidth := '';
+ Style.BorderStyle := '';
+ Style.BorderTop := '';
+ Style.BorderRight := '';
+ Style.BorderBottom := '';
+ Style.BorderLeft := '';
+
+ If Element = Nil Then Exit;
+
+ { Collecter les regles correspondantes }
+ MatchedCount := 0;
+ For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
+  For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
+   If CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
+    If MatchedCount < 128 Then Begin
+     Inc(MatchedCount);
+     MatchedRules[MatchedCount].RuleIndex := I;
+     MatchedRules[MatchedCount].SelectorIndex := J;
+     MatchedRules[MatchedCount].Specificity :=
+      CSSGlobalStylesheet.Rules[I].Selectors[J].Specificity;
+     MatchedRules[MatchedCount].SourceOrder := I;
+    End;
+    Break;
+   End;
+  End;
+ End;
+
+ { Trier par specificite et ordre de source (tri a bulles simple) }
+ For I := 1 To MatchedCount - 1 Do
+  For J := I + 1 To MatchedCount Do
+   If CSSCompareRules(MatchedRules[I], MatchedRules[J]) > 0 Then Begin
+    Temp := MatchedRules[I];
+    MatchedRules[I] := MatchedRules[J];
+    MatchedRules[J] := Temp;
+   End;
+
+ { Appliquer les regles dans l'ordre de cascade }
+ { D'abord les regles normales }
+ For I := 1 To MatchedCount Do Begin
+  RuleIndex := MatchedRules[I].RuleIndex;
+  For J := 1 To CSSGlobalStylesheet.Rules[RuleIndex].PropertyCount Do Begin
+   If Not CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then
+    CSSAssignProperty(CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId,
+     CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value, Style);
+  End;
+ End;
+
+ { Ensuite les regles !important }
+ For I := 1 To MatchedCount Do Begin
+  RuleIndex := MatchedRules[I].RuleIndex;
+  For J := 1 To CSSGlobalStylesheet.Rules[RuleIndex].PropertyCount Do Begin
+   If CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Important Then
+    CSSAssignProperty(CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].PropId,
+     CSSGlobalStylesheet.Rules[RuleIndex].Properties[J].Value, Style);
+  End;
+ End;
+
+ { Appliquer le style inline (priorite maximale sauf !important) }
+ InlineStyle := DOMGetAttribute(Element, 'style');
+ If Length(InlineStyle) > 0 Then
+  CSSParseInlineStyle(InlineStyle, Style);
+End;
+
+Function CSSParseDimension(Const Value:String;DefaultPx:Integer):Integer;Forward;
+Function CSSParseLineHeight(Const Value:String;CurrentPx:Integer):Integer;Forward;
+
+{ Appliquer les styles CSS au contexte de rendu }
+Procedure CSSApplyStylesToContext(Const Style: DOMStyle; Var Ctx: RenderContext);
+Var
+ ColorIndex: Integer;
+ FontWeightLower, FontStyleLower,FontLower,TransformLower: String;
+Begin
+ { Appliquer la couleur du texte }
+ If Length(Style.Color) > 0 Then Begin
+  ColorIndex := CSSColorToIndex(Style.Color);
+  If ColorIndex >= 0 Then
+   Ctx.TextColor := ColorIndex;
+ End;
+
+ { Appliquer la couleur de fond }
+ If Length(Style.BackgroundColor) > 0 Then Begin
+  ColorIndex := CSSColorToIndex(Style.BackgroundColor);
+  If ColorIndex >= 0 Then
+   Ctx.BgColor := ColorIndex;
+ End;
+
+ { Appliquer le font-weight }
+ If Length(Style.FontWeight) > 0 Then Begin
+  FontWeightLower := HTMLLowerCase(Style.FontWeight);
+  If (FontWeightLower = 'bold') Or (FontWeightLower = '700') Or
+     (FontWeightLower = '800') Or (FontWeightLower = '900') Then
+   Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD
+  Else If (FontWeightLower = 'normal') Or (FontWeightLower = '400') Then
+   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_BOLD);
+ End;
+
+ { Appliquer le font-style }
+ If Length(Style.FontStyle) > 0 Then Begin
+  FontStyleLower := HTMLLowerCase(Style.FontStyle);
+  If FontStyleLower = 'italic' Then
+   Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_ITALIC
+  Else If FontStyleLower = 'normal' Then
+   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_ITALIC);
+ End;
+
+ { Raccourci font : les variantes graphiques disponibles sont limitees,
+   mais italic/oblique, bold et small-caps sont honores. }
+ If Style.Font<>''Then Begin
+  FontLower:=HTMLLowerCase(Style.Font);
+  If System.Pos('bold',FontLower)>0Then Ctx.TextStyle:=Ctx.TextStyle Or TEXT_STYLE_BOLD;
+  If(System.Pos('italic',FontLower)>0)Or(System.Pos('oblique',FontLower)>0)Then
+   Ctx.TextStyle:=Ctx.TextStyle Or TEXT_STYLE_ITALIC
+ End;
+ If HTMLLowerCase(Style.FontVariant)='small-caps'Then Ctx.TextTransformMode:=1;
+ If(Style.LetterSpacing<>'')And(HTMLLowerCase(Style.LetterSpacing)<>'normal')Then
+  Ctx.LetterSpacingPx:=CSSParseDimension(Style.LetterSpacing,0);
+ If(Style.WordSpacing<>'')And(HTMLLowerCase(Style.WordSpacing)<>'normal')Then
+  Ctx.WordSpacingPx:=CSSParseDimension(Style.WordSpacing,0);
+ TransformLower:=HTMLLowerCase(Style.TextTransform);
+ If TransformLower='uppercase'Then Ctx.TextTransformMode:=1
+ Else If TransformLower='lowercase'Then Ctx.TextTransformMode:=2
+ Else If TransformLower='capitalize'Then Ctx.TextTransformMode:=3
+ Else If TransformLower='none'Then Ctx.TextTransformMode:=0;
+
+ { Appliquer text-decoration (underline et/ou line-through, separes
+   par un espace en CSS, ex: "underline line-through") }
+ If Length(Style.TextDecoration) > 0 Then Begin
+  If HTMLLowerCase(Style.TextDecoration) = 'none' Then Begin
+   Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_UNDERLINE) And (Not TEXT_STYLE_STRIKE);
+  End Else Begin
+   If System.Pos('underline', HTMLLowerCase(Style.TextDecoration)) > 0 Then
+    Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
+   If System.Pos('line-through', HTMLLowerCase(Style.TextDecoration)) > 0 Then
+    Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_STRIKE;
+  End;
+ End;
+
+ { Appliquer visibility }
+ If HTMLLowerCase(Style.Visibility) = 'hidden' Then Begin
+  { Element cache mais prend de l'espace - simuler en ne pas dessiner }
+  { Note: necessiterait un flag InVisible dans le contexte }
+ End;
+
+ { Appliquer text-align }
+ If Length(Style.TextAlign) > 0 Then Begin
+  If HTMLLowerCase(Style.TextAlign) = 'center' Then
+   Ctx.TextAlignMode := ALIGN_CENTER
+  Else If HTMLLowerCase(Style.TextAlign) = 'right' Then
+   Ctx.TextAlignMode := ALIGN_RIGHT
+  Else If HTMLLowerCase(Style.TextAlign) = 'justify' Then
+   Ctx.TextAlignMode := ALIGN_JUSTIFY
+  Else
+   Ctx.TextAlignMode := ALIGN_LEFT;
+ End;
+
+ { Appliquer white-space: nowrap (empeche le retour a la ligne
+   automatique - utilise par ex. par les icones d'en-tete sprites) }
+ If Length(Style.WhiteSpace) > 0 Then
+  Ctx.NoWrap := HTMLLowerCase(Style.WhiteSpace) = 'nowrap';
+
+ { line-height est heritable et pilote l'avance verticale de chaque ligne.
+   La propriete etait analysee dans DOMStyle, mais jamais appliquee. La
+   base reste la metrique de la police, et non la hauteur deja heritee :
+   sinon un multiplicateur 1.2 serait remultiplie dans chaque FONT/B/A. }
+ If Length(Style.LineHeight)>0 Then
+  Ctx.LineHeight:=CSSParseLineHeight(Style.LineHeight,RENDER_LINE_HEIGHT);
+End;
+
+{ Verifier si un element doit etre cache (display: none) }
+Function CSSIsElementHidden(Const Style: DOMStyle): Boolean;
+Var
+ DisplayLower: String;
+Begin
+ CSSIsElementHidden := False;
+ If Length(Style.Display) > 0 Then Begin
+  DisplayLower := HTMLLowerCase(Style.Display);
+  If DisplayLower = 'none' Then
+   CSSIsElementHidden := True;
+ End;
+ If Length(Style.Visibility) > 0 Then Begin
+  If HTMLLowerCase(Style.Visibility) = 'hidden' Then
+   CSSIsElementHidden := True;
+ End;
+End;
+
+{ Verifier si un element est un element de bloc }
+Function CSSIsBlockElement(Const Style: DOMStyle; TagType: Byte): Boolean;
+Var
+ DisplayLower: String;
+Begin
+ { Verifier d'abord le style CSS }
+ If Length(Style.Display) > 0 Then Begin
+  DisplayLower := HTMLLowerCase(Style.Display);
+  If DisplayLower = 'block' Then Begin
+   CSSIsBlockElement := True;
+   Exit;
+  End
+  Else If DisplayLower = 'inline' Then Begin
+   CSSIsBlockElement := False;
+   Exit;
+  End
+  Else If DisplayLower = 'inline-block' Then Begin
+   CSSIsBlockElement := False;
+   Exit;
+  End;
+ End;
+
+ { Sinon utiliser le comportement par defaut de la balise }
+ Case TagType Of
+  TAG_DIV, TAG_P, TAG_H1, TAG_H2, TAG_H3, TAG_H4, TAG_H5, TAG_H6,
+  TAG_SECTION, TAG_ARTICLE, TAG_NAV, TAG_ASIDE, TAG_HEADER, TAG_FOOTER,
+  TAG_MAIN, TAG_UL, TAG_OL, TAG_LI, TAG_DL, TAG_DT, TAG_DD,
+  TAG_TABLE, TAG_TR, TAG_FORM, TAG_PRE, TAG_BLOCKQUOTE, TAG_HR,
+  TAG_FIGCAPTION, TAG_FIGURE, TAG_ADDRESS, TAG_DETAILS, TAG_SUMMARY:
+   CSSIsBlockElement := True;
+  Else
+   CSSIsBlockElement := False;
+ End;
+End;
+
+{ ============================================================
+  Evaluateur minimal de calc() CSS : +, -, *, / et parentheses, avec
+  des operandes en px/%/em/rem/pt (memes unites que CSSParseDimension
+  ci-dessous). ContainerPx sert de base pour convertir les pourcentages,
+  exactement comme le parametre DefaultPx de CSSParseDimension. Necessaire
+  pour des regles reelles comme .newsBlock/.searchBlock de gladir.com :
+  width:calc((100% - 130px - 20px)/2). }
+Function CSSCalcParseExpr(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real; Forward;
+
+Procedure CSSCalcSkipSpaces(Const S: String; Var Pos: Integer);
+Begin
+ While (Pos <= Length(S)) And (S[Pos] = ' ') Do Inc(Pos);
+End;
+
+Function CSSCalcParseNumber(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Var
+ StartPos: Integer;
+ NumStr, UnitStr: String;
+ NumVal: Real;
+ Code: Integer;
+Begin
+ CSSCalcParseNumber := 0.0;
+ CSSCalcSkipSpaces(S, Pos);
+ StartPos := Pos;
+ If (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Then Inc(Pos);
+ While (Pos <= Length(S)) And (S[Pos] In ['0'..'9', '.']) Do Inc(Pos);
+ NumStr := Copy(S, StartPos, Pos - StartPos);
+ Val(NumStr, NumVal, Code);
+ If Code <> 0 Then Exit;
+ StartPos := Pos;
+ While (Pos <= Length(S)) And (S[Pos] In ['A'..'Z', 'a'..'z', '%']) Do Inc(Pos);
+ UnitStr := HTMLLowerCase(Copy(S, StartPos, Pos - StartPos));
+ If UnitStr = '%' Then
+  CSSCalcParseNumber := (NumVal / 100) * ContainerPx
+ Else If (UnitStr = 'em') Or (UnitStr = 'rem') Then
+  CSSCalcParseNumber := NumVal * 16
+ Else If UnitStr = 'pt' Then
+  CSSCalcParseNumber := NumVal * 1.33
+ Else
+  CSSCalcParseNumber := NumVal; { px ou sans unite }
+End;
+
+Function CSSCalcParseFactor(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Begin
+ CSSCalcSkipSpaces(S, Pos);
+ If (Pos <= Length(S)) And (S[Pos] = '(') Then Begin
+  Inc(Pos);
+  CSSCalcParseFactor := CSSCalcParseExpr(S, Pos, ContainerPx);
+  CSSCalcSkipSpaces(S, Pos);
+  If (Pos <= Length(S)) And (S[Pos] = ')') Then Inc(Pos);
+ End
+ Else
+  CSSCalcParseFactor := CSSCalcParseNumber(S, Pos, ContainerPx);
+End;
+
+Function CSSCalcParseTerm(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Var
+ Value, RHS: Real;
+ Op: Char;
+Begin
+ Value := CSSCalcParseFactor(S, Pos, ContainerPx);
+ CSSCalcSkipSpaces(S, Pos);
+ While (Pos <= Length(S)) And (S[Pos] In ['*', '/']) Do Begin
+  Op := S[Pos];
+  Inc(Pos);
+  RHS := CSSCalcParseFactor(S, Pos, ContainerPx);
+  If Op = '*' Then Value := Value * RHS
+  Else If RHS <> 0 Then Value := Value / RHS;
+  CSSCalcSkipSpaces(S, Pos);
+ End;
+ CSSCalcParseTerm := Value;
+End;
+
+Function CSSCalcParseExpr(Const S: String; Var Pos: Integer; ContainerPx: Integer): Real;
+Var
+ Value, RHS: Real;
+ Op: Char;
+Begin
+ Value := CSSCalcParseTerm(S, Pos, ContainerPx);
+ CSSCalcSkipSpaces(S, Pos);
+ While (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Do Begin
+  Op := S[Pos];
+  Inc(Pos);
+  RHS := CSSCalcParseTerm(S, Pos, ContainerPx);
+  If Op = '+' Then Value := Value + RHS Else Value := Value - RHS;
+  CSSCalcSkipSpaces(S, Pos);
+ End;
+ CSSCalcParseExpr := Value;
+End;
+
+{ Evaluer "calc(...)" en pixels. Recherche la parenthese fermante qui
+  correspond au "calc(" d'ouverture en comptant la profondeur, car
+  l'expression contient elle-meme des parentheses imbriquees. }
+Function CSSEvalCalc(Const Expr: String; ContainerPx: Integer): Integer;
+Var
+ Inner: String;
+ Depth, I, ParenStart: Integer;
+ Pos: Integer;
+Begin
+ CSSEvalCalc := 0;
+ ParenStart := System.Pos('(', Expr);
+ If ParenStart = 0 Then Exit;
+ Depth := 0;
+ I := ParenStart;
+ While I <= Length(Expr) Do Begin
+  If Expr[I] = '(' Then Inc(Depth)
+  Else If Expr[I] = ')' Then Begin
+   Dec(Depth);
+   If Depth = 0 Then Break;
+  End;
+  Inc(I);
+ End;
+ Inner := Copy(Expr, ParenStart + 1, I - ParenStart - 1);
+ Pos := 1;
+ CSSEvalCalc := Round(CSSCalcParseExpr(Inner, Pos, ContainerPx));
+End;
+
+{ Parser une valeur de dimension CSS (px, em, %, etc.) et retourner en pixels }
+Function CSSParseDimension(Const Value: String; DefaultPx: Integer): Integer;
+Var
+ NumStr: String;
+ NumVal: Real;
+ UnitStr: String;
+ I, Code: Integer;
+Begin
+ CSSParseDimension := DefaultPx;
+ If Length(Value) = 0 Then Exit;
+
+ { calc(...) : evaluateur dedie ci-dessus (+ - * / et parentheses). }
+ If Copy(HTMLLowerCase(BrowserTrimStr(Value)), 1, 5) = 'calc(' Then Begin
+  CSSParseDimension := CSSEvalCalc(BrowserTrimStr(Value), DefaultPx);
+  Exit;
+ End;
+
+ { Extraire la partie numerique }
+ NumStr := '';
+ I := 1;
+ While (I <= Length(Value)) And (Value[I] In ['0'..'9', '.', '-']) Do Begin
+  NumStr := NumStr + Value[I];
+  Inc(I);
+ End;
+
+ If Length(NumStr) = 0 Then Exit;
+ Val(NumStr, NumVal, Code);
+ If Code <> 0 Then Exit;
+
+ { Extraire l'unite }
+ UnitStr := HTMLLowerCase(Copy(Value, I, Length(Value) - I + 1));
+
+ { Convertir selon l'unite }
+ If (UnitStr = 'px') Or (Length(UnitStr) = 0) Then
+  CSSParseDimension := Round(NumVal)
+ Else If UnitStr = 'em' Then
+  CSSParseDimension := Round(NumVal * 16) { 1em = 16px par defaut }
+ Else If UnitStr = 'rem' Then
+  CSSParseDimension := Round(NumVal * 16)
+ Else If UnitStr = '%' Then
+  CSSParseDimension := Round((NumVal / 100) * DefaultPx)
+ Else If UnitStr = 'pt' Then
+  CSSParseDimension := Round(NumVal * 1.33) { 1pt = 1.33px }
+ Else
+  CSSParseDimension := Round(NumVal);
+End;
+
+{ line-height accepte une dimension, un pourcentage ou un multiplicateur
+  sans unite. CSSParseDimension traiterait a tort "1.2" comme 1 pixel. }
+Function CSSParseLineHeight(Const Value:String;CurrentPx:Integer):Integer;
+Var S:String;V:Real;Code,R:Integer;
+Begin
+ S:=HTMLLowerCase(BrowserTrimStr(Value));
+ If(S='')Or(S='normal')Then Begin CSSParseLineHeight:=CurrentPx;Exit End;
+ If(System.Pos('px',S)=0)And(System.Pos('pt',S)=0)And
+   (System.Pos('em',S)=0)And(System.Pos('rem',S)=0)And
+   (System.Pos('%',S)=0)Then Begin
+  Val(S,V,Code);
+  If Code=0Then R:=Round(V*CurrentPx)Else R:=CurrentPx
+ End Else
+  R:=CSSParseDimension(S,CurrentPx);
+ { La police bitmap fait environ 8 pixels de haut. Eviter qu'une valeur
+   invalide rende deux lignes illisibles en les superposant. }
+ If R<8Then R:=8;
+ CSSParseLineHeight:=R
+End;
+
+{ Decompose un raccourci CSS a 1-4 valeurs (margin/padding) selon la       }
+{ regle CSS standard (1 valeur = les 4 cotes ; 2 = haut/bas puis           }
+{ gauche/droite ; 3 = haut, gauche/droite, bas ; 4 = haut,droite,bas,      }
+{ gauche) et renvoie la valeur du cote demande, convertie en pixels via    }
+{ CSSParseDimension. Side : 0=haut, 1=droite, 2=bas, 3=gauche.             }
+{ BOGUE REEL corrige (2026-09-25, demande explicite de l'utilisateur -     }
+{ "implemente l'application generique du margin (au moins horizontal)     }
+{ pour les elements inline-block") : CSSParseDimension seule ne lit QUE    }
+{ le premier nombre d'un raccourci a plusieurs valeurs (disclosed dans     }
+{ son propre commentaire, juste au-dessus) - correct pour le cote HAUT     }
+{ seulement, mais FAUX pour droite/bas/gauche des qu'un raccourci a 2      }
+{ valeurs ou plus est utilise (ex: le cote gauche d'un                     }
+{ "margin:12px 8px 12px 10px" valait a tort 12 - la valeur du HAUT -       }
+{ au lieu de 10 - la vraie valeur du cote gauche). }
+Function CSSParseShorthandSide(Const Shorthand: String; Side: Byte;
+ DefaultPx: Integer): Integer;
+Var
+ Tokens: Array[0..3] Of String;
+ NTokens: Integer;
+ P, TokStart: Integer;
+ S: String;
+Begin
+ CSSParseShorthandSide := DefaultPx;
+ S := BrowserTrimStr(Shorthand);
+ If Length(S) = 0 Then Exit;
+ NTokens := 0;
+ TokStart := 1;
+ For P := 1 To Length(S) + 1 Do Begin
+  If (P > Length(S)) Or (S[P] = ' ') Then Begin
+   If (P > TokStart) And (NTokens < 4) Then Begin
+    Tokens[NTokens] := Copy(S, TokStart, P - TokStart);
+    Inc(NTokens);
+   End;
+   TokStart := P + 1;
+  End;
+ End;
+ If NTokens = 0 Then Exit;
+ Case NTokens Of
+  1: CSSParseShorthandSide := CSSParseDimension(Tokens[0], DefaultPx);
+  2: Case Side Of
+      0, 2: CSSParseShorthandSide := CSSParseDimension(Tokens[0], DefaultPx); { haut/bas }
+      Else  CSSParseShorthandSide := CSSParseDimension(Tokens[1], DefaultPx); { gauche/droite }
+     End;
+  3: Case Side Of
+      0: CSSParseShorthandSide := CSSParseDimension(Tokens[0], DefaultPx);
+      2: CSSParseShorthandSide := CSSParseDimension(Tokens[2], DefaultPx);
+      Else CSSParseShorthandSide := CSSParseDimension(Tokens[1], DefaultPx); { gauche/droite }
+     End;
+  Else { 4 valeurs : ordre CSS standard haut,droite,bas,gauche = Side 0..3 }
+   CSSParseShorthandSide := CSSParseDimension(Tokens[Side], DefaultPx);
+ End;
+End;
+
+{ Calculer la boite CSS (marges/padding/bordure/fond) d'un element a
+  partir de son style resolu. -1 dans MarginTopPx/.../PaddingBottomPx
+  signifie "non specifie", le gestionnaire de balise garde alors sa
+  propre constante d'espacement par defaut. Le raccourci (Margin,
+  Padding, Border) est utilise si le cote specifique n'est pas defini,
+  via CSSParseShorthandSide ci-dessus (gere correctement un raccourci a
+  1-4 valeurs, ex: "4px 8px" ou "12px 8px 12px 10px"). }
+Function ComputeElementBoxInfo(Const Style: DOMStyle): TElementBoxInfo;
+Var
+ Info: TElementBoxInfo;
+ BorderTokens, Tok: String;
+ P: Integer;
+ TryColor: Integer;
+Begin
+ Info.MarginTopPx := -1;
+ Info.MarginBottomPx := -1;
+ Info.MarginLeftPx := -1;
+ Info.MarginRightPx := -1;
+ Info.PaddingTopPx := -1;
+ Info.PaddingBottomPx := -1;
+ Info.HasBorder := False;
+ Info.BorderWidthPx := 0;
+ Info.BorderColorIdx := HTMLBlackColorIndex; { jamais 0 en dur : voir BrowserInitLayoutAndPalette }
+ Info.HasBgBox := False;
+ Info.BgBoxColorIdx := 0;
+
+ If Length(Style.MarginTop) > 0 Then
+  Info.MarginTopPx := CSSParseDimension(Style.MarginTop, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginTopPx := CSSParseShorthandSide(Style.Margin, 0, 0);
+
+ If Length(Style.MarginLeft) > 0 Then
+  Info.MarginLeftPx := CSSParseDimension(Style.MarginLeft, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginLeftPx := CSSParseShorthandSide(Style.Margin, 3, 0);
+
+ If Length(Style.MarginRight) > 0 Then
+  Info.MarginRightPx := CSSParseDimension(Style.MarginRight, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginRightPx := CSSParseShorthandSide(Style.Margin, 1, 0);
+
+ If Length(Style.MarginBottom) > 0 Then
+  Info.MarginBottomPx := CSSParseDimension(Style.MarginBottom, 0)
+ Else If Length(Style.Margin) > 0 Then
+  Info.MarginBottomPx := CSSParseShorthandSide(Style.Margin, 2, 0);
+
+ If Length(Style.PaddingTop) > 0 Then
+  Info.PaddingTopPx := CSSParseDimension(Style.PaddingTop, 0)
+ Else If Length(Style.Padding) > 0 Then
+  Info.PaddingTopPx := CSSParseDimension(Style.Padding, 0);
+
+ If Length(Style.PaddingBottom) > 0 Then
+  Info.PaddingBottomPx := CSSParseDimension(Style.PaddingBottom, 0)
+ Else If Length(Style.Padding) > 0 Then
+  Info.PaddingBottomPx := CSSParseShorthandSide(Style.Padding, 2, 0);
+
+ { Bordure : largeur et couleur, depuis les sous-proprietes ou le
+   raccourci "border: 1px solid #003366" }
+ If Length(Style.BorderWidth) > 0 Then
+  Info.BorderWidthPx := CSSParseDimension(Style.BorderWidth, 0)
+ Else If Length(Style.Border) > 0 Then
+  Info.BorderWidthPx := CSSParseDimension(Style.Border, 0);
+ { Les boites BGI ne conservaient auparavant qu'un contour uniforme.
+   Une largeur laterale explicite doit neanmoins activer la bordure; la
+   plus grande largeur est retenue pour le contour rasterise. }
+ If CSSParseDimension(Style.BorderTopWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderTopWidth,0);
+ If CSSParseDimension(Style.BorderRightWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderRightWidth,0);
+ If CSSParseDimension(Style.BorderBottomWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderBottomWidth,0);
+ If CSSParseDimension(Style.BorderLeftWidth,0)>Info.BorderWidthPx Then
+  Info.BorderWidthPx:=CSSParseDimension(Style.BorderLeftWidth,0);
+
+ If Length(Style.BorderColor) > 0 Then Begin
+  TryColor := CSSColorToIndex(Style.BorderColor);
+  If TryColor >= 0 Then Info.BorderColorIdx := TryColor;
+ End Else If Length(Style.Border) > 0 Then Begin
+  { Chercher un jeton ressemblant a une couleur dans le raccourci }
+  BorderTokens := Style.Border + ' ';
+  P := System.Pos(' ', BorderTokens);
+  While P > 0 Do Begin
+   Tok := Copy(BorderTokens, 1, P - 1);
+   BorderTokens := Copy(BorderTokens, P + 1, Length(BorderTokens) - P);
+   If Length(Tok) > 0 Then Begin
+    TryColor := CSSColorToIndex(Tok);
+    If TryColor >= 0 Then Info.BorderColorIdx := TryColor;
+   End;
+   P := System.Pos(' ', BorderTokens);
+  End;
+ End;
+ If Style.BorderTopColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderTopColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
+ If Style.BorderRightColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderRightColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
+ If Style.BorderBottomColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderBottomColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
+ If Style.BorderLeftColor<>''Then Begin TryColor:=CSSColorToIndex(Style.BorderLeftColor);If TryColor>=0Then Info.BorderColorIdx:=TryColor End;
+
+ Info.HasBorder := Info.BorderWidthPx > 0;
+ If Length(Style.BorderStyle) > 0 Then
+  Info.HasBorder := Info.HasBorder And (HTMLLowerCase(Style.BorderStyle) <> 'none');
+ If(HTMLLowerCase(Style.BorderTopStyle)='none')And
+   (HTMLLowerCase(Style.BorderRightStyle)='none')And
+   (HTMLLowerCase(Style.BorderBottomStyle)='none')And
+   (HTMLLowerCase(Style.BorderLeftStyle)='none')Then Info.HasBorder:=False;
+
+ { Fond plein de la boite (pas seulement derriere les mots, voir
+   RenderStyledWord) : seulement si la balise est un bloc avec une
+   couleur de fond explicite. }
+ If Length(Style.BackgroundColor) > 0 Then Begin
+  TryColor := CSSColorToIndex(Style.BackgroundColor);
+  If TryColor >= 0 Then Begin
+   Info.HasBgBox := True;
+   Info.BgBoxColorIdx := TryColor;
+  End;
+ End;
+
+ ComputeElementBoxInfo := Info;
+End;
+
+{ =====================================================
+  FIN APPLICATION DES STYLES CSS
+  ===================================================== }
+
+{ =====================================================
+  FIN PARSEUR CSS
+  ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Balises de structure (html, head, body, div, span)
+  ===================================================== }
+
+Var
+ { Variables globales pour le rendu HTML }
+ CurrentRenderContext: RenderContext;
+
+{ Procedure pour initialiser le contexte de rendu }
+Procedure InitRenderContext(Var Ctx: RenderContext);
+Begin
+ { RenderOriginX/Y = ancre de positionnement du contenu, decalee selon
+   le defilement courant. Ctx.MaxX/MaxY restent bases sur la VRAIE
+   position fixe de la zone de rendu (independants du defilement) :
+   Ctx.MaxX est la limite de retour a la ligne (elle ne doit pas
+   bouger avec ScrollX, sinon le texte se reformaterait a chaque clic
+   sur la barre horizontale) ; Ctx.MaxY est etendu d'une marge de
+   mesure pour pouvoir detecter, en une seule passe, s'il reste du
+   contenu sous la zone visible (voir RenderHTMLDocument). }
+ RenderOriginX := RENDER_AREA_X - ScrollX;
+ RenderOriginY := RENDER_AREA_Y - ScrollY;
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
+ Ctx.Y := RenderOriginY + RENDER_MARGIN_TOP;
+ Ctx.BlockContentX:=Ctx.X;
+ Ctx.MaxX := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) - RENDER_MARGIN_LEFT;
+ { Parcourir tout le document a chaque passe. L'ancien plafond situe 2000
+   pixels sous la fenetre ne donnait qu'une hauteur partielle qui changeait
+   avec ScrollY, donc une poignee verticale de taille variable. 30000 reste
+   dans la plage de l'Integer 16 bits de Turbo Pascal. }
+ Ctx.MaxY := RENDER_LAYOUT_MAX_Y;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
+ Ctx.TextColor := HTMLBlackColorIndex;
+ Ctx.BgColor := RENDER_BG_COLOR;
+ Ctx.InHead := False;
+ Ctx.InBody := False;
+ Ctx.BlockLevel := 0;
+ Ctx.BlockContentX:=Ctx.X;
+ Ctx.TextStyle := TEXT_STYLE_NORMAL;
+ Ctx.InPreformatted := False;
+ Ctx.ListType := LIST_TYPE_NONE;
+ Ctx.ListLevel := 0;
+ Ctx.ListItemNumber := 0;
+ Ctx.InTable := False;
+ Ctx.InTableHeader := False;
+ Ctx.TableX := 0;
+ Ctx.TableCellX := 0;
+ Ctx.TableCellWidth := TABLE_CELL_MIN_WIDTH;
+ FillChar(Ctx.TableColumnWidths, SizeOf(Ctx.TableColumnWidths), 0);
+ FillChar(Ctx.TableRowSpanRemaining, SizeOf(Ctx.TableRowSpanRemaining), 0);
+ Ctx.TableColIndex := 0;
+ Ctx.TableRowY := 0;
+ Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
+ Ctx.TableCellPadding := TABLE_CELL_PADDING;
+ Ctx.TableCellSpacing := TABLE_CELL_SPACING;
+ Ctx.TableDrawBorders := False;
+ Ctx.InForm := False;
+ Ctx.InSelect := False;
+ Ctx.SelectOptionIndex := 0;
+ Ctx.InLink := False;
+ Ctx.CurrentLinkHref := '';
+ Ctx.NoWrap := False;
+ Ctx.TextAlignMode := ALIGN_LEFT;
+ Ctx.LetterSpacingPx:=0;
+ Ctx.WordSpacingPx:=0;
+ Ctx.TextTransformMode:=0;
+End;
+
+{ Procedure pour reinitialiser les zones de liens }
+Procedure ClearLinkAreas;
+Var
+ I: Integer;
+Begin
+ For I := 1 To MAX_LINKS Do Begin
+  LinkAreas[I].Active := False;
+  LinkAreas[I].Href := '';
+  LinkAreas[I].Title := '';
+ End;
+ LinkCount := 0;
+End;
+
+{ Procedure pour ajouter une zone de lien cliquable }
+Procedure AddLinkArea(X1, Y1, X2, Y2: Integer; Href, Title: String);
+Begin
+ If TableMeasurePass Then Exit; { Passe de mesure : ne pas enregistrer deux fois la meme zone }
+ If LinkCount < MAX_LINKS Then Begin
+  Inc(LinkCount);
+  LinkAreas[LinkCount].X1 := X1;
+  LinkAreas[LinkCount].Y1 := Y1;
+  LinkAreas[LinkCount].X2 := X2;
+  LinkAreas[LinkCount].Y2 := Y2;
+  LinkAreas[LinkCount].Href := Href;
+  LinkAreas[LinkCount].Title := Title;
+  LinkAreas[LinkCount].Active := True;
+ End;
+End;
+
+{ Fonction pour trouver un lien a une position donnee }
+Function FindLinkAtPosition(X, Y: Integer): Integer;
+Var
+ I: Integer;
+ AreaSize, BestAreaSize: LongInt;
+Begin
+ FindLinkAtPosition := 0;
+ BestAreaSize := High(LongInt);
+ { Plusieurs boites peuvent se chevaucher a cause des liens multilignes,
+   des contenus justifies et d'un HTML imparfaitement ferme. Choisir
+   simplement la premiere donnait le lien englobant vers CODER/index.htm;
+   choisir la derniere pouvait donner un lien ulterieur tel que CSHARP a
+   la place d'ABAP. La boite la plus petite est la zone la plus precise,
+   c'est-a-dire normalement celle du mot reellement clique. En cas
+   d'egalite, le parcours inverse conserve l'element peint en dernier. }
+ For I := LinkCount DownTo 1 Do Begin
+  If LinkAreas[I].Active Then Begin
+   If (X >= LinkAreas[I].X1) And (X <= LinkAreas[I].X2) And
+      (Y >= LinkAreas[I].Y1) And (Y <= LinkAreas[I].Y2) Then Begin
+    AreaSize := LongInt(LinkAreas[I].X2 - LinkAreas[I].X1 + 1) *
+                LongInt(LinkAreas[I].Y2 - LinkAreas[I].Y1 + 1);
+    If AreaSize < BestAreaSize Then Begin
+     BestAreaSize := AreaSize;
+     FindLinkAtPosition := I;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Procedure pour effacer les zones interactives (onclick/onmouseover/
+  onmouseout) avant un nouveau rendu - voir ClearLinkAreas. }
+Procedure ClearInteractiveAreas;
+Var
+ I: Integer;
+Begin
+ For I := 1 To MAX_LINKS Do Begin
+  InteractiveAreas[I].Active := False;
+  InteractiveAreas[I].Node := Nil;
+ End;
+ InteractiveAreaCount := 0;
+End;
+
+{ Procedure pour enregistrer une zone interactive (cellule TD/TH
+  portant onclick/onmouseover/onmouseout) - voir AddLinkArea. }
+Procedure AddInteractiveArea(X1, Y1, X2, Y2: Integer; Node: HTMLNodePtr);
+Begin
+ If TableMeasurePass Then Exit;
+ If InteractiveAreaCount < MAX_LINKS Then Begin
+  Inc(InteractiveAreaCount);
+  InteractiveAreas[InteractiveAreaCount].X1 := X1;
+  InteractiveAreas[InteractiveAreaCount].Y1 := Y1;
+  InteractiveAreas[InteractiveAreaCount].X2 := X2;
+  InteractiveAreas[InteractiveAreaCount].Y2 := Y2;
+  InteractiveAreas[InteractiveAreaCount].Node := Node;
+  InteractiveAreas[InteractiveAreaCount].Active := True;
+ End;
+End;
+
+{ Trouver la zone interactive peinte au premier plan. }
+Function FindInteractiveAreaAtPosition(X, Y: Integer): Integer;
+Var
+ I: Integer;
+Begin
+ FindInteractiveAreaAtPosition := 0;
+ { Les overlays sont ajoutes apres le document normal et sont donc au
+   premier plan. Parcourir en sens inverse evite qu'une cellule de la page
+   situee sous un sous-menu intercepte aleatoirement son survol. La premiere
+   zone rencontree en sens inverse est celle peinte au-dessus des autres. }
+ For I := InteractiveAreaCount DownTo 1 Do Begin
+  If InteractiveAreas[I].Active Then Begin
+   If (X >= InteractiveAreas[I].X1) And (X <= InteractiveAreas[I].X2) And
+      (Y >= InteractiveAreas[I].Y1) And (Y <= InteractiveAreas[I].Y2) Then Begin
+    FindInteractiveAreaAtPosition := I;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ Effacer les boites de mise en page memorisees (voir JSNodeBox) -
+  appele au debut de chaque rendu complet, comme ClearLinkAreas. }
+Procedure ClearJSNodeBoxes;
+Begin
+ JSNodeBoxCount := 0;
+End;
+
+{ Memoriser la boite (position/taille) d'un element ID'e juste apres
+  son rendu - voir RenderHTMLNode, qui appelle ceci pour tout element
+  portant un attribut id non vide. Remplace l'entree existante si le
+  meme noeud a deja une boite (re-rendu/defilement). }
+Procedure SetJSNodeBox(Node: HTMLNodePtr; X, Y, Width, Height: Integer);
+Var
+ I: Integer;
+Begin
+ If Node = Nil Then Exit;
+ For I := 1 To JSNodeBoxCount Do Begin
+  If JSNodeBoxes[I].Node = Node Then Begin
+   JSNodeBoxes[I].X := X;
+   JSNodeBoxes[I].Y := Y;
+   JSNodeBoxes[I].Width := Width;
+   JSNodeBoxes[I].Height := Height;
+   Exit;
+  End;
+ End;
+ If JSNodeBoxCount < MAX_LINKS Then Begin
+  Inc(JSNodeBoxCount);
+  JSNodeBoxes[JSNodeBoxCount].Node := Node;
+  JSNodeBoxes[JSNodeBoxCount].X := X;
+  JSNodeBoxes[JSNodeBoxCount].Y := Y;
+  JSNodeBoxes[JSNodeBoxCount].Width := Width;
+  JSNodeBoxes[JSNodeBoxCount].Height := Height;
+  JSNodeBoxes[JSNodeBoxCount].Active := True;
+ End;
+End;
+
+Function FindJSNodeBox(Node: HTMLNodePtr): Integer;
+Var
+ I: Integer;
+Begin
+ FindJSNodeBox := 0;
+ For I := 1 To JSNodeBoxCount Do
+  If JSNodeBoxes[I].Node = Node Then Begin
+   FindJSNodeBox := I;
+   Exit;
+  End;
+End;
+
+{ Trouver la zone interactive (voir InteractiveArea) associee a Node -
+  repli pour offsetWidth/Height/Left/Top quand Node est l'element "this"
+  d'un gestionnaire onclick/onmouseover/onmouseout (ex: une cellule de
+  menu) plutot qu'un element ID'e suivi par JSNodeBoxes. }
+Function FindInteractiveAreaIndex(Node: HTMLNodePtr): Integer;
+Var
+ I: Integer;
+Begin
+ FindInteractiveAreaIndex := 0;
+ { En cas de doublon, la derniere boite appartient a la passe/couche
+   effectivement peinte au-dessus. }
+ For I := InteractiveAreaCount DownTo 1 Do
+  If InteractiveAreas[I].Node = Node Then Begin
+   FindInteractiveAreaIndex := I;
+   Exit;
+  End;
+End;
+
+Function JSGetNodeBoxX(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ { Pour un element interactif de tableau, la zone est calculee apres la
+   passe de mesure et contient les limites finales exactes de la cellule. }
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxX := InteractiveAreas[I].X1;
+  Exit;
+ End;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxX := JSNodeBoxes[I].X Else JSGetNodeBoxX := 0;
+End;
+
+Function JSGetNodeBoxY(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxY := InteractiveAreas[I].Y1;
+  Exit;
+ End;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxY := JSNodeBoxes[I].Y Else JSGetNodeBoxY := 0;
+End;
+
+Function JSGetNodeBoxWidth(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxWidth := InteractiveAreas[I].X2 - InteractiveAreas[I].X1;
+  Exit;
+ End;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxWidth := JSNodeBoxes[I].Width Else JSGetNodeBoxWidth := 0;
+End;
+
+Function JSGetNodeBoxHeight(Node: HTMLNodePtr): Integer;
+Var I: Integer;
+Begin
+ I := FindInteractiveAreaIndex(Node);
+ If I > 0 Then Begin
+  JSGetNodeBoxHeight := InteractiveAreas[I].Y2 - InteractiveAreas[I].Y1;
+  Exit;
+ End;
+ I := FindJSNodeBox(Node);
+ If I > 0 Then JSGetNodeBoxHeight := JSNodeBoxes[I].Height Else JSGetNodeBoxHeight := 0;
+End;
+
+{ setTimeout/clearTimeout a emplacement unique (voir la declaration de
+  JSTimeoutActive) : enregistre simplement quand declencher Handler,
+  verifie au mieux par ProcessMouseInput a chaque iteration (pas de
+  vraie horloge asynchrone dans BROWSER.PAS). }
+Procedure JSSetTimeout(Const Handler: String; DelayMs: LongInt);
+Begin
+ JSTimeoutActive := True;
+ JSTimeoutHandler := Handler;
+ JSTimeoutFireAtTick := BrowserGetTickCount + DelayMs;
+End;
+
+Procedure JSClearTimeout;
+Begin
+ JSTimeoutActive := False;
+ JSTimeoutHandler := '';
+End;
+
+{ A appeler a chaque iteration de la boucle principale (voir
+  ProcessMouseInput) : declenche le gestionnaire en attente si son
+  delai est ecoule. }
+Procedure JSCheckTimeout;
+Var
+ Handler: String;
+Begin
+ If Not JSTimeoutActive Then Exit;
+ If BrowserGetTickCount < JSTimeoutFireAtTick Then Exit;
+ Handler := JSTimeoutHandler;
+ JSTimeoutActive := False;
+ JSTimeoutHandler := '';
+ JSExecuteScript(Handler);
+ RescrollPage;
+End;
+
+{ GetNodeAttribute et RescrollPage sont deja declarees Forward plus
+  haut dans le fichier (juste apres JSEvaluate), reutilisees ici. }
+
+{ Executer un gestionnaire d'evenement inline (onclick/onmouseover/
+  onmouseout) sur un noeud : lie "this" au noeud pour la duree de
+  l'execution (voir JSEvaluate, cas particulier this.className = ...),
+  puis redessine la page courante sans reparser - necessaire pour
+  qu'un changement de classe CSS via this.className soit visible. }
+Procedure DispatchInlineEventHandler(Node: HTMLNodePtr; Const AttrName: String);
+Var
+ Handler: String;
+ OldEventTargetNode: HTMLNodePtr;
+Begin
+ If Node = Nil Then Exit;
+ Handler := GetNodeAttribute(Node, AttrName);
+ If Length(Handler) = 0 Then Exit;
+ { Certaines pages ecrivent onclick/onmouseover="javascript:...:" par
+   habitude (utile dans un href, inutile - mais frequent - dans un
+   gestionnaire d'evenement) : retirer ce prefixe pour que le script
+   qui suit soit reconnu normalement. }
+ If HTMLLowerCase(Copy(Handler, 1, 11)) = 'javascript:' Then
+  Delete(Handler, 1, 11);
+ OldEventTargetNode := JSEventTargetNode;
+ JSEventTargetNode := Node;
+ JSExecuteScript(Handler);
+ JSEventTargetNode := OldEventTargetNode;
+ If DeferEventRedraw Then
+  EventRedrawPending := True
+ Else
+  RescrollPage;
+End;
+
+{ Procedure pour effacer la zone de rendu }
+Procedure ClearRenderArea(BgColorIdx: Integer);
+Begin
+ SetFillStyle(SolidFill, BgColorIdx);
+ Bar(RENDER_AREA_X, RENDER_AREA_Y,
+     RENDER_AREA_X + RENDER_AREA_WIDTH,
+     RENDER_AREA_Y + RENDER_AREA_HEIGHT);
+ SetColor(HTMLBlackColorIndex); { jamais 0 en dur : voir BrowserInitLayoutAndPalette }
+ Rectangle(RENDER_AREA_X, RENDER_AREA_Y,
+           RENDER_AREA_X + RENDER_AREA_WIDTH,
+           RENDER_AREA_Y + RENDER_AREA_HEIGHT);
+End;
+
+Procedure FlushJustifiedLine(Var Ctx: RenderContext; ExpandSpaces: Boolean); Forward;
+
+{ Procedure pour passer a la ligne suivante }
+Procedure RenderNewLine(Var Ctx: RenderContext);
+Begin
+ { Un saut explicite termine la ligne courante sans etirer sa derniere
+   ligne. Lors d'un wrap automatique, RenderText l'a deja videe avec
+   ExpandSpaces=True. }
+ FlushJustifiedLine(Ctx, False);
+ { Dans une cellule de tableau, revenir au bord gauche du CONTENU DE
+   LA CELLULE plutot qu'a la marge de la page : sans cette
+   distinction, un texte qui deborde sur plusieurs lignes a
+   l'interieur d'une cellule voyait sa 2e ligne (et les suivantes)
+   recommencer a la marge de la page, hors de la colonne. }
+ If Ctx.InTable Then
+  Ctx.X := Ctx.TableCellContentX
+ Else
+  Ctx.X := Ctx.BlockContentX;
+ Ctx.Y := Ctx.Y + Ctx.LineHeight;
+End;
+
+{ Procedure pour ajouter un espacement de bloc }
+Procedure RenderBlockSpacing(Var Ctx: RenderContext; Spacing: Integer);
+Begin
+ FlushJustifiedLine(Ctx, False);
+ Ctx.Y := Ctx.Y + Spacing;
+ { Un bloc (DIV, P, TABLE, etc.) place dans une cellule doit rester dans
+   cette cellule. Revenir ici a la marge globale faisait notamment
+   dessiner l'IMG insere dans div#tdBackground par-dessus la premiere
+   colonne, alors que son noeud DOM appartenait correctement a la
+   troisieme cellule. Meme principe que RenderNewLine ci-dessus. }
+ If Ctx.InTable Then
+  Ctx.X := Ctx.TableCellContentX
+ Else
+  Ctx.X := Ctx.BlockContentX;
+End;
+
+{ Fonction pour calculer la largeur d'un texte }
+Function GetTextWidth(Const Text: String): Integer;
+Begin
+ { En mode TP, Integer est signe sur 16 bits. DOMGetTextContent applique a
+   un grand menu peut retourner des milliers de caracteres : Length * 8
+   depassait alors 32767 et levait ERangeError pendant un simple survol.
+   Une largeur superieure a l'ecran n'apporte aucune information utile ;
+   la borner conserve le comportement de wrap sans debordement arithmetique. }
+ If Length(Text) > 3750 Then
+  GetTextWidth := 30000
+ Else
+  GetTextWidth := Length(Text) * 8; { Police par defaut = 8 pixels par caractere }
+End;
+
+{ Verifier si une plage verticale [Y1,Y2] recoupe la bande visible de
+  la zone de rendu (entre la barre d'URL et la barre de defilement
+  horizontale). A utiliser avant tout Bar()/Line()/Rectangle() qui
+  dessine a une position deja calculee avec defilement (Ctx.Y) : sans
+  cette verification, les fonds et bordures de tableau (entre autres)
+  continuent de se dessiner au-dessus de la zone de rendu quand on
+  defile, recouvrant progressivement la barre d'adresse et ses
+  boutons - le texte (RenderText) avait deja ce garde-fou, mais pas
+  les autres primitives de dessin. }
+Function YInVisibleBand(Y1, Y2: Integer): Boolean;
+Begin
+ YInVisibleBand := (Y2 >= RENDER_AREA_Y) And
+                   (Y1 <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+End;
+
+Function MeasureInlineContentWidth(Node:HTMLNodePtr):Integer;
+Var
+ Child:HTMLNodePtr;
+ W,Part,Code:Integer;
+ S,T:String;
+Begin
+ MeasureInlineContentWidth:=0;If Node=Nil Then Exit;
+ If Node^.NodeType=HTML_NODE_TEXT Then Begin
+  MeasureInlineContentWidth:=GetTextWidth(Node^.Content);Exit
+ End;
+ Case Node^.TagType of
+  TAG_IMG:Begin
+   S:=GetNodeAttribute(Node,'width');Val(S,W,Code);
+   If(Code<>0)or(W<1)Then W:=GetTextWidth(GetNodeAttribute(Node,'alt'));
+   MeasureInlineContentWidth:=W;Exit
+  End;
+  TAG_INPUT:Begin
+   T:=HTMLLowerCase(GetNodeAttribute(Node,'type'));
+   If T='hidden'Then W:=0
+   Else If(T='submit')or(T='button')or(T='reset')Then Begin
+    S:=GetNodeAttribute(Node,'value');If S=''Then S:='Bouton';
+    W:=GetTextWidth(S)+2*BUTTON_PADDING_X+6
+   End Else If T='checkbox'Then W:=CHECKBOX_SIZE+6
+   Else If T='radio'Then W:=RADIO_SIZE+6
+   Else W:=INPUT_WIDTH+6;
+   MeasureInlineContentWidth:=W;Exit
+  End
+ End;
+ W:=0;Child:=Node^.FirstChild;
+ While Child<>Nil do Begin
+  Part:=MeasureInlineContentWidth(Child);
+  If W>30000-Part Then W:=30000 Else Inc(W,Part);
+  Child:=Child^.NextSibling
+ End;
+ MeasureInlineContentWidth:=W
+End;
+
+{ Decaler Ctx.X selon text-align (centre/droite) avant de rendre le
+  contenu d'un element de bloc. Approximation : on mesure la largeur
+  du texte de TOUT le sous-arbre (DOMGetTextContent) et on suppose
+  qu'il tient sur une seule ligne, ce qui est exact pour les titres et
+  la plupart des paragraphes courts ; un paragraphe long se reformate
+  sur plusieurs lignes a partir de ce meme decalage initial (un
+  centrage parfait ligne par ligne demanderait de bufferiser chaque
+  ligne avant de la dessiner, hors de portee raisonnable ici). }
+Procedure ApplyTextAlignOffset(Var Ctx: RenderContext; Node: HTMLNodePtr);
+Var
+ ContentWidth, AvailWidth, LineStart: Integer;
+Begin
+ If Ctx.TextAlignMode = ALIGN_LEFT Then Exit;
+ LineStart := Ctx.X;
+ { Mesurer aussi IMG, INPUT et BUTTON : DOMGetTextContent ne voit que le
+   texte et donnait donc une largeur nulle pour le logo Google. }
+ ContentWidth := MeasureInlineContentWidth(Node);
+ AvailWidth := Ctx.MaxX - LineStart;
+ If ContentWidth >= AvailWidth Then Exit; { ne tient pas sur une ligne : laisser le wrap normal }
+ If Ctx.TextAlignMode = ALIGN_CENTER Then
+  Ctx.X := LineStart + ((AvailWidth - ContentWidth) Div 2)
+ Else If Ctx.TextAlignMode = ALIGN_RIGHT Then
+  Ctx.X := LineStart + (AvailWidth - ContentWidth);
+ If Ctx.X < LineStart Then Ctx.X := LineStart;
+End;
+
+{ Procedure pour afficher du texte avec retour a la ligne automatique }
+{ Dessiner un seul mot avec les styles actifs (gras/souligne/barre/
+  fond) : Ctx.TextStyle et Ctx.BgColor sont mis a jour partout dans le
+  moteur de rendu (balises B/STRONG/I/EM/U/S/MARK/CSS font-weight/
+  text-decoration/etc.) mais n'etaient jusqu'ici jamais consultes au
+  moment de dessiner - le texte sortait toujours "normal". }
+Procedure RenderStyledWord(Var Ctx: RenderContext; Const Word: String; WordWidth: Integer);
+Var
+ UnderlineY, StrikeY,I,DrawX: Integer;
+ Ch:String;
+Begin
+ { Fond du mot, si different du fond de page par defaut }
+ If Ctx.BgColor <> RENDER_BG_COLOR Then Begin
+  SetFillStyle(SolidFill, Ctx.BgColor);
+  { Les coordonnees de Bar sont inclusives. X+WordWidth peignait donc
+    un pixel dans l'avance du mot suivant et pouvait effacer le dernier
+    pixel d'un lien ou le premier pixel du texte qui le suivait. }
+  If WordWidth>0Then
+   Bar(Ctx.X,Ctx.Y,Ctx.X+WordWidth-1,Ctx.Y+Ctx.LineHeight-2);
+ End;
+
+ SetColor(Ctx.TextColor);
+ If Ctx.LetterSpacingPx=0Then OutTextXY(Ctx.X,Ctx.Y,Word)
+ Else Begin
+  DrawX:=Ctx.X;
+  For I:=1To Length(Word)Do Begin
+   Ch:=Word[I];OutTextXY(DrawX,Ctx.Y,Ch);
+   If(Ctx.TextStyle And TEXT_STYLE_BOLD)<>0Then OutTextXY(DrawX+1,Ctx.Y,Ch);
+   Inc(DrawX,GetTextWidth(Ch)+Ctx.LetterSpacingPx)
+  End
+ End;
+ { Gras simule par un second trace decale de 1 pixel : la police
+   bitmap par defaut n'a pas de variante grasse. }
+ If((Ctx.TextStyle And TEXT_STYLE_BOLD)<>0)And(Ctx.LetterSpacingPx=0)Then
+  OutTextXY(Ctx.X + 1, Ctx.Y, Word);
+
+ If (Ctx.TextStyle And TEXT_STYLE_UNDERLINE) <> 0 Then Begin
+  UnderlineY := Ctx.Y + 9;
+  Line(Ctx.X, UnderlineY, Ctx.X + WordWidth, UnderlineY);
+ End;
+
+ If (Ctx.TextStyle And TEXT_STYLE_STRIKE) <> 0 Then Begin
+  StrikeY := Ctx.Y + 4;
+  Line(Ctx.X, StrikeY, Ctx.X + WordWidth, StrikeY);
+ End;
+End;
+
+{ Dessiner les mots accumules d'une ligne. Pour une ligne coupee
+  automatiquement, tout l'espace libre est reparti entre les intervalles;
+  une ligne terminee par le paragraphe conserve des espaces normaux. }
+Procedure FlushJustifiedLine(Var Ctx: RenderContext; ExpandSpaces: Boolean);
+Var
+ I, XPos, WordsWidth, GapCount, Extra, Gap, Remainder: Integer;
+ SavedX, SavedY, SavedColor, SavedBg: Integer;
+ SavedStyle: Byte;
+Begin
+ If JustifyWordCount = 0 Then Exit;
+ WordsWidth := 0;
+ For I := 1 To JustifyWordCount Do
+  Inc(WordsWidth, JustifyWords[I].Width);
+ GapCount := JustifyWordCount - 1;
+ Gap := 8;
+ Remainder := 0;
+ If ExpandSpaces And (GapCount > 0) Then Begin
+  Extra := Ctx.MaxX - JustifyLineStartX - WordsWidth;
+  If Extra < GapCount * 8 Then Extra := GapCount * 8;
+  Gap := Extra Div GapCount;
+  Remainder := Extra Mod GapCount;
+ End;
+
+ SavedX := Ctx.X; SavedY := Ctx.Y;
+ SavedColor := Ctx.TextColor; SavedBg := Ctx.BgColor;
+ SavedStyle := Ctx.TextStyle;
+ XPos := JustifyLineStartX;
+ For I := 1 To JustifyWordCount Do Begin
+  Ctx.X := XPos; Ctx.Y := JustifyLineY;
+  Ctx.TextColor := JustifyWords[I].TextColor;
+  Ctx.BgColor := JustifyWords[I].BgColor;
+  Ctx.TextStyle := JustifyWords[I].TextStyle;
+  If YInVisibleBand(Ctx.Y, Ctx.Y + Ctx.LineHeight) Then
+   RenderStyledWord(Ctx, JustifyWords[I].Text, JustifyWords[I].Width);
+  If Length(JustifyWords[I].LinkHref) > 0 Then
+   AddLinkArea(XPos, JustifyLineY, XPos + JustifyWords[I].Width,
+               JustifyLineY + Ctx.LineHeight, JustifyWords[I].LinkHref, '');
+  Inc(XPos, JustifyWords[I].Width);
+  If I < JustifyWordCount Then Begin
+   Inc(XPos, Gap);
+   If Remainder > 0 Then Begin Inc(XPos); Dec(Remainder); End;
+  End;
+  JustifyWords[I].Text := '';
+  JustifyWords[I].LinkHref := '';
+ End;
+ JustifyWordCount := 0;
+ Ctx.X := SavedX; Ctx.Y := SavedY;
+ Ctx.TextColor := SavedColor; Ctx.BgColor := SavedBg;
+ Ctx.TextStyle := SavedStyle;
+End;
+
+Procedure RenderText(Var Ctx: RenderContext; Const Text: String);
+Var
+ I, StartWord, EndWord: LongInt;
+ WordWidth: Integer;
+ Word: String;
+Begin
+ If Ctx.InHead Then Exit; { Ne pas afficher le contenu de head }
+ If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
+
+ SetColor(Ctx.TextColor);
+ I := 1;
+
+ While I <= Length(Text) Do Begin
+  { Ignorer les espaces en debut de ligne }
+  While (I <= Length(Text)) And (Text[I] In [' ', #9, #10, #13]) Do Begin
+   If Text[I] In [#10, #13] Then Begin
+    { Nouvelle ligne dans le texte source }
+    If (Not Ctx.NoWrap) And
+       (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+     RenderNewLine(Ctx);
+   End
+   Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then Begin
+    { Espace entre les mots }
+    Ctx.X := Ctx.X + 8+Ctx.WordSpacingPx;
+   End;
+   Inc(I);
+  End;
+
+  If I > Length(Text) Then Break;
+
+  { Extraire le mot suivant }
+  StartWord := I;
+  While (I <= Length(Text)) And Not (Text[I] In [' ', #9, #10, #13]) Do
+   Inc(I);
+  EndWord := I - 1;
+  Word := Copy(Text, StartWord, EndWord - StartWord + 1);
+  Case Ctx.TextTransformMode Of
+   1:For StartWord:=1To Length(Word)Do Word[StartWord]:=UpCase(Word[StartWord]);
+   2:Word:=HTMLLowerCase(Word);
+   3:If Length(Word)>0Then Word[1]:=UpCase(Word[1])
+  End;
+  WordWidth := GetTextWidth(Word);
+  If Length(Word)>1Then Inc(WordWidth,(Length(Word)-1)*Ctx.LetterSpacingPx);
+
+  { Retour a la ligne si le mot ne tient pas (sauf white-space:nowrap,
+    qui demande explicitement de ne jamais retourner a la ligne -
+    utilise par ex. par les icones d'en-tete en sprite) }
+  If (Not Ctx.NoWrap) And (Ctx.X + WordWidth > Ctx.MaxX) And
+     (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then Begin
+   If Ctx.TextAlignMode = ALIGN_JUSTIFY Then
+    FlushJustifiedLine(Ctx, True);
+   RenderNewLine(Ctx);
+  End;
+
+  { Afficher le mot uniquement s'il est dans la bande visible (entre
+    la barre d'URL et la barre de defilement horizontale) ; on avance
+    quand meme Ctx.X pour garder une mise en page coherente et pour
+    detecter un eventuel debordement (mot plus large que la zone). }
+  If Ctx.TextAlignMode = ALIGN_JUSTIFY Then Begin
+   If JustifyWordCount >= MAX_JUSTIFY_WORDS Then
+    FlushJustifiedLine(Ctx, False);
+   If JustifyWordCount = 0 Then Begin
+    JustifyLineStartX := Ctx.X;
+    JustifyLineY := Ctx.Y;
+   End;
+   Inc(JustifyWordCount);
+   JustifyWords[JustifyWordCount].Text := Word;
+   JustifyWords[JustifyWordCount].Width := WordWidth;
+   JustifyWords[JustifyWordCount].TextColor := Ctx.TextColor;
+   JustifyWords[JustifyWordCount].BgColor := Ctx.BgColor;
+   JustifyWords[JustifyWordCount].TextStyle := Ctx.TextStyle;
+   If Ctx.InLink Then
+    JustifyWords[JustifyWordCount].LinkHref := Ctx.CurrentLinkHref
+   Else
+    JustifyWords[JustifyWordCount].LinkHref := '';
+  End
+  Else If (Ctx.Y >= RENDER_AREA_Y) And
+          (Ctx.Y <= RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)) Then
+   RenderStyledWord(Ctx, Word, WordWidth);
+  Ctx.X := Ctx.X + WordWidth;
+  If Ctx.X > ContentOverflowX Then ContentOverflowX := Ctx.X;
+ End;
+End;
+
+{ Declaration forward pour la recursion }
+Procedure DevToolsTrackElement(Node: HTMLNodePtr; X1,Y1,X2,Y2:Integer); Forward;
+Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
+Procedure RenderCSSBackgroundSprite(Const Style: DOMStyle; X, Y: Integer); Forward;
+
+{ display:table-cell (souvent accompagne de float:left, ex: .newsBlock/
+  .searchBlock/.biglogo de gladir.com) demande explicitement plusieurs
+  freres cote a cote plutot qu'empiles verticalement - jusqu'ici ignore
+  par le moteur (seul le TagType par defaut etait consulte, jamais
+  Style.Display), si bien que ces DIV/SECTION s'empilaient toujours en
+  pleine largeur comme des blocs ordinaires. }
+Function CSSChildWantsTableCellFlow(Child: HTMLNodePtr): Boolean;
+Var
+ ChildStyle: DOMStyle;
+Begin
+ CSSChildWantsTableCellFlow := False;
+ If Not CSSEnabled Then Exit;
+ If Child^.NodeType <> HTML_NODE_ELEMENT Then Exit;
+ CSSResolveCascade(Child, ChildStyle);
+ If CSSIsElementHidden(ChildStyle) Then Exit;
+ If HTMLLowerCase(ChildStyle.PositionProp) = 'absolute' Then Exit;
+ CSSChildWantsTableCellFlow := HTMLLowerCase(ChildStyle.Display) = 'table-cell';
+End;
+
+Function CSSIgnorableBetweenTableCells(Node:HTMLNodePtr):Boolean;
+Begin
+ CSSIgnorableBetweenTableCells:=False;
+ If Node=Nil Then Exit;
+ If Node^.NodeType=HTML_NODE_COMMENT Then Begin
+  CSSIgnorableBetweenTableCells:=True;Exit
+ End;
+ If(Node^.NodeType=HTML_NODE_TEXT)And(BrowserTrimStr(Node^.Content)='')Then
+  CSSIgnorableBetweenTableCells:=True
+End;
+
+{ Rendre une serie de freres consecutifs display:table-cell comme une
+  rangee de tableau implicite : reutilise l'infrastructure Ctx.InTable/
+  TableCellContentX deja fiable (RenderNewLine renvoie alors Ctx.X au
+  debut du contenu de la cellule au lieu de la marge de la page - voir
+  RenderNewLine), sans passer par un vrai <table>/<tr>/<td>. Largeur de
+  chaque cellule = sa propriete CSS width (px/%/calc()), ou le reste de
+  la rangee si non specifiee (derniere cellule typiquement). }
+Procedure RenderTableCellRow(FirstCell, LastCell: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Cell: HTMLNodePtr;
+ CellStyle: DOMStyle;
+ RowY, RowStartX, CellX, CellWidth, RowWidth, MaxRowBottom, PadLeft: Integer;
+ OldInTable, OldTableDrawBorders: Boolean;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth: Integer;
+ OldTableCellPadding, OldTableCellSpacing, OldTableColIndex: Integer;
+ OldTableRowY, OldTableRowHeight, OldTableCellX, OldTableX: Integer;
+ OldLineHeight: Integer;
+Begin
+ RowY := Ctx.Y;
+ RowStartX := Ctx.X;
+ RowWidth := Ctx.MaxX - RowStartX;
+ If RowWidth < 1 Then RowWidth := 1;
+
+ OldInTable := Ctx.InTable;
+ OldTableDrawBorders := Ctx.TableDrawBorders;
+ OldMaxX := Ctx.MaxX;
+ OldTableCellContentX := Ctx.TableCellContentX;
+ OldTableCellWidth := Ctx.TableCellWidth;
+ OldTableCellPadding := Ctx.TableCellPadding;
+ OldTableCellSpacing := Ctx.TableCellSpacing;
+ OldTableColIndex := Ctx.TableColIndex;
+ OldTableRowY := Ctx.TableRowY;
+ OldTableRowHeight := Ctx.TableRowHeight;
+ OldTableCellX := Ctx.TableCellX;
+ OldTableX := Ctx.TableX;
+ OldLineHeight := Ctx.LineHeight;
+
+ Ctx.InTable := True;
+ Ctx.TableDrawBorders := False;
+ Ctx.TableCellPadding := 0;
+ Ctx.TableCellSpacing := 0;
+ Ctx.TableX := RowStartX;
+ Ctx.TableRowY := RowY;
+ Ctx.TableRowHeight := Ctx.LineHeight;
+
+ MaxRowBottom := RowY;
+ CellX := RowStartX;
+ Cell := FirstCell;
+ Repeat
+  CSSResolveCascade(Cell, CellStyle);
+  If Length(CellStyle.Width) > 0 Then
+   CellWidth := CSSParseDimension(CellStyle.Width, RowWidth)
+  Else
+   CellWidth := RowWidth - (CellX - RowStartX); { reste de la rangee }
+  If CellWidth < 1 Then CellWidth := 1;
+
+  If CellX + CellWidth > OldMaxX Then CellWidth := OldMaxX - CellX;
+  If CellWidth < 1 Then CellWidth := 1;
+
+  PadLeft := CSSParseDimension(CellStyle.PaddingLeft, 0);
+  If Length(CellStyle.Padding) > 0 Then
+   PadLeft := CSSParseDimension(CellStyle.Padding, 0);
+
+  Ctx.X := CellX + PadLeft;
+  Ctx.Y := RowY;
+  { Chaque cellule implicite commence avec sa propre boite de ligne.
+    Sans cette remise a zero, une image haute dans la premiere cellule
+    imposait sa hauteur de ligne aux sections et DIV suivants. Chaque saut
+    de bloc ajoutait alors de nouveau cette hauteur. Une rangee CSS mesure
+    ses cellules independamment et ne conserve que leur hauteur maximale. }
+  Ctx.LineHeight := RENDER_LINE_HEIGHT;
+  Ctx.MaxX := CellX + CellWidth;
+  Ctx.TableCellX := CellX;
+  Ctx.TableCellWidth := CellWidth;
+  Ctx.TableCellContentX := Ctx.X;
+
+  RenderingImplicitTableCellRoot := True;
+  RenderHTMLNode(Cell, Ctx);
+  RenderingImplicitTableCellRoot := False;
+  FlushJustifiedLine(Ctx, False);
+
+  If Ctx.Y + Ctx.LineHeight > MaxRowBottom Then MaxRowBottom := Ctx.Y + Ctx.LineHeight;
+
+  CellX := CellX + CellWidth;
+  If Cell = LastCell Then Break;
+  Cell := Cell^.NextSibling;
+  While CSSIgnorableBetweenTableCells(Cell)Do Cell:=Cell^.NextSibling;
+ Until Cell = Nil;
+
+ Ctx.InTable := OldInTable;
+ Ctx.TableDrawBorders := OldTableDrawBorders;
+ Ctx.MaxX := OldMaxX;
+ Ctx.TableCellContentX := OldTableCellContentX;
+ Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.TableCellPadding := OldTableCellPadding;
+ Ctx.TableCellSpacing := OldTableCellSpacing;
+ Ctx.TableColIndex := OldTableColIndex;
+ Ctx.TableRowY := OldTableRowY;
+ Ctx.TableRowHeight := OldTableRowHeight;
+ Ctx.TableCellX := OldTableCellX;
+ Ctx.TableX := OldTableX;
+ Ctx.LineHeight := OldLineHeight;
+
+ Ctx.X := RowStartX;
+ Ctx.Y := MaxRowBottom;
+End;
+
+{ Procedure pour rendre les enfants d'un noeud }
+Procedure RenderChildren(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Child, RunEnd, Probe: HTMLNodePtr;
+Begin
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  If (Not RenderingAbsoluteOverlay) And CSSChildWantsTableCellFlow(Child) Then Begin
+   RunEnd := Child;
+   Probe:=RunEnd^.NextSibling;
+   While CSSIgnorableBetweenTableCells(Probe)Do Probe:=Probe^.NextSibling;
+   While(Probe<>Nil)And CSSChildWantsTableCellFlow(Probe)Do Begin
+    RunEnd:=Probe;
+    Probe:=RunEnd^.NextSibling;
+    While CSSIgnorableBetweenTableCells(Probe)Do Probe:=Probe^.NextSibling
+   End;
+   RenderTableCellRow(Child, RunEnd, Ctx);
+   Child := Probe;
+  End Else Begin
+   RenderHTMLNode(Child, Ctx);
+   Child := Child^.NextSibling;
+  End;
+ End;
+End;
+
+{ Procedure pour rendre la balise HTML (racine du document) }
+Procedure RenderTagHTML(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { La balise html est un conteneur, on rend juste ses enfants }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise HEAD (metadonnees, ne pas afficher) }
+Procedure RenderTagHead(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInHead: Boolean;
+Begin
+ OldInHead := Ctx.InHead;
+ Ctx.InHead := True;
+ { On peut parser le contenu de head pour le titre, mais on n'affiche rien }
+ RenderChildren(Node, Ctx);
+ Ctx.InHead := OldInHead;
+End;
+
+{ Procedure pour rendre la balise BODY (contenu principal) }
+Procedure RenderTagBody(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInBody: Boolean;
+ BgColorAttr: String;
+Begin
+ OldInBody := Ctx.InBody;
+ Ctx.InBody := True;
+
+ { Verifier l'attribut bgcolor }
+ BgColorAttr := GetHTMLAttribute(Node, 'bgcolor');
+ { Note: Le support complet des couleurs sera ajoute avec le CSS }
+
+ RenderChildren(Node, Ctx);
+ Ctx.InBody := OldInBody;
+End;
+
+{ Procedure pour rendre la balise DIV (bloc) }
+Procedure RenderTagDiv(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+ DivStyle: DOMStyle;
+ Box: TElementBoxInfo;
+ MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
+ BoxStartX, BoxStartY, BoxEndX, BoxEndY, RequestedWidth: Integer;
+ OldMaxX, OldMaxY, FixedHeight, SavedClipDepth: Integer;
+ OldPositionAnchorValid: Boolean;
+ OldPositionAnchorX, OldPositionAnchorY, OldPositionAnchorMaxX: Integer;
+ IsImplicitTableCellRoot: Boolean;
+ MeasureCtx: RenderContext;
+ OldMeasurePass: Boolean;
+ SavedAbsoluteCount: Integer;
+ ClipOverflow: Boolean;
+Begin
+ IsImplicitTableCellRoot:=RenderingImplicitTableCellRoot;
+ OldPositionAnchorValid:=PositionAnchorValid;
+ OldPositionAnchorX:=PositionAnchorX;
+ OldPositionAnchorY:=PositionAnchorY;
+ OldPositionAnchorMaxX:=PositionAnchorMaxX;
+ WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := RENDER_DIV_MARGIN;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := RENDER_DIV_MARGIN;
+ If Box.PaddingTopPx >= 0 Then PaddingTopPx := Box.PaddingTopPx Else PaddingTopPx := 0;
+ If Box.PaddingBottomPx >= 0 Then PaddingBottomPx := Box.PaddingBottomPx Else PaddingBottomPx := 0;
+
+ { DIV est un element de bloc par defaut - nouvelle ligne avant et
+   apres - sauf si le CSS demande display:inline/inline-block. }
+ If WantsBlock Then Begin
+  If (Not RenderingAbsoluteOverlay) And
+     (Not IsImplicitTableCellRoot) And
+     (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+   RenderNewLine(Ctx);
+  { Le DIV qui constitue lui-meme la cellule implicite ne commence pas
+    une nouvelle ligne; ses descendants retrouvent ensuite le flux bloc
+    normal a l'interieur de cette cellule. }
+  RenderingImplicitTableCellRoot:=False;
+  Inc(Ctx.BlockLevel);
+  If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginTopPx);
+  If RenderingAbsoluteOverlay Then BoxStartX := Ctx.X
+  { Tout bloc descendant d'une cellule doit rester dans le repere de
+    cette cellule. Revenir a RenderOriginX faisait commencer les SECTION
+    .INX de newsBlock et searchBlock au meme X : la seconde repeignait la
+    premiere et leurs H3 absolus apparaissaient au-dessus du logo. }
+  Else If Ctx.InTable Then BoxStartX:=Ctx.TableCellContentX
+  Else BoxStartX := Ctx.BlockContentX;
+  BoxStartY := Ctx.Y;
+  If PaddingTopPx > 0 Then Ctx.Y := Ctx.Y + PaddingTopPx;
+  ApplyTextAlignOffset(Ctx, Node);
+ End;
+
+ { Les icones de JSCookMenu sont des DIV vides dont l'image est un
+   background CSS decoupe dans une feuille de sprites. Le peindre avant le
+   contenu garantit qu'une seconde passe du tableau ne l'efface pas. }
+ CSSResolveCascade(Node, DivStyle);
+ OldMaxX := Ctx.MaxX;
+ OldMaxY := Ctx.MaxY;
+ FixedHeight := CSSParseDimension(DivStyle.Height, 0);
+ ClipOverflow := WantsBlock And (FixedHeight > 0) And
+  ((HTMLLowerCase(DivStyle.Overflow) = 'hidden') Or
+   (HTMLLowerCase(DivStyle.Overflow) = 'clip') Or
+   (HTMLLowerCase(DivStyle.OverflowY) = 'hidden') Or
+   (HTMLLowerCase(DivStyle.OverflowY) = 'clip'));
+ If WantsBlock And(DivStyle.TextIndent<>'')Then
+  Inc(Ctx.X,CSSParseDimension(DivStyle.TextIndent,0));
+
+ { Un DIV de type bloc occupe par defaut toute la largeur disponible.
+   Auparavant son background-color n'etait jamais peint: seuls ses mots
+   ou les cellules de son tableau enfant avaient un fond, ce qui
+   raccourcissait visuellement les barres de navigation. Mesurer d'abord
+   les enfants permet de peindre la boite complete avant leur contenu. }
+ If WantsBlock Then Begin
+  BoxEndX := Ctx.MaxX;
+  { RenderTableCellRow a deja resolu la largeur CSS de sa cellule racine
+    par rapport a toute la rangee. Ne pas reevaluer width/calc() avec la
+    largeur reduite de la cellule, sinon le panneau est retreci deux fois. }
+  If (Not IsImplicitTableCellRoot) And (Length(DivStyle.Width) > 0) Then Begin
+   RequestedWidth := CSSParseDimension(DivStyle.Width, Ctx.MaxX - BoxStartX);
+   If(DivStyle.MinWidth<>'')And
+     (RequestedWidth<CSSParseDimension(DivStyle.MinWidth,RequestedWidth))Then
+    RequestedWidth:=CSSParseDimension(DivStyle.MinWidth,RequestedWidth);
+   If(DivStyle.MaxWidth<>'')And
+     (RequestedWidth>CSSParseDimension(DivStyle.MaxWidth,RequestedWidth))Then
+    RequestedWidth:=CSSParseDimension(DivStyle.MaxWidth,RequestedWidth);
+   If RequestedWidth >= 0 Then BoxEndX := BoxStartX + RequestedWidth;
+   If BoxEndX > Ctx.MaxX Then BoxEndX := Ctx.MaxX;
+  End;
+  If HTMLLowerCase(DivStyle.PositionProp)='relative'Then Begin
+   PositionAnchorValid:=True;
+   { Pour position:absolute, le bloc conteneur CSS est etabli sur son
+     padding box, donc a l'interieur de ses bordures. Cette distinction
+     est visible sur .INX (border-top:5px) avec un H3 top:-53px. }
+   PositionAnchorX:=BoxStartX+
+                    CSSParseDimension(DivStyle.BorderLeftWidth,0);
+   PositionAnchorY:=BoxStartY+
+                    CSSParseDimension(DivStyle.BorderTopWidth,0);
+   PositionAnchorMaxX:=BoxEndX
+  End;
+  MeasureCtx := Ctx;
+  MeasureCtx.MaxX := BoxEndX;
+  If ClipOverflow Then MeasureCtx.MaxY := BoxStartY + FixedHeight
+  Else MeasureCtx.MaxY := High(Integer);
+  OldMeasurePass := TableMeasurePass;
+  SavedAbsoluteCount := AbsolutePositionedCount;
+  TableMeasurePass := True;
+  RenderChildren(Node, MeasureCtx);
+  TableMeasurePass := OldMeasurePass;
+  AbsolutePositionedCount := SavedAbsoluteCount;
+  BoxEndY := MeasureCtx.Y + PaddingBottomPx;
+  { height s'applique aussi aux DIV contenant des enfants. Auparavant cette
+    contrainte n'etait reservee qu'aux sprites vides. }
+  If (DivStyle.Height <> '') And
+     (BoxEndY < BoxStartY + CSSParseDimension(DivStyle.Height, 0)) Then
+   BoxEndY := BoxStartY + CSSParseDimension(DivStyle.Height, 0);
+  If(DivStyle.MinHeight<>'')And
+    (BoxEndY<BoxStartY+CSSParseDimension(DivStyle.MinHeight,0))Then
+   BoxEndY:=BoxStartY+CSSParseDimension(DivStyle.MinHeight,0);
+  If(DivStyle.MaxHeight<>'')And
+    (BoxEndY>BoxStartY+CSSParseDimension(DivStyle.MaxHeight,BoxEndY-BoxStartY))Then
+   BoxEndY:=BoxStartY+CSSParseDimension(DivStyle.MaxHeight,BoxEndY-BoxStartY);
+  If BoxEndY < BoxStartY + Ctx.LineHeight Then
+   BoxEndY := BoxStartY + Ctx.LineHeight;
+  If Box.HasBgBox And (Not TableMeasurePass) And
+     YInVisibleBand(BoxStartY, BoxEndY) Then Begin
+   SetFillStyle(SolidFill, Box.BgBoxColorIdx);
+   Bar(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
+  End;
+ End;
+ RenderCSSBackgroundSprite(DivStyle, Ctx.X, Ctx.Y);
+
+ If WantsBlock Then Ctx.MaxX := BoxEndX;
+ If ClipOverflow And (BoxStartY + FixedHeight < Ctx.MaxY) Then
+  Ctx.MaxY := BoxStartY + FixedHeight;
+ SavedClipDepth := AbsoluteClipDepth;
+ If ClipOverflow Then Inc(AbsoluteClipDepth);
+ RenderChildren(Node, Ctx);
+ AbsoluteClipDepth := SavedClipDepth;
+
+ { overflow:hidden est un vrai viewport local : le contenu ne peut ni
+   peindre ni agrandir la boite au-dela de sa hauteur declaree. }
+ If ClipOverflow Then Ctx.Y := BoxStartY + FixedHeight;
+ Ctx.MaxX := OldMaxX;
+ Ctx.MaxY := OldMaxY;
+
+ { Une hauteur CSS explicite reserve la hauteur de toute boite DIV; son
+   contenu peut encore l'agrandir si necessaire. }
+ If WantsBlock And
+    (CSSParseDimension(DivStyle.Height, 0) > 0) And
+    (Ctx.Y < BoxStartY + CSSParseDimension(DivStyle.Height, 0)) Then
+  Ctx.Y := BoxStartY + CSSParseDimension(DivStyle.Height, 0);
+ If WantsBlock And(DivStyle.MinHeight<>'')And
+   (Ctx.Y<BoxStartY+CSSParseDimension(DivStyle.MinHeight,0))Then
+  Ctx.Y:=BoxStartY+CSSParseDimension(DivStyle.MinHeight,0);
+ If WantsBlock And(DivStyle.MaxHeight<>'')And
+   (Ctx.Y>BoxStartY+CSSParseDimension(DivStyle.MaxHeight,Ctx.Y-BoxStartY))Then
+  Ctx.Y:=BoxStartY+CSSParseDimension(DivStyle.MaxHeight,Ctx.Y-BoxStartY);
+
+ If WantsBlock Then Begin
+  If PaddingBottomPx > 0 Then Ctx.Y := Ctx.Y + PaddingBottomPx;
+  If Ctx.Y > BoxEndY Then BoxEndY := Ctx.Y;
+  { Bordure dessinee apres le contenu (simple contour, ne recouvre
+    donc pas le texte deja trace - un fond plein devrait etre dessine
+    AVANT le contenu, ce qui demanderait de connaitre la hauteur de la
+    boite a l'avance ; non implemente pour cette raison). }
+  If Box.HasBorder And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
+   SetColor(Box.BorderColorIdx);
+   Rectangle(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
+   SetColor(Ctx.TextColor);
+  End;
+  Dec(Ctx.BlockLevel);
+  RenderBlockSpacing(Ctx, MarginBottomPx);
+ End;
+ PositionAnchorValid:=OldPositionAnchorValid;
+ PositionAnchorX:=OldPositionAnchorX;
+ PositionAnchorY:=OldPositionAnchorY;
+ PositionAnchorMaxX:=OldPositionAnchorMaxX;
+End;
+
+{ Procedure pour rendre la balise SPAN (inline) }
+Procedure RenderTagSpan(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { SPAN est un element inline - pas de saut de ligne }
+ RenderChildren(Node, Ctx);
+End;
+
+{ CENTER est obsolete en HTML5 mais demeure utilise dans les pages de
+  compatibilite envoyees aux navigateurs simples, notamment par Google. }
+Procedure RenderTagCenter(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldAlign: Byte;
+Begin
+ OldAlign := Ctx.TextAlignMode;
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then RenderNewLine(Ctx);
+ Ctx.TextAlignMode := ALIGN_CENTER;
+ RenderChildren(Node, Ctx);
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then RenderNewLine(Ctx);
+ Ctx.TextAlignMode := OldAlign
+End;
+
+{ Procedure pour rendre la balise SECTION (HTML5 bloc semantique) }
+Procedure RenderTagSection(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { SECTION possede le meme modele de boite qu'un DIV. L'ancien rendu
+   semantique ignorait background, padding, margin et height; les panneaux
+   .INX de gladir.com devenaient donc transparents et mal dimensionnes. }
+ RenderTagDiv(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise ARTICLE (HTML5 bloc semantique) }
+Procedure RenderTagArticle(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+ Box: TElementBoxInfo;
+ ArticleStyle: DOMStyle;
+ MarginTopPx, MarginBottomPx, MarginLeftPx, MarginRightPx: Integer;
+ PaddingTopPx, PaddingBottomPx, PaddingLeftPx, PaddingRightPx: Integer;
+ BoxStartX, BoxStartY, BoxEndX, BoxEndY, OldMaxX,OldBlockContentX: Integer;
+ MeasureCtx: RenderContext;
+ OldMeasurePass: Boolean;
+ SavedAbsoluteCount: Integer;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ CSSResolveCascade(Node, ArticleStyle);
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := 0;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := 0;
+ If Box.PaddingTopPx >= 0 Then PaddingTopPx := Box.PaddingTopPx Else PaddingTopPx := 0;
+ If Box.PaddingBottomPx >= 0 Then PaddingBottomPx := Box.PaddingBottomPx Else PaddingBottomPx := 0;
+ If Length(ArticleStyle.MarginLeft) > 0 Then
+  MarginLeftPx := CSSParseDimension(ArticleStyle.MarginLeft, 0)
+ Else MarginLeftPx := CSSParseDimension(ArticleStyle.Margin, 0);
+ If Length(ArticleStyle.MarginRight) > 0 Then
+  MarginRightPx := CSSParseDimension(ArticleStyle.MarginRight, 0)
+ Else MarginRightPx := CSSParseDimension(ArticleStyle.Margin, 0);
+ If Length(ArticleStyle.PaddingLeft) > 0 Then
+  PaddingLeftPx := CSSParseDimension(ArticleStyle.PaddingLeft, 0)
+ Else PaddingLeftPx := CSSParseDimension(ArticleStyle.Padding, 0);
+ If Length(ArticleStyle.PaddingRight) > 0 Then
+  PaddingRightPx := CSSParseDimension(ArticleStyle.PaddingRight, 0)
+ Else PaddingRightPx := CSSParseDimension(ArticleStyle.Padding, 0);
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, MarginTopPx);
+  OldBlockContentX:=Ctx.BlockContentX;
+  BoxStartX := OldBlockContentX + MarginLeftPx;
+  BoxStartY := Ctx.Y;
+  BoxEndX := Ctx.MaxX - MarginRightPx;
+  If BoxEndX < BoxStartX Then BoxEndX := BoxStartX;
+  OldMaxX := Ctx.MaxX;
+  Ctx.X := BoxStartX + PaddingLeftPx;
+  Ctx.BlockContentX:=Ctx.X;
+  Ctx.MaxX := BoxEndX - PaddingRightPx;
+  If Ctx.MaxX < Ctx.X Then Ctx.MaxX := Ctx.X;
+  If PaddingTopPx > 0 Then Inc(Ctx.Y, PaddingTopPx);
+
+  { Mesurer la hauteur reelle avant de peindre le fond. Cette passe utilise
+    le meme mecanisme silencieux que les lignes de tableau. }
+  MeasureCtx := Ctx;
+  MeasureCtx.MaxY := High(Integer);
+  OldMeasurePass := TableMeasurePass;
+  SavedAbsoluteCount := AbsolutePositionedCount;
+  TableMeasurePass := True;
+  RenderChildren(Node, MeasureCtx);
+  TableMeasurePass := OldMeasurePass;
+  AbsolutePositionedCount := SavedAbsoluteCount;
+  BoxEndY := MeasureCtx.Y + MeasureCtx.LineHeight + PaddingBottomPx;
+  If BoxEndY < BoxStartY + Ctx.LineHeight Then
+   BoxEndY := BoxStartY + Ctx.LineHeight;
+  If Box.HasBgBox And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
+   SetFillStyle(SolidFill, Box.BgBoxColorIdx);
+   Bar(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
+  End;
+ End;
+ RenderChildren(Node, Ctx);
+ If WantsBlock Then Begin
+  If PaddingBottomPx > 0 Then Inc(Ctx.Y, PaddingBottomPx);
+  If Ctx.Y < BoxEndY Then Ctx.Y := BoxEndY;
+  If Box.HasBorder And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
+   SetColor(Box.BorderColorIdx);
+   Rectangle(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
+   SetColor(Ctx.TextColor);
+  End;
+  Ctx.MaxX := OldMaxX;
+  Ctx.BlockContentX:=OldBlockContentX;
+  Ctx.X := OldBlockContentX;
+  If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginBottomPx);
+ End;
+End;
+
+Function FindInteractiveNodeAtPosition(X, Y: Integer): HTMLNodePtr;
+Var
+ I: Integer;
+Begin
+ I := FindInteractiveAreaAtPosition(X, Y);
+ If I > 0 Then
+  FindInteractiveNodeAtPosition := InteractiveAreas[I].Node
+ Else
+  FindInteractiveNodeAtPosition := Nil;
+End;
+
+{ Procedure pour rendre la balise NAV (HTML5 navigation) }
+Procedure RenderTagNav(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+ NavStyle: DOMStyle;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+  RenderNewLine(Ctx);
+ CSSResolveCascade(Node, NavStyle);
+ { display:table + margin:auto est la technique CSS employee par
+   .breadcrumb pour obtenir une boite ajustee a son texte et centree. }
+ If (HTMLLowerCase(NavStyle.Display) = 'table') And
+    (System.Pos('auto', HTMLLowerCase(NavStyle.Margin)) > 0) Then Begin
+  Ctx.TextAlignMode := ALIGN_CENTER;
+  ApplyTextAlignOffset(Ctx, Node);
+ End Else If Ctx.TextAlignMode <> ALIGN_LEFT Then
+  ApplyTextAlignOffset(Ctx, Node);
+ RenderChildren(Node, Ctx);
+ If WantsBlock Then
+  RenderNewLine(Ctx);
+End;
+
+{ Procedure pour rendre la balise ASIDE (HTML5 contenu lateral) }
+Procedure RenderTagAside(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  Inc(Ctx.BlockLevel);
+ End;
+ RenderChildren(Node, Ctx);
+ If WantsBlock Then Begin
+  Dec(Ctx.BlockLevel);
+  RenderNewLine(Ctx);
+ End;
+End;
+
+{ Procedure pour rendre la balise HEADER (HTML5 en-tete) }
+Procedure RenderTagHeader(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+ HeaderStyle: DOMStyle;
+ HeaderBox: TElementBoxInfo;
+ HeaderX1, HeaderY1, HeaderX2, HeaderHeight: Integer;
+ OldPositionAnchorValid:Boolean;
+ OldPositionAnchorX,OldPositionAnchorY,OldPositionAnchorMaxX:Integer;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+  RenderNewLine(Ctx);
+ CSSResolveCascade(Node, HeaderStyle);
+ HeaderBox := ComputeElementBoxInfo(HeaderStyle);
+ HeaderX1 := RENDER_AREA_X;
+ HeaderX2 := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+ HeaderY1 := Ctx.Y;
+ HeaderHeight := CSSParseDimension(HeaderStyle.Height, Ctx.LineHeight);
+ If HeaderHeight < Ctx.LineHeight Then HeaderHeight := Ctx.LineHeight;
+ { Un HEADER bloc occupe la largeur disponible, independamment de la
+   largeur de ses enfants. Peindre son background AVANT le fil d'Ariane. }
+ If HeaderBox.HasBgBox And YInVisibleBand(HeaderY1, HeaderY1 + HeaderHeight) Then Begin
+  SetFillStyle(SolidFill, HeaderBox.BgBoxColorIdx);
+  Bar(HeaderX1, HeaderY1, HeaderX2, HeaderY1 + HeaderHeight);
+ End;
+ OldPositionAnchorValid:=PositionAnchorValid;
+ OldPositionAnchorX:=PositionAnchorX;
+ OldPositionAnchorY:=PositionAnchorY;
+ OldPositionAnchorMaxX:=PositionAnchorMaxX;
+ If HTMLLowerCase(HeaderStyle.PositionProp)='relative'Then Begin
+  PositionAnchorValid:=True;
+  PositionAnchorX:=HeaderX1;
+  PositionAnchorY:=HeaderY1;
+  PositionAnchorMaxX:=HeaderX2
+ End;
+ RenderChildren(Node, Ctx);
+ PositionAnchorValid:=OldPositionAnchorValid;
+ PositionAnchorX:=OldPositionAnchorX;
+ PositionAnchorY:=OldPositionAnchorY;
+ PositionAnchorMaxX:=OldPositionAnchorMaxX;
+ If WantsBlock Then Begin
+  { height et overflow:hidden fixent la hauteur de la barre : les H2
+    display:none et les listes absolues ne doivent pas l'agrandir. }
+  If Ctx.Y < HeaderY1 + HeaderHeight Then Ctx.Y := HeaderY1 + HeaderHeight;
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
+ End;
+End;
+
+{ Procedure pour rendre la balise FOOTER (HTML5 pied de page) }
+Procedure RenderTagFooter(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock Then Begin
+  RenderBlockSpacing(Ctx, RENDER_DIV_MARGIN);
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+ End;
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise MAIN (HTML5 contenu principal) }
+Procedure RenderTagMain(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+  RenderNewLine(Ctx);
+ RenderChildren(Node, Ctx);
+End;
+
+{ =====================================================
+  RENDU HTML - Balises de texte (p, h1-h6, strong, em, pre, code)
+  ===================================================== }
+
+{ Procedure pour rendre la balise P (paragraphe) }
+Procedure RenderTagP(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+ Box: TElementBoxInfo;
+ MarginTopPx, MarginBottomPx: Integer;
+ BoxStartX, BoxStartY: Integer;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := RENDER_PARAGRAPH_SPACING;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := RENDER_PARAGRAPH_SPACING;
+
+ { Nouvelle ligne avant le paragraphe si necessaire, sauf si le CSS
+   demande display:inline/inline-block. }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, MarginTopPx);
+  BoxStartX := Ctx.BlockContentX;
+  BoxStartY := Ctx.Y;
+  ApplyTextAlignOffset(Ctx, Node);
+ End;
+
+ RenderChildren(Node, Ctx);
+
+ If WantsBlock Then Begin
+  If Box.HasBorder And YInVisibleBand(BoxStartY, Ctx.Y) Then Begin
+   SetColor(Box.BorderColorIdx);
+   Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, Ctx.Y);
+   SetColor(Ctx.TextColor);
+  End;
+  RenderBlockSpacing(Ctx, MarginBottomPx);
+ End;
+End;
+
+{ Procedure generique pour rendre les titres H1-H6 }
+Procedure RenderHeading(Node: HTMLNodePtr; Var Ctx: RenderContext; HeadingHeight: Integer);
+Var
+ OldLineHeight: Integer;
+ OldTextStyle: Byte;
+ WantsBlock: Boolean;
+ Box: TElementBoxInfo;
+ MarginTopPx, MarginBottomPx: Integer;
+ HeadingStyle: DOMStyle;
+ HeadingX,HeadingY,HeadingWidth,HeadingBoxHeight:Integer;
+ PaddingLeftPx,PaddingRightPx,PaddingTopPx,PaddingBottomPx:Integer;
+ BorderLeftPx,BorderTopPx,BorderBottomPx,HeadingMarginTopPx:Integer;
+ HeadingBgColor,HeadingBorderColor:Integer;
+ HeadingTextColor:Integer;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ Box := CurrentElementBox;
+ If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := RENDER_PARAGRAPH_SPACING;
+ If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := RENDER_PARAGRAPH_SPACING;
+
+ { Sauvegarder les valeurs courantes }
+ OldLineHeight := Ctx.LineHeight;
+ OldTextStyle := Ctx.TextStyle;
+
+ { Un titre position:absolute est deja place a ses coordonnees finales
+   par RenderAbsolutePositionedOverlays. Il ne doit surtout pas appeler
+   RenderNewLine/RenderBlockSpacing : ces routines le rameneraient a la
+   marge de la page et decaleraient son Y. Peindre ici sa propre boite
+   CSS permet aussi de reproduire les onglets .INX h3 de Gladir. }
+ If RenderingAbsoluteOverlay Then Begin
+  CSSResolveCascade(Node,HeadingStyle);
+  HeadingX:=Ctx.X;HeadingY:=Ctx.Y;
+  PaddingLeftPx:=CSSParseDimension(HeadingStyle.PaddingLeft,0);
+  PaddingRightPx:=CSSParseDimension(HeadingStyle.PaddingRight,0);
+  PaddingTopPx:=CSSParseDimension(HeadingStyle.PaddingTop,0);
+  PaddingBottomPx:=CSSParseDimension(HeadingStyle.PaddingBottom,0);
+  If HeadingStyle.Padding<>'' Then Begin
+   If HeadingStyle.PaddingLeft='' Then
+    PaddingLeftPx:=CSSParseShorthandSide(HeadingStyle.Padding,3,0);
+   If HeadingStyle.PaddingRight='' Then
+    PaddingRightPx:=CSSParseShorthandSide(HeadingStyle.Padding,1,0);
+   If HeadingStyle.PaddingTop='' Then
+    PaddingTopPx:=CSSParseShorthandSide(HeadingStyle.Padding,0,0);
+   If HeadingStyle.PaddingBottom='' Then
+    PaddingBottomPx:=CSSParseShorthandSide(HeadingStyle.Padding,2,0)
+  End;
+  BorderLeftPx:=CSSParseDimension(HeadingStyle.BorderLeftWidth,0);
+  BorderTopPx:=CSSParseDimension(HeadingStyle.BorderTopWidth,0);
+  BorderBottomPx:=CSSParseDimension(HeadingStyle.BorderBottomWidth,0);
+  { Les feuilles utilisateur des navigateurs donnent aux H1..H6 une
+    marge verticale de 1em. top positionne la marge externe; la boite
+    visible commence donc un em plus bas si la page ne neutralise pas
+    explicitement cette marge. C'est le cas de .INX h3 sur Gladir. }
+  If HeadingStyle.MarginTop<>'' Then
+   HeadingMarginTopPx:=CSSParseDimension(HeadingStyle.MarginTop,0)
+  Else If HeadingStyle.Margin<>'' Then
+   HeadingMarginTopPx:=CSSParseShorthandSide(HeadingStyle.Margin,0,0)
+  Else
+   HeadingMarginTopPx:=CSSParseDimension(HeadingStyle.FontSize,HeadingHeight);
+  Inc(HeadingY,HeadingMarginTopPx);
+  HeadingWidth:=CSSParseDimension(HeadingStyle.Width,0);
+  If HeadingWidth<=0 Then
+   HeadingWidth:=GetTextWidth(DOMGetTextContent(Node))+PaddingLeftPx+
+                 PaddingRightPx+BorderLeftPx;
+  HeadingBoxHeight:=CSSParseDimension(HeadingStyle.Height,HeadingHeight);
+  If HeadingBoxHeight<HeadingHeight Then HeadingBoxHeight:=HeadingHeight;
+  Inc(HeadingBoxHeight,PaddingTopPx+PaddingBottomPx+
+                       BorderTopPx+BorderBottomPx);
+  HeadingBgColor:=CSSColorToIndex(HeadingStyle.BackgroundColor);
+  If HeadingBgColor>=0 Then Begin
+   SetFillStyle(SolidFill,HeadingBgColor);
+   Bar(HeadingX,HeadingY,HeadingX+HeadingWidth,HeadingY+HeadingBoxHeight)
+  End;
+  If BorderLeftPx>0 Then Begin
+   HeadingBorderColor:=CSSColorToIndex(HeadingStyle.BorderLeftColor);
+   If HeadingBorderColor<0 Then HeadingBorderColor:=Box.BorderColorIdx;
+   SetFillStyle(SolidFill,HeadingBorderColor);
+   Bar(HeadingX,HeadingY,HeadingX+BorderLeftPx-1,
+       HeadingY+HeadingBoxHeight)
+  End;
+  Ctx.X:=HeadingX+BorderLeftPx+PaddingLeftPx;
+  Ctx.Y:=HeadingY+BorderTopPx+PaddingTopPx;
+  HeadingTextColor:=CSSColorToIndex(HeadingStyle.Color);
+  If HeadingTextColor>=0 Then Ctx.TextColor:=HeadingTextColor;
+  Ctx.LineHeight:=HeadingHeight;
+  Ctx.TextStyle:=Ctx.TextStyle Or TEXT_STYLE_BOLD;
+  RenderChildren(Node,Ctx);
+  { text-align:justify met le mot dans JustifyWords. Comme un overlay ne
+    passe pas par RenderNewLine, il faut terminer explicitement sa ligne,
+    sinon le fond blanc est visible mais le titre reste dans le tampon. }
+  FlushJustifiedLine(Ctx,False);
+  Ctx.LineHeight:=OldLineHeight;
+  Ctx.TextStyle:=OldTextStyle;
+  Exit
+ End;
+
+ { Nouvelle ligne avant le titre, sauf si le CSS demande
+   display:inline/inline-block. }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, MarginTopPx);
+ End;
+
+ { Appliquer la taille du titre }
+ Ctx.LineHeight := HeadingHeight;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+
+ If WantsBlock Then ApplyTextAlignOffset(Ctx, Node);
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer les valeurs }
+ Ctx.LineHeight := OldLineHeight;
+ Ctx.TextStyle := OldTextStyle;
+
+ { Espacement apres le titre }
+ If WantsBlock Then Begin
+  RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, MarginBottomPx);
+ End;
+End;
+
+{ Procedure pour rendre la balise H1 }
+Procedure RenderTagH1(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H1_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H2 }
+Procedure RenderTagH2(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H2_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H3 }
+Procedure RenderTagH3(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H3_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H4 }
+Procedure RenderTagH4(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H4_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H5 }
+Procedure RenderTagH5(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H5_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise H6 }
+Procedure RenderTagH6(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderHeading(Node, Ctx, RENDER_H6_HEIGHT);
+End;
+
+{ Procedure pour rendre la balise STRONG (texte gras) }
+Procedure RenderTagStrong(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise B (texte gras) }
+Procedure RenderTagB(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagStrong(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise EM (texte italique) }
+Procedure RenderTagEm(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_ITALIC;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise I (texte italique) }
+Procedure RenderTagI(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagEm(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise U (texte souligne) }
+Procedure RenderTagU(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise S/STRIKE/DEL (texte barre) }
+Procedure RenderTagStrike(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_STRIKE;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise PRE (texte preformate) }
+Procedure RenderTagPre(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInPreformatted: Boolean;
+ OldTextStyle: Byte;
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne avant le bloc pre }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
+
+ OldInPreformatted := Ctx.InPreformatted;
+ OldTextStyle := Ctx.TextStyle;
+
+ Ctx.InPreformatted := True;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_CODE;
+
+ RenderChildren(Node, Ctx);
+
+ Ctx.InPreformatted := OldInPreformatted;
+ Ctx.TextStyle := OldTextStyle;
+
+ { Espacement apres le bloc pre }
+ If WantsBlock Then Begin
+  RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
+End;
+
+{ Procedure pour rendre la balise CODE (code inline) }
+Procedure RenderTagCode(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+Begin
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_CODE;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Balise HTML historique FONT. Les pages de reference Gladir utilisent
+  encore abondamment <font color="#rrggbb"> pour leur coloration
+  syntaxique. La couleur est heritee par B/A/SPAN imbriques, puis restauree
+  exactement a la fermeture de FONT. }
+Procedure RenderTagFont(Node:HTMLNodePtr;Var Ctx:RenderContext);
+Var
+ OldTextColor,NewTextColor:Integer;
+ ColorValue:String;
+Begin
+ OldTextColor:=Ctx.TextColor;
+ ColorValue:=GetNodeAttribute(Node,'color');
+ If ColorValue<>''Then Begin
+  NewTextColor:=CSSColorToIndex(ColorValue);
+  If NewTextColor>=0Then Ctx.TextColor:=NewTextColor
+ End;
+ RenderChildren(Node,Ctx);
+ Ctx.TextColor:=OldTextColor
+End;
+
+{ Procedure pour rendre la balise KBD (entree clavier) }
+Procedure RenderTagKbd(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagCode(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise SAMP (exemple de sortie) }
+Procedure RenderTagSamp(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagCode(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise VAR (variable) }
+Procedure RenderTagVar(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagEm(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise BR (saut de ligne) }
+Procedure RenderTagBR(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderNewLine(Ctx);
+End;
+
+{ Procedure pour rendre la balise HR (ligne horizontale) }
+Procedure RenderTagHR(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Nouvelle ligne avant la ligne horizontale }
+ If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+  RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, 4);
+
+ { Dessiner la ligne horizontale }
+ If YInVisibleBand(Ctx.Y + (Ctx.LineHeight Div 2), Ctx.Y + (Ctx.LineHeight Div 2)) Then Begin
+  SetColor(8); { Gris }
+  Line(RenderOriginX + RENDER_MARGIN_LEFT,
+       Ctx.Y + (Ctx.LineHeight Div 2),
+       Ctx.MaxX - RENDER_MARGIN_LEFT,
+       Ctx.Y + (Ctx.LineHeight Div 2));
+  SetColor(Ctx.TextColor);
+ End;
+
+ { Espacement apres la ligne }
+ RenderNewLine(Ctx);
+ RenderBlockSpacing(Ctx, 4);
+End;
+
+{ Procedure pour rendre la balise BLOCKQUOTE (citation) }
+Procedure RenderTagBlockquote(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne avant la citation }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+  Inc(Ctx.BlockLevel, 2);
+ End;
+
+ { Indenter le contenu }
+ RenderChildren(Node, Ctx);
+
+ { Espacement apres la citation }
+ If WantsBlock Then Begin
+  Dec(Ctx.BlockLevel, 2);
+  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ End;
+End;
+
+{ Procedure pour rendre la balise Q (citation inline) }
+Procedure RenderTagQ(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Ajouter des guillemets }
+ RenderText(Ctx, '"');
+ RenderChildren(Node, Ctx);
+ RenderText(Ctx, '"');
+End;
+
+{ Procedure pour rendre la balise SMALL (texte petit) }
+Procedure RenderTagSmall(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Note: En mode texte graphique, on ne peut pas vraiment reduire la taille }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise MARK (texte surligne) }
+Procedure RenderTagMark(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldBgColor: Integer;
+Begin
+ OldBgColor := Ctx.BgColor;
+ Ctx.BgColor := 14; { Jaune pour le surlignage }
+ RenderChildren(Node, Ctx);
+ Ctx.BgColor := OldBgColor;
+End;
+
+{ Procedure pour rendre la balise ABBR/DFN/CITE (texte semantique) }
+Procedure RenderTagSemanticInline(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Ces balises n'ont pas de style visuel specifique par defaut }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise SUB (indice) }
+Procedure RenderTagSub(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Note: Le rendu de l'indice necessiterait un ajustement vertical }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise SUP (exposant) }
+Procedure RenderTagSup(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Note: Le rendu de l'exposant necessiterait un ajustement vertical }
+ RenderChildren(Node, Ctx);
+End;
+
+{ Procedure pour rendre la balise INS (texte insere) }
+Procedure RenderTagIns(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ RenderTagU(Node, Ctx);
+End;
+
+{ =====================================================
+  FIN RENDU BALISES DE TEXTE
+  ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Listes (ul, ol, li, dl, dt, dd)
+  ===================================================== }
+
+{ RenderTagImg est implemente plus bas, apres les decodeurs d'images. }
+Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext); Forward;
+
+{ Rendre le cas CSS de marqueur employe par le site : selecteur
+  ul.Mnu li::before avec content:url(...) et padding-right:5px.
+  Les pseudo-elements ne sont pas des noeuds DOM. On fait donc correspondre
+  le selecteur sans sa derniere partie ::before, puis on cree un IMG
+  temporaire qui reutilise exactement le chargeur/cache d'images normal. }
+Function RenderListBeforePseudo(Node: HTMLNodePtr;
+                                Var Ctx: RenderContext): Boolean;
+Var
+ I, J, P1, P2, PaddingRight: Integer;
+ Sel: CSSSelector;
+ ContentValue, URLValue, PropName: String;
+ ImgNode: HTMLNodePtr;
+Begin
+ RenderListBeforePseudo := False;
+ If (Node = Nil) Or (Not CSSEnabled) Then Exit;
+
+ For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
+  For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
+   Sel := CSSGlobalStylesheet.Rules[I].Selectors[J];
+   If (Sel.PartCount < 2) Or
+      (Sel.Parts[Sel.PartCount].PartType <> CSS_SEL_PSEUDO_ELEMENT) Or
+      (HTMLLowerCase(Sel.Parts[Sel.PartCount].Value) <> 'before') Then
+    Continue;
+   Dec(Sel.PartCount);
+   If Not CSSMatchSelector(Sel, Node) Then Continue;
+
+   ContentValue := '';
+   PaddingRight := 0;
+   For P1 := 1 To CSSGlobalStylesheet.Rules[I].PropertyCount Do Begin
+    PropName := HTMLLowerCase(CSSGlobalStylesheet.Rules[I].Properties[P1].PropName);
+    If PropName = 'content' Then
+     ContentValue := CSSGlobalStylesheet.Rules[I].Properties[P1].Value
+    Else If PropName = 'padding-right' Then
+     PaddingRight := CSSParseDimension(
+       CSSGlobalStylesheet.Rules[I].Properties[P1].Value, 0);
+   End;
+
+   P1 := System.Pos('url(', HTMLLowerCase(ContentValue));
+   If P1 = 0 Then Continue;
+   Inc(P1, 4);
+   P2 := P1;
+   While (P2 <= Length(ContentValue)) And (ContentValue[P2] <> ')') Do Inc(P2);
+   If P2 > Length(ContentValue) Then Continue;
+   URLValue := BrowserTrimStr(Copy(ContentValue, P1, P2 - P1));
+   If (Length(URLValue) >= 2) And
+      (((URLValue[1] = '"') And (URLValue[Length(URLValue)] = '"')) Or
+       ((URLValue[1] = '''') And (URLValue[Length(URLValue)] = ''''))) Then
+    URLValue := Copy(URLValue, 2, Length(URLValue) - 2);
+   If Length(URLValue) = 0 Then Continue;
+
+   ImgNode := CreateHTMLNode;
+   ImgNode^.NodeType := HTML_NODE_ELEMENT;
+   ImgNode^.TagName := 'img';
+   ImgNode^.TagType := TAG_IMG;
+   HTMLAddAttribute(ImgNode, 'src', URLValue);
+   RenderTagImg(ImgNode, Ctx);
+   FreeHTMLNode(ImgNode);
+   If PaddingRight > 0 Then Inc(Ctx.X, PaddingRight);
+   RenderListBeforePseudo := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ Procedure pour rendre la balise UL (liste non ordonnee) }
+Procedure RenderTagUL(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldListType: Byte;
+ OldListItemNumber: Integer;
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne avant la liste si necessaire }
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ End;
+
+ { Sauvegarder l'etat de la liste parente }
+ OldListType := Ctx.ListType;
+ OldListItemNumber := Ctx.ListItemNumber;
+
+ { Configurer pour liste non ordonnee }
+ Ctx.ListType := LIST_TYPE_UL;
+ Ctx.ListItemNumber := 0;
+ Inc(Ctx.ListLevel);
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Dec(Ctx.ListLevel);
+ Ctx.ListType := OldListType;
+ Ctx.ListItemNumber := OldListItemNumber;
+
+ { Espacement apres la liste }
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ Procedure pour rendre la balise OL (liste ordonnee) }
+Procedure RenderTagOL(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldListType: Byte;
+ OldListItemNumber: Integer;
+ WantsBlock: Boolean;
+ Box:TElementBoxInfo;
+ MarginTopPx,MarginBottomPx:Integer;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ Box:=CurrentElementBox;
+ If Box.MarginTopPx>=0Then MarginTopPx:=Box.MarginTopPx
+ Else MarginTopPx:=RENDER_LIST_SPACING;
+ If Box.MarginBottomPx>=0Then MarginBottomPx:=Box.MarginBottomPx
+ Else MarginBottomPx:=RENDER_LIST_SPACING;
+ { Nouvelle ligne avant la liste si necessaire }
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, MarginTopPx);
+ End;
+
+ { Sauvegarder l'etat de la liste parente }
+ OldListType := Ctx.ListType;
+ OldListItemNumber := Ctx.ListItemNumber;
+
+ { Configurer pour liste ordonnee }
+ Ctx.ListType := LIST_TYPE_OL;
+ Ctx.ListItemNumber := 0;
+ Inc(Ctx.ListLevel);
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Dec(Ctx.ListLevel);
+ Ctx.ListType := OldListType;
+ Ctx.ListItemNumber := OldListItemNumber;
+
+ { Espacement apres la liste }
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then
+  RenderBlockSpacing(Ctx, MarginBottomPx);
+End;
+
+{ Procedure pour rendre la balise LI (element de liste) }
+Procedure RenderTagLI(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ BulletText: String;
+ IndentX: Integer;
+ ItemStartY: Integer;
+ WantsBlock: Boolean;
+ NoBullet: Boolean;
+ LIStyle: DOMStyle;
+ RowBgColor,RowStartX:Integer;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ NoBullet := CurrentElementListStyleNone;
+ ItemStartY := Ctx.Y;
+ { Nouvelle ligne pour l'element, sauf si le CSS demande
+   display:inline/inline-block (ex: menu horizontal en <li>). }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
+   RenderNewLine(Ctx);
+
+  { Calculer l'indentation }
+  IndentX := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
+  Ctx.X := IndentX;
+ End;
+ { Aucun espacement implicite entre des LI inline/inline-block. Leur
+   separation vient exclusivement de margin/padding CSS, appliques par
+   RenderHTMLNode. L'ancien +8 s'ajoutait au margin-left:4px des icones
+   HeaderBlock et creait les grands intervalles visibles dans l'entete. }
+
+ { Un LI peut lui aussi porter un background-image CSS (menus et barres
+   d'outils generiques), exactement comme un DIV. }
+ CSSResolveCascade(Node, LIStyle);
+ { Le fond d'un LI de bloc appartient a toute sa boite de ligne, pas a
+   chacun de ses mots. C'est indispensable aux listings <code><ol><li>
+   dont les bandes alternees doivent former un panneau continu. }
+ RowBgColor:=CSSColorToIndex(LIStyle.BackgroundColor);
+ If WantsBlock And(RowBgColor>=0)And(Not TableMeasurePass)Then Begin
+  RowStartX:=Ctx.BlockContentX;
+  If Ctx.InTable Then RowStartX:=Ctx.TableCellContentX;
+  If YInVisibleBand(Ctx.Y,Ctx.Y+Ctx.LineHeight-1)Then Begin
+   SetFillStyle(SolidFill,RowBgColor);
+   Bar(RowStartX,Ctx.Y,Ctx.MaxX,Ctx.Y+Ctx.LineHeight-1)
+  End
+ End;
+ RenderCSSBackgroundSprite(LIStyle, Ctx.X, Ctx.Y);
+
+ { Incrementer le numero d'element pour les listes ordonnees }
+ If Ctx.ListType = LIST_TYPE_OL Then
+  Inc(Ctx.ListItemNumber)
+ Else If Ctx.ListType = LIST_TYPE_UL Then
+  { Egalement utilise comme compteur d'espacement pour les LI inline. }
+  Inc(Ctx.ListItemNumber);
+
+ { Afficher le marqueur de liste, sauf si list-style/list-style-type
+   vaut none (menus horizontaux <ul><li> par exemple). }
+ If RenderListBeforePseudo(Node, Ctx) Then Begin
+  { Le pseudo-element CSS remplace la puce native. }
+ End
+ Else If Not NoBullet Then Begin
+  Case Ctx.ListType Of
+   LIST_TYPE_UL: Begin
+    { Puce pour liste non ordonnee - utiliser differentes puces selon le niveau }
+    Case Ctx.ListLevel Of
+     1: BulletText := '• ';   { Puce ronde }
+     2: BulletText := '○ ';   { Cercle vide }
+     3: BulletText := '■ ';   { Carre plein }
+     Else BulletText := '- '; { Tiret pour niveaux plus profonds }
+    End;
+    RenderText(Ctx, BulletText);
+   End;
+   LIST_TYPE_OL: Begin
+    { Numero pour liste ordonnee }
+    Str(Ctx.ListItemNumber, BulletText);
+    BulletText := BulletText + '. ';
+    RenderText(Ctx, BulletText);
+   End;
+   Else Begin
+    { Pas de marqueur si pas dans une liste }
+   End;
+  End;
+ End;
+
+ { Rendre le contenu de l'element }
+ RenderChildren(Node, Ctx);
+
+ { Un LI de bloc doit consommer la hauteur de sa derniere ligne avant
+   l'espacement qui le suit. RenderBlockSpacing remet X a la marge mais
+   n'ajoute que quelques pixels : l'ancien code faisait donc croire au LI
+   suivant qu'une nouvelle ligne avait deja commence, et tous les elements
+   se superposaient avec seulement RENDER_LIST_SPACING pixels d'ecart.
+
+ Si une sous-liste/bloc enfant a deja termine la ligne et avance Y, X est
+   revenu a la marge et il ne faut pas ajouter une ligne vide. Un LI vide
+   consomme tout de meme une hauteur de ligne minimale. }
+ If WantsBlock Then Begin
+  { Une ligne justifiee est mise en tampon dans JustifyWords. Elle doit
+    absolument etre finalisee avant de quitter ce LI, meme lorsque X est
+    inferieur au seuil calcule avec BlockLevel. Sinon les mots et surtout
+    leurs LinkHref restent en attente pendant plusieurs LI : un vidage
+    ulterieur peut alors associer la zone d'ABAP au href de CSHARP. }
+  If JustifyWordCount > 0 Then
+   RenderNewLine(Ctx)
+  Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx)
+  Else If Ctx.Y <= ItemStartY Then Begin
+   Ctx.Y := ItemStartY + Ctx.LineHeight;
+   Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+  End;
+  { HTML ne donne aucune marge verticale implicite aux LI. L'ancien
+    espacement de quatre pixels disloquait les listings ligne par ligne. }
+ End;
+End;
+
+{ Procedure pour rendre la balise DL (liste de definitions) }
+Procedure RenderTagDL(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldListType: Byte;
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne avant la liste si necessaire }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+ End;
+
+ { Sauvegarder l'etat }
+ OldListType := Ctx.ListType;
+
+ { Configurer pour liste de definitions }
+ Ctx.ListType := LIST_TYPE_DL;
+ Inc(Ctx.ListLevel);
+
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Dec(Ctx.ListLevel);
+ Ctx.ListType := OldListType;
+
+ { Espacement apres la liste }
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ Procedure pour rendre la balise DT (terme de definition) }
+Procedure RenderTagDT(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldTextStyle: Byte;
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne pour le terme }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, RENDER_DT_SPACING);
+
+  { Position sans indentation supplementaire }
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT);
+ End;
+
+ { Rendre le terme en gras }
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+
+ RenderChildren(Node, Ctx);
+
+ Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Procedure pour rendre la balise DD (definition) }
+Procedure RenderTagDD(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne pour la definition }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT Then
+   RenderNewLine(Ctx);
+
+  { Indenter la definition }
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + ((Ctx.ListLevel - 1) * RENDER_LIST_INDENT) + RENDER_DD_INDENT;
+ End;
+
+ RenderChildren(Node, Ctx);
+
+ { Espacement apres la definition }
+ RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+End;
+
+{ =====================================================
+  FIN RENDU LISTES
+  ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Tableaux (table, tr, td, th, thead, tbody)
+  ===================================================== }
+
+{ Fonction utilitaire pour compter les colonnes d'un tableau }
+Function CountTableColumns(Node: HTMLNodePtr): Integer;
+Var
+ MaxCols, RowCols, SpanValue, Code: Integer;
+ SpanSpec: String;
+ ChildNode, CellNode, RowNode: HTMLNodePtr;
+Begin
+ MaxCols := 0;
+
+ { Parcourir les enfants pour trouver tr, thead, tbody }
+ ChildNode := Node^.FirstChild;
+ While ChildNode <> Nil Do Begin
+  If ChildNode <> Nil Then Begin
+   If (ChildNode^.TagType = TAG_TR) Then Begin
+    { Compter les cellules dans cette ligne }
+    RowCols := 0;
+    CellNode := ChildNode^.FirstChild;
+    While CellNode <> Nil Do Begin
+     If CellNode <> Nil Then Begin
+      If (CellNode^.TagType = TAG_TD) Or (CellNode^.TagType = TAG_TH) Then Begin
+       SpanValue := 1;
+       SpanSpec := GetNodeAttribute(CellNode, 'colspan');
+       If Length(SpanSpec) > 0 Then Begin
+        Val(SpanSpec, SpanValue, Code);
+        If (Code <> 0) Or (SpanValue < 1) Then SpanValue := 1;
+       End;
+       If RowCols + SpanValue > MAX_TABLE_COLS Then
+        SpanValue := MAX_TABLE_COLS - RowCols;
+       If SpanValue > 0 Then Inc(RowCols, SpanValue);
+      End;
+     End;
+     CellNode := CellNode^.NextSibling;
+    End;
+    If RowCols > MaxCols Then MaxCols := RowCols;
+   End
+   Else If (ChildNode^.TagType = TAG_THEAD) Or (ChildNode^.TagType = TAG_TBODY) Then Begin
+    { Parcourir les lignes dans thead/tbody }
+    RowNode := ChildNode^.FirstChild;
+    While RowNode <> Nil Do Begin
+     If RowNode^.TagType = TAG_TR Then Begin
+      RowCols := CountTableColumns(ChildNode);
+      If RowCols > MaxCols Then MaxCols := RowCols;
+     End;
+     RowNode := RowNode^.NextSibling;
+    End;
+   End;
+  End;
+  ChildNode := ChildNode^.NextSibling;
+ End;
+
+ If MaxCols > MAX_TABLE_COLS Then MaxCols := MAX_TABLE_COLS;
+ If MaxCols = 0 Then MaxCols := 1;
+ CountTableColumns := MaxCols;
+End;
+
+{ Mesurer la largeur naturelle maximale de chaque colonne. }
+Function GetTableCellSpan(Node: HTMLNodePtr; Const AttrName: String): Integer; Forward;
+
+Procedure MeasureTableNaturalColumns(Node: HTMLNodePtr; CellPadding: Integer;
+                                     Var Widths: Array Of Integer);
+Var
+ Child, Cell: HTMLNodePtr;
+ Col, W, RequestedWidth, ColSpan, SpanCol, Code: Integer;
+ WidthSpec, SpanSpec: String;
+ CellStyle: DOMStyle;
+Begin
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  If Child^.TagType = TAG_TR Then Begin
+   Col := 0;
+   Cell := Child^.FirstChild;
+   While Cell <> Nil Do Begin
+    If (Cell^.TagType = TAG_TD) Or (Cell^.TagType = TAG_TH) Then Begin
+     ColSpan := 1;
+     SpanSpec := GetNodeAttribute(Cell, 'colspan');
+     If Length(SpanSpec) > 0 Then Begin
+      Val(SpanSpec, ColSpan, Code);
+      If (Code <> 0) Or (ColSpan < 1) Then ColSpan := 1;
+     End;
+     If Col + ColSpan > Length(Widths) Then ColSpan := Length(Widths) - Col;
+     If Col <= High(Widths) Then Begin
+      W := GetTextWidth(BrowserTrimStr(DOMGetTextContent(Cell))) + (2 * CellPadding) + 4;
+      CSSResolveCascade(Cell, CellStyle);
+      WidthSpec := CellStyle.Width;
+      If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Cell, 'width');
+      If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
+       RequestedWidth := CSSParseDimension(WidthSpec, W);
+       If RequestedWidth > W Then W := RequestedWidth;
+      End;
+      If W < TABLE_CELL_MIN_WIDTH Then W := TABLE_CELL_MIN_WIDTH;
+      { Une largeur naturelle portant sur plusieurs colonnes doit etre
+        repartie entre celles-ci. Elle ne doit pas gonfler uniquement la
+        premiere colonne du colspan. }
+      If ColSpan > 1 Then W := (W + ColSpan - 1) Div ColSpan;
+      For SpanCol := 0 To ColSpan - 1 Do
+       If W > Widths[Col + SpanCol] Then Widths[Col + SpanCol] := W;
+     End;
+     Inc(Col, ColSpan);
+    End;
+    Cell := Cell^.NextSibling;
+   End;
+  End
+  Else If Child^.TagType <> TAG_TABLE Then
+   MeasureTableNaturalColumns(Child, CellPadding, Widths);
+  Child := Child^.NextSibling;
+ End;
+End;
+
+{ Relever les contraintes width des TD/TH. Dans un tableau de largeur
+  explicite, l'ancien partage egal annulait completement width="20" ou
+  width="40%" portes par les cellules. }
+Procedure CollectTableColumnWidthHints(Node: HTMLNodePtr; TableWidth: Integer;
+                                       Var Hints: Array Of Integer);
+Var
+ RowSpanRemaining: Array[0..MAX_TABLE_COLS - 1] Of Integer;
+
+ Procedure WalkRows(Container: HTMLNodePtr);
+ Var
+  Child, Cell: HTMLNodePtr;
+  CellStyle: DOMStyle;
+  WidthSpec: String;
+  Col, ColSpan, RowSpan, RequestedWidth, I: Integer;
+ Begin
+  Child := Container^.FirstChild;
+  While Child <> Nil Do Begin
+   If Child^.TagType = TAG_TR Then Begin
+    Col := 0;
+    Cell := Child^.FirstChild;
+    While Cell <> Nil Do Begin
+     If (Cell^.TagType = TAG_TD) Or (Cell^.TagType = TAG_TH) Then Begin
+      While (Col < Length(Hints)) And (RowSpanRemaining[Col] > 0) Do Inc(Col);
+      ColSpan := GetTableCellSpan(Cell, 'colspan');
+      RowSpan := GetTableCellSpan(Cell, 'rowspan');
+      If Col + ColSpan > Length(Hints) Then ColSpan := Length(Hints) - Col;
+      CSSResolveCascade(Cell, CellStyle);
+      WidthSpec := CellStyle.Width;
+      If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Cell, 'width');
+      { Un pourcentage porte par un colspan exprime la largeur du groupe,
+        pas une largeur fixe pour chacune de ses colonnes. Le groupe prend
+        naturellement l'espace restant; le repartir ici rendrait la somme
+        des contraintes superieure a 100%. }
+      If (Length(WidthSpec) > 0) And (ColSpan > 0) And
+         ((ColSpan = 1) Or (System.Pos('%', WidthSpec) = 0)) Then Begin
+       RequestedWidth := CSSParseDimension(WidthSpec, TableWidth);
+       If ColSpan > 1 Then RequestedWidth := RequestedWidth Div ColSpan;
+       For I := 0 To ColSpan - 1 Do
+        If RequestedWidth > Hints[Col + I] Then Hints[Col + I] := RequestedWidth;
+      End;
+      If RowSpan > 1 Then
+       For I := 0 To ColSpan - 1 Do RowSpanRemaining[Col + I] := RowSpan;
+      Inc(Col, ColSpan);
+     End;
+     Cell := Cell^.NextSibling;
+    End;
+    For I := 0 To MAX_TABLE_COLS - 1 Do
+     If RowSpanRemaining[I] > 0 Then Dec(RowSpanRemaining[I]);
+   End
+   Else If Child^.TagType <> TAG_TABLE Then
+    WalkRows(Child);
+   Child := Child^.NextSibling;
+  End;
+ End;
+
+Begin
+ FillChar(RowSpanRemaining, SizeOf(RowSpanRemaining), 0);
+ WalkRows(Node);
+End;
+
+{ Procedure pour rendre la balise TABLE }
+Procedure RenderTagTable(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInTable: Boolean;
+ OldTableDrawBorders: Boolean;
+ OldTableX: Integer;
+ OldTableCellX, OldTableCellWidth, OldTableColIndex: Integer;
+ OldTableRowY, OldTableRowHeight, OldTableCellContentX: Integer;
+ OldTableCellPadding, OldTableCellSpacing: Integer;
+ OldTableColumnWidths: Array[1..MAX_TABLE_COLS] Of Integer;
+ OldTableRowSpanRemaining: Array[1..MAX_TABLE_COLS] Of Integer;
+ NumCols, TableWidth, AvailableWidth, I, PercentValue, Code: Integer;
+ ContentWidth, FixedWidth, FlexibleCols, FlexibleWidth: Integer;
+ TableColumnHints: Array[1..MAX_TABLE_COLS] Of Integer;
+ CellPaddingSpec, CellSpacingSpec, TableWidthSpec, TableBorderSpec: String;
+ TableStyle: DOMStyle;
+ TableBox: TElementBoxInfo;
+ TableMarginTop, TableMarginBottom: Integer;
+Begin
+ CSSResolveCascade(Node, TableStyle);
+ TableBox := ComputeElementBoxInfo(TableStyle);
+ If TableBox.MarginTopPx >= 0 Then TableMarginTop := TableBox.MarginTopPx
+ Else TableMarginTop := 0;
+ If TableBox.MarginBottomPx >= 0 Then TableMarginBottom := TableBox.MarginBottomPx
+ Else TableMarginBottom := 0;
+
+ { Nouvelle ligne avant le tableau si necessaire }
+ If (Not RenderingAbsoluteOverlay) And
+    (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+  RenderNewLine(Ctx);
+ If (Not RenderingAbsoluteOverlay) And (TableMarginTop > 0) Then
+  RenderBlockSpacing(Ctx, TableMarginTop);
+
+ { Sauvegarder l'etat }
+ OldInTable := Ctx.InTable;
+ OldTableX := Ctx.TableX;
+ OldTableCellX := Ctx.TableCellX;
+ OldTableCellWidth := Ctx.TableCellWidth;
+ OldTableColIndex := Ctx.TableColIndex;
+ OldTableRowY := Ctx.TableRowY;
+ OldTableRowHeight := Ctx.TableRowHeight;
+ OldTableCellPadding := Ctx.TableCellPadding;
+ OldTableCellSpacing := Ctx.TableCellSpacing;
+ OldTableCellContentX := Ctx.TableCellContentX;
+ OldTableDrawBorders := Ctx.TableDrawBorders;
+ For I := 1 To MAX_TABLE_COLS Do Begin
+  OldTableColumnWidths[I] := Ctx.TableColumnWidths[I];
+  OldTableRowSpanRemaining[I] := Ctx.TableRowSpanRemaining[I];
+ End;
+
+ { Configurer le contexte pour le tableau }
+ Ctx.InTable := True;
+ Ctx.TableX := Ctx.X;
+ Ctx.TableColIndex := 0;
+ Ctx.TableRowY := Ctx.Y;
+ Ctx.TableRowHeight := RENDER_LINE_HEIGHT;
+
+ { Les attributs HTML historiques appartiennent au TABLE courant. Les
+   conserver dans le contexte permet aussi aux tableaux imbriques de ne
+   pas modifier le padding/spacing de leur parent. }
+ Ctx.TableCellPadding := TABLE_CELL_PADDING;
+ CellPaddingSpec := GetNodeAttribute(Node, 'cellpadding');
+ If Length(CellPaddingSpec) > 0 Then Begin
+  Ctx.TableCellPadding := CSSParseDimension(CellPaddingSpec, TABLE_CELL_PADDING);
+  If Ctx.TableCellPadding < 0 Then Ctx.TableCellPadding := 0;
+ End;
+ Ctx.TableCellSpacing := TABLE_CELL_SPACING;
+ CellSpacingSpec := GetNodeAttribute(Node, 'cellspacing');
+ If Length(CellSpacingSpec) > 0 Then Begin
+  Ctx.TableCellSpacing := CSSParseDimension(CellSpacingSpec, TABLE_CELL_SPACING);
+  If Ctx.TableCellSpacing < 0 Then Ctx.TableCellSpacing := 0;
+ End;
+
+ { width:auto entoure le contenu; seules les largeurs HTML/CSS explicites
+   etirent le tableau sur une partie ou la totalite du conteneur. }
+ NumCols := CountTableColumns(Node);
+ AvailableWidth := Ctx.MaxX - Ctx.X;
+ For I := 1 To MAX_TABLE_COLS Do Begin
+  Ctx.TableColumnWidths[I] := 0;
+  Ctx.TableRowSpanRemaining[I] := 0;
+  TableColumnHints[I] := 0;
+ End;
+ { Une table HTML n'a aucune bordure par defaut. Activer la grille
+   uniquement si border est positif ou si le CSS definit une vraie
+   bordure; border="0" et border:0 restent sans trait. }
+ Ctx.TableDrawBorders := False;
+ TableBorderSpec := GetNodeAttribute(Node, 'border');
+ If Length(TableBorderSpec) > 0 Then
+  Ctx.TableDrawBorders := CSSParseDimension(TableBorderSpec, 0) > 0;
+ If TableBox.HasBorder Then Ctx.TableDrawBorders := True;
+ TableWidthSpec := TableStyle.Width;
+ If Length(TableWidthSpec) = 0 Then TableWidthSpec := GetNodeAttribute(Node, 'width');
+ If Length(TableWidthSpec) = 0 Then Begin
+  MeasureTableNaturalColumns(Node, Ctx.TableCellPadding, Ctx.TableColumnWidths);
+  TableWidth := 0;
+  For I := 1 To NumCols Do Inc(TableWidth, Ctx.TableColumnWidths[I]);
+  Inc(TableWidth, NumCols * Ctx.TableCellSpacing);
+  If TableWidth > AvailableWidth Then Begin
+   TableWidth := AvailableWidth;
+   For I := 1 To NumCols Do
+    Ctx.TableColumnWidths[I] :=
+     (TableWidth - NumCols * Ctx.TableCellSpacing) Div NumCols;
+  End;
+ End Else Begin
+  If System.Pos('%', TableWidthSpec) > 0 Then Begin
+   Val(Copy(TableWidthSpec, 1, System.Pos('%', TableWidthSpec) - 1),
+       PercentValue, Code);
+   If Code <> 0 Then PercentValue := 100;
+   TableWidth := (AvailableWidth * PercentValue) Div 100;
+  End Else
+   TableWidth := CSSParseDimension(TableWidthSpec, AvailableWidth);
+  If TableWidth > AvailableWidth Then TableWidth := AvailableWidth;
+  CollectTableColumnWidthHints(Node, TableWidth, TableColumnHints);
+  ContentWidth := TableWidth - NumCols * Ctx.TableCellSpacing;
+  If ContentWidth < NumCols Then ContentWidth := NumCols;
+  FixedWidth := 0;
+  FlexibleCols := 0;
+  For I := 1 To NumCols Do
+   If TableColumnHints[I] > 0 Then Inc(FixedWidth, TableColumnHints[I])
+   Else Inc(FlexibleCols);
+  If FlexibleCols > 0 Then Begin
+   FlexibleWidth := (ContentWidth - FixedWidth) Div FlexibleCols;
+   If FlexibleWidth < 1 Then FlexibleWidth := 1;
+  End Else FlexibleWidth := 0;
+  For I := 1 To NumCols Do
+   If TableColumnHints[I] > 0 Then
+    Ctx.TableColumnWidths[I] := TableColumnHints[I]
+   Else
+    Ctx.TableColumnWidths[I] := FlexibleWidth;
+ End;
+ Ctx.TableCellWidth := Ctx.TableColumnWidths[1];
+
+ { Dessiner la bordure superieure du tableau }
+ If Ctx.TableDrawBorders And YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + TableWidth, Ctx.Y);
+ End;
+ If Ctx.TableDrawBorders Then Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+
+ { Rendre les enfants }
+ RenderChildren(Node, Ctx);
+
+ { Dessiner la bordure inferieure du tableau }
+ If Ctx.TableDrawBorders And YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX + TableWidth, Ctx.Y);
+ End;
+ If Ctx.TableDrawBorders Then Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+
+ { Restaurer l'etat }
+ Ctx.InTable := OldInTable;
+ Ctx.TableX := OldTableX;
+ Ctx.TableCellX := OldTableCellX;
+ Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.TableColIndex := OldTableColIndex;
+ Ctx.TableRowY := OldTableRowY;
+ Ctx.TableRowHeight := OldTableRowHeight;
+ Ctx.TableCellPadding := OldTableCellPadding;
+ Ctx.TableCellSpacing := OldTableCellSpacing;
+ Ctx.TableCellContentX := OldTableCellContentX;
+ Ctx.TableDrawBorders := OldTableDrawBorders;
+ For I := 1 To MAX_TABLE_COLS Do Begin
+  Ctx.TableColumnWidths[I] := OldTableColumnWidths[I];
+  Ctx.TableRowSpanRemaining[I] := OldTableRowSpanRemaining[I];
+ End;
+
+ { Retour dans le bon repere. Un tableau imbrique dans TD/TH ne doit pas
+   renvoyer X a la marge de la page ni perdre le contexte de sa cellule. }
+ If OldInTable Then Begin
+  Ctx.X := OldTableCellContentX;
+  If TableMarginBottom > 0 Then Inc(Ctx.Y, TableMarginBottom);
+ End Else Begin
+  Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
+  If TableMarginBottom > 0 Then RenderBlockSpacing(Ctx, TableMarginBottom);
+ End;
+End;
+
+{ Procedure pour rendre la balise THEAD (en-tete du tableau) }
+Procedure RenderTagThead(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInTableHeader: Boolean;
+Begin
+ OldInTableHeader := Ctx.InTableHeader;
+ Ctx.InTableHeader := True;
+
+ RenderChildren(Node, Ctx);
+
+ Ctx.InTableHeader := OldInTableHeader;
+End;
+
+{ Procedure pour rendre la balise TBODY (corps du tableau) }
+Procedure RenderTagTbody(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { TBODY est principalement semantique, rendre simplement les enfants }
+ RenderChildren(Node, Ctx);
+End;
+
+Function GetTableCellSpan(Node: HTMLNodePtr; Const AttrName: String): Integer;
+Var
+ Spec: String;
+ SpanValue, Code: Integer;
+Begin
+ SpanValue := 1;
+ Spec := GetNodeAttribute(Node, AttrName);
+ If Length(Spec) > 0 Then Begin
+  Val(Spec, SpanValue, Code);
+  If (Code <> 0) Or (SpanValue < 1) Then SpanValue := 1;
+ End;
+ If SpanValue > MAX_TABLE_COLS Then SpanValue := MAX_TABLE_COLS;
+ GetTableCellSpan := SpanValue;
+End;
+
+Procedure AdvancePastTableRowSpans(Var Ctx: RenderContext);
+Begin
+ While (Ctx.TableColIndex < MAX_TABLE_COLS) And
+       (Ctx.TableRowSpanRemaining[Ctx.TableColIndex + 1] > 0) Do Begin
+  Inc(Ctx.TableCellX, Ctx.TableColumnWidths[Ctx.TableColIndex + 1] +
+                         Ctx.TableCellSpacing);
+  Inc(Ctx.TableColIndex);
+ End;
+End;
+
+Function GetSpannedTableCellWidth(Var Ctx: RenderContext;
+                                  ColSpan: Integer): Integer;
+Var
+ I, LastCol, ResultWidth: Integer;
+Begin
+ ResultWidth := 0;
+ LastCol := Ctx.TableColIndex + ColSpan;
+ If LastCol > MAX_TABLE_COLS Then LastCol := MAX_TABLE_COLS;
+ For I := Ctx.TableColIndex + 1 To LastCol Do Begin
+  Inc(ResultWidth, Ctx.TableColumnWidths[I]);
+  If I < LastCol Then Inc(ResultWidth, Ctx.TableCellSpacing);
+ End;
+ If ResultWidth <= 0 Then ResultWidth := Ctx.TableCellWidth;
+ GetSpannedTableCellWidth := ResultWidth;
+End;
+
+{ Procedure pour rendre la balise TR (ligne de tableau) }
+Procedure RenderTagTR(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ I: Integer;
+ OldMeasurePass: Boolean;
+ OldLineHeight: Integer;
+ MeasureCtx: RenderContext;
+Begin
+ If Not Ctx.InTable Then Begin
+  { Si pas dans un tableau, rendre comme un bloc }
+  RenderChildren(Node, Ctx);
+  Exit;
+ End;
+
+ { Initialiser la ligne }
+ Ctx.TableColIndex := 0;
+ Ctx.TableCellX := Ctx.TableX;
+ Ctx.TableRowY := Ctx.Y;
+ Ctx.TableRowHeight := RENDER_LINE_HEIGHT + (2 * Ctx.TableCellPadding);
+ OldLineHeight := Ctx.LineHeight;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
+
+ { Premiere passe (mesure uniquement, rien n'est dessine) : travailler
+   dans une COPIE du contexte. Une cellule complexe peut modifier X, Y,
+   ListLevel, BlockLevel, l'alignement, etc. L'ancienne passe utilisait
+   directement Ctx puis n'en restaurait que quelques champs; le rendu
+   reel commencait donc avec un etat partiellement issu de la mesure et
+   des elements de liste disparaissaient ou etaient places hors cellule. }
+ OldMeasurePass := TableMeasurePass;
+ TableMeasurePass := True;
+ MeasureCtx := Ctx;
+ { La hauteur du viewport ne doit pas interrompre la mesure : une cellule
+   de tableau peut contenir une page entiere, comme CODER/index.htm. }
+ MeasureCtx.MaxY := High(Integer);
+ RenderChildren(Node, MeasureCtx);
+ Ctx.TableRowHeight := MeasureCtx.TableRowHeight;
+
+ { La passe reelle repart du contexte original, en ne conservant de la
+   copie que la hauteur finale de la rangee. }
+ Ctx.TableColIndex := 0;
+ Ctx.TableCellX := Ctx.TableX;
+ Ctx.Y := Ctx.TableRowY;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
+ TableMeasurePass := OldMeasurePass;
+
+ { Dessiner la bordure gauche de la ligne (no-op automatique si on
+   est nous-meme imbriques dans la passe de mesure d'une rangee
+   englobante - TableMeasurePass vaut alors deja True). }
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(Ctx.Y, Ctx.Y + Ctx.TableRowHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableX, Ctx.Y + Ctx.TableRowHeight);
+ End;
+
+ { Rendre les cellules pour de vrai, a la hauteur finale }
+ RenderChildren(Node, Ctx);
+
+ { Enregistrer la rangee elle-meme comme zone interactive si elle
+   porte un gestionnaire onclick/onmouseover/onmouseout - utilise par
+   JSCookMenu.js pour les lignes de sous-menu (a la difference des
+   elements de menu principal horizontal, dont le gestionnaire est
+   pose sur la cellule TD elle-meme, deja gere par RenderTagTD). }
+ If (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseout')) > 0) Then
+  AddInteractiveArea(Ctx.TableX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight, Node);
+
+ { Dessiner la bordure droite de la ligne }
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(Ctx.TableRowY, Ctx.TableRowY + Ctx.TableRowHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableCellX, Ctx.TableRowY, Ctx.TableCellX, Ctx.TableRowY + Ctx.TableRowHeight);
+ End;
+
+ { Passer a la ligne suivante }
+ Ctx.Y := Ctx.TableRowY + Ctx.TableRowHeight;
+ Ctx.X := Ctx.TableX;
+
+ { Dessiner la bordure horizontale sous la ligne }
+ If Ctx.TableDrawBorders And YInVisibleBand(Ctx.Y, Ctx.Y) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableX, Ctx.Y, Ctx.TableCellX, Ctx.Y);
+ End;
+ If Ctx.TableDrawBorders Then Inc(Ctx.Y, TABLE_BORDER_WIDTH);
+ For I := 1 To MAX_TABLE_COLS Do
+  If Ctx.TableRowSpanRemaining[I] > 0 Then
+   Dec(Ctx.TableRowSpanRemaining[I]);
+ Ctx.LineHeight := OldLineHeight;
+End;
+
+{ Procedure pour rendre la balise TD (cellule de donnees) }
+Procedure RenderTagTD(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ CellStartX, CellStartY: Integer;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth, OldLineHeight: Integer;
+ CellNaturalHeight, RequestedWidth, RequestedHeight, CellPaintHeight: Integer;
+ ColSpan, RowSpan, SpanCol, LastSpanCol: Integer;
+ WidthSpec, HeightSpec: String;
+ BgColorSpec: String;
+ CellStyle, AncestorStyle: DOMStyle;
+ CellBgColor, TryBgColor, CellInset: Integer;
+ BgNode: HTMLNodePtr;
+ PaintCellBackground: Boolean;
+Begin
+ If Not Ctx.InTable Then Begin
+  { Si pas dans un tableau, rendre comme un bloc }
+  RenderChildren(Node, Ctx);
+  Exit;
+ End;
+
+ { Position de la cellule: ignorer d'abord les colonnes encore occupees
+   par un rowspan d'une rangee precedente. }
+ AdvancePastTableRowSpans(Ctx);
+ ColSpan := GetTableCellSpan(Node, 'colspan');
+ RowSpan := GetTableCellSpan(Node, 'rowspan');
+ If Ctx.TableColIndex + ColSpan > MAX_TABLE_COLS Then
+  ColSpan := MAX_TABLE_COLS - Ctx.TableColIndex;
+ If ColSpan < 1 Then ColSpan := 1;
+ CellStartX := Ctx.TableCellX;
+ CellStartY := Ctx.TableRowY;
+ { La hauteur de ligne appartient au contenu de cette cellule. Une image
+   haute rendue dans une cellule voisine ne doit pas agrandir artificiellement
+   toutes les lignes des tableaux imbriques ou de la passe suivante. }
+ OldLineHeight := Ctx.LineHeight;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
+
+ { Couleur de fond de la cellule = background-color CSS de cette
+   cellule (ex: classe "onglet" / "ongletOver" changee dynamiquement
+   par onmouseover/onmouseout), sinon le fond par defaut. Resolue a
+   chaque rendu (donc apres tout changement de classe via
+   this.className) plutot que mise en cache, comme pour le fond de
+   <body> dans RenderHTMLDocument. }
+ { TD est transparent par defaut : reprendre le fond courant permet de
+   laisser apparaitre le background-color du conteneur ARTICLE. }
+ CellBgColor := Ctx.BgColor;
+ PaintCellBackground := False;
+
+ { L'attribut HTML historique BGCOLOR du tableau est visible a travers
+   ses cellules lorsqu'elles n'ont pas leur propre fond. Comme ce moteur
+   peint chaque TD avec un rectangle opaque, il faut reproduire cet effet
+   explicitement en recherchant d'abord la cellule, puis ses ancetres
+   (TR/TBODY/TABLE). C'est notamment le cas du menu de index.htm dont le
+   TABLE porte bgcolor="#c0c0c0" et les TD class="MenuItem" aucun fond. }
+ BgNode := Node;
+ While BgNode <> Nil Do Begin
+  BgColorSpec := GetNodeAttribute(BgNode, 'bgcolor');
+  If Length(BgColorSpec) > 0 Then Begin
+   TryBgColor := CSSColorToIndex(BgColorSpec);
+   If TryBgColor >= 0 Then Begin
+    CellBgColor := TryBgColor;
+    PaintCellBackground := True;
+   End;
+   Break;
+  End;
+  If BgNode^.TagType = TAG_TABLE Then Break;
+  BgNode := BgNode^.Parent;
+ End;
+
+ If CSSEnabled Then Begin
+  CSSResolveCascade(Node, CellStyle);
+  If Length(CellStyle.BackgroundColor) > 0 Then Begin
+   TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
+   If TryBgColor >= 0 Then Begin
+    CellBgColor := TryBgColor;
+    PaintCellBackground := True;
+   End;
+  End;
+
+  { Une cellule sans fond propre est transparente. Si un ancetre porte un
+    fond concret (TR/TABLE/DIV/ARTICLE/BODY), rendre ce fond a travers la
+    cellule; sinon ne dessiner aucun rectangle opaque. }
+  If Not PaintCellBackground Then Begin
+   BgNode := Node^.Parent;
+   While BgNode <> Nil Do Begin
+    If BgNode^.NodeType = HTML_NODE_ELEMENT Then Begin
+     CSSResolveCascade(BgNode, AncestorStyle);
+     BgColorSpec := HTMLLowerCase(BrowserTrimStr(AncestorStyle.BackgroundColor));
+     If (Length(BgColorSpec) > 0) And (BgColorSpec <> 'inherit') And
+        (BgColorSpec <> 'transparent') Then Begin
+      TryBgColor := CSSColorToIndex(AncestorStyle.BackgroundColor);
+      If TryBgColor >= 0 Then Begin
+       CellBgColor := TryBgColor;
+       PaintCellBackground := True;
+      End;
+      Break;
+     End;
+    End;
+    BgNode := BgNode^.Parent;
+   End;
+  End;
+ End;
+
+ { width/height CSS ou attributs HTML constituent la taille demandee de
+   la cellule. Ils etaient auparavant ignores au profit d'un partage egal
+   de toutes les colonnes, meme pour <td width="200">/.MenuItem. }
+ OldTableCellWidth := Ctx.TableCellWidth;
+ Ctx.TableCellWidth := GetSpannedTableCellWidth(Ctx, ColSpan);
+ WidthSpec := CellStyle.Width;
+ If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
+ If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
+  RequestedWidth := CSSParseDimension(WidthSpec, Ctx.TableCellWidth);
+  If RequestedWidth > Ctx.TableCellWidth Then Ctx.TableCellWidth := RequestedWidth;
+ End;
+ If Ctx.TableCellWidth > Ctx.MaxX - CellStartX Then
+  Ctx.TableCellWidth := Ctx.MaxX - CellStartX;
+
+ HeightSpec := CellStyle.Height;
+ If Length(HeightSpec) = 0 Then HeightSpec := GetNodeAttribute(Node, 'height');
+ If Length(HeightSpec) > 0 Then Begin
+  RequestedHeight := CSSParseDimension(HeightSpec, Ctx.TableRowHeight);
+  If RequestedHeight > Ctx.TableRowHeight Then Ctx.TableRowHeight := RequestedHeight;
+ End;
+ CellPaintHeight := Ctx.TableRowHeight;
+ If RowSpan > 1 Then
+  CellPaintHeight := (Ctx.TableRowHeight * RowSpan) +
+                     ((RowSpan - 1) * Ctx.TableCellSpacing);
+
+ { Dessiner le fond de la cellule (seulement si visible : sans cette
+   verification, les rangees deja defilees au-dessus de la zone de
+   rendu continuent de peindre leur fond, recouvrant la barre
+   d'adresse et ses boutons un peu plus a chaque defilement). }
+ If PaintCellBackground And
+    YInVisibleBand(CellStartY, CellStartY + CellPaintHeight) Then Begin
+  If Ctx.TableDrawBorders Then CellInset := TABLE_BORDER_WIDTH Else CellInset := 0;
+  SetFillStyle(SolidFill, CellBgColor);
+  Bar(CellStartX + CellInset, CellStartY + CellInset,
+      CellStartX + Ctx.TableCellWidth,
+      CellStartY + CellPaintHeight - CellInset);
+ End;
+
+ { Configurer le contexte pour le contenu de la cellule }
+ Ctx.X := CellStartX + Ctx.TableCellPadding;
+ Ctx.Y := CellStartY + Ctx.TableCellPadding;
+ OldMaxX := Ctx.MaxX;
+ Ctx.MaxX := CellStartX + Ctx.TableCellWidth - Ctx.TableCellPadding;
+ OldTableCellContentX := Ctx.TableCellContentX;
+ Ctx.TableCellContentX := Ctx.X;
+
+ { Rendre le contenu }
+ RenderChildren(Node, Ctx);
+
+ { Si le contenu a deborde sur plusieurs lignes (Ctx.Y a avance via
+   RenderNewLine), agrandir la hauteur de la rangee en consequence -
+   sans cela, le texte trop grand pour une seule ligne debordait dans
+   la rangee suivante au lieu de faire grandir sa propre cellule. }
+ CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.TableCellPadding;
+ { X revient au debut du contenu apres un element bloc. Dans ce cas Y
+   inclut deja toute sa hauteur et il ne faut pas ajouter une ligne vide. }
+ If Ctx.X > Ctx.TableCellContentX Then
+  Inc(CellNaturalHeight, Ctx.LineHeight);
+ If CellNaturalHeight > Ctx.TableRowHeight Then
+  Ctx.TableRowHeight := CellNaturalHeight;
+
+ { Restaurer MaxX et TableCellContentX }
+ Ctx.MaxX := OldMaxX;
+ Ctx.TableCellContentX := OldTableCellContentX;
+
+ { Enregistrer la cellule comme zone interactive si elle porte un
+   gestionnaire onclick/onmouseover/onmouseout (ex: cellule utilisee
+   comme onglet) - voir HandleMouseClick et la detection de survol
+   dans ProcessMouseInput. La rangee a deja sa hauteur finale a ce
+   stade (passe de mesure de RenderTagTR deja effectuee). }
+ If (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseout')) > 0) Then
+  AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + CellPaintHeight, Node);
+
+ { Passer a la cellule suivante }
+ LastSpanCol := Ctx.TableColIndex + ColSpan;
+ If RowSpan > 1 Then
+  For SpanCol := Ctx.TableColIndex + 1 To LastSpanCol Do
+   Ctx.TableRowSpanRemaining[SpanCol] := RowSpan;
+ Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + Ctx.TableCellSpacing;
+ Inc(Ctx.TableColIndex, ColSpan);
+
+ { Dessiner la bordure droite de la cellule }
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(CellStartY, CellStartY + CellPaintHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY, Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY + CellPaintHeight);
+ End;
+
+ { Remettre Y a la position de la ligne }
+ Ctx.Y := CellStartY;
+ Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.LineHeight := OldLineHeight;
+End;
+
+{ Procedure pour rendre la balise TH (cellule d'en-tete) }
+Procedure RenderTagTH(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ CellStartX, CellStartY: Integer;
+ OldMaxX, OldTableCellContentX, OldTableCellWidth, OldLineHeight: Integer;
+ OldTextStyle: Byte;
+ CellNaturalHeight, RequestedWidth, RequestedHeight, CellPaintHeight: Integer;
+ ColSpan, RowSpan, SpanCol, LastSpanCol: Integer;
+ WidthSpec, HeightSpec: String;
+ CellStyle: DOMStyle;
+ CellBgColor, TryBgColor, CellInset: Integer;
+Begin
+ If Not Ctx.InTable Then Begin
+  { Si pas dans un tableau, rendre comme un bloc en gras }
+  OldTextStyle := Ctx.TextStyle;
+  Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+  RenderChildren(Node, Ctx);
+  Ctx.TextStyle := OldTextStyle;
+  Exit;
+ End;
+
+ AdvancePastTableRowSpans(Ctx);
+ ColSpan := GetTableCellSpan(Node, 'colspan');
+ RowSpan := GetTableCellSpan(Node, 'rowspan');
+ If Ctx.TableColIndex + ColSpan > MAX_TABLE_COLS Then
+  ColSpan := MAX_TABLE_COLS - Ctx.TableColIndex;
+ If ColSpan < 1 Then ColSpan := 1;
+ CellStartX := Ctx.TableCellX;
+ CellStartY := Ctx.TableRowY;
+ OldLineHeight := Ctx.LineHeight;
+ Ctx.LineHeight := RENDER_LINE_HEIGHT;
+
+ { Couleur de fond = background-color CSS de cette cellule si presente
+   (voir RenderTagTD), sinon le gris clair par defaut des en-tetes. }
+ CellBgColor := TABLE_HEADER_BG;
+ If CSSEnabled Then Begin
+  CSSResolveCascade(Node, CellStyle);
+  If Length(CellStyle.BackgroundColor) > 0 Then Begin
+   TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
+   If TryBgColor >= 0 Then CellBgColor := TryBgColor;
+  End;
+ End;
+
+ OldTableCellWidth := Ctx.TableCellWidth;
+ Ctx.TableCellWidth := GetSpannedTableCellWidth(Ctx, ColSpan);
+ WidthSpec := CellStyle.Width;
+ If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Node, 'width');
+ If (Length(WidthSpec) > 0) And (System.Pos('%', WidthSpec) = 0) Then Begin
+  RequestedWidth := CSSParseDimension(WidthSpec, Ctx.TableCellWidth);
+  If RequestedWidth > Ctx.TableCellWidth Then Ctx.TableCellWidth := RequestedWidth;
+ End;
+ If Ctx.TableCellWidth > Ctx.MaxX - CellStartX Then
+  Ctx.TableCellWidth := Ctx.MaxX - CellStartX;
+ HeightSpec := CellStyle.Height;
+ If Length(HeightSpec) = 0 Then HeightSpec := GetNodeAttribute(Node, 'height');
+ If Length(HeightSpec) > 0 Then Begin
+  RequestedHeight := CSSParseDimension(HeightSpec, Ctx.TableRowHeight);
+  If RequestedHeight > Ctx.TableRowHeight Then Ctx.TableRowHeight := RequestedHeight;
+ End;
+ CellPaintHeight := Ctx.TableRowHeight;
+ If RowSpan > 1 Then
+  CellPaintHeight := (Ctx.TableRowHeight * RowSpan) +
+                     ((RowSpan - 1) * Ctx.TableCellSpacing);
+
+ { Dessiner le fond de la cellule d'en-tete, seulement si visible
+   (voir RenderTagTD pour l'explication). }
+ If YInVisibleBand(CellStartY, CellStartY + CellPaintHeight) Then Begin
+  If Ctx.TableDrawBorders Then CellInset := TABLE_BORDER_WIDTH Else CellInset := 0;
+  SetFillStyle(SolidFill, CellBgColor);
+  Bar(CellStartX + CellInset, CellStartY + CellInset,
+      CellStartX + Ctx.TableCellWidth,
+      CellStartY + CellPaintHeight - CellInset);
+ End;
+
+ { Configurer le contexte pour le contenu de la cellule }
+ Ctx.X := CellStartX + Ctx.TableCellPadding;
+ Ctx.Y := CellStartY + Ctx.TableCellPadding;
+ OldMaxX := Ctx.MaxX;
+ Ctx.MaxX := CellStartX + Ctx.TableCellWidth - Ctx.TableCellPadding;
+ OldTableCellContentX := Ctx.TableCellContentX;
+ Ctx.TableCellContentX := Ctx.X;
+
+ { Rendre le contenu en gras }
+ OldTextStyle := Ctx.TextStyle;
+ Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_BOLD;
+ RenderChildren(Node, Ctx);
+ Ctx.TextStyle := OldTextStyle;
+
+ { Agrandir la hauteur de la rangee si le contenu a deborde sur
+   plusieurs lignes (voir RenderTagTD pour l'explication). }
+ CellNaturalHeight := (Ctx.Y - CellStartY) + Ctx.TableCellPadding;
+ If Ctx.X > Ctx.TableCellContentX Then
+  Inc(CellNaturalHeight, Ctx.LineHeight);
+ If CellNaturalHeight > Ctx.TableRowHeight Then
+  Ctx.TableRowHeight := CellNaturalHeight;
+
+ { Restaurer MaxX et TableCellContentX }
+ Ctx.MaxX := OldMaxX;
+ Ctx.TableCellContentX := OldTableCellContentX;
+
+ { Enregistrer la cellule comme zone interactive si elle porte un
+   gestionnaire onclick/onmouseover/onmouseout (voir RenderTagTD). }
+ If (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+    (Length(GetNodeAttribute(Node, 'onmouseout')) > 0) Then
+  AddInteractiveArea(CellStartX, CellStartY, CellStartX + Ctx.TableCellWidth, CellStartY + CellPaintHeight, Node);
+
+ { Passer a la cellule suivante }
+ LastSpanCol := Ctx.TableColIndex + ColSpan;
+ If RowSpan > 1 Then
+  For SpanCol := Ctx.TableColIndex + 1 To LastSpanCol Do
+   Ctx.TableRowSpanRemaining[SpanCol] := RowSpan;
+ Ctx.TableCellX := CellStartX + Ctx.TableCellWidth + Ctx.TableCellSpacing;
+ Inc(Ctx.TableColIndex, ColSpan);
+
+ { Dessiner la bordure droite de la cellule }
+ If Ctx.TableDrawBorders And
+    YInVisibleBand(CellStartY, CellStartY + CellPaintHeight) Then Begin
+  SetColor(TABLE_BORDER_COLOR);
+  Line(Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY, Ctx.TableCellX - Ctx.TableCellSpacing, CellStartY + CellPaintHeight);
+ End;
+
+ { Remettre Y a la position de la ligne }
+ Ctx.Y := CellStartY;
+ Ctx.TableCellWidth := OldTableCellWidth;
+ Ctx.LineHeight := OldLineHeight;
+End;
+
+{ =====================================================
+  FIN RENDU TABLEAUX
+  ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Formulaires (form, input, button, select, textarea)
+  ===================================================== }
+
+{ Fonction utilitaire pour obtenir la valeur d'un attribut }
+Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String;
+Var
+ Attr: HTMLAttributePtr;
+ LowerAttr: String;
+Begin
+ GetNodeAttribute := '';
+ If Node = Nil Then Exit;
+
+ LowerAttr := HTMLLowerCase(AttrName);
+
+ Attr := Node^.FirstAttribute;
+ While Attr <> Nil Do Begin
+  If HTMLLowerCase(Attr^.Name) = LowerAttr Then Begin
+   GetNodeAttribute := Attr^.Value;
+   Exit;
+  End;
+  Attr := Attr^.Next;
+ End;
+End;
+
+{ Procedure pour rendre la balise FORM }
+Procedure RenderTagForm(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInForm: Boolean;
+ WantsBlock: Boolean;
+Begin
+ WantsBlock := CurrentElementWantsBlock;
+ { Nouvelle ligne avant le formulaire si necessaire }
+ If WantsBlock Then Begin
+  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
+   RenderNewLine(Ctx);
+  RenderBlockSpacing(Ctx, FORM_MARGIN);
+ End;
+
+ { Sauvegarder l'etat }
+ OldInForm := Ctx.InForm;
+ Ctx.InForm := True;
+
+ { Rendre les enfants du formulaire }
+ If WantsBlock And(Ctx.TextAlignMode<>ALIGN_LEFT)Then
+  ApplyTextAlignOffset(Ctx,Node);
+ RenderChildren(Node, Ctx);
+
+ { Restaurer l'etat }
+ Ctx.InForm := OldInForm;
+
+ { Espacement apres le formulaire }
+ If WantsBlock Then
+  RenderBlockSpacing(Ctx, FORM_MARGIN);
+End;
+
+{ Procedure pour dessiner un champ de saisie text/password }
+Procedure BrowserDrawInputField(X, Y, W, H: Integer; Value: String; IsPassword: Boolean);
+Var
+ DisplayText: String;
+ I: Integer;
+Begin
+ { Fond blanc }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(X, Y, X + W, Y + H);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(X, Y, X + W, Y + H);
+
+ { Texte (masque pour password) }
+ If IsPassword Then Begin
+  DisplayText := '';
+  For I := 1 To Length(Value) Do
+   DisplayText := DisplayText + '*';
+ End
+ Else
+  DisplayText := Value;
+
+ SetColor(INPUT_TEXT_COLOR);
+ If Length(DisplayText) > 0 Then
+  OutTextXY(X + INPUT_PADDING, Y + INPUT_PADDING, DisplayText);
+End;
+
+{ Procedure pour dessiner une case a cocher }
+Procedure BrowserDrawCheckbox(X, Y: Integer; Checked: Boolean);
+Begin
+ { Fond blanc }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(X, Y, X + CHECKBOX_SIZE, Y + CHECKBOX_SIZE);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(X, Y, X + CHECKBOX_SIZE, Y + CHECKBOX_SIZE);
+
+ { Coche si selectionne }
+ If Checked Then Begin
+  SetColor(INPUT_TEXT_COLOR);
+  Line(X + 2, Y + (CHECKBOX_SIZE Div 2), X + (CHECKBOX_SIZE Div 2), Y + CHECKBOX_SIZE - 3);
+  Line(X + (CHECKBOX_SIZE Div 2), Y + CHECKBOX_SIZE - 3, X + CHECKBOX_SIZE - 2, Y + 2);
+ End;
+End;
+
+{ Procedure pour dessiner un bouton radio }
+Procedure BrowserDrawRadioButton(X, Y: Integer; Selected: Boolean);
+Var
+ CenterX, CenterY, Radius: Integer;
+Begin
+ CenterX := X + (RADIO_SIZE Div 2);
+ CenterY := Y + (RADIO_SIZE Div 2);
+ Radius := RADIO_SIZE Div 2;
+
+ { Cercle exterieur }
+ SetColor(INPUT_BORDER_COLOR);
+ Circle(CenterX, CenterY, Radius);
+
+ { Remplir si selectionne }
+ If Selected Then Begin
+  SetFillStyle(SolidFill, INPUT_TEXT_COLOR);
+  FillEllipse(CenterX, CenterY, Radius - 3, Radius - 3);
+ End;
+End;
+
+{ Procedure pour dessiner un bouton }
+Procedure BrowserDrawButton(X, Y: Integer; Caption: String);
+Var
+ W, H: Integer;
+Begin
+ W := TextWidth(Caption) + (2 * BUTTON_PADDING_X);
+ H := TextHeight(Caption) + (2 * BUTTON_PADDING_Y);
+
+ { Ombre }
+ SetFillStyle(SolidFill, BUTTON_SHADOW_COLOR);
+ Bar(X + 2, Y + 2, X + W + 2, Y + H + 2);
+
+ { Fond du bouton }
+ SetFillStyle(SolidFill, BUTTON_BG_COLOR);
+ Bar(X, Y, X + W, Y + H);
+
+ { Bordure }
+ SetColor(BUTTON_BORDER_COLOR);
+ Rectangle(X, Y, X + W, Y + H);
+
+ { Effet 3D (bord haut/gauche clair) }
+ SetColor(15);
+ Line(X, Y, X + W, Y);
+ Line(X, Y, X, Y + H);
+
+ { Effet 3D (bord bas/droite fonce) }
+ SetColor(8);
+ Line(X, Y + H, X + W, Y + H);
+ Line(X + W, Y, X + W, Y + H);
+
+ { Texte du bouton }
+ SetColor(INPUT_TEXT_COLOR);
+ OutTextXY(X + BUTTON_PADDING_X, Y + BUTTON_PADDING_Y, Caption);
+End;
+
+{ Procedure pour rendre la balise INPUT }
+Procedure RenderTagInput(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ InputType, InputValue, InputName: String;
+ Checked: Boolean;
+ W, H: Integer;
+Begin
+ { Obtenir les attributs }
+ InputType := GetNodeAttribute(Node, 'type');
+ InputValue := GetNodeAttribute(Node, 'value');
+ InputName := GetNodeAttribute(Node, 'name');
+
+ { Type par defaut: text }
+ If InputType = '' Then InputType := 'text';
+
+ { Verifier si checked }
+ Checked := (GetNodeAttribute(Node, 'checked') <> '');
+
+ { BOGUE REEL corrige (2026-09-25, signale par l'utilisateur - "le champ  }
+ { de saisie... ne fonctionne pas ou le curseur n'est pas present" / "le   }
+ { bouton Recherche Google ne semble pas fonctionner") : AUCUNE des        }
+ { branches ci-dessous n'enregistrait de zone interactive (AddInteractive-}
+ { Area) - un clic sur un champ ou un bouton ne pouvait donc RIEN          }
+ { declencher, quel que soit son type. HandleMouseClick route desormais    }
+ { ces zones vers FocusInputField (champs texte)/ToggleCheckedInput        }
+ { (case/radio)/SubmitEnclosingForm (submit) - voir leur disclosure. }
+ { Rendre selon le type }
+ If (InputType = 'text') Or (InputType = 'password') Or (InputType = 'email') Or
+    (InputType = 'number') Or (InputType = 'search') Or (InputType = 'tel') Or
+    (InputType = 'url') Then Begin
+  { Champ de saisie }
+  BrowserDrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, InputType = 'password');
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + INPUT_WIDTH, Ctx.Y + INPUT_HEIGHT, Node);
+  Inc(Ctx.X, INPUT_WIDTH + 6);
+ End
+ Else If InputType = 'checkbox' Then Begin
+  { Case a cocher }
+  BrowserDrawCheckbox(Ctx.X, Ctx.Y, Checked);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + CHECKBOX_SIZE, Ctx.Y + CHECKBOX_SIZE, Node);
+  Inc(Ctx.X, CHECKBOX_SIZE + 6);
+ End
+ Else If InputType = 'radio' Then Begin
+  { Bouton radio }
+  BrowserDrawRadioButton(Ctx.X, Ctx.Y, Checked);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + RADIO_SIZE, Ctx.Y + RADIO_SIZE, Node);
+  Inc(Ctx.X, RADIO_SIZE + 6);
+ End
+ Else If (InputType = 'submit') Or (InputType = 'button') Or (InputType = 'reset') Then Begin
+  { Bouton }
+  If InputValue = '' Then Begin
+   If InputType = 'submit' Then InputValue := 'Envoyer'
+   Else If InputType = 'reset' Then InputValue := 'Effacer'
+   Else InputValue := 'Bouton';
+  End;
+  BrowserDrawButton(Ctx.X, Ctx.Y, InputValue);
+  W := TextWidth(InputValue) + (2 * BUTTON_PADDING_X);
+  H := TextHeight(InputValue) + (2 * BUTTON_PADDING_Y);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H, Node);
+  Inc(Ctx.X, W + 6);
+ End
+ Else If InputType = 'hidden' Then Begin
+  { Input cache - ne rien afficher }
+ End
+ Else Begin
+  { Type inconnu - afficher comme texte }
+  BrowserDrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, False);
+  AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + INPUT_WIDTH, Ctx.Y + INPUT_HEIGHT, Node);
+  Inc(Ctx.X, INPUT_WIDTH + 6);
+ End;
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+End;
+
+{ Procedure pour rendre la balise BUTTON }
+Procedure RenderTagButton(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ ButtonText: String;
+ W: Integer;
+Begin
+ { Obtenir le texte du bouton }
+ ButtonText := GetNodeAttribute(Node, 'value');
+
+ { Si pas de valeur, utiliser le contenu textuel }
+ If ButtonText = '' Then Begin
+  If Node^.FirstChild <> Nil Then Begin
+   If Node^.FirstChild^.NodeType = HTML_NODE_TEXT Then
+    ButtonText := Node^.FirstChild^.Content;
+  End;
+ End;
+
+ If ButtonText = '' Then ButtonText := 'Bouton';
+
+ { Dessiner le bouton }
+ BrowserDrawButton(Ctx.X, Ctx.Y, ButtonText);
+ W := TextWidth(ButtonText) + (2 * BUTTON_PADDING_X);
+ { BOGUE REEL corrige (2026-09-25) : meme trou que RenderTagInput ci-      }
+ { dessus (voir sa disclosure) - aucune zone interactive n'etait           }
+ { enregistree pour <button>, le rendant totalement non-cliquable. }
+ AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + W,
+  Ctx.Y + TextHeight(ButtonText) + (2 * BUTTON_PADDING_Y), Node);
+ Inc(Ctx.X, W + 6);
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+End;
+
+{ Procedure pour rendre la balise SELECT }
+Procedure RenderTagSelect(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ OldInSelect: Boolean;
+ FirstOptionText: String;
+ ChildNode: HTMLNodePtr;
+Begin
+ { Trouver le texte de la premiere option }
+ FirstOptionText := '';
+ ChildNode := Node^.FirstChild;
+ While ChildNode <> Nil Do Begin
+  If (ChildNode <> Nil) And (ChildNode^.TagType = TAG_OPTION) Then Begin
+   If ChildNode^.FirstChild <> Nil Then Begin
+    If ChildNode^.FirstChild^.NodeType = HTML_NODE_TEXT Then Begin
+     FirstOptionText := ChildNode^.FirstChild^.Content;
+     Break;
+    End;
+   End;
+  End;
+  ChildNode := ChildNode^.NextSibling;
+ End;
+
+ If FirstOptionText = '' Then FirstOptionText := '---';
+
+ { Dessiner le fond de la liste deroulante }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(Ctx.X, Ctx.Y, Ctx.X + SELECT_WIDTH, Ctx.Y + INPUT_HEIGHT);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(Ctx.X, Ctx.Y, Ctx.X + SELECT_WIDTH, Ctx.Y + INPUT_HEIGHT);
+
+ { Zone de la fleche }
+ SetFillStyle(SolidFill, BUTTON_BG_COLOR);
+ Bar(Ctx.X + SELECT_WIDTH - SELECT_ARROW_WIDTH, Ctx.Y + 1,
+     Ctx.X + SELECT_WIDTH - 1, Ctx.Y + INPUT_HEIGHT - 1);
+
+ { Dessiner la fleche vers le bas }
+ SetColor(INPUT_TEXT_COLOR);
+ Line(Ctx.X + SELECT_WIDTH - SELECT_ARROW_WIDTH + 4, Ctx.Y + 5,
+      Ctx.X + SELECT_WIDTH - (SELECT_ARROW_WIDTH Div 2), Ctx.Y + INPUT_HEIGHT - 5);
+ Line(Ctx.X + SELECT_WIDTH - (SELECT_ARROW_WIDTH Div 2), Ctx.Y + INPUT_HEIGHT - 5,
+      Ctx.X + SELECT_WIDTH - 4, Ctx.Y + 5);
+
+ { Texte de l'option selectionnee }
+ SetColor(INPUT_TEXT_COLOR);
+ OutTextXY(Ctx.X + INPUT_PADDING, Ctx.Y + INPUT_PADDING, FirstOptionText);
+
+ Inc(Ctx.X, SELECT_WIDTH + 6);
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+
+ { Note: Les options ne sont pas rendues visiblement (liste fermee par defaut) }
+End;
+
+{ Procedure pour rendre la balise OPTION }
+Procedure RenderTagOption(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Les options sont gerees par SELECT, ne rien faire ici }
+ { Le texte de l'option est lu directement par RenderTagSelect }
+End;
+
+{ Procedure pour rendre la balise TEXTAREA }
+Procedure RenderTagTextarea(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Rows, Cols: Integer;
+ W, H: Integer;
+ TextContent: String;
+ RowsStr, ColsStr: String;
+ Code: Integer;
+Begin
+ { Obtenir les dimensions }
+ RowsStr := GetNodeAttribute(Node, 'rows');
+ ColsStr := GetNodeAttribute(Node, 'cols');
+
+ Rows := TEXTAREA_ROWS_DEFAULT;
+ Cols := TEXTAREA_COLS_DEFAULT;
+
+ If RowsStr <> '' Then Begin
+  Val(RowsStr, Rows, Code);
+  If Code <> 0 Then Rows := TEXTAREA_ROWS_DEFAULT;
+ End;
+
+ If ColsStr <> '' Then Begin
+  Val(ColsStr, Cols, Code);
+  If Code <> 0 Then Cols := TEXTAREA_COLS_DEFAULT;
+ End;
+
+ { Calculer les dimensions en pixels }
+ W := Cols * 8;  { Approximation: 8 pixels par caractere }
+ H := Rows * RENDER_LINE_HEIGHT;
+
+ If W < TEXTAREA_WIDTH Div 2 Then W := TEXTAREA_WIDTH;
+ If H < TEXTAREA_HEIGHT Div 2 Then H := TEXTAREA_HEIGHT;
+
+ { Nouvelle ligne si necessaire }
+ If Ctx.X + W > Ctx.MaxX Then
+  RenderNewLine(Ctx);
+
+ { Fond blanc }
+ SetFillStyle(SolidFill, INPUT_BG_COLOR);
+ Bar(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H);
+
+ { Bordure }
+ SetColor(INPUT_BORDER_COLOR);
+ Rectangle(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H);
+
+ { Contenu textuel (si present) }
+ If Node^.FirstChild <> Nil Then Begin
+  If Node^.FirstChild^.NodeType = HTML_NODE_TEXT Then Begin
+   TextContent := Node^.FirstChild^.Content;
+   SetColor(INPUT_TEXT_COLOR);
+   OutTextXY(Ctx.X + INPUT_PADDING, Ctx.Y + INPUT_PADDING, TextContent);
+  End;
+ End;
+
+ Inc(Ctx.X, W + 6);
+
+ { Gerer le debordement de ligne }
+ If Ctx.X > Ctx.MaxX Then Begin
+  RenderNewLine(Ctx);
+ End;
+End;
+
+{ Procedure pour rendre la balise LABEL }
+Procedure RenderTagLabel(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Begin
+ { Label est rendu comme du texte normal avec ses enfants }
+ RenderChildren(Node, Ctx);
+End;
+
+{ =====================================================
+  FIN RENDU FORMULAIRES
+  ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Liens hypertexte (balise <a href>)
+  ===================================================== }
+
+{ Dire si le lien appartient a une cellule qui ne contient que cette seule
+  balise A. L'extension de la zone a toute la cellule est utile pour les
+  petites cellules-boutons, mais elle est catastrophique pour une cellule
+  contenant une liste entiere de liens. Le parcours s'arrete au deuxieme A. }
+Function LinkIsAloneInTableCell(LinkNode: HTMLNodePtr): Boolean;
+Var
+ Cell, Current: HTMLNodePtr;
+ LinkTotal: Integer;
+Begin
+ LinkIsAloneInTableCell := False;
+ Cell := LinkNode;
+ While (Cell <> Nil) And (Cell^.TagType <> TAG_TD) And
+       (Cell^.TagType <> TAG_TH) Do
+  Cell := Cell^.Parent;
+ If Cell = Nil Then Exit;
+
+ LinkTotal := 0;
+ Current := Cell^.FirstChild;
+ While Current <> Nil Do Begin
+  If (Current^.NodeType = HTML_NODE_ELEMENT) And
+     (Current^.TagType = TAG_A) Then Begin
+   Inc(LinkTotal);
+   If LinkTotal > 1 Then Exit;
+  End;
+
+  If Current^.FirstChild <> Nil Then
+   Current := Current^.FirstChild
+  Else Begin
+   While (Current <> Nil) And (Current <> Cell) And
+         (Current^.NextSibling = Nil) Do
+    Current := Current^.Parent;
+   If Current = Cell Then Current := Nil
+   Else If Current <> Nil Then Current := Current^.NextSibling;
+  End;
+ End;
+ LinkIsAloneInTableCell := LinkTotal = 1;
+End;
+
+{ Procedure pour rendre la balise A (lien hypertexte) }
+Procedure RenderTagA(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Href, Title: String;
+ OldTextColor: Integer;
+ OldTextStyle: Byte;
+ OldInLink: Boolean;
+ StartX, StartY: Integer;
+ EndX, EndY: Integer;
+ LinkCountBefore: Integer;
+ LinkStyle: DOMStyle;
+ InvisibleWidth, InvisibleHeight: Integer;
+ LinkMinEnd:Integer;
+Begin
+ { Obtenir les attributs href et title }
+ Href := GetNodeAttribute(Node, 'href');
+ Title := GetNodeAttribute(Node, 'title');
+
+ { Si pas de href, rendre comme du texte normal }
+ If Href = '' Then Begin
+  RenderChildren(Node, Ctx);
+  Exit;
+ End;
+
+ CSSResolveCascade(Node, LinkStyle);
+ { Dans le HEADER, le texte des liens est opacity:0 et le LI parent porte
+   l'icone. Garder la dimension et la zone cliquable sans imprimer ce texte
+   par-dessus le sprite. }
+ InvisibleWidth := GetTextWidth(DOMGetTextContent(Node));
+ InvisibleHeight := Ctx.LineHeight;
+ If BrowserTrimStr(LinkStyle.Opacity) = '0' Then Begin
+  InvisibleWidth := CSSParseDimension(LinkStyle.Width,
+                    InvisibleWidth);
+  InvisibleHeight := CSSParseDimension(LinkStyle.Height, InvisibleHeight);
+  If InvisibleWidth < 1 Then InvisibleWidth := 1;
+  If InvisibleHeight < 1 Then InvisibleHeight := Ctx.LineHeight;
+  AddLinkArea(Ctx.X, Ctx.Y, Ctx.X + InvisibleWidth,
+              Ctx.Y + InvisibleHeight, Href, Title);
+  Inc(Ctx.X, InvisibleWidth);
+  If InvisibleHeight > Ctx.LineHeight Then Ctx.LineHeight := InvisibleHeight;
+  Exit;
+ End;
+
+ { Sauvegarder l'etat courant }
+ OldTextColor := Ctx.TextColor;
+ OldTextStyle := Ctx.TextStyle;
+ OldInLink := Ctx.InLink;
+
+ { Configurer le style de lien }
+ { Ne pas ecraser une couleur CSS/heritee explicite, notamment le blanc
+   du fil d'Ariane dans le HEADER. Le bleu reste le defaut sur fond noir. }
+ If OldTextColor = HTMLBlackColorIndex Then
+  Ctx.TextColor := RENDER_LINK_COLOR
+ Else
+  Ctx.TextColor := OldTextColor;
+ If HTMLLowerCase(LinkStyle.TextDecoration) = 'none' Then
+  Ctx.TextStyle := Ctx.TextStyle And (Not TEXT_STYLE_UNDERLINE)
+ Else
+  Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_UNDERLINE;
+ Ctx.InLink := True;
+ Ctx.CurrentLinkHref := Href;
+
+ { Memoriser la position de debut }
+ StartX := Ctx.X;
+ StartY := Ctx.Y;
+ LinkMinEnd:=StartX+GetTextWidth(DOMGetTextContent(Node));
+ LinkCountBefore := LinkCount;
+
+ { Appliquer la couleur du lien }
+ SetColor(RENDER_LINK_COLOR);
+
+ { Rendre le contenu du lien }
+ RenderChildren(Node, Ctx);
+
+ { En mode text-align:justify, RenderText differe normalement le dessin et
+   conserve chaque href dans JustifyWords jusqu'a la fin de la ligne. Une
+   page comportant des UL/LI imbriques ou imparfaitement fermes peut faire
+   traverser ce tampon d'un lien au suivant : le texte ABAP garde alors les
+   coordonnees de sa ligne, mais une petite zone C# ajoutee plus tard peut
+   se retrouver au meme endroit et gagner le hit-test. Vider ici garantit
+   qu'aucun href ne franchit la limite de sa balise A. Cela ne provoque pas
+   de saut de ligne : FlushJustifiedLine dessine seulement les mots deja
+   accumules et conserve X/Y pour la suite du contenu inline. }
+ If JustifyWordCount > 0 Then
+  FlushJustifiedLine(Ctx, False);
+
+ { Une balise A peut traverser plusieurs balises de style (I/B/SPAN) et
+   une vidange du tampon justifie. Son avance ne doit jamais devenir plus
+   petite que celle de son texte brut. Garder aussi un pixel de garde
+   entre deux runs de styles distincts pour le trait gras/souligne du BGI. }
+ If(Ctx.Y=StartY)And(Ctx.X<LinkMinEnd)Then Ctx.X:=LinkMinEnd;
+ If(Ctx.Y=StartY)And(Node^.NextSibling<>Nil)Then Inc(Ctx.X);
+
+ { Calculer la position de fin }
+ EndX := Ctx.X;
+ EndY := Ctx.Y;
+
+ { Si le lien a occupe plusieurs lignes, ajuster la zone }
+ If EndY > StartY Then Begin
+  { Zone multiligne - on enregistre seulement la derniere ligne }
+  { Pour une implementation plus complete, il faudrait plusieurs zones }
+  StartX := RenderOriginX + RENDER_MARGIN_LEFT;
+ End;
+
+ { Employer l'etendue reellement occupee par le rendu, et non la seule
+   largeur des noeuds texte. Un lien tel que
+     <a><img ...>&nbsp;&nbsp;Logiciel</a>
+   commence avant l'icone : l'ancienne zone, large seulement comme le mot,
+   couvrait l'icone mais s'arretait avant le texte visible. }
+ { Dans un tableau, les coordonnees du texte sont produites pendant des
+   passes imbriquees de mesure puis de rendu. Une zone attachee au mot peut
+   donc conserver l'ancien Y lorsque la hauteur finale de la rangee est
+   appliquee. La cellule courante, elle, possede deja ici ses limites
+   definitives : rendre cette surface cliquable garantit aussi les liens
+   composes d'une icone, d'espaces et de texte sur plusieurs lignes. }
+ { N'etendre le lien a toute la cellule que si son contenu n'a produit
+   aucune zone precise. Une cellule peut contenir une liste complete avec
+   des centaines de liens (CODER/index.htm) : l'ancien test InTable seul
+   donnait alors le meme rectangle de TD a ABAP, Ada, ... puis X. Tous les
+   clics finissaient donc sur le dernier href, X/index.htm. En mode
+   justify, FlushJustifiedLine vient d'ajouter les rectangles exacts des
+   mots; il ne faut surtout pas les recouvrir par la cellule entiere. }
+ If Ctx.InTable And (Not TableMeasurePass) And
+    (LinkCount = LinkCountBefore) And LinkIsAloneInTableCell(Node) Then
+  AddLinkArea(Ctx.TableCellX, Ctx.TableRowY,
+              Ctx.TableCellX + Ctx.TableCellWidth,
+              Ctx.TableRowY + Ctx.TableRowHeight, Href, Title)
+
+ { Hors tableau, en mode justify, FlushJustifiedLine enregistre directement
+   chaque mot lie avec ses coordonnees finales. Ne pas ajouter ensuite une
+   zone de secours calculee sur la derniere ligne vide d'un lien HTML
+   indente. }
+ Else If LinkCount = LinkCountBefore Then Begin
+  If EndY = StartY Then Begin
+   If EndX > StartX Then
+    AddLinkArea(StartX, StartY, EndX, StartY + Ctx.LineHeight, Href, Title);
+  End
+  Else Begin
+   { Lien multiligne sans zone produite par la justification. }
+   If EndX > StartX Then
+    AddLinkArea(StartX, EndY, EndX, EndY + Ctx.LineHeight, Href, Title);
+  End;
+ End;
+
+ { Dessiner le soulignement si pas deja fait par RenderText }
+ { Le soulignement est gere par TEXT_STYLE_UNDERLINE dans RenderText }
+
+ { Restaurer l'etat }
+ Ctx.TextColor := OldTextColor;
+ Ctx.TextStyle := OldTextStyle;
+ Ctx.InLink := OldInLink;
+ Ctx.CurrentLinkHref := '';
+
+ { Restaurer la couleur }
+ SetColor(OldTextColor);
+End;
+
+{ =====================================================
+  FIN RENDU LIENS HYPERTEXTE
+  ===================================================== }
+
+{ =====================================================
+  RENDU HTML - Scripts (balise <script>)
+  ===================================================== }
+
+{ Fonction pour extraire le contenu textuel d'un noeud }
+Function GetNodeTextContent(Node: HTMLNodePtr): String;
+Var
+ Result: String;
+ Child: HTMLNodePtr;
+Begin
+ Result := '';
+ If Node = Nil Then Begin
+  GetNodeTextContent := Result;
+  Exit;
+ End;
+
+ If Node^.NodeType = HTML_NODE_TEXT Then
+  Result := Node^.Content
+ Else If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
+  Child := Node^.FirstChild;
+  While Child <> Nil Do Begin
+   Result := Result + GetNodeTextContent(Child);
+   Child := Child^.NextSibling;
+  End;
+ End;
+ GetNodeTextContent := Result;
+End;
+
+{ Procedure pour rendre la balise SCRIPT (execution JavaScript) }
+Procedure RenderTagScript(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ ScriptType, ScriptSrc: String;
+ ScriptContent: String;
+ ResolvedPath: String;
+ ExtSource: HTMLSourceBuffer;
+Begin
+ { Une balise script est executee au chargement du document, pas a chaque
+   repaint provoque par ScrollPageBy/RescrollPage. }
+ If Not ExecuteDocumentScripts Then Exit;
+
+ { Verifier le type de script }
+ ScriptType := GetNodeAttribute(Node, 'type');
+ ScriptSrc := GetNodeAttribute(Node, 'src');
+
+ { Ne supporter que JavaScript (par defaut ou explicitement) }
+ If (ScriptType <> '') And (ScriptType <> 'text/javascript') And
+    (ScriptType <> 'application/javascript') And
+    (ScriptType <> 'module') Then Begin
+  { Type de script non supporte, ignorer }
+  Exit;
+ End;
+
+ { Script externe (src=...) : resoudre le chemin relatif a la page
+   courante (meme principe que pour les images/CSS), charger le
+   fichier et l'executer comme s'il s'agissait d'un script en ligne.
+   Les URL distantes (http/https, ex: les vieux polyfills IE) ne sont
+   pas supportees, ce navigateur ne fait pas de requetes HTTP. }
+ If ScriptSrc <> '' Then Begin
+  If (Copy(HTMLLowerCase(ScriptSrc), 1, 7) = 'http://') Or
+     (Copy(HTMLLowerCase(ScriptSrc), 1, 8) = 'https://') Then
+   Exit;
+  ResolvedPath := ResolveLinkHref(ScriptSrc);
+  InitHTMLSource(ExtSource);
+  If LoadHTMLFile(ResolvedPath, ExtSource) Then Begin
+   ScriptContent := HTMLSourceCopy(ExtSource, 1, ExtSource.DataLength);
+   FreeHTMLSource(ExtSource);
+   If Length(ScriptContent) > 0 Then
+    JSExecuteScript(ScriptContent);
+  End Else
+   FreeHTMLSource(ExtSource);
+  Exit;
+ End;
+
+ { Extraire le contenu du script }
+ ScriptContent := GetNodeTextContent(Node);
+
+ { Executer le script JavaScript }
+ If Length(ScriptContent) > 0 Then Begin
+  JSExecuteScript(ScriptContent);
+ End;
+
+ { Le script ne produit pas de rendu visuel direct }
+ { La sortie de document.write() est traitee separement }
+End;
+
+{ Executer les scripts dans l'ordre du document avant la mise en page.
+  Un script peut modifier par innerHTML un element situe avant lui
+  (cmDraw remplit DIV#myMenuID). Pendant un rendu ordinaire, ce DIV aurait
+  deja ete traverse vide et le menu n'apparaitrait qu'au repaint suivant. }
+Procedure ExecuteDocumentScriptNodes(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Child, NextChild: HTMLNodePtr;
+ WrittenHTML: String;
+Begin
+ If Node = Nil Then Exit;
+ If (Node^.NodeType = HTML_NODE_ELEMENT) And (Node^.TagType = TAG_SCRIPT) Then Begin
+  { document.write appartient au script courant et doit etre insere a sa
+    position dans le document, pas conserve dans un tampon global sans
+    jamais etre rendu. }
+  JSClearDocumentOutput;
+  RenderTagScript(Node, Ctx);
+  WrittenHTML := JSGetDocumentOutput;
+  If Length(WrittenHTML) > 0 Then
+   JSInsertHTMLAfter(Node, WrittenHTML);
+  JSClearDocumentOutput;
+  Exit;
+ End;
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  ExecuteDocumentScriptNodes(Child, Ctx);
+  Child := NextChild;
+ End;
+End;
+
+{ =====================================================
+  FIN RENDU SCRIPTS
+  ===================================================== }
+
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES BMP
+  ===================================================== }
+
+Const
+ { BMP_SIGNATURE deja declaree ligne 1268 (identique, $4D42) - reutilisee. }
+
+ { Types de compression BMP }
+ BMP_COMPRESS_NONE = 0;    { Pas de compression }
+ BMP_COMPRESS_RLE8 = 1;    { RLE 8-bit }
+ BMP_COMPRESS_RLE4 = 2;    { RLE 4-bit }
+ BMP_COMPRESS_BITFIELDS = 3; { Champs de bits }
+
+ { Taille maximale d'image supportee }
+ BMP_MAX_WIDTH = 800;
+ BMP_MAX_HEIGHT = 600;
+
+Type
+ { En-tete de fichier BMP (14 octets). Empaquetage force a 1 (aucun
+   remplissage entre les champs) : sans cela, FPC inserait 2 octets
+   de bourrage avant FileSize pour aligner ce LongInt sur 4 octets,
+   portant SizeOf a 16 au lieu de 14 et decalant la lecture binaire
+   de tout ce qui suit dans le fichier. }
+ {$PACKRECORDS 1}
+ BMPFileHeader = Record
+  Signature: Word;       { 'BM' = 0x4D42 }
+  FileSize: LongInt;     { Taille totale du fichier }
+  Reserved1: Word;       { Reserve (0) }
+  Reserved2: Word;       { Reserve (0) }
+  DataOffset: LongInt;   { Offset vers les donnees image }
+ End;
+ {$PACKRECORDS DEFAULT}
+
+ { En-tete d'information BMP (BITMAPINFOHEADER - 40 octets) }
+ BMPInfoHeader = Record
+  HeaderSize: LongInt;   { Taille de cet en-tete (40) }
+  Width: LongInt;        { Largeur en pixels }
+  Height: LongInt;       { Hauteur en pixels (negatif = top-down) }
+  Planes: Word;          { Nombre de plans (1) }
+  BitsPerPixel: Word;    { Bits par pixel (1, 4, 8, 16, 24, 32) }
+  Compression: LongInt;  { Type de compression }
+  ImageSize: LongInt;    { Taille des donnees image }
+  XPixelsPerMeter: LongInt; { Resolution horizontale }
+  YPixelsPerMeter: LongInt; { Resolution verticale }
+  ColorsUsed: LongInt;   { Nombre de couleurs utilisees }
+  ColorsImportant: LongInt; { Nombre de couleurs importantes }
+ End;
+
+ { Entree de palette BMP (4 octets) }
+ BMPPaletteEntry = Record
+  Blue: Byte;
+  Green: Byte;
+  Red: Byte;
+  Reserved: Byte;
+ End;
+
+ { Palette de couleurs BMP }
+ BMPPalette = Array[0..255] Of BMPPaletteEntry;
+
+ { Structure d'image BMP en memoire }
+ BMPImage = Record
+  Width: Integer;
+  Height: Integer;
+  BitsPerPixel: Integer;
+  TopDown: Boolean;      { True si les lignes sont stockees de haut en bas }
+  Palette: BMPPalette;
+  PaletteSize: Integer;
+  Data: Pointer;         { Pointeur vers les donnees de pixels }
+  DataSize: LongInt;
+  Valid: Boolean;
+ End;
+
+ BMPImagePtr = ^BMPImage;
+
+Var
+ { Cache d'images chargees }
+ BMPImageCache: Array[1..32] Of Record
+  URL: String[255];
+  Image: BMPImage;
+  Used: Boolean;
+ End;
+ BMPImageCacheCount: Integer;
+
+{ Initialiser le cache d'images }
+Procedure BMPInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 32 Do Begin
+  BMPImageCache[I].URL := '';
+  BMPImageCache[I].Used := False;
+  BMPImageCache[I].Image.Valid := False;
+  BMPImageCache[I].Image.Data := Nil;
+ End;
+ BMPImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA/EGA }
+Function BMPRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: LongInt;
+ I: Integer;
+ { Palette EGA/VGA standard }
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3; { Distance maximale possible }
+
+ For I := 0 To 15 Do Begin
+  { Distance euclidienne au carre }
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ If BestColor = 0 Then BMPRGBToVGAColor := HTMLBlackColorIndex
+ Else BMPRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une image BMP }
+Procedure BMPFreeImage(Var Img: BMPImage);
+Begin
+ If Img.Data <> Nil Then Begin
+  FreeMem(Img.Data, Img.DataSize);
+  Img.Data := Nil;
+ End;
+ Img.Valid := False;
+ Img.DataSize := 0;
+End;
+
+{ Charger une image BMP depuis un fichier }
+Function BMPLoadFromFile(Const FileName: String; Var Img: BMPImage): Boolean;
+Var
+ F: File;
+ FileHdr: BMPFileHeader;
+ InfoHdr: BMPInfoHeader;
+ BytesRead: Word;
+ I: Integer;
+ RowSize: LongInt;
+ Padding: Integer;
+Begin
+ BMPLoadFromFile := False;
+ Img.Valid := False;
+ Img.Data := Nil;
+
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Lire l'en-tete de fichier }
+ BlockRead(F, FileHdr, SizeOf(BMPFileHeader), BytesRead);
+ If BytesRead <> SizeOf(BMPFileHeader) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier la signature BMP }
+ If FileHdr.Signature <> BMP_SIGNATURE Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Lire l'en-tete d'information }
+ BlockRead(F, InfoHdr, SizeOf(BMPInfoHeader), BytesRead);
+ If BytesRead <> SizeOf(BMPInfoHeader) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier les dimensions }
+ If (Abs(InfoHdr.Width) > BMP_MAX_WIDTH) Or
+    (Abs(InfoHdr.Height) > BMP_MAX_HEIGHT) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier la compression (seule BI_RGB est supportee) }
+ If InfoHdr.Compression <> BMP_COMPRESS_NONE Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Remplir la structure }
+ Img.Width := InfoHdr.Width;
+ If InfoHdr.Height < 0 Then Begin
+  Img.Height := -InfoHdr.Height;
+  Img.TopDown := True;
+ End
+ Else Begin
+  Img.Height := InfoHdr.Height;
+  Img.TopDown := False;
+ End;
+ Img.BitsPerPixel := InfoHdr.BitsPerPixel;
+
+ { Lire la palette si necessaire }
+ Img.PaletteSize := 0;
+ If Img.BitsPerPixel <= 8 Then Begin
+  If InfoHdr.ColorsUsed > 0 Then
+   Img.PaletteSize := InfoHdr.ColorsUsed
+  Else
+   Img.PaletteSize := 1 Shl Img.BitsPerPixel;
+
+  If Img.PaletteSize > 256 Then Img.PaletteSize := 256;
+
+  For I := 0 To Img.PaletteSize - 1 Do Begin
+   BlockRead(F, Img.Palette[I], SizeOf(BMPPaletteEntry), BytesRead);
+   If BytesRead <> SizeOf(BMPPaletteEntry) Then Begin
+    Close(F);
+    Exit;
+   End;
+  End;
+ End;
+
+ { Calculer la taille des donnees }
+ { Chaque ligne est alignee sur 4 octets }
+ RowSize := ((LongInt(Img.Width) * LongInt(Img.BitsPerPixel) + 31) Div 32) * 4;
+ Img.DataSize := RowSize * LongInt(Img.Height);
+
+ { Allouer la memoire pour les donnees }
+ If Img.DataSize > 65520 Then Begin
+  { Trop grand pour une allocation simple }
+  Close(F);
+  Exit;
+ End;
+
+ GetMem(Img.Data, Img.DataSize);
+ If Img.Data = Nil Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Se positionner au debut des donnees }
+ Seek(F, FileHdr.DataOffset);
+ If IOResult <> 0 Then Begin
+  BMPFreeImage(Img);
+  Close(F);
+  Exit;
+ End;
+
+ { Lire les donnees de l'image }
+ BlockRead(F, Img.Data^, Img.DataSize, BytesRead);
+ If LongInt(BytesRead) <> Img.DataSize Then Begin
+  BMPFreeImage(Img);
+  Close(F);
+  Exit;
+ End;
+
+ Close(F);
+ Img.Valid := True;
+ BMPLoadFromFile := True;
+End;
+
+{ Obtenir la couleur d'un pixel dans l'image BMP }
+Function BMPGetPixel(Const Img: BMPImage; X, Y: Integer): Byte;
+Var
+ RowSize: LongInt;
+ ByteOffset: LongInt;
+ BitOffset: Integer;
+ PixelData: Byte;
+ R, G, B: Byte;
+ RowPtr: ^Byte;
+ ActualY: Integer;
+Begin
+ BMPGetPixel := 0;
+ If Not Img.Valid Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+
+ { Les BMP stockent les lignes du bas vers le haut (sauf TopDown) }
+ If Img.TopDown Then
+  ActualY := Y
+ Else
+  ActualY := Img.Height - 1 - Y;
+
+ { Calculer la taille d'une ligne (alignee sur 4 octets) }
+ RowSize := ((LongInt(Img.Width) * LongInt(Img.BitsPerPixel) + 31) Div 32) * 4;
+
+ Case Img.BitsPerPixel Of
+  1: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + (X Div 8);
+   BitOffset := 7 - (X Mod 8);
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   PixelData := (RowPtr^ Shr BitOffset) And 1;
+   { Convertir via la palette }
+   BMPGetPixel := BMPRGBToVGAColor(
+    Img.Palette[PixelData].Red,
+    Img.Palette[PixelData].Green,
+    Img.Palette[PixelData].Blue);
+  End;
+
+  4: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + (X Div 2);
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   If (X Mod 2) = 0 Then
+    PixelData := (RowPtr^ Shr 4) And $0F
+   Else
+    PixelData := RowPtr^ And $0F;
+   { Convertir via la palette }
+   BMPGetPixel := BMPRGBToVGAColor(
+    Img.Palette[PixelData].Red,
+    Img.Palette[PixelData].Green,
+    Img.Palette[PixelData].Blue);
+  End;
+
+  8: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + LongInt(X);
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   PixelData := RowPtr^;
+   { Convertir via la palette }
+   BMPGetPixel := BMPRGBToVGAColor(
+    Img.Palette[PixelData].Red,
+    Img.Palette[PixelData].Green,
+    Img.Palette[PixelData].Blue);
+  End;
+
+  24: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + LongInt(X) * 3;
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   B := RowPtr^;
+   Inc(RowPtr);
+   G := RowPtr^;
+   Inc(RowPtr);
+   R := RowPtr^;
+   BMPGetPixel := BMPRGBToVGAColor(R, G, B);
+  End;
+
+  32: Begin
+   ByteOffset := RowSize * LongInt(ActualY) + LongInt(X) * 4;
+   RowPtr := Img.Data;
+   Inc(RowPtr, ByteOffset);
+   B := RowPtr^;
+   Inc(RowPtr);
+   G := RowPtr^;
+   Inc(RowPtr);
+   R := RowPtr^;
+   { Ignorer l'alpha (4eme octet) }
+   BMPGetPixel := BMPRGBToVGAColor(R, G, B);
+  End;
+ End;
+End;
+
+{ Dessiner une image BMP a l'ecran }
+Procedure BMPDrawImage(Const Img: BMPImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+
+ { Calculer les dimensions a dessiner }
+ DrawWidth := Img.Width;
+ DrawHeight := Img.Height;
+
+ { Limiter aux dimensions maximales }
+ If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+ If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+
+ { Dessiner pixel par pixel }
+ For Y := 0 To DrawHeight - 1 Do Begin
+  For X := 0 To DrawWidth - 1 Do Begin
+   PixelColor := BMPGetPixel(Img, X, Y);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Dessiner une image BMP avec mise a l'echelle }
+Procedure BMPDrawImageScaled(Const Img: BMPImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+
+ { Dessiner avec mise a l'echelle }
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Width) Div DestWidth;
+   PixelColor := BMPGetPixel(Img, SrcX, SrcY);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Chercher une image dans le cache }
+Function BMPFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ BMPFindInCache := 0;
+ For I := 1 To 32 Do Begin
+  If BMPImageCache[I].Used And (BMPImageCache[I].URL = URL) Then Begin
+   BMPFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image au cache }
+Function BMPAddToCache(Const URL: String; Const Img: BMPImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ BMPAddToCache := 0;
+
+ { Chercher un slot libre }
+ Slot := 0;
+ For I := 1 To 32 Do Begin
+  If Not BMPImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+
+ { Si pas de slot libre, utiliser le premier }
+ If Slot = 0 Then Begin
+  { Liberer la premiere image }
+  If BMPImageCache[1].Image.Valid Then
+   BMPFreeImage(BMPImageCache[1].Image);
+  Slot := 1;
+ End;
+
+ BMPImageCache[Slot].URL := URL;
+ BMPImageCache[Slot].Image := Img;
+ BMPImageCache[Slot].Used := True;
+ BMPAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image }
+Function BMPBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ LowerBase: String;
+ I, RootPos: Integer;
+Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  BMPBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
+ { Un chemin /... est absolu du point de vue du site Web, pas du disque.
+   Pour une page locale servie depuis IIS, le rattacher a wwwroot. }
+ If (Length(Src) > 0) And (Src[1] In ['/', '\']) Then Begin
+  LowerBase := HTMLLowerCase(CurrentURL);
+  RootPos := System.Pos('\wwwroot\', LowerBase);
+  If RootPos = 0 Then RootPos := System.Pos('/wwwroot/', LowerBase);
+  If RootPos > 0 Then Begin
+   BasePath := Copy(CurrentURL, 1, RootPos + Length('\wwwroot\') - 2);
+   BMPBuildImagePath := BasePath + '\' + Copy(Src, 2, Length(Src) - 1);
+  End
+  Else
+   BMPBuildImagePath := Src;
+  Exit;
+ End;
+
+ { Un chemin avec lettre de lecteur est deja absolu. }
+ If (Length(Src) > 2) And (Src[2] = ':') Then Begin
+  BMPBuildImagePath := Src;
+  Exit;
+ End;
+
+ { Sinon construire le chemin relatif a l'URL courante }
+ BasePath := CurrentURL;
+
+ { Retirer le nom de fichier de l'URL courante }
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ BMPBuildImagePath := BasePath + Src;
+End;
+
+{ RenderTagImg (balise IMG) est definie plus loin dans ce fichier,
+  apres les types BMPImage/GIFImage/JPEGImage/PNGImage/SVGImage dont
+  elle a besoin. }
+
+{ =====================================================
+  FIN DECODEUR IMAGES BMP
+  ===================================================== }
+
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES GIF (y compris anime)
+  ===================================================== }
+
+Const
+ { Signature GIF }
+ GIF_SIGNATURE_87A = 'GIF87a';
+ GIF_SIGNATURE_89A = 'GIF89a';
+
+ { Types d'extensions GIF }
+ GIF_EXT_GRAPHIC_CONTROL = $F9;
+ GIF_EXT_COMMENT = $FE;
+ GIF_EXT_PLAINTEXT = $01;
+ GIF_EXT_APPLICATION = $FF;
+
+ { Separateurs GIF }
+ GIF_IMAGE_SEPARATOR = $2C;
+ GIF_EXTENSION_INTRODUCER = $21;
+ GIF_TRAILER = $3B;
+
+ { Taille maximale d'image GIF supportee }
+ GIF_MAX_WIDTH = 800;
+ GIF_MAX_HEIGHT = 600;
+ GIF_MAX_FRAMES = 100;
+
+ { LZW Constants }
+ LZW_MAX_CODES = 4096;
+ LZW_CLEAR_CODE_OFFSET = 0;
+ LZW_EOI_CODE_OFFSET = 1;
+
+Type
+ { En-tete de fichier GIF (6 octets) }
+ GIFHeader = Record
+  Signature: Array[1..6] Of Char; { 'GIF87a' ou 'GIF89a' }
+ End;
+
+ { Descripteur d'ecran logique GIF (7 octets). Empaquetage force a 1 :
+   sans cela FPC porte SizeOf a 8 (bourrage final pour aligner le
+   record sur 2 octets a cause des champs Word), ce qui decale d'un
+   octet toute la lecture binaire qui suit (palette globale, blocs
+   d'image) et empeche de retrouver le moindre separateur d'image. }
+ {$PACKRECORDS 1}
+ GIFLogicalScreenDesc = Record
+  Width: Word;           { Largeur de l'ecran logique }
+  Height: Word;          { Hauteur de l'ecran logique }
+  PackedFields: Byte;    { Champs compresses }
+  BgColorIndex: Byte;    { Index de couleur de fond }
+  PixelAspectRatio: Byte; { Ratio d'aspect }
+ End;
+ {$PACKRECORDS DEFAULT}
+
+ { Entree de palette GIF (3 octets) }
+ GIFPaletteEntry = Record
+  Red: Byte;
+  Green: Byte;
+  Blue: Byte;
+ End;
+
+ { Palette de couleurs GIF }
+ GIFPalette = Array[0..255] Of GIFPaletteEntry;
+ GIFPalettePtr = ^GIFPalette;
+
+ { Extension de controle graphique GIF }
+ GIFGraphicControlExt = Record
+  DisposalMethod: Byte;  { Methode de disposition (0-7) }
+  UserInputFlag: Boolean; { Attend une entree utilisateur }
+  TransparentFlag: Boolean; { Transparence activee }
+  DelayTime: Word;       { Delai en 1/100 secondes }
+  TransparentIndex: Byte; { Index de couleur transparente }
+ End;
+
+ { Descripteur d'image GIF (9 octets). Empaquetage force a 1 pour la
+   meme raison que GIFLogicalScreenDesc ci-dessus (sinon SizeOf vaut
+   10 au lieu de 9). }
+ {$PACKRECORDS 1}
+ GIFImageDescriptor = Record
+  Left: Word;            { Position X de l'image }
+  Top: Word;             { Position Y de l'image }
+  Width: Word;           { Largeur de l'image }
+  Height: Word;          { Hauteur de l'image }
+  PackedFields: Byte;    { Champs compresses }
+ End;
+ {$PACKRECORDS DEFAULT}
+
+ { Frame d'animation GIF }
+ GIFFrame = Record
+  Left: Integer;
+  Top: Integer;
+  Width: Integer;
+  Height: Integer;
+  Data: Pointer;         { Pointeur vers les pixels de la frame }
+  DataSize: LongInt;
+  DelayTime: Word;       { Delai avant la prochaine frame (1/100 sec) }
+  DisposalMethod: Byte;  { Comment disposer de cette frame }
+  TransparentFlag: Boolean;
+  TransparentIndex: Byte;
+  HasLocalPalette: Boolean;
+  LocalPalette: GIFPalette;
+  LocalPaletteSize: Integer;
+  Valid: Boolean;
+ End;
+
+ GIFFramePtr = ^GIFFrame;
+
+ { Structure d'image GIF complete en memoire }
+ GIFImage = Record
+  Width: Integer;        { Largeur de l'ecran logique }
+  Height: Integer;       { Hauteur de l'ecran logique }
+  GlobalPalette: GIFPalette;
+  GlobalPaletteSize: Integer;
+  HasGlobalPalette: Boolean;
+  BgColorIndex: Byte;
+  FrameCount: Integer;   { Nombre de frames }
+  Frames: Array[1..GIF_MAX_FRAMES] Of GIFFrame;
+  CurrentFrame: Integer; { Frame actuelle pour l'animation }
+  LastFrameTime: LongInt; { Temps de la derniere frame }
+  IsAnimated: Boolean;   { True si GIF anime }
+  LoopCount: Integer;    { Nombre de boucles (0 = infini) }
+  Valid: Boolean;
+ End;
+
+ GIFImagePtr = ^GIFImage;
+
+ { Table LZW pour le decodage }
+ LZWEntry = Record
+  Prefix: Integer;       { Code prefixe (-1 si racine) }
+  Suffix: Byte;          { Octet suffixe }
+  Length: Integer;       { Longueur de la chaine }
+ End;
+
+ LZWTable = Array[0..LZW_MAX_CODES - 1] Of LZWEntry;
+ LZWTablePtr = ^LZWTable;
+
+Var
+ { Cache d'images GIF chargees }
+ GIFImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: GIFImage;
+  Used: Boolean;
+ End;
+ GIFImageCacheCount: Integer;
+
+ { Buffer de lecture LZW }
+ LZWBitBuffer: LongInt;
+ LZWBitsInBuffer: Integer;
+ LZWDataBuffer: Array[0..255] Of Byte;
+ LZWDataPos: Integer;
+ LZWDataLen: Integer;
+ LZWFileHandle: File;
+
+{ Initialiser le cache d'images GIF }
+Procedure GIFInitCache;
+Var
+ I, J: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  GIFImageCache[I].URL := '';
+  GIFImageCache[I].Used := False;
+  GIFImageCache[I].Image.Valid := False;
+  GIFImageCache[I].Image.FrameCount := 0;
+  For J := 1 To GIF_MAX_FRAMES Do Begin
+   GIFImageCache[I].Image.Frames[J].Data := Nil;
+   GIFImageCache[I].Image.Frames[J].Valid := False;
+  End;
+ End;
+ GIFImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA }
+Function GIFRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: LongInt;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ If BestColor = 0 Then GIFRGBToVGAColor := HTMLBlackColorIndex
+ Else GIFRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une frame GIF }
+Procedure GIFFreeFrame(Var Frame: GIFFrame);
+Begin
+ If Frame.Data <> Nil Then Begin
+  FreeMem(Frame.Data, Frame.DataSize);
+  Frame.Data := Nil;
+ End;
+ Frame.Valid := False;
+ Frame.DataSize := 0;
+End;
+
+{ Liberer la memoire d'une image GIF complete }
+Procedure GIFFreeImage(Var Img: GIFImage);
+Var
+ I: Integer;
+Begin
+ For I := 1 To Img.FrameCount Do
+  GIFFreeFrame(Img.Frames[I]);
+ Img.FrameCount := 0;
+ Img.Valid := False;
+End;
+
+{ Lire un bloc de sous-donnees GIF }
+Function GIFReadSubBlock(Var F: File; Var Buffer; MaxSize: Integer): Integer;
+Var
+ BlockSize: Byte;
+ BytesRead: Word;
+Begin
+ GIFReadSubBlock := 0;
+ BlockRead(F, BlockSize, 1, BytesRead);
+ If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
+
+ If BlockSize > MaxSize Then BlockSize := MaxSize;
+ BlockRead(F, Buffer, BlockSize, BytesRead);
+ GIFReadSubBlock := BytesRead;
+End;
+
+{ Sauter les sous-blocs restants }
+Procedure GIFSkipSubBlocks(Var F: File);
+Var
+ BlockSize: Byte;
+ BytesRead: Word;
+ TempBuffer: Array[0..255] Of Byte;
+Begin
+ Repeat
+  BlockRead(F, BlockSize, 1, BytesRead);
+  If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
+  BlockRead(F, TempBuffer, BlockSize, BytesRead);
+ Until (BlockSize = 0) Or (BytesRead = 0);
+End;
+
+{ Initialiser le buffer de lecture LZW }
+Procedure LZWInitBuffer(Var F: File);
+Begin
+ LZWBitBuffer := 0;
+ LZWBitsInBuffer := 0;
+ LZWDataPos := 0;
+ LZWDataLen := 0;
+ LZWFileHandle := F;
+End;
+
+{ Lire le prochain sous-bloc de donnees }
+Function LZWReadNextBlock: Boolean;
+Var
+ BlockSize: Byte;
+ BytesRead: Word;
+Begin
+ LZWReadNextBlock := False;
+ BlockRead(LZWFileHandle, BlockSize, 1, BytesRead);
+ If (BytesRead <> 1) Or (BlockSize = 0) Then Exit;
+
+ BlockRead(LZWFileHandle, LZWDataBuffer, BlockSize, BytesRead);
+ If BytesRead <> BlockSize Then Exit;
+
+ LZWDataPos := 0;
+ LZWDataLen := BlockSize;
+ LZWReadNextBlock := True;
+End;
+
+{ Lire N bits du flux LZW }
+Function LZWReadBits(NumBits: Integer): Integer;
+Var
+ Result: Integer;
+ NextByte: Byte;
+Begin
+ LZWReadBits := -1;
+
+ { S'assurer qu'on a assez de bits }
+ While LZWBitsInBuffer < NumBits Do Begin
+  { Besoin de plus de donnees }
+  If LZWDataPos >= LZWDataLen Then Begin
+   If Not LZWReadNextBlock Then Exit;
+  End;
+
+  NextByte := LZWDataBuffer[LZWDataPos];
+  Inc(LZWDataPos);
+
+  LZWBitBuffer := LZWBitBuffer Or (LongInt(NextByte) Shl LZWBitsInBuffer);
+  Inc(LZWBitsInBuffer, 8);
+ End;
+
+ { Extraire les bits requis }
+ Result := LZWBitBuffer And ((1 Shl NumBits) - 1);
+ LZWBitBuffer := LZWBitBuffer Shr NumBits;
+ Dec(LZWBitsInBuffer, NumBits);
+
+ LZWReadBits := Result;
+End;
+
+{ Decoder les donnees d'image LZW }
+Function GIFDecodeLZW(Var F: File; MinCodeSize: Byte;
+                       OutputBuffer: Pointer; MaxOutput: LongInt): LongInt;
+Var
+ Table: LZWTablePtr;
+ ClearCode, EOICode: Integer;
+ CodeSize, NextCode: Integer;
+ OldCode, Code, TempCode: Integer;
+ Stack: Array[0..LZW_MAX_CODES - 1] Of Byte;
+ StackPtr: Integer;
+ FirstChar: Byte;
+ OutputPos: LongInt;
+ OutPtr: ^Byte;
+ I: Integer;
+Begin
+ GIFDecodeLZW := 0;
+
+ { Allouer la table LZW }
+ GetMem(Table, SizeOf(LZWTable));
+ If Table = Nil Then Exit;
+
+ { Initialiser les codes speciaux }
+ ClearCode := 1 Shl MinCodeSize;
+ EOICode := ClearCode + 1;
+
+ { Initialiser le buffer de lecture }
+ LZWInitBuffer(F);
+
+ { Initialiser les variables }
+ CodeSize := MinCodeSize + 1;
+ NextCode := EOICode + 1;
+ OldCode := -1;
+ FirstChar := 0;
+ OutputPos := 0;
+ OutPtr := OutputBuffer;
+
+ { Initialiser la table avec les codes de base }
+ For I := 0 To ClearCode - 1 Do Begin
+  Table^[I].Prefix := -1;
+  Table^[I].Suffix := I;
+  Table^[I].Length := 1;
+ End;
+
+ { Decoder le flux }
+ While OutputPos < MaxOutput Do Begin
+  Code := LZWReadBits(CodeSize);
+  If Code < 0 Then Break; { Erreur de lecture }
+
+  If Code = EOICode Then Break; { Fin de l'image }
+
+  If Code = ClearCode Then Begin
+   { Reinitialiser la table }
+   CodeSize := MinCodeSize + 1;
+   NextCode := EOICode + 1;
+   OldCode := -1;
+   Continue;
+  End;
+
+  If OldCode = -1 Then Begin
+   { Premier code apres clear }
+   If Code < ClearCode Then Begin
+    OutPtr^ := Code;
+    Inc(OutPtr);
+    Inc(OutputPos);
+    FirstChar := Code;
+    OldCode := Code;
+   End;
+   Continue;
+  End;
+
+  { Decoder la chaine }
+  TempCode := Code;
+  StackPtr := 0;
+
+  If Code >= NextCode Then Begin
+   { Cas special: code pas encore dans la table }
+   Stack[StackPtr] := FirstChar;
+   Inc(StackPtr);
+   TempCode := OldCode;
+  End;
+
+  { Suivre la chaine de prefixes }
+  While TempCode >= ClearCode Do Begin
+   If TempCode >= NextCode Then Break; { Code invalide }
+   Stack[StackPtr] := Table^[TempCode].Suffix;
+   Inc(StackPtr);
+   TempCode := Table^[TempCode].Prefix;
+   If StackPtr >= LZW_MAX_CODES Then Break; { Debordement }
+  End;
+
+  { Ajouter le dernier caractere }
+  If TempCode >= 0 Then Begin
+   Stack[StackPtr] := TempCode;
+   Inc(StackPtr);
+   FirstChar := TempCode;
+  End;
+
+  { Ecrire la pile dans l'ordre inverse }
+  While (StackPtr > 0) And (OutputPos < MaxOutput) Do Begin
+   Dec(StackPtr);
+   OutPtr^ := Stack[StackPtr];
+   Inc(OutPtr);
+   Inc(OutputPos);
+  End;
+
+  { Ajouter une nouvelle entree a la table }
+  If NextCode < LZW_MAX_CODES Then Begin
+   Table^[NextCode].Prefix := OldCode;
+   Table^[NextCode].Suffix := FirstChar;
+   Table^[NextCode].Length := Table^[OldCode].Length + 1;
+   Inc(NextCode);
+
+   { Augmenter la taille du code si necessaire }
+   If (NextCode >= (1 Shl CodeSize)) And (CodeSize < 12) Then
+    Inc(CodeSize);
+  End;
+
+  OldCode := Code;
+ End;
+
+ { Liberer la table }
+ FreeMem(Table, SizeOf(LZWTable));
+
+ GIFDecodeLZW := OutputPos;
+End;
+
+{ Charger une image GIF depuis un fichier }
+Function GIFLoadFromFile(Const FileName: String; Var Img: GIFImage): Boolean;
+Var
+ F: File;
+ Header: GIFHeader;
+ ScreenDesc: GIFLogicalScreenDesc;
+ ImageDesc: GIFImageDescriptor;
+ BytesRead: Word;
+ I: Integer;
+ GlobalPaletteSize: Integer;
+ Introducer, Label_: Byte;
+ GCE: GIFGraphicControlExt;
+ HasGCE: Boolean;
+ BlockSize: Byte;
+ GCEData: Array[0..5] Of Byte;
+ MinCodeSize: Byte;
+ FrameWidth, FrameHeight: Integer;
+ FrameDataSize: LongInt;
+ LocalPaletteSize: Integer;
+ DecodedSize: LongInt;
+ AppId: Array[1..11] Of Char;
+ LoopData: Array[0..2] Of Byte;
+Begin
+ GIFLoadFromFile := False;
+ Img.Valid := False;
+ Img.FrameCount := 0;
+ Img.CurrentFrame := 1;
+ Img.IsAnimated := False;
+ Img.LoopCount := 0;
+ Img.HasGlobalPalette := False;
+
+ { Initialiser le GCE }
+ HasGCE := False;
+ GCE.DisposalMethod := 0;
+ GCE.UserInputFlag := False;
+ GCE.TransparentFlag := False;
+ GCE.DelayTime := 0;
+ GCE.TransparentIndex := 0;
+
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Lire l'en-tete GIF }
+ BlockRead(F, Header, SizeOf(GIFHeader), BytesRead);
+ If BytesRead <> SizeOf(GIFHeader) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier la signature GIF }
+ If (Header.Signature <> GIF_SIGNATURE_87A) And
+    (Header.Signature <> GIF_SIGNATURE_89A) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Lire le descripteur d'ecran logique }
+ BlockRead(F, ScreenDesc, SizeOf(GIFLogicalScreenDesc), BytesRead);
+ If BytesRead <> SizeOf(GIFLogicalScreenDesc) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Verifier les dimensions }
+ If (ScreenDesc.Width > GIF_MAX_WIDTH) Or
+    (ScreenDesc.Height > GIF_MAX_HEIGHT) Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ Img.Width := ScreenDesc.Width;
+ Img.Height := ScreenDesc.Height;
+ Img.BgColorIndex := ScreenDesc.BgColorIndex;
+
+ { Lire la palette globale si presente }
+ If (ScreenDesc.PackedFields And $80) <> 0 Then Begin
+  GlobalPaletteSize := 1 Shl ((ScreenDesc.PackedFields And $07) + 1);
+  Img.GlobalPaletteSize := GlobalPaletteSize;
+  Img.HasGlobalPalette := True;
+
+  For I := 0 To GlobalPaletteSize - 1 Do Begin
+   BlockRead(F, Img.GlobalPalette[I], SizeOf(GIFPaletteEntry), BytesRead);
+   If BytesRead <> SizeOf(GIFPaletteEntry) Then Begin
+    Close(F);
+    Exit;
+   End;
+  End;
+ End;
+
+ { Parcourir les blocs GIF }
+ While True Do Begin
+  BlockRead(F, Introducer, 1, BytesRead);
+  If BytesRead <> 1 Then Break;
+
+  Case Introducer Of
+   GIF_TRAILER: Break; { Fin du fichier GIF }
+
+   GIF_EXTENSION_INTRODUCER: Begin
+    { Lire le type d'extension }
+    BlockRead(F, Label_, 1, BytesRead);
+    If BytesRead <> 1 Then Break;
+
+    Case Label_ Of
+     GIF_EXT_GRAPHIC_CONTROL: Begin
+      { Extension de controle graphique }
+      BlockRead(F, BlockSize, 1, BytesRead);
+      If (BytesRead = 1) And (BlockSize >= 4) Then Begin
+       BlockRead(F, GCEData, BlockSize, BytesRead);
+       If BytesRead = BlockSize Then Begin
+        GCE.DisposalMethod := (GCEData[0] Shr 2) And $07;
+        GCE.UserInputFlag := (GCEData[0] And $02) <> 0;
+        GCE.TransparentFlag := (GCEData[0] And $01) <> 0;
+        GCE.DelayTime := GCEData[1] Or (Word(GCEData[2]) Shl 8);
+        GCE.TransparentIndex := GCEData[3];
+        HasGCE := True;
+       End;
+      End;
+      { Lire le terminateur }
+      BlockRead(F, BlockSize, 1, BytesRead);
+     End;
+
+     GIF_EXT_APPLICATION: Begin
+      { Extension d'application (NETSCAPE pour les boucles) }
+      BlockRead(F, BlockSize, 1, BytesRead);
+      If (BytesRead = 1) And (BlockSize = 11) Then Begin
+       BlockRead(F, AppId, 11, BytesRead);
+       If (BytesRead = 11) And (Copy(AppId, 1, 8) = 'NETSCAPE') Then Begin
+        { Lire le sous-bloc de boucle }
+        BlockRead(F, BlockSize, 1, BytesRead);
+        If (BytesRead = 1) And (BlockSize = 3) Then Begin
+         BlockRead(F, LoopData, 3, BytesRead);
+         If BytesRead = 3 Then
+          Img.LoopCount := LoopData[1] Or (Word(LoopData[2]) Shl 8);
+        End;
+       End;
+      End;
+      GIFSkipSubBlocks(F);
+     End;
+
+     Else Begin
+      { Sauter les autres extensions }
+      GIFSkipSubBlocks(F);
+     End;
+    End;
+   End;
+
+   GIF_IMAGE_SEPARATOR: Begin
+    { Nouvelle frame d'image }
+    If Img.FrameCount >= GIF_MAX_FRAMES Then Break;
+
+    { Lire le descripteur d'image }
+    BlockRead(F, ImageDesc, SizeOf(GIFImageDescriptor), BytesRead);
+    If BytesRead <> SizeOf(GIFImageDescriptor) Then Break;
+
+    Inc(Img.FrameCount);
+
+    With Img.Frames[Img.FrameCount] Do Begin
+     Left := ImageDesc.Left;
+     Top := ImageDesc.Top;
+     Width := ImageDesc.Width;
+     Height := ImageDesc.Height;
+     Valid := False;
+     Data := Nil;
+     HasLocalPalette := False;
+     LocalPaletteSize := 0;
+
+     { Appliquer les parametres GCE si disponibles }
+     If HasGCE Then Begin
+      DelayTime := GCE.DelayTime;
+      DisposalMethod := GCE.DisposalMethod;
+      TransparentFlag := GCE.TransparentFlag;
+      TransparentIndex := GCE.TransparentIndex;
+      HasGCE := False; { Consommer le GCE }
+     End
+     Else Begin
+      DelayTime := 0;
+      DisposalMethod := 0;
+      TransparentFlag := False;
+      TransparentIndex := 0;
+     End;
+
+     { Lire la palette locale si presente }
+     If (ImageDesc.PackedFields And $80) <> 0 Then Begin
+      LocalPaletteSize := 1 Shl ((ImageDesc.PackedFields And $07) + 1);
+      HasLocalPalette := True;
+      Img.Frames[Img.FrameCount].LocalPaletteSize := LocalPaletteSize;
+
+      For I := 0 To LocalPaletteSize - 1 Do Begin
+       BlockRead(F, LocalPalette[I], SizeOf(GIFPaletteEntry), BytesRead);
+       If BytesRead <> SizeOf(GIFPaletteEntry) Then Begin
+        Close(F);
+        Exit;
+       End;
+      End;
+     End;
+
+     { Lire le code LZW minimum }
+     BlockRead(F, MinCodeSize, 1, BytesRead);
+     If BytesRead <> 1 Then Begin
+      Close(F);
+      Exit;
+     End;
+
+     { Allouer la memoire pour les pixels }
+     FrameWidth := ImageDesc.Width;
+     FrameHeight := ImageDesc.Height;
+     FrameDataSize := LongInt(FrameWidth) * LongInt(FrameHeight);
+
+     If FrameDataSize > 65520 Then Begin
+      { Trop grand, sauter cette frame }
+      GIFSkipSubBlocks(F);
+      Dec(Img.FrameCount);
+      Continue;
+     End;
+
+     GetMem(Data, FrameDataSize);
+     If Data = Nil Then Begin
+      GIFSkipSubBlocks(F);
+      Dec(Img.FrameCount);
+      Continue;
+     End;
+     DataSize := FrameDataSize;
+
+     { Decoder les donnees LZW }
+     DecodedSize := GIFDecodeLZW(F, MinCodeSize, Data, FrameDataSize);
+
+     If DecodedSize > 0 Then
+      Valid := True
+     Else Begin
+      FreeMem(Data, FrameDataSize);
+      Data := Nil;
+      Dec(Img.FrameCount);
+     End;
+    End;
+   End;
+  End;
+ End;
+
+ Close(F);
+
+ { Verifier si on a charge au moins une frame }
+ If Img.FrameCount > 0 Then Begin
+  Img.Valid := True;
+  Img.IsAnimated := (Img.FrameCount > 1);
+  Img.CurrentFrame := 1;
+  Img.LastFrameTime := 0;
+  GIFLoadFromFile := True;
+ End;
+End;
+
+{ Obtenir la couleur d'un pixel dans une frame GIF }
+Function GIFGetPixel(Const Img: GIFImage; FrameIdx: Integer;
+                      X, Y: Integer; Var IsTransparent: Boolean): Byte;
+Var
+ Offset: LongInt;
+ PixelIndex: Byte;
+ Palette: ^GIFPalette;
+ DataPtr: ^Byte;
+Begin
+ GIFGetPixel := 0;
+ IsTransparent := False;
+
+ If Not Img.Valid Then Exit;
+ If (FrameIdx < 1) Or (FrameIdx > Img.FrameCount) Then Exit;
+ If Not Img.Frames[FrameIdx].Valid Then Exit;
+
+ With Img.Frames[FrameIdx] Do Begin
+  If (X < 0) Or (X >= Width) Or (Y < 0) Or (Y >= Height) Then Exit;
+
+  Offset := LongInt(Y) * LongInt(Width) + LongInt(X);
+  DataPtr := Data;
+  Inc(DataPtr, Offset);
+  PixelIndex := DataPtr^;
+
+  { Verifier la transparence }
+  If TransparentFlag And (PixelIndex = TransparentIndex) Then Begin
+   IsTransparent := True;
+   Exit;
+  End;
+
+  { Choisir la palette appropriee }
+  If HasLocalPalette Then
+   Palette := @LocalPalette
+  Else If Img.HasGlobalPalette Then
+   Palette := @Img.GlobalPalette
+  Else Begin
+   GIFGetPixel := PixelIndex And $0F; { Utiliser l'index directement }
+   Exit;
+  End;
+
+  { Convertir en couleur VGA }
+  GIFGetPixel := GIFRGBToVGAColor(
+   Palette^[PixelIndex].Red,
+   Palette^[PixelIndex].Green,
+   Palette^[PixelIndex].Blue);
+ End;
+End;
+
+{ Dessiner une frame GIF a l'ecran }
+Procedure GIFDrawFrame(Const Img: GIFImage; FrameIdx: Integer;
+                        DestX, DestY: Integer; MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+ IsTransparent: Boolean;
+ FrameX, FrameY: Integer;
+Begin
+ If Not Img.Valid Then Exit;
+ If (FrameIdx < 1) Or (FrameIdx > Img.FrameCount) Then Exit;
+ If Not Img.Frames[FrameIdx].Valid Then Exit;
+
+ With Img.Frames[FrameIdx] Do Begin
+  { Calculer les dimensions a dessiner }
+  DrawWidth := Width;
+  DrawHeight := Height;
+
+  If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+  If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+
+  { Dessiner pixel par pixel }
+  For Y := 0 To DrawHeight - 1 Do Begin
+   For X := 0 To DrawWidth - 1 Do Begin
+    PixelColor := GIFGetPixel(Img, FrameIdx, X, Y, IsTransparent);
+    If Not IsTransparent Then Begin
+     FrameX := DestX + Left + X;
+     FrameY := DestY + Top + Y;
+     PutPixel(FrameX, FrameY, PixelColor);
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Dessiner une image GIF (premiere frame ou frame courante) }
+Procedure GIFDrawImage(Const Img: GIFImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Begin
+ If Img.Valid And (Img.FrameCount > 0) Then
+  GIFDrawFrame(Img, Img.CurrentFrame, DestX, DestY, MaxWidth, MaxHeight);
+End;
+
+{ Dessiner une image GIF avec mise a l'echelle }
+Procedure GIFDrawImageScaled(Const Img: GIFImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+ IsTransparent: Boolean;
+ FrameIdx: Integer;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+ If Img.FrameCount < 1 Then Exit;
+
+ FrameIdx := Img.CurrentFrame;
+ If Not Img.Frames[FrameIdx].Valid Then Exit;
+
+ { Dessiner avec mise a l'echelle }
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Frames[FrameIdx].Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Frames[FrameIdx].Width) Div DestWidth;
+   PixelColor := GIFGetPixel(Img, FrameIdx, SrcX, SrcY, IsTransparent);
+   If Not IsTransparent Then
+    PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Avancer a la prochaine frame d'animation }
+Function GIFNextFrame(Var Img: GIFImage): Boolean;
+Begin
+ GIFNextFrame := False;
+ If Not Img.Valid Then Exit;
+ If Not Img.IsAnimated Then Exit;
+
+ Inc(Img.CurrentFrame);
+ If Img.CurrentFrame > Img.FrameCount Then
+  Img.CurrentFrame := 1;
+
+ GIFNextFrame := True;
+End;
+
+{ Verifier si l'animation doit avancer (basee sur le temps) }
+Function GIFShouldAdvance(Const Img: GIFImage; CurrentTime: LongInt): Boolean;
+Var
+ DelayMs: LongInt;
+Begin
+ GIFShouldAdvance := False;
+ If Not Img.Valid Then Exit;
+ If Not Img.IsAnimated Then Exit;
+
+ { Calculer le delai en millisecondes }
+ DelayMs := LongInt(Img.Frames[Img.CurrentFrame].DelayTime) * 10;
+ If DelayMs < 20 Then DelayMs := 100; { Delai minimum }
+
+ { Verifier si assez de temps s'est ecoule }
+ If CurrentTime - Img.LastFrameTime >= DelayMs Then
+  GIFShouldAdvance := True;
+End;
+
+{ Mettre a jour le temps de la derniere frame }
+Procedure GIFUpdateFrameTime(Var Img: GIFImage; CurrentTime: LongInt);
+Begin
+ Img.LastFrameTime := CurrentTime;
+End;
+
+{ Chercher une image GIF dans le cache }
+Function GIFFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ GIFFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If GIFImageCache[I].Used And (GIFImageCache[I].URL = URL) Then Begin
+   GIFFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image GIF au cache }
+Function GIFAddToCache(Const URL: String; Const Img: GIFImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ GIFAddToCache := 0;
+
+ { Chercher un slot libre }
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not GIFImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+
+ { Si pas de slot libre, utiliser le premier }
+ If Slot = 0 Then Begin
+  If GIFImageCache[1].Image.Valid Then
+   GIFFreeImage(GIFImageCache[1].Image);
+  Slot := 1;
+ End;
+
+ GIFImageCache[Slot].URL := URL;
+ GIFImageCache[Slot].Image := Img;
+ GIFImageCache[Slot].Used := True;
+ GIFAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image GIF }
+Function GIFBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  GIFBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
+ { Si c'est un chemin absolu, le retourner tel quel }
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  GIFBuildImagePath := Src;
+  Exit;
+ End;
+
+ { Sinon construire le chemin relatif a l'URL courante }
+ BasePath := CurrentURL;
+
+ { Retirer le nom de fichier de l'URL courante }
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ GIFBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN DECODEUR IMAGES GIF
+  ===================================================== }
+
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES JPEG
+  ===================================================== }
+
+Const
+ { Marqueurs JPEG }
+ JPEG_SOI  = $FFD8;  { Start Of Image }
+ JPEG_EOI  = $FFD9;  { End Of Image }
+ JPEG_APP0 = $FFE0;  { Application Marker JFIF }
+ JPEG_APP1 = $FFE1;  { Application Marker EXIF }
+ JPEG_DQT  = $FFDB;  { Define Quantization Table }
+ JPEG_DHT  = $FFC4;  { Define Huffman Table }
+ JPEG_SOF0 = $FFC0;  { Start Of Frame (Baseline DCT) }
+ JPEG_SOF2 = $FFC2;  { Start Of Frame (Progressive DCT) }
+ JPEG_SOS  = $FFDA;  { Start Of Scan }
+ JPEG_DRI  = $FFDD;  { Define Restart Interval }
+ JPEG_RST0 = $FFD0;  { Restart Marker 0 }
+ JPEG_RST7 = $FFD7;  { Restart Marker 7 }
+ JPEG_COM  = $FFFE;  { Comment }
+
+ { Taille maximale d'image JPEG supportee }
+ JPEG_MAX_WIDTH = 800;
+ JPEG_MAX_HEIGHT = 600;
+
+ { Constantes DCT }
+ JPEG_BLOCK_SIZE = 8;  { Taille d'un bloc DCT }
+ JPEG_BLOCK_SIZE2 = 64; { 8x8 pixels par bloc }
+
+Type
+ { Table de quantification JPEG }
+ JPEGQuantTable = Array[0..63] Of Word;
+ JPEGQuantTablePtr = ^JPEGQuantTable;
+
+ { Table Huffman JPEG }
+ JPEGHuffmanTable = Record
+  Bits: Array[0..15] Of Byte;    { Nombre de codes par longueur }
+  Values: Array[0..255] Of Byte; { Valeurs des symboles }
+  { Un code Huffman JPEG peut occuper 16 bits et atteindre $FFFF.
+    Integer est signe sur 16 bits en mode TP : LongInt est indispensable. }
+  MinCode: Array[0..15] Of LongInt; { Code minimum par longueur }
+  MaxCode: Array[0..15] Of LongInt; { Code maximum par longueur }
+  ValPtr: Array[0..15] Of Integer;  { Index dans Values }
+  NumCodes: Integer;
+  Valid: Boolean;
+ End;
+ JPEGHuffmanTablePtr = ^JPEGHuffmanTable;
+
+ { Composante d'image JPEG }
+ JPEGComponent = Record
+  Id: Byte;              { Identifiant de composante }
+  HSampling: Byte;       { Facteur d'echantillonnage horizontal }
+  VSampling: Byte;       { Facteur d'echantillonnage vertical }
+  QuantTableId: Byte;    { Table de quantification utilisee }
+  DCTableId: Byte;       { Table Huffman DC }
+  ACTableId: Byte;       { Table Huffman AC }
+  DCPred: Integer;       { Predicteur DC precedent }
+ End;
+
+ { Bloc de donnees 8x8 }
+ JPEGBlock = Array[0..63] Of Integer;
+ JPEGBlockPtr = ^JPEGBlock;
+
+ { Structure d'image JPEG en memoire }
+ JPEGImage = Record
+  Width: Integer;
+  Height: Integer;
+  NumComponents: Integer;
+  Components: Array[1..4] Of JPEGComponent;
+  QuantTables: Array[0..3] Of JPEGQuantTable;
+  QuantTableValid: Array[0..3] Of Boolean;
+  DCHuffTables: Array[0..3] Of JPEGHuffmanTable;
+  ACHuffTables: Array[0..3] Of JPEGHuffmanTable;
+  MaxHSampling: Byte;
+  MaxVSampling: Byte;
+  RestartInterval: Word;
+  Data: Pointer;         { Pointeur vers les donnees RGB }
+  DataSize: LongInt;
+  Valid: Boolean;
+ End;
+
+ JPEGImagePtr = ^JPEGImage;
+
+Var
+ { Cache d'images JPEG chargees }
+ JPEGImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: JPEGImage;
+  Used: Boolean;
+ End;
+ JPEGImageCacheCount: Integer;
+
+ { Buffer de lecture de bits pour Huffman }
+ JPEGBitBuffer: LongInt;
+ JPEGBitsInBuffer: Integer;
+ JPEGFileHandle: File;
+ JPEGFilePos: LongInt;
+ JPEGDataBuffer: Array[0..4095] Of Byte;
+ JPEGDataPos: Integer;
+ JPEGDataLen: Integer;
+
+{ Ordre zigzag pour parcourir les coefficients DCT }
+Const
+ JPEGZigZag: Array[0..63] Of Byte = (
+   0,  1,  8, 16,  9,  2,  3, 10,
+  17, 24, 32, 25, 18, 11,  4,  5,
+  12, 19, 26, 33, 40, 48, 41, 34,
+  27, 20, 13,  6,  7, 14, 21, 28,
+  35, 42, 49, 56, 57, 50, 43, 36,
+  29, 22, 15, 23, 30, 37, 44, 51,
+  58, 59, 52, 45, 38, 31, 39, 46,
+  53, 60, 61, 54, 47, 55, 62, 63
+ );
+
+{ Initialiser le cache d'images JPEG }
+Procedure JPEGInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  JPEGImageCache[I].URL := '';
+  JPEGImageCache[I].Used := False;
+  JPEGImageCache[I].Image.Valid := False;
+  JPEGImageCache[I].Image.Data := Nil;
+ End;
+ JPEGImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA }
+Function JPEGRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: LongInt;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ If BestColor = 0 Then JPEGRGBToVGAColor := HTMLBlackColorIndex
+ Else JPEGRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une image JPEG }
+Procedure JPEGFreeImage(Var Img: JPEGImage);
+Begin
+ If Img.Data <> Nil Then Begin
+  FreeMem(Img.Data, Img.DataSize);
+  Img.Data := Nil;
+ End;
+ Img.Valid := False;
+ Img.DataSize := 0;
+End;
+
+{ Initialiser le buffer de lecture de bits }
+Procedure JPEGInitBitBuffer(Var F: File);
+Begin
+ JPEGBitBuffer := 0;
+ JPEGBitsInBuffer := 0;
+ JPEGFileHandle := F;
+ JPEGDataPos := 0;
+ JPEGDataLen := 0;
+End;
+
+{ Lire un octet du fichier JPEG (gere les marqueurs $FF00) }
+Function JPEGReadByte: Integer;
+Var
+ BytesRead: Word;
+ B: Byte;
+ SkipMarker: Boolean;
+Begin
+ JPEGReadByte := -1;
+
+ { Boucle plutot que recursion : un flux corrompu/atypique peut
+   enchainer plusieurs marqueurs RST consecutifs, ce qu'un appel
+   recursif a soi-meme finirait par faire deborder la pile. }
+ Repeat
+  SkipMarker := False;
+
+  { Remplir le buffer si necessaire }
+  If JPEGDataPos >= JPEGDataLen Then Begin
+   BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
+   If BytesRead = 0 Then Exit;
+   JPEGDataPos := 0;
+   JPEGDataLen := BytesRead;
+  End;
+
+  B := JPEGDataBuffer[JPEGDataPos];
+  Inc(JPEGDataPos);
+
+  { Gerer le byte stuffing: $FF00 devient $FF }
+  If B = $FF Then Begin
+   If JPEGDataPos >= JPEGDataLen Then Begin
+    BlockRead(JPEGFileHandle, JPEGDataBuffer, SizeOf(JPEGDataBuffer), BytesRead);
+    If BytesRead = 0 Then Exit;
+    JPEGDataPos := 0;
+    JPEGDataLen := BytesRead;
+   End;
+
+   If JPEGDataBuffer[JPEGDataPos] = $00 Then Begin
+    Inc(JPEGDataPos); { Sauter le $00 de stuffing }
+   End
+   Else If (JPEGDataBuffer[JPEGDataPos] >= $D0) And
+           (JPEGDataBuffer[JPEGDataPos] <= $D7) Then Begin
+    { Marqueur RST - le sauter, puis lire l'octet suivant }
+    Inc(JPEGDataPos);
+    JPEGBitBuffer := 0;
+    JPEGBitsInBuffer := 0;
+    SkipMarker := True;
+   End;
+  End;
+ Until Not SkipMarker;
+
+ JPEGReadByte := B;
+End;
+
+{ Lire N bits du flux }
+Function JPEGReadBits(NumBits: Integer): Integer;
+Var
+ B: Integer;
+Begin
+ JPEGReadBits := -1;
+
+ While JPEGBitsInBuffer < NumBits Do Begin
+  B := JPEGReadByte;
+  If B < 0 Then Exit;
+  JPEGBitBuffer := (JPEGBitBuffer Shl 8) Or B;
+  Inc(JPEGBitsInBuffer, 8);
+ End;
+
+ Dec(JPEGBitsInBuffer, NumBits);
+ JPEGReadBits := (JPEGBitBuffer Shr JPEGBitsInBuffer) And ((1 Shl NumBits) - 1);
+End;
+
+{ Decoder un symbole Huffman }
+Function JPEGDecodeHuffman(Var Table: JPEGHuffmanTable): Integer;
+Var
+ Code: LongInt;
+ BitLen: Integer;
+ Index: Integer;
+Begin
+ JPEGDecodeHuffman := -1;
+ If Not Table.Valid Then Exit;
+
+ Code := 0;
+ For BitLen := 1 To 16 Do Begin
+  Code := (Code Shl 1) Or JPEGReadBits(1);
+  If Code < 0 Then Exit;
+
+  If (Code >= Table.MinCode[BitLen - 1]) And
+     (Code <= Table.MaxCode[BitLen - 1]) Then Begin
+   Index := Table.ValPtr[BitLen - 1] + Code - Table.MinCode[BitLen - 1];
+   If Index < Table.NumCodes Then
+    JPEGDecodeHuffman := Table.Values[Index];
+   Exit;
+  End;
+ End;
+End;
+
+{ Etendre la valeur decodee selon la categorie }
+Function JPEGExtendValue(Value, Category: Integer): Integer;
+Var
+ Threshold: Integer;
+Begin
+ If Category = 0 Then Begin
+  JPEGExtendValue := 0;
+  Exit;
+ End;
+
+ Threshold := 1 Shl (Category - 1);
+ If Value < Threshold Then
+  JPEGExtendValue := Value - (2 * Threshold - 1)
+ Else
+  JPEGExtendValue := Value;
+End;
+
+{ Construire les codes Huffman a partir des bits }
+Procedure JPEGBuildHuffmanCodes(Var Table: JPEGHuffmanTable);
+Var
+ Code: LongInt;
+ I, J: Integer;
+ Count: Integer;
+Begin
+ Code := 0;
+ Count := 0;
+
+ For I := 0 To 15 Do Begin
+  Table.MinCode[I] := Code;
+  Table.ValPtr[I] := Count;
+
+  For J := 0 To Table.Bits[I] - 1 Do Begin
+   Inc(Code);
+   Inc(Count);
+  End;
+
+  Table.MaxCode[I] := Code - 1;
+  Code := Code Shl 1;
+ End;
+
+ Table.NumCodes := Count;
+ Table.Valid := True;
+End;
+
+{ Coefficients IDCT precalcules (cosinus) }
+Const
+ JPEGIDCTScale: Array[0..7, 0..7] Of Integer = (
+  (362, 362, 362, 362, 362, 362, 362, 362),
+  (502, 425, 284, 100, -100, -284, -425, -502),
+  (473, 195, -195, -473, -473, -195, 195, 473),
+  (425, -100, -502, -284, 284, 502, 100, -425),
+  (362, -362, -362, 362, 362, -362, -362, 362),
+  (284, -502, 100, 425, -425, -100, 502, -284),
+  (195, -473, 473, -195, -195, 473, -473, 195),
+  (100, -284, 425, -502, 502, -425, 284, -100)
+ );
+
+{ Effectuer l'IDCT sur un bloc 8x8 }
+Procedure JPEGInverseIDCT(Var Block: JPEGBlock);
+Var
+ Temp: Array[0..63] Of LongInt;
+ I, J, K: Integer;
+ Sum: LongInt;
+Begin
+ { IDCT sur les colonnes }
+ For I := 0 To 7 Do Begin
+  For J := 0 To 7 Do Begin
+   Sum := 0;
+   For K := 0 To 7 Do Begin
+    Sum := Sum + LongInt(Block[K * 8 + I]) * LongInt(JPEGIDCTScale[K, J]);
+   End;
+   Temp[J * 8 + I] := Sum Div 256;
+  End;
+ End;
+
+ { IDCT sur les lignes }
+ For I := 0 To 7 Do Begin
+  For J := 0 To 7 Do Begin
+   Sum := 0;
+   For K := 0 To 7 Do Begin
+    Sum := Sum + Temp[I * 8 + K] * LongInt(JPEGIDCTScale[K, J]);
+   End;
+   Block[I * 8 + J] := Sum Div 256 + 128;
+
+   { Clamping a 0-255 }
+   If Block[I * 8 + J] < 0 Then Block[I * 8 + J] := 0;
+   If Block[I * 8 + J] > 255 Then Block[I * 8 + J] := 255;
+  End;
+ End;
+End;
+
+{ Decoder un bloc 8x8 }
+Function JPEGDecodeBlock(Var Block: JPEGBlock;
+                          Var DCTable, ACTable: JPEGHuffmanTable;
+                          Var QuantTable: JPEGQuantTable;
+                          Var DCPred: Integer): Boolean;
+Var
+ I, Symbol, Category, Bits, Value: Integer;
+ Run, Size: Integer;
+ ZZIndex: Integer;
+Begin
+ JPEGDecodeBlock := False;
+
+ { Initialiser le bloc a zero }
+ For I := 0 To 63 Do Block[I] := 0;
+
+ { Decoder le coefficient DC }
+ Category := JPEGDecodeHuffman(DCTable);
+ If Category < 0 Then Exit;
+
+ If Category > 0 Then Begin
+  Bits := JPEGReadBits(Category);
+  If Bits < 0 Then Exit;
+  Value := JPEGExtendValue(Bits, Category);
+ End
+ Else
+  Value := 0;
+
+ DCPred := DCPred + Value;
+ Block[0] := DCPred * Integer(QuantTable[0]);
+
+ { Decoder les coefficients AC }
+ ZZIndex := 1;
+ While ZZIndex < 64 Do Begin
+  Symbol := JPEGDecodeHuffman(ACTable);
+  If Symbol < 0 Then Exit;
+
+  If Symbol = 0 Then Begin
+   { EOB - End Of Block }
+   Break;
+  End;
+
+  Run := (Symbol Shr 4) And $0F;   { Nombre de zeros }
+  Size := Symbol And $0F;          { Taille de la valeur }
+
+  If Symbol = $F0 Then Begin
+   { ZRL - 16 zeros }
+   Inc(ZZIndex, 16);
+   Continue;
+  End;
+
+  Inc(ZZIndex, Run);
+  If ZZIndex >= 64 Then Break;
+
+  If Size > 0 Then Begin
+   Bits := JPEGReadBits(Size);
+   If Bits < 0 Then Exit;
+   Value := JPEGExtendValue(Bits, Size);
+   Block[JPEGZigZag[ZZIndex]] := Value * Integer(QuantTable[JPEGZigZag[ZZIndex]]);
+  End;
+
+  Inc(ZZIndex);
+ End;
+
+ { Appliquer l'IDCT }
+ JPEGInverseIDCT(Block);
+
+ JPEGDecodeBlock := True;
+End;
+
+{ Convertir YCbCr vers RGB }
+Procedure JPEGYCbCrToRGB(Y, Cb, Cr: Integer; Var R, G, B: Byte);
+Var
+ Rv, Gv, Bv: Integer;
+Begin
+ { Formule standard ITU-R BT.601 }
+ Rv := Y + ((Cr - 128) * 359) Div 256;
+ Gv := Y - ((Cb - 128) * 88 + (Cr - 128) * 183) Div 256;
+ Bv := Y + ((Cb - 128) * 454) Div 256;
+
+ { Clamping a 0-255 }
+ If Rv < 0 Then Rv := 0 Else If Rv > 255 Then Rv := 255;
+ If Gv < 0 Then Gv := 0 Else If Gv > 255 Then Gv := 255;
+ If Bv < 0 Then Bv := 0 Else If Bv > 255 Then Bv := 255;
+
+ R := Rv;
+ G := Gv;
+ B := Bv;
+End;
+
+{ Lire un mot (16 bits big-endian) }
+Function JPEGReadWord(Var F: File): Word;
+Var
+ B1, B2: Byte;
+ BytesRead: Word;
+Begin
+ BlockRead(F, B1, 1, BytesRead);
+ BlockRead(F, B2, 1, BytesRead);
+ JPEGReadWord := (Word(B1) Shl 8) Or B2;
+End;
+
+{ Sauter N octets }
+Procedure JPEGSkipBytes(Var F: File; Count: Word);
+Var
+ I: Integer;
+ B: Byte;
+ BytesRead: Word;
+Begin
+ For I := 1 To Count Do
+  BlockRead(F, B, 1, BytesRead);
+End;
+
+{ Lire la table de quantification }
+Function JPEGReadQuantTable(Var F: File; Var Img: JPEGImage; Length: Word): Boolean;
+Var
+ Precision, TableId: Byte;
+ I: Integer;
+ B: Byte;
+ W: Word;
+ BytesRead: Word;
+ Remaining: Integer;
+Begin
+ JPEGReadQuantTable := False;
+ Remaining := Length - 2;
+
+ While Remaining > 0 Do Begin
+  BlockRead(F, B, 1, BytesRead);
+  Dec(Remaining);
+
+  Precision := (B Shr 4) And $0F;
+  TableId := B And $0F;
+
+  If TableId > 3 Then Exit;
+
+  If Precision = 0 Then Begin
+   { Table 8 bits }
+   For I := 0 To 63 Do Begin
+    BlockRead(F, B, 1, BytesRead);
+    Dec(Remaining);
+    Img.QuantTables[TableId][JPEGZigZag[I]] := B;
+   End;
+  End
+  Else Begin
+   { Table 16 bits }
+   For I := 0 To 63 Do Begin
+    W := JPEGReadWord(F);
+    Dec(Remaining, 2);
+    Img.QuantTables[TableId][JPEGZigZag[I]] := W;
+   End;
+  End;
+
+  Img.QuantTableValid[TableId] := True;
+ End;
+
+ JPEGReadQuantTable := True;
+End;
+
+{ Lire la table Huffman }
+Function JPEGReadHuffmanTable(Var F: File; Var Img: JPEGImage; Length: Word): Boolean;
+Var
+ TableClass, TableId: Byte;
+ B: Byte;
+ BytesRead: Word;
+ Remaining: Integer;
+ I, Count: Integer;
+ Table: ^JPEGHuffmanTable;
+Begin
+ JPEGReadHuffmanTable := False;
+ Remaining := Length - 2;
+
+ While Remaining > 0 Do Begin
+  BlockRead(F, B, 1, BytesRead);
+  Dec(Remaining);
+
+  TableClass := (B Shr 4) And $0F; { 0 = DC, 1 = AC }
+  TableId := B And $0F;
+
+  If TableId > 3 Then Exit;
+
+  If TableClass = 0 Then
+   Table := @Img.DCHuffTables[TableId]
+  Else
+   Table := @Img.ACHuffTables[TableId];
+
+  { Lire le nombre de codes par longueur }
+  Count := 0;
+  For I := 0 To 15 Do Begin
+   BlockRead(F, Table^.Bits[I], 1, BytesRead);
+   Dec(Remaining);
+   Inc(Count, Table^.Bits[I]);
+  End;
+
+  { Lire les valeurs }
+  For I := 0 To Count - 1 Do Begin
+   BlockRead(F, Table^.Values[I], 1, BytesRead);
+   Dec(Remaining);
+  End;
+
+  { Construire les codes }
+  JPEGBuildHuffmanCodes(Table^);
+ End;
+
+ JPEGReadHuffmanTable := True;
+End;
+
+{ Lire le SOF (Start Of Frame) }
+Function JPEGReadSOF(Var F: File; Var Img: JPEGImage; Length: Word): Boolean;
+Var
+ Precision: Byte;
+ BytesRead: Word;
+ I: Integer;
+ B: Byte;
+Begin
+ JPEGReadSOF := False;
+
+ BlockRead(F, Precision, 1, BytesRead);
+ Img.Height := JPEGReadWord(F);
+ Img.Width := JPEGReadWord(F);
+ BlockRead(F, B, 1, BytesRead);
+ Img.NumComponents := B;
+
+ If (Img.Width > JPEG_MAX_WIDTH) Or (Img.Height > JPEG_MAX_HEIGHT) Then Exit;
+ If (Img.NumComponents < 1) Or (Img.NumComponents > 4) Then Exit;
+
+ Img.MaxHSampling := 1;
+ Img.MaxVSampling := 1;
+
+ For I := 1 To Img.NumComponents Do Begin
+  BlockRead(F, Img.Components[I].Id, 1, BytesRead);
+  BlockRead(F, B, 1, BytesRead);
+  Img.Components[I].HSampling := (B Shr 4) And $0F;
+  Img.Components[I].VSampling := B And $0F;
+  BlockRead(F, Img.Components[I].QuantTableId, 1, BytesRead);
+  Img.Components[I].DCPred := 0;
+
+  If Img.Components[I].HSampling > Img.MaxHSampling Then
+   Img.MaxHSampling := Img.Components[I].HSampling;
+  If Img.Components[I].VSampling > Img.MaxVSampling Then
+   Img.MaxVSampling := Img.Components[I].VSampling;
+ End;
+
+ JPEGReadSOF := True;
+End;
+
+{ Lire le SOS (Start Of Scan) }
+Function JPEGReadSOS(Var F: File; Var Img: JPEGImage): Boolean;
+Var
+ NumComponents: Byte;
+ BytesRead: Word;
+ I: Integer;
+ CompId, TableIds: Byte;
+ Ss, Se, AhAl: Byte;
+Begin
+ JPEGReadSOS := False;
+
+ BlockRead(F, NumComponents, 1, BytesRead);
+ If NumComponents <> Img.NumComponents Then Exit;
+
+ For I := 1 To NumComponents Do Begin
+  BlockRead(F, CompId, 1, BytesRead);
+  BlockRead(F, TableIds, 1, BytesRead);
+  Img.Components[I].DCTableId := (TableIds Shr 4) And $0F;
+  Img.Components[I].ACTableId := TableIds And $0F;
+ End;
+
+ { Lire les parametres de scan (ignores pour baseline) }
+ BlockRead(F, Ss, 1, BytesRead);
+ BlockRead(F, Se, 1, BytesRead);
+ BlockRead(F, AhAl, 1, BytesRead);
+
+ JPEGReadSOS := True;
+End;
+
+{ Charger une image JPEG depuis un fichier }
+Function JPEGLoadFromFile(Const FileName: String; Var Img: JPEGImage): Boolean;
+Var
+ F: File;
+ Marker, Length: Word;
+ BytesRead: Word;
+ I, J, X, Y: Integer;
+ MCUWidth, MCUHeight: Integer;
+ BlocksPerMCU: Integer;
+ YBlocks, CbBlocks, CrBlocks: Array[0..3] Of JPEGBlock;
+ R, G, B: Byte;
+ PixelOffset: LongInt;
+ DataPtr: ^Byte;
+ Yv, Cbv, Crv: Integer;
+ BlockX, BlockY: Integer;
+ PixelX, PixelY: Integer;
+Begin
+ JPEGLoadFromFile := False;
+ Img.Valid := False;
+ Img.Data := Nil;
+
+ For I := 0 To 3 Do Begin
+  Img.QuantTableValid[I] := False;
+  Img.DCHuffTables[I].Valid := False;
+  Img.ACHuffTables[I].Valid := False;
+ End;
+
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Verifier la signature SOI }
+ Marker := JPEGReadWord(F);
+ If Marker <> JPEG_SOI Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ { Parcourir les segments }
+ While True Do Begin
+  Marker := JPEGReadWord(F);
+  If (Marker And $FF00) <> $FF00 Then Break;
+
+  Case Marker Of
+   JPEG_EOI: Break;
+
+   JPEG_DQT: Begin
+    Length := JPEGReadWord(F);
+    If Not JPEGReadQuantTable(F, Img, Length) Then Begin
+     Close(F);
+     Exit;
+    End;
+   End;
+
+   JPEG_DHT: Begin
+    Length := JPEGReadWord(F);
+    If Not JPEGReadHuffmanTable(F, Img, Length) Then Begin
+     Close(F);
+     Exit;
+    End;
+   End;
+
+   JPEG_SOF0: Begin { Baseline DCT }
+    Length := JPEGReadWord(F);
+    If Not JPEGReadSOF(F, Img, Length) Then Begin
+     Close(F);
+     Exit;
+    End;
+   End;
+
+   JPEG_SOS: Begin
+    Length := JPEGReadWord(F);
+    If Not JPEGReadSOS(F, Img) Then Begin
+     Close(F);
+     Exit;
+    End;
+
+    { Allouer la memoire pour les pixels RGB }
+    Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
+    {$IFNDEF FPC}
+    If Img.DataSize > 65520 Then Begin
+     { Turbo Pascal en mode reel ne peut pas allouer un bloc depassant
+       un segment. Sous Free Pascal/Win32, GetMem accepte naturellement
+       les images plus grandes : conserver cette ancienne limite faisait
+       echouer, entre autres, les JPEG 350x250 injectes par innerHTML. }
+     Close(F);
+     Exit;
+    End;
+    {$ENDIF}
+
+    GetMem(Img.Data, Img.DataSize);
+    If Img.Data = Nil Then Begin
+     Close(F);
+     Exit;
+    End;
+
+    { Initialiser le buffer de bits }
+    JPEGInitBitBuffer(F);
+
+    { Reinitialiser les predicteurs DC }
+    For I := 1 To Img.NumComponents Do
+     Img.Components[I].DCPred := 0;
+
+    { Taille d'un MCU en pixels }
+    MCUWidth := Img.MaxHSampling * 8;
+    MCUHeight := Img.MaxVSampling * 8;
+
+    { Decoder les MCUs }
+    Y := 0;
+    While Y < Img.Height Do Begin
+     X := 0;
+     While X < Img.Width Do Begin
+      { Decoder les blocs Y (luminance) }
+      For I := 0 To Img.Components[1].VSampling * Img.Components[1].HSampling - 1 Do Begin
+       If Not JPEGDecodeBlock(YBlocks[I],
+         Img.DCHuffTables[Img.Components[1].DCTableId],
+         Img.ACHuffTables[Img.Components[1].ACTableId],
+         Img.QuantTables[Img.Components[1].QuantTableId],
+         Img.Components[1].DCPred) Then Begin
+        FreeMem(Img.Data, Img.DataSize);
+        Img.Data := Nil;
+        Close(F);
+        Exit;
+       End;
+      End;
+
+      { Decoder les blocs Cb et Cr si image couleur }
+      If Img.NumComponents >= 3 Then Begin
+       If Not JPEGDecodeBlock(CbBlocks[0],
+         Img.DCHuffTables[Img.Components[2].DCTableId],
+         Img.ACHuffTables[Img.Components[2].ACTableId],
+         Img.QuantTables[Img.Components[2].QuantTableId],
+         Img.Components[2].DCPred) Then Begin
+        FreeMem(Img.Data, Img.DataSize);
+        Img.Data := Nil;
+        Close(F);
+        Exit;
+       End;
+
+       If Not JPEGDecodeBlock(CrBlocks[0],
+         Img.DCHuffTables[Img.Components[3].DCTableId],
+         Img.ACHuffTables[Img.Components[3].ACTableId],
+         Img.QuantTables[Img.Components[3].QuantTableId],
+         Img.Components[3].DCPred) Then Begin
+        FreeMem(Img.Data, Img.DataSize);
+        Img.Data := Nil;
+        Close(F);
+        Exit;
+       End;
+      End;
+
+      { Convertir et stocker les pixels }
+      For BlockY := 0 To MCUHeight - 1 Do Begin
+       For BlockX := 0 To MCUWidth - 1 Do Begin
+        PixelX := X + BlockX;
+        PixelY := Y + BlockY;
+
+        If (PixelX < Img.Width) And (PixelY < Img.Height) Then Begin
+         { Obtenir la valeur Y du bloc approprie }
+         I := (BlockY Div 8) * Img.Components[1].HSampling + (BlockX Div 8);
+         If I > Img.Components[1].VSampling * Img.Components[1].HSampling - 1 Then
+          I := 0;
+         Yv := YBlocks[I][(BlockY Mod 8) * 8 + (BlockX Mod 8)];
+
+         If Img.NumComponents >= 3 Then Begin
+          { Calculer la position dans les blocs Cb/Cr (sous-echantillonnes) }
+          J := (BlockY * Img.Components[2].VSampling Div Img.MaxVSampling) * 8 +
+               (BlockX * Img.Components[2].HSampling Div Img.MaxHSampling);
+          If J > 63 Then J := 63;
+          Cbv := CbBlocks[0][J];
+          Crv := CrBlocks[0][J];
+
+          JPEGYCbCrToRGB(Yv, Cbv, Crv, R, G, B);
+         End
+         Else Begin
+          { Image en niveaux de gris }
+          R := Yv;
+          G := Yv;
+          B := Yv;
+         End;
+
+         { Stocker le pixel }
+         PixelOffset := (LongInt(PixelY) * LongInt(Img.Width) + LongInt(PixelX)) * 3;
+         DataPtr := Img.Data;
+         Inc(DataPtr, PixelOffset);
+         DataPtr^ := R;
+         Inc(DataPtr);
+         DataPtr^ := G;
+         Inc(DataPtr);
+         DataPtr^ := B;
+        End;
+       End;
+      End;
+
+      Inc(X, MCUWidth);
+     End;
+     Inc(Y, MCUHeight);
+    End;
+
+    Break; { Fin du decodage }
+   End;
+
+   JPEG_DRI: Begin
+    Length := JPEGReadWord(F);
+    Img.RestartInterval := JPEGReadWord(F);
+   End;
+
+   Else Begin
+    { Sauter les segments inconnus }
+    Length := JPEGReadWord(F);
+    If Length > 2 Then
+     JPEGSkipBytes(F, Length - 2);
+   End;
+  End;
+ End;
+
+ Close(F);
+
+ If Img.Data <> Nil Then Begin
+  Img.Valid := True;
+  JPEGLoadFromFile := True;
+ End;
+End;
+
+{ Obtenir la couleur d'un pixel dans une image JPEG }
+Function JPEGGetPixel(Const Img: JPEGImage; X, Y: Integer): Byte;
+Var
+ Offset: LongInt;
+ DataPtr: ^Byte;
+ R, G, B: Byte;
+Begin
+ JPEGGetPixel := 0;
+ If Not Img.Valid Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+
+ Offset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
+ DataPtr := Img.Data;
+ Inc(DataPtr, Offset);
+ R := DataPtr^;
+ Inc(DataPtr);
+ G := DataPtr^;
+ Inc(DataPtr);
+ B := DataPtr^;
+
+ JPEGGetPixel := JPEGRGBToVGAColor(R, G, B);
+End;
+
+{ Dessiner une image JPEG a l'ecran }
+Procedure JPEGDrawImage(Const Img: JPEGImage; DestX, DestY: Integer;
+                         MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+
+ DrawWidth := Img.Width;
+ DrawHeight := Img.Height;
+
+ If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+ If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+
+ For Y := 0 To DrawHeight - 1 Do Begin
+  For X := 0 To DrawWidth - 1 Do Begin
+   PixelColor := JPEGGetPixel(Img, X, Y);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Dessiner une image JPEG avec mise a l'echelle }
+Procedure JPEGDrawImageScaled(Const Img: JPEGImage; DestX, DestY: Integer;
+                               DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Width) Div DestWidth;
+   PixelColor := JPEGGetPixel(Img, SrcX, SrcY);
+   PutPixel(DestX + X, DestY + Y, PixelColor);
+  End;
+ End;
+End;
+
+{ Chercher une image JPEG dans le cache }
+Function JPEGFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ JPEGFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If JPEGImageCache[I].Used And (JPEGImageCache[I].URL = URL) Then Begin
+   JPEGFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image JPEG au cache }
+Function JPEGAddToCache(Const URL: String; Const Img: JPEGImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ JPEGAddToCache := 0;
+
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not JPEGImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+
+ If Slot = 0 Then Begin
+  If JPEGImageCache[1].Image.Valid Then
+   JPEGFreeImage(JPEGImageCache[1].Image);
+  Slot := 1;
+ End;
+
+ JPEGImageCache[Slot].URL := URL;
+ JPEGImageCache[Slot].Image := Img;
+ JPEGImageCache[Slot].Used := True;
+ JPEGAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image JPEG }
+Function JPEGBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  JPEGBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  JPEGBuildImagePath := Src;
+  Exit;
+ End;
+
+ BasePath := CurrentURL;
+
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ JPEGBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN DECODEUR IMAGES JPEG
+  ===================================================== }
+
+{ =====================================================
+  DECODEUR ET AFFICHAGE D'IMAGES PNG
+  ===================================================== }
+
+Const
+ { Signature PNG (8 octets) }
+ PNG_SIGNATURE: Array[0..7] Of Byte = ($89, $50, $4E, $47, $0D, $0A, $1A, $0A);
+
+ { Types de chunks PNG }
+ PNG_CHUNK_IHDR = 'IHDR';  { Image Header }
+ PNG_CHUNK_PLTE = 'PLTE';  { Palette }
+ PNG_CHUNK_IDAT = 'IDAT';  { Image Data }
+ PNG_CHUNK_IEND = 'IEND';  { Image End }
+ PNG_CHUNK_tRNS = 'tRNS';  { Transparency }
+
+ { Types de couleur PNG }
+ PNG_COLOR_GRAYSCALE = 0;
+ PNG_COLOR_RGB = 2;
+ PNG_COLOR_PALETTE = 3;
+ PNG_COLOR_GRAYSCALE_ALPHA = 4;
+ PNG_COLOR_RGBA = 6;
+
+ { Types de filtres PNG }
+ PNG_FILTER_NONE = 0;
+ PNG_FILTER_SUB = 1;
+ PNG_FILTER_UP = 2;
+ PNG_FILTER_AVERAGE = 3;
+ PNG_FILTER_PAETH = 4;
+
+ { Taille maximale d'image PNG supportee. Les feuilles de sprites Web
+   depassent couramment 800 pixels (ressources.png de gladir.com fait
+   2008x47). FPC dispose de lignes dynamiques; la cible DOS conserve sa
+   limite segmentee historique. }
+ {$IFDEF FPC}
+ PNG_MAX_WIDTH = 4096;
+ {$ELSE}
+ PNG_MAX_WIDTH = 800;
+ {$ENDIF}
+ PNG_MAX_HEIGHT = 600;
+
+ { Constantes pour DEFLATE }
+ DEFLATE_MAX_BITS = 15;
+ { Les tables fixes contiennent 288 codes lit/length et 32 codes distance.
+   Les symboles 286/287 et 30/31 sont reserves, mais doivent disposer d'une
+   case pendant la construction avant d'etre rejetes au decodage. }
+ DEFLATE_MAX_LIT_CODES = 288;
+ DEFLATE_MAX_DIST_CODES = 32;
+ DEFLATE_MAX_CODE_LENGTH = 19;
+
+Type
+ { En-tete IHDR PNG }
+ PNGHeader = Record
+  Width: LongInt;
+  Height: LongInt;
+  BitDepth: Byte;
+  ColorType: Byte;
+  Compression: Byte;
+  Filter: Byte;
+  Interlace: Byte;
+ End;
+
+ { Entree de palette PNG }
+ PNGPaletteEntry = Record
+  R, G, B: Byte;
+ End;
+
+ { Table Huffman pour DEFLATE }
+ DeflateHuffTable = Record
+  Counts: Array[0..DEFLATE_MAX_BITS] Of Word;
+  Symbols: Array[0..DEFLATE_MAX_LIT_CODES - 1] Of Word;
+  NumSymbols: Integer;
+  Valid: Boolean;
+ End;
+
+ { Structure d'image PNG en memoire }
+ PNGImage = Record
+  Width: Integer;
+  Height: Integer;
+  BitDepth: Byte;
+  ColorType: Byte;
+  HasAlpha: Boolean;
+  Palette: Array[0..255] Of PNGPaletteEntry;
+  PaletteSize: Integer;
+  TransparentIndex: Integer;  { Pour images palette avec transparence }
+  TransparentR, TransparentG, TransparentB: Word;  { Pour RGB transparent }
+  HasTransparent: Boolean;
+  Data: Pointer;         { Pointeur vers les donnees RGB }
+  AlphaData: Pointer;    { Pointeur vers les donnees alpha }
+  DataSize: LongInt;
+  Valid: Boolean;
+ End;
+
+ PNGImagePtr = ^PNGImage;
+
+Var
+ { Cache d'images PNG chargees }
+ PNGImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: PNGImage;
+  Used: Boolean;
+ End;
+ PNGImageCacheCount: Integer;
+
+ { Buffer pour decompression DEFLATE. Agrandi de 65536 a 4 Mo (2026-09-26,
+   necessaire au support PDF - voir Browser_PdfExtractText plus bas) : un
+   flux de contenu de page PDF compresse peut largement depasser 64 Ko
+   pour un document texte de plusieurs pages ; l'ancienne taille aurait
+   fait deborder ce tableau fixe via Move(...) (aucun garde-fou present
+   avant ce correctif, ni ici pour PNG ni dans le nouveau code PDF sans
+   cette marge). Incidemment, corrige aussi le meme risque latent (jamais
+   signale) pour un PNG dont les donnees IDAT compressees depasseraient
+   64 Ko. }
+ DeflateInBuffer: Array[0..4 * 1024 * 1024 - 1] Of Byte;
+ DeflateInPos: LongInt;
+ DeflateInLen: LongInt;
+ DeflateBitBuffer: LongInt;
+ DeflateBitsInBuffer: Integer;
+
+ { Buffer de sortie pour donnees decompressees }
+ DeflateOutBuffer: Array[0..65535] Of Byte;
+ DeflateOutPos: LongInt;
+ DeflateOutLen: LongInt;
+
+{ Initialiser le cache d'images PNG }
+Procedure PNGInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  PNGImageCache[I].URL := '';
+  PNGImageCache[I].Used := False;
+  PNGImageCache[I].Image.Valid := False;
+  PNGImageCache[I].Image.Data := Nil;
+  PNGImageCache[I].Image.AlphaData := Nil;
+ End;
+ PNGImageCacheCount := 0;
+End;
+
+{ Convertir une couleur RGB en index de palette VGA }
+Function PNGRGBToVGAColor(R, G, B: Byte): Byte;
+Var
+ BestColor, BestDist, Dist: LongInt;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ If BestColor = 0 Then PNGRGBToVGAColor := HTMLBlackColorIndex
+ Else PNGRGBToVGAColor := BestColor;
+End;
+
+{ Liberer la memoire d'une image PNG }
+Procedure PNGFreeImage(Var Img: PNGImage);
+Begin
+ If Img.Data <> Nil Then Begin
+  FreeMem(Img.Data, Img.DataSize);
+  Img.Data := Nil;
+ End;
+ If Img.AlphaData <> Nil Then Begin
+  FreeMem(Img.AlphaData, LongInt(Img.Width) * LongInt(Img.Height));
+  Img.AlphaData := Nil;
+ End;
+ Img.Valid := False;
+ Img.DataSize := 0;
+End;
+
+{ Lire un mot 32 bits big-endian }
+Function PNGReadDWord(Var F: File): LongInt;
+Var
+ B: Array[0..3] Of Byte;
+ {$IFDEF FPC}
+ BytesRead: LongInt;
+ {$ELSE}
+ BytesRead: Word;
+ {$ENDIF}
+Begin
+ BlockRead(F, B, 4, BytesRead);
+ PNGReadDWord := (LongInt(B[0]) Shl 24) Or (LongInt(B[1]) Shl 16) Or
+                 (LongInt(B[2]) Shl 8) Or LongInt(B[3]);
+End;
+
+{ Lire un mot 16 bits big-endian }
+Function PNGReadWord(Var F: File): Word;
+Var
+ B1, B2: Byte;
+ BytesRead: Word;
+Begin
+ BlockRead(F, B1, 1, BytesRead);
+ BlockRead(F, B2, 1, BytesRead);
+ PNGReadWord := (Word(B1) Shl 8) Or B2;
+End;
+
+{ Initialiser le buffer de bits pour DEFLATE }
+Procedure DeflateInitBitBuffer;
+Begin
+ DeflateBitBuffer := 0;
+ DeflateBitsInBuffer := 0;
+ DeflateInPos := 0;
+End;
+
+{ Lire N bits du flux DEFLATE }
+Function DeflateReadBits(NumBits: Integer): Integer;
+Var
+ Result: Integer;
+Begin
+ DeflateReadBits := -1;
+
+ While DeflateBitsInBuffer < NumBits Do Begin
+  If DeflateInPos >= DeflateInLen Then Exit;
+  DeflateBitBuffer := DeflateBitBuffer Or
+   (LongInt(DeflateInBuffer[DeflateInPos]) Shl DeflateBitsInBuffer);
+  Inc(DeflateInPos);
+  Inc(DeflateBitsInBuffer, 8);
+ End;
+
+ Result := DeflateBitBuffer And ((1 Shl NumBits) - 1);
+ DeflateBitBuffer := DeflateBitBuffer Shr NumBits;
+ Dec(DeflateBitsInBuffer, NumBits);
+ DeflateReadBits := Result;
+End;
+
+{ Tables de longueurs pour DEFLATE }
+Const
+ DeflateLengthBase: Array[257..285] Of Word = (
+  3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+  35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258
+ );
+ DeflateLengthExtra: Array[257..285] Of Byte = (
+  0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+  3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0
+ );
+ DeflateDistBase: Array[0..29] Of Word = (
+  1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193,
+  257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145,
+  8193, 12289, 16385, 24577
+ );
+ DeflateDistExtra: Array[0..29] Of Byte = (
+  0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+  7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13
+ );
+ DeflateCodeLengthOrder: Array[0..18] Of Byte = (
+  16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15
+ );
+
+{ Construire une table Huffman }
+Procedure DeflateBuildHuffTable(Var Table: DeflateHuffTable;
+                                 Var Lengths: Array Of Byte;
+                                 NumCodes: Integer);
+Var
+ I, Len, SymbolCount: Integer;
+ Offsets: Array[0..DEFLATE_MAX_BITS] Of Integer;
+Begin
+ Table.Valid := False;
+ Table.NumSymbols := 0;
+ If (NumCodes < 0) Or (NumCodes > Length(Lengths)) Or
+    (NumCodes > DEFLATE_MAX_LIT_CODES) Then Exit;
+
+ { Compter les codes par longueur }
+ For I := 0 To DEFLATE_MAX_BITS Do Table.Counts[I] := 0;
+ SymbolCount := 0;
+ For I := 0 To NumCodes - 1 Do Begin
+  Len := Lengths[I];
+  If Len > DEFLATE_MAX_BITS Then Exit;
+  If Len > 0 Then Begin
+   Inc(Table.Counts[Len]);
+   Inc(SymbolCount);
+  End;
+ End;
+
+ { RFC 1951 : Symbols est une liste compacte des symboles tries d'abord
+   par longueur, puis par valeur de symbole. L'ancien code utilisait le
+   code canonique (jusqu'a 32767) comme indice d'un tableau [0..287], ce
+   qui provoquait ERangeError avec -Cr et corrompait la RAM sans -Cr. }
+ Offsets[0] := 0;
+ Offsets[1] := 0;
+ For Len := 1 To DEFLATE_MAX_BITS - 1 Do
+  Offsets[Len + 1] := Offsets[Len] + Table.Counts[Len];
+
+ For I := 0 To NumCodes - 1 Do Begin
+  Len := Lengths[I];
+  If Len > 0 Then Begin
+   If Offsets[Len] >= DEFLATE_MAX_LIT_CODES Then Exit;
+   Table.Symbols[Offsets[Len]] := I;
+   Inc(Offsets[Len]);
+  End;
+ End;
+
+ Table.NumSymbols := SymbolCount;
+ Table.Valid := True;
+End;
+
+{ Decoder un symbole Huffman }
+Function DeflateDecodeSymbol(Var Table: DeflateHuffTable): Integer;
+Var
+ Code, First: LongInt;
+ Len, Index, Count, SymbolIndex: Integer;
+Begin
+ DeflateDecodeSymbol := -1;
+ If Not Table.Valid Then Exit;
+
+ Code := 0;
+ First := 0;
+ Index := 0;
+
+ For Len := 1 To DEFLATE_MAX_BITS Do Begin
+  Code := (Code Shl 1) Or DeflateReadBits(1);
+  If Code < 0 Then Exit;
+
+  Count := Table.Counts[Len];
+  If (Code >= First) And (Code - First < Count) Then Begin
+   SymbolIndex := Index + (Code - First);
+   If (SymbolIndex < 0) Or (SymbolIndex >= Table.NumSymbols) Then Exit;
+   DeflateDecodeSymbol := Table.Symbols[SymbolIndex];
+   Exit;
+  End;
+  First := (First + Count) Shl 1;
+  Inc(Index, Count);
+ End;
+End;
+
+{ Decompresser un bloc DEFLATE }
+Function DeflateDecompressBlock(Var OutData: Array Of Byte;
+                                 Var OutLen: LongInt;
+                                 MaxOut: LongInt): Boolean;
+Var
+ BFinal, BType: Integer;
+ Len, NLen: Word;
+ I: Integer;
+ LitLenLengths: Array[0..DEFLATE_MAX_LIT_CODES - 1] Of Byte;
+ DistLengths: Array[0..DEFLATE_MAX_DIST_CODES - 1] Of Byte;
+ CodeLengths: Array[0..18] Of Byte;
+ LitLenTable, DistTable, CodeTable: DeflateHuffTable;
+ HLit, HDist, HCLen: Integer;
+ Symbol, Length, Distance: Integer;
+ Extra, PrevLength: Integer;
+ CopyPos: LongInt;
+Begin
+ DeflateDecompressBlock := False;
+ OutLen := 0;
+
+ DeflateInitBitBuffer;
+
+ Repeat
+  BFinal := DeflateReadBits(1);
+  If BFinal < 0 Then Exit;
+
+  BType := DeflateReadBits(2);
+  If BType < 0 Then Exit;
+
+  Case BType Of
+   0: Begin { Bloc non compresse }
+    { Aligner sur octet }
+    DeflateBitBuffer := 0;
+    DeflateBitsInBuffer := 0;
+
+    If DeflateInPos + 4 > DeflateInLen Then Exit;
+    Len := DeflateInBuffer[DeflateInPos] Or
+           (Word(DeflateInBuffer[DeflateInPos + 1]) Shl 8);
+    NLen := DeflateInBuffer[DeflateInPos + 2] Or
+            (Word(DeflateInBuffer[DeflateInPos + 3]) Shl 8);
+    Inc(DeflateInPos, 4);
+
+    If Len <> (NLen Xor $FFFF) Then Exit;
+
+    If DeflateInPos + Len > DeflateInLen Then Exit;
+    If OutLen + Len > MaxOut Then Exit;
+
+    For I := 0 To Len - 1 Do Begin
+     OutData[OutLen] := DeflateInBuffer[DeflateInPos];
+     Inc(OutLen);
+     Inc(DeflateInPos);
+    End;
+   End;
+
+   1: Begin { Bloc avec codes Huffman fixes }
+    { Construire les tables Huffman fixes }
+    For I := 0 To 143 Do LitLenLengths[I] := 8;
+    For I := 144 To 255 Do LitLenLengths[I] := 9;
+    For I := 256 To 279 Do LitLenLengths[I] := 7;
+    For I := 280 To 287 Do LitLenLengths[I] := 8;
+    DeflateBuildHuffTable(LitLenTable, LitLenLengths, 288);
+
+    For I := 0 To 31 Do DistLengths[I] := 5;
+    DeflateBuildHuffTable(DistTable, DistLengths, 32);
+
+    { Decoder les symboles }
+    Repeat
+     Symbol := DeflateDecodeSymbol(LitLenTable);
+     If Symbol < 0 Then Exit;
+
+     If Symbol < 256 Then Begin
+      { Litteral }
+      If OutLen >= MaxOut Then Exit;
+      OutData[OutLen] := Symbol;
+      Inc(OutLen);
+     End
+     Else If Symbol = 256 Then Begin
+      { Fin du bloc }
+      Break;
+     End
+     Else Begin
+      { Longueur + distance }
+      If (Symbol < 257) Or (Symbol > 285) Then Exit;
+      Length := DeflateLengthBase[Symbol];
+      If DeflateLengthExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateLengthExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Length, Extra);
+      End;
+
+      Symbol := DeflateDecodeSymbol(DistTable);
+      If (Symbol < 0) Or (Symbol > 29) Then Exit;
+
+      Distance := DeflateDistBase[Symbol];
+      If DeflateDistExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateDistExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Distance, Extra);
+      End;
+
+      { Copier les octets }
+      CopyPos := OutLen - Distance;
+      If CopyPos < 0 Then Exit;
+
+      For I := 0 To Length - 1 Do Begin
+       If OutLen >= MaxOut Then Exit;
+       OutData[OutLen] := OutData[CopyPos];
+       Inc(OutLen);
+       Inc(CopyPos);
+      End;
+     End;
+    Until False;
+   End;
+
+   2: Begin { Bloc avec codes Huffman dynamiques }
+    HLit := DeflateReadBits(5) + 257;
+    HDist := DeflateReadBits(5) + 1;
+    HCLen := DeflateReadBits(4) + 4;
+
+    If (HLit < 257) Or (HLit > 286) Or
+       (HDist < 1) Or (HDist > 32) Or
+       (HCLen < 4) Or (HCLen > 19) Then Exit;
+
+    { Lire les longueurs de codes }
+    For I := 0 To 18 Do CodeLengths[I] := 0;
+    For I := 0 To HCLen - 1 Do Begin
+     CodeLengths[DeflateCodeLengthOrder[I]] := DeflateReadBits(3);
+    End;
+
+    DeflateBuildHuffTable(CodeTable, CodeLengths, 19);
+
+    { Decoder les longueurs literal/length }
+    I := 0;
+    While I < HLit + HDist Do Begin
+     Symbol := DeflateDecodeSymbol(CodeTable);
+     If Symbol < 0 Then Exit;
+
+     If Symbol < 16 Then Begin
+      If I < HLit Then LitLenLengths[I] := Symbol
+      Else DistLengths[I - HLit] := Symbol;
+      Inc(I);
+     End
+     Else If Symbol = 16 Then Begin
+      If I = 0 Then Exit; { aucun code precedent a repeter }
+      If I - 1 < HLit Then
+       PrevLength := LitLenLengths[I - 1]
+      Else
+       PrevLength := DistLengths[I - HLit - 1];
+      Extra := DeflateReadBits(2) + 3;
+      If Extra < 0 Then Exit;
+      While Extra > 0 Do Begin
+       If I >= HLit + HDist Then Exit;
+       If I < HLit Then
+        LitLenLengths[I] := PrevLength
+       Else
+        DistLengths[I - HLit] := PrevLength;
+       Inc(I);
+       Dec(Extra);
+      End;
+     End
+     Else If Symbol = 17 Then Begin
+      Extra := DeflateReadBits(3) + 3;
+      If Extra < 0 Then Exit;
+      While Extra > 0 Do Begin
+       If I >= HLit + HDist Then Exit;
+       If I < HLit Then LitLenLengths[I] := 0
+       Else DistLengths[I - HLit] := 0;
+       Inc(I);
+       Dec(Extra);
+      End;
+     End
+     Else If Symbol = 18 Then Begin
+      Extra := DeflateReadBits(7) + 11;
+      If Extra < 0 Then Exit;
+      While Extra > 0 Do Begin
+       If I >= HLit + HDist Then Exit;
+       If I < HLit Then LitLenLengths[I] := 0
+       Else DistLengths[I - HLit] := 0;
+       Inc(I);
+       Dec(Extra);
+      End;
+     End
+     Else Exit;
+    End;
+
+    DeflateBuildHuffTable(LitLenTable, LitLenLengths, HLit);
+    DeflateBuildHuffTable(DistTable, DistLengths, HDist);
+
+    { Decoder les symboles }
+    Repeat
+     Symbol := DeflateDecodeSymbol(LitLenTable);
+     If Symbol < 0 Then Exit;
+
+     If Symbol < 256 Then Begin
+      If OutLen >= MaxOut Then Exit;
+      OutData[OutLen] := Symbol;
+      Inc(OutLen);
+     End
+     Else If Symbol = 256 Then Begin
+      Break;
+     End
+     Else Begin
+      If (Symbol < 257) Or (Symbol > 285) Then Exit;
+      Length := DeflateLengthBase[Symbol];
+      If DeflateLengthExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateLengthExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Length, Extra);
+      End;
+
+      Symbol := DeflateDecodeSymbol(DistTable);
+      If (Symbol < 0) Or (Symbol > 29) Then Exit;
+
+      Distance := DeflateDistBase[Symbol];
+      If DeflateDistExtra[Symbol] > 0 Then Begin
+       Extra := DeflateReadBits(DeflateDistExtra[Symbol]);
+       If Extra < 0 Then Exit;
+       Inc(Distance, Extra);
+      End;
+
+      CopyPos := OutLen - Distance;
+      If CopyPos < 0 Then Exit;
+
+      For I := 0 To Length - 1 Do Begin
+       If OutLen >= MaxOut Then Exit;
+       OutData[OutLen] := OutData[CopyPos];
+       Inc(OutLen);
+       Inc(CopyPos);
+      End;
+     End;
+    Until False;
+   End;
+
+   Else Exit; { Type invalide }
+  End;
+
+ Until BFinal = 1;
+
+ DeflateDecompressBlock := True;
+End;
+
+{ Predicteur Paeth pour filtres PNG }
+Function PNGPaethPredictor(A, B, C: Integer): Integer;
+Var
+ P, PA, PB, PC: Integer;
+Begin
+ P := A + B - C;
+ PA := Abs(P - A);
+ PB := Abs(P - B);
+ PC := Abs(P - C);
+
+ If (PA <= PB) And (PA <= PC) Then
+  PNGPaethPredictor := A
+ Else If PB <= PC Then
+  PNGPaethPredictor := B
+ Else
+  PNGPaethPredictor := C;
+End;
+
+{ Appliquer les filtres PNG }
+Function PNGUnfilterRow(FilterType: Byte;
+                         Var CurrRow, PrevRow: Array Of Byte;
+                         RowLen, BytesPerPixel: Integer): Boolean;
+Var
+ I: Integer;
+ A, B, C, Raw: Integer;
+Begin
+ PNGUnfilterRow := False;
+
+ Case FilterType Of
+  PNG_FILTER_NONE: Begin
+   { Rien a faire }
+  End;
+
+  PNG_FILTER_SUB: Begin
+   For I := BytesPerPixel To RowLen - 1 Do Begin
+    CurrRow[I] := (CurrRow[I] + CurrRow[I - BytesPerPixel]) And $FF;
+   End;
+  End;
+
+  PNG_FILTER_UP: Begin
+   For I := 0 To RowLen - 1 Do Begin
+    CurrRow[I] := (CurrRow[I] + PrevRow[I]) And $FF;
+   End;
+  End;
+
+  PNG_FILTER_AVERAGE: Begin
+   For I := 0 To RowLen - 1 Do Begin
+    If I < BytesPerPixel Then
+     A := 0
+    Else
+     A := CurrRow[I - BytesPerPixel];
+    B := PrevRow[I];
+    CurrRow[I] := (CurrRow[I] + (A + B) Div 2) And $FF;
+   End;
+  End;
+
+  PNG_FILTER_PAETH: Begin
+   For I := 0 To RowLen - 1 Do Begin
+    If I < BytesPerPixel Then Begin
+     A := 0;
+     C := 0;
+    End
+    Else Begin
+     A := CurrRow[I - BytesPerPixel];
+     C := PrevRow[I - BytesPerPixel];
+    End;
+    B := PrevRow[I];
+    CurrRow[I] := (CurrRow[I] + PNGPaethPredictor(A, B, C)) And $FF;
+   End;
+  End;
+
+  Else Exit; { Filtre inconnu }
+ End;
+
+ PNGUnfilterRow := True;
+End;
+
+{ Charger une image PNG depuis un fichier }
+Function PNGLoadFromFile(Const FileName: String; Var Img: PNGImage): Boolean;
+Var
+ F: File;
+ Signature: Array[0..7] Of Byte;
+ ChunkLen: LongInt;
+ ChunkType: Array[0..3] Of Char;
+ ChunkCRC: LongInt;
+ BytesRead: Word;
+ I, X, Y: Integer;
+ Header: PNGHeader;
+ CompDataLen: LongInt;
+ {$IFDEF FPC}
+ CompData: Array Of Byte;
+ {$ELSE}
+ CompData: Array[0..65519] Of Byte;
+ {$ENDIF}
+ CompDataPos: LongInt;
+ {$IFDEF FPC}
+ DecompData: Array Of Byte;
+ {$ELSE}
+ DecompData: Array[0..65519] Of Byte;
+ {$ENDIF}
+ DecompLen: LongInt;
+ CompCapacity, DecompCapacity: LongInt;
+ BytesPerPixel, RowBytes, SampleBytes: Integer;
+ {$IFDEF FPC}
+ CurrRow, PrevRow: Array Of Byte;
+ {$ELSE}
+ CurrRow, PrevRow: Array[0..4095] Of Byte;
+ {$ENDIF}
+ FilterType: Byte;
+ DataPos: LongInt;
+ PixelOffset: LongInt;
+ DataPtr: ^Byte;
+ AlphaPtr: ^Byte;
+ R, G, B, A: Byte;
+ GrayVal: Byte;
+ PalIdx: Byte;
+Begin
+ PNGLoadFromFile := False;
+ Img.Valid := False;
+ Img.Data := Nil;
+ Img.AlphaData := Nil;
+ Img.HasTransparent := False;
+ Img.TransparentIndex := -1;
+ {$IFDEF FPC}
+ { L'entree reste bornee par DeflateInBuffer; seule la sortie et les pixels
+   doivent depasser un segment DOS pour les images courantes. }
+ SetLength(CompData, 65536);
+ SetLength(DecompData, 1);
+ CompCapacity := Length(CompData);
+ DecompCapacity := Length(DecompData);
+ {$ELSE}
+ CompCapacity := 65520;
+ DecompCapacity := 65520;
+ {$ENDIF}
+
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Verifier la signature PNG }
+ BlockRead(F, Signature, 8, BytesRead);
+ If BytesRead <> 8 Then Begin
+  Close(F);
+  Exit;
+ End;
+
+ For I := 0 To 7 Do Begin
+  If Signature[I] <> PNG_SIGNATURE[I] Then Begin
+   Close(F);
+   Exit;
+  End;
+ End;
+
+ CompDataLen := 0;
+ CompDataPos := 0;
+ Img.PaletteSize := 0;
+
+ { Parcourir les chunks }
+ While True Do Begin
+  ChunkLen := PNGReadDWord(F);
+  BlockRead(F, ChunkType, 4, BytesRead);
+  If BytesRead <> 4 Then Break;
+
+  If ChunkType = PNG_CHUNK_IHDR Then Begin
+   { En-tete de l'image }
+   Header.Width := PNGReadDWord(F);
+   Header.Height := PNGReadDWord(F);
+   BlockRead(F, Header.BitDepth, 1, BytesRead);
+   BlockRead(F, Header.ColorType, 1, BytesRead);
+   BlockRead(F, Header.Compression, 1, BytesRead);
+   BlockRead(F, Header.Filter, 1, BytesRead);
+   BlockRead(F, Header.Interlace, 1, BytesRead);
+
+   If (Header.Width > PNG_MAX_WIDTH) Or (Header.Height > PNG_MAX_HEIGHT) Then Begin
+    Close(F);
+    Exit;
+   End;
+
+   Img.Width := Header.Width;
+   Img.Height := Header.Height;
+   Img.BitDepth := Header.BitDepth;
+   Img.ColorType := Header.ColorType;
+   Img.HasAlpha := (Header.ColorType = PNG_COLOR_GRAYSCALE_ALPHA) Or
+                   (Header.ColorType = PNG_COLOR_RGBA);
+
+   { Lire le CRC }
+   ChunkCRC := PNGReadDWord(F);
+  End
+
+  Else If ChunkType = PNG_CHUNK_PLTE Then Begin
+   { Palette }
+   Img.PaletteSize := ChunkLen Div 3;
+   For I := 0 To Img.PaletteSize - 1 Do Begin
+    BlockRead(F, Img.Palette[I].R, 1, BytesRead);
+    BlockRead(F, Img.Palette[I].G, 1, BytesRead);
+    BlockRead(F, Img.Palette[I].B, 1, BytesRead);
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End
+
+  Else If ChunkType = PNG_CHUNK_tRNS Then Begin
+   { Transparence }
+   Img.HasTransparent := True;
+   If Img.ColorType = PNG_COLOR_PALETTE Then Begin
+    { Index transparent pour palette }
+    For I := 0 To ChunkLen - 1 Do Begin
+     BlockRead(F, A, 1, BytesRead);
+     If A = 0 Then Img.TransparentIndex := I;
+    End;
+   End
+   Else If Img.ColorType = PNG_COLOR_GRAYSCALE Then Begin
+    Img.TransparentG := PNGReadWord(F);
+   End
+   Else If Img.ColorType = PNG_COLOR_RGB Then Begin
+    Img.TransparentR := PNGReadWord(F);
+    Img.TransparentG := PNGReadWord(F);
+    Img.TransparentB := PNGReadWord(F);
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End
+
+  Else If ChunkType = PNG_CHUNK_IDAT Then Begin
+   { Donnees compressees - accumuler }
+   {$IFDEF FPC}
+   If CompDataPos + ChunkLen > CompCapacity Then Begin
+    CompCapacity := CompDataPos + ChunkLen + 65536;
+    SetLength(CompData, CompCapacity);
+   End;
+   {$ENDIF}
+   If CompDataPos + ChunkLen <= CompCapacity Then Begin
+    BlockRead(F, CompData[CompDataPos], ChunkLen, BytesRead);
+    Inc(CompDataPos, ChunkLen);
+   End
+   Else Begin
+    { Trop de donnees - sauter }
+    For I := 1 To ChunkLen Do Begin
+     BlockRead(F, A, 1, BytesRead);
+    End;
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End
+
+  Else If ChunkType = PNG_CHUNK_IEND Then Begin
+   { Fin de l'image }
+   ChunkCRC := PNGReadDWord(F);
+   Break;
+  End
+
+  Else Begin
+   { Chunk inconnu - sauter }
+   For I := 1 To ChunkLen Do Begin
+    BlockRead(F, A, 1, BytesRead);
+   End;
+   ChunkCRC := PNGReadDWord(F);
+  End;
+ End;
+
+ Close(F);
+
+ { Decompresser les donnees (sauter l'en-tete zlib de 2 octets) }
+ If CompDataPos < 3 Then Exit;
+
+ { Calculer les octets par pixel avant d'allouer la sortie DEFLATE. Le
+   logo Google 272x92 depasse deja l'ancienne limite DOS de 65520 octets. }
+ If Img.BitDepth = 16 Then SampleBytes := 2
+ Else If Img.BitDepth = 8 Then SampleBytes := 1
+ Else Exit;
+ Case Img.ColorType Of
+  PNG_COLOR_GRAYSCALE: BytesPerPixel := SampleBytes;
+  PNG_COLOR_RGB: BytesPerPixel := 3 * SampleBytes;
+  PNG_COLOR_PALETTE: Begin
+   If Img.BitDepth <> 8 Then Exit;
+   BytesPerPixel := 1;
+  End;
+  PNG_COLOR_GRAYSCALE_ALPHA: BytesPerPixel := 2 * SampleBytes;
+  PNG_COLOR_RGBA: BytesPerPixel := 4 * SampleBytes;
+  Else Exit;
+ End;
+ {$IFDEF FPC}
+ SetLength(DecompData, LongInt(Img.Height) *
+  (LongInt(Img.Width) * BytesPerPixel + 1) + 1024);
+ DecompCapacity := Length(DecompData);
+ {$ENDIF}
+
+ { Garde-fou (2026-09-26) : CompDataPos-2 depassant SizeOf(DeflateInBuffer)
+   deborderait ce tableau fixe - improbable pour un PNG (agrandi a 4 Mo,
+   voir sa disclosure) mais jamais verifie avant ce correctif. }
+ If CompDataPos - 2 > SizeOf(DeflateInBuffer) Then Exit;
+ Move(CompData[2], DeflateInBuffer, CompDataPos - 2);
+ DeflateInLen := CompDataPos - 2;
+
+ If Not DeflateDecompressBlock(DecompData, DecompLen, DecompCapacity) Then Exit;
+
+ RowBytes := Img.Width * BytesPerPixel;
+ {$IFDEF FPC}
+ SetLength(CurrRow, RowBytes);
+ SetLength(PrevRow, RowBytes);
+ {$ELSE}
+ If RowBytes > SizeOf(CurrRow) Then Exit;
+ {$ENDIF}
+
+ { Allouer la memoire pour les pixels RGB }
+ Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
+ {$IFNDEF FPC}
+ If Img.DataSize > 65520 Then Exit;
+ {$ENDIF}
+
+ GetMem(Img.Data, Img.DataSize);
+ If Img.Data = Nil Then Exit;
+
+ { Allouer la memoire pour l'alpha si necessaire }
+ If Img.HasAlpha Then Begin
+  GetMem(Img.AlphaData, LongInt(Img.Width) * LongInt(Img.Height));
+  If Img.AlphaData = Nil Then Begin
+   FreeMem(Img.Data, Img.DataSize);
+   Img.Data := Nil;
+   Exit;
+  End;
+ End;
+
+ { Initialiser la ligne precedente a zero }
+ For I := 0 To RowBytes - 1 Do PrevRow[I] := 0;
+
+ { Decoder les lignes }
+ DataPos := 0;
+ For Y := 0 To Img.Height - 1 Do Begin
+  { Lire le type de filtre }
+  If DataPos >= DecompLen Then Break;
+  FilterType := DecompData[DataPos];
+  Inc(DataPos);
+
+  { Lire les donnees de la ligne }
+  For I := 0 To RowBytes - 1 Do Begin
+   If DataPos >= DecompLen Then
+    CurrRow[I] := 0
+   Else Begin
+    CurrRow[I] := DecompData[DataPos];
+    Inc(DataPos);
+   End;
+  End;
+
+  { Appliquer le filtre inverse }
+  If Not PNGUnfilterRow(FilterType, CurrRow, PrevRow, RowBytes, BytesPerPixel) Then Begin
+   PNGFreeImage(Img);
+   Exit;
+  End;
+
+  { Convertir les pixels en RGB }
+  For X := 0 To Img.Width - 1 Do Begin
+   PixelOffset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
+   DataPtr := Img.Data;
+   Inc(DataPtr, PixelOffset);
+
+   Case Img.ColorType Of
+    PNG_COLOR_GRAYSCALE: Begin
+     GrayVal := CurrRow[X * SampleBytes];
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal;
+    End;
+
+    PNG_COLOR_RGB: Begin
+     DataPtr^ := CurrRow[X * BytesPerPixel]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + SampleBytes]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + 2 * SampleBytes];
+    End;
+
+    PNG_COLOR_PALETTE: Begin
+     PalIdx := CurrRow[X];
+     If PalIdx < Img.PaletteSize Then Begin
+      DataPtr^ := Img.Palette[PalIdx].R; Inc(DataPtr);
+      DataPtr^ := Img.Palette[PalIdx].G; Inc(DataPtr);
+      DataPtr^ := Img.Palette[PalIdx].B;
+     End
+     Else Begin
+      DataPtr^ := 0; Inc(DataPtr);
+      DataPtr^ := 0; Inc(DataPtr);
+      DataPtr^ := 0;
+     End;
+    End;
+
+    PNG_COLOR_GRAYSCALE_ALPHA: Begin
+     GrayVal := CurrRow[X * BytesPerPixel];
+     A := CurrRow[X * BytesPerPixel + SampleBytes];
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal; Inc(DataPtr);
+     DataPtr^ := GrayVal;
+     If Img.AlphaData <> Nil Then Begin
+      AlphaPtr := Img.AlphaData;
+      Inc(AlphaPtr, LongInt(Y) * LongInt(Img.Width) + LongInt(X));
+      AlphaPtr^ := A;
+     End;
+    End;
+
+    PNG_COLOR_RGBA: Begin
+     DataPtr^ := CurrRow[X * BytesPerPixel]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + SampleBytes]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + 2 * SampleBytes];
+     If Img.AlphaData <> Nil Then Begin
+      AlphaPtr := Img.AlphaData;
+      Inc(AlphaPtr, LongInt(Y) * LongInt(Img.Width) + LongInt(X));
+      AlphaPtr^ := CurrRow[X * BytesPerPixel + 3 * SampleBytes];
+     End;
+    End;
+   End;
+  End;
+
+  { Sauvegarder la ligne courante comme precedente. Avec les tableaux
+    dynamiques FPC, Move(CurrRow, PrevRow, ...) copierait les DESCRIPTEURS
+    (leurs pointeurs) et corromprait le gestionnaire de memoire; il faut
+    explicitement viser le premier octet de chaque tableau. }
+  {$IFDEF FPC}
+  If RowBytes > 0 Then Move(CurrRow[0], PrevRow[0], RowBytes);
+  {$ELSE}
+  Move(CurrRow, PrevRow, RowBytes);
+  {$ENDIF}
+ End;
+
+ Img.Valid := True;
+ PNGLoadFromFile := True;
+End;
+{ ============================================================
+  SUPPORT PDF (2026-09-26, demande explicite de l'utilisateur -
+  "Implemente un support PDF au navigateur Web", teste avec un vrai
+  document reel : https://www.gladir.com/DOCUMENT/grimoireassembleur.pdf)
+  ============================================================
+  Extraction REELLE du texte d'un document PDF (norme ISO 32000), PAS un
+  simple message "non supporte" : localise le catalogue/l'arbre des
+  pages/les flux de contenu par un VRAI parcours de la structure d'objets
+  indirects du fichier, decompresse les flux FlateDecode en reutilisant
+  le decompresseur DEFLATE deja existant et verifie (voir PNGLoadFromFile
+  plus haut - meme algorithme RFC 1950/1951, aucune reimplementation),
+  puis extrait le texte reel des operateurs Tj/TJ/'/" des flux de
+  contenu (les seuls operateurs de flux de contenu PDF a accepter une
+  chaine comme operande, d'ou l'absence de besoin d'un tokenizer
+  d'operateurs generique complet - simplification deliberee, pas une
+  approximation hasardeuse).
+
+  SIMPLIFICATIONS DELIBEREMENT DIVULGUEES (toutes disclosed pour ne
+  jamais fabriquer un succes qui ne serait pas reel) :
+  - Localisation des objets par recherche du DERNIER motif "N G obj"
+    correspondant dans le fichier entier, PAS par analyse de la table
+    xref/trailer ni des flux d'objets compresses (PDF 1.5+, /Type
+    /ObjStm) - technique de RECUPERATION deliberement robuste (le meme
+    principe que les outils de reparation PDF reels), au prix de ne pas
+    gerer un fichier dont TOUS les objets seraient exclusivement dans
+    des flux d'objets compresses (rare pour un document simple).
+  - Le catalogue est trouve en cherchant directement "/Type /Catalog"
+    dans le fichier plutot qu'en analysant le "trailer" - evite d'avoir
+    a parser une eventuelle table xref/trailer distincte.
+  - /Length d'un flux n'est JAMAIS parse (meme s'il s'agit d'une
+    reference indirecte "N G R", cas frequent) : la fin du flux est
+    localisee en cherchant directement le mot-cle "endstream" reel qui
+    suit - plus robuste qu'une valeur /Length parfois fausse ou non
+    resolue, meme technique que les lecteurs PDF tolerants reels.
+  - Seul le filtre /FlateDecode est decompresse. Un flux de contenu
+    texte utilise presque toujours ce filtre (ou aucun) en pratique ;
+    tout autre filtre (rare pour du texte) est signale honnetement,
+    jamais fabrique.
+  - Aucune reconstruction de mise en page (colonnes, positions X/Y
+    exactes, polices/tailles) : le texte est extrait dans l'ordre
+    d'apparition du flux de contenu ("reading order"), comme la plupart
+    des extracteurs de texte PDF simples (ex. la variante "sans mise en
+    page" d'outils reels comme pdftotext) - un saut de ligne est insere
+    a chaque operateur Td/TD/T*/BT reel.
+  - Encodage de caracteres suppose Latin/WinAnsi standard (code octal/
+    hexadecimal PDF => valeur d'octet directe) : une police avec un
+    encodage personnalise/CID (courant pour certains PDF generes par des
+    outils specifiques) peut produire du texte incorrect - non detecte
+    ni corrige ici, disclosed.
+  ============================================================ }
+
+Const
+ PDF_MAX_FILE_SIZE = 32 * 1024 * 1024; { limite de securite, disclosed }
+ PDF_MAX_PAGES = 2000;
+ { Nombre maximal de LIGNES de texte accumulees pour UNE SEULE page
+   (voir PDFLines/PDFFlushCurrentLine) - un roman de 9999 lignes sur une
+   page tiendrait deja difficilement sur un vrai support papier ;
+   garde-fou de securite, disclosed. }
+ PDF_MAX_LINES_PER_PAGE = 8000;
+
+Var
+ PDFPageObjNums: Array[1..PDF_MAX_PAGES] Of LongInt;
+ PDFPageCount: Integer;
+ PDFCollectCallCount: LongInt; { garde-fou de diagnostic temporaire }
+
+{ 2026-09-26, demande explicite de l'utilisateur suite au premier essai
+  du support PDF ("la mise en page du PDF est mediocre, faudrait au
+  moins que l'alignement gauche/droite/centre soit supporte et [...] il
+  n'est pas non plus possible de changer le numero de page") : refonte
+  du rendu PDF, PAGE PAR PAGE (avec navigation reelle Precedent/Suivant/
+  aller-a-la-page) plutot qu'un unique document HTML geant concatenant
+  toutes les pages - cela resout AUSSI, comme effet de bord benefique,
+  la lenteur observee sur le vrai document de l'utilisateur (1558
+  pages/9,3 Mo) : le moteur de mise en page HTML n'a plus jamais qu'UNE
+  SEULE page de texte a la fois dans son DOM, quelle que soit la taille
+  totale du document.
+
+  Alignement approxime (PAS une reproduction exacte de la typographie
+  d'origine, DISCLOSED) : position X de depart de chaque ligne (issue
+  des VRAIS operateurs de positionnement Td/TD/Tm/T* du flux de
+  contenu, dont les operandes numeriques sont maintenant reellement lus
+  - auparavant seule la PRESENCE de l'operateur declenchait un saut de
+  ligne, ses arguments etaient ignores) comparee a la largeur de page
+  reelle (/MediaBox, avec heritage via /Parent comme l'exige la norme -
+  612pt/US Letter par defaut si absent, valeur standard reelle) :
+  gauche si le debut de ligne est dans le premier cinquieme de la page,
+  droite dans les 40% de droite, centre sinon. Aucune detection de
+  justification (necessiterait une analyse fiable de l'espacement inter-
+  mots, hors de portee ici) - le "au moins" de la demande est couvert
+  par gauche/centre/droite, disclosed pour justify. }
+Type
+ TPDFTextLine = Record
+  LineText: String;
+  StartX: LongInt;
+  IsBold: Boolean;
+  IsItalic: Boolean;
+ End;
+ { Table de correspondance code-octet -> point de code Unicode pour un
+   /Encoding /Differences propre a une police (voir PDFResolveFontEncoding
+   plus bas) - -1 = pas de correspondance particuliere (repli sur la
+   table WinAnsi generique, voir PDFDecodeByteToCharEx). }
+ TPDFDiffMap = Array[0..255] Of LongInt;
+
+Var
+ PDFLines: Array[1..PDF_MAX_LINES_PER_PAGE] Of TPDFTextLine;
+ PDFLineCount: Integer;
+ PDFCurLineText: String;
+ PDFCurX: LongInt;
+ PDFCurY: LongInt;
+ PDFCurLineStartX: LongInt;
+ { Style de police courant (2026-09-26, demande explicite de l'utilisateur
+   - "detecter gras/italique via le nom de police") : PDFCurFontName est
+   le NOM DE RESSOURCE ("F1", "F2"...) donne par le dernier operateur Tf
+   rencontre - resolu en un vrai nom de police (/BaseFont, ex.
+   "Arial-BoldMT") via les /Resources de la page (avec heritage /Parent),
+   voir PDFResolveFontStyle. Gras/italique approxime par la PRESENCE des
+   mots "Bold"/"Italic"/"Oblique" dans ce nom - convention PostScript/PDF
+   reelle et courante, pas une invention, mais pas garantie a 100% (un
+   nom de police tres inhabituel pourrait ne pas la respecter). }
+ PDFCurFontName: String;
+ PDFCurFontBold: Boolean;
+ PDFCurFontItalic: Boolean;
+ { /Differences propre a la police active (2026-09-26, demande explicite
+   - "l'apostrophe s'affiche mal") - voir PDFResolveFontEncoding et
+   PDFDecodeByteToCharEx. }
+ PDFCurFontDiffMap: TPDFDiffMap;
+ PDFCurFontHasDiff: Boolean;
+
+{ Trace de diagnostic TEMPORAIRE (2026-09-26) pour investiguer un
+  ERangeError reel dans HTMLAppendChild/ParseHTML declenche par une page
+  PDF reelle - WriteLn(StdErr,...) perdait son contenu (jamais vide avant
+  la sortie anormale du programme sur exception non geree), d'ou
+  l'ecriture directe dans un fichier avec Close() immediat. A RETIRER une
+  fois le bogue trouve et corrige. }
+Procedure PDFDebugLog(Const S: String);
+Var
+ DbgF: Text;
+Begin
+ Assign(DbgF, 'PDFDEBUG.LOG');
+ {$I-}
+ Append(DbgF);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  {$I-}
+  Rewrite(DbgF);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+ End;
+ WriteLn(DbgF, S);
+ Close(DbgF);
+End;
+
+Function BoolToStrDbg(B: Boolean): String;
+Begin
+ If B Then BoolToStrDbg := 'True' Else BoolToStrDbg := 'False';
+End;
+
+{ Detecter une adresse PDF (extension .pdf, requete/ancre ignoree - voir
+  BrowserExtractFileExt). }
+Function IsPdfURL(Const URL: String): Boolean;
+Begin
+ IsPdfURL := HTMLLowerCase(BrowserExtractFileExt(URL)) = '.pdf';
+End;
+
+Function PDFStrToLongInt(Const S: String): LongInt;
+Var
+ V: LongInt;
+ Code: Integer;
+Begin
+ Val(S, V, Code);
+ If Code <> 0 Then V := -1;
+ PDFStrToLongInt := V;
+End;
+
+{ Tronque un nombre PDF potentiellement decimal ("12.5", "-3.0") vers un
+  LongInt (les coordonnees de positionnement de texte PDF sont souvent
+  des reels, mais un arrondi au point pres est largement suffisant pour
+  la classification d'alignement approximative - voir sa disclosure). }
+Function PDFStrToLongIntTrunc(Const S: String): LongInt;
+Var
+ DotPos: Integer;
+ IntPart: String;
+Begin
+ DotPos := Pos('.', S);
+ If DotPos > 0 Then IntPart := Copy(S, 1, DotPos - 1)
+ Else IntPart := S;
+ If (IntPart = '') Or (IntPart = '-') Or (IntPart = '+') Then IntPart := '0';
+ PDFStrToLongIntTrunc := PDFStrToLongInt(IntPart);
+End;
+
+{ Position de Needle dans Haystack a partir de StartPos (1-indexe,
+  inclus) ; 0 si absent. Recherche caractere par caractere DIRECTEMENT
+  dans Haystack (pas de PosEx - absente du Uses de ce fichier, aucune
+  unite Strings/StrUtils chargee) : la premiere version utilisait
+  `Pos(Needle, Copy(Haystack, StartPos, ...))`, qui ALLOUE une copie de
+  tout le reste de Haystack a CHAQUE appel - desastreux en performance
+  des que cette fonction est appelee en boucle (ex. PDFFindObject) sur
+  un fichier PDF reel de plusieurs Mo (observe : plusieurs dizaines de
+  secondes sans terminer sur un document reel de quelques centaines de
+  Ko). Version corrigee : aucune allocation, simple comparaison directe
+  caractere par caractere. }
+Function PDFPosFrom(Const Needle, Haystack: String; StartPos: LongInt): LongInt;
+Var
+ I, J, NLen, HLen: LongInt;
+ Match: Boolean;
+Begin
+ PDFPosFrom := 0;
+ NLen := Length(Needle);
+ HLen := Length(Haystack);
+ If NLen = 0 Then Exit;
+ If StartPos < 1 Then StartPos := 1;
+ I := StartPos;
+ While I <= HLen - NLen + 1 Do Begin
+  If Haystack[I] = Needle[1] Then Begin
+   Match := True;
+   J := 2;
+   While Match And (J <= NLen) Do Begin
+    If Haystack[I + J - 1] <> Needle[J] Then Match := False;
+    Inc(J);
+   End;
+   If Match Then Begin
+    PDFPosFrom := I;
+    Exit;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+{ Index objet-numero -> position juste apres le mot-cle "obj" (DERNIERE
+  occurrence rencontree, gerant naturellement les mises a jour
+  incrementales - voir disclosure du module). Construit par UN SEUL
+  passage lineaire sur le fichier entier (PDFBuildObjectIndex, appelee
+  une fois par PDFExtractText) : BOGUE REEL corrige (2026-09-26) - la
+  toute premiere version de PDFFindObject refaisait un balayage complet
+  du fichier a CHAQUE resolution d'objet (une fois par page/noeud de
+  l'arbre /Pages), soit potentiellement des MILLIARDS de comparaisons de
+  caracteres pour un document reel de plusieurs centaines de pages (le
+  "grimoire assembleur" fourni par l'utilisateur fait 9,3 Mo) - le
+  navigateur restait bloque plusieurs dizaines de secondes sans jamais
+  terminer. Un index construit une seule fois transforme cette recherche
+  en un simple acces tableau O(1). }
+Const
+ PDF_MAX_OBJ_NUM = 100000;
+Var
+ PDFObjOffsets: Array[1..PDF_MAX_OBJ_NUM] Of LongInt;
+
+Procedure PDFBuildObjectIndex(Const Data: String);
+Var
+ I, DLen, NumEnd, GenEnd, NumStart, ObjNum: LongInt;
+Begin
+ FillChar(PDFObjOffsets, SizeOf(PDFObjOffsets), 0);
+ DLen := Length(Data);
+ I := 1;
+ While I <= DLen - 2 Do Begin
+  If (Data[I] = 'o') And (Data[I + 1] = 'b') And (Data[I + 2] = 'j') Then Begin
+   If ((I + 3 > DLen) Or Not (Data[I + 3] In ['A'..'Z', 'a'..'z', '0'..'9', '_'])) And
+      ((I = 1) Or (Data[I - 1] In [' ', #9, #13, #10])) Then Begin
+    NumEnd := I - 1;
+    While (NumEnd >= 1) And (Data[NumEnd] In [' ', #9, #13, #10]) Do Dec(NumEnd);
+    GenEnd := NumEnd;
+    While (GenEnd >= 1) And (Data[GenEnd] In ['0'..'9']) Do Dec(GenEnd);
+    If GenEnd < NumEnd Then Begin
+     NumEnd := GenEnd;
+     While (NumEnd >= 1) And (Data[NumEnd] In [' ', #9, #13, #10]) Do Dec(NumEnd);
+     NumStart := NumEnd;
+     While (NumStart >= 1) And (Data[NumStart] In ['0'..'9']) Do Dec(NumStart);
+     If NumStart < NumEnd Then Begin
+      ObjNum := PDFStrToLongInt(Copy(Data, NumStart + 1, NumEnd - NumStart));
+      If (ObjNum >= 1) And (ObjNum <= PDF_MAX_OBJ_NUM) Then
+       PDFObjOffsets[ObjNum] := I + 3;
+     End;
+    End;
+   End;
+  End;
+  Inc(I);
+ End;
+End;
+
+Function PDFFindObject(Const Data: String; ObjNum: LongInt): LongInt;
+Begin
+ If (ObjNum >= 1) And (ObjNum <= PDF_MAX_OBJ_NUM) Then
+  PDFFindObject := PDFObjOffsets[ObjNum]
+ Else
+  PDFFindObject := 0;
+End;
+
+{ Position du '<<' de fin correspondant (nesting compte) a un '<<' ouvert
+  a StartPos. 0 si jamais refermee. }
+Function PDFFindDictEnd(Const Data: String; StartPos: LongInt): LongInt;
+Var
+ P, Depth, DLen: LongInt;
+Begin
+ PDFFindDictEnd := 0;
+ P := StartPos;
+ Depth := 0;
+ DLen := Length(Data);
+ While P <= DLen - 1 Do Begin
+  If (Data[P] = '<') And (Data[P + 1] = '<') Then Begin
+   Inc(Depth);
+   Inc(P, 2);
+  End Else If (Data[P] = '>') And (Data[P + 1] = '>') Then Begin
+   Dec(Depth);
+   Inc(P, 2);
+   If Depth = 0 Then Begin
+    PDFFindDictEnd := P - 1;
+    Exit;
+   End;
+  End Else
+   Inc(P);
+ End;
+End;
+
+{ Remonte depuis une position P (ex. celle de "/Type/Catalog") jusqu'au
+  '<<' d'ouverture du dictionnaire qui la contient reellement (compte le
+  nesting en sens inverse). 0 si jamais trouve. }
+Function PDFFindEnclosingDictStart(Const Data: String; P: LongInt): LongInt;
+Var
+ Q, Depth: LongInt;
+Begin
+ PDFFindEnclosingDictStart := 0;
+ Q := P;
+ Depth := 0;
+ While Q >= 2 Do Begin
+  If (Data[Q - 1] = '>') And (Data[Q] = '>') Then Begin
+   Inc(Depth);
+   Dec(Q, 2);
+  End Else If (Data[Q - 1] = '<') And (Data[Q] = '<') Then Begin
+   If Depth = 0 Then Begin
+    PDFFindEnclosingDictStart := Q - 1;
+    Exit;
+   End;
+   Dec(Depth);
+   Dec(Q, 2);
+  End Else
+   Dec(Q);
+ End;
+End;
+
+{ Bornes [DictStart..DictEnd] du dictionnaire de l'objet ObjNum (objet
+  ordinaire OU objet-flux, le dictionnaire precede toujours "stream").
+  DictStart=0 si l'objet est introuvable ou n'a pas de dictionnaire dans
+  un voisinage raisonnable (20000 car. - garde-fou contre un saut vers
+  le dictionnaire d'un AUTRE objet si celui demande n'en a pas, ex. un
+  entier simple utilise comme cible d'une reference /Length). }
+Procedure PDFGetObjectDict(Const Data: String; ObjNum: LongInt; Var DictStart, DictEnd: LongInt);
+Var
+ ObjBodyStart, DictOpen: LongInt;
+Begin
+ DictStart := 0;
+ DictEnd := 0;
+ If ObjNum <= 0 Then Exit;
+ ObjBodyStart := PDFFindObject(Data, ObjNum);
+ If ObjBodyStart = 0 Then Exit;
+ DictOpen := PDFPosFrom('<<', Data, ObjBodyStart);
+ If (DictOpen = 0) Or (DictOpen - ObjBodyStart > 20000) Then Exit;
+ DictStart := DictOpen;
+ DictEnd := PDFFindDictEnd(Data, DictOpen);
+End;
+
+{ Position juste apres "/KeyName" dans [DictStart..DictEnd] (verifie que
+  ce n'est pas le prefixe d'un nom plus long). 0 si absent. }
+Function PDFDictKeyPos(Const Data: String; DictStart, DictEnd: LongInt; Const KeyName: String): LongInt;
+Var
+ Needle: String;
+ P: LongInt;
+Begin
+ PDFDictKeyPos := 0;
+ If DictStart = 0 Then Exit;
+ Needle := '/' + KeyName;
+ P := PDFPosFrom(Needle, Data, DictStart);
+ If (P = 0) Or (P > DictEnd) Then Exit;
+ If (P + Length(Needle) <= Length(Data)) And
+    (Data[P + Length(Needle)] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+ PDFDictKeyPos := P + Length(Needle);
+End;
+
+{ Vrai si la cle KeyName de [DictStart..DictEnd] vaut exactement le nom
+  ValueName (ex. /Type /Page). }
+Function PDFDictHasNameValue(Const Data: String; DictStart, DictEnd: LongInt;
+ Const KeyName, ValueName: String): Boolean;
+Var
+ KeyPos, Q: LongInt;
+Begin
+ PDFDictHasNameValue := False;
+ KeyPos := PDFDictKeyPos(Data, DictStart, DictEnd, KeyName);
+ If KeyPos = 0 Then Exit;
+ Q := KeyPos;
+ While (Q <= DictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q > DictEnd) Or (Data[Q] <> '/') Then Exit;
+ Inc(Q);
+ If Copy(Data, Q, Length(ValueName)) <> ValueName Then Exit;
+ Q := Q + Length(ValueName);
+ If (Q <= Length(Data)) And (Data[Q] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+ PDFDictHasNameValue := True;
+End;
+
+{ Lit une reference indirecte "N G R" a partir de P (espaces ignores),
+  bornee par LimitPos (inclus). Renvoie le numero d'objet N, ou -1 si ce
+  n'en est pas une ; NextPos avance toujours d'au moins 1 caractere pour
+  garantir la terminaison d'une boucle appelante. }
+Function PDFReadRefAt(Const Data: String; P, LimitPos: LongInt; Var NextPos: LongInt): LongInt;
+Var
+ Q, S: LongInt;
+ ObjNum: LongInt;
+Begin
+ PDFReadRefAt := -1;
+ Q := P;
+ While (Q <= LimitPos) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ S := Q;
+ While (Q <= LimitPos) And (Data[Q] In ['0'..'9']) Do Inc(Q);
+ If Q = S Then Begin
+  NextPos := P + 1;
+  Exit;
+ End;
+ ObjNum := PDFStrToLongInt(Copy(Data, S, Q - S));
+ While (Q <= LimitPos) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ S := Q;
+ While (Q <= LimitPos) And (Data[Q] In ['0'..'9']) Do Inc(Q);
+ If Q = S Then Begin
+  NextPos := P + 1;
+  Exit;
+ End;
+ While (Q <= LimitPos) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q > LimitPos) Or (Data[Q] <> 'R') Then Begin
+  NextPos := P + 1;
+  Exit;
+ End;
+ Inc(Q);
+ NextPos := Q;
+ PDFReadRefAt := ObjNum;
+End;
+
+{ Parcourt recursivement l'arbre /Pages (noeuds /Type /Pages, feuilles
+  /Type /Page), rempli PDFPageObjNums/PDFPageCount DANS L'ORDRE REEL des
+  pages (celui de /Kids, PAS l'ordre numerique des objets dans le
+  fichier - souvent different). Garde-fous : profondeur max 32,
+  PDF_MAX_PAGES pages max (fichier pathologique/circulaire). }
+Procedure PDFCollectPagesRec(Const Data: String; NodeObjNum: LongInt; Depth: Integer);
+Var
+ DictStart, DictEnd, KidsPos, ArrStart, ArrEnd, P: LongInt;
+ ChildNum: LongInt;
+Begin
+ Inc(PDFCollectCallCount);
+ If PDFCollectCallCount > 20000 Then Begin
+  PDFDebugLog('PDFCollectPagesRec: garde-fou 20000 appels atteint - abandon (cycle probable)');
+  Exit;
+ End;
+ If (Depth > 32) Or (PDFPageCount >= PDF_MAX_PAGES) Then Exit;
+ PDFGetObjectDict(Data, NodeObjNum, DictStart, DictEnd);
+ If DictStart = 0 Then Exit;
+
+ If PDFDictHasNameValue(Data, DictStart, DictEnd, 'Type', 'Page') Then Begin
+  If PDFPageCount < PDF_MAX_PAGES Then Begin
+   Inc(PDFPageCount);
+   PDFPageObjNums[PDFPageCount] := NodeObjNum;
+  End;
+  Exit;
+ End;
+
+ KidsPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Kids');
+ If KidsPos = 0 Then Exit;
+ ArrStart := PDFPosFrom('[', Data, KidsPos);
+ If (ArrStart = 0) Or (ArrStart > DictEnd) Then Exit;
+ ArrEnd := PDFPosFrom(']', Data, ArrStart);
+ If (ArrEnd = 0) Or (ArrEnd > DictEnd) Then Exit;
+
+ P := ArrStart + 1;
+ While P < ArrEnd Do Begin
+  ChildNum := PDFReadRefAt(Data, P, ArrEnd, P);
+  If ChildNum < 0 Then Break;
+  PDFCollectPagesRec(Data, ChildNum, Depth + 1);
+  If PDFPageCount >= PDF_MAX_PAGES Then Break;
+ End;
+End;
+
+Function PDFOctalToByte(Const S: String): Byte;
+Var
+ I, V: Integer;
+Begin
+ V := 0;
+ For I := 1 To Length(S) Do
+  V := V * 8 + (Ord(S[I]) - Ord('0'));
+ PDFOctalToByte := Byte(V And $FF);
+End;
+
+Function PDFHexDigitVal(C: Char): Integer;
+Begin
+ Case C Of
+  '0'..'9': PDFHexDigitVal := Ord(C) - Ord('0');
+  'A'..'F': PDFHexDigitVal := Ord(C) - Ord('A') + 10;
+  'a'..'f': PDFHexDigitVal := Ord(C) - Ord('a') + 10;
+  Else PDFHexDigitVal := 0;
+ End;
+End;
+
+{ Decode une chaine litterale PDF "(...)" a partir de P (positionne sur
+  le '(' ouvrant) ; avance P juste apres le ')' fermant. Gere les
+  echappements \n \r \t \b \f \( \) \\ \ddd (octal) et la continuation de
+  ligne "\<EOL>" (aucun caractere emis), ainsi que les parentheses
+  NON echappees equilibrees (litteralement valides dans la chaine, per
+  la norme). }
+Function PDFDecodeLiteralString(Const Data: String; Var P: LongInt; LimitPos: LongInt): String;
+Var
+ R: String;
+ Depth: Integer;
+ C: Char;
+ Oct: String;
+ K: Integer;
+Begin
+ R := '';
+ Depth := 1;
+ Inc(P);
+ While (P <= LimitPos) And (Depth > 0) Do Begin
+  C := Data[P];
+  If C = '\' Then Begin
+   Inc(P);
+   If P > LimitPos Then Break;
+   C := Data[P];
+   Case C Of
+    'n': R := R + #10;
+    'r': R := R + #13;
+    't': R := R + #9;
+    'b': R := R + #8;
+    'f': R := R + #12;
+    '(': R := R + '(';
+    ')': R := R + ')';
+    '\': R := R + '\';
+    #13: If (P < LimitPos) And (Data[P + 1] = #10) Then Inc(P);
+    #10: ;
+    '0'..'7': Begin
+     Oct := C;
+     K := 1;
+     While (K < 3) And (P < LimitPos) And (Data[P + 1] In ['0'..'7']) Do Begin
+      Inc(P);
+      Oct := Oct + Data[P];
+      Inc(K);
+     End;
+     R := R + Chr(PDFOctalToByte(Oct));
+    End;
+    Else R := R + C;
+   End;
+   Inc(P);
+  End Else If C = '(' Then Begin
+   Inc(Depth);
+   R := R + C;
+   Inc(P);
+  End Else If C = ')' Then Begin
+   Dec(Depth);
+   Inc(P);
+   If Depth > 0 Then R := R + C;
+  End Else Begin
+   R := R + C;
+   Inc(P);
+  End;
+ End;
+ PDFDecodeLiteralString := R;
+End;
+
+{ Decode une chaine hexadecimale PDF "<...>" a partir de P (positionne
+  sur le '<' ouvrant) ; avance P juste apres le '>' fermant. Un nombre
+  impair de chiffres est complete par un '0' final, comme l'exige la
+  norme. }
+Function PDFDecodeHexString(Const Data: String; Var P: LongInt; LimitPos: LongInt): String;
+Var
+ R, HexDigits: String;
+ I, ByteVal: Integer;
+Begin
+ HexDigits := '';
+ Inc(P);
+ While (P <= LimitPos) And (Data[P] <> '>') Do Begin
+  If Data[P] In ['0'..'9', 'A'..'F', 'a'..'f'] Then HexDigits := HexDigits + Data[P];
+  Inc(P);
+ End;
+ If P <= LimitPos Then Inc(P);
+ If (Length(HexDigits) Mod 2) = 1 Then HexDigits := HexDigits + '0';
+ R := '';
+ I := 1;
+ While I < Length(HexDigits) Do Begin
+  ByteVal := (PDFHexDigitVal(HexDigits[I]) Shl 4) Or PDFHexDigitVal(HexDigits[I + 1]);
+  R := R + Chr(ByteVal);
+  Inc(I, 2);
+ End;
+ PDFDecodeHexString := R;
+End;
+
+{ Octet WinAnsiEncoding (2026-09-26, demande explicite de l'utilisateur -
+  "l'apostrophe s'affiche mal, certains glyphes decoratifs sont
+  illisibles") -> point de code Unicode reel. WinAnsiEncoding est
+  l'encodage de base PDF implicite le plus courant pour une police
+  latine non symbolique (norme ISO 32000 Annexe D.2) ; il est IDENTIQUE
+  a Windows-1252 pour la plage haute. Table verifiee (pas devinee) :
+  0xA0-0xFF y coincide EXACTEMENT avec Latin-1/Unicode (d'ou le simple
+  "Else B" ci-dessous), seule la plage 0x80-0x9F differe reellement de
+  Latin-1 (qui n'y definit que des caracteres de controle C1 inutilises)
+  - guillemets/apostrophes courbes, tirets demi/cadratin, points de
+  suspension, etc. Sans cette table, l'ancien code faisait juste
+  Chr(octet) sans AUCUNE conversion : un octet WinAnsi 0x92 (apostrophe
+  courbe) redevenait l'octet CP437 0x92 (qui est un tout autre glyphe
+  dans la police bitmap de ce navigateur) au lieu d'une apostrophe -
+  exactement le symptome signale. }
+Function PDFWinAnsiByteToCodePoint(B: Byte): LongInt;
+Begin
+ Case B Of
+  $80: PDFWinAnsiByteToCodePoint := 8364;  { Euro }
+  $82: PDFWinAnsiByteToCodePoint := 8218;  { virgule basse simple }
+  $83: PDFWinAnsiByteToCodePoint := 402;   { f a crochet }
+  $84: PDFWinAnsiByteToCodePoint := 8222;  { virgule basse double }
+  $85: PDFWinAnsiByteToCodePoint := 8230;  { points de suspension }
+  $86: PDFWinAnsiByteToCodePoint := 8224;  { obele }
+  $87: PDFWinAnsiByteToCodePoint := 8225;  { double obele }
+  $88: PDFWinAnsiByteToCodePoint := 710;   { accent circonflexe isole }
+  $89: PDFWinAnsiByteToCodePoint := 8240;  { pour mille }
+  $8A: PDFWinAnsiByteToCodePoint := 352;   { S caron }
+  $8B: PDFWinAnsiByteToCodePoint := 8249;  { chevron simple gauche }
+  $8C: PDFWinAnsiByteToCodePoint := 338;   { OE ligature majuscule }
+  $8E: PDFWinAnsiByteToCodePoint := 381;   { Z caron }
+  $91: PDFWinAnsiByteToCodePoint := 8216;  { apostrophe courbe gauche }
+  $92: PDFWinAnsiByteToCodePoint := 8217;  { apostrophe courbe droite - LE bogue signale }
+  $93: PDFWinAnsiByteToCodePoint := 8220;  { guillemet courbe gauche }
+  $94: PDFWinAnsiByteToCodePoint := 8221;  { guillemet courbe droit }
+  $95: PDFWinAnsiByteToCodePoint := 8226;  { puce }
+  $96: PDFWinAnsiByteToCodePoint := 8211;  { tiret demi-cadratin }
+  $97: PDFWinAnsiByteToCodePoint := 8212;  { tiret cadratin }
+  $98: PDFWinAnsiByteToCodePoint := 732;   { tilde isole }
+  $99: PDFWinAnsiByteToCodePoint := 8482;  { marque de commerce }
+  $9A: PDFWinAnsiByteToCodePoint := 353;   { s caron }
+  $9B: PDFWinAnsiByteToCodePoint := 8250;  { chevron simple droit }
+  $9C: PDFWinAnsiByteToCodePoint := 339;   { oe ligature minuscule }
+  $9E: PDFWinAnsiByteToCodePoint := 382;   { z caron }
+  $9F: PDFWinAnsiByteToCodePoint := 376;   { Y trema }
+  Else PDFWinAnsiByteToCodePoint := B; { 0xA0-0xFF identique a Latin-1/Unicode ; 0x81/0x8D/0x8F/0x90/0x9D non definis en WinAnsi, repli honnete sur l'octet lui-meme }
+ End;
+End;
+
+{ Octet brut d'une chaine PDF -> caractere reellement affichable par ce
+  navigateur (ASCII inchange, haut de plage converti via la table
+  WinAnsi ci-dessus puis vers le jeu de caracteres d'affichage deja
+  utilise pour le HTML - voir HTMLCodePointToChar, qui gere deja
+  correctement les guillemets/apostrophes courbes et les lettres
+  accentuees, initialement ecrite pour les entites HTML mais entierement
+  reutilisable ici telle quelle). }
+Function PDFDecodeByteToChar(B: Byte): Char;
+Begin
+ If B < 128 Then PDFDecodeByteToChar := Chr(B)
+ Else PDFDecodeByteToChar := HTMLCodePointToChar(PDFWinAnsiByteToCodePoint(B));
+End;
+
+{ Variante de PDFDecodeByteToChar qui consulte D'ABORD le /Differences
+  de la police ACTUELLEMENT active (PDFCurFontDiffMap/PDFCurFontHasDiff,
+  mis a jour a chaque Tf - voir PDFResolveFontEncoding) avant de retomber
+  sur la table WinAnsi generique. Necessaire (2026-09-26, demande
+  explicite - "l'apostrophe s'affiche mal") : le document reel de
+  l'utilisateur remappe l'apostrophe sur le code 182 via un /Differences
+  propre a sa police - PAS le code 0x92 standard de WinAnsiEncoding
+  (confirme en instrumentant temporairement le decodage : ce code 182
+  apparaissait EXACTEMENT 4 fois sur la page, correspondant aux 4
+  apostrophes reelles du texte francais de cette page). }
+Function PDFDecodeByteToCharEx(B: Byte): Char;
+Var
+ CP: LongInt;
+Begin
+ If PDFCurFontHasDiff And (PDFCurFontDiffMap[B] >= 0) Then Begin
+  CP := PDFCurFontDiffMap[B];
+  If CP < 128 Then PDFDecodeByteToCharEx := Chr(CP)
+  Else PDFDecodeByteToCharEx := HTMLCodePointToChar(CP);
+  Exit;
+ End;
+ PDFDecodeByteToCharEx := PDFDecodeByteToChar(B);
+End;
+
+Function PDFApplyWinAnsi(Const S: String): String;
+Var
+ I: LongInt;
+ R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do
+  R := R + PDFDecodeByteToCharEx(Byte(Ord(S[I])));
+ PDFApplyWinAnsi := R;
+End;
+
+{ Termine la ligne en cours d'accumulation (PDFCurLineText) et l'ajoute
+  a PDFLines avec la position X ou elle a commence - appelee a chaque
+  operateur de positionnement reel (Td/TD/T*/Tm/BT) et une derniere fois
+  apres le dernier flux de contenu de la page. }
+Procedure PDFFlushCurrentLine;
+Begin
+ If BrowserTrimStr(PDFCurLineText) <> '' Then Begin
+  If PDFLineCount < PDF_MAX_LINES_PER_PAGE Then Begin
+   Inc(PDFLineCount);
+   PDFLines[PDFLineCount].LineText := PDFCurLineText;
+   PDFLines[PDFLineCount].StartX := PDFCurLineStartX;
+   PDFLines[PDFLineCount].IsBold := PDFCurFontBold;
+   PDFLines[PDFLineCount].IsItalic := PDFCurFontItalic;
+  End;
+ End;
+ PDFCurLineText := '';
+End;
+
+{ Reinitialise l'accumulation de lignes pour une NOUVELLE page (a
+  appeler une fois avant de traiter le/les flux de contenu de cette
+  page - PDFLines/PDFLineCount sont partages par TOUS les flux d'une
+  meme page, pour permettre a un texte de continuer sur le flux
+  suivant si /Contents est un tableau). }
+Procedure PDFResetPageAccumulation;
+Begin
+ PDFLineCount := 0;
+ PDFCurLineText := '';
+ PDFCurX := 0;
+ PDFCurY := 0;
+ PDFCurLineStartX := 0;
+ PDFCurFontName := '';
+ PDFCurFontBold := False;
+ PDFCurFontItalic := False;
+ PDFCurFontHasDiff := False;
+End;
+
+{ Localise le dictionnaire /Resources de PageObjNum, avec heritage via
+  /Parent (meme principe que /MediaBox ci-dessus - la norme permet aux
+  deux d'etre herites depuis un noeud /Pages ancetre plutot que repetes
+  sur chaque page). /Resources peut etre soit un dictionnaire direct
+  << ... >>, soit une reference indirecte N G R. }
+Function PDFFindResourcesDict(Const Data: String; PageObjNum: LongInt;
+ Var ResDictStart, ResDictEnd: LongInt): Boolean;
+Var
+ CurObj, Depth, Q: LongInt;
+ DictStart, DictEnd, ResPos, ParentPos, RefObjNum: LongInt;
+Begin
+ PDFFindResourcesDict := False;
+ ResDictStart := 0;
+ ResDictEnd := 0;
+ CurObj := PageObjNum;
+ Depth := 0;
+ While (CurObj > 0) And (Depth < 10) Do Begin
+  PDFGetObjectDict(Data, CurObj, DictStart, DictEnd);
+  If DictStart = 0 Then Exit;
+  ResPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Resources');
+  If ResPos > 0 Then Begin
+   Q := ResPos;
+   While (Q <= DictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+   If (Q < DictEnd) And (Data[Q] = '<') And (Data[Q + 1] = '<') Then Begin
+    ResDictStart := Q;
+    ResDictEnd := PDFFindDictEnd(Data, Q);
+    PDFFindResourcesDict := ResDictEnd > 0;
+    Exit;
+   End Else Begin
+    RefObjNum := PDFReadRefAt(Data, Q, DictEnd, Q);
+    If RefObjNum > 0 Then Begin
+     PDFGetObjectDict(Data, RefObjNum, ResDictStart, ResDictEnd);
+     PDFFindResourcesDict := ResDictStart > 0;
+     Exit;
+    End;
+   End;
+  End;
+  ParentPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Parent');
+  If ParentPos = 0 Then Exit;
+  CurObj := PDFReadRefAt(Data, ParentPos, DictEnd, Q);
+  Inc(Depth);
+ End;
+End;
+
+{ Resout FontResName (ex. "F1", le nom donne par l'operateur Tf) en
+  gras/italique approximatifs, en cherchant /Font/FontResName dans
+  [ResDictStart..ResDictEnd] (une reference indirecte vers un objet
+  police), puis en lisant le /BaseFont de cet objet et en cherchant les
+  mots "Bold"/"Italic"/"Oblique" (insensible a la casse) dans son nom -
+  convention PostScript/PDF reelle et courante (ex. "Arial-BoldMT",
+  "TimesNewRomanPS-BoldItalicMT"), PAS garantie a 100% mais un standard
+  de facto largement respecte en pratique. }
+Procedure PDFResolveFontStyle(Const Data: String; ResDictStart, ResDictEnd: LongInt;
+ Const FontResName: String; Var IsBold, IsItalic: Boolean);
+Var
+ FontDictPos, FontArrS, FontArrE, NamePos, Q, FontObjNum: LongInt;
+ FObjDictStart, FObjDictEnd, BaseFontPos: LongInt;
+ BaseFontName, LowerName: String;
+Begin
+ IsBold := False;
+ IsItalic := False;
+ If (ResDictStart = 0) Or (FontResName = '') Then Exit;
+
+ FontDictPos := PDFDictKeyPos(Data, ResDictStart, ResDictEnd, 'Font');
+ If FontDictPos = 0 Then Exit;
+ FontArrS := PDFPosFrom('<<', Data, FontDictPos);
+ If (FontArrS = 0) Or (FontArrS > ResDictEnd) Then Exit;
+ FontArrE := PDFFindDictEnd(Data, FontArrS);
+ If FontArrE = 0 Then Exit;
+
+ NamePos := PDFPosFrom('/' + FontResName, Data, FontArrS);
+ If (NamePos = 0) Or (NamePos > FontArrE) Then Exit;
+ { verifier que ce n'est pas le prefixe d'un nom plus long (ex. "/F1"
+   trouve a l'interieur de "/F10"). }
+ Q := NamePos + Length(FontResName) + 1;
+ If (Q <= Length(Data)) And (Data[Q] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+
+ FontObjNum := PDFReadRefAt(Data, Q, FontArrE, Q);
+ If FontObjNum <= 0 Then Exit;
+
+ PDFGetObjectDict(Data, FontObjNum, FObjDictStart, FObjDictEnd);
+ If FObjDictStart = 0 Then Exit;
+ BaseFontPos := PDFDictKeyPos(Data, FObjDictStart, FObjDictEnd, 'BaseFont');
+ If BaseFontPos = 0 Then Exit;
+ { le nom de police va de BaseFontPos (deja apres le '/' de la cle, mais
+   PAS apres le '/' du NOM lui-meme, ex. "/BaseFont /Arial-BoldMT" -
+   sauter les espaces puis le '/' du nom avant de lire les caracteres. }
+ Q := BaseFontPos;
+ While (Q <= FObjDictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q > FObjDictEnd) Or (Data[Q] <> '/') Then Exit;
+ Inc(Q);
+ NamePos := Q;
+ While (Q <= FObjDictEnd) And Not (Data[Q] In [' ', #9, #13, #10, '/', '<', '>', '[', ']']) Do Inc(Q);
+ BaseFontName := Copy(Data, NamePos, Q - NamePos);
+
+ LowerName := HTMLLowerCase(BaseFontName);
+ IsBold := PDFPosFrom('bold', LowerName, 1) > 0;
+ IsItalic := (PDFPosFrom('italic', LowerName, 1) > 0) Or (PDFPosFrom('oblique', LowerName, 1) > 0);
+End;
+
+{ Sous-ensemble PRATIQUE (pas exhaustif, DISCLOSED) de l'Adobe Glyph
+  List (AGL) - norme reelle et publique associant un nom de glyphe
+  PostScript (utilise par /Differences, voir PDFResolveFontEncoding) a
+  son point de code Unicode - couvre la typographie occidentale/
+  francaise courante (lettres accentuees, guillemets/apostrophes
+  courbes, tirets). Un nom absent de ce sous-ensemble renvoie -1 (glyphe
+  ignore, pas invente). }
+Function PDFGlyphNameToCodePoint(Const Name: String): LongInt;
+Begin
+ PDFGlyphNameToCodePoint := -1;
+ If Name = 'space' Then PDFGlyphNameToCodePoint := 32
+ Else If Name = 'quoteright' Then PDFGlyphNameToCodePoint := 8217
+ Else If Name = 'quoteleft' Then PDFGlyphNameToCodePoint := 8216
+ Else If Name = 'quotesingle' Then PDFGlyphNameToCodePoint := 39
+ Else If Name = 'quotedblleft' Then PDFGlyphNameToCodePoint := 8220
+ Else If Name = 'quotedblright' Then PDFGlyphNameToCodePoint := 8221
+ Else If Name = 'quotedbl' Then PDFGlyphNameToCodePoint := 34
+ Else If Name = 'quotesinglbase' Then PDFGlyphNameToCodePoint := 8218
+ Else If Name = 'quotedblbase' Then PDFGlyphNameToCodePoint := 8222
+ Else If Name = 'endash' Then PDFGlyphNameToCodePoint := 8211
+ Else If Name = 'emdash' Then PDFGlyphNameToCodePoint := 8212
+ Else If Name = 'hyphen' Then PDFGlyphNameToCodePoint := 45
+ Else If Name = 'ellipsis' Then PDFGlyphNameToCodePoint := 8230
+ Else If Name = 'bullet' Then PDFGlyphNameToCodePoint := 8226
+ Else If Name = 'eacute' Then PDFGlyphNameToCodePoint := 233
+ Else If Name = 'egrave' Then PDFGlyphNameToCodePoint := 232
+ Else If Name = 'ecircumflex' Then PDFGlyphNameToCodePoint := 234
+ Else If Name = 'edieresis' Then PDFGlyphNameToCodePoint := 235
+ Else If Name = 'agrave' Then PDFGlyphNameToCodePoint := 224
+ Else If Name = 'aacute' Then PDFGlyphNameToCodePoint := 225
+ Else If Name = 'acircumflex' Then PDFGlyphNameToCodePoint := 226
+ Else If Name = 'adieresis' Then PDFGlyphNameToCodePoint := 228
+ Else If Name = 'ccedilla' Then PDFGlyphNameToCodePoint := 231
+ Else If Name = 'ugrave' Then PDFGlyphNameToCodePoint := 249
+ Else If Name = 'uacute' Then PDFGlyphNameToCodePoint := 250
+ Else If Name = 'ucircumflex' Then PDFGlyphNameToCodePoint := 251
+ Else If Name = 'udieresis' Then PDFGlyphNameToCodePoint := 252
+ Else If Name = 'ograve' Then PDFGlyphNameToCodePoint := 242
+ Else If Name = 'oacute' Then PDFGlyphNameToCodePoint := 243
+ Else If Name = 'ocircumflex' Then PDFGlyphNameToCodePoint := 244
+ Else If Name = 'odieresis' Then PDFGlyphNameToCodePoint := 246
+ Else If Name = 'igrave' Then PDFGlyphNameToCodePoint := 236
+ Else If Name = 'iacute' Then PDFGlyphNameToCodePoint := 237
+ Else If Name = 'icircumflex' Then PDFGlyphNameToCodePoint := 238
+ Else If Name = 'idieresis' Then PDFGlyphNameToCodePoint := 239
+ Else If Name = 'ntilde' Then PDFGlyphNameToCodePoint := 241
+ Else If Name = 'ydieresis' Then PDFGlyphNameToCodePoint := 255
+ Else If Name = 'Eacute' Then PDFGlyphNameToCodePoint := 201
+ Else If Name = 'Egrave' Then PDFGlyphNameToCodePoint := 200
+ Else If Name = 'Ecircumflex' Then PDFGlyphNameToCodePoint := 202
+ Else If Name = 'Agrave' Then PDFGlyphNameToCodePoint := 192
+ Else If Name = 'Ccedilla' Then PDFGlyphNameToCodePoint := 199
+ Else If Name = 'Ugrave' Then PDFGlyphNameToCodePoint := 217
+ Else If Name = 'oe' Then PDFGlyphNameToCodePoint := 339
+ Else If Name = 'OE' Then PDFGlyphNameToCodePoint := 338
+ Else If Name = 'copyright' Then PDFGlyphNameToCodePoint := 169
+ Else If Name = 'registered' Then PDFGlyphNameToCodePoint := 174
+ Else If Name = 'trademark' Then PDFGlyphNameToCodePoint := 8482
+ Else If Name = 'degree' Then PDFGlyphNameToCodePoint := 176
+ Else If Name = 'guillemotleft' Then PDFGlyphNameToCodePoint := 171
+ Else If Name = 'guillemotright' Then PDFGlyphNameToCodePoint := 187;
+End;
+
+{ Resout le /Encoding de FontResName : si c'est un dictionnaire avec un
+  tableau /Differences (remappage de codes-octets propre a CETTE
+  police, distinct de l'encodage de base WinAnsi/Standard - technique
+  reelle et courante pour les polices subsetees/embarquees, voir norme
+  ISO 32000 9.6.6), le tableau est REELLEMENT parse (syntaxe reelle :
+  une suite [ code /nom /nom code /nom ... ], chaque /nom s'appliquant
+  au code courant puis incrementant celui-ci pour le /nom suivant) et
+  DiffMap est rempli via PDFGlyphNameToCodePoint. Si /Encoding est un
+  simple NOM (ex. /WinAnsiEncoding) ou absent, HasDiff reste False (la
+  table WinAnsi generique de PDFDecodeByteToChar s'applique alors seule -
+  voir PDFDecodeByteToCharEx). }
+Procedure PDFResolveFontEncoding(Const Data: String; ResDictStart, ResDictEnd: LongInt;
+ Const FontResName: String; Var DiffMap: TPDFDiffMap; Var HasDiff: Boolean);
+Var
+ FontDictPos, FontArrS, FontArrE, NamePos, Q, FontObjNum: LongInt;
+ FObjDictStart, FObjDictEnd, EncPos, EncDictS, EncDictE, DiffPos, ArrS, ArrE: LongInt;
+ CurCode, NStart, CP, EncObjNum: LongInt;
+ GlyphName: String;
+Begin
+ HasDiff := False;
+ If (ResDictStart = 0) Or (FontResName = '') Then Exit;
+
+ FontDictPos := PDFDictKeyPos(Data, ResDictStart, ResDictEnd, 'Font');
+ If FontDictPos = 0 Then Exit;
+ FontArrS := PDFPosFrom('<<', Data, FontDictPos);
+ If (FontArrS = 0) Or (FontArrS > ResDictEnd) Then Exit;
+ FontArrE := PDFFindDictEnd(Data, FontArrS);
+ If FontArrE = 0 Then Exit;
+
+ NamePos := PDFPosFrom('/' + FontResName, Data, FontArrS);
+ If (NamePos = 0) Or (NamePos > FontArrE) Then Exit;
+ Q := NamePos + Length(FontResName) + 1;
+ If (Q <= Length(Data)) And (Data[Q] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+
+ FontObjNum := PDFReadRefAt(Data, Q, FontArrE, Q);
+ If FontObjNum <= 0 Then Exit;
+
+ PDFGetObjectDict(Data, FontObjNum, FObjDictStart, FObjDictEnd);
+ If FObjDictStart = 0 Then Exit;
+
+ EncPos := PDFDictKeyPos(Data, FObjDictStart, FObjDictEnd, 'Encoding');
+ If EncPos = 0 Then Exit;
+ Q := EncPos;
+ While (Q <= FObjDictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q < FObjDictEnd) And (Data[Q] = '<') And (Data[Q + 1] = '<') Then Begin
+  EncDictS := Q;
+  EncDictE := PDFFindDictEnd(Data, EncDictS);
+ End Else Begin
+  { /Encoding est souvent une REFERENCE INDIRECTE vers un objet
+    dictionnaire separe (partage entre plusieurs polices) plutot qu'un
+    dictionnaire inline - corrige pour gerer les deux formes (voir aussi
+    la disclosure globale du module : meme si /Differences est trouve et
+    applique ici quand present, le document reel de l'utilisateur s'est
+    revele ne PAS en avoir - voir la disclosure globale plus haut sur les
+    limites reelles de cette approche). }
+  EncObjNum := PDFReadRefAt(Data, Q, FObjDictEnd, Q);
+  If EncObjNum <= 0 Then Exit;
+  PDFGetObjectDict(Data, EncObjNum, EncDictS, EncDictE);
+ End;
+ If EncDictS = 0 Then Exit;
+ If EncDictE = 0 Then Exit;
+
+ DiffPos := PDFDictKeyPos(Data, EncDictS, EncDictE, 'Differences');
+ If DiffPos = 0 Then Exit;
+ ArrS := PDFPosFrom('[', Data, DiffPos);
+ If (ArrS = 0) Or (ArrS > EncDictE) Then Exit;
+ ArrE := PDFPosFrom(']', Data, ArrS);
+ If (ArrE = 0) Or (ArrE > EncDictE) Then Exit;
+
+ For CurCode := 0 To 255 Do DiffMap[CurCode] := -1;
+ CurCode := 0;
+ Q := ArrS + 1;
+ While Q < ArrE Do Begin
+  While (Q < ArrE) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+  If Q >= ArrE Then Break;
+  If Data[Q] In ['0'..'9'] Then Begin
+   NStart := Q;
+   While (Q < ArrE) And (Data[Q] In ['0'..'9']) Do Inc(Q);
+   CurCode := PDFStrToLongInt(Copy(Data, NStart, Q - NStart));
+  End Else If Data[Q] = '/' Then Begin
+   NStart := Q;
+   Inc(Q);
+   While (Q < ArrE) And Not (Data[Q] In [' ', #9, #13, #10, '/', '[', ']']) Do Inc(Q);
+   GlyphName := Copy(Data, NStart + 1, Q - NStart - 1);
+   If (CurCode >= 0) And (CurCode <= 255) Then Begin
+    CP := PDFGlyphNameToCodePoint(GlyphName);
+    If CP >= 0 Then DiffMap[CurCode] := CP;
+   End;
+   Inc(CurCode);
+  End Else
+   Inc(Q);
+ End;
+ HasDiff := True;
+End;
+
+{ Traite un flux de contenu DEJA decompresse, alimentant PDFLines : les
+  chaines litterales/hexadecimales sont du texte reel (les operateurs de
+  flux de contenu PDF autres que Tj/TJ/'/" n'acceptent jamais de chaine
+  comme operande, norme ISO 32000). Les operateurs de positionnement
+  Td/TD/Tm lisent REELLEMENT leurs operandes numeriques (auparavant seule
+  leur PRESENCE etait detectee, l'operande ignore) pour suivre la
+  position X courante - necessaire a l'alignement approximatif, voir la
+  disclosure du module.
+
+  BOGUE REEL corrige (2026-09-26, trouve en verifiant le document reel de
+  l'utilisateur - "document" s'affichait une lettre par ligne) : certains
+  generateurs PDF positionnent CHAQUE GLYPHE individuellement via son
+  propre Td (crenage precis caractere par caractere), avec un deplacement
+  vertical (ty) NUL ou quasi nul - la version precedente demarrait une
+  NOUVELLE LIGNE a CHAQUE Td/TD rencontre, sans distinction, brisant un
+  mot entier en une lettre par ligne des que le generateur utilisait
+  cette technique. Corrige : Td/TD ne demarre une nouvelle ligne que si
+  son operande ty depasse un seuil (2 unites PDF - un vrai saut de ligne
+  implique toujours un deplacement vertical significatif ; un ajustement
+  de crenage intra-ligne a ty=0 ou proche de 0) ; sinon, le texte continue
+  d'etre accumule sur la MEME ligne logique, seule la position X suivie
+  avance. T* reste TOUJOURS un saut de ligne reel (la norme le definit
+  ainsi : avance a la ligne suivante selon l'interligne courant). }
+Procedure PDFProcessContentStream(Const Stream: String; Const Data: String;
+ ResDictStart, ResDictEnd: LongInt);
+Var
+ P, LimitPos, WStart, NStart, Tx, Ty: LongInt;
+ WordTok, NumStr, LastName: String;
+ Num6: Array[0..5] Of LongInt;
+Begin
+ P := 1;
+ LimitPos := Length(Stream);
+ LastName := '';
+ FillChar(Num6, SizeOf(Num6), 0);
+ While P <= LimitPos Do Begin
+  If Stream[P] = '(' Then
+   { PAS d'espace ajoute automatiquement ici (BOGUE REEL corrige
+     2026-09-26, trouve en verifiant le meme document reel - "Ce
+     document" s'affichait "C e   d o c u m e n t") : ce generateur PDF
+     positionne CHAQUE GLYPHE individuellement (un Tj par caractere, voir
+     la disclosure de PDFProcessContentStream ci-dessus) et emet deja un
+     VRAI glyphe espace "( ) Tj" partout ou un espace visuel est requis -
+     ajouter systematiquement un espace supplementaire ici en inserait un
+     entre CHAQUE lettre. COMPROMIS DISCLOSED : un PDF qui separerait des
+     MOTS entre plusieurs Tj/TJ en s'appuyant UNIQUEMENT sur l'ecart de
+     positionnement (sans jamais emettre de glyphe espace explicite) les
+     verrait alors colles - plus rare en pratique que le cas corrige ici.
+     PDFApplyWinAnsi (2026-09-26, demande explicite de l'utilisateur -
+     "l'apostrophe s'affiche mal") convertit chaque octet >= 128 du
+     WinAnsiEncoding PDF (l'encodage implicite le plus courant pour une
+     police non symbolique) vers le jeu de caracteres d'affichage de ce
+     navigateur - voir sa disclosure complete. }
+   PDFCurLineText := PDFCurLineText + PDFApplyWinAnsi(PDFDecodeLiteralString(Stream, P, LimitPos))
+  Else If (Stream[P] = '<') And (P < LimitPos) And (Stream[P + 1] <> '<') Then
+   PDFCurLineText := PDFCurLineText + PDFApplyWinAnsi(PDFDecodeHexString(Stream, P, LimitPos))
+  Else If Stream[P] = '/' Then Begin
+   { Nom PDF ("/F1", "/Bold" etc.) - seul le NOM DE POLICE precedant un
+     Tf nous interesse (voir plus bas), mais tout nom est capture ici de
+     la meme facon generique. }
+   NStart := P;
+   Inc(P);
+   While (P <= LimitPos) And Not (Stream[P] In [' ', #9, #13, #10, '/', '<', '>', '[', ']', '(', ')']) Do Inc(P);
+   LastName := Copy(Stream, NStart + 1, P - NStart - 1);
+  End Else If Stream[P] In ['0'..'9', '-', '.', '+'] Then Begin
+   NStart := P;
+   Inc(P);
+   While (P <= LimitPos) And (Stream[P] In ['0'..'9', '.', '-', '+']) Do Inc(P);
+   NumStr := Copy(Stream, NStart, P - NStart);
+   Num6[0] := Num6[1]; Num6[1] := Num6[2]; Num6[2] := Num6[3];
+   Num6[3] := Num6[4]; Num6[4] := Num6[5]; Num6[5] := PDFStrToLongIntTrunc(NumStr);
+  End Else If Stream[P] In ['A'..'Z', 'a'..'z', '*'] Then Begin
+   WStart := P;
+   While (P <= LimitPos) And (Stream[P] In ['A'..'Z', 'a'..'z', '0'..'9', '*']) Do Inc(P);
+   WordTok := Copy(Stream, WStart, P - WStart);
+   If WordTok = 'Tf' Then Begin
+    { Detection gras/italique (2026-09-26, demande explicite de
+      l'utilisateur) : /NomRessource taille Tf - LastName est le nom de
+      ressource ("F1") lu juste avant ce Tf. Ne resout que si le nom a
+      change, pour eviter de re-analyser les /Resources a chaque Tf
+      identique (frequent - un Tf est souvent repete a chaque ligne). }
+    If LastName <> PDFCurFontName Then Begin
+     PDFCurFontName := LastName;
+     PDFResolveFontStyle(Data, ResDictStart, ResDictEnd, LastName, PDFCurFontBold, PDFCurFontItalic);
+     PDFResolveFontEncoding(Data, ResDictStart, ResDictEnd, LastName, PDFCurFontDiffMap, PDFCurFontHasDiff);
+    End;
+   End Else If (WordTok = 'Td') Or (WordTok = 'TD') Then Begin
+    Tx := Num6[4]; { tx = avant-dernier nombre lu avant Td/TD }
+    Ty := Num6[5]; { ty = dernier nombre lu avant Td/TD }
+    If Abs(Ty) > 2 Then Begin
+     PDFFlushCurrentLine;
+     PDFCurX := PDFCurX + Tx;
+     PDFCurY := PDFCurY + Ty;
+     PDFCurLineStartX := PDFCurX;
+    End Else
+     PDFCurX := PDFCurX + Tx; { ajustement de crenage intra-ligne, pas de saut }
+   End Else If WordTok = 'T*' Then Begin
+    PDFFlushCurrentLine;
+    PDFCurLineStartX := PDFCurX;
+   End Else If WordTok = 'BT' Then Begin
+    { AUCUNE ACTION ICI - ni flush, ni reinitialisation de PDFCurX/PDFCurY
+      (BOGUE REEL corrige 2026-09-26, trouve en verifiant le document reel
+      de l'utilisateur - "document" s'affichait une lettre par ligne) : de
+      nombreux generateurs PDF reels (dont celui utilise pour ce document)
+      emettent UN BT/ET PAR GLYPHE, chacun avec son propre Tm ABSOLU sur
+      la MEME ligne visuelle. Un flush systematique ici terminait la ligne
+      en cours AVANT MEME que le Tm suivant ait pu comparer sa position Y
+      a celle du glyphe precedent pour decider si c'est reellement une
+      nouvelle ligne - cassant la ligne a chaque caractere quel que soit
+      le seuil applique dans Tm/Td. Seuls Tm/Td/T* (avec leur propre
+      logique de seuil vertical) decident desormais d'un vrai saut de
+      ligne ; BT/ET restent de purs marqueurs de bloc de texte, sans effet
+      sur le suivi de position ni sur l'accumulation de la ligne. }
+   End Else If WordTok = 'Tm' Then Begin
+    If Abs(Num6[5] - PDFCurY) > 2 Then Begin
+     PDFFlushCurrentLine;
+     PDFCurY := Num6[5]; { 'f' = 6e operande, position Y absolue }
+     PDFCurX := Num6[4]; { 'e' = 5e operande, position X absolue }
+     PDFCurLineStartX := PDFCurX;
+    End Else
+     PDFCurX := Num6[4];
+   End;
+  End Else
+   Inc(P);
+ End;
+End;
+
+{ Recupere le flux de donnees (deja decompresse si /FlateDecode) de
+  l'objet-flux ObjNum. La fin du flux est localisee par le mot-cle
+  "endstream" reel (PAS par /Length, souvent une reference indirecte non
+  resolue ici - voir la disclosure du module). Chaine vide si le filtre
+  n'est pas FlateDecode et n'est pas absent (filtre non supporte, signale
+  honnetement plutot que fabrique). }
+Function PDFGetDecompressedStream(Const Data: String; ObjNum: LongInt): String;
+Var
+ DictStart, DictEnd, StreamKW, DataStart, EndKW, DataEnd, FlatePos: LongInt;
+ RawStream, OutStr: String;
+ DecompBuf: Array Of Byte;
+ DecompLen: LongInt;
+ I: LongInt;
+Begin
+ PDFGetDecompressedStream := '';
+ PDFGetObjectDict(Data, ObjNum, DictStart, DictEnd);
+ If DictStart = 0 Then Exit;
+
+ StreamKW := PDFPosFrom('stream', Data, DictEnd);
+ If StreamKW = 0 Then Exit;
+ DataStart := StreamKW + 6;
+ If (DataStart <= Length(Data)) And (Data[DataStart] = #13) Then Inc(DataStart);
+ If (DataStart <= Length(Data)) And (Data[DataStart] = #10) Then Inc(DataStart);
+
+ EndKW := PDFPosFrom('endstream', Data, DataStart);
+ If EndKW = 0 Then Exit;
+ DataEnd := EndKW - 1;
+ While (DataEnd >= DataStart) And (Data[DataEnd] In [#13, #10]) Do Dec(DataEnd);
+ If DataEnd < DataStart Then Exit;
+ RawStream := Copy(Data, DataStart, DataEnd - DataStart + 1);
+
+ FlatePos := PDFPosFrom('FlateDecode', Data, DictStart);
+ If (FlatePos > 0) And (FlatePos < DictEnd) Then Begin
+  If Length(RawStream) < 3 Then Exit;
+  If Length(RawStream) - 2 > SizeOf(DeflateInBuffer) Then Exit;
+  Move(RawStream[3], DeflateInBuffer, Length(RawStream) - 2);
+  DeflateInLen := Length(RawStream) - 2;
+  SetLength(DecompBuf, 8 * 1024 * 1024);
+  If Not DeflateDecompressBlock(DecompBuf, DecompLen, Length(DecompBuf)) Then Exit;
+  SetLength(OutStr, DecompLen);
+  For I := 0 To DecompLen - 1 Do OutStr[I + 1] := Chr(DecompBuf[I]);
+  PDFGetDecompressedStream := OutStr;
+ End Else If PDFDictKeyPos(Data, DictStart, DictEnd, 'Filter') = 0 Then
+  PDFGetDecompressedStream := RawStream;
+ { Filtre present mais different de FlateDecode : ignore, SIMPLIFICATION
+   DISCLOSED (rare pour un flux de contenu texte). }
+End;
+
+Procedure PDFGetDecompressedStreamAndExtract(Const Data: String; ObjNum: LongInt;
+ ResDictStart, ResDictEnd: LongInt);
+Begin
+ PDFProcessContentStream(PDFGetDecompressedStream(Data, ObjNum), Data, ResDictStart, ResDictEnd);
+End;
+
+{ Extraction de SECOURS (2026-09-26) : utilisee quand le catalogue/l'arbre
+  des pages n'a pas pu etre localise (structure inhabituelle, xref-only
+  via flux d'objets compresses non geres ici - voir disclosure). Balaie
+  le fichier entier a la recherche de TOUS les blocs stream/endstream
+  FlateDecode (dictionnaire recherche dans les 300 caracteres precedents
+  - portee volontairement locale, SIMPLIFICATION DISCLOSED) et alimente
+  PDFLines avec leur texte, SANS garantie d'ordre de page reel (une seule
+  "page virtuelle" - la navigation Precedent/Suivant/aller-a-la-page n'a
+  pas de sens ici puisqu'aucune vraie pagination n'a pu etre etablie). }
+Procedure PDFFallbackExtractAll(Const Data: String);
+Var
+ P, DataStart, EndKW, DataEnd, DictGuessStart, FlatePos: LongInt;
+ RawStream, OutStr: String;
+ DecompBuf: Array Of Byte;
+ DecompLen: LongInt;
+ I: LongInt;
+Begin
+ P := 1;
+ Repeat
+  P := PDFPosFrom('stream', Data, P);
+  If P = 0 Then Break;
+  DataStart := P + 6;
+  If Not ((DataStart <= Length(Data)) And (Data[DataStart] In [#13, #10])) Then Begin
+   P := P + 6;
+   Continue;
+  End;
+  If Data[DataStart] = #13 Then Inc(DataStart);
+  If (DataStart <= Length(Data)) And (Data[DataStart] = #10) Then Inc(DataStart);
+
+  EndKW := PDFPosFrom('endstream', Data, DataStart);
+  If EndKW = 0 Then Break;
+  DataEnd := EndKW - 1;
+  While (DataEnd >= DataStart) And (Data[DataEnd] In [#13, #10]) Do Dec(DataEnd);
+
+  If DataEnd >= DataStart Then Begin
+   RawStream := Copy(Data, DataStart, DataEnd - DataStart + 1);
+   DictGuessStart := P - 300;
+   If DictGuessStart < 1 Then DictGuessStart := 1;
+   FlatePos := PDFPosFrom('FlateDecode', Copy(Data, DictGuessStart, P - DictGuessStart), 1);
+   If (FlatePos > 0) And (Length(RawStream) >= 3) And
+      (Length(RawStream) - 2 <= SizeOf(DeflateInBuffer)) Then Begin
+    Move(RawStream[3], DeflateInBuffer, Length(RawStream) - 2);
+    DeflateInLen := Length(RawStream) - 2;
+    SetLength(DecompBuf, 8 * 1024 * 1024);
+    If DeflateDecompressBlock(DecompBuf, DecompLen, Length(DecompBuf)) Then Begin
+     SetLength(OutStr, DecompLen);
+     For I := 0 To DecompLen - 1 Do OutStr[I + 1] := Chr(DecompBuf[I]);
+     PDFProcessContentStream(OutStr, Data, 0, 0); { pas de /Resources connu en secours }
+    End;
+   End;
+  End;
+  P := EndKW + 9;
+ Until False;
+End;
+
+{ Largeur de page reelle (/MediaBox : urx - llx), avec heritage via
+  /Parent comme l'exige la norme si la page elle-meme n'a pas de
+  /MediaBox direct (courant - souvent defini une seule fois sur le noeud
+  /Pages racine). 612pt (US Letter) par defaut si introuvable - valeur
+  standard reelle, pas une invention. }
+Function PDFParseMediaBoxWidth(Const Data: String; DictStart, DictEnd: LongInt; Var Found: Boolean): LongInt;
+Var
+ MBPos, ArrS, ArrE, P, NStart: LongInt;
+ Nums: Array[0..3] Of LongInt;
+ NCount: Integer;
+Begin
+ Found := False;
+ PDFParseMediaBoxWidth := 612;
+ MBPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'MediaBox');
+ If MBPos = 0 Then Exit;
+ ArrS := PDFPosFrom('[', Data, MBPos);
+ If (ArrS = 0) Or (ArrS > DictEnd) Then Exit;
+ ArrE := PDFPosFrom(']', Data, ArrS);
+ If (ArrE = 0) Or (ArrE > DictEnd) Then Exit;
+ NCount := 0;
+ P := ArrS + 1;
+ While (P < ArrE) And (NCount < 4) Do Begin
+  While (P < ArrE) And (Data[P] In [' ', #9, #13, #10]) Do Inc(P);
+  NStart := P;
+  While (P < ArrE) And (Data[P] In ['0'..'9', '.', '-', '+']) Do Inc(P);
+  If P > NStart Then Begin
+   Nums[NCount] := PDFStrToLongIntTrunc(Copy(Data, NStart, P - NStart));
+   Inc(NCount);
+  End Else
+   Inc(P);
+ End;
+ If NCount = 4 Then Begin
+  Found := True;
+  PDFParseMediaBoxWidth := Abs(Nums[2] - Nums[0]);
+ End;
+End;
+
+Function PDFGetPageWidth(Const Data: String; PageObjNum: LongInt): LongInt;
+Var
+ CurObj, Depth, Q: LongInt;
+ DictStart, DictEnd, ParentPos: LongInt;
+ Found: Boolean;
+ W: LongInt;
+Begin
+ PDFGetPageWidth := 612;
+ CurObj := PageObjNum;
+ Depth := 0;
+ While (CurObj > 0) And (Depth < 10) Do Begin
+  PDFGetObjectDict(Data, CurObj, DictStart, DictEnd);
+  If DictStart = 0 Then Exit;
+  W := PDFParseMediaBoxWidth(Data, DictStart, DictEnd, Found);
+  If Found Then Begin
+   PDFGetPageWidth := W;
+   Exit;
+  End;
+  ParentPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Parent');
+  If ParentPos = 0 Then Exit;
+  CurObj := PDFReadRefAt(Data, ParentPos, DictEnd, Q);
+  Inc(Depth);
+ End;
+End;
+
+{ Classification d'alignement approximative (0=gauche,1=centre,2=droite)
+  - voir la disclosure complete du module. Arithmetique entiere
+  (StartX*100 tient largement dans un LongInt pour des coordonnees PDF
+  realistes) plutot que flottante, par coherence avec le reste de ce
+  module. }
+Function PDFClassifyAlign(StartX, PageWidth: LongInt): Integer;
+Var
+ PctPos: LongInt;
+Begin
+ If PageWidth <= 0 Then Begin
+  PDFClassifyAlign := 0;
+  Exit;
+ End;
+ PctPos := (StartX * 100) Div PageWidth;
+ If PctPos < 20 Then PDFClassifyAlign := 0
+ Else If PctPos > 60 Then PDFClassifyAlign := 2
+ Else PDFClassifyAlign := 1;
+End;
+
+{ Retire un eventuel "?..." de fin d'URL (utilise pour le numero de page,
+  voir PDFParsePageQuery) afin d'obtenir l'URL de base du FICHIER PDF
+  reel (celle a effectivement telecharger/ouvrir). }
+Function PDFStripQuery(Const URL: String): String;
+Var
+ P: LongInt;
+Begin
+ P := Pos('?', URL);
+ If P > 0 Then PDFStripQuery := Copy(URL, 1, P - 1)
+ Else PDFStripQuery := URL;
+End;
+
+{ Lit "?page=N" (ou "&page=N") dans URL ; 1 par defaut si absent/invalide
+  - convention reelle utilisee par de nombreux lecteurs PDF web pour
+  cibler une page precise. }
+Function PDFParsePageQuery(Const URL: String): LongInt;
+Var
+ P, Q: LongInt;
+ NumStr: String;
+ V: LongInt;
+Begin
+ PDFParsePageQuery := 1;
+ P := PDFPosFrom('page=', URL, 1);
+ If P = 0 Then Exit;
+ Q := P + 5;
+ NumStr := '';
+ While (Q <= Length(URL)) And (URL[Q] In ['0'..'9']) Do Begin
+  NumStr := NumStr + URL[Q];
+  Inc(Q);
+ End;
+ If NumStr = '' Then Exit;
+ V := PDFStrToLongInt(NumStr);
+ If V >= 1 Then PDFParsePageQuery := V;
+End;
+
+{ Construit la page HTML de rendu (une section par page reelle, ou le
+  resultat de l'extraction de secours) pour tout le document PDF Data
+  (deja lu entierement en memoire). }
+Function PDFExtractText(Const Data: String; Const BaseURL: String; RequestedPage: LongInt;
+ Var HTMLOut: String): Boolean;
+Var
+ CatalogNamePos, DictS, DictE, PagesRef, P, Q, ArrE: LongInt;
+ PageDictS, PageDictE, ContentsPos, SingleContentsRef: LongInt;
+ LI, PageWidth, AlignId, PageIdx, TotalPages: LongInt;
+ ResDictS, ResDictE: LongInt;
+ AllHTML, AlignStr, LineHTML: String;
+ UsedFallback: Boolean;
+Begin
+ PDFExtractText := False;
+ HTMLOut := '';
+ PDFPageCount := 0;
+ PDFCollectCallCount := 0;
+ PDFResetPageAccumulation;
+
+ If Copy(Data, 1, 5) <> '%PDF-' Then Exit;
+ PDFBuildObjectIndex(Data);
+
+ UsedFallback := True;
+ CatalogNamePos := PDFPosFrom('/Catalog', Data, 1);
+ If CatalogNamePos > 0 Then Begin
+  DictS := PDFFindEnclosingDictStart(Data, CatalogNamePos);
+  If DictS > 0 Then Begin
+   DictE := PDFFindDictEnd(Data, DictS);
+   P := PDFDictKeyPos(Data, DictS, DictE, 'Pages');
+   If P > 0 Then Begin
+    PagesRef := PDFReadRefAt(Data, P, DictE, Q);
+    If PagesRef > 0 Then Begin
+     PDFCollectPagesRec(Data, PagesRef, 0);
+     If PDFPageCount > 0 Then UsedFallback := False;
+    End;
+   End;
+  End;
+ End;
+
+ AllHTML := '<html><head><title>' + FTPEscapeText(BrowserExtractFileExt(BaseURL)) +
+  ' - PDF</title></head><body>';
+ PageWidth := 612;
+
+ If Not UsedFallback Then Begin
+  TotalPages := PDFPageCount;
+  PageIdx := RequestedPage;
+  If PageIdx < 1 Then PageIdx := 1;
+  If PageIdx > TotalPages Then PageIdx := TotalPages;
+
+  PDFGetObjectDict(Data, PDFPageObjNums[PageIdx], PageDictS, PageDictE);
+  If PageDictS > 0 Then Begin
+   PageWidth := PDFGetPageWidth(Data, PDFPageObjNums[PageIdx]);
+   If Not PDFFindResourcesDict(Data, PDFPageObjNums[PageIdx], ResDictS, ResDictE) Then Begin
+    ResDictS := 0;
+    ResDictE := 0;
+   End;
+   ContentsPos := PDFDictKeyPos(Data, PageDictS, PageDictE, 'Contents');
+   If ContentsPos > 0 Then Begin
+    Q := ContentsPos;
+    While (Q <= PageDictE) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+    If (Q <= PageDictE) And (Data[Q] = '[') Then Begin
+     ArrE := PDFPosFrom(']', Data, Q);
+     If (ArrE > 0) And (ArrE <= PageDictE) Then Begin
+      P := Q + 1;
+      While P < ArrE Do Begin
+       SingleContentsRef := PDFReadRefAt(Data, P, ArrE, P);
+       If SingleContentsRef < 0 Then Break;
+       PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef, ResDictS, ResDictE);
+      End;
+     End;
+    End Else Begin
+     SingleContentsRef := PDFReadRefAt(Data, Q, PageDictE, P);
+     If SingleContentsRef > 0 Then
+      PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef, ResDictS, ResDictE);
+    End;
+   End;
+  End;
+  PDFFlushCurrentLine;
+
+  { Navigation REELLE (demande explicite de l'utilisateur - "il n'est pas
+    non plus possible de changer le numero de page") : Precedent/Suivant
+    en liens reels + formulaire "aller a la page" (soumission GET reelle,
+    reutilise l'infrastructure de formulaire deja existante). Chaque page
+    n'exige plus qu'UN SEUL de ces petits rendus HTML (voir disclosure du
+    module) au lieu du document geant d'avant - resout aussi la lenteur
+    constatee sur le document reel de l'utilisateur. }
+  AllHTML := AllHTML + '<p>';
+  If PageIdx > 1 Then
+   AllHTML := AllHTML + '<a href="' + BaseURL + '?page=' + IntToStr(PageIdx - 1) +
+    '">&lt;&lt; Page precedente</a> &nbsp; '
+  Else
+   AllHTML := AllHTML + '&lt;&lt; Page precedente &nbsp; ';
+  AllHTML := AllHTML + '<b>Page ' + IntToStr(PageIdx) + ' sur ' + IntToStr(TotalPages) + '</b> &nbsp; ';
+  If PageIdx < TotalPages Then
+   AllHTML := AllHTML + '<a href="' + BaseURL + '?page=' + IntToStr(PageIdx + 1) +
+    '">Page suivante &gt;&gt;</a>'
+  Else
+   AllHTML := AllHTML + 'Page suivante &gt;&gt;';
+  AllHTML := AllHTML + '</p><form action="' + BaseURL + '" method="get">' +
+   'Aller a la page : <input type="text" name="page" value="' + IntToStr(PageIdx) + '">' +
+   '<input type="submit" value="Aller"></form><hr>';
+
+  If PDFLineCount = 0 Then
+   AllHTML := AllHTML + '<p>(Aucun texte extrait pour cette page - probablement composee ' +
+    'd''images.)</p>'
+  Else
+   For LI := 1 To PDFLineCount Do Begin
+    AlignId := PDFClassifyAlign(PDFLines[LI].StartX, PageWidth);
+    Case AlignId Of
+     1: AlignStr := 'center';
+     2: AlignStr := 'right';
+     Else AlignStr := 'left';
+    End;
+    { Gras/italique approxime (2026-09-26, demande explicite de
+      l'utilisateur) - voir la disclosure de PDFResolveFontStyle. }
+    LineHTML := FTPEscapeText(PDFLines[LI].LineText);
+    If PDFLines[LI].IsBold Then LineHTML := '<b>' + LineHTML + '</b>';
+    If PDFLines[LI].IsItalic Then LineHTML := '<i>' + LineHTML + '</i>';
+    AllHTML := AllHTML + '<p style="text-align:' + AlignStr + '">' + LineHTML + '</p>';
+   End;
+ End Else Begin
+  PDFFallbackExtractAll(Data);
+  PDFFlushCurrentLine;
+  AllHTML := AllHTML + '<p><em>Structure de pages non reconnue (voir la disclosure ' +
+   'du module PDF) - extraction de secours : tous les flux de contenu ' +
+   'compresses du fichier, sans ordre de page ni navigation garantis dans ' +
+   'ce cas.</em></p><hr>';
+  If PDFLineCount = 0 Then
+   AllHTML := AllHTML + '<p>(Aucun texte extrait.)</p>'
+  Else
+   For LI := 1 To PDFLineCount Do
+    AllHTML := AllHTML + '<p>' + FTPEscapeText(PDFLines[LI].LineText) + '</p>';
+ End;
+
+ AllHTML := AllHTML + '</body></html>';
+ HTMLOut := AllHTML;
+ PDFExtractText := True;
+End;
+
+{ Point d'entree unique : lit FileName (chemin local, deja telecharge
+  dans un fichier temporaire pour une adresse distante - voir
+  DisplayCurrentTarget), extrait la page RequestedPage et produit le
+  HTML de rendu avec navigation reelle vers BaseURL?page=N. }
+Function Browser_PdfLoadAndRender(Const FileName, BaseURL: String; RequestedPage: LongInt;
+ Var HTMLOut: String): Boolean;
+Var
+ Data: String;
+Begin
+ Browser_PdfLoadAndRender := False;
+ Data := LoadTextFileAsString(FileName);
+ If Length(Data) = 0 Then Exit;
+ If Length(Data) > PDF_MAX_FILE_SIZE Then SetLength(Data, PDF_MAX_FILE_SIZE);
+ Browser_PdfLoadAndRender := PDFExtractText(Data, BaseURL, RequestedPage, HTMLOut);
+End;
+
+
+{ Obtenir la couleur d'un pixel dans une image PNG }
+Function PNGGetPixel(Const Img: PNGImage; X, Y: Integer): Byte;
+Var
+ Offset: LongInt;
+ DataPtr: ^Byte;
+ R, G, B: Byte;
+Begin
+ PNGGetPixel := 0;
+ If Not Img.Valid Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+
+ Offset := (LongInt(Y) * LongInt(Img.Width) + LongInt(X)) * 3;
+ DataPtr := Img.Data;
+ Inc(DataPtr, Offset);
+ R := DataPtr^;
+ Inc(DataPtr);
+ G := DataPtr^;
+ Inc(DataPtr);
+ B := DataPtr^;
+
+ PNGGetPixel := PNGRGBToVGAColor(R, G, B);
+End;
+
+{ Obtenir l'alpha d'un pixel dans une image PNG }
+Function PNGGetAlpha(Const Img: PNGImage; X, Y: Integer): Byte;
+Var
+ Offset: LongInt;
+ AlphaPtr: ^Byte;
+Begin
+ PNGGetAlpha := 255;  { Opaque par defaut }
+ If Not Img.Valid Then Exit;
+ If Not Img.HasAlpha Then Exit;
+ If Img.AlphaData = Nil Then Exit;
+ If (X < 0) Or (X >= Img.Width) Or (Y < 0) Or (Y >= Img.Height) Then Exit;
+
+ Offset := LongInt(Y) * LongInt(Img.Width) + LongInt(X);
+ AlphaPtr := Img.AlphaData;
+ Inc(AlphaPtr, Offset);
+ PNGGetAlpha := AlphaPtr^;
+End;
+
+{ Dessiner une image PNG a l'ecran }
+Procedure PNGDrawImage(Const Img: PNGImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Var
+ X, Y: Integer;
+ DrawWidth, DrawHeight: Integer;
+ PixelColor: Byte;
+ Alpha: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+
+ DrawWidth := Img.Width;
+ DrawHeight := Img.Height;
+
+ If DrawWidth > MaxWidth Then DrawWidth := MaxWidth;
+ If DrawHeight > MaxHeight Then DrawHeight := MaxHeight;
+
+ For Y := 0 To DrawHeight - 1 Do Begin
+  For X := 0 To DrawWidth - 1 Do Begin
+   If Img.HasAlpha Then Begin
+    Alpha := PNGGetAlpha(Img, X, Y);
+    If Alpha > 128 Then Begin
+     PixelColor := PNGGetPixel(Img, X, Y);
+     PutPixel(DestX + X, DestY + Y, PixelColor);
+    End;
+   End
+   Else Begin
+    PixelColor := PNGGetPixel(Img, X, Y);
+    PutPixel(DestX + X, DestY + Y, PixelColor);
+   End;
+  End;
+ End;
+End;
+
+{ Dessiner une image PNG avec mise a l'echelle }
+Procedure PNGDrawImageScaled(Const Img: PNGImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Var
+ X, Y: Integer;
+ SrcX, SrcY: Integer;
+ PixelColor: Byte;
+ Alpha: Byte;
+Begin
+ If Not Img.Valid Then Exit;
+ If (DestWidth <= 0) Or (DestHeight <= 0) Then Exit;
+
+ For Y := 0 To DestHeight - 1 Do Begin
+  SrcY := (Y * Img.Height) Div DestHeight;
+  For X := 0 To DestWidth - 1 Do Begin
+   SrcX := (X * Img.Width) Div DestWidth;
+   If Img.HasAlpha Then Begin
+    Alpha := PNGGetAlpha(Img, SrcX, SrcY);
+    If Alpha > 128 Then Begin
+     PixelColor := PNGGetPixel(Img, SrcX, SrcY);
+     PutPixel(DestX + X, DestY + Y, PixelColor);
+    End;
+   End
+   Else Begin
+    PixelColor := PNGGetPixel(Img, SrcX, SrcY);
+    PutPixel(DestX + X, DestY + Y, PixelColor);
+   End;
+  End;
+ End;
+End;
+
+{ Chercher une image PNG dans le cache }
+Function PNGFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ PNGFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If PNGImageCache[I].Used And (PNGImageCache[I].URL = URL) Then Begin
+   PNGFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image PNG au cache }
+Function PNGAddToCache(Const URL: String; Const Img: PNGImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ PNGAddToCache := 0;
+
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not PNGImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+
+ If Slot = 0 Then Begin
+  If PNGImageCache[1].Image.Valid Then
+   PNGFreeImage(PNGImageCache[1].Image);
+  Slot := 1;
+ End;
+
+ PNGImageCache[Slot].URL := URL;
+ PNGImageCache[Slot].Image := Img;
+ PNGImageCache[Slot].Used := True;
+ PNGAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image PNG }
+Function PNGBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  PNGBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  PNGBuildImagePath := Src;
+  Exit;
+ End;
+
+ BasePath := CurrentURL;
+
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ PNGBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN DECODEUR IMAGES PNG
+  ===================================================== }
+
+{ =====================================================
+  PARSEUR ET RENDU DE FICHIERS SVG (Scalable Vector Graphics)
+  ===================================================== }
+
+Const
+ { Types d'elements SVG }
+ SVG_ELEM_NONE = 0;
+ SVG_ELEM_SVG = 1;
+ SVG_ELEM_G = 2;
+ SVG_ELEM_RECT = 3;
+ SVG_ELEM_CIRCLE = 4;
+ SVG_ELEM_ELLIPSE = 5;
+ SVG_ELEM_LINE = 6;
+ SVG_ELEM_POLYLINE = 7;
+ SVG_ELEM_POLYGON = 8;
+ SVG_ELEM_PATH = 9;
+ SVG_ELEM_TEXT = 10;
+
+ { Commandes de chemin SVG }
+ SVG_CMD_MOVETO = 'M';
+ SVG_CMD_LINETO = 'L';
+ SVG_CMD_HLINETO = 'H';
+ SVG_CMD_VLINETO = 'V';
+ SVG_CMD_CURVETO = 'C';
+ SVG_CMD_SMOOTHCURVE = 'S';
+ SVG_CMD_QUADRATIC = 'Q';
+ SVG_CMD_SMOOTHQUAD = 'T';
+ SVG_CMD_ARC = 'A';
+ SVG_CMD_CLOSEPATH = 'Z';
+
+ { Taille maximale SVG }
+ SVG_MAX_WIDTH = 800;
+ SVG_MAX_HEIGHT = 600;
+ SVG_MAX_POINTS = 1024;
+ SVG_MAX_ELEMENTS = 256;
+
+Type
+ { Point 2D flottant }
+ SVGPoint = Record
+  X, Y: Real;
+ End;
+
+ { Matrice de transformation 2D }
+ SVGTransform = Record
+  A, B, C, D, E, F: Real;  { a b c d e f - matrice 3x3 }
+ End;
+
+ { Style SVG }
+ SVGStyle = Record
+  Fill: LongInt;        { Couleur de remplissage (-1 = none) }
+  Stroke: LongInt;      { Couleur de contour (-1 = none) }
+  StrokeWidth: Real;    { Largeur du contour }
+  Opacity: Real;        { Opacite 0.0 - 1.0 }
+  FillOpacity: Real;
+  StrokeOpacity: Real;
+ End;
+
+ { Element SVG de base }
+ SVGElementPtr = ^SVGElement;
+ SVGElement = Record
+  ElemType: Integer;
+  Style: SVGStyle;
+  Transform: SVGTransform;
+  { Proprietes specifiques selon le type }
+  X, Y: Real;           { Position }
+  Width, Height: Real;  { Dimensions }
+  RX, RY: Real;         { Rayons (pour rect arrondi, ellipse) }
+  X1, Y1, X2, Y2: Real; { Points (pour line) }
+  Points: Array[0..SVG_MAX_POINTS - 1] Of SVGPoint;
+  PointCount: Integer;
+  PathData: String;     { Donnees du chemin }
+  TextContent: String;  { Contenu texte }
+  Children: Array[0..31] Of SVGElementPtr;
+  ChildCount: Integer;
+  Parent: SVGElementPtr;
+ End;
+
+ { Image SVG complete }
+ SVGImage = Record
+  Width: Integer;
+  Height: Integer;
+  ViewBoxX, ViewBoxY: Real;
+  ViewBoxW, ViewBoxH: Real;
+  HasViewBox: Boolean;
+  Root: SVGElementPtr;
+  Elements: Array[0..SVG_MAX_ELEMENTS - 1] Of SVGElement;
+  ElementCount: Integer;
+  Valid: Boolean;
+ End;
+
+ SVGImagePtr = ^SVGImage;
+
+Var
+ { Cache d'images SVG }
+ SVGImageCache: Array[1..16] Of Record
+  URL: String[255];
+  Image: SVGImage;
+  Used: Boolean;
+ End;
+ SVGImageCacheCount: Integer;
+
+{ Initialiser le cache SVG }
+Procedure SVGInitCache;
+Var
+ I: Integer;
+Begin
+ For I := 1 To 16 Do Begin
+  SVGImageCache[I].URL := '';
+  SVGImageCache[I].Used := False;
+  SVGImageCache[I].Image.Valid := False;
+  SVGImageCache[I].Image.Root := Nil;
+ End;
+ SVGImageCacheCount := 0;
+End;
+
+{ Initialiser une transformation identite }
+Procedure SVGInitTransform(Var T: SVGTransform);
+Begin
+ T.A := 1.0; T.B := 0.0;
+ T.C := 0.0; T.D := 1.0;
+ T.E := 0.0; T.F := 0.0;
+End;
+
+{ Initialiser un style par defaut }
+Procedure SVGInitStyle(Var S: SVGStyle);
+Begin
+ S.Fill := 0;           { Noir }
+ S.Stroke := -1;        { Pas de contour }
+ S.StrokeWidth := 1.0;
+ S.Opacity := 1.0;
+ S.FillOpacity := 1.0;
+ S.StrokeOpacity := 1.0;
+End;
+
+{ Convertir une couleur SVG en couleur VGA }
+Function SVGColorToVGA(Color: LongInt): Byte;
+Var
+ R, G, B: Byte;
+ BestColor, BestDist, Dist: LongInt;
+ I: Integer;
+Const
+ VGAPalette: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       { 0: Noir }
+  (0, 0, 170),     { 1: Bleu }
+  (0, 170, 0),     { 2: Vert }
+  (0, 170, 170),   { 3: Cyan }
+  (170, 0, 0),     { 4: Rouge }
+  (170, 0, 170),   { 5: Magenta }
+  (170, 85, 0),    { 6: Marron }
+  (170, 170, 170), { 7: Gris clair }
+  (85, 85, 85),    { 8: Gris fonce }
+  (85, 85, 255),   { 9: Bleu clair }
+  (85, 255, 85),   { 10: Vert clair }
+  (85, 255, 255),  { 11: Cyan clair }
+  (255, 85, 85),   { 12: Rouge clair }
+  (255, 85, 255),  { 13: Magenta clair }
+  (255, 255, 85),  { 14: Jaune }
+  (255, 255, 255)  { 15: Blanc }
+ );
+Begin
+ If Color < 0 Then Begin
+  SVGColorToVGA := 255; { Transparent }
+  Exit;
+ End;
+
+ R := (Color Shr 16) And $FF;
+ G := (Color Shr 8) And $FF;
+ B := Color And $FF;
+
+ BestColor := 0;
+ BestDist := 256 * 256 * 3;
+
+ For I := 0 To 15 Do Begin
+  Dist := (Integer(R) - Integer(VGAPalette[I, 0])) *
+          (Integer(R) - Integer(VGAPalette[I, 0])) +
+          (Integer(G) - Integer(VGAPalette[I, 1])) *
+          (Integer(G) - Integer(VGAPalette[I, 1])) +
+          (Integer(B) - Integer(VGAPalette[I, 2])) *
+          (Integer(B) - Integer(VGAPalette[I, 2]));
+  If Dist < BestDist Then Begin
+   BestDist := Dist;
+   BestColor := I;
+  End;
+ End;
+
+ If BestColor = 0 Then SVGColorToVGA := HTMLBlackColorIndex
+ Else SVGColorToVGA := BestColor;
+End;
+
+{ Parser une couleur SVG (hex, rgb, nommee) }
+Function SVGParseColor(Const S: String): LongInt;
+Var
+ Temp: String;
+ R, G, B: Integer;
+ Code: Integer;
+ I, J: Integer;
+Begin
+ SVGParseColor := 0;  { Noir par defaut }
+
+ If Length(S) = 0 Then Exit;
+
+ Temp := HTMLLowerCase(S);
+
+ { Couleur "none" = transparent }
+ If Temp = 'none' Then Begin
+  SVGParseColor := -1;
+  Exit;
+ End;
+
+ { Format hexadecimal #RRGGBB ou #RGB }
+ If S[1] = '#' Then Begin
+  If Length(S) = 7 Then Begin
+   Val('$' + Copy(S, 2, 2), R, Code);
+   Val('$' + Copy(S, 4, 2), G, Code);
+   Val('$' + Copy(S, 6, 2), B, Code);
+   SVGParseColor := (LongInt(R) Shl 16) Or (LongInt(G) Shl 8) Or LongInt(B);
+  End
+  Else If Length(S) = 4 Then Begin
+   Val('$' + S[2] + S[2], R, Code);
+   Val('$' + S[3] + S[3], G, Code);
+   Val('$' + S[4] + S[4], B, Code);
+   SVGParseColor := (LongInt(R) Shl 16) Or (LongInt(G) Shl 8) Or LongInt(B);
+  End;
+  Exit;
+ End;
+
+ { Format rgb(r,g,b) }
+ If Copy(Temp, 1, 4) = 'rgb(' Then Begin
+  Temp := Copy(S, 5, Length(S) - 5);
+  I := Pos(',', Temp);
+  If I > 0 Then Begin
+   Val(Copy(Temp, 1, I - 1), R, Code);
+   Delete(Temp, 1, I);
+   I := Pos(',', Temp);
+   If I > 0 Then Begin
+    Val(Copy(Temp, 1, I - 1), G, Code);
+    Delete(Temp, 1, I);
+    Val(Temp, B, Code);
+    SVGParseColor := (LongInt(R) Shl 16) Or (LongInt(G) Shl 8) Or LongInt(B);
+   End;
+  End;
+  Exit;
+ End;
+
+ { Couleurs nommees }
+ If Temp = 'black' Then SVGParseColor := $000000
+ Else If Temp = 'white' Then SVGParseColor := $FFFFFF
+ Else If Temp = 'red' Then SVGParseColor := $FF0000
+ Else If Temp = 'green' Then SVGParseColor := $008000
+ Else If Temp = 'blue' Then SVGParseColor := $0000FF
+ Else If Temp = 'yellow' Then SVGParseColor := $FFFF00
+ Else If Temp = 'cyan' Then SVGParseColor := $00FFFF
+ Else If Temp = 'magenta' Then SVGParseColor := $FF00FF
+ Else If Temp = 'orange' Then SVGParseColor := $FFA500
+ Else If Temp = 'purple' Then SVGParseColor := $800080
+ Else If Temp = 'gray' Then SVGParseColor := $808080
+ Else If Temp = 'grey' Then SVGParseColor := $808080
+ Else If Temp = 'silver' Then SVGParseColor := $C0C0C0
+ Else If Temp = 'navy' Then SVGParseColor := $000080
+ Else If Temp = 'teal' Then SVGParseColor := $008080
+ Else If Temp = 'olive' Then SVGParseColor := $808000
+ Else If Temp = 'maroon' Then SVGParseColor := $800000
+ Else If Temp = 'lime' Then SVGParseColor := $00FF00
+ Else If Temp = 'aqua' Then SVGParseColor := $00FFFF
+ Else If Temp = 'fuchsia' Then SVGParseColor := $FF00FF
+ Else If Temp = 'pink' Then SVGParseColor := $FFC0CB
+ Else If Temp = 'brown' Then SVGParseColor := $A52A2A
+ Else If Temp = 'coral' Then SVGParseColor := $FF7F50
+ Else If Temp = 'gold' Then SVGParseColor := $FFD700
+ Else If Temp = 'lightgray' Then SVGParseColor := $D3D3D3
+ Else If Temp = 'darkgray' Then SVGParseColor := $A9A9A9;
+End;
+
+{ Parser un nombre reel }
+Function SVGParseNumber(Const S: String; Var Pos: Integer): Real;
+Var
+ Start: Integer;
+ NumStr: String;
+ Code: Integer;
+ Value: Real;
+Begin
+ SVGParseNumber := 0.0;
+
+ { Sauter les espaces et separateurs }
+ While (Pos <= Length(S)) And (S[Pos] In [' ', ',', #9, #10, #13]) Do
+  Inc(Pos);
+
+ If Pos > Length(S) Then Exit;
+
+ Start := Pos;
+
+ { Signe optionnel }
+ If (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Then Inc(Pos);
+
+ { Partie entiere }
+ While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do Inc(Pos);
+
+ { Partie decimale }
+ If (Pos <= Length(S)) And (S[Pos] = '.') Then Begin
+  Inc(Pos);
+  While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do Inc(Pos);
+ End;
+
+ { Exposant }
+ If (Pos <= Length(S)) And (S[Pos] In ['e', 'E']) Then Begin
+  Inc(Pos);
+  If (Pos <= Length(S)) And (S[Pos] In ['+', '-']) Then Inc(Pos);
+  While (Pos <= Length(S)) And (S[Pos] In ['0'..'9']) Do Inc(Pos);
+ End;
+
+ NumStr := Copy(S, Start, Pos - Start);
+ Val(NumStr, Value, Code);
+ If Code = 0 Then SVGParseNumber := Value;
+End;
+
+{ Sauter les espaces }
+Procedure SVGSkipWhitespace(Const S: String; Var Pos: Integer);
+Begin
+ While (Pos <= Length(S)) And (S[Pos] In [' ', ',', #9, #10, #13]) Do
+  Inc(Pos);
+End;
+
+{ Appliquer une transformation a un point }
+Procedure SVGTransformPoint(Const T: SVGTransform; Var P: SVGPoint);
+Var
+ NewX, NewY: Real;
+Begin
+ NewX := T.A * P.X + T.C * P.Y + T.E;
+ NewY := T.B * P.X + T.D * P.Y + T.F;
+ P.X := NewX;
+ P.Y := NewY;
+End;
+
+{ Multiplier deux transformations }
+Procedure SVGMultiplyTransform(Const T1, T2: SVGTransform; Var Result: SVGTransform);
+Begin
+ Result.A := T1.A * T2.A + T1.C * T2.B;
+ Result.B := T1.B * T2.A + T1.D * T2.B;
+ Result.C := T1.A * T2.C + T1.C * T2.D;
+ Result.D := T1.B * T2.C + T1.D * T2.D;
+ Result.E := T1.A * T2.E + T1.C * T2.F + T1.E;
+ Result.F := T1.B * T2.E + T1.D * T2.F + T1.F;
+End;
+
+{ Dessiner une ligne avec transformation }
+Procedure SVGDrawLine(X1, Y1, X2, Y2: Integer; Color: Byte;
+                       OffsetX, OffsetY: Integer);
+Var
+ DX, DY, Steps, I: Integer;
+ XInc, YInc: Real;
+ X, Y: Real;
+Begin
+ If Color = 255 Then Exit; { Transparent }
+
+ DX := X2 - X1;
+ DY := Y2 - Y1;
+
+ If Abs(DX) > Abs(DY) Then Steps := Abs(DX)
+ Else Steps := Abs(DY);
+
+ If Steps = 0 Then Begin
+  PutPixel(OffsetX + X1, OffsetY + Y1, Color);
+  Exit;
+ End;
+
+ XInc := DX / Steps;
+ YInc := DY / Steps;
+ X := X1;
+ Y := Y1;
+
+ For I := 0 To Steps Do Begin
+  PutPixel(OffsetX + Round(X), OffsetY + Round(Y), Color);
+  X := X + XInc;
+  Y := Y + YInc;
+ End;
+End;
+
+{ Dessiner un rectangle }
+Procedure SVGDrawRect(X, Y, W, H: Integer; FillColor, StrokeColor: Byte;
+                       OffsetX, OffsetY: Integer);
+Var
+ I, J: Integer;
+Begin
+ { Remplissage }
+ If FillColor <> 255 Then Begin
+  For J := Y To Y + H - 1 Do
+   For I := X To X + W - 1 Do
+    PutPixel(OffsetX + I, OffsetY + J, FillColor);
+ End;
+
+ { Contour }
+ If StrokeColor <> 255 Then Begin
+  { Haut et bas }
+  For I := X To X + W - 1 Do Begin
+   PutPixel(OffsetX + I, OffsetY + Y, StrokeColor);
+   PutPixel(OffsetX + I, OffsetY + Y + H - 1, StrokeColor);
+  End;
+  { Gauche et droite }
+  For J := Y To Y + H - 1 Do Begin
+   PutPixel(OffsetX + X, OffsetY + J, StrokeColor);
+   PutPixel(OffsetX + X + W - 1, OffsetY + J, StrokeColor);
+  End;
+ End;
+End;
+
+{ Dessiner un cercle (algorithme de Bresenham) }
+Procedure SVGDrawCircle(CX, CY, R: Integer; FillColor, StrokeColor: Byte;
+                         OffsetX, OffsetY: Integer);
+Var
+ X, Y, D: Integer;
+ I: Integer;
+Begin
+ If R <= 0 Then Exit;
+
+ { Remplissage par lignes horizontales }
+ If FillColor <> 255 Then Begin
+  For Y := -R To R Do Begin
+   X := Round(Sqrt(R * R - Y * Y));
+   For I := CX - X To CX + X Do
+    PutPixel(OffsetX + I, OffsetY + CY + Y, FillColor);
+  End;
+ End;
+
+ { Contour avec algorithme de Bresenham }
+ If StrokeColor <> 255 Then Begin
+  X := 0;
+  Y := R;
+  D := 3 - 2 * R;
+
+  While X <= Y Do Begin
+   PutPixel(OffsetX + CX + X, OffsetY + CY + Y, StrokeColor);
+   PutPixel(OffsetX + CX - X, OffsetY + CY + Y, StrokeColor);
+   PutPixel(OffsetX + CX + X, OffsetY + CY - Y, StrokeColor);
+   PutPixel(OffsetX + CX - X, OffsetY + CY - Y, StrokeColor);
+   PutPixel(OffsetX + CX + Y, OffsetY + CY + X, StrokeColor);
+   PutPixel(OffsetX + CX - Y, OffsetY + CY + X, StrokeColor);
+   PutPixel(OffsetX + CX + Y, OffsetY + CY - X, StrokeColor);
+   PutPixel(OffsetX + CX - Y, OffsetY + CY - X, StrokeColor);
+
+   If D < 0 Then
+    D := D + 4 * X + 6
+   Else Begin
+    D := D + 4 * (X - Y) + 10;
+    Dec(Y);
+   End;
+   Inc(X);
+  End;
+ End;
+End;
+
+{ Dessiner une ellipse }
+Procedure SVGDrawEllipse(CX, CY, RX, RY: Integer; FillColor, StrokeColor: Byte;
+                          OffsetX, OffsetY: Integer);
+Var
+ X, Y: Integer;
+ XLen: Integer;
+Begin
+ If (RX <= 0) Or (RY <= 0) Then Exit;
+
+ { Remplissage par lignes horizontales }
+ If FillColor <> 255 Then Begin
+  For Y := -RY To RY Do Begin
+   XLen := Round(RX * Sqrt(1 - (Y * Y) / (RY * RY)));
+   For X := CX - XLen To CX + XLen Do
+    PutPixel(OffsetX + X, OffsetY + CY + Y, FillColor);
+  End;
+ End;
+
+ { Contour approximatif }
+ If StrokeColor <> 255 Then Begin
+  For Y := -RY To RY Do Begin
+   XLen := Round(RX * Sqrt(1 - (Y * Y) / (RY * RY)));
+   PutPixel(OffsetX + CX - XLen, OffsetY + CY + Y, StrokeColor);
+   PutPixel(OffsetX + CX + XLen, OffsetY + CY + Y, StrokeColor);
+  End;
+ End;
+End;
+
+{ Dessiner un polygone rempli (scanline) }
+Procedure SVGDrawPolygon(Const Points: Array Of SVGPoint; Count: Integer;
+                          FillColor, StrokeColor: Byte;
+                          OffsetX, OffsetY: Integer);
+Var
+ MinY, MaxY, Y: Integer;
+ I, J: Integer;
+ X1, Y1, X2, Y2: Integer;
+ Intersections: Array[0..255] Of Integer;
+ IntCount: Integer;
+ Temp: Integer;
+Begin
+ If Count < 3 Then Exit;
+
+ { Trouver les bornes Y }
+ MinY := Round(Points[0].Y);
+ MaxY := MinY;
+ For I := 1 To Count - 1 Do Begin
+  If Round(Points[I].Y) < MinY Then MinY := Round(Points[I].Y);
+  If Round(Points[I].Y) > MaxY Then MaxY := Round(Points[I].Y);
+ End;
+
+ { Remplissage par scanline }
+ If FillColor <> 255 Then Begin
+  For Y := MinY To MaxY Do Begin
+   IntCount := 0;
+   J := Count - 1;
+   For I := 0 To Count - 1 Do Begin
+    Y1 := Round(Points[J].Y);
+    Y2 := Round(Points[I].Y);
+    If ((Y1 <= Y) And (Y2 > Y)) Or ((Y2 <= Y) And (Y1 > Y)) Then Begin
+     X1 := Round(Points[J].X);
+     X2 := Round(Points[I].X);
+     If IntCount < 256 Then Begin
+      Intersections[IntCount] := X1 + ((Y - Y1) * (X2 - X1)) Div (Y2 - Y1);
+      Inc(IntCount);
+     End;
+    End;
+    J := I;
+   End;
+
+   { Trier les intersections }
+   For I := 0 To IntCount - 2 Do
+    For J := I + 1 To IntCount - 1 Do
+     If Intersections[I] > Intersections[J] Then Begin
+      Temp := Intersections[I];
+      Intersections[I] := Intersections[J];
+      Intersections[J] := Temp;
+     End;
+
+   { Remplir entre les paires d'intersections }
+   I := 0;
+   While I < IntCount - 1 Do Begin
+    For J := Intersections[I] To Intersections[I + 1] Do
+     PutPixel(OffsetX + J, OffsetY + Y, FillColor);
+    Inc(I, 2);
+   End;
+  End;
+ End;
+
+ { Contour }
+ If StrokeColor <> 255 Then Begin
+  For I := 0 To Count - 1 Do Begin
+   J := (I + 1) Mod Count;
+   SVGDrawLine(Round(Points[I].X), Round(Points[I].Y),
+               Round(Points[J].X), Round(Points[J].Y),
+               StrokeColor, OffsetX, OffsetY);
+  End;
+ End;
+End;
+
+{ Parser les donnees d'un chemin SVG }
+Procedure SVGParsePath(Const D: String; Var Points: Array Of SVGPoint;
+                        Var PointCount: Integer);
+Var
+ Pos: Integer;
+ Cmd: Char;
+ IsRelative: Boolean;
+ CurX, CurY: Real;
+ StartX, StartY: Real;
+ X, Y, X1, Y1, X2, Y2: Real;
+ LastCmd: Char;
+Begin
+ PointCount := 0;
+ Pos := 1;
+ CurX := 0; CurY := 0;
+ StartX := 0; StartY := 0;
+ LastCmd := ' ';
+
+ While Pos <= Length(D) Do Begin
+  SVGSkipWhitespace(D, Pos);
+  If Pos > Length(D) Then Break;
+
+  { Lire la commande }
+  If D[Pos] In ['M', 'm', 'L', 'l', 'H', 'h', 'V', 'v', 'C', 'c',
+                'S', 's', 'Q', 'q', 'T', 't', 'A', 'a', 'Z', 'z'] Then Begin
+   Cmd := D[Pos];
+   Inc(Pos);
+  End
+  Else
+   Cmd := LastCmd;
+
+  IsRelative := Cmd In ['m', 'l', 'h', 'v', 'c', 's', 'q', 't', 'a', 'z'];
+  Cmd := UpCase(Cmd);
+
+  Case Cmd Of
+   'M': Begin { MoveTo }
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     CurX := CurX + X;
+     CurY := CurY + Y;
+    End
+    Else Begin
+     CurX := X;
+     CurY := Y;
+    End;
+    StartX := CurX;
+    StartY := CurY;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := 'L'; { Suivants implicites = LineTo }
+   End;
+
+   'L': Begin { LineTo }
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     CurX := CurX + X;
+     CurY := CurY + Y;
+    End
+    Else Begin
+     CurX := X;
+     CurY := Y;
+    End;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'H': Begin { Horizontal LineTo }
+    X := SVGParseNumber(D, Pos);
+    If IsRelative Then CurX := CurX + X
+    Else CurX := X;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'V': Begin { Vertical LineTo }
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then CurY := CurY + Y
+    Else CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'C': Begin { Cubic Bezier - approximer par segments }
+    X1 := SVGParseNumber(D, Pos);
+    Y1 := SVGParseNumber(D, Pos);
+    X2 := SVGParseNumber(D, Pos);
+    Y2 := SVGParseNumber(D, Pos);
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X1 := CurX + X1; Y1 := CurY + Y1;
+     X2 := CurX + X2; Y2 := CurY + Y2;
+     X := CurX + X; Y := CurY + Y;
+    End;
+    { Approximation lineaire du point final }
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'S': Begin { Smooth Cubic Bezier }
+    X2 := SVGParseNumber(D, Pos);
+    Y2 := SVGParseNumber(D, Pos);
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X2 := CurX + X2; Y2 := CurY + Y2;
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'Q': Begin { Quadratic Bezier }
+    X1 := SVGParseNumber(D, Pos);
+    Y1 := SVGParseNumber(D, Pos);
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X1 := CurX + X1; Y1 := CurY + Y1;
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'T': Begin { Smooth Quadratic Bezier }
+    X := SVGParseNumber(D, Pos);
+    Y := SVGParseNumber(D, Pos);
+    If IsRelative Then Begin
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'A': Begin { Arc - approximer par ligne directe }
+    { Sauter rx, ry, x-axis-rotation, large-arc-flag, sweep-flag }
+    X1 := SVGParseNumber(D, Pos); { rx }
+    Y1 := SVGParseNumber(D, Pos); { ry }
+    X2 := SVGParseNumber(D, Pos); { x-axis-rotation }
+    X := SVGParseNumber(D, Pos);  { large-arc-flag }
+    Y := SVGParseNumber(D, Pos);  { sweep-flag }
+    X := SVGParseNumber(D, Pos);  { x }
+    Y := SVGParseNumber(D, Pos);  { y }
+    If IsRelative Then Begin
+     X := CurX + X; Y := CurY + Y;
+    End;
+    CurX := X;
+    CurY := Y;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   'Z': Begin { ClosePath }
+    CurX := StartX;
+    CurY := StartY;
+    If PointCount < SVG_MAX_POINTS Then Begin
+     Points[PointCount].X := CurX;
+     Points[PointCount].Y := CurY;
+     Inc(PointCount);
+    End;
+    LastCmd := Cmd;
+   End;
+
+   Else Inc(Pos); { Caractere inconnu }
+  End;
+ End;
+End;
+
+{ Extraire un attribut d'un element XML }
+Function SVGGetAttribute(Const Element, AttrName: String): String;
+Var
+ Pos, StartPos, EndPos: Integer;
+ AttrLower: String;
+ C: Char;
+Begin
+ SVGGetAttribute := '';
+ AttrLower := HTMLLowerCase(AttrName) + '=';
+ Pos := 1;
+
+ While Pos <= Length(Element) Do Begin
+  If HTMLLowerCase(Copy(Element, Pos, Length(AttrLower))) = AttrLower Then Begin
+   Inc(Pos, Length(AttrLower));
+   If Pos > Length(Element) Then Exit;
+   C := Element[Pos];
+   If C In ['"', ''''] Then Begin
+    Inc(Pos);
+    StartPos := Pos;
+    While (Pos <= Length(Element)) And (Element[Pos] <> C) Do Inc(Pos);
+    SVGGetAttribute := Copy(Element, StartPos, Pos - StartPos);
+    Exit;
+   End;
+  End
+  Else
+   Inc(Pos);
+ End;
+End;
+
+{ Charger une image SVG depuis un fichier }
+Function SVGLoadFromFile(Const FileName: String; Var Img: SVGImage): Boolean;
+Var
+ F: Text;
+ Line, Content, Element, TagName: String;
+ Pos, TagStart, TagEnd: Integer;
+ InTag: Boolean;
+ CurElem: SVGElementPtr;
+ Temp: String;
+ Code: Integer;
+ I: Integer;
+Begin
+ SVGLoadFromFile := False;
+ Img.Valid := False;
+ Img.ElementCount := 0;
+ Img.Root := Nil;
+ Img.Width := 100;
+ Img.Height := 100;
+ Img.HasViewBox := False;
+
+ { Ouvrir le fichier }
+ {$I-}
+ Assign(F, FileName);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ { Lire tout le contenu }
+ Content := '';
+ While Not EOF(F) Do Begin
+  ReadLn(F, Line);
+  Content := Content + Line + ' ';
+ End;
+ Close(F);
+
+ { Parser les elements SVG }
+ Pos := 1;
+ While Pos <= Length(Content) Do Begin
+  { Chercher le debut d'un tag }
+  TagStart := Pos;
+  While (TagStart <= Length(Content)) And (Content[TagStart] <> '<') Do
+   Inc(TagStart);
+  If TagStart > Length(Content) Then Break;
+
+  { Chercher la fin du tag }
+  TagEnd := TagStart + 1;
+  While (TagEnd <= Length(Content)) And (Content[TagEnd] <> '>') Do
+   Inc(TagEnd);
+  If TagEnd > Length(Content) Then Break;
+
+  Element := Copy(Content, TagStart + 1, TagEnd - TagStart - 1);
+  Pos := TagEnd + 1;
+
+  { Ignorer les commentaires et declarations }
+  If (Length(Element) > 0) And ((Element[1] = '!') Or (Element[1] = '?')) Then
+   Continue;
+
+  { Ignorer les tags de fermeture }
+  If (Length(Element) > 0) And (Element[1] = '/') Then Continue;
+
+  { Extraire le nom du tag }
+  TagName := '';
+  I := 1;
+  While (I <= Length(Element)) And Not (Element[I] In [' ', '/', '>']) Do Begin
+   TagName := TagName + Element[I];
+   Inc(I);
+  End;
+  TagName := HTMLLowerCase(TagName);
+
+  { Traiter les elements }
+  If TagName = 'svg' Then Begin
+   { Element racine SVG }
+   Temp := SVGGetAttribute(Element, 'width');
+   If Length(Temp) > 0 Then Begin
+    Val(Temp, Img.Width, Code);
+    If Code <> 0 Then Img.Width := 100;
+   End;
+   Temp := SVGGetAttribute(Element, 'height');
+   If Length(Temp) > 0 Then Begin
+    Val(Temp, Img.Height, Code);
+    If Code <> 0 Then Img.Height := 100;
+   End;
+   Temp := SVGGetAttribute(Element, 'viewBox');
+   If Length(Temp) > 0 Then Begin
+    Img.HasViewBox := True;
+    I := 1;
+    Img.ViewBoxX := SVGParseNumber(Temp, I);
+    Img.ViewBoxY := SVGParseNumber(Temp, I);
+    Img.ViewBoxW := SVGParseNumber(Temp, I);
+    Img.ViewBoxH := SVGParseNumber(Temp, I);
+   End;
+  End
+
+  Else If (TagName = 'rect') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_RECT;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'x');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X := SVGParseNumber(Temp, I); End
+   Else CurElem^.X := 0;
+
+   Temp := SVGGetAttribute(Element, 'y');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y := 0;
+
+   Temp := SVGGetAttribute(Element, 'width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Width := SVGParseNumber(Temp, I); End
+   Else CurElem^.Width := 0;
+
+   Temp := SVGGetAttribute(Element, 'height');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Height := SVGParseNumber(Temp, I); End
+   Else CurElem^.Height := 0;
+
+   Temp := SVGGetAttribute(Element, 'rx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RX := SVGParseNumber(Temp, I); End
+   Else CurElem^.RX := 0;
+
+   Temp := SVGGetAttribute(Element, 'ry');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RY := SVGParseNumber(Temp, I); End
+   Else CurElem^.RY := 0;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'circle') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_CIRCLE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'cx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X := SVGParseNumber(Temp, I); End
+   Else CurElem^.X := 0;
+
+   Temp := SVGGetAttribute(Element, 'cy');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y := 0;
+
+   Temp := SVGGetAttribute(Element, 'r');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RX := SVGParseNumber(Temp, I); End
+   Else CurElem^.RX := 0;
+   CurElem^.RY := CurElem^.RX;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'ellipse') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_ELLIPSE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'cx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X := SVGParseNumber(Temp, I); End
+   Else CurElem^.X := 0;
+
+   Temp := SVGGetAttribute(Element, 'cy');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y := 0;
+
+   Temp := SVGGetAttribute(Element, 'rx');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RX := SVGParseNumber(Temp, I); End
+   Else CurElem^.RX := 0;
+
+   Temp := SVGGetAttribute(Element, 'ry');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.RY := SVGParseNumber(Temp, I); End
+   Else CurElem^.RY := 0;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'line') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_LINE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'x1');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X1 := SVGParseNumber(Temp, I); End
+   Else CurElem^.X1 := 0;
+
+   Temp := SVGGetAttribute(Element, 'y1');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y1 := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y1 := 0;
+
+   Temp := SVGGetAttribute(Element, 'x2');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.X2 := SVGParseNumber(Temp, I); End
+   Else CurElem^.X2 := 0;
+
+   Temp := SVGGetAttribute(Element, 'y2');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Y2 := SVGParseNumber(Temp, I); End
+   Else CurElem^.Y2 := 0;
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp)
+   Else CurElem^.Style.Stroke := 0; { Noir par defaut }
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If ((TagName = 'polygon') Or (TagName = 'polyline')) And
+          (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   If TagName = 'polygon' Then CurElem^.ElemType := SVG_ELEM_POLYGON
+   Else CurElem^.ElemType := SVG_ELEM_POLYLINE;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'points');
+   If Length(Temp) > 0 Then Begin
+    CurElem^.PointCount := 0;
+    I := 1;
+    While I <= Length(Temp) Do Begin
+     SVGSkipWhitespace(Temp, I);
+     If I > Length(Temp) Then Break;
+     If CurElem^.PointCount < SVG_MAX_POINTS Then Begin
+      CurElem^.Points[CurElem^.PointCount].X := SVGParseNumber(Temp, I);
+      CurElem^.Points[CurElem^.PointCount].Y := SVGParseNumber(Temp, I);
+      Inc(CurElem^.PointCount);
+     End
+     Else Break;
+    End;
+   End;
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Inc(Img.ElementCount);
+  End
+
+  Else If (TagName = 'path') And (Img.ElementCount < SVG_MAX_ELEMENTS) Then Begin
+   CurElem := @Img.Elements[Img.ElementCount];
+   CurElem^.ElemType := SVG_ELEM_PATH;
+   SVGInitStyle(CurElem^.Style);
+   SVGInitTransform(CurElem^.Transform);
+
+   Temp := SVGGetAttribute(Element, 'd');
+   If Length(Temp) > 0 Then
+    SVGParsePath(Temp, CurElem^.Points, CurElem^.PointCount);
+
+   Temp := SVGGetAttribute(Element, 'fill');
+   If Length(Temp) > 0 Then CurElem^.Style.Fill := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke');
+   If Length(Temp) > 0 Then CurElem^.Style.Stroke := SVGParseColor(Temp);
+
+   Temp := SVGGetAttribute(Element, 'stroke-width');
+   If Length(Temp) > 0 Then Begin I := 1; CurElem^.Style.StrokeWidth := SVGParseNumber(Temp, I); End;
+
+   Inc(Img.ElementCount);
+  End;
+ End;
+
+ Img.Valid := True;
+ SVGLoadFromFile := True;
+End;
+
+{ Dessiner une image SVG }
+Procedure SVGDrawImage(Const Img: SVGImage; DestX, DestY: Integer;
+                        MaxWidth, MaxHeight: Integer);
+Var
+ I: Integer;
+ Elem: SVGElementPtr;
+ FillColor, StrokeColor: Byte;
+ ScaleX, ScaleY: Real;
+ X, Y, W, H, RX, RY: Integer;
+ X1, Y1, X2, Y2: Integer;
+Begin
+ If Not Img.Valid Then Exit;
+
+ { Calculer l'echelle }
+ ScaleX := 1.0;
+ ScaleY := 1.0;
+ If Img.HasViewBox And (Img.ViewBoxW > 0) And (Img.ViewBoxH > 0) Then Begin
+  ScaleX := MaxWidth / Img.ViewBoxW;
+  ScaleY := MaxHeight / Img.ViewBoxH;
+ End
+ Else If (Img.Width > 0) And (Img.Height > 0) Then Begin
+  ScaleX := MaxWidth / Img.Width;
+  ScaleY := MaxHeight / Img.Height;
+ End;
+
+ { Dessiner chaque element }
+ For I := 0 To Img.ElementCount - 1 Do Begin
+  Elem := @Img.Elements[I];
+  FillColor := SVGColorToVGA(Elem^.Style.Fill);
+  StrokeColor := SVGColorToVGA(Elem^.Style.Stroke);
+
+  Case Elem^.ElemType Of
+   SVG_ELEM_RECT: Begin
+    X := Round(Elem^.X * ScaleX);
+    Y := Round(Elem^.Y * ScaleY);
+    W := Round(Elem^.Width * ScaleX);
+    H := Round(Elem^.Height * ScaleY);
+    SVGDrawRect(X, Y, W, H, FillColor, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_CIRCLE: Begin
+    X := Round(Elem^.X * ScaleX);
+    Y := Round(Elem^.Y * ScaleY);
+    RX := Round(Elem^.RX * ScaleX);
+    SVGDrawCircle(X, Y, RX, FillColor, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_ELLIPSE: Begin
+    X := Round(Elem^.X * ScaleX);
+    Y := Round(Elem^.Y * ScaleY);
+    RX := Round(Elem^.RX * ScaleX);
+    RY := Round(Elem^.RY * ScaleY);
+    SVGDrawEllipse(X, Y, RX, RY, FillColor, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_LINE: Begin
+    X1 := Round(Elem^.X1 * ScaleX);
+    Y1 := Round(Elem^.Y1 * ScaleY);
+    X2 := Round(Elem^.X2 * ScaleX);
+    Y2 := Round(Elem^.Y2 * ScaleY);
+    SVGDrawLine(X1, Y1, X2, Y2, StrokeColor, DestX, DestY);
+   End;
+
+   SVG_ELEM_POLYGON, SVG_ELEM_PATH: Begin
+    If Elem^.PointCount > 2 Then Begin
+     { Appliquer l'echelle aux points }
+     For X := 0 To Elem^.PointCount - 1 Do Begin
+      Elem^.Points[X].X := Elem^.Points[X].X * ScaleX;
+      Elem^.Points[X].Y := Elem^.Points[X].Y * ScaleY;
+     End;
+     SVGDrawPolygon(Elem^.Points, Elem^.PointCount,
+                    FillColor, StrokeColor, DestX, DestY);
+    End;
+   End;
+
+   SVG_ELEM_POLYLINE: Begin
+    If Elem^.PointCount > 1 Then Begin
+     For X := 0 To Elem^.PointCount - 2 Do Begin
+      X1 := Round(Elem^.Points[X].X * ScaleX);
+      Y1 := Round(Elem^.Points[X].Y * ScaleY);
+      X2 := Round(Elem^.Points[X + 1].X * ScaleX);
+      Y2 := Round(Elem^.Points[X + 1].Y * ScaleY);
+      SVGDrawLine(X1, Y1, X2, Y2, StrokeColor, DestX, DestY);
+     End;
+    End;
+   End;
+  End;
+ End;
+End;
+
+{ Dessiner une image SVG avec mise a l'echelle }
+Procedure SVGDrawImageScaled(Const Img: SVGImage; DestX, DestY: Integer;
+                              DestWidth, DestHeight: Integer);
+Begin
+ SVGDrawImage(Img, DestX, DestY, DestWidth, DestHeight);
+End;
+
+{ Chercher une image SVG dans le cache }
+Function SVGFindInCache(Const URL: String): Integer;
+Var
+ I: Integer;
+Begin
+ SVGFindInCache := 0;
+ For I := 1 To 16 Do Begin
+  If SVGImageCache[I].Used And (SVGImageCache[I].URL = URL) Then Begin
+   SVGFindInCache := I;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter une image SVG au cache }
+Function SVGAddToCache(Const URL: String; Const Img: SVGImage): Integer;
+Var
+ I: Integer;
+ Slot: Integer;
+Begin
+ SVGAddToCache := 0;
+
+ Slot := 0;
+ For I := 1 To 16 Do Begin
+  If Not SVGImageCache[I].Used Then Begin
+   Slot := I;
+   Break;
+  End;
+ End;
+
+ If Slot = 0 Then Slot := 1; { Remplacer le premier }
+
+ SVGImageCache[Slot].URL := URL;
+ SVGImageCache[Slot].Image := Img;
+ SVGImageCache[Slot].Used := True;
+ SVGAddToCache := Slot;
+End;
+
+{ Construire le chemin complet d'une image SVG }
+Function SVGBuildImagePath(Const Src: String): String;
+Var
+ BasePath: String;
+ I: Integer;
+Begin
+ { Page distante (ou Src deja une URL absolue) : resoudre comme une vraie
+   URL Web plutot que comme un chemin de fichier local (meme logique que
+   les feuilles de style externes, voir CSSBuildStylesheetPath). }
+ If (Copy(HTMLLowerCase(Src), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(Src), 1, 8) = 'https://') Or
+    (Copy(HTMLLowerCase(CurrentURL), 1, 7) = 'http://') Or (Copy(HTMLLowerCase(CurrentURL), 1, 8) = 'https://') Then Begin
+  SVGBuildImagePath := CSSBuildStylesheetPath(Src);
+  Exit;
+ End;
+
+ If (Length(Src) > 0) And ((Src[1] = '/') Or (Src[1] = '\') Or
+     ((Length(Src) > 2) And (Src[2] = ':'))) Then Begin
+  SVGBuildImagePath := Src;
+  Exit;
+ End;
+
+ BasePath := CurrentURL;
+
+ For I := Length(BasePath) DownTo 1 Do Begin
+  If BasePath[I] In ['/', '\'] Then Begin
+   BasePath := Copy(BasePath, 1, I);
+   Break;
+  End;
+ End;
+
+ SVGBuildImagePath := BasePath + Src;
+End;
+
+{ =====================================================
+  FIN PARSEUR ET RENDU SVG
+  ===================================================== }
+
+{ Procedure pour rendre la balise IMG. Deplacee ici (apres les types
+  BMPImage/GIFImage/JPEGImage/PNGImage/SVGImage, tous declares plus
+  haut a present) depuis son ancien emplacement juste apres
+  BMPBuildImagePath : a cet ancien endroit, GIFImage/JPEGImage/
+  PNGImage/SVGImage n'etaient pas encore declares, donc la branche
+  active pour FPC (la seule reellement compilee ici) se contentait
+  d'un bouchon affichant systematiquement "[image]"/le texte
+   alternatif, sans jamais decoder ni dessiner la moindre image -
+   quel que soit le format. }
+Procedure AlignReplacedElement(Var Ctx: RenderContext; Node: HTMLNodePtr;
+ ElementWidth: Integer);
+Var
+ LineStart, AvailableWidth: Integer;
+ ImgStyle: DOMStyle;
+ AutoMargins: Boolean;
+Begin
+ AutoMargins := False;
+ If CSSEnabled Then Begin
+  CSSResolveCascade(Node, ImgStyle);
+  AutoMargins :=
+   (HTMLLowerCase(ImgStyle.MarginLeft) = 'auto') And
+   (HTMLLowerCase(ImgStyle.MarginRight) = 'auto');
+  If Not AutoMargins Then
+   AutoMargins := (System.Pos('auto', HTMLLowerCase(ImgStyle.Margin)) > 0);
+ End;
+ If(Not AutoMargins)and(Ctx.TextAlignMode=ALIGN_LEFT)Then Exit;
+ { Ne recentrer que le premier objet de la ligne. Les objets inline qui le
+   suivent conservent ainsi leur disposition horizontale normale. }
+ If(Node<>Nil)and(Node^.PreviousSibling<>Nil)and not AutoMargins Then Exit;
+ If Ctx.InTable Then LineStart:=Ctx.TableCellContentX
+ Else LineStart:=RenderOriginX+RENDER_MARGIN_LEFT+(Ctx.BlockLevel*10);
+ AvailableWidth:=Ctx.MaxX-LineStart;
+ If ElementWidth>=AvailableWidth Then Exit;
+ If AutoMargins or(Ctx.TextAlignMode=ALIGN_CENTER)Then
+  Ctx.X:=LineStart+(AvailableWidth-ElementWidth)div 2
+ Else If Ctx.TextAlignMode=ALIGN_RIGHT Then
+  Ctx.X:=LineStart+AvailableWidth-ElementWidth
+End;
+
+Procedure RenderTagImg(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ Src, Alt, WidthAttr, HeightAttr: String;
+ ImgPath, ImgExt: String;
+ LoadPath: String;
+ LoadOk: Boolean;
+ BMPImg: BMPImage;
+ GIFImg: GIFImage;
+ JPEGImg: JPEGImage;
+ PNGImg: PNGImage;
+ SVGImg: SVGImage;
+ CacheIdx: Integer;
+ ImgWidth, ImgHeight: Integer;
+ DrawWidth, DrawHeight: Integer;
+ AltWidth: Integer;
+ Code: Integer;
+ IsBMP, IsGIF, IsJPEG, IsPNG, IsSVG: Boolean;
+Begin
+ If Node = Nil Then Exit;
+ If Ctx.InHead Then Exit; { Pas d'affichage dans head }
+
+ { Obtenir les attributs }
+ Src := GetNodeAttribute(Node, 'src');
+ Alt := GetNodeAttribute(Node, 'alt');
+ WidthAttr := GetNodeAttribute(Node, 'width');
+ HeightAttr := GetNodeAttribute(Node, 'height');
+
+ { Si pas de source, afficher le texte alternatif }
+ If Length(Src) = 0 Then Begin
+  If Length(Alt) > 0 Then
+   RenderText(Ctx, '[' + Alt + ']');
+  Exit;
+ End;
+
+ { Construire le chemin complet de l'image }
+ ImgPath := BMPBuildImagePath(Src);
+ If ImageURLPreviouslyFailed(ImgPath)Then Begin
+  If Alt<>''Then RenderText(Ctx,'['+Alt+']')
+  Else RenderText(Ctx,'[IMG: '+Src+']');
+  Exit
+ End;
+
+ { Determiner le type d'image }
+ IsBMP := False;
+ IsGIF := False;
+ IsJPEG := False;
+ IsPNG := False;
+ IsSVG := False;
+ If Length(ImgPath) >= 4 Then Begin
+  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 3, 4));
+  If ImgExt = '.bmp' Then IsBMP := True
+  Else If ImgExt = '.gif' Then IsGIF := True
+  Else If ImgExt = '.jpg' Then IsJPEG := True
+  Else If ImgExt = 'jpeg' Then IsJPEG := True
+  Else If ImgExt = '.png' Then IsPNG := True
+  Else If ImgExt = '.svg' Then IsSVG := True;
+ End;
+ { Verifier aussi .jpeg (5 caracteres) }
+ If (Not IsJPEG) And (Length(ImgPath) >= 5) Then Begin
+  ImgExt := HTMLLowerCase(Copy(ImgPath, Length(ImgPath) - 4, 5));
+  If ImgExt = '.jpeg' Then IsJPEG := True;
+ End;
+
+ { Si format non supporte, afficher le texte alternatif }
+ If Not IsBMP And Not IsGIF And Not IsJPEG And Not IsPNG And Not IsSVG Then Begin
+  If Length(Alt) > 0 Then
+   RenderText(Ctx, '[' + Alt + ']')
+  Else
+   RenderText(Ctx, '[IMG]');
+  Exit;
+ End;
+
+ { Traitement des images BMP }
+ If IsBMP Then Begin
+  CacheIdx := BMPFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   BMPImg := BMPImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And BMPLoadFromFile(LoadPath, BMPImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   BMPAddToCache(ImgPath, BMPImg);
+  End;
+
+  ImgWidth := BMPImg.Width;
+  ImgHeight := BMPImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    BMPDrawImage(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    BMPDrawImageScaled(BMPImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images GIF }
+ Else If IsGIF Then Begin
+  CacheIdx := GIFFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   GIFImg := GIFImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And GIFLoadFromFile(LoadPath, GIFImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   GIFAddToCache(ImgPath, GIFImg);
+  End;
+
+  ImgWidth := GIFImg.Width;
+  ImgHeight := GIFImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    GIFDrawImage(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    GIFDrawImageScaled(GIFImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images JPEG }
+ Else If IsJPEG Then Begin
+  CacheIdx := JPEGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   JPEGImg := JPEGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And JPEGLoadFromFile(LoadPath, JPEGImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   JPEGAddToCache(ImgPath, JPEGImg);
+  End;
+
+  ImgWidth := JPEGImg.Width;
+  ImgHeight := JPEGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    JPEGDrawImage(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    JPEGDrawImageScaled(JPEGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images PNG }
+ Else If IsPNG Then Begin
+  CacheIdx := PNGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   PNGImg := PNGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And PNGLoadFromFile(LoadPath, PNGImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   PNGAddToCache(ImgPath, PNGImg);
+  End;
+
+  ImgWidth := PNGImg.Width;
+  ImgHeight := PNGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then Begin
+   If (DrawWidth = ImgWidth) And (DrawHeight = ImgHeight) Then
+    PNGDrawImage(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight)
+   Else
+    PNGDrawImageScaled(PNGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+  End;
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End
+
+ { Traitement des images SVG }
+ Else If IsSVG Then Begin
+  CacheIdx := SVGFindInCache(ImgPath);
+  If CacheIdx > 0 Then Begin
+   SVGImg := SVGImageCache[CacheIdx].Image;
+  End
+  Else Begin
+   LoadOk := ResolveImageLoadPath(ImgPath, LoadPath) And SVGLoadFromFile(LoadPath, SVGImg);
+   ReleaseImageLoadPath(LoadPath);
+   If Not LoadOk Then Begin
+    RememberFailedImageURL(ImgPath);
+    If Length(Alt) > 0 Then
+     RenderText(Ctx, '[' + Alt + ']')
+    Else
+     RenderText(Ctx, '[IMG: ' + Src + ']');
+    Exit;
+   End;
+   SVGAddToCache(ImgPath, SVGImg);
+  End;
+
+  ImgWidth := SVGImg.Width;
+  ImgHeight := SVGImg.Height;
+
+  If Length(WidthAttr) > 0 Then Begin
+   Val(WidthAttr, DrawWidth, Code);
+   If Code <> 0 Then DrawWidth := ImgWidth;
+  End
+  Else
+   DrawWidth := ImgWidth;
+
+  If Length(HeightAttr) > 0 Then Begin
+   Val(HeightAttr, DrawHeight, Code);
+   If Code <> 0 Then DrawHeight := ImgHeight;
+  End
+  Else
+   DrawHeight := ImgHeight;
+
+  If Ctx.X + DrawWidth > Ctx.MaxX Then RenderNewLine(Ctx);
+  AlignReplacedElement(Ctx,Node,DrawWidth);
+
+  If DrawWidth > Ctx.MaxX - Ctx.X Then DrawWidth := Ctx.MaxX - Ctx.X;
+  If DrawHeight > Ctx.MaxY - Ctx.Y Then DrawHeight := Ctx.MaxY - Ctx.Y;
+
+  If YInVisibleBand(Ctx.Y, Ctx.Y + DrawHeight) Then
+   SVGDrawImageScaled(SVGImg, Ctx.X, Ctx.Y, DrawWidth, DrawHeight);
+
+  Ctx.X := Ctx.X + DrawWidth;
+  If DrawHeight > Ctx.LineHeight Then Ctx.LineHeight := DrawHeight;
+ End;
+End;
+
+{ Rendre un background CSS decoupe dans une image PNG. C'est le mecanisme
+  employe par les classes sprite-* du menu : background-position contient
+  des coordonnees negatives dans ressources.png. }
+Procedure RenderCSSBackgroundSprite(Const Style: DOMStyle; X, Y: Integer);
+Var
+ Bg, LowerBg, Src, PosText, Token: String;
+ LoadPath: String;
+ P1, P2, SpacePos, Code: Integer;
+ BgX, BgY, W, H, SrcX, SrcY, DX, DY,PX,PY, CacheIndex: Integer;
+ RepeatX,RepeatY:Boolean;
+ Img: PNGImage;
+ PixelColor, Alpha: Byte;
+Begin
+ Bg := Style.BackgroundImage;
+ { Compatibilite avec les styles deja resolus par l'ancien champ : le
+   raccourci background peut contenir a la fois couleur et url(). }
+ If Length(Bg) = 0 Then Bg := Style.BackgroundColor;
+ LowerBg := HTMLLowerCase(Bg);
+ P1 := System.Pos('url(', LowerBg);
+ If P1 = 0 Then Exit;
+ Inc(P1, 4);
+ P2 := P1;
+ While (P2 <= Length(Bg)) And (Bg[P2] <> ')') Do Inc(P2);
+ If P2 > Length(Bg) Then Exit;
+ Src := BrowserTrimStr(Copy(Bg, P1, P2 - P1));
+ If (Length(Src) >= 2) And (Src[1] In ['''', '"']) And
+    (Src[Length(Src)] = Src[1]) Then
+  Src := Copy(Src, 2, Length(Src) - 2);
+ If HTMLLowerCase(BrowserExtractFileExt(Src)) <> '.png' Then Exit;
+
+ BgX := 0;
+ BgY := 0;
+ PosText := BrowserTrimStr(Style.BackgroundPosition);
+ SpacePos := System.Pos(' ', PosText);
+ If SpacePos > 0 Then Begin
+  Token := Copy(PosText, 1, SpacePos - 1);
+  Delete(PosText, 1, SpacePos);
+  PosText := BrowserTrimStr(PosText);
+ End Else Begin
+  Token := PosText;
+  PosText := '0';
+ End;
+ If System.Pos('px', HTMLLowerCase(Token)) > 0 Then
+  Delete(Token, System.Pos('px', HTMLLowerCase(Token)), 2);
+ Val(Token, BgX, Code);
+ If Code <> 0 Then BgX := 0;
+ If System.Pos('px', HTMLLowerCase(PosText)) > 0 Then
+  Delete(PosText, System.Pos('px', HTMLLowerCase(PosText)), 2);
+ Val(PosText, BgY, Code);
+ If Code <> 0 Then BgY := 0;
+
+ W := CSSParseDimension(Style.Width, 0);
+ H := CSSParseDimension(Style.Height, 0);
+ If (W <= 0) Or (H <= 0) Then Exit;
+ Src := BMPBuildImagePath(Src);
+ If ImageURLPreviouslyFailed(Src)Then Exit;
+ CacheIndex := PNGFindInCache(Src);
+ If CacheIndex = 0 Then Begin
+  If Not (ResolveImageLoadPath(Src, LoadPath) And PNGLoadFromFile(LoadPath, Img)) Then Begin
+   RememberFailedImageURL(Src);
+   ReleaseImageLoadPath(LoadPath);
+   Exit;
+  End;
+  ReleaseImageLoadPath(LoadPath);
+  CacheIndex := PNGAddToCache(Src, Img);
+  If CacheIndex = 0 Then Begin PNGFreeImage(Img); Exit; End;
+ End;
+ SrcX := -BgX;
+ SrcY := -BgY;
+ LowerBg:=HTMLLowerCase(Style.BackgroundRepeat);
+ RepeatX:=(LowerBg='repeat')Or(LowerBg='repeat-x');
+ RepeatY:=(LowerBg='repeat')Or(LowerBg='repeat-y');
+ If LowerBg=''Then Begin RepeatX:=True;RepeatY:=True End;
+ If HTMLLowerCase(Style.BackgroundAttachment)='fixed'Then Begin
+  Inc(SrcX,ScrollX);Inc(SrcY,ScrollY)
+ End;
+ For DY := 0 To H - 1 Do
+  For DX := 0 To W - 1 Do Begin
+   PX:=SrcX+DX;PY:=SrcY+DY;
+   If RepeatX And(PNGImageCache[CacheIndex].Image.Width>0)Then Begin
+    PX:=PX Mod PNGImageCache[CacheIndex].Image.Width;
+    If PX<0Then Inc(PX,PNGImageCache[CacheIndex].Image.Width)
+   End;
+   If RepeatY And(PNGImageCache[CacheIndex].Image.Height>0)Then Begin
+    PY:=PY Mod PNGImageCache[CacheIndex].Image.Height;
+    If PY<0Then Inc(PY,PNGImageCache[CacheIndex].Image.Height)
+   End;
+   If(PX>=0)And(PX<PNGImageCache[CacheIndex].Image.Width)And
+     (PY>=0)And(PY<PNGImageCache[CacheIndex].Image.Height)Then Begin
+    If PNGImageCache[CacheIndex].Image.HasAlpha Then
+     Alpha := PNGGetAlpha(PNGImageCache[CacheIndex].Image,PX,PY)
+    Else
+     Alpha := 255;
+    If Alpha > 128 Then Begin
+     PixelColor := PNGGetPixel(PNGImageCache[CacheIndex].Image,PX,PY);
+     PutPixel(X + DX, Y + DY, PixelColor);
+    End;
+   End;
+End;
+End;
+
+{ Variable globale pour activer/desactiver l'application CSS automatique }
+Var
+ CSSAutoApply: Boolean;
+
+Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
+Var
+ NodeStyle: DOMStyle;
+ OldTextColor: Integer;
+ OldBgColor: Integer;
+ OldLineHeight: Integer;
+ OldTextStyle: Byte;
+ OldNoWrap: Boolean;
+ OldTextAlignMode: Byte;
+ OldLetterSpacing,OldWordSpacing:Integer;
+ OldTextTransform:Byte;
+ BoxIdAttr: String;
+ BoxStartX, BoxStartY: Integer;
+ HasInlineHandler: Boolean;
+Begin
+ If Node = Nil Then Exit;
+ If Ctx.Y > Ctx.MaxY Then Exit; { Depasse la zone de rendu }
+
+ { Memoriser la position de depart des elements ID'es, pour calculer
+   leur boite (position/taille) une fois leur contenu rendu - voir
+   JSGetNodeBoxX/Y/Width/Height (offsetWidth/Height/Left/Top cote JS,
+   utilises par exemple par JSCookMenu.js pour positionner ses
+   sous-menus). }
+ BoxIdAttr := '';
+ HasInlineHandler := False;
+ If Node^.NodeType = HTML_NODE_ELEMENT Then
+ Begin
+  BoxIdAttr := GetNodeAttribute(Node, 'id');
+  HasInlineHandler := (Length(GetNodeAttribute(Node, 'onclick')) > 0) Or
+                      (Length(GetNodeAttribute(Node, 'onmouseover')) > 0) Or
+                      (Length(GetNodeAttribute(Node, 'onmouseout')) > 0);
+ End;
+ If (Length(BoxIdAttr) > 0) Or HasInlineHandler Then Begin
+  BoxStartX := Ctx.X;
+  BoxStartY := Ctx.Y;
+ End;
+
+ { Sauvegarder le contexte actuel pour restauration apres le rendu }
+ OldTextColor := Ctx.TextColor;
+ OldBgColor := Ctx.BgColor;
+ OldLineHeight := Ctx.LineHeight;
+ OldTextStyle := Ctx.TextStyle;
+ OldNoWrap := Ctx.NoWrap;
+ OldTextAlignMode := Ctx.TextAlignMode;
+ OldLetterSpacing:=Ctx.LetterSpacingPx;
+ OldWordSpacing:=Ctx.WordSpacingPx;
+ OldTextTransform:=Ctx.TextTransformMode;
+
+ { Par defaut (CSS desactive ou noeud texte) : comportement de bloc
+   selon la balise seule, comme avant l'introduction du CSS. }
+ NodeStyle.Display := '';
+ CurrentElementWantsBlock := CSSIsBlockElement(NodeStyle, Node^.TagType);
+ CurrentElementListStyleNone := False;
+ CurrentElementBox.MarginTopPx := -1;
+ CurrentElementBox.MarginBottomPx := -1;
+ CurrentElementBox.MarginLeftPx := -1;
+ CurrentElementBox.MarginRightPx := -1;
+ CurrentElementBox.PaddingTopPx := -1;
+ CurrentElementBox.PaddingBottomPx := -1;
+ CurrentElementBox.HasBorder := False;
+ CurrentElementBox.HasBgBox := False;
+
+ { Appliquer les styles CSS si active et si c'est un element }
+ If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
+  CSSResolveCascade(Node, NodeStyle);
+
+  { Verifier si l'element doit etre cache }
+  If CSSIsElementHidden(NodeStyle) Then Exit;
+
+  { Un element absolute est retire du flux normal. L'ancien moteur le
+    rendait ici comme un bloc ordinaire, puis une seconde fois en overlay :
+    sa hauteur creait alors d'immenses espaces verticaux. Pendant la passe
+    overlay, le drapeau autorise naturellement son rendu reel. }
+  If (HTMLLowerCase(NodeStyle.PositionProp) = 'absolute') And
+     (Not RenderingAbsoluteOverlay) Then Begin
+   { Un descendant d'un viewport overflow:hidden (notamment le contenu
+     importe d'une IFRAME) ne doit jamais devenir un overlay global qui
+     echappe a la zone de decoupage. }
+   If (AbsoluteClipDepth = 0) And
+      (AbsolutePositionedCount < High(AbsolutePositionedNodes)) Then Begin
+   Inc(AbsolutePositionedCount);
+   AbsolutePositionedNodes[AbsolutePositionedCount] := Node;
+   If PositionAnchorValid Then Begin
+    AbsoluteAnchorX[AbsolutePositionedCount] := PositionAnchorX;
+    AbsoluteAnchorY[AbsolutePositionedCount] := PositionAnchorY;
+    AbsoluteAnchorMaxX[AbsolutePositionedCount] := PositionAnchorMaxX
+   End Else Begin
+    AbsoluteAnchorX[AbsolutePositionedCount] := Ctx.X;
+    AbsoluteAnchorY[AbsolutePositionedCount] := Ctx.Y;
+    AbsoluteAnchorMaxX[AbsolutePositionedCount] := Ctx.MaxX
+   End;
+   End;
+   Exit;
+  End;
+
+  { Appliquer les styles au contexte }
+  CSSApplyStylesToContext(NodeStyle, Ctx);
+
+  { display: en/in/inline-block calcule par cascade, en tenant compte
+    du comportement par defaut de la balise si la propriete n'est pas
+    explicitement fixee (voir CSSIsBlockElement). }
+  CurrentElementWantsBlock := CSSIsBlockElement(NodeStyle, Node^.TagType);
+
+  { list-style/list-style-type: none - puce supprimee (utilise par ex.
+    pour les menus horizontaux construits avec <ul><li>). }
+  CurrentElementListStyleNone :=
+   (HTMLLowerCase(NodeStyle.ListStyleType) = 'none') Or
+   (System.Pos('none', HTMLLowerCase(NodeStyle.ListStyle)) > 0);
+
+  { Marges/padding/bordure/fond resolus en pixels pour cet element. }
+  CurrentElementBox := ComputeElementBoxInfo(NodeStyle);
+
+ End;
+
+ { Compatibilite HTML 2/3.2 : align=center/right sur DIV, P, FORM,
+   TD, etc. produit le meme contexte heritable que text-align CSS. }
+ If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
+  If HTMLLowerCase(GetNodeAttribute(Node, 'align')) = 'center' Then
+   Ctx.TextAlignMode := ALIGN_CENTER
+  Else If HTMLLowerCase(GetNodeAttribute(Node, 'align')) = 'right' Then
+   Ctx.TextAlignMode := ALIGN_RIGHT
+  Else If HTMLLowerCase(GetNodeAttribute(Node, 'align')) = 'left' Then
+   Ctx.TextAlignMode := ALIGN_LEFT;
+ End;
+
+ { Application GENERIQUE du margin horizontal (2026-09-25, demande        }
+ { explicite de l'utilisateur - "implemente l'application generique du    }
+ { margin (au moins horizontal) pour les elements inline-block") : avant  }
+ { ce correctif, seul le margin VERTICAL (haut/bas, pour l'empilement des }
+ { blocs) etait applique quelque part (RenderBlockSpacing, cas par cas    }
+ { pour ARTICLE/IMG/BODY) - AUCUN element rendu en ligne (inline/inline-  }
+ { block, ex. deux <a>/<div> adjacents dans une barre de navigation)      }
+ { n'avancait jamais Ctx.X pour son propre margin-left/right, meme quand  }
+ { le CSS en demandait un explicitement (cause reelle du bogue signale :  }
+ { deux liens de navigation Google se retrouvaient colles l'un a l'autre  }
+ { sans le moindre espace). Applique ICI, au point UNIQUE de dispatch de  }
+ { tous les types de balise, pour en beneficier automatiquement PARTOUT   }
+ { (DIV/SPAN/A/LI/etc) sans dupliquer la logique dans chaque             }
+ { Procedure RenderTagXxx individuelle - seulement pour le cas NON-bloc   }
+ { (CurrentElementWantsBlock=False), le margin horizontal d'un element de }
+ { bloc restant hors de ce correctif (deja gere separement pour le        }
+ { centrage margin:auto de ARTICLE/IMG/BODY). }
+ If (Not CurrentElementWantsBlock) And (CurrentElementBox.MarginLeftPx > 0) Then
+  Inc(Ctx.X, CurrentElementBox.MarginLeftPx);
+
+ Case Node^.NodeType Of
+  HTML_NODE_TEXT: Begin
+   { Noeud texte - afficher le contenu }
+   RenderText(Ctx, Node^.Content);
+  End;
+
+  HTML_NODE_ELEMENT: Begin
+   { Element HTML - traiter selon le type de balise }
+   Case Node^.TagType Of
+    { Balises de structure }
+    TAG_HTML:     RenderTagHTML(Node, Ctx);
+    TAG_HEAD:     RenderTagHead(Node, Ctx);
+    TAG_BODY:     RenderTagBody(Node, Ctx);
+    TAG_DIV:      RenderTagDiv(Node, Ctx);
+    TAG_SPAN:     RenderTagSpan(Node, Ctx);
+    TAG_SECTION:  RenderTagSection(Node, Ctx);
+    TAG_ARTICLE:  RenderTagArticle(Node, Ctx);
+    TAG_NAV:      RenderTagNav(Node, Ctx);
+    TAG_ASIDE:    RenderTagAside(Node, Ctx);
+    TAG_HEADER:   RenderTagHeader(Node, Ctx);
+    TAG_FOOTER:   RenderTagFooter(Node, Ctx);
+     TAG_MAIN:     RenderTagMain(Node, Ctx);
+     TAG_CENTER:   RenderTagCenter(Node, Ctx);
+
+    { Balises de texte - Titres }
+    TAG_H1:       RenderTagH1(Node, Ctx);
+    TAG_H2:       RenderTagH2(Node, Ctx);
+    TAG_H3:       RenderTagH3(Node, Ctx);
+    TAG_H4:       RenderTagH4(Node, Ctx);
+    TAG_H5:       RenderTagH5(Node, Ctx);
+    TAG_H6:       RenderTagH6(Node, Ctx);
+
+    { Balises de texte - Paragraphe et blocs }
+    TAG_P:        RenderTagP(Node, Ctx);
+    TAG_BR:       RenderTagBR(Node, Ctx);
+    TAG_HR:       RenderTagHR(Node, Ctx);
+    TAG_PRE:      RenderTagPre(Node, Ctx);
+    TAG_BLOCKQUOTE: RenderTagBlockquote(Node, Ctx);
+
+    { Balises de texte - Style inline }
+    TAG_STRONG:   RenderTagStrong(Node, Ctx);
+    TAG_B:        RenderTagB(Node, Ctx);
+    TAG_EM:       RenderTagEm(Node, Ctx);
+    TAG_I:        RenderTagI(Node, Ctx);
+    TAG_U:        RenderTagU(Node, Ctx);
+    TAG_S:        RenderTagStrike(Node, Ctx);
+    TAG_STRIKE:   RenderTagStrike(Node, Ctx);
+    TAG_DEL:      RenderTagStrike(Node, Ctx);
+    TAG_INS:      RenderTagIns(Node, Ctx);
+    TAG_CODE:     RenderTagCode(Node, Ctx);
+    TAG_FONT:     RenderTagFont(Node, Ctx);
+    TAG_KBD:      RenderTagKbd(Node, Ctx);
+    TAG_SAMP:     RenderTagSamp(Node, Ctx);
+    TAG_VAR:      RenderTagVar(Node, Ctx);
+    TAG_Q:        RenderTagQ(Node, Ctx);
+    TAG_SMALL:    RenderTagSmall(Node, Ctx);
+    TAG_MARK:     RenderTagMark(Node, Ctx);
+    TAG_SUB:      RenderTagSub(Node, Ctx);
+    TAG_SUP:      RenderTagSup(Node, Ctx);
+    TAG_ABBR:     RenderTagSemanticInline(Node, Ctx);
+    TAG_CITE:     RenderTagSemanticInline(Node, Ctx);
+    TAG_DFN:      RenderTagSemanticInline(Node, Ctx);
+
+    { Balises de listes }
+    TAG_UL:       RenderTagUL(Node, Ctx);
+    TAG_OL:       RenderTagOL(Node, Ctx);
+    TAG_LI:       RenderTagLI(Node, Ctx);
+    TAG_DL:       RenderTagDL(Node, Ctx);
+    TAG_DT:       RenderTagDT(Node, Ctx);
+    TAG_DD:       RenderTagDD(Node, Ctx);
+
+    { Balises de tableaux }
+    TAG_TABLE:    RenderTagTable(Node, Ctx);
+    TAG_THEAD:    RenderTagThead(Node, Ctx);
+    TAG_TBODY:    RenderTagTbody(Node, Ctx);
+    TAG_TR:       RenderTagTR(Node, Ctx);
+    TAG_TD:       RenderTagTD(Node, Ctx);
+    TAG_TH:       RenderTagTH(Node, Ctx);
+
+    { Balises de formulaires }
+    TAG_FORM:     RenderTagForm(Node, Ctx);
+    TAG_INPUT:    RenderTagInput(Node, Ctx);
+    TAG_BUTTON:   RenderTagButton(Node, Ctx);
+    TAG_SELECT:   RenderTagSelect(Node, Ctx);
+    TAG_OPTION:   RenderTagOption(Node, Ctx);
+    TAG_TEXTAREA: RenderTagTextarea(Node, Ctx);
+    TAG_LABEL:    RenderTagLabel(Node, Ctx);
+
+    { Liens hypertexte }
+    TAG_A:        RenderTagA(Node, Ctx);
+
+    { Scripts JavaScript }
+    TAG_SCRIPT:   RenderTagScript(Node, Ctx);
+
+    { Metadonnees et feuilles de style: leur texte appartient au moteur
+      CSS/DOM et ne doit jamais apparaitre dans la page rendue. Des pages
+      modernes placent parfois STYLE dans BODY. }
+    TAG_STYLE, TAG_TITLE, TAG_META, TAG_LINK, TAG_BASE: Begin End;
+
+    { Images }
+    TAG_IMG:      RenderTagImg(Node, Ctx);
+
+    { NOSCRIPT - afficher le contenu si JavaScript est desactive }
+    TAG_NOSCRIPT: Begin
+     If Not JSEnabled Then RenderChildren(Node, Ctx);
+    End;
+
+    Else Begin
+     { Balise non geree (ex: figure, figcaption, address, details,
+       summary) - rendre les enfants, avec saut de ligne si la balise
+       ou le CSS la considere comme un element de bloc. }
+     If CurrentElementWantsBlock And
+        (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
+      RenderNewLine(Ctx);
+     RenderChildren(Node, Ctx);
+     If CurrentElementWantsBlock Then
+      RenderNewLine(Ctx);
+    End;
+   End;
+  End;
+
+  HTML_NODE_COMMENT: Begin
+   { Commentaire - ne rien afficher }
+  End;
+ End;
+
+ { Margin-right, symetrique de l'avance margin-left ci-dessus - voir sa   }
+ { disclosure complete. }
+ If (Not CurrentElementWantsBlock) And (CurrentElementBox.MarginRightPx > 0) Then
+  Inc(Ctx.X, CurrentElementBox.MarginRightPx);
+
+ If Length(BoxIdAttr) > 0 Then
+  SetJSNodeBox(Node, BoxStartX, BoxStartY, Ctx.MaxX - BoxStartX, (Ctx.Y - BoxStartY) + Ctx.LineHeight);
+
+ If Node^.NodeType = HTML_NODE_ELEMENT Then
+  DevToolsTrackElement(Node, BoxStartX, BoxStartY, Ctx.MaxX,
+                       Ctx.Y + Ctx.LineHeight);
+
+ { Les gestionnaires inline peuvent appartenir a n'importe quel element,
+   pas seulement TD/TH/TR. Dans le menu de la page d'accueil, onmouseover
+   et onmouseout sont portes par DIV.displayImage. A l'interieur d'une
+   cellule, ses limites finales sont la boite la plus fiable apres les deux
+   passes de mesure du tableau. }
+ { TD/TH/TR enregistrent deja leur zone DANS leur routine specialisee,
+   avant de restaurer/avancer le contexte du tableau. Les enregistrer une
+   seconde fois ici produisait une boite decalee (cellule suivante ou ligne
+   suivante), laquelle gagnait ensuite le hit-test parce qu'elle etait
+   ajoutee en dernier. }
+ If HasInlineHandler And
+    (Node^.TagType <> TAG_TD) And
+    (Node^.TagType <> TAG_TH) And
+    (Node^.TagType <> TAG_TR) Then Begin
+  If Ctx.InTable Then
+   AddInteractiveArea(Ctx.TableCellX, Ctx.TableRowY,
+                      Ctx.TableCellX + Ctx.TableCellWidth,
+                      Ctx.TableRowY + Ctx.TableRowHeight, Node)
+  Else
+   AddInteractiveArea(BoxStartX, BoxStartY, Ctx.MaxX,
+                      Ctx.Y + Ctx.LineHeight, Node);
+ End;
+
+ { Restaurer le contexte apres le rendu de cet element }
+ If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
+  Ctx.TextColor := OldTextColor;
+  Ctx.BgColor := OldBgColor;
+  Ctx.LineHeight := OldLineHeight;
+  Ctx.TextStyle := OldTextStyle;
+  Ctx.NoWrap := OldNoWrap;
+  Ctx.TextAlignMode := OldTextAlignMode;
+  Ctx.LetterSpacingPx:=OldLetterSpacing;
+  Ctx.WordSpacingPx:=OldWordSpacing;
+  Ctx.TextTransformMode:=OldTextTransform;
+ End;
+End;
+
+{ Declarations forward pour les barres de defilement (definies plus
+  bas, avec les autres elements de l'interface comme les boutons). }
+Procedure DrawVScrollBar; Forward;
+Procedure DrawHScrollBar; Forward;
+Procedure DrawURLBar; Forward;
+Procedure DrawBackButton; Forward;
+Procedure DrawForwardButton; Forward;
+Procedure DrawRefreshButton; Forward;
+Procedure DrawFavoriteButton; Forward;
+{ ShowMouse/HideMouse : reutilise les procedures globales de DEVENV.PAS
+  (lignes 12238/12246, meme signature) - pas de declaration Forward ici. }
+Procedure DrawDevTools; Forward;
+Procedure DevToolsBindDocument(Doc:HTMLNodePtr); Forward;
+
+{ Procedure pour rendre un document HTML complet }
+{ Afficher par-dessus tout le reste les elements CSS position:absolute
+  actuellement visibility:visible (ex: les sous-menus de
+  JSCookMenu.js, normalement caches et affiches au survol via
+  this.style.visibility='visible'), a leurs coordonnees style.left/
+  top - le moteur de rendu normal (RenderHTMLNode/RenderChildren) ne
+  gere que le flux de documents classique de haut en bas, jamais le
+  positionnement absolu, donc ces elements seraient sinon rendus a
+  leur position de flux normale (le plus souvent invisible, puisque
+  caches par CSS) ou pas du tout.
+
+  Les candidats (AbsolutePositionedNodes) sont collectes par
+  RenderHTMLNode pendant la passe normale, qui resout deja le CSS de
+  chaque element - inutile de reparcourir tout l'arbre et de
+  re-resoudre le CSS une seconde fois juste pour les retrouver, ce
+  qui serait couteux sur un arbre de plusieurs milliers de noeuds
+  (ex: le menu complet d'un site genere par JSCookMenu.js). }
+Procedure RenderAbsolutePositionedOverlays(Const BaseCtx: RenderContext);
+Var
+ I,J: Integer;
+ TmpNode:HTMLNodePtr;
+ ZA,ZB,Code,TmpCoord:Integer;
+ ZText:String;
+ NodeStyle: DOMStyle;
+ OverlayCtx: RenderContext;
+ OverlayWidth, OverlayHeight, RightPx, BottomPx: Integer;
+ OverlayStartX, OverlayStartY, OverlayEndX, OverlayEndY: Integer;
+ AnchorAreaIndex, FirstOverlayArea, AreaIndex: Integer;
+ OverlayId, HoverHandler: String;
+ ChildNode: HTMLNodePtr;
+ ChildStyle: DOMStyle;
+ NaturalWidth, ChildWidth, NaturalChildCount: Integer;
+Begin
+ { Les elements positionnes sont peints du plus petit au plus grand
+   z-index; l'ordre du document departage les valeurs identiques. }
+ For I:=1To AbsolutePositionedCount-1Do
+  For J:=I+1To AbsolutePositionedCount Do Begin
+   CSSResolveCascade(AbsolutePositionedNodes[I],NodeStyle);
+   ZText:=NodeStyle.ZIndex;Val(ZText,ZA,Code);If Code<>0Then ZA:=0;
+   CSSResolveCascade(AbsolutePositionedNodes[J],NodeStyle);
+   ZText:=NodeStyle.ZIndex;Val(ZText,ZB,Code);If Code<>0Then ZB:=0;
+   If ZA>ZB Then Begin
+    TmpNode:=AbsolutePositionedNodes[I];
+    AbsolutePositionedNodes[I]:=AbsolutePositionedNodes[J];
+    AbsolutePositionedNodes[J]:=TmpNode;
+    TmpCoord:=AbsoluteAnchorX[I];AbsoluteAnchorX[I]:=AbsoluteAnchorX[J];AbsoluteAnchorX[J]:=TmpCoord;
+    TmpCoord:=AbsoluteAnchorY[I];AbsoluteAnchorY[I]:=AbsoluteAnchorY[J];AbsoluteAnchorY[J]:=TmpCoord;
+    TmpCoord:=AbsoluteAnchorMaxX[I];AbsoluteAnchorMaxX[I]:=AbsoluteAnchorMaxX[J];AbsoluteAnchorMaxX[J]:=TmpCoord
+   End
+  End;
+ For I := 1 To AbsolutePositionedCount Do Begin
+  CSSResolveCascade(AbsolutePositionedNodes[I], NodeStyle);
+  If Not CSSIsElementHidden(NodeStyle) Then Begin
+   OverlayCtx := BaseCtx;
+   OverlayWidth := CSSParseDimension(NodeStyle.Width,
+                    GetTextWidth(DOMGetTextContent(AbsolutePositionedNodes[I])) + 16);
+   { Une UL absolue du HEADER n'a pas de width propre : sa largeur est la
+     somme de ses LI inline-block (trois icones). Employer le texte cache
+     comme largeur de repli poussait #admin loin de son bord droit. }
+   If (AbsolutePositionedNodes[I]^.TagType = TAG_UL) And
+      (Length(NodeStyle.Width) = 0) Then Begin
+   NaturalWidth := 0;
+    NaturalChildCount := 0;
+    ChildNode := AbsolutePositionedNodes[I]^.FirstChild;
+    While ChildNode <> Nil Do Begin
+     If ChildNode^.NodeType = HTML_NODE_ELEMENT Then Begin
+      CSSResolveCascade(ChildNode, ChildStyle);
+      ChildWidth := CSSParseDimension(ChildStyle.Width, 0);
+      If ChildWidth > 0 Then Begin
+       Inc(NaturalWidth,ChildWidth);
+       If ChildStyle.MarginLeft<>''Then
+        Inc(NaturalWidth,CSSParseDimension(ChildStyle.MarginLeft,0))
+       Else If ChildStyle.Margin<>''Then
+        Inc(NaturalWidth,CSSParseShorthandSide(ChildStyle.Margin,3,0));
+       If ChildStyle.MarginRight<>''Then
+        Inc(NaturalWidth,CSSParseDimension(ChildStyle.MarginRight,0))
+       Else If ChildStyle.Margin<>''Then
+        Inc(NaturalWidth,CSSParseShorthandSide(ChildStyle.Margin,1,0));
+       Inc(NaturalChildCount);
+      End;
+     End;
+     ChildNode := ChildNode^.NextSibling;
+    End;
+    If NaturalWidth > 0 Then OverlayWidth := NaturalWidth;
+   End;
+   If OverlayWidth < 1 Then OverlayWidth := 1;
+   OverlayHeight := CSSParseDimension(NodeStyle.Height, OverlayCtx.LineHeight);
+   If OverlayHeight < 1 Then OverlayHeight := OverlayCtx.LineHeight;
+
+   If Length(NodeStyle.LeftProp) > 0 Then
+    OverlayCtx.X := AbsoluteAnchorX[I] + CSSParseDimension(NodeStyle.LeftProp, 0)
+   Else If Length(NodeStyle.RightProp) > 0 Then Begin
+    RightPx := CSSParseDimension(NodeStyle.RightProp, 0);
+    OverlayCtx.X := AbsoluteAnchorMaxX[I] - RightPx - OverlayWidth;
+   End
+   Else
+    OverlayCtx.X := AbsoluteAnchorX[I];
+
+   If Length(NodeStyle.TopProp) > 0 Then
+    OverlayCtx.Y := AbsoluteAnchorY[I] + CSSParseDimension(NodeStyle.TopProp, 0)
+   Else If Length(NodeStyle.BottomProp) > 0 Then Begin
+    BottomPx := CSSParseDimension(NodeStyle.BottomProp, 0);
+    OverlayCtx.Y := RenderOriginY + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE) -
+                    BottomPx - OverlayHeight;
+   End
+   Else
+    OverlayCtx.Y := AbsoluteAnchorY[I];
+
+   { Repli fiable pour les menus JSCookMenu. Le gestionnaire de l'element
+     survole contient l'id exact du sous-menu qu'il vient d'afficher. Les
+     zones interactives sont calculees apres la mise en page finale des
+     cellules, contrairement aux offsetLeft/offsetParent partiellement
+     supportes par l'interpreteur JS. }
+   If HoveredInteractiveNode <> Nil Then Begin
+    OverlayId := GetNodeAttribute(AbsolutePositionedNodes[I], 'id');
+    HoverHandler := GetNodeAttribute(HoveredInteractiveNode, 'onmouseover');
+    If (HoveredInteractiveNode^.TagType = TAG_TD) Or
+       ((Length(OverlayId) > 0) And
+        (System.Pos(HTMLLowerCase(OverlayId),
+                    HTMLLowerCase(HoverHandler)) > 0)) Then Begin
+     AnchorAreaIndex := FindInteractiveAreaIndex(HoveredInteractiveNode);
+     If AnchorAreaIndex > 0 Then Begin
+      If HoveredInteractiveNode^.TagType = TAG_TR Then Begin
+       { Sous-menu imbrique : a droite de la ligne courante. }
+       OverlayCtx.X := InteractiveAreas[AnchorAreaIndex].X2;
+       OverlayCtx.Y := InteractiveAreas[AnchorAreaIndex].Y1;
+      End Else Begin
+       { Menu horizontal principal : directement sous sa cellule. }
+       OverlayCtx.X := InteractiveAreas[AnchorAreaIndex].X1;
+       OverlayCtx.Y := InteractiveAreas[AnchorAreaIndex].Y2;
+      End;
+     End Else If HoverAnchorValid Then Begin
+      { Le gestionnaire peut cacher le menu qui contenait la zone avant la
+        nouvelle passe. Employer alors les coordonnees capturees AVANT
+        l'execution JavaScript, plutot que de retomber a (0,0). }
+      If HoveredInteractiveNode^.TagType = TAG_TR Then Begin
+       OverlayCtx.X := HoverAnchorX2;
+       OverlayCtx.Y := HoverAnchorY1;
+      End Else Begin
+       OverlayCtx.X := HoverAnchorX1;
+       OverlayCtx.Y := HoverAnchorY2;
+      End;
+     End;
+    End;
+   End;
+   OverlayCtx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+   OverlayCtx.BlockLevel := 0;
+   OverlayStartX := OverlayCtx.X;
+   OverlayStartY := OverlayCtx.Y;
+   { Les zones ajoutees apres cet index appartiendront a cet overlay.
+     Elles donnent les boites completes des TD/TR, y compris les portions
+     transparentes qui ne passent par aucune primitive de dessin. }
+   FirstOverlayArea := InteractiveAreaCount + 1;
+   RenderingAbsoluteOverlay := True;
+   RenderHTMLNode(AbsolutePositionedNodes[I], OverlayCtx);
+   RenderingAbsoluteOverlay := False;
+
+   For AreaIndex := FirstOverlayArea To InteractiveAreaCount Do
+    TrackAbsoluteOverlayPaint(InteractiveAreas[AreaIndex].X1 - 2,
+                              InteractiveAreas[AreaIndex].Y1 - 2,
+                              InteractiveAreas[AreaIndex].X2 + 2,
+                              InteractiveAreas[AreaIndex].Y2 + 2);
+
+   { Memoriser l'empreinte a restaurer lorsque ce menu disparait. Les
+     dimensions CSS sont preferees ; la position Y atteinte par le moteur
+     couvre aussi les tableaux dont la hauteur est automatique. }
+   OverlayEndX := OverlayStartX + OverlayWidth + 2;
+   OverlayEndY := OverlayStartY + OverlayHeight + 2;
+   If OverlayCtx.Y + OverlayCtx.LineHeight + 2 > OverlayEndY Then
+    OverlayEndY := OverlayCtx.Y + OverlayCtx.LineHeight + 2;
+   If OverlayEndX > RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE Then
+    OverlayEndX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+   If OverlayEndY > RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE Then
+    OverlayEndY := RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
+   If Not LastOverlayRectValid Then Begin
+    LastOverlayX1 := OverlayStartX;
+    LastOverlayY1 := OverlayStartY;
+    LastOverlayX2 := OverlayEndX;
+    LastOverlayY2 := OverlayEndY;
+    LastOverlayRectValid := True;
+   End Else Begin
+    If OverlayStartX < LastOverlayX1 Then LastOverlayX1 := OverlayStartX;
+    If OverlayStartY < LastOverlayY1 Then LastOverlayY1 := OverlayStartY;
+    If OverlayEndX > LastOverlayX2 Then LastOverlayX2 := OverlayEndX;
+    If OverlayEndY > LastOverlayY2 Then LastOverlayY2 := OverlayEndY;
+   End;
+  End;
+ End;
+End;
+
+Procedure RenderHTMLDocument(Doc: HTMLNodePtr);
+Var
+ Ctx: RenderContext;
+ BodyNode: HTMLNodePtr;
+ BodyStyle: DOMStyle;
+ BodyBox: TElementBoxInfo;
+ BodyBgColor, TryBgColor: Integer;
+ BodyMarginLeft, BodyMarginRight, BodyMarginTop, BodyMarginBottom: Integer;
+ BodyPaddingLeft, BodyPaddingRight, BodyPaddingTop, BodyPaddingBottom: Integer;
+ BodyBorderInset, BorderLine: Integer;
+Begin
+ If Doc = Nil Then Exit;
+
+ { Initialiser le contexte de rendu }
+ InitRenderContext(Ctx);
+
+ { Activer l'application automatique des styles CSS }
+ CSSAutoApply := True;
+
+ { Extraire et parser les styles CSS des balises <style>/<link> - PAS
+   pendant une simple passe de survol (SkipNextRenderAreaClear) : la
+   feuille de style elle-meme ne change jamais parce que la souris
+   bouge, seules des classes CSS sur des noeuds existants le peuvent.
+   Reparser (et, pour une feuille externe, RETELECHARGER PAR LE RESEAU
+   via Browser_HttpGet) l'integralite du CSS a CHAQUE survol - signale
+   par l'utilisateur comme un lag majeur persistant meme apres avoir
+   corrige le redessin du chrome - en etait la vraie cause. }
+ If CSSEnabled And(Not SkipNextRenderAreaClear)Then Begin
+  If CSSPreparedForRender Then
+   CSSPreparedForRender:=False
+  Else
+   CSSExtractFromDocument
+ End;
+
+ { Reinitialiser les zones de liens }
+ ClearLinkAreas;
+ ClearInteractiveAreas;
+ ClearJSNodeBoxes;
+ DevElementAreaCount := 0;
+ AbsolutePositionedCount := 0;
+ RenderingAbsoluteOverlay := False;
+
+ { Couleur de fond de la page = background-color CSS du <body>, la
+   couleur la plus visible de toute la page et pourtant jusqu'ici
+   toujours blanche quelle que soit la feuille de style (ClearRenderArea
+   utilisait une constante fixe). Determinee AVANT d'effacer, puisque
+   pour le <body> (a la difference d'un <div> quelconque) la boite
+   couvre exactement toute la zone de rendu, connue d'avance - aucun
+   probleme d'ordre de dessin comme pour un fond de bloc generique. }
+ BodyBgColor := RENDER_BG_COLOR;
+ BodyMarginLeft := RENDER_MARGIN_LEFT;
+ BodyMarginRight := RENDER_MARGIN_LEFT;
+ BodyMarginTop := RENDER_MARGIN_TOP;
+ BodyMarginBottom := RENDER_MARGIN_TOP;
+ BodyPaddingLeft := 0;
+ BodyPaddingRight := 0;
+ BodyPaddingTop := 0;
+ BodyPaddingBottom := 0;
+ BodyBorderInset := 0;
+ BodyBox.HasBorder := False;
+ If CSSEnabled Then Begin
+  BodyNode := DOMGetBody;
+  If BodyNode <> Nil Then Begin
+   CSSResolveCascade(BodyNode, BodyStyle);
+   BodyBox := ComputeElementBoxInfo(BodyStyle);
+   If Length(BodyStyle.BackgroundColor) > 0 Then Begin
+    TryBgColor := CSSColorToIndex(BodyStyle.BackgroundColor);
+    If TryBgColor >= 0 Then BodyBgColor := TryBgColor;
+   End;
+
+   { La boite du BODY definit le repere de toute la page. L'ancien moteur
+     conservait toujours RENDER_MARGIN_LEFT/TOP, meme lorsque margin et
+     padding valaient zero, formant une fausse bordure autour du contenu. }
+   If Length(BodyStyle.MarginLeft) > 0 Then
+    BodyMarginLeft := CSSParseDimension(BodyStyle.MarginLeft, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginLeft := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.MarginRight) > 0 Then
+    BodyMarginRight := CSSParseDimension(BodyStyle.MarginRight, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginRight := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.MarginTop) > 0 Then
+    BodyMarginTop := CSSParseDimension(BodyStyle.MarginTop, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginTop := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.MarginBottom) > 0 Then
+    BodyMarginBottom := CSSParseDimension(BodyStyle.MarginBottom, 0)
+   Else If Length(BodyStyle.Margin) > 0 Then
+    BodyMarginBottom := CSSParseDimension(BodyStyle.Margin, 0);
+   If Length(BodyStyle.PaddingLeft) > 0 Then
+    BodyPaddingLeft := CSSParseDimension(BodyStyle.PaddingLeft, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingLeft := CSSParseDimension(BodyStyle.Padding, 0);
+   If Length(BodyStyle.PaddingRight) > 0 Then
+    BodyPaddingRight := CSSParseDimension(BodyStyle.PaddingRight, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingRight := CSSParseDimension(BodyStyle.Padding, 0);
+   If Length(BodyStyle.PaddingTop) > 0 Then
+    BodyPaddingTop := CSSParseDimension(BodyStyle.PaddingTop, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingTop := CSSParseDimension(BodyStyle.Padding, 0);
+   If Length(BodyStyle.PaddingBottom) > 0 Then
+    BodyPaddingBottom := CSSParseDimension(BodyStyle.PaddingBottom, 0)
+   Else If Length(BodyStyle.Padding) > 0 Then
+    BodyPaddingBottom := CSSParseDimension(BodyStyle.Padding, 0);
+   If BodyBox.HasBorder Then BodyBorderInset := BodyBox.BorderWidthPx;
+  End;
+ End;
+
+ { Conserver la convention interne RenderOriginX + RENDER_MARGIN_LEFT,
+   mais faire correspondre cette expression au vrai bord gauche CSS. }
+ RenderOriginX := RENDER_AREA_X - ScrollX - RENDER_MARGIN_LEFT +
+                  BodyMarginLeft + BodyBorderInset + BodyPaddingLeft;
+ RenderOriginY := RENDER_AREA_Y - ScrollY - RENDER_MARGIN_TOP +
+                  BodyMarginTop + BodyBorderInset + BodyPaddingTop;
+ Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT;
+ Ctx.Y := RenderOriginY + RENDER_MARGIN_TOP;
+ Ctx.BlockContentX:=Ctx.X;
+ Ctx.MaxX := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE -
+             BodyMarginRight - BodyBorderInset - BodyPaddingRight;
+
+ { Effacer la zone de rendu avec cette couleur }
+ LastBodyBgColor := BodyBgColor;
+ If Not SkipNextRenderAreaClear Then
+  ClearRenderArea(BodyBgColor);
+
+ { Contrairement a margin et padding, une vraie bordure CSS du BODY est
+   visible. La dessiner avec son epaisseur demandee autour du viewport. }
+ If BodyBox.HasBorder And (Not SkipNextRenderAreaClear) Then Begin
+  SetColor(BodyBox.BorderColorIdx);
+  For BorderLine := 0 To BodyBox.BorderWidthPx - 1 Do
+   Rectangle(RENDER_AREA_X + BodyMarginLeft + BorderLine,
+             RENDER_AREA_Y + BodyMarginTop + BorderLine,
+             RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE -
+               BodyMarginRight - BorderLine,
+             RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE -
+               BodyMarginBottom - BorderLine);
+ End;
+
+ { Rendre le document avec application des styles CSS }
+ ContentOverflowX := RENDER_AREA_X;
+ JustifyWordCount := 0;
+ LastOverlayRectValid := False;
+ InContentRenderPass := True;
+ RenderHTMLNode(Doc, Ctx);
+ FlushJustifiedLine(Ctx, False);
+ RenderAbsolutePositionedOverlays(Ctx);
+ InContentRenderPass := False;
+
+ { Ctx.Y est exprime dans le repere defile de l'ecran. En lui retirant
+   RenderOriginY, on retrouve une hauteur de document stable quelle que
+   soit la valeur courante de ScrollY. }
+ DocumentContentHeight := LongInt(Ctx.Y) - LongInt(RenderOriginY) + Ctx.LineHeight;
+ If DocumentContentHeight < 0 Then DocumentContentHeight := 0;
+ MaxScrollY := DocumentContentHeight - (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);
+ If MaxScrollY < 0 Then MaxScrollY := 0;
+ If ScrollY > MaxScrollY Then ScrollY := MaxScrollY;
+ CanScrollDown := LongInt(ScrollY) < MaxScrollY;
+ CanScrollUp := ScrollY > 0;
+ CanScrollRight := ContentOverflowX > (RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE));
+ CanScrollLeft := ScrollX > 0;
+
+ DrawVScrollBar;
+ DrawHScrollBar;
+
+ { Le chrome du navigateur (barre d'URL + 4 boutons) est une couche fixe
+   qui doit TOUJOURS etre repeinte apres le document, meme pendant une
+   passe legere de survol (SkipNextRenderAreaClear) - un essai precedent
+   avait saute ce redessin pendant le survol en supposant que rien ne
+   pouvait jamais peindre au-dessus de RENDER_AREA_Y, mais un vrai
+   rendu de page (JSCookMenu, sous-menus, etc.) pouvait quand meme
+   recouvrir cette zone par un chemin qui ne passe pas par les
+   enveloppes Bar/Rectangle/OutTextXY protegees par YInVisibleBand -
+   sans ce redessin systematique, la barre d'URL et ses boutons
+   restaient alors DEFINITIVEMENT effaces des le premier survol
+   (regression signalee par l'utilisateur). La vraie cause du lag
+   d'origine (CSSExtractFromDocument re-telechargeant le CSS externe a
+   chaque survol) est corrigee plus haut, independamment de ce
+   redessin - il n'y a donc plus besoin de le sauter ici. }
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ If Not SuppressDevToolsRedraw Then DrawDevTools;
+End;
+
+{ Procedure pour tester le rendu avec du HTML }
+Procedure TestHTMLRender(Var HTMLSource: HTMLSourceBuffer);
+Var
+ Doc: HTMLNodePtr;
+ ScriptCtx: RenderContext;
+Begin
+ Doc := ParseHTML(HTMLSource);
+
+ { Liberer le buffer HTML SOURCE immediatement apres le parsing, avant
+   de lancer le rendu (et l'execution JavaScript qu'il declenche).
+   ParseHTML a deja tout extrait dans l'arbre DOM : le buffer n'est
+   plus necessaire. Pour referenceelement.htm (142 Ko), cela libere
+   ~35 blocs de 4 Ko qui fragmentaient le tas et rendaient impossible
+   l'allocation de la chaine de 169 Ko construite par JSCookMenu.js
+   via str += (EOutOfMemory en mode -maxscreen). L'appelant appellera
+   encore FreeHTMLSource apres retour - ce second appel est inoffensif
+   car FirstChunk vaut deja Nil et la boucle ne fait rien. }
+ FreeHTMLSource(HTMLSource);
+
+ If Doc <> Nil Then Begin
+  { HoveredInteractiveNode pointe potentiellement vers un noeud de
+    l'ancien arbre (cellule TD/TH survolee au moment de la navigation -
+    ex: clic sur un lien pendant que la souris survole un onglet) :
+    sans cette remise a Nil, ProcessMouseHover continuait a l'utiliser
+    apres coup pour declencher onmouseout, accedant a de la memoire
+    deja liberee par FreeHTMLNode ci-dessous (EAccessViolation dans
+    GetNodeAttribute). JSEventTargetNode n'est utilise que pendant
+    l'execution synchrone d'un gestionnaire (jamais a travers une
+    navigation), mais on le remet aussi a Nil par precaution. }
+  HoveredInteractiveNode := Nil;
+  { Detacher explicitement l'inspecteur AVANT de liberer l'ancien arbre. }
+  DevToolsBindDocument(Nil);
+  JSEventTargetNode := Nil;
+  JSClearTimeout;
+
+  { Repartir d'un contexte JS vierge a chaque navigation (comme un vrai
+    navigateur le fait par page) : sans cela, les variables globales
+    JS de l'ancienne page (ex: _cmCurrentItem, _cmItemList dans
+    JSCookMenu.js) restaient en memoire et pouvaient encore referencer
+    des noeuds DOM de l'arbre libere juste apres (meme risque de
+    pointeur perime que pour HoveredInteractiveNode ci-dessus). Les
+    objets/tableaux JS de l'ancienne page deviennent inaccessibles
+    mais ne sont pas liberes explicitement : un objet JS peut en
+    referencer un autre de facon cyclique (ex: subMenu.cmParentMenu /
+    thisMenu.cmSubMenu dans JSCookMenu.js), ce qui rendrait un
+    parcours de liberation recursif naif dangereux (boucle infinie ou
+    double liberation). }
+  InitJSContext;
+
+  { Conserver l'arbre du document (au lieu de le liberer immediatement)
+    pour pouvoir le re-rendre sans reparser a chaque defilement, et
+    pour que DOMGetElementById/... (acces DOM depuis JS) trouvent un
+    document valide. L'ancien arbre est libere ici, juste avant d etre
+    remplace. }
+  If HTMLDocument <> Nil Then FreeHTMLNode(HTMLDocument);
+  HTMLDocument := Doc;
+  { Le panneau doit suivre exactement le nouveau DOM, y compris lorsqu'une
+    navigation a ete declenchee depuis un gestionnaire JavaScript imbrique. }
+  DevToolsBindDocument(HTMLDocument);
+  ScrollX := 0;
+  ScrollY := 0;
+  { Les feuilles ont priorite sur les scripts et images externes. Avant
+    cette extraction, ExecuteDocumentScriptNodes pouvait consommer le
+    budget reseau de la page puis CSSExtractFromDocument echouait; le rendu
+    paraissait alors totalement sans CSS. Le drapeau empeche aussi le
+    second telechargement identique au debut de RenderHTMLDocument. }
+  CSSPreparedForRender:=False;
+  If CSSEnabled Then Begin
+   CSSExtractFromDocument;
+   CSSPreparedForRender:=True
+  End;
+  { Construire le DOM dynamique avant de calculer ses boites. }
+  ExecuteDocumentScripts := True;
+  InitRenderContext(ScriptCtx);
+  ExecuteDocumentScriptNodes(HTMLDocument, ScriptCtx);
+  ExecuteDocumentScripts := False;
+  RenderHTMLDocument(HTMLDocument);
+ End;
+End;
+
+{ Procedure pour re-rendre la page courante apres un changement de
+  defilement, sans reparser le HTML. }
+Procedure RescrollPage;
+Begin
+ If HTMLDocument = Nil Then Exit;
+ ExecuteDocumentScripts := False;
+ SuppressDevToolsRedraw:=True;
+ RenderHTMLDocument(HTMLDocument);
+ SuppressDevToolsRedraw:=False;
+ { RenderHTMLDocument ne dessine volontairement pas le panneau pendant
+   le recalcul de la page. Il faut cependant le repeindre APRES cette
+   passe; sinon DevToolsSetOpen reduit bien le viewport, mais F12 et le
+   menu Inspecter donnent visuellement l'impression de ne rien faire. }
+ If DevToolsOpen Then DrawDevTools;
+End;
+
+{ Rafraichissement utilise exclusivement par le survol des menus. Le DOM est
+  remis en page (les classes CSS ont pu changer), mais l'ecran visible n'est
+  plus efface en entier. On nettoie seulement l'ancien sous-menu afin que le
+  rendu normal puisse restaurer ce qui se trouvait dessous. }
+Procedure RescrollPageAfterHover;
+Begin
+ If HTMLDocument = Nil Then Exit;
+ If LastOverlayRectValid Then Begin
+  SetFillStyle(SolidFill, LastBodyBgColor);
+  Bar(LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2);
+ End;
+ SkipNextRenderAreaClear := True;
+ SuppressDevToolsRedraw:=True;
+ ExecuteDocumentScripts := False;
+ RenderHTMLDocument(HTMLDocument);
+ SuppressDevToolsRedraw:=False;
+ SkipNextRenderAreaClear := False;
+ If DevToolsOpen Then DrawDevTools;
+End;
+
+{ =====================================================
+  FIN RENDU HTML
+  ===================================================== }
+
+{ Declarations forward pour l'historique de navigation }
+Procedure BrowserGoBack; Forward;
+Procedure BrowserGoForward; Forward;
+
+{ Procedure pour dessiner la barre d'URL }
+Procedure DrawURLBar;
+Var
+ TextX, TextY, DisplayChars: Integer;
+ DisplayURL: String;
+Begin
+ { Les pilotes BGI ne garantissent pas tous le meme etat texte initial.
+   D8bit en haute resolution peut conserver une justification ou une taille
+   differente de VGAHi, ce qui place l'adresse hors du champ. }
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+
+ { Repeindre TOUTE la bande de la barre d'outils (toute la largeur de
+   l'ecran, de Y=0 a RENDER_AREA_Y), pas seulement le rectangle de la
+   barre d'URL elle-meme. Les espaces ENTRE les widgets (URL/boutons)
+   n'etaient jamais repeints par personne : si un element de page (ex:
+   un menu CSS position:absolute pres du haut de la page, comme sur la
+   page d'accueil reelle) parvenait a peindre au-dessus de
+   RENDER_AREA_Y, ce residu restait visible en PERMANENCE dans ces
+   interstices - signale par l'utilisateur avec une capture d'ecran
+   montrant du cyan (fond de la page) visible entre les boutons et la
+   barre d'URL. Repeindre toute la bande a chaque frame garantit qu'AUCUN
+   residu de page ne peut jamais y subsister, quelle qu'en soit la cause
+   exacte cote rendu de page. }
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(0, 0, GetMaxX, RENDER_AREA_Y - 1);
+
+ { Dessiner le fond de la barre d'URL }
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
+
+ { Dessiner la bordure de la barre d'URL }
+ SetColor(HTMLBlackColorIndex);
+ Rectangle(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
+
+ { Afficher l'URL courante }
+ { En D8bit, le chargement des images remplace la palette. L'index VGA
+   fixe 0 peut alors devenir blanc et rendre l'adresse invisible sur le
+   fond blanc. HTMLBlackColorIndex designe le noir reserve de la palette
+   active dans les deux modes graphiques. }
+ SetColor(HTMLBlackColorIndex);
+ TextX := URL_BAR_X + 5;
+ TextY := URL_BAR_Y + 5;
+
+ { Tronquer l'URL si elle est trop longue pour l'affichage }
+ DisplayURL := CurrentURL;
+ DisplayChars := (URL_BAR_WIDTH - 12) Div 8;
+ If DisplayChars < 4 Then DisplayChars := 4;
+ If Length(DisplayURL) > DisplayChars Then
+  DisplayURL := Copy(DisplayURL, 1, DisplayChars - 3) + '...';
+
+ OutTextXY(TextX, TextY, DisplayURL);
+
+ { Dessiner le curseur si la barre a le focus }
+ If URLBarFocused Then Begin
+  SetColor(HTMLBlackColorIndex);
+  Line(TextX + (URLCursorPos * 8), URL_BAR_Y + 3,
+       TextX + (URLCursorPos * 8), URL_BAR_Y + URL_BAR_HEIGHT - 3);
+ End;
+End;
+
+{ Procedure pour dessiner le bouton Precedent }
+Procedure DrawBackButton;
+Var
+ CenterX, CenterY: Integer;
+ ArrowColor: Integer;
+Begin
+ { Dessiner le fond du bouton }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_X + BACK_BTN_WIDTH, BACK_BTN_Y + BACK_BTN_HEIGHT);
+
+ { Dessiner la bordure du bouton }
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_X + BACK_BTN_WIDTH, BACK_BTN_Y + BACK_BTN_HEIGHT);
+
+ { Dessiner la fleche vers la gauche (symbole <) }
+ CenterX := BACK_BTN_X + (BACK_BTN_WIDTH Div 2);
+ CenterY := BACK_BTN_Y + (BACK_BTN_HEIGHT Div 2);
+
+ { Couleur de la fleche selon l'etat du bouton }
+ If BackButtonEnabled Then
+  ArrowColor := COLOR_BTN_TEXT
+ Else
+  ArrowColor := COLOR_BTN_DISABLED;
+
+ SetColor(ArrowColor);
+ { Dessiner une fleche vers la gauche }
+ Line(CenterX + 5, CenterY - 5, CenterX - 5, CenterY);
+ Line(CenterX - 5, CenterY, CenterX + 5, CenterY + 5);
+ Line(CenterX - 5, CenterY, CenterX + 8, CenterY);
+End;
+
+{ Fonction pour verifier si un clic est dans le bouton Precedent }
+Function IsClickInBackButton(X, Y: Integer): Boolean;
+Begin
+ IsClickInBackButton := (X >= BACK_BTN_X) And (X <= BACK_BTN_X + BACK_BTN_WIDTH) And
+                        (Y >= BACK_BTN_Y) And (Y <= BACK_BTN_Y + BACK_BTN_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur le bouton Precedent }
+Procedure HandleBackButtonClick;
+Begin
+ If Not BackButtonEnabled Then Exit;
+ BrowserGoBack;
+End;
+
+{ Procedure pour initialiser le bouton Precedent }
+Procedure InitBackButton;
+Begin
+ BackButtonEnabled := False; { Desactive par defaut car pas d'historique }
+End;
+
+{ Procedure pour activer/desactiver le bouton Precedent }
+Procedure SetBackButtonEnabled(Enabled: Boolean);
+Begin
+ BackButtonEnabled := Enabled;
+ DrawBackButton;
+End;
+
+{ Procedure pour dessiner le bouton Suivant }
+Procedure DrawForwardButton;
+Var
+ CenterX, CenterY: Integer;
+ ArrowColor: Integer;
+Begin
+ { Dessiner le fond du bouton }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(FORWARD_BTN_X, FORWARD_BTN_Y, FORWARD_BTN_X + FORWARD_BTN_WIDTH, FORWARD_BTN_Y + FORWARD_BTN_HEIGHT);
+
+ { Dessiner la bordure du bouton }
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(FORWARD_BTN_X, FORWARD_BTN_Y, FORWARD_BTN_X + FORWARD_BTN_WIDTH, FORWARD_BTN_Y + FORWARD_BTN_HEIGHT);
+
+ { Dessiner la fleche vers la droite (symbole >) }
+ CenterX := FORWARD_BTN_X + (FORWARD_BTN_WIDTH Div 2);
+ CenterY := FORWARD_BTN_Y + (FORWARD_BTN_HEIGHT Div 2);
+
+ { Couleur de la fleche selon l'etat du bouton }
+ If ForwardButtonEnabled Then
+  ArrowColor := COLOR_BTN_TEXT
+ Else
+  ArrowColor := COLOR_BTN_DISABLED;
+
+ SetColor(ArrowColor);
+ { Dessiner une fleche vers la droite }
+ Line(CenterX - 5, CenterY - 5, CenterX + 5, CenterY);
+ Line(CenterX + 5, CenterY, CenterX - 5, CenterY + 5);
+ Line(CenterX + 5, CenterY, CenterX - 8, CenterY);
+End;
+
+{ Fonction pour verifier si un clic est dans le bouton Suivant }
+Function IsClickInForwardButton(X, Y: Integer): Boolean;
+Begin
+ IsClickInForwardButton := (X >= FORWARD_BTN_X) And (X <= FORWARD_BTN_X + FORWARD_BTN_WIDTH) And
+                           (Y >= FORWARD_BTN_Y) And (Y <= FORWARD_BTN_Y + FORWARD_BTN_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur le bouton Suivant }
+Procedure HandleForwardButtonClick;
+Begin
+ If Not ForwardButtonEnabled Then Exit;
+ BrowserGoForward;
+End;
+
+{ Procedure pour initialiser le bouton Suivant }
+Procedure InitForwardButton;
+Begin
+ ForwardButtonEnabled := False; { Desactive par defaut car pas d'historique }
+End;
+
+{ Procedure pour activer/desactiver le bouton Suivant }
+Procedure SetForwardButtonEnabled(Enabled: Boolean);
+Begin
+ ForwardButtonEnabled := Enabled;
+ DrawForwardButton;
+End;
+
+{ Procedure pour dessiner le bouton Actualiser }
+Procedure DrawRefreshButton;
+Var
+ CenterX, CenterY: Integer;
+ IconColor: Integer;
+Begin
+ { Dessiner le fond du bouton }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(REFRESH_BTN_X, REFRESH_BTN_Y, REFRESH_BTN_X + REFRESH_BTN_WIDTH, REFRESH_BTN_Y + REFRESH_BTN_HEIGHT);
+
+ { Dessiner la bordure du bouton }
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(REFRESH_BTN_X, REFRESH_BTN_Y, REFRESH_BTN_X + REFRESH_BTN_WIDTH, REFRESH_BTN_Y + REFRESH_BTN_HEIGHT);
+
+ { Dessiner le symbole de rafraichissement (fleche circulaire) }
+ CenterX := REFRESH_BTN_X + (REFRESH_BTN_WIDTH Div 2);
+ CenterY := REFRESH_BTN_Y + (REFRESH_BTN_HEIGHT Div 2);
+
+ { Couleur de l'icone selon l'etat du bouton }
+ If RefreshButtonEnabled Then
+  IconColor := COLOR_BTN_TEXT
+ Else
+  IconColor := COLOR_BTN_DISABLED;
+
+ SetColor(IconColor);
+ { Dessiner un cercle partiel avec une fleche pour symboliser le rafraichissement }
+ Arc(CenterX, CenterY, 45, 315, 6);
+ { Dessiner la pointe de la fleche }
+ Line(CenterX + 4, CenterY - 6, CenterX + 6, CenterY - 2);
+ Line(CenterX + 4, CenterY - 6, CenterX + 8, CenterY - 6);
+End;
+
+{ Fonction pour verifier si un clic est dans le bouton Actualiser }
+Function IsClickInRefreshButton(X, Y: Integer): Boolean;
+Begin
+ IsClickInRefreshButton := (X >= REFRESH_BTN_X) And (X <= REFRESH_BTN_X + REFRESH_BTN_WIDTH) And
+                           (Y >= REFRESH_BTN_Y) And (Y <= REFRESH_BTN_Y + REFRESH_BTN_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur le bouton Actualiser }
+Procedure HandleRefreshButtonClick;
+Begin
+ If Not RefreshButtonEnabled Then Exit;
+ { Recharger la page courante SANS toucher a l'historique (contrairement a
+   NavigateTo) - un rafraichissement n'est pas une nouvelle navigation. }
+ DisplayCurrentTarget;
+End;
+
+{ Procedure pour initialiser le bouton Actualiser }
+Procedure InitRefreshButton;
+Begin
+ RefreshButtonEnabled := True; { Active par defaut car on peut toujours rafraichir }
+End;
+
+{ Procedure pour activer/desactiver le bouton Actualiser }
+Procedure SetRefreshButtonEnabled(Enabled: Boolean);
+Begin
+ RefreshButtonEnabled := Enabled;
+ DrawRefreshButton;
+End;
+
+{ Fonction pour verifier si l'URL courante est dans les favoris }
+Function IsFavorite(URL: String): Boolean;
+Var
+ I: Integer;
+Begin
+ IsFavorite := False;
+ For I := 1 To FavoriteCount Do Begin
+  If Favorites[I] = URL Then Begin
+   IsFavorite := True;
+   Exit;
+  End;
+ End;
+End;
+
+{ Procedure pour ajouter l'URL courante aux favoris }
+Procedure AddFavorite(URL: String);
+Begin
+ If FavoriteCount < MAX_FAVORITES Then Begin
+  If Not IsFavorite(URL) Then Begin
+   Inc(FavoriteCount);
+   Favorites[FavoriteCount] := URL;
+  End;
+ End;
+End;
+
+{ Procedure pour retirer l'URL courante des favoris }
+Procedure RemoveFavorite(URL: String);
+Var
+ I, J: Integer;
+Begin
+ For I := 1 To FavoriteCount Do Begin
+  If Favorites[I] = URL Then Begin
+   { Decaler les elements suivants }
+   For J := I To FavoriteCount - 1 Do
+    Favorites[J] := Favorites[J + 1];
+   Dec(FavoriteCount);
+   Exit;
+  End;
+ End;
+End;
+
+{ Procedure pour dessiner le bouton Favori }
+Procedure DrawFavoriteButton;
+Var
+ CenterX, CenterY: Integer;
+ IconColor: Integer;
+ IsFav: Boolean;
+Begin
+ { Dessiner le fond du bouton }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(FAVORITE_BTN_X, FAVORITE_BTN_Y, FAVORITE_BTN_X + FAVORITE_BTN_WIDTH, FAVORITE_BTN_Y + FAVORITE_BTN_HEIGHT);
+
+ { Dessiner la bordure du bouton }
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(FAVORITE_BTN_X, FAVORITE_BTN_Y, FAVORITE_BTN_X + FAVORITE_BTN_WIDTH, FAVORITE_BTN_Y + FAVORITE_BTN_HEIGHT);
+
+ { Dessiner le symbole etoile pour les favoris }
+ CenterX := FAVORITE_BTN_X + (FAVORITE_BTN_WIDTH Div 2);
+ CenterY := FAVORITE_BTN_Y + (FAVORITE_BTN_HEIGHT Div 2);
+
+ { Couleur de l'icone selon l'etat du bouton et si l'URL est en favori }
+ IsFav := IsFavorite(CurrentURL);
+ If FavoriteButtonEnabled Then Begin
+  If IsFav Then
+   IconColor := 14 { Jaune si favori }
+  Else
+   IconColor := COLOR_BTN_TEXT;
+ End
+  Else
+  IconColor := COLOR_BTN_DISABLED;
+
+ SetColor(IconColor);
+ { Dessiner une etoile a 5 branches }
+ { Branche superieure }
+ Line(CenterX, CenterY - 7, CenterX - 2, CenterY - 2);
+ Line(CenterX, CenterY - 7, CenterX + 2, CenterY - 2);
+ { Branche gauche superieure }
+ Line(CenterX - 7, CenterY - 2, CenterX - 2, CenterY - 2);
+ Line(CenterX - 7, CenterY - 2, CenterX - 3, CenterY + 2);
+ { Branche droite superieure }
+ Line(CenterX + 7, CenterY - 2, CenterX + 2, CenterY - 2);
+ Line(CenterX + 7, CenterY - 2, CenterX + 3, CenterY + 2);
+ { Branche gauche inferieure }
+ Line(CenterX - 5, CenterY + 6, CenterX - 3, CenterY + 2);
+ Line(CenterX - 5, CenterY + 6, CenterX, CenterY + 3);
+ { Branche droite inferieure }
+ Line(CenterX + 5, CenterY + 6, CenterX + 3, CenterY + 2);
+ Line(CenterX + 5, CenterY + 6, CenterX, CenterY + 3);
+End;
+
+{ Fonction pour verifier si un clic est dans le bouton Favori }
+Function IsClickInFavoriteButton(X, Y: Integer): Boolean;
+Begin
+ IsClickInFavoriteButton := (X >= FAVORITE_BTN_X) And (X <= FAVORITE_BTN_X + FAVORITE_BTN_WIDTH) And
+                            (Y >= FAVORITE_BTN_Y) And (Y <= FAVORITE_BTN_Y + FAVORITE_BTN_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur le bouton Favori }
+Procedure HandleFavoriteButtonClick;
+Begin
+ If Not FavoriteButtonEnabled Then Exit;
+ { Basculer l'etat du favori pour l'URL courante }
+ If IsFavorite(CurrentURL) Then
+  RemoveFavorite(CurrentURL)
+ Else
+  AddFavorite(CurrentURL);
+ DrawFavoriteButton;
+End;
+
+{ Procedure pour initialiser le bouton Favori }
+Procedure InitFavoriteButton;
+Begin
+ FavoriteButtonEnabled := True; { Active par defaut }
+ FavoriteCount := 0;
+End;
+
+{ Procedure pour activer/desactiver le bouton Favori }
+Procedure SetFavoriteButtonEnabled(Enabled: Boolean);
+Begin
+ FavoriteButtonEnabled := Enabled;
+ DrawFavoriteButton;
+End;
+
+{ =====================================================
+  GENERATEUR DE CODE QR (menu contextuel - "Creer un code
+  QR pour cette page", demande explicite de l'utilisateur,
+  2026-09-25)
+  =====================================================
+  Implementation reelle conforme a ISO/IEC 18004, verifiee pendant le
+  developpement contre le code source de la bibliotheque de reference
+  QR-Code-generator de Project Nayuki (licence MIT, code public a
+  https://github.com/nayuki/QR-Code-generator, fichier c/qrcodegen.c) :
+  formules de masque, regles de penalite (N1-N4) et leur mecanisme
+  d'historique de motifs "en forme de repere", polynome/algorithme
+  Reed-Solomon sur GF(256) (racine 0x11D), zigzag de placement des
+  donnees, positions des motifs d'alignement et chaines d'information
+  de format (niveau L, verifiees aussi contre le tutoriel public
+  Thonky.com) proviennent toutes de cette verification, afin de ne
+  fabriquer aucune table/constante de la norme.
+
+  SIMPLIFICATION ASSUMEE ET DIVULGUEE : seules les versions 1 a 5 (mode
+  octet, correction de niveau L, un seul bloc Reed-Solomon - la norme
+  n'exige un decoupage en plusieurs blocs entrelaces qu'a partir de la
+  version 6 en niveau L) sont supportees, soit 17/32/53/78/106 octets
+  utiles maximum selon la version choisie automatiquement. Au-dela, un
+  message d'erreur reel est affiche plutot que de tronquer l'URL en
+  silence (ce qui produirait un code QR pointant vers une adresse
+  fausse). Le rendu final n'a pas ete verifie avec un vrai lecteur/
+  decodeur QR dans cet environnement (aucun n'y est disponible) - la
+  conformite a ete controlee algorithme par algorithme contre la
+  reference ci-dessus, pas par une lecture physique du resultat. }
+
+Const
+ { Mots de code de correction d'erreur par bloc, niveau L, versions 1-5
+   (un seul bloc pour chacune - voir la simplification ci-dessus). }
+ QR_ECC_PER_BLOCK_L: Array[1..5] Of Integer = (7, 10, 15, 20, 26);
+ { Deuxieme coordonnee des motifs d'alignement (la premiere est toujours
+   6) ; version 1 n'a aucun motif d'alignement. }
+ QR_ALIGN_COORD2: Array[2..5] Of Integer = (18, 22, 26, 30);
+ { Chaines d'information de format (15 bits, deja completes avec leur
+   BCH et le masque XOR fixe) pour le niveau de correction L, indexees
+   par le motif de masque 0-7 - reprises telles quelles de la table
+   verifiee plutot que recalculees, pour eliminer tout risque d'erreur
+   dans l'implementation du BCH. }
+ QR_FORMAT_STRINGS_L: Array[0..7] Of String[15] = (
+  '111011111000100', '111001011110011', '111110110101010', '111100010011101',
+  '110011000101111', '110001100011000', '110110001000001', '110100101110110');
+
+Type
+ TQRByteBuf = Array[0..319] Of Byte;
+ TQRGenBuf = Array[0..29] Of Byte;
+ TQRHistory = Array[0..6] Of Integer;
+ { 0..36 couvre toutes les tailles de version 1 (21x21) a version 5 (37x37). }
+ TQRMatrix = Array[0..36, 0..36] Of Byte;   { 0 = clair, 1 = sombre }
+ TQRFuncMap = Array[0..36, 0..36] Of Boolean; { True = motif de fonction (jamais masque) }
+
+{ Nombre total de mots de code (donnees + correction) disponibles pour
+  Version, avant separation en blocs - formule verifiee (getNumRawDataModules
+  de la reference ci-dessus), divisee par 8 (les eventuels bits restants
+  inutilises, 0 a 7 selon la version, sont ignores comme le fait aussi
+  la reference). }
+Function QRTotalCodewords(Version: Integer): Integer;
+Var
+ RawBits: LongInt;
+ NumAlign: Integer;
+Begin
+ RawBits := LongInt(16 * Version + 128) * Version + 64;
+ If Version >= 2 Then Begin
+  NumAlign := Version Div 7 + 2;
+  RawBits := RawBits - (LongInt(25 * NumAlign - 10) * NumAlign - 55);
+ End;
+ QRTotalCodewords := RawBits Div 8;
+End;
+
+Function QRDataCodewords(Version: Integer): Integer;
+Begin
+ QRDataCodewords := QRTotalCodewords(Version) - QR_ECC_PER_BLOCK_L[Version];
+End;
+
+{ Capacite utile reelle en octets (mode octet) : mots de code de donnees,
+  moins l'indicateur de mode (4 bits) et l'indicateur de longueur (8 bits,
+  valable pour les versions 1-9 seulement - hors de portee ici). }
+Function QRByteCapacity(Version: Integer): Integer;
+Begin
+ QRByteCapacity := (QRDataCodewords(Version) * 8 - 4 - 8) Div 8;
+End;
+
+{ Plus petite version (1-5) capable de contenir DataLen octets ; 0 si
+  aucune version supportee n'y suffit (voir la simplification ci-dessus). }
+Function QRChooseVersion(DataLen: Integer): Integer;
+Var
+ V: Integer;
+Begin
+ QRChooseVersion := 0;
+ For V := 1 To 5 Do
+  If DataLen <= QRByteCapacity(V) Then Begin
+   QRChooseVersion := V;
+   Exit;
+  End;
+End;
+
+Procedure QRAppendBits(Var Buf: TQRByteBuf; Var BitLen: Integer; Value: LongInt; NumBits: Integer);
+Var
+ I: Integer;
+Begin
+ For I := NumBits - 1 DownTo 0 Do Begin
+  If ((Value Shr I) And 1) <> 0 Then
+   Buf[BitLen Shr 3] := Buf[BitLen Shr 3] Or ($80 Shr (BitLen And 7));
+  Inc(BitLen);
+ End;
+End;
+
+{ Construit les mots de code de DONNEES (mode octet, terminateur et
+  bourrage 0xEC/0x11 inclus) pour Version ; renvoie leur nombre. }
+Function QREncodeDataCodewords(Const S: String; Version: Integer; Var Buf: TQRByteBuf): Integer;
+Var
+ BitLen: Integer;
+ DataCw, I, TermBits: Integer;
+ PadIsEC: Boolean;
+Begin
+ FillChar(Buf, SizeOf(Buf), 0);
+ BitLen := 0;
+ QRAppendBits(Buf, BitLen, 4, 4);              { indicateur de mode : octet }
+ QRAppendBits(Buf, BitLen, Length(S), 8);      { indicateur de longueur }
+ For I := 1 To Length(S) Do
+  QRAppendBits(Buf, BitLen, Ord(S[I]), 8);
+
+ DataCw := QRDataCodewords(Version);
+
+ TermBits := (DataCw * 8) - BitLen;
+ If TermBits > 4 Then TermBits := 4;
+ If TermBits > 0 Then QRAppendBits(Buf, BitLen, 0, TermBits);
+ If (BitLen Mod 8) <> 0 Then QRAppendBits(Buf, BitLen, 0, 8 - (BitLen Mod 8));
+
+ PadIsEC := True;
+ While (BitLen Div 8) < DataCw Do Begin
+  If PadIsEC Then QRAppendBits(Buf, BitLen, $EC, 8)
+  Else QRAppendBits(Buf, BitLen, $11, 8);
+  PadIsEC := Not PadIsEC;
+ End;
+ QREncodeDataCodewords := DataCw;
+End;
+
+{ Multiplication dans GF(256) avec le polynome reducteur 0x11D utilise par
+  la norme QR (x^8+x^4+x^3+x^2+1) - port direct de reedSolomonMultiply. }
+Function QRGFMultiply(X, Y: Byte): Byte;
+Var
+ Z: LongInt;
+ I: Integer;
+Begin
+ Z := 0;
+ For I := 7 DownTo 0 Do Begin
+  Z := (Z Shl 1) Xor ((Z Shr 7) * $11D);
+  Z := Z And $FF;
+  If ((Y Shr I) And 1) <> 0 Then Z := Z Xor X;
+ End;
+ QRGFMultiply := Byte(Z);
+End;
+
+Procedure QRComputeGenerator(Degree: Integer; Var Gen: TQRGenBuf);
+Var
+ I, J: Integer;
+ Root: Byte;
+Begin
+ FillChar(Gen, SizeOf(Gen), 0);
+ Gen[Degree - 1] := 1;
+ Root := 1;
+ For I := 0 To Degree - 1 Do Begin
+  For J := 0 To Degree - 1 Do Begin
+   Gen[J] := QRGFMultiply(Gen[J], Root);
+   If J + 1 < Degree Then Gen[J] := Gen[J] Xor Gen[J + 1];
+  End;
+  Root := QRGFMultiply(Root, 2);
+ End;
+End;
+
+Procedure QRComputeRemainder(Const Data: TQRByteBuf; DataLen: Integer;
+ Const Gen: TQRGenBuf; Degree: Integer; Var Rem: TQRGenBuf);
+Var
+ I, J: Integer;
+ Factor: Byte;
+Begin
+ FillChar(Rem, SizeOf(Rem), 0);
+ For I := 0 To DataLen - 1 Do Begin
+  Factor := Data[I] Xor Rem[0];
+  For J := 0 To Degree - 2 Do Rem[J] := Rem[J + 1];
+  Rem[Degree - 1] := 0;
+  For J := 0 To Degree - 1 Do
+   Rem[J] := Rem[J] Xor QRGFMultiply(Gen[J], Factor);
+ End;
+End;
+
+Procedure QRSetIfValid(Var M: TQRMatrix; Size, X, Y: Integer; Val: Byte);
+Begin
+ If (X >= 0) And (X < Size) And (Y >= 0) And (Y < Size) Then
+  M[Y, X] := Val;
+End;
+
+Function QRFormatBit(MaskId, I: Integer): Boolean;
+Begin
+ { QR_FORMAT_STRINGS_L est ecrite bit de poids fort (bit 14) a gauche,
+   bit de poids faible (bit 0) a droite - comme toute ecriture usuelle
+   d'un nombre binaire - d'ou l'index inverse 15-I (chaine 1-indexee). }
+ QRFormatBit := QR_FORMAT_STRINGS_L[MaskId][15 - I] = '1';
+End;
+
+Procedure QRFinderAddHistory(RunLen: Integer; Var Hist: TQRHistory; Size: Integer);
+Var
+ K: Integer;
+Begin
+ If Hist[0] = 0 Then Inc(RunLen, Size);
+ For K := 6 DownTo 1 Do Hist[K] := Hist[K - 1];
+ Hist[0] := RunLen;
+End;
+
+Function QRFinderCountPatterns(Const Hist: TQRHistory): Integer;
+Var
+ N: Integer;
+ Core: Boolean;
+ Cnt: Integer;
+Begin
+ N := Hist[1];
+ Core := (N > 0) And (Hist[2] = N) And (Hist[3] = N * 3) And (Hist[4] = N) And (Hist[5] = N);
+ Cnt := 0;
+ If Core And (Hist[0] >= N * 4) And (Hist[6] >= N) Then Inc(Cnt);
+ If Core And (Hist[6] >= N * 4) And (Hist[0] >= N) Then Inc(Cnt);
+ QRFinderCountPatterns := Cnt;
+End;
+
+Function QRFinderTerminateAndCount(CurColorDark: Boolean; CurRunLen: Integer;
+ Var Hist: TQRHistory; Size: Integer): Integer;
+Begin
+ If CurColorDark Then Begin
+  QRFinderAddHistory(CurRunLen, Hist, Size);
+  CurRunLen := 0;
+ End;
+ Inc(CurRunLen, Size);
+ QRFinderAddHistory(CurRunLen, Hist, Size);
+ QRFinderTerminateAndCount := QRFinderCountPatterns(Hist);
+End;
+
+{ Score de penalite (regles N1-N4) utilise pour choisir automatiquement
+  le meilleur des 8 masques - port direct de getPenaltyScore. }
+Function QRPenaltyScore(Const M: TQRMatrix; Size: Integer): LongInt;
+Var
+ X, Y: Integer;
+ RunColorDark, ColorHere: Boolean;
+ RunLen: Integer;
+ Hist: TQRHistory;
+ Res: LongInt;
+ Dark, Total, K: LongInt;
+Begin
+ Res := 0;
+
+ For Y := 0 To Size - 1 Do Begin
+  RunColorDark := False;
+  RunLen := 0;
+  FillChar(Hist, SizeOf(Hist), 0);
+  For X := 0 To Size - 1 Do Begin
+   ColorHere := (M[Y, X] <> 0);
+   If ColorHere = RunColorDark Then Begin
+    Inc(RunLen);
+    If RunLen = 5 Then Inc(Res, 3)
+    Else If RunLen > 5 Then Inc(Res);
+   End Else Begin
+    QRFinderAddHistory(RunLen, Hist, Size);
+    If Not RunColorDark Then Inc(Res, QRFinderCountPatterns(Hist) * 40);
+    RunColorDark := ColorHere;
+    RunLen := 1;
+   End;
+  End;
+  Inc(Res, QRFinderTerminateAndCount(RunColorDark, RunLen, Hist, Size) * 40);
+ End;
+
+ For X := 0 To Size - 1 Do Begin
+  RunColorDark := False;
+  RunLen := 0;
+  FillChar(Hist, SizeOf(Hist), 0);
+  For Y := 0 To Size - 1 Do Begin
+   ColorHere := (M[Y, X] <> 0);
+   If ColorHere = RunColorDark Then Begin
+    Inc(RunLen);
+    If RunLen = 5 Then Inc(Res, 3)
+    Else If RunLen > 5 Then Inc(Res);
+   End Else Begin
+    QRFinderAddHistory(RunLen, Hist, Size);
+    If Not RunColorDark Then Inc(Res, QRFinderCountPatterns(Hist) * 40);
+    RunColorDark := ColorHere;
+    RunLen := 1;
+   End;
+  End;
+  Inc(Res, QRFinderTerminateAndCount(RunColorDark, RunLen, Hist, Size) * 40);
+ End;
+
+ For Y := 0 To Size - 2 Do
+  For X := 0 To Size - 2 Do
+   If (M[Y, X] = M[Y, X + 1]) And (M[Y, X] = M[Y + 1, X]) And (M[Y, X] = M[Y + 1, X + 1]) Then
+    Inc(Res, 3);
+
+ Dark := 0;
+ For Y := 0 To Size - 1 Do
+  For X := 0 To Size - 1 Do
+   If M[Y, X] <> 0 Then Inc(Dark);
+ Total := LongInt(Size) * Size;
+ K := (Abs(Dark * 20 - Total * 10) + Total - 1) Div Total - 1;
+ If K < 0 Then K := 0; { mathematiquement inatteignable (Size est toujours impair) }
+ Inc(Res, K * 10);
+
+ QRPenaltyScore := Res;
+End;
+
+{ Construit la matrice finale (motifs de fonction + donnees + meilleur
+  masque + information de format) pour Version/Codewords - port direct
+  de initializeFunctionModules/drawCodewords/drawLightFunctionModules/
+  applyMask/drawFormatBits, dans le meme ordre que la reference. }
+Procedure QRBuildMatrix(Version: Integer; Const Codewords: TQRByteBuf; TotalCw: Integer;
+ Var OutM: TQRMatrix; Var Size: Integer);
+Var
+ Base, Trial, Best: TQRMatrix;
+ FM: TQRFuncMap;
+ X, Y, Dx, Dy, Dist: Integer;
+ AlignCount, AI, AJ, AX, AY: Integer;
+ AlignPos: Array[0..1] Of Integer;
+ Right, Vert, J2, BitIdx, DataI: Integer;
+ Upward: Boolean;
+ Invert: Boolean;
+ MaskTry: Integer;
+ Score, BestScore: LongInt;
+Begin
+ Size := 4 * Version + 17;
+ FillChar(Base, SizeOf(Base), 0);
+ FillChar(FM, SizeOf(FM), False);
+
+ { --- motifs de synchronisation (tout sombre pour l'instant) --- }
+ For X := 0 To Size - 1 Do Begin Base[6, X] := 1; FM[6, X] := True; End;
+ For Y := 0 To Size - 1 Do Begin Base[Y, 6] := 1; FM[Y, 6] := True; End;
+
+ { --- 3 zones reperage+separateur+bande d'information de format --- }
+ For Dy := 0 To 8 Do For Dx := 0 To 8 Do Begin
+  Base[Dy, Dx] := 1; FM[Dy, Dx] := True;                                 { haut-gauche : 9x9 }
+ End;
+ For Dy := 0 To 8 Do For Dx := 0 To 7 Do Begin
+  Base[Dy, Size - 8 + Dx] := 1; FM[Dy, Size - 8 + Dx] := True;           { haut-droite : 8x9 }
+ End;
+ For Dy := 0 To 7 Do For Dx := 0 To 8 Do Begin
+  Base[Size - 8 + Dy, Dx] := 1; FM[Size - 8 + Dy, Dx] := True;           { bas-gauche : 9x8 }
+ End;
+
+ { --- emplacements des motifs d'alignement (encore tout sombre) --- }
+ AlignCount := 0;
+ If Version > 1 Then Begin
+  AlignCount := 2;
+  AlignPos[0] := 6;
+  AlignPos[1] := QR_ALIGN_COORD2[Version];
+ End;
+ For AI := 0 To AlignCount - 1 Do
+  For AJ := 0 To AlignCount - 1 Do Begin
+   If (AI = 0) And (AJ = 0) Then Continue;
+   If (AI = 0) And (AJ = AlignCount - 1) Then Continue;
+   If (AI = AlignCount - 1) And (AJ = 0) Then Continue;
+   For Dy := -2 To 2 Do For Dx := -2 To 2 Do Begin
+    AX := AlignPos[AI] + Dx; AY := AlignPos[AJ] + Dy;
+    Base[AY, AX] := 1; FM[AY, AX] := True;
+   End;
+  End;
+
+ { --- module sombre fixe (voir QRFormatBit plus bas pour le reste) --- }
+ Base[Size - 8, 8] := 1; FM[Size - 8, 8] := True;
+
+ { --- zigzag de placement des mots de code (saute les cellules deja
+   marquees comme motif de fonction) --- }
+ DataI := 0;
+ Right := Size - 1;
+ While Right >= 1 Do Begin
+  If Right = 6 Then Right := 5;
+  For Vert := 0 To Size - 1 Do
+   For J2 := 0 To 1 Do Begin
+    X := Right - J2;
+    Upward := ((Right + 1) And 2) = 0;
+    If Upward Then Y := Size - 1 - Vert Else Y := Vert;
+    If (Not FM[Y, X]) And (DataI < TotalCw * 8) Then Begin
+     BitIdx := (Codewords[DataI Shr 3] Shr (7 - (DataI And 7))) And 1;
+     Base[Y, X] := BitIdx;
+     Inc(DataI);
+    End;
+   End;
+  Right := Right - 2;
+ End;
+
+ { --- eclaircir les anneaux reels des motifs (apres placement des
+   donnees : ces cellules restent marquees FM, jamais touchees par le
+   zigzag ci-dessus) --- }
+ X := 7;
+ While X < Size - 7 Do Begin
+  Base[6, X] := 0;
+  Base[X, 6] := 0;
+  X := X + 2;
+ End;
+
+ For Dy := -4 To 4 Do
+  For Dx := -4 To 4 Do Begin
+   Dist := Abs(Dx); If Abs(Dy) > Dist Then Dist := Abs(Dy);
+   If (Dist = 2) Or (Dist = 4) Then Begin
+    QRSetIfValid(Base, Size, 3 + Dx, 3 + Dy, 0);
+    QRSetIfValid(Base, Size, Size - 4 + Dx, 3 + Dy, 0);
+    QRSetIfValid(Base, Size, 3 + Dx, Size - 4 + Dy, 0);
+   End;
+  End;
+
+ For AI := 0 To AlignCount - 1 Do
+  For AJ := 0 To AlignCount - 1 Do Begin
+   If (AI = 0) And (AJ = 0) Then Continue;
+   If (AI = 0) And (AJ = AlignCount - 1) Then Continue;
+   If (AI = AlignCount - 1) And (AJ = 0) Then Continue;
+   For Dy := -1 To 1 Do For Dx := -1 To 1 Do Begin
+    AX := AlignPos[AI] + Dx; AY := AlignPos[AJ] + Dy;
+    If (Dx = 0) And (Dy = 0) Then Base[AY, AX] := 1 Else Base[AY, AX] := 0;
+   End;
+  End;
+
+ { --- essayer les 8 masques, garder celui de plus faible penalite --- }
+ BestScore := -1;
+ Best := Base;
+ For MaskTry := 0 To 7 Do Begin
+  Trial := Base;
+  For Y := 0 To Size - 1 Do
+   For X := 0 To Size - 1 Do Begin
+    If FM[Y, X] Then Continue;
+    Case MaskTry Of
+     0: Invert := ((X + Y) Mod 2) = 0;
+     1: Invert := (Y Mod 2) = 0;
+     2: Invert := (X Mod 3) = 0;
+     3: Invert := ((X + Y) Mod 3) = 0;
+     4: Invert := (((X Div 3) + (Y Div 2)) Mod 2) = 0;
+     5: Invert := ((X * Y) Mod 2 + (X * Y) Mod 3) = 0;
+     6: Invert := (((X * Y) Mod 2 + (X * Y) Mod 3) Mod 2) = 0;
+     Else Invert := ((((X + Y) Mod 2) + ((X * Y) Mod 3)) Mod 2) = 0; { masque 7 }
+    End;
+    If Invert Then Trial[Y, X] := 1 - Trial[Y, X];
+   End;
+
+  For BitIdx := 0 To 5 Do
+   Trial[BitIdx, 8] := Ord(QRFormatBit(MaskTry, BitIdx));
+  Trial[7, 8] := Ord(QRFormatBit(MaskTry, 6));
+  Trial[8, 8] := Ord(QRFormatBit(MaskTry, 7));
+  Trial[8, 7] := Ord(QRFormatBit(MaskTry, 8));
+  For BitIdx := 9 To 14 Do
+   Trial[8, 14 - BitIdx] := Ord(QRFormatBit(MaskTry, BitIdx));
+  For BitIdx := 0 To 7 Do
+   Trial[8, Size - 1 - BitIdx] := Ord(QRFormatBit(MaskTry, BitIdx));
+  For BitIdx := 8 To 14 Do
+   Trial[Size - 15 + BitIdx, 8] := Ord(QRFormatBit(MaskTry, BitIdx));
+  Trial[Size - 8, 8] := 1;
+
+  Score := QRPenaltyScore(Trial, Size);
+  If (BestScore < 0) Or (Score < BestScore) Then Begin
+   BestScore := Score;
+   Best := Trial;
+  End;
+ End;
+
+ OutM := Best;
+End;
+
+{ Point d'entree : encode URL (mode octet, niveau L) dans OutM/Size.
+  Renvoie False si URL depasse la capacite de la version 5 (106 octets). }
+Function QREncodeURL(Const URLText: String; Var OutM: TQRMatrix; Var Size: Integer): Boolean;
+Var
+ Version, DataCw, EccDeg, TotalCw, I: Integer;
+ DataBuf, AllCw: TQRByteBuf;
+ Gen, Rem: TQRGenBuf;
+Begin
+ QREncodeURL := False;
+ Version := QRChooseVersion(Length(URLText));
+ If Version = 0 Then Exit;
+
+ DataCw := QREncodeDataCodewords(URLText, Version, DataBuf);
+ EccDeg := QR_ECC_PER_BLOCK_L[Version];
+ QRComputeGenerator(EccDeg, Gen);
+ QRComputeRemainder(DataBuf, DataCw, Gen, EccDeg, Rem);
+
+ FillChar(AllCw, SizeOf(AllCw), 0);
+ For I := 0 To DataCw - 1 Do AllCw[I] := DataBuf[I];
+ For I := 0 To EccDeg - 1 Do AllCw[DataCw + I] := Rem[I];
+ TotalCw := DataCw + EccDeg;
+
+ QRBuildMatrix(Version, AllCw, TotalCw, OutM, Size);
+ QREncodeURL := True;
+End;
+
+{ Dessine la matrice avec une zone tranquille reelle de 4 modules (exigee
+  par la norme pour une lecture fiable - ne pas l'omettre). }
+Procedure QRDrawModules(Const M: TQRMatrix; Size, OriginX, OriginY, Scale: Integer);
+Var
+ X, Y: Integer;
+Begin
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(OriginX, OriginY, OriginX + (Size + 8) * Scale, OriginY + (Size + 8) * Scale);
+ SetFillStyle(SolidFill, HTMLBlackColorIndex);
+ For Y := 0 To Size - 1 Do
+  For X := 0 To Size - 1 Do
+   If M[Y, X] <> 0 Then
+    Bar(OriginX + (X + 4) * Scale, OriginY + (Y + 4) * Scale,
+        OriginX + (X + 5) * Scale - 1, OriginY + (Y + 5) * Scale - 1);
+End;
+
+{ Boite de message generique (utilisee par le menu contextuel) - attend
+  un clic ou une touche, puis restaure l'affichage. }
+Procedure QRShowMessageBox(Const Title, Msg: String);
+Var
+ BoxW, BoxH, OriginX, OriginY: Integer;
+ DoneWaiting: Boolean;
+ DismissKey: Char;
+Begin
+ BoxW := 420; BoxH := 90;
+ OriginX := RENDER_AREA_X + ((RENDER_AREA_WIDTH - BoxW) Div 2);
+ OriginY := RENDER_AREA_Y + ((RENDER_AREA_HEIGHT - BoxH) Div 2);
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetColor(HTMLBlackColorIndex);
+ Rectangle(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+ SetColor(HTMLBlackColorIndex);
+ OutTextXY(OriginX + 10, OriginY + 10, Title);
+ OutTextXY(OriginX + 10, OriginY + 38, Msg);
+ OutTextXY(OriginX + 10, OriginY + 65, '(cliquez ou appuyez sur une touche pour fermer)');
+
+ DoneWaiting := False;
+ If MouseAvailable Then GetMouseState(BrowserMouseX, BrowserMouseY, LastMouseButton);
+ Repeat
+  If KeyPressed Then Begin
+   DismissKey := ReadKey;
+   DoneWaiting := True;
+  End Else If MouseAvailable Then Begin
+   GetMouseState(BrowserMouseX, BrowserMouseY, MouseButton);
+   If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then
+    DoneWaiting := True;
+   LastMouseButton := MouseButton;
+  End;
+ Until DoneWaiting;
+
+ { Repeindre aussi le chrome (boutons Precedent/Suivant/Actualiser/
+   Favori) : RescrollPage seul ne redessine que la zone de rendu de la
+   page, laissant ces boutons vides - meme bogue et meme correctif que
+   RepaintAfterContextMenu plus bas (definie apres ce point, donc non
+   reutilisable ici sans declaration Forward supplementaire). }
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ RescrollPage;
+End;
+
+{ Action du menu contextuel "Creer un code QR pour cette page". }
+Procedure ContextMenuCreateQRCode;
+Const
+ QR_DIALOG_TITLE = 'Code QR - clic ou touche pour fermer';
+Var
+ M: TQRMatrix;
+ Size, Scale, BoxW, BoxH, GridW, TitleW, OriginX, OriginY: Integer;
+ Ok: Boolean;
+ DoneWaiting: Boolean;
+ DismissKey: Char;
+Begin
+ Ok := QREncodeURL(CurrentURL, M, Size);
+ If Not Ok Then Begin
+  QRShowMessageBox('Code QR', 'Adresse trop longue pour un code QR (maximum 106 caracteres).');
+  Exit;
+ End;
+
+ Scale := 6;
+ GridW := (Size + 8) * Scale;
+ TitleW := Length(QR_DIALOG_TITLE) * 8 + 16;
+ If TitleW > GridW Then BoxW := TitleW Else BoxW := GridW;
+ BoxH := (Size + 8) * Scale + 26;
+ OriginX := RENDER_AREA_X + ((RENDER_AREA_WIDTH - BoxW) Div 2);
+ OriginY := RENDER_AREA_Y + ((RENDER_AREA_HEIGHT - BoxH) Div 2);
+ If OriginX < RENDER_AREA_X Then OriginX := RENDER_AREA_X;
+ If OriginY < RENDER_AREA_Y Then OriginY := RENDER_AREA_Y;
+
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetColor(HTMLBlackColorIndex);
+ Rectangle(OriginX, OriginY, OriginX + BoxW, OriginY + BoxH);
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+ SetColor(HTMLBlackColorIndex);
+ OutTextXY(OriginX + 8, OriginY + 6, QR_DIALOG_TITLE);
+
+ QRDrawModules(M, Size, OriginX + ((BoxW - GridW) Div 2), OriginY + 24, Scale);
+
+ DoneWaiting := False;
+ If MouseAvailable Then GetMouseState(BrowserMouseX, BrowserMouseY, LastMouseButton);
+ Repeat
+  If KeyPressed Then Begin
+   DismissKey := ReadKey;
+   DoneWaiting := True;
+  End Else If MouseAvailable Then Begin
+   GetMouseState(BrowserMouseX, BrowserMouseY, MouseButton);
+   If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then
+    DoneWaiting := True;
+   LastMouseButton := MouseButton;
+  End;
+ Until DoneWaiting;
+
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ RescrollPage;
+End;
+
+Function BrowserFileExists(Const FileName:String):Boolean;
+Var F:File;Exists:Boolean;
+Begin
+ Assign(F,FileName);{$I-}Reset(F,1);{$I+};Exists:=IOResult=0;
+ If Exists Then Close(F);BrowserFileExists:=Exists
+End;
+
+Procedure DrawGraphDialogButton(X,Y,W:Integer;Const Caption:String);
+Begin
+ SetFillStyle(SolidFill,LightGray);Bar(X,Y,X+W,Y+22);
+ SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+22);
+ SetTextJustify(CenterText,CenterText);OutTextXY(X+W div 2,Y+11,Caption);
+ SetTextJustify(LeftText,TopText)
+End;
+
+Function BrowserGraphConfirmOverwrite(Const FileName:String):Boolean;
+Var X,Y,W,H,YesX,NoX:Integer;Done,Answer:Boolean;K:Char;
+Begin
+ W:=430;H:=105;X:=(GetMaxX-W)div 2;Y:=(GetMaxY-H)div 2;
+ YesX:=X+W-180;NoX:=X+W-90;
+ If MouseAvailable Then HideMouse;
+ SetFillStyle(SolidFill,COLOR_URL_BAR_BG);Bar(X,Y,X+W,Y+H);
+ SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+H);
+ OutTextXY(X+10,Y+10,'Confirmer le remplacement');
+ OutTextXY(X+10,Y+36,'Le fichier existe deja : '+FileName);
+ DrawGraphDialogButton(YesX,Y+70,75,'Oui');
+ DrawGraphDialogButton(NoX,Y+70,75,'Non');
+ If MouseAvailable Then ShowMouse;
+ Done:=False;Answer:=False;
+ If MouseAvailable Then GetMouseState(BrowserMouseX,BrowserMouseY,LastMouseButton);
+ Repeat
+  If KeyPressed Then Begin
+   K:=ReadKey;
+   If K=#13Then Begin Answer:=True;Done:=True End
+   Else If K=#27Then Done:=True
+  End Else If MouseAvailable Then Begin
+   GetMouseState(BrowserMouseX,BrowserMouseY,MouseButton);
+   If((MouseButton and MOUSE_LEFT_BUTTON)<>0)and
+     ((LastMouseButton and MOUSE_LEFT_BUTTON)=0)Then Begin
+    If(BrowserMouseY>=Y+70)and(BrowserMouseY<=Y+92)Then Begin
+     If(BrowserMouseX>=YesX)and(BrowserMouseX<=YesX+75)Then Begin Answer:=True;Done:=True End
+     Else If(BrowserMouseX>=NoX)and(BrowserMouseX<=NoX+75)Then Done:=True
+    End
+   End;
+   LastMouseButton:=MouseButton
+  End
+ Until Done;
+ BrowserGraphConfirmOverwrite:=Answer
+End;
+
+Function BrowserDefaultSaveName(Const URL:String):String;
+Var S:String;I,P:Integer;
+Begin
+ S:=URL;P:=Pos('?',S);If P>0Then Delete(S,P,Length(S));
+ P:=Pos('#',S);If P>0Then Delete(S,P,Length(S));
+ For I:=Length(S)downto 1do If(S[I]='/')or(S[I]='\')Then Begin
+  S:=Copy(S,I+1,Length(S));Break
+ End;
+ If S=''Then S:='index.html';
+ If BrowserExtractFileExt(S)=''Then S:=S+'.html';
+ For I:=1to Length(S)do If S[I]in['\','/',':','*','?','"','<','>','|']Then S[I]:='_';
+ BrowserDefaultSaveName:=S
+End;
+
+Function BrowserGraphSaveDialog(Const DefaultName:String):String;
+Var
+ X,Y,W,H,InputX,InputY,InputW,OkX,CancelX,I:Integer;
+ FileName,VisibleName,CurrentDir:String;
+ Done,Accepted,NeedRedraw:Boolean;
+ K:Char;
+Begin
+ W:=500;If W>GetMaxX-20Then W:=GetMaxX-20;
+ H:=150;X:=(GetMaxX-W)div 2;Y:=(GetMaxY-H)div 2;
+ InputX:=X+12;InputY:=Y+62;InputW:=W-24;
+ OkX:=X+W-190;CancelX:=X+W-95;
+ FileName:=DefaultName;GetDir(0,CurrentDir);
+ Done:=False;Accepted:=False;NeedRedraw:=True;
+ If MouseAvailable Then GetMouseState(BrowserMouseX,BrowserMouseY,LastMouseButton);
+ { L'action du menu contextuel est appelee pendant que ProcessMouseInput
+   a masque le curseur. Retablir d'abord ce niveau, puis entourer chaque
+   redessin Graph par HideMouse/ShowMouse. }
+ If MouseAvailable Then ShowMouse;
+ Repeat
+  If NeedRedraw Then Begin
+   If MouseAvailable Then HideMouse;
+   SetFillStyle(SolidFill,COLOR_URL_BAR_BG);Bar(X,Y,X+W,Y+H);
+   SetColor(HTMLBlackColorIndex);Rectangle(X,Y,X+W,Y+H);
+   SetTextStyle(DefaultFont,HorizDir,1);SetTextJustify(LeftText,TopText);
+   OutTextXY(X+10,Y+9,'Enregistrer sous...');
+   OutTextXY(X+10,Y+31,'Dossier : '+CurrentDir);
+   SetFillStyle(SolidFill,RENDER_BG_COLOR);
+   Bar(InputX,InputY,InputX+InputW,InputY+22);
+   SetColor(HTMLBlackColorIndex);Rectangle(InputX,InputY,InputX+InputW,InputY+22);
+   VisibleName:=FileName;
+   While(Length(VisibleName)*8>InputW-12)and(Length(VisibleName)>1)do
+    Delete(VisibleName,1,1);
+   OutTextXY(InputX+4,InputY+5,VisibleName);
+   I:=InputX+4+Length(VisibleName)*8;
+   Line(I,InputY+4,I,InputY+18);
+   DrawGraphDialogButton(OkX,Y+112,80,'Enregistrer');
+   DrawGraphDialogButton(CancelX,Y+112,80,'Annuler');
+   If MouseAvailable Then ShowMouse;
+   NeedRedraw:=False
+  End;
+  If KeyPressed Then Begin
+   K:=ReadKey;
+   If K=#0Then Begin If KeyPressed Then K:=ReadKey End
+   Else If K=#27Then Done:=True
+   Else If K=#13Then Begin Accepted:=FileName<>'';Done:=Accepted End
+   Else If K=#8Then Begin
+    If Length(FileName)>0Then Delete(FileName,Length(FileName),1);
+    NeedRedraw:=True
+   End Else If(Ord(K)>=32)and(Length(FileName)<255)Then Begin
+    FileName:=FileName+K;NeedRedraw:=True
+   End
+  End Else If MouseAvailable Then Begin
+   GetMouseState(BrowserMouseX,BrowserMouseY,MouseButton);
+   If((MouseButton and MOUSE_LEFT_BUTTON)<>0)and
+     ((LastMouseButton and MOUSE_LEFT_BUTTON)=0)Then Begin
+    If(BrowserMouseY>=Y+112)and(BrowserMouseY<=Y+134)Then Begin
+     If(BrowserMouseX>=OkX)and(BrowserMouseX<=OkX+80)Then Begin
+      Accepted:=FileName<>'';Done:=Accepted
+     End Else If(BrowserMouseX>=CancelX)and(BrowserMouseX<=CancelX+80)Then Done:=True
+    End
+   End;
+   LastMouseButton:=MouseButton
+  End
+ Until Done;
+ If Accepted and BrowserFileExists(FileName)Then
+  Accepted:=BrowserGraphConfirmOverwrite(FileName);
+ If Accepted Then BrowserGraphSaveDialog:=FileName
+ Else BrowserGraphSaveDialog:='';
+ If MouseAvailable Then HideMouse;
+ DrawURLBar;DrawBackButton;DrawForwardButton;DrawRefreshButton;
+ DrawFavoriteButton;RescrollPage
+End;
+
+{ Action du menu contextuel "Enregistrer sous...". Recupere le code
+  source de la page courante EXACTEMENT comme le fait deja le prefixe
+  "view-source:" (voir DisplayCurrentTarget) - le HTML brut n'est pas
+  conserve apres l'analyse syntaxique normale d'une page (seul le DOM
+  l'est), donc la page est re-obtenue (nouvelle requete HTTP reelle, ou
+  nouvelle lecture de fichier local). }
+Procedure ContextMenuSaveAs;
+Var
+ InnerURL, LocalFileName, SourceText,SaveFileName: String;
+ SourceOk: Boolean;
+ SourceHTML: HTMLSourceBuffer;
+ StatusCode: LongInt;
+ F: Text;
+Begin
+ InnerURL := CurrentURL;
+ If IsViewSourceURL(InnerURL) Then InnerURL := StripViewSourcePrefix(InnerURL);
+ SourceText := '';
+ SourceOk := False;
+
+ If IsRemoteURL(InnerURL) Then Begin
+  {$IFDEF WINDOWS}
+  SourceOk := Browser_HttpGet(InnerURL, SourceText, StatusCode) And (Length(SourceText) > 0);
+  {$ENDIF}
+ End Else Begin
+  LocalFileName := InnerURL;
+  If Copy(HTMLLowerCase(LocalFileName), 1, 7) = 'file://' Then Delete(LocalFileName, 1, 7);
+  InitHTMLSource(SourceHTML);
+  SourceOk := LoadHTMLFile(LocalFileName, SourceHTML);
+  If SourceOk Then SourceText := HTMLSourceCopy(SourceHTML, 1, SourceHTML.DataLength);
+  FreeHTMLSource(SourceHTML);
+ End;
+
+ If Not SourceOk Then Begin
+  QRShowMessageBox('Enregistrer sous...', 'Impossible de recuperer le contenu de la page.');
+  Exit;
+ End;
+
+ SaveFileName:=BrowserGraphSaveDialog(BrowserDefaultSaveName(InnerURL));
+ If SaveFileName<>''Then Begin
+  Assign(F,SaveFileName);
+  {$I-}
+  Rewrite(F);
+  {$I+}
+  If IOResult = 0 Then Begin
+   Write(F, SourceText);
+   Close(F);
+  End Else
+   QRShowMessageBox('Enregistrer sous...', 'Echec de l''ecriture du fichier.');
+ End
+End;
+
+{ =====================================================
+  OUTILS DE DEVELOPPEMENT INTEGRES
+  ===================================================== }
+
+Const
+ DEVTOOLS_TAB_INSPECTOR = 1;
+ DEVTOOLS_TAB_DEBUGGER = 2;
+ DEVTOOLS_TAB_STYLE = 3;
+ DEVTOOLS_TAB_CONSOLE = 4;
+ DEVTOOLS_TAB_NETWORK = 5;
+ DEVTOOLS_TAB_HEIGHT = 24;
+
+Function DevToolsPanelTop:Integer;
+Begin DevToolsPanelTop:=RENDER_AREA_Y+RENDER_AREA_HEIGHT+1 End;
+
+Procedure DevToolsAddConsole(Const S:String);
+Var I:Integer;
+Begin
+ If DevConsoleLineCount=100 Then Begin
+  For I:=1 To 99 Do DevConsoleLines[I]:=DevConsoleLines[I+1];
+  DevConsoleLineCount:=99
+ End;
+ Inc(DevConsoleLineCount);DevConsoleLines[DevConsoleLineCount]:=S
+End;
+
+Function DevToolsURLType(Const URL:String):String;
+Var E:String;
+Begin
+ E:=HTMLLowerCase(BrowserExtractFileExt(URL));
+ If (E='.png')Or(E='.gif')Or(E='.jpg')Or(E='.jpeg')Or(E='.bmp')Or(E='.svg')Then DevToolsURLType:='image'
+ Else If E='.css'Then DevToolsURLType:='stylesheet'
+ Else If E='.js'Then DevToolsURLType:='script'
+ Else If (E='.htm')Or(E='.html')Or(E='')Then DevToolsURLType:='document'
+ Else DevToolsURLType:='other'
+End;
+
+Procedure DevToolsLogNetwork(Const URL,RequestMethod:String;ResponseStatus,ResponseSize:LongInt);
+Var UseHttps,Ok:Boolean;Host,Path:String;Port:Word;P:LongInt;I:Integer;
+Begin
+ Browser_ParseUrl(URL,UseHttps,Host,Port,Path,Ok);
+ If Not Ok Then Exit;
+ If DevNetworkCount=100 Then Begin
+  For I:=1 To 99 Do DevNetworkEntries[I]:=DevNetworkEntries[I+1];
+  DevNetworkCount:=99
+ End;
+ Inc(DevNetworkCount);
+ With DevNetworkEntries[DevNetworkCount]Do Begin
+  DevNetworkEntries[DevNetworkCount].Status:=ResponseStatus;
+  DevNetworkEntries[DevNetworkCount].Method:=Copy(RequestMethod,1,80);Domain:=Copy(Host,1,80);
+  P:=Length(Path);While(P>0)And(Path[P]<>'/')Do Dec(P);
+  FileName:=Copy(Path,P+1,80);If FileName=''Then FileName:='/';
+  ContentType:=DevToolsURLType(Path);DevNetworkEntries[DevNetworkCount].Size:=ResponseSize
+ End
+End;
+
+Procedure DevToolsTrackElement(Node:HTMLNodePtr;X1,Y1,X2,Y2:Integer);
+Begin
+ If Not DevToolsOpen Then Exit;
+ If (X2<X1)Or(Y2<Y1)Then Exit;
+ If DevElementAreaCount<2048 Then Begin
+  Inc(DevElementAreaCount);
+  With DevElementAreas[DevElementAreaCount]Do Begin
+   DevElementAreas[DevElementAreaCount].X1:=X1;
+   DevElementAreas[DevElementAreaCount].Y1:=Y1;
+   DevElementAreas[DevElementAreaCount].X2:=X2;
+   DevElementAreas[DevElementAreaCount].Y2:=Y2;
+   DevElementAreas[DevElementAreaCount].Node:=Node
+  End
+ End
+End;
+
+Function DevToolsElementAt(X,Y:Integer):HTMLNodePtr;
+Var I:Integer;
+Begin
+ DevToolsElementAt:=Nil;
+ For I:=DevElementAreaCount DownTo 1 Do
+  With DevElementAreas[I]Do
+   If(X>=X1)And(X<=X2)And(Y>=Y1)And(Y<=Y2)Then Begin DevToolsElementAt:=Node;Exit End
+End;
+
+Procedure DevToolsBindDocument(Doc:HTMLNodePtr);
+Begin
+ DevInspectorDocument:=Doc;Inc(DevDocumentSerial);
+ DevSelectedNode:=Nil;DevInspectorScrollX:=0;DevInspectorFirstLine:=0;
+ DevInspectorTotalLines:=0;DevInspectorContentWidth:=0;
+ DevCollapsedCount:=0;DevInspectorRowCount:=0;DevElementAreaCount:=0;
+ DevCSSSourceCount:=0;DevCSSSelected:=0;DevCSSFirstLine:=0
+End;
+
+Procedure DevToolsSetOpen(OpenIt:Boolean);
+Var H:Integer;
+Begin
+ { Une commande "Inspecter..." peut etre choisie alors que le panneau est
+   deja ouvert. Le menu contextuel vient alors d'etre marque ferme, mais
+   ses pixels sont encore a l'ecran. L'ancien Exit laissait cette image
+   fantome au-dessus de la page et donnait l'impression d'un navigateur
+   fige. Une demande d'ouverture idempotente doit donc repeindre les deux
+   couches, sans modifier une seconde fois la hauteur de rendu. }
+ If DevToolsOpen=OpenIt Then Begin
+  If OpenIt Then Begin
+   RescrollPage;
+   DrawDevTools
+  End;
+  Exit
+ End;
+ DevToolsOpen:=OpenIt;DevConsoleFocused:=False;DevElementPicker:=False;
+ If OpenIt Then Begin
+  If DevToolsFullRenderHeight=0 Then DevToolsFullRenderHeight:=RENDER_AREA_HEIGHT;
+  H:=GetMaxY Div 3;If H<170 Then H:=170;If H>300 Then H:=300;
+  RENDER_AREA_HEIGHT:=DevToolsFullRenderHeight-H;
+  If RENDER_AREA_HEIGHT<100 Then RENDER_AREA_HEIGHT:=100;
+  If DevToolsTab=0 Then DevToolsTab:=DEVTOOLS_TAB_INSPECTOR
+ End Else RENDER_AREA_HEIGHT:=DevToolsFullRenderHeight;
+ RescrollPage
+End;
+
+Procedure DevToolsToggle;
+Begin DevToolsSetOpen(Not DevToolsOpen)End;
+
+{$IFDEF FPC}
+Function BrowserGetAsyncKeyState(VKey:LongInt):SmallInt;StdCall;
+ External 'user32.dll' Name 'GetAsyncKeyState';
+{$ENDIF}
+
+Procedure DevToolsPollF12;
+{$IFDEF FPC}
+Var Down:Boolean;
+{$ENDIF}
+Begin
+ {$IFDEF FPC}
+ Down:=(Word(BrowserGetAsyncKeyState($7B))And $8000)<>0; { VK_F12 }
+ If Down And(Not PreviousF12Down)Then DevToolsToggle;
+ PreviousF12Down:=Down
+ {$ENDIF}
+End;
+
+Function DevToolsNodeCaption(Node:HTMLNodePtr):String;
+Var S,V:String;
+Begin
+ If Node=Nil Then Begin DevToolsNodeCaption:='(aucun element)';Exit End;
+ If Node^.NodeType=HTML_NODE_TEXT Then Begin DevToolsNodeCaption:='#text '+Copy(BrowserTrimStr(Node^.Content),1,45);Exit End;
+ S:='<'+Node^.TagName;V:=GetNodeAttribute(Node,'id');If V<>''Then S:=S+'#'+V;
+ V:=GetNodeAttribute(Node,'class');If V<>''Then S:=S+'.'+V;
+ DevToolsNodeCaption:=Copy(S+'>',1,75)
+End;
+
+Function DevToolsNodeCollapsed(Node:HTMLNodePtr):Boolean;
+Var I:Integer;
+Begin
+ DevToolsNodeCollapsed:=False;
+ For I:=1 To DevCollapsedCount Do If DevCollapsedNodes[I]=Node Then Begin
+  DevToolsNodeCollapsed:=True;Exit
+ End
+End;
+
+Procedure DevToolsToggleNode(Node:HTMLNodePtr);
+Var I,J:Integer;
+Begin
+ If(Node=Nil)Or(Node^.FirstChild=Nil)Then Exit;
+ For I:=1 To DevCollapsedCount Do If DevCollapsedNodes[I]=Node Then Begin
+  For J:=I To DevCollapsedCount-1 Do DevCollapsedNodes[J]:=DevCollapsedNodes[J+1];
+  Dec(DevCollapsedCount);Exit
+ End;
+ If DevCollapsedCount<2048Then Begin Inc(DevCollapsedCount);DevCollapsedNodes[DevCollapsedCount]:=Node End
+End;
+
+Procedure DevToolsOutSyntax(Var X:Integer;Y:Integer;Const S:String;
+                            NormalColor:Integer;Selected:Boolean);
+Var T:String;MaxChars,W:Integer;
+Begin
+ If X>=GetMaxX-20Then Exit;
+ W:=TextWidth('M');If W<1Then W:=8;
+ MaxChars:=(GetMaxX-X-20)Div W;If MaxChars<1Then Exit;
+ T:=Copy(S,1,MaxChars);
+ If Selected Then Begin
+  Case NormalColor Of
+   LightBlue:SetColor(LightCyan);
+   Red:SetColor(Yellow);
+   Green:SetColor(LightGreen);
+   DarkGray:SetColor(White);
+   Magenta:SetColor(LightMagenta);
+   Else SetColor(White)
+  End
+ End Else SetColor(NormalColor);
+ OutTextXY(X,Y,T);Inc(X,TextWidth(T))
+End;
+
+{ TextWidth de certains pilotes BGI parcourt toute la chaine. Les pages
+  modernes placent parfois plusieurs centaines de kilo-octets de JavaScript
+  dans un noeud texte ou un attribut : mesurer ce texte integral donnait
+  l'impression que le navigateur etait bloque. L'Inspecteur ne peut de toute
+  facon representer utilement une ligne plus large que cette borne. }
+Function DevToolsBoundedTextWidth(Const S:String):Integer;
+Const DEVTOOLS_WIDTH_CHARS=2048;
+      DEVTOOLS_WIDTH_LIMIT=30000;
+Var T:String;W,CharWidth:Integer;
+Begin
+ If Length(S)<=DEVTOOLS_WIDTH_CHARS Then T:=S
+ Else T:=Copy(S,1,DEVTOOLS_WIDTH_CHARS);
+ W:=TextWidth(T);
+ If Length(S)>DEVTOOLS_WIDTH_CHARS Then Begin
+  CharWidth:=TextWidth('M');If CharWidth<1Then CharWidth:=8;
+  If Length(S)>=DEVTOOLS_WIDTH_LIMIT Div CharWidth Then W:=DEVTOOLS_WIDTH_LIMIT
+  Else W:=Length(S)*CharWidth
+ End;
+ If W>DEVTOOLS_WIDTH_LIMIT Then W:=DEVTOOLS_WIDTH_LIMIT;
+ DevToolsBoundedTextWidth:=W
+End;
+
+Procedure DevToolsDrawDOM(Node:HTMLNodePtr;Depth:Integer;Var Y,Lines:Integer;
+                          MaxLines:Integer);
+Var C:HTMLNodePtr;A:HTMLAttributePtr;S:String;X,LineWidth,SignX:Integer;
+    Selected,DisplayLine,HasChildren,Collapsed:Boolean;
+Begin
+ If Node=Nil Then Exit;
+ If Node^.NodeType=HTML_NODE_ELEMENT Then Begin
+  HasChildren:=Node^.FirstChild<>Nil;Collapsed:=DevToolsNodeCollapsed(Node);
+  LineWidth:=20+Depth*16+DevToolsBoundedTextWidth('<'+Node^.TagName+'>');
+  A:=Node^.FirstAttribute;
+  While A<>Nil Do Begin
+   If LineWidth<30000Then Inc(LineWidth,DevToolsBoundedTextWidth(' '+A^.Name));
+   If(A^.Value<>'')And(LineWidth<30000)Then
+    Inc(LineWidth,DevToolsBoundedTextWidth('="'+A^.Value+'"'));
+   If LineWidth>30000Then LineWidth:=30000;
+   A:=A^.Next
+  End;
+  If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
+  DisplayLine:=(Lines>=DevInspectorFirstLine)And
+               (Lines<DevInspectorFirstLine+MaxLines);
+  If DisplayLine Then Begin
+   Selected:=Node=DevSelectedNode;
+   If Selected Then Begin SetFillStyle(SolidFill,1);Bar(5,Y-1,GetMaxX-20,Y+9)End;
+   X:=8+Depth*16-DevInspectorScrollX;SignX:=X;
+   If HasChildren Then Begin
+    If Collapsed Then DevToolsOutSyntax(X,Y,'+',DarkGray,Selected)
+    Else DevToolsOutSyntax(X,Y,'-',DarkGray,Selected)
+   End Else DevToolsOutSyntax(X,Y,' ',DarkGray,Selected);
+   DevToolsOutSyntax(X,Y,' ',HTMLBlackColorIndex,Selected);
+   If DevInspectorRowCount<128Then Begin
+    Inc(DevInspectorRowCount);
+    With DevInspectorRows[DevInspectorRowCount]Do Begin
+     Y1:=Y-1;Y2:=Y+9;SignX1:=SignX;SignX2:=SignX+TextWidth('++')
+    End;
+    DevInspectorRows[DevInspectorRowCount].Node:=Node;
+    DevInspectorRows[DevInspectorRowCount].HasChildren:=HasChildren
+   End;
+   DevToolsOutSyntax(X,Y,'<',LightBlue,Selected);
+   DevToolsOutSyntax(X,Y,Node^.TagName,LightBlue,Selected);
+   A:=Node^.FirstAttribute;
+   While(A<>Nil)And(X<GetMaxX-20)Do Begin
+    DevToolsOutSyntax(X,Y,' ',HTMLBlackColorIndex,Selected);
+    DevToolsOutSyntax(X,Y,A^.Name,Red,Selected);
+    If A^.Value<>''Then Begin
+     DevToolsOutSyntax(X,Y,'="',HTMLBlackColorIndex,Selected);
+     DevToolsOutSyntax(X,Y,A^.Value,Green,Selected);
+     DevToolsOutSyntax(X,Y,'"',HTMLBlackColorIndex,Selected)
+    End;
+    A:=A^.Next
+   End;
+   DevToolsOutSyntax(X,Y,'>',LightBlue,Selected);Inc(Y,11)
+  End;
+  Inc(Lines)
+ End Else If Node^.NodeType=HTML_NODE_TEXT Then Begin
+  S:=BrowserTrimStr(Node^.Content);
+  If S<>''Then Begin
+   LineWidth:=8+Depth*16+DevToolsBoundedTextWidth(S)+TextWidth('""');
+   If LineWidth>30000Then LineWidth:=30000;
+   If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
+   If(Lines>=DevInspectorFirstLine)And(Lines<DevInspectorFirstLine+MaxLines)Then Begin
+    X:=8+Depth*16-DevInspectorScrollX;
+    DevToolsOutSyntax(X,Y,'"',DarkGray,False);
+    DevToolsOutSyntax(X,Y,S,Magenta,False);
+    DevToolsOutSyntax(X,Y,'"',DarkGray,False);Inc(Y,11)
+   End;
+   Inc(Lines)
+  End
+ End Else If Node^.NodeType=HTML_NODE_COMMENT Then Begin
+  S:='<!-- '+BrowserTrimStr(Node^.Content)+' -->';
+  LineWidth:=8+Depth*16+DevToolsBoundedTextWidth(S);
+  If LineWidth>30000Then LineWidth:=30000;
+  If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
+  If(Lines>=DevInspectorFirstLine)And(Lines<DevInspectorFirstLine+MaxLines)Then Begin
+   X:=8+Depth*16-DevInspectorScrollX;
+   DevToolsOutSyntax(X,Y,S,DarkGray,False);Inc(Y,11)
+  End;
+  Inc(Lines)
+ End;
+ C:=Node^.FirstChild;
+ If Not((Node^.NodeType=HTML_NODE_ELEMENT)And DevToolsNodeCollapsed(Node))Then
+  While C<>Nil Do Begin
+   DevToolsDrawDOM(C,Depth+1,Y,Lines,MaxLines);C:=C^.NextSibling
+  End
+End;
+
+Function DevToolsTabName(Index:Integer):String;
+Begin
+ Case Index Of
+  DEVTOOLS_TAB_INSPECTOR:DevToolsTabName:='Inspecteur';
+  DEVTOOLS_TAB_DEBUGGER:DevToolsTabName:='Debogueur';
+  DEVTOOLS_TAB_STYLE:DevToolsTabName:='Editeur style';
+  DEVTOOLS_TAB_CONSOLE:DevToolsTabName:='Console';
+  DEVTOOLS_TAB_NETWORK:DevToolsTabName:='Reseau';
+  Else DevToolsTabName:=''
+ End
+End;
+
+Function DevToolsTabLeft(Index:Integer):Integer;
+Var I,X:Integer;
+Begin
+ X:=38;
+ For I:=1 To Index-1 Do Inc(X,TextWidth(DevToolsTabName(I))+12);
+ DevToolsTabLeft:=X
+End;
+
+Function DevToolsTabRight(Index:Integer):Integer;
+Begin DevToolsTabRight:=DevToolsTabLeft(Index)+TextWidth(DevToolsTabName(Index))+11 End;
+
+Function DevToolsJSKeyword(Const S:String):Boolean;
+Var L:String;
+Begin
+ L:=HTMLLowerCase(S);
+ DevToolsJSKeyword:=(L='var')Or(L='let')Or(L='const')Or(L='function')Or
+  (L='if')Or(L='else')Or(L='for')Or(L='while')Or(L='do')Or
+  (L='return')Or(L='break')Or(L='continue')Or(L='new')Or
+  (L='typeof')Or(L='true')Or(L='false')Or(L='null')Or
+  (L='undefined')Or(L='this')Or(L='document')Or(L='window')Or
+  (L='console')
+End;
+
+Procedure DevToolsDrawJavaScript(Var X:Integer;Y:Integer;Const Source:String);
+Var I,J:Integer;T:String;Q:Char;
+Begin
+ I:=1;
+ While(I<=Length(Source))And(X<GetMaxX-8)Do Begin
+  If Source[I]In['A'..'Z','a'..'z','_','$']Then Begin
+   J:=I+1;While(J<=Length(Source))And(Source[J]In['A'..'Z','a'..'z','0'..'9','_','$'])Do Inc(J);
+   T:=Copy(Source,I,J-I);
+   If DevToolsJSKeyword(T)Then DevToolsOutSyntax(X,Y,T,LightBlue,False)
+   Else DevToolsOutSyntax(X,Y,T,HTMLBlackColorIndex,False);I:=J
+  End Else If Source[I]In['0'..'9']Then Begin
+   J:=I+1;While(J<=Length(Source))And(Source[J]In['0'..'9','.','x','X','a'..'f','A'..'F'])Do Inc(J);
+   DevToolsOutSyntax(X,Y,Copy(Source,I,J-I),Cyan,False);I:=J
+  End Else If Source[I]In['''','"']Then Begin
+   Q:=Source[I];J:=I+1;
+   While J<=Length(Source)Do Begin
+    If Source[J]='\'Then Inc(J)
+    Else If Source[J]=Q Then Begin Inc(J);Break End;
+    Inc(J)
+   End;
+   DevToolsOutSyntax(X,Y,Copy(Source,I,J-I),Green,False);I:=J
+  End Else If(I<Length(Source))And(Source[I]='/')And(Source[I+1]='/')Then Begin
+   DevToolsOutSyntax(X,Y,Copy(Source,I,Length(Source)-I+1),DarkGray,False);Exit
+  End Else Begin
+   If Source[I]In['+','-','*','/','%','=','!','<','>','&','|','?',':']Then
+    DevToolsOutSyntax(X,Y,Source[I],Red,False)
+   Else DevToolsOutSyntax(X,Y,Source[I],HTMLBlackColorIndex,False);
+   Inc(I)
+  End
+ End
+End;
+
+Procedure DrawDevToolsInspectorScrollBars(VisibleLines:Integer);
+Const S=14;
+Var Top,Bottom,VX,TrackTop,TrackBottom,ThumbTop,ThumbBottom:Integer;
+    HY,TrackLeft,TrackRight,ThumbLeft,ThumbRight:Integer;
+    MaxFirst,MaxXScroll,ViewWidth:Integer;
+Begin
+ Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=GetMaxY-S;
+ VX:=GetMaxX-S;HY:=GetMaxY-S;
+ SetFillStyle(SolidFill,LightGray);SetColor(HTMLBlackColorIndex);
+ Bar(VX,Top,GetMaxX,GetMaxY);Rectangle(VX,Top,GetMaxX,GetMaxY);
+ Bar(0,HY,VX,GetMaxY);Rectangle(0,HY,VX,GetMaxY);
+ { Boutons haut et bas. }
+ Rectangle(VX,Top,GetMaxX,Top+S);Rectangle(VX,Bottom-S,GetMaxX,Bottom);
+ Line(VX+4,Top+9,VX+7,Top+5);Line(VX+7,Top+5,VX+10,Top+9);
+ Line(VX+4,Bottom-S+5,VX+7,Bottom-S+9);Line(VX+7,Bottom-S+9,VX+10,Bottom-S+5);
+ TrackTop:=Top+S+1;TrackBottom:=Bottom-S-1;
+ MaxFirst:=DevInspectorTotalLines-VisibleLines;If MaxFirst<0Then MaxFirst:=0;
+ If MaxFirst=0Then Begin ThumbTop:=TrackTop;ThumbBottom:=TrackBottom End
+ Else Begin
+  ThumbTop:=TrackTop+(LongInt(TrackBottom-TrackTop-10)*DevInspectorFirstLine)Div MaxFirst;
+  ThumbBottom:=ThumbTop+10
+ End;
+ SetFillStyle(SolidFill,DarkGray);Bar(VX+3,ThumbTop,VX+S-3,ThumbBottom);
+ { Boutons gauche et droite. }
+ Rectangle(0,HY,S,GetMaxY);Rectangle(VX-S,HY,VX,GetMaxY);
+ Line(9,HY+4,5,HY+7);Line(5,HY+7,9,HY+10);
+ Line(VX-S+5,HY+4,VX-S+9,HY+7);Line(VX-S+9,HY+7,VX-S+5,HY+10);
+ TrackLeft:=S+1;TrackRight:=VX-S-1;ViewWidth:=GetMaxX-20;
+ MaxXScroll:=DevInspectorContentWidth-ViewWidth;If MaxXScroll<0Then MaxXScroll:=0;
+ If MaxXScroll=0Then Begin ThumbLeft:=TrackLeft;ThumbRight:=TrackRight End
+ Else Begin
+  ThumbLeft:=TrackLeft+(LongInt(TrackRight-TrackLeft-18)*DevInspectorScrollX)Div MaxXScroll;
+  ThumbRight:=ThumbLeft+18
+ End;
+ SetFillStyle(SolidFill,DarkGray);Bar(ThumbLeft,HY+3,ThumbRight,GetMaxY-3)
+End;
+
+Procedure DevToolsDrawCSSLine(X,Y:Integer;Const LineText:String;LineNumber:Integer);
+Var P,LX:Integer;LeftPart,RightPart:String;
+Begin
+ SetColor(DarkGray);OutTextXY(X,Y,IntToStr(LineNumber));
+ LX:=X+40;P:=Pos('/*',LineText);
+ If P>0Then Begin
+  If P>1Then Begin SetColor(LightBlue);OutTextXY(LX,Y,Copy(LineText,1,P-1));Inc(LX,TextWidth(Copy(LineText,1,P-1)))End;
+  SetColor(DarkGray);OutTextXY(LX,Y,Copy(LineText,P,Length(LineText)-P+1));Exit
+ End;
+ P:=Pos(':',LineText);
+ If(P>0)And(Pos('{',LineText)=0)Then Begin
+  LeftPart:=Copy(LineText,1,P);RightPart:=Copy(LineText,P+1,Length(LineText)-P);
+  SetColor(Red);OutTextXY(LX,Y,LeftPart);Inc(LX,TextWidth(LeftPart));
+  SetColor(Green);OutTextXY(LX,Y,RightPart)
+ End Else Begin
+  SetColor(LightBlue);OutTextXY(LX,Y,LineText)
+ End
+End;
+
+Procedure DevToolsDrawStyleEditor(ContentTop:Integer);
+Var LeftW,I,Y,MaxRows,LineNo:Integer;P,StartPos,SourceLen:LongInt;
+    LineText:String;Source:AnsiString;
+Begin
+ LeftW:=GetMaxX Div 4;If LeftW<160Then LeftW:=160;If LeftW>260Then LeftW:=260;
+ SetFillStyle(SolidFill,White);Bar(0,ContentTop-4,LeftW,GetMaxY);
+ SetColor(HTMLBlackColorIndex);Line(LeftW,ContentTop-4,LeftW,GetMaxY);
+ Y:=ContentTop;
+ If DevCSSSourceCount=0Then Begin
+  SetColor(DarkGray);OutTextXY(6,Y,'Aucune feuille CSS');Exit
+ End;
+ For I:=1 To DevCSSSourceCount Do Begin
+  If I=DevCSSSelected Then Begin SetFillStyle(SolidFill,1);Bar(2,Y-1,LeftW-2,Y+10);SetColor(White)End
+  Else SetColor(HTMLBlackColorIndex);
+  OutTextXY(6,Y,Copy(DevCSSSources[I].Name,1,(LeftW-12)Div 8));Inc(Y,13);
+  If Y>GetMaxY-12Then Break
+ End;
+ If(DevCSSSelected<1)Or(DevCSSSelected>DevCSSSourceCount)Then Exit;
+ Source:=DevCSSSources[DevCSSSelected].Content;SourceLen:=Length(Source);
+ MaxRows:=(GetMaxY-ContentTop-3)Div 12;Y:=ContentTop;LineNo:=1;StartPos:=1;
+ While(StartPos<=SourceLen)And(LineNo<=DevCSSFirstLine)Do Begin
+  While(StartPos<=SourceLen)And Not(Source[StartPos]In[#10,#13])Do Inc(StartPos);
+  If(StartPos<=SourceLen)And(Source[StartPos]=#13)Then Inc(StartPos);
+  If(StartPos<=SourceLen)And(Source[StartPos]=#10)Then Inc(StartPos);Inc(LineNo)
+ End;
+ I:=0;
+ While(StartPos<=SourceLen)And(I<MaxRows)Do Begin
+  P:=StartPos;While(P<=SourceLen)And Not(Source[P]In[#10,#13])Do Inc(P);
+  LineText:=Copy(Source,StartPos,P-StartPos);
+  LineText:=Copy(LineText,1,(GetMaxX-LeftW-55)Div 8);
+  DevToolsDrawCSSLine(LeftW+6,Y,LineText,LineNo);Inc(Y,12);Inc(I);Inc(LineNo);
+  StartPos:=P;If(StartPos<=SourceLen)And(Source[StartPos]=#13)Then Inc(StartPos);
+  If(StartPos<=SourceLen)And(Source[StartPos]=#10)Then Inc(StartPos)
+ End
+End;
+
+Procedure DrawDevTools;
+Var Top,Y,I,Lines,First,TabLeft,TabRight,MaxInspectorLines:Integer;
+    C1,C2,C3,C4,C5,C6,C7:Integer;
+Begin
+ If Not DevToolsOpen Then Exit;
+ Top:=DevToolsPanelTop;
+ SetTextStyle(DefaultFont,HorizDir,1);SetTextJustify(LeftText,TopText);
+ SetFillStyle(SolidFill,LightGray);Bar(0,Top,GetMaxX,GetMaxY);
+ SetColor(HTMLBlackColorIndex);Line(0,Top,GetMaxX,Top);
+ { selecteur d'element }
+ If DevElementPicker Then Begin SetFillStyle(SolidFill,1);Bar(4,Top+2,31,Top+21);SetColor(15)End
+ Else Begin SetFillStyle(SolidFill,White);Bar(4,Top+2,31,Top+21);SetColor(HTMLBlackColorIndex)End;
+ Rectangle(4,Top+2,31,Top+21);OutTextXY(11,Top+7,'<>');
+ For I:=1 To 5 Do Begin
+  TabLeft:=DevToolsTabLeft(I);TabRight:=DevToolsTabRight(I);
+  If DevToolsTab=I Then Begin SetFillStyle(SolidFill,White);Bar(TabLeft,Top+2,TabRight,Top+22)End;
+  SetColor(HTMLBlackColorIndex);OutTextXY(TabLeft+6,Top+8,DevToolsTabName(I))
+ End;
+ OutTextXY(GetMaxX-18,Top+7,'X');Line(0,Top+DEVTOOLS_TAB_HEIGHT,GetMaxX,Top+DEVTOOLS_TAB_HEIGHT);
+ Y:=Top+30;SetColor(HTMLBlackColorIndex);
+ Case DevToolsTab Of
+  DEVTOOLS_TAB_INSPECTOR:Begin
+   If DevInspectorDocument<>HTMLDocument Then DevToolsBindDocument(HTMLDocument);
+   Lines:=0;
+   MaxInspectorLines:=(GetMaxY-Y-14)Div 11;
+   If MaxInspectorLines<1Then MaxInspectorLines:=1;
+   DevInspectorContentWidth:=0;
+   DevInspectorRowCount:=0;
+   DevToolsDrawDOM(DevInspectorDocument,0,Y,Lines,MaxInspectorLines);
+   DevInspectorTotalLines:=Lines;
+   If DevInspectorFirstLine>DevInspectorTotalLines-MaxInspectorLines Then
+    DevInspectorFirstLine:=DevInspectorTotalLines-MaxInspectorLines;
+   If DevInspectorFirstLine<0Then DevInspectorFirstLine:=0;
+   DrawDevToolsInspectorScrollBars(MaxInspectorLines)
+  End;
+  DEVTOOLS_TAB_DEBUGGER:Begin
+   OutTextXY(8,Y,'Sources JavaScript et execution');Inc(Y,14);
+   OutTextXY(8,Y,'Etat: '+IntToStr(Ord(JSCtx.HasError))+'  fonctions: '+IntToStr(JSCtx.FuncCount));Inc(Y,14);
+   If JSCtx.HasError Then OutTextXY(8,Y,'Erreur: '+Copy(JSCtx.ErrorMsg,1,70))
+   Else OutTextXY(8,Y,'Aucune exception JavaScript. Points d arret: F12 pour fermer.')
+  End;
+  DEVTOOLS_TAB_STYLE:Begin
+   DevToolsDrawStyleEditor(Y)
+  End;
+  DEVTOOLS_TAB_CONSOLE:Begin
+   First:=DevConsoleLineCount-9;If First<1Then First:=1;
+   For I:=First To DevConsoleLineCount Do Begin
+    If Copy(DevConsoleLines[I],1,3)='>> 'Then Begin
+     TabLeft:=8;DevToolsOutSyntax(TabLeft,Y,'>> ',LightBlue,False);
+     DevToolsDrawJavaScript(TabLeft,Y,Copy(DevConsoleLines[I],4,Length(DevConsoleLines[I])-3))
+    End Else Begin SetColor(HTMLBlackColorIndex);OutTextXY(8,Y,Copy(DevConsoleLines[I],1,(GetMaxX-20)Div 8))End;
+    Inc(Y,12)
+   End;
+   Y:=GetMaxY-24;SetFillStyle(SolidFill,White);Bar(4,Y,GetMaxX-5,GetMaxY-3);
+   SetColor(HTMLBlackColorIndex);Rectangle(4,Y,GetMaxX-5,GetMaxY-3);
+   TabLeft:=8;DevToolsOutSyntax(TabLeft,Y+5,'>> ',LightBlue,False);
+   DevToolsDrawJavaScript(TabLeft,Y+5,DevConsoleInput);
+   If DevConsoleFocused And DevConsoleCursorVisible Then Begin
+    I:=8+TextWidth('>> '+DevConsoleInput);
+    Line(I,Y+4,I,Y+15)
+   End
+  End;
+  DEVTOOLS_TAB_NETWORK:Begin
+   { Colonnes proportionnelles a la largeur du panneau. Les memes bornes
+     servent aux titres, aux valeurs et aux separateurs verticaux. }
+   C1:=0;C2:=48;C3:=112;C4:=(GetMaxX*35)Div 100;
+   C5:=(GetMaxX*55)Div 100;C6:=(GetMaxX*69)Div 100;C7:=GetMaxX;
+   SetColor(HTMLBlackColorIndex);
+   Line(C2,Y-5,C2,GetMaxY);Line(C3,Y-5,C3,GetMaxY);
+   Line(C4,Y-5,C4,GetMaxY);Line(C5,Y-5,C5,GetMaxY);Line(C6,Y-5,C6,GetMaxY);
+   OutTextXY(C1+4,Y,'Etat');OutTextXY(C2+4,Y,'Methode');
+   OutTextXY(C3+4,Y,'Domaine');OutTextXY(C4+4,Y,'Fichier');
+   OutTextXY(C5+4,Y,'Type');OutTextXY(C6+4,Y,'Taille');
+   Inc(Y,13);Line(C1,Y-2,C7,Y-2);
+   First:=DevNetworkCount-11;If First<1Then First:=1;
+   For I:=First To DevNetworkCount Do With DevNetworkEntries[I]Do Begin
+    OutTextXY(C1+4,Y,Copy(IntToStr(Status),1,(C2-C1-8)Div 8));
+    OutTextXY(C2+4,Y,Copy(Method,1,(C3-C2-8)Div 8));
+    OutTextXY(C3+4,Y,Copy(Domain,1,(C4-C3-8)Div 8));
+    OutTextXY(C4+4,Y,Copy(FileName,1,(C5-C4-8)Div 8));
+    OutTextXY(C5+4,Y,Copy(ContentType,1,(C6-C5-8)Div 8));
+    OutTextXY(C6+4,Y,Copy(IntToStr(Size),1,(C7-C6-8)Div 8));
+    Inc(Y,12)
+   End
+  End
+ End;
+ If(DevSelectedNode<>Nil)And(DevElementPicker)Then
+  For I:=1 To DevElementAreaCount Do If DevElementAreas[I].Node=DevSelectedNode Then Begin
+   SetColor(Yellow);Rectangle(DevElementAreas[I].X1,DevElementAreas[I].Y1,DevElementAreas[I].X2,DevElementAreas[I].Y2);Break
+  End
+End;
+
+Function DevToolsHandleInspectorScrollClick(X,Y:Integer):Boolean;
+Const S=14;
+Var Top,Bottom,VX,HY,VisibleLines,MaxFirst,MaxXScroll,ViewWidth,I:Integer;
+Begin
+ DevToolsHandleInspectorScrollClick:=False;
+ If DevToolsTab<>DEVTOOLS_TAB_INSPECTOR Then Exit;
+ Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=GetMaxY-S;
+ VX:=GetMaxX-S;HY:=GetMaxY-S;
+ VisibleLines:=(GetMaxY-(DevToolsPanelTop+30)-S)Div 11;
+ If VisibleLines<1Then VisibleLines:=1;
+ MaxFirst:=DevInspectorTotalLines-VisibleLines;If MaxFirst<0Then MaxFirst:=0;
+ ViewWidth:=GetMaxX-20;MaxXScroll:=DevInspectorContentWidth-ViewWidth;
+ If MaxXScroll<0Then MaxXScroll:=0;
+ For I:=1 To DevInspectorRowCount Do With DevInspectorRows[I]Do
+  If(Y>=Y1)And(Y<=Y2)Then Begin
+   DevSelectedNode:=DevInspectorRows[I].Node;
+   If HasChildren And(X>=SignX1)And(X<=SignX2)Then
+    DevToolsToggleNode(DevInspectorRows[I].Node);
+   DevToolsHandleInspectorScrollClick:=True;DrawDevTools;Exit
+  End;
+ If(X>=VX)And(Y>=Top)And(Y<=Bottom)Then Begin
+  If Y<=Top+S Then Dec(DevInspectorFirstLine)
+  Else If Y>=Bottom-S Then Inc(DevInspectorFirstLine)
+  Else If Y<Top+((Bottom-Top)Div 2)Then Dec(DevInspectorFirstLine,VisibleLines)
+  Else Inc(DevInspectorFirstLine,VisibleLines);
+  If DevInspectorFirstLine<0Then DevInspectorFirstLine:=0;
+  If DevInspectorFirstLine>MaxFirst Then DevInspectorFirstLine:=MaxFirst;
+  DevToolsHandleInspectorScrollClick:=True;DrawDevTools;Exit
+ End;
+ If(Y>=HY)And(X>=0)And(X<=VX)Then Begin
+  If X<=S Then Dec(DevInspectorScrollX,32)
+  Else If X>=VX-S Then Inc(DevInspectorScrollX,32)
+  Else If X<VX Div 2Then Dec(DevInspectorScrollX,ViewWidth)
+  Else Inc(DevInspectorScrollX,ViewWidth);
+  If DevInspectorScrollX<0Then DevInspectorScrollX:=0;
+  If DevInspectorScrollX>MaxXScroll Then DevInspectorScrollX:=MaxXScroll;
+  DevToolsHandleInspectorScrollClick:=True;DrawDevTools
+ End
+End;
+
+Function DevToolsHandleClick(X,Y:Integer):Boolean;
+Var I,StyleLeftW,StyleIndex:Integer;N:HTMLNodePtr;
+Begin
+ DevToolsHandleClick:=False;
+ If Not DevToolsOpen Then Exit;
+ If Y>=DevToolsPanelTop Then Begin
+  DevToolsHandleClick:=True;DevConsoleFocused:=False;
+  If(Y<DevToolsPanelTop+24)Then Begin
+   If X<34Then DevElementPicker:=Not DevElementPicker
+   Else If X>GetMaxX-30Then Begin DevToolsSetOpen(False);Exit End
+   Else For I:=1 To 5 Do
+    If(X>=DevToolsTabLeft(I))And(X<=DevToolsTabRight(I))Then DevToolsTab:=I
+   ;
+   If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then Begin
+    DevConsoleFocused:=True;DevConsoleCursorVisible:=True;
+    DevConsoleLastBlink:=BrowserGetTickCount
+   End
+  End Else If DevToolsHandleInspectorScrollClick(X,Y)Then Exit
+  Else If(DevToolsTab=DEVTOOLS_TAB_STYLE)And(Y>=DevToolsPanelTop+30)Then Begin
+   StyleLeftW:=GetMaxX Div 4;If StyleLeftW<160Then StyleLeftW:=160;
+   If StyleLeftW>260Then StyleLeftW:=260;
+   If X<StyleLeftW Then Begin
+    StyleIndex:=((Y-(DevToolsPanelTop+30))Div 13)+1;
+    If(StyleIndex>=1)And(StyleIndex<=DevCSSSourceCount)Then Begin
+     DevCSSSelected:=StyleIndex;DevCSSFirstLine:=0
+    End
+   End
+  End
+  Else If DevToolsTab=DEVTOOLS_TAB_CONSOLE Then DevConsoleFocused:=True;
+  DrawDevTools;Exit
+ End;
+ If DevElementPicker And (X>=RENDER_AREA_X)And(X<=RENDER_AREA_X+RENDER_AREA_WIDTH)And
+    (Y>=RENDER_AREA_Y)And(Y<=RENDER_AREA_Y+RENDER_AREA_HEIGHT) Then Begin
+  N:=DevToolsElementAt(X,Y);If N<>Nil Then Begin DevSelectedNode:=N;DevToolsTab:=DEVTOOLS_TAB_INSPECTOR;DevElementPicker:=False;DrawDevTools End;
+  DevToolsHandleClick:=True
+ End
+End;
+
+Procedure DevToolsConsoleKey(K:Char);
+Var V:JSValue;S:String;
+Begin
+ If Not DevConsoleFocused Then Exit;
+ Case Ord(K)Of
+  8:If Length(DevConsoleInput)>0Then Delete(DevConsoleInput,Length(DevConsoleInput),1);
+  13:Begin
+   S:=DevConsoleInput;DevToolsAddConsole('>> '+S);JSCtx.HasError:=False;V:=JSEvaluate(S);
+   If JSCtx.HasError Then DevToolsAddConsole('Erreur: '+JSCtx.ErrorMsg)
+   Else DevToolsAddConsole(JSValueToString(V));DevConsoleInput:=''
+  End;
+  27:DevConsoleFocused:=False;
+  Else If(K>=#32)And(K<=#126)Then DevConsoleInput:=DevConsoleInput+K
+ End;
+ DevConsoleCursorVisible:=True;DevConsoleLastBlink:=BrowserGetTickCount;
+ DrawDevTools
+End;
+
+Procedure DevToolsUpdateConsoleCursor;
+Var NowTick:LongInt;
+Begin
+ If Not(DevToolsOpen And(DevToolsTab=DEVTOOLS_TAB_CONSOLE)And DevConsoleFocused)Then Exit;
+ NowTick:=BrowserGetTickCount;
+ If(NowTick<DevConsoleLastBlink)Or(NowTick-DevConsoleLastBlink>=500)Then Begin
+  DevConsoleCursorVisible:=Not DevConsoleCursorVisible;
+  DevConsoleLastBlink:=NowTick;DrawDevTools
+ End
+End;
+
+{ =====================================================
+  MENU CONTEXTUEL (clic droit sur la zone de rendu)
+  =====================================================
+  Demande explicite de l'utilisateur (2026-09-25) : Precedent/Suivant/
+  Actualiser/Voir le code source/Enregistrer sous.../Creer un code QR
+  pour cette page. Aucune infrastructure de menu deroulant ne preexistait
+  dans BROWSER.PAS (le rendu de <select> reste statique, sans liste
+  ouvrante) - ce mecanisme est entierement nouveau, mais reutilise le
+  meme style de dessin (SetFillStyle/Bar/Rectangle/OutTextXY) que le
+  chrome existant (DrawURLBar, DrawBackButton, etc.) et le meme motif de
+  restauration par re-rendu complet (RescrollPage) deja utilise ailleurs
+  pour les survols de menus JS en position absolue. }
+
+Const
+ CONTEXT_MENU_ITEM_COUNT = 7;
+ CONTEXT_MENU_ITEM_HEIGHT = 22;
+ CONTEXT_MENU_WIDTH = 300;
+
+Function ContextMenuLabel(Idx: Integer): String;
+Begin
+ Case Idx Of
+  1: ContextMenuLabel := 'Precedent';
+  2: ContextMenuLabel := 'Suivant';
+  3: ContextMenuLabel := 'Actualiser';
+  4: ContextMenuLabel := 'Voir le code source';
+  5: ContextMenuLabel := 'Enregistrer sous...';
+  6: ContextMenuLabel := 'Creer un code QR pour cette page';
+  7: ContextMenuLabel := 'Inspecter...                         F12';
+  Else ContextMenuLabel := '';
+ End;
+End;
+
+{ Une ligne separatrice fine est dessinee juste APRES ces index (regroupe
+  navigation / affichage-source / enregistrement-partage, comme la
+  plupart des navigateurs reels). }
+Function ContextMenuHasSeparatorAfter(Idx: Integer): Boolean;
+Begin
+ ContextMenuHasSeparatorAfter := (Idx = 3) Or (Idx = 4) Or (Idx = 6);
+End;
+
+Function ContextMenuHeight: Integer;
+Var
+ H, I: Integer;
+Begin
+ H := 4;
+ For I := 1 To CONTEXT_MENU_ITEM_COUNT Do Begin
+  Inc(H, CONTEXT_MENU_ITEM_HEIGHT);
+  If ContextMenuHasSeparatorAfter(I) Then Inc(H, 5);
+ End;
+ ContextMenuHeight := H;
+End;
+
+{ Renvoie 1..CONTEXT_MENU_ITEM_COUNT (item survole/clique), ou 0. }
+Function ContextMenuItemAt(PX, PY: Integer): Integer;
+Var
+ Y, I: Integer;
+Begin
+ ContextMenuItemAt := 0;
+ If (PX < ContextMenuX) Or (PX > ContextMenuX + CONTEXT_MENU_WIDTH) Then Exit;
+ Y := ContextMenuY + 4;
+ For I := 1 To CONTEXT_MENU_ITEM_COUNT Do Begin
+  If (PY >= Y) And (PY < Y + CONTEXT_MENU_ITEM_HEIGHT) Then Begin
+   ContextMenuItemAt := I;
+   Exit;
+  End;
+  Inc(Y, CONTEXT_MENU_ITEM_HEIGHT);
+  If ContextMenuHasSeparatorAfter(I) Then Inc(Y, 5);
+ End;
+End;
+
+Procedure BrowserDrawContextMenu;
+Var
+ Y, I, TextY: Integer;
+Begin
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(ContextMenuX, ContextMenuY, ContextMenuX + CONTEXT_MENU_WIDTH, ContextMenuY + ContextMenuHeight);
+ SetColor(HTMLBlackColorIndex);
+ Rectangle(ContextMenuX, ContextMenuY, ContextMenuX + CONTEXT_MENU_WIDTH, ContextMenuY + ContextMenuHeight);
+
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+
+ Y := ContextMenuY + 4;
+ For I := 1 To CONTEXT_MENU_ITEM_COUNT Do Begin
+  If I = ContextMenuHoverIndex Then Begin
+   SetFillStyle(SolidFill, 1); { bleu - mise en surbrillance, style menu Windows usuel }
+   Bar(ContextMenuX + 1, Y, ContextMenuX + CONTEXT_MENU_WIDTH - 1, Y + CONTEXT_MENU_ITEM_HEIGHT - 1);
+   SetColor(15); { blanc }
+  End Else
+   SetColor(HTMLBlackColorIndex);
+  TextY := Y + ((CONTEXT_MENU_ITEM_HEIGHT - 8) Div 2);
+  OutTextXY(ContextMenuX + 8, TextY, ContextMenuLabel(I));
+  Inc(Y, CONTEXT_MENU_ITEM_HEIGHT);
+  If ContextMenuHasSeparatorAfter(I) Then Begin
+   SetColor(COLOR_BTN_DISABLED);
+   Line(ContextMenuX + 4, Y + 2, ContextMenuX + CONTEXT_MENU_WIDTH - 4, Y + 2);
+   Inc(Y, 5);
+  End;
+ End;
+End;
+
+Procedure OpenContextMenu(PX, PY: Integer);
+Begin
+ ContextMenuX := PX;
+ ContextMenuY := PY;
+ If ContextMenuX + CONTEXT_MENU_WIDTH > GetMaxX Then
+  ContextMenuX := GetMaxX - CONTEXT_MENU_WIDTH;
+ If ContextMenuX < 0 Then ContextMenuX := 0;
+ If ContextMenuY + ContextMenuHeight > GetMaxY Then
+  ContextMenuY := GetMaxY - ContextMenuHeight;
+ If ContextMenuY < RENDER_AREA_Y Then ContextMenuY := RENDER_AREA_Y;
+ ContextMenuHoverIndex := 0;
+ ContextMenuOpen := True;
+ BrowserDrawContextMenu;
+End;
+
+{ Met a jour la surbrillance survolee ; redessine seulement si elle a
+  change (evite un scintillement inutile a chaque iteration). }
+Procedure UpdateContextMenuHover(PX, PY: Integer);
+Var
+ NewHover: Integer;
+Begin
+ NewHover := ContextMenuItemAt(PX, PY);
+ If NewHover <> ContextMenuHoverIndex Then Begin
+  ContextMenuHoverIndex := NewHover;
+  BrowserDrawContextMenu;
+ End;
+End;
+
+{ Repeint le chrome + la page pour effacer le menu (ou toute boite de
+  dialogue) - meme sequence que celle deja utilisee ailleurs dans
+  HandleMouseClick apres une action ne declenchant pas de navigation. }
+Procedure RepaintAfterContextMenu;
+Begin
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ RescrollPage;
+End;
+
+Procedure ContextMenuViewSource;
+Begin
+ If IsViewSourceURL(CurrentURL) Then Exit; { deja en mode source - rien a faire }
+ NavigateTo('view-source:' + CurrentURL);
+End;
+
+{ Dispatché par HandleMouseClick lorsque le menu est ouvert et qu'un
+  clic gauche vient d'arriver (item choisi, ou clic hors du menu pour
+  simplement le fermer). }
+Procedure ExecuteContextMenuAction(Idx: Integer);
+Begin
+ Case Idx Of
+  1: HandleBackButtonClick;
+  2: HandleForwardButtonClick;
+  3: HandleRefreshButtonClick;
+  4: ContextMenuViewSource;
+  5: Begin RescrollPage; ContextMenuSaveAs; End;
+  6: Begin RescrollPage; ContextMenuCreateQRCode; End;
+  7: DevToolsSetOpen(True);
+  Else RescrollPage;
+ End;
+End;
+
+{ =====================================================
+  BARRES DE DEFILEMENT DE LA ZONE DE RENDU
+  ===================================================== }
+
+{ --- Geometrie de la barre verticale --- }
+Function VScrollX1: Integer;
+Begin VScrollX1 := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE; End;
+Function VScrollX2: Integer;
+Begin VScrollX2 := RENDER_AREA_X + RENDER_AREA_WIDTH; End;
+Function VScrollTrackY1: Integer;
+Begin VScrollTrackY1 := RENDER_AREA_Y + SCROLLBAR_SIZE; End;
+Function VScrollTrackY2: Integer;
+Begin VScrollTrackY2 := RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE) - SCROLLBAR_SIZE; End;
+
+{ --- Geometrie de la barre horizontale --- }
+Function HScrollY1: Integer;
+Begin HScrollY1 := RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE; End;
+Function HScrollY2: Integer;
+Begin HScrollY2 := RENDER_AREA_Y + RENDER_AREA_HEIGHT; End;
+Function HScrollTrackX1: Integer;
+Begin HScrollTrackX1 := RENDER_AREA_X + SCROLLBAR_SIZE; End;
+Function HScrollTrackX2: Integer;
+Begin HScrollTrackX2 := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) - SCROLLBAR_SIZE; End;
+
+{ Procedure pour dessiner la barre de defilement verticale (fleches
+  haut/bas et poignee proportionnelle a l'avancement). }
+Procedure DrawVScrollBar;
+Var
+ TrackH, ThumbH, ThumbY, ArrowColor: Integer;
+ VisibleH: Integer;
+ ThumbCalc, PosCalc: LongInt;
+ CenterX, CenterY: Integer;
+Begin
+ { Fond de la barre }
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE));
+
+ { Bouton fleche du haut }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + SCROLLBAR_SIZE);
+ Rectangle(VScrollX1, RENDER_AREA_Y, VScrollX2, RENDER_AREA_Y + SCROLLBAR_SIZE);
+ CenterX := (VScrollX1 + VScrollX2) Div 2;
+ CenterY := RENDER_AREA_Y + (SCROLLBAR_SIZE Div 2);
+ If CanScrollUp Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX, CenterY - 4, CenterX - 4, CenterY + 3);
+ Line(CenterX, CenterY - 4, CenterX + 4, CenterY + 3);
+
+ { Bouton fleche du bas }
+ CenterY := VScrollTrackY2 + (SCROLLBAR_SIZE Div 2);
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(VScrollX1, VScrollTrackY2, VScrollX2, VScrollTrackY2 + SCROLLBAR_SIZE);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(VScrollX1, VScrollTrackY2, VScrollX2, VScrollTrackY2 + SCROLLBAR_SIZE);
+ If CanScrollDown Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX, CenterY + 4, CenterX - 4, CenterY - 3);
+ Line(CenterX, CenterY + 4, CenterX + 4, CenterY - 3);
+
+ { La taille depend uniquement du rapport visible/document : elle reste
+   donc constante pendant tout le defilement. La position utilise le
+   rapport ScrollY/MaxScrollY. Calculs en LongInt car TrackH*VisibleH peut
+   depasser 32767 dans le mode Integer 16 bits de Turbo Pascal. }
+ TrackH := VScrollTrackY2 - VScrollTrackY1;
+ If TrackH < SCROLLBAR_MIN_THUMB Then Exit;
+ If MaxScrollY > 0 Then Begin
+  VisibleH := RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
+  If DocumentContentHeight <= 0 Then DocumentContentHeight := VisibleH;
+  ThumbCalc := (LongInt(TrackH) * LongInt(VisibleH)) Div DocumentContentHeight;
+  ThumbH := ThumbCalc;
+  If ThumbH > TrackH Then ThumbH := TrackH;
+  If ThumbH < SCROLLBAR_MIN_THUMB Then ThumbH := SCROLLBAR_MIN_THUMB;
+  PosCalc := (LongInt(TrackH - ThumbH) * LongInt(ScrollY)) Div MaxScrollY;
+  ThumbY := VScrollTrackY1 + PosCalc;
+  If ThumbY + ThumbH > VScrollTrackY2 Then ThumbY := VScrollTrackY2 - ThumbH;
+ End Else Begin
+  ThumbH := TrackH;
+  ThumbY := VScrollTrackY1;
+ End;
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(VScrollX1 + 2, ThumbY, VScrollX2 - 2, ThumbY + ThumbH);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(VScrollX1 + 2, ThumbY, VScrollX2 - 2, ThumbY + ThumbH);
+End;
+
+{ Procedure pour dessiner la barre de defilement horizontale }
+Procedure DrawHScrollBar;
+Var
+ TrackW, ThumbW, ThumbX, Range, ArrowColor: Integer;
+ CenterX, CenterY: Integer;
+Begin
+ SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
+ Bar(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE), HScrollY2);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE), HScrollY2);
+
+ { Bouton fleche gauche }
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + SCROLLBAR_SIZE, HScrollY2);
+ Rectangle(RENDER_AREA_X, HScrollY1, RENDER_AREA_X + SCROLLBAR_SIZE, HScrollY2);
+ CenterX := RENDER_AREA_X + (SCROLLBAR_SIZE Div 2);
+ CenterY := (HScrollY1 + HScrollY2) Div 2;
+ If CanScrollLeft Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX - 4, CenterY, CenterX + 3, CenterY - 4);
+ Line(CenterX - 4, CenterY, CenterX + 3, CenterY + 4);
+
+ { Bouton fleche droite }
+ CenterX := HScrollTrackX2 + (SCROLLBAR_SIZE Div 2);
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(HScrollTrackX2, HScrollY1, HScrollTrackX2 + SCROLLBAR_SIZE, HScrollY2);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(HScrollTrackX2, HScrollY1, HScrollTrackX2 + SCROLLBAR_SIZE, HScrollY2);
+ If CanScrollRight Then ArrowColor := COLOR_BTN_TEXT Else ArrowColor := COLOR_BTN_DISABLED;
+ SetColor(ArrowColor);
+ Line(CenterX + 4, CenterY, CenterX - 3, CenterY - 4);
+ Line(CenterX + 4, CenterY, CenterX - 3, CenterY + 4);
+
+ { Poignee horizontale }
+ TrackW := HScrollTrackX2 - HScrollTrackX1;
+ If TrackW < SCROLLBAR_MIN_THUMB Then Exit;
+ If CanScrollLeft Or CanScrollRight Then Begin
+  Range := ScrollX;
+  If CanScrollRight Then Inc(Range, TrackW);
+  If Range <= 0 Then Range := 1;
+  ThumbW := (TrackW * TrackW) Div Range;
+  If ThumbW > TrackW Then ThumbW := TrackW;
+  If ThumbW < SCROLLBAR_MIN_THUMB Then ThumbW := SCROLLBAR_MIN_THUMB;
+  ThumbX := HScrollTrackX1 + ((TrackW - ThumbW) * ScrollX) Div Range;
+  If ThumbX + ThumbW > HScrollTrackX2 Then ThumbX := HScrollTrackX2 - ThumbW;
+ End Else Begin
+  ThumbW := TrackW;
+  ThumbX := HScrollTrackX1;
+ End;
+ SetFillStyle(SolidFill, COLOR_BTN_BG);
+ Bar(ThumbX, HScrollY1 + 2, ThumbX + ThumbW, HScrollY2 - 2);
+ SetColor(COLOR_BTN_BORDER);
+ Rectangle(ThumbX, HScrollY1 + 2, ThumbX + ThumbW, HScrollY2 - 2);
+End;
+
+{ --- Detection de clic sur les elements des barres de defilement --- }
+Function IsClickInVScrollUp(X, Y: Integer): Boolean;
+Begin
+ IsClickInVScrollUp := (X >= VScrollX1) And (X <= VScrollX2) And
+                       (Y >= RENDER_AREA_Y) And (Y <= RENDER_AREA_Y + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInVScrollDown(X, Y: Integer): Boolean;
+Begin
+ IsClickInVScrollDown := (X >= VScrollX1) And (X <= VScrollX2) And
+                         (Y >= VScrollTrackY2) And (Y <= VScrollTrackY2 + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInVScrollTrack(X, Y: Integer): Boolean;
+Begin
+ IsClickInVScrollTrack := (X >= VScrollX1) And (X <= VScrollX2) And
+                          (Y > RENDER_AREA_Y + SCROLLBAR_SIZE) And (Y < VScrollTrackY2);
+End;
+
+Function IsClickInHScrollLeft(X, Y: Integer): Boolean;
+Begin
+ IsClickInHScrollLeft := (Y >= HScrollY1) And (Y <= HScrollY2) And
+                         (X >= RENDER_AREA_X) And (X <= RENDER_AREA_X + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInHScrollRight(X, Y: Integer): Boolean;
+Begin
+ IsClickInHScrollRight := (Y >= HScrollY1) And (Y <= HScrollY2) And
+                          (X >= HScrollTrackX2) And (X <= HScrollTrackX2 + SCROLLBAR_SIZE);
+End;
+
+Function IsClickInHScrollTrack(X, Y: Integer): Boolean;
+Begin
+ IsClickInHScrollTrack := (Y >= HScrollY1) And (Y <= HScrollY2) And
+                          (X > RENDER_AREA_X + SCROLLBAR_SIZE) And (X < HScrollTrackX2);
+End;
+
+{ --- Defilement effectif : ajuste ScrollX/ScrollY puis re-rend la
+  page courante (sans reparser le HTML). --- }
+Procedure ScrollPageBy(DX, DY: Integer);
+Begin
+ If (DY < 0) And (ScrollY > 0) Then Begin
+  ScrollY := ScrollY + DY;
+  If ScrollY < 0 Then ScrollY := 0;
+ End Else If (DY > 0) And CanScrollDown Then Begin
+  If LongInt(ScrollY) + DY > MaxScrollY Then
+   ScrollY := MaxScrollY
+  Else
+   ScrollY := ScrollY + DY;
+ End;
+
+ If (DX < 0) And (ScrollX > 0) Then Begin
+  ScrollX := ScrollX + DX;
+  If ScrollX < 0 Then ScrollX := 0;
+ End Else If (DX > 0) And CanScrollRight Then
+  ScrollX := ScrollX + DX;
+
+ RescrollPage;
+End;
+
+{ Procedure pour gerer un clic dans la barre verticale }
+Procedure HandleVScrollClick(X, Y: Integer);
+Var
+ PageStep: Integer;
+Begin
+ PageStep := RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
+ If IsClickInVScrollUp(X, Y) Then
+  ScrollPageBy(0, -SCROLL_LINE_STEP)
+ Else If IsClickInVScrollDown(X, Y) Then
+  ScrollPageBy(0, SCROLL_LINE_STEP)
+ Else If IsClickInVScrollTrack(X, Y) Then Begin
+  If Y < VScrollTrackY1 + ((VScrollTrackY2 - VScrollTrackY1) Div 2) Then
+   ScrollPageBy(0, -PageStep)
+  Else
+   ScrollPageBy(0, PageStep);
+ End;
+End;
+
+{ Procedure pour gerer un clic dans la barre horizontale }
+Procedure HandleHScrollClick(X, Y: Integer);
+Var
+ PageStep: Integer;
+Begin
+ PageStep := RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+ If IsClickInHScrollLeft(X, Y) Then
+  ScrollPageBy(-SCROLL_LINE_STEP, 0)
+ Else If IsClickInHScrollRight(X, Y) Then
+  ScrollPageBy(SCROLL_LINE_STEP, 0)
+ Else If IsClickInHScrollTrack(X, Y) Then Begin
+  If X < HScrollTrackX1 + ((HScrollTrackX2 - HScrollTrackX1) Div 2) Then
+   ScrollPageBy(-PageStep, 0)
+  Else
+   ScrollPageBy(PageStep, 0);
+ End;
+End;
+
+{ Fonction pour verifier si on peut revenir en arriere dans l'historique }
+Function CanGoBack: Boolean;
+Begin
+ CanGoBack := BrowserHistoryIndex > 1;
+End;
+
+{ Fonction pour verifier si on peut avancer dans l'historique }
+Function CanGoForward: Boolean;
+Begin
+ CanGoForward := BrowserHistoryIndex < BrowserHistoryCount;
+End;
+
+{ Procedure pour mettre a jour l'etat des boutons de navigation }
+Procedure UpdateNavigationButtons;
+Begin
+ BackButtonEnabled := CanGoBack;
+ ForwardButtonEnabled := CanGoForward;
+ DrawBackButton;
+ DrawForwardButton;
+End;
+
+Procedure InitHTMLSource(Var HTML: HTMLSourceBuffer);
+Begin
+ HTML.FirstChunk := Nil;
+ HTML.LastChunk := Nil;
+ HTML.DataLength := 0;
+ { Invalider le cache de HTMLSourceChar (voir sa disclosure) : un
+   nouveau buffer va reutiliser cette structure, jamais l'ancien pointeur
+   de chunk qu'il pourrait contenir. }
+ HTMLSourceCharCacheOwner := Nil;
+ HTMLSourceCharCacheChunk := Nil;
+End;
+
+Procedure FreeHTMLSource(Var HTML: HTMLSourceBuffer);
+Var
+ Chunk, NextChunk: HTMLBufferChunkPtr;
+Begin
+ Chunk := HTML.FirstChunk;
+ While Chunk <> Nil Do Begin
+  NextChunk := Chunk^.Next;
+  Dispose(Chunk);
+  Chunk := NextChunk;
+ End;
+ HTML.FirstChunk := Nil;
+ HTML.LastChunk := Nil;
+ HTML.DataLength := 0;
+End;
+
+{ BOGUE REEL corrige (2026-09-21, signale par l'utilisateur - plantage      }
+{ "ERangeError: Range check error" a l'execution avec le controle de       }
+{ plage active, ex. depuis l'IDE Free Pascal) : I/CopyCount etaient         }
+{ declares Integer, qui vaut seulement 16 bits en mode TP (-32768..32767,   }
+{ voir la meme categorie de bogue deja rencontree ailleurs dans ce depot -  }
+{ feedback_integer_16bit) - une page HTML reelle de plus de 32 Ko (le cas   }
+{ concret signale : https://www.gladir.com fait 34312 octets) deborde       }
+{ silencieusement "Length(S) - I + 1" (34312 > 32767) sans le controle de   }
+{ plage (ce qui MASQUAIT le bogue lors d'une compilation en ligne de        }
+{ commande standard, sans -Cr) mais plante des que ce controle est actif.   }
+{ HTML.DataLength etait deja correctement LongInt - seules ces 2 variables  }
+{ locales avaient le mauvais type. }
+Function SetHTMLSourceFromString(Const S: String;
+                                 Var HTML: HTMLSourceBuffer): Boolean;
+Var
+ I, CopyCount: LongInt;
+ Chunk: HTMLBufferChunkPtr;
+Begin
+ FreeHTMLSource(HTML);
+ SetHTMLSourceFromString := False;
+ If Length(S) = 0 Then Exit;
+ I := 1;
+ While I <= Length(S) Do Begin
+  New(Chunk);
+  Chunk^.Used := 0;
+  Chunk^.Next := Nil;
+  CopyCount := Length(S) - I + 1;
+  If CopyCount > 4096 Then CopyCount := 4096;
+  While Chunk^.Used < CopyCount Do Begin
+   Chunk^.Data[Chunk^.Used] := S[I + Chunk^.Used];
+   Inc(Chunk^.Used);
+  End;
+  If HTML.LastChunk = Nil Then HTML.FirstChunk := Chunk
+  Else HTML.LastChunk^.Next := Chunk;
+  HTML.LastChunk := Chunk;
+  Inc(HTML.DataLength, CopyCount);
+  Inc(I, CopyCount);
+ End;
+ SetHTMLSourceFromString := True;
+End;
+
+{ Definir le contenu HTML d'un noeud (innerHTML) : parse Le fragment
+  HTML comme un mini-document (ParseHTML accepte n'importe quel
+  contenu, pas seulement un document complet avec html/body - ses
+  enfants directs sont exactement les noeuds du fragment), puis
+  detache ces enfants du document temporaire pour les rattacher au
+  noeud cible, apres avoir libere ses anciens enfants. C'est ainsi que
+  JSCookMenu.js (obj.innerHTML = str) construit reellement le menu
+  dans le DOM. }
+
+{ Parseur HTML direct depuis une chaine (sans passer par HTMLSourceBuffer
+  et ses blocs de 4 Ko : avec une chaine de 169 Ko construite par
+  JSCookMenu.js via de nombreux += successifs, les ~168 Ko de blocs
+  de 4 Ko que SetHTMLSourceFromString aurait tente d'allouer
+  entraient en conflit avec la fragmentation du tas resultant de ces
+  += , causant un EOutOfMemory. Ce parseur accede directement a
+  S[Pos] en O(1) par caractere, sans aucune allocation intermediaire.) }
+Function ParseHTMLFromString(Const S: String): HTMLNodePtr;
+Var
+ Pos, StartPos, EndTagPos: LongInt;
+ Root, CurrentNode, NewNode, TextNode, SearchNode: HTMLNodePtr;
+ TagName, CloseTagName, TextContent: String;
+ IsClosingTag, IsSelfClosing: Boolean;
+ CurrentDepth: Integer;
+ AttrName, AttrValue: String;
+ QuoteChar: Char;
+Begin
+ Root := CreateHTMLNode;
+ Root^.NodeType := HTML_NODE_ELEMENT;
+ Root^.TagName := 'document';
+ Root^.TagType := TAG_UNKNOWN;
+ CurrentNode := Root;
+ CurrentDepth := 0;
+ Pos := 1;
+
+ While Pos <= Length(S) Do Begin
+  StartPos := Pos;
+  While (Pos <= Length(S)) And (S[Pos] <> '<') Do Inc(Pos);
+
+  { Traiter le texte avant la balise }
+  If Pos > StartPos Then Begin
+   TextContent := HTMLDecodeEntities(Copy(S, StartPos, Pos - StartPos));
+   If BrowserTrimStr(TextContent) <> '' Then Begin
+    TextNode := CreateHTMLNode;
+    TextNode^.NodeType := HTML_NODE_TEXT;
+    TextNode^.Content := TextContent;
+    TextNode^.Parent := CurrentNode;
+    HTMLAppendChild(CurrentNode, TextNode);
+   End;
+  End;
+  If Pos > Length(S) Then Break;
+
+  Inc(Pos); { passe '<' }
+  If Pos > Length(S) Then Break;
+
+  If S[Pos] = '!' Then Begin
+   { Commentaire ou DOCTYPE }
+   Inc(Pos);
+   If (Pos + 1 <= Length(S)) And (S[Pos] = '-') And (S[Pos+1] = '-') Then Begin
+    Inc(Pos, 2);
+    StartPos := Pos;
+    While (Pos + 2 <= Length(S)) And
+          Not ((S[Pos]='-') And (S[Pos+1]='-') And (S[Pos+2]='>')) Do Inc(Pos);
+    NewNode := CreateHTMLNode;
+    NewNode^.NodeType := HTML_NODE_COMMENT;
+    NewNode^.Content := Copy(S, StartPos, Pos - StartPos);
+    NewNode^.Parent := CurrentNode;
+    HTMLAppendChild(CurrentNode, NewNode);
+    Inc(Pos, 3);
+   End Else Begin
+    While (Pos <= Length(S)) And (S[Pos] <> '>') Do Inc(Pos);
+    If Pos <= Length(S) Then Inc(Pos);
+   End;
+   Continue;
+  End;
+
+  { Determiner si balise fermante }
+  IsClosingTag := (Pos <= Length(S)) And (S[Pos] = '/');
+  If IsClosingTag Then Inc(Pos);
+
+  { Lire le nom de la balise }
+  StartPos := Pos;
+  While (Pos <= Length(S)) And (S[Pos] In ['A'..'Z','a'..'z','0'..'9','_','-',':']) Do Inc(Pos);
+  TagName := HTMLLowerCase(Copy(S, StartPos, Pos - StartPos));
+
+  If Length(TagName) = 0 Then Begin
+   While (Pos <= Length(S)) And (S[Pos] <> '>') Do Inc(Pos);
+   If Pos <= Length(S) Then Inc(Pos);
+   Continue;
+  End;
+
+  If IsClosingTag Then Begin
+   CloseTagName := TagName;
+   While (Pos <= Length(S)) And (S[Pos] <> '>') Do Inc(Pos);
+   If Pos <= Length(S) Then Inc(Pos);
+   SearchNode := HTMLFindClosingNodeInScope(CurrentNode, Root, CloseTagName);
+   If SearchNode <> Nil Then Begin
+    While CurrentNode <> SearchNode Do Begin
+     CurrentNode := CurrentNode^.Parent;
+     If CurrentDepth > 0 Then Dec(CurrentDepth);
+    End;
+    CurrentNode := SearchNode^.Parent;
+    If CurrentNode = Nil Then CurrentNode := Root;
+    If CurrentDepth > 0 Then Dec(CurrentDepth);
+   End;
+   Continue;
+  End;
+
+  If TagName = 'li' Then
+   HTMLAutoCloseListItem(CurrentNode, Root, CurrentDepth);
+  HTMLPrepareNestedList(CurrentNode, Root, TagName, CurrentDepth);
+  If (TagName = 'td') Or (TagName = 'th') Or (TagName = 'tr') Then
+   HTMLAutoCloseTableElement(CurrentNode, Root, TagName, CurrentDepth);
+
+  { Creer l'element }
+  NewNode := CreateHTMLNode;
+  NewNode^.NodeType := HTML_NODE_ELEMENT;
+  NewNode^.TagName := TagName;
+  NewNode^.TagType := GetTagType(TagName);
+  NewNode^.Parent := CurrentNode;
+
+  { Lire les attributs }
+  While (Pos <= Length(S)) And (S[Pos] <> '>') And (S[Pos] <> '/') Do Begin
+   While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Inc(Pos);
+   If (Pos > Length(S)) Or (S[Pos] In ['>', '/']) Then Break;
+   StartPos := Pos;
+   While (Pos <= Length(S)) And Not (S[Pos] In [' ', '=', '>', '/', #9, #10, #13]) Do Inc(Pos);
+   AttrName := HTMLLowerCase(Copy(S, StartPos, Pos - StartPos));
+   If Length(AttrName) = 0 Then Begin Inc(Pos); Continue; End;
+
+   While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Inc(Pos);
+   If (Pos <= Length(S)) And (S[Pos] = '=') Then Begin
+    Inc(Pos);
+    While (Pos <= Length(S)) And (S[Pos] In [' ', #9, #10, #13]) Do Inc(Pos);
+    If (Pos <= Length(S)) And (S[Pos] In ['"', '''']) Then Begin
+     QuoteChar := S[Pos]; Inc(Pos);
+     StartPos := Pos;
+     While (Pos <= Length(S)) And (S[Pos] <> QuoteChar) Do Inc(Pos);
+     AttrValue := HTMLDecodeEntities(Copy(S, StartPos, Pos - StartPos));
+     If Pos <= Length(S) Then Inc(Pos);
+    End Else Begin
+     StartPos := Pos;
+     While (Pos <= Length(S)) And Not (S[Pos] In [' ', '>', '/', #9]) Do Inc(Pos);
+     AttrValue := HTMLDecodeEntities(Copy(S, StartPos, Pos - StartPos));
+    End;
+   End Else
+    AttrValue := '';
+   HTMLAddAttribute(NewNode, AttrName, AttrValue);
+  End;
+
+  IsSelfClosing := (Pos <= Length(S)) And (S[Pos] = '/');
+  If IsSelfClosing Then Inc(Pos);
+  If (Pos <= Length(S)) And (S[Pos] = '>') Then Inc(Pos);
+
+  HTMLAppendChild(CurrentNode, NewNode);
+
+  If Not IsSelfClosing And Not IsVoidElement(TagName) And
+     Not (NewNode^.TagType In [TAG_SCRIPT, TAG_STYLE]) Then Begin
+   CurrentNode := NewNode;
+   Inc(CurrentDepth);
+  End;
+ End;
+
+ ParseHTMLFromString := Root;
+End;
+
+Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String);
+Var
+ FragRoot, Child, NextChild: HTMLNodePtr;
+ FragmentHTML: String;
+Begin
+ If Node = Nil Then Exit;
+
+ { Detacher et liberer les anciens enfants }
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  FreeHTMLNode(Child);
+  Child := NextChild;
+ End;
+ Node^.FirstChild := Nil;
+ Node^.LastChild := Nil;
+ Node^.ChildCount := 0;
+
+ { Une valeur vide signifie bien supprimer tout le contenu. }
+ If Length(HTML) = 0 Then Exit;
+
+ FragmentHTML := HTML;
+ { Dans un gestionnaire inline, le source HTML emploie normalement
+   &lt; et &gt; pour ne pas introduire de balises dans la valeur de
+   l'attribut. Le parseur du document les decode deja. Certains anciens
+   documents ou chemins de chargement laissent toutefois cette couche
+   d'entites dans la chaine JavaScript. Dans ce cas seulement, la retirer
+   avant de parser innerHTML ; sinon "&lt;img ...&gt;" serait cree comme un
+   noeud texte et affiche litteralement. Ne pas decoder sans condition :
+   un vrai innerHTML contenant du texte volontairement echappe doit rester
+   du texte. }
+ If (Pos('<', FragmentHTML) = 0) And
+    ((Pos('&lt;', HTMLLowerCase(FragmentHTML)) > 0) Or
+     (Pos('&#60;', FragmentHTML) > 0) Or
+     (Pos('&#x3c;', HTMLLowerCase(FragmentHTML)) > 0)) Then
+  FragmentHTML := HTMLDecodeEntities(FragmentHTML);
+
+ { Utiliser le parseur direct sur la chaine pour eviter les ~42
+   allocations de blocs de 4 Ko que SetHTMLSourceFromString ferait
+   pour une chaine de 169 Ko - ces allocations echouaient (OOM) a
+   cause de la fragmentation du tas resultant de la construction de
+   la chaine HTML par les nombreux += dans cmDraw/cmDrawSubMenu. }
+ FragRoot := ParseHTMLFromString(FragmentHTML);
+ If FragRoot = Nil Then Exit;
+
+ { Rattacher chaque enfant du document temporaire au noeud cible }
+ Child := FragRoot^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  Child^.PreviousSibling := Nil;
+  Child^.NextSibling := Nil;
+  Child^.Parent := Nil;
+  HTMLAppendChild(Node, Child);
+  Child := NextChild;
+ End;
+
+ { Le noeud racine temporaire n'a plus d'enfants a lui (ils ont tous
+   ete deplaces ci-dessus) : Dispose direct plutot que FreeHTMLNode,
+   qui libererait aussi les enfants qu'on vient juste de rattacher
+   ailleurs. }
+ FragRoot^.FirstChild := Nil;
+ FragRoot^.LastChild := Nil;
+ FragRoot^.ChildCount := 0;
+ FreeHTMLNode(FragRoot);
+End;
+
+{ Inserer la sortie de document.write immediatement apres le SCRIPT qui l'a
+  produite, en conservant l'ordre des noeuds du fragment. }
+Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String);
+Var
+ FragRoot, Child, NextChild, InsertBeforeNode: HTMLNodePtr;
+Begin
+ If (Node = Nil) Or (Node^.Parent = Nil) Or (Length(HTML) = 0) Then Exit;
+ FragRoot := ParseHTMLFromString(HTML);
+ If FragRoot = Nil Then Exit;
+ InsertBeforeNode := Node^.NextSibling;
+ Child := FragRoot^.FirstChild;
+ While Child <> Nil Do Begin
+  NextChild := Child^.NextSibling;
+  Child^.PreviousSibling := Nil;
+  Child^.NextSibling := Nil;
+  Child^.Parent := Nil;
+  DOMInsertBefore(Node^.Parent, Child, InsertBeforeNode);
+  Child := NextChild;
+ End;
+ FragRoot^.FirstChild := Nil;
+ FragRoot^.LastChild := Nil;
+ FragRoot^.ChildCount := 0;
+ FreeHTMLNode(FragRoot);
+End;
+
+{ Lecture binaire par blocs chaines, sans segment contigu de 64 Ko. }
+Function LoadHTMLFile(Const FileName: String; Var HTML: HTMLSourceBuffer): Boolean;
+Var
+ F: File;
+ BytesRead: Word;
+ Chunk: HTMLBufferChunkPtr;
+Begin
+ FreeHTMLSource(HTML);
+ LoadHTMLFile := False;
+ Assign(F, FileName);
+ {$I-}
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+
+ Repeat
+  New(Chunk);
+  Chunk^.Used := 0;
+  Chunk^.Next := Nil;
+  BlockRead(F, Chunk^.Data, 4096, BytesRead);
+  If BytesRead > 0 Then Begin
+   Chunk^.Used := BytesRead;
+   If HTML.LastChunk = Nil Then HTML.FirstChunk := Chunk
+   Else HTML.LastChunk^.Next := Chunk;
+   HTML.LastChunk := Chunk;
+   Inc(HTML.DataLength, BytesRead);
+  End
+  Else
+   Dispose(Chunk);
+ Until BytesRead < 4096;
+ Close(F);
+ LoadHTMLFile := HTML.DataLength > 0;
+End;
+
+Function IsRemoteURL(Const URL: String): Boolean;
+Var
+ LowerURL: String;
+Begin
+ LowerURL := HTMLLowerCase(URL);
+ IsRemoteURL := (Copy(LowerURL, 1, 7) = 'http://') Or
+                (Copy(LowerURL, 1, 8) = 'https://');
+End;
+
+{ Detecter le prefixe d'URL "ftp://" (2026-09-26, demande explicite -
+  "implemente un support complet pour les adresses FTP"). }
+Function IsFtpURL(Const URL: String): Boolean;
+Begin
+ IsFtpURL := Copy(HTMLLowerCase(URL), 1, 6) = 'ftp://';
+End;
+
+{ Echappement HTML minimal (&/</>) pour afficher tel quel, en texte
+  brut dans un <pre>, un fichier recupere par FTP (voir Browser_
+  FtpGetFile) - evite qu'un '<' litteral dans le fichier soit
+  reinterprete comme une balise HTML. }
+Function FTPEscapeText(Const S: String): String;
+Var
+ I: LongInt;
+ R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do
+  Case S[I] Of
+   '&': R := R + '&amp;';
+   '<': R := R + '&lt;';
+   '>': R := R + '&gt;';
+   Else R := R + S[I];
+  End;
+ FTPEscapeText := R;
+End;
+
+{ Detecter le prefixe d'URL "view-source:" (ex: "view-source:https://..."
+  ou "view-source:C:\page.html"), demande explicitement par l'utilisateur
+  pour afficher le code source HTML brut en syntaxe coloree au lieu de le
+  rendre normalement - voir BuildHTMLSourceView plus bas. }
+Function IsViewSourceURL(Const URL: String): Boolean;
+Begin
+ IsViewSourceURL := Copy(HTMLLowerCase(URL), 1, 12) = 'view-source:';
+End;
+
+{ Retire le prefixe "view-source:" (12 caracteres) pour obtenir l'URL/le
+  chemin reel a charger - ce prefixe n'est qu'un indicateur d'affichage,
+  jamais transmis au serveur ni au systeme de fichiers. }
+Function StripViewSourcePrefix(Const URL: String): String;
+Begin
+ StripViewSourcePrefix := Copy(URL, 13, Length(URL) - 12);
+End;
+
+{ ============================================================
+  Coloration syntaxique du code source HTML brut pour "view-source:"
+  (comme les navigateurs reels). Principe : le source original est
+  ENCODE en HTML (< > & echappes pour un affichage LITTERAL) puis
+  chaque token (balise/attribut/valeur/commentaire) est enveloppe dans
+  un <span style="color:...">, avant d'etre passe au moteur de rendu
+  HTML EXISTANT (meme principe que les pages d'erreur synthetiques de
+  DisplayCurrentTarget ci-dessous) : aucun nouveau moteur de rendu/
+  dessin n'est necessaire.
+  ============================================================ }
+Const
+ VIEWSOURCE_COLOR_TAG     = '#0000CC'; { balises et ponctuation < / > }
+ VIEWSOURCE_COLOR_ATTR    = '#AA0000'; { noms d'attributs }
+ VIEWSOURCE_COLOR_VALUE   = '#008800'; { valeurs d'attributs (avec guillemets) }
+ VIEWSOURCE_COLOR_COMMENT = '#808080'; { commentaires et declarations <!...> }
+
+{ Echapper < > & pour un affichage LITTERAL du texte source (sinon il
+  serait re-interprete comme des balises par le moteur de rendu) -
+  HTMLDecodeEntities fera la conversion inverse au moment de l'affichage. }
+Function HTMLViewSourceEscape(Const S: String): String;
+Var
+ I: LongInt;
+ ResultText: String;
+Begin
+ ResultText := '';
+ For I := 1 To Length(S) Do Begin
+  Case S[I] Of
+   '<': ResultText := ResultText + '&lt;';
+   '>': ResultText := ResultText + '&gt;';
+   '&': ResultText := ResultText + '&amp;';
+   Else ResultText := ResultText + S[I];
+  End;
+ End;
+ HTMLViewSourceEscape := ResultText;
+End;
+
+{ Envelopper un fragment de source BRUT (pas encore echappe) dans un
+  span colore. }
+Function VSColorSpan(Const RawText, ColorHex: String): String;
+Begin
+ If Length(RawText) = 0 Then Begin
+  VSColorSpan := '';
+  Exit;
+ End;
+ VSColorSpan := '<span style="color:' + ColorHex + '">' +
+                HTMLViewSourceEscape(RawText) + '</span>';
+End;
+
+{ Trouver le '>' qui ferme la balise commencant en StartPos (S[StartPos]='<'),
+  en ignorant les '>' a l'interieur d'une valeur d'attribut entre guillemets
+  (ex: <a title="a > b">). Retourne Length(S) si la balise n'est jamais
+  fermee (HTML tronque/malforme). }
+Function HTMLFindTagEnd(Const S: String; StartPos: LongInt): LongInt;
+Var
+ I: LongInt;
+ InQuote: Char;
+Begin
+ InQuote := #0;
+ I := StartPos + 1;
+ While I <= Length(S) Do Begin
+  If InQuote <> #0 Then Begin
+   If S[I] = InQuote Then InQuote := #0;
+  End Else Begin
+   If (S[I] = '"') Or (S[I] = '''') Then InQuote := S[I]
+   Else If S[I] = '>' Then Begin
+    HTMLFindTagEnd := I;
+    Exit;
+   End;
+  End;
+  Inc(I);
+ End;
+ HTMLFindTagEnd := Length(S);
+End;
+
+{ Coloration syntaxique d'une balise complete "<...>"/"</...>" (delimiteurs,
+  nom, attributs et valeurs). Les declarations <!...> (DOCTYPE, etc - les
+  commentaires <!-- --> sont traites a part par BuildHTMLSourceView) sont
+  simplement colorees en bloc comme un commentaire. }
+Function HighlightTagContent(Const TagContent: String): String;
+Var
+ P, AttrStart, ValStart: LongInt;
+ ResultStr: String;
+ QuoteChar: Char;
+Begin
+ If (Length(TagContent) >= 2) And (TagContent[1] = '<') And (TagContent[2] = '!') Then Begin
+  HighlightTagContent := VSColorSpan(TagContent, VIEWSOURCE_COLOR_COMMENT);
+  Exit;
+ End;
+
+ ResultStr := '';
+ P := 1;
+ If (P <= Length(TagContent)) And (TagContent[P] = '<') Then Begin
+  ResultStr := ResultStr + VSColorSpan('<', VIEWSOURCE_COLOR_TAG);
+  Inc(P);
+ End;
+ If (P <= Length(TagContent)) And (TagContent[P] = '/') Then Begin
+  ResultStr := ResultStr + VSColorSpan('/', VIEWSOURCE_COLOR_TAG);
+  Inc(P);
+ End;
+
+ { Nom de balise }
+ AttrStart := P;
+ While (P <= Length(TagContent)) And
+       (TagContent[P] In ['A'..'Z', 'a'..'z', '0'..'9', '-', '_', ':']) Do Inc(P);
+ If P > AttrStart Then
+  ResultStr := ResultStr + VSColorSpan(Copy(TagContent, AttrStart, P - AttrStart), VIEWSOURCE_COLOR_TAG);
+
+ { Attributs jusqu'a la fin de la balise }
+ While P <= Length(TagContent) Do Begin
+  If TagContent[P] In [' ', #9, #10, #13] Then Begin
+   AttrStart := P;
+   While (P <= Length(TagContent)) And (TagContent[P] In [' ', #9, #10, #13]) Do Inc(P);
+   ResultStr := ResultStr + HTMLViewSourceEscape(Copy(TagContent, AttrStart, P - AttrStart));
+  End
+  Else If TagContent[P] = '>' Then Begin
+   ResultStr := ResultStr + VSColorSpan('>', VIEWSOURCE_COLOR_TAG);
+   Inc(P);
+  End
+  Else If (TagContent[P] = '/') And (P = Length(TagContent) - 1) And
+          (TagContent[P + 1] = '>') Then Begin
+   ResultStr := ResultStr + VSColorSpan('/>', VIEWSOURCE_COLOR_TAG);
+   P := P + 2;
+  End
+  Else If TagContent[P] = '/' Then Begin
+   ResultStr := ResultStr + VSColorSpan('/', VIEWSOURCE_COLOR_TAG);
+   Inc(P);
+  End
+  Else Begin
+   { Nom d'attribut }
+   AttrStart := P;
+   While (P <= Length(TagContent)) And
+         Not (TagContent[P] In [' ', #9, #10, #13, '=', '>', '/']) Do Inc(P);
+   If P > AttrStart Then
+    ResultStr := ResultStr + VSColorSpan(Copy(TagContent, AttrStart, P - AttrStart), VIEWSOURCE_COLOR_ATTR);
+
+   If (P <= Length(TagContent)) And (TagContent[P] = '=') Then Begin
+    ResultStr := ResultStr + HTMLViewSourceEscape('=');
+    Inc(P);
+    If (P <= Length(TagContent)) And (TagContent[P] In ['"', '''']) Then Begin
+     QuoteChar := TagContent[P];
+     ValStart := P;
+     Inc(P);
+     While (P <= Length(TagContent)) And (TagContent[P] <> QuoteChar) Do Inc(P);
+     If P <= Length(TagContent) Then Inc(P); { inclure le guillemet fermant }
+     ResultStr := ResultStr + VSColorSpan(Copy(TagContent, ValStart, P - ValStart), VIEWSOURCE_COLOR_VALUE);
+    End Else Begin
+     ValStart := P;
+     While (P <= Length(TagContent)) And
+           Not (TagContent[P] In [' ', #9, #10, #13, '>', '/']) Do Inc(P);
+     If P > ValStart Then
+      ResultStr := ResultStr + VSColorSpan(Copy(TagContent, ValStart, P - ValStart), VIEWSOURCE_COLOR_VALUE);
+    End;
+   End;
+  End;
+ End;
+
+ HighlightTagContent := ResultStr;
+End;
+
+{ Construire un document HTML synthetique affichant RawSource (le code
+  source HTML brut d'une page) en <pre> avec coloration syntaxique -
+  utilise par DisplayCurrentTarget pour le prefixe "view-source:". Le
+  contenu des balises <script>/<style> n'est pas retokenise comme du
+  HTML (leur JS/CSS peut contenir '<'/'>' sans rapport avec des
+  balises) : seule la balise fermante correspondante est recherchee. }
+Function BuildHTMLSourceView(Const RawSource, DisplayURL: String): String;
+Var
+ ResultStr: String;
+ I, J, Len, CommentEnd, TagEnd, ClosePos, SearchLen: LongInt;
+ TagContent, LowerTagStart, CloseNeedle: String;
+ IsScriptOrStyle: Boolean;
+Begin
+ ResultStr := '<html><head><title>view-source:' + HTMLViewSourceEscape(DisplayURL) +
+              '</title></head><body><pre>';
+ Len := Length(RawSource);
+ I := 1;
+ While I <= Len Do Begin
+  If RawSource[I] = '<' Then Begin
+   If Copy(RawSource, I, 4) = '<!--' Then Begin
+    CommentEnd := System.Pos('-->', Copy(RawSource, I, Len - I + 1));
+    If CommentEnd = 0 Then Begin
+     ResultStr := ResultStr + VSColorSpan(Copy(RawSource, I, Len - I + 1), VIEWSOURCE_COLOR_COMMENT);
+     I := Len + 1;
+    End Else Begin
+     ResultStr := ResultStr + VSColorSpan(Copy(RawSource, I, CommentEnd + 2), VIEWSOURCE_COLOR_COMMENT);
+     I := I + CommentEnd + 2;
+    End;
+   End Else Begin
+    TagEnd := HTMLFindTagEnd(RawSource, I);
+    TagContent := Copy(RawSource, I, TagEnd - I + 1);
+    LowerTagStart := HTMLLowerCase(Copy(TagContent, 1, 7));
+    IsScriptOrStyle := (Copy(LowerTagStart, 1, 7) = '<script') Or
+                       (Copy(LowerTagStart, 1, 6) = '<style');
+    ResultStr := ResultStr + HighlightTagContent(TagContent);
+    I := TagEnd + 1;
+
+    If IsScriptOrStyle Then Begin
+     If Copy(LowerTagStart, 1, 7) = '<script' Then CloseNeedle := '</script'
+     Else CloseNeedle := '</style';
+     SearchLen := Len - I + 1;
+     If SearchLen > 0 Then
+      ClosePos := System.Pos(CloseNeedle, HTMLLowerCase(Copy(RawSource, I, SearchLen)))
+     Else
+      ClosePos := 0;
+     If ClosePos = 0 Then Begin
+      ResultStr := ResultStr + HTMLViewSourceEscape(Copy(RawSource, I, SearchLen));
+      I := Len + 1;
+     End Else Begin
+      ResultStr := ResultStr + HTMLViewSourceEscape(Copy(RawSource, I, ClosePos - 1));
+      I := I + ClosePos - 1;
+     End;
+    End;
+   End;
+  End Else Begin
+   J := I;
+   While (J <= Len) And (RawSource[J] <> '<') Do Inc(J);
+   ResultStr := ResultStr + HTMLViewSourceEscape(Copy(RawSource, I, J - I));
+   I := J;
+  End;
+ End;
+ ResultStr := ResultStr + '</pre></body></html>';
+ BuildHTMLSourceView := ResultStr;
+End;
+
+{ ============================================================
+  Lecteur RSS/Atom. Les flux XML sont transformes en un document HTML
+  ordinaire afin de reutiliser le moteur de rendu, les liens, l'historique
+  et l'Inspecteur existants. Aucun nom d'extension particulier n'est requis.
+  ============================================================ }
+Function XMLFindCI(Const S,Needle:String;StartAt:LongInt):LongInt;
+Var I,J,L,N:LongInt;Match:Boolean;
+Begin
+ XMLFindCI:=0;L:=Length(S);N:=Length(Needle);
+ If(StartAt<1)Or(N=0)Then StartAt:=1;
+ I:=StartAt;
+ While I<=L-N+1Do Begin
+  Match:=True;J:=1;
+  While(J<=N)And Match Do Begin
+   Match:=UpCase(S[I+J-1])=UpCase(Needle[J]);Inc(J)
+  End;
+  If Match Then Begin XMLFindCI:=I;Exit End;
+  Inc(I)
+ End
+End;
+
+Function XMLStripCDATA(Const S:String):String;
+Var T:String;
+Begin
+ T:=BrowserTrimStr(S);
+ If(Length(T)>=12)And(Copy(T,1,9)='<![CDATA[')And
+   (Copy(T,Length(T)-2,3)=']]>')Then
+  T:=Copy(T,10,Length(T)-12);
+ XMLStripCDATA:=T
+End;
+
+Function XMLTagValue(Const S,TagName:String;StartAt,LimitAt:LongInt;
+ Var NextAt:LongInt):String;
+Var P,Q,R:LongInt;OpenNeedle,CloseNeedle:String;
+Begin
+ XMLTagValue:='';NextAt:=StartAt;
+ If LimitAt<=0Then LimitAt:=Length(S);
+ OpenNeedle:='<'+TagName;CloseNeedle:='</'+TagName+'>';
+ P:=XMLFindCI(S,OpenNeedle,StartAt);
+ If(P=0)Or(P>LimitAt)Then Exit;
+ { Le caractere suivant le nom doit terminer celui-ci; evite que <titleX>
+   soit pris pour <title>. }
+ R:=P+Length(OpenNeedle);
+ If(R<=Length(S))And Not(S[R]In[' ',#9,#10,#13,'>','/'])Then Exit;
+ Q:=P;
+ While(Q<=LimitAt)And(S[Q]<>'>')Do Inc(Q);
+ If Q>LimitAt Then Exit;
+ R:=XMLFindCI(S,CloseNeedle,Q+1);
+ If(R=0)Or(R>LimitAt)Then Exit;
+ XMLTagValue:=XMLStripCDATA(Copy(S,Q+1,R-Q-1));
+ NextAt:=R+Length(CloseNeedle)
+End;
+
+Function XMLPlainText(Const S:String):String;
+Var I:LongInt;InTag:Boolean;R:String;
+Begin
+ R:='';InTag:=False;
+ For I:=1To Length(S)Do Begin
+  If S[I]='<'Then InTag:=True
+  Else If S[I]='>'Then InTag:=False
+  Else If Not InTag Then R:=R+S[I]
+ End;
+ XMLPlainText:=BrowserTrimStr(HTMLDecodeEntities(R))
+End;
+
+Function IsRSSDocument(Const S:String):Boolean;
+Var P:LongInt;
+Begin
+ P:=1;
+ While(P<=Length(S))And(S[P]In[' ',#9,#10,#13,#$EF,#$BB,#$BF])Do Inc(P);
+ IsRSSDocument:=(XMLFindCI(S,'<rss',P)>0)Or
+  (XMLFindCI(S,'<rdf:rdf',P)>0)Or(XMLFindCI(S,'<feed',P)>0)
+End;
+
+Function RSSAtomLink(Const Block:String):String;
+Var P,Q:LongInt;Tag,ResultLink:String;
+Begin
+ ResultLink:='';P:=XMLFindCI(Block,'<link',1);
+ While P>0Do Begin
+  Q:=P;While(Q<=Length(Block))And(Block[Q]<>'>')Do Inc(Q);
+  If Q>Length(Block)Then Exit;
+  Tag:=Copy(Block,P,Q-P+1);
+  ResultLink:=SVGGetAttribute(Tag,'href');
+  If ResultLink<>''Then Begin RSSAtomLink:=ResultLink;Exit End;
+  P:=XMLFindCI(Block,'<link',Q+1)
+ End;
+ RSSAtomLink:=ResultLink
+End;
+
+Function BuildRSSDocument(Const Source,FeedURL:String):String;
+Var IsAtom:Boolean;EntryTag,CloseEntry,FeedTitle,FeedDesc:String;
+ P,Q,N,Dummy:LongInt;Block,TitleText,LinkText,DateText:String;
+ DescText,AuthorText,ResultText:String;
+Begin
+ IsAtom:=XMLFindCI(Source,'<feed',1)>0;
+ If IsAtom Then Begin EntryTag:='<entry';CloseEntry:='</entry>' End
+ Else Begin EntryTag:='<item';CloseEntry:='</item>' End;
+ FeedTitle:=XMLPlainText(XMLTagValue(Source,'title',1,Length(Source),Dummy));
+ FeedDesc:=XMLPlainText(XMLTagValue(Source,'description',1,Length(Source),Dummy));
+ If FeedDesc=''Then FeedDesc:=XMLPlainText(XMLTagValue(Source,'subtitle',1,Length(Source),Dummy));
+ If FeedTitle=''Then FeedTitle:='Flux RSS';
+ ResultText:='<html><head><title>'+HTMLViewSourceEscape(FeedTitle)+
+  '</title></head><body><h1>'+HTMLViewSourceEscape(FeedTitle)+'</h1>';
+ If FeedDesc<>''Then ResultText:=ResultText+'<p>'+HTMLViewSourceEscape(FeedDesc)+'</p>';
+ ResultText:=ResultText+'<p><small>Source : '+HTMLViewSourceEscape(FeedURL)+
+  '</small></p><hr>';
+ P:=1;N:=0;
+ Repeat
+  P:=XMLFindCI(Source,EntryTag,P);
+  If P=0Then Break;
+  Q:=XMLFindCI(Source,CloseEntry,P+Length(EntryTag));
+  If Q=0Then Break;
+  Block:=Copy(Source,P,Q-P+Length(CloseEntry));Inc(N);
+  TitleText:=XMLPlainText(XMLTagValue(Block,'title',1,Length(Block),Dummy));
+  LinkText:=XMLPlainText(XMLTagValue(Block,'link',1,Length(Block),Dummy));
+  If IsAtom Then Begin
+   LinkText:=RSSAtomLink(Block);
+   If LinkText=''Then LinkText:=XMLPlainText(XMLTagValue(Block,'id',1,Length(Block),Dummy))
+  End;
+  DateText:=XMLPlainText(XMLTagValue(Block,'pubDate',1,Length(Block),Dummy));
+  If DateText=''Then DateText:=XMLPlainText(XMLTagValue(Block,'updated',1,Length(Block),Dummy));
+  If DateText=''Then DateText:=XMLPlainText(XMLTagValue(Block,'published',1,Length(Block),Dummy));
+  AuthorText:=XMLPlainText(XMLTagValue(Block,'author',1,Length(Block),Dummy));
+  DescText:=XMLPlainText(XMLTagValue(Block,'description',1,Length(Block),Dummy));
+  If DescText=''Then DescText:=XMLPlainText(XMLTagValue(Block,'summary',1,Length(Block),Dummy));
+  If DescText=''Then DescText:=XMLPlainText(XMLTagValue(Block,'content',1,Length(Block),Dummy));
+  If TitleText=''Then TitleText:='Article '+IntToStr(N);
+  ResultText:=ResultText+'<h2>';
+  If LinkText<>''Then ResultText:=ResultText+'<a href="'+HTMLViewSourceEscape(LinkText)+'">';
+  ResultText:=ResultText+HTMLViewSourceEscape(TitleText);
+  If LinkText<>''Then ResultText:=ResultText+'</a>';
+  ResultText:=ResultText+'</h2>';
+  If(DateText<>'')Or(AuthorText<>'')Then Begin
+   ResultText:=ResultText+'<p><small>'+HTMLViewSourceEscape(DateText);
+   If AuthorText<>''Then ResultText:=ResultText+' '+HTMLViewSourceEscape(AuthorText);
+   ResultText:=ResultText+'</small></p>'
+  End;
+  If DescText<>''Then ResultText:=ResultText+'<p>'+HTMLViewSourceEscape(DescText)+'</p>';
+  P:=Q+Length(CloseEntry);
+ Until N>=500;
+ If N=0Then ResultText:=ResultText+'<p>Aucun article dans ce flux.</p>';
+ ResultText:=ResultText+'</body></html>';
+ BuildRSSDocument:=ResultText
+End;
+
+{ Charger les IFRAME HTML dans la page hote. Le moteur est mono-document :
+  il remplace donc chaque cadre par un conteneur dimensionne contenant le
+  corps du document distant. Cela conserve le flux et permet d'afficher les
+  nouvelles de gladir.com, sans detruire le DOM/CSS de la page principale. }
+Function ExpandHTMLIFrames(Const Source,BaseURL:String):String;
+Var
+ ResultText,TagText,FrameURL,FrameHTML,OldURL,WidthText,HeightText:String;
+ P,TagEnd,ClosePos,CloseEnd,BodyPos,BodyStart,BodyEnd,Count:LongInt;
+ StatusCode:LongInt;
+ Loaded:Boolean;
+Begin
+ ResultText:=Source;P:=1;Count:=0;
+ Repeat
+  P:=XMLFindCI(ResultText,'<iframe',P);
+  If P=0Then Break;
+  TagEnd:=P;
+  While(TagEnd<=Length(ResultText))And(ResultText[TagEnd]<>'>')Do Inc(TagEnd);
+  If TagEnd>Length(ResultText)Then Break;
+  TagText:=Copy(ResultText,P,TagEnd-P+1);
+  FrameURL:=SVGGetAttribute(TagText,'src');
+  WidthText:=SVGGetAttribute(TagText,'width');
+  HeightText:=SVGGetAttribute(TagText,'height');
+  ClosePos:=XMLFindCI(ResultText,'</iframe',TagEnd+1);
+  If ClosePos=0Then CloseEnd:=TagEnd
+  Else Begin
+   CloseEnd:=ClosePos;
+   While(CloseEnd<=Length(ResultText))And(ResultText[CloseEnd]<>'>')Do Inc(CloseEnd);
+  End;
+  FrameHTML:='';Loaded:=False;
+  If FrameURL<>''Then Begin
+   OldURL:=CurrentURL;CurrentURL:=BaseURL;
+   FrameURL:=CSSBuildStylesheetPath(FrameURL);
+   CurrentURL:=OldURL;
+   {$IFDEF WINDOWS}
+   Loaded:=Browser_HttpGet(FrameURL,FrameHTML,StatusCode)And(Length(FrameHTML)>0);
+   {$ENDIF}
+  End;
+  If Loaded Then Begin
+   BodyPos:=XMLFindCI(FrameHTML,'<body',1);
+   If BodyPos>0Then Begin
+    BodyStart:=BodyPos;
+    While(BodyStart<=Length(FrameHTML))And(FrameHTML[BodyStart]<>'>')Do Inc(BodyStart);
+    BodyEnd:=XMLFindCI(FrameHTML,'</body',BodyStart+1);
+    If BodyEnd=0Then BodyEnd:=Length(FrameHTML)+1;
+    FrameHTML:=Copy(FrameHTML,BodyStart+1,BodyEnd-BodyStart-1)
+   End
+  End Else
+   FrameHTML:='<small>Impossible de charger le cadre '+HTMLViewSourceEscape(FrameURL)+'</small>';
+  TagText:='<div class="browser-iframe" style="overflow:hidden;';
+  If WidthText<>''Then TagText:=TagText+'width:'+WidthText+';';
+  If HeightText<>''Then TagText:=TagText+'height:'+HeightText+';';
+  TagText:=TagText+'">'+FrameHTML+'</div>';
+  Delete(ResultText,P,CloseEnd-P+1);
+  Insert(TagText,ResultText,P);
+  Inc(P,Length(TagText));Inc(Count)
+ Until Count>=8;
+ ExpandHTMLIFrames:=ResultText
+End;
+
+{ Charger et afficher la cible courante. }
+Procedure DisplayCurrentTarget;
+Var
+ HTML: HTMLSourceBuffer;
+ FileName: String;
+ MessageText: String;
+ InnerURL, SourceText,LoadedText: String;
+ SourceOk: Boolean;
+ SourceHTML: HTMLSourceBuffer;
+ PdfHTML: String;
+ PdfOk: Boolean;
+ PdfBaseURL: String;
+ PdfRequestedPage: LongInt;
+ {$IFDEF WINDOWS}
+ PageBody: String;
+ StatusCode: LongInt;
+ GetOk: Boolean;
+ FtpHost, FtpPath: String;
+ FtpPort: Word;
+ FtpUrlOk, FtpIsDirRequest, FtpOk: Boolean;
+ PdfTempF: File;
+ PdfBytesWritten: LongInt;
+ {$ENDIF}
+Begin
+ InitHTMLSource(HTML);
+ FailedImageURLCount:=0;
+ {$IFDEF WINDOWS}
+ { Nouveau budget reseau pour cette navigation. Les sous-ressources CSS et
+   images consommeront le meme budget au lieu de pouvoir bloquer en serie. }
+ BrowserPageRequestCount:=0;
+ BrowserPageLoadStarted:=BrowserGetTickCount;
+ {$ENDIF}
+
+ { Prefixe "view-source:" - afficher le code source HTML brut en syntaxe
+   coloree au lieu de le rendre normalement (voir BuildHTMLSourceView). }
+ If IsViewSourceURL(CurrentURL) Then Begin
+  InnerURL := StripViewSourcePrefix(CurrentURL);
+  SourceText := '';
+  SourceOk := False;
+  If IsRemoteURL(InnerURL) Then Begin
+   {$IFDEF WINDOWS}
+   SourceOk := Browser_HttpGet(InnerURL, SourceText, StatusCode) And (Length(SourceText) > 0);
+   {$ENDIF}
+  End Else Begin
+   FileName := InnerURL;
+   If Copy(HTMLLowerCase(FileName), 1, 7) = 'file://' Then
+    Delete(FileName, 1, 7);
+   InitHTMLSource(SourceHTML);
+   SourceOk := LoadHTMLFile(FileName, SourceHTML);
+   If SourceOk Then
+    SourceText := HTMLSourceCopy(SourceHTML, 1, SourceHTML.DataLength);
+   FreeHTMLSource(SourceHTML);
+  End;
+
+  If SourceOk Then
+   MessageText := BuildHTMLSourceView(SourceText, InnerURL)
+  Else
+   MessageText := '<html><body><h2>Erreur de chargement</h2><p>Impossible d''afficher la ' +
+    'source de : ' + InnerURL + '</p></body></html>';
+
+  If SetHTMLSourceFromString(MessageText, HTML) Then
+   TestHTMLRender(HTML);
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ { Adresse FTP (2026-09-26, demande explicite - "implemente un support
+   complet pour les adresses FTP", teste avec ftp://test.rebex.net) :
+   repertoire (UrlPath vide ou terminant par '/') affiche comme une page
+   de listing HTML synthetique avec de vrais liens cliquables ; sinon
+   tente d'abord un fichier, puis retente comme repertoire SANS slash
+   final si l'ouverture du fichier echoue (heuristique - un serveur FTP
+   reel accepte les deux formes, aucune commande FEAT/MLSD n'est
+   utilisee ici pour distinguer explicitement, SIMPLIFICATION DISCLOSED).
+   Un fichier recupere est affiche comme TEXTE BRUT echappe (aucun
+   detecteur de type MIME/binaire reel - SIMPLIFICATION DISCLOSED,
+   suffisant pour parcourir un serveur FTP comme test.rebex.net). }
+ If IsFtpURL(CurrentURL) Then Begin
+  {$IFDEF WINDOWS}
+  Browser_FtpParseUrl(CurrentURL, FtpHost, FtpPort, FtpPath, FtpUrlOk);
+  If Not FtpUrlOk Then Begin
+   MessageText := '<html><body><h2>Adresse FTP invalide</h2><p>' + CurrentURL + '</p></body></html>';
+  End Else Begin
+   FtpIsDirRequest := (FtpPath = '') Or (FtpPath[Length(FtpPath)] = '/');
+   If FtpIsDirRequest Then Begin
+    FtpOk := Browser_FtpListDirectory(FtpHost, FtpPort, FtpPath, PageBody);
+    If FtpOk Then Begin
+     If SetHTMLSourceFromString(PageBody, HTML) Then TestHTMLRender(HTML);
+     FreeHTMLSource(HTML);
+     Exit;
+    End;
+    MessageText := '<html><body><h2>Erreur FTP</h2><p>Impossible de lister : ' +
+     CurrentURL + '</p></body></html>';
+   End Else Begin
+    FtpOk := Browser_FtpGetFile(FtpHost, FtpPort, FtpPath, PageBody);
+    If FtpOk Then Begin
+     MessageText := '<html><body><pre>' + FTPEscapeText(PageBody) + '</pre></body></html>';
+     If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+     FreeHTMLSource(HTML);
+     Exit;
+    End;
+    { Peut-etre un repertoire reference sans '/' final - retenter comme tel. }
+    FtpOk := Browser_FtpListDirectory(FtpHost, FtpPort, FtpPath + '/', PageBody);
+    If FtpOk Then Begin
+     If SetHTMLSourceFromString(PageBody, HTML) Then TestHTMLRender(HTML);
+     FreeHTMLSource(HTML);
+     Exit;
+    End;
+    MessageText := '<html><body><h2>Erreur FTP</h2><p>Impossible d''ouvrir : ' +
+     CurrentURL + '</p></body></html>';
+   End;
+  End;
+  If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  {$ELSE}
+  MessageText := '<html><body><h2>Adresse FTP</h2><p>' + CurrentURL +
+                 '</p><p>Le support FTP n''est disponible que sous Windows ' +
+                 'pour l''instant (client WinInet).</p></body></html>';
+  If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  {$ENDIF}
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ { Adresse PDF (2026-09-26, demande explicite - "Implemente un support
+   PDF au navigateur Web", teste avec un vrai document reel :
+   https://www.gladir.com/DOCUMENT/grimoireassembleur.pdf) : voir la
+   disclosure complete du module PDF (Browser_PdfLoadAndRender et
+   consorts, juste apres PNGLoadFromFile) pour les simplifications
+   assumees. Une adresse distante est telechargee vers un fichier
+   temporaire (meme technique que ResolveImageLoadPath pour les images)
+   car le parseur PDF a besoin d'un acces par POSITION D'OCTET reel, pas
+   seulement du contenu brut deja en memoire. }
+ If IsPdfURL(CurrentURL) Then Begin
+  PdfOk := False;
+  PdfHTML := '';
+  PdfBaseURL := PDFStripQuery(CurrentURL);
+  PdfRequestedPage := PDFParsePageQuery(CurrentURL);
+  If IsRemoteURL(PdfBaseURL) Then Begin
+   {$IFDEF WINDOWS}
+   GetOk := Browser_HttpGet(PdfBaseURL, PageBody, StatusCode);
+   If GetOk And (Length(PageBody) > 0) Then Begin
+    Assign(PdfTempF, BROWSER_PDF_TEMP_FILE);
+    {$I-}
+    Rewrite(PdfTempF, 1);
+    {$I+}
+    If IOResult = 0 Then Begin
+     BlockWrite(PdfTempF, PageBody[1], Length(PageBody), PdfBytesWritten);
+     Close(PdfTempF);
+     PdfOk := Browser_PdfLoadAndRender(BROWSER_PDF_TEMP_FILE, PdfBaseURL, PdfRequestedPage, PdfHTML);
+    End;
+   End;
+   {$ENDIF}
+  End Else Begin
+   FileName := PdfBaseURL;
+   If Copy(HTMLLowerCase(FileName), 1, 7) = 'file://' Then Delete(FileName, 1, 7);
+   PdfOk := Browser_PdfLoadAndRender(FileName, PdfBaseURL, PdfRequestedPage, PdfHTML);
+  End;
+
+  If PdfOk Then Begin
+   If SetHTMLSourceFromString(PdfHTML, HTML) Then TestHTMLRender(HTML);
+  End Else Begin
+   MessageText := '<html><body><h2>Erreur PDF</h2><p>Impossible de lire ou d''analyser : ' +
+    CurrentURL + '</p></body></html>';
+   If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  End;
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ If IsRemoteURL(CurrentURL) Then Begin
+  {$IFDEF WINDOWS}
+  { Telechargement HTTP/HTTPS REEL (voir Browser_HttpGet ci-dessus,       }
+  { demande explicite de l'utilisateur - remplace l'ancien message        }
+  { "pas encore implemente" qui s'affichait toujours ici avant, meme pour }
+  { une URL valide). }
+  GetOk := Browser_HttpGet(CurrentURL, PageBody, StatusCode);
+  If GetOk And (Length(PageBody) > 0) Then Begin
+   PageBody:=ExpandHTMLIFrames(PageBody,CurrentURL);
+   If IsRSSDocument(PageBody)Then PageBody:=BuildRSSDocument(PageBody,CurrentURL);
+   If SetHTMLSourceFromString(PageBody, HTML) Then
+    TestHTMLRender(HTML);
+  End Else Begin
+   MessageText := '<html><body><h2>Erreur de chargement</h2><p>' + CurrentURL + '</p><p>';
+   If Not GetOk Then
+    MessageText := MessageText +
+     'Impossible de se connecter (DNS, reseau, ou URL invalide).'
+   Else
+    MessageText := MessageText + 'Code de statut HTTP : ' + IntToStr(StatusCode) +
+     ' (reponse vide).';
+   MessageText := MessageText + '</p></body></html>';
+   If SetHTMLSourceFromString(MessageText, HTML) Then
+    TestHTMLRender(HTML);
+  End;
+  {$ELSE}
+  MessageText := '<html><body><h2>Adresse URL</h2><p>' + CurrentURL +
+                 '</p><p>Le telechargement HTTP/HTTPS n''est disponible que sous ' +
+                 'Windows pour l''instant (client WinInet).</p></body></html>';
+  If SetHTMLSourceFromString(MessageText, HTML) Then
+   TestHTMLRender(HTML);
+  {$ENDIF}
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ FileName := CurrentURL;
+ If Copy(HTMLLowerCase(FileName), 1, 7) = 'file://' Then
+  Delete(FileName, 1, 7);
+
+ If LoadHTMLFile(FileName, HTML) Then Begin
+  LoadedText:=HTMLSourceCopy(HTML,1,HTML.DataLength);
+  If IsRSSDocument(LoadedText)Then Begin
+   LoadedText:=BuildRSSDocument(LoadedText,CurrentURL);
+   SetHTMLSourceFromString(LoadedText,HTML)
+  End;
+  TestHTMLRender(HTML)
+ End
+ Else Begin
+  MessageText := '<html><body><h2>Erreur</h2><p>Impossible d''ouvrir le fichier : ' +
+                 FileName + '</p></body></html>';
+  If SetHTMLSourceFromString(MessageText, HTML) Then
+   TestHTMLRender(HTML);
+ End;
+ FreeHTMLSource(HTML);
+End;
+
+{ Procedure pour naviguer vers une nouvelle URL et l'ajouter a l'historique }
+Procedure NavigateTo(URL: String);
+Var
+ I: Integer;
+Begin
+ { Si on navigue depuis un point intermediaire de l'historique, }
+ { on supprime tout ce qui est apres la position actuelle }
+ If BrowserHistoryIndex < BrowserHistoryCount Then Begin
+  BrowserHistoryCount := BrowserHistoryIndex;
+ End;
+
+ { Ajouter la nouvelle URL a l'historique si l'historique n'est pas plein }
+ If BrowserHistoryCount < MAX_HISTORY Then Begin
+  Inc(BrowserHistoryCount);
+  BrowserHistory[BrowserHistoryCount] := URL;
+  BrowserHistoryIndex := BrowserHistoryCount;
+ End
+  Else
+ Begin
+  { Si l'historique est plein, decaler tout vers le haut et ajouter a la fin }
+  For I := 1 To MAX_HISTORY - 1 Do
+   BrowserHistory[I] := BrowserHistory[I + 1];
+  BrowserHistory[MAX_HISTORY] := URL;
+  BrowserHistoryIndex := MAX_HISTORY;
+ End;
+
+ { Mettre a jour l'URL courante }
+ CurrentURL := URL;
+ URLCursorPos := Length(CurrentURL);
+ DrawURLBar;
+ DrawFavoriteButton;
+ UpdateNavigationButtons;
+ DisplayCurrentTarget;
+End;
+
+{ Procedure pour aller a la page precedente }
+Procedure BrowserGoBack;
+Begin
+ If CanGoBack Then Begin
+  Dec(BrowserHistoryIndex);
+  CurrentURL := BrowserHistory[BrowserHistoryIndex];
+  URLCursorPos := Length(CurrentURL);
+  DrawURLBar;
+  DrawFavoriteButton;
+  UpdateNavigationButtons;
+  DisplayCurrentTarget;
+ End;
+End;
+
+{ Procedure pour aller a la page suivante }
+Procedure BrowserGoForward;
+Begin
+ If CanGoForward Then Begin
+  Inc(BrowserHistoryIndex);
+  CurrentURL := BrowserHistory[BrowserHistoryIndex];
+  URLCursorPos := Length(CurrentURL);
+  DrawURLBar;
+  DrawFavoriteButton;
+  UpdateNavigationButtons;
+  DisplayCurrentTarget;
+ End;
+End;
+
+{ Procedure pour initialiser l'historique }
+Procedure InitHistory;
+Begin
+ BrowserHistoryCount := 0;
+ BrowserHistoryIndex := 0;
+End;
+
+{ Fonction pour obtenir le nombre d'elements dans l'historique }
+Function GetHistoryCount: Integer;
+Begin
+ GetHistoryCount := BrowserHistoryCount;
+End;
+
+{ Fonction pour obtenir la position actuelle dans l'historique }
+Function GetHistoryIndex: Integer;
+Begin
+ GetHistoryIndex := BrowserHistoryIndex;
+End;
+
+{ Procedure pour verifier si un clic est dans la barre d'URL }
+Function IsClickInURLBar(X, Y: Integer): Boolean;
+Begin
+ IsClickInURLBar := (X >= URL_BAR_X) And (X <= URL_BAR_X + URL_BAR_WIDTH) And
+                    (Y >= URL_BAR_Y) And (Y <= URL_BAR_Y + URL_BAR_HEIGHT);
+End;
+
+{ Procedure pour gerer la saisie de texte dans la barre d'URL }
+Procedure HandleURLInput(Key: Char);
+Begin
+ If Not URLBarFocused Then Exit;
+
+ Case Ord(Key) Of
+  8: Begin { Backspace }
+   If (URLCursorPos > 0) And (Length(CurrentURL) > 0) Then Begin
+    Delete(CurrentURL, URLCursorPos, 1);
+    Dec(URLCursorPos);
+   End;
+  End;
+  13: Begin { Enter - Valider l'URL et (re)charger la page }
+   URLBarFocused := False;
+   { URL inchangee depuis la page affichee : simple actualisation, sans
+     empiler une nouvelle entree d'historique (comme HandleRefreshButtonClick).
+     URL modifiee (ou aucun historique encore) : vraie navigation. }
+   If (BrowserHistoryCount > 0) And (CurrentURL = BrowserHistory[BrowserHistoryIndex]) Then
+    DisplayCurrentTarget
+   Else
+    NavigateTo(CurrentURL);
+  End;
+  27: Begin { Escape - Annuler la saisie }
+   URLBarFocused := False;
+  End;
+  Else Begin { Caractere normal }
+   If (Key >= #32) And (Key <= #126) Then Begin
+    If Length(CurrentURL) < URL_MAX_LENGTH Then Begin
+     Inc(URLCursorPos);
+     Insert(Key, CurrentURL, URLCursorPos);
+    End;
+   End;
+  End;
+ End;
+ DrawURLBar;
+End;
+
+{ Procedure pour gerer les touches speciales (fleches) dans la barre d'URL }
+Procedure HandleURLSpecialKey(ScanCode: Byte);
+Begin
+ If Not URLBarFocused Then Begin
+  { La barre d'URL n'a pas le focus : les touches de navigation
+    defilent la page plutot que de deplacer un curseur de texte. }
+  Case ScanCode Of
+   72: ScrollPageBy(0, -SCROLL_LINE_STEP);                      { Fleche haut }
+   80: ScrollPageBy(0, SCROLL_LINE_STEP);                       { Fleche bas }
+   75: ScrollPageBy(-SCROLL_LINE_STEP, 0);                      { Fleche gauche }
+   77: ScrollPageBy(SCROLL_LINE_STEP, 0);                       { Fleche droite }
+   73: ScrollPageBy(0, -(RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)); { Page haut }
+   81: ScrollPageBy(0, RENDER_AREA_HEIGHT - SCROLLBAR_SIZE);    { Page bas }
+  End;
+  Exit;
+ End;
+
+ Case ScanCode Of
+  75: Begin { Fleche gauche }
+   If URLCursorPos > 0 Then Dec(URLCursorPos);
+  End;
+  77: Begin { Fleche droite }
+   If URLCursorPos < Length(CurrentURL) Then Inc(URLCursorPos);
+  End;
+  71: Begin { Home }
+   URLCursorPos := 0;
+  End;
+  79: Begin { End }
+   URLCursorPos := Length(CurrentURL);
+  End;
+  83: Begin { Delete }
+   If URLCursorPos < Length(CurrentURL) Then
+    Delete(CurrentURL, URLCursorPos + 1, 1);
+  End;
+ End;
+ DrawURLBar;
+End;
+
+{ Procedure pour initialiser la barre d'URL }
+Procedure InitURLBar;
+Begin
+ CurrentURL := 'https://';
+ URLCursorPos := Length(CurrentURL);
+ URLBarFocused := False;
+End;
+
+{ Procedure pour definir une nouvelle URL }
+Procedure SetURL(NewURL: String);
+Begin
+ CurrentURL := NewURL;
+ URLCursorPos := Length(CurrentURL);
+ DrawURLBar;
+End;
+
+{ Fonction pour obtenir l'URL courante }
+Function GetURL: String;
+Begin
+ GetURL := CurrentURL;
+End;
+
+{ --- Choisir le pilote/mode graphique selon -maxscreen : voir
+  DEVENV.PAS/SelectScreenDriverMode pour le detail. Detect choisirait
+  le pilote couleur le plus profond (15/16 bits), ou les indices de
+  palette EGA/VGA 1..15 sont alors interpretes comme des valeurs RGB
+  brutes au lieu de couleurs Noir/Bleu/Vert/.../Jaune/Blanc. On force
+  donc le pilote 256 couleurs (palette VGA standard) a sa plus haute
+  resolution, ce qui conserve la palette correcte. }
+
+{ Le pilote D8bit ne garantit pas que ses 16 premiers index contiennent
+  deja la palette EGA attendue par tout le moteur HTML. En particulier,
+  l'index 0 utilise pour color:black pouvait rester identique au fond et
+  rendre invisibles les liens .Mnu, alors que le lien bleu (index 1)
+  demeurait visible. Programmer explicitement ces entrees rend les
+  constantes de couleur stables dans tous les modes graphiques. }
+Procedure InitializeHTMLPalette;
+Const
+ RGB: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0),       (0, 0, 170),     (0, 170, 0),
+  (0, 170, 170),   (170, 0, 0),     (170, 0, 170),
+  (170, 85, 0),    (170, 170, 170), (85, 85, 85),
+  (85, 85, 255),   (85, 255, 85),   (85, 255, 255),
+  (255, 85, 85),   (255, 85, 255),  (255, 255, 85),
+  (255, 255, 255));
+Var
+ I: Integer;
+Begin
+ If GetMaxColor >= 16 Then
+  HTMLBlackColorIndex := 16
+ Else
+  HTMLBlackColorIndex := Black;
+ For I := 0 To 15 Do
+  { PtcGraph attend des composantes 0..255. Le Shr 2 adapte aux anciens
+    registres DAC VGA 0..63, mais rend ici le blanc (255) gris (63) et
+    fausse toutes les couleurs CSS fondees sur les indices BGI. }
+  SetRGBPalette(I, RGB[I, 0], RGB[I, 1], RGB[I, 2]);
+ { Dans le pilote D8bit de PtcGraph, l'entree logique 0 peut conserver le
+   role de couleur transparente/de fond malgre SetRGBPalette(0,...). La
+   mapper vers un registre distinct programme en noir rend enfin les
+   textes CSS color:black visibles, sans modifier les index utilises par
+   tout le moteur et les decodeurs d'images. }
+ If GetMaxColor >= 16 Then
+  SetRGBPalette(16, 0, 0, 0);
+End;
+
+{ Ex-InitializeGraphics de BROWSER.PAS : la partie "choix du pilote/mode
+  graphique" (SelectScreenDriverMode/InitGraph/GraphResult) est retiree -
+  DEVENV.PAS possede deja son unique InitGraph (voir InitializeGraphics,
+  ligne 12056), appele une seule fois au demarrage. Ne restent ici que la
+  palette HTML (InitializeHTMLPalette) et le calcul de geometrie des
+  boutons/zone de rendu, qui deviendra BrowserComputeLayout (phase C) une
+  fois parametre par le rectangle de l'onglet plutot que par GetMaxX/Y. }
+Procedure BrowserInitLayoutAndPalette;
+Begin
+ InitializeHTMLPalette;
+ { PAS de SetBkColor(RENDER_BG_COLOR) ici : SetBkColor reprogramme l'entree
+   de palette 0 avec cette couleur (ici blanc), ce qui ecrasait le noir
+   pourtant deja programme par InitializeHTMLPalette - HTMLBlackColorIndex
+   vaut 0 en VGA 16 couleurs (hors -maxscreen), donc TOUT texte "noir"
+   (barre d'URL comprise) devenait blanc sur fond blanc, invisible. Le
+   fond de page (RENDER_BG_COLOR=15) est deja peint explicitement par
+   Bar()/SetFillStyle partout ou necessaire, sans dependre du bk-color. }
+ SetColor(White);
+ SetLineStyle(SolidLn, 0, NormWidth);
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ SetTextJustify(LeftText, TopText);
+
+ { Barre de navigation responsive : conserver les quatre boutons groupes
+   contre le bord droit et donner tout l'espace restant au champ URL. }
+ FAVORITE_BTN_X := GetMaxX - 5 - FAVORITE_BTN_WIDTH;
+ REFRESH_BTN_X := FAVORITE_BTN_X - 5 - REFRESH_BTN_WIDTH;
+ FORWARD_BTN_X := REFRESH_BTN_X - 5 - FORWARD_BTN_WIDTH;
+ BACK_BTN_X := FORWARD_BTN_X - 5 - BACK_BTN_WIDTH;
+ URL_BAR_WIDTH := BACK_BTN_X - URL_BAR_X - 5;
+ If URL_BAR_WIDTH < 80 Then URL_BAR_WIDTH := 80;
+
+ { Zone de rendu = espace reellement disponible apres la barre d'URL,
+   et non plus une taille figee pour 640x480 : sans cela, le mode
+   -maxscreen ouvrirait un grand ecran mais ne dessinerait le contenu
+   HTML que dans son coin superieur gauche. }
+ RENDER_AREA_WIDTH := GetMaxX - RENDER_AREA_X - 5;
+ RENDER_AREA_HEIGHT := GetMaxY - RENDER_AREA_Y - 5;
+ DevToolsFullRenderHeight := RENDER_AREA_HEIGHT;
+End;
+
+
+{ Fonction pour verifier si une position est dans la zone de rendu }
+Function IsInRenderArea(X, Y: Integer): Boolean;
+Begin
+ IsInRenderArea := (X >= RENDER_AREA_X) And
+                   (X <= RENDER_AREA_X + RENDER_AREA_WIDTH) And
+                   (Y >= RENDER_AREA_Y) And
+                   (Y <= RENDER_AREA_Y + RENDER_AREA_HEIGHT);
+End;
+
+{ Procedure pour gerer le clic sur un lien hypertexte }
+{ Resoudre un href relatif (ex: "A86/reference.htm") par rapport au
+  repertoire de la page courante - meme principe que BMPBuildImagePath
+  pour les images et CSSBuildStylesheetPath pour les feuilles de
+  style, qui souffraient du meme probleme avant d'etre corriges : sans
+  cette resolution, un lien relatif est cherche par rapport au
+  repertoire de travail du PROCESSUS (celui ou BROWSER.exe a ete
+  lance), pas par rapport a la page actuellement affichee. }
+{ BOGUE REEL corrige (2026-09-25, signale par l'utilisateur - clic sur     }
+{ "Advanced search" depuis https://www.google.ca/ (un lien "racine du      }
+{ site", ex. href="/advanced_search") renvoyait "page introuvable") :      }
+{ cette fonction renvoyait un tel href TEL QUEL (juste "/advanced_search", }
+{ sans schema/hote), qu'IsRemoteURL rejette ensuite (ne commence pas par   }
+{ http(s)://) - DisplayCurrentTarget tombait alors dans le chargement de   }
+{ FICHIER LOCAL, qui echoue forcement pour un chemin pareil. Reutilise     }
+{ desormais CSSBuildStylesheetPath (deja corrigee pour ce cas exact -      }
+{ href racine-du-site resolu avec l'origine schema://hote de la page       }
+{ courante quand celle-ci est distante - deja utilisee avec succes par     }
+{ BMPBuildImagePath/GIFBuildImagePath/etc pour les images) plutot que sa    }
+{ propre logique dupliquee qui n'avait jamais recu ce correctif. }
+Function NormalizeHTTPURLPath(Const URL:String):String;
+Var Work,Suffix:String;SchemeEnd,HostEnd,CutPos,QPos,HPos,P,I:Integer;
+Begin
+ Work:=URL;Suffix:='';
+ SchemeEnd:=Pos('://',Work);
+ If SchemeEnd=0Then Begin NormalizeHTTPURLPath:=URL;Exit End;
+ { La requete et l'ancre ne sont pas des segments de chemin. }
+ QPos:=Pos('?',Work);HPos:=Pos('#',Work);CutPos:=0;
+ If QPos>0Then CutPos:=QPos;
+ If(HPos>0)And((CutPos=0)Or(HPos<CutPos))Then CutPos:=HPos;
+ If CutPos>0Then Begin
+  Suffix:=Copy(Work,CutPos,Length(Work));Delete(Work,CutPos,Length(Work))
+ End;
+ HostEnd:=SchemeEnd+3;
+ While(HostEnd<=Length(Work))And(Work[HostEnd]<>'/')Do Inc(HostEnd);
+ If HostEnd>Length(Work)Then Begin
+  NormalizeHTTPURLPath:=Work+Suffix;Exit
+ End;
+ Repeat
+  P:=Pos('/./',Work);
+  If P>=HostEnd Then Delete(Work,P,2)
+ Until(P=0)Or(P<HostEnd);
+ Repeat
+ P:=Pos('/../',Work);
+  If P>=HostEnd Then Begin
+   If P>HostEnd Then Begin
+    { Supprimer le segment precedent avec /../, mais conserver le slash
+      qui delimite sa racine. Exemple: /a/b/../c devient /a/c. }
+    I:=P-1;
+    While(I>HostEnd)And(Work[I]<>'/')Do Dec(I);
+    Delete(Work,I+1,P+3-I)
+   End Else
+    { Deja a la racine : conserver le slash racine et jeter ../. }
+    Delete(Work,P+1,3)
+  End
+ Until(P=0)Or(P<HostEnd);
+ NormalizeHTTPURLPath:=Work+Suffix
+End;
+
+Function ResolveLinkHref(Const Href: String): String;
+Var
+ LowerHref,LowerCurrent,Origin,BasePath,Scheme,ResultURL:String;
+ SchemeEnd,HostEnd,I,P:Integer;
+Begin
+ LowerHref:=HTMLLowerCase(Href);
+ If IsViewSourceURL(Href)Then Begin ResolveLinkHref:=Href;Exit End;
+ If(Copy(LowerHref,1,7)='http://')or
+   (Copy(LowerHref,1,8)='https://')Then Begin
+  ResolveLinkHref:=NormalizeHTTPURLPath(Href);Exit
+ End;
+ If(Copy(LowerHref,1,7)='mailto:')or
+    (Copy(LowerHref,1,4)='tel:')or(Copy(LowerHref,1,5)='data:')Then Begin
+  ResolveLinkHref := Href;
+  Exit;
+ End;
+ LowerCurrent:=HTMLLowerCase(CurrentURL);
+ If(Copy(LowerCurrent,1,7)<>'http://')and
+   (Copy(LowerCurrent,1,8)<>'https://')Then Begin
+  ResolveLinkHref:=CSSBuildStylesheetPath(Href);Exit
+ End;
+ SchemeEnd:=Pos('://',CurrentURL);Scheme:=Copy(CurrentURL,1,SchemeEnd-1);
+ HostEnd:=SchemeEnd+3;
+ While(HostEnd<=Length(CurrentURL))and(CurrentURL[HostEnd]<>'/')do Inc(HostEnd);
+ If HostEnd>Length(CurrentURL)Then Origin:=CurrentURL
+ Else Origin:=Copy(CurrentURL,1,HostEnd-1);
+ If Copy(Href,1,2)='//'Then Begin
+  ResolveLinkHref:=Scheme+':'+Href;Exit
+ End;
+ If Copy(Href,1,1)='/'Then Begin
+  ResolveLinkHref:=NormalizeHTTPURLPath(Origin+Href);Exit
+ End;
+ BasePath:=CurrentURL;P:=Pos('#',BasePath);
+ If P>0Then Delete(BasePath,P,Length(BasePath));
+ If Copy(Href,1,1)='#'Then Begin ResolveLinkHref:=BasePath+Href;Exit End;
+ P:=Pos('?',BasePath);If P>0Then Delete(BasePath,P,Length(BasePath));
+ If Copy(Href,1,1)='?'Then Begin ResolveLinkHref:=BasePath+Href;Exit End;
+ For I:=Length(BasePath)downto 1do If BasePath[I]='/'Then Begin
+  BasePath:=Copy(BasePath,1,I);Break
+ End;
+ ResultURL:=BasePath+Href;
+ ResolveLinkHref:=NormalizeHTTPURLPath(ResultURL)
+End;
+
+Procedure HandleLinkClick(LinkIndex: Integer);
+Var
+ TargetURL: String;
+Begin
+ If (LinkIndex < 1) Or (LinkIndex > LinkCount) Then Exit;
+ If Not LinkAreas[LinkIndex].Active Then Exit;
+
+ { Recuperer l'URL du lien }
+ TargetURL := LinkAreas[LinkIndex].Href;
+
+ { Verifier si l'URL est vide }
+ If TargetURL = '' Then Exit;
+ If Copy(TargetURL,1,1)='#'Then Exit;
+ TargetURL:=ResolveLinkHref(TargetURL);
+
+ { Traiter les differents types d'URL }
+ If (Copy(TargetURL, 1, 7) = 'http://') Or
+    (Copy(TargetURL, 1, 8) = 'https://') Or IsViewSourceURL(TargetURL) Then Begin
+  { URL absolue (ou prefixe view-source:) - naviguer directement }
+  NavigateTo(TargetURL);
+ End
+ Else If (Copy(TargetURL, 1, 7) = 'mailto:') Then Begin
+  { Lien email - ne pas naviguer }
+  { Afficher une notification? }
+ End
+ Else If (Copy(TargetURL, 1, 4) = 'tel:') Then Begin
+  { Lien telephone - ne pas naviguer }
+ End
+ Else Begin
+  { URL relative (racine du site "/xxx", protocole-relatif "//xxx", ou
+    relative au repertoire courant, ex. "A86/reference.htm" depuis une
+    page situee dans CODER/ doit pointer vers CODER/A86/reference.htm,
+    pas vers le repertoire de travail du processus) - BOGUE REEL corrige
+    (2026-09-25, signale par l'utilisateur : un clic sur "Advanced
+    search" depuis Google renvoyait "page introuvable") : le cas
+    "racine du site" avait sa PROPRE branche ci-dessus qui navigait vers
+    TargetURL tel quel (sans schema/hote), ce qu'IsRemoteURL rejetait
+    ensuite - supprimee, ResolveLinkHref (voir sa disclosure) gere
+    desormais ce cas correctement lui aussi. }
+  NavigateTo(TargetURL);
+ End;
+End;
+
+{ ============================================================
+  Interactivite REELLE des formulaires (2026-09-25, demande explicite de
+  l'utilisateur - "le champ de saisie... ne fonctionne pas ou le curseur
+  n'est pas present" + "le bouton Recherche Google ne semble pas
+  fonctionner ou il semble pas tenir compte de la balise FORM") : AVANT ce
+  correctif, RenderTagInput/RenderTagButton dessinaient des pixels mais
+  n'enregistraient JAMAIS de zone interactive (AddInteractiveArea) - un
+  clic ne pouvait donc RIEN declencher, quel que soit le type de champ.
+  ============================================================ }
+
+{ Encodage "application/x-www-form-urlencoded" (espace -> '+', reste des
+  caracteres non-alphanumeriques en %XX hexadecimal) - AUCUN encodeur de
+  ce type n'existait dans ce fichier avant (recherche prealable :
+  encodeURIComponent/URLEncode absents), necessaire des qu'un champ de
+  recherche contient un espace ou un caractere special. }
+Function URLEncodeFormValue(Const S: String): String;
+Const
+ HexDigits: String[16] = '0123456789ABCDEF';
+Var
+ I: Integer;
+ C: Char;
+ R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do Begin
+  C := S[I];
+  If (C In ['A'..'Z', 'a'..'z', '0'..'9', '-', '_', '.', '~']) Then
+   R := R + C
+  Else If C = ' ' Then
+   R := R + '+'
+  Else
+   R := R + '%' + HexDigits[(Ord(C) Shr 4) + 1] + HexDigits[(Ord(C) And $0F) + 1];
+ End;
+ URLEncodeFormValue := R;
+End;
+
+{ Remonte les ancetres jusqu'au FORM englobant (ou Nil si aucun - un
+  bouton/champ hors de tout FORM ne peut rien soumettre). }
+Function FindEnclosingForm(Node: HTMLNodePtr): HTMLNodePtr;
+Begin
+ While (Node <> Nil) And (Node^.TagType <> TAG_FORM) Do
+  Node := Node^.Parent;
+ FindEnclosingForm := Node;
+End;
+
+{ Parcours RECURSIF de tout le sous-arbre d'un FORM, accumulant
+  "nom=valeur&..." pour chaque INPUT/TEXTAREA/SELECT nomme - les types
+  submit/button/reset/image sont exclus (le bouton cliquable lui-meme n'a
+  pas besoin d'apparaitre dans la requete pour qu'un formulaire de
+  recherche simple fonctionne, meme convention que la plupart des
+  formulaires reels). Les case a cocher/boutons radio NON coches sont
+  omis (convention HTML reelle : un checkbox decoche n'envoie rien). }
+Procedure CollectFormFields(Node: HTMLNodePtr; Var Query: String);
+Var
+ Child: HTMLNodePtr;
+ FName, FType, FValue: String;
+ IsChecked: Boolean;
+Begin
+ Child := Node^.FirstChild;
+ While Child <> Nil Do Begin
+  If Child^.NodeType = HTML_NODE_ELEMENT Then Begin
+   If (Child^.TagType = TAG_INPUT) Or (Child^.TagType = TAG_TEXTAREA) Then Begin
+    FName := GetNodeAttribute(Child, 'name');
+    FType := HTMLLowerCase(GetNodeAttribute(Child, 'type'));
+    If (Length(FName) > 0) And (FType <> 'submit') And (FType <> 'button') And
+       (FType <> 'reset') And (FType <> 'image') Then Begin
+     If (FType = 'checkbox') Or (FType = 'radio') Then Begin
+      IsChecked := GetNodeAttribute(Child, 'checked') <> '';
+      If IsChecked Then Begin
+       FValue := GetNodeAttribute(Child, 'value');
+       If FValue = '' Then FValue := 'on';
+       If Query <> '' Then Query := Query + '&';
+       Query := Query + URLEncodeFormValue(FName) + '=' + URLEncodeFormValue(FValue);
+      End;
+     End Else Begin
+      If Child^.TagType = TAG_TEXTAREA Then
+       FValue := DOMGetTextContent(Child)
+      Else
+       FValue := GetNodeAttribute(Child, 'value');
+      If Query <> '' Then Query := Query + '&';
+      Query := Query + URLEncodeFormValue(FName) + '=' + URLEncodeFormValue(FValue);
+     End;
+    End;
+   End;
+   { Ne PAS descendre dans un FORM imbrique (invalide en HTML mais mieux }
+   { vaut ne pas melanger deux formulaires distincts par accident). }
+   If Child^.TagType <> TAG_FORM Then CollectFormFields(Child, Query);
+  End;
+  Child := Child^.NextSibling;
+ End;
+End;
+
+{ Soumission REELLE d'un formulaire : construit l'URL (action + '?' +
+  champs nommes encodes) et navigue reellement, EXACTEMENT comme un vrai
+  clic de soumission. method="post" est traite de la meme facon que GET
+  (accroche les champs en requete d'URL) - SIMPLIFICATION DISCLOSED : ce
+  navigateur n'assemble aucun corps de requete HTTP POST reel (Browser_
+  HttpGet est GET seul, voir sa disclosure), beaucoup de formulaires reels
+  simples (dont la recherche Google) acceptent neanmoins les deux. }
+Procedure SubmitEnclosingForm(ClickedNode: HTMLNodePtr);
+Var
+ FormNode: HTMLNodePtr;
+ Action, Query, FullURL: String;
+Begin
+ FormNode := FindEnclosingForm(ClickedNode);
+ If FormNode = Nil Then Exit;
+ Action := GetNodeAttribute(FormNode, 'action');
+ If Action = '' Then Action := CurrentURL
+ Else Action := ResolveLinkHref(Action);
+ Query := '';
+ CollectFormFields(FormNode, Query);
+ If Query <> '' Then Begin
+  If System.Pos('?', Action) > 0 Then FullURL := Action + '&' + Query
+  Else FullURL := Action + '?' + Query;
+ End Else FullURL := Action;
+ NavigateTo(FullURL);
+End;
+
+{ Bascule reelle d'une case a cocher/bouton radio - l'etat DOM ('checked')
+  est toujours mis a jour correctement (ce qui compte pour une soumission
+  de formulaire ulterieure). Pour un groupe de boutons radio de meme
+  "name", decoche aussi les autres membres du groupe cote DOM (comportement
+  HTML reel : un seul bouton radio coche par groupe) - SIMPLIFICATION
+  DISCLOSED : seul CE widget (WidgetX/WidgetY, sa propre position ecran
+  deja connue de HandleMouseClick) est redessine immediatement ; d'autres
+  boutons radio du MEME groupe ailleurs sur la page garde un affichage
+  perime jusqu'au prochain chargement complet (leur etat DOM reel est
+  neanmoins deja correct) - pas de mecanisme de rendu cible par noeud pour
+  un widget arbitraire situe ailleurs dans l'arbre. }
+Procedure ToggleCheckedInput(Node: HTMLNodePtr; WidgetX, WidgetY: Integer);
+Var
+ FormNode: HTMLNodePtr;
+ GroupName: String;
+
+ Procedure UncheckSameGroup(N: HTMLNodePtr);
+ Var C: HTMLNodePtr;
+ Begin
+  C := N^.FirstChild;
+  While C <> Nil Do Begin
+   If (C^.NodeType = HTML_NODE_ELEMENT) And (C^.TagType = TAG_INPUT) And
+      (HTMLLowerCase(GetNodeAttribute(C, 'type')) = 'radio') And
+      (GetNodeAttribute(C, 'name') = GroupName) And (C <> Node) Then
+    DOMRemoveAttribute(C, 'checked');
+   If C^.TagType <> TAG_FORM Then UncheckSameGroup(C);
+   C := C^.NextSibling;
+  End;
+ End;
+
+Begin
+ If HTMLLowerCase(GetNodeAttribute(Node, 'type')) = 'radio' Then Begin
+  GroupName := GetNodeAttribute(Node, 'name');
+  FormNode := FindEnclosingForm(Node);
+  If (FormNode <> Nil) And (Length(GroupName) > 0) Then UncheckSameGroup(FormNode);
+  DOMSetAttribute(Node, 'checked', 'checked');
+  BrowserDrawRadioButton(WidgetX, WidgetY, True);
+ End Else Begin
+  { Case a cocher : bascule simple. }
+  If GetNodeAttribute(Node, 'checked') <> '' Then Begin
+   DOMRemoveAttribute(Node, 'checked');
+   BrowserDrawCheckbox(WidgetX, WidgetY, False);
+  End Else Begin
+   DOMSetAttribute(Node, 'checked', 'checked');
+   BrowserDrawCheckbox(WidgetX, WidgetY, True);
+  End;
+ End;
+End;
+
+{ Donne le focus de saisie clavier a un champ INPUT texte/mot de passe -
+  UNIQUEMENT ces types ont un curseur/une saisie (checkbox/radio/submit
+  n'en ont pas besoin, deja geres par ToggleCheckedInput/
+  SubmitEnclosingForm). Retire le focus de la barre d'URL (un seul champ
+  actif a la fois). ClickX sert a placer le curseur au caractere le plus
+  proche du point clique, meme convention que la barre d'URL
+  (8 pixels/caractere, police fixe). }
+Procedure FocusInputField(Node: HTMLNodePtr; FieldX, FieldY, ClickX: Integer);
+Var
+ CurVal: String;
+Begin
+ URLBarFocused := False;
+ FocusedInputNode := Node;
+ FocusedInputX := FieldX;
+ FocusedInputY := FieldY;
+ FocusedInputIsPassword := HTMLLowerCase(GetNodeAttribute(Node, 'type')) = 'password';
+ CurVal := GetNodeAttribute(Node, 'value');
+ FocusedInputCursorPos := (ClickX - FieldX - INPUT_PADDING) Div 8;
+ If FocusedInputCursorPos > Length(CurVal) Then FocusedInputCursorPos := Length(CurVal);
+ If FocusedInputCursorPos < 0 Then FocusedInputCursorPos := 0;
+ BrowserDrawInputField(FieldX, FieldY, INPUT_WIDTH, INPUT_HEIGHT, CurVal, FocusedInputIsPassword);
+ SetColor(INPUT_TEXT_COLOR);
+ Line(FieldX + INPUT_PADDING + (FocusedInputCursorPos * 8), FieldY + 2,
+      FieldX + INPUT_PADDING + (FocusedInputCursorPos * 8), FieldY + INPUT_HEIGHT - 2);
+End;
+
+{ Retire le focus d'un champ (clic ailleurs sur la page) - redessine le    }
+{ champ SANS son curseur. }
+Procedure ClearInputFocus;
+Begin
+ If FocusedInputNode <> Nil Then
+  BrowserDrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
+   GetNodeAttribute(FocusedInputNode, 'value'), FocusedInputIsPassword);
+ FocusedInputNode := Nil;
+End;
+
+{ Redessine le champ de saisie actuellement focus (widget + curseur) -    }
+{ factorise pour eviter de dupliquer ce dessin a chaque frappe. }
+Procedure RedrawFocusedInput;
+Var CurVal: String;
+Begin
+ If FocusedInputNode = Nil Then Exit;
+ CurVal := GetNodeAttribute(FocusedInputNode, 'value');
+ BrowserDrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
+  CurVal, FocusedInputIsPassword);
+ SetColor(INPUT_TEXT_COLOR);
+ Line(FocusedInputX + INPUT_PADDING + (FocusedInputCursorPos * 8), FocusedInputY + 2,
+      FocusedInputX + INPUT_PADDING + (FocusedInputCursorPos * 8), FocusedInputY + INPUT_HEIGHT - 2);
+End;
+
+{ Saisie clavier REELLE dans un champ INPUT texte/mot de passe focus -    }
+{ meme structure que HandleURLInput (barre d'URL), operant sur l'attribut }
+{ DOM 'value' du noeud focus (via DOMSetAttribute) au lieu de CurrentURL, }
+{ et redessinant SEULEMENT ce widget (RedrawFocusedInput) plutot que      }
+{ toute la page. Entree (13) soumet reellement le FORM englobant, comme   }
+{ un vrai navigateur - repond directement au 2e symptome signale ("le     }
+{ bouton ... ne semble pas fonctionner") : appuyer sur Entree dans le      }
+{ champ fonctionne desormais meme si le clic sur le bouton lui-meme est    }
+{ rate. }
+Procedure HandleFormInputKey(Key: Char);
+Var CurVal: String;
+Begin
+ If FocusedInputNode = Nil Then Exit;
+ CurVal := GetNodeAttribute(FocusedInputNode, 'value');
+ Case Ord(Key) Of
+  8: Begin { Backspace }
+   If (FocusedInputCursorPos > 0) And (Length(CurVal) > 0) Then Begin
+    Delete(CurVal, FocusedInputCursorPos, 1);
+    Dec(FocusedInputCursorPos);
+    DOMSetAttribute(FocusedInputNode, 'value', CurVal);
+   End;
+  End;
+  13: Begin { Entree - soumet le FORM englobant, meme convention qu'un vrai navigateur }
+   SubmitEnclosingForm(FocusedInputNode);
+   FocusedInputNode := Nil; { la page a change, ce noeud n'existe plus }
+   Exit;
+  End;
+  27: Begin { Echap - retire le focus sans soumettre }
+   ClearInputFocus;
+   Exit;
+  End;
+  Else Begin { Caractere normal }
+   If (Key >= #32) And (Key <= #126) Then Begin
+    If Length(CurVal) < 254 Then Begin { String[255] : plafond de HTMLAttribute.Value }
+     Inc(FocusedInputCursorPos);
+     Insert(Key, CurVal, FocusedInputCursorPos);
+     DOMSetAttribute(FocusedInputNode, 'value', CurVal);
+    End;
+   End;
+  End;
+ End;
+ RedrawFocusedInput;
+End;
+
+{ Touches speciales (fleches/Home/End/Suppr) dans un champ focus - meme   }
+{ structure que HandleURLSpecialKey. }
+Procedure HandleFormInputSpecialKey(ScanCode: Byte);
+Var CurVal: String;
+Begin
+ If FocusedInputNode = Nil Then Exit;
+ CurVal := GetNodeAttribute(FocusedInputNode, 'value');
+ Case ScanCode Of
+  75: If FocusedInputCursorPos > 0 Then Dec(FocusedInputCursorPos);       { Fleche gauche }
+  77: If FocusedInputCursorPos < Length(CurVal) Then Inc(FocusedInputCursorPos); { Fleche droite }
+  71: FocusedInputCursorPos := 0;                                          { Home }
+  79: FocusedInputCursorPos := Length(CurVal);                            { End }
+  83: Begin { Suppr }
+   If FocusedInputCursorPos < Length(CurVal) Then Begin
+    Delete(CurVal, FocusedInputCursorPos + 1, 1);
+    DOMSetAttribute(FocusedInputNode, 'value', CurVal);
+   End;
+  End;
+ End;
+ RedrawFocusedInput;
+End;
+
+{ Procedure pour gerer les clics de souris sur l'interface }
+Procedure HandleMouseClick(X, Y: Integer);
+Var
+ LinkIdx: Integer;
+ InteractiveNode: HTMLNodePtr;
+ InteractiveIdx: Integer;
+ ClickedType: String;
+ CtxItemIdx: Integer;
+Begin
+ { Le menu contextuel (clic droit), s'il est ouvert, absorbe ce clic
+   gauche en entier - qu'il tombe sur un item (execute cet item) ou en
+   dehors (le referme simplement) - avant tout autre traitement normal
+   du clic (barre d'URL, boutons, liens...). }
+ If ContextMenuOpen Then Begin
+  CtxItemIdx := ContextMenuItemAt(X, Y);
+  ContextMenuOpen := False;
+  DrawURLBar;
+  DrawBackButton;
+  DrawForwardButton;
+  DrawRefreshButton;
+  DrawFavoriteButton;
+  ExecuteContextMenuAction(CtxItemIdx);
+  Exit;
+ End;
+
+ If DevToolsHandleClick(X,Y) Then Exit;
+
+ { Verifier si le clic est dans la barre d'URL }
+ If IsClickInURLBar(X, Y) Then Begin
+  URLBarFocused := True;
+  ClearInputFocus;
+  { Calculer la position du curseur dans l'URL }
+  URLCursorPos := (X - URL_BAR_X - 5) Div 8;
+  If URLCursorPos > Length(CurrentURL) Then
+   URLCursorPos := Length(CurrentURL);
+  If URLCursorPos < 0 Then
+   URLCursorPos := 0;
+  DrawURLBar;
+ End
+  Else
+ Begin
+  URLBarFocused := False;
+  DrawURLBar;
+ End;
+ { BOGUE REEL corrige (2026-09-25, trouve en verifiant le correctif des    }
+ { formulaires ci-dessus) : DrawURLBar repeint TOUTE la bande d'outils     }
+ { (voir sa propre disclosure - necessaire pour effacer un residu de page  }
+ { qui aurait pu deborder dessus), mais EFFACE du meme coup les boutons     }
+ { Precedent/Suivant/Actualiser/Favori sans les redessiner - NavigateTo et  }
+ { la passe de survol (ProcessMouseHover) le font deja correctement juste   }
+ { apres leur propre DrawURLBar (meme sequence exacte), mais ce chemin-ci   }
+ { (present depuis la toute premiere version de HandleMouseClick) ne         }
+ { l'avait jamais fait. Reste invisible tant qu'aucun clic ne pouvait        }
+ { EVITER de declencher une navigation complete (qui redessine tout de      }
+ { toute facon) - un clic dans un champ de formulaire (voir plus haut,      }
+ { FocusInputField) est le premier cas ou cela devient reellement visible. }
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+
+ { Verifier si le clic est dans le bouton Precedent }
+ If IsClickInBackButton(X, Y) Then Begin
+  HandleBackButtonClick;
+ End;
+
+ { Verifier si le clic est dans le bouton Suivant }
+ If IsClickInForwardButton(X, Y) Then Begin
+  HandleForwardButtonClick;
+ End;
+
+ { Verifier si le clic est dans le bouton Actualiser }
+ If IsClickInRefreshButton(X, Y) Then Begin
+  HandleRefreshButtonClick;
+ End;
+
+ { Verifier si le clic est dans le bouton Favori }
+ If IsClickInFavoriteButton(X, Y) Then Begin
+  HandleFavoriteButtonClick;
+ End;
+
+ { Verifier si le clic est dans l'une des barres de defilement }
+ HandleVScrollClick(X, Y);
+ HandleHScrollClick(X, Y);
+
+ { Verifier si le clic est sur un lien hypertexte dans la zone de rendu }
+ If IsInRenderArea(X, Y) Then Begin
+  LinkIdx := FindLinkAtPosition(X, Y);
+  If LinkIdx > 0 Then Begin
+   ClearInputFocus;
+   HandleLinkClick(LinkIdx);
+  End
+  Else Begin
+   { Verifier si le clic est sur une zone interactive (ex: cellule TD
+     utilisee comme onglet avec onclick="...", OU un champ/bouton de
+     formulaire reel - voir la disclosure complete pres de
+     SubmitEnclosingForm/FocusInputField/ToggleCheckedInput ci-dessus). }
+   InteractiveIdx := FindInteractiveAreaAtPosition(X, Y);
+   If InteractiveIdx > 0 Then Begin
+    InteractiveNode := InteractiveAreas[InteractiveIdx].Node;
+    { JSCookMenu effectue la navigation dans onmouseup, pas onclick. }
+    MousePressedInteractiveNode := InteractiveNode;
+    DispatchInlineEventHandler(InteractiveNode, 'onmousedown');
+    DispatchInlineEventHandler(InteractiveNode, 'onclick');
+    If (InteractiveNode <> Nil) And (InteractiveNode^.NodeType = HTML_NODE_ELEMENT) Then Begin
+     If InteractiveNode^.TagType = TAG_INPUT Then Begin
+      ClickedType := HTMLLowerCase(GetNodeAttribute(InteractiveNode, 'type'));
+      If (ClickedType = '') Or (ClickedType = 'text') Or (ClickedType = 'password') Or
+         (ClickedType = 'email') Or (ClickedType = 'number') Or (ClickedType = 'search') Or
+         (ClickedType = 'tel') Or (ClickedType = 'url') Then
+       FocusInputField(InteractiveNode, InteractiveAreas[InteractiveIdx].X1,
+        InteractiveAreas[InteractiveIdx].Y1, X)
+      Else If ClickedType = 'submit' Then Begin
+       ClearInputFocus;
+       SubmitEnclosingForm(InteractiveNode);
+      End
+      Else If (ClickedType = 'checkbox') Or (ClickedType = 'radio') Then Begin
+       ClearInputFocus;
+       ToggleCheckedInput(InteractiveNode, InteractiveAreas[InteractiveIdx].X1,
+        InteractiveAreas[InteractiveIdx].Y1);
+      End
+      Else ClearInputFocus;
+     End
+     Else If InteractiveNode^.TagType = TAG_BUTTON Then Begin
+      { <button> sans attribut type, a l'interieur d'un FORM, est un      }
+      { SUBMIT par defaut (convention HTML reelle - contrairement a       }
+      { <input> ou 'text' est le defaut). }
+      ClickedType := HTMLLowerCase(GetNodeAttribute(InteractiveNode, 'type'));
+      ClearInputFocus;
+      If (ClickedType = '') Or (ClickedType = 'submit') Then
+       SubmitEnclosingForm(InteractiveNode);
+     End
+     Else ClearInputFocus;
+    End;
+   End Else Begin
+    MousePressedInteractiveNode := Nil;
+    ClearInputFocus;
+   End;
+  End;
+ End;
+End;
+
+{ Procedure pour detecter les changements de survol (onmouseover/
+  onmouseout) sur les zones interactives - independant des clics,
+  doit etre appele a chaque iteration pour suivre les deplacements de
+  la souris meme sans bouton presse. }
+Procedure ProcessMouseHover;
+Var
+ CurrentNode, PreviousNode: HTMLNodePtr;
+ CurrentAreaIndex: Integer;
+Begin
+ If IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
+  CurrentAreaIndex := FindInteractiveAreaAtPosition(BrowserMouseX, BrowserMouseY);
+  If CurrentAreaIndex > 0 Then
+   CurrentNode := InteractiveAreas[CurrentAreaIndex].Node
+  Else
+   CurrentNode := Nil;
+ End Else Begin
+  CurrentAreaIndex := 0;
+  CurrentNode := Nil;
+ End;
+
+ If CurrentNode <> HoveredInteractiveNode Then Begin
+  HideMouse;
+ PreviousNode := HoveredInteractiveNode;
+  { Les gestionnaires peuvent provoquer immediatement RescrollPage. Le
+    nouvel element doit donc etre publie avant onmouseover pour que le
+    positionnement des overlays connaisse deja son ancre. }
+  HoveredInteractiveNode := CurrentNode;
+  HoverAnchorValid := False;
+  { Conserver exactement le rectangle ayant gagne le hit-test. Rechercher
+    ensuite seulement par Node pouvait selectionner une ancienne copie de
+    la boite, issue d'une autre passe de tableau et placee trop haut. }
+  If (CurrentNode <> Nil) And (CurrentAreaIndex > 0) Then Begin
+    HoverAnchorX1 := InteractiveAreas[CurrentAreaIndex].X1;
+    HoverAnchorY1 := InteractiveAreas[CurrentAreaIndex].Y1;
+    HoverAnchorX2 := InteractiveAreas[CurrentAreaIndex].X2;
+    HoverAnchorY2 := InteractiveAreas[CurrentAreaIndex].Y2;
+    HoverAnchorValid := True;
+  End;
+  DeferEventRedraw := True;
+  EventRedrawPending := False;
+  If PreviousNode <> Nil Then
+   DispatchInlineEventHandler(PreviousNode, 'onmouseout');
+  If CurrentNode <> Nil Then
+   DispatchInlineEventHandler(CurrentNode, 'onmouseover');
+  DeferEventRedraw := False;
+  If EventRedrawPending Then Begin
+   EventRedrawPending := False;
+   RescrollPageAfterHover;
+  End;
+  ShowMouse;
+ End;
+End;
+
+{ Procedure pour traiter les evenements de la souris }
+Procedure ProcessMouseInput;
+Begin
+ DevToolsPollF12;
+ { Verifier le minuteur JS en attente (setTimeout) a chaque iteration
+   de la boucle principale, independamment de la souris - voir
+   JSCheckTimeout. }
+ JSCheckTimeout;
+ DevToolsUpdateConsoleCursor;
+
+ If Not MouseAvailable Then Exit;
+
+ { Obtenir l'etat actuel de la souris }
+ GetMouseState(BrowserMouseX, BrowserMouseY, MouseButton);
+
+ { Le menu contextuel, pendant qu'il est ouvert, remplace entierement le
+   survol/clic normal de la page (sinon un survol de lien dessous
+   redessinerait par-dessus le menu). Le clic gauche est route par
+   HandleMouseClick (voir sa propre verification ContextMenuOpen en
+   tout debut de fonction, qui l'execute puis le referme). }
+ If ContextMenuOpen Then Begin
+  UpdateContextMenuHover(BrowserMouseX, BrowserMouseY);
+  If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
+     ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
+   HideMouse;
+   HandleMouseClick(BrowserMouseX, BrowserMouseY);
+   ShowMouse;
+  End;
+  LastMouseButton := MouseButton;
+  Exit;
+ End;
+
+ ProcessMouseHover;
+
+ { Detecter un clic (transition de non-presse a presse) }
+ If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
+    ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
+  HideMouse;
+ HandleMouseClick(BrowserMouseX, BrowserMouseY);
+  ShowMouse;
+ End;
+
+ { Clic droit sur la zone de rendu : ouvrir le menu contextuel (demande
+   explicite de l'utilisateur, 2026-09-25). Hors de la zone de rendu
+   (barre d'URL, boutons...), ignore - ces widgets ont deja leur propre
+   comportement natif de clic gauche uniquement. }
+ If ((MouseButton And MOUSE_RIGHT_BUTTON) <> 0) And
+    ((LastMouseButton And MOUSE_RIGHT_BUTTON) = 0) Then Begin
+  If IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
+   HideMouse;
+   OpenContextMenu(BrowserMouseX, BrowserMouseY);
+   ShowMouse;
+  End;
+ End;
+
+ { Completer la sequence DOM mousedown/mouseup. Garder la cible pressee
+   permet a cmItemMouseUp() de retrouver l'entree meme si le rendu du
+   style actif a reconstruit les zones de hit-test entre les deux. }
+ If ((MouseButton And MOUSE_LEFT_BUTTON) = 0) And
+    ((LastMouseButton And MOUSE_LEFT_BUTTON) <> 0) Then Begin
+  If MousePressedInteractiveNode <> Nil Then Begin
+   HideMouse;
+   DispatchInlineEventHandler(MousePressedInteractiveNode, 'onmouseup');
+   MousePressedInteractiveNode := Nil;
+   ShowMouse;
+  End;
+ End;
+
+ { Sauvegarder l'etat du bouton pour la prochaine iteration }
+ LastMouseButton := MouseButton;
+End;
+
+
+
+{ ============================================================ }
+{ FIN bloc importe de BROWSER.PAS                                }
+{ ============================================================ }
+{$H-}
+
 BEGIN
  { Permettre l ouverture de fichiers en lecture seule via Reset(F, 1). }
  { FileMode = 0 = lecture seule (defaut TP est 2 = read/write).        }

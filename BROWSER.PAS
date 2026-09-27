@@ -1239,13 +1239,13 @@ FailedImageURLCount:Integer;
  FavoriteCount: Integer;
 
  { Variables pour l'historique de navigation }
- History: Array[1..MAX_HISTORY] Of String;
- HistoryCount: Integer;
- HistoryIndex: Integer;
+ BrowserHistory: Array[1..MAX_HISTORY] Of String;
+ BrowserHistoryCount: Integer;
+ BrowserHistoryIndex: Integer;
 
  { Variables pour le support de la souris }
  MouseAvailable: Boolean;
- MouseX, MouseY: LongInt;
+ BrowserMouseX, BrowserMouseY: LongInt;
  MouseButton: LongInt;
  LastMouseButton: LongInt;
  MousePressedInteractiveNode: HTMLNodePtr;
@@ -1485,7 +1485,7 @@ End;
   ===================================================== }
 
 { Declaree ici car elle est utilisee par le parseur avant son implementation. }
-Function Trim(Const S: String): String; Forward;
+Function BrowserTrimStr(Const S: String): String; Forward;
 
 { Fonction pour convertir une chaine en minuscules }
 Function HTMLLowerCase(S: String): String;
@@ -1514,7 +1514,7 @@ Begin
  Str(N,S);IntToStr:=S
 End;
 
-Function ExtractFileExt(FileName:String):String;
+Function BrowserExtractFileExt(FileName:String):String;
 Var I,CutPos:Integer;
 Begin
  CutPos:=Length(FileName);
@@ -1522,11 +1522,11 @@ Begin
   If(FileName[I]='?')or(FileName[I]='#')Then Begin CutPos:=I-1;Break End;
  For I:=CutPos downto 1do Begin
   If FileName[I]='.'Then Begin
-   ExtractFileExt:=Copy(FileName,I,CutPos-I+1);Exit
+   BrowserExtractFileExt:=Copy(FileName,I,CutPos-I+1);Exit
   End;
   If(FileName[I]='\')or(FileName[I]='/')Then Break
  End;
- ExtractFileExt:=''
+ BrowserExtractFileExt:=''
 End;
 
 Function BrowserGetTickCount:LongInt;
@@ -2921,7 +2921,7 @@ Begin
    TextContent := HTMLDecodeEntities(
                    HTMLSourceCopy(HTMLSource, StartPos, Pos - StartPos));
    { Ignorer le texte qui ne contient que des espaces }
-   If Trim(TextContent) <> '' Then Begin
+   If BrowserTrimStr(TextContent) <> '' Then Begin
     TextNode := CreateHTMLNode;
     TextNode^.NodeType := HTML_NODE_TEXT;
     TextNode^.Content := TextContent;
@@ -3104,13 +3104,13 @@ End;
 { BOGUE REEL corrige (2026-09-25, meme categorie que SetHTMLSourceFromString }
 { - voir feedback_integer_16bit) : StartPos/EndPos etaient declares Integer, }
 { 16 bits seulement en mode TP (-32768..32767) - une chaine reelle de plus  }
-{ de 32 Ko passee a Trim (appelee depuis ParseHTML sur du contenu HTML/     }
+{ de 32 Ko passee a BrowserTrimStr (appelee depuis ParseHTML sur du contenu HTML/     }
 { texte reel, ex. en cliquant un lien qui charge une page volumineuse)      }
 { deborde silencieusement "EndPos := Length(S)" sans controle de plage,     }
 { mais plante avec le controle de plage actif (signale par l'utilisateur,   }
 { compilation depuis l'IDE Free Pascal). }
-{ Fonction Trim pour supprimer les espaces en debut et fin }
-Function Trim(Const S: String): String;
+{ Fonction BrowserTrimStr pour supprimer les espaces en debut et fin }
+Function BrowserTrimStr(Const S: String): String;
 Var
  StartPos, EndPos: LongInt;
 Begin
@@ -3121,9 +3121,9 @@ Begin
  While (EndPos >= StartPos) And (S[EndPos] In [' ', #9, #10, #13]) Do
   Dec(EndPos);
  If StartPos > EndPos Then
-  Trim := ''
+  BrowserTrimStr := ''
  Else
-  Trim := Copy(S, StartPos, EndPos - StartPos + 1);
+  BrowserTrimStr := Copy(S, StartPos, EndPos - StartPos + 1);
 End;
 
 { Procedure pour initialiser le parseur HTML }
@@ -4027,13 +4027,13 @@ Begin
  While Length(Decls) > 0 Do Begin
   SepPos := Pos(';', Decls);
   If SepPos = 0 Then SepPos := Length(Decls) + 1;
-  Decl := Trim(Copy(Decls, 1, SepPos - 1));
+  Decl := BrowserTrimStr(Copy(Decls, 1, SepPos - 1));
   Delete(Decls, 1, SepPos);
   ColonPos := Pos(':', Decl);
   If ColonPos > 0 Then Begin
-   Name := Trim(Copy(Decl, 1, ColonPos - 1));
+   Name := BrowserTrimStr(Copy(Decl, 1, ColonPos - 1));
    If HTMLLowerCase(Name) = HTMLLowerCase(StyleProp) Then Begin
-    JSGetStyleProp := Trim(Copy(Decl, ColonPos + 1, Length(Decl)));
+    JSGetStyleProp := BrowserTrimStr(Copy(Decl, ColonPos + 1, Length(Decl)));
     Exit;
    End;
   End;
@@ -4053,11 +4053,11 @@ Begin
  While Length(Decls) > 0 Do Begin
   SepPos := Pos(';', Decls);
   If SepPos = 0 Then SepPos := Length(Decls) + 1;
-  Decl := Trim(Copy(Decls, 1, SepPos - 1));
+  Decl := BrowserTrimStr(Copy(Decls, 1, SepPos - 1));
   Delete(Decls, 1, SepPos);
   If Length(Decl) = 0 Then Continue;
   ColonPos := Pos(':', Decl);
-  If ColonPos > 0 Then Name := Trim(Copy(Decl, 1, ColonPos - 1)) Else Name := '';
+  If ColonPos > 0 Then Name := BrowserTrimStr(Copy(Decl, 1, ColonPos - 1)) Else Name := '';
   If HTMLLowerCase(Name) = HTMLLowerCase(StyleProp) Then Begin
    NewStyle := NewStyle + StyleProp + ':' + Value + ';';
    Found := True;
@@ -7063,12 +7063,12 @@ Begin
    Inc(Pos);
   End;
 
-  PropValue := Trim(Copy(S, StartValue, Pos - StartValue));
+  PropValue := BrowserTrimStr(Copy(S, StartValue, Pos - StartValue));
 
   { Verifier !important }
   If System.Pos('!important', HTMLLowerCase(PropValue)) > 0 Then Begin
    Important := True;
-   PropValue := Trim(Copy(PropValue, 1, System.Pos('!important', HTMLLowerCase(PropValue)) - 1));
+   PropValue := BrowserTrimStr(Copy(PropValue, 1, System.Pos('!important', HTMLLowerCase(PropValue)) - 1));
   End;
 
   { Ajouter propriete }
@@ -7308,7 +7308,7 @@ Begin
   StartValue := Pos;
   While (Pos <= Length(StyleAttr)) And Not (StyleAttr[Pos] In [';']) Do
    Inc(Pos);
-  PropValue := Trim(Copy(StyleAttr, StartValue, Pos - StartValue));
+  PropValue := BrowserTrimStr(Copy(StyleAttr, StartValue, Pos - StartValue));
 
   { Appliquer la propriete au style - meme table que les feuilles de
     style (CSSGetPropertyId/CSSAssignProperty), pour que le style
@@ -8399,8 +8399,8 @@ Begin
  If Length(Value) = 0 Then Exit;
 
  { calc(...) : evaluateur dedie ci-dessus (+ - * / et parentheses). }
- If Copy(HTMLLowerCase(Trim(Value)), 1, 5) = 'calc(' Then Begin
-  CSSParseDimension := CSSEvalCalc(Trim(Value), DefaultPx);
+ If Copy(HTMLLowerCase(BrowserTrimStr(Value)), 1, 5) = 'calc(' Then Begin
+  CSSParseDimension := CSSEvalCalc(BrowserTrimStr(Value), DefaultPx);
   Exit;
  End;
 
@@ -8439,7 +8439,7 @@ End;
 Function CSSParseLineHeight(Const Value:String;CurrentPx:Integer):Integer;
 Var S:String;V:Real;Code,R:Integer;
 Begin
- S:=HTMLLowerCase(Trim(Value));
+ S:=HTMLLowerCase(BrowserTrimStr(Value));
  If(S='')Or(S='normal')Then Begin CSSParseLineHeight:=CurrentPx;Exit End;
  If(System.Pos('px',S)=0)And(System.Pos('pt',S)=0)And
    (System.Pos('em',S)=0)And(System.Pos('rem',S)=0)And
@@ -8477,7 +8477,7 @@ Var
  S: String;
 Begin
  CSSParseShorthandSide := DefaultPx;
- S := Trim(Shorthand);
+ S := BrowserTrimStr(Shorthand);
  If Length(S) = 0 Then Exit;
  NTokens := 0;
  TokStart := 1;
@@ -9345,7 +9345,7 @@ Begin
  If Node^.NodeType=HTML_NODE_COMMENT Then Begin
   CSSIgnorableBetweenTableCells:=True;Exit
  End;
- If(Node^.NodeType=HTML_NODE_TEXT)And(Trim(Node^.Content)='')Then
+ If(Node^.NodeType=HTML_NODE_TEXT)And(BrowserTrimStr(Node^.Content)='')Then
   CSSIgnorableBetweenTableCells:=True
 End;
 
@@ -10433,7 +10433,7 @@ Begin
    P2 := P1;
    While (P2 <= Length(ContentValue)) And (ContentValue[P2] <> ')') Do Inc(P2);
    If P2 > Length(ContentValue) Then Continue;
-   URLValue := Trim(Copy(ContentValue, P1, P2 - P1));
+   URLValue := BrowserTrimStr(Copy(ContentValue, P1, P2 - P1));
    If (Length(URLValue) >= 2) And
       (((URLValue[1] = '"') And (URLValue[Length(URLValue)] = '"')) Or
        ((URLValue[1] = '''') And (URLValue[Length(URLValue)] = ''''))) Then
@@ -10814,7 +10814,7 @@ Begin
      End;
      If Col + ColSpan > Length(Widths) Then ColSpan := Length(Widths) - Col;
      If Col <= High(Widths) Then Begin
-      W := GetTextWidth(Trim(DOMGetTextContent(Cell))) + (2 * CellPadding) + 4;
+      W := GetTextWidth(BrowserTrimStr(DOMGetTextContent(Cell))) + (2 * CellPadding) + 4;
       CSSResolveCascade(Cell, CellStyle);
       WidthSpec := CellStyle.Width;
       If Length(WidthSpec) = 0 Then WidthSpec := GetNodeAttribute(Cell, 'width');
@@ -11315,7 +11315,7 @@ Begin
    While BgNode <> Nil Do Begin
     If BgNode^.NodeType = HTML_NODE_ELEMENT Then Begin
      CSSResolveCascade(BgNode, AncestorStyle);
-     BgColorSpec := HTMLLowerCase(Trim(AncestorStyle.BackgroundColor));
+     BgColorSpec := HTMLLowerCase(BrowserTrimStr(AncestorStyle.BackgroundColor));
      If (Length(BgColorSpec) > 0) And (BgColorSpec <> 'inherit') And
         (BgColorSpec <> 'transparent') Then Begin
       TryBgColor := CSSColorToIndex(AncestorStyle.BackgroundColor);
@@ -11616,7 +11616,7 @@ Begin
 End;
 
 { Procedure pour dessiner un champ de saisie text/password }
-Procedure DrawInputField(X, Y, W, H: Integer; Value: String; IsPassword: Boolean);
+Procedure BrowserDrawInputField(X, Y, W, H: Integer; Value: String; IsPassword: Boolean);
 Var
  DisplayText: String;
  I: Integer;
@@ -11644,7 +11644,7 @@ Begin
 End;
 
 { Procedure pour dessiner une case a cocher }
-Procedure DrawCheckbox(X, Y: Integer; Checked: Boolean);
+Procedure BrowserDrawCheckbox(X, Y: Integer; Checked: Boolean);
 Begin
  { Fond blanc }
  SetFillStyle(SolidFill, INPUT_BG_COLOR);
@@ -11663,7 +11663,7 @@ Begin
 End;
 
 { Procedure pour dessiner un bouton radio }
-Procedure DrawRadioButton(X, Y: Integer; Selected: Boolean);
+Procedure BrowserDrawRadioButton(X, Y: Integer; Selected: Boolean);
 Var
  CenterX, CenterY, Radius: Integer;
 Begin
@@ -11683,7 +11683,7 @@ Begin
 End;
 
 { Procedure pour dessiner un bouton }
-Procedure DrawButton(X, Y: Integer; Caption: String);
+Procedure BrowserDrawButton(X, Y: Integer; Caption: String);
 Var
  W, H: Integer;
 Begin
@@ -11748,19 +11748,19 @@ Begin
     (InputType = 'number') Or (InputType = 'search') Or (InputType = 'tel') Or
     (InputType = 'url') Then Begin
   { Champ de saisie }
-  DrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, InputType = 'password');
+  BrowserDrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, InputType = 'password');
   AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + INPUT_WIDTH, Ctx.Y + INPUT_HEIGHT, Node);
   Inc(Ctx.X, INPUT_WIDTH + 6);
  End
  Else If InputType = 'checkbox' Then Begin
   { Case a cocher }
-  DrawCheckbox(Ctx.X, Ctx.Y, Checked);
+  BrowserDrawCheckbox(Ctx.X, Ctx.Y, Checked);
   AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + CHECKBOX_SIZE, Ctx.Y + CHECKBOX_SIZE, Node);
   Inc(Ctx.X, CHECKBOX_SIZE + 6);
  End
  Else If InputType = 'radio' Then Begin
   { Bouton radio }
-  DrawRadioButton(Ctx.X, Ctx.Y, Checked);
+  BrowserDrawRadioButton(Ctx.X, Ctx.Y, Checked);
   AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + RADIO_SIZE, Ctx.Y + RADIO_SIZE, Node);
   Inc(Ctx.X, RADIO_SIZE + 6);
  End
@@ -11771,7 +11771,7 @@ Begin
    Else If InputType = 'reset' Then InputValue := 'Effacer'
    Else InputValue := 'Bouton';
   End;
-  DrawButton(Ctx.X, Ctx.Y, InputValue);
+  BrowserDrawButton(Ctx.X, Ctx.Y, InputValue);
   W := TextWidth(InputValue) + (2 * BUTTON_PADDING_X);
   H := TextHeight(InputValue) + (2 * BUTTON_PADDING_Y);
   AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + W, Ctx.Y + H, Node);
@@ -11782,7 +11782,7 @@ Begin
  End
  Else Begin
   { Type inconnu - afficher comme texte }
-  DrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, False);
+  BrowserDrawInputField(Ctx.X, Ctx.Y, INPUT_WIDTH, INPUT_HEIGHT, InputValue, False);
   AddInteractiveArea(Ctx.X, Ctx.Y, Ctx.X + INPUT_WIDTH, Ctx.Y + INPUT_HEIGHT, Node);
   Inc(Ctx.X, INPUT_WIDTH + 6);
  End;
@@ -11813,7 +11813,7 @@ Begin
  If ButtonText = '' Then ButtonText := 'Bouton';
 
  { Dessiner le bouton }
- DrawButton(Ctx.X, Ctx.Y, ButtonText);
+ BrowserDrawButton(Ctx.X, Ctx.Y, ButtonText);
  W := TextWidth(ButtonText) + (2 * BUTTON_PADDING_X);
  { BOGUE REEL corrige (2026-09-25) : meme trou que RenderTagInput ci-      }
  { dessus (voir sa disclosure) - aucune zone interactive n'etait           }
@@ -12038,7 +12038,7 @@ Begin
    par-dessus le sprite. }
  InvisibleWidth := GetTextWidth(DOMGetTextContent(Node));
  InvisibleHeight := Ctx.LineHeight;
- If Trim(LinkStyle.Opacity) = '0' Then Begin
+ If BrowserTrimStr(LinkStyle.Opacity) = '0' Then Begin
   InvisibleWidth := CSSParseDimension(LinkStyle.Width,
                     InvisibleWidth);
   InvisibleHeight := CSSParseDimension(LinkStyle.Height, InvisibleHeight);
@@ -15959,10 +15959,10 @@ Begin
 End;
 
 { Detecter une adresse PDF (extension .pdf, requete/ancre ignoree - voir
-  ExtractFileExt). }
+  BrowserExtractFileExt). }
 Function IsPdfURL(Const URL: String): Boolean;
 Begin
- IsPdfURL := HTMLLowerCase(ExtractFileExt(URL)) = '.pdf';
+ IsPdfURL := HTMLLowerCase(BrowserExtractFileExt(URL)) = '.pdf';
 End;
 
 Function PDFStrToLongInt(Const S: String): LongInt;
@@ -16489,7 +16489,7 @@ End;
   apres le dernier flux de contenu de la page. }
 Procedure PDFFlushCurrentLine;
 Begin
- If Trim(PDFCurLineText) <> '' Then Begin
+ If BrowserTrimStr(PDFCurLineText) <> '' Then Begin
   If PDFLineCount < PDF_MAX_LINES_PER_PAGE Then Begin
    Inc(PDFLineCount);
    PDFLines[PDFLineCount].LineText := PDFCurLineText;
@@ -17167,7 +17167,7 @@ Begin
   End;
  End;
 
- AllHTML := '<html><head><title>' + FTPEscapeText(ExtractFileExt(BaseURL)) +
+ AllHTML := '<html><head><title>' + FTPEscapeText(BrowserExtractFileExt(BaseURL)) +
   ' - PDF</title></head><body>';
  PageWidth := 612;
 
@@ -19124,20 +19124,20 @@ Begin
  P2 := P1;
  While (P2 <= Length(Bg)) And (Bg[P2] <> ')') Do Inc(P2);
  If P2 > Length(Bg) Then Exit;
- Src := Trim(Copy(Bg, P1, P2 - P1));
+ Src := BrowserTrimStr(Copy(Bg, P1, P2 - P1));
  If (Length(Src) >= 2) And (Src[1] In ['''', '"']) And
     (Src[Length(Src)] = Src[1]) Then
   Src := Copy(Src, 2, Length(Src) - 2);
- If HTMLLowerCase(ExtractFileExt(Src)) <> '.png' Then Exit;
+ If HTMLLowerCase(BrowserExtractFileExt(Src)) <> '.png' Then Exit;
 
  BgX := 0;
  BgY := 0;
- PosText := Trim(Style.BackgroundPosition);
+ PosText := BrowserTrimStr(Style.BackgroundPosition);
  SpacePos := System.Pos(' ', PosText);
  If SpacePos > 0 Then Begin
   Token := Copy(PosText, 1, SpacePos - 1);
   Delete(PosText, 1, SpacePos);
-  PosText := Trim(PosText);
+  PosText := BrowserTrimStr(PosText);
  End Else Begin
   Token := PosText;
   PosText := '0';
@@ -20037,8 +20037,8 @@ End;
   ===================================================== }
 
 { Declarations forward pour l'historique de navigation }
-Procedure GoBack; Forward;
-Procedure GoForward; Forward;
+Procedure BrowserGoBack; Forward;
+Procedure BrowserGoForward; Forward;
 
 { Procedure pour dessiner la barre d'URL }
 Procedure DrawURLBar;
@@ -20143,7 +20143,7 @@ End;
 Procedure HandleBackButtonClick;
 Begin
  If Not BackButtonEnabled Then Exit;
- GoBack;
+ BrowserGoBack;
 End;
 
 { Procedure pour initialiser le bouton Precedent }
@@ -20201,7 +20201,7 @@ End;
 Procedure HandleForwardButtonClick;
 Begin
  If Not ForwardButtonEnabled Then Exit;
- GoForward;
+ BrowserGoForward;
 End;
 
 { Procedure pour initialiser le bouton Suivant }
@@ -20927,13 +20927,13 @@ Begin
  OutTextXY(OriginX + 10, OriginY + 65, '(cliquez ou appuyez sur une touche pour fermer)');
 
  DoneWaiting := False;
- If MouseAvailable Then GetMouseState(MouseX, MouseY, LastMouseButton);
+ If MouseAvailable Then GetMouseState(BrowserMouseX, BrowserMouseY, LastMouseButton);
  Repeat
   If KeyPressed Then Begin
    DismissKey := ReadKey;
    DoneWaiting := True;
   End Else If MouseAvailable Then Begin
-   GetMouseState(MouseX, MouseY, MouseButton);
+   GetMouseState(BrowserMouseX, BrowserMouseY, MouseButton);
    If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then
     DoneWaiting := True;
    LastMouseButton := MouseButton;
@@ -20992,13 +20992,13 @@ Begin
  QRDrawModules(M, Size, OriginX + ((BoxW - GridW) Div 2), OriginY + 24, Scale);
 
  DoneWaiting := False;
- If MouseAvailable Then GetMouseState(MouseX, MouseY, LastMouseButton);
+ If MouseAvailable Then GetMouseState(BrowserMouseX, BrowserMouseY, LastMouseButton);
  Repeat
   If KeyPressed Then Begin
    DismissKey := ReadKey;
    DoneWaiting := True;
   End Else If MouseAvailable Then Begin
-   GetMouseState(MouseX, MouseY, MouseButton);
+   GetMouseState(BrowserMouseX, BrowserMouseY, MouseButton);
    If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then
     DoneWaiting := True;
    LastMouseButton := MouseButton;
@@ -21042,19 +21042,19 @@ Begin
  DrawGraphDialogButton(NoX,Y+70,75,'Non');
  If MouseAvailable Then ShowMouse;
  Done:=False;Answer:=False;
- If MouseAvailable Then GetMouseState(MouseX,MouseY,LastMouseButton);
+ If MouseAvailable Then GetMouseState(BrowserMouseX,BrowserMouseY,LastMouseButton);
  Repeat
   If KeyPressed Then Begin
    K:=ReadKey;
    If K=#13Then Begin Answer:=True;Done:=True End
    Else If K=#27Then Done:=True
   End Else If MouseAvailable Then Begin
-   GetMouseState(MouseX,MouseY,MouseButton);
+   GetMouseState(BrowserMouseX,BrowserMouseY,MouseButton);
    If((MouseButton and MOUSE_LEFT_BUTTON)<>0)and
      ((LastMouseButton and MOUSE_LEFT_BUTTON)=0)Then Begin
-    If(MouseY>=Y+70)and(MouseY<=Y+92)Then Begin
-     If(MouseX>=YesX)and(MouseX<=YesX+75)Then Begin Answer:=True;Done:=True End
-     Else If(MouseX>=NoX)and(MouseX<=NoX+75)Then Done:=True
+    If(BrowserMouseY>=Y+70)and(BrowserMouseY<=Y+92)Then Begin
+     If(BrowserMouseX>=YesX)and(BrowserMouseX<=YesX+75)Then Begin Answer:=True;Done:=True End
+     Else If(BrowserMouseX>=NoX)and(BrowserMouseX<=NoX+75)Then Done:=True
     End
    End;
    LastMouseButton:=MouseButton
@@ -21072,7 +21072,7 @@ Begin
   S:=Copy(S,I+1,Length(S));Break
  End;
  If S=''Then S:='index.html';
- If ExtractFileExt(S)=''Then S:=S+'.html';
+ If BrowserExtractFileExt(S)=''Then S:=S+'.html';
  For I:=1to Length(S)do If S[I]in['\','/',':','*','?','"','<','>','|']Then S[I]:='_';
  BrowserDefaultSaveName:=S
 End;
@@ -21090,7 +21090,7 @@ Begin
  OkX:=X+W-190;CancelX:=X+W-95;
  FileName:=DefaultName;GetDir(0,CurrentDir);
  Done:=False;Accepted:=False;NeedRedraw:=True;
- If MouseAvailable Then GetMouseState(MouseX,MouseY,LastMouseButton);
+ If MouseAvailable Then GetMouseState(BrowserMouseX,BrowserMouseY,LastMouseButton);
  { L'action du menu contextuel est appelee pendant que ProcessMouseInput
    a masque le curseur. Retablir d'abord ce niveau, puis entourer chaque
    redessin Graph par HideMouse/ShowMouse. }
@@ -21129,13 +21129,13 @@ Begin
     FileName:=FileName+K;NeedRedraw:=True
    End
   End Else If MouseAvailable Then Begin
-   GetMouseState(MouseX,MouseY,MouseButton);
+   GetMouseState(BrowserMouseX,BrowserMouseY,MouseButton);
    If((MouseButton and MOUSE_LEFT_BUTTON)<>0)and
      ((LastMouseButton and MOUSE_LEFT_BUTTON)=0)Then Begin
-    If(MouseY>=Y+112)and(MouseY<=Y+134)Then Begin
-     If(MouseX>=OkX)and(MouseX<=OkX+80)Then Begin
+    If(BrowserMouseY>=Y+112)and(BrowserMouseY<=Y+134)Then Begin
+     If(BrowserMouseX>=OkX)and(BrowserMouseX<=OkX+80)Then Begin
       Accepted:=FileName<>'';Done:=Accepted
-     End Else If(MouseX>=CancelX)and(MouseX<=CancelX+80)Then Done:=True
+     End Else If(BrowserMouseX>=CancelX)and(BrowserMouseX<=CancelX+80)Then Done:=True
     End
    End;
    LastMouseButton:=MouseButton
@@ -21229,7 +21229,7 @@ End;
 Function DevToolsURLType(Const URL:String):String;
 Var E:String;
 Begin
- E:=HTMLLowerCase(ExtractFileExt(URL));
+ E:=HTMLLowerCase(BrowserExtractFileExt(URL));
  If (E='.png')Or(E='.gif')Or(E='.jpg')Or(E='.jpeg')Or(E='.bmp')Or(E='.svg')Then DevToolsURLType:='image'
  Else If E='.css'Then DevToolsURLType:='stylesheet'
  Else If E='.js'Then DevToolsURLType:='script'
@@ -21341,7 +21341,7 @@ Function DevToolsNodeCaption(Node:HTMLNodePtr):String;
 Var S,V:String;
 Begin
  If Node=Nil Then Begin DevToolsNodeCaption:='(aucun element)';Exit End;
- If Node^.NodeType=HTML_NODE_TEXT Then Begin DevToolsNodeCaption:='#text '+Copy(Trim(Node^.Content),1,45);Exit End;
+ If Node^.NodeType=HTML_NODE_TEXT Then Begin DevToolsNodeCaption:='#text '+Copy(BrowserTrimStr(Node^.Content),1,45);Exit End;
  S:='<'+Node^.TagName;V:=GetNodeAttribute(Node,'id');If V<>''Then S:=S+'#'+V;
  V:=GetNodeAttribute(Node,'class');If V<>''Then S:=S+'.'+V;
  DevToolsNodeCaption:=Copy(S+'>',1,75)
@@ -21464,7 +21464,7 @@ Begin
   End;
   Inc(Lines)
  End Else If Node^.NodeType=HTML_NODE_TEXT Then Begin
-  S:=Trim(Node^.Content);
+  S:=BrowserTrimStr(Node^.Content);
   If S<>''Then Begin
    LineWidth:=8+Depth*16+DevToolsBoundedTextWidth(S)+TextWidth('""');
    If LineWidth>30000Then LineWidth:=30000;
@@ -21478,7 +21478,7 @@ Begin
    Inc(Lines)
   End
  End Else If Node^.NodeType=HTML_NODE_COMMENT Then Begin
-  S:='<!-- '+Trim(Node^.Content)+' -->';
+  S:='<!-- '+BrowserTrimStr(Node^.Content)+' -->';
   LineWidth:=8+Depth*16+DevToolsBoundedTextWidth(S);
   If LineWidth>30000Then LineWidth:=30000;
   If LineWidth>DevInspectorContentWidth Then DevInspectorContentWidth:=LineWidth;
@@ -21923,7 +21923,7 @@ Begin
  End;
 End;
 
-Procedure DrawContextMenu;
+Procedure BrowserDrawContextMenu;
 Var
  Y, I, TextY: Integer;
 Begin
@@ -21966,7 +21966,7 @@ Begin
  If ContextMenuY < RENDER_AREA_Y Then ContextMenuY := RENDER_AREA_Y;
  ContextMenuHoverIndex := 0;
  ContextMenuOpen := True;
- DrawContextMenu;
+ BrowserDrawContextMenu;
 End;
 
 { Met a jour la surbrillance survolee ; redessine seulement si elle a
@@ -21978,7 +21978,7 @@ Begin
  NewHover := ContextMenuItemAt(PX, PY);
  If NewHover <> ContextMenuHoverIndex Then Begin
   ContextMenuHoverIndex := NewHover;
-  DrawContextMenu;
+  BrowserDrawContextMenu;
  End;
 End;
 
@@ -22259,13 +22259,13 @@ End;
 { Fonction pour verifier si on peut revenir en arriere dans l'historique }
 Function CanGoBack: Boolean;
 Begin
- CanGoBack := HistoryIndex > 1;
+ CanGoBack := BrowserHistoryIndex > 1;
 End;
 
 { Fonction pour verifier si on peut avancer dans l'historique }
 Function CanGoForward: Boolean;
 Begin
- CanGoForward := HistoryIndex < HistoryCount;
+ CanGoForward := BrowserHistoryIndex < BrowserHistoryCount;
 End;
 
 { Procedure pour mettre a jour l'etat des boutons de navigation }
@@ -22386,7 +22386,7 @@ Begin
   { Traiter le texte avant la balise }
   If Pos > StartPos Then Begin
    TextContent := HTMLDecodeEntities(Copy(S, StartPos, Pos - StartPos));
-   If Trim(TextContent) <> '' Then Begin
+   If BrowserTrimStr(TextContent) <> '' Then Begin
     TextNode := CreateHTMLNode;
     TextNode^.NodeType := HTML_NODE_TEXT;
     TextNode^.Content := TextContent;
@@ -22936,7 +22936,7 @@ End;
 Function XMLStripCDATA(Const S:String):String;
 Var T:String;
 Begin
- T:=Trim(S);
+ T:=BrowserTrimStr(S);
  If(Length(T)>=12)And(Copy(T,1,9)='<![CDATA[')And
    (Copy(T,Length(T)-2,3)=']]>')Then
   T:=Copy(T,10,Length(T)-12);
@@ -22974,7 +22974,7 @@ Begin
   Else If S[I]='>'Then InTag:=False
   Else If Not InTag Then R:=R+S[I]
  End;
- XMLPlainText:=Trim(HTMLDecodeEntities(R))
+ XMLPlainText:=BrowserTrimStr(HTMLDecodeEntities(R))
 End;
 
 Function IsRSSDocument(Const S:String):Boolean;
@@ -23348,23 +23348,23 @@ Var
 Begin
  { Si on navigue depuis un point intermediaire de l'historique, }
  { on supprime tout ce qui est apres la position actuelle }
- If HistoryIndex < HistoryCount Then Begin
-  HistoryCount := HistoryIndex;
+ If BrowserHistoryIndex < BrowserHistoryCount Then Begin
+  BrowserHistoryCount := BrowserHistoryIndex;
  End;
 
  { Ajouter la nouvelle URL a l'historique si l'historique n'est pas plein }
- If HistoryCount < MAX_HISTORY Then Begin
-  Inc(HistoryCount);
-  History[HistoryCount] := URL;
-  HistoryIndex := HistoryCount;
+ If BrowserHistoryCount < MAX_HISTORY Then Begin
+  Inc(BrowserHistoryCount);
+  BrowserHistory[BrowserHistoryCount] := URL;
+  BrowserHistoryIndex := BrowserHistoryCount;
  End
   Else
  Begin
   { Si l'historique est plein, decaler tout vers le haut et ajouter a la fin }
   For I := 1 To MAX_HISTORY - 1 Do
-   History[I] := History[I + 1];
-  History[MAX_HISTORY] := URL;
-  HistoryIndex := MAX_HISTORY;
+   BrowserHistory[I] := BrowserHistory[I + 1];
+  BrowserHistory[MAX_HISTORY] := URL;
+  BrowserHistoryIndex := MAX_HISTORY;
  End;
 
  { Mettre a jour l'URL courante }
@@ -23377,11 +23377,11 @@ Begin
 End;
 
 { Procedure pour aller a la page precedente }
-Procedure GoBack;
+Procedure BrowserGoBack;
 Begin
  If CanGoBack Then Begin
-  Dec(HistoryIndex);
-  CurrentURL := History[HistoryIndex];
+  Dec(BrowserHistoryIndex);
+  CurrentURL := BrowserHistory[BrowserHistoryIndex];
   URLCursorPos := Length(CurrentURL);
   DrawURLBar;
   DrawFavoriteButton;
@@ -23391,11 +23391,11 @@ Begin
 End;
 
 { Procedure pour aller a la page suivante }
-Procedure GoForward;
+Procedure BrowserGoForward;
 Begin
  If CanGoForward Then Begin
-  Inc(HistoryIndex);
-  CurrentURL := History[HistoryIndex];
+  Inc(BrowserHistoryIndex);
+  CurrentURL := BrowserHistory[BrowserHistoryIndex];
   URLCursorPos := Length(CurrentURL);
   DrawURLBar;
   DrawFavoriteButton;
@@ -23407,20 +23407,20 @@ End;
 { Procedure pour initialiser l'historique }
 Procedure InitHistory;
 Begin
- HistoryCount := 0;
- HistoryIndex := 0;
+ BrowserHistoryCount := 0;
+ BrowserHistoryIndex := 0;
 End;
 
 { Fonction pour obtenir le nombre d'elements dans l'historique }
 Function GetHistoryCount: Integer;
 Begin
- GetHistoryCount := HistoryCount;
+ GetHistoryCount := BrowserHistoryCount;
 End;
 
 { Fonction pour obtenir la position actuelle dans l'historique }
 Function GetHistoryIndex: Integer;
 Begin
- GetHistoryIndex := HistoryIndex;
+ GetHistoryIndex := BrowserHistoryIndex;
 End;
 
 { Procedure pour verifier si un clic est dans la barre d'URL }
@@ -23447,7 +23447,7 @@ Begin
    { URL inchangee depuis la page affichee : simple actualisation, sans
      empiler une nouvelle entree d'historique (comme HandleRefreshButtonClick).
      URL modifiee (ou aucun historique encore) : vraie navigation. }
-   If (HistoryCount > 0) And (CurrentURL = History[HistoryIndex]) Then
+   If (BrowserHistoryCount > 0) And (CurrentURL = BrowserHistory[BrowserHistoryIndex]) Then
     DisplayCurrentTarget
    Else
     NavigateTo(CurrentURL);
@@ -23850,8 +23850,8 @@ Begin
   SetMouseHorizontalBounds(0, GetMaxX);
   SetMouseVerticalBounds(0, GetMaxY);
   SetMousePosition(GetMaxX Div 2, GetMaxY Div 2);
-  MouseX := GetMaxX Div 2;
-  MouseY := GetMaxY Div 2;
+  BrowserMouseX := GetMaxX Div 2;
+  BrowserMouseY := GetMaxY Div 2;
   MouseButton := 0;
   LastMouseButton := 0;
   MousePressedInteractiveNode := Nil;
@@ -24167,15 +24167,15 @@ Begin
   FormNode := FindEnclosingForm(Node);
   If (FormNode <> Nil) And (Length(GroupName) > 0) Then UncheckSameGroup(FormNode);
   DOMSetAttribute(Node, 'checked', 'checked');
-  DrawRadioButton(WidgetX, WidgetY, True);
+  BrowserDrawRadioButton(WidgetX, WidgetY, True);
  End Else Begin
   { Case a cocher : bascule simple. }
   If GetNodeAttribute(Node, 'checked') <> '' Then Begin
    DOMRemoveAttribute(Node, 'checked');
-   DrawCheckbox(WidgetX, WidgetY, False);
+   BrowserDrawCheckbox(WidgetX, WidgetY, False);
   End Else Begin
    DOMSetAttribute(Node, 'checked', 'checked');
-   DrawCheckbox(WidgetX, WidgetY, True);
+   BrowserDrawCheckbox(WidgetX, WidgetY, True);
   End;
  End;
 End;
@@ -24200,7 +24200,7 @@ Begin
  FocusedInputCursorPos := (ClickX - FieldX - INPUT_PADDING) Div 8;
  If FocusedInputCursorPos > Length(CurVal) Then FocusedInputCursorPos := Length(CurVal);
  If FocusedInputCursorPos < 0 Then FocusedInputCursorPos := 0;
- DrawInputField(FieldX, FieldY, INPUT_WIDTH, INPUT_HEIGHT, CurVal, FocusedInputIsPassword);
+ BrowserDrawInputField(FieldX, FieldY, INPUT_WIDTH, INPUT_HEIGHT, CurVal, FocusedInputIsPassword);
  SetColor(INPUT_TEXT_COLOR);
  Line(FieldX + INPUT_PADDING + (FocusedInputCursorPos * 8), FieldY + 2,
       FieldX + INPUT_PADDING + (FocusedInputCursorPos * 8), FieldY + INPUT_HEIGHT - 2);
@@ -24211,7 +24211,7 @@ End;
 Procedure ClearInputFocus;
 Begin
  If FocusedInputNode <> Nil Then
-  DrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
+  BrowserDrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
    GetNodeAttribute(FocusedInputNode, 'value'), FocusedInputIsPassword);
  FocusedInputNode := Nil;
 End;
@@ -24223,7 +24223,7 @@ Var CurVal: String;
 Begin
  If FocusedInputNode = Nil Then Exit;
  CurVal := GetNodeAttribute(FocusedInputNode, 'value');
- DrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
+ BrowserDrawInputField(FocusedInputX, FocusedInputY, INPUT_WIDTH, INPUT_HEIGHT,
   CurVal, FocusedInputIsPassword);
  SetColor(INPUT_TEXT_COLOR);
  Line(FocusedInputX + INPUT_PADDING + (FocusedInputCursorPos * 8), FocusedInputY + 2,
@@ -24447,8 +24447,8 @@ Var
  CurrentNode, PreviousNode: HTMLNodePtr;
  CurrentAreaIndex: Integer;
 Begin
- If IsInRenderArea(MouseX, MouseY) Then Begin
-  CurrentAreaIndex := FindInteractiveAreaAtPosition(MouseX, MouseY);
+ If IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
+  CurrentAreaIndex := FindInteractiveAreaAtPosition(BrowserMouseX, BrowserMouseY);
   If CurrentAreaIndex > 0 Then
    CurrentNode := InteractiveAreas[CurrentAreaIndex].Node
   Else
@@ -24504,7 +24504,7 @@ Begin
  If Not MouseAvailable Then Exit;
 
  { Obtenir l'etat actuel de la souris }
- GetMouseState(MouseX, MouseY, MouseButton);
+ GetMouseState(BrowserMouseX, BrowserMouseY, MouseButton);
 
  { Le menu contextuel, pendant qu'il est ouvert, remplace entierement le
    survol/clic normal de la page (sinon un survol de lien dessous
@@ -24512,11 +24512,11 @@ Begin
    HandleMouseClick (voir sa propre verification ContextMenuOpen en
    tout debut de fonction, qui l'execute puis le referme). }
  If ContextMenuOpen Then Begin
-  UpdateContextMenuHover(MouseX, MouseY);
+  UpdateContextMenuHover(BrowserMouseX, BrowserMouseY);
   If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
      ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
    HideMouse;
-   HandleMouseClick(MouseX, MouseY);
+   HandleMouseClick(BrowserMouseX, BrowserMouseY);
    ShowMouse;
   End;
   LastMouseButton := MouseButton;
@@ -24529,7 +24529,7 @@ Begin
  If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
     ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
   HideMouse;
- HandleMouseClick(MouseX, MouseY);
+ HandleMouseClick(BrowserMouseX, BrowserMouseY);
   ShowMouse;
  End;
 
@@ -24539,9 +24539,9 @@ Begin
    comportement natif de clic gauche uniquement. }
  If ((MouseButton And MOUSE_RIGHT_BUTTON) <> 0) And
     ((LastMouseButton And MOUSE_RIGHT_BUTTON) = 0) Then Begin
-  If IsInRenderArea(MouseX, MouseY) Then Begin
+  If IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
    HideMouse;
-   OpenContextMenu(MouseX, MouseY);
+   OpenContextMenu(BrowserMouseX, BrowserMouseY);
    ShowMouse;
   End;
  End;
@@ -24758,11 +24758,11 @@ BEGIN
     ProcessMouseHover/DispatchInlineEventHandler sur un contenu
     genere dynamiquement par un script externe. }
   For ScrollTestI := 1 To InteractiveAreaCount Do Begin
-   MouseX := (InteractiveAreas[ScrollTestI].X1 + InteractiveAreas[ScrollTestI].X2) Div 2;
-   MouseY := (InteractiveAreas[ScrollTestI].Y1 + InteractiveAreas[ScrollTestI].Y2) Div 2;
+   BrowserMouseX := (InteractiveAreas[ScrollTestI].X1 + InteractiveAreas[ScrollTestI].X2) Div 2;
+   BrowserMouseY := (InteractiveAreas[ScrollTestI].Y1 + InteractiveAreas[ScrollTestI].Y2) Div 2;
    ProcessMouseHover;
-   MouseX := -100;
-   MouseY := -100;
+   BrowserMouseX := -100;
+   BrowserMouseY := -100;
    ProcessMouseHover;
   End;
   { Valider aussi les operations executees uniquement par le mode normal. }
@@ -24809,14 +24809,14 @@ BEGIN
     survolee - qui provoquait un EAccessViolation dans GetNodeAttribute
     (HoveredInteractiveNode pointait vers de la memoire deja liberee). }
   If InteractiveAreaCount >= 1 Then Begin
-   MouseX := (InteractiveAreas[1].X1 + InteractiveAreas[1].X2) Div 2;
-   MouseY := (InteractiveAreas[1].Y1 + InteractiveAreas[1].Y2) Div 2;
+   BrowserMouseX := (InteractiveAreas[1].X1 + InteractiveAreas[1].X2) Div 2;
+   BrowserMouseY := (InteractiveAreas[1].Y1 + InteractiveAreas[1].Y2) Div 2;
    ProcessMouseHover;
    NavigateTo(CurrentURL);
-   MouseX := -100;
-   MouseY := -100;
+   BrowserMouseX := -100;
+   BrowserMouseY := -100;
    ProcessMouseHover;
-   HandleMouseClick(MouseX, MouseY);
+   HandleMouseClick(BrowserMouseX, BrowserMouseY);
   End;
   WriteConsoleLine('Build ' + BROWSER_BUILD_ID +
                    ': chargement, rendu et interface termines sans exception.');
