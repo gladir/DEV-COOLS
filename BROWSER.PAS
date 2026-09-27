@@ -9312,6 +9312,7 @@ Var
  OldMaxX, OldTableCellContentX, OldTableCellWidth: Integer;
  OldTableCellPadding, OldTableCellSpacing, OldTableColIndex: Integer;
  OldTableRowY, OldTableRowHeight, OldTableCellX, OldTableX: Integer;
+ OldLineHeight: Integer;
 Begin
  RowY := Ctx.Y;
  RowStartX := Ctx.X;
@@ -9330,6 +9331,7 @@ Begin
  OldTableRowHeight := Ctx.TableRowHeight;
  OldTableCellX := Ctx.TableCellX;
  OldTableX := Ctx.TableX;
+ OldLineHeight := Ctx.LineHeight;
 
  Ctx.InTable := True;
  Ctx.TableDrawBorders := False;
@@ -9358,6 +9360,12 @@ Begin
 
   Ctx.X := CellX + PadLeft;
   Ctx.Y := RowY;
+  { Chaque cellule implicite commence avec sa propre boite de ligne.
+    Sans cette remise a zero, une image haute dans la premiere cellule
+    imposait sa hauteur de ligne aux sections et DIV suivants. Chaque saut
+    de bloc ajoutait alors de nouveau cette hauteur. Une rangee CSS mesure
+    ses cellules independamment et ne conserve que leur hauteur maximale. }
+  Ctx.LineHeight := RENDER_LINE_HEIGHT;
   Ctx.MaxX := CellX + CellWidth;
   Ctx.TableCellX := CellX;
   Ctx.TableCellWidth := CellWidth;
@@ -9385,6 +9393,7 @@ Begin
  Ctx.TableRowHeight := OldTableRowHeight;
  Ctx.TableCellX := OldTableCellX;
  Ctx.TableX := OldTableX;
+ Ctx.LineHeight := OldLineHeight;
 
  Ctx.X := RowStartX;
  Ctx.Y := MaxRowBottom;
@@ -9515,6 +9524,11 @@ Begin
   TableMeasurePass := OldMeasurePass;
   AbsolutePositionedCount := SavedAbsoluteCount;
   BoxEndY := MeasureCtx.Y + PaddingBottomPx;
+  { height s'applique aussi aux DIV contenant des enfants. Auparavant cette
+    contrainte n'etait reservee qu'aux sprites vides. }
+  If (DivStyle.Height <> '') And
+     (BoxEndY < BoxStartY + CSSParseDimension(DivStyle.Height, 0)) Then
+   BoxEndY := BoxStartY + CSSParseDimension(DivStyle.Height, 0);
   If(DivStyle.MinHeight<>'')And
     (BoxEndY<BoxStartY+CSSParseDimension(DivStyle.MinHeight,0))Then
    BoxEndY:=BoxStartY+CSSParseDimension(DivStyle.MinHeight,0);
@@ -9533,8 +9547,9 @@ Begin
 
  RenderChildren(Node, Ctx);
 
- { Un DIV sprite vide doit quand meme reserver sa hauteur CSS. }
- If WantsBlock And (Node^.FirstChild = Nil) And
+ { Une hauteur CSS explicite reserve la hauteur de toute boite DIV; son
+   contenu peut encore l'agrandir si necessaire. }
+ If WantsBlock And
     (CSSParseDimension(DivStyle.Height, 0) > 0) And
     (Ctx.Y < BoxStartY + CSSParseDimension(DivStyle.Height, 0)) Then
   Ctx.Y := BoxStartY + CSSParseDimension(DivStyle.Height, 0);
