@@ -9116,7 +9116,11 @@ Begin
  { Fond du mot, si different du fond de page par defaut }
  If Ctx.BgColor <> RENDER_BG_COLOR Then Begin
   SetFillStyle(SolidFill, Ctx.BgColor);
-  Bar(Ctx.X, Ctx.Y, Ctx.X + WordWidth, Ctx.Y + Ctx.LineHeight - 2);
+  { Les coordonnees de Bar sont inclusives. X+WordWidth peignait donc
+    un pixel dans l'avance du mot suivant et pouvait effacer le dernier
+    pixel d'un lien ou le premier pixel du texte qui le suivait. }
+  If WordWidth>0Then
+   Bar(Ctx.X,Ctx.Y,Ctx.X+WordWidth-1,Ctx.Y+Ctx.LineHeight-2);
  End;
 
  SetColor(Ctx.TextColor);
@@ -11946,6 +11950,7 @@ Var
  LinkCountBefore: Integer;
  LinkStyle: DOMStyle;
  InvisibleWidth, InvisibleHeight: Integer;
+ LinkMinEnd:Integer;
 Begin
  { Obtenir les attributs href et title }
  Href := GetNodeAttribute(Node, 'href');
@@ -11998,6 +12003,7 @@ Begin
  { Memoriser la position de debut }
  StartX := Ctx.X;
  StartY := Ctx.Y;
+ LinkMinEnd:=StartX+GetTextWidth(DOMGetTextContent(Node));
  LinkCountBefore := LinkCount;
 
  { Appliquer la couleur du lien }
@@ -12017,6 +12023,13 @@ Begin
    accumules et conserve X/Y pour la suite du contenu inline. }
  If JustifyWordCount > 0 Then
   FlushJustifiedLine(Ctx, False);
+
+ { Une balise A peut traverser plusieurs balises de style (I/B/SPAN) et
+   une vidange du tampon justifie. Son avance ne doit jamais devenir plus
+   petite que celle de son texte brut. Garder aussi un pixel de garde
+   entre deux runs de styles distincts pour le trait gras/souligne du BGI. }
+ If(Ctx.Y=StartY)And(Ctx.X<LinkMinEnd)Then Ctx.X:=LinkMinEnd;
+ If(Ctx.Y=StartY)And(Node^.NextSibling<>Nil)Then Inc(Ctx.X);
 
  { Calculer la position de fin }
  EndX := Ctx.X;
