@@ -1977,6 +1977,7 @@ Const
  WIN95_MAX_TASKS    = 10;
  WIN95_TASK_NOTEPAD = 1;
  WIN95_TASK_MSDOS   = 2;
+ WIN95_TASK_BROWSER = 3; { phase G - onglet WK_BROWSER isole, meme motif que Bloc-notes }
  WIN95_TASKBTN_W    = 140;
  { Isolation des taches (2026-09-18, demande explicite de l utilisateur : }
  { "comme le ferait Windows 95" - cliquer une tache = SEULE sa fenetre est }
@@ -13783,6 +13784,13 @@ Procedure Win95OnEditorWindowClosing(Index: Integer); Forward;
 { plus bas. }
 Function Win95ActiveEditorIsIsolated: Boolean; Forward;
 Procedure Win95DockActiveEditor; Forward;
+Function Win95ActiveBrowserIsIsolated: Boolean; Forward;
+{ Equivalents Navigateur Web (phase G) - implementation reelle DANS le bloc
+  importe de BROWSER.PAS (touchent ActiveBrowserState.X/Y/Width/Height,
+  type non visible ici), meme raison que CreateBrowserWindow/DrawBrowserTab
+  plus haut. }
+Procedure Win95DockActiveBrowser; Forward;
+Procedure Win95IsolateActiveBrowser; Forward;
 Procedure ClearExplorer(Var Exp: TSolutionExplorer); Forward;
 Procedure UpdatePropsPanelForExplorerNode(Var Exp: TSolutionExplorer;
  NodeIdx: Integer); Forward;
@@ -18786,8 +18794,11 @@ Begin
   Exit;
  { /TASKBARWIN95 : voir la note pres du Forward de Win95DockActiveEditor -  }
  { redocker AVANT de sauvegarder, jamais figer une geometrie plein ecran   }
- { dans le stockage persistant Editors[]^. }
+ { dans le stockage persistant Editors[]^. Meme garde pour le navigateur   }
+ { (phase G) - BrowserTabs[]^ ne doit jamais non plus figer une geometrie  }
+ { plein ecran. }
  If Win95ActiveEditorIsIsolated Then Win95DockActiveEditor;
+ If Win95ActiveBrowserIsIsolated Then Win95DockActiveBrowser;
  If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
   If HexEditors[WinMgr.ActiveIdx] <> Nil Then
    HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
@@ -19055,17 +19066,21 @@ End;
 { le menu Demarrer > Bloc-notes est une application Windows 95 ISOLEE, pas  }
 { un document de "Visual Studio" - NextWindow/PreviousWindow/              }
 { DrawWindowTabs/TabHitTest/TabCloseHitTest l ignorent tous desormais       }
-{ (seule Win95DrawIsolatedView/Win95DrawNotepadChrome la montre). }
-Function Win95IsNotepadWindow(Idx: Integer): Boolean;
+{ (seule Win95DrawIsolatedView/Win95DrawNotepadChrome la montre).
+  Renommee Win95IsIsolatedTaskWindow (phase G, ex-Win95IsNotepadWindow) :
+  couvre maintenant aussi WIN95_TASK_BROWSER (onglet Navigateur Web ouvert
+  depuis le menu Demarrer), meme motif exact que Bloc-notes. }
+Function Win95IsIsolatedTaskWindow(Idx: Integer): Boolean;
 Var
  I: Integer;
 Begin
- Win95IsNotepadWindow := False;
+ Win95IsIsolatedTaskWindow := False;
  If Not Opts.TaskbarWin95 Then Exit;
  For I := 1 To WIN95_MAX_TASKS Do
-  If Win95TaskActive[I] And (Win95TaskKind[I] = WIN95_TASK_NOTEPAD) And
+  If Win95TaskActive[I] And
+     ((Win95TaskKind[I] = WIN95_TASK_NOTEPAD) Or (Win95TaskKind[I] = WIN95_TASK_BROWSER)) And
      (Win95TaskWinIdx[I] = Idx) Then Begin
-   Win95IsNotepadWindow := True;
+   Win95IsIsolatedTaskWindow := True;
    Exit;
   End;
 End;
@@ -19087,7 +19102,7 @@ Begin
  I := StartIdx;
  Repeat
   I := (I + 1) Mod WinMgr.WinCount;
-  If Not Win95IsNotepadWindow(I) Then Begin
+  If Not Win95IsIsolatedTaskWindow(I) Then Begin
    WinMgr.ActiveIdx := I;
    SyncActiveWindowIn(WinMgr.ActiveIdx);
    Exit;
@@ -19110,7 +19125,7 @@ Begin
  I := StartIdx;
  Repeat
   If I > 0 Then Dec(I) Else I := WinMgr.WinCount - 1;
-  If Not Win95IsNotepadWindow(I) Then Begin
+  If Not Win95IsIsolatedTaskWindow(I) Then Begin
    WinMgr.ActiveIdx := I;
    SyncActiveWindowIn(WinMgr.ActiveIdx);
    Exit;
@@ -19151,7 +19166,7 @@ Begin
  Bar(0, TY, GetScreenWidth - EXPLORER_WIDTH - 1, TY + TAB_HEIGHT - 1);
  TX := 0 - WinMgr.TabScrollX;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If Win95IsNotepadWindow(I) Then Continue;
+  If Win95IsIsolatedTaskWindow(I) Then Continue;
   TW := TabWidth(I);
   If (TX + TW > 0) And (TX < GetScreenWidth - EXPLORER_WIDTH) Then Begin
    { Fond de l onglet }
@@ -19198,7 +19213,7 @@ Begin
  If MX < 0 Then Exit;
  TX := 0 - WinMgr.TabScrollX;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If Win95IsNotepadWindow(I) Then Continue;
+  If Win95IsIsolatedTaskWindow(I) Then Continue;
   TW := TabWidth(I);
   If (MX >= TX) And (MX < TX + TW) Then Begin
    TabHitTest := I;
@@ -19220,7 +19235,7 @@ Begin
  TY := MENUBAR_HEIGHT + TOOLBAR_HEIGHT;
  TX := 0 - WinMgr.TabScrollX;
  For I := 0 To TabIdx - 1 Do Begin
-  If Win95IsNotepadWindow(I) Then Continue;
+  If Win95IsIsolatedTaskWindow(I) Then Continue;
   TX := TX + TabWidth(I);
  End;
  TW := TabWidth(TabIdx);
@@ -19256,6 +19271,17 @@ Begin
     DrawWindowTabs;
    End Else Begin
     ActivateWindow(Hit);
+    { BOGUE REEL trouve en verifiant la Phase H de l'integration BROWSER.PAS
+      (2026-09-27) : exactement la meme classe de bogue deja documentee et
+      corrigee juste au-dessus pour le "x" de fermeture, jamais appliquee
+      ICI - un simple clic sur le LABEL d'un onglet (pas son "x") ne
+      redessinait lui non plus que la barre d'onglets elle-meme, laissant
+      les anciens pixels de la fenetre PRECEDENTE affiches jusqu'au
+      prochain evenement qui declenchait un repaint complet par ailleurs.
+      Invisible jusqu'ici car deux onglets WK_TEXT/WK_GRID adjacents se
+      ressemblent trop pour que l'effet saute aux yeux - devient flagrant
+      avec un onglet Navigateur Web au contenu tres distinct. }
+    FullRepaintNeeded := True;
     DrawWindowTabs;
    End;
   End;
@@ -229280,7 +229306,7 @@ Begin
  X1 := MX1 + MW + 2;
  Y1 := MY1 + 6;
  W := 150;
- H := Win95FlyoutHeight(2);
+ H := Win95FlyoutHeight(3); { phase G : +1 pour "Navigateur Web" }
 End;
 
 Procedure Win95AccMenuGeometry(Var X1, Y1, W, H: Integer);
@@ -229307,7 +229333,7 @@ Var
  X1, Y1, W, H: Integer;
 Begin
  Win95ProgMenuGeometry(X1, Y1, W, H);
- Win95HitProgMenu := Win95FlyoutHitTest(X1, Y1, W, 2, MX, MY);
+ Win95HitProgMenu := Win95FlyoutHitTest(X1, Y1, W, 3, MX, MY); { phase G }
 End;
 
 Function Win95HitAccMenu(MX, MY: Integer): Integer;
@@ -229349,10 +229375,13 @@ Begin
  Win95DrawFlyoutMenu(X1, Y1, W, 10, Items, Win95HoverAccItem);
 End;
 
-{ --- Sous-menu Programmes (Accessoires + MS-DOS uniquement) --- }
+{ --- Sous-menu Programmes (Accessoires + MS-DOS + Navigateur Web) ---
+  "Navigateur Web" est un item de PREMIER NIVEAU ici (pas sous
+  Accessoires, contrairement au Bloc-notes) : un navigateur Web n est pas
+  un "accessoire" au sens Windows 95 du terme (demande/plan phase G). }
 Procedure DrawWin95ProgrammesMenu;
 Const
- Items: Array[0..1] Of String = ('Accessoires', 'MS-DOS');
+ Items: Array[0..2] Of String = ('Accessoires', 'MS-DOS', 'Navigateur Web');
 Var
  X1, Y1, W, H: Integer;
 Begin
@@ -229437,8 +229466,15 @@ Procedure Win95OnEditorWindowClosing(Index: Integer);
 Var
  I: Integer;
 Begin
+ { Phase G : etendu a WIN95_TASK_BROWSER - initialement code en dur pour
+   WIN95_TASK_NOTEPAD seulement (verifie directement, PAS suppose "deja
+   agnostique du genre" malgre la ressemblance avec le decalage partage
+   de CloseEditorWindow) - sans cette extension, fermer un onglet situe
+   AVANT un onglet navigateur dans WinMgr aurait desynchronise
+   Win95TaskWinIdx[] de son vrai index WinMgr. }
  For I := 1 To WIN95_MAX_TASKS Do
-  If Win95TaskActive[I] And (Win95TaskKind[I] = WIN95_TASK_NOTEPAD) Then Begin
+  If Win95TaskActive[I] And
+     ((Win95TaskKind[I] = WIN95_TASK_NOTEPAD) Or (Win95TaskKind[I] = WIN95_TASK_BROWSER)) Then Begin
    If Win95TaskWinIdx[I] = Index Then
     Win95RemoveTask(I)
    Else If Win95TaskWinIdx[I] > Index Then
@@ -229644,6 +229680,20 @@ Begin
   (Win95TaskWinIdx[Win95ActiveTask] = WinMgr.ActiveIdx);
 End;
 
+{ Meme principe que Win95ActiveEditorIsIsolated, pour l'onglet Navigateur
+  Web (phase G). Peut etre implementee ICI (contrairement a
+  Win95DockActiveBrowser/Win95IsolateActiveBrowser plus bas) : elle ne
+  touche a aucun champ de TBrowserState, seulement a WinMgr/Win95Task*
+  (tous deja visibles a ce point du fichier). }
+Function Win95ActiveBrowserIsIsolated: Boolean;
+Begin
+ Win95ActiveBrowserIsIsolated := Opts.TaskbarWin95 And
+  (Win95ActiveTask >= 1) And (Win95ActiveTask <= WIN95_MAX_TASKS) And
+  Win95TaskActive[Win95ActiveTask] And
+  (Win95TaskKind[Win95ActiveTask] = WIN95_TASK_BROWSER) And
+  (Win95TaskWinIdx[Win95ActiveTask] = WinMgr.ActiveIdx);
+End;
+
 { Remet ActiveEditor a sa geometrie NORMALE (dockee, comme InitEditor la    }
 { calcule a la creation) - meme formule exacte, pour que SyncActiveWindowOut}
 { ne fige jamais un etat plein ecran dans Editors[]^. }
@@ -229715,8 +229765,9 @@ Begin
   (MY >= Top + 3) And (MY <= Bottom - 3);
 End;
 
-{ Si la fenetre WinMgr active est un Bloc-notes isole (voir                }
-{ Win95IsNotepadWindow), la vue normale de l IDE ne doit JAMAIS l afficher }
+{ Si la fenetre WinMgr active est une tache isolee - Bloc-notes ou         }
+{ Navigateur Web, phase G (voir Win95IsIsolatedTaskWindow) - la vue        }
+{ normale de l IDE ne doit JAMAIS l afficher }
 { dans l editeur/les onglets (demande explicite de l utilisateur,          }
 { 2026-09-19) - bascule vers la premiere fenetre "Visual Studio" restante, }
 { ou vide completement l editeur (EditorReady:=False) s il n en reste      }
@@ -229726,9 +229777,9 @@ Var
  I: Integer;
 Begin
  If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
- If Not Win95IsNotepadWindow(WinMgr.ActiveIdx) Then Exit;
+ If Not Win95IsIsolatedTaskWindow(WinMgr.ActiveIdx) Then Exit;
  For I := 0 To WinMgr.WinCount - 1 Do
-  If Not Win95IsNotepadWindow(I) Then Begin
+  If Not Win95IsIsolatedTaskWindow(I) Then Begin
    ActivateWindow(I);
    Exit;
   End;
@@ -229761,6 +229812,8 @@ Begin
  { passe par la branche WIN95_TASK_NOTEPAD ci-dessous). Redocker ici,       }
  { INCONDITIONNELLEMENT et en tout premier, couvre TOUTES les transitions. }
  If Win95ActiveEditorIsIsolated Then Win95DockActiveEditor;
+ { Meme garde pour le navigateur (phase G). }
+ If Win95ActiveBrowserIsIsolated Then Win95DockActiveBrowser;
 
  { Si on quitte une invite MS-DOS isolee, la redocker d abord (voir la     }
  { note de Win95DockTerminal ci-dessus - aucune garde centralisee possible }
@@ -229789,6 +229842,13 @@ Begin
     Win95OpenMsDosTerminal;
     Win95IsolateTerminal;
    End;
+   WIN95_TASK_BROWSER:
+    If (Win95TaskWinIdx[NewTask] >= 0) And (Win95TaskWinIdx[NewTask] < WinMgr.WinCount) Then Begin
+     { Meme motif exact que WIN95_TASK_NOTEPAD ci-dessus. }
+     ActivateWindow(Win95TaskWinIdx[NewTask]);
+     Win95IsolateActiveBrowser;
+     TerminalHasFocus := False;
+    End;
   End;
  End Else
   Win95EnsureDevenvActiveWindowValid;
@@ -229854,6 +229914,19 @@ Begin
    { Win95OpenMsDosTerminal separement ici. }
    Slot := Win95AddTask(WIN95_TASK_MSDOS, 'MS-DOS', -1);
    If Slot > 0 Then Win95SetActiveTask(Slot);
+   Exit;
+  End Else If Item = 3 Then Begin { Navigateur Web (phase G) }
+   Win95CloseAllOverlays;
+   { CreateBrowserWindow fait deja son propre SyncActiveWindowOut (voir son }
+   { corps, bloc importe de BROWSER.PAS) - pas besoin de le repeter ici,    }
+   { contrairement a la branche Bloc-notes ci-dessus. Une tache par onglet  }
+   { navigateur ouvert, meme motif exact que Bloc-notes. }
+   StartPage.Visible := False;
+   CreateBrowserWindow('https://');
+   Slot := Win95AddTask(WIN95_TASK_BROWSER,
+    WinMgr.Windows[WinMgr.ActiveIdx].Title, WinMgr.ActiveIdx);
+   If Slot > 0 Then Win95SetActiveTask(Slot);
+   FullRepaintNeeded := True;
    Exit;
   End;
  End;
@@ -230615,10 +230688,84 @@ Begin
  Win95NotepadFileMenuOpen := False;
 End;
 
+{ ============================================================
+  Chrome de fenetre du Navigateur Web isole (phase G)
+  ============================================================
+  Contrairement au Bloc-notes (aucun chrome propre, tout vient de
+  Win95DrawNotepadChrome), le navigateur dessine DEJA sa propre barre
+  d'adresse/boutons Precedent/Suivant/Actualiser/Favori comme partie de
+  son propre contenu (DrawBrowserTab) - la fausse barre de menu
+  Fichier/Edition/Recherche/Aide de Notepad n'a donc pas de raison d'etre
+  ici : uniquement une barre de titre + bouton fermer, exactement comme
+  une vraie fenetre Windows 95 habillerait une application qui a deja sa
+  propre interface. Win95IsolateActiveBrowser (bloc importe) place le
+  contenu du navigateur juste sous cette barre de titre (Y :=
+  WIN95_NOTEPAD_TITLEH, pas de hauteur de menu a soustraire en plus). }
+Procedure Win95DrawBrowserChrome;
+Var
+ MX: Integer;
+ Title: String;
+Begin
+ MX := GetScreenWidth - 1;
+ If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
+  Title := WinMgr.Windows[WinMgr.ActiveIdx].Title
+ Else
+  Title := 'Navigateur Web';
+
+ SetFillStyle(SolidFill, W95_BLUE);
+ Bar(0, 0, MX, WIN95_NOTEPAD_TITLEH - 1);
+ Win95DrawIcon(4, 4);
+ SetColor(W95_WHITE);
+ OutTextXY(18, 7, Title);
+
+ { Bouton fermer (fonctionnel, voir Win95CloseIsolatedBrowser) - memes
+   coordonnees exactes que Win95DrawNotepadChrome (meme WIN95_NOTEPAD_TITLEH). }
+ SetFillStyle(SolidFill, W95_LIGHTGRAY);
+ Bar(MX - 18, 3, MX - 3, WIN95_NOTEPAD_TITLEH - 4);
+ Win95Draw3DBorder(MX - 18, 3, MX - 3, WIN95_NOTEPAD_TITLEH - 4, True);
+ SetColor(W95_BLACK);
+ OutTextXY(MX - 15, 4, 'X');
+End;
+
+Function Win95IsOnBrowserCloseButton(MX, MY: Integer): Boolean;
+Var
+ ScreenMX: Integer;
+Begin
+ ScreenMX := GetScreenWidth - 1;
+ Win95IsOnBrowserCloseButton := (MX >= ScreenMX - 18) And (MX <= ScreenMX - 3) And
+  (MY >= 3) And (MY <= WIN95_NOTEPAD_TITLEH - 4);
+End;
+
+{ Ferme le Navigateur Web isole courant - meme motif exact que
+  Win95CloseIsolatedNotepad (CloseEditorWindow gere deja WK_BROWSER
+  depuis la phase F : dispose via FreeBrowserTab, decalage via
+  ShiftBrowserTabDown). }
+Procedure Win95CloseIsolatedBrowser;
+Var
+ WinIdx: Integer;
+Begin
+ If Not ((Win95ActiveTask >= 1) And (Win95ActiveTask <= WIN95_MAX_TASKS) And
+    Win95TaskActive[Win95ActiveTask] And
+    (Win95TaskKind[Win95ActiveTask] = WIN95_TASK_BROWSER)) Then Exit;
+ WinIdx := Win95TaskWinIdx[Win95ActiveTask];
+ Win95SetActiveTask(WIN95_ACTIVETASK_DEVENV);
+ If (WinIdx >= 0) And (WinIdx < WinMgr.WinCount) Then
+  CloseEditorWindow(WinIdx);
+ FullRepaintNeeded := True;
+End;
+
+{ Pas de menu Fichier a gerer (voir Win95DrawBrowserChrome) : seul le
+  bouton fermer est cliquable dans ce chrome minimal. }
+Procedure Win95BrowserChromeMouseDown(MX, MY: Integer);
+Begin
+ If Win95IsOnBrowserCloseButton(MX, MY) Then
+  Win95CloseIsolatedBrowser;
+End;
+
 Function Win95HandleEvent(Var Ev: TEvent): Boolean;
 Var
  MX, MY: Integer;
- InTaskbarStrip, Overlay, InNotepadChrome: Boolean;
+ InTaskbarStrip, Overlay, InNotepadChrome, InBrowserChrome: Boolean;
  Sec100Dummy: Word;
  TaskHit: Integer;
 Begin
@@ -230633,6 +230780,13 @@ Begin
  { le menu Fichier deroule, qui s etend SOUS cette bande. }
  InNotepadChrome := Win95ActiveEditorIsIsolated And
   ((MY < WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH) Or Win95NotepadFileMenuOpen);
+ { Chrome de fenetre du Navigateur Web isole (phase G) - juste la bande de
+   la barre de titre (pas de menu deroulant a couvrir en plus, voir
+   Win95DrawBrowserChrome) : un clic EN DESSOUS (barre d'adresse/contenu
+   du navigateur, deja dessines par DrawBrowserTab) doit tomber a travers
+   vers le dispatch normal (WK_BROWSER -> HandleBrowserMouse), pas etre
+   absorbe ici. }
+ InBrowserChrome := Win95ActiveBrowserIsIsolated And (MY < WIN95_NOTEPAD_TITLEH);
 
  If Ev.Kind = EV_MOUSE_MOVE Then Begin
   If Overlay Then Begin
@@ -230645,7 +230799,8 @@ Begin
     Win95NotepadFileMenuHover := Win95FlyoutHitTest(4,
      WIN95_NOTEPAD_TITLEH + WIN95_NOTEPAD_MENUH, 110, 2, MX, MY);
    Win95HandleEvent := True;
-  End;
+  End Else If InBrowserChrome Then
+   Win95HandleEvent := True;
   Exit;
  End;
 
@@ -230682,6 +230837,11 @@ Begin
   End;
   If InNotepadChrome Then Begin
    Win95NotepadChromeMouseDown(MX, MY);
+   Win95HandleEvent := True;
+   Exit;
+  End;
+  If InBrowserChrome Then Begin
+   Win95BrowserChromeMouseDown(MX, MY);
    Win95HandleEvent := True;
    Exit;
   End;
@@ -230764,6 +230924,11 @@ Begin
      Win95DrawNotepadFileMenu;
     End;
    WIN95_TASK_MSDOS: DrawTerminalPanel(TermPanels[ActiveShell]);
+   WIN95_TASK_BROWSER:
+    If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then Begin
+     Win95DrawBrowserChrome;
+     DrawBrowserTab;
+    End;
   End;
  End;
  DrawWin95Taskbar;
@@ -261258,6 +261423,39 @@ Begin
  DrawFavoriteButton;
  RescrollPage;
  BrowserSyncOut(ActiveBrowserState);
+End;
+
+{ Remet ActiveBrowserState a sa geometrie NORMALE (dockee, onglet MDI) -
+  meme formule exacte que CreateBrowserWindow, pour que SyncActiveWindowOut
+  ne fige jamais une geometrie plein ecran dans BrowserTabs[]^. Meme motif
+  que Win95DockActiveEditor. BrowserComputeLayout est rappelee ICI (pas
+  seulement au prochain DrawBrowserTab) pour que le hit-test souris reste
+  aligne des le tout premier evenement suivant le redockage, pas seulement
+  l affichage. }
+Procedure Win95DockActiveBrowser;
+Begin
+ ActiveBrowserState.X := 0;
+ ActiveBrowserState.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ ActiveBrowserState.Width := GetScreenWidth - EXPLORER_WIDTH;
+ ActiveBrowserState.Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ BrowserComputeLayout(ActiveBrowserState.X, ActiveBrowserState.Y,
+  ActiveBrowserState.Width, ActiveBrowserState.Height);
+End;
+
+{ Agrandit ActiveBrowserState pour occuper tout l'ecran, sous la barre de
+  titre du chrome isole (Win95DrawBrowserChrome) - PAS de hauteur de menu
+  a soustraire en plus, contrairement a Win95IsolateActiveEditor : le
+  navigateur n'a pas de fausse barre de menu, sa propre barre d'adresse
+  fait deja office de chrome (voir Win95DrawBrowserChrome). }
+Procedure Win95IsolateActiveBrowser;
+Begin
+ ActiveBrowserState.X := 0;
+ ActiveBrowserState.Y := WIN95_NOTEPAD_TITLEH;
+ ActiveBrowserState.Width := GetScreenWidth;
+ ActiveBrowserState.Height := GetScreenHeight - WIN95_NOTEPAD_TITLEH;
+ BrowserComputeLayout(ActiveBrowserState.X, ActiveBrowserState.Y,
+  ActiveBrowserState.Width, ActiveBrowserState.Height);
 End;
 
 { Sauvegarde ActiveBrowserState (deja synchronisee depuis les globales
