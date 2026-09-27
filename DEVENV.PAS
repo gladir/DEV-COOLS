@@ -237319,11 +237319,204 @@ End;
  { Pointeur vers une feuille de style }
  CSSStylesheetPtr = ^CSSStylesheet;
 
+ { TBrowserState (phase D) : receptacle pour TOUT l'etat "vivant" d'un
+   onglet navigateur, rempli/vide par BrowserSyncOut/BrowserSyncIn aux
+   changements d'onglet - meme motif que TGridEditor, sauf que l'etat de
+   BROWSER.PAS vivait dans ~150 globales separees (pas deja un seul
+   record), d'ou ce receptacle neuf plutot qu'un record deja existant.
+   X/Y/Width/Height mirent TGridEditor (geometrie de l'onglet, source
+   de BrowserComputeLayout). Volontairement EXCLUS de ce record (voir
+   memoire projet pour le detail) :
+   - les constantes de geometrie deja recalculees par BrowserComputeLayout
+     a chaque redessin (BrowserViewMaxX/Y, URL_BAR_X/Y, BACK/FORWARD/
+     REFRESH/FAVORITE_BTN_X/Y, URL_BAR_WIDTH, RENDER_AREA_X/Y/W/H) ;
+   - les caches d'images decodees (BMP/GIF/JPEG/PNG/SVG) : partages entre
+     tous les onglets, indexes par URL, pas une identite d'onglet ;
+   - l'etat de travail du lecteur PDF (PDFPageObjNums/PDFLines/...) et le
+     cache de position HTMLSourceChar* : entierement reconstruits a
+     chaque navigation, jamais relus apres coup pour un simple redessin. }
+
+ { Types tableaux nommes (phase D) : FPC traite deux "Array[1..N] Of X"
+   ecrits separement comme deux types ANONYMES distincts, meme identiques
+   structurellement - une simple affectation de tableau entre une globale
+   ambiante et le champ correspondant de TBrowserState echoue alors avec
+   "Incompatible types". Nommer le type UNE fois et l'utiliser aux deux
+   endroits (ci-dessous et sur la globale ambiante correspondante, plus
+   bas) resout ce probleme proprement plutot que par des boucles de
+   copie element par element. }
+ TJustifyWordArr = Array[1..MAX_JUSTIFY_WORDS] Of JustifyWordRec;
+ TDevConsoleLinesArr = Array[1..100] Of String;
+ TDevNetworkEntriesArr = Array[1..100] Of DevNetworkEntry;
+ TDevElementAreasArr = Array[1..2048] Of DevElementArea;
+ TDevCollapsedNodesArr = Array[1..2048] Of HTMLNodePtr;
+ TDevInspectorRowsArr = Array[1..128] Of DevInspectorRow;
+ TDevCSSSourcesArr = Array[1..32] Of DevCSSSource;
+ TFailedImageURLsArr = Array[1..128] Of String[255];
+ TFavoritesArr = Array[1..MAX_FAVORITES] Of String;
+ TBrowserHistoryArr = Array[1..MAX_HISTORY] Of String;
+ TLinkAreasArr = Array[1..MAX_LINKS] Of LinkArea;
+ TInteractiveAreasArr = Array[1..MAX_LINKS] Of InteractiveArea;
+ TJSNodeBoxesArr = Array[1..MAX_LINKS] Of JSNodeBox;
+ TAbsNodesArr = Array[1..200] Of HTMLNodePtr;
+ TAbsCoordArr = Array[1..200] Of Integer;
+ TDOMEventListenersArr = Array[1..MAX_DOM_EVENT_LISTENERS] Of DOMEventListener;
+
+ TBrowserState = Record
+  { Position/dimensions de l'onglet (mirroir de TEditorWindow/TGridEditor) }
+  X, Y, Width, Height: Integer;
+
+  { Defilement de la page }
+  ScrollX: Integer;
+  ScrollY: Integer;
+  DocumentContentHeight: LongInt;
+  MaxScrollY: LongInt;
+  CanScrollUp: Boolean;
+  CanScrollDown: Boolean;
+  CanScrollLeft: Boolean;
+  CanScrollRight: Boolean;
+
+  { Etat de rendu qui doit survivre entre deux redessins du MEME document
+    (ExecuteDocumentScripts en particulier : ne doit passer a False
+    qu'apres la premiere execution des SCRIPT du document courant, et ne
+    jamais redevenir True tant qu'aucune nouvelle navigation n'a eu lieu -
+    un changement d'onglet ne doit donc pas le reinitialiser). }
+  ExecuteDocumentScripts: Boolean;
+  JustifyWords: TJustifyWordArr;
+  JustifyWordCount: Integer;
+  JustifyLineStartX, JustifyLineY: Integer;
+  ContentOverflowX: Integer;
+  RenderOriginX: Integer;
+  RenderOriginY: Integer;
+  CurrentElementWantsBlock: Boolean;
+  CurrentElementListStyleNone: Boolean;
+  CurrentElementBox: TElementBoxInfo;
+
+  { Barre d'URL / navigation }
+  CurrentURL: String;
+  URLCursorPos: Integer;
+  URLBarFocused: Boolean;
+  BackButtonEnabled: Boolean;
+  ForwardButtonEnabled: Boolean;
+  RefreshButtonEnabled: Boolean;
+  FavoriteButtonEnabled: Boolean;
+  Favorites: TFavoritesArr;
+  FavoriteCount: Integer;
+  BrowserHistory: TBrowserHistoryArr;
+  BrowserHistoryCount: Integer;
+  BrowserHistoryIndex: Integer;
+  BrowserPageRequestCount: Integer;
+  BrowserPageLoadStarted: LongInt;
+
+  { Champ de formulaire HTML en cours de saisie }
+  FocusedInputNode: HTMLNodePtr;
+  FocusedInputCursorPos: Integer;
+  FocusedInputX, FocusedInputY: Integer;
+  FocusedInputIsPassword: Boolean;
+
+  { Menu contextuel }
+  ContextMenuOpen: Boolean;
+  ContextMenuX, ContextMenuY: Integer;
+  ContextMenuHoverIndex: Integer;
+
+  { Outils de developpement integres (F12) - entierement par onglet, sinon
+    l'inspecteur/la console d'un onglet fuiterait dans un autre. }
+  DevToolsOpen, DevElementPicker, DevConsoleFocused: Boolean;
+  SuppressDevToolsRedraw: Boolean;
+  PreviousF12Down: Boolean;
+  DevToolsTab, DevToolsFullRenderHeight: Integer;
+  DevSelectedNode: HTMLNodePtr;
+  DevInspectorDocument: HTMLNodePtr;
+  DevDocumentSerial: LongInt;
+  DevConsoleInput: String;
+  DevConsoleLines: TDevConsoleLinesArr;
+  DevConsoleLineCount: Integer;
+  DevConsoleCursorVisible: Boolean;
+  DevConsoleLastBlink: LongInt;
+  DevNetworkEntries: TDevNetworkEntriesArr;
+  DevNetworkCount: Integer;
+  DevElementAreas: TDevElementAreasArr;
+  DevElementAreaCount: Integer;
+  DevInspectorScrollX, DevInspectorFirstLine: Integer;
+  DevInspectorTotalLines, DevInspectorContentWidth: Integer;
+  DevCollapsedNodes: TDevCollapsedNodesArr;
+  DevCollapsedCount: Integer;
+  DevInspectorRows: TDevInspectorRowsArr;
+  DevInspectorRowCount: Integer;
+  DevCSSSources: TDevCSSSourcesArr;
+  DevCSSSourceCount, DevCSSSelected, DevCSSFirstLine: Integer;
+  FailedImageURLs: TFailedImageURLsArr;
+  FailedImageURLCount: Integer;
+
+  { Souris (etat logique - le pilote lui-meme reste celui de DEVENV.PAS) }
+  MouseAvailable: Boolean;
+  BrowserMouseX, BrowserMouseY: LongInt;
+  MouseButton: LongInt;
+  LastMouseButton: LongInt;
+  MousePressedInteractiveNode: HTMLNodePtr;
+  HTMLBlackColorIndex: Integer;
+
+  { DOM / HTML - HTMLDocument est un pointeur : l'arbre reste vivant sur
+    le tas independamment de l'onglet actif, seule la COPIE du pointeur
+    voyage entre TBrowserState et les globales ambiantes. }
+  HTMLDocument: HTMLNodePtr;
+  HTMLParseError: String;
+  LinkAreas: TLinkAreasArr;
+  LinkCount: Integer;
+  InteractiveAreas: TInteractiveAreasArr;
+  InteractiveAreaCount: Integer;
+  HoveredInteractiveNode: HTMLNodePtr;
+  HoverAnchorValid: Boolean;
+  HoverAnchorX1, HoverAnchorY1, HoverAnchorX2, HoverAnchorY2: Integer;
+  DeferEventRedraw: Boolean;
+  EventRedrawPending: Boolean;
+  SkipNextRenderAreaClear: Boolean;
+  LastBodyBgColor: Integer;
+  LastOverlayRectValid: Boolean;
+  LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2: Integer;
+  JSNodeBoxes: TJSNodeBoxesArr;
+  JSNodeBoxCount: Integer;
+  AbsolutePositionedNodes: TAbsNodesArr;
+  AbsoluteAnchorX, AbsoluteAnchorY, AbsoluteAnchorMaxX: TAbsCoordArr;
+  AbsolutePositionedCount: Integer;
+  AbsoluteClipDepth: Integer;
+  PositionAnchorValid: Boolean;
+  PositionAnchorX, PositionAnchorY, PositionAnchorMaxX: Integer;
+  RenderingImplicitTableCellRoot: Boolean;
+  RenderingAbsoluteOverlay: Boolean;
+  InContentRenderPass: Boolean;
+  TableMeasurePass: Boolean;
+  JSEventTargetNode: HTMLNodePtr;
+
+  { JavaScript - JSCtx est un record par valeur sans pointeurs, se copie
+    trivialement. setTimeout est par onglet : sinon un minuteur arme dans
+    un onglet en arriere-plan se declencherait a tort. }
+  JSTimeoutActive: Boolean;
+  JSTimeoutHandler: String;
+  JSTimeoutFireAtTick: LongInt;
+  JSBreakFlag: Boolean;
+  JSContinueFlag: Boolean;
+  JSCtx: JSContext;
+  JSEnabled: Boolean;
+  JSLastAlert: String;
+
+  { Ecouteurs DOM (addEventListener) }
+  DOMEventListeners: TDOMEventListenersArr;
+  DOMEventListenerCount: Integer;
+
+  { CSS - CSSGlobalStylesheet est aussi un record par valeur }
+  CSSGlobalStylesheet: CSSStylesheet;
+  CSSParseError: String;
+  CSSEnabled: Boolean;
+  CSSPreparedForRender: Boolean;
+  CSSAutoApply: Boolean;
+ End;
+ PBrowserState = ^TBrowserState;
+
 Var
 
  { BrowserViewMaxX/Y : bord droit/bas de l'onglet navigateur courant, mis a
-   jour par BrowserComputeLayout (phase C). Remplacent BrowserViewMaxX/BrowserViewMaxY (bord
-   de l'ECRAN PHYSIQUE entier) dans tout le code importe de BROWSER.PAS -
+   jour par BrowserComputeLayout (phase C). Remplacent les anciens appels a
+   l'ecran physique entier dans tout le code importe de BROWSER.PAS -
    necessaire car l'onglet WK_BROWSER n'occupe qu'un rectangle X/Y/Largeur/
    Hauteur de la fenetre DEVENV, pas tout l'ecran. }
  BrowserViewMaxX: Integer;
@@ -237331,7 +237524,7 @@ Var
 
  { Geometrie horizontale de la barre de navigation, plus position (X/Y)
    calculees par BrowserComputeLayout a partir du rectangle de l'onglet -
-   auparavant des Const figees ou derivees de BrowserViewMaxX plein ecran. }
+   auparavant des Const figees ou derivees de l'ecran physique entier. }
  URL_BAR_X: Integer;
  URL_BAR_Y: Integer;
  BACK_BTN_Y: Integer;
@@ -237367,7 +237560,7 @@ Var
    d'evenements et setTimeout appellent JSExecuteScript directement et ne
    sont donc pas bloques par ce drapeau. }
  ExecuteDocumentScripts: Boolean;
- JustifyWords: Array[1..MAX_JUSTIFY_WORDS] Of JustifyWordRec;
+ JustifyWords: TJustifyWordArr;
  JustifyWordCount: Integer;
  JustifyLineStartX, JustifyLineY: Integer;
  ContentOverflowX: Integer;    { X maximal atteint pendant le rendu (mots non coupables) }
@@ -237433,23 +237626,23 @@ DevSelectedNode: HTMLNodePtr;
 DevInspectorDocument:HTMLNodePtr;
 DevDocumentSerial:LongInt;
 DevConsoleInput: String;
-DevConsoleLines: Array[1..100] Of String;
+DevConsoleLines: TDevConsoleLinesArr;
 DevConsoleLineCount: Integer;
 DevConsoleCursorVisible:Boolean;
 DevConsoleLastBlink:LongInt;
-DevNetworkEntries: Array[1..100] Of DevNetworkEntry;
+DevNetworkEntries: TDevNetworkEntriesArr;
 DevNetworkCount: Integer;
-DevElementAreas: Array[1..2048] Of DevElementArea;
+DevElementAreas: TDevElementAreasArr;
 DevElementAreaCount: Integer;
 DevInspectorScrollX, DevInspectorFirstLine: Integer;
 DevInspectorTotalLines, DevInspectorContentWidth: Integer;
-DevCollapsedNodes:Array[1..2048]Of HTMLNodePtr;
+DevCollapsedNodes:TDevCollapsedNodesArr;
 DevCollapsedCount:Integer;
-DevInspectorRows:Array[1..128]Of DevInspectorRow;
+DevInspectorRows:TDevInspectorRowsArr;
 DevInspectorRowCount:Integer;
-DevCSSSources:Array[1..32]Of DevCSSSource;
+DevCSSSources:TDevCSSSourcesArr;
 DevCSSSourceCount,DevCSSSelected,DevCSSFirstLine:Integer;
-FailedImageURLs:Array[1..128]Of String[255];
+FailedImageURLs:TFailedImageURLsArr;
 FailedImageURLCount:Integer;
 
  { Variables pour le bouton Precedent }
@@ -237463,11 +237656,11 @@ FailedImageURLCount:Integer;
 
  { Variables pour le bouton Favori et les marque-pages }
  FavoriteButtonEnabled: Boolean;
- Favorites: Array[1..MAX_FAVORITES] Of String;
+ Favorites: TFavoritesArr;
  FavoriteCount: Integer;
 
  { Variables pour l'historique de navigation }
- BrowserHistory: Array[1..MAX_HISTORY] Of String;
+ BrowserHistory: TBrowserHistoryArr;
  BrowserHistoryCount: Integer;
  BrowserHistoryIndex: Integer;
 
@@ -237484,13 +237677,13 @@ FailedImageURLCount:Integer;
  HTMLParseError: String;      { Message d'erreur de parsing }
 
  { Variables pour les zones de liens cliquables }
- LinkAreas: Array[1..MAX_LINKS] Of LinkArea;
+ LinkAreas: TLinkAreasArr;
  LinkCount: Integer;
 
  { Variables pour les zones interactives (onclick/onmouseover/
    onmouseout sur des elements autres que les liens - actuellement
    seules les cellules TD/TH les enregistrent, voir RenderTagTD/TH). }
- InteractiveAreas: Array[1..MAX_LINKS] Of InteractiveArea;
+ InteractiveAreas: TInteractiveAreasArr;
  InteractiveAreaCount: Integer;
  HoveredInteractiveNode: HTMLNodePtr; { Noeud actuellement survole, pour declencher onmouseout au depart }
  HoverAnchorValid: Boolean;
@@ -237512,7 +237705,7 @@ FailedImageURLCount:Integer;
  LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2: Integer;
 
  { Boites de mise en page des elements ID'es (voir JSNodeBox) }
- JSNodeBoxes: Array[1..MAX_LINKS] Of JSNodeBox;
+ JSNodeBoxes: TJSNodeBoxesArr;
  JSNodeBoxCount: Integer;
 
  { Elements CSS position:absolute rencontres pendant la passe normale
@@ -237523,8 +237716,8 @@ FailedImageURLCount:Integer;
    d'elements d'une page reelle sont position:absolute (ex: les
    sous-menus de JSCookMenu.js), meme quand l'arbre entier comporte
    des milliers de noeuds. }
-AbsolutePositionedNodes: Array[1..200] Of HTMLNodePtr;
-AbsoluteAnchorX, AbsoluteAnchorY, AbsoluteAnchorMaxX: Array[1..200] Of Integer;
+AbsolutePositionedNodes: TAbsNodesArr;
+AbsoluteAnchorX, AbsoluteAnchorY, AbsoluteAnchorMaxX: TAbsCoordArr;
 AbsolutePositionedCount: Integer;
 AbsoluteClipDepth: Integer;
 PositionAnchorValid: Boolean;
@@ -237560,7 +237753,7 @@ PositionAnchorX, PositionAnchorY, PositionAnchorMaxX: Integer;
  JSLastAlert: String;         { Dernier message d'alerte }
 
  { Variables pour le DOM }
- DOMEventListeners: Array[1..MAX_DOM_EVENT_LISTENERS] Of DOMEventListener;
+ DOMEventListeners: TDOMEventListenersArr;
  DOMEventListenerCount: Integer;
 
  { Variables pour le parseur CSS }
@@ -237590,6 +237783,7 @@ Var
    voir JSEvaluate (cas particulier this.className = ...) et
    DispatchInlineEventHandler. }
  JSEventTargetNode: HTMLNodePtr;
+
 
 { Etendre l'empreinte du menu absolu avec les coordonnees REELLEMENT
   envoyees au pilote graphique. Cela inclut les cellules transparentes :
@@ -255425,6 +255619,246 @@ End;
 { Variable globale pour activer/desactiver l'application CSS automatique }
 Var
  CSSAutoApply: Boolean;
+
+{ ============================================================
+  BrowserSyncOut / BrowserSyncIn (phase D)
+  ============================================================
+  BROWSER.PAS a ete ecrit avec ~150 globales separees (pas deja un seul
+  record comme TGridEditor), donc l'etat "vivant" d'un onglet ne peut pas
+  etre echange par une simple affectation de record - ces deux procedures
+  font mecaniquement, champ par champ, exactement ce qu'une affectation
+  GridEditors[Idx]^ := ActiveGridEditor ferait pour la grille. Appelees
+  aux memes points que pour WK_GRID (SyncActiveWindowOut/In, phase F) :
+  BrowserSyncOut juste AVANT de quitter l'onglet (globales -> BS),
+  BrowserSyncIn juste APRES y etre revenu (BS -> globales). }
+Procedure BrowserSyncOut(Var BS: TBrowserState);
+Begin
+ { BS.X/Y/Width/Height ne sont PAS copies ici : contrairement au reste de
+   cet etat, ils n'ont jamais existe comme globales ambiantes dans
+   BROWSER.PAS (le code d'origine ne connaissait que l'ecran entier). Ce
+   sont WinMgr.Windows[Idx].X/Y/Width/Height (phase F, meme motif que
+   GE.X := WinMgr.Windows[Idx].X pour Grid) qui restent la seule source
+   de verite pour la geometrie de l'onglet. }
+ BS.ScrollX := ScrollX; BS.ScrollY := ScrollY;
+ BS.DocumentContentHeight := DocumentContentHeight; BS.MaxScrollY := MaxScrollY;
+ BS.CanScrollUp := CanScrollUp; BS.CanScrollDown := CanScrollDown;
+ BS.CanScrollLeft := CanScrollLeft; BS.CanScrollRight := CanScrollRight;
+
+ BS.ExecuteDocumentScripts := ExecuteDocumentScripts;
+ BS.JustifyWords := JustifyWords; BS.JustifyWordCount := JustifyWordCount;
+ BS.JustifyLineStartX := JustifyLineStartX; BS.JustifyLineY := JustifyLineY;
+ BS.ContentOverflowX := ContentOverflowX;
+ BS.RenderOriginX := RenderOriginX; BS.RenderOriginY := RenderOriginY;
+ BS.CurrentElementWantsBlock := CurrentElementWantsBlock;
+ BS.CurrentElementListStyleNone := CurrentElementListStyleNone;
+ BS.CurrentElementBox := CurrentElementBox;
+
+ BS.CurrentURL := CurrentURL; BS.URLCursorPos := URLCursorPos;
+ BS.URLBarFocused := URLBarFocused;
+ BS.BackButtonEnabled := BackButtonEnabled;
+ BS.ForwardButtonEnabled := ForwardButtonEnabled;
+ BS.RefreshButtonEnabled := RefreshButtonEnabled;
+ BS.FavoriteButtonEnabled := FavoriteButtonEnabled;
+ BS.Favorites := Favorites; BS.FavoriteCount := FavoriteCount;
+ BS.BrowserHistory := BrowserHistory;
+ BS.BrowserHistoryCount := BrowserHistoryCount;
+ BS.BrowserHistoryIndex := BrowserHistoryIndex;
+ {$IFDEF WINDOWS}
+ BS.BrowserPageRequestCount := BrowserPageRequestCount;
+ BS.BrowserPageLoadStarted := BrowserPageLoadStarted;
+ {$ENDIF}
+
+ BS.FocusedInputNode := FocusedInputNode;
+ BS.FocusedInputCursorPos := FocusedInputCursorPos;
+ BS.FocusedInputX := FocusedInputX; BS.FocusedInputY := FocusedInputY;
+ BS.FocusedInputIsPassword := FocusedInputIsPassword;
+
+ BS.ContextMenuOpen := ContextMenuOpen;
+ BS.ContextMenuX := ContextMenuX; BS.ContextMenuY := ContextMenuY;
+ BS.ContextMenuHoverIndex := ContextMenuHoverIndex;
+
+ BS.DevToolsOpen := DevToolsOpen; BS.DevElementPicker := DevElementPicker;
+ BS.DevConsoleFocused := DevConsoleFocused;
+ BS.SuppressDevToolsRedraw := SuppressDevToolsRedraw;
+ BS.PreviousF12Down := PreviousF12Down;
+ BS.DevToolsTab := DevToolsTab; BS.DevToolsFullRenderHeight := DevToolsFullRenderHeight;
+ BS.DevSelectedNode := DevSelectedNode;
+ BS.DevInspectorDocument := DevInspectorDocument;
+ BS.DevDocumentSerial := DevDocumentSerial;
+ BS.DevConsoleInput := DevConsoleInput;
+ BS.DevConsoleLines := DevConsoleLines; BS.DevConsoleLineCount := DevConsoleLineCount;
+ BS.DevConsoleCursorVisible := DevConsoleCursorVisible;
+ BS.DevConsoleLastBlink := DevConsoleLastBlink;
+ BS.DevNetworkEntries := DevNetworkEntries; BS.DevNetworkCount := DevNetworkCount;
+ BS.DevElementAreas := DevElementAreas; BS.DevElementAreaCount := DevElementAreaCount;
+ BS.DevInspectorScrollX := DevInspectorScrollX; BS.DevInspectorFirstLine := DevInspectorFirstLine;
+ BS.DevInspectorTotalLines := DevInspectorTotalLines; BS.DevInspectorContentWidth := DevInspectorContentWidth;
+ BS.DevCollapsedNodes := DevCollapsedNodes; BS.DevCollapsedCount := DevCollapsedCount;
+ BS.DevInspectorRows := DevInspectorRows; BS.DevInspectorRowCount := DevInspectorRowCount;
+ BS.DevCSSSources := DevCSSSources;
+ BS.DevCSSSourceCount := DevCSSSourceCount; BS.DevCSSSelected := DevCSSSelected;
+ BS.DevCSSFirstLine := DevCSSFirstLine;
+ BS.FailedImageURLs := FailedImageURLs; BS.FailedImageURLCount := FailedImageURLCount;
+
+ BS.MouseAvailable := MouseAvailable;
+ BS.BrowserMouseX := BrowserMouseX; BS.BrowserMouseY := BrowserMouseY;
+ BS.MouseButton := MouseButton; BS.LastMouseButton := LastMouseButton;
+ BS.MousePressedInteractiveNode := MousePressedInteractiveNode;
+ BS.HTMLBlackColorIndex := HTMLBlackColorIndex;
+
+ BS.HTMLDocument := HTMLDocument; BS.HTMLParseError := HTMLParseError;
+ BS.LinkAreas := LinkAreas; BS.LinkCount := LinkCount;
+ BS.InteractiveAreas := InteractiveAreas; BS.InteractiveAreaCount := InteractiveAreaCount;
+ BS.HoveredInteractiveNode := HoveredInteractiveNode;
+ BS.HoverAnchorValid := HoverAnchorValid;
+ BS.HoverAnchorX1 := HoverAnchorX1; BS.HoverAnchorY1 := HoverAnchorY1;
+ BS.HoverAnchorX2 := HoverAnchorX2; BS.HoverAnchorY2 := HoverAnchorY2;
+ BS.DeferEventRedraw := DeferEventRedraw; BS.EventRedrawPending := EventRedrawPending;
+ BS.SkipNextRenderAreaClear := SkipNextRenderAreaClear;
+ BS.LastBodyBgColor := LastBodyBgColor;
+ BS.LastOverlayRectValid := LastOverlayRectValid;
+ BS.LastOverlayX1 := LastOverlayX1; BS.LastOverlayY1 := LastOverlayY1;
+ BS.LastOverlayX2 := LastOverlayX2; BS.LastOverlayY2 := LastOverlayY2;
+ BS.JSNodeBoxes := JSNodeBoxes; BS.JSNodeBoxCount := JSNodeBoxCount;
+ BS.AbsolutePositionedNodes := AbsolutePositionedNodes;
+ BS.AbsoluteAnchorX := AbsoluteAnchorX; BS.AbsoluteAnchorY := AbsoluteAnchorY;
+ BS.AbsoluteAnchorMaxX := AbsoluteAnchorMaxX;
+ BS.AbsolutePositionedCount := AbsolutePositionedCount;
+ BS.AbsoluteClipDepth := AbsoluteClipDepth;
+ BS.PositionAnchorValid := PositionAnchorValid;
+ BS.PositionAnchorX := PositionAnchorX; BS.PositionAnchorY := PositionAnchorY;
+ BS.PositionAnchorMaxX := PositionAnchorMaxX;
+ BS.RenderingImplicitTableCellRoot := RenderingImplicitTableCellRoot;
+ BS.RenderingAbsoluteOverlay := RenderingAbsoluteOverlay;
+ BS.InContentRenderPass := InContentRenderPass;
+ BS.TableMeasurePass := TableMeasurePass;
+ BS.JSEventTargetNode := JSEventTargetNode;
+
+ BS.JSTimeoutActive := JSTimeoutActive; BS.JSTimeoutHandler := JSTimeoutHandler;
+ BS.JSTimeoutFireAtTick := JSTimeoutFireAtTick;
+ BS.JSBreakFlag := JSBreakFlag; BS.JSContinueFlag := JSContinueFlag;
+ BS.JSCtx := JSCtx; BS.JSEnabled := JSEnabled; BS.JSLastAlert := JSLastAlert;
+
+ BS.DOMEventListeners := DOMEventListeners;
+ BS.DOMEventListenerCount := DOMEventListenerCount;
+
+ BS.CSSGlobalStylesheet := CSSGlobalStylesheet;
+ BS.CSSParseError := CSSParseError; BS.CSSEnabled := CSSEnabled;
+ BS.CSSPreparedForRender := CSSPreparedForRender;
+ BS.CSSAutoApply := CSSAutoApply;
+End;
+
+Procedure BrowserSyncIn(Const BS: TBrowserState);
+Begin
+ { BS.X/Y/Width/Height : voir la note symetrique dans BrowserSyncOut. }
+ ScrollX := BS.ScrollX; ScrollY := BS.ScrollY;
+ DocumentContentHeight := BS.DocumentContentHeight; MaxScrollY := BS.MaxScrollY;
+ CanScrollUp := BS.CanScrollUp; CanScrollDown := BS.CanScrollDown;
+ CanScrollLeft := BS.CanScrollLeft; CanScrollRight := BS.CanScrollRight;
+
+ ExecuteDocumentScripts := BS.ExecuteDocumentScripts;
+ JustifyWords := BS.JustifyWords; JustifyWordCount := BS.JustifyWordCount;
+ JustifyLineStartX := BS.JustifyLineStartX; JustifyLineY := BS.JustifyLineY;
+ ContentOverflowX := BS.ContentOverflowX;
+ RenderOriginX := BS.RenderOriginX; RenderOriginY := BS.RenderOriginY;
+ CurrentElementWantsBlock := BS.CurrentElementWantsBlock;
+ CurrentElementListStyleNone := BS.CurrentElementListStyleNone;
+ CurrentElementBox := BS.CurrentElementBox;
+
+ CurrentURL := BS.CurrentURL; URLCursorPos := BS.URLCursorPos;
+ URLBarFocused := BS.URLBarFocused;
+ BackButtonEnabled := BS.BackButtonEnabled;
+ ForwardButtonEnabled := BS.ForwardButtonEnabled;
+ RefreshButtonEnabled := BS.RefreshButtonEnabled;
+ FavoriteButtonEnabled := BS.FavoriteButtonEnabled;
+ Favorites := BS.Favorites; FavoriteCount := BS.FavoriteCount;
+ BrowserHistory := BS.BrowserHistory;
+ BrowserHistoryCount := BS.BrowserHistoryCount;
+ BrowserHistoryIndex := BS.BrowserHistoryIndex;
+ {$IFDEF WINDOWS}
+ BrowserPageRequestCount := BS.BrowserPageRequestCount;
+ BrowserPageLoadStarted := BS.BrowserPageLoadStarted;
+ {$ENDIF}
+
+ FocusedInputNode := BS.FocusedInputNode;
+ FocusedInputCursorPos := BS.FocusedInputCursorPos;
+ FocusedInputX := BS.FocusedInputX; FocusedInputY := BS.FocusedInputY;
+ FocusedInputIsPassword := BS.FocusedInputIsPassword;
+
+ ContextMenuOpen := BS.ContextMenuOpen;
+ ContextMenuX := BS.ContextMenuX; ContextMenuY := BS.ContextMenuY;
+ ContextMenuHoverIndex := BS.ContextMenuHoverIndex;
+
+ DevToolsOpen := BS.DevToolsOpen; DevElementPicker := BS.DevElementPicker;
+ DevConsoleFocused := BS.DevConsoleFocused;
+ SuppressDevToolsRedraw := BS.SuppressDevToolsRedraw;
+ PreviousF12Down := BS.PreviousF12Down;
+ DevToolsTab := BS.DevToolsTab; DevToolsFullRenderHeight := BS.DevToolsFullRenderHeight;
+ DevSelectedNode := BS.DevSelectedNode;
+ DevInspectorDocument := BS.DevInspectorDocument;
+ DevDocumentSerial := BS.DevDocumentSerial;
+ DevConsoleInput := BS.DevConsoleInput;
+ DevConsoleLines := BS.DevConsoleLines; DevConsoleLineCount := BS.DevConsoleLineCount;
+ DevConsoleCursorVisible := BS.DevConsoleCursorVisible;
+ DevConsoleLastBlink := BS.DevConsoleLastBlink;
+ DevNetworkEntries := BS.DevNetworkEntries; DevNetworkCount := BS.DevNetworkCount;
+ DevElementAreas := BS.DevElementAreas; DevElementAreaCount := BS.DevElementAreaCount;
+ DevInspectorScrollX := BS.DevInspectorScrollX; DevInspectorFirstLine := BS.DevInspectorFirstLine;
+ DevInspectorTotalLines := BS.DevInspectorTotalLines; DevInspectorContentWidth := BS.DevInspectorContentWidth;
+ DevCollapsedNodes := BS.DevCollapsedNodes; DevCollapsedCount := BS.DevCollapsedCount;
+ DevInspectorRows := BS.DevInspectorRows; DevInspectorRowCount := BS.DevInspectorRowCount;
+ DevCSSSources := BS.DevCSSSources;
+ DevCSSSourceCount := BS.DevCSSSourceCount; DevCSSSelected := BS.DevCSSSelected;
+ DevCSSFirstLine := BS.DevCSSFirstLine;
+ FailedImageURLs := BS.FailedImageURLs; FailedImageURLCount := BS.FailedImageURLCount;
+
+ MouseAvailable := BS.MouseAvailable;
+ BrowserMouseX := BS.BrowserMouseX; BrowserMouseY := BS.BrowserMouseY;
+ MouseButton := BS.MouseButton; LastMouseButton := BS.LastMouseButton;
+ MousePressedInteractiveNode := BS.MousePressedInteractiveNode;
+ HTMLBlackColorIndex := BS.HTMLBlackColorIndex;
+
+ HTMLDocument := BS.HTMLDocument; HTMLParseError := BS.HTMLParseError;
+ LinkAreas := BS.LinkAreas; LinkCount := BS.LinkCount;
+ InteractiveAreas := BS.InteractiveAreas; InteractiveAreaCount := BS.InteractiveAreaCount;
+ HoveredInteractiveNode := BS.HoveredInteractiveNode;
+ HoverAnchorValid := BS.HoverAnchorValid;
+ HoverAnchorX1 := BS.HoverAnchorX1; HoverAnchorY1 := BS.HoverAnchorY1;
+ HoverAnchorX2 := BS.HoverAnchorX2; HoverAnchorY2 := BS.HoverAnchorY2;
+ DeferEventRedraw := BS.DeferEventRedraw; EventRedrawPending := BS.EventRedrawPending;
+ SkipNextRenderAreaClear := BS.SkipNextRenderAreaClear;
+ LastBodyBgColor := BS.LastBodyBgColor;
+ LastOverlayRectValid := BS.LastOverlayRectValid;
+ LastOverlayX1 := BS.LastOverlayX1; LastOverlayY1 := BS.LastOverlayY1;
+ LastOverlayX2 := BS.LastOverlayX2; LastOverlayY2 := BS.LastOverlayY2;
+ JSNodeBoxes := BS.JSNodeBoxes; JSNodeBoxCount := BS.JSNodeBoxCount;
+ AbsolutePositionedNodes := BS.AbsolutePositionedNodes;
+ AbsoluteAnchorX := BS.AbsoluteAnchorX; AbsoluteAnchorY := BS.AbsoluteAnchorY;
+ AbsoluteAnchorMaxX := BS.AbsoluteAnchorMaxX;
+ AbsolutePositionedCount := BS.AbsolutePositionedCount;
+ AbsoluteClipDepth := BS.AbsoluteClipDepth;
+ PositionAnchorValid := BS.PositionAnchorValid;
+ PositionAnchorX := BS.PositionAnchorX; PositionAnchorY := BS.PositionAnchorY;
+ PositionAnchorMaxX := BS.PositionAnchorMaxX;
+ RenderingImplicitTableCellRoot := BS.RenderingImplicitTableCellRoot;
+ RenderingAbsoluteOverlay := BS.RenderingAbsoluteOverlay;
+ InContentRenderPass := BS.InContentRenderPass;
+ TableMeasurePass := BS.TableMeasurePass;
+ JSEventTargetNode := BS.JSEventTargetNode;
+
+ JSTimeoutActive := BS.JSTimeoutActive; JSTimeoutHandler := BS.JSTimeoutHandler;
+ JSTimeoutFireAtTick := BS.JSTimeoutFireAtTick;
+ JSBreakFlag := BS.JSBreakFlag; JSContinueFlag := BS.JSContinueFlag;
+ JSCtx := BS.JSCtx; JSEnabled := BS.JSEnabled; JSLastAlert := BS.JSLastAlert;
+
+ DOMEventListeners := BS.DOMEventListeners;
+ DOMEventListenerCount := BS.DOMEventListenerCount;
+
+ CSSGlobalStylesheet := BS.CSSGlobalStylesheet;
+ CSSParseError := BS.CSSParseError; CSSEnabled := BS.CSSEnabled;
+ CSSPreparedForRender := BS.CSSPreparedForRender;
+ CSSAutoApply := BS.CSSAutoApply;
+End;
 
 Procedure RenderHTMLNode(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
