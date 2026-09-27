@@ -9946,7 +9946,8 @@ Var
  MarginTopPx, MarginBottomPx: Integer;
  HeadingStyle: DOMStyle;
  HeadingX,HeadingY,HeadingWidth,HeadingBoxHeight:Integer;
- PaddingLeftPx,PaddingRightPx,PaddingTopPx,BorderLeftPx:Integer;
+ PaddingLeftPx,PaddingRightPx,PaddingTopPx,PaddingBottomPx:Integer;
+ BorderLeftPx,BorderTopPx,BorderBottomPx,HeadingMarginTopPx:Integer;
  HeadingBgColor,HeadingBorderColor:Integer;
  HeadingTextColor:Integer;
 Begin
@@ -9970,21 +9971,39 @@ Begin
   PaddingLeftPx:=CSSParseDimension(HeadingStyle.PaddingLeft,0);
   PaddingRightPx:=CSSParseDimension(HeadingStyle.PaddingRight,0);
   PaddingTopPx:=CSSParseDimension(HeadingStyle.PaddingTop,0);
+  PaddingBottomPx:=CSSParseDimension(HeadingStyle.PaddingBottom,0);
   If HeadingStyle.Padding<>'' Then Begin
    If HeadingStyle.PaddingLeft='' Then
     PaddingLeftPx:=CSSParseShorthandSide(HeadingStyle.Padding,3,0);
    If HeadingStyle.PaddingRight='' Then
     PaddingRightPx:=CSSParseShorthandSide(HeadingStyle.Padding,1,0);
    If HeadingStyle.PaddingTop='' Then
-    PaddingTopPx:=CSSParseShorthandSide(HeadingStyle.Padding,0,0)
+    PaddingTopPx:=CSSParseShorthandSide(HeadingStyle.Padding,0,0);
+   If HeadingStyle.PaddingBottom='' Then
+    PaddingBottomPx:=CSSParseShorthandSide(HeadingStyle.Padding,2,0)
   End;
   BorderLeftPx:=CSSParseDimension(HeadingStyle.BorderLeftWidth,0);
+  BorderTopPx:=CSSParseDimension(HeadingStyle.BorderTopWidth,0);
+  BorderBottomPx:=CSSParseDimension(HeadingStyle.BorderBottomWidth,0);
+  { Les feuilles utilisateur des navigateurs donnent aux H1..H6 une
+    marge verticale de 1em. top positionne la marge externe; la boite
+    visible commence donc un em plus bas si la page ne neutralise pas
+    explicitement cette marge. C'est le cas de .INX h3 sur Gladir. }
+  If HeadingStyle.MarginTop<>'' Then
+   HeadingMarginTopPx:=CSSParseDimension(HeadingStyle.MarginTop,0)
+  Else If HeadingStyle.Margin<>'' Then
+   HeadingMarginTopPx:=CSSParseShorthandSide(HeadingStyle.Margin,0,0)
+  Else
+   HeadingMarginTopPx:=CSSParseDimension(HeadingStyle.FontSize,HeadingHeight);
+  Inc(HeadingY,HeadingMarginTopPx);
   HeadingWidth:=CSSParseDimension(HeadingStyle.Width,0);
   If HeadingWidth<=0 Then
    HeadingWidth:=GetTextWidth(DOMGetTextContent(Node))+PaddingLeftPx+
                  PaddingRightPx+BorderLeftPx;
   HeadingBoxHeight:=CSSParseDimension(HeadingStyle.Height,HeadingHeight);
   If HeadingBoxHeight<HeadingHeight Then HeadingBoxHeight:=HeadingHeight;
+  Inc(HeadingBoxHeight,PaddingTopPx+PaddingBottomPx+
+                       BorderTopPx+BorderBottomPx);
   HeadingBgColor:=CSSColorToIndex(HeadingStyle.BackgroundColor);
   If HeadingBgColor>=0 Then Begin
    SetFillStyle(SolidFill,HeadingBgColor);
@@ -9998,7 +10017,7 @@ Begin
        HeadingY+HeadingBoxHeight)
   End;
   Ctx.X:=HeadingX+BorderLeftPx+PaddingLeftPx;
-  Ctx.Y:=HeadingY+PaddingTopPx;
+  Ctx.Y:=HeadingY+BorderTopPx+PaddingTopPx;
   HeadingTextColor:=CSSColorToIndex(HeadingStyle.Color);
   If HeadingTextColor>=0 Then Ctx.TextColor:=HeadingTextColor;
   Ctx.LineHeight:=HeadingHeight;
