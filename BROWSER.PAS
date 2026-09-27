@@ -20887,7 +20887,19 @@ End;
 Procedure DevToolsSetOpen(OpenIt:Boolean);
 Var H:Integer;
 Begin
- If DevToolsOpen=OpenIt Then Exit;
+ { Une commande "Inspecter..." peut etre choisie alors que le panneau est
+   deja ouvert. Le menu contextuel vient alors d'etre marque ferme, mais
+   ses pixels sont encore a l'ecran. L'ancien Exit laissait cette image
+   fantome au-dessus de la page et donnait l'impression d'un navigateur
+   fige. Une demande d'ouverture idempotente doit donc repeindre les deux
+   couches, sans modifier une seconde fois la hauteur de rendu. }
+ If DevToolsOpen=OpenIt Then Begin
+  If OpenIt Then Begin
+   RescrollPage;
+   DrawDevTools
+  End;
+  Exit
+ End;
  DevToolsOpen:=OpenIt;DevConsoleFocused:=False;DevElementPicker:=False;
  If OpenIt Then Begin
   If DevToolsFullRenderHeight=0 Then DevToolsFullRenderHeight:=RENDER_AREA_HEIGHT;
