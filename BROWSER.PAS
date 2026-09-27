@@ -9367,6 +9367,7 @@ Begin
   Else
    CellWidth := RowWidth - (CellX - RowStartX); { reste de la rangee }
   If CellWidth < 1 Then CellWidth := 1;
+
   If CellX + CellWidth > OldMaxX Then CellWidth := OldMaxX - CellX;
   If CellWidth < 1 Then CellWidth := 1;
 
@@ -9490,11 +9491,13 @@ Var
  OldMaxX, OldMaxY, FixedHeight, SavedClipDepth: Integer;
  OldPositionAnchorValid: Boolean;
  OldPositionAnchorX, OldPositionAnchorY, OldPositionAnchorMaxX: Integer;
+ IsImplicitTableCellRoot: Boolean;
  MeasureCtx: RenderContext;
  OldMeasurePass: Boolean;
  SavedAbsoluteCount: Integer;
  ClipOverflow: Boolean;
 Begin
+ IsImplicitTableCellRoot:=RenderingImplicitTableCellRoot;
  OldPositionAnchorValid:=PositionAnchorValid;
  OldPositionAnchorX:=PositionAnchorX;
  OldPositionAnchorY:=PositionAnchorY;
@@ -9510,7 +9513,7 @@ Begin
    apres - sauf si le CSS demande display:inline/inline-block. }
  If WantsBlock Then Begin
   If (Not RenderingAbsoluteOverlay) And
-     (Not RenderingImplicitTableCellRoot) And
+     (Not IsImplicitTableCellRoot) And
      (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
    RenderNewLine(Ctx);
   { Le DIV qui constitue lui-meme la cellule implicite ne commence pas
@@ -9520,6 +9523,11 @@ Begin
   Inc(Ctx.BlockLevel);
   If Not RenderingAbsoluteOverlay Then RenderBlockSpacing(Ctx, MarginTopPx);
   If RenderingAbsoluteOverlay Then BoxStartX := Ctx.X
+  { Tout bloc descendant d'une cellule doit rester dans le repere de
+    cette cellule. Revenir a RenderOriginX faisait commencer les SECTION
+    .INX de newsBlock et searchBlock au meme X : la seconde repeignait la
+    premiere et leurs H3 absolus apparaissaient au-dessus du logo. }
+  Else If Ctx.InTable Then BoxStartX:=Ctx.TableCellContentX
   Else BoxStartX := RenderOriginX + RENDER_MARGIN_LEFT;
   BoxStartY := Ctx.Y;
   If PaddingTopPx > 0 Then Ctx.Y := Ctx.Y + PaddingTopPx;
@@ -9548,7 +9556,10 @@ Begin
    les enfants permet de peindre la boite complete avant leur contenu. }
  If WantsBlock Then Begin
   BoxEndX := Ctx.MaxX;
-  If Length(DivStyle.Width) > 0 Then Begin
+  { RenderTableCellRow a deja resolu la largeur CSS de sa cellule racine
+    par rapport a toute la rangee. Ne pas reevaluer width/calc() avec la
+    largeur reduite de la cellule, sinon le panneau est retreci deux fois. }
+  If (Not IsImplicitTableCellRoot) And (Length(DivStyle.Width) > 0) Then Begin
    RequestedWidth := CSSParseDimension(DivStyle.Width, Ctx.MaxX - BoxStartX);
    If(DivStyle.MinWidth<>'')And
      (RequestedWidth<CSSParseDimension(DivStyle.MinWidth,RequestedWidth))Then
