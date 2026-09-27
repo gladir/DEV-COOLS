@@ -165,6 +165,7 @@ Const
  TAG_VAR = 54;
  TAG_Q = 55;
  TAG_BLOCKQUOTE = 56;
+ TAG_FONT = 57;              { HTML historique: color/face/size }
 
  { Types de balises HTML - Liens et media }
  TAG_A = 60;
@@ -2417,7 +2418,7 @@ Type
  End;
 
 Const
- HTML_TAG_COUNT = 117;
+ HTML_TAG_COUNT = 118;
  { Table des balises HTML supportees, triee par ordre ALPHABETIQUE -
    condition necessaire a la recherche dichotomique de GetTagType
    ci-dessous (meme principe que CSSPropertyTable/CSSGetPropertyId). }
@@ -2458,9 +2459,10 @@ Const
   (Name: 'em';           Id: TAG_EM),
   (Name: 'embed';        Id: TAG_EMBED),
   (Name: 'fieldset';     Id: TAG_FIELDSET),
-  (Name: 'figcaption';   Id: TAG_FIGCAPTION),
-  (Name: 'figure';       Id: TAG_FIGURE),
-  (Name: 'footer';       Id: TAG_FOOTER),
+ (Name: 'figcaption';   Id: TAG_FIGCAPTION),
+ (Name: 'figure';       Id: TAG_FIGURE),
+ (Name: 'font';         Id: TAG_FONT),
+ (Name: 'footer';       Id: TAG_FOOTER),
   (Name: 'form';         Id: TAG_FORM),
   (Name: 'h1';           Id: TAG_H1),
   (Name: 'h2';           Id: TAG_H2),
@@ -10231,6 +10233,25 @@ Begin
  Ctx.TextStyle := Ctx.TextStyle Or TEXT_STYLE_CODE;
  RenderChildren(Node, Ctx);
  Ctx.TextStyle := OldTextStyle;
+End;
+
+{ Balise HTML historique FONT. Les pages de reference Gladir utilisent
+  encore abondamment <font color="#rrggbb"> pour leur coloration
+  syntaxique. La couleur est heritee par B/A/SPAN imbriques, puis restauree
+  exactement a la fermeture de FONT. }
+Procedure RenderTagFont(Node:HTMLNodePtr;Var Ctx:RenderContext);
+Var
+ OldTextColor,NewTextColor:Integer;
+ ColorValue:String;
+Begin
+ OldTextColor:=Ctx.TextColor;
+ ColorValue:=GetNodeAttribute(Node,'color');
+ If ColorValue<>''Then Begin
+  NewTextColor:=CSSColorToIndex(ColorValue);
+  If NewTextColor>=0Then Ctx.TextColor:=NewTextColor
+ End;
+ RenderChildren(Node,Ctx);
+ Ctx.TextColor:=OldTextColor
 End;
 
 { Procedure pour rendre la balise KBD (entree clavier) }
@@ -18973,6 +18994,7 @@ Begin
     TAG_DEL:      RenderTagStrike(Node, Ctx);
     TAG_INS:      RenderTagIns(Node, Ctx);
     TAG_CODE:     RenderTagCode(Node, Ctx);
+    TAG_FONT:     RenderTagFont(Node, Ctx);
     TAG_KBD:      RenderTagKbd(Node, Ctx);
     TAG_SAMP:     RenderTagSamp(Node, Ctx);
     TAG_VAR:      RenderTagVar(Node, Ctx);
