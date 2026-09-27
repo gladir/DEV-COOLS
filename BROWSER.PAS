@@ -14549,8 +14549,15 @@ Const
  PNG_FILTER_AVERAGE = 3;
  PNG_FILTER_PAETH = 4;
 
- { Taille maximale d'image PNG supportee }
+ { Taille maximale d'image PNG supportee. Les feuilles de sprites Web
+   depassent couramment 800 pixels (ressources.png de gladir.com fait
+   2008x47). FPC dispose de lignes dynamiques; la cible DOS conserve sa
+   limite segmentee historique. }
+ {$IFDEF FPC}
+ PNG_MAX_WIDTH = 4096;
+ {$ELSE}
  PNG_MAX_WIDTH = 800;
+ {$ENDIF}
  PNG_MAX_HEIGHT = 600;
 
  { Constantes pour DEFLATE }
@@ -14715,7 +14722,11 @@ End;
 Function PNGReadDWord(Var F: File): LongInt;
 Var
  B: Array[0..3] Of Byte;
+ {$IFDEF FPC}
+ BytesRead: LongInt;
+ {$ELSE}
  BytesRead: Word;
+ {$ENDIF}
 Begin
  BlockRead(F, B, 4, BytesRead);
  PNGReadDWord := (LongInt(B[0]) Shl 24) Or (LongInt(B[1]) Shl 16) Or
@@ -15204,8 +15215,12 @@ Var
  {$ENDIF}
  DecompLen: LongInt;
  CompCapacity, DecompCapacity: LongInt;
- BytesPerPixel, RowBytes: Integer;
+ BytesPerPixel, RowBytes, SampleBytes: Integer;
+ {$IFDEF FPC}
+ CurrRow, PrevRow: Array Of Byte;
+ {$ELSE}
  CurrRow, PrevRow: Array[0..4095] Of Byte;
+ {$ENDIF}
  FilterType: Byte;
  DataPos: LongInt;
  PixelOffset: LongInt;
@@ -15324,6 +15339,12 @@ Begin
 
   Else If ChunkType = PNG_CHUNK_IDAT Then Begin
    { Donnees compressees - accumuler }
+   {$IFDEF FPC}
+   If CompDataPos + ChunkLen > CompCapacity Then Begin
+    CompCapacity := CompDataPos + ChunkLen + 65536;
+    SetLength(CompData, CompCapacity);
+   End;
+   {$ENDIF}
    If CompDataPos + ChunkLen <= CompCapacity Then Begin
     BlockRead(F, CompData[CompDataPos], ChunkLen, BytesRead);
     Inc(CompDataPos, ChunkLen);
@@ -15359,12 +15380,18 @@ Begin
 
  { Calculer les octets par pixel avant d'allouer la sortie DEFLATE. Le
    logo Google 272x92 depasse deja l'ancienne limite DOS de 65520 octets. }
+ If Img.BitDepth = 16 Then SampleBytes := 2
+ Else If Img.BitDepth = 8 Then SampleBytes := 1
+ Else Exit;
  Case Img.ColorType Of
-  PNG_COLOR_GRAYSCALE: BytesPerPixel := 1;
-  PNG_COLOR_RGB: BytesPerPixel := 3;
-  PNG_COLOR_PALETTE: BytesPerPixel := 1;
-  PNG_COLOR_GRAYSCALE_ALPHA: BytesPerPixel := 2;
-  PNG_COLOR_RGBA: BytesPerPixel := 4;
+  PNG_COLOR_GRAYSCALE: BytesPerPixel := SampleBytes;
+  PNG_COLOR_RGB: BytesPerPixel := 3 * SampleBytes;
+  PNG_COLOR_PALETTE: Begin
+   If Img.BitDepth <> 8 Then Exit;
+   BytesPerPixel := 1;
+  End;
+  PNG_COLOR_GRAYSCALE_ALPHA: BytesPerPixel := 2 * SampleBytes;
+  PNG_COLOR_RGBA: BytesPerPixel := 4 * SampleBytes;
   Else Exit;
  End;
  {$IFDEF FPC}
@@ -15383,6 +15410,12 @@ Begin
  If Not DeflateDecompressBlock(DecompData, DecompLen, DecompCapacity) Then Exit;
 
  RowBytes := Img.Width * BytesPerPixel;
+ {$IFDEF FPC}
+ SetLength(CurrRow, RowBytes);
+ SetLength(PrevRow, RowBytes);
+ {$ELSE}
+ If RowBytes > SizeOf(CurrRow) Then Exit;
+ {$ENDIF}
 
  { Allouer la memoire pour les pixels RGB }
  Img.DataSize := LongInt(Img.Width) * LongInt(Img.Height) * 3;
@@ -15438,16 +15471,16 @@ Begin
 
    Case Img.ColorType Of
     PNG_COLOR_GRAYSCALE: Begin
-     GrayVal := CurrRow[X];
+     GrayVal := CurrRow[X * SampleBytes];
      DataPtr^ := GrayVal; Inc(DataPtr);
      DataPtr^ := GrayVal; Inc(DataPtr);
      DataPtr^ := GrayVal;
     End;
 
     PNG_COLOR_RGB: Begin
-     DataPtr^ := CurrRow[X * 3]; Inc(DataPtr);
-     DataPtr^ := CurrRow[X * 3 + 1]; Inc(DataPtr);
-     DataPtr^ := CurrRow[X * 3 + 2];
+     DataPtr^ := CurrRow[X * BytesPerPixel]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + SampleBytes]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + 2 * SampleBytes];
     End;
 
     PNG_COLOR_PALETTE: Begin
@@ -15465,8 +15498,8 @@ Begin
     End;
 
     PNG_COLOR_GRAYSCALE_ALPHA: Begin
-     GrayVal := CurrRow[X * 2];
-     A := CurrRow[X * 2 + 1];
+     GrayVal := CurrRow[X * BytesPerPixel];
+     A := CurrRow[X * BytesPerPixel + SampleBytes];
      DataPtr^ := GrayVal; Inc(DataPtr);
      DataPtr^ := GrayVal; Inc(DataPtr);
      DataPtr^ := GrayVal;
@@ -15478,20 +15511,27 @@ Begin
     End;
 
     PNG_COLOR_RGBA: Begin
-     DataPtr^ := CurrRow[X * 4]; Inc(DataPtr);
-     DataPtr^ := CurrRow[X * 4 + 1]; Inc(DataPtr);
-     DataPtr^ := CurrRow[X * 4 + 2];
+     DataPtr^ := CurrRow[X * BytesPerPixel]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + SampleBytes]; Inc(DataPtr);
+     DataPtr^ := CurrRow[X * BytesPerPixel + 2 * SampleBytes];
      If Img.AlphaData <> Nil Then Begin
       AlphaPtr := Img.AlphaData;
       Inc(AlphaPtr, LongInt(Y) * LongInt(Img.Width) + LongInt(X));
-      AlphaPtr^ := CurrRow[X * 4 + 3];
+      AlphaPtr^ := CurrRow[X * BytesPerPixel + 3 * SampleBytes];
      End;
     End;
    End;
   End;
 
-  { Sauvegarder la ligne courante comme precedente }
+  { Sauvegarder la ligne courante comme precedente. Avec les tableaux
+    dynamiques FPC, Move(CurrRow, PrevRow, ...) copierait les DESCRIPTEURS
+    (leurs pointeurs) et corromprait le gestionnaire de memoire; il faut
+    explicitement viser le premier octet de chaque tableau. }
+  {$IFDEF FPC}
+  If RowBytes > 0 Then Move(CurrRow[0], PrevRow[0], RowBytes);
+  {$ELSE}
   Move(CurrRow, PrevRow, RowBytes);
+  {$ENDIF}
  End;
 
  Img.Valid := True;
