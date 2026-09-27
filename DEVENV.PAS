@@ -236277,28 +236277,27 @@ Const
  BROWSER_BUILD_ID = '20260620-STACKFIX-5';
 
  { Constantes pour la barre d'URL }
- URL_BAR_X = 5;
- URL_BAR_Y = 5;
+ { URL_BAR_X/Y : voir Var plus bas (BrowserComputeLayout, phase C) }
  URL_BAR_HEIGHT = 20;
  URL_MAX_LENGTH = 255;
 
  { Constantes pour le bouton Precedent }
- BACK_BTN_Y = 5;
+ { BACK_BTN_Y : voir Var plus bas (BrowserComputeLayout, phase C) }
  BACK_BTN_WIDTH = 30;
  BACK_BTN_HEIGHT = 20;
 
  { Constantes pour le bouton Suivant }
- FORWARD_BTN_Y = 5;
+ { FORWARD_BTN_Y : voir Var plus bas (BrowserComputeLayout, phase C) }
  FORWARD_BTN_WIDTH = 30;
  FORWARD_BTN_HEIGHT = 20;
 
  { Constantes pour le bouton Actualiser }
- REFRESH_BTN_Y = 5;
+ { REFRESH_BTN_Y : voir Var plus bas (BrowserComputeLayout, phase C) }
  REFRESH_BTN_WIDTH = 30;
  REFRESH_BTN_HEIGHT = 20;
 
  { Constantes pour le bouton Favori }
- FAVORITE_BTN_Y = 5;
+ { FAVORITE_BTN_Y : voir Var plus bas (BrowserComputeLayout, phase C) }
  FAVORITE_BTN_WIDTH = 30;
  FAVORITE_BTN_HEIGHT = 20;
 
@@ -236488,11 +236487,9 @@ Const
    ===================================================== }
 
  { Zone de rendu du contenu HTML }
- RENDER_AREA_X = 5;
- RENDER_AREA_Y = 30;           { Sous la barre d'URL }
- { RENDER_AREA_WIDTH/HEIGHT : valeurs par defaut pour le mode VGA
-   640x480 ; recalculees dans BrowserInitLayoutAndPalette selon la resolution
-   reelle (notamment en mode -maxscreen), voir plus bas. }
+ { RENDER_AREA_X/Y et RENDER_AREA_WIDTH/HEIGHT : voir Var plus bas -
+   calcules par BrowserComputeLayout (phase C) a partir du rectangle de
+   l'onglet plutot que fixes ou derives de BrowserViewMaxX/Y (plein ecran). }
 
  { Barres de defilement de la zone de rendu }
  SCROLLBAR_SIZE = 16;          { Epaisseur des barres / cote des boutons fleche }
@@ -237324,18 +237321,33 @@ End;
 
 Var
 
- { Geometrie horizontale de la barre de navigation. En 640x480 ces
-   valeurs retrouvent pratiquement les anciennes positions; en mode
-   -maxscreen elles sont recalculees selon GetMaxX. }
+ { BrowserViewMaxX/Y : bord droit/bas de l'onglet navigateur courant, mis a
+   jour par BrowserComputeLayout (phase C). Remplacent BrowserViewMaxX/BrowserViewMaxY (bord
+   de l'ECRAN PHYSIQUE entier) dans tout le code importe de BROWSER.PAS -
+   necessaire car l'onglet WK_BROWSER n'occupe qu'un rectangle X/Y/Largeur/
+   Hauteur de la fenetre DEVENV, pas tout l'ecran. }
+ BrowserViewMaxX: Integer;
+ BrowserViewMaxY: Integer;
+
+ { Geometrie horizontale de la barre de navigation, plus position (X/Y)
+   calculees par BrowserComputeLayout a partir du rectangle de l'onglet -
+   auparavant des Const figees ou derivees de BrowserViewMaxX plein ecran. }
+ URL_BAR_X: Integer;
+ URL_BAR_Y: Integer;
+ BACK_BTN_Y: Integer;
+ FORWARD_BTN_Y: Integer;
+ REFRESH_BTN_Y: Integer;
+ FAVORITE_BTN_Y: Integer;
  URL_BAR_WIDTH: Integer;
  BACK_BTN_X: Integer;
  FORWARD_BTN_X: Integer;
  REFRESH_BTN_X: Integer;
  FAVORITE_BTN_X: Integer;
 
- { Dimensions de la zone de rendu HTML, calculees selon la resolution
-   graphique reelle (voir BrowserInitLayoutAndPalette). Valeurs par defaut =
-   mode VGA 640x480. }
+ { Dimensions et position de la zone de rendu HTML, calculees par
+   BrowserComputeLayout a partir du rectangle de l'onglet. }
+ RENDER_AREA_X: Integer;
+ RENDER_AREA_Y: Integer;
  RENDER_AREA_WIDTH: Integer;
  RENDER_AREA_HEIGHT: Integer;
 
@@ -256274,7 +256286,7 @@ Begin
    residu de page ne peut jamais y subsister, quelle qu'en soit la cause
    exacte cote rendu de page. }
  SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
- Bar(0, 0, GetMaxX, RENDER_AREA_Y - 1);
+ Bar(0, 0, BrowserViewMaxX, RENDER_AREA_Y - 1);
 
  { Dessiner le fond de la barre d'URL }
  SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
@@ -257240,7 +257252,7 @@ End;
 Function BrowserGraphConfirmOverwrite(Const FileName:String):Boolean;
 Var X,Y,W,H,YesX,NoX:Integer;Done,Answer:Boolean;K:Char;
 Begin
- W:=430;H:=105;X:=(GetMaxX-W)div 2;Y:=(GetMaxY-H)div 2;
+ W:=430;H:=105;X:=(BrowserViewMaxX-W)div 2;Y:=(BrowserViewMaxY-H)div 2;
  YesX:=X+W-180;NoX:=X+W-90;
  If MouseAvailable Then HideMouse;
  SetFillStyle(SolidFill,COLOR_URL_BAR_BG);Bar(X,Y,X+W,Y+H);
@@ -257293,8 +257305,8 @@ Var
  Done,Accepted,NeedRedraw:Boolean;
  K:Char;
 Begin
- W:=500;If W>GetMaxX-20Then W:=GetMaxX-20;
- H:=150;X:=(GetMaxX-W)div 2;Y:=(GetMaxY-H)div 2;
+ W:=500;If W>BrowserViewMaxX-20Then W:=BrowserViewMaxX-20;
+ H:=150;X:=(BrowserViewMaxX-W)div 2;Y:=(BrowserViewMaxY-H)div 2;
  InputX:=X+12;InputY:=Y+62;InputW:=W-24;
  OkX:=X+W-190;CancelX:=X+W-95;
  FileName:=DefaultName;GetDir(0,CurrentDir);
@@ -257518,7 +257530,7 @@ Begin
  DevToolsOpen:=OpenIt;DevConsoleFocused:=False;DevElementPicker:=False;
  If OpenIt Then Begin
   If DevToolsFullRenderHeight=0 Then DevToolsFullRenderHeight:=RENDER_AREA_HEIGHT;
-  H:=GetMaxY Div 3;If H<170 Then H:=170;If H>300 Then H:=300;
+  H:=BrowserViewMaxY Div 3;If H<170 Then H:=170;If H>300 Then H:=300;
   RENDER_AREA_HEIGHT:=DevToolsFullRenderHeight-H;
   If RENDER_AREA_HEIGHT<100 Then RENDER_AREA_HEIGHT:=100;
   If DevToolsTab=0 Then DevToolsTab:=DEVTOOLS_TAB_INSPECTOR
@@ -257580,9 +257592,9 @@ Procedure DevToolsOutSyntax(Var X:Integer;Y:Integer;Const S:String;
                             NormalColor:Integer;Selected:Boolean);
 Var T:String;MaxChars,W:Integer;
 Begin
- If X>=GetMaxX-20Then Exit;
+ If X>=BrowserViewMaxX-20Then Exit;
  W:=TextWidth('M');If W<1Then W:=8;
- MaxChars:=(GetMaxX-X-20)Div W;If MaxChars<1Then Exit;
+ MaxChars:=(BrowserViewMaxX-X-20)Div W;If MaxChars<1Then Exit;
  T:=Copy(S,1,MaxChars);
  If Selected Then Begin
   Case NormalColor Of
@@ -257641,7 +257653,7 @@ Begin
                (Lines<DevInspectorFirstLine+MaxLines);
   If DisplayLine Then Begin
    Selected:=Node=DevSelectedNode;
-   If Selected Then Begin SetFillStyle(SolidFill,1);Bar(5,Y-1,GetMaxX-20,Y+9)End;
+   If Selected Then Begin SetFillStyle(SolidFill,1);Bar(5,Y-1,BrowserViewMaxX-20,Y+9)End;
    X:=8+Depth*16-DevInspectorScrollX;SignX:=X;
    If HasChildren Then Begin
     If Collapsed Then DevToolsOutSyntax(X,Y,'+',DarkGray,Selected)
@@ -257659,7 +257671,7 @@ Begin
    DevToolsOutSyntax(X,Y,'<',LightBlue,Selected);
    DevToolsOutSyntax(X,Y,Node^.TagName,LightBlue,Selected);
    A:=Node^.FirstAttribute;
-   While(A<>Nil)And(X<GetMaxX-20)Do Begin
+   While(A<>Nil)And(X<BrowserViewMaxX-20)Do Begin
     DevToolsOutSyntax(X,Y,' ',HTMLBlackColorIndex,Selected);
     DevToolsOutSyntax(X,Y,A^.Name,Red,Selected);
     If A^.Value<>''Then Begin
@@ -257743,7 +257755,7 @@ Procedure DevToolsDrawJavaScript(Var X:Integer;Y:Integer;Const Source:String);
 Var I,J:Integer;T:String;Q:Char;
 Begin
  I:=1;
- While(I<=Length(Source))And(X<GetMaxX-8)Do Begin
+ While(I<=Length(Source))And(X<BrowserViewMaxX-8)Do Begin
   If Source[I]In['A'..'Z','a'..'z','_','$']Then Begin
    J:=I+1;While(J<=Length(Source))And(Source[J]In['A'..'Z','a'..'z','0'..'9','_','$'])Do Inc(J);
    T:=Copy(Source,I,J-I);
@@ -257777,13 +257789,13 @@ Var Top,Bottom,VX,TrackTop,TrackBottom,ThumbTop,ThumbBottom:Integer;
     HY,TrackLeft,TrackRight,ThumbLeft,ThumbRight:Integer;
     MaxFirst,MaxXScroll,ViewWidth:Integer;
 Begin
- Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=GetMaxY-S;
- VX:=GetMaxX-S;HY:=GetMaxY-S;
+ Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=BrowserViewMaxY-S;
+ VX:=BrowserViewMaxX-S;HY:=BrowserViewMaxY-S;
  SetFillStyle(SolidFill,LightGray);SetColor(HTMLBlackColorIndex);
- Bar(VX,Top,GetMaxX,GetMaxY);Rectangle(VX,Top,GetMaxX,GetMaxY);
- Bar(0,HY,VX,GetMaxY);Rectangle(0,HY,VX,GetMaxY);
+ Bar(VX,Top,BrowserViewMaxX,BrowserViewMaxY);Rectangle(VX,Top,BrowserViewMaxX,BrowserViewMaxY);
+ Bar(0,HY,VX,BrowserViewMaxY);Rectangle(0,HY,VX,BrowserViewMaxY);
  { Boutons haut et bas. }
- Rectangle(VX,Top,GetMaxX,Top+S);Rectangle(VX,Bottom-S,GetMaxX,Bottom);
+ Rectangle(VX,Top,BrowserViewMaxX,Top+S);Rectangle(VX,Bottom-S,BrowserViewMaxX,Bottom);
  Line(VX+4,Top+9,VX+7,Top+5);Line(VX+7,Top+5,VX+10,Top+9);
  Line(VX+4,Bottom-S+5,VX+7,Bottom-S+9);Line(VX+7,Bottom-S+9,VX+10,Bottom-S+5);
  TrackTop:=Top+S+1;TrackBottom:=Bottom-S-1;
@@ -257795,17 +257807,17 @@ Begin
  End;
  SetFillStyle(SolidFill,DarkGray);Bar(VX+3,ThumbTop,VX+S-3,ThumbBottom);
  { Boutons gauche et droite. }
- Rectangle(0,HY,S,GetMaxY);Rectangle(VX-S,HY,VX,GetMaxY);
+ Rectangle(0,HY,S,BrowserViewMaxY);Rectangle(VX-S,HY,VX,BrowserViewMaxY);
  Line(9,HY+4,5,HY+7);Line(5,HY+7,9,HY+10);
  Line(VX-S+5,HY+4,VX-S+9,HY+7);Line(VX-S+9,HY+7,VX-S+5,HY+10);
- TrackLeft:=S+1;TrackRight:=VX-S-1;ViewWidth:=GetMaxX-20;
+ TrackLeft:=S+1;TrackRight:=VX-S-1;ViewWidth:=BrowserViewMaxX-20;
  MaxXScroll:=DevInspectorContentWidth-ViewWidth;If MaxXScroll<0Then MaxXScroll:=0;
  If MaxXScroll=0Then Begin ThumbLeft:=TrackLeft;ThumbRight:=TrackRight End
  Else Begin
   ThumbLeft:=TrackLeft+(LongInt(TrackRight-TrackLeft-18)*DevInspectorScrollX)Div MaxXScroll;
   ThumbRight:=ThumbLeft+18
  End;
- SetFillStyle(SolidFill,DarkGray);Bar(ThumbLeft,HY+3,ThumbRight,GetMaxY-3)
+ SetFillStyle(SolidFill,DarkGray);Bar(ThumbLeft,HY+3,ThumbRight,BrowserViewMaxY-3)
 End;
 
 Procedure DevToolsDrawCSSLine(X,Y:Integer;Const LineText:String;LineNumber:Integer);
@@ -257831,9 +257843,9 @@ Procedure DevToolsDrawStyleEditor(ContentTop:Integer);
 Var LeftW,I,Y,MaxRows,LineNo:Integer;P,StartPos,SourceLen:LongInt;
     LineText:String;Source:AnsiString;
 Begin
- LeftW:=GetMaxX Div 4;If LeftW<160Then LeftW:=160;If LeftW>260Then LeftW:=260;
- SetFillStyle(SolidFill,White);Bar(0,ContentTop-4,LeftW,GetMaxY);
- SetColor(HTMLBlackColorIndex);Line(LeftW,ContentTop-4,LeftW,GetMaxY);
+ LeftW:=BrowserViewMaxX Div 4;If LeftW<160Then LeftW:=160;If LeftW>260Then LeftW:=260;
+ SetFillStyle(SolidFill,White);Bar(0,ContentTop-4,LeftW,BrowserViewMaxY);
+ SetColor(HTMLBlackColorIndex);Line(LeftW,ContentTop-4,LeftW,BrowserViewMaxY);
  Y:=ContentTop;
  If DevCSSSourceCount=0Then Begin
   SetColor(DarkGray);OutTextXY(6,Y,'Aucune feuille CSS');Exit
@@ -257842,11 +257854,11 @@ Begin
   If I=DevCSSSelected Then Begin SetFillStyle(SolidFill,1);Bar(2,Y-1,LeftW-2,Y+10);SetColor(White)End
   Else SetColor(HTMLBlackColorIndex);
   OutTextXY(6,Y,Copy(DevCSSSources[I].Name,1,(LeftW-12)Div 8));Inc(Y,13);
-  If Y>GetMaxY-12Then Break
+  If Y>BrowserViewMaxY-12Then Break
  End;
  If(DevCSSSelected<1)Or(DevCSSSelected>DevCSSSourceCount)Then Exit;
  Source:=DevCSSSources[DevCSSSelected].Content;SourceLen:=Length(Source);
- MaxRows:=(GetMaxY-ContentTop-3)Div 12;Y:=ContentTop;LineNo:=1;StartPos:=1;
+ MaxRows:=(BrowserViewMaxY-ContentTop-3)Div 12;Y:=ContentTop;LineNo:=1;StartPos:=1;
  While(StartPos<=SourceLen)And(LineNo<=DevCSSFirstLine)Do Begin
   While(StartPos<=SourceLen)And Not(Source[StartPos]In[#10,#13])Do Inc(StartPos);
   If(StartPos<=SourceLen)And(Source[StartPos]=#13)Then Inc(StartPos);
@@ -257856,7 +257868,7 @@ Begin
  While(StartPos<=SourceLen)And(I<MaxRows)Do Begin
   P:=StartPos;While(P<=SourceLen)And Not(Source[P]In[#10,#13])Do Inc(P);
   LineText:=Copy(Source,StartPos,P-StartPos);
-  LineText:=Copy(LineText,1,(GetMaxX-LeftW-55)Div 8);
+  LineText:=Copy(LineText,1,(BrowserViewMaxX-LeftW-55)Div 8);
   DevToolsDrawCSSLine(LeftW+6,Y,LineText,LineNo);Inc(Y,12);Inc(I);Inc(LineNo);
   StartPos:=P;If(StartPos<=SourceLen)And(Source[StartPos]=#13)Then Inc(StartPos);
   If(StartPos<=SourceLen)And(Source[StartPos]=#10)Then Inc(StartPos)
@@ -257870,8 +257882,8 @@ Begin
  If Not DevToolsOpen Then Exit;
  Top:=DevToolsPanelTop;
  SetTextStyle(DefaultFont,HorizDir,1);SetTextJustify(LeftText,TopText);
- SetFillStyle(SolidFill,LightGray);Bar(0,Top,GetMaxX,GetMaxY);
- SetColor(HTMLBlackColorIndex);Line(0,Top,GetMaxX,Top);
+ SetFillStyle(SolidFill,LightGray);Bar(0,Top,BrowserViewMaxX,BrowserViewMaxY);
+ SetColor(HTMLBlackColorIndex);Line(0,Top,BrowserViewMaxX,Top);
  { selecteur d'element }
  If DevElementPicker Then Begin SetFillStyle(SolidFill,1);Bar(4,Top+2,31,Top+21);SetColor(15)End
  Else Begin SetFillStyle(SolidFill,White);Bar(4,Top+2,31,Top+21);SetColor(HTMLBlackColorIndex)End;
@@ -257881,13 +257893,13 @@ Begin
   If DevToolsTab=I Then Begin SetFillStyle(SolidFill,White);Bar(TabLeft,Top+2,TabRight,Top+22)End;
   SetColor(HTMLBlackColorIndex);OutTextXY(TabLeft+6,Top+8,DevToolsTabName(I))
  End;
- OutTextXY(GetMaxX-18,Top+7,'X');Line(0,Top+DEVTOOLS_TAB_HEIGHT,GetMaxX,Top+DEVTOOLS_TAB_HEIGHT);
+ OutTextXY(BrowserViewMaxX-18,Top+7,'X');Line(0,Top+DEVTOOLS_TAB_HEIGHT,BrowserViewMaxX,Top+DEVTOOLS_TAB_HEIGHT);
  Y:=Top+30;SetColor(HTMLBlackColorIndex);
  Case DevToolsTab Of
   DEVTOOLS_TAB_INSPECTOR:Begin
    If DevInspectorDocument<>HTMLDocument Then DevToolsBindDocument(HTMLDocument);
    Lines:=0;
-   MaxInspectorLines:=(GetMaxY-Y-14)Div 11;
+   MaxInspectorLines:=(BrowserViewMaxY-Y-14)Div 11;
    If MaxInspectorLines<1Then MaxInspectorLines:=1;
    DevInspectorContentWidth:=0;
    DevInspectorRowCount:=0;
@@ -257913,11 +257925,11 @@ Begin
     If Copy(DevConsoleLines[I],1,3)='>> 'Then Begin
      TabLeft:=8;DevToolsOutSyntax(TabLeft,Y,'>> ',LightBlue,False);
      DevToolsDrawJavaScript(TabLeft,Y,Copy(DevConsoleLines[I],4,Length(DevConsoleLines[I])-3))
-    End Else Begin SetColor(HTMLBlackColorIndex);OutTextXY(8,Y,Copy(DevConsoleLines[I],1,(GetMaxX-20)Div 8))End;
+    End Else Begin SetColor(HTMLBlackColorIndex);OutTextXY(8,Y,Copy(DevConsoleLines[I],1,(BrowserViewMaxX-20)Div 8))End;
     Inc(Y,12)
    End;
-   Y:=GetMaxY-24;SetFillStyle(SolidFill,White);Bar(4,Y,GetMaxX-5,GetMaxY-3);
-   SetColor(HTMLBlackColorIndex);Rectangle(4,Y,GetMaxX-5,GetMaxY-3);
+   Y:=BrowserViewMaxY-24;SetFillStyle(SolidFill,White);Bar(4,Y,BrowserViewMaxX-5,BrowserViewMaxY-3);
+   SetColor(HTMLBlackColorIndex);Rectangle(4,Y,BrowserViewMaxX-5,BrowserViewMaxY-3);
    TabLeft:=8;DevToolsOutSyntax(TabLeft,Y+5,'>> ',LightBlue,False);
    DevToolsDrawJavaScript(TabLeft,Y+5,DevConsoleInput);
    If DevConsoleFocused And DevConsoleCursorVisible Then Begin
@@ -257928,11 +257940,11 @@ Begin
   DEVTOOLS_TAB_NETWORK:Begin
    { Colonnes proportionnelles a la largeur du panneau. Les memes bornes
      servent aux titres, aux valeurs et aux separateurs verticaux. }
-   C1:=0;C2:=48;C3:=112;C4:=(GetMaxX*35)Div 100;
-   C5:=(GetMaxX*55)Div 100;C6:=(GetMaxX*69)Div 100;C7:=GetMaxX;
+   C1:=0;C2:=48;C3:=112;C4:=(BrowserViewMaxX*35)Div 100;
+   C5:=(BrowserViewMaxX*55)Div 100;C6:=(BrowserViewMaxX*69)Div 100;C7:=BrowserViewMaxX;
    SetColor(HTMLBlackColorIndex);
-   Line(C2,Y-5,C2,GetMaxY);Line(C3,Y-5,C3,GetMaxY);
-   Line(C4,Y-5,C4,GetMaxY);Line(C5,Y-5,C5,GetMaxY);Line(C6,Y-5,C6,GetMaxY);
+   Line(C2,Y-5,C2,BrowserViewMaxY);Line(C3,Y-5,C3,BrowserViewMaxY);
+   Line(C4,Y-5,C4,BrowserViewMaxY);Line(C5,Y-5,C5,BrowserViewMaxY);Line(C6,Y-5,C6,BrowserViewMaxY);
    OutTextXY(C1+4,Y,'Etat');OutTextXY(C2+4,Y,'Methode');
    OutTextXY(C3+4,Y,'Domaine');OutTextXY(C4+4,Y,'Fichier');
    OutTextXY(C5+4,Y,'Type');OutTextXY(C6+4,Y,'Taille');
@@ -257961,12 +257973,12 @@ Var Top,Bottom,VX,HY,VisibleLines,MaxFirst,MaxXScroll,ViewWidth,I:Integer;
 Begin
  DevToolsHandleInspectorScrollClick:=False;
  If DevToolsTab<>DEVTOOLS_TAB_INSPECTOR Then Exit;
- Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=GetMaxY-S;
- VX:=GetMaxX-S;HY:=GetMaxY-S;
- VisibleLines:=(GetMaxY-(DevToolsPanelTop+30)-S)Div 11;
+ Top:=DevToolsPanelTop+DEVTOOLS_TAB_HEIGHT+1;Bottom:=BrowserViewMaxY-S;
+ VX:=BrowserViewMaxX-S;HY:=BrowserViewMaxY-S;
+ VisibleLines:=(BrowserViewMaxY-(DevToolsPanelTop+30)-S)Div 11;
  If VisibleLines<1Then VisibleLines:=1;
  MaxFirst:=DevInspectorTotalLines-VisibleLines;If MaxFirst<0Then MaxFirst:=0;
- ViewWidth:=GetMaxX-20;MaxXScroll:=DevInspectorContentWidth-ViewWidth;
+ ViewWidth:=BrowserViewMaxX-20;MaxXScroll:=DevInspectorContentWidth-ViewWidth;
  If MaxXScroll<0Then MaxXScroll:=0;
  For I:=1 To DevInspectorRowCount Do With DevInspectorRows[I]Do
   If(Y>=Y1)And(Y<=Y2)Then Begin
@@ -258004,7 +258016,7 @@ Begin
   DevToolsHandleClick:=True;DevConsoleFocused:=False;
   If(Y<DevToolsPanelTop+24)Then Begin
    If X<34Then DevElementPicker:=Not DevElementPicker
-   Else If X>GetMaxX-30Then Begin DevToolsSetOpen(False);Exit End
+   Else If X>BrowserViewMaxX-30Then Begin DevToolsSetOpen(False);Exit End
    Else For I:=1 To 5 Do
     If(X>=DevToolsTabLeft(I))And(X<=DevToolsTabRight(I))Then DevToolsTab:=I
    ;
@@ -258014,7 +258026,7 @@ Begin
    End
   End Else If DevToolsHandleInspectorScrollClick(X,Y)Then Exit
   Else If(DevToolsTab=DEVTOOLS_TAB_STYLE)And(Y>=DevToolsPanelTop+30)Then Begin
-   StyleLeftW:=GetMaxX Div 4;If StyleLeftW<160Then StyleLeftW:=160;
+   StyleLeftW:=BrowserViewMaxX Div 4;If StyleLeftW<160Then StyleLeftW:=160;
    If StyleLeftW>260Then StyleLeftW:=260;
    If X<StyleLeftW Then Begin
     StyleIndex:=((Y-(DevToolsPanelTop+30))Div 13)+1;
@@ -258167,11 +258179,11 @@ Procedure OpenContextMenu(PX, PY: Integer);
 Begin
  ContextMenuX := PX;
  ContextMenuY := PY;
- If ContextMenuX + CONTEXT_MENU_WIDTH > GetMaxX Then
-  ContextMenuX := GetMaxX - CONTEXT_MENU_WIDTH;
+ If ContextMenuX + CONTEXT_MENU_WIDTH > BrowserViewMaxX Then
+  ContextMenuX := BrowserViewMaxX - CONTEXT_MENU_WIDTH;
  If ContextMenuX < 0 Then ContextMenuX := 0;
- If ContextMenuY + ContextMenuHeight > GetMaxY Then
-  ContextMenuY := GetMaxY - ContextMenuHeight;
+ If ContextMenuY + ContextMenuHeight > BrowserViewMaxY Then
+  ContextMenuY := BrowserViewMaxY - ContextMenuHeight;
  If ContextMenuY < RENDER_AREA_Y Then ContextMenuY := RENDER_AREA_Y;
  ContextMenuHoverIndex := 0;
  ContextMenuOpen := True;
@@ -259783,10 +259795,11 @@ End;
 { Ex-InitializeGraphics de BROWSER.PAS : la partie "choix du pilote/mode
   graphique" (SelectScreenDriverMode/InitGraph/GraphResult) est retiree -
   DEVENV.PAS possede deja son unique InitGraph (voir InitializeGraphics,
-  ligne 12056), appele une seule fois au demarrage. Ne restent ici que la
-  palette HTML (InitializeHTMLPalette) et le calcul de geometrie des
-  boutons/zone de rendu, qui deviendra BrowserComputeLayout (phase C) une
-  fois parametre par le rectangle de l'onglet plutot que par GetMaxX/Y. }
+  ligne 12056), appele une seule fois au demarrage. Ne reste ici que la
+  palette HTML (InitializeHTMLPalette) et l'etat de dessin par defaut -
+  la geometrie des boutons/zone de rendu est maintenant dans
+  BrowserComputeLayout ci-dessous (phase C), rappelee a chaque redessin
+  d'onglet plutot qu'une seule fois au demarrage. }
 Procedure BrowserInitLayoutAndPalette;
 Begin
  InitializeHTMLPalette;
@@ -259801,10 +259814,33 @@ Begin
  SetLineStyle(SolidLn, 0, NormWidth);
  SetTextStyle(DefaultFont, HorizDir, 1);
  SetTextJustify(LeftText, TopText);
+End;
+
+{ BrowserComputeLayout (phase C) : calcule toute la geometrie de l'onglet
+  navigateur (barre d'URL, boutons, zone de rendu) a partir du rectangle
+  reellement occupe par l'onglet (VX,VY,VWidth,VHeight) plutot que de
+  BrowserViewMaxX/BrowserViewMaxY (ecran physique entier) - c'est ce qui permet a l'onglet
+  d'etre un vrai onglet MDI redimensionnable et pas seulement plein ecran.
+  A appeler a la creation de l'onglet ET a chaque redessin (bon marche),
+  comme DrawGridEditor rappelle GridClampView(GE) a chaque redessin.
+  BrowserViewMaxX/Y remplacent BrowserViewMaxX/BrowserViewMaxY dans tout le reste du code
+  importe de BROWSER.PAS (voir Var plus haut). }
+Procedure BrowserComputeLayout(VX, VY, VWidth, VHeight: Integer);
+Begin
+ BrowserViewMaxX := VX + VWidth - 1;
+ BrowserViewMaxY := VY + VHeight - 1;
+
+ URL_BAR_X := VX + 5;
+ URL_BAR_Y := VY + 5;
+ BACK_BTN_Y := VY + 5;
+ FORWARD_BTN_Y := VY + 5;
+ REFRESH_BTN_Y := VY + 5;
+ FAVORITE_BTN_Y := VY + 5;
 
  { Barre de navigation responsive : conserver les quatre boutons groupes
-   contre le bord droit et donner tout l'espace restant au champ URL. }
- FAVORITE_BTN_X := GetMaxX - 5 - FAVORITE_BTN_WIDTH;
+   contre le bord droit de l'onglet et donner tout l'espace restant au
+   champ URL. }
+ FAVORITE_BTN_X := BrowserViewMaxX - 5 - FAVORITE_BTN_WIDTH;
  REFRESH_BTN_X := FAVORITE_BTN_X - 5 - REFRESH_BTN_WIDTH;
  FORWARD_BTN_X := REFRESH_BTN_X - 5 - FORWARD_BTN_WIDTH;
  BACK_BTN_X := FORWARD_BTN_X - 5 - BACK_BTN_WIDTH;
@@ -259812,11 +259848,14 @@ Begin
  If URL_BAR_WIDTH < 80 Then URL_BAR_WIDTH := 80;
 
  { Zone de rendu = espace reellement disponible apres la barre d'URL,
-   et non plus une taille figee pour 640x480 : sans cela, le mode
-   -maxscreen ouvrirait un grand ecran mais ne dessinerait le contenu
-   HTML que dans son coin superieur gauche. }
- RENDER_AREA_WIDTH := GetMaxX - RENDER_AREA_X - 5;
- RENDER_AREA_HEIGHT := GetMaxY - RENDER_AREA_Y - 5;
+   dans le rectangle de l'onglet - et non plus une taille figee ou
+   derivee de l'ecran entier : sans cela, un onglet plus petit que
+   l'ecran ne dessinerait le contenu HTML que dans son coin superieur
+   gauche, ou pire, deborderait sur les autres onglets/panneaux. }
+ RENDER_AREA_X := VX + 5;
+ RENDER_AREA_Y := VY + 30;
+ RENDER_AREA_WIDTH := BrowserViewMaxX - RENDER_AREA_X - 5;
+ RENDER_AREA_HEIGHT := BrowserViewMaxY - RENDER_AREA_Y - 5;
  DevToolsFullRenderHeight := RENDER_AREA_HEIGHT;
 End;
 
