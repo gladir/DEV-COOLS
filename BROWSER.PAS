@@ -10489,13 +10489,11 @@ Begin
   { Calculer l'indentation }
   IndentX := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
   Ctx.X := IndentX;
- End
- Else If Ctx.ListItemNumber > 0 Then
-  { En ligne : separer les elements APRES le premier. Comparer X a la
-    marge globale cassait les listes positionnees a droite : leur premier
-    LI recevait lui aussi un retrait, simplement parce que son ancre X
-    etait naturellement eloignee du bord gauche. }
-  Ctx.X := Ctx.X + 8;
+ End;
+ { Aucun espacement implicite entre des LI inline/inline-block. Leur
+   separation vient exclusivement de margin/padding CSS, appliques par
+   RenderHTMLNode. L'ancien +8 s'ajoutait au margin-left:4px des icones
+   HeaderBlock et creait les grands intervalles visibles dans l'entete. }
 
  { Un LI peut lui aussi porter un background-image CSS (menus et barres
    d'outils generiques), exactement comme un DIV. }
@@ -19111,8 +19109,15 @@ Begin
       CSSResolveCascade(ChildNode, ChildStyle);
       ChildWidth := CSSParseDimension(ChildStyle.Width, 0);
       If ChildWidth > 0 Then Begin
-       If NaturalChildCount > 0 Then Inc(NaturalWidth, 8);
-       Inc(NaturalWidth, ChildWidth);
+       Inc(NaturalWidth,ChildWidth);
+       If ChildStyle.MarginLeft<>''Then
+        Inc(NaturalWidth,CSSParseDimension(ChildStyle.MarginLeft,0))
+       Else If ChildStyle.Margin<>''Then
+        Inc(NaturalWidth,CSSParseShorthandSide(ChildStyle.Margin,3,0));
+       If ChildStyle.MarginRight<>''Then
+        Inc(NaturalWidth,CSSParseDimension(ChildStyle.MarginRight,0))
+       Else If ChildStyle.Margin<>''Then
+        Inc(NaturalWidth,CSSParseShorthandSide(ChildStyle.Margin,1,0));
        Inc(NaturalChildCount);
       End;
      End;
