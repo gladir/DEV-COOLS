@@ -2689,7 +2689,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER, WK_BROWSER);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -7337,6 +7337,14 @@ Var
  { type WK_GRID) - meme motif que HexEditors[]/ActiveHexEditor. }
  GridEditors     : Array[0..MAX_WINDOWS - 1] Of PGridEditor;
  ActiveGridEditor: TGridEditor;
+ { BrowserTabs[]/ActiveBrowserState (onglets WK_BROWSER, meme motif que
+   GridEditors[]/ActiveGridEditor) NE PEUVENT PAS etre declares ici :
+   TBrowserState/PBrowserState dependent de types (HTMLNodePtr, JSContext,
+   CSSStylesheet...) qui n'existent qu'a partir du bloc importe de
+   BROWSER.PAS, bien plus loin dans ce fichier - contrairement a
+   TGridEditor/PGridEditor (Type, ligne 2851/2893), tous deux deja
+   disponibles ici. Voir leur declaration reelle juste apres
+   "PBrowserState = ^TBrowserState;" dans le bloc importe. }
  { Editeurs de formulaire (un par fenetre de type WK_FORM) }
  FormEditors     : Array[0..MAX_WINDOWS - 1] Of PFormEditor;
  ActiveFormEditor: TFormEditor;
@@ -13720,6 +13728,32 @@ Procedure AppendOutputEx(Var OP: TOutputPanel; AText: String;
   dialogue/grille, toutes definies plus bas que ce bloc. }
 Function FindGridWindowByFileName(FN: String): Integer; Forward;
 Procedure CreateGridWindow(AFileName: String); Forward;
+{ Onglet navigateur Web (WK_BROWSER, phase F) - meme motif que
+  CreateGridWindow ci-dessus, definie plus bas (~ligne 24700+, juste
+  apres CreateGridWindow) ; a besoin d'une declaration Forward ici car
+  appelee a la fois par un futur menu/raccourci et par le cablage
+  /TASKBARWIN95 (phase G), tous deux definis avant ce point. }
+{ AnsiString explicite (pas String) : ce point du fichier est en mode
+  ShortString par defaut (directive H moins, ligne 976), mais la vraie
+  implementation (dans le bloc importe de BROWSER.PAS) est compilee en
+  mode H plus - String y designe donc AnsiString, et la signature
+  Forward doit correspondre EXACTEMENT (sinon "Forward declaration not
+  solved", constate a la compilation). }
+Procedure CreateBrowserWindow(Const InitialURL: AnsiString); Forward;
+{ Gestionnaires/cablage WK_BROWSER (phase E/F), tous definis dans le bloc
+  importe de BROWSER.PAS - AUCUN ne peut prendre TBrowserState en
+  parametre (type non visible ici), ils operent tous implicitement sur
+  ActiveBrowserState/BrowserTabs[] (voir leur propre commentaire, dans
+  le bloc importe, pour le detail). }
+Procedure HandleBrowserMouse(Ev: TEvent); Forward;
+Procedure HandleBrowserKey(Ev: TEvent); Forward;
+Procedure BrowserIdleTick; Forward;
+Procedure DrawBrowserTab; Forward;
+Procedure SyncBrowserOut(TabIdx: Integer); Forward;
+Procedure SyncBrowserIn(TabIdx: Integer); Forward;
+Procedure FreeBrowserTab(TabIdx: Integer); Forward;
+Procedure ShiftBrowserTabDown(I: Integer); Forward;
+Procedure ClearLastBrowserTabSlot(I: Integer); Forward;
 Procedure CloseDialog(Var Dlg: TDialog); Forward;
 Procedure InitInputBox(Var IB: TInputBox; T, Prompt, Default: String); Forward;
 Function GetInputBoxText(Var IB: TInputBox): String; Forward;
@@ -18768,6 +18802,8 @@ Begin
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
   If GridEditors[WinMgr.ActiveIdx] <> Nil Then
    GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
+ End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+  SyncBrowserOut(WinMgr.ActiveIdx);
  End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU Then Begin
   { Stage 2 : met en securite le panneau ET (pour C64) tout l etat qui vit  }
   { hors de TEmulatorPanel, dans des globales partagees CPU6502_*/C64_*.   }
@@ -18834,6 +18870,8 @@ Begin
  End Else If WinMgr.Windows[Idx].Kind = WK_GRID Then Begin
   If GridEditors[Idx] <> Nil Then
    ActiveGridEditor := GridEditors[Idx]^;
+ End Else If WinMgr.Windows[Idx].Kind = WK_BROWSER Then Begin
+  SyncBrowserIn(Idx);
  End Else If WinMgr.Windows[Idx].Kind = WK_EMU Then Begin
   EmuPanel := EmuTabs[Idx];
   If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx])
@@ -18933,6 +18971,10 @@ Begin
   Dispose(GridEditors[Index]);
   GridEditors[Index] := Nil;
  End;
+ { Onglet navigateur Web (phase F) - FreeBrowserTab libere aussi l'arbre
+   DOM (FreeHTMLNode), chemin reellement NOUVEAU introduit par cette
+   integration (voir sa propre note dans le bloc importe). }
+ FreeBrowserTab(Index);
  { Onglet emulateur (Stage 2) : rien a Dispose (EmuTabs[]/C64Snaps[] sont   }
  { des enregistrements simples, pas des pointeurs) - juste s assurer que    }
  { l emulateur ne continue pas de tourner "fantome" si c est l onglet ACTIF }
@@ -18948,6 +18990,7 @@ Begin
   HexEditors[I] := HexEditors[I + 1];
   FormEditors[I] := FormEditors[I + 1];
   GridEditors[I] := GridEditors[I + 1];
+  ShiftBrowserTabDown(I);
   EmuTabs[I] := EmuTabs[I + 1];
   C64Snaps[I] := C64Snaps[I + 1];
   NesSnaps[I] := NesSnaps[I + 1];
@@ -18964,6 +19007,7 @@ Begin
  HexEditors[WinMgr.WinCount - 1] := Nil;
  FormEditors[WinMgr.WinCount - 1] := Nil;
  GridEditors[WinMgr.WinCount - 1] := Nil;
+ ClearLastBrowserTabSlot(WinMgr.WinCount - 1);
  Dec(WinMgr.WinCount);
  { Ajuster l index actif }
  If WinMgr.WinCount = 0 Then Begin
@@ -226680,6 +226724,8 @@ Begin
    SB.Language := 'Grille'
   Else If WM.Windows[Idx].Kind = WK_SQLEXPLORER Then
    SB.Language := 'SQL Server'
+  Else If WM.Windows[Idx].Kind = WK_BROWSER Then
+   SB.Language := 'Navigateur'
   Else
    SB.Language := 'Text';
  End Else Begin
@@ -230780,6 +230826,8 @@ Begin
    DrawGridEditor(ActiveGridEditor)
   Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then
    DrawSqlExplorer(SqlExplorer)
+  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then
+   DrawBrowserTab
   Else
    DrawEditor(ActiveEditor);
  End;
@@ -235428,6 +235476,13 @@ Begin
      GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
     WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveGridEditor.SelRow;
     WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveGridEditor.SelCol;
+   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+    HandleBrowserKey(Ev);
+    { Pas d'equivalent direct a une position curseur ligne/colonne pour
+      la barre d'etat (le focus peut etre sur la barre d'URL, un champ
+      de formulaire ou le contenu rendu) - ne rien synchroniser vers
+      WinMgr.Windows[].CursorX/Y plutot que d'inventer une position
+      fictive. }
    End Else Begin
     HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
      EditorUndo, EditorRedo, Ev);
@@ -235480,6 +235535,8 @@ Begin
       GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
      WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveGridEditor.SelRow;
      WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveGridEditor.SelCol;
+    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+     HandleBrowserMouse(Ev);
     End Else If (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseBtn = MB_RIGHT) Then Begin
      { Menu contextuel de l editeur de texte source (2026-08-31) - voir     }
      { ShowEditorContextMenu / Case CtxTag Of (tags 800-808). }
@@ -235562,6 +235619,13 @@ Begin
    { bloquante interne a ShowEmulatorPanel. Voir StepEmulator. }
    If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then
     StepEmulator(EmuPanel);
+   { Meme motif que StepEmulator ci-dessus, pour l'onglet navigateur Web
+     ACTIF uniquement (phase F) - un onglet WK_BROWSER en arriere-plan ne
+     doit pas voir son setTimeout se declencher, comme un vrai navigateur
+     qui met en veille les onglets inactifs. }
+   If (WinMgr.ActiveIdx >= 0) And
+      (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER) Then
+    BrowserIdleTick;
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
    If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
     DrawTerminalPanel(TermPanels[ActiveShell]);
@@ -237513,6 +237577,14 @@ End;
  PBrowserState = ^TBrowserState;
 
 Var
+
+ { BrowserTabs[]/ActiveBrowserState (phase F) : un onglet WK_BROWSER par
+   emplacement WinMgr, meme motif exact que GridEditors[]/ActiveGridEditor
+   (voir ligne ~7338) - seulement declares ICI plutot qu'a cote de
+   GridEditors car TBrowserState depend de types (HTMLNodePtr, JSContext,
+   CSSStylesheet...) qui n'existent qu'a partir de ce bloc importe. }
+ BrowserTabs     : Array[0..MAX_WINDOWS - 1] Of PBrowserState;
+ ActiveBrowserState: TBrowserState;
 
  { BrowserViewMaxX/Y : bord droit/bas de l'onglet navigateur courant, mis a
    jour par BrowserComputeLayout (phase C). Remplacent les anciens appels a
@@ -260927,79 +260999,321 @@ Begin
  End;
 End;
 
-{ Procedure pour traiter les evenements de la souris }
-Procedure ProcessMouseInput;
+{ ============================================================
+  HandleBrowserMouse / HandleBrowserKey / BrowserIdleTick (phase E/F)
+  ============================================================
+  Remplacent l'ancienne boucle bloquante (Repeat...ProcessMouseInput;
+  If KeyPressed Then...Until Key=#27) par des gestionnaires par
+  evenement, appeles UN A LA FOIS par le dispatch central de DEVENV.PAS -
+  meme principe que HandleGridEditorMouse/HandleGridEditorKey (Var GE:
+  TGridEditor; Ev: TEvent), SAUF la signature : contrairement a
+  TGridEditor (Type, ligne 2851, visible partout des le debut du
+  fichier), TBrowserState ne peut etre declare qu'a l'interieur de ce
+  bloc importe (il depend de HTMLNodePtr/JSContext/CSSStylesheet...) -
+  donc DispatchEvent (ligne ~234437, BIEN avant ce bloc) ne peut pas
+  recevoir "Var BS: TBrowserState" dans un appel direct. Ces trois
+  procedures operent donc implicitement sur ActiveBrowserState (comme
+  ActiveGridEditor pour Grid, mais sans le faire figurer dans la
+  signature) - DispatchEvent les appelle seulement avec Ev, voir leur
+  declaration Forward pres de HandleGridEditorMouse/Key (phase F).
+  Le polling manuel MouseButton/LastMouseButton disparait : DEVENV a deja
+  transforme le polling en evenements discrets EV_MOUSE_DOWN/EV_MOUSE_UP
+  AVANT de les livrer ici, donc HandleMouseClick (inchangee, deja une
+  fonction pure d'une position de clic contre l'etat ambiant - aucune
+  boucle a l'interieur) est appelee directement, une seule fois par clic
+  reel, sans avoir a redetecter la transition nous-memes. Encore
+  appelees UN A LA FOIS : donc HideMouse/ShowMouse entourent chaque
+  HandleMouseClick individuel, plus besoin de les appeler "a chaque
+  iteration" comme le faisait l'ancien polling. }
+Procedure HandleBrowserMouse(Ev: TEvent);
 Begin
- DevToolsPollF12;
- { Verifier le minuteur JS en attente (setTimeout) a chaque iteration
-   de la boucle principale, independamment de la souris - voir
-   JSCheckTimeout. }
- JSCheckTimeout;
- DevToolsUpdateConsoleCursor;
+ BrowserSyncIn(ActiveBrowserState);
+ If Not MouseAvailable Then Begin BrowserSyncOut(ActiveBrowserState); Exit; End;
 
- If Not MouseAvailable Then Exit;
+ BrowserMouseX := Ev.MouseX;
+ BrowserMouseY := Ev.MouseY;
 
- { Obtenir l'etat actuel de la souris }
- GetMouseState(BrowserMouseX, BrowserMouseY, MouseButton);
+ Case Ev.Kind Of
+  EV_MOUSE_MOVE:
+   Begin
+    { Le menu contextuel, pendant qu'il est ouvert, remplace entierement
+      le survol normal de la page (sinon un survol de lien dessous
+      redessinerait par-dessus le menu). }
+    If ContextMenuOpen Then
+     UpdateContextMenuHover(BrowserMouseX, BrowserMouseY)
+    Else
+     ProcessMouseHover;
+   End;
 
- { Le menu contextuel, pendant qu'il est ouvert, remplace entierement le
-   survol/clic normal de la page (sinon un survol de lien dessous
-   redessinerait par-dessus le menu). Le clic gauche est route par
-   HandleMouseClick (voir sa propre verification ContextMenuOpen en
-   tout debut de fonction, qui l'execute puis le referme). }
- If ContextMenuOpen Then Begin
-  UpdateContextMenuHover(BrowserMouseX, BrowserMouseY);
-  If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
-     ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
-   HideMouse;
-   HandleMouseClick(BrowserMouseX, BrowserMouseY);
-   ShowMouse;
-  End;
-  LastMouseButton := MouseButton;
-  Exit;
+  EV_MOUSE_DOWN:
+   Begin
+    If Ev.MouseBtn = MB_LEFT Then Begin
+     { HandleMouseClick verifie elle-meme ContextMenuOpen en tout debut
+       (execute l'item puis referme le menu) - meme si un menu est
+       ouvert, l'appeler directement ici reproduit exactement le
+       comportement d'origine (voir son propre corps). }
+     HideMouse;
+     HandleMouseClick(BrowserMouseX, BrowserMouseY);
+     ShowMouse;
+    End Else If Ev.MouseBtn = MB_RIGHT Then Begin
+     { Clic droit sur la zone de rendu : ouvrir le menu contextuel
+       (demande explicite de l'utilisateur, 2026-09-25). Hors de la zone
+       de rendu, ignore. Un menu deja ouvert doit d'abord se refermer
+       (clic gauche) avant qu'un nouveau puisse s'ouvrir. }
+     If (Not ContextMenuOpen) And IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
+      HideMouse;
+      OpenContextMenu(BrowserMouseX, BrowserMouseY);
+      ShowMouse;
+     End;
+    End;
+   End;
+
+  EV_MOUSE_UP:
+   Begin
+    { Completer la sequence DOM mousedown/mouseup. Garder la cible
+      pressee permet a cmItemMouseUp() de retrouver l'entree meme si le
+      rendu du style actif a reconstruit les zones de hit-test entre les
+      deux. }
+    If (Ev.MouseBtn = MB_LEFT) And (MousePressedInteractiveNode <> Nil) Then Begin
+     HideMouse;
+     DispatchInlineEventHandler(MousePressedInteractiveNode, 'onmouseup');
+     MousePressedInteractiveNode := Nil;
+     ShowMouse;
+    End;
+   End;
  End;
 
- ProcessMouseHover;
-
- { Detecter un clic (transition de non-presse a presse) }
- If ((MouseButton And MOUSE_LEFT_BUTTON) <> 0) And
-    ((LastMouseButton And MOUSE_LEFT_BUTTON) = 0) Then Begin
-  HideMouse;
- HandleMouseClick(BrowserMouseX, BrowserMouseY);
-  ShowMouse;
- End;
-
- { Clic droit sur la zone de rendu : ouvrir le menu contextuel (demande
-   explicite de l'utilisateur, 2026-09-25). Hors de la zone de rendu
-   (barre d'URL, boutons...), ignore - ces widgets ont deja leur propre
-   comportement natif de clic gauche uniquement. }
- If ((MouseButton And MOUSE_RIGHT_BUTTON) <> 0) And
-    ((LastMouseButton And MOUSE_RIGHT_BUTTON) = 0) Then Begin
-  If IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
-   HideMouse;
-   OpenContextMenu(BrowserMouseX, BrowserMouseY);
-   ShowMouse;
-  End;
- End;
-
- { Completer la sequence DOM mousedown/mouseup. Garder la cible pressee
-   permet a cmItemMouseUp() de retrouver l'entree meme si le rendu du
-   style actif a reconstruit les zones de hit-test entre les deux. }
- If ((MouseButton And MOUSE_LEFT_BUTTON) = 0) And
-    ((LastMouseButton And MOUSE_LEFT_BUTTON) <> 0) Then Begin
-  If MousePressedInteractiveNode <> Nil Then Begin
-   HideMouse;
-   DispatchInlineEventHandler(MousePressedInteractiveNode, 'onmouseup');
-   MousePressedInteractiveNode := Nil;
-   ShowMouse;
-  End;
- End;
-
- { Sauvegarder l'etat du bouton pour la prochaine iteration }
- LastMouseButton := MouseButton;
+ BrowserSyncOut(ActiveBrowserState);
 End;
 
+{ Conversion du bloc clavier de l'ancienne boucle principale. DEVENV
+  distingue deja EV_KEY_DOWN (touche etendue/speciale, Ev.KeyCode) de
+  EV_KEY_CHAR (caractere normal, Ev.KeyChar) exactement comme l'ancien
+  code distinguait Key=#0/#224 (lire un second ReadKey) du cas normal -
+  aucune reinterpretation necessaire, juste un branchement sur Ev.Kind.
 
+  CHANGEMENT DE COMPORTEMENT INTENTIONNEL (a verifier en direct, phase H):
+  Echap (EV_KEY_CHAR, KeyChar=#27) ne ferme plus le navigateur - c'etait
+  le comportement de l'ancien programme autonome qui possedait tout
+  l'ecran (Until Key=#27). Un onglet WK_BROWSER se ferme uniquement via
+  le "x" normal de la barre d'onglets, comme tous les autres onglets ;
+  Echap se contente ici de fermer le menu contextuel s'il etait ouvert. }
+Procedure HandleBrowserKey(Ev: TEvent);
+Begin
+ BrowserSyncIn(ActiveBrowserState);
+
+ If Ev.Kind = EV_KEY_DOWN Then Begin
+  If ContextMenuOpen Then Begin
+   ContextMenuOpen := False;
+   RepaintAfterContextMenu;
+  End Else If Ev.KeyCode = 134 Then Begin
+   { F12 : remplace l'ancien DevToolsPollF12 (polling brut
+     GetAsyncKeyState, hors du systeme d'evenements de DEVENV, et qui de
+     toute facon ne recevait JAMAIS F12 par la voie clavier normale sous
+     FPC - la directive de compilation conditionnelle NON-FPC de l'ancien
+     code laissait cette branche vide) par un vrai evenement clavier
+     discret. A verifier en direct : changement de mecanisme, pas
+     seulement de position du code. }
+   DevToolsToggle;
+  End Else If DevConsoleFocused Then Begin
+   { La console DevTools ignore les touches speciales (fleches...). }
+  End Else If FocusedInputNode <> Nil Then
+   HandleFormInputSpecialKey(Ev.KeyCode)
+  Else
+   HandleURLSpecialKey(Ev.KeyCode);
+ End Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If ContextMenuOpen Then Begin
+   ContextMenuOpen := False;
+   RepaintAfterContextMenu;
+  End Else If DevConsoleFocused Then
+   DevToolsConsoleKey(Ev.KeyChar)
+  Else If FocusedInputNode <> Nil Then
+   HandleFormInputKey(Ev.KeyChar)
+  Else
+   HandleURLInput(Ev.KeyChar);
+ End;
+
+ BrowserSyncOut(ActiveBrowserState);
+End;
+
+{ A appeler une fois par "tick" d'inactivite (meme motif que
+  StepEmulator dans la branche Else du dispatch central, phase F) UNIQUEMENT
+  pour l'onglet WK_BROWSER actuellement ACTIF - un onglet en arriere-plan
+  ne doit pas voir son setTimeout se declencher, comme un vrai navigateur
+  qui met en veille les onglets inactifs. Sans parametre pour la meme
+  raison que HandleBrowserMouse/Key ci-dessus (TBrowserState non visible
+  au point d'appel dans le dispatch central). }
+Procedure BrowserIdleTick;
+Begin
+ BrowserSyncIn(ActiveBrowserState);
+ JSCheckTimeout;
+ DevToolsUpdateConsoleCursor;
+ BrowserSyncOut(ActiveBrowserState);
+End;
+
+{ ============================================================
+  CreateBrowserWindow (phase F) : point d'entree unique pour ouvrir un
+  nouvel onglet WK_BROWSER - meme motif general que CreateGridWindow
+  (ligne ~24619), avec deux differences deliberees :
+  - PAS de deduplication par URL (contrairement a
+    FindGridWindowByFileName) : ouvrir la meme URL dans deux onglets est
+    un usage normal d'un navigateur, pas une erreur a eviter.
+  - L'"ouverture" elle-meme se fait via la sequence d'initialisation
+    historique de BROWSER.PAS (InitURLBar/InitHistory/InitHTMLParser/
+    InitJSContext/InitDOM/InitCSS/Init*Button, ex-bloc BEGIN principal du
+    programme autonome, phase B) plutot que par un simple GridOpenFile -
+    BS DOIT rester accede par POINTEUR (BrowserTabs[Idx]^, jamais de
+    TBrowserState par valeur en Var locale) tout du long : voir le vrai
+    EStackOverflow rencontre en phase D avec seulement deux instances
+    locales. Placee ICI (fin du bloc importe) et non pres de
+    CreateGridWindow : elle appelle des dizaines de fonctions du bloc
+    importe (NavigateTo, BrowserComputeLayout, Init*...), toutes
+    declarees plus loin dans le fichier que CreateGridWindow. }
+Procedure CreateBrowserWindow(Const InitialURL: String);
+Var
+ Idx: Integer;
+Begin
+ If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
+ Idx := WinMgr.WinCount;
+ InitEditorWindow(WinMgr.Windows[Idx]);
+ WinMgr.Windows[Idx].Kind := WK_BROWSER;
+ WinMgr.Windows[Idx].Title := 'Navigateur Web';
+ WinMgr.Windows[Idx].TabIndex := Idx;
+ WinMgr.Windows[Idx].Visible := True;
+ WinMgr.Windows[Idx].Maximized := True;
+ WinMgr.Windows[Idx].X := 0;
+ WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
+ WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+
+ If BrowserTabs[Idx] = Nil Then New(BrowserTabs[Idx]);
+ FillChar(BrowserTabs[Idx]^, SizeOf(BrowserTabs[Idx]^), 0);
+
+ { Charger un etat vierge dans les globales ambiantes avant la sequence
+   d'initialisation - reproduit exactement ce qu'un lancement autonome de
+   BROWSER.PAS faisait au demarrage du PROCESSUS, mais par ONGLET. }
+ BrowserSyncIn(BrowserTabs[Idx]^);
+ InitURLBar;
+ InitHistory;
+ MouseAvailable := True; { DEVENV.PAS possede deja sa propre souris fonctionnelle }
+ InitHTMLParser;
+ InitJSContext;
+ InitDOM;
+ InitCSS;
+ InitBackButton;
+ InitForwardButton;
+ InitRefreshButton;
+ InitFavoriteButton;
+
+ BrowserTabs[Idx]^.X := WinMgr.Windows[Idx].X;
+ BrowserTabs[Idx]^.Y := WinMgr.Windows[Idx].Y;
+ BrowserTabs[Idx]^.Width := WinMgr.Windows[Idx].Width;
+ BrowserTabs[Idx]^.Height := WinMgr.Windows[Idx].Height;
+ BrowserComputeLayout(BrowserTabs[Idx]^.X, BrowserTabs[Idx]^.Y,
+  BrowserTabs[Idx]^.Width, BrowserTabs[Idx]^.Height);
+
+ SetURL(InitialURL);
+ NavigateTo(CurrentURL);
+ BrowserSyncOut(BrowserTabs[Idx]^);
+
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ ActiveBrowserState := BrowserTabs[Idx]^;
+
+ { Meme bogue reel deja documente pour CreateGridWindow (2026-09-04) : sans
+   ceci, l'onglet est bien cree mais DrawAllWidgets ne dessine la fenetre
+   active que si EditorReady est deja a True. }
+ EditorReady := True;
+ FullRepaintNeeded := True;
+End;
+
+{ ============================================================
+  Petites procedures de cablage WinMgr (phase F), toutes SANS
+  TBrowserState dans leur signature (meme raison que HandleBrowserMouse/
+  Key/BrowserIdleTick ci-dessus) - elles operent sur ActiveBrowserState/
+  BrowserTabs[] directement. Chacune a une declaration Forward pres des
+  autres procedures WinMgr (SyncActiveWindowOut/In, CloseEditorWindow,
+  DrawAllWidgets), TOUTES situees avant ce bloc importe dans le fichier -
+  meme motif que CreateBrowserWindow/HandleBrowserMouse/Key ci-dessus. }
+
+{ Redessine l'onglet WK_BROWSER actuellement actif - appelee depuis
+  DrawAllWidgets (phase F), meme role que DrawGridEditor(ActiveGridEditor)
+  mais sans parametre. RescrollPage (deja existante, "re-rendre la page
+  courante apres un changement de defilement, sans reparser le HTML")
+  est exactement l'operation voulue pour un simple redessin d'onglet -
+  pas de nouvelle navigation, pas de nouvelle recuperation reseau. }
+Procedure DrawBrowserTab;
+Begin
+ BrowserSyncIn(ActiveBrowserState);
+ BrowserComputeLayout(ActiveBrowserState.X, ActiveBrowserState.Y,
+  ActiveBrowserState.Width, ActiveBrowserState.Height);
+ DrawURLBar;
+ DrawBackButton;
+ DrawForwardButton;
+ DrawRefreshButton;
+ DrawFavoriteButton;
+ RescrollPage;
+ BrowserSyncOut(ActiveBrowserState);
+End;
+
+{ Sauvegarde ActiveBrowserState (deja synchronisee depuis les globales
+  ambiantes) dans BrowserTabs[TabIdx]^ - appelee par la branche WK_BROWSER
+  de SyncActiveWindowOut, meme role que
+  "GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor". }
+Procedure SyncBrowserOut(TabIdx: Integer);
+Begin
+ BrowserSyncOut(ActiveBrowserState);
+ If BrowserTabs[TabIdx] <> Nil Then
+  BrowserTabs[TabIdx]^ := ActiveBrowserState;
+End;
+
+{ Restaure BrowserTabs[TabIdx]^ dans ActiveBrowserState PUIS dans les
+  globales ambiantes - appelee par la branche WK_BROWSER de
+  SyncActiveWindowIn, meme role que "ActiveGridEditor := GridEditors[Idx]^". }
+Procedure SyncBrowserIn(TabIdx: Integer);
+Begin
+ If BrowserTabs[TabIdx] <> Nil Then Begin
+  ActiveBrowserState := BrowserTabs[TabIdx]^;
+  BrowserSyncIn(ActiveBrowserState);
+ End;
+End;
+
+{ Libere un onglet WK_BROWSER ferme - appelee par CloseEditorWindow (phase
+  F), meme role que "FreeGridEditor(GridEditors[Index]^); Dispose(...)".
+  BROWSER.PAS autonome ne liberait jamais un document EN COURS DE ROUTE
+  (seulement, eventuellement, a la toute fin du processus) : fermer un
+  onglet pendant que d'autres restent ouverts est un chemin reellement
+  NOUVEAU introduit par cette integration, pas deja exerce par le
+  programme d'origine - a verifier en direct (phase H), pas seulement
+  suppose correct du fait que FreeHTMLNode a l'air correct a la lecture. }
+Procedure FreeBrowserTab(TabIdx: Integer);
+Begin
+ If BrowserTabs[TabIdx] = Nil Then Exit;
+ FreeHTMLNode(BrowserTabs[TabIdx]^.HTMLDocument);
+ Dispose(BrowserTabs[TabIdx]);
+ BrowserTabs[TabIdx] := Nil;
+End;
+
+{ Decale un emplacement de BrowserTabs[] vers le bas d'un cran - appelee
+  depuis la boucle de decalage partagee de CloseEditorWindow (phase F),
+  qui decale DEJA Editors[]/HexEditors[]/GridEditors[]/EmuTabs[]/... dans
+  la MEME boucle pour toutes les fenetres restantes. }
+Procedure ShiftBrowserTabDown(I: Integer);
+Begin
+ BrowserTabs[I] := BrowserTabs[I + 1];
+End;
+
+{ Efface le dernier emplacement de BrowserTabs[] apres decalage - appelee
+  juste apres la boucle de decalage partagee, meme role que
+  "GridEditors[WinMgr.WinCount-1] := Nil;" pour les autres genres. }
+Procedure ClearLastBrowserTabSlot(I: Integer);
+Begin
+ BrowserTabs[I] := Nil;
+End;
 
 { ============================================================ }
 { FIN bloc importe de BROWSER.PAS                                }
