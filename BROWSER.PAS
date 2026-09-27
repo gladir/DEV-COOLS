@@ -8112,6 +8112,7 @@ Begin
 End;
 
 Function CSSParseDimension(Const Value:String;DefaultPx:Integer):Integer;Forward;
+Function CSSParseLineHeight(Const Value:String;CurrentPx:Integer):Integer;Forward;
 
 { Appliquer les styles CSS au contexte de rendu }
 Procedure CSSApplyStylesToContext(Const Style: DOMStyle; Var Ctx: RenderContext);
@@ -8206,6 +8207,13 @@ Begin
    automatique - utilise par ex. par les icones d'en-tete sprites) }
  If Length(Style.WhiteSpace) > 0 Then
   Ctx.NoWrap := HTMLLowerCase(Style.WhiteSpace) = 'nowrap';
+
+ { line-height est heritable et pilote l'avance verticale de chaque ligne.
+   La propriete etait analysee dans DOMStyle, mais jamais appliquee. La
+   base reste la metrique de la police, et non la hauteur deja heritee :
+   sinon un multiplicateur 1.2 serait remultiplie dans chaque FONT/B/A. }
+ If Length(Style.LineHeight)>0 Then
+  Ctx.LineHeight:=CSSParseLineHeight(Style.LineHeight,RENDER_LINE_HEIGHT);
 End;
 
 { Verifier si un element doit etre cache (display: none) }
@@ -8422,6 +8430,26 @@ Begin
   CSSParseDimension := Round(NumVal * 1.33) { 1pt = 1.33px }
  Else
   CSSParseDimension := Round(NumVal);
+End;
+
+{ line-height accepte une dimension, un pourcentage ou un multiplicateur
+  sans unite. CSSParseDimension traiterait a tort "1.2" comme 1 pixel. }
+Function CSSParseLineHeight(Const Value:String;CurrentPx:Integer):Integer;
+Var S:String;V:Real;Code,R:Integer;
+Begin
+ S:=HTMLLowerCase(Trim(Value));
+ If(S='')Or(S='normal')Then Begin CSSParseLineHeight:=CurrentPx;Exit End;
+ If(System.Pos('px',S)=0)And(System.Pos('pt',S)=0)And
+   (System.Pos('em',S)=0)And(System.Pos('rem',S)=0)And
+   (System.Pos('%',S)=0)Then Begin
+  Val(S,V,Code);
+  If Code=0Then R:=Round(V*CurrentPx)Else R:=CurrentPx
+ End Else
+  R:=CSSParseDimension(S,CurrentPx);
+ { La police bitmap fait environ 8 pixels de haut. Eviter qu'une valeur
+   invalide rende deux lignes illisibles en les superposant. }
+ If R<8Then R:=8;
+ CSSParseLineHeight:=R
 End;
 
 { Decompose un raccourci CSS a 1-4 valeurs (margin/padding) selon la       }
@@ -10447,13 +10475,20 @@ Var
  OldListType: Byte;
  OldListItemNumber: Integer;
  WantsBlock: Boolean;
+ Box:TElementBoxInfo;
+ MarginTopPx,MarginBottomPx:Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
+ Box:=CurrentElementBox;
+ If Box.MarginTopPx>=0Then MarginTopPx:=Box.MarginTopPx
+ Else MarginTopPx:=RENDER_LIST_SPACING;
+ If Box.MarginBottomPx>=0Then MarginBottomPx:=Box.MarginBottomPx
+ Else MarginBottomPx:=RENDER_LIST_SPACING;
  { Nouvelle ligne avant la liste si necessaire }
  If WantsBlock And (Not RenderingAbsoluteOverlay) Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
-  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+  RenderBlockSpacing(Ctx, MarginTopPx);
  End;
 
  { Sauvegarder l'etat de la liste parente }
@@ -10474,7 +10509,7 @@ Begin
 
  { Espacement apres la liste }
  If WantsBlock And (Not RenderingAbsoluteOverlay) Then
-  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+  RenderBlockSpacing(Ctx, MarginBottomPx);
 End;
 
 { Procedure pour rendre la balise LI (element de liste) }
@@ -10486,6 +10521,7 @@ Var
  WantsBlock: Boolean;
  NoBullet: Boolean;
  LIStyle: DOMStyle;
+ RowBgColor,RowStartX:Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  NoBullet := CurrentElementListStyleNone;
@@ -10508,6 +10544,18 @@ Begin
  { Un LI peut lui aussi porter un background-image CSS (menus et barres
    d'outils generiques), exactement comme un DIV. }
  CSSResolveCascade(Node, LIStyle);
+ { Le fond d'un LI de bloc appartient a toute sa boite de ligne, pas a
+   chacun de ses mots. C'est indispensable aux listings <code><ol><li>
+   dont les bandes alternees doivent former un panneau continu. }
+ RowBgColor:=CSSColorToIndex(LIStyle.BackgroundColor);
+ If WantsBlock And(RowBgColor>=0)And(Not TableMeasurePass)Then Begin
+  RowStartX:=Ctx.BlockContentX;
+  If Ctx.InTable Then RowStartX:=Ctx.TableCellContentX;
+  If YInVisibleBand(Ctx.Y,Ctx.Y+Ctx.LineHeight-1)Then Begin
+   SetFillStyle(SolidFill,RowBgColor);
+   Bar(RowStartX,Ctx.Y,Ctx.MaxX,Ctx.Y+Ctx.LineHeight-1)
+  End
+ End;
  RenderCSSBackgroundSprite(LIStyle, Ctx.X, Ctx.Y);
 
  { Incrementer le numero d'element pour les listes ordonnees }
@@ -10572,7 +10620,8 @@ Begin
    Ctx.Y := ItemStartY + Ctx.LineHeight;
    Ctx.X := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10);
   End;
-  RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
+  { HTML ne donne aucune marge verticale implicite aux LI. L'ancien
+    espacement de quatre pixels disloquait les listings ligne par ligne. }
  End;
 End;
 
@@ -18734,6 +18783,7 @@ Var
  NodeStyle: DOMStyle;
  OldTextColor: Integer;
  OldBgColor: Integer;
+ OldLineHeight: Integer;
  OldTextStyle: Byte;
  OldNoWrap: Boolean;
  OldTextAlignMode: Byte;
@@ -18768,6 +18818,7 @@ Begin
  { Sauvegarder le contexte actuel pour restauration apres le rendu }
  OldTextColor := Ctx.TextColor;
  OldBgColor := Ctx.BgColor;
+ OldLineHeight := Ctx.LineHeight;
  OldTextStyle := Ctx.TextStyle;
  OldNoWrap := Ctx.NoWrap;
  OldTextAlignMode := Ctx.TextAlignMode;
@@ -19036,6 +19087,7 @@ Begin
  If CSSAutoApply And CSSEnabled And (Node^.NodeType = HTML_NODE_ELEMENT) Then Begin
   Ctx.TextColor := OldTextColor;
   Ctx.BgColor := OldBgColor;
+  Ctx.LineHeight := OldLineHeight;
   Ctx.TextStyle := OldTextStyle;
   Ctx.NoWrap := OldNoWrap;
   Ctx.TextAlignMode := OldTextAlignMode;
