@@ -23395,14 +23395,57 @@ End;
 { courante quand celle-ci est distante - deja utilisee avec succes par     }
 { BMPBuildImagePath/GIFBuildImagePath/etc pour les images) plutot que sa    }
 { propre logique dupliquee qui n'avait jamais recu ce correctif. }
+Function NormalizeHTTPURLPath(Const URL:String):String;
+Var Work,Suffix:String;SchemeEnd,HostEnd,CutPos,QPos,HPos,P,I:Integer;
+Begin
+ Work:=URL;Suffix:='';
+ SchemeEnd:=Pos('://',Work);
+ If SchemeEnd=0Then Begin NormalizeHTTPURLPath:=URL;Exit End;
+ { La requete et l'ancre ne sont pas des segments de chemin. }
+ QPos:=Pos('?',Work);HPos:=Pos('#',Work);CutPos:=0;
+ If QPos>0Then CutPos:=QPos;
+ If(HPos>0)And((CutPos=0)Or(HPos<CutPos))Then CutPos:=HPos;
+ If CutPos>0Then Begin
+  Suffix:=Copy(Work,CutPos,Length(Work));Delete(Work,CutPos,Length(Work))
+ End;
+ HostEnd:=SchemeEnd+3;
+ While(HostEnd<=Length(Work))And(Work[HostEnd]<>'/')Do Inc(HostEnd);
+ If HostEnd>Length(Work)Then Begin
+  NormalizeHTTPURLPath:=Work+Suffix;Exit
+ End;
+ Repeat
+  P:=Pos('/./',Work);
+  If P>=HostEnd Then Delete(Work,P,2)
+ Until(P=0)Or(P<HostEnd);
+ Repeat
+ P:=Pos('/../',Work);
+  If P>=HostEnd Then Begin
+   If P>HostEnd Then Begin
+    { Supprimer le segment precedent avec /../, mais conserver le slash
+      qui delimite sa racine. Exemple: /a/b/../c devient /a/c. }
+    I:=P-1;
+    While(I>HostEnd)And(Work[I]<>'/')Do Dec(I);
+    Delete(Work,I+1,P+3-I)
+   End Else
+    { Deja a la racine : conserver le slash racine et jeter ../. }
+    Delete(Work,P+1,3)
+  End
+ Until(P=0)Or(P<HostEnd);
+ NormalizeHTTPURLPath:=Work+Suffix
+End;
+
 Function ResolveLinkHref(Const Href: String): String;
 Var
  LowerHref,LowerCurrent,Origin,BasePath,Scheme,ResultURL:String;
  SchemeEnd,HostEnd,I,P:Integer;
 Begin
  LowerHref:=HTMLLowerCase(Href);
- If IsViewSourceURL(Href)or(Copy(LowerHref,1,7)='http://')or
-    (Copy(LowerHref,1,8)='https://')or(Copy(LowerHref,1,7)='mailto:')or
+ If IsViewSourceURL(Href)Then Begin ResolveLinkHref:=Href;Exit End;
+ If(Copy(LowerHref,1,7)='http://')or
+   (Copy(LowerHref,1,8)='https://')Then Begin
+  ResolveLinkHref:=NormalizeHTTPURLPath(Href);Exit
+ End;
+ If(Copy(LowerHref,1,7)='mailto:')or
     (Copy(LowerHref,1,4)='tel:')or(Copy(LowerHref,1,5)='data:')Then Begin
   ResolveLinkHref := Href;
   Exit;
@@ -23421,7 +23464,7 @@ Begin
   ResolveLinkHref:=Scheme+':'+Href;Exit
  End;
  If Copy(Href,1,1)='/'Then Begin
-  ResolveLinkHref:=Origin+Href;Exit
+  ResolveLinkHref:=NormalizeHTTPURLPath(Origin+Href);Exit
  End;
  BasePath:=CurrentURL;P:=Pos('#',BasePath);
  If P>0Then Delete(BasePath,P,Length(BasePath));
@@ -23432,21 +23475,7 @@ Begin
   BasePath:=Copy(BasePath,1,I);Break
  End;
  ResultURL:=BasePath+Href;
- { Normaliser les segments /./ et /../ sans toucher au double slash du
-   schema. Une boucle suffit pour les chemins relatifs imbriques. }
- Repeat
-  P:=Pos('/./',ResultURL);
-  If P>SchemeEnd+2Then Delete(ResultURL,P,2)
- Until(P=0)or(P<=SchemeEnd+2);
- Repeat
-  P:=Pos('/../',ResultURL);
-  If P>SchemeEnd+2Then Begin
-   I:=P-1;While(I>SchemeEnd+2)and(ResultURL[I]<>'/')do Dec(I);
-   If I>SchemeEnd+2Then Delete(ResultURL,I,P+3-I)
-   Else P:=0
-  End
- Until(P=0)or(P<=SchemeEnd+2);
- ResolveLinkHref:=ResultURL
+ ResolveLinkHref:=NormalizeHTTPURLPath(ResultURL)
 End;
 
 Procedure HandleLinkClick(LinkIndex: Integer);
@@ -24205,6 +24234,19 @@ BEGIN
     WriteConsoleLine('ECHEC test URL: '+ResolvedTestURL);
     If MouseAvailable Then HideMouse;CloseGraph;Halt(2)
    End;
+  End;
+  { Une URL ne peut jamais remonter au-dessus de la racine de son hote. }
+  ResolvedTestURL:=ResolveLinkHref(
+   'https://www.gladir.com/../../LEXIQUE/FICHIERS/convert_eco.htm');
+  If ResolvedTestURL<>
+    'https://www.gladir.com/LEXIQUE/FICHIERS/convert_eco.htm'Then Begin
+   WriteConsoleLine('ECHEC test URL racine: '+ResolvedTestURL);
+   If MouseAvailable Then HideMouse;CloseGraph;Halt(2)
+  End;
+  ResolvedTestURL:=ResolveLinkHref('https://www.gladir.com/a/b/../../x');
+  If ResolvedTestURL<>'https://www.gladir.com/x'Then Begin
+   WriteConsoleLine('ECHEC test URL relative: '+ResolvedTestURL);
+   If MouseAvailable Then HideMouse;CloseGraph;Halt(2)
   End;
   { Re-naviguer vers la meme page pour exercer un second appel a
     CSSParseStylesheet alors que la table de regles est deja pleine
