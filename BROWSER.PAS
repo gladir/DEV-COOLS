@@ -15898,6 +15898,11 @@ Type
   IsBold: Boolean;
   IsItalic: Boolean;
  End;
+ { Table de correspondance code-octet -> point de code Unicode pour un
+   /Encoding /Differences propre a une police (voir PDFResolveFontEncoding
+   plus bas) - -1 = pas de correspondance particuliere (repli sur la
+   table WinAnsi generique, voir PDFDecodeByteToCharEx). }
+ TPDFDiffMap = Array[0..255] Of LongInt;
 
 Var
  PDFLines: Array[1..PDF_MAX_LINES_PER_PAGE] Of TPDFTextLine;
@@ -15918,6 +15923,11 @@ Var
  PDFCurFontName: String;
  PDFCurFontBold: Boolean;
  PDFCurFontItalic: Boolean;
+ { /Differences propre a la police active (2026-09-26, demande explicite
+   - "l'apostrophe s'affiche mal") - voir PDFResolveFontEncoding et
+   PDFDecodeByteToCharEx. }
+ PDFCurFontDiffMap: TPDFDiffMap;
+ PDFCurFontHasDiff: Boolean;
 
 { Trace de diagnostic TEMPORAIRE (2026-09-26) pour investiguer un
   ERangeError reel dans HTMLAppendChild/ParseHTML declenche par une page
@@ -16377,6 +16387,102 @@ Begin
  PDFDecodeHexString := R;
 End;
 
+{ Octet WinAnsiEncoding (2026-09-26, demande explicite de l'utilisateur -
+  "l'apostrophe s'affiche mal, certains glyphes decoratifs sont
+  illisibles") -> point de code Unicode reel. WinAnsiEncoding est
+  l'encodage de base PDF implicite le plus courant pour une police
+  latine non symbolique (norme ISO 32000 Annexe D.2) ; il est IDENTIQUE
+  a Windows-1252 pour la plage haute. Table verifiee (pas devinee) :
+  0xA0-0xFF y coincide EXACTEMENT avec Latin-1/Unicode (d'ou le simple
+  "Else B" ci-dessous), seule la plage 0x80-0x9F differe reellement de
+  Latin-1 (qui n'y definit que des caracteres de controle C1 inutilises)
+  - guillemets/apostrophes courbes, tirets demi/cadratin, points de
+  suspension, etc. Sans cette table, l'ancien code faisait juste
+  Chr(octet) sans AUCUNE conversion : un octet WinAnsi 0x92 (apostrophe
+  courbe) redevenait l'octet CP437 0x92 (qui est un tout autre glyphe
+  dans la police bitmap de ce navigateur) au lieu d'une apostrophe -
+  exactement le symptome signale. }
+Function PDFWinAnsiByteToCodePoint(B: Byte): LongInt;
+Begin
+ Case B Of
+  $80: PDFWinAnsiByteToCodePoint := 8364;  { Euro }
+  $82: PDFWinAnsiByteToCodePoint := 8218;  { virgule basse simple }
+  $83: PDFWinAnsiByteToCodePoint := 402;   { f a crochet }
+  $84: PDFWinAnsiByteToCodePoint := 8222;  { virgule basse double }
+  $85: PDFWinAnsiByteToCodePoint := 8230;  { points de suspension }
+  $86: PDFWinAnsiByteToCodePoint := 8224;  { obele }
+  $87: PDFWinAnsiByteToCodePoint := 8225;  { double obele }
+  $88: PDFWinAnsiByteToCodePoint := 710;   { accent circonflexe isole }
+  $89: PDFWinAnsiByteToCodePoint := 8240;  { pour mille }
+  $8A: PDFWinAnsiByteToCodePoint := 352;   { S caron }
+  $8B: PDFWinAnsiByteToCodePoint := 8249;  { chevron simple gauche }
+  $8C: PDFWinAnsiByteToCodePoint := 338;   { OE ligature majuscule }
+  $8E: PDFWinAnsiByteToCodePoint := 381;   { Z caron }
+  $91: PDFWinAnsiByteToCodePoint := 8216;  { apostrophe courbe gauche }
+  $92: PDFWinAnsiByteToCodePoint := 8217;  { apostrophe courbe droite - LE bogue signale }
+  $93: PDFWinAnsiByteToCodePoint := 8220;  { guillemet courbe gauche }
+  $94: PDFWinAnsiByteToCodePoint := 8221;  { guillemet courbe droit }
+  $95: PDFWinAnsiByteToCodePoint := 8226;  { puce }
+  $96: PDFWinAnsiByteToCodePoint := 8211;  { tiret demi-cadratin }
+  $97: PDFWinAnsiByteToCodePoint := 8212;  { tiret cadratin }
+  $98: PDFWinAnsiByteToCodePoint := 732;   { tilde isole }
+  $99: PDFWinAnsiByteToCodePoint := 8482;  { marque de commerce }
+  $9A: PDFWinAnsiByteToCodePoint := 353;   { s caron }
+  $9B: PDFWinAnsiByteToCodePoint := 8250;  { chevron simple droit }
+  $9C: PDFWinAnsiByteToCodePoint := 339;   { oe ligature minuscule }
+  $9E: PDFWinAnsiByteToCodePoint := 382;   { z caron }
+  $9F: PDFWinAnsiByteToCodePoint := 376;   { Y trema }
+  Else PDFWinAnsiByteToCodePoint := B; { 0xA0-0xFF identique a Latin-1/Unicode ; 0x81/0x8D/0x8F/0x90/0x9D non definis en WinAnsi, repli honnete sur l'octet lui-meme }
+ End;
+End;
+
+{ Octet brut d'une chaine PDF -> caractere reellement affichable par ce
+  navigateur (ASCII inchange, haut de plage converti via la table
+  WinAnsi ci-dessus puis vers le jeu de caracteres d'affichage deja
+  utilise pour le HTML - voir HTMLCodePointToChar, qui gere deja
+  correctement les guillemets/apostrophes courbes et les lettres
+  accentuees, initialement ecrite pour les entites HTML mais entierement
+  reutilisable ici telle quelle). }
+Function PDFDecodeByteToChar(B: Byte): Char;
+Begin
+ If B < 128 Then PDFDecodeByteToChar := Chr(B)
+ Else PDFDecodeByteToChar := HTMLCodePointToChar(PDFWinAnsiByteToCodePoint(B));
+End;
+
+{ Variante de PDFDecodeByteToChar qui consulte D'ABORD le /Differences
+  de la police ACTUELLEMENT active (PDFCurFontDiffMap/PDFCurFontHasDiff,
+  mis a jour a chaque Tf - voir PDFResolveFontEncoding) avant de retomber
+  sur la table WinAnsi generique. Necessaire (2026-09-26, demande
+  explicite - "l'apostrophe s'affiche mal") : le document reel de
+  l'utilisateur remappe l'apostrophe sur le code 182 via un /Differences
+  propre a sa police - PAS le code 0x92 standard de WinAnsiEncoding
+  (confirme en instrumentant temporairement le decodage : ce code 182
+  apparaissait EXACTEMENT 4 fois sur la page, correspondant aux 4
+  apostrophes reelles du texte francais de cette page). }
+Function PDFDecodeByteToCharEx(B: Byte): Char;
+Var
+ CP: LongInt;
+Begin
+ If PDFCurFontHasDiff And (PDFCurFontDiffMap[B] >= 0) Then Begin
+  CP := PDFCurFontDiffMap[B];
+  If CP < 128 Then PDFDecodeByteToCharEx := Chr(CP)
+  Else PDFDecodeByteToCharEx := HTMLCodePointToChar(CP);
+  Exit;
+ End;
+ PDFDecodeByteToCharEx := PDFDecodeByteToChar(B);
+End;
+
+Function PDFApplyWinAnsi(Const S: String): String;
+Var
+ I: LongInt;
+ R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do
+  R := R + PDFDecodeByteToCharEx(Byte(Ord(S[I])));
+ PDFApplyWinAnsi := R;
+End;
+
 { Termine la ligne en cours d'accumulation (PDFCurLineText) et l'ajoute
   a PDFLines avec la position X ou elle a commence - appelee a chaque
   operateur de positionnement reel (Td/TD/T*/Tm/BT) et une derniere fois
@@ -16388,6 +16494,8 @@ Begin
    Inc(PDFLineCount);
    PDFLines[PDFLineCount].LineText := PDFCurLineText;
    PDFLines[PDFLineCount].StartX := PDFCurLineStartX;
+   PDFLines[PDFLineCount].IsBold := PDFCurFontBold;
+   PDFLines[PDFLineCount].IsItalic := PDFCurFontItalic;
   End;
  End;
  PDFCurLineText := '';
@@ -16405,6 +16513,268 @@ Begin
  PDFCurX := 0;
  PDFCurY := 0;
  PDFCurLineStartX := 0;
+ PDFCurFontName := '';
+ PDFCurFontBold := False;
+ PDFCurFontItalic := False;
+ PDFCurFontHasDiff := False;
+End;
+
+{ Localise le dictionnaire /Resources de PageObjNum, avec heritage via
+  /Parent (meme principe que /MediaBox ci-dessus - la norme permet aux
+  deux d'etre herites depuis un noeud /Pages ancetre plutot que repetes
+  sur chaque page). /Resources peut etre soit un dictionnaire direct
+  << ... >>, soit une reference indirecte N G R. }
+Function PDFFindResourcesDict(Const Data: String; PageObjNum: LongInt;
+ Var ResDictStart, ResDictEnd: LongInt): Boolean;
+Var
+ CurObj, Depth, Q: LongInt;
+ DictStart, DictEnd, ResPos, ParentPos, RefObjNum: LongInt;
+Begin
+ PDFFindResourcesDict := False;
+ ResDictStart := 0;
+ ResDictEnd := 0;
+ CurObj := PageObjNum;
+ Depth := 0;
+ While (CurObj > 0) And (Depth < 10) Do Begin
+  PDFGetObjectDict(Data, CurObj, DictStart, DictEnd);
+  If DictStart = 0 Then Exit;
+  ResPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Resources');
+  If ResPos > 0 Then Begin
+   Q := ResPos;
+   While (Q <= DictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+   If (Q < DictEnd) And (Data[Q] = '<') And (Data[Q + 1] = '<') Then Begin
+    ResDictStart := Q;
+    ResDictEnd := PDFFindDictEnd(Data, Q);
+    PDFFindResourcesDict := ResDictEnd > 0;
+    Exit;
+   End Else Begin
+    RefObjNum := PDFReadRefAt(Data, Q, DictEnd, Q);
+    If RefObjNum > 0 Then Begin
+     PDFGetObjectDict(Data, RefObjNum, ResDictStart, ResDictEnd);
+     PDFFindResourcesDict := ResDictStart > 0;
+     Exit;
+    End;
+   End;
+  End;
+  ParentPos := PDFDictKeyPos(Data, DictStart, DictEnd, 'Parent');
+  If ParentPos = 0 Then Exit;
+  CurObj := PDFReadRefAt(Data, ParentPos, DictEnd, Q);
+  Inc(Depth);
+ End;
+End;
+
+{ Resout FontResName (ex. "F1", le nom donne par l'operateur Tf) en
+  gras/italique approximatifs, en cherchant /Font/FontResName dans
+  [ResDictStart..ResDictEnd] (une reference indirecte vers un objet
+  police), puis en lisant le /BaseFont de cet objet et en cherchant les
+  mots "Bold"/"Italic"/"Oblique" (insensible a la casse) dans son nom -
+  convention PostScript/PDF reelle et courante (ex. "Arial-BoldMT",
+  "TimesNewRomanPS-BoldItalicMT"), PAS garantie a 100% mais un standard
+  de facto largement respecte en pratique. }
+Procedure PDFResolveFontStyle(Const Data: String; ResDictStart, ResDictEnd: LongInt;
+ Const FontResName: String; Var IsBold, IsItalic: Boolean);
+Var
+ FontDictPos, FontArrS, FontArrE, NamePos, Q, FontObjNum: LongInt;
+ FObjDictStart, FObjDictEnd, BaseFontPos: LongInt;
+ BaseFontName, LowerName: String;
+Begin
+ IsBold := False;
+ IsItalic := False;
+ If (ResDictStart = 0) Or (FontResName = '') Then Exit;
+
+ FontDictPos := PDFDictKeyPos(Data, ResDictStart, ResDictEnd, 'Font');
+ If FontDictPos = 0 Then Exit;
+ FontArrS := PDFPosFrom('<<', Data, FontDictPos);
+ If (FontArrS = 0) Or (FontArrS > ResDictEnd) Then Exit;
+ FontArrE := PDFFindDictEnd(Data, FontArrS);
+ If FontArrE = 0 Then Exit;
+
+ NamePos := PDFPosFrom('/' + FontResName, Data, FontArrS);
+ If (NamePos = 0) Or (NamePos > FontArrE) Then Exit;
+ { verifier que ce n'est pas le prefixe d'un nom plus long (ex. "/F1"
+   trouve a l'interieur de "/F10"). }
+ Q := NamePos + Length(FontResName) + 1;
+ If (Q <= Length(Data)) And (Data[Q] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+
+ FontObjNum := PDFReadRefAt(Data, Q, FontArrE, Q);
+ If FontObjNum <= 0 Then Exit;
+
+ PDFGetObjectDict(Data, FontObjNum, FObjDictStart, FObjDictEnd);
+ If FObjDictStart = 0 Then Exit;
+ BaseFontPos := PDFDictKeyPos(Data, FObjDictStart, FObjDictEnd, 'BaseFont');
+ If BaseFontPos = 0 Then Exit;
+ { le nom de police va de BaseFontPos (deja apres le '/' de la cle, mais
+   PAS apres le '/' du NOM lui-meme, ex. "/BaseFont /Arial-BoldMT" -
+   sauter les espaces puis le '/' du nom avant de lire les caracteres. }
+ Q := BaseFontPos;
+ While (Q <= FObjDictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q > FObjDictEnd) Or (Data[Q] <> '/') Then Exit;
+ Inc(Q);
+ NamePos := Q;
+ While (Q <= FObjDictEnd) And Not (Data[Q] In [' ', #9, #13, #10, '/', '<', '>', '[', ']']) Do Inc(Q);
+ BaseFontName := Copy(Data, NamePos, Q - NamePos);
+
+ LowerName := HTMLLowerCase(BaseFontName);
+ IsBold := PDFPosFrom('bold', LowerName, 1) > 0;
+ IsItalic := (PDFPosFrom('italic', LowerName, 1) > 0) Or (PDFPosFrom('oblique', LowerName, 1) > 0);
+End;
+
+{ Sous-ensemble PRATIQUE (pas exhaustif, DISCLOSED) de l'Adobe Glyph
+  List (AGL) - norme reelle et publique associant un nom de glyphe
+  PostScript (utilise par /Differences, voir PDFResolveFontEncoding) a
+  son point de code Unicode - couvre la typographie occidentale/
+  francaise courante (lettres accentuees, guillemets/apostrophes
+  courbes, tirets). Un nom absent de ce sous-ensemble renvoie -1 (glyphe
+  ignore, pas invente). }
+Function PDFGlyphNameToCodePoint(Const Name: String): LongInt;
+Begin
+ PDFGlyphNameToCodePoint := -1;
+ If Name = 'space' Then PDFGlyphNameToCodePoint := 32
+ Else If Name = 'quoteright' Then PDFGlyphNameToCodePoint := 8217
+ Else If Name = 'quoteleft' Then PDFGlyphNameToCodePoint := 8216
+ Else If Name = 'quotesingle' Then PDFGlyphNameToCodePoint := 39
+ Else If Name = 'quotedblleft' Then PDFGlyphNameToCodePoint := 8220
+ Else If Name = 'quotedblright' Then PDFGlyphNameToCodePoint := 8221
+ Else If Name = 'quotedbl' Then PDFGlyphNameToCodePoint := 34
+ Else If Name = 'quotesinglbase' Then PDFGlyphNameToCodePoint := 8218
+ Else If Name = 'quotedblbase' Then PDFGlyphNameToCodePoint := 8222
+ Else If Name = 'endash' Then PDFGlyphNameToCodePoint := 8211
+ Else If Name = 'emdash' Then PDFGlyphNameToCodePoint := 8212
+ Else If Name = 'hyphen' Then PDFGlyphNameToCodePoint := 45
+ Else If Name = 'ellipsis' Then PDFGlyphNameToCodePoint := 8230
+ Else If Name = 'bullet' Then PDFGlyphNameToCodePoint := 8226
+ Else If Name = 'eacute' Then PDFGlyphNameToCodePoint := 233
+ Else If Name = 'egrave' Then PDFGlyphNameToCodePoint := 232
+ Else If Name = 'ecircumflex' Then PDFGlyphNameToCodePoint := 234
+ Else If Name = 'edieresis' Then PDFGlyphNameToCodePoint := 235
+ Else If Name = 'agrave' Then PDFGlyphNameToCodePoint := 224
+ Else If Name = 'aacute' Then PDFGlyphNameToCodePoint := 225
+ Else If Name = 'acircumflex' Then PDFGlyphNameToCodePoint := 226
+ Else If Name = 'adieresis' Then PDFGlyphNameToCodePoint := 228
+ Else If Name = 'ccedilla' Then PDFGlyphNameToCodePoint := 231
+ Else If Name = 'ugrave' Then PDFGlyphNameToCodePoint := 249
+ Else If Name = 'uacute' Then PDFGlyphNameToCodePoint := 250
+ Else If Name = 'ucircumflex' Then PDFGlyphNameToCodePoint := 251
+ Else If Name = 'udieresis' Then PDFGlyphNameToCodePoint := 252
+ Else If Name = 'ograve' Then PDFGlyphNameToCodePoint := 242
+ Else If Name = 'oacute' Then PDFGlyphNameToCodePoint := 243
+ Else If Name = 'ocircumflex' Then PDFGlyphNameToCodePoint := 244
+ Else If Name = 'odieresis' Then PDFGlyphNameToCodePoint := 246
+ Else If Name = 'igrave' Then PDFGlyphNameToCodePoint := 236
+ Else If Name = 'iacute' Then PDFGlyphNameToCodePoint := 237
+ Else If Name = 'icircumflex' Then PDFGlyphNameToCodePoint := 238
+ Else If Name = 'idieresis' Then PDFGlyphNameToCodePoint := 239
+ Else If Name = 'ntilde' Then PDFGlyphNameToCodePoint := 241
+ Else If Name = 'ydieresis' Then PDFGlyphNameToCodePoint := 255
+ Else If Name = 'Eacute' Then PDFGlyphNameToCodePoint := 201
+ Else If Name = 'Egrave' Then PDFGlyphNameToCodePoint := 200
+ Else If Name = 'Ecircumflex' Then PDFGlyphNameToCodePoint := 202
+ Else If Name = 'Agrave' Then PDFGlyphNameToCodePoint := 192
+ Else If Name = 'Ccedilla' Then PDFGlyphNameToCodePoint := 199
+ Else If Name = 'Ugrave' Then PDFGlyphNameToCodePoint := 217
+ Else If Name = 'oe' Then PDFGlyphNameToCodePoint := 339
+ Else If Name = 'OE' Then PDFGlyphNameToCodePoint := 338
+ Else If Name = 'copyright' Then PDFGlyphNameToCodePoint := 169
+ Else If Name = 'registered' Then PDFGlyphNameToCodePoint := 174
+ Else If Name = 'trademark' Then PDFGlyphNameToCodePoint := 8482
+ Else If Name = 'degree' Then PDFGlyphNameToCodePoint := 176
+ Else If Name = 'guillemotleft' Then PDFGlyphNameToCodePoint := 171
+ Else If Name = 'guillemotright' Then PDFGlyphNameToCodePoint := 187;
+End;
+
+{ Resout le /Encoding de FontResName : si c'est un dictionnaire avec un
+  tableau /Differences (remappage de codes-octets propre a CETTE
+  police, distinct de l'encodage de base WinAnsi/Standard - technique
+  reelle et courante pour les polices subsetees/embarquees, voir norme
+  ISO 32000 9.6.6), le tableau est REELLEMENT parse (syntaxe reelle :
+  une suite [ code /nom /nom code /nom ... ], chaque /nom s'appliquant
+  au code courant puis incrementant celui-ci pour le /nom suivant) et
+  DiffMap est rempli via PDFGlyphNameToCodePoint. Si /Encoding est un
+  simple NOM (ex. /WinAnsiEncoding) ou absent, HasDiff reste False (la
+  table WinAnsi generique de PDFDecodeByteToChar s'applique alors seule -
+  voir PDFDecodeByteToCharEx). }
+Procedure PDFResolveFontEncoding(Const Data: String; ResDictStart, ResDictEnd: LongInt;
+ Const FontResName: String; Var DiffMap: TPDFDiffMap; Var HasDiff: Boolean);
+Var
+ FontDictPos, FontArrS, FontArrE, NamePos, Q, FontObjNum: LongInt;
+ FObjDictStart, FObjDictEnd, EncPos, EncDictS, EncDictE, DiffPos, ArrS, ArrE: LongInt;
+ CurCode, NStart, CP, EncObjNum: LongInt;
+ GlyphName: String;
+Begin
+ HasDiff := False;
+ If (ResDictStart = 0) Or (FontResName = '') Then Exit;
+
+ FontDictPos := PDFDictKeyPos(Data, ResDictStart, ResDictEnd, 'Font');
+ If FontDictPos = 0 Then Exit;
+ FontArrS := PDFPosFrom('<<', Data, FontDictPos);
+ If (FontArrS = 0) Or (FontArrS > ResDictEnd) Then Exit;
+ FontArrE := PDFFindDictEnd(Data, FontArrS);
+ If FontArrE = 0 Then Exit;
+
+ NamePos := PDFPosFrom('/' + FontResName, Data, FontArrS);
+ If (NamePos = 0) Or (NamePos > FontArrE) Then Exit;
+ Q := NamePos + Length(FontResName) + 1;
+ If (Q <= Length(Data)) And (Data[Q] In ['A'..'Z', 'a'..'z', '0'..'9', '_', '.', '-']) Then Exit;
+
+ FontObjNum := PDFReadRefAt(Data, Q, FontArrE, Q);
+ If FontObjNum <= 0 Then Exit;
+
+ PDFGetObjectDict(Data, FontObjNum, FObjDictStart, FObjDictEnd);
+ If FObjDictStart = 0 Then Exit;
+
+ EncPos := PDFDictKeyPos(Data, FObjDictStart, FObjDictEnd, 'Encoding');
+ If EncPos = 0 Then Exit;
+ Q := EncPos;
+ While (Q <= FObjDictEnd) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+ If (Q < FObjDictEnd) And (Data[Q] = '<') And (Data[Q + 1] = '<') Then Begin
+  EncDictS := Q;
+  EncDictE := PDFFindDictEnd(Data, EncDictS);
+ End Else Begin
+  { /Encoding est souvent une REFERENCE INDIRECTE vers un objet
+    dictionnaire separe (partage entre plusieurs polices) plutot qu'un
+    dictionnaire inline - corrige pour gerer les deux formes (voir aussi
+    la disclosure globale du module : meme si /Differences est trouve et
+    applique ici quand present, le document reel de l'utilisateur s'est
+    revele ne PAS en avoir - voir la disclosure globale plus haut sur les
+    limites reelles de cette approche). }
+  EncObjNum := PDFReadRefAt(Data, Q, FObjDictEnd, Q);
+  If EncObjNum <= 0 Then Exit;
+  PDFGetObjectDict(Data, EncObjNum, EncDictS, EncDictE);
+ End;
+ If EncDictS = 0 Then Exit;
+ If EncDictE = 0 Then Exit;
+
+ DiffPos := PDFDictKeyPos(Data, EncDictS, EncDictE, 'Differences');
+ If DiffPos = 0 Then Exit;
+ ArrS := PDFPosFrom('[', Data, DiffPos);
+ If (ArrS = 0) Or (ArrS > EncDictE) Then Exit;
+ ArrE := PDFPosFrom(']', Data, ArrS);
+ If (ArrE = 0) Or (ArrE > EncDictE) Then Exit;
+
+ For CurCode := 0 To 255 Do DiffMap[CurCode] := -1;
+ CurCode := 0;
+ Q := ArrS + 1;
+ While Q < ArrE Do Begin
+  While (Q < ArrE) And (Data[Q] In [' ', #9, #13, #10]) Do Inc(Q);
+  If Q >= ArrE Then Break;
+  If Data[Q] In ['0'..'9'] Then Begin
+   NStart := Q;
+   While (Q < ArrE) And (Data[Q] In ['0'..'9']) Do Inc(Q);
+   CurCode := PDFStrToLongInt(Copy(Data, NStart, Q - NStart));
+  End Else If Data[Q] = '/' Then Begin
+   NStart := Q;
+   Inc(Q);
+   While (Q < ArrE) And Not (Data[Q] In [' ', #9, #13, #10, '/', '[', ']']) Do Inc(Q);
+   GlyphName := Copy(Data, NStart + 1, Q - NStart - 1);
+   If (CurCode >= 0) And (CurCode <= 255) Then Begin
+    CP := PDFGlyphNameToCodePoint(GlyphName);
+    If CP >= 0 Then DiffMap[CurCode] := CP;
+   End;
+   Inc(CurCode);
+  End Else
+   Inc(Q);
+ End;
+ HasDiff := True;
 End;
 
 { Traite un flux de contenu DEJA decompresse, alimentant PDFLines : les
@@ -16430,14 +16800,16 @@ End;
   d'etre accumule sur la MEME ligne logique, seule la position X suivie
   avance. T* reste TOUJOURS un saut de ligne reel (la norme le definit
   ainsi : avance a la ligne suivante selon l'interligne courant). }
-Procedure PDFProcessContentStream(Const Stream: String);
+Procedure PDFProcessContentStream(Const Stream: String; Const Data: String;
+ ResDictStart, ResDictEnd: LongInt);
 Var
  P, LimitPos, WStart, NStart, Tx, Ty: LongInt;
- WordTok, NumStr: String;
+ WordTok, NumStr, LastName: String;
  Num6: Array[0..5] Of LongInt;
 Begin
  P := 1;
  LimitPos := Length(Stream);
+ LastName := '';
  FillChar(Num6, SizeOf(Num6), 0);
  While P <= LimitPos Do Begin
   If Stream[P] = '(' Then
@@ -16451,11 +16823,24 @@ Begin
      entre CHAQUE lettre. COMPROMIS DISCLOSED : un PDF qui separerait des
      MOTS entre plusieurs Tj/TJ en s'appuyant UNIQUEMENT sur l'ecart de
      positionnement (sans jamais emettre de glyphe espace explicite) les
-     verrait alors colles - plus rare en pratique que le cas corrige ici. }
-   PDFCurLineText := PDFCurLineText + PDFDecodeLiteralString(Stream, P, LimitPos)
+     verrait alors colles - plus rare en pratique que le cas corrige ici.
+     PDFApplyWinAnsi (2026-09-26, demande explicite de l'utilisateur -
+     "l'apostrophe s'affiche mal") convertit chaque octet >= 128 du
+     WinAnsiEncoding PDF (l'encodage implicite le plus courant pour une
+     police non symbolique) vers le jeu de caracteres d'affichage de ce
+     navigateur - voir sa disclosure complete. }
+   PDFCurLineText := PDFCurLineText + PDFApplyWinAnsi(PDFDecodeLiteralString(Stream, P, LimitPos))
   Else If (Stream[P] = '<') And (P < LimitPos) And (Stream[P + 1] <> '<') Then
-   PDFCurLineText := PDFCurLineText + PDFDecodeHexString(Stream, P, LimitPos)
-  Else If Stream[P] In ['0'..'9', '-', '.', '+'] Then Begin
+   PDFCurLineText := PDFCurLineText + PDFApplyWinAnsi(PDFDecodeHexString(Stream, P, LimitPos))
+  Else If Stream[P] = '/' Then Begin
+   { Nom PDF ("/F1", "/Bold" etc.) - seul le NOM DE POLICE precedant un
+     Tf nous interesse (voir plus bas), mais tout nom est capture ici de
+     la meme facon generique. }
+   NStart := P;
+   Inc(P);
+   While (P <= LimitPos) And Not (Stream[P] In [' ', #9, #13, #10, '/', '<', '>', '[', ']', '(', ')']) Do Inc(P);
+   LastName := Copy(Stream, NStart + 1, P - NStart - 1);
+  End Else If Stream[P] In ['0'..'9', '-', '.', '+'] Then Begin
    NStart := P;
    Inc(P);
    While (P <= LimitPos) And (Stream[P] In ['0'..'9', '.', '-', '+']) Do Inc(P);
@@ -16466,7 +16851,18 @@ Begin
    WStart := P;
    While (P <= LimitPos) And (Stream[P] In ['A'..'Z', 'a'..'z', '0'..'9', '*']) Do Inc(P);
    WordTok := Copy(Stream, WStart, P - WStart);
-   If (WordTok = 'Td') Or (WordTok = 'TD') Then Begin
+   If WordTok = 'Tf' Then Begin
+    { Detection gras/italique (2026-09-26, demande explicite de
+      l'utilisateur) : /NomRessource taille Tf - LastName est le nom de
+      ressource ("F1") lu juste avant ce Tf. Ne resout que si le nom a
+      change, pour eviter de re-analyser les /Resources a chaque Tf
+      identique (frequent - un Tf est souvent repete a chaque ligne). }
+    If LastName <> PDFCurFontName Then Begin
+     PDFCurFontName := LastName;
+     PDFResolveFontStyle(Data, ResDictStart, ResDictEnd, LastName, PDFCurFontBold, PDFCurFontItalic);
+     PDFResolveFontEncoding(Data, ResDictStart, ResDictEnd, LastName, PDFCurFontDiffMap, PDFCurFontHasDiff);
+    End;
+   End Else If (WordTok = 'Td') Or (WordTok = 'TD') Then Begin
     Tx := Num6[4]; { tx = avant-dernier nombre lu avant Td/TD }
     Ty := Num6[5]; { ty = dernier nombre lu avant Td/TD }
     If Abs(Ty) > 2 Then Begin
@@ -16555,9 +16951,10 @@ Begin
    DISCLOSED (rare pour un flux de contenu texte). }
 End;
 
-Procedure PDFGetDecompressedStreamAndExtract(Const Data: String; ObjNum: LongInt);
+Procedure PDFGetDecompressedStreamAndExtract(Const Data: String; ObjNum: LongInt;
+ ResDictStart, ResDictEnd: LongInt);
 Begin
- PDFProcessContentStream(PDFGetDecompressedStream(Data, ObjNum));
+ PDFProcessContentStream(PDFGetDecompressedStream(Data, ObjNum), Data, ResDictStart, ResDictEnd);
 End;
 
 { Extraction de SECOURS (2026-09-26) : utilisee quand le catalogue/l'arbre
@@ -16607,7 +17004,7 @@ Begin
     If DeflateDecompressBlock(DecompBuf, DecompLen, Length(DecompBuf)) Then Begin
      SetLength(OutStr, DecompLen);
      For I := 0 To DecompLen - 1 Do OutStr[I + 1] := Chr(DecompBuf[I]);
-     PDFProcessContentStream(OutStr);
+     PDFProcessContentStream(OutStr, Data, 0, 0); { pas de /Resources connu en secours }
     End;
    End;
   End;
@@ -16740,7 +17137,8 @@ Var
  CatalogNamePos, DictS, DictE, PagesRef, P, Q, ArrE: LongInt;
  PageDictS, PageDictE, ContentsPos, SingleContentsRef: LongInt;
  LI, PageWidth, AlignId, PageIdx, TotalPages: LongInt;
- AllHTML, AlignStr: String;
+ ResDictS, ResDictE: LongInt;
+ AllHTML, AlignStr, LineHTML: String;
  UsedFallback: Boolean;
 Begin
  PDFExtractText := False;
@@ -16782,6 +17180,10 @@ Begin
   PDFGetObjectDict(Data, PDFPageObjNums[PageIdx], PageDictS, PageDictE);
   If PageDictS > 0 Then Begin
    PageWidth := PDFGetPageWidth(Data, PDFPageObjNums[PageIdx]);
+   If Not PDFFindResourcesDict(Data, PDFPageObjNums[PageIdx], ResDictS, ResDictE) Then Begin
+    ResDictS := 0;
+    ResDictE := 0;
+   End;
    ContentsPos := PDFDictKeyPos(Data, PageDictS, PageDictE, 'Contents');
    If ContentsPos > 0 Then Begin
     Q := ContentsPos;
@@ -16793,13 +17195,13 @@ Begin
       While P < ArrE Do Begin
        SingleContentsRef := PDFReadRefAt(Data, P, ArrE, P);
        If SingleContentsRef < 0 Then Break;
-       PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef);
+       PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef, ResDictS, ResDictE);
       End;
      End;
     End Else Begin
      SingleContentsRef := PDFReadRefAt(Data, Q, PageDictE, P);
      If SingleContentsRef > 0 Then
-      PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef);
+      PDFGetDecompressedStreamAndExtract(Data, SingleContentsRef, ResDictS, ResDictE);
     End;
    End;
   End;
@@ -16839,8 +17241,12 @@ Begin
      2: AlignStr := 'right';
      Else AlignStr := 'left';
     End;
-    AllHTML := AllHTML + '<p style="text-align:' + AlignStr + '">' +
-     FTPEscapeText(PDFLines[LI].LineText) + '</p>';
+    { Gras/italique approxime (2026-09-26, demande explicite de
+      l'utilisateur) - voir la disclosure de PDFResolveFontStyle. }
+    LineHTML := FTPEscapeText(PDFLines[LI].LineText);
+    If PDFLines[LI].IsBold Then LineHTML := '<b>' + LineHTML + '</b>';
+    If PDFLines[LI].IsItalic Then LineHTML := '<i>' + LineHTML + '</i>';
+    AllHTML := AllHTML + '<p style="text-align:' + AlignStr + '">' + LineHTML + '</p>';
    End;
  End Else Begin
   PDFFallbackExtractAll(Data);
