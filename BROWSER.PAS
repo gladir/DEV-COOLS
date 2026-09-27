@@ -9572,8 +9572,13 @@ Begin
   End;
   If HTMLLowerCase(DivStyle.PositionProp)='relative'Then Begin
    PositionAnchorValid:=True;
-   PositionAnchorX:=BoxStartX;
-   PositionAnchorY:=BoxStartY;
+   { Pour position:absolute, le bloc conteneur CSS est etabli sur son
+     padding box, donc a l'interieur de ses bordures. Cette distinction
+     est visible sur .INX (border-top:5px) avec un H3 top:-53px. }
+   PositionAnchorX:=BoxStartX+
+                    CSSParseDimension(DivStyle.BorderLeftWidth,0);
+   PositionAnchorY:=BoxStartY+
+                    CSSParseDimension(DivStyle.BorderTopWidth,0);
    PositionAnchorMaxX:=BoxEndX
   End;
   MeasureCtx := Ctx;
@@ -9939,6 +9944,11 @@ Var
  WantsBlock: Boolean;
  Box: TElementBoxInfo;
  MarginTopPx, MarginBottomPx: Integer;
+ HeadingStyle: DOMStyle;
+ HeadingX,HeadingY,HeadingWidth,HeadingBoxHeight:Integer;
+ PaddingLeftPx,PaddingRightPx,PaddingTopPx,BorderLeftPx:Integer;
+ HeadingBgColor,HeadingBorderColor:Integer;
+ HeadingTextColor:Integer;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  Box := CurrentElementBox;
@@ -9948,6 +9958,60 @@ Begin
  { Sauvegarder les valeurs courantes }
  OldLineHeight := Ctx.LineHeight;
  OldTextStyle := Ctx.TextStyle;
+
+ { Un titre position:absolute est deja place a ses coordonnees finales
+   par RenderAbsolutePositionedOverlays. Il ne doit surtout pas appeler
+   RenderNewLine/RenderBlockSpacing : ces routines le rameneraient a la
+   marge de la page et decaleraient son Y. Peindre ici sa propre boite
+   CSS permet aussi de reproduire les onglets .INX h3 de Gladir. }
+ If RenderingAbsoluteOverlay Then Begin
+  CSSResolveCascade(Node,HeadingStyle);
+  HeadingX:=Ctx.X;HeadingY:=Ctx.Y;
+  PaddingLeftPx:=CSSParseDimension(HeadingStyle.PaddingLeft,0);
+  PaddingRightPx:=CSSParseDimension(HeadingStyle.PaddingRight,0);
+  PaddingTopPx:=CSSParseDimension(HeadingStyle.PaddingTop,0);
+  If HeadingStyle.Padding<>'' Then Begin
+   If HeadingStyle.PaddingLeft='' Then
+    PaddingLeftPx:=CSSParseShorthandSide(HeadingStyle.Padding,3,0);
+   If HeadingStyle.PaddingRight='' Then
+    PaddingRightPx:=CSSParseShorthandSide(HeadingStyle.Padding,1,0);
+   If HeadingStyle.PaddingTop='' Then
+    PaddingTopPx:=CSSParseShorthandSide(HeadingStyle.Padding,0,0)
+  End;
+  BorderLeftPx:=CSSParseDimension(HeadingStyle.BorderLeftWidth,0);
+  HeadingWidth:=CSSParseDimension(HeadingStyle.Width,0);
+  If HeadingWidth<=0 Then
+   HeadingWidth:=GetTextWidth(DOMGetTextContent(Node))+PaddingLeftPx+
+                 PaddingRightPx+BorderLeftPx;
+  HeadingBoxHeight:=CSSParseDimension(HeadingStyle.Height,HeadingHeight);
+  If HeadingBoxHeight<HeadingHeight Then HeadingBoxHeight:=HeadingHeight;
+  HeadingBgColor:=CSSColorToIndex(HeadingStyle.BackgroundColor);
+  If HeadingBgColor>=0 Then Begin
+   SetFillStyle(SolidFill,HeadingBgColor);
+   Bar(HeadingX,HeadingY,HeadingX+HeadingWidth,HeadingY+HeadingBoxHeight)
+  End;
+  If BorderLeftPx>0 Then Begin
+   HeadingBorderColor:=CSSColorToIndex(HeadingStyle.BorderLeftColor);
+   If HeadingBorderColor<0 Then HeadingBorderColor:=Box.BorderColorIdx;
+   SetFillStyle(SolidFill,HeadingBorderColor);
+   Bar(HeadingX,HeadingY,HeadingX+BorderLeftPx-1,
+       HeadingY+HeadingBoxHeight)
+  End;
+  Ctx.X:=HeadingX+BorderLeftPx+PaddingLeftPx;
+  Ctx.Y:=HeadingY+PaddingTopPx;
+  HeadingTextColor:=CSSColorToIndex(HeadingStyle.Color);
+  If HeadingTextColor>=0 Then Ctx.TextColor:=HeadingTextColor;
+  Ctx.LineHeight:=HeadingHeight;
+  Ctx.TextStyle:=Ctx.TextStyle Or TEXT_STYLE_BOLD;
+  RenderChildren(Node,Ctx);
+  { text-align:justify met le mot dans JustifyWords. Comme un overlay ne
+    passe pas par RenderNewLine, il faut terminer explicitement sa ligne,
+    sinon le fond blanc est visible mais le titre reste dans le tampon. }
+  FlushJustifiedLine(Ctx,False);
+  Ctx.LineHeight:=OldLineHeight;
+  Ctx.TextStyle:=OldTextStyle;
+  Exit
+ End;
 
  { Nouvelle ligne avant le titre, sauf si le CSS demande
    display:inline/inline-block. }
