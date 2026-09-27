@@ -10233,7 +10233,7 @@ Var
 Begin
  WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant la liste si necessaire }
- If WantsBlock Then Begin
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
   RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
@@ -10256,7 +10256,7 @@ Begin
  Ctx.ListItemNumber := OldListItemNumber;
 
  { Espacement apres la liste }
- If WantsBlock Then
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then
   RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 End;
 
@@ -10269,7 +10269,7 @@ Var
 Begin
  WantsBlock := CurrentElementWantsBlock;
  { Nouvelle ligne avant la liste si necessaire }
- If WantsBlock Then Begin
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
    RenderNewLine(Ctx);
   RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
@@ -10292,7 +10292,7 @@ Begin
  Ctx.ListItemNumber := OldListItemNumber;
 
  { Espacement apres la liste }
- If WantsBlock Then
+ If WantsBlock And (Not RenderingAbsoluteOverlay) Then
   RenderBlockSpacing(Ctx, RENDER_LIST_SPACING);
 End;
 
@@ -10319,8 +10319,11 @@ Begin
   IndentX := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
   Ctx.X := IndentX;
  End
- Else If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
-  { En ligne : un espace de separation avant l'element suivant }
+ Else If Ctx.ListItemNumber > 0 Then
+  { En ligne : separer les elements APRES le premier. Comparer X a la
+    marge globale cassait les listes positionnees a droite : leur premier
+    LI recevait lui aussi un retrait, simplement parce que son ancre X
+    etait naturellement eloignee du bord gauche. }
   Ctx.X := Ctx.X + 8;
 
  { Un LI peut lui aussi porter un background-image CSS (menus et barres
@@ -10330,6 +10333,9 @@ Begin
 
  { Incrementer le numero d'element pour les listes ordonnees }
  If Ctx.ListType = LIST_TYPE_OL Then
+  Inc(Ctx.ListItemNumber)
+ Else If Ctx.ListType = LIST_TYPE_UL Then
+  { Egalement utilise comme compteur d'espacement pour les LI inline. }
   Inc(Ctx.ListItemNumber);
 
  { Afficher le marqueur de liste, sauf si list-style/list-style-type
@@ -18883,7 +18889,7 @@ Var
  OverlayId, HoverHandler: String;
  ChildNode: HTMLNodePtr;
  ChildStyle: DOMStyle;
- NaturalWidth, ChildWidth: Integer;
+ NaturalWidth, ChildWidth, NaturalChildCount: Integer;
 Begin
  { Les elements positionnes sont peints du plus petit au plus grand
    z-index; l'ordre du document departage les valeurs identiques. }
@@ -18910,13 +18916,18 @@ Begin
      comme largeur de repli poussait #admin loin de son bord droit. }
    If (AbsolutePositionedNodes[I]^.TagType = TAG_UL) And
       (Length(NodeStyle.Width) = 0) Then Begin
-    NaturalWidth := 0;
+   NaturalWidth := 0;
+    NaturalChildCount := 0;
     ChildNode := AbsolutePositionedNodes[I]^.FirstChild;
     While ChildNode <> Nil Do Begin
      If ChildNode^.NodeType = HTML_NODE_ELEMENT Then Begin
       CSSResolveCascade(ChildNode, ChildStyle);
       ChildWidth := CSSParseDimension(ChildStyle.Width, 0);
-      If ChildWidth > 0 Then Inc(NaturalWidth, ChildWidth + 4);
+      If ChildWidth > 0 Then Begin
+       If NaturalChildCount > 0 Then Inc(NaturalWidth, 8);
+       Inc(NaturalWidth, ChildWidth);
+       Inc(NaturalChildCount);
+      End;
      End;
      ChildNode := ChildNode^.NextSibling;
     End;
