@@ -1293,8 +1293,10 @@ FailedImageURLCount:Integer;
    d'elements d'une page reelle sont position:absolute (ex: les
    sous-menus de JSCookMenu.js), meme quand l'arbre entier comporte
    des milliers de noeuds. }
- AbsolutePositionedNodes: Array[1..200] Of HTMLNodePtr;
- AbsolutePositionedCount: Integer;
+AbsolutePositionedNodes: Array[1..200] Of HTMLNodePtr;
+AbsoluteAnchorX, AbsoluteAnchorY, AbsoluteAnchorMaxX: Array[1..200] Of Integer;
+AbsolutePositionedCount: Integer;
+AbsoluteClipDepth: Integer;
  RenderingAbsoluteOverlay: Boolean;
 
  { Minuterie a emplacement unique pour setTimeout/clearTimeout cote JS
@@ -9464,9 +9466,11 @@ Var
  Box: TElementBoxInfo;
  MarginTopPx, MarginBottomPx, PaddingTopPx, PaddingBottomPx: Integer;
  BoxStartX, BoxStartY, BoxEndX, BoxEndY, RequestedWidth: Integer;
+ OldMaxX, OldMaxY, FixedHeight, SavedClipDepth: Integer;
  MeasureCtx: RenderContext;
  OldMeasurePass: Boolean;
  SavedAbsoluteCount: Integer;
+ ClipOverflow: Boolean;
 Begin
  WantsBlock := CurrentElementWantsBlock;
  Box := CurrentElementBox;
@@ -9494,6 +9498,14 @@ Begin
    background CSS decoupe dans une feuille de sprites. Le peindre avant le
    contenu garantit qu'une seconde passe du tableau ne l'efface pas. }
  CSSResolveCascade(Node, DivStyle);
+ OldMaxX := Ctx.MaxX;
+ OldMaxY := Ctx.MaxY;
+ FixedHeight := CSSParseDimension(DivStyle.Height, 0);
+ ClipOverflow := WantsBlock And (FixedHeight > 0) And
+  ((HTMLLowerCase(DivStyle.Overflow) = 'hidden') Or
+   (HTMLLowerCase(DivStyle.Overflow) = 'clip') Or
+   (HTMLLowerCase(DivStyle.OverflowY) = 'hidden') Or
+   (HTMLLowerCase(DivStyle.OverflowY) = 'clip'));
  If WantsBlock And(DivStyle.TextIndent<>'')Then
   Inc(Ctx.X,CSSParseDimension(DivStyle.TextIndent,0));
 
@@ -9516,7 +9528,9 @@ Begin
    If BoxEndX > Ctx.MaxX Then BoxEndX := Ctx.MaxX;
   End;
   MeasureCtx := Ctx;
-  MeasureCtx.MaxY := High(Integer);
+  MeasureCtx.MaxX := BoxEndX;
+  If ClipOverflow Then MeasureCtx.MaxY := BoxStartY + FixedHeight
+  Else MeasureCtx.MaxY := High(Integer);
   OldMeasurePass := TableMeasurePass;
   SavedAbsoluteCount := AbsolutePositionedCount;
   TableMeasurePass := True;
@@ -9545,7 +9559,19 @@ Begin
  End;
  RenderCSSBackgroundSprite(DivStyle, Ctx.X, Ctx.Y);
 
+ If WantsBlock Then Ctx.MaxX := BoxEndX;
+ If ClipOverflow And (BoxStartY + FixedHeight < Ctx.MaxY) Then
+  Ctx.MaxY := BoxStartY + FixedHeight;
+ SavedClipDepth := AbsoluteClipDepth;
+ If ClipOverflow Then Inc(AbsoluteClipDepth);
  RenderChildren(Node, Ctx);
+ AbsoluteClipDepth := SavedClipDepth;
+
+ { overflow:hidden est un vrai viewport local : le contenu ne peut ni
+   peindre ni agrandir la boite au-dela de sa hauteur declaree. }
+ If ClipOverflow Then Ctx.Y := BoxStartY + FixedHeight;
+ Ctx.MaxX := OldMaxX;
+ Ctx.MaxY := OldMaxY;
 
  { Une hauteur CSS explicite reserve la hauteur de toute boite DIV; son
    contenu peut encore l'agrandir si necessaire. }
@@ -9569,7 +9595,7 @@ Begin
     boite a l'avance ; non implemente pour cette raison). }
   If Box.HasBorder And YInVisibleBand(BoxStartY, BoxEndY) Then Begin
    SetColor(Box.BorderColorIdx);
-   Rectangle(BoxStartX, BoxStartY, Ctx.MaxX, BoxEndY);
+   Rectangle(BoxStartX, BoxStartY, BoxEndX, BoxEndY);
    SetColor(Ctx.TextColor);
   End;
   Dec(Ctx.BlockLevel);
@@ -9600,18 +9626,11 @@ End;
 
 { Procedure pour rendre la balise SECTION (HTML5 bloc semantique) }
 Procedure RenderTagSection(Node: HTMLNodePtr; Var Ctx: RenderContext);
-Var
- WantsBlock: Boolean;
 Begin
- WantsBlock := CurrentElementWantsBlock;
- If WantsBlock Then Begin
-  If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10) Then
-   RenderNewLine(Ctx);
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
- End;
- RenderChildren(Node, Ctx);
- If WantsBlock Then
-  RenderBlockSpacing(Ctx, RENDER_PARAGRAPH_SPACING);
+ { SECTION possede le meme modele de boite qu'un DIV. L'ancien rendu
+   semantique ignorait background, padding, margin et height; les panneaux
+   .INX de gladir.com devenaient donc transparents et mal dimensionnes. }
+ RenderTagDiv(Node, Ctx);
 End;
 
 { Procedure pour rendre la balise ARTICLE (HTML5 bloc semantique) }
@@ -18614,9 +18633,16 @@ Begin
     overlay, le drapeau autorise naturellement son rendu reel. }
   If (HTMLLowerCase(NodeStyle.PositionProp) = 'absolute') And
      (Not RenderingAbsoluteOverlay) Then Begin
-   If AbsolutePositionedCount < High(AbsolutePositionedNodes) Then Begin
-    Inc(AbsolutePositionedCount);
-    AbsolutePositionedNodes[AbsolutePositionedCount] := Node;
+   { Un descendant d'un viewport overflow:hidden (notamment le contenu
+     importe d'une IFRAME) ne doit jamais devenir un overlay global qui
+     echappe a la zone de decoupage. }
+   If (AbsoluteClipDepth = 0) And
+      (AbsolutePositionedCount < High(AbsolutePositionedNodes)) Then Begin
+   Inc(AbsolutePositionedCount);
+   AbsolutePositionedNodes[AbsolutePositionedCount] := Node;
+   AbsoluteAnchorX[AbsolutePositionedCount] := Ctx.X;
+   AbsoluteAnchorY[AbsolutePositionedCount] := Ctx.Y;
+   AbsoluteAnchorMaxX[AbsolutePositionedCount] := Ctx.MaxX;
    End;
    Exit;
   End;
@@ -18879,7 +18905,7 @@ Procedure RenderAbsolutePositionedOverlays(Const BaseCtx: RenderContext);
 Var
  I,J: Integer;
  TmpNode:HTMLNodePtr;
- ZA,ZB,Code:Integer;
+ ZA,ZB,Code,TmpCoord:Integer;
  ZText:String;
  NodeStyle: DOMStyle;
  OverlayCtx: RenderContext;
@@ -18902,7 +18928,10 @@ Begin
    If ZA>ZB Then Begin
     TmpNode:=AbsolutePositionedNodes[I];
     AbsolutePositionedNodes[I]:=AbsolutePositionedNodes[J];
-    AbsolutePositionedNodes[J]:=TmpNode
+    AbsolutePositionedNodes[J]:=TmpNode;
+    TmpCoord:=AbsoluteAnchorX[I];AbsoluteAnchorX[I]:=AbsoluteAnchorX[J];AbsoluteAnchorX[J]:=TmpCoord;
+    TmpCoord:=AbsoluteAnchorY[I];AbsoluteAnchorY[I]:=AbsoluteAnchorY[J];AbsoluteAnchorY[J]:=TmpCoord;
+    TmpCoord:=AbsoluteAnchorMaxX[I];AbsoluteAnchorMaxX[I]:=AbsoluteAnchorMaxX[J];AbsoluteAnchorMaxX[J]:=TmpCoord
    End
   End;
  For I := 1 To AbsolutePositionedCount Do Begin
@@ -18938,24 +18967,23 @@ Begin
    If OverlayHeight < 1 Then OverlayHeight := OverlayCtx.LineHeight;
 
    If Length(NodeStyle.LeftProp) > 0 Then
-    OverlayCtx.X := RenderOriginX + CSSParseDimension(NodeStyle.LeftProp, 0)
+    OverlayCtx.X := AbsoluteAnchorX[I] + CSSParseDimension(NodeStyle.LeftProp, 0)
    Else If Length(NodeStyle.RightProp) > 0 Then Begin
     RightPx := CSSParseDimension(NodeStyle.RightProp, 0);
-    OverlayCtx.X := RenderOriginX + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE) -
-                    RightPx - OverlayWidth;
+    OverlayCtx.X := AbsoluteAnchorMaxX[I] - RightPx - OverlayWidth;
    End
    Else
-    OverlayCtx.X := RenderOriginX;
+    OverlayCtx.X := AbsoluteAnchorX[I];
 
    If Length(NodeStyle.TopProp) > 0 Then
-    OverlayCtx.Y := RenderOriginY + CSSParseDimension(NodeStyle.TopProp, 0)
+    OverlayCtx.Y := AbsoluteAnchorY[I] + CSSParseDimension(NodeStyle.TopProp, 0)
    Else If Length(NodeStyle.BottomProp) > 0 Then Begin
     BottomPx := CSSParseDimension(NodeStyle.BottomProp, 0);
     OverlayCtx.Y := RenderOriginY + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE) -
                     BottomPx - OverlayHeight;
    End
    Else
-    OverlayCtx.Y := RenderOriginY;
+    OverlayCtx.Y := AbsoluteAnchorY[I];
 
    { Repli fiable pour les menus JSCookMenu. Le gestionnaire de l'element
      survole contient l'id exact du sous-menu qu'il vient d'afficher. Les
@@ -22348,6 +22376,65 @@ Begin
  BuildRSSDocument:=ResultText
 End;
 
+{ Charger les IFRAME HTML dans la page hote. Le moteur est mono-document :
+  il remplace donc chaque cadre par un conteneur dimensionne contenant le
+  corps du document distant. Cela conserve le flux et permet d'afficher les
+  nouvelles de gladir.com, sans detruire le DOM/CSS de la page principale. }
+Function ExpandHTMLIFrames(Const Source,BaseURL:String):String;
+Var
+ ResultText,TagText,FrameURL,FrameHTML,OldURL,WidthText,HeightText:String;
+ P,TagEnd,ClosePos,CloseEnd,BodyPos,BodyStart,BodyEnd,Count:LongInt;
+ StatusCode:LongInt;
+ Loaded:Boolean;
+Begin
+ ResultText:=Source;P:=1;Count:=0;
+ Repeat
+  P:=XMLFindCI(ResultText,'<iframe',P);
+  If P=0Then Break;
+  TagEnd:=P;
+  While(TagEnd<=Length(ResultText))And(ResultText[TagEnd]<>'>')Do Inc(TagEnd);
+  If TagEnd>Length(ResultText)Then Break;
+  TagText:=Copy(ResultText,P,TagEnd-P+1);
+  FrameURL:=SVGGetAttribute(TagText,'src');
+  WidthText:=SVGGetAttribute(TagText,'width');
+  HeightText:=SVGGetAttribute(TagText,'height');
+  ClosePos:=XMLFindCI(ResultText,'</iframe',TagEnd+1);
+  If ClosePos=0Then CloseEnd:=TagEnd
+  Else Begin
+   CloseEnd:=ClosePos;
+   While(CloseEnd<=Length(ResultText))And(ResultText[CloseEnd]<>'>')Do Inc(CloseEnd);
+  End;
+  FrameHTML:='';Loaded:=False;
+  If FrameURL<>''Then Begin
+   OldURL:=CurrentURL;CurrentURL:=BaseURL;
+   FrameURL:=CSSBuildStylesheetPath(FrameURL);
+   CurrentURL:=OldURL;
+   {$IFDEF WINDOWS}
+   Loaded:=Browser_HttpGet(FrameURL,FrameHTML,StatusCode)And(Length(FrameHTML)>0);
+   {$ENDIF}
+  End;
+  If Loaded Then Begin
+   BodyPos:=XMLFindCI(FrameHTML,'<body',1);
+   If BodyPos>0Then Begin
+    BodyStart:=BodyPos;
+    While(BodyStart<=Length(FrameHTML))And(FrameHTML[BodyStart]<>'>')Do Inc(BodyStart);
+    BodyEnd:=XMLFindCI(FrameHTML,'</body',BodyStart+1);
+    If BodyEnd=0Then BodyEnd:=Length(FrameHTML)+1;
+    FrameHTML:=Copy(FrameHTML,BodyStart+1,BodyEnd-BodyStart-1)
+   End
+  End Else
+   FrameHTML:='<small>Impossible de charger le cadre '+HTMLViewSourceEscape(FrameURL)+'</small>';
+  TagText:='<div class="browser-iframe" style="overflow:hidden;';
+  If WidthText<>''Then TagText:=TagText+'width:'+WidthText+';';
+  If HeightText<>''Then TagText:=TagText+'height:'+HeightText+';';
+  TagText:=TagText+'">'+FrameHTML+'</div>';
+  Delete(ResultText,P,CloseEnd-P+1);
+  Insert(TagText,ResultText,P);
+  Inc(P,Length(TagText));Inc(Count)
+ Until Count>=8;
+ ExpandHTMLIFrames:=ResultText
+End;
+
 { Charger et afficher la cible courante. }
 Procedure DisplayCurrentTarget;
 Var
@@ -22525,6 +22612,7 @@ Begin
   { une URL valide). }
   GetOk := Browser_HttpGet(CurrentURL, PageBody, StatusCode);
   If GetOk And (Length(PageBody) > 0) Then Begin
+   PageBody:=ExpandHTMLIFrames(PageBody,CurrentURL);
    If IsRSSDocument(PageBody)Then PageBody:=BuildRSSDocument(PageBody,CurrentURL);
    If SetHTMLSourceFromString(PageBody, HTML) Then
     TestHTMLRender(HTML);
