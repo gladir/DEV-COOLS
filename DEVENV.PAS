@@ -13741,6 +13741,7 @@ Procedure CreateGridWindow(AFileName: String); Forward;
   Forward doit correspondre EXACTEMENT (sinon "Forward declaration not
   solved", constate a la compilation). }
 Procedure CreateBrowserWindow(Const InitialURL: AnsiString); Forward;
+Function BrowserCSSDiagString: AnsiString; Forward; { DIAGNOSTIC TEMPORAIRE }
 { Gestionnaires/cablage WK_BROWSER (phase E/F), tous definis dans le bloc
   importe de BROWSER.PAS - AUCUN ne peut prendre TBrowserState en
   parametre (type non visible ici), ils operent tous implicitement sur
@@ -89083,6 +89084,66 @@ Begin
  TermAddLine(TP, 'Fichier ouvert dans l''editeur : ' + FullPath);
 End;
 
+{ BROWSER URL <adresse> | BROWSER FILE <fichier> - demande explicite de
+  l'utilisateur (2026-09-27), pour les MEMES 4 shells que EDIT ci-dessus
+  ("Invite de commande", "Norton Commander", "PowerShell dev", "OS/2 &
+  REXX") : ouvre un nouvel onglet "Navigateur Web" (WK_BROWSER, voir
+  l'integration BROWSER.PAS -> DEVENV.PAS) vers l'adresse ou le fichier
+  indique. Meme convention exacte que la ligne de commande de BROWSER.PAS
+  autonome (BROWSER URL <adresse> / BROWSER FILE <fichier.html>, voir
+  l'ancien ParseCommandLine/IsURLParameter/IsFileParameter, phase B),
+  reprise a l'identique plutot que reinventee. FILE resout le chemin
+  EXACTEMENT comme EDIT (TP.VirtCwd pour Norton Commander, GetDir(0,...)
+  pour les 3 autres, disque virtuel non supporte) - une URL n'a pas
+  besoin de cette resolution. Pas de deduplication par cible :
+  CreateBrowserWindow n'en fait pas (choix deja assume pour le menu
+  Demarrer /TASKBARWIN95, phase G - ouvrir la meme adresse dans un
+  second onglet est un usage normal d'un navigateur, contrairement a un
+  fichier texte). }
+Procedure TermCmd_Browser(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Verb, Target, Dir: String;
+Begin
+ Verb := TermStrToUpper(TermExtractParam(ParamStr, 1));
+ If (Verb = '') Or (Verb = '/?') Then Begin
+  TermAddLine(TP, 'Syntaxe : BROWSER URL <adresse>  ou  BROWSER FILE <fichier>');
+  TermAddLine(TP, '  Ouvre un nouvel onglet "Navigateur Web" vers l''adresse');
+  TermAddLine(TP, '  HTTP(S)/FTP ou le fichier HTML local indique.');
+  TermAddLine(TP, 'BROWSER DIAG : affiche l''etat CSS courant de l''onglet actif');
+  TermAddLine(TP, '  (regles chargees, feuille preparee, URL courante) - diagnostic.');
+  Exit;
+ End;
+ If Verb = 'DIAG' Then Begin { DIAGNOSTIC TEMPORAIRE }
+  TermAddLine(TP, 'DIAG CSS: ' + BrowserCSSDiagString);
+  Exit;
+ End;
+ If (Verb <> 'URL') And (Verb <> 'FILE') Then Begin
+  TermAddLine(TP, 'browser : argument invalide "' + Verb + '" (attendu URL ou FILE).');
+  Exit;
+ End;
+ Target := TermExtractParam(ParamStr, 2);
+ If Target = '' Then Begin
+  TermAddLine(TP, 'browser : adresse ou fichier manquant. Tapez BROWSER /? pour l''aide.');
+  Exit;
+ End;
+ If Verb = 'FILE' Then Begin
+  If TP.VirtDrive >= 0 Then Begin
+   TermAddLine(TP, 'BROWSER FILE : disque virtuel non supporte, utiliser un ' +
+    'chemin du systeme hote.');
+   Exit;
+  End;
+  If TP.Shell = SK_NCOMMANDER Then Dir := TP.VirtCwd Else GetDir(0, Dir);
+  Target := TermCombinePath(Dir, Target);
+ End;
+ If StartPage.Visible Then Begin
+  StartPage.Visible := False;
+  FullRepaintNeeded := True;
+ End;
+ CreateBrowserWindow(Target);
+ TermAddLine(TP, 'Navigateur Web ouvert : ' + Target);
+ TermAddLine(TP, 'DIAG CSS: ' + BrowserCSSDiagString);
+End;
+
 { --- DATE --- }
 
 Procedure TermCmd_DATE(Var TP: TTerminalPanel);
@@ -158165,7 +158226,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 258;
+ PS_CMD_ALIASES = 259;
  PSCmd: Array[1..PS_CMD_ALIASES] Of Record
   Name: String[45];
   ID: Byte;
@@ -158199,6 +158260,7 @@ Const
   (Name:'BACKUP-ORACLEDATABASE'; ID:224),
   (Name:'BACKUP-SQLDATABASE'; ID:153),
   (Name:'BOOT'; ID:57),
+  (Name:'BROWSER'; ID:237),
   (Name:'CAT'; ID:12),
   (Name:'CD'; ID:2),
   (Name:'CHDIR'; ID:2),
@@ -158843,6 +158905,8 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'BROWSER' Then
+    TermCmd_Browser(TP, ParamStr)
    Else If CurrCmd = 'ASSIGN' Then
     TermCmd_ASSIGN(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
@@ -159234,6 +159298,10 @@ Begin
     { Invoke-GeoWorksAPI (2026-09-19, demande explicite) : Stage 2, voir    }
     { TermCmd_InvokeGeoWorksAPI. }
     236: TermCmd_InvokeGeoWorksAPI(TP, ParamStr); { INVOKE-GEOWORKSAPI }
+    { BROWSER (2026-09-27, demande explicite) : meme commande, memes 4    }
+    { shells (voir TermCmd_Browser/TermCmd_EDIT) - ID choisi juste apres   }
+    { le plus grand ID PSCmd deja utilise (236) au moment de l'ajout. }
+    237: TermCmd_Browser(TP, ParamStr); { BROWSER }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -159537,6 +159605,8 @@ Begin
    TermCmd_TYPE(TP, ParamStr)
   Else If CurrCmd = 'EDIT' Then
    TermCmd_EDIT(TP, ParamStr)
+  Else If CurrCmd = 'BROWSER' Then
+   TermCmd_Browser(TP, ParamStr)
   Else If CurrCmd = 'ASSIGN' Then
    TermCmd_ASSIGN(TP, ParamStr)
   Else If CurrCmd = 'ARJ' Then
@@ -159714,6 +159784,8 @@ Begin
     TermCmd_TYPE(TP, ParamStr)
    Else If CurrCmd = 'EDIT' Then
     TermCmd_EDIT(TP, ParamStr)
+   Else If CurrCmd = 'BROWSER' Then
+    TermCmd_Browser(TP, ParamStr)
    Else If CurrCmd = 'ASSIGN' Then
     TermCmd_ASSIGN(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
@@ -237759,6 +237831,18 @@ Var
  BrowserViewMaxX: Integer;
  BrowserViewMaxY: Integer;
 
+ { BrowserViewMinX/Y : bord gauche/haut de l'onglet navigateur courant
+   (analogue a BrowserViewMaxX/Y ci-dessus). Ajoutes le 2026-09-27 pour
+   corriger un bogue reel : plusieurs endroits du code importe de
+   BROWSER.PAS repeignaient depuis l'origine physique de l'ecran (0,0)
+   au lieu du coin superieur gauche reel de l'onglet, ce qui peignait
+   par-dessus la barre de menu/barre d'outils/barre d'onglets de DEVENV
+   des que l'onglet ne commence pas a Y=0 (signale par l'utilisateur :
+   "le navigateur Web ne devrait pas masquer... il affiche au dessus
+   de l'onglet"). }
+ BrowserViewMinX: Integer;
+ BrowserViewMinY: Integer;
+
  { Geometrie horizontale de la barre de navigation, plus position (X/Y)
    calculees par BrowserComputeLayout a partir du rectangle de l'onglet -
    auparavant des Const figees ou derivees de l'ecran physique entier. }
@@ -256957,7 +257041,7 @@ Begin
    residu de page ne peut jamais y subsister, quelle qu'en soit la cause
    exacte cote rendu de page. }
  SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
- Bar(0, 0, BrowserViewMaxX, RENDER_AREA_Y - 1);
+ Bar(BrowserViewMinX, BrowserViewMinY, BrowserViewMaxX, RENDER_AREA_Y - 1);
 
  { Dessiner le fond de la barre d'URL }
  SetFillStyle(SolidFill, COLOR_URL_BAR_BG);
@@ -258553,8 +258637,8 @@ Begin
  If Not DevToolsOpen Then Exit;
  Top:=DevToolsPanelTop;
  SetTextStyle(DefaultFont,HorizDir,1);SetTextJustify(LeftText,TopText);
- SetFillStyle(SolidFill,LightGray);Bar(0,Top,BrowserViewMaxX,BrowserViewMaxY);
- SetColor(HTMLBlackColorIndex);Line(0,Top,BrowserViewMaxX,Top);
+ SetFillStyle(SolidFill,LightGray);Bar(BrowserViewMinX,Top,BrowserViewMaxX,BrowserViewMaxY);
+ SetColor(HTMLBlackColorIndex);Line(BrowserViewMinX,Top,BrowserViewMaxX,Top);
  { selecteur d'element }
  If DevElementPicker Then Begin SetFillStyle(SolidFill,1);Bar(4,Top+2,31,Top+21);SetColor(15)End
  Else Begin SetFillStyle(SolidFill,White);Bar(4,Top+2,31,Top+21);SetColor(HTMLBlackColorIndex)End;
@@ -260498,6 +260582,8 @@ End;
   importe de BROWSER.PAS (voir Var plus haut). }
 Procedure BrowserComputeLayout(VX, VY, VWidth, VHeight: Integer);
 Begin
+ BrowserViewMinX := VX;
+ BrowserViewMinY := VY;
  BrowserViewMaxX := VX + VWidth - 1;
  BrowserViewMaxY := VY + VHeight - 1;
 
@@ -261394,6 +261480,16 @@ Begin
    active que si EditorReady est deja a True. }
  EditorReady := True;
  FullRepaintNeeded := True;
+End;
+
+Function BrowserCSSDiagString: AnsiString; { DIAGNOSTIC TEMPORAIRE }
+Begin
+ BrowserCSSDiagString := 'Enabled=' + IntToStr(Ord(CSSEnabled)) +
+  ' AutoApply=' + IntToStr(Ord(CSSAutoApply)) +
+  ' RuleCount=' + IntToStr(CSSGlobalStylesheet.RuleCount) +
+  ' Prepared=' + IntToStr(Ord(CSSPreparedForRender)) +
+  ' CurrentURL=[' + CurrentURL + ']' +
+  ' SkipClear=' + IntToStr(Ord(SkipNextRenderAreaClear));
 End;
 
 { ============================================================
