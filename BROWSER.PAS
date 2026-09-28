@@ -19755,12 +19755,25 @@ Begin
    Reparser (et, pour une feuille externe, RETELECHARGER PAR LE RESEAU
    via Browser_HttpGet) l'integralite du CSS a CHAQUE survol - signale
    par l'utilisateur comme un lag majeur persistant meme apres avoir
-   corrige le redessin du chrome - en etait la vraie cause. }
- If CSSEnabled And(Not SkipNextRenderAreaClear)Then Begin
-  If CSSPreparedForRender Then
-   CSSPreparedForRender:=False
-  Else
-   CSSExtractFromDocument
+   corrige le redessin du chrome - en etait la vraie cause.
+   BOGUE REEL (2026-09-28, trouve et corrige d'abord dans DEVENV.PAS suite
+   a un gel de ~10s + disparition du CSS signales par l'utilisateur en
+   ouvrant DevTools, puis reporte ici sur demande explicite) :
+   CSSPreparedForRender etait un laissez-passer CONSOMME a chaque lecture
+   (mis a False des qu'il valait True) au lieu de rester vrai jusqu'a la
+   PROCHAINE vraie navigation - hors de la passe de survol, environ un
+   appel de RenderHTMLDocument sur deux retombait dans le Else et
+   retelechargeait/reparsait TOUTE la feuille CSS depuis le reseau, encore
+   et encore, a chaque redessin (touche F12, redimensionnement, etc., pas
+   seulement le survol). CSSExtractFromDocument vide d'abord
+   CSSGlobalStylesheet.RuleCount avant de la repeupler - si cette requete
+   redondante echoue/est lente, le CSS deja affiche disparait purement et
+   simplement. Fix : ne plus consommer ce laissez-passer - une fois vrai,
+   il reste vrai jusqu'a la prochaine navigation reelle (qui le remet a
+   False explicitement avant de re-extraire). }
+ If CSSEnabled And(Not SkipNextRenderAreaClear)And(Not CSSPreparedForRender)Then Begin
+  CSSExtractFromDocument;
+  CSSPreparedForRender:=True
  End;
 
  { Reinitialiser les zones de liens }

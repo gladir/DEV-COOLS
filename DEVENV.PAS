@@ -237018,9 +237018,33 @@ Const
  COLOR_URL_BAR_TEXT = 0;      { Noir }
  COLOR_URL_BAR_CURSOR = 0;    { Noir }
  COLOR_BTN_BG = 7;            { Gris clair }
- COLOR_BTN_BORDER = 0;        { Noir }
- COLOR_BTN_TEXT = 0;          { Noir }
- COLOR_BTN_DISABLED = 8;      { Gris fonce }
+ { BOGUE REEL (2026-09-28, "les boutons du navigateur semble dessiner les
+   symboles en gris sur des boutons de couleurs grises... on ne voit pas
+   les boutons") : l'index de palette 0 est documente comme non fiable
+   PARTOUT ailleurs dans ce projet (voir CLR_EDITOR_TEXT="pas 0 car
+   SetBkColor remappe 0" et [[feedback_color_index_0_unreliable]] en
+   memoire, deja rencontre cette session pour les onglets DevTools) -
+   SetColor(0) ne rend pas noir mais la couleur de fond general (gris
+   clair), EXACTEMENT la meme teinte que COLOR_BTN_BG=7 - bordure et
+   fleches/icones des boutons Precedent/Suivant/Actualiser/Favori
+   devenaient donc invisibles sur leur propre fond. CLR_EDITOR_TEXT (8,
+   gris fonce) au lieu de 0 (Noir, en principe, mais en pratique gris
+   clair ici), exactement la meme convention deja appliquee au navigateur
+   pour DevTools. }
+ COLOR_BTN_BORDER = 8;        { Gris fonce (pas 0, voir commentaire) }
+ COLOR_BTN_TEXT = 8;          { Gris fonce (pas 0, voir commentaire) }
+ { COLOR_BTN_DISABLED=7 (gris clair, meme teinte que COLOR_BTN_BG) a ete
+   essaye puis infirme EN DIRECT (capture d'ecran) : rend l'icone d'un
+   bouton desactive (Precedent/Suivant au tout premier chargement, sans
+   historique) totalement invisible sur son propre fond - EXACTEMENT le
+   meme bogue que celui deja corrige ci-dessus, juste deplace de l'etat
+   "actif" vers l'etat "desactive". La palette EGA 16 couleurs de ce
+   projet n'offre que 2 gris distincts et fiables (7 clair, 8 fonce) -
+   aucune 3e teinte intermediaire disponible sans reprogrammer la palette
+   (deja etabli non fiable pour l'index 0 cette session). Priorite donnee
+   a la visibilite (demande explicite de l'utilisateur) plutot qu'a la
+   distinction visuelle actif/desactive : meme couleur que BTN_TEXT. }
+ COLOR_BTN_DISABLED = 8;      { Gris fonce - voir commentaire, priorite a la visibilite }
 
  { Constantes pour les boutons de la souris }
  MOUSE_LEFT_BUTTON = 1;
@@ -238264,6 +238288,23 @@ Var
  BrowserPageBuf: Pointer;
  BrowserPageBufSz: LongInt;
 
+ { Bouton Actualiser <-> Arreter (2026-09-28, demande explicite de
+   l'utilisateur - "quand la page se charge le bouton devrait etre un X
+   pour l'arreter, et redevenir Actualiser une fois la page chargee") :
+   Browser_HttpGet (et les autres recuperations reseau bloquantes de ce
+   fichier monothread) ne rendent la main qu'une fois le transfert termine
+   - il n'y a donc pas de file d'evenements pompee pendant le chargement
+   pour recevoir un clic normal sur le bouton. BrowserPageLoading pilote
+   l'icone dessinee par DrawRefreshButton ; BrowserStopRequested/
+   BrowserStopPollPrevDown sont sondes directement DANS la boucle de
+   lecture de Browser_HttpGet via GetMouseState (meme fonction, deja
+   fiable, que PollEvents utilise normalement) - meme principe de sondage
+   actif que BrowserPollF12OnActiveTab/GetAsyncKeyState pour F12, pas une
+   attente d'evenement classique qui ne peut pas arriver ici. }
+ BrowserPageLoading: Boolean;
+ BrowserStopRequested: Boolean;
+ BrowserStopPollPrevDown: Boolean;
+
  { Geometrie horizontale de la barre de navigation, plus position (X/Y)
    calculees par BrowserComputeLayout a partir du rectangle de l'onglet -
    auparavant des Const figees ou derivees de l'ecran physique entier. }
@@ -238878,6 +238919,35 @@ End;
 Procedure DevToolsLogNetwork(Const URL, RequestMethod: String; ResponseStatus, ResponseSize: LongInt); Forward;
 Procedure DevToolsAddConsole(Const S: String); Forward;
 
+{ BrowserPollStopClick (2026-09-28) : sonde directement l'etat SOURIS reel
+  (via GetMouseState, la MEME fonction que PollEvents utilise normalement -
+  fiable, deja appelee des milliers de fois par seconde ailleurs dans cet
+  IDE) pour detecter un clic sur le bouton Actualiser/Arreter PENDANT une
+  requete reseau bloquante - aucun evenement normal ne peut atteindre
+  HandleRefreshButtonClick tant que Browser_HttpGet n'a pas rendu la main,
+  donc un sondage direct (meme principe que BrowserPollF12OnActiveTab/
+  GetAsyncKeyState pour F12) est la seule facon de reagir a temps. Detection
+  de front (BrowserStopPollPrevDown) pour ne declencher qu'une fois par
+  clic reel, pas a chaque appel pendant que le bouton reste enfonce. A
+  appeler entre chaque bloc lu (Browser_InternetReadFile), jamais a
+  l'interieur d'un appel bloquant lui-meme. }
+Procedure BrowserPollStopClick;
+Var
+ MX, MY, MBtn: LongInt;
+ NowDown: Boolean;
+Begin
+ If Not BrowserPageLoading Then Exit;
+ If BrowserStopRequested Then Exit;
+ GetMouseState(MX, MY, MBtn);
+ NowDown := (MBtn And 1) <> 0;
+ If NowDown And (Not BrowserStopPollPrevDown) Then Begin
+  If (MX >= REFRESH_BTN_X) And (MX <= REFRESH_BTN_X + REFRESH_BTN_WIDTH) And
+     (MY >= REFRESH_BTN_Y) And (MY <= REFRESH_BTN_Y + REFRESH_BTN_HEIGHT) Then
+   BrowserStopRequested := True;
+ End;
+ BrowserStopPollPrevDown := NowDown;
+End;
+
 { Requete HTTP GET synchrone reelle via WinInet - meme transport que       }
 { CurlHttpRequest de DEVENV.PAS (ouvre/ferme une connexion par appel, pas  }
 { de pool - suffisant pour une navigation interactive au clavier/souris    }
@@ -238975,6 +239045,14 @@ Begin
    Break
   End;
   ResponseBody := ResponseBody + Chunk;
+  { Bouton Arreter (2026-09-28) : verifier entre chaque bloc lu si
+    l'utilisateur a clique le bouton Actualiser/Arreter pendant que cette
+    requete etait en cours - voir BrowserPollStopClick. }
+  BrowserPollStopClick;
+  If BrowserStopRequested Then Begin
+   StatusCode:=0;
+   Break
+  End;
  Until False;
  Browser_InternetCloseHandle(hRequest);
  Browser_InternetCloseHandle(hConnect);
@@ -240788,6 +240866,7 @@ Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String); Forwa
 Function GetNodeAttribute(Node: HTMLNodePtr; AttrName: String): String; Forward;
 Procedure NavigateTo(URL: String); Forward;
 Procedure DisplayCurrentTarget; Forward;
+Procedure DisplayCurrentTargetWithLoadingIndicator; Forward;
 Function ResolveLinkHref(Const Href: String): String; Forward;
 Function DOMGetElementById(Id: String): HTMLNodePtr; Forward;
 Function DOMGetBody: HTMLNodePtr; Forward;
@@ -257650,7 +257729,6 @@ Begin
  SetColor(COLOR_BTN_BORDER);
  Rectangle(REFRESH_BTN_X, REFRESH_BTN_Y, REFRESH_BTN_X + REFRESH_BTN_WIDTH, REFRESH_BTN_Y + REFRESH_BTN_HEIGHT);
 
- { Dessiner le symbole de rafraichissement (fleche circulaire) }
  CenterX := REFRESH_BTN_X + (REFRESH_BTN_WIDTH Div 2);
  CenterY := REFRESH_BTN_Y + (REFRESH_BTN_HEIGHT Div 2);
 
@@ -257661,11 +257739,20 @@ Begin
   IconColor := COLOR_BTN_DISABLED;
 
  SetColor(IconColor);
- { Dessiner un cercle partiel avec une fleche pour symboliser le rafraichissement }
- Arc(CenterX, CenterY, 45, 315, 6);
- { Dessiner la pointe de la fleche }
- Line(CenterX + 4, CenterY - 6, CenterX + 6, CenterY - 2);
- Line(CenterX + 4, CenterY - 6, CenterX + 8, CenterY - 6);
+ { Pendant un chargement (2026-09-28, demande explicite de l'utilisateur -
+   "quand la page se charge le bouton devrait etre un X pour l'arreter")
+   dessiner un X (arreter) a la place du symbole habituel - voir
+   BrowserPageLoading/DisplayCurrentTargetWithLoadingIndicator. }
+ If BrowserPageLoading Then Begin
+  Line(CenterX - 6, CenterY - 6, CenterX + 6, CenterY + 6);
+  Line(CenterX - 6, CenterY + 6, CenterX + 6, CenterY - 6)
+ End Else Begin
+  { Dessiner un cercle partiel avec une fleche pour symboliser le rafraichissement }
+  Arc(CenterX, CenterY, 45, 315, 6);
+  { Dessiner la pointe de la fleche }
+  Line(CenterX + 4, CenterY - 6, CenterX + 6, CenterY - 2);
+  Line(CenterX + 4, CenterY - 6, CenterX + 8, CenterY - 6);
+ End;
 End;
 
 { Fonction pour verifier si un clic est dans le bouton Actualiser }
@@ -257681,7 +257768,7 @@ Begin
  If Not RefreshButtonEnabled Then Exit;
  { Recharger la page courante SANS toucher a l'historique (contrairement a
    NavigateTo) - un rafraichissement n'est pas une nouvelle navigation. }
- DisplayCurrentTarget;
+ DisplayCurrentTargetWithLoadingIndicator;
 End;
 
 { Procedure pour initialiser le bouton Actualiser }
@@ -260842,6 +260929,32 @@ Begin
  FreeHTMLSource(HTML);
 End;
 
+{ DisplayCurrentTargetWithLoadingIndicator (2026-09-28, demande explicite
+  de l'utilisateur - "quand la page se charge le bouton devrait etre un X
+  pour l'arreter, et redevenir Actualiser une fois la page chargee") :
+  DisplayCurrentTarget a de nombreux points de sortie internes (view-
+  source:, exec:, http(s), file, erreurs...) - plutot que d'instrumenter
+  chacun d'eux individuellement (fragile, facile a oublier un cas), cette
+  enveloppe borne l'etat de chargement autour de TOUS ses points d'entree
+  (4 au total : NavigateTo/BrowserGoBack/BrowserGoForward/
+  HandleRefreshButtonClick) - quel que soit le chemin interne emprunte,
+  DisplayCurrentTarget finit toujours par rendre la main ICI. Dessine le
+  bouton immediatement AVANT l'appel bloquant (le "X" doit apparaitre a
+  l'ecran des le debut du chargement, pas seulement apres coup) - une
+  simple SetColor/Bar directe comme celle-ci s'affiche immediatement, meme
+  hors du cycle normal de DrawAllWidgets, exactement comme DevToolsToggle
+  le fait deja pour F12. }
+Procedure DisplayCurrentTargetWithLoadingIndicator;
+Begin
+ BrowserPageLoading := True;
+ BrowserStopRequested := False;
+ BrowserStopPollPrevDown := False;
+ DrawRefreshButton;
+ DisplayCurrentTarget;
+ BrowserPageLoading := False;
+ DrawRefreshButton;
+End;
+
 { Procedure pour naviguer vers une nouvelle URL et l'ajouter a l'historique }
 Procedure NavigateTo(URL: String);
 Var
@@ -260874,7 +260987,7 @@ Begin
  DrawURLBar;
  DrawFavoriteButton;
  UpdateNavigationButtons;
- DisplayCurrentTarget;
+ DisplayCurrentTargetWithLoadingIndicator;
 End;
 
 { Procedure pour aller a la page precedente }
@@ -260887,7 +261000,7 @@ Begin
   DrawURLBar;
   DrawFavoriteButton;
   UpdateNavigationButtons;
-  DisplayCurrentTarget;
+  DisplayCurrentTargetWithLoadingIndicator;
  End;
 End;
 
@@ -260901,7 +261014,7 @@ Begin
   DrawURLBar;
   DrawFavoriteButton;
   UpdateNavigationButtons;
-  DisplayCurrentTarget;
+  DisplayCurrentTargetWithLoadingIndicator;
  End;
 End;
 
