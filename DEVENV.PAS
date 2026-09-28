@@ -7683,6 +7683,22 @@ Var
  { DispatchEvent) - permet de taper dans le Terminal/Explorateur pendant  }
  { qu un emulateur convertit (Loaded=True) continue de tourner en fond.   }
  EmuHasFocus    : Boolean;
+ { BrowserHasFocus (2026-09-28, demande explicite de l'utilisateur -
+   "comme les emulateurs" - meme motif exact que EmuHasFocus ci-dessus) :
+   True tant que le dernier clic reel de l'utilisateur etait a l'interieur
+   du rectangle de rendu de l'onglet Navigateur Web actif (voir la
+   fonction wrapper BrowserPointInView, Forward-declaree car
+   BrowserViewMinX/Max* vivent dans le bloc importe de BROWSER.PAS, plus
+   loin dans ce fichier) ou qu'aucun clic n'a encore ete fait depuis la
+   creation de l'onglet. Quand False, le JavaScript (setTimeout) et le
+   curseur clignotant de la console DevTools cessent de s'executer - voir
+   BrowserIdleTick - jusqu'a ce qu'un nouveau clic a l'interieur du
+   rectangle le remette a True. Declaree ICI (pas dans le bloc importe,
+   contrairement a BrowserDblBufPage/BrowserViewMinX/etc.) precisement
+   pour rester un simple Boolean directement lisible/modifiable depuis
+   DispatchEvent (bien avant le bloc importe dans ce fichier), evitant un
+   wrapper Forward pour cette seule variable - meme choix que EmuHasFocus. }
+ BrowserHasFocus: Boolean;
  { Correctifs 2026-08-15 (rapportes par l utilisateur apres test Stage 2) : }
  { EmuHasFocus seul ne suffit pas a decider si l emulateur doit VRAIMENT    }
  { continuer a avancer - ouvrir un menu (clic sur la barre de menus, deja   }
@@ -13778,6 +13794,13 @@ Procedure BrowserIdleTick; Forward;
   jamais par evenement), avec le meme motif Forward-sans-TBrowserState que
   BrowserIdleTick/BrowserOpenDevToolsOnActiveTab. }
 Procedure BrowserPollF12OnActiveTab; Forward;
+{ BrowserPointInView (2026-09-28, mode pause hors-focus - voir
+  BrowserHasFocus, declaree tot dans les globales principales) : teste si
+  (X,Y) tombe dans le rectangle de rendu de l'onglet navigateur actif -
+  simple wrapper Forward car BrowserViewMinX/Y/MaxX/Y vivent dans le bloc
+  importe, plus loin dans ce fichier, inaccessibles directement depuis
+  DispatchEvent (bien avant). }
+Function BrowserPointInView(X, Y: Integer): Boolean; Forward;
 Procedure DrawBrowserTab; Forward;
 Procedure SyncBrowserOut(TabIdx: Integer); Forward;
 Procedure SyncBrowserIn(TabIdx: Integer); Forward;
@@ -235074,6 +235097,20 @@ Begin
  { Icone de fermeture Explorateur/Proprietes (2026-09-14) : voir la     }
  { note sur RightDockCloseConsumed - reinitialise a chaque evenement.  }
  RightDockCloseConsumed := False;
+ { BrowserHasFocus (2026-09-28, "comme les emulateurs... mode pause hors
+   focus") : meme motif que le portail EmuHasFocus plus bas dans cette
+   procedure, mais teste ICI en un seul endroit (plutot que d'instrumenter
+   chacune des branches Explorateur/Terminal/Sortie/Proprietes separement)
+   car le rectangle de l'onglet navigateur (BrowserPointInView) couvre
+   TOUT ce qui n'est PAS un de ces autres panneaux - un clic en dehors de
+   ce rectangle, pendant que l'onglet actif est WK_BROWSER, est donc
+   TOUJOURS un clic vers un panneau externe, quel qu'il soit. Place tot,
+   avant tout le reste du dispatch, pour capturer aussi bien la perte que
+   la reprise du focus des le premier clic. }
+ If (Ev.Kind = EV_MOUSE_DOWN) And (WinMgr.ActiveIdx >= 0) And
+    (WinMgr.ActiveIdx < WinMgr.WinCount) And
+    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER) Then
+  BrowserHasFocus := BrowserPointInView(Ev.MouseX, Ev.MouseY);
  { Menu contextuel en priorite si visible }
  If CtxMenu.Visible Then Begin
   CtxTag := HandleContextMenuEvent(CtxMenu, Ev);
@@ -262076,9 +262113,26 @@ End;
 Procedure BrowserIdleTick;
 Begin
  BrowserSyncIn(ActiveBrowserState);
- JSCheckTimeout;
+ { BOGUE REEL / demande explicite (2026-09-28, "comme les emulateurs...
+   le JavaScript du navigateur ne s'execute plus, les rafraichissements
+   de la page ne se produisent plus") : ne declencher les setTimeout que
+   si l'onglet a reellement le focus (dernier clic reel a l'interieur de
+   son rectangle de rendu) - voir BrowserHasFocus, meme motif que
+   EmuHasFocus pour l'emulateur. DevToolsUpdateConsoleCursor (simple
+   clignotement de curseur, purement cosmetique, sans effet de bord sur
+   la page) reste inconditionnel. }
+ If BrowserHasFocus Then
+  JSCheckTimeout;
  DevToolsUpdateConsoleCursor;
  BrowserSyncOut(ActiveBrowserState);
+End;
+
+{ BrowserPointInView : voir le commentaire complet pres de la declaration
+  Forward (ligne ~13797) - simple test de rectangle, aucun effet de bord. }
+Function BrowserPointInView(X, Y: Integer): Boolean;
+Begin
+ BrowserPointInView := (X >= BrowserViewMinX) And (X <= BrowserViewMaxX) And
+                        (Y >= BrowserViewMinY) And (Y <= BrowserViewMaxY);
 End;
 
 { BrowserPollF12OnActiveTab : voir le commentaire complet pres de la
@@ -262119,6 +262173,11 @@ Var
  Idx: Integer;
 Begin
  If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
+
+ { L'utilisateur vient d'agir pour ouvrir cet onglet - il a le focus des
+   sa creation, comme un onglet emulateur nouvellement lance (EmuHasFocus
+   suit le meme motif). }
+ BrowserHasFocus := True;
 
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
