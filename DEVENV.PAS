@@ -13742,6 +13742,13 @@ Procedure CreateGridWindow(AFileName: String); Forward;
   solved", constate a la compilation). }
 Procedure CreateBrowserWindow(Const InitialURL: AnsiString); Forward;
 Function BrowserCSSDiagString: AnsiString; Forward; { DIAGNOSTIC TEMPORAIRE }
+{ BrowserOpenDevToolsOnActiveTab (2026-09-27, demande explicite de
+  l'utilisateur - "/DEVTOOLS... equivalent de F12 ou Inspecter...") :
+  appelle DevToolsSetOpen(True) PUIS persiste le changement dans
+  ActiveBrowserState (voir son propre commentaire, dans le bloc importe,
+  pour le bogue reel que ce sync corrige) - permet a TermCmd_Browser (bien
+  avant le bloc importe) d'ouvrir DevTools juste apres avoir cree l'onglet. }
+Procedure BrowserOpenDevToolsOnActiveTab; Forward;
 { Gestionnaires/cablage WK_BROWSER (phase E/F), tous definis dans le bloc
   importe de BROWSER.PAS - AUCUN ne peut prendre TBrowserState en
   parametre (type non visible ici), ils operent tous implicitement sur
@@ -89105,12 +89112,19 @@ Var
  Verb, Target, Dir: String;
  DiagFull: AnsiString;
  DiagSplitPos: Integer;
+ DiagSplitPos2: Integer;
+ OpenDevTools: Boolean;
+ ArgI: Integer;
+ Tok: String;
 Begin
  Verb := TermStrToUpper(TermExtractParam(ParamStr, 1));
  If (Verb = '') Or (Verb = '/?') Then Begin
-  TermAddLine(TP, 'Syntaxe : BROWSER URL <adresse>  ou  BROWSER FILE <fichier>');
+  TermAddLine(TP, 'Syntaxe : BROWSER URL <adresse> [/DEVTOOLS]');
+  TermAddLine(TP, '          BROWSER FILE <fichier> [/DEVTOOLS]');
   TermAddLine(TP, '  Ouvre un nouvel onglet "Navigateur Web" vers l''adresse');
   TermAddLine(TP, '  HTTP(S)/FTP ou le fichier HTML local indique.');
+  TermAddLine(TP, '  /DEVTOOLS ouvre aussi le panneau developpeur (equivalent');
+  TermAddLine(TP, '  de la touche F12 ou de "Inspecter..." dans le menu contextuel).');
   TermAddLine(TP, 'BROWSER DIAG : affiche l''etat CSS courant de l''onglet actif');
   TermAddLine(TP, '  (regles chargees, feuille preparee, URL courante) - diagnostic.');
   Exit;
@@ -89118,7 +89132,12 @@ Begin
  If Verb = 'DIAG' Then Begin { DIAGNOSTIC TEMPORAIRE }
   DiagFull := BrowserCSSDiagString;
   DiagSplitPos := System.Pos('JSTimeoutActive', DiagFull);
-  If DiagSplitPos > 0 Then Begin
+  DiagSplitPos2 := System.Pos('DevToolsOpen', DiagFull);
+  If (DiagSplitPos > 0) And (DiagSplitPos2 > DiagSplitPos) Then Begin
+   TermAddLine(TP, 'DIAG CSS: ' + Copy(DiagFull, 1, DiagSplitPos - 1));
+   TermAddLine(TP, 'DIAG JS: ' + Copy(DiagFull, DiagSplitPos, DiagSplitPos2 - DiagSplitPos));
+   TermAddLine(TP, 'DIAG DT: ' + Copy(DiagFull, DiagSplitPos2, Length(DiagFull) - DiagSplitPos2 + 1));
+  End Else If DiagSplitPos > 0 Then Begin
    TermAddLine(TP, 'DIAG CSS: ' + Copy(DiagFull, 1, DiagSplitPos - 1));
    TermAddLine(TP, 'DIAG JS: ' + Copy(DiagFull, DiagSplitPos, Length(DiagFull) - DiagSplitPos + 1));
   End Else
@@ -89134,6 +89153,23 @@ Begin
   TermAddLine(TP, 'browser : adresse ou fichier manquant. Tapez BROWSER /? pour l''aide.');
   Exit;
  End;
+ { /DEVTOOLS (2026-09-27, demande explicite de l'utilisateur - "equivalent
+   de F12 ou 'Inspecter...'") : seul argument optionnel supplementaire
+   reconnu pour l'instant, cherche parmi tous les arguments restants
+   (pas seulement le 3e) pour rester tolerant a l'ordre. }
+ OpenDevTools := False;
+ ArgI := 3;
+ Tok := TermExtractParam(ParamStr, ArgI);
+ While Tok <> '' Do Begin
+  If TermStrToUpper(Tok) = '/DEVTOOLS' Then
+   OpenDevTools := True
+  Else Begin
+   TermAddLine(TP, 'browser : parametre invalide : ' + Tok);
+   Exit;
+  End;
+  Inc(ArgI);
+  Tok := TermExtractParam(ParamStr, ArgI);
+ End;
  If Verb = 'FILE' Then Begin
   If TP.VirtDrive >= 0 Then Begin
    TermAddLine(TP, 'BROWSER FILE : disque virtuel non supporte, utiliser un ' +
@@ -89148,6 +89184,7 @@ Begin
   FullRepaintNeeded := True;
  End;
  CreateBrowserWindow(Target);
+ If OpenDevTools Then BrowserOpenDevToolsOnActiveTab;
  TermAddLine(TP, 'Navigateur Web ouvert : ' + Target);
  TermAddLine(TP, 'DIAG CSS: ' + BrowserCSSDiagString);
 End;
@@ -238165,6 +238202,23 @@ Var
  BrowserViewMinX: Integer;
  BrowserViewMinY: Integer;
 
+ { Double buffering reel pour l'onglet Navigateur Web (2026-09-27, demande
+   explicite de l'utilisateur : "il efface... et il la redessine... aucune
+   raison d'effacer ce qu'il a en arriere") - memes 3 variables, MEME
+   TECHNIQUE EXACTE, deja EPROUVEE dans ce projet pour l'ecran de
+   l'emulateur (voir DrawEmulatorPanel, commentaire "Double buffering
+   reel") : PtcGraph supporte le page-flip BGI classique (SetActivePage/
+   SetVisualPage), deja verifie par un test dedie avant ce chantier-ci -
+   composer tout le rendu de l'onglet sur la page ARRIERE (invisible) puis
+   un seul flip atomique, au lieu de peindre trame par trame sur ce que
+   l'utilisateur voit deja (source du clignotement signale). Globales
+   dediees plutot que reutiliser EmuPageBuf/EmuDblBufPage tels quels : ce
+   sont des sous-systemes distincts (navigateur vs emulateur), jamais
+   deux noms generiques partages entre sous-systemes dans ce projet. }
+ BrowserDblBufPage: Integer;
+ BrowserPageBuf: Pointer;
+ BrowserPageBufSz: LongInt;
+
  { Geometrie horizontale de la barre de navigation, plus position (X/Y)
    calculees par BrowserComputeLayout a partir du rectangle de l'onglet -
    auparavant des Const figees ou derivees de l'ecran physique entier. }
@@ -260988,6 +261042,8 @@ End;
   BrowserViewMaxX/Y remplacent BrowserViewMaxX/BrowserViewMaxY dans tout le reste du code
   importe de BROWSER.PAS (voir Var plus haut). }
 Procedure BrowserComputeLayout(VX, VY, VWidth, VHeight: Integer);
+Var
+ DevToolsPanelHeightCalc: Integer;
 Begin
  BrowserViewMinX := VX;
  BrowserViewMinY := VY;
@@ -261021,6 +261077,27 @@ Begin
  RENDER_AREA_WIDTH := BrowserViewMaxX - RENDER_AREA_X - 5;
  RENDER_AREA_HEIGHT := BrowserViewMaxY - RENDER_AREA_Y - 5;
  DevToolsFullRenderHeight := RENDER_AREA_HEIGHT;
+ { BOGUE REEL corrige (2026-09-28, trouve en verifiant /DEVTOOLS en
+   direct) : cette procedure est rappelee a CHAQUE redessin normal de
+   l'onglet (DrawBrowserTab), pas seulement a la creation - elle
+   ecrasait donc INCONDITIONNELLEMENT RENDER_AREA_HEIGHT avec la
+   hauteur PLEINE de l'onglet, defaisant le retrecissement que
+   DevToolsSetOpen n'applique qu'UNE SEULE FOIS (a l'ouverture/
+   fermeture, pas a chaque image) - le panneau DevTools restait donc
+   avec DevToolsOpen=True en memoire mais sans jamais retrecir la zone
+   de rendu pour lui laisser de la place, ni se redessiner correctement
+   apres le tout premier appel. Reappliquer ici, a CHAQUE recalcul de
+   geometrie, la MEME formule que DevToolsSetOpen (dupliquee plutot que
+   factorisee : DevToolsSetOpen doit rester idempotent quand l'etat ne
+   change pas, cette procedure-ci doit rester correcte que l'etat change
+   ou non). }
+ If DevToolsOpen Then Begin
+  DevToolsPanelHeightCalc := BrowserViewMaxY Div 3;
+  If DevToolsPanelHeightCalc < 170 Then DevToolsPanelHeightCalc := 170;
+  If DevToolsPanelHeightCalc > 300 Then DevToolsPanelHeightCalc := 300;
+  RENDER_AREA_HEIGHT := DevToolsFullRenderHeight - DevToolsPanelHeightCalc;
+  If RENDER_AREA_HEIGHT < 100 Then RENDER_AREA_HEIGHT := 100;
+ End;
 End;
 
 
@@ -261900,7 +261977,29 @@ Begin
   ' JSTimeoutActive=' + IntToStr(Ord(JSTimeoutActive)) +
   ' JSTimeoutFireAtTick=' + IntToStr(JSTimeoutFireAtTick) +
   ' NowTick=' + IntToStr(BrowserGetTickCount) +
-  ' ContextMenuOpen=' + IntToStr(Ord(ContextMenuOpen));
+  ' ContextMenuOpen=' + IntToStr(Ord(ContextMenuOpen)) +
+  ' DevToolsOpen=' + IntToStr(Ord(DevToolsOpen)) +
+  ' RenderAreaH=' + IntToStr(RENDER_AREA_HEIGHT) +
+  ' DevToolsFullH=' + IntToStr(DevToolsFullRenderHeight);
+End;
+
+{ BrowserOpenDevToolsOnActiveTab (2026-09-27, demande explicite de
+  l'utilisateur - "/DEVTOOLS... equivalent de F12 ou Inspecter...") :
+  DevToolsSetOpen ne fait que muter les globales ambiantes (DevToolsOpen,
+  RENDER_AREA_HEIGHT...) - BOGUE REEL trouve en verifiant en direct (le
+  panneau DevTools ne s'ouvrait PAS malgre /DEVTOOLS) : CreateBrowserWindow
+  a DEJA fait "ActiveBrowserState := BrowserTabs[Idx]^;" (une COPIE PAR
+  VALEUR) avant que TermCmd_Browser n'appelle DevToolsSetOpen - sans ce
+  BrowserSyncOut ici, le PROCHAIN DrawBrowserTab commence par
+  BrowserSyncIn(ActiveBrowserState), qui ECRASE DevToolsOpen (et tout le
+  reste) avec cette copie PERIMEE d'AVANT l'appel a DevToolsSetOpen,
+  annulant silencieusement la demande. Meme motif que CreateBrowserWindow/
+  BrowserCSSDiagString (Forward SANS TBrowserState, implementation reelle
+  ici operant implicitement sur ActiveBrowserState). }
+Procedure BrowserOpenDevToolsOnActiveTab;
+Begin
+ DevToolsSetOpen(True);
+ BrowserSyncOut(ActiveBrowserState);
 End;
 
 { ============================================================
@@ -261919,7 +262018,29 @@ End;
   est exactement l'operation voulue pour un simple redessin d'onglet -
   pas de nouvelle navigation, pas de nouvelle recuperation reseau. }
 Procedure DrawBrowserTab;
+Var
+ BrowserBackPage: Integer;
 Begin
+ { Double buffering reel (2026-09-27) : composer TOUT le rendu ci-dessous
+   sur la page ARRIERE (invisible) plutot que directement sur la page a
+   l'ecran - voir le commentaire complet pres de la declaration de
+   BrowserDblBufPage/BrowserPageBuf/BrowserPageBufSz (meme technique
+   exacte, deja eprouvee dans ce projet, que DrawEmulatorPanel). Copier
+   d'abord le contenu de la page VISIBLE vers la page arriere : le reste
+   de l'IDE (menu/barre d'outils/onglets/explorateur, deja dessines par
+   DrawAllWidgets AVANT cet appel dans la meme image) doit rester correct
+   autour de cet onglet apres le flip, pas seulement son propre
+   rectangle. }
+ BrowserBackPage := 1 - BrowserDblBufPage;
+ If BrowserPageBuf = Nil Then Begin
+  BrowserPageBufSz := ImageSize(0, 0, GetScreenWidth - 1, GetScreenHeight - 1);
+  GetMem(BrowserPageBuf, BrowserPageBufSz);
+ End;
+ SetActivePage(BrowserDblBufPage);
+ GetImage(0, 0, GetScreenWidth - 1, GetScreenHeight - 1, BrowserPageBuf^);
+ SetActivePage(BrowserBackPage);
+ PutImage(0, 0, BrowserPageBuf^, NormalPut);
+
  BrowserSyncIn(ActiveBrowserState);
  BrowserComputeLayout(ActiveBrowserState.X, ActiveBrowserState.Y,
   ActiveBrowserState.Width, ActiveBrowserState.Height);
@@ -261930,6 +262051,14 @@ Begin
  DrawFavoriteButton;
  RescrollPage;
  BrowserSyncOut(ActiveBrowserState);
+
+ { Flip atomique : l'utilisateur ne voit jamais l'etat intermediaire
+   compose ci-dessus (fond efface puis contenu redessine morceau par
+   morceau), seulement le resultat final d'un coup - source du
+   clignotement signale par l'utilisateur, desormais invisible. }
+ SetVisualPage(BrowserBackPage);
+ SetActivePage(BrowserBackPage);
+ BrowserDblBufPage := BrowserBackPage;
 End;
 
 { Remet ActiveBrowserState a sa geometrie NORMALE (dockee, onglet MDI) -
