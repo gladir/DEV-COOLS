@@ -13757,6 +13757,27 @@ Procedure BrowserOpenDevToolsOnActiveTab; Forward;
 Procedure HandleBrowserMouse(Ev: TEvent); Forward;
 Procedure HandleBrowserKey(Ev: TEvent); Forward;
 Procedure BrowserIdleTick; Forward;
+{ BrowserPollF12OnActiveTab (2026-09-28, "F12 ... aucune reaction", confirme
+  par l'utilisateur meme apres correctif TerminalHasFocus - "pourtant ca
+  fonctionnait tres bien dans BROWSER.PAS") : dans BROWSER.PAS autonome,
+  DevToolsPollF12 (sondage direct de VK_F12 via GetAsyncKeyState, PAS
+  l'evenement clavier EV_KEY_DOWN) etait appelee INCONDITIONNELLEMENT a
+  CHAQUE iteration de la boucle principale via ProcessMouseInput (voir
+  BROWSER.PAS ligne ~24497/24835), independamment du systeme d'evenements
+  clavier. Lors du portage, ProcessMouseInput a ete supprimee et ses
+  responsabilites redistribuees (HandleBrowserMouse/Key, BrowserIdleTick),
+  mais DevToolsPollF12 elle-meme a ete laissee de cote au profit d'un simple
+  test Ev.KeyCode=134 dans HandleBrowserKey - EN SUPPOSANT (a tort) que le
+  sondage actif etait redondant avec l'evenement clavier. Diagnostic direct
+  (journal temporaire de chaque EV_KEY_DOWN/EV_KEY_CHAR recu par PollEvents)
+  a confirme que F12 ne genere JAMAIS cet evenement dans cet environnement
+  (ReadKey/KeyPressed ne semble jamais renvoyer le code etendu 134 pour F12,
+  contrairement a F1-F10) - donc HandleBrowserKey ne peut structurellement
+  jamais le voir, quelle que soit la logique de routage autour. Restaure ici
+  EXACTEMENT le mecanisme d'origine (sondage GetAsyncKeyState par image,
+  jamais par evenement), avec le meme motif Forward-sans-TBrowserState que
+  BrowserIdleTick/BrowserOpenDevToolsOnActiveTab. }
+Procedure BrowserPollF12OnActiveTab; Forward;
 Procedure DrawBrowserTab; Forward;
 Procedure SyncBrowserOut(TabIdx: Integer); Forward;
 Procedure SyncBrowserIn(TabIdx: Integer); Forward;
@@ -235985,7 +236006,20 @@ Begin
  { que le glissement/relachement souris (2026-09-01, demande explicite de   }
  { l utilisateur : selection de texte au glisser-deposer) - le clic initial }
  { (EV_MOUSE_DOWN) est deja route plus haut. }
- If TermVisible And TerminalHasFocus Then Begin
+ If TermVisible And TerminalHasFocus And Not
+    ((Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = 134) And
+     (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) And
+     (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER)) Then Begin
+  { BOGUE REEL (2026-09-28, "F12 ... aucune reaction") : F12 (DevTools) est
+    un raccourci GLOBAL du navigateur dans un vrai navigateur - il doit
+    fonctionner meme si le Terminal integre garde le focus clavier (ex :
+    l'utilisateur vient d'ouvrir l'onglet via BROWSER FILE/URL au Terminal
+    et appuie sur F12 sans avoir cliqué dans la page avant). Sans cette
+    exception, TOUT evenement clavier (y compris F12) tombait
+    inconditionnellement dans HandleTerminalEvent tant que TerminalHasFocus
+    restait vrai, sans jamais atteindre HandleBrowserKey plus bas -
+    explique aussi l'ancien "F12/menu contextuel n'ouvrent pas sur un
+    onglet cree via BROWSER URL" deja note comme non resolu. }
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Or
      (Ev.Kind = EV_MOUSE_MOVE) Or (Ev.Kind = EV_MOUSE_UP) Then Begin
    HandleTerminalEvent(TermPanels[ActiveShell], Ev);
@@ -236155,6 +236189,17 @@ Begin
  LastBlinkState := ProjPropCursorVisible;
  While Not QuitRequested Do Begin
   PollEvents(Ev);
+  { BrowserPollF12OnActiveTab (2026-09-28) : sondage direct de F12 a CHAQUE
+    iteration, meme motif exact que BROWSER.PAS autonome (ProcessMouseInput
+    appelait DevToolsPollF12 inconditionnellement, avant tout traitement
+    d'evenement) - voir le commentaire complet pres de sa declaration
+    Forward. Doit rester ICI, avant le "If Ev.Kind <> EV_NONE", pour sonder
+    a chaque image independamment de tout evenement clavier/souris,
+    puisque F12 ne genere jamais lui-meme d'evenement EV_KEY_DOWN dans cet
+    environnement. }
+  If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) And
+     (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER) Then
+   BrowserPollF12OnActiveTab;
   If Ev.Kind <> EV_NONE Then Begin
    DispatchEvent(Ev);
    UpdateStatusBar(StatusBar, WinMgr);
@@ -261901,6 +261946,21 @@ Begin
  BrowserSyncIn(ActiveBrowserState);
  JSCheckTimeout;
  DevToolsUpdateConsoleCursor;
+ BrowserSyncOut(ActiveBrowserState);
+End;
+
+{ BrowserPollF12OnActiveTab : voir le commentaire complet pres de la
+  declaration Forward (ligne ~13763) pour le bogue reel que ceci corrige -
+  sondage GetAsyncKeyState direct (comme BROWSER.PAS autonome le faisait a
+  chaque iteration via ProcessMouseInput), PAS l'evenement clavier
+  EV_KEY_DOWN qui ne se declenche jamais pour F12 dans cet environnement.
+  A appeler a CHAQUE iteration de MainLoop (pas seulement les iterations
+  "inactives" comme BrowserIdleTick) pour reproduire fidelement le
+  comportement "sonde a chaque tick, sans exception" de l'original. }
+Procedure BrowserPollF12OnActiveTab;
+Begin
+ BrowserSyncIn(ActiveBrowserState);
+ DevToolsPollF12;
  BrowserSyncOut(ActiveBrowserState);
 End;
 
