@@ -13823,6 +13823,17 @@ Procedure BrowserPollF12OnActiveTab; Forward;
   importe, plus loin dans ce fichier, inaccessibles directement depuis
   DispatchEvent (bien avant). }
 Function BrowserPointInView(X, Y: Integer): Boolean; Forward;
+{ BrowserRestoreSnapshotIfValid (2026-09-28, demande explicite de
+  l'utilisateur - "conserver une capture d'image de la zone de la page du
+  navigateur et la reprendre... au lieu d'effacer systematiquement
+  l'ecran") : restaure a moindre cout (un seul PutImage, aucun reparcours
+  DOM/CSS) le DERNIER rendu reussi du navigateur, pour DrawAllWidgets
+  quand l'onglet est en pause mais qu'un ClearScreen externe vient
+  d'effacer sa zone - voir le commentaire complet pres de
+  BrowserSnapshotBuf (globales du bloc importe). Renvoie False si aucun
+  cliche n'est encore disponible (tout premier redessin de l'onglet),
+  auquel cas l'appelant doit se rabattre sur un DrawBrowserTab complet. }
+Function BrowserRestoreSnapshotIfValid: Boolean; Forward;
 Procedure DrawBrowserTab; Forward;
 Procedure SyncBrowserOut(TabIdx: Integer); Forward;
 Procedure SyncBrowserIn(TabIdx: Integer); Forward;
@@ -231500,16 +231511,39 @@ Begin
      d'ecran : onglet navigateur entierement VIDE apres une frappe dans le
      Terminal) : WasFullRepaint (capture juste avant que le bloc
      "If FullRepaintNeeded" ci-dessus ne le consomme) doit ELLE AUSSI
-     forcer le redessin, meme si BrowserHasFocus est faux - sinon
+     forcer un redessin, meme si BrowserHasFocus est faux - sinon
      ClearScreen() efface l'ecran ENTIER (dont la zone du navigateur) et
      personne ne la redessine, laissant un trou gris permanent jusqu'au
      prochain clic dans le navigateur. FullRepaintNeeded se declenche pour
      des raisons totalement etrangeres au navigateur (fermeture de
      dialogue, etc.) - le sauter ici reviendrait a supposer, a tort,
      qu'il ne peut jamais se produire pendant que le navigateur est
-     inactif. }
-   If BrowserHasFocus Or WasFullRepaint Then
-    DrawBrowserTab;
+     inactif.
+     BOGUE DE PERFORMANCE REEL, PERSISTANT MEME APRES LE CORRECTIF
+     CI-DESSUS (2026-09-28, signale par l'utilisateur : "il lag encore
+     lorsque je tape du texte dans Terminal apres que le Navigateur Web
+     soit ouvert... je me demande si le probleme c'est pas ta manie de
+     toujours effacer l'ecran au complet et de la redessiner
+     continuellement") : appeler DrawBrowserTab ici (meme uniquement pour
+     WasFullRepaint) reste un PLEIN reparcours DOM/CSS + une copie
+     plein ecran a CHAQUE frappe clavier des que FullRepaintNeeded est
+     vrai - et FullRepaintNeeded se declenche bien plus souvent que prevu
+     (toute transition impliquant StartPage/dialogues). Hors focus, le
+     contenu du navigateur n'a PAS change depuis son dernier vrai rendu -
+     inutile de tout reparcourir pour reafficher un pixel identique.
+     BrowserRestoreSnapshotIfValid restaure a la place, a moindre cout
+     (un seul PutImage du rectangle de l'onglet, capture par DrawBrowserTab
+     lui-meme a la fin de son dernier VRAI rendu - voir le commentaire
+     complet pres de BrowserSnapshotBuf), l'apparence deja correcte du
+     navigateur. DrawBrowserTab en entier ne reste necessaire ici que pour
+     le tout premier redessin de l'onglet (aucun cliche encore disponible)
+     - cas rare, gere par le retour False de BrowserRestoreSnapshotIfValid. }
+   If BrowserHasFocus Then
+    DrawBrowserTab
+   Else If WasFullRepaint Then Begin
+    If Not BrowserRestoreSnapshotIfValid Then
+     DrawBrowserTab;
+   End;
   End
   Else
    DrawEditor(ActiveEditor);
@@ -238396,6 +238430,27 @@ Var
  BrowserDblBufPage: Integer;
  BrowserPageBuf: Pointer;
  BrowserPageBufSz: LongInt;
+
+ { Cliche (2026-09-28, demande explicite de l'utilisateur - "si elle est
+   en pause, tu devrais juste conserver une capture d'image de la zone de
+   la page du navigateur et la reprendre... au lieu d'effacer
+   systematiquement l'ecran") : contrairement a BrowserPageBuf ci-dessus
+   (capture PLEIN ECRAN, utilisee en interne UNE FOIS PAR VRAI rendu pour
+   preserver le chrome environnant lors du flip), BrowserSnapshotBuf ne
+   capture QUE le rectangle propre de l'onglet navigateur (chrome +
+   contenu, apres chaque VRAI rendu reussi) - permet a DrawAllWidgets de
+   restaurer l'apparence du navigateur a moindre cout (un simple PutImage)
+   quand l'onglet est en pause (BrowserHasFocus=False) mais qu'un
+   ClearScreen externe (FullRepaintNeeded, sans rapport avec le
+   navigateur) vient d'effacer sa zone - AUCUN reparcours DOM/CSS,
+   AUCUNE recopie plein ecran, juste le rectangle deja calcule. }
+ BrowserSnapshotBuf: Pointer;
+ BrowserSnapshotBufSz: LongInt;
+ BrowserSnapshotValid: Boolean;
+ BrowserSnapshotX1: Integer;
+ BrowserSnapshotY1: Integer;
+ BrowserSnapshotX2: Integer;
+ BrowserSnapshotY2: Integer;
 
  { Bouton Actualiser <-> Arreter (2026-09-28, demande explicite de
    l'utilisateur - "quand la page se charge le bouton devrait etre un X
@@ -262207,6 +262262,19 @@ Begin
                         (Y >= BrowserViewMinY) And (Y <= BrowserViewMaxY);
 End;
 
+{ BrowserRestoreSnapshotIfValid : voir le commentaire complet pres de la
+  declaration Forward. Un seul PutImage du dernier rectangle capture -
+  pas de BrowserSyncIn/Out, pas de RescrollPage, pas de double buffering
+  plein ecran : juste redonner a l'ecran l'apparence qu'il avait deja. }
+Function BrowserRestoreSnapshotIfValid: Boolean;
+Begin
+ BrowserRestoreSnapshotIfValid := False;
+ If Not BrowserSnapshotValid Then Exit;
+ If BrowserSnapshotBuf = Nil Then Exit;
+ PutImage(BrowserSnapshotX1, BrowserSnapshotY1, BrowserSnapshotBuf^, NormalPut);
+ BrowserRestoreSnapshotIfValid := True;
+End;
+
 { BrowserPollF12OnActiveTab : voir le commentaire complet pres de la
   declaration Forward (ligne ~13763) pour le bogue F12 original que ceci
   corrige - sondage GetAsyncKeyState direct (comme BROWSER.PAS autonome le
@@ -262397,6 +262465,7 @@ End;
 Procedure DrawBrowserTab;
 Var
  BrowserBackPage: Integer;
+ SnapshotSz: LongInt;
 Begin
  { Double buffering reel (2026-09-27) : composer TOUT le rendu ci-dessous
    sur la page ARRIERE (invisible) plutot que directement sur la page a
@@ -262449,6 +262518,23 @@ Begin
  SetVisualPage(BrowserBackPage);
  SetActivePage(BrowserBackPage);
  BrowserDblBufPage := BrowserBackPage;
+
+ { Cliche (2026-09-28, demande explicite de l'utilisateur - voir le
+   commentaire complet pres de la declaration de BrowserSnapshotBuf) :
+   capturer MAINTENANT le rectangle de l'onglet tel qu'il vient d'etre
+   affiche (page active = page visible, juste apres le flip ci-dessus),
+   pour que DrawAllWidgets puisse le restaurer a moindre cout pendant une
+   pause au lieu de rappeler DrawBrowserTab en entier. }
+ SnapshotSz := ImageSize(BrowserViewMinX, BrowserViewMinY, BrowserViewMaxX, BrowserViewMaxY);
+ If (BrowserSnapshotBuf = Nil) Or (SnapshotSz <> BrowserSnapshotBufSz) Then Begin
+  If BrowserSnapshotBuf <> Nil Then FreeMem(BrowserSnapshotBuf, BrowserSnapshotBufSz);
+  BrowserSnapshotBufSz := SnapshotSz;
+  GetMem(BrowserSnapshotBuf, BrowserSnapshotBufSz);
+ End;
+ BrowserSnapshotX1 := BrowserViewMinX; BrowserSnapshotY1 := BrowserViewMinY;
+ BrowserSnapshotX2 := BrowserViewMaxX; BrowserSnapshotY2 := BrowserViewMaxY;
+ GetImage(BrowserSnapshotX1, BrowserSnapshotY1, BrowserSnapshotX2, BrowserSnapshotY2, BrowserSnapshotBuf^);
+ BrowserSnapshotValid := True;
 End;
 
 { Remet ActiveBrowserState a sa geometrie NORMALE (dockee, onglet MDI) -
