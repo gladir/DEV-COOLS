@@ -18957,6 +18957,14 @@ Begin
    ActiveGridEditor := GridEditors[Idx]^;
  End Else If WinMgr.Windows[Idx].Kind = WK_BROWSER Then Begin
   SyncBrowserIn(Idx);
+  { BrowserHasFocus (2026-09-28) : on vient de basculer VERS cet onglet
+    (clic sur la barre d'onglets, en dehors du rectangle de rendu du
+    navigateur lui-meme) - sans ceci, DrawAllWidgets ne redessinerait pas
+    le contenu tant qu'aucun clic supplementaire DANS la zone de rendu
+    n'a eu lieu (voir le bogue de performance corrige dans DrawAllWidgets,
+    qui saute maintenant DrawBrowserTab si BrowserHasFocus est faux),
+    laissant l'onglet fraichement selectionne visuellement vide/perime. }
+  BrowserHasFocus := True;
  End Else If WinMgr.Windows[Idx].Kind = WK_EMU Then Begin
   EmuPanel := EmuTabs[Idx];
   If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx])
@@ -231409,6 +231417,8 @@ End;
 { --- Dessiner tous les widgets de l IDE --- }
 
 Procedure DrawAllWidgets;
+Var
+ WasFullRepaint: Boolean;
 Begin
  { /TASKBARWIN95 (2026-09-18, demande explicite de l utilisateur : "comme  }
  { le ferait Windows 95") : chaque tache est une application ISOLEE - une  }
@@ -231440,6 +231450,7 @@ Begin
   Exit;
  End;
  { Nettoyage unique lors de la transition page de demarrage -> IDE }
+ WasFullRepaint := FullRepaintNeeded;
  If FullRepaintNeeded Then Begin
   ClearScreen(CLR_BACKGROUND);
   FullRepaintNeeded := False;
@@ -231459,8 +231470,47 @@ Begin
    DrawGridEditor(ActiveGridEditor)
   Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then
    DrawSqlExplorer(SqlExplorer)
-  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then
-   DrawBrowserTab
+  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+   { BOGUE REEL DE PERFORMANCE (2026-09-28, "5 minutes a chaque touche...
+     il y a encore d'autres mecanismes") : DrawAllWidgets est appelee
+     apres CHAQUE evenement distribue (voir MainLoop), donc CHAQUE frappe
+     clavier dans le Terminal tant que l'onglet MDI actif reste un
+     navigateur - AUCUN rapport avec la frappe elle-meme, mais
+     DrawBrowserTab etait rappelee ICI inconditionnellement a chaque fois
+     quand meme. DrawBrowserTab fait (a) une copie PLEIN ECRAN
+     (GetImage+PutImage, voir le double buffering) ET (b) un
+     RescrollPage->RenderHTMLDocument complet (reparcours de tout l'arbre
+     DOM/CSS) - un cout bien plus lourd que le sondage F12 deja corrige
+     (bogue precedent), et la VRAIE cause dominante du symptome. Ce
+     travail est PUR GASPILLAGE quand rien du cote navigateur n'a change :
+     tout evenement qui affecte reellement le contenu du navigateur
+     (JSCheckTimeout via BrowserIdleTick, le bascule DevTools via F12,
+     un clic/scroll dans HandleBrowserMouse/Key) declenche DEJA son PROPRE
+     RescrollPage directement, INDEPENDAMMENT de cet appel - ils ne
+     dependent PAS de ce DrawBrowserTab-ci pour apparaitre a l'ecran. Ne
+     rappeler DrawBrowserTab ICI que si BrowserHasFocus (le navigateur a
+     reellement ete la cible du dernier clic reel - voir sa declaration,
+     globales principales) : synchronise avec le mode pause deja demande
+     par l'utilisateur - "hors focus" doit vouloir dire hors focus
+     PARTOUT, pas seulement pour les timers JS. Des qu'un clic regagne le
+     focus, ce MEME evenement redessine deja correctement (BrowserHasFocus
+     devient vrai AVANT que DrawAllWidgets ne soit appelee dans le meme
+     tour de MainLoop).
+     BOGUE REEL TROUVE EN VERIFIANT CE CORRECTIF EN DIRECT (capture
+     d'ecran : onglet navigateur entierement VIDE apres une frappe dans le
+     Terminal) : WasFullRepaint (capture juste avant que le bloc
+     "If FullRepaintNeeded" ci-dessus ne le consomme) doit ELLE AUSSI
+     forcer le redessin, meme si BrowserHasFocus est faux - sinon
+     ClearScreen() efface l'ecran ENTIER (dont la zone du navigateur) et
+     personne ne la redessine, laissant un trou gris permanent jusqu'au
+     prochain clic dans le navigateur. FullRepaintNeeded se declenche pour
+     des raisons totalement etrangeres au navigateur (fermeture de
+     dialogue, etc.) - le sauter ici reviendrait a supposer, a tort,
+     qu'il ne peut jamais se produire pendant que le navigateur est
+     inactif. }
+   If BrowserHasFocus Or WasFullRepaint Then
+    DrawBrowserTab;
+  End
   Else
    DrawEditor(ActiveEditor);
  End;
