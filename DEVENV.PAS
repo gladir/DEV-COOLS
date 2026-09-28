@@ -260993,7 +260993,25 @@ Begin
  If GetMaxColor >= 16 Then
   HTMLBlackColorIndex := 16
  Else
-  HTMLBlackColorIndex := Black;
+  { BOGUE REEL (2026-09-28, "les onglets Debogueur/Editeur style/Console/
+    Reseau ne s'affichent pas dans DEVTOOLS, regression vs BROWSER.PAS") :
+    l'index de palette 0 (Black) est documente comme non fiable PARTOUT
+    ailleurs dans ce projet - voir CLR_EDITOR_TEXT (=8, "pas 0 car
+    SetBkColor remappe 0") et [[feedback_color_index_0_unreliable]] en
+    memoire : SetBkColor(CLR_BACKGROUND), appele a plusieurs endroits de
+    l'IDE (dont InitializeGraphics au demarrage et DrawTerminalPanel a
+    chaque frame), reprogramme en permanence le registre de palette 0 vers
+    la couleur de fond general (gris clair), quel que soit ce que
+    SetRGBPalette(0,...) y avait ecrit ici. HTMLBlackColorIndex=0 semblait
+    correct a la simple lecture (coincide avec la constante Black) mais le
+    texte "noir" du navigateur s'affichait donc en gris clair - invisible
+    sur le panneau DevTools (lui-meme gris clair) sauf sur fond blanc
+    (onglet selectionne), ou il restait visible mais gris au lieu de noir.
+    Utiliser CLR_EDITOR_TEXT (index 8, gris fonce) au lieu de Black (0),
+    exactement comme le reste de l'IDE le fait deja pour tout son texte
+    "noir", au lieu de reintroduire un troisieme mecanisme de contournement
+    pour le meme bogue deja connu. }
+  HTMLBlackColorIndex := CLR_EDITOR_TEXT;
  For I := 0 To 15 Do
   { PtcGraph attend des composantes 0..255. Le Shr 2 adapte aux anciens
     registres DAC VGA 0..63, mais rend ici le blanc (255) gris (63) et
@@ -261932,6 +261950,25 @@ Begin
    d'initialisation - reproduit exactement ce qu'un lancement autonome de
    BROWSER.PAS faisait au demarrage du PROCESSUS, mais par ONGLET. }
  BrowserSyncIn(BrowserTabs[Idx]^);
+ { BOGUE REEL (2026-09-28, "les onglets Debogueur/Editeur style/Console/
+   Reseau ne s'affichent pas dans DEVTOOLS, regression vs BROWSER.PAS") :
+   BrowserInitLayoutAndPalette (donc InitializeHTMLPalette, qui reprogramme
+   le registre de palette 0 en noir reel et fixe HTMLBlackColorIndex)
+   n'etait jamais appelee nulle part - code mort depuis le portage. Le
+   registre 0 restait donc a la couleur laissee par
+   SetBkColor(CLR_BACKGROUND) de InitializeGraphics (demarrage de l'IDE,
+   ligne ~12078), un gris - PAS le noir attendu. HTMLBlackColorIndex valait
+   bien 0 (valeur par defaut d'un Integer global, coincidant avec la
+   constante Black), ce qui masquait le bogue a la simple lecture de cette
+   variable. Consequence : tout texte "noir" du navigateur (dont les
+   onglets DevTools) etait en realite gris - invisible sur le panneau
+   DevTools (lui-meme gris clair) sauf sur fond blanc (onglet selectionne),
+   ou il restait visible mais gris au lieu de noir (signale separement par
+   l'utilisateur). Diagnostic confirme en direct : un journal temporaire
+   dans DrawDevTools montrait des positions d'onglets 2-5 parfaitement
+   valides (dans les limites du panneau), donc ce n'etait pas un bogue de
+   positionnement/largeur de texte, uniquement de couleur. }
+ BrowserInitLayoutAndPalette;
  InitURLBar;
  InitHistory;
  MouseAvailable := True; { DEVENV.PAS possede deja sa propre souris fonctionnelle }
