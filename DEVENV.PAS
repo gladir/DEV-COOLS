@@ -227604,24 +227604,16 @@ Begin
   End;
  End
  Else If (Ext = '.psp') Then Begin
-  { Compilation PSP (Pascal Server Pages) }
-  DetectPSPCompiler(PSPContext);
-  If PSPContext.CompilerFound Then Begin
-   CmdLine := PSPContext.CompilerPath + ' ' + SourceFile;
-   AppendOutput(OutputPanel,
-    '------ Build started: ' + SourceFile + ' ------',
-    Ord(OTK_BUILD));
-   AppendOutput(OutputPanel, '> ' + CmdLine,
-    Ord(OTK_BUILD));
-   ExitCode := ExecuteCompiler(CmdLine, TempFile);
-   ReadOutputFile(TempFile, OutputPanel, Ord(OTK_BUILD));
-   CleanupTempFile(TempFile);
-  End Else Begin
-   AppendOutput(OutputPanel,
-    'Erreur : compilateur PSP non trouve (PSPCW32/PSP86).',
-    Ord(OTK_BUILD));
-   Exit;
-  End;
+  { Pascal Server Pages (2026-09-27, demande explicite de l'utilisateur -
+    "plutot que de mettre un nom de fichier .html a la place du .psp, tu
+    devrais conserver le nom exacte et rajouter dans l'adresse URL le
+    prefixe exec:") : F5 ouvre directement un onglet "Navigateur Web" sur
+    "exec:<fichier>" au lieu de compiler ici - le schema exec: (voir
+    DisplayCurrentTarget dans le bloc navigateur importe) invoque
+    PSPCW32 lui-meme a chaque (re)navigation et affiche ce qu'il genere ;
+    l'adresse affichee reste le nom EXACT du fichier .psp, jamais un nom
+    de fichier .html invente. }
+  CreateBrowserWindow('exec:' + SourceFile);
  End
  Else If (Ext = '.asm') Or (Ext = '.s') Then Begin
   { Detecter la cible depuis le contenu du fichier (jamais depuis le projet) }
@@ -238734,6 +238726,7 @@ End;
 Const
  BROWSER_IMG_TEMP_FILE = 'BROWSERIMG.TMP';
  BROWSER_PDF_TEMP_FILE = 'BROWSERPDF.TMP';
+ BROWSER_EXEC_TEMP_FILE = 'BROWSEREXEC.TMP';
 
 Function ImageURLPreviouslyFailed(Const URL:String):Boolean;
 Var I:Integer;
@@ -240380,6 +240373,8 @@ Procedure JSSetInnerHTML(Node: HTMLNodePtr; Const HTML: String); Forward;
 Function IsRemoteURL(Const URL: String): Boolean; Forward;
 Function IsViewSourceURL(Const URL: String): Boolean; Forward;
 Function StripViewSourcePrefix(Const URL: String): String; Forward;
+Function IsExecURL(Const URL: String): Boolean; Forward;
+Function StripExecPrefix(Const URL: String): String; Forward;
 Function IsFtpURL(Const URL: String): Boolean; Forward;
 { Necessaire au module PDF (PDFExtractText, voir plus bas) - definie
   bien plus loin dans le fichier, aux cotes de IsFtpURL. }
@@ -259664,6 +259659,24 @@ Begin
  StripViewSourcePrefix := Copy(URL, 13, Length(URL) - 12);
 End;
 
+{ Prefixe "exec:" (2026-09-27, demande explicite de l'utilisateur) :
+  identifie une adresse qui designe un fichier source (ex: Pascal
+  Server Pages) a compiler/executer a chaque navigation, plutot qu'un
+  document a charger tel quel - voir son traitement dans
+  DisplayCurrentTarget. }
+Function IsExecURL(Const URL: String): Boolean;
+Begin
+ IsExecURL := Copy(HTMLLowerCase(URL), 1, 5) = 'exec:';
+End;
+
+{ Retire le prefixe "exec:" (5 caracteres) pour obtenir le chemin reel
+  du fichier source a compiler - jamais transmis tel quel a un
+  compilateur, seulement le chemin qui suit. }
+Function StripExecPrefix(Const URL: String): String;
+Begin
+ StripExecPrefix := Copy(URL, 6, Length(URL) - 5);
+End;
+
 { ============================================================
   Coloration syntaxique du code source HTML brut pour "view-source:"
   (comme les navigateurs reels). Principe : le source original est
@@ -260105,6 +260118,13 @@ Var
  PdfOk: Boolean;
  PdfBaseURL: String;
  PdfRequestedPage: LongInt;
+ ExecExt: String;
+ ExecOutput: String;
+ ExecOk: Boolean;
+ ExecCmdLine: String;
+ ExecExeName: String;
+ ExecExitCode: Integer;
+ ExecTempF: File;
  {$IFDEF WINDOWS}
  PageBody: String;
  StatusCode: LongInt;
@@ -260154,6 +260174,63 @@ Begin
 
   If SetHTMLSourceFromString(MessageText, HTML) Then
    TestHTMLRender(HTML);
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ { Prefixe "exec:" (2026-09-27, demande explicite de l'utilisateur -
+   F5 sur un .psp doit ouvrir un onglet Navigateur Web qui affiche ce
+   que le compilateur genere, en gardant le nom EXACT du fichier
+   source dans l'adresse, jamais un .html invente) : compile/execute
+   le fichier indique avec le compilateur associe a son extension et
+   affiche ce qu'il produit sur sa propre sortie standard - refait a
+   CHAQUE navigation (donc aussi a chaque clic sur Actualiser), pas
+   seulement a l'ouverture, ce qui permet un cycle edite-F5-actualise
+   sans jamais avoir a fermer/rouvrir l'onglet. }
+ If IsExecURL(CurrentURL) Then Begin
+  FileName := StripExecPrefix(CurrentURL);
+  ExecExt := HTMLLowerCase(ExtractFileExt(FileName));
+  ExecOutput := '';
+  ExecOk := False;
+  If ExecExt = '.psp' Then Begin
+   DetectPSPCompiler(PSPContext);
+   If PSPContext.CompilerFound Then Begin
+    { PSPCW32/PSP86 sont des COMPILATEURS (Pascal Server Pages -> .exe
+      Win32/DOS), jamais des interpreteurs - confirme par lecture de
+      PSPCW32.PAS (Opts.OutFile := ReplaceExt(Opts.SrcFile,'.exe'),
+      aucune execution automatique du resultat). Ils ne mettent donc
+      RIEN d'utile sur leur propre sortie standard en cas de succes.
+      La vraie page HTML n'existe qu'une fois le .exe COMPILE ensuite
+      REELLEMENT EXECUTE - meme motif compile-puis-executer que les
+      autres langages compiles de HandleStartDebugging (.asm Win32/
+      .lua), simplement redirige ici vers l'onglet Navigateur Web au
+      lieu du panneau de sortie. }
+    ExecCmdLine := PSPContext.CompilerPath + ' ' + FileName;
+    ExecExitCode := ExecuteCompiler(ExecCmdLine, BROWSER_EXEC_TEMP_FILE);
+    If ExecExitCode = 0 Then Begin
+     ExecExeName := ChangeFileExt(FileName, '.exe');
+     ExecExitCode := ExecuteCompiler(ExecExeName, BROWSER_EXEC_TEMP_FILE);
+     ExecOutput := LoadTextFileAsString(BROWSER_EXEC_TEMP_FILE);
+     ExecOk := Length(ExecOutput) > 0;
+    End Else
+     ExecOutput := LoadTextFileAsString(BROWSER_EXEC_TEMP_FILE); { erreurs de compilation }
+    {$I-}
+    Assign(ExecTempF, BROWSER_EXEC_TEMP_FILE);
+    Erase(ExecTempF);
+    {$I+}
+    If IOResult <> 0 Then ; { ignorer - fichier temporaire deja absent }
+   End Else
+    ExecOutput := 'Erreur : compilateur PSP non trouve (PSPCW32/PSP86).';
+  End Else
+   ExecOutput := 'Erreur : extension non prise en charge par exec: "' + ExecExt + '".';
+
+  If ExecOk Then Begin
+   If SetHTMLSourceFromString(ExecOutput, HTML) Then TestHTMLRender(HTML);
+  End Else Begin
+   MessageText := '<html><body><h2>Erreur d''execution</h2><pre>' +
+    FTPEscapeText(ExecOutput) + '</pre></body></html>';
+   If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  End;
   FreeHTMLSource(HTML);
   Exit;
  End;
