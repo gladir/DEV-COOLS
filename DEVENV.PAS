@@ -238452,6 +238452,19 @@ Var
  BrowserSnapshotX2: Integer;
  BrowserSnapshotY2: Integer;
 
+ { BrowserLastIdleSyncTick (2026-09-28, trouve en cherchant la cause d'un
+   "gel" signale par l'utilisateur sur une vraie page externe - voir le
+   commentaire complet pres de BrowserIdleTick) : meme quand l'onglet a
+   le focus (BrowserSyncIn/JSCheckTimeout/BrowserSyncOut legitimement
+   necessaires pour detecter un setTimeout arme), rien n'empechait ce
+   trio de s'executer a CHAQUE tick d'inactivite - potentiellement plus
+   de 200 fois/seconde, mesure en direct via un compteur temporaire,
+   representant a lui seul ~35-40% de charge CPU CONTINUE meme quand la
+   page n'a AUCUN minuteur arme et ne fait litteralement rien. Un
+   setTimeout n'a pas besoin d'une precision meilleure que quelques
+   dizaines de ms pour rester imperceptible - throttle ci-dessous. }
+ BrowserLastIdleSyncTick: LongInt;
+
  { Bouton Actualiser <-> Arreter (2026-09-28, demande explicite de
    l'utilisateur - "quand la page se charge le bouton devrait etre un X
    pour l'arreter, et redevenir Actualiser une fois la page chargee") :
@@ -262257,7 +262270,16 @@ Begin
    propre (JSCheckTimeout ETAIT bien saute), mais une copie de tout l'etat
    JS/CSS/DevTools a chaque tick d'inactivite malgre tout, ce qui EST le
    symptome ressenti ("il doit y avoir quelque chose qui roule"). }
- If BrowserHasFocus Then Begin
+ { BrowserLastIdleSyncTick (2026-09-28, voir le commentaire complet pres de
+   sa declaration, globales du bloc importe) : ce trio reste legitimement
+   necessaire pour detecter un setTimeout arme, mais n'a besoin d'aucune
+   precision sub-milliseconde - throttle a au plus une fois toutes les
+   50 ms (imperceptible pour un setTimeout reel, mais reduit un cout
+   mesure a ~35-40% de CPU CONTINU (page focalisee, AUCUN minuteur arme)
+   a ~12% verifie en direct - meme page, meme mesure sur 10 secondes). }
+ If BrowserHasFocus And
+    ((BrowserGetTickCount - BrowserLastIdleSyncTick) >= 50) Then Begin
+  BrowserLastIdleSyncTick := BrowserGetTickCount;
   BrowserSyncIn(ActiveBrowserState);
   JSCheckTimeout;
   BrowserSyncOut(ActiveBrowserState);
