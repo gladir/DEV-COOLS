@@ -257155,12 +257155,31 @@ Begin
    Reparser (et, pour une feuille externe, RETELECHARGER PAR LE RESEAU
    via Browser_HttpGet) l'integralite du CSS a CHAQUE survol - signale
    par l'utilisateur comme un lag majeur persistant meme apres avoir
-   corrige le redessin du chrome - en etait la vraie cause. }
- If CSSEnabled And(Not SkipNextRenderAreaClear)Then Begin
-  If CSSPreparedForRender Then
-   CSSPreparedForRender:=False
-  Else
-   CSSExtractFromDocument
+   corrige le redessin du chrome - en etait la vraie cause.
+   BOGUE REEL (2026-09-28, "F12 ... fige un bon 10 secondes, et la feuille
+   de style CSS disparait") : CSSPreparedForRender etait un "laissez-passer"
+   CONSOMME a chaque lecture (mis a False des qu'il valait True) au lieu de
+   rester vrai jusqu'a la PROCHAINE vraie navigation - hors de la passe de
+   survol, environ un appel de RenderHTMLDocument sur deux (donc de
+   DrawBrowserTab, donc quasiment chaque redessin de l'onglet navigateur -
+   un simple mouvement de souris suffit) retombait dans le Else et
+   retelechargeait/reparsait TOUTE la feuille CSS depuis le reseau, encore
+   et encore. Le F12 de l'utilisateur a simplement ete la premiere fois
+   qu'un redessin survenait au moment ou cette requete reseau redondante se
+   trouvait lente (d'ou le gel de ~10s) - le meme bogue guettait
+   silencieusement a chaque mouvement de souris depuis le debut, invisible
+   seulement parce que d'ordinaire le reseau repondait assez vite pour ne
+   pas etre remarque. CSSExtractFromDocument vide d'abord
+   CSSGlobalStylesheet.RuleCount avant de la repeupler - si CETTE requete
+   redondante echoue/est lente, le CSS deja affiche disparait purement et
+   simplement, meme si le PREMIER chargement avait reussi. Fix : ne plus
+   "consommer" ce laissez-passer du tout - une fois vrai (extraction reussie,
+   ici ou dans TestHTMLRender au chargement initial), il reste vrai jusqu'a
+   la PROCHAINE navigation reelle (TestHTMLRender le remet explicitement a
+   False avant de re-extraire) - plus jamais retelecharge a chaque redessin. }
+ If CSSEnabled And(Not SkipNextRenderAreaClear)And(Not CSSPreparedForRender)Then Begin
+  CSSExtractFromDocument;
+  CSSPreparedForRender:=True
  End;
 
  { Reinitialiser les zones de liens }
