@@ -150474,6 +150474,261 @@ Begin
 End;
 
 { ============================================================ }
+{ === FORMAT (2026-09-27, demande explicite de l'utilisateur : }
+{ === port complet de C:\SOURCE\GITHUB\CORAIL\FORMAT.PAS,      }
+{ === "et tient compte du disque virtuel de DEVENV.PAS")       }
+{ ============================================================ }
+{ Reformate un disque virtuel DEJA MONTE (IMGMOUNT ou BOOT           }
+{ /DISKn:) sur l'une des 4 unites A:/B:/C:/D: geree par             }
+{ FatVol[]/EmuFloppyOpen[]/EmuFloppySize[] - reecrit secteur de      }
+{ demarrage (BPB)+tables FAT+repertoire racine avec Fat_WriteSector, }
+{ selon EXACTEMENT les memes champs que Fat_TryMount lit deja pour   }
+{ detecter un volume FAT12/16 (memes offsets 11/13/14/16/17/19/21/   }
+{ 22/32/510/511) - Fat_TryMount est rappelee a la fin pour rafraichir}
+{ FatVol[Idx] a partir de ce qui vient d'etre ecrit, plutot que de   }
+{ dupliquer sa logique de lecture.                                  }
+{ Porte le sous-ensemble FAT12/FAT16 de la geometrie                 }
+{ ConfigureFileSystem/Logical4mat de FORMAT.PAS (boucle de           }
+{ convergence taille-de-cluster -> nombre-de-secteurs-FAT identique).}
+{ LIMITATIONS ASSUMEES ET DISCLOSEES (pas des oublis) :              }
+{  - FAT32 : non implemente (le calcul de geometrie existe dans      }
+{    FORMAT.PAS mais son ecriture, FSInfo+secteur de sauvegarde+     }
+{    chaine de clusters pour la racine, n'a pas ete portee faute     }
+{    de temps) - message d'erreur explicite plutot qu'un volume       }
+{    silencieusement casse.                                          }
+{  - exFAT/NTFS : jamais ecrits par ce projet (FatVol ne les          }
+{    modelise pas du tout) ; HPFS : FatVol ne le lit qu'en LECTURE    }
+{    (IsHPFS, jamais de champs d'ECRITURE) - aucun des trois n'est    }
+{    donc atteignable depuis cette commande.                         }
+{  - Formatage materiel reel C:-Z: (mode DOS reel de FORMAT.PAS) :    }
+{    hors de portee ici, DEVENV ne tourne jamais sous DOS reel -      }
+{    FORMAT.PAS lui-meme refuse deja ce mode sous FPC.                }
+{  - /CREATE (nouvelle image) : non repris, IMGMOUNT/BOOT /DISKn:     }
+{    s'en chargent deja (creer puis monter, plutot que de dupliquer   }
+{    cette logique ici).                                             }
+{  - Une seule partition geree (MBR non touche) : FatVol[Idx].        }
+{    PartitionStart existant (0 pour les images simples, deja la      }
+{    grande majorite des .img de ce projet) est PRESERVE tel quel -   }
+{    FORMAT ne reecrit jamais la table de partitions, exactement      }
+{    comme un vrai FORMAT.COM. }
+
+{ Construit un secteur de demarrage (BPB) FAT12/16 minimal mais       }
+{ complet - seuls les champs que Fat_TryMount lit reellement sont     }
+{ garantis corrects (voir sa liste d'offsets ci-dessus) ; le reste     }
+{ (nom OEM, secteurs/piste, numero de lecteur BIOS, signature de       }
+{ demarrage etendue 0x29) est rempli avec des valeurs generiques        }
+{ standard pour rester lisible par un outil externe eventuel. }
+Procedure Fmt_WriteBPB(Var Buf: Array Of Byte; TotalSectors: LongInt;
+ SPC: Byte; ReservedSectors: Word; NumFATs: Byte; RootEntries: Word;
+ SPF: LongInt; FATBits: Byte);
+Begin
+ FillChar(Buf[0], 512, 0);
+ Buf[0] := $EB; Buf[1] := $3C; Buf[2] := $90;
+ Buf[3] := Ord('D'); Buf[4] := Ord('E'); Buf[5] := Ord('V');
+ Buf[6] := Ord('C'); Buf[7] := Ord('O'); Buf[8] := Ord('O');
+ Buf[9] := Ord('L'); Buf[10] := Ord('S');
+ Buf[11] := Lo(512); Buf[12] := Hi(512);
+ Buf[13] := SPC;
+ Buf[14] := Lo(ReservedSectors); Buf[15] := Hi(ReservedSectors);
+ Buf[16] := NumFATs;
+ Buf[17] := Lo(RootEntries); Buf[18] := Hi(RootEntries);
+ If TotalSectors <= 65535 Then Begin
+  Buf[19] := Byte(TotalSectors); Buf[20] := Byte(TotalSectors Shr 8);
+ End;
+ Buf[21] := $F8; { descripteur de support : disque "fixe" generique }
+ Buf[22] := Byte(SPF); Buf[23] := Byte(SPF Shr 8);
+ Buf[24] := 1; Buf[25] := 0; { secteurs/piste : valeur nominale, non relue }
+ Buf[26] := 1; Buf[27] := 0; { nombre de tetes : valeur nominale, non relue }
+ Buf[32] := Byte(TotalSectors); Buf[33] := Byte(TotalSectors Shr 8);
+ Buf[34] := Byte(TotalSectors Shr 16); Buf[35] := Byte(TotalSectors Shr 24);
+ Buf[36] := $80; { numero de lecteur BIOS }
+ Buf[38] := $29; { signature de demarrage etendue }
+ Buf[510] := $55; Buf[511] := $AA;
+End;
+
+{ Ecrit une entree "etiquette de volume" (attribut ATTR_VOLUME_ID=$08)
+  en toute premiere entree du repertoire racine. }
+Procedure Fmt_PutVolumeLabelEntry(Var Buf: Array Of Byte; Const VolLabel: String);
+Var
+ S: String;
+ I: Integer;
+Begin
+ S := Copy(VolLabel, 1, 11);
+ While Length(S) < 11 Do S := S + ' ';
+ For I := 1 To 11 Do Buf[I - 1] := Ord(UpCase(S[I]));
+ Buf[11] := $08;
+End;
+
+{ Porte de ConfigureFileSystem (FORMAT.PAS) : boucle de convergence
+  taille-de-cluster -> nombre-de-secteurs-FAT identique (SPC double a
+  chaque echec jusqu'a entrer dans la plage de clusters valide), pour
+  FAT12 (<4085 clusters) et FAT16 (4085 a 65524 clusters) uniquement. }
+Function Fmt_ComputeGeometry(TotalSectors: LongInt; ReqFS: String;
+ Var SPC: Byte; Var NumFATs: Byte; Var RootEntries: Word;
+ Var SPF: LongInt; Var FATBits: Byte; Var ErrMsg: String): Boolean;
+Var
+ Clusters, DataSectors, RootSectors, FatSectors, OldFat: LongInt;
+ I: Integer;
+Begin
+ Fmt_ComputeGeometry := False;
+ Clusters := 0;
+ NumFATs := 2;
+ If TotalSectors <= 2880 Then RootEntries := 224 Else RootEntries := 512;
+ If ReqFS = 'FAT32' Then Begin
+  ErrMsg := 'FAT32 n''est pas encore implemente par cette commande (voir /FS:FAT16).';
+  Exit;
+ End;
+ If (ReqFS <> '') And (ReqFS <> 'AUTO') And (ReqFS <> 'FAT') And
+    (ReqFS <> 'FAT12') And (ReqFS <> 'FAT16') Then Begin
+  ErrMsg := 'systeme de fichiers non pris en charge : ' + ReqFS +
+   ' (attendu FAT, FAT12 ou FAT16).';
+  Exit;
+ End;
+ If ReqFS = 'FAT16' Then FATBits := 16
+ Else If ReqFS = 'FAT12' Then FATBits := 12
+ Else If TotalSectors >= 8192 Then FATBits := 16
+ Else FATBits := 12;
+ RootSectors := (LongInt(RootEntries) * 32 + 511) Div 512;
+ SPC := 1;
+ Repeat
+  FatSectors := 1;
+  For I := 1 To 16 Do Begin
+   DataSectors := TotalSectors - 1 - FatSectors * 2 - RootSectors;
+   If DataSectors < 1 Then Break;
+   Clusters := DataSectors Div SPC;
+   OldFat := FatSectors;
+   If FATBits = 12 Then
+    FatSectors := ((Clusters + 2) * 3 Div 2 + 511) Div 512
+   Else
+    FatSectors := ((Clusters + 2) * 2 + 511) Div 512;
+   If FatSectors = OldFat Then Break;
+  End;
+  If DataSectors < 1 Then Break;
+  If FATBits = 12 Then Begin
+   If (Clusters >= 1) And (Clusters < 4085) Then Break;
+  End Else Begin
+   If (Clusters >= 4085) And (Clusters < 65525) Then Break;
+  End;
+  SPC := SPC * 2;
+ Until SPC > 128;
+ If FATBits = 12 Then Begin
+  If (Clusters < 1) Or (Clusters >= 4085) Then Begin
+   ErrMsg := 'la geometrie ne convient pas a FAT12 (essayer /FS:FAT16 sur une image plus grande).';
+   Exit;
+  End;
+ End Else Begin
+  If (Clusters < 4085) Or (Clusters >= 65525) Then Begin
+   ErrMsg := 'la geometrie ne convient pas a FAT16 (image trop petite ou trop grande).';
+   Exit;
+  End;
+ End;
+ SPF := FatSectors;
+ Fmt_ComputeGeometry := True;
+End;
+
+Procedure TermCmd_FORMAT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ P1, ReqFS, VolLabel, Tok: String;
+ Idx: Byte;
+ I, ArgI: Integer;
+ TotalSectors: LongInt;
+ SPC, NumFATs, FATBits: Byte;
+ RootEntries: Word;
+ SPF: LongInt;
+ ErrMsg: String;
+ Buf: Array[0..511] Of Byte;
+ FATStart, RootStart, DataStart, RootDirSectors, LBA: LongInt;
+Begin
+ P1 := TermExtractParam(ParamStr, 1);
+ If (P1 = '') Or (TermStrToUpper(P1) = '/?') Then Begin
+  TermAddLine(TP, 'Syntaxe : FORMAT lettre: [/FS:FAT|FAT12|FAT16] [/V:nom] [/Q]');
+  TermAddLine(TP, '  Reformate un disque virtuel deja monte (IMGMOUNT ou BOOT');
+  TermAddLine(TP, '  /DISKn:) sur A:, B:, C: ou D: - efface tout son contenu.');
+  Exit;
+ End;
+ If (Length(P1) <> 2) Or (P1[2] <> ':') Or Not Term_DriveIdxFromLetter(P1[1], Idx) Then Begin
+  TermAddLine(TP, 'FORMAT : lettre de lecteur invalide : ' + P1 +
+   ' (seuls A:, B:, C: et D: sont geres par les disques virtuels).');
+  Exit;
+ End;
+ If Not EmuFloppyOpen[Idx] Then Begin
+  TermAddLine(TP, 'FORMAT : ' + P1 + ' n''a aucune image de montee ' +
+   '(utiliser IMGMOUNT ou BOOT /DISKn: d''abord).');
+  Exit;
+ End;
+ ReqFS := 'AUTO'; VolLabel := '';
+ ArgI := 2;
+ Tok := TermExtractParam(ParamStr, ArgI);
+ While Tok <> '' Do Begin
+  If TermStrToUpper(Copy(Tok, 1, 4)) = '/FS:' Then
+   ReqFS := TermStrToUpper(Copy(Tok, 5, Length(Tok) - 4))
+  Else If TermStrToUpper(Copy(Tok, 1, 3)) = '/V:' Then
+   VolLabel := Copy(Tok, 4, 11)
+  Else If TermStrToUpper(Tok) = '/Q' Then
+   { formatage rapide : c'est deja le seul mode implemente (pas de
+     parcours physique piste par piste comme le mode complet de
+     FORMAT.PAS - disclosed, /Q et sans /Q se comportent identiquement }
+  Else Begin
+   TermAddLine(TP, 'FORMAT : parametre invalide : ' + Tok);
+   Exit;
+  End;
+  Inc(ArgI);
+  Tok := TermExtractParam(ParamStr, ArgI);
+ End;
+ TotalSectors := LongInt(EmuFloppySize[Idx]) Div 512;
+ If TotalSectors < 32 Then Begin
+  TermAddLine(TP, 'FORMAT : image trop petite pour contenir un systeme de fichiers.');
+  Exit;
+ End;
+ ErrMsg := '';
+ If Not Fmt_ComputeGeometry(TotalSectors, ReqFS, SPC, NumFATs, RootEntries,
+  SPF, FATBits, ErrMsg) Then Begin
+  TermAddLine(TP, 'FORMAT : ' + ErrMsg);
+  Exit;
+ End;
+ Fmt_WriteBPB(Buf, TotalSectors, SPC, 1, NumFATs, RootEntries, SPF, FATBits);
+ If Not Fat_WriteSector(Idx, 0, Buf) Then Begin
+  TermAddLine(TP, 'FORMAT : echec d''ecriture du secteur de demarrage.');
+  Exit;
+ End;
+ FATStart := 1;
+ RootDirSectors := (LongInt(RootEntries) * 32 + 511) Div 512;
+ RootStart := FATStart + LongInt(NumFATs) * SPF;
+ DataStart := RootStart + RootDirSectors;
+ For I := 0 To NumFATs - 1 Do Begin
+  FillChar(Buf, 512, 0);
+  Buf[0] := $F8; Buf[1] := $FF; Buf[2] := $FF;
+  If FATBits = 16 Then Buf[3] := $FF;
+  If Not Fat_WriteSector(Idx, FATStart + LongInt(I) * SPF, Buf) Then Begin
+   TermAddLine(TP, 'FORMAT : echec d''ecriture de la table FAT.');
+   Exit;
+  End;
+  FillChar(Buf, 512, 0);
+  For LBA := FATStart + LongInt(I) * SPF + 1 To FATStart + LongInt(I) * SPF + SPF - 1 Do
+   If Not Fat_WriteSector(Idx, LBA, Buf) Then Begin
+    TermAddLine(TP, 'FORMAT : echec d''ecriture de la table FAT.');
+    Exit;
+   End;
+ End;
+ FillChar(Buf, 512, 0);
+ If VolLabel <> '' Then Fmt_PutVolumeLabelEntry(Buf, VolLabel);
+ If Not Fat_WriteSector(Idx, RootStart, Buf) Then Begin
+  TermAddLine(TP, 'FORMAT : echec d''ecriture du repertoire racine.');
+  Exit;
+ End;
+ FillChar(Buf, 512, 0);
+ For LBA := RootStart + 1 To RootStart + RootDirSectors - 1 Do
+  If Not Fat_WriteSector(Idx, LBA, Buf) Then Begin
+   TermAddLine(TP, 'FORMAT : echec d''ecriture du repertoire racine.');
+   Exit;
+  End;
+ Fat_TryMount(Idx);
+ TermAddLine(TP, 'Le formatage de ' + P1 + ' est termine.');
+ TermAddLine(TP, IntToStr(LongInt(TotalSectors) * 512) + ' octets disponibles sur le disque.');
+ If VolLabel <> '' Then TermAddLine(TP, 'Nom de volume : ' + VolLabel);
+End;
+
+{ ============================================================ }
 { === Commandes Microsoft Teams (PowerShell dev uniquement)=== }
 { ============================================================ }
 { (2026-09-07, demande explicite) : Connect-MicrosoftTeams/                 }
@@ -158226,7 +158481,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 259;
+ PS_CMD_ALIASES = 260;
  PSCmd: Array[1..PS_CMD_ALIASES] Of Record
   Name: String[45];
   ID: Byte;
@@ -158319,6 +158574,7 @@ Const
   (Name:'EXPORT-CSV'; ID:89),
   (Name:'EXPORT-MDBCDATA'; ID:150),
   (Name:'FOREACH-OBJECT'; ID:90),
+  (Name:'FORMAT'; ID:238),
   (Name:'FORMAT-HEX'; ID:91),
   (Name:'FORMAT-LIST'; ID:92),
   (Name:'FORMAT-TABLE'; ID:93),
@@ -158909,6 +159165,8 @@ Begin
     TermCmd_Browser(TP, ParamStr)
    Else If CurrCmd = 'ASSIGN' Then
     TermCmd_ASSIGN(TP, ParamStr)
+   Else If CurrCmd = 'FORMAT' Then
+    TermCmd_FORMAT(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
@@ -159302,6 +159560,7 @@ Begin
     { shells (voir TermCmd_Browser/TermCmd_EDIT) - ID choisi juste apres   }
     { le plus grand ID PSCmd deja utilise (236) au moment de l'ajout. }
     237: TermCmd_Browser(TP, ParamStr); { BROWSER }
+    238: TermCmd_FORMAT(TP, ParamStr); { FORMAT }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
@@ -159609,6 +159868,8 @@ Begin
    TermCmd_Browser(TP, ParamStr)
   Else If CurrCmd = 'ASSIGN' Then
    TermCmd_ASSIGN(TP, ParamStr)
+  Else If CurrCmd = 'FORMAT' Then
+   TermCmd_FORMAT(TP, ParamStr)
   Else If CurrCmd = 'ARJ' Then
    TermCmd_ARJ(TP, ParamStr)
   Else If CurrCmd = 'UNZIP' Then
@@ -159788,6 +160049,8 @@ Begin
     TermCmd_Browser(TP, ParamStr)
    Else If CurrCmd = 'ASSIGN' Then
     TermCmd_ASSIGN(TP, ParamStr)
+   Else If CurrCmd = 'FORMAT' Then
+    TermCmd_FORMAT(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
@@ -223692,6 +223955,7 @@ End;
 Function FindCompiler(Name: String): String;
 Var
  FullPath: String;
+ AppDir: String;
 Begin
  FindCompiler := '';
  {$IFDEF WINDOWS}
@@ -223703,13 +223967,28 @@ Begin
   FindCompiler := FExpand(FullPath);
   Exit;
  End;
- { Chercher dans le repertoire courant }
+ { Chercher a cote de DEVENV.exe lui-meme, PAS dans le repertoire
+   courant du processus (2026-09-27, bogue reel signale par
+   l'utilisateur - Entree sur un .psp dans Norton Commander APRES un
+   CD vers un sous-repertoire, ex. SAMPLES\PSP, ne trouvait plus
+   PSPCW32.exe : "Erreur : compilateur PSP non trouve"). L'ancien
+   FSearch(FullPath, '.') cherchait le vrai repertoire courant du
+   PROCESSUS - or NC modifie REELLEMENT ce repertoire courant quand on
+   navigue (CD n'est pas qu'un chemin logique affiche), donc "." ne
+   pointait plus vers C:\SOURCE\GITHUB\DEV-COOLS (ou vivent tous les
+   compilateurs xxxCW32/xxx86) des qu'on s'etait deplace ailleurs.
+   Les compilateurs sont installes a cote de DEVENV.exe, jamais dans
+   le repertoire que l'utilisateur parcourt actuellement - meme
+   repertoire que celui deja utilise pour SQLCMD.EXE/PASCHAT.exe
+   (ExtractFilePath(ParamStr(0))). Affecte TOUS les langages compiles
+   de ce projet (cette fonction est partagee), pas seulement PSP. }
+ AppDir := ExtractFilePath(ParamStr(0));
  {$IFDEF WINDOWS}
- FullPath := Name + '.exe';
+ FullPath := AppDir + Name + '.exe';
  {$ELSE}
- FullPath := Name;
+ FullPath := AppDir + Name;
  {$ENDIF}
- If FSearch(FullPath, '.') <> '' Then
+ If FileExists(FullPath) Then
   FindCompiler := FExpand(FullPath);
 End;
 
