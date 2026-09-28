@@ -89103,6 +89103,8 @@ End;
 Procedure TermCmd_Browser(Var TP: TTerminalPanel; ParamStr: String);
 Var
  Verb, Target, Dir: String;
+ DiagFull: AnsiString;
+ DiagSplitPos: Integer;
 Begin
  Verb := TermStrToUpper(TermExtractParam(ParamStr, 1));
  If (Verb = '') Or (Verb = '/?') Then Begin
@@ -89114,7 +89116,13 @@ Begin
   Exit;
  End;
  If Verb = 'DIAG' Then Begin { DIAGNOSTIC TEMPORAIRE }
-  TermAddLine(TP, 'DIAG CSS: ' + BrowserCSSDiagString);
+  DiagFull := BrowserCSSDiagString;
+  DiagSplitPos := System.Pos('JSTimeoutActive', DiagFull);
+  If DiagSplitPos > 0 Then Begin
+   TermAddLine(TP, 'DIAG CSS: ' + Copy(DiagFull, 1, DiagSplitPos - 1));
+   TermAddLine(TP, 'DIAG JS: ' + Copy(DiagFull, DiagSplitPos, Length(DiagFull) - DiagSplitPos + 1));
+  End Else
+   TermAddLine(TP, 'DIAG CSS: ' + DiagFull);
   Exit;
  End;
  If (Verb <> 'URL') And (Verb <> 'FILE') Then Begin
@@ -236203,6 +236211,35 @@ Begin
      DrawWin95DateTimeDialog;
     End;
    End;
+   { BOGUE REEL corrige (2026-09-27, signale par l'utilisateur - "la fenetre
+     arrete de pas de flecher des que je deplace le pointeur de la souris"
+     sur https://www.google.ca, F12/menu contextuel inutilisables) : cette
+     branche Else (aucun evenement, Ev.Kind=EV_NONE) ne contenait AUCUNE
+     pause - PollEvents utilise un MODELE PAR SONDAGE (GetMouseState lit la
+     position courante, pas une file de messages Windows), donc tant que
+     rien ne bouge cette boucle tournait deja a vide en continu (confirme
+     par mesure directe : ~1 seconde de temps CPU consommee par seconde
+     ecoulee, meme sur une page totalement statique, AVANT tout mouvement
+     de souris). Deplacer physiquement la souris fait varier la position
+     sondee a CHAQUE iteration ; sur un onglet WK_BROWSER, chaque variation
+     appelle HandleBrowserMouse -> ProcessMouseHover, qui refait un test de
+     survol (FindInteractiveAreaAtPosition) a CHAQUE iteration de cette
+     boucle deja non bridee - avec des dizaines de milliers d'iterations
+     par seconde sur une machine moderne, ce travail (pourtant deja
+     correctement protege contre un rendu COMPLET inutile par
+     "If CurrentNode <> HoveredInteractiveNode") suffit a saturer le coeur
+     CPU et donne l'impression d'un gel : le clavier (verifie EN PREMIER
+     dans PollEvents) finit par etre traite, mais seulement entre deux
+     iterations d'une boucle qui n'a plus aucune marge. Corrige par une
+     PAUSE minime (1 ms, en dessous du seuil de perception humaine mais
+     largement suffisante pour rendre la main a l'ordonnanceur Windows)
+     - OMISE quand un emulateur DOS est actif (StepEmulator a lui-meme
+     besoin d'etre rappele aussi vite que possible pour avancer a une
+     vitesse d'emulation raisonnable ; le brider ici aurait ralenti tout
+     programme DOS en cours d'execution, une regression bien plus grave
+     que le gel du navigateur). }
+   If Not (EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running) Then
+    WinSleep(1);
   End;
  End;
 End;
@@ -261859,7 +261896,11 @@ Begin
   ' RuleCount=' + IntToStr(CSSGlobalStylesheet.RuleCount) +
   ' Prepared=' + IntToStr(Ord(CSSPreparedForRender)) +
   ' CurrentURL=[' + CurrentURL + ']' +
-  ' SkipClear=' + IntToStr(Ord(SkipNextRenderAreaClear));
+  ' SkipClear=' + IntToStr(Ord(SkipNextRenderAreaClear)) +
+  ' JSTimeoutActive=' + IntToStr(Ord(JSTimeoutActive)) +
+  ' JSTimeoutFireAtTick=' + IntToStr(JSTimeoutFireAtTick) +
+  ' NowTick=' + IntToStr(BrowserGetTickCount) +
+  ' ContextMenuOpen=' + IntToStr(Ord(ContextMenuOpen));
 End;
 
 { ============================================================
