@@ -7699,6 +7699,28 @@ Var
    DispatchEvent (bien avant le bloc importe dans ce fichier), evitant un
    wrapper Forward pour cette seule variable - meme choix que EmuHasFocus. }
  BrowserHasFocus: Boolean;
+ { BrowserPrevF12Down (2026-09-28) : BOGUE REEL DE PERFORMANCE signale par
+   l'utilisateur ("5 minutes a chaque touche tapee dans le Terminal") -
+   BrowserPollF12OnActiveTab (appelee a CHAQUE iteration de MainLoop, y
+   compris pour CHAQUE frappe clavier dans le Terminal, tant que l'onglet
+   MDI actif reste un navigateur) faisait BrowserSyncIn+BrowserSyncOut
+   INCONDITIONNELLEMENT juste pour lire PreviousF12Down (qui vivait dans
+   TBrowserState, donc necessitait la synchronisation complete pour etre a
+   jour) - cette sync copie par VALEUR des structures potentiellement
+   volumineuses (JSCtx, CSSGlobalStylesheet, tableaux Dev*) a un rythme
+   pouvant depasser 1000 fois/seconde, un cout invisible pour un simple
+   sondage GetAsyncKeyState mais qui s'accumulait a chaque frappe.
+   BrowserPrevF12Down est donc sorti de TBrowserState et declare ICI,
+   AMBIANT et non synchronise par onglet (comme BrowserHasFocus juste
+   au-dessus) - le sondage F12 lui-meme (GetAsyncKeyState + comparaison a
+   ce Boolean) ne coute plus RIEN tant que la touche n'est pas
+   effectivement pressee ; le BrowserSyncIn/Out complet ne se produit plus
+   que sur un VRAI front descendant->montant de F12 (donc rarement), pas a
+   chaque iteration. Simplification consciente : ce debounce n'a plus
+   besoin d'etre precis par onglet (un seul onglet est actif/visible a la
+   fois de toute facon) - meme raisonnement deja applique a
+   BrowserHasFocus. }
+ BrowserPrevF12Down: Boolean;
  { Correctifs 2026-08-15 (rapportes par l utilisateur apres test Stage 2) : }
  { EmuHasFocus seul ne suffit pas a decider si l emulateur doit VRAIMENT    }
  { continuer a avancer - ouvrir un menu (clic sur la barre de menus, deja   }
@@ -262136,18 +262158,35 @@ Begin
 End;
 
 { BrowserPollF12OnActiveTab : voir le commentaire complet pres de la
-  declaration Forward (ligne ~13763) pour le bogue reel que ceci corrige -
-  sondage GetAsyncKeyState direct (comme BROWSER.PAS autonome le faisait a
-  chaque iteration via ProcessMouseInput), PAS l'evenement clavier
-  EV_KEY_DOWN qui ne se declenche jamais pour F12 dans cet environnement.
-  A appeler a CHAQUE iteration de MainLoop (pas seulement les iterations
-  "inactives" comme BrowserIdleTick) pour reproduire fidelement le
-  comportement "sonde a chaque tick, sans exception" de l'original. }
+  declaration Forward (ligne ~13763) pour le bogue F12 original que ceci
+  corrige - sondage GetAsyncKeyState direct (comme BROWSER.PAS autonome le
+  faisait a chaque iteration via ProcessMouseInput), PAS l'evenement
+  clavier EV_KEY_DOWN qui ne se declenche jamais pour F12 dans cet
+  environnement. A appeler a CHAQUE iteration de MainLoop (pas seulement
+  les iterations "inactives" comme BrowserIdleTick) pour reproduire
+  fidelement le comportement "sonde a chaque tick, sans exception" de
+  l'original.
+  BOGUE REEL DE PERFORMANCE (2026-09-28, "5 minutes a chaque touche
+  tapee") corrige ICI : la version precedente faisait BrowserSyncIn/Out
+  (copie de TOUT l'etat de l'onglet - JSCtx, CSSGlobalStylesheet, etc.)
+  INCONDITIONNELLEMENT a chaque appel, donc a chaque iteration de
+  MainLoop, y compris chaque frappe clavier dans le Terminal tant que
+  l'onglet actif restait un navigateur - voir BrowserPrevF12Down
+  (declaration, globales principales) pour le detail. Le sondage
+  GetAsyncKeyState lui-meme ne coute maintenant RIEN de plus qu'un
+  Boolean compare ; seul un VRAI front montant de F12 (rare) declenche la
+  synchronisation complete + le basculement DevTools. }
 Procedure BrowserPollF12OnActiveTab;
+Var
+ Down: Boolean;
 Begin
- BrowserSyncIn(ActiveBrowserState);
- DevToolsPollF12;
- BrowserSyncOut(ActiveBrowserState);
+ Down := (Word(BrowserGetAsyncKeyState($7B)) And $8000) <> 0; { VK_F12 }
+ If Down And (Not BrowserPrevF12Down) Then Begin
+  BrowserSyncIn(ActiveBrowserState);
+  DevToolsToggle;
+  BrowserSyncOut(ActiveBrowserState);
+ End;
+ BrowserPrevF12Down := Down;
 End;
 
 { ============================================================
