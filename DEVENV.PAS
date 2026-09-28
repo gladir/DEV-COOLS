@@ -163360,6 +163360,20 @@ Begin
     TermCmd_PSCRIPT(TP, FullPath);
     NCActionOpenAssociated := True;
    End
+   { Entree sur une Pascal Server Pages .psp (2026-09-27, demande explicite }
+   { de l'utilisateur) : ouvre un onglet "Navigateur Web" sur "exec:<fichier>"}
+   { - meme schema d'adresse, et donc meme mecanisme compile-puis-execute    }
+   { PSPCW32, que F5 sur un .psp dans l'editeur (voir HandleStartDebugging   }
+   { et le bloc exec: de DisplayCurrentTarget) - jamais une deuxieme logique }
+   { separee pour ouvrir un .psp, comme deja pour .sln juste en dessous. }
+   Else If Ext = 'PSP' Then Begin
+    If StartPage.Visible Then Begin
+     StartPage.Visible := False;
+     FullRepaintNeeded := True;
+    End;
+    CreateBrowserWindow('exec:' + FullPath);
+    NCActionOpenAssociated := True;
+   End
    { Chantier grille (DBF/Clarion/Btrieve/CSV/MyISAM) : deuxieme point    }
    { d entree demande explicitement par l utilisateur, en plus du         }
    { double-clic dans l Explorateur de solutions - voir GridFormatForExtension }
