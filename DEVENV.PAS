@@ -262239,19 +262239,36 @@ End;
   au point d'appel dans le dispatch central). }
 Procedure BrowserIdleTick;
 Begin
- BrowserSyncIn(ActiveBrowserState);
- { BOGUE REEL / demande explicite (2026-09-28, "comme les emulateurs...
-   le JavaScript du navigateur ne s'execute plus, les rafraichissements
-   de la page ne se produisent plus") : ne declencher les setTimeout que
-   si l'onglet a reellement le focus (dernier clic reel a l'interieur de
-   son rectangle de rendu) - voir BrowserHasFocus, meme motif que
-   EmuHasFocus pour l'emulateur. DevToolsUpdateConsoleCursor (simple
-   clignotement de curseur, purement cosmetique, sans effet de bord sur
-   la page) reste inconditionnel. }
- If BrowserHasFocus Then
+ { BOGUE REEL DE PERFORMANCE (2026-09-28, "il lag encore... meme apres le
+   cliche image, je me demande s'il y a un JavaScript en arriere-plan qui
+   roule quand meme") : cette procedure est appelee a CHAQUE tick d'
+   inactivite de MainLoop (potentiellement des centaines de fois par
+   seconde, voir le commentaire a son site d'appel) tant que l'onglet
+   navigateur reste l'onglet MDI ACTIF - MEME quand BrowserHasFocus est
+   faux (Terminal en train de recevoir les frappes). Avant ce correctif,
+   BrowserSyncIn/BrowserSyncOut (le MEME motif exact que le bogue n°11 -
+   copie complete de JSCtx/CSSGlobalStylesheet/tableaux Dev*, voir ce
+   commentaire) s'executaient ICI INCONDITIONNELLEMENT, entourant meme le
+   seul appel (JSCheckTimeout) deja correctement garde par BrowserHasFocus
+   - la garde protegeait le TRAVAIL de JSCheckTimeout, pas le COUT de la
+   synchronisation elle-meme qui l'entourait. Resultat : pile le meme
+   gaspillage que le bogue n°11, juste dans une fonction differente que ce
+   correctif-la n'avait pas auditee - "pas de JS en arriere-plan" au sens
+   propre (JSCheckTimeout ETAIT bien saute), mais une copie de tout l'etat
+   JS/CSS/DevTools a chaque tick d'inactivite malgre tout, ce qui EST le
+   symptome ressenti ("il doit y avoir quelque chose qui roule"). }
+ If BrowserHasFocus Then Begin
+  BrowserSyncIn(ActiveBrowserState);
   JSCheckTimeout;
+  BrowserSyncOut(ActiveBrowserState);
+ End;
+ { DevToolsUpdateConsoleCursor (simple clignotement de curseur, purement
+   cosmetique) reste inconditionnel - MAIS n'a besoin d'AUCUNE synchronisation
+   propre : elle lit/ecrit directement les globales "en direct" (DevToolsOpen,
+   DevConsoleCursorVisible, etc.) qui refletent deja correctement l'onglet
+   actif (rien d'autre ne les modifie pendant l'inactivite - seul un VRAI
+   evenement, deja suivi de son propre BrowserSyncOut, pourrait les changer). }
  DevToolsUpdateConsoleCursor;
- BrowserSyncOut(ActiveBrowserState);
 End;
 
 { BrowserPointInView : voir le commentaire complet pres de la declaration
