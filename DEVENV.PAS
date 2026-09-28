@@ -7699,6 +7699,22 @@ Var
    DispatchEvent (bien avant le bloc importe dans ce fichier), evitant un
    wrapper Forward pour cette seule variable - meme choix que EmuHasFocus. }
  BrowserHasFocus: Boolean;
+ { BrowserSuppressRedraw (2026-09-28, VRAI bogue de performance trouve en
+   reproduisant le "gel" rapporte par l'utilisateur - reproduit en direct
+   ET ISOLE : ~100% CPU pendant un simple survol de souris (mouvements
+   SANS meme changer d'element survole), MEME DevTools ferme - donc SANS
+   RAPPORT avec le cache Inspecteur ajoute plus haut. Cause : DrawAllWidgets
+   (bogue n°12) appelle DrawBrowserTab (reparcours DOM/CSS complet +
+   copie plein ecran) apres CHAQUE evenement tant que BrowserHasFocus,
+   MEME un EV_MOUSE_MOVE qui n'a change AUCUN etat visible - ProcessMouseHover
+   sait deja, en interne, quand rien n'a change (CurrentNode=HoveredInteractiveNode)
+   mais ce savoir ne remontait jusqu'ici nulle part. Ambiant (comme
+   BrowserHasFocus), remis a False par DispatchEvent avant CHAQUE evenement
+   (donc un redessin complet reste le comportement PAR DEFAUT, sur
+   n'importe quel evenement non explicitement reconnu comme inoffensif) ;
+   seul HandleBrowserMouse le met a True, seulement pour un EV_MOUSE_MOVE
+   dont ProcessMouseHover confirme qu'il n'a rien change. }
+ BrowserSuppressRedraw: Boolean;
  { BrowserPrevF12Down (2026-09-28) : BOGUE REEL DE PERFORMANCE signale par
    l'utilisateur ("5 minutes a chaque touche tapee dans le Terminal") -
    BrowserPollF12OnActiveTab (appelee a CHAQUE iteration de MainLoop, y
@@ -231538,8 +231554,23 @@ Begin
      navigateur. DrawBrowserTab en entier ne reste necessaire ici que pour
      le tout premier redessin de l'onglet (aucun cliche encore disponible)
      - cas rare, gere par le retour False de BrowserRestoreSnapshotIfValid. }
-   If BrowserHasFocus Then
-    DrawBrowserTab
+   If BrowserHasFocus Then Begin
+    { BrowserSuppressRedraw (2026-09-28, VRAI bogue de performance trouve
+      en isolant le "gel" signale par l'utilisateur : reproduit en direct,
+      ~100% CPU pendant un simple survol de souris qui ne change AUCUN
+      etat visible, MEME DevTools ferme - donc meme le cas FOCALISE, pas
+      seulement le cas hors-focus deja corrige ci-dessus, souffrait du
+      meme gaspillage. Voir le commentaire complet pres de sa declaration,
+      globales principales) : si HandleBrowserMouse a deja determine que
+      ce survol n'a rien change (pas de nouvel element survole), sauter le
+      reparcours complet - restaurer le cliche existant suffit, exactement
+      comme pour le cas hors-focus. }
+    If BrowserSuppressRedraw Then Begin
+     If Not BrowserRestoreSnapshotIfValid Then
+      DrawBrowserTab;
+    End Else
+     DrawBrowserTab;
+   End
    Else If WasFullRepaint Then Begin
     If Not BrowserRestoreSnapshotIfValid Then
      DrawBrowserTab;
@@ -235203,6 +235234,11 @@ Begin
  { Icone de fermeture Explorateur/Proprietes (2026-09-14) : voir la     }
  { note sur RightDockCloseConsumed - reinitialise a chaque evenement.  }
  RightDockCloseConsumed := False;
+ { BrowserSuppressRedraw (voir le commentaire complet pres de sa            }
+ { declaration, globales principales) : redessin complet par DEFAUT sur    }
+ { chaque evenement - seul HandleBrowserMouse peut le desactiver plus bas, }
+ { et seulement pour un EV_MOUSE_MOVE confirme sans effet. }
+ BrowserSuppressRedraw := False;
  { BrowserHasFocus (2026-09-28, "comme les emulateurs... mode pause hors
    focus") : meme motif que le portail EmuHasFocus plus bas dans cette
    procedure, mais teste ICI en un seul endroit (plutot que d'instrumenter
@@ -238464,6 +238500,43 @@ Var
    setTimeout n'a pas besoin d'une precision meilleure que quelques
    dizaines de ms pour rester imperceptible - throttle ci-dessous. }
  BrowserLastIdleSyncTick: LongInt;
+
+ { DevInspectorCache* (2026-09-28, VRAI bogue trouve en reproduisant le
+   "gel...10 secondes, DevTools ouvert" rapporte par l'utilisateur -
+   reproduit en direct : ~100% CPU pendant plusieurs secondes des qu'un
+   evenement quelconque survient - MEME taper dans la barre d'adresse,
+   sans rapport avec le DOM - pendant que le panneau DevTools est ouvert
+   sur l'onglet Inspecteur. Cause : DevToolsDrawDOM (voir son commentaire
+   "TextWidth de certains pilotes BGI parcourt toute la chaine") reparcourt
+   et remesure TOUT l'arbre DOM (toutes les balises, tous les attributs)
+   a CHAQUE appel de DrawDevTools - et DrawDevTools est appelee par
+   RescrollPage/DrawBrowserTab apres CHAQUE evenement tant que l'onglet a
+   le focus, meme un evenement qui n'a RIEN a voir avec le DOM ou
+   l'Inspecteur (taper une lettre dans la barre d'adresse redessine QUAND
+   MEME tout l'onglet, DevTools inclus, par conception - voir DrawAllWidgets/
+   BrowserHasFocus). Sur une VRAIE page (des centaines de noeuds, beaucoup
+   avec des attributs microdata longs comme itemtype="http://schema.org/..."),
+   cette remesure repetee devient le nouveau goulot dominant - meme motif
+   de fond que les bogues n°11/12/14 (travail couteux refait a chaque
+   evenement au lieu de seulement quand le resultat peut avoir change),
+   mais cette fois le travail couteux est le parcours DOM de l'Inspecteur
+   lui-meme, pas la synchronisation TBrowserState. Cliche (meme technique
+   que BrowserSnapshotBuf, bogue n°13) : si rien de pertinent a l'affichage
+   de l'Inspecteur n'a change depuis le dernier VRAI parcours (document,
+   defilement vertical/horizontal, noeud selectionne, nombre de noeuds
+   replies/depliés, taille de la zone), restaurer le cliche (un seul
+   PutImage) au lieu de tout reparcourir. }
+ DevInspectorCacheValid: Boolean;
+ DevInspectorCacheDocSerial: LongInt;
+ DevInspectorCacheFirstLine: Integer;
+ DevInspectorCacheScrollX: Integer;
+ DevInspectorCacheSelNode: HTMLNodePtr;
+ DevInspectorCacheCollapsedCount: Integer;
+ DevInspectorCacheMinY: Integer;
+ DevInspectorCacheMaxX: Integer;
+ DevInspectorCacheMaxY: Integer;
+ DevInspectorCacheBuf: Pointer;
+ DevInspectorCacheBufSz: LongInt;
 
  { Bouton Actualiser <-> Arreter (2026-09-28, demande explicite de
    l'utilisateur - "quand la page se charge le bouton devrait etre un X
@@ -259340,6 +259413,7 @@ End;
 Procedure DrawDevTools;
 Var Top,Y,I,Lines,First,TabLeft,TabRight,MaxInspectorLines:Integer;
     C1,C2,C3,C4,C5,C6,C7:Integer;
+    NeededCacheSz:LongInt;
 Begin
  If Not DevToolsOpen Then Exit;
  Top:=DevToolsPanelTop;
@@ -259360,17 +259434,52 @@ Begin
  Case DevToolsTab Of
   DEVTOOLS_TAB_INSPECTOR:Begin
    If DevInspectorDocument<>HTMLDocument Then DevToolsBindDocument(HTMLDocument);
-   Lines:=0;
    MaxInspectorLines:=(BrowserViewMaxY-Y-14)Div 11;
    If MaxInspectorLines<1Then MaxInspectorLines:=1;
-   DevInspectorContentWidth:=0;
-   DevInspectorRowCount:=0;
-   DevToolsDrawDOM(DevInspectorDocument,0,Y,Lines,MaxInspectorLines);
-   DevInspectorTotalLines:=Lines;
-   If DevInspectorFirstLine>DevInspectorTotalLines-MaxInspectorLines Then
-    DevInspectorFirstLine:=DevInspectorTotalLines-MaxInspectorLines;
-   If DevInspectorFirstLine<0Then DevInspectorFirstLine:=0;
-   DrawDevToolsInspectorScrollBars(MaxInspectorLines)
+   { Cliche (voir le commentaire complet pres de DevInspectorCacheValid,
+     globales du bloc importe) : si rien de pertinent a l'affichage de
+     l'Inspecteur n'a change depuis le dernier VRAI parcours, restaurer le
+     cliche (un seul PutImage) plutot que de tout reparcourir/remesurer -
+     evite le "gel" de plusieurs secondes sur une vraie page, meme pour un
+     evenement totalement etranger au DOM (ex: taper dans la barre d'adresse
+     pendant que l'onglet Inspecteur est visible). }
+   If DevInspectorCacheValid And
+      (DevInspectorCacheDocSerial=DevDocumentSerial) And
+      (DevInspectorCacheFirstLine=DevInspectorFirstLine) And
+      (DevInspectorCacheScrollX=DevInspectorScrollX) And
+      (DevInspectorCacheSelNode=DevSelectedNode) And
+      (DevInspectorCacheCollapsedCount=DevCollapsedCount) And
+      (DevInspectorCacheMinY=Top+29) And
+      (DevInspectorCacheMaxX=BrowserViewMaxX) And
+      (DevInspectorCacheMaxY=BrowserViewMaxY) Then
+    PutImage(0,Top+29,DevInspectorCacheBuf^,NormalPut)
+   Else Begin
+    Lines:=0;
+    DevInspectorContentWidth:=0;
+    DevInspectorRowCount:=0;
+    DevToolsDrawDOM(DevInspectorDocument,0,Y,Lines,MaxInspectorLines);
+    DevInspectorTotalLines:=Lines;
+    If DevInspectorFirstLine>DevInspectorTotalLines-MaxInspectorLines Then
+     DevInspectorFirstLine:=DevInspectorTotalLines-MaxInspectorLines;
+    If DevInspectorFirstLine<0Then DevInspectorFirstLine:=0;
+    DrawDevToolsInspectorScrollBars(MaxInspectorLines);
+    NeededCacheSz:=ImageSize(0,Top+29,BrowserViewMaxX,BrowserViewMaxY);
+    If(DevInspectorCacheBuf=Nil)Or(NeededCacheSz<>DevInspectorCacheBufSz)Then Begin
+     If DevInspectorCacheBuf<>Nil Then FreeMem(DevInspectorCacheBuf,DevInspectorCacheBufSz);
+     DevInspectorCacheBufSz:=NeededCacheSz;
+     GetMem(DevInspectorCacheBuf,DevInspectorCacheBufSz)
+    End;
+    GetImage(0,Top+29,BrowserViewMaxX,BrowserViewMaxY,DevInspectorCacheBuf^);
+    DevInspectorCacheValid:=True;
+    DevInspectorCacheDocSerial:=DevDocumentSerial;
+    DevInspectorCacheFirstLine:=DevInspectorFirstLine;
+    DevInspectorCacheScrollX:=DevInspectorScrollX;
+    DevInspectorCacheSelNode:=DevSelectedNode;
+    DevInspectorCacheCollapsedCount:=DevCollapsedCount;
+    DevInspectorCacheMinY:=Top+29;
+    DevInspectorCacheMaxX:=BrowserViewMaxX;
+    DevInspectorCacheMaxY:=BrowserViewMaxY
+   End
   End;
   DEVTOOLS_TAB_DEBUGGER:Begin
    OutTextXY(8,Y,'Sources JavaScript et execution');Inc(Y,14);
@@ -262133,6 +262242,8 @@ End;
   HandleMouseClick individuel, plus besoin de les appeler "a chaque
   iteration" comme le faisait l'ancien polling. }
 Procedure HandleBrowserMouse(Ev: TEvent);
+Var
+ PrevHoverNode: HTMLNodePtr;
 Begin
  BrowserSyncIn(ActiveBrowserState);
  If Not MouseAvailable Then Begin BrowserSyncOut(ActiveBrowserState); Exit; End;
@@ -262148,8 +262259,19 @@ Begin
       redessinerait par-dessus le menu). }
     If ContextMenuOpen Then
      UpdateContextMenuHover(BrowserMouseX, BrowserMouseY)
-    Else
+    Else Begin
+     { BrowserSuppressRedraw (voir son commentaire complet, globales
+       principales) : ProcessMouseHover sait deja, en interne, distinguer
+       un survol qui change quelque chose (CurrentNode<>HoveredInteractiveNode,
+       chemin qui appelle RescrollPageAfterHover) d'un survol qui ne change
+       rien - capturer l'etat avant/apres suffit a faire remonter cette
+       information a DrawAllWidgets SANS toucher a la logique de
+       ProcessMouseHover elle-meme. }
+     PrevHoverNode := HoveredInteractiveNode;
      ProcessMouseHover;
+     If HoveredInteractiveNode = PrevHoverNode Then
+      BrowserSuppressRedraw := True;
+    End;
    End;
 
   EV_MOUSE_DOWN:
