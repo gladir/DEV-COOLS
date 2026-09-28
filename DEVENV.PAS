@@ -262087,6 +262087,19 @@ Begin
  DrawRefreshButton;
  DrawFavoriteButton;
  RescrollPage;
+ { BOGUE REEL (2026-09-28, "le menu contextuel disparait immediatement,
+   impossible de choisir une option") : MainLoop appelle DrawAllWidgets
+   (donc DrawBrowserTab) apres CHAQUE evenement distribue, y compris le
+   EV_MOUSE_DOWN/MB_RIGHT qui vient d'ouvrir le menu via OpenContextMenu
+   (qui le dessine bien une fois immediatement) et le tout premier
+   EV_MOUSE_MOVE qui suit (meme un micro-mouvement de souris). Contrairement
+   a DevToolsOpen (deja repeint depuis RescrollPage/RenderHTMLDocument via
+   DevToolsOpen/DrawDevTools), rien ne redessinait ContextMenuOpen apres un
+   repaint complet de l'onglet - le menu etait donc efface par le tout
+   prochain redessin, souvent DANS LE MEME cycle MainLoop qui venait de
+   l'ouvrir (flash visible puis disparition immediate, exactement le
+   symptome signale). Meme motif que DevToolsOpen/DrawDevTools ci-dessus. }
+ If ContextMenuOpen Then BrowserDrawContextMenu;
  BrowserSyncOut(ActiveBrowserState);
 
  { Flip atomique : l'utilisateur ne voit jamais l'etat intermediaire
