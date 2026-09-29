@@ -238620,6 +238620,24 @@ Var
    est en cours - voir TElementBoxInfo. }
  CurrentElementBox: TElementBoxInfo;
 
+ { CurrentElementStyle (2026-09-28, trouve par un agent d'exploration en
+   cherchant pourquoi PgUp/PgDn est lent - voir project_devenv_browser_
+   integration.md bogue n°19/#18) : le style CSS COMPLET (DOMStyle) du
+   noeud dont le rendu est en cours, deja resolu UNE FOIS par
+   RenderHTMLNode juste avant l'appel a son gestionnaire RenderTagXXX -
+   VRAI bogue trouve : ~11 gestionnaires (Div/Article/Nav/Header/H1-H6/
+   LI/Table/TD/TH/A/Img) rappelaient CSSResolveCascade sur le MEME noeud
+   une seconde fois, juste pour lire des champs (Width/Height/Overflow/
+   TextIndent/PositionProp/etc.) que CurrentElementBox ne transporte pas -
+   O(regles CSS) de travail refait pour rien, sur le noeud le plus commun
+   du document, a CHAQUE rendu (premier chargement, defilement, survol -
+   pas seulement le defilement). Meme prudence de capture que
+   CurrentElementWantsBlock/CurrentElementBox ci-dessus : chaque
+   gestionnaire doit copier ce champ dans une variable LOCALE (simple
+   affectation, DOMStyle est un Record par valeur) avant tout appel
+   recursif a RenderChildren, qui peut l'ecraser pour un descendant. }
+ CurrentElementStyle: DOMStyle;
+
  { Variables globales pour la barre d'URL }
  CurrentURL: String;
  URLCursorPos: Integer;
@@ -247063,8 +247081,13 @@ Begin
 
  { Les icones de JSCookMenu sont des DIV vides dont l'image est un
    background CSS decoupe dans une feuille de sprites. Le peindre avant le
-   contenu garantit qu'une seconde passe du tableau ne l'efface pas. }
- CSSResolveCascade(Node, DivStyle);
+   contenu garantit qu'une seconde passe du tableau ne l'efface pas.
+   CurrentElementStyle (2026-09-28) : RenderHTMLNode a DEJA resolu le CSS
+   de ce MEME noeud juste avant de nous appeler - le refaire ici doublait
+   inutilement le cout O(regles CSS) de CSSResolveCascade pour la balise
+   la plus commune du document, a CHAQUE rendu (voir project_devenv_
+   browser_integration.md bogue n°19). }
+ DivStyle := CurrentElementStyle;
  OldMaxX := Ctx.MaxX;
  OldMaxY := Ctx.MaxY;
  FixedHeight := CSSParseDimension(DivStyle.Height, 0);
@@ -247233,7 +247256,10 @@ Var
 Begin
  WantsBlock := CurrentElementWantsBlock;
  Box := CurrentElementBox;
- CSSResolveCascade(Node, ArticleStyle);
+ { CurrentElementStyle (2026-09-28) : voir le commentaire complet pres de
+   sa declaration - evite un second CSSResolveCascade sur ce MEME noeud,
+   deja resolu par RenderHTMLNode juste avant cet appel. }
+ ArticleStyle := CurrentElementStyle;
  If Box.MarginTopPx >= 0 Then MarginTopPx := Box.MarginTopPx Else MarginTopPx := 0;
  If Box.MarginBottomPx >= 0 Then MarginBottomPx := Box.MarginBottomPx Else MarginBottomPx := 0;
  If Box.PaddingTopPx >= 0 Then PaddingTopPx := Box.PaddingTopPx Else PaddingTopPx := 0;
@@ -247320,7 +247346,9 @@ Begin
  WantsBlock := CurrentElementWantsBlock;
  If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
- CSSResolveCascade(Node, NavStyle);
+ { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+   voir le commentaire complet pres de sa declaration. }
+ NavStyle := CurrentElementStyle;
  { display:table + margin:auto est la technique CSS employee par
    .breadcrumb pour obtenir une boite ajustee a son texte et centree. }
  If (HTMLLowerCase(NavStyle.Display) = 'table') And
@@ -247365,7 +247393,9 @@ Begin
  WantsBlock := CurrentElementWantsBlock;
  If WantsBlock And (Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.BlockLevel * 10)) Then
   RenderNewLine(Ctx);
- CSSResolveCascade(Node, HeaderStyle);
+ { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+   voir le commentaire complet pres de sa declaration. }
+ HeaderStyle := CurrentElementStyle;
  HeaderBox := ComputeElementBoxInfo(HeaderStyle);
  HeaderX1 := RENDER_AREA_X;
  HeaderX2 := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
@@ -247496,7 +247526,9 @@ Begin
    marge de la page et decaleraient son Y. Peindre ici sa propre boite
    CSS permet aussi de reproduire les onglets .INX h3 de Gladir. }
  If RenderingAbsoluteOverlay Then Begin
-  CSSResolveCascade(Node,HeadingStyle);
+  { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+    voir le commentaire complet pres de sa declaration. }
+  HeadingStyle:=CurrentElementStyle;
   HeadingX:=Ctx.X;HeadingY:=Ctx.Y;
   PaddingLeftPx:=CSSParseDimension(HeadingStyle.PaddingLeft,0);
   PaddingRightPx:=CSSParseDimension(HeadingStyle.PaddingRight,0);
@@ -248053,8 +248085,10 @@ Begin
    HeaderBlock et creait les grands intervalles visibles dans l'entete. }
 
  { Un LI peut lui aussi porter un background-image CSS (menus et barres
-   d'outils generiques), exactement comme un DIV. }
- CSSResolveCascade(Node, LIStyle);
+   d'outils generiques), exactement comme un DIV.
+   CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+   voir le commentaire complet pres de sa declaration. }
+ LIStyle := CurrentElementStyle;
  { Le fond d'un LI de bloc appartient a toute sa boite de ligne, pas a
    chacun de ses mots. C'est indispensable aux listings <code><ol><li>
    dont les bandes alternees doivent former un panneau continu. }
@@ -248410,7 +248444,9 @@ Var
  TableBox: TElementBoxInfo;
  TableMarginTop, TableMarginBottom: Integer;
 Begin
- CSSResolveCascade(Node, TableStyle);
+ { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+   voir le commentaire complet pres de sa declaration. }
+ TableStyle := CurrentElementStyle;
  TableBox := ComputeElementBoxInfo(TableStyle);
  If TableBox.MarginTopPx >= 0 Then TableMarginTop := TableBox.MarginTopPx
  Else TableMarginTop := 0;
@@ -248788,7 +248824,9 @@ Begin
  End;
 
  If CSSEnabled Then Begin
-  CSSResolveCascade(Node, CellStyle);
+  { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+    voir le commentaire complet pres de sa declaration. }
+  CellStyle := CurrentElementStyle;
   If Length(CellStyle.BackgroundColor) > 0 Then Begin
    TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
    If TryBgColor >= 0 Then Begin
@@ -248953,7 +248991,9 @@ Begin
    (voir RenderTagTD), sinon le gris clair par defaut des en-tetes. }
  CellBgColor := TABLE_HEADER_BG;
  If CSSEnabled Then Begin
-  CSSResolveCascade(Node, CellStyle);
+  { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+    voir le commentaire complet pres de sa declaration. }
+  CellStyle := CurrentElementStyle;
   If Length(CellStyle.BackgroundColor) > 0 Then Begin
    TryBgColor := CSSColorToIndex(CellStyle.BackgroundColor);
    If TryBgColor >= 0 Then CellBgColor := TryBgColor;
@@ -249522,7 +249562,9 @@ Begin
   Exit;
  End;
 
- CSSResolveCascade(Node, LinkStyle);
+ { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+   voir le commentaire complet pres de sa declaration. }
+ LinkStyle := CurrentElementStyle;
  { Dans le HEADER, le texte des liens est opacity:0 et le LI parent porte
    l'icone. Garder la dimension et la zone cliquable sans imprimer ce texte
    par-dessus le sprite. }
@@ -256229,7 +256271,12 @@ Var
 Begin
  AutoMargins := False;
  If CSSEnabled Then Begin
-  CSSResolveCascade(Node, ImgStyle);
+  { CurrentElementStyle (2026-09-28) : evite un second CSSResolveCascade -
+    voir le commentaire complet pres de sa declaration. AlignReplacedElement
+    est toujours appelee pour le MEME Node que RenderHTMLNode vient de
+    resoudre (aucun RenderChildren/RenderHTMLNode imbrique entre les deux
+    pour un AUTRE noeud). }
+  ImgStyle := CurrentElementStyle;
   AutoMargins :=
    (HTMLLowerCase(ImgStyle.MarginLeft) = 'auto') And
    (HTMLLowerCase(ImgStyle.MarginRight) = 'auto');
@@ -257048,6 +257095,14 @@ Begin
 
  End;
 
+ { CurrentElementStyle (voir le commentaire complet pres de sa declaration,
+   globales du bloc importe) : partager le style DEJA resolu ci-dessus (ou
+   le minimum par defaut si le CSS est desactive/ce n'est pas un element -
+   NodeStyle.Display:='' plus haut) avec le gestionnaire RenderTagXXX qui
+   va etre appele juste apres, pour qu'il n'ait PLUS besoin de rappeler
+   CSSResolveCascade lui-meme sur ce MEME noeud. }
+ CurrentElementStyle := NodeStyle;
+
  { Compatibilite HTML 2/3.2 : align=center/right sur DIV, P, FORM,
    TD, etc. produit le meme contexte heritable que text-align CSS. }
  If Node^.NodeType = HTML_NODE_ELEMENT Then Begin
@@ -257289,8 +257344,9 @@ Procedure RenderAbsolutePositionedOverlays(Const BaseCtx: RenderContext);
 Var
  I,J: Integer;
  TmpNode:HTMLNodePtr;
- ZA,ZB,Code,TmpCoord:Integer;
+ Code,TmpCoord:Integer;
  ZText:String;
+ ZIndexCache: Array[1..200] Of Integer;
  NodeStyle: DOMStyle;
  OverlayCtx: RenderContext;
  OverlayWidth, OverlayHeight, RightPx, BottomPx: Integer;
@@ -257302,20 +257358,28 @@ Var
  NaturalWidth, ChildWidth, NaturalChildCount: Integer;
 Begin
  { Les elements positionnes sont peints du plus petit au plus grand
-   z-index; l'ordre du document departage les valeurs identiques. }
+   z-index; l'ordre du document departage les valeurs identiques.
+   ZIndexCache (2026-09-28) : precalculer le z-index de chaque overlay UNE
+   SEULE FOIS (O(n) resolutions CSS) avant le tri, au lieu de rappeler
+   CSSResolveCascade a CHAQUE comparaison du tri a bulles ci-dessous
+   (O(n^2) resolutions - un vrai bogue trouve par un agent d'exploration,
+   voir project_devenv_browser_integration.md bogue n°19). Le cache doit
+   suivre les noeuds echanges, donc il est lui-meme permute avec eux. }
+ For I := 1 To AbsolutePositionedCount Do Begin
+  CSSResolveCascade(AbsolutePositionedNodes[I], NodeStyle);
+  ZText := NodeStyle.ZIndex; Val(ZText, ZIndexCache[I], Code);
+  If Code <> 0 Then ZIndexCache[I] := 0;
+ End;
  For I:=1To AbsolutePositionedCount-1Do
   For J:=I+1To AbsolutePositionedCount Do Begin
-   CSSResolveCascade(AbsolutePositionedNodes[I],NodeStyle);
-   ZText:=NodeStyle.ZIndex;Val(ZText,ZA,Code);If Code<>0Then ZA:=0;
-   CSSResolveCascade(AbsolutePositionedNodes[J],NodeStyle);
-   ZText:=NodeStyle.ZIndex;Val(ZText,ZB,Code);If Code<>0Then ZB:=0;
-   If ZA>ZB Then Begin
+   If ZIndexCache[I]>ZIndexCache[J] Then Begin
     TmpNode:=AbsolutePositionedNodes[I];
     AbsolutePositionedNodes[I]:=AbsolutePositionedNodes[J];
     AbsolutePositionedNodes[J]:=TmpNode;
     TmpCoord:=AbsoluteAnchorX[I];AbsoluteAnchorX[I]:=AbsoluteAnchorX[J];AbsoluteAnchorX[J]:=TmpCoord;
     TmpCoord:=AbsoluteAnchorY[I];AbsoluteAnchorY[I]:=AbsoluteAnchorY[J];AbsoluteAnchorY[J]:=TmpCoord;
-    TmpCoord:=AbsoluteAnchorMaxX[I];AbsoluteAnchorMaxX[I]:=AbsoluteAnchorMaxX[J];AbsoluteAnchorMaxX[J]:=TmpCoord
+    TmpCoord:=AbsoluteAnchorMaxX[I];AbsoluteAnchorMaxX[I]:=AbsoluteAnchorMaxX[J];AbsoluteAnchorMaxX[J]:=TmpCoord;
+    TmpCoord:=ZIndexCache[I];ZIndexCache[I]:=ZIndexCache[J];ZIndexCache[J]:=TmpCoord
    End
   End;
  For I := 1 To AbsolutePositionedCount Do Begin
