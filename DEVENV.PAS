@@ -237783,6 +237783,86 @@ Type
  JSObjectPtr = ^JSObjectRec;
  JSPropertyPtr = ^JSPropertyRec;
 
+ { Style CSS d'un element DOM. Deplace ICI (avant HTMLNode, qui le
+   referencait auparavant plus bas dans le fichier) pour que HTMLNode
+   puisse embarquer directement un DOMStyle en cache - voir le
+   commentaire complet pres de CSSCacheGen/CSSCacheStyle ci-dessous
+   (cache CSS par noeud, demande explicite de l'utilisateur). Aucune
+   des declarations entre les deux emplacements ne depend de DOMStyle
+   ni n'est utilisee par lui (uniquement des String[N] integres). }
+ DOMStyle = Record
+  Color: String[32];
+ BackgroundColor: String[32];
+  BackgroundPosition: String[32];
+  BackgroundImage: String[255];
+  BackgroundRepeat: String[16];
+  BackgroundAttachment: String[16];
+  Opacity: String[16];
+  FontSize: String[16];
+  FontWeight: String[16];
+  FontStyle: String[16];
+  Font: String[64];
+  FontVariant: String[16];
+  TextDecoration: String[32];
+  Display: String[16];
+  Visibility: String[16];
+  { String[64] et non [16] : une valeur width:calc((100% - 130px -
+    20px)/2) (rencontree par ex. sur gladir.com pour ses colonnes
+    .newsBlock/.searchBlock) depasse 16 caracteres et etait tronquee
+    silencieusement, rendant calc() impossible a analyser correctement. }
+  Width: String[64];
+  Height: String[64];
+  Margin: String[32];
+  Padding: String[32];
+  Border: String[32];
+  { Etendu pour un support CSS plus complet }
+  TextAlign: String[16];
+  LineHeight: String[16];
+  Float: String[16];
+  ClearProp: String[16];
+  PositionProp: String[16];
+  TopProp: String[16];
+  RightProp: String[16];
+  BottomProp: String[16];
+  LeftProp: String[16];
+  ListStyle: String[32];
+  ListStyleType: String[16];
+  VerticalAlign: String[16];
+  WhiteSpace: String[16];
+  Overflow: String[16];
+  OverflowX: String[16];
+  OverflowY: String[16];
+  LetterSpacing: String[16];
+  WordSpacing: String[16];
+  TextIndent: String[16];
+  TextTransform: String[16];
+  ListStyleImage: String[255];
+  ListStylePosition: String[16];
+  MaxHeight: String[32];
+  MaxWidth: String[32];
+  MinHeight: String[32];
+  MinWidth: String[32];
+  ZIndex: String[16];
+  MarginTop: String[16];
+  MarginRight: String[16];
+  MarginBottom: String[16];
+  MarginLeft: String[16];
+  PaddingTop: String[16];
+  PaddingRight: String[16];
+  PaddingBottom: String[16];
+  PaddingLeft: String[16];
+  BorderColor: String[32];
+  BorderWidth: String[16];
+  BorderStyle: String[16];
+  BorderTop: String[32];
+  BorderRight: String[32];
+  BorderBottom: String[32];
+  BorderLeft: String[32];
+  BorderTopColor,BorderRightColor,BorderBottomColor,BorderLeftColor:String[32];
+  BorderTopStyle,BorderRightStyle,BorderBottomStyle,BorderLeftStyle:String[16];
+  BorderTopWidth,BorderRightWidth,BorderBottomWidth,BorderLeftWidth:String[16];
+ End;
+
  { Type pour un noeud HTML }
  HTMLNode = Record
   NodeType: Byte;            { Type de noeud (element, texte, commentaire, etc.) }
@@ -237799,6 +237879,30 @@ Type
   NextSibling: HTMLNodePtr;
   ChildCount: Integer;
   Parent: HTMLNodePtr;       { Pointeur vers le noeud parent }
+  { Cache CSS par noeud (demande explicite de l'utilisateur - "reduire
+    le cout de resolution CSS partout, pas seulement au survol de
+    menu"). CSSCacheGen : le numero de "generation" globale
+    (CSSResolveGeneration) au moment ou CSSCacheStyle a ete calcule pour
+    ce noeud - compare a la generation ACTUELLE dans CSSResolveCascade ;
+    une valeur differente signifie "perime, recalculer". -1 = jamais
+    calcule (CSSResolveGeneration demarre a 0 et ne fait qu'augmenter -
+    -1 comme sentinelle, plutot que 0, pour qu'une page qui ne declenche
+    JAMAIS DOMSetAttribute/DOMRemoveAttribute reste quand meme
+    entierement cachable des le premier calcul, generation 0 comprise).
+    CSSResolveGeneration est incremente UNIQUEMENT
+    par DOMSetAttribute/DOMRemoveAttribute (les deux seules facons de
+    changer class/id/style/tout attribut utilisable par un selecteur) -
+    jamais par l'ajout/retrait de noeuds (ce moteur ne supporte aucun
+    selecteur structurel comme :nth-child ni combinateur de fraternite
+    +/~ - confirme par une recherche dans le parseur CSS - donc une
+    insertion/suppression ne peut jamais changer les regles qui
+    correspondent a un AUTRE noeud existant). Stocker le cache SUR le
+    noeud lui-meme (plutot qu'une table separee indexee par pointeur)
+    evite tout risque de "ABA" (un noeud libere puis un autre realloue
+    a la meme adresse memoire renverrait alors le mauvais style) : le
+    cache est liberee automatiquement avec le noeud, jamais separement. }
+  CSSCacheGen: LongInt;
+  CSSCacheStyle: DOMStyle;
  End;
 
  { Structure pour stocker les zones de liens cliquables }
@@ -238093,80 +238197,6 @@ End;
   StopPropagation: Boolean;   { La propagation doit-elle s'arreter? }
  End;
 
- { Style CSS d'un element DOM }
- DOMStyle = Record
-  Color: String[32];
- BackgroundColor: String[32];
-  BackgroundPosition: String[32];
-  BackgroundImage: String[255];
-  BackgroundRepeat: String[16];
-  BackgroundAttachment: String[16];
-  Opacity: String[16];
-  FontSize: String[16];
-  FontWeight: String[16];
-  FontStyle: String[16];
-  Font: String[64];
-  FontVariant: String[16];
-  TextDecoration: String[32];
-  Display: String[16];
-  Visibility: String[16];
-  { String[64] et non [16] : une valeur width:calc((100% - 130px -
-    20px)/2) (rencontree par ex. sur gladir.com pour ses colonnes
-    .newsBlock/.searchBlock) depasse 16 caracteres et etait tronquee
-    silencieusement, rendant calc() impossible a analyser correctement. }
-  Width: String[64];
-  Height: String[64];
-  Margin: String[32];
-  Padding: String[32];
-  Border: String[32];
-  { Etendu pour un support CSS plus complet }
-  TextAlign: String[16];
-  LineHeight: String[16];
-  Float: String[16];
-  ClearProp: String[16];
-  PositionProp: String[16];
-  TopProp: String[16];
-  RightProp: String[16];
-  BottomProp: String[16];
-  LeftProp: String[16];
-  ListStyle: String[32];
-  ListStyleType: String[16];
-  VerticalAlign: String[16];
-  WhiteSpace: String[16];
-  Overflow: String[16];
-  OverflowX: String[16];
-  OverflowY: String[16];
-  LetterSpacing: String[16];
-  WordSpacing: String[16];
-  TextIndent: String[16];
-  TextTransform: String[16];
-  ListStyleImage: String[255];
-  ListStylePosition: String[16];
-  MaxHeight: String[32];
-  MaxWidth: String[32];
-  MinHeight: String[32];
-  MinWidth: String[32];
-  ZIndex: String[16];
-  MarginTop: String[16];
-  MarginRight: String[16];
-  MarginBottom: String[16];
-  MarginLeft: String[16];
-  PaddingTop: String[16];
-  PaddingRight: String[16];
-  PaddingBottom: String[16];
-  PaddingLeft: String[16];
-  BorderColor: String[32];
-  BorderWidth: String[16];
-  BorderStyle: String[16];
-  BorderTop: String[32];
-  BorderRight: String[32];
-  BorderBottom: String[32];
-  BorderLeft: String[32];
-  BorderTopColor,BorderRightColor,BorderBottomColor,BorderLeftColor:String[32];
-  BorderTopStyle,BorderRightStyle,BorderBottomStyle,BorderLeftStyle:String[16];
-  BorderTopWidth,BorderRightWidth,BorderBottomWidth,BorderLeftWidth:String[16];
- End;
-
  { =====================================================
    Types pour le parseur CSS
    ===================================================== }
@@ -238273,6 +238303,17 @@ End;
    distinctes (globales ambiantes + TBrowserState) sont des types
    INCOMPATIBLES pour FPC malgre des bornes identiques. }
  THoverTouchedNodesArr = Array[1..64] Of HTMLNodePtr;
+ { Overlay backing store (bogue n°22 suite - correctif du bogue reel trouve
+   en verification live : RescrollOverlaysOnly effacait le rectangle de
+   l'ancien overlay avec une couleur unie, ce qui pouvait effacer du texte
+   du flux normal situe dessous sans jamais le repeindre - voir le
+   commentaire complet pres de RescrollOverlaysOnly). Un seul jeu, PAS par
+   onglet (meme convention que BrowserSnapshotBuf juste en dessous) : par
+   construction, un chemin rapide ne peut consommer que le cliche du
+   MEME onglet actif qui vient de faire un vrai rendu complet. }
+ TOverlayBackingBufArr = Array[1..200] Of Pointer;
+ TOverlayBackingBufSzArr = Array[1..200] Of LongInt;
+ TOverlayBackingValidArr = Array[1..200] Of Boolean;
 
  TBrowserState = Record
   { Position/dimensions de l'onglet (mirroir de TEditorWindow/TGridEditor) }
@@ -238505,6 +238546,25 @@ Var
  BrowserSnapshotY1: Integer;
  BrowserSnapshotX2: Integer;
  BrowserSnapshotY2: Integer;
+
+ { Overlay backing store (voir le commentaire complet pres du type
+   TOverlayBackingBufArr) : image du contenu du flux normal situe SOUS
+   chaque overlay position:absolute, capturee UNIQUEMENT pendant un VRAI
+   rendu complet (RenderAbsolutePositionedOverlays(..., CaptureBacking=
+   True), juste avant de peindre l'overlay par-dessus - a ce moment
+   precis, l'ecran reflete encore fidelement le flux normal fraichement
+   repeint, jamais recouvert par un overlay). RescrollOverlaysOnly la
+   restaure (PutImage) a la place d'un simple remplissage de couleur
+   unie avant de repeindre les overlays - sans ca, un menu qui chevauche
+   du texte du flux normal (le cas courant d'un menu deroulant) efface
+   ce texte pour de bon des le premier survol suivant. Indexation
+   IDENTIQUE a AbsolutePositionedNodes/AbsoluteAnchorX/Y/MaxX/ZIndexCache
+   - permutee avec eux dans le meme tri par z-index, pour rester associee
+   au bon noeud d'un appel a l'autre. }
+ OverlayBackingBuf: TOverlayBackingBufArr;
+ OverlayBackingBufSz: TOverlayBackingBufSzArr;
+ OverlayBackingValid: TOverlayBackingValidArr;
+ OverlayBackingX1, OverlayBackingY1: TAbsCoordArr;
 
  { BrowserLastIdleSyncTick (2026-09-28, trouve en cherchant la cause d'un
    "gel" signale par l'utilisateur sur une vraie page externe - voir le
@@ -238871,6 +238931,20 @@ PositionAnchorX, PositionAnchorY, PositionAnchorMaxX: Integer;
  CSSParseError: String;               { Message d'erreur de parsing }
  CSSEnabled: Boolean;                 { CSS active ou non }
  CSSPreparedForRender:Boolean;        { feuille deja extraite pour cette navigation }
+
+ { Cache CSS par noeud (demande explicite de l'utilisateur - voir le
+   commentaire complet pres de CSSCacheGen/CSSCacheStyle dans HTMLNode).
+   Compteur de generation UNIQUE pour toute l'application (PAS par
+   onglet, contrairement a la plupart des globales de ce bloc) :
+   incremente UNIQUEMENT par DOMSetAttribute/DOMRemoveAttribute, jamais
+   remis a zero (une remise a zero par onglet/navigation pourrait faire
+   correspondre par coincidence un vieux CSSCacheGen perime d'un noeud
+   d'un AUTRE onglet). Une valeur partagee, jamais reinitialisee, reste
+   sure dans tous les cas : une correspondance ne peut arriver que si
+   c'est exactement CE noeud qui a ete calcule a exactement CETTE
+   generation, ce qui n'est vrai que tant que rien n'a modifie un
+   attribut nulle part depuis. }
+ CSSResolveGeneration: LongInt;
 
 Var
  { True pendant le parcours du document (RenderHTMLNode au sommet),
@@ -240190,6 +240264,12 @@ Begin
  Node^.NextSibling := Nil;
  Node^.ChildCount := 0;
  Node^.Parent := Nil;
+ { Cache CSS par noeud (voir le commentaire complet pres de sa
+   declaration dans HTMLNode) : -1 ne correspond jamais a une generation
+   valide (CSSResolveGeneration ne descend jamais sous 0), donc le tout
+   premier appel a CSSResolveCascade pour ce noeud sera toujours un vrai
+   calcul. }
+ Node^.CSSCacheGen := -1;
  CreateHTMLNode := Node;
 End;
 
@@ -243299,6 +243379,13 @@ Var
  Attr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
 Begin
+ { Cache CSS par noeud (voir le commentaire complet pres de la
+   declaration de CSSResolveGeneration) : un attribut vient de changer
+   (class/id/style/n'importe lequel, tous utilisables par un
+   selecteur) - perimer TOUT le cache d'un coup (O(1), pas besoin de
+   savoir precisement quels autres noeuds pourraient etre affectes par
+   heritage/selecteur combine). }
+ Inc(CSSResolveGeneration);
  { Incremental layout (survol de menu, bogue n°22) : voir le commentaire
    complet pres de la declaration de HoverTrackTouchedNodes. }
  If HoverTrackTouchedNodes And (Node <> Nil) Then Begin
@@ -243329,6 +243416,8 @@ Var
  Attr, PreviousAttr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
 Begin
+ { Cache CSS par noeud : voir le commentaire complet dans DOMSetAttribute. }
+ Inc(CSSResolveGeneration);
  { Incremental layout : voir DOMSetAttribute, juste au-dessus. }
  If HoverTrackTouchedNodes And (Node <> Nil) Then Begin
   If HoverTouchedNodeCount < High(HoverTouchedNodes) Then Begin
@@ -245490,6 +245579,15 @@ Var
   {$ENDIF}
  InlineStyleNumber:Integer;
 Begin
+ { Cache CSS par noeud (voir CSSResolveGeneration) : la feuille de style
+   elle-meme est sur le point d'etre reconstruite - un noeud dont aucun
+   ATTRIBUT n'a change pourrait neanmoins correspondre a des regles
+   differentes si CSSGlobalStylesheet.Rules change (ex: une feuille
+   externe rechargee, un <style> modifie). Perimer le cache ici aussi,
+   par prudence - navigation normale (nouveau HTMLDocument, noeuds tout
+   neufs) n'en a pas besoin, mais ce chemin peut aussi s'executer sur un
+   document DEJA EN PLACE. }
+ Inc(CSSResolveGeneration);
  { Repartir d'une feuille de style VIDE a chaque appel - sans ce reset,
    chaque appel (ex: un rechargement de page reutilisant la meme
    CSSGlobalStylesheet globale) rajoutait ses regles A LA SUITE des
@@ -245695,6 +245793,22 @@ Begin
 
  If Element = Nil Then Exit;
 
+ { Cache CSS par noeud (demande explicite de l'utilisateur, voir le
+   commentaire complet pres de la declaration de CSSResolveGeneration
+   dans les globales du bloc importe) : si aucun attribut n'a change
+   NULLE PART dans le document depuis le dernier calcul de CE noeud
+   (meme generation), reutiliser le resultat deja calcule plutot que de
+   refaire tout le filtrage/tri des regles CSS - le cas frequent d'un
+   simple defilement (PgUp/PgDn/scrollbar) ou d'un survol qui ne change
+   rien de pertinent ne modifie jamais aucun attribut, donc chaque noeud
+   de la page entiere profite du cache, pas seulement les noeuds
+   repetes plusieurs fois dans UN MEME rendu (deja regle par le bogue
+   n°20). }
+ If Element^.CSSCacheGen = CSSResolveGeneration Then Begin
+  Style := Element^.CSSCacheStyle;
+  Exit;
+ End;
+
  { Collecter les regles correspondantes }
  MatchedCount := 0;
  For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
@@ -245747,6 +245861,11 @@ Begin
  InlineStyle := DOMGetAttribute(Element, 'style');
  If Length(InlineStyle) > 0 Then
   CSSParseInlineStyle(InlineStyle, Style);
+
+ { Cache CSS par noeud : memoriser ce resultat pour la generation
+   courante - voir le commentaire complet plus haut dans cette fonction. }
+ Element^.CSSCacheGen := CSSResolveGeneration;
+ Element^.CSSCacheStyle := Style;
 End;
 
 Function CSSParseDimension(Const Value:String;DefaultPx:Integer):Integer;Forward;
@@ -257486,11 +257605,15 @@ Procedure DevToolsBindDocument(Doc:HTMLNodePtr); Forward;
   re-resoudre le CSS une seconde fois juste pour les retrouver, ce
   qui serait couteux sur un arbre de plusieurs milliers de noeuds
   (ex: le menu complet d'un site genere par JSCookMenu.js). }
-Procedure RenderAbsolutePositionedOverlays(Const BaseCtx: RenderContext);
+Procedure RenderAbsolutePositionedOverlays(Const BaseCtx: RenderContext;
+  CaptureBacking: Boolean);
 Var
  I,J: Integer;
  TmpNode:HTMLNodePtr;
  Code,TmpCoord:Integer;
+ TmpBuf: Pointer;
+ TmpBufSz: LongInt;
+ TmpValid: Boolean;
  ZText:String;
  ZIndexCache: Array[1..200] Of Integer;
  NodeStyle: DOMStyle;
@@ -257502,7 +257625,22 @@ Var
  ChildNode: HTMLNodePtr;
  ChildStyle: DOMStyle;
  NaturalWidth, ChildWidth, NaturalChildCount: Integer;
+ CaptureX2, CaptureY2: Integer;
 Begin
+ { Overlay backing store (bogue n°22 suite, voir le commentaire complet
+   pres de sa declaration) : repartir d'une ardoise propre a CHAQUE vrai
+   rendu complet, plutot que de ne liberer que les emplacements 1..
+   AbsolutePositionedCount - si un rendu PRECEDENT avait plus d'overlays
+   que celui-ci, les emplacements au-dela de l'AbsolutePositionedCount
+   ACTUEL ne seraient jamais liberes (fuite memoire silencieuse). }
+ If CaptureBacking Then
+  For I := 1 To High(OverlayBackingBuf) Do
+   If OverlayBackingBuf[I] <> Nil Then Begin
+    FreeMem(OverlayBackingBuf[I], OverlayBackingBufSz[I]);
+    OverlayBackingBuf[I] := Nil;
+    OverlayBackingValid[I] := False;
+   End;
+
  { Les elements positionnes sont peints du plus petit au plus grand
    z-index; l'ordre du document departage les valeurs identiques.
    ZIndexCache (2026-09-28) : precalculer le z-index de chaque overlay UNE
@@ -257525,7 +257663,14 @@ Begin
     TmpCoord:=AbsoluteAnchorX[I];AbsoluteAnchorX[I]:=AbsoluteAnchorX[J];AbsoluteAnchorX[J]:=TmpCoord;
     TmpCoord:=AbsoluteAnchorY[I];AbsoluteAnchorY[I]:=AbsoluteAnchorY[J];AbsoluteAnchorY[J]:=TmpCoord;
     TmpCoord:=AbsoluteAnchorMaxX[I];AbsoluteAnchorMaxX[I]:=AbsoluteAnchorMaxX[J];AbsoluteAnchorMaxX[J]:=TmpCoord;
-    TmpCoord:=ZIndexCache[I];ZIndexCache[I]:=ZIndexCache[J];ZIndexCache[J]:=TmpCoord
+    TmpCoord:=ZIndexCache[I];ZIndexCache[I]:=ZIndexCache[J];ZIndexCache[J]:=TmpCoord;
+    { Overlay backing store : reste associe au bon noeud a travers ce
+      meme tri, voir le commentaire complet pres de sa declaration. }
+    TmpBuf:=OverlayBackingBuf[I];OverlayBackingBuf[I]:=OverlayBackingBuf[J];OverlayBackingBuf[J]:=TmpBuf;
+    TmpBufSz:=OverlayBackingBufSz[I];OverlayBackingBufSz[I]:=OverlayBackingBufSz[J];OverlayBackingBufSz[J]:=TmpBufSz;
+    TmpValid:=OverlayBackingValid[I];OverlayBackingValid[I]:=OverlayBackingValid[J];OverlayBackingValid[J]:=TmpValid;
+    TmpCoord:=OverlayBackingX1[I];OverlayBackingX1[I]:=OverlayBackingX1[J];OverlayBackingX1[J]:=TmpCoord;
+    TmpCoord:=OverlayBackingY1[I];OverlayBackingY1[I]:=OverlayBackingY1[J];OverlayBackingY1[J]:=TmpCoord
    End
   End;
  For I := 1 To AbsolutePositionedCount Do Begin
@@ -257627,6 +257772,32 @@ Begin
    OverlayCtx.BlockLevel := 0;
    OverlayStartX := OverlayCtx.X;
    OverlayStartY := OverlayCtx.Y;
+
+   { Overlay backing store (bogue n°22 suite, voir le commentaire complet
+     pres de sa declaration) : capturer MAINTENANT, juste avant de peindre
+     cet overlay, ce qu'il y a dessous - a cet instant precis, l'ecran
+     reflete encore fidelement le flux normal fraichement repeint par
+     RenderHTMLNode(Doc,Ctx) plus haut, jamais recouvert par un overlay
+     (CaptureBacking n'est vrai que lors d'un vrai rendu complet - voir
+     RenderHTMLDocument). Capturer jusqu'au coin inferieur droit de la
+     zone de rendu (pas seulement OverlayWidth/OverlayHeight) : la
+     hauteur REELLEMENT peinte peut depasser la hauteur CSS declaree
+     (tableaux a hauteur automatique, voir le calcul de OverlayEndY plus
+     bas) - une capture generreuse evite d'avoir a choisir la bonne
+     taille avant d'avoir fini de peindre. }
+   If CaptureBacking Then Begin
+    CaptureX2 := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
+    CaptureY2 := RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
+    If (OverlayStartX <= CaptureX2) And (OverlayStartY <= CaptureY2) Then Begin
+     OverlayBackingBufSz[I] := ImageSize(OverlayStartX, OverlayStartY, CaptureX2, CaptureY2);
+     GetMem(OverlayBackingBuf[I], OverlayBackingBufSz[I]);
+     GetImage(OverlayStartX, OverlayStartY, CaptureX2, CaptureY2, OverlayBackingBuf[I]^);
+     OverlayBackingX1[I] := OverlayStartX;
+     OverlayBackingY1[I] := OverlayStartY;
+     OverlayBackingValid[I] := True;
+    End;
+   End;
+
    { Les zones ajoutees apres cet index appartiendront a cet overlay.
      Elles donnent les boites completes des TD/TR, y compris les portions
      transparentes qui ne passent par aucune primitive de dessin. }
@@ -257842,7 +258013,7 @@ Begin
  NormalFlowInteractiveAreaCount := InteractiveAreaCount;
  NormalFlowJSNodeBoxCount := JSNodeBoxCount;
  LastRenderCtx := Ctx;
- RenderAbsolutePositionedOverlays(Ctx);
+ RenderAbsolutePositionedOverlays(Ctx, True);
  InContentRenderPass := False;
 
  { Ctx.Y est exprime dans le repere defile de l'ecran. En lui retirant
@@ -258040,8 +258211,9 @@ End;
   c'est le cas, aucun noeud du flux normal n'a besoin d'etre repeint. }
 Function HoverTouchedNodesAreAllOverlays: Boolean;
 Var
- I: Integer;
+ I, J: Integer;
  St: DOMStyle;
+ AlreadyCollected: Boolean;
 Begin
  HoverTouchedNodesAreAllOverlays := True;
  If HoverTouchedNodeOverflow Then Begin
@@ -258060,6 +258232,32 @@ Begin
    HoverTouchedNodesAreAllOverlays := False;
    Exit;
   End;
+  { Un noeud position:absolute/fixed qui demarre display:none n'est
+    JAMAIS ajoute a AbsolutePositionedNodes au premier rendu (RenderHTMLNode
+    sort via CSSIsElementHidden avant meme d'atteindre le test position -
+    voir son commentaire) - exactement le cas d'un sous-menu JSCookMenu.js
+    revele au survol. RenderAbsolutePositionedOverlays ne PARCOURT que ce
+    tableau deja fige : un tel noeud, meme desormais visible, n'y sera
+    simplement JAMAIS peint par le chemin rapide (silencieusement absent,
+    pas une exception). Si ce noeud est maintenant VISIBLE, il faut donc
+    verifier qu'il faisait deja partie de l'ensemble collecte - sinon
+    l'ensemble lui-meme a change et seul le chemin complet (qui reconstruit
+    AbsolutePositionedNodes a partir de zero) peut le detecter. Un noeud qui
+    redevient cache n'a pas ce probleme : RenderAbsolutePositionedOverlays
+    filtre deja CSSIsElementHidden a la peinture, donc le simplement ne
+    plus dessiner suffit. }
+  If Not CSSIsElementHidden(St) Then Begin
+   AlreadyCollected := False;
+   For J := 1 To AbsolutePositionedCount Do
+    If AbsolutePositionedNodes[J] = HoverTouchedNodes[I] Then Begin
+     AlreadyCollected := True;
+     Break;
+    End;
+   If Not AlreadyCollected Then Begin
+    HoverTouchedNodesAreAllOverlays := False;
+    Exit;
+   End;
+  End;
  End;
 End;
 
@@ -258074,9 +258272,31 @@ End;
   ses propres zones (liens/survol/id) s'accumuleraient a chaque survol
   au lieu d'etre remplacees. }
 Procedure RescrollOverlaysOnly;
+Var
+ SnapshotSz: LongInt; { voir la note sur le cliche, en bas de cette procedure }
+ I: Integer;
+ ErasedByBackingStore: Boolean;
 Begin
  If HTMLDocument = Nil Then Exit;
- If LastOverlayRectValid Then Begin
+ { Effacer l'empreinte du DERNIER overlay peint. Restaurer d'abord le
+   contenu reel du flux normal capture pendant le dernier vrai rendu
+   (voir le commentaire complet pres de la declaration de
+   OverlayBackingBuf) - un simple remplissage de couleur unie (l'ancien
+   comportement) effacerait a tort du texte du flux normal situe sous un
+   overlay qui le chevauche (menu deroulant typique), sans jamais le
+   repeindre puisque ce chemin ne repasse jamais par RenderHTMLNode sur
+   le corps du document. Le remplissage uni ne reste qu'un filet de
+   securite pour un emplacement sans cliche valide (ne devrait pas
+   arriver : HoverTouchedNodesAreAllOverlays exige deja qu'un overlay
+   nouvellement visible ait ete collecte par un vrai rendu complet, qui
+   capture toujours son cliche a ce moment-la). }
+ ErasedByBackingStore := False;
+ For I := 1 To AbsolutePositionedCount Do
+  If OverlayBackingValid[I] Then Begin
+   PutImage(OverlayBackingX1[I], OverlayBackingY1[I], OverlayBackingBuf[I]^, NormalPut);
+   ErasedByBackingStore := True;
+  End;
+ If (Not ErasedByBackingStore) And LastOverlayRectValid Then Begin
   SetFillStyle(SolidFill, LastBodyBgColor);
   Bar(LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2);
  End;
@@ -258085,9 +258305,33 @@ Begin
  JSNodeBoxCount := NormalFlowJSNodeBoxCount;
  LastOverlayRectValid := False;
  InContentRenderPass := True;
- RenderAbsolutePositionedOverlays(LastRenderCtx);
+ RenderAbsolutePositionedOverlays(LastRenderCtx, False);
  InContentRenderPass := False;
  If DevToolsOpen Then DrawDevTools;
+
+ { BrowserSuppressRedraw (voir son commentaire complet, globales
+   principales) : sans ceci, DrawAllWidgets appelle quand meme
+   DrawBrowserTab->RescrollPage juste apres (des que HoveredInteractiveNode
+   a change, seul cas ou BrowserSuppressRedraw n'est pas deja mis a True
+   par HandleBrowserMouse) - un VRAI flux normal complet, qui annule tout
+   le benefice de ce chemin rapide sans que rien ne le signale (meme bogue
+   de fond que celui documente pour la tentative de cache de defilement
+   #19). Le repeindre nous-memes MET DEJA a jour les pixels reels ; il
+   suffit d'empecher ce second rendu redondant. BrowserRestoreSnapshotIfValid
+   (utilise par DrawAllWidgets pendant une pause) doit cependant restaurer
+   CES pixels-la, pas un cliche perime d'avant ce survol - rafraichir le
+   cliche ici avec exactement la meme logique que la fin de DrawBrowserTab. }
+ BrowserSuppressRedraw := True;
+ SnapshotSz := ImageSize(BrowserViewMinX, BrowserViewMinY, BrowserViewMaxX, BrowserViewMaxY);
+ If (BrowserSnapshotBuf = Nil) Or (SnapshotSz <> BrowserSnapshotBufSz) Then Begin
+  If BrowserSnapshotBuf <> Nil Then FreeMem(BrowserSnapshotBuf, BrowserSnapshotBufSz);
+  BrowserSnapshotBufSz := SnapshotSz;
+  GetMem(BrowserSnapshotBuf, BrowserSnapshotBufSz);
+ End;
+ BrowserSnapshotX1 := BrowserViewMinX; BrowserSnapshotY1 := BrowserViewMinY;
+ BrowserSnapshotX2 := BrowserViewMaxX; BrowserSnapshotY2 := BrowserViewMaxY;
+ GetImage(BrowserSnapshotX1, BrowserSnapshotY1, BrowserSnapshotX2, BrowserSnapshotY2, BrowserSnapshotBuf^);
+ BrowserSnapshotValid := True;
 End;
 
 { =====================================================
@@ -262486,16 +262730,6 @@ End;
   onmouseout) sur les zones interactives - independant des clics,
   doit etre appele a chaque iteration pour suivre les deplacements de
   la souris meme sans bouton presse. }
-{ TEMPORAIRE - diagnostic de verification a retirer apres verification live. }
-Procedure DiagLogHoverPath(Const Kind: String; Ms: LongInt);
-Var
- DiagF: Text;
-Begin
- If FileExists('_hoverdiag.log') Then Assign(DiagF,'_hoverdiag.log')
- Else Begin Assign(DiagF,'_hoverdiag.log');Rewrite(DiagF);Close(DiagF);Assign(DiagF,'_hoverdiag.log');End;
- Append(DiagF); WriteLn(DiagF,Kind,' ',Ms,' ms'); Close(DiagF);
-End;
-
 Procedure ProcessMouseHover;
 Var
  CurrentNode, PreviousNode: HTMLNodePtr;
@@ -262505,7 +262739,6 @@ Var
    haut dans ce fichier. }
  MutationCountBeforeEvent: LongInt;
  CanUseOverlaysOnlyPath: Boolean;
- DiagT1, DiagT2: LongInt; { TEMPORAIRE }
 Begin
  If IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
   CurrentAreaIndex := FindInteractiveAreaAtPosition(BrowserMouseX, BrowserMouseY);
@@ -262568,16 +262801,10 @@ Begin
     (Not DevToolsOpen) And
     (DOMStructureMutationCount = MutationCountBeforeEvent) And
     HoverTouchedNodesAreAllOverlays;
-   DiagT1 := BrowserGetTickCount;
    If CanUseOverlaysOnlyPath Then
     RescrollOverlaysOnly
    Else
     RescrollPageAfterHover;
-   DiagT2 := BrowserGetTickCount;
-   If CanUseOverlaysOnlyPath Then
-    DiagLogHoverPath('FAST', DiagT2-DiagT1)
-   Else
-    DiagLogHoverPath('SLOW', DiagT2-DiagT1);
   End;
   ShowMouse;
  End;
