@@ -238873,11 +238873,24 @@ End;
   transmettre a la primitive reelle de PtcGraph, qui n'a pas de
   region de decoupage active par defaut. }
 Procedure OutTextXY(X, Y: Integer; Const Text: String);
+Var
+ VisibleRight: Integer;
 Begin
  If TableMeasurePass Then Exit;
- If InContentRenderPass And
-    ((Y < RENDER_AREA_Y) Or (Y > RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE))) Then
-  Exit;
+ If InContentRenderPass Then Begin
+  If (Y < RENDER_AREA_Y) Or (Y > RENDER_AREA_Y + (RENDER_AREA_HEIGHT - SCROLLBAR_SIZE)) Then
+   Exit;
+  { Culling horizontal (2026-09-29) : symetrique au test vertical
+    ci-dessus, meme formule que PutPixel (seule primitive qui testait
+    deja X) - un mot entierement a gauche ou a droite de la bande
+    visible (defilement horizontal d'un tableau/bloc large) n'a pas
+    besoin d'etre mesure/dessine par PtcGraph. Pas de troncature
+    partielle (comme pour Y) : PtcGraph.OutTextXY ne sait pas couper
+    une chaine au milieu, on saute l'appel entier ou pas du tout. }
+  VisibleRight := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE);
+  If (X + PtcGraph.TextWidth(Text) < RENDER_AREA_X) Or (X > VisibleRight) Then
+   Exit;
+ End;
  TrackAbsoluteOverlayPaint(X - 2, Y - 2,
                            X + PtcGraph.TextWidth(Text) + 2,
                            Y + PtcGraph.TextHeight(Text) + 2);
@@ -238886,7 +238899,7 @@ End;
 
 Procedure Bar(X1, Y1, X2, Y2: Integer);
 Var
- VisibleBottom: Integer;
+ VisibleBottom, VisibleRight: Integer;
 Begin
  If TableMeasurePass Then Exit;
  If InContentRenderPass Then Begin
@@ -238894,6 +238907,14 @@ Begin
   If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
   If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
   If Y2 > VisibleBottom Then Y2 := VisibleBottom;
+  { Culling horizontal (2026-09-29), meme principe que le decoupage Y
+    ci-dessus : un rectangle plein est trivial a rogner (contrairement
+    a du texte), donc on ramene X1/X2 a la bande visible au lieu de
+    sauter l'appel entier des qu'il y a un chevauchement partiel. }
+  VisibleRight := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE);
+  If (X2 < RENDER_AREA_X) Or (X1 > VisibleRight) Then Exit;
+  If X1 < RENDER_AREA_X Then X1 := RENDER_AREA_X;
+  If X2 > VisibleRight Then X2 := VisibleRight;
  End;
  TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
  PtcGraph.Bar(X1, Y1, X2, Y2);
@@ -238901,7 +238922,7 @@ End;
 
 Procedure Rectangle(X1, Y1, X2, Y2: Integer);
 Var
- VisibleBottom: Integer;
+ VisibleBottom, VisibleRight: Integer;
 Begin
  If TableMeasurePass Then Exit;
  If InContentRenderPass Then Begin
@@ -238909,6 +238930,11 @@ Begin
   If (Y2 < RENDER_AREA_Y) Or (Y1 > VisibleBottom) Then Exit;
   If Y1 < RENDER_AREA_Y Then Y1 := RENDER_AREA_Y;
   If Y2 > VisibleBottom Then Y2 := VisibleBottom;
+  { Culling horizontal (2026-09-29), voir Bar ci-dessus. }
+  VisibleRight := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE);
+  If (X2 < RENDER_AREA_X) Or (X1 > VisibleRight) Then Exit;
+  If X1 < RENDER_AREA_X Then X1 := RENDER_AREA_X;
+  If X2 > VisibleRight Then X2 := VisibleRight;
  End;
  TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
  PtcGraph.Rectangle(X1, Y1, X2, Y2);
@@ -238916,7 +238942,7 @@ End;
 
 Procedure Line(X1, Y1, X2, Y2: Integer);
 Var
- VisibleBottom: Integer;
+ VisibleBottom, VisibleRight: Integer;
 Begin
  If TableMeasurePass Then Exit;
  If InContentRenderPass Then Begin
@@ -238927,6 +238953,17 @@ Begin
   If Y2 < RENDER_AREA_Y Then Y2 := RENDER_AREA_Y;
   If Y1 > VisibleBottom Then Y1 := VisibleBottom;
   If Y2 > VisibleBottom Then Y2 := VisibleBottom;
+  { Culling horizontal (2026-09-29), meme principe symetrique que le
+    decoupage Y ci-dessus (les deux extremites du meme cote = la ligne
+    entiere est hors-champ ; sinon on ramene chaque extremite dans la
+    bande visible, comme le fait deja le code Y existant). }
+  VisibleRight := RENDER_AREA_X + (RENDER_AREA_WIDTH - SCROLLBAR_SIZE);
+  If (X1 < RENDER_AREA_X) And (X2 < RENDER_AREA_X) Then Exit;
+  If (X1 > VisibleRight) And (X2 > VisibleRight) Then Exit;
+  If X1 < RENDER_AREA_X Then X1 := RENDER_AREA_X;
+  If X2 < RENDER_AREA_X Then X2 := RENDER_AREA_X;
+  If X1 > VisibleRight Then X1 := VisibleRight;
+  If X2 > VisibleRight Then X2 := VisibleRight;
  End;
  TrackAbsoluteOverlayPaint(X1, Y1, X2, Y2);
  PtcGraph.Line(X1, Y1, X2, Y2);
