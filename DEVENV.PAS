@@ -238268,6 +238268,11 @@ End;
  TAbsNodesArr = Array[1..200] Of HTMLNodePtr;
  TAbsCoordArr = Array[1..200] Of Integer;
  TDOMEventListenersArr = Array[1..MAX_DOM_EVENT_LISTENERS] Of DOMEventListener;
+ { Incremental layout (survol de menu, bogue n°22) - voir HoverTouchedNodes.
+   Type nomme obligatoire : deux declarations "Array[1..64] Of HTMLNodePtr"
+   distinctes (globales ambiantes + TBrowserState) sont des types
+   INCOMPATIBLES pour FPC malgre des bornes identiques. }
+ THoverTouchedNodesArr = Array[1..64] Of HTMLNodePtr;
 
  TBrowserState = Record
   { Position/dimensions de l'onglet (mirroir de TEditorWindow/TGridEditor) }
@@ -238377,10 +238382,23 @@ End;
   HoverAnchorX1, HoverAnchorY1, HoverAnchorX2, HoverAnchorY2: Integer;
   DeferEventRedraw: Boolean;
   EventRedrawPending: Boolean;
+  HoverTrackTouchedNodes: Boolean;
+  HoverTouchedNodes: THoverTouchedNodesArr;
+  HoverTouchedNodeCount: Integer;
+  HoverTouchedNodeOverflow: Boolean;
   SkipNextRenderAreaClear: Boolean;
   LastBodyBgColor: Integer;
   LastOverlayRectValid: Boolean;
   LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2: Integer;
+  { Incremental layout (survol de menu, bogue n°22) : chemin rapide qui
+    saute le flux normal et ne rejoue que RenderAbsolutePositionedOverlays
+    quand on peut prouver qu'un survol n'a rien change en dehors des
+    sous-arbres position:absolute/fixed - voir RescrollOverlaysOnly. }
+  NormalFlowLinkCount: Integer;
+  NormalFlowInteractiveAreaCount: Integer;
+  NormalFlowJSNodeBoxCount: Integer;
+  LastRenderCtx: RenderContext;
+  DOMStructureMutationCount: LongInt;
   JSNodeBoxes: TJSNodeBoxesArr;
   JSNodeBoxCount: Integer;
   AbsolutePositionedNodes: TAbsNodesArr;
@@ -238747,6 +238765,22 @@ FailedImageURLCount:Integer;
  DeferEventRedraw: Boolean;
  EventRedrawPending: Boolean;
 
+ { Incremental layout (survol de menu, bogue n°22) : liste des noeuds
+   dont DOMSetAttribute/DOMRemoveAttribute a modifie un attribut (donc
+   aussi tout .style.X=Y JS, qui passe par JSSetStyleProp->DOMSetAttribute)
+   PENDANT le gestionnaire onmouseover/onmouseout en cours - voir
+   ProcessMouseHover. Necessaire car un survol peut modifier N'IMPORTE
+   QUEL noeud via getElementById (ex: un sous-menu FRERE du noeud
+   survole, pas un descendant) - verifier seulement le sous-arbre de
+   CurrentNode/PreviousNode ne suffit pas a le detecter. Debordement
+   (plus de 64 noeuds touches) traite comme "ne pas savoir" : fait
+   echouer le chemin rapide par prudence plutot que de risquer d'en
+   oublier un. }
+ HoverTrackTouchedNodes: Boolean;
+ HoverTouchedNodes: THoverTouchedNodesArr;
+ HoverTouchedNodeCount: Integer;
+ HoverTouchedNodeOverflow: Boolean;
+
  { Etat du rendu incremental des menus positionnes en absolu. La page reste
    en place pendant un survol ; seule l'ancienne empreinte du sous-menu est
    effacee avant de repeindre le document sans ClearRenderArea global. }
@@ -238754,6 +238788,31 @@ FailedImageURLCount:Integer;
  LastBodyBgColor: Integer;
  LastOverlayRectValid: Boolean;
  LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2: Integer;
+
+ { Incremental layout (survol de menu, bogue n°22, voir RescrollOverlaysOnly
+   et son commentaire complet) : compteurs figes juste apres le flux
+   normal (avant toute passe overlay), pour pouvoir tronquer LinkCount/
+   InteractiveAreaCount/JSNodeBoxCount a cette limite avant de rejouer
+   uniquement les overlays - sinon leurs zones (liens/survol/id) internes
+   s'accumuleraient indefiniment a chaque survol au lieu d'etre remplacees.
+   LastRenderCtx : copie du RenderContext du DERNIER flux normal reussi,
+   reutilisable telle quelle pour rejouer RenderAbsolutePositionedOverlays
+   seul puisque, par construction (voir NormalFlowSubtreeSignature), rien
+   dans le flux normal n'a pu changer. DOMStructureMutationCount :
+   incremente par JSSetInnerHTML/JSInsertHTMLAfter (les deux SEULES
+   fonctions qui liberent/creent des noeuds HTML dans ce moteur) - une
+   valeur inchangee pendant un survol prouve qu'aucun noeud n'a ete
+   ajoute/retire nulle part dans le document, condition necessaire pour
+   que les tableaux/compteurs ci-dessus restent valides tels quels.
+   Note : LastOverlayRectValid/X1/Y1/X2/Y2 (juste au-dessus) suffisent deja
+   pour l'empreinte a effacer avant de repeindre - TrackAbsoluteOverlayPaint
+   ignore tout appel hors de RenderingAbsoluteOverlay, donc ce couple ne
+   melange jamais le flux normal, pas besoin d'un second jeu de variables. }
+ NormalFlowLinkCount: Integer;
+ NormalFlowInteractiveAreaCount: Integer;
+ NormalFlowJSNodeBoxCount: Integer;
+ LastRenderCtx: RenderContext;
+ DOMStructureMutationCount: LongInt;
 
  { Boites de mise en page des elements ID'es (voir JSNodeBox) }
  JSNodeBoxes: TJSNodeBoxesArr;
@@ -243240,6 +243299,15 @@ Var
  Attr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
 Begin
+ { Incremental layout (survol de menu, bogue n°22) : voir le commentaire
+   complet pres de la declaration de HoverTrackTouchedNodes. }
+ If HoverTrackTouchedNodes And (Node <> Nil) Then Begin
+  If HoverTouchedNodeCount < High(HoverTouchedNodes) Then Begin
+   Inc(HoverTouchedNodeCount);
+   HoverTouchedNodes[HoverTouchedNodeCount] := Node;
+  End Else
+   HoverTouchedNodeOverflow := True;
+ End;
  If Node = Nil Then Exit;
 
  LowerAttr := HTMLLowerCase(AttrName);
@@ -243261,6 +243329,14 @@ Var
  Attr, PreviousAttr: HTMLAttributePtr;
  LowerAttr, LowerName: String;
 Begin
+ { Incremental layout : voir DOMSetAttribute, juste au-dessus. }
+ If HoverTrackTouchedNodes And (Node <> Nil) Then Begin
+  If HoverTouchedNodeCount < High(HoverTouchedNodes) Then Begin
+   Inc(HoverTouchedNodeCount);
+   HoverTouchedNodes[HoverTouchedNodeCount] := Node;
+  End Else
+   HoverTouchedNodeOverflow := True;
+ End;
  If Node = Nil Then Exit;
 
  LowerAttr := HTMLLowerCase(AttrName);
@@ -243515,6 +243591,10 @@ Procedure DOMSetTextContent(Node: HTMLNodePtr; Text: String);
 Var
  Child, NextChild, TextNode: HTMLNodePtr;
 Begin
+ { DOMStructureMutationCount (incremental layout, bogue n°22) : cette
+   procedure libere/cree des noeuds - voir le commentaire complet dans
+   JSSetInnerHTML. }
+ Inc(DOMStructureMutationCount);
  If Node = Nil Then Exit;
 
  { Supprimer tous les enfants existants }
@@ -243567,6 +243647,11 @@ End;
 { Ajouter un enfant a un element (appendChild) }
 Function DOMAppendChild(Parent, Child: HTMLNodePtr): HTMLNodePtr;
 Begin
+ { DOMStructureMutationCount : voir le commentaire complet dans
+   JSSetInnerHTML - AppendChild/InsertBefore/RemoveChild/ReplaceChild
+   changent tous ce qui est atteignable dans l'arbre pendant la mise en
+   page, exactement comme une liberation/creation de noeud. }
+ Inc(DOMStructureMutationCount);
  DOMAppendChild := Nil;
  If (Parent = Nil) Or (Child = Nil) Then Exit;
 
@@ -243577,6 +243662,8 @@ End;
 { Inserer un enfant avant un autre (insertBefore) }
 Function DOMInsertBefore(Parent, NewChild, RefChild: HTMLNodePtr): HTMLNodePtr;
 Begin
+ { DOMStructureMutationCount : voir DOMAppendChild, juste au-dessus. }
+ Inc(DOMStructureMutationCount);
  DOMInsertBefore := Nil;
  If (Parent = Nil) Or (NewChild = Nil) Then Exit;
 
@@ -243602,6 +243689,8 @@ End;
 { Supprimer un enfant (removeChild) }
 Function DOMRemoveChild(Parent, Child: HTMLNodePtr): HTMLNodePtr;
 Begin
+ { DOMStructureMutationCount : voir DOMAppendChild, plus haut. }
+ Inc(DOMStructureMutationCount);
  DOMRemoveChild := Nil;
  If (Parent = Nil) Or (Child = Nil) Then Exit;
 
@@ -243622,6 +243711,8 @@ End;
 { Remplacer un enfant (replaceChild) }
 Function DOMReplaceChild(Parent, NewChild, OldChild: HTMLNodePtr): HTMLNodePtr;
 Begin
+ { DOMStructureMutationCount : voir DOMAppendChild, plus haut. }
+ Inc(DOMStructureMutationCount);
  DOMReplaceChild := Nil;
  If (Parent = Nil) Or (NewChild = Nil) Or (OldChild = Nil) Then Exit;
 
@@ -256872,11 +256963,20 @@ Begin
  BS.HoverAnchorX1 := HoverAnchorX1; BS.HoverAnchorY1 := HoverAnchorY1;
  BS.HoverAnchorX2 := HoverAnchorX2; BS.HoverAnchorY2 := HoverAnchorY2;
  BS.DeferEventRedraw := DeferEventRedraw; BS.EventRedrawPending := EventRedrawPending;
+ BS.HoverTrackTouchedNodes := HoverTrackTouchedNodes;
+ BS.HoverTouchedNodes := HoverTouchedNodes;
+ BS.HoverTouchedNodeCount := HoverTouchedNodeCount;
+ BS.HoverTouchedNodeOverflow := HoverTouchedNodeOverflow;
  BS.SkipNextRenderAreaClear := SkipNextRenderAreaClear;
  BS.LastBodyBgColor := LastBodyBgColor;
  BS.LastOverlayRectValid := LastOverlayRectValid;
  BS.LastOverlayX1 := LastOverlayX1; BS.LastOverlayY1 := LastOverlayY1;
  BS.LastOverlayX2 := LastOverlayX2; BS.LastOverlayY2 := LastOverlayY2;
+ BS.NormalFlowLinkCount := NormalFlowLinkCount;
+ BS.NormalFlowInteractiveAreaCount := NormalFlowInteractiveAreaCount;
+ BS.NormalFlowJSNodeBoxCount := NormalFlowJSNodeBoxCount;
+ BS.LastRenderCtx := LastRenderCtx;
+ BS.DOMStructureMutationCount := DOMStructureMutationCount;
  BS.JSNodeBoxes := JSNodeBoxes; BS.JSNodeBoxCount := JSNodeBoxCount;
  BS.AbsolutePositionedNodes := AbsolutePositionedNodes;
  BS.AbsoluteAnchorX := AbsoluteAnchorX; BS.AbsoluteAnchorY := AbsoluteAnchorY;
@@ -256984,11 +257084,20 @@ Begin
  HoverAnchorX1 := BS.HoverAnchorX1; HoverAnchorY1 := BS.HoverAnchorY1;
  HoverAnchorX2 := BS.HoverAnchorX2; HoverAnchorY2 := BS.HoverAnchorY2;
  DeferEventRedraw := BS.DeferEventRedraw; EventRedrawPending := BS.EventRedrawPending;
+ HoverTrackTouchedNodes := BS.HoverTrackTouchedNodes;
+ HoverTouchedNodes := BS.HoverTouchedNodes;
+ HoverTouchedNodeCount := BS.HoverTouchedNodeCount;
+ HoverTouchedNodeOverflow := BS.HoverTouchedNodeOverflow;
  SkipNextRenderAreaClear := BS.SkipNextRenderAreaClear;
  LastBodyBgColor := BS.LastBodyBgColor;
  LastOverlayRectValid := BS.LastOverlayRectValid;
  LastOverlayX1 := BS.LastOverlayX1; LastOverlayY1 := BS.LastOverlayY1;
  LastOverlayX2 := BS.LastOverlayX2; LastOverlayY2 := BS.LastOverlayY2;
+ NormalFlowLinkCount := BS.NormalFlowLinkCount;
+ NormalFlowInteractiveAreaCount := BS.NormalFlowInteractiveAreaCount;
+ NormalFlowJSNodeBoxCount := BS.NormalFlowJSNodeBoxCount;
+ LastRenderCtx := BS.LastRenderCtx;
+ DOMStructureMutationCount := BS.DOMStructureMutationCount;
  JSNodeBoxes := BS.JSNodeBoxes; JSNodeBoxCount := BS.JSNodeBoxCount;
  AbsolutePositionedNodes := BS.AbsolutePositionedNodes;
  AbsoluteAnchorX := BS.AbsoluteAnchorX; AbsoluteAnchorY := BS.AbsoluteAnchorY;
@@ -257724,6 +257833,15 @@ Begin
  InContentRenderPass := True;
  RenderHTMLNode(Doc, Ctx);
  FlushJustifiedLine(Ctx, False);
+ { Incremental layout (survol de menu, bogue n°22) : figer ici l'etat du
+   flux normal, juste avant la passe overlay - voir RescrollOverlaysOnly
+   (bien plus bas) qui reutilise ces instantanes pour rejouer UNIQUEMENT
+   RenderAbsolutePositionedOverlays sans repasser par RenderHTMLNode sur
+   tout le corps du document. }
+ NormalFlowLinkCount := LinkCount;
+ NormalFlowInteractiveAreaCount := InteractiveAreaCount;
+ NormalFlowJSNodeBoxCount := JSNodeBoxCount;
+ LastRenderCtx := Ctx;
  RenderAbsolutePositionedOverlays(Ctx);
  InContentRenderPass := False;
 
@@ -257878,6 +257996,97 @@ Begin
  RenderHTMLDocument(HTMLDocument);
  SuppressDevToolsRedraw:=False;
  SkipNextRenderAreaClear := False;
+ If DevToolsOpen Then DrawDevTools;
+End;
+
+{ Incremental layout (survol de menu, bogue n°22, demande explicite de
+  l'utilisateur - "ne recalculer que les parties du layout affectees par
+  une modification"). Portee volontairement etroite (voir
+  project_devenv_browser_integration.md) : une mise en page incrementale
+  GENERALE (n'importe quelle mutation - JS, redimensionnement...) exigerait
+  un vrai suivi de "noeuds sales" que ce moteur n'a pas, et se heurterait
+  probablement au meme mur architectural qu'une tentative anterieure de
+  cache de defilement (bogue n°19, annulee) : la mise en page est une
+  passe recursive unique ou la position Y de chaque noeud depend
+  cumulativement de tout ce qui precede.
+
+  Le cas cible ici est celui, tres frequent, du survol de menu
+  (JSCookMenu.js et equivalents) : onmouseover/onmouseout ne fait
+  QUASIMENT TOUJOURS que (a) changer une classe/un style sur le noeud
+  survole lui-meme, et (b) afficher/masquer un sous-menu qui est deja
+  position:absolute - un noeud DEJA rendu dans une passe SEPAREE
+  (RenderAbsolutePositionedOverlays) apres le flux normal, precisement
+  parce qu'il est retire du flux (voir son commentaire). Repeindre le
+  document entier pour ca revient a refaire tout le travail de CSS/mise
+  en page du corps de la page pour un changement qui ne peut, par
+  construction CSS, avoir deplace ou redimensionne AUCUN element du flux
+  normal - MAIS le sous-menu affecte n'est pas forcement un DESCENDANT du
+  noeud survole : le motif JSCookMenu.js reel (et le premier jet de ce
+  correctif, corrige apres un test local qui l'a pris en defaut) atteint
+  souvent le sous-menu via document.getElementById(...), qui peut viser
+  n'importe quel noeud du document, y compris un FRERE. Se contenter de
+  comparer le sous-arbre du noeud survole avant/apres ne suffit donc PAS
+  a prouver que rien d'autre n'a change.
+
+  HoverTouchedNodesAreAllOverlays prouve la condition correcte a la
+  place : ProcessMouseHover active HoverTrackTouchedNodes juste avant de
+  declencher onmouseout/onmouseover, ce qui fait que DOMSetAttribute/
+  DOMRemoveAttribute (et donc aussi tout .style.X=Y JS, qui y aboutit via
+  JSSetStyleProp) enregistrent CHAQUE noeud reellement touche dans
+  HoverTouchedNodes - quel que soit son lien de parente avec le noeud
+  survole. Cette fonction verifie ensuite que TOUS ces noeuds sont
+  position:absolute/fixed (donc deja repeints integralement par
+  RenderAbsolutePositionedOverlays, quel que soit ce qui y a change) : si
+  c'est le cas, aucun noeud du flux normal n'a besoin d'etre repeint. }
+Function HoverTouchedNodesAreAllOverlays: Boolean;
+Var
+ I: Integer;
+ St: DOMStyle;
+Begin
+ HoverTouchedNodesAreAllOverlays := True;
+ If HoverTouchedNodeOverflow Then Begin
+  HoverTouchedNodesAreAllOverlays := False;
+  Exit;
+ End;
+ For I := 1 To HoverTouchedNodeCount Do Begin
+  If HoverTouchedNodes[I] = Nil Then Continue;
+  If HoverTouchedNodes[I]^.NodeType <> HTML_NODE_ELEMENT Then Begin
+   HoverTouchedNodesAreAllOverlays := False;
+   Exit;
+  End;
+  CSSResolveCascade(HoverTouchedNodes[I], St);
+  If (HTMLLowerCase(St.PositionProp) <> 'absolute') And
+     (HTMLLowerCase(St.PositionProp) <> 'fixed') Then Begin
+   HoverTouchedNodesAreAllOverlays := False;
+   Exit;
+  End;
+ End;
+End;
+
+{ Chemin rapide : rejoue UNIQUEMENT RenderAbsolutePositionedOverlays, en
+  reutilisant LastRenderCtx et les tableaux AbsolutePositionedNodes/
+  AbsoluteAnchorX/Y/MaxX figes par le DERNIER flux normal reussi (voir
+  RenderHTMLDocument) - valides tels quels puisque l'appelant
+  (ProcessMouseHover) a deja prouve qu'aucune structure DOM ni aucun
+  noeud du flux normal n'a change. LinkCount/InteractiveAreaCount/
+  JSNodeBoxCount sont tronques a leur valeur d'AVANT toute passe overlay
+  (NormalFlowLinkCount/...) avant de rappeler la passe overlay, sinon
+  ses propres zones (liens/survol/id) s'accumuleraient a chaque survol
+  au lieu d'etre remplacees. }
+Procedure RescrollOverlaysOnly;
+Begin
+ If HTMLDocument = Nil Then Exit;
+ If LastOverlayRectValid Then Begin
+  SetFillStyle(SolidFill, LastBodyBgColor);
+  Bar(LastOverlayX1, LastOverlayY1, LastOverlayX2, LastOverlayY2);
+ End;
+ LinkCount := NormalFlowLinkCount;
+ InteractiveAreaCount := NormalFlowInteractiveAreaCount;
+ JSNodeBoxCount := NormalFlowJSNodeBoxCount;
+ LastOverlayRectValid := False;
+ InContentRenderPass := True;
+ RenderAbsolutePositionedOverlays(LastRenderCtx);
+ InContentRenderPass := False;
  If DevToolsOpen Then DrawDevTools;
 End;
 
@@ -260408,6 +260617,13 @@ Var
  FragRoot, Child, NextChild: HTMLNodePtr;
  FragmentHTML: String;
 Begin
+ { DOMStructureMutationCount (incremental layout, bogue n°22) : cette
+   procedure et JSInsertHTMLAfter sont les deux SEULES a liberer/creer
+   des noeuds HTML dans ce moteur - incrementer inconditionnellement,
+   meme si Node=Nil plus bas, pour que ProcessMouseHover puisse prouver
+   qu'aucune structure DOM n'a change nulle part pendant un survol avant
+   de reutiliser tel quel l'etat fige du dernier flux normal. }
+ Inc(DOMStructureMutationCount);
  If Node = Nil Then Exit;
 
  { Detacher et liberer les anciens enfants }
@@ -260475,6 +260691,9 @@ Procedure JSInsertHTMLAfter(Node: HTMLNodePtr; Const HTML: String);
 Var
  FragRoot, Child, NextChild, InsertBeforeNode: HTMLNodePtr;
 Begin
+ { DOMStructureMutationCount : voir le commentaire complet dans
+   JSSetInnerHTML, juste au-dessus dans ce fichier. }
+ Inc(DOMStructureMutationCount);
  If (Node = Nil) Or (Node^.Parent = Nil) Or (Length(HTML) = 0) Then Exit;
  FragRoot := ParseHTMLFromString(HTML);
  If FragRoot = Nil Then Exit;
@@ -262267,10 +262486,26 @@ End;
   onmouseout) sur les zones interactives - independant des clics,
   doit etre appele a chaque iteration pour suivre les deplacements de
   la souris meme sans bouton presse. }
+{ TEMPORAIRE - diagnostic de verification a retirer apres verification live. }
+Procedure DiagLogHoverPath(Const Kind: String; Ms: LongInt);
+Var
+ DiagF: Text;
+Begin
+ If FileExists('_hoverdiag.log') Then Assign(DiagF,'_hoverdiag.log')
+ Else Begin Assign(DiagF,'_hoverdiag.log');Rewrite(DiagF);Close(DiagF);Assign(DiagF,'_hoverdiag.log');End;
+ Append(DiagF); WriteLn(DiagF,Kind,' ',Ms,' ms'); Close(DiagF);
+End;
+
 Procedure ProcessMouseHover;
 Var
  CurrentNode, PreviousNode: HTMLNodePtr;
  CurrentAreaIndex: Integer;
+ { Incremental layout (survol de menu, bogue n°22) : voir le commentaire
+   complet de HoverTouchedNodesAreAllOverlays/RescrollOverlaysOnly, plus
+   haut dans ce fichier. }
+ MutationCountBeforeEvent: LongInt;
+ CanUseOverlaysOnlyPath: Boolean;
+ DiagT1, DiagT2: LongInt; { TEMPORAIRE }
 Begin
  If IsInRenderArea(BrowserMouseX, BrowserMouseY) Then Begin
   CurrentAreaIndex := FindInteractiveAreaAtPosition(BrowserMouseX, BrowserMouseY);
@@ -262301,6 +262536,15 @@ Begin
     HoverAnchorY2 := InteractiveAreas[CurrentAreaIndex].Y2;
     HoverAnchorValid := True;
   End;
+  { Incremental layout (survol de menu, bogue n°22) : armer le suivi des
+    noeuds touches AVANT l'evenement - voir HoverTouchedNodesAreAllOverlays
+    et le commentaire complet pres de la declaration de
+    HoverTrackTouchedNodes. }
+  MutationCountBeforeEvent := DOMStructureMutationCount;
+  HoverTrackTouchedNodes := True;
+  HoverTouchedNodeCount := 0;
+  HoverTouchedNodeOverflow := False;
+
   DeferEventRedraw := True;
   EventRedrawPending := False;
   If PreviousNode <> Nil Then
@@ -262308,9 +262552,32 @@ Begin
   If CurrentNode <> Nil Then
    DispatchInlineEventHandler(CurrentNode, 'onmouseover');
   DeferEventRedraw := False;
+  HoverTrackTouchedNodes := False;
   If EventRedrawPending Then Begin
    EventRedrawPending := False;
-   RescrollPageAfterHover;
+   { Chemin rapide seulement si : (a) aucun noeud n'a ete ajoute/retire
+     nulle part dans le document (DOMStructureMutationCount inchange),
+     (b) tous les noeuds reellement touches (HoverTouchedNodes) pendant
+     onmouseout/onmouseover sont position:absolute/fixed - donc deja
+     repeints integralement par la passe overlay quoi qu'il arrive -, et
+     (c) DevTools est ferme (DevElementAreas, propre a l'inspecteur,
+     n'est pas tronque/reconstruit par ce chemin rapide - carte de
+     sortie simple plutot que de le gerer aussi). Sinon, le chemin
+     complet existant reste toujours correct. }
+   CanUseOverlaysOnlyPath :=
+    (Not DevToolsOpen) And
+    (DOMStructureMutationCount = MutationCountBeforeEvent) And
+    HoverTouchedNodesAreAllOverlays;
+   DiagT1 := BrowserGetTickCount;
+   If CanUseOverlaysOnlyPath Then
+    RescrollOverlaysOnly
+   Else
+    RescrollPageAfterHover;
+   DiagT2 := BrowserGetTickCount;
+   If CanUseOverlaysOnlyPath Then
+    DiagLogHoverPath('FAST', DiagT2-DiagT1)
+   Else
+    DiagLogHoverPath('SLOW', DiagT2-DiagT1);
   End;
   ShowMouse;
  End;
