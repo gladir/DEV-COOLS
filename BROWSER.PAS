@@ -10596,9 +10596,9 @@ Begin
    LIST_TYPE_UL: Begin
     { Puce pour liste non ordonnee - utiliser differentes puces selon le niveau }
     Case Ctx.ListLevel Of
-     1: BulletText := '• ';   { Puce ronde }
-     2: BulletText := '○ ';   { Cercle vide }
-     3: BulletText := '■ ';   { Carre plein }
+     1: BulletText := #249+' ';   { Puce ronde }
+     2: BulletText := #9+' ';   { Cercle vide }
+     3: BulletText := #254+' ';   { Carre plein }
      Else BulletText := '- '; { Tiret pour niveaux plus profonds }
     End;
     RenderText(Ctx, BulletText);
