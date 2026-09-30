@@ -51,6 +51,19 @@ Begin
  For I:=1 to Length(R)do R[I]:=UpCase(R[I]);UpperString:=R;
 End;
 
+{ Construire un identificateur Pascal valide a partir du nom de fichier.
+  Un tiret est permis dans un nom de fichier DOS/Windows, mais il serait
+  interprete comme l'operateur de soustraction dans une declaration
+  "Program". Le remplacer uniquement dans le nom du programme; le fichier
+  et sa sauvegarde conservent naturellement leur nom d'origine. }
+Function NormalizeProgramName(Const S:String):String;
+Var R:String;I:Integer;
+Begin
+ R:=S;
+ For I:=1To Length(R)Do If R[I]='-'Then R[I]:='_';
+ NormalizeProgramName:=R
+End;
+
 Function CollapseSpaces(Const S:TSourceString):TSourceString;
 Var R:TSourceString;I:LongInt;PendingSpace:Boolean;
 Begin
@@ -843,7 +856,8 @@ BEGIN
  TempName:=ReplaceExtension(SourceName,'.$$$');
  BackupName:=ReplaceExtension(SourceName,'.BAK');
  DeadName:=ReplaceExtension(SourceName,'.$DC');FormatSourceName:=SourceName;
- ProgramName:=UpperString(FileBase(SourceName));If ProgramName=''Then Begin
+ ProgramName:=NormalizeProgramName(UpperString(FileBase(SourceName)));
+ If ProgramName=''Then Begin
   Error('nom de fichier invalide');Halt(1);
  End;
  If ProgramName[1]in['0'..'9']Then ProgramName:='_'+ProgramName;
