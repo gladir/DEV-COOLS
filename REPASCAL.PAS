@@ -655,21 +655,33 @@ End;
 Procedure WriteFormattedLine(Const Source:TSourceString;Level:LongInt);
 Var
  S,Part:TSourceString;
- Available,BreakPos,I:LongInt;
+ Available,BreakPos,I,CurrentLevel,ContinuationLevel,OpenParen:LongInt;
 Begin
  S:=Source;
- If Level>=MaxFormattedWidth Then Available:=1 Else Available:=MaxFormattedWidth-Level;
+ CurrentLevel:=Level;ContinuationLevel:=Level;
+ { Les parametres suivants d'une Procedure/Function commencent sous le
+   premier caractere situe apres la parenthese ouvrante. }
+ OpenParen:=Pos('(',S);
+ If(OpenParen>0)And
+   ((Copy(UpperString(TrimLine(S)),1,9)='FUNCTION ')Or
+    (Copy(UpperString(TrimLine(S)),1,10)='PROCEDURE '))Then
+  ContinuationLevel:=Level+OpenParen;
+ If CurrentLevel>=MaxFormattedWidth Then Available:=1
+ Else Available:=MaxFormattedWidth-CurrentLevel;
  While Length(S)>Available do Begin
   BreakPos:=FindLineBreak(S,Available);
   If BreakPos=0 Then Break;
   Part:=TrimLine(Copy(S,1,BreakPos));
-  For I:=1 to Level do Write(OutputFile,' ');
+  For I:=1 to CurrentLevel do Write(OutputFile,' ');
   WriteLn(OutputFile,Part);
   If IOResult<>0 Then Begin
    Error('erreur d''ecriture');Exit;
   End;S:=LeftTrim(Copy(S,BreakPos+1,Length(S)-BreakPos));
+  CurrentLevel:=ContinuationLevel;
+  If CurrentLevel>=MaxFormattedWidth Then Available:=1
+  Else Available:=MaxFormattedWidth-CurrentLevel;
  End;
- For I:=1 to Level do Write(OutputFile,' ');WriteLn(OutputFile,S);
+ For I:=1 to CurrentLevel do Write(OutputFile,' ');WriteLn(OutputFile,S);
 End;
 
 Procedure EmitLine;
@@ -810,7 +822,9 @@ Begin
     Inc(BeginNumber);If DeclarationSection Then Begin
      If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;
     End;
-    If AwaitingRoutineBegin and RoutineNeedsBlank Then WriteLn(OutputFile);
+    { Sans section locale Const/Type/Var, conserver le Begin directement
+      apres le point-virgule de l'en-tete. OutLine contient encore toute
+      la signature, y compris ses continuations eventuelles. }
     If not(AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin)Then EmitPending;
     If AwaitingThenBegin or AwaitingDoBegin Then EnsureOneTrailingSpace;
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then WriteLn(OutputFile);
@@ -880,8 +894,9 @@ Begin
   End;Inc(I);
  End;
  If(TrimLine(OutLine)<>'')and not(
- AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin)
- Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram Then OutLine:='';
+ AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin or RoutineHeader)
+ Then EmitLine Else If(TrimLine(OutLine)='')and not SkipProgram and
+ (not RoutineHeader)Then OutLine:='';
 End;
 
 Procedure SecondPass;
