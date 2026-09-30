@@ -976,7 +976,14 @@ Begin
     WriteLn(OutFile,Held);
     If P>0Then Held:=Spaces(P)+TrimCur Else Held:=Cur
    End Else Begin
-    WriteLn(OutFile,Held);Held:=Cur
+    WriteLn(OutFile,Held);
+    { Un ELSE autonome qui introduit le BEGIN suivant est volontairement
+      decale d'UN espace de plus que END et BEGIN. Repartir de
+      l'indentation calculee par la deuxieme passe rend aussi cette regle
+      stable apres plusieurs executions de REPASCAL. }
+    If UpperString(TrimCur)='ELSE'Then
+     Held:=LeadingIndent(Cur)+' '+TrimCur
+    Else Held:=Cur
    End
   End
  End;
