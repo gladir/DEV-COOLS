@@ -1,5 +1,11 @@
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2026
+  @version: 1.00
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2
+  @description: RePascal - Reformateur Pascal compatible Turbo Pascal / Free Pascal. }
+
 Program REPASCAL;
-{ REPASCAL - Reformateur Pascal compatible Turbo Pascal / Free Pascal. }
 
 Uses Dos;
 
@@ -729,9 +735,17 @@ Begin
     If AwaitingThenBegin or AwaitingDoBegin Then EnsureOneTrailingSpace;
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then WriteLn(OutputFile);
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then S:='BEGIN'Else S:='Begin';
-    AppendText(S);AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
-    RoutineHeader:=False;EmitLine;
-    Inc(IndentLevel);
+   AppendText(S);AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
+   RoutineHeader:=False;EmitLine;
+   Inc(IndentLevel);
+   End
+   Else If U='RECORD'Then Begin
+    { RECORD ouvre un bloc de declaration. Il doit rester sur la ligne du
+      nom du type, puis ses champs gagnent un niveau d'indentation. Le END
+      generique ci-dessous referme naturellement ce niveau et s'aligne
+      ainsi sur la declaration TType=Record. }
+    AppendText('Record');EmitLine;Inc(IndentLevel);
+    AwaitingThenBegin:=False;AwaitingDoBegin:=False
    End
    Else If U='END'Then Begin
     Inc(EndNumber);EmitPending;If IndentLevel>0 Then Dec(IndentLevel);
