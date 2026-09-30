@@ -257625,7 +257625,7 @@ Var
  ChildNode: HTMLNodePtr;
  ChildStyle: DOMStyle;
  NaturalWidth, ChildWidth, NaturalChildCount: Integer;
- CaptureX2, CaptureY2: Integer;
+ CaptureX1, CaptureY1, CaptureX2, CaptureY2: Integer;
 Begin
  { Overlay backing store (bogue n°22 suite, voir le commentaire complet
    pres de sa declaration) : repartir d'une ardoise propre a CHAQUE vrai
@@ -257786,14 +257786,32 @@ Begin
      bas) - une capture generreuse evite d'avoir a choisir la bonne
      taille avant d'avoir fini de peindre. }
    If CaptureBacking Then Begin
+    { BOGUE REEL (2026-09-29, rapporte par l'utilisateur - EAccessViolation
+      en naviguant sur https://www.gladir.com/, confirme en direct avec
+      -gl : plante exactement sur l'appel a cette fonction) : un element
+      position:absolute peut avoir des coordonnees NEGATIVES (technique
+      courante pour le cacher hors-ecran, ex: "left:-9999px", au lieu de
+      display:none) - OverlayStartX/Y n'etaient JAMAIS ramenes a la zone
+      de rendu reelle avant l'appel a GetImage, seulement compares au
+      coin INFERIEUR droit (CaptureX2/Y2). Un depart tres negatif reste
+      inferieur a ce coin et passait donc le test, mais ImageSize/GetImage
+      avec une coordonnee de depart hors de l'ecran lit de la memoire
+      video invalide - acces memoire illegal. Ramener le coin SUPERIEUR
+      gauche a RENDER_AREA_X/Y (meme principe que le decoupage deja
+      applique ailleurs par YInVisibleBand/le culling horizontal du
+      bogue n°21) avant tout calcul de taille/capture. }
+    CaptureX1 := OverlayStartX;
+    CaptureY1 := OverlayStartY;
+    If CaptureX1 < RENDER_AREA_X Then CaptureX1 := RENDER_AREA_X;
+    If CaptureY1 < RENDER_AREA_Y Then CaptureY1 := RENDER_AREA_Y;
     CaptureX2 := RENDER_AREA_X + RENDER_AREA_WIDTH - SCROLLBAR_SIZE;
     CaptureY2 := RENDER_AREA_Y + RENDER_AREA_HEIGHT - SCROLLBAR_SIZE;
-    If (OverlayStartX <= CaptureX2) And (OverlayStartY <= CaptureY2) Then Begin
-     OverlayBackingBufSz[I] := ImageSize(OverlayStartX, OverlayStartY, CaptureX2, CaptureY2);
+    If (CaptureX1 <= CaptureX2) And (CaptureY1 <= CaptureY2) Then Begin
+     OverlayBackingBufSz[I] := ImageSize(CaptureX1, CaptureY1, CaptureX2, CaptureY2);
      GetMem(OverlayBackingBuf[I], OverlayBackingBufSz[I]);
-     GetImage(OverlayStartX, OverlayStartY, CaptureX2, CaptureY2, OverlayBackingBuf[I]^);
-     OverlayBackingX1[I] := OverlayStartX;
-     OverlayBackingY1[I] := OverlayStartY;
+     GetImage(CaptureX1, CaptureY1, CaptureX2, CaptureY2, OverlayBackingBuf[I]^);
+     OverlayBackingX1[I] := CaptureX1;
+     OverlayBackingY1[I] := CaptureY1;
      OverlayBackingValid[I] := True;
     End;
    End;
