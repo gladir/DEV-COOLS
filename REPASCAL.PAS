@@ -822,9 +822,10 @@ Begin
     Inc(BeginNumber);If DeclarationSection Then Begin
      If IndentLevel>0 Then Dec(IndentLevel);DeclarationSection:=False;
     End;
-    { Sans section locale Const/Type/Var, conserver le Begin directement
+   { Sans section locale Const/Type/Var, conserver le Begin directement
       apres le point-virgule de l'en-tete. OutLine contient encore toute
       la signature, y compris ses continuations eventuelles. }
+    If AwaitingRoutineBegin And RoutineNeedsBlank Then WriteLn(OutputFile);
     If not(AwaitingThenBegin or AwaitingDoBegin or AwaitingRoutineBegin)Then EmitPending;
     If AwaitingThenBegin or AwaitingDoBegin Then EnsureOneTrailingSpace;
     If(not IsUnit)and(BeginNumber=MainBeginNumber)Then WriteLn(OutputFile);

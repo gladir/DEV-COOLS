@@ -237979,6 +237979,7 @@ End;
   ListType: Byte;            { Type de liste courante (UL, OL, DL) }
   ListLevel: Integer;        { Niveau d'imbrication des listes }
   ListItemNumber: Integer;   { Numero de l'element courant dans OL }
+  ListStyleNone: Boolean;    { list-style-type:none herite du UL/OL englobant, voir RenderTagUL/OL }
   InTable: Boolean;          { Dans un tableau }
   InTableHeader: Boolean;    { Dans l'en-tete du tableau (thead/th) }
   TableX: Integer;           { Position X de depart du tableau }
@@ -238349,6 +238350,7 @@ End;
   CurrentURL: String;
   URLCursorPos: Integer;
   URLBarFocused: Boolean;
+  URLSel: TSelection;        { selection souris + Ctrl+Ins/Shift+Ins, voir HandleBrowserMouse/Key }
   BackButtonEnabled: Boolean;
   ForwardButtonEnabled: Boolean;
   RefreshButtonEnabled: Boolean;
@@ -238720,6 +238722,7 @@ Var
  CurrentURL: String;
  URLCursorPos: Integer;
  URLBarFocused: Boolean;
+ URLSel: TSelection;
 
  { Champ de formulaire HTML actuellement en saisie (2026-09-25, demande    }
  { explicite de l'utilisateur - "le champ de saisie... ne fonctionne pas  }
@@ -245089,6 +245092,25 @@ Begin
    End;
 
    If Not Match Then Begin
+    { BOGUE REEL (2026-09-30, rapporte par l'utilisateur via le motif
+      ".Tab li" - gladir.com/CODER/ASM370/reference.htm) : la toute
+      DERNIERE partie du selecteur (I = Sel.PartCount, celle qui doit
+      correspondre a l'ELEMENT CIBLE lui-meme, jamais a un ancetre) ne
+      doit JAMAIS remonter l'arbre sur un echec. Avant ce correctif,
+      Part.Combinator valait deja CSS_COMB_DESCENDANT a ce stade des
+      qu'un espace precedait cette derniere partie dans le texte source
+      (ex. "li" dans ".Tab li") - la Case ci-dessous remontait alors
+      vers Node^.Parent et reessayait, faisant passer ".Tab li" pour un
+      match sur N'IMPORTE QUEL DESCENDANT d'un <li> lui-meme descendant
+      d'un ".Tab" (pas seulement le <li> lui-meme). C'est ainsi qu'un
+      simple <a> a l'interieur d'un <li class="Tab"> heritait a tort de
+      "display:table-cell", declenchant une ligne de cellule imbriquee
+      parasite et faussant toute la largeur mesuree. Remonter reste
+      correct pour les parties INTERMEDIAIRES (I < Sel.PartCount,
+      apres qu'un match precedent a deja avance Node vers un ancetre) :
+      seule la toute premiere verification (I = Sel.PartCount) doit
+      rejeter immediatement plutot que chercher plus haut. }
+    If I = Sel.PartCount Then Exit;
     Case Part.Combinator Of
      CSS_COMB_DESCENDANT: Begin
       { Remonter dans l'arbre }
@@ -246430,6 +246452,7 @@ Begin
  Ctx.ListType := LIST_TYPE_NONE;
  Ctx.ListLevel := 0;
  Ctx.ListItemNumber := 0;
+ Ctx.ListStyleNone := False;
  Ctx.InTable := False;
  Ctx.InTableHeader := False;
  Ctx.TableX := 0;
@@ -247121,6 +247144,9 @@ Var
  OldTableCellPadding, OldTableCellSpacing, OldTableColIndex: Integer;
  OldTableRowY, OldTableRowHeight, OldTableCellX, OldTableX: Integer;
  OldLineHeight: Integer;
+ MeasureCtx: RenderContext;
+ OldMeasurePass: Boolean;
+ SavedAbsoluteCount: Integer;
 Begin
  RowY := Ctx.Y;
  RowStartX := Ctx.X;
@@ -247156,8 +247182,48 @@ Begin
   CSSResolveCascade(Cell, CellStyle);
   If Length(CellStyle.Width) > 0 Then
    CellWidth := CSSParseDimension(CellStyle.Width, RowWidth)
-  Else
-   CellWidth := RowWidth - (CellX - RowStartX); { reste de la rangee }
+  Else Begin
+   { BOGUE REEL (2026-09-30, rapporte par l'utilisateur - "Vue par
+     description"/"Vue par prototype" de gladir.com/CODER/ASM370/
+     reference.htm, un <ul class="Tab"> a DEUX cellules table-cell sans
+     largeur CSS explicite) : l'ancien "reste de la rangee" donnait TOUTE
+     la largeur disponible a la PREMIERE cellule sans width, poussant
+     les cellules suivantes hors ecran (CellX au-dela de MaxX, largeur
+     ecretee a 1px). Une vraie cellule display:table-cell sans width
+     explicite se dimensionne sur son CONTENU (comme une vraie <table>
+     a mise en page automatique), pas sur tout l'espace restant - mesurer
+     avec la meme technique deja etablie ailleurs dans ce fichier pour les
+     vraies cellules <table><tr><td> (passe silencieuse, TableMeasurePass,
+     dans une COPIE du contexte) plutot que de deviner. }
+   OldMeasurePass := TableMeasurePass;
+   SavedAbsoluteCount := AbsolutePositionedCount;
+   TableMeasurePass := True;
+   MeasureCtx := Ctx;
+   { Mesurer a partir de CellX (pas 0) : certains calculs en aval
+     supposent Ctx.X >= RenderOriginX (marge de page), une valeur trop
+     basse pourrait fausser un calcul de largeur disponible ailleurs. La
+     largeur mesuree est la DELTA, pas la position absolue. }
+   MeasureCtx.X := CellX;
+   MeasureCtx.MaxX := High(Integer) Div 2;
+   MeasureCtx.LineHeight := RENDER_LINE_HEIGHT;
+   { Sans ceci, MeasureCtx.TableCellContentX heritait de la valeur
+     perimee du Ctx englobant (Ctx.InTable est deja True a ce point) :
+     un RenderNewLine declenche PENDANT la mesure (ex. par le saut de
+     ligne de fin de RenderTagLI) renvoyait alors Ctx.X vers cette
+     ancienne position au lieu du debut du contenu de LA cellule
+     mesuree, tronquant la largeur mesuree au premier mot. Meme ligne
+     que le vrai rendu plus bas (Ctx.TableCellContentX := Ctx.X). }
+   MeasureCtx.TableCellContentX := MeasureCtx.X;
+   RenderingImplicitTableCellRoot := True;
+   RenderHTMLNode(Cell, MeasureCtx);
+   RenderingImplicitTableCellRoot := False;
+   TableMeasurePass := OldMeasurePass;
+   AbsolutePositionedCount := SavedAbsoluteCount;
+   CellWidth := MeasureCtx.X - CellX;
+   { Repli si la mesure n'a rien avance (cellule vide) : au moins ne pas
+     deborder sur le reste de la rangee. }
+   If CellWidth < 1 Then CellWidth := RowWidth - (CellX - RowStartX);
+  End;
   If CellWidth < 1 Then CellWidth := 1;
 
   If CellX + CellWidth > OldMaxX Then CellWidth := OldMaxX - CellX;
@@ -247175,7 +247241,19 @@ Begin
     de bloc ajoutait alors de nouveau cette hauteur. Une rangee CSS mesure
     ses cellules independamment et ne conserve que leur hauteur maximale. }
   Ctx.LineHeight := RENDER_LINE_HEIGHT;
-  Ctx.MaxX := CellX + CellWidth;
+  { BOGUE REEL (2026-09-30, "Vue par description" repassait a la ligne
+    dans sa cellule alors que "Vue par prototype" tenait sur une seule
+    ligne dans une cellule pourtant plus etroite) : la mesure ci-dessus
+    demarre a CellX (sans PadLeft), donnant la largeur NATURELLE du
+    contenu a partir d'un bord gauche flush. Le rendu reel, lui, demarre
+    a CellX+PadLeft (Ctx.X ci-dessus) mais bornait encore Ctx.MaxX a
+    CellX+CellWidth SANS ajouter ce meme PadLeft - la cellule avait donc
+    PadLeft pixels de MOINS que ce que la mesure avait prevu, suffisant
+    pour faire deborder le dernier mot. ".Tab li.Current" (padding:5px
+    directement sur le LI) etait touche ; ".Tab li a" ne l'etait pas
+    puisque ce padding porte sur le <a> enfant, que RenderTagA n'applique
+    de toute facon jamais a Ctx.X. }
+  Ctx.MaxX := CellX + PadLeft + CellWidth;
   Ctx.TableCellX := CellX;
   Ctx.TableCellWidth := CellWidth;
   Ctx.TableCellContentX := Ctx.X;
@@ -248228,6 +248306,7 @@ Procedure RenderTagUL(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldListType: Byte;
  OldListItemNumber: Integer;
+ OldListStyleNone: Boolean;
  WantsBlock: Boolean;
 Begin
  WantsBlock := CurrentElementWantsBlock;
@@ -248241,11 +248320,32 @@ Begin
  { Sauvegarder l'etat de la liste parente }
  OldListType := Ctx.ListType;
  OldListItemNumber := Ctx.ListItemNumber;
+ OldListStyleNone := Ctx.ListStyleNone;
 
  { Configurer pour liste non ordonnee }
  Ctx.ListType := LIST_TYPE_UL;
  Ctx.ListItemNumber := 0;
  Inc(Ctx.ListLevel);
+ { BOGUE REEL (2026-09-30, la regle CSS ".Tab" qui met list-style-type a
+   none de gladir.com ignoree par tous les <li> enfants) : list-style-type
+   est une propriete
+   CSS HERITEE (un UL/OL le transmet a ses <li> sauf override explicite),
+   mais CSSInheritStyle n'est jamais appelee dans ce moteur - l'heritage
+   passe exclusivement par RenderContext pendant le parcours du DOM (voir
+   le commentaire de CSSResolveCascade). RenderTagLI ne consultait que le
+   style resolu du <li> LUI-MEME (CurrentElementListStyleNone) : comme
+   ".Tab li" ne definit pas list-style-type, la valeur restait vide et
+   chaque <li> affichait une puce (rendue en caracteres illisibles avec
+   la police BGI courante) que le CSS demandait pourtant de supprimer.
+   Meme mecanisme que Ctx.ListType : resoudre le UL/OL lui-meme UNE FOIS
+   ici et le transporter via Ctx pour que RenderTagLI puisse le combiner
+   avec son propre style. }
+ If (HTMLLowerCase(CurrentElementStyle.ListStyleType) = 'none') Or
+    (System.Pos('none', HTMLLowerCase(CurrentElementStyle.ListStyle)) > 0) Then
+  Ctx.ListStyleNone := True
+ Else If (Length(CurrentElementStyle.ListStyleType) > 0) Or
+         (Length(CurrentElementStyle.ListStyle) > 0) Then
+  Ctx.ListStyleNone := False;
 
  RenderChildren(Node, Ctx);
 
@@ -248253,6 +248353,7 @@ Begin
  Dec(Ctx.ListLevel);
  Ctx.ListType := OldListType;
  Ctx.ListItemNumber := OldListItemNumber;
+ Ctx.ListStyleNone := OldListStyleNone;
 
  { Espacement apres la liste }
  If WantsBlock And (Not RenderingAbsoluteOverlay) Then
@@ -248264,6 +248365,7 @@ Procedure RenderTagOL(Node: HTMLNodePtr; Var Ctx: RenderContext);
 Var
  OldListType: Byte;
  OldListItemNumber: Integer;
+ OldListStyleNone: Boolean;
  WantsBlock: Boolean;
  Box:TElementBoxInfo;
  MarginTopPx,MarginBottomPx:Integer;
@@ -248284,11 +248386,20 @@ Begin
  { Sauvegarder l'etat de la liste parente }
  OldListType := Ctx.ListType;
  OldListItemNumber := Ctx.ListItemNumber;
+ OldListStyleNone := Ctx.ListStyleNone;
 
  { Configurer pour liste ordonnee }
  Ctx.ListType := LIST_TYPE_OL;
  Ctx.ListItemNumber := 0;
  Inc(Ctx.ListLevel);
+ { Meme correctif d'heritage list-style-type que RenderTagUL - voir son
+   commentaire detaille. }
+ If (HTMLLowerCase(CurrentElementStyle.ListStyleType) = 'none') Or
+    (System.Pos('none', HTMLLowerCase(CurrentElementStyle.ListStyle)) > 0) Then
+  Ctx.ListStyleNone := True
+ Else If (Length(CurrentElementStyle.ListStyleType) > 0) Or
+         (Length(CurrentElementStyle.ListStyle) > 0) Then
+  Ctx.ListStyleNone := False;
 
  RenderChildren(Node, Ctx);
 
@@ -248296,6 +248407,7 @@ Begin
  Dec(Ctx.ListLevel);
  Ctx.ListType := OldListType;
  Ctx.ListItemNumber := OldListItemNumber;
+ Ctx.ListStyleNone := OldListStyleNone;
 
  { Espacement apres la liste }
  If WantsBlock And (Not RenderingAbsoluteOverlay) Then
@@ -248312,13 +248424,35 @@ Var
  NoBullet: Boolean;
  LIStyle: DOMStyle;
  RowBgColor,RowStartX:Integer;
+ IsImplicitTableCellRoot: Boolean;
 Begin
+ { BOGUE REEL (2026-09-30, rapporte par l'utilisateur - "Vue par
+   description"/"Vue par prototype" empiles au lieu d'etre cote a cote,
+   motif ul.Tab > li avec la regle CSS ".Tab li" qui met Display a
+   table-cell - vu sur gladir.com/CODER/ASM370/reference.htm) :
+   contrairement a RenderTagDiv (qui gere deja ce cas pour .newsBlock/
+   .searchBlock), RenderTagLI ignorait completement
+   RenderingImplicitTableCellRoot - meme quand RenderTableCellRow
+   positionnait deja correctement Ctx.X pour cette cellule, RenderTagLI
+   forcait quand meme un RenderNewLine puis reecrasait Ctx.X avec sa
+   propre indentation de liste, detruisant la mise en page en rangee et
+   faisant retomber chaque <li> sur sa propre ligne. Meme correctif que
+   RenderTagDiv : capturer le drapeau AVANT qu'il soit efface, sauter le
+   saut de ligne/la reindentation quand ce LI EST lui-meme la cellule
+   implicite. }
+ IsImplicitTableCellRoot := RenderingImplicitTableCellRoot;
  WantsBlock := CurrentElementWantsBlock;
- NoBullet := CurrentElementListStyleNone;
+ { CurrentElementListStyleNone ne voit que le style resolu du <li>
+   LUI-MEME ; Ctx.ListStyleNone porte en plus l'heritage depuis le
+   UL/OL englobant (voir RenderTagUL) puisque list-style-type est une
+   propriete CSS heritee que ce moteur ne propage pas autrement. }
+ NoBullet := CurrentElementListStyleNone Or Ctx.ListStyleNone;
  ItemStartY := Ctx.Y;
  { Nouvelle ligne pour l'element, sauf si le CSS demande
-   display:inline/inline-block (ex: menu horizontal en <li>). }
- If WantsBlock Then Begin
+   display:inline/inline-block (ex: menu horizontal en <li>) ou si ce LI
+   est lui-meme la cellule implicite d'une rangee display:table-cell
+   (deja positionne par RenderTableCellRow). }
+ If WantsBlock And (Not IsImplicitTableCellRoot) Then Begin
   If Ctx.X > RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT) Then
    RenderNewLine(Ctx);
 
@@ -248326,6 +248460,7 @@ Begin
   IndentX := RenderOriginX + RENDER_MARGIN_LEFT + (Ctx.ListLevel * RENDER_LIST_INDENT);
   Ctx.X := IndentX;
  End;
+ RenderingImplicitTableCellRoot := False;
  { Aucun espacement implicite entre des LI inline/inline-block. Leur
    separation vient exclusivement de margin/padding CSS, appliques par
    RenderHTMLNode. L'ancien +8 s'ajoutait au margin-left:4px des icones
@@ -248367,9 +248502,9 @@ Begin
    LIST_TYPE_UL: Begin
     { Puce pour liste non ordonnee - utiliser differentes puces selon le niveau }
     Case Ctx.ListLevel Of
-     1: BulletText := '• ';   { Puce ronde }
-     2: BulletText := '○ ';   { Cercle vide }
-     3: BulletText := '■ ';   { Carre plein }
+     1: BulletText := #249+' ';   { Puce ronde }
+     2: BulletText := #9+' ';   { Cercle vide }
+     3: BulletText := #254+' ';   { Carre plein }
      Else BulletText := '- '; { Tiret pour niveaux plus profonds }
     End;
     RenderText(Ctx, BulletText);
@@ -248397,8 +248532,22 @@ Begin
 
  Si une sous-liste/bloc enfant a deja termine la ligne et avance Y, X est
    revenu a la marge et il ne faut pas ajouter une ligne vide. Un LI vide
-   consomme tout de meme une hauteur de ligne minimale. }
- If WantsBlock Then Begin
+   consomme tout de meme une hauteur de ligne minimale.
+
+   BOGUE REEL (2026-09-30, suite du correctif ci-dessus) : ce bloc
+   appelait RenderNewLine sans condition, meme pour un LI qui EST la
+   cellule implicite d'une rangee display:table-cell. Comme Ctx.InTable
+   est deja vrai a ce point, RenderNewLine renvoyait alors Ctx.X au
+   debut du contenu de LA CELLULE (Ctx.TableCellContentX) au lieu de
+   laisser Ctx.X au bout du texte rendu - invisible en rendu reel
+   (RenderTableCellRow repositionne Ctx.X/Y pour la cellule suivante de
+   toute facon) mais faussait totalement la largeur mesuree en passe
+   silencieuse (CellWidth := MeasureCtx.X - CellX ne voyait plus que le
+   premier mot). RenderTableCellRow fait deja son propre
+   FlushJustifiedLine apres RenderHTMLNode : ce LI n'a besoin d'aucun
+   saut de ligne/reflow de fin quand il est lui-meme la racine de
+   cellule implicite. }
+ If WantsBlock And (Not IsImplicitTableCellRoot) Then Begin
   { Une ligne justifiee est mise en tampon dans JustifyWords. Elle doit
     absolument etre finalisee avant de quitter ce LI, meme lorsque X est
     inferieur au seuil calcule avec BlockLevel. Sinon les mots et surtout
@@ -257023,6 +257172,7 @@ Begin
 
  BS.CurrentURL := CurrentURL; BS.URLCursorPos := URLCursorPos;
  BS.URLBarFocused := URLBarFocused;
+ BS.URLSel := URLSel;
  BS.BackButtonEnabled := BackButtonEnabled;
  BS.ForwardButtonEnabled := ForwardButtonEnabled;
  BS.RefreshButtonEnabled := RefreshButtonEnabled;
@@ -257144,6 +257294,7 @@ Begin
 
  CurrentURL := BS.CurrentURL; URLCursorPos := BS.URLCursorPos;
  URLBarFocused := BS.URLBarFocused;
+ URLSel := BS.URLSel;
  BackButtonEnabled := BS.BackButtonEnabled;
  ForwardButtonEnabled := BS.ForwardButtonEnabled;
  RefreshButtonEnabled := BS.RefreshButtonEnabled;
@@ -258365,6 +258516,7 @@ Procedure DrawURLBar;
 Var
  TextX, TextY, DisplayChars: Integer;
  DisplayURL: String;
+ HlSL, HlSC, HlEL, HlEC: LongInt;
 Begin
  { Les pilotes BGI ne garantissent pas tous le meme etat texte initial.
    D8bit en haute resolution peut conserver une justification ou une taille
@@ -258395,12 +258547,6 @@ Begin
  SetColor(HTMLBlackColorIndex);
  Rectangle(URL_BAR_X, URL_BAR_Y, URL_BAR_X + URL_BAR_WIDTH, URL_BAR_Y + URL_BAR_HEIGHT);
 
- { Afficher l'URL courante }
- { En D8bit, le chargement des images remplace la palette. L'index VGA
-   fixe 0 peut alors devenir blanc et rendre l'adresse invisible sur le
-   fond blanc. HTMLBlackColorIndex designe le noir reserve de la palette
-   active dans les deux modes graphiques. }
- SetColor(HTMLBlackColorIndex);
  TextX := URL_BAR_X + 5;
  TextY := URL_BAR_Y + 5;
 
@@ -258411,6 +258557,31 @@ Begin
  If Length(DisplayURL) > DisplayChars Then
   DisplayURL := Copy(DisplayURL, 1, DisplayChars - 3) + '...';
 
+ { Surbrillance de la selection (2026-09-30, demande explicite de
+   l'utilisateur), dessinee AVANT le texte pour qu'il reste lisible
+   par-dessus - jaune (CLR_LINE_HIGHLIGHT) plutot que CLR_SELECTION
+   (bleu), qui serait invisible sur le fond blanc de cette barre mais
+   qu'on evite quand meme par coherence avec PasChat/le Terminal, ou ce
+   choix est deja documente comme un piege reel. Colonnes bornees a
+   DisplayChars : la selection porte sur CurrentURL au complet, mais
+   seule la portion visible (avant troncature "...") peut etre surlignee. }
+ If URLBarFocused And IsSelectionActive(URLSel) Then Begin
+  GetOrderedSelection(URLSel, HlSL, HlSC, HlEL, HlEC);
+  If HlSC > DisplayChars Then HlSC := DisplayChars;
+  If HlEC > DisplayChars Then HlEC := DisplayChars;
+  If HlEC > HlSC Then Begin
+   SetFillStyle(SolidFill, CLR_LINE_HIGHLIGHT);
+   Bar(TextX + (HlSC * 8), URL_BAR_Y + 3,
+       TextX + (HlEC * 8), URL_BAR_Y + URL_BAR_HEIGHT - 3);
+  End;
+ End;
+
+ { Afficher l'URL courante }
+ { En D8bit, le chargement des images remplace la palette. L'index VGA
+   fixe 0 peut alors devenir blanc et rendre l'adresse invisible sur le
+   fond blanc. HTMLBlackColorIndex designe le noir reserve de la palette
+   active dans les deux modes graphiques. }
+ SetColor(HTMLBlackColorIndex);
  OutTextXY(TextX, TextY, DisplayURL);
 
  { Dessiner le curseur si la barre a le focus }
@@ -261912,10 +262083,74 @@ Begin
                     (Y >= URL_BAR_Y) And (Y <= URL_BAR_Y + URL_BAR_HEIGHT);
 End;
 
+{ Position de curseur (0..Length(CurrentURL)) correspondant a un X ecran
+  dans la barre d'URL - meme formule deja utilisee par le clic simple
+  (voir HandleMouseClick), extraite ici pour etre partagee avec le debut/
+  glissement/fin de selection souris (2026-09-30, demande explicite de
+  l'utilisateur : "il faudrait que dans le champ de saisie de l'URL, il
+  supporte la selection avec la souris, la copie et le coller du
+  presse-papier avec Ctrl+Ins et Shift+Ins" - meme motif deja etabli pour
+  PasChat/le Terminal, voir StartSelection/ExtendSelection/URLSel). }
+Function URLColAt(X: Integer): LongInt;
+Var
+ Col: LongInt;
+Begin
+ Col := (X - URL_BAR_X - 5) Div 8;
+ If Col > Length(CurrentURL) Then Col := Length(CurrentURL);
+ If Col < 0 Then Col := 0;
+ URLColAt := Col;
+End;
+
+{ Texte actuellement selectionne dans la barre d'URL, ou chaine vide si
+  aucune selection active - une seule "ligne" (StartLine/EndLine toujours
+  0), donc pas besoin du parcours multi-lignes de ChatGetSelectedText. }
+Function URLGetSelectedText: String;
+Var
+ SL, SC, EL, EC: LongInt;
+Begin
+ URLGetSelectedText := '';
+ If Not IsSelectionActive(URLSel) Then Exit;
+ GetOrderedSelection(URLSel, SL, SC, EL, EC);
+ If (SC < 0) Or (EC > Length(CurrentURL)) Or (EC <= SC) Then Exit;
+ URLGetSelectedText := Copy(CurrentURL, SC + 1, EC - SC);
+End;
+
+{ "Coller" (Shift+Ins) dans la barre d'URL - meme motif que
+  PasChatPasteFromClipboard/TermPasteFromClipboard, seule la premiere
+  ligne est prise si le contenu colle est multi-lignes (un champ de
+  saisie sur une seule ligne ne peut pas contenir de retour a la ligne). }
+Procedure URLPasteFromClipboard;
+Var
+ ClipText, Head, Tail: String;
+ CRPos, LFPos, CutPos: Integer;
+Begin
+ ClipText := GetRealClipboardText;
+ If ClipText = '' Then Exit;
+ CRPos := Pos(#13, ClipText);
+ LFPos := Pos(#10, ClipText);
+ CutPos := 0;
+ If (CRPos > 0) And ((LFPos = 0) Or (CRPos < LFPos)) Then CutPos := CRPos
+ Else If LFPos > 0 Then CutPos := LFPos;
+ If CutPos > 0 Then ClipText := Copy(ClipText, 1, CutPos - 1);
+ If URLCursorPos < 0 Then URLCursorPos := 0;
+ If URLCursorPos > Length(CurrentURL) Then URLCursorPos := Length(CurrentURL);
+ Head := Copy(CurrentURL, 1, URLCursorPos);
+ Tail := Copy(CurrentURL, URLCursorPos + 1, Length(CurrentURL));
+ If Length(Head) + Length(ClipText) + Length(Tail) <= URL_MAX_LENGTH Then Begin
+  CurrentURL := Head + ClipText + Tail;
+  URLCursorPos := URLCursorPos + Length(ClipText);
+ End;
+End;
+
 { Procedure pour gerer la saisie de texte dans la barre d'URL }
 Procedure HandleURLInput(Key: Char);
 Begin
  If Not URLBarFocused Then Exit;
+
+ { Toute frappe qui modifie le texte annule une selection en cours -
+   sinon la surbrillance resterait affichee sur des colonnes qui ne
+   correspondent plus au bon texte apres l'edition (2026-09-30). }
+ If Ord(Key) <> 13 Then ClearSelection(URLSel);
 
  Case Ord(Key) Of
   8: Begin { Backspace }
@@ -261949,8 +262184,12 @@ Begin
  DrawURLBar;
 End;
 
-{ Procedure pour gerer les touches speciales (fleches) dans la barre d'URL }
-Procedure HandleURLSpecialKey(ScanCode: Byte);
+{ Procedure pour gerer les touches speciales (fleches) dans la barre d'URL.
+  ShiftState (2026-09-30, demande explicite de l'utilisateur - selection
+  souris + Ctrl+Ins/Shift+Ins) : seul le code $52 (Inser) en a besoin,
+  pour distinguer Ctrl+Ins (copier) de Shift+Ins (coller) - meme motif
+  que HandlePasChatEvent/HandleTerminalEvent. }
+Procedure HandleURLSpecialKey(ScanCode: Byte; ShiftState: Word);
 Begin
  If Not URLBarFocused Then Begin
   { La barre d'URL n'a pas le focus : les touches de navigation
@@ -261969,19 +262208,29 @@ Begin
  Case ScanCode Of
   75: Begin { Fleche gauche }
    If URLCursorPos > 0 Then Dec(URLCursorPos);
+   ClearSelection(URLSel);
   End;
   77: Begin { Fleche droite }
    If URLCursorPos < Length(CurrentURL) Then Inc(URLCursorPos);
+   ClearSelection(URLSel);
   End;
   71: Begin { Home }
    URLCursorPos := 0;
+   ClearSelection(URLSel);
   End;
   79: Begin { End }
    URLCursorPos := Length(CurrentURL);
+   ClearSelection(URLSel);
   End;
   83: Begin { Delete }
    If URLCursorPos < Length(CurrentURL) Then
     Delete(CurrentURL, URLCursorPos + 1, 1);
+  End;
+  $52: Begin { Inser - Ctrl+Ins copie, Shift+Ins colle }
+   If (ShiftState And 2) <> 0 Then
+    SetRealClipboardText(URLGetSelectedText)
+   Else If (ShiftState And 1) <> 0 Then
+    URLPasteFromClipboard;
   End;
  End;
  DrawURLBar;
@@ -261993,6 +262242,7 @@ Begin
  CurrentURL := 'https://';
  URLCursorPos := Length(CurrentURL);
  URLBarFocused := False;
+ ClearSelection(URLSel);
 End;
 
 { Procedure pour definir une nouvelle URL }
@@ -262634,16 +262884,18 @@ Begin
   URLBarFocused := True;
   ClearInputFocus;
   { Calculer la position du curseur dans l'URL }
-  URLCursorPos := (X - URL_BAR_X - 5) Div 8;
-  If URLCursorPos > Length(CurrentURL) Then
-   URLCursorPos := Length(CurrentURL);
-  If URLCursorPos < 0 Then
-   URLCursorPos := 0;
+  URLCursorPos := URLColAt(X);
+  { Debut de selection de texte au clic gauche (2026-09-30, demande
+    explicite de l'utilisateur) - meme motif que ChatSel/TermSel
+    (StartSelection), etendue par glissement dans HandleBrowserMouse. }
+  ClearSelection(URLSel);
+  StartSelection(URLSel, 0, URLCursorPos);
   DrawURLBar;
  End
   Else
  Begin
   URLBarFocused := False;
+  ClearSelection(URLSel);
   DrawURLBar;
  End;
  { BOGUE REEL corrige (2026-09-25, trouve en verifiant le correctif des    }
@@ -262872,7 +263124,14 @@ Begin
       redessinerait par-dessus le menu). }
     If ContextMenuOpen Then
      UpdateContextMenuHover(BrowserMouseX, BrowserMouseY)
-    Else Begin
+    Else If IsSelectionActive(URLSel) And (Ev.MouseBtn <> MB_NONE) Then Begin
+     { Glissement : etendre la selection de la barre d'URL si le bouton
+       gauche est enfonce (2026-09-30, demande explicite de l'utilisateur)
+       - meme motif que ChatSel/TermSel (voir HandlePasChatEvent). }
+     URLCursorPos := URLColAt(BrowserMouseX);
+     ExtendSelection(URLSel, 0, URLCursorPos);
+     DrawURLBar;
+    End Else Begin
      { BrowserSuppressRedraw (voir son commentaire complet, globales
        principales) : ProcessMouseHover sait deja, en interne, distinguer
        un survol qui change quelque chose (CurrentNode<>HoveredInteractiveNode,
@@ -262922,6 +263181,16 @@ Begin
      MousePressedInteractiveNode := Nil;
      ShowMouse;
     End;
+    { Relachement : finaliser la selection de la barre d'URL (l'annuler
+      si debut = fin, un simple clic sans glisser ne doit pas laisser une
+      "selection" degeneree d'un seul caractere - meme motif que
+      HandlePasChatEvent/HandleTerminalEvent). }
+    If IsSelectionActive(URLSel) Then Begin
+     URLCursorPos := URLColAt(BrowserMouseX);
+     ExtendSelection(URLSel, 0, URLCursorPos);
+     If (URLSel.StartCol = URLSel.EndCol) Then ClearSelection(URLSel);
+     DrawURLBar;
+    End;
    End;
  End;
 
@@ -262962,7 +263231,7 @@ Begin
   End Else If FocusedInputNode <> Nil Then
    HandleFormInputSpecialKey(Ev.KeyCode)
   Else
-   HandleURLSpecialKey(Ev.KeyCode);
+   HandleURLSpecialKey(Ev.KeyCode, Ev.ShiftState);
  End Else If Ev.Kind = EV_KEY_CHAR Then Begin
   If ContextMenuOpen Then Begin
    ContextMenuOpen := False;
