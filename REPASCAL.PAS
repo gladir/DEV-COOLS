@@ -29,7 +29,7 @@ Type
  {$ENDIF}
 
 Var
- SourceName,FormatSourceName,DeadName,TempName,BackupName,ProgramName:String;
+ SourceName,FormatSourceName,DeadName,TempName,ElseTempName,BackupName,ProgramName:String;
  InputFile,OutputFile:Text;
  IsUnit,HasProgram,HadError:Boolean;
  BeginTotal,EndTotal,BeginNumber,EndNumber,IndentLevel,MainBeginNumber,
@@ -915,6 +915,82 @@ Begin
  If IOResult<>0 Then Error('erreur de fermeture du fichier temporaire');
 End;
 
+Function LeadingIndent(Const S:TSourceString):TSourceString;
+Var I:LongInt;
+Begin
+ I:=1;While(I<=Length(S))And(S[I]in[' ',#9])Do Inc(I);
+ LeadingIndent:=Copy(S,1,I-1)
+End;
+
+Function StartsWithWord(Const S,Prefix:String):Boolean;
+Var T,U:String;
+Begin
+ T:=TrimLine(S);U:=UpperString(T);
+ StartsWithWord:=(Copy(U,1,Length(Prefix))=Prefix)And
+  ((Length(U)=Length(Prefix))Or(U[Length(Prefix)+1]in[' ',#9]))
+End;
+
+Function ThenIndent(Const S:TSourceString):Integer;
+Var U:String;P:Integer;
+Begin
+ U:=UpperString(S);P:=Pos(' THEN ',U);
+ If P=0Then P:=Pos(' THEN',U);
+ { P designe l'espace juste avant THEN et correspond donc exactement au
+   nombre d'espaces requis pour placer ELSE sous le T de Then. }
+ ThenIndent:=P
+End;
+
+Function Spaces(Count:Integer):TSourceString;
+Var R:TSourceString;
+Begin
+ R:='';While Count>0Do Begin R:=R+' ';Dec(Count)End;Spaces:=R
+End;
+
+{ Troisieme passe legere pour le style des chaines IF/ELSE. Une ligne est
+  gardee en attente afin que "Else If" puisse donner son ELSE a la fin du
+  IF precedent. Le dernier ELSE simple est ensuite aligne sous le THEN du
+  IF precedent. Un ELSE qui ouvre BEGIN reste, lui, au niveau normal. }
+Procedure ElseStylePass;
+Var InFile,OutFile:Text;OldFile,NewFile:File;
+    Held,Cur,TrimCur:TSourceString;HaveHeld:Boolean;P:Integer;
+Begin
+ Assign(InFile,TempName);Reset(InFile);If IOResult<>0Then Begin
+  Error('impossible de relire le fichier temporaire');Exit
+ End;
+ Assign(OutFile,ElseTempName);Rewrite(OutFile);If IOResult<>0Then Begin
+  Close(InFile);Error('impossible de creer le fichier temporaire ELSE');Exit
+ End;
+ HaveHeld:=False;
+ While ReadSourceLine(InFile,Cur)Do Begin
+  TrimCur:=TrimLine(Cur);
+  If Not HaveHeld Then Begin Held:=Cur;HaveHeld:=True;Continue End;
+  If StartsWithWord(TrimCur,'ELSE IF')And(ThenIndent(Held)>0)Then Begin
+   WriteLn(OutFile,Held,' Else');
+   Held:=LeadingIndent(Held)+Copy(TrimCur,6,Length(TrimCur)-5)
+  End Else Begin
+   If StartsWithWord(TrimCur,'ELSE')And
+      (Not StartsWithWord(TrimCur,'ELSE IF'))And
+      (Not StartsWithWord(TrimCur,'ELSE BEGIN'))And
+      (UpperString(TrimCur)<>'ELSE')Then Begin
+    P:=ThenIndent(Held);
+    WriteLn(OutFile,Held);
+    If P>0Then Held:=Spaces(P)+TrimCur Else Held:=Cur
+   End Else Begin
+    WriteLn(OutFile,Held);Held:=Cur
+   End
+  End
+ End;
+ If HaveHeld Then WriteLn(OutFile,Held);
+ Close(InFile);Close(OutFile);If IOResult<>0Then Begin
+  Error('erreur d''ecriture du style ELSE');Exit
+ End;
+ Assign(OldFile,TempName);Erase(OldFile);If IOResult<>0Then Begin
+  Error('impossible de remplacer le fichier temporaire');Exit
+ End;
+ Assign(NewFile,ElseTempName);Rename(NewFile,TempName);If IOResult<>0Then
+  Error('impossible d''installer le style ELSE')
+End;
+
 Procedure InstallResult;
 Var
  OldFile,NewFile,BakFile:File;
@@ -948,6 +1024,7 @@ BEGIN
  End;
  If SourceName=''Then Begin Usage;Halt(1)End;
  TempName:=ReplaceExtension(SourceName,'.$$$');
+ ElseTempName:=ReplaceExtension(SourceName,'.$EL');
  BackupName:=ReplaceExtension(SourceName,'.BAK');
  DeadName:=ReplaceExtension(SourceName,'.$DC');FormatSourceName:=SourceName;
  ProgramName:=NormalizeProgramName(UpperString(FileBase(SourceName)));
@@ -958,6 +1035,7 @@ BEGIN
  If DeadCode Then Begin DeadCodePass;FormatSourceName:=DeadName End;
  If HadError Then Begin RemoveDeadTemporary;Halt(1)End;
  FirstPass;If HadError Then Begin RemoveDeadTemporary;Halt(1)End;
- SecondPass;RemoveDeadTemporary;If HadError Then Halt(1);InstallResult;
+ SecondPass;If not HadError Then ElseStylePass;
+ RemoveDeadTemporary;If HadError Then Halt(1);InstallResult;
  If HadError Then Halt(1);WriteLn('Fichier reformate. Sauvegarde: ',BackupName);
 END.
