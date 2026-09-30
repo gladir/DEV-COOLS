@@ -123,6 +123,86 @@ Function SameText(Const A,B:String):Boolean;Begin
  SameText:=UpperString(A)=UpperString(B);
 End;
 
+{ Casse canonique des mots reserves Pascal. Cette fonction ne recoit que
+  des identificateurs deja isoles par FormatLine; les commentaires et les
+  chaines de caracteres ne peuvent donc jamais etre modifies. }
+Function PascalKeywordCase(Const W:String):String;
+Var U:String;
+Begin
+ U:=UpperString(W);
+ If U='ABSOLUTE'Then PascalKeywordCase:='Absolute'
+ Else If U='AND'Then PascalKeywordCase:='And'
+ Else If U='ARRAY'Then PascalKeywordCase:='Array'
+ Else If U='AS'Then PascalKeywordCase:='As'
+ Else If U='ASM'Then PascalKeywordCase:='Asm'
+ Else If U='BEGIN'Then PascalKeywordCase:='Begin'
+ Else If U='CASE'Then PascalKeywordCase:='Case'
+ Else If U='CLASS'Then PascalKeywordCase:='Class'
+ Else If U='CONST'Then PascalKeywordCase:='Const'
+ Else If U='CONSTRUCTOR'Then PascalKeywordCase:='Constructor'
+ Else If U='DESTRUCTOR'Then PascalKeywordCase:='Destructor'
+ Else If U='DIV'Then PascalKeywordCase:='Div'
+ Else If U='DISPINTERFACE'Then PascalKeywordCase:='Dispinterface'
+ Else If U='DO'Then PascalKeywordCase:='Do'
+ Else If U='DOWNTO'Then PascalKeywordCase:='Downto'
+ Else If U='ELSE'Then PascalKeywordCase:='Else'
+ Else If U='END'Then PascalKeywordCase:='End'
+ Else If U='EXCEPT'Then PascalKeywordCase:='Except'
+ Else If U='EXPORTS'Then PascalKeywordCase:='Exports'
+ Else If U='FINALIZATION'Then PascalKeywordCase:='Finalization'
+ Else If U='FINALLY'Then PascalKeywordCase:='Finally'
+ Else If U='FILE'Then PascalKeywordCase:='File'
+ Else If U='FOR'Then PascalKeywordCase:='For'
+ Else If U='FUNCTION'Then PascalKeywordCase:='Function'
+ Else If U='GOTO'Then PascalKeywordCase:='Goto'
+ Else If U='GENERIC'Then PascalKeywordCase:='Generic'
+ Else If U='IF'Then PascalKeywordCase:='If'
+ Else If U='IMPLEMENTATION'Then PascalKeywordCase:='Implementation'
+ Else If U='INITIALIZATION'Then PascalKeywordCase:='Initialization'
+ Else If U='IN'Then PascalKeywordCase:='In'
+ Else If U='INHERITED'Then PascalKeywordCase:='Inherited'
+ Else If U='INLINE'Then PascalKeywordCase:='Inline'
+ Else If U='INTERFACE'Then PascalKeywordCase:='Interface'
+ Else If U='IS'Then PascalKeywordCase:='Is'
+ Else If U='LABEL'Then PascalKeywordCase:='Label'
+ Else If U='LIBRARY'Then PascalKeywordCase:='Library'
+ Else If U='MOD'Then PascalKeywordCase:='Mod'
+ Else If U='NIL'Then PascalKeywordCase:='Nil'
+ Else If U='NOT'Then PascalKeywordCase:='Not'
+ Else If U='OBJECT'Then PascalKeywordCase:='Object'
+ Else If U='OF'Then PascalKeywordCase:='Of'
+ Else If U='ON'Then PascalKeywordCase:='On'
+ Else If U='OPERATOR'Then PascalKeywordCase:='Operator'
+ Else If U='OR'Then PascalKeywordCase:='Or'
+ Else If U='OUT'Then PascalKeywordCase:='Out'
+ Else If U='PACKED'Then PascalKeywordCase:='Packed'
+ Else If U='PROCEDURE'Then PascalKeywordCase:='Procedure'
+ Else If U='PROGRAM'Then PascalKeywordCase:='Program'
+ Else If U='PROPERTY'Then PascalKeywordCase:='Property'
+ Else If U='RAISE'Then PascalKeywordCase:='Raise'
+ Else If U='RECORD'Then PascalKeywordCase:='Record'
+ Else If U='REPEAT'Then PascalKeywordCase:='Repeat'
+ Else If U='RESOURCESTRING'Then PascalKeywordCase:='Resourcestring'
+ Else If U='SET'Then PascalKeywordCase:='Set'
+ Else If U='SHL'Then PascalKeywordCase:='Shl'
+ Else If U='SHR'Then PascalKeywordCase:='Shr'
+ Else If U='STRING'Then PascalKeywordCase:='String'
+ Else If U='SPECIALIZE'Then PascalKeywordCase:='Specialize'
+ Else If U='THEN'Then PascalKeywordCase:='Then'
+ Else If U='THREADVAR'Then PascalKeywordCase:='Threadvar'
+ Else If U='TO'Then PascalKeywordCase:='To'
+ Else If U='TRY'Then PascalKeywordCase:='Try'
+ Else If U='TYPE'Then PascalKeywordCase:='Type'
+ Else If U='UNIT'Then PascalKeywordCase:='Unit'
+ Else If U='UNTIL'Then PascalKeywordCase:='Until'
+ Else If U='USES'Then PascalKeywordCase:='Uses'
+ Else If U='VAR'Then PascalKeywordCase:='Var'
+ Else If U='WHILE'Then PascalKeywordCase:='While'
+ Else If U='WITH'Then PascalKeywordCase:='With'
+ Else If U='XOR'Then PascalKeywordCase:='Xor'
+ Else PascalKeywordCase:=W
+End;
+
 Function FileBase(Const S:String):String;
 Var
  I,First,Dot:Integer;
@@ -723,7 +803,7 @@ Begin
      DeclarationIsLocal:=ThisDeclarationIsLocal;
     End Else
     Begin
-     AppendText(W);AwaitingThenBegin:=False;AwaitingDoBegin:=False;
+     AppendText(PascalKeywordCase(W));AwaitingThenBegin:=False;AwaitingDoBegin:=False;
     End;
    End
    Else If U='BEGIN'Then Begin
@@ -755,7 +835,7 @@ Begin
     AppendText('Then');AwaitingThenBegin:=True;
    End
    Else If U='DO'Then Begin
-    AppendText(W);AwaitingDoBegin:=True;AwaitingThenBegin:=False;
+    AppendText('Do');AwaitingDoBegin:=True;AwaitingThenBegin:=False;
    End
    Else If(U='FOR')or(U='WHILE')Then Begin
     EmitPending;If U='FOR'Then AppendText('For')Else AppendText('While');
@@ -771,7 +851,7 @@ Begin
      If RoutineNeedsBlank Then WriteLn(OutputFile);EmitPending;
      AwaitingRoutineBegin:=False;RoutineNeedsBlank:=False;
     End;
-    AppendText(W);AwaitingThenBegin:=False;AwaitingDoBegin:=False;
+    AppendText(PascalKeywordCase(W));AwaitingThenBegin:=False;AwaitingDoBegin:=False;
    End;Continue;
   End;
   If SkipProgram Then Begin
