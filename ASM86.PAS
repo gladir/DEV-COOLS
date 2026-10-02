@@ -44,6 +44,12 @@ Type
   Jmptype:(Short,Med);
   Prev,Next:Fixup_Info_Ptr;
  End;
+ { Tableau heap (voir BinArray plus bas) : un pointeur type, alloue via    }
+ { GetMem/libere via FreeMem - fonctionne identiquement en Turbo Pascal   }
+ { reel et en Free Pascal, contrairement a un tableau dynamique           }
+ { (Array Of Byte/SetLength), extension FPC/Delphi absente de TP. }
+ BinArrayType=Array[0..Maxbyte] of Byte;
+ BinArrayPtr=^BinArrayType;
 
 Var
  Language:(_Albanian,_Danish,_French,_English,_Germany,_Italian,_Spain,_Swedish);
@@ -62,8 +68,29 @@ Var
  Rmm,Md:Integer;
  ByWord:PtrType;
  Byt,SignExt:Byte;
- Tindex,Tindex0,Column,I,ByteCount,LastSlash:Integer;
+ Tindex,Tindex0,Column,I,ByteCount,ByteCount0,LastSlash:Integer;
  TextArray:Array[0..Maxbyte] of Char;
+ { BOGUE REEL CORRIGE (2026-10-02, decouvert en assemblant un programme de }
+ { test reel pour DEVENV - TESTS/DOSEMU/CPUDETECT.A86) : InsertByte         }
+ { ecrivait directement dans le fichier .BIN des que l octet etait          }
+ { rencontre, AVANT que Modify_Byte (ShfRot/MulDiv/Accum, et surtout la     }
+ { resolution des sauts/appels avant AVANT que leur etiquette cible ne      }
+ { soit connue - Chk_For_Label) ne vienne corriger cet octet. Le fichier   }
+ { .H86 (texte) etait toujours juste (Modify_Byte corrige bien TextArray), }
+ { mais le .BIN restait fige sur l octet PROVISOIRE (ex: D0 au lieu de D3   }
+ { pour un SHL reg,CL ; 00 au lieu du vrai deplacement pour un saut avant   }
+ { - verifie octet par octet sur un cas reel). BinArray est desormais       }
+ { rempli en parallele de TextArray (indexe par ByteCount, pas par Tindex) }
+ { et corrige par les memes sites que Modify_Byte (voir Modify_BinByte) ;  }
+ { le fichier .BIN est ecrit en une seule fois a la toute fin, une fois     }
+ { tous les correctifs appliques - voir la boucle finale pres de Close(Binary). }
+ { Tableau DYNAMIQUE (tas), pas statique (segment de donnees) : contrairement}
+ { a TextArray (deja statique avant ce chantier, hors de portee ici), un     }
+ { second tableau statique de la meme taille (Maxbyte+1 octets) doublerait   }
+ { inutilement l empreinte du segment de donnees pour tout le monde, meme    }
+ { sans /B - alloue donc seulement a la demande (voir GetMem plus bas,       }
+ { juste avant l ouverture du fichier binaire, et FreeMem apres usage). }
+ BinArray:BinArrayPtr;
  Lsid:SymString;
  Str8:Array[1..9] of Char;
  Str:String5 Absolute Str8;
@@ -210,7 +237,7 @@ Begin
    GetCh;
   End;
   If(Mode=_Hex)Then Begin
-   If(UCh<>'H')Then Error(Chi,'Nombre hexad‚cimal sans identificateur ''h''')
+   If(UCh<>'H')Then Error(Chi,'Nombre hexadï¿½cimal sans identificateur ''h''')
                Else GetCh;
   End
    Else
@@ -241,7 +268,7 @@ Begin
   GetHex:=True;
   If(UCh>='A')Then Digit:=Ord(UCh)-Ord('A')+10
               Else Digit:=Ord(UCh)-Ord('0');
-  If H and $F000<>0 Then Error(Chi,'D‚bordement');
+  If H and $F000<>0 Then Error(Chi,'Dï¿½bordement');
   H:=(H Shl 4)+Digit;
   GetCh;
  End;
@@ -263,14 +290,14 @@ Begin
    Err:=N and $FF00 <> 0;
    N:=(N Shl 8)+Ord(LCh);
    GetCh;
-   If(Err)Then Error(Chi, 'D‚bordement');
+   If(Err)Then Error(Chi, 'Dï¿½bordement');
   End;
   GetCh;
  End
   Else
  If UCh='$'Then Begin
   GetCh;
-  If Not GetHex(N)Then Error(Chi,'Expression de nombre hexad‚cimal');
+  If Not GetHex(N)Then Error(Chi,'Expression de nombre hexadï¿½cimal');
   GetNumber:=True;
  End
   Else
@@ -456,10 +483,10 @@ End;
 Procedure InsertByte(B:Byte);Begin
  If(InlineForTurboPascal in Option)Then InsertChr('$');
  InsertStr(ByteHex2Str(B));
+ If(BinaryFile in Option)Then BinArray^[ByteCount]:=B;
  ByteCount:=ByteCount+1;
  LastSlash:=Tindex;
  If(InlineForTurboPascal in Option)Then InsertChr('/');
- If(BinaryFile in Option)Then Write(Binary,B);
  Wait_Already:=False;
 End;
 
@@ -504,6 +531,18 @@ Begin
  St:=ByteHex2Str(HexToByte(I,J)+Modify);
  TextArray[J]:=St[1];
  TextArray[J+1]:=St[2];
+End;
+
+{ Equivalent de Modify_Byte mais pour BinArray (voir son commentaire de     }
+{ declaration) - BC est un index ByteCount (PAS un index TextArray/Tindex), }
+{ fourni par l appelant comme BinArray0/Fix_pt (captures au meme moment     }
+{ que Tindex0/Indx/Indx2). Meme semantique additive que Modify_Byte         }
+{ (l octet est toujours un emplacement reserve a 0 au moment de l appel,    }
+{ donc +Modify equivaut a une affectation, mais reste coherent si ce        }
+{ n etait pas le cas). }
+Procedure Modify_BinByte(BC:Integer; Modify:Byte);
+Begin
+ If(BinaryFile in Option)Then BinArray^[BC]:=BinArray^[BC]+Modify;
 End;
 
 Procedure DoNext;
@@ -1402,6 +1441,7 @@ Begin
   If NValue<>1 Then Error(Chi, 'CL ou une expression 1');
   NextA;
   Modify_Byte(Tindex0, CL+W1);
+  Modify_BinByte(ByteCount0, CL+W1);
  End;
 End;
 
@@ -1571,6 +1611,7 @@ Var
    Else
   Error(Chi, 'Expression de registre ou de memoire');
   Modify_Byte(Tindex0, Wordbit);
+  Modify_BinByte(ByteCount0, Wordbit);
  End;
 
  Function DXreg:Boolean;Begin
@@ -1617,7 +1658,10 @@ Begin
     Else
    Goto 10;
    If Sym = Comma Then NextA;
-   If Accum(W1) Then Modify_Byte(Tindex0, W1) {al ou ax}
+   If Accum(W1) Then Begin
+    Modify_Byte(Tindex0, W1); {al ou ax}
+    Modify_BinByte(ByteCount0, W1);
+   End
                 Else Goto 20;
   End;
   Inn:Begin
@@ -1723,14 +1767,14 @@ Begin
   SkipSpaces;
   If(Lsid[0]>Chr(0))and(UCh = ':')Then Begin
    Sym:=Identifier;
-   If Register(Dum1,Dum2)Then Error(Chi, 'Nom enregistr‚ utiliser comme ‚tiquette')
+   If Register(Dum1,Dum2)Then Error(Chi, 'Nom enregistrï¿½ utiliser comme ï¿½tiquette')
     Else
    Begin
     GetCh;
     Symname:=Lsid;
     Pl:=Firstlabel;
     While Pl <> Nil do With Pl^ do Begin
-     If Symname = Name Then Error(Chi, 'Etiquette dupliqu‚');
+     If Symname = Name Then Error(Chi, 'Etiquette dupliquï¿½');
      Pl:=Next;
     End;
     New(Pl);
@@ -1749,7 +1793,10 @@ Begin
       Dispose(Pf);
       Addr:=ByteCount-(Fix_pt+1);
       If Jmptype = Short Then Begin
-       If Addr+$80 <= $FF Then Modify_Byte(Indx, Lo(Addr))
+       If Addr+$80 <= $FF Then Begin
+        Modify_Byte(Indx, Lo(Addr));
+        Modify_BinByte(Fix_pt, Lo(Addr));
+       End
                           Else Error(Chi, 'Trop long');
       End
        Else
@@ -1757,6 +1804,8 @@ Begin
        Addr := Addr-1;
        Modify_Byte(Indx, Lo(Addr));
        Modify_Byte(Indx2, Hi(Addr));
+       Modify_BinByte(Fix_pt, Lo(Addr));
+       Modify_BinByte(Fix_pt+1, Hi(Addr));
       End;
      End;
      Pf:=Next;
@@ -1771,6 +1820,7 @@ End;
 
 Procedure Interpret;Begin
  Tindex0:=Tindex;
+ ByteCount0:=ByteCount;
  GetString;
  Chk_For_Label;
  While Prefix do GetString;
@@ -1813,7 +1863,7 @@ Var
 Begin
  IOerr:=IOResult;
  If(IOerr=2)or(IOerr=3)Then WriteLn('Introuvable ', S) Else
- If IOerr<>0 then WriteLn('Erreur d''entr‚e/sortie ', IOerr);
+ If IOerr<>0 then WriteLn('Erreur d''entrï¿½e/sortie ', IOerr);
  ChkIOerror:=IOerr;
 End;
 
@@ -1877,10 +1927,10 @@ BEGIN
     WriteLn;
     WriteLn('Syntaxe : ASM86 [source[.A86] [destination[.H86]]] [/C] [/INLINE|/TP]');
     WriteLn;
-    WriteLn('ParamŠtres');
+    WriteLn('Paramï¿½tres');
     WriteLn;
     WriteLn('    source       Nom du fichier contenant le source assembleur');
-    WriteLn('    destination  Nom du fichier contenu le code machine en hexad‚cimal');
+    WriteLn('    destination  Nom du fichier contenu le code machine en hexadï¿½cimal');
     WriteLn('    /B           Fabrique un fichier binaire (.BIN)');
     WriteLn('    /C           Sortie en commentaires des instructions assembleurs');
     WriteLn('    /INLINE      Sortie en instruction INLINE du Turbo Pascal');
@@ -1894,7 +1944,7 @@ BEGIN
   WriteLn('ASM86 1.0.1 - Compilateur assembleur 8086');
   WriteLn('Licence MIT');
   WriteLn;
-  WriteLn('crit par Sylvain Maltais');
+  WriteLn('ï¿½crit par Sylvain Maltais');
  End
   Else
  Begin
@@ -1941,7 +1991,7 @@ BEGIN
     Err:=ChkIOerror(SourceName);
     If Err>1 then Halt(1);
    Until Err=0;
-   Write('Code machine hexad‚cimal [',Path2DirName(SourceName),'.H86]: ');
+   Write('Code machine hexadï¿½cimal [',Path2DirName(SourceName),'.H86]: ');
    ReadLn(TargetName);
    If TargetName=''Then TargetName:=Path2DirName(SourceName)+'.H86';
    {DefaultExtension('H86',TargetName,_Name);}
@@ -1953,6 +2003,7 @@ BEGIN
   If(BinaryFile in Option)Then Begin
    Assign(Binary,Path2DirName(TargetName)+'.BIN');
    Rewrite(Binary);
+   GetMem(BinArray, Maxbyte+1);
   End;
   Wait_Already:=False;
   NewFnd:=True;
@@ -2002,7 +2053,12 @@ BEGIN
    LabelReport;
    For I:=0 to Tindex-1 do Write(TargetFile,TextArray[I]);
   End;
-  If(BinaryFile in Option)Then Close(Binary);
+  If(BinaryFile in Option)Then
+   For I:=0 to ByteCount-1 do Write(Binary,BinArray^[I]);
+  If(BinaryFile in Option)Then Begin
+   Close(Binary);
+   FreeMem(BinArray, Maxbyte+1);
+  End;
   Close(TargetFile);
   Close(SourceFile);
  End;

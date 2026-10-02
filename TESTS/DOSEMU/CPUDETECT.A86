@@ -1,0 +1,123 @@
+; CPUDETECT.A86
+; ============================================================
+; Detection logicielle du "Type de processeur" choisi dans
+; Options > Emulateur : DOS > Materiel (DosCpuType) de DEVENV.
+;
+; Assembler : ASM86.exe CPUDETECT.A86 CPUDETECT /B
+;             puis renommer CPUDETECT.BIN en CPUDETECT.COM
+;             (format .BIN brut = format .COM : code charge a
+;             CS:0100h, aucune difference de structure).
+;
+; Executer dans DEVENV (F5 / Ctrl+F5) pour chacun des 10 reglages
+; de "Type de processeur", puis lire le code de sortie dans le
+; message "Programme termine (code N)" du panneau de sortie (ou
+; Deboguer > Activites observees). Voir TESTS/DOSEMU/README.txt
+; pour la table de correspondance attendue reglage -> code.
+;
+; Codes de sortie (AL au moment de INT 21h/AH=4Ch) :
+;   0 = 8086/8088 (Intel reel - MUL laisse SF/ZF/PF indetermines)
+;   1 = NEC V20/V30 (MUL calcule reellement SF/ZF/PF)
+;   2 = 80186/80188 (compte de decalage masque a 5 bits)
+;   3 = 80286 (FLAGS 12-15 forces a 0 en mode reel)
+;   4 = 80386 (EFLAGS 12-14 pilotables, mais pas de CPUID)
+;   5 = 80486 (CPUID present, famille 4)
+;   6 = Pentium ou plus (CPUID present, famille 5)
+;
+; LIMITE HONNETE (voir aussi README.txt) : ce programme ne peut PAS
+; distinguer 8086 de 8088, NEC V20 de NEC V30, ni 80186 de 80188 -
+; leur seule difference reelle (largeur du bus externe / taille de
+; la queue de prefetch, 4 vs 6 octets) echappe a toute emulation au
+; niveau instruction (pas de modele de bus/cycles ici). Un vrai banc
+; d'essai materiel utiliserait du code auto-modifiant chronometre,
+; technique non reproductible dans un emulateur qui n'execute pas a
+; vitesse/pipeline reels.
+; ============================================================
+
+; --- Etape 1 : bits reserves 12-15 de FLAGS -------------------------
+; Pre-286 : toujours forces a 1. 80286 reel (mode reel) : forces a 0.
+; 80386+ : bit 15 reste a 1, mais les bits 12-14 (IOPL/NT) passent tels
+; quels (ici remis a 0 par le AND ci-dessous, donc le resultat final
+; pour 386+ est $8000 - bit 15 seul).
+PUSHF
+POP AX
+AND AX,$0FFF
+PUSH AX
+POPF
+PUSHF
+POP AX
+AND AX,$F000
+CMP AX,$F000
+JE PREV286
+CMP AX,0
+JE IS80286
+JMP CPU386PLUS
+
+; --- Branche pre-286 : 8086/8088/NEC V20/V30/80186/80188 ------------
+PREV286:
+; Compte de decalage CL=33 (0..255, pas d'unite de registre) : le
+; 80186+ le masque a 5 bits (33 AND 1Fh = 1 -> un seul decalage, AX=2),
+; le 8086/8088/V20/V30 l'utilise brut (33 decalages d'un registre 16
+; bits -> tous les bits sortis, AX=0).
+MOV CL,33
+MOV AX,1
+SHL AX,CL
+CMP AX,0
+JE NOTMASKED
+MOV AL,2
+JMP THEEND
+
+; --- Pas masque : vrai 8086/8088 ou NEC V20/V30 ---------------------
+NOTMASKED:
+; ZF connu (=0) avant le MUL, pour detecter si le CPU le recalcule.
+MOV AX,1
+CMP AX,0
+MOV AL,0
+MOV BL,5
+MUL BL
+JZ ISNEC
+MOV AL,0
+JMP THEEND
+
+ISNEC:
+MOV AL,1
+JMP THEEND
+
+IS80286:
+MOV AL,3
+JMP THEEND
+
+; --- Branche 386+ : CPUID present (486+) ou non (386 simple) -------
+CPU386PLUS:
+MOV BX,$1234
+MOV CX,$1234
+MOV DX,$1234
+DB $66,$33,$C0          ; XOR EAX,EAX (CPUID, fonction EAX=0)
+DB $0F,$A2              ; CPUID
+CMP BX,$1234
+JNE HASCPUID
+CMP CX,$1234
+JNE HASCPUID
+CMP DX,$1234
+JNE HASCPUID
+MOV AL,4
+JMP THEEND
+
+; --- CPUID present : decoder la famille (EAX=1, bits 8-11) ---------
+HASCPUID:
+DB $0F,$A2              ; CPUID, fonction EAX=1 (EAX deja =1 depuis la
+                        ; reponse de la fonction EAX=0 de CET emulateur)
+MOV BX,AX
+MOV CL,8
+SHR BX,CL
+AND BX,$0F
+CMP BX,5
+JE ISPENTIUM
+MOV AL,5
+JMP THEEND
+
+ISPENTIUM:
+MOV AL,6
+
+THEEND:
+MOV AH,$4C
+INT 21h
