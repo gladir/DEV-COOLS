@@ -992,6 +992,27 @@ Program DEVENV;
  { s enveloppe deliberement (deja le cas dans de nombreuses routines        }
  { bas niveau : CRC, hachage, arithmetique CPU emule, etc.). }
  {$Q-}
+ { BOGUE REEL (2026-10-02, rapporte par l utilisateur - "EOutOfMemory: Out  }
+ { of memory" en executant TESTS/DOSEMU/CPUDETECT.COM via Entree dans      }
+ { Norton Commander, reproduit a l identique en ligne de commande donc PAS  }
+ { un bogue specifique a l IDE FP) : DEVENV.exe est un executable 32 bits   }
+ { (cible i386-Win32) sans IMAGE_FILE_LARGE_ADDRESS_AWARE, donc limite a    }
+ { 2 Go d espace d adresses virtuelles (0..$7FFFFFFF) quelle que soit la    }
+ { RAM physique reellement disponible. Un diagnostic temporaire a confirme }
+ { que ce plafond, pas une taille de tampon erronee, est la vraie cause :   }
+ { Emu_XmsInit/Emu_EmsInit (tampons fixes de 64 Mo/32 Mo, alloues par New   }
+ { des que XMS/EMS est coche, voir EMU_XMS_CAP_KB/EMU_EMS_CAP_KB) reussissent}
+ { mais obtiennent des adresses deja tres proches du plafond ($7B588050 et  }
+ { $7745D050, a moins de 150 Mo de $7FFFFFFF) - preuve que ce gros          }
+ { executable (~264 000 lignes, des dizaines d emulateurs/compilateurs      }
+ { integres) a deja largement fragmente/consomme son espace d adresses de   }
+ { 2 Go avant meme ces 3 tampons ; Emu_DpmiInit (3e tampon de 64 Mo) ne      }
+ { trouve alors plus nulle part un bloc contigu assez grand. $SetPEFlags    }
+ { $20 = IMAGE_FILE_LARGE_ADDRESS_AWARE : porte ce plafond a 4 Go sur un    }
+ { Windows 64 bits (le cas ici), sans aucun autre changement de code -      }
+ { s ajoute aux drapeaux PE deja positionnes par le compilateur/l editeur   }
+ { de liens FPC, ne les remplace pas. }
+ {$SetPEFlags $20}
 {$ENDIF}
 
 Uses DOS,
@@ -1723,6 +1744,23 @@ Const
  EMU_WIN95_VER_MINOR  = 10;
  DOS_CPU_VENDOR_COUNT = 8;       { nombre de fabricants de CPU      }
  DOS_HARDWARE_COUNT   = 11;      { nombre de modeles de materiel    }
+ { "Type de processeur" (2026-10-02, demande explicite de l utilisateur -   }
+ { "verifier que chacun des microprocesseurs sont detectes correctement")   }
+ { pilote desormais de vraies differences de comportement du coeur 8086     }
+ { (voir Emu_ApplyCpuType) plutot que les seules cases DosEmu80286/80386,   }
+ { qui ne gerent que des fonctionnalites 286+/386+ independantes (DPMI,     }
+ { pagination) sans jamais distinguer la GENERATION precise du CPU. }
+ DOS_CPU_TYPE_COUNT   = 10;      { nombre de types de processeur emulables }
+ CPU_TYPE_8086        = 0;
+ CPU_TYPE_8088        = 1;
+ CPU_TYPE_80186       = 2;
+ CPU_TYPE_NECV20      = 3;
+ CPU_TYPE_NECV30      = 4;
+ CPU_TYPE_80188       = 5;
+ CPU_TYPE_80286       = 6;
+ CPU_TYPE_80386       = 7;
+ CPU_TYPE_80486       = 8;
+ CPU_TYPE_PENTIUM     = 9;
  DOS_VIDEO_COUNT      = 22;      { nombre de cartes video emulables }
  EMU_VID_NONE         = 21;      { index DosVideo1/2 = aucune carte }
  DOS_DISK_IF_COUNT    = 13;      { nombre d interfaces de disque emulables }
@@ -6537,6 +6575,7 @@ Type
                                   { 6=OS/2                          }
   DosCPUIDDetect  : Boolean;     { CPUID detecte                  }
   DosCPUVendor    : Integer;     { fabricant CPU rapporte par CPUID}
+  DosCpuType      : Integer;     { type de processeur emule (voir CPU_TYPE_*) }
   DosHardware     : Integer;     { modele de materiel emule        }
   DosVideo1       : Integer;     { carte video primaire emulee    }
   DosVideo2       : Integer;     { carte video secondaire emulee  }
@@ -8629,6 +8668,19 @@ Var
  { "80386" -> True) pour que chaque suite /TESTUNIT verifie le bon           }
  { comportement materiel. }
  EmuCpu286Plus  : Boolean;
+ { EmuCpuIsNEC/EmuCpuFlags386Plus (2026-10-02, demande explicite de         }
+ { l utilisateur - "Type de processeur" dans Options > Emulateur : DOS >   }
+ { Materiel) : EmuCpu286Plus seul ne distinguait que 2 generations          }
+ { (pre-286 / 286+). Ces 2 commutateurs supplementaires, positionnes avec   }
+ { EmuCpu286Plus par Emu_ApplyCpuType (voir sa declaration), couvrent les   }
+ { autres techniques de detection logicielle documentees dans TESTS/        }
+ { DOSEMU/CPUDETECT.ASM : EmuCpuIsNEC (NEC V20/V30 - MUL/IMUL calculent     }
+ { reellement SF/ZF/PF a partir du produit, contrairement au vrai 8086/     }
+ { 8088 qui les laisse indetermines) et EmuCpuFlags386Plus (80386+ - les    }
+ { bits 12-14 d EFLAGS, IOPL/NT, deviennent reellement pilotables par le    }
+ { programme au lieu d etre forces par le CPU - voir Emu_ApplyFlagsReservedBits). }
+ EmuCpuIsNEC        : Boolean;
+ EmuCpuFlags386Plus : Boolean;
  EmuDiv0Div     : LongInt;  { divisor }
  EmuDiv0AX      : Word;
  EmuDiv0DX      : Word;
@@ -168966,6 +169018,29 @@ Begin
  End;
 End;
 
+{ "Type de processeur" (voir CPU_TYPE_* et Emu_ApplyCpuType) - distinct de }
+{ DosCPUVendorName (le fabricant rapporte par CPUID) : ceci est la        }
+{ GENERATION reelle du silicium emule, qui pilote les differences de      }
+{ comportement verifiables par un programme DOS (voir TESTS/DOSEMU/       }
+{ CPUDETECT.ASM) bien avant que CPUID n existe (486+). }
+Function DosCpuTypeName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  CPU_TYPE_8086:    DosCpuTypeName := '8086';
+  CPU_TYPE_8088:    DosCpuTypeName := '8088';
+  CPU_TYPE_80186:   DosCpuTypeName := '80186';
+  CPU_TYPE_NECV20:  DosCpuTypeName := 'NEC V20';
+  CPU_TYPE_NECV30:  DosCpuTypeName := 'NEC V30';
+  CPU_TYPE_80188:   DosCpuTypeName := '80188';
+  CPU_TYPE_80286:   DosCpuTypeName := '80286';
+  CPU_TYPE_80386:   DosCpuTypeName := '80386';
+  CPU_TYPE_80486:   DosCpuTypeName := '80486';
+  CPU_TYPE_PENTIUM: DosCpuTypeName := 'Pentium';
+ Else
+  DosCpuTypeName := '???';
+ End;
+End;
+
 { Empaquete 4 caracteres ASCII consecutifs de S (a partir de StartPos, 1-   }
 { indexe) en un LongInt petit-boutiste - ordre attendu par CPUID pour       }
 { charger EBX/EDX/ECX depuis une chaine de 12 caracteres. }
@@ -195900,9 +195975,46 @@ Begin
 End;
 
 { Initialiser la BIOS Data Area minimale a 0040:0000. }
+{ Positionne EmuCpu286Plus/EmuCpuIsNEC/EmuCpuFlags386Plus selon le "Type de }
+{ processeur" choisi (Options > Emulateur : DOS > Materiel, DosCpuType) -   }
+{ EmuCpu286Plus restait fige a True pour toute session DOS reelle (voir    }
+{ sa valeur par defaut dans Run) : seule /TESTUNIT le faisait varier selon }
+{ l architecture demandee. Appelee a chaque (re)demarrage d une session    }
+{ DOS (Emu_InitBDA) pour que le choix explicite de l utilisateur soit      }
+{ reellement applique, pas seulement affiche dans le dialogue Options. }
+Procedure Emu_ApplyCpuType(CpuType: Integer);
+Begin
+ EmuCpu286Plus := CpuType >= CPU_TYPE_80286;
+ EmuCpuIsNEC := (CpuType = CPU_TYPE_NECV20) Or (CpuType = CPU_TYPE_NECV30);
+ EmuCpuFlags386Plus := CpuType >= CPU_TYPE_80386;
+End;
+
+{ Bits reserves 12-15 de (E)FLAGS : 3 comportements materiels reels         }
+{ distincts, appliques a chaque restauration de FLAGS depuis la pile       }
+{ (POPF/POPFD, IRET/IRETD - voir Emu_StepOne $9D et $CF) - c est l une des }
+{ techniques de detection CPU les plus classiques (voir TESTS/DOSEMU/      }
+{ CPUDETECT.ASM) : pre-286 (8086/8088/NEC V20/V30/80186/80188) force ces   }
+{ bits a 1 quoi qu on y mette ; le 80286 reel (en mode reel) les force a 0 ;}
+{ le 80386+ rend les bits 12-13 (IOPL) et 14 (NT) reellement pilotables    }
+{ par le programme (bit 15 reste reserve a 1 dans les 3 cas 286+). }
+Procedure Emu_ApplyFlagsReservedBits(Var F: Word);
+Begin
+ If Not EmuCpu286Plus Then Begin
+  F := F Or $F000;
+  Exit;
+ End;
+ If EmuCpuFlags386Plus Then
+  F := F Or $8000
+ Else
+  F := F And $0FFF;
+End;
+
 Procedure Emu_InitBDA(Var P: TEmulatorPanel);
 Var I: Integer; EqLo: Byte; EqWord: Word; SerialCount, ParallelCount: Byte;
 Begin
+ { "Type de processeur" (DosCpuType) applique au tout debut de la session   }
+ { DOS, avant la moindre instruction emulee - voir Emu_ApplyCpuType. }
+ Emu_ApplyCpuType(OptionsDlg.Data.DosCpuType);
  { Etat machine ANSI.SYS remis a neuf pour cette session (voir             }
  { EmuVScr_AnsiFeed) - NE PAS confondre avec EmuVScr_Clear, qui efface      }
  { l ecran sur un ESC[2J du programme invite mais doit preserver les        }
@@ -196777,6 +196889,7 @@ Begin
      P.CPU.Segs.CS := Emu_PopWord(P.CPU);
      P.CPU.Flags.Base := Emu_PopWord(P.CPU);
     End;
+    Emu_ApplyFlagsReservedBits(P.CPU.Flags.Base);
    End;
   $B0..$B7: { MOV r8,imm8 }
    Begin
@@ -196800,6 +196913,18 @@ Begin
    Begin
     If P.CPU.OperandSize32 Then
      Emu_PushDWord(P.CPU, Emu_GetReg32(P.CPU, OpCode And 7))
+    Else If (OpCode And 7) = 4 Then Begin
+     { PUSH SP : technique de detection CPU classique (voir TESTS/DOSEMU/  }
+     { CPUDETECT.ASM) - le 8086/8088/NEC V20/V30/80186/80188 poussent la   }
+     { valeur de SP DEJA DECREMENTEE (celle qui sera realmente en memoire  }
+     { apres le push), alors que le 80286+ pousse l ANCIENNE valeur de SP  }
+     { (avant decrementation). Emu_PushWord decremente SP lui-meme : seule }
+     { la VALEUR ecrite differe ici, pas le decrement reel. }
+     If EmuCpu286Plus Then
+      Emu_PushWord(P.CPU, P.CPU.Regs.SP)
+     Else
+      Emu_PushWord(P.CPU, P.CPU.Regs.SP - 2);
+    End
     Else
      Emu_PushWord(P.CPU, Emu_GetReg16(P.CPU, OpCode And 7));
     Inc(P.CPU.IP);
@@ -197327,7 +197452,15 @@ Begin
            { coche, EAX=0 renvoie la chaine d identifiant a 12 caracteres    }
            { EXACTE (voir DosCPUVendorID12) correspondant au choix fait dans }
            { le menu deroulant "Identifiant CPU :" de cette meme page. }
-           If OptionsDlg.Data.DosCPUIDDetect Then Begin
+           { Gate supplementaire (2026-10-02, demande explicite de         }
+           { l utilisateur) : CPUID n existe reellement que sur 80486+     }
+           { (et Pentium+) - voir DOS_CPU_TYPE_COUNT/CPU_TYPE_*. Un         }
+           { programme qui l'execute sur un "Type de processeur" plus      }
+           { ancien doit voir ses registres rester inchanges, exactement   }
+           { comme le ferait un vrai 386/286/8086 (meme raisonnement deja  }
+           { documente plus haut pour la case "CPUID detecte" decochee). }
+           If OptionsDlg.Data.DosCPUIDDetect And
+              (OptionsDlg.Data.DosCpuType >= CPU_TYPE_80486) Then Begin
             Case P.CPU.Regs.EAX Of
              0: Begin
                  P.CPU.Regs.EAX := 1; { plus haute fonction standard geree }
@@ -197337,7 +197470,13 @@ Begin
                  P.CPU.Regs.ECX := DosPack4Chars(CpuVendStr, 9);
                 End;
              1: Begin
-                 P.CPU.Regs.EAX := $00000480; { famille 4 (486), modele 8 }
+                 { Famille/modele varie selon le "Type de processeur"      }
+                 { choisi (voir TESTS/DOSEMU/CPUDETECT.ASM qui decode le    }
+                 { nibble famille, bits 8-11 de EAX). }
+                 If OptionsDlg.Data.DosCpuType = CPU_TYPE_PENTIUM Then
+                  P.CPU.Regs.EAX := $00000520  { famille 5 (Pentium), modele 2 }
+                 Else
+                  P.CPU.Regs.EAX := $00000480; { famille 4 (486), modele 8 }
                  P.CPU.Regs.EBX := 0;
                  P.CPU.Regs.ECX := 0;
                  P.CPU.Regs.EDX := $00000001; { bit 0 = FPU integree presente }
@@ -197910,6 +198049,7 @@ Begin
    Begin
     If P.CPU.OperandSize32 Then P.CPU.Flags.Base := Word(Emu_PopDWord(P.CPU))
     Else P.CPU.Flags.Base := Emu_PopWord(P.CPU);
+    Emu_ApplyFlagsReservedBits(P.CPU.Flags.Base);
     Inc(P.CPU.IP);
    End;
   { BOGUE REEL (2026-08-24, trouve en verifiant le correctif HasSegOvr sur   }
@@ -199179,6 +199319,15 @@ Begin
           Exclude(P.CPU.Flags.s, EFG_CF);
           Exclude(P.CPU.Flags.s, EFG_OF);
          End;
+         { NEC V20/V30 (contrairement au vrai 8086/8088, qui laisse        }
+         { SF/ZF/PF indetermines apres MUL/IMUL) calculent reellement      }
+         { SF/ZF/PF a partir du produit - technique de detection voir      }
+         { TESTS/DOSEMU/CPUDETECT.ASM et EmuCpuIsNEC. }
+         If EmuCpuIsNEC Then Begin
+          Emu_SetZFW(P.CPU, P.CPU.Regs.AX);
+          Emu_SetSFW(P.CPU, P.CPU.Regs.AX);
+          Emu_SetPF(P.CPU, Byte(P.CPU.Regs.AX));
+         End;
         End;
      5: Begin { IMUL }
          P.CPU.Regs.AX :=
@@ -199189,6 +199338,11 @@ Begin
          End Else Begin
           Include(P.CPU.Flags.s, EFG_CF);
           Include(P.CPU.Flags.s, EFG_OF);
+         End;
+         If EmuCpuIsNEC Then Begin { voir le commentaire de MUL ci-dessus }
+          Emu_SetZFW(P.CPU, P.CPU.Regs.AX);
+          Emu_SetSFW(P.CPU, P.CPU.Regs.AX);
+          Emu_SetPF(P.CPU, Byte(P.CPU.Regs.AX));
          End;
         End;
      6: Begin { DIV }
@@ -199336,6 +199490,16 @@ Begin
            Exclude(P.CPU.Flags.s, EFG_CF);
            Exclude(P.CPU.Flags.s, EFG_OF);
           End;
+          { NEC V20/V30 : voir le commentaire equivalent pour MUL rm8 plus }
+          { haut - ZF/SF portent ici sur le produit DX:AX complet. }
+          If EmuCpuIsNEC Then Begin
+           If (P.CPU.Regs.AX = 0) And (P.CPU.Regs.DX = 0) Then
+            Include(P.CPU.Flags.s, EFG_ZF)
+           Else
+            Exclude(P.CPU.Flags.s, EFG_ZF);
+           Emu_SetSFW(P.CPU, P.CPU.Regs.DX);
+           Emu_SetPF(P.CPU, Byte(P.CPU.Regs.AX));
+          End;
          End;
       5: Begin { IMUL }
           MulRes := LongInt(SmallInt(P.CPU.Regs.AX))
@@ -199348,6 +199512,14 @@ Begin
           End Else Begin
            Include(P.CPU.Flags.s, EFG_CF);
            Include(P.CPU.Flags.s, EFG_OF);
+          End;
+          If EmuCpuIsNEC Then Begin { voir le commentaire de MUL ci-dessus }
+           If (P.CPU.Regs.AX = 0) And (P.CPU.Regs.DX = 0) Then
+            Include(P.CPU.Flags.s, EFG_ZF)
+           Else
+            Exclude(P.CPU.Flags.s, EFG_ZF);
+           Emu_SetSFW(P.CPU, P.CPU.Regs.DX);
+           Emu_SetPF(P.CPU, Byte(P.CPU.Regs.AX));
           End;
          End;
       6: Begin { DIV : DX:AX / rm16 }
@@ -220241,6 +220413,7 @@ Begin
  D.DosType := 1;
  D.DosCPUIDDetect := True;
  D.DosCPUVendor := 0;
+ D.DosCpuType := CPU_TYPE_80286;
  D.DosHardware := 2;
  D.DosVideo1 := 8;             { VGA }
  D.DosVideo2 := EMU_VID_NONE;  { un PC reel n a qu une seule carte video }
@@ -221192,6 +221365,8 @@ Var
         DosVideoName(ActualIdx), FG);
     10: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
         DosDiskInterfaceName(ActualIdx), FG);
+    11: DrawText(FX + OPT_LABEL_WIDTH + 4, ItemY + 2,
+        DosCpuTypeName(ActualIdx), FG);
    End;
   End;
   DrawRect(FX + OPT_LABEL_WIDTH, ListTop, ListRight, ListBottom - 1,
@@ -221240,6 +221415,8 @@ Begin
  Check(Dlg.Data.DosEmu8087, 'Emulation 8087 activee');           { Row 6 }
  Check(Dlg.Data.DosEmu80286, 'Emulation 80286');                 { Row 7 }
  Check(Dlg.Data.DosEmu80386, 'Emulation 80386');                 { Row 8 }
+ Dropdown('Type de processeur :',                                { Row 9 }
+  DosCpuTypeName(Dlg.Data.DosCpuType));
 
  Case Dlg.DosDropdownOpen Of
   2: OpenList(1, DOS_CPU_VENDOR_COUNT, Dlg.Data.DosCPUVendor);
@@ -221247,6 +221424,7 @@ Begin
   4: OpenList(3, DOS_VIDEO_COUNT, Dlg.Data.DosVideo1);
   5: OpenList(4, DOS_VIDEO_COUNT, Dlg.Data.DosVideo2);
   10: OpenList(5, DOS_DISK_IF_COUNT, Dlg.Data.DosDiskInterface);
+  11: OpenList(9, DOS_CPU_TYPE_COUNT, Dlg.Data.DosCpuType);
  End;
 End;
 
@@ -221964,6 +222142,7 @@ Var
    8: Dlg.Data.DosMouseVendor := NewIdx;
    9: Dlg.Data.DosMouseVersion := NewIdx;
    10: Dlg.Data.DosDiskInterface := NewIdx;
+   11: Dlg.Data.DosCpuType := NewIdx;
   End;
   Dlg.Modified := True;
  End;
@@ -221995,6 +222174,8 @@ Begin
       CurIdx := Dlg.Data.DosMouseVersion; End;
   10: Begin RowIdx := 5; Count := DOS_DISK_IF_COUNT;
       CurIdx := Dlg.Data.DosDiskInterface; End;
+  11: Begin RowIdx := 9; Count := DOS_CPU_TYPE_COUNT;
+      CurIdx := Dlg.Data.DosCpuType; End;
   Else Begin Dlg.DosDropdownOpen := 0; Exit; End;
  End;
  { LabelW doit rester synchronise avec DrawOptionsEmuDOSOS (Dropdown/       }
@@ -222317,6 +222498,7 @@ Begin
         Dlg.Data.DosEmu80386 := Not Dlg.Data.DosEmu80386;
         Dlg.Modified := True;
        End;
+       9: Dlg.DosDropdownOpen := 11; { Type de processeur }
       End;
      OC_EMU_DOS_OS:
       Case FieldIdx Of
@@ -222592,6 +222774,8 @@ Begin
  WriteCfgLine(F, 'DosCPUIDDetect', BoolToStr(Data.DosCPUIDDetect));
  Str(Data.DosCPUVendor, S);
  WriteCfgLine(F, 'DosCPUVendor', S);
+ Str(Data.DosCpuType, S);
+ WriteCfgLine(F, 'DosCpuType', S);
  Str(Data.DosHardware, S);
  WriteCfgLine(F, 'DosHardware', S);
  Str(Data.DosVideo1, S);
@@ -222760,6 +222944,13 @@ Begin
    If (Code <> 0) Or (Data.DosCPUVendor < 0) Or
       (Data.DosCPUVendor >= DOS_CPU_VENDOR_COUNT) Then
     Data.DosCPUVendor := 0;
+  End
+  Else If Key = 'DosCpuType' Then
+  Begin
+   Val(Value, Data.DosCpuType, Code);
+   If (Code <> 0) Or (Data.DosCpuType < 0) Or
+      (Data.DosCpuType >= DOS_CPU_TYPE_COUNT) Then
+    Data.DosCpuType := CPU_TYPE_80286;
   End
   Else If Key = 'DosHardware' Then
   Begin
