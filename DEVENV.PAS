@@ -13654,6 +13654,8 @@ Procedure HandleVirtAddDiskDialogEvent(Var Dlg: TVirtAddDiskDialog;
  Var Ev: TEvent); Forward;
 Function Emu_MountDiskSlot(Idx: Byte; FName: String): Boolean; Forward;
 Procedure Emu_UnmountDiskSlot(Idx: Byte); Forward;
+Function Emu_BuildKernelDosImage(FolderPath, ImagePath, IoSysName, MsDosName: TString;
+ Var ErrMsg: TString): Boolean; Forward;
 Procedure Emu_CdromOpenOne(Idx: Byte; FName: String); Forward;
 Procedure Emu_CdromAssignDriveLetters; Forward;
 { Emu_PktInit a deja un Forward plus haut (~ligne 10913, crochet            }
@@ -89730,6 +89732,84 @@ Begin
  CreateEmulatorBootTab(Idx, DispName);
 End;
 
+{ --- START-KERNELDOS (2026-10-03, demande explicite de l'utilisateur) :    }
+{ construit une image disque FAT16 FRAICHE a partir d'un simple dossier    }
+{ Windows (IO.SYS/MSDOS.SYS/COMMAND.COM/CONFIG.SYS/pilotes comme            }
+{ HIMEM.SYS/AUTOEXEC.BAT), la monte sur le lecteur C: (emplacement 2,       }
+{ DISK80) et l'amorce REELLEMENT (meme pipeline que BOOT : Emu_LoadBootSector}
+{ + CreateEmulatorBootTab, aucun raccourci) - pensee pour tester un noyau   }
+{ MS-DOS tout juste recompile (ex: depuis les VRAIES sources MS-DOS 6.0     }
+{ deja exploitees cette session) sans avoir a maintenir un VHD a part :     }
+{ l'image est reconstruite a l'identique du dossier a CHAQUE appel, donc    }
+{ TOUJOURS exactement les fichiers qui s'y trouvent - elimine le risque     }
+{ d'enqueter sur un disque dont le contenu exact n'est plus certain.        }
+{                                                                            }
+{ PORTEE ACTUELLE (v1), a etendre au besoin (l'utilisateur a explicitement  }
+{ anticipe que des parametres supplementaires seraient necessaires) :       }
+{  - Racine du dossier SEULEMENT, pas de sous-dossiers - CONFIG.SYS doit    }
+{    donc referencer ses pilotes SANS chemin (ex: "DEVICE=HIMEM.SYS", pas   }
+{    "DEVICE=C:\DOS\HIMEM.SYS") puisque tout vit a la racine de l'image.    }
+{  - Noms de fichiers deja en 8.3 (le cas normal pour un noyau DOS d'epoque)}
+{  - Image fixe a 64 Mo (voir KDOS_TOTAL_SECTORS) - largement suffisant     }
+{    pour un noyau DOS 6.x + quelques pilotes + CONFIG.SYS/AUTOEXEC.BAT.    }
+Procedure TermCmd_StartKernelDos(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ UpParams: String;
+ FlagPos: Integer;
+ FolderPath, ImagePath, IoSysName, MsDosName: TString;
+ ErrMsg: TString;
+Begin
+ UpParams := TermStrToUpper(ParamStr);
+ FolderPath := '';
+ FlagPos := System.Pos('-PATH', UpParams);
+ If FlagPos > 0 Then
+  FolderPath := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 5, Length(ParamStr)), 1));
+ If FolderPath = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Start-KernelDos -Path dossier [-IoSys fichier] ' +
+   '[-MsDos fichier] [-ImagePath fichier.img]');
+  TermAddLine(TP, '  -Path dossier contenant IO.SYS, MSDOS.SYS, CONFIG.SYS, ' +
+   'COMMAND.COM et les pilotes (HIMEM.SYS, etc.), tous a la racine.');
+  Exit;
+ End;
+ If Not DirectoryExists(FolderPath) Then Begin
+  TermAddLine(TP, 'Start-KernelDos : dossier introuvable : ' + FolderPath);
+  Exit;
+ End;
+
+ { -IoSys/-MsDos : noms de fichiers par defaut IO.SYS/MSDOS.SYS, mais        }
+ { surchargeables (ex: une build OAK/BASE du noyau 6.0 peut produire des     }
+ { noms differents - voir dos\makefile, cibles $(dest)/$(dest2)). }
+ IoSysName := 'IO.SYS';
+ FlagPos := System.Pos('-IOSYS', UpParams);
+ If FlagPos > 0 Then
+  IoSysName := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1));
+ MsDosName := 'MSDOS.SYS';
+ FlagPos := System.Pos('-MSDOS', UpParams);
+ If FlagPos > 0 Then
+  MsDosName := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 6, Length(ParamStr)), 1));
+
+ ImagePath := '';
+ FlagPos := System.Pos('-IMAGEPATH', UpParams);
+ If FlagPos > 0 Then
+  ImagePath := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 10, Length(ParamStr)), 1));
+ If ImagePath = '' Then
+  ImagePath := GetEnv('TEMP') + '\KERNELDOS.IMG';
+
+ TermAddLine(TP, 'Start-KernelDos : construction de l''image depuis ' + FolderPath + ' ...');
+ If Not Emu_BuildKernelDosImage(FolderPath, ImagePath, IoSysName, MsDosName, ErrMsg) Then Begin
+  TermAddLine(TP, 'Start-KernelDos : echec de construction de l''image - ' + ErrMsg);
+  Exit;
+ End;
+ TermAddLine(TP, 'Start-KernelDos : image ecrite dans ' + ImagePath + '.');
+
+ If Not Emu_MountDiskSlot(2, ImagePath) Then Begin
+  TermAddLine(TP, 'Start-KernelDos : echec du montage de ' + ImagePath + ' sur C:.');
+  Exit;
+ End;
+ TermAddLine(TP, 'Start-KernelDos : amorcage de C: ...');
+ CreateEmulatorBootTab(2, 'C:');
+End;
+
 { --- NES : lance directement l emulateur Nintendo NES integre sur une     }
 { ROM tapee par son nom, depuis le Terminal (2026-08-29, demande           }
 { explicite de l utilisateur : "taper NES fichier dans Invite de           }
@@ -158679,7 +158759,7 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 260;
+ PS_CMD_ALIASES = 261;
  PSCmd: Array[1..PS_CMD_ALIASES] Of Record
   Name: String[45];
   ID: Byte;
@@ -158924,6 +159004,7 @@ Const
   (Name:'START-CRAY1PROGRAM'; ID:228),
   (Name:'START-DOSPROGRAM'; ID:59),
   (Name:'START-GEOWORKSPROGRAM'; ID:235),
+  (Name:'START-KERNELDOS'; ID:239),
   (Name:'START-LINUXPROGRAM'; ID:79),
   (Name:'START-NESPROGRAM'; ID:78),
   (Name:'START-OS9PROGRAM'; ID:226),
@@ -159734,6 +159815,7 @@ Begin
     78: TermCmd_StartNesProgram(TP, ParamStr);       { START-NESPROGRAM }
     79: TermCmd_StartLinuxProgram(TP, ParamStr);      { START-LINUXPROGRAM }
     226: TermCmd_StartOS9Program(TP, ParamStr);       { START-OS9PROGRAM }
+    239: TermCmd_StartKernelDos(TP, ParamStr);         { START-KERNELDOS }
     { Start-Win32Program/Start-Win32Application (2026-09-11, demande        }
     { explicite) - meme handler TermCmd_Win32Launch pour les 2 alias. }
     227: TermCmd_Win32Launch(TP, ParamStr);      { START-WIN32PROGRAM/APPLICATION }
@@ -189282,6 +189364,348 @@ End;
 { Synchroniser Opts.DiskImgN avec l emplacement Idx, pour rester
   coherent avec les parametres /DISK0:/DISK1:/DISK80:/DISK81: passes
   en ligne de commande. }
+{ ============================================================
+  START-KERNELDOS (2026-10-03, demande explicite de l'utilisateur) :
+  construit une image disque FAT16 FRAICHE a partir d'un simple dossier
+  Windows (IO.SYS/MSDOS.SYS/COMMAND.COM/CONFIG.SYS/pilotes), pour pouvoir
+  amorcer un noyau MS-DOS tout juste recompile (ex: depuis les sources
+  MS-DOS 6.0 reelles) SANS avoir a maintenir un VHD a part - l'image est
+  reconstruite a l'identique du dossier a CHAQUE appel, eliminant le risque
+  d'enqueter sur un disque dont le contenu exact n'est plus certain.
+
+  Le MBR et le secteur de boot (VBR) ci-dessous sont des copies BYTE PAR
+  BYTE, deja VERIFIEES cette session (desassemblage complet via DISSYS.PAS)
+  du VRAI MBR/VBR du VHD "MS-DOS 6.22.vhd" deja utilise dans ce projet -
+  du code MS-DOS generique et bien documente (cherche "IO      SYS" puis
+  "MSDOS   SYS" comme 2 PREMIERES entrees du repertoire racine, dans cet
+  ordre, les charge de facon CONTIGUE a 0070:0000, et y saute) : reutiliser
+  ces octets EXACTS (au lieu d'ecrire un nouveau secteur de boot a la main)
+  minimise le risque d'introduire un bogue dans le tout premier code qui
+  s'execute. SEULS les champs du BPB (taille/geometrie) et l'entree de
+  table de partitions du MBR sont adaptes a la nouvelle image - le CODE
+  (bootstrap) reste identique a l'original, exactement comme le ferait un
+  vrai FORMAT.COM sur un disque different. }
+
+Const KDOS_MBR_TEMPLATE : Array[0..511] Of Byte = (
+ $FA,$33,$C0,$8E,$D0,$BC,$00,$7C,$8B,$F4,$50,$07,$50,$1F,$FB,$FC,
+ $BF,$00,$06,$B9,$00,$01,$F2,$A5,$EA,$1D,$06,$00,$00,$BE,$BE,$07,
+ $B3,$04,$80,$3C,$80,$74,$0E,$80,$3C,$00,$75,$1C,$83,$C6,$10,$FE,
+ $CB,$75,$EF,$CD,$18,$8B,$14,$8B,$4C,$02,$8B,$EE,$83,$C6,$10,$FE,
+ $CB,$74,$1A,$80,$3C,$00,$74,$F4,$BE,$8B,$06,$AC,$3C,$00,$74,$0B,
+ $56,$BB,$07,$00,$B4,$0E,$CD,$10,$5E,$EB,$F0,$EB,$FE,$BF,$05,$00,
+ $BB,$00,$7C,$B8,$01,$02,$57,$CD,$13,$5F,$73,$0C,$33,$C0,$CD,$13,
+ $4F,$75,$ED,$BE,$A3,$06,$EB,$D3,$BE,$C2,$06,$BF,$FE,$7D,$81,$3D,
+ $55,$AA,$75,$C7,$8B,$F5,$EA,$00,$7C,$00,$00,$49,$6E,$76,$61,$6C,
+ $69,$64,$20,$70,$61,$72,$74,$69,$74,$69,$6F,$6E,$20,$74,$61,$62,
+ $6C,$65,$00,$45,$72,$72,$6F,$72,$20,$6C,$6F,$61,$64,$69,$6E,$67,
+ $20,$6F,$70,$65,$72,$61,$74,$69,$6E,$67,$20,$73,$79,$73,$74,$65,
+ $6D,$00,$4D,$69,$73,$73,$69,$6E,$67,$20,$6F,$70,$65,$72,$61,$74,
+ $69,$6E,$67,$20,$73,$79,$73,$74,$65,$6D,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$80,$01,
+ $01,$00,$06,$7F,$BF,$06,$3F,$00,$00,$00,$41,$DC,$3F,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,
+ $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$55,$AA
+);
+
+Const KDOS_VBR_TEMPLATE : Array[0..511] Of Byte = (
+ $EB,$3C,$90,$4D,$53,$44,$4F,$53,$35,$2E,$30,$00,$02,$40,$01,$00,
+ $02,$00,$02,$00,$00,$F8,$00,$01,$3F,$00,$80,$00,$3F,$00,$00,$00,
+ $41,$DC,$3F,$00,$80,$00,$29,$8A,$85,$17,$3B,$4E,$4F,$20,$4E,$41,
+ $4D,$45,$20,$20,$20,$20,$46,$41,$54,$31,$36,$20,$20,$20,$FA,$33,
+ $C0,$8E,$D0,$BC,$00,$7C,$16,$07,$BB,$78,$00,$36,$C5,$37,$1E,$56,
+ $16,$53,$BF,$3E,$7C,$B9,$0B,$00,$FC,$F3,$A4,$06,$1F,$C6,$45,$FE,
+ $0F,$8B,$0E,$18,$7C,$88,$4D,$F9,$89,$47,$02,$C7,$07,$3E,$7C,$FB,
+ $CD,$13,$72,$79,$33,$C0,$39,$06,$13,$7C,$74,$08,$8B,$0E,$13,$7C,
+ $89,$0E,$20,$7C,$A0,$10,$7C,$F7,$26,$16,$7C,$03,$06,$1C,$7C,$13,
+ $16,$1E,$7C,$03,$06,$0E,$7C,$83,$D2,$00,$A3,$50,$7C,$89,$16,$52,
+ $7C,$A3,$49,$7C,$89,$16,$4B,$7C,$B8,$20,$00,$F7,$26,$11,$7C,$8B,
+ $1E,$0B,$7C,$03,$C3,$48,$F7,$F3,$01,$06,$49,$7C,$83,$16,$4B,$7C,
+ $00,$BB,$00,$05,$8B,$16,$52,$7C,$A1,$50,$7C,$E8,$92,$00,$72,$1D,
+ $B0,$01,$E8,$AC,$00,$72,$16,$8B,$FB,$B9,$0B,$00,$BE,$E0,$7D,$F3,
+ $A6,$75,$0A,$8D,$7F,$20,$B9,$0B,$00,$F3,$A6,$74,$18,$BE,$9E,$7D,
+ $E8,$5F,$00,$33,$C0,$CD,$16,$5E,$1F,$8F,$04,$8F,$44,$02,$CD,$19,
+ $58,$58,$58,$EB,$E8,$8B,$47,$1A,$48,$48,$8A,$1E,$0D,$7C,$32,$FF,
+ $F7,$E3,$03,$06,$49,$7C,$13,$16,$4B,$7C,$BB,$00,$07,$B9,$03,$00,
+ $50,$52,$51,$E8,$3A,$00,$72,$D8,$B0,$01,$E8,$54,$00,$59,$5A,$58,
+ $72,$BB,$05,$01,$00,$83,$D2,$00,$03,$1E,$0B,$7C,$E2,$E2,$8A,$2E,
+ $15,$7C,$8A,$16,$24,$7C,$8B,$1E,$49,$7C,$A1,$4B,$7C,$EA,$00,$00,
+ $70,$00,$AC,$0A,$C0,$74,$29,$B4,$0E,$BB,$07,$00,$CD,$10,$EB,$F2,
+ $3B,$16,$18,$7C,$73,$19,$F7,$36,$18,$7C,$FE,$C2,$88,$16,$4F,$7C,
+ $33,$D2,$F7,$36,$1A,$7C,$88,$16,$25,$7C,$A3,$4D,$7C,$F8,$C3,$F9,
+ $C3,$B4,$02,$8B,$16,$4D,$7C,$B1,$06,$D2,$E6,$0A,$36,$4F,$7C,$8B,
+ $CA,$86,$E9,$8A,$16,$24,$7C,$8A,$36,$25,$7C,$CD,$13,$C3,$0D,$0A,
+ $44,$69,$73,$71,$75,$65,$20,$6E,$6F,$6E,$2D,$73,$79,$73,$74,$8A,
+ $6D,$65,$2F,$65,$72,$72,$65,$75,$72,$20,$64,$69,$73,$71,$75,$65,
+ $0D,$0A,$52,$65,$6D,$70,$6C,$61,$63,$65,$7A,$20,$65,$74,$20,$70,
+ $72,$65,$73,$73,$65,$7A,$20,$74,$6F,$75,$63,$68,$65,$0D,$0A,$00,
+ $49,$4F,$20,$20,$20,$20,$20,$20,$53,$59,$53,$4D,$53,$44,$4F,$53,
+ $20,$20,$20,$53,$59,$53,$00,$00,$00,$00,$00,$00,$00,$00,$55,$AA
+);
+
+Const
+ { Geometrie FAT16 calculee et verifiee pour une image de 64 Mo (ample pour
+   IO.SYS+MSDOS.SYS+COMMAND.COM+CONFIG.SYS+AUTOEXEC.BAT+plusieurs pilotes) :
+   131072 secteurs totaux, partition demarrant a LBA 63 (meme convention que
+   le VHD deja utilise), grappes de 4 secteurs (2 Ko) donnant 32695 grappes -
+   confortablement dans la plage FAT16 valide (4085-65524), loin de
+   l'ambiguite FAT12/FAT16 des disques plus petits. }
+ KDOS_TOTAL_SECTORS    = 131072;
+ KDOS_PART_START_LBA   = 63;
+ KDOS_PART_SECTORS     = KDOS_TOTAL_SECTORS - KDOS_PART_START_LBA;
+ KDOS_BYTES_PER_SECTOR = 512;
+ KDOS_SPC              = 4;
+ KDOS_RESERVED_SECS    = 1;
+ KDOS_NUM_FATS         = 2;
+ KDOS_ROOT_ENTRIES     = 512;
+ KDOS_ROOT_DIR_SECS    = (KDOS_ROOT_ENTRIES * 32) Div KDOS_BYTES_PER_SECTOR;
+ KDOS_SECS_PER_FAT     = 128;
+ KDOS_DATA_START_REL   = KDOS_RESERVED_SECS + (KDOS_NUM_FATS * KDOS_SECS_PER_FAT) + KDOS_ROOT_DIR_SECS;
+ KDOS_MAX_FILES        = 128;
+
+Type
+ TKdosFileEntry = Record
+  FName8    : Array[0..7] Of Byte;
+  FExt3     : Array[0..2] Of Byte;
+  FSize     : LongInt;
+  FStartClu : Word;
+  FNumClu   : Word;
+  FAttr     : Byte;
+ End;
+
+{ Decoupe un nom de fichier DOS classique ("CONFIG.SYS") en 8.3 majuscule,
+  complete d'espaces - les fichiers d'un noyau DOS d'epoque sont deja
+  conformes a cette convention, aucune translation "nom long" necessaire. }
+Procedure Kdos_SplitName(FName: TString; Var Name8: Array Of Byte; Var Ext3: Array Of Byte);
+Var I, P: Integer; Base, Ext: TString;
+Begin
+ For I := 0 To 7 Do Name8[I] := 32;
+ For I := 0 To 2 Do Ext3[I] := 32;
+ P := Pos('.', FName);
+ If P > 0 Then Begin
+  Base := Copy(FName, 1, P - 1);
+  Ext  := Copy(FName, P + 1, Length(FName) - P);
+ End Else Begin
+  Base := FName;
+  Ext  := '';
+ End;
+ If Length(Base) > 8 Then Base := Copy(Base, 1, 8);
+ If Length(Ext) > 3 Then Ext := Copy(Ext, 1, 3);
+ For I := 1 To Length(Base) Do Name8[I-1] := Ord(UpCase(Base[I]));
+ For I := 1 To Length(Ext) Do Ext3[I-1] := Ord(UpCase(Ext[I]));
+End;
+
+{ Construit une image disque FAT16 de KDOS_TOTAL_SECTORS secteurs a
+  ImagePath, contenant tous les fichiers (racine seule, pas de
+  sous-dossiers - voir le commentaire de TermCmd_StartKernelDos) du dossier
+  FolderPath. IoSysName/MsDosName DOIVENT exister dans ce dossier et
+  deviennent, DANS CET ORDRE, les 2 premieres entrees du repertoire racine
+  (convention de boot exigee par KDOS_VBR_TEMPLATE, voir plus haut). }
+Function Emu_BuildKernelDosImage(FolderPath, ImagePath, IoSysName, MsDosName: TString;
+ Var ErrMsg: TString): Boolean;
+Var
+ Files: Array[0..KDOS_MAX_FILES-1] Of TKdosFileEntry;
+ FNames: Array[0..KDOS_MAX_FILES-1] Of TString;
+ FileCnt, I, J: Integer;
+ IoIdx, MsIdx: Integer;
+ SR: SearchRec;
+ NextClu: Word;
+ Mbr, Vbr: Array[0..511] Of Byte;
+ Fat: Array[0..(KDOS_SECS_PER_FAT * KDOS_BYTES_PER_SECTOR) Div 2 - 1] Of Word;
+ RootDir: Array[0..(KDOS_ROOT_DIR_SECS * KDOS_BYTES_PER_SECTOR) - 1] Of Byte;
+ F: File;
+ ZeroBuf: Array[0..KDOS_BYTES_PER_SECTOR-1] Of Byte;
+ Tmp: TKdosFileEntry; TmpName: TString;
+ CluNeeded: LongInt;
+ SrcF: File;
+ BytesRead: LongWord;
+ DataOfs, FileOfsInImage: Int64;
+ CopyBuf: Array[0..65535] Of Byte;
+ ChsStart, ChsEnd: Array[0..2] Of Byte;
+ Cyl, Hd, Sc: LongInt;
+Begin
+ Emu_BuildKernelDosImage := False;
+ ErrMsg := '';
+ If FolderPath[Length(FolderPath)] <> '\' Then FolderPath := FolderPath + '\';
+
+ { --- Enumeration des fichiers (racine seule, voir commentaire plus haut) --- }
+ FileCnt := 0;
+ FindFirst(FolderPath + '*.*', AnyFile, SR);
+ While DosError = 0 Do Begin
+  If ((SR.Attr And Directory) = 0) And (SR.Name <> '.') And (SR.Name <> '..') Then Begin
+   If FileCnt >= KDOS_MAX_FILES Then Begin
+    ErrMsg := 'trop de fichiers dans ' + FolderPath + ' (limite ' + IntToStr(KDOS_MAX_FILES) + ')';
+    Exit;
+   End;
+   FNames[FileCnt] := SR.Name;
+   FillChar(Files[FileCnt], SizeOf(TKdosFileEntry), 0);
+   Files[FileCnt].FSize := SR.Size;
+   Kdos_SplitName(SR.Name, Files[FileCnt].FName8, Files[FileCnt].FExt3);
+   Inc(FileCnt);
+  End;
+  FindNext(SR);
+ End;
+
+ { --- IO.SYS et MSDOS.SYS DOIVENT etre les entrees 0 et 1, dans cet ordre --- }
+ IoIdx := -1; MsIdx := -1;
+ For I := 0 To FileCnt - 1 Do Begin
+  If UpCaseStr(FNames[I]) = UpCaseStr(IoSysName) Then IoIdx := I;
+  If UpCaseStr(FNames[I]) = UpCaseStr(MsDosName) Then MsIdx := I;
+ End;
+ If IoIdx < 0 Then Begin ErrMsg := IoSysName + ' introuvable dans ' + FolderPath; Exit; End;
+ If MsIdx < 0 Then Begin ErrMsg := MsDosName + ' introuvable dans ' + FolderPath; Exit; End;
+ If IoIdx <> 0 Then Begin
+  Tmp := Files[0]; Files[0] := Files[IoIdx]; Files[IoIdx] := Tmp;
+  TmpName := FNames[0]; FNames[0] := FNames[IoIdx]; FNames[IoIdx] := TmpName;
+  If MsIdx = 0 Then MsIdx := IoIdx;
+ End;
+ If MsIdx <> 1 Then Begin
+  Tmp := Files[1]; Files[1] := Files[MsIdx]; Files[MsIdx] := Tmp;
+  TmpName := FNames[1]; FNames[1] := FNames[MsIdx]; FNames[MsIdx] := TmpName;
+ End;
+ { IO.SYS/MSDOS.SYS : cache+systeme+lecture-seule, comme un vrai noyau DOS }
+ Files[0].FAttr := $07;
+ Files[1].FAttr := $07;
+ For I := 2 To FileCnt - 1 Do Files[I].FAttr := $20; { Archive, fichiers ordinaires }
+
+ { --- Allocation des grappes (chainage simplement contigu, image fraiche) --- }
+ FillChar(Fat, SizeOf(Fat), 0);
+ NextClu := 2;
+ For I := 0 To FileCnt - 1 Do Begin
+  CluNeeded := (Files[I].FSize + (KDOS_SPC * KDOS_BYTES_PER_SECTOR) - 1) Div (KDOS_SPC * KDOS_BYTES_PER_SECTOR);
+  If CluNeeded < 1 Then CluNeeded := 1; { meme un fichier de 0 octet occupe 1 grappe }
+  If LongInt(NextClu) + CluNeeded > KDOS_MAX_FILES * 2048 Then Begin
+   ErrMsg := 'image trop petite pour ' + FNames[I];
+   Exit;
+  End;
+  Files[I].FStartClu := NextClu;
+  Files[I].FNumClu := Word(CluNeeded);
+  For J := 0 To CluNeeded - 2 Do
+   Fat[NextClu + J] := Word(NextClu + J + 1);
+  Fat[NextClu + CluNeeded - 1] := $FFFF; { fin de chaine }
+  Inc(NextClu, CluNeeded);
+ End;
+ If LongInt(NextClu) - 2 > KDOS_PART_SECTORS Div KDOS_SPC Then Begin
+  ErrMsg := 'contenu de ' + FolderPath + ' trop volumineux pour l''image (64 Mo)';
+  Exit;
+ End;
+
+ { --- Repertoire racine --- }
+ FillChar(RootDir, SizeOf(RootDir), 0);
+ For I := 0 To FileCnt - 1 Do Begin
+  Move(Files[I].FName8, RootDir[I*32], 8);
+  Move(Files[I].FExt3, RootDir[I*32+8], 3);
+  RootDir[I*32+11] := Files[I].FAttr;
+  RootDir[I*32+26] := Byte(Files[I].FStartClu And $FF);
+  RootDir[I*32+27] := Byte((Files[I].FStartClu Shr 8) And $FF);
+  RootDir[I*32+28] := Byte(Files[I].FSize And $FF);
+  RootDir[I*32+29] := Byte((Files[I].FSize Shr 8) And $FF);
+  RootDir[I*32+30] := Byte((Files[I].FSize Shr 16) And $FF);
+  RootDir[I*32+31] := Byte((Files[I].FSize Shr 24) And $FF);
+ End;
+
+ { --- MBR : copie du modele reel, SEULE l'entree de partition #0 change --- }
+ Move(KDOS_MBR_TEMPLATE, Mbr, 512);
+ { CHS de depart/fin (champ legue, calcule pour rester plausible - la
+   lecture reelle se fait par LBA, voir Emu_ImageReadSector) }
+ Cyl := KDOS_PART_START_LBA Div (63 * 128); Hd := (KDOS_PART_START_LBA Div 63) Mod 128; Sc := (KDOS_PART_START_LBA Mod 63) + 1;
+ ChsStart[0] := Byte(Hd); ChsStart[1] := Byte(((Cyl Shr 8) Shl 6) Or Sc); ChsStart[2] := Byte(Cyl And $FF);
+ Cyl := (KDOS_TOTAL_SECTORS-1) Div (63 * 128); Hd := ((KDOS_TOTAL_SECTORS-1) Div 63) Mod 128; Sc := ((KDOS_TOTAL_SECTORS-1) Mod 63) + 1;
+ ChsEnd[0] := Byte(Hd); ChsEnd[1] := Byte(((Cyl Shr 8) Shl 6) Or Sc); ChsEnd[2] := Byte(Cyl And $FF);
+ Mbr[$1BE] := $80; { actif }
+ Mbr[$1BF] := ChsStart[0]; Mbr[$1C0] := ChsStart[1]; Mbr[$1C1] := ChsStart[2];
+ Mbr[$1C2] := $06; { FAT16 }
+ Mbr[$1C3] := ChsEnd[0]; Mbr[$1C4] := ChsEnd[1]; Mbr[$1C5] := ChsEnd[2];
+ Mbr[$1C6] := Byte(KDOS_PART_START_LBA And $FF);
+ Mbr[$1C7] := Byte((KDOS_PART_START_LBA Shr 8) And $FF);
+ Mbr[$1C8] := Byte((KDOS_PART_START_LBA Shr 16) And $FF);
+ Mbr[$1C9] := Byte((KDOS_PART_START_LBA Shr 24) And $FF);
+ Mbr[$1CA] := Byte(KDOS_PART_SECTORS And $FF);
+ Mbr[$1CB] := Byte((KDOS_PART_SECTORS Shr 8) And $FF);
+ Mbr[$1CC] := Byte((KDOS_PART_SECTORS Shr 16) And $FF);
+ Mbr[$1CD] := Byte((KDOS_PART_SECTORS Shr 24) And $FF);
+
+ { --- VBR : copie du modele reel, SEULS les champs BPB de taille/geometrie
+   changent (code de bootstrap intact) --- }
+ Move(KDOS_VBR_TEMPLATE, Vbr, 512);
+ Vbr[11] := Byte(KDOS_BYTES_PER_SECTOR And $FF); Vbr[12] := Byte((KDOS_BYTES_PER_SECTOR Shr 8) And $FF);
+ Vbr[13] := KDOS_SPC;
+ Vbr[14] := Byte(KDOS_RESERVED_SECS And $FF); Vbr[15] := Byte((KDOS_RESERVED_SECS Shr 8) And $FF);
+ Vbr[16] := KDOS_NUM_FATS;
+ Vbr[17] := Byte(KDOS_ROOT_ENTRIES And $FF); Vbr[18] := Byte((KDOS_ROOT_ENTRIES Shr 8) And $FF);
+ Vbr[19] := 0; Vbr[20] := 0; { TotalSectors16 = 0, on utilise le champ 32 bits }
+ Vbr[22] := Byte(KDOS_SECS_PER_FAT And $FF); Vbr[23] := Byte((KDOS_SECS_PER_FAT Shr 8) And $FF);
+ Vbr[28] := Byte(KDOS_PART_START_LBA And $FF); Vbr[29] := Byte((KDOS_PART_START_LBA Shr 8) And $FF);
+ Vbr[30] := 0; Vbr[31] := 0;
+ Vbr[32] := Byte(KDOS_PART_SECTORS And $FF);
+ Vbr[33] := Byte((KDOS_PART_SECTORS Shr 8) And $FF);
+ Vbr[34] := Byte((KDOS_PART_SECTORS Shr 16) And $FF);
+ Vbr[35] := Byte((KDOS_PART_SECTORS Shr 24) And $FF);
+
+ { --- Ecriture de l'image sur disque --- }
+ {$I-}
+ Assign(F, ImagePath);
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  ErrMsg := 'impossible de creer ' + ImagePath;
+  Exit;
+ End;
+ FillChar(ZeroBuf, SizeOf(ZeroBuf), 0);
+ BlockWrite(F, Mbr, 512);
+ For I := 1 To KDOS_PART_START_LBA - 1 Do BlockWrite(F, ZeroBuf, 512); { alignement avant la partition }
+ BlockWrite(F, Vbr, 512);
+ For I := 0 To KDOS_NUM_FATS - 1 Do
+  BlockWrite(F, Fat, SizeOf(Fat));
+ BlockWrite(F, RootDir, SizeOf(RootDir));
+
+ { Zone de donnees : chaque fichier a l'offset de SA grappe de depart. }
+ DataOfs := (Int64(KDOS_PART_START_LBA) + KDOS_DATA_START_REL) * KDOS_BYTES_PER_SECTOR;
+ For I := 0 To FileCnt - 1 Do Begin
+  FileOfsInImage := DataOfs + (Int64(Files[I].FStartClu - 2) * KDOS_SPC * KDOS_BYTES_PER_SECTOR);
+  Seek(F, FileOfsInImage);
+  {$I-}
+  Assign(SrcF, FolderPath + FNames[I]);
+  Reset(SrcF, 1);
+  {$I+}
+  If IOResult <> 0 Then Begin
+   Close(F);
+   ErrMsg := 'impossible de lire ' + FNames[I];
+   Exit;
+  End;
+  Repeat
+   BlockRead(SrcF, CopyBuf, SizeOf(CopyBuf), BytesRead);
+   If BytesRead > 0 Then BlockWrite(F, CopyBuf, BytesRead);
+  Until BytesRead = 0;
+  Close(SrcF);
+ End;
+
+ { Etend le fichier a la taille totale exacte de l'image (secteur final a
+   zero si aucun fichier n'y atteint deja). }
+ Seek(F, Int64(KDOS_TOTAL_SECTORS) * KDOS_BYTES_PER_SECTOR - 1);
+ BlockWrite(F, ZeroBuf, 1);
+ Close(F);
+ If IOResult <> 0 Then Begin
+  ErrMsg := 'erreur d''ecriture sur ' + ImagePath;
+  Exit;
+ End;
+
+ Emu_BuildKernelDosImage := True;
+End;
+
 Procedure Emu_SetDiskOpt(Idx: Byte; FName: String);
 Begin
  Case Idx Of
