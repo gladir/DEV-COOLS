@@ -188757,11 +188757,31 @@ Begin
  { ci-dessus, et Open est de toute facon mis a True inconditionnellement   }
  { a la fin de cette procedure. }
  EmuFloppyOpen[Idx] := True;
+ { BOGUE REEL (2026-10-02, rapporte par l'utilisateur - amorcage d'un vrai
+   VHD Windows 95 de VirtualBox plantait en division par zero apres 1437
+   instructions) : ce repli ">500 Mo -> Heads=255" s'executait de facon
+   INCONDITIONNELLE, ECRASANT la geometrie REELLE que Emu_DetectHardDiskGeometry
+   venait pourtant de lire CORRECTEMENT depuis le VBR/BPB du disque (ligne
+   juste au-dessus) des que le disque depassait 500 Mo - ce qui est le cas de
+   la quasi-totalite des disques durs reels. Diagnostic complet (EMUDIAG.LOG/
+   EMUINT13.LOG + trace instruction par instruction) : le code invite (MS-DOS/
+   IO.SYS) lisait la VRAIE geometrie (Heads=128 sur ce VHD de ~2 Go, valeur
+   EXACTE lue dans le VBR) pour convertir en CHS le LBA de IO.SYS (calcule
+   correctement, verifie octet par octet via le MUL/ADD/ADC reel : 316128),
+   mais Emu_ImageReadSector reconvertissait ensuite ce MEME CHS en LBA avec
+   Heads=255 (impose ici) au lieu de 128 - un MEME CHS se traduisant alors en
+   DEUX LBA differents selon le sens (316128 a l'aller, 628167 au retour),
+   le second tombant sur un bloc jamais alloue du VHD dynamique (secteurs a
+   zero, legitimement) : le CPU invite executait alors ces zeros comme du
+   code jusqu'a atteindre une zone jamais chargee (poison $F6), d'ou le DIV
+   fautif. Corrige en ne reappliquant ce repli codeur en dur QUE si
+   Emu_DetectHardDiskGeometry a reellement ECHOUE (pas de MBR/BPB exploitable)
+   - une geometrie correctement lue doit toujours l'emporter, quelle que soit
+   la taille du disque. }
  If Emu_DetectHardDiskGeometry(Idx, DetHeads, DetSpt) Then Begin
   If (DetHeads >= 1) And (DetHeads <= 255) Then EmuFloppyHeads[Idx] := DetHeads;
   If (DetSpt >= 1) And (DetSpt <= 63) Then EmuFloppySpt[Idx] := DetSpt;
- End;
- If EmuFloppySize[Idx] > 500 * 1024 * 1024 Then Begin
+ End Else If EmuFloppySize[Idx] > 500 * 1024 * 1024 Then Begin
   EmuFloppyHeads[Idx] := 255;
   EmuFloppySpt[Idx]   := 63;
  End;
