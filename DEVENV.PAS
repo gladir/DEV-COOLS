@@ -89744,14 +89744,18 @@ End;
 { TOUJOURS exactement les fichiers qui s'y trouvent - elimine le risque     }
 { d'enqueter sur un disque dont le contenu exact n'est plus certain.        }
 {                                                                            }
-{ PORTEE ACTUELLE (v1), a etendre au besoin (l'utilisateur a explicitement  }
-{ anticipe que des parametres supplementaires seraient necessaires) :       }
-{  - Racine du dossier SEULEMENT, pas de sous-dossiers - CONFIG.SYS doit    }
-{    donc referencer ses pilotes SANS chemin (ex: "DEVICE=HIMEM.SYS", pas   }
-{    "DEVICE=C:\DOS\HIMEM.SYS") puisque tout vit a la racine de l'image.    }
+{ PORTEE (v2, 2026-10-03 - sous-dossiers ajoutes pour pouvoir embarquer un  }
+{ VRAI arbre source type MS-DOS 6.0 OAK, demande explicite de l'utilisateur}
+{ pour recompiler DOS 6.0 avec ses VRAIS outils d'epoque MASM/LINK/RELOC    }
+{ deja presents dans C:\BACKUP\dos-6.0\c6ers\tools6\bin\) :                 }
+{  - IO.SYS/MSDOS.SYS DOIVENT etre A LA RACINE de -Path (convention de      }
+{    boot du secteur de demarrage reutilise, voir KDOS_VBR_TEMPLATE) - tout }
+{    le RESTE (fichiers ET sous-dossiers, a N'IMPORTE QUEL niveau) est      }
+{    copie RECURSIVEMENT, structure preservee a l'identique.                }
 {  - Noms de fichiers deja en 8.3 (le cas normal pour un noyau DOS d'epoque)}
-{  - Image fixe a 64 Mo (voir KDOS_TOTAL_SECTORS) - largement suffisant     }
-{    pour un noyau DOS 6.x + quelques pilotes + CONFIG.SYS/AUTOEXEC.BAT.    }
+{  - Image fixe a 256 Mo (voir KDOS_TOTAL_SECTORS), jusqu'a 2048 fichiers/   }
+{    dossiers confondus (KDOS_MAX_ENTRIES) et 510 entrees par dossier -      }
+{    largement suffisant pour un arbre source complet DOS+BIOS+INC+outils.  }
 Procedure TermCmd_StartKernelDos(Var TP: TTerminalPanel; ParamStr: String);
 Var
  UpParams: String;
@@ -189457,38 +189461,48 @@ Const KDOS_VBR_TEMPLATE : Array[0..511] Of Byte = (
 );
 
 Const
- { Geometrie FAT16 calculee et verifiee pour une image de 64 Mo (ample pour
-   IO.SYS+MSDOS.SYS+COMMAND.COM+CONFIG.SYS+AUTOEXEC.BAT+plusieurs pilotes) :
-   131072 secteurs totaux, partition demarrant a LBA 63 (meme convention que
-   le VHD deja utilise), grappes de 4 secteurs (2 Ko) donnant 32695 grappes -
-   confortablement dans la plage FAT16 valide (4085-65524), loin de
-   l'ambiguite FAT12/FAT16 des disques plus petits. }
- KDOS_TOTAL_SECTORS    = 131072;
+ { Geometrie FAT16 calculee et verifiee pour une image de 256 Mo (ample pour
+   un noyau DOS + un VRAI arbre source complet type MS-DOS 6.0 OAK avec ses
+   outils de compilation d'epoque - voir [[project_devenv_start_kerneldos]]
+   2e phase, "recompiler le dos 6.0") : 524288 secteurs totaux, partition
+   demarrant a LBA 63 (meme convention que le VHD deja utilise), grappes de
+   16 secteurs (8 Ko) donnant 32749 grappes - confortablement dans la plage
+   FAT16 valide (4085-65524), loin de l'ambiguite FAT12/FAT16. }
+ KDOS_TOTAL_SECTORS    = 524288;
  KDOS_PART_START_LBA   = 63;
  KDOS_PART_SECTORS     = KDOS_TOTAL_SECTORS - KDOS_PART_START_LBA;
  KDOS_BYTES_PER_SECTOR = 512;
- KDOS_SPC              = 4;
+ KDOS_SPC              = 16;
  KDOS_RESERVED_SECS    = 1;
  KDOS_NUM_FATS         = 2;
  KDOS_ROOT_ENTRIES     = 512;
  KDOS_ROOT_DIR_SECS    = (KDOS_ROOT_ENTRIES * 32) Div KDOS_BYTES_PER_SECTOR;
  KDOS_SECS_PER_FAT     = 128;
  KDOS_DATA_START_REL   = KDOS_RESERVED_SECS + (KDOS_NUM_FATS * KDOS_SECS_PER_FAT) + KDOS_ROOT_DIR_SECS;
- KDOS_MAX_FILES        = 128;
+ { Capacite totale FICHIERS+REPERTOIRES confondus, tous niveaux confondus -
+   un VRAI arbre source (MS-DOS 6.0 OAK : dos\+bios\+inc\+outils) totalise
+   environ 310 fichiers + une quinzaine de repertoires ; marge genereuse. }
+ KDOS_MAX_ENTRIES      = 2048;
 
 Type
- TKdosFileEntry = Record
-  FName8    : Array[0..7] Of Byte;
-  FExt3     : Array[0..2] Of Byte;
-  FSize     : LongInt;
-  FStartClu : Word;
-  FNumClu   : Word;
-  FAttr     : Byte;
+ TKdosEntry = Record
+  FName      : TString;     { nom seul (pas de chemin) }
+  HostFull   : TString;     { chemin HOTE complet (fichier) ou racine (repertoire) }
+  IsDir      : Boolean;
+  ParentIdx  : Integer;     { -1 = racine de l'image }
+  Name8      : Array[0..7] Of Byte;
+  Ext3       : Array[0..2] Of Byte;
+  FSize      : LongInt;     { 0 pour un repertoire }
+  StartClu   : Word;
+  NumClu     : Word;
+  Attr       : Byte;
+  ChildCount : Integer;     { nombre d'enfants DIRECTS (repertoires seulement) }
  End;
 
 { Decoupe un nom de fichier DOS classique ("CONFIG.SYS") en 8.3 majuscule,
-  complete d'espaces - les fichiers d'un noyau DOS d'epoque sont deja
-  conformes a cette convention, aucune translation "nom long" necessaire. }
+  complete d'espaces - les fichiers d'un noyau/arbre source DOS d'epoque
+  sont deja conformes a cette convention, aucune translation "nom long"
+  necessaire. }
 Procedure Kdos_SplitName(FName: TString; Var Name8: Array Of Byte; Var Ext3: Array Of Byte);
 Var I, P: Integer; Base, Ext: TString;
 Begin
@@ -189508,27 +189522,80 @@ Begin
  For I := 1 To Length(Ext) Do Ext3[I-1] := Ord(UpCase(Ext[I]));
 End;
 
+Var
+ { Tableau de travail PARTAGE par Emu_BuildKernelDosImage et sa routine de
+   parcours recursive Kdos_ScanRecursive (globales plutot que parametres,
+   pour eviter de copier ce gros tableau a chaque appel recursif). }
+ KdosEntries   : Array[0..KDOS_MAX_ENTRIES-1] Of TKdosEntry;
+ KdosEntryCnt  : Integer;
+ KdosScanError : TString;
+
+{ Parcourt RECURSIVEMENT HostPath (repertoire HOTE reel), ajoutant une
+  TKdosEntry par fichier/sous-repertoire direct a KdosEntries - ordre de
+  parcours en profondeur (sans consequence : chaque entree sait retrouver
+  ses propres enfants directs via ParentIdx, l'ordre global n'importe pas).
+  ParentIdx=-1 designe la racine de l'IMAGE (pas forcement HostPath lui-meme
+  au premier appel, qui EST la racine). }
+Procedure Kdos_ScanRecursive(HostPath: TString; ParentIdx: Integer);
+Var SR: SearchRec; ThisIdx: Integer; SubPath: TString;
+Begin
+ If KdosScanError <> '' Then Exit;
+ If (Length(HostPath) = 0) Or (HostPath[Length(HostPath)] <> '\') Then HostPath := HostPath + '\';
+ FindFirst(HostPath + '*.*', AnyFile, SR);
+ While DosError = 0 Do Begin
+  If (SR.Name <> '.') And (SR.Name <> '..') Then Begin
+   If KdosEntryCnt >= KDOS_MAX_ENTRIES Then Begin
+    KdosScanError := 'trop de fichiers/repertoires (limite ' + IntToStr(KDOS_MAX_ENTRIES) + ')';
+    Exit;
+   End;
+   ThisIdx := KdosEntryCnt;
+   FillChar(KdosEntries[ThisIdx], SizeOf(TKdosEntry), 0);
+   KdosEntries[ThisIdx].FName := SR.Name;
+   KdosEntries[ThisIdx].ParentIdx := ParentIdx;
+   KdosEntries[ThisIdx].IsDir := (SR.Attr And Directory) <> 0;
+   Kdos_SplitName(SR.Name, KdosEntries[ThisIdx].Name8, KdosEntries[ThisIdx].Ext3);
+   If KdosEntries[ThisIdx].IsDir Then Begin
+    KdosEntries[ThisIdx].HostFull := HostPath + SR.Name;
+    KdosEntries[ThisIdx].Attr := $10; { Directory }
+    Inc(KdosEntryCnt);
+    SubPath := HostPath + SR.Name + '\';
+    Kdos_ScanRecursive(SubPath, ThisIdx);
+   End Else Begin
+    KdosEntries[ThisIdx].HostFull := HostPath + SR.Name;
+    KdosEntries[ThisIdx].FSize := SR.Size;
+    KdosEntries[ThisIdx].Attr := $20; { Archive, surchargee plus tard pour IO.SYS/MSDOS.SYS }
+    Inc(KdosEntryCnt);
+   End;
+  End;
+  FindNext(SR);
+ End;
+End;
+
 { Construit une image disque FAT16 de KDOS_TOTAL_SECTORS secteurs a
-  ImagePath, contenant tous les fichiers (racine seule, pas de
-  sous-dossiers - voir le commentaire de TermCmd_StartKernelDos) du dossier
-  FolderPath. IoSysName/MsDosName DOIVENT exister dans ce dossier et
-  deviennent, DANS CET ORDRE, les 2 premieres entrees du repertoire racine
-  (convention de boot exigee par KDOS_VBR_TEMPLATE, voir plus haut). }
+  ImagePath, a partir de TOUT le contenu de FolderPath, RECURSIVEMENT
+  (fichiers ET sous-repertoires, structure preservee telle quelle - utile
+  pour embarquer un VRAI arbre source avec ses propres sous-dossiers, ex:
+  DOS\, BIOS\, INC\, TOOLS\BIN\, en plus des fichiers de demarrage). Seuls
+  IoSysName/MsDosName DOIVENT exister A LA RACINE de FolderPath (pas dans un
+  sous-dossier) et deviennent, DANS CET ORDRE, les 2 premieres entrees du
+  repertoire racine (convention de boot exigee par KDOS_VBR_TEMPLATE, voir
+  plus haut) - tout le reste (fichiers ET sous-repertoires, a tout niveau)
+  est copie sans condition. }
 Function Emu_BuildKernelDosImage(FolderPath, ImagePath, IoSysName, MsDosName: TString;
  Var ErrMsg: TString): Boolean;
 Var
- Files: Array[0..KDOS_MAX_FILES-1] Of TKdosFileEntry;
- FNames: Array[0..KDOS_MAX_FILES-1] Of TString;
- FileCnt, I, J: Integer;
+ I, J: Integer;
  IoIdx, MsIdx: Integer;
- SR: SearchRec;
  NextClu: Word;
  Mbr, Vbr: Array[0..511] Of Byte;
  Fat: Array[0..(KDOS_SECS_PER_FAT * KDOS_BYTES_PER_SECTOR) Div 2 - 1] Of Word;
  RootDir: Array[0..(KDOS_ROOT_DIR_SECS * KDOS_BYTES_PER_SECTOR) - 1] Of Byte;
+ { Capacite d'un sous-repertoire : meme plafond que la racine (512 entrees,
+   16 Ko) - tres large pour un sous-dossier source reel (le plus gros de
+   l'arbre MS-DOS 6.0 OAK, dos\inc\, n'en compte qu'une centaine). }
+ SubDirBuf: Array[0..16383] Of Byte;
  F: File;
  ZeroBuf: Array[0..KDOS_BYTES_PER_SECTOR-1] Of Byte;
- Tmp: TKdosFileEntry; TmpName: TString;
  CluNeeded: LongInt;
  SrcF: File;
  BytesRead: LongWord;
@@ -189536,86 +189603,141 @@ Var
  CopyBuf: Array[0..65535] Of Byte;
  ChsStart, ChsEnd: Array[0..2] Of Byte;
  Cyl, Hd, Sc: LongInt;
+ RootSlot, SubSlot: Integer;
+ ParentStartClu: Word;
+ MaxEntryBytesPerDir: LongInt;
+
+ { Ecrit l'entree 32 octets de KdosEntries[Idx] a l'offset Slot*32 dans Buf
+   (RootDir ou SubDirBuf) - factorise car utilise pour la racine ET chaque
+   sous-repertoire. }
+ Procedure WriteDirSlot(Var Buf; BufSize: LongInt; Slot: Integer; Idx: Integer);
+ Var B: Array[0..0] Of Byte Absolute Buf;
+  Off: LongInt;
+ Begin
+  Off := Slot * 32;
+  Move(KdosEntries[Idx].Name8, B[Off], 8);
+  Move(KdosEntries[Idx].Ext3, B[Off+8], 3);
+  B[Off+11] := KdosEntries[Idx].Attr;
+  { BOGUE REEL CORRIGE (2026-10-03, chantier "Start-KernelDos") : date/heure }
+  { jamais ecrites ici -> $0000/$0000, une date FAT INVALIDE (jour/mois a 0).}
+  { NMAKE (voir dos\makefile/bios\makefile) utilise cette date pour decider }
+  { si un fichier existe/est a jour - une date invalide le fait conclure a  }
+  { tort "don't know how to make X", meme pour le plus simple des fichiers }
+  { source presents sur le disque (reproduit avec un makefile de 2 lignes  }
+  { a la racine du disque, sans aucun sous-repertoire). Date fixe plausible}
+  { (10 mars 1993, ere MS-DOS 6.0) : seule son INVALIDITE comptait ici, pas}
+  { sa valeur exacte. }
+  B[Off+22] := $00; B[Off+23] := $60; { heure FAT : 12:00:00 }
+  B[Off+24] := $6A; B[Off+25] := $1A; { date FAT : 1993-03-10 }
+  B[Off+26] := Byte(KdosEntries[Idx].StartClu And $FF);
+  B[Off+27] := Byte((KdosEntries[Idx].StartClu Shr 8) And $FF);
+  B[Off+28] := Byte(KdosEntries[Idx].FSize And $FF);
+  B[Off+29] := Byte((KdosEntries[Idx].FSize Shr 8) And $FF);
+  B[Off+30] := Byte((KdosEntries[Idx].FSize Shr 16) And $FF);
+  B[Off+31] := Byte((KdosEntries[Idx].FSize Shr 24) And $FF);
+ End;
+
+ { Idem, mais pour un "." ou ".." synthetique (pas une vraie TKdosEntry) -
+   StartCluArg=0 est la convention FAT standard pour ".." d'un sous-repertoire
+   directement sous la racine (la racine elle-meme n'a pas de numero de
+   grappe, elle vit dans sa zone fixe separee). }
+ Procedure WriteDotSlot(Var Buf; Slot: Integer; DotName: TString; StartCluArg: Word);
+ Var B: Array[0..0] Of Byte Absolute Buf;
+  Off, N: LongInt;
+ Begin
+  Off := Slot * 32;
+  For N := 0 To 7 Do B[Off+N] := 32;
+  For N := 1 To Length(DotName) Do B[Off+N-1] := Ord(DotName[N]);
+  For N := 0 To 2 Do B[Off+8+N] := 32;
+  B[Off+11] := $10; { Directory }
+  B[Off+22] := $00; B[Off+23] := $60; { heure FAT : 12:00:00 - voir WriteDirSlot }
+  B[Off+24] := $6A; B[Off+25] := $1A; { date FAT : 1993-03-10 }
+  B[Off+26] := Byte(StartCluArg And $FF);
+  B[Off+27] := Byte((StartCluArg Shr 8) And $FF);
+  B[Off+28] := 0; B[Off+29] := 0; B[Off+30] := 0; B[Off+31] := 0;
+ End;
+
 Begin
  Emu_BuildKernelDosImage := False;
  ErrMsg := '';
  If FolderPath[Length(FolderPath)] <> '\' Then FolderPath := FolderPath + '\';
 
- { --- Enumeration des fichiers (racine seule, voir commentaire plus haut) --- }
- FileCnt := 0;
- FindFirst(FolderPath + '*.*', AnyFile, SR);
- While DosError = 0 Do Begin
-  If ((SR.Attr And Directory) = 0) And (SR.Name <> '.') And (SR.Name <> '..') Then Begin
-   If FileCnt >= KDOS_MAX_FILES Then Begin
-    ErrMsg := 'trop de fichiers dans ' + FolderPath + ' (limite ' + IntToStr(KDOS_MAX_FILES) + ')';
-    Exit;
-   End;
-   FNames[FileCnt] := SR.Name;
-   FillChar(Files[FileCnt], SizeOf(TKdosFileEntry), 0);
-   Files[FileCnt].FSize := SR.Size;
-   Kdos_SplitName(SR.Name, Files[FileCnt].FName8, Files[FileCnt].FExt3);
-   Inc(FileCnt);
-  End;
-  FindNext(SR);
+ { --- Parcours recursif complet de FolderPath --- }
+ KdosEntryCnt := 0;
+ KdosScanError := '';
+ Kdos_ScanRecursive(FolderPath, -1);
+ If KdosScanError <> '' Then Begin
+  ErrMsg := KdosScanError;
+  Exit;
  End;
 
- { --- IO.SYS et MSDOS.SYS DOIVENT etre les entrees 0 et 1, dans cet ordre --- }
+ { --- IO.SYS et MSDOS.SYS DOIVENT exister A LA RACINE (ParentIdx=-1) et
+   devenir les slots 0 et 1 du REPERTOIRE RACINE, dans cet ordre - ceci ne
+   deplace RIEN dans KdosEntries (leur index y reste quelconque), seul
+   l'ORDRE D'ECRITURE dans RootDir, plus bas, en tient compte. }
  IoIdx := -1; MsIdx := -1;
- For I := 0 To FileCnt - 1 Do Begin
-  If UpCaseStr(FNames[I]) = UpCaseStr(IoSysName) Then IoIdx := I;
-  If UpCaseStr(FNames[I]) = UpCaseStr(MsDosName) Then MsIdx := I;
- End;
- If IoIdx < 0 Then Begin ErrMsg := IoSysName + ' introuvable dans ' + FolderPath; Exit; End;
- If MsIdx < 0 Then Begin ErrMsg := MsDosName + ' introuvable dans ' + FolderPath; Exit; End;
- If IoIdx <> 0 Then Begin
-  Tmp := Files[0]; Files[0] := Files[IoIdx]; Files[IoIdx] := Tmp;
-  TmpName := FNames[0]; FNames[0] := FNames[IoIdx]; FNames[IoIdx] := TmpName;
-  If MsIdx = 0 Then MsIdx := IoIdx;
- End;
- If MsIdx <> 1 Then Begin
-  Tmp := Files[1]; Files[1] := Files[MsIdx]; Files[MsIdx] := Tmp;
-  TmpName := FNames[1]; FNames[1] := FNames[MsIdx]; FNames[MsIdx] := TmpName;
- End;
+ For I := 0 To KdosEntryCnt - 1 Do
+  If (KdosEntries[I].ParentIdx = -1) And (Not KdosEntries[I].IsDir) Then Begin
+   If UpCaseStr(KdosEntries[I].FName) = UpCaseStr(IoSysName) Then IoIdx := I;
+   If UpCaseStr(KdosEntries[I].FName) = UpCaseStr(MsDosName) Then MsIdx := I;
+  End;
+ If IoIdx < 0 Then Begin ErrMsg := IoSysName + ' introuvable a la racine de ' + FolderPath; Exit; End;
+ If MsIdx < 0 Then Begin ErrMsg := MsDosName + ' introuvable a la racine de ' + FolderPath; Exit; End;
  { IO.SYS/MSDOS.SYS : cache+systeme+lecture-seule, comme un vrai noyau DOS }
- Files[0].FAttr := $07;
- Files[1].FAttr := $07;
- For I := 2 To FileCnt - 1 Do Files[I].FAttr := $20; { Archive, fichiers ordinaires }
+ KdosEntries[IoIdx].Attr := $07;
+ KdosEntries[MsIdx].Attr := $07;
 
- { --- Allocation des grappes (chainage simplement contigu, image fraiche) --- }
+ { --- Pre-passe : compter les enfants DIRECTS de chaque repertoire (sert a
+   dimensionner sa propre zone de donnees, allouee juste apres). --- }
+ For I := 0 To KdosEntryCnt - 1 Do
+  If KdosEntries[I].ParentIdx >= 0 Then
+   Inc(KdosEntries[KdosEntries[I].ParentIdx].ChildCount);
+
+ { --- Allocation des grappes (chainage simplement contigu, image fraiche).
+   La racine n'est PAS dans KdosEntries (zone fixe separee, KDOS_ROOT_DIR_SECS) -
+   seuls les FICHIERS et SOUS-repertoires (a tout niveau) consomment des
+   grappes numerotees, a partir de 2. --- }
  FillChar(Fat, SizeOf(Fat), 0);
  NextClu := 2;
- For I := 0 To FileCnt - 1 Do Begin
-  CluNeeded := (Files[I].FSize + (KDOS_SPC * KDOS_BYTES_PER_SECTOR) - 1) Div (KDOS_SPC * KDOS_BYTES_PER_SECTOR);
-  If CluNeeded < 1 Then CluNeeded := 1; { meme un fichier de 0 octet occupe 1 grappe }
-  If LongInt(NextClu) + CluNeeded > KDOS_MAX_FILES * 2048 Then Begin
-   ErrMsg := 'image trop petite pour ' + FNames[I];
+ For I := 0 To KdosEntryCnt - 1 Do Begin
+  If KdosEntries[I].IsDir Then Begin
+   If KdosEntries[I].ChildCount + 2 > 512 Then Begin
+    ErrMsg := 'trop de fichiers dans le sous-dossier ' + KdosEntries[I].FName + ' (limite 510)';
+    Exit;
+   End;
+   MaxEntryBytesPerDir := (2 + KdosEntries[I].ChildCount) * 32; { "." + ".." + enfants }
+   CluNeeded := (MaxEntryBytesPerDir + (KDOS_SPC * KDOS_BYTES_PER_SECTOR) - 1) Div (KDOS_SPC * KDOS_BYTES_PER_SECTOR);
+  End Else
+   CluNeeded := (KdosEntries[I].FSize + (KDOS_SPC * KDOS_BYTES_PER_SECTOR) - 1) Div (KDOS_SPC * KDOS_BYTES_PER_SECTOR);
+  If CluNeeded < 1 Then CluNeeded := 1;
+  If LongInt(NextClu) + CluNeeded - 2 > KDOS_PART_SECTORS Div KDOS_SPC Then Begin
+   ErrMsg := 'contenu de ' + FolderPath + ' trop volumineux pour l''image (256 Mo) - a ' + KdosEntries[I].FName;
    Exit;
   End;
-  Files[I].FStartClu := NextClu;
-  Files[I].FNumClu := Word(CluNeeded);
+  KdosEntries[I].StartClu := NextClu;
+  KdosEntries[I].NumClu := Word(CluNeeded);
   For J := 0 To CluNeeded - 2 Do
    Fat[NextClu + J] := Word(NextClu + J + 1);
   Fat[NextClu + CluNeeded - 1] := $FFFF; { fin de chaine }
   Inc(NextClu, CluNeeded);
  End;
- If LongInt(NextClu) - 2 > KDOS_PART_SECTORS Div KDOS_SPC Then Begin
-  ErrMsg := 'contenu de ' + FolderPath + ' trop volumineux pour l''image (64 Mo)';
-  Exit;
- End;
 
- { --- Repertoire racine --- }
+ { --- Repertoire racine : IO.SYS puis MSDOS.SYS, puis tout le reste trouve
+   directement a la racine (fichiers ET sous-repertoires), dans l'ordre de
+   decouverte. --- }
  FillChar(RootDir, SizeOf(RootDir), 0);
- For I := 0 To FileCnt - 1 Do Begin
-  Move(Files[I].FName8, RootDir[I*32], 8);
-  Move(Files[I].FExt3, RootDir[I*32+8], 3);
-  RootDir[I*32+11] := Files[I].FAttr;
-  RootDir[I*32+26] := Byte(Files[I].FStartClu And $FF);
-  RootDir[I*32+27] := Byte((Files[I].FStartClu Shr 8) And $FF);
-  RootDir[I*32+28] := Byte(Files[I].FSize And $FF);
-  RootDir[I*32+29] := Byte((Files[I].FSize Shr 8) And $FF);
-  RootDir[I*32+30] := Byte((Files[I].FSize Shr 16) And $FF);
-  RootDir[I*32+31] := Byte((Files[I].FSize Shr 24) And $FF);
- End;
+ RootSlot := 0;
+ WriteDirSlot(RootDir, SizeOf(RootDir), RootSlot, IoIdx); Inc(RootSlot);
+ WriteDirSlot(RootDir, SizeOf(RootDir), RootSlot, MsIdx); Inc(RootSlot);
+ For I := 0 To KdosEntryCnt - 1 Do
+  If (KdosEntries[I].ParentIdx = -1) And (I <> IoIdx) And (I <> MsIdx) Then Begin
+   If RootSlot >= KDOS_ROOT_ENTRIES Then Begin
+    ErrMsg := 'trop d''entrees a la racine de ' + FolderPath + ' (limite ' + IntToStr(KDOS_ROOT_ENTRIES) + ')';
+    Exit;
+   End;
+   WriteDirSlot(RootDir, SizeOf(RootDir), RootSlot, I);
+   Inc(RootSlot);
+  End;
 
  { --- MBR : copie du modele reel, SEULE l'entree de partition #0 change --- }
  Move(KDOS_MBR_TEMPLATE, Mbr, 512);
@@ -189672,25 +189794,44 @@ Begin
   BlockWrite(F, Fat, SizeOf(Fat));
  BlockWrite(F, RootDir, SizeOf(RootDir));
 
- { Zone de donnees : chaque fichier a l'offset de SA grappe de depart. }
+ { Zone de donnees : chaque fichier/sous-repertoire a l'offset de SA (ses)
+   grappe(s) de depart. }
  DataOfs := (Int64(KDOS_PART_START_LBA) + KDOS_DATA_START_REL) * KDOS_BYTES_PER_SECTOR;
- For I := 0 To FileCnt - 1 Do Begin
-  FileOfsInImage := DataOfs + (Int64(Files[I].FStartClu - 2) * KDOS_SPC * KDOS_BYTES_PER_SECTOR);
+ For I := 0 To KdosEntryCnt - 1 Do Begin
+  FileOfsInImage := DataOfs + (Int64(KdosEntries[I].StartClu - 2) * KDOS_SPC * KDOS_BYTES_PER_SECTOR);
   Seek(F, FileOfsInImage);
-  {$I-}
-  Assign(SrcF, FolderPath + FNames[I]);
-  Reset(SrcF, 1);
-  {$I+}
-  If IOResult <> 0 Then Begin
-   Close(F);
-   ErrMsg := 'impossible de lire ' + FNames[I];
-   Exit;
+  If KdosEntries[I].IsDir Then Begin
+   { Contenu du sous-repertoire : "." (soi-meme), ".." (parent - 0 si le      }
+   { parent EST la racine, convention FAT standard), puis tous ses enfants   }
+   { DIRECTS (fichiers et/ou sous-sous-repertoires), dans l'ordre trouve.   }
+   FillChar(SubDirBuf, SizeOf(SubDirBuf), 0);
+   WriteDotSlot(SubDirBuf, 0, '.', KdosEntries[I].StartClu);
+   If KdosEntries[I].ParentIdx < 0 Then ParentStartClu := 0
+   Else ParentStartClu := KdosEntries[KdosEntries[I].ParentIdx].StartClu;
+   WriteDotSlot(SubDirBuf, 1, '..', ParentStartClu);
+   SubSlot := 2;
+   For J := 0 To KdosEntryCnt - 1 Do
+    If KdosEntries[J].ParentIdx = I Then Begin
+     WriteDirSlot(SubDirBuf, SizeOf(SubDirBuf), SubSlot, J);
+     Inc(SubSlot);
+    End;
+   BlockWrite(F, SubDirBuf, LongInt(KdosEntries[I].NumClu) * KDOS_SPC * KDOS_BYTES_PER_SECTOR);
+  End Else Begin
+   {$I-}
+   Assign(SrcF, KdosEntries[I].HostFull);
+   Reset(SrcF, 1);
+   {$I+}
+   If IOResult <> 0 Then Begin
+    Close(F);
+    ErrMsg := 'impossible de lire ' + KdosEntries[I].HostFull;
+    Exit;
+   End;
+   Repeat
+    BlockRead(SrcF, CopyBuf, SizeOf(CopyBuf), BytesRead);
+    If BytesRead > 0 Then BlockWrite(F, CopyBuf, BytesRead);
+   Until BytesRead = 0;
+   Close(SrcF);
   End;
-  Repeat
-   BlockRead(SrcF, CopyBuf, SizeOf(CopyBuf), BytesRead);
-   If BytesRead > 0 Then BlockWrite(F, CopyBuf, BytesRead);
-  Until BytesRead = 0;
-  Close(SrcF);
  End;
 
  { Etend le fichier a la taille totale exacte de l'image (secteur final a
