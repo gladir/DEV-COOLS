@@ -332,6 +332,34 @@ Begin
  ChangeFileExt := Base + NewExt;
 End;
 
+Function DecStrToLong(S: TString): LongInt;
+Var I: Integer; V: LongInt;
+Begin
+ V := 0;
+ For I := 1 To Length(S) Do
+  If (S[I] >= '0') And (S[I] <= '9') Then V := V*10 + (Ord(S[I])-Ord('0'));
+ DecStrToLong := V;
+End;
+
+{ Decoupe une version DOS "6.22"/"6,22"/"6" en partie majeure/mineure
+  (chiffres DECIMAUX, pas hexadecimaux) - le separateur peut etre '.' ou
+  ',', la partie mineure vaut 0 si absente. }
+Procedure ParseDosVersion(S: TString; Var Major, Minor: Byte);
+Var P: Integer; MajS, MinS: TString;
+Begin
+ P := Pos('.', S);
+ If P = 0 Then P := Pos(',', S);
+ If P > 0 Then Begin
+  MajS := Copy(S, 1, P-1);
+  MinS := Copy(S, P+1, Length(S)-P);
+ End Else Begin
+  MajS := S;
+  MinS := '0';
+ End;
+ Major := Byte(DecStrToLong(MajS));
+ Minor := Byte(DecStrToLong(MinS));
+End;
+
 { ============================================================
   TABLES DE NOMS DE REGISTRES
   ============================================================ }
@@ -541,7 +569,6 @@ End;
 
 Procedure BuildOpcodeTables;
 Var I: Integer; AluNames: Array[0..7] Of String[3];
- ShiftNames: Array[0..7] Of String[3];
 Begin
  For I := 0 To 255 Do Begin
   SetOp(I, '???', OT_NONE, OT_NONE, OT_NONE, False, GRP_NONE, CPU_8086);
@@ -550,8 +577,6 @@ Begin
 
  AluNames[0] := 'ADD'; AluNames[1] := 'OR';  AluNames[2] := 'ADC'; AluNames[3] := 'SBB';
  AluNames[4] := 'AND'; AluNames[5] := 'SUB'; AluNames[6] := 'XOR'; AluNames[7] := 'CMP';
- ShiftNames[0]:='ROL'; ShiftNames[1]:='ROR'; ShiftNames[2]:='RCL'; ShiftNames[3]:='RCR';
- ShiftNames[4]:='SHL'; ShiftNames[5]:='SHR'; ShiftNames[6]:='SAL'; ShiftNames[7]:='SAR';
 
  { ---- Groupes ALU 00h-3Dh : 6 opcodes par groupe (rm8,r8 / rm16,r16 /
    r8,rm8 / r16,rm16 / AL,imm8 / AX,imm16), puis PUSH/POP de segment et
@@ -1060,8 +1085,15 @@ Begin
   OT_IMM8:  S := HexByte(ImmByte);
   OT_IMM8S: S := HexWord(ImmWord);  { deja etendu en signe par l'appelant }
   OT_IMM16: S := HexWord(ImmWord);
-  OT_REL8:  S := LabelOrAddr(ImmWord);
-  OT_REL16: S := LabelOrAddr(ImmWord);
+  { Les cibles de branchement direct ne sont PAS resolues ici : tous les
+    symboles ne sont pas encore connus pendant le decodage (le moteur
+    recursif peut rencontrer une reference AVANT la cible elle-meme). Un
+    marqueur est emis et remplace par WriteOneInstruction une fois TOUS les
+    symboles connus - evite les etiquettes "en avance" affichees en
+    hexadecimal brut alors qu'un nom symbolique existe bel et bien plus
+    loin dans le meme listing. }
+  OT_REL8:  S := '@BT' + HexWord(ImmWord) + '@';
+  OT_REL16: S := '@BT' + HexWord(ImmWord) + '@';
   OT_FARPTR:S := HexWord(FarSeg) + ':' + HexWord(FarOfs);
   OT_MOFFS8, OT_MOFFS16: S := InjectSeg('[' + HexWord(ImmWord) + ']');
   OT_AL: S := 'AL'; OT_AX: S := 'AX'; OT_CL: S := 'CL';
@@ -1142,7 +1174,8 @@ Begin
   Exit;
  End;
  For I := 0 To API_COUNT-1 Do
-  If ApiTable[I].IntNum = IntNum Then Begin
+  If (ApiTable[I].IntNum = IntNum) And
+     (ApiTable[I].MinDos <= (Word(OptDosVerMajor)*100 + OptDosVerMinor)) Then Begin
    If (ApiTable[I].AhVal = -1) Then Begin
     If Best = '' Then Best := ApiTable[I].Descr;
    End Else If (Ah = ApiTable[I].AhVal) Then Begin
@@ -1469,6 +1502,7 @@ Begin
   If Not InBounds(Ofs) Then Continue;
   If ByteFlags^[Ofs] = BF_CODE Then Continue;   { deja traite }
   If ByteFlags^[Ofs] = BF_CODEPART Then Continue; { tombe au milieu d'une instruction deja decodee - desalignement, on ignore ce depart }
+  If ByteFlags^[Ofs] = BF_HEADER Then Continue; { Device Header (18 octets) : jamais du code, meme si une cible erronee y pointe }
 
   DecodeOne(Addr, Text, Len, IsBranch, IsCall_, IsUncond, IsIndirect, IsRetI, BrTarget, IntNum, MinCpuOut);
   MarkCodeRange(Ofs, Len);
@@ -1523,7 +1557,7 @@ Begin
  While Addr < EndAddr Do Begin
   Ofs := AddrToOfs(Addr);
   If Not InBounds(Ofs) Then Break;
-  If ByteFlags^[Ofs] In [BF_CODE, BF_CODEPART] Then Begin
+  If ByteFlags^[Ofs] In [BF_CODE, BF_CODEPART, BF_HEADER] Then Begin
    Inc(Addr);
    Continue;
   End;
@@ -1618,7 +1652,7 @@ End;
   ou CMP Byte Ptr [xxx],4Dh/5Ah - pure heuristique de motif, annoncee comme
   telle dans le commentaire emis (/MCB). }
 Procedure ScanMcbPatterns;
-Var I: LongInt; B0,B1,B2: Byte; A: LongInt;
+Var I: LongInt; B0,B1: Byte; A: LongInt;
 Begin
  If Not OptMcb Then Exit;
  For I := 0 To DecodedCnt-1 Do Begin
@@ -1760,7 +1794,7 @@ End;
   ============================================================ }
 
 Function ConvertToNasm(S: TString): TString;
-Var R: TString; I: Integer; InHex: Boolean; Tok: TString;
+Var R: TString; I: Integer; Tok: TString;
 Begin
  { Convertit chaque "XXh" en "0xXX" et retire les mots-cles "Ptr"/"Far Ptr"
    (NASM utilise "byte [..]" / "word [..]" sans "Ptr"). }
@@ -1805,6 +1839,18 @@ End;
   ECRITURE DE LA SORTIE
   ============================================================ }
 
+Function CpuLevelName(C: Byte): TString;
+Begin
+ Case C Of
+  CPU_8086: CpuLevelName := '8086';
+  CPU_186:  CpuLevelName := '80186';
+  CPU_286:  CpuLevelName := '80286';
+  CPU_386:  CpuLevelName := '80386';
+  CPU_486:  CpuLevelName := '80486';
+ Else CpuLevelName := '?';
+ End;
+End;
+
 Function BytesToHexStr(Var D: TDecodedInstr): TString;
 Var I: Integer; S: TString;
 Begin
@@ -1848,8 +1894,28 @@ Begin
  WriteLn(OutF);
 End;
 
+{ Remplace chaque marqueur "@BTxxxxh@" (cible de branchement direct, laisse
+  en attente par FmtOperand au moment du decodage) par le nom symbolique
+  s'il existe desormais (/SYMBOLS) et que l'adresse tombe dans l'image,
+  sinon par l'adresse hexadecimale brute - appele une fois TOUS les
+  symboles connus, donc toujours a jour meme pour une reference "en avance". }
+Function ResolveBranchMarkers(S: TString): TString;
+Var P1, P2: Integer; Inner: TString; Addr: LongInt; Resolved: TString;
+Begin
+ While Pos('@BT', S) > 0 Do Begin
+  P1 := Pos('@BT', S);
+  P2 := P1 + 3;
+  While (P2 <= Length(S)) And (S[P2] <> '@') Do Inc(P2);
+  Inner := Copy(S, P1+3, P2-(P1+3));   { "xxxxh" }
+  Addr := HexStrToLong(Inner);
+  Resolved := LabelOrAddr(Addr);
+  S := Copy(S, 1, P1-1) + Resolved + Copy(S, P2+1, Length(S)-P2);
+ End;
+ ResolveBranchMarkers := S;
+End;
+
 Procedure WriteOneInstruction(Var D: TDecodedInstr);
-Var Line, Nm, Cmt: TString; Idx: LongInt;
+Var Line, Nm, Cmt, ResolvedText: TString; Idx: LongInt;
 Begin
  { ---- Etiquette eventuelle sur une ligne separee ---- }
  Idx := FindSymbol(D.Addr);
@@ -1858,10 +1924,12 @@ Begin
   WriteLn(OutF, Nm, ':');
  End;
 
+ ResolvedText := ResolveBranchMarkers(D.Text);
+
  Line := '';
  If OptAddr Then Line := Line + FmtAddr(D.Addr) + '  ';
  If OptBytes Then Line := Line + Pad(BytesToHexStr(D), 24) + ' ';
- Line := Line + '    ' + ApplySyntax(D.Text);
+ Line := Line + '    ' + ApplySyntax(ResolvedText);
 
  Cmt := '';
  If OptComments And (D.IntNumber >= 0) And (OptIntAnnot Or OptApiAnnot) Then
@@ -1896,12 +1964,34 @@ Begin
    End;
 End;
 
+Function FormatName: TString;
+Begin
+ Case OptFormat Of
+  FMT_SYS: FormatName := 'SYS (pilote DOS)';
+  FMT_COM: FormatName := 'COM';
+  FMT_EXE: FormatName := 'EXE (MZ)';
+  FMT_RAW: FormatName := 'RAW (image brute / noyau)';
+ Else FormatName := 'AUTO';
+ End;
+End;
+
 Procedure WriteListing;
-Var I: LongInt;
+Var I: LongInt; Profiles: TString;
 Begin
  WriteLn(OutF, '; ============================================================');
  WriteLn(OutF, '; DISSYS v', DISSYS_VERSION, ' - Desassemblage de ', InputFileName);
- WriteLn(OutF, '; Format : ', Copy('AUTO,SYS,COM,EXE,RAW', 1, 1));
+ WriteLn(OutF, '; Format detecte/force : ', FormatName);
+ WriteLn(OutF, '; Origine (ORG)        : ', HexWord(Word(OptOrg)));
+ If OptHasBase Then
+  WriteLn(OutF, '; Base de chargement   : ', HexLong(OptBase));
+ If OptHasEntry Then
+  WriteLn(OutF, '; Point d''entree       : ', FmtAddr(OptEntry));
+ WriteLn(OutF, '; DOS cible            : ', OptDosVerMajor, '.', OptDosVerMinor);
+ Profiles := '';
+ If OptModeSys    Then Profiles := Profiles + '/SYS ';
+ If OptModeDriver Then Profiles := Profiles + '/DRIVER ';
+ If OptModeKernel Then Profiles := Profiles + '/KERNEL ';
+ If Profiles <> '' Then WriteLn(OutF, '; Profil(s) d''analyse  : ', Profiles);
  WriteLn(OutF, '; Genere le ', DISSYS_DATE);
  WriteLn(OutF, '; ============================================================');
  WriteLn(OutF);
@@ -1974,7 +2064,8 @@ End;
 
 Procedure ShowHelp;
 Begin
- WriteLn('DISSYS v', DISSYS_VERSION, ' - Desassembleur de noyaux et pilotes DOS');
+ WriteLn('DISSYS v', DISSYS_VERSION, ' - Cette commande permet de lancer le d'+#130+'sassembleur de ',
+         'noyaux et pilotes DOS.');
  WriteLn('Cible MSDOS.SYS, IO.SYS, et tout pilote DEVICE= (.SYS ou .EXE resident :');
  WriteLn('HIMEM.SYS, EMM386.EXE, SMARTDRV.EXE, ANSI.SYS, un pilote CD-ROM, etc.).');
  WriteLn;
@@ -2049,6 +2140,16 @@ Begin
  End;
 End;
 
+{ IMPORTANT : les profils ci-dessous n'activent JAMAIS individuellement
+  OptXms/OptEms/OptBios/OptDosApi/OptDpb/OptSft/OptIndos - ces commutateurs
+  sont INTENTIONNELLEMENT restrictifs (voir CategoryEnabled : des qu'UN
+  SEUL est actif, l'annotation se limite a SA categorie) pour un usage
+  AUTONOME et cible ("/DPB seul" = ne montrer QUE les acces DPB). Un
+  profil veut au contraire une couverture LARGE : il se contente donc de
+  OptIntAnnot+OptApiAnnot (aucune categorie restrictive active => tout est
+  annote, voir CategoryEnabled). Seul OptMcb est mis a part : c'est une
+  passe heuristique additive separee (ScanMcbPatterns), pas un filtre de
+  CategoryEnabled, donc sans effet secondaire a l'activer dans un profil. }
 Procedure ApplyProfile(Profile: TString);
 Begin
  Profile := UpStr(Profile);
@@ -2056,17 +2157,15 @@ Begin
   OptModeSys := True;
   OptHdr := True; OptDrv := True; OptIntAnnot := True; OptApiAnnot := True;
   OptSymbols := True; OptComments := True; OptXref := True; OptData := True;
-  OptStrings := True;
+  OptStrings := True; OptMcb := True;
  End Else If Profile = 'DRIVER' Then Begin
   OptModeDriver := True;
   OptHdr := True; OptDrv := True; OptIntAnnot := True; OptApiAnnot := True;
-  OptSymbols := True; OptComments := True; OptXref := True;
-  OptDpb := True; OptSft := True; OptMcb := True; OptIndos := True;
+  OptSymbols := True; OptComments := True; OptXref := True; OptMcb := True;
  End Else If Profile = 'KERNEL' Then Begin
   OptModeKernel := True;
   OptSymbols := True; OptComments := True; OptXref := True;
-  OptDosApi := True; OptIntAnnot := True; OptApiAnnot := True;
-  OptDpb := True; OptSft := True; OptMcb := True; OptIndos := True;
+  OptIntAnnot := True; OptApiAnnot := True; OptMcb := True;
   OptData := True; OptStrings := True;
  End;
 End;
@@ -2154,7 +2253,9 @@ Begin
     Else OptFormat := FMT_AUTO;
    End
    Else If SwName = 'DOS' Then Begin
-    If Length(SwVal) >= 1 Then OptDosVerMajor := Byte(HexStrToLong(Copy(SwVal,1,1)));
+    { Accepte "6.22", "6,22" ou simplement "6" - separateur ignore, le
+      reste est la partie mineure (0 si absente). }
+    ParseDosVersion(SwVal, OptDosVerMajor, OptDosVerMinor);
    End
    Else If SwName = 'ASM' Then Begin
     SwVal := UpStr(SwVal);
@@ -2214,13 +2315,14 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 
-Begin
+BEGIN
  ParseArgs;
 
  If Not OptQuiet Then Begin
   WriteLn('DISSYS v', DISSYS_VERSION, ' - desassemblage de ', InputFileName);
  End;
 
+ If OptVerbose Then WriteLn('[V] Construction des tables d''opcodes (8086-80486)...');
  BuildOpcodeTables;
 
  If Not LoadImageFile(InputFileName) Then Halt(1);
@@ -2231,17 +2333,35 @@ Begin
  WorkQueueCnt := 0;
  DecodedCnt := 0;
 
+ If OptVerbose Then WriteLn('[V] Detection du format et des points d''entree...');
  SetupFormatAndEntries;
+ If OptVerbose Then Begin
+  WriteLn('[V] Format retenu     : ', FormatName);
+  WriteLn('[V] Origine (ORG)     : ', HexWord(Word(OptOrg)));
+  If OptHasEntry Then WriteLn('[V] Point d''entree    : ', FmtAddr(OptEntry));
+  If HasDeviceHeader Then WriteLn('[V] Device Header reconnu - Strategy/Interrupt mis en file.');
+ End;
 
+ If OptVerbose Then WriteLn('[V] Moteur recursif (file d''attente initiale : ', WorkQueueCnt, ' adresse(s))...');
  RunRecursiveEngine;
+ If OptVerbose Then WriteLn('[V] Moteur recursif termine : ', DecodedCnt, ' instruction(s) decodee(s).');
 
- If OptLinear Then
+ If OptLinear Then Begin
+  If OptVerbose Then WriteLn('[V] Passe lineaire (/L) sur tout l''intervalle...');
   RunLinearPass(OfsToAddr(0), OfsToAddr(ImageSize));
+ End;
 
- If OptData Or OptStrings Then
+ If OptData Or OptStrings Then Begin
+  If OptVerbose Then WriteLn('[V] Detection de donnees/chaines dans les octets restants...');
   RunDataDetection;
+ End;
 
+ If OptMcb And OptVerbose Then WriteLn('[V] Recherche de motifs de signature MCB (''M''/''Z'')...');
  ScanMcbPatterns;
+
+ If OptReloc And OptHdr And (Not OptQuiet) And (OptFormat = FMT_EXE) Then
+  WriteLn('Remarque /RELOC : les cibles de CALL/JMP FAR vers un autre segment ne',
+          ' sont pas resolues (hors de la portee d''une image a segment unique).');
 
  {$I-}
  Assign(OutF, OutputFileName);
@@ -2264,4 +2384,4 @@ Begin
   WriteLn('Sortie ecrite dans    : ', OutputFileName);
   If OptUseMap Then WriteLn('Carte des symboles    : ', MapFileName);
  End;
-End.
+END.
