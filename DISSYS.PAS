@@ -63,7 +63,14 @@ Const
  OT_CS    = 26; OT_DS    = 27; OT_ES    = 28; OT_SS    = 29;
  OT_FS    = 30; OT_GS    = 31;
  OT_SREGF = 32; { champ reg du ModRM interprete comme registre de segment }
- OT_REGOP = 33; { registre code dans les 3 bits de poids faible de l'opcode }
+ OT_REGOP = 33; { registre 16/32 bits code dans les 3 bits de poids faible de l'opcode }
+ OT_REGOP8= 34; { BOGUE REEL CORRIGE (2026-10-03, trouve en reutilisant DISSYS
+                   pour l'enquete HIMEM/MS-DOS 6.22 : "B4 F2" affiche a tort
+                   "MOV SP,F2h" au lieu de "MOV AH,F2h" - OT_REGOP utilisait
+                   TOUJOURS la table 16/32 bits, meme pour B0h-B7h (MOV r8,
+                   imm8), la SEULE plage ou le registre code dans l'opcode
+                   est un registre 8 BITS. Type dedie, utilise uniquement
+                   pour B0h-B7h. }
 
  { ---- Marqueurs de groupes a dispatch special (champ reg du ModRM) ---- }
  GRP_NONE = 0;
@@ -684,7 +691,7 @@ Begin
  SetOp($AE,'SCASB',OT_NONE,OT_NONE,OT_NONE,False,GRP_NONE,CPU_8086);
  SetOp($AF,'SCASW',OT_NONE,OT_NONE,OT_NONE,False,GRP_NONE,CPU_8086);
  For I := 0 To 7 Do Begin
-  SetOp($B0+I,'MOV',OT_REGOP,OT_IMM8, OT_NONE,False,GRP_NONE,CPU_8086);
+  SetOp($B0+I,'MOV',OT_REGOP8,OT_IMM8, OT_NONE,False,GRP_NONE,CPU_8086);
   SetOp($B8+I,'MOV',OT_REGOP,OT_IMM16,OT_NONE,False,GRP_NONE,CPU_8086);
  End;
  SetOp($C0,'GRP2',OT_RM8, OT_IMM8,OT_NONE,True,GRP_2,CPU_186);
@@ -1069,6 +1076,7 @@ Begin
   OT_TREG:  S := TRegNames[RegField];
   OT_REGOP: If CurOpSize32 Then S := Reg32Names[OpCodeForRegOp And 7]
             Else S := Reg16Names[OpCodeForRegOp And 7];
+  OT_REGOP8: S := Reg8Names[OpCodeForRegOp And 7];
   OT_RM8:   If UseRm Then Begin
              If RmDecoded.IsMem Then S := 'Byte Ptr ' + InjectSeg(RmDecoded.Text)
              Else S := Reg8Names[ModRMRm];
@@ -1205,10 +1213,24 @@ End;
   fichier. Heuristique volontairement tolerante (de nombreux vrais pilotes
   laissent NextOfs/NextSeg a FFFFh avant chargement par DOS). }
 Function DetectDeviceHeader: Boolean;
-Var I: Integer; NameOk: Boolean; B: Byte;
+Var I: Integer; NameOk: Boolean; B: Byte; FirstByte: Byte;
 Begin
  DetectDeviceHeader := False;
  If ImageSize < 18 Then Exit;
+ { BOGUE REEL CORRIGE (2026-10-03, trouve en testant DISSYS sur le VRAI
+   MSDOS.SYS extrait d'un VHD) : un noyau DOS brut (MSDOS.SYS/IO.SYS)
+   commence TOUJOURS par un simple "JMP" (E9h near ou EBh short) vers son
+   vrai code, suivi de donnees - ces octets etaient auparavant INTERPRETES
+   A TORT comme un Device Header "pilote bloc" plausible (le controle de
+   nom imprimable ne s'applique qu'aux pilotes CARACTERE, bit 15 des
+   attributs, donc ne protegeait pas ce cas), produisant un faux positif
+   qui faisait prendre le JMP initial pour une partie de l'en-tete et
+   arretait le desassemblage recursif en 3 instructions a peine. Un VRAI
+   Device Header ne commence jamais par un JMP/CALL deliberement encode -
+   exclusion explicite de cette signature, la plus fiable disponible sans
+   decoder le fichier au prealable. }
+ FirstByte := GetByte(0);
+ If (FirstByte = $E9) Or (FirstByte = $EB) Or (FirstByte = $E8) Then Exit;
  DevHeader.NextOfs      := GetWordAt(0);
  DevHeader.NextSeg      := GetWordAt(2);
  DevHeader.Attributes   := GetWordAt(4);
@@ -1217,6 +1239,8 @@ Begin
  For I := 0 To 7 Do DevHeader.Name[I] := GetByte(10+I);
  If (DevHeader.StrategyOfs >= ImageSize) Or (DevHeader.InterruptOfs >= ImageSize) Then Exit;
  If (DevHeader.StrategyOfs = 0) And (DevHeader.InterruptOfs = 0) Then Exit;
+ { Un vrai pilote n'a jamais Strategy et Interrupt a la MEME adresse. }
+ If DevHeader.StrategyOfs = DevHeader.InterruptOfs Then Exit;
  { Pilote caractere (bit 15 de Attributes) : Name doit etre imprimable. }
  If (DevHeader.Attributes And $8000) <> 0 Then Begin
   NameOk := True;
@@ -1225,6 +1249,13 @@ Begin
    If (B < 32) Or (B > 126) Then NameOk := False;
   End;
   If Not NameOk Then Exit;
+ End Else Begin
+  { Pilote bloc (bit 15 = 0) : aucun champ texte a verifier, donc seul
+    signal fiable restant = NextOfs/NextSeg plausibles (soit non encore
+    chaine - $FFFF/$FFFF - soit un segment reel non nul ; un noyau brut
+    qui n'est PAS un pilote a des "octets de NextOfs/NextSeg" qui sont en
+    realite le DEBUT de son code/ses donnees, rarement a la fois nuls). }
+  If (DevHeader.NextOfs = 0) And (DevHeader.NextSeg = 0) Then Exit;
  End;
  DetectDeviceHeader := True;
 End;
