@@ -110,6 +110,20 @@ Const
  MAX_WORKQUEUE   = 16384;
  MAX_XREFS       = 32768;
 
+ { ---- Blocs de segments multiples (2026-10-03, enquete HIMEM/MS-DOS 6.22) :
+   DISSYS ne gerait jusqu'ici qu'un seul "bloc" (l'image primaire /O). Un
+   noyau DOS reel dispatche constamment via CALL/JMP FAR et des tables de
+   pointeurs FAR entre PLUSIEURS segments charges independamment (ex :
+   plusieurs dumps memoire pris en direct dans l'emulateur, un par segment
+   implique). /SEG:xxxx=fichier.bin (repetable) charge un bloc SUPPLEMENTAIRE
+   en plus du bloc 0 (le fichier /O) ; le moteur recursif suit alors les
+   CALL/JMP FAR directs qui tombent sur un segment charge, EXACTEMENT comme
+   un vrai CPU le ferait, au lieu de s'arreter net comme avant ("segment
+   different : cible non resoluble dans cette image"). }
+ MAX_SEGBLOCKS   = 64;
+ MAX_SEG_SIZE    = 65536;  { un bloc supplementaire est toujours un segment reel complet }
+ MAX_FARPROBES   = 256;    { voir /FARPTR }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -136,16 +150,44 @@ Type
 
  { Symbole connu (auto-genere ou reconnu) }
  TSymbolRec = Record
+  Blk  : Integer;      { indice du bloc de segment (voir TSegBlock) }
   Addr : LongInt;    { adresse (deja ORG-relative, c-a-d valeur affichee) }
   Kind : Byte;        { SYM_xxx }
   Name : TString;
  End;
 
- { Reference croisee : qui appelle/saute vers qui }
+ { Reference croisee : qui appelle/saute vers qui - FromBlk/ToBlk different
+   pour un CALL/JMP FAR direct resolu vers un AUTRE bloc charge (voir /SEG). }
  TXRefRec = Record
+  FromBlk  : Integer;
   FromAddr : LongInt;
+  ToBlk    : Integer;
   ToAddr   : LongInt;
   IsCall   : Boolean;
+ End;
+
+ { Un bloc de segment charge : le fichier /O original (bloc 0) ou un bloc
+   supplementaire charge via /SEG:xxxx=fichier.bin. Chaque bloc a sa PROPRE
+   image/carte d'octets/ORG/segment - c'est ce qui permet au moteur recursif
+   de "traverser" plusieurs dumps memoire distincts comme un vrai CPU le
+   ferait via CALL/JMP FAR. }
+ TSegBlock = Record
+  RealSeg   : Word;       { segment DOS reel represente par ce bloc }
+  BlkOrg    : LongInt;    { ORG de ce bloc (0 pour un bloc supplementaire) }
+  BlkHasSeg : Boolean;    { afficher "SEG:OFS" pour ce bloc }
+  FileName  : TString;
+  Image     : PByteArr;
+  ByteFlags : PFlagArr;
+  ImageSize : LongInt;
+  Loaded    : Boolean;
+ End;
+
+ { Element de la file d'attente du moteur recursif : desormais un couple
+   (bloc, adresse) plutot qu'une simple adresse - necessaire des qu'un CALL/
+   JMP FAR direct peut faire basculer le travail vers un AUTRE bloc charge. }
+ TWorkItem = Record
+  Blk  : Integer;
+  Addr : LongInt;
  End;
 
  { En-tete de pilote DOS (Device Header), 18 octets au minimum }
@@ -226,12 +268,38 @@ Var
  XRefCnt    : LongInt;
 
  { --- File d'attente de travail (moteur recursif) --- }
- WorkQueue    : Array[0..MAX_WORKQUEUE-1] Of LongInt;
+ WorkQueue    : Array[0..MAX_WORKQUEUE-1] Of TWorkItem;
  WorkQueueCnt : LongInt;
 
- { --- Device Header reconnu --- }
+ { --- Device Header reconnu (toujours relatif au bloc 0, le fichier /O -
+   un bloc supplementaire /SEG:xxxx=fichier.bin est un dump memoire brut,
+   jamais un .SYS avec son propre en-tete) --- }
  HasDeviceHeader : Boolean;
  DevHeader       : TDeviceHeader;
+
+ { --- Blocs de segments (voir TSegBlock / /SEG:xxxx=fichier.bin) --- }
+ SegBlocks   : Array[0..MAX_SEGBLOCKS-1] Of TSegBlock;
+ SegBlockCnt : Integer;
+ CurBlk      : Integer;   { bloc actuellement "actif" : Image/ByteFlags/
+                             ImageSize/OptOrg/OptSeg lui correspondent }
+
+ { --- Blocs supplementaires EN ATTENTE (/SEG:xxxx=fichier.bin), collectes
+   pendant ParseArgs mais charges plus tard dans le programme principal,
+   APRES que le bloc 0 (fichier /O) ait pris sa place via RegisterBlock0. }
+ PendingSegVal  : Array[0..MAX_SEGBLOCKS-1] Of Word;
+ PendingSegFile : Array[0..MAX_SEGBLOCKS-1] Of TString;
+ PendingSegCnt  : Integer;
+
+ { --- Sondes de pointeur FAR manuelles (/FARPTR:[xxxx:]yyyy) : l'utilisateur
+   indique un endroit ou une table/variable contient un pointeur FAR
+   (mot offset puis mot segment, convention x86 standard) a lire et a
+   suivre si son segment correspond a un bloc charge - utile pour atteindre
+   du code appele uniquement via une table de sauts qu'aucune analyse de
+   flux statique ne peut decouvrir seule. }
+ FarProbeSeg : Array[0..MAX_FARPROBES-1] Of Word;
+ FarProbeOfs : Array[0..MAX_FARPROBES-1] Of Word;
+ FarProbeHasSeg : Array[0..MAX_FARPROBES-1] Of Boolean;
+ FarProbeCnt : Integer;
 
  { --- Fichiers de sortie --- }
  OutF : Text;
@@ -269,12 +337,16 @@ Begin
  HexLong := S + 'h';
 End;
 
-{ Formate une adresse d'affichage (deja ORG-relative) selon qu'un segment a
-  ete fourni par l'utilisateur (/SEG) ou non. }
-Function FmtAddr(Addr: LongInt): TString;
+{ Formate une adresse d'affichage (deja ORG-relative) selon que le BLOC
+  concerne a un segment d'affichage connu (/SEG) ou non. Parametre explicite
+  (plutot que les globales OptSeg/OptHasSeg "actives") car un listing multi-
+  bloc doit pouvoir formater une adresse d'un bloc SANS basculer le bloc
+  actif (ex : la section XREF finale, qui melange des adresses de plusieurs
+  blocs sur les memes lignes). }
+Function FmtAddr(Blk: Integer; Addr: LongInt): TString;
 Begin
- If OptHasSeg Then
-  FmtAddr := HexWord(OptSeg) + ':' + HexWord(Word(Addr))
+ If (Blk >= 0) And (Blk < SegBlockCnt) And SegBlocks[Blk].BlkHasSeg Then
+  FmtAddr := HexWord(SegBlocks[Blk].RealSeg) + ':' + HexWord(Word(Addr))
  Else
   FmtAddr := HexWord(Word(Addr));
 End;
@@ -876,24 +948,182 @@ Begin
 End;
 
 { ============================================================
+  BLOCS DE SEGMENTS MULTIPLES (voir TSegBlock / /SEG:xxxx=fichier.bin)
+  ============================================================ }
+
+{ Rend le bloc 0 (le fichier /O, deja charge dans Image/ByteFlags/ImageSize
+  par LoadImageFile et eventuellement ajuste par SetupFormatAndEntries -
+  decoupe d'en-tete MZ, ORG par defaut selon le format, etc.) visible dans
+  SegBlocks, pour que le moteur recursif puisse y revenir apres avoir
+  bascule sur un autre bloc. A appeler UNE SEULE FOIS, juste apres
+  SetupFormatAndEntries. }
+Procedure RegisterBlock0;
+Begin
+ SegBlocks[0].RealSeg   := OptSeg;
+ SegBlocks[0].BlkOrg    := OptOrg;
+ SegBlocks[0].BlkHasSeg := OptHasSeg;
+ SegBlocks[0].FileName  := InputFileName;
+ SegBlocks[0].Image     := Image;
+ SegBlocks[0].ByteFlags := ByteFlags;
+ SegBlocks[0].ImageSize := ImageSize;
+ SegBlocks[0].Loaded    := True;
+ SegBlockCnt := 1;
+ CurBlk := 0;
+End;
+
+{ Charge un bloc SUPPLEMENTAIRE (/SEG:xxxx=fichier.bin) : toujours un dump
+  de segment reel complet (ORG=0, segment affiche = RealSeg fourni), avec sa
+  PROPRE image/carte d'octets independantes du bloc 0. }
+Function LoadExtraSegBlock(RealSeg: Word; FName: TString): Boolean;
+Var F: File; BytesRead: LongInt; Sz: LongInt; Idx: Integer;
+Begin
+ LoadExtraSegBlock := False;
+ If SegBlockCnt >= MAX_SEGBLOCKS Then Begin
+  WriteLn('Avertissement : limite de ', MAX_SEGBLOCKS, ' blocs de segments atteinte, ', FName, ' ignore.');
+  Exit;
+ End;
+ {$I-}
+ Assign(F, FName);
+ Reset(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur : impossible d''ouvrir ', FName, ' (/SEG:', HexWord(RealSeg), '=...)');
+  Exit;
+ End;
+ Sz := FileSize(F);
+ If Sz > MAX_SEG_SIZE Then Sz := MAX_SEG_SIZE;
+ Idx := SegBlockCnt;
+ GetMem(SegBlocks[Idx].Image, MAX_SEG_SIZE);
+ GetMem(SegBlocks[Idx].ByteFlags, MAX_SEG_SIZE);
+ FillChar(SegBlocks[Idx].ByteFlags^, MAX_SEG_SIZE, BF_UNKNOWN);
+ {$I-}
+ BlockRead(F, SegBlocks[Idx].Image^, Sz, BytesRead);
+ {$I+}
+ Close(F);
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur de lecture : ', FName);
+  Exit;
+ End;
+ SegBlocks[Idx].RealSeg   := RealSeg;
+ SegBlocks[Idx].BlkOrg    := 0;
+ SegBlocks[Idx].BlkHasSeg := True;
+ SegBlocks[Idx].FileName  := FName;
+ SegBlocks[Idx].ImageSize := BytesRead;
+ SegBlocks[Idx].Loaded    := True;
+ Inc(SegBlockCnt);
+ LoadExtraSegBlock := True;
+End;
+
+{ Cherche un bloc CHARGE dont le segment DOS reel correspond - c'est ce qui
+  permet a un CALL/JMP FAR direct (ou une sonde /FARPTR) de "traverser" vers
+  un autre bloc deja charge. -1 si aucun bloc ne correspond (segment non
+  charge - le moteur ne peut pas suivre plus loin, comme avant /SEG). }
+Function FindBlockBySeg(Seg: Word): Integer;
+Var I: Integer;
+Begin
+ FindBlockBySeg := -1;
+ For I := 0 To SegBlockCnt-1 Do
+  If SegBlocks[I].Loaded And (SegBlocks[I].RealSeg = Seg) Then Begin
+   FindBlockBySeg := I;
+   Exit;
+  End;
+End;
+
+{ Rend un bloc "actif" : toutes les fonctions existantes (GetByte/InBounds/
+  AddrToOfs/OfsToAddr/DecodeModRM/DecodeOne/...) continuent a lire les
+  globales Image/ByteFlags/ImageSize/OptOrg/OptSeg/OptHasSeg SANS AUCUN
+  changement - c'est ce qui evite de devoir reecrire tout le decodeur pour
+  le rendre "multi-bloc" : on bascule simplement CE SUR QUOI il travaille. }
+Procedure SwitchBlock(B: Integer);
+Begin
+ If (B < 0) Or (B >= SegBlockCnt) Then Exit;
+ CurBlk    := B;
+ Image     := SegBlocks[B].Image;
+ ByteFlags := SegBlocks[B].ByteFlags;
+ ImageSize := SegBlocks[B].ImageSize;
+ OptOrg    := SegBlocks[B].BlkOrg;
+ OptSeg    := SegBlocks[B].RealSeg;
+ OptHasSeg := SegBlocks[B].BlkHasSeg;
+End;
+
+{ IMPORTANT : si Blk est le bloc ACTUELLEMENT ACTIF (CurBlk), on consulte les
+  globales "en cours" (ImageSize/OptOrg) plutot que SegBlocks[Blk] - c'est ce
+  qui permet a SetupFormatAndEntries (bloc 0, AVANT que RegisterBlock0 n'ait
+  pu etre appele puisqu'il doit capturer l'etat FINAL apres ajustements
+  ORG/ImageSize specifiques au format) d'utiliser QueuePush(0,...)/
+  AddSymbol(0,...) exactement comme avant - sans ce garde-fou, SegBlocks[0]
+  ne serait pas encore rempli a ce moment precis et toute verification de
+  bornes echouerait silencieusement (bogue reel trouve et corrige en testant
+  cette fonctionnalite : "Instructions decodees : 0" alors qu'un point
+  d'entree pourtant valide venait d'etre mis en file). }
+Function InBoundsBlk(Blk: Integer; Ofs: LongInt): Boolean;
+Begin
+ If Blk = CurBlk Then Begin
+  InBoundsBlk := InBounds(Ofs);
+  Exit;
+ End;
+ InBoundsBlk := (Blk >= 0) And (Blk < SegBlockCnt) And
+                (Ofs >= 0) And (Ofs < SegBlocks[Blk].ImageSize);
+End;
+
+Function AddrToOfsBlk(Blk: Integer; Addr: LongInt): LongInt;
+Begin
+ If Blk = CurBlk Then Begin
+  AddrToOfsBlk := AddrToOfs(Addr);
+  Exit;
+ End;
+ If (Blk < 0) Or (Blk >= SegBlockCnt) Then AddrToOfsBlk := Addr
+ Else AddrToOfsBlk := Addr - SegBlocks[Blk].BlkOrg;
+End;
+
+Function OfsToAddrBlk(Blk: Integer; Ofs: LongInt): LongInt;
+Begin
+ If Blk = CurBlk Then Begin
+  OfsToAddrBlk := OfsToAddr(Ofs);
+  Exit;
+ End;
+ If (Blk < 0) Or (Blk >= SegBlockCnt) Then OfsToAddrBlk := Ofs
+ Else OfsToAddrBlk := Ofs + SegBlocks[Blk].BlkOrg;
+End;
+
+{ Lecture d'un octet dans un bloc donne SANS le rendre actif - utilise par
+  les passes qui parcourent Decoded[] apres coup (ex: ScanMcbPatterns), ou
+  chaque entree peut appartenir a un bloc different de celui actuellement
+  actif. }
+Function GetByteBlk(Blk: Integer; Ofs: LongInt): Byte;
+Begin
+ If Blk = CurBlk Then Begin
+  GetByteBlk := GetByte(Ofs);
+  Exit;
+ End;
+ If InBoundsBlk(Blk, Ofs) Then GetByteBlk := SegBlocks[Blk].Image^[Ofs]
+ Else GetByteBlk := 0;
+End;
+
+Function GetWordAtBlk(Blk: Integer; Ofs: LongInt): Word;
+Begin
+ GetWordAtBlk := Word(GetByteBlk(Blk, Ofs)) Or (Word(GetByteBlk(Blk, Ofs+1)) Shl 8);
+End;
+
+{ ============================================================
   TABLE DE SYMBOLES
   ============================================================ }
 
-Function FindSymbol(Addr: LongInt): LongInt;
+Function FindSymbol(Blk: Integer; Addr: LongInt): LongInt;
 Var I: LongInt;
 Begin
  FindSymbol := -1;
  For I := 0 To SymbolCnt-1 Do
-  If Symbols[I].Addr = Addr Then Begin
+  If (Symbols[I].Blk = Blk) And (Symbols[I].Addr = Addr) Then Begin
    FindSymbol := I;
    Exit;
   End;
 End;
 
-Procedure AddSymbol(Addr: LongInt; Kind: Byte; Nm: TString);
+Procedure AddSymbol(Blk: Integer; Addr: LongInt; Kind: Byte; Nm: TString);
 Var Idx: LongInt;
 Begin
- Idx := FindSymbol(Addr);
+ Idx := FindSymbol(Blk, Addr);
  If Idx >= 0 Then Begin
   { Un symbole deja reconnu structurellement (Device Header/Strategy/...)
     a priorite sur un simple sub_/loc_ auto-genere. }
@@ -905,31 +1135,45 @@ Begin
   Exit;
  End;
  If SymbolCnt >= MAX_SYMBOLS Then Exit;
+ Symbols[SymbolCnt].Blk  := Blk;
  Symbols[SymbolCnt].Addr := Addr;
  Symbols[SymbolCnt].Kind := Kind;
  Symbols[SymbolCnt].Name := Nm;
  Inc(SymbolCnt);
 End;
 
-Function AutoSymbolName(Addr: LongInt; Kind: Byte): TString;
+{ Qualifie le nom par le segment du bloc des qu'il y a PLUS D'UN bloc charge
+  (/SEG:xxxx=fichier.bin) - sinon un "sub_94C8h" du bloc 9078h et un
+  "sub_94C8h" d'un autre bloc charge au MEME decalage local seraient
+  indiscernables dans un listing qui les melange tous. En mode mono-bloc
+  (l'usage historique), le nom reste EXACTEMENT comme avant. }
+Function AutoSymbolName(Blk: Integer; Addr: LongInt; Kind: Byte): TString;
+Var Prefix, SegPfx: TString;
 Begin
  Case Kind Of
-  SYM_SUB:    AutoSymbolName := 'sub_'  + HexWord(Word(Addr));
-  SYM_LOC:    AutoSymbolName := 'loc_'  + HexWord(Word(Addr));
-  SYM_DATA:   AutoSymbolName := 'data_' + HexWord(Word(Addr));
-  SYM_DEVHDR: AutoSymbolName := 'DeviceHeader_' + HexWord(Word(Addr));
-  SYM_STRAT:  AutoSymbolName := 'Strategy_'     + HexWord(Word(Addr));
-  SYM_INTR:   AutoSymbolName := 'Interrupt_'    + HexWord(Word(Addr));
-  SYM_ENTRY:  AutoSymbolName := 'Entry_'        + HexWord(Word(Addr));
+  SYM_SUB:    Prefix := 'sub_';
+  SYM_LOC:    Prefix := 'loc_';
+  SYM_DATA:   Prefix := 'data_';
+  SYM_DEVHDR: Prefix := 'DeviceHeader_';
+  SYM_STRAT:  Prefix := 'Strategy_';
+  SYM_INTR:   Prefix := 'Interrupt_';
+  SYM_ENTRY:  Prefix := 'Entry_';
  Else
-  AutoSymbolName := 'lbl_' + HexWord(Word(Addr));
+  Prefix := 'lbl_';
  End;
+ SegPfx := '';
+ If (SegBlockCnt > 1) And (Blk >= 0) And (Blk < SegBlockCnt) Then Begin
+  SegPfx := HexWord(SegBlocks[Blk].RealSeg);
+  Delete(SegPfx, Length(SegPfx), 1);  { retire le 'h' final de HexWord }
+  SegPfx := SegPfx + '_';
+ End;
+ AutoSymbolName := Prefix + SegPfx + HexWord(Word(Addr));
 End;
 
-Function SymbolNameAt(Addr: LongInt): TString;
+Function SymbolNameAt(Blk: Integer; Addr: LongInt): TString;
 Var Idx: LongInt;
 Begin
- Idx := FindSymbol(Addr);
+ Idx := FindSymbol(Blk, Addr);
  If Idx >= 0 Then SymbolNameAt := Symbols[Idx].Name
  Else SymbolNameAt := '';
 End;
@@ -937,11 +1181,11 @@ End;
 { Renvoie un texte utilisable comme operande pour une adresse cible :
   le nom symbolique s'il existe et que /SYMBOLS est actif, sinon l'adresse
   hexadecimale brute. }
-Function LabelOrAddr(Addr: LongInt): TString;
+Function LabelOrAddr(Blk: Integer; Addr: LongInt): TString;
 Var Nm: TString;
 Begin
  If OptSymbols Then Begin
-  Nm := SymbolNameAt(Addr);
+  Nm := SymbolNameAt(Blk, Addr);
   If Nm <> '' Then Begin
    LabelOrAddr := Nm;
    Exit;
@@ -950,10 +1194,12 @@ Begin
  LabelOrAddr := HexWord(Word(Addr));
 End;
 
-Procedure AddXRef(FromA, ToA: LongInt; IsCall: Boolean);
+Procedure AddXRef(FromBlk: Integer; FromA: LongInt; ToBlk: Integer; ToA: LongInt; IsCall: Boolean);
 Begin
  If XRefCnt >= MAX_XREFS Then Exit;
+ XRefs[XRefCnt].FromBlk  := FromBlk;
  XRefs[XRefCnt].FromAddr := FromA;
+ XRefs[XRefCnt].ToBlk    := ToBlk;
  XRefs[XRefCnt].ToAddr   := ToA;
  XRefs[XRefCnt].IsCall   := IsCall;
  Inc(XRefCnt);
@@ -963,11 +1209,12 @@ End;
   FILE D'ATTENTE DE TRAVAIL (MOTEUR RECURSIF)
   ============================================================ }
 
-Procedure QueuePush(Addr: LongInt);
+Procedure QueuePush(Blk: Integer; Addr: LongInt);
 Begin
- If Not InBounds(AddrToOfs(Addr)) Then Exit;
+ If Not InBoundsBlk(Blk, AddrToOfsBlk(Blk, Addr)) Then Exit;
  If WorkQueueCnt >= MAX_WORKQUEUE Then Exit;
- WorkQueue[WorkQueueCnt] := Addr;
+ WorkQueue[WorkQueueCnt].Blk  := Blk;
+ WorkQueue[WorkQueueCnt].Addr := Addr;
  Inc(WorkQueueCnt);
 End;
 
@@ -1102,7 +1349,11 @@ Begin
     loin dans le meme listing. }
   OT_REL8:  S := '@BT' + HexWord(ImmWord) + '@';
   OT_REL16: S := '@BT' + HexWord(ImmWord) + '@';
-  OT_FARPTR:S := HexWord(FarSeg) + ':' + HexWord(FarOfs);
+  { Marqueur FAR distinct ("@BTF...@") : un CALL/JMP FAR direct peut cibler
+    un AUTRE bloc de segment charge (/SEG:xxxx=fichier.bin) - resolu plus
+    tard par ResolveBranchMarkers, une fois tous les symboles connus,
+    exactement comme @BT pour les branchements proches. }
+  OT_FARPTR:S := '@BTF' + HexWord(FarSeg) + ':' + HexWord(FarOfs) + '@';
   OT_MOFFS8, OT_MOFFS16: S := InjectSeg('[' + HexWord(ImmWord) + ']');
   OT_AL: S := 'AL'; OT_AX: S := 'AX'; OT_CL: S := 'CL';
   OT_DX: S := 'DX'; OT_ONE: S := '1';
@@ -1270,7 +1521,8 @@ End;
 
 Procedure DecodeOne(Addr: LongInt; Var OutText: TString; Var Length_: LongInt;
  Var IsBranch, IsCall_, IsUncond, IsIndirect, IsRetInstr: Boolean;
- Var BranchTarget: LongInt; Var IntNumber: Integer; Var OpMinCPU: Byte);
+ Var BranchTarget: LongInt; Var BranchBlock: Integer;
+ Var IntNumber: Integer; Var OpMinCPU: Byte);
 Var Ofs: LongInt; OpByte, Op2Byte, Imm8: Byte; Imm16: Word;
  Entry: TOpEntry; Rm: TDecodedOperand; RmUsed: Boolean;
  S, O1S, O2S, O3S: TString;
@@ -1288,6 +1540,7 @@ Begin
  CurOpSize32 := False;
  IsBranch := False; IsCall_ := False; IsUncond := False; IsIndirect := False;
  IsRetInstr := False; BranchTarget := 0; IntNumber := -1;
+ BranchBlock := CurBlk;  { toujours le bloc courant sauf CALL/JMP FAR direct resolu vers un autre bloc }
  RmUsed := False;
 
  { ---- Consommer les prefixes (segment/REP/LOCK/66h/67h) ---- }
@@ -1418,7 +1671,17 @@ Begin
   FarSeg := GetWordAt(CurPos); CurPos := CurPos + 2;
   IsBranch := True; IsUncond := True;
   If OpByte = $9A Then Begin IsCall_ := True; IsUncond := False; End;
-  BranchTarget := -1; { segment different : cible non resoluble dans cette image }
+  { BOGUE REEL "manquait" CORRIGE (2026-10-03, enquete HIMEM/MS-DOS 6.22) :
+    un CALL/JMP FAR direct vers un AUTRE segment etait jusqu'ici TOUJOURS
+    marque "non resoluble", meme si ce segment correspondait a un bloc
+    charge via /SEG:xxxx=fichier.bin. On cherche maintenant ce bloc et, s'il
+    existe, le moteur recursif peut realmente y poursuivre le decodage -
+    exactement ce qu'un vrai CPU ferait en changeant simplement CS. }
+  BranchBlock := FindBlockBySeg(FarSeg);
+  If BranchBlock >= 0 Then
+   BranchTarget := OfsToAddrBlk(BranchBlock, LongInt(FarOfs))
+  Else
+   BranchTarget := -1; { segment non charge : cible non resoluble, comme avant }
  End;
  If (Entry.Op1 = OT_REL8) Then Begin
   Rel8 := ShortInt(GetByte(CurPos)); Inc(CurPos);
@@ -1447,9 +1710,18 @@ Begin
  If (Not Is0F) And (OpByte = $E8) Then IsCall_ := True;
  If (Not Is0F) And ((OpByte = $C3) Or (OpByte = $C2) Or (OpByte = $CA) Or
     (OpByte = $CB) Or (OpByte = $CF)) Then Begin
+  { BOGUE REEL CORRIGE (2026-10-03, trouve en testant les blocs de segments
+    multiples) : BranchTarget restait a sa valeur par defaut (0) pour
+    RET/RETF/IRET, qui n'ont PAS de cible statique connue (elle vient de la
+    pile a l'execution). Le moteur recursif (RunRecursiveEngine) ne teste
+    que "BrTarget >= 0" pour decider d'ajouter un symbole/xref/mise en file -
+    0 passait ce test, ce qui creait a tort un symbole/xref "RET -> debut du
+    bloc" pour CHAQUE RET/RETF/IRET rencontre. Meme convention que pour un
+    pointeur FAR non resoluble : -1 = "pas de cible". }
   IsRetInstr := True;
   IsBranch := True;
   IsUncond := True;
+  BranchTarget := -1;
  End;
  If (Not Is0F) And (OpByte = $CD) Then IntNumber := Imm8;
 
@@ -1504,6 +1776,7 @@ End;
 
 Type
  TDecodedInstr = Record
+  Blk  : Integer;
   Addr : LongInt;
   Text : TString;
   Len  : LongInt;
@@ -1519,26 +1792,39 @@ Var
  Decoded    : Array[0..MAX_DECODED-1] Of TDecodedInstr;
  DecodedCnt : LongInt;
 
+{ Moteur recursif : desormais parcourt une file d'attente de couples
+  (bloc,adresse) - voir TWorkItem. Chaque iteration bascule le bloc ACTIF
+  sur celui de l'element traite (SwitchBlock), ce qui fait que TOUT le reste
+  (GetByte/InBounds/AddrToOfs/DecodeOne/MarkCodeRange/ByteFlags^) continue a
+  fonctionner EXACTEMENT comme avant, sans aucun changement - seul un
+  CALL/JMP FAR direct (voir DecodeOne/OT_FARPTR) peut faire apparaitre un
+  BranchBlock different du bloc courant, et c'est CE couple (BranchBlock,
+  BrTarget) qui est mis en file, permettant au moteur de "traverser" vers
+  l'autre bloc charge. }
 Procedure RunRecursiveEngine;
-Var Addr, Ofs: LongInt; Text: TString; Len: LongInt; I: LongInt;
+Var Blk, BranchBlock: Integer; Addr, Ofs: LongInt; Text: TString; Len: LongInt; I: LongInt;
  IsBranch, IsCall_, IsUncond, IsIndirect, IsRetI: Boolean;
  BrTarget: LongInt; IntNum: Integer; MinCpuOut: Byte;
  Head: LongInt;
 Begin
  Head := 0;
  While Head < WorkQueueCnt Do Begin
-  Addr := WorkQueue[Head];
+  Blk  := WorkQueue[Head].Blk;
+  Addr := WorkQueue[Head].Addr;
   Inc(Head);
+  If (Blk < 0) Or (Blk >= SegBlockCnt) Then Continue;
+  SwitchBlock(Blk);
   Ofs := AddrToOfs(Addr);
   If Not InBounds(Ofs) Then Continue;
   If ByteFlags^[Ofs] = BF_CODE Then Continue;   { deja traite }
   If ByteFlags^[Ofs] = BF_CODEPART Then Continue; { tombe au milieu d'une instruction deja decodee - desalignement, on ignore ce depart }
   If ByteFlags^[Ofs] = BF_HEADER Then Continue; { Device Header (18 octets) : jamais du code, meme si une cible erronee y pointe }
 
-  DecodeOne(Addr, Text, Len, IsBranch, IsCall_, IsUncond, IsIndirect, IsRetI, BrTarget, IntNum, MinCpuOut);
+  DecodeOne(Addr, Text, Len, IsBranch, IsCall_, IsUncond, IsIndirect, IsRetI, BrTarget, BranchBlock, IntNum, MinCpuOut);
   MarkCodeRange(Ofs, Len);
 
   If DecodedCnt < MAX_DECODED Then Begin
+   Decoded[DecodedCnt].Blk  := Blk;
    Decoded[DecodedCnt].Addr := Addr;
    Decoded[DecodedCnt].Text := Text;
    Decoded[DecodedCnt].Len  := Len;
@@ -1551,15 +1837,16 @@ Begin
    Inc(DecodedCnt);
   End;
 
-  If IsBranch And (Not IsIndirect) And (BrTarget >= 0) And InBounds(AddrToOfs(BrTarget)) Then Begin
+  If IsBranch And (Not IsIndirect) And (BranchBlock >= 0) And (BrTarget >= 0) And
+     InBoundsBlk(BranchBlock, AddrToOfsBlk(BranchBlock, BrTarget)) Then Begin
    If IsCall_ Then Begin
-    AddSymbol(BrTarget, SYM_SUB, AutoSymbolName(BrTarget, SYM_SUB));
-    AddXRef(Addr, BrTarget, True);
+    AddSymbol(BranchBlock, BrTarget, SYM_SUB, AutoSymbolName(BranchBlock, BrTarget, SYM_SUB));
+    AddXRef(Blk, Addr, BranchBlock, BrTarget, True);
    End Else Begin
-    AddSymbol(BrTarget, SYM_LOC, AutoSymbolName(BrTarget, SYM_LOC));
-    AddXRef(Addr, BrTarget, False);
+    AddSymbol(BranchBlock, BrTarget, SYM_LOC, AutoSymbolName(BranchBlock, BrTarget, SYM_LOC));
+    AddXRef(Blk, Addr, BranchBlock, BrTarget, False);
    End;
-   QueuePush(BrTarget);
+   QueuePush(BranchBlock, BrTarget);
   End;
 
   { Une instruction qui ne se termine ni par un saut inconditionnel ni par
@@ -1569,7 +1856,7 @@ Begin
     elle-meme la suivante, permettant de s'arreter net des qu'on rencontre
     un JMP/RET/IRET inconditionnel plutot que de deborder dans des donnees). }
   If Not (IsUncond Or IsRetI) Then
-   QueuePush(Addr + Len);
+   QueuePush(Blk, Addr + Len);
  End;
 End;
 
@@ -1579,11 +1866,12 @@ End;
   moteur recursif n'a rien trouve de rattache au graphe d'appel.
   ============================================================ }
 
-Procedure RunLinearPass(StartAddr, EndAddr: LongInt);
+Procedure RunLinearPass(Blk: Integer; StartAddr, EndAddr: LongInt);
 Var Addr: LongInt; Ofs: LongInt; Text: TString; Len: LongInt; I: LongInt;
  IsBranch, IsCall_, IsUncond, IsIndirect, IsRetI: Boolean;
- BrTarget: LongInt; IntNum: Integer; MinCpuOut: Byte;
+ BrTarget: LongInt; BranchBlock: Integer; IntNum: Integer; MinCpuOut: Byte;
 Begin
+ SwitchBlock(Blk);
  Addr := StartAddr;
  While Addr < EndAddr Do Begin
   Ofs := AddrToOfs(Addr);
@@ -1592,9 +1880,10 @@ Begin
    Inc(Addr);
    Continue;
   End;
-  DecodeOne(Addr, Text, Len, IsBranch, IsCall_, IsUncond, IsIndirect, IsRetI, BrTarget, IntNum, MinCpuOut);
+  DecodeOne(Addr, Text, Len, IsBranch, IsCall_, IsUncond, IsIndirect, IsRetI, BrTarget, BranchBlock, IntNum, MinCpuOut);
   MarkCodeRange(Ofs, Len);
   If DecodedCnt < MAX_DECODED Then Begin
+   Decoded[DecodedCnt].Blk  := Blk;
    Decoded[DecodedCnt].Addr := Addr;
    Decoded[DecodedCnt].Text := Text;
    Decoded[DecodedCnt].Len  := Len;
@@ -1615,9 +1904,10 @@ End;
   DANS LES OCTETS RESTES NON MARQUES APRES LE DESASSEMBLAGE DE CODE
   ============================================================ }
 
-Procedure RunDataDetection;
+Procedure RunDataDetection(Blk: Integer);
 Var Ofs, RunStart: LongInt; RunLen: Integer; B: Byte;
 Begin
+ SwitchBlock(Blk);
  Ofs := 0;
  While Ofs < ImageSize Do Begin
   If ByteFlags^[Ofs] <> BF_UNKNOWN Then Begin
@@ -1637,7 +1927,7 @@ Begin
    If RunLen >= 4 Then Begin
     { chaine ASCII plausible : au moins 4 caracteres imprimables consecutifs }
     ByteFlags^[RunStart] := BF_STRING;
-    AddSymbol(OfsToAddr(RunStart), SYM_DATA, AutoSymbolName(OfsToAddr(RunStart), SYM_DATA));
+    AddSymbol(Blk, OfsToAddr(RunStart), SYM_DATA, AutoSymbolName(Blk, OfsToAddr(RunStart), SYM_DATA));
    End Else Begin
     Ofs := RunStart;
     If OptData Then ByteFlags^[Ofs] := BF_DATA;
@@ -1660,8 +1950,9 @@ End;
 Procedure AnnotateDeviceStructure;
 Var StratAddr, IntrAddr: LongInt; NameStr: TString; I: Integer;
 Begin
+ { Toujours relatif au bloc 0 (le fichier /O) - voir HasDeviceHeader. }
  If Not HasDeviceHeader Then Exit;
- AddSymbol(OfsToAddr(0), SYM_DEVHDR, AutoSymbolName(OfsToAddr(0), SYM_DEVHDR));
+ AddSymbol(0, OfsToAddr(0), SYM_DEVHDR, AutoSymbolName(0, OfsToAddr(0), SYM_DEVHDR));
  ByteFlags^[0] := BF_HEADER;
  For I := 1 To 17 Do If InBounds(I) Then ByteFlags^[I] := BF_HEADER;
 
@@ -1672,10 +1963,10 @@ Begin
 
  StratAddr := OfsToAddr(DevHeader.StrategyOfs);
  IntrAddr  := OfsToAddr(DevHeader.InterruptOfs);
- AddSymbol(StratAddr, SYM_STRAT, 'Strategy_' + HexWord(Word(StratAddr)));
- AddSymbol(IntrAddr,  SYM_INTR,  'Interrupt_' + HexWord(Word(IntrAddr)));
- QueuePush(StratAddr);
- QueuePush(IntrAddr);
+ AddSymbol(0, StratAddr, SYM_STRAT, 'Strategy_' + HexWord(Word(StratAddr)));
+ AddSymbol(0, IntrAddr,  SYM_INTR,  'Interrupt_' + HexWord(Word(IntrAddr)));
+ QueuePush(0, StratAddr);
+ QueuePush(0, IntrAddr);
 End;
 
 { Recherche heuristique de comparaisons avec les octets signature 'M'(4Dh)
@@ -1687,11 +1978,13 @@ Var I: LongInt; B0,B1: Byte; A: LongInt;
 Begin
  If Not OptMcb Then Exit;
  For I := 0 To DecodedCnt-1 Do Begin
-  A := AddrToOfs(Decoded[I].Addr);
+  { Decoded[I] peut appartenir a N'IMPORTE QUEL bloc charge - GetByteBlk lit
+    directement dans le bloc concerne, sans toucher au bloc "actif". }
+  A := AddrToOfsBlk(Decoded[I].Blk, Decoded[I].Addr);
   If (Decoded[I].Len >= 2) Then Begin
-   B0 := GetByte(A); B1 := GetByte(A+1);
+   B0 := GetByteBlk(Decoded[I].Blk, A); B1 := GetByteBlk(Decoded[I].Blk, A+1);
    If (B0 = $3C) And ((B1 = $4D) Or (B1 = $5A)) Then
-    AddSymbol(Decoded[I].Addr, SYM_LOC, SymbolNameAt(Decoded[I].Addr));
+    AddSymbol(Decoded[I].Blk, Decoded[I].Addr, SYM_LOC, SymbolNameAt(Decoded[I].Blk, Decoded[I].Addr));
   End;
  End;
 End;
@@ -1799,9 +2092,12 @@ Begin
   End;
  End;
 
+ { Toujours le bloc 0 (le fichier /O) - SetupFormatAndEntries s'execute
+   AVANT que RegisterBlock0/SwitchBlock n'existent, donc "0" est explicite
+   plutot que CurBlk (pas encore significatif a ce stade). }
  If OptHasEntry Then Begin
-  AddSymbol(OptEntry, SYM_ENTRY, AutoSymbolName(OptEntry, SYM_ENTRY));
-  QueuePush(OptEntry);
+  AddSymbol(0, OptEntry, SYM_ENTRY, AutoSymbolName(0, OptEntry, SYM_ENTRY));
+  QueuePush(0, OptEntry);
  End;
  If (Not HasDeviceHeader) And (OptFormat = FMT_SYS) Then Begin
   { Pas d'en-tete de pilote detecte malgre /FMT:SYS force (cas d'un VRAI
@@ -1810,8 +2106,8 @@ Begin
   If Not OptHasEntry Then Begin
    OptEntry := OfsToAddr(0);
    OptHasEntry := True;
-   AddSymbol(OptEntry, SYM_ENTRY, AutoSymbolName(OptEntry, SYM_ENTRY));
-   QueuePush(OptEntry);
+   AddSymbol(0, OptEntry, SYM_ENTRY, AutoSymbolName(0, OptEntry, SYM_ENTRY));
+   QueuePush(0, OptEntry);
   End;
  End;
 End;
@@ -1901,14 +2197,14 @@ Begin
  WriteLn(OutF, '; ------------------------------------------------------------');
  WriteLn(OutF, '; Device Header DOS (en-tete de pilote, 18 octets)');
  WriteLn(OutF, '; ------------------------------------------------------------');
- WriteLn(OutF, FmtAddr(OfsToAddr(0)), '  DeviceHeader_', HexWord(Word(OfsToAddr(0))), ':');
+ WriteLn(OutF, FmtAddr(0, OfsToAddr(0)), '  DeviceHeader_', HexWord(Word(OfsToAddr(0))), ':');
  WriteLn(OutF, '    DD  ', HexWord(DevHeader.NextSeg), ':', HexWord(DevHeader.NextOfs),
    '          ; pointeur vers le pilote suivant (rempli par DOS au chargement)');
  WriteLn(OutF, '    DW  ', HexWord(DevHeader.Attributes),
    '                   ; attributs (bit15=caractere, bit11=IOCTL, bit13=sortie-jusqu-a-occupe)');
- WriteLn(OutF, '    DW  ', LabelOrAddr(OfsToAddr(DevHeader.StrategyOfs)),
+ WriteLn(OutF, '    DW  ', LabelOrAddr(0, OfsToAddr(DevHeader.StrategyOfs)),
    '                ; offset de la routine Strategy');
- WriteLn(OutF, '    DW  ', LabelOrAddr(OfsToAddr(DevHeader.InterruptOfs)),
+ WriteLn(OutF, '    DW  ', LabelOrAddr(0, OfsToAddr(DevHeader.InterruptOfs)),
    '                ; offset de la routine Interrupt (traitement des requetes)');
  S := '';
  If (DevHeader.Attributes And $8000) <> 0 Then Begin
@@ -1925,21 +2221,40 @@ Begin
  WriteLn(OutF);
 End;
 
-{ Remplace chaque marqueur "@BTxxxxh@" (cible de branchement direct, laisse
-  en attente par FmtOperand au moment du decodage) par le nom symbolique
-  s'il existe desormais (/SYMBOLS) et que l'adresse tombe dans l'image,
+{ Remplace chaque marqueur "@BTxxxxh@" (branchement PROCHE, meme bloc) ou
+  "@BTFssss:oooo@" (CALL/JMP FAR DIRECT, voir OT_FARPTR - "ssss"=segment,
+  "oooo"=offset) par le nom symbolique s'il existe desormais (/SYMBOLS),
   sinon par l'adresse hexadecimale brute - appele une fois TOUS les
-  symboles connus, donc toujours a jour meme pour une reference "en avance". }
-Function ResolveBranchMarkers(S: TString): TString;
-Var P1, P2: Integer; Inner: TString; Addr: LongInt; Resolved: TString;
+  symboles connus (de TOUS les blocs), donc toujours a jour meme pour une
+  reference "en avance". Blk = bloc de L'INSTRUCTION QUI CONTIENT LE
+  MARQUEUR (necessaire pour resoudre un "@BT" proche, qui reste toujours
+  dans le MEME bloc que l'instruction qui branche). }
+Function ResolveBranchMarkers(Blk: Integer; S: TString): TString;
+Var P1, P2, PColon: Integer; Inner, SegS, OfsS: TString;
+ Addr: LongInt; Resolved: TString; TargetBlk: Integer; Seg: Word;
 Begin
  While Pos('@BT', S) > 0 Do Begin
   P1 := Pos('@BT', S);
   P2 := P1 + 3;
   While (P2 <= Length(S)) And (S[P2] <> '@') Do Inc(P2);
-  Inner := Copy(S, P1+3, P2-(P1+3));   { "xxxxh" }
-  Addr := HexStrToLong(Inner);
-  Resolved := LabelOrAddr(Addr);
+  Inner := Copy(S, P1+3, P2-(P1+3));
+  If (Length(Inner) > 0) And (Inner[1] = 'F') Then Begin
+   { "Fssss:oooo" - CALL/JMP FAR direct }
+   Delete(Inner, 1, 1);
+   PColon := Pos(':', Inner);
+   SegS := Copy(Inner, 1, PColon-1);
+   OfsS := Copy(Inner, PColon+1, Length(Inner)-PColon);
+   Seg := Word(HexStrToLong(SegS));
+   TargetBlk := FindBlockBySeg(Seg);
+   If TargetBlk >= 0 Then
+    Resolved := HexWord(Seg) + ':' + LabelOrAddr(TargetBlk, HexStrToLong(OfsS))
+   Else
+    Resolved := HexWord(Seg) + ':' + OfsS;  { segment non charge : hex brut, comme avant /SEG }
+  End Else Begin
+   { "xxxxh" - branchement proche, toujours dans le meme bloc Blk }
+   Addr := HexStrToLong(Inner);
+   Resolved := LabelOrAddr(Blk, Addr);
+  End;
   S := Copy(S, 1, P1-1) + Resolved + Copy(S, P2+1, Length(S)-P2);
  End;
  ResolveBranchMarkers := S;
@@ -1948,17 +2263,22 @@ End;
 Procedure WriteOneInstruction(Var D: TDecodedInstr);
 Var Line, Nm, Cmt, ResolvedText: TString; Idx: LongInt;
 Begin
+ { Le bloc actif doit correspondre a CELUI de l'instruction : DescribeInterrupt
+   (via AddrToOfs/GetByte) lit l'image du bloc concerne, pas forcement celui
+   qui etait actif au moment ou le moteur recursif a fini son travail. }
+ SwitchBlock(D.Blk);
+
  { ---- Etiquette eventuelle sur une ligne separee ---- }
- Idx := FindSymbol(D.Addr);
+ Idx := FindSymbol(D.Blk, D.Addr);
  If (Idx >= 0) And OptSymbols Then Begin
   Nm := Symbols[Idx].Name;
   WriteLn(OutF, Nm, ':');
  End;
 
- ResolvedText := ResolveBranchMarkers(D.Text);
+ ResolvedText := ResolveBranchMarkers(D.Blk, D.Text);
 
  Line := '';
- If OptAddr Then Line := Line + FmtAddr(D.Addr) + '  ';
+ If OptAddr Then Line := Line + FmtAddr(D.Blk, D.Addr) + '  ';
  If OptBytes Then Line := Line + Pad(BytesToHexStr(D), 24) + ' ';
  Line := Line + '    ' + ApplySyntax(ResolvedText);
 
@@ -1980,19 +2300,26 @@ Begin
  WriteLn(OutF, Line);
 End;
 
+{ Tri par (Blk,Addr) - pas seulement Addr - pour que chaque bloc forme une
+  section CONTIGUE dans le listing final, meme si deux blocs differents
+  contiennent un decalage local identique (parfaitement possible : chacun a
+  son propre espace d'adressage 0..65535). }
 Procedure SortDecodedByAddr;
-Var I, J: LongInt; Tmp: TDecodedInstr;
+Var I, J: LongInt; Tmp: TDecodedInstr; Swap: Boolean;
 Begin
  { Tri a bulles simple : le nombre d'instructions decodees pour un noyau/
    pilote DOS reste de l'ordre de quelques dizaines de milliers au pire,
    largement gerable sans tri plus sophistique pour un outil hors-ligne. }
  For I := 0 To DecodedCnt-2 Do
-  For J := 0 To DecodedCnt-2-I Do
-   If Decoded[J].Addr > Decoded[J+1].Addr Then Begin
+  For J := 0 To DecodedCnt-2-I Do Begin
+   Swap := (Decoded[J].Blk > Decoded[J+1].Blk) Or
+           ((Decoded[J].Blk = Decoded[J+1].Blk) And (Decoded[J].Addr > Decoded[J+1].Addr));
+   If Swap Then Begin
     Tmp := Decoded[J];
     Decoded[J] := Decoded[J+1];
     Decoded[J+1] := Tmp;
    End;
+  End;
 End;
 
 Function FormatName: TString;
@@ -2006,8 +2333,22 @@ Begin
  End;
 End;
 
+{ Affiche la ligne d'en-tete "SEG:OFS -> SEG:OFS CALL/JMP ..." d'une xref,
+  en indiquant le segment des DEUX cotes meme s'ils sont identiques (plus
+  clair qu'une xref multi-bloc melangeant silencieusement 2 espaces
+  d'adressage locaux differents). }
+Procedure WriteXRefLine(Var F: Text; Prefix: TString; I: LongInt);
+Begin
+ If XRefs[I].IsCall Then
+  WriteLn(F, Prefix, FmtAddr(XRefs[I].FromBlk, XRefs[I].FromAddr), ' CALL -> ',
+   FmtAddr(XRefs[I].ToBlk, XRefs[I].ToAddr), ' (', LabelOrAddr(XRefs[I].ToBlk, XRefs[I].ToAddr), ')')
+ Else
+  WriteLn(F, Prefix, FmtAddr(XRefs[I].FromBlk, XRefs[I].FromAddr), ' JMP/Jcc -> ',
+   FmtAddr(XRefs[I].ToBlk, XRefs[I].ToAddr), ' (', LabelOrAddr(XRefs[I].ToBlk, XRefs[I].ToAddr), ')');
+End;
+
 Procedure WriteListing;
-Var I: LongInt; Profiles: TString;
+Var I: LongInt; Profiles: TString; B: Integer; AnyForBlk: Boolean;
 Begin
  WriteLn(OutF, '; ============================================================');
  WriteLn(OutF, '; DISSYS v', DISSYS_VERSION, ' - Desassemblage de ', InputFileName);
@@ -2016,13 +2357,15 @@ Begin
  If OptHasBase Then
   WriteLn(OutF, '; Base de chargement   : ', HexLong(OptBase));
  If OptHasEntry Then
-  WriteLn(OutF, '; Point d''entree       : ', FmtAddr(OptEntry));
+  WriteLn(OutF, '; Point d''entree       : ', FmtAddr(0, OptEntry));
  WriteLn(OutF, '; DOS cible            : ', OptDosVerMajor, '.', OptDosVerMinor);
  Profiles := '';
  If OptModeSys    Then Profiles := Profiles + '/SYS ';
  If OptModeDriver Then Profiles := Profiles + '/DRIVER ';
  If OptModeKernel Then Profiles := Profiles + '/KERNEL ';
  If Profiles <> '' Then WriteLn(OutF, '; Profil(s) d''analyse  : ', Profiles);
+ If SegBlockCnt > 1 Then
+  WriteLn(OutF, '; Blocs de segments    : ', SegBlockCnt, ' (voir /SEG ci-dessous)');
  WriteLn(OutF, '; Genere le ', DISSYS_DATE);
  WriteLn(OutF, '; ============================================================');
  WriteLn(OutF);
@@ -2030,20 +2373,47 @@ Begin
  WriteDeviceHeaderBlock;
 
  SortDecodedByAddr;
- For I := 0 To DecodedCnt-1 Do
-  WriteOneInstruction(Decoded[I]);
+
+ { Un seul bloc (usage historique) : comportement EXACTEMENT identique a
+   avant, sans aucun en-tete de section supplementaire. Plusieurs blocs :
+   une section par bloc, dans l'ordre ou ils ont ete charges (bloc 0 =
+   fichier /O en premier), chacune montrant son segment/fichier/nombre
+   d'instructions - y compris les blocs charges mais JAMAIS atteints par
+   aucun CALL/JMP FAR (0 instruction), signe utile que ce segment n'est
+   peut-etre pas celui attendu ou n'est reellement appele que via un
+   pointeur FAR en donnees (voir /FARPTR). }
+ If SegBlockCnt <= 1 Then Begin
+  For I := 0 To DecodedCnt-1 Do
+   WriteOneInstruction(Decoded[I]);
+ End Else Begin
+  For B := 0 To SegBlockCnt-1 Do Begin
+   WriteLn(OutF, '; ------------------------------------------------------------');
+   If SegBlocks[B].BlkHasSeg Then
+    WriteLn(OutF, '; Bloc ', B, ' - segment ', HexWord(SegBlocks[B].RealSeg),
+     ' (', SegBlocks[B].FileName, '), ', SegBlocks[B].ImageSize, ' octets')
+   Else
+    WriteLn(OutF, '; Bloc ', B, ' - ', SegBlocks[B].FileName, ' (pas de segment /SEG), ',
+     SegBlocks[B].ImageSize, ' octets');
+   WriteLn(OutF, '; ------------------------------------------------------------');
+   AnyForBlk := False;
+   For I := 0 To DecodedCnt-1 Do
+    If Decoded[I].Blk = B Then Begin
+     WriteOneInstruction(Decoded[I]);
+     AnyForBlk := True;
+    End;
+   If Not AnyForBlk Then
+    WriteLn(OutF, '; (aucune instruction decodee - ce bloc n''a ete atteint par', ' aucun CALL/JMP FAR direct ni point d''entree)');
+   WriteLn(OutF);
+  End;
+ End;
 
  If OptXref Then Begin
   WriteLn(OutF);
   WriteLn(OutF, '; ------------------------------------------------------------');
   WriteLn(OutF, '; References croisees (/XREF)');
   WriteLn(OutF, '; ------------------------------------------------------------');
-  For I := 0 To XRefCnt-1 Do Begin
-   If XRefs[I].IsCall Then
-    WriteLn(OutF, '; ', FmtAddr(XRefs[I].FromAddr), ' CALL -> ', LabelOrAddr(XRefs[I].ToAddr))
-   Else
-    WriteLn(OutF, '; ', FmtAddr(XRefs[I].FromAddr), ' JMP/Jcc -> ', LabelOrAddr(XRefs[I].ToAddr));
-  End;
+  For I := 0 To XRefCnt-1 Do
+   WriteXRefLine(OutF, '; ', I);
  End;
 End;
 
@@ -2074,17 +2444,13 @@ Begin
    SYM_USER:   KindStr := 'user';
   Else KindStr := '?';
   End;
-  WriteLn(MapF, FmtAddr(Symbols[I].Addr), '  ', Pad(KindStr,13), '  ', Symbols[I].Name);
+  WriteLn(MapF, FmtAddr(Symbols[I].Blk, Symbols[I].Addr), '  ', Pad(KindStr,13), '  ', Symbols[I].Name);
  End;
  If OptXref Then Begin
   WriteLn(MapF);
   WriteLn(MapF, 'References croisees :');
-  For I := 0 To XRefCnt-1 Do Begin
-   If XRefs[I].IsCall Then
-    WriteLn(MapF, '  ', FmtAddr(XRefs[I].FromAddr), ' CALL -> ', LabelOrAddr(XRefs[I].ToAddr))
-   Else
-    WriteLn(MapF, '  ', FmtAddr(XRefs[I].FromAddr), ' JMP  -> ', LabelOrAddr(XRefs[I].ToAddr));
-  End;
+  For I := 0 To XRefCnt-1 Do
+   WriteXRefLine(MapF, '  ', I);
  End;
  Close(MapF);
 End;
@@ -2114,6 +2480,20 @@ Begin
  WriteLn('  /FMT:format      SYS | COM | EXE | RAW | AUTO (defaut AUTO)');
  WriteLn('  /DOS:version     3.30 | 5.00 | 6.22 | ... (filtre les fonctions connues)');
  WriteLn('  /ASM:syntaxe     MASM | TASM | NASM (defaut MASM)');
+ WriteLn;
+ WriteLn('Blocs de segments multiples (suivre CALL/JMP FAR entre plusieurs dumps) :');
+ WriteLn('  /SEG:xxxx=fichier.bin  Charge un bloc de SEGMENT SUPPLEMENTAIRE (repetable) -');
+ WriteLn('                   un dump brut de 64 Ko representant le segment xxxx. Un');
+ WriteLn('                   CALL/JMP FAR direct du fichier /O (ou d''un autre bloc)');
+ WriteLn('                   dont le segment correspond est alors REELLEMENT SUIVI,');
+ WriteLn('                   comme un vrai CPU le ferait en changeant CS - au lieu de');
+ WriteLn('                   s''arreter net ("segment non resoluble dans cette image").');
+ WriteLn('  /FARPTR:[xxxx:]yyyy    Sonde manuelle (repetable) : lit un pointeur FAR');
+ WriteLn('                   (mot offset puis mot segment) a l''offset yyyy du bloc');
+ WriteLn('                   xxxx (bloc 0 = fichier /O si omis) et le suit si son');
+ WriteLn('                   segment correspond a un bloc charge - utile pour du code');
+ WriteLn('                   atteint UNIQUEMENT via une table de sauts en donnees,');
+ WriteLn('                   qu''aucune analyse de flux statique ne peut decouvrir seule.');
  WriteLn;
  WriteLn('Mode de parcours :');
  WriteLn('  /R               Desassemblage RECURSIF (suit CALL/JMP/Jcc) - defaut');
@@ -2202,7 +2582,7 @@ Begin
 End;
 
 Procedure ParseArgs;
-Var I: Integer; Arg, SwName, SwVal: TString; HasVal: Boolean; GotFile: Boolean;
+Var I, EqPos: Integer; Arg, SwName, SwVal: TString; HasVal: Boolean; GotFile: Boolean;
 Begin
  InputFileName  := '';
  OutputFileName := '';
@@ -2238,6 +2618,9 @@ Begin
  OptDpb := False; OptSft := False; OptMcb := False; OptIndos := False;
  OptUseMap := False;
 
+ PendingSegCnt := 0;
+ FarProbeCnt := 0;
+
  GotFile := False;
  I := 1;
  While I <= ParamCount Do Begin
@@ -2252,7 +2635,8 @@ Begin
    If (Not HasVal) And
       ((SwName = 'O') Or (SwName = 'LIST') Or (SwName = 'MAP') Or (SwName = 'CPU') Or
        (SwName = 'ORG') Or (SwName = 'BASE') Or (SwName = 'ENTRY') Or
-       (SwName = 'SEG') Or (SwName = 'FMT') Or (SwName = 'DOS') Or (SwName = 'ASM')) And
+       (SwName = 'SEG') Or (SwName = 'FMT') Or (SwName = 'DOS') Or (SwName = 'ASM') Or
+       (SwName = 'FARPTR')) And
       (I < ParamCount) Then Begin
     Inc(I);
     SwVal := ParamStr(I);
@@ -2274,7 +2658,43 @@ Begin
    Else If SwName = 'ORG' Then Begin OptOrg := HexStrToLong(SwVal); OptHasOrg := True; End
    Else If SwName = 'BASE' Then Begin OptBase := HexStrToLong(SwVal); OptHasBase := True; End
    Else If SwName = 'ENTRY' Then Begin OptEntry := HexStrToLong(SwVal); OptHasEntry := True; End
-   Else If SwName = 'SEG' Then Begin OptSeg := Word(HexStrToLong(SwVal)); OptHasSeg := True; End
+   Else If SwName = 'SEG' Then Begin
+    { "/SEG:xxxx" (forme historique, un seul bloc) : fixe juste le segment
+      d'affichage du fichier /O. "/SEG:xxxx=fichier.bin" (NOUVEAU, repetable) :
+      charge un bloc de SEGMENT SUPPLEMENTAIRE - voir TSegBlock / l'enquete
+      HIMEM/MS-DOS 6.22 qui a motive cette extension (suivre un CALL/JMP FAR
+      a travers plusieurs dumps memoire distincts). }
+    EqPos := Pos('=', SwVal);
+    If EqPos > 0 Then Begin
+     If PendingSegCnt < MAX_SEGBLOCKS Then Begin
+      PendingSegVal[PendingSegCnt]  := Word(HexStrToLong(Copy(SwVal, 1, EqPos-1)));
+      PendingSegFile[PendingSegCnt] := Copy(SwVal, EqPos+1, Length(SwVal)-EqPos);
+      Inc(PendingSegCnt);
+     End;
+    End Else Begin
+     OptSeg := Word(HexStrToLong(SwVal)); OptHasSeg := True;
+    End;
+   End
+   Else If SwName = 'FARPTR' Then Begin
+    { "/FARPTR:[xxxx:]yyyy" (repetable) : a l'offset yyyy du bloc xxxx (ou du
+      bloc 0 si omis), lit un pointeur FAR (mot offset puis mot segment,
+      convention x86 standard) et le suit s'il tombe sur un segment charge -
+      utile pour atteindre du code qu'AUCUNE analyse de flux statique ne
+      peut decouvrir seule (appele uniquement via une table de sauts en
+      donnees, jamais par un CALL/JMP FAR direct). }
+    If FarProbeCnt < MAX_FARPROBES Then Begin
+     EqPos := Pos(':', SwVal);
+     If EqPos > 0 Then Begin
+      FarProbeSeg[FarProbeCnt]    := Word(HexStrToLong(Copy(SwVal, 1, EqPos-1)));
+      FarProbeOfs[FarProbeCnt]    := Word(HexStrToLong(Copy(SwVal, EqPos+1, Length(SwVal)-EqPos)));
+      FarProbeHasSeg[FarProbeCnt] := True;
+     End Else Begin
+      FarProbeOfs[FarProbeCnt]    := Word(HexStrToLong(SwVal));
+      FarProbeHasSeg[FarProbeCnt] := False;
+     End;
+     Inc(FarProbeCnt);
+    End;
+   End
    Else If SwName = 'FMT' Then Begin
     SwVal := UpStr(SwVal);
     If SwVal = 'SYS' Then OptFormat := FMT_SYS
@@ -2346,6 +2766,9 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 
+Var
+ MainB: Integer; MainI: Integer;
+ ProbeSrcBlk, ProbeDstBlk: Integer; ProbeFarOfs, ProbeFarSeg: Word; ProbeTargetAddr: LongInt;
 BEGIN
  ParseArgs;
 
@@ -2363,14 +2786,54 @@ BEGIN
  XRefCnt := 0;
  WorkQueueCnt := 0;
  DecodedCnt := 0;
+ SegBlockCnt := 0;
 
  If OptVerbose Then WriteLn('[V] Detection du format et des points d''entree...');
  SetupFormatAndEntries;
  If OptVerbose Then Begin
   WriteLn('[V] Format retenu     : ', FormatName);
   WriteLn('[V] Origine (ORG)     : ', HexWord(Word(OptOrg)));
-  If OptHasEntry Then WriteLn('[V] Point d''entree    : ', FmtAddr(OptEntry));
+  If OptHasEntry Then WriteLn('[V] Point d''entree    : ', FmtAddr(0, OptEntry));
   If HasDeviceHeader Then WriteLn('[V] Device Header reconnu - Strategy/Interrupt mis en file.');
+ End;
+
+ RegisterBlock0;
+
+ { Blocs de segments SUPPLEMENTAIRES (/SEG:xxxx=fichier.bin) - charges
+   maintenant que le bloc 0 a pris sa place (index 0 garanti). }
+ For MainI := 0 To PendingSegCnt-1 Do Begin
+  If LoadExtraSegBlock(PendingSegVal[MainI], PendingSegFile[MainI]) Then Begin
+   If Not OptQuiet Then
+    WriteLn('Bloc supplementaire charge : segment ', HexWord(PendingSegVal[MainI]),
+     ' <- ', PendingSegFile[MainI], ' (', SegBlocks[SegBlockCnt-1].ImageSize, ' octets)');
+  End;
+ End;
+ If (SegBlockCnt > 1) And OptVerbose Then
+  WriteLn('[V] ', SegBlockCnt, ' blocs de segments charges au total.');
+
+ { Sondes de pointeur FAR manuelles (/FARPTR:[xxxx:]yyyy) - lues et suivies
+   AVANT le moteur recursif, pour que leurs cibles (si resolues) soient
+   dans la file d'attente initiale exactement comme un point d'entree. }
+ For MainI := 0 To FarProbeCnt-1 Do Begin
+  If FarProbeHasSeg[MainI] Then ProbeSrcBlk := FindBlockBySeg(FarProbeSeg[MainI])
+  Else ProbeSrcBlk := 0;
+  If ProbeSrcBlk < 0 Then Begin
+   If Not OptQuiet Then WriteLn('Avertissement /FARPTR : segment source ', HexWord(FarProbeSeg[MainI]), ' non charge, sonde ignoree.');
+   Continue;
+  End;
+  ProbeFarOfs := GetWordAtBlk(ProbeSrcBlk, FarProbeOfs[MainI]);
+  ProbeFarSeg := GetWordAtBlk(ProbeSrcBlk, LongInt(FarProbeOfs[MainI]) + 2);
+  ProbeDstBlk := FindBlockBySeg(ProbeFarSeg);
+  If ProbeDstBlk < 0 Then Begin
+   If Not OptQuiet Then WriteLn('/FARPTR a ', FmtAddr(ProbeSrcBlk, OfsToAddrBlk(ProbeSrcBlk, FarProbeOfs[MainI])),
+    ' pointe vers ', HexWord(ProbeFarSeg), ':', HexWord(ProbeFarOfs), ' - segment non charge, non suivi.');
+   Continue;
+  End;
+  ProbeTargetAddr := OfsToAddrBlk(ProbeDstBlk, LongInt(ProbeFarOfs));
+  AddSymbol(ProbeDstBlk, ProbeTargetAddr, SYM_ENTRY, AutoSymbolName(ProbeDstBlk, ProbeTargetAddr, SYM_ENTRY));
+  QueuePush(ProbeDstBlk, ProbeTargetAddr);
+  If Not OptQuiet Then WriteLn('/FARPTR a ', FmtAddr(ProbeSrcBlk, OfsToAddrBlk(ProbeSrcBlk, FarProbeOfs[MainI])),
+   ' suivi vers ', FmtAddr(ProbeDstBlk, ProbeTargetAddr), '.');
  End;
 
  If OptVerbose Then WriteLn('[V] Moteur recursif (file d''attente initiale : ', WorkQueueCnt, ' adresse(s))...');
@@ -2378,21 +2841,21 @@ BEGIN
  If OptVerbose Then WriteLn('[V] Moteur recursif termine : ', DecodedCnt, ' instruction(s) decodee(s).');
 
  If OptLinear Then Begin
-  If OptVerbose Then WriteLn('[V] Passe lineaire (/L) sur tout l''intervalle...');
-  RunLinearPass(OfsToAddr(0), OfsToAddr(ImageSize));
+  If OptVerbose Then WriteLn('[V] Passe lineaire (/L) sur le bloc 0...');
+  RunLinearPass(0, OfsToAddrBlk(0, 0), OfsToAddrBlk(0, SegBlocks[0].ImageSize));
  End;
 
  If OptData Or OptStrings Then Begin
-  If OptVerbose Then WriteLn('[V] Detection de donnees/chaines dans les octets restants...');
-  RunDataDetection;
+  If OptVerbose Then WriteLn('[V] Detection de donnees/chaines dans les octets restants (tous blocs)...');
+  For MainB := 0 To SegBlockCnt-1 Do RunDataDetection(MainB);
  End;
 
  If OptMcb And OptVerbose Then WriteLn('[V] Recherche de motifs de signature MCB (''M''/''Z'')...');
  ScanMcbPatterns;
 
  If OptReloc And OptHdr And (Not OptQuiet) And (OptFormat = FMT_EXE) Then
-  WriteLn('Remarque /RELOC : les cibles de CALL/JMP FAR vers un autre segment ne',
-          ' sont pas resolues (hors de la portee d''une image a segment unique).');
+  WriteLn('Remarque /RELOC : les cibles de CALL/JMP FAR vers un segment non charge',
+          ' via /SEG:xxxx=fichier.bin ne sont pas resolues.');
 
  {$I-}
  Assign(OutF, OutputFileName);
