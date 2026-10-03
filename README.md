@@ -567,6 +567,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permert de lancer le desassembleur de fichiers .RES (ressources Windows) vers .RC</td>
 		</tr>
 		<tr>
+			<td><b>DISSYS.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembleur de noyaux et pilotes DOS.</td>
+		</tr>
+		<tr>
 			<td><b>DISZ80.PAS</b></td>
 			<td>Cette commande permet de désassembler un code binaire de microprocesseur Z80 en langage de programmation assembleur Z80.</td>
 		</tr>
