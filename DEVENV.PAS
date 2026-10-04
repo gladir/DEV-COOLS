@@ -176961,6 +176961,116 @@ Begin
  Emu_LoadExeAt := True;
 End;
 
+{ EXEC AL=03h ("Load Overlay", INT 21h AH=4Bh) - 2026-10-04, demande        }
+{ explicite de l utilisateur, poursuite directe de l enquete division par  }
+{ zero : notre gestionnaire AH=4Bh rejetait jusqu ici TOUT AL<>0 avec une  }
+{ erreur DOS (voir le commentaire de tete du Case $4B ci-dessous). AL=03h  }
+{ EST pourtant une vraie fonction EXEC publique - combinaison des bits      }
+{ EXEC_FUNC_OVERLAY (2) + EXEC_FUNC_NO_EXECUTE (1), voir le vrai            }
+{ inc\exe.inc de MS-DOS 6.0 (KDOS_BUILD) - utilisee par SYSINIT pour        }
+{ charger un pilote CONFIG.SYS au format .EXE (ex. SETVER.EXE) SANS         }
+{ creer de nouveau processus : voir dos\misc.asm                           }
+{ $CREATE_PROCESS_DATA_BLOCK dans le vrai source - le drapeau interne       }
+{ "CreatePDB" y reste a 0 pour ce chemin, donc AUCUN PSP n est cree         }
+{ (fidele au vrai DOS : un overlay n est jamais un processus a part         }
+{ entiere, juste une image chargee+relogee dans de la memoire DEJA          }
+{ allouee par l appelant - voir Ralf Brown Interrupt List, INT 21h          }
+{ AH=4Bh AL=03h). C est cette absence meme de PSP qui, dans le VRAI noyau,  }
+{ fait que le contexte "CurrentPDB" au moment de l appel reste celui de     }
+{ l appelant (SYSINIT) tout du long - comportement authentique, pas un      }
+{ bogue Microsoft, mais confirme ici pour que notre propre DOS interne       }
+{ (utilise par Start-DosProgram, independant du VRAI noyau booté via        }
+{ BOOT/Start-KernelDos) se comporte de facon identique plutot que de         }
+{ simplement echouer AL=03h comme avant. }
+{ Format du bloc parametre a ES:BX (DIFFERENT du bloc EXEC normal           }
+{ AL=0/1) : +0 Word = segment de chargement (ou les octets de l image       }
+{ sont places), +2 Word = facteur de relogement (ajoute a chaque entree     }
+{ segment de la table de relogement - PEUT differer du segment de           }
+{ chargement, voir Ralf Brown Interrupt List). }
+Function Emu_LoadExeOverlay(Var C: TEmuCPU; Const FileName: String;
+ LoadSeg, RelocFactor: Word): Boolean;
+Var
+ HeadSize, Addr, RPos, N: LongInt;
+ I: LongInt;
+ Handle: File;
+ ByteReaded: Word;
+ Exe: TEmuHeaderEXE;
+ Buffer: Array[0..255] Of Byte;
+ Reloc: Array[0..1] Of Word;
+ ROff, RSeg, RVal: Word;
+Begin
+ Emu_LoadExeOverlay := False;
+ {$I-}
+ Assign(Handle, FileName);
+ Reset(Handle, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ { BOGUE REEL CORRIGE (2026-10-04, trouve en mettant au point ce chantier  }
+ { "-Device"/EXEC AL=03h) : FileSize(Handle) sur ce handle (File non type, }
+ { Reset(..,1)) declenchait une erreur d execution FPC non rattrapable      }
+ { (sortie immediate du processus hote, code 217) alors que                }
+ { Assign+Reset seuls sont inoffensifs - cause exacte non elucidee (voir    }
+ { Emu_LoadComAt plus haut, qui utilise pourtant EXACTEMENT le meme         }
+ { FileSize(Handle) sans probleme ailleurs dans ce fichier). Contourne      }
+ { entierement l appel : la boucle de lecture ci-dessous s arrete deja      }
+ { sur Eof(Handle), donc Sz/FileSize n etaient utiles qu a fixer une        }
+ { LIMITE qui n a pas lieu d etre pour une image chargee integralement.     }
+ Seek(Handle, 0);
+ BlockRead(Handle, Exe, SizeOf(Exe), ByteReaded);
+ If (ByteReaded = SizeOf(Exe)) And (Exe.Sign[0] = 'M') And (Exe.Sign[1] = 'Z') Then Begin
+  { En-tete MZ reel : meme calcul de taille d image + meme boucle de        }
+  { chargement/relogement exactement que Emu_LoadExeAt ci-dessus, mais      }
+  { LoadSeg/RelocFactor sont FOURNIS PAR L APPELANT (pas derives d un PSP - }
+  { il n y en a pas ici). }
+  HeadSize := Exe.SizeOfHeader * 16;
+  N := (LongInt(Exe.LenShr9) - 1) * 512 + LongInt(Exe.LenN511) - HeadSize;
+  If N < 0 Then N := 0;
+  Addr := LongInt(LoadSeg) Shl 4;
+  Seek(Handle, HeadSize);
+  While (Not Eof(Handle)) And (N > 0) Do Begin
+   I := SizeOf(Buffer);
+   If LongInt(I) > N Then I := N;
+   BlockRead(Handle, Buffer, I, ByteReaded);
+   Emu_WriteAbsBlock(C, Addr, Buffer, ByteReaded);
+   Addr := Addr + ByteReaded;
+   N := N - ByteReaded;
+   If ByteReaded < I Then Break;
+  End;
+  Seek(Handle, Exe.AdrExeTable);
+  For I := 1 To Exe.NmSeg Do Begin
+   BlockRead(Handle, Reloc, SizeOf(Reloc), ByteReaded);
+   If ByteReaded <> SizeOf(Reloc) Then Break;
+   ROff := Reloc[0];
+   RSeg := Word(RelocFactor + Reloc[1]);
+   RPos := LongInt(ROff) + 16 * LongInt(RSeg);
+   Emu_ReadAbsBlock(C, RPos, RVal, 2);
+   RVal := Word(RVal + RelocFactor);
+   Emu_WriteAbsBlock(C, RPos, RVal, 2);
+  End;
+ End Else Begin
+  { Pas d en-tete MZ valide : chargement brut (style .COM) a LoadSeg:0000,  }
+  { sans relogement - meme convention que le vrai DOS pour un overlay       }
+  { non-MZ. Lit jusqu a Eof(Handle) - voir le commentaire plus haut sur      }
+  { l abandon de FileSize(Handle)/Sz, N n a donc plus besoin que d etre      }
+  { une limite "assez grande" (jamais realiste a atteindre : un overlay     }
+  { tient toujours dans un seul segment de 64 Ko). }
+  Seek(Handle, 0);
+  Addr := LongInt(LoadSeg) Shl 4;
+  N := 65536;
+  While (Not Eof(Handle)) And (N > 0) Do Begin
+   I := SizeOf(Buffer);
+   If LongInt(I) > N Then I := N;
+   BlockRead(Handle, Buffer, I, ByteReaded);
+   Emu_WriteAbsBlock(C, Addr, Buffer, ByteReaded);
+   Addr := Addr + ByteReaded;
+   N := N - ByteReaded;
+   If ByteReaded < I Then Break;
+  End;
+ End;
+ Close(Handle);
+ Emu_LoadExeOverlay := True;
+End;
+
 Function Emu_LoadExe(Var C: TEmuCPU; Const FileName: String): Boolean;
 Begin
  If EmuLoadFixArmOnLoad Then Begin
@@ -185223,6 +185333,7 @@ Var
  ExecFrame: TEmuExecFrame;
  ExecChildSeg, ExecArenaSeg, ExecTailOfs, ExecTailSeg: Word;
  ExecTailLen: Byte;
+ ExecOvlSeg, ExecOvlReloc: Word; { AL=3 (overlay), voir Emu_LoadExeOverlay }
  ExecLoadOk: Boolean;
  ExecI: Integer;
  { --- FCB (AH=0Fh/10h/14h/16h/29h) : voir Emu_FcbParse/Emu_FcbBuildName --- }
@@ -186192,13 +186303,54 @@ Begin
     End;
    End;
   $4B:
-   { EXEC - Load and Execute Program. Seul AL=0 (charger et executer) est   }
-   { pris en charge ; AL=1/3 (charger sans executer / overlay) retournent   }
-   { une erreur DOS explicite plutot que d echouer silencieusement - rares  }
-   { et non necessaires pour NC.EXE/NCMAIN.EXE. Voir Emu_DosTerminate pour  }
-   { le chemin de retour (AH=00/31/4C de l enfant). }
+   { EXEC - Load and Execute Program. AL=0 (charger et executer) et AL=3    }
+   { (charger un overlay, voir Emu_LoadExeOverlay - 2026-10-04, demande     }
+   { explicite de l utilisateur poursuivant l enquete division par zero)    }
+   { sont pris en charge ; AL=1 (charger sans executer, bloc parametre      }
+   { ETENDU avec retour de SS/SP/CS/IP - jamais demande, aucun appelant     }
+   { connu dans ce projet n en a besoin) retourne encore une erreur DOS     }
+   { explicite plutot que d echouer silencieusement. Voir Emu_DosTerminate  }
+   { pour le chemin de retour (AH=00/31/4C de l enfant, AL=0 uniquement). }
    Begin
-    If P.CPU.Regs.AL <> 0 Then
+    If P.CPU.Regs.AL = 3 Then Begin
+     { Bloc parametre OVERLAY (ES:BX), DIFFERENT du bloc EXEC normal        }
+     { AL=0/1 - voir le commentaire de tete d Emu_LoadExeOverlay. }
+     ExecChildPath := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.DS, P.CPU.Regs.DX);
+     ExecHostPath := Emu_HostPath(ExecChildPath);
+     If Not FileExists(ExecHostPath) And (EmuExeDir <> '') Then Begin
+      ExecI := Length(ExecChildPath);
+      While (ExecI > 0) And (ExecChildPath[ExecI] <> '\') And (ExecChildPath[ExecI] <> '/') Do
+       Dec(ExecI);
+      If FileExists(EmuExeDir + '\' + Copy(ExecChildPath, ExecI + 1, Length(ExecChildPath) - ExecI)) Then
+       ExecHostPath := EmuExeDir + '\' + Copy(ExecChildPath, ExecI + 1, Length(ExecChildPath) - ExecI);
+     End;
+     { BOGUE REEL CORRIGE (2026-10-04, trouve en mettant au point ce          }
+     { chantier via une instrumentation temporaire) : un pointeur DS:DX       }
+     { invalide (ex. programme invite bogue, comme le tout premier            }
+     { TESTOVL.COM hand-assemble de cette session) peut produire un           }
+     { ExecChildPath VIDE (ASCIIZ dont le premier octet est deja 00). Hors,    }
+     { FileExists('') renvoie True sur ce systeme (Reset(F,1) sur un nom      }
+     { de fichier vide reussit - cause exacte non elucidee, voir le           }
+     { commentaire equivalent dans Emu_LoadExeOverlay sur FileSize), et le     }
+     { BlockRead qui suit a l interieur d Emu_LoadExeOverlay BLOQUE ALORS      }
+     { INDEFINIMENT (observe : plus de 5h sans avancer, 0% CPU, fenetre       }
+     { totalement figee - l IDE entier devient inutilisable). Un garde-fou    }
+     { explicite ICI (avant meme FileExists) est plus sur que de corriger     }
+     { FileExists globalement (utilisee par des centaines d appelants). }
+     If ExecChildPath = '' Then
+      Emu_SetDosErr(P, 2)
+     Else If Not FileExists(ExecHostPath) Then
+      Emu_SetDosErr(P, 2)
+     Else Begin
+      ExecOvlSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX);
+      ExecOvlReloc := Emu_ReadWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.BX + 2);
+      If Emu_LoadExeOverlay(P.CPU, ExecHostPath, ExecOvlSeg, ExecOvlReloc) Then
+       Exclude(P.CPU.Flags.s, EFG_CF)
+      Else
+       Emu_SetDosErr(P, 2);
+     End;
+    End
+    Else If P.CPU.Regs.AL <> 0 Then
      Emu_SetDosErr(P, 1)
     Else If EmuExecDepth >= MAX_EMU_EXEC_DEPTH Then
      Emu_SetDosErr(P, 8)
