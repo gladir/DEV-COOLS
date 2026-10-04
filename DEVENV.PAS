@@ -1372,7 +1372,8 @@ Const
  { Limites des fenetres et onglets }
  MAX_WINDOWS           = 32;
  MAX_TABS              = 64;
- MAX_FRM_VIS_CONTROLS  = 256;    { controles max dans l apercu .FRM }
+ { MAX_FRM_VIS_CONTROLS retire (2026-10-04) : TFormEditor.Controls est    }
+ { desormais une liste chainee sans plafond, voir TFRMVisControlNode. }
  MAX_EXT_ENTRIES       = 64;     { backends/compagnons catalogues par }
                                  { le Gestionnaire d extensions        }
 
@@ -1392,10 +1393,9 @@ Const
   ('', 'LABEL', 'TEXTBOX', 'COMMANDBUTTON', 'CHECKBOX', 'OPTIONBUTTON',
    'FRAME', 'LISTBOX', 'COMBOBOX');
 
- { Limites des menus }
- MAX_MENUS             = 16;
- MAX_MENU_ITEMS        = 32;
- MAX_CTX_ITEMS         = 32;      { items max menu contextuel     }
+ { MAX_MENUS/MAX_MENU_ITEMS/MAX_CTX_ITEMS retires (2026-10-04) :           }
+ { TMenuBar.Menus, TMenu.Items et TContextMenu.Items sont desormais des    }
+ { listes chainees sans plafond, voir TMenuNode/TMenuItemNode. }
 
  { Limites de l editeur de texte }
  MAX_LINES             = 65536;
@@ -2682,19 +2682,40 @@ Type
   IconIndex  : Integer;       { index d icone (futur)           }
  End;
 
+ { Noeud de liste chainee partage par TMenu.Items/TContextMenu.Items -   }
+ { remplace les tableaux Array[0..MAX_xxx-1] Of TMenuItem a taille fixe  }
+ { (demande explicite 2026-10-04 : plus de plafond, memoire proportion-   }
+ { nelle a l usage reel). Voir MenuItemNodeAppend/MenuItemNodeAt/         }
+ { MenuItemListFree ci-dessous. }
+ PMenuItemNode = ^TMenuItemNode;
+ TMenuItemNode = Record
+  Item : TMenuItem;
+  Next : PMenuItemNode;
+ End;
+
  { Menu deroulant }
  PMenu = ^TMenu;
  TMenu = Record
   Title      : String[31];    { titre affiche dans la barre     }
-  Items      : Array[0..MAX_MENU_ITEMS - 1] Of TMenuItem;
+  Head       : PMenuItemNode; { tete de la liste chainee d items        }
+  Tail       : PMenuItemNode; { queue, pour ajout O(1)                  }
   ItemCount  : Integer;       { nombre d elements               }
   X          : Integer;       { position X du menu ouvert       }
   Width      : Integer;       { largeur du menu ouvert          }
  End;
 
+ { Noeud de liste chainee pour TMenuBar.Menus - remplace le tableau       }
+ { Array[0..MAX_MENUS-1] Of TMenu a taille fixe. }
+ PMenuNode = ^TMenuNode;
+ TMenuNode = Record
+  M    : TMenu;
+  Next : PMenuNode;
+ End;
+
  { Barre de menus }
  TMenuBar = Record
-  Menus      : Array[0..MAX_MENUS - 1] Of TMenu;
+  Head       : PMenuNode;      { tete de la liste chainee de menus       }
+  Tail       : PMenuNode;      { queue, pour ajout O(1)                  }
   MenuCount  : Integer;       { nombre de menus                 }
   Y          : Integer;       { position Y (0 = haut)           }
   Height     : Integer;       { hauteur de la barre             }
@@ -2702,7 +2723,8 @@ Type
 
  { Menu contextuel (clic droit) }
  TContextMenu = Record
-  Items      : Array[0..MAX_CTX_ITEMS - 1] Of TMenuItem;
+  Head       : PMenuItemNode; { tete de la liste chainee d items        }
+  Tail       : PMenuItemNode; { queue, pour ajout O(1)                  }
   ItemCount  : Integer;       { nombre d elements               }
   X, Y       : Integer;       { position d affichage            }
   Width      : Integer;       { largeur calculee                }
@@ -2769,15 +2791,11 @@ Type
   Maximized  : Boolean;       { fenetre maximisee               }
  End;
 
- { Gestionnaire de fenetres }
- TWindowManager = Record
-  Windows    : Array[0..MAX_WINDOWS - 1] Of TEditorWindow;
-  WinCount   : Integer;       { nombre de fenetres ouvertes     }
-  ActiveIdx  : Integer;       { index de la fenetre active      }
-  TabScrollX : Integer;       { defilement des onglets          }
-  SplitMode  : Boolean;       { vue fractionnee active          }
-  SplitPos   : Integer;       { position du separateur (pixels) }
- End;
+ { TWindowManager declare plus bas (apres TDOSSnapshot/TWindowNode) : il    }
+ { a besoin de PWindowNode, dont la definition complete depend de types    }
+ { (TEmulatorPanel, les T*Snapshot) pas encore connus ici, et ce fichier   }
+ { n autorise pas le type pointeur en avant au-dela d une section Const/   }
+ { Type intermediaire (voir le bloc Const juste apres TToolBar plus bas). }
 
  { Type de fin de ligne }
  TLineEnding = (
@@ -2956,6 +2974,19 @@ Type
   CtlHeight: LongInt;
  End;
 
+ { Noeud de liste chainee pour TFormEditor.Controls - remplace le         }
+ { tableau Array[0..MAX_FRM_VIS_CONTROLS-1] Of TFRMVisControl a taille    }
+ { fixe. Simplement chainee, ajout en QUEUE (voir AppendFormControl) :    }
+ { le dessin (plus ancien en premier) reste un simple parcours avant      }
+ { depuis CtlHead ; le hit-test (plus RECENT en premier, "au-dessus       }
+ { gagne") se fait via un parcours RECURSIF (FormHitTestRec) qui descend  }
+ { jusqu a la queue puis teste en remontant - pas besoin de pointeur Prev.}
+ PFRMVisControlNode = ^TFRMVisControlNode;
+ TFRMVisControlNode = Record
+  Ctl  : TFRMVisControl;
+  Next : PFRMVisControlNode;
+ End;
+
  { Editeur de formulaire visuel d un fichier .FRM (bloc concepteur    }
  { VERSION/Begin VB.Form/...) : grille de points, boite a outils a    }
  { gauche, barres de defilement H/V, ajout de controles par clic      }
@@ -2969,7 +3000,8 @@ Type
   FormWidth    : LongInt;        { twips                            }
   FormHeight   : LongInt;        { twips                            }
   ControlCount : Integer;
-  Controls     : Array[0..MAX_FRM_VIS_CONTROLS - 1] Of TFRMVisControl;
+  CtlHead      : PFRMVisControlNode; { tete de la liste chainee de controles }
+  CtlTail      : PFRMVisControlNode; { queue, pour ajout O(1)                }
   X            : Integer;        { position X de la zone            }
   Y            : Integer;        { position Y de la zone            }
   Width        : Integer;        { largeur de la zone               }
@@ -6023,6 +6055,56 @@ Type
   ExecDepth      : Integer;
  End;
 
+ { Noeud de liste chainee pour WinMgr.Windows - remplace le tableau       }
+ { Array[0..MAX_WINDOWS-1] Of TEditorWindow a taille fixe ET les 16       }
+ { tableaux globaux paralleles qui partageaient son index comme cle       }
+ { etrangere (Editors/HexEditors/GridEditors/FormEditors/EmuTabs/les 10   }
+ { T*Snapshot - voir l ancien bloc Var pres de la declaration de WinMgr). }
+ { Doit etre declare ICI (apres TDOSSnapshot, le plus tardif des types    }
+ { embarques en valeur) et non a l emplacement historique de              }
+ { TWindowManager (trop tot - PEditor/TEmulatorPanel/etc n existent pas   }
+ { encore a ce point du fichier). BrowserTabs[] (PBrowserState) reste a   }
+ { part : son type depend du bloc importe BROWSER.PAS, bien plus loin -   }
+ { indexe desormais par Node^.Win.TabIndex au lieu d une position de       }
+ { tableau brute. }
+ PWindowNode = ^TWindowNode;
+ TWindowNode = Record
+  Win            : TEditorWindow;
+  Editor         : PEditor;
+  HexEditor      : PHexEditor;
+  GridEditor     : PGridEditor;
+  FormEditor     : PFormEditor;
+  EmuTab         : TEmulatorPanel;
+  C64Snap        : TC64Snapshot;
+  NesSnap        : TNesSnapshot;
+  A2600Snap      : TA2600Snapshot;
+  Coco3Snap      : TCoco3Snapshot;
+  AppleAtariSnap : TAppleAtariSnapshot;
+  M68KSnap       : TM68KSnapshot;
+  CraySnap       : TCraySnapshot;
+  PCode2Snap     : TPCode2Snapshot;
+  Z80Snap        : TZ80Snapshot;
+  DOSSnap        : TDOSSnapshot;
+  Next           : PWindowNode;
+ End;
+
+ { Gestionnaire de fenetres - Head/Tail/liste chainee de PWindowNode       }
+ { remplacent l ancien tableau Windows: Array[0..MAX_WINDOWS-1] Of         }
+ { TEditorWindow ET les 16 tableaux globaux paralleles qui partageaient    }
+ { son index comme cle etrangere. ActiveNode cache le noeud actif en      }
+ { O(1) - indispensable, le motif Windows[WinMgr.ActiveIdx] apparait       }
+ { ~140 fois dans ce fichier sur des chemins tres chauds (dessin, saisie). }
+ TWindowManager = Record
+  Head       : PWindowNode;
+  Tail       : PWindowNode;
+  ActiveNode : PWindowNode;
+  WinCount   : Integer;       { nombre de fenetres ouvertes     }
+  ActiveIdx  : Integer;       { index de la fenetre active      }
+  TabScrollX : Integer;       { defilement des onglets          }
+  SplitMode  : Boolean;       { vue fractionnee active          }
+  SplitPos   : Integer;       { position du separateur (pixels) }
+ End;
+
  { En-tete de fichier ELF64 (executable Linux x86-64) - seuls les champs  }
  { necessaires au chargement d un executable statique sont exploites.    }
  TELF64Header = Record
@@ -7370,8 +7452,12 @@ Var
  TooltipVisible: Boolean;     { infobulle affichee              }
  { Gestionnaire de fenetres }
  WinMgr       : TWindowManager;
- { Editeurs de texte (un par fenetre) }
- Editors      : Array[0..MAX_WINDOWS - 1] Of PEditor;
+ { Editors/HexEditors/GridEditors/FormEditors/EmuTabs/les 10 T*Snapshot    }
+ { (tableaux Array[0..MAX_WINDOWS-1] a taille fixe) sont retires           }
+ { (2026-10-04) : chaque champ vit maintenant directement dans             }
+ { TWindowNode (Node^.Editor/HexEditor/GridEditor/FormEditor/EmuTab/       }
+ { *Snap), alloue a la demande - plus de plafond MAX_WINDOWS. Voir         }
+ { TWindowNode pres de TDOSSnapshot. }
  ActiveEditor : TEditor;
  EditorSel    : TSelection;
  EditorClip   : TClipboard;
@@ -7384,40 +7470,15 @@ Var
  { base 0 (meme convention que Ed.CursorLine), 0 = aucune erreur active. }
  ErrorHighlightLine : LongInt;
  ErrorHighlightFile : String;
- { Editeurs hexadecimaux (un par fenetre de type WK_HEX) }
- HexEditors     : Array[0..MAX_WINDOWS - 1] Of PHexEditor;
  ActiveHexEditor: THexEditor;
- { Editeurs grille - DBF/Clarion/Btrieve/CSV/MyISAM (un par fenetre de     }
- { type WK_GRID) - meme motif que HexEditors[]/ActiveHexEditor. }
- GridEditors     : Array[0..MAX_WINDOWS - 1] Of PGridEditor;
  ActiveGridEditor: TGridEditor;
- { BrowserTabs[]/ActiveBrowserState (onglets WK_BROWSER, meme motif que
-   GridEditors[]/ActiveGridEditor) NE PEUVENT PAS etre declares ici :
-   TBrowserState/PBrowserState dependent de types (HTMLNodePtr, JSContext,
-   CSSStylesheet...) qui n'existent qu'a partir du bloc importe de
-   BROWSER.PAS, bien plus loin dans ce fichier - contrairement a
-   TGridEditor/PGridEditor (Type, ligne 2851/2893), tous deux deja
-   disponibles ici. Voir leur declaration reelle juste apres
-   "PBrowserState = ^TBrowserState;" dans le bloc importe. }
- { Editeurs de formulaire (un par fenetre de type WK_FORM) }
- FormEditors     : Array[0..MAX_WINDOWS - 1] Of PFormEditor;
+ { BrowserTabs[] (onglets WK_BROWSER) reste un tableau a part (voir         }
+ { TWindowNode) : TBrowserState/PBrowserState dependent de types            }
+ { (HTMLNodePtr, JSContext, CSSStylesheet...) qui n'existent qu'a partir    }
+ { du bloc importe de BROWSER.PAS, bien plus loin dans ce fichier - sa      }
+ { declaration reelle reste juste apres "PBrowserState = ^TBrowserState;"   }
+ { dans le bloc importe. }
  ActiveFormEditor: TFormEditor;
- { Onglets emulateur (Stage 2, un par fenetre de type WK_EMU) - meme motif }
- { que Editors[]/ActiveEditor : EmuPanel EST le panneau "actif" (utilise    }
- { tel quel par les ~200 references existantes dans le fichier), EmuTabs[]  }
- { stocke celui des onglets INACTIFS. C64Snaps[] stocke en plus l etat      }
- { C64 qui vit hors de TEmulatorPanel (CPU6502_*/C64_*, voir TC64Snapshot). }
- EmuTabs      : Array[0..MAX_WINDOWS - 1] Of TEmulatorPanel;
- C64Snaps     : Array[0..MAX_WINDOWS - 1] Of TC64Snapshot;
- NesSnaps     : Array[0..MAX_WINDOWS - 1] Of TNesSnapshot;
- A2600Snaps   : Array[0..MAX_WINDOWS - 1] Of TA2600Snapshot;
- Coco3Snaps   : Array[0..MAX_WINDOWS - 1] Of TCoco3Snapshot;
- AppleAtariSnaps : Array[0..MAX_WINDOWS - 1] Of TAppleAtariSnapshot;
- M68KSnaps    : Array[0..MAX_WINDOWS - 1] Of TM68KSnapshot;
- CraySnaps    : Array[0..MAX_WINDOWS - 1] Of TCraySnapshot;
- PCode2Snaps  : Array[0..MAX_WINDOWS - 1] Of TPCode2Snapshot;
- Z80Snaps     : Array[0..MAX_WINDOWS - 1] Of TZ80Snapshot;
- DOSSnaps     : Array[0..MAX_WINDOWS - 1] Of TDOSSnapshot;
  { Coloration syntaxique C }
  CHL          : TCHighlighter;
  { Coloration syntaxique C# }
@@ -13377,6 +13438,50 @@ End;
 
 { --- Utilitaires de menu --- }
 
+{ Primitives de liste chainee partagees par TMenu.Items/TContextMenu.Items }
+{ (voir TMenuItemNode, bloc de types pres de TMenuItem) - remplacent les   }
+{ anciens tableaux Array[0..MAX_xxx-1] Of TMenuItem a taille fixe. }
+
+Procedure MenuItemNodeAppend(Var Head, Tail: PMenuItemNode;
+ Const NewItem: TMenuItem);
+Var
+ Node: PMenuItemNode;
+Begin
+ New(Node);
+ Node^.Item := NewItem;
+ Node^.Next := Nil;
+ If Tail = Nil Then Head := Node Else Tail^.Next := Node;
+ Tail := Node;
+End;
+
+Function MenuItemNodeAt(Head: PMenuItemNode; Idx: Integer): PMenuItemNode;
+Var
+ Node: PMenuItemNode;
+ I: Integer;
+Begin
+ Node := Head;
+ I := 0;
+ While (Node <> Nil) And (I < Idx) Do Begin
+  Node := Node^.Next;
+  Inc(I);
+ End;
+ If I = Idx Then MenuItemNodeAt := Node Else MenuItemNodeAt := Nil;
+End;
+
+Procedure MenuItemListFree(Var Head, Tail: PMenuItemNode);
+Var
+ Node, Nxt: PMenuItemNode;
+Begin
+ Node := Head;
+ While Node <> Nil Do Begin
+  Nxt := Node^.Next;
+  Dispose(Node);
+  Node := Nxt;
+ End;
+ Head := Nil;
+ Tail := Nil;
+End;
+
 Procedure InitMenuItem(Var MI: TMenuItem; ACaption: String;
                        AShortCut: String; ATag: LongInt;
                        ASep: Boolean);
@@ -13392,24 +13497,28 @@ End;
 
 Procedure AddMenuItem(Var M: TMenu; ACaption: String;
                       AShortCut: String; ATag: LongInt);
+Var
+ NewItem: TMenuItem;
 Begin
- If M.ItemCount < MAX_MENU_ITEMS Then Begin
-  InitMenuItem(M.Items[M.ItemCount], ACaption, AShortCut, ATag, False);
-  Inc(M.ItemCount);
- End;
+ InitMenuItem(NewItem, ACaption, AShortCut, ATag, False);
+ MenuItemNodeAppend(M.Head, M.Tail, NewItem);
+ Inc(M.ItemCount);
 End;
 
 Procedure AddMenuSeparator(Var M: TMenu);
+Var
+ NewItem: TMenuItem;
 Begin
- If M.ItemCount < MAX_MENU_ITEMS Then Begin
-  InitMenuItem(M.Items[M.ItemCount], '', '', 0, True);
-  Inc(M.ItemCount);
- End;
+ InitMenuItem(NewItem, '', '', 0, True);
+ MenuItemNodeAppend(M.Head, M.Tail, NewItem);
+ Inc(M.ItemCount);
 End;
 
 Procedure InitMenu(Var M: TMenu; ATitle: String);
 Begin
  M.Title := ATitle;
+ M.Head := Nil;
+ M.Tail := Nil;
  M.ItemCount := 0;
  M.X := 0;
  M.Width := 0;
@@ -13417,25 +13526,62 @@ End;
 
 Function MenuItemWidth(Var M: TMenu): Integer;
 Var
- I, W, MaxW: Integer;
+ W, MaxW: Integer;
+ Node: PMenuItemNode;
 Begin
  MaxW := 0;
- For I := 0 To M.ItemCount - 1 Do Begin
-  If Not M.Items[I].Separator Then Begin
-   W := Length(M.Items[I].Caption) + Length(M.Items[I].ShortCut) + 4;
+ Node := M.Head;
+ While Node <> Nil Do Begin
+  If Not Node^.Item.Separator Then Begin
+   W := Length(Node^.Item.Caption) + Length(Node^.Item.ShortCut) + 4;
    If W > MaxW Then
     MaxW := W;
   End;
+  Node := Node^.Next;
  End;
  MenuItemWidth := MaxW * 8 + 16;
+End;
+
+{ Primitives de liste chainee pour TMenuBar.Menus - remplacent le tableau }
+{ Array[0..MAX_MENUS-1] Of TMenu a taille fixe. Voir TMenuNode. }
+
+Function AppendMenu(Var MB: TMenuBar; ATitle: String): PMenu;
+Var
+ Node: PMenuNode;
+Begin
+ New(Node);
+ InitMenu(Node^.M, ATitle);
+ Node^.Next := Nil;
+ If MB.Tail = Nil Then MB.Head := Node Else MB.Tail^.Next := Node;
+ MB.Tail := Node;
+ Inc(MB.MenuCount);
+ AppendMenu := @Node^.M;
+End;
+
+Function MenuNodeAt(Head: PMenuNode; Idx: Integer): PMenuNode;
+Var
+ Node: PMenuNode;
+ I: Integer;
+Begin
+ Node := Head;
+ I := 0;
+ While (Node <> Nil) And (I < Idx) Do Begin
+  Node := Node^.Next;
+  Inc(I);
+ End;
+ If I = Idx Then MenuNodeAt := Node Else MenuNodeAt := Nil;
 End;
 
 { --- Initialisation de la barre de menus Visual Studio --- }
 
 Procedure InitMenuBar;
 Var
- XPos, I: Integer;
+ XPos: Integer;
+ CurMenu: PMenu;
+ MenuNode: PMenuNode;
 Begin
+ MainMenuBar.Head := Nil;
+ MainMenuBar.Tail := Nil;
  MainMenuBar.MenuCount := 0;
  MainMenuBar.Y := 0;
  MainMenuBar.Height := MENUBAR_HEIGHT;
@@ -13446,161 +13592,154 @@ Begin
  MenuBgSaved := False;
 
  { Menu Fichier }
- InitMenu(MainMenuBar.Menus[0], 'Fichier');
- AddMenuItem(MainMenuBar.Menus[0], 'Nouveau projet...', 'Ctrl+Maj+N', 100);
- AddMenuItem(MainMenuBar.Menus[0], 'Nouveau fichier...', 'Ctrl+N', 101);
- AddMenuItem(MainMenuBar.Menus[0], 'Nouvelle solution...', '', 102);
- AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir projet/solution...', 'Ctrl+Shift+O', 110);
- AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir fichier...', 'Ctrl+O', 111);
- AddMenuItem(MainMenuBar.Menus[0], 'Ouvrir dossier...', '', 112);
- AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Fermer', 'Ctrl+W', 120);
- AddMenuItem(MainMenuBar.Menus[0], 'Fermer la solution', '', 121);
- AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer', 'Ctrl+S', 130);
- AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer sous...', '', 131);
- AddMenuItem(MainMenuBar.Menus[0], 'Enregistrer tout', 'Ctrl+Shift+S', 132);
- AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Imprimer...', 'Ctrl+P', 140);
- AddMenuItem(MainMenuBar.Menus[0], 'Aper'+#135+'u avant impression', '', 141);
- AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Fichiers r'+#130+'cents', '', 150);
- AddMenuItem(MainMenuBar.Menus[0], 'Projets r'+#130+'cents', '', 151);
- AddMenuSeparator(MainMenuBar.Menus[0]);
- AddMenuItem(MainMenuBar.Menus[0], 'Quitter', 'Alt+F4', 199);
- MainMenuBar.MenuCount := 1;
+ CurMenu := AppendMenu(MainMenuBar, 'Fichier');
+ AddMenuItem(CurMenu^, 'Nouveau projet...', 'Ctrl+Maj+N', 100);
+ AddMenuItem(CurMenu^, 'Nouveau fichier...', 'Ctrl+N', 101);
+ AddMenuItem(CurMenu^, 'Nouvelle solution...', '', 102);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Ouvrir projet/solution...', 'Ctrl+Shift+O', 110);
+ AddMenuItem(CurMenu^, 'Ouvrir fichier...', 'Ctrl+O', 111);
+ AddMenuItem(CurMenu^, 'Ouvrir dossier...', '', 112);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Fermer', 'Ctrl+W', 120);
+ AddMenuItem(CurMenu^, 'Fermer la solution', '', 121);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Enregistrer', 'Ctrl+S', 130);
+ AddMenuItem(CurMenu^, 'Enregistrer sous...', '', 131);
+ AddMenuItem(CurMenu^, 'Enregistrer tout', 'Ctrl+Shift+S', 132);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Imprimer...', 'Ctrl+P', 140);
+ AddMenuItem(CurMenu^, 'Aper'+#135+'u avant impression', '', 141);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Fichiers r'+#130+'cents', '', 150);
+ AddMenuItem(CurMenu^, 'Projets r'+#130+'cents', '', 151);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Quitter', 'Alt+F4', 199);
 
  { Menu Edition }
- InitMenu(MainMenuBar.Menus[1], 'Edition');
- AddMenuItem(MainMenuBar.Menus[1], 'Annuler', 'Ctrl+Z', 200);
- AddMenuItem(MainMenuBar.Menus[1], 'R'+#130+'tablir', 'Ctrl+Y', 201);
- AddMenuSeparator(MainMenuBar.Menus[1]);
- AddMenuItem(MainMenuBar.Menus[1], 'Couper', 'Ctrl+X', 210);
- AddMenuItem(MainMenuBar.Menus[1], 'Copier', 'Ctrl+C', 211);
- AddMenuItem(MainMenuBar.Menus[1], 'Coller', 'Ctrl+V', 212);
- AddMenuItem(MainMenuBar.Menus[1], 'Supprimer', 'Delete', 213);
- AddMenuSeparator(MainMenuBar.Menus[1]);
- AddMenuItem(MainMenuBar.Menus[1], 'S'+#130+'lectionner tout', 'Ctrl+A', 220);
- AddMenuSeparator(MainMenuBar.Menus[1]);
- AddMenuItem(MainMenuBar.Menus[1], 'Rechercher...', 'Ctrl+F', 230);
- AddMenuItem(MainMenuBar.Menus[1], 'Remplacer...', 'Ctrl+H', 231);
- AddMenuItem(MainMenuBar.Menus[1], 'Aller '+#133+' la ligne...', 'Ctrl+G', 232);
- AddMenuSeparator(MainMenuBar.Menus[1]);
- AddMenuItem(MainMenuBar.Menus[1], 'Indenter', 'Tab', 240);
- AddMenuItem(MainMenuBar.Menus[1], 'D'+#130+'sindenter', 'Shift+Tab', 241);
- AddMenuItem(MainMenuBar.Menus[1], 'Mettre en majuscules', '', 242);
- AddMenuItem(MainMenuBar.Menus[1], 'Mettre en minuscules', '', 243);
- AddMenuSeparator(MainMenuBar.Menus[1]);
- AddMenuItem(MainMenuBar.Menus[1], 'Signet : activer', 'Ctrl+K,K', 250);
- AddMenuItem(MainMenuBar.Menus[1], 'Signet : suivant', 'Ctrl+K,N', 251);
- AddMenuItem(MainMenuBar.Menus[1], 'Signet : pr'+#130+'c'+#130+'dent', 'Ctrl+K,P', 252);
- AddMenuItem(MainMenuBar.Menus[1], 'Signet : effacer tout', 'Ctrl+K,L', 253);
- MainMenuBar.MenuCount := 2;
+ CurMenu := AppendMenu(MainMenuBar, 'Edition');
+ AddMenuItem(CurMenu^, 'Annuler', 'Ctrl+Z', 200);
+ AddMenuItem(CurMenu^, 'R'+#130+'tablir', 'Ctrl+Y', 201);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Couper', 'Ctrl+X', 210);
+ AddMenuItem(CurMenu^, 'Copier', 'Ctrl+C', 211);
+ AddMenuItem(CurMenu^, 'Coller', 'Ctrl+V', 212);
+ AddMenuItem(CurMenu^, 'Supprimer', 'Delete', 213);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'S'+#130+'lectionner tout', 'Ctrl+A', 220);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Rechercher...', 'Ctrl+F', 230);
+ AddMenuItem(CurMenu^, 'Remplacer...', 'Ctrl+H', 231);
+ AddMenuItem(CurMenu^, 'Aller '+#133+' la ligne...', 'Ctrl+G', 232);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Indenter', 'Tab', 240);
+ AddMenuItem(CurMenu^, 'D'+#130+'sindenter', 'Shift+Tab', 241);
+ AddMenuItem(CurMenu^, 'Mettre en majuscules', '', 242);
+ AddMenuItem(CurMenu^, 'Mettre en minuscules', '', 243);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Signet : activer', 'Ctrl+K,K', 250);
+ AddMenuItem(CurMenu^, 'Signet : suivant', 'Ctrl+K,N', 251);
+ AddMenuItem(CurMenu^, 'Signet : pr'+#130+'c'+#130+'dent', 'Ctrl+K,P', 252);
+ AddMenuItem(CurMenu^, 'Signet : effacer tout', 'Ctrl+K,L', 253);
 
  { Menu Affichage }
- InitMenu(MainMenuBar.Menus[2], 'Affichage');
- AddMenuItem(MainMenuBar.Menus[2], 'Explorateur de solution', 'Ctrl+Alt+L', 300);
- AddMenuItem(MainMenuBar.Menus[2], 'Sortie', 'Ctrl+Alt+O', 301);
- AddMenuItem(MainMenuBar.Menus[2], 'Liste d''erreurs', 'Ctrl+\+E', 302);
- AddMenuItem(MainMenuBar.Menus[2], 'Terminal', 'Ctrl+`', 303);
- AddMenuItem(MainMenuBar.Menus[2], 'Explorateur d''objets SQL Server,...', '', 304);
- AddMenuItem(MainMenuBar.Menus[2], 'Propri'+#130+'t'+#130+'s', 'Ctrl+Alt+P', 305);
- AddMenuSeparator(MainMenuBar.Menus[2]);
- AddMenuItem(MainMenuBar.Menus[2], 'Barre d''outils', '', 310);
- AddMenuItem(MainMenuBar.Menus[2], 'Plein '+#130+'cran', 'Shift+Alt+Enter', 311);
- AddMenuSeparator(MainMenuBar.Menus[2]);
- AddMenuItem(MainMenuBar.Menus[2], 'Signets', '', 320);
- AddMenuItem(MainMenuBar.Menus[2], 'Pile d''appels', '', 321);
- AddMenuItem(MainMenuBar.Menus[2], 'Espion', '', 322);
- AddMenuItem(MainMenuBar.Menus[2], 'Points d''arr'+#136+'t', '', 323);
- AddMenuSeparator(MainMenuBar.Menus[2]);
- AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en arri'+#138+'re', 'Ctrl+-', 330);
- AddMenuItem(MainMenuBar.Menus[2], 'Naviguer en avant', 'Ctrl+Shift+-', 331);
- MainMenuBar.MenuCount := 3;
+ CurMenu := AppendMenu(MainMenuBar, 'Affichage');
+ AddMenuItem(CurMenu^, 'Explorateur de solution', 'Ctrl+Alt+L', 300);
+ AddMenuItem(CurMenu^, 'Sortie', 'Ctrl+Alt+O', 301);
+ AddMenuItem(CurMenu^, 'Liste d''erreurs', 'Ctrl+\+E', 302);
+ AddMenuItem(CurMenu^, 'Terminal', 'Ctrl+`', 303);
+ AddMenuItem(CurMenu^, 'Explorateur d''objets SQL Server,...', '', 304);
+ AddMenuItem(CurMenu^, 'Propri'+#130+'t'+#130+'s', 'Ctrl+Alt+P', 305);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Barre d''outils', '', 310);
+ AddMenuItem(CurMenu^, 'Plein '+#130+'cran', 'Shift+Alt+Enter', 311);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Signets', '', 320);
+ AddMenuItem(CurMenu^, 'Pile d''appels', '', 321);
+ AddMenuItem(CurMenu^, 'Espion', '', 322);
+ AddMenuItem(CurMenu^, 'Points d''arr'+#136+'t', '', 323);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Naviguer en arri'+#138+'re', 'Ctrl+-', 330);
+ AddMenuItem(CurMenu^, 'Naviguer en avant', 'Ctrl+Shift+-', 331);
 
  { Menu Projet }
- InitMenu(MainMenuBar.Menus[3], 'Projet');
- AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un '+#130+'l'+#130+'ment existant...', 'Shift+Alt+A', 400);
- AddMenuItem(MainMenuBar.Menus[3], 'Ajouter un nouvel '+#130+'l'''+#130+'ment...', 'Ctrl+Shift+A', 401);
- AddMenuItem(MainMenuBar.Menus[3], 'Exclure du projet', '', 402);
- AddMenuSeparator(MainMenuBar.Menus[3]);
- AddMenuItem(MainMenuBar.Menus[3], 'Propri'+#130+'t'+#130+'s du projet', '', 410);
- AddMenuItem(MainMenuBar.Menus[3], 'Ajouter une r'+#130+'f'+#130+'rence...', '', 411);
- AddMenuItem(MainMenuBar.Menus[3], 'G'+#130+'rer les packages NuGet...', '', 412);
- MainMenuBar.MenuCount := 4;
+ CurMenu := AppendMenu(MainMenuBar, 'Projet');
+ AddMenuItem(CurMenu^, 'Ajouter un '+#130+'l'+#130+'ment existant...', 'Shift+Alt+A', 400);
+ AddMenuItem(CurMenu^, 'Ajouter un nouvel '+#130+'l'''+#130+'ment...', 'Ctrl+Shift+A', 401);
+ AddMenuItem(CurMenu^, 'Exclure du projet', '', 402);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Propri'+#130+'t'+#130+'s du projet', '', 410);
+ AddMenuItem(CurMenu^, 'Ajouter une r'+#130+'f'+#130+'rence...', '', 411);
+ AddMenuItem(CurMenu^, 'G'+#130+'rer les packages NuGet...', '', 412);
 
  { Menu Generer }
- InitMenu(MainMenuBar.Menus[4], 'G'+#130+'n'+#130+'rer');
- AddMenuItem(MainMenuBar.Menus[4], 'G'+#130+'n'+#130+'rer la solution', 'F6', 500);
- AddMenuItem(MainMenuBar.Menus[4], 'Reg'+#130+'n'+#130+'rer la solution', '', 501);
- AddMenuSeparator(MainMenuBar.Menus[4]);
- AddMenuItem(MainMenuBar.Menus[4], 'G'+#130+'n'+#130+'rer le projet', '', 510);
- AddMenuSeparator(MainMenuBar.Menus[4]);
- AddMenuItem(MainMenuBar.Menus[4], 'Nettoyer la solution', '', 520);
- AddMenuItem(MainMenuBar.Menus[4], 'Nettoyer le projet', '', 521);
- AddMenuSeparator(MainMenuBar.Menus[4]);
- AddMenuItem(MainMenuBar.Menus[4], 'Gestionnaire de configuration...', '', 530);
- MainMenuBar.MenuCount := 5;
+ CurMenu := AppendMenu(MainMenuBar, 'G'+#130+'n'+#130+'rer');
+ AddMenuItem(CurMenu^, 'G'+#130+'n'+#130+'rer la solution', 'F6', 500);
+ AddMenuItem(CurMenu^, 'Reg'+#130+'n'+#130+'rer la solution', '', 501);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'G'+#130+'n'+#130+'rer le projet', '', 510);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Nettoyer la solution', '', 520);
+ AddMenuItem(CurMenu^, 'Nettoyer le projet', '', 521);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Gestionnaire de configuration...', '', 530);
 
  { Menu Deboguer }
- InitMenu(MainMenuBar.Menus[5], 'D'+#130+'boguer');
- AddMenuItem(MainMenuBar.Menus[5], 'D'+#130+'marrer le debogage', 'F5', 600);
- AddMenuItem(MainMenuBar.Menus[5], 'D'+#130+'marrer sans debogage', 'Ctrl+F5', 601);
- AddMenuSeparator(MainMenuBar.Menus[5]);
- AddMenuItem(MainMenuBar.Menus[5], 'Point d''arr'+#136+'t', 'F9', 610);
- AddMenuSeparator(MainMenuBar.Menus[5]);
- AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas principal', 'F10', 620);
- AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas detaille', 'F11 ou Ctrl+F10', 621);
- AddMenuItem(MainMenuBar.Menus[5], 'Pas a pas sortant', 'Shift+F11 ou Alt+F10', 622);
- AddMenuItem(MainMenuBar.Menus[5], 'Animer', '', 623);
- AddMenuSeparator(MainMenuBar.Menus[5]);
- AddMenuItem(MainMenuBar.Menus[5], 'Arr'+#136+'ter le d'+#130+'bogage', 'Shift+F5', 630);
- AddMenuSeparator(MainMenuBar.Menus[5]);
- AddMenuItem(MainMenuBar.Menus[5], 'Activit'+#130+'s observ'+#130+'es...', '', 650);
- AddMenuItem(MainMenuBar.Menus[5], 'Commandes...', '', 651);
- AddMenuItem(MainMenuBar.Menus[5], 'D'+#130+'sassembler l''ex'+#130+'cutable...', '', 660);
- MainMenuBar.MenuCount := 6;
+ CurMenu := AppendMenu(MainMenuBar, 'D'+#130+'boguer');
+ AddMenuItem(CurMenu^, 'D'+#130+'marrer le debogage', 'F5', 600);
+ AddMenuItem(CurMenu^, 'D'+#130+'marrer sans debogage', 'Ctrl+F5', 601);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Point d''arr'+#136+'t', 'F9', 610);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Pas a pas principal', 'F10', 620);
+ AddMenuItem(CurMenu^, 'Pas a pas detaille', 'F11 ou Ctrl+F10', 621);
+ AddMenuItem(CurMenu^, 'Pas a pas sortant', 'Shift+F11 ou Alt+F10', 622);
+ AddMenuItem(CurMenu^, 'Animer', '', 623);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Arr'+#136+'ter le d'+#130+'bogage', 'Shift+F5', 630);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Activit'+#130+'s observ'+#130+'es...', '', 650);
+ AddMenuItem(CurMenu^, 'Commandes...', '', 651);
+ AddMenuItem(CurMenu^, 'D'+#130+'sassembler l''ex'+#130+'cutable...', '', 660);
 
  { Menu Outils }
- InitMenu(MainMenuBar.Menus[6], 'Outils');
- AddMenuItem(MainMenuBar.Menus[6], 'Options...', '', 700);
- AddMenuItem(MainMenuBar.Menus[6], 'Disque virtuel...', '', 705);
- AddMenuItem(MainMenuBar.Menus[6], 'Personnaliser...', '', 701);
- AddMenuSeparator(MainMenuBar.Menus[6]);
- AddMenuItem(MainMenuBar.Menus[6], 'Gestionnaire d''extensions...', '', 710);
- AddMenuSeparator(MainMenuBar.Menus[6]);
- AddMenuItem(MainMenuBar.Menus[6], 'Ligne de commande externe', '', 720);
- AddMenuItem(MainMenuBar.Menus[6], 'COMMENT', '', 721);
- AddMenuItem(MainMenuBar.Menus[6], 'RePascal', '', 722);
- MainMenuBar.MenuCount := 7;
+ CurMenu := AppendMenu(MainMenuBar, 'Outils');
+ AddMenuItem(CurMenu^, 'Options...', '', 700);
+ AddMenuItem(CurMenu^, 'Disque virtuel...', '', 705);
+ AddMenuItem(CurMenu^, 'Personnaliser...', '', 701);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Gestionnaire d''extensions...', '', 710);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Ligne de commande externe', '', 720);
+ AddMenuItem(CurMenu^, 'COMMENT', '', 721);
+ AddMenuItem(CurMenu^, 'RePascal', '', 722);
 
  { Menu Fenetre }
- InitMenu(MainMenuBar.Menus[7], 'Fen'+#136+'tre');
- AddMenuItem(MainMenuBar.Menus[7], 'Nouvelle fen'+#136+'tre', '', 800);
- AddMenuItem(MainMenuBar.Menus[7], 'Fractionner', '', 801);
- AddMenuSeparator(MainMenuBar.Menus[7]);
- AddMenuItem(MainMenuBar.Menus[7], 'Fermer toutes les fen'+#136+'tres', '', 810);
- AddMenuSeparator(MainMenuBar.Menus[7]);
- AddMenuItem(MainMenuBar.Menus[7], 'Fen'+#136+'tre suivante', 'Ctrl+F6', 820);
- AddMenuItem(MainMenuBar.Menus[7], 'Fen'+#136+'tre pr'+#136+'c'+#136+'dente', 'Ctrl+Shift+F6', 821);
- MainMenuBar.MenuCount := 8;
+ CurMenu := AppendMenu(MainMenuBar, 'Fen'+#136+'tre');
+ AddMenuItem(CurMenu^, 'Nouvelle fen'+#136+'tre', '', 800);
+ AddMenuItem(CurMenu^, 'Fractionner', '', 801);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Fermer toutes les fen'+#136+'tres', '', 810);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Fen'+#136+'tre suivante', 'Ctrl+F6', 820);
+ AddMenuItem(CurMenu^, 'Fen'+#136+'tre pr'+#136+'c'+#136+'dente', 'Ctrl+Shift+F6', 821);
 
  { Menu Aide }
- InitMenu(MainMenuBar.Menus[8], 'Aide');
- AddMenuItem(MainMenuBar.Menus[8], 'A propos de DEVENV', '', 900);
- AddMenuItem(MainMenuBar.Menus[8], 'Documentation en ligne', 'F1', 901);
- AddMenuSeparator(MainMenuBar.Menus[8]);
- AddMenuItem(MainMenuBar.Menus[8], 'Raccourcis clavier', '', 910);
- AddMenuItem(MainMenuBar.Menus[8], 'Bienvenue', '', 911);
- MainMenuBar.MenuCount := 9;
+ CurMenu := AppendMenu(MainMenuBar, 'Aide');
+ AddMenuItem(CurMenu^, 'A propos de DEVENV', '', 900);
+ AddMenuItem(CurMenu^, 'Documentation en ligne', 'F1', 901);
+ AddMenuSeparator(CurMenu^);
+ AddMenuItem(CurMenu^, 'Raccourcis clavier', '', 910);
+ AddMenuItem(CurMenu^, 'Bienvenue', '', 911);
 
  { Calculer les positions X et largeurs }
  XPos := 4;
- For I := 0 To MainMenuBar.MenuCount - 1 Do Begin
-  MainMenuBar.Menus[I].X := XPos;
-  MainMenuBar.Menus[I].Width := MenuItemWidth(MainMenuBar.Menus[I]);
-  XPos := XPos + Length(MainMenuBar.Menus[I].Title) * 8 + 16;
+ MenuNode := MainMenuBar.Head;
+ While MenuNode <> Nil Do Begin
+  MenuNode^.M.X := XPos;
+  MenuNode^.M.Width := MenuItemWidth(MenuNode^.M);
+  XPos := XPos + Length(MenuNode^.M.Title) * 8 + 16;
+  MenuNode := MenuNode^.Next;
  End;
 End;
 
@@ -14080,18 +14219,23 @@ Procedure PushUndo(Var Stack: TUndoStack; Action: TUndoAction;
 
 Procedure GetMenuRect(Idx: Integer; Var X1,Y1,X2,Y2: Integer);
 Var
- M: TMenu;
- MW, MH, I, SW: Integer;
+ M: TMenu;    { copie superficielle - M.Head/Tail aliasent la liste reelle }
+              { du noeud MenuNodeAt(MainMenuBar.Head, Idx) ; lecture seule  }
+              { ici, jamais mutee/liberee via M - voir TMenuItemNode. }
+ MW, MH, SW: Integer;
+ Node: PMenuItemNode;
 Begin
- M := MainMenuBar.Menus[Idx];
+ M := MenuNodeAt(MainMenuBar.Head, Idx)^.M;
  X1 := M.X;
  Y1 := MainMenuBar.Height;
  MW := M.Width;
  If MW < 160 Then MW := 160;
  MH := 4;
- For I := 0 To M.ItemCount - 1 Do Begin
-  If M.Items[I].Separator Then MH := MH + 8
+ Node := M.Head;
+ While Node <> Nil Do Begin
+  If Node^.Item.Separator Then MH := MH + 8
   Else MH := MH + 16;
+  Node := Node^.Next;
  End;
  { Si le menu deroulant deborde a droite, le decaler vers la gauche
    pour qu il reste totalement visible }
@@ -14137,6 +14281,7 @@ Procedure DrawIcon16x16(X, Y: Integer; Var Icon: TIcon16); Forward;
 Procedure DrawMenuBar;
 Var
  I, TX, BX, BY: Integer;
+ MenuNode: PMenuNode;
 Begin
  { Fond de la barre }
  SetColor(CLR_MENUBAR);
@@ -14154,18 +14299,22 @@ Begin
       GetScreenWidth - 1, MainMenuBar.Y + MainMenuBar.Height - 1);
  { Titres des menus }
  TX := 4;
- For I := 0 To MainMenuBar.MenuCount - 1 Do Begin
+ I := 0;
+ MenuNode := MainMenuBar.Head;
+ While MenuNode <> Nil Do Begin
   If I = OpenMenuIdx Then Begin
    SetColor(CLR_MENU_HIGHLIGHT);
    SetFillStyle(SolidFill, CLR_MENU_HIGHLIGHT);
    Bar(TX - 4, MainMenuBar.Y,
-       TX + Length(MainMenuBar.Menus[I].Title) * 8 + 12,
+       TX + Length(MenuNode^.M.Title) * 8 + 12,
        MainMenuBar.Y + MainMenuBar.Height - 2);
    SetColor(CLR_EDITOR_BG);
   End Else
    SetColor(CLR_MENU_TEXT);
-  OutTextXY(TX, MainMenuBar.Y + 4, MainMenuBar.Menus[I].Title);
-  TX := TX + Length(MainMenuBar.Menus[I].Title) * 8 + 16;
+  OutTextXY(TX, MainMenuBar.Y + 4, MenuNode^.M.Title);
+  TX := TX + Length(MenuNode^.M.Title) * 8 + 16;
+  Inc(I);
+  MenuNode := MenuNode^.Next;
  End;
  { Bouton de zoom ecran (plein ecran / VGA 640x480), coin sup. droit }
  BX := GetScreenWidth - SCRZOOM_BTN_SIZE - SCRZOOM_BTN_MARGIN;
@@ -14184,19 +14333,22 @@ End;
 Procedure DrawOpenMenu;
 Var
  I, YPos, MX, MW, MH, SW: Integer;
- M: TMenu;
+ M: TMenu;    { copie superficielle - voir le commentaire de GetMenuRect }
+ Node: PMenuItemNode;
 Begin
  If OpenMenuIdx < 0 Then Exit;
- M := MainMenuBar.Menus[OpenMenuIdx];
+ M := MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M;
  MX := M.X;
  MW := M.Width;
  If MW < 160 Then MW := 160;
  MH := 4;
- For I := 0 To M.ItemCount - 1 Do Begin
-  If M.Items[I].Separator Then
+ Node := M.Head;
+ While Node <> Nil Do Begin
+  If Node^.Item.Separator Then
    MH := MH + 8
   Else
    MH := MH + 16;
+  Node := Node^.Next;
  End;
  { Decalage vers la gauche si le menu deroulant deborde a droite,
    afin qu il reste totalement visible. Doit etre coherent avec
@@ -14223,8 +14375,10 @@ Begin
  Rectangle(MX, MainMenuBar.Height, MX + MW, MainMenuBar.Height + MH);
  { Items }
  YPos := MainMenuBar.Height + 2;
- For I := 0 To M.ItemCount - 1 Do Begin
-  If M.Items[I].Separator Then Begin
+ I := 0;
+ Node := M.Head;
+ While Node <> Nil Do Begin
+  If Node^.Item.Separator Then Begin
    SetColor(CLR_BORDER);
    Line(MX + 2, YPos + 3, MX + MW - 2, YPos + 3);
    YPos := YPos + 8;
@@ -14235,27 +14389,29 @@ Begin
     Bar(MX + 1, YPos, MX + MW - 1, YPos + 15);
     SetColor(CLR_EDITOR_BG);
    End Else Begin
-    If Not M.Items[I].Enabled Then
+    If Not Node^.Item.Enabled Then
      SetColor(CLR_BORDER)
     Else
      SetColor(CLR_MENU_TEXT);
    End;
    { Coche }
-   If M.Items[I].Checked Then
+   If Node^.Item.Checked Then
     OutTextXY(MX + 4, YPos + 2, #251);
    { Caption }
-   OutTextXY(MX + 16, YPos + 2, M.Items[I].Caption);
+   OutTextXY(MX + 16, YPos + 2, Node^.Item.Caption);
    { Raccourci }
-   If Length(M.Items[I].ShortCut) > 0 Then Begin
+   If Length(Node^.Item.ShortCut) > 0 Then Begin
     If I = SelItemIdx Then
      SetColor(CLR_EDITOR_BG)
     Else
      SetColor(CLR_BORDER);
-    OutTextXY(MX + MW - Length(M.Items[I].ShortCut) * 8 - 8,
-              YPos + 2, M.Items[I].ShortCut);
+    OutTextXY(MX + MW - Length(Node^.Item.ShortCut) * 8 - 8,
+              YPos + 2, Node^.Item.ShortCut);
    End;
    YPos := YPos + 16;
   End;
+  Inc(I);
+  Node := Node^.Next;
  End;
 End;
 
@@ -14727,18 +14883,23 @@ End;
 Function MenuBarHitTest(MX, MY: Integer): Integer;
 Var
  I, TX, TW: Integer;
+ MenuNode: PMenuNode;
 Begin
  MenuBarHitTest := -1;
  If (MY < MainMenuBar.Y) Or
     (MY >= MainMenuBar.Y + MainMenuBar.Height) Then Exit;
  TX := 0;
- For I := 0 To MainMenuBar.MenuCount - 1 Do Begin
-  TW := Length(MainMenuBar.Menus[I].Title) * 8 + 16;
+ I := 0;
+ MenuNode := MainMenuBar.Head;
+ While MenuNode <> Nil Do Begin
+  TW := Length(MenuNode^.M.Title) * 8 + 16;
   If (MX >= TX) And (MX < TX + TW) Then Begin
    MenuBarHitTest := I;
    Exit;
   End;
   TX := TX + TW;
+  Inc(I);
+  MenuNode := MenuNode^.Next;
  End;
 End;
 
@@ -14760,11 +14921,12 @@ End;
 Function MenuItemHitTest(MX, MY: Integer): Integer;
 Var
  I, YPos, MW, MXOrig, SW: Integer;
- M: TMenu;
+ M: TMenu;    { copie superficielle - voir le commentaire de GetMenuRect }
+ Node: PMenuItemNode;
 Begin
  MenuItemHitTest := -1;
  If OpenMenuIdx < 0 Then Exit;
- M := MainMenuBar.Menus[OpenMenuIdx];
+ M := MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M;
  MW := M.Width;
  If MW < 160 Then MW := 160;
  { Appliquer le meme decalage que DrawOpenMenu/GetMenuRect quand le menu
@@ -14775,17 +14937,21 @@ Begin
  If MXOrig < 0 Then MXOrig := 0;
  If (MX < MXOrig) Or (MX > MXOrig + MW) Then Exit;
  YPos := MainMenuBar.Height + 2;
- For I := 0 To M.ItemCount - 1 Do Begin
-  If M.Items[I].Separator Then
+ I := 0;
+ Node := M.Head;
+ While Node <> Nil Do Begin
+  If Node^.Item.Separator Then
    YPos := YPos + 8
   Else Begin
    If (MY >= YPos) And (MY < YPos + 16) Then Begin
-    If M.Items[I].Enabled Then
+    If Node^.Item.Enabled Then
      MenuItemHitTest := I;
     Exit;
    End;
    YPos := YPos + 16;
   End;
+  Inc(I);
+  Node := Node^.Next;
  End;
 End;
 
@@ -14827,7 +14993,7 @@ Begin
   If MenuActive And (OpenMenuIdx >= 0) Then Begin
    ItemHit := MenuItemHitTest(Ev.MouseX, Ev.MouseY);
    If ItemHit >= 0 Then Begin
-    ExecuteMenuItem(MainMenuBar.Menus[OpenMenuIdx].Items[ItemHit]);
+    ExecuteMenuItem(MenuItemNodeAt(MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.Head, ItemHit)^.Item);
     Exit;
    End;
    { Clic ailleurs : fermer }
@@ -14861,10 +15027,10 @@ Begin
        If SelItemIdx > 0 Then
         Dec(SelItemIdx)
        Else
-        SelItemIdx := MainMenuBar.Menus[OpenMenuIdx].ItemCount - 1;
+        SelItemIdx := MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.ItemCount - 1;
        { Sauter les separateurs }
        While (SelItemIdx >= 0) And
-             MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx].Separator Do
+             MenuItemNodeAt(MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.Head, SelItemIdx)^.Item.Separator Do
         Dec(SelItemIdx);
        DrawOpenMenu;
       End;
@@ -14872,13 +15038,13 @@ Begin
     80: { Fleche bas }
      Begin
       If OpenMenuIdx >= 0 Then Begin
-       If SelItemIdx < MainMenuBar.Menus[OpenMenuIdx].ItemCount - 1 Then
+       If SelItemIdx < MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.ItemCount - 1 Then
         Inc(SelItemIdx)
        Else
         SelItemIdx := 0;
        { Sauter les separateurs }
-       While (SelItemIdx < MainMenuBar.Menus[OpenMenuIdx].ItemCount) And
-             MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx].Separator Do
+       While (SelItemIdx < MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.ItemCount) And
+             MenuItemNodeAt(MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.Head, SelItemIdx)^.Item.Separator Do
         Inc(SelItemIdx);
        DrawOpenMenu;
       End;
@@ -14900,7 +15066,7 @@ Begin
     28: { Entree }
      Begin
       If (SelItemIdx >= 0) And (OpenMenuIdx >= 0) Then
-       ExecuteMenuItem(MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx]);
+       ExecuteMenuItem(MenuItemNodeAt(MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.Head, SelItemIdx)^.Item);
      End;
     1:  { Echap }
      CloseMenu;
@@ -14927,7 +15093,7 @@ Begin
    Case Ev.KeyChar Of
     #13: Begin { Entree : valider l element pointe par la souris }
           If (SelItemIdx >= 0) And (OpenMenuIdx >= 0) Then
-           ExecuteMenuItem(MainMenuBar.Menus[OpenMenuIdx].Items[SelItemIdx]);
+           ExecuteMenuItem(MenuItemNodeAt(MenuNodeAt(MainMenuBar.Head, OpenMenuIdx)^.M.Head, SelItemIdx)^.Item);
          End;
     #27: CloseMenu; { Echap : fermer le menu }
    End;
@@ -14943,23 +15109,34 @@ End;
 
 Function CountMenuItems: Integer;
 Var
- I, Total: Integer;
+ Total: Integer;
+ MenuNode: PMenuNode;
 Begin
  Total := 0;
- For I := 0 To MainMenuBar.MenuCount - 1 Do
-  Total := Total + MainMenuBar.Menus[I].ItemCount;
+ MenuNode := MainMenuBar.Head;
+ While MenuNode <> Nil Do Begin
+  Total := Total + MenuNode^.M.ItemCount;
+  MenuNode := MenuNode^.Next;
+ End;
  CountMenuItems := Total;
 End;
 
 Function CountMenuSeparators: Integer;
 Var
- I, J, Total: Integer;
+ Total: Integer;
+ Node: PMenuItemNode;
+ MenuNode: PMenuNode;
 Begin
  Total := 0;
- For I := 0 To MainMenuBar.MenuCount - 1 Do
-  For J := 0 To MainMenuBar.Menus[I].ItemCount - 1 Do
-   If MainMenuBar.Menus[I].Items[J].Separator Then
-    Inc(Total);
+ MenuNode := MainMenuBar.Head;
+ While MenuNode <> Nil Do Begin
+  Node := MenuNode^.M.Head;
+  While Node <> Nil Do Begin
+   If Node^.Item.Separator Then Inc(Total);
+   Node := Node^.Next;
+  End;
+  MenuNode := MenuNode^.Next;
+ End;
  CountMenuSeparators := Total;
 End;
 
@@ -16256,23 +16433,71 @@ Begin
  W.Maximized := True;
 End;
 
+{ Primitives de liste chainee pour WinMgr (Head/Tail/ActiveNode) -        }
+{ remplacent l ancien tableau WinMgr.Windows + les 16 tableaux            }
+{ paralleles Editors/HexEditors/GridEditors/FormEditors/EmuTabs/          }
+{ T*Snapshot. Voir TWindowNode. }
+
+Function AppendWindowNode: PWindowNode;
+Var
+ Node: PWindowNode;
+Begin
+ New(Node);
+ InitEditorWindow(Node^.Win);
+ Node^.Editor := Nil;
+ Node^.HexEditor := Nil;
+ Node^.GridEditor := Nil;
+ Node^.FormEditor := Nil;
+ Node^.Next := Nil;
+ If WinMgr.Tail = Nil Then WinMgr.Head := Node Else WinMgr.Tail^.Next := Node;
+ WinMgr.Tail := Node;
+ AppendWindowNode := Node;
+End;
+
+Function WindowNodeAt(Idx: Integer): PWindowNode;
+Var
+ Node: PWindowNode;
+ I: Integer;
+Begin
+ Node := WinMgr.Head;
+ I := 0;
+ While (Node <> Nil) And (I < Idx) Do Begin
+  Node := Node^.Next;
+  Inc(I);
+ End;
+ If I = Idx Then WindowNodeAt := Node Else WindowNodeAt := Nil;
+End;
+
+{ Reassigne Node^.Win.TabIndex := 0,1,2... dans l ordre de la liste -      }
+{ ce champ est le "Pos" dont BrowserTabs[] (reste un tableau, voir         }
+{ TWindowNode) a besoin comme index stable apres un ajout/retrait. A      }
+{ appeler apres CHAQUE mutation de la liste (append/removal). }
+Procedure RenumberWindowNodes;
+Var
+ Node: PWindowNode;
+ I: Integer;
+Begin
+ Node := WinMgr.Head;
+ I := 0;
+ While Node <> Nil Do Begin
+  Node^.Win.TabIndex := I;
+  Inc(I);
+  Node := Node^.Next;
+ End;
+End;
+
 { --- Initialiser le gestionnaire de fenetres --- }
 
 Procedure InitWindowManager;
-Var
- I: Integer;
 Begin
+ WinMgr.Head := Nil;
+ WinMgr.Tail := Nil;
+ WinMgr.ActiveNode := Nil;
  WinMgr.WinCount := 0;
  WinMgr.ActiveIdx := -1;
  WinMgr.TabScrollX := 0;
  WinMgr.SplitMode := False;
  WinMgr.SplitPos := 0;
- For I := 0 To MAX_WINDOWS - 1 Do Begin
-  InitEditorWindow(WinMgr.Windows[I]);
-  Editors[I] := Nil;
-  HexEditors[I] := Nil;
-  FormEditors[I] := Nil;
- End;
 End;
 
 { --- Declaration anticipee de InitEditor --- }
@@ -16289,8 +16514,8 @@ Begin
  FindEditorByFileName := -1;
  A := UpCaseStr(FN);
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If WinMgr.Windows[I].Kind = WK_TEXT Then Begin
-   B := UpCaseStr(WinMgr.Windows[I].FileName);
+  If WindowNodeAt(I)^.Win.Kind = WK_TEXT Then Begin
+   B := UpCaseStr(WindowNodeAt(I)^.Win.FileName);
    If A = B Then Begin
     FindEditorByFileName := I;
     Exit;
@@ -16309,8 +16534,8 @@ Begin
  FindHexWindowByFileName := -1;
  A := UpCaseStr(FN);
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If WinMgr.Windows[I].Kind = WK_HEX Then Begin
-   B := UpCaseStr(WinMgr.Windows[I].FileName);
+  If WindowNodeAt(I)^.Win.Kind = WK_HEX Then Begin
+   B := UpCaseStr(WindowNodeAt(I)^.Win.FileName);
    If A = B Then Begin
     FindHexWindowByFileName := I;
     Exit;
@@ -16330,8 +16555,8 @@ Begin
  FindFormWindowByFileName := -1;
  A := UpCaseStr(FN);
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If WinMgr.Windows[I].Kind = WK_FORM Then Begin
-   B := UpCaseStr(WinMgr.Windows[I].FileName);
+  If WindowNodeAt(I)^.Win.Kind = WK_FORM Then Begin
+   B := UpCaseStr(WindowNodeAt(I)^.Win.FileName);
    If A = B Then Begin
     FindFormWindowByFileName := I;
     Exit;
@@ -16347,8 +16572,8 @@ Procedure SyncActiveWindowOut; Forward;
 Procedure CreateEditorWindow(AFileName: String);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  { BOGUE REEL signale par l utilisateur 2026-08-15 : contrairement a          }
  { ActivateWindow/NextWindow/PreviousWindow (qui font TOUJOURS                }
  { SyncActiveWindowOut avant de changer WinMgr.ActiveIdx, puis                 }
@@ -16366,29 +16591,29 @@ Begin
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].FileName := AFileName;
+ Node := AppendWindowNode;
+ Node^.Win.FileName := AFileName;
  If Length(AFileName) > 0 Then
-  WinMgr.Windows[Idx].Title := GetTabLabel(AFileName)
+  Node^.Win.Title := GetTabLabel(AFileName)
  Else
-  WinMgr.Windows[Idx].Title := 'Sans titre';
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
+  Node^.Win.Title := 'Sans titre';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
  { Zone d edition : sous onglets, a gauche de l explorateur }
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  { Allouer un editeur pour cette fenetre }
- If Editors[Idx] = Nil Then
-  New(Editors[Idx]);
- InitEditor(Editors[Idx]^);
+ New(Node^.Editor);
+ InitEditor(Node^.Editor^);
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
  { Synchroniser ActiveEditor }
- ActiveEditor := Editors[Idx]^;
+ ActiveEditor := Node^.Editor^;
 End;
 
 { Declarations anticipees : definies plus bas (TODO08). }
@@ -16397,6 +16622,7 @@ Procedure SaveFileHex(Var HE: THexEditor; AFileName: String); Forward;
 Procedure FreeHexEditor(Var HE: THexEditor); Forward;
 Procedure LoadFileForm(Var FE: TFormEditor; AFileName: String); Forward;
 Procedure FreeFormEditor(Var FE: TFormEditor); Forward;
+Procedure CloneFormEditor(Var Dst: TFormEditor; Const Src: TFormEditor); Forward;
 Procedure FreeGridEditor(Var GE: TGridEditor); Forward;
 
 { --- Creer une nouvelle fenetre d edition hexadecimale et y charger
@@ -16405,36 +16631,36 @@ Procedure FreeGridEditor(Var GE: TGridEditor); Forward;
 Procedure CreateHexWindow(AFileName: String);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  { Meme correctif que CreateEditorWindow ci-dessus : synchroniser la      }
  { fenetre PRECEDEMMENT active (et masquer un panneau emulateur           }
  { eventuellement laisse actif) avant de basculer WinMgr.ActiveIdx. }
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_HEX;
- WinMgr.Windows[Idx].FileName := AFileName;
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_HEX;
+ Node^.Win.FileName := AFileName;
  If Length(AFileName) > 0 Then
-  WinMgr.Windows[Idx].Title := GetTabLabel(AFileName) + ' (Hex)'
+  Node^.Win.Title := GetTabLabel(AFileName) + ' (Hex)'
  Else
-  WinMgr.Windows[Idx].Title := 'Sans titre (Hex)';
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+  Node^.Win.Title := 'Sans titre (Hex)';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  { Allouer et charger l editeur hexadecimal pour cette fenetre }
- If HexEditors[Idx] = Nil Then
-  New(HexEditors[Idx]);
- LoadFileHex(HexEditors[Idx]^, AFileName);
+ New(Node^.HexEditor);
+ LoadFileHex(Node^.HexEditor^, AFileName);
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
- ActiveHexEditor := HexEditors[Idx]^;
+ WinMgr.ActiveNode := Node;
+ ActiveHexEditor := Node^.HexEditor^;
 End;
 
 { --- Creer une nouvelle fenetre d apercu de formulaire (.FRM) et y
@@ -16443,36 +16669,42 @@ End;
 Procedure CreateFormWindow(AFileName: String);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  { Meme correctif que CreateEditorWindow ci-dessus : synchroniser la      }
  { fenetre PRECEDEMMENT active (et masquer un panneau emulateur           }
  { eventuellement laisse actif) avant de basculer WinMgr.ActiveIdx. }
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_FORM;
- WinMgr.Windows[Idx].FileName := AFileName;
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_FORM;
+ Node^.Win.FileName := AFileName;
  If Length(AFileName) > 0 Then
-  WinMgr.Windows[Idx].Title := GetTabLabel(AFileName)
+  Node^.Win.Title := GetTabLabel(AFileName)
  Else
-  WinMgr.Windows[Idx].Title := 'Sans titre';
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+  Node^.Win.Title := 'Sans titre';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  { Allouer et charger l apercu de formulaire pour cette fenetre }
- If FormEditors[Idx] = Nil Then
-  New(FormEditors[Idx]);
- LoadFileForm(FormEditors[Idx]^, AFileName);
+ New(Node^.FormEditor);
+ { Memoire fraiche non garantie a zero par New() - CtlHead/CtlTail      }
+ { DOIVENT etre Nil avant le premier InitFormEditor/FreeFormControlList }
+ { (voir LoadFileForm ci-dessous), sinon celui-ci tenterait de liberer  }
+ { des pointeurs indetermines. }
+ Node^.FormEditor^.CtlHead := Nil;
+ Node^.FormEditor^.CtlTail := Nil;
+ LoadFileForm(Node^.FormEditor^, AFileName);
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
- ActiveFormEditor := FormEditors[Idx]^;
+ WinMgr.ActiveNode := Node;
+ CloneFormEditor(ActiveFormEditor, Node^.FormEditor^);
 End;
 
 { Declaration anticipee : ActivateWindow n est definie completement que }
@@ -16490,7 +16722,7 @@ Var
 Begin
  FindExtMgrWindow := -1;
  For I := 0 To WinMgr.WinCount - 1 Do
-  If WinMgr.Windows[I].Kind = WK_EXTMGR Then Begin
+  If WindowNodeAt(I)^.Win.Kind = WK_EXTMGR Then Begin
    FindExtMgrWindow := I;
    Exit;
   End;
@@ -16627,13 +16859,13 @@ End;
 Procedure CreateExtManagerWindow;
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
  Idx := FindExtMgrWindow;
  If Idx >= 0 Then Begin
   ActivateWindow(Idx);
   Exit;
  End;
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  { Meme correctif que CreateEditorWindow/CreateHexWindow/CreateFormWindow  }
  { ci-dessus : synchroniser la fenetre PRECEDEMMENT active (et masquer un  }
  { panneau emulateur eventuellement laisse actif) avant de basculer         }
@@ -16641,26 +16873,27 @@ Begin
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_EXTMGR;
- WinMgr.Windows[Idx].FileName := '';
- WinMgr.Windows[Idx].Title := 'Gestionnaire d''extensions';
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_EXTMGR;
+ Node^.Win.FileName := '';
+ Node^.Win.Title := 'Gestionnaire d''extensions';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  InitExtManager(ExtMgr);
- ExtMgr.X := WinMgr.Windows[Idx].X;
- ExtMgr.Y := WinMgr.Windows[Idx].Y;
- ExtMgr.Width := WinMgr.Windows[Idx].Width;
- ExtMgr.Height := WinMgr.Windows[Idx].Height;
+ ExtMgr.X := Node^.Win.X;
+ ExtMgr.Y := Node^.Win.Y;
+ ExtMgr.Width := Node^.Win.Width;
+ ExtMgr.Height := Node^.Win.Height;
  PopulateExtEntries(ExtMgr);
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
  EditorReady := True;
 End;
 
@@ -16688,7 +16921,7 @@ Var
 Begin
  FindSqlExplorerWindow := -1;
  For I := 0 To WinMgr.WinCount - 1 Do
-  If WinMgr.Windows[I].Kind = WK_SQLEXPLORER Then Begin
+  If WindowNodeAt(I)^.Win.Kind = WK_SQLEXPLORER Then Begin
    FindSqlExplorerWindow := I;
    Exit;
    End;
@@ -17432,35 +17665,36 @@ End;
 Procedure CreateSqlObjectExplorerWindow;
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
  Idx := FindSqlExplorerWindow;
  If Idx >= 0 Then Begin
   ActivateWindow(Idx);
   Exit;
  End;
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_SQLEXPLORER;
- WinMgr.Windows[Idx].FileName := '';
- WinMgr.Windows[Idx].Title := 'Explorateur d''objets SQL Server';
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_SQLEXPLORER;
+ Node^.Win.FileName := '';
+ Node^.Win.Title := 'Explorateur d''objets SQL Server';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  InitSqlExplorer(SqlExplorer);
- SqlExplorer.X := WinMgr.Windows[Idx].X;
- SqlExplorer.Y := WinMgr.Windows[Idx].Y;
- SqlExplorer.Width := WinMgr.Windows[Idx].Width;
- SqlExplorer.Height := WinMgr.Windows[Idx].Height;
+ SqlExplorer.X := Node^.Win.X;
+ SqlExplorer.Y := Node^.Win.Y;
+ SqlExplorer.Width := Node^.Win.Width;
+ SqlExplorer.Height := Node^.Win.Height;
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
  EditorReady := True;
 End;
 
@@ -19025,8 +19259,8 @@ Begin
  End;
  CreateEditorWindow(FN);
  Idx := WinMgr.ActiveIdx;
- LoadFile(Editors[Idx]^.Buffer, FN);
- ActiveEditor := Editors[Idx]^;
+ LoadFile(WinMgr.ActiveNode^.Editor^.Buffer, FN);
+ ActiveEditor := WinMgr.ActiveNode^.Editor^;
  EditorReady := True;
  FullRepaintNeeded := True;
 End;
@@ -19045,59 +19279,59 @@ Begin
  { plein ecran. }
  If Win95ActiveEditorIsIsolated Then Win95DockActiveEditor;
  If Win95ActiveBrowserIsIsolated Then Win95DockActiveBrowser;
- If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
-  If HexEditors[WinMgr.ActiveIdx] <> Nil Then
-   HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
- End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
-  If FormEditors[WinMgr.ActiveIdx] <> Nil Then
-   FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
- End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
+ If WinMgr.ActiveNode^.Win.Kind = WK_HEX Then Begin
+  If WinMgr.ActiveNode^.HexEditor <> Nil Then
+   WinMgr.ActiveNode^.HexEditor^ := ActiveHexEditor;
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_FORM Then Begin
+  If WinMgr.ActiveNode^.FormEditor <> Nil Then
+   CloneFormEditor(WinMgr.ActiveNode^.FormEditor^, ActiveFormEditor);
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_EXTMGR Then Begin
   { Rien a synchroniser : ExtMgr est un singleton global, pas un etat  }
   { par-index comme HexEditors[]/FormEditors[]. }
- End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then Begin
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then Begin
   { Rien a synchroniser : SqlExplorer est aussi un singleton global. }
- End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
-  If GridEditors[WinMgr.ActiveIdx] <> Nil Then
-   GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
- End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
+  If WinMgr.ActiveNode^.GridEditor <> Nil Then
+   WinMgr.ActiveNode^.GridEditor^ := ActiveGridEditor;
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_BROWSER Then Begin
   SyncBrowserOut(WinMgr.ActiveIdx);
- End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU Then Begin
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_EMU Then Begin
   { Stage 2 : met en securite le panneau ET (pour C64) tout l etat qui vit  }
   { hors de TEmulatorPanel, dans des globales partagees CPU6502_*/C64_*.   }
-  EmuTabs[WinMgr.ActiveIdx] := EmuPanel;
+  WinMgr.ActiveNode^.EmuTab := EmuPanel;
   If EmuPanel.TargetCPU = '-CC64' Then
-   C64_SaveState(C64Snaps[WinMgr.ActiveIdx])
+   C64_SaveState(WinMgr.ActiveNode^.C64Snap)
   Else If EmuPanel.TargetCPU = '-CNES' Then
-   Nes_SaveState(NesSnaps[WinMgr.ActiveIdx])
+   Nes_SaveState(WinMgr.ActiveNode^.NesSnap)
   Else If EmuPanel.TargetCPU = '-CATARI2600' Then
-   A2600_SaveState(A2600Snaps[WinMgr.ActiveIdx])
+   A2600_SaveState(WinMgr.ActiveNode^.A2600Snap)
   Else If (EmuPanel.TargetCPU = '-CCOCO3') Or (EmuPanel.TargetCPU = '-CDRAGON32') Or
           (EmuPanel.TargetCPU = '-CDRAGON64') Or (EmuPanel.TargetCPU = '-CTO7') Or
           (EmuPanel.TargetCPU = '-CTO8') Or (EmuPanel.TargetCPU = '-CMO5') Then
    { Reutilise Coco3_SaveState/Coco3Snaps[] pour les 2 modes CoCo3 (materiel  }
    { ET texte, voir StepEmulator) ET Dragon32/64/TO7/TO8/MO5 - tous ne          }
    { partagent que le coeur M6809, deja entierement capture par ce type. }
-   Coco3_SaveState(Coco3Snaps[WinMgr.ActiveIdx])
+   Coco3_SaveState(WinMgr.ActiveNode^.Coco3Snap)
   Else If (EmuPanel.TargetCPU = '-CAPPLEII') Or (EmuPanel.TargetCPU = '-CATARI400') Or
           (EmuPanel.TargetCPU = '-CATARI800') Then
-   AppleAtari_SaveState(AppleAtariSnaps[WinMgr.ActiveIdx])
+   AppleAtari_SaveState(WinMgr.ActiveNode^.AppleAtariSnap)
   Else If (EmuPanel.TargetCPU = '-C68000') Or (EmuPanel.TargetCPU = '-CATARIST') Or
           (EmuPanel.TargetCPU = '-CAMIGA') Then
-   M68K_SaveState(M68KSnaps[WinMgr.ActiveIdx])
+   M68K_SaveState(WinMgr.ActiveNode^.M68KSnap)
   Else If EmuPanel.TargetCPU = '-CCRAY1' Then
-   Cray_SaveState(CraySnaps[WinMgr.ActiveIdx])
+   Cray_SaveState(WinMgr.ActiveNode^.CraySnap)
   Else If EmuPanel.TargetCPU = '-CPCODE' Then
-   PCode2_SaveState(PCode2Snaps[WinMgr.ActiveIdx])
+   PCode2_SaveState(WinMgr.ActiveNode^.PCode2Snap)
   Else If (EmuPanel.TargetCPU = '-CTRS80') Or (EmuPanel.TargetCPU = '-CMSX') Or
           (EmuPanel.TargetCPU = '-CADAM') Then
-   Z80_SaveState(Z80Snaps[WinMgr.ActiveIdx])
+   Z80_SaveState(WinMgr.ActiveNode^.Z80Snap)
   Else If (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP') Then
-   DOS_SaveState(DOSSnaps[WinMgr.ActiveIdx])
+   DOS_SaveState(WinMgr.ActiveNode^.DOSSnap)
   Else If EmuPanel.TargetCPU = '-CWIN16' Then
    Win16_SaveVideoState;
  End Else Begin
-  If Editors[WinMgr.ActiveIdx] <> Nil Then
-   Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  If WinMgr.ActiveNode^.Editor <> Nil Then
+   WinMgr.ActiveNode^.Editor^ := ActiveEditor;
  End;
 End;
 
@@ -19106,28 +19340,32 @@ End;
   emulateur) --- }
 
 Procedure SyncActiveWindowIn(Idx: Integer);
+Var
+ Node: PWindowNode;
 Begin
  If (Idx < 0) Or (Idx >= WinMgr.WinCount) Then Exit;
+ Node := WindowNodeAt(Idx);
+ If Node = Nil Then Exit;
  { Stage 2 : par defaut, masquer le panneau emulateur - la branche WK_EMU  }
  { ci-dessous le restaure a son etat sauvegarde (visible ou non) si          }
  { l onglet cible en est bien un ; sinon, on bascule vers un onglet texte/  }
  { hexa/formulaire, qui ne doit jamais laisser le panneau emulateur d un      }
  { AUTRE onglet rester affiche par-dessus. }
  EmuPanel.Base.Visible := False;
- If WinMgr.Windows[Idx].Kind = WK_HEX Then Begin
-  If HexEditors[Idx] <> Nil Then
-   ActiveHexEditor := HexEditors[Idx]^;
- End Else If WinMgr.Windows[Idx].Kind = WK_FORM Then Begin
-  If FormEditors[Idx] <> Nil Then
-   ActiveFormEditor := FormEditors[Idx]^;
- End Else If WinMgr.Windows[Idx].Kind = WK_EXTMGR Then Begin
+ If Node^.Win.Kind = WK_HEX Then Begin
+  If Node^.HexEditor <> Nil Then
+   ActiveHexEditor := Node^.HexEditor^;
+ End Else If Node^.Win.Kind = WK_FORM Then Begin
+  If Node^.FormEditor <> Nil Then
+   CloneFormEditor(ActiveFormEditor, Node^.FormEditor^);
+ End Else If Node^.Win.Kind = WK_EXTMGR Then Begin
   { Rien a restaurer : ExtMgr est un singleton global. }
- End Else If WinMgr.Windows[Idx].Kind = WK_SQLEXPLORER Then Begin
+ End Else If Node^.Win.Kind = WK_SQLEXPLORER Then Begin
   { Rien a restaurer : SqlExplorer est aussi un singleton global. }
- End Else If WinMgr.Windows[Idx].Kind = WK_GRID Then Begin
-  If GridEditors[Idx] <> Nil Then
-   ActiveGridEditor := GridEditors[Idx]^;
- End Else If WinMgr.Windows[Idx].Kind = WK_BROWSER Then Begin
+ End Else If Node^.Win.Kind = WK_GRID Then Begin
+  If Node^.GridEditor <> Nil Then
+   ActiveGridEditor := Node^.GridEditor^;
+ End Else If Node^.Win.Kind = WK_BROWSER Then Begin
   SyncBrowserIn(Idx);
   { BrowserHasFocus (2026-09-28) : on vient de basculer VERS cet onglet
     (clic sur la barre d'onglets, en dehors du rectangle de rendu du
@@ -19137,30 +19375,30 @@ Begin
     qui saute maintenant DrawBrowserTab si BrowserHasFocus est faux),
     laissant l'onglet fraichement selectionne visuellement vide/perime. }
   BrowserHasFocus := True;
- End Else If WinMgr.Windows[Idx].Kind = WK_EMU Then Begin
-  EmuPanel := EmuTabs[Idx];
-  If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(C64Snaps[Idx])
-  Else If EmuPanel.TargetCPU = '-CNES' Then Nes_LoadState(NesSnaps[Idx])
-  Else If EmuPanel.TargetCPU = '-CATARI2600' Then A2600_LoadState(A2600Snaps[Idx])
+ End Else If Node^.Win.Kind = WK_EMU Then Begin
+  EmuPanel := Node^.EmuTab;
+  If EmuPanel.TargetCPU = '-CC64' Then C64_LoadState(Node^.C64Snap)
+  Else If EmuPanel.TargetCPU = '-CNES' Then Nes_LoadState(Node^.NesSnap)
+  Else If EmuPanel.TargetCPU = '-CATARI2600' Then A2600_LoadState(Node^.A2600Snap)
   Else If (EmuPanel.TargetCPU = '-CCOCO3') Or (EmuPanel.TargetCPU = '-CDRAGON32') Or
           (EmuPanel.TargetCPU = '-CDRAGON64') Or (EmuPanel.TargetCPU = '-CTO7') Or
           (EmuPanel.TargetCPU = '-CTO8') Or (EmuPanel.TargetCPU = '-CMO5') Then
-   Coco3_LoadState(Coco3Snaps[Idx])
+   Coco3_LoadState(Node^.Coco3Snap)
   Else If (EmuPanel.TargetCPU = '-CAPPLEII') Or (EmuPanel.TargetCPU = '-CATARI400') Or
           (EmuPanel.TargetCPU = '-CATARI800') Then
-   AppleAtari_LoadState(AppleAtariSnaps[Idx])
+   AppleAtari_LoadState(Node^.AppleAtariSnap)
   Else If (EmuPanel.TargetCPU = '-C68000') Or (EmuPanel.TargetCPU = '-CATARIST') Or
           (EmuPanel.TargetCPU = '-CAMIGA') Then
-   M68K_LoadState(M68KSnaps[Idx])
+   M68K_LoadState(Node^.M68KSnap)
   Else If EmuPanel.TargetCPU = '-CCRAY1' Then
-   Cray_LoadState(CraySnaps[Idx])
+   Cray_LoadState(Node^.CraySnap)
   Else If EmuPanel.TargetCPU = '-CPCODE' Then
-   PCode2_LoadState(PCode2Snaps[Idx])
+   PCode2_LoadState(Node^.PCode2Snap)
   Else If (EmuPanel.TargetCPU = '-CTRS80') Or (EmuPanel.TargetCPU = '-CMSX') Or
           (EmuPanel.TargetCPU = '-CADAM') Then
-   Z80_LoadState(Z80Snaps[Idx])
+   Z80_LoadState(Node^.Z80Snap)
   Else If (EmuPanel.TargetCPU = '-CD') Or (EmuPanel.TargetCPU = '-CP') Then
-   DOS_LoadState(DOSSnaps[Idx])
+   DOS_LoadState(Node^.DOSSnap)
   Else If EmuPanel.TargetCPU = '-CWIN16' Then
    Win16_LoadVideoState;
   { Naviguer VERS un onglet emulateur vaut "focus" - reprend l affichage   }
@@ -19172,8 +19410,8 @@ Begin
   If EmuPanel.StatusMsg = 'En pause (cliquez sur l''ecran pour reprendre)' Then
    EmuPanel.StatusMsg := '';
  End Else Begin
-  If Editors[Idx] <> Nil Then
-   ActiveEditor := Editors[Idx]^;
+  If Node^.Editor <> Nil Then
+   ActiveEditor := Node^.Editor^;
  End;
 End;
 
@@ -19183,11 +19421,14 @@ Procedure CloseEditorWindow(Index: Integer);
 Var
  I: Integer;
  ClosingDOSCPU: String;
+ Node, Prev, Cur: PWindowNode;
 Begin
  If (Index < 0) Or (Index >= WinMgr.WinCount) Then Exit;
+ Node := WindowNodeAt(Index);
+ If Node = Nil Then Exit;
  { /TASKBARWIN95 : garder les taches Bloc-notes de la barre des taches      }
- { Windows 95 synchronisees avec cette fermeture (et le decalage d index    }
- { qui suit plus bas) - voir Win95OnEditorWindowClosing. }
+ { Windows 95 synchronisees avec cette fermeture - voir                    }
+ { Win95OnEditorWindowClosing. }
  If Opts.TaskbarWin95 Then Win95OnEditorWindowClosing(Index);
  { Onglet DOS/8086 (Stage 2) : contrairement aux autres backends (dont les  }
  { snapshots sont de simples copies de valeurs), DOS_SaveState/LoadState     }
@@ -19197,10 +19438,10 @@ Begin
  { vraie fuite memoire (jusqu a ~160 Mo par onglet DOS ferme, si XMS/EMS/   }
  { DPMI etaient actifs pour ce programme). L onglet ACTIF garde ses          }
  { pointeurs dans les GLOBALES (EmuVideo.Mem/EmuXmsMem/EmuEmsMem/            }
- { EmuDpmiExtMem) ; un onglet INACTIF les garde dans DOSSnaps[Index]. }
- If WinMgr.Windows[Index].Kind = WK_EMU Then Begin
+ { EmuDpmiExtMem) ; un onglet INACTIF les garde dans Node^.DOSSnap. }
+ If Node^.Win.Kind = WK_EMU Then Begin
   If Index = WinMgr.ActiveIdx Then ClosingDOSCPU := EmuPanel.TargetCPU
-  Else ClosingDOSCPU := EmuTabs[Index].TargetCPU;
+  Else ClosingDOSCPU := Node^.EmuTab.TargetCPU;
   If (ClosingDOSCPU = '-CD') Or (ClosingDOSCPU = '-CP') Then Begin
    If Index = WinMgr.ActiveIdx Then Begin
     If EmuVideo.Mem <> Nil Then Begin Dispose(EmuVideo.Mem); EmuVideo.Mem := Nil; EmuVideo.MemReady := False; End;
@@ -19208,75 +19449,68 @@ Begin
     If EmuEmsMem <> Nil Then Begin Dispose(EmuEmsMem); EmuEmsMem := Nil; End;
     If EmuDpmiExtMem <> Nil Then Begin Dispose(EmuDpmiExtMem); EmuDpmiExtMem := Nil; End;
    End Else Begin
-    If DOSSnaps[Index].Video.Mem <> Nil Then Dispose(DOSSnaps[Index].Video.Mem);
-    If DOSSnaps[Index].XmsMemPtr <> Nil Then Dispose(DOSSnaps[Index].XmsMemPtr);
-    If DOSSnaps[Index].EmsMemPtr <> Nil Then Dispose(DOSSnaps[Index].EmsMemPtr);
-    If DOSSnaps[Index].DpmiExtMemPtr <> Nil Then Dispose(DOSSnaps[Index].DpmiExtMemPtr);
-    FillChar(DOSSnaps[Index], SizeOf(DOSSnaps[Index]), 0);
+    If Node^.DOSSnap.Video.Mem <> Nil Then Dispose(Node^.DOSSnap.Video.Mem);
+    If Node^.DOSSnap.XmsMemPtr <> Nil Then Dispose(Node^.DOSSnap.XmsMemPtr);
+    If Node^.DOSSnap.EmsMemPtr <> Nil Then Dispose(Node^.DOSSnap.EmsMemPtr);
+    If Node^.DOSSnap.DpmiExtMemPtr <> Nil Then Dispose(Node^.DOSSnap.DpmiExtMemPtr);
+    FillChar(Node^.DOSSnap, SizeOf(Node^.DOSSnap), 0);
    End;
   End;
  End;
  { Liberer l editeur, l editeur hexadecimal ou l apercu de formulaire }
- If Editors[Index] <> Nil Then Begin
-  Dispose(Editors[Index]);
-  Editors[Index] := Nil;
+ If Node^.Editor <> Nil Then Begin
+  Dispose(Node^.Editor);
+  Node^.Editor := Nil;
  End;
- If HexEditors[Index] <> Nil Then Begin
-  FreeHexEditor(HexEditors[Index]^);
-  Dispose(HexEditors[Index]);
-  HexEditors[Index] := Nil;
+ If Node^.HexEditor <> Nil Then Begin
+  FreeHexEditor(Node^.HexEditor^);
+  Dispose(Node^.HexEditor);
+  Node^.HexEditor := Nil;
  End;
- If FormEditors[Index] <> Nil Then Begin
-  FreeFormEditor(FormEditors[Index]^);
-  Dispose(FormEditors[Index]);
-  FormEditors[Index] := Nil;
+ If Node^.FormEditor <> Nil Then Begin
+  FreeFormEditor(Node^.FormEditor^);
+  Dispose(Node^.FormEditor);
+  Node^.FormEditor := Nil;
  End;
- If GridEditors[Index] <> Nil Then Begin
-  FreeGridEditor(GridEditors[Index]^);
-  Dispose(GridEditors[Index]);
-  GridEditors[Index] := Nil;
+ If Node^.GridEditor <> Nil Then Begin
+  FreeGridEditor(Node^.GridEditor^);
+  Dispose(Node^.GridEditor);
+  Node^.GridEditor := Nil;
  End;
  { Onglet navigateur Web (phase F) - FreeBrowserTab libere aussi l'arbre
    DOM (FreeHTMLNode), chemin reellement NOUVEAU introduit par cette
    integration (voir sa propre note dans le bloc importe). }
  FreeBrowserTab(Index);
- { Onglet emulateur (Stage 2) : rien a Dispose (EmuTabs[]/C64Snaps[] sont   }
- { des enregistrements simples, pas des pointeurs) - juste s assurer que    }
- { l emulateur ne continue pas de tourner "fantome" si c est l onglet ACTIF }
- { qu on ferme (sinon StepEmulator continuerait de piloter EmuPanel meme     }
- { apres la fermeture visuelle de son onglet). }
- If (WinMgr.Windows[Index].Kind = WK_EMU) And (Index = WinMgr.ActiveIdx) Then
+ { Onglet emulateur (Stage 2) : rien a Dispose (EmuTab/C64Snap sont des     }
+ { enregistrements simples embarques dans le noeud, pas des pointeurs) -   }
+ { juste s assurer que l emulateur ne continue pas de tourner "fantome" si }
+ { c est l onglet ACTIF qu on ferme (sinon StepEmulator continuerait de     }
+ { piloter EmuPanel meme apres la fermeture visuelle de son onglet). }
+ If (Node^.Win.Kind = WK_EMU) And (Index = WinMgr.ActiveIdx) Then
   EmuPanel.Running := False;
- { Decaler les fenetres et editeurs suivants }
- For I := Index To WinMgr.WinCount - 2 Do Begin
-  WinMgr.Windows[I] := WinMgr.Windows[I + 1];
-  WinMgr.Windows[I].TabIndex := I;
-  Editors[I] := Editors[I + 1];
-  HexEditors[I] := HexEditors[I + 1];
-  FormEditors[I] := FormEditors[I + 1];
-  GridEditors[I] := GridEditors[I + 1];
+ { BrowserTabs[] reste un tableau (voir TWindowNode) - meme decalage       }
+ { qu avant, independant du dechainage de la liste WinMgr ci-dessous. }
+ For I := Index To WinMgr.WinCount - 2 Do
   ShiftBrowserTabDown(I);
-  EmuTabs[I] := EmuTabs[I + 1];
-  C64Snaps[I] := C64Snaps[I + 1];
-  NesSnaps[I] := NesSnaps[I + 1];
-  A2600Snaps[I] := A2600Snaps[I + 1];
-  Coco3Snaps[I] := Coco3Snaps[I + 1];
-  AppleAtariSnaps[I] := AppleAtariSnaps[I + 1];
-  M68KSnaps[I] := M68KSnaps[I + 1];
-  CraySnaps[I] := CraySnaps[I + 1];
-  PCode2Snaps[I] := PCode2Snaps[I + 1];
-  Z80Snaps[I] := Z80Snaps[I + 1];
-  DOSSnaps[I] := DOSSnaps[I + 1];
- End;
- Editors[WinMgr.WinCount - 1] := Nil;
- HexEditors[WinMgr.WinCount - 1] := Nil;
- FormEditors[WinMgr.WinCount - 1] := Nil;
- GridEditors[WinMgr.WinCount - 1] := Nil;
  ClearLastBrowserTabSlot(WinMgr.WinCount - 1);
+ { Dechainer le noeud - plus simple qu avant (aucun decalage necessaire,   }
+ { aucune fonctionnalite de reordonnancement n existe - voir le plan). }
+ Prev := Nil;
+ Cur := WinMgr.Head;
+ While (Cur <> Nil) And (Cur <> Node) Do Begin
+  Prev := Cur;
+  Cur := Cur^.Next;
+ End;
+ If Prev = Nil Then WinMgr.Head := Node^.Next Else Prev^.Next := Node^.Next;
+ If Node = WinMgr.Tail Then WinMgr.Tail := Prev;
+ If WinMgr.ActiveNode = Node Then WinMgr.ActiveNode := Nil;
+ Dispose(Node);
+ RenumberWindowNodes;
  Dec(WinMgr.WinCount);
  { Ajuster l index actif }
  If WinMgr.WinCount = 0 Then Begin
   WinMgr.ActiveIdx := -1;
+  WinMgr.ActiveNode := Nil;
   EditorReady := False;
   { BOGUE REEL signale par l utilisateur 2026-08-15 : fermer le DERNIER      }
   { onglet restant, quand c est un onglet emulateur, laissait le panneau      }
@@ -19288,6 +19522,11 @@ Begin
  End Else Begin
   If WinMgr.ActiveIdx >= WinMgr.WinCount Then
    WinMgr.ActiveIdx := WinMgr.WinCount - 1;
+  { Toujours re-resoudre ActiveNode ici : RenumberWindowNodes a pu          }
+  { decaler la position de TOUS les noeuds apres le point de fermeture,    }
+  { donc ActiveNode (cache O(1)) doit etre re-synchronise avec ActiveIdx   }
+  { meme quand ActiveIdx lui-meme n a pas change de valeur numerique. }
+  WinMgr.ActiveNode := WindowNodeAt(WinMgr.ActiveIdx);
   { Restaurer l editeur actif }
   SyncActiveWindowIn(WinMgr.ActiveIdx);
  End;
@@ -19302,6 +19541,17 @@ Begin
   SyncActiveWindowOut;
   { Activer la nouvelle fenetre }
   WinMgr.ActiveIdx := Index;
+  { BOGUE REEL CORRIGE (2026-10-04, trouve en testant la conversion liste  }
+  { chainee de WinMgr) : sans cette ligne, WinMgr.ActiveNode (cache O(1)   }
+  { introduit par cette conversion) restait pointe sur l ANCIEN noeud      }
+  { actif - DrawAllWidgets (qui dispatche sur WinMgr.ActiveNode^.Win.Kind) }
+  { continuait donc de dessiner selon le MAUVAIS type de fenetre apres un  }
+  { changement d onglet (ex: bascule vers un onglet Formulaire affichait   }
+  { le texte brut de l ancien onglet actif) - alors meme que              }
+  { SyncActiveWindowIn (qui resout son propre noeud via WindowNodeAt(Idx), }
+  { independamment de ActiveNode) synchronisait pourtant correctement      }
+  { ActiveEditor/ActiveFormEditor/etc. }
+  WinMgr.ActiveNode := WindowNodeAt(Index);
   { Restaurer l editeur selectionne }
   SyncActiveWindowIn(Index);
  End;
@@ -19358,6 +19608,7 @@ Begin
   I := (I + 1) Mod WinMgr.WinCount;
   If Not Win95IsIsolatedTaskWindow(I) Then Begin
    WinMgr.ActiveIdx := I;
+   WinMgr.ActiveNode := WindowNodeAt(I);
    SyncActiveWindowIn(WinMgr.ActiveIdx);
    Exit;
   End;
@@ -19381,6 +19632,7 @@ Begin
   If I > 0 Then Dec(I) Else I := WinMgr.WinCount - 1;
   If Not Win95IsIsolatedTaskWindow(I) Then Begin
    WinMgr.ActiveIdx := I;
+   WinMgr.ActiveNode := WindowNodeAt(I);
    SyncActiveWindowIn(WinMgr.ActiveIdx);
    Exit;
   End;
@@ -19395,8 +19647,8 @@ Var
  W: Integer;
  T: String;
 Begin
- T := WinMgr.Windows[Index].Title;
- If WinMgr.Windows[Index].Modified Then
+ T := WindowNodeAt(Index)^.Win.Title;
+ If WindowNodeAt(Index)^.Win.Modified Then
   T := '*' + T;
  W := Length(T) * 8 + TAB_PADDING * 2 + TAB_CLOSE_SIZE + 4;
  If W > TAB_MAX_WIDTH Then
@@ -19436,8 +19688,8 @@ Begin
     Rectangle(TX, TY, TX + TW - 1, TY + TAB_HEIGHT - 1);
    End;
    { Texte de l onglet }
-   Lbl := WinMgr.Windows[I].Title;
-   If WinMgr.Windows[I].Modified Then
+   Lbl := WindowNodeAt(I)^.Win.Title;
+   If WindowNodeAt(I)^.Win.Modified Then
     Lbl := '*' + Lbl;
    If Length(Lbl) > 18 Then
     Lbl := Copy(Lbl, 1, 15) + '...';
@@ -19546,36 +19798,39 @@ End;
 
 Procedure SaveAllWindows;
 Var
- I: Integer;
  FN: String;
+ Node: PWindowNode;
 Begin
  { Synchroniser la fenetre active avant de sauvegarder }
  If EditorReady Then SyncActiveWindowOut;
- For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If (Editors[I] <> Nil) And Editors[I]^.Buffer.Modified Then Begin
-   FN := WinMgr.Windows[I].FileName;
+ Node := WinMgr.Head;
+ While Node <> Nil Do Begin
+  If (Node^.Editor <> Nil) And Node^.Editor^.Buffer.Modified Then Begin
+   FN := Node^.Win.FileName;
    If FN <> '' Then Begin
-    SaveFile(Editors[I]^.Buffer, FN);
-    WinMgr.Windows[I].Modified := False;
+    SaveFile(Node^.Editor^.Buffer, FN);
+    Node^.Win.Modified := False;
    End;
   End;
-  If (HexEditors[I] <> Nil) And HexEditors[I]^.Modified Then Begin
-   FN := WinMgr.Windows[I].FileName;
+  If (Node^.HexEditor <> Nil) And Node^.HexEditor^.Modified Then Begin
+   FN := Node^.Win.FileName;
    If FN <> '' Then Begin
-    SaveFileHex(HexEditors[I]^, FN);
-    WinMgr.Windows[I].Modified := False;
+    SaveFileHex(Node^.HexEditor^, FN);
+    Node^.Win.Modified := False;
    End;
   End;
+  Node := Node^.Next;
  End;
 End;
 
-{ --- Fermer toutes les fenetres --- }
-
-Procedure CloseAllWindows;
-Begin
- WinMgr.WinCount := 0;
- WinMgr.ActiveIdx := -1;
-End;
+{ CloseAllWindows retiree (2026-10-04, voir le plan de conversion liste    }
+{ chainee) : code mort confirme (zero appelant dans tout le fichier,       }
+{ seule sa propre declaration + un commentaire table-des-matieres la       }
+{ mentionnaient) qui ne liberait de toute facon jamais Editors[]/          }
+{ HexEditors[]/etc (devenu Node^.Editor/etc) ni ne dechainait la liste      }
+{ WinMgr - un vrai piege a fuite memoire s il avait jamais ete appele.      }
+{ Supprimee plutot que corrigee : corriger du code mort jamais exerce      }
+{ ajouterait un chemin non verifiable pour aucun benefice comportemental. }
 
 { --- Disposition en mosaique --- }
 
@@ -19599,12 +19854,12 @@ Begin
  For I := 0 To WinMgr.WinCount - 1 Do Begin
   C := I Mod Cols;
   R := I Div Cols;
-  WinMgr.Windows[I].X := ZX + C * W;
-  WinMgr.Windows[I].Y := ZY + R * H;
-  WinMgr.Windows[I].Width := W;
-  WinMgr.Windows[I].Height := H;
-  WinMgr.Windows[I].Maximized := False;
-  WinMgr.Windows[I].Minimized := False;
+  WindowNodeAt(I)^.Win.X := ZX + C * W;
+  WindowNodeAt(I)^.Win.Y := ZY + R * H;
+  WindowNodeAt(I)^.Win.Width := W;
+  WindowNodeAt(I)^.Win.Height := H;
+  WindowNodeAt(I)^.Win.Maximized := False;
+  WindowNodeAt(I)^.Win.Minimized := False;
  End;
 End;
 
@@ -19622,12 +19877,12 @@ Begin
        - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  Offset := 20;
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  WinMgr.Windows[I].X := ZX + I * Offset;
-  WinMgr.Windows[I].Y := ZY + I * Offset;
-  WinMgr.Windows[I].Width := ZW - (WinMgr.WinCount - 1) * Offset;
-  WinMgr.Windows[I].Height := ZH - (WinMgr.WinCount - 1) * Offset;
-  WinMgr.Windows[I].Maximized := False;
-  WinMgr.Windows[I].Minimized := False;
+  WindowNodeAt(I)^.Win.X := ZX + I * Offset;
+  WindowNodeAt(I)^.Win.Y := ZY + I * Offset;
+  WindowNodeAt(I)^.Win.Width := ZW - (WinMgr.WinCount - 1) * Offset;
+  WindowNodeAt(I)^.Win.Height := ZH - (WinMgr.WinCount - 1) * Offset;
+  WindowNodeAt(I)^.Win.Maximized := False;
+  WindowNodeAt(I)^.Win.Minimized := False;
  End;
 End;
 
@@ -19655,16 +19910,19 @@ End;
 
 Function CountModifiedWindows: Integer;
 Var
- I, Total: Integer;
+ Total: Integer;
+ Node: PWindowNode;
 Begin
  { Synchroniser la fenetre active dans le tableau }
  If EditorReady Then SyncActiveWindowOut;
  Total := 0;
- For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If (Editors[I] <> Nil) And Editors[I]^.Buffer.Modified Then
+ Node := WinMgr.Head;
+ While Node <> Nil Do Begin
+  If (Node^.Editor <> Nil) And Node^.Editor^.Buffer.Modified Then
    Inc(Total);
-  If (HexEditors[I] <> Nil) And HexEditors[I]^.Modified Then
+  If (Node^.HexEditor <> Nil) And Node^.HexEditor^.Modified Then
    Inc(Total);
+  Node := Node^.Next;
  End;
  CountModifiedWindows := Total;
 End;
@@ -19677,7 +19935,7 @@ Var
 Begin
  FindWindowByFileName := -1;
  For I := 0 To WinMgr.WinCount - 1 Do
-  If WinMgr.Windows[I].FileName = AFileName Then Begin
+  If WindowNodeAt(I)^.Win.FileName = AFileName Then Begin
    FindWindowByFileName := I;
    Exit;
   End;
@@ -19695,7 +19953,7 @@ End;
 Function GetWindowTitle(Index: Integer): String;
 Begin
  If IsValidWindowIndex(Index) Then
-  GetWindowTitle := WinMgr.Windows[Index].Title
+  GetWindowTitle := WindowNodeAt(Index)^.Win.Title
  Else
   GetWindowTitle := '';
 End;
@@ -19705,7 +19963,7 @@ End;
 Procedure SetWindowTitle(Index: Integer; ATitle: String);
 Begin
  If IsValidWindowIndex(Index) Then
-  WinMgr.Windows[Index].Title := ATitle;
+  WindowNodeAt(Index)^.Win.Title := ATitle;
 End;
 
 { --- Marquer une fenetre comme modifiee --- }
@@ -19713,7 +19971,7 @@ End;
 Procedure MarkWindowModified(Index: Integer);
 Begin
  If IsValidWindowIndex(Index) Then
-  WinMgr.Windows[Index].Modified := True;
+  WindowNodeAt(Index)^.Win.Modified := True;
 End;
 
 { --- Marquer une fenetre comme sauvegardee --- }
@@ -19721,7 +19979,7 @@ End;
 Procedure MarkWindowSaved(Index: Integer);
 Begin
  If IsValidWindowIndex(Index) Then
-  WinMgr.Windows[Index].Modified := False;
+  WindowNodeAt(Index)^.Win.Modified := False;
 End;
 
 { ============================================================
@@ -19962,14 +20220,95 @@ End;
 
 { --- Apercu de formulaire .FRM : initialisation/liberation --- }
 
+{ Primitives de liste chainee pour TFormEditor.Controls - voir           }
+{ TFRMVisControlNode. Remplacent le tableau a taille fixe. }
+
+Procedure FreeFormControlList(Var FE: TFormEditor);
+Var
+ Node, Nxt: PFRMVisControlNode;
+Begin
+ Node := FE.CtlHead;
+ While Node <> Nil Do Begin
+  Nxt := Node^.Next;
+  Dispose(Node);
+  Node := Nxt;
+ End;
+ FE.CtlHead := Nil;
+ FE.CtlTail := Nil;
+End;
+
+Function AppendFormControl(Var FE: TFormEditor): PFRMVisControlNode;
+Var
+ Node: PFRMVisControlNode;
+Begin
+ New(Node);
+ Node^.Ctl.Name := '';
+ Node^.Ctl.TypeStr := '';
+ Node^.Ctl.Caption := '';
+ Node^.Ctl.CtlLeft := 0;
+ Node^.Ctl.CtlTop := 0;
+ Node^.Ctl.CtlWidth := 0;
+ Node^.Ctl.CtlHeight := 0;
+ Node^.Next := Nil;
+ If FE.CtlTail = Nil Then FE.CtlHead := Node Else FE.CtlTail^.Next := Node;
+ FE.CtlTail := Node;
+ Inc(FE.ControlCount);
+ AppendFormControl := Node;
+End;
+
+Function FormControlNodeAt(Var FE: TFormEditor; Idx: Integer): PFRMVisControlNode;
+Var
+ Node: PFRMVisControlNode;
+ I: Integer;
+Begin
+ Node := FE.CtlHead;
+ I := 0;
+ While (Node <> Nil) And (I < Idx) Do Begin
+  Node := Node^.Next;
+  Inc(I);
+ End;
+ If I = Idx Then FormControlNodeAt := Node Else FormControlNodeAt := Nil;
+End;
+
+{ Copie PROFONDE (pas juste := ) d un TFormEditor vers un autre - requise }
+{ depuis que Controls est une liste chainee : un simple := copierait      }
+{ seulement CtlHead/CtlTail (pointeurs), faisant de Dst et Src des ALIAS   }
+{ de la MEME liste - un Dispose sur l un (fermeture d onglet) laisserait  }
+{ l autre (ActiveFormEditor) avec des pointeurs pendants. Utilisee a      }
+{ chaque synchronisation ActiveFormEditor<->FormEditors[]^ (voir          }
+{ SyncActiveWindowOut/In, ApplyFrmControlPropertyCommit). }
+Procedure CloneFormEditor(Var Dst: TFormEditor; Const Src: TFormEditor);
+Var
+ Node: PFRMVisControlNode;
+Begin
+ FreeFormControlList(Dst);
+ Dst := Src;
+ Dst.CtlHead := Nil;
+ Dst.CtlTail := Nil;
+ Dst.ControlCount := 0;
+ Node := Src.CtlHead;
+ While Node <> Nil Do Begin
+  AppendFormControl(Dst)^.Ctl := Node^.Ctl;
+  Node := Node^.Next;
+ End;
+End;
+
 Procedure InitFormEditor(Var FE: TFormEditor);
 Begin
+ { Liberer une eventuelle liste preexistante (ex. LoadFileForm rappele   }
+ { pour recharger un formulaire deja ouvert/modifie) - voir le           }
+ { commentaire de CloneFormEditor. Sans danger sur une instance VRAIMENT }
+ { fraiche (CtlHead/CtlTail deja Nil) : FreeFormControlList sur une liste}
+ { vide ne fait rien. }
+ FreeFormControlList(FE);
  FE.FileName := '';
  FE.Modified := False;
  FE.FormCaption := '';
  FE.FormWidth := 4800;
  FE.FormHeight := 3600;
  FE.ControlCount := 0;
+ FE.CtlHead := Nil;
+ FE.CtlTail := Nil;
  FE.X := 0;
  FE.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
  FE.Width := GetScreenWidth - EXPLORER_WIDTH;
@@ -19983,6 +20322,7 @@ End;
 
 Procedure FreeFormEditor(Var FE: TFormEditor);
 Begin
+ FreeFormControlList(FE);
  FE.ControlCount := 0;
  FE.Modified := False;
 End;
@@ -20051,9 +20391,9 @@ Var
  PName, PVal: String;
  EqPos, I: Integer;
  StackIsMenu: Array[0..MAX_FRM_STACK - 1] Of Boolean;
- StackCtl   : Array[0..MAX_FRM_STACK - 1] Of Integer; { -1 = Form }
+ StackCtl   : Array[0..MAX_FRM_STACK - 1] Of PFRMVisControlNode; { Nil = Form }
  StackTop   : Integer;
- CIdx       : Integer;
+ CtlNode    : PFRMVisControlNode;
  Done, FirstLine: Boolean;
 Begin
  InitFormEditor(FE);
@@ -20087,27 +20427,25 @@ Begin
    If StackTop >= MAX_FRM_STACK Then Continue;
    If ShortType = 'MENU' Then Begin
     StackIsMenu[StackTop] := True;
-    StackCtl[StackTop] := -1;
+    StackCtl[StackTop] := Nil;
     Inc(StackTop);
    End Else If ShortType = 'FORM' Then Begin
     StackIsMenu[StackTop] := False;
-    StackCtl[StackTop] := -1;
+    StackCtl[StackTop] := Nil;
     Inc(StackTop);
    End Else Begin
     StackIsMenu[StackTop] := False;
-    If FE.ControlCount < MAX_FRM_VIS_CONTROLS Then Begin
-     CIdx := FE.ControlCount;
-     FE.Controls[CIdx].Name := NameTok;
-     FE.Controls[CIdx].TypeStr := ShortType;
-     FE.Controls[CIdx].Caption := '';
-     FE.Controls[CIdx].CtlLeft := 0;
-     FE.Controls[CIdx].CtlTop := 0;
-     FE.Controls[CIdx].CtlWidth := 1215;
-     FE.Controls[CIdx].CtlHeight := 375;
-     Inc(FE.ControlCount);
-     StackCtl[StackTop] := CIdx;
-    End Else
-     StackCtl[StackTop] := -1;
+    { Plus de plafond MAX_FRM_VIS_CONTROLS - AppendFormControl grandit    }
+    { la liste au besoin. }
+    CtlNode := AppendFormControl(FE);
+    CtlNode^.Ctl.Name := NameTok;
+    CtlNode^.Ctl.TypeStr := ShortType;
+    CtlNode^.Ctl.Caption := '';
+    CtlNode^.Ctl.CtlLeft := 0;
+    CtlNode^.Ctl.CtlTop := 0;
+    CtlNode^.Ctl.CtlWidth := 1215;
+    CtlNode^.Ctl.CtlHeight := 375;
+    StackCtl[StackTop] := CtlNode;
     Inc(StackTop);
    End;
   End Else If UpCaseStr(Line) = 'END' Then Begin
@@ -20120,8 +20458,8 @@ Begin
    If EqPos > 0 Then Begin
     PName := UpCaseStr(TrimStr(Copy(Line, 1, EqPos - 1)));
     PVal := TrimStr(Copy(Line, EqPos + 1, Length(Line) - EqPos));
-    CIdx := StackCtl[StackTop - 1];
-    If CIdx = -1 Then Begin
+    CtlNode := StackCtl[StackTop - 1];
+    If CtlNode = Nil Then Begin
      { Proprietes du formulaire lui-meme }
      If PName = 'CAPTION' Then
       FE.FormCaption := FRMVisUnquote(PVal)
@@ -20131,17 +20469,17 @@ Begin
       FE.FormHeight := FRMVisValInt(PVal);
     End Else Begin
      If PName = 'CAPTION' Then
-      FE.Controls[CIdx].Caption := FRMVisUnquote(PVal)
+      CtlNode^.Ctl.Caption := FRMVisUnquote(PVal)
      Else If PName = 'TEXT' Then
-      FE.Controls[CIdx].Caption := FRMVisUnquote(PVal)
+      CtlNode^.Ctl.Caption := FRMVisUnquote(PVal)
      Else If PName = 'LEFT' Then
-      FE.Controls[CIdx].CtlLeft := FRMVisValInt(PVal)
+      CtlNode^.Ctl.CtlLeft := FRMVisValInt(PVal)
      Else If PName = 'TOP' Then
-      FE.Controls[CIdx].CtlTop := FRMVisValInt(PVal)
+      CtlNode^.Ctl.CtlTop := FRMVisValInt(PVal)
      Else If PName = 'WIDTH' Then
-      FE.Controls[CIdx].CtlWidth := FRMVisValInt(PVal)
+      CtlNode^.Ctl.CtlWidth := FRMVisValInt(PVal)
      Else If PName = 'HEIGHT' Then
-      FE.Controls[CIdx].CtlHeight := FRMVisValInt(PVal);
+      CtlNode^.Ctl.CtlHeight := FRMVisValInt(PVal);
     End;
    End;
   End;
@@ -20210,15 +20548,17 @@ End;
 Function NextControlName(Var FE: TFormEditor; TypeStr: String): String;
 Var
  Prefix, NumStr: String;
- I, J, Num, MaxNum: Integer;
+ J, Num, MaxNum: Integer;
+ Node: PFRMVisControlNode;
 Begin
  Prefix := FRMControlNamePrefix(TypeStr);
  MaxNum := 0;
- For I := 0 To FE.ControlCount - 1 Do Begin
-  If Length(FE.Controls[I].Name) > Length(Prefix) Then Begin
-   If Copy(FE.Controls[I].Name, 1, Length(Prefix)) = Prefix Then Begin
-    NumStr := Copy(FE.Controls[I].Name, Length(Prefix) + 1,
-     Length(FE.Controls[I].Name) - Length(Prefix));
+ Node := FE.CtlHead;
+ While Node <> Nil Do Begin
+  If Length(Node^.Ctl.Name) > Length(Prefix) Then Begin
+   If Copy(Node^.Ctl.Name, 1, Length(Prefix)) = Prefix Then Begin
+    NumStr := Copy(Node^.Ctl.Name, Length(Prefix) + 1,
+     Length(Node^.Ctl.Name) - Length(Prefix));
     Num := 0;
     For J := 1 To Length(NumStr) Do
      If (NumStr[J] >= '0') And (NumStr[J] <= '9') Then
@@ -20230,6 +20570,7 @@ Begin
     If (Num > 0) And (Num > MaxNum) Then MaxNum := Num;
    End;
   End;
+  Node := Node^.Next;
  End;
  NextControlName := Prefix + IntToStr(MaxNum + 1);
 End;
@@ -21975,6 +22316,7 @@ Var
  OrgX, OrgY, FormPxW, FormPxH, I: Integer;
  CvX1, CvY1, CvX2, CvY2: Integer;
  Caption: String;
+ Node: PFRMVisControlNode;
 Begin
  ComputeFormEditorLayout(FE, CvX1, CvY1, CvX2, CvY2);
  DrawFormToolbox(FE);
@@ -22002,15 +22344,54 @@ Begin
  Rectangle(OrgX - 1, OrgY - 21, OrgX + FormPxW, OrgY + FormPxH);
  { Points de la grille de conception }
  DrawFormGrid(OrgX, OrgY, FormPxW, FormPxH, CvX1, CvY1, CvX2, CvY2);
- { Controles }
- For I := 0 To FE.ControlCount - 1 Do
-  DrawFormVisControl(FE, FE.Controls[I], OrgX, OrgY, I = FE.SelectedCtl);
+ { Controles - parcours avant depuis CtlHead (plus ancien en premier),    }
+ { chaque controle est ajoute en QUEUE (AppendFormControl) donc le plus   }
+ { recent est dessine EN DERNIER = par-dessus les autres, comme avant. }
+ I := 0;
+ Node := FE.CtlHead;
+ While Node <> Nil Do Begin
+  DrawFormVisControl(FE, Node^.Ctl, OrgX, OrgY, I = FE.SelectedCtl);
+  Inc(I);
+  Node := Node^.Next;
+ End;
  { Barres de defilement }
  DrawFormVScrollbar(FE, CvY1, CvY2, CvX2 + 1, FE.X + FE.Width - 1);
  DrawFormHScrollbar(FE, CvX1, CvX2, CvY2 + 1, FE.Y + FE.Height - 1);
  { Coin (intersection des deux barres) }
  SetFillStyle(SolidFill, CLR_BACKGROUND);
  Bar(CvX2 + 1, CvY2 + 1, FE.X + FE.Width - 1, FE.Y + FE.Height - 1);
+End;
+
+{ --- Hit-test recursif des controles d un formulaire, du plus RECENT   }
+{ (queue de la liste, dessine en dernier = au-dessus) vers le plus       }
+{ ancien - sans necessiter de liste doublement chainee : la recursion    }
+{ descend jusqu a la queue puis teste en remontant, donc le noeud le     }
+{ plus proche de la queue est TOUJOURS teste avant un noeud plus ancien. }
+{ Profondeur de recursion = nombre de controles du formulaire (plus de   }
+{ plafond MAX_FRM_VIS_CONTROLS - un formulaire reel en contient toujours }
+{ bien trop peu pour approcher la pile par defaut de FPC). }
+Function FormHitTestRec(Node: PFRMVisControlNode; Idx: Integer;
+ OrgX, OrgY, MX, MY: Integer; Var HitIdx: Integer): Boolean;
+Var
+ CX, CY, CW, CH: Integer;
+Begin
+ FormHitTestRec := False;
+ If Node = Nil Then Exit;
+ If FormHitTestRec(Node^.Next, Idx + 1, OrgX, OrgY, MX, MY, HitIdx) Then Begin
+  FormHitTestRec := True;
+  Exit;
+ End;
+ CX := OrgX + Node^.Ctl.CtlLeft Div 15;
+ CY := OrgY + Node^.Ctl.CtlTop Div 15;
+ CW := Node^.Ctl.CtlWidth Div 15;
+ CH := Node^.Ctl.CtlHeight Div 15;
+ If CW < 4 Then CW := 4;
+ If CH < 4 Then CH := 4;
+ If (MX >= CX) And (MX <= CX + CW - 1) And
+    (MY >= CY) And (MY <= CY + CH - 1) Then Begin
+  HitIdx := Idx;
+  FormHitTestRec := True;
+ End;
 End;
 
 { --- Traiter un clic de souris dans l editeur de formulaire :         }
@@ -22020,7 +22401,7 @@ End;
 Procedure HandleFormEditorMouse(Var FE: TFormEditor; Ev: TEvent);
 Var
  CvX1, CvY1, CvX2, CvY2, OrgX, OrgY: Integer;
- MaxSX, MaxSY, I, TY, HitCtl, CX, CY, CW, CH: Integer;
+ MaxSX, MaxSY, I, TY, HitCtl: Integer;
  SavedSX, SavedSY: Integer;
  FormX, FormY: LongInt;
  TypeStr, CName: String;
@@ -22070,21 +22451,10 @@ Begin
     (Ev.MouseY < CvY1) Or (Ev.MouseY > CvY2) Then Exit;
  GetFormOrigin(FE, CvX1, CvY1, OrgX, OrgY);
  If FE.ToolSel = 0 Then Begin
-  { Outil Pointeur : selectionner le controle sous le curseur }
+  { Outil Pointeur : selectionner le controle sous le curseur (le plus    }
+  { recent/au-dessus gagne - voir FormHitTestRec) }
   HitCtl := -1;
-  For I := FE.ControlCount - 1 DownTo 0 Do Begin
-   CX := OrgX + FE.Controls[I].CtlLeft Div 15;
-   CY := OrgY + FE.Controls[I].CtlTop Div 15;
-   CW := FE.Controls[I].CtlWidth Div 15;
-   CH := FE.Controls[I].CtlHeight Div 15;
-   If CW < 4 Then CW := 4;
-   If CH < 4 Then CH := 4;
-   If (Ev.MouseX >= CX) And (Ev.MouseX <= CX + CW - 1) And
-      (Ev.MouseY >= CY) And (Ev.MouseY <= CY + CH - 1) Then Begin
-    HitCtl := I;
-    Break;
-   End;
-  End;
+  FormHitTestRec(FE.CtlHead, 0, OrgX, OrgY, Ev.MouseX, Ev.MouseY, HitCtl);
   FE.SelectedCtl := HitCtl;
   SetPropertySourceFrmControl(PropsPanel, FE, FE.SelectedCtl);
  End Else Begin
@@ -23981,10 +24351,10 @@ Begin
   End;
  End;
  ActiveEditor.Buffer.Modified := False;
- WinMgr.Windows[WinMgr.ActiveIdx].Title :=
+ WinMgr.ActiveNode^.Win.Title :=
   'Memo (' + ExtractFileName(DbfPath) + ', bloc ' + IntToStr(BlockNum) + ')';
- If Editors[WinMgr.ActiveIdx] <> Nil Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+ If WinMgr.ActiveNode^.Editor <> Nil Then
+  WinMgr.ActiveNode^.Editor^ := ActiveEditor;
  EditorReady := True;
  FullRepaintNeeded := True;
 End;
@@ -24033,8 +24403,8 @@ Begin
  FindGridWindowByFileName := -1;
  A := UpCaseStr(FN);
  For I := 0 To WinMgr.WinCount - 1 Do Begin
-  If WinMgr.Windows[I].Kind = WK_GRID Then Begin
-   B := UpCaseStr(WinMgr.Windows[I].FileName);
+  If WindowNodeAt(I)^.Win.Kind = WK_GRID Then Begin
+   B := UpCaseStr(WindowNodeAt(I)^.Win.FileName);
    If A = B Then Begin
     FindGridWindowByFileName := I;
     Exit;
@@ -24945,6 +25315,7 @@ Var
  Idx, Fmt: Integer;
  GE: TGridEditor;
  DatPath: String;
+ Node: PWindowNode;
 Begin
  { Redirection Clarion .K??/.I?? -> le .DAT frere, AVANT toute autre       }
  { logique (y compris FindGridWindowByFileName : ouvrir NOM.K01 puis        }
@@ -24964,6 +25335,7 @@ Begin
  If Idx >= 0 Then Begin
   SyncActiveWindowOut;
   WinMgr.ActiveIdx := Idx;
+  WinMgr.ActiveNode := WindowNodeAt(Idx);
   SyncActiveWindowIn(Idx);
   EditorReady := True;
   FullRepaintNeeded := True;
@@ -24971,7 +25343,6 @@ Begin
  End;
  Fmt := GridFormatForExtension(UpCaseStr(GridExtOfPath(AFileName)));
  If Fmt = GTF_NONE Then Exit;
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  FillChar(GE, SizeOf(GE), 0);
  GE.Format := Fmt;
  If Not GridOpenFile(GE, AFileName) Then Begin
@@ -24982,27 +25353,28 @@ Begin
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_GRID;
- WinMgr.Windows[Idx].FileName := AFileName;
- WinMgr.Windows[Idx].Title := GetTabLabel(AFileName) + ' (Grille)';
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_GRID;
+ Node^.Win.FileName := AFileName;
+ Node^.Win.Title := GetTabLabel(AFileName) + ' (Grille)';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
- GE.X := WinMgr.Windows[Idx].X;
- GE.Y := WinMgr.Windows[Idx].Y;
- GE.Width := WinMgr.Windows[Idx].Width;
- GE.Height := WinMgr.Windows[Idx].Height;
- If GridEditors[Idx] = Nil Then New(GridEditors[Idx]);
- GridEditors[Idx]^ := GE;
+ GE.X := Node^.Win.X;
+ GE.Y := Node^.Win.Y;
+ GE.Width := Node^.Win.Width;
+ GE.Height := Node^.Win.Height;
+ New(Node^.GridEditor);
+ Node^.GridEditor^ := GE;
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
- ActiveGridEditor := GridEditors[Idx]^;
+ WinMgr.ActiveNode := Node;
+ ActiveGridEditor := Node^.GridEditor^;
  { BOGUE REEL trouve en verifiant cette etape par capture d ecran           }
  { (2026-09-04) : sans ceci, la grille s ouvrait bien (onglet cree, fichier }
  { analyse avec succes) mais restait a l ecran completement VIDE -          }
@@ -35622,8 +35994,8 @@ Begin
  { Visual Studio : elles s elargissent pour combler l espace libere      }
  { (ou retrecissent si la colonne est rouverte). }
  For I := 0 To WinMgr.WinCount - 1 Do
-  If WinMgr.Windows[I].Maximized Then
-   WinMgr.Windows[I].Width := GetScreenWidth - EXPLORER_WIDTH;
+  If WindowNodeAt(I)^.Win.Maximized Then
+   WindowNodeAt(I)^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
  If TermVisible Then
   TermWidth := GetScreenWidth - EXPLORER_WIDTH;
 
@@ -37612,15 +37984,15 @@ Begin
   { il faut donc activer D ABORD, puis recharger le fichier APRES, sinon           }
   { ce recharger serait aussitot efface par cette synchronisation. }
   ActivateWindow(WIdx);
-  LoadFile(Editors[WIdx]^.Buffer, FullPath);
-  ActiveEditor := Editors[WIdx]^;
+  LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, FullPath);
+  ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
   FullRepaintNeeded := True;
   Exit;
  End;
  CreateEditorWindow(FullPath);
  WIdx := WinMgr.ActiveIdx;
- LoadFile(Editors[WIdx]^.Buffer, FullPath);
- ActiveEditor := Editors[WIdx]^;
+ LoadFile(WinMgr.ActiveNode^.Editor^.Buffer, FullPath);
+ ActiveEditor := WinMgr.ActiveNode^.Editor^;
  Opts.SourceFile := FullPath;
  EditorReady := True;
  FullRepaintNeeded := True;
@@ -38306,8 +38678,8 @@ Begin
  { Ouvrir dans un nouvel editeur }
  CreateEditorWindow(FullPath);
  WIdx := WinMgr.ActiveIdx;
- LoadFile(Editors[WIdx]^.Buffer, FullPath);
- ActiveEditor := Editors[WIdx]^;
+ LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, FullPath);
+ ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
  Opts.SourceFile := FullPath;
  EditorReady := True;
  FullRepaintNeeded := True;
@@ -39019,6 +39391,11 @@ End;
 
 Procedure InitContextMenu(Var CM: TContextMenu);
 Begin
+ { Liste reconstruite integralement a CHAQUE ouverture (voir les divers   }
+ { Show*ContextMenu) - liberer les noeuds de la fois precedente ici,      }
+ { sinon fuite memoire reelle (inoffensif avant, quand Items etait un      }
+ { tableau statique). }
+ MenuItemListFree(CM.Head, CM.Tail);
  CM.ItemCount := 0;
  CM.X := 0;
  CM.Y := 0;
@@ -39034,14 +39411,16 @@ Procedure AddContextItem(Var CM: TContextMenu; ACaption: String;
  ATag: LongInt);
 Var
  NeededWidth: Integer;
+ NewItem: TMenuItem;
 Begin
- If CM.ItemCount >= MAX_CTX_ITEMS Then Exit;
- CM.Items[CM.ItemCount].Caption := ACaption;
- CM.Items[CM.ItemCount].ShortCut := '';
- CM.Items[CM.ItemCount].Tag := ATag;
- CM.Items[CM.ItemCount].Enabled := True;
- CM.Items[CM.ItemCount].Separator := False;
- CM.Items[CM.ItemCount].Checked := False;
+ NewItem.Caption := ACaption;
+ NewItem.ShortCut := '';
+ NewItem.Tag := ATag;
+ NewItem.Enabled := True;
+ NewItem.Separator := False;
+ NewItem.Checked := False;
+ NewItem.IconIndex := -1;
+ MenuItemNodeAppend(CM.Head, CM.Tail, NewItem);
  Inc(CM.ItemCount);
  { BOGUE REEL corrige (2026-09-11, demande explicite : "la largeur du menu }
  { contextuel dans le Terminal... affiche tous les textes a l'interieur   }
@@ -39064,11 +39443,17 @@ End;
 { --- Ajouter un separateur au menu contextuel --- }
 
 Procedure AddContextSeparator(Var CM: TContextMenu);
+Var
+ NewItem: TMenuItem;
 Begin
- If CM.ItemCount >= MAX_CTX_ITEMS Then Exit;
- CM.Items[CM.ItemCount].Separator := True;
- CM.Items[CM.ItemCount].Caption := '';
- CM.Items[CM.ItemCount].Tag := 0;
+ NewItem.Separator := True;
+ NewItem.Caption := '';
+ NewItem.ShortCut := '';
+ NewItem.Tag := 0;
+ NewItem.Enabled := True;
+ NewItem.Checked := False;
+ NewItem.IconIndex := -1;
+ MenuItemNodeAppend(CM.Head, CM.Tail, NewItem);
  Inc(CM.ItemCount);
 End;
 
@@ -39077,12 +39462,16 @@ End;
 Procedure DrawContextMenu(Var CM: TContextMenu);
 Var
  I, YPos, MH: Integer;
+ Node: PMenuItemNode;
 Begin
  If Not CM.Visible Then Exit;
  MH := 4;
- For I := 0 To CM.ItemCount - 1 Do
-  If CM.Items[I].Separator Then MH := MH + 8
+ Node := CM.Head;
+ While Node <> Nil Do Begin
+  If Node^.Item.Separator Then MH := MH + 8
   Else MH := MH + 16;
+  Node := Node^.Next;
+ End;
  { BOGUE REEL corrige (2026-09-11, demande explicite : "lorsque le menu    }
  { contextuel du Terminal affiche plus bas que l'espace de l'ecran, faudrait}
  { le remonter") : CM.X/CM.Y sont poses tels quels a la position du clic    }
@@ -39114,8 +39503,10 @@ Begin
  Rectangle(CM.X, CM.Y, CM.X + CM.Width, CM.Y + MH);
  { Items }
  YPos := CM.Y + 2;
- For I := 0 To CM.ItemCount - 1 Do Begin
-  If CM.Items[I].Separator Then Begin
+ I := 0;
+ Node := CM.Head;
+ While Node <> Nil Do Begin
+  If Node^.Item.Separator Then Begin
    SetColor(CLR_BORDER);
    Line(CM.X + 2, YPos + 3, CM.X + CM.Width - 2, YPos + 3);
    YPos := YPos + 8;
@@ -39127,9 +39518,11 @@ Begin
     SetColor(CLR_EDITOR_BG);
    End Else
     SetColor(CLR_MENU_TEXT);
-   OutTextXY(CM.X + 8, YPos + 2, CM.Items[I].Caption);
+   OutTextXY(CM.X + 8, YPos + 2, Node^.Item.Caption);
    YPos := YPos + 16;
   End;
+  Inc(I);
+  Node := Node^.Next;
  End;
 End;
 
@@ -39222,6 +39615,7 @@ Function HandleContextMenuEvent(Var CM: TContextMenu;
  Var Ev: TEvent): LongInt;
 Var
  I, YPos, MH: Integer;
+ Node, SelNode: PMenuItemNode;
 Begin
  HandleContextMenuEvent := 0;
  If Not CM.Visible Then Exit;
@@ -39229,14 +39623,19 @@ Begin
   { Survol : calculer l item sous la souris }
   CM.SelIdx := -1;
   MH := 4;
-  For I := 0 To CM.ItemCount - 1 Do
-   If CM.Items[I].Separator Then MH := MH + 8
+  Node := CM.Head;
+  While Node <> Nil Do Begin
+   If Node^.Item.Separator Then MH := MH + 8
    Else MH := MH + 16;
+   Node := Node^.Next;
+  End;
   If (Ev.MouseX >= CM.X) And (Ev.MouseX <= CM.X + CM.Width) And
      (Ev.MouseY >= CM.Y) And (Ev.MouseY <= CM.Y + MH) Then Begin
    YPos := CM.Y + 2;
-   For I := 0 To CM.ItemCount - 1 Do Begin
-    If CM.Items[I].Separator Then
+   I := 0;
+   Node := CM.Head;
+   While Node <> Nil Do Begin
+    If Node^.Item.Separator Then
      YPos := YPos + 8
     Else Begin
      If (Ev.MouseY >= YPos) And (Ev.MouseY < YPos + 16) Then Begin
@@ -39245,6 +39644,8 @@ Begin
      End;
      YPos := YPos + 16;
     End;
+    Inc(I);
+    Node := Node^.Next;
    End;
   End;
   DrawContextMenu(CM);
@@ -39252,18 +39653,20 @@ Begin
  Else If Ev.Kind = EV_MOUSE_DOWN Then Begin
   { Clic : verifier si c est sur un item }
   YPos := CM.Y + 2;
-  For I := 0 To CM.ItemCount - 1 Do Begin
-   If CM.Items[I].Separator Then
+  Node := CM.Head;
+  While Node <> Nil Do Begin
+   If Node^.Item.Separator Then
     YPos := YPos + 8
    Else Begin
     If (Ev.MouseX >= CM.X) And (Ev.MouseX <= CM.X + CM.Width) And
        (Ev.MouseY >= YPos) And (Ev.MouseY < YPos + 16) Then Begin
-     HandleContextMenuEvent := CM.Items[I].Tag;
+     HandleContextMenuEvent := Node^.Item.Tag;
      CM.Visible := False;
      Exit;
     End;
     YPos := YPos + 16;
    End;
+   Node := Node^.Next;
   End;
   { Clic hors du menu : fermer }
   CM.Visible := False;
@@ -39272,9 +39675,10 @@ Begin
   If Ev.KeyChar = #27 Then { Escape }
    CM.Visible := False;
   If Ev.KeyChar = #13 Then Begin { Entree }
-   If (CM.SelIdx >= 0) And (CM.SelIdx < CM.ItemCount) And
-      (Not CM.Items[CM.SelIdx].Separator) Then Begin
-    HandleContextMenuEvent := CM.Items[CM.SelIdx].Tag;
+   SelNode := MenuItemNodeAt(CM.Head, CM.SelIdx);
+   If (CM.SelIdx >= 0) And (SelNode <> Nil) And
+      (Not SelNode^.Item.Separator) Then Begin
+    HandleContextMenuEvent := SelNode^.Item.Tag;
     CM.Visible := False;
    End;
   End;
@@ -39283,7 +39687,8 @@ Begin
   If Ev.KeyCode = $48 Then Begin { Fleche haut }
    If CM.SelIdx > 0 Then Begin
     Dec(CM.SelIdx);
-    If CM.Items[CM.SelIdx].Separator And (CM.SelIdx > 0) Then
+    SelNode := MenuItemNodeAt(CM.Head, CM.SelIdx);
+    If (SelNode <> Nil) And SelNode^.Item.Separator And (CM.SelIdx > 0) Then
      Dec(CM.SelIdx);
    End;
    DrawContextMenu(CM);
@@ -39291,7 +39696,8 @@ Begin
   Else If Ev.KeyCode = $50 Then Begin { Fleche bas }
    If CM.SelIdx < CM.ItemCount - 1 Then Begin
     Inc(CM.SelIdx);
-    If CM.Items[CM.SelIdx].Separator And
+    SelNode := MenuItemNodeAt(CM.Head, CM.SelIdx);
+    If (SelNode <> Nil) And SelNode^.Item.Separator And
        (CM.SelIdx < CM.ItemCount - 1) Then
      Inc(CM.SelIdx);
    End;
@@ -39613,12 +40019,18 @@ Procedure SetPropertySourceFrmControl(Var PP: TPropertiesPanel;
  Var FE: TFormEditor; CtlIdx: Integer);
 Var
  C: TFRMVisControl;
+ Node: PFRMVisControlNode;
 Begin
  If (CtlIdx < 0) Or (CtlIdx >= FE.ControlCount) Then Begin
   ClearPropertiesPanel(PP);
   Exit;
  End;
- C := FE.Controls[CtlIdx];
+ Node := FormControlNodeAt(FE, CtlIdx);
+ If Node = Nil Then Begin
+  ClearPropertiesPanel(PP);
+  Exit;
+ End;
+ C := Node^.Ctl;
  ClearPropertiesPanel(PP);
  PP.SourceKind := PK_FRM_CONTROL;
  PP.SourceTitle := C.Name + ' (' + C.TypeStr + ')';
@@ -39717,46 +40129,52 @@ Var
  Idx: Integer;
  OldName, PropName: String;
  NewNum: LongInt;
+ CtlNode: PFRMVisControlNode;
 Begin
  If (ActiveFormEditor.SelectedCtl < 0) Or
     (ActiveFormEditor.SelectedCtl >= ActiveFormEditor.ControlCount) Then
   Exit;
  Idx := ActiveFormEditor.SelectedCtl;
+ { Resoudre le noeud UNE SEULE FOIS (au lieu de re-indexer FE.Controls[Idx]}
+ { separement pour chaque champ, ce qui ferait autant de parcours O(n)    }
+ { independants qu il y a de proprietes modifiees). }
+ CtlNode := FormControlNodeAt(ActiveFormEditor, Idx);
+ If CtlNode = Nil Then Exit;
  If Key = 'CTLNAME' Then Begin
   If (Length(NewVal) = 0) Or
-     (NewVal = ActiveFormEditor.Controls[Idx].Name) Then Exit;
-  OldName := ActiveFormEditor.Controls[Idx].Name;
+     (NewVal = CtlNode^.Ctl.Name) Then Exit;
+  OldName := CtlNode^.Ctl.Name;
   RenameFrmControl(ActiveFormEditor.FileName, OldName, NewVal);
-  ActiveFormEditor.Controls[Idx].Name := NewVal;
+  CtlNode^.Ctl.Name := NewVal;
  End Else If Key = 'CTLCAPTION' Then Begin
-  PropName := FrmCaptionPropName(ActiveFormEditor.Controls[Idx].TypeStr);
+  PropName := FrmCaptionPropName(CtlNode^.Ctl.TypeStr);
   UpdateFrmControlProperty(ActiveFormEditor.FileName,
-   ActiveFormEditor.Controls[Idx].Name, PropName, NewVal, True);
-  ActiveFormEditor.Controls[Idx].Caption := NewVal;
+   CtlNode^.Ctl.Name, PropName, NewVal, True);
+  CtlNode^.Ctl.Caption := NewVal;
  End Else If Key = 'CTLLEFT' Then Begin
   NewNum := FRMVisValInt(NewVal);
   UpdateFrmControlProperty(ActiveFormEditor.FileName,
-   ActiveFormEditor.Controls[Idx].Name, 'Left', IntToStr(NewNum), False);
-  ActiveFormEditor.Controls[Idx].CtlLeft := NewNum;
+   CtlNode^.Ctl.Name, 'Left', IntToStr(NewNum), False);
+  CtlNode^.Ctl.CtlLeft := NewNum;
  End Else If Key = 'CTLTOP' Then Begin
   NewNum := FRMVisValInt(NewVal);
   UpdateFrmControlProperty(ActiveFormEditor.FileName,
-   ActiveFormEditor.Controls[Idx].Name, 'Top', IntToStr(NewNum), False);
-  ActiveFormEditor.Controls[Idx].CtlTop := NewNum;
+   CtlNode^.Ctl.Name, 'Top', IntToStr(NewNum), False);
+  CtlNode^.Ctl.CtlTop := NewNum;
  End Else If Key = 'CTLWIDTH' Then Begin
   NewNum := FRMVisValInt(NewVal);
   UpdateFrmControlProperty(ActiveFormEditor.FileName,
-   ActiveFormEditor.Controls[Idx].Name, 'Width', IntToStr(NewNum), False);
-  ActiveFormEditor.Controls[Idx].CtlWidth := NewNum;
+   CtlNode^.Ctl.Name, 'Width', IntToStr(NewNum), False);
+  CtlNode^.Ctl.CtlWidth := NewNum;
  End Else If Key = 'CTLHEIGHT' Then Begin
   NewNum := FRMVisValInt(NewVal);
   UpdateFrmControlProperty(ActiveFormEditor.FileName,
-   ActiveFormEditor.Controls[Idx].Name, 'Height', IntToStr(NewNum), False);
-  ActiveFormEditor.Controls[Idx].CtlHeight := NewNum;
+   CtlNode^.Ctl.Name, 'Height', IntToStr(NewNum), False);
+  CtlNode^.Ctl.CtlHeight := NewNum;
  End;
  If (WinMgr.ActiveIdx >= 0) And
-    (FormEditors[WinMgr.ActiveIdx] <> Nil) Then
-  FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
+    (WinMgr.ActiveNode^.FormEditor <> Nil) Then
+  CloneFormEditor(WinMgr.ActiveNode^.FormEditor^, ActiveFormEditor);
 End;
 
 { --- Appliquer la modification d une propriete au donnee reelle       }
@@ -87996,25 +88414,25 @@ End;
 Function TermEmuTabTargetCPU(WI: Integer): String;
 Begin
  If WI = WinMgr.ActiveIdx Then TermEmuTabTargetCPU := EmuPanel.TargetCPU
- Else TermEmuTabTargetCPU := EmuTabs[WI].TargetCPU;
+ Else TermEmuTabTargetCPU := WindowNodeAt(WI)^.EmuTab.TargetCPU;
 End;
 
 Function TermEmuTabBinaryPath(WI: Integer): String;
 Begin
  If WI = WinMgr.ActiveIdx Then TermEmuTabBinaryPath := EmuPanel.BinaryPath
- Else TermEmuTabBinaryPath := EmuTabs[WI].BinaryPath;
+ Else TermEmuTabBinaryPath := WindowNodeAt(WI)^.EmuTab.BinaryPath;
 End;
 
 Function TermEmuTabRunning(WI: Integer): Boolean;
 Begin
  If WI = WinMgr.ActiveIdx Then TermEmuTabRunning := EmuPanel.Running
- Else TermEmuTabRunning := EmuTabs[WI].Running;
+ Else TermEmuTabRunning := WindowNodeAt(WI)^.EmuTab.Running;
 End;
 
 Function TermEmuTabFault(WI: Integer): Integer;
 Begin
  If WI = WinMgr.ActiveIdx Then TermEmuTabFault := EmuPanel.Fault
- Else TermEmuTabFault := EmuTabs[WI].Fault;
+ Else TermEmuTabFault := WindowNodeAt(WI)^.EmuTab.Fault;
 End;
 
 Function TermBoolFR(B: Boolean): String;
@@ -88045,7 +88463,7 @@ Begin
   P2 := TermExtractParam(ParamStr, 2);
  EmuCount := 0;
  For I := 0 To WinMgr.WinCount - 1 Do
-  If WinMgr.Windows[I].Kind = WK_EMU Then Begin
+  If WindowNodeAt(I)^.Win.Kind = WK_EMU Then Begin
    If EmuCount <= High(EmuIdxList) Then Begin
     EmuIdxList[EmuCount] := I;
     Inc(EmuCount);
@@ -88062,7 +88480,7 @@ Begin
    IntToStr(EmuCount) + ' onglets emulateur ouverts ci-dessous)');
   For I := 0 To EmuCount - 1 Do
    TermAddLine(TP, '  ' + IntToStr(I + 1) + ': ' +
-    WinMgr.Windows[EmuIdxList[I]].Title + ' [' +
+    WindowNodeAt(EmuIdxList[I])^.Win.Title + ' [' +
     TermEmuTabTargetCPU(EmuIdxList[I]) + '] ' +
     TermEmuTabBinaryPath(EmuIdxList[I]));
   Exit;
@@ -88081,8 +88499,8 @@ Begin
  End;
  WI1 := EmuIdxList[N1 - 1];
  WI2 := EmuIdxList[N2 - 1];
- TermAddLine(TP, 'Compare-VM : "' + WinMgr.Windows[WI1].Title + '" (' +
-  IntToStr(N1) + ') vs "' + WinMgr.Windows[WI2].Title + '" (' +
+ TermAddLine(TP, 'Compare-VM : "' + WindowNodeAt(WI1)^.Win.Title + '" (' +
+  IntToStr(N1) + ') vs "' + WindowNodeAt(WI2)^.Win.Title + '" (' +
   IntToStr(N2) + ')');
  AnyDiff := False;
  If TermEmuTabTargetCPU(WI1) <> TermEmuTabTargetCPU(WI2) Then Begin
@@ -88382,7 +88800,7 @@ Var
 Begin
  TermAnyEmulatorOpen := False;
  For I := 0 To WinMgr.WinCount - 1 Do
-  If WinMgr.Windows[I].Kind = WK_EMU Then Begin
+  If WindowNodeAt(I)^.Win.Kind = WK_EMU Then Begin
    TermAnyEmulatorOpen := True;
    Exit;
   End;
@@ -89268,8 +89686,8 @@ Begin
  End;
  CreateEditorWindow(FullPath);
  WIdx := WinMgr.ActiveIdx;
- LoadFile(Editors[WIdx]^.Buffer, FullPath);
- ActiveEditor := Editors[WIdx]^;
+ LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, FullPath);
+ ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
  Opts.SourceFile := FullPath;
  EditorReady := True;
  FullRepaintNeeded := True;
@@ -138232,7 +138650,7 @@ Begin
    Inc(I);
   End;
   ActiveEditor.Buffer.Modified := True;
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  WinMgr.ActiveNode^.Editor^ := ActiveEditor;
   MarkWindowModified(WinMgr.ActiveIdx);
   FullRepaintNeeded := True;
   AppendOutput(OutputPanel, 'Executer le VBScript... : termine sur "' +
@@ -140037,7 +140455,7 @@ Function PscGeoActiveOK: Boolean;
 Var
  Ok: Boolean;
 Begin
- Ok := (WinMgr.ActiveIdx >= 0) And (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) And
+ Ok := (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveNode^.Win.Kind = WK_EMU) And
   EmuPanel.Loaded And (EmuPanel.TargetCPU = '-CGEOS');
  If Not Ok Then
   PscWL('GeoGraph : aucun onglet PC/GEOS-GeoWorks actif (utilisez GEOS ou ' +
@@ -140650,7 +141068,7 @@ Function PscEmuActiveOK: Boolean;
 Var
  Ok: Boolean;
 Begin
- Ok := (WinMgr.ActiveIdx >= 0) And (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) And
+ Ok := (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveNode^.Win.Kind = WK_EMU) And
   EmuPanel.Loaded;
  If Not Ok Then
   PscWL('Commande emulateur : aucun onglet emulateur actif.');
@@ -141379,7 +141797,7 @@ Begin
     Inc(I);
    End;
    ActiveEditor.Buffer.Modified := True;
-   Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+   WinMgr.ActiveNode^.Editor^ := ActiveEditor;
    MarkWindowModified(WinMgr.ActiveIdx);
    FullRepaintNeeded := True;
    AppendOutput(OutputPanel, 'Executer le PascalScript... : termine sur "' +
@@ -157957,7 +158375,7 @@ Var
  F: File;
 Begin
  If (WinMgr.ActiveIdx < 0) Or
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind <> WK_EMU) Or
+    (WinMgr.ActiveNode^.Win.Kind <> WK_EMU) Or
     (Not EmuPanel.Loaded) Then Begin
   TermAddLine(TP, 'New-EmulatorGif : aucun onglet emulateur actif ' +
    '(l''onglet actuellement ouvert doit etre un emulateur, pas ce Terminal).');
@@ -158478,7 +158896,7 @@ Var
  ErrC: Integer;
 Begin
  If (WinMgr.ActiveIdx < 0) Or
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind <> WK_EMU) Or
+    (WinMgr.ActiveNode^.Win.Kind <> WK_EMU) Or
     (Not EmuPanel.Loaded) Or (EmuPanel.TargetCPU <> '-CGEOS') Then Begin
   TermAddLine(TP, 'Invoke-GeoWorksAPI : aucun onglet PC/GEOS-GeoWorks actif ' +
    '(utilisez Start-GeoWorksProgram pour en charger un).');
@@ -171209,7 +171627,7 @@ Var
 Begin
  If Not EditorReady Then Exit;
  If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
- CurName := ExtractFileName(WinMgr.Windows[WinMgr.ActiveIdx].FileName);
+ CurName := ExtractFileName(WinMgr.ActiveNode^.Win.FileName);
  InitInputBox(RenameFileDlg, 'Renommer', 'Nouveau nom de fichier :', CurName);
  RenameFileDlg.Base.Visible := True;
  DrawInputBox(RenameFileDlg);
@@ -171232,7 +171650,7 @@ Begin
  If NewName = '' Then Exit;
  Idx := WinMgr.ActiveIdx;
  If (Idx < 0) Or (Idx >= WinMgr.WinCount) Then Exit;
- OldPath := WinMgr.Windows[Idx].FileName;
+ OldPath := WindowNodeAt(Idx)^.Win.FileName;
  If OldPath = '' Then Exit;
  Dir := ExtractFilePath(OldPath);
  NewPath := Dir + NewName;
@@ -171246,10 +171664,10 @@ Begin
    Exit;
   End;
  End;
- WinMgr.Windows[Idx].FileName := NewPath;
- WinMgr.Windows[Idx].Title := GetTabLabel(NewPath);
- If Editors[Idx] <> Nil Then
-  Editors[Idx]^.Buffer.FileName := NewPath;
+ WindowNodeAt(Idx)^.Win.FileName := NewPath;
+ WindowNodeAt(Idx)^.Win.Title := GetTabLabel(NewPath);
+ If WindowNodeAt(Idx)^.Editor <> Nil Then
+  WindowNodeAt(Idx)^.Editor^.Buffer.FileName := NewPath;
  If WinMgr.ActiveIdx = Idx Then
   ActiveEditor.Buffer.FileName := NewPath;
  For I := 0 To SolExplorer.NodeCount - 1 Do
@@ -171404,7 +171822,7 @@ Begin
  If Not EditorReady Then Exit;
  Ed := ActiveEditor;
  If (WinMgr.ActiveIdx < 0) Or (WinMgr.ActiveIdx >= WinMgr.WinCount) Then Exit;
- CurFile := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+ CurFile := WinMgr.ActiveNode^.Win.FileName;
  Ext := UpCaseStr(ExtractFileExt(CurFile));
  BaseDir := ExtractFilePath(CurFile);
  LineText := '';
@@ -186798,19 +187216,19 @@ Begin
     Case P.CPU.Regs.DX Of
      0: Begin { reactiver le titre automatique }
       If EmuOS2TitleSaved Then
-       WinMgr.Windows[WinMgr.ActiveIdx].Title := EmuOS2TitleDefault;
+       WinMgr.ActiveNode^.Win.Title := EmuOS2TitleDefault;
       EmuOS2SetTitle := '';
       Exclude(P.CPU.Flags.s, EFG_CF);
      End;
      1: Begin { ES:DI -> nouveau titre ASCIZ, 12 caracteres max }
       If Not EmuOS2TitleSaved Then Begin
-       EmuOS2TitleDefault := WinMgr.Windows[WinMgr.ActiveIdx].Title;
+       EmuOS2TitleDefault := WinMgr.ActiveNode^.Win.Title;
        EmuOS2TitleSaved := True;
       End;
       FName := Emu_ReadAsciiz(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI);
       If Length(FName) > 12 Then FName := Copy(FName, 1, 12);
       EmuOS2SetTitle := FName;
-      WinMgr.Windows[WinMgr.ActiveIdx].Title := FName;
+      WinMgr.ActiveNode^.Win.Title := FName;
       Exclude(P.CPU.Flags.s, EFG_CF);
      End;
      2: Begin { ES:DI -> tampon de 13 octets pour lire le titre }
@@ -221506,45 +221924,45 @@ End;
 Procedure CreateEmulatorTab(BinaryPath, TargetCPU: String; Args: String);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  SyncActiveWindowOut;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_EMU;
- WinMgr.Windows[Idx].FileName := BinaryPath;
- WinMgr.Windows[Idx].Title := EmuPanelTitleFor(TargetCPU) +
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_EMU;
+ Node^.Win.FileName := BinaryPath;
+ Node^.Win.Title := EmuPanelTitleFor(TargetCPU) +
   ' - ' + GetTabLabel(BinaryPath);
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  ShowEmulatorPanel(EmuPanel, BinaryPath, TargetCPU, Args);
- EmuTabs[Idx] := EmuPanel;
- If TargetCPU = '-CC64' Then C64_SaveState(C64Snaps[Idx])
- Else If TargetCPU = '-CNES' Then Nes_SaveState(NesSnaps[Idx])
- Else If TargetCPU = '-CATARI2600' Then A2600_SaveState(A2600Snaps[Idx])
+ Node^.EmuTab := EmuPanel;
+ If TargetCPU = '-CC64' Then C64_SaveState(Node^.C64Snap)
+ Else If TargetCPU = '-CNES' Then Nes_SaveState(Node^.NesSnap)
+ Else If TargetCPU = '-CATARI2600' Then A2600_SaveState(Node^.A2600Snap)
  Else If (TargetCPU = '-CCOCO3') Or (TargetCPU = '-CDRAGON32') Or
          (TargetCPU = '-CDRAGON64') Or (TargetCPU = '-CTO7') Or
          (TargetCPU = '-CTO8') Or (TargetCPU = '-CMO5') Then
-  Coco3_SaveState(Coco3Snaps[Idx])
+  Coco3_SaveState(Node^.Coco3Snap)
  Else If (TargetCPU = '-CAPPLEII') Or (TargetCPU = '-CATARI400') Or
          (TargetCPU = '-CATARI800') Then
-  AppleAtari_SaveState(AppleAtariSnaps[Idx])
+  AppleAtari_SaveState(Node^.AppleAtariSnap)
  Else If (TargetCPU = '-C68000') Or (TargetCPU = '-CATARIST') Or
          (TargetCPU = '-CAMIGA') Then
-  M68K_SaveState(M68KSnaps[Idx])
+  M68K_SaveState(Node^.M68KSnap)
  Else If TargetCPU = '-CCRAY1' Then
-  Cray_SaveState(CraySnaps[Idx])
+  Cray_SaveState(Node^.CraySnap)
  Else If TargetCPU = '-CPCODE' Then
-  PCode2_SaveState(PCode2Snaps[Idx])
+  PCode2_SaveState(Node^.PCode2Snap)
  Else If (TargetCPU = '-CTRS80') Or (TargetCPU = '-CMSX') Or
          (TargetCPU = '-CADAM') Then
-  Z80_SaveState(Z80Snaps[Idx]);
+  Z80_SaveState(Node^.Z80Snap);
  { PAS de DOS_SaveState ici (contrairement aux autres backends) : au        }
  { contraire de leurs SaveState (qui font une simple COPIE via `:=`/Move(), }
  { sans toucher la source), DOS_SaveState VOLE les 4 pointeurs globaux      }
@@ -221552,12 +221970,13 @@ Begin
  { quand on QUITTE un onglet, mais catastrophique ici puisque cet onglet     }
  { tout juste cree devient l onglet ACTIF (WinMgr.ActiveIdx:=Idx juste       }
  { apres) : appeler DOS_SaveState maintenant viderait sa propre memoire      }
- { video/XMS/EMS a peine allouee. DOSSnaps[Idx] reste a son etat par        }
+ { video/XMS/EMS a peine allouee. Node^.DOSSnap reste a son etat par        }
  { defaut (vide) jusqu a ce que l utilisateur quitte REELLEMENT cet onglet   }
  { pour la premiere fois (SyncActiveWindowOut le peuplera alors             }
  { correctement, au bon moment). }
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
 End;
 
 { Variante de CreateEmulatorTab pour la commande Terminal BOOT : pas de     }
@@ -221568,29 +221987,30 @@ End;
 Procedure CreateEmulatorBootTab(DriveIdx: Byte; Const DispName: String);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  SyncActiveWindowOut;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_EMU;
- WinMgr.Windows[Idx].FileName := DispName;
- WinMgr.Windows[Idx].Title := EmuPanelTitleFor('-CD') + ' - Amorcage ' + DispName;
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_EMU;
+ Node^.Win.FileName := DispName;
+ Node^.Win.Title := EmuPanelTitleFor('-CD') + ' - Amorcage ' + DispName;
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  EmuBootFromDrive := DriveIdx;
  ShowEmulatorPanel(EmuPanel, DispName, '-CD', '');
- EmuTabs[Idx] := EmuPanel;
+ Node^.EmuTab := EmuPanel;
  { Pas de SaveState (-CD n en a jamais, voir le commentaire au-dessus de   }
  { CreateEmulatorTab) - meme raisonnement, s applique identiquement ici. }
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
 End;
 
 { Variante de CreateEmulatorBootTab ci-dessus pour l amorcage El Torito    }
@@ -221600,27 +222020,28 @@ End;
 Procedure CreateEmulatorElToritoBootTab(CdIdx: Byte; Const DispName: String);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
  SyncActiveWindowOut;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_EMU;
- WinMgr.Windows[Idx].FileName := DispName;
- WinMgr.Windows[Idx].Title := EmuPanelTitleFor('-CD') + ' - Amorcage ' + DispName;
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_EMU;
+ Node^.Win.FileName := DispName;
+ Node^.Win.Title := EmuPanelTitleFor('-CD') + ' - Amorcage ' + DispName;
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  EmuBootFromElTorito := CdIdx;
  ShowEmulatorPanel(EmuPanel, DispName, '-CD', '');
- EmuTabs[Idx] := EmuPanel;
+ Node^.EmuTab := EmuPanel;
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
 End;
 
 { --- Traiter un evenement du panneau emulateur --- }
@@ -221654,7 +222075,7 @@ Begin
      { document), pas juste masquer le panneau - sinon l onglet resterait   }
      { dans la barre d onglets, vide, sans plus rien a afficher. }
      If (WinMgr.ActiveIdx >= 0) And
-        (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) Then
+        (WinMgr.ActiveNode^.Win.Kind = WK_EMU) Then
       CloseEditorWindow(WinMgr.ActiveIdx);
      Exit;
     End;
@@ -221668,7 +222089,7 @@ Begin
      P.Base.Visible := False;
      P.Visible := False;
      If (WinMgr.ActiveIdx >= 0) And
-        (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EMU) Then
+        (WinMgr.ActiveNode^.Win.Kind = WK_EMU) Then
       CloseEditorWindow(WinMgr.ActiveIdx);
      Exit;
     End;
@@ -228882,21 +229303,26 @@ Procedure UpdateStatusBar(Var SB: TStatusBar;
  Var WM: TWindowManager);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
  Idx := WM.ActiveIdx;
  If (Idx >= 0) And (Idx < WM.WinCount) Then Begin
-  SB.CursorLine := WM.Windows[Idx].CursorY + 1;
-  SB.CursorCol := WM.Windows[Idx].CursorX + 1;
-  SB.FileName := WM.Windows[Idx].FileName;
-  If WM.Windows[Idx].Kind = WK_EXTMGR Then
+  { WM est toujours un alias de la globale WinMgr (seul appelant) -        }
+  { WindowNodeAt(Idx), qui parcourt WinMgr.Head, est donc equivalent a un  }
+  { parcours de WM.Head ici. }
+  Node := WindowNodeAt(Idx);
+  SB.CursorLine := Node^.Win.CursorY + 1;
+  SB.CursorCol := Node^.Win.CursorX + 1;
+  SB.FileName := Node^.Win.FileName;
+  If Node^.Win.Kind = WK_EXTMGR Then
    SB.Language := 'Extensions'
-  Else If WM.Windows[Idx].Kind = WK_FORM Then
+  Else If Node^.Win.Kind = WK_FORM Then
    SB.Language := 'Formulaire'
-  Else If WM.Windows[Idx].Kind = WK_GRID Then
+  Else If Node^.Win.Kind = WK_GRID Then
    SB.Language := 'Grille'
-  Else If WM.Windows[Idx].Kind = WK_SQLEXPLORER Then
+  Else If Node^.Win.Kind = WK_SQLEXPLORER Then
    SB.Language := 'SQL Server'
-  Else If WM.Windows[Idx].Kind = WK_BROWSER Then
+  Else If Node^.Win.Kind = WK_BROWSER Then
    SB.Language := 'Navigateur'
   Else
    SB.Language := 'Text';
@@ -229371,7 +229797,7 @@ Begin
  { couvert par CreateEditorWindow au demarrage). }
  SourceFile := '';
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then
-  SourceFile := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+  SourceFile := WinMgr.ActiveNode^.Win.FileName
  Else If Opts.SourceFile <> '' Then
   SourceFile := Opts.SourceFile;
  If SourceFile = '' Then Begin
@@ -230368,17 +230794,17 @@ Begin
    { produisait qu'une ligne discrete dans l'onglet Sortie de debogage,   }
    { facile a manquer si ce panneau etait ferme ou pas remarque. }
    If (PscCurrLineNo > 0) And EditorReady And (WinMgr.ActiveIdx >= 0) And
-      (UpCaseStr(WinMgr.Windows[WinMgr.ActiveIdx].FileName) =
+      (UpCaseStr(WinMgr.ActiveNode^.Win.FileName) =
        UpCaseStr(SourceFile)) Then Begin
     ErrorHighlightFile := SourceFile;
     ErrorHighlightLine := PscCurrLineNo;
     ActiveEditor.CursorLine := PscCurrLineNo - 1;
     ActiveEditor.CursorCol := 1;
     EnsureCursorVisible(ActiveEditor);
-    If Editors[WinMgr.ActiveIdx] <> Nil Then
-     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+    If WinMgr.ActiveNode^.Editor <> Nil Then
+     WinMgr.ActiveNode^.Editor^ := ActiveEditor;
+    WinMgr.ActiveNode^.Win.CursorY := ActiveEditor.CursorLine;
+    WinMgr.ActiveNode^.Win.CursorX := ActiveEditor.CursorCol - 1;
    End;
    If PsPipelineLineCount > 0 Then
     ErrMsg := PsPipelineLines[PsPipelineLineCount]
@@ -230447,8 +230873,8 @@ Begin
   Exit;
  End;
  If (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX) Then Begin
-  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName;
+    (WinMgr.ActiveNode^.Win.Kind = WK_HEX) Then Begin
+  FN := WinMgr.ActiveNode^.Win.FileName;
   If FN = '' Then Begin
    AppendOutput(OutputPanel, 'Aucun nom de fichier.',
     Ord(OTK_BUILD));
@@ -230468,7 +230894,7 @@ Begin
  { refus explicite que GridOpenFile pour les versions/sous-formats non      }
  { pris en charge. }
  If (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) Then Begin
+    (WinMgr.ActiveNode^.Win.Kind = WK_GRID) Then Begin
   AppendOutput(OutputPanel,
    'Cette version de la grille est en lecture seule - rien a enregistrer.',
    Ord(OTK_BUILD));
@@ -230479,7 +230905,7 @@ Begin
  { premier fichier ouvert au lieu de l onglet reellement actif. }
  FN := '';
  If WinMgr.ActiveIdx >= 0 Then
-  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+  FN := WinMgr.ActiveNode^.Win.FileName
  Else If Opts.SourceFile <> '' Then
   FN := Opts.SourceFile;
  If FN = '' Then Begin
@@ -230580,14 +231006,14 @@ Begin
   Exit;
  End;
  If (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX) Then Begin
+    (WinMgr.ActiveNode^.Win.Kind = WK_HEX) Then Begin
   AppendOutput(OutputPanel,
    'COMMENT ne s''applique pas a un fichier ouvert en hexadecimal.',
    Ord(OTK_BUILD));
   Exit;
  End;
  If (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) Then Begin
+    (WinMgr.ActiveNode^.Win.Kind = WK_GRID) Then Begin
   AppendOutput(OutputPanel,
    'COMMENT ne s''applique pas a un fichier de table ouvert en grille.',
    Ord(OTK_BUILD));
@@ -230597,7 +231023,7 @@ Begin
  { primer sur Opts.SourceFile. }
  FN := '';
  If WinMgr.ActiveIdx >= 0 Then
-  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+  FN := WinMgr.ActiveNode^.Win.FileName
  Else If Opts.SourceFile <> '' Then
   FN := Opts.SourceFile;
  If FN = '' Then Begin
@@ -230616,7 +231042,7 @@ Begin
    travaille sur le fichier disque, pas sur le tampon memoire. }
  SaveFile(ActiveEditor.Buffer, FN);
  If WinMgr.ActiveIdx >= 0 Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  WinMgr.ActiveNode^.Editor^ := ActiveEditor;
 
  ToolPath := FindToolExe('COMMENT');
  If ToolPath = '' Then Begin
@@ -230658,7 +231084,7 @@ Begin
  ActiveEditor.CursorCol := 1;
  ActiveEditor.ScrollLine := 0;
  If WinMgr.ActiveIdx >= 0 Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  WinMgr.ActiveNode^.Editor^ := ActiveEditor;
 
  If ExitCode = 0 Then
   AppendOutputEx(OutputPanel,
@@ -230694,14 +231120,14 @@ Begin
   Exit;
  End;
  If (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX) Then Begin
+    (WinMgr.ActiveNode^.Win.Kind = WK_HEX) Then Begin
   AppendOutput(OutputPanel,
    'RePascal ne s''applique pas a un fichier ouvert en hexadecimal.',
    Ord(OTK_BUILD));
   Exit;
  End;
  If (WinMgr.ActiveIdx >= 0) And
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) Then Begin
+    (WinMgr.ActiveNode^.Win.Kind = WK_GRID) Then Begin
   AppendOutput(OutputPanel,
    'RePascal ne s''applique pas a un fichier de table ouvert en grille.',
    Ord(OTK_BUILD));
@@ -230711,7 +231137,7 @@ Begin
  { primer sur Opts.SourceFile. }
  FN := '';
  If WinMgr.ActiveIdx >= 0 Then
-  FN := WinMgr.Windows[WinMgr.ActiveIdx].FileName
+  FN := WinMgr.ActiveNode^.Win.FileName
  Else If Opts.SourceFile <> '' Then
   FN := Opts.SourceFile;
  If FN = '' Then Begin
@@ -230730,7 +231156,7 @@ Begin
    travaille sur le fichier disque, pas sur le tampon memoire. }
  SaveFile(ActiveEditor.Buffer, FN);
  If WinMgr.ActiveIdx >= 0 Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  WinMgr.ActiveNode^.Editor^ := ActiveEditor;
 
  ToolPath := FindToolExe('REPASCAL');
  If ToolPath = '' Then Begin
@@ -230763,7 +231189,7 @@ Begin
  ActiveEditor.CursorCol := 1;
  ActiveEditor.ScrollLine := 0;
  If WinMgr.ActiveIdx >= 0 Then
-  Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+  WinMgr.ActiveNode^.Editor^ := ActiveEditor;
 
  If ExitCode = 0 Then
   AppendOutputEx(OutputPanel,
@@ -231046,8 +231472,8 @@ Begin
  CreateEditorWindow(FN);
  Idx := WinMgr.ActiveIdx;
  { Charger le fichier dans l editeur alloue }
- LoadFile(Editors[Idx]^.Buffer, FN);
- ActiveEditor := Editors[Idx]^;
+ LoadFile(WinMgr.ActiveNode^.Editor^.Buffer, FN);
+ ActiveEditor := WinMgr.ActiveNode^.Editor^;
  Opts.SourceFile := FN;
  EditorReady := True;
  { Ajouter le fichier a l explorateur }
@@ -231241,8 +231667,8 @@ Begin
  { Ouvrir dans un nouvel editeur }
  CreateEditorWindow(FullPath);
  WIdx := WinMgr.ActiveIdx;
- LoadFile(Editors[WIdx]^.Buffer, FullPath);
- ActiveEditor := Editors[WIdx]^;
+ LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, FullPath);
+ ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
  Opts.SourceFile := FullPath;
  EditorReady := True;
  { Ajouter le fichier a l explorateur }
@@ -231929,6 +232355,7 @@ Begin
  { presente dans WinMgr.Windows[], simplement non affichee). Meme          }
  { convention que CloseEditorWindow quand WinCount tombe a 0. }
  WinMgr.ActiveIdx := -1;
+ WinMgr.ActiveNode := Nil;
  EditorReady := False;
 End;
 
@@ -232029,7 +232456,7 @@ Begin
    CreateEditorWindow('');
    EditorReady := True;
    Slot := Win95AddTask(WIN95_TASK_NOTEPAD,
-    WinMgr.Windows[WinMgr.ActiveIdx].Title, WinMgr.ActiveIdx);
+    WinMgr.ActiveNode^.Win.Title, WinMgr.ActiveIdx);
    { Lancer une application l affiche aussitot, isolee, comme le ferait    }
    { vraiment Windows 95 (demande explicite de l utilisateur, 2026-09-18). }
    If Slot > 0 Then Win95SetActiveTask(Slot);
@@ -232062,7 +232489,7 @@ Begin
    StartPage.Visible := False;
    CreateBrowserWindow('https://');
    Slot := Win95AddTask(WIN95_TASK_BROWSER,
-    WinMgr.Windows[WinMgr.ActiveIdx].Title, WinMgr.ActiveIdx);
+    WinMgr.ActiveNode^.Win.Title, WinMgr.ActiveIdx);
    If Slot > 0 Then Win95SetActiveTask(Slot);
    FullRepaintNeeded := True;
    Exit;
@@ -232705,7 +233132,7 @@ Var
 Begin
  MX := GetScreenWidth - 1;
  If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
-  Title := WinMgr.Windows[WinMgr.ActiveIdx].Title
+  Title := WinMgr.ActiveNode^.Win.Title
  Else
   Title := 'Sans titre';
 
@@ -232806,7 +233233,7 @@ Begin
    CreateEditorWindow('');
    EditorReady := True;
    Slot := Win95AddTask(WIN95_TASK_NOTEPAD,
-    WinMgr.Windows[WinMgr.ActiveIdx].Title, WinMgr.ActiveIdx);
+    WinMgr.ActiveNode^.Win.Title, WinMgr.ActiveIdx);
    If Slot > 0 Then Win95SetActiveTask(Slot);
   End Else If Item = 2 Then { Fermer }
    Win95CloseIsolatedNotepad;
@@ -232846,7 +233273,7 @@ Var
 Begin
  MX := GetScreenWidth - 1;
  If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
-  Title := WinMgr.Windows[WinMgr.ActiveIdx].Title
+  Title := WinMgr.ActiveNode^.Win.Title
  Else
   Title := 'Navigateur Web';
 
@@ -233122,17 +233549,17 @@ Begin
  DrawWindowTabs;
  { Dessiner l editeur actif si une fenetre est ouverte }
  If EditorReady And (WinMgr.ActiveIdx >= 0) Then Begin
-  If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then
+  If WinMgr.ActiveNode^.Win.Kind = WK_HEX Then
    DrawHexEditor(ActiveHexEditor)
-  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_FORM Then
    DrawFormEditor(ActiveFormEditor)
-  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_EXTMGR Then
    DrawExtManager(ExtMgr)
-  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then
    DrawGridEditor(ActiveGridEditor)
-  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then
    DrawSqlExplorer(SqlExplorer)
-  Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_BROWSER Then Begin
    { BOGUE REEL DE PERFORMANCE (2026-09-28, "5 minutes a chaque touche...
      il y a encore d'autres mecanismes") : DrawAllWidgets est appelee
      apres CHAQUE evenement distribue (voir MainLoop), donc CHAQUE frappe
@@ -233653,8 +234080,8 @@ Begin
  Else Begin
   CreateEditorWindow(OutPath);
   WIdx := WinMgr.ActiveIdx;
-  LoadFile(Editors[WIdx]^.Buffer, OutPath);
-  ActiveEditor := Editors[WIdx]^;
+  LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, OutPath);
+  ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
  End;
  EditorReady := True;
  FullRepaintNeeded := True;
@@ -236734,8 +237161,8 @@ Begin
  Else Begin
   CreateEditorWindow(OutPath);
   WIdx := WinMgr.ActiveIdx;
-  LoadFile(Editors[WIdx]^.Buffer, OutPath);
-  ActiveEditor := Editors[WIdx]^;
+  LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, OutPath);
+  ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
  End;
  EditorReady := True;
  FullRepaintNeeded := True;
@@ -236806,8 +237233,8 @@ Begin
  Else Begin
   CreateEditorWindow(OutPath);
   WIdx := WinMgr.ActiveIdx;
-  LoadFile(Editors[WIdx]^.Buffer, OutPath);
-  ActiveEditor := Editors[WIdx]^;
+  LoadFile(WindowNodeAt(WIdx)^.Editor^.Buffer, OutPath);
+  ActiveEditor := WindowNodeAt(WIdx)^.Editor^;
  End;
  EditorReady := True;
  FullRepaintNeeded := True;
@@ -236886,7 +237313,7 @@ Begin
    la reprise du focus des le premier clic. }
  If (Ev.Kind = EV_MOUSE_DOWN) And (WinMgr.ActiveIdx >= 0) And
     (WinMgr.ActiveIdx < WinMgr.WinCount) And
-    (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER) Then
+    (WinMgr.ActiveNode^.Win.Kind = WK_BROWSER) Then
   BrowserHasFocus := BrowserPointInView(Ev.MouseX, Ev.MouseY);
  { Menu contextuel en priorite si visible }
  If CtxMenu.Visible Then Begin
@@ -236990,16 +237417,16 @@ Begin
      801: Begin { Copier le nom du fichier }
       If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
        SetRealClipboardText(
-        ExtractFileName(WinMgr.Windows[WinMgr.ActiveIdx].FileName));
+        ExtractFileName(WinMgr.ActiveNode^.Win.FileName));
      End;
      802: Begin { Copier le chemin }
       If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
        SetRealClipboardText(
-        ExtractFilePath(WinMgr.Windows[WinMgr.ActiveIdx].FileName));
+        ExtractFilePath(WinMgr.ActiveNode^.Win.FileName));
      End;
      803: Begin { Copier le chemin et le nom }
       If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) Then
-       SetRealClipboardText(WinMgr.Windows[WinMgr.ActiveIdx].FileName);
+       SetRealClipboardText(WinMgr.ActiveNode^.Win.FileName);
      End;
      804: Begin { Couper }
       If EditorReady Then Begin
@@ -237823,7 +238250,7 @@ Begin
  If TermVisible And TerminalHasFocus And Not
     ((Ev.Kind = EV_KEY_DOWN) And (Ev.KeyCode = 134) And
      (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) And
-     (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER)) Then Begin
+     (WinMgr.ActiveNode^.Win.Kind = WK_BROWSER)) Then Begin
   { BOGUE REEL (2026-09-28, "F12 ... aucune reaction") : F12 (DevTools) est
     un raccourci GLOBAL du navigateur dans un vrai navigateur - il doit
     fonctionner meme si le Terminal integre garde le focus clavier (ex :
@@ -237848,7 +238275,7 @@ Begin
   { non plus). Pas de rechargement de GridEditors[] apres l appel :         }
   { GridHandleDoubleClick peut avoir change WinMgr.ActiveIdx (ouverture du  }
   { visualiseur de memo), et de toute facon elle ne modifie jamais GE. }
-  If (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID) And
+  If (WinMgr.ActiveNode^.Win.Kind = WK_GRID) And
      (Ev.Kind = EV_MOUSE_DBLCLICK) Then Begin
    GridHandleDoubleClick(ActiveGridEditor, Ev);
    Exit;
@@ -237857,7 +238284,7 @@ Begin
   { noeud sous le curseur (Etape 1) - point d ancrage aussi pour un futur  }
   { double-clic "ouvrir la table" une fois les connexions fichier .DBF/    }
   { .CSV cablees (Etape 4 du plan). }
-  If (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER) And
+  If (WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER) And
      (Ev.Kind = EV_MOUSE_DBLCLICK) Then Begin
    HandleSqlExplorerEvent(SqlExplorer, Ev);
    Exit;
@@ -237869,29 +238296,29 @@ Begin
    Exit;
   End;
   If (Ev.Kind = EV_KEY_CHAR) Or (Ev.Kind = EV_KEY_DOWN) Then Begin
-   If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
+   If WinMgr.ActiveNode^.Win.Kind = WK_HEX Then Begin
     HandleHexEditorKey(ActiveHexEditor, Ev);
-    If HexEditors[WinMgr.ActiveIdx] <> Nil Then
-     HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
+    If WinMgr.ActiveNode^.HexEditor <> Nil Then
+     WinMgr.ActiveNode^.HexEditor^ := ActiveHexEditor;
     If ActiveHexEditor.Modified Then
      MarkWindowModified(WinMgr.ActiveIdx);
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorY :=
+    WinMgr.ActiveNode^.Win.CursorY :=
      ActiveHexEditor.CursorOfs Div HEX_BYTES_PER_ROW;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorX :=
+    WinMgr.ActiveNode^.Win.CursorX :=
      ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
-   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_FORM Then Begin
     { Apercu de formulaire : lecture seule, aucune frappe traitee }
-   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_EXTMGR Then Begin
     { Gestionnaire d extensions : pilote a la souris, aucune frappe traitee }
-   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then Begin
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then Begin
     HandleSqlExplorerEvent(SqlExplorer, Ev);
-   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
     HandleGridEditorKey(ActiveGridEditor, Ev);
-    If GridEditors[WinMgr.ActiveIdx] <> Nil Then
-     GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveGridEditor.SelRow;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveGridEditor.SelCol;
-   End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+    If WinMgr.ActiveNode^.GridEditor <> Nil Then
+     WinMgr.ActiveNode^.GridEditor^ := ActiveGridEditor;
+    WinMgr.ActiveNode^.Win.CursorY := ActiveGridEditor.SelRow;
+    WinMgr.ActiveNode^.Win.CursorX := ActiveGridEditor.SelCol;
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_BROWSER Then Begin
     HandleBrowserKey(Ev);
     { Pas d'equivalent direct a une position curseur ligne/colonne pour
       la barre d'etat (le focus peut etre sur la barre d'URL, un champ
@@ -237902,11 +238329,11 @@ Begin
     HandleSelectionKey(ActiveEditor, EditorSel, EditorClip,
      EditorUndo, EditorRedo, Ev);
     { Sauvegarder l etat de l editeur dans le tableau }
-    If Editors[WinMgr.ActiveIdx] <> Nil Then
-     Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
+    If WinMgr.ActiveNode^.Editor <> Nil Then
+     WinMgr.ActiveNode^.Editor^ := ActiveEditor;
     { Synchroniser curseur vers TEditorWindow pour la barre d etat }
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
-    WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+    WinMgr.ActiveNode^.Win.CursorY := ActiveEditor.CursorLine;
+    WinMgr.ActiveNode^.Win.CursorX := ActiveEditor.CursorCol - 1;
    End;
    Exit;
   End;
@@ -237926,47 +238353,47 @@ Begin
       (Ev.MouseY < OutputPanel.Y + OutputPanel.Height) Then Begin
     { Laisser passer vers HandleOutputEvent }
    End Else Begin
-    If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_HEX Then Begin
+    If WinMgr.ActiveNode^.Win.Kind = WK_HEX Then Begin
      HandleHexEditorMouse(ActiveHexEditor, Ev);
-     If HexEditors[WinMgr.ActiveIdx] <> Nil Then
-      HexEditors[WinMgr.ActiveIdx]^ := ActiveHexEditor;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorY :=
+     If WinMgr.ActiveNode^.HexEditor <> Nil Then
+      WinMgr.ActiveNode^.HexEditor^ := ActiveHexEditor;
+     WinMgr.ActiveNode^.Win.CursorY :=
       ActiveHexEditor.CursorOfs Div HEX_BYTES_PER_ROW;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorX :=
+     WinMgr.ActiveNode^.Win.CursorX :=
       ActiveHexEditor.CursorOfs Mod HEX_BYTES_PER_ROW;
-    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_FORM Then Begin
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_FORM Then Begin
      HandleFormEditorMouse(ActiveFormEditor, Ev);
-     If FormEditors[WinMgr.ActiveIdx] <> Nil Then
-      FormEditors[WinMgr.ActiveIdx]^ := ActiveFormEditor;
+     If WinMgr.ActiveNode^.FormEditor <> Nil Then
+      CloneFormEditor(WinMgr.ActiveNode^.FormEditor^, ActiveFormEditor);
      If ActiveFormEditor.Modified Then
       MarkWindowModified(WinMgr.ActiveIdx);
-    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_EXTMGR Then Begin
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_EXTMGR Then Begin
      HandleExtManagerMouse(ExtMgr, Ev);
-    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_SQLEXPLORER Then Begin
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then Begin
      HandleSqlExplorerEvent(SqlExplorer, Ev);
-    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_GRID Then Begin
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
      HandleGridEditorMouse(ActiveGridEditor, Ev);
-     If GridEditors[WinMgr.ActiveIdx] <> Nil Then
-      GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveGridEditor.SelRow;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveGridEditor.SelCol;
-    End Else If WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER Then Begin
+     If WinMgr.ActiveNode^.GridEditor <> Nil Then
+      WinMgr.ActiveNode^.GridEditor^ := ActiveGridEditor;
+     WinMgr.ActiveNode^.Win.CursorY := ActiveGridEditor.SelRow;
+     WinMgr.ActiveNode^.Win.CursorX := ActiveGridEditor.SelCol;
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_BROWSER Then Begin
      HandleBrowserMouse(Ev);
     End Else If (Ev.Kind = EV_MOUSE_DOWN) And (Ev.MouseBtn = MB_RIGHT) Then Begin
      { Menu contextuel de l editeur de texte source (2026-08-31) - voir     }
      { ShowEditorContextMenu / Case CtxTag Of (tags 800-808). }
      PositionCursorForContextMenu(ActiveEditor, Ev.MouseX, Ev.MouseY);
-     If Editors[WinMgr.ActiveIdx] <> Nil Then
-      Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+     If WinMgr.ActiveNode^.Editor <> Nil Then
+      WinMgr.ActiveNode^.Editor^ := ActiveEditor;
+     WinMgr.ActiveNode^.Win.CursorY := ActiveEditor.CursorLine;
+     WinMgr.ActiveNode^.Win.CursorX := ActiveEditor.CursorCol - 1;
      ShowEditorContextMenu(CtxMenu, Ev.MouseX, Ev.MouseY);
     End Else Begin
      HandleEditorMouse(ActiveEditor, Ev);
-     If Editors[WinMgr.ActiveIdx] <> Nil Then
-      Editors[WinMgr.ActiveIdx]^ := ActiveEditor;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorY := ActiveEditor.CursorLine;
-     WinMgr.Windows[WinMgr.ActiveIdx].CursorX := ActiveEditor.CursorCol - 1;
+     If WinMgr.ActiveNode^.Editor <> Nil Then
+      WinMgr.ActiveNode^.Editor^ := ActiveEditor;
+     WinMgr.ActiveNode^.Win.CursorY := ActiveEditor.CursorLine;
+     WinMgr.ActiveNode^.Win.CursorX := ActiveEditor.CursorCol - 1;
     End;
     Exit;
    End;
@@ -238012,7 +238439,7 @@ Begin
     puisque F12 ne genere jamais lui-meme d'evenement EV_KEY_DOWN dans cet
     environnement. }
   If (WinMgr.ActiveIdx >= 0) And (WinMgr.ActiveIdx < WinMgr.WinCount) And
-     (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER) Then
+     (WinMgr.ActiveNode^.Win.Kind = WK_BROWSER) Then
    BrowserPollF12OnActiveTab;
   If Ev.Kind <> EV_NONE Then Begin
    DispatchEvent(Ev);
@@ -238050,7 +238477,7 @@ Begin
      doit pas voir son setTimeout se declencher, comme un vrai navigateur
      qui met en veille les onglets inactifs. }
    If (WinMgr.ActiveIdx >= 0) And
-      (WinMgr.Windows[WinMgr.ActiveIdx].Kind = WK_BROWSER) Then
+      (WinMgr.ActiveNode^.Win.Kind = WK_BROWSER) Then
     BrowserIdleTick;
    { Meme sans evenement utilisateur, redessiner si le terminal a change }
    If TermVisible And TermPanels[ActiveShell].NeedRepaint Then
@@ -238485,8 +238912,8 @@ Begin
   StartPage.Visible := False;
   CreateEditorWindow(Opts.SourceFile);
   { Charger le fichier dans l editeur alloue }
-  LoadFile(Editors[WinMgr.ActiveIdx]^.Buffer, Opts.SourceFile);
-  ActiveEditor := Editors[WinMgr.ActiveIdx]^;
+  LoadFile(WinMgr.ActiveNode^.Editor^.Buffer, Opts.SourceFile);
+  ActiveEditor := WinMgr.ActiveNode^.Editor^;
   EditorReady := True;
   { Peupler l explorateur de solutions avec le fichier ouvert }
   ClearExplorer(SolExplorer);
@@ -258788,8 +259215,8 @@ Begin
  { BS.X/Y/Width/Height ne sont PAS copies ici : contrairement au reste de
    cet etat, ils n'ont jamais existe comme globales ambiantes dans
    BROWSER.PAS (le code d'origine ne connaissait que l'ecran entier). Ce
-   sont WinMgr.Windows[Idx].X/Y/Width/Height (phase F, meme motif que
-   GE.X := WinMgr.Windows[Idx].X pour Grid) qui restent la seule source
+   sont WindowNodeAt(Idx)^.Win.X/Y/Width/Height (phase F, meme motif que
+   GE.X := WindowNodeAt(Idx)^.Win.X pour Grid) qui restent la seule source
    de verite pour la geometrie de l'onglet. }
  BS.ScrollX := ScrollX; BS.ScrollY := ScrollY;
  BS.DocumentContentHeight := DocumentContentHeight; BS.MaxScrollY := MaxScrollY;
@@ -265006,9 +265433,8 @@ End;
 Procedure CreateBrowserWindow(Const InitialURL: String);
 Var
  Idx: Integer;
+ Node: PWindowNode;
 Begin
- If WinMgr.WinCount >= MAX_WINDOWS Then Exit;
-
  { L'utilisateur vient d'agir pour ouvrir cet onglet - il a le focus des
    sa creation, comme un onglet emulateur nouvellement lance (EmuHasFocus
    suit le meme motif). }
@@ -265017,16 +265443,16 @@ Begin
  SyncActiveWindowOut;
  EmuPanel.Base.Visible := False;
  Idx := WinMgr.WinCount;
- InitEditorWindow(WinMgr.Windows[Idx]);
- WinMgr.Windows[Idx].Kind := WK_BROWSER;
- WinMgr.Windows[Idx].Title := 'Navigateur Web';
- WinMgr.Windows[Idx].TabIndex := Idx;
- WinMgr.Windows[Idx].Visible := True;
- WinMgr.Windows[Idx].Maximized := True;
- WinMgr.Windows[Idx].X := 0;
- WinMgr.Windows[Idx].Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
- WinMgr.Windows[Idx].Width := GetScreenWidth - EXPLORER_WIDTH;
- WinMgr.Windows[Idx].Height := GetScreenHeight - MENUBAR_HEIGHT
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_BROWSER;
+ Node^.Win.Title := 'Navigateur Web';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
 
  If BrowserTabs[Idx] = Nil Then New(BrowserTabs[Idx]);
@@ -265067,10 +265493,10 @@ Begin
  InitRefreshButton;
  InitFavoriteButton;
 
- BrowserTabs[Idx]^.X := WinMgr.Windows[Idx].X;
- BrowserTabs[Idx]^.Y := WinMgr.Windows[Idx].Y;
- BrowserTabs[Idx]^.Width := WinMgr.Windows[Idx].Width;
- BrowserTabs[Idx]^.Height := WinMgr.Windows[Idx].Height;
+ BrowserTabs[Idx]^.X := Node^.Win.X;
+ BrowserTabs[Idx]^.Y := Node^.Win.Y;
+ BrowserTabs[Idx]^.Width := Node^.Win.Width;
+ BrowserTabs[Idx]^.Height := Node^.Win.Height;
  BrowserComputeLayout(BrowserTabs[Idx]^.X, BrowserTabs[Idx]^.Y,
   BrowserTabs[Idx]^.Width, BrowserTabs[Idx]^.Height);
 
@@ -265080,6 +265506,7 @@ Begin
 
  Inc(WinMgr.WinCount);
  WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
  ActiveBrowserState := BrowserTabs[Idx]^;
 
  { Meme bogue reel deja documente pour CreateGridWindow (2026-09-04) : sans
@@ -265251,7 +265678,7 @@ End;
 { Sauvegarde ActiveBrowserState (deja synchronisee depuis les globales
   ambiantes) dans BrowserTabs[TabIdx]^ - appelee par la branche WK_BROWSER
   de SyncActiveWindowOut, meme role que
-  "GridEditors[WinMgr.ActiveIdx]^ := ActiveGridEditor". }
+  "WinMgr.ActiveNode^.GridEditor^ := ActiveGridEditor". }
 Procedure SyncBrowserOut(TabIdx: Integer);
 Begin
  BrowserSyncOut(ActiveBrowserState);
