@@ -2329,6 +2329,20 @@ Const
  { tort la reservation de LOADHIGH). }
  EMU_UMB_SEG          = $D000; { unique bloc UMB gere par AH=10h/11h/12h   }
  EMU_UMB_SIZE_PARAS   = $1000; { 64 Ko en paragraphes (4096 = 65536/16)    }
+ { "-Device"/"-DeviceHigh" repetable de Start-DosProgram (2026-10-03,      }
+ { demande explicite de l utilisateur) - voir EmuDeviceDriverPaths/        }
+ { Emu_LoadDeviceDriver. 16 = large marge (un vrai CONFIG.SYS en a         }
+ { rarement plus d une dizaine). }
+ EMU_DEVLOAD_MAX = 16;
+ { Adresse sentinelle partagee par Emu_LoadDeviceDriver ET Emu_TryDosHigh  }
+ { (voir Emu_RunCpuUntilSentinel) - poussee comme adresse de retour FAR    }
+ { avant tout CALL FAR manuel dans du code de pilote reel ; la boucle de   }
+ { pas s arrete des que CS:IP l atteint. Plage F000 libre (voir le          }
+ { commentaire de tete d Emu_XmsInit pour les autres offsets deja pris :   }
+ { 0080/00A0/00C0/0100/0110/0120/0140, trampolines 0300-06FF). }
+ EMU_DRVINIT_SENT_SEG = $F000;
+ EMU_DRVINIT_SENT_OFS = $0180;
+ EMU_DRVINIT_STEP_CAP = 2000000;
 
  { INT 21h AH=52h ("list of lists"/SYSVARS) - voir Emu_DoInt21 case $52 :  }
  { BOGUE REEL (2026-08-24, trouve en investiguant DOS=HIGH qui echoue      }
@@ -7824,24 +7838,59 @@ Var
  { FatVol/EmuFloppyOpen - voir Emu_LoadElToritoBoot/                      }
  { CreateEmulatorElToritoBootTab. }
  EmuBootFromElTorito: Integer;
- { Pilote DOS reel a charger/INIT avant le programme principal              }
+ { Pilote(s) DOS reel(s) a charger/INIT avant le programme principal        }
  { (2026-10-03, demande explicite de l utilisateur, "Start-DosProgram      }
- { -Device fichier.sys ...") : meme motif exactement que                   }
- { EmuStartCmdLine/EmuBootFromDrive ci-dessus                              }
- { (arme juste avant ShowEmulatorPanel, consomme et remis a '' des que      }
- { Emu_LoadDeviceDriver l a traite) - voir TermCmd_DosLaunch et le nouveau  }
- { appel dans ShowEmulatorPanel juste apres Emu_DefaultVectorsInit. But :   }
- { tester un VRAI binaire de pilote (ex. HIMEM.SYS extrait) contre notre    }
- { propre emulation CPU/INT en mode "-CD" leger, sans passer par le         }
- { noyau DOS reel complet (Start-KernelDos). }
- EmuDeviceDriverPath: String;
+ { -Device fichier.sys ...", etendu le meme jour pour accepter -Device/    }
+ { -DeviceHigh PLUSIEURS fois - l utilisateur soupconne qu un plantage      }
+ { reel puisse venir de l INTERACTION entre plusieurs pilotes charges       }
+ { ensemble, pas d un seul isole) : meme motif exactement que               }
+ { EmuStartCmdLine/EmuBootFromDrive ci-dessus (armes juste avant            }
+ { ShowEmulatorPanel, consommes et remis a '' des que                       }
+ { Emu_LoadAllDeviceDrivers les a traites) - voir TermCmd_DosLaunch et le   }
+ { nouveau appel dans ShowEmulatorPanel juste apres Emu_DefaultVectorsInit. }
+ { But : tester du VRAI code machine de pilote (ex. HIMEM.SYS extrait)      }
+ { contre notre propre emulation CPU/INT en mode "-CD" leger, sans passer   }
+ { par le noyau DOS reel complet (Start-KernelDos). Ordre du tableau =      }
+ { ordre de chargement, exactement comme des lignes DEVICE=/DEVICEHIGH=    }
+ { successives d un vrai CONFIG.SYS. }
+ EmuDeviceDriverPaths: Array[1..EMU_DEVLOAD_MAX] Of String;
+ EmuDeviceDriverHigh : Array[1..EMU_DEVLOAD_MAX] Of Boolean;
+ EmuDeviceDriverCount: Integer;
+ { "-Files=N" de Start-DosProgram (2026-10-03, meme demande) : equivalent  }
+ { du FILES= de CONFIG.SYS. 0 = non precise -> comportement par defaut     }
+ { (27 handles, comme avant ce chantier) ; sinon clampe 8..32 par           }
+ { TermCmd_DosLaunch avant chaque lancement - voir Emu_SftInit/             }
+ { Emu_AllocHandle. }
+ EmuFilesMax: Integer;
+ { "-Dos=High/Umb/Low" de Start-DosProgram (2026-10-03, meme demande) :    }
+ { equivalent de DOS=HIGH/DOS=UMB,HIGH/DOS=LOW du CONFIG.SYS. Comme ce      }
+ { mode "-CD" leger ne charge AUCUN noyau IO.SYS/MSDOS.SYS reel a reloger,  }
+ { EmuDosHighRequested declenche plutot (voir Emu_TryDosHigh, appelee      }
+ { juste apres le chargement des pilotes) la VRAIE sequence that           }
+ { CONFIG.SYS DOS=HIGH ferait faire au noyau : INT 2Fh AX=4310h (obtenir   }
+ { le point d entree XMM reellement accroche - celui du VRAI pilote si     }
+ { -Device=HIMEM.SYS a ete donne), puis AH=01h (Request HMA, DX=0FFFFh)     }
+ { puis AH=05h (Local Enable A20), verifies via un vrai test ecriture/      }
+ { relecture a FFFF:0010 - sequence reelle confirmee dans                   }
+ { bios\sysinit1.asm (AllocHMA), voir KDOS_BUILD. EmuDosHighActive = resultat}
+ { reel (pas suppose) de cette sequence, lu par INT 21h AX=3306h/la          }
+ { commande MEM. }
+ EmuDosHighRequested: Boolean;
+ EmuDosHighActive: Boolean;
+ { Bloc UMB $D000 (EMU_UMB_SEG/EMU_UMB_SIZE_PARAS ci-dessus) : pointeur de  }
+ { prochain segment libre pour "-DeviceHigh", avance par chaque pilote      }
+ { charge haut (plusieurs pilotes -DeviceHigh partagent le meme bloc de     }
+ { 64 Ko) - remis a EMU_UMB_SEG au debut de CHAQUE lancement                }
+ { (Emu_LoadAllDeviceDrivers), jamais persistant entre deux sessions        }
+ { emulateur. }
+ EmuDevHighNextSeg: Word;
  { "-LastOpcode N" de Start-DosProgram (2026-10-03, meme demande) : 0 =    }
  { desactive (comportement normal) ; sinon DOS_PrintEndMessage affiche a   }
  { l ecran, directement a l arret/plantage, les N dernieres instructions   }
  { de EmuTraceBuf (deja alimente en continu par DOS_RunOneChunk) - evite   }
  { de devoir activer DosLogDiag et aller lire EMUDIAG.LOG a la main pour   }
  { une simple inspection rapide. Arme/remis a 0 a chaque lancement, comme  }
- { EmuDeviceDriverPath ci-dessus. }
+ { EmuDeviceDriverPaths ci-dessus. }
  EmuLastOpcodeCount: Integer;
  { Tests unitaires CPU (2026-09-02, demande explicite de l utilisateur) -   }
  { voir TUnitTest8086/LoadUnitTestFile8086/RunUnitTests8086. Emu_TestPanel  }
@@ -11641,7 +11690,9 @@ Procedure Emu_DefaultVectorsInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_StepOne(Var P: TEmulatorPanel); Forward;
 Procedure Emu_TimerTick(Var P: TEmulatorPanel); Forward;
 Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel); Forward;
-Function Emu_LoadDeviceDriver(Var P: TEmulatorPanel; Const DriverPath: TString): Boolean; Forward;
+Function Emu_LoadDeviceDriver(Var P: TEmulatorPanel; Const DriverPath: TString;
+ High: Boolean): Boolean; Forward;
+Procedure Emu_LoadAllDeviceDrivers(Var P: TEmulatorPanel); Forward;
 Procedure ShowEmulatorPanel(Var P: TEmulatorPanel;
  BinaryPath, TargetCPU: String; Args: String); Forward;
 Procedure Emu_DpbInit(Var P: TEmulatorPanel); Forward;
@@ -92564,47 +92615,104 @@ Begin
  If FileExists(Candidate) Then TermResolveDeviceDriverPath := Candidate;
 End;
 
+{ Aide detaillee de Start-DosProgram (2026-10-03, demande explicite de     }
+{ l utilisateur : "/? affiche une aide detaillee"). }
+Procedure TermCmd_DosLaunchHelp(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP, 'Start-DosProgram fichier.exe [arguments] [options]');
+ TermAddLine(TP, '  Lance l''emulateur DOS (8086, cible -CD) sur un executable/.com hote.');
+ TermAddLine(TP, '');
+ TermAddLine(TP, 'Options (n''importe ou dans la ligne, avant ou apres le programme) :');
+ TermAddLine(TP, '  -Device=fichier.sys      Charge+INIT un VRAI pilote DOS (STRATEGY/');
+ TermAddLine(TP, '                           INTERRUPT) avant le programme, en memoire');
+ TermAddLine(TP, '                           conventionnelle. Repetable (plusieurs -Device=');
+ TermAddLine(TP, '                           chargent plusieurs pilotes, dans l''ordre donne,');
+ TermAddLine(TP, '                           comme autant de lignes DEVICE= de CONFIG.SYS).');
+ TermAddLine(TP, '  -DeviceHigh=fichier.sys  Identique a -Device=, mais le CODE du pilote est');
+ TermAddLine(TP, '                           charge dans le bloc UMB $D000 (64 Ko) plutot');
+ TermAddLine(TP, '                           qu''en memoire conventionnelle - equivalent de');
+ TermAddLine(TP, '                           DEVICEHIGH=. Repetable, melangeable avec -Device=.');
+ TermAddLine(TP, '  -Dos=High|Umb|Low        Equivalent de DOS=HIGH/DOS=UMB,HIGH/DOS=LOW de');
+ TermAddLine(TP, '                           CONFIG.SYS. High/Umb declenchent apres le');
+ TermAddLine(TP, '                           chargement des pilotes la VRAIE sequence qu''un');
+ TermAddLine(TP, '                           noyau ferait (INT 2Fh AX=4310h, AH=01h Request');
+ TermAddLine(TP, '                           HMA, AH=05h Local Enable A20, verifies par un');
+ TermAddLine(TP, '                           vrai test d''ecriture/relecture a FFFF:0010) -');
+ TermAddLine(TP, '                           ce mode leger ne chargeant aucun noyau IO.SYS/');
+ TermAddLine(TP, '                           MSDOS.SYS reel a reloger. Low ne fait rien');
+ TermAddLine(TP, '                           (comportement par defaut).');
+ TermAddLine(TP, '  -Files=N                 Equivalent de FILES=N de CONFIG.SYS (nombre max');
+ TermAddLine(TP, '                           de descripteurs de fichiers). N est ramene entre');
+ TermAddLine(TP, '                           8 et 32 (capacite reelle de la table interne).');
+ TermAddLine(TP, '  -CpuType=nom             8086/8088/80186/80188/NecV20/NecV30/80286/80386/');
+ TermAddLine(TP, '                           80486/Pentium - remplace temporairement Options >');
+ TermAddLine(TP, '                           Emulateur > DOS: CPU pour CE SEUL lancement.');
+ TermAddLine(TP, '  -LastOpcode N            Affiche a l''ecran les N dernieres instructions');
+ TermAddLine(TP, '                           executees en cas d''arret/plantage (0..8192),');
+ TermAddLine(TP, '                           sans avoir a activer DosLogDiag/lire EMUDIAG.LOG.');
+ TermAddLine(TP, '  /?                       Affiche cette aide.');
+ TermAddLine(TP, '');
+ TermAddLine(TP, 'Exemple : Start-DosProgram -Device=HIMEM.SYS -Dos=High -Files=30 ' +
+  '-LastOpcode 20 COMMAND.COM');
+End;
+
 { Start-DosProgram (2026-08-30, demande explicite de l utilisateur, alias  }
 { PowerShell dev) : lance l emulateur DOS (8086, cible -CD) sur un         }
 { executable/.com hote, meme motif exact que LOADFIX/LOADHIGH ci-dessous   }
 { mais SANS armer de comportement special (chargement normal, memoire      }
 { conventionnelle a l'adresse par defaut). }
 { Etendu (2026-10-03, demande explicite de l utilisateur, poursuite de     }
-{ l enquete division par zero/HIMEM.SYS) avec 3 drapeaux optionnels,       }
-{ reconnaissables n'importe ou dans la ligne (avant ou apres le nom du     }
-{ programme, comme dans l exemple donne "Start-DosProgram -device=        }
-{ HIMEM.SYS COMMAND.COM") :                                                }
-{   -device=fichier.sys   charge+INIT un VRAI pilote DOS avant le          }
-{                          programme (voir Emu_LoadDeviceDriver).          }
-{   -cputype=NOM           8086/8088/80186/80188/NecV20/NecV30/80286/      }
-{                          80386/80486/Pentium - remplace temporairement   }
-{                          Options > Emulateur > DOS: CPU pour CE SEUL     }
-{                          lancement (restaure juste apres).               }
-{   -lastopcode N          affiche les N dernieres instructions executees  }
-{                          directement a l ecran en cas d arret/plantage   }
-{                          (voir DOS_PrintEndMessage), sans avoir a         }
-{                          activer DosLogDiag/lire EMUDIAG.LOG a la main.  }
+{ l enquete division par zero/HIMEM.SYS) avec plusieurs drapeaux           }
+{ optionnels, reconnaissables n'importe ou dans la ligne, -Device/         }
+{ -DeviceHigh repetables (l utilisateur soupconne qu un plantage reel       }
+{ puisse venir de l INTERACTION entre plusieurs pilotes charges ensemble)  }
+{ - voir TermCmd_DosLaunchHelp ci-dessus pour le detail de chaque option   }
+{ (aussi affiche par "Start-DosProgram /?"). }
 Procedure TermCmd_DosLaunch(Var TP: TTerminalPanel; ParamStr: String);
 Var
- Dir, DosExe, DeviceRaw, DevicePath, CpuTypeName, ProgToken, RestParam: String;
- Tok: String;
+ Dir, DosExe, DeviceRaw, DevicePath, CpuTypeName, DosModeName,
+ ProgToken, RestParam: String;
+ Tok, UpTok: String;
  I, TokCount: Integer;
- CpuTypeVal, LastOpcodeVal, SavedCpuType: Integer;
+ CpuTypeVal, LastOpcodeVal, FilesVal, SavedCpuType: Integer;
+ DevCount: Integer;
+ DevPaths: Array[1..EMU_DEVLOAD_MAX] Of String;
+ DevHigh: Array[1..EMU_DEVLOAD_MAX] Of Boolean;
+ DosHighWanted: Boolean;
 Begin
+ If TrimStr(ParamStr) = '/?' Then Begin
+  TermCmd_DosLaunchHelp(TP);
+  Exit;
+ End;
  Dir := '';
  GetDir(0, Dir);
- DeviceRaw := ''; CpuTypeName := ''; LastOpcodeVal := 0;
+ CpuTypeName := ''; LastOpcodeVal := 0; FilesVal := 0;
+ DosModeName := ''; DosHighWanted := False;
  ProgToken := ''; RestParam := '';
+ DevCount := 0;
  TokCount := 0;
  While TermExtractParam(ParamStr, TokCount + 1) <> '' Do Inc(TokCount);
  I := 1;
  While I <= TokCount Do Begin
   Tok := TermExtractParam(ParamStr, I);
-  If (Length(Tok) > 8) And (UpCaseStr(Copy(Tok, 1, 8)) = '-DEVICE=') Then
-   DeviceRaw := YamlUnquote(Copy(Tok, 9, Length(Tok) - 8))
-  Else If (Length(Tok) > 9) And (UpCaseStr(Copy(Tok, 1, 9)) = '-CPUTYPE=') Then
+  UpTok := UpCaseStr(Tok);
+  If (Length(Tok) > 8) And (Copy(UpTok, 1, 8) = '-DEVICE=') Then Begin
+   DeviceRaw := YamlUnquote(Copy(Tok, 9, Length(Tok) - 8));
+   If DevCount < EMU_DEVLOAD_MAX Then Begin
+    Inc(DevCount); DevPaths[DevCount] := DeviceRaw; DevHigh[DevCount] := False;
+   End;
+  End Else If (Length(Tok) > 12) And (Copy(UpTok, 1, 12) = '-DEVICEHIGH=') Then Begin
+   DeviceRaw := YamlUnquote(Copy(Tok, 13, Length(Tok) - 12));
+   If DevCount < EMU_DEVLOAD_MAX Then Begin
+    Inc(DevCount); DevPaths[DevCount] := DeviceRaw; DevHigh[DevCount] := True;
+   End;
+  End Else If (Length(Tok) > 9) And (Copy(UpTok, 1, 9) = '-CPUTYPE=') Then
    CpuTypeName := Copy(Tok, 10, Length(Tok) - 9)
-  Else If UpCaseStr(Tok) = '-LASTOPCODE' Then Begin
+  Else If (Length(Tok) > 5) And (Copy(UpTok, 1, 5) = '-DOS=') Then
+   DosModeName := Copy(Tok, 6, Length(Tok) - 5)
+  Else If (Length(Tok) > 7) And (Copy(UpTok, 1, 7) = '-FILES=') Then
+   FilesVal := StrToInt(Copy(Tok, 8, Length(Tok) - 7))
+  Else If UpTok = '-LASTOPCODE' Then Begin
    Inc(I);
    If I <= TokCount Then LastOpcodeVal := StrToInt(TermExtractParam(ParamStr, I));
   End Else If ProgToken = '' Then
@@ -92616,8 +92724,8 @@ Begin
   Inc(I);
  End;
  If ProgToken = '' Then Begin
-  TermAddLine(TP, 'Syntaxe : Start-DosProgram fichier.exe [arguments] ' +
-   '[-Device fichier.sys] [-CpuType nom] [-LastOpcode N]');
+  TermAddLine(TP, 'Syntaxe : Start-DosProgram fichier.exe [arguments] [options] ' +
+   '(Start-DosProgram /? pour l''aide detaillee)');
   Exit;
  End;
  If TP.VirtDrive >= 0 Then Begin
@@ -92630,13 +92738,16 @@ Begin
   TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
   Exit;
  End;
- DevicePath := '';
- If DeviceRaw <> '' Then Begin
-  DevicePath := TermResolveDeviceDriverPath(Dir, DeviceRaw);
+ For I := 1 To DevCount Do Begin
+  DevicePath := TermResolveDeviceDriverPath(Dir, DevPaths[I]);
   If DevicePath = '' Then Begin
-   TermAddLine(TP, 'Start-DosProgram -Device : fichier introuvable - ' + DeviceRaw);
+   If DevHigh[I] Then
+    TermAddLine(TP, 'Start-DosProgram -DeviceHigh : fichier introuvable - ' + DevPaths[I])
+   Else
+    TermAddLine(TP, 'Start-DosProgram -Device : fichier introuvable - ' + DevPaths[I]);
    Exit;
   End;
+  DevPaths[I] := DevicePath;
  End;
  CpuTypeVal := -1;
  If CpuTypeName <> '' Then Begin
@@ -92647,11 +92758,35 @@ Begin
    Exit;
   End;
  End;
- EmuDeviceDriverPath := DevicePath;
+ If DosModeName <> '' Then Begin
+  UpTok := UpCaseStr(DosModeName);
+  If (UpTok = 'HIGH') Or (UpTok = 'UMB,HIGH') Or (UpTok = 'HIGH,UMB') Or
+     (UpTok = 'UMB') Then
+   DosHighWanted := True
+  Else If UpTok = 'LOW' Then
+   DosHighWanted := False
+  Else Begin
+   TermAddLine(TP, 'Start-DosProgram -Dos : valeur inconnue - ' + DosModeName +
+    ' (High/Umb/Low)');
+   Exit;
+  End;
+ End;
+ For I := 1 To DevCount Do Begin
+  EmuDeviceDriverPaths[I] := DevPaths[I];
+  EmuDeviceDriverHigh[I] := DevHigh[I];
+ End;
+ EmuDeviceDriverCount := DevCount;
+ EmuDosHighRequested := DosHighWanted;
  { Plafond = taille de EmuTraceBuf (tampon circulaire de 8192 entrees). }
  If LastOpcodeVal < 0 Then LastOpcodeVal := 0;
  If LastOpcodeVal > 8192 Then LastOpcodeVal := 8192;
  EmuLastOpcodeCount := LastOpcodeVal;
+ { "-Files=N" : capacite reelle 8..32 (voir Emu_SftInit/Emu_AllocHandle). }
+ If FilesVal <> 0 Then Begin
+  If FilesVal < 8 Then FilesVal := 8;
+  If FilesVal > 32 Then FilesVal := 32;
+ End;
+ EmuFilesMax := FilesVal;
  If CpuTypeVal <> -1 Then Begin
   SavedCpuType := OptionsDlg.Data.DosCpuType;
   OptionsDlg.Data.DosCpuType := CpuTypeVal;
@@ -94653,7 +94788,10 @@ Var
     XmsFreeB := XmsTotalB;
    TermAddLine(TP, Pad(XmsTotalB, 8) + '  octets de memoire etendue contigue totale');
    TermAddLine(TP, Pad(XmsFreeB, 8) + '  octets de memoire XMS disponible');
-   If EmuXms.Active And EmuXms.HmaOwned Then
+   { EmuXms.HmaOwned (XMM interne) OU EmuDosHighActive ("-Dos=High" de      }
+   { Start-DosProgram contre un VRAI pilote accroche, voir Emu_TryDosHigh - }
+   { 2026-10-03) : les deux signifient la meme chose pour l affichage. }
+   If (EmuXms.Active And EmuXms.HmaOwned) Or EmuDosHighActive Then
     TermAddLine(TP, 'MS-DOS reside dans la zone de memoire haute (HMA).');
    TermAddLine(TP, '');
   End;
@@ -175852,11 +175990,34 @@ End;
 { tout premier passage de DOS_RunOneChunk l affichera normalement via       }
 { DOS_PrintEndMessage - exactement comme un plantage du programme principal}
 { lui-meme, avec -LastOpcode disponible dessus de la meme facon. }
-Function Emu_LoadDeviceDriver(Var P: TEmulatorPanel; Const DriverPath: TString): Boolean;
-Const
- EMU_DRVINIT_SENT_SEG = $F000;
- EMU_DRVINIT_SENT_OFS = $0180;
- EMU_DRVINIT_STEP_CAP = 2000000;
+{ Boucle de pas manuelle partagee par Emu_LoadDeviceDriver et               }
+{ Emu_TryDosHigh (2026-10-03) : avance Emu_StepOne jusqu a ce que CS:IP     }
+{ atteigne l adresse sentinelle (un CALL FAR manuel vers du code de pilote  }
+{ reel vient de RETF), qu une Fault survienne, ou que le plafond de pas de  }
+{ securite soit atteint. PAS DOS_RunOneChunk (pas de video/clavier/        }
+{ VRetrace a servir ici) mais le minimum de minuterie/IRQ pour les          }
+{ pilotes dont l INIT attend reellement un tick. }
+Procedure Emu_RunCpuUntilSentinel(Var P: TEmulatorPanel; Var Reached: Boolean);
+Var Steps: LongInt;
+Begin
+ Steps := 0;
+ Reached := False;
+ While Steps < EMU_DRVINIT_STEP_CAP Do Begin
+  If P.CPU.Fault <> sfNone Then Exit;
+  If (P.CPU.Segs.CS = EMU_DRVINIT_SENT_SEG) And
+     (P.CPU.IP = EMU_DRVINIT_SENT_OFS) Then Begin
+   Reached := True;
+   Exit;
+  End;
+  Emu_StepOne(P);
+  Inc(Steps);
+  If (Steps Mod 5000) = 0 Then Emu_TimerTick(P);
+  Emu_ServiceIrqs(P);
+ End;
+End;
+
+Function Emu_LoadDeviceDriver(Var P: TEmulatorPanel; Const DriverPath: TString;
+ High: Boolean): Boolean;
 Var
  Handle: File;
  Size: LongInt;
@@ -175872,29 +176033,7 @@ Var
  SavedRegs: TEmuRegs;
  SavedSegs: TEmuSegs;
  SavedIP: Word;
- Steps: LongInt;
  Reached: Boolean;
-
- Procedure RunUntilSentinel;
- Begin
-  Steps := 0;
-  Reached := False;
-  While Steps < EMU_DRVINIT_STEP_CAP Do Begin
-   If P.CPU.Fault <> sfNone Then Exit;
-   If (P.CPU.Segs.CS = EMU_DRVINIT_SENT_SEG) And
-      (P.CPU.IP = EMU_DRVINIT_SENT_OFS) Then Begin
-    Reached := True;
-    Exit;
-   End;
-   Emu_StepOne(P);
-   Inc(Steps);
-   { Minimum de service minuterie/IRQ pour les pilotes dont l INIT attend   }
-   { reellement un tick (voir DOS_RunOneChunk, meme rythme). }
-   If (Steps Mod 5000) = 0 Then Emu_TimerTick(P);
-   Emu_ServiceIrqs(P);
-  End;
- End;
-
 Begin
  Emu_LoadDeviceDriver := False;
  {$I-}
@@ -175906,28 +176045,54 @@ Begin
  If Size <= 0 Then Begin Close(Handle); Exit; End;
  DrvParas := Word((Size + 15) Shr 4);
  ReqPktParas := 4; { 64 octets : 23 pour le paquet requete + pile scratch }
- { Retailler le bloc du programme principal pour liberer DrvParas+         }
- { ReqPktParas+1 paragraphes en haut de la chaine (voir commentaire de     }
- { Emu_McbResize : une reduction libere TOUJOURS l espace AU-DESSUS du     }
- { bloc, jamais en dessous - exactement ce qu il faut ici puisque le       }
- { programme garde son adresse de chargement d origine). }
- CurProgParas := Emu_McbSize(P.CPU, Word(EmuPspSeg - 1));
- If LongInt(CurProgParas) < LongInt(DrvParas) + ReqPktParas + 17 Then Begin
-  Close(Handle);
-  Exit; { pas assez de memoire pour isoler le pilote : abandon silencieux }
- End;
- NewProgParas := Word(CurProgParas - DrvParas - ReqPktParas - 1);
- If Not Emu_McbResize(P.CPU, EmuPspSeg, NewProgParas, MaxParas) Then Begin
-  Close(Handle);
-  Exit;
- End;
- If Not Emu_McbAlloc(P.CPU, DrvParas, $0008, DrvSeg, MaxFree) Then Begin
-  Close(Handle);
-  Exit;
- End;
- If Not Emu_McbAlloc(P.CPU, ReqPktParas, $0008, ReqPktSeg, MaxFree) Then Begin
-  Close(Handle);
-  Exit;
+ If High Then Begin
+  { "-DeviceHigh" (2026-10-03) : le code du pilote va dans le bloc UMB fixe }
+  { $D000 (EMU_UMB_SEG, 64 Ko - voir EmuDevHighNextSeg, pointeur de bump    }
+  { partage entre plusieurs -DeviceHigh, remis a EMU_UMB_SEG au debut de    }
+  { Emu_LoadAllDeviceDrivers). Le vrai HIMEM.SYS ne fournit PAS d UMB (role }
+  { d EMM386/QEMM, absent ici) - on simule donc directement l octroi que    }
+  { DOS=UMB aurait obtenu d un fournisseur d UMB reel, plutot que de passer }
+  { par l AH=10h XMS (qui irait de toute facon vers le VRAI pilote accroche }
+  { s il y en a un, pas notre allocateur interne). Le paquet requete reste  }
+  { en memoire CONVENTIONNELLE (via Emu_McbAlloc plus bas) - un vrai DOS    }
+  { fait de meme pour un pilote charge haut, seul SON CODE est haut. }
+  If EmuDevHighNextSeg = 0 Then EmuDevHighNextSeg := EMU_UMB_SEG;
+  If LongInt(EmuDevHighNextSeg) + LongInt(DrvParas) >
+     LongInt(EMU_UMB_SEG) + EMU_UMB_SIZE_PARAS Then Begin
+   Close(Handle);
+   Exit; { bloc UMB plein : abandon silencieux }
+  End;
+  DrvSeg := EmuDevHighNextSeg;
+  EmuDevHighNextSeg := Word(EmuDevHighNextSeg + DrvParas);
+  EmuXms.UmbInUse := True; { coherence avec INT 21h AH=52h / la commande MEM }
+  If Not Emu_McbAlloc(P.CPU, ReqPktParas, $0008, ReqPktSeg, MaxFree) Then Begin
+   Close(Handle);
+   Exit;
+  End;
+ End Else Begin
+  { Retailler le bloc du programme principal pour liberer DrvParas+         }
+  { ReqPktParas+1 paragraphes en haut de la chaine (voir commentaire de     }
+  { Emu_McbResize : une reduction libere TOUJOURS l espace AU-DESSUS du     }
+  { bloc, jamais en dessous - exactement ce qu il faut ici puisque le       }
+  { programme garde son adresse de chargement d origine). }
+  CurProgParas := Emu_McbSize(P.CPU, Word(EmuPspSeg - 1));
+  If LongInt(CurProgParas) < LongInt(DrvParas) + ReqPktParas + 17 Then Begin
+   Close(Handle);
+   Exit; { pas assez de memoire pour isoler le pilote : abandon silencieux }
+  End;
+  NewProgParas := Word(CurProgParas - DrvParas - ReqPktParas - 1);
+  If Not Emu_McbResize(P.CPU, EmuPspSeg, NewProgParas, MaxParas) Then Begin
+   Close(Handle);
+   Exit;
+  End;
+  If Not Emu_McbAlloc(P.CPU, DrvParas, $0008, DrvSeg, MaxFree) Then Begin
+   Close(Handle);
+   Exit;
+  End;
+  If Not Emu_McbAlloc(P.CPU, ReqPktParas, $0008, ReqPktSeg, MaxFree) Then Begin
+   Close(Handle);
+   Exit;
+  End;
  End;
  { Charger l image brute du pilote a DrvSeg:0000, par blocs de 512 octets -}
  { meme motif exactement que Emu_LoadComAt (aucun relogement : un .SYS,    }
@@ -175963,7 +176128,7 @@ Begin
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_SEG);
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_OFS);
  P.CPU.Segs.CS := DrvSeg; P.CPU.IP := StrategyOfs;
- RunUntilSentinel;
+ Emu_RunCpuUntilSentinel(P, Reached);
  If (P.CPU.Fault <> sfNone) Or (Not Reached) Then Begin
   { Fault pendant STRATEGY (ou plafond de pas atteint sans Fault explicite) :}
   { si c est une vraie Fault, on la LAISSE armee (voir commentaire de tete -}
@@ -175980,7 +176145,7 @@ Begin
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_SEG);
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_OFS);
  P.CPU.Segs.CS := DrvSeg; P.CPU.IP := InterruptOfs;
- RunUntilSentinel;
+ Emu_RunCpuUntilSentinel(P, Reached);
  If (P.CPU.Fault <> sfNone) Or (Not Reached) Then Begin
   If P.CPU.Fault = sfNone Then Begin
    P.CPU.Regs := SavedRegs; P.CPU.Segs := SavedSegs; P.CPU.IP := SavedIP;
@@ -175994,6 +176159,94 @@ Begin
  { dispatch INT consulte deja la VRAIE IVT en memoire emulee). }
  P.CPU.Regs := SavedRegs; P.CPU.Segs := SavedSegs; P.CPU.IP := SavedIP;
  Emu_LoadDeviceDriver := True;
+End;
+
+{ "-Dos=High" de Start-DosProgram (2026-10-03, demande explicite de       }
+{ l utilisateur) : ce mode "-CD" leger ne charge AUCUN noyau IO.SYS/       }
+{ MSDOS.SYS reel a reloger (contrairement a Start-KernelDos) - on          }
+{ declenche donc plutot la VRAIE sequence que CONFIG.SYS DOS=HIGH ferait   }
+{ faire au noyau, sequence confirmee dans le vrai source MS-DOS 6.0        }
+{ (bios\sysinit1.asm, procedure AllocHMA - voir KDOS_BUILD) :               }
+{   1) INT 2Fh AX=4310h : point d entree XMM REELLEMENT accroche (celui    }
+{      du vrai pilote si -Device=HIMEM.SYS a ete charge avant, sinon       }
+{      notre propre stub F000:00C0 - voir Emu_DoInt2F).                    }
+{   2) AH=01h (XMM_REQUEST_HMA), DX=0FFFFh - vrai CALL FAR dans ce point   }
+{      d entree (via Emu_RunCpuUntilSentinel, meme technique que           }
+{      STRATEGY/INTERRUPT ci-dessus).                                      }
+{   3) AH=05h (XMM_LOCAL_ENABLE_A20).                                      }
+{   4) Verification reelle (pas supposee) : ecrire a FFFF:0010 et           }
+{      confirmer que 0000:0000 reste INCHANGE (si A20 etait reste          }
+{      desactivee, l ecriture s enveloppeait sur 0000:0000). }
+Procedure Emu_TryDosHigh(Var P: TEmulatorPanel);
+Var
+ SavedRegs: TEmuRegs;
+ SavedSegs: TEmuSegs;
+ SavedIP: Word;
+ XmmSeg, XmmOfs, ScratchSeg, MaxFree: Word;
+ Reached: Boolean;
+ V1, V2: Byte;
+
+ Procedure CallXmm(FnAH: Byte; FnDX: Word);
+ Begin
+  P.CPU.Segs.SS := ScratchSeg; P.CPU.Regs.SP := $0040;
+  P.CPU.Regs.AH := FnAH; P.CPU.Regs.DX := FnDX;
+  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_SEG);
+  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_OFS);
+  P.CPU.Segs.CS := XmmSeg; P.CPU.IP := XmmOfs;
+  Emu_RunCpuUntilSentinel(P, Reached);
+ End;
+
+Begin
+ EmuDosHighActive := False;
+ SavedRegs := P.CPU.Regs;
+ SavedSegs := P.CPU.Segs;
+ SavedIP := P.CPU.IP;
+ P.CPU.Regs.AX := $4310;
+ Emu_DoInt(P, $2F);
+ XmmSeg := P.CPU.Segs.ES;
+ XmmOfs := P.CPU.Regs.BX;
+ P.CPU.Regs := SavedRegs; P.CPU.Segs := SavedSegs; P.CPU.IP := SavedIP;
+ If (XmmSeg = 0) And (XmmOfs = 0) Then Exit; { aucun XMM accroche du tout }
+ If Not Emu_McbAlloc(P.CPU, 4, $0008, ScratchSeg, MaxFree) Then Exit;
+ Emu_WriteByte(P.CPU, EMU_DRVINIT_SENT_SEG, EMU_DRVINIT_SENT_OFS, $F4);
+ CallXmm(1, $FFFF); { Request HMA }
+ If P.CPU.Fault <> sfNone Then Exit; { laissee armee, voir commentaire de tete }
+ If (Not Reached) Or (P.CPU.Regs.AX <> 1) Then Begin
+  P.CPU.Regs := SavedRegs; P.CPU.Segs := SavedSegs; P.CPU.IP := SavedIP;
+  Exit;
+ End;
+ CallXmm(5, 0); { Local Enable A20 }
+ If P.CPU.Fault <> sfNone Then Exit;
+ If (Not Reached) Or (P.CPU.Regs.AX <> 1) Then Begin
+  P.CPU.Regs := SavedRegs; P.CPU.Segs := SavedSegs; P.CPU.IP := SavedIP;
+  Exit;
+ End;
+ V1 := Emu_ReadByte(P.CPU, 0, 0);
+ Emu_WriteByte(P.CPU, $FFFF, $0010, Byte(Not V1));
+ V2 := Emu_ReadByte(P.CPU, 0, 0);
+ EmuDosHighActive := (V2 = V1);
+ P.CPU.Regs := SavedRegs; P.CPU.Segs := SavedSegs; P.CPU.IP := SavedIP;
+End;
+
+{ Orchestre TOUS les "-Device"/"-DeviceHigh" de Start-DosProgram, dans      }
+{ l ordre donne sur la ligne de commande (EmuDeviceDriverPaths/High -       }
+{ remplis par TermCmd_DosLaunch), puis "-Dos=High" s il a ete demande.      }
+{ Appelee depuis ShowEmulatorPanel juste apres Emu_DefaultVectorsInit -     }
+{ voir le commentaire la-bas. Si un pilote plante PENDANT son INIT, on      }
+{ arrete la chaine net (P.CPU.Fault reste arme) - exactement comme un       }
+{ vrai CONFIG.SYS dont une ligne DEVICE= fautive empecherait les            }
+{ suivantes de charger. }
+Procedure Emu_LoadAllDeviceDrivers(Var P: TEmulatorPanel);
+Var I: Integer;
+Begin
+ EmuDevHighNextSeg := EMU_UMB_SEG;
+ For I := 1 To EmuDeviceDriverCount Do Begin
+  If P.CPU.Fault <> sfNone Then Break;
+  Emu_LoadDeviceDriver(P, EmuDeviceDriverPaths[I], EmuDeviceDriverHigh[I]);
+ End;
+ EmuDeviceDriverCount := 0;
+ If (P.CPU.Fault = sfNone) And EmuDosHighRequested Then Emu_TryDosHigh(P);
+ EmuDosHighRequested := False;
 End;
 
 { Libere TOUS les blocs appartenant a PspSeg (utilise a la terminaison      }
@@ -176227,11 +176480,22 @@ Begin
  Emu_WriteDWord(P.CPU, EMU_SFT_SEG, Ofs + 55, 0);      { sf_IFS_HDR }
 End;
 
+{ "-Files=N" de Start-DosProgram (2026-10-03, demande explicite de         }
+{ l utilisateur, poursuite de l enquete HIMEM.SYS) : equivalent du         }
+{ FILES= de CONFIG.SYS. EmuFilesMax (0 = non precise -> 32 par defaut,     }
+{ comportement IDENTIQUE a l ancien code en dur) est deja clampe 8..32 a   }
+{ l analyse de la commande (TermCmd_DosLaunch) - 32 = capacite EXACTE des  }
+{ tableaux EmuFileH/EmuFileOpen/... (Array[5..31], bornes de compilation,  }
+{ jamais redimensionnees ici) donc aucun changement de taille memoire,     }
+{ seul SFCount/la boucle d octroi de descripteurs (Emu_AllocHandle) varie. }
 Procedure Emu_SftInit(Var P: TEmulatorPanel);
-Var H: Integer;
+Var H, Top, SFCount: Integer;
 Begin
+ If EmuFilesMax < 8 Then Top := 31 Else Top := EmuFilesMax - 1;
+ If Top > 31 Then Top := 31;
+ SFCount := Top - 5 + 1;
  Emu_WriteDWord(P.CPU, EMU_SFT_SEG, 0, LongInt(-1)); { SFLink : un seul bloc SFT, jamais chaine }
- Emu_WriteWord(P.CPU, EMU_SFT_SEG, 4, 27);          { SFCount : 5..31 = 27 handles }
+ Emu_WriteWord(P.CPU, EMU_SFT_SEG, 4, SFCount);      { SFCount : 5..Top }
  For H := 5 To 31 Do Emu_SftClearEntry(P, H);
 End;
 
@@ -183616,12 +183880,15 @@ End;
 
 { --- Executer une interruption DOS (INT 21h) --- }
 
-{ Trouver un handle libre (5..31). Retourne 0 si aucun. }
+{ Trouver un handle libre (5..31, ou 5..EmuFilesMax-1 si "-Files=N" - voir }
+{ Emu_SftInit ci-dessus, meme clampage). Retourne 0 si aucun. }
 Function Emu_AllocHandle: Integer;
-Var I: Integer;
+Var I, Top: Integer;
 Begin
   Emu_AllocHandle := 0;
-  For I := 5 To 31 Do
+  If EmuFilesMax < 8 Then Top := 31 Else Top := EmuFilesMax - 1;
+  If Top > 31 Then Top := 31;
+  For I := 5 To Top Do
     If Not EmuFileOpen[I] Then Begin
       Emu_AllocHandle := I;
       Exit;
@@ -185316,7 +185583,11 @@ Begin
        End;
        P.CPU.Regs.AL := 0;  { <> FFh : version vraie disponible (>= DOS 5.0) }
        P.CPU.Regs.DL := 0;  { revision }
-       P.CPU.Regs.DH := 0;  { pas de DOS en ROM/HMA emule }
+       { bit 4 ($10) = "DOS reside en HMA" - reflete maintenant le resultat  }
+       { REEL (pas suppose) de "-Dos=High" de Start-DosProgram, voir         }
+       { Emu_TryDosHigh/EmuDosHighActive (2026-10-03). Reste 0 dans tous     }
+       { les autres cas (comportement d origine inchange). }
+       If EmuDosHighActive Then P.CPU.Regs.DH := $10 Else P.CPU.Regs.DH := 0;
       End;
     End;
    End;
@@ -220196,17 +220467,14 @@ Begin NesActive := False;
  { Chainage reel IVT (AH=25h/35h) : voir Emu_DefaultVectorsInit/            }
  { Emu_IntIsHooked - doit venir APRES les Init ci-dessus (lit leurs .Active).}
  Emu_DefaultVectorsInit(P);
- { "-Device" de Start-DosProgram (2026-10-03) : voir Emu_LoadDeviceDriver.  }
- { Doit venir ICI (apres Emu_DefaultVectorsInit, qui vient de reecrire       }
- { toute la IVT) sinon un hook INT pose par le pilote serait aussitot       }
- { ecrase. Une Fault survenue PENDANT l INIT du pilote reste armee          }
- { (voir commentaire de tete d Emu_LoadDeviceDriver) : le tout premier      }
- { passage de DOS_RunOneChunk l affichera normalement, sans aucun autre     }
- { traitement special ici. }
- If EmuDeviceDriverPath <> '' Then Begin
-  Emu_LoadDeviceDriver(P, EmuDeviceDriverPath);
-  EmuDeviceDriverPath := '';
- End;
+ { "-Device"/"-DeviceHigh"/"-Dos=High" de Start-DosProgram (2026-10-03) :   }
+ { voir Emu_LoadAllDeviceDrivers. Doit venir ICI (apres                     }
+ { Emu_DefaultVectorsInit, qui vient de reecrire toute la IVT) sinon un     }
+ { hook INT pose par un pilote serait aussitot ecrase. Une Fault survenue   }
+ { PENDANT l INIT d un pilote reste armee (voir commentaire de tete         }
+ { d Emu_LoadDeviceDriver) : le tout premier passage de DOS_RunOneChunk     }
+ { l affichera normalement, sans aucun autre traitement special ici. }
+ If EmuDeviceDriverCount > 0 Then Emu_LoadAllDeviceDrivers(P);
  { ----- Stage 1 (2026-08-15) : charge puis rend la main immediatement -   }
  { PAS de Stage 2 pour ce backend (voir DOS_RunOneChunk pour les raisons - }
  { etat peripherique DOS bien au-dela du seul P.CPU deja sauve par onglet).}
