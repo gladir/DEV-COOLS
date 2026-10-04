@@ -7831,6 +7831,15 @@ Var
                                  { Emu_LoadBootSector/CreateEmulatorBootTab.}
                                  { Arme juste avant ShowEmulatorPanel,     }
                                  { consomme et remis a -1 immediatement.  }
+ { "BOOT /DOSINROM" (2026-10-04, demande explicite de l utilisateur) :     }
+ { False (defaut) = un VRAI amorcage (EmuBootActive=True) n installe PAS   }
+ { les services DOS factices de l emulateur (INT 21h/XMS/DPMI/ANSI.SYS/    }
+ { UMB/ASSIGN), pour laisser le noyau REELLEMENT amorce les installer lui  }
+ { meme sans interference - voir ShowEmulatorPanel. Arme juste avant       }
+ { ShowEmulatorPanel, consomme et remis a False immediatement, meme motif  }
+ { que EmuBootFromDrive ci-dessus. Sans effet hors amorcage reel (-CD/-CP  }
+ { direct, EmuBootActive deja False). }
+ EmuBootDosInRom: Boolean;
  { Amorcage El Torito depuis un CD-ROM (2026-09-02, demande explicite de }
  { l utilisateur) - meme motif exactement que EmuBootFromDrive ci-dessus  }
  { (arme juste avant ShowEmulatorPanel, consomme et remis a -1            }
@@ -7922,6 +7931,17 @@ Var
                                  { (contrairement a EmuBootFromDrive) -   }
                                  { doit rester vrai pour toute la duree   }
                                  { de vie de CET onglet emulateur.        }
+ { "BOOT /DOSINROM" (2026-10-04, demande explicite de l utilisateur) :    }
+ { True = CET onglet est un VRAI amorcage SANS /DOSINROM, donc les         }
+ { services DOS factices de l emulateur (INT 21h/XMS+UMB/DPMI/ANSI.SYS/    }
+ { ASSIGN) doivent rester SUPPRIMES pour toute la duree de vie de l onglet }
+ { - meme motif exactement que EmuBootActive juste au-dessus (fixe une     }
+ { seule fois dans ShowEmulatorPanel, jamais remis a False ensuite). Lu    }
+ { par Emu_AssignInit/Emu_XmsInit/Emu_DpmiInit (saute a l init), par        }
+ { Emu_DoInt2F (bloque les reponses ASSIGN live AX=0600h/0601h), par        }
+ { Emu_DoInt (saute le dispatch INT 21h factice) et par EmuVScr_PutChar     }
+ { (saute l interpretation ANSI.SYS). }
+ EmuFakeDosSuppressed: Boolean;
  { --- Phase DOS+ : gestion fichiers reels (handles 5..31) --- }
  EmuFileH       : Array[5..31] Of File;
  EmuFileOpen    : Array[5..31] Of Boolean;
@@ -89722,7 +89742,8 @@ Begin
    End;
    TermAddLine(TP, 'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:img] [/DISK80:img] ' +
     '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
-    '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG_ENFORCE=True|False] [/GUI] [/CMD]');
+    '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG_ENFORCE=True|False] [/GUI] [/CMD] ' +
+    '[/DOSINROM]');
    Exit;
   End;
   DL := Term_DriveLetterFromIdx(Idx);
@@ -89746,6 +89767,19 @@ Begin
  { EmuDbg) ni /OS2/LINUXARM/LINUXARM64 (stubs, jamais d onglet emulateur cree). }
  If Pos('/CMD', Up) > 0 Then EmuCmdConsoleArmOnLoad := True;
  If (Pos('/GUI', Up) > 0) Or (Pos('/CMD', Up) > 0) Then EmuDbgArmPauseOnLoad := True;
+ { /DOSINROM (2026-10-04, demande explicite de l utilisateur) : par defaut,}
+ { un VRAI amorcage (EmuBootActive=True) ne devrait PAS laisser l emulateur}
+ { installer ses PROPRES services DOS factices (INT 21h, XMS, DPMI,        }
+ { ANSI.SYS, UMB, ASSIGN) EN PLUS de ceux que le noyau REELLEMENT amorce    }
+ { depuis le disque installera lui-meme - sinon les deux peuvent entrer en }
+ { conflit (ex. notre faux pilote XMS repond "deja installe" a SYSINIT     }
+ { AVANT meme que DEVICE=HIMEM.SYS du VRAI CONFIG.SYS ne s execute),        }
+ { exactement le genre d interference difficile a diagnostiquer soupconnee }
+ { pour l enquete division par zero en cours. /DOSINROM REACTIVE ce         }
+ { comportement (utile pour amorcer un secteur de boot "nu"/un programme de}
+ { diagnostic qui attend ces services DEJA presents, comme un vrai          }
+ { ROMDOS) - voir EmuBootDosInRom, consomme dans ShowEmulatorPanel. }
+ EmuBootDosInRom := Pos('/DOSINROM', Up) > 0;
  { Chantier ARM64, Etape 5 (2026-09-01) : demarrage reel d un noyau Linux   }
  { ARM64 extrait d une image ISO9660 montee (/CDROM:/CDROM0:/CDROM1: sur    }
  { CETTE commande BOOT, ou deja montee via le drapeau de demarrage /CDROM:  }
@@ -89841,7 +89875,7 @@ Begin
   FolderPath := TrimStr(TermExtractParam(Copy(ParamStr, FlagPos + 5, Length(ParamStr)), 1));
  If FolderPath = '' Then Begin
   TermAddLine(TP, 'Syntaxe : Start-KernelDos -Path dossier [-IoSys fichier] ' +
-   '[-MsDos fichier] [-ImagePath fichier.img]');
+   '[-MsDos fichier] [-ImagePath fichier.img] [-DosInRom]');
   TermAddLine(TP, '  -Path dossier contenant IO.SYS, MSDOS.SYS, CONFIG.SYS, ' +
    'COMMAND.COM et les pilotes (HIMEM.SYS, etc.), tous a la racine.');
   Exit;
@@ -89881,6 +89915,11 @@ Begin
   TermAddLine(TP, 'Start-KernelDos : echec du montage de ' + ImagePath + ' sur C:.');
   Exit;
  End;
+ { -DosInRom : meme drapeau/meme raison exactement que "BOOT /DOSINROM" -   }
+ { voir EmuBootDosInRom - ce pipeline partage le MEME CreateEmulatorBootTab}
+ { que BOOT, donc la meme interference potentielle entre nos propres        }
+ { services DOS factices et ceux du noyau reellement amorce s y applique.  }
+ EmuBootDosInRom := System.Pos('-DOSINROM', UpParams) > 0;
  TermAddLine(TP, 'Start-KernelDos : amorcage de C: ...');
  CreateEmulatorBootTab(2, 'C:');
 End;
@@ -173898,7 +173937,12 @@ Begin
   Close(DbgF);
  End;
  {$ENDIF}
- If OptionsDlg.Data.DosAnsiSys And
+ { Voir le commentaire de tete d EmuFakeDosSuppressed ("BOOT /DOSINROM") : }
+ { un VRAI amorcage sans /DOSINROM ne doit pas interpreter les sequences   }
+ { ESC[ de la sortie teletype INT 10h du noyau reellement amorce comme si  }
+ { notre ANSI.SYS factice etait charge (aucun VRAI ANSI.SYS n a ete        }
+ { install en memoire dans ce cas). }
+ If OptionsDlg.Data.DosAnsiSys And (Not EmuFakeDosSuppressed) And
     ((P.TargetCPU = '-CD') Or (P.TargetCPU = '-CP')) And
     EmuVScr_AnsiFeed(P, C) Then Exit;
  Case C Of
@@ -176009,8 +176053,25 @@ Begin
    Reached := True;
    Exit;
   End;
+  { BOGUE REEL CORRIGE (2026-10-04, demande explicite de l utilisateur :    }
+  { "bizarre que HIMEM reussisse sur un 8086 simule") : EmuTraceBuf/        }
+  { P.TotalSteps n etaient JAMAIS alimentes ici (contrairement a            }
+  { DOS_RunOneChunk), rendant -LastOpcode/EMUDIAG.LOG totalement AVEUGLES   }
+  { a ce qui se passe PENDANT l INIT d un pilote ou la sequence -Dos=High - }
+  { impossible de verifier si un vrai test de generation de CPU s execute   }
+  { reellement a l interieur. Memes champs exactement que                   }
+  { DOS_RunOneChunk (CS/IP/Op/ES/DI/CX/AX), meme tampon circulaire. }
+  EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
+  EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
+  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
+  EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
+  EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
+  EmuTraceBuf[EmuTraceIdx].AX := P.CPU.Regs.AX;
+  EmuTraceIdx := (EmuTraceIdx + 1) And $1FFF;
   Emu_StepOne(P);
   Inc(Steps);
+  Inc(P.TotalSteps);
   If (Steps Mod 5000) = 0 Then Emu_TimerTick(P);
   Emu_ServiceIrqs(P);
  End;
@@ -176044,7 +176105,18 @@ Begin
  Size := FileSize(Handle);
  If Size <= 0 Then Begin Close(Handle); Exit; End;
  DrvParas := Word((Size + 15) Shr 4);
- ReqPktParas := 4; { 64 octets : 23 pour le paquet requete + pile scratch }
+ { BOGUE REEL CORRIGE (2026-10-04, demande explicite de l utilisateur :    }
+ { "bizarre que HIMEM reussisse sur un 8086 simule", enquete amenant a      }
+ { constater un "blocage" - en realite une pile scratch bien trop petite : }
+ { 64 octets (4 paragraphes) pour le paquet requete (23 octets) ET la      }
+ { pile d execution du pilote. Des que ce dernier empile quoi que ce soit   }
+ { (appels imbriques, ou une VRAIE IRQ 8259 livree en plein milieu - voir   }
+ { Emu_RunCpuUntilSentinel/Emu_TimerTick toutes les 5000 pas, EFG_IF        }
+ { souvent actif par defaut dans du code de pilote reel), SP descendait     }
+ { sous 0 et ecrasait le paquet requete/divaguait en memoire - symptome     }
+ { observe : blocage apparent (CPU a 100%, jamais de Fault explicite,        }
+ { jamais le sentinel). 64 paragraphes (1 Ko) laisse une MARGE REELLE. }
+ ReqPktParas := 64; { 1024 octets : 23 pour le paquet requete + pile scratch }
  If High Then Begin
   { "-DeviceHigh" (2026-10-03) : le code du pilote va dans le bloc UMB fixe }
   { $D000 (EMU_UMB_SEG, 64 Ko - voir EmuDevHighNextSeg, pointeur de bump    }
@@ -176123,7 +176195,7 @@ Begin
  SavedSegs := P.CPU.Segs;
  SavedIP := P.CPU.IP;
  { --- Appel STRATEGY (ES:BX = paquet requete) --- }
- P.CPU.Segs.SS := ReqPktSeg; P.CPU.Regs.SP := $0040;
+ P.CPU.Segs.SS := ReqPktSeg; P.CPU.Regs.SP := $0400;
  P.CPU.Segs.ES := ReqPktSeg; P.CPU.Regs.BX := 0;
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_SEG);
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_OFS);
@@ -176141,7 +176213,7 @@ Begin
   Exit;
  End;
  { --- Appel INTERRUPT (sans parametres - le pilote a deja sauve ES:BX) --- }
- P.CPU.Segs.SS := ReqPktSeg; P.CPU.Regs.SP := $0040;
+ P.CPU.Segs.SS := ReqPktSeg; P.CPU.Regs.SP := $0400;
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_SEG);
  Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_OFS);
  P.CPU.Segs.CS := DrvSeg; P.CPU.IP := InterruptOfs;
@@ -176188,7 +176260,7 @@ Var
 
  Procedure CallXmm(FnAH: Byte; FnDX: Word);
  Begin
-  P.CPU.Segs.SS := ScratchSeg; P.CPU.Regs.SP := $0040;
+  P.CPU.Segs.SS := ScratchSeg; P.CPU.Regs.SP := $0400;
   P.CPU.Regs.AH := FnAH; P.CPU.Regs.DX := FnDX;
   Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_SEG);
   Emu_PushWord(P.CPU, EMU_DRVINIT_SENT_OFS);
@@ -176207,7 +176279,7 @@ Begin
  XmmOfs := P.CPU.Regs.BX;
  P.CPU.Regs := SavedRegs; P.CPU.Segs := SavedSegs; P.CPU.IP := SavedIP;
  If (XmmSeg = 0) And (XmmOfs = 0) Then Exit; { aucun XMM accroche du tout }
- If Not Emu_McbAlloc(P.CPU, 4, $0008, ScratchSeg, MaxFree) Then Exit;
+ If Not Emu_McbAlloc(P.CPU, 64, $0008, ScratchSeg, MaxFree) Then Exit; { voir Emu_LoadDeviceDriver }
  Emu_WriteByte(P.CPU, EMU_DRVINIT_SENT_SEG, EMU_DRVINIT_SENT_OFS, $F4);
  CallXmm(1, $FFFF); { Request HMA }
  If P.CPU.Fault <> sfNone Then Exit; { laissee armee, voir commentaire de tete }
@@ -196218,12 +196290,17 @@ Begin
   Emu_DoMscdex(P);
   Exit;
  End;
- If OptionsDlg.Data.DosAssign And (P.CPU.Regs.AX = $0600) Then Begin
+ { Voir le commentaire de tete d EmuFakeDosSuppressed ("BOOT /DOSINROM") : }
+ { un VRAI amorcage sans /DOSINROM ne doit pas repondre a ces 2 sous-       }
+ { fonctions non plus (pas seulement sauter Emu_AssignInit a l init). }
+ If OptionsDlg.Data.DosAssign And (Not EmuFakeDosSuppressed) And
+    (P.CPU.Regs.AX = $0600) Then Begin
   { ASSIGN - INSTALLATION CHECK (voir EMU_ASSIGN_SEG). AL=FFh = installe. }
   P.CPU.Regs.AL := $FF;
   Exit;
  End;
- If OptionsDlg.Data.DosAssign And (P.CPU.Regs.AX = $0601) Then Begin
+ If OptionsDlg.Data.DosAssign And (Not EmuFakeDosSuppressed) And
+    (P.CPU.Regs.AX = $0601) Then Begin
   { ASSIGN - GET DRIVE ASSIGNMENT TABLE : ES = segment de la zone de        }
   { travail, table de 26 octets a ES:0103h (voir Emu_AssignInit pour son   }
   { contenu par defaut - correspondance identite tant qu aucune            }
@@ -196715,7 +196792,15 @@ Begin
   $20: If Geos_Active Then Geos_ThreadTerminate(P)
        Else If Emu_IntIsHooked(P, $20) Then Emu_FireHwInt(P, $20)
        Else P.CPU.Fault := sfEndProgram;
-  $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21) Else Begin
+  $21: If Emu_IntIsHooked(P, $21) Then Emu_FireHwInt(P, $21)
+   Else If EmuFakeDosSuppressed Then Begin
+    { "BOOT /DOSINROM" (voir le commentaire de tete d EmuFakeDosSuppressed) :}
+    { un VRAI amorcage sans /DOSINROM ne doit PAS repondre a INT 21h tant   }
+    { qu aucun vecteur n est accroche (ni le notre, ni - pas encore - celui }
+    { du noyau reellement amorce) - simple CF (echec), comme le ferait du   }
+    { vrai materiel sans le moindre gestionnaire installe. }
+    Include(P.CPU.Flags.s, EFG_CF);
+   End Else Begin
    { InDOS (SDA+01h) : incremente pour la duree de l appel, exactement      }
    { comme le vrai noyau DOS - c est CE compteur que INT 21h AH=34h renvoie }
    { un pointeur vers (voir Emu_DoInt21 case $34), consulte par tout TSR    }
@@ -220348,6 +220433,13 @@ Begin NesActive := False;
   EmuBootActive := False;
   Loaded := Emu_LoadProgram(P.CPU, BinaryPath);
  End;
+ { Voir le commentaire de tete d EmuFakeDosSuppressed/EmuBootDosInRom :     }
+ { fixe une seule fois ici (EmuBootActive vient tout juste d etre          }
+ { finalise ci-dessus), consomme EmuBootDosInRom immediatement (meme         }
+ { convention "arme juste avant, remis a False tout de suite" que           }
+ { EmuBootFromDrive). }
+ EmuFakeDosSuppressed := EmuBootActive And Not EmuBootDosInRom;
+ EmuBootDosInRom := False;
  If Not Loaded Then Begin
   P.CurFg := 12;
   EmuVScr_WriteStr(P,
@@ -220455,15 +220547,25 @@ Begin NesActive := False;
  Emu_CdsInit(P);
  Emu_SftInit(P);
  Emu_SdaInit(P);
- Emu_AssignInit(P);
+ { "BOOT /DOSINROM" (2026-10-04, demande explicite de l utilisateur) : un   }
+ { VRAI amorcage SANS /DOSINROM saute ASSIGN/XMS(+UMB)/DPMI - voir le       }
+ { commentaire de tete d EmuFakeDosSuppressed. Emu_XmsInit/Emu_DpmiInit     }
+ { sont quand meme APPELEES (pour liberer/reinitialiser proprement leurs   }
+ { tampons existants), puis .Active est force a Faux ensuite - equivalent  }
+ { a l effet d une case Options decochee, ce qui bloque du meme coup les   }
+ { reponses INT 2Fh AX=4300h/4310h ET les fonctions UMB (10h/11h/12h de    }
+ { l INT FEh), qui partagent toutes le meme point d entree EmuXms.Active.  }
+ If Not EmuFakeDosSuppressed Then Emu_AssignInit(P);
  Emu_IpxInit(P);
  Emu_PktInit(P);
  Emu_NetBiosInit(P);
  Emu_XmsInit(P);
+ If EmuFakeDosSuppressed Then EmuXms.Active := False;
  Emu_EmsInit(P);
  Emu_MouseInit(P);
  Emu_MscdexInit(P);
  Emu_DpmiInit(P);
+ If EmuFakeDosSuppressed Then EmuDpmi.Active := False;
  { Chainage reel IVT (AH=25h/35h) : voir Emu_DefaultVectorsInit/            }
  { Emu_IntIsHooked - doit venir APRES les Init ci-dessus (lit leurs .Active).}
  Emu_DefaultVectorsInit(P);
