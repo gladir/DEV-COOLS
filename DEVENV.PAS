@@ -151559,11 +151559,109 @@ Begin
  Buf[11] := $08;
 End;
 
+{ Porte de SetVolumeLabel (FORMAT.PAS) : longueur <= 11, non vide, aucun
+  caractere interdit, mise en majuscules. Lbl est modifie en place (mis
+  en majuscules) si la validation reussit ; inchange sinon. }
+Function Fmt_ValidateVolumeLabel(Var Lbl: String; Var ErrMsg: String): Boolean;
+Var
+ I: Integer;
+ C: Char;
+Begin
+ Fmt_ValidateVolumeLabel := False;
+ If Length(Lbl) > 11 Then Begin
+  ErrMsg := 'le nom de volume ne peut pas depasser 11 caracteres.';
+  Exit;
+ End;
+ If Lbl = '' Then Begin
+  ErrMsg := 'le nom de volume ne peut pas etre vide.';
+  Exit;
+ End;
+ For I := 1 To Length(Lbl) Do Begin
+  C := Lbl[I];
+  If (Ord(C) < 32) Or (C = '"') Or (C = '*') Or (C = '+') Or (C = ',') Or
+     (C = '.') Or (C = '/') Or (C = ':') Or (C = ';') Or (C = '<') Or
+     (C = '=') Or (C = '>') Or (C = '?') Or (C = '[') Or (C = '\') Or
+     (C = ']') Or (C = '|') Then Begin
+   ErrMsg := 'caractere interdit dans le nom de volume : ' + C;
+   Exit;
+  End;
+  Lbl[I] := UpCase(C);
+ End;
+ Fmt_ValidateVolumeLabel := True;
+End;
+
+{ Porte de SetupSystemFamily/ParseSystemFamily (FORMAT.PAS) : noms de
+  fichiers systeme par famille DOS, pour /S et /S:famille. F3 = '' pour
+  une famille a 2 fichiers seulement (FreeDOS). OS/2 et WinNT sont
+  refuses explicitement : ils exigent HPFS/NTFS, sans pilote dans ce
+  projet (meme contrainte que le refus deja existant de /FS:FAT32). }
+Function Fmt_SystemFilesForFamily(Family: String;
+ Var F1, F2, F3: String; Var ErrMsg: String): Boolean;
+Var
+ U: String;
+Begin
+ Fmt_SystemFilesForFamily := True;
+ F1 := ''; F2 := ''; F3 := '';
+ U := TermStrToUpper(Family);
+ If (U = 'MS-DOS') Or (U = 'MSDOS') Or (U = 'MS') Or (U = '') Then Begin
+  F1 := 'IO.SYS'; F2 := 'MSDOS.SYS'; F3 := 'COMMAND.COM';
+ End Else If (U = 'PC-DOS') Or (U = 'PCDOS') Or (U = 'PC') Or (U = 'IBM') Then Begin
+  F1 := 'IBMBIO.COM'; F2 := 'IBMDOS.COM'; F3 := 'COMMAND.COM';
+ End Else If (U = 'DR-DOS') Or (U = 'DRDOS') Or (U = 'DR') Then Begin
+  F1 := 'IBMBIO.COM'; F2 := 'IBMDOS.COM'; F3 := 'COMMAND.COM';
+ End Else If (U = 'FREEDOS') Or (U = 'FREE') Or (U = 'FDOS') Then Begin
+  F1 := 'KERNEL.SYS'; F2 := 'COMMAND.COM'; F3 := '';
+ End Else If (U = 'RXDOS') Or (U = 'RX') Then Begin
+  F1 := 'RXDOSBIO.SYS'; F2 := 'RXDOS.SYS'; F3 := 'COMMAND.COM';
+ End Else If (U = 'WIN95') Or (U = 'WIN9X') Or (U = 'W95') Or
+             (U = 'MSDOS7') Or (U = 'MS-DOS7') Then Begin
+  F1 := 'IO.SYS'; F2 := 'MSDOS.SYS'; F3 := 'COMMAND.COM';
+ End Else If (U = 'PTS-DOS') Or (U = 'PTSDOS') Or (U = 'PTS') Then Begin
+  F1 := 'PTSBIO.SYS'; F2 := 'PTSDOS.SYS'; F3 := 'COMMAND.COM';
+ End Else If (U = 'OS/2') Or (U = 'OS2') Or (U = 'IBMOS2') Or
+             (U = 'NT') Or (U = 'WINNT') Or (U = 'WIN-NT') Or
+             (U = 'WIN2K') Or (U = 'W2K') Or (U = 'WINXP') Or
+             (U = 'XP') Or (U = 'WIN2000') Then Begin
+  ErrMsg := 'la famille ' + Family + ' exige HPFS ou NTFS, sans pilote ' +
+   'dans ce projet (voir /FS:FAT12 ou /FS:FAT16).';
+  Fmt_SystemFilesForFamily := False;
+ End Else Begin
+  ErrMsg := 'famille DOS inconnue : ' + Family + ' (attendu MS-DOS, ' +
+   'PC-DOS, DR-DOS, FreeDOS, RxDOS, Win95 ou PTS-DOS).';
+  Fmt_SystemFilesForFamily := False;
+ End;
+End;
+
+{ Taille approximative (reservation /B uniquement - aucun fichier reel
+  n'est lu ici) d'un fichier systeme cache connu, par nom 8.3. Valeur
+  generique raisonnable pour tout nom non reconnu. }
+Function Fmt_ApproxBootFileSize(FName: String): LongInt;
+Begin
+ FName := TermStrToUpper(FName);
+ If FName = 'IO.SYS' Then Fmt_ApproxBootFileSize := 45056
+ Else If FName = 'MSDOS.SYS' Then Fmt_ApproxBootFileSize := 38912
+ Else If FName = 'IBMBIO.COM' Then Fmt_ApproxBootFileSize := 33792
+ Else If FName = 'IBMDOS.COM' Then Fmt_ApproxBootFileSize := 36864
+ Else If FName = 'KERNEL.SYS' Then Fmt_ApproxBootFileSize := 45056
+ Else If FName = 'RXDOSBIO.SYS' Then Fmt_ApproxBootFileSize := 31744
+ Else If FName = 'RXDOS.SYS' Then Fmt_ApproxBootFileSize := 34816
+ Else If FName = 'PTSBIO.SYS' Then Fmt_ApproxBootFileSize := 31744
+ Else If FName = 'PTSDOS.SYS' Then Fmt_ApproxBootFileSize := 34816
+ Else If FName = 'COMMAND.COM' Then Fmt_ApproxBootFileSize := 93880
+ Else Fmt_ApproxBootFileSize := 32768;
+End;
+
 { Porte de ConfigureFileSystem (FORMAT.PAS) : boucle de convergence
   taille-de-cluster -> nombre-de-secteurs-FAT identique (SPC double a
   chaque echec jusqu'a entrer dans la plage de clusters valide), pour
-  FAT12 (<4085 clusters) et FAT16 (4085 a 65524 clusters) uniquement. }
+  FAT12 (<4085 clusters) et FAT16 (4085 a 65524 clusters) uniquement.
+  ForcedSPC (secteurs/cluster) : 0 = boucle automatique habituelle ;
+  sinon (option /A: de FORMAT) fixe SPC directement et saute la boucle -
+  la verification finale de plage de clusters s'applique quand meme, pour
+  rejeter proprement une taille d'unite d'allocation incompatible avec la
+  geometrie demandee (ex. /A:512 sur une image trop grande pour FAT12). }
 Function Fmt_ComputeGeometry(TotalSectors: LongInt; ReqFS: String;
+ ForcedSPC: Byte;
  Var SPC: Byte; Var NumFATs: Byte; Var RootEntries: Word;
  Var SPF: LongInt; Var FATBits: Byte; Var ErrMsg: String): Boolean;
 Var
@@ -151589,8 +151687,8 @@ Begin
  Else If TotalSectors >= 8192 Then FATBits := 16
  Else FATBits := 12;
  RootSectors := (LongInt(RootEntries) * 32 + 511) Div 512;
- SPC := 1;
- Repeat
+ If ForcedSPC > 0 Then Begin
+  SPC := ForcedSPC;
   FatSectors := 1;
   For I := 1 To 16 Do Begin
    DataSectors := TotalSectors - 1 - FatSectors * 2 - RootSectors;
@@ -151603,14 +151701,30 @@ Begin
     FatSectors := ((Clusters + 2) * 2 + 511) Div 512;
    If FatSectors = OldFat Then Break;
   End;
-  If DataSectors < 1 Then Break;
-  If FATBits = 12 Then Begin
-   If (Clusters >= 1) And (Clusters < 4085) Then Break;
-  End Else Begin
-   If (Clusters >= 4085) And (Clusters < 65525) Then Break;
-  End;
-  SPC := SPC * 2;
- Until SPC > 128;
+ End Else Begin
+  SPC := 1;
+  Repeat
+   FatSectors := 1;
+   For I := 1 To 16 Do Begin
+    DataSectors := TotalSectors - 1 - FatSectors * 2 - RootSectors;
+    If DataSectors < 1 Then Break;
+    Clusters := DataSectors Div SPC;
+    OldFat := FatSectors;
+    If FATBits = 12 Then
+     FatSectors := ((Clusters + 2) * 3 Div 2 + 511) Div 512
+    Else
+     FatSectors := ((Clusters + 2) * 2 + 511) Div 512;
+    If FatSectors = OldFat Then Break;
+   End;
+   If DataSectors < 1 Then Break;
+   If FATBits = 12 Then Begin
+    If (Clusters >= 1) And (Clusters < 4085) Then Break;
+   End Else Begin
+    If (Clusters >= 4085) And (Clusters < 65525) Then Break;
+   End;
+   SPC := SPC * 2;
+  Until SPC > 128;
+ End;
  If FATBits = 12 Then Begin
   If (Clusters < 1) Or (Clusters >= 4085) Then Begin
    ErrMsg := 'la geometrie ne convient pas a FAT12 (essayer /FS:FAT16 sur une image plus grande).';
@@ -151628,22 +151742,53 @@ End;
 
 Procedure TermCmd_FORMAT(Var TP: TTerminalPanel; ParamStr: String);
 Var
- P1, ReqFS, VolLabel, Tok: String;
+ P1, ReqFS, VolLabel, Tok, Family, ErrMsg: String;
+ F1, F2, F3: String;
  Idx: Byte;
  I, ArgI: Integer;
- TotalSectors: LongInt;
- SPC, NumFATs, FATBits: Byte;
+ TotalSectors, ASize: LongInt;
+ SPC, NumFATs, FATBits, ForcedSPC: Byte;
  RootEntries: Word;
  SPF: LongInt;
- ErrMsg: String;
  Buf: Array[0..511] Of Byte;
  FATStart, RootStart, DataStart, RootDirSectors, LBA: LongInt;
+ DoQuick, DoUnconditional, DoSystemTransfer, DoBootReserve: Boolean;
+ Code: Integer;
+ CopyErr: String;
+ Sz1, Sz2: LongInt;
+ Clu, PrevClu, FirstClu, NeedClusters, J: LongInt;
+ N11: Array[0..10] Of Byte;
+ SlotLBA: LongInt;
+ SlotIdx: Integer;
 Begin
  P1 := TermExtractParam(ParamStr, 1);
  If (P1 = '') Or (TermStrToUpper(P1) = '/?') Then Begin
-  TermAddLine(TP, 'Syntaxe : FORMAT lettre: [/FS:FAT|FAT12|FAT16] [/V:nom] [/Q]');
+  TermAddLine(TP, 'Syntaxe : FORMAT lettre: [/FS:FAT|FAT12|FAT16] [/V:nom] [/A:taille]');
+  TermAddLine(TP, '                        [/Q] [/U] [/S[:famille]] [/B]');
   TermAddLine(TP, '  Reformate un disque virtuel deja monte (IMGMOUNT ou BOOT');
-  TermAddLine(TP, '  /DISKn:) sur A:, B:, C: ou D: - efface tout son contenu.');
+  TermAddLine(TP, '  /DISKn:) sur A:, B:, C: ou D: - efface tout son contenu. La');
+  TermAddLine(TP, '  geometrie (nombre de secteurs) vient de l''image deja montee ;');
+  TermAddLine(TP, '  FORMAT ne cree ni ne redimensionne jamais l''image elle-meme.');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '  /FS:systeme  FAT, FAT12 ou FAT16 (FAT32/exFAT/NTFS/HPFS : aucun');
+  TermAddLine(TP, '               pilote dans ce projet)');
+  TermAddLine(TP, '  /V:nom       Nom de volume, 11 caracteres maximum');
+  TermAddLine(TP, '  /A:taille    Taille d''unite d''allocation : 512 a 32768 octets');
+  TermAddLine(TP, '               (puissance de 2)');
+  TermAddLine(TP, '  /Q           Formatage rapide : secteur de demarrage, FAT et');
+  TermAddLine(TP, '               repertoire racine seulement');
+  TermAddLine(TP, '  (par defaut, sans /Q) Formatage complet : efface aussi toute');
+  TermAddLine(TP, '               la zone de donnees');
+  TermAddLine(TP, '  /U           Formatage inconditionnel (accepte, sans effet :');
+  TermAddLine(TP, '               aucune fonction UNFORMAT dans ce projet)');
+  TermAddLine(TP, '  /S           Copie les fichiers systeme (IO.SYS, MSDOS.SYS,');
+  TermAddLine(TP, '               COMMAND.COM) depuis le repertoire courant de');
+  TermAddLine(TP, '               DEVENV.exe, pour rendre le volume amorcable');
+  TermAddLine(TP, '  /S:famille   Choisit la famille DOS : MS-DOS, PC-DOS, DR-DOS,');
+  TermAddLine(TP, '               FreeDOS, RxDOS, Win95 ou PTS-DOS (defaut MS-DOS) ;');
+  TermAddLine(TP, '               OS/2 et WinNT sont refuses (exigent HPFS/NTFS)');
+  TermAddLine(TP, '  /B           Reserve l''espace des 2 fichiers systeme caches');
+  TermAddLine(TP, '               sans les copier ; incompatible avec /S');
   Exit;
  End;
  If (Length(P1) <> 2) Or (P1[2] <> ':') Or Not Term_DriveIdxFromLetter(P1[1], Idx) Then Begin
@@ -151656,18 +151801,56 @@ Begin
    '(utiliser IMGMOUNT ou BOOT /DISKn: d''abord).');
   Exit;
  End;
- ReqFS := 'AUTO'; VolLabel := '';
+ ReqFS := 'AUTO'; VolLabel := ''; Family := ''; ForcedSPC := 0;
+ DoQuick := False; DoUnconditional := False;
+ DoSystemTransfer := False; DoBootReserve := False;
  ArgI := 2;
  Tok := TermExtractParam(ParamStr, ArgI);
  While Tok <> '' Do Begin
   If TermStrToUpper(Copy(Tok, 1, 4)) = '/FS:' Then
    ReqFS := TermStrToUpper(Copy(Tok, 5, Length(Tok) - 4))
-  Else If TermStrToUpper(Copy(Tok, 1, 3)) = '/V:' Then
-   VolLabel := Copy(Tok, 4, 11)
-  Else If TermStrToUpper(Tok) = '/Q' Then
-   { formatage rapide : c'est deja le seul mode implemente (pas de
-     parcours physique piste par piste comme le mode complet de
-     FORMAT.PAS - disclosed, /Q et sans /Q se comportent identiquement }
+  Else If TermStrToUpper(Copy(Tok, 1, 3)) = '/V:' Then Begin
+   VolLabel := Copy(Tok, 4, Length(Tok) - 3);
+   If Not Fmt_ValidateVolumeLabel(VolLabel, ErrMsg) Then Begin
+    TermAddLine(TP, 'FORMAT : ' + ErrMsg);
+    Exit;
+   End;
+  End
+  Else If TermStrToUpper(Copy(Tok, 1, 3)) = '/A:' Then Begin
+   Val(Copy(Tok, 4, Length(Tok) - 3), ASize, Code);
+   If (Code <> 0) Or (ASize < 512) Or (ASize > 32768) Or (ASize Mod 512 <> 0) Then Begin
+    TermAddLine(TP, 'FORMAT : taille d''unite d''allocation invalide : ' + Tok +
+     ' (attendu 512 a 32768, puissance de 2).');
+    Exit;
+   End;
+   ForcedSPC := ASize Div 512;
+   J := ForcedSPC;
+   While J > 1 Do Begin
+    If (J Mod 2) <> 0 Then Begin
+     TermAddLine(TP, 'FORMAT : taille d''unite d''allocation invalide : ' + Tok +
+      ' (doit etre une puissance de 2).');
+     Exit;
+    End;
+    J := J Div 2;
+   End;
+  End
+  Else If TermStrToUpper(Tok) = '/Q' Then DoQuick := True
+  Else If TermStrToUpper(Tok) = '/U' Then DoUnconditional := True
+  Else If TermStrToUpper(Tok) = '/S' Then DoSystemTransfer := True
+  Else If TermStrToUpper(Copy(Tok, 1, 3)) = '/S:' Then Begin
+   DoSystemTransfer := True;
+   Family := Copy(Tok, 4, Length(Tok) - 3);
+  End
+  Else If TermStrToUpper(Tok) = '/B' Then DoBootReserve := True
+  Else If (TermStrToUpper(Tok) = '/1') Or (TermStrToUpper(Tok) = '/4') Or
+          (TermStrToUpper(Tok) = '/8') Or
+          (TermStrToUpper(Copy(Tok, 1, 3)) = '/T:') Or
+          (TermStrToUpper(Copy(Tok, 1, 3)) = '/N:') Or
+          (TermStrToUpper(Copy(Tok, 1, 3)) = '/F:') Then Begin
+   TermAddLine(TP, 'FORMAT : ' + Tok + ' sans objet sur une image deja montee ' +
+    '(la taille/geometrie vient du fichier d''image, pas de FORMAT).');
+   Exit;
+  End
   Else Begin
    TermAddLine(TP, 'FORMAT : parametre invalide : ' + Tok);
    Exit;
@@ -151675,14 +151858,33 @@ Begin
   Inc(ArgI);
   Tok := TermExtractParam(ParamStr, ArgI);
  End;
+ If DoSystemTransfer And DoBootReserve Then Begin
+  TermAddLine(TP, 'FORMAT : /S et /B sont mutuellement exclusifs.');
+  Exit;
+ End;
+ If Not Fmt_SystemFilesForFamily(Family, F1, F2, F3, ErrMsg) Then Begin
+  TermAddLine(TP, 'FORMAT : ' + ErrMsg);
+  Exit;
+ End;
+ If DoSystemTransfer Then Begin
+  ErrMsg := '';
+  If Not FileExists(F1) Then ErrMsg := ErrMsg + F1 + ' ';
+  If Not FileExists(F2) Then ErrMsg := ErrMsg + F2 + ' ';
+  If (F3 <> '') And (Not FileExists(F3)) Then ErrMsg := ErrMsg + F3 + ' ';
+  If ErrMsg <> '' Then Begin
+   TermAddLine(TP, 'FORMAT : fichiers systeme introuvables dans le repertoire ' +
+    'courant : ' + ErrMsg);
+   Exit;
+  End;
+ End;
  TotalSectors := LongInt(EmuFloppySize[Idx]) Div 512;
  If TotalSectors < 32 Then Begin
   TermAddLine(TP, 'FORMAT : image trop petite pour contenir un systeme de fichiers.');
   Exit;
  End;
  ErrMsg := '';
- If Not Fmt_ComputeGeometry(TotalSectors, ReqFS, SPC, NumFATs, RootEntries,
-  SPF, FATBits, ErrMsg) Then Begin
+ If Not Fmt_ComputeGeometry(TotalSectors, ReqFS, ForcedSPC, SPC, NumFATs,
+  RootEntries, SPF, FATBits, ErrMsg) Then Begin
   TermAddLine(TP, 'FORMAT : ' + ErrMsg);
   Exit;
  End;
@@ -151722,10 +151924,67 @@ Begin
    TermAddLine(TP, 'FORMAT : echec d''ecriture du repertoire racine.');
    Exit;
   End;
+ { Formatage complet (sans /Q) : la reference efface aussi la zone de
+   donnees entiere, pas seulement les zones systeme - voir Phys4mat dans
+   FORMAT.PAS. Fait ICI, avant Fat_TryMount, pour rester sur les memes
+   secteurs bruts que le reste de cette procedure (une fois monte, /S et
+   /B ecriront via le cache FAT normal, qui ne doit pas re-zapper ce
+   qu''ils viennent d''ecrire). }
+ If Not DoQuick Then Begin
+  FillChar(Buf, 512, 0);
+  For LBA := DataStart To TotalSectors - 1 Do
+   If Not Fat_WriteSector(Idx, LBA, Buf) Then Begin
+    TermAddLine(TP, 'FORMAT : echec d''ecriture de la zone de donnees.');
+    Exit;
+   End;
+ End;
  Fat_TryMount(Idx);
  TermAddLine(TP, 'Le formatage de ' + P1 + ' est termine.');
  TermAddLine(TP, IntToStr(LongInt(TotalSectors) * 512) + ' octets disponibles sur le disque.');
  If VolLabel <> '' Then TermAddLine(TP, 'Nom de volume : ' + VolLabel);
+ If DoSystemTransfer Then Begin
+  CopyErr := '';
+  If Not TermCopyFile(TP, F1, P1 + '\' + F1, True) Then CopyErr := F1
+  Else If Not TermCopyFile(TP, F2, P1 + '\' + F2, True) Then CopyErr := F2
+  Else If (F3 <> '') And (Not TermCopyFile(TP, F3, P1 + '\' + F3, True)) Then CopyErr := F3;
+  If CopyErr <> '' Then
+   TermAddLine(TP, 'FORMAT : le volume est formate mais la copie de ' +
+    CopyErr + ' a echoue.')
+  Else Begin
+   Tok := 'Fichiers systeme transferes (' + F1 + ', ' + F2;
+   If F3 <> '' Then Tok := Tok + ', ' + F3;
+   TermAddLine(TP, Tok + ').');
+  End;
+ End;
+ If DoBootReserve Then Begin
+  Sz1 := Fmt_ApproxBootFileSize(F1);
+  Sz2 := Fmt_ApproxBootFileSize(F2);
+  NeedClusters := (Sz1 + (LongInt(SPC) * 512) - 1) Div (LongInt(SPC) * 512);
+  FirstClu := 0; PrevClu := 0;
+  For J := 1 To NeedClusters Do Begin
+   Clu := Fat_AllocCluster(Idx);
+   If Clu = 0 Then Break;
+   If PrevClu <> 0 Then Fat_SetNextCluster(Idx, PrevClu, Clu);
+   If FirstClu = 0 Then FirstClu := Clu;
+   PrevClu := Clu;
+  End;
+  If (FirstClu <> 0) And Fat_FindFreeSlot(Idx, True, 0, SlotLBA, SlotIdx) And
+     Fat_MakeName11(F1, N11) Then
+   Fat_WriteDirEntry(Idx, SlotLBA, SlotIdx, N11, $06, FirstClu, Sz1);
+  NeedClusters := (Sz2 + (LongInt(SPC) * 512) - 1) Div (LongInt(SPC) * 512);
+  FirstClu := 0; PrevClu := 0;
+  For J := 1 To NeedClusters Do Begin
+   Clu := Fat_AllocCluster(Idx);
+   If Clu = 0 Then Break;
+   If PrevClu <> 0 Then Fat_SetNextCluster(Idx, PrevClu, Clu);
+   If FirstClu = 0 Then FirstClu := Clu;
+   PrevClu := Clu;
+  End;
+  If (FirstClu <> 0) And Fat_FindFreeSlot(Idx, True, 0, SlotLBA, SlotIdx) And
+     Fat_MakeName11(F2, N11) Then
+   Fat_WriteDirEntry(Idx, SlotLBA, SlotIdx, N11, $06, FirstClu, Sz2);
+  TermAddLine(TP, 'Espace reserve pour ' + F1 + ' et ' + F2 + ' (/B).');
+ End;
 End;
 
 { ============================================================ }
