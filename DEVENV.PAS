@@ -1277,6 +1277,58 @@ Function Mdbc_inet_addr(cp: PChar): LongWord;
          StdCall; External 'ws2_32.dll' Name 'inet_addr';
 Function Mdbc_gethostbyname(Name: PChar): PMdbcHostEnt;
          StdCall; External 'ws2_32.dll' Name 'gethostbyname';
+
+{ IPCONFIG (2026-10-04, demande explicite - voir                           }
+{ C:\SOURCE\GITHUB\NETWORKKIT-P\IPCONFIG.PAS) : contrairement a la          }
+{ reference (un seul gethostbyname, pas de masque/passerelle reels, MAC     }
+{ uniquement via NetBIOS sous DOS), utilise directement la VRAIE API        }
+{ Win32 IP Helper (iphlpapi.dll GetAdaptersInfo) - meme API que le vrai      }
+{ ipconfig.exe de Windows, donne adresse/masque/passerelle/MAC/DHCP reels   }
+{ pour CHAQUE carte, pas seulement une IP simulee. Disposition de           }
+{ TIpConfigAdapterInfo calquee octet pour octet sur IP_ADAPTER_INFO         }
+{ (iptypes.h) - l'ordre des champs ne doit jamais changer, Windows ecrit    }
+{ directement dedans. }
+Const
+ MAX_ADAPTER_DESCRIPTION_LENGTH = 128;
+ MAX_ADAPTER_NAME_LENGTH        = 256;
+ MAX_ADAPTER_ADDRESS_LENGTH     = 8;
+
+Type
+ PIpConfigAddrString = ^TIpConfigAddrString;
+ TIpConfigAddrString = Record
+  Next      : PIpConfigAddrString;
+  IpAddress : Array[0..15] Of Char;
+  IpMask    : Array[0..15] Of Char;
+  Context   : LongWord;
+ End;
+ PIpConfigAdapterInfo = ^TIpConfigAdapterInfo;
+ TIpConfigAdapterInfo = Record
+  Next            : PIpConfigAdapterInfo;
+  ComboIndex      : LongWord;
+  AdapterName     : Array[0..MAX_ADAPTER_NAME_LENGTH + 3] Of Char;
+  Description     : Array[0..MAX_ADAPTER_DESCRIPTION_LENGTH + 3] Of Char;
+  AddressLength   : LongWord;
+  Address         : Array[0..MAX_ADAPTER_ADDRESS_LENGTH - 1] Of Byte;
+  Index           : LongWord;
+  AdpType         : LongWord;   { 'Type' en C - mot reserve en Pascal }
+  DhcpEnabled     : LongWord;
+  CurrentIpAddress: PIpConfigAddrString;
+  IpAddressList   : TIpConfigAddrString;
+  GatewayList     : TIpConfigAddrString;
+  DhcpServer      : TIpConfigAddrString;
+  HaveWins        : LongWord;
+  PrimaryWinsServer  : TIpConfigAddrString;
+  SecondaryWinsServer: TIpConfigAddrString;
+  LeaseObtained   : LongInt;
+  LeaseExpires    : LongInt;
+ End;
+
+Function IpCfg_GetAdaptersInfo(pAdapterInfo: Pointer; Var pOutBufLen: LongWord): LongWord;
+         StdCall; External 'iphlpapi.dll' Name 'GetAdaptersInfo';
+Function IpCfg_gethostname(name: PChar; namelen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'gethostname';
+Function IpCfg_WSACleanup: LongInt;
+         StdCall; External 'ws2_32.dll' Name 'WSACleanup';
 {$ENDIF}
 
 Const
@@ -2056,7 +2108,7 @@ Const
  TERM_SELECT_WIDTH     = 180;     { largeur du selecteur deroulant }
  TERM_SELECT_HEIGHT    = 18;      { hauteur du selecteur ferme     }
  TERM_SELECT_ITEM_H    = 18;      { hauteur d un item dans la liste}
- TERM_SELECT_COUNT     = 12;      { nombre total de shells du selecteur }
+ TERM_SELECT_COUNT     = 13;      { nombre total de shells du selecteur }
  TERM_SELECT_SBAR_W    = 14;      { largeur barre defilement du selecteur }
  TERM_SCROLLBAR_WIDTH  = 14;      { largeur barre defilement term  }
  TERM_SCROLL_BTN_H     = 14;      { hauteur boutons fleche scrollb }
@@ -2548,6 +2600,7 @@ Type
   GulamBatch      : TString;   { /GULAM:fichier.gsh }
   Os9Batch        : TString;   { /OS9:fichier - shell OS-9 (CoCo 3) }
   CosBatch        : TString;   { /COS:fichier - shell COS (Cray-1) }
+  AppleDOSBatch   : TString;   { /APPLEDOS:fichier - shell Apple DOS 3.3 }
   RexxFile        : TString;   { /REXX:fichier.rex }
   AwkFile         : TString;   { /AWK:fichier.awk }
   PerlFile        : TString;   { /PERL:fichier.pl }
@@ -3614,8 +3667,8 @@ Type
  End;
 
  { Type de shell du terminal }
- TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_GULAM, SK_AMIGADOS, SK_NCOMMANDER,
-  SK_OS2REXX, SK_OS9, SK_FLEX, SK_CPM, SK_VMS, SK_COS);
+ TShellKind = (SK_CMD, SK_POWERSHELL, SK_BASH, SK_GULAM, SK_APPLEDOS, SK_AMIGADOS,
+  SK_NCOMMANDER, SK_OS2REXX, SK_OS9, SK_FLEX, SK_CPM, SK_VMS, SK_COS);
 
  { Noeud de liste chainee pour l historique d affichage du terminal }
  PTermLine = ^TTermLine;
@@ -3707,6 +3760,11 @@ Type
                                     { lecture seule                          }
   OS9RootFD      : LongInt;        { LSN du descripteur de fichier (FD) du  }
                                     { repertoire racine (DD.DIR de LSN 0)    }
+  IsAppleDOS     : Boolean;        { image Apple II DOS 3.3 "DOS-order"     }
+                                    { (35 pistes x 16 secteurs x 256 octets, }
+                                    { .DSK/.DO) - voir AppleDOS_TryMount,    }
+                                    { lecture ET ecriture                   }
+  AppleDOSVolNum : Byte;           { numero de volume (VTOC octet 6, 0..254)}
   FATType        : Byte;           { 12, 16 ou 32                   }
   BytesPerSector : Word;
   SectorsPerCluster: Byte;
@@ -11737,6 +11795,7 @@ Begin
  Opts.BashBatch        := '';
  Opts.Os9Batch         := '';
  Opts.CosBatch         := '';
+ Opts.AppleDOSBatch    := '';
  Opts.RexxFile         := '';
  Opts.AwkFile          := '';
  Opts.PerlFile         := '';
@@ -11876,6 +11935,15 @@ Begin
     Opts.CosBatch := Copy(Arg, 6, Length(Arg) - 5);
    If (Opts.CosBatch = '') Or (Not FileExists(Opts.CosBatch)) Then
     FatalError('Fichier script introuvable: ' + Opts.CosBatch);
+  End Else
+    { /APPLEDOS:fichier - meme principe, mais ouvre le shell "Apple DOS"   }
+    { (SK_APPLEDOS) - demande explicite de l'utilisateur, 2026-10-05. }
+    If (Length(Arg) >= 10) And
+      ((Copy(Arg, 1, 10) = '/APPLEDOS:') Or (Copy(Arg, 1, 10) = '/appledos:') Or
+      (Copy(Arg, 1, 10) = '-APPLEDOS:') Or (Copy(Arg, 1, 10) = '-appledos:')) Then Begin
+    Opts.AppleDOSBatch := Copy(Arg, 11, Length(Arg) - 10);
+   If (Opts.AppleDOSBatch = '') Or (Not FileExists(Opts.AppleDOSBatch)) Then
+    FatalError('Fichier script introuvable: ' + Opts.AppleDOSBatch);
   End Else
     If (Length(Arg) >= 6) And
       ((Copy(Arg, 1, 6) = '/REXX:') Or (Copy(Arg, 1, 6) = '/rexx:') Or
@@ -43398,6 +43466,11 @@ Begin
  OS9_FreeBytes := FreeSectors * LongInt(OS9_SECSIZE);
 End;
 
+{ Forward : AppleDOS_TryMount est definie plus bas (pres de D64_*/        }
+{ apres D64_ExtractToTempFile), mais Fat_TryMount (juste en dessous) en   }
+{ a besoin des maintenant. }
+Function AppleDOS_TryMount(Idx: Byte; Var V: TFatVol): Boolean; Forward;
+
 Procedure Fat_TryMount(Idx: Byte);
 Var
  Buf: Array[0..511] Of Byte;
@@ -43425,6 +43498,10 @@ Begin
  End;
  { Essayer d abord le format Commodore 64 (.D64) }
  If D64_TryMount(Idx, V) Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ If AppleDOS_TryMount(Idx, V) Then Begin
   FatVol[Idx] := V;
   Exit;
  End;
@@ -44785,6 +44862,617 @@ Begin
  End;
  Close(F);
  D64_ExtractToTempFile := (TotalWritten > 0);
+End;
+
+{ ============================================================
+  Format image Apple II DOS 3.3 "DOS-order" (.DSK/.DO) : 35 pistes x
+  16 secteurs x 256 octets = 143360 octets. Format reel documente
+  ("Beneath Apple DOS") - VTOC piste 17 secteur 0, bitmap de secteurs
+  libres (4 octets/piste), chaine de secteurs de catalogue (7 entrees
+  de 35 octets par secteur), chaine de T-S-list (122 paires piste/
+  secteur par secteur de liste). Contrairement a D64 ci-dessus
+  (lecture seule), lecture ET ECRITURE reelles - aucun precedent dans
+  ce projet pour un format piste/secteur en ecriture (voir
+  [[project_devenv_apple_dos]] / demande explicite de l'utilisateur,
+  2026-10-05, nouveau shell Terminal "Apple DOS"). Perimetre assume :
+  uniquement le format DOS-order standard (PAS .PO ordre ProDOS, PAS
+  .NIB nibble bas niveau) - meme logique de perimetre que FORMAT
+  (FAT12/16 seulement, voir project_devenv_format_command).
+  ============================================================ }
+
+Const
+ APPLEDOS_TRACKS      = 35;
+ APPLEDOS_SECTORS     = 16;
+ APPLEDOS_SECSIZE     = 256;
+ APPLEDOS_IMAGE_SIZE  = LongInt(APPLEDOS_TRACKS) * APPLEDOS_SECTORS * APPLEDOS_SECSIZE;
+ APPLEDOS_VTOC_TRACK  = 17;
+ APPLEDOS_VTOC_SECTOR = 0;
+ APPLEDOS_TS_MAXPAIRS = 122;      { paires piste/secteur par secteur T-S-list }
+ APPLEDOS_ENTRY_SIZE  = 35;       { taille d'une entree de catalogue }
+ APPLEDOS_ENTRIES_PER_SECTOR = 7; { entrees par secteur de catalogue }
+
+Function AppleDOS_SectorOffset(Track, Sector: Byte): LongInt;
+Begin
+ If (Track >= APPLEDOS_TRACKS) Or (Sector >= APPLEDOS_SECTORS) Then
+  AppleDOS_SectorOffset := -1
+ Else
+  AppleDOS_SectorOffset := (LongInt(Track) * APPLEDOS_SECTORS + Sector) *
+   APPLEDOS_SECSIZE;
+End;
+
+Function AppleDOS_ReadSector(Idx: Byte; Track, Sector: Byte;
+ Var Buf: Array Of Byte): Boolean;
+Var
+ Ofs: LongInt;
+ BR: Word;
+Begin
+ AppleDOS_ReadSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ Ofs := AppleDOS_SectorOffset(Track, Sector);
+ If Ofs < 0 Then Exit;
+ If Ofs + APPLEDOS_SECSIZE > EmuFloppySize[Idx] Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], Ofs);
+ If IOResult <> 0 Then Exit;
+ BR := 0;
+ BlockRead(EmuFloppyFile[Idx], Buf, APPLEDOS_SECSIZE, BR);
+ {$I+} If IOResult <> 0 Then Exit;
+ AppleDOS_ReadSector := (BR = APPLEDOS_SECSIZE);
+End;
+
+Function AppleDOS_WriteSector(Idx: Byte; Track, Sector: Byte;
+ Var Buf: Array Of Byte): Boolean;
+Var
+ Ofs: LongInt;
+ BW: Word;
+Begin
+ AppleDOS_WriteSector := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ Ofs := AppleDOS_SectorOffset(Track, Sector);
+ If Ofs < 0 Then Exit;
+ If Ofs + APPLEDOS_SECSIZE > EmuFloppySize[Idx] Then Exit;
+ {$I-}
+ Seek(EmuFloppyFile[Idx], Ofs);
+ If IOResult <> 0 Then Exit;
+ BW := 0;
+ BlockWrite(EmuFloppyFile[Idx], Buf, APPLEDOS_SECSIZE, BW);
+ {$I+} If IOResult <> 0 Then Exit;
+ AppleDOS_WriteSector := (BW = APPLEDOS_SECSIZE);
+End;
+
+Function AppleDOS_TryMount(Idx: Byte; Var V: TFatVol): Boolean;
+Var
+ VTOC: Array[0..255] Of Byte;
+Begin
+ AppleDOS_TryMount := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If EmuFloppySize[Idx] <> APPLEDOS_IMAGE_SIZE Then Exit;
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then
+  Exit;
+ { Sanity : piste du 1er secteur de catalogue plausible, 35 pistes/16    }
+ { secteurs/256 octets annonces dans la VTOC elle-meme (octets 34-37).  }
+ If (VTOC[1] = 0) Or (VTOC[1] >= APPLEDOS_TRACKS) Then Exit;
+ If VTOC[2] >= APPLEDOS_SECTORS Then Exit;
+ If VTOC[34] <> APPLEDOS_TRACKS Then Exit;
+ If VTOC[35] <> APPLEDOS_SECTORS Then Exit;
+ If (VTOC[36] <> Lo(APPLEDOS_SECSIZE)) Or (VTOC[37] <> Hi(APPLEDOS_SECSIZE)) Then Exit;
+ V.AppleDOSVolNum := VTOC[6];
+ V.IsAppleDOS := True;
+ V.Mounted := True;
+ AppleDOS_TryMount := True;
+End;
+
+{ Decode un nom de 30 octets high-bit-set (convention Apple II) a partir }
+{ de Buf[Offset..Offset+29], espaces de bourrage ($A0->' ') retires a    }
+{ droite. }
+Function AppleDOS_NameDecode(Var Buf: Array Of Byte; Offset: Integer): String;
+Var
+ S: String;
+ I: Integer;
+Begin
+ S := '';
+ For I := 0 To 29 Do S := S + Chr(Buf[Offset + I] And $7F);
+ While (Length(S) > 0) And (S[Length(S)] = ' ') Do
+  S := Copy(S, 1, Length(S) - 1);
+ AppleDOS_NameDecode := S;
+End;
+
+{ Encode Name (<=30 car.) dans Buf[Offset..Offset+29], espace-bourre et  }
+{ bit haut force sur chaque caractere (convention Apple II). }
+Procedure AppleDOS_NameEncode(Name: String; Var Buf: Array Of Byte; Offset: Integer);
+Var
+ S: String;
+ I: Integer;
+Begin
+ S := UpCaseStr(Name);
+ If Length(S) > 30 Then S := Copy(S, 1, 30);
+ While Length(S) < 30 Do S := S + ' ';
+ For I := 0 To 29 Do Buf[Offset + I] := Byte(Ord(S[I + 1])) Or $80;
+End;
+
+Function AppleDOS_TypeChar(T: Byte): Char;
+Begin
+ Case T And $7F Of
+  0:  AppleDOS_TypeChar := 'T';
+  1:  AppleDOS_TypeChar := 'I';
+  2:  AppleDOS_TypeChar := 'A';
+  4:  AppleDOS_TypeChar := 'B';
+  8:  AppleDOS_TypeChar := 'S';
+  16: AppleDOS_TypeChar := 'R';
+  32: AppleDOS_TypeChar := 'A';
+  64: AppleDOS_TypeChar := 'B';
+  Else AppleDOS_TypeChar := '?';
+ End;
+End;
+
+Function AppleDOS_TypeByte(C: Char): Byte;
+Begin
+ Case UpCase(C) Of
+  'T': AppleDOS_TypeByte := 0;
+  'I': AppleDOS_TypeByte := 1;
+  'A': AppleDOS_TypeByte := 2;
+  'B': AppleDOS_TypeByte := 4;
+  'S': AppleDOS_TypeByte := 8;
+  'R': AppleDOS_TypeByte := 16;
+  Else AppleDOS_TypeByte := $FF;
+ End;
+End;
+
+{ Bitmap VTOC (octets 38+, 4 octets/piste) : bit a $80 = secteur 0,       }
+{ descendant jusqu'a $01 = secteur 7 dans le 1er octet du groupe, meme    }
+{ motif pour le 2e octet (secteurs 8-15). 1 = libre, 0 = utilise (        }
+{ convention DOS 3.3 reelle). }
+Function AppleDOS_SectorFree(Var VTOC: Array Of Byte; Track, Sector: Byte): Boolean;
+Var
+ ByteIdx: Integer;
+ Mask: Byte;
+Begin
+ ByteIdx := 38 + 4 * Track + (Sector Div 8);
+ Mask := $80 Shr (Sector Mod 8);
+ AppleDOS_SectorFree := (VTOC[ByteIdx] And Mask) <> 0;
+End;
+
+Procedure AppleDOS_MarkSector(Var VTOC: Array Of Byte; Track, Sector: Byte;
+ Free: Boolean);
+Var
+ ByteIdx: Integer;
+ Mask: Byte;
+Begin
+ ByteIdx := 38 + 4 * Track + (Sector Div 8);
+ Mask := $80 Shr (Sector Mod 8);
+ If Free Then VTOC[ByteIdx] := VTOC[ByteIdx] Or Mask
+ Else VTOC[ByteIdx] := VTOC[ByteIdx] And (Not Mask);
+End;
+
+Function AppleDOS_FreeCount(Var VTOC: Array Of Byte): LongInt;
+Var
+ T, S: Byte;
+ N: LongInt;
+Begin
+ N := 0;
+ For T := 0 To APPLEDOS_TRACKS - 1 Do
+  For S := 0 To APPLEDOS_SECTORS - 1 Do
+   If AppleDOS_SectorFree(VTOC, T, S) Then Inc(N);
+ AppleDOS_FreeCount := N;
+End;
+
+{ Alloue le premier secteur libre trouve (parcours lineaire piste 0..34,  }
+{ secteur 0..15) - la vraie DOS 3.3 alterne vers l'exterieur depuis la    }
+{ piste 17 pour minimiser les deplacements de tete sur un vrai lecteur,   }
+{ optimisation sans objet sur une image emulee ; un parcours lineaire     }
+{ deterministe est fonctionnellement equivalent pour la correction. }
+Function AppleDOS_AllocSector(Var VTOC: Array Of Byte; Var Track, Sector: Byte): Boolean;
+Var
+ T, S: Byte;
+Begin
+ AppleDOS_AllocSector := False;
+ For T := 0 To APPLEDOS_TRACKS - 1 Do
+  For S := 0 To APPLEDOS_SECTORS - 1 Do
+   If AppleDOS_SectorFree(VTOC, T, S) Then Begin
+    AppleDOS_MarkSector(VTOC, T, S, False);
+    Track := T; Sector := S;
+    AppleDOS_AllocSector := True;
+    Exit;
+   End;
+End;
+
+{ CATALOG : parcourt la chaine de secteurs de repertoire a partir de la   }
+{ VTOC, affiche chaque entree valide (piste de 1er T-S-list <> 0 et       }
+{ <> $FF - 0=jamais utilisee, $FF=effacee), meme format reel que la       }
+{ commande CATALOG d'Apple DOS 3.3. }
+Procedure AppleDOS_ListDir(Idx: Byte; Var TP: TTerminalPanel);
+Var
+ VTOC, Buf: Array[0..255] Of Byte;
+ CatT, CatS: Byte;
+ E, EntOff: Integer;
+ Name: String;
+ TypeB: Byte;
+ Locked: Boolean;
+ SizeSec: Word;
+ Line, S: String;
+ Safety: Integer;
+Begin
+ If Not FatVol[Idx].Mounted Or Not FatVol[Idx].IsAppleDOS Then Exit;
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ Str(VTOC[6], S);
+ TermAddLine(TP, 'DISK VOLUME ' + S);
+ TermAddLine(TP, '');
+ CatT := VTOC[1]; CatS := VTOC[2];
+ Safety := 0;
+ While (CatT <> 0) And (Safety < APPLEDOS_TRACKS * APPLEDOS_SECTORS) Do Begin
+  Inc(Safety);
+  If Not AppleDOS_ReadSector(Idx, CatT, CatS, Buf) Then Break;
+  For E := 0 To APPLEDOS_ENTRIES_PER_SECTOR - 1 Do Begin
+   EntOff := 11 + E * APPLEDOS_ENTRY_SIZE;
+   If (Buf[EntOff] = 0) Or (Buf[EntOff] = $FF) Then Continue;
+   TypeB := Buf[EntOff + 2];
+   Locked := (TypeB And $80) <> 0;
+   Name := AppleDOS_NameDecode(Buf, EntOff + 3);
+   SizeSec := Word(Buf[EntOff + 33]) Or (Word(Buf[EntOff + 34]) Shl 8);
+   Str(SizeSec, S);
+   While Length(S) < 3 Do S := ' ' + S;
+   If Locked Then Line := ' *' Else Line := '  ';
+   Line := Line + AppleDOS_TypeChar(TypeB) + ' ' + S + ' ' + Name;
+   TermAddLine(TP, Line);
+  End;
+  CatT := Buf[1]; CatS := Buf[2];
+ End;
+End;
+
+{ Cherche une entree par nom (insensible a la casse) dans la chaine de   }
+{ repertoire. Renvoie aussi la position de l'entree (secteur+offset) -   }
+{ necessaire pour DELETE/RENAME/LOCK/UNLOCK qui reecrivent l'entree en    }
+{ place. }
+Function AppleDOS_FindEntry(Idx: Byte; Const Name: String;
+ Var CatTrack, CatSector: Byte; Var EntOff: Integer;
+ Var TSTrack, TSSector, TypeB: Byte; Var SizeSec: Word): Boolean;
+Var
+ VTOC, Buf: Array[0..255] Of Byte;
+ CatT, CatS: Byte;
+ E: Integer;
+ UpName, EName: String;
+ Safety: Integer;
+Begin
+ AppleDOS_FindEntry := False;
+ If Not FatVol[Idx].Mounted Or Not FatVol[Idx].IsAppleDOS Then Exit;
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ UpName := UpCaseStr(Name);
+ CatT := VTOC[1]; CatS := VTOC[2];
+ Safety := 0;
+ While (CatT <> 0) And (Safety < APPLEDOS_TRACKS * APPLEDOS_SECTORS) Do Begin
+  Inc(Safety);
+  If Not AppleDOS_ReadSector(Idx, CatT, CatS, Buf) Then Exit;
+  For E := 0 To APPLEDOS_ENTRIES_PER_SECTOR - 1 Do Begin
+   EntOff := 11 + E * APPLEDOS_ENTRY_SIZE;
+   If (Buf[EntOff] = 0) Or (Buf[EntOff] = $FF) Then Continue;
+   EName := AppleDOS_NameDecode(Buf, EntOff + 3);
+   If UpCaseStr(EName) = UpName Then Begin
+    CatTrack := CatT; CatSector := CatS;
+    TSTrack := Buf[EntOff]; TSSector := Buf[EntOff + 1];
+    TypeB := Buf[EntOff + 2];
+    SizeSec := Word(Buf[EntOff + 33]) Or (Word(Buf[EntOff + 34]) Shl 8);
+    AppleDOS_FindEntry := True;
+    Exit;
+   End;
+  End;
+  CatT := Buf[1]; CatS := Buf[2];
+ End;
+End;
+
+{ Suit la T-S-list a partir de TSTrack/TSSector et copie les octets de    }
+{ DONNEES BRUTS (sans decoder le prefixe longueur/adresse propre a        }
+{ chaque type - fait par l'appelant) dans OutBuf, jusqu'a MaxSize. Les    }
+{ paires (0,0) d'une liste (secteurs "epars" d'un fichier texte a acces   }
+{ aleatoire) sont ignorees - comportement reel DOS 3.3. }
+Procedure AppleDOS_ReadFileChain(Idx: Byte; TSTrack, TSSector: Byte;
+ Var OutBuf: Array Of Byte; MaxSize: LongInt; Var OutSize: LongInt);
+Var
+ TSBuf, DataBuf: Array[0..255] Of Byte;
+ P: Integer;
+ PT, PS: Byte;
+ I: Integer;
+ Safety: Integer;
+Begin
+ OutSize := 0;
+ Safety := 0;
+ While (TSTrack <> 0) And (Safety < APPLEDOS_TRACKS * APPLEDOS_SECTORS) Do Begin
+  Inc(Safety);
+  If Not AppleDOS_ReadSector(Idx, TSTrack, TSSector, TSBuf) Then Exit;
+  For P := 0 To APPLEDOS_TS_MAXPAIRS - 1 Do Begin
+   PT := TSBuf[12 + P * 2]; PS := TSBuf[13 + P * 2];
+   If (PT = 0) And (PS = 0) Then Continue;
+   If Not AppleDOS_ReadSector(Idx, PT, PS, DataBuf) Then Exit;
+   For I := 0 To APPLEDOS_SECSIZE - 1 Do
+    If OutSize < MaxSize Then Begin
+     OutBuf[OutSize] := DataBuf[I];
+     Inc(OutSize);
+    End;
+  End;
+  TSTrack := TSBuf[1]; TSSector := TSBuf[2];
+ End;
+End;
+
+{ Extrait un fichier BINAIRE ('B') vers un fichier hote temporaire, DEJA  }
+{ au format attendu par CPU6502_LoadAppleBin (adresse LE 2 octets +        }
+{ longueur LE 2 octets + charge utile) - c'est EXACTEMENT le format de    }
+{ stockage reel d'un fichier B sur une image DOS 3.3 (les 4 premiers       }
+{ octets de donnees sont deja adresse+longueur), donc aucune              }
+{ reecriture d'en-tete n'est necessaire, contrairement a D64 (PRG C64)     }
+{ qui ne stocke que l'adresse sur 2 octets. Utilise par BRUN. }
+Function AppleDOS_ExtractToTempFile(Idx: Byte; TSTrack, TSSector: Byte;
+ Var OutPath: String): Boolean;
+Var
+ Buf: Array[0..65535] Of Byte;
+ Sz: LongInt;
+ F: File;
+ BW: Word;
+Begin
+ AppleDOS_ExtractToTempFile := False;
+ AppleDOS_ReadFileChain(Idx, TSTrack, TSSector, Buf, SizeOf(Buf), Sz);
+ If Sz < 4 Then Exit;
+ OutPath := GetEnv('TEMP');
+ If OutPath = '' Then OutPath := '.';
+ If OutPath[Length(OutPath)] <> '\' Then OutPath := OutPath + '\';
+ OutPath := OutPath + 'DEVENV_APPLEDOS.BIN';
+ {$I-}
+ Assign(F, OutPath);
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ BW := 0;
+ BlockWrite(F, Buf, Sz, BW);
+ Close(F);
+ AppleDOS_ExtractToTempFile := (LongInt(BW) = Sz);
+End;
+
+{ Libere (marque libres dans la VTOC en memoire - l'appelant doit la       }
+{ reecrire) tous les secteurs d'un fichier : les secteurs de donnees ET    }
+{ les secteurs de T-S-list eux-memes. }
+Procedure AppleDOS_FreeFileChain(Idx: Byte; Var VTOC: Array Of Byte;
+ TSTrack, TSSector: Byte);
+Var
+ TSBuf: Array[0..255] Of Byte;
+ P: Integer;
+ PT, PS, NextT, NextS: Byte;
+ Safety: Integer;
+Begin
+ Safety := 0;
+ While (TSTrack <> 0) And (Safety < APPLEDOS_TRACKS * APPLEDOS_SECTORS) Do Begin
+  Inc(Safety);
+  If Not AppleDOS_ReadSector(Idx, TSTrack, TSSector, TSBuf) Then Exit;
+  For P := 0 To APPLEDOS_TS_MAXPAIRS - 1 Do Begin
+   PT := TSBuf[12 + P * 2]; PS := TSBuf[13 + P * 2];
+   If (PT = 0) And (PS = 0) Then Continue;
+   AppleDOS_MarkSector(VTOC, PT, PS, True);
+  End;
+  NextT := TSBuf[1]; NextS := TSBuf[2];
+  AppleDOS_MarkSector(VTOC, TSTrack, TSSector, True);
+  TSTrack := NextT; TSSector := NextS;
+ End;
+End;
+
+{ Ecrit Data (DataLen octets, prefixe longueur/adresse DEJA inclus par    }
+{ l'appelant selon le type - meme convention que AppleDOS_ReadFileChain)  }
+{ dans une nouvelle chaine de secteurs de donnees + T-S-list, en allouant }
+{ via AppleDOS_AllocSector. VTOC est modifiee EN MEMOIRE (bitmap) - c'est }
+{ a l'appelant de la reecrire sur disque une fois tous les appels         }
+{ AllocSector/Free termines (meme discipline que D64/CP-M : un seul        }
+{ secteur VTOC, le batching evite les ecritures partielles incoherentes). }
+Function AppleDOS_WriteFileChain(Idx: Byte; Var VTOC: Array Of Byte;
+ Var Data: Array Of Byte; DataLen: LongInt;
+ Var FirstTSTrack, FirstTSSector: Byte): Boolean;
+Var
+ TSBuf: Array[0..255] Of Byte;
+ DataBuf: Array[0..255] Of Byte;
+ CurTST, CurTSS, PrevTST, PrevTSS: Byte;
+ DT, DS: Byte;
+ Pos, PairIdx, I, ChunkLen: LongInt;
+ FirstTS: Boolean;
+Begin
+ AppleDOS_WriteFileChain := False;
+ PrevTST := 0; PrevTSS := 0;
+ Pos := 0;
+ FirstTS := True;
+ Repeat
+  If Not AppleDOS_AllocSector(VTOC, CurTST, CurTSS) Then Exit;
+  If FirstTS Then Begin
+   FirstTSTrack := CurTST; FirstTSSector := CurTSS;
+   FirstTS := False;
+  End Else Begin
+   { Chainer le precedent secteur T-S-list vers celui-ci. }
+   If Not AppleDOS_ReadSector(Idx, PrevTST, PrevTSS, TSBuf) Then Exit;
+   TSBuf[1] := CurTST; TSBuf[2] := CurTSS;
+   If Not AppleDOS_WriteSector(Idx, PrevTST, PrevTSS, TSBuf) Then Exit;
+  End;
+  FillChar(TSBuf, APPLEDOS_SECSIZE, 0);
+  TSBuf[5] := Byte(Pos Div APPLEDOS_SECSIZE);
+  TSBuf[6] := Byte((Pos Div APPLEDOS_SECSIZE) Shr 8);
+  PairIdx := 0;
+  While (PairIdx < APPLEDOS_TS_MAXPAIRS) And (Pos < DataLen) Do Begin
+   If Not AppleDOS_AllocSector(VTOC, DT, DS) Then Exit;
+   ChunkLen := DataLen - Pos;
+   If ChunkLen > APPLEDOS_SECSIZE Then ChunkLen := APPLEDOS_SECSIZE;
+   FillChar(DataBuf, APPLEDOS_SECSIZE, 0);
+   For I := 0 To ChunkLen - 1 Do DataBuf[I] := Data[Pos + I];
+   If Not AppleDOS_WriteSector(Idx, DT, DS, DataBuf) Then Exit;
+   TSBuf[12 + PairIdx * 2] := DT;
+   TSBuf[13 + PairIdx * 2] := DS;
+   Inc(PairIdx);
+   Inc(Pos, ChunkLen);
+  End;
+  If Not AppleDOS_WriteSector(Idx, CurTST, CurTSS, TSBuf) Then Exit;
+  PrevTST := CurTST; PrevTSS := CurTSS;
+ Until Pos >= DataLen;
+ AppleDOS_WriteFileChain := True;
+End;
+
+{ Ajoute une entree dans le premier slot libre (piste=0 ou $FF) de la     }
+{ chaine de repertoire DEJA existante - la vraie DOS 3.3 NE fait JAMAIS    }
+{ grandir dynamiquement le catalogue (chaine figee a l'INIT, voir          }
+{ AppleDOS_Init plus bas, 105 entrees max = 15 secteurs x 7) : "repertoire }
+{ plein" quand aucun slot libre n'est trouve est donc un comportement       }
+{ reel, pas une limitation simulee. }
+Function AppleDOS_AddCatalogEntry(Idx: Byte; Const Name: String; TypeB: Byte;
+ TSTrack, TSSector: Byte; SizeSec: Word): Boolean;
+Var
+ VTOC, Buf: Array[0..255] Of Byte;
+ CatT, CatS: Byte;
+ E, EntOff: Integer;
+ Safety: Integer;
+Begin
+ AppleDOS_AddCatalogEntry := False;
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ CatT := VTOC[1]; CatS := VTOC[2];
+ Safety := 0;
+ While (CatT <> 0) And (Safety < APPLEDOS_TRACKS * APPLEDOS_SECTORS) Do Begin
+  Inc(Safety);
+  If Not AppleDOS_ReadSector(Idx, CatT, CatS, Buf) Then Exit;
+  For E := 0 To APPLEDOS_ENTRIES_PER_SECTOR - 1 Do Begin
+   EntOff := 11 + E * APPLEDOS_ENTRY_SIZE;
+   If (Buf[EntOff] = 0) Or (Buf[EntOff] = $FF) Then Begin
+    Buf[EntOff] := TSTrack;
+    Buf[EntOff + 1] := TSSector;
+    Buf[EntOff + 2] := TypeB;
+    AppleDOS_NameEncode(Name, Buf, EntOff + 3);
+    Buf[EntOff + 33] := Lo(SizeSec);
+    Buf[EntOff + 34] := Hi(SizeSec);
+    AppleDOS_AddCatalogEntry := AppleDOS_WriteSector(Idx, CatT, CatS, Buf);
+    Exit;
+   End;
+  End;
+  CatT := Buf[1]; CatS := Buf[2];
+ End;
+ { Aucun slot libre : repertoire plein (comportement DOS 3.3 reel). }
+End;
+
+{ Renvoie True si Name existe ET est verrouille (bit 7 de l'octet type)   }
+{ - utilise par TermCmd_AppleDOS_DELETE pour un message distinct de       }
+{ "FILE NOT FOUND" ; AppleDOS_DeleteEntry refuse aussi silencieusement    }
+{ (meme regle reelle DOS 3.3) pour proteger de la meme facon le chemin    }
+{ d'ecrasement SAVE/BSAVE/CLOSE, pas seulement DELETE explicite. }
+Function AppleDOS_IsLocked(Idx: Byte; Const Name: String): Boolean;
+Var
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+Begin
+ AppleDOS_IsLocked := False;
+ If AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then
+  AppleDOS_IsLocked := (TypeB And $80) <> 0;
+End;
+
+Function AppleDOS_DeleteEntry(Idx: Byte; Const Name: String): Boolean;
+Var
+ VTOC, Buf: Array[0..255] Of Byte;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+Begin
+ AppleDOS_DeleteEntry := False;
+ If Not AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Exit;
+ If (TypeB And $80) <> 0 Then Exit; { FILE LOCKED (vrai comportement DOS 3.3) }
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ AppleDOS_FreeFileChain(Idx, VTOC, TSTrack, TSSector);
+ If Not AppleDOS_WriteSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ If Not AppleDOS_ReadSector(Idx, CatTrack, CatSector, Buf) Then Exit;
+ { Marqueur d'effacement $FF ; la vraie DOS 3.3 preserve la piste          }
+ { d'origine au dernier octet du nom (offset 32) a des fins d'"undelete" - }
+ { reproduit ici pour authenticite, bien qu'aucune commande UNDELETE ne   }
+ { soit proposee par cette implementation. }
+ Buf[EntOff + 32] := Buf[EntOff];
+ Buf[EntOff] := $FF;
+ AppleDOS_DeleteEntry := AppleDOS_WriteSector(Idx, CatTrack, CatSector, Buf);
+End;
+
+Function AppleDOS_RenameEntry(Idx: Byte; Const OldName, NewName: String): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+ DummyCatT, DummyCatS, DummyTST, DummyTSS, DummyType: Byte;
+ DummyEntOff: Integer;
+ DummySize: Word;
+Begin
+ AppleDOS_RenameEntry := False;
+ If AppleDOS_FindEntry(Idx, NewName, DummyCatT, DummyCatS, DummyEntOff,
+  DummyTST, DummyTSS, DummyType, DummySize) Then Exit; { nom deja pris }
+ If Not AppleDOS_FindEntry(Idx, OldName, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Exit;
+ If Not AppleDOS_ReadSector(Idx, CatTrack, CatSector, Buf) Then Exit;
+ AppleDOS_NameEncode(NewName, Buf, EntOff + 3);
+ AppleDOS_RenameEntry := AppleDOS_WriteSector(Idx, CatTrack, CatSector, Buf);
+End;
+
+Function AppleDOS_SetLocked(Idx: Byte; Const Name: String; Locked: Boolean): Boolean;
+Var
+ Buf: Array[0..255] Of Byte;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+Begin
+ AppleDOS_SetLocked := False;
+ If Not AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Exit;
+ If Not AppleDOS_ReadSector(Idx, CatTrack, CatSector, Buf) Then Exit;
+ If Locked Then Buf[EntOff + 2] := TypeB Or $80
+ Else Buf[EntOff + 2] := TypeB And $7F;
+ AppleDOS_SetLocked := AppleDOS_WriteSector(Idx, CatTrack, CatSector, Buf);
+End;
+
+{ INIT : reecrit une VTOC + un catalogue VIDE sur l'image deja montee (ne }
+{ cree PAS une nouvelle image - meme principe que FORMAT, qui reformate   }
+{ toujours une image deja montee plutot que d'en creer une, voir           }
+{ project_devenv_format_command). Chaine le catalogue sur TOUTE la piste  }
+{ 17 (secteurs 15 descendant a 1, 15 secteurs x 7 entrees = 105 fichiers   }
+{ max) - EXACTEMENT la vraie limite documentee d'un disque DOS 3.3, pas    }
+{ une limitation simulee. Pistes 0-2 (amorce) et 17 (VTOC+catalogue)       }
+{ marquees utilisees ; AUCUN vrai code d'amorce RWTS n'est ecrit sur les   }
+{ pistes 0-2 (reservees mais vides) puisqu'aucun code de cet emulateur ne  }
+{ peut de toute facon amorcer reellement DOS 3.3 (voir limites honnetes    }
+{ documentees dans l'aide du shell Terminal). }
+Function AppleDOS_Init(Idx: Byte; VolNum: Byte): Boolean;
+Var
+ VTOC, Cat: Array[0..255] Of Byte;
+ T, S: Byte;
+Begin
+ AppleDOS_Init := False;
+ If Not EmuFloppyOpen[Idx] Then Exit;
+ If EmuFloppySize[Idx] <> APPLEDOS_IMAGE_SIZE Then Exit;
+ FillChar(VTOC, APPLEDOS_SECSIZE, 0);
+ VTOC[1] := APPLEDOS_VTOC_TRACK; VTOC[2] := 15; { 1er secteur de catalogue }
+ VTOC[3] := 3;                    { version DOS 3 }
+ VTOC[6] := VolNum;
+ VTOC[27] := APPLEDOS_TS_MAXPAIRS;
+ VTOC[30] := APPLEDOS_VTOC_TRACK;
+ VTOC[31] := 1;
+ VTOC[34] := APPLEDOS_TRACKS;
+ VTOC[35] := APPLEDOS_SECTORS;
+ VTOC[36] := Lo(APPLEDOS_SECSIZE); VTOC[37] := Hi(APPLEDOS_SECSIZE);
+ { Tout marquer libre, puis reserver pistes 0-2 (amorce) et 17 (VTOC+     }
+ { catalogue). }
+ For T := 0 To APPLEDOS_TRACKS - 1 Do
+  For S := 0 To APPLEDOS_SECTORS - 1 Do
+   AppleDOS_MarkSector(VTOC, T, S, True);
+ For T := 0 To 2 Do
+  For S := 0 To APPLEDOS_SECTORS - 1 Do
+   AppleDOS_MarkSector(VTOC, T, S, False);
+ For S := 0 To APPLEDOS_SECTORS - 1 Do
+  AppleDOS_MarkSector(VTOC, APPLEDOS_VTOC_TRACK, S, False);
+ If Not AppleDOS_WriteSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ { Chainer les 15 secteurs de catalogue (15 descendant a 1), tous vides. }
+ FillChar(Cat, APPLEDOS_SECSIZE, 0);
+ For S := 15 DownTo 1 Do Begin
+  If S > 1 Then Begin Cat[1] := APPLEDOS_VTOC_TRACK; Cat[2] := S - 1; End
+  Else Begin Cat[1] := 0; Cat[2] := 0; End;
+  If Not AppleDOS_WriteSector(Idx, APPLEDOS_VTOC_TRACK, S, Cat) Then Exit;
+ End;
+ FatVol[Idx].IsAppleDOS := True;
+ FatVol[Idx].Mounted := True;
+ FatVol[Idx].AppleDOSVolNum := VolNum;
+ AppleDOS_Init := True;
 End;
 
 { ============================================================
@@ -94724,6 +95412,737 @@ Begin
 End;
 
 { ============================================================
+  Shell Terminal "Apple DOS" (SK_APPLEDOS, 2026-10-05, demande explicite
+  de l'utilisateur - shell insere entre Gulam et AmigaDOS, 27 commandes
+  fournies : CATALOG/LOAD/SAVE/RUN/DELETE/RENAME/LOCK/UNLOCK/VERIFY/
+  BLOAD/BSAVE/BRUN/OPEN/CLOSE/READ/WRITE/APPEND/POSITION/EXEC/INIT/MON/
+  NOMON/MAXFILES/IN#/PR#/FP/INT. Opere sur l'image Apple II DOS 3.3
+  montee sur le lecteur virtuel courant (TP.VirtDrive, meme mecanisme
+  generique "A:" deja utilise par OS-9/CP-M - voir Term_TryEnterVirtDrive)
+  via les fonctions AppleDOS_* (format reel DOS-order, lecture ET
+  ecriture - voir leur bloc, pres de D64_ExtractToTempFile).
+
+  Limites honnetes assumees (jamais simulees comme si elles marchaient
+  pleinement - meme discipline que les stubs DDT/SYSGEN/XSUB de CP/M-80
+  ci-dessus) : il n'existe AUCUN interpreteur Applesoft/Integer BASIC
+  reel dans cet emulateur (CPU6502_LoadAppleBin est un chargeur binaire
+  brut jouet, contrairement a C64_Boot qui simule le vrai KERNAL) - donc
+  RUN charge le fichier (comme LOAD) mais ne peut pas l'executer, et
+  OPEN/CLOSE/READ/WRITE/APPEND/POSITION (qui sur un vrai DOS 3.3
+  interceptent les PRINT#/INPUT# d'un programme BASIC EN COURS
+  D'EXECUTION) sont implementees comme de simples commandes Terminal
+  directes sur un fichier texte 'T' du disque (un seul contexte "fichier
+  ouvert" a la fois), pas comme un hook d'E/S BASIC live. MON/NOMON/IN#/
+  PR# sont acceptees avec un message honnete plutot qu'un faux effet. }
+Var
+ AppleDOSProgBuf: Array[0..65535] Of Byte; { "programme courant" LOAD/SAVE }
+ AppleDOSProgLen: LongInt;
+ AppleDOSProgType: Char;      { 'A' ou 'I' - type du dernier LOAD/SAVE }
+ AppleDOSLang: Char;          { FP/INT : langage courant ('A' ou 'I') }
+ AppleDOSMonOn: Boolean;
+ AppleDOSMaxFiles: Integer;
+ AppleDOSOpenName: String;    { '' = aucun fichier ouvert (OPEN/APPEND) }
+ AppleDOSOpenBuf: Array[0..65535] Of Byte;
+ AppleDOSOpenLen: LongInt;
+ AppleDOSOpenPos: LongInt;
+
+{ Resout le lecteur virtuel courant (TP.VirtDrive, deja positionne par   }
+{ la frappe generique "A:" - voir Term_TryEnterVirtDrive) et verifie     }
+{ qu'il porte bien une image Apple DOS 3.3 montee. Repete par PRESQUE    }
+{ toutes les commandes de ce shell - factorise ici une fois pour toutes. }
+Function TermAppleDOS_GetDrive(Var TP: TTerminalPanel; Var Idx: Byte): Boolean;
+Begin
+ TermAppleDOS_GetDrive := False;
+ If TP.VirtDrive < 0 Then Begin
+  TermAddLine(TP, 'Aucun disque monte (taper "A:" apres IMGMOUNT/BOOT /DISKn:).');
+  Exit;
+ End;
+ Idx := Byte(TP.VirtDrive);
+ If Not FatVol[Idx].IsAppleDOS Then Begin
+  TermAddLine(TP, 'Le disque monte n''est pas une image Apple DOS 3.3.');
+  Exit;
+ End;
+ TermAppleDOS_GetDrive := True;
+End;
+
+{ Separe S en morceaux sur les virgules (syntaxe Apple II sans espace -  }
+{ ex. "HELLO,A$2000,L$100"), MaxParts morceaux max. }
+Procedure TermAppleDOS_SplitCommas(S: String; Var Parts: Array Of String;
+ Var Count: Integer; MaxParts: Integer);
+Var
+ P: Integer;
+ Cur: String;
+Begin
+ Count := 0;
+ Cur := '';
+ S := S + ',';
+ For P := 1 To Length(S) Do Begin
+  If S[P] = ',' Then Begin
+   If Count < MaxParts Then Begin Parts[Count] := Cur; Inc(Count); End;
+   Cur := '';
+  End Else Cur := Cur + S[P];
+ End;
+End;
+
+{ Decode un parametre "A$HHHH"/"L$HHHH" : C = 'A' ou 'L', renvoie False  }
+{ si Tok ne correspond pas a ce prefixe (l'appelant essaie alors l'autre }
+{ C) ou si l'hexadecimal est invalide. }
+Function TermAppleDOS_ParseHexParam(Tok: String; C: Char; Var Value: Word): Boolean;
+Var
+ Code: Integer;
+ V: LongInt;
+Begin
+ TermAppleDOS_ParseHexParam := False;
+ If Length(Tok) < 3 Then Exit;
+ If UpCase(Tok[1]) <> C Then Exit;
+ If Tok[2] <> '$' Then Exit;
+ Val('$' + Copy(Tok, 3, Length(Tok) - 2), V, Code);
+ If (Code <> 0) Or (V < 0) Or (V > $FFFF) Then Exit;
+ Value := Word(V);
+ TermAppleDOS_ParseHexParam := True;
+End;
+
+{ --- CATALOG --- }
+Procedure TermCmd_AppleDOS_CATALOG(Var TP: TTerminalPanel);
+Var
+ Idx: Byte;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ AppleDOS_ListDir(Idx, TP);
+End;
+
+{ --- LOAD nom : programme Applesoft (A) ou Integer (I) uniquement, le   }
+{ prefixe longueur 2 octets est retire (reconstruit par SAVE). --- }
+Procedure TermCmd_AppleDOS_LOAD(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Name: String;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+ Raw: Array[0..65535] Of Byte;
+ RawLen: LongInt;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ If Name = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : LOAD nom');
+  Exit;
+ End;
+ If Not AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Begin
+  TermAddLine(TP, 'FILE NOT FOUND');
+  Exit;
+ End;
+ If (AppleDOS_TypeChar(TypeB) <> 'A') And (AppleDOS_TypeChar(TypeB) <> 'I') Then Begin
+  TermAddLine(TP, 'LOAD attend un fichier Applesoft (A) ou Integer (I) - ' +
+   Name + ' est de type ' + AppleDOS_TypeChar(TypeB) + '.');
+  Exit;
+ End;
+ AppleDOS_ReadFileChain(Idx, TSTrack, TSSector, Raw, SizeOf(Raw), RawLen);
+ If RawLen < 2 Then Begin
+  TermAddLine(TP, 'Fichier illisible ou vide.');
+  Exit;
+ End;
+ AppleDOSProgLen := LongInt(Word(Raw[0]) Or (Word(Raw[1]) Shl 8));
+ If AppleDOSProgLen > RawLen - 2 Then AppleDOSProgLen := RawLen - 2;
+ If AppleDOSProgLen > SizeOf(AppleDOSProgBuf) Then AppleDOSProgLen := SizeOf(AppleDOSProgBuf);
+ Move(Raw[2], AppleDOSProgBuf, AppleDOSProgLen);
+ AppleDOSProgType := AppleDOS_TypeChar(TypeB);
+ AppleDOSLang := AppleDOSProgType;
+ TermAddLine(TP, IntToStr(AppleDOSProgLen) + ' octets charges (' + Name + ').');
+End;
+
+{ --- SAVE nom : ecrit AppleDOSProgBuf (dernier LOAD, ou programme pose  }
+{ par une autre commande) comme fichier A ou I (AppleDOSProgType). --- }
+Procedure TermCmd_AppleDOS_SAVE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Name: String;
+ VTOC: Array[0..255] Of Byte;
+ Raw: Array[0..65537] Of Byte;
+ RawLen: LongInt;
+ TSTrack, TSSector: Byte;
+ SizeSec: Word;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ If Name = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : SAVE nom');
+  Exit;
+ End;
+ If AppleDOSProgLen <= 0 Then Begin
+  TermAddLine(TP, 'Aucun programme en memoire (LOAD d''abord - RUN ne ' +
+   'modelise pas de BASIC live dans cet emulateur).');
+  Exit;
+ End;
+ AppleDOS_DeleteEntry(Idx, Name); { ecrasement silencieux si deja present }
+ RawLen := AppleDOSProgLen + 2;
+ Raw[0] := Lo(Word(AppleDOSProgLen)); Raw[1] := Hi(Word(AppleDOSProgLen));
+ Move(AppleDOSProgBuf, Raw[2], AppleDOSProgLen);
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ If Not AppleDOS_WriteFileChain(Idx, VTOC, Raw, RawLen, TSTrack, TSSector) Then Begin
+  TermAddLine(TP, 'DISK FULL');
+  Exit;
+ End;
+ If Not AppleDOS_WriteSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ SizeSec := Word((RawLen + APPLEDOS_SECSIZE - 1) Div APPLEDOS_SECSIZE) + 1; { + T-S-list }
+ If Not AppleDOS_AddCatalogEntry(Idx, Name, AppleDOS_TypeByte(AppleDOSProgType),
+  TSTrack, TSSector, SizeSec) Then Begin
+  TermAddLine(TP, 'DISK FULL (repertoire plein).');
+  Exit;
+ End;
+ TermAddLine(TP, IntToStr(AppleDOSProgLen) + ' octets sauvegardes (' + Name + ').');
+End;
+
+{ --- RUN nom : LOAD + limite honnete (aucun interpreteur Applesoft/     }
+{ Integer BASIC reel dans cet emulateur). --- }
+Procedure TermCmd_AppleDOS_RUN(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermCmd_AppleDOS_LOAD(TP, ParamStr);
+ If AppleDOSProgLen > 0 Then
+  TermAddLine(TP, '(RUN : aucun interpreteur Applesoft/Integer BASIC reel ' +
+   'dans cet emulateur - programme charge mais non execute. Voir BRUN ' +
+   'pour un fichier binaire (B), qui s''execute reellement.)');
+End;
+
+Procedure TermCmd_AppleDOS_DELETE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Name: String;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ If Name = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : DELETE nom');
+  Exit;
+ End;
+ If AppleDOS_DeleteEntry(Idx, Name) Then
+  TermAddLine(TP, Name + ' efface.')
+ Else If AppleDOS_IsLocked(Idx, Name) Then
+  TermAddLine(TP, 'FILE LOCKED')
+ Else
+  TermAddLine(TP, 'FILE NOT FOUND');
+End;
+
+Procedure TermCmd_AppleDOS_RENAME(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Parts: Array[0..1] Of String;
+ Count: Integer;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ TermAppleDOS_SplitCommas(TermTrim(TermExtractParam(ParamStr, 1)), Parts, Count, 2);
+ If (Count <> 2) Or (Parts[0] = '') Or (Parts[1] = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : RENAME ancien,nouveau');
+  Exit;
+ End;
+ If AppleDOS_RenameEntry(Idx, Parts[0], Parts[1]) Then
+  TermAddLine(TP, Parts[0] + ' renomme en ' + Parts[1] + '.')
+ Else
+  TermAddLine(TP, 'FILE NOT FOUND (ou nom cible deja utilise).');
+End;
+
+Procedure TermCmd_AppleDOS_LOCKCmd(Var TP: TTerminalPanel; ParamStr: String; Lock: Boolean);
+Var
+ Idx: Byte;
+ Name: String;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ If Name = '' Then Begin
+  If Lock Then TermAddLine(TP, 'Syntaxe : LOCK nom')
+  Else TermAddLine(TP, 'Syntaxe : UNLOCK nom');
+  Exit;
+ End;
+ If AppleDOS_SetLocked(Idx, Name, Lock) Then Begin
+  If Lock Then TermAddLine(TP, Name + ' verrouille.')
+  Else TermAddLine(TP, Name + ' deverrouille.');
+ End Else
+  TermAddLine(TP, 'FILE NOT FOUND');
+End;
+
+Procedure TermCmd_AppleDOS_VERIFY(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Name: String;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+ Raw: Array[0..65535] Of Byte;
+ RawLen: LongInt;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ If Name = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : VERIFY nom');
+  Exit;
+ End;
+ If Not AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Begin
+  TermAddLine(TP, 'FILE NOT FOUND');
+  Exit;
+ End;
+ AppleDOS_ReadFileChain(Idx, TSTrack, TSSector, Raw, SizeOf(Raw), RawLen);
+ TermAddLine(TP, Name + ' : ' + AppleDOS_TypeChar(TypeB) + ', ' +
+  IntToStr(SizeSec) + ' secteurs, ' + IntToStr(RawLen) + ' octets lus - OK.');
+End;
+
+{ --- BLOAD nom[,A$hhhh] : pose les octets directement dans la memoire   }
+{ VIVE de l'emulateur 6502 (CPU6502_Mem) - reel, pas de simulation. --- }
+Procedure TermCmd_AppleDOS_BLOAD(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Parts: Array[0..3] Of String;
+ Count, I: Integer;
+ Name: String;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+ Raw: Array[0..65535] Of Byte;
+ RawLen: LongInt;
+ Addr: Word;
+ HasAddr: Boolean;
+ FileAddr, FileLen: Word;
+ J: LongInt;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ TermAppleDOS_SplitCommas(TermTrim(TermExtractParam(ParamStr, 1)), Parts, Count, 4);
+ If (Count < 1) Or (Parts[0] = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : BLOAD nom[,A$hhhh]');
+  Exit;
+ End;
+ Name := Parts[0];
+ HasAddr := False;
+ For I := 1 To Count - 1 Do
+  If TermAppleDOS_ParseHexParam(Parts[I], 'A', Addr) Then HasAddr := True;
+ If Not AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Begin
+  TermAddLine(TP, 'FILE NOT FOUND');
+  Exit;
+ End;
+ If AppleDOS_TypeChar(TypeB) <> 'B' Then Begin
+  TermAddLine(TP, 'BLOAD attend un fichier binaire (B) - ' + Name +
+   ' est de type ' + AppleDOS_TypeChar(TypeB) + '.');
+  Exit;
+ End;
+ AppleDOS_ReadFileChain(Idx, TSTrack, TSSector, Raw, SizeOf(Raw), RawLen);
+ If RawLen < 4 Then Begin
+  TermAddLine(TP, 'Fichier illisible ou vide.');
+  Exit;
+ End;
+ FileAddr := Word(Raw[0]) Or (Word(Raw[1]) Shl 8);
+ FileLen := Word(Raw[2]) Or (Word(Raw[3]) Shl 8);
+ If Not HasAddr Then Addr := FileAddr;
+ If LongInt(FileLen) > RawLen - 4 Then FileLen := Word(RawLen - 4);
+ For J := 0 To LongInt(FileLen) - 1 Do
+  If LongInt(Addr) + J <= $FFFF Then CPU6502_Mem[Addr + J] := Raw[4 + J];
+ TermAddLine(TP, IntToStr(FileLen) + ' octets charges en memoire a $' +
+  HexWord(Addr) + ' (' + Name + ').');
+End;
+
+{ --- BSAVE nom,A$hhhh,L$hhhh : lit CPU6502_Mem[Addr..Addr+Len-1] et     }
+{ ecrit un fichier binaire (B) reel. --- }
+Procedure TermCmd_AppleDOS_BSAVE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Parts: Array[0..3] Of String;
+ Count, I: Integer;
+ Name: String;
+ HasAddr, HasLen: Boolean;
+ Addr, Len: Word;
+ Raw: Array[0..65539] Of Byte;
+ RawLen: LongInt;
+ VTOC: Array[0..255] Of Byte;
+ TSTrack, TSSector: Byte;
+ SizeSec: Word;
+ J: LongInt;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ TermAppleDOS_SplitCommas(TermTrim(TermExtractParam(ParamStr, 1)), Parts, Count, 4);
+ If Count < 1 Then Parts[0] := '';
+ Name := Parts[0];
+ HasAddr := False; HasLen := False;
+ For I := 1 To Count - 1 Do Begin
+  If TermAppleDOS_ParseHexParam(Parts[I], 'A', Addr) Then HasAddr := True;
+  If TermAppleDOS_ParseHexParam(Parts[I], 'L', Len) Then HasLen := True;
+ End;
+ If (Name = '') Or (Not HasAddr) Or (Not HasLen) Then Begin
+  TermAddLine(TP, 'Syntaxe : BSAVE nom,A$hhhh,L$hhhh');
+  Exit;
+ End;
+ AppleDOS_DeleteEntry(Idx, Name); { ecrasement silencieux }
+ Raw[0] := Lo(Addr); Raw[1] := Hi(Addr);
+ Raw[2] := Lo(Len); Raw[3] := Hi(Len);
+ For J := 0 To LongInt(Len) - 1 Do
+  If LongInt(Addr) + J <= $FFFF Then Raw[4 + J] := CPU6502_Mem[Addr + J]
+  Else Raw[4 + J] := 0;
+ RawLen := LongInt(Len) + 4;
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ If Not AppleDOS_WriteFileChain(Idx, VTOC, Raw, RawLen, TSTrack, TSSector) Then Begin
+  TermAddLine(TP, 'DISK FULL');
+  Exit;
+ End;
+ If Not AppleDOS_WriteSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Exit;
+ SizeSec := Word((RawLen + APPLEDOS_SECSIZE - 1) Div APPLEDOS_SECSIZE) + 1;
+ If Not AppleDOS_AddCatalogEntry(Idx, Name, AppleDOS_TypeByte('B'), TSTrack,
+  TSSector, SizeSec) Then Begin
+  TermAddLine(TP, 'DISK FULL (repertoire plein).');
+  Exit;
+ End;
+ TermAddLine(TP, IntToStr(Len) + ' octets sauvegardes depuis $' + HexWord(Addr) +
+  ' (' + Name + ').');
+End;
+
+{ --- BRUN nom[,A$hhhh] : BLOAD + extraction vers fichier hote temporaire }
+{ (deja au format attendu par CPU6502_LoadAppleBin, voir                 }
+{ AppleDOS_ExtractToTempFile) + nouvel onglet emulateur -CAPPLEII, meme   }
+{ idiome que Start-OS9Program/Start-DosProgram. REELLEMENT execute       }
+{ (contrairement a RUN), puisqu'un fichier B contient du vrai code       }
+{ machine 6502, pas des jetons Applesoft/Integer necessitant un           }
+{ interpreteur absent de cet emulateur. --- }
+Procedure TermCmd_AppleDOS_BRUN(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Name: String;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+ TempPath: String;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ { BRUN n'accepte pas de parametre A$hhhh dans cette implementation      }
+ { (contrairement a BLOAD/BSAVE) - un fichier B s'execute toujours a      }
+ { l'adresse qu'il a lui-meme enregistree (meme convention que le vrai    }
+ { DOS 3.3 si aucun override A$ n'est donne). }
+ If Name = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : BRUN nom');
+  Exit;
+ End;
+ If Not AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Begin
+  TermAddLine(TP, 'FILE NOT FOUND');
+  Exit;
+ End;
+ If AppleDOS_TypeChar(TypeB) <> 'B' Then Begin
+  TermAddLine(TP, 'BRUN attend un fichier binaire (B) - ' + Name +
+   ' est de type ' + AppleDOS_TypeChar(TypeB) + '.');
+  Exit;
+ End;
+ If Not AppleDOS_ExtractToTempFile(Idx, TSTrack, TSSector, TempPath) Then Begin
+  TermAddLine(TP, 'Echec de l''extraction du fichier.');
+  Exit;
+ End;
+ CreateEmulatorTab(TempPath, '-CAPPLEII', '');
+End;
+
+{ --- OPEN/APPEND/CLOSE/READ/WRITE/POSITION : voir le commentaire de     }
+{ tete du shell - simplifie en commandes Terminal directes (un seul      }
+{ contexte "fichier ouvert" a la fois) plutot qu'un hook d'E/S BASIC      }
+{ live, faute d'interpreteur reel. --- }
+Procedure TermCmd_AppleDOS_OPEN(Var TP: TTerminalPanel; ParamStr: String; AppendMode: Boolean);
+Var
+ Idx: Byte;
+ Name: String;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+ Raw: Array[0..65535] Of Byte;
+ RawLen: LongInt;
+ I: LongInt;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ If Name = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : OPEN nom');
+  Exit;
+ End;
+ If AppleDOSOpenName <> '' Then Begin
+  TermAddLine(TP, 'Un fichier (' + AppleDOSOpenName + ') est deja ouvert - ' +
+   'CLOSE d''abord (un seul contexte a la fois dans cette implementation).');
+  Exit;
+ End;
+ AppleDOSOpenLen := 0;
+ If AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Begin
+  If AppleDOS_TypeChar(TypeB) <> 'T' Then Begin
+   TermAddLine(TP, 'OPEN attend un fichier texte (T) - ' + Name +
+    ' est de type ' + AppleDOS_TypeChar(TypeB) + '.');
+   Exit;
+  End;
+  AppleDOS_ReadFileChain(Idx, TSTrack, TSSector, Raw, SizeOf(Raw), RawLen);
+  { BOGUE REEL corrige (2026-10-05, trouve en verifiant live l'aller-     }
+  { retour OPEN/WRITE/CLOSE/OPEN/READ) : AppleDOS_ReadFileChain renvoie   }
+  { les secteurs COMPLETS de la chaine T-S-list (256 octets chacun, le    }
+  { dernier bourre de zeros par AppleDOS_WriteFileChain) - sans ce        }
+  { balayage, un fichier de 24 octets reel se rouvrait en annoncant 256   }
+  { octets (tout le dernier secteur, bourrage compris). Un vrai fichier   }
+  { sequentiel DOS 3.3 se termine par un octet NUL ($00) - le bourrage    }
+  { de AppleDOS_WriteFileChain EST deja ce octet NUL par coincidence      }
+  { (FillChar a 0 avant copie), donc chercher le premier $00 suffit. }
+  AppleDOSOpenLen := RawLen;
+  For I := 0 To RawLen - 1 Do
+   If Raw[I] = 0 Then Begin AppleDOSOpenLen := I; Break; End;
+  Move(Raw, AppleDOSOpenBuf, AppleDOSOpenLen);
+ End; { sinon : nouveau fichier, cree au CLOSE }
+ AppleDOSOpenName := Name;
+ If AppendMode Then AppleDOSOpenPos := AppleDOSOpenLen Else AppleDOSOpenPos := 0;
+ TermAddLine(TP, Name + ' ouvert (' + IntToStr(AppleDOSOpenLen) + ' octets).');
+End;
+
+Procedure TermCmd_AppleDOS_CLOSE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ VTOC: Array[0..255] Of Byte;
+ TSTrack, TSSector: Byte;
+ SizeSec: Word;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ If AppleDOSOpenName = '' Then Begin
+  TermAddLine(TP, 'Aucun fichier ouvert.');
+  Exit;
+ End;
+ AppleDOS_DeleteEntry(Idx, AppleDOSOpenName); { reecrit en entier }
+ If Not AppleDOS_ReadSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC) Then Begin
+  AppleDOSOpenName := '';
+  Exit;
+ End;
+ If Not AppleDOS_WriteFileChain(Idx, VTOC, AppleDOSOpenBuf, AppleDOSOpenLen,
+  TSTrack, TSSector) Then Begin
+  TermAddLine(TP, 'DISK FULL - fichier non sauvegarde.');
+  AppleDOSOpenName := '';
+  Exit;
+ End;
+ AppleDOS_WriteSector(Idx, APPLEDOS_VTOC_TRACK, APPLEDOS_VTOC_SECTOR, VTOC);
+ SizeSec := Word((AppleDOSOpenLen + APPLEDOS_SECSIZE - 1) Div APPLEDOS_SECSIZE) + 1;
+ AppleDOS_AddCatalogEntry(Idx, AppleDOSOpenName, AppleDOS_TypeByte('T'),
+  TSTrack, TSSector, SizeSec);
+ TermAddLine(TP, AppleDOSOpenName + ' ferme (' + IntToStr(AppleDOSOpenLen) + ' octets).');
+ AppleDOSOpenName := '';
+End;
+
+Procedure TermCmd_AppleDOS_READ(Var TP: TTerminalPanel);
+Var
+ Line: String;
+Begin
+ If AppleDOSOpenName = '' Then Begin
+  TermAddLine(TP, 'Aucun fichier ouvert (OPEN d''abord).');
+  Exit;
+ End;
+ If AppleDOSOpenPos >= AppleDOSOpenLen Then Begin
+  TermAddLine(TP, '(fin de fichier)');
+  Exit;
+ End;
+ Line := '';
+ While (AppleDOSOpenPos < AppleDOSOpenLen) And
+       ((AppleDOSOpenBuf[AppleDOSOpenPos] And $7F) <> 13) Do Begin
+  Line := Line + Chr(AppleDOSOpenBuf[AppleDOSOpenPos] And $7F);
+  Inc(AppleDOSOpenPos);
+ End;
+ If AppleDOSOpenPos < AppleDOSOpenLen Then Inc(AppleDOSOpenPos); { sauter le CR }
+ TermAddLine(TP, Line);
+End;
+
+{ WRITE texte : ajoute TOUJOURS a la FIN du tampon (simplification       }
+{ assumee - un vrai DOS 3.3 ecrit a la position courante d'un fichier a   }
+{ acces aleatoire, non modelise ici, voir le commentaire de tete). }
+Procedure TermCmd_AppleDOS_WRITE(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ I: Integer;
+Begin
+ If AppleDOSOpenName = '' Then Begin
+  TermAddLine(TP, 'Aucun fichier ouvert (OPEN d''abord).');
+  Exit;
+ End;
+ ParamStr := TermTrim(ParamStr);
+ For I := 1 To Length(ParamStr) Do
+  If AppleDOSOpenLen < SizeOf(AppleDOSOpenBuf) Then Begin
+   AppleDOSOpenBuf[AppleDOSOpenLen] := Byte(Ord(ParamStr[I])) Or $80;
+   Inc(AppleDOSOpenLen);
+  End;
+ If AppleDOSOpenLen < SizeOf(AppleDOSOpenBuf) Then Begin
+  AppleDOSOpenBuf[AppleDOSOpenLen] := $8D; { CR high-bit }
+  Inc(AppleDOSOpenLen);
+ End;
+ AppleDOSOpenPos := AppleDOSOpenLen;
+End;
+
+Procedure TermCmd_AppleDOS_POSITION(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ N: LongInt;
+ Code: Integer;
+Begin
+ If AppleDOSOpenName = '' Then Begin
+  TermAddLine(TP, 'Aucun fichier ouvert (OPEN d''abord).');
+  Exit;
+ End;
+ Val(TermTrim(TermExtractParam(ParamStr, 1)), N, Code);
+ If (Code <> 0) Or (N < 0) Then Begin
+  TermAddLine(TP, 'Syntaxe : POSITION n');
+  Exit;
+ End;
+ If N > AppleDOSOpenLen Then N := AppleDOSOpenLen;
+ AppleDOSOpenPos := N;
+ TermAddLine(TP, 'Position : ' + IntToStr(AppleDOSOpenPos) + '.');
+End;
+
+{ --- EXEC nom : lit un fichier texte (T) ligne par ligne, chaque ligne  }
+{ rejouee via TermExecuteCommand - meme patron deja utilise pour les     }
+{ scripts PowerShell dev (boucle TermExecuteCommand(TP, Stage)). Reel,   }
+{ aucune limite honnete necessaire ici. --- }
+Procedure TermCmd_AppleDOS_EXEC(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+ Name: String;
+ CatTrack, CatSector, TSTrack, TSSector, TypeB: Byte;
+ EntOff: Integer;
+ SizeSec: Word;
+ Raw: Array[0..65535] Of Byte;
+ RawLen: LongInt;
+ P: LongInt;
+ Line: String;
+Begin
+ If Not TermAppleDOS_GetDrive(TP, Idx) Then Exit;
+ Name := TermTrim(TermExtractParam(ParamStr, 1));
+ If Name = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : EXEC nom');
+  Exit;
+ End;
+ If Not AppleDOS_FindEntry(Idx, Name, CatTrack, CatSector, EntOff, TSTrack,
+  TSSector, TypeB, SizeSec) Then Begin
+  TermAddLine(TP, 'FILE NOT FOUND');
+  Exit;
+ End;
+ If AppleDOS_TypeChar(TypeB) <> 'T' Then Begin
+  TermAddLine(TP, 'EXEC attend un fichier texte (T) - ' + Name +
+   ' est de type ' + AppleDOS_TypeChar(TypeB) + '.');
+  Exit;
+ End;
+ AppleDOS_ReadFileChain(Idx, TSTrack, TSSector, Raw, SizeOf(Raw), RawLen);
+ P := 0;
+ While P < RawLen Do Begin
+  Line := '';
+  While (P < RawLen) And ((Raw[P] And $7F) <> 13) Do Begin
+   Line := Line + Chr(Raw[P] And $7F);
+   Inc(P);
+  End;
+  If P < RawLen Then Inc(P);
+  If TermTrim(Line) <> '' Then TermExecuteCommand(TP, TermTrim(Line));
+ End;
+End;
+
+{ --- INIT nom : reformate l'image DEJA montee (meme principe que        }
+{ FORMAT, voir project_devenv_format_command - ne cree jamais une        }
+{ nouvelle image). BOGUE REEL evite (trouve en concevant le test live) : }
+{ si AUCUN lecteur n'est encore "entre" (TP.VirtDrive<0), se replier sur }
+{ le lecteur A: (index 0) - l'Apple II n'a de toute facon qu'un seul     }
+{ lecteur conventionnel, et la frappe generique "A:" (Term_             }
+{ TryEnterVirtDrive) EXIGE deja un systeme de fichiers reconnu pour      }
+{ positionner TP.VirtDrive - une image encore vierge ne pourrait donc    }
+{ JAMAIS etre "entree" pour y lancer INIT sans ce repli, cercle vicieux. }
+Procedure TermCmd_AppleDOS_INIT(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Idx: Byte;
+Begin
+ If TP.VirtDrive >= 0 Then Idx := Byte(TP.VirtDrive) Else Idx := 0;
+ If Not EmuFloppyOpen[Idx] Then Begin
+  TermAddLine(TP, 'Aucune image montee (utiliser IMGMOUNT ou BOOT /DISKn: d''abord).');
+  Exit;
+ End;
+ If EmuFloppySize[Idx] <> APPLEDOS_IMAGE_SIZE Then Begin
+  TermAddLine(TP, 'INIT : l''image montee n''a pas la taille d''une disquette ' +
+   'Apple DOS 3.3 (143360 octets, 35 pistes x 16 secteurs).');
+  Exit;
+ End;
+ If AppleDOS_Init(Idx, 254) Then Begin
+  TermAddLine(TP, 'DISQUE INITIALISE (volume 254).');
+  AppleDOSProgLen := 0;
+  AppleDOSOpenName := '';
+  { Re-sonder maintenant que l'image porte un systeme de fichiers valide }
+  { (deja fait par AppleDOS_Init lui-meme sur FatVol[Idx], mais          }
+  { Fat_TryMount remet aussi a jour le reste de l'etat de montage de la  }
+  { meme facon qu'un vrai (re)montage) et entrer directement le lecteur  }
+  { - evite a l'utilisateur de retaper "A:" separement apres un INIT.    }
+  Fat_TryMount(Idx);
+  TP.VirtDrive := Idx;
+  If TP.VirtCwd = '' Then TP.VirtCwd := '\';
+ End Else
+  TermAddLine(TP, 'Echec de l''initialisation du disque.');
+End;
+
+Procedure TermCmd_AppleDOS_MON(Var TP: TTerminalPanel; On_: Boolean);
+Begin
+ AppleDOSMonOn := On_;
+ If On_ Then
+  TermAddLine(TP, 'MON active (accepte, sans effet observable - aucune ' +
+   'execution BASIC live a tracer dans cet emulateur).')
+ Else
+  TermAddLine(TP, 'NOMON.');
+End;
+
+Procedure TermCmd_AppleDOS_MAXFILES(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ N, Code: Integer;
+Begin
+ Val(TermTrim(TermExtractParam(ParamStr, 1)), N, Code);
+ If (Code <> 0) Or (N < 1) Or (N > 16) Then Begin
+  TermAddLine(TP, 'Syntaxe : MAXFILES n (1-16)');
+  Exit;
+ End;
+ AppleDOSMaxFiles := N;
+ TermAddLine(TP, 'MAXFILES=' + IntToStr(N) + ' (accepte - OPEN ne gere qu''un ' +
+  'seul fichier a la fois dans cette implementation, voir l''aide).');
+End;
+
+{ IN#n/PR#n : TermExtractCommand (voir sa tete plus haut) coupe le mot de }
+{ commande au premier caractere non alphanumerique - "IN#6"/"PR#6"        }
+{ arrivent donc comme CurrCmd='IN'/'PR' + ParamStr='#6' (pas d'espace     }
+{ dans la syntaxe reelle Apple II), d'ou le '#' attendu ICI plutot que    }
+{ dans le Case de dispatch. }
+Procedure TermCmd_AppleDOS_SLOT(Var TP: TTerminalPanel; ParamStr: String; IsOutput: Boolean);
+Var
+ S: String;
+ N, Code: Integer;
+ Verb: String;
+Begin
+ If IsOutput Then Verb := 'PR#' Else Verb := 'IN#';
+ S := TermTrim(ParamStr);
+ If (S = '') Or (S[1] <> '#') Then Begin
+  TermAddLine(TP, 'Syntaxe : ' + Verb + 'n (n = numero de slot, 0-7)');
+  Exit;
+ End;
+ Val(Copy(S, 2, Length(S) - 1), N, Code);
+ If (Code <> 0) Or (N < 0) Or (N > 7) Then Begin
+  TermAddLine(TP, 'Syntaxe : ' + Verb + 'n (n = numero de slot, 0-7)');
+  Exit;
+ End;
+ TermAddLine(TP, Verb + IntToStr(N) + ' : aucune carte peripherique de slot ' +
+  'emulee dans ce projet - accepte sans effet.');
+End;
+
+{ FP/INT : bascule un indicateur de langage courant, accepte et conserve }
+{ (AppleDOSLang) mais SANS consommateur reel dans cette implementation -  }
+{ LOAD/SAVE determinent toujours leur type depuis le fichier/programme    }
+{ deja en memoire, jamais depuis ce choix (il n'existe aucune commande    }
+{ "NEW" pour demarrer un programme vide dont le type resterait            }
+{ ambigu) - meme discipline honnete que DDT/SYSGEN/XSUB du shell CP/M-80. }
+Procedure TermCmd_AppleDOS_FPINT(Var TP: TTerminalPanel; Lang: Char);
+Begin
+ AppleDOSLang := Lang;
+ If Lang = 'A' Then TermAddLine(TP, 'Applesoft BASIC (FP).')
+ Else TermAddLine(TP, 'Integer BASIC (INT).');
+End;
+
+Procedure TermCmd_AppleDOS_HELP(Var TP: TTerminalPanel);
+Begin
+ TermAddLine(TP, 'Apple DOS 3.3 shell built-in commands :');
+ TermAddLine(TP, '  CATALOG LOAD SAVE RUN DELETE RENAME LOCK UNLOCK VERIFY');
+ TermAddLine(TP, '  BLOAD BSAVE BRUN OPEN CLOSE READ WRITE APPEND POSITION');
+ TermAddLine(TP, '  EXEC INIT MON NOMON MAXFILES IN# PR# FP INT');
+End;
+
+{ ============================================================
   Shell Terminal "VMS (VAX)" (SK_VMS, 2026-09-21, demande explicite de
   l'utilisateur - shell insere entre CP/M et COS, ~100 verbes DCL fournis
   (beaucoup de doublons reels - ANALYZE/AUDIT, ANALYZE/CRASH_DUMP etc sont
@@ -127558,6 +128977,7 @@ Begin
   SK_POWERSHELL: FName := 'terminal-ps.log';
   SK_BASH:       FName := 'terminal-bash.log';
   SK_GULAM:      FName := 'terminal-gulam.log';
+  SK_APPLEDOS:   FName := 'terminal-appledos.log';
   SK_AMIGADOS:   FName := 'terminal-amiga.log';
   SK_OS2REXX:    FName := 'terminal-os2.log';
   SK_OS9:        FName := 'terminal-os9.log';
@@ -150392,6 +151812,130 @@ Begin
 End;
 {$ENDIF}
 
+{ IPCONFIG (2026-10-04, demande explicite - voir                           }
+{ C:\SOURCE\GITHUB\NETWORKKIT-P\IPCONFIG.PAS) : affiche la VRAIE            }
+{ configuration IP de la machine hote, pas une simulation - IpCfg_          }
+{ GetAdaptersInfo/IpCfg_gethostname (liaisons iphlpapi.dll/ws2_32.dll,      }
+{ voir leur declaration pres de Mdbc_* plus haut) sont la meme API que le   }
+{ vrai ipconfig.exe de Windows. Commun aux 5 shells, intercepte avant le    }
+{ Case ci-dessous - meme patron que CURL juste au-dessus. }
+Procedure TermCmd_IPConfig(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Const
+ ERROR_BUFFER_OVERFLOW_IPCFG = 111;
+Var
+ P1, HostName, AdpTypeName, MacStr, IpStr: String;
+ ShowAll: Boolean;
+ BufLen: LongWord;
+ Buf: Pointer;
+ Ret: LongWord;
+ Adp: PIpConfigAdapterInfo;
+ HostNameBuf: Array[0..255] Of Char;
+ I: Integer;
+ WSD: TMdbcWSAData;
+ WinsockReady: Boolean;
+Begin
+ P1 := TermStrToUpper(TermTrim(ParamStr));
+ If P1 = '/?' Then Begin
+  TermAddLine(TP, 'IPCONFIG : affiche la configuration IP reelle de la machine hote ' +
+   '(adresse/masque/passerelle de chaque carte reseau).');
+  TermAddLine(TP, '');
+  TermAddLine(TP, 'Syntaxe : IPCONFIG [/ALL]');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '  /ALL   Affiche aussi le nom d''hote, l''adresse physique (MAC),');
+  TermAddLine(TP, '         l''etat DHCP et le serveur DHCP de chaque carte.');
+  Exit;
+ End;
+ ShowAll := (P1 = '/ALL');
+ If (P1 <> '') And (Not ShowAll) Then Begin
+  TermAddLine(TP, 'IPCONFIG : parametre invalide : ' + TermTrim(ParamStr));
+  Exit;
+ End;
+ TermAddLine(TP, '');
+ TermAddLine(TP, 'Configuration IP de Windows');
+ TermAddLine(TP, '');
+ If ShowAll Then Begin
+  { BOGUE REEL corrige (2026-10-04, trouve en verifiant live "IPCONFIG       }
+  { /ALL" - le nom d'hote s'affichait toujours "?") : contrairement a        }
+  { IpCfg_GetAdaptersInfo (iphlpapi.dll, independant de Winsock),            }
+  { gethostname EXIGE un WSAStartup prealable sur le MEME processus -        }
+  { sans ca, l'appel echoue systematiquement (WSANOTINITIALISED), silence    }
+  { -ieusement avale par le simple test "= 0" ci-dessous. Reutilise          }
+  { Mdbc_WSAStartup/TMdbcWSAData (deja declares pour le client MongoDB) -    }
+  { meme liaison ws2_32.dll, pas de nouvelle declaration necessaire. }
+  WinsockReady := Mdbc_WSAStartup($0202, WSD) = 0;
+  FillChar(HostNameBuf, SizeOf(HostNameBuf), 0);
+  If WinsockReady And (IpCfg_gethostname(HostNameBuf, SizeOf(HostNameBuf)) = 0) Then
+   HostName := StrPas(PChar(@HostNameBuf[0]))
+  Else
+   HostName := '?';
+  If WinsockReady Then IpCfg_WSACleanup;
+  TermAddLine(TP, '   Nom d''hote . . . . . . . . . . . . : ' + HostName);
+  TermAddLine(TP, '');
+ End;
+ { Premier essai avec une seule TIpConfigAdapterInfo ; si GetAdaptersInfo   }
+ { renvoie ERROR_BUFFER_OVERFLOW (plusieurs cartes), BufLen contient alors  }
+ { deja la taille reelle necessaire - reessayer une seule fois avec un      }
+ { tampon de cette taille (meme convention que l'API Win32 elle-meme). }
+ BufLen := SizeOf(TIpConfigAdapterInfo);
+ GetMem(Buf, BufLen);
+ Ret := IpCfg_GetAdaptersInfo(Buf, BufLen);
+ If Ret = ERROR_BUFFER_OVERFLOW_IPCFG Then Begin
+  FreeMem(Buf);
+  GetMem(Buf, BufLen);
+  Ret := IpCfg_GetAdaptersInfo(Buf, BufLen);
+ End;
+ If Ret <> 0 Then Begin
+  TermAddLine(TP, 'IPCONFIG : impossible d''obtenir la configuration reseau (code ' +
+   IntToStr(LongInt(Ret)) + ').');
+  FreeMem(Buf);
+  Exit;
+ End;
+ Adp := PIpConfigAdapterInfo(Buf);
+ If Adp = Nil Then
+  TermAddLine(TP, 'Aucune carte reseau detectee.');
+ While Adp <> Nil Do Begin
+  Case Adp^.AdpType Of
+   6:  AdpTypeName := 'Ethernet';
+   71: AdpTypeName := 'reseau sans fil';
+   24: AdpTypeName := 'de bouclage';
+   Else AdpTypeName := 'reseau';
+  End;
+  TermAddLine(TP, 'Carte ' + AdpTypeName + ' ' + StrPas(PChar(@Adp^.Description[0])) + ' :');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '   Adresse IPv4 . . . . . . . . . . . : ' +
+   StrPas(PChar(@Adp^.IpAddressList.IpAddress[0])));
+  TermAddLine(TP, '   Masque de sous-reseau . . . . . . . : ' +
+   StrPas(PChar(@Adp^.IpAddressList.IpMask[0])));
+  IpStr := StrPas(PChar(@Adp^.GatewayList.IpAddress[0]));
+  If (IpStr <> '') And (IpStr <> '0.0.0.0') Then
+   TermAddLine(TP, '   Passerelle par defaut . . . . . . . : ' + IpStr);
+  If ShowAll Then Begin
+   MacStr := '';
+   For I := 0 To Integer(Adp^.AddressLength) - 1 Do Begin
+    If MacStr <> '' Then MacStr := MacStr + '-';
+    MacStr := MacStr + HexByte(Adp^.Address[I]);
+   End;
+   TermAddLine(TP, '   Adresse physique . . . . . . . . . : ' + MacStr);
+   If Adp^.DhcpEnabled <> 0 Then
+    TermAddLine(TP, '   DHCP active . . . . . . . . . . . . : Oui')
+   Else
+    TermAddLine(TP, '   DHCP active . . . . . . . . . . . . : Non');
+   IpStr := StrPas(PChar(@Adp^.DhcpServer.IpAddress[0]));
+   If (IpStr <> '') And (IpStr <> '0.0.0.0') Then
+    TermAddLine(TP, '   Serveur DHCP . . . . . . . . . . . : ' + IpStr);
+  End;
+  TermAddLine(TP, '');
+  Adp := Adp^.Next;
+ End;
+ FreeMem(Buf);
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'IPCONFIG : disponible uniquement sous Windows.');
+End;
+{$ENDIF}
+
 { ============================================================ }
 { === Commandes JIRA (PowerShell dev uniquement)           === }
 { ============================================================ }
@@ -160527,6 +162071,13 @@ Begin
   TermCmd_Curl(TP, ParamStr);
   Exit;
  End;
+ { IPCONFIG (demande explicite, 2026-10-04) : meme raisonnement que CURL     }
+ { juste au-dessus - commun aux 5 shells, intercepte ICI plutot que          }
+ { duplique dans chacun. }
+ If CurrCmd = 'IPCONFIG' Then Begin
+  TermCmd_IPConfig(TP, ParamStr);
+  Exit;
+ End;
  { Dispatcher selon le type de shell }
  Case TP.Shell Of
   SK_CMD: Begin
@@ -161802,6 +163353,43 @@ Begin
    Else
     TermAddLine(TP, CurrCmd + ': UNKNOWN COMMAND.');
   End;
+  SK_APPLEDOS: Begin
+   { Apple DOS 3.3 - demande explicite de l'utilisateur (2026-10-05), 27   }
+   { commandes fournies. Voir le commentaire de tete du bloc TermCmd_      }
+   { AppleDOS_* (juste avant le shell VMS plus haut) pour le detail        }
+   { complet de chaque commande et des limites honnetes assumees (RUN/     }
+   { OPEN-CLOSE-READ-WRITE-APPEND-POSITION/MON/IN#/PR#). }
+   If CurrCmd = 'CATALOG' Then TermCmd_AppleDOS_CATALOG(TP)
+   Else If CurrCmd = 'LOAD' Then TermCmd_AppleDOS_LOAD(TP, ParamStr)
+   Else If CurrCmd = 'SAVE' Then TermCmd_AppleDOS_SAVE(TP, ParamStr)
+   Else If CurrCmd = 'RUN' Then TermCmd_AppleDOS_RUN(TP, ParamStr)
+   Else If CurrCmd = 'DELETE' Then TermCmd_AppleDOS_DELETE(TP, ParamStr)
+   Else If CurrCmd = 'RENAME' Then TermCmd_AppleDOS_RENAME(TP, ParamStr)
+   Else If CurrCmd = 'LOCK' Then TermCmd_AppleDOS_LOCKCmd(TP, ParamStr, True)
+   Else If CurrCmd = 'UNLOCK' Then TermCmd_AppleDOS_LOCKCmd(TP, ParamStr, False)
+   Else If CurrCmd = 'VERIFY' Then TermCmd_AppleDOS_VERIFY(TP, ParamStr)
+   Else If CurrCmd = 'BLOAD' Then TermCmd_AppleDOS_BLOAD(TP, ParamStr)
+   Else If CurrCmd = 'BSAVE' Then TermCmd_AppleDOS_BSAVE(TP, ParamStr)
+   Else If CurrCmd = 'BRUN' Then TermCmd_AppleDOS_BRUN(TP, ParamStr)
+   Else If CurrCmd = 'OPEN' Then TermCmd_AppleDOS_OPEN(TP, ParamStr, False)
+   Else If CurrCmd = 'APPEND' Then TermCmd_AppleDOS_OPEN(TP, ParamStr, True)
+   Else If CurrCmd = 'CLOSE' Then TermCmd_AppleDOS_CLOSE(TP, ParamStr)
+   Else If CurrCmd = 'READ' Then TermCmd_AppleDOS_READ(TP)
+   Else If CurrCmd = 'WRITE' Then TermCmd_AppleDOS_WRITE(TP, ParamStr)
+   Else If CurrCmd = 'POSITION' Then TermCmd_AppleDOS_POSITION(TP, ParamStr)
+   Else If CurrCmd = 'EXEC' Then TermCmd_AppleDOS_EXEC(TP, ParamStr)
+   Else If CurrCmd = 'INIT' Then TermCmd_AppleDOS_INIT(TP, ParamStr)
+   Else If CurrCmd = 'MON' Then TermCmd_AppleDOS_MON(TP, True)
+   Else If CurrCmd = 'NOMON' Then TermCmd_AppleDOS_MON(TP, False)
+   Else If CurrCmd = 'MAXFILES' Then TermCmd_AppleDOS_MAXFILES(TP, ParamStr)
+   Else If CurrCmd = 'IN' Then TermCmd_AppleDOS_SLOT(TP, ParamStr, False)
+   Else If CurrCmd = 'PR' Then TermCmd_AppleDOS_SLOT(TP, ParamStr, True)
+   Else If CurrCmd = 'FP' Then TermCmd_AppleDOS_FPINT(TP, 'A')
+   Else If CurrCmd = 'INT' Then TermCmd_AppleDOS_FPINT(TP, 'I')
+   Else If CurrCmd = 'HELP' Then TermCmd_AppleDOS_HELP(TP)
+   Else
+    TermAddLine(TP, '?SYNTAX ERROR');
+  End;
   SK_CPM: Begin
    { CP/M-80 (Digital Research) - demande explicite de l'utilisateur       }
    { (2026-09-20), 15 commandes fournies. Commandes fichier reelles :      }
@@ -162299,6 +163887,7 @@ Begin
   SK_CMD:        TermCmdHistFile := 'devenv-cmd.hist';
   SK_POWERSHELL: TermCmdHistFile := 'devenv-ps.hist';
   SK_BASH:       TermCmdHistFile := 'devenv-bash.hist';
+  SK_APPLEDOS:   TermCmdHistFile := 'devenv-appledos.hist';
   SK_AMIGADOS:   TermCmdHistFile := 'devenv-amiga.hist';
   SK_OS2REXX:    TermCmdHistFile := 'devenv-os2.hist';
   SK_OS9:        TermCmdHistFile := 'devenv-os9.hist';
@@ -162431,6 +164020,7 @@ Begin
  InitTerminalPanel(TermPanels[SK_POWERSHELL], SK_POWERSHELL);
  InitTerminalPanel(TermPanels[SK_BASH], SK_BASH);
  InitTerminalPanel(TermPanels[SK_GULAM], SK_GULAM);
+ InitTerminalPanel(TermPanels[SK_APPLEDOS], SK_APPLEDOS);
  InitTerminalPanel(TermPanels[SK_AMIGADOS], SK_AMIGADOS);
  InitTerminalPanel(TermPanels[SK_NCOMMANDER], SK_NCOMMANDER);
  InitTerminalPanel(TermPanels[SK_OS2REXX], SK_OS2REXX);
@@ -166267,14 +167857,15 @@ Begin
   1: TermSelectCaption := 'PowerShell dev';
   2: TermSelectCaption := 'Bash';
   3: TermSelectCaption := 'Gul'+#132+'m';
-  4: TermSelectCaption := 'AmigaDOS';
-  5: TermSelectCaption := 'Norton Commander';
-  6: TermSelectCaption := 'OS/2 & REXX';
-  7: TermSelectCaption := 'OS-9 (CoCo 3)';
-  8: TermSelectCaption := 'FLEX';
-  9: TermSelectCaption := 'CP/M-80';
-  10: TermSelectCaption := 'VMS (VAX)';
-  11: TermSelectCaption := 'COS (Cray-1)';
+  4: TermSelectCaption := 'Apple DOS';
+  5: TermSelectCaption := 'AmigaDOS';
+  6: TermSelectCaption := 'Norton Commander';
+  7: TermSelectCaption := 'OS/2 & REXX';
+  8: TermSelectCaption := 'OS-9 (CoCo 3)';
+  9: TermSelectCaption := 'FLEX';
+  10: TermSelectCaption := 'CP/M-80';
+  11: TermSelectCaption := 'VMS (VAX)';
+  12: TermSelectCaption := 'COS (Cray-1)';
   Else TermSelectCaption := '';
  End;
 End;
@@ -166321,14 +167912,15 @@ Begin
   1: NewShell := SK_POWERSHELL;
   2: NewShell := SK_BASH;
   3: NewShell := SK_GULAM;
-  4: NewShell := SK_AMIGADOS;
-  5: NewShell := SK_NCOMMANDER;
-  6: NewShell := SK_OS2REXX;
-  7: NewShell := SK_OS9;
-  8: NewShell := SK_FLEX;
-  9: NewShell := SK_CPM;
-  10: NewShell := SK_VMS;
-  11: NewShell := SK_COS;
+  4: NewShell := SK_APPLEDOS;
+  5: NewShell := SK_AMIGADOS;
+  6: NewShell := SK_NCOMMANDER;
+  7: NewShell := SK_OS2REXX;
+  8: NewShell := SK_OS9;
+  9: NewShell := SK_FLEX;
+  10: NewShell := SK_CPM;
+  11: NewShell := SK_VMS;
+  12: NewShell := SK_COS;
   Else NewShell := ActiveShell;
  End;
  TermSelectOpen := False;
@@ -166348,6 +167940,9 @@ Begin
     SK_GULAM:
      TermAddLine(TermPanels[SK_GULAM],
       'gul'+#132+'m shell. Tapez help.');
+    SK_APPLEDOS:
+     TermAddLine(TermPanels[SK_APPLEDOS],
+      'APPLE DOS VERSION 3.3. Tapez HELP pour la liste des commandes.');
     SK_AMIGADOS:
      TermAddLine(TermPanels[SK_AMIGADOS],
       'AmigaDOS 3.1. Tapez ? pour la liste des commandes.');
@@ -166446,6 +168041,7 @@ Begin
   SK_POWERSHELL: SelLabel := 'PowerShell dev';
   SK_BASH:       SelLabel := 'Bash';
   SK_GULAM:      SelLabel := 'gul'+#132+'m';
+  SK_APPLEDOS:   SelLabel := 'Apple DOS';
   SK_AMIGADOS:   SelLabel := 'AmigaDOS';
   SK_NCOMMANDER: SelLabel := 'Norton Commander';
   SK_OS2REXX:    SelLabel := 'OS/2 & REXX';
@@ -166622,6 +168218,12 @@ Begin
    SK_GULAM:
     PromptStr := UpCaseStr(Copy(PromptStr, 1, 1)) + ': ' + Chr(175) +
      ' ' + TP.InputLine + '_';
+   SK_APPLEDOS:
+    { Prompt reel : DOS 3.3 n'a pas d'invite propre, les commandes DOS se  }
+    { tapent a l'invite Applesoft BASIC "]" (convention authentique Apple  }
+    { II) - aucun chemin affiche, meme principe que FLEX/CP-M/VMS ci-      }
+    { dessous (pas de personnalisation inventee). }
+    PromptStr := ']' + TP.InputLine + '_';
    SK_AMIGADOS:
     PromptStr := '1.SYS:> ' + TP.InputLine + '_';
    SK_OS9:
@@ -167085,14 +168687,15 @@ Begin
      SK_POWERSHELL: TermSelectIdx := 1;
      SK_BASH:       TermSelectIdx := 2;
      SK_GULAM:      TermSelectIdx := 3;
-     SK_AMIGADOS:   TermSelectIdx := 4;
-     SK_NCOMMANDER: TermSelectIdx := 5;
-     SK_OS2REXX:    TermSelectIdx := 6;
-     SK_OS9:        TermSelectIdx := 7;
-     SK_FLEX:       TermSelectIdx := 8;
-     SK_CPM:        TermSelectIdx := 9;
-     SK_VMS:        TermSelectIdx := 10;
-     SK_COS:        TermSelectIdx := 11;
+     SK_APPLEDOS:   TermSelectIdx := 4;
+     SK_AMIGADOS:   TermSelectIdx := 5;
+     SK_NCOMMANDER: TermSelectIdx := 6;
+     SK_OS2REXX:    TermSelectIdx := 7;
+     SK_OS9:        TermSelectIdx := 8;
+     SK_FLEX:       TermSelectIdx := 9;
+     SK_CPM:        TermSelectIdx := 10;
+     SK_VMS:        TermSelectIdx := 11;
+     SK_COS:        TermSelectIdx := 12;
     End;
    FullRepaintNeeded := True;
    Exit;
@@ -239164,6 +240767,30 @@ Begin
   TerminalOnTop := True;
   TermPanels[ActiveShell].NeedRepaint := True;
   {$I-} Assign(BatchFile, Opts.CosBatch); Reset(BatchFile); {$I+}
+  If IOResult = 0 Then Begin
+   While Not Eof(BatchFile) Do Begin
+    ReadLn(BatchFile, BatchLine);
+    If TermTrim(BatchLine) <> '' Then
+     TermExecuteCommand(TermPanels[ActiveShell], BatchLine);
+   End;
+   Close(BatchFile);
+  End;
+ End;
+ { /APPLEDOS:fichier - meme principe, mais ouvre le shell "Apple DOS"      }
+ { (SK_APPLEDOS) - demande explicite de l'utilisateur, 2026-10-05. }
+ If Opts.AppleDOSBatch <> '' Then Begin
+  StartPage.Visible := False;
+  ActiveShell := SK_APPLEDOS;
+  TermVisible := True;
+  TermX := 0;
+  TermY := GetScreenHeight - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+  TermWidth := GetScreenWidth - EXPLORER_WIDTH;
+  TermHeight := OUTPUT_HEIGHT;
+  TerminalHasFocus := True;
+  TermSelectOpen := False;
+  TerminalOnTop := True;
+  TermPanels[ActiveShell].NeedRepaint := True;
+  {$I-} Assign(BatchFile, Opts.AppleDOSBatch); Reset(BatchFile); {$I+}
   If IOResult = 0 Then Begin
    While Not Eof(BatchFile) Do Begin
     ReadLn(BatchFile, BatchLine);

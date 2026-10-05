@@ -14,7 +14,7 @@ Program EDASM;
 Uses DOS;
 
 Const
- VERSION='1.1';
+ VERSION='1.2';
  MAX_SYMBOLS=4096;
  MAX_LINE=255;
  MAX_RELOCS=8192;
@@ -64,6 +64,7 @@ Var
  CurrentSource,ChainName,Subtitle:TString;
  ChainRequested:Boolean;
  ListPage,ListRow,PageLength:Integer;
+ RepeatChar:Char;
 
 Function Up(S:TString):TString;
 Var
@@ -238,6 +239,15 @@ Procedure EmitWord(V:LongInt; Var Bytes:TString);Begin
  EmitByte(V And $FF,Bytes); EmitByte((V Shr 8) And $FF,Bytes);
 End;
 
+Procedure EmitBigWord(V:LongInt; Var Bytes:TString);Begin
+ EmitByte((V Shr 8) And $FF,Bytes); EmitByte(V And $FF,Bytes);
+End;
+
+Procedure EmitLong(V:LongInt; Var Bytes:TString);Begin
+ EmitByte(V And $FF,Bytes); EmitByte((V Shr 8) And $FF,Bytes);
+ EmitByte((V Shr 16) And $FF,Bytes); EmitByte((V Shr 24) And $FF,Bytes);
+End;
+
 Function ImpliedOpcode(M:TString):Integer;Begin
  If M='BRK' Then ImpliedOpcode:=$00 Else If M='PHP' Then ImpliedOpcode:=$08 Else If M=
  'CLC' Then ImpliedOpcode:=$18 Else If M='PLP' Then ImpliedOpcode:=$28 Else If M=
@@ -322,6 +332,7 @@ Procedure ParseFields(Line:TString; Var LabelName,Op,Arg,Comment:TString);
 Var
  I,P:Integer;
  HasLabel:Boolean;
+ Quote:Char;
 
 Function Token:TString;
 Var
@@ -331,7 +342,12 @@ Begin
  While (I<=Length(Line)) And Not(Line[I] In [' ',#9]) Do Inc(I); Token:=Copy(Line,A,I-A);
 End;
 Begin
- LabelName:=''; Op:=''; Arg:=''; Comment:=''; P:=Pos(';',Line); If P>0 Then Begin
+ LabelName:=''; Op:=''; Arg:=''; Comment:=''; P:=0; Quote:=#0;
+ For I:=1 To Length(Line) Do Begin
+  If (Line[I] In ['''','"']) Then Begin If Quote=#0 Then Quote:=Line[I] Else If Quote=Line[I] Then Quote:=#0; End
+  Else If (Line[I]=';') And (Quote=#0) Then Begin P:=I; Break; End;
+ End;
+ If P>0 Then Begin
   Comment:=Copy(Line,P,255); Delete(Line,P,255);
  End; If Trim(Line)='' Then Exit; HasLabel:=Not(Line[1] In [' ',#9]); I:=1;
  If HasLabel Then Begin
@@ -413,6 +429,14 @@ Procedure SkipListing(Count:Integer);
 Begin
  If Count<1 Then Count:=1; EnsureListingRows(Count);
  While Count>0 Do Begin WriteLn(ListText); Inc(ListRow); Dec(Count); End;
+End;
+
+Procedure RepeatListing(Count:Integer);
+Var S:TString;
+Begin
+ If Count<0 Then Count:=0; If Count>255 Then Count:=255;
+ EnsureListingRows(1); S:=''; While Count>0 Do Begin S:=S+RepeatChar; Dec(Count); End;
+ If (Pass=2) And UseListing And ListingEnabled Then Begin WriteLn(ListText,S); Inc(ListRow); End;
 End;
 
 Procedure ListLine(Address:LongInt; Bytes,Source:TString);
@@ -516,6 +540,15 @@ Begin
  If M='PAGE' Then Begin ListLine(PC,'',Source); NewListingPage; Exit; End;
  If M='SKP' Then Begin V:=1; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Not Known Then V:=1; End; ListLine(PC,'',Source); SkipListing(V); Exit; End;
  If M='SBTL' Then Begin Subtitle:=Trim(A); If (Length(Subtitle)>=2) And (Subtitle[1] In ['''','"']) And (Subtitle[Length(Subtitle)]=Subtitle[1]) Then Subtitle:=Copy(Subtitle,2,Length(Subtitle)-2); ListLine(PC,'',Source); NewListingPage; Exit; End;
+ If M='CHR' Then Begin
+  A:=Trim(A); If A='' Then Error('Caractere CHR absent') Else If (Length(A)>=2) And (A[1] In ['''','"']) Then RepeatChar:=A[2]
+  Else If (Length(A)=1) And Not(A[1] In ['0'..'9']) Then RepeatChar:=A[1]
+  Else Begin V:=Eval(A,Known); If Known And (V>=0) And (V<=255) Then RepeatChar:=Chr(V) Else Error('Valeur CHR invalide'); End;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If M='REP' Then Begin
+  V:=Eval(A,Known); If Not Known Or (V<0) Then Error('Nombre REP invalide') Else Begin ListLine(PC,'',Source); RepeatListing(V); End; Exit;
+ End;
  If (M='DFB') Or (M='DB') Then Begin
   A:=A+',';
   While A<>'' Do Begin
@@ -532,9 +565,26 @@ Begin
    If Not Known Then Error('Valeur DW inconnue: '+Item); AddReloc(ObjPC,3,Item); EmitWord(V,Bytes);
   End;
  End
+ Else If M='DDB' Then Begin
+  A:=A+',';
+  While A<>'' Do Begin
+   P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
+   If Not Known Then Error('Valeur DDB inconnue: '+Item); AddReloc(ObjPC,5,Item); EmitBigWord(V,Bytes);
+  End;
+ End
+ Else If M='DCL' Then Begin
+  A:=A+',';
+  While A<>'' Do Begin
+   P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
+   If Not Known Then Error('Valeur DCL inconnue: '+Item); AddReloc(ObjPC,4,Item); EmitLong(V,Bytes);
+  End;
+ End
  Else If (M='DS') Or (M='DFS') Then Begin
-  V:=Eval(A,Known); If Not Known Then Error('Taille DS inconnue') Else
-  For I:=1 To V Do EmitByte(0,Bytes);
+  P:=Pos(',',A); Item:=A; C:='0'; If P>0 Then Begin Item:=Copy(A,1,P-1); C:=Copy(A,P+1,255); End;
+  V:=Eval(Item,Known); If Not Known Or (V<0) Then Error('Taille DS inconnue ou negative') Else Begin
+   O:=Eval(C,Known); If Not Known Or (O<0) Or (O>255) Then Error('Octet de remplissage DS invalide')
+   Else For I:=1 To V Do EmitByte(O,Bytes);
+  End;
  End
  Else If M='HEX' Then Begin
   A:=Trim(A); I:=1;
@@ -548,13 +598,15 @@ Begin
   End;
  End
  Else If (M='ASC') Or (M='DCI') Then Begin
-  A:=Trim(A); If Length(A)>=2 Then Begin
-   C:=A[1]; Delete(A,1,1); P:=Pos(C,A); If P=0 Then P:=Length(A)+1; A:=Copy(A,1,P-1);
-   For I:=1 To Length(A) Do Begin
-    V:=Ord(A[I]); If MSBMode Then V:=V Or $80;
-    If (M='DCI') And (I=Length(A)) Then V:=V Xor $80; EmitByte(V,Bytes);
-   End;
-  End Else Error('Chaine ASC invalide');
+  A:=Trim(A); Item:='';
+  While A<>'' Do Begin
+   While (A<>'') And (A[1] In [' ',#9,',']) Do Delete(A,1,1); If A='' Then Break;
+   C:=A[1]; Delete(A,1,1); P:=Pos(C,A);
+   If P=0 Then Begin Item:=Item+A; A:=''; End Else Begin Item:=Item+Copy(A,1,P-1); Delete(A,1,P); End;
+  End;
+  If Item='' Then Error('Chaine '+M+' vide') Else Begin
+   For I:=1 To Length(Item) Do Begin V:=Ord(Item[I]); If MSBMode Then V:=V Or $80; If (M='DCI') And (I=Length(Item)) Then V:=V Xor $80; EmitByte(V,Bytes); End;
+  End;
  End
   Else
  Begin
@@ -599,6 +651,7 @@ Procedure AssembleOnePass;
 Begin
  LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
  CondDepth:=0; Active:=True; MSBMode:=False; RelMode:=False; InDsect:=False;
+ RepeatChar:='*';
  ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
  If InDsect Then Error('DSECT sans DEND');
  If CondDepth<>0 Then Error('DO sans FIN');
@@ -619,7 +672,10 @@ Begin
  End;
  For I:=0 To RelocCount-1 Do Begin
   Write(F,'RELOC ',Hex(Relocs[I].Offset,4),' ');
-  Case Relocs[I].Kind Of 1:Write(F,'LOW8 '); 2:Write(F,'HIGH8 '); Else Write(F,'WORD16 '); End;
+  Case Relocs[I].Kind Of
+   1:Write(F,'LOW8 '); 2:Write(F,'HIGH8 '); 3:Write(F,'WORD16 ');
+   4:Write(F,'LONG32 '); 5:Write(F,'BIG16 ');
+  End;
   WriteLn(F,Relocs[I].SymbolName);
  End; WriteLn(F,'END'); Close(F);
  If Not Quiet Then WriteLn('Relocations ecrites dans ',N);
@@ -630,7 +686,7 @@ Procedure Help;Begin
  WriteLn;
  WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/Q]');
  WriteLn;
- WriteLn('Directives: ORG OBJ EQU = DFB DB DW DA DS DFS HEX ASC DCI MSB');
+ WriteLn('Directives: ORG OBJ EQU = DFB DB DW DA DDB DCL DS DFS HEX ASC DCI MSB');
  WriteLn('            DO ELSE FIN LST PAGE SKP SBTL DSECT DEND REL EXTRN ENTRY CHN END');
  WriteLn;
  WriteLn('DSECT [adr] / DEND  Definit une zone symbolique sans octets objet.');
@@ -641,6 +697,13 @@ Procedure Help;Begin
  WriteLn('PAGE                 Commence une nouvelle page du listing.');
  WriteLn('SKP [n]              Insere n lignes blanches dans le listing.');
  WriteLn('SBTL texte           Change le sous-titre et commence une page.');
+ WriteLn('CHR caractere        Choisit le caractere imprime par REP.');
+ WriteLn('REP nombre           Imprime ce nombre de caracteres dans le listing.');
+ WriteLn('DDB valeur,...       Ecrit des mots en ordre octet fort, octet faible.');
+ WriteLn('DCL valeur,...       Ecrit des valeurs 32 bits, octet faible d''abord.');
+ WriteLn('DS taille[,octet]    Reserve et remplit une zone (zero par defaut).');
+ WriteLn('ASC delimiteur...    Ecrit une ou plusieurs chaines ASCII delimitees.');
+ WriteLn('DCI delimiteur...    Comme ASC; inverse le bit 7 du dernier caractere.');
  WriteLn; 
  WriteLn('Nombres: decimal, $hexadecimal, %binaire, caracteres entre apostrophes.');
  WriteLn('Expressions: symbole+valeur, symbole-valeur, >octet-faible, <octet-fort.');
