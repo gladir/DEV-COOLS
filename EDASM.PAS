@@ -14,9 +14,10 @@ Program EDASM;
 Uses DOS;
 
 Const
- VERSION='1.0';
+ VERSION='1.1';
  MAX_SYMBOLS=4096;
  MAX_LINE=255;
+ MAX_RELOCS=8192;
  AM_IMP=0;
  AM_ACC=1;
  AM_IMM=2;
@@ -36,7 +37,12 @@ Type
  TSymbol=Record
   Name:String[31];
   Value:LongInt;
-  Defined:Boolean;
+  Defined,External,PublicSym,Relocatable:Boolean;
+ End;
+ TReloc=Record
+  Offset:LongInt;
+  Kind:Byte;
+  SymbolName:String[31];
  End;
 
 Var
@@ -45,12 +51,19 @@ Var
  SrcName,ObjName,ListName:TString;
  Symbols:Array[0..MAX_SYMBOLS-1] Of TSymbol;
  SymbolCount:Integer;
+ Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
+ RelocCount:Integer;
  Pass,LineNo,Errors:Integer;
  PC,ObjPC,FirstPC,LastPC:LongInt;
  ListingEnabled,UseListing,MSBMode,EndSeen,Quiet:Boolean;
  CondStack:Array[0..15] Of Boolean;
  CondDepth:Integer;
  Active:Boolean;
+ RelMode,InDsect:Boolean;
+ SavedPC:LongInt;
+ CurrentSource,ChainName,Subtitle:TString;
+ ChainRequested:Boolean;
+ ListPage,ListRow,PageLength:Integer;
 
 Function Up(S:TString):TString;
 Var
@@ -91,7 +104,8 @@ End;
 
 Procedure Error(S:TString);Begin
  Inc(Errors); If Pass=2 Then Begin
-  WriteLn('EDASM: ligne ',LineNo,': ',S); If UseListing Then WriteLn(ListText,'**** ',S);
+  WriteLn('EDASM: ',CurrentSource,', ligne ',LineNo,': ',S);
+  If UseListing Then WriteLn(ListText,'**** ',S);
  End;
 End;
 
@@ -112,10 +126,50 @@ Begin
  If N='' Then Exit; N:=Up(N); I:=FindSymbol(N); If I<0 Then Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin
    Error('Table des symboles pleine'); Exit;
-  End; I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N;
+ End; I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N;
+  Symbols[I].External:=False; Symbols[I].PublicSym:=False;
+  Symbols[I].Relocatable:=False;
  End Else If Symbols[I].Defined And (Pass=1) Then Begin
   Error('Symbole defini deux fois: '+N); Exit;
  End; Symbols[I].Value:=V; Symbols[I].Defined:=True;
+End;
+
+Function SourceDirectory(S:TString):TString;
+Var I,P:Integer;
+Begin P:=0; For I:=1 To Length(S) Do If S[I] In ['\','/'] Then P:=I; SourceDirectory:=Copy(S,1,P); End;
+
+Function GetOrCreateSymbol(N:TString):Integer;
+Var I:Integer;
+Begin
+ N:=Up(Trim(N)); I:=FindSymbol(N);
+ If (I<0) And (N<>'') Then Begin
+  If SymbolCount>=MAX_SYMBOLS Then Begin Error('Table des symboles pleine'); GetOrCreateSymbol:=-1; Exit; End;
+  I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N; Symbols[I].Value:=0;
+  Symbols[I].Defined:=False; Symbols[I].External:=False;
+  Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False;
+ End; GetOrCreateSymbol:=I;
+End;
+
+Function ExpressionSymbol(S:TString):TString;
+Var I,A:Integer; C:Char;
+Begin
+ S:=Trim(S); If (S<>'') And (S[1] In ['<','>','#']) Then Delete(S,1,1);
+ While (S<>'') And (S[1]='(') Do Delete(S,1,1);
+ A:=1; While A<=Length(S) Do Begin C:=S[A];
+  If (C In ['A'..'Z','a'..'z','@','_','.']) Then Break; Inc(A); End;
+ I:=A; While (I<=Length(S)) And (S[I] In ['A'..'Z','a'..'z','0'..'9','@','_','.']) Do Inc(I);
+ ExpressionSymbol:=Up(Copy(S,A,I-A));
+End;
+
+Procedure AddReloc(Offset:LongInt; Kind:Byte; Expr:TString);
+Var N:TString; I:Integer;
+Begin
+ If (Pass<>2) Or Not RelMode Or InDsect Then Exit; N:=ExpressionSymbol(Expr);
+ If N='' Then Exit; I:=FindSymbol(N);
+ If (I<0) Or ((Not Symbols[I].External) And (Not Symbols[I].Relocatable)) Then Exit;
+ If RelocCount>=MAX_RELOCS Then Begin Error('Table de relocation pleine'); Exit; End;
+ Relocs[RelocCount].Offset:=Offset; Relocs[RelocCount].Kind:=Kind;
+ Relocs[RelocCount].SymbolName:=N; Inc(RelocCount);
 End;
 
 Function EvalAtom(S:TString; Var Known:Boolean):LongInt;
@@ -174,6 +228,7 @@ Procedure EmitByte(B:Byte; Var Bytes:TString);
 Var
  W:Word;
 Begin
+ If InDsect Then Begin Inc(PC); Exit; End;
  Bytes:=Bytes+Chr(B); If Pass=2 Then Begin
   BlockWrite(Obj,B,1,W); If W<>1 Then Error('Erreur d''ecriture objet');
  End; Inc(PC); Inc(ObjPC);
@@ -339,16 +394,40 @@ Begin
  End;
 End;
 
+Procedure NewListingPage;
+Begin
+ If (Pass<>2) Or Not UseListing Or Not ListingEnabled Then Exit;
+ If ListPage>0 Then WriteLn(ListText,#12); Inc(ListPage); ListRow:=0;
+ WriteLn(ListText,'EDASM ',VERSION,'   ',CurrentSource,'   PAGE ',ListPage);
+ If Subtitle<>'' Then WriteLn(ListText,Subtitle) Else WriteLn(ListText);
+ WriteLn(ListText,' LINE ADDR  OBJECT       SOURCE'); WriteLn(ListText); ListRow:=4;
+End;
+
+Procedure EnsureListingRows(Count:Integer);
+Begin
+ If (Pass<>2) Or Not UseListing Or Not ListingEnabled Then Exit;
+ If (ListPage=0) Or (ListRow+Count>PageLength) Then NewListingPage;
+End;
+
+Procedure SkipListing(Count:Integer);
+Begin
+ If Count<1 Then Count:=1; EnsureListingRows(Count);
+ While Count>0 Do Begin WriteLn(ListText); Inc(ListRow); Dec(Count); End;
+End;
+
 Procedure ListLine(Address:LongInt; Bytes,Source:TString);
 Var
  I:Integer;
  H:TString;
 Begin
- If (Pass<>2) Or Not UseListing Or Not ListingEnabled Then Exit; H:='';
+ If (Pass<>2) Or Not UseListing Or Not ListingEnabled Then Exit;
+ EnsureListingRows(1); H:='';
  For I:=1 To Length(Bytes) Do H:=H+Hex(Ord(Bytes[I]),2)+' ';
  While Length(H)<12 Do H:=H+' ';
- WriteLn(ListText,LineNo:5,' ',Hex(Address,4),'  ',H,Source);
+ WriteLn(ListText,LineNo:5,' ',Hex(Address,4),'  ',H,Source); Inc(ListRow);
 End;
+
+Procedure ProcessSourceFile(Name:TString; Depth:Integer); Forward;
 
 Procedure ProcessLine(Source:TString);
 Var
@@ -383,7 +462,10 @@ Begin
   V:=Eval(A,Known); If Not Known And (Pass=1) Then Error('Expression EQU inconnue');
   DefineSymbol(Lab,V); ListLine(V,'',Source); Exit;
  End;
- If Lab<>'' Then DefineSymbol(Lab,PC); If M='' Then Begin
+ If Lab<>'' Then Begin
+  DefineSymbol(Lab,PC); I:=FindSymbol(Lab);
+  If (I>=0) And RelMode And Not InDsect Then Symbols[I].Relocatable:=True;
+ End; If M='' Then Begin
   ListLine(PC,'',Source); Exit;
  End;
  If M='ORG' Then Begin
@@ -403,22 +485,51 @@ Begin
  If M='LST' Then Begin
   ListingEnabled:=Up(A)<>'OFF'; ListLine(PC,'',Source); Exit;
  End;
- If (M='PAGE') Or (M='SKP') Or (M='SBTL') Or (M='REL') Or (M='EXTRN') Or (M='ENTRY') Or (
- M='CHN') Or (M='DSECT') Or (M='DEND') Then Begin
+ If M='DSECT' Then Begin
+  If InDsect Then Error('DSECT imbrique interdit') Else Begin
+   SavedPC:=PC; V:=0; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Not Known Then Error('Adresse DSECT inconnue'); End;
+   PC:=V; InDsect:=True; If Lab<>'' Then Begin I:=FindSymbol(Lab); If I>=0 Then Symbols[I].Value:=PC; End;
+  End; ListLine(PC,'',Source); Exit;
+ End;
+ If M='DEND' Then Begin
+  If Not InDsect Then Error('DEND sans DSECT') Else Begin PC:=SavedPC; InDsect:=False; End;
   ListLine(PC,'',Source); Exit;
  End;
+ If M='REL' Then Begin
+  RelMode:=True; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Known Then PC:=V Else Error('Adresse REL inconnue'); End;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If (M='EXTRN') Or (M='ENTRY') Then Begin
+  If Lab<>'' Then A:=Lab+','+A; A:=A+',';
+  While A<>'' Do Begin P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P);
+   If Item<>'' Then Begin I:=GetOrCreateSymbol(Item); If I>=0 Then
+    If M='EXTRN' Then Begin Symbols[I].External:=True; Symbols[I].Defined:=True; Symbols[I].Value:=0; End
+    Else Symbols[I].PublicSym:=True;
+   End;
+  End; ListLine(PC,'',Source); Exit;
+ End;
+ If M='CHN' Then Begin
+  A:=Trim(A); If (Length(A)>=2) And (A[1] In ['''','"']) And (A[Length(A)]=A[1]) Then A:=Copy(A,2,Length(A)-2);
+  If A='' Then Error('Nom de fichier CHN absent') Else Begin ChainName:=A; ChainRequested:=True; End;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If M='PAGE' Then Begin ListLine(PC,'',Source); NewListingPage; Exit; End;
+ If M='SKP' Then Begin V:=1; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Not Known Then V:=1; End; ListLine(PC,'',Source); SkipListing(V); Exit; End;
+ If M='SBTL' Then Begin Subtitle:=Trim(A); If (Length(Subtitle)>=2) And (Subtitle[1] In ['''','"']) And (Subtitle[Length(Subtitle)]=Subtitle[1]) Then Subtitle:=Copy(Subtitle,2,Length(Subtitle)-2); ListLine(PC,'',Source); NewListingPage; Exit; End;
  If (M='DFB') Or (M='DB') Then Begin
   A:=A+',';
   While A<>'' Do Begin
    P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DFB inconnue: '+Item); EmitByte(V,Bytes);
+   If Not Known Then Error('Valeur DFB inconnue: '+Item);
+   If (Item<>'') And (Item[1]='<') Then AddReloc(ObjPC,2,Item) Else AddReloc(ObjPC,1,Item);
+   EmitByte(V,Bytes);
   End;
  End
  Else If (M='DW') Or (M='DA') Then Begin
   A:=A+',';
   While A<>'' Do Begin
    P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DW inconnue: '+Item); EmitWord(V,Bytes);
+   If Not Known Then Error('Valeur DW inconnue: '+Item); AddReloc(ObjPC,3,Item); EmitWord(V,Bytes);
   End;
  End
  Else If (M='DS') Or (M='DFS') Then Begin
@@ -447,7 +558,9 @@ Begin
  End
   Else
  Begin
-  V:=Eval(A,Known); DetermineMode(M,A,V,Known,Mode,Size,E); V:=Eval(E,Known);
+  V:=Eval(A,Known); I:=FindSymbol(ExpressionSymbol(A));
+  If (I>=0) And Symbols[I].External Then Known:=False;
+  DetermineMode(M,A,V,Known,Mode,Size,E); V:=Eval(E,Known);
   O:=Opcode(M,Mode); If (O<0) And (Mode In [AM_ZP,AM_ZPX,AM_ZPY]) Then Begin
    Inc(Mode,3); Inc(Size); O:=Opcode(M,Mode);
   End; If O<0 Then Error('Mode d''adressage illegal pour '+M) Else
@@ -455,25 +568,61 @@ Begin
    EmitByte(O,Bytes); If Mode=AM_REL Then Begin
     V:=V-(PC+1); If Known And ((V<-128) Or (V>127)) Then Error('Branchement hors limite');
     EmitByte(V And $FF,Bytes);
-   End Else If Size=2 Then EmitByte(V,Bytes) Else If Size=3 Then EmitWord(V,Bytes);
+   End Else If Size=2 Then Begin AddReloc(ObjPC,1,E); EmitByte(V,Bytes); End
+   Else If Size=3 Then Begin AddReloc(ObjPC,3,E); EmitWord(V,Bytes); End;
   End;
  End;
  If PC>LastPC Then LastPC:=PC; ListLine(OldPC,Bytes,Source);
 End;
 
-Procedure AssembleOnePass;
+Procedure ProcessSourceFile(Name:TString; Depth:Integer);
 Var
  F:Text;
  S:TString;
  E:Integer;
+ NextName,PreviousSource:TString;
 Begin
- Assign(F,SrcName); Reset(F); E:=IOResult; If E<>0 Then Begin
-  WriteLn('EDASM: impossible d''ouvrir ',SrcName); Halt(2);
- End; LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False; CondDepth:=0;
- Active:=True; MSBMode:=False;
- While Not EOF(F) And Not EndSeen Do Begin
-  ReadLn(F,S); ProcessLine(S);
- End; Close(F); If CondDepth<>0 Then Error('DO sans FIN');
+ If Depth>32 Then Begin Error('Trop de fichiers CHN (boucle probable)'); Exit; End;
+ PreviousSource:=CurrentSource; CurrentSource:=Name;
+ Assign(F,Name); Reset(F); E:=IOResult; If E<>0 Then Begin
+  Error('Impossible d''ouvrir le fichier CHN '+Name); CurrentSource:=PreviousSource; Exit;
+ End;
+ ChainRequested:=False;
+ While Not EOF(F) And Not EndSeen And Not ChainRequested Do Begin ReadLn(F,S); ProcessLine(S); End;
+ Close(F); If ChainRequested And Not EndSeen Then Begin
+  NextName:=ChainName; If SourceDirectory(NextName)='' Then NextName:=SourceDirectory(Name)+NextName;
+  ChainRequested:=False; ProcessSourceFile(NextName,Depth+1);
+ End; CurrentSource:=PreviousSource;
+End;
+
+Procedure AssembleOnePass;
+Begin
+ LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
+ CondDepth:=0; Active:=True; MSBMode:=False; RelMode:=False; InDsect:=False;
+ ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
+ If InDsect Then Error('DSECT sans DEND');
+ If CondDepth<>0 Then Error('DO sans FIN');
+End;
+
+Procedure WriteRelocationFile;
+Var F:Text; I,E:Integer; N:TString;
+Begin
+ For I:=0 To SymbolCount-1 Do
+  If Symbols[I].PublicSym And Not Symbols[I].Defined Then Error('Symbole ENTRY non defini: '+Symbols[I].Name);
+ If Not RelMode And (RelocCount=0) Then Exit;
+ N:=BaseName(ObjName)+'.REL'; Assign(F,N); Rewrite(F); E:=IOResult;
+ If E<>0 Then Begin Error('Impossible de creer '+N); Exit; End;
+ WriteLn(F,'EDASM-REL 1'); WriteLn(F,'OBJECT ',ObjName); WriteLn(F,'ORIGIN ',Hex(FirstPC,4));
+ For I:=0 To SymbolCount-1 Do Begin
+  If Symbols[I].External Then WriteLn(F,'EXTRN ',Symbols[I].Name);
+  If Symbols[I].PublicSym And Symbols[I].Defined Then WriteLn(F,'ENTRY ',Symbols[I].Name,' ',Hex(Symbols[I].Value,4));
+ End;
+ For I:=0 To RelocCount-1 Do Begin
+  Write(F,'RELOC ',Hex(Relocs[I].Offset,4),' ');
+  Case Relocs[I].Kind Of 1:Write(F,'LOW8 '); 2:Write(F,'HIGH8 '); Else Write(F,'WORD16 '); End;
+  WriteLn(F,Relocs[I].SymbolName);
+ End; WriteLn(F,'END'); Close(F);
+ If Not Quiet Then WriteLn('Relocations ecrites dans ',N);
 End;
 
 Procedure Help;Begin
@@ -482,7 +631,16 @@ Procedure Help;Begin
  WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/Q]');
  WriteLn;
  WriteLn('Directives: ORG OBJ EQU = DFB DB DW DA DS DFS HEX ASC DCI MSB');
- WriteLn('            DO ELSE FIN LST PAGE SKP SBTL DSECT DEND REL EXTRN ENTRY END');
+ WriteLn('            DO ELSE FIN LST PAGE SKP SBTL DSECT DEND REL EXTRN ENTRY CHN END');
+ WriteLn;
+ WriteLn('DSECT [adr] / DEND  Definit une zone symbolique sans octets objet.');
+ WriteLn('REL [adr]            Active les informations de relocation <objet>.REL.');
+ WriteLn('EXTRN nom,...        Declare des symboles fournis par un autre module.');
+ WriteLn('ENTRY nom,...        Exporte des symboles definis dans ce module.');
+ WriteLn('CHN fichier          Continue l''assemblage dans un autre source.');
+ WriteLn('PAGE                 Commence une nouvelle page du listing.');
+ WriteLn('SKP [n]              Insere n lignes blanches dans le listing.');
+ WriteLn('SBTL texte           Change le sous-titre et commence une page.');
  WriteLn; 
  WriteLn('Nombres: decimal, $hexadecimal, %binaire, caracteres entre apostrophes.');
  WriteLn('Expressions: symbole+valeur, symbole-valeur, >octet-faible, <octet-fort.');
@@ -515,18 +673,20 @@ Var
 
 BEGIN
  ParseArgs; SymbolCount:=0; Errors:=0; Pass:=1; AssembleOnePass;
+ E:=IOResult; { efface un etat d'E/S non fatal laisse par un fichier source }
  Assign(Obj,ObjName); Rewrite(Obj,1); E:=IOResult; If E<>0 Then Begin
-  WriteLn('EDASM: impossible de creer ',ObjName); Halt(3);
+  WriteLn('EDASM: impossible de creer ',ObjName,' (erreur ',E,')'); Halt(3);
  End;
  If UseListing Then Begin
   Assign(ListText,ListName); Rewrite(ListText); If IOResult<>0 Then Begin
    WriteLn('EDASM: impossible de creer ',ListName); Close(Obj); Halt(3);
-  End; WriteLn(ListText,'EDASM ',VERSION,'   ',SrcName); WriteLn(ListText);
+  End;
  End;
  { Stabilise les etiquettes et les choix page-zero/absolu apres la passe
    initiale. Les references avant peuvent modifier la taille du code. }
  Pass:=0; AssembleOnePass; AssembleOnePass; AssembleOnePass;
- Pass:=2; AssembleOnePass; Close(Obj); If UseListing Then Begin
+ Errors:=0; RelocCount:=0; ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
+ Pass:=2; AssembleOnePass; WriteRelocationFile; Close(Obj); If UseListing Then Begin
   WriteLn(ListText); WriteLn(ListText,'Symboles: ',SymbolCount,'   Erreurs: ',Errors);
   Close(ListText);
  End;
