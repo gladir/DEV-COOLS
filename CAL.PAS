@@ -1,9 +1,16 @@
-Program CAL;
-{ CAL - Assembleur Cray-1, sous-ensemble autonome de CAL.
+{ @author: Sylvain Maltais (support@gladir.com)
+  @created: 2026
+  @version: 1.00
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2
+  @description: CAL - Assembleur Cray-1, sous-ensemble autonome de CAL.
   Compatible syntaxe Turbo Pascal 7 / Free Pascal (-Mtp).
   Sortie: parcels 16 bits big-endian, image absolue, pas un objet COS.
   Reference: Cray Research 2240004 revision C, chapitre 4.
   Voir DOC/CAL.txt pour la syntaxe et les limites. }
+
+Program CAL;
+
 {$I-}
 
 Const
