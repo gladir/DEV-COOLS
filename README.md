@@ -433,6 +433,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de transpiler un fichier «.C» en «.PAS».</td>
 		</tr>	
 		<tr>
+			<td><b>CAL.PAS</b></td>
+			<td>Cette commande permet de lancer l'assembleur Cray-1 (sous-ensemble).</td>
+		</tr>
+		<tr>
 			<td><b>CC09.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur C pour le microprocesseur 6809.</td>
 		</tr>
