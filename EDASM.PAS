@@ -14,7 +14,7 @@ Program EDASM;
 Uses DOS;
 
 Const
- VERSION='1.2';
+ VERSION='1.3';
  MAX_SYMBOLS=4096;
  MAX_LINE=255;
  MAX_RELOCS=8192;
@@ -41,12 +41,14 @@ Type
  TSymbol=Record
   Name:String[31];
   Value:LongInt;
-  Defined,External,PublicSym,Relocatable:Boolean;
+ Defined,External,PublicSym,Relocatable:Boolean;
+  EsdNumber:Byte;
  End;
  TReloc=Record
   Offset:LongInt;
   Kind:Byte;
   SymbolName:String[31];
+  Aux:Byte;
  End;
 
 Var
@@ -56,13 +58,13 @@ Var
  SymbolCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
  RelocCount:Integer;
- Pass,LineNo,Errors:Integer;
+ Pass,LineNo,Errors,NextEsdNumber:Integer;
  PC,ObjPC,FirstPC,LastPC:LongInt;
  ObjectMin,ObjectMax,ListObjAddress:LongInt;
  ObjectPages:Array[0..255] Of PObjectPage;
  UsedPages:Array[0..255] Of PUsedPage;
  ObjExplicit:Boolean;
- ListingEnabled,UseListing,MSBMode,EndSeen,Quiet:Boolean;
+ ListingEnabled,UseListing,MSBMode,EndSeen,Quiet,AppleBinaryHeader:Boolean;
  CondStack:Array[0..15] Of Boolean;
  CondDepth:Integer;
  Active:Boolean;
@@ -135,8 +137,8 @@ Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin
    Error('Table des symboles pleine'); Exit;
  End; I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N;
-  Symbols[I].External:=False; Symbols[I].PublicSym:=False;
-  Symbols[I].Relocatable:=False;
+ Symbols[I].External:=False; Symbols[I].PublicSym:=False;
+  Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
  End Else If Symbols[I].Defined And (Pass=1) Then Begin
   Error('Symbole defini deux fois: '+N); Exit;
  End; Symbols[I].Value:=V; Symbols[I].Defined:=True;
@@ -179,21 +181,98 @@ Begin
  If Address>ObjectMax Then ObjectMax:=Address;
 End;
 
-Function WriteObjectFile:Boolean;
-Var F:File; Address:LongInt; B:Byte; W:Word; E:Integer;
+Procedure WriteFileByte(Var F:File; B:Byte; Var Failed:Boolean);
+Var W:Word;
 Begin
- WriteObjectFile:=False; Assign(F,ObjName); Rewrite(F,1); E:=IOResult;
+ If Failed Then Exit; BlockWrite(F,B,1,W);
+ If W<>1 Then Begin Error('Erreur d''ecriture objet'); Failed:=True; End;
+End;
+
+Function ObjectByte(Address:LongInt):Byte;
+Begin
+ If (Address>=0) And (Address<=65535) And
+    (UsedPages[Address Shr 8]<>Nil) And
+    UsedPages[Address Shr 8]^[Address And $FF] Then
+  ObjectByte:=ObjectPages[Address Shr 8]^[Address And $FF] Else ObjectByte:=0;
+End;
+
+Function WriteObjectFile:Boolean;
+Var
+ F:File;
+ Address,ImageLength,Offset:LongInt;
+ B,Flags:Byte;
+ E,I,J,S:Integer;
+ Failed:Boolean;
+ N:TString;
+Begin
+ WriteObjectFile:=False; Failed:=False;
+ Assign(F,ObjName); Rewrite(F,1); E:=IOResult;
  If E<>0 Then Begin Error('Impossible de creer '+ObjName); Exit; End;
- If ObjectMax>=ObjectMin Then For Address:=ObjectMin To ObjectMax Do Begin
-  If (UsedPages[Address Shr 8]<>Nil) And
-     UsedPages[Address Shr 8]^[Address And $FF] Then
-   B:=ObjectPages[Address Shr 8]^[Address And $FF] Else B:=0;
-  BlockWrite(F,B,1,W); If W<>1 Then Begin
-   Error('Erreur d''ecriture objet'); Close(F); Exit;
-  End;
+ If ObjectMax>=ObjectMin Then ImageLength:=ObjectMax-ObjectMin+1 Else ImageLength:=0;
+
+ { Le format REL EDASM commence par la longueur de l'image. Sous ProDOS,
+   le type de fichier doit etre $FE et l'AUXTYPE contient l'ORG. }
+ If RelMode Then Begin
+  WriteFileByte(F,ImageLength And $FF,Failed);
+  WriteFileByte(F,(ImageLength Shr 8) And $FF,Failed);
+ End Else If AppleBinaryHeader Then Begin
+  WriteFileByte(F,ObjectMin And $FF,Failed);
+  WriteFileByte(F,(ObjectMin Shr 8) And $FF,Failed);
+  WriteFileByte(F,ImageLength And $FF,Failed);
+  WriteFileByte(F,(ImageLength Shr 8) And $FF,Failed);
  End;
- Close(F); E:=IOResult; If E<>0 Then Begin Error('Erreur de fermeture objet'); Exit; End;
- WriteObjectFile:=True;
+
+ If ImageLength>0 Then For Address:=ObjectMin To ObjectMax Do
+  WriteFileByte(F,ObjectByte(Address),Failed);
+
+ If RelMode Then Begin
+  { RLD: indicateurs, position du champ (lo/hi), numero ESD ou octet
+    auxiliaire. Le bit 0 indique qu'un autre enregistrement suit. }
+  For I:=0 To RelocCount-1 Do Begin
+   Offset:=Relocs[I].Offset-ObjectMin;
+   If (Offset<0) Or (Offset>=ImageLength) Then Begin
+    Error('Relocation hors image a $'+Hex(Relocs[I].Offset,4)); Failed:=True;
+   End Else Begin
+    Case Relocs[I].Kind Of
+     1:Flags:=$01;             { octet faible }
+     2:Flags:=$41;             { octet fort }
+     3:Flags:=$81;             { mot faible/fort }
+     5:Flags:=$A1;             { mot fort/faible }
+     Else Begin Flags:=$81; Error('Relocation 32 bits reduite a 16 bits'); Failed:=True; End;
+    End;
+    S:=FindSymbol(Relocs[I].SymbolName);
+    B:=Relocs[I].Aux;
+    If (S>=0) And Symbols[S].External Then Begin
+     Flags:=Flags Or $10; B:=Symbols[S].EsdNumber;
+    End;
+    WriteFileByte(F,Flags,Failed); WriteFileByte(F,Offset And $FF,Failed);
+    WriteFileByte(F,(Offset Shr 8) And $FF,Failed); WriteFileByte(F,B,Failed);
+   End;
+  End;
+  WriteFileByte(F,0,Failed); { fin du RLD }
+
+  { ESD: nom avec bit 7 sur tous les caracteres sauf le dernier,
+    indicateurs du symbole, puis valeur ou numero de symbole externe. }
+  For I:=1 To 255 Do For S:=0 To SymbolCount-1 Do
+   If Symbols[S].EsdNumber=I Then Begin
+    N:=Symbols[S].Name;
+    For J:=1 To Length(N) Do Begin
+     B:=Ord(N[J]); If J<Length(N) Then B:=B Or $80;
+     WriteFileByte(F,B,Failed);
+    End;
+    If Symbols[S].External Then Begin
+     WriteFileByte(F,$31,Failed); WriteFileByte(F,Symbols[S].EsdNumber,Failed);
+     WriteFileByte(F,0,Failed);
+    End Else Begin
+     WriteFileByte(F,$28,Failed); WriteFileByte(F,Symbols[S].Value And $FF,Failed);
+     WriteFileByte(F,(Symbols[S].Value Shr 8) And $FF,Failed);
+    End;
+   End;
+  WriteFileByte(F,0,Failed); { fin de l'ESD }
+ End;
+ Close(F); E:=IOResult;
+ If E<>0 Then Begin Error('Erreur de fermeture objet'); Failed:=True; End;
+ WriteObjectFile:=Not Failed;
 End;
 
 Function SourceDirectory(S:TString):TString;
@@ -208,7 +287,7 @@ Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin Error('Table des symboles pleine'); GetOrCreateSymbol:=-1; Exit; End;
   I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N; Symbols[I].Value:=0;
   Symbols[I].Defined:=False; Symbols[I].External:=False;
-  Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False;
+  Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
  End; GetOrCreateSymbol:=I;
 End;
 
@@ -223,15 +302,21 @@ Begin
  ExpressionSymbol:=Up(Copy(S,A,I-A));
 End;
 
+Function Eval(S:TString; Var Known:Boolean):LongInt; Forward;
+
 Procedure AddReloc(Offset:LongInt; Kind:Byte; Expr:TString);
-Var N:TString; I:Integer;
+Var N,T:TString; I:Integer; V:LongInt; Known:Boolean;
 Begin
  If (Pass<>2) Or Not RelMode Or InDsect Then Exit; N:=ExpressionSymbol(Expr);
  If N='' Then Exit; I:=FindSymbol(N);
  If (I<0) Or ((Not Symbols[I].External) And (Not Symbols[I].Relocatable)) Then Exit;
  If RelocCount>=MAX_RELOCS Then Begin Error('Table de relocation pleine'); Exit; End;
  Relocs[RelocCount].Offset:=Offset; Relocs[RelocCount].Kind:=Kind;
- Relocs[RelocCount].SymbolName:=N; Inc(RelocCount);
+ Relocs[RelocCount].SymbolName:=N; Relocs[RelocCount].Aux:=0;
+ T:=Trim(Expr); If (T<>'') And (T[1] In ['<','>','#']) Then Delete(T,1,1);
+ V:=Eval(T,Known);
+ If Known And (Kind=2) Then Relocs[RelocCount].Aux:=V And $FF;
+ Inc(RelocCount);
 End;
 
 Function EvalAtom(S:TString; Var Known:Boolean):LongInt;
@@ -558,6 +643,7 @@ Begin
   If FirstPC<0 Then FirstPC:=PC; ListLine(PC,'',Source); Exit;
  End;
  If M='OBJ' Then Begin
+  If RelMode Then Begin Error('OBJ interdit dans un module REL'); ListLine(PC,'',Source); Exit; End;
   V:=Eval(A,Known); If Known Then Begin
    ObjPC:=V; ObjExplicit:=True; ListObjAddress:=ObjPC;
   End Else Error('OBJ invalide');
@@ -583,15 +669,26 @@ Begin
   ListLine(PC,'',Source); Exit;
  End;
  If M='REL' Then Begin
-  RelMode:=True; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Known Then PC:=V Else Error('Adresse REL inconnue'); End;
+  If ObjExplicit Then Error('REL incompatible avec OBJ') Else RelMode:=True;
+  If Trim(A)<>'' Then Begin
+   V:=Eval(A,Known); If Known Then Begin PC:=V; ObjPC:=V; End
+   Else Error('Adresse REL inconnue');
+  End;
   ListLine(PC,'',Source); Exit;
  End;
  If (M='EXTRN') Or (M='ENTRY') Then Begin
   If Lab<>'' Then A:=Lab+','+A; A:=A+',';
   While A<>'' Do Begin P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P);
    If Item<>'' Then Begin I:=GetOrCreateSymbol(Item); If I>=0 Then
-    If M='EXTRN' Then Begin Symbols[I].External:=True; Symbols[I].Defined:=True; Symbols[I].Value:=0; End
-    Else Symbols[I].PublicSym:=True;
+    Begin
+     If Symbols[I].EsdNumber=0 Then Begin
+      If NextEsdNumber>255 Then Error('Plus de 255 symboles ENTRY/EXTRN') Else Begin
+       Symbols[I].EsdNumber:=NextEsdNumber; Inc(NextEsdNumber);
+      End;
+     End;
+     If M='EXTRN' Then Begin Symbols[I].External:=True; Symbols[I].Defined:=True; Symbols[I].Value:=0; End
+     Else Symbols[I].PublicSym:=True;
+    End;
    End;
   End; ListLine(PC,'',Source); Exit;
  End;
@@ -721,35 +818,17 @@ Begin
  If CondDepth<>0 Then Error('DO sans FIN');
 End;
 
-Procedure WriteRelocationFile;
-Var F:Text; I,E:Integer; N:TString;
+Procedure ValidateExternalSymbols;
+Var I:Integer;
 Begin
  For I:=0 To SymbolCount-1 Do
   If Symbols[I].PublicSym And Not Symbols[I].Defined Then Error('Symbole ENTRY non defini: '+Symbols[I].Name);
- If Not RelMode And (RelocCount=0) Then Exit;
- N:=BaseName(ObjName)+'.REL'; Assign(F,N); Rewrite(F); E:=IOResult;
- If E<>0 Then Begin Error('Impossible de creer '+N); Exit; End;
- WriteLn(F,'EDASM-REL 1'); WriteLn(F,'OBJECT ',ObjName); WriteLn(F,'ORIGIN ',Hex(FirstPC,4));
- If ObjectMax>=ObjectMin Then WriteLn(F,'OBJECTBASE ',Hex(ObjectMin,4));
- For I:=0 To SymbolCount-1 Do Begin
-  If Symbols[I].External Then WriteLn(F,'EXTRN ',Symbols[I].Name);
-  If Symbols[I].PublicSym And Symbols[I].Defined Then WriteLn(F,'ENTRY ',Symbols[I].Name,' ',Hex(Symbols[I].Value,4));
- End;
- For I:=0 To RelocCount-1 Do Begin
-  Write(F,'RELOC ',Hex(Relocs[I].Offset,4),' ');
-  Case Relocs[I].Kind Of
-   1:Write(F,'LOW8 '); 2:Write(F,'HIGH8 '); 3:Write(F,'WORD16 ');
-   4:Write(F,'LONG32 '); 5:Write(F,'BIG16 ');
-  End;
-  WriteLn(F,Relocs[I].SymbolName);
- End; WriteLn(F,'END'); Close(F);
- If Not Quiet Then WriteLn('Relocations ecrites dans ',N);
 End;
 
 Procedure Help;Begin
  WriteLn('EDASM ',VERSION,' - Cette commande permet de lancer un assembleur Apple EDASM compatible 6502.');
  WriteLn;
- WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/Q]');
+ WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/B] [/Q]');
  WriteLn;
  WriteLn('Directives: ORG OBJ EQU = DFB DB DW DA DDB DCL DS DFS HEX ASC DCI MSB');
  WriteLn('            DO ELSE FIN LST PAGE SKP SBTL DSECT DEND REL EXTRN ENTRY CHN END');
@@ -758,7 +837,9 @@ Procedure Help;Begin
  WriteLn('ORG adresse          Fixe l''adresse d''execution des instructions.');
  WriteLn('OBJ adresse          Fixe independamment leur adresse de stockage objet.');
  WriteLn('                     Les trous sont remplis de zero; tout chevauchement est une erreur.');
- WriteLn('REL [adr]            Active les informations de relocation <objet>.REL.');
+ WriteLn('REL [adr]            Produit directement un module objet EDASM relogeable.');
+ WriteLn('                     Le fichier contient image, RLD et ESD au format EDASM.');
+ WriteLn('                     Sur ProDOS: type $FE (REL), AUXTYPE=adresse ORG.');
  WriteLn('EXTRN nom,...        Declare des symboles fournis par un autre module.');
  WriteLn('ENTRY nom,...        Exporte des symboles definis dans ce module.');
  WriteLn('CHN fichier          Continue l''assemblage dans un autre source.');
@@ -772,6 +853,8 @@ Procedure Help;Begin
  WriteLn('DS taille[,octet]    Reserve et remplit une zone (zero par defaut).');
  WriteLn('ASC delimiteur...    Ecrit une ou plusieurs chaines ASCII delimitees.');
  WriteLn('DCI delimiteur...    Comme ASC; inverse le bit 7 du dernier caractere.');
+ WriteLn('/B                   Ajoute l''en-tete Apple DOS B: adresse et longueur.');
+ WriteLn('                     Sans /B, une sortie absolue demeure un binaire brut.');
  WriteLn; 
  WriteLn('Nombres: decimal, $hexadecimal, %binaire, caracteres entre apostrophes.');
  WriteLn('Expressions: symbole+valeur, symbole-valeur, >octet-faible, <octet-fort.');
@@ -784,12 +867,13 @@ Var
  A,U:TString;
 Begin
  If ParamCount=0 Then Help; SrcName:=''; ObjName:=''; ListName:=''; ListingEnabled:=True;
- Quiet:=False;
+ Quiet:=False; AppleBinaryHeader:=False;
  For I:=1 To ParamCount Do Begin
   A:=ParamStr(I); U:=Up(A);
   If (U='/?') Or (U='-?') Then Help Else If Copy(U,1,3)='/L:' Then Begin
    ListName:=Copy(A,4,255); UseListing:=True;
-  End Else If U='/Q' Then Quiet:=True Else If (A<>'') And (A[1]='/') Then Begin
+  End Else If U='/Q' Then Quiet:=True Else If U='/B' Then AppleBinaryHeader:=True
+  Else If (A<>'') And (A[1]='/') Then Begin
    WriteLn('Option inconnue: ',A); Halt(1);
   End Else If SrcName='' Then SrcName:=A Else If ObjName='' Then ObjName:=A Else
   Begin
@@ -800,7 +884,7 @@ Begin
 End;
 
 BEGIN
- ParseArgs; SymbolCount:=0; Errors:=0; Pass:=1; AssembleOnePass;
+ ParseArgs; SymbolCount:=0; NextEsdNumber:=1; Errors:=0; Pass:=1; AssembleOnePass;
  If UseListing Then Begin
   Assign(ListText,ListName); Rewrite(ListText); If IOResult<>0 Then Begin
    WriteLn('EDASM: impossible de creer ',ListName); Halt(3);
@@ -810,7 +894,9 @@ BEGIN
    initiale. Les references avant peuvent modifier la taille du code. }
  Pass:=0; AssembleOnePass; AssembleOnePass; AssembleOnePass;
  Errors:=0; RelocCount:=0; ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
- InitObjectImage; Pass:=2; AssembleOnePass; WriteRelocationFile;
+ InitObjectImage; Pass:=2; AssembleOnePass;
+ If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
+ ValidateExternalSymbols;
  If Errors=0 Then WriteObjectFile;
  If UseListing Then Begin
   WriteLn(ListText); WriteLn(ListText,'Symboles: ',SymbolCount,'   Erreurs: ',Errors);
@@ -821,6 +907,8 @@ BEGIN
    WriteLn('Assemblage termine: ',ObjName,' (',ObjectMax-ObjectMin+1,
    ' octets, objet $',Hex(ObjectMin,4),'-$',Hex(ObjectMax,4),').') Else
    WriteLn('Assemblage termine: ',ObjName,' (objet vide).');
+  If Not Quiet And RelMode Then
+   WriteLn('Attributs ProDOS requis: TYPE=$FE, AUXTYPE=$',Hex(ObjectMin,4),'.');
  End Else
  Begin
   WriteLn(Errors,' erreur(s); objet invalide.'); FreeObjectImage; Halt(4);
