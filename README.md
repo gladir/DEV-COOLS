@@ -65,6 +65,12 @@ L'application DEVENV possède plusieurs terminaux pour répondre aux différente
 		<td>AS68</td>		
 	</tr>
 	<tr>
+		<td><b>Apple DOS</b></td>
+		<td>Apple II</td>
+		<td>Emulateur Apple II</td>
+		<td></td>
+	</tr>
+	<tr>
 		<td><b>AmigaDOS</b></td>
 		<td>Amiga</td>
 		<td>Emulateur Amiga</td>
