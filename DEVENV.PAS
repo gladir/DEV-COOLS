@@ -46207,7 +46207,7 @@ End;
   avec le nom Leaf (8.3), en lisant les donnees depuis SrcPath (hote).
   Retourne False et remplit ErrMsg en cas d echec. }
 Function Fat_WriteFileFromHost(Idx: Byte; AbsParent, Leaf: String;
- SrcPath: String; Var ErrMsg: String): Boolean;
+ SrcPath: String; Var ErrMsg: String; Attr: Byte): Boolean;
 Var
  IsRoot: Boolean;
  StartCl: LongInt;
@@ -46315,7 +46315,7 @@ Begin
  Until BR < Word(ClusterSize);
  Close(SrcF);
  If Not Fat_CommitLFNWrite(Idx, N11, NeedLFN, NFrag, RunLBA, RunIdx, Leaf,
-  $20, FirstClu, TotalSize) Then Begin
+  Attr, FirstClu, TotalSize) Then Begin
   ErrMsg := 'Erreur d ecriture de l entree repertoire';
   Exit;
  End;
@@ -46581,7 +46581,7 @@ Begin
    Exit;
   End;
   If Fat_WriteFileFromHost(DstIdx, ParentAbs, Leaf, Source,
-   ErrMsg) Then Begin
+   ErrMsg, $20) Then Begin
    TermCopyFile := True;
    Exit;
   End;
@@ -153285,12 +153285,17 @@ Begin
 End;
 
 { Porte de SetupSystemFamily/ParseSystemFamily (FORMAT.PAS) : noms de
-  fichiers systeme par famille DOS, pour /S et /S:famille. F3 = '' pour
-  une famille a 2 fichiers seulement (FreeDOS). OS/2 et WinNT sont
-  refuses explicitement : ils exigent HPFS/NTFS, sans pilote dans ce
-  projet (meme contrainte que le refus deja existant de /FS:FAT32). }
+  fichiers systeme par famille DOS, pour /S et /S:famille (et pour SYS,
+  voir TermCmd_SYS). F3 = '' pour une famille a 2 fichiers seulement
+  (FreeDOS). AllowOS2NT distingue les deux appelants : FORMAT doit CREER
+  le systeme de fichiers (HPFS/NTFS hors de portee, sans pilote dans ce
+  projet - memes contrainte que le refus deja existant de /FS:FAT32) donc
+  passe False ; SYS ne fait que COPIER des fichiers sur un volume FAT
+  DEJA existant (OS2BOOT/OS2LDR/OS2KRNL et NTLDR/NTDETECT.COM/BOOT.INI
+  vivent reellement sur FAT pour Boot Manager OS/2 et les installations
+  NT/2000/XP anciennes - aucune limitation reelle ici) donc passe True. }
 Function Fmt_SystemFilesForFamily(Family: String;
- Var F1, F2, F3: String; Var ErrMsg: String): Boolean;
+ Var F1, F2, F3: String; Var ErrMsg: String; AllowOS2NT: Boolean): Boolean;
 Var
  U: String;
 Begin
@@ -153312,16 +153317,31 @@ Begin
   F1 := 'IO.SYS'; F2 := 'MSDOS.SYS'; F3 := 'COMMAND.COM';
  End Else If (U = 'PTS-DOS') Or (U = 'PTSDOS') Or (U = 'PTS') Then Begin
   F1 := 'PTSBIO.SYS'; F2 := 'PTSDOS.SYS'; F3 := 'COMMAND.COM';
- End Else If (U = 'OS/2') Or (U = 'OS2') Or (U = 'IBMOS2') Or
-             (U = 'NT') Or (U = 'WINNT') Or (U = 'WIN-NT') Or
+ End Else If (U = 'OS/2') Or (U = 'OS2') Or (U = 'IBMOS2') Then Begin
+  If AllowOS2NT Then Begin
+   F1 := 'OS2BOOT'; F2 := 'OS2LDR'; F3 := 'OS2KRNL';
+  End Else Begin
+   ErrMsg := 'la famille ' + Family + ' exige HPFS ou NTFS, sans pilote ' +
+    'dans ce projet (voir /FS:FAT12 ou /FS:FAT16).';
+   Fmt_SystemFilesForFamily := False;
+  End;
+ End Else If (U = 'NT') Or (U = 'WINNT') Or (U = 'WIN-NT') Or
              (U = 'WIN2K') Or (U = 'W2K') Or (U = 'WINXP') Or
              (U = 'XP') Or (U = 'WIN2000') Then Begin
-  ErrMsg := 'la famille ' + Family + ' exige HPFS ou NTFS, sans pilote ' +
-   'dans ce projet (voir /FS:FAT12 ou /FS:FAT16).';
-  Fmt_SystemFilesForFamily := False;
+  If AllowOS2NT Then Begin
+   F1 := 'NTLDR'; F2 := 'NTDETECT.COM'; F3 := 'BOOT.INI';
+  End Else Begin
+   ErrMsg := 'la famille ' + Family + ' exige HPFS ou NTFS, sans pilote ' +
+    'dans ce projet (voir /FS:FAT12 ou /FS:FAT16).';
+   Fmt_SystemFilesForFamily := False;
+  End;
  End Else Begin
-  ErrMsg := 'famille DOS inconnue : ' + Family + ' (attendu MS-DOS, ' +
-   'PC-DOS, DR-DOS, FreeDOS, RxDOS, Win95 ou PTS-DOS).';
+  If AllowOS2NT Then
+   ErrMsg := 'famille DOS inconnue : ' + Family + ' (attendu MS-DOS, ' +
+    'PC-DOS, DR-DOS, FreeDOS, RxDOS, Win95, PTS-DOS, OS/2 ou WinNT).'
+  Else
+   ErrMsg := 'famille DOS inconnue : ' + Family + ' (attendu MS-DOS, ' +
+    'PC-DOS, DR-DOS, FreeDOS, RxDOS, Win95 ou PTS-DOS).';
   Fmt_SystemFilesForFamily := False;
  End;
 End;
@@ -153556,7 +153576,7 @@ Begin
   TermAddLine(TP, 'FORMAT : /S et /B sont mutuellement exclusifs.');
   Exit;
  End;
- If Not Fmt_SystemFilesForFamily(Family, F1, F2, F3, ErrMsg) Then Begin
+ If Not Fmt_SystemFilesForFamily(Family, F1, F2, F3, ErrMsg, False) Then Begin
   TermAddLine(TP, 'FORMAT : ' + ErrMsg);
   Exit;
  End;
@@ -153679,6 +153699,384 @@ Begin
    Fat_WriteDirEntry(Idx, SlotLBA, SlotIdx, N11, $06, FirstClu, Sz2);
   TermAddLine(TP, 'Espace reserve pour ' + F1 + ' et ' + F2 + ' (/B).');
  End;
+End;
+
+{ SYS (2026-10-05, demande explicite - voir C:\SOURCE\GITHUB\CORAIL\SYS.PAS) }
+{ : contrairement a la reference (clone autonome de SYS.COM, ses propres     }
+{ fonctions bas niveau FAT), ce port est un simple ORCHESTRATEUR de          }
+{ briques FAT12/16 DEJA existantes dans ce fichier (Fat_WriteFileFromHost,   }
+{ Fat_FindPath, Fat_ExtractToTempFile, Fmt_ComputeGeometry/Fmt_WriteBPB -    }
+{ ces deux dernieres deja ecrites pour FORMAT) - pas de nouveau format a     }
+{ batir, contrairement au chantier Apple DOS precedent. Disponible          }
+{ UNIQUEMENT dans Invite de commande/Norton Commander/OS2&REXX (demande     }
+{ explicite - pas le patron "commun a tous les shells" de CURL/IPCONFIG).   }
+
+{ Reformatage rapide minimal pour SYS /FORMAT: - reutilise EXACTEMENT       }
+{ Fmt_ComputeGeometry/Fmt_WriteBPB de FORMAT (pas de recalcul de geometrie  }
+{ duplique), mais n'efface PAS la zone de donnees (SYS /FORMAT: est un      }
+{ formatage logique rapide, jamais un effacement physique complet - meme    }
+{ portee que le /FORMAT: de la reference, qui ne fait jamais de passage     }
+{ piste par piste). Code delibermment SEPARE du corps de TermCmd_FORMAT     }
+{ (plutot qu'un refactor partage) pour ne prendre aucun risque de           }
+{ regression sur FORMAT, deja verifie en direct. }
+Function Fmt_QuickFormatVolume(Idx: Byte; ReqFS: String; Var ErrMsg: String): Boolean;
+Var
+ TotalSectors: LongInt;
+ SPC, NumFATs, FATBits: Byte;
+ RootEntries: Word;
+ SPF: LongInt;
+ Buf: Array[0..511] Of Byte;
+ FATStart, RootStart, RootDirSectors, LBA: LongInt;
+ I: Integer;
+Begin
+ Fmt_QuickFormatVolume := False;
+ TotalSectors := LongInt(EmuFloppySize[Idx]) Div 512;
+ If TotalSectors < 32 Then Begin
+  ErrMsg := 'image trop petite pour contenir un systeme de fichiers.';
+  Exit;
+ End;
+ If Not Fmt_ComputeGeometry(TotalSectors, ReqFS, 0, SPC, NumFATs, RootEntries,
+  SPF, FATBits, ErrMsg) Then Exit;
+ Fmt_WriteBPB(Buf, TotalSectors, SPC, 1, NumFATs, RootEntries, SPF, FATBits);
+ If Not Fat_WriteSector(Idx, 0, Buf) Then Begin
+  ErrMsg := 'echec d''ecriture du secteur de demarrage.'; Exit;
+ End;
+ FATStart := 1;
+ RootDirSectors := (LongInt(RootEntries) * 32 + 511) Div 512;
+ RootStart := FATStart + LongInt(NumFATs) * SPF;
+ For I := 0 To NumFATs - 1 Do Begin
+  FillChar(Buf, 512, 0);
+  Buf[0] := $F8; Buf[1] := $FF; Buf[2] := $FF;
+  If FATBits = 16 Then Buf[3] := $FF;
+  If Not Fat_WriteSector(Idx, FATStart + LongInt(I) * SPF, Buf) Then Begin
+   ErrMsg := 'echec d''ecriture de la table FAT.'; Exit;
+  End;
+  FillChar(Buf, 512, 0);
+  For LBA := FATStart + LongInt(I) * SPF + 1 To FATStart + LongInt(I) * SPF + SPF - 1 Do
+   If Not Fat_WriteSector(Idx, LBA, Buf) Then Begin
+    ErrMsg := 'echec d''ecriture de la table FAT.'; Exit;
+   End;
+ End;
+ FillChar(Buf, 512, 0);
+ For LBA := RootStart To RootStart + RootDirSectors - 1 Do
+  If Not Fat_WriteSector(Idx, LBA, Buf) Then Begin
+   ErrMsg := 'echec d''ecriture du repertoire racine.'; Exit;
+  End;
+ Fat_TryMount(Idx);
+ Fmt_QuickFormatVolume := True;
+End;
+
+{ Reecrit le secteur de demarrage avec la geometrie DEJA connue du volume   }
+{ monte (FatVol[Idx], peuplee par Fat_TryMount) - pas de recalcul, juste un }
+{ rafraichissement du BPB+signature (meme "stub minimal honnete, pas de     }
+{ vrai bootstrap" que FORMAT - voir Fmt_WriteBPB). }
+Procedure Sys_RewriteBootSector(Idx: Byte);
+Var
+ Buf: Array[0..511] Of Byte;
+ TotalSectors: LongInt;
+Begin
+ TotalSectors := LongInt(EmuFloppySize[Idx]) Div 512;
+ Fmt_WriteBPB(Buf, TotalSectors, FatVol[Idx].SectorsPerCluster,
+  FatVol[Idx].ReservedSectors, FatVol[Idx].NumFATs, FatVol[Idx].RootEntries,
+  FatVol[Idx].SectorsPerFAT, FatVol[Idx].FATType);
+ Fat_WriteSector(Idx, 0, Buf);
+End;
+
+{ SYS /ACTIVE[:N] : marque la partition N (1..4) active dans le MBR brut au }
+{ LBA ABSOLU 0 (Emu_ImageReadSector/WriteSector, PAS Fat_ReadSector/        }
+{ WriteSector qui ajoutent FatVol[Idx].PartitionStart - le MBR est toujours }
+{ avant la partition) - memes octets/offsets que SetActivePartition de la  }
+{ reference ($1BE + 16*(N-1), +4=type, +0=indicateur $80 bootable). }
+Function Sys_SetActivePartition(Idx: Byte; PartNum: Byte; Var ErrMsg: String): Boolean;
+Var
+ Sec0: Array[0..511] Of Byte;
+ K: Integer;
+ Ofs: Word;
+Begin
+ Sys_SetActivePartition := False;
+ { BOGUE REEL evite (trouve en verifiant live /ACTIVE sur une image        }
+ { disquette) : un secteur de boot BPB (disquette) se termine AUSSI par     }
+ { 55AA (convention FAT standard, pas exclusive au MBR) - la seule          }
+ { signature ne suffit donc pas a distinguer "vrai MBR avec table de        }
+ { partitions" de "disquette formatee". FatVol[Idx].PartitionStart n'est    }
+ { non-nul QUE si Fat_TryMount a reellement trouve une table de             }
+ { partitions MBR valide au montage (voir Fat_TryMount) - test plus fiable  }
+ { que la signature seule, meme logique que LoadBPB de la reference. }
+ If (Not FatVol[Idx].Mounted) Or (FatVol[Idx].PartitionStart = 0) Then Begin
+  ErrMsg := 'cette image n''a pas de table de partitions MBR (disquette ' +
+   'ou image brute sans partition - /ACTIVE ne s''applique qu''aux images ' +
+   'de disque dur /DISK80:/DISK81: avec MBR).';
+  Exit;
+ End;
+ If Not Emu_ImageReadSector(Idx, 0, Sec0) Then Begin
+  ErrMsg := 'lecture du MBR impossible.'; Exit;
+ End;
+ If (Sec0[510] <> $55) Or (Sec0[511] <> $AA) Then Begin
+  ErrMsg := 'signature MBR (55AA) absente ou corrompue.';
+  Exit;
+ End;
+ Ofs := $1BE + Word(PartNum - 1) * 16;
+ If Sec0[Ofs + 4] = 0 Then Begin
+  ErrMsg := 'la partition #' + IntToStr(PartNum) + ' est vide.'; Exit;
+ End;
+ For K := 0 To 3 Do Sec0[$1BE + K * 16] := $00;
+ Sec0[Ofs] := $80;
+ If Not Emu_ImageWriteSector(Idx, 0, Sec0) Then Begin
+  ErrMsg := 'ecriture du MBR impossible.'; Exit;
+ End;
+ Sys_SetActivePartition := True;
+End;
+
+{ SYS /INFO : rapporte la geometrie DEJA connue (FatVol[Idx], aucun nouveau }
+{ parsing BPB) + detection de la famille DOS installee - port simplifie de }
+{ DetectFATFiles (reference) : un Fat_FindPath par nom de fichier connu     }
+{ suffit, la resolution de repertoire existe deja dans ce projet. }
+Procedure Sys_InfoReport(Var TP: TTerminalPanel; Idx: Byte);
+Var
+ Attr: Byte;
+ Cluster, Size: LongInt;
+ Fam: String;
+Begin
+ TermAddLine(TP, 'Type de volume   : FAT' + IntToStr(FatVol[Idx].FATType));
+ TermAddLine(TP, 'Secteurs/unite   : ' + IntToStr(FatVol[Idx].SectorsPerCluster));
+ TermAddLine(TP, 'Copies de FAT    : ' + IntToStr(FatVol[Idx].NumFATs));
+ TermAddLine(TP, 'Entrees racine   : ' + IntToStr(FatVol[Idx].RootEntries));
+ TermAddLine(TP, 'Secteurs/FAT     : ' + IntToStr(FatVol[Idx].SectorsPerFAT));
+ TermAddLine(TP, 'Total secteurs   : ' + IntToStr(FatVol[Idx].TotalSectors));
+ If FatVol[Idx].PartitionStart > 0 Then
+  TermAddLine(TP, 'LBA partition    : ' + IntToStr(FatVol[Idx].PartitionStart))
+ Else
+  TermAddLine(TP, 'LBA partition    : 0 (pas de MBR - disquette ou image brute)');
+ Fam := '';
+ If Fat_FindPath(Idx, '\NTLDR', Attr, Cluster, Size) And
+    Fat_FindPath(Idx, '\NTDETECT.COM', Attr, Cluster, Size) Then
+  Fam := 'Windows NT/2000/XP'
+ Else If Fat_FindPath(Idx, '\OS2LDR', Attr, Cluster, Size) And
+    Fat_FindPath(Idx, '\OS2KRNL', Attr, Cluster, Size) Then
+  Fam := 'OS/2'
+ Else If Fat_FindPath(Idx, '\IO.SYS', Attr, Cluster, Size) And
+    Fat_FindPath(Idx, '\MSDOS.SYS', Attr, Cluster, Size) Then
+  Fam := 'MS-DOS / Windows 9x'
+ Else If Fat_FindPath(Idx, '\IBMBIO.COM', Attr, Cluster, Size) And
+    Fat_FindPath(Idx, '\IBMDOS.COM', Attr, Cluster, Size) Then
+  Fam := 'PC-DOS ou DR-DOS'
+ Else If Fat_FindPath(Idx, '\KERNEL.SYS', Attr, Cluster, Size) Then
+  Fam := 'FreeDOS'
+ Else If Fat_FindPath(Idx, '\PTSBIO.SYS', Attr, Cluster, Size) Then
+  Fam := 'PTS-DOS'
+ Else If Fat_FindPath(Idx, '\RXDOSBIO.SYS', Attr, Cluster, Size) Then
+  Fam := 'RxDOS';
+ If Fam <> '' Then Begin
+  TermAddLine(TP, 'DOS detecte      : ' + Fam);
+  If Fat_FindPath(Idx, '\COMMAND.COM', Attr, Cluster, Size) Or
+     Fat_FindPath(Idx, '\BOOT.INI', Attr, Cluster, Size) Then
+   TermAddLine(TP, 'Verdict          : disque amorcable (' + Fam + ').')
+  Else
+   TermAddLine(TP, 'Verdict          : fichiers partiels, disque probablement incomplet.');
+ End Else
+  TermAddLine(TP, 'Verdict          : aucun fichier systeme DOS reconnu sur ce volume.');
+End;
+
+Procedure TermCmd_SYS(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ Tok, ErrMsg, Family, ReqFS: String;
+ ArgI, Code, ActiveN: Integer;
+ PosArgs: Array[1..2] Of String;
+ PosCount: Integer;
+ DoFormat: Byte;
+ DoNoBoot, DoInfo: Boolean;
+ DoActive: Byte;
+ SrcLetter, DstLetter: String;
+ SrcIdx, DstIdx: Byte;
+ HasSrcDrive: Boolean;
+ F1, F2, F3: String;
+ SrcPath1, SrcPath2, SrcPath3: String;
+ Attr: Byte;
+ Cluster, Size: LongInt;
+ CopyErr: String;
+Begin
+ Tok := TermExtractParam(ParamStr, 1);
+ If (Tok = '') Or (TermStrToUpper(Tok) = '/?') Then Begin
+  TermAddLine(TP, 'Syntaxe : SYS [source:] destination: [/FORMAT:FAT12|FAT16]');
+  TermAddLine(TP, '              [/DOS:famille] [/NOBOOT] [/ACTIVE[:N]] [/INFO]');
+  TermAddLine(TP, '  Transfere les fichiers systeme sur un disque virtuel deja');
+  TermAddLine(TP, '  monte (IMGMOUNT ou BOOT /DISKn:), pour le rendre amorcable,');
+  TermAddLine(TP, '  SANS toucher aux autres fichiers deja presents (contrairement');
+  TermAddLine(TP, '  a FORMAT /S, qui efface tout le volume avant de transferer).');
+  TermAddLine(TP, '');
+  TermAddLine(TP, '  source:       Lecteur virtuel source des fichiers systeme (A..D).');
+  TermAddLine(TP, '                Omis : les fichiers sont lus dans le repertoire');
+  TermAddLine(TP, '                courant de DEVENV.exe.');
+  TermAddLine(TP, '  destination:  Lecteur virtuel cible (A..D), deja monte.');
+  TermAddLine(TP, '  /FORMAT:FAT12 Formate rapidement la destination avant le');
+  TermAddLine(TP, '  /FORMAT:FAT16 transfert (formatage logique seulement, aucun');
+  TermAddLine(TP, '                effacement de la zone de donnees - voir FORMAT');
+  TermAddLine(TP, '                pour un formatage complet).');
+  TermAddLine(TP, '  /DOS:famille  Choisit la famille : MS-DOS, PC-DOS, DR-DOS,');
+  TermAddLine(TP, '                FreeDOS, RxDOS, Win95, PTS-DOS, OS/2 ou WinNT');
+  TermAddLine(TP, '                (defaut MS-DOS).');
+  TermAddLine(TP, '  /NOBOOT       N''ecrit pas le secteur de demarrage apres le');
+  TermAddLine(TP, '                transfert (par defaut, SYS le reecrit).');
+  TermAddLine(TP, '  /ACTIVE[:N]   Marque la partition N (1-4, defaut 1) active');
+  TermAddLine(TP, '                dans la table de partitions MBR.');
+  TermAddLine(TP, '  /INFO         Analyse la destination (type FAT, famille DOS');
+  TermAddLine(TP, '                detectee) sans aucune ecriture.');
+  Exit;
+ End;
+ PosCount := 0; DoFormat := 0; DoNoBoot := False; DoInfo := False;
+ DoActive := 0; Family := '';
+ ArgI := 1;
+ Tok := TermExtractParam(ParamStr, ArgI);
+ While Tok <> '' Do Begin
+  If TermStrToUpper(Copy(Tok, 1, 8)) = '/FORMAT:' Then Begin
+   If TermStrToUpper(Copy(Tok, 9, Length(Tok) - 8)) = 'FAT12' Then DoFormat := 12
+   Else If TermStrToUpper(Copy(Tok, 9, Length(Tok) - 8)) = 'FAT16' Then DoFormat := 16
+   Else Begin
+    TermAddLine(TP, 'SYS : /FORMAT: attend FAT12 ou FAT16.'); Exit;
+   End;
+  End
+  Else If TermStrToUpper(Copy(Tok, 1, 5)) = '/DOS:' Then
+   Family := Copy(Tok, 6, Length(Tok) - 5)
+  Else If TermStrToUpper(Tok) = '/NOBOOT' Then DoNoBoot := True
+  Else If TermStrToUpper(Tok) = '/INFO' Then DoInfo := True
+  Else If TermStrToUpper(Tok) = '/ACTIVE' Then DoActive := 1
+  Else If TermStrToUpper(Copy(Tok, 1, 8)) = '/ACTIVE:' Then Begin
+   Val(Copy(Tok, 9, Length(Tok) - 8), ActiveN, Code);
+   If (Code <> 0) Or (ActiveN < 1) Or (ActiveN > 4) Then Begin
+    TermAddLine(TP, 'SYS : /ACTIVE attend un numero de partition entre 1 et 4.'); Exit;
+   End;
+   DoActive := Byte(ActiveN);
+  End
+  Else If (Length(Tok) > 0) And (Tok[1] <> '/') Then Begin
+   Inc(PosCount);
+   If PosCount <= 2 Then PosArgs[PosCount] := Tok;
+  End
+  Else Begin
+   TermAddLine(TP, 'SYS : parametre invalide : ' + Tok);
+   Exit;
+  End;
+  Inc(ArgI);
+  Tok := TermExtractParam(ParamStr, ArgI);
+ End;
+ If PosCount = 0 Then Begin
+  TermAddLine(TP, 'Syntaxe : SYS [source:] destination:');
+  Exit;
+ End;
+ If PosCount = 1 Then Begin
+  HasSrcDrive := False;
+  DstLetter := PosArgs[1];
+ End Else Begin
+  HasSrcDrive := True;
+  SrcLetter := PosArgs[1];
+  DstLetter := PosArgs[2];
+ End;
+ If (Length(DstLetter) <> 2) Or (DstLetter[2] <> ':') Or
+    Not Term_DriveIdxFromLetter(DstLetter[1], DstIdx) Then Begin
+  TermAddLine(TP, 'SYS : lettre de lecteur destination invalide : ' + DstLetter);
+  Exit;
+ End;
+ If Not EmuFloppyOpen[DstIdx] Then Begin
+  TermAddLine(TP, 'SYS : ' + DstLetter + ' n''a aucune image montee ' +
+   '(utiliser IMGMOUNT ou BOOT /DISKn: d''abord).');
+  Exit;
+ End;
+ If HasSrcDrive Then Begin
+  If (Length(SrcLetter) <> 2) Or (SrcLetter[2] <> ':') Or
+     Not Term_DriveIdxFromLetter(SrcLetter[1], SrcIdx) Then Begin
+   TermAddLine(TP, 'SYS : lettre de lecteur source invalide : ' + SrcLetter);
+   Exit;
+  End;
+  If Not FatVol[SrcIdx].Mounted Then Begin
+   TermAddLine(TP, 'SYS : ' + SrcLetter + ' n''a aucun systeme de fichiers reconnu.');
+   Exit;
+  End;
+ End;
+ If DoInfo Then Begin
+  If Not FatVol[DstIdx].Mounted Then Begin
+   TermAddLine(TP, 'SYS /INFO : aucun systeme de fichiers reconnu sur ' + DstLetter);
+   Exit;
+  End;
+  Sys_InfoReport(TP, DstIdx);
+  Exit;
+ End;
+ If Not Fmt_SystemFilesForFamily(Family, F1, F2, F3, ErrMsg, True) Then Begin
+  TermAddLine(TP, 'SYS : ' + ErrMsg);
+  Exit;
+ End;
+ { Resoudre les sources AVANT toute ecriture (fail-fast, meme discipline   }
+ { que FORMAT /S) - fichier manquant = rien n'est touche sur la cible. }
+ If HasSrcDrive Then Begin
+  If Not Fat_FindPath(SrcIdx, '\' + F1, Attr, Cluster, Size) Then Begin
+   TermAddLine(TP, 'SYS : ' + F1 + ' introuvable sur ' + SrcLetter); Exit;
+  End;
+  If Not Fat_ExtractToTempFile(SrcIdx, Cluster, Size, F1, SrcPath1) Then Begin
+   TermAddLine(TP, 'SYS : extraction de ' + F1 + ' impossible.'); Exit;
+  End;
+  If Not Fat_FindPath(SrcIdx, '\' + F2, Attr, Cluster, Size) Then Begin
+   TermAddLine(TP, 'SYS : ' + F2 + ' introuvable sur ' + SrcLetter); Exit;
+  End;
+  If Not Fat_ExtractToTempFile(SrcIdx, Cluster, Size, F2, SrcPath2) Then Begin
+   TermAddLine(TP, 'SYS : extraction de ' + F2 + ' impossible.'); Exit;
+  End;
+  If F3 <> '' Then Begin
+   If Not Fat_FindPath(SrcIdx, '\' + F3, Attr, Cluster, Size) Then Begin
+    TermAddLine(TP, 'SYS : ' + F3 + ' introuvable sur ' + SrcLetter); Exit;
+   End;
+   If Not Fat_ExtractToTempFile(SrcIdx, Cluster, Size, F3, SrcPath3) Then Begin
+    TermAddLine(TP, 'SYS : extraction de ' + F3 + ' impossible.'); Exit;
+   End;
+  End;
+ End Else Begin
+  SrcPath1 := F1; SrcPath2 := F2; SrcPath3 := F3;
+  If Not FileExists(SrcPath1) Then Begin
+   TermAddLine(TP, 'SYS : ' + F1 + ' introuvable dans le repertoire courant.'); Exit;
+  End;
+  If Not FileExists(SrcPath2) Then Begin
+   TermAddLine(TP, 'SYS : ' + F2 + ' introuvable dans le repertoire courant.'); Exit;
+  End;
+  If (F3 <> '') And (Not FileExists(SrcPath3)) Then Begin
+   TermAddLine(TP, 'SYS : ' + F3 + ' introuvable dans le repertoire courant.'); Exit;
+  End;
+ End;
+ If DoFormat <> 0 Then Begin
+  If DoFormat = 12 Then ReqFS := 'FAT12' Else ReqFS := 'FAT16';
+  If Not Fmt_QuickFormatVolume(DstIdx, ReqFS, ErrMsg) Then Begin
+   TermAddLine(TP, 'SYS : ' + ErrMsg);
+   Exit;
+  End;
+  TermAddLine(TP, 'Volume formate (FAT' + IntToStr(DoFormat) + ').');
+ End Else If Not FatVol[DstIdx].Mounted Then Begin
+  TermAddLine(TP, 'SYS : aucun systeme de fichiers reconnu sur ' + DstLetter +
+   ' (utiliser /FORMAT:FAT12 ou /FORMAT:FAT16).');
+  Exit;
+ End;
+ CopyErr := '';
+ ErrMsg := '';
+ If Not Fat_WriteFileFromHost(DstIdx, '\', F1, SrcPath1, ErrMsg, $27) Then
+  CopyErr := F1
+ Else If Not Fat_WriteFileFromHost(DstIdx, '\', F2, SrcPath2, ErrMsg, $27) Then
+  CopyErr := F2
+ Else If (F3 <> '') And
+    (Not Fat_WriteFileFromHost(DstIdx, '\', F3, SrcPath3, ErrMsg, $20)) Then
+  CopyErr := F3;
+ If CopyErr <> '' Then Begin
+  TermAddLine(TP, 'SYS : echec de la copie de ' + CopyErr + ' (' + ErrMsg + ').');
+  Exit;
+ End;
+ Tok := 'Fichiers systeme transferes (' + F1 + ', ' + F2;
+ If F3 <> '' Then Tok := Tok + ', ' + F3;
+ TermAddLine(TP, Tok + ').');
+ If Not DoNoBoot Then Begin
+  Sys_RewriteBootSector(DstIdx);
+  TermAddLine(TP, 'Secteur de demarrage reecrit.');
+ End;
+ If DoActive > 0 Then Begin
+  If Sys_SetActivePartition(DstIdx, DoActive, ErrMsg) Then
+   TermAddLine(TP, 'Partition #' + IntToStr(DoActive) + ' marquee active.')
+  Else
+   TermAddLine(TP, 'SYS : ' + ErrMsg);
+ End;
+ TermAddLine(TP, 'Transfert systeme termine.');
 End;
 
 { ============================================================ }
@@ -162128,6 +162526,8 @@ Begin
     TermCmd_ASSIGN(TP, ParamStr)
    Else If CurrCmd = 'FORMAT' Then
     TermCmd_FORMAT(TP, ParamStr)
+   Else If CurrCmd = 'SYS' Then
+    TermCmd_SYS(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
@@ -162832,6 +163232,8 @@ Begin
    TermCmd_ASSIGN(TP, ParamStr)
   Else If CurrCmd = 'FORMAT' Then
    TermCmd_FORMAT(TP, ParamStr)
+  Else If CurrCmd = 'SYS' Then
+   TermCmd_SYS(TP, ParamStr)
   Else If CurrCmd = 'ARJ' Then
    TermCmd_ARJ(TP, ParamStr)
   Else If CurrCmd = 'UNZIP' Then
@@ -163013,6 +163415,8 @@ Begin
     TermCmd_ASSIGN(TP, ParamStr)
    Else If CurrCmd = 'FORMAT' Then
     TermCmd_FORMAT(TP, ParamStr)
+   Else If CurrCmd = 'SYS' Then
+    TermCmd_SYS(TP, ParamStr)
    Else If CurrCmd = 'ARJ' Then
     TermCmd_ARJ(TP, ParamStr)
    Else If CurrCmd = 'UNZIP' Then
