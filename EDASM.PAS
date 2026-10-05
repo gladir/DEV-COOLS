@@ -34,6 +34,10 @@ Const
 
 Type
  TString=String;
+ TObjectPage=Array[0..255] Of Byte;
+ PObjectPage=^TObjectPage;
+ TUsedPage=Array[0..255] Of Boolean;
+ PUsedPage=^TUsedPage;
  TSymbol=Record
   Name:String[31];
   Value:LongInt;
@@ -46,7 +50,6 @@ Type
  End;
 
 Var
- Obj:File;
  ListText:Text;
  SrcName,ObjName,ListName:TString;
  Symbols:Array[0..MAX_SYMBOLS-1] Of TSymbol;
@@ -55,6 +58,10 @@ Var
  RelocCount:Integer;
  Pass,LineNo,Errors:Integer;
  PC,ObjPC,FirstPC,LastPC:LongInt;
+ ObjectMin,ObjectMax,ListObjAddress:LongInt;
+ ObjectPages:Array[0..255] Of PObjectPage;
+ UsedPages:Array[0..255] Of PUsedPage;
+ ObjExplicit:Boolean;
  ListingEnabled,UseListing,MSBMode,EndSeen,Quiet:Boolean;
  CondStack:Array[0..15] Of Boolean;
  CondDepth:Integer;
@@ -133,6 +140,60 @@ Begin
  End Else If Symbols[I].Defined And (Pass=1) Then Begin
   Error('Symbole defini deux fois: '+N); Exit;
  End; Symbols[I].Value:=V; Symbols[I].Defined:=True;
+End;
+
+Procedure InitObjectImage;
+Var I:Integer;
+Begin
+ For I:=0 To 255 Do Begin ObjectPages[I]:=Nil; UsedPages[I]:=Nil; End;
+ ObjectMin:=65536; ObjectMax:=-1;
+End;
+
+Procedure FreeObjectImage;
+Var I:Integer;
+Begin
+ For I:=0 To 255 Do Begin
+  If ObjectPages[I]<>Nil Then Dispose(ObjectPages[I]);
+  If UsedPages[I]<>Nil Then Dispose(UsedPages[I]);
+  ObjectPages[I]:=Nil; UsedPages[I]:=Nil;
+ End;
+End;
+
+Procedure StoreObjectByte(Address:LongInt; B:Byte);
+Var Page,Offset:Integer;
+Begin
+ If (Address<0) Or (Address>65535) Then Begin
+  Error('Adresse objet hors limite: $'+Hex(Address,4)); Exit;
+ End;
+ Page:=Address Shr 8; Offset:=Address And $FF;
+ If ObjectPages[Page]=Nil Then Begin
+  New(ObjectPages[Page]); New(UsedPages[Page]);
+  FillChar(ObjectPages[Page]^,SizeOf(TObjectPage),0);
+  FillChar(UsedPages[Page]^,SizeOf(TUsedPage),0);
+ End;
+ If UsedPages[Page]^[Offset] Then Begin
+  Error('Conflit de zone objet a $'+Hex(Address,4)); Exit;
+ End;
+ ObjectPages[Page]^[Offset]:=B; UsedPages[Page]^[Offset]:=True;
+ If Address<ObjectMin Then ObjectMin:=Address;
+ If Address>ObjectMax Then ObjectMax:=Address;
+End;
+
+Function WriteObjectFile:Boolean;
+Var F:File; Address:LongInt; B:Byte; W:Word; E:Integer;
+Begin
+ WriteObjectFile:=False; Assign(F,ObjName); Rewrite(F,1); E:=IOResult;
+ If E<>0 Then Begin Error('Impossible de creer '+ObjName); Exit; End;
+ If ObjectMax>=ObjectMin Then For Address:=ObjectMin To ObjectMax Do Begin
+  If (UsedPages[Address Shr 8]<>Nil) And
+     UsedPages[Address Shr 8]^[Address And $FF] Then
+   B:=ObjectPages[Address Shr 8]^[Address And $FF] Else B:=0;
+  BlockWrite(F,B,1,W); If W<>1 Then Begin
+   Error('Erreur d''ecriture objet'); Close(F); Exit;
+  End;
+ End;
+ Close(F); E:=IOResult; If E<>0 Then Begin Error('Erreur de fermeture objet'); Exit; End;
+ WriteObjectFile:=True;
 End;
 
 Function SourceDirectory(S:TString):TString;
@@ -226,13 +287,10 @@ Begin
 End;
 
 Procedure EmitByte(B:Byte; Var Bytes:TString);
-Var
- W:Word;
 Begin
  If InDsect Then Begin Inc(PC); Exit; End;
- Bytes:=Bytes+Chr(B); If Pass=2 Then Begin
-  BlockWrite(Obj,B,1,W); If W<>1 Then Error('Erreur d''ecriture objet');
- End; Inc(PC); Inc(ObjPC);
+ Bytes:=Bytes+Chr(B); If Pass=2 Then StoreObjectByte(ObjPC,B);
+ Inc(PC); Inc(ObjPC);
 End;
 
 Procedure EmitWord(V:LongInt; Var Bytes:TString);Begin
@@ -416,7 +474,7 @@ Begin
  If ListPage>0 Then WriteLn(ListText,#12); Inc(ListPage); ListRow:=0;
  WriteLn(ListText,'EDASM ',VERSION,'   ',CurrentSource,'   PAGE ',ListPage);
  If Subtitle<>'' Then WriteLn(ListText,Subtitle) Else WriteLn(ListText);
- WriteLn(ListText,' LINE ADDR  OBJECT       SOURCE'); WriteLn(ListText); ListRow:=4;
+ WriteLn(ListText,' LINE EXEC OBJ  OBJECT       SOURCE'); WriteLn(ListText); ListRow:=4;
 End;
 
 Procedure EnsureListingRows(Count:Integer);
@@ -448,7 +506,8 @@ Begin
  EnsureListingRows(1); H:='';
  For I:=1 To Length(Bytes) Do H:=H+Hex(Ord(Bytes[I]),2)+' ';
  While Length(H)<12 Do H:=H+' ';
- WriteLn(ListText,LineNo:5,' ',Hex(Address,4),'  ',H,Source); Inc(ListRow);
+ WriteLn(ListText,LineNo:5,' ',Hex(Address,4),' ',Hex(ListObjAddress,4),' ',H,Source);
+ Inc(ListRow);
 End;
 
 Procedure ProcessSourceFile(Name:TString; Depth:Integer); Forward;
@@ -461,7 +520,7 @@ Var
  Mode,Size:Byte;
  O,P,I,Code:Integer;
 Begin
- Inc(LineNo); OldPC:=PC; Bytes:='';
+ Inc(LineNo); OldPC:=PC; ListObjAddress:=ObjPC; Bytes:='';
  If (Trim(Source)<>'') And (Trim(Source)[1]='*') Then Begin
   ListLine(PC,'',Source); Exit;
  End; ParseFields(Source,Lab,M,A,C);
@@ -494,10 +553,14 @@ Begin
  End;
  If M='ORG' Then Begin
   V:=Eval(A,Known); If Known Then PC:=V Else Error('ORG invalide');
+  If Known And Not ObjExplicit Then ObjPC:=V;
+  ListObjAddress:=ObjPC;
   If FirstPC<0 Then FirstPC:=PC; ListLine(PC,'',Source); Exit;
  End;
  If M='OBJ' Then Begin
-  V:=Eval(A,Known); If Known Then ObjPC:=V Else Error('OBJ invalide');
+  V:=Eval(A,Known); If Known Then Begin
+   ObjPC:=V; ObjExplicit:=True; ListObjAddress:=ObjPC;
+  End Else Error('OBJ invalide');
   ListLine(PC,'',Source); Exit;
  End;
  If M='END' Then Begin
@@ -650,6 +713,7 @@ End;
 Procedure AssembleOnePass;
 Begin
  LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
+ ObjExplicit:=False; ListObjAddress:=0;
  CondDepth:=0; Active:=True; MSBMode:=False; RelMode:=False; InDsect:=False;
  RepeatChar:='*';
  ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
@@ -666,6 +730,7 @@ Begin
  N:=BaseName(ObjName)+'.REL'; Assign(F,N); Rewrite(F); E:=IOResult;
  If E<>0 Then Begin Error('Impossible de creer '+N); Exit; End;
  WriteLn(F,'EDASM-REL 1'); WriteLn(F,'OBJECT ',ObjName); WriteLn(F,'ORIGIN ',Hex(FirstPC,4));
+ If ObjectMax>=ObjectMin Then WriteLn(F,'OBJECTBASE ',Hex(ObjectMin,4));
  For I:=0 To SymbolCount-1 Do Begin
   If Symbols[I].External Then WriteLn(F,'EXTRN ',Symbols[I].Name);
   If Symbols[I].PublicSym And Symbols[I].Defined Then WriteLn(F,'ENTRY ',Symbols[I].Name,' ',Hex(Symbols[I].Value,4));
@@ -690,6 +755,9 @@ Procedure Help;Begin
  WriteLn('            DO ELSE FIN LST PAGE SKP SBTL DSECT DEND REL EXTRN ENTRY CHN END');
  WriteLn;
  WriteLn('DSECT [adr] / DEND  Definit une zone symbolique sans octets objet.');
+ WriteLn('ORG adresse          Fixe l''adresse d''execution des instructions.');
+ WriteLn('OBJ adresse          Fixe independamment leur adresse de stockage objet.');
+ WriteLn('                     Les trous sont remplis de zero; tout chevauchement est une erreur.');
  WriteLn('REL [adr]            Active les informations de relocation <objet>.REL.');
  WriteLn('EXTRN nom,...        Declare des symboles fournis par un autre module.');
  WriteLn('ENTRY nom,...        Exporte des symboles definis dans ce module.');
@@ -731,33 +799,30 @@ Begin
  If UseListing And (ListName='') Then ListName:=BaseName(SrcName)+'.LST';
 End;
 
-Var
- E:Integer;
-
 BEGIN
  ParseArgs; SymbolCount:=0; Errors:=0; Pass:=1; AssembleOnePass;
- E:=IOResult; { efface un etat d'E/S non fatal laisse par un fichier source }
- Assign(Obj,ObjName); Rewrite(Obj,1); E:=IOResult; If E<>0 Then Begin
-  WriteLn('EDASM: impossible de creer ',ObjName,' (erreur ',E,')'); Halt(3);
- End;
  If UseListing Then Begin
   Assign(ListText,ListName); Rewrite(ListText); If IOResult<>0 Then Begin
-   WriteLn('EDASM: impossible de creer ',ListName); Close(Obj); Halt(3);
+   WriteLn('EDASM: impossible de creer ',ListName); Halt(3);
   End;
  End;
  { Stabilise les etiquettes et les choix page-zero/absolu apres la passe
    initiale. Les references avant peuvent modifier la taille du code. }
  Pass:=0; AssembleOnePass; AssembleOnePass; AssembleOnePass;
  Errors:=0; RelocCount:=0; ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
- Pass:=2; AssembleOnePass; WriteRelocationFile; Close(Obj); If UseListing Then Begin
+ InitObjectImage; Pass:=2; AssembleOnePass; WriteRelocationFile;
+ If Errors=0 Then WriteObjectFile;
+ If UseListing Then Begin
   WriteLn(ListText); WriteLn(ListText,'Symboles: ',SymbolCount,'   Erreurs: ',Errors);
   Close(ListText);
  End;
  If Errors=0 Then Begin
-  If Not Quiet Then WriteLn('Assemblage termine: ',ObjName,' (',LastPC-FirstPC,
-  ' octets).');
+  If Not Quiet Then If ObjectMax>=ObjectMin Then
+   WriteLn('Assemblage termine: ',ObjName,' (',ObjectMax-ObjectMin+1,
+   ' octets, objet $',Hex(ObjectMin,4),'-$',Hex(ObjectMax,4),').') Else
+   WriteLn('Assemblage termine: ',ObjName,' (objet vide).');
  End Else
  Begin
-  WriteLn(Errors,' erreur(s); objet invalide.'); Halt(4);
- End;
+  WriteLn(Errors,' erreur(s); objet invalide.'); FreeObjectImage; Halt(4);
+ End; FreeObjectImage;
 END.
