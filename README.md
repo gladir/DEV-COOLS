@@ -347,6 +347,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur Z80.</td>
 		</tr>
 		<tr>
+			<td><b>ASMZ8000.PAS</b></td>
+			<td>Cette commande permet de lancer l'assembleur Zilog Z8000/Z8002.</td>
+		</tr>
+		<tr>
 			<td><b>ASZ8K.PAS</b></td>
 			<td>Cette commande permet de lancer l'assembleur Zilog Z8001/Z8002 pour CP/M-8000.</td>
 		</tr>
