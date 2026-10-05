@@ -595,6 +595,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet d'analyser et d'afficher en detail le contenu des fichiers binaires Windows, tels que les executables (.exe), les bibliotheques dynamiques (.dll), les fichiers objets (.obj) et les bibliotheques statiques (.lib), afin d'en examiner les en-tetes, les symboles, les importations, les exportations, les informations PDB et le code machine.</td>
 		</tr>
 		<tr>
+			<td><b>EDASM.PAS</b></td>
+			<td>Cette commande permet de lancer un assembleur Apple EDASM compatible 6502.</td>
+		</tr>
+		<tr>
 			<td><b>FNT2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir des fichiers de polices de caractères .FNT en code source Pascal.</td>
 		</tr>
