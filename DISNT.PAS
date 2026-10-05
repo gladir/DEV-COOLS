@@ -137,7 +137,8 @@ Begin
 End;
 
 Procedure Help;Begin
- WriteLn('DISNT ',VERSION,' - Desassembleur et analyseur Windows NT PE/COFF');
+ WriteLn('DISNT ',VERSION,' - Cette commande permet de lancer le d'+#130,
+         'sassembleur et analyseur Windows NT PE/COFF.');
  WriteLn;
  WriteLn('Syntaxe');
  WriteLn('  DISNT [options] fichier.exe');
