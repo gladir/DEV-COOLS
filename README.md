@@ -567,6 +567,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le désassembleur de fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits).</td>
 		</tr>
 		<tr>
+			<td><b>DISNT.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembleur et analyseur Windows NT PE/COFF.</td>
+		</tr>
+		<tr>
 			<td><b>DISOBJ.PAS</b></td>
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
 		</tr>
