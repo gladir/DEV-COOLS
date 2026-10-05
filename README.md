@@ -319,6 +319,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer l'Assembleur Microware OS-9/6809.</td>
 		</tr>
 		<tr>
+			<td><b>ASM430.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur assembleur MSP430.</td>
+		</tr>
+		<tr>
 			<td><b>ASM6502.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 6502.</td>
 		</tr>
@@ -333,6 +337,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>ASM86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 8086. Cette commande est inspiré de la commande <a href="https://www.gladir.com/OS/CPM86/asm86.htm">ASM86</a> du système d'exploitation CP/M 86.</td>
+		</tr>
+		<tr>
+			<td><b>ASM89.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur assembleur Intel 8089.</td>
 		</tr>
 		<tr>
 			<td><b>ASMZ80.PAS</b></td>
