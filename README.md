@@ -553,7 +553,11 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>DIS8086.PAS</b></td>
 			<td>Cette commande permet de désassembler un code binaire de microprocesseur 8086 en langage de programmation assembleur 8086.</td>
-		</tr>	
+		</tr>
+		<tr>
+			<td><b>DISCRAY1.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembleur Cray-1.</td>
+		</tr>
 		<tr>
 			<td><b>DISDCU.PAS</b></td>
 			<td>Cette commande permet de décompilateur .DCU vers .PAS</td>
