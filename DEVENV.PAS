@@ -5463,6 +5463,14 @@ Type
   TitleTooltipVisible : Boolean;
   NeedRepaint: Boolean;          { redessin complet requis         }
   StatusMsg  : String[127];      { message d etat affiche en bas   }
+  { WIN /R /S /2 /3 /VERSION: (2026-10-04, demande explicite) : mode et       }
+  { version Windows simules pour CET onglet -CWIN16 - voir TermCmd_Win16Launch.}
+  { 'R'/'S'/'3' ou #0 si aucun commutateur de mode n'a ete donne (CPU repris  }
+  { tel quel). Pas de rendu de controles (BUTTON etc.) dans ce projet - ces   }
+  { champs ne pilotent QUE le choix de CPU_TYPE_* (voir le commentaire de    }
+  { tete de TermCmd_Win16Launch) ; stockes pour affichage/diagnostic futur.  }
+  Win16ModeChar   : Char;
+  Win16VersionStr : String[8];
   { Stage 1 "multi-fenetre" (2026-08-15) : Loaded distingue "binaire      }
   { charge, execution pilotee par petits pas via l idle-tick de MainLoop" }
   { de l ancien modele "ShowEmulatorPanel bloque jusqu a la fin". Seuls    }
@@ -92966,30 +92974,118 @@ Begin
  CreateEmulatorTab(RomPath, '-CCOCO3', '');
 End;
 
+{ Forward : les deux fonctions sont declarees plus bas dans ce fichier       }
+{ (Win16VersionFromName pres de TermCpuTypeFromName, DosCpuTypeName pres de }
+{ DosCpuTypeName/ParamsDlg) mais TermCmd_Win16Launch (juste en dessous) en  }
+{ a besoin des maintenant. }
+Function Win16VersionFromName(Const NameIn: String; Var Is3xNoReal: Boolean): String; Forward;
+Function DosCpuTypeName(Idx: Integer): String; Forward;
+
 Procedure TermCmd_Win16Launch(Var TP: TTerminalPanel; ParamStr: String);
 Var
- CurrParam, Dir, ExePath: String;
+ CurrParam, Dir, ExePath, Tok, UpTok, VersionName, VersionNorm: String;
+ I, TokCount: Integer;
+ ModeChar: Char;
+ Is3xNoReal: Boolean;
+ SavedCpuType, ForcedCpuType: Integer;
 Begin
  CurrParam := TermExtractParam(ParamStr, 1);
  { /? (2026-09-20, demande explicite) : aide detaillee - UNE SEULE          }
  { implementation partagee par WIN/WIN16 (Invite de commande/Norton         }
  { Commander) ET Start-Win16*/Invoke-Win16* (PowerShell dev, meme fonction, }
  { voir PSCmd ID 58) - couvre les 3 shells d'un coup, aucun autre           }
- { changement necessaire. }
+ { changement necessaire. Etendue (2026-10-04, demande explicite) avec les  }
+ { commutateurs de mode /R /S /2 /3 (reels du vrai WIN.COM) et /VERSION:.   }
  If CurrParam = '/?' Then Begin
   TermAddLine(TP, 'WIN / WIN16 : lance l''emulateur Windows 16 bits (NE) ' +
    'sur un executable .exe du systeme hote.');
   TermAddLine(TP, '');
-  TermAddLine(TP, 'Syntaxe : WIN fichier.exe');
-  TermAddLine(TP, '          WIN16 fichier.exe   (alias exact)');
+  TermAddLine(TP, 'Syntaxe : WIN [/R | /S | /2 | /3] [/VERSION:nom] fichier.exe');
+  TermAddLine(TP, '          WIN16 ...   (alias exact)');
   TermAddLine(TP, '');
   TermAddLine(TP, '  fichier.exe   Executable Win16 (NE) a charger ' +
    '(chemin du systeme hote uniquement, disque virtuel non supporte).');
+  TermAddLine(TP, '  /R            Mode reel (8086/8088 et plus).');
+  TermAddLine(TP, '  /S            Mode standard (80286 et plus, memoire etendue).');
+  TermAddLine(TP, '  /2            Synonyme de /S.');
+  TermAddLine(TP, '  /3            Mode 386 etendu (80386 et plus, mode virtuel 8086).');
+  TermAddLine(TP, '                Sans /R /S /2 /3 : reprend le processeur configure');
+  TermAddLine(TP, '                (Options > Emulateur > DOS: CPU) tel quel.');
+  TermAddLine(TP, '  /VERSION:nom  Version Windows simulee : 2.0, 2.01, 2.03, 2.1,');
+  TermAddLine(TP, '                2.11, 286,2.1, 386,2.1, 3.0, 3.0a, 3.1, 3.11.');
+  TermAddLine(TP, '                3.1 et 3.11 ne supportent plus le mode reel (/R).');
   Exit;
  End;
+ TokCount := 0;
+ While TermExtractParam(ParamStr, TokCount + 1) <> '' Do Inc(TokCount);
+ CurrParam := ''; ModeChar := #0; VersionName := '';
+ I := 1;
+ While I <= TokCount Do Begin
+  Tok := TermExtractParam(ParamStr, I);
+  UpTok := UpCaseStr(Tok);
+  If UpTok = '/R' Then ModeChar := 'R'
+  Else If (UpTok = '/S') Or (UpTok = '/2') Then ModeChar := 'S'
+  Else If UpTok = '/3' Then ModeChar := '3'
+  Else If (Length(Tok) > 9) And (Copy(UpTok, 1, 9) = '/VERSION:') Then
+   VersionName := Copy(Tok, 10, Length(Tok) - 9)
+  { BOGUE REEL corrige (2026-10-04, trouve en verifiant live "WIN /BOGUS      }
+  { prog.exe") : sans ce garde explicite, un commutateur "/xxx" non reconnu  }
+  { tombait dans la branche "CurrParam='' -> c'est le nom de fichier"         }
+  { (puisque CurrParam etait encore vide a ce moment-la) - /BOGUS devenait    }
+  { silencieusement le "nom de fichier", et c'est alors le VRAI nom de        }
+  { fichier (token suivant) qui se faisait rejeter avec un message trompeur   }
+  { ("parametre invalide : prog.exe"). Tout token commencant par '/' et ne    }
+  { correspondant a aucun commutateur connu doit etre rejete ICI, jamais      }
+  { confondu avec un nom de fichier positionnel. }
+  Else If (Length(Tok) > 0) And (Tok[1] = '/') Then Begin
+   TermAddLine(TP, 'WIN : parametre invalide : ' + Tok);
+   Exit;
+  End
+  Else If CurrParam = '' Then
+   CurrParam := Tok
+  Else Begin
+   TermAddLine(TP, 'WIN : parametre invalide : ' + Tok);
+   Exit;
+  End;
+  Inc(I);
+ End;
  If CurrParam = '' Then Begin
-  TermAddLine(TP, 'Syntaxe : WIN16 fichier.exe');
+  TermAddLine(TP, 'Syntaxe : WIN [/R | /S | /2 | /3] [/VERSION:nom] fichier.exe');
   Exit;
+ End;
+ VersionNorm := ''; Is3xNoReal := False;
+ If VersionName <> '' Then Begin
+  VersionNorm := Win16VersionFromName(VersionName, Is3xNoReal);
+  If VersionNorm = '' Then Begin
+   TermAddLine(TP, 'WIN /VERSION: valeur inconnue : ' + VersionName +
+    ' (attendu 2.0, 2.01, 2.03, 2.1, 2.11, 286,2.1, 386,2.1, 3.0, 3.0a, ' +
+    '3.1 ou 3.11)');
+   Exit;
+  End;
+ End;
+ If (ModeChar = 'R') And Is3xNoReal Then Begin
+  TermAddLine(TP, 'WIN /R : Windows ' + VersionNorm +
+   ' ne supporte plus le mode reel (seulement les versions 2.x).');
+  Exit;
+ End;
+ ForcedCpuType := -1;
+ If ModeChar = 'R' Then ForcedCpuType := CPU_TYPE_8086
+ Else If ModeChar = 'S' Then Begin
+  If OptionsDlg.Data.DosCpuType < CPU_TYPE_80286 Then Begin
+   TermAddLine(TP, 'WIN /S (ou /2) : necessite un processeur 80286 ou ' +
+    'superieur (Options > Emulateur > DOS: CPU) - ' +
+    DosCpuTypeName(OptionsDlg.Data.DosCpuType) + ' configure.');
+   Exit;
+  End;
+  ForcedCpuType := CPU_TYPE_80286;
+ End Else If ModeChar = '3' Then Begin
+  If OptionsDlg.Data.DosCpuType < CPU_TYPE_80386 Then Begin
+   TermAddLine(TP, 'WIN /3 : necessite un processeur 80386 ou superieur ' +
+    '(Options > Emulateur > DOS: CPU) - ' +
+    DosCpuTypeName(OptionsDlg.Data.DosCpuType) + ' configure.');
+   Exit;
+  End;
+  ForcedCpuType := CPU_TYPE_80386;
  End;
  If TP.VirtDrive >= 0 Then Begin
   TermAddLine(TP, 'WIN16 : disque virtuel non supporte, utiliser un ' +
@@ -93002,7 +93098,33 @@ Begin
   TermAddLine(TP, 'Le systeme ne trouve pas le fichier specifie.');
   Exit;
  End;
- CreateEmulatorTab(ExePath, '-CWIN16', '');
+ Case ModeChar Of
+  'R': TermAddLine(TP, 'WIN : mode reel (8086) force.');
+  'S': TermAddLine(TP, 'WIN : mode standard (80286) force.');
+  '3': TermAddLine(TP, 'WIN : mode 386 etendu (80386) force.');
+  Else TermAddLine(TP, 'WIN : aucun mode specifie, processeur configure ' +
+   'repris (' + DosCpuTypeName(OptionsDlg.Data.DosCpuType) + ').');
+ End;
+ If VersionNorm <> '' Then
+  TermAddLine(TP, 'WIN : version Windows simulee : ' + VersionNorm + '.');
+ If ForcedCpuType <> -1 Then Begin
+  SavedCpuType := OptionsDlg.Data.DosCpuType;
+  OptionsDlg.Data.DosCpuType := ForcedCpuType;
+  CreateEmulatorTab(ExePath, '-CWIN16', '');
+  OptionsDlg.Data.DosCpuType := SavedCpuType;
+ End Else
+  CreateEmulatorTab(ExePath, '-CWIN16', '');
+ { Stockage pour affichage/diagnostic futur (voir le commentaire de tete de }
+ { TEmulatorPanel.Win16ModeChar) - rempli APRES CreateEmulatorTab (qui       }
+ { appelle InitEmulatorPanel, lequel remet ces deux champs a #0/'' comme     }
+ { tout le reste du panneau) sur le panneau global ET sur le noeud juste     }
+ { cree (WinMgr.ActiveNode pointe deja dessus a ce stade). }
+ EmuPanel.Win16ModeChar := ModeChar;
+ EmuPanel.Win16VersionStr := VersionNorm;
+ If WinMgr.ActiveNode <> Nil Then Begin
+  WinMgr.ActiveNode^.EmuTab.Win16ModeChar := ModeChar;
+  WinMgr.ActiveNode^.EmuTab.Win16VersionStr := VersionNorm;
+ End;
 End;
 
 { Start-Win32Program/Start-Win32Application (2026-09-11, demande explicite }
@@ -93050,6 +93172,34 @@ Begin
  Else If U = '80486'   Then TermCpuTypeFromName := CPU_TYPE_80486
  Else If U = 'PENTIUM' Then TermCpuTypeFromName := CPU_TYPE_PENTIUM
  Else TermCpuTypeFromName := -1;
+End;
+
+{ WIN /VERSION:xxx (2026-10-04, demande explicite) : nom -> identifiant       }
+{ normalise de version Windows 16 bits simulee. Renvoie '' (echec) si Name   }
+{ ne correspond a aucune version connue - Is3xNoReal est mis a True pour     }
+{ exactement 3.1/3.11 (seules versions qui, sur le vrai Windows, ne           }
+{ supportent plus /R - voir TermCmd_Win16Launch). }
+Function Win16VersionFromName(Const NameIn: String; Var Is3xNoReal: Boolean): String;
+Var U: String;
+Begin
+ U := UpCaseStr(NameIn);
+ Is3xNoReal := False;
+ If U = '2.0' Then Win16VersionFromName := '2.0'
+ Else If U = '2.01' Then Win16VersionFromName := '2.01'
+ Else If U = '2.03' Then Win16VersionFromName := '2.03'
+ Else If U = '2.1' Then Win16VersionFromName := '2.1'
+ Else If U = '2.11' Then Win16VersionFromName := '2.11'
+ Else If U = '286,2.1' Then Win16VersionFromName := '286,2.1'
+ Else If U = '386,2.1' Then Win16VersionFromName := '386,2.1'
+ Else If U = '3.0' Then Win16VersionFromName := '3.0'
+ Else If U = '3.0A' Then Win16VersionFromName := '3.0a'
+ Else If U = '3.1' Then Begin
+  Win16VersionFromName := '3.1'; Is3xNoReal := True;
+ End
+ Else If U = '3.11' Then Begin
+  Win16VersionFromName := '3.11'; Is3xNoReal := True;
+ End
+ Else Win16VersionFromName := '';
 End;
 
 { Resout un chemin de pilote (-device=...) : chemin absolu (lettre de      }
@@ -174391,6 +174541,8 @@ Begin
  P.TitleTooltipVisible := False;
  P.Loaded := False;
  P.TotalSteps := 0;
+ P.Win16ModeChar := #0;
+ P.Win16VersionStr := '';
  For Y := 0 To 24 Do
   For X := 0 To 79 Do Begin
    P.VRAM[Y, X].Ch := ' ';
