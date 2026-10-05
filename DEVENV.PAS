@@ -161815,6 +161815,1252 @@ Begin
   'non implantee (voir HELP pour la liste).');
 End;
 
+{ ============================================================ }
+{ === Client FTP (PowerShell dev) - 29 cmdlets             === }
+{ ============================================================ }
+{ Demande explicite de l'utilisateur (2026-10-05) : Connect-FTPServer/        }
+{ Disconnect-FTPServer/Get-FTPConnection/Test-FTPConnection/Get-FTPDirectory/ }
+{ Get-FTPFile/Send-FTPFile/Remove-FTPFile/Copy-FTPFile/Move-FTPFile/          }
+{ Rename-FTPFile/Get-FTPFileInfo/New-FTPDirectory/Remove-FTPDirectory/        }
+{ Set-FTPDirectory/Get-FTPWorkingDirectory/Set-FTPWorkingDirectory/           }
+{ Test-FTPPath/Get-FTPServerInfo/Invoke-FTPCommand/Get-FTPTransfer/           }
+{ Stop-FTPTransfer/Set-FTPTransferMode/Set-FTPTransferType/                   }
+{ Set-FTPPassiveMode/Get-FTPConfiguration/Set-FTPConfiguration/               }
+{ Export-FTPConfiguration/Import-FTPConfiguration. Meme patron de sessions    }
+{ nommees que Open-Redis/Close-Redis (voir project_devenv_redis) - tableau    }
+{ FTP_MAX_SESSIONS, FtpGetFlag clone de RedisGetFlag, FtpResolveSession*      }
+{ clones des helpers Redis - mais transport WinInet (client FTP REEL de       }
+{ Windows) au lieu de Winsock brut, puisque WinInet expose deja un vrai      }
+{ client FTP complet (FtpGetFile/FtpPutFile/FtpFindFirstFile/etc.) - deja     }
+{ utilise en lecture seule anonyme par le Browser (Browser_Ftp*, voir plus   }
+{ bas dans ce fichier) ; prefixe Ftp_ dedie ici (meme convention qu'un        }
+{ prefixe par sous-systeme deja en place pour Mcp_/Browser_), independant de }
+{ celui du Browser pour permettre de vrais identifiants (le Browser ne se    }
+{ connecte qu'en anonyme). TWin32FindDataA/TFileTime du Browser ne sont PAS  }
+{ reutilisables ici (declarees PLUS LOIN dans le fichier que ce bloc, Pascal }
+{ exige une declaration avant usage) - TFtpFindDataA/TFtpFileTime sont donc   }
+{ de courts clones locaux, de meme pour l'algorithme calendaire FILETIME     }
+{ (Howard Hinnant, duplique sous prefixe Ftp - l'original a FileTimeToDos    }
+{ DateTime est lui aussi declare plus loin dans ce fichier). }
+{ Limite honnete disclosee : Copy-FTPFile n'a pas de vraie copie serveur-a-  }
+{ serveur (RFC 959 ne la prevoit pas nativement) - relais par un fichier     }
+{ hote temporaire (telecharger puis reenvoyer), comme le ferait tout client  }
+{ FTP ordinaire sans extension proprietaire. Get-FTPTransfer/Stop-FTPTransfer}
+{ : les transferts WinInet FtpGetFile/FtpPutFile sont synchrones (bloquants) }
+{ - aucune progression "en cours" ni annulation reelle n'est possible une    }
+{ fois l'appel rendu ; Get-FTPTransfer rapporte donc le DERNIER transfert     }
+{ termine (chemin/octets/succes), et Stop-FTPTransfer le declare            }
+{ explicitement plutot que de le simuler. Export-FTPConfiguration n'exporte  }
+{ JAMAIS les mots de passe (format texte simple cle=valeur, pas de            }
+{ precedent JSON/INI existant dans ce fichier pour une config PS-dev -        }
+{ voir TermCmd_ExportCsv pour le meme idiome Assign/Rewrite/IOResult). }
+
+Const
+ FTP_MAX_SESSIONS = 8;
+ FTP_DEFAULT_PORT = 21;
+ FTP_INTERNET_OPEN_TYPE_DIRECT = 1;
+ FTP_INTERNET_SERVICE_FTP      = 1;
+ FTP_INTERNET_FLAG_PASSIVE     = LongWord($08000000);
+ FTP_TRANSFER_TYPE_ASCII       = LongWord($00000001);
+ FTP_TRANSFER_TYPE_BINARY      = LongWord($00000002);
+ FTP_FILE_ATTRIBUTE_NORMAL     = LongWord($00000080);
+ FTP_FILE_ATTRIBUTE_DIRECTORY  = LongWord($00000010);
+
+Type
+ TFtpFileTime = Record
+  dwLowDateTime: LongWord;
+  dwHighDateTime: LongWord;
+ End;
+ TFtpFindDataA = Record
+  dwFileAttributes: LongWord;
+  ftCreationTime: TFtpFileTime;
+  ftLastAccessTime: TFtpFileTime;
+  ftLastWriteTime: TFtpFileTime;
+  nFileSizeHigh: LongWord;
+  nFileSizeLow: LongWord;
+  dwReserved0: LongWord;
+  dwReserved1: LongWord;
+  cFileName: Array[0..259] Of Char;
+  cAlternateFileName: Array[0..13] Of Char;
+ End;
+ TFtpSession = Record
+  InUse        : Boolean;
+  SrvLabel     : String;
+  HostName     : String;
+  Port         : Word;
+  UserName     : String;
+  CurrentDir   : String;
+  PassiveMode  : Boolean;
+  TransferType : Byte;   { 1=ASCII, 2=Binary }
+  hInet        : LongInt;
+  hConnect     : LongInt;
+  LastXferPath : String;
+  LastXferDir  : String; { 'Get' ou 'Send', '' si aucun transfert encore }
+  LastXferBytes: LongInt;
+  LastXferOk   : Boolean;
+ End;
+
+Var
+ FtpSessions: Array[1..FTP_MAX_SESSIONS] Of TFtpSession;
+ FtpConfigDefaultPort         : Word; { 0 = non configure -> FTP_DEFAULT_PORT }
+ FtpConfigDefaultPassiveState : Byte; { 0=non configure(->actif), 1=Faux, 2=Vrai }
+ FtpConfigDefaultTransferType : Byte; { 0=non configure(->Binaire), 1=ASCII, 2=Binaire }
+
+Function FtpFindSession(Nm: String): Integer;
+Var I: Integer;
+Begin
+ FtpFindSession := 0;
+ For I := 1 To FTP_MAX_SESSIONS Do
+  If FtpSessions[I].InUse And
+     (TermStrToUpper(FtpSessions[I].SrvLabel) = TermStrToUpper(Nm)) Then Begin
+   FtpFindSession := I;
+   Exit;
+  End;
+End;
+
+Function FtpFindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ FtpFindFreeSlot := 0;
+ For I := 1 To FTP_MAX_SESSIONS Do
+  If Not FtpSessions[I].InUse Then Begin FtpFindFreeSlot := I; Exit; End;
+End;
+
+Function FtpSoleSession: Integer;
+Var I, Found: Integer;
+Begin
+ Found := 0;
+ For I := 1 To FTP_MAX_SESSIONS Do
+  If FtpSessions[I].InUse Then Begin
+   If Found <> 0 Then Begin FtpSoleSession := 0; Exit; End;
+   Found := I;
+  End;
+ FtpSoleSession := Found;
+End;
+
+Function FtpResolveSession(NameArg: String): Integer;
+Begin
+ If NameArg = '' Then FtpResolveSession := FtpSoleSession
+ Else FtpResolveSession := FtpFindSession(NameArg);
+End;
+
+Function FtpResolveSessionOrReport(Var TP: TTerminalPanel; Cmd, NameArg: String): Integer;
+Var Slot: Integer;
+Begin
+ Slot := FtpResolveSession(NameArg);
+ If Slot = 0 Then Begin
+  If NameArg = '' Then
+   TermAddLine(TP, Cmd + ' : aucune session FTP active, ou plusieurs (utilisez -Name).')
+  Else
+   TermAddLine(TP, Cmd + ' : aucune session FTP nommee "' + NameArg + '".');
+ End;
+ FtpResolveSessionOrReport := Slot;
+End;
+
+Function FtpGetFlag(ParamStr: String; FlagUpper: String): String;
+Var
+ LocalArgCount, I: Integer;
+ LocalArgs: Array[1..24] Of String;
+ UpTok: String;
+Begin
+ FtpGetFlag := '';
+ LocalArgCount := 0;
+ While (TermExtractParam(ParamStr, LocalArgCount+1) <> '') And (LocalArgCount < 24) Do
+  Inc(LocalArgCount);
+ For I := 1 To LocalArgCount Do LocalArgs[I] := TermExtractParam(ParamStr, I);
+ For I := 1 To LocalArgCount - 1 Do Begin
+  UpTok := TermStrToUpper(LocalArgs[I]);
+  If UpTok = '-' + FlagUpper Then Begin
+   FtpGetFlag := YamlUnquote(LocalArgs[I+1]);
+   Exit;
+  End;
+ End;
+End;
+
+Function FtpBoolToStr(B: Boolean): String;
+Begin
+ If B Then FtpBoolToStr := 'True' Else FtpBoolToStr := 'False';
+End;
+
+Function FtpPadRight(S: String; W: Integer): String;
+Begin
+ While Length(S) < W Do S := S + ' ';
+ FtpPadRight := S;
+End;
+
+Function FtpPad2(S: String): String;
+Begin
+ If Length(S) < 2 Then FtpPad2 := '0' + S Else FtpPad2 := S;
+End;
+
+Function FtpEffectiveDefaultPort: Word;
+Begin
+ If FtpConfigDefaultPort = 0 Then FtpEffectiveDefaultPort := FTP_DEFAULT_PORT
+ Else FtpEffectiveDefaultPort := FtpConfigDefaultPort;
+End;
+
+Function FtpEffectiveDefaultPassive: Boolean;
+Begin
+ FtpEffectiveDefaultPassive := (FtpConfigDefaultPassiveState <> 1);
+End;
+
+Function FtpEffectiveDefaultTransferType: Byte;
+Begin
+ If FtpConfigDefaultTransferType = 0 Then FtpEffectiveDefaultTransferType := 2
+ Else FtpEffectiveDefaultTransferType := FtpConfigDefaultTransferType;
+End;
+
+Function FtpTempFileName: String;
+Var TempDir: String;
+Begin
+ TempDir := GetEnv('TEMP');
+ If TempDir = '' Then TempDir := GetEnv('TMP');
+ If TempDir = '' Then TempDir := '.';
+ If TempDir[Length(TempDir)] <> '\' Then TempDir := TempDir + '\';
+ FtpTempFileName := TempDir + 'FTPCOPY' + IntToStr(System.Random(999999)) + '.TMP';
+End;
+
+Procedure FtpDeleteLocalFile(Path: String);
+Var F: File;
+Begin
+ {$I-} Assign(F, Path); Erase(F); {$I+}
+ If IOResult <> 0 Then ; { relais temporaire deja absent - ignorer silencieusement }
+End;
+
+{$IFDEF WINDOWS}
+Function Ftp_InternetOpenA(lpszAgent: PChar; dwAccessType: LongWord;
+         lpszProxyName, lpszProxyBypass: PChar; dwFlags: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetOpenA';
+Function Ftp_InternetConnectA(hInternet: LongInt; lpszServerName: PChar;
+         nServerPort: Word; lpszUserName, lpszPassword: PChar;
+         dwService: LongWord; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'InternetConnectA';
+Function Ftp_InternetCloseHandle(hInternet: LongInt): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetCloseHandle';
+Function Ftp_FtpFindFirstFileA(hConnect: LongInt; lpszSearchFile: PChar;
+         Var lpFindFileData: TFtpFindDataA; dwFlags: LongWord; dwContext: LongWord): LongInt;
+         StdCall; External 'wininet.dll' Name 'FtpFindFirstFileA';
+Function Ftp_InternetFindNextFileA(hFind: LongInt; Var lpvFindData: TFtpFindDataA): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetFindNextFileA';
+Function Ftp_FtpGetFileA(hConnect: LongInt; lpszRemoteFile, lpszNewFile: PChar;
+         fFailIfExists: LongBool; dwFlagsAndAttributes: LongWord; dwFlags: LongWord;
+         dwContext: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpGetFileA';
+Function Ftp_FtpPutFileA(hConnect: LongInt; lpszLocalFile, lpszNewRemoteFile: PChar;
+         dwFlags: LongWord; dwContext: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpPutFileA';
+Function Ftp_FtpDeleteFileA(hConnect: LongInt; lpszFileName: PChar): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpDeleteFileA';
+Function Ftp_FtpRenameFileA(hConnect: LongInt; lpszExisting, lpszNew: PChar): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpRenameFileA';
+Function Ftp_FtpCreateDirectoryA(hConnect: LongInt; lpszDirectory: PChar): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpCreateDirectoryA';
+Function Ftp_FtpRemoveDirectoryA(hConnect: LongInt; lpszDirectory: PChar): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpRemoveDirectoryA';
+Function Ftp_FtpSetCurrentDirectoryA(hConnect: LongInt; lpszDirectory: PChar): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpSetCurrentDirectoryA';
+Function Ftp_FtpGetCurrentDirectoryA(hConnect: LongInt; lpszCurrentDirectory: PChar;
+         Var lpdwCurrentDirectory: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpGetCurrentDirectoryA';
+Function Ftp_FtpCommandA(hConnect: LongInt; fExpectResponse: LongBool; dwFlags: LongWord;
+         lpszCommand: PChar; dwContext: LongWord; Var phFtpCommand: LongInt): LongBool;
+         StdCall; External 'wininet.dll' Name 'FtpCommandA';
+Function Ftp_InternetGetLastResponseInfoA(Var lpdwError: LongWord; lpszBuffer: PChar;
+         Var lpdwBufferLength: LongWord): LongBool;
+         StdCall; External 'wininet.dll' Name 'InternetGetLastResponseInfoA';
+Function Ftp_GetLastError: LongWord; StdCall; External 'kernel32.dll' Name 'GetLastError';
+
+Function FtpCharsToStr(Const A: Array Of Char): String;
+Var R: String; I: Integer;
+Begin
+ R := '';
+ I := 0;
+ While (I <= High(A)) And (A[I] <> #0) Do Begin
+  R := R + A[I];
+  Inc(I);
+ End;
+ FtpCharsToStr := R;
+End;
+
+Function FtpTransferFlags(Slot: Integer): LongWord;
+Var Flags: LongWord;
+Begin
+ If FtpSessions[Slot].TransferType = 1 Then Flags := FTP_TRANSFER_TYPE_ASCII
+ Else Flags := FTP_TRANSFER_TYPE_BINARY;
+ If FtpSessions[Slot].PassiveMode Then
+  Flags := Flags Or FTP_INTERNET_FLAG_PASSIVE;
+ FtpTransferFlags := Flags;
+End;
+
+{ Howard Hinnant "days_from_civil"/"civil_from_days", duplique sous prefixe  }
+{ Ftp (l'original DaysSinceCivilEpoch/DaysToCivil, utilise par              }
+{ FileTimeToDosDateTime, est declare PLUS LOIN dans ce fichier - Pascal      }
+{ exige une declaration avant usage). }
+Function FtpDaysSinceCivilEpoch(Y, M, D: LongInt): LongInt;
+Var Y2, Era, Yoe, Doy, Doe: LongInt;
+Begin
+ If M <= 2 Then Y2 := Y - 1 Else Y2 := Y;
+ If Y2 >= 0 Then Era := Y2 Div 400 Else Era := (Y2 - 399) Div 400;
+ Yoe := Y2 - Era * 400;
+ If M > 2 Then Doy := (153 * (M - 3) + 2) Div 5 + D - 1
+           Else Doy := (153 * (M + 9) + 2) Div 5 + D - 1;
+ Doe := Yoe * 365 + Yoe Div 4 - Yoe Div 100 + Doy;
+ FtpDaysSinceCivilEpoch := Era * 146097 + Doe;
+End;
+
+Procedure FtpDaysToCivil(Z: LongInt; Var Y, M, D: LongInt);
+Var Era, Doe, Yoe, Doy, Mp: LongInt;
+Begin
+ If Z >= 0 Then Era := Z Div 146097 Else Era := (Z - 146096) Div 146097;
+ Doe := Z - Era * 146097;
+ Yoe := (Doe - Doe Div 1460 + Doe Div 36524 - Doe Div 146096) Div 365;
+ Y := Yoe + Era * 400;
+ Doy := Doe - (365 * Yoe + Yoe Div 4 - Yoe Div 100);
+ Mp := (5 * Doy + 2) Div 153;
+ D := Doy - (153 * Mp + 2) Div 5 + 1;
+ If Mp < 10 Then M := Mp + 3 Else M := Mp - 9;
+ If M <= 2 Then Y := Y + 1;
+End;
+
+Function FtpFileTimeToStr(Const FT: TFtpFileTime): String;
+Var
+ Ticks, TotalSecs, Rem: QWord;
+ Days: LongInt;
+ Hr, Mn, Se: Word;
+ Y, M, D: LongInt;
+Begin
+ Ticks := (QWord(FT.dwHighDateTime) Shl 32) Or QWord(FT.dwLowDateTime);
+ TotalSecs := Ticks Div 10000000;
+ Days := LongInt(TotalSecs Div 86400);
+ Rem := TotalSecs Mod 86400;
+ Hr := Word(Rem Div 3600); Rem := Rem Mod 3600;
+ Mn := Word(Rem Div 60); Se := Word(Rem Mod 60);
+ FtpDaysToCivil(Days + FtpDaysSinceCivilEpoch(1601, 1, 1), Y, M, D);
+ FtpFileTimeToStr := FtpPad2(IntToStr(D)) + '/' + FtpPad2(IntToStr(M)) + '/' + IntToStr(Y) +
+  ' ' + FtpPad2(IntToStr(Hr)) + ':' + FtpPad2(IntToStr(Mn)) + ':' + FtpPad2(IntToStr(Se));
+End;
+
+Function FtpLastResponseText: String;
+Var
+ Buf: Array[0..1023] Of Char;
+ BufLen, ErrCode: LongWord;
+Begin
+ BufLen := SizeOf(Buf);
+ ErrCode := 0;
+ FtpLastResponseText := '';
+ If Ftp_InternetGetLastResponseInfoA(ErrCode, PChar(@Buf[0]), BufLen) Then
+  FtpLastResponseText := FtpCharsToStr(Buf);
+End;
+{$ENDIF}
+
+{ --- Connect-FTPServer --- }
+Procedure TermCmd_ConnectFTPServer(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ ServerArg, PortArg, UserArg, PassArg, NameArg, PassiveArg, TypeArg: String;
+ HostName, UserNm, Password: String;
+ Port: Word;
+ PortVal, PortCode: LongInt;
+ Slot: Integer;
+ hInet, hConnect: LongInt;
+Begin
+ ServerArg := FtpGetFlag(ParamStr, 'SERVER');
+ If ServerArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Connect-FTPServer -Server hote [-Port 21] [-User nom] ' +
+   '[-Password mdp] [-Name etiquette] [-Passive true|false] [-TransferType ASCII|Binary]');
+  Exit;
+ End;
+ PortArg := FtpGetFlag(ParamStr, 'PORT');
+ UserArg := FtpGetFlag(ParamStr, 'USER');
+ PassArg := FtpGetFlag(ParamStr, 'PASSWORD');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ PassiveArg := FtpGetFlag(ParamStr, 'PASSIVE');
+ TypeArg := FtpGetFlag(ParamStr, 'TRANSFERTYPE');
+ HostName := ServerArg;
+ Port := FtpEffectiveDefaultPort;
+ If PortArg <> '' Then Begin
+  Val(PortArg, PortVal, PortCode);
+  If (PortCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then Port := Word(PortVal);
+ End;
+ If UserArg = '' Then UserNm := 'anonymous' Else UserNm := UserArg;
+ If PassArg = '' Then Password := 'anonymous@devenv.local' Else Password := PassArg;
+ If NameArg = '' Then NameArg := 'default';
+ If FtpFindSession(NameArg) <> 0 Then Begin
+  TermAddLine(TP, 'Connect-FTPServer : une session nommee "' + NameArg + '" existe deja.');
+  Exit;
+ End;
+ Slot := FtpFindFreeSlot;
+ If Slot = 0 Then Begin
+  TermAddLine(TP, 'Connect-FTPServer : nombre maximal de sessions atteint (' +
+   IntToStr(FTP_MAX_SESSIONS) + ').');
+  Exit;
+ End;
+ hInet := Ftp_InternetOpenA('DEVENV-FTP/1.0', FTP_INTERNET_OPEN_TYPE_DIRECT, Nil, Nil, 0);
+ If hInet = 0 Then Begin
+  TermAddLine(TP, 'Connect-FTPServer : echec InternetOpen (code ' +
+   IntToStr(Ftp_GetLastError) + ').');
+  Exit;
+ End;
+ hConnect := Ftp_InternetConnectA(hInet, PChar(AnsiString(HostName)), Port, PChar(AnsiString(UserNm)), PChar(AnsiString(Password)),
+  FTP_INTERNET_SERVICE_FTP, 0, 0);
+ If hConnect = 0 Then Begin
+  TermAddLine(TP, 'Connect-FTPServer : echec de connexion a ' + HostName + ':' +
+   IntToStr(Port) + ' (code ' + IntToStr(Ftp_GetLastError) +
+   ' - verifier hote/identifiants).');
+  Ftp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ FtpSessions[Slot].InUse := True;
+ FtpSessions[Slot].SrvLabel := NameArg;
+ FtpSessions[Slot].HostName := HostName;
+ FtpSessions[Slot].Port := Port;
+ FtpSessions[Slot].UserName := UserNm;
+ FtpSessions[Slot].CurrentDir := '/';
+ If PassiveArg = '' Then FtpSessions[Slot].PassiveMode := FtpEffectiveDefaultPassive
+ Else FtpSessions[Slot].PassiveMode := (TermStrToUpper(PassiveArg) <> 'FALSE');
+ If TypeArg = '' Then FtpSessions[Slot].TransferType := FtpEffectiveDefaultTransferType
+ Else If TermStrToUpper(TypeArg) = 'ASCII' Then FtpSessions[Slot].TransferType := 1
+ Else FtpSessions[Slot].TransferType := 2;
+ FtpSessions[Slot].hInet := hInet;
+ FtpSessions[Slot].hConnect := hConnect;
+ FtpSessions[Slot].LastXferPath := '';
+ FtpSessions[Slot].LastXferDir := '';
+ FtpSessions[Slot].LastXferBytes := 0;
+ FtpSessions[Slot].LastXferOk := False;
+ TermAddLine(TP, 'Connect-FTPServer : connecte a ' + HostName + ':' + IntToStr(Port) +
+  ' sous "' + NameArg + '" (utilisateur ' + UserNm + ').');
+End;
+{$ELSE}
+Begin
+ TermAddLine(TP, 'Connect-FTPServer : disponible uniquement sous Windows (WinInet).');
+End;
+{$ENDIF}
+
+{ --- Disconnect-FTPServer --- }
+Procedure TermCmd_DisconnectFTPServer(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var NameArg, Lbl: String; Slot: Integer;
+Begin
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ Slot := FtpResolveSessionOrReport(TP, 'Disconnect-FTPServer', NameArg);
+ If Slot = 0 Then Exit;
+ Ftp_InternetCloseHandle(FtpSessions[Slot].hConnect);
+ Ftp_InternetCloseHandle(FtpSessions[Slot].hInet);
+ Lbl := FtpSessions[Slot].SrvLabel;
+ FtpSessions[Slot].InUse := False;
+ TermAddLine(TP, 'Disconnect-FTPServer : session "' + Lbl + '" fermee.');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Disconnect-FTPServer : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Get-FTPConnection --- }
+Procedure TermCmd_GetFTPConnection(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ NameArg, TypeTxt, PassTxt: String;
+ I, MatchCount: Integer;
+Begin
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ MatchCount := 0;
+ For I := 1 To FTP_MAX_SESSIONS Do
+  If FtpSessions[I].InUse And
+     ((NameArg = '') Or (TermStrToUpper(FtpSessions[I].SrvLabel) = TermStrToUpper(NameArg))) Then Begin
+   If FtpSessions[I].TransferType = 1 Then TypeTxt := 'ASCII' Else TypeTxt := 'Binary';
+   If FtpSessions[I].PassiveMode Then PassTxt := 'oui' Else PassTxt := 'non';
+   TermAddLine(TP, FtpSessions[I].SrvLabel + '  ' + FtpSessions[I].HostName + ':' +
+    IntToStr(FtpSessions[I].Port) + '  utilisateur=' + FtpSessions[I].UserName +
+    '  passif=' + PassTxt + '  type=' + TypeTxt);
+   Inc(MatchCount);
+  End;
+ If MatchCount = 0 Then TermAddLine(TP, 'Get-FTPConnection : aucune session FTP active.');
+End;
+
+{ --- Test-FTPConnection --- }
+Procedure TermCmd_TestFTPConnection(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg, ServerArg, PortArg, UserArg, PassArg: String;
+ Slot: Integer;
+ HostName, UserNm, Password: String;
+ Port: Word;
+ PortVal, PortCode: LongInt;
+ hInet, hConnect: LongInt;
+ Ok: Boolean;
+Begin
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If NameArg <> '' Then Begin
+  Slot := FtpFindSession(NameArg);
+  If Slot = 0 Then Begin
+   TermAddLine(TP, 'Test-FTPConnection : False (aucune session nommee "' + NameArg + '").');
+   Exit;
+  End;
+  Ok := Ftp_FtpSetCurrentDirectoryA(FtpSessions[Slot].hConnect, PChar('.'));
+  If Ok Then TermAddLine(TP, 'Test-FTPConnection : True (session "' + NameArg + '" active).')
+  Else TermAddLine(TP, 'Test-FTPConnection : False (session "' + NameArg + '" ne repond plus).');
+  Exit;
+ End;
+ ServerArg := FtpGetFlag(ParamStr, 'SERVER');
+ If ServerArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Test-FTPConnection -Server hote [-Port 21] [-User nom] ' +
+   '[-Password mdp] | -Name etiquette');
+  Exit;
+ End;
+ PortArg := FtpGetFlag(ParamStr, 'PORT');
+ UserArg := FtpGetFlag(ParamStr, 'USER');
+ PassArg := FtpGetFlag(ParamStr, 'PASSWORD');
+ HostName := ServerArg;
+ Port := FtpEffectiveDefaultPort;
+ If PortArg <> '' Then Begin
+  Val(PortArg, PortVal, PortCode);
+  If (PortCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then Port := Word(PortVal);
+ End;
+ If UserArg = '' Then UserNm := 'anonymous' Else UserNm := UserArg;
+ If PassArg = '' Then Password := 'anonymous@devenv.local' Else Password := PassArg;
+ hInet := Ftp_InternetOpenA('DEVENV-FTP/1.0', FTP_INTERNET_OPEN_TYPE_DIRECT, Nil, Nil, 0);
+ If hInet = 0 Then Begin
+  TermAddLine(TP, 'Test-FTPConnection : False (InternetOpen a echoue).');
+  Exit;
+ End;
+ hConnect := Ftp_InternetConnectA(hInet, PChar(AnsiString(HostName)), Port, PChar(AnsiString(UserNm)), PChar(AnsiString(Password)),
+  FTP_INTERNET_SERVICE_FTP, 0, 0);
+ If hConnect = 0 Then Begin
+  TermAddLine(TP, 'Test-FTPConnection : False (connexion/authentification refusee sur ' +
+   HostName + ':' + IntToStr(Port) + ').');
+  Ftp_InternetCloseHandle(hInet);
+  Exit;
+ End;
+ TermAddLine(TP, 'Test-FTPConnection : True (' + HostName + ':' + IntToStr(Port) +
+  ' accessible, identifiants acceptes).');
+ Ftp_InternetCloseHandle(hConnect);
+ Ftp_InternetCloseHandle(hInet);
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Test-FTPConnection : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Get-FTPDirectory --- }
+Procedure TermCmd_GetFTPDirectory(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, NameArg, SearchPat, EntryName, SizeTxt, KindTxt: String;
+ Slot: Integer;
+ hFind: LongInt;
+ FindData: TFtpFindDataA;
+ HasMore, IsDir: Boolean;
+ EntryCount: Integer;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ Slot := FtpResolveSessionOrReport(TP, 'Get-FTPDirectory', NameArg);
+ If Slot = 0 Then Exit;
+ If PathArg = '' Then SearchPat := '*'
+ Else If PathArg[Length(PathArg)] = '/' Then SearchPat := PathArg + '*'
+ Else SearchPat := PathArg + '/*';
+ hFind := Ftp_FtpFindFirstFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(SearchPat)), FindData, 0, 0);
+ If hFind = 0 Then Begin
+  TermAddLine(TP, 'Get-FTPDirectory : impossible de lister "' + PathArg + '" (code ' +
+   IntToStr(Ftp_GetLastError) + ').');
+  Exit;
+ End;
+ HasMore := True;
+ EntryCount := 0;
+ While HasMore Do Begin
+  EntryName := FtpCharsToStr(FindData.cFileName);
+  If (EntryName <> '.') And (EntryName <> '..') And (EntryName <> '') Then Begin
+   IsDir := (FindData.dwFileAttributes And FTP_FILE_ATTRIBUTE_DIRECTORY) <> 0;
+   If IsDir Then Begin KindTxt := 'DIR'; SizeTxt := ''; End
+   Else Begin KindTxt := ''; SizeTxt := IntToStr(LongInt(FindData.nFileSizeLow)); End;
+   TermAddLine(TP, FtpPadRight(KindTxt, 4) + FtpPadRight(SizeTxt, 12) + EntryName);
+   Inc(EntryCount);
+  End;
+  HasMore := Ftp_InternetFindNextFileA(hFind, FindData);
+ End;
+ Ftp_InternetCloseHandle(hFind);
+ TermAddLine(TP, IntToStr(EntryCount) + ' element(s).');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Get-FTPDirectory : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Get-FTPFile --- }
+Procedure TermCmd_GetFTPFile(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, DestArg, NameArg: String;
+ Slot: Integer;
+ Ok: Boolean;
+ LocalSize: LongInt;
+ F: File;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ DestArg := FtpGetFlag(ParamStr, 'DESTINATION');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If (PathArg = '') Or (DestArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-FTPFile -Path fichier_distant -Destination fichier_local ' +
+   '[-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Get-FTPFile', NameArg);
+ If Slot = 0 Then Exit;
+ Ok := Ftp_FtpGetFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)), PChar(AnsiString(DestArg)), False,
+  FTP_FILE_ATTRIBUTE_NORMAL, FtpTransferFlags(Slot), 0);
+ FtpSessions[Slot].LastXferPath := PathArg;
+ FtpSessions[Slot].LastXferDir := 'Get';
+ FtpSessions[Slot].LastXferOk := Ok;
+ If Ok Then Begin
+  LocalSize := 0;
+  {$I-} Assign(F, DestArg); Reset(F, 1); {$I+}
+  If IOResult = 0 Then Begin LocalSize := FileSize(F); Close(F); End;
+  FtpSessions[Slot].LastXferBytes := LocalSize;
+  TermAddLine(TP, 'Get-FTPFile : ' + PathArg + ' -> ' + DestArg + ' (' +
+   IntToStr(LocalSize) + ' octets).');
+ End Else Begin
+  FtpSessions[Slot].LastXferBytes := 0;
+  TermAddLine(TP, 'Get-FTPFile : echec du telechargement de ' + PathArg + ' (code ' +
+   IntToStr(Ftp_GetLastError) + ').');
+ End;
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Get-FTPFile : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Send-FTPFile --- }
+Procedure TermCmd_SendFTPFile(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, DestArg, NameArg: String;
+ Slot: Integer;
+ Ok: Boolean;
+ F: File;
+ LocalSize: LongInt;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ DestArg := FtpGetFlag(ParamStr, 'DESTINATION');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If (PathArg = '') Or (DestArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Send-FTPFile -Path fichier_local -Destination fichier_distant ' +
+   '[-Name etiquette]');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'Send-FTPFile : fichier local introuvable : ' + PathArg);
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Send-FTPFile', NameArg);
+ If Slot = 0 Then Exit;
+ LocalSize := 0;
+ {$I-} Assign(F, PathArg); Reset(F, 1); {$I+}
+ If IOResult = 0 Then Begin LocalSize := FileSize(F); Close(F); End;
+ Ok := Ftp_FtpPutFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)), PChar(AnsiString(DestArg)),
+  FtpTransferFlags(Slot), 0);
+ FtpSessions[Slot].LastXferPath := DestArg;
+ FtpSessions[Slot].LastXferDir := 'Send';
+ FtpSessions[Slot].LastXferOk := Ok;
+ If Ok Then Begin
+  FtpSessions[Slot].LastXferBytes := LocalSize;
+  TermAddLine(TP, 'Send-FTPFile : ' + PathArg + ' -> ' + DestArg + ' (' +
+   IntToStr(LocalSize) + ' octets).');
+ End Else Begin
+  FtpSessions[Slot].LastXferBytes := 0;
+  TermAddLine(TP, 'Send-FTPFile : echec du televersement de ' + PathArg + ' (code ' +
+   IntToStr(Ftp_GetLastError) + ').');
+ End;
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Send-FTPFile : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Remove-FTPFile --- }
+Procedure TermCmd_RemoveFTPFile(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var PathArg, NameArg: String; Slot: Integer; Ok: Boolean;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-FTPFile -Path fichier_distant [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Remove-FTPFile', NameArg);
+ If Slot = 0 Then Exit;
+ Ok := Ftp_FtpDeleteFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)));
+ If Ok Then TermAddLine(TP, 'Remove-FTPFile : ' + PathArg + ' supprime.')
+ Else TermAddLine(TP, 'Remove-FTPFile : echec de la suppression de ' + PathArg +
+  ' (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Remove-FTPFile : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Copy-FTPFile --- }
+Procedure TermCmd_CopyFTPFile(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ SrcPathArg, DstPathArg, SrcNameArg, DstNameArg, TempPath: String;
+ SrcSlot, DstSlot: Integer;
+ OkGet, OkPut: Boolean;
+Begin
+ SrcPathArg := FtpGetFlag(ParamStr, 'SOURCEPATH');
+ DstPathArg := FtpGetFlag(ParamStr, 'DESTINATIONPATH');
+ SrcNameArg := FtpGetFlag(ParamStr, 'SOURCESESSION');
+ DstNameArg := FtpGetFlag(ParamStr, 'DESTINATIONSESSION');
+ If (SrcPathArg = '') Or (DstPathArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Copy-FTPFile -SourcePath fichier -DestinationPath fichier ' +
+   '[-SourceSession etiquette] [-DestinationSession etiquette]');
+  Exit;
+ End;
+ SrcSlot := FtpResolveSessionOrReport(TP, 'Copy-FTPFile', SrcNameArg);
+ If SrcSlot = 0 Then Exit;
+ If DstNameArg = '' Then DstSlot := SrcSlot
+ Else Begin
+  DstSlot := FtpFindSession(DstNameArg);
+  If DstSlot = 0 Then Begin
+   TermAddLine(TP, 'Copy-FTPFile : aucune session FTP nommee "' + DstNameArg + '".');
+   Exit;
+  End;
+ End;
+ { Pas de copie serveur-a-serveur reelle en FTP standard (RFC 959 ne la      }
+ { prevoit pas) - relais honnete par un fichier hote temporaire, disclose   }
+ { dans le message de succes. }
+ TempPath := FtpTempFileName;
+ OkGet := Ftp_FtpGetFileA(FtpSessions[SrcSlot].hConnect, PChar(AnsiString(SrcPathArg)), PChar(AnsiString(TempPath)),
+  False, FTP_FILE_ATTRIBUTE_NORMAL, FtpTransferFlags(SrcSlot), 0);
+ If Not OkGet Then Begin
+  TermAddLine(TP, 'Copy-FTPFile : echec du telechargement source ' + SrcPathArg +
+   ' (code ' + IntToStr(Ftp_GetLastError) + ').');
+  Exit;
+ End;
+ OkPut := Ftp_FtpPutFileA(FtpSessions[DstSlot].hConnect, PChar(AnsiString(TempPath)), PChar(AnsiString(DstPathArg)),
+  FtpTransferFlags(DstSlot), 0);
+ FtpDeleteLocalFile(TempPath);
+ If OkPut Then
+  TermAddLine(TP, 'Copy-FTPFile : ' + SrcPathArg + ' -> ' + DstPathArg +
+   ' (relais local, aucune copie serveur-a-serveur native en FTP).')
+ Else
+  TermAddLine(TP, 'Copy-FTPFile : echec de l''envoi vers ' + DstPathArg + ' (code ' +
+   IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Copy-FTPFile : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Move-FTPFile --- }
+Procedure TermCmd_MoveFTPFile(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var PathArg, DestArg, NameArg: String; Slot: Integer; Ok: Boolean;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ DestArg := FtpGetFlag(ParamStr, 'DESTINATION');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If (PathArg = '') Or (DestArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Move-FTPFile -Path fichier_distant -Destination nouveau_chemin ' +
+   '[-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Move-FTPFile', NameArg);
+ If Slot = 0 Then Exit;
+ Ok := Ftp_FtpRenameFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)), PChar(AnsiString(DestArg)));
+ If Ok Then TermAddLine(TP, 'Move-FTPFile : ' + PathArg + ' -> ' + DestArg + '.')
+ Else TermAddLine(TP, 'Move-FTPFile : echec (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Move-FTPFile : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Rename-FTPFile --- }
+Procedure TermCmd_RenameFTPFile(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, NewNameArg, NameArg, DirPart, NewPath: String;
+ Slot, SlashPos, I: Integer;
+ Ok: Boolean;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NewNameArg := FtpGetFlag(ParamStr, 'NEWNAME');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If (PathArg = '') Or (NewNameArg = '') Then Begin
+  TermAddLine(TP, 'Syntaxe : Rename-FTPFile -Path fichier_distant -NewName nouveau_nom ' +
+   '[-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Rename-FTPFile', NameArg);
+ If Slot = 0 Then Exit;
+ SlashPos := 0;
+ For I := Length(PathArg) DownTo 1 Do
+  If PathArg[I] = '/' Then Begin SlashPos := I; Break; End;
+ If SlashPos > 0 Then DirPart := Copy(PathArg, 1, SlashPos) Else DirPart := '';
+ NewPath := DirPart + NewNameArg;
+ Ok := Ftp_FtpRenameFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)), PChar(AnsiString(NewPath)));
+ If Ok Then TermAddLine(TP, 'Rename-FTPFile : ' + PathArg + ' -> ' + NewPath + '.')
+ Else TermAddLine(TP, 'Rename-FTPFile : echec (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Rename-FTPFile : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Get-FTPFileInfo --- }
+Procedure TermCmd_GetFTPFileInfo(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, NameArg, DateTxt: String;
+ Slot: Integer;
+ hFind: LongInt;
+ FindData: TFtpFindDataA;
+ IsDir: Boolean;
+ SizeVal: LongInt;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Get-FTPFileInfo -Path fichier_distant [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Get-FTPFileInfo', NameArg);
+ If Slot = 0 Then Exit;
+ hFind := Ftp_FtpFindFirstFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)), FindData, 0, 0);
+ If hFind = 0 Then Begin
+  TermAddLine(TP, 'Get-FTPFileInfo : introuvable : ' + PathArg + ' (code ' +
+   IntToStr(Ftp_GetLastError) + ').');
+  Exit;
+ End;
+ IsDir := (FindData.dwFileAttributes And FTP_FILE_ATTRIBUTE_DIRECTORY) <> 0;
+ SizeVal := LongInt(FindData.nFileSizeLow);
+ DateTxt := FtpFileTimeToStr(FindData.ftLastWriteTime);
+ TermAddLine(TP, 'Chemin            : ' + PathArg);
+ If IsDir Then TermAddLine(TP, 'Type              : repertoire')
+ Else Begin
+  TermAddLine(TP, 'Type              : fichier');
+  TermAddLine(TP, 'Taille            : ' + IntToStr(SizeVal) + ' octets');
+ End;
+ TermAddLine(TP, 'Derniere ecriture : ' + DateTxt);
+ Ftp_InternetCloseHandle(hFind);
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Get-FTPFileInfo : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- New-FTPDirectory --- }
+Procedure TermCmd_NewFTPDirectory(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var PathArg, NameArg: String; Slot: Integer; Ok: Boolean;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : New-FTPDirectory -Path repertoire_distant [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'New-FTPDirectory', NameArg);
+ If Slot = 0 Then Exit;
+ Ok := Ftp_FtpCreateDirectoryA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)));
+ If Ok Then TermAddLine(TP, 'New-FTPDirectory : ' + PathArg + ' cree.')
+ Else TermAddLine(TP, 'New-FTPDirectory : echec (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'New-FTPDirectory : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Remove-FTPDirectory --- }
+Procedure TermCmd_RemoveFTPDirectory(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var PathArg, NameArg: String; Slot: Integer; Ok: Boolean;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Remove-FTPDirectory -Path repertoire_distant [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Remove-FTPDirectory', NameArg);
+ If Slot = 0 Then Exit;
+ Ok := Ftp_FtpRemoveDirectoryA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)));
+ If Ok Then TermAddLine(TP, 'Remove-FTPDirectory : ' + PathArg + ' supprime.')
+ Else TermAddLine(TP, 'Remove-FTPDirectory : echec (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Remove-FTPDirectory : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Set-FTPDirectory / Set-FTPWorkingDirectory (meme comportement reel,   }
+{ 2 noms demandes explicitement) --- }
+Procedure TermCmd_SetFTPDirectoryImpl(Var TP: TTerminalPanel; ParamStr: String; CmdName: String);
+{$IFDEF WINDOWS}
+Var PathArg, NameArg: String; Slot: Integer; Ok: Boolean;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ' + CmdName + ' -Path repertoire_distant [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, CmdName, NameArg);
+ If Slot = 0 Then Exit;
+ Ok := Ftp_FtpSetCurrentDirectoryA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)));
+ If Ok Then Begin
+  FtpSessions[Slot].CurrentDir := PathArg;
+  TermAddLine(TP, CmdName + ' : repertoire courant -> ' + PathArg);
+ End Else
+  TermAddLine(TP, CmdName + ' : echec (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, CmdName + ' : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+Procedure TermCmd_SetFTPDirectory(Var TP: TTerminalPanel; ParamStr: String);
+Begin TermCmd_SetFTPDirectoryImpl(TP, ParamStr, 'Set-FTPDirectory'); End;
+
+Procedure TermCmd_SetFTPWorkingDirectory(Var TP: TTerminalPanel; ParamStr: String);
+Begin TermCmd_SetFTPDirectoryImpl(TP, ParamStr, 'Set-FTPWorkingDirectory'); End;
+
+{ --- Get-FTPWorkingDirectory --- }
+Procedure TermCmd_GetFTPWorkingDirectory(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg, S: String;
+ Slot: Integer;
+ Buf: Array[0..1023] Of Char;
+ BufLen: LongWord;
+ Ok: Boolean;
+Begin
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ Slot := FtpResolveSessionOrReport(TP, 'Get-FTPWorkingDirectory', NameArg);
+ If Slot = 0 Then Exit;
+ BufLen := SizeOf(Buf);
+ Ok := Ftp_FtpGetCurrentDirectoryA(FtpSessions[Slot].hConnect, PChar(@Buf[0]), BufLen);
+ If Ok Then Begin
+  S := FtpCharsToStr(Buf);
+  FtpSessions[Slot].CurrentDir := S;
+  TermAddLine(TP, S);
+ End Else
+  TermAddLine(TP, 'Get-FTPWorkingDirectory : echec (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Get-FTPWorkingDirectory : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Test-FTPPath --- }
+Procedure TermCmd_TestFTPPath(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ PathArg, NameArg, SavedDir: String;
+ Slot: Integer;
+ hFind: LongInt;
+ FindData: TFtpFindDataA;
+ Buf: Array[0..1023] Of Char;
+ BufLen: LongWord;
+ ExistsAsDir: Boolean;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Test-FTPPath -Path chemin_distant [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Test-FTPPath', NameArg);
+ If Slot = 0 Then Exit;
+ hFind := Ftp_FtpFindFirstFileA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)), FindData, 0, 0);
+ If hFind <> 0 Then Begin
+  Ftp_InternetCloseHandle(hFind);
+  TermAddLine(TP, 'Test-FTPPath : True');
+  Exit;
+ End;
+ { Pas trouve comme fichier/motif direct - essayer comme repertoire (sonde  }
+ { non destructive : sauvegarde le repertoire courant, tente le             }
+ { changement, restaure immediatement apres, succes ou echec). }
+ BufLen := SizeOf(Buf);
+ SavedDir := '';
+ If Ftp_FtpGetCurrentDirectoryA(FtpSessions[Slot].hConnect, PChar(@Buf[0]), BufLen) Then
+  SavedDir := FtpCharsToStr(Buf);
+ ExistsAsDir := Ftp_FtpSetCurrentDirectoryA(FtpSessions[Slot].hConnect, PChar(AnsiString(PathArg)));
+ If ExistsAsDir And (SavedDir <> '') Then
+  Ftp_FtpSetCurrentDirectoryA(FtpSessions[Slot].hConnect, PChar(AnsiString(SavedDir)));
+ TermAddLine(TP, 'Test-FTPPath : ' + FtpBoolToStr(ExistsAsDir));
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Test-FTPPath : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Get-FTPServerInfo --- }
+Procedure TermCmd_GetFTPServerInfo(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ NameArg, Reply: String;
+ Slot: Integer;
+ hCmd: LongInt;
+ Ok: Boolean;
+Begin
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ Slot := FtpResolveSessionOrReport(TP, 'Get-FTPServerInfo', NameArg);
+ If Slot = 0 Then Exit;
+ TermAddLine(TP, 'Serveur     : ' + FtpSessions[Slot].HostName + ':' +
+  IntToStr(FtpSessions[Slot].Port));
+ TermAddLine(TP, 'Utilisateur : ' + FtpSessions[Slot].UserName);
+ TermAddLine(TP, 'Session     : ' + FtpSessions[Slot].SrvLabel);
+ hCmd := 0;
+ Ok := Ftp_FtpCommandA(FtpSessions[Slot].hConnect, True, FTP_TRANSFER_TYPE_ASCII,
+  PChar('SYST'), 0, hCmd);
+ Reply := FtpLastResponseText;
+ If Ok And (Reply <> '') Then TermAddLine(TP, 'SYST        : ' + Reply)
+ Else TermAddLine(TP, 'SYST        : (non disponible)');
+ If hCmd <> 0 Then Ftp_InternetCloseHandle(hCmd);
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Get-FTPServerInfo : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Invoke-FTPCommand --- }
+Procedure TermCmd_InvokeFTPCommand(Var TP: TTerminalPanel; ParamStr: String);
+{$IFDEF WINDOWS}
+Var
+ CmdArg, NameArg, Reply: String;
+ Slot: Integer;
+ hCmd: LongInt;
+ Ok: Boolean;
+Begin
+ CmdArg := FtpGetFlag(ParamStr, 'COMMAND');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If CmdArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Invoke-FTPCommand -Command "commande FTP brute" [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Invoke-FTPCommand', NameArg);
+ If Slot = 0 Then Exit;
+ hCmd := 0;
+ Ok := Ftp_FtpCommandA(FtpSessions[Slot].hConnect, True, FTP_TRANSFER_TYPE_ASCII,
+  PChar(AnsiString(CmdArg)), 0, hCmd);
+ Reply := FtpLastResponseText;
+ If hCmd <> 0 Then Ftp_InternetCloseHandle(hCmd);
+ If Ok Then Begin
+  If Reply <> '' Then TermAddLine(TP, Reply)
+  Else TermAddLine(TP, '(commande executee, aucune reponse texte disponible)');
+ End Else
+  TermAddLine(TP, 'Invoke-FTPCommand : echec (code ' + IntToStr(Ftp_GetLastError) + ').');
+End;
+{$ELSE}
+Begin TermAddLine(TP, 'Invoke-FTPCommand : disponible uniquement sous Windows (WinInet).'); End;
+{$ENDIF}
+
+{ --- Get-FTPTransfer --- }
+Procedure TermCmd_GetFTPTransfer(Var TP: TTerminalPanel; ParamStr: String);
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ Slot := FtpResolveSessionOrReport(TP, 'Get-FTPTransfer', NameArg);
+ If Slot = 0 Then Exit;
+ If FtpSessions[Slot].LastXferDir = '' Then Begin
+  TermAddLine(TP, 'Get-FTPTransfer : aucun transfert effectue sur cette session.');
+  Exit;
+ End;
+ TermAddLine(TP, 'Dernier transfert (' + FtpSessions[Slot].LastXferDir + ') : ' +
+  FtpSessions[Slot].LastXferPath + '  ' + IntToStr(FtpSessions[Slot].LastXferBytes) +
+  ' octets  ' + FtpBoolToStr(FtpSessions[Slot].LastXferOk));
+ TermAddLine(TP, '(les transferts de ce client WinInet sont synchrones/bloquants - aucun ' +
+  'transfert "en cours" ne peut etre observe separement, seul le dernier transfert ' +
+  'termine est rapporte.)');
+End;
+
+{ --- Stop-FTPTransfer --- }
+Procedure TermCmd_StopFTPTransfer(Var TP: TTerminalPanel; ParamStr: String);
+Var NameArg: String; Slot: Integer;
+Begin
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ Slot := FtpResolveSessionOrReport(TP, 'Stop-FTPTransfer', NameArg);
+ If Slot = 0 Then Exit;
+ TermAddLine(TP, 'Stop-FTPTransfer : non pris en charge - les transferts Get-FTPFile/' +
+  'Send-FTPFile de ce client sont synchrones (bloquants, via WinInet FtpGetFile/' +
+  'FtpPutFile) ; il n''y a rien "en cours" a interrompre une fois la commande rendue.');
+End;
+
+{ --- Set-FTPTransferMode / Set-FTPTransferType (meme comportement reel,    }
+{ 2 noms demandes explicitement) --- }
+Procedure TermCmd_SetFTPTransferImpl(Var TP: TTerminalPanel; ParamStr: String; CmdName: String);
+Var ModeArg, NameArg, Up: String; Slot: Integer;
+Begin
+ ModeArg := FtpGetFlag(ParamStr, 'MODE');
+ If ModeArg = '' Then ModeArg := FtpGetFlag(ParamStr, 'TYPE');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If ModeArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : ' + CmdName + ' -Mode ASCII|Binary [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, CmdName, NameArg);
+ If Slot = 0 Then Exit;
+ Up := TermStrToUpper(ModeArg);
+ If Up = 'ASCII' Then FtpSessions[Slot].TransferType := 1
+ Else If (Up = 'BINARY') Or (Up = 'IMAGE') Then FtpSessions[Slot].TransferType := 2
+ Else Begin
+  TermAddLine(TP, CmdName + ' : mode invalide (ASCII ou Binary attendu) : ' + ModeArg);
+  Exit;
+ End;
+ TermAddLine(TP, CmdName + ' : mode de transfert -> ' + Up + '.');
+End;
+
+Procedure TermCmd_SetFTPTransferMode(Var TP: TTerminalPanel; ParamStr: String);
+Begin TermCmd_SetFTPTransferImpl(TP, ParamStr, 'Set-FTPTransferMode'); End;
+
+Procedure TermCmd_SetFTPTransferType(Var TP: TTerminalPanel; ParamStr: String);
+Begin TermCmd_SetFTPTransferImpl(TP, ParamStr, 'Set-FTPTransferType'); End;
+
+{ --- Set-FTPPassiveMode --- }
+Procedure TermCmd_SetFTPPassiveMode(Var TP: TTerminalPanel; ParamStr: String);
+Var EnabledArg, NameArg: String; Slot: Integer;
+Begin
+ EnabledArg := FtpGetFlag(ParamStr, 'ENABLED');
+ NameArg := FtpGetFlag(ParamStr, 'NAME');
+ If EnabledArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Set-FTPPassiveMode -Enabled true|false [-Name etiquette]');
+  Exit;
+ End;
+ Slot := FtpResolveSessionOrReport(TP, 'Set-FTPPassiveMode', NameArg);
+ If Slot = 0 Then Exit;
+ FtpSessions[Slot].PassiveMode := (TermStrToUpper(EnabledArg) <> 'FALSE');
+ TermAddLine(TP, 'Set-FTPPassiveMode : ' + FtpBoolToStr(FtpSessions[Slot].PassiveMode) + '.');
+End;
+
+{ --- Get-FTPConfiguration / Set-FTPConfiguration (defauts globaux, pas lies }
+{ a une session - utilises par Connect-FTPServer quand -Port/-Passive/      }
+{ -TransferType sont omis) --- }
+Procedure TermCmd_GetFTPConfiguration(Var TP: TTerminalPanel; ParamStr: String);
+Begin
+ TermAddLine(TP, 'Port par defaut          : ' + IntToStr(FtpEffectiveDefaultPort));
+ TermAddLine(TP, 'Mode passif par defaut   : ' + FtpBoolToStr(FtpEffectiveDefaultPassive));
+ If FtpEffectiveDefaultTransferType = 1 Then
+  TermAddLine(TP, 'Type de transfert defaut : ASCII')
+ Else
+  TermAddLine(TP, 'Type de transfert defaut : Binary');
+End;
+
+Procedure TermCmd_SetFTPConfiguration(Var TP: TTerminalPanel; ParamStr: String);
+Var PortArg, PassiveArg, TypeArg, Up: String; PortVal, PortCode: LongInt;
+Begin
+ PortArg := FtpGetFlag(ParamStr, 'PORT');
+ PassiveArg := FtpGetFlag(ParamStr, 'PASSIVEMODE');
+ TypeArg := FtpGetFlag(ParamStr, 'TRANSFERTYPE');
+ If PortArg <> '' Then Begin
+  Val(PortArg, PortVal, PortCode);
+  If (PortCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then
+   FtpConfigDefaultPort := Word(PortVal)
+  Else TermAddLine(TP, 'Set-FTPConfiguration : port invalide : ' + PortArg);
+ End;
+ If PassiveArg <> '' Then Begin
+  If TermStrToUpper(PassiveArg) = 'FALSE' Then FtpConfigDefaultPassiveState := 1
+  Else FtpConfigDefaultPassiveState := 2;
+ End;
+ If TypeArg <> '' Then Begin
+  Up := TermStrToUpper(TypeArg);
+  If Up = 'ASCII' Then FtpConfigDefaultTransferType := 1
+  Else If (Up = 'BINARY') Or (Up = 'IMAGE') Then FtpConfigDefaultTransferType := 2
+  Else TermAddLine(TP, 'Set-FTPConfiguration : type invalide (ASCII ou Binary) : ' + TypeArg);
+ End;
+ TermAddLine(TP, 'Set-FTPConfiguration : configuration par defaut mise a jour.');
+End;
+
+{ --- Export-FTPConfiguration / Import-FTPConfiguration --- }
+{ Format texte simple cle=valeur par section (meme idiome Assign/Rewrite/   }
+{ IOResult que TermCmd_ExportCsv) - aucun precedent JSON/INI pour une       }
+{ configuration PS-dev dans ce fichier. Les mots de passe des sessions ne   }
+{ sont JAMAIS exportes (risque de secret en clair sur disque) - seuls       }
+{ hote/port/utilisateur/options de transfert le sont ; une reconnexion      }
+{ explicite via Connect-FTPServer -Password est necessaire apres import. }
+Procedure TermCmd_ExportFTPConfiguration(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, TypeTxt: String;
+ F: Text;
+ I: Integer;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Export-FTPConfiguration -Path fichier.ini');
+  Exit;
+ End;
+ {$I-} Assign(F, PathArg); Rewrite(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Export-FTPConfiguration : impossible de creer ' + PathArg);
+  Exit;
+ End;
+ WriteLn(F, '[DefaultConfiguration]');
+ WriteLn(F, 'Port=' + IntToStr(FtpEffectiveDefaultPort));
+ WriteLn(F, 'PassiveMode=' + FtpBoolToStr(FtpEffectiveDefaultPassive));
+ If FtpEffectiveDefaultTransferType = 1 Then WriteLn(F, 'TransferType=ASCII')
+ Else WriteLn(F, 'TransferType=Binary');
+ For I := 1 To FTP_MAX_SESSIONS Do
+  If FtpSessions[I].InUse Then Begin
+   WriteLn(F, '');
+   WriteLn(F, '[Session:' + FtpSessions[I].SrvLabel + ']');
+   WriteLn(F, 'Server=' + FtpSessions[I].HostName);
+   WriteLn(F, 'Port=' + IntToStr(FtpSessions[I].Port));
+   WriteLn(F, 'User=' + FtpSessions[I].UserName);
+   WriteLn(F, 'PassiveMode=' + FtpBoolToStr(FtpSessions[I].PassiveMode));
+   If FtpSessions[I].TransferType = 1 Then TypeTxt := 'ASCII' Else TypeTxt := 'Binary';
+   WriteLn(F, 'TransferType=' + TypeTxt);
+  End;
+ Close(F);
+ TermAddLine(TP, 'Export-FTPConfiguration : ecrit dans ' + PathArg +
+  ' (mots de passe JAMAIS exportes - reconnectez-vous avec Connect-FTPServer ' +
+  '-Password apres import).');
+End;
+
+Procedure TermCmd_ImportFTPConfiguration(Var TP: TTerminalPanel; ParamStr: String);
+Var
+ PathArg, Line, Section, Key, Val_, Up: String;
+ F: Text;
+ EqPos: Integer;
+ PortVal, PortCode: LongInt;
+ SessionCount: Integer;
+Begin
+ PathArg := FtpGetFlag(ParamStr, 'PATH');
+ If PathArg = '' Then Begin
+  TermAddLine(TP, 'Syntaxe : Import-FTPConfiguration -Path fichier.ini');
+  Exit;
+ End;
+ If Not FileExists(PathArg) Then Begin
+  TermAddLine(TP, 'Import-FTPConfiguration : fichier introuvable : ' + PathArg);
+  Exit;
+ End;
+ {$I-} Assign(F, PathArg); Reset(F); {$I+}
+ If IOResult <> 0 Then Begin
+  TermAddLine(TP, 'Import-FTPConfiguration : impossible de lire ' + PathArg);
+  Exit;
+ End;
+ Section := '';
+ SessionCount := 0;
+ While Not Eof(F) Do Begin
+  ReadLn(F, Line);
+  Line := TrimStr(Line);
+  If (Line = '') Or (Line[1] = ';') Then Continue;
+  If (Line[1] = '[') And (Line[Length(Line)] = ']') Then Begin
+   Section := Copy(Line, 2, Length(Line) - 2);
+   If Copy(TermStrToUpper(Section), 1, 8) = 'SESSION:' Then Inc(SessionCount);
+   Continue;
+  End;
+  EqPos := Pos('=', Line);
+  If EqPos = 0 Then Continue;
+  Key := TermStrToUpper(Copy(Line, 1, EqPos - 1));
+  Val_ := Copy(Line, EqPos + 1, Length(Line));
+  If Section = 'DefaultConfiguration' Then Begin
+   If Key = 'PORT' Then Begin
+    Val(Val_, PortVal, PortCode);
+    If (PortCode = 0) And (PortVal > 0) And (PortVal <= 65535) Then
+     FtpConfigDefaultPort := Word(PortVal);
+   End Else If Key = 'PASSIVEMODE' Then Begin
+    If TermStrToUpper(Val_) = 'FALSE' Then FtpConfigDefaultPassiveState := 1
+    Else FtpConfigDefaultPassiveState := 2;
+   End Else If Key = 'TRANSFERTYPE' Then Begin
+    Up := TermStrToUpper(Val_);
+    If Up = 'ASCII' Then FtpConfigDefaultTransferType := 1
+    Else If Up = 'BINARY' Then FtpConfigDefaultTransferType := 2;
+   End;
+  End;
+ End;
+ Close(F);
+ TermAddLine(TP, 'Import-FTPConfiguration : configuration par defaut relue depuis ' +
+  PathArg + '.');
+ If SessionCount > 0 Then
+  TermAddLine(TP, IntToStr(SessionCount) + ' profil(s) de session trouve(s) dans le ' +
+   'fichier (non reconnectes automatiquement - aucun mot de passe n''est jamais ' +
+   'stocke dans ce format ; utilisez Connect-FTPServer -Server ... -Name ... pour chacun).');
+End;
+
 
 { ============================================================ }
 { === Table de dispatch PowerShell dev (SK_POWERSHELL)     === }
@@ -161832,10 +163078,10 @@ End;
 { gardent leur chaine Else-If existante, inchangee. }
 
 Const
- PS_CMD_ALIASES = 261;
+ PS_CMD_ALIASES = 290;
  PSCmd: Array[1..PS_CMD_ALIASES] Of Record
   Name: String[45];
-  ID: Byte;
+  ID: Word;
  End = (
   (Name:'?'; ID:61),
   (Name:'ADD-CONTENT'; ID:13),
@@ -161885,6 +163131,7 @@ Const
   (Name:'COMPARE-VM'; ID:23),
   (Name:'COMPLETE-VMFAILOVER'; ID:29),
   (Name:'COMPRESS-ARCHIVE'; ID:22),
+  (Name:'CONNECT-FTPSERVER'; ID:240),
   (Name:'CONNECT-MCPSERVER'; ID:104),
   (Name:'CONNECT-MDBC'; ID:136),
   (Name:'CONNECT-MICROSOFTTEAMS'; ID:123),
@@ -161907,6 +163154,7 @@ Const
   (Name:'CONVERTTO-SECURESTRING'; ID:84),
   (Name:'CONVERTTO-XML'; ID:86),
   (Name:'COPY'; ID:5),
+  (Name:'COPY-FTPFILE'; ID:248),
   (Name:'COPY-ITEM'; ID:5),
   (Name:'COPY-ITEMPROPERTY'; ID:88),
   (Name:'COPY-VMFILE'; ID:87),
@@ -161915,6 +163163,7 @@ Const
   (Name:'DEL'; ID:6),
   (Name:'DEVENV'; ID:85),
   (Name:'DIR'; ID:4),
+  (Name:'DISCONNECT-FTPSERVER'; ID:241),
   (Name:'DISCONNECT-MCPSERVER'; ID:105),
   (Name:'DISCONNECT-MICROSOFTTEAMS'; ID:124),
   (Name:'DISCONNECT-ORACLEDATABASE'; ID:196),
@@ -161923,6 +163172,7 @@ Const
   (Name:'EXIT'; ID:1),
   (Name:'EXPAND-ARCHIVE'; ID:65),
   (Name:'EXPORT-CSV'; ID:89),
+  (Name:'EXPORT-FTPCONFIGURATION'; ID:267),
   (Name:'EXPORT-MDBCDATA'; ID:150),
   (Name:'FOREACH-OBJECT'; ID:90),
   (Name:'FORMAT'; ID:238),
@@ -161943,6 +163193,14 @@ Const
   (Name:'GET-DATE'; ID:96),
   (Name:'GET-ERROR'; ID:99),
   (Name:'GET-FORMATDATA'; ID:100),
+  (Name:'GET-FTPCONFIGURATION'; ID:265),
+  (Name:'GET-FTPCONNECTION'; ID:242),
+  (Name:'GET-FTPDIRECTORY'; ID:244),
+  (Name:'GET-FTPFILE'; ID:245),
+  (Name:'GET-FTPFILEINFO'; ID:251),
+  (Name:'GET-FTPSERVERINFO'; ID:258),
+  (Name:'GET-FTPTRANSFER'; ID:260),
+  (Name:'GET-FTPWORKINGDIRECTORY'; ID:255),
   (Name:'GET-HELP'; ID:101),
   (Name:'GET-HISTORY'; ID:102),
   (Name:'GET-JIRAISSUE'; ID:112),
@@ -161990,7 +163248,9 @@ Const
   (Name:'GET-TEAMUSER'; ID:126),
   (Name:'GRANT-ORACLEPRIVILEGE'; ID:222),
   (Name:'HELP'; ID:61),
+  (Name:'IMPORT-FTPCONFIGURATION'; ID:268),
   (Name:'IMPORT-MDBCDATA'; ID:149),
+  (Name:'INVOKE-FTPCOMMAND'; ID:259),
   (Name:'INVOKE-GEOWORKSAPI'; ID:236),
   (Name:'INVOKE-JIRAISSUETRANSITION'; ID:120),
   (Name:'INVOKE-MCPTOOL'; ID:109),
@@ -162010,11 +163270,13 @@ Const
   (Name:'LS'; ID:4),
   (Name:'MKDIR'; ID:8),
   (Name:'MOVE'; ID:11),
+  (Name:'MOVE-FTPFILE'; ID:249),
   (Name:'MOVE-ITEM'; ID:11),
   (Name:'NEW-COUCHDBADMIN'; ID:170),
   (Name:'NEW-COUCHDBDATABASE'; ID:164),
   (Name:'NEW-COUCHDBDOCUMENT'; ID:167),
   (Name:'NEW-EMULATORGIF'; ID:229),
+  (Name:'NEW-FTPDIRECTORY'; ID:252),
   (Name:'NEW-ITEM'; ID:8),
   (Name:'NEW-JIRAISSUE'; ID:113),
   (Name:'NEW-JIRASESSION'; ID:111),
@@ -162039,6 +163301,8 @@ Const
   (Name:'REMOVE-COUCHDBADMIN'; ID:171),
   (Name:'REMOVE-COUCHDBDATABASE'; ID:165),
   (Name:'REMOVE-COUCHDBDOCUMENT'; ID:169),
+  (Name:'REMOVE-FTPDIRECTORY'; ID:253),
+  (Name:'REMOVE-FTPFILE'; ID:247),
   (Name:'REMOVE-ITEM'; ID:6),
   (Name:'REMOVE-MDBCCOLLECTION'; ID:145),
   (Name:'REMOVE-MDBCDATA'; ID:144),
@@ -162051,6 +163315,7 @@ Const
   (Name:'REMOVE-TEAMCHANNEL'; ID:135),
   (Name:'REMOVE-TEAMUSER'; ID:131),
   (Name:'REN'; ID:10),
+  (Name:'RENAME-FTPFILE'; ID:250),
   (Name:'RENAME-ITEM'; ID:10),
   (Name:'RENAME-REDISKEY'; ID:190),
   (Name:'RESTORE-ORACLEDATABASE'; ID:225),
@@ -162058,8 +163323,15 @@ Const
   (Name:'RESTORE-VMCHECKPOINT'; ID:45),
   (Name:'REVOKE-ORACLEPRIVILEGE'; ID:223),
   (Name:'RMDIR'; ID:9),
+  (Name:'SEND-FTPFILE'; ID:246),
   (Name:'SET'; ID:55),
   (Name:'SET-COUCHDBDOCUMENT'; ID:168),
+  (Name:'SET-FTPCONFIGURATION'; ID:266),
+  (Name:'SET-FTPDIRECTORY'; ID:254),
+  (Name:'SET-FTPPASSIVEMODE'; ID:264),
+  (Name:'SET-FTPTRANSFERMODE'; ID:262),
+  (Name:'SET-FTPTRANSFERTYPE'; ID:263),
+  (Name:'SET-FTPWORKINGDIRECTORY'; ID:256),
   (Name:'SET-JIRACONFIGSERVER'; ID:110),
   (Name:'SET-JIRAISSUE'; ID:114),
   (Name:'SET-LOCATION'; ID:2),
@@ -162086,6 +163358,9 @@ Const
   (Name:'START-WIN16PROGRAM'; ID:58),
   (Name:'START-WIN32APPLICATION'; ID:227),
   (Name:'START-WIN32PROGRAM'; ID:227),
+  (Name:'STOP-FTPTRANSFER'; ID:261),
+  (Name:'TEST-FTPCONNECTION'; ID:243),
+  (Name:'TEST-FTPPATH'; ID:257),
   (Name:'TEST-ORACLECONNECTION'; ID:197),
   (Name:'TEST-REDISKEY'; ID:188),
   (Name:'TEST-SQLAVAILABILITYGROUP'; ID:156),
@@ -162106,7 +163381,7 @@ Const
 { et efficace") - PSCmd[] est trie par Name (ordre croissant des chaines,   }
 { meme convention que la comparaison lexicale native de Pascal '<'/'>') ;   }
 { auparavant une recherche lineaire sur 2 tableaux paralleles non tries.    }
-Function TermLookupPSCmd(S: String): Byte;
+Function TermLookupPSCmd(S: String): Word;
 Var
  Lo, Hi, Mid: Integer;
 Begin
@@ -162172,7 +163447,7 @@ End;
   Procedure TermCmd_GetHelp(Var TP: TTerminalPanel; ParamStr: String);
   Var
    NameArg, UpName: String;
-   CmdId: Byte;
+   CmdId: Word;
   Begin
    NameArg := TermExtractParam(ParamStr, 1);
    If TermStrToUpper(NameArg) = '-NAME' Then
@@ -162228,7 +163503,7 @@ Var
  BPN, BPLen: LongInt;
  BPIdx: Integer;
  ArgCmd3, ArgCmd4: String;
- PSCmdID: Byte;
+ PSCmdID: Word;
  GulamAliasI: Integer;
  Os9BuildF: File;
  CosLogF: Text;
@@ -162923,6 +164198,37 @@ Begin
     { le plus grand ID PSCmd deja utilise (236) au moment de l'ajout. }
     237: TermCmd_Browser(TP, ParamStr); { BROWSER }
     238: TermCmd_FORMAT(TP, ParamStr); { FORMAT }
+    { Client FTP (2026-10-05, demande explicite) : 29 cmdlets, voir le bloc  }
+    { "Client FTP (PowerShell dev)" juste avant la table PSCmd[] ci-dessus.  }
+    240: TermCmd_ConnectFTPServer(TP, ParamStr);        { CONNECT-FTPSERVER }
+    241: TermCmd_DisconnectFTPServer(TP, ParamStr);     { DISCONNECT-FTPSERVER }
+    242: TermCmd_GetFTPConnection(TP, ParamStr);         { GET-FTPCONNECTION }
+    243: TermCmd_TestFTPConnection(TP, ParamStr);        { TEST-FTPCONNECTION }
+    244: TermCmd_GetFTPDirectory(TP, ParamStr);          { GET-FTPDIRECTORY }
+    245: TermCmd_GetFTPFile(TP, ParamStr);               { GET-FTPFILE }
+    246: TermCmd_SendFTPFile(TP, ParamStr);              { SEND-FTPFILE }
+    247: TermCmd_RemoveFTPFile(TP, ParamStr);            { REMOVE-FTPFILE }
+    248: TermCmd_CopyFTPFile(TP, ParamStr);              { COPY-FTPFILE }
+    249: TermCmd_MoveFTPFile(TP, ParamStr);              { MOVE-FTPFILE }
+    250: TermCmd_RenameFTPFile(TP, ParamStr);            { RENAME-FTPFILE }
+    251: TermCmd_GetFTPFileInfo(TP, ParamStr);           { GET-FTPFILEINFO }
+    252: TermCmd_NewFTPDirectory(TP, ParamStr);          { NEW-FTPDIRECTORY }
+    253: TermCmd_RemoveFTPDirectory(TP, ParamStr);       { REMOVE-FTPDIRECTORY }
+    254: TermCmd_SetFTPDirectory(TP, ParamStr);          { SET-FTPDIRECTORY }
+    255: TermCmd_GetFTPWorkingDirectory(TP, ParamStr);   { GET-FTPWORKINGDIRECTORY }
+    256: TermCmd_SetFTPWorkingDirectory(TP, ParamStr);   { SET-FTPWORKINGDIRECTORY }
+    257: TermCmd_TestFTPPath(TP, ParamStr);              { TEST-FTPPATH }
+    258: TermCmd_GetFTPServerInfo(TP, ParamStr);         { GET-FTPSERVERINFO }
+    259: TermCmd_InvokeFTPCommand(TP, ParamStr);         { INVOKE-FTPCOMMAND }
+    260: TermCmd_GetFTPTransfer(TP, ParamStr);           { GET-FTPTRANSFER }
+    261: TermCmd_StopFTPTransfer(TP, ParamStr);          { STOP-FTPTRANSFER }
+    262: TermCmd_SetFTPTransferMode(TP, ParamStr);       { SET-FTPTRANSFERMODE }
+    263: TermCmd_SetFTPTransferType(TP, ParamStr);       { SET-FTPTRANSFERTYPE }
+    264: TermCmd_SetFTPPassiveMode(TP, ParamStr);        { SET-FTPPASSIVEMODE }
+    265: TermCmd_GetFTPConfiguration(TP, ParamStr);      { GET-FTPCONFIGURATION }
+    266: TermCmd_SetFTPConfiguration(TP, ParamStr);      { SET-FTPCONFIGURATION }
+    267: TermCmd_ExportFTPConfiguration(TP, ParamStr);   { EXPORT-FTPCONFIGURATION }
+    268: TermCmd_ImportFTPConfiguration(TP, ParamStr);   { IMPORT-FTPCONFIGURATION }
     60: TermCmd_LOG(TP, ParamStr);
     85: TermCmd_DEVENV(TP, ParamStr);
     61: TermCmd_HELP(TP);                        { HELP/GET-HELP/? }
