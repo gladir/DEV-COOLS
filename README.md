@@ -65,6 +65,12 @@ L'application DEVENV possède plusieurs terminaux pour répondre aux différente
 		<td>AS68</td>		
 	</tr>
 	<tr>
+		<td><b>Apple DOS</b></td>
+		<td>Apple II</td>
+		<td>Emulateur Apple II</td>
+		<td></td>
+	</tr>
+	<tr>
 		<td><b>AmigaDOS</b></td>
 		<td>Amiga</td>
 		<td>Emulateur Amiga</td>
@@ -565,6 +571,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		<tr>
 			<td><b>DISEXE.PAS</b></td>
 			<td>Cette commande permet de lancer le désassembleur de fichiers EXE (MZ DOS 16 bits / PE Windows 32 bits).</td>
+		</tr>
+		<tr>
+			<td><b>DISNT.PAS</b></td>
+			<td>Cette commande permet de lancer le désassembleur et analyseur Windows NT PE/COFF.</td>
 		</tr>
 		<tr>
 			<td><b>DISOBJ.PAS</b></td>
