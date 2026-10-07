@@ -93,6 +93,7 @@ Var
  InstructionsChanged:Boolean;
  ExpressionValue:TExprValue;
  ExpressionKnown:Boolean;
+ ValueContext:TString;
  References:Array[0..MAX_REFERENCES-1] Of TReference;
  ReferenceCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
@@ -634,31 +635,42 @@ Begin
  Else If ExpressionValue.Rel=1 Then EquSection:=SEC_RELOCATABLE;
 End;
 
-Procedure CheckRange(V:LongInt; Bits:Byte; AddressOnly:Boolean);
-Var Minimum,Maximum:LongInt;
+Function CheckRange(V:LongInt; Bits:Byte; AddressOnly:Boolean):Boolean;
+Var Minimum,Maximum:LongInt; Actual,Lo,Hi,Width:TString;
 Begin
- If Pass<>2 Then Exit;
+ CheckRange:=True; If Pass<>2 Then Exit;
  If Bits=8 Then Begin Minimum:=-128; Maximum:=255; End
  Else Begin Minimum:=-32768; Maximum:=65535; End;
  If AddressOnly Then Minimum:=0;
- If (V<Minimum) Or (V>Maximum) Then
-  If Bits=8 Then Error('Valeur hors limite 8 bits') Else Error('Valeur hors limite 16 bits');
+ If (V<Minimum) Or (V>Maximum) Then Begin
+  Str(V,Actual); Str(Minimum,Lo); Str(Maximum,Hi); Str(Bits,Width);
+  Error(ValueContext+': valeur '+Actual+' hors limite '+Width+
+   ' bits (attendu '+Lo+'..'+Hi+')');
+  CheckRange:=False;
+ End;
 End;
 
-Procedure EmitByte(B:Byte; Var Bytes:TString);
+Procedure AdvanceInvalidValue(Count:LongInt);
 Begin
+ Inc(PC,Count); If Not InDsect Then Inc(ObjPC,Count);
+End;
+
+Procedure EmitByte(B:LongInt; Var Bytes:TString);
+Begin
+ If Not CheckRange(B,8,False) Then Begin AdvanceInvalidValue(1); Exit; End;
  If InDsect Then Begin Inc(PC); Exit; End;
+ B:=B And $FF;
  Bytes:=Bytes+Chr(B); If Pass=2 Then StoreObjectByte(ObjPC,B);
  Inc(PC); Inc(ObjPC);
 End;
 
 Procedure EmitWord(V:LongInt; Var Bytes:TString);Begin
- CheckRange(V,16,False);
+ If Not CheckRange(V,16,False) Then Begin AdvanceInvalidValue(2); Exit; End;
  EmitByte(V And $FF,Bytes); EmitByte((V Shr 8) And $FF,Bytes);
 End;
 
 Procedure EmitBigWord(V:LongInt; Var Bytes:TString);Begin
- CheckRange(V,16,False);
+ If Not CheckRange(V,16,False) Then Begin AdvanceInvalidValue(2); Exit; End;
  EmitByte((V Shr 8) And $FF,Bytes); EmitByte(V And $FF,Bytes);
 End;
 
@@ -958,15 +970,15 @@ End;
 Procedure ProcessLine(Source:TString);
 Var
  Lab,M,A,C,E,Item,Bytes:TString;
- V,OldPC:LongInt;
- Known:Boolean;
+ V,OldPC,FillValue:LongInt;
+ Known,ValidValue:Boolean;
  Mode,Size:Byte;
  O,P,I,Code:Integer;
 Begin
  Inc(LineNo); OldPC:=PC; ListObjAddress:=ObjPC; Bytes:='';
  If (Trim(Source)<>'') And (Trim(Source)[1]='*') Then Begin
   ListLine(PC,'',Source); Exit;
- End; ParseFields(Source,Lab,M,A,C);
+ End; ParseFields(Source,Lab,M,A,C); ValueContext:=M+' '+A;
  If M='DO' Then Begin
   V:=Eval(A,Known); CondStack[CondDepth]:=Active; Inc(CondDepth);
   Active:=Active And Known And (V<>0); ListLine(PC,'',Source); Exit;
@@ -1098,9 +1110,8 @@ Begin
  If (M='DFB') Or (M='DB') Then Begin
   A:=A+',';
   While A<>'' Do Begin
-   Item:=TakeExpression(A); V:=Eval(Item,Known);
+   Item:=TakeExpression(A); ValueContext:=M+' '+Item; V:=Eval(Item,Known);
    If Not Known Then Error('Valeur DFB inconnue: '+Item);
-   If Known Then CheckRange(V,8,False);
    AddReloc(ObjPC,1);
    EmitByte(V,Bytes);
   End;
@@ -1108,14 +1119,14 @@ Begin
  Else If (M='DW') Or (M='DA') Then Begin
   A:=A+',';
   While A<>'' Do Begin
-   Item:=TakeExpression(A); V:=Eval(Item,Known);
+   Item:=TakeExpression(A); ValueContext:=M+' '+Item; V:=Eval(Item,Known);
    If Not Known Then Error('Valeur DW inconnue: '+Item); AddReloc(ObjPC,3); EmitWord(V,Bytes);
   End;
  End
  Else If M='DDB' Then Begin
   A:=A+',';
   While A<>'' Do Begin
-   Item:=TakeExpression(A); V:=Eval(Item,Known);
+   Item:=TakeExpression(A); ValueContext:=M+' '+Item; V:=Eval(Item,Known);
    If Not Known Then Error('Valeur DDB inconnue: '+Item); AddReloc(ObjPC,5); EmitBigWord(V,Bytes);
   End;
  End
@@ -1128,9 +1139,24 @@ Begin
  End
  Else If (M='DS') Or (M='DFS') Then Begin
   Item:=TakeExpression(A); C:=Trim(A); If C='' Then C:='0';
-  V:=Eval(Item,Known); If Not Known Or (V<0) Then Error('Taille DS inconnue ou negative') Else Begin
-   O:=Eval(C,Known); If Not Known Or (O<0) Or (O>255) Then Error('Octet de remplissage DS invalide')
-   Else For I:=1 To V Do EmitByte(O,Bytes);
+  V:=Eval(Item,Known);
+  If Not Known Then Error(M+': taille inconnue: '+Item)
+  Else If V<0 Then Begin
+   Str(V,E); Error(M+': taille negative '+E+' (attendu 0..65536)');
+  End Else If V>65536 Then Begin
+   Str(V,E); Error(M+': taille '+E+' hors limite (attendu 0..65536)');
+  End Else If (PC<0) Or (PC>65536-V) Or
+   ((Not InDsect) And ((ObjPC<0) Or (ObjPC>65536-V))) Then
+   Error(M+': reservation depassant l''espace d''adressage 16 bits')
+  Else Begin
+   ValueContext:=M+' remplissage '+C;
+   FillValue:=Eval(C,Known);
+   If Not Known Then Error(M+': octet de remplissage inconnu: '+C)
+   Else If CheckRange(FillValue,8,True) Then Begin
+    { V est LongInt: une reservation de 65536 octets doit aussi
+      fonctionner avec les Integer 16 bits du mode Turbo Pascal. }
+    While V>0 Do Begin EmitByte(FillValue,Bytes); Dec(V); End;
+   End;
   End;
  End
  Else If M='HEX' Then Begin
@@ -1169,13 +1195,17 @@ Begin
   End; If O<0 Then Error('Mode d''adressage illegal pour '+M) Else
   Begin
    TrackInstruction(Mode,Size);
+   ValidValue:=True;
    If Size>1 Then Begin
     If Mode=AM_REL Then Begin
-     CheckRange(V,16,True);
+     ValidValue:=CheckRange(V,16,True);
      If (ExpressionValue.ExternalIndex>=0) Or (ExpressionValue.Part<>0) Then
       Error('Cible de branchement externe ou extraite interdite');
-    End Else If Size=2 Then CheckRange(V,8,Mode<>AM_IMM)
-    Else CheckRange(V,16,True);
+    End Else If Size=2 Then ValidValue:=CheckRange(V,8,Mode<>AM_IMM)
+    Else ValidValue:=CheckRange(V,16,True);
+   End;
+   If Not ValidValue Then Begin
+    AdvanceInvalidValue(Size); ListLine(OldPC,'',Source); Exit;
    End;
    EmitByte(O,Bytes); If Mode=AM_REL Then Begin
     V:=V-(PC+1); If Known And ((V<-128) Or (V>127)) Then Error('Branchement hors limite');
