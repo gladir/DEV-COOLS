@@ -425,6 +425,7 @@ Begin
   Begin
    V:=0; Val(S,V,Code); If Code<>0 Then Begin
     Known:=False;
+    If Pass=2 Then Error('Symbole non defini ou valeur invalide: '+S);
     If (C<0) And (Pass=1) Then C:=GetOrCreateSymbol(S);
    End;
   End;
@@ -447,7 +448,10 @@ Begin
    T:=Copy(S,Start,I-Start); If Trim(T)<>'' Then V:=V+Sign*EvalAtom(T,Known);
    If I<=Length(S) Then If S[I]='-' Then Sign:=-1 Else Sign:=1; Start:=I+1;
   End; Inc(I);
- End; Eval:=V;
+ End;
+ If Trim(S)='' Then Known:=False;
+ If (Pass=2) And Not Known Then Error('Expression inconnue: '+S);
+ Eval:=V;
 End;
 
 { Les differences de deux adresses REL sont absolues; une adresse REL
@@ -902,9 +906,14 @@ Begin
  End
   Else
  Begin
-  V:=Eval(A,Known); I:=FindSymbol(ExpressionSymbol(A));
+  { Extraire l'expression avant de l'evaluer: #, ,X et parentheses
+    appartiennent au mode d'adressage, pas au nom du symbole. }
+  DetermineMode(M,A,0,False,Mode,Size,E);
+  V:=0; Known:=True;
+  If Size>1 Then V:=Eval(E,Known);
+  I:=FindSymbol(ExpressionSymbol(E));
   If (I>=0) And Symbols[I].External Then Known:=False;
-  DetermineMode(M,A,V,Known,Mode,Size,E); V:=Eval(E,Known);
+  DetermineMode(M,A,V,Known,Mode,Size,E);
   O:=Opcode(M,Mode); If (O<0) And (Mode In [AM_ZP,AM_ZPX,AM_ZPY]) Then Begin
    Inc(Mode,3); Inc(Size); O:=Opcode(M,Mode);
   End; If O<0 Then Error('Mode d''adressage illegal pour '+M) Else
@@ -1024,6 +1033,14 @@ Begin
  End;
 End;
 
+Procedure RemoveInvalidObject;
+Var F:File; E:Integer;
+Begin
+ Assign(F,ObjName); Erase(F); E:=IOResult;
+ If (E<>0) And (E<>2) And (E<>3) Then
+  Error('Impossible de supprimer le fichier objet invalide: '+ObjName);
+End;
+
 Procedure Help;Begin
  WriteLn('EDASM ',VERSION,' - Cette commande permet de lancer un assembleur Apple EDASM compatible 6502.');
  WriteLn;
@@ -1101,6 +1118,7 @@ BEGIN
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
  ValidateExternalSymbols;
  If Errors=0 Then WriteObjectFile;
+ If Errors<>0 Then RemoveInvalidObject;
  If UseListing Then Begin
   WriteSymbolTable;
   Close(ListText);
