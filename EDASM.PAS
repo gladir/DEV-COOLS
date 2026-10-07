@@ -16,6 +16,7 @@ Uses DOS;
 Const
  VERSION='1.4';
  MAX_SYMBOLS=4096;
+ MAX_STABILIZATION_PASSES=MAX_SYMBOLS+2;
  MAX_REFERENCES=8192;
  MAX_LINE=255;
  MAX_RELOCS=8192;
@@ -67,6 +68,13 @@ Type
   SymbolName:String[31];
   Aux:Byte;
  End;
+ PInstructionState=^TInstructionState;
+ TInstructionState=Record
+  Next:PInstructionState;
+  SourceLine:Integer;
+  Address,ObjectAddress:LongInt;
+  Mode,Size:Byte;
+ End;
 
 Var
  ListText:Text;
@@ -75,6 +83,8 @@ Var
  SymbolCount:Integer;
  PreviousSymbols:Array[0..MAX_SYMBOLS-1] Of TSymbolState;
  PhaseStable:Boolean;
+ Instructions,InstructionCursor,LastInstruction:PInstructionState;
+ InstructionsChanged:Boolean;
  References:Array[0..MAX_REFERENCES-1] Of TReference;
  ReferenceCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
@@ -716,6 +726,40 @@ End;
 
 Procedure ProcessSourceFile(Name:TString; Depth:Integer); Forward;
 
+{ Compare chaque instruction, meme si deux changements de taille se
+  compensent et laissent les symboles et l'adresse finale inchanges. }
+Procedure TrackInstruction(Mode,Size:Byte);
+Var P:PInstructionState; Changed:Boolean;
+Begin
+ P:=InstructionCursor; Changed:=P=Nil;
+ If P=Nil Then Begin
+  New(P); P^.Next:=Nil;
+  If LastInstruction=Nil Then Instructions:=P Else LastInstruction^.Next:=P;
+ End Else
+  Changed:=(P^.SourceLine<>LineNo) Or (P^.Address<>PC) Or
+   (P^.ObjectAddress<>ObjPC) Or (P^.Mode<>Mode) Or (P^.Size<>Size);
+ If Changed Then Begin
+  InstructionsChanged:=True;
+  If Pass=2 Then Error('Erreur de phase: mode, taille ou adresse d''instruction modifie');
+ End;
+ P^.SourceLine:=LineNo; P^.Address:=PC; P^.ObjectAddress:=ObjPC;
+ P^.Mode:=Mode; P^.Size:=Size;
+ LastInstruction:=P; InstructionCursor:=P^.Next;
+End;
+
+Procedure FinishInstructionPass;
+Var P:PInstructionState;
+Begin
+ If InstructionCursor<>Nil Then Begin
+  InstructionsChanged:=True;
+  If Pass=2 Then Error('Erreur de phase: nombre d''instructions modifie');
+ End;
+ While InstructionCursor<>Nil Do Begin
+  P:=InstructionCursor; InstructionCursor:=P^.Next; Dispose(P);
+ End;
+ If LastInstruction=Nil Then Instructions:=Nil Else LastInstruction^.Next:=Nil;
+End;
+
 Procedure ProcessLine(Source:TString);
 Var
  Lab,M,A,C,E,Item,Bytes:TString;
@@ -927,6 +971,7 @@ Begin
    Inc(Mode,3); Inc(Size); O:=Opcode(M,Mode);
   End; If O<0 Then Error('Mode d''adressage illegal pour '+M) Else
   Begin
+   TrackInstruction(Mode,Size);
    EmitByte(O,Bytes); If Mode=AM_REL Then Begin
     V:=V-(PC+1); If Known And ((V<-128) Or (V>127)) Then Error('Branchement hors limite');
     EmitByte(V And $FF,Bytes);
@@ -959,11 +1004,13 @@ End;
 
 Procedure AssembleOnePass;
 Begin
+ InstructionCursor:=Instructions; LastInstruction:=Nil; InstructionsChanged:=False;
  LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
  ObjExplicit:=False; ListObjAddress:=0;
  CondDepth:=0; Active:=True; MSBMode:=False; RelMode:=False; InDsect:=False;
  RepeatChar:='*'; CurrentScope:='';
  ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
+ FinishInstructionPass;
  If InDsect Then Error('DSECT sans DEND');
  If CondDepth<>0 Then Error('DO sans FIN');
 End;
@@ -984,13 +1031,13 @@ Begin
   End;
   AssembleOnePass; Inc(Iteration);
   PhaseStable:=(PreviousCount=SymbolCount) And (PreviousPC=PC) And
-   (PreviousObjPC=ObjPC);
+   (PreviousObjPC=ObjPC) And Not InstructionsChanged;
   For I:=0 To PreviousCount-1 Do
    If (PreviousSymbols[I].Value<>Symbols[I].Value) Or
       (PreviousSymbols[I].Defined<>Symbols[I].Defined) Or
       (PreviousSymbols[I].Relocatable<>Symbols[I].Relocatable) Or
       (PreviousSymbols[I].Section<>Symbols[I].Section) Then PhaseStable:=False;
- Until PhaseStable Or (Iteration>=MAX_SYMBOLS+2);
+ Until PhaseStable Or (Iteration>=MAX_STABILIZATION_PASSES);
 End;
 
 Function SymbolTypeName(I:Integer):TString;
@@ -1142,6 +1189,7 @@ Begin
 End;
 
 BEGIN
+ Instructions:=Nil;
  ParseArgs; SymbolCount:=0; NextEsdNumber:=1; Errors:=0; Pass:=1; AssembleOnePass;
  If UseListing Then Begin
   Assign(ListText,ListName); Rewrite(ListText); If IOResult<>0 Then Begin
@@ -1154,7 +1202,7 @@ BEGIN
  Errors:=0; RelocCount:=0; ReferenceCount:=0;
  ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
  InitObjectImage; Pass:=2; AssembleOnePass;
- If Not PhaseStable Then Error('Erreur de phase: les symboles ne se stabilisent pas');
+ If Not PhaseStable Then Error('Erreur de phase: limite de stabilisation atteinte (symboles ou instructions)');
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
  ValidateExternalSymbols;
  If Errors=0 Then WriteObjectFile;
@@ -1163,6 +1211,9 @@ BEGIN
   WriteSymbolTable;
   Close(ListText);
  End;
+ { Libere l'historique sans lancer une autre passe. }
+ InstructionCursor:=Instructions; LastInstruction:=Nil; Pass:=0;
+ FinishInstructionPass;
  If Errors=0 Then Begin
   If Not Quiet Then If ObjectMax>=ObjectMin Then
    WriteLn('Assemblage termine: ',ObjName,' (',ObjectMax-ObjectMin+1,
