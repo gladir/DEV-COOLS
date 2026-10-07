@@ -62,6 +62,12 @@ Type
   Defined,Relocatable:Boolean;
   Section:Byte;
  End;
+ TExprValue=Record
+  Value,FullValue:LongInt;
+  Rel:Integer;
+  ExternalIndex:Integer;
+  Part:Byte;
+ End;
  TReloc=Record
   Offset:LongInt;
   Kind:Byte;
@@ -85,6 +91,7 @@ Var
  PhaseStable:Boolean;
  Instructions,InstructionCursor,LastInstruction:PInstructionState;
  InstructionsChanged:Boolean;
+ ExpressionValue:TExprValue;
  References:Array[0..MAX_REFERENCES-1] Of TReference;
  ReferenceCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
@@ -170,7 +177,8 @@ Const
 Begin
  N:=Up(Trim(N));
  IsReservedSymbol:=(Pos(','+N+',',R1)>0) Or (Pos(','+N+',',R2)>0) Or
-                  (Pos(','+N+',',R3)>0);
+                  (Pos(','+N+',',R3)>0) Or
+                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,')>0);
 End;
 
 Function FindSymbol(N:TString):Integer;
@@ -395,109 +403,249 @@ Begin
  ExpressionSymbol:=Up(Copy(S,A,I-A));
 End;
 
-Function Eval(S:TString; Var Known:Boolean):LongInt; Forward;
+Function Eval(S:TString; Var Known:Boolean):LongInt;
+Var Position,Depth:Integer; Token:TString; Number:LongInt;
+    ResultValue:TExprValue;
+
+Procedure Fail(MessageText:TString);
+Begin
+ Known:=False;
+ If Pass=2 Then Error(MessageText);
+End;
+
+Function EmptyValue:TExprValue;
+Var R:TExprValue;
+Begin
+ FillChar(R,SizeOf(R),0); R.ExternalIndex:=-1; EmptyValue:=R;
+End;
+
+Function Digit(C:Char):Integer;
+Begin
+ C:=UpCase(C);
+ If C In ['0'..'9'] Then Digit:=Ord(C)-Ord('0')
+ Else If C In ['A'..'F'] Then Digit:=Ord(C)-Ord('A')+10
+ Else Digit:=-1;
+End;
+
+Procedure NextToken;
+Var Start,Code,D,J:Integer; C:Char; TextValue:TString;
+Begin
+ While (Position<=Length(S)) And (S[Position] In [' ',#9]) Do Inc(Position);
+ Token:=''; Number:=0;
+ If Position>Length(S) Then Exit;
+ C:=S[Position]; Start:=Position; Inc(Position);
+ If C='''' Then Begin
+  Token:='#NUMBER';
+  If Position>Length(S) Then Begin Fail('Caractere non termine'); Exit; End;
+  C:=S[Position]; Inc(Position);
+  If C='\' Then Begin
+   If Position>Length(S) Then Begin Fail('Echappement incomplet'); Exit; End;
+   C:=S[Position]; Inc(Position);
+   Case C Of
+    'n':Number:=10; 'r':Number:=13; 't':Number:=9; '0':Number:=0;
+    '\','''','"':Number:=Ord(C);
+    'x':Begin
+     For J:=1 To 2 Do Begin
+      D:=-1; If Position<=Length(S) Then D:=Digit(S[Position]);
+      If D<0 Then Begin Fail('Echappement hexadecimal invalide'); D:=0; End;
+      Number:=Number*16+D; Inc(Position);
+     End;
+    End;
+    Else Fail('Echappement de caractere inconnu');
+   End;
+  End Else Number:=Ord(C);
+  If (Position>Length(S)) Or (S[Position]<>'''') Then
+   Fail('Un caractere entre apostrophes est attendu') Else Inc(Position);
+  Exit;
+ End;
+ If C In ['0'..'9','$','%'] Then Begin
+  While (Position<=Length(S)) And (S[Position] In ['0'..'9','A'..'Z','a'..'z']) Do Inc(Position);
+  TextValue:=Copy(S,Start,Position-Start); Token:='#NUMBER';
+  If C='%' Then Begin
+   If Length(TextValue)=1 Then Fail('Nombre binaire vide');
+   For J:=2 To Length(TextValue) Do Begin
+    If Not (TextValue[J] In ['0','1']) Then Fail('Nombre binaire invalide');
+    If J>33 Then Fail('Debordement de constante 32 bits');
+    Number:=(Number Shl 1) Or Ord(TextValue[J]='1');
+   End;
+  End Else Begin
+   Val(TextValue,Number,Code);
+   If Code<>0 Then Begin Number:=0; Fail('Constante numerique invalide: '+TextValue); End;
+  End;
+  Exit;
+ End;
+ If C In ['A'..'Z','a'..'z','_','.','@'] Then Begin
+  While (Position<=Length(S)) And
+   (S[Position] In ['A'..'Z','a'..'z','0'..'9','_','.','@']) Do Inc(Position);
+  Token:=Up(Copy(S,Start,Position-Start)); Exit;
+ End;
+ Token:=C;
+ If (Position<=Length(S)) And (S[Position]=C) And (C In ['<','>']) Then Begin
+  Token:=Token+C; Inc(Position);
+ End;
+End;
+
+Function Checked(V:Extended):LongInt;
+Begin
+ If (V<-2147483648.0) Or (V>2147483647.0) Then Begin
+  Fail('Debordement arithmetique 32 bits'); Checked:=0;
+ End Else Checked:=Trunc(V);
+End;
+
+Function Priority(Op:TString):Integer;
+Begin
+ Priority:=0;
+ If (Op='|') Or (Op='OR') Then Priority:=1
+ Else If (Op='^') Or (Op='XOR') Then Priority:=2
+ Else If (Op='&') Or (Op='AND') Then Priority:=3
+ Else If (Op='<<') Or (Op='>>') Or (Op='SHL') Or (Op='SHR') Then Priority:=4
+ Else If (Op='+') Or (Op='-') Then Priority:=5
+ Else If (Op='*') Or (Op='/') Or (Op='DIV') Or (Op='MOD') Then Priority:=6;
+End;
+
+Function ParseExpression(MinPriority:Integer):TExprValue; Forward;
+
+Function ParseUnary:TExprValue;
+Var R:TExprValue; Op:TString; I:Integer;
+Begin
+ R:=EmptyValue; Inc(Depth);
+ If Depth>64 Then Begin
+  Fail('Expression trop imbriquee'); Token:=''; Dec(Depth); ParseUnary:=R; Exit;
+ End;
+ Op:=Token;
+ If (Op='+') Or (Op='-') Or (Op='~') Or (Op='NOT') Or
+    (Op='<') Or (Op='>') Then Begin
+  NextToken; R:=ParseUnary;
+  If Op='-' Then Begin
+   R.Value:=Checked(-1.0*R.Value); R.Rel:=-R.Rel;
+   If (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Negation relogeable invalide');
+  End Else If (Op='~') Or (Op='NOT') Then Begin
+   If (R.Rel<>0) Or (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Operation logique relogeable invalide');
+   R.Value:=Not R.Value;
+  End Else If (Op='<') Or (Op='>') Then Begin
+   If R.Part<>0 Then Fail('Extraction relogeable imbriquee invalide');
+   R.FullValue:=R.Value;
+   If (R.Rel<>0) Or (R.ExternalIndex>=0) Then
+    If Op='>' Then R.Part:=1 Else R.Part:=2;
+   If Op='>' Then R.Value:=R.Value And $FF Else R.Value:=(R.Value Shr 8) And $FF;
+  End;
+ End Else If Op='(' Then Begin
+  NextToken; R:=ParseExpression(1);
+  If Token<>')' Then Fail('Parenthese fermante attendue') Else NextToken;
+ End Else If Op='#NUMBER' Then Begin R.Value:=Number; NextToken; End
+ Else If Op='*' Then Begin
+  R.Value:=PC; If RelMode And Not InDsect Then R.Rel:=1; NextToken;
+ End Else If (Op<>'') And (Op[1] In ['A'..'Z','_','.','@']) And
+  (Priority(Op)=0) Then Begin
+  I:=FindSymbol(Op);
+  If I<0 Then I:=GetOrCreateSymbol(Op);
+  If I>=0 Then Begin
+   AddCrossReference(I);
+   If Symbols[I].Defined Then Begin
+    R.Value:=Symbols[I].Value;
+    If Symbols[I].External Then R.ExternalIndex:=I
+    Else If Symbols[I].Relocatable Then R.Rel:=1;
+   End Else Fail('Symbole non defini: '+Op);
+  End Else Known:=False;
+  NextToken;
+ End Else Begin
+  Fail('Operande attendu: '+Op); If Token<>'' Then NextToken;
+ End;
+ Dec(Depth); ParseUnary:=R;
+End;
+
+Function ParseExpression(MinPriority:Integer):TExprValue;
+Var L,R:TExprValue; Op:TString; P,Sign:Integer;
+Begin
+ L:=ParseUnary;
+ While (Priority(Token)>=MinPriority) And (Token<>'') Do Begin
+  Op:=Token; P:=Priority(Op); NextToken; R:=ParseExpression(P+1);
+  If (Op='+') Or (Op='-') Then Begin
+   Sign:=1; If Op='-' Then Sign:=-1;
+   If (L.Part<>0) Or (R.Part<>0) Then Fail('Calcul apres extraction relogeable interdit');
+   If R.ExternalIndex>=0 Then Begin
+    If (Op='-') And (L.ExternalIndex=R.ExternalIndex) Then L.ExternalIndex:=-1
+    Else If (Op='+') And (L.ExternalIndex<0) Then L.ExternalIndex:=R.ExternalIndex
+    Else Fail('Expression externe non relogeable');
+   End;
+   L.Rel:=L.Rel+Sign*R.Rel;
+   L.Value:=Checked(1.0*L.Value+1.0*Sign*R.Value);
+  End Else Begin
+   If (L.Rel<>0) Or (R.Rel<>0) Or (L.ExternalIndex>=0) Or
+      (R.ExternalIndex>=0) Or (L.Part<>0) Or (R.Part<>0) Then
+    Fail('Operateur exigeant des valeurs absolues: '+Op);
+   If Op='*' Then L.Value:=Checked(1.0*L.Value*R.Value)
+   Else If (Op='/') Or (Op='DIV') Or (Op='MOD') Then Begin
+    If R.Value=0 Then Begin Fail('Division par zero'); L.Value:=0; End
+    Else If (L.Value=(-2147483647-1)) And (R.Value=-1) Then
+     Begin Fail('Debordement arithmetique 32 bits'); L.Value:=0; End
+    Else If Op='MOD' Then L.Value:=L.Value Mod R.Value Else L.Value:=L.Value Div R.Value;
+   End Else If (Op='&') Or (Op='AND') Then L.Value:=L.Value And R.Value
+   Else If (Op='|') Or (Op='OR') Then L.Value:=L.Value Or R.Value
+   Else If (Op='^') Or (Op='XOR') Then L.Value:=L.Value Xor R.Value
+   Else Begin
+    If (R.Value<0) Or (R.Value>31) Then Fail('Decalage hors limite (0..31)')
+    Else If (Op='<<') Or (Op='SHL') Then L.Value:=L.Value Shl R.Value
+    Else L.Value:=L.Value Shr R.Value;
+   End;
+  End;
+ End;
+ ParseExpression:=L;
+End;
+
+Begin
+ Known:=True; Position:=1; Depth:=0; NextToken;
+ ResultValue:=ParseExpression(1);
+ If Token<>'' Then Fail('Operateur inattendu: '+Token);
+ If (ResultValue.Rel<0) Or (ResultValue.Rel>1) Or
+  ((ResultValue.ExternalIndex>=0) And (ResultValue.Rel<>0)) Then
+  Fail('Expression non relogeable');
+ If (Pass=2) And (ResultValue.ExternalIndex>=0) And Not RelMode Then
+  Fail('Symbole externe exigeant le mode REL');
+ If ResultValue.Part=0 Then ResultValue.FullValue:=ResultValue.Value;
+ ExpressionValue:=ResultValue;
+ If (Pass=2) And Not Known Then Error('Expression inconnue: '+S);
+ Eval:=ResultValue.Value;
+End;
 
 Procedure AddReloc(Offset:LongInt; Kind:Byte; Expr:TString);
-Var N,T:TString; I:Integer; V:LongInt; Known:Boolean;
+Var Known:Boolean;
 Begin
- If (Pass<>2) Or Not RelMode Or InDsect Then Exit; N:=ExpressionSymbol(Expr);
- If N='' Then Exit; I:=FindSymbol(N);
- If (I<0) Or ((Not Symbols[I].External) And (Not Symbols[I].Relocatable)) Then Exit;
+ If (Pass<>2) Or Not RelMode Or InDsect Then Exit;
+ Eval(Expr,Known);
+ If Not Known Or ((ExpressionValue.Rel=0) And (ExpressionValue.ExternalIndex<0)) Then Exit;
  If RelocCount>=MAX_RELOCS Then Begin Error('Table de relocation pleine'); Exit; End;
+ If ExpressionValue.Part<>0 Then Begin
+  If Kind<>1 Then Begin Error('Extraction relogeable exige un octet'); Exit; End;
+  Kind:=ExpressionValue.Part;
+ End;
  Relocs[RelocCount].Offset:=Offset; Relocs[RelocCount].Kind:=Kind;
- Relocs[RelocCount].SymbolName:=Symbols[I].Name; Relocs[RelocCount].Aux:=0;
- T:=Trim(Expr); If (T<>'') And (T[1] In ['<','>','#']) Then Delete(T,1,1);
- V:=Eval(T,Known);
- If Known And (Kind=2) Then Relocs[RelocCount].Aux:=V And $FF;
+ Relocs[RelocCount].SymbolName:='';
+ If ExpressionValue.ExternalIndex>=0 Then
+  Relocs[RelocCount].SymbolName:=Symbols[ExpressionValue.ExternalIndex].Name;
+ Relocs[RelocCount].Aux:=0;
+ If Kind=2 Then Relocs[RelocCount].Aux:=ExpressionValue.FullValue And $FF;
  Inc(RelocCount);
 End;
 
-Function EvalAtom(S:TString; Var Known:Boolean):LongInt;
-Var
- V:LongInt;
- C:Integer;
- Code:Integer;
- Low,High:Boolean;
-Begin
- S:=Trim(S); Low:=False; High:=False; If S='' Then Begin
-  Known:=False; EvalAtom:=0; Exit;
- End;
- { EDASM historique: > donne l'octet faible et < l'octet fort. }
- If S[1]='>' Then Begin
-  Low:=True; Delete(S,1,1);
- End Else If S[1]='<' Then Begin
-  High:=True; Delete(S,1,1);
- End;
- If S='*' Then V:=PC Else If S[1]='$' Then Begin
-  Val('$'+Copy(S,2,255),V,Code); If Code<>0 Then Known:=False;
- End
- Else If S[1]='%' Then Begin
-  V:=0;
-  For C:=2 To Length(S) Do If S[C] In ['0','1'] Then V:=V*2+Ord(S[C])-48 Else Known:=
-  False;
- End
- Else If (S[1]='''') And (Length(S)>=2) Then V:=Ord(S[2]) Else
- Begin
-  C:=FindSymbol(S); If C>=0 Then AddCrossReference(C);
-  If (C>=0) And Symbols[C].Defined Then V:=Symbols[C].Value Else
-  Begin
-   V:=0; Val(S,V,Code); If Code<>0 Then Begin
-    Known:=False;
-    If Pass=2 Then Error('Symbole non defini ou valeur invalide: '+S);
-    If (C<0) And (Pass=1) Then C:=GetOrCreateSymbol(S);
-   End;
-  End;
- End;
- If Low Then V:=V And $FF Else If High Then V:=(V Shr 8) And $FF; EvalAtom:=V;
-End;
-
-Function Eval(S:TString; Var Known:Boolean):LongInt;
-Var
- I,Start:Integer;
- Sign:LongInt;
- T:TString;
- V:LongInt;
- InQuote:Boolean;
-Begin
- Known:=True; V:=0; Sign:=1; Start:=1; InQuote:=False; I:=1;
- While I<=Length(S)+1 Do Begin
-  If (I<=Length(S)) And (S[I]='''') Then InQuote:=Not InQuote;
-  If (I>Length(S)) Or (((S[I]='+') Or (S[I]='-')) And Not InQuote) Then Begin
-   T:=Copy(S,Start,I-Start); If Trim(T)<>'' Then V:=V+Sign*EvalAtom(T,Known);
-   If I<=Length(S) Then If S[I]='-' Then Sign:=-1 Else Sign:=1; Start:=I+1;
-  End; Inc(I);
- End;
- If Trim(S)='' Then Known:=False;
- If (Pass=2) And Not Known Then Error('Expression inconnue: '+S);
- Eval:=V;
-End;
-
-{ Les differences de deux adresses REL sont absolues; une adresse REL
-  plus une constante reste relogeable. Les extractions d'octet sont ABS. }
 Function EquSection(S:TString):Byte;
-Var I,Start,J,Balance,Sign:Integer; T:TString; InQuote:Boolean;
+Var Known:Boolean;
 Begin
- Balance:=0; Sign:=1; Start:=1; InQuote:=False;
- For I:=1 To Length(S)+1 Do Begin
-  If (I<=Length(S)) And (S[I]='''') Then InQuote:=Not InQuote;
-  If (I>Length(S)) Or ((S[I] In ['+','-']) And Not InQuote) Then Begin
-   T:=Trim(Copy(S,Start,I-Start));
-   If T='*' Then Begin
-    If RelMode And Not InDsect Then Inc(Balance,Sign);
-   End Else If T<>'' Then Begin
-    J:=FindSymbol(T);
-    If J>=0 Then Begin
-     If Symbols[J].External Then Error('EQU sur symbole externe interdit: '+T)
-     Else If Symbols[J].Relocatable Then Inc(Balance,Sign);
-    End;
-   End;
-   If I<=Length(S) Then If S[I]='-' Then Sign:=-1 Else Sign:=1;
-   Start:=I+1;
-  End;
- End;
- EquSection:=SEC_ABSOLUTE;
- If Balance=1 Then EquSection:=SEC_RELOCATABLE
- Else If Balance<>0 Then Error('Expression EQU non relogeable');
+ Eval(S,Known); EquSection:=SEC_ABSOLUTE;
+ If (ExpressionValue.ExternalIndex>=0) Or (ExpressionValue.Part<>0) Then
+  Error('EQU externe ou extraction relogeable interdit')
+ Else If ExpressionValue.Rel=1 Then EquSection:=SEC_RELOCATABLE;
+End;
+
+Procedure CheckRange(V:LongInt; Bits:Byte; AddressOnly:Boolean);
+Var Minimum,Maximum:LongInt;
+Begin
+ If Pass<>2 Then Exit;
+ If Bits=8 Then Begin Minimum:=-128; Maximum:=255; End
+ Else Begin Minimum:=-32768; Maximum:=65535; End;
+ If AddressOnly Then Minimum:=0;
+ If (V<Minimum) Or (V>Maximum) Then
+  If Bits=8 Then Error('Valeur hors limite 8 bits') Else Error('Valeur hors limite 16 bits');
 End;
 
 Procedure EmitByte(B:Byte; Var Bytes:TString);
@@ -508,10 +656,12 @@ Begin
 End;
 
 Procedure EmitWord(V:LongInt; Var Bytes:TString);Begin
+ CheckRange(V,16,False);
  EmitByte(V And $FF,Bytes); EmitByte((V Shr 8) And $FF,Bytes);
 End;
 
 Procedure EmitBigWord(V:LongInt; Var Bytes:TString);Begin
+ CheckRange(V,16,False);
  EmitByte((V Shr 8) And $FF,Bytes); EmitByte(V And $FF,Bytes);
 End;
 
@@ -903,7 +1053,8 @@ Begin
   While A<>'' Do Begin
    P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
    If Not Known Then Error('Valeur DFB inconnue: '+Item);
-   If (Item<>'') And (Item[1]='<') Then AddReloc(ObjPC,2,Item) Else AddReloc(ObjPC,1,Item);
+   If Known Then CheckRange(V,8,False);
+   AddReloc(ObjPC,1,Item);
    EmitByte(V,Bytes);
   End;
  End
@@ -964,14 +1115,20 @@ Begin
   DetermineMode(M,A,0,False,Mode,Size,E);
   V:=0; Known:=True;
   If Size>1 Then V:=Eval(E,Known);
-  I:=FindSymbol(ExpressionSymbol(E));
-  If (I>=0) And Symbols[I].External Then Known:=False;
+  If (Size>1) And (ExpressionValue.ExternalIndex>=0) Then Known:=False;
   DetermineMode(M,A,V,Known,Mode,Size,E);
   O:=Opcode(M,Mode); If (O<0) And (Mode In [AM_ZP,AM_ZPX,AM_ZPY]) Then Begin
    Inc(Mode,3); Inc(Size); O:=Opcode(M,Mode);
   End; If O<0 Then Error('Mode d''adressage illegal pour '+M) Else
   Begin
    TrackInstruction(Mode,Size);
+   If Size>1 Then Begin
+    If Mode=AM_REL Then Begin
+     If (ExpressionValue.ExternalIndex>=0) Or (ExpressionValue.Part<>0) Then
+      Error('Cible de branchement externe ou extraite interdite');
+    End Else If Size=2 Then CheckRange(V,8,Mode<>AM_IMM)
+    Else CheckRange(V,16,True);
+   End;
    EmitByte(O,Bytes); If Mode=AM_REL Then Begin
     V:=V-(PC+1); If Known And ((V<-128) Or (V>127)) Then Error('Branchement hors limite');
     EmitByte(V And $FF,Bytes);
