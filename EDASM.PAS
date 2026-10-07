@@ -56,6 +56,11 @@ Type
   SymbolIndex:Word;
   SourceLine:Word;
  End;
+ TSymbolState=Record
+  Value:LongInt;
+  Defined,Relocatable:Boolean;
+  Section:Byte;
+ End;
  TReloc=Record
   Offset:LongInt;
   Kind:Byte;
@@ -68,6 +73,8 @@ Var
  SrcName,ObjName,ListName:TString;
  Symbols:Array[0..MAX_SYMBOLS-1] Of TSymbol;
  SymbolCount:Integer;
+ PreviousSymbols:Array[0..MAX_SYMBOLS-1] Of TSymbolState;
+ PhaseStable:Boolean;
  References:Array[0..MAX_REFERENCES-1] Of TReference;
  ReferenceCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
@@ -166,7 +173,7 @@ Begin
  End; FindSymbol:=-1;
 End;
 
-Procedure DefineSymbol(N:TString; V:LongInt);
+Procedure DefineSymbol(N:TString; V:LongInt; Resolved:Boolean);
 Var
  I:Integer;
  WasLocal:Boolean;
@@ -188,11 +195,12 @@ Begin
   Symbols[I].Section:=SEC_UNDEF; Symbols[I].DefinedLine:=0;
  End Else If Symbols[I].External Then Begin
   Error('Definition d''un symbole externe: '+N); Exit;
- End Else If Symbols[I].Defined And ((Pass=1) Or
+ End Else If (Symbols[I].DefinedLine<>0) And ((Pass=1) Or
   ((Pass=2) And (Symbols[I].DefinedLine<>LineNo))) Then Begin
   Error('Symbole defini deux fois: '+N); Exit;
- End; Symbols[I].Value:=V; Symbols[I].Defined:=True;
- If Pass=1 Then Symbols[I].DefinedLine:=LineNo;
+ End;
+ Symbols[I].Value:=V; Symbols[I].Defined:=Resolved;
+ If Symbols[I].DefinedLine=0 Then Symbols[I].DefinedLine:=LineNo;
 End;
 
 Procedure InitObjectImage;
@@ -741,14 +749,15 @@ Begin
   Not IsLocalName(Lab) And Not IsReservedSymbol(Lab) Then
   CurrentScope:=Up(Lab);
  If (M='EQU') Or (M='=') Then Begin
-  V:=Eval(A,Known); If Not Known And (Pass=1) Then Error('Expression EQU inconnue');
-  DefineSymbol(Lab,V); I:=FindSymbol(Lab); If I>=0 Then Begin
-   Symbols[I].Section:=EquSection(A);
+  V:=Eval(A,Known);
+  DefineSymbol(Lab,V,Known); I:=FindSymbol(Lab); If I>=0 Then Begin
+   If Known Then Symbols[I].Section:=EquSection(A)
+   Else Symbols[I].Section:=SEC_UNDEF;
    Symbols[I].Relocatable:=Symbols[I].Section=SEC_RELOCATABLE;
   End; ListLine(V,'',Source); Exit;
  End;
  If (Lab<>'') And (M<>'ENTRY') And (M<>'EXTRN') Then Begin
-  DefineSymbol(Lab,PC); I:=FindSymbol(Lab);
+  DefineSymbol(Lab,PC,True); I:=FindSymbol(Lab);
   If I>=0 Then Begin
    If InDsect Then Symbols[I].Section:=SEC_DSECT
    Else If RelMode Then Symbols[I].Section:=SEC_RELOCATABLE
@@ -959,6 +968,31 @@ Begin
  If CondDepth<>0 Then Error('DO sans FIN');
 End;
 
+{ Une chaine de N EQU peut demander N passes. Ne pas considerer une
+  valeur provisoire comme definie, sinon les cycles deviennent des zeros. }
+Procedure StabilizeSymbols;
+Var I,Iteration,PreviousCount:Integer; PreviousPC,PreviousObjPC:LongInt;
+Begin
+ Pass:=0; Iteration:=0;
+ Repeat
+  PreviousCount:=SymbolCount; PreviousPC:=PC; PreviousObjPC:=ObjPC;
+  For I:=0 To SymbolCount-1 Do Begin
+   PreviousSymbols[I].Value:=Symbols[I].Value;
+   PreviousSymbols[I].Defined:=Symbols[I].Defined;
+   PreviousSymbols[I].Relocatable:=Symbols[I].Relocatable;
+   PreviousSymbols[I].Section:=Symbols[I].Section;
+  End;
+  AssembleOnePass; Inc(Iteration);
+  PhaseStable:=(PreviousCount=SymbolCount) And (PreviousPC=PC) And
+   (PreviousObjPC=ObjPC);
+  For I:=0 To PreviousCount-1 Do
+   If (PreviousSymbols[I].Value<>Symbols[I].Value) Or
+      (PreviousSymbols[I].Defined<>Symbols[I].Defined) Or
+      (PreviousSymbols[I].Relocatable<>Symbols[I].Relocatable) Or
+      (PreviousSymbols[I].Section<>Symbols[I].Section) Then PhaseStable:=False;
+ Until PhaseStable Or (Iteration>=MAX_SYMBOLS+2);
+End;
+
 Function SymbolTypeName(I:Integer):TString;
 Begin
  If Symbols[I].External Then SymbolTypeName:='EXTERN'
@@ -1027,6 +1061,11 @@ Procedure ValidateExternalSymbols;
 Var I:Integer;
 Begin
  For I:=0 To SymbolCount-1 Do Begin
+  If PhaseStable And Symbols[I].Defined And
+   ((PreviousSymbols[I].Value<>Symbols[I].Value) Or
+    (PreviousSymbols[I].Defined<>Symbols[I].Defined) Or
+    (PreviousSymbols[I].Section<>Symbols[I].Section)) Then
+   Error('Erreur de phase pour le symbole: '+Symbols[I].Name);
   If Symbols[I].PublicSym And Not Symbols[I].Defined Then
    Error('Symbole ENTRY non defini: '+Symbols[I].Name)
   Else If Not Symbols[I].Defined Then Error('Symbole non defini: '+Symbols[I].Name);
@@ -1111,10 +1150,11 @@ BEGIN
  End;
  { Stabilise les etiquettes et les choix page-zero/absolu apres la passe
    initiale. Les references avant peuvent modifier la taille du code. }
- Pass:=0; AssembleOnePass; AssembleOnePass; AssembleOnePass;
+ StabilizeSymbols;
  Errors:=0; RelocCount:=0; ReferenceCount:=0;
  ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
  InitObjectImage; Pass:=2; AssembleOnePass;
+ If Not PhaseStable Then Error('Erreur de phase: les symboles ne se stabilisent pas');
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
  ValidateExternalSymbols;
  If Errors=0 Then WriteObjectFile;
