@@ -17,6 +17,11 @@ Const
  VERSION='1.4';
  MAX_SYMBOLS=4096;
  MAX_STABILIZATION_PASSES=MAX_SYMBOLS+2;
+ {$IFDEF FPC}
+ MAX_DATA_TEXT=16384;
+ {$ELSE}
+ MAX_DATA_TEXT=255;
+ {$ENDIF}
  MAX_REFERENCES=8192;
  MAX_LINE=255;
  MAX_RELOCS=8192;
@@ -41,6 +46,11 @@ Const
 
 Type
  TString=String;
+ {$IFDEF FPC}
+ TDataText=AnsiString;
+ {$ELSE}
+ TDataText=String;
+ {$ENDIF}
  TObjectPage=Array[0..255] Of Byte;
  PObjectPage=^TObjectPage;
  TUsedPage=Array[0..255] Of Boolean;
@@ -180,7 +190,7 @@ Begin
  N:=Up(Trim(N));
  IsReservedSymbol:=(Pos(','+N+',',R1)>0) Or (Pos(','+N+',',R2)>0) Or
                   (Pos(','+N+',',R3)>0) Or
-                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,')>0);
+                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,DUP,')>0);
 End;
 
 Function FindSymbol(N:TString):Integer;
@@ -759,10 +769,32 @@ End;
 End;
 End;
 
-Procedure ParseFields(Line:TString; Var LabelName,Op,Arg,Comment:TString);
+Function TrimData(S:TDataText):TDataText;
+Var A,B:LongInt;
+Begin
+ A:=1; B:=Length(S);
+ While (A<=B) And (S[A] In [' ',#9]) Do Inc(A);
+ While (B>=A) And (S[B] In [' ',#9]) Do Dec(B);
+ TrimData:=Copy(S,A,B-A+1);
+End;
+
+Function IsDataDirective(M:TString):Boolean;
+Begin
+ IsDataDirective:=(M='DFB') Or (M='DB') Or (M='DW') Or (M='DA') Or
+  (M='DDB') Or (M='DCL') Or (M='ASC') Or (M='DCI');
+End;
+
+Function DataDelimiter(C:Char; M:TString):Boolean;
+Begin
+ DataDelimiter:=(C In ['''','"']) Or
+  (((M='ASC') Or (M='DCI')) And (C In ['/','!','|',':']));
+End;
+
+Procedure ParseFields(Line:TDataText; Var LabelName,Op:TString;
+                      Var Arg:TDataText; Var Comment:TString);
 Var
  I,P:Integer;
- HasLabel,Escaped:Boolean;
+ HasLabel,Escaped,ItemStart:Boolean;
  Quote:Char;
 
 Function Token:TString;
@@ -773,20 +805,34 @@ Begin
  While (I<=Length(Line)) And Not(Line[I] In [' ',#9]) Do Inc(I); Token:=Copy(Line,A,I-A);
 End;
 Begin
- LabelName:=''; Op:=''; Arg:=''; Comment:=''; P:=0; Quote:=#0; Escaped:=False;
- For I:=1 To Length(Line) Do Begin
+ LabelName:=''; Op:=''; Arg:=''; Comment:='';
+ If TrimData(Line)='' Then Exit;
+ If TrimData(Line)[1]=';' Then Exit;
+ HasLabel:=Not(Line[1] In [' ',#9]); I:=1;
+ If HasLabel Then Begin LabelName:=Token; Op:=Up(Token); End Else Op:=Up(Token);
+ P:=0; Quote:=#0; Escaped:=False; ItemStart:=True;
+ While I<=Length(Line) Do Begin
   If Escaped Then Escaped:=False
   Else If (Quote<>#0) And (Line[I]='\') Then Escaped:=True
-  Else If (Line[I] In ['''','"']) Then Begin If Quote=#0 Then Quote:=Line[I] Else If Quote=Line[I] Then Quote:=#0; End
-  Else If (Line[I]=';') And (Quote=#0) Then Begin P:=I; Break; End;
+  Else If Quote<>#0 Then Begin
+   If Line[I]=Quote Then Begin
+    If (I<Length(Line)) And (Line[I+1]=Quote) Then Inc(I) Else Quote:=#0;
+   End;
+  End Else If DataDelimiter(Line[I],Op) And
+   ((Line[I] In ['''','"']) Or ItemStart) Then Begin Quote:=Line[I]; ItemStart:=False; End
+  Else If Line[I]=';' Then Begin P:=I; Break; End
+  Else If Line[I] In [',','('] Then ItemStart:=True
+  Else If Not (Line[I] In [' ',#9]) Then ItemStart:=False;
+  Inc(I);
  End;
  If P>0 Then Begin
-  Comment:=Copy(Line,P,255); Delete(Line,P,255);
- End; If Trim(Line)='' Then Exit; HasLabel:=Not(Line[1] In [' ',#9]); I:=1;
+  Comment:=Copy(Line,P,255); Delete(Line,P,Length(Line));
+ End; If TrimData(Line)='' Then Begin LabelName:=''; Op:=''; Exit; End;
+ HasLabel:=Not(Line[1] In [' ',#9]); I:=1;
  If HasLabel Then Begin
   LabelName:=Token; Op:=Up(Token);
  End Else Op:=Up(Token);
- While (I<=Length(Line)) And (Line[I] In [' ',#9]) Do Inc(I); Arg:=Trim(Copy(Line,I,255));
+ While (I<=Length(Line)) And (Line[I] In [' ',#9]) Do Inc(I); Arg:=TrimData(Copy(Line,I,Length(Line)));
  If (LabelName<>'') And (Op='') Then Begin
   Op:=Up(LabelName); LabelName:='';
  End;
@@ -949,7 +995,7 @@ Begin
  If LastInstruction=Nil Then Instructions:=Nil Else LastInstruction^.Next:=Nil;
 End;
 
-Function TakeExpression(Var S:TString):TString;
+Function TakeExpression(Var S:TDataText):TString;
 Var I,Level:Integer; Quoted,Escaped:Boolean; C:Char;
 Begin
  Level:=0; Quoted:=False; Escaped:=False; I:=1;
@@ -967,9 +1013,188 @@ Begin
  TakeExpression:=Trim(Copy(S,1,I-1)); Delete(S,1,I);
 End;
 
-Procedure ProcessLine(Source:TString);
+Procedure EmitDataList(M:TString; TextValue:TDataText; Var Bytes:TString);
+Var Visits,Emitted,LastAddress:LongInt; Width,LastByte:Byte; Failed:Boolean;
+
+Procedure Bad(MessageText:TString);
+Begin
+ Error(M+': '+MessageText); Failed:=True;
+End;
+
+Function Evaluate(S:TDataText; Var Known:Boolean):LongInt;
+Begin
+ If Length(S)>255 Then Begin
+  Bad('expression de plus de 255 caracteres'); Known:=False; Evaluate:=0;
+ End Else Evaluate:=Eval(S,Known);
+End;
+
+Function HexDigit(C:Char):Integer;
+Begin
+ C:=UpCase(C);
+ If C In ['0'..'9'] Then HexDigit:=Ord(C)-48
+ Else If C In ['A'..'F'] Then HexDigit:=Ord(C)-Ord('A')+10
+ Else HexDigit:=-1;
+End;
+
+Function DecodeStrings(S:TDataText; Var Decoded:TDataText):Boolean;
+Var I,J,D,V:Integer; Delimiter,C:Char; Closed:Boolean;
+Begin
+ I:=1; Decoded:=''; DecodeStrings:=False;
+ While I<=Length(S) Do Begin
+  While (I<=Length(S)) And (S[I] In [' ',#9]) Do Inc(I);
+  If I>Length(S) Then Break;
+  If Not DataDelimiter(S[I],M) Then Exit;
+  Delimiter:=S[I]; Inc(I); Closed:=False;
+  While I<=Length(S) Do Begin
+   C:=S[I]; Inc(I);
+   If C=Delimiter Then Begin
+    If (I<=Length(S)) And (S[I]=Delimiter) Then Inc(I)
+    Else Begin Closed:=True; Break; End;
+   End Else If C='\' Then Begin
+    If I>Length(S) Then Begin Bad('echappement incomplet'); Break; End;
+    C:=S[I]; Inc(I);
+    If C=Delimiter Then Begin End
+    Else Case C Of
+     'n':C:=#10; 'r':C:=#13; 't':C:=#9; '0':C:=#0;
+     '\','''','"':Begin End;
+     'x':Begin
+      V:=0;
+      For J:=1 To 2 Do Begin
+       D:=-1; If I<=Length(S) Then D:=HexDigit(S[I]);
+       If D<0 Then Begin Bad('echappement hexadecimal invalide'); D:=0; End;
+       V:=V*16+D; Inc(I);
+      End;
+      C:=Chr(V);
+     End;
+     Else Bad('echappement inconnu: \'+C);
+    End;
+   End;
+   Decoded:=Decoded+C;
+  End;
+  If Not Closed Then Begin Bad('chaine non terminee'); DecodeStrings:=True; Exit; End;
+ End;
+ DecodeStrings:=True;
+End;
+
+Procedure EmitValue(V:LongInt; IsString,Enabled:Boolean);
+Begin
+ If Not Enabled Or Failed Then Exit;
+ If (Emitted>65536-Width) Or (PC<0) Or (PC>65536-Width) Or
+  ((Not InDsect) And ((ObjPC<0) Or (ObjPC>65536-Width))) Then Begin
+  Bad('liste depassant l''espace d''adressage 16 bits'); Exit;
+ End;
+ If (M='ASC') Or (M='DCI') Then Begin
+  If Not CheckRange(V,8,False) Then Begin AdvanceInvalidValue(1); Exit; End;
+  If MSBMode Then V:=(V And $FF) Or $80;
+ End;
+ LastAddress:=ObjPC; LastByte:=V And $FF;
+ If Not IsString Then Begin
+  If M='DCI' Then Begin
+   If (ExpressionValue.Rel<>0) Or (ExpressionValue.ExternalIndex>=0) Then Begin
+    Bad('DCI exige des valeurs absolues'); Exit;
+   End;
+  End Else If M='DDB' Then AddReloc(ObjPC,5)
+  Else If Width=2 Then AddReloc(ObjPC,3) Else AddReloc(ObjPC,Width);
+ End;
+ Case Width Of
+  1:EmitByte(V,Bytes);
+  2:If M='DDB' Then EmitBigWord(V,Bytes) Else EmitWord(V,Bytes);
+  4:EmitLong(V,Bytes);
+ End;
+ Inc(Emitted,Width);
+End;
+
+Procedure ParseList(S:TDataText; Depth:Integer; Enabled:Boolean); Forward;
+
+Procedure ParseItem(S:TDataText; Depth:Integer; Enabled:Boolean);
+Var I,Level,DupAt:Integer; Quote,C:Char; Escaped,Known:Boolean;
+    Decoded,Body,CountText:TDataText; Count,V:LongInt;
+Begin
+ S:=TrimData(S); Inc(Visits);
+ If Visits>131072 Then Begin Bad('trop de repetitions imbriquees'); Exit; End;
+ If S='' Then Begin Bad('element vide dans la liste'); Exit; End;
+ ValueContext:=M+' '+S;
+ Level:=0; DupAt:=0; Quote:=#0; Escaped:=False;
+ For I:=1 To Length(S) Do Begin
+  C:=S[I];
+  If Escaped Then Escaped:=False
+  Else If (Quote<>#0) And (C='\') Then Escaped:=True
+  Else If Quote<>#0 Then Begin If C=Quote Then Quote:=#0; End
+  Else If DataDelimiter(C,M) And ((C In ['''','"']) Or (I=1)) Then Quote:=C
+  Else If C='(' Then Inc(Level) Else If C=')' Then Dec(Level)
+  Else If (Level=0) And (I>1) And (S[I-1] In [' ',#9,')']) And
+   (Up(Copy(S,I,3))='DUP') And
+   ((I+3>Length(S)) Or (S[I+3] In [' ',#9,'('])) Then Begin DupAt:=I; Break; End;
+ End;
+ If DupAt>0 Then Begin
+  CountText:=TrimData(Copy(S,1,DupAt-1)); Body:=TrimData(Copy(S,DupAt+3,Length(S)));
+  If (Length(Body)<2) Or (Body[1]<>'(') Or (Body[Length(Body)]<>')') Then Begin
+   Bad('DUP exige une liste entre parentheses'); Exit;
+  End;
+  Count:=Evaluate(CountText,Known);
+  If Known And ((ExpressionValue.Rel<>0) Or (ExpressionValue.ExternalIndex>=0)) Then Begin
+   Bad('compteur DUP non absolu'); Exit;
+  End;
+  If Known And ((Count<0) Or (Count>65536)) Then Begin Bad('compteur DUP hors limite 0..65536'); Exit; End;
+  Body:=Copy(Body,2,Length(Body)-2);
+  If Not Enabled Or Not Known Or (Count=0) Then ParseList(Body,Depth+1,False)
+  Else While (Count>0) And Not Failed Do Begin
+   ParseList(Body,Depth+1,Enabled); Dec(Count);
+  End;
+ End Else If DecodeStrings(S,Decoded) Then Begin
+  If Failed Then Exit;
+  For I:=1 To Length(Decoded) Do EmitValue(Ord(Decoded[I]),True,Enabled);
+ End Else Begin
+  V:=Evaluate(S,Known); EmitValue(V,False,Enabled);
+ End;
+End;
+
+Procedure ParseList(S:TDataText; Depth:Integer; Enabled:Boolean);
+Var I,Start,Level:Integer; Quote,C:Char; Escaped,ItemStart:Boolean;
+Begin
+ If Depth>32 Then Begin Bad('DUP trop imbrique'); Exit; End;
+ Start:=1; I:=1; Level:=0; Quote:=#0; Escaped:=False; ItemStart:=True;
+ While (I<=Length(S)) And Not Failed Do Begin
+  C:=S[I];
+  If Escaped Then Escaped:=False
+  Else If (Quote<>#0) And (C='\') Then Escaped:=True
+  Else If Quote<>#0 Then Begin
+   If C=Quote Then Begin
+    If (I<Length(S)) And (S[I+1]=Quote) Then Inc(I) Else Quote:=#0;
+   End;
+  End Else If DataDelimiter(C,M) And ((C In ['''','"']) Or ItemStart) Then Begin
+   Quote:=C; ItemStart:=False;
+  End Else If C='(' Then Begin Inc(Level); ItemStart:=True; End
+  Else If C=')' Then Begin
+   Dec(Level); If Level<0 Then Bad('parenthese fermante inattendue'); ItemStart:=False;
+  End Else If C=',' Then Begin
+   If Level=0 Then Begin ParseItem(Copy(S,Start,I-Start),Depth,Enabled); Start:=I+1; End;
+   ItemStart:=True;
+  End Else If Not (C In [' ',#9]) Then ItemStart:=False;
+  Inc(I);
+ End;
+ If Failed Then Exit;
+ If Quote<>#0 Then Bad('chaine non terminee')
+ Else If Level<>0 Then Bad('parentheses non equilibrees')
+ Else ParseItem(Copy(S,Start,Length(S)),Depth,Enabled);
+End;
+
+Begin
+ Width:=1; If (M='DW') Or (M='DA') Or (M='DDB') Then Width:=2
+ Else If M='DCL' Then Width:=4;
+ Visits:=0; Emitted:=0; Failed:=False; LastAddress:=0; LastByte:=0;
+ ParseList(TextValue,0,True);
+ If (M='DCI') And (Emitted>0) And Not Failed Then Begin
+  If (Pass=2) And Not InDsect And (ObjectPages[LastAddress Shr 8]<>Nil) Then
+   ObjectPages[LastAddress Shr 8]^[LastAddress And $FF]:=LastByte Xor $80;
+  If Emitted<=Length(Bytes) Then Bytes[Length(Bytes)]:=Chr(LastByte Xor $80);
+ End;
+End;
+
+Procedure ProcessLine(Source:TDataText);
 Var
- Lab,M,A,C,E,Item,Bytes:TString;
+ Lab,M,C,E,Item,Bytes:TString;
+ A:TDataText;
  V,OldPC,FillValue:LongInt;
  Known,ValidValue:Boolean;
  Mode,Size:Byte;
@@ -979,6 +1204,9 @@ Begin
  If (Trim(Source)<>'') And (Trim(Source)[1]='*') Then Begin
   ListLine(PC,'',Source); Exit;
  End; ParseFields(Source,Lab,M,A,C); ValueContext:=M+' '+A;
+ If Not IsDataDirective(M) And (Length(A)>255) Then Begin
+  Error('Operande de plus de 255 caracteres'); Exit;
+ End;
  If M='DO' Then Begin
   V:=Eval(A,Known); CondStack[CondDepth]:=Active; Inc(CondDepth);
   Active:=Active And Known And (V<>0); ListLine(PC,'',Source); Exit;
@@ -1107,36 +1335,7 @@ Begin
  If M='REP' Then Begin
   V:=Eval(A,Known); If Not Known Or (V<0) Then Error('Nombre REP invalide') Else Begin ListLine(PC,'',Source); RepeatListing(V); End; Exit;
  End;
- If (M='DFB') Or (M='DB') Then Begin
-  A:=A+',';
-  While A<>'' Do Begin
-   Item:=TakeExpression(A); ValueContext:=M+' '+Item; V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DFB inconnue: '+Item);
-   AddReloc(ObjPC,1);
-   EmitByte(V,Bytes);
-  End;
- End
- Else If (M='DW') Or (M='DA') Then Begin
-  A:=A+',';
-  While A<>'' Do Begin
-   Item:=TakeExpression(A); ValueContext:=M+' '+Item; V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DW inconnue: '+Item); AddReloc(ObjPC,3); EmitWord(V,Bytes);
-  End;
- End
- Else If M='DDB' Then Begin
-  A:=A+',';
-  While A<>'' Do Begin
-   Item:=TakeExpression(A); ValueContext:=M+' '+Item; V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DDB inconnue: '+Item); AddReloc(ObjPC,5); EmitBigWord(V,Bytes);
-  End;
- End
- Else If M='DCL' Then Begin
-  A:=A+',';
-  While A<>'' Do Begin
-   Item:=TakeExpression(A); V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DCL inconnue: '+Item); AddReloc(ObjPC,4); EmitLong(V,Bytes);
-  End;
- End
+ If IsDataDirective(M) Then EmitDataList(M,A,Bytes)
  Else If (M='DS') Or (M='DFS') Then Begin
   Item:=TakeExpression(A); C:=Trim(A); If C='' Then C:='0';
   V:=Eval(Item,Known);
@@ -1168,17 +1367,6 @@ Begin
    End Else If I<=Length(A) Then Begin
     Error('Nombre impair de chiffres HEX'); Inc(I);
    End;
-  End;
- End
- Else If (M='ASC') Or (M='DCI') Then Begin
-  A:=Trim(A); Item:='';
-  While A<>'' Do Begin
-   While (A<>'') And (A[1] In [' ',#9,',']) Do Delete(A,1,1); If A='' Then Break;
-   C:=A[1]; Delete(A,1,1); P:=Pos(C,A);
-   If P=0 Then Begin Item:=Item+A; A:=''; End Else Begin Item:=Item+Copy(A,1,P-1); Delete(A,1,P); End;
-  End;
-  If Item='' Then Error('Chaine '+M+' vide') Else Begin
-   For I:=1 To Length(Item) Do Begin V:=Ord(Item[I]); If MSBMode Then V:=V Or $80; If (M='DCI') And (I=Length(Item)) Then V:=V Xor $80; EmitByte(V,Bytes); End;
   End;
  End
   Else
@@ -1217,12 +1405,37 @@ Begin
  If PC>LastPC Then LastPC:=PC; ListLine(OldPC,Bytes,Source);
 End;
 
+Function DataContinues(S:TDataText; M:TString):Boolean;
+Var I:Integer; Quote,C:Char; Escaped,ItemStart:Boolean;
+Begin
+ S:=TrimData(S); DataContinues:=False;
+ Quote:=#0; Escaped:=False; ItemStart:=True; I:=1;
+ While I<=Length(S) Do Begin
+  C:=S[I];
+  If Escaped Then Escaped:=False
+  Else If (Quote<>#0) And (C='\') Then Escaped:=True
+  Else If Quote<>#0 Then Begin
+   If C=Quote Then Begin
+    If (I<Length(S)) And (S[I+1]=Quote) Then Inc(I) Else Quote:=#0;
+   End;
+  End Else If DataDelimiter(C,M) And ((C In ['''','"']) Or ItemStart) Then Begin
+   Quote:=C; ItemStart:=False;
+  End Else If C In [',','('] Then ItemStart:=True
+  Else If Not (C In [' ',#9]) Then Begin
+   If (C='\') And (I=Length(S)) Then DataContinues:=True;
+   ItemStart:=False;
+  End;
+  Inc(I);
+ End;
+End;
+
 Procedure ProcessSourceFile(Name:TString; Depth:Integer);
 Var
  F:Text;
- S:TString;
- E:Integer;
- NextName,PreviousSource:TString;
+ S,Args,More,Part:TDataText;
+ E,Joined:Integer;
+ NextName,PreviousSource,Lab,M,Comment,DummyLab,DummyOp:TString;
+ Missing,TooLong:Boolean;
 Begin
  If Depth>32 Then Begin Error('Trop de fichiers CHN (boucle probable)'); Exit; End;
  PreviousSource:=CurrentSource; CurrentSource:=Name;
@@ -1230,7 +1443,30 @@ Begin
   Error('Impossible d''ouvrir le fichier CHN '+Name); CurrentSource:=PreviousSource; Exit;
  End;
  ChainRequested:=False;
- While Not EOF(F) And Not EndSeen And Not ChainRequested Do Begin ReadLn(F,S); ProcessLine(S); End;
+ While Not EOF(F) And Not EndSeen And Not ChainRequested Do Begin
+  ReadLn(F,S); Joined:=0; Missing:=False; TooLong:=Length(S)>MAX_DATA_TEXT;
+  If TooLong Then S:=Copy(S,1,MAX_DATA_TEXT);
+  ParseFields(S,Lab,M,Args,Comment);
+  If IsDataDirective(M) Then Begin
+   While DataContinues(Args,M) And Not TooLong Do Begin
+    Args:=TrimData(Args); Delete(Args,Length(Args),1); Part:='';
+    While (TrimData(Part)='') And Not EOF(F) Do Begin
+     ReadLn(F,More); Inc(Joined); More:=TrimData(More);
+     If (More<>'') And (More[1]<>'*') And (More[1]<>';') Then
+      ParseFields(' '+M+' '+More,DummyLab,DummyOp,Part,Comment);
+    End;
+    If TrimData(Part)='' Then Begin Missing:=True; Break; End;
+    If Length(Args)+Length(Part)+Length(Lab)+Length(M)+4>MAX_DATA_TEXT Then
+     TooLong:=True
+    Else Args:=Args+' '+Part;
+   End;
+   If Joined>0 Then S:=Lab+' '+M+' '+Args;
+  End;
+  ProcessLine(S);
+  If Missing Then Error('Continuation de donnees sans ligne suivante');
+  If TooLong Then Error('Liste de donnees ou ligne source trop longue');
+  Inc(LineNo,Joined);
+ End;
  Close(F); If ChainRequested And Not EndSeen Then Begin
   NextName:=ChainName; If SourceDirectory(NextName)='' Then NextName:=SourceDirectory(Name)+NextName;
   ChainRequested:=False; ProcessSourceFile(NextName,Depth+1);
@@ -1393,6 +1629,13 @@ Procedure Help;Begin
  WriteLn('DS taille[,octet]    Reserve et remplit une zone (zero par defaut).');
  WriteLn('ASC delimiteur...    Ecrit une ou plusieurs chaines ASCII delimitees.');
  WriteLn('DCI delimiteur...    Comme ASC; inverse le bit 7 du dernier caractere.');
+ WriteLn('Listes de donnees: chaines entre apostrophes ou guillemets,');
+ WriteLn(' expressions et n DUP(liste), y compris repetitions imbriquees.');
+ WriteLn(' DW/DA/DDB: chaque caractere de chaine occupe un mot de 16 bits.');
+ WriteLn(' ASC/DCI: delimiteurs supplementaires / ! | : et MSB ON/OFF.');
+ WriteLn(' Echappements et delimiteurs doubles admis; virgules internes conservees.');
+ WriteLn(' Terminer une ligne par \ pour continuer la liste sur la suivante.');
+ WriteLn(' DCI inverse le bit 7 du dernier octet de la liste complete.');
  WriteLn('/B                   Ajoute l''en-tete Apple DOS B: adresse et longueur.');
  WriteLn('                     Sans /B, une sortie absolue demeure un binaire brut.');
  WriteLn; 
