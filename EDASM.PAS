@@ -58,7 +58,7 @@ Type
  TSymbol=Record
   Name:String[31];
  Value:LongInt;
- Defined,External,PublicSym,Relocatable,LocalSymbol:Boolean;
+ Defined,External,PublicSym,Relocatable,LocalSymbol,UndefinedReported:Boolean;
   EsdNumber:Byte;
   Section:Byte;
   DefinedLine:Word;
@@ -90,6 +90,11 @@ Type
   SourceLine:Integer;
   Address,ObjectAddress:LongInt;
   Mode,Size:Byte;
+ End;
+ PListingDiagnostic=^TListingDiagnostic;
+ TListingDiagnostic=Record
+  Next:PListingDiagnostic;
+  MessageText:TString;
  End;
 
 Var
@@ -124,6 +129,13 @@ Var
  ChainRequested:Boolean;
  ListPage,ListRow,PageLength:Integer;
  RepeatChar:Char;
+ ListingTitle,ListingStamp:TString;
+ ListingSection:Byte;
+ ListingForce,ListingHeaderDirty,InSourceLine,SourceListed:Boolean;
+ StrictSource:Boolean;
+ DiagnosticHead,DiagnosticTail:PListingDiagnostic;
+ ListingSource:TDataText;
+ ListingAddress:LongInt;
 
 Function Up(S:TString):TString;
 Var
@@ -162,10 +174,20 @@ Begin
  For I:=1 To Length(S) Do If S[I]='.' Then P:=I; If P>0 Then Delete(S,P,255); BaseName:=S;
 End;
 
-Procedure Error(S:TString);Begin
+Procedure WriteListingDiagnostic(S:TString); Forward;
+
+Procedure Error(S:TString);
+Var P:PListingDiagnostic;
+Begin
  Inc(Errors); If Pass=2 Then Begin
   WriteLn('EDASM: ',CurrentSource,', ligne ',LineNo,': ',S);
-  If UseListing Then WriteLn(ListText,'**** ',S);
+  If UseListing Then Begin
+   If InSourceLine Then Begin
+    New(P); P^.Next:=Nil; P^.MessageText:=S;
+    If DiagnosticHead=Nil Then DiagnosticHead:=P Else DiagnosticTail^.Next:=P;
+    DiagnosticTail:=P;
+   End Else WriteListingDiagnostic(S);
+  End;
  End;
 End;
 
@@ -190,7 +212,7 @@ Begin
  N:=Up(Trim(N));
  IsReservedSymbol:=(Pos(','+N+',',R1)>0) Or (Pos(','+N+',',R2)>0) Or
                   (Pos(','+N+',',R3)>0) Or
-                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,DUP,')>0);
+                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,DUP,TITL,TITLE,')>0);
 End;
 
 Function FindSymbol(N:TString):Integer;
@@ -219,7 +241,7 @@ Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin
    Error('Table des symboles pleine'); Exit;
  End; I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N;
- Symbols[I].External:=False; Symbols[I].PublicSym:=False;
+ Symbols[I].External:=False; Symbols[I].PublicSym:=False; Symbols[I].UndefinedReported:=False;
   Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
   Symbols[I].LocalSymbol:=WasLocal;
   Symbols[I].Section:=SEC_UNDEF; Symbols[I].DefinedLine:=0;
@@ -381,7 +403,7 @@ Begin
  If (I<0) And (N<>'') Then Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin Error('Table des symboles pleine'); GetOrCreateSymbol:=-1; Exit; End;
   I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N; Symbols[I].Value:=0;
-  Symbols[I].Defined:=False; Symbols[I].External:=False;
+  Symbols[I].Defined:=False; Symbols[I].External:=False; Symbols[I].UndefinedReported:=False;
   Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
   Symbols[I].LocalSymbol:=WasLocal; Symbols[I].Section:=SEC_UNDEF;
   Symbols[I].DefinedLine:=0;
@@ -552,7 +574,10 @@ Begin
     R.Value:=Symbols[I].Value;
     If Symbols[I].External Then R.ExternalIndex:=I
     Else If Symbols[I].Relocatable Then R.Rel:=1;
-   End Else Fail('Symbole non defini: '+Op);
+   End Else Begin
+    Fail('Symbole non defini: '+Op);
+    If Pass=2 Then Symbols[I].UndefinedReported:=True;
+   End;
   End Else Known:=False;
   NextToken;
  End Else Begin
@@ -784,6 +809,20 @@ Begin
   (M='DDB') Or (M='DCL') Or (M='ASC') Or (M='DCI');
 End;
 
+Function IsSourceOperation(M:TString):Boolean;
+Const Directives=',ORG,OBJ,EQU,=,DS,DFS,HEX,MSB,DO,ELSE,FIN,LST,PAGE,SKP,TITL,TITLE,SBTL,CHR,REP,DSECT,DEND,REL,EXTRN,ENTRY,CHN,END,';
+Var Mode:Byte;
+Begin
+ M:=Up(M); IsSourceOperation:=False;
+ If M='' Then Exit;
+ If IsDataDirective(M) Or (Pos(','+M+',',Directives)>0) Then Begin
+  IsSourceOperation:=True; Exit;
+ End;
+ For Mode:=AM_IMP To AM_REL Do If Opcode(M,Mode)>=0 Then Begin
+  IsSourceOperation:=True; Exit;
+ End;
+End;
+
 Function DataDelimiter(C:Char; M:TString):Boolean;
 Begin
  DataDelimiter:=(C In ['''','"']) Or
@@ -794,7 +833,7 @@ Procedure ParseFields(Line:TDataText; Var LabelName,Op:TString;
                       Var Arg:TDataText; Var Comment:TString);
 Var
  I,P:Integer;
- HasLabel,Escaped,ItemStart:Boolean;
+ Escaped,ItemStart:Boolean;
  Quote:Char;
 
 Function Token:TString;
@@ -802,14 +841,29 @@ Var
  A:Integer;
 Begin
  While (I<=Length(Line)) And (Line[I] In [' ',#9]) Do Inc(I); A:=I;
- While (I<=Length(Line)) And Not(Line[I] In [' ',#9]) Do Inc(I); Token:=Copy(Line,A,I-A);
+ While (I<=Length(Line)) And Not(Line[I] In [' ',#9,';']) Do Begin
+  If Not StrictSource And (Line[I]=':') Then Begin Inc(I); Break; End;
+  Inc(I);
+ End;
+ Token:=Copy(Line,A,I-A);
 End;
+
+Procedure ReadHead;
+Var First:TString;
+Begin
+ I:=1; LabelName:=''; Op:=''; First:=Token;
+ If Not StrictSource And (First<>'') And (First[Length(First)]=':') Then Begin
+  LabelName:=Copy(First,1,Length(First)-1); Op:=Up(Token);
+ End Else If Not StrictSource And IsSourceOperation(First) Then Op:=Up(First)
+ Else If Not(Line[1] In [' ',#9]) Then Begin LabelName:=First; Op:=Up(Token); End
+ Else Op:=Up(First);
+End;
+
 Begin
  LabelName:=''; Op:=''; Arg:=''; Comment:='';
  If TrimData(Line)='' Then Exit;
  If TrimData(Line)[1]=';' Then Exit;
- HasLabel:=Not(Line[1] In [' ',#9]); I:=1;
- If HasLabel Then Begin LabelName:=Token; Op:=Up(Token); End Else Op:=Up(Token);
+ ReadHead;
  P:=0; Quote:=#0; Escaped:=False; ItemStart:=True;
  While I<=Length(Line) Do Begin
   If Escaped Then Escaped:=False
@@ -828,14 +882,8 @@ Begin
  If P>0 Then Begin
   Comment:=Copy(Line,P,255); Delete(Line,P,Length(Line));
  End; If TrimData(Line)='' Then Begin LabelName:=''; Op:=''; Exit; End;
- HasLabel:=Not(Line[1] In [' ',#9]); I:=1;
- If HasLabel Then Begin
-  LabelName:=Token; Op:=Up(Token);
- End Else Op:=Up(Token);
+ ReadHead;
  While (I<=Length(Line)) And (Line[I] In [' ',#9]) Do Inc(I); Arg:=TrimData(Copy(Line,I,Length(Line)));
- If (LabelName<>'') And (Op='') Then Begin
-  Op:=Up(LabelName); LabelName:='';
- End;
 End;
 
 Procedure DetermineMode(M,Arg:TString; V:LongInt; Known:Boolean; Var Mode,Size:Byte;
@@ -917,46 +965,142 @@ Begin
  End;
 End;
 
+Function DecimalText(V:LongInt; Width:Integer; Pad:Char):TString;
+Var S:TString;
+Begin
+ Str(V,S); While Length(S)<Width Do S:=Pad+S; DecimalText:=S;
+End;
+
+Procedure InitializeListing;
+Var Y,M,D,W,H,N,S,C:Word;
+Begin
+ GetDate(Y,M,D,W); GetTime(H,N,S,C);
+ ListingStamp:=DecimalText(Y,4,'0')+'-'+DecimalText(M,2,'0')+'-'+
+  DecimalText(D,2,'0')+' '+DecimalText(H,2,'0')+':'+
+  DecimalText(N,2,'0')+':'+DecimalText(S,2,'0');
+ ListPage:=0; ListRow:=0; PageLength:=60; ListingSection:=0;
+ ListingForce:=False; DiagnosticHead:=Nil; DiagnosticTail:=Nil;
+ InSourceLine:=False;
+End;
+
+Function ListingActive:Boolean;
+Begin
+ ListingActive:=(Pass=2) And UseListing And (ListingEnabled Or ListingForce);
+End;
+
 Procedure NewListingPage;
 Begin
- If (Pass<>2) Or Not UseListing Or Not ListingEnabled Then Exit;
- If ListPage>0 Then WriteLn(ListText,#12); Inc(ListPage); ListRow:=0;
- WriteLn(ListText,'EDASM ',VERSION,'   ',CurrentSource,'   PAGE ',ListPage);
- If Subtitle<>'' Then WriteLn(ListText,Subtitle) Else WriteLn(ListText);
- WriteLn(ListText,' LINE EXEC OBJ  OBJECT       SOURCE'); WriteLn(ListText); ListRow:=4;
+ If Not ListingActive Then Exit;
+ If ListPage>0 Then Write(ListText,#12);
+ Inc(ListPage); ListingHeaderDirty:=False;
+ WriteLn(ListText,'EDASM ',VERSION,'   PAGE ',ListPage,'   ',ListingStamp);
+ WriteLn(ListText,'TITRE: ',ListingTitle);
+ WriteLn(ListText,'SOUS-TITRE: ',Subtitle);
+ If CurrentSource<>'' Then WriteLn(ListText,'SOURCE: ',CurrentSource)
+ Else WriteLn(ListText,'SOURCE: ',SrcName);
+ ListRow:=4;
+ Case ListingSection Of
+  0:WriteLn(ListText,' LINE EXEC OBJ  OBJECT       SOURCE');
+  1:Begin
+   WriteLn(ListText,'TABLE DES SYMBOLES (ordre alphabetique)');
+   WriteLn(ListText,'NOM                              VALEUR TYPE    SECTION ATTRIBUTS  DEF  REFERENCES');
+   Inc(ListRow);
+  End;
+  2:Begin
+   WriteLn(ListText,'TABLE DES REFERENCES CROISEES (ordre alphabetique)');
+   WriteLn(ListText,'NOM                              DEF  REFERENCES (numeros de lignes source)');
+   Inc(ListRow);
+  End;
+ End;
+ WriteLn(ListText); Inc(ListRow,2);
 End;
 
 Procedure EnsureListingRows(Count:Integer);
 Begin
- If (Pass<>2) Or Not UseListing Or Not ListingEnabled Then Exit;
- If (ListPage=0) Or (ListRow+Count>PageLength) Then NewListingPage;
+ If Not ListingActive Then Exit;
+ If (ListPage=0) Or ListingHeaderDirty Or (ListRow+Count>PageLength) Then NewListingPage;
 End;
 
-Procedure SkipListing(Count:Integer);
+Procedure ListingRow(S:TString);
 Begin
- If Count<1 Then Count:=1; EnsureListingRows(Count);
- While Count>0 Do Begin WriteLn(ListText); Inc(ListRow); Dec(Count); End;
+ If Not ListingActive Then Exit;
+ EnsureListingRows(1); WriteLn(ListText,S); Inc(ListRow);
+End;
+
+Procedure SkipListing(Count:LongInt);
+Begin
+ If Not ListingActive Then Exit;
+ While Count>0 Do Begin ListingRow(''); Dec(Count); End;
 End;
 
 Procedure RepeatListing(Count:Integer);
 Var S:TString;
 Begin
- If Count<0 Then Count:=0; If Count>255 Then Count:=255;
- EnsureListingRows(1); S:=''; While Count>0 Do Begin S:=S+RepeatChar; Dec(Count); End;
- If (Pass=2) And UseListing And ListingEnabled Then Begin WriteLn(ListText,S); Inc(ListRow); End;
+ If Not ListingActive Or (Count=0) Then Exit;
+ S:=''; While Count>0 Do Begin S:=S+RepeatChar; Dec(Count); End;
+ ListingRow(S);
 End;
 
-Procedure ListLine(Address:LongInt; Bytes,Source:TString);
-Var
- I:Integer;
- H:TString;
+Procedure WriteListingDiagnostic(S:TString);
+Var WasForced:Boolean; Prefix:TString; I:Integer;
 Begin
- If (Pass<>2) Or Not UseListing Or Not ListingEnabled Then Exit;
- EnsureListingRows(1); H:='';
- For I:=1 To Length(Bytes) Do H:=H+Hex(Ord(Bytes[I]),2)+' ';
- While Length(H)<12 Do H:=H+' ';
- WriteLn(ListText,LineNo:5,' ',Hex(Address,4),' ',Hex(ListObjAddress,4),' ',H,Source);
- Inc(ListRow);
+ If (Pass<>2) Or Not UseListing Then Exit;
+ WasForced:=ListingForce; ListingForce:=True;
+ If InSourceLine Then Prefix:='**** Ligne '+DecimalText(LineNo,0,' ') +': '
+ Else Prefix:='**** Bilan: ';
+ I:=1;
+ Repeat
+  ListingRow(Prefix+Copy(S,I,120-Length(Prefix))); Inc(I,120-Length(Prefix));
+ Until I>Length(S);
+ ListingForce:=WasForced;
+End;
+
+Procedure FlushListingDiagnostics;
+Var P:PListingDiagnostic;
+Begin
+ While DiagnosticHead<>Nil Do Begin
+  P:=DiagnosticHead; DiagnosticHead:=P^.Next;
+  WriteListingDiagnostic(P^.MessageText); Dispose(P);
+ End;
+ DiagnosticTail:=Nil;
+End;
+
+Procedure ListLine(Address:LongInt; Bytes:TString; Source:TDataText);
+Var J,SourcePos:Integer; H,Prefix,TextPart:TString;
+    Offset,ByteCount,AtObject:LongInt; WasForced,First:Boolean;
+Begin
+ If (Pass<>2) Or Not UseListing Then Exit;
+ WasForced:=ListingForce;
+ If DiagnosticHead<>Nil Then ListingForce:=True;
+ If Not ListingActive Then Exit;
+ SourceListed:=True;
+ ByteCount:=0;
+ If Length(Bytes)>0 Then ByteCount:=ObjPC-ListObjAddress;
+ If ByteCount<0 Then ByteCount:=Length(Bytes);
+ Offset:=0; SourcePos:=1; First:=True;
+ Repeat
+  H:='';
+  For J:=0 To 3 Do Begin
+   If Offset+J<ByteCount Then Begin
+    AtObject:=ListObjAddress+Offset+J;
+    If (AtObject>=0) And (AtObject<=65535) And
+       (ObjectPages[AtObject Shr 8]<>Nil) And
+       UsedPages[AtObject Shr 8]^[AtObject And $FF] Then
+     H:=H+Hex(ObjectPages[AtObject Shr 8]^[AtObject And $FF],2)+' '
+    Else H:=H+'-- ';
+   End Else H:=H+'   ';
+  End;
+  If First Then Prefix:=DecimalText(LineNo,5,' ') Else Prefix:='     ';
+  If First Or (Offset<ByteCount) Then
+   Prefix:=Prefix+' '+Hex(Address+Offset,4)+' '+Hex(ListObjAddress+Offset,4)+' '+H
+  Else Prefix:=Prefix+'                       ';
+  TextPart:=Copy(Source,SourcePos,92); Inc(SourcePos,92);
+  If First And (DiagnosticHead<>Nil) Then EnsureListingRows(2);
+  ListingRow(Prefix+TextPart);
+  Inc(Offset,4); First:=False;
+ Until (Offset>=ByteCount) And (SourcePos>Length(Source));
+ FlushListingDiagnostics;
+ ListingForce:=WasForced;
 End;
 
 Procedure ProcessSourceFile(Name:TString; Depth:Integer); Forward;
@@ -1224,10 +1368,15 @@ Begin
  If Not Active Then Begin
   ListLine(PC,'',Source); Exit;
  End;
+ If StrictSource And (Lab<>'') And (IsSourceOperation(Lab) Or (Pos(':',Lab)>0)) Then Begin
+  Error('Mode /STRICT: etiquette sans deux-points en colonne 1, operation indentee');
+  ListLine(PC,'',Source); Exit;
+ End;
  If (Lab<>'') And (M<>'ENTRY') And (M<>'EXTRN') And
   Not IsLocalName(Lab) And Not IsReservedSymbol(Lab) Then
   CurrentScope:=Up(Lab);
  If (M='EQU') Or (M='=') Then Begin
+  If Lab='' Then Begin Error(M+' exige une etiquette'); ListLine(PC,'',Source); Exit; End;
   V:=Eval(A,Known);
   DefineSymbol(Lab,V,Known); I:=FindSymbol(Lab); If I>=0 Then Begin
    If Known Then Symbols[I].Section:=EquSection(A)
@@ -1267,7 +1416,11 @@ Begin
   MSBMode:=Up(A)<>'OFF'; ListLine(PC,'',Source); Exit;
  End;
  If M='LST' Then Begin
-  ListingEnabled:=Up(A)<>'OFF'; ListLine(PC,'',Source); Exit;
+  E:=Up(Trim(A));
+  If E='OFF' Then Begin ListLine(PC,'',Source); ListingEnabled:=False; End
+  Else If E='ON' Then Begin ListingEnabled:=True; ListLine(PC,'',Source); End
+  Else Begin Error('LST attend ON ou OFF'); ListLine(PC,'',Source); End;
+  Exit;
  End;
  If M='DSECT' Then Begin
   If InDsect Then Error('DSECT imbrique interdit') Else Begin
@@ -1311,7 +1464,13 @@ Begin
       Symbols[I].External:=True; Symbols[I].Defined:=True; Symbols[I].Value:=0;
       Symbols[I].Section:=SEC_EXTERNAL; Symbols[I].Relocatable:=True;
      End
-     Else Symbols[I].PublicSym:=True;
+     Else Begin
+      Symbols[I].PublicSym:=True;
+      If (Pass=2) And Not Symbols[I].Defined Then Begin
+       Error('Symbole ENTRY non defini: '+Symbols[I].Name);
+       Symbols[I].UndefinedReported:=True;
+      End;
+     End;
      AddCrossReference(I);
      End;
     End;
@@ -1323,17 +1482,44 @@ Begin
   If A='' Then Error('Nom de fichier CHN absent') Else Begin ChainName:=A; ChainRequested:=True; End;
   ListLine(PC,'',Source); Exit;
  End;
- If M='PAGE' Then Begin ListLine(PC,'',Source); NewListingPage; Exit; End;
- If M='SKP' Then Begin V:=1; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Not Known Then V:=1; End; ListLine(PC,'',Source); SkipListing(V); Exit; End;
- If M='SBTL' Then Begin Subtitle:=Trim(A); If (Length(Subtitle)>=2) And (Subtitle[1] In ['''','"']) And (Subtitle[Length(Subtitle)]=Subtitle[1]) Then Subtitle:=Copy(Subtitle,2,Length(Subtitle)-2); ListLine(PC,'',Source); NewListingPage; Exit; End;
+ If M='PAGE' Then Begin
+  If Trim(A)<>'' Then Error('PAGE n''accepte pas d''operande');
+  ListLine(PC,'',Source); NewListingPage; Exit;
+ End;
+ If M='SKP' Then Begin
+  V:=1; Known:=True; If Trim(A)<>'' Then V:=Eval(A,Known);
+  If Known And ((V<0) Or (V>65535)) Then Begin
+   Error('SKP attend un nombre de lignes de 0 a 65535'); Known:=False;
+  End;
+  ListLine(PC,'',Source); If Known Then SkipListing(V); Exit;
+ End;
+ If (M='SBTL') Or (M='TITL') Or (M='TITLE') Then Begin
+  E:=Trim(A);
+  If (E<>'') And (E[1] In ['''','"']) Then Begin
+   If (Length(E)<2) Or (E[Length(E)]<>E[1]) Then Error(M+': titre non termine')
+   Else E:=Copy(E,2,Length(E)-2);
+  End;
+  ListLine(PC,'',Source);
+  If M='SBTL' Then Subtitle:=E Else ListingTitle:=E;
+  ListingHeaderDirty:=True; Exit;
+ End;
  If M='CHR' Then Begin
-  A:=Trim(A); If A='' Then Error('Caractere CHR absent') Else If (Length(A)>=2) And (A[1] In ['''','"']) Then RepeatChar:=A[2]
-  Else If (Length(A)=1) And Not(A[1] In ['0'..'9']) Then RepeatChar:=A[1]
-  Else Begin V:=Eval(A,Known); If Known And (V>=0) And (V<=255) Then RepeatChar:=Chr(V) Else Error('Valeur CHR invalide'); End;
+  A:=Trim(A); Known:=True; V:=-1;
+  If A='' Then Begin Error('Caractere CHR absent'); Known:=False; End
+  Else If (Length(A)=3) And (A[1]='"') And (A[3]='"') Then V:=Ord(A[2])
+  Else If (Length(A)=1) And Not(A[1] In ['0'..'9','''']) Then V:=Ord(A[1])
+  Else V:=Eval(A,Known);
+  If Known Then If (V<32) Or (V>255) Or (V=127) Then
+   Error('CHR attend un caractere imprimable (32..255, sauf 127)')
+  Else RepeatChar:=Chr(V);
   ListLine(PC,'',Source); Exit;
  End;
  If M='REP' Then Begin
-  V:=Eval(A,Known); If Not Known Or (V<0) Then Error('Nombre REP invalide') Else Begin ListLine(PC,'',Source); RepeatListing(V); End; Exit;
+  V:=Eval(A,Known);
+  If Known And ((V<0) Or (V>255)) Then Begin
+   Error('REP attend un nombre de caracteres de 0 a 255'); Known:=False;
+  End;
+  ListLine(PC,'',Source); If Known Then RepeatListing(V); Exit;
  End;
  If IsDataDirective(M) Then EmitDataList(M,A,Bytes)
  Else If (M='DS') Or (M='DFS') Then Begin
@@ -1439,6 +1625,7 @@ Var
 Begin
  If Depth>32 Then Begin Error('Trop de fichiers CHN (boucle probable)'); Exit; End;
  PreviousSource:=CurrentSource; CurrentSource:=Name;
+ If (Pass=2) And (ListPage>0) Then ListingHeaderDirty:=True;
  Assign(F,Name); Reset(F); E:=IOResult; If E<>0 Then Begin
   Error('Impossible d''ouvrir le fichier CHN '+Name); CurrentSource:=PreviousSource; Exit;
  End;
@@ -1462,9 +1649,12 @@ Begin
    End;
    If Joined>0 Then S:=Lab+' '+M+' '+Args;
   End;
+  ListingSource:=S; ListingAddress:=PC; SourceListed:=False; InSourceLine:=True;
   ProcessLine(S);
   If Missing Then Error('Continuation de donnees sans ligne suivante');
   If TooLong Then Error('Liste de donnees ou ligne source trop longue');
+  If (DiagnosticHead<>Nil) And Not SourceListed Then ListLine(ListingAddress,'',ListingSource);
+  FlushListingDiagnostics; InSourceLine:=False;
   Inc(LineNo,Joined);
  End;
  Close(F); If ChainRequested And Not EndSeen Then Begin
@@ -1479,6 +1669,7 @@ Begin
  LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
  ObjExplicit:=False; ListObjAddress:=0;
  CondDepth:=0; Active:=True; MSBMode:=False; RelMode:=False; InDsect:=False;
+ ListingEnabled:=True; ListingTitle:=SrcName; Subtitle:=''; ListingHeaderDirty:=False;
  RepeatChar:='*'; CurrentScope:='';
  ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
  FinishInstructionPass;
@@ -1530,9 +1721,29 @@ Begin
  End;
 End;
 
+Function PadRight(S:TString; Width:Integer):TString;
+Begin
+ While Length(S)<Width Do S:=S+' '; PadRight:=S;
+End;
+
+Procedure ListingReferences(SymbolIndex:Integer; Prefix:TString);
+Var R:Integer; Row,Number:TString; HasRef:Boolean;
+Begin
+ Row:=Prefix; HasRef:=False;
+ For R:=0 To ReferenceCount-1 Do If References[R].SymbolIndex=SymbolIndex Then Begin
+  Number:=DecimalText(References[R].SourceLine,0,' ');
+  If Length(Row)+Length(Number)+1>120 Then Begin
+   ListingRow(Row); Row:=PadRight('',Length(Prefix)); HasRef:=False;
+  End;
+  If HasRef Then Row:=Row+',';
+  Row:=Row+Number; HasRef:=True;
+ End;
+ If Not HasRef Then Row:=Row+'-'; ListingRow(Row);
+End;
+
 Procedure WriteSymbolTable;
 Var Order:Array[0..MAX_SYMBOLS-1] Of Integer;
-    I,J,K,R:Integer; T:Integer; Attr:TString; HasRef:Boolean;
+    I,J:Integer; T:Integer; Attr,Row,Definition:TString;
 Begin
  If Not UseListing Then Exit;
  For I:=0 To SymbolCount-1 Do Order[I]:=I;
@@ -1542,37 +1753,31 @@ Begin
    Order[J+1]:=Order[J]; Dec(J);
   End; Order[J+1]:=T;
  End;
- WriteLn(ListText,#12); WriteLn(ListText,'TABLE DES SYMBOLES (ordre alphabetique)');
- WriteLn(ListText,'NOM                              VALEUR TYPE    SECTION ATTRIBUTS  DEF  REFERENCES');
- WriteLn(ListText,'-------------------------------  ------ ------- ------- ---------- ---- ----------------');
+ ListingForce:=True; ListingSection:=1; NewListingPage;
  For J:=0 To SymbolCount-1 Do Begin
   I:=Order[J]; Attr:='';
   If Symbols[I].PublicSym Then Attr:=Attr+'EXPORT ';
   If Symbols[I].LocalSymbol Then Attr:=Attr+'LOCAL ';
-  Write(ListText,Symbols[I].Name);
-  For K:=Length(Symbols[I].Name) To 31 Do Write(ListText,' ');
+  Row:=PadRight(Symbols[I].Name,32);
   If Symbols[I].Defined And Not Symbols[I].External Then
    If (Symbols[I].Value>=0) And (Symbols[I].Value<=65535) Then
-    Write(ListText,' $',Hex(Symbols[I].Value,4),' ')
-   Else Write(ListText,' $',Hex(Symbols[I].Value,8),' ')
-  Else Write(ListText,' ----  ');
-  Write(ListText,SymbolTypeName(I));
-  For K:=Length(SymbolTypeName(I)) To 7 Do Write(ListText,' ');
-  Write(ListText,SectionName(I));
-  For K:=Length(SectionName(I)) To 7 Do Write(ListText,' ');
-  Write(ListText,Attr);
-  For K:=Length(Attr) To 10 Do Write(ListText,' ');
-  If Symbols[I].DefinedLine>0 Then Write(ListText,Symbols[I].DefinedLine:4)
-  Else Write(ListText,'   -');
-  Write(ListText,'  '); HasRef:=False;
-  For R:=0 To ReferenceCount-1 Do If References[R].SymbolIndex=I Then Begin
-   If HasRef Then Write(ListText,','); Write(ListText,References[R].SourceLine);
-   HasRef:=True;
-  End;
-  If Not HasRef Then Write(ListText,'-'); WriteLn(ListText);
+    Row:=Row+' $'+Hex(Symbols[I].Value,4)+' '
+   Else Row:=Row+' $'+Hex(Symbols[I].Value,8)+' '
+  Else Row:=Row+' ----  ';
+  Row:=Row+PadRight(SymbolTypeName(I),8)+PadRight(SectionName(I),8)+PadRight(Attr,11);
+  Definition:='   -';
+  If Symbols[I].DefinedLine>0 Then Definition:=DecimalText(Symbols[I].DefinedLine,4,' ');
+  ListingReferences(I,Row+Definition+'  ');
  End;
- WriteLn(ListText); WriteLn(ListText,'Symboles: ',SymbolCount,
-  '   References: ',ReferenceCount,'   Erreurs: ',Errors);
+ ListingSection:=2; NewListingPage;
+ For J:=0 To SymbolCount-1 Do Begin
+  I:=Order[J]; Definition:='   -';
+  If Symbols[I].DefinedLine>0 Then Definition:=DecimalText(Symbols[I].DefinedLine,4,' ');
+  ListingReferences(I,PadRight(Symbols[I].Name,32)+Definition+'  ');
+ End;
+ ListingRow(''); ListingRow('Symboles: '+DecimalText(SymbolCount,0,' ')+
+  '   References: '+DecimalText(ReferenceCount,0,' ')+'   Erreurs: '+DecimalText(Errors,0,' '));
+ ListingForce:=False;
 End;
 
 Procedure ValidateExternalSymbols;
@@ -1584,9 +1789,10 @@ Begin
     (PreviousSymbols[I].Defined<>Symbols[I].Defined) Or
     (PreviousSymbols[I].Section<>Symbols[I].Section)) Then
    Error('Erreur de phase pour le symbole: '+Symbols[I].Name);
-  If Symbols[I].PublicSym And Not Symbols[I].Defined Then
+  If Symbols[I].PublicSym And Not Symbols[I].Defined And Not Symbols[I].UndefinedReported Then
    Error('Symbole ENTRY non defini: '+Symbols[I].Name)
-  Else If Not Symbols[I].Defined Then Error('Symbole non defini: '+Symbols[I].Name);
+  Else If Not Symbols[I].Defined And Not Symbols[I].UndefinedReported Then
+   Error('Symbole non defini: '+Symbols[I].Name);
  End;
 End;
 
@@ -1601,10 +1807,16 @@ End;
 Procedure Help;Begin
  WriteLn('EDASM ',VERSION,' - Cette commande permet de lancer un assembleur Apple EDASM compatible 6502.');
  WriteLn;
- WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/B] [/Q]');
+ WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/B] [/Q] [/STRICT|/MODERN]');
+ WriteLn('Par defaut: instructions et directives reconnues meme en colonne 1.');
+ WriteLn('Etiquettes: nom OP ... en colonne 1, ou nom: [OP ...] avec retrait libre.');
+ WriteLn('/STRICT: format a colonnes, etiquette en colonne 1, operation indentee.');
+ WriteLn('         Les deux-points ne sont pas admis; une etiquette peut etre seule.');
+ WriteLn('/MODERN: reactive la reconnaissance automatique (mode par defaut).');
  WriteLn;
  WriteLn('Directives: ORG OBJ EQU = DFB DB DW DA DDB DCL DS DFS HEX ASC DCI MSB');
- WriteLn('            DO ELSE FIN LST PAGE SKP SBTL DSECT DEND REL EXTRN ENTRY CHN END');
+ WriteLn('            DO ELSE FIN LST PAGE SKP TITL TITLE SBTL CHR REP');
+ WriteLn('            DSECT DEND REL EXTRN ENTRY CHN END');
  WriteLn;
  WriteLn('DSECT [adr] / DEND  Definit une zone symbolique sans octets objet.');
  WriteLn('ORG adresse          Fixe l''adresse d''execution des instructions.');
@@ -1618,10 +1830,14 @@ Procedure Help;Begin
  WriteLn('Labels .nom/@nom     Labels locaux rattaches au dernier label global.');
  WriteLn('Listing /L           Ajoute une table alphabetique: type, section,');
  WriteLn('                     attributs, definition et references croisees.');
+ WriteLn('                     Pages de 60 lignes avec date/heure et adresses EXEC/OBJ.');
+ WriteLn('LST ON/OFF           Active/masque les lignes source et la mise en page.');
+ WriteLn('                     Diagnostics et tables finales restent visibles.');
  WriteLn('CHN fichier          Continue l''assemblage dans un autre source.');
  WriteLn('PAGE                 Commence une nouvelle page du listing.');
  WriteLn('SKP [n]              Insere n lignes blanches dans le listing.');
  WriteLn('SBTL texte           Change le sous-titre et commence une page.');
+ WriteLn('TITL texte / TITLE   Change le titre de page (source par defaut).');
  WriteLn('CHR caractere        Choisit le caractere imprime par REP.');
  WriteLn('REP nombre           Imprime ce nombre de caracteres dans le listing.');
  WriteLn('DDB valeur,...       Ecrit des mots en ordre octet fort, octet faible.');
@@ -1659,12 +1875,13 @@ Var
  A,U:TString;
 Begin
  If ParamCount=0 Then Help; SrcName:=''; ObjName:=''; ListName:=''; ListingEnabled:=True;
- Quiet:=False; AppleBinaryHeader:=False;
+ Quiet:=False; AppleBinaryHeader:=False; StrictSource:=False;
  For I:=1 To ParamCount Do Begin
   A:=ParamStr(I); U:=Up(A);
   If (U='/?') Or (U='-?') Then Help Else If Copy(U,1,3)='/L:' Then Begin
    ListName:=Copy(A,4,255); UseListing:=True;
   End Else If U='/Q' Then Quiet:=True Else If U='/B' Then AppleBinaryHeader:=True
+  Else If U='/STRICT' Then StrictSource:=True Else If U='/MODERN' Then StrictSource:=False
   Else If (A<>'') And (A[1]='/') Then Begin
    WriteLn('Option inconnue: ',A); Halt(1);
   End Else If SrcName='' Then SrcName:=A Else If ObjName='' Then ObjName:=A Else
@@ -1687,7 +1904,7 @@ BEGIN
    initiale. Les references avant peuvent modifier la taille du code. }
  StabilizeSymbols;
  Errors:=0; RelocCount:=0; ReferenceCount:=0;
- ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
+ InitializeListing;
  InitObjectImage; Pass:=2; AssembleOnePass;
  If Not PhaseStable Then Error('Erreur de phase: limite de stabilisation atteinte (symboles ou instructions)');
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
