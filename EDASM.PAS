@@ -92,6 +92,7 @@ Var
  Instructions,InstructionCursor,LastInstruction:PInstructionState;
  InstructionsChanged:Boolean;
  ExpressionValue:TExprValue;
+ ExpressionKnown:Boolean;
  References:Array[0..MAX_REFERENCES-1] Of TReference;
  ReferenceCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
@@ -392,17 +393,6 @@ Begin
  Inc(ReferenceCount);
 End;
 
-Function ExpressionSymbol(S:TString):TString;
-Var I,A:Integer; C:Char;
-Begin
- S:=Trim(S); If (S<>'') And (S[1] In ['<','>','#']) Then Delete(S,1,1);
- While (S<>'') And (S[1]='(') Do Delete(S,1,1);
- A:=1; While A<=Length(S) Do Begin C:=S[A];
-  If (C In ['A'..'Z','a'..'z','@','_','.']) Then Break; Inc(A); End;
- I:=A; While (I<=Length(S)) And (S[I] In ['A'..'Z','a'..'z','0'..'9','@','_','.']) Do Inc(I);
- ExpressionSymbol:=Up(Copy(S,A,I-A));
-End;
-
 Function Eval(S:TString; Var Known:Boolean):LongInt;
 Var Position,Depth:Integer; Token:TString; Number:LongInt;
     ResultValue:TExprValue;
@@ -468,7 +458,8 @@ Begin
     If J>33 Then Fail('Debordement de constante 32 bits');
     Number:=(Number Shl 1) Or Ord(TextValue[J]='1');
    End;
-  End Else Begin
+  End Else If TextValue='2147483648' Then Token:='#MINMAG'
+  Else Begin
    Val(TextValue,Number,Code);
    If Code<>0 Then Begin Number:=0; Fail('Constante numerique invalide: '+TextValue); End;
   End;
@@ -515,7 +506,11 @@ Begin
  Op:=Token;
  If (Op='+') Or (Op='-') Or (Op='~') Or (Op='NOT') Or
     (Op='<') Or (Op='>') Then Begin
-  NextToken; R:=ParseUnary;
+  NextToken;
+  If (Op='-') And (Token='#MINMAG') Then Begin
+   R.Value:=-2147483647-1; NextToken;
+  End Else Begin
+  R:=ParseUnary;
   If Op='-' Then Begin
    R.Value:=Checked(-1.0*R.Value); R.Rel:=-R.Rel;
    If (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Negation relogeable invalide');
@@ -528,6 +523,7 @@ Begin
    If (R.Rel<>0) Or (R.ExternalIndex>=0) Then
     If Op='>' Then R.Part:=1 Else R.Part:=2;
    If Op='>' Then R.Value:=R.Value And $FF Else R.Value:=(R.Value Shr 8) And $FF;
+  End;
   End;
  End Else If Op='(' Then Begin
   NextToken; R:=ParseExpression(1);
@@ -604,16 +600,17 @@ Begin
   Fail('Symbole externe exigeant le mode REL');
  If ResultValue.Part=0 Then ResultValue.FullValue:=ResultValue.Value;
  ExpressionValue:=ResultValue;
+ ExpressionKnown:=Known;
  If (Pass=2) And Not Known Then Error('Expression inconnue: '+S);
  Eval:=ResultValue.Value;
 End;
 
-Procedure AddReloc(Offset:LongInt; Kind:Byte; Expr:TString);
-Var Known:Boolean;
+Procedure AddReloc(Offset:LongInt; Kind:Byte);
 Begin
  If (Pass<>2) Or Not RelMode Or InDsect Then Exit;
- Eval(Expr,Known);
- If Not Known Or ((ExpressionValue.Rel=0) And (ExpressionValue.ExternalIndex<0)) Then Exit;
+ { Reutiliser l'evaluation faite avant l'emission de l'opcode: * doit
+   conserver l'adresse de l'instruction, pas celle de son operande. }
+ If Not ExpressionKnown Or ((ExpressionValue.Rel=0) And (ExpressionValue.ExternalIndex<0)) Then Exit;
  If RelocCount>=MAX_RELOCS Then Begin Error('Table de relocation pleine'); Exit; End;
  If ExpressionValue.Part<>0 Then Begin
   If Kind<>1 Then Begin Error('Extraction relogeable exige un octet'); Exit; End;
@@ -753,7 +750,7 @@ End;
 Procedure ParseFields(Line:TString; Var LabelName,Op,Arg,Comment:TString);
 Var
  I,P:Integer;
- HasLabel:Boolean;
+ HasLabel,Escaped:Boolean;
  Quote:Char;
 
 Function Token:TString;
@@ -764,9 +761,11 @@ Begin
  While (I<=Length(Line)) And Not(Line[I] In [' ',#9]) Do Inc(I); Token:=Copy(Line,A,I-A);
 End;
 Begin
- LabelName:=''; Op:=''; Arg:=''; Comment:=''; P:=0; Quote:=#0;
+ LabelName:=''; Op:=''; Arg:=''; Comment:=''; P:=0; Quote:=#0; Escaped:=False;
  For I:=1 To Length(Line) Do Begin
-  If (Line[I] In ['''','"']) Then Begin If Quote=#0 Then Quote:=Line[I] Else If Quote=Line[I] Then Quote:=#0; End
+  If Escaped Then Escaped:=False
+  Else If (Quote<>#0) And (Line[I]='\') Then Escaped:=True
+  Else If (Line[I] In ['''','"']) Then Begin If Quote=#0 Then Quote:=Line[I] Else If Quote=Line[I] Then Quote:=#0; End
   Else If (Line[I]=';') And (Quote=#0) Then Begin P:=I; Break; End;
  End;
  If P>0 Then Begin
@@ -785,9 +784,13 @@ Procedure DetermineMode(M,Arg:TString; V:LongInt; Known:Boolean; Var Mode,Size:B
                         Var Expr:TString);
 Var
  U:TString;
- P:Integer;
+ P,I,Level:Integer;
+ Quote,Ch:Char;
+ Escaped:Boolean;
 Begin
- U:=Up(Trim(Arg)); Expr:=U; If U='' Then Begin
+ { Conserver la casse des caracteres; supprimer uniquement les espaces
+   autour des separateurs d'adressage, jamais ceux des operateurs mots. }
+ Expr:=Trim(Arg); U:=Up(Expr); If U='' Then Begin
   Mode:=AM_IMP; Size:=1; Exit;
  End; If U='A' Then Begin
   Mode:=AM_ACC; Size:=1; Exit;
@@ -798,31 +801,55 @@ Begin
  If U[1]='#' Then Begin
   Delete(Expr,1,1); Mode:=AM_IMM; Size:=2; Exit;
  End;
- If (U[1]='(') Then Begin
-  P:=Pos(')',U); If Pos(',X)',U)>0 Then Begin
-   Mode:=AM_INX; Expr:=Copy(U,2,Pos(',X)',U)-2); Size:=2;
-  End Else If Pos('),Y',U)>0 Then Begin
-   Mode:=AM_INY; Expr:=Copy(U,2,Pos('),Y',U)-2); Size:=2;
-  End Else
-  Begin
-   Mode:=AM_IND; Expr:=Copy(U,2,P-2); Size:=3;
-  End; Exit;
+ P:=0; Level:=0; Quote:=#0; Escaped:=False;
+ If U[1]='(' Then Begin
+  For I:=1 To Length(U) Do Begin
+   Ch:=U[I];
+   If Escaped Then Escaped:=False
+   Else If (Quote<>#0) And (Ch='\') Then Escaped:=True
+   Else If Ch='''' Then Begin If Quote=#0 Then Quote:=Ch Else Quote:=#0; End
+   Else If Quote=#0 Then Begin
+    If Ch='(' Then Inc(Level) Else If Ch=')' Then Begin
+     Dec(Level); If Level=0 Then Begin P:=I; Break; End;
+    End;
+   End;
+  End;
+  If P>0 Then Begin
+   U:=Up(Trim(Copy(Expr,P+1,255)));
+   If (U<>'') And (U[1]=',') And (Trim(Copy(U,2,255))='Y') Then Begin
+    Mode:=AM_INY; Expr:=Copy(Expr,2,P-2); Size:=2; Exit;
+   End;
+   If P=Length(Expr) Then Begin
+    U:=Trim(Copy(Expr,2,P-2)); I:=Length(U);
+    If (I>0) And (UpCase(U[I])='X') Then Begin
+     U:=Trim(Copy(U,1,I-1)); I:=Length(U);
+     If (I>0) And (U[I]=',') Then Begin
+      Mode:=AM_INX; Expr:=Trim(Copy(U,1,I-1)); Size:=2; Exit;
+     End;
+    End;
+    If M='JMP' Then Begin
+     Mode:=AM_IND; Expr:=Copy(Expr,2,P-2); Size:=3; Exit;
+    End;
+   End;
+  End;
  End;
- If Pos(',X',U)>0 Then Begin
-  Delete(Expr,Pos(',X',Expr),2); If Known And (V<256) Then Begin
+ U:=Up(Expr); P:=Length(U);
+ If (P>0) And (U[P] In ['X','Y']) Then Begin
+  Ch:=U[P]; U:=Trim(Copy(U,1,P-1)); P:=Length(U);
+  If (P>0) And (U[P]=',') Then Begin
+   Expr:=Trim(Copy(Expr,1,P-1));
+   If Ch='X' Then Begin
+    If Known And (V>=0) And (V<256) Then Begin
    Mode:=AM_ZPX; Size:=2;
-  End Else
-  Begin
+    End Else Begin
    Mode:=AM_ABX; Size:=3;
-  End; Exit;
- End;
- If Pos(',Y',U)>0 Then Begin
-  Delete(Expr,Pos(',Y',Expr),2); If Known And (V<256) Then Begin
+    End;
+   End Else If Known And (V>=0) And (V<256) Then Begin
    Mode:=AM_ZPY; Size:=2;
-  End Else
-  Begin
+   End Else Begin
    Mode:=AM_ABY; Size:=3;
-  End; Exit;
+   End; Exit;
+  End;
  End;
  If Known And (V>=0) And (V<256) And (M<>'JMP') And (M<>'JSR') Then Begin
   Mode:=AM_ZP; Size:=2;
@@ -910,6 +937,24 @@ Begin
  If LastInstruction=Nil Then Instructions:=Nil Else LastInstruction^.Next:=Nil;
 End;
 
+Function TakeExpression(Var S:TString):TString;
+Var I,Level:Integer; Quoted,Escaped:Boolean; C:Char;
+Begin
+ Level:=0; Quoted:=False; Escaped:=False; I:=1;
+ While I<=Length(S) Do Begin
+  C:=S[I];
+  If Escaped Then Escaped:=False
+  Else If Quoted And (C='\') Then Escaped:=True
+  Else If C='''' Then Quoted:=Not Quoted
+  Else If Not Quoted Then Begin
+   If C='(' Then Inc(Level) Else If C=')' Then Dec(Level)
+   Else If (C=',') And (Level=0) Then Break;
+  End;
+  Inc(I);
+ End;
+ TakeExpression:=Trim(Copy(S,1,I-1)); Delete(S,1,I);
+End;
+
 Procedure ProcessLine(Source:TString);
 Var
  Lab,M,A,C,E,Item,Bytes:TString;
@@ -962,7 +1007,7 @@ Begin
   ListLine(PC,'',Source); Exit;
  End;
  If M='ORG' Then Begin
-  V:=Eval(A,Known); If Known Then PC:=V Else Error('ORG invalide');
+  V:=Eval(A,Known); If Known Then Begin CheckRange(V,16,True); PC:=V; End Else Error('ORG invalide');
   If Known And Not ObjExplicit Then ObjPC:=V;
   ListObjAddress:=ObjPC;
   If FirstPC<0 Then FirstPC:=PC; ListLine(PC,'',Source); Exit;
@@ -970,6 +1015,7 @@ Begin
  If M='OBJ' Then Begin
   If RelMode Then Begin Error('OBJ interdit dans un module REL'); ListLine(PC,'',Source); Exit; End;
   V:=Eval(A,Known); If Known Then Begin
+   CheckRange(V,16,True);
    ObjPC:=V; ObjExplicit:=True; ListObjAddress:=ObjPC;
   End Else Error('OBJ invalide');
   ListLine(PC,'',Source); Exit;
@@ -986,6 +1032,7 @@ Begin
  If M='DSECT' Then Begin
   If InDsect Then Error('DSECT imbrique interdit') Else Begin
    SavedPC:=PC; V:=0; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Not Known Then Error('Adresse DSECT inconnue'); End;
+   CheckRange(V,16,True);
    PC:=V; InDsect:=True; If Lab<>'' Then Begin I:=FindSymbol(Lab); If I>=0 Then Symbols[I].Value:=PC; End;
    If Lab<>'' Then Begin I:=FindSymbol(Lab); If I>=0 Then Begin
     Symbols[I].Section:=SEC_DSECT; Symbols[I].Relocatable:=False;
@@ -999,7 +1046,7 @@ Begin
  If M='REL' Then Begin
   If ObjExplicit Then Error('REL incompatible avec OBJ') Else RelMode:=True;
   If Trim(A)<>'' Then Begin
-   V:=Eval(A,Known); If Known Then Begin PC:=V; ObjPC:=V; End
+   V:=Eval(A,Known); If Known Then Begin CheckRange(V,16,True); PC:=V; ObjPC:=V; End
    Else Error('Adresse REL inconnue');
   End;
   ListLine(PC,'',Source); Exit;
@@ -1051,36 +1098,36 @@ Begin
  If (M='DFB') Or (M='DB') Then Begin
   A:=A+',';
   While A<>'' Do Begin
-   P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
+   Item:=TakeExpression(A); V:=Eval(Item,Known);
    If Not Known Then Error('Valeur DFB inconnue: '+Item);
    If Known Then CheckRange(V,8,False);
-   AddReloc(ObjPC,1,Item);
+   AddReloc(ObjPC,1);
    EmitByte(V,Bytes);
   End;
  End
  Else If (M='DW') Or (M='DA') Then Begin
   A:=A+',';
   While A<>'' Do Begin
-   P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DW inconnue: '+Item); AddReloc(ObjPC,3,Item); EmitWord(V,Bytes);
+   Item:=TakeExpression(A); V:=Eval(Item,Known);
+   If Not Known Then Error('Valeur DW inconnue: '+Item); AddReloc(ObjPC,3); EmitWord(V,Bytes);
   End;
  End
  Else If M='DDB' Then Begin
   A:=A+',';
   While A<>'' Do Begin
-   P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DDB inconnue: '+Item); AddReloc(ObjPC,5,Item); EmitBigWord(V,Bytes);
+   Item:=TakeExpression(A); V:=Eval(Item,Known);
+   If Not Known Then Error('Valeur DDB inconnue: '+Item); AddReloc(ObjPC,5); EmitBigWord(V,Bytes);
   End;
  End
  Else If M='DCL' Then Begin
   A:=A+',';
   While A<>'' Do Begin
-   P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P); V:=Eval(Item,Known);
-   If Not Known Then Error('Valeur DCL inconnue: '+Item); AddReloc(ObjPC,4,Item); EmitLong(V,Bytes);
+   Item:=TakeExpression(A); V:=Eval(Item,Known);
+   If Not Known Then Error('Valeur DCL inconnue: '+Item); AddReloc(ObjPC,4); EmitLong(V,Bytes);
   End;
  End
  Else If (M='DS') Or (M='DFS') Then Begin
-  P:=Pos(',',A); Item:=A; C:='0'; If P>0 Then Begin Item:=Copy(A,1,P-1); C:=Copy(A,P+1,255); End;
+  Item:=TakeExpression(A); C:=Trim(A); If C='' Then C:='0';
   V:=Eval(Item,Known); If Not Known Or (V<0) Then Error('Taille DS inconnue ou negative') Else Begin
    O:=Eval(C,Known); If Not Known Or (O<0) Or (O>255) Then Error('Octet de remplissage DS invalide')
    Else For I:=1 To V Do EmitByte(O,Bytes);
@@ -1124,6 +1171,7 @@ Begin
    TrackInstruction(Mode,Size);
    If Size>1 Then Begin
     If Mode=AM_REL Then Begin
+     CheckRange(V,16,True);
      If (ExpressionValue.ExternalIndex>=0) Or (ExpressionValue.Part<>0) Then
       Error('Cible de branchement externe ou extraite interdite');
     End Else If Size=2 Then CheckRange(V,8,Mode<>AM_IMM)
@@ -1132,8 +1180,8 @@ Begin
    EmitByte(O,Bytes); If Mode=AM_REL Then Begin
     V:=V-(PC+1); If Known And ((V<-128) Or (V>127)) Then Error('Branchement hors limite');
     EmitByte(V And $FF,Bytes);
-   End Else If Size=2 Then Begin AddReloc(ObjPC,1,E); EmitByte(V,Bytes); End
-   Else If Size=3 Then Begin AddReloc(ObjPC,3,E); EmitWord(V,Bytes); End;
+   End Else If Size=2 Then Begin AddReloc(ObjPC,1); EmitByte(V,Bytes); End
+   Else If Size=3 Then Begin AddReloc(ObjPC,3); EmitWord(V,Bytes); End;
   End;
  End;
  If PC>LastPC Then LastPC:=PC; ListLine(OldPC,Bytes,Source);
@@ -1319,7 +1367,16 @@ Procedure Help;Begin
  WriteLn('                     Sans /B, une sortie absolue demeure un binaire brut.');
  WriteLn; 
  WriteLn('Nombres: decimal, $hexadecimal, %binaire, caracteres entre apostrophes.');
- WriteLn('Expressions: symbole+valeur, symbole-valeur, >octet-faible, <octet-fort.');
+ WriteLn('Expressions: parentheses, + - * / DIV MOD, AND & XOR ^ OR |,');
+ WriteLn('             SHL << SHR >>, signes unaires + - et NOT ~.');
+ WriteLn('Priorites: unaires, produit, somme, decalages, AND, XOR, OR.');
+ WriteLn('EDASM: >expr = octet faible; <expr = octet fort.');
+ WriteLn('Caracteres: ''a'', ''\n'', ''\r'', ''\t'', ''\0'', ''\\'', ''\x41''.');
+ WriteLn('Plages: donnees 8 bits -128..255, 16 bits -32768..65535;');
+ WriteLn('        adresses non negatives; decalages logiques de 0 a 31.');
+ WriteLn('JMP (expr) reste indirect; LDA (expr) utilise un calcul arithmetique.');
+ WriteLn('Relocation: adresse +/- constante ou difference d''adresses;');
+ WriteLn('            produit, division et operations logiques exigent des absolus.');
  Halt(0);
 End;
 
