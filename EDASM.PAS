@@ -14,7 +14,7 @@ Program EDASM;
 Uses DOS;
 
 Const
- VERSION='1.3';
+ VERSION='1.4';
  MAX_SYMBOLS=4096;
  MAX_REFERENCES=8192;
  MAX_LINE=255;
@@ -169,8 +169,10 @@ End;
 Procedure DefineSymbol(N:TString; V:LongInt);
 Var
  I:Integer;
+ WasLocal:Boolean;
 Begin
  If N='' Then Exit;
+ WasLocal:=IsLocalName(N);
  If Not IsLocalName(N) And IsReservedSymbol(N) Then Begin
   Error('Nom de symbole reserve: '+Up(N)); Exit;
  End;
@@ -182,9 +184,12 @@ Begin
  End; I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N;
  Symbols[I].External:=False; Symbols[I].PublicSym:=False;
   Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
-  Symbols[I].LocalSymbol:=IsLocalName(Copy(N,Length(CurrentScope)+1,255));
+  Symbols[I].LocalSymbol:=WasLocal;
   Symbols[I].Section:=SEC_UNDEF; Symbols[I].DefinedLine:=0;
- End Else If Symbols[I].Defined And (Pass=1) Then Begin
+ End Else If Symbols[I].External Then Begin
+  Error('Definition d''un symbole externe: '+N); Exit;
+ End Else If Symbols[I].Defined And ((Pass=1) Or
+  ((Pass=2) And (Symbols[I].DefinedLine<>LineNo))) Then Begin
   Error('Symbole defini deux fois: '+N); Exit;
  End; Symbols[I].Value:=V; Symbols[I].Defined:=True;
  If Pass=1 Then Symbols[I].DefinedLine:=LineNo;
@@ -326,15 +331,39 @@ Var I,P:Integer;
 Begin P:=0; For I:=1 To Length(S) Do If S[I] In ['\','/'] Then P:=I; SourceDirectory:=Copy(S,1,P); End;
 
 Function GetOrCreateSymbol(N:TString):Integer;
-Var I:Integer;
+Var I:Integer; WasLocal:Boolean;
 Begin
- N:=Up(Trim(N)); I:=FindSymbol(N);
+ WasLocal:=IsLocalName(N);
+ If Not WasLocal And IsReservedSymbol(N) Then Begin
+  Error('Nom de symbole reserve: '+Up(N)); GetOrCreateSymbol:=-1; Exit;
+ End;
+ N:=CanonicalSymbolName(N);
+ If Length(N)>31 Then Begin Error('Nom de symbole trop long: '+N); GetOrCreateSymbol:=-1; Exit; End;
+ I:=FindSymbol(N);
  If (I<0) And (N<>'') Then Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin Error('Table des symboles pleine'); GetOrCreateSymbol:=-1; Exit; End;
   I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N; Symbols[I].Value:=0;
   Symbols[I].Defined:=False; Symbols[I].External:=False;
   Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
+  Symbols[I].LocalSymbol:=WasLocal; Symbols[I].Section:=SEC_UNDEF;
+  Symbols[I].DefinedLine:=0;
  End; GetOrCreateSymbol:=I;
+End;
+
+Procedure AddCrossReference(SymbolIndex:Integer);
+Var I:Integer;
+Begin
+ If (Pass<>2) Or (SymbolIndex<0) Then Exit;
+ I:=ReferenceCount-1;
+ While (I>=0) And (References[I].SourceLine=LineNo) Do Begin
+  If References[I].SymbolIndex=SymbolIndex Then Exit; Dec(I);
+ End;
+ If ReferenceCount>=MAX_REFERENCES Then Begin
+  Error('Table des references croisees pleine'); Exit;
+ End;
+ References[ReferenceCount].SymbolIndex:=SymbolIndex;
+ References[ReferenceCount].SourceLine:=LineNo;
+ Inc(ReferenceCount);
 End;
 
 Function ExpressionSymbol(S:TString):TString;
@@ -358,7 +387,7 @@ Begin
  If (I<0) Or ((Not Symbols[I].External) And (Not Symbols[I].Relocatable)) Then Exit;
  If RelocCount>=MAX_RELOCS Then Begin Error('Table de relocation pleine'); Exit; End;
  Relocs[RelocCount].Offset:=Offset; Relocs[RelocCount].Kind:=Kind;
- Relocs[RelocCount].SymbolName:=N; Relocs[RelocCount].Aux:=0;
+ Relocs[RelocCount].SymbolName:=Symbols[I].Name; Relocs[RelocCount].Aux:=0;
  T:=Trim(Expr); If (T<>'') And (T[1] In ['<','>','#']) Then Delete(T,1,1);
  V:=Eval(T,Known);
  If Known And (Kind=2) Then Relocs[RelocCount].Aux:=V And $FF;
@@ -391,9 +420,13 @@ Begin
  End
  Else If (S[1]='''') And (Length(S)>=2) Then V:=Ord(S[2]) Else
  Begin
-  C:=FindSymbol(S); If (C>=0) And Symbols[C].Defined Then V:=Symbols[C].Value Else
+  C:=FindSymbol(S); If C>=0 Then AddCrossReference(C);
+  If (C>=0) And Symbols[C].Defined Then V:=Symbols[C].Value Else
   Begin
-   V:=0; Val(S,V,Code); If Code<>0 Then Known:=False;
+   V:=0; Val(S,V,Code); If Code<>0 Then Begin
+    Known:=False;
+    If (C<0) And (Pass=1) Then C:=GetOrCreateSymbol(S);
+   End;
   End;
  End;
  If Low Then V:=V And $FF Else If High Then V:=(V Shr 8) And $FF; EvalAtom:=V;
@@ -415,6 +448,34 @@ Begin
    If I<=Length(S) Then If S[I]='-' Then Sign:=-1 Else Sign:=1; Start:=I+1;
   End; Inc(I);
  End; Eval:=V;
+End;
+
+{ Les differences de deux adresses REL sont absolues; une adresse REL
+  plus une constante reste relogeable. Les extractions d'octet sont ABS. }
+Function EquSection(S:TString):Byte;
+Var I,Start,J,Balance,Sign:Integer; T:TString; InQuote:Boolean;
+Begin
+ Balance:=0; Sign:=1; Start:=1; InQuote:=False;
+ For I:=1 To Length(S)+1 Do Begin
+  If (I<=Length(S)) And (S[I]='''') Then InQuote:=Not InQuote;
+  If (I>Length(S)) Or ((S[I] In ['+','-']) And Not InQuote) Then Begin
+   T:=Trim(Copy(S,Start,I-Start));
+   If T='*' Then Begin
+    If RelMode And Not InDsect Then Inc(Balance,Sign);
+   End Else If T<>'' Then Begin
+    J:=FindSymbol(T);
+    If J>=0 Then Begin
+     If Symbols[J].External Then Error('EQU sur symbole externe interdit: '+T)
+     Else If Symbols[J].Relocatable Then Inc(Balance,Sign);
+    End;
+   End;
+   If I<=Length(S) Then If S[I]='-' Then Sign:=-1 Else Sign:=1;
+   Start:=I+1;
+  End;
+ End;
+ EquSection:=SEC_ABSOLUTE;
+ If Balance=1 Then EquSection:=SEC_RELOCATABLE
+ Else If Balance<>0 Then Error('Expression EQU non relogeable');
 End;
 
 Procedure EmitByte(B:Byte; Var Bytes:TString);
@@ -672,13 +733,24 @@ Begin
  If Not Active Then Begin
   ListLine(PC,'',Source); Exit;
  End;
+ If (Lab<>'') And (M<>'ENTRY') And (M<>'EXTRN') And
+  Not IsLocalName(Lab) And Not IsReservedSymbol(Lab) Then
+  CurrentScope:=Up(Lab);
  If (M='EQU') Or (M='=') Then Begin
   V:=Eval(A,Known); If Not Known And (Pass=1) Then Error('Expression EQU inconnue');
-  DefineSymbol(Lab,V); ListLine(V,'',Source); Exit;
+  DefineSymbol(Lab,V); I:=FindSymbol(Lab); If I>=0 Then Begin
+   Symbols[I].Section:=EquSection(A);
+   Symbols[I].Relocatable:=Symbols[I].Section=SEC_RELOCATABLE;
+  End; ListLine(V,'',Source); Exit;
  End;
- If Lab<>'' Then Begin
+ If (Lab<>'') And (M<>'ENTRY') And (M<>'EXTRN') Then Begin
   DefineSymbol(Lab,PC); I:=FindSymbol(Lab);
-  If (I>=0) And RelMode And Not InDsect Then Symbols[I].Relocatable:=True;
+  If I>=0 Then Begin
+   If InDsect Then Symbols[I].Section:=SEC_DSECT
+   Else If RelMode Then Symbols[I].Section:=SEC_RELOCATABLE
+   Else Symbols[I].Section:=SEC_ABSOLUTE;
+   Symbols[I].Relocatable:=RelMode And Not InDsect;
+  End;
  End; If M='' Then Begin
   ListLine(PC,'',Source); Exit;
  End;
@@ -708,6 +780,9 @@ Begin
   If InDsect Then Error('DSECT imbrique interdit') Else Begin
    SavedPC:=PC; V:=0; If Trim(A)<>'' Then Begin V:=Eval(A,Known); If Not Known Then Error('Adresse DSECT inconnue'); End;
    PC:=V; InDsect:=True; If Lab<>'' Then Begin I:=FindSymbol(Lab); If I>=0 Then Symbols[I].Value:=PC; End;
+   If Lab<>'' Then Begin I:=FindSymbol(Lab); If I>=0 Then Begin
+    Symbols[I].Section:=SEC_DSECT; Symbols[I].Relocatable:=False;
+   End; End;
   End; ListLine(PC,'',Source); Exit;
  End;
  If M='DEND' Then Begin
@@ -725,15 +800,26 @@ Begin
  If (M='EXTRN') Or (M='ENTRY') Then Begin
   If Lab<>'' Then A:=Lab+','+A; A:=A+',';
   While A<>'' Do Begin P:=Pos(',',A); Item:=Trim(Copy(A,1,P-1)); Delete(A,1,P);
-   If Item<>'' Then Begin I:=GetOrCreateSymbol(Item); If I>=0 Then
+   If IsLocalName(Item) Then Error('ENTRY/EXTRN exige un symbole global: '+Item)
+   Else If Item<>'' Then Begin I:=GetOrCreateSymbol(Item); If I>=0 Then
     Begin
+     If ((M='EXTRN') And (Symbols[I].PublicSym Or
+         (Symbols[I].Defined And Not Symbols[I].External))) Or
+        ((M='ENTRY') And Symbols[I].External) Then Begin
+      Error('Conflit ENTRY/EXTRN ou definition: '+Item);
+     End Else Begin
      If Symbols[I].EsdNumber=0 Then Begin
       If NextEsdNumber>255 Then Error('Plus de 255 symboles ENTRY/EXTRN') Else Begin
        Symbols[I].EsdNumber:=NextEsdNumber; Inc(NextEsdNumber);
       End;
      End;
-     If M='EXTRN' Then Begin Symbols[I].External:=True; Symbols[I].Defined:=True; Symbols[I].Value:=0; End
+     If M='EXTRN' Then Begin
+      Symbols[I].External:=True; Symbols[I].Defined:=True; Symbols[I].Value:=0;
+      Symbols[I].Section:=SEC_EXTERNAL; Symbols[I].Relocatable:=True;
+     End
      Else Symbols[I].PublicSym:=True;
+     AddCrossReference(I);
+     End;
     End;
    End;
   End; ListLine(PC,'',Source); Exit;
@@ -858,17 +944,84 @@ Begin
  LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
  ObjExplicit:=False; ListObjAddress:=0;
  CondDepth:=0; Active:=True; MSBMode:=False; RelMode:=False; InDsect:=False;
- RepeatChar:='*';
+ RepeatChar:='*'; CurrentScope:='';
  ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
  If InDsect Then Error('DSECT sans DEND');
  If CondDepth<>0 Then Error('DO sans FIN');
 End;
 
+Function SymbolTypeName(I:Integer):TString;
+Begin
+ If Symbols[I].External Then SymbolTypeName:='EXTERN'
+ Else If Not Symbols[I].Defined Then SymbolTypeName:='UNDEF'
+ Else If Symbols[I].Relocatable Then SymbolTypeName:='RELOC'
+ Else SymbolTypeName:='ABS';
+End;
+
+Function SectionName(I:Integer):TString;
+Begin
+ Case Symbols[I].Section Of
+  SEC_ABSOLUTE:SectionName:='ABS';
+  SEC_RELOCATABLE:SectionName:='REL';
+  SEC_DSECT:SectionName:='DSECT';
+  SEC_EXTERNAL:SectionName:='EXTERN';
+  Else SectionName:='UNDEF';
+ End;
+End;
+
+Procedure WriteSymbolTable;
+Var Order:Array[0..MAX_SYMBOLS-1] Of Integer;
+    I,J,K,R:Integer; T:Integer; Attr:TString; HasRef:Boolean;
+Begin
+ If Not UseListing Then Exit;
+ For I:=0 To SymbolCount-1 Do Order[I]:=I;
+ For I:=1 To SymbolCount-1 Do Begin
+  T:=Order[I]; J:=I-1;
+  While (J>=0) And (Symbols[Order[J]].Name>Symbols[T].Name) Do Begin
+   Order[J+1]:=Order[J]; Dec(J);
+  End; Order[J+1]:=T;
+ End;
+ WriteLn(ListText,#12); WriteLn(ListText,'TABLE DES SYMBOLES (ordre alphabetique)');
+ WriteLn(ListText,'NOM                              VALEUR TYPE    SECTION ATTRIBUTS  DEF  REFERENCES');
+ WriteLn(ListText,'-------------------------------  ------ ------- ------- ---------- ---- ----------------');
+ For J:=0 To SymbolCount-1 Do Begin
+  I:=Order[J]; Attr:='';
+  If Symbols[I].PublicSym Then Attr:=Attr+'EXPORT ';
+  If Symbols[I].LocalSymbol Then Attr:=Attr+'LOCAL ';
+  Write(ListText,Symbols[I].Name);
+  For K:=Length(Symbols[I].Name) To 31 Do Write(ListText,' ');
+  If Symbols[I].Defined And Not Symbols[I].External Then
+   If (Symbols[I].Value>=0) And (Symbols[I].Value<=65535) Then
+    Write(ListText,' $',Hex(Symbols[I].Value,4),' ')
+   Else Write(ListText,' $',Hex(Symbols[I].Value,8),' ')
+  Else Write(ListText,' ----  ');
+  Write(ListText,SymbolTypeName(I));
+  For K:=Length(SymbolTypeName(I)) To 7 Do Write(ListText,' ');
+  Write(ListText,SectionName(I));
+  For K:=Length(SectionName(I)) To 7 Do Write(ListText,' ');
+  Write(ListText,Attr);
+  For K:=Length(Attr) To 10 Do Write(ListText,' ');
+  If Symbols[I].DefinedLine>0 Then Write(ListText,Symbols[I].DefinedLine:4)
+  Else Write(ListText,'   -');
+  Write(ListText,'  '); HasRef:=False;
+  For R:=0 To ReferenceCount-1 Do If References[R].SymbolIndex=I Then Begin
+   If HasRef Then Write(ListText,','); Write(ListText,References[R].SourceLine);
+   HasRef:=True;
+  End;
+  If Not HasRef Then Write(ListText,'-'); WriteLn(ListText);
+ End;
+ WriteLn(ListText); WriteLn(ListText,'Symboles: ',SymbolCount,
+  '   References: ',ReferenceCount,'   Erreurs: ',Errors);
+End;
+
 Procedure ValidateExternalSymbols;
 Var I:Integer;
 Begin
- For I:=0 To SymbolCount-1 Do
-  If Symbols[I].PublicSym And Not Symbols[I].Defined Then Error('Symbole ENTRY non defini: '+Symbols[I].Name);
+ For I:=0 To SymbolCount-1 Do Begin
+  If Symbols[I].PublicSym And Not Symbols[I].Defined Then
+   Error('Symbole ENTRY non defini: '+Symbols[I].Name)
+  Else If Not Symbols[I].Defined Then Error('Symbole non defini: '+Symbols[I].Name);
+ End;
 End;
 
 Procedure Help;Begin
@@ -888,6 +1041,9 @@ Procedure Help;Begin
  WriteLn('                     Sur ProDOS: type $FE (REL), AUXTYPE=adresse ORG.');
  WriteLn('EXTRN nom,...        Declare des symboles fournis par un autre module.');
  WriteLn('ENTRY nom,...        Exporte des symboles definis dans ce module.');
+ WriteLn('Labels .nom/@nom     Labels locaux rattaches au dernier label global.');
+ WriteLn('Listing /L           Ajoute une table alphabetique: type, section,');
+ WriteLn('                     attributs, definition et references croisees.');
  WriteLn('CHN fichier          Continue l''assemblage dans un autre source.');
  WriteLn('PAGE                 Commence une nouvelle page du listing.');
  WriteLn('SKP [n]              Insere n lignes blanches dans le listing.');
@@ -939,13 +1095,14 @@ BEGIN
  { Stabilise les etiquettes et les choix page-zero/absolu apres la passe
    initiale. Les references avant peuvent modifier la taille du code. }
  Pass:=0; AssembleOnePass; AssembleOnePass; AssembleOnePass;
- Errors:=0; RelocCount:=0; ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
+ Errors:=0; RelocCount:=0; ReferenceCount:=0;
+ ListPage:=0; ListRow:=0; PageLength:=60; Subtitle:='';
  InitObjectImage; Pass:=2; AssembleOnePass;
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
  ValidateExternalSymbols;
  If Errors=0 Then WriteObjectFile;
  If UseListing Then Begin
-  WriteLn(ListText); WriteLn(ListText,'Symboles: ',SymbolCount,'   Erreurs: ',Errors);
+  WriteSymbolTable;
   Close(ListText);
  End;
  If Errors=0 Then Begin
