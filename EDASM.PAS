@@ -16,6 +16,7 @@ Uses DOS;
 Const
  VERSION='1.3';
  MAX_SYMBOLS=4096;
+ MAX_REFERENCES=8192;
  MAX_LINE=255;
  MAX_RELOCS=8192;
  AM_IMP=0;
@@ -31,6 +32,11 @@ Const
  AM_INX=10;
  AM_INY=11;
  AM_REL=12;
+ SEC_UNDEF=0;
+ SEC_ABSOLUTE=1;
+ SEC_RELOCATABLE=2;
+ SEC_DSECT=3;
+ SEC_EXTERNAL=4;
 
 Type
  TString=String;
@@ -40,9 +46,15 @@ Type
  PUsedPage=^TUsedPage;
  TSymbol=Record
   Name:String[31];
-  Value:LongInt;
- Defined,External,PublicSym,Relocatable:Boolean;
+ Value:LongInt;
+ Defined,External,PublicSym,Relocatable,LocalSymbol:Boolean;
   EsdNumber:Byte;
+  Section:Byte;
+  DefinedLine:Word;
+ End;
+ TReference=Record
+  SymbolIndex:Word;
+  SourceLine:Word;
  End;
  TReloc=Record
   Offset:LongInt;
@@ -56,6 +68,8 @@ Var
  SrcName,ObjName,ListName:TString;
  Symbols:Array[0..MAX_SYMBOLS-1] Of TSymbol;
  SymbolCount:Integer;
+ References:Array[0..MAX_REFERENCES-1] Of TReference;
+ ReferenceCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
  RelocCount:Integer;
  Pass,LineNo,Errors,NextEsdNumber:Integer;
@@ -70,7 +84,7 @@ Var
  Active:Boolean;
  RelMode,InDsect:Boolean;
  SavedPC:LongInt;
- CurrentSource,ChainName,Subtitle:TString;
+ CurrentSource,ChainName,Subtitle,CurrentScope:TString;
  ChainRequested:Boolean;
  ListPage,ListRow,PageLength:Integer;
  RepeatChar:Char;
@@ -119,11 +133,34 @@ Procedure Error(S:TString);Begin
  End;
 End;
 
+Function IsLocalName(N:TString):Boolean;
+Begin
+ N:=Trim(N); IsLocalName:=(N<>'') And (N[1] In ['.','@']);
+End;
+
+Function CanonicalSymbolName(N:TString):TString;
+Begin
+ N:=Up(Trim(N));
+ If IsLocalName(N) And (CurrentScope<>'') Then N:=CurrentScope+N;
+ CanonicalSymbolName:=N;
+End;
+
+Function IsReservedSymbol(N:TString):Boolean;
+Const
+ R1=',ADC,AND,ASL,BCC,BCS,BEQ,BIT,BMI,BNE,BPL,BRK,BVC,BVS,CLC,CLD,CLI,CLV,CMP,CPX,CPY,DEC,DEX,DEY,EOR,INC,INX,INY,JMP,JSR,';
+ R2=',LDA,LDX,LDY,LSR,NOP,ORA,PHA,PHP,PLA,PLP,ROL,ROR,RTI,RTS,SBC,SEC,SED,SEI,STA,STX,STY,TAX,TAY,TSX,TXA,TXS,TYA,';
+ R3=',ORG,OBJ,EQU,DFB,DB,DW,DA,DDB,DCL,DS,DFS,HEX,ASC,DCI,MSB,DO,ELSE,FIN,LST,PAGE,SKP,SBTL,DSECT,DEND,REL,EXTRN,ENTRY,CHN,END,CHR,REP,A,X,Y,';
+Begin
+ N:=Up(Trim(N));
+ IsReservedSymbol:=(Pos(','+N+',',R1)>0) Or (Pos(','+N+',',R2)>0) Or
+                  (Pos(','+N+',',R3)>0);
+End;
+
 Function FindSymbol(N:TString):Integer;
 Var
  I:Integer;
 Begin
- N:=Up(N);
+ N:=CanonicalSymbolName(N);
  For I:=0 To SymbolCount-1 Do If Symbols[I].Name=N Then Begin
   FindSymbol:=I; Exit;
  End; FindSymbol:=-1;
@@ -133,15 +170,24 @@ Procedure DefineSymbol(N:TString; V:LongInt);
 Var
  I:Integer;
 Begin
- If N='' Then Exit; N:=Up(N); I:=FindSymbol(N); If I<0 Then Begin
+ If N='' Then Exit;
+ If Not IsLocalName(N) And IsReservedSymbol(N) Then Begin
+  Error('Nom de symbole reserve: '+Up(N)); Exit;
+ End;
+ N:=CanonicalSymbolName(N);
+ If Length(N)>31 Then Begin Error('Nom de symbole trop long: '+N); Exit; End;
+ I:=FindSymbol(N); If I<0 Then Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin
    Error('Table des symboles pleine'); Exit;
  End; I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N;
  Symbols[I].External:=False; Symbols[I].PublicSym:=False;
   Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
+  Symbols[I].LocalSymbol:=IsLocalName(Copy(N,Length(CurrentScope)+1,255));
+  Symbols[I].Section:=SEC_UNDEF; Symbols[I].DefinedLine:=0;
  End Else If Symbols[I].Defined And (Pass=1) Then Begin
   Error('Symbole defini deux fois: '+N); Exit;
  End; Symbols[I].Value:=V; Symbols[I].Defined:=True;
+ If Pass=1 Then Symbols[I].DefinedLine:=LineNo;
 End;
 
 Procedure InitObjectImage;
