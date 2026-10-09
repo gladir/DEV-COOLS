@@ -43,6 +43,8 @@ Const
  AM_INX=10;
  AM_INY=11;
  AM_REL=12;
+ AM_ZPI=13;
+ AM_AIX=14;
  SEC_UNDEF=0;
  SEC_ABSOLUTE=1;
  SEC_RELOCATABLE=2;
@@ -64,6 +66,7 @@ Type
   Name:String[31];
  Value:LongInt;
  Defined,External,PublicSym,Relocatable,LocalSymbol,UndefinedReported,DefinedThisPass:Boolean;
+ ZeroPage:Boolean;
   EsdNumber:Byte;
   Section:Byte;
   DefinedLine:Word;
@@ -113,6 +116,11 @@ Type
   SourceLine:Integer;
   InitialState,PreviousState:Byte;
  End;
+ PMacroFrame=^TMacroFrame;
+ TMacroFrame=Record
+  Args:Array[0..9] Of TString;
+  Serial:Integer;
+ End;
 
 Var
  ListText:Text;
@@ -159,6 +167,19 @@ Var
  DiagnosticHead,DiagnosticTail:PListingDiagnostic;
  ListingSource:TDataText;
  ListingAddress:LongInt;
+ CmosEnabled,MacroEnabled,IncludeRequested,MacroRequested:Boolean;
+ MacroLibrary,IncludeName,BuildDate,BuildTime:TString;
+ PendingMacro:PMacroFrame;
+ MacroSerial,IncludeLevel,SourceBufferSize,IncludeBufferSize:Integer;
+ ListGen,ListUnasm,ListAsym,ListVsym,ListExp,ListSix,ListCycles,ListWarn:Boolean;
+ CurrentCycles,WarningCount:Integer;
+ ProdosType:Byte;
+ InteractivePause:Boolean;
+ InMacroSource:Boolean;
+ FirstPassFailure:TString;
+ ValueTable:Boolean;
+
+Function HostFileExists(Name:TString):Boolean; Forward;
 
 Function Up(S:TString):TString;
 Var
@@ -235,7 +256,8 @@ Begin
  N:=Up(Trim(N));
  IsReservedSymbol:=(Pos(','+N+',',R1)>0) Or (Pos(','+N+',',R2)>0) Or
                   (Pos(','+N+',',R3)>0) Or
-                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,DUP,TITL,TITLE,IFEQ,IFNE,IFLT,IFLE,IFGT,IFGE,')>0);
+                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,DUP,TITL,TITLE,IFEQ,IFNE,IFLT,IFLE,IFGT,IFGE,')>0) Or
+                  (Pos(','+N+',',',MACLIB,INCLUDE,X6502,DEF,REF,ZDEF,ZREF,ZXTRN,STR,DATE,TIME,IDNUM,FAIL,PAUSE,INTERP,SYS,SBUFSIZ,IBUFSIZ,BRA,INA,DEA,PHX,PHY,PLX,PLY,STZ,TRB,TSB,BLT,BGE,LSL,')>0);
 End;
 
 Function FindSymbol(N:TString):Integer;
@@ -395,10 +417,15 @@ Begin
      WriteFileByte(F,B,Failed);
     End;
     If Symbols[S].External Then Begin
-     WriteFileByte(F,$31,Failed); WriteFileByte(F,Symbols[S].EsdNumber,Failed);
+     Flags:=$31; If Symbols[S].ZeroPage Then Flags:=$30;
+     WriteFileByte(F,Flags,Failed); WriteFileByte(F,Symbols[S].EsdNumber,Failed);
      WriteFileByte(F,0,Failed);
     End Else Begin
-     WriteFileByte(F,$28,Failed); WriteFileByte(F,Symbols[S].Value And $FF,Failed);
+     Flags:=$08; If Symbols[S].Relocatable Then Flags:=Flags Or $20;
+     If Not Symbols[S].ZeroPage Then Flags:=Flags Or $01;
+     { Conserver l'encodage historique des ENTRY ordinaires. }
+     If Not Symbols[S].ZeroPage Then Flags:=$28;
+     WriteFileByte(F,Flags,Failed); WriteFileByte(F,Symbols[S].Value And $FF,Failed);
      WriteFileByte(F,(Symbols[S].Value Shr 8) And $FF,Failed);
     End;
    End;
@@ -427,7 +454,7 @@ Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin Error('Table des symboles pleine'); GetOrCreateSymbol:=-1; Exit; End;
   I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N; Symbols[I].Value:=0;
   Symbols[I].Defined:=False; Symbols[I].External:=False; Symbols[I].UndefinedReported:=False;
-  Symbols[I].DefinedThisPass:=False;
+  Symbols[I].DefinedThisPass:=False; Symbols[I].ZeroPage:=False;
   Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
   Symbols[I].LocalSymbol:=WasLocal; Symbols[I].Section:=SEC_UNDEF;
   Symbols[I].DefinedLine:=0;
@@ -778,6 +805,28 @@ Function ImpliedOpcode(M:TString):Integer;Begin
  'SED' Then ImpliedOpcode:=$F8 Else ImpliedOpcode:=-1;
 End;
 
+Function CmosOpcode(M:TString; Mode:Byte):Integer;
+Const Names:Array[0..7] Of String[3]=('ORA','AND','EOR','ADC','STA','LDA','CMP','SBC');
+Var I:Integer;
+Begin
+ CmosOpcode:=-1;
+ If Mode=AM_ZPI Then For I:=0 To 7 Do If M=Names[I] Then CmosOpcode:=$12+I*$20;
+ If (M='BRA') And (Mode=AM_REL) Then CmosOpcode:=$80;
+ If ((M='INA') And (Mode=AM_IMP)) Or ((M='INC') And (Mode=AM_ACC)) Then CmosOpcode:=$1A;
+ If ((M='DEA') And (Mode=AM_IMP)) Or ((M='DEC') And (Mode=AM_ACC)) Then CmosOpcode:=$3A;
+ If Mode=AM_IMP Then Begin
+  If M='PHX' Then CmosOpcode:=$DA Else If M='PHY' Then CmosOpcode:=$5A
+  Else If M='PLX' Then CmosOpcode:=$FA Else If M='PLY' Then CmosOpcode:=$7A;
+ End;
+ If M='STZ' Then Case Mode Of AM_ZP:CmosOpcode:=$64; AM_ZPX:CmosOpcode:=$74;
+  AM_ABS:CmosOpcode:=$9C; AM_ABX:CmosOpcode:=$9E; End;
+ If M='TRB' Then Case Mode Of AM_ZP:CmosOpcode:=$14; AM_ABS:CmosOpcode:=$1C; End;
+ If M='TSB' Then Case Mode Of AM_ZP:CmosOpcode:=$04; AM_ABS:CmosOpcode:=$0C; End;
+ If M='BIT' Then Case Mode Of AM_IMM:CmosOpcode:=$89; AM_ZPX:CmosOpcode:=$34;
+  AM_ABX:CmosOpcode:=$3C; End;
+ If (M='JMP') And (Mode=AM_AIX) Then CmosOpcode:=$7C;
+End;
+
 Function Opcode(M:TString; Mode:Byte):Integer;
 Const
  G1:Array[0..7] Of String[3]=('ORA','AND','EOR','ADC','STA','LDA','CMP','SBC');
@@ -785,6 +834,11 @@ Const
 Var
  I,B:Integer;
 Begin
+ If M='BLT' Then M:='BCC' Else If M='BGE' Then M:='BCS' Else If M='LSL' Then M:='ASL';
+ I:=CmosOpcode(M,Mode); If I>=0 Then Begin
+  Opcode:=I; If Not CmosEnabled Then Opcode:=-1;
+  Exit;
+ End;
  Opcode:=-1; If Mode=AM_IMP Then Begin
   Opcode:=ImpliedOpcode(M); Exit;
  End;
@@ -854,27 +908,29 @@ End;
 Function IsDataDirective(M:TString):Boolean;
 Begin
  IsDataDirective:=(M='DFB') Or (M='DB') Or (M='DW') Or (M='DA') Or
-  (M='DDB') Or (M='DCL') Or (M='ASC') Or (M='DCI');
+  (M='DDB') Or (M='DCL') Or (M='ASC') Or (M='DCI') Or (M='STR');
 End;
 
 Function IsSourceOperation(M:TString):Boolean;
 Const Directives=',ORG,OBJ,EQU,=,DS,DFS,HEX,MSB,DO,ELSE,FIN,IFEQ,IFNE,IFLT,IFLE,IFGT,IFGE,LST,PAGE,SKP,TITL,TITLE,SBTL,CHR,REP,DSECT,DEND,REL,EXTRN,ENTRY,CHN,END,';
+ Extra=',MACLIB,INCLUDE,X6502,DEF,REF,ZDEF,ZREF,ZXTRN,DATE,TIME,IDNUM,FAIL,PAUSE,INTERP,SYS,SBUFSIZ,IBUFSIZ,';
 Var Mode:Byte;
 Begin
  M:=Up(M); IsSourceOperation:=False;
  If M='' Then Exit;
- If IsDataDirective(M) Or (Pos(','+M+',',Directives)>0) Then Begin
+ If IsDataDirective(M) Or (Pos(','+M+',',Directives)>0) Or (Pos(','+M+',',Extra)>0) Then Begin
   IsSourceOperation:=True; Exit;
  End;
- For Mode:=AM_IMP To AM_REL Do If Opcode(M,Mode)>=0 Then Begin
+ For Mode:=AM_IMP To AM_AIX Do If (Opcode(M,Mode)>=0) Or (CmosOpcode(M,Mode)>=0) Then Begin
   IsSourceOperation:=True; Exit;
  End;
+ If MacroEnabled Then IsSourceOperation:=HostFileExists(MacroLibrary+M);
 End;
 
 Function DataDelimiter(C:Char; M:TString):Boolean;
 Begin
  DataDelimiter:=(C In ['''','"']) Or
-  (((M='ASC') Or (M='DCI')) And (C In ['/','!','|',':']));
+  (((M='ASC') Or (M='DCI') Or (M='STR')) And (C In ['/','!','|',':']));
 End;
 
 Procedure ParseFields(Line:TDataText; Var LabelName,Op:TString;
@@ -978,12 +1034,15 @@ Begin
     If (I>0) And (UpCase(U[I])='X') Then Begin
      U:=Trim(Copy(U,1,I-1)); I:=Length(U);
      If (I>0) And (U[I]=',') Then Begin
-      Mode:=AM_INX; Expr:=Trim(Copy(U,1,I-1)); Size:=2; Exit;
+      Mode:=AM_INX; Size:=2;
+      If M='JMP' Then Begin Mode:=AM_AIX; Size:=3; End;
+      Expr:=Trim(Copy(U,1,I-1)); Exit;
      End;
     End;
     If M='JMP' Then Begin
      Mode:=AM_IND; Expr:=Copy(Expr,2,P-2); Size:=3; Exit;
     End;
+    If CmosEnabled Then Begin Mode:=AM_ZPI; Expr:=Copy(Expr,2,P-2); Size:=2; Exit; End;
    End;
   End;
  End;
@@ -1021,11 +1080,16 @@ End;
 
 Procedure InitializeListing;
 Var Y,M,D,W,H,N,S,C:Word;
+Const Months='JANFEBMARAPRMAYJUNJULAUGSEPOCTNOVDEC';
 Begin
  GetDate(Y,M,D,W); GetTime(H,N,S,C);
+ If BuildDate='' Then Begin
  ListingStamp:=DecimalText(Y,4,'0')+'-'+DecimalText(M,2,'0')+'-'+
   DecimalText(D,2,'0')+' '+DecimalText(H,2,'0')+':'+
   DecimalText(N,2,'0')+':'+DecimalText(S,2,'0');
+  BuildDate:=DecimalText(D,2,'0')+'-'+Copy(Months,(M-1)*3+1,3)+'-'+DecimalText(Y Mod 100,2,'0');
+  BuildTime:=DecimalText(H,2,'0')+':'+DecimalText(N,2,'0')+' ';
+ End;
  ListPage:=0; ListRow:=0; PageLength:=60; ListingSection:=0;
  ListingForce:=False; DiagnosticHead:=Nil; DiagnosticTail:=Nil;
  InSourceLine:=False;
@@ -1050,7 +1114,8 @@ Begin
  Case ListingSection Of
   0:WriteLn(ListText,' LINE EXEC OBJ  OBJECT       SOURCE');
   1:Begin
-   WriteLn(ListText,'TABLE DES SYMBOLES (ordre alphabetique)');
+   If ValueTable Then WriteLn(ListText,'TABLE DES SYMBOLES (ordre des valeurs)')
+   Else WriteLn(ListText,'TABLE DES SYMBOLES (ordre alphabetique)');
    WriteLn(ListText,'NOM                              VALEUR TYPE    SECTION ATTRIBUTS  DEF  REFERENCES');
    Inc(ListRow);
   End;
@@ -1125,9 +1190,12 @@ Begin
  If DiagnosticHead<>Nil Then ListingForce:=True;
  If Not ListingActive Then Exit;
  SourceListed:=True;
+ If (DiagnosticHead=Nil) And
+    ((InMacroSource And Not ListExp) Or (Not Active And Not ListUnasm)) Then Exit;
  ByteCount:=0;
  If Length(Bytes)>0 Then ByteCount:=ObjPC-ListObjAddress;
  If ByteCount<0 Then ByteCount:=Length(Bytes);
+ If Not ListGen And (ByteCount>4) Then ByteCount:=4;
  Offset:=0; SourcePos:=1; First:=True;
  Repeat
   H:='';
@@ -1142,6 +1210,7 @@ Begin
    End Else H:=H+'   ';
   End;
   If First Then Prefix:=DecimalText(LineNo,5,' ') Else Prefix:='     ';
+  If First And ListCycles And (CurrentCycles>0) Then Prefix:='('+DecimalText(CurrentCycles,0,' ')+') '+Prefix;
   If First Or (Offset<ByteCount) Then
    Prefix:=Prefix+' '+Hex(Address+Offset,4)+' '+Hex(ListObjAddress+Offset,4)+' '+H
   Else Prefix:=Prefix+'                       ';
@@ -1210,6 +1279,7 @@ End;
 
 Procedure EmitDataList(M:TString; TextValue:TDataText; Var Bytes:TString);
 Var Visits,Emitted,LastAddress:LongInt; Width,LastByte:Byte; Failed:Boolean;
+    StringData:TDataText; StringIndex,StringByte:Integer;
 
 Procedure Bad(MessageText:TString);
 Begin
@@ -1378,6 +1448,19 @@ Begin
  Width:=1; If (M='DW') Or (M='DA') Or (M='DDB') Then Width:=2
  Else If M='DCL' Then Width:=4;
  Visits:=0; Emitted:=0; Failed:=False; LastAddress:=0; LastByte:=0;
+ If M='STR' Then Begin
+  If Not DecodeStrings(TextValue,StringData) Then Bad('chaine delimitee requise');
+  If Length(StringData)>255 Then Bad('plus de 255 caracteres');
+  If Not Failed Then Begin
+   EmitByte(Length(StringData),Bytes);
+   For StringIndex:=1 To Length(StringData) Do Begin
+    StringByte:=Ord(StringData[StringIndex]) And $7F;
+    If MSBMode Then StringByte:=StringByte Or $80;
+    EmitByte(StringByte,Bytes);
+   End;
+  End;
+  Exit;
+ End;
  ParseList(TextValue,0,True);
  If (M='DCI') And (Emitted>0) And Not Failed Then Begin
   If (Pass=2) And Not InDsect And (ObjectPages[LastAddress Shr 8]<>Nil) Then
@@ -1429,19 +1512,136 @@ Begin
  If LastCondition=Nil Then Conditions:=Nil Else LastCondition^.Next:=Nil;
 End;
 
+Function SourcePath(Name:TString):TString;
+Begin
+ Name:=Trim(Name);
+ If (Length(Name)>=2) And (Name[1] In ['''','"']) And
+    (Name[Length(Name)]=Name[1]) Then Name:=Copy(Name,2,Length(Name)-2);
+ If Name<>'' Then
+  If (Name[1]<>'\') And (Name[1]<>'/') And (Pos(':',Name)=0) Then
+   Name:=SourceDirectory(CurrentSource)+Name;
+ SourcePath:=Name;
+End;
+
+Procedure PrepareMacro(M:TString; A:TDataText);
+Var I,Start,Count,Level,J:Integer; Q,C:Char; Escaped:Boolean;
+Begin
+ If Not HostFileExists(MacroLibrary+M) Then Begin Error('Macro introuvable: '+M); Exit; End;
+ If MacroSerial>=9999 Then Begin Error('Limite de 9999 appels de macros'); Exit; End;
+ New(PendingMacro); For J:=0 To 9 Do PendingMacro^.Args[J]:='';
+ Inc(MacroSerial); PendingMacro^.Serial:=MacroSerial;
+ Count:=0; Start:=1; Level:=0; Q:=#0; Escaped:=False;
+ If TrimData(A)<>'' Then For I:=1 To Length(A)+1 Do Begin
+  If I>Length(A) Then C:=',' Else C:=A[I];
+  If Escaped Then Escaped:=False
+  Else If (Q<>#0) And (C='\') Then Escaped:=True
+  Else If Q<>#0 Then Begin If C=Q Then Q:=#0; End
+  Else If C In ['''','"'] Then Q:=C
+  Else If C='(' Then Inc(Level)
+  Else If C=')' Then Dec(Level)
+  Else If (C=',') And (Level=0) Then Begin
+   Inc(Count);
+   If Count>9 Then Error('Macro: plus de neuf parametres')
+   Else If I-Start>255 Then Error('Parametre de macro trop long')
+   Else PendingMacro^.Args[Count]:=TrimData(Copy(A,Start,I-Start));
+   Start:=I+1;
+  End;
+ End;
+ If (Q<>#0) Or (Level<>0) Then Error('Macro: delimitateur non ferme');
+ PendingMacro^.Args[0]:=DecimalText(Count,0,' ');
+ IncludeName:=MacroLibrary+M; IncludeRequested:=True; MacroRequested:=True;
+End;
+
+Function ExpandMacro(S:TDataText; Frame:PMacroFrame):TDataText;
+Var I,N:Integer; R:TDataText;
+Begin
+ R:=''; I:=1;
+ While I<=Length(S) Do Begin
+  If (S[I]='&') And (I<Length(S)) And (S[I+1] In ['0'..'9','X']) Then Begin
+   Inc(I);
+   If S[I]='X' Then R:=R+DecimalText(Frame^.Serial,0,' ')
+   Else Begin N:=Ord(S[I])-Ord('0'); R:=R+Frame^.Args[N]; End;
+  End Else R:=R+S[I];
+  Inc(I);
+  If Length(R)>MAX_DATA_TEXT Then Begin Error('Expansion de macro trop longue'); Break; End;
+ End;
+ ExpandMacro:=R;
+End;
+
+Procedure SetListingOptions(A:TDataText);
+Var P:Integer; S:TString; Enabled:Boolean;
+Begin
+ If TrimData(A)='' Then Begin Error('LST: option absente'); Exit; End;
+ A:=A+',';
+ While A<>'' Do Begin
+  P:=Pos(',',A); S:=Up(Trim(Copy(A,1,P-1))); Delete(A,1,P);
+  If S='ON' Then ListingEnabled:=True Else If S='OFF' Then ListingEnabled:=False
+  Else Begin
+   Enabled:=Copy(S,1,2)<>'NO'; If Not Enabled Then Delete(S,1,2);
+   If S='' Then Error('LST: option vide') Else Case S[1] Of
+    'G':ListGen:=Enabled; 'U':ListUnasm:=Enabled; 'A':ListAsym:=Enabled;
+    'V':ListVsym:=Enabled; 'E':ListExp:=Enabled; 'S':ListSix:=Enabled;
+    'C':ListCycles:=Enabled; 'W':ListWarn:=Enabled;
+    Else Error('LST: option inconnue '+S);
+   End;
+  End;
+ End;
+End;
+
+Procedure Warning(S:TString);
+Begin
+ If Pass<>2 Then Exit;
+ Inc(WarningCount);
+ If ListWarn Then Begin
+  WriteLn('EDASM: ',CurrentSource,', ligne ',FileLine,': avertissement: ',S);
+  If UseListing Then WriteListingDiagnostic('Avertissement: '+S);
+ End;
+End;
+
+Function InstructionCycles(M:TString; Mode:Byte):Integer;
+Var N:Integer;
+Begin
+ N:=2;
+ Case Mode Of
+  AM_ZP:N:=3; AM_ZPX,AM_ZPY:N:=4; AM_ABS,AM_ABX,AM_ABY:N:=4;
+  AM_IND:N:=5; AM_INX:N:=6; AM_INY,AM_ZPI:N:=5; AM_AIX:N:=6;
+ End;
+ If M='BRA' Then N:=3;
+ If M='JMP' Then Begin
+  If Mode=AM_ABS Then N:=3 Else If (Mode=AM_IND) And CmosEnabled Then N:=6;
+ End;
+ If M='STA' Then Begin
+  If Mode In [AM_ABX,AM_ABY] Then N:=5 Else If Mode=AM_INY Then N:=6;
+ End;
+ If (M='STZ') And (Mode=AM_ABX) Then N:=5;
+ If (M='ASL') Or (M='LSL') Or (M='LSR') Or (M='ROL') Or (M='ROR') Or
+    (M='INC') Or (M='DEC') Or (M='TSB') Or (M='TRB') Then Begin
+  If Mode In [AM_ZP,AM_ZPX,AM_ABS,AM_ABX] Then Inc(N,2);
+  If (Mode=AM_ABX) And (Not CmosEnabled Or (M='INC') Or (M='DEC')) Then Inc(N);
+ End;
+ If (M='PHA') Or (M='PHP') Or (M='PHX') Or (M='PHY') Then N:=3;
+ If (M='PLA') Or (M='PLP') Or (M='PLX') Or (M='PLY') Then N:=4;
+ If (M='JSR') Or (M='RTS') Or (M='RTI') Then N:=6;
+ If M='BRK' Then N:=7;
+ InstructionCycles:=N;
+End;
+
 Procedure ProcessLine(Source:TDataText);
 Var
  Lab,M,C,E,Item,Bytes:TString;
  A:TDataText;
  V,OldPC,FillValue:LongInt;
- Known,ValidValue:Boolean;
+ Known,ValidValue,ZDeclaration:Boolean;
  Mode,Size:Byte;
  O,P,I,Code:Integer;
 Begin
- Inc(LineNo); Inc(FileLine); OldPC:=PC; ListObjAddress:=ObjPC; Bytes:='';
+ Inc(LineNo); Inc(FileLine); OldPC:=PC; ListObjAddress:=ObjPC; Bytes:=''; CurrentCycles:=0;
  If (Trim(Source)<>'') And (Trim(Source)[1]='*') Then Begin
   ListLine(PC,'',Source); Exit;
  End; ParseFields(Source,Lab,M,A,C); ValueContext:=M+' '+A;
+ ZDeclaration:=(M='ZDEF') Or (M='ZREF') Or (M='ZXTRN');
+ If (M='DEF') Or (M='ZDEF') Then M:='ENTRY';
+ If (M='REF') Or (M='ZREF') Or (M='ZXTRN') Then M:='EXTRN';
  If Not IsDataDirective(M) And (Length(A)>255) Then Begin
   Error('Operande de plus de 255 caracteres'); Exit;
  End;
@@ -1504,6 +1704,24 @@ Begin
   Error('Mode /STRICT: etiquette sans deux-points en colonne 1, operation indentee');
   ListLine(PC,'',Source); Exit;
  End;
+ If M='X6502' Then Begin
+  If A<>'' Then Error('X6502 sans operande'); CmosEnabled:=True;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If M='MACLIB' Then Begin
+  If A='' Then Error('MACLIB: repertoire absent') Else Begin
+   MacroLibrary:=SourcePath(A);
+   If Not (MacroLibrary[Length(MacroLibrary)] In ['\','/']) Then MacroLibrary:=MacroLibrary+'\';
+   MacroEnabled:=True;
+  End;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If M='INCLUDE' Then Begin
+  If A='' Then Error('INCLUDE: fichier absent') Else Begin
+   IncludeName:=SourcePath(A); IncludeRequested:=True; MacroRequested:=False;
+  End;
+  ListLine(PC,'',Source); Exit;
+ End;
  If (Lab<>'') And (M<>'ENTRY') And (M<>'EXTRN') And
   Not IsLocalName(Lab) And Not IsReservedSymbol(Lab) Then
   CurrentScope:=Up(Lab);
@@ -1544,14 +1762,59 @@ Begin
  If M='END' Then Begin
   EndSeen:=True; ListLine(PC,'',Source); Exit;
  End;
+ If (M='DATE') Or (M='TIME') Or (M='IDNUM') Then Begin
+  If A<>'' Then Error(M+' sans operande');
+  E:=BuildTime; If M='DATE' Then E:=BuildDate;
+  For I:=1 To Length(E) Do EmitByte(Ord(E[I]),Bytes);
+  ListLine(OldPC,Bytes,Source); Exit;
+ End;
+ If (M='INTERP') Or (M='SYS') Then Begin
+  If A<>'' Then Error(M+' sans operande');
+  If RelMode Or (DiskName<>'') Or AppleBinaryHeader Then Error(M+' exige une sortie ProDOS absolue sans /DSK ni /B')
+  Else ProdosType:=$FF;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If (M='SBUFSIZ') Or (M='IBUFSIZ') Then Begin
+  V:=Eval(A,Known);
+  If IncludeLevel>0 Then Error(M+' interdit dans INCLUDE ou macro')
+  Else If Known Then Begin
+   If V>256 Then V:=V Div 256;
+   If (V<1) Or (V>127) Then Error(M+': taille de 1 a 127 pages requise')
+   Else If M='SBUFSIZ' Then SourceBufferSize:=V*256 Else IncludeBufferSize:=V*256;
+  End;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If (M='FAIL') Or (M='PAUSE') Then Begin
+  E:=A; P:=Pos(',',A);
+  If M='FAIL' Then Begin
+   If P=0 Then Begin Error('FAIL attend passe,chaine'); ListLine(PC,'',Source); Exit; End;
+   E:=Trim(Copy(A,1,P-1));
+  End;
+  V:=Eval(E,Known);
+  If Known And (V<>1) And (V<>2) And Not ((M='FAIL') And (V=3)) Then Error(M+': passe invalide');
+  If Known And ((V=Pass) Or ((M='FAIL') And (V=3))) And (Pass<>0) Then Begin
+   If M='FAIL' Then Begin
+    E:=Trim(Copy(A,P+1,255));
+    If (Length(E)<2) Or (E[1]<>E[Length(E)]) Then Error('FAIL: message delimite requis')
+    Else E:=Copy(E,2,Length(E)-2);
+    If Pass=1 Then FirstPassFailure:=CurrentSource+':'+DecimalText(FileLine,0,' ')+': '+E
+    Else Error('FAIL: '+E);
+   End Else If InteractivePause Then Begin
+    WriteLn(CurrentSource,':',FileLine,': PRESS RETURN TO CONTINUE');
+    If EOF(Input) Then Begin
+     If Pass=1 Then FirstPassFailure:='PAUSE: entree standard fermee' Else Error('PAUSE: entree standard fermee');
+    End Else ReadLn;
+   End Else Warning('PAUSE ignoree en mode /BATCH');
+  End;
+  ListLine(PC,'',Source); Exit;
+ End;
  If M='MSB' Then Begin
   MSBMode:=Up(A)<>'OFF'; ListLine(PC,'',Source); Exit;
  End;
  If M='LST' Then Begin
-  E:=Up(Trim(A));
-  If E='OFF' Then Begin ListLine(PC,'',Source); ListingEnabled:=False; End
-  Else If E='ON' Then Begin ListingEnabled:=True; ListLine(PC,'',Source); End
-  Else Begin Error('LST attend ON ou OFF'); ListLine(PC,'',Source); End;
+  If Up(Trim(A))='OFF' Then ListLine(PC,'',Source);
+  SetListingOptions(A);
+  If Up(Trim(A))<>'OFF' Then ListLine(PC,'',Source);
   Exit;
  End;
  If M='DSECT' Then Begin
@@ -1587,6 +1850,14 @@ Begin
         ((M='ENTRY') And Symbols[I].External) Then Begin
       Error('Conflit ENTRY/EXTRN ou definition: '+Item);
      End Else Begin
+     If ZDeclaration And (M='ENTRY') Then Begin
+      If Not Symbols[I].DefinedThisPass Or Not Symbols[I].Defined Or
+         (Symbols[I].Value<0) Or (Symbols[I].Value>255) Then
+       Error('ZDEF exige une definition precedente en page zero: '+Item);
+     End;
+     If Symbols[I].External And (Symbols[I].ZeroPage<>ZDeclaration) Then
+      Error('Declaration externe de largeur incompatible: '+Item);
+     If ZDeclaration Then Symbols[I].ZeroPage:=True;
      If Symbols[I].EsdNumber=0 Then Begin
       If NextEsdNumber>255 Then Error('Plus de 255 symboles ENTRY/EXTRN') Else Begin
        Symbols[I].EsdNumber:=NextEsdNumber; Inc(NextEsdNumber);
@@ -1594,6 +1865,7 @@ Begin
      End;
      If M='EXTRN' Then Begin
       Symbols[I].External:=True; Symbols[I].Defined:=True; Symbols[I].Value:=0;
+      Symbols[I].DefinedThisPass:=True;
       Symbols[I].Section:=SEC_EXTERNAL; Symbols[I].Relocatable:=True;
      End
      Else Begin
@@ -1687,20 +1959,27 @@ Begin
    End;
   End;
  End
-  Else
+ Else
  Begin
+  If MacroEnabled And Not IsReservedSymbol(M) Then Begin
+   PrepareMacro(M,A); ListLine(PC,'',Source); Exit;
+  End;
   { Extraire l'expression avant de l'evaluer: #, ,X et parentheses
     appartiennent au mode d'adressage, pas au nom du symbole. }
   DetermineMode(M,A,0,False,Mode,Size,E);
   V:=0; Known:=True;
   If Size>1 Then V:=Eval(E,Known);
-  If (Size>1) And (ExpressionValue.ExternalIndex>=0) Then Known:=False;
+ If (Size>1) And (ExpressionValue.ExternalIndex>=0) Then
+  Known:=Symbols[ExpressionValue.ExternalIndex].ZeroPage;
   DetermineMode(M,A,V,Known,Mode,Size,E);
   O:=Opcode(M,Mode); If (O<0) And (Mode In [AM_ZP,AM_ZPX,AM_ZPY]) Then Begin
    Inc(Mode,3); Inc(Size); O:=Opcode(M,Mode);
   End; If O<0 Then Error('Mode d''adressage illegal pour '+M) Else
   Begin
    TrackInstruction(Mode,Size);
+   CurrentCycles:=InstructionCycles(M,Mode);
+   If (M='JMP') And (Mode=AM_IND) And ((V And $FF)=$FF) And Not CmosEnabled Then
+    Warning('JMP indirect sur une fin de page: comportement particulier du 6502');
    ValidValue:=True;
    If Size>1 Then Begin
     If Mode=AM_REL Then Begin
@@ -1751,18 +2030,26 @@ Procedure ProcessSourceFile(Name:TString; Depth:Integer);
 Var
  F:Text;
  S,Args,More,Part:TDataText;
- E,Joined,I:Integer;
- NextName,Lab,M,Comment,DummyLab,DummyOp:TString;
- Missing,TooLong:Boolean;
+ E,Joined,I,CallerLine:Integer;
+ NextName,Lab,M,Comment,DummyLab,DummyOp,CallerScope:TString;
+ Missing,TooLong,IsMacroCall:Boolean;
+ Frame:PMacroFrame;
+ ReadBuffer:Pointer;
+ BufferSize:Word;
 Begin
+ Frame:=PendingMacro; PendingMacro:=Nil;
  Name:=FExpand(Name);
  For I:=0 To Depth-1 Do If Up(SourcePaths[I])=Up(Name) Then Begin
-  Error('Cycle CHN: fichier deja visite: '+Name); Exit;
+  Error('Cycle CHN: fichier deja visite (CHN/INCLUDE/macro): '+Name);
+  If Frame<>Nil Then Dispose(Frame); Exit;
  End;
- If Depth>32 Then Begin Error('Limite CHN de 33 fichiers depassee'); Exit; End;
+ If Depth>32 Then Begin Error('Limite CHN de 33 fichiers depassee (INCLUDE/macros inclus)');
+  If Frame<>Nil Then Dispose(Frame); Exit; End;
  Assign(F,Name); Reset(F); E:=IOResult; If E<>0 Then Begin
-  Error('Impossible d''ouvrir le fichier source '+Name); Exit;
+  Error('Impossible d''ouvrir le fichier source '+Name); If Frame<>Nil Then Dispose(Frame); Exit;
  End;
+ If IncludeLevel>0 Then BufferSize:=IncludeBufferSize Else BufferSize:=SourceBufferSize;
+ GetMem(ReadBuffer,BufferSize); SetTextBuf(F,ReadBuffer^,BufferSize);
  SourcePaths[Depth]:=Name; CurrentSource:=Name; FileLine:=0;
  If (Pass=2) And (ListPage>0) Then ListingHeaderDirty:=True;
  If (Pass=2) And UseListing Then Begin
@@ -1772,7 +2059,9 @@ Begin
  End;
  ChainRequested:=False;
  While Not EOF(F) And Not EndSeen And Not ChainRequested Do Begin
+  InMacroSource:=Frame<>Nil;
   ReadLn(F,S); Joined:=0; Missing:=False; TooLong:=Length(S)>MAX_DATA_TEXT;
+  If Frame<>Nil Then S:=ExpandMacro(S,Frame);
   If TooLong Then S:=Copy(S,1,MAX_DATA_TEXT);
   ParseFields(S,Lab,M,Args,Comment);
   If IsDataDirective(M) Then Begin
@@ -1780,6 +2069,7 @@ Begin
     Args:=TrimData(Args); Delete(Args,Length(Args),1); Part:='';
     While (TrimData(Part)='') And Not EOF(F) Do Begin
      ReadLn(F,More); Inc(Joined); More:=TrimData(More);
+     If Frame<>Nil Then More:=ExpandMacro(More,Frame);
      If (More<>'') And (More[1]<>'*') And (More[1]<>';') Then
       ParseFields(' '+M+' '+More,DummyLab,DummyOp,Part,Comment);
     End;
@@ -1797,8 +2087,19 @@ Begin
   If (DiagnosticHead<>Nil) And Not SourceListed Then ListLine(ListingAddress,'',ListingSource);
   FlushListingDiagnostics; InSourceLine:=False;
   Inc(LineNo,Joined); Inc(FileLine,Joined);
+  If IncludeRequested And Not EndSeen Then Begin
+   NextName:=IncludeName; IncludeRequested:=False; IsMacroCall:=MacroRequested;
+   CallerLine:=FileLine; CallerScope:=CurrentScope;
+   Inc(IncludeLevel); ProcessSourceFile(NextName,Depth+1); Dec(IncludeLevel);
+   CurrentSource:=Name; FileLine:=CallerLine; InMacroSource:=Frame<>Nil;
+   If IsMacroCall Then CurrentScope:=CallerScope;
+   ListingHeaderDirty:=True;
+   If (Pass=2) And UseListing Then ListingRow('REPRISE: '+Name+' ligne '+DecimalText(FileLine+1,0,' '));
+  End;
  End;
- Close(F); If ChainRequested And Not EndSeen Then Begin
+ Close(F); FreeMem(ReadBuffer,BufferSize);
+ If Frame<>Nil Then Dispose(Frame);
+ If ChainRequested And Not EndSeen Then Begin
   NextName:=ChainName;
   If (NextName[1]<>'\') And (NextName[1]<>'/') And (Pos(':',NextName)=0) Then
    NextName:=SourceDirectory(Name)+NextName;
@@ -1809,6 +2110,12 @@ End;
 Procedure AssembleOnePass;
 Var I:Integer;
 Begin
+ CmosEnabled:=False; MacroEnabled:=False; MacroLibrary:=''; MacroSerial:=0;
+ IncludeRequested:=False; MacroRequested:=False; PendingMacro:=Nil;
+ IncludeLevel:=0; InMacroSource:=False;
+ SourceBufferSize:=1024; IncludeBufferSize:=4096; ProdosType:=$06;
+ ListGen:=True; ListUnasm:=True; ListAsym:=True; ListVsym:=False;
+ ListExp:=True; ListSix:=False; ListCycles:=False; ListWarn:=True; WarningCount:=0;
  For I:=0 To SymbolCount-1 Do Symbols[I].DefinedThisPass:=False;
  ConditionCursor:=Conditions; LastCondition:=Nil; ConditionsChanged:=False;
  CondOverflow:=0; ConditionEvaluation:=False;
@@ -1893,21 +2200,29 @@ End;
 
 Procedure WriteSymbolTable;
 Var Order:Array[0..MAX_SYMBOLS-1] Of Integer;
-    I,J:Integer; T:Integer; Attr,Row,Definition:TString;
+    I,J,K,Column:Integer; T:Integer; Attr,Row,Definition,Compact:TString;
 Begin
  If Not UseListing Then Exit;
+ ListingForce:=True;
+ For K:=0 To 1 Do If ((K=0) And ListAsym) Or ((K=1) And ListVsym) Then Begin
+ ValueTable:=K=1;
  For I:=0 To SymbolCount-1 Do Order[I]:=I;
  For I:=1 To SymbolCount-1 Do Begin
   T:=Order[I]; J:=I-1;
-  While (J>=0) And (Symbols[Order[J]].Name>Symbols[T].Name) Do Begin
+  While (J>=0) And
+   (((Not ValueTable Or (Symbols[Order[J]].Value=Symbols[T].Value)) And
+     (Symbols[Order[J]].Name>Symbols[T].Name)) Or
+    (ValueTable And (Symbols[Order[J]].Value>Symbols[T].Value))) Do Begin
    Order[J+1]:=Order[J]; Dec(J);
   End; Order[J+1]:=T;
  End;
  ListingForce:=True; ListingSection:=1; NewListingPage;
+ Compact:=''; Column:=0;
  For J:=0 To SymbolCount-1 Do Begin
   I:=Order[J]; Attr:='';
   If Symbols[I].PublicSym Then Attr:=Attr+'EXPORT ';
   If Symbols[I].LocalSymbol Then Attr:=Attr+'LOCAL ';
+  If Symbols[I].ZeroPage Then Attr:=Attr+'ZP ';
   Row:=PadRight(Symbols[I].Name,32);
   If Symbols[I].Defined And Not Symbols[I].External Then
    If (Symbols[I].Value>=0) And (Symbols[I].Value<=65535) Then
@@ -1917,7 +2232,22 @@ Begin
   Row:=Row+PadRight(SymbolTypeName(I),8)+PadRight(SectionName(I),8)+PadRight(Attr,11);
   Definition:='   -';
   If Symbols[I].DefinedLine>0 Then Definition:=DecimalText(Symbols[I].DefinedLine,4,' ');
-  ListingReferences(I,Row+Definition+'  ');
+  If ListSix Then Begin
+   Compact:=Compact+PadRight(Copy(Symbols[I].Name,1,14),14)+' '+Hex(Symbols[I].Value,4)+' ';
+   Inc(Column);
+   If Column=6 Then Begin ListingRow(Compact); Compact:=''; Column:=0; End;
+  End Else ListingReferences(I,Row+Definition+'  ');
+ End;
+ If Compact<>'' Then ListingRow(Compact);
+ End;
+ ValueTable:=False;
+ { References toujours alphabetiques, independamment de VSYM. }
+ For I:=0 To SymbolCount-1 Do Order[I]:=I;
+ For I:=1 To SymbolCount-1 Do Begin
+  T:=Order[I]; J:=I-1;
+  While (J>=0) And (Symbols[Order[J]].Name>Symbols[T].Name) Do Begin
+   Order[J+1]:=Order[J]; Dec(J);
+  End; Order[J+1]:=T;
  End;
  ListingSection:=2; NewListingPage;
  For J:=0 To SymbolCount-1 Do Begin
@@ -1927,6 +2257,7 @@ Begin
  End;
  ListingRow(''); ListingRow('Symboles: '+DecimalText(SymbolCount,0,' ')+
   '   References: '+DecimalText(ReferenceCount,0,' ')+'   Erreurs: '+DecimalText(Errors,0,' '));
+ If WarningCount>0 Then ListingRow('Avertissements: '+DecimalText(WarningCount,0,' '));
  ListingForce:=False;
 End;
 
@@ -1979,6 +2310,21 @@ Procedure Help;Begin
  WriteLn('/MODERN: reactive la reconnaissance automatique (mode par defaut).');
  WriteLn;
  WriteLn('Directives: ORG OBJ EQU = DFB DB DW DA DDB DCL DS DFS HEX ASC DCI MSB');
+ WriteLn('            MACLIB INCLUDE X6502 DEF REF ZDEF ZREF ZXTRN STR');
+ WriteLn('            DATE TIME IDNUM FAIL PAUSE SYS INTERP SBUFSIZ IBUFSIZ');
+ WriteLn('MACLIB repertoire    Macros en fichiers, parametres &1..&9, &0 et &X.');
+ WriteLn('INCLUDE fichier      Assemble le fichier puis reprend le source appelant.');
+ WriteLn('X6502                Active les instructions NCR 65C02 du manuel EDASM.');
+ WriteLn('DEF/REF              Synonymes de ENTRY/EXTRN; ZDEF/ZREF: page zero.');
+ WriteLn('STR chaine           Chaine precedee de sa longueur (255 caracteres max).');
+ WriteLn('DATE/TIME/IDNUM       DD-MMM-YY (9 octets), HH:MM espace (6 octets).');
+ WriteLn('FAIL passe,/message/ Erreur programmee: 1, 2, ou 3 pour les deux passes.');
+ WriteLn('PAUSE 1|2            Attend RETURN; /BATCH desactive cette attente.');
+ WriteLn('SYS/INTERP           Objet brut SYS, attributs dans objet.prodos.');
+ WriteLn('SBUFSIZ/IBUFSIZ      Taille de lecture des prochains fichiers: pages ou octets.');
+ WriteLn('LST options          [NO]GEN, UNASM, ASYM, VSYM, EXP, SIXUP, CYC, WARN.');
+ WriteLn(' CYC affiche les cycles de base, hors branche prise, page franchie et mode decimal.');
+ WriteLn(' GEN reste actif par defaut pour conserver le listing moderne complet.');
  WriteLn('            DO ELSE FIN LST PAGE SKP TITL TITLE SBTL CHR REP');
  WriteLn('            DSECT DEND REL EXTRN ENTRY CHN END');
  WriteLn;
@@ -2237,7 +2583,7 @@ Var
  Historical,DeviceSet:Boolean;
 Begin
  If ParamCount=0 Then Help; SrcName:=''; ObjName:=''; ListName:=''; ListingEnabled:=True;
- Quiet:=False; AppleBinaryHeader:=False; StrictSource:=False;
+ Quiet:=False; AppleBinaryHeader:=False; StrictSource:=False; InteractivePause:=True;
  DiskName:=''; DiskTemplate:=''; DosName:=''; DosSlot:=6; DosDrive:=1; DosVolume:=254;
  Historical:=False; DeviceSet:=False; Command:='';
  For I:=1 To ParamCount Do Begin
@@ -2251,6 +2597,7 @@ Begin
    ListName:=Copy(A,4,255); UseListing:=True;
   End Else If U='/Q' Then Quiet:=True Else If U='/B' Then AppleBinaryHeader:=True
   Else If U='/STRICT' Then StrictSource:=True Else If U='/MODERN' Then StrictSource:=False
+  Else If U='/BATCH' Then InteractivePause:=False
   Else If (A<>'') And (A[1]='/') Then Begin
    WriteLn('Option inconnue: ',A); Halt(1);
   End Else If Historical Then Begin
@@ -2290,6 +2637,12 @@ Begin
  End;
  If ObjName='' Then ObjName:=BaseName(SrcName)+'.OBJ';
  If UseListing And (ListName='') Then ListName:=BaseName(SrcName)+'.LST';
+ If (Up(FExpand(ObjName+'.prodos'))=Up(FExpand(SrcName))) Or
+    (UseListing And (Up(FExpand(ObjName+'.prodos'))=Up(FExpand(ListName)))) Or
+    ((DiskTemplate<>'') And (Up(FExpand(ObjName+'.prodos'))=Up(FExpand(DiskTemplate)))) Or
+    ((DiskName<>'') And (Up(FExpand(ObjName+'.prodos'))=Up(FExpand(DiskName)))) Then Begin
+  WriteLn('Conflit de chemin avec les attributs ProDOS de l''objet'); Halt(1);
+ End;
  If DiskTemplate<>'' Then Begin
   If (Up(FExpand(DiskTemplate))=Up(FExpand(ObjName))) Or
      (UseListing And (Up(FExpand(DiskTemplate))=Up(FExpand(ListName)))) Then Begin
@@ -2315,9 +2668,28 @@ Begin
  If UseListing And (ListName='') Then ListName:=BaseName(SrcName)+'.LST';
 End;
 
+Procedure WriteProdosAttributes;
+Var F:Text; E:Integer;
+Begin
+ If ProdosType<>$FF Then Exit;
+ Assign(F,ObjName+'.prodos'); Rewrite(F); E:=IOResult;
+ If E<>0 Then Begin Error('Impossible de creer les attributs ProDOS'); Exit; End;
+ WriteLn(F,'TYPE=$FF'); WriteLn(F,'AUXTYPE=$',Hex(ObjectMin,4)); E:=IOResult;
+ Close(F); If (IOResult<>0) Or (E<>0) Then Error('Erreur ecriture attributs ProDOS');
+End;
+
+Procedure RemoveProdosAttributes;
+Var F:File; E:Integer;
+Begin
+ If Not HostFileExists(ObjName+'.prodos') Then Exit;
+ Assign(F,ObjName+'.prodos'); Erase(F); E:=IOResult;
+ If E<>0 Then Error('Impossible de supprimer les attributs ProDOS perimes');
+End;
+
 BEGIN
  Instructions:=Nil; Conditions:=Nil;
- ParseArgs; SymbolCount:=0; NextEsdNumber:=1; Errors:=0; Pass:=1; AssembleOnePass;
+ ParseArgs; BuildDate:=''; FirstPassFailure:=''; InitializeListing;
+ SymbolCount:=0; NextEsdNumber:=1; Errors:=0; Pass:=1; AssembleOnePass;
  If UseListing Then Begin
   Assign(ListText,ListName); Rewrite(ListText); If IOResult<>0 Then Begin
    WriteLn('EDASM: impossible de creer ',ListName); Halt(3);
@@ -2329,12 +2701,17 @@ BEGIN
  Errors:=0; RelocCount:=0; ReferenceCount:=0;
  InitializeListing;
  InitObjectImage; Pass:=2; AssembleOnePass;
+ If FirstPassFailure<>'' Then Error('FAIL/PAUSE en premiere passe: '+FirstPassFailure);
  If Not PhaseStable Then Error('Erreur de phase: limite de stabilisation atteinte (symboles ou instructions)');
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
+ If (ProdosType=$FF) And (RelMode Or AppleBinaryHeader Or (DiskName<>'')) Then
+  Error('SYS/INTERP incompatible avec REL, /B ou /DSK');
  ValidateExternalSymbols;
+ RemoveProdosAttributes;
  If Errors=0 Then WriteObjectFile;
  If (Errors=0) And (DiskName<>'') Then WriteDosDisk;
- If Errors<>0 Then RemoveInvalidObject;
+ If Errors=0 Then WriteProdosAttributes;
+ If Errors<>0 Then Begin RemoveInvalidObject; RemoveProdosAttributes; End;
  If UseListing Then Begin
   WriteSymbolTable;
   Close(ListText);
