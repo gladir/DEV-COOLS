@@ -130,7 +130,8 @@ Var
  ReferenceCount:Integer;
  Relocs:Array[0..MAX_RELOCS-1] Of TReloc;
  RelocCount:Integer;
- Pass,LineNo,Errors,NextEsdNumber:Integer;
+ Pass,LineNo,FileLine,Errors,NextEsdNumber:Integer;
+ SourcePaths:Array[0..32] Of TString;
  PC,ObjPC,FirstPC,LastPC:LongInt;
  ObjectMin,ObjectMax,ListObjAddress:LongInt;
  ObjectPages:Array[0..255] Of PObjectPage;
@@ -200,7 +201,7 @@ Procedure Error(S:TString);
 Var P:PListingDiagnostic;
 Begin
  Inc(Errors); If Pass=2 Then Begin
-  WriteLn('EDASM: ',CurrentSource,', ligne ',LineNo,': ',S);
+  WriteLn('EDASM: ',CurrentSource,', ligne ',FileLine,': ',S);
   If UseListing Then Begin
    If InSourceLine Then Begin
     New(P); P^.Next:=Nil; P^.MessageText:=S;
@@ -1091,8 +1092,11 @@ Var WasForced:Boolean; Prefix:TString; I:Integer;
 Begin
  If (Pass<>2) Or Not UseListing Then Exit;
  WasForced:=ListingForce; ListingForce:=True;
- If InSourceLine Then Prefix:='**** Ligne '+DecimalText(LineNo,0,' ') +': '
- Else Prefix:='**** Bilan: ';
+ If InSourceLine Then Prefix:='**** Ligne '+DecimalText(FileLine,0,' ') +': '
+ Else Begin
+  ListingRow('**** Fichier: '+CurrentSource);
+  Prefix:='**** Bilan ligne '+DecimalText(FileLine,0,' ')+': ';
+ End;
  I:=1;
  Repeat
   ListingRow(Prefix+Copy(S,I,120-Length(Prefix))); Inc(I,120-Length(Prefix));
@@ -1432,7 +1436,7 @@ Var
  Mode,Size:Byte;
  O,P,I,Code:Integer;
 Begin
- Inc(LineNo); OldPC:=PC; ListObjAddress:=ObjPC; Bytes:='';
+ Inc(LineNo); Inc(FileLine); OldPC:=PC; ListObjAddress:=ObjPC; Bytes:='';
  If (Trim(Source)<>'') And (Trim(Source)[1]='*') Then Begin
   ListLine(PC,'',Source); Exit;
  End; ParseFields(Source,Lab,M,A,C); ValueContext:=M+' '+A;
@@ -1467,7 +1471,7 @@ Begin
   Size:=TrackCondition(Size);
   With CondStack[CondDepth] Do Begin
    ParentActive:=Active; ElseSeen:=False; State:=Size;
-   OpenLine:=LineNo; ElseLine:=0; OpenSource:=CurrentSource;
+   OpenLine:=FileLine; ElseLine:=0; OpenSource:=CurrentSource;
   End;
   Inc(CondDepth); Active:=Active And (Size=COND_TRUE);
   ListLine(PC,'',Source); Exit;
@@ -1479,7 +1483,7 @@ Begin
    If ElseSeen Then Error('ELSE multiple: premier ELSE ligne '+DecimalText(ElseLine,0,' ')+
     ', bloc ouvert dans '+OpenSource+':'+DecimalText(OpenLine,0,' '))
    Else Begin
-    ElseSeen:=True; ElseLine:=LineNo; Active:=ParentActive And (State=COND_FALSE);
+    ElseSeen:=True; ElseLine:=FileLine; Active:=ParentActive And (State=COND_FALSE);
    End;
   End;
   ListLine(PC,'',Source); Exit;
@@ -1745,15 +1749,24 @@ Procedure ProcessSourceFile(Name:TString; Depth:Integer);
 Var
  F:Text;
  S,Args,More,Part:TDataText;
- E,Joined:Integer;
- NextName,PreviousSource,Lab,M,Comment,DummyLab,DummyOp:TString;
+ E,Joined,I:Integer;
+ NextName,Lab,M,Comment,DummyLab,DummyOp:TString;
  Missing,TooLong:Boolean;
 Begin
- If Depth>32 Then Begin Error('Trop de fichiers CHN (boucle probable)'); Exit; End;
- PreviousSource:=CurrentSource; CurrentSource:=Name;
- If (Pass=2) And (ListPage>0) Then ListingHeaderDirty:=True;
+ Name:=FExpand(Name);
+ For I:=0 To Depth-1 Do If Up(SourcePaths[I])=Up(Name) Then Begin
+  Error('Cycle CHN: fichier deja visite: '+Name); Exit;
+ End;
+ If Depth>32 Then Begin Error('Limite CHN de 33 fichiers depassee'); Exit; End;
  Assign(F,Name); Reset(F); E:=IOResult; If E<>0 Then Begin
-  Error('Impossible d''ouvrir le fichier CHN '+Name); CurrentSource:=PreviousSource; Exit;
+  Error('Impossible d''ouvrir le fichier source '+Name); Exit;
+ End;
+ SourcePaths[Depth]:=Name; CurrentSource:=Name; FileLine:=0;
+ If (Pass=2) And (ListPage>0) Then ListingHeaderDirty:=True;
+ If (Pass=2) And UseListing Then Begin
+  ListingRow('FICHIER: '+Name);
+  ListingRow('Premiere ligne globale: '+DecimalText(LineNo+1,0,' ')+
+   ' (LINE et references: numeros globaux; diagnostics: lignes du fichier)');
  End;
  ChainRequested:=False;
  While Not EOF(F) And Not EndSeen And Not ChainRequested Do Begin
@@ -1781,12 +1794,14 @@ Begin
   If TooLong Then Error('Liste de donnees ou ligne source trop longue');
   If (DiagnosticHead<>Nil) And Not SourceListed Then ListLine(ListingAddress,'',ListingSource);
   FlushListingDiagnostics; InSourceLine:=False;
-  Inc(LineNo,Joined);
+  Inc(LineNo,Joined); Inc(FileLine,Joined);
  End;
  Close(F); If ChainRequested And Not EndSeen Then Begin
-  NextName:=ChainName; If SourceDirectory(NextName)='' Then NextName:=SourceDirectory(Name)+NextName;
+  NextName:=ChainName;
+  If (NextName[1]<>'\') And (NextName[1]<>'/') And (Pos(':',NextName)=0) Then
+   NextName:=SourceDirectory(Name)+NextName;
   ChainRequested:=False; ProcessSourceFile(NextName,Depth+1);
- End; CurrentSource:=PreviousSource;
+ End;
 End;
 
 Procedure AssembleOnePass;
@@ -1796,7 +1811,7 @@ Begin
  ConditionCursor:=Conditions; LastCondition:=Nil; ConditionsChanged:=False;
  CondOverflow:=0; ConditionEvaluation:=False;
  InstructionCursor:=Instructions; LastInstruction:=Nil; InstructionsChanged:=False;
- LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
+ LineNo:=0; FileLine:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
  ObjExplicit:=False; ListObjAddress:=0;
  CondDepth:=0; Active:=True; MSBMode:=False; RelMode:=False; InDsect:=False;
  ListingEnabled:=True; ListingTitle:=SrcName; Subtitle:=''; ListingHeaderDirty:=False;
@@ -1972,6 +1987,9 @@ Procedure Help;Begin
  WriteLn('LST ON/OFF           Active/masque les lignes source et la mise en page.');
  WriteLn('                     Diagnostics et tables finales restent visibles.');
  WriteLn('CHN fichier          Continue l''assemblage dans un autre source.');
+ WriteLn(' Chemins relatifs au source courant; CHN remplace la suite du fichier.');
+ WriteLn(' Cycles interdits; 33 fichiers maximum. LINE/references: lignes globales,');
+ WriteLn(' diagnostics: lignes physiques du fichier indique.');
  WriteLn('PAGE                 Commence une nouvelle page du listing.');
  WriteLn('SKP [n]              Insere n lignes blanches dans le listing.');
  WriteLn('SBTL texte           Change le sous-titre et commence une page.');
