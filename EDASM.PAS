@@ -17,6 +17,11 @@ Const
  VERSION='1.4';
  MAX_SYMBOLS=4096;
  MAX_STABILIZATION_PASSES=MAX_SYMBOLS+2;
+ MAX_CONDITIONS=64;
+ COND_SKIPPED=0;
+ COND_UNKNOWN=1;
+ COND_FALSE=2;
+ COND_TRUE=3;
  {$IFDEF FPC}
  MAX_DATA_TEXT=16384;
  {$ELSE}
@@ -58,7 +63,7 @@ Type
  TSymbol=Record
   Name:String[31];
  Value:LongInt;
- Defined,External,PublicSym,Relocatable,LocalSymbol,UndefinedReported:Boolean;
+ Defined,External,PublicSym,Relocatable,LocalSymbol,UndefinedReported,DefinedThisPass:Boolean;
   EsdNumber:Byte;
   Section:Byte;
   DefinedLine:Word;
@@ -96,6 +101,18 @@ Type
   Next:PListingDiagnostic;
   MessageText:TString;
  End;
+ TConditionalFrame=Record
+  ParentActive,ElseSeen:Boolean;
+  State:Byte;
+  OpenLine,ElseLine:Integer;
+  OpenSource:TString;
+ End;
+ PConditionalTrace=^TConditionalTrace;
+ TConditionalTrace=Record
+  Next:PConditionalTrace;
+  SourceLine:Integer;
+  InitialState,PreviousState:Byte;
+ End;
 
 Var
  ListText:Text;
@@ -120,8 +137,11 @@ Var
  UsedPages:Array[0..255] Of PUsedPage;
  ObjExplicit:Boolean;
  ListingEnabled,UseListing,MSBMode,EndSeen,Quiet,AppleBinaryHeader:Boolean;
- CondStack:Array[0..15] Of Boolean;
+ CondStack:Array[0..MAX_CONDITIONS-1] Of TConditionalFrame;
  CondDepth:Integer;
+ CondOverflow:LongInt;
+ OverflowParentActive,ConditionEvaluation,ConditionsChanged:Boolean;
+ Conditions,ConditionCursor,LastCondition:PConditionalTrace;
  Active:Boolean;
  RelMode,InDsect:Boolean;
  SavedPC:LongInt;
@@ -212,7 +232,7 @@ Begin
  N:=Up(Trim(N));
  IsReservedSymbol:=(Pos(','+N+',',R1)>0) Or (Pos(','+N+',',R2)>0) Or
                   (Pos(','+N+',',R3)>0) Or
-                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,DUP,TITL,TITLE,')>0);
+                  (Pos(','+N+',',',OR,XOR,NOT,MOD,DIV,SHL,SHR,DUP,TITL,TITLE,IFEQ,IFNE,IFLT,IFLE,IFGT,IFGE,')>0);
 End;
 
 Function FindSymbol(N:TString):Integer;
@@ -251,7 +271,7 @@ Begin
   ((Pass=2) And (Symbols[I].DefinedLine<>LineNo))) Then Begin
   Error('Symbole defini deux fois: '+N); Exit;
  End;
- Symbols[I].Value:=V; Symbols[I].Defined:=Resolved;
+ Symbols[I].Value:=V; Symbols[I].Defined:=Resolved; Symbols[I].DefinedThisPass:=True;
  If Symbols[I].DefinedLine=0 Then Symbols[I].DefinedLine:=LineNo;
 End;
 
@@ -404,6 +424,7 @@ Begin
   If SymbolCount>=MAX_SYMBOLS Then Begin Error('Table des symboles pleine'); GetOrCreateSymbol:=-1; Exit; End;
   I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N; Symbols[I].Value:=0;
   Symbols[I].Defined:=False; Symbols[I].External:=False; Symbols[I].UndefinedReported:=False;
+  Symbols[I].DefinedThisPass:=False;
   Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
   Symbols[I].LocalSymbol:=WasLocal; Symbols[I].Section:=SEC_UNDEF;
   Symbols[I].DefinedLine:=0;
@@ -504,8 +525,13 @@ Begin
   Token:=Up(Copy(S,Start,Position-Start)); Exit;
  End;
  Token:=C;
- If (Position<=Length(S)) And (S[Position]=C) And (C In ['<','>']) Then Begin
-  Token:=Token+C; Inc(Position);
+ If Position<=Length(S) Then Begin
+  TextValue:=C+S[Position];
+  If (TextValue='<<') Or (TextValue='>>') Or (TextValue='<=') Or
+     (TextValue='>=') Or (TextValue='<>') Or (TextValue='!=') Or
+     (TextValue='==') Or (TextValue='&&') Or (TextValue='||') Then Begin
+   Token:=TextValue; Inc(Position);
+  End;
  End;
 End;
 
@@ -519,12 +545,15 @@ End;
 Function Priority(Op:TString):Integer;
 Begin
  Priority:=0;
- If (Op='|') Or (Op='OR') Then Priority:=1
- Else If (Op='^') Or (Op='XOR') Then Priority:=2
- Else If (Op='&') Or (Op='AND') Then Priority:=3
- Else If (Op='<<') Or (Op='>>') Or (Op='SHL') Or (Op='SHR') Then Priority:=4
- Else If (Op='+') Or (Op='-') Then Priority:=5
- Else If (Op='*') Or (Op='/') Or (Op='DIV') Or (Op='MOD') Then Priority:=6;
+ If Op='||' Then Priority:=1 Else If Op='&&' Then Priority:=2
+ Else If (Op='=') Or (Op='==') Or (Op='<>') Or (Op='!=') Or
+  (Op='<') Or (Op='<=') Or (Op='>') Or (Op='>=') Then Priority:=3
+ Else If (Op='|') Or (Op='OR') Then Priority:=4
+ Else If (Op='^') Or (Op='XOR') Then Priority:=5
+ Else If (Op='&') Or (Op='AND') Then Priority:=6
+ Else If (Op='<<') Or (Op='>>') Or (Op='SHL') Or (Op='SHR') Then Priority:=7
+ Else If (Op='+') Or (Op='-') Then Priority:=8
+ Else If (Op='*') Or (Op='/') Or (Op='DIV') Or (Op='MOD') Then Priority:=9;
 End;
 
 Function ParseExpression(MinPriority:Integer):TExprValue; Forward;
@@ -537,7 +566,7 @@ Begin
   Fail('Expression trop imbriquee'); Token:=''; Dec(Depth); ParseUnary:=R; Exit;
  End;
  Op:=Token;
- If (Op='+') Or (Op='-') Or (Op='~') Or (Op='NOT') Or
+ If (Op='+') Or (Op='-') Or (Op='~') Or (Op='NOT') Or (Op='!') Or
     (Op='<') Or (Op='>') Then Begin
   NextToken;
   If (Op='-') And (Token='#MINMAG') Then Begin
@@ -547,9 +576,9 @@ Begin
   If Op='-' Then Begin
    R.Value:=Checked(-1.0*R.Value); R.Rel:=-R.Rel;
    If (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Negation relogeable invalide');
-  End Else If (Op='~') Or (Op='NOT') Then Begin
+  End Else If (Op='~') Or (Op='NOT') Or (Op='!') Then Begin
    If (R.Rel<>0) Or (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Operation logique relogeable invalide');
-   R.Value:=Not R.Value;
+   If Op='!' Then R.Value:=Ord(R.Value=0) Else R.Value:=Not R.Value;
   End Else If (Op='<') Or (Op='>') Then Begin
    If R.Part<>0 Then Fail('Extraction relogeable imbriquee invalide');
    R.FullValue:=R.Value;
@@ -570,7 +599,11 @@ Begin
   If I<0 Then I:=GetOrCreateSymbol(Op);
   If I>=0 Then Begin
    AddCrossReference(I);
-   If Symbols[I].Defined Then Begin
+   If ConditionEvaluation And (Not Symbols[I].DefinedThisPass Or Not Symbols[I].Defined) Then
+    Fail('Condition: symbole non defini avant cette ligne: '+Op)
+   Else If ConditionEvaluation And Symbols[I].External Then
+    Fail('Condition: symbole externe interdit: '+Op)
+   Else If Symbols[I].Defined Then Begin
     R.Value:=Symbols[I].Value;
     If Symbols[I].External Then R.ExternalIndex:=I
     Else If Symbols[I].Relocatable Then R.Rel:=1;
@@ -602,11 +635,23 @@ Begin
    End;
    L.Rel:=L.Rel+Sign*R.Rel;
    L.Value:=Checked(1.0*L.Value+1.0*Sign*R.Value);
+  End Else If P=3 Then Begin
+   If (L.Rel<>R.Rel) Or (L.ExternalIndex<>R.ExternalIndex) Or
+      (L.Part<>0) Or (R.Part<>0) Then Fail('Comparaison de valeurs relogeables incompatibles');
+   If (Op='=') Or (Op='==') Then L.Value:=Ord(L.Value=R.Value)
+   Else If (Op='<>') Or (Op='!=') Then L.Value:=Ord(L.Value<>R.Value)
+   Else If Op='<' Then L.Value:=Ord(L.Value<R.Value)
+   Else If Op='<=' Then L.Value:=Ord(L.Value<=R.Value)
+   Else If Op='>' Then L.Value:=Ord(L.Value>R.Value)
+   Else L.Value:=Ord(L.Value>=R.Value);
+   L.Rel:=0; L.ExternalIndex:=-1; L.Part:=0;
   End Else Begin
    If (L.Rel<>0) Or (R.Rel<>0) Or (L.ExternalIndex>=0) Or
       (R.ExternalIndex>=0) Or (L.Part<>0) Or (R.Part<>0) Then
     Fail('Operateur exigeant des valeurs absolues: '+Op);
-   If Op='*' Then L.Value:=Checked(1.0*L.Value*R.Value)
+   If Op='&&' Then L.Value:=Ord((L.Value<>0) And (R.Value<>0))
+   Else If Op='||' Then L.Value:=Ord((L.Value<>0) Or (R.Value<>0))
+   Else If Op='*' Then L.Value:=Checked(1.0*L.Value*R.Value)
    Else If (Op='/') Or (Op='DIV') Or (Op='MOD') Then Begin
     If R.Value=0 Then Begin Fail('Division par zero'); L.Value:=0; End
     Else If (L.Value=(-2147483647-1)) And (R.Value=-1) Then
@@ -810,7 +855,7 @@ Begin
 End;
 
 Function IsSourceOperation(M:TString):Boolean;
-Const Directives=',ORG,OBJ,EQU,=,DS,DFS,HEX,MSB,DO,ELSE,FIN,LST,PAGE,SKP,TITL,TITLE,SBTL,CHR,REP,DSECT,DEND,REL,EXTRN,ENTRY,CHN,END,';
+Const Directives=',ORG,OBJ,EQU,=,DS,DFS,HEX,MSB,DO,ELSE,FIN,IFEQ,IFNE,IFLT,IFLE,IFGT,IFGE,LST,PAGE,SKP,TITL,TITLE,SBTL,CHR,REP,DSECT,DEND,REL,EXTRN,ENTRY,CHN,END,';
 Var Mode:Byte;
 Begin
  M:=Up(M); IsSourceOperation:=False;
@@ -1335,6 +1380,49 @@ Begin
  End;
 End;
 
+Function IsConditional(M:TString):Boolean;
+Begin
+ IsConditional:=(M='DO') Or (M='IFNE') Or (M='IFEQ') Or (M='IFLT') Or
+  (M='IFLE') Or (M='IFGT') Or (M='IFGE');
+End;
+
+Function TrackCondition(State:Byte):Byte;
+Var P:PConditionalTrace;
+Begin
+ P:=ConditionCursor;
+ If P=Nil Then Begin
+  New(P); P^.Next:=Nil; P^.SourceLine:=LineNo;
+  P^.InitialState:=State; P^.PreviousState:=State;
+  If LastCondition=Nil Then Conditions:=P Else LastCondition^.Next:=P;
+  ConditionsChanged:=True;
+  If Pass=2 Then Error('Erreur de phase: nouvelle condition');
+ End Else Begin
+  If (P^.PreviousState<>State) Or (P^.SourceLine<>LineNo) Then ConditionsChanged:=True;
+  P^.PreviousState:=State;
+ End;
+ If Pass=2 Then Begin
+  If P^.InitialState=COND_UNKNOWN Then
+   Error('Condition inconnue lors de la premiere passe: definir ses symboles avant DO/IFxx')
+  Else If (P^.InitialState<>State) Or (P^.SourceLine<>LineNo) Then
+   Error('Erreur de phase: condition differente de la premiere passe');
+ End;
+ TrackCondition:=P^.InitialState;
+ LastCondition:=P; ConditionCursor:=P^.Next;
+End;
+
+Procedure FinishConditionalPass;
+Var P:PConditionalTrace;
+Begin
+ If ConditionCursor<>Nil Then Begin
+  ConditionsChanged:=True;
+  If Pass=2 Then Error('Erreur de phase: nombre de conditions modifie');
+ End;
+ While ConditionCursor<>Nil Do Begin
+  P:=ConditionCursor; ConditionCursor:=P^.Next; Dispose(P);
+ End;
+ If LastCondition=Nil Then Conditions:=Nil Else LastCondition^.Next:=Nil;
+End;
+
 Procedure ProcessLine(Source:TDataText);
 Var
  Lab,M,C,E,Item,Bytes:TString;
@@ -1351,18 +1439,56 @@ Begin
  If Not IsDataDirective(M) And (Length(A)>255) Then Begin
   Error('Operande de plus de 255 caracteres'); Exit;
  End;
- If M='DO' Then Begin
-  V:=Eval(A,Known); CondStack[CondDepth]:=Active; Inc(CondDepth);
-  Active:=Active And Known And (V<>0); ListLine(PC,'',Source); Exit;
+ If CondOverflow>0 Then Begin
+  If IsConditional(M) Then Inc(CondOverflow)
+  Else If M='FIN' Then Begin
+   Dec(CondOverflow); If CondOverflow=0 Then Active:=OverflowParentActive;
+  End;
+  ListLine(PC,'',Source); Exit;
+ End;
+ If IsConditional(M) Then Begin
+  If CondDepth>=MAX_CONDITIONS Then Begin
+   Error('Imbrication conditionnelle excessive: limite '+DecimalText(MAX_CONDITIONS,0,' '));
+   CondOverflow:=1; OverflowParentActive:=Active; Active:=False;
+   ListLine(PC,'',Source); Exit;
+  End;
+  Size:=COND_SKIPPED;
+  If Active Then Begin
+   ConditionEvaluation:=True; V:=Eval(A,Known); ConditionEvaluation:=False;
+   Size:=COND_UNKNOWN;
+   If Known Then Begin
+    ValidValue:=V<>0;
+    If M='IFEQ' Then ValidValue:=V=0 Else If M='IFLT' Then ValidValue:=V<0
+    Else If M='IFLE' Then ValidValue:=V<=0 Else If M='IFGT' Then ValidValue:=V>0
+    Else If M='IFGE' Then ValidValue:=V>=0;
+    If ValidValue Then Size:=COND_TRUE Else Size:=COND_FALSE;
+   End;
+  End;
+  Size:=TrackCondition(Size);
+  With CondStack[CondDepth] Do Begin
+   ParentActive:=Active; ElseSeen:=False; State:=Size;
+   OpenLine:=LineNo; ElseLine:=0; OpenSource:=CurrentSource;
+  End;
+  Inc(CondDepth); Active:=Active And (Size=COND_TRUE);
+  ListLine(PC,'',Source); Exit;
  End;
  If M='ELSE' Then Begin
-  If CondDepth=0 Then Error('ELSE sans DO') Else Active:=CondStack[CondDepth-
-  1] And Not Active; ListLine(PC,'',Source); Exit;
+  If A<>'' Then Error('ELSE n''accepte aucun operande');
+  If CondDepth=0 Then Error('ELSE sans DO/IFxx')
+  Else With CondStack[CondDepth-1] Do Begin
+   If ElseSeen Then Error('ELSE multiple: premier ELSE ligne '+DecimalText(ElseLine,0,' ')+
+    ', bloc ouvert dans '+OpenSource+':'+DecimalText(OpenLine,0,' '))
+   Else Begin
+    ElseSeen:=True; ElseLine:=LineNo; Active:=ParentActive And (State=COND_FALSE);
+   End;
+  End;
+  ListLine(PC,'',Source); Exit;
  End;
  If M='FIN' Then Begin
-  If CondDepth=0 Then Error('FIN sans DO') Else
+  If A<>'' Then Error('FIN n''accepte aucun operande');
+  If CondDepth=0 Then Error('FIN sans DO/IFxx') Else
   Begin
-   Dec(CondDepth); Active:=CondStack[CondDepth];
+   Dec(CondDepth); Active:=CondStack[CondDepth].ParentActive;
   End; ListLine(PC,'',Source); Exit;
  End;
  If Not Active Then Begin
@@ -1664,7 +1790,11 @@ Begin
 End;
 
 Procedure AssembleOnePass;
+Var I:Integer;
 Begin
+ For I:=0 To SymbolCount-1 Do Symbols[I].DefinedThisPass:=False;
+ ConditionCursor:=Conditions; LastCondition:=Nil; ConditionsChanged:=False;
+ CondOverflow:=0; ConditionEvaluation:=False;
  InstructionCursor:=Instructions; LastInstruction:=Nil; InstructionsChanged:=False;
  LineNo:=0; PC:=0; ObjPC:=0; FirstPC:=-1; LastPC:=0; EndSeen:=False;
  ObjExplicit:=False; ListObjAddress:=0;
@@ -1673,8 +1803,11 @@ Begin
  RepeatChar:='*'; CurrentScope:='';
  ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
  FinishInstructionPass;
+ FinishConditionalPass;
  If InDsect Then Error('DSECT sans DEND');
- If CondDepth<>0 Then Error('DO sans FIN');
+ For I:=CondDepth-1 DownTo 0 Do
+  Error('DO/IFxx sans FIN: bloc ouvert dans '+CondStack[I].OpenSource+':'+DecimalText(CondStack[I].OpenLine,0,' '));
+ If CondOverflow>0 Then Error('Bloc conditionnel excedentaire sans FIN');
 End;
 
 { Une chaine de N EQU peut demander N passes. Ne pas considerer une
@@ -1693,7 +1826,7 @@ Begin
   End;
   AssembleOnePass; Inc(Iteration);
   PhaseStable:=(PreviousCount=SymbolCount) And (PreviousPC=PC) And
-   (PreviousObjPC=ObjPC) And Not InstructionsChanged;
+   (PreviousObjPC=ObjPC) And Not InstructionsChanged And Not ConditionsChanged;
   For I:=0 To PreviousCount-1 Do
    If (PreviousSymbols[I].Value<>Symbols[I].Value) Or
       (PreviousSymbols[I].Defined<>Symbols[I].Defined) Or
@@ -1808,6 +1941,11 @@ Procedure Help;Begin
  WriteLn('EDASM ',VERSION,' - Cette commande permet de lancer un assembleur Apple EDASM compatible 6502.');
  WriteLn;
  WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/B] [/Q] [/STRICT|/MODERN]');
+ WriteLn;
+ WriteLn('Conditions: DO/IFNE IFEQ IFLT IFLE IFGT IFGE, ELSE unique, FIN; 64 niveaux.');
+ WriteLn('Symboles conditionnels definis avant usage; choix figes a la premiere passe.');
+ WriteLn('Condition inconnue: aucune branche active et erreur finale.');
+ WriteLn('Comparaisons = == <> != < <= > >=; ! && || sans court-circuit.');
  WriteLn('Par defaut: instructions et directives reconnues meme en colonne 1.');
  WriteLn('Etiquettes: nom OP ... en colonne 1, ou nom: [OP ...] avec retrait libre.');
  WriteLn('/STRICT: format a colonnes, etiquette en colonne 1, operation indentee.');
@@ -1893,7 +2031,7 @@ Begin
 End;
 
 BEGIN
- Instructions:=Nil;
+ Instructions:=Nil; Conditions:=Nil;
  ParseArgs; SymbolCount:=0; NextEsdNumber:=1; Errors:=0; Pass:=1; AssembleOnePass;
  If UseListing Then Begin
   Assign(ListText,ListName); Rewrite(ListText); If IOResult<>0 Then Begin
@@ -1918,6 +2056,7 @@ BEGIN
  { Libere l'historique sans lancer une autre passe. }
  InstructionCursor:=Instructions; LastInstruction:=Nil; Pass:=0;
  FinishInstructionPass;
+ ConditionCursor:=Conditions; LastCondition:=Nil; FinishConditionalPass;
  If Errors=0 Then Begin
   If Not Quiet Then If ObjectMax>=ObjectMin Then
    WriteLn('Assemblage termine: ',ObjName,' (',ObjectMax-ObjectMin+1,
