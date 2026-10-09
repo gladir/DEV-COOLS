@@ -117,6 +117,8 @@ Type
 Var
  ListText:Text;
  SrcName,ObjName,ListName:TString;
+ DiskName,DiskTemplate,DosName:TString;
+ DosSlot,DosDrive,DosVolume:Integer;
  Symbols:Array[0..MAX_SYMBOLS-1] Of TSymbol;
  SymbolCount:Integer;
  PreviousSymbols:Array[0..MAX_SYMBOLS-1] Of TSymbolState;
@@ -1956,6 +1958,15 @@ Procedure Help;Begin
  WriteLn('EDASM ',VERSION,' - Cette commande permet de lancer un assembleur Apple EDASM compatible 6502.');
  WriteLn;
  WriteLn('Syntaxe: EDASM source [objet] [/L:listing] [/B] [/Q] [/STRICT|/MODERN]');
+ WriteLn('         EDASM ASM SOURCE,OBJECT[,S6,D1,V254] [options]');
+ WriteLn('/DSK:image.dsk       Cree une nouvelle image DOS 3.3 (140 Ko, ordre DOS).');
+ WriteLn('/NAME:NOM APPLE      Nom du fichier B dans le catalogue (30 caracteres max).');
+ WriteLn('/TEMPLATE:base.dsk   Copie une image DOS 3.3 et y ajoute l''objet.');
+ WriteLn(' Sans modele: disque de donnees non amorcable; aucun DOS de demarrage inclus.');
+ WriteLn(' Le modele et les fichiers existants ne sont jamais remplaces dans l''image.');
+ WriteLn(' S1..7,D1..2 designent le lecteur virtuel /DSK; V0..254 fixe son volume.');
+ WriteLn(' Source et CHN restent des fichiers de l''hote; pas d''editeur interactif.');
+ WriteLn(' Objet disque: binaire absolu 1..65535 octets avec en-tete adresse/longueur.');
  WriteLn;
  WriteLn('Conditions: DO/IFNE IFEQ IFLT IFLE IFGT IFGE, ELSE unique, FIN; 64 niveaux.');
  WriteLn('Symboles conditionnels definis avant usage; choix figes a la premiere passe.');
@@ -2025,26 +2036,90 @@ Procedure Help;Begin
  Halt(0);
 End;
 
+{$I EDASMDOS.INC}
+
 Procedure ParseArgs;
 Var
- I:Integer;
- A,U:TString;
+ I,J,K,Code,N:Integer;
+ A,U,Command,Field:TString;
+ Historical,DeviceSet:Boolean;
 Begin
  If ParamCount=0 Then Help; SrcName:=''; ObjName:=''; ListName:=''; ListingEnabled:=True;
  Quiet:=False; AppleBinaryHeader:=False; StrictSource:=False;
+ DiskName:=''; DiskTemplate:=''; DosName:=''; DosSlot:=6; DosDrive:=1; DosVolume:=254;
+ Historical:=False; DeviceSet:=False; Command:='';
  For I:=1 To ParamCount Do Begin
   A:=ParamStr(I); U:=Up(A);
-  If (U='/?') Or (U='-?') Then Help Else If Copy(U,1,3)='/L:' Then Begin
+  If (I=1) And ((U='ASM') Or (Copy(U,1,4)='ASM ')) Then Begin
+   Historical:=True; Command:=Trim(Copy(A,4,255));
+  End Else If Copy(U,1,5)='/DSK:' Then DiskName:=Copy(A,6,255)
+  Else If Copy(U,1,10)='/TEMPLATE:' Then DiskTemplate:=Copy(A,11,255)
+  Else If Copy(U,1,6)='/NAME:' Then DosName:=Copy(A,7,255)
+  Else If (U='/?') Or (U='-?') Then Help Else If Copy(U,1,3)='/L:' Then Begin
    ListName:=Copy(A,4,255); UseListing:=True;
   End Else If U='/Q' Then Quiet:=True Else If U='/B' Then AppleBinaryHeader:=True
   Else If U='/STRICT' Then StrictSource:=True Else If U='/MODERN' Then StrictSource:=False
   Else If (A<>'') And (A[1]='/') Then Begin
    WriteLn('Option inconnue: ',A); Halt(1);
+  End Else If Historical Then Begin
+   If Command<>'' Then Command:=Command+' '; Command:=Command+A;
   End Else If SrcName='' Then SrcName:=A Else If ObjName='' Then ObjName:=A Else
   Begin
    WriteLn('Argument surnumeraire: ',A); Halt(1);
   End;
- End; If ObjName='' Then ObjName:=BaseName(SrcName)+'.OBJ';
+ End;
+ If Historical Then Begin
+  K:=0;
+  Repeat
+   J:=Pos(',',Command);
+   If J=0 Then Begin Field:=Trim(Command); Command:=''; End
+   Else Begin Field:=Trim(Copy(Command,1,J-1)); Delete(Command,1,J); End;
+   Inc(K);
+   If K=1 Then SrcName:=Field Else If K=2 Then ObjName:=Field
+   Else Begin
+    U:=Up(Field); Code:=1; N:=0;
+    If Length(U)>1 Then Val(Copy(U,2,255),N,Code);
+    If (Code<>0) Or (U='') Then Begin WriteLn('Parametre ASM invalide: ',Field); Halt(1); End;
+    Case U[1] Of
+     'S':Begin DosSlot:=N; DeviceSet:=True; End;
+     'D':Begin DosDrive:=N; DeviceSet:=True; End;
+     'V':Begin DosVolume:=N; DeviceSet:=True; End;
+     Else Begin WriteLn('Parametre ASM inconnu: ',Field); Halt(1); End;
+    End;
+   End;
+  Until J=0;
+  If K<2 Then Begin WriteLn('Syntaxe: ASM SOURCE,OBJECT[,S6,D1,V254]'); Halt(1); End;
+ End;
+ If SrcName='' Then Begin WriteLn('Source absent'); Halt(1); End;
+ If (DosSlot<1) Or (DosSlot>7) Or (DosDrive<1) Or (DosDrive>2) Or
+    (DosVolume<0) Or (DosVolume>254) Then Begin WriteLn('Slot 1..7, drive 1..2, volume 0..254 requis'); Halt(1); End;
+ If (DiskName='') And (DeviceSet Or (DiskTemplate<>'') Or (DosName<>'')) Then Begin
+  WriteLn('Les parametres disque exigent /DSK:image.dsk'); Halt(1);
+ End;
+ If ObjName='' Then ObjName:=BaseName(SrcName)+'.OBJ';
+ If UseListing And (ListName='') Then ListName:=BaseName(SrcName)+'.LST';
+ If DiskTemplate<>'' Then Begin
+  If (Up(FExpand(DiskTemplate))=Up(FExpand(ObjName))) Or
+     (UseListing And (Up(FExpand(DiskTemplate))=Up(FExpand(ListName)))) Then Begin
+   WriteLn('Le modele disque ne peut pas servir de fichier objet ou listing'); Halt(1);
+  End;
+ End;
+ If DiskName<>'' Then Begin
+  If DosName='' Then Begin
+   DosName:=ObjName;
+   For J:=Length(DosName) DownTo 1 Do If DosName[J] In ['\','/',':'] Then Begin
+    Delete(DosName,1,J); Break;
+   End;
+  End;
+  DosName:=Up(Trim(DosName));
+  If Not ValidDosName(DosName) Then Begin WriteLn('Nom Apple DOS invalide (1..30 caracteres, initiale A-Z, sans virgule): ',DosName); Halt(1); End;
+  If HostFileExists(DiskName) Then Begin WriteLn('Image de sortie deja existante: ',DiskName); Halt(1); End;
+  If (Up(FExpand(DiskName))=Up(FExpand(SrcName))) Or
+     (Up(FExpand(DiskName))=Up(FExpand(ObjName))) Or
+     ((ListName<>'') And (Up(FExpand(DiskName))=Up(FExpand(ListName)))) Then Begin
+   WriteLn('Chemins source, objet, listing et image doivent etre distincts'); Halt(1);
+  End;
+ End;
  If UseListing And (ListName='') Then ListName:=BaseName(SrcName)+'.LST';
 End;
 
@@ -2066,6 +2141,7 @@ BEGIN
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
  ValidateExternalSymbols;
  If Errors=0 Then WriteObjectFile;
+ If (Errors=0) And (DiskName<>'') Then WriteDosDisk;
  If Errors<>0 Then RemoveInvalidObject;
  If UseListing Then Begin
   WriteSymbolTable;
