@@ -2036,7 +2036,199 @@ Procedure Help;Begin
  Halt(0);
 End;
 
-{$I EDASMDOS.INC}
+{ Apple DOS 3.3, images 35 pistes x 16 secteurs, ordre DOS (.DSK/.DO).
+  Le modele reste intact; aucune image existante n'est remplacee.
+  Structures verifiees contre DiskArc/FS/DOS.cs et DOS_VTOC.cs (CiderPress2).
+  Implementation independante; pas de code DOS de demarrage distribue. }
+
+Function HostFileExists(Name:TString):Boolean;
+Var R:SearchRec;
+Begin FindFirst(Name,AnyFile,R); HostFileExists:=DosError=0; End;
+
+Function ValidDosName(Name:TString):Boolean;
+Var I:Integer;
+Begin
+ ValidDosName:=False;
+ If (Length(Name)<1) Or (Length(Name)>30) Then Exit;
+ If Not (Name[1] In ['A'..'Z']) Then Exit;
+ For I:=1 To Length(Name) Do
+  If (Ord(Name[I])<32) Or (Ord(Name[I])>126) Or (Name[I]=',') Then Exit;
+ ValidDosName:=True;
+End;
+
+Procedure WriteDosDisk;
+Const Vtoc=272; SectorCount=560;
+Var
+ Disk:Array[0..SectorCount-1] Of PObjectPage;
+ Claimed:Array[0..SectorCount-1] Of Boolean;
+ Allocated:Array[0..260] Of Integer;
+ F:File;
+ I,J,K,C,Entry,FreeCat,FreeEntry,T,L,P,N,NextC,NextL,DataCount,ListCount,E:Integer;
+ Got:Word;
+ ImageLength,Offset:LongInt;
+ Failed,Opened,Created:Boolean;
+ Name:TString;
+
+Procedure Bad(S:TString);
+Begin If Not Failed Then Error('DOS 3.3: '+S); Failed:=True; End;
+
+Function Sector(T,S:Integer):Integer;
+Begin
+ Sector:=0;
+ If (T<1) Or (T>34) Or (S<0) Or (S>15) Then Bad('pointeur piste/secteur invalide')
+ Else Sector:=T*16+S;
+End;
+
+Function IsFree(N:Integer):Boolean;
+Var B:Integer;
+Begin
+ B:=$38+(N Div 16)*4+1-(N Mod 16) Div 8;
+ IsFree:=(Disk[Vtoc]^[B] And (1 Shl (N Mod 8)))<>0;
+End;
+
+Procedure Claim(N:Integer);
+Begin
+ If Failed Then Exit;
+ If Claimed[N] Then Bad('cycle ou secteurs partages dans le modele')
+ Else If IsFree(N) Then Bad('secteur utilise marque libre dans le VTOC')
+ Else Claimed[N]:=True;
+End;
+
+Procedure MarkUsed(N:Integer);
+Var B:Integer;
+Begin
+ B:=$38+(N Div 16)*4+1-(N Mod 16) Div 8;
+ Disk[Vtoc]^[B]:=Disk[Vtoc]^[B] And Not (1 Shl (N Mod 8));
+End;
+
+Begin
+ Failed:=False; Opened:=False; Created:=False;
+ FillChar(Disk,SizeOf(Disk),0); FillChar(Claimed,SizeOf(Claimed),0);
+ If RelMode Then Begin Error('/DSK exige un objet absolu (REL non pris en charge)'); Exit; End;
+ ImageLength:=0; If ObjectMax>=ObjectMin Then ImageLength:=ObjectMax-ObjectMin+1;
+ If (ImageLength=0) Or (ImageLength>65535) Then Begin
+  Error('/DSK exige entre 1 et 65535 octets objet'); Exit;
+ End;
+ For I:=0 To SectorCount-1 Do Begin New(Disk[I]); FillChar(Disk[I]^,256,0); End;
+ If DiskTemplate<>'' Then Begin
+  Assign(F,DiskTemplate); Reset(F,1); E:=IOResult;
+  If E<>0 Then Bad('impossible d''ouvrir le modele') Else Begin
+   Opened:=True;
+   If FileSize(F)<>143360 Then Bad('modele attendu: image DOS 3.3 de 143360 octets');
+   E:=IOResult; If E<>0 Then Bad('lecture de la taille du modele impossible');
+   If Not Failed Then For I:=0 To SectorCount-1 Do Begin
+    BlockRead(F,Disk[I]^,256,Got); E:=IOResult;
+    If (E<>0) Or (Got<>256) Then Bad('lecture du modele incomplete');
+   End;
+   Close(F); E:=IOResult; Opened:=False;
+   If E<>0 Then Bad('fermeture du modele impossible');
+  End;
+ End Else Begin
+  Disk[Vtoc]^[1]:=17; Disk[Vtoc]^[2]:=15; Disk[Vtoc]^[3]:=3;
+  Disk[Vtoc]^[$27]:=122; Disk[Vtoc]^[$30]:=18; Disk[Vtoc]^[$31]:=1;
+  Disk[Vtoc]^[$34]:=35; Disk[Vtoc]^[$35]:=16; Disk[Vtoc]^[$37]:=1;
+  For I:=3 To 34 Do If I<>17 Then Begin
+   Disk[Vtoc]^[$38+I*4]:=255; Disk[Vtoc]^[$39+I*4]:=255;
+  End;
+  For I:=15 DownTo 2 Do Begin
+   Disk[17*16+I]^[1]:=17; Disk[17*16+I]^[2]:=I-1;
+  End;
+ End;
+ If Not Failed Then Begin
+  If (Disk[Vtoc]^[$27]<>122) Or (Disk[Vtoc]^[$34]<>35) Or
+     (Disk[Vtoc]^[$35]<>16) Or (Disk[Vtoc]^[$36]<>0) Or
+     (Disk[Vtoc]^[$37]<>1) Then Bad('VTOC DOS 3.3 invalide');
+ End;
+ FreeCat:=-1; FreeEntry:=-1;
+ If Not Failed Then Begin
+  Claim(Vtoc); C:=Sector(Disk[Vtoc]^[1],Disk[Vtoc]^[2]);
+  While (C<>0) And Not Failed Do Begin
+   Claim(C);
+   For Entry:=0 To 6 Do If Not Failed Then Begin
+    P:=$0B+Entry*35; T:=Disk[C]^[P];
+    If (T=0) Or (T=255) Then Begin
+     If FreeCat<0 Then Begin FreeCat:=C; FreeEntry:=P; End;
+    End Else Begin
+     Name:=''; For J:=0 To 29 Do Name:=Name+Chr(Disk[C]^[P+3+J] And $7F);
+     If Up(Trim(Name))=DosName Then Bad('nom deja present dans le modele: '+DosName);
+     L:=Sector(T,Disk[C]^[P+1]);
+     While (L<>0) And Not Failed Do Begin
+      Claim(L);
+      For J:=0 To 121 Do If Not Failed Then Begin
+       T:=Disk[L]^[$0C+J*2]; K:=Disk[L]^[$0D+J*2];
+       If T<>0 Then Claim(Sector(T,K)) Else If K<>0 Then Bad('reference de donnees invalide');
+      End;
+      NextL:=0;
+      If Disk[L]^[1]<>0 Then NextL:=Sector(Disk[L]^[1],Disk[L]^[2]);
+      L:=NextL;
+     End;
+    End;
+   End;
+   NextC:=0; If Disk[C]^[1]<>0 Then NextC:=Sector(Disk[C]^[1],Disk[C]^[2]);
+   C:=NextC;
+  End;
+  If FreeCat<0 Then Bad('catalogue plein');
+ End;
+ DataCount:=(ImageLength+4+255) Div 256; ListCount:=(DataCount+121) Div 122;
+ If Not Failed Then Begin
+  N:=0;
+  For I:=48 To SectorCount-1 Do
+   If (I Div 16<>17) And IsFree(I) And (N<DataCount+ListCount) Then Begin
+    Allocated[N]:=I; Inc(N); MarkUsed(I); FillChar(Disk[I]^,256,0);
+   End;
+  If N<DataCount+ListCount Then Bad('espace disque insuffisant');
+ End;
+ If Not Failed Then Begin
+  For I:=0 To ListCount-1 Do Begin
+   L:=Allocated[I];
+   If I+1<ListCount Then Begin
+    Disk[L]^[1]:=Allocated[I+1] Div 16; Disk[L]^[2]:=Allocated[I+1] Mod 16;
+   End;
+   Disk[L]^[5]:=(I*122) And 255; Disk[L]^[6]:=(I*122) Shr 8;
+  End;
+  For I:=0 To DataCount-1 Do Begin
+   L:=Allocated[I Div 122]; P:=$0C+(I Mod 122)*2; N:=Allocated[ListCount+I];
+   Disk[L]^[P]:=N Div 16; Disk[L]^[P+1]:=N Mod 16;
+   For J:=0 To 255 Do Begin
+    Offset:=LongInt(I)*256+J;
+    Case Offset Of
+     0:Disk[N]^[J]:=ObjectMin And 255;
+     1:Disk[N]^[J]:=ObjectMin Shr 8;
+     2:Disk[N]^[J]:=ImageLength And 255;
+     3:Disk[N]^[J]:=ImageLength Shr 8;
+     Else If Offset<ImageLength+4 Then Disk[N]^[J]:=ObjectByte(ObjectMin+Offset-4);
+    End;
+   End;
+  End;
+  P:=FreeEntry; C:=FreeCat;
+  FillChar(Disk[C]^[P],35,0);
+  Disk[C]^[P]:=Allocated[0] Div 16; Disk[C]^[P+1]:=Allocated[0] Mod 16;
+  Disk[C]^[P+2]:=4;
+  For I:=1 To 30 Do
+   If I<=Length(DosName) Then Disk[C]^[P+2+I]:=Ord(DosName[I]) Or $80
+   Else Disk[C]^[P+2+I]:=$A0;
+  Disk[C]^[P+33]:=(DataCount+ListCount) And 255;
+  Disk[C]^[P+34]:=(DataCount+ListCount) Shr 8;
+  Disk[Vtoc]^[6]:=DosVolume;
+  Disk[Vtoc]^[$30]:=Allocated[DataCount+ListCount-1] Div 16;
+  Disk[Vtoc]^[$31]:=1;
+  If HostFileExists(DiskName) Then Bad('image de sortie deja existante') Else Begin
+   Assign(F,DiskName); Rewrite(F,1); E:=IOResult;
+   If E<>0 Then Bad('creation image impossible') Else Begin
+    Created:=True; Opened:=True;
+    For I:=0 To SectorCount-1 Do If Not Failed Then Begin
+     BlockWrite(F,Disk[I]^,256,Got); E:=IOResult;
+     If (E<>0) Or (Got<>256) Then Bad('ecriture image incomplete');
+    End;
+   End;
+  End;
+ End;
+ If Opened Then Begin Close(F); E:=IOResult; If E<>0 Then Bad('fermeture image impossible'); End;
+ If Failed And Created Then Begin Assign(F,DiskName); Erase(F); E:=IOResult; End;
+ For I:=0 To SectorCount-1 Do Dispose(Disk[I]);
+ If Not Failed And Not Quiet Then
+  WriteLn('Image DOS 3.3: ',DiskName,' ; B ',DosName,' ; lecteur virtuel S',DosSlot,',D',DosDrive);
+End;
 
 Procedure ParseArgs;
 Var
