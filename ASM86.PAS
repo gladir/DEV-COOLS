@@ -448,7 +448,22 @@ Begin
  Lsid:='          ';
  I:=1;
  If(UCh >= 'A')and(UCh <= 'Z')Then Begin
-  While(UCh >= 'A')and(UCh <= 'Z')or(UCh >= '0')and(UCh<='9') do Begin
+  { BOGUE REEL CORRIGE (2026-10-10, trouve en ecrivant WATTCPTEST.A86 -    }
+  { TESTS/DOSEMU) : le trait de soulignement '_' n'etait PAS reconnu       }
+  { comme caractere d'identifiant valide ici, alors que Chk_For_Label/     }
+  { ShortJmp/CallJmp etc acceptent n'importe quel nom enregistre comme     }
+  { etiquette sans restriction particuliere - un identifiant comme         }
+  { "L_CPMAC1" etait donc tronque a "L" des le premier '_' rencontre,      }
+  { silencieusement, aussi bien a la DEFINITION ("L_CPMAC1:" mal reconnu   }
+  { comme etiquette puis l'instruction "Instruction inconnu" sur le        }
+  { reste) qu'a la REFERENCE ("LOOP L_CPMAC1" resolvait vers une           }
+  { etiquette "L" inexistante - "Etiquette introuvable-- L" - en ecrivant  }
+  { un deplacement de saut errone $00 au lieu du vrai decalage). Le '_'    }
+  { est une convention tres courante dans les noms d'etiquette assembleur  }
+  { (et deja utilisee ailleurs dans ce depot, ex. TESTS/DOSEMU) - accepte   }
+  { desormais comme caractere de CONTINUATION (pas de debut, convention    }
+  { usuelle : un identifiant commence toujours par une lettre). }
+  While(UCh >= 'A')and(UCh <= 'Z')or(UCh >= '0')and(UCh<='9')or(UCh = '_') do Begin
    If I <= SymbolLength Then Begin
     Lsid[I]:=UCh;
     I:=I+1;
@@ -1746,7 +1761,13 @@ Var
 Begin
  Repeat
   If GetQuoted(Lst)Then Begin
-   For I:=1 to Ord(Lst[0]) do InsertByte(Lo(Ord(Lst[I])));
+   { BOGUE REEL CORRIGE (2026-10-10, trouve en verifiant DB 'HELLO$' pour    }
+   { TESTS/DOSEMU) : Lo() applique a un argument de type Byte (ce qu est    }
+   { Ord(Char)) a la semantique "nibble bas" de Turbo Pascal (Lo/Hi d un    }
+   { Byte retournent les 4 bits bas/haut, PAS les 8 bits bas d un Word) -   }
+   { DB 'HELLO$' ecrivait $08 $05 $0C $0C $0F $04 au lieu de $48 $45 $4C    }
+   { $4C $4F $24. Ord(Char) est deja un octet complet, aucun Lo() requis. }
+   For I:=1 to Ord(Lst[0]) do InsertByte(Ord(Lst[I]));
   End
    Else
   If ReadByte Then InsertByte(Byt)

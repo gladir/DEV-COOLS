@@ -1,0 +1,109 @@
+:                         # ; NBTEST.A86
+:                         # ; ============================================================
+:                         # ; Verifie la pile NetBIOS (INT 5Ch) de l'emulateur DOS : ADD NAME,
+:                         # ; SEND DATAGRAM puis RECEIVE DATAGRAM vers/depuis SOI-MEME (modele
+:                         # ; "boucle locale" documente dans DEVENV.PAS - voir TEmuNetBiosState).
+:                         # ;
+:                         # ; Comme SEND DATAGRAM met le datagramme en FILE D'ATTENTE quand
+:                         # ; aucune RECEIVE DATAGRAM n'est deja en attente (voir Emu_NbCmdSendDg/
+:                         # ; Emu_NbQueuePush dans DEVENV.PAS), l'ordre SEND puis RECEIVE (plutot
+:                         # ; que l'inverse) evite tout etat "PENDING" asynchrone : chaque appel
+:                         # ; INT 5Ch rend la main immediatement avec un resultat definitif,
+:                         # ; aucune routine de rappel (NCB_POST) n'est necessaire ici.
+:                         # ;
+:                         # ; A cocher avant de lancer : Options > Emulateur > DOS: Logiciel >
+:                         # ; "NetBIOS (INT 5Ch)".
+:                         # ;
+:                         # ; Assembler : ASM86.exe NBTEST.A86 NBTEST /B /C
+:                         # ;             puis renommer NBTEST.BIN en NBTEST.COM.
+:                         # ;
+:                         # ; Codes de sortie (AL au moment de INT 21h/AH=4Ch) :
+:                         # ;   0 = succes complet (ADD NAME + SEND DG + RECEIVE DG + contenu verifie)
+:                         # ;   1 = ADD NAME a echoue (ncb_retcode <> 0)
+:                         # ;   2 = SEND DATAGRAM a echoue
+:                         # ;   3 = RECEIVE DATAGRAM a echoue (ou jamais recu - verifier la case
+:                         # ;       "NetBIOS" dans Options > Emulateur : DOS > Logiciel)
+:                         # ;   4 = longueur recue <> 4 octets (le datagramme envoye fait 4 octets)
+:                         # ;   5 = contenu recu different de "NBOK" (corruption de donnees)
+:                         # ; ============================================================
+:E95400                   # JMP START
+:                         # ; --- NCB (Network Control Block), 64 octets - disposition exacte       ---
+:                         # ; --- verifiee contre TEmuNbNcbFields (DEVENV.PAS) : Command/RetCode/   ---
+:                         # ; --- Lsn/Num/BufOfs/BufSeg/Length/CallName(16)/Name(16)/Rto/Sto/       ---
+:                         # ; --- PostOfs/PostSeg/LanaNum/CmdCplt/Reserve(14). Name/CallName pre-   ---
+:                         # ; --- remplis une fois pour toutes (meme nom des 2 cotes : on s'envoie  ---
+:                         # ; --- un datagramme a nous-memes) ; le reste reste a zero, patche a     ---
+:                         # ; --- l'execution champ par champ via [BX+decalage].
+:00000000                 # DB 0,0,0,0
+:0000                     # DB 0,0
+:0000                     # DB 0,0
+:0000                     # DB 0,0
+:4E425445535420202020202020202020  # DB 'NBTEST          '
+:4E425445535420202020202020202020  # DB 'NBTEST          '
+:0000                     # DB 0,0
+:0000                     # DB 0,0
+:0000                     # DB 0,0
+:00000000000000000000000000000000  # DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+:                         # SENDBUF:
+:4E424F4B                 # DB 'NBOK'
+:                         # RECVBUF:
+:00000000000000000000000000000000  # DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+:                         # START:
+:8CC8                     # MOV AX,CS
+:8ED8                     # MOV DS,AX
+:8EC0                     # MOV ES,AX
+:BB0301                   # MOV BX,$100+3
+:C60730                   # MOV BYTE [BX+0],$30
+:CD5C                     # INT $5C
+:807F0100                 # CMP BYTE [BX+1],0
+:755B                     # JNE FAIL1
+:C60720                   # MOV BYTE [BX+0],$20
+:C747044301               # MOV WORD [BX+4],$100+3+64
+:894706                   # MOV [BX+6],AX
+:C747080400               # MOV WORD [BX+8],4
+:CD5C                     # INT $5C
+:807F0100                 # CMP BYTE [BX+1],0
+:7548                     # JNE FAIL2
+:C60721                   # MOV BYTE [BX+0],$21
+:C747044701               # MOV WORD [BX+4],$100+3+68
+:894706                   # MOV [BX+6],AX
+:C747081000               # MOV WORD [BX+8],16
+:CD5C                     # INT $5C
+:807F0100                 # CMP BYTE [BX+1],0
+:7535                     # JNE FAIL3
+:8B4F08                   # MOV CX,[BX+8]
+:83F904                   # CMP CX,4
+:7532                     # JNE FAIL4
+:BE4701                   # MOV SI,$100+3+68
+:8A04                     # MOV AL,[SI]
+:3C4E                     # CMP AL,78
+:752E                     # JNE FAIL5
+:8A4401                   # MOV AL,[SI+1]
+:3C42                     # CMP AL,66
+:7527                     # JNE FAIL5
+:8A4402                   # MOV AL,[SI+2]
+:3C4F                     # CMP AL,79
+:7520                     # JNE FAIL5
+:8A4403                   # MOV AL,[SI+3]
+:3C4B                     # CMP AL,75
+:7519                     # JNE FAIL5
+:B000                     # MOV AL,0
+:E91600                   # JMP THEEND
+:                         # FAIL1:
+:B001                     # MOV AL,1
+:E91100                   # JMP THEEND
+:                         # FAIL2:
+:B002                     # MOV AL,2
+:E90C00                   # JMP THEEND
+:                         # FAIL3:
+:B003                     # MOV AL,3
+:E90700                   # JMP THEEND
+:                         # FAIL4:
+:B004                     # MOV AL,4
+:E90200                   # JMP THEEND
+:                         # FAIL5:
+:B005                     # MOV AL,5
+:                         # THEEND:
+:B44C                     # MOV AH,$4C
+:CD21                     # INT 21h
+

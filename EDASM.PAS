@@ -415,6 +415,9 @@ Var
  N:TString;
 Begin
  WriteObjectFile:=False; Failed:=False;
+ If (RelMode Or AppleBinaryHeader) And (ObjectMax-ObjectMin+1>65535) Then Begin
+  Error('Longueur objet non representable sur 16 bits (REL ou /B)'); Exit;
+ End;
  Assign(F,ObjName); Rewrite(F,1); E:=IOResult;
  If E<>0 Then Begin Error('Impossible de creer '+ObjName); Exit; End;
  If ObjectMax>=ObjectMin Then ImageLength:=ObjectMax-ObjectMin+1 Else ImageLength:=0;
@@ -599,7 +602,7 @@ Begin
    Val(TextValue,Number,Code);
    If Code<>0 Then Begin Number:=0; Fail('Constante numerique invalide: '+TextValue); End;
   End;
-  If StrictSource And ((Number<0) Or (Number>65535)) Then Fail('Constante hors limite 16 bits en mode /STRICT');
+ If StrictSource And ((Number<0) Or (Number>65535) Or (Token='#MINMAG')) Then Fail('Constante hors limite 16 bits en mode /STRICT');
   Exit;
  End;
  If C In ['A'..'Z','a'..'z','_','.','@'] Then Begin
@@ -669,6 +672,7 @@ Begin
    R.Value:=Checked(-1.0*R.Value); R.Rel:=-R.Rel; R.OriginRel:=-R.OriginRel;
    If (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Negation relogeable invalide');
   End Else If (Op='~') Or (Op='NOT') Or (Op='!') Then Begin
+   If StrictSource Then Fail('Operateur unaire moderne interdit en mode /STRICT');
    If (R.Rel<>0) Or (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Operation logique relogeable invalide');
    If Op='!' Then R.Value:=Ord(R.Value=0) Else R.Value:=Not R.Value;
   End Else If (Op='<') Or (Op='>') Then Begin
@@ -1884,6 +1888,7 @@ Begin
   If Known Then Begin
    If (MultiObjects Or StrictSource) And Not InDsect And Not RelMode And Not ObjExplicit Then Begin
     If ExpressionValue.OriginRel=0 Then Begin
+     If (Pass=2) And (OrgCount=0) And (ObjectMax>=0) Then Error('Octets emis avant le premier ORG absolu');
      If (Pass=2) And (OrgCount>0) Then SaveObjectSegment;
      Inc(OrgCount); If OrgCount>36 Then Error('Plus de 36 ORG absolus');
      SegmentOrigin:=V; SegmentType:=ProdosType; ProdosType:=$06;
@@ -2175,7 +2180,7 @@ Procedure ProcessSourceFile(Name:TString; Depth:Integer);
 Var
  F:Text;
  S,Args,More,Part:TDataText;
- E,Joined,I,CallerLine:Integer;
+ E,Joined,I,CallerLine,LineSlot,LineDrive,LineVolume:Integer;
  NextName,Lab,M,Comment,DummyLab,DummyOp,CallerScope:TString;
  Missing,TooLong,IsMacroCall:Boolean;
  Frame:PMacroFrame;
@@ -2230,6 +2235,7 @@ Begin
    If Joined>0 Then S:=Lab+' '+M+' '+Args;
   End;
   ListingSource:=S; ListingAddress:=PC; SourceListed:=False; InSourceLine:=True;
+  LineSlot:=SourceSlot; LineDrive:=SourceDrive; LineVolume:=SourceVolume;
   ProcessLine(S);
   If Missing Then Error('Continuation de donnees sans ligne suivante');
   If TooLong Then Error('Liste de donnees ou ligne source trop longue');
@@ -2241,6 +2247,7 @@ Begin
    CallerLine:=FileLine; CallerScope:=CurrentScope;
    Inc(IncludeLevel); ProcessSourceFile(NextName,Depth+1); Dec(IncludeLevel);
    CurrentSource:=Name; FileLine:=CallerLine; InMacroSource:=Frame<>Nil;
+   SourceSlot:=LineSlot; SourceDrive:=LineDrive; SourceVolume:=LineVolume;
    If IsMacroCall Then CurrentScope:=CallerScope;
    ListingHeaderDirty:=True;
    If (Pass=2) And UseListing Then ListingRow('REPRISE: '+Name+' ligne '+DecimalText(FileLine+1,0,' '));
@@ -2458,6 +2465,14 @@ Procedure Help;Begin
  WriteLn('Par defaut: instructions et directives reconnues meme en colonne 1.');
  WriteLn('Etiquettes: nom OP ... en colonne 1, ou nom: [OP ...] avec retrait libre.');
  WriteLn('/STRICT: format a colonnes, etiquette en colonne 1, operation indentee.');
+ WriteLn('         Expressions 16 bits de gauche a droite; ^ AND, ! XOR, | OR.');
+ WriteLn('         References avant en absolu; NOGEN par defaut; ORG requis.');
+ WriteLn('         INCLUDE imbrique interdit; ORG absolus en fichiers distincts.');
+ WriteLn('/MULTIOBJ: sorties ORG historiques avec analyse source moderne (aussi ASM).');
+ WriteLn(' Dernier caractere du nom objet: cycle 0..9,A..Z; limite de 36 fichiers.');
+ WriteLn(' ORG relatif: troncature arriere ou remplissage avant par zeros.');
+ WriteLn('/DRIVE:s,d,v=repertoire Monte un repertoire hote comme lecteur source.');
+ WriteLn(' CHN fichier[,slot[,drive[,volume]]] accepte aussi S6,D1,V254.');
  WriteLn('         Les deux-points ne sont pas admis; une etiquette peut etre seule.');
  WriteLn('/MODERN: reactive la reconnaissance automatique (mode par defaut).');
  WriteLn;
@@ -2505,6 +2520,7 @@ Procedure Help;Begin
  WriteLn('TITL texte / TITLE   Change le titre de page (source par defaut).');
  WriteLn('CHR caractere        Choisit le caractere imprime par REP.');
  WriteLn('REP nombre           Imprime ce nombre de caracteres dans le listing.');
+ WriteLn('                     Seul l''octet faible compte; zero signifie 256.');
  WriteLn('DDB valeur,...       Ecrit des mots en ordre octet fort, octet faible.');
  WriteLn('DCL valeur,...       Ecrit des valeurs 32 bits, octet faible d''abord.');
  WriteLn('DS taille[,octet]    Reserve et remplit une zone (zero par defaut).');

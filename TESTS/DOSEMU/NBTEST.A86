@@ -1,0 +1,117 @@
+; NBTEST.A86
+; ============================================================
+; Verifie la pile NetBIOS (INT 5Ch) de l'emulateur DOS : ADD NAME,
+; SEND DATAGRAM puis RECEIVE DATAGRAM vers/depuis SOI-MEME (modele
+; "boucle locale" documente dans DEVENV.PAS - voir TEmuNetBiosState).
+;
+; Comme SEND DATAGRAM met le datagramme en FILE D'ATTENTE quand
+; aucune RECEIVE DATAGRAM n'est deja en attente (voir Emu_NbCmdSendDg/
+; Emu_NbQueuePush dans DEVENV.PAS), l'ordre SEND puis RECEIVE (plutot
+; que l'inverse) evite tout etat "PENDING" asynchrone : chaque appel
+; INT 5Ch rend la main immediatement avec un resultat definitif,
+; aucune routine de rappel (NCB_POST) n'est necessaire ici.
+;
+; A cocher avant de lancer : Options > Emulateur > DOS: Logiciel >
+; "NetBIOS (INT 5Ch)".
+;
+; Assembler : ASM86.exe NBTEST.A86 NBTEST /B /C
+;             puis renommer NBTEST.BIN en NBTEST.COM.
+;
+; Codes de sortie (AL au moment de INT 21h/AH=4Ch) :
+;   0 = succes complet (ADD NAME + SEND DG + RECEIVE DG + contenu verifie)
+;   1 = ADD NAME a echoue (ncb_retcode <> 0)
+;   2 = SEND DATAGRAM a echoue
+;   3 = RECEIVE DATAGRAM a echoue (ou jamais recu - verifier la case
+;       "NetBIOS" dans Options > Emulateur : DOS > Logiciel)
+;   4 = longueur recue <> 4 octets (le datagramme envoye fait 4 octets)
+;   5 = contenu recu different de "NBOK" (corruption de donnees)
+; ============================================================
+
+JMP START
+
+; --- NCB (Network Control Block), 64 octets - disposition exacte       ---
+; --- verifiee contre TEmuNbNcbFields (DEVENV.PAS) : Command/RetCode/   ---
+; --- Lsn/Num/BufOfs/BufSeg/Length/CallName(16)/Name(16)/Rto/Sto/       ---
+; --- PostOfs/PostSeg/LanaNum/CmdCplt/Reserve(14). Name/CallName pre-   ---
+; --- remplis une fois pour toutes (meme nom des 2 cotes : on s'envoie  ---
+; --- un datagramme a nous-memes) ; le reste reste a zero, patche a     ---
+; --- l'execution champ par champ via [BX+decalage].
+DB 0,0,0,0
+DB 0,0
+DB 0,0
+DB 0,0
+DB 'NBTEST          '
+DB 'NBTEST          '
+DB 0,0
+DB 0,0
+DB 0,0
+DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+SENDBUF:
+DB 'NBOK'
+RECVBUF:
+DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+START:
+MOV AX,CS
+MOV DS,AX
+MOV ES,AX
+MOV BX,$100+3
+
+MOV BYTE [BX+0],$30
+INT $5C
+CMP BYTE [BX+1],0
+JNE FAIL1
+
+MOV BYTE [BX+0],$20
+MOV WORD [BX+4],$100+3+64
+MOV [BX+6],AX
+MOV WORD [BX+8],4
+INT $5C
+CMP BYTE [BX+1],0
+JNE FAIL2
+
+MOV BYTE [BX+0],$21
+MOV WORD [BX+4],$100+3+68
+MOV [BX+6],AX
+MOV WORD [BX+8],16
+INT $5C
+CMP BYTE [BX+1],0
+JNE FAIL3
+
+MOV CX,[BX+8]
+CMP CX,4
+JNE FAIL4
+
+MOV SI,$100+3+68
+MOV AL,[SI]
+CMP AL,78
+JNE FAIL5
+MOV AL,[SI+1]
+CMP AL,66
+JNE FAIL5
+MOV AL,[SI+2]
+CMP AL,79
+JNE FAIL5
+MOV AL,[SI+3]
+CMP AL,75
+JNE FAIL5
+
+MOV AL,0
+JMP THEEND
+FAIL1:
+MOV AL,1
+JMP THEEND
+FAIL2:
+MOV AL,2
+JMP THEEND
+FAIL3:
+MOV AL,3
+JMP THEEND
+FAIL4:
+MOV AL,4
+JMP THEEND
+FAIL5:
+MOV AL,5
+THEEND:
+MOV AH,$4C
+INT 21h

@@ -1278,6 +1278,64 @@ Function Mdbc_inet_addr(cp: PChar): LongWord;
 Function Mdbc_gethostbyname(Name: PChar): PMdbcHostEnt;
          StdCall; External 'ws2_32.dll' Name 'gethostbyname';
 
+{ WATTCP (2026-10-10, demande explicite - voir project_devenv_wattcp.md) : }
+{ liaisons Winsock SUPPLEMENTAIRES par rapport a MdbcConnectSocket (qui     }
+{ fait un connect() BLOQUANT, inacceptable ici puisque la passerelle NAT    }
+{ tourne a l interieur de la boucle d emulation CPU mono-thread - voir      }
+{ Wtcp_OpenNonBlocking) - ioctlsocket (mode non bloquant), select (detection}
+{ de fin de connect() non bloquant) et WSAGetLastError (distinguer "rien    }
+{ pour l instant" de "vraie erreur" sur un recv()/connect() non bloquant). }
+{ TWtcpFdSet est volontairement limite a 1 descripteur (fd_count=1) : la    }
+{ passerelle n appelle jamais select() que pour une SEULE socket a la fois. }
+Type
+ TWtcpFdSet = Record
+  fd_count : LongWord;
+  fd_array : LongInt;    { un seul descripteur - voir le commentaire ci-dessus }
+ End;
+ TWtcpTimeVal = Record
+  tv_sec  : LongInt;
+  tv_usec : LongInt;
+ End;
+Function Wtcp_ioctlsocket(s: LongInt; cmd: LongInt; Var argp: LongWord): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'ioctlsocket';
+Function Wtcp_select(nfds: LongInt; readfds, writefds, exceptfds: Pointer;
+ timeout: Pointer): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'select';
+Function Wtcp_WSAGetLastError: LongInt;
+         StdCall; External 'ws2_32.dll' Name 'WSAGetLastError';
+Function Wtcp_shutdown(s: LongInt; how: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'shutdown';
+
+{ ICMP (ping) - API Win32 historique utilisee par la plupart des           }
+{ composants ping Delphi/Pascal (ICMP.DLL, disponible depuis Windows 95,    }
+{ encore presente et fonctionnelle sur les versions recentes). Synchrone    }
+{ (voir disclosure pres de TWatTcpConn) : IcmpSendEcho bloque jusqu a        }
+{ reponse ou expiration du delai (Wtcp_IcmpSendEcho's Timeout, en ms). }
+Type
+ TWtcpIcmpEchoReply = Packed Record
+  Address       : LongWord;
+  Status        : LongWord;
+  RoundTripTime : LongWord;
+  DataSize      : Word;
+  Reserved      : Word;
+  DataPtr       : LongWord;
+  OptTTL        : Byte;
+  OptTos        : Byte;
+  OptFlags      : Byte;
+  OptOptSize    : Byte;
+  OptDataPtr    : LongWord;
+  Data          : Array[0..63] Of Byte; { marge de donnees de reponse }
+ End;
+Function Wtcp_IcmpCreateFile: LongInt;
+         StdCall; External 'icmp.dll' Name 'IcmpCreateFile';
+Function Wtcp_IcmpCloseHandle(IcmpHandle: LongInt): LongBool;
+         StdCall; External 'icmp.dll' Name 'IcmpCloseHandle';
+Function Wtcp_IcmpSendEcho(IcmpHandle: LongInt; DestinationAddress: LongWord;
+ RequestData: Pointer; RequestSize: Word; RequestOptions: Pointer;
+ Var ReplyBuffer: TWtcpIcmpEchoReply; ReplySize: LongWord;
+ Timeout: LongWord): LongWord;
+         StdCall; External 'icmp.dll' Name 'IcmpSendEcho';
+
 { IPCONFIG (2026-10-04, demande explicite - voir                           }
 { C:\SOURCE\GITHUB\NETWORKKIT-P\IPCONFIG.PAS) : contrairement a la          }
 { reference (un seul gethostbyname, pas de masque/passerelle reels, MAC     }
@@ -5102,6 +5160,70 @@ Type
   AsSendResult     : Word;
  End;
 
+ { --- WATTCP (Options > Emulateur > DOS: Logiciel > "WATTCP") - PASSERELLE }
+ { NAT REELLE au-dessus du pilote de paquets ci-dessus (demande explicite   }
+ { de l utilisateur, 2026-10-10 : "Implementer un WATTCP (TCP/IP) dans     }
+ { l emulateur DOS"). Contrairement a IPX/NetBIOS/Packet Driver ci-dessus   }
+ { (modele "boucle locale", AUCUNE machine reelle sur le fil), WATTCP est   }
+ { DELIBEREMENT different : c est la PREMIERE fois que la couche pilote de  }
+ { paquets est reliee a une vraie sortie reseau (choix explicite de         }
+ { l utilisateur, l alternative "boucle locale seule" ayant ete ecartee).   }
+ { Un programme DOS reel lie a la vraie bibliotheque WatTCP (Waterloo TCP)  }
+ { implemente LUI-MEME tout le code IP/TCP/UDP/ARP/ICMP - cet emulateur n a }
+ { donc PAS besoin de reimplementer WatTCP, seulement de faire en sorte que }
+ { les trames Ethernet que cette bibliotheque envoie via INT 60h (send_pkt) }
+ { recoivent de VRAIES reponses credibles, exactement comme le ferait une   }
+ { vraie carte reseau + un vrai routeur NAT. Modele retenu : une PASSERELLE  }
+ { synthetique (MAC/IP fixes ci-dessous) repond aux requetes ARP visant sa   }
+ { propre IP (WatTCP route systematiquement tout trafic hors sous-reseau    }
+ { vers la passerelle configuree dans WATTCP.CFG - voir WTcp_HandleOutbound }
+ { Frame) ; chaque paquet IP adresse a la MAC de cette passerelle est alors  }
+ { traduit en operation Winsock REELLE sur la machine hote (table de        }
+ { translation NAT : WatTcpConns pour TCP, WatTcpUdps pour UDP) et toute     }
+ { reponse/donnee reelle recue de l hote est re-emballee en trame Ethernet   }
+ { et livree a l invite via Emu_PktDeliverToHandle (reutilise tel quel,      }
+ { aucune duplication du mecanisme d upcall deja ecrit ci-dessus). Portee    }
+ { assumee et disclosee (voir Wtcp_PumpTcp/Wtcp_PumpUdp pour le detail) :    }
+ { pas de fragmentation IP, pas d options IP/TCP, pas de retransmission      }
+ { active de notre cote (on laisse WatTCP lui-meme retransmettre si une      }
+ { trame est perdue, exactement comme sur un vrai reseau), ICMP echo        }
+ { (ping) synchrone via IcmpSendEcho (bloque brievement le thread unique de  }
+ { l emulateur - compromis assume, meme famille que les appels Winsock      }
+ { bloquants deja presents pour Mongo/Redis/Oracle). }
+ Const
+  WTCP_MAX_CONN = 16; { connexions TCP NAT simultanees }
+  WTCP_MAX_UDP  = 16; { associations UDP NAT simultanees }
+  WTCP_ST_CONNECTING  = 1; { connect() hote non bloquant en cours }
+  WTCP_ST_ESTABLISHED = 2;
+  WTCP_ST_FINWAIT     = 3; { notre FIN envoye, attente ACK/FIN invite }
+ Type
+  TWatTcpConn = Record
+   InUse        : Boolean;
+   Sock         : LongInt;
+   State        : Byte;
+   GuestPort    : Word;
+   GuestIP      : LongWord; { IP source declaree par l invite lui-meme (son   }
+                             { propre WATTCP.CFG my_ip) - jamais supposee,     }
+                             { toujours capturee depuis le SYN entrant. }
+   DestIP       : LongWord; { "ordre reseau tel quel" (compatible Winsock     }
+                             { sin_addr), voir Wtcp_GetIP/Wtcp_PutIP. }
+   DestPort     : Word;
+   GuestISN     : LongWord; { ISN choisi par l invite (SYN initial) }
+   GuestNextSeq : LongWord; { prochain octet attendu de l invite = notre ACK }
+   OurISN       : LongWord;
+   OurNextSeq   : LongWord; { prochain octet que nous enverrons = notre Seq }
+   LastActivity : LongInt;  { EmuTickCounter, pour expiration des connexions mortes }
+  End;
+  TWatTcpUdp = Record
+   InUse        : Boolean;
+   Sock         : LongInt;
+   GuestPort    : Word;
+   GuestIP      : LongWord;
+   DestIP       : LongWord;
+   DestPort     : Word;
+   LastActivity : LongInt;
+  End;
+
  { --- NetBIOS (Options > Emulateur > DOS: Logiciel > "NetBIOS") - INT 5Ch, }
  { IBM/Sytek NetBIOS 3.0 (1984). Structure NCB (Network Control Block) et   }
  { codes de commande/retour verifies contre nb30.h (Microsoft, portage      }
@@ -6765,6 +6887,7 @@ Type
   DosLAN          : Boolean;     { reseau LAN generique           }
   DosLANVendor    : Integer;     { fabricant/produit du pilote LAN}
   DosNetBios      : Boolean;     { pile NetBIOS (INT 5Ch)         }
+  DosWatTcp       : Boolean;     { WATTCP - reseau REEL via NAT (INT 60h) }
   DosAssign       : Boolean;     { ASSIGN (INT 2Fh AH=06h)        }
   DosLogInt21     : Boolean;     { journal EMU21.LOG (chaque INT) }
   DosLogDiag      : Boolean;     { journal EMUDIAG.LOG (diagnostics ponctuels) }
@@ -9057,6 +9180,13 @@ Var
  EmuIpx         : TEmuIpxState;
  { --- Etat du pilote de paquets generique (INT 60h) --- }
  EmuPkt         : TEmuPktState;
+ { --- Etat de la passerelle NAT WATTCP (reseau REEL, voir TWatTcpConn) --- }
+ EmuWatTcpActive  : Boolean;
+ EmuWatTcpWsReady : Boolean;
+ EmuWatTcpGwIP    : LongWord;
+ EmuWatTcpGwMAC   : Array[0..5] Of Byte;
+ WatTcpConns      : Array[0..WTCP_MAX_CONN-1] Of TWatTcpConn;
+ WatTcpUdps       : Array[0..WTCP_MAX_UDP-1]  Of TWatTcpUdp;
  { --- Etat de la pile NetBIOS (INT 5Ch) --- }
  EmuNetBios     : TEmuNetBiosState;
  { --- Etat du pilote XMS (INT 2Fh AX=4300h/4310h) --- }
@@ -196307,6 +196437,595 @@ Begin
  EmuPkt.Handles[Slot].InUse := False;
 End;
 
+{ ============================================================================ }
+{ WATTCP - passerelle NAT reelle au-dessus du pilote de paquets ci-dessus      }
+{ (voir le commentaire de TWatTcpConn pour l'architecture et la portee        }
+{ assumee). Petits convertisseurs d'abord : Wtcp_Get/Put16/32 manipulent des   }
+{ entiers "ordre reseau" (gros-boutiste, comme sur le fil - numeros de        }
+{ sequence TCP, longueurs...) ; Wtcp_GetIP/PutIP manipulent specifiquement    }
+{ des adresses IP dans la representation Winsock (compatible sin_addr/       }
+{ inet_addr - l octet de poids FAIBLE du LongWord correspond au PREMIER       }
+{ octet transmis, l inverse de Put32/Get32 ci-dessus) - ne jamais les         }
+{ confondre. }
+{ ============================================================================ }
+
+Procedure Wtcp_Put16(Var F: TIpxBuf; Ofs: Word; V: Word);
+Begin F[Ofs] := Byte(V Shr 8); F[Ofs+1] := Byte(V); End;
+
+Procedure Wtcp_Put32(Var F: TIpxBuf; Ofs: Word; V: LongWord);
+Begin
+ F[Ofs]   := Byte(V Shr 24); F[Ofs+1] := Byte(V Shr 16);
+ F[Ofs+2] := Byte(V Shr 8);  F[Ofs+3] := Byte(V);
+End;
+
+Function Wtcp_Get16(Var F: TIpxBuf; Ofs: Word): Word;
+Begin Wtcp_Get16 := (Word(F[Ofs]) Shl 8) Or F[Ofs+1]; End;
+
+Function Wtcp_Get32(Var F: TIpxBuf; Ofs: Word): LongWord;
+Begin
+ Wtcp_Get32 := (LongWord(F[Ofs]) Shl 24) Or (LongWord(F[Ofs+1]) Shl 16) Or
+  (LongWord(F[Ofs+2]) Shl 8) Or LongWord(F[Ofs+3]);
+End;
+
+Function Wtcp_GetIP(Var F: TIpxBuf; Ofs: Word): LongWord;
+Begin
+ Wtcp_GetIP := LongWord(F[Ofs]) Or (LongWord(F[Ofs+1]) Shl 8) Or
+  (LongWord(F[Ofs+2]) Shl 16) Or (LongWord(F[Ofs+3]) Shl 24);
+End;
+
+Procedure Wtcp_PutIP(Var F: TIpxBuf; Ofs: Word; IP: LongWord);
+Begin
+ F[Ofs]   := Byte(IP);        F[Ofs+1] := Byte(IP Shr 8);
+ F[Ofs+2] := Byte(IP Shr 16); F[Ofs+3] := Byte(IP Shr 24);
+End;
+
+Function Wtcp_IPFromOctets(A, B, C, D: Byte): LongWord;
+Begin
+ Wtcp_IPFromOctets := LongWord(A) Or (LongWord(B) Shl 8) Or
+  (LongWord(C) Shl 16) Or (LongWord(D) Shl 24);
+End;
+
+Procedure Wtcp_PutEth(Var F: TIpxBuf; Const DstMAC, SrcMAC: Array Of Byte;
+ EthType: Word);
+Var I: Integer;
+Begin
+ For I := 0 To 5 Do F[I] := DstMAC[I];
+ For I := 0 To 5 Do F[6+I] := SrcMAC[I];
+ Wtcp_Put16(F, 12, EthType);
+End;
+
+{ Somme en complement a un (RFC 1071), fold final et negation au tout      }
+{ dernier moment par l appelant (checksum IP) ou via Wtcp_CkFold (TCP/UDP). }
+Function Wtcp_CkAdd(Sum: LongWord; Var F: TIpxBuf; Ofs, Len: Word): LongWord;
+Var I: Word;
+Begin
+ I := 0;
+ While I + 1 < Len Do Begin
+  Sum := Sum + ((LongWord(F[Ofs+I]) Shl 8) Or F[Ofs+I+1]);
+  Inc(I, 2);
+ End;
+ If I < Len Then Sum := Sum + (LongWord(F[Ofs+I]) Shl 8);
+ Wtcp_CkAdd := Sum;
+End;
+
+Function Wtcp_CkFold(Sum: LongWord): Word;
+Begin
+ While (Sum Shr 16) <> 0 Do Sum := (Sum And $FFFF) + (Sum Shr 16);
+ Wtcp_CkFold := Not Word(Sum);
+End;
+
+Procedure Wtcp_FixIpChecksum(Var F: TIpxBuf; IpOfs: Word);
+Begin
+ Wtcp_Put16(F, IpOfs+10, 0);
+ Wtcp_Put16(F, IpOfs+10, Wtcp_CkFold(Wtcp_CkAdd(0, F, IpOfs, 20)));
+End;
+
+{ Pseudo-en-tete TCP/UDP (RFC 793/768) : IP source+dest (4+4), zero+        }
+{ protocole (1 octet decale en poids fort d un mot de 16 bits - voir Sum := }
+{ Sum+Proto, equivalent a (0 Shl 8) Or Proto), longueur TCP/UDP (2) - puis   }
+{ le segment lui-meme (en-tete+donnees, checksum deja mis a zero par        }
+{ l appelant avant d appeler cette fonction). }
+Function Wtcp_TcpUdpChecksum(SrcIP, DstIP: LongWord; Proto: Byte;
+ Var F: TIpxBuf; SegOfs, SegLen: Word): Word;
+Var Sum: LongWord;
+Begin
+ Sum := 0;
+ Sum := Sum + ((LongWord(Byte(SrcIP)) Shl 8) Or Byte(SrcIP Shr 8));
+ Sum := Sum + ((LongWord(Byte(SrcIP Shr 16)) Shl 8) Or Byte(SrcIP Shr 24));
+ Sum := Sum + ((LongWord(Byte(DstIP)) Shl 8) Or Byte(DstIP Shr 8));
+ Sum := Sum + ((LongWord(Byte(DstIP Shr 16)) Shl 8) Or Byte(DstIP Shr 24));
+ Sum := Sum + Proto;
+ Sum := Sum + SegLen;
+ Sum := Wtcp_CkAdd(Sum, F, SegOfs, SegLen);
+ Wtcp_TcpUdpChecksum := Wtcp_CkFold(Sum);
+End;
+
+{ Livre une trame synthetisee (reponse ARP/ICMP/TCP/UDP) a l invite en       }
+{ reutilisant TEL QUEL le mecanisme d upcall de reception du pilote de       }
+{ paquets (Emu_PktMatchType/Emu_PktDeliverToHandle, deja ecrits plus haut     }
+{ pour la boucle locale IPX-like) - voir le commentaire de TWatTcpConn :      }
+{ c est le seul endroit ou WATTCP touche a l infrastructure existante. }
+Procedure Wtcp_DeliverFrame(Var P: TEmulatorPanel; Var F: TIpxBuf; Len: Word);
+Var I: Integer;
+Begin
+ For I := 0 To High(EmuPkt.Handles) Do
+  If EmuPkt.Handles[I].InUse And Emu_PktMatchType(EmuPkt.Handles[I], F, Len) Then
+   Emu_PktDeliverToHandle(P, I, F, Len);
+End;
+
+{ --- ARP : ne repond QUE pour notre propre IP de passerelle (WatTCP route   }
+{ systematiquement tout trafic hors sous-reseau via la passerelle declaree   }
+{ dans WATTCP.CFG - jamais d ARP direct vers la cible reelle, voir le        }
+{ commentaire de TWatTcpConn). }
+Procedure Wtcp_HandleArp(Var P: TEmulatorPanel; Var F: TIpxBuf; Len: Word);
+Var Reply: TIpxBuf; SenderMAC: Array[0..5] Of Byte; SenderIP, TargetIP: LongWord;
+ I: Integer;
+Begin
+ If Len < 42 Then Exit; { 14 (Ethernet) + 28 (ARP IPv4/Ethernet) }
+ If Wtcp_Get16(F, 20) <> 1 Then Exit; { opcode doit etre "request" }
+ TargetIP := Wtcp_GetIP(F, 38);
+ If TargetIP <> EmuWatTcpGwIP Then Exit;
+ For I := 0 To 5 Do SenderMAC[I] := F[22+I];
+ SenderIP := Wtcp_GetIP(F, 28);
+
+ FillChar(Reply, SizeOf(Reply), 0);
+ Wtcp_PutEth(Reply, SenderMAC, EmuWatTcpGwMAC, $0806);
+ Wtcp_Put16(Reply, 14, 1);      { hw type = Ethernet }
+ Wtcp_Put16(Reply, 16, $0800);  { proto type = IP }
+ Reply[18] := 6; Reply[19] := 4;
+ Wtcp_Put16(Reply, 20, 2);      { opcode = reply }
+ For I := 0 To 5 Do Reply[22+I] := EmuWatTcpGwMAC[I];
+ Wtcp_PutIP(Reply, 28, EmuWatTcpGwIP);
+ For I := 0 To 5 Do Reply[32+I] := SenderMAC[I];
+ Wtcp_PutIP(Reply, 38, SenderIP);
+ Wtcp_DeliverFrame(P, Reply, 42);
+End;
+
+{ --- ICMP (ping) : synchrone via IcmpSendEcho (voir disclosure de portee    }
+{ pres de TWatTcpConn) - pas de table NAT necessaire, une requete = une      }
+{ reponse immediate. }
+Procedure Wtcp_HandleIcmp(Var P: TEmulatorPanel; Var F: TIpxBuf; Len: Word;
+ IpOfs, IcmpOfs, IcmpLen: Word; SrcIP, DstIP: LongWord);
+Var
+ Reply: TIpxBuf;
+ IcmpHandle: LongInt;
+ EchoReply: TWtcpIcmpEchoReply;
+ ReqData: Array[0..511] Of Byte;
+ ReqSize: Word;
+ RC: LongWord;
+ I: Integer;
+ Ident, Seq: Word;
+Begin
+ If IcmpLen < 8 Then Exit;
+ If F[IcmpOfs] <> 8 Then Exit; { seulement ECHO REQUEST (type 8) }
+ Ident := Wtcp_Get16(F, IcmpOfs+4);
+ Seq   := Wtcp_Get16(F, IcmpOfs+6);
+ ReqSize := IcmpLen - 8;
+ If ReqSize > SizeOf(ReqData) Then ReqSize := SizeOf(ReqData);
+ For I := 0 To Integer(ReqSize) - 1 Do ReqData[I] := F[IcmpOfs+8+I];
+
+ IcmpHandle := Wtcp_IcmpCreateFile;
+ If IcmpHandle = LongInt(LongWord($FFFFFFFF)) Then Exit;
+ FillChar(EchoReply, SizeOf(EchoReply), 0);
+ RC := Wtcp_IcmpSendEcho(IcmpHandle, DstIP, @ReqData, ReqSize, Nil,
+  EchoReply, SizeOf(EchoReply), 1500);
+ Wtcp_IcmpCloseHandle(IcmpHandle);
+ If RC = 0 Then Exit; { echec/delai - WatTCP retransmettra ou signalera lui-meme }
+
+ FillChar(Reply, SizeOf(Reply), 0);
+ Wtcp_PutEth(Reply, EmuPkt.LocalMAC, EmuWatTcpGwMAC, $0800);
+ Reply[14] := $45; Reply[15] := 0;
+ Wtcp_Put16(Reply, 16, 20 + 8 + ReqSize);
+ Wtcp_Put16(Reply, 18, Wtcp_Get16(F, IpOfs+4)); { reprendre l identification }
+ Wtcp_Put16(Reply, 20, 0);
+ Reply[22] := 64; Reply[23] := 1; { TTL, protocole ICMP }
+ Wtcp_PutIP(Reply, 26, DstIP); { source apparente = l hote distant qui a repondu }
+ Wtcp_PutIP(Reply, 30, SrcIP); { destination = l invite (son IP WATTCP.CFG) }
+ Wtcp_FixIpChecksum(Reply, 14);
+
+ Reply[34] := 0; Reply[35] := 0; { type=0 (echo reply), code=0 }
+ Wtcp_Put16(Reply, 38, Ident);
+ Wtcp_Put16(Reply, 40, Seq);
+ For I := 0 To Integer(ReqSize) - 1 Do Reply[42+I] := ReqData[I];
+ Wtcp_Put16(Reply, 36, Wtcp_CkFold(Wtcp_CkAdd(0, Reply, 34, 8 + ReqSize)));
+
+ Wtcp_DeliverFrame(P, Reply, 14 + 20 + 8 + ReqSize);
+End;
+
+{ --- UDP : une association NAT par port local invite (voir TWatTcpUdp) --- }
+Function Wtcp_FindUdpByPort(GuestPort: Word): Integer;
+Var I: Integer;
+Begin
+ Wtcp_FindUdpByPort := -1;
+ For I := 0 To WTCP_MAX_UDP - 1 Do
+  If WatTcpUdps[I].InUse And (WatTcpUdps[I].GuestPort = GuestPort) Then Begin
+   Wtcp_FindUdpByPort := I; Exit;
+  End;
+End;
+
+Procedure Wtcp_HandleUdp(Var P: TEmulatorPanel; Var F: TIpxBuf; Len: Word;
+ IpOfs, UdpOfs, UdpTotalLen: Word; SrcIP, DstIP: LongWord);
+Var
+ Idx, I: Integer;
+ GuestPort, DestPortW: Word;
+ PayLen: Word;
+ Addr: TMdbcSockAddrIn;
+ S: LongInt;
+ NonBlock: LongWord;
+Begin
+ If UdpTotalLen < 8 Then Exit;
+ GuestPort := Wtcp_Get16(F, UdpOfs);
+ DestPortW := Wtcp_Get16(F, UdpOfs+2);
+ PayLen := UdpTotalLen - 8;
+
+ Idx := Wtcp_FindUdpByPort(GuestPort);
+ If (Idx >= 0) And ((WatTcpUdps[Idx].DestIP <> DstIP) Or
+  (WatTcpUdps[Idx].DestPort <> DestPortW)) Then Begin
+  { Meme port local, nouvelle cible (courant en UDP - ex. une nouvelle      }
+  { requete DNS vers un autre serveur) : recreer l association. }
+  Mdbc_closesocket(WatTcpUdps[Idx].Sock);
+  WatTcpUdps[Idx].InUse := False;
+  Idx := -1;
+ End;
+
+ If Idx < 0 Then Begin
+  For I := 0 To WTCP_MAX_UDP - 1 Do
+   If Not WatTcpUdps[I].InUse Then Begin Idx := I; Break; End;
+  If Idx < 0 Then Exit; { table NAT UDP pleine }
+  If Not EmuWatTcpWsReady Then Exit;
+  S := Mdbc_socket(2, 2, 17); { AF_INET, SOCK_DGRAM, IPPROTO_UDP }
+  If S = LongInt(LongWord($FFFFFFFF)) Then Exit;
+  NonBlock := 1;
+  Wtcp_ioctlsocket(S, LongInt(LongWord($8004667E)) { FIONBIO }, NonBlock);
+  FillChar(Addr, SizeOf(Addr), 0);
+  Addr.sin_family := 2;
+  Addr.sin_port := Mdbc_htons(DestPortW);
+  Addr.sin_addr := DstIP;
+  Mdbc_connect(S, Addr, SizeOf(Addr)); { UDP : fixe juste la cible par defaut }
+  FillChar(WatTcpUdps[Idx], SizeOf(WatTcpUdps[Idx]), 0);
+  WatTcpUdps[Idx].InUse     := True;
+  WatTcpUdps[Idx].Sock      := S;
+  WatTcpUdps[Idx].GuestPort := GuestPort;
+  WatTcpUdps[Idx].GuestIP   := SrcIP;
+  WatTcpUdps[Idx].DestIP    := DstIP;
+  WatTcpUdps[Idx].DestPort  := DestPortW;
+ End;
+ WatTcpUdps[Idx].LastActivity := EmuTickCounter;
+ If PayLen > 0 Then Mdbc_send(WatTcpUdps[Idx].Sock, F[UdpOfs+8], PayLen, 0);
+End;
+
+{ --- TCP : vraie machine a etats de translation (voir TWatTcpConn) --- }
+Function Wtcp_FindConnByPort(GuestPort: Word): Integer;
+Var I: Integer;
+Begin
+ Wtcp_FindConnByPort := -1;
+ For I := 0 To WTCP_MAX_CONN - 1 Do
+  If WatTcpConns[I].InUse And (WatTcpConns[I].GuestPort = GuestPort) Then Begin
+   Wtcp_FindConnByPort := I; Exit;
+  End;
+End;
+
+{ Construit et livre un segment TCP a l invite (SYN-ACK/donnees/FIN/RST -    }
+{ Flags passe directement les bits TCP : $02 SYN, $10 ACK, $01 FIN, $04 RST, }
+{ $08 PSH). Seq/Ack repris directement de C.OurNextSeq/C.GuestNextSeq -       }
+{ c est l appelant qui fait avancer ces compteurs selon ce qui a ete envoye. }
+Procedure Wtcp_SendTcpSeg(Var P: TEmulatorPanel; Var C: TWatTcpConn; Flags: Byte;
+ Var Payload; PayLen: Word);
+Var F: TIpxBuf; TcpOfs: Word; Cks: Word;
+Begin
+ FillChar(F, SizeOf(F), 0);
+ Wtcp_PutEth(F, EmuPkt.LocalMAC, EmuWatTcpGwMAC, $0800);
+ TcpOfs := 14 + 20;
+ F[14] := $45; F[15] := 0;
+ Wtcp_Put16(F, 16, 20 + 20 + PayLen);
+ Wtcp_Put16(F, 18, Word(EmuTickCounter)); { identification - valeur quelconque }
+ Wtcp_Put16(F, 20, $4000); { DF, pas de fragmentation (voir disclosure de portee) }
+ F[22] := 64; F[23] := 6; { TTL, protocole TCP }
+ Wtcp_PutIP(F, 26, C.DestIP);   { source apparente = le vrai serveur distant }
+ Wtcp_PutIP(F, 30, C.GuestIP);  { destination = l invite (son IP WATTCP.CFG) }
+ Wtcp_FixIpChecksum(F, 14);
+
+ Wtcp_Put16(F, TcpOfs,    C.DestPort);
+ Wtcp_Put16(F, TcpOfs+2,  C.GuestPort);
+ Wtcp_Put32(F, TcpOfs+4,  C.OurNextSeq);
+ Wtcp_Put32(F, TcpOfs+8,  C.GuestNextSeq);
+ F[TcpOfs+12] := $50; { data offset = 5 (20 octets), pas d options }
+ F[TcpOfs+13] := Flags;
+ Wtcp_Put16(F, TcpOfs+14, 8192); { fenetre annoncee }
+ Wtcp_Put16(F, TcpOfs+16, 0);
+ Wtcp_Put16(F, TcpOfs+18, 0);
+ If PayLen > 0 Then Move(Payload, F[TcpOfs+20], PayLen);
+
+ Cks := Wtcp_TcpUdpChecksum(C.DestIP, C.GuestIP, 6, F, TcpOfs, 20 + PayLen);
+ Wtcp_Put16(F, TcpOfs+16, Cks);
+
+ Wtcp_DeliverFrame(P, F, 14 + 20 + 20 + PayLen);
+End;
+
+Procedure Wtcp_HandleTcp(Var P: TEmulatorPanel; Var F: TIpxBuf; Len: Word;
+ IpOfs, IpHdrLen, TcpOfs, TcpTotalLen: Word; SrcIP, DstIP: LongWord);
+Var
+ Idx, I: Integer;
+ GuestPort, DestPortW: Word;
+ DataOfsBytes: Word;
+ Flags: Byte;
+ SeqNum: LongWord;
+ PayLen: Word;
+ Addr: TMdbcSockAddrIn;
+ S: LongInt;
+ NonBlock: LongWord;
+ Dummy: Byte;
+Begin
+ If TcpTotalLen < 20 Then Exit;
+ GuestPort := Wtcp_Get16(F, TcpOfs);
+ DestPortW := Wtcp_Get16(F, TcpOfs+2);
+ SeqNum    := Wtcp_Get32(F, TcpOfs+4);
+ DataOfsBytes := Word(F[TcpOfs+12] Shr 4) * 4;
+ Flags     := F[TcpOfs+13];
+ If DataOfsBytes < 20 Then DataOfsBytes := 20;
+ If TcpTotalLen > DataOfsBytes Then PayLen := TcpTotalLen - DataOfsBytes
+ Else PayLen := 0;
+
+ Idx := Wtcp_FindConnByPort(GuestPort);
+
+ If (Flags And $04) <> 0 Then Begin { RST invite : fermer immediatement }
+  If Idx >= 0 Then Begin
+   Mdbc_closesocket(WatTcpConns[Idx].Sock);
+   WatTcpConns[Idx].InUse := False;
+  End;
+  Exit;
+ End;
+
+ If ((Flags And $02) <> 0) And ((Flags And $10) = 0) Then Begin { SYN }
+  If Idx < 0 Then Begin
+   For I := 0 To WTCP_MAX_CONN - 1 Do
+    If Not WatTcpConns[I].InUse Then Begin Idx := I; Break; End;
+   If (Idx < 0) Or (Not EmuWatTcpWsReady) Then Exit;
+   S := Mdbc_socket(2, 1, 6); { AF_INET, SOCK_STREAM, IPPROTO_TCP }
+   If S = LongInt(LongWord($FFFFFFFF)) Then Exit;
+   NonBlock := 1;
+   Wtcp_ioctlsocket(S, LongInt(LongWord($8004667E)) { FIONBIO }, NonBlock);
+   FillChar(Addr, SizeOf(Addr), 0);
+   Addr.sin_family := 2;
+   Addr.sin_port := Mdbc_htons(DestPortW);
+   Addr.sin_addr := DstIP;
+   Mdbc_connect(S, Addr, SizeOf(Addr)); { non bloquant : termine en arriere-plan, voir Wtcp_PumpTcp }
+   FillChar(WatTcpConns[Idx], SizeOf(WatTcpConns[Idx]), 0);
+   WatTcpConns[Idx].InUse        := True;
+   WatTcpConns[Idx].Sock         := S;
+   WatTcpConns[Idx].State        := WTCP_ST_CONNECTING;
+   WatTcpConns[Idx].GuestPort    := GuestPort;
+   WatTcpConns[Idx].GuestIP      := SrcIP;
+   WatTcpConns[Idx].DestIP       := DstIP;
+   WatTcpConns[Idx].DestPort     := DestPortW;
+   WatTcpConns[Idx].GuestISN     := SeqNum;
+   WatTcpConns[Idx].GuestNextSeq := SeqNum + 1;
+   WatTcpConns[Idx].OurISN       := LongWord(EmuTickCounter);
+   WatTcpConns[Idx].OurNextSeq   := WatTcpConns[Idx].OurISN;
+   WatTcpConns[Idx].LastActivity := EmuTickCounter;
+  End;
+  Exit; { le SYN-ACK part depuis Wtcp_PumpTcp une fois connect() reellement termine }
+ End;
+
+ If Idx < 0 Then Exit; { aucune connexion NAT connue pour ce port - ignorer }
+ WatTcpConns[Idx].LastActivity := EmuTickCounter;
+
+ If (Flags And $01) <> 0 Then Begin { FIN invite }
+  Inc(WatTcpConns[Idx].GuestNextSeq);
+  Wtcp_shutdown(WatTcpConns[Idx].Sock, 1 { SD_SEND });
+  Dummy := 0;
+  Wtcp_SendTcpSeg(P, WatTcpConns[Idx], $10 { ACK }, Dummy, 0);
+  Exit;
+ End;
+
+ If PayLen > 0 Then Begin
+  { Ne relayer que si Seq correspond exactement a ce qui est attendu - une  }
+  { retransmission invite deja traitee est juste re-acquittee, jamais      }
+  { relivree une 2e fois au vrai socket. }
+  If SeqNum = WatTcpConns[Idx].GuestNextSeq Then Begin
+   Mdbc_send(WatTcpConns[Idx].Sock, F[TcpOfs+DataOfsBytes], PayLen, 0);
+   Inc(WatTcpConns[Idx].GuestNextSeq, PayLen);
+  End;
+  Dummy := 0;
+  Wtcp_SendTcpSeg(P, WatTcpConns[Idx], $10 { ACK }, Dummy, 0);
+ End;
+End;
+
+Procedure Wtcp_HandleIP(Var P: TEmulatorPanel; Var F: TIpxBuf; Len: Word);
+Var
+ IpOfs: Word; VerIhl: Byte; IhlBytes, TotalLen: Word;
+ Proto: Byte; SrcIP, DstIP: LongWord;
+Begin
+ IpOfs := 14;
+ If Len < IpOfs + 20 Then Exit;
+ VerIhl := F[IpOfs];
+ If (VerIhl Shr 4) <> 4 Then Exit; { IPv4 uniquement }
+ IhlBytes := Word(VerIhl And $0F) * 4;
+ If IhlBytes < 20 Then Exit;
+ TotalLen := Wtcp_Get16(F, IpOfs+2);
+ If (TotalLen = 0) Or (TotalLen > Len - IpOfs) Then TotalLen := Len - IpOfs;
+ Proto := F[IpOfs+9];
+ SrcIP := Wtcp_GetIP(F, IpOfs+12);
+ DstIP := Wtcp_GetIP(F, IpOfs+16);
+ Case Proto Of
+  1:  Wtcp_HandleIcmp(P, F, Len, IpOfs, IpOfs+IhlBytes, TotalLen-IhlBytes, SrcIP, DstIP);
+  6:  Wtcp_HandleTcp(P, F, Len, IpOfs, IhlBytes, IpOfs+IhlBytes, TotalLen-IhlBytes, SrcIP, DstIP);
+  17: Wtcp_HandleUdp(P, F, Len, IpOfs, IpOfs+IhlBytes, TotalLen-IhlBytes, SrcIP, DstIP);
+ End;
+End;
+
+{ --- Point d entree unique pour toute trame sortante de l invite (appele    }
+{ depuis Emu_Pkt_SendPacket/Emu_Pkt_AsSendPacket, EN PLUS de la livraison    }
+{ "boucle locale" existante - les deux coexistent sans conflit). --- }
+Procedure Wtcp_HandleOutboundFrame(Var P: TEmulatorPanel; Var F: TIpxBuf; Len: Word);
+Var EthType: Word; I: Integer; IsOurs: Boolean;
+Begin
+ If Not EmuWatTcpActive Then Exit;
+ If Len < 14 Then Exit;
+ EthType := Wtcp_Get16(F, 12);
+ If EthType = $0806 Then Begin Wtcp_HandleArp(P, F, Len); Exit; End;
+ If EthType <> $0800 Then Exit;
+ IsOurs := True;
+ For I := 0 To 5 Do If F[I] <> EmuWatTcpGwMAC[I] Then Begin IsOurs := False; Break; End;
+ If Not IsOurs Then Exit; { pas adresse a notre passerelle - rien a router }
+ Wtcp_HandleIP(P, F, Len);
+End;
+
+{ --- Pompe periodique (appelee depuis Emu_TimerTick, ~18.2 Hz) : sockets    }
+{ hote non bloquants, donc AUCUN appel Winsock ici ne peut jamais bloquer    }
+{ la boucle d emulation CPU mono-thread - voir le commentaire de TWatTcpConn.}
+Procedure Wtcp_PumpTcp(Var P: TEmulatorPanel);
+Var
+ I: Integer; Fds: TWtcpFdSet; Tv: TWtcpTimeVal; N: LongInt;
+ Buf: Array[0..511] Of Byte; RC: LongInt; Err: LongInt;
+Begin
+ For I := 0 To WTCP_MAX_CONN - 1 Do
+  If WatTcpConns[I].InUse Then Begin
+
+   If WatTcpConns[I].State = WTCP_ST_CONNECTING Then Begin
+    Tv.tv_sec := 0; Tv.tv_usec := 0;
+    Fds.fd_count := 1; Fds.fd_array := WatTcpConns[I].Sock;
+    N := Wtcp_select(0, Nil, @Fds, Nil, @Tv);
+    If N > 0 Then Begin { connect() reel termine avec succes }
+     WatTcpConns[I].State := WTCP_ST_ESTABLISHED;
+     Buf[0] := 0;
+     Wtcp_SendTcpSeg(P, WatTcpConns[I], $12 { SYN+ACK }, Buf, 0);
+     Inc(WatTcpConns[I].OurNextSeq);
+    End Else Begin
+     Tv.tv_sec := 0; Tv.tv_usec := 0;
+     Fds.fd_count := 1; Fds.fd_array := WatTcpConns[I].Sock;
+     N := Wtcp_select(0, Nil, Nil, @Fds, @Tv);
+     If N > 0 Then Begin { connect() reel a echoue }
+      Buf[0] := 0;
+      Wtcp_SendTcpSeg(P, WatTcpConns[I], $14 { RST+ACK }, Buf, 0);
+      Mdbc_closesocket(WatTcpConns[I].Sock);
+      WatTcpConns[I].InUse := False;
+     End
+     Else If (EmuTickCounter - WatTcpConns[I].LastActivity) > 18 * 15 Then Begin
+      { Delai d etablissement depasse (~15 s) - abandon silencieux. }
+      Mdbc_closesocket(WatTcpConns[I].Sock);
+      WatTcpConns[I].InUse := False;
+     End;
+    End;
+    Continue;
+   End;
+
+   If WatTcpConns[I].State = WTCP_ST_ESTABLISHED Then Begin
+    RC := Mdbc_recv(WatTcpConns[I].Sock, Buf, SizeOf(Buf), 0);
+    If RC > 0 Then Begin
+     Wtcp_SendTcpSeg(P, WatTcpConns[I], $18 { PSH+ACK }, Buf, RC);
+     Inc(WatTcpConns[I].OurNextSeq, RC);
+     WatTcpConns[I].LastActivity := EmuTickCounter;
+    End
+    Else If RC = 0 Then Begin { l hote distant a ferme proprement }
+     Buf[0] := 0;
+     Wtcp_SendTcpSeg(P, WatTcpConns[I], $11 { FIN+ACK }, Buf, 0);
+     Inc(WatTcpConns[I].OurNextSeq);
+     WatTcpConns[I].State := WTCP_ST_FINWAIT;
+    End Else Begin
+     Err := Wtcp_WSAGetLastError;
+     If Err <> 10035 { WSAEWOULDBLOCK } Then Begin
+      Buf[0] := 0;
+      Wtcp_SendTcpSeg(P, WatTcpConns[I], $14 { RST+ACK }, Buf, 0);
+      Mdbc_closesocket(WatTcpConns[I].Sock);
+      WatTcpConns[I].InUse := False;
+     End;
+    End;
+   End;
+
+   If WatTcpConns[I].InUse And
+    ((EmuTickCounter - WatTcpConns[I].LastActivity) > 18 * 300) Then Begin
+    { Expiration generale (~5 min d inactivite) - evite qu une connexion    }
+    { abandonnee par l invite (sans FIN/RST propre) sature la table NAT. }
+    Mdbc_closesocket(WatTcpConns[I].Sock);
+    WatTcpConns[I].InUse := False;
+   End;
+  End;
+End;
+
+Procedure Wtcp_PumpUdp(Var P: TEmulatorPanel);
+Var
+ I: Integer; Buf: Array[0..511] Of Byte; RC: LongInt;
+ F: TIpxBuf; UdpOfs: Word; Cks: Word;
+Begin
+ For I := 0 To WTCP_MAX_UDP - 1 Do
+  If WatTcpUdps[I].InUse Then Begin
+   RC := Mdbc_recv(WatTcpUdps[I].Sock, Buf, SizeOf(Buf), 0);
+   If RC > 0 Then Begin
+    FillChar(F, SizeOf(F), 0);
+    Wtcp_PutEth(F, EmuPkt.LocalMAC, EmuWatTcpGwMAC, $0800);
+    UdpOfs := 14 + 20;
+    F[14] := $45; F[15] := 0;
+    Wtcp_Put16(F, 16, 20 + 8 + RC);
+    Wtcp_Put16(F, 18, Word(EmuTickCounter));
+    Wtcp_Put16(F, 20, $4000);
+    F[22] := 64; F[23] := 17;
+    Wtcp_PutIP(F, 26, WatTcpUdps[I].DestIP);
+    Wtcp_PutIP(F, 30, WatTcpUdps[I].GuestIP);
+    Wtcp_FixIpChecksum(F, 14);
+
+    Wtcp_Put16(F, UdpOfs,   WatTcpUdps[I].DestPort);
+    Wtcp_Put16(F, UdpOfs+2, WatTcpUdps[I].GuestPort);
+    Wtcp_Put16(F, UdpOfs+4, 8 + RC);
+    Wtcp_Put16(F, UdpOfs+6, 0);
+    Move(Buf, F[UdpOfs+8], RC);
+    Cks := Wtcp_TcpUdpChecksum(WatTcpUdps[I].DestIP, WatTcpUdps[I].GuestIP,
+     17, F, UdpOfs, 8 + RC);
+    If Cks = 0 Then Cks := $FFFF; { 0 signifierait "pas de somme" en UDP }
+    Wtcp_Put16(F, UdpOfs+6, Cks);
+
+    Wtcp_DeliverFrame(P, F, 14 + 20 + 8 + RC);
+    WatTcpUdps[I].LastActivity := EmuTickCounter;
+   End
+   Else If (RC = LongInt(LongWord($FFFFFFFF))) And
+    (Wtcp_WSAGetLastError <> 10035) Then Begin
+    Mdbc_closesocket(WatTcpUdps[I].Sock);
+    WatTcpUdps[I].InUse := False;
+   End;
+
+   If WatTcpUdps[I].InUse And
+    ((EmuTickCounter - WatTcpUdps[I].LastActivity) > 18 * 60) Then Begin
+    Mdbc_closesocket(WatTcpUdps[I].Sock); { expiration ~60 s (ex. association DNS) }
+    WatTcpUdps[I].InUse := False;
+   End;
+  End;
+End;
+
+Procedure Wtcp_Pump(Var P: TEmulatorPanel);
+Begin
+ If Not EmuWatTcpActive Then Exit;
+ Wtcp_PumpTcp(P);
+ Wtcp_PumpUdp(P);
+End;
+
+{ Appelee depuis Emu_PktInit (voir plus bas) - WATTCP n a de sens que si le  }
+{ pilote de paquets lui-meme est actif, puisqu il en est le seul transport. }
+Procedure Emu_WatTcpInit(Var P: TEmulatorPanel);
+Var WSD: TMdbcWSAData; I: Integer;
+Begin
+ For I := 0 To WTCP_MAX_CONN - 1 Do
+  If WatTcpConns[I].InUse Then Mdbc_closesocket(WatTcpConns[I].Sock);
+ For I := 0 To WTCP_MAX_UDP - 1 Do
+  If WatTcpUdps[I].InUse Then Mdbc_closesocket(WatTcpUdps[I].Sock);
+ FillChar(WatTcpConns, SizeOf(WatTcpConns), 0);
+ FillChar(WatTcpUdps, SizeOf(WatTcpUdps), 0);
+ EmuWatTcpWsReady := False;
+ EmuWatTcpActive := OptionsDlg.Data.DosWatTcp And EmuPkt.Active;
+ If Not EmuWatTcpActive Then Exit;
+ { Passerelle synthetique : MAC "localement administree" (2e bit du 1er     }
+ { octet - comme EmuPkt.LocalMAC un peu plus haut, jamais une vraie adresse }
+ { constructeur) + IP conventionnelle 192.168.200.1 - l utilisateur doit    }
+ { configurer son WATTCP.CFG invite avec un my_ip sur ce /24 (ex.           }
+ { 192.168.200.50) et gateway=192.168.200.1 (le nameserver, lui, peut       }
+ { pointer vers un VRAI serveur DNS public comme 8.8.8.8 : WatTCP route     }
+ { tout trafic hors sous-reseau via la passerelle, qui NAT ensuite chaque    }
+ { paquet IP selon sa destination reelle, DNS y compris). }
+ EmuWatTcpGwMAC[0] := $02; EmuWatTcpGwMAC[1] := $00; EmuWatTcpGwMAC[2] := $00;
+ EmuWatTcpGwMAC[3] := $00; EmuWatTcpGwMAC[4] := $00; EmuWatTcpGwMAC[5] := $01;
+ EmuWatTcpGwIP := Wtcp_IPFromOctets(192, 168, 200, 1);
+ If Mdbc_WSAStartup($0202, WSD) = 0 Then EmuWatTcpWsReady := True;
+End;
+
 { --- AH=4 : send_pkt --- }
 Procedure Emu_Pkt_SendPacket(Var P: TEmulatorPanel);
 Var Buf: TIpxBuf; Len: Word; I: Integer;
@@ -196323,6 +197042,7 @@ Begin
    Inc(EmuPkt.Stats.PacketsIn); EmuPkt.Stats.BytesIn := EmuPkt.Stats.BytesIn + Len;
    Emu_PktDeliverToHandle(P, I, Buf, Len);
   End;
+ Wtcp_HandleOutboundFrame(P, Buf, Len); { WATTCP (si actif) - voir plus haut }
 End;
 
 { --- AH=5 : terminate --- }
@@ -196407,6 +197127,7 @@ Begin
    Inc(EmuPkt.Stats.PacketsIn); EmuPkt.Stats.BytesIn := EmuPkt.Stats.BytesIn + Len;
    Emu_PktDeliverToHandle(P, I, Buf, Len);
   End;
+ Wtcp_HandleOutboundFrame(P, Buf, Len); { WATTCP (si actif) - voir plus haut }
  { Si aucune poignee ne correspondait (donc aucune cascade demarree),     }
  { declencher l upcall de confirmation immediatement ; sinon              }
  { Emu_PktContFinishOne s en chargera automatiquement une fois la         }
@@ -196548,6 +197269,7 @@ Begin
  EmuPkt.LocalMAC[3] := $00; EmuPkt.LocalMAC[4] := $00; EmuPkt.LocalMAC[5] := $02;
  For I := 0 To High(EmuPkt.Handles) Do
   EmuPkt.Handles[I].RcvMode := 3;
+ Emu_WatTcpInit(P); { WATTCP ne depend que du MAC/vecteur ci-dessus, deja prets }
  If Not EmuPkt.Active Then Exit;
  EmuPkt.StubSeg := $F000; EmuPkt.StubOfs := $0010;
  EmuPkt.ContSeg := $F000; EmuPkt.ContOfs := $0030;
@@ -201715,6 +202437,7 @@ Begin
   Emu_Tv_ServiceSound;  { SOUND (1019h) - avance la file de notes }
   Emu_Tv_ServiceTimers; { TIMER TopView - avance les compteurs actifs }
  End;
+ Wtcp_Pump(P); { WATTCP (si actif) - sockets hote non bloquants, voir plus haut }
 End;
 
 { Verifier les IRQ en attente et tirer la plus prioritaire si IF=1. }
@@ -226031,6 +226754,7 @@ Begin
  D.DosLAN := False;
  D.DosLANVendor := 0;
  D.DosNetBios := False;
+ D.DosWatTcp := False; { reseau REEL (sortie Internet) - desactive par defaut }
  { Journaux EMU*.LOG desactives par defaut - ecriture disque a chaque INT21h}
  { (EMU21.LOG) mesurable sur les performances, reserves au diagnostic. }
  D.DosLogInt21 := False;
@@ -227289,6 +228013,8 @@ Begin
  Dropdown('Version pilote (INT 33h) :',                          { Row 5 }
   DosMouseVersionName(Dlg.Data.DosMouseVersion));
  Check(Dlg.Data.DosNetBios, 'NetBIOS (INT 5Ch)');                 { Row 6 }
+ Check(Dlg.Data.DosWatTcp,                                        { Row 7 }
+  'WATTCP (reseau REEL via NAT, INT 60h)');
 
  If Dlg.DosDropdownOpen = 6 Then
   OpenList(3, DOS_LAN_VENDOR_COUNT, Dlg.Data.DosLANVendor)
@@ -228174,6 +228900,10 @@ Begin
        5: Dlg.DosDropdownOpen := 9;  { Version pilote souris (INT 33h) }
        6: Begin
         Dlg.Data.DosNetBios := Not Dlg.Data.DosNetBios;
+        Dlg.Modified := True;
+       End;
+       7: Begin
+        Dlg.Data.DosWatTcp := Not Dlg.Data.DosWatTcp;
         Dlg.Modified := True;
        End;
       End;

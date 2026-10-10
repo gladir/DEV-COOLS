@@ -1,0 +1,123 @@
+:                         # ; PKTTEST.A86
+:                         # ; ============================================================
+:                         # ; Verifie le pilote de paquets generique (INT 60h, PC/TCP Packet
+:                         # ; Driver Specification) de l'emulateur DOS en mode "boucle locale"
+:                         # ; PUR (sans WATTCP) : ouvre une poignee PROMISCUOUS (access_type,
+:                         # ; type_len=0 = tout accepter, voir Emu_PktMatchType dans DEVENV.PAS),
+:                         # ; envoie une trame Ethernet construite a la main, et verifie qu'elle
+:                         # ; revient vers SA PROPRE poignee (send_pkt compare a TOUTES les
+:                         # ; poignees ouvertes, y compris celle de l'expediteur - voir
+:                         # ; Emu_Pkt_SendPacket) via le mecanisme d'upcall reel en 2 temps
+:                         # ; (receiver_routine, voir Emu_PktDeliverToHandle/Emu_PktCont).
+:                         # ;
+:                         # ; A cocher avant de lancer : Options > Emulateur > DOS: Logiciel >
+:                         # ; "Reseau LAN". (PAS besoin de cocher "WATTCP" pour ce test - c'est
+:                         # ; justement la boucle locale SANS sortie reseau qui est testee ici ;
+:                         # ; voir WATTCPTEST.A86 pour le test de la passerelle NAT reelle.)
+:                         # ;
+:                         # ; Assembler : ASM86.exe PKTTEST.A86 PKTTEST /B /C
+:                         # ;             puis renommer PKTTEST.BIN en PKTTEST.COM.
+:                         # ;
+:                         # ; Codes de sortie (AL au moment de INT 21h/AH=4Ch) :
+:                         # ;   0 = succes complet (access_type + get_address + send_pkt +
+:                         # ;       upcall de reception + contenu de la trame recue verifie)
+:                         # ;   1 = access_type a echoue (CF=1)
+:                         # ;   2 = get_address a echoue (CF=1)
+:                         # ;   3 = aucune trame recue apres send_pkt (l'upcall n'a jamais mis
+:                         # ;       FLAG a 1 - verifier la case "Reseau LAN")
+:                         # ;   4 = trame recue, mais le contenu du payload ("LANOK") est
+:                         # ;       incorrect (corruption pendant la cascade d'upcall)
+:                         # ; ============================================================
+:E93700                   # JMP START
+:                         # TYPEBUF:
+:00                       # DB 0
+:                         # HANDLE:
+:0000                     # DB 0,0
+:                         # FRAME_DST:
+:FFFFFFFFFFFF             # DB $FF,$FF,$FF,$FF,$FF,$FF
+:                         # FRAME_SRC:
+:000000000000             # DB 0,0,0,0,0,0
+:                         # FRAME_ETYPE:
+:1234                     # DB $12,$34
+:                         # FRAME_PAYLOAD:
+:4C414E4F4B               # DB 'LANOK'
+:                         # RECVBUF:
+:0000000000000000000000000000000000000000000000000000000000000000  # DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+:                         # FLAG:
+:00                       # DB 0
+:                         # START:
+:8CC8                     # MOV AX,CS
+:8ED8                     # MOV DS,AX
+:8EC0                     # MOV ES,AX
+:B001                     # MOV AL,1
+:B90000                   # MOV CX,0
+:BE0301                   # MOV SI,$100+3
+:BFBA01                   # MOV DI,$100+186
+:B402                     # MOV AH,2
+:CD60                     # INT $60
+:7254                     # JC FAIL1
+:A30401                   # MOV [$100+4],AX
+:89C3                     # MOV BX,AX
+:B90600                   # MOV CX,6
+:BF0C01                   # MOV DI,$100+12
+:B406                     # MOV AH,6
+:CD60                     # INT $60
+:7248                     # JC FAIL2
+:BE0601                   # MOV SI,$100+6
+:B91300                   # MOV CX,19
+:B404                     # MOV AH,4
+:CD60                     # INT $60
+:A03901                   # MOV AL,[$100+57]
+:3C01                     # CMP AL,1
+:753C                     # JNE FAIL3
+:BE2701                   # MOV SI,$100+39
+:8A04                     # MOV AL,[SI]
+:3C4C                     # CMP AL,76
+:7538                     # JNE FAIL4
+:8A4401                   # MOV AL,[SI+1]
+:3C41                     # CMP AL,65
+:7531                     # JNE FAIL4
+:8A4402                   # MOV AL,[SI+2]
+:3C4E                     # CMP AL,78
+:752A                     # JNE FAIL4
+:8A4403                   # MOV AL,[SI+3]
+:3C4F                     # CMP AL,79
+:7523                     # JNE FAIL4
+:8A4404                   # MOV AL,[SI+4]
+:3C4B                     # CMP AL,75
+:751C                     # JNE FAIL4
+:8B1E0401                 # MOV BX,[$100+4]
+:B403                     # MOV AH,3
+:CD60                     # INT $60
+:B000                     # MOV AL,0
+:E91100                   # JMP THEEND
+:                         # FAIL1:
+:B001                     # MOV AL,1
+:E90C00                   # JMP THEEND
+:                         # FAIL2:
+:B002                     # MOV AL,2
+:E90700                   # JMP THEEND
+:                         # FAIL3:
+:B003                     # MOV AL,3
+:E90200                   # JMP THEEND
+:                         # FAIL4:
+:B004                     # MOV AL,4
+:                         # THEEND:
+:B44C                     # MOV AH,$4C
+:CD21                     # INT 21h
+:                         # ; --- Routine receptrice (appelee par l'emulateur via l'upcall en 2  ---
+:                         # ; --- temps du pilote de paquets - voir Emu_PktDeliverToHandle/      ---
+:                         # ; --- Emu_PktCont dans DEVENV.PAS). AX=0 : 1er appel, l'emulateur    ---
+:                         # ; --- demande un tampon (ES:DI). AX=1 : 2e appel, la trame est deja  ---
+:                         # ; --- copiee a DS:SI (CX=longueur) - on se contente de marquer FLAG. ---
+:                         # RECEIVER:
+:3D0000                   # CMP AX,0
+:7406                     # JE RSTAGE0
+:C606390101               # MOV BYTE [$100+57],1
+:CB                       # RETF
+:                         # RSTAGE0:
+:0E                       # PUSH CS
+:07                       # POP ES
+:BF1901                   # MOV DI,$100+25
+:CB                       # RETF
+

@@ -1,0 +1,133 @@
+; PKTTEST.A86
+; ============================================================
+; Verifie le pilote de paquets generique (INT 60h, PC/TCP Packet
+; Driver Specification) de l'emulateur DOS en mode "boucle locale"
+; PUR (sans WATTCP) : ouvre une poignee PROMISCUOUS (access_type,
+; type_len=0 = tout accepter, voir Emu_PktMatchType dans DEVENV.PAS),
+; envoie une trame Ethernet construite a la main, et verifie qu'elle
+; revient vers SA PROPRE poignee (send_pkt compare a TOUTES les
+; poignees ouvertes, y compris celle de l'expediteur - voir
+; Emu_Pkt_SendPacket) via le mecanisme d'upcall reel en 2 temps
+; (receiver_routine, voir Emu_PktDeliverToHandle/Emu_PktCont).
+;
+; A cocher avant de lancer : Options > Emulateur > DOS: Logiciel >
+; "Reseau LAN". (PAS besoin de cocher "WATTCP" pour ce test - c'est
+; justement la boucle locale SANS sortie reseau qui est testee ici ;
+; voir WATTCPTEST.A86 pour le test de la passerelle NAT reelle.)
+;
+; Assembler : ASM86.exe PKTTEST.A86 PKTTEST /B /C
+;             puis renommer PKTTEST.BIN en PKTTEST.COM.
+;
+; Codes de sortie (AL au moment de INT 21h/AH=4Ch) :
+;   0 = succes complet (access_type + get_address + send_pkt +
+;       upcall de reception + contenu de la trame recue verifie)
+;   1 = access_type a echoue (CF=1)
+;   2 = get_address a echoue (CF=1)
+;   3 = aucune trame recue apres send_pkt (l'upcall n'a jamais mis
+;       FLAG a 1 - verifier la case "Reseau LAN")
+;   4 = trame recue, mais le contenu du payload ("LANOK") est
+;       incorrect (corruption pendant la cascade d'upcall)
+; ============================================================
+
+JMP START
+
+TYPEBUF:
+DB 0
+HANDLE:
+DB 0,0
+FRAME_DST:
+DB $FF,$FF,$FF,$FF,$FF,$FF
+FRAME_SRC:
+DB 0,0,0,0,0,0
+FRAME_ETYPE:
+DB $12,$34
+FRAME_PAYLOAD:
+DB 'LANOK'
+RECVBUF:
+DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+FLAG:
+DB 0
+
+START:
+MOV AX,CS
+MOV DS,AX
+MOV ES,AX
+
+MOV AL,1
+MOV CX,0
+MOV SI,$100+3
+MOV DI,$100+186
+MOV AH,2
+INT $60
+JC FAIL1
+MOV [$100+4],AX
+
+MOV BX,AX
+MOV CX,6
+MOV DI,$100+12
+MOV AH,6
+INT $60
+JC FAIL2
+
+MOV SI,$100+6
+MOV CX,19
+MOV AH,4
+INT $60
+
+MOV AL,[$100+57]
+CMP AL,1
+JNE FAIL3
+
+MOV SI,$100+39
+MOV AL,[SI]
+CMP AL,76
+JNE FAIL4
+MOV AL,[SI+1]
+CMP AL,65
+JNE FAIL4
+MOV AL,[SI+2]
+CMP AL,78
+JNE FAIL4
+MOV AL,[SI+3]
+CMP AL,79
+JNE FAIL4
+MOV AL,[SI+4]
+CMP AL,75
+JNE FAIL4
+
+MOV BX,[$100+4]
+MOV AH,3
+INT $60
+
+MOV AL,0
+JMP THEEND
+FAIL1:
+MOV AL,1
+JMP THEEND
+FAIL2:
+MOV AL,2
+JMP THEEND
+FAIL3:
+MOV AL,3
+JMP THEEND
+FAIL4:
+MOV AL,4
+THEEND:
+MOV AH,$4C
+INT 21h
+
+; --- Routine receptrice (appelee par l'emulateur via l'upcall en 2  ---
+; --- temps du pilote de paquets - voir Emu_PktDeliverToHandle/      ---
+; --- Emu_PktCont dans DEVENV.PAS). AX=0 : 1er appel, l'emulateur    ---
+; --- demande un tampon (ES:DI). AX=1 : 2e appel, la trame est deja  ---
+; --- copiee a DS:SI (CX=longueur) - on se contente de marquer FLAG. ---
+RECEIVER:
+CMP AX,0
+JE RSTAGE0
+MOV BYTE [$100+57],1
+RETF
+RSTAGE0:
+PUSH CS
+POP ES
+MOV DI,$100+25
+RETF

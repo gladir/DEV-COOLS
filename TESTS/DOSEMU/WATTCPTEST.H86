@@ -1,0 +1,298 @@
+:                         # ; WATTCPTEST.A86
+:                         # ; ============================================================
+:                         # ; Verifie la passerelle NAT reelle WATTCP (voir project_devenv_wattcp
+:                         # ; dans DEVENV.PAS : Wtcp_HandleOutboundFrame/Wtcp_HandleArp/
+:                         # ; Wtcp_HandleIcmp/Wtcp_HandleTcp/Wtcp_Pump) en construisant a la main
+:                         # ; 3 trames Ethernet reelles (ARP, ICMP, TCP) et en verifiant les
+:                         # ; VRAIES reponses regues (reseau reel de la machine hote, via
+:                         # ; Winsock - voir la disclosure de portee dans DEVENV.PAS).
+:                         # ;
+:                         # ; A cocher avant de lancer, les DEUX cases (WATTCP a besoin du
+:                         # ; pilote de paquets comme transport) :
+:                         # ;   Options > Emulateur > DOS: Logiciel > "Reseau LAN"
+:                         # ;   Options > Emulateur > DOS: Logiciel > "WATTCP (reseau REEL via NAT, INT 60h)"
+:                         # ; Necessite un acces Internet reel depuis la machine qui execute
+:                         # ; DEVENV (ping/TCP vers 8.8.8.8) pour les tests ICMP et TCP.
+:                         # ;
+:                         # ; Adressage utilise (pas besoin d'un WATTCP.CFG invite reel ici -
+:                         # ; ce test construit ses propres trames a la main) :
+:                         # ;   Passerelle synthetique : 192.168.200.1 / MAC 02:00:00:00:00:01
+:                         # ;   "Notre" IP de test      : 192.168.200.50
+:                         # ;   Cible ICMP/TCP          : 8.8.8.8 (DNS public Google, repond au
+:                         # ;                             ping ET accepte des connexions TCP sur
+:                         # ;                             le port 53/DNS-sur-TCP - un seul hote
+:                         # ;                             externe reel suffit pour les 2 tests)
+:                         # ;
+:                         # ; Assembler : ASM86.exe WATTCPTEST.A86 WATTCPTEST /B /C
+:                         # ;             puis renommer WATTCPTEST.BIN en WATTCPTEST.COM.
+:                         # ;
+:                         # ; IMPORTANT : le test TCP fait une VRAIE boucle d'attente (des
+:                         # ; dizaines de millions d'iterations) pour laisser le temps a la
+:                         # ; passerelle de completer un VRAI connect() non bloquant via sa
+:                         # ; pompe periodique (Wtcp_Pump, accrochee a Emu_TimerTick - voir
+:                         # ; DEVENV.PAS) ET a un vrai aller-retour reseau de se produire. Une
+:                         # ; pause de quelques secondes avant la fin du programme est donc
+:                         # ; NORMALE, pas un gel. ARP et ICMP, eux, sont entierement
+:                         # ; SYNCHRONES cote passerelle (aucune dependance a la pompe
+:                         # ; periodique) et repondent donc instantanement.
+:                         # ;
+:                         # ; Codes de sortie (AL au moment de INT 21h/AH=4Ch) :
+:                         # ;   0 = succes complet (ARP + ICMP + TCP tous verifies)
+:                         # ;   1 = access_type (INT 60h) a echoue
+:                         # ;   2 = ARP : aucune reponse de la passerelle (CF=0 attendu de
+:                         # ;       send_pkt, mais ARP_OK jamais mis a 1 - verifier les 2 cases
+:                         # ;       a cocher ci-dessus)
+:                         # ;   3 = ICMP : aucune reponse d'echo recue (verifier l'acces Internet
+:                         # ;       reel de la machine qui execute DEVENV, ping 8.8.8.8 doit
+:                         # ;       fonctionner depuis un vrai terminal Windows)
+:                         # ;   4 = TCP : aucun SYN-ACK recu avant expiration du delai d'attente
+:                         # ;       (inconclusif si la machine hote n'a pas d'acces reseau reel
+:                         # ;       au port 53 de 8.8.8.8 - pas necessairement un bogue de
+:                         # ;       WATTCP ; voir le README de ce dossier)
+:                         # ; ============================================================
+:E9FA00                   # JMP START
+:                         # TYPEBUF:
+:00                       # DB 0
+:                         # HANDLE:
+:0000                     # DB 0,0
+:                         # MYMAC:
+:000000000000             # DB 0,0,0,0,0,0
+:                         # RECVBUF:
+:0000000000000000000000000000000000000000000000000000000000000000  # DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+:0000000000000000000000000000000000000000000000000000000000000000  # DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+:0000000000000000000000000000000000000000000000000000000000000000  # DB 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+:                         # ARPOK:
+:00                       # DB 0
+:                         # ICMPOK:
+:00                       # DB 0
+:                         # TCPOK:
+:00                       # DB 0
+:                         # ; --- Trame ARP REQUEST (42 octets : Ethernet 14 + ARP 28) ---
+:                         # ARPFRAME:
+:FFFFFFFFFFFF             # DB $FF,$FF,$FF,$FF,$FF,$FF
+:                         # ARPFRAME_SRC:
+:000000000000             # DB 0,0,0,0,0,0
+:0806                     # DB $08,$06
+:0001                     # DB $00,$01
+:0800                     # DB $08,$00
+:06                       # DB 6
+:04                       # DB 4
+:0001                     # DB $00,$01
+:                         # ARPFRAME_SNDMAC:
+:000000000000             # DB 0,0,0,0,0,0
+:C0A8C832                 # DB 192,168,200,50
+:000000000000             # DB 0,0,0,0,0,0
+:C0A8C801                 # DB 192,168,200,1
+:                         # ; --- Trame ICMP ECHO REQUEST (46 octets : Ethernet 14 + IP 20 + ICMP 8 + donnees 4) ---
+:                         # ICMPFRAME:
+:020000000001             # DB 2,0,0,0,0,1
+:                         # ICMPFRAME_SRC:
+:000000000000             # DB 0,0,0,0,0,0
+:0800                     # DB $08,$00
+:4500                     # DB $45,0
+:0020                     # DB 0,32
+:0000                     # DB 0,0
+:0000                     # DB 0,0
+:4001                     # DB 64,1
+:0000                     # DB 0,0
+:C0A8C832                 # DB 192,168,200,50
+:08080808                 # DB 8,8,8,8
+:0800                     # DB 8,0
+:0000                     # DB 0,0
+:BEEF                     # DB $BE,$EF
+:0001                     # DB 0,1
+:50494E47                 # DB 'PING'
+:                         # ; --- Trame TCP SYN (54 octets : Ethernet 14 + IP 20 + TCP 20) ---
+:                         # TCPFRAME:
+:020000000001             # DB 2,0,0,0,0,1
+:                         # TCPFRAME_SRC:
+:000000000000             # DB 0,0,0,0,0,0
+:0800                     # DB $08,$00
+:4500                     # DB $45,0
+:0028                     # DB 0,40
+:0000                     # DB 0,0
+:0000                     # DB 0,0
+:4006                     # DB 64,6
+:0000                     # DB 0,0
+:C0A8C832                 # DB 192,168,200,50
+:08080808                 # DB 8,8,8,8
+:0FA0                     # DB $0F,$A0
+:0035                     # DB 0,53
+:00000001                 # DB 0,0,0,1
+:00000000                 # DB 0,0,0,0
+:5002                     # DB $50,$02
+:2000                     # DB $20,0
+:0000                     # DB 0,0
+:0000                     # DB 0,0
+:                         # START:
+:8CC8                     # MOV AX,CS
+:8ED8                     # MOV DS,AX
+:8EC0                     # MOV ES,AX
+:B001                     # MOV AL,1
+:B90000                   # MOV CX,0
+:BE0301                   # MOV SI,$100+3
+:BFCA02                   # MOV DI,$100+458
+:B402                     # MOV AH,2
+:CD60                     # INT $60
+:7303                     # JNC SKIPJ1
+:E99E00                   # JMP FAIL1
+:                         # SKIPJ1:
+:A30401                   # MOV [$100+4],AX
+:89C3                     # MOV BX,AX
+:B90600                   # MOV CX,6
+:BF0601                   # MOV DI,$100+6
+:B406                     # MOV AH,6
+:CD60                     # INT $60
+:7303                     # JNC SKIPJ2
+:E98A00                   # JMP FAIL1
+:                         # SKIPJ2:
+:BE0601                   # MOV SI,$100+6
+:BF7501                   # MOV DI,$100+117
+:B90600                   # MOV CX,6
+:                         # L_CPMAC1:
+:8A04                     # MOV AL,[SI]
+:8805                     # MOV [DI],AL
+:46                       # INC SI
+:47                       # INC DI
+:E2F8                     # LOOP L_CPMAC1
+:BE0601                   # MOV SI,$100+6
+:BF8501                   # MOV DI,$100+133
+:B90600                   # MOV CX,6
+:                         # L_CPMAC2:
+:8A04                     # MOV AL,[SI]
+:8805                     # MOV [DI],AL
+:46                       # INC SI
+:47                       # INC DI
+:E2F8                     # LOOP L_CPMAC2
+:BE0601                   # MOV SI,$100+6
+:BF9F01                   # MOV DI,$100+159
+:B90600                   # MOV CX,6
+:                         # L_CPMAC3:
+:8A04                     # MOV AL,[SI]
+:8805                     # MOV [DI],AL
+:46                       # INC SI
+:47                       # INC DI
+:E2F8                     # LOOP L_CPMAC3
+:BE0601                   # MOV SI,$100+6
+:BFCD01                   # MOV DI,$100+205
+:B90600                   # MOV CX,6
+:                         # L_CPMAC4:
+:8A04                     # MOV AL,[SI]
+:8805                     # MOV [DI],AL
+:46                       # INC SI
+:47                       # INC DI
+:E2F8                     # LOOP L_CPMAC4
+:BE6F01                   # MOV SI,$100+111
+:B92A00                   # MOV CX,42
+:B404                     # MOV AH,4
+:CD60                     # INT $60
+:A06C01                   # MOV AL,[$100+108]
+:3C01                     # CMP AL,1
+:753A                     # JNE FAIL2
+:BE9901                   # MOV SI,$100+153
+:B92E00                   # MOV CX,46
+:B404                     # MOV AH,4
+:CD60                     # INT $60
+:A06D01                   # MOV AL,[$100+109]
+:3C01                     # CMP AL,1
+:752E                     # JNE FAIL3
+:BEC701                   # MOV SI,$100+199
+:B93600                   # MOV CX,54
+:B404                     # MOV AH,4
+:CD60                     # INT $60
+:BAD007                   # MOV DX,2000
+:                         # RETRYTCP:
+:A06E01                   # MOV AL,[$100+110]
+:3C01                     # CMP AL,1
+:740B                     # JE TCPGOOD
+:B90000                   # MOV CX,0
+:                         # DELAYLOOP:
+:E2FE                     # LOOP DELAYLOOP
+:4A                       # DEC DX
+:75F1                     # JNZ RETRYTCP
+:E91400                   # JMP FAIL4
+:                         # TCPGOOD:
+:B000                     # MOV AL,0
+:E91100                   # JMP THEEND
+:                         # FAIL1:
+:B001                     # MOV AL,1
+:E90C00                   # JMP THEEND
+:                         # FAIL2:
+:B002                     # MOV AL,2
+:E90700                   # JMP THEEND
+:                         # FAIL3:
+:B003                     # MOV AL,3
+:E90200                   # JMP THEEND
+:                         # FAIL4:
+:B004                     # MOV AL,4
+:                         # THEEND:
+:B44C                     # MOV AH,$4C
+:CD21                     # INT 21h
+:                         # ; --- Routine receptrice promiscuous (voir PKTTEST.A86 pour le detail ---
+:                         # ; --- du mecanisme d'upcall en 2 temps). Invoquee potentiellement     ---
+:                         # ; --- PLUSIEURS fois par trame envoyee (l'echo "boucle locale" de     ---
+:                         # ; --- notre propre trame ET la vraie reponse de la passerelle, voir   ---
+:                         # ; --- Emu_Pkt_SendPacket puis Wtcp_HandleOutboundFrame dans DEVENV.   ---
+:                         # ; --- PAS) - chaque appel examine independamment ce qu'il a recu et   ---
+:                         # ; --- ne fait QUE POSITIONNER (jamais effacer) les drapeaux, les      ---
+:                         # ; --- echos de nos PROPRES trames envoyees (requete, pas reponse) ne  ---
+:                         # ; --- correspondant jamais aux conditions testees ci-dessous.
+:                         # RECEIVER:
+:3D0000                   # CMP AX,0
+:7475                     # JE RSTAGE0
+:BE0C01                   # MOV SI,$100+12
+:8A440C                   # MOV AL,[SI+12]
+:3C08                     # CMP AL,8
+:7536                     # JNE RNOTARP
+:8A440D                   # MOV AL,[SI+13]
+:3C06                     # CMP AL,6
+:752F                     # JNE RNOTARP
+:8A4414                   # MOV AL,[SI+20]
+:3C00                     # CMP AL,0
+:7528                     # JNE RNOTARP
+:8A4415                   # MOV AL,[SI+21]
+:3C02                     # CMP AL,2
+:7521                     # JNE RNOTARP
+:8A441C                   # MOV AL,[SI+28]
+:3CC0                     # CMP AL,192
+:751A                     # JNE RNOTARP
+:8A441D                   # MOV AL,[SI+29]
+:3CA8                     # CMP AL,168
+:7513                     # JNE RNOTARP
+:8A441E                   # MOV AL,[SI+30]
+:3CC8                     # CMP AL,200
+:750C                     # JNE RNOTARP
+:8A441F                   # MOV AL,[SI+31]
+:3C01                     # CMP AL,1
+:7505                     # JNE RNOTARP
+:C6066C0101               # MOV BYTE [$100+108],1
+:                         # RNOTARP:
+:8A440C                   # MOV AL,[SI+12]
+:3C08                     # CMP AL,8
+:752D                     # JNE RNOTIP
+:8A440D                   # MOV AL,[SI+13]
+:3C00                     # CMP AL,0
+:7526                     # JNE RNOTIP
+:8A4417                   # MOV AL,[SI+23]
+:3C01                     # CMP AL,1
+:750C                     # JNE RNOTICMP
+:8A4422                   # MOV AL,[SI+34]
+:3C00                     # CMP AL,0
+:7505                     # JNE RNOTICMP
+:C6066D0101               # MOV BYTE [$100+109],1
+:                         # RNOTICMP:
+:8A4417                   # MOV AL,[SI+23]
+:3C06                     # CMP AL,6
+:750C                     # JNE RNOTIP
+:8A442F                   # MOV AL,[SI+47]
+:3C12                     # CMP AL,$12
+:7505                     # JNE RNOTIP
+:C6066E0101               # MOV BYTE [$100+110],1
+:                         # RNOTIP:
+:CB                       # RETF
+:                         # RSTAGE0:
+:0E                       # PUSH CS
+:07                       # POP ES
+:BF0C01                   # MOV DI,$100+12
+:CB                       # RETF
+
