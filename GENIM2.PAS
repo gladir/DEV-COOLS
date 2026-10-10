@@ -525,9 +525,19 @@ Begin
 End;
 
 Function HexToInt(Const S: String): LongInt;
+{ BOGUE CORRIGE (trouve pendant le portage GenIm2, via dc.l $DEADBEEF) :     }
+{ accumuler en LongInt SIGNE puis multiplier par 16 declenche une erreur    }
+{ d'execution 215 (depassement arithmetique) des que le litteral depasse    }
+{ $7FFFFFFF - extremement courant en 68k/Amiga reel (masques de bits,       }
+{ constantes comme $DEADBEEF ou $FFFFFFFF). Accumuler en LongWord NON       }
+{ SIGNE (32 bits, jamais depasse par un litteral hex d'au plus 8 chiffres)  }
+{ puis reinterpreter le motif de bits en LongInt par un transtypage EXPLICITE}
+{ (LongInt(V), qui ne declenche PAS de verification de plage, contrairement }
+{ a une affectation implicite) resout le probleme sans changer le        }
+{ comportement pour les petites valeurs. }
 Var
   I: Integer;
-  V: LongInt;
+  V: LongWord;
   C: Char;
 Begin
  V := 0;
@@ -535,16 +545,16 @@ Begin
  Begin
   C := UpCase(S[I]);
   If (C >= '0') and (C <= '9') Then
-   V := V * 16 + Ord(C) - Ord('0')
+   V := V * 16 + LongWord(Ord(C) - Ord('0'))
   Else If (C >= 'A') and (C <= 'F') Then
-   V := V * 16 + Ord(C) - Ord('A') + 10
+   V := V * 16 + LongWord(Ord(C) - Ord('A') + 10)
   Else
   Begin
    HexToInt := 0;
    Exit;
   End;
  End;
- HexToInt := V;
+ HexToInt := LongInt(V);
 End;
 
 Function Trim(Const S: String): String;
@@ -914,10 +924,13 @@ Procedure LexNumber;
   $xxxx ou 0xFFFF -> hexadecimal
   @nnn ou 0onnn   -> octal
   %bbbb ou 0bnnnn -> binaire
-  sinon            -> decimal }
+  sinon            -> decimal
+  V accumule en LongWord non signe (meme correctif que HexToInt, voir son   }
+{ commentaire) - affecte a cur_tok_val (LongInt) via un transtypage        }
+{ explicite a chaque sortie, jamais une affectation directe. }
 Var
   S: String;
-  V: LongInt;
+  V: LongWord;
   C: Char;
 Begin
  cur_tok := TOK_INTEGER;
@@ -954,11 +967,11 @@ Begin
         (src_line[src_col] in ['0'..'7']) do
   Begin
    S := S + src_line[src_col];
-   V := V * 8 + Ord(src_line[src_col]) - Ord('0');
+   V := V * 8 + LongWord(Ord(src_line[src_col]) - Ord('0'));
    Inc(src_col);
   End;
   cur_tok_str := cur_tok_str + S;
-  cur_tok_val := V;
+  cur_tok_val := LongInt(V);
   Exit;
  End;
 
@@ -973,11 +986,11 @@ Begin
         (src_line[src_col] in ['0', '1']) do
   Begin
    S := S + src_line[src_col];
-   V := V * 2 + Ord(src_line[src_col]) - Ord('0');
+   V := V * 2 + LongWord(Ord(src_line[src_col]) - Ord('0'));
    Inc(src_col);
   End;
   cur_tok_str := cur_tok_str + S;
-  cur_tok_val := V;
+  cur_tok_val := LongInt(V);
   Exit;
  End;
 
@@ -1015,11 +1028,11 @@ Begin
           (src_line[src_col] in ['0'..'7']) do
     Begin
      S := S + src_line[src_col];
-     V := V * 8 + Ord(src_line[src_col]) - Ord('0');
+     V := V * 8 + LongWord(Ord(src_line[src_col]) - Ord('0'));
      Inc(src_col);
     End;
     cur_tok_str := cur_tok_str + S;
-    cur_tok_val := V;
+    cur_tok_val := LongInt(V);
     Exit;
    End;
    { 0bnnnn : binaire }
@@ -1033,11 +1046,11 @@ Begin
           (src_line[src_col] in ['0', '1']) do
     Begin
      S := S + src_line[src_col];
-     V := V * 2 + Ord(src_line[src_col]) - Ord('0');
+     V := V * 2 + LongWord(Ord(src_line[src_col]) - Ord('0'));
      Inc(src_col);
     End;
     cur_tok_str := cur_tok_str + S;
-    cur_tok_val := V;
+    cur_tok_val := LongInt(V);
     Exit;
    End;
   End;
@@ -1047,10 +1060,10 @@ Begin
         (src_line[src_col] in ['0'..'9']) do
   Begin
    cur_tok_str := cur_tok_str + src_line[src_col];
-   V := V * 10 + Ord(src_line[src_col]) - Ord('0');
+   V := V * 10 + LongWord(Ord(src_line[src_col]) - Ord('0'));
    Inc(src_col);
   End;
-  cur_tok_val := V;
+  cur_tok_val := LongInt(V);
   Exit;
  End;
 
@@ -1060,10 +1073,10 @@ Begin
        (src_line[src_col] in ['0'..'9']) do
  Begin
   cur_tok_str := cur_tok_str + src_line[src_col];
-  V := V * 10 + Ord(src_line[src_col]) - Ord('0');
+  V := V * 10 + LongWord(Ord(src_line[src_col]) - Ord('0'));
   Inc(src_col);
  End;
- cur_tok_val := V;
+ cur_tok_val := LongInt(V);
 End;
 
 Procedure LexString;
