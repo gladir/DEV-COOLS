@@ -66,7 +66,7 @@ Type
   Name:String[31];
  Value:LongInt;
  Defined,External,PublicSym,Relocatable,LocalSymbol,UndefinedReported,DefinedThisPass:Boolean;
- ZeroPage:Boolean;
+ ZeroPage,ForwardReference,AddressRelative:Boolean;
   EsdNumber:Byte;
   Section:Byte;
   DefinedLine:Word;
@@ -82,7 +82,7 @@ Type
  End;
  TExprValue=Record
   Value,FullValue:LongInt;
-  Rel:Integer;
+  Rel,OriginRel:Integer;
   ExternalIndex:Integer;
   Part:Byte;
  End;
@@ -120,6 +120,19 @@ Type
  TMacroFrame=Record
   Args:Array[0..9] Of TString;
   Serial:Integer;
+ End;
+ PObjectSegment=^TObjectSegment;
+ TObjectSegment=Record
+  Next:PObjectSegment;
+  Pages:Array[0..255] Of PObjectPage;
+  Used:Array[0..255] Of PUsedPage;
+  MinAddress,MaxAddress:LongInt;
+  FileType:Byte;
+ End;
+ PInputName=^TInputName;
+ TInputName=Record
+  Next:PInputName;
+  Name:TString;
  End;
 
 Var
@@ -178,6 +191,15 @@ Var
  InMacroSource:Boolean;
  FirstPassFailure:TString;
  ValueTable:Boolean;
+ MultiObjects,EvalForward,OrgEvaluation,OutputSafe:Boolean;
+ OrgCount,SegmentCount:Integer;
+ SegmentOrigin:LongInt;
+ SegmentType:Byte;
+ Segments,LastSegment:PObjectSegment;
+ Inputs:PInputName;
+ InitialSlot,InitialDrive,InitialVolume,SourceSlot,SourceDrive,SourceVolume:Integer;
+ DeviceRoots:Array[1..7,1..2] Of TString;
+ DeviceVolumes:Array[1..7,1..2] Of Integer;
 
 Function HostFileExists(Name:TString):Boolean; Forward;
 
@@ -317,6 +339,37 @@ Begin
  End;
 End;
 
+Procedure SaveObjectSegment;
+Var P:PObjectSegment; I:Integer;
+Begin
+ If Pass<>2 Then Exit;
+ If SegmentCount>=36 Then Begin Error('Plus de 36 objets ORG'); Exit; End;
+ New(P); P^.Next:=Nil;
+ For I:=0 To 255 Do Begin P^.Pages[I]:=ObjectPages[I]; P^.Used[I]:=UsedPages[I]; End;
+ P^.MinAddress:=ObjectMin; If ObjectMax<0 Then P^.MinAddress:=SegmentOrigin;
+ P^.MaxAddress:=ObjectMax; P^.FileType:=SegmentType;
+ If LastSegment=Nil Then Segments:=P Else LastSegment^.Next:=P;
+ LastSegment:=P; Inc(SegmentCount); InitObjectImage;
+End;
+
+Procedure StoreObjectByte(Address:LongInt; B:Byte); Forward;
+
+Procedure MoveHistoricalOrigin(Address:LongInt);
+Var I:LongInt;
+Begin
+ If Address<SegmentOrigin Then Begin Error('ORG relatif avant le debut de l''objet'); Exit; End;
+ If Pass<>2 Then Exit;
+ If Address<=ObjectMax Then Begin
+  For I:=Address To ObjectMax Do
+   If UsedPages[I Shr 8]<>Nil Then UsedPages[I Shr 8]^[I And $FF]:=False;
+  ObjectMax:=Address-1;
+ End Else For I:=ObjectMax+1 To Address-1 Do
+  If I>=SegmentOrigin Then Begin
+   { Les trous historiques etaient indetermines; le clone les initialise a zero. }
+   StoreObjectByte(I,0);
+  End;
+End;
+
 Procedure StoreObjectByte(Address:LongInt; B:Byte);
 Var Page,Offset:Integer;
 Begin
@@ -423,8 +476,6 @@ Begin
     End Else Begin
      Flags:=$08; If Symbols[S].Relocatable Then Flags:=Flags Or $20;
      If Not Symbols[S].ZeroPage Then Flags:=Flags Or $01;
-     { Conserver l'encodage historique des ENTRY ordinaires. }
-     If Not Symbols[S].ZeroPage Then Flags:=$28;
      WriteFileByte(F,Flags,Failed); WriteFileByte(F,Symbols[S].Value And $FF,Failed);
      WriteFileByte(F,(Symbols[S].Value Shr 8) And $FF,Failed);
     End;
@@ -455,6 +506,7 @@ Begin
   I:=SymbolCount; Inc(SymbolCount); Symbols[I].Name:=N; Symbols[I].Value:=0;
   Symbols[I].Defined:=False; Symbols[I].External:=False; Symbols[I].UndefinedReported:=False;
   Symbols[I].DefinedThisPass:=False; Symbols[I].ZeroPage:=False;
+  Symbols[I].ForwardReference:=False; Symbols[I].AddressRelative:=False;
   Symbols[I].PublicSym:=False; Symbols[I].Relocatable:=False; Symbols[I].EsdNumber:=0;
   Symbols[I].LocalSymbol:=WasLocal; Symbols[I].Section:=SEC_UNDEF;
   Symbols[I].DefinedLine:=0;
@@ -547,6 +599,7 @@ Begin
    Val(TextValue,Number,Code);
    If Code<>0 Then Begin Number:=0; Fail('Constante numerique invalide: '+TextValue); End;
   End;
+  If StrictSource And ((Number<0) Or (Number>65535)) Then Fail('Constante hors limite 16 bits en mode /STRICT');
   Exit;
  End;
  If C In ['A'..'Z','a'..'z','_','.','@'] Then Begin
@@ -567,6 +620,9 @@ End;
 
 Function Checked(V:Extended):LongInt;
 Begin
+ If StrictSource Then Begin
+  V:=V-Trunc(V/65536)*65536; Checked:=Trunc(V) And $FFFF; Exit;
+ End;
  If (V<-2147483648.0) Or (V>2147483647.0) Then Begin
   Fail('Debordement arithmetique 32 bits'); Checked:=0;
  End Else Checked:=Trunc(V);
@@ -574,6 +630,12 @@ End;
 
 Function Priority(Op:TString):Integer;
 Begin
+ If StrictSource Then Begin
+  Priority:=0;
+  If (Op='+') Or (Op='-') Or (Op='*') Or (Op='/') Or
+     (Op='^') Or (Op='"') Or (Op='|') Or (Op='!') Then Priority:=1;
+  Exit;
+ End;
  Priority:=0;
  If Op='||' Then Priority:=1 Else If Op='&&' Then Priority:=2
  Else If (Op='=') Or (Op='==') Or (Op='<>') Or (Op='!=') Or
@@ -604,7 +666,7 @@ Begin
   End Else Begin
   R:=ParseUnary;
   If Op='-' Then Begin
-   R.Value:=Checked(-1.0*R.Value); R.Rel:=-R.Rel;
+   R.Value:=Checked(-1.0*R.Value); R.Rel:=-R.Rel; R.OriginRel:=-R.OriginRel;
    If (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Negation relogeable invalide');
   End Else If (Op='~') Or (Op='NOT') Or (Op='!') Then Begin
    If (R.Rel<>0) Or (R.ExternalIndex>=0) Or (R.Part<>0) Then Fail('Operation logique relogeable invalide');
@@ -622,13 +684,18 @@ Begin
   If Token<>')' Then Fail('Parenthese fermante attendue') Else NextToken;
  End Else If Op='#NUMBER' Then Begin R.Value:=Number; NextToken; End
  Else If Op='*' Then Begin
-  R.Value:=PC; If RelMode And Not InDsect Then R.Rel:=1; NextToken;
+  R.Value:=PC; R.OriginRel:=1; If RelMode And Not InDsect Then R.Rel:=1; NextToken;
  End Else If (Op<>'') And (Op[1] In ['A'..'Z','_','.','@']) And
   (Priority(Op)=0) Then Begin
   I:=FindSymbol(Op);
   If I<0 Then I:=GetOrCreateSymbol(Op);
   If I>=0 Then Begin
    AddCrossReference(I);
+   If (Pass=1) And Not Symbols[I].Defined Then Symbols[I].ForwardReference:=True;
+   If Symbols[I].ForwardReference Then EvalForward:=True;
+   If Symbols[I].AddressRelative Then R.OriginRel:=1;
+   If OrgEvaluation And Not Symbols[I].DefinedThisPass Then
+    Fail('ORG exige des symboles definis avant usage: '+Op);
    If ConditionEvaluation And (Not Symbols[I].DefinedThisPass Or Not Symbols[I].Defined) Then
     Fail('Condition: symbole non defini avant cette ligne: '+Op)
    Else If ConditionEvaluation And Symbols[I].External Then
@@ -664,8 +731,9 @@ Begin
     Else Fail('Expression externe non relogeable');
    End;
    L.Rel:=L.Rel+Sign*R.Rel;
+   L.OriginRel:=L.OriginRel+Sign*R.OriginRel;
    L.Value:=Checked(1.0*L.Value+1.0*Sign*R.Value);
-  End Else If P=3 Then Begin
+  End Else If (P=3) And Not StrictSource Then Begin
    If (L.Rel<>R.Rel) Or (L.ExternalIndex<>R.ExternalIndex) Or
       (L.Part<>0) Or (R.Part<>0) Then Fail('Comparaison de valeurs relogeables incompatibles');
    If (Op='=') Or (Op='==') Then L.Value:=Ord(L.Value=R.Value)
@@ -674,12 +742,15 @@ Begin
    Else If Op='<=' Then L.Value:=Ord(L.Value<=R.Value)
    Else If Op='>' Then L.Value:=Ord(L.Value>R.Value)
    Else L.Value:=Ord(L.Value>=R.Value);
-   L.Rel:=0; L.ExternalIndex:=-1; L.Part:=0;
+   L.Rel:=0; L.OriginRel:=0; L.ExternalIndex:=-1; L.Part:=0;
   End Else Begin
    If (L.Rel<>0) Or (R.Rel<>0) Or (L.ExternalIndex>=0) Or
       (R.ExternalIndex>=0) Or (L.Part<>0) Or (R.Part<>0) Then
     Fail('Operateur exigeant des valeurs absolues: '+Op);
-   If Op='&&' Then L.Value:=Ord((L.Value<>0) And (R.Value<>0))
+   L.OriginRel:=0;
+   If StrictSource And ((Op='^') Or (Op='"')) Then L.Value:=L.Value And R.Value
+   Else If StrictSource And (Op='!') Then L.Value:=L.Value Xor R.Value
+   Else If Op='&&' Then L.Value:=Ord((L.Value<>0) And (R.Value<>0))
    Else If Op='||' Then L.Value:=Ord((L.Value<>0) Or (R.Value<>0))
    Else If Op='*' Then L.Value:=Checked(1.0*L.Value*R.Value)
    Else If (Op='/') Or (Op='DIV') Or (Op='MOD') Then Begin
@@ -701,7 +772,7 @@ Begin
 End;
 
 Begin
- Known:=True; Position:=1; Depth:=0; NextToken;
+ Known:=True; EvalForward:=False; Position:=1; Depth:=0; NextToken;
  ResultValue:=ParseExpression(1);
  If Token<>'' Then Fail('Operateur inattendu: '+Token);
  If (ResultValue.Rel<0) Or (ResultValue.Rel>1) Or
@@ -733,6 +804,9 @@ Begin
   Relocs[RelocCount].SymbolName:=Symbols[ExpressionValue.ExternalIndex].Name;
  Relocs[RelocCount].Aux:=0;
  If Kind=2 Then Relocs[RelocCount].Aux:=ExpressionValue.FullValue And $FF;
+ If (Kind=2) And (ExpressionValue.ExternalIndex>=0) And
+    ((ExpressionValue.FullValue And $FF)<>0) Then
+  Error('Octet fort externe avec ajout non representable dans le RLD Apple');
  Inc(RelocCount);
 End;
 
@@ -1150,8 +1224,11 @@ Procedure RepeatListing(Count:Integer);
 Var S:TString;
 Begin
  If Not ListingActive Or (Count=0) Then Exit;
- S:=''; While Count>0 Do Begin S:=S+RepeatChar; Dec(Count); End;
- ListingRow(S);
+ { Une ShortString ne peut contenir 256 caracteres. }
+ While Count>0 Do Begin
+  S:=''; While (Count>0) And (Length(S)<120) Do Begin S:=S+RepeatChar; Dec(Count); End;
+  ListingRow(S);
+ End;
 End;
 
 Procedure WriteListingDiagnostic(S:TString);
@@ -1523,6 +1600,52 @@ Begin
  SourcePath:=Name;
 End;
 
+Function SourceSpecification(S:TDataText; Var Name:TString):Boolean;
+Var I,Start,Count,N,Code,Slot,Drive,Volume:Integer; Q:Char;
+    Fields:Array[0..3] Of TString; F:TString; WithDevice:Boolean;
+Begin
+ SourceSpecification:=False; Name:=''; Count:=0; Start:=1; Q:=#0;
+ For I:=0 To 3 Do Fields[I]:='';
+ S:=S+',';
+ For I:=1 To Length(S) Do Begin
+  If S[I] In ['''','"'] Then Begin
+   If Q=#0 Then Q:=S[I] Else If Q=S[I] Then Q:=#0;
+  End Else If (S[I]=',') And (Q=#0) Then Begin
+   If Count>3 Then Begin Error('CHN/INCLUDE: trop de parametres'); Exit; End;
+   Fields[Count]:=Trim(Copy(S,Start,I-Start)); Inc(Count); Start:=I+1;
+  End;
+ End;
+ If (Q<>#0) Or (Count=0) Or (Fields[0]='') Then Begin Error('Nom de fichier CHN/INCLUDE absent ou mal delimite'); Exit; End;
+ Slot:=SourceSlot; Drive:=SourceDrive; Volume:=SourceVolume; WithDevice:=False;
+ For I:=1 To Count-1 Do If Fields[I]<>'' Then Begin
+  F:=Up(Fields[I]); WithDevice:=True;
+  If F[1] In ['S','D','V'] Then Begin
+   If ((I=1) And (F[1]<>'S')) Or ((I=2) And (F[1]<>'D')) Or
+      ((I=3) And (F[1]<>'V')) Then Begin Error('Ordre attendu: fichier,slot,drive,volume'); Exit; End;
+   Delete(F,1,1);
+  End;
+  Val(F,N,Code); If Code<>0 Then Begin Error('Parametre de peripherique invalide: '+Fields[I]); Exit; End;
+  Case I Of 1:Slot:=N; 2:Drive:=N; 3:Volume:=N; End;
+ End;
+ If (Slot<1) Or (Slot>7) Or (Drive<1) Or (Drive>2) Or (Volume<0) Or (Volume>254) Then Begin
+  Error('CHN/INCLUDE: slot 1..7, drive 1..2, volume 0..254 requis'); Exit;
+ End;
+ Name:=Fields[0];
+ If (Length(Name)>=2) And (Name[1] In ['''','"']) And (Name[Length(Name)]=Name[1]) Then Name:=Copy(Name,2,Length(Name)-2);
+ If WithDevice Then Begin
+  If (DeviceRoots[Slot,Drive]='') Or
+     ((Volume<>0) And (DeviceVolumes[Slot,Drive]<>Volume)) Then Begin
+   Error('Lecteur/volume non monte: utiliser /DRIVE:slot,drive,volume=repertoire'); Exit;
+  End;
+  If (Name[1]='\') Or (Name[1]='/') Or (Pos(':',Name)>0) Then Begin
+   Error('Un nom relatif est requis avec les parametres de peripherique'); Exit;
+  End;
+  Name:=FExpand(DeviceRoots[Slot,Drive]+Name);
+  SourceSlot:=Slot; SourceDrive:=Drive; SourceVolume:=DeviceVolumes[Slot,Drive];
+ End Else Name:=SourcePath(Name);
+ SourceSpecification:=True;
+End;
+
 Procedure PrepareMacro(M:TString; A:TDataText);
 Var I,Start,Count,Level,J:Integer; Q,C:Char; Escaped:Boolean;
 Begin
@@ -1717,8 +1840,9 @@ Begin
   ListLine(PC,'',Source); Exit;
  End;
  If M='INCLUDE' Then Begin
-  If A='' Then Error('INCLUDE: fichier absent') Else Begin
-   IncludeName:=SourcePath(A); IncludeRequested:=True; MacroRequested:=False;
+  If StrictSource And (IncludeLevel>0) Then Error('/STRICT: INCLUDE imbrique interdit')
+  Else If SourceSpecification(A,IncludeName) Then Begin
+   IncludeRequested:=True; MacroRequested:=False;
   End;
   ListLine(PC,'',Source); Exit;
  End;
@@ -1732,6 +1856,7 @@ Begin
    If Known Then Symbols[I].Section:=EquSection(A)
    Else Symbols[I].Section:=SEC_UNDEF;
    Symbols[I].Relocatable:=Symbols[I].Section=SEC_RELOCATABLE;
+   Symbols[I].AddressRelative:=ExpressionValue.OriginRel<>0;
   End; ListLine(V,'',Source); Exit;
  End;
  If (Lab<>'') And (M<>'ENTRY') And (M<>'EXTRN') Then Begin
@@ -1741,13 +1866,26 @@ Begin
    Else If RelMode Then Symbols[I].Section:=SEC_RELOCATABLE
    Else Symbols[I].Section:=SEC_ABSOLUTE;
    Symbols[I].Relocatable:=RelMode And Not InDsect;
+   Symbols[I].AddressRelative:=Not InDsect;
   End;
  End; If M='' Then Begin
   ListLine(PC,'',Source); Exit;
  End;
  If M='ORG' Then Begin
-  V:=Eval(A,Known); If Known Then Begin CheckRange(V,16,True); PC:=V; End Else Error('ORG invalide');
-  If Known And Not ObjExplicit Then ObjPC:=V;
+  OrgEvaluation:=StrictSource Or MultiObjects; V:=Eval(A,Known); OrgEvaluation:=False;
+  If Known Then Known:=CheckRange(V,16,True);
+  If Known Then Begin
+   If (MultiObjects Or StrictSource) And Not InDsect And Not RelMode And Not ObjExplicit Then Begin
+    If ExpressionValue.OriginRel=0 Then Begin
+     If (Pass=2) And (OrgCount>0) Then SaveObjectSegment;
+     Inc(OrgCount); If OrgCount>36 Then Error('Plus de 36 ORG absolus');
+     SegmentOrigin:=V; SegmentType:=ProdosType; ProdosType:=$06;
+    End Else If OrgCount=0 Then Error('ORG relatif sans ORG absolu initial')
+    Else MoveHistoricalOrigin(V);
+   End Else If Not InDsect Then Inc(OrgCount);
+   PC:=V;
+  End Else Error('ORG invalide');
+  If Known And Not ObjExplicit And Not InDsect Then ObjPC:=V;
   ListObjAddress:=ObjPC;
   If FirstPC<0 Then FirstPC:=PC; ListLine(PC,'',Source); Exit;
  End;
@@ -1882,8 +2020,7 @@ Begin
   End; ListLine(PC,'',Source); Exit;
  End;
  If M='CHN' Then Begin
-  A:=Trim(A); If (Length(A)>=2) And (A[1] In ['''','"']) And (A[Length(A)]=A[1]) Then A:=Copy(A,2,Length(A)-2);
-  If A='' Then Error('Nom de fichier CHN absent') Else Begin ChainName:=A; ChainRequested:=True; End;
+  If SourceSpecification(A,ChainName) Then ChainRequested:=True;
   ListLine(PC,'',Source); Exit;
  End;
  If M='PAGE' Then Begin
@@ -1920,9 +2057,7 @@ Begin
  End;
  If M='REP' Then Begin
   V:=Eval(A,Known);
-  If Known And ((V<0) Or (V>255)) Then Begin
-   Error('REP attend un nombre de caracteres de 0 a 255'); Known:=False;
-  End;
+  V:=V And $FF; If V=0 Then V:=256;
   ListLine(PC,'',Source); If Known Then RepeatListing(V); Exit;
  End;
  If IsDataDirective(M) Then EmitDataList(M,A,Bytes)
@@ -1969,6 +2104,7 @@ Begin
   DetermineMode(M,A,0,False,Mode,Size,E);
   V:=0; Known:=True;
   If Size>1 Then V:=Eval(E,Known);
+  If StrictSource And EvalForward And (Size>1) Then Known:=False;
  If (Size>1) And (ExpressionValue.ExternalIndex>=0) Then
   Known:=Symbols[ExpressionValue.ExternalIndex].ZeroPage;
   DetermineMode(M,A,V,Known,Mode,Size,E);
@@ -2034,11 +2170,15 @@ Var
  NextName,Lab,M,Comment,DummyLab,DummyOp,CallerScope:TString;
  Missing,TooLong,IsMacroCall:Boolean;
  Frame:PMacroFrame;
+ InputName:PInputName;
  ReadBuffer:Pointer;
  BufferSize:Word;
 Begin
  Frame:=PendingMacro; PendingMacro:=Nil;
  Name:=FExpand(Name);
+ InputName:=Inputs;
+ While (InputName<>Nil) And (Up(InputName^.Name)<>Up(Name)) Do InputName:=InputName^.Next;
+ If InputName=Nil Then Begin New(InputName); InputName^.Name:=Name; InputName^.Next:=Inputs; Inputs:=InputName; End;
  For I:=0 To Depth-1 Do If Up(SourcePaths[I])=Up(Name) Then Begin
   Error('Cycle CHN: fichier deja visite (CHN/INCLUDE/macro): '+Name);
   If Frame<>Nil Then Dispose(Frame); Exit;
@@ -2110,11 +2250,13 @@ End;
 Procedure AssembleOnePass;
 Var I:Integer;
 Begin
+ OrgCount:=0; SegmentOrigin:=0; SegmentType:=$06; OrgEvaluation:=False;
+ SourceSlot:=InitialSlot; SourceDrive:=InitialDrive; SourceVolume:=InitialVolume;
  CmosEnabled:=False; MacroEnabled:=False; MacroLibrary:=''; MacroSerial:=0;
  IncludeRequested:=False; MacroRequested:=False; PendingMacro:=Nil;
  IncludeLevel:=0; InMacroSource:=False;
  SourceBufferSize:=1024; IncludeBufferSize:=4096; ProdosType:=$06;
- ListGen:=True; ListUnasm:=True; ListAsym:=True; ListVsym:=False;
+ ListGen:=Not StrictSource; ListUnasm:=True; ListAsym:=True; ListVsym:=False;
  ListExp:=True; ListSix:=False; ListCycles:=False; ListWarn:=True; WarningCount:=0;
  For I:=0 To SymbolCount-1 Do Symbols[I].DefinedThisPass:=False;
  ConditionCursor:=Conditions; LastCondition:=Nil; ConditionsChanged:=False;
@@ -2128,6 +2270,7 @@ Begin
  ChainRequested:=False; CurrentSource:=SrcName; ProcessSourceFile(SrcName,0);
  FinishInstructionPass;
  FinishConditionalPass;
+ If StrictSource And (OrgCount=0) And Not RelMode And Not ObjExplicit Then Error('/STRICT: ORG requis pour une sortie objet');
  If InDsect Then Error('DSECT sans DEND');
  For I:=CondDepth-1 DownTo 0 Do
   Error('DO/IFxx sans FIN: bloc ouvert dans '+CondStack[I].OpenSource+':'+DecimalText(CondStack[I].OpenLine,0,' '));
@@ -2578,12 +2721,14 @@ End;
 
 Procedure ParseArgs;
 Var
- I,J,K,Code,N:Integer;
+ I,J,K,Code,N,Slt,Drv,Vol:Integer;
  A,U,Command,Field:TString;
  Historical,DeviceSet:Boolean;
 Begin
  If ParamCount=0 Then Help; SrcName:=''; ObjName:=''; ListName:=''; ListingEnabled:=True;
  Quiet:=False; AppleBinaryHeader:=False; StrictSource:=False; InteractivePause:=True;
+ MultiObjects:=False;
+ For I:=1 To 7 Do For J:=1 To 2 Do Begin DeviceRoots[I,J]:=''; DeviceVolumes[I,J]:=254; End;
  DiskName:=''; DiskTemplate:=''; DosName:=''; DosSlot:=6; DosDrive:=1; DosVolume:=254;
  Historical:=False; DeviceSet:=False; Command:='';
  For I:=1 To ParamCount Do Begin
@@ -2591,6 +2736,24 @@ Begin
   If (I=1) And ((U='ASM') Or (Copy(U,1,4)='ASM ')) Then Begin
    Historical:=True; Command:=Trim(Copy(A,4,255));
   End Else If Copy(U,1,5)='/DSK:' Then DiskName:=Copy(A,6,255)
+  Else If U='/MULTIOBJ' Then MultiObjects:=True
+  Else If Copy(U,1,7)='/DRIVE:' Then Begin
+   Field:=Copy(A,8,255); J:=Pos('=',Field);
+   If J=0 Then Begin WriteLn('/DRIVE:slot,drive,volume=repertoire attendu'); Halt(1); End;
+   U:=Copy(Field,1,J-1); Field:=Copy(Field,J+1,255);
+   K:=Pos(',',U); If K=0 Then Begin WriteLn('Slot,drive,volume requis'); Halt(1); End;
+   Val(Copy(U,1,K-1),Slt,Code); If Code<>0 Then Halt(1); Delete(U,1,K);
+   K:=Pos(',',U); If K=0 Then Begin WriteLn('Slot,drive,volume requis'); Halt(1); End;
+   Val(Copy(U,1,K-1),Drv,Code); If Code<>0 Then Halt(1); Delete(U,1,K);
+   Val(U,Vol,Code);
+   If (Code<>0) Or (Slt<1) Or (Slt>7) Or (Drv<1) Or (Drv>2) Or (Vol<0) Or (Vol>254) Or (Field='') Then Begin
+    WriteLn('Parametres /DRIVE invalides'); Halt(1);
+   End;
+   DeviceRoots[Slt,Drv]:=FExpand(Field);
+   If Not (DeviceRoots[Slt,Drv][Length(DeviceRoots[Slt,Drv])] In ['\','/']) Then
+    DeviceRoots[Slt,Drv]:=DeviceRoots[Slt,Drv]+'\';
+   DeviceVolumes[Slt,Drv]:=Vol;
+  End
   Else If Copy(U,1,10)='/TEMPLATE:' Then DiskTemplate:=Copy(A,11,255)
   Else If Copy(U,1,6)='/NAME:' Then DosName:=Copy(A,7,255)
   Else If (U='/?') Or (U='-?') Then Help Else If Copy(U,1,3)='/L:' Then Begin
@@ -2630,6 +2793,7 @@ Begin
   If K<2 Then Begin WriteLn('Syntaxe: ASM SOURCE,OBJECT[,S6,D1,V254]'); Halt(1); End;
  End;
  If SrcName='' Then Begin WriteLn('Source absent'); Halt(1); End;
+ If Historical Then MultiObjects:=True;
  If (DosSlot<1) Or (DosSlot>7) Or (DosDrive<1) Or (DosDrive>2) Or
     (DosVolume<0) Or (DosVolume>254) Then Begin WriteLn('Slot 1..7, drive 1..2, volume 0..254 requis'); Halt(1); End;
  If (DiskName='') And (DeviceSet Or (DiskTemplate<>'') Or (DosName<>'')) Then Begin
@@ -2637,6 +2801,11 @@ Begin
  End;
  If ObjName='' Then ObjName:=BaseName(SrcName)+'.OBJ';
  If UseListing And (ListName='') Then ListName:=BaseName(SrcName)+'.LST';
+ InitialSlot:=DosSlot; InitialDrive:=DosDrive; InitialVolume:=DosVolume;
+ If DeviceRoots[DosSlot,DosDrive]='' Then Begin
+  DeviceRoots[DosSlot,DosDrive]:=SourceDirectory(FExpand(SrcName));
+  DeviceVolumes[DosSlot,DosDrive]:=DosVolume;
+ End;
  If (Up(FExpand(ObjName+'.prodos'))=Up(FExpand(SrcName))) Or
     (UseListing And (Up(FExpand(ObjName+'.prodos'))=Up(FExpand(ListName)))) Or
     ((DiskTemplate<>'') And (Up(FExpand(ObjName+'.prodos'))=Up(FExpand(DiskTemplate)))) Or
@@ -2671,10 +2840,11 @@ End;
 Procedure WriteProdosAttributes;
 Var F:Text; E:Integer;
 Begin
- If ProdosType<>$FF Then Exit;
+ If RelMode Then ProdosType:=$FE;
+ If (ProdosType<>$FF) And (ProdosType<>$FE) And (Segments=Nil) Then Exit;
  Assign(F,ObjName+'.prodos'); Rewrite(F); E:=IOResult;
  If E<>0 Then Begin Error('Impossible de creer les attributs ProDOS'); Exit; End;
- WriteLn(F,'TYPE=$FF'); WriteLn(F,'AUXTYPE=$',Hex(ObjectMin,4)); E:=IOResult;
+ WriteLn(F,'TYPE=$',Hex(ProdosType,2)); WriteLn(F,'AUXTYPE=$',Hex(ObjectMin,4)); E:=IOResult;
  Close(F); If (IOResult<>0) Or (E<>0) Then Error('Erreur ecriture attributs ProDOS');
 End;
 
@@ -2686,8 +2856,108 @@ Begin
  If E<>0 Then Error('Impossible de supprimer les attributs ProDOS perimes');
 End;
 
+Function NextObjectName(Name:TString):TString;
+Const Alphabet='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+Var P:Integer;
+Begin
+ P:=Pos(UpCase(Name[Length(Name)]),Alphabet);
+ If P=0 Then Begin Error('Nom objet multi-ORG: dernier caractere attendu dans 0..9,A..Z'); NextObjectName:=Name; Exit; End;
+ Name[Length(Name)]:=Alphabet[(P Mod 36)+1]; NextObjectName:=Name;
+End;
+
+Function SafeOutputName(Name:TString):Boolean;
+Var P:PInputName; Canon:TString;
+Begin
+ Canon:=Up(FExpand(Name)); SafeOutputName:=False;
+ P:=Inputs;
+ While P<>Nil Do Begin
+  If Up(P^.Name)=Canon Then Exit;
+  P:=P^.Next;
+ End;
+ If UseListing And (Canon=Up(FExpand(ListName))) Then Exit;
+ If (DiskTemplate<>'') And (Canon=Up(FExpand(DiskTemplate))) Then Exit;
+ If (DiskName<>'') And (Canon=Up(FExpand(DiskName))) Then Exit;
+ SafeOutputName:=True;
+End;
+
+Procedure WriteAllOutputs;
+Var Names:Array[0..35] Of TString;
+    Stages:Array[0..35] Of TString;
+    StageCreated:Array[0..35] Of Boolean;
+    BaseObject,BaseDisk,BaseTemplate,BaseDos,NextDos:TString;
+    P:PObjectSegment; I,J,Count,E:Integer; F:File;
+Begin
+ BaseObject:=ObjName; BaseDisk:=DiskName; BaseTemplate:=DiskTemplate; BaseDos:=DosName;
+ FillChar(StageCreated,SizeOf(StageCreated),0);
+ Count:=SegmentCount; If Count=0 Then Count:=1;
+ Names[0]:=BaseObject;
+ For I:=1 To Count-1 Do Names[I]:=NextObjectName(Names[I-1]);
+ OutputSafe:=True;
+ For I:=0 To Count-1 Do Begin
+  If Not SafeOutputName(Names[I]) Or Not SafeOutputName(Names[I]+'.prodos') Then Begin
+   Error('Sortie objet en conflit avec un fichier source, modele ou listing: '+Names[I]); OutputSafe:=False;
+  End;
+  Stages[I]:=BaseDisk+'.edasm-stage-'+Hex(I,2);
+  If (BaseDisk<>'') And (Count>1) Then
+   If HostFileExists(Stages[I]) Or Not SafeOutputName(Stages[I]) Then Begin
+    Error('Fichier temporaire disque deja utilise: '+Stages[I]); OutputSafe:=False;
+   End;
+ End;
+ If Not OutputSafe Then Exit;
+ P:=Segments; NextDos:=BaseDos;
+ For I:=0 To Count-1 Do Begin
+  ObjName:=Names[I];
+  If P<>Nil Then Begin
+   For J:=0 To 255 Do Begin ObjectPages[J]:=P^.Pages[J]; UsedPages[J]:=P^.Used[J]; End;
+   ObjectMin:=P^.MinAddress; ObjectMax:=P^.MaxAddress; ProdosType:=P^.FileType;
+   P:=P^.Next;
+  End;
+  RemoveProdosAttributes;
+  If Errors=0 Then WriteObjectFile;
+  If Errors=0 Then WriteProdosAttributes;
+  If (Errors=0) And (BaseDisk<>'') Then Begin
+   If Count>1 Then Begin
+    DiskName:=Stages[I]; DosName:=NextDos;
+    If I>0 Then DiskTemplate:=Stages[I-1];
+   End;
+   WriteDosDisk;
+   If (Count>1) And (Errors=0) Then StageCreated[I]:=True;
+   If (I+1<Count) And (Errors=0) Then NextDos:=NextObjectName(NextDos);
+  End;
+ End;
+ If (Errors=0) And (BaseDisk<>'') And (Count>1) Then Begin
+  If HostFileExists(BaseDisk) Then Error('Image de sortie apparue pendant l''assemblage') Else Begin
+   Assign(F,Stages[Count-1]); Rename(F,BaseDisk); E:=IOResult;
+   If E<>0 Then Error('Impossible de publier l''image disque') Else StageCreated[Count-1]:=False;
+  End;
+ End;
+ For I:=0 To Count-1 Do Begin
+  If Errors<>0 Then Begin ObjName:=Names[I]; RemoveInvalidObject; RemoveProdosAttributes; End;
+  If StageCreated[I] Then Begin Assign(F,Stages[I]); Erase(F); E:=IOResult;
+   If E<>0 Then Error('Impossible de supprimer une image intermediaire'); End;
+ End;
+ ObjName:=BaseObject; DiskName:=BaseDisk; DiskTemplate:=BaseTemplate; DosName:=BaseDos;
+End;
+
+Procedure FreeSegments;
+Var P:PObjectSegment; N:PInputName; I:Integer;
+Begin
+ If Segments<>Nil Then Begin
+  While Segments<>Nil Do Begin
+   P:=Segments; Segments:=P^.Next;
+   For I:=0 To 255 Do Begin
+    If P^.Pages[I]<>Nil Then Dispose(P^.Pages[I]);
+    If P^.Used[I]<>Nil Then Dispose(P^.Used[I]);
+   End;
+   Dispose(P);
+  End;
+  InitObjectImage;
+ End;
+ While Inputs<>Nil Do Begin N:=Inputs; Inputs:=N^.Next; Dispose(N); End;
+End;
+
 BEGIN
- Instructions:=Nil; Conditions:=Nil;
+ Instructions:=Nil; Conditions:=Nil; Segments:=Nil; LastSegment:=Nil; SegmentCount:=0; Inputs:=Nil;
  ParseArgs; BuildDate:=''; FirstPassFailure:=''; InitializeListing;
  SymbolCount:=0; NextEsdNumber:=1; Errors:=0; Pass:=1; AssembleOnePass;
  If UseListing Then Begin
@@ -2701,17 +2971,14 @@ BEGIN
  Errors:=0; RelocCount:=0; ReferenceCount:=0;
  InitializeListing;
  InitObjectImage; Pass:=2; AssembleOnePass;
+ If (MultiObjects Or StrictSource) And Not RelMode And Not ObjExplicit And (OrgCount>0) Then SaveObjectSegment;
  If FirstPassFailure<>'' Then Error('FAIL/PAUSE en premiere passe: '+FirstPassFailure);
  If Not PhaseStable Then Error('Erreur de phase: limite de stabilisation atteinte (symboles ou instructions)');
  If RelMode And AppleBinaryHeader Then Error('/B incompatible avec un module REL');
  If (ProdosType=$FF) And (RelMode Or AppleBinaryHeader Or (DiskName<>'')) Then
   Error('SYS/INTERP incompatible avec REL, /B ou /DSK');
  ValidateExternalSymbols;
- RemoveProdosAttributes;
- If Errors=0 Then WriteObjectFile;
- If (Errors=0) And (DiskName<>'') Then WriteDosDisk;
- If Errors=0 Then WriteProdosAttributes;
- If Errors<>0 Then Begin RemoveInvalidObject; RemoveProdosAttributes; End;
+ WriteAllOutputs;
  If UseListing Then Begin
   WriteSymbolTable;
   Close(ListText);
@@ -2721,6 +2988,7 @@ BEGIN
  FinishInstructionPass;
  ConditionCursor:=Conditions; LastCondition:=Nil; FinishConditionalPass;
  If Errors=0 Then Begin
+  If Not Quiet And (SegmentCount>1) Then WriteLn('Objets ORG produits: ',SegmentCount);
   If Not Quiet Then If ObjectMax>=ObjectMin Then
    WriteLn('Assemblage termine: ',ObjName,' (',ObjectMax-ObjectMin+1,
    ' octets, objet $',Hex(ObjectMin,4),'-$',Hex(ObjectMax,4),').') Else
@@ -2729,6 +2997,6 @@ BEGIN
    WriteLn('Attributs ProDOS requis: TYPE=$FE, AUXTYPE=$',Hex(ObjectMin,4),'.');
  End Else
  Begin
-  WriteLn(Errors,' erreur(s); objet invalide.'); FreeObjectImage; Halt(4);
- End; FreeObjectImage;
+  WriteLn(Errors,' erreur(s); objet invalide.'); FreeSegments; FreeObjectImage; Halt(4);
+ End; FreeSegments; FreeObjectImage;
 END.
