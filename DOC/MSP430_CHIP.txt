@@ -1,0 +1,1058 @@
+==============================================================================
+ TEXAS INSTRUMENTS MSP430
+ Architecture, assembleur et construction d'un emulateur
+==============================================================================
+
+Revision : 10 octobre 2026
+Langue : francais ; accents omis pour conserver un fichier ASCII.
+Notation : 0x indique l'hexadecimal ; Kio = 1024 octets.
+
+Ce document est une reference pratique originale, accompagnee d'exemples et
+d'un plan d'implementation. Les documents Texas Instruments de la section 19
+restent la reference pour les particularites d'un composant et ses errata.
+
+Le MSP430 est une famille de microcontroleurs, pas une puce unique. Il faut
+distinguer le coeur MSP430 classique, ses extensions MSP430X et les nombreux
+jeux de peripheriques. Le MSP432, fonde sur ARM, est une autre architecture.
+
+Le coeur classique constitue ici la base du decodeur et des exemples binaires.
+Le MSP430G2553 sert d'exemple de machine concrete. Les indications concernant
+ce composant ne doivent pas etre generalisees a tous les MSP430.
+
+
+TABLE DES MATIERES
+-----------------
+  1. Caracteristiques et familles
+  2. Registres du processeur
+  3. Memoire, alignement et pile
+  4. Modes d'adressage
+  5. Codage des instructions classiques
+  6. Instructions natives
+  7. Instructions emulees et synonymes
+  8. Calcul des indicateurs
+  9. Temps d'execution
+ 10. Reset, interruptions et basse consommation
+ 11. Exemple materiel : MSP430G2553
+ 12. Programmation en assembleur
+ 13. Extensions MSP430X
+ 14. Architecture logicielle d'un emulateur
+ 15. Execution d'une instruction
+ 16. Emulation des peripheriques
+ 17. Chargement, debogage et validation
+ 18. Plan de realisation
+ 19. References techniques
+
+
+==============================================================================
+1. CARACTERISTIQUES ET FAMILLES
+==============================================================================
+
+Le MSP430 classique possede une architecture RISC 16 bits, des registres de
+travail et un espace d'adressage unifie pour le code, les donnees et les
+peripheriques. Il peut effectuer des operations sur des octets ou des mots.
+Il n'a pas de MMU et n'offre pas les niveaux de privilege d'un processeur
+destine a un systeme d'exploitation generaliste.
+
+Profil architectural de base :
+
+  Donnee naturelle             16 bits
+  Octet                         8 bits
+  Registres visibles           16, dont quatre a usage particulier
+  Adresse classique            16 bits, soit 64 Kio adressables
+  Ordre des octets              little-endian
+  Mot d'instruction             16 bits, eventuellement suivi de mots operandes
+  Instructions classiques       27 instructions natives
+  Pile                         en memoire, croissance vers les adresses basses
+  Entrees-sorties              registres mappes dans l'espace memoire
+
+Un espace de 64 Kio ne signifie pas 64 Kio de RAM : une partie contient les
+peripheriques, une autre la RAM, la memoire programme et des zones reservees.
+
+Les references F utilisent generalement de la Flash ; plusieurs familles FR
+utilisent de la FRAM. Les capacites, frequences, tensions, temporisateurs,
+interfaces serie, convertisseurs et modules de multiplication dependent de
+la reference exacte. Un multiplicateur materiel eventuel est un peripherique :
+il ne transforme pas MUL en instruction native du coeur classique.
+
+Les extensions MSP430X ouvrent un espace d'adressage de 20 bits, soit 1 Mio.
+Le coeur, ses revisions et ses instructions sont a distinguer des modules
+systeme : choisir un nom de famille ne suffit pas a definir une machine.
+
+Pour un emulateur, enregistrer un profil explicite : reference du composant,
+revision du coeur, carte memoire, vecteurs, peripheriques, horloges et errata
+pris en compte. Ne pas annoncer la compatibilite avec toute la famille si
+seul le profil G2553 est implemente.
+
+
+==============================================================================
+2. REGISTRES DU PROCESSEUR
+==============================================================================
+
+  Registre   Nom       Fonction
+  --------   -------   ------------------------------------------------------
+  R0         PC        Compteur ordinal ; adresse du code a executer.
+  R1         SP        Pointeur de pile.
+  R2         SR/CG1    Etat du processeur ou generateur de constantes.
+  R3         CG2       Generateur de constantes ; pas un registre de travail.
+  R4-R15               Douze registres generaux de 16 bits.
+
+PC et SP sont alignes sur un mot. Les instructions qui ecrivent PC peuvent
+modifier le flot d'execution ; il ne faut donc pas reserver ce comportement
+aux seuls sauts dans un emulateur.
+
+Registre SR classique :
+
+  Bit    Masque    Nom       Role
+   0     0x0001    C         Retenue ; absence d'emprunt pour une soustraction.
+   1     0x0002    Z         Resultat nul.
+   2     0x0004    N         Bit de signe du resultat.
+   3     0x0008    GIE       Autorisation generale des interruptions masquables.
+   4     0x0010    CPUOFF    Arret de l'execution CPU.
+   5     0x0020    OSCOFF    Commande d'arret de l'oscillateur concerne.
+   6     0x0040    SCG0      Commande du systeme d'horloge.
+   7     0x0080    SCG1      Commande du systeme d'horloge.
+   8     0x0100    V         Debordement arithmetique signe.
+  9-15                       Reserves dans le modele classique.
+
+Les effets precis de SCG0, SCG1 et OSCOFF dependent du module d'horloge.
+Ils ne sont pas de simples indicateurs arithmetiques.
+
+Une ecriture .B dans un registre general du coeur classique met a zero son
+octet haut. Une ecriture .B en RAM ne modifie que l'octet adresse.
+Les registres particuliers et les peripheriques doivent suivre leurs regles
+propres ; ne pas appliquer aveuglement une routine de registre general a SR.
+
+
+==============================================================================
+3. MEMOIRE, ALIGNEMENT ET PILE
+==============================================================================
+
+Un mot 0x1234 a l'adresse A est range ainsi :
+
+  mem[A] = 0x34 ; mem[A + 1] = 0x12.
+
+Les adresses designent des octets. Le code et les acces mot normaux sont
+alignes sur des adresses paires. Les acces impairs ou interdits ne doivent pas
+etre presentes comme une exception materielle universelle : le comportement
+depend du coeur et du module. Un emulateur peut les signaler en mode diagnostic,
+en distinguant ce diagnostic d'une interruption reellement offerte par la puce.
+
+La memoire programme appartient au meme espace logique que les donnees :
+le CPU peut lire une constante en Flash avec une instruction ordinaire.
+En revanche, ecrire la Flash exige le protocole de son controleur.
+
+Pile classique :
+
+  PUSH.W valeur : SP = SP - 2 ; ecrire le mot a SP.
+  POP.W Rn     : lire le mot a SP ; SP = SP + 2 ; affecter Rn.
+
+POP est une instruction emulee par l'assembleur. PUSH.B consomme egalement
+deux octets de pile ; ne pas remplacer son decrement par un decrement de un.
+Dans une implementation, tester separement les alias avec SP et les ecritures
+octet ; les deux lignes ci-dessus decrivent le cas ordinaire sans alias.
+
+CALL empile l'adresse de retour. RET la recharge dans PC. RETI restaure aussi
+SR et appartient au mecanisme d'interruption. RET et RETI sont differents.
+
+
+==============================================================================
+4. MODES D'ADRESSAGE
+==============================================================================
+
+Les instructions a deux operandes s'ecrivent source,destination.
+La source dispose d'un champ As de deux bits ; la destination d'un bit Ad.
+
+  Mode                 Syntaxe        Usage
+  ------------------   ------------   --------------------------------------
+  Registre             R5             Valeur dans un registre.
+  Indexe               6(R5)          Memoire a R5 + deplacement.
+  Symbolique           etiquette      Memoire relative a PC.
+  Absolu               &0x0200         Memoire a une adresse explicite.
+  Indirect             @R5            Memoire a l'adresse contenue dans R5.
+  Indirect incremente  @R5+           Lecture puis increment de R5.
+  Immediat             #0x1234        Constante, pas lecture de cette adresse.
+
+Pour une source Rn ordinaire :
+
+  As=00 : registre
+  As=01 : indexe ; consomme un mot de deplacement
+  As=10 : indirect
+  As=11 : indirect avec auto-increment
+
+Pour une destination :
+
+  Ad=0 : registre
+  Ad=1 : indexe, avec les cas particuliers symbolique et absolu
+
+Il n'existe donc pas un champ destination independant offrant tous les modes
+source. Pour ecrire a l'adresse de R5, utiliser par exemple 0(R5).
+
+Cas particuliers essentiels du decodeur :
+
+  R0, As=01 : adressage symbolique, relatif a PC.
+  R0, As=11 : immediat ; le mot suivant fournit la constante.
+  R2, As=01 : adressage absolu ; le mot suivant fournit l'adresse.
+  R2, Ad=1  : destination absolue.
+
+Le generateur de constantes remplace certains modes source :
+
+  Registre   As=00     As=01          As=10     As=11
+  --------   -------- -------------  --------  --------
+  R2         SR        absolu        #4        #8
+  R3         #0        #1            #2        #-1
+
+Ces constantes ne consomment pas de mot supplementaire. #-1 devient 0xFF
+en operation octet et 0xFFFF en operation mot. Decoder R3 comme un registre
+general stockant une valeur produit des erreurs jusque dans NOP et CLR.
+
+Auto-increment : un registre general avance de un en .B et de deux en .W.
+SP avance toujours de deux. Un immediat via PC consomme toujours un mot,
+meme si l'operation est .B.
+
+En adressage symbolique classique, la base est l'adresse du mot d'extension
+de l'operande concerne. Ce n'est pas toujours l'adresse de fin d'instruction.
+Si source et destination sont symboliques, leurs bases sont differentes.
+
+Exemple a l'adresse 0xC000 :
+
+  MOV 0xC010,R5
+  mots : 0x4015,0x000E
+
+Le deplacement 0x000E est ajoute a 0xC002, adresse de son mot d'extension.
+L'addition d'adresse classique est ramenee a 16 bits.
+
+Ne pas confondre :
+
+  MOV #0x0200,R5     ; R5 recoit la constante 0x0200.
+  MOV &0x0200,R5     ; R5 recoit le mot situe a l'adresse 0x0200.
+  MOV 0x0200,R5      ; lecture symbolique encodee relativement a PC.
+
+
+==============================================================================
+5. CODAGE DES INSTRUCTIONS CLASSIQUES
+==============================================================================
+
+5.1. Format I : deux operandes
+-----------------------------
+
+  Bits : 15..12 | 11..8 | 7  | 6   | 5..4 | 3..0
+         opcode | source| Ad | B/W | As   | destination
+
+  B/W = 0 : mot ; B/W = 1 : octet.
+
+  Opcode hexadecimal :
+    4 MOV   5 ADD   6 ADDC  7 SUBC  8 SUB  9 CMP
+    A DADD  B BIT   C BIC   D BIS   E XOR  F AND
+
+Les mots supplementaires sont places dans l'ordre source puis destination.
+Une instruction classique de ce format occupe un a trois mots.
+
+Exemples de controle du decodeur :
+
+  Assembleur              Mots hexadecimaux      Octets en memoire
+  ----------------------  --------------------  -------------------
+  MOV #0x1234,R5          4035 1234             35 40 34 12
+  MOV #0,R5               4305                  05 43
+  ADD R4,R5               5405                  05 54
+  MOV.B #0x12,R5          4075 0012             75 40 12 00
+  MOV #0x5A80,&0x0120     40B2 5A80 0120        B2 40 80 5A 20 01
+
+5.2. Format II : un operande
+---------------------------
+
+  Bits : 15..10 | 9..7     | 6   | 5..4 | 3..0
+         000100 | operation | B/W | As   | registre
+
+  Operation   Base du mot   Instruction
+     0          0x1000       RRC
+     1          0x1080       SWPB
+     2          0x1100       RRA
+     3          0x1180       SXT
+     4          0x1200       PUSH
+     5          0x1280       CALL
+     6          0x1300       RETI, encodage usuel exact 0x1300
+     7                       reserve
+
+Les bits operandes ne rendent pas toutes les combinaisons valides.
+SWPB, SXT et CALL sont des operations mot ; RETI n'a pas d'operande.
+Un immediat ne constitue pas une destination valable pour RRC ou RRA.
+
+5.3. Format III : sauts
+----------------------
+
+  Bits : 15..13 | 12..10    | 9..0
+         001    | condition | deplacement signe sur 10 bits
+
+  0 JNE/JNZ     1 JEQ/JZ      2 JNC/JLO     3 JC/JHS
+  4 JN          5 JGE         6 JL          7 JMP
+
+Calcul, apres lecture du mot d'instruction :
+
+  delta = instruction AND 0x03FF
+  si delta >= 0x0200 : delta = delta - 0x0400
+  cible = (PC_apres_instruction + 2 * delta) AND 0xFFFF
+
+La portee est -1024 a +1022 octets relativement au PC apres instruction.
+Les cibles sont alignees. Le mot 0x3FFF saute sur lui-meme : delta=-1.
+Un saut hors de portee exige une autre sequence, pas une troncature silencieuse.
+
+
+==============================================================================
+6. INSTRUCTIONS NATIVES
+==============================================================================
+
+S = source, D = ancienne destination, C = ancienne retenue.
+Les resultats sont limites a la largeur .B ou .W.
+
+6.1. Deux operandes
+------------------
+
+  Instruction    Operation                           Indicateurs calcules
+  ------------   ----------------------------------  ---------------------
+  MOV S,D        D = S                               aucun
+  ADD S,D        D = D + S                           N Z C V
+  ADDC S,D       D = D + S + C                       N Z C V
+  SUB S,D        D = D - S                           N Z C V
+  SUBC S,D       D = D - S - (1-C)                   N Z C V
+  CMP S,D        calcul de D - S, sans ecrire D       N Z C V
+  DADD S,D       addition decimale BCD avec C         N Z C ; V indefini
+  BIT S,D        calcul de D AND S, sans ecrire D     N Z C ; V=0
+  BIC S,D        D = D AND NOT S                     aucun
+  BIS S,D        D = D OR S                          aucun
+  XOR S,D        D = D XOR S                         N Z C V
+  AND S,D        D = D AND S                         N Z C ; V=0
+
+"Aucun" signifie aucun calcul automatique des indicateurs. Une instruction
+dont la destination est SR peut evidemment changer ses bits explicitement.
+
+DADD travaille sur des chiffres BCD compactes : deux chiffres en .B, quatre
+en .W. Pour une addition decimale sans retenue entrante, executer CLRC avant.
+Ne pas remplacer DADD par une addition binaire ordinaire.
+
+6.2. Un operande et controle
+---------------------------
+
+  RRC D     Decale vers la droite en faisant entrer l'ancien C au bit de
+            poids fort. L'ancien bit 0 devient C ; N/Z calcules ; V=0.
+  RRA D     Decalage arithmetique a droite : conserve le signe, ancien bit 0
+            vers C ; N/Z calcules ; V=0.
+  SWPB D    Echange les deux octets d'un mot ; ne calcule pas les indicateurs.
+  SXT D     Etend le signe de l'octet bas sur 16 bits ; N/Z calcules,
+            C=1 si resultat non nul, V=0.
+  PUSH S    Empile l'operande ; ne calcule pas les indicateurs.
+  CALL S    Empile le PC de retour, puis charge PC avec la valeur source.
+  RETI      Depile SR puis PC ; reprend le contexte interrompu.
+
+CALL #fonction appelle l'adresse de fonction. CALL &pointeur lit en memoire
+l'adresse a appeler. CALL fonction emploie la valeur lue par le mode
+symbolique ; cette distinction explique beaucoup d'appels incorrects.
+
+6.3. Conditions des sauts
+------------------------
+
+  JNE/JNZ : Z=0          JEQ/JZ : Z=1
+  JNC/JLO : C=0          JC/JHS : C=1
+  JN      : N=1          JGE    : N=V
+  JL      : N<>V         JMP    : toujours
+
+Apres CMP source,destination : JL/JGE comparent des nombres signes ;
+JLO/JHS comparent des nombres non signes. JN n'est pas un remplacement de JL
+lorsqu'un debordement signe est possible.
+
+
+==============================================================================
+7. INSTRUCTIONS EMULEES ET SYNONYMES
+==============================================================================
+
+Ici, "emulee" signifie developpee par l'assembleur en instruction native.
+Le processeur et un emulateur de machine executent le codage resultant.
+
+  Mnemonique        Developpement
+  ----------------  -------------------------------------------------------
+  ADC D             ADDC #0,D
+  SBC D             SUBC #0,D
+  DADC D            DADD #0,D
+  CLR D             MOV #0,D
+  INC D             ADD #1,D
+  INCD D            ADD #2,D
+  DEC D             SUB #1,D
+  DECD D            SUB #2,D
+  INV D             XOR #-1,D
+  TST D             CMP #0,D
+  RLA D             ADD D,D
+  RLC D             ADDC D,D
+  POP D             MOV @SP+,D
+  BR S              MOV S,PC
+  RET               MOV @SP+,PC
+  NOP               MOV #0,R3 ; mot 0x4303
+  CLRC / SETC       BIC #1,SR / BIS #1,SR
+  CLRZ / SETZ       BIC #2,SR / BIS #2,SR
+  CLRN / SETN       BIC #4,SR / BIS #4,SR
+  DINT / EINT       BIC #8,SR / BIS #8,SR
+
+Les formes autorisees et les suffixes restent ceux de l'instruction obtenue.
+RLA/RLC sur memoire exigent notamment un adressage destination representable.
+Les syntaxes additionnelles offertes par certains assembleurs ne sont pas
+automatiquement des instructions materiellement nouvelles.
+
+
+==============================================================================
+8. CALCUL DES INDICATEURS
+==============================================================================
+
+Pour ecrire une ALU independante du langage hote :
+
+  n = 8 ou 16
+  masque = (1 << n) - 1
+  signe = 1 << (n - 1)
+  s = source AND masque
+  d = destination AND masque
+
+Addition et addition avec retenue :
+
+  entree = 0 pour ADD, ancien C pour ADDC
+  total = d + s + entree             ; calcul dans un type plus large
+  r = total AND masque
+  C = total > masque
+  V = ((NOT(d XOR s) AND (d XOR r) AND signe) <> 0)
+
+Soustraction et comparaison :
+
+  emprunt = 0 pour SUB/CMP, 1-ancien C pour SUBC
+  total = d + (s XOR masque) + (1-emprunt)
+  r = total AND masque
+  C = total > masque                 ; C=1 signifie PAS d'emprunt
+  V = (((d XOR s) AND (d XOR r) AND signe) <> 0)
+
+Pour ces operations : Z=(r=0), N=((r AND signe)<>0).
+Calculer les indicateurs avant de perdre la retenue par troncature.
+CMP utilise les memes calculs que SUB, sans ecriture de la destination.
+
+Pour BIT et AND : C=(r<>0), V=0 ; N et Z suivent le resultat.
+Pour XOR : C=(r<>0) et V=1 si les deux operandes avaient leur signe a 1.
+Pour RRC et RRA : C recoit l'ancien bit 0 ; V est remis a zero.
+
+Addition BCD possible, chiffre par chiffre :
+
+  retenue = ancien C
+  pour chaque quartet, du moins significatif au plus significatif :
+      t = chiffre_destination + chiffre_source + retenue
+      si t > 9 : t = t + 6
+      chiffre_resultat = t AND 15
+      retenue = (t > 15)
+
+Cela definit les cas BCD valides. Ne pas inventer une garantie pour les
+chiffres A a F ni pour V apres DADD. Un outil de validation doit exclure les
+bits architecturalement indefinis de ses comparaisons.
+
+Exemples attendus, en mode mot :
+
+  0xFFFF + 1 = 0x0000 : C=1 Z=1 N=0 V=0
+  0x7FFF + 1 = 0x8000 : C=0 Z=0 N=1 V=1
+  0x0000 - 1 = 0xFFFF : C=0 Z=0 N=1 V=0
+  0x8000 - 1 = 0x7FFF : C=1 Z=0 N=0 V=1
+
+Une multiplication, division ou expression du langage hote ne doit pas
+introduire de debordement signe indefini. Utiliser des entiers non signes
+plus larges et des masques explicites.
+
+
+==============================================================================
+9. TEMPS D'EXECUTION
+==============================================================================
+
+La duree depend du format, des modes d'adressage et du coeur. Le nombre de
+mots de code n'est pas a lui seul le nombre de cycles.
+
+Quelques reperes du coeur classique, en cycles MCLK :
+
+  MOV R4,R5                         1
+  ADD R4,R5                         1
+  MOV #0x1234,R5                    2
+  MOV #0,R5 avec generateur CG       1
+  MOV &0x0200,R5                    3
+  MOV R5,&0x0200                    4
+  PUSH R5                           3
+  CALL #fonction                    5
+  Saut conditionnel ou JMP          2, pris ou non pris
+  RETI                              5
+  Acceptation d'une interruption    6
+
+Ces exemples ne remplacent pas les tables completes de cycles. Les acces
+a PC, les extensions CPUX, les attentes memoire et les variantes de coeur
+doivent etre traites explicitement dans un modele temporel precis.
+
+Proposition d'implementation : associer au decodeur une table de couts par
+format et modes, avec les exceptions documentees. Tester separement le
+nombre d'octets consommes et le nombre de cycles executes.
+
+
+==============================================================================
+10. RESET, INTERRUPTIONS ET BASSE CONSOMMATION
+==============================================================================
+
+10.1. Demarrage
+---------------
+
+Sur le profil classique, le vecteur de reset est le mot a 0xFFFE.
+Le programme doit initialiser SP avant un appel ou une interruption.
+Le reset n'est pas un appel : il n'empile pas une adresse de retour.
+
+Les causes BOR, POR et PUC n'ont pas necessairement les memes effets sur
+chaque registre ou memoire. Pour un modele fidele, definir une matrice de
+reinitialisation par cause plutot qu'effacer toute la machine sans distinction.
+La RAM n'est pas une memoire automatiquement remplie de zeros au demarrage.
+
+10.2. Interruption classique
+---------------------------
+
+Une interruption masquable demande son autorisation locale et GIE. Les NMI
+et les resets suivent d'autres regles. A une frontiere d'instruction :
+
+  - arbitrer les requetes selon les priorites du composant ;
+  - empiler le PC de reprise, puis SR ;
+  - appliquer les acquittements propres a la source ;
+  - remettre SR a zero sur le coeur classique decrit ici ;
+  - charger PC depuis le vecteur selectionne.
+
+La pile contient donc SR a 0(SP) et PC a 2(SP) a l'entree du gestionnaire.
+Les registres generaux ne sont pas sauvegardes automatiquement.
+RETI restaure SR, puis PC, avec un increment total de SP de quatre octets.
+
+Ne pas effacer tous les IFG a chaque interruption. Certains drapeaux sont
+acquittes automatiquement, d'autres par logiciel ou par lecture d'un registre
+de vecteur partage. Le traitement appartient au modele du peripherique.
+
+10.3. Modes classiques de faible consommation
+--------------------------------------------
+
+  Mode   Bits de commande poses dans SR
+  ------ -------------------------------------------------------------
+  Actif  aucun des quatre bits ci-dessous
+  LPM0   CPUOFF
+  LPM1   CPUOFF + SCG0
+  LPM2   CPUOFF + SCG1
+  LPM3   CPUOFF + SCG1 + SCG0
+  LPM4   CPUOFF + SCG1 + SCG0 + OSCOFF
+
+Les horloges effectivement actives dependent de leurs sources et des demandes
+des modules. Les modes LPMx.5 de certaines familles constituent un autre cas.
+
+RETI peut retablir CPUOFF depuis SR sauvegarde et rendormir le CPU.
+Pour sortir durablement de LPM0, un gestionnaire peut effacer CPUOFF dans
+le SR empile. L'offset change s'il a auparavant empile d'autres registres.
+
+Dans l'emulateur, CPUOFF arrete les instructions, pas l'univers simule.
+Les temporisateurs ou entrees externes encore actifs peuvent provoquer le
+prochain reveil. Avancer alors directement au prochain evenement utile.
+
+
+==============================================================================
+11. EXEMPLE MATERIEL : MSP430G2553
+==============================================================================
+
+Caracteristiques de ce composant, a confronter au boitier et aux conditions
+electriques de sa fiche technique [2] :
+
+  - coeur classique, jusqu'a 16 MHz ; alimentation 1,8 a 3,6 V ;
+  - 16 Kio de Flash programme et 512 octets de RAM ;
+  - Flash d'information de 256 octets ;
+  - deux Timer_A a trois blocs capture/comparaison chacun ;
+  - watchdog, interfaces USCI, convertisseur ADC10 et comparateur ;
+  - GPIO et fonctions alternatives dont la disponibilite depend du boitier.
+
+La frequence maximale autorisee depend de la tension : 16 MHz n'est pas
+une promesse de fonctionnement sur toute la plage d'alimentation.
+
+Carte memoire utile au profil G2553 :
+
+  0x0000-0x000F   Registres speciaux SFR
+  0x0010-0x00FF   Fenetre des peripheriques 8 bits
+  0x0100-0x01FF   Fenetre des peripheriques 16 bits
+  0x0200-0x03FF   RAM, 512 octets
+  0x1000-0x10FF   Flash d'information
+  0xC000-0xFFFF   Flash principale, vecteurs compris
+  0xFFFE-0xFFFF   Vecteur de reset
+
+Les autres adresses ne deviennent pas de la RAM par defaut. Cette carte
+resume les regions utiles ; consulter la fiche pour les zones reservees.
+
+Quelques registres pour un premier programme :
+
+  P1IN     0x0020   Etat des broches du port 1
+  P1OUT    0x0021   Verrou de sortie du port 1
+  P1DIR    0x0022   Direction ; bit a 1 = sortie
+  P1SEL    0x0026   Selection de fonction, avec P1SEL2 selon la broche
+  P1REN    0x0027   Activation des resistances internes
+  P1SEL2   0x0041   Selection de fonction complementaire
+  WDTCTL   0x0120   Controle du watchdog, acces mot avec mot de passe
+
+WDTCTL exige 0x5A dans l'octet haut lors d'une ecriture. Le bit WDTHOLD vaut
+0x0080 : 0x5A80 arrete le watchdog. Une mauvaise cle provoque un reset de
+type PUC ; une lecture ne renvoie pas simplement la cle d'ecriture.
+
+Les horloges principales sont MCLK pour le CPU, SMCLK pour certains modules
+et ACLK pour les usages lents. Ne pas supposer qu'elles ont la meme frequence.
+Le DCO et ses constantes d'etalonnage demandent un traitement specifique :
+une image contenant seulement le programme peut omettre la Flash d'information.
+
+
+==============================================================================
+12. PROGRAMMATION EN ASSEMBLEUR
+==============================================================================
+
+12.1. Syntaxe de base
+--------------------
+
+  etiquette:  instruction source,destination ; commentaire
+
+Le suffixe .B selectionne huit bits ; .W selectionne seize bits et peut
+generalement etre omis. # introduit une valeur immediate, & un adressage
+absolu. Les directives ne sont pas executees par le CPU.
+
+Les assembleurs TI et GNU n'ont pas toutes les memes directives, macros,
+sections ni conventions de lien. Les exemples de corps de fonctions suivants
+illustrent les instructions ; adapter leur enveloppe a l'outil choisi.
+
+12.2. Programme autonome minimal pour le G2553
+--------------------------------------------
+
+Placer ce code a 0xC000 et le mot 0xC000 au vecteur 0xFFFE. Le script de lien
+doit reserver la RAM 0x0200-0x03FF et fournir une pile dont le sommet initial
+est 0x0400. Le programme illustre une sortie numerique, sans supposer qu'une
+carte particuliere relie effectivement P1.0 a une LED.
+
+  reset:
+      MOV.W #0x0400,SP
+      MOV.W #0x5A80,&0x0120     ; arreter le watchdog
+      BIC.B #1,&0x0026          ; fonction GPIO sur P1.0
+      BIC.B #1,&0x0041
+      BIC.B #1,&0x0021          ; sortie initialement basse
+      BIS.B #1,&0x0022          ; P1.0 en sortie
+
+  boucle:
+      XOR.B #1,&0x0021
+      MOV.W #50000,R15
+  attente:
+      DEC.W R15
+      JNZ attente
+      JMP boucle
+
+Cette temporisation depend de MCLK ; elle ne definit pas une duree universelle.
+Une application basse consommation utilisera plutot un temporisateur et LPM.
+
+12.3. Copier des octets
+----------------------
+
+Entree : R4=source, R5=destination, R6=nombre d'octets.
+Les zones ne doivent pas se chevaucher de facon destructive.
+
+  copie:
+      TST.W R6
+      JZ termine
+  suivant:
+      MOV.B @R4+,0(R5)
+      INC.W R5
+      DEC.W R6
+      JNZ suivant
+  termine:
+      RET
+
+Cette routine modifie R4, R5, R6 et SR. Une fonction appelee depuis C doit
+respecter l'ABI du compilateur, qui peut imposer de sauvegarder des registres.
+
+12.4. Addition 32 bits
+---------------------
+
+Ajouter R7:R6 a R5:R4, mot haut a gauche :
+
+      ADD.W  R6,R4
+      ADDC.W R7,R5
+
+Ne pas intercaler une instruction modifiant C entre les deux additions.
+Le Z final ne decrit que le mot haut ; pour tester tout le resultat, il faut
+combiner explicitement les deux mots.
+
+12.5. Edition de liens
+---------------------
+
+Un executable utilisable exige plus que l'assemblage du texte :
+
+  - une cible CPU et un modele memoire coherents ;
+  - des sections de code et de constantes placees dans la memoire programme ;
+  - des donnees initialisees copiees en RAM si le programme l'exige ;
+  - une zone de donnees non initialisees et une pile sans chevauchement ;
+  - les vecteurs correctement places et le vecteur de reset renseigne.
+
+Le demarrage d'un programme C peut effectuer ces initialisations. Un programme
+entierement assembleur doit les assurer lui-meme lorsqu'elles sont necessaires.
+
+
+==============================================================================
+13. EXTENSIONS MSP430X
+==============================================================================
+
+Le passage a MSP430X n'est pas un simple agrandissement du tableau memoire.
+Il introduit notamment des adresses de 20 bits, des mots d'extension et des
+operations d'adresse. Le guide du coeur concerne doit definir chaque codage.
+
+Exemples de familles d'instructions supplementaires :
+
+  MOVX, ADDX, ...     Operations etendues et mots d'extension.
+  MOVA               Transfert de valeurs d'adresse.
+  ADDA, SUBA, CMPA    Arithmetique et comparaison d'adresses.
+  CALLA, RETA        Appel et retour avec adresse etendue.
+  PUSHM, POPM        Sauvegarde/restauration de plusieurs registres.
+
+La taille .A des instructions qui la prennent en charge represente une
+valeur d'adresse de 20 bits. SR conserve son role particulier ; il ne faut
+pas transformer indistinctement tous les registres en entiers 20 bits.
+
+Points a implementer separement :
+
+  - interpretation des mots d'extension avant l'instruction principale ;
+  - largeur des registres et effets des operations .B, .W et .A ;
+  - calcul des adresses au passage de la limite 0xFFFF ;
+  - formats de pile des appels et interruptions etendus ;
+  - repetitions et instructions multiples, lorsqu'elles sont disponibles ;
+  - cycles et differences entre revisions de coeur.
+
+Un CALLA n'empile pas seulement le mot utilise par CALL classique. Les
+interruptions CPUX enregistrent aussi les bits superieurs du PC selon un
+format specifique. Reutiliser RETI classique sans adaptation corrompt le retour.
+
+Pour commencer, refuser explicitement une image exigeant MSP430X dans un
+emulateur classique. L'execution silencieuse des mots d'extension comme NOP
+masquerait une incompatibilite fondamentale.
+
+
+==============================================================================
+14. ARCHITECTURE LOGICIELLE D'UN EMULATEUR
+==============================================================================
+
+Proposition de modules, independante du langage de programmation :
+
+  Machine
+    +-- ProfilComposant : memoire, vecteurs, modules et valeurs de reset
+    +-- CPU             : registres, decodeur, ALU, controle d'execution
+    +-- Bus             : acces octet/mot et routage memoire/peripheriques
+    +-- Interruptions   : requetes, autorisations, priorites
+    +-- Horloges        : sources, diviseurs et domaines actifs
+    +-- Evenements      : temps virtuel et actions programmees
+    +-- Peripheriques   : GPIO, WDT, timers, interfaces, ADC, Flash
+    +-- Chargeur        : executable et symboles
+    +-- Debogueur       : trace, points d'arret et inspection
+
+Etat minimal du coeur classique :
+
+  registres[16] : stockage entier, avec semantique speciale R0-R3
+  cycles       : compteur suffisamment large
+  profil       : description immuable de la cible
+  arret_debug  : etat de l'outil, distinct de CPUOFF
+
+Garder une source de verite unique pour SR. Un booleen "interruptions actives"
+duplique peut devenir incoherent apres MOV vers SR ou RETI.
+
+Interface du bus proposee :
+
+  lire8(adresse, nature)
+  lire16(adresse, nature)
+  ecrire8(adresse, valeur, nature)
+  ecrire16(adresse, valeur, nature)
+  inspecter_sans_effet(adresse, largeur)
+
+"nature" distingue si utile la lecture d'instruction, la donnee et le DMA.
+L'inspection du debogueur ne doit pas acquitter accidentellement une interruption.
+Un acces 16 bits a un peripherique ne se decompose pas toujours en deux acces
+8 bits equivalents : respecter la largeur et les effets du module.
+
+Utiliser des descripteurs d'operandes :
+
+  Immediate(valeur)
+  Registre(numero, largeur)
+  Memoire(adresse_effective, largeur)
+
+Le descripteur conserve l'adresse deja calculee. Ainsi une instruction de
+lecture-modification-ecriture n'auto-incremente pas deux fois son pointeur.
+
+
+==============================================================================
+15. EXECUTION D'UNE INSTRUCTION
+==============================================================================
+
+15.1. Boucle principale proposee
+--------------------------------
+
+  tant que la machine n'est pas arretee par l'utilisateur :
+      traiter les evenements arrives au temps courant
+      traiter un reset eventuel
+      si une interruption est admissible :
+          effectuer son entree et avancer le temps correspondant
+          continuer
+      si SR.CPUOFF :
+          avancer au prochain evenement capable de changer la machine
+          ou attendre une entree externe s'il n'existe aucun evenement
+          continuer
+      pc_initial = PC
+      instruction = lire16(PC, instruction)
+      PC = (PC + 2) AND 0xFFFF
+      decoder et executer une instruction
+      avancer le temps suivant son cout
+      publier la trace si demandee
+
+Ce modele execute les instructions atomiquement. Il convient a une premiere
+emulation fonctionnelle ; une fidelite au cycle de bus exige de placer les
+lectures et ecritures a leurs instants internes, pas seulement en fin de pas.
+
+15.2. Decodage classique
+-----------------------
+
+  si (mot AND 0xE000) = 0x2000 : famille des sauts
+  sinon si (mot AND 0xFC00) = 0x1000 : famille a un operande
+  sinon si (mot AND 0xF000) >= 0x4000 : famille a deux operandes
+  sinon : encodage non pris en charge ou reserve
+
+Verifier ensuite les sous-champs. Reconnaitre la famille ne suffit pas a
+valider les combinaisons reservees ni les formes illegales.
+
+Pour le format I :
+
+  1. Extraire opcode, registres, As, Ad et largeur.
+  2. Resoudre la source, son mot supplementaire et son auto-increment.
+  3. Conserver sa valeur au moment architecturalement approprie.
+  4. Resoudre la destination et son eventuel mot supplementaire.
+  5. Lire l'ancienne destination seulement si l'operation l'exige.
+  6. Executer l'ALU et calculer les indicateurs concernes.
+  7. Ecrire le resultat, sauf CMP/BIT, et appliquer la semantique de SR/PC.
+
+Le cas des registres particuliers et des alias doit faire l'objet de tests
+dedies. Une formule uniforme qui lit tous les registres apres avoir avance
+PC jusqu'a la fin du decodeur donne des resultats incorrects.
+
+Pour un operande symbolique, memoriser PC avant de consommer son deplacement.
+Pour MOV vers un peripherique, ne pas lire la destination pour rien : une
+lecture peut avoir un effet materiel. Pour CMP/BIT, ne pas reecrire la valeur
+lue : cette ecriture fictive pourrait declencher un peripherique.
+
+15.3. Politiques de diagnostic
+-----------------------------
+
+Consigner PC, mot machine, largeur et adresse lors d'un acces invalide.
+Un mode strict de developpement peut interrompre l'emulation ; un mode de
+compatibilite peut reproduire un comportement documente du composant.
+Ne pas fabriquer une exception CPU qui n'existe pas sur la cible.
+
+Pour les bits indefinis, conserver une politique deterministe et documentee
+sans la presenter comme une garantie materielle.
+
+
+==============================================================================
+16. EMULATION DES PERIPHERIQUES
+==============================================================================
+
+16.1. GPIO
+----------
+
+Separer le verrou OUT, DIR, la selection de fonction et les niveaux externes.
+IN depend de l'etat de la broche, pas simplement d'une copie de OUT.
+Modeliser REN et le choix tirage haut/bas lorsque necessaire, puis les fronts,
+les IFG et les autorisations d'interruption propres aux ports concernes.
+Une sortie LED virtuelle est un observateur de broche, pas un opcode special.
+
+16.2. Watchdog
+-------------
+
+Verifier la cle d'ecriture, le mode watchdog ou intervalle, la source d'horloge,
+le diviseur, la remise a zero du compteur et HOLD. Une expiration watchdog
+declenche la cause de reset appropriee ; le mode intervalle utilise son
+mecanisme d'interruption. Arreter le CPU ne doit pas arreter arbitrairement WDT.
+
+16.3. Timer_A
+-------------
+
+Modeliser le compteur, sa source, son diviseur, ses modes arret/up/continu/
+up-down, les registres CCR et les drapeaux. Ajouter capture et sorties ensuite.
+Respecter la distinction entre le vecteur dedie a CCR0 et les sources partagees.
+La lecture du registre de vecteur peut acquitter une source selon sa priorite.
+
+Une approche efficace calcule le prochain passage significatif du compteur
+au lieu d'executer une boucle pour chaque tic. Toute ecriture qui change le
+compteur, la periode ou l'horloge doit recalculer l'evenement programme.
+
+16.4. Interfaces serie
+----------------------
+
+Commencer par une UART dont RX/TX sont alimentes par une file deterministe.
+Representer separement le registre de donnees, le decalage en cours et les IFG.
+Le drapeau de tampon disponible ne signifie pas toujours fin de transmission.
+SPI et I2C demandent en plus un modele des peripheriques connectes au bus.
+
+16.5. ADC et comparateur
+-----------------------
+
+Fournir des entrees analogiques virtuelles horodatees. Respecter selection du
+canal, reference, duree d'acquisition, conversion et interruption. Une premiere
+version peut convertir une valeur ideale ; bruit, tolerance et consommation
+analogique constituent un niveau de fidelite distinct, a annoncer clairement.
+
+16.6. Flash et FRAM
+------------------
+
+Une Flash demande des operations d'effacement et de programmation, des verrous
+et des durees. Ne pas autoriser une simple ecriture RAM dans la zone programme.
+Une cible FRAM exige son propre modele de protection et d'attente memoire.
+Les changements doivent pouvoir etre conserves dans une image persistante.
+
+16.7. Temps virtuel
+------------------
+
+Ne pas utiliser la duree reelle d'execution du PC hote comme horloge materielle.
+Employer une base de temps entiere ou rationnelle, une file d'evenements et
+des ordres deterministes pour les evenements simultanes.
+
+Changer MCLK modifie la duree des cycles CPU, pas retroactivement les periodes
+de tous les modules. Chaque domaine d'horloge conserve sa phase et ses regles
+d'arret/reprise. DMA et arbitrage de bus peuvent etre ajoutes pour les profils
+qui les possedent ; le G2553 ne doit pas recevoir ces modules par invention.
+
+
+==============================================================================
+17. CHARGEMENT, DEBOGAGE ET VALIDATION
+==============================================================================
+
+17.1. Formats de fichiers
+------------------------
+
+  Binaire brut : exige une adresse de chargement externe ; ne contient pas
+                 automatiquement le vecteur de reset ni les symboles.
+  Intel HEX    : verifier types d'enregistrement, adresses et sommes de controle.
+  TI-TXT       : interprete les marqueurs d'adresse et les octets textuels.
+  ELF          : respecter adresses de chargement, sections/segments et cible ;
+                 les symboles et informations de debug sont facultatifs.
+
+Ne pas charger le fichier ELF entier comme une suite d'instructions.
+Le chargement par le debogueur est une operation hors CPU : definir s'il
+contourne volontairement les verrous de programmation du materiel.
+
+Verifier les regions, les debordements d'adresse et la presence d'un vecteur
+de reset plausible. Les zones absentes d'un fichier ne sont pas toutes a
+remplir avec zero : la Flash effacee et la RAM ont des conventions differentes.
+
+17.2. Outils utiles dans l'emulateur
+----------------------------------
+
+  - pas a pas, execution jusqu'a une adresse et arret sur nombre de cycles ;
+  - desassemblage avec les mots supplementaires ;
+  - affichage des registres, de SR, de la pile et des horloges ;
+  - points d'arret et surveillance des acces memoire ;
+  - journal des interruptions, resets et acces aux peripheriques ;
+  - entree serie et broches virtuelles scriptables ;
+  - instantanes incluant files d'evenements et etats des peripheriques.
+
+Une trace utile contient : temps virtuel, PC initial, octets de l'instruction,
+modifications des registres, modifications de SR et acces memoire observables.
+Elle ne doit pas refaire les lectures CPU pour les afficher.
+
+17.3. Matrice de tests conseillee
+--------------------------------
+
+  Domaine           Cas a verifier
+  ----------------  -------------------------------------------------------
+  Chargement        Little-endian ; trou memoire ; mauvais checksum ; reset.
+  Decodeur          Chaque opcode ; chaque As/Ad valide ; mots supplementaires.
+  Constantes        Toutes les combinaisons R2/R3 ; #0 ; #-1 ; tailles .B/.W.
+  Adressage         Source et destination symboliques ; absolu ; @Rn+ ; SP.
+  Registres         Octet haut apres MOV.B ; ecriture PC ; lecture/ecriture SR.
+  ALU               Zero ; retenue ; emprunt ; limites signees ; C entrant 0/1.
+  BCD               09+01 ; 99+01 ; plusieurs chiffres ; retenue entrante.
+  Sauts             Chaque condition ; deux sens ; limites ; saut sur lui-meme.
+  Pile              CALL/RET ; PUSH.B ; interruption/RETI ; registres aliases.
+  Bus               MOV sans lecture destination ; BIT/CMP sans ecriture.
+  Interruptions     GIE=0/1 ; priorites ; IFG partage ; reveil puis rendormissement.
+  Watchdog          Bonne/mauvaise cle ; HOLD ; expiration ; mode intervalle.
+  Timer             Comparaison ; debordement ; diviseurs ; changement de CCR.
+  Temps             Cycles ; horloges distinctes ; CPUOFF ; evenements simultanes.
+  MSP430X           Frontiere 64 Kio ; extensions ; appels et retours etendus.
+
+Construire d'abord des tests avec les mots binaires de la section 5 : ils
+evitent qu'une erreur de l'assembleur masque une erreur du decodeur.
+Ajouter ensuite des petits programmes assembles et des executables C.
+
+Pour l'ALU octet, tester exhaustivement les paires d'operandes et les deux
+retenues entrantes est abordable. Pour les mots, combiner cas limites et
+tirages reproductibles. Comparer seulement les indicateurs definis.
+
+La validation differentielle peut comparer registres, memoire et traces avec
+une carte reelle ou un simulateur independant. Preciser le composant, ses
+errata et les effets du debogueur sur les horloges. Un seul programme de
+clignotement ne valide ni le jeu d'instructions ni les timings.
+
+
+==============================================================================
+18. PLAN DE REALISATION
+==============================================================================
+
+Etape 1 : coeur classique et bus RAM/ROM.
+  Implementer les formats, les modes, l'ALU, PC, SP, SR et les tests binaires.
+
+Etape 2 : machine G2553 minimale.
+  Charger une image, suivre le reset, exposer GPIO et WDTCTL, executer le
+  programme de la section 12 avec une sortie virtuelle observable.
+
+Etape 3 : temps virtuel et interruptions.
+  Ajouter Timer_A, priorites, RETI et basse consommation ; verifier un reveil
+  periodique sans boucle CPU active.
+
+Etape 4 : environnement de programmation.
+  Charger ELF ou les formats d'echange retenus, afficher les symboles et
+  proposer points d'arret, traces et tests automatisables.
+
+Etape 5 : peripheriques utiles aux logiciels vises.
+  Ajouter serie, conversion analogique et programmation de la Flash avec
+  les effets de bord et interruptions correspondants.
+
+Etape 6 : fidelite et autres profils.
+  Completer les cycles, les errata pertinents et eventuellement MSP430X.
+  Chaque nouveau composant doit avoir sa carte memoire et sa suite de tests.
+
+Definir le niveau annonce : execution fonctionnelle des instructions,
+compatibilite de peripheriques, precision en cycles, ou simulation electrique.
+Ces objectifs demandent des modeles differents. Un emulateur fonctionnel
+utile n'est pas automatiquement un instrument de mesure de consommation.
+
+
+==============================================================================
+19. REFERENCES TECHNIQUES
+==============================================================================
+
+Documents primaires Texas Instruments consultes le 10 octobre 2026.
+Les liens generiques peuvent pointer vers une revision plus recente a l'avenir.
+
+[1] MSP430F2xx, MSP430G2xx Family User's Guide, SLAU144K, aout 2022.
+    https://www.ti.com/lit/ug/slau144/slau144.pdf
+    Chapitres 2 et 3 : reset, interruptions, coeur classique, instructions
+    et tables de cycles. Chapitre 4 : CPUX. Autres chapitres : modules.
+
+[2] MSP430G2x53, MSP430G2x13 Mixed Signal Microcontroller, SLAS735J.
+    https://www.ti.com/lit/ds/symlink/msp430g2553.pdf
+    Reference pour le G2553 : limites electriques, boitiers, carte memoire,
+    registres presents et vecteurs. Un guide de famille ne remplace pas
+    cette fiche specifique.
+
+[3] MSP430x5xx and MSP430x6xx Family User's Guide, SLAU208Q.
+    https://www.ti.com/lit/ug/slau208q/slau208q.pdf
+    Reference complementaire pour les coeurs et modules de ces familles.
+    Ne pas transposer leurs registres ou leur reset au G2553.
+
+[4] MSP430 Assembly Language Tools v21.6.0.LTS User's Guide, SLAU131Y.
+    https://www.ti.com/lit/ug/slau131y/slau131y.pdf
+    Syntaxe de l'outillage TI, directives, objets, bibliotheques et liaison.
+    Les directives de cet outil ne definissent pas le jeu d'instructions CPU.
+
+Avant de viser une puce supplementaire, consulter aussi sa fiche technique
+et sa liste d'errata. Pour un autre assembleur, consulter sa documentation
+de syntaxe et d'ABI plutot que supposer l'equivalence de toutes les directives.
+
+==============================================================================
+ FIN DU DOCUMENT
+==============================================================================
