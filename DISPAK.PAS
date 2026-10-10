@@ -203,6 +203,19 @@ Var
  LoadAddr   : Word;           { adresse de chargement (ORG effectif) }
  Region     : Array[0..$FFFF] Of Byte;   { RGN_xxx par adresse memoire 16 bits }
  HasByte    : Array[0..$FFFF] Of Boolean; { True si cette adresse est couverte par Rom }
+ { BOGUE CORRIGE (plantage reel "Runtime error 201" + en-tete Vavasour      }
+ { jamais detecte, rapportes en utilisation live) : RawBuf etait auparavant}
+ { une variable LOCALE de LoadPakFile (~2 Mio, Array[0..MAX_ROM+16-1] of    }
+ { Byte) - un tableau de cette taille alloue sur la PILE d'un appel de      }
+ { fonction depasse de tres loin la reserve de pile par defaut d'un         }
+ { executable Win32 (typiquement 1 Mio), causant un debordement/corruption }
+ { de pile des l'entree dans LoadPakFile - avant meme que LooksLikeVavasour}
+ { n'examine ses octets (d'ou un en-tete "jamais" detecte, les octets etant}
+ { deja corrompus) et menant ensuite a un plantage (erreur de plage sur un  }
+ { acces tableau quelque part en aval, consequence indirecte de la pile     }
+ { deja corrompue). Corrige en promouvant RawBuf en variable GLOBALE,       }
+ { exactement comme Rom[] ci-dessus (segment de donnees, jamais la pile). }
+ RawBuf     : Array[0..MAX_ROM + 16 - 1] Of Byte;
 
  { --- Table des opcodes active (TODO 03/04/05) --- }
  OpTable      : Array[0..255] Of TOpEntry;  { page de base }
@@ -395,8 +408,10 @@ End;
 { selon Opts.PakMode (et les overrides -loadaddr/-romsize/-offset/-size).      }
 { Retourne False si le fichier est illisible. }
 Function LoadPakFile: Boolean;
+{ RawBuf est desormais une variable GLOBALE (voir le bloc Var principal,   }
+{ TODO 02 plus haut) - ne JAMAIS la redeclarer localement ici (c'est        }
+{ exactement le bogue corrige : un tableau de ~2 Mio sur la pile). }
 Var
- RawBuf: Array[0..MAX_ROM + 16 - 1] Of Byte;
  RawLen: LongInt;
  DeclLen, DeclAddr: Word;
  IsVavasour: Boolean;
@@ -830,7 +845,12 @@ Begin
  WriteLn('  -h, --help              Cette aide');
  WriteLn('  -v, --version           Version du desassembleur');
  WriteLn('  -i, --info              Informations sur le fichier .PAK, sans desassembler');
- WriteLn('  -auto                   Desassemblage recursif code/donnees (implicite avec -entry)');
+ WriteLn('  -auto                   Desassemblage recursif code/donnees (ACTIF PAR DEFAUT');
+ WriteLn('                          depuis cette version - ce switch est donc accepte');
+ WriteLn('                          mais sans effet ; voir -noauto pour le desactiver)');
+ WriteLn('  -noauto                 Desactive le desassemblage recursif : revient a un');
+ WriteLn('                          balayage LINEAIRE simple (ORG a la fin), au risque de');
+ WriteLn('                          desassembler des donnees comme si elles etaient du code');
  WriteLn('  -end adresse            Derniere adresse a desassembler');
  WriteLn('  -size taille            Limite le nombre d''octets analyses');
  WriteLn('  -header / -noheader     Force/desactive l''interpretation de l''en-tete');
@@ -885,7 +905,7 @@ Begin
  Begin
   PakFile := ''; OutFile := '';
   PakMode := PAK_AUTO; Cpu := CPU_6809;
-  AutoMode := False;
+  AutoMode := True;  { desassemblage recursif actif par defaut - voir -noauto }
   OrgSet := False; OrgAddr := 0;
   EntrySet := False; EntryAddr := 0;
   EndSet := False; EndAddr := 0;
@@ -923,6 +943,7 @@ Begin
    If UpArg(ParamStr(I)) = '6309' Then Opts.Cpu := CPU_6309 Else Opts.Cpu := CPU_6809;
   End
   Else If UA = '-AUTO' Then Opts.AutoMode := True
+  Else If UA = '-NOAUTO' Then Opts.AutoMode := False
   Else If UA = '-ORG' Then
   Begin Inc(I); Opts.OrgAddr := ParseHexWord(ParamStr(I), Ok); Opts.OrgSet := Ok; End
   Else If UA = '-ENTRY' Then
@@ -1004,7 +1025,9 @@ Begin
 
  If PosCount >= 1 Then Opts.PakFile := PosArgs[1];
  If PosCount >= 2 Then Opts.OutFile := PosArgs[2];
- If Opts.EntrySet Then Opts.AutoMode := True;
+ { Pas de forcage de AutoMode ici : il vaut deja True par defaut, et un      }
+ { -noauto explicite (meme combine a -entry) doit rester respecte plutot    }
+ { que d'etre silencieusement ecrase. }
 End;
 
 { ============================================================================ }
@@ -1898,6 +1921,13 @@ Begin
 
  If Opts.EntrySet Then StartAddr := Opts.EntryAddr Else StartAddr := LoadAddr;
 
+ { AutoMode (desassemblage recursif) est VRAI PAR DEFAUT depuis le retour  }
+ { d'utilisation live du 2026-10-10 (un balayage lineaire naif desynchronise}
+ { des la premiere donnee ressemblant a un opcode plausible, jamais le bon  }
+ { choix par defaut pour une vraie cartouche) - -noauto reste un vrai       }
+ { echappatoire explicite vers l'ancien balayage lineaire simple, pour      }
+ { l'utilisateur qui prefere diagnostiquer lui-meme un flux de code         }
+ { incorrectement reconstitue plutot que de laisser DISPAK deviner. }
  If Opts.AutoMode Then
  Begin
   If Opts.DoLabels Then AddLabel(StartAddr, False);
@@ -1930,9 +1960,9 @@ Begin
  End
  Else
  Begin
-  { Sans -auto : balayage lineaire simple, du debut (ou -entry) a la fin    }
-  { (ou -end) - plus simple, mais risque de desassembler des donnees comme  }
-  { si elles etaient du code, disclose dans -help. }
+  { -noauto : balayage lineaire simple, du debut (ou -entry) a la fin (ou   }
+  { -end) - plus simple, mais risque reel de desassembler des donnees       }
+  { comme si elles etaient du code (disclose dans -help). }
   Addr := StartAddr;
   While HasByte[Addr] Do
   Begin
@@ -2015,13 +2045,53 @@ Begin
  EmitLine('');
 End;
 
-Procedure EmitDataRun(StartAddr: Word; Len: Integer);
-{ Emet une serie d'octets consecutifs non decodes comme instruction, sous    }
-{ forme de lignes FCB (8 octets/ligne au plus, convention de listing usuelle).}
+Function PrintableRunLenAt(StartAddr: Word; Len, K: LongInt): LongInt;
+{ Longueur de la sous-sequence d'octets imprimables ($20-$7E) commencant a   }
+{ l'offset K dans la serie de donnees [StartAddr, StartAddr+Len). Len/K/     }
+{ valeur de retour en LongInt (pas Integer 16 bits) : un fichier .PAK peut   }
+{ legitimement produire une serie de donnees de plusieurs dizaines de Ko. }
+Var N: LongInt; B: Byte;
+Begin
+ N := 0;
+ While (K + N < Len) Do
+ Begin
+  B := Rom[LongInt(StartAddr - LoadAddr) + K + N];
+  If (B < 32) Or (B > 126) Then Break;
+  Inc(N);
+ End;
+ PrintableRunLenAt := N;
+End;
+
+Function PickDelimiter(Const S: String): Char;
+{ FCC exige un delimiteur n'apparaissant pas dans le texte - '/' est la      }
+{ convention Motorola la plus courante, repli sur quelques autres si le     }
+{ texte le contient lui-meme (rare). #0 = aucun delimiteur sur trouve,       }
+{ l'appelant doit alors retomber sur FCB hexadecimal pour cet octet. }
+Const Candidates: Array[1..5] Of Char = ('/', '"', '|', '!', '#');
+Var I: Integer;
+Begin
+ For I := 1 To 5 Do
+  If Pos(Candidates[I], S) = 0 Then Begin PickDelimiter := Candidates[I]; Exit; End;
+ PickDelimiter := #0;
+End;
+
+Procedure EmitDataRun(StartAddr: Word; Len: LongInt);
+{ Emet une serie d'octets consecutifs non decodes comme instruction.         }
+{ AMELIORATION (retour d'utilisation live) : toute sous-sequence d'au moins  }
+{ 4 octets imprimables est rendue en texte lisible (FCC /texte/) plutot      }
+{ qu'en hexadecimal FCB brut - c'est exactement ce qui rend visibles les     }
+{ messages/droits d'auteur caches dans une cartouche, INCONDITIONNELLEMENT   }
+{ (pas seulement via -strings, qui reste un rapport console separe). Le      }
+{ reste (octets non imprimables) continue en FCB, 8 octets/ligne. Len (et I, }
+{ RunLen qui en derivent) en LongInt - une serie de donnees reelle peut      }
+{ depasser les 32767 octets (limite d'un Integer 16 bits). }
 Var
- I, Col: Integer;
- Line, LblPart: String;
+ I, RunLen: LongInt;
+ Col: Integer;
+ Line, LblPart, TextRun: String;
  A: Word;
+ Delim: Char;
+ J: LongInt;
 Begin
  I := 0;
  While I < Len Do
@@ -2029,16 +2099,33 @@ Begin
   A := Word(StartAddr + I);
   LblPart := '';
   If Opts.DoLabels And (FindLabel(A) <> 0) Then LblPart := LabelName(A) + ':';
+
+  RunLen := PrintableRunLenAt(StartAddr, Len, I);
+  If RunLen >= 4 Then
+  Begin
+   TextRun := '';
+   For J := 0 To RunLen - 1 Do
+    TextRun := TextRun + Chr(Rom[LongInt(StartAddr - LoadAddr) + I + J]);
+   Delim := PickDelimiter(TextRun);
+   If Delim <> #0 Then
+   Begin
+    EmitLine(PadRight(LblPart, 10) + 'FCC     ' + Delim + TextRun + Delim);
+    Inc(I, RunLen);
+    Continue;
+   End;
+   { Delimiteur introuvable (texte contient / " | ! et #) : repli FCB. }
+  End;
+
   Line := PadRight(LblPart, 10) + 'FCB     ';
   Col := 0;
-  While (I < Len) And (Col < 8) Do
+  While (I < Len) And (Col < 8) And (PrintableRunLenAt(StartAddr, Len, I) < 4) Do
   Begin
    If Col > 0 Then Line := Line + ',';
    Line := Line + '$' + HexByte(Rom[LongInt(StartAddr - LoadAddr) + I]);
    Inc(I);
    Inc(Col);
   End;
-  EmitLine(Line);
+  If Col > 0 Then EmitLine(Line);
  End;
 End;
 
@@ -2065,10 +2152,11 @@ End;
 Procedure RunPass2;
 Var
  Addr: Word;
+ Pos: LongInt;
  DI: TDecodedInstr;
  Line, LblPart, OperPart, CommentPart, BytesPart: String;
  RunStart: Word;
- RunLen: Integer;
+ RunLen: LongInt;
  I: Integer;
 Begin
  OutOpened := False;
@@ -2095,9 +2183,19 @@ Begin
   EmitLine('');
  End;
 
- Addr := LoadAddr;
- While LongInt(Addr) < LongInt(LoadAddr) + RomSize Do
+ { Pos est une position LongInt qui ne boucle JAMAIS (contrairement a Addr, }
+ { Word qui boucle a $FFFF -> $0000) - c'est elle qui borne les boucles     }
+ { ci-dessous. Bogue CRITIQUE corrige ici : l'ancienne condition            }
+ { `LongInt(Addr) < LongInt(LoadAddr)+RomSize` est TOUJOURS VRAIE des que   }
+ { LoadAddr+RomSize = $10000 (cas reel et frequent d'une cartouche qui      }
+ { remplit jusqu'a $FFFF, ex. KING.PAK) car Addr:Word ne peut JAMAIS        }
+ { atteindre $10000 - les deux boucles ci-dessous ne s'arretaient alors     }
+ { plus que sur Region[], et re-parcouraient indefiniment les 64 Ko         }
+ { d'espace d'adressage (RunLen/sortie demesurement gonfles). }
+ Pos := 0;
+ While Pos < RomSize Do
  Begin
+  Addr := Word(LongInt(LoadAddr) + Pos);
   If Region[Addr] = RGN_CODE Then
   Begin
    If Not DecodeOne(Addr, DI) Then Break;
@@ -2136,7 +2234,7 @@ Begin
     Line := Line + '  ; ' + CommentPart;
 
    EmitLine(Line);
-   Addr := Word(Addr + DI.Len);
+   Inc(Pos, DI.Len);
   End
   Else
   Begin
@@ -2144,11 +2242,12 @@ Begin
    { une seule serie FCB plutot qu'une ligne par octet. }
    RunStart := Addr;
    RunLen := 0;
-   While (LongInt(Addr) < LongInt(LoadAddr) + RomSize) And
-         (Region[Addr] <> RGN_CODE) And (Region[Addr] <> RGN_OPERAND) Do
+   While (Pos < RomSize) And
+         (Region[Word(LongInt(LoadAddr) + Pos)] <> RGN_CODE) And
+         (Region[Word(LongInt(LoadAddr) + Pos)] <> RGN_OPERAND) Do
    Begin
     Inc(RunLen);
-    Addr := Word(Addr + 1);
+    Inc(Pos);
    End;
    If RunLen > 0 Then
    Begin
@@ -2160,7 +2259,7 @@ Begin
     End;
    End
    Else
-    Addr := Word(Addr + 1); { securite anti-boucle infinie (RGN_OPERAND isole) }
+    Inc(Pos); { securite anti-boucle infinie (RGN_OPERAND isole) }
   End;
  End;
 

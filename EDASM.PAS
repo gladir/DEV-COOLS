@@ -530,7 +530,7 @@ Begin
 End;
 
 Function Eval(S:TString; Var Known:Boolean):LongInt;
-Var Position,Depth:Integer; Token:TString; Number:LongInt;
+Var Position,Depth,SpaceAt:Integer; Token:TString; Number:LongInt; InChar:Boolean;
     ResultValue:TExprValue;
 
 Procedure Fail(MessageText:TString);
@@ -772,6 +772,14 @@ Begin
 End;
 
 Begin
+ S:=Trim(S);
+ If StrictSource Then Begin
+  InChar:=False;
+  For SpaceAt:=1 To Length(S) Do Begin
+   If S[SpaceAt]='''' Then InChar:=Not InChar;
+   If Not InChar And (S[SpaceAt] In [' ',#9]) Then Begin Delete(S,SpaceAt,255); Break; End;
+  End;
+ End;
  Known:=True; EvalForward:=False; Position:=1; Depth:=0; NextToken;
  ResultValue:=ParseExpression(1);
  If Token<>'' Then Fail('Operateur inattendu: '+Token);
@@ -804,9 +812,8 @@ Begin
   Relocs[RelocCount].SymbolName:=Symbols[ExpressionValue.ExternalIndex].Name;
  Relocs[RelocCount].Aux:=0;
  If Kind=2 Then Relocs[RelocCount].Aux:=ExpressionValue.FullValue And $FF;
- If (Kind=2) And (ExpressionValue.ExternalIndex>=0) And
-    ((ExpressionValue.FullValue And $FF)<>0) Then
-  Error('Octet fort externe avec ajout non representable dans le RLD Apple');
+ If (ExpressionValue.ExternalIndex>=0) And (ExpressionValue.FullValue<>0) Then
+  Error('Ajout a un externe non representable par le lieur Apple (utiliser un symbole exporte distinct)');
  Inc(RelocCount);
 End;
 
@@ -1890,6 +1897,7 @@ Begin
   If FirstPC<0 Then FirstPC:=PC; ListLine(PC,'',Source); Exit;
  End;
  If M='OBJ' Then Begin
+  If SegmentCount>0 Then Begin Error('OBJ interdit apres une separation multi-ORG'); ListLine(PC,'',Source); Exit; End;
   If RelMode Then Begin Error('OBJ interdit dans un module REL'); ListLine(PC,'',Source); Exit; End;
   V:=Eval(A,Known); If Known Then Begin
    CheckRange(V,16,True);
@@ -1970,6 +1978,7 @@ Begin
   ListLine(PC,'',Source); Exit;
  End;
  If M='REL' Then Begin
+  If SegmentCount>0 Then Begin Error('REL interdit apres une separation multi-ORG'); ListLine(PC,'',Source); Exit; End;
   If ObjExplicit Then Error('REL incompatible avec OBJ') Else RelMode:=True;
   If Trim(A)<>'' Then Begin
    V:=Eval(A,Known); If Known Then Begin CheckRange(V,16,True); PC:=V; ObjPC:=V; End
@@ -2104,7 +2113,7 @@ Begin
   DetermineMode(M,A,0,False,Mode,Size,E);
   V:=0; Known:=True;
   If Size>1 Then V:=Eval(E,Known);
-  If StrictSource And EvalForward And (Size>1) Then Known:=False;
+  If StrictSource And (EvalForward Or (ExpressionValue.OriginRel<>0)) And (Size>1) Then Known:=False;
  If (Size>1) And (ExpressionValue.ExternalIndex>=0) Then
   Known:=Symbols[ExpressionValue.ExternalIndex].ZeroPage;
   DetermineMode(M,A,V,Known,Mode,Size,E);
