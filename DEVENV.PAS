@@ -3805,6 +3805,12 @@ Type
   BlkCount : Word;  { nombre de blocs d allocation contigus }
  End;
  THFSExtRec = Array[0..2] Of THFSExtent;
+ { Liste etendue d extents (extents "en ligne" du catalogue + continuations }
+ { de l arbre Extents Overflow enchainees - voir HFS_ResolveExtents). 64    }
+ { plages est tres largement suffisant pour tout fichier HFS classique      }
+ { reel (verifie : meme un fichier tres fragmente comme Desktop DB/DF sur   }
+ { macos7.5.3/disk1.dsk n en utilise que 9). }
+ THFSExtList = Array[0..63] Of THFSExtent;
 
  { Etat d un disque virtuel FAT12/16/32 monte via /DISK0, /DISK1,
    /DISK80 ou /DISK81 }
@@ -3840,6 +3846,9 @@ Type
                                     { d allocation #0                        }
   HFSCatExtRec   : THFSExtRec;     { drCTExtRec : extents du fichier Catalogue}
   HFSCatFileSize : LongInt;        { drCTFlSize : taille du fichier Catalogue}
+  HFSExtOvExtRec : THFSExtRec;     { drXTExtRec : extents du fichier Extents }
+                                    { Overflow - voir HFS_ExtOvFindNext      }
+  HFSExtOvFileSize: LongInt;       { drXTFlSize                             }
   HFSFreeBks     : Word;           { drFreeBks : blocs d allocation libres  }
   HFSVolName     : String[27];     { drVN : nom du volume                   }
   FATType        : Byte;           { 12, 16 ou 32                   }
@@ -43688,47 +43697,52 @@ Begin
  HFS_ReadFileSector := Fat_ReadSector(Idx, LBA, Buf);
 End;
 
-{ Lit le noeud NodeNum (0-based) de l arbre B* du catalogue (NodeSize        }
-{ octets, presume un multiple de 512 - toujours 512 en pratique pour un      }
-{ volume HFS classique, verifie sur l image reelle). NodeBuf doit etre un    }
-{ tableau d AU MOINS NodeSize octets fourni par l appelant. }
-Function HFS_ReadCatNode(Idx: Byte; NodeNum: LongInt; NodeSize: Word;
- Var NodeBuf: Array Of Byte): Boolean;
+{ Lit le noeud NodeNum (0-based) de l arbre B* designe par TreeExt (le       }
+{ CATALOGUE via FatVol[Idx].HFSCatExtRec, ou les EXTENTS OVERFLOW via        }
+{ FatVol[Idx].HFSExtOvExtRec - meme mecanique de noeuds pour les 2 arbres,   }
+{ voir HFS_ExtOvFindNext). NodeSize octets, presume un multiple de 512 -     }
+{ toujours 512 en pratique pour un volume HFS classique, verifie sur         }
+{ l image reelle. NodeBuf doit etre un tableau d AU MOINS NodeSize octets    }
+{ fourni par l appelant. }
+Function HFS_ReadTreeNode(Idx: Byte; Var TreeExt: THFSExtRec; NodeNum: LongInt;
+ NodeSize: Word; Var NodeBuf: Array Of Byte): Boolean;
 Var Tmp: Array[0..511] Of Byte; S, SecCount, SecIdx: LongInt;
 Begin
- HFS_ReadCatNode := False;
+ HFS_ReadTreeNode := False;
  If (NodeSize = 0) Or (NodeSize Mod 512 <> 0) Then Exit;
  SecCount := NodeSize Div 512;
  SecIdx := (NodeNum * LongInt(NodeSize)) Div 512;
  For S := 0 To SecCount - 1 Do Begin
-  If Not HFS_ReadFileSector(Idx, FatVol[Idx].HFSCatExtRec, SecIdx + S, Tmp) Then Exit;
+  If Not HFS_ReadFileSector(Idx, TreeExt, SecIdx + S, Tmp) Then Exit;
   Move(Tmp, NodeBuf[S * 512], 512);
  End;
- HFS_ReadCatNode := True;
+ HFS_ReadTreeNode := True;
 End;
 
-{ Lit le noeud 0 (noeud d en-tete) du catalogue : noeud racine + taille de   }
-{ noeud reelle (bthNodeSize) - necessaires avant tout autre acces a l arbre. }
-Function HFS_CatHeader(Idx: Byte; Var RootNode: LongInt;
+{ Lit le noeud 0 (noeud d en-tete) de l arbre designe par TreeExt : noeud    }
+{ racine + taille de noeud reelle (bthNodeSize) - necessaires avant tout     }
+{ autre acces a l arbre. }
+Function HFS_TreeHeader(Idx: Byte; Var TreeExt: THFSExtRec; Var RootNode: LongInt;
  Var NodeSize: Word): Boolean;
 Var Buf: Array[0..511] Of Byte;
 Begin
- HFS_CatHeader := False;
- If Not HFS_ReadFileSector(Idx, FatVol[Idx].HFSCatExtRec, 0, Buf) Then Exit;
+ HFS_TreeHeader := False;
+ If Not HFS_ReadFileSector(Idx, TreeExt, 0, Buf) Then Exit;
  If Buf[8] <> 1 Then Exit; { ndType doit etre 1 = noeud d en-tete }
  RootNode := OS9_BE32(Buf, 16); { bthRoot }
  NodeSize := OS9_BE16(Buf, 32); { bthNodeSize }
  If (NodeSize = 0) Or (NodeSize Mod 512 <> 0) Or (NodeSize > 512) Then
   NodeSize := 512; { securite - toujours 512 en pratique, voir disclosure }
- HFS_CatHeader := True;
+ HFS_TreeHeader := True;
 End;
 
 { Descend par le TOUT PREMIER pointeur de chaque noeud d index rencontre    }
 { (pas de comparaison de cle - voir disclosure de tete) jusqu au premier     }
-{ noeud FEUILLE le plus a gauche de l arbre - point de depart du balayage    }
-{ lineaire de la chaine de feuilles (ndFLink) utilise par toutes les         }
-{ fonctions HFS_* ci-dessous. }
-Function HFS_FirstLeaf(Idx: Byte; RootNode: LongInt; NodeSize: Word): LongInt;
+{ noeud FEUILLE le plus a gauche de l arbre designe par TreeExt - point de   }
+{ depart du balayage lineaire de la chaine de feuilles (ndFLink) utilise     }
+{ par toutes les fonctions HFS_* ci-dessous. }
+Function HFS_FirstLeaf(Idx: Byte; Var TreeExt: THFSExtRec; RootNode: LongInt;
+ NodeSize: Word): LongInt;
 Var Buf: Array[0..511] Of Byte; Cur: LongInt; RecOfs: Word; KeyLen: Byte;
  PaddedKeyLen: Word; Hops: Integer;
 Begin
@@ -43737,7 +43751,7 @@ Begin
  Hops := 0;
  While Hops < 64 Do Begin
   Inc(Hops);
-  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  If Not HFS_ReadTreeNode(Idx, TreeExt, Cur, NodeSize, Buf) Then Exit;
   If Buf[8] = 255 Then Begin HFS_FirstLeaf := Cur; Exit; End;
   If Buf[8] <> 0 Then Exit; { ni feuille ni index : structure inattendue }
   RecOfs := OS9_BE16(Buf, NodeSize - 2);
@@ -43746,6 +43760,122 @@ Begin
   If Odd(PaddedKeyLen) Then Inc(PaddedKeyLen);
   Cur := OS9_BE32(Buf, RecOfs + PaddedKeyLen);
  End;
+End;
+
+{ Recherche, dans l arbre B* des EXTENTS OVERFLOW, l enregistrement de       }
+{ continuation du fichier FileCNID (fourche de donnees, forkType=0) qui      }
+{ commence exactement au bloc d allocation NeedBlock (= nombre cumule de     }
+{ blocs deja couverts par les extents precedents - les enregistrements       }
+{ s enchainent par construction : chacun commence exactement ou le           }
+{ precedent finit, verifie sur l image reelle). Cle Extents Overflow (8      }
+{ octets : longueur(1)+forkType(1)+fileID(4)+startBlock(2)) verifiee          }
+{ octet par octet contre macos7.5.3/disk1.dsk - voir project_devenv_hfs.md. }
+Function HFS_ExtOvFindNext(Idx: Byte; FileCNID: LongInt; NeedBlock: Word;
+ Var Ext3: THFSExtRec): Boolean;
+Var
+ RootNode: LongInt; NodeSize: Word; Cur: LongInt;
+ Buf: Array[0..511] Of Byte;
+ I, NRecs: Integer; RecOfs: Word; KeyLen: Byte;
+ ForkType: Byte; FlNum: LongInt; StartBlk: Word;
+ PaddedKeyLen: Word; DataOfs: Word; Hops: LongInt;
+Begin
+ HFS_ExtOvFindNext := False;
+ If FatVol[Idx].HFSExtOvExtRec[0].BlkCount = 0 Then Exit; { aucun fichier Extents Overflow }
+ If Not HFS_TreeHeader(Idx, FatVol[Idx].HFSExtOvExtRec, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, FatVol[Idx].HFSExtOvExtRec, RootNode, NodeSize);
+ Hops := 0;
+ While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
+  Inc(Hops);
+  If Not HFS_ReadTreeNode(Idx, FatVol[Idx].HFSExtOvExtRec, Cur, NodeSize, Buf) Then Exit;
+  NRecs := OS9_BE16(Buf, 10);
+  For I := 0 To NRecs - 1 Do Begin
+   RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
+   KeyLen := Buf[RecOfs];
+   ForkType := Buf[RecOfs + 1];
+   FlNum := OS9_BE32(Buf, RecOfs + 2);
+   StartBlk := OS9_BE16(Buf, RecOfs + 6);
+   PaddedKeyLen := 1 + KeyLen;
+   If Odd(PaddedKeyLen) Then Inc(PaddedKeyLen);
+   DataOfs := RecOfs + PaddedKeyLen;
+   If (FlNum = FileCNID) And (ForkType = 0) And (StartBlk = NeedBlock) Then Begin
+    Ext3[0].StartBlk := OS9_BE16(Buf, DataOfs);
+    Ext3[0].BlkCount := OS9_BE16(Buf, DataOfs + 2);
+    Ext3[1].StartBlk := OS9_BE16(Buf, DataOfs + 4);
+    Ext3[1].BlkCount := OS9_BE16(Buf, DataOfs + 6);
+    Ext3[2].StartBlk := OS9_BE16(Buf, DataOfs + 8);
+    Ext3[2].BlkCount := OS9_BE16(Buf, DataOfs + 10);
+    HFS_ExtOvFindNext := True;
+    Exit;
+   End;
+  End;
+  Cur := OS9_BE32(Buf, 0);
+ End;
+End;
+
+{ Construit la liste COMPLETE des extents d un fichier (jusqu a             }
+{ HFS_MAX_EXTENTS plages) : les 3 extents "en ligne" du catalogue, puis,     }
+{ si la taille reelle du fichier depasse ce qu ils couvrent, enchaine les    }
+{ enregistrements de continuation de l arbre Extents Overflow (voir          }
+{ HFS_ExtOvFindNext) jusqu a couvrir la taille entiere ou a defaut d en      }
+{ trouver un de plus (fichier dont les extents manquent reellement - rendu   }
+{ tel quel, les lecteurs s arreteront simplement au dernier octet couvert    }
+{ plutot que d inventer des donnees). }
+Function HFS_ResolveExtents(Idx: Byte; FileCNID: LongInt; Var InlineExt: THFSExtRec;
+ FileSize: LongInt; Var FullList: THFSExtList; Var NumExt: Integer): Boolean;
+Var
+ CoveredBlocks, NeededBlocks: LongInt; E: Integer; NextExt: THFSExtRec;
+Begin
+ HFS_ResolveExtents := True;
+ NumExt := 0;
+ CoveredBlocks := 0;
+ For E := 0 To 2 Do Begin
+  FullList[NumExt] := InlineExt[E];
+  Inc(NumExt);
+  Inc(CoveredBlocks, InlineExt[E].BlkCount);
+ End;
+ If FatVol[Idx].HFSAlBlkSiz <= 0 Then Exit;
+ NeededBlocks := (FileSize + FatVol[Idx].HFSAlBlkSiz - 1) Div FatVol[Idx].HFSAlBlkSiz;
+ While (CoveredBlocks < NeededBlocks) And (NumExt <= High(FullList) - 3) Do Begin
+  If Not HFS_ExtOvFindNext(Idx, FileCNID, Word(CoveredBlocks), NextExt) Then Break;
+  For E := 0 To 2 Do Begin
+   If NextExt[E].BlkCount = 0 Then Continue;
+   FullList[NumExt] := NextExt[E];
+   Inc(NumExt);
+   Inc(CoveredBlocks, NextExt[E].BlkCount);
+  End;
+ End;
+End;
+
+Function HFS_FileSectorToLBAList(Var V: TFatVol; Var ExtList: THFSExtList;
+ NumExt: Integer; SectorIdx: LongInt): LongInt;
+Var E: Integer; SecPerBlk, BlkIdx, Remain, ExtSecs: LongInt;
+Begin
+ HFS_FileSectorToLBAList := -1;
+ SecPerBlk := V.HFSAlBlkSiz Div 512;
+ If SecPerBlk <= 0 Then Exit;
+ Remain := SectorIdx;
+ For E := 0 To NumExt - 1 Do Begin
+  If ExtList[E].BlkCount = 0 Then Continue;
+  ExtSecs := LongInt(ExtList[E].BlkCount) * SecPerBlk;
+  If Remain < ExtSecs Then Begin
+   BlkIdx := Remain Div SecPerBlk;
+   HFS_FileSectorToLBAList := V.HFSAlBlSt +
+    (LongInt(ExtList[E].StartBlk) + BlkIdx) * SecPerBlk +
+    (Remain Mod SecPerBlk);
+   Exit;
+  End;
+  Dec(Remain, ExtSecs);
+ End;
+End;
+
+Function HFS_ReadFileSectorList(Idx: Byte; Var ExtList: THFSExtList; NumExt: Integer;
+ SectorIdx: LongInt; Var Buf: Array Of Byte): Boolean;
+Var LBA: LongInt;
+Begin
+ HFS_ReadFileSectorList := False;
+ LBA := HFS_FileSectorToLBAList(FatVol[Idx], ExtList, NumExt, SectorIdx);
+ If LBA < 0 Then Exit;
+ HFS_ReadFileSectorList := Fat_ReadSector(Idx, LBA, Buf);
 End;
 
 { Recherche un enfant (dossier OU fichier) nomme NameUp (deja normalise en   }
@@ -43765,12 +43895,12 @@ Var
  Nm: String; Hops: LongInt;
 Begin
  HFS_FindInDir := False;
- If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
- Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ If Not HFS_TreeHeader(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize);
  Hops := 0;
  While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
   Inc(Hops);
-  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  If Not HFS_ReadTreeNode(Idx, FatVol[Idx].HFSCatExtRec, Cur, NodeSize, Buf) Then Exit;
   NRecs := OS9_BE16(Buf, 10);
   For I := 0 To NRecs - 1 Do Begin
    RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
@@ -43817,12 +43947,12 @@ Var
  Hops: LongInt;
 Begin
  HFS_FindByCNID := False;
- If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
- Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ If Not HFS_TreeHeader(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize);
  Hops := 0;
  While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
   Inc(Hops);
-  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  If Not HFS_ReadTreeNode(Idx, FatVol[Idx].HFSCatExtRec, Cur, NodeSize, Buf) Then Exit;
   NRecs := OS9_BE16(Buf, 10);
   For I := 0 To NRecs - 1 Do Begin
    RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
@@ -43863,12 +43993,12 @@ Var
  Hops: LongInt;
 Begin
  TotalFiles := 0; TotalDirs := 0;
- If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
- Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ If Not HFS_TreeHeader(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize);
  Hops := 0;
  While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
   Inc(Hops);
-  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  If Not HFS_ReadTreeNode(Idx, FatVol[Idx].HFSCatExtRec, Cur, NodeSize, Buf) Then Exit;
   NRecs := OS9_BE16(Buf, 10);
   For I := 0 To NRecs - 1 Do Begin
    RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
@@ -43903,6 +44033,70 @@ Begin
  TermAddLine(TP, Sz + ' Dir(s)');
 End;
 
+{ Convertit une date HFS (secondes depuis le 1er janvier 1904 00:00:00,     }
+{ horloge Macintosh classique) vers le format date/heure "empaquete DOS"    }
+{ deja utilise partout ailleurs dans ce fichier pour TNCEntry.FTime/FDate   }
+{ (voir Fat_ListDir : annee sur 7 bits depuis 1980, mois 4 bits, jour 5     }
+{ bits ; heure 5 bits, minute 6 bits, seconde/2 sur 5 bits). BOGUE REEL     }
+{ CORRIGE (2026-10-10, signale par l utilisateur : "la colonne Date/Heure   }
+{ semble retourner des dates invalides") : HFS_ListDirNC laissait FTime/    }
+{ FDate a 0 sans jamais convertir les vraies dates du catalogue - 0 se      }
+{ decode en une date DOS invalide (jour/mois 0) plutot qu une vraie date. }
+{ 2e BOGUE REEL CORRIGE DANS LA FOULEE (trouve en testant cette fonction   }
+{ elle-meme, pas juste en la relisant) : MacSecs doit etre un LongWord     }
+{ (32 bits NON signe), pas un LongInt signe - les secondes Mac depuis 1904 }
+{ pour toute date reelle posterieure a ~1972 depassent la moitie de la     }
+{ plage 32 bits et apparaissent NEGATIVES si interpretees en LongInt       }
+{ signe, ce qui faisait croire a tort que CHAQUE date reelle des annees    }
+{ 1990-2000 (exactement celles de ce volume de test) etait "avant 1970"    }
+{ et produisait donc 0/0/0 - le meme symptome que le bogue precedent, pour }
+{ une raison differente. }
+Procedure HFS_MacDateToDosPacked(MacSecs: LongWord; Var PackedDate, PackedTime: Word);
+Const
+ SECS_1904_TO_1970 = 2082844800;
+Var
+ UnixSecs, Days, SecOfDay: LongInt;
+ Hr, Mn, Sc, Y, M, D: Integer;
+ IsLeap: Boolean;
+ DaysInMonth: Array[1..12] Of Integer;
+Begin
+ PackedDate := 0; PackedTime := 0;
+ If MacSecs < LongWord(SECS_1904_TO_1970) Then Exit; { avant 1970 - hors de portee du format DOS }
+ UnixSecs := LongInt(MacSecs - LongWord(SECS_1904_TO_1970));
+ Days := UnixSecs Div 86400;
+ SecOfDay := UnixSecs Mod 86400;
+ Hr := SecOfDay Div 3600;
+ Mn := (SecOfDay Mod 3600) Div 60;
+ Sc := SecOfDay Mod 60;
+ Y := 1970;
+ IsLeap := False;
+ While True Do Begin
+  IsLeap := ((Y Mod 4 = 0) And (Y Mod 100 <> 0)) Or (Y Mod 400 = 0);
+  If IsLeap Then Begin
+   If Days < 366 Then Break;
+   Dec(Days, 366);
+  End Else Begin
+   If Days < 365 Then Break;
+   Dec(Days, 365);
+  End;
+  Inc(Y);
+ End;
+ DaysInMonth[1]:=31; DaysInMonth[2]:=28; DaysInMonth[3]:=31; DaysInMonth[4]:=30;
+ DaysInMonth[5]:=31; DaysInMonth[6]:=30; DaysInMonth[7]:=31; DaysInMonth[8]:=31;
+ DaysInMonth[9]:=30; DaysInMonth[10]:=31; DaysInMonth[11]:=30; DaysInMonth[12]:=31;
+ If IsLeap Then DaysInMonth[2] := 29;
+ M := 1;
+ While (M < 12) And (Days >= DaysInMonth[M]) Do Begin
+  Dec(Days, DaysInMonth[M]);
+  Inc(M);
+ End;
+ D := Days + 1;
+ If Y < 1980 Then Y := 1980;
+ If Y > 2107 Then Y := 2107; { plafond du champ annee DOS (7 bits) }
+ PackedDate := Word(((Y - 1980) Shl 9) Or (M Shl 5) Or D);
+ PackedTime := Word((Hr Shl 11) Or (Mn Shl 5) Or (Sc Div 2));
+End;
+
 { Meme balayage que HFS_ListDir, mais remplit un TNCPane (Norton Commander)  }
 { - voir NCListDir. Cluster de l entree = CNID (repris par HFS_FindByCNID   }
 { si l entree est ensuite ouverte/copiee), meme convention que D64/HPFS/OS-9 }
@@ -43914,13 +44108,14 @@ Var
  I, J, NRecs: Integer; RecOfs: Word; KeyLen, NameLen: Byte;
  PID: LongInt; PaddedKeyLen: Word; DataOfs: Word; CdrType: Byte;
  Nm: String; EntCNID: LongInt; EntSize: LongInt; Hops: LongInt;
+ EntMacDate: LongInt; EntPackedDate, EntPackedTime: Word;
 Begin
- If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
- Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ If Not HFS_TreeHeader(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, FatVol[Idx].HFSCatExtRec, RootNode, NodeSize);
  Hops := 0;
  While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
   Inc(Hops);
-  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  If Not HFS_ReadTreeNode(Idx, FatVol[Idx].HFSCatExtRec, Cur, NodeSize, Buf) Then Exit;
   NRecs := OS9_BE16(Buf, 10);
   For I := 0 To NRecs - 1 Do Begin
    RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
@@ -43938,16 +44133,19 @@ Begin
     If CdrType = 1 Then Begin
      EntCNID := OS9_BE32(Buf, DataOfs + 6);
      EntSize := 0;
+     EntMacDate := OS9_BE32(Buf, DataOfs + 14); { dirMdDat }
     End Else Begin
      EntCNID := OS9_BE32(Buf, DataOfs + 20);
      EntSize := OS9_BE32(Buf, DataOfs + 26);
+     EntMacDate := OS9_BE32(Buf, DataOfs + 48); { filMdDat }
     End;
+    HFS_MacDateToDosPacked(LongWord(EntMacDate), EntPackedDate, EntPackedTime);
     Pane.Entries[Pane.Count].Name := Nm;
     Pane.Entries[Pane.Count].ShortName := '';
     Pane.Entries[Pane.Count].Size := EntSize;
     Pane.Entries[Pane.Count].IsDir := (CdrType = 1);
-    Pane.Entries[Pane.Count].FTime := 0;
-    Pane.Entries[Pane.Count].FDate := 0;
+    Pane.Entries[Pane.Count].FTime := EntPackedTime;
+    Pane.Entries[Pane.Count].FDate := EntPackedDate;
     Pane.Entries[Pane.Count].Cluster := EntCNID;
     Inc(Pane.Count);
    End;
@@ -43965,6 +44163,8 @@ Procedure HFS_TypeFile(Idx: Byte; FileCNID: LongInt; Size: LongInt;
  Var TP: TTerminalPanel);
 Var
  Ext: THFSExtRec;
+ FullList: THFSExtList;
+ NumExt: Integer;
  Buf: Array[0..511] Of Byte;
  SecIdx: LongInt;
  Remain: LongInt;
@@ -43979,12 +44179,13 @@ Begin
   TermAddLine(TP, 'Erreur de lecture sur l image');
   Exit;
  End;
+ HFS_ResolveExtents(Idx, FileCNID, Ext, Size, FullList, NumExt);
  Remain := Size;
  Line := '';
  IsBin := False;
  SecIdx := 0;
  While (Remain > 0) And (Not IsBin) Do Begin
-  If Not HFS_ReadFileSector(Idx, Ext, SecIdx, Buf) Then Begin
+  If Not HFS_ReadFileSectorList(Idx, FullList, NumExt, SecIdx, Buf) Then Begin
    TermAddLine(TP, 'Erreur de lecture sur l image');
    Exit;
   End;
@@ -44032,6 +44233,11 @@ Begin
  For I := 0 To 2 Do Begin
   V.HFSCatExtRec[I].StartBlk := OS9_BE16(Buf, 150 + I * 4);
   V.HFSCatExtRec[I].BlkCount := OS9_BE16(Buf, 150 + I * 4 + 2);
+ End;
+ V.HFSExtOvFileSize := OS9_BE32(Buf, 130);
+ For I := 0 To 2 Do Begin
+  V.HFSExtOvExtRec[I].StartBlk := OS9_BE16(Buf, 134 + I * 4);
+  V.HFSExtOvExtRec[I].BlkCount := OS9_BE16(Buf, 134 + I * 4 + 2);
  End;
  NameLen := Buf[36];
  If NameLen > 27 Then NameLen := 27;
@@ -44848,6 +45054,8 @@ Var
  OS9SegCnt: Array[0..47] Of Word;
  OS9NSegs, OS9SI, OS9S: Integer;
  HFSExt: THFSExtRec;
+ HFSFullList: THFSExtList;
+ HFSNumExt: Integer;
  HFSSecIdx: LongInt;
 Begin
  Fat_ExtractToTempFile := False;
@@ -44871,10 +45079,11 @@ Begin
    {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
    Exit;
   End;
+  HFS_ResolveExtents(Idx, StartCluster, HFSExt, Size, HFSFullList, HFSNumExt);
   Remain := Size;
   HFSSecIdx := 0;
   While Remain > 0 Do Begin
-   If Not HFS_ReadFileSector(Idx, HFSExt, HFSSecIdx, SBuf) Then Begin
+   If Not HFS_ReadFileSectorList(Idx, HFSFullList, HFSNumExt, HFSSecIdx, SBuf) Then Begin
     {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
     Exit;
    End;
@@ -47118,6 +47327,8 @@ Var
  OS9SegCnt: Array[0..47] Of Word;
  OS9NSegs, OS9SI, OS9S: Integer;
  HFSExt: THFSExtRec;
+ HFSFullList: THFSExtList;
+ HFSNumExt: Integer;
  HFSSecIdx: LongInt;
 Begin
  TermCopyFile := False;
@@ -47254,10 +47465,11 @@ Begin
     Close(TargetFile);
     Exit;
    End;
+   HFS_ResolveExtents(SrcIdx, SrcCluster, HFSExt, SrcSize, HFSFullList, HFSNumExt);
    Remain := SrcSize;
    HFSSecIdx := 0;
    While Remain > 0 Do Begin
-    If Not HFS_ReadFileSector(SrcIdx, HFSExt, HFSSecIdx, SBuf) Then Begin
+    If Not HFS_ReadFileSectorList(SrcIdx, HFSFullList, HFSNumExt, HFSSecIdx, SBuf) Then Begin
      TermAddLine(TP, 'Erreur de lecture sur l image');
      Close(TargetFile);
      Exit;
