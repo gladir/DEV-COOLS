@@ -3798,6 +3798,14 @@ Type
   VisRowCount: Integer;
  End;
 
+ { Une entree d extent HFS (3 par fichier au maximum stockees "en ligne"   }
+ { dans le catalogue - voir le commentaire de TFatVol.IsHFS/HFS_TryMount). }
+ THFSExtent = Record
+  StartBlk : Word;  { 1er bloc d allocation de cette plage }
+  BlkCount : Word;  { nombre de blocs d allocation contigus }
+ End;
+ THFSExtRec = Array[0..2] Of THFSExtent;
+
  { Etat d un disque virtuel FAT12/16/32 monte via /DISK0, /DISK1,
    /DISK80 ou /DISK81 }
  TFatVol = Record
@@ -3823,6 +3831,17 @@ Type
                                     { .DSK/.DO) - voir AppleDOS_TryMount,    }
                                     { lecture ET ecriture                   }
   AppleDOSVolNum : Byte;           { numero de volume (VTOC octet 6, 0..254)}
+  IsHFS          : Boolean;        { volume Macintosh classique HFS (System }
+                                    { 6/7.x, Mac OS Bloc Directeur de Volume }
+                                    { "BD" au bloc logique 2) - voir         }
+                                    { HFS_TryMount, lecture seule            }
+  HFSAlBlkSiz    : LongInt;        { drAlBlkSiz : taille d un bloc d allocation}
+  HFSAlBlSt      : Word;           { drAlBlSt : 1er bloc de 512 o du bloc    }
+                                    { d allocation #0                        }
+  HFSCatExtRec   : THFSExtRec;     { drCTExtRec : extents du fichier Catalogue}
+  HFSCatFileSize : LongInt;        { drCTFlSize : taille du fichier Catalogue}
+  HFSFreeBks     : Word;           { drFreeBks : blocs d allocation libres  }
+  HFSVolName     : String[27];     { drVN : nom du volume                   }
   FATType        : Byte;           { 12, 16 ou 32                   }
   BytesPerSector : Word;
   SectorsPerCluster: Byte;
@@ -43596,6 +43615,432 @@ Begin
  OS9_FreeBytes := FreeSectors * LongInt(OS9_SECSIZE);
 End;
 
+{ ============================================================================ }
+{ HFS (Macintosh classique, System 6/7.x - 2026-10-10, demande explicite de    }
+{ l utilisateur : "Il ne reconnait pas les disques de format Macintosh").      }
+{ Lecture seule. Bloc Directeur de Volume (MDB, "Master Directory Block",     }
+{ signature $4244='BD') au bloc logique 2 (blocs de 512 o) ; pas de table de   }
+{ partitions Apple (APM) geree - seulement le cas "volume HFS nu" (disquette  }
+{ ou image disque directement formatee HFS, sans APM) - voir HFS_TryMount.    }
+{ Toutes les valeurs multi-octets sont GROS-BOUTISTES (reutilise OS9_BE16/    }
+{ OS9_BE32, deja ecrits pour OS-9/6809 - egalement gros-boutiste). Disposition}
+{ du MDB et du catalogue (arbre B*) verifiee **octet par octet contre une     }
+{ vraie image disque reelle** (macos7.5.3/disk1.dsk, System 7.5.3, 500 Mio) - }
+{ pas seulement transcrite depuis la documentation Apple : drNmFls/drVN/      }
+{ tailles de fichiers du catalogue/extents recoupees entre elles, et le       }
+{ premier noeud feuille atteint contient exactement l entree attendue par     }
+{ construction (dossier racine, parentID=1, CNID=2 - LA constante la plus     }
+{ connue de tout HFS). }
+{ Portee assumee et disclosee : seuls les 3 extents "en ligne" du catalogue   }
+{ et de chaque fichier sont geres (pas de parcours du fichier Extents         }
+{ Overflow) - un fichier utilisateur fragmente en plus de 3 plages ne sera    }
+{ pas lu entierement (cas rare sur un volume peu fragmente). Parcours des     }
+{ repertoires par BALAYAGE LINEAIRE de la chaine de noeuds feuilles (pas de   }
+{ comparaison de cle Mac-OS-Roman exacte) : plus simple et robuste qu une     }
+{ navigation d index a cle, cout negligeable sur un volume de quelques        }
+{ milliers d entrees (meme compromis simplicite/robustesse que la "boucle     }
+{ locale" IPX/NetBIOS ailleurs dans ce fichier). }
+
+Const
+ { BOGUE REEL CORRIGE (2026-10-10, trouve en testant contre une vraie image }
+ { disque de 500 Mio avec ~6700 fichiers) : le balayage lineaire de la      }
+ { chaine de noeuds feuilles (ndFLink) ci-dessous ne s arretait QUE sur     }
+ { ndFLink=0 - un seul noeud dont le ndFLink reel forme un cycle (jamais 0, }
+ { que ce soit une vraie incoherence du volume apres des annees d usage ou  }
+ { une limite de ce lecteur) transformait le parcours en boucle infinie     }
+ { REELLE (confirme : plus de 89 millions de lignes identiques avant d etre }
+ { tue manuellement) - exactement la meme famille de gel deja corrigee      }
+ { ailleurs dans ce fichier pour NCListDir/OS-9. Toutes les fonctions HFS_* }
+ { qui parcourent cette chaine sont desormais bornees par cette constante   }
+ { (tres largement superieure a ce qu aucun volume HFS classique reel ne    }
+ { pourrait jamais avoir de noeuds). }
+ HFS_MAX_LEAF_HOPS = 65535;
+
+Function HFS_FileSectorToLBA(Var V: TFatVol; Var Ext: THFSExtRec;
+ SectorIdx: LongInt): LongInt;
+Var E: Integer; SecPerBlk, BlkIdx, Remain, ExtSecs: LongInt;
+Begin
+ HFS_FileSectorToLBA := -1;
+ SecPerBlk := V.HFSAlBlkSiz Div 512;
+ If SecPerBlk <= 0 Then Exit;
+ Remain := SectorIdx;
+ For E := 0 To 2 Do Begin
+  If Ext[E].BlkCount = 0 Then Continue;
+  ExtSecs := LongInt(Ext[E].BlkCount) * SecPerBlk;
+  If Remain < ExtSecs Then Begin
+   BlkIdx := Remain Div SecPerBlk;
+   HFS_FileSectorToLBA := V.HFSAlBlSt +
+    (LongInt(Ext[E].StartBlk) + BlkIdx) * SecPerBlk +
+    (Remain Mod SecPerBlk);
+   Exit;
+  End;
+  Dec(Remain, ExtSecs);
+ End;
+End;
+
+Function HFS_ReadFileSector(Idx: Byte; Var Ext: THFSExtRec;
+ SectorIdx: LongInt; Var Buf: Array Of Byte): Boolean;
+Var LBA: LongInt;
+Begin
+ HFS_ReadFileSector := False;
+ LBA := HFS_FileSectorToLBA(FatVol[Idx], Ext, SectorIdx);
+ If LBA < 0 Then Exit;
+ HFS_ReadFileSector := Fat_ReadSector(Idx, LBA, Buf);
+End;
+
+{ Lit le noeud NodeNum (0-based) de l arbre B* du catalogue (NodeSize        }
+{ octets, presume un multiple de 512 - toujours 512 en pratique pour un      }
+{ volume HFS classique, verifie sur l image reelle). NodeBuf doit etre un    }
+{ tableau d AU MOINS NodeSize octets fourni par l appelant. }
+Function HFS_ReadCatNode(Idx: Byte; NodeNum: LongInt; NodeSize: Word;
+ Var NodeBuf: Array Of Byte): Boolean;
+Var Tmp: Array[0..511] Of Byte; S, SecCount, SecIdx: LongInt;
+Begin
+ HFS_ReadCatNode := False;
+ If (NodeSize = 0) Or (NodeSize Mod 512 <> 0) Then Exit;
+ SecCount := NodeSize Div 512;
+ SecIdx := (NodeNum * LongInt(NodeSize)) Div 512;
+ For S := 0 To SecCount - 1 Do Begin
+  If Not HFS_ReadFileSector(Idx, FatVol[Idx].HFSCatExtRec, SecIdx + S, Tmp) Then Exit;
+  Move(Tmp, NodeBuf[S * 512], 512);
+ End;
+ HFS_ReadCatNode := True;
+End;
+
+{ Lit le noeud 0 (noeud d en-tete) du catalogue : noeud racine + taille de   }
+{ noeud reelle (bthNodeSize) - necessaires avant tout autre acces a l arbre. }
+Function HFS_CatHeader(Idx: Byte; Var RootNode: LongInt;
+ Var NodeSize: Word): Boolean;
+Var Buf: Array[0..511] Of Byte;
+Begin
+ HFS_CatHeader := False;
+ If Not HFS_ReadFileSector(Idx, FatVol[Idx].HFSCatExtRec, 0, Buf) Then Exit;
+ If Buf[8] <> 1 Then Exit; { ndType doit etre 1 = noeud d en-tete }
+ RootNode := OS9_BE32(Buf, 16); { bthRoot }
+ NodeSize := OS9_BE16(Buf, 32); { bthNodeSize }
+ If (NodeSize = 0) Or (NodeSize Mod 512 <> 0) Or (NodeSize > 512) Then
+  NodeSize := 512; { securite - toujours 512 en pratique, voir disclosure }
+ HFS_CatHeader := True;
+End;
+
+{ Descend par le TOUT PREMIER pointeur de chaque noeud d index rencontre    }
+{ (pas de comparaison de cle - voir disclosure de tete) jusqu au premier     }
+{ noeud FEUILLE le plus a gauche de l arbre - point de depart du balayage    }
+{ lineaire de la chaine de feuilles (ndFLink) utilise par toutes les         }
+{ fonctions HFS_* ci-dessous. }
+Function HFS_FirstLeaf(Idx: Byte; RootNode: LongInt; NodeSize: Word): LongInt;
+Var Buf: Array[0..511] Of Byte; Cur: LongInt; RecOfs: Word; KeyLen: Byte;
+ PaddedKeyLen: Word; Hops: Integer;
+Begin
+ HFS_FirstLeaf := -1;
+ Cur := RootNode;
+ Hops := 0;
+ While Hops < 64 Do Begin
+  Inc(Hops);
+  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  If Buf[8] = 255 Then Begin HFS_FirstLeaf := Cur; Exit; End;
+  If Buf[8] <> 0 Then Exit; { ni feuille ni index : structure inattendue }
+  RecOfs := OS9_BE16(Buf, NodeSize - 2);
+  KeyLen := Buf[RecOfs];
+  PaddedKeyLen := 1 + KeyLen;
+  If Odd(PaddedKeyLen) Then Inc(PaddedKeyLen);
+  Cur := OS9_BE32(Buf, RecOfs + PaddedKeyLen);
+ End;
+End;
+
+{ Recherche un enfant (dossier OU fichier) nomme NameUp (deja normalise en   }
+{ majuscules, meme convention que Fat_FindInDir/OS9_FindInDir) dans le       }
+{ dossier ParentCNID, par balayage lineaire de toute la chaine de feuilles.  }
+{ Attr suit la convention generique deja utilisee partout dans ce fichier    }
+{ (bit $10 = repertoire). CNID (en sortie) sert de "descripteur" pour tout   }
+{ appel HFS_* ulterieur (sous-repertoire -> ParentCNID, fichier -> cle de    }
+{ relecture par HFS_FindByCNID). }
+Function HFS_FindInDir(Idx: Byte; ParentCNID: LongInt; NameUp: String;
+ Var Attr: Byte; Var CNID: LongInt; Var Size: LongInt): Boolean;
+Var
+ RootNode: LongInt; NodeSize: Word; Cur: LongInt;
+ Buf: Array[0..511] Of Byte;
+ I, J, NRecs: Integer; RecOfs: Word; KeyLen, NameLen: Byte;
+ PID: LongInt; PaddedKeyLen: Word; DataOfs: Word; CdrType: Byte;
+ Nm: String; Hops: LongInt;
+Begin
+ HFS_FindInDir := False;
+ If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ Hops := 0;
+ While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
+  Inc(Hops);
+  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  NRecs := OS9_BE16(Buf, 10);
+  For I := 0 To NRecs - 1 Do Begin
+   RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
+   KeyLen := Buf[RecOfs];
+   PID := OS9_BE32(Buf, RecOfs + 2);
+   NameLen := Buf[RecOfs + 6];
+   PaddedKeyLen := 1 + KeyLen;
+   If Odd(PaddedKeyLen) Then Inc(PaddedKeyLen);
+   DataOfs := RecOfs + PaddedKeyLen;
+   CdrType := Buf[DataOfs];
+   If (PID = ParentCNID) And ((CdrType = 1) Or (CdrType = 2)) Then Begin
+    Nm := '';
+    For J := 0 To Integer(NameLen) - 1 Do Nm := Nm + Chr(Buf[RecOfs + 7 + J]);
+    If UpCaseStr(Nm) = NameUp Then Begin
+     If CdrType = 1 Then Begin
+      Attr := $10;
+      CNID := OS9_BE32(Buf, DataOfs + 6);   { dirDirID }
+      Size := 0;
+     End Else Begin
+      Attr := 0;
+      CNID := OS9_BE32(Buf, DataOfs + 20);  { filFlNum }
+      Size := OS9_BE32(Buf, DataOfs + 26);  { filLgLen }
+     End;
+     HFS_FindInDir := True;
+     Exit;
+    End;
+   End;
+  End;
+  Cur := OS9_BE32(Buf, 0); { ndFLink }
+ End;
+End;
+
+{ Retrouve les extents + taille d un FICHIER deja connu par son CNID (filFlNum) }
+{ - utilise par HFS_TypeFile/TermCopyFile, qui ne recoivent que ce CNID (et  }
+{ la taille, deja connue via Fat_FindPath) et doivent relocaliser les plages }
+{ reelles de donnees. Meme balayage lineaire que HFS_FindInDir. }
+Function HFS_FindByCNID(Idx: Byte; TargetCNID: LongInt;
+ Var Ext: THFSExtRec): Boolean;
+Var
+ RootNode: LongInt; NodeSize: Word; Cur: LongInt;
+ Buf: Array[0..511] Of Byte;
+ I, NRecs: Integer; RecOfs: Word; KeyLen: Byte;
+ PaddedKeyLen: Word; DataOfs: Word; CdrType: Byte; FlNum: LongInt;
+ Hops: LongInt;
+Begin
+ HFS_FindByCNID := False;
+ If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ Hops := 0;
+ While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
+  Inc(Hops);
+  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  NRecs := OS9_BE16(Buf, 10);
+  For I := 0 To NRecs - 1 Do Begin
+   RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
+   KeyLen := Buf[RecOfs];
+   PaddedKeyLen := 1 + KeyLen;
+   If Odd(PaddedKeyLen) Then Inc(PaddedKeyLen);
+   DataOfs := RecOfs + PaddedKeyLen;
+   CdrType := Buf[DataOfs];
+   If CdrType = 2 Then Begin
+    FlNum := OS9_BE32(Buf, DataOfs + 20);
+    If FlNum = TargetCNID Then Begin
+     Ext[0].StartBlk := OS9_BE16(Buf, DataOfs + 74);
+     Ext[0].BlkCount := OS9_BE16(Buf, DataOfs + 76);
+     Ext[1].StartBlk := OS9_BE16(Buf, DataOfs + 78);
+     Ext[1].BlkCount := OS9_BE16(Buf, DataOfs + 80);
+     Ext[2].StartBlk := OS9_BE16(Buf, DataOfs + 82);
+     Ext[2].BlkCount := OS9_BE16(Buf, DataOfs + 84);
+     HFS_FindByCNID := True;
+     Exit;
+    End;
+   End;
+  End;
+  Cur := OS9_BE32(Buf, 0);
+ End;
+End;
+
+{ Enumere le contenu du dossier ParentCNID, meme convention d affichage que  }
+{ Fat_ListDir (lignes de texte dans un TTerminalPanel). }
+Procedure HFS_ListDir(Idx: Byte; ParentCNID: LongInt; Var TP: TTerminalPanel);
+Var
+ RootNode: LongInt; NodeSize: Word; Cur: LongInt;
+ Buf: Array[0..511] Of Byte;
+ I, J, NRecs: Integer; RecOfs: Word; KeyLen, NameLen: Byte;
+ PID: LongInt; PaddedKeyLen: Word; DataOfs: Word; CdrType: Byte;
+ Nm, Line, Sz: String;
+ EntSize: LongInt;
+ TotalFiles, TotalDirs: LongInt;
+ Hops: LongInt;
+Begin
+ TotalFiles := 0; TotalDirs := 0;
+ If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ Hops := 0;
+ While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
+  Inc(Hops);
+  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  NRecs := OS9_BE16(Buf, 10);
+  For I := 0 To NRecs - 1 Do Begin
+   RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
+   KeyLen := Buf[RecOfs];
+   PID := OS9_BE32(Buf, RecOfs + 2);
+   NameLen := Buf[RecOfs + 6];
+   PaddedKeyLen := 1 + KeyLen;
+   If Odd(PaddedKeyLen) Then Inc(PaddedKeyLen);
+   DataOfs := RecOfs + PaddedKeyLen;
+   CdrType := Buf[DataOfs];
+   If (PID = ParentCNID) And ((CdrType = 1) Or (CdrType = 2)) Then Begin
+    Nm := '';
+    For J := 0 To Integer(NameLen) - 1 Do Nm := Nm + Chr(Buf[RecOfs + 7 + J]);
+    If CdrType = 1 Then Begin
+     Line := '<DIR>          ' + Nm;
+     Inc(TotalDirs);
+    End Else Begin
+     EntSize := OS9_BE32(Buf, DataOfs + 26);
+     Str(EntSize, Sz);
+     While Length(Sz) < 14 Do Sz := ' ' + Sz;
+     Line := Sz + ' ' + Nm;
+     Inc(TotalFiles);
+    End;
+    TermAddLine(TP, Line);
+   End;
+  End;
+  Cur := OS9_BE32(Buf, 0);
+ End;
+ Str(TotalFiles, Sz);
+ TermAddLine(TP, Sz + ' File(s)');
+ Str(TotalDirs, Sz);
+ TermAddLine(TP, Sz + ' Dir(s)');
+End;
+
+{ Meme balayage que HFS_ListDir, mais remplit un TNCPane (Norton Commander)  }
+{ - voir NCListDir. Cluster de l entree = CNID (repris par HFS_FindByCNID   }
+{ si l entree est ensuite ouverte/copiee), meme convention que D64/HPFS/OS-9 }
+{ qui y rangent chacun leur propre "descripteur" natif. }
+Procedure HFS_ListDirNC(Idx: Byte; ParentCNID: LongInt; Var Pane: TNCPane);
+Var
+ RootNode: LongInt; NodeSize: Word; Cur: LongInt;
+ Buf: Array[0..511] Of Byte;
+ I, J, NRecs: Integer; RecOfs: Word; KeyLen, NameLen: Byte;
+ PID: LongInt; PaddedKeyLen: Word; DataOfs: Word; CdrType: Byte;
+ Nm: String; EntCNID: LongInt; EntSize: LongInt; Hops: LongInt;
+Begin
+ If Not HFS_CatHeader(Idx, RootNode, NodeSize) Then Exit;
+ Cur := HFS_FirstLeaf(Idx, RootNode, NodeSize);
+ Hops := 0;
+ While (Cur > 0) And (Hops < HFS_MAX_LEAF_HOPS) Do Begin
+  Inc(Hops);
+  If Not HFS_ReadCatNode(Idx, Cur, NodeSize, Buf) Then Exit;
+  NRecs := OS9_BE16(Buf, 10);
+  For I := 0 To NRecs - 1 Do Begin
+   RecOfs := OS9_BE16(Buf, NodeSize - 2 * (I + 1));
+   KeyLen := Buf[RecOfs];
+   PID := OS9_BE32(Buf, RecOfs + 2);
+   NameLen := Buf[RecOfs + 6];
+   PaddedKeyLen := 1 + KeyLen;
+   If Odd(PaddedKeyLen) Then Inc(PaddedKeyLen);
+   DataOfs := RecOfs + PaddedKeyLen;
+   CdrType := Buf[DataOfs];
+   If (PID = ParentCNID) And ((CdrType = 1) Or (CdrType = 2)) And
+    (Pane.Count < MAX_NC_ENTRIES) Then Begin
+    Nm := '';
+    For J := 0 To Integer(NameLen) - 1 Do Nm := Nm + Chr(Buf[RecOfs + 7 + J]);
+    If CdrType = 1 Then Begin
+     EntCNID := OS9_BE32(Buf, DataOfs + 6);
+     EntSize := 0;
+    End Else Begin
+     EntCNID := OS9_BE32(Buf, DataOfs + 20);
+     EntSize := OS9_BE32(Buf, DataOfs + 26);
+    End;
+    Pane.Entries[Pane.Count].Name := Nm;
+    Pane.Entries[Pane.Count].ShortName := '';
+    Pane.Entries[Pane.Count].Size := EntSize;
+    Pane.Entries[Pane.Count].IsDir := (CdrType = 1);
+    Pane.Entries[Pane.Count].FTime := 0;
+    Pane.Entries[Pane.Count].FDate := 0;
+    Pane.Entries[Pane.Count].Cluster := EntCNID;
+    Inc(Pane.Count);
+   End;
+  End;
+  Cur := OS9_BE32(Buf, 0);
+ End;
+End;
+
+{ Affiche un fichier HFS (dont le CNID est FileCNID) ligne par ligne - meme  }
+{ convention que Fat_TypeFile/OS9_TypeFile (coupe sur LF, tabulation         }
+{ etendue, arret au premier octet de controle hors TAB/CR/LF). Relocalise    }
+{ d abord les extents reels via HFS_FindByCNID (Fat_FindPath n a transmis    }
+{ que le CNID et la taille, pas les extents). }
+Procedure HFS_TypeFile(Idx: Byte; FileCNID: LongInt; Size: LongInt;
+ Var TP: TTerminalPanel);
+Var
+ Ext: THFSExtRec;
+ Buf: Array[0..511] Of Byte;
+ SecIdx: LongInt;
+ Remain: LongInt;
+ ToRead: Integer;
+ B: Byte;
+ Line: String;
+ IsBin: Boolean;
+ J: Integer;
+Begin
+ If (FileCNID <= 0) Or (Size <= 0) Then Exit;
+ If Not HFS_FindByCNID(Idx, FileCNID, Ext) Then Begin
+  TermAddLine(TP, 'Erreur de lecture sur l image');
+  Exit;
+ End;
+ Remain := Size;
+ Line := '';
+ IsBin := False;
+ SecIdx := 0;
+ While (Remain > 0) And (Not IsBin) Do Begin
+  If Not HFS_ReadFileSector(Idx, Ext, SecIdx, Buf) Then Begin
+   TermAddLine(TP, 'Erreur de lecture sur l image');
+   Exit;
+  End;
+  If Remain > 512 Then ToRead := 512 Else ToRead := Integer(Remain);
+  For J := 0 To ToRead - 1 Do Begin
+   B := Buf[J];
+   Case B Of
+    10: Begin TermAddLine(TP, Line); Line := ''; End;
+    13: ;
+     9: Line := Line + '    ';
+   Else
+    If B < 32 Then Begin IsBin := True; Break; End;
+    If Length(Line) >= 250 Then Begin TermAddLine(TP, Line); Line := ''; End;
+    Line := Line + Chr(B);
+   End;
+  End;
+  Dec(Remain, ToRead);
+  Inc(SecIdx);
+ End;
+ If Line <> '' Then TermAddLine(TP, Line);
+ If IsBin Then TermAddLine(TP, '(fichier binaire : affichage interrompu)');
+End;
+
+{ Espace libre : drFreeBks (blocs d allocation libres) * drAlBlkSiz. }
+Function HFS_FreeBytes(Idx: Byte): LongInt;
+Begin
+ HFS_FreeBytes := LongInt(FatVol[Idx].HFSFreeBks) * FatVol[Idx].HFSAlBlkSiz;
+End;
+
+{ Lit le Bloc Directeur de Volume (bloc logique 2) et verifie la signature  }
+{ $4244='BD' - voir le commentaire de tete de cette section pour le detail  }
+{ de la disposition (verifiee contre une vraie image disque). }
+Function HFS_TryMount(Idx: Byte; Var V: TFatVol): Boolean;
+Var Buf: Array[0..511] Of Byte; NameLen: Byte; I: Integer;
+Begin
+ HFS_TryMount := False;
+ If Not Fat_ReadSector(Idx, 2, Buf) Then Exit;
+ If OS9_BE16(Buf, 0) <> $4244 Then Exit;
+ V.IsHFS := True;
+ V.Mounted := True;
+ V.HFSAlBlkSiz := OS9_BE32(Buf, 20);
+ V.HFSAlBlSt := OS9_BE16(Buf, 28);
+ V.HFSFreeBks := OS9_BE16(Buf, 34);
+ V.HFSCatFileSize := OS9_BE32(Buf, 146);
+ For I := 0 To 2 Do Begin
+  V.HFSCatExtRec[I].StartBlk := OS9_BE16(Buf, 150 + I * 4);
+  V.HFSCatExtRec[I].BlkCount := OS9_BE16(Buf, 150 + I * 4 + 2);
+ End;
+ NameLen := Buf[36];
+ If NameLen > 27 Then NameLen := 27;
+ V.HFSVolName := '';
+ For I := 0 To Integer(NameLen) - 1 Do
+  V.HFSVolName := V.HFSVolName + Chr(Buf[37 + I]);
+ HFS_TryMount := True;
+End;
+
 { Forward : AppleDOS_TryMount est definie plus bas (pres de D64_*/        }
 { apres D64_ExtractToTempFile), mais Fat_TryMount (juste en dessous) en   }
 { a besoin des maintenant. }
@@ -43640,6 +44085,10 @@ Begin
   Exit;
  End;
  If OS9_TryMount(Idx, V) Then Begin
+  FatVol[Idx] := V;
+  Exit;
+ End;
+ If HFS_TryMount(Idx, V) Then Begin
   FatVol[Idx] := V;
   Exit;
  End;
@@ -44142,6 +44591,10 @@ Var
  LBA: LongInt;
 Begin
  Fat_FindInDir := False;
+ If FatVol[Idx].IsHFS Then Begin
+  Fat_FindInDir := HFS_FindInDir(Idx, StartCl, Fat_UpStr(NameUp), Attr, Cluster, Size);
+  Exit;
+ End;
  If FatVol[Idx].IsOS9 Then Begin
   Fat_FindInDir := OS9_FindInDir(Idx, StartCl, Fat_UpStr(NameUp), Attr, Cluster, Size);
   Exit;
@@ -44198,6 +44651,13 @@ End;
   n importe quel autre repertoire. }
 Procedure Fat_SetRootRef(Idx: Byte; Var IsRoot: Boolean; Var StartCl: LongInt);
 Begin
+ If FatVol[Idx].IsHFS Then Begin
+  { CNID 2 = dossier racine, constante fixe HFS (verifiee sur une vraie     }
+  { image disque - voir le commentaire de tete de la section HFS). }
+  IsRoot  := False;
+  StartCl := 2;
+  Exit;
+ End;
  If FatVol[Idx].IsOS9 Then Begin
   IsRoot  := False;
   StartCl := FatVol[Idx].OS9RootFD;
@@ -44387,6 +44847,8 @@ Var
  OS9SegLsn: Array[0..47] Of LongInt;
  OS9SegCnt: Array[0..47] Of Word;
  OS9NSegs, OS9SI, OS9S: Integer;
+ HFSExt: THFSExtRec;
+ HFSSecIdx: LongInt;
 Begin
  Fat_ExtractToTempFile := False;
  OutPath := GetEnv('TEMP');
@@ -44400,6 +44862,35 @@ Begin
  OutPath := OutPath + 'DEVENV_NC_FAT.' + UpCaseStr(Ext);
  {$I-} Assign(TargetFile, OutPath); Rewrite(TargetFile, 1); {$I+}
  If IOResult <> 0 Then Exit;
+ { HFS (Macintosh classique) : allocation par extents, pas de chaine de    }
+ { clusters FAT - StartCluster vaut ici le CNID du fichier (voir Fat_      }
+ { FindInDir), il faut donc d abord relocaliser les extents reels via      }
+ { HFS_FindByCNID avant de pouvoir lire quoi que ce soit. }
+ If FatVol[Idx].IsHFS Then Begin
+  If Not HFS_FindByCNID(Idx, StartCluster, HFSExt) Then Begin
+   {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+   Exit;
+  End;
+  Remain := Size;
+  HFSSecIdx := 0;
+  While Remain > 0 Do Begin
+   If Not HFS_ReadFileSector(Idx, HFSExt, HFSSecIdx, SBuf) Then Begin
+    {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+    Exit;
+   End;
+   If Remain > 512 Then ToRead := 512 Else ToRead := Integer(Remain);
+   {$I-} BlockWrite(TargetFile, SBuf, ToRead); {$I+}
+   If IOResult <> 0 Then Begin
+    {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+    Exit;
+   End;
+   Dec(Remain, ToRead);
+   Inc(HFSSecIdx);
+  End;
+  {$I-} Close(TargetFile); {$I+} If IOResult <> 0 Then ;
+  Fat_ExtractToTempFile := True;
+  Exit;
+ End;
  { OS-9/6809 RBF : allocation par liste de segments, pas de chaine de     }
  { clusters FAT - Fat_NextCluster boucle indefiniment si on le laisse     }
  { parcourir StartCluster comme un cluster (meme classe de gel que le     }
@@ -44570,6 +45061,10 @@ Begin
  TotalDirs  := 0;
  TotalSize  := 0;
  Done := False;
+ If FatVol[Idx].IsHFS Then Begin
+  HFS_ListDir(Idx, StartCl, TP);
+  Exit;
+ End;
  If FatVol[Idx].IsOS9 Then Begin
   OS9_ListDir(Idx, StartCl, TP);
   Exit;
@@ -44691,6 +45186,10 @@ Var
  Line: String;
  IsBin: Boolean;
 Begin
+ If FatVol[Idx].IsHFS Then Begin
+  HFS_TypeFile(Idx, StartCl, Size, TP);
+  Exit;
+ End;
  If FatVol[Idx].IsOS9 Then Begin
   OS9_TypeFile(Idx, StartCl, TP);
   Exit;
@@ -44759,6 +45258,10 @@ Var
 Begin
  Fat_FreeBytes := 0;
  If Not FatVol[Idx].Mounted Then Exit;
+ If FatVol[Idx].IsHFS Then Begin
+  Fat_FreeBytes := HFS_FreeBytes(Idx);
+  Exit;
+ End;
  If FatVol[Idx].IsOS9 Then Begin
   Fat_FreeBytes := OS9_FreeBytes(Idx);
   Exit;
@@ -46614,6 +47117,8 @@ Var
  OS9SegLsn: Array[0..47] Of LongInt;
  OS9SegCnt: Array[0..47] Of Word;
  OS9NSegs, OS9SI, OS9S: Integer;
+ HFSExt: THFSExtRec;
+ HFSSecIdx: LongInt;
 Begin
  TermCopyFile := False;
  { Si la cible se termine par ':'/'\'/'/', OU si elle designe deja un       }
@@ -46666,6 +47171,10 @@ Begin
   { classe de gel que le bogue NCListDir deja corrige. }
   If FatVol[DstIdx].IsOS9 Then Begin
    TermAddLine(TP, 'Volume OS-9 en lecture seule : ecriture impossible.');
+   Exit;
+  End;
+  If FatVol[DstIdx].IsHFS Then Begin
+   TermAddLine(TP, 'Volume HFS en lecture seule : ecriture impossible.');
    Exit;
   End;
   If SrcIsVirt Then Begin
@@ -46733,6 +47242,38 @@ Begin
   {$I-} Rewrite(TargetFile, 1); {$I+}
   If IOResult <> 0 Then Begin
    TermAddLine(TP, 'Impossible de creer : ' + Target);
+   Exit;
+  End;
+  { HFS (Macintosh classique) : allocation par extents, pas de chaine de    }
+  { clusters FAT - SrcCluster vaut ici le CNID du fichier (voir Fat_        }
+  { FindPath/Fat_FindInDir), il faut donc relocaliser les extents reels     }
+  { via HFS_FindByCNID avant de pouvoir lire quoi que ce soit. }
+  If FatVol[SrcIdx].IsHFS Then Begin
+   If Not HFS_FindByCNID(SrcIdx, SrcCluster, HFSExt) Then Begin
+    TermAddLine(TP, 'Erreur de lecture sur l image');
+    Close(TargetFile);
+    Exit;
+   End;
+   Remain := SrcSize;
+   HFSSecIdx := 0;
+   While Remain > 0 Do Begin
+    If Not HFS_ReadFileSector(SrcIdx, HFSExt, HFSSecIdx, SBuf) Then Begin
+     TermAddLine(TP, 'Erreur de lecture sur l image');
+     Close(TargetFile);
+     Exit;
+    End;
+    If Remain > 512 Then ToRead := 512 Else ToRead := Integer(Remain);
+    {$I-} BlockWrite(TargetFile, SBuf, ToRead); {$I+}
+    If IOResult <> 0 Then Begin
+     TermAddLine(TP, 'Erreur d ecriture : ' + Target);
+     Close(TargetFile);
+     Exit;
+    End;
+    Dec(Remain, ToRead);
+    Inc(HFSSecIdx);
+   End;
+   Close(TargetFile);
+   TermCopyFile := True;
    Exit;
   End;
   { OS-9/6809 RBF : allocation par liste de segments, pas de chaine de     }
@@ -47801,12 +48342,15 @@ Begin
   { (limite acceptee de NCListDir lui-meme, deja ainsi pour Norton          }
   { Commander). }
   If (Not FatVol[Idx].IsD64) And (Not FatVol[Idx].IsH8D) And
-   (Not FatVol[Idx].IsHPFS) And (Not FatVol[Idx].IsOS9) Then
+   (Not FatVol[Idx].IsHPFS) And (Not FatVol[Idx].IsOS9) And
+   (Not FatVol[Idx].IsHFS) Then
    If Not Fat_ResolveDir(Idx, AbsP, IsRoot, StartCl) Then Begin
     TermAddLine(TP, 'Le systeme ne trouve pas le chemin specifie.');
     Exit;
    End;
-  If FatVol[Idx].VolLabel <> '' Then
+  If FatVol[Idx].IsHFS And (FatVol[Idx].HFSVolName <> '') Then
+   LblTxt := FatVol[Idx].HFSVolName
+  Else If FatVol[Idx].VolLabel <> '' Then
    LblTxt := FatVol[Idx].VolLabel
   Else
    LblTxt := 'no label';
@@ -47814,7 +48358,7 @@ Begin
   HdrLine1 := ' Volume in drive ' + Chr(Ord('A') + Idx) + ' is ' + LblTxt;
   HdrLine2 := '';
   If FatVol[Idx].IsD64 Or FatVol[Idx].IsH8D Or FatVol[Idx].IsHPFS Or
-   FatVol[Idx].IsOS9 Then
+   FatVol[Idx].IsOS9 Or FatVol[Idx].IsHFS Then
    FreeBytesTxt := '0 bytes free (lecture seule)'
   Else
    FreeBytesTxt := IntToStr(Fat_FreeBytes(Idx)) + ' bytes free';
@@ -166216,6 +166760,12 @@ Begin
   { enumere les entrees via OS9_ListDirNC. }
   If Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then
    OS9_ListDirNC(Byte(Slot), StartCl, Pane);
+ End Else If FatVol[Slot].IsHFS Then Begin
+  { Volume Macintosh classique HFS - meme patron que OS-9 juste au-dessus : }
+  { Fat_ResolveDir/Fat_SetRootRef sont deja adaptes a HFS (CNID 2 = racine, }
+  { voir Fat_SetRootRef), puis enumeration via HFS_ListDirNC. }
+  If Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then
+   HFS_ListDirNC(Byte(Slot), StartCl, Pane);
  End Else Begin
   { Disquette virtuelle FAT montee. }
   If Not Fat_ResolveDir(Byte(Slot), Pane.Path, IsRoot, StartCl) Then Exit;
@@ -193749,6 +194299,8 @@ Begin
   { TotalSectors ne sont jamais renseignes pour H8D) meme quand le montage  }
   { H8D avait REELLEMENT reussi. }
   WriteLn(' -> ', FatVol[Idx].VolLabel, ' monte (image Heath/Zenith .H8D)')
+ Else If FatVol[Idx].IsHFS Then
+  WriteLn(' -> HFS monte (volume "', FatVol[Idx].HFSVolName, '")')
  Else If FatVol[Idx].Mounted Then
   WriteLn(' -> FAT', FatVol[Idx].FATType, ' monte (',
    FatVol[Idx].TotalSectors, ' secteurs, partition LBA=',
