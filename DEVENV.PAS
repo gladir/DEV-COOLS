@@ -7707,6 +7707,48 @@ Type
   GridErrorMsg : String[127];
  End;
 
+ { "Creer..." (2026-10-11, demande explicite de l'utilisateur - menu       }
+ { contextuel clic droit de l'Explorateur SQL Server) : boite de dialogue  }
+ { pour creer une VRAIE table (CREATE TABLE execute via SQLCMD.EXE, meme   }
+ { moteur reel que SqlLoadTables/SqlLoadColumns) avec un nombre variable   }
+ { de champs. Capacite FIXE (CTBL_MAX_FIELDS) plutot qu'une vraie liste     }
+ { chainee redimensionnable - la derniere ligne sans nom reste toujours    }
+ { visible et "s'active" automatiquement des qu'on y tape un nom (comme     }
+ { une feuille de calcul), ce qui donne a l'utilisateur l'impression d'une  }
+ { liste dynamique sans la complexite d'une structure reellement            }
+ { redimensionnable ; 12 champs couvre tres largement l'usage normal d'une  }
+ { table creee via ce raccourci (au-dela, "Nouvelle requete" permet un vrai }
+ { CREATE TABLE ecrit a la main, deja supporte par le meme moteur SQLCMD). }
+Const
+ CTBL_MAX_FIELDS = 12;
+ CTBL_ROW_H      = 22;
+Type
+ TCreateTableField = Record
+  Name      : String[64];
+  TypeIdx   : Integer;    { voir CTbl_TypeName/CTbl_TypeNeedsSize }
+  Size1     : Integer;
+  Nullable  : Boolean;    { True = NULL autorise, False = NOT NULL }
+  PrimaryKey: Boolean;
+ End;
+ TCreateTableDialog = Record
+  Base         : TDialog;
+  TargetNodeIdx: Integer;  { noeud SQLNK_TABLES ou SQLNK_DATABASE d'origine,
+                             pour retrouver le bon fichier .mdf via
+                             SqlNodeMdfPath, meme en dehors de tout clic }
+  TableName    : String[64];
+  TableCursor  : Integer;
+  Fields       : Array[0..CTBL_MAX_FIELDS - 1] Of TCreateTableField;
+  FieldCount   : Integer;  { nombre de lignes "actives" (voir le commentaire
+                             de tete - croit automatiquement, ne decroit
+                             jamais tant qu'un nom reste tape plus haut) }
+  EditTarget   : Integer;  { -1=rien ; 0=nom de table ; 1..FieldCount+1 =
+                             nom du champ (index-1) en cours de saisie }
+  EditCursor   : Integer;
+  Cancelled    : Boolean;  { True si ferme via Annuler/Echap - meme           }
+                            { convention que TInputBox.Cancelled, verifiee    }
+                            { en tete d'ApplyCreateTableDialog. }
+ End;
+
  { INT 21h/AX=714Eh-714Fh (Windows 95, Stage 5) - un resultat de recherche }
  { de nom long capture d avance (contrairement au FindFirst/Next classique}
  { $4E/$4F, qui ne recapture QUE le nom pour FindNext - voir Emu_DoInt21). }
@@ -8128,6 +8170,7 @@ Var
  { n a elle non plus jamais eu de vraie boucle modale, voir la note        }
  { ci-dessus - un chemin tape au clavier, pas un navigateur graphique). }
  SqlNewConnDlg  : TInputBox;
+ CreateTableDlg : TCreateTableDialog; { "Creer..." (clic droit), voir TCreateTableDialog }
  { True pendant que FileDlg est ouvert pour "Executer le VBScript..." du   }
  { menu contextuel de l editeur - redirige la confirmation de FileDlg vers  }
  { RunVBScriptMacroOnEditor au lieu du chemin normal HandleOpenFileConfirmed}
@@ -14529,6 +14572,21 @@ Procedure FreeBrowserTab(TabIdx: Integer); Forward;
 Procedure ShiftBrowserTabDown(I: Integer); Forward;
 Procedure ClearLastBrowserTabSlot(I: Integer); Forward;
 Procedure CloseDialog(Var Dlg: TDialog); Forward;
+{ "Creer une table" (2026-10-11, demande explicite - menu contextuel de    }
+{ l'Explorateur SQL Server) : primitives de dialogue generiques (InitDialog/}
+{ DrawDialogFrame/DrawDialogButtons/DrawRect/DrawCheckMark/IsInsideDialog/  }
+{ DialogButtonHitTest) deja definies plus bas dans ce fichier mais dont la  }
+{ VRAIE implementation arrive bien apres le point d'appel necessaire ici    }
+{ (HandleSqlExplorerEvent/DrawAllWidgets, plus haut dans le fichier) - meme }
+{ besoin exact que CloseDialog/InitInputBox/DrawInputBox juste au-dessus/   }
+{ dessous, resolu de la meme facon (declaration Forward). }
+Procedure InitDialog(Var Dlg: TDialog; T: String; W, H: Integer); Forward;
+Procedure DrawDialogFrame(Var Dlg: TDialog); Forward;
+Procedure DrawDialogButtons(Var Dlg: TDialog); Forward;
+Procedure DrawRect(X1, Y1, X2, Y2: Integer; Color: LongInt); Forward;
+Procedure DrawCheckMark(X, Y, BoxSize: Integer); Forward;
+Function IsInsideDialog(Var Dlg: TDialog; MX, MY: Integer): Boolean; Forward;
+Function DialogButtonHitTest(Var Dlg: TDialog; MX, MY: Integer): Integer; Forward;
 Procedure InitInputBox(Var IB: TInputBox; T, Prompt, Default: String); Forward;
 Function GetInputBoxText(Var IB: TInputBox): String; Forward;
 Procedure DrawInputBox(Var IB: TInputBox); Forward;
@@ -18046,6 +18104,401 @@ Begin
  SqlExplorer.NeedRepaint := True;
 End;
 
+{ ========================================================================
+  "Creer..." (2026-10-11, demande explicite de l'utilisateur - clic droit
+  dans l'Explorateur SQL Server doit proposer "Creer..." ouvrant une boite
+  de dialogue permettant de choisir le nom de la table, une liste de
+  champs DYNAMIQUE (nom/type/proprietes par champ) et de creer reellement
+  la table dans la base designee) - voir TCreateTableDialog pour le detail
+  de la portee assumee (capacite fixe mais usage "dynamique"). La table
+  est reellement creee via UN VRAI CREATE TABLE execute par SQLCMD.EXE
+  (meme moteur reel, deja verifie, que SqlLoadTables/SqlLoadColumns -
+  voir SQLCMD.PAS/ParseCreateTable pour la grammaire exacte supportee :
+  types avec taille optionnelle TYPE(n), NOT NULL/NULL, PRIMARY KEY par
+  colonne), jamais une simulation. ========================================================================= }
+
+{ --- Nom/portee des types de donnees proposes - sous-ensemble des VRAIS   }
+{ types reconnus par SqlXTypeName/ParseTypeRef (SQLCMD.PAS), pas une       }
+{ liste inventee. --- }
+Function CTbl_TypeName(Idx: Integer): String;
+Begin
+ Case Idx Of
+  0:  CTbl_TypeName := 'INT';
+  1:  CTbl_TypeName := 'BIGINT';
+  2:  CTbl_TypeName := 'SMALLINT';
+  3:  CTbl_TypeName := 'TINYINT';
+  4:  CTbl_TypeName := 'BIT';
+  5:  CTbl_TypeName := 'DECIMAL';
+  6:  CTbl_TypeName := 'FLOAT';
+  7:  CTbl_TypeName := 'VARCHAR';
+  8:  CTbl_TypeName := 'NVARCHAR';
+  9:  CTbl_TypeName := 'CHAR';
+  10: CTbl_TypeName := 'DATETIME';
+  11: CTbl_TypeName := 'DATE';
+  12: CTbl_TypeName := 'TEXT';
+  Else CTbl_TypeName := 'INT';
+ End;
+End;
+Const CTBL_TYPE_COUNT = 13;
+
+Function CTbl_TypeNeedsSize(Idx: Integer): Boolean;
+Begin
+ CTbl_TypeNeedsSize := (Idx = 5) Or (Idx = 7) Or (Idx = 8) Or (Idx = 9);
+             { DECIMAL,      VARCHAR,   NVARCHAR,  CHAR }
+End;
+
+{ Tailles courantes proposees au clic (plus simple et plus sur qu'un vrai  }
+{ editeur numerique pour ce raccourci - une vraie valeur arbitraire reste  }
+{ possible via "Nouvelle requete", deja supportee par le meme moteur). }
+Function CTbl_NextSize(Cur: Integer): Integer;
+Begin
+ Case Cur Of
+  10:  CTbl_NextSize := 20;
+  20:  CTbl_NextSize := 50;
+  50:  CTbl_NextSize := 100;
+  100: CTbl_NextSize := 255;
+  255: CTbl_NextSize := 10;
+  Else CTbl_NextSize := 50;
+ End;
+End;
+
+{ --- Initialise et ouvre la boite de dialogue, ciblant le noeud sur       }
+{ lequel le menu contextuel a ete ouvert (SQLNK_TABLES ou SQLNK_DATABASE - }
+{ SqlNodeMdfPath remonte jusqu'au bon SQLNK_SERVER quel que soit le point  }
+{ de depart exact). --- }
+Procedure InitCreateTableDialog(TargetNodeIdx: Integer);
+Var I: Integer;
+Begin
+ InitDialog(CreateTableDlg.Base, 'Creer une table', 580, 460);
+ CreateTableDlg.Base.HasCancel := True;
+ CreateTableDlg.TargetNodeIdx := TargetNodeIdx;
+ CreateTableDlg.TableName := '';
+ CreateTableDlg.TableCursor := 0;
+ CreateTableDlg.FieldCount := 1; { 1 ligne vide visible des l'ouverture }
+ For I := 0 To CTBL_MAX_FIELDS - 1 Do Begin
+  CreateTableDlg.Fields[I].Name := '';
+  CreateTableDlg.Fields[I].TypeIdx := 0; { INT par defaut }
+  CreateTableDlg.Fields[I].Size1 := 50;
+  CreateTableDlg.Fields[I].Nullable := True;
+  CreateTableDlg.Fields[I].PrimaryKey := False;
+ End;
+ CreateTableDlg.EditTarget := 0; { le curseur commence dans le nom de table }
+ CreateTableDlg.EditCursor := 0;
+ CreateTableDlg.Cancelled := False;
+ CreateTableDlg.Base.Visible := True;
+End;
+
+{ --- Dessine le champ de saisie du nom de table (meme style que           }
+{ DrawInputField, sans defilement horizontal - un nom de table tres long    }
+{ est un cas limite non gere ici, disclosure honnete plutot qu'une          }
+{ complexite supplementaire pour un champ qui reste court en pratique). --- }
+Procedure CTbl_DrawTextCell(X, Y, W: Integer; Const Txt: String;
+ Editing: Boolean; CPos: Integer);
+Begin
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(X, Y, X + W - 1, Y + DLG_INPUT_HEIGHT - 1);
+ SetColor(CLR_BORDER);
+ Rectangle(X, Y, X + W - 1, Y + DLG_INPUT_HEIGHT - 1);
+ SetColor(CLR_EDITOR_TEXT);
+ OutTextXY(X + 3, Y + 3, Txt);
+ If Editing Then Begin
+  SetColor(CLR_CURSOR);
+  Line(X + 3 + TextWidth(Copy(Txt, 1, CPos)), Y + 2,
+       X + 3 + TextWidth(Copy(Txt, 1, CPos)), Y + DLG_INPUT_HEIGHT - 3);
+ End;
+End;
+
+{ --- Dessine la boite de dialogue complete --- }
+Procedure DrawCreateTableDialog;
+Var
+ PX, BaseY, I, RowY, NameW, TypeW, SizeW, ChkX1, ChkX2: Integer;
+Begin
+ If Not CreateTableDlg.Base.Visible Then Exit;
+ DrawDialogFrame(CreateTableDlg.Base);
+ PX := CreateTableDlg.Base.X + DLG_PADDING;
+ BaseY := CreateTableDlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(PX, BaseY, 'Nom de la table :');
+ CTbl_DrawTextCell(PX + 120, BaseY - 3, 200, CreateTableDlg.TableName,
+  CreateTableDlg.EditTarget = 0, CreateTableDlg.TableCursor);
+ BaseY := BaseY + DLG_INPUT_HEIGHT + 10;
+ { En-tete des colonnes de la liste de champs }
+ NameW := 160; TypeW := 110; SizeW := 60;
+ ChkX1 := PX + NameW + TypeW + SizeW + 16;
+ ChkX2 := ChkX1 + 70;
+ SetColor(CLR_MENU_TEXT);
+ OutTextXY(PX, BaseY, 'Nom du champ');
+ OutTextXY(PX + NameW + 6, BaseY, 'Type');
+ OutTextXY(PX + NameW + TypeW + 12, BaseY, 'Taille');
+ OutTextXY(ChkX1, BaseY, 'NULL');
+ OutTextXY(ChkX2, BaseY, 'Cle 1');
+ BaseY := BaseY + 18;
+ { Lignes de champs - toutes les lignes jusqu'a FieldCount, plus une       }
+ { derniere ligne vide supplementaire tant que la capacite le permet       }
+ { (voir le commentaire de tete de TCreateTableDialog). }
+ For I := 0 To CreateTableDlg.FieldCount - 1 Do Begin
+  RowY := BaseY + I * CTBL_ROW_H;
+  CTbl_DrawTextCell(PX, RowY, NameW, CreateTableDlg.Fields[I].Name,
+   CreateTableDlg.EditTarget = I + 1, CreateTableDlg.EditCursor);
+  SetFillStyle(SolidFill, CLR_BTNFACE);
+  Bar(PX + NameW + 6, RowY, PX + NameW + TypeW - 1, RowY + DLG_INPUT_HEIGHT - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(PX + NameW + 6, RowY, PX + NameW + TypeW - 1, RowY + DLG_INPUT_HEIGHT - 1);
+  SetColor(CLR_WINDOWTEXT);
+  OutTextXY(PX + NameW + 10, RowY + 3, CTbl_TypeName(CreateTableDlg.Fields[I].TypeIdx));
+  If CTbl_TypeNeedsSize(CreateTableDlg.Fields[I].TypeIdx) Then Begin
+   SetFillStyle(SolidFill, CLR_BTNFACE);
+   Bar(PX + NameW + TypeW + 12, RowY, PX + NameW + TypeW + SizeW + 5, RowY + DLG_INPUT_HEIGHT - 1);
+   SetColor(CLR_BORDER);
+   Rectangle(PX + NameW + TypeW + 12, RowY, PX + NameW + TypeW + SizeW + 5, RowY + DLG_INPUT_HEIGHT - 1);
+   SetColor(CLR_WINDOWTEXT);
+   OutTextXY(PX + NameW + TypeW + 16, RowY + 3, IntToStr(CreateTableDlg.Fields[I].Size1));
+  End;
+  DrawRect(ChkX1, RowY + 2, ChkX1 + OPT_CHECK_SIZE, RowY + 2 + OPT_CHECK_SIZE, CLR_BORDER);
+  If CreateTableDlg.Fields[I].Nullable Then DrawCheckMark(ChkX1, RowY + 2, OPT_CHECK_SIZE);
+  DrawRect(ChkX2, RowY + 2, ChkX2 + OPT_CHECK_SIZE, RowY + 2 + OPT_CHECK_SIZE, CLR_BORDER);
+  If CreateTableDlg.Fields[I].PrimaryKey Then DrawCheckMark(ChkX2, RowY + 2, OPT_CHECK_SIZE);
+ End;
+ BaseY := BaseY + CreateTableDlg.FieldCount * CTBL_ROW_H + 10;
+ SetColor(CLR_BORDER);
+ OutTextXY(PX, BaseY, 'Cliquez sur Type/Taille pour changer, NULL/Cle 1 pour basculer.');
+ DrawDialogButtons(CreateTableDlg.Base);
+End;
+
+{ --- Trouve la ligne de champ sous (MX,MY), -1 si aucune --- }
+Function CTbl_RowAt(MY: Integer): Integer;
+Var BaseY, Row: Integer;
+Begin
+ CTbl_RowAt := -1;
+ BaseY := CreateTableDlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING +
+  DLG_INPUT_HEIGHT + 10 + 18;
+ If MY < BaseY Then Exit;
+ Row := (MY - BaseY) Div CTBL_ROW_H;
+ If (Row >= 0) And (Row < CreateTableDlg.FieldCount) Then CTbl_RowAt := Row;
+End;
+
+{ --- Construit le VRAI CREATE TABLE (grammaire verifiee contre            }
+{ SQLCMD.PAS/ParseCreateTable - types avec taille TYPE(n), NOT NULL,        }
+{ PRIMARY KEY par colonne) a partir des lignes dont le nom n'est pas vide. }
+Function CTbl_BuildSQL: String;
+Var
+ I: Integer;
+ Sql, ColDef: String;
+ First: Boolean;
+Begin
+ Sql := 'CREATE TABLE ' + TrimStr(CreateTableDlg.TableName) + ' (';
+ First := True;
+ For I := 0 To CreateTableDlg.FieldCount - 1 Do
+  If TrimStr(CreateTableDlg.Fields[I].Name) <> '' Then Begin
+   ColDef := TrimStr(CreateTableDlg.Fields[I].Name) + ' ' +
+    CTbl_TypeName(CreateTableDlg.Fields[I].TypeIdx);
+   If CTbl_TypeNeedsSize(CreateTableDlg.Fields[I].TypeIdx) Then
+    ColDef := ColDef + '(' + IntToStr(CreateTableDlg.Fields[I].Size1) + ')';
+   If Not CreateTableDlg.Fields[I].Nullable Then ColDef := ColDef + ' NOT NULL';
+   If CreateTableDlg.Fields[I].PrimaryKey Then ColDef := ColDef + ' PRIMARY KEY';
+   If Not First Then Sql := Sql + ', ';
+   Sql := Sql + ColDef;
+   First := False;
+  End;
+ Sql := Sql + ')';
+ CTbl_BuildSQL := Sql;
+End;
+
+{ --- Execute le VRAI CREATE TABLE via SQLCMD.EXE (meme patron exact que   }
+{ SqlLoadTables/SqlLoadColumns - diagnostic optionnel, detection d'erreur  }
+{ par la meme convention "ligne contenant Erreur" que le moteur SQLCMD     }
+{ utilise deja pour ses propres messages, voir ExecCreateTable/OutputLine  }
+{ dans SQLCMD.PAS) puis rafraichit l'arbre (meme discipline que le bouton  }
+{ "Actualiser" - reconstruit tout le squelette, l'etat deplie n'est pas     }
+{ preserve, compromis deja accepte ailleurs dans cet explorateur). --- }
+Procedure ApplyCreateTableDialog;
+Var
+ MdfPath, Sql, Cmd: String;
+ Buf: TCmdOutputLines;
+ Cnt, I: Integer;
+ HasError, HasField: Boolean;
+Begin
+ If CreateTableDlg.Cancelled Then Exit;
+ If TrimStr(CreateTableDlg.TableName) = '' Then Begin
+  AppendOutputEx(OutputPanel, 'Creer une table : nom de table requis.',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Exit;
+ End;
+ HasField := False;
+ For I := 0 To CreateTableDlg.FieldCount - 1 Do
+  If TrimStr(CreateTableDlg.Fields[I].Name) <> '' Then HasField := True;
+ If Not HasField Then Begin
+  AppendOutputEx(OutputPanel, 'Creer une table : au moins un champ nomme est requis.',
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Exit;
+ End;
+ MdfPath := SqlNodeMdfPath(SqlExplorer, CreateTableDlg.TargetNodeIdx);
+ If Not FileExists(MdfPath) Then Begin
+  AppendOutputEx(OutputPanel, 'Creer une table : fichier introuvable - ' + MdfPath,
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  Exit;
+ End;
+ Sql := CTbl_BuildSQL;
+ Cmd := '"' + SqlCmdExePath + '" -S "' + MdfPath + '" -q "' + Sql + '"';
+ If OptionsDlg.Data.SqlExplorerShowDiag Then
+  SqlExplorerDiagDump('ApplyCreateTableDialog', Cmd, MdfPath);
+ RunCommandCaptureOutput(Cmd, Buf, Cnt);
+ If OptionsDlg.Data.SqlExplorerShowDiag Then
+  SqlExplorerDiagDumpOutput(Buf, Cnt);
+ { SQLCMD.PAS rapporte les erreurs semantiques via OutputLine('-- Erreur : ...')  }
+ { (ExecCreateTable) mais les erreurs de syntaxe/analyse via WarnMsg, qui      }
+ { ecrit 'SQLCMD:warning: ...' (sans jamais le mot "Erreur"), et les erreurs   }
+ { fatales de demarrage via 'SQLCMD: FATAL: ...' - les 3 marqueurs doivent     }
+ { etre detectes pour ne jamais rapporter un faux succes.                     }
+ HasError := False;
+ For I := 0 To Cnt - 1 Do
+  If (Pos('Erreur', Buf[I]) > 0) Or (Pos('SQLCMD:warning:', Buf[I]) > 0) Or
+     (Pos('SQLCMD: FATAL:', Buf[I]) > 0) Then
+   HasError := True;
+ If HasError Then Begin
+  AppendOutputEx(OutputPanel, 'Creer une table : echec - ' + Sql,
+   Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+  For I := 0 To Cnt - 1 Do
+   If TrimStr(Buf[I]) <> '' Then
+    AppendOutputEx(OutputPanel, '  ' + Buf[I], Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+ End Else Begin
+  AppendOutputEx(OutputPanel, 'Table "' + TrimStr(CreateTableDlg.TableName) +
+   '" creee avec succes : ' + Sql, Ord(OTK_BUILD), OLK_INFO, '', 0, 0);
+  BuildSqlExplorerSkeleton(SqlExplorer);
+ End;
+ SqlExplorer.NeedRepaint := True;
+End;
+
+{ --- Gere une touche clavier dans la cellule en cours d'edition (meme     }
+{ patron exact que HandleInputBoxKey, applique soit au nom de table soit   }
+{ au nom du champ cible selon EditTarget). --- }
+Procedure CTbl_HandleKey(Key: Char);
+Var I: Integer;
+Begin
+ If CreateTableDlg.EditTarget = 0 Then Begin
+  If Key = #8 Then Begin
+   If (CreateTableDlg.TableCursor > 0) And (Length(CreateTableDlg.TableName) > 0) Then Begin
+    Delete(CreateTableDlg.TableName, CreateTableDlg.TableCursor, 1);
+    Dec(CreateTableDlg.TableCursor);
+   End;
+  End Else If (Key >= ' ') And (Key <= '~') Then Begin
+   If Length(CreateTableDlg.TableName) < 64 Then Begin
+    Inc(CreateTableDlg.TableCursor);
+    Insert(Key, CreateTableDlg.TableName, CreateTableDlg.TableCursor);
+   End;
+  End;
+ End Else If (CreateTableDlg.EditTarget >= 1) And
+  (CreateTableDlg.EditTarget <= CTBL_MAX_FIELDS) Then Begin
+  I := CreateTableDlg.EditTarget - 1;
+  If Key = #8 Then Begin
+   If (CreateTableDlg.EditCursor > 0) And
+      (Length(CreateTableDlg.Fields[I].Name) > 0) Then Begin
+    Delete(CreateTableDlg.Fields[I].Name, CreateTableDlg.EditCursor, 1);
+    Dec(CreateTableDlg.EditCursor);
+   End;
+  End Else If (Key >= ' ') And (Key <= '~') Then Begin
+   If Length(CreateTableDlg.Fields[I].Name) < 64 Then Begin
+    Inc(CreateTableDlg.EditCursor);
+    Insert(Key, CreateTableDlg.Fields[I].Name, CreateTableDlg.EditCursor);
+   End;
+   { Ligne finale qui vient de recevoir son 1er caractere : revele une      }
+   { nouvelle ligne vide juste apres, tant que la capacite le permet -      }
+   { c'est CE mecanisme, et lui seul, qui donne l'impression d'une liste    }
+   { de champs dynamique (voir le commentaire de tete de                   }
+   { TCreateTableDialog). }
+   If (I = CreateTableDlg.FieldCount - 1) And
+      (Length(CreateTableDlg.Fields[I].Name) = 1) And
+      (CreateTableDlg.FieldCount < CTBL_MAX_FIELDS) Then
+    Inc(CreateTableDlg.FieldCount);
+  End;
+ End;
+End;
+
+{ --- Gere un evenement dans la boite de dialogue --- }
+Procedure HandleCreateTableDialogEvent(Var Ev: TEvent);
+Var
+ Idx, Row, PX, BaseY, NameW, TypeW, SizeW, ChkX1, ChkX2: Integer;
+Begin
+ If Not CreateTableDlg.Base.Visible Then Exit;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If Not IsInsideDialog(CreateTableDlg.Base, Ev.MouseX, Ev.MouseY) Then Exit;
+  Idx := DialogButtonHitTest(CreateTableDlg.Base, Ev.MouseX, Ev.MouseY);
+  If Idx = 0 Then Begin
+   CreateTableDlg.Cancelled := False;
+   CloseDialog(CreateTableDlg.Base);
+   Exit;
+  End Else If Idx = 1 Then Begin
+   CreateTableDlg.Cancelled := True;
+   CloseDialog(CreateTableDlg.Base);
+   Exit;
+  End;
+  PX := CreateTableDlg.Base.X + DLG_PADDING;
+  BaseY := CreateTableDlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+  { Champ "Nom de la table" }
+  If (Ev.MouseY >= BaseY - 3) And (Ev.MouseY < BaseY - 3 + DLG_INPUT_HEIGHT) And
+     (Ev.MouseX >= PX + 120) And (Ev.MouseX < PX + 320) Then Begin
+   CreateTableDlg.EditTarget := 0;
+   CreateTableDlg.TableCursor := Length(CreateTableDlg.TableName);
+   Exit;
+  End;
+  NameW := 160; TypeW := 110; SizeW := 60;
+  ChkX1 := PX + NameW + TypeW + SizeW + 16;
+  ChkX2 := ChkX1 + 70;
+  Row := CTbl_RowAt(Ev.MouseY);
+  If Row < 0 Then Exit;
+  If (Ev.MouseX >= PX) And (Ev.MouseX < PX + NameW) Then Begin
+   CreateTableDlg.EditTarget := Row + 1;
+   CreateTableDlg.EditCursor := Length(CreateTableDlg.Fields[Row].Name);
+  End Else If (Ev.MouseX >= PX + NameW + 6) And (Ev.MouseX < PX + NameW + TypeW) Then Begin
+   CreateTableDlg.Fields[Row].TypeIdx :=
+    (CreateTableDlg.Fields[Row].TypeIdx + 1) Mod CTBL_TYPE_COUNT;
+  End Else If (Ev.MouseX >= PX + NameW + TypeW + 12) And
+   (Ev.MouseX < PX + NameW + TypeW + SizeW + 6) And
+   CTbl_TypeNeedsSize(CreateTableDlg.Fields[Row].TypeIdx) Then Begin
+   CreateTableDlg.Fields[Row].Size1 := CTbl_NextSize(CreateTableDlg.Fields[Row].Size1);
+  End Else If (Ev.MouseX >= ChkX1) And (Ev.MouseX < ChkX1 + OPT_CHECK_SIZE) Then Begin
+   CreateTableDlg.Fields[Row].Nullable := Not CreateTableDlg.Fields[Row].Nullable;
+  End Else If (Ev.MouseX >= ChkX2) And (Ev.MouseX < ChkX2 + OPT_CHECK_SIZE) Then Begin
+   CreateTableDlg.Fields[Row].PrimaryKey := Not CreateTableDlg.Fields[Row].PrimaryKey;
+   { Une cle primaire ne peut jamais accepter NULL - cocher "Cle 1" decoche }
+   { automatiquement NULL (correction honnete plutot qu'un CREATE TABLE     }
+   { genere qui serait invalide : PRIMARY KEY + NULL est contradictoire). }
+   If CreateTableDlg.Fields[Row].PrimaryKey Then
+    CreateTableDlg.Fields[Row].Nullable := False;
+  End;
+  Exit;
+ End Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #13 Then Begin
+   CreateTableDlg.Cancelled := False;
+   CloseDialog(CreateTableDlg.Base);
+  End Else If Ev.KeyChar = #27 Then Begin
+   CreateTableDlg.Cancelled := True;
+   CloseDialog(CreateTableDlg.Base);
+  End Else
+   CTbl_HandleKey(Ev.KeyChar);
+ End;
+End;
+
+{ --- Menu contextuel clic droit de l'Explorateur SQL Server (2026-10-11,  }
+{ demande explicite) - "Creer..." disponible sur le dossier "Tables"       }
+{ d'une base ET directement sur la base elle-meme (les 2 points d'entree   }
+{ les plus naturels, comme dans un vrai SSMS). Autres types de noeud :      }
+{ menu vide (CM.ItemCount reste 0), ShowSqlExplorerContextMenu n'affiche    }
+{ alors rien plutot que de proposer une action hors contexte. --- }
+Procedure ShowSqlExplorerContextMenu(Var CM: TContextMenu; NodeIdx, MX, MY: Integer);
+Begin
+ InitContextMenu(CM);
+ CM.X := MX;
+ CM.Y := MY;
+ CM.NodeIdx := NodeIdx;
+ If (NodeIdx < 0) Or (NodeIdx >= SqlExplorer.NodeCount) Then Exit;
+ Case SqlExplorer.Nodes[NodeIdx].Kind Of
+  SQLNK_TABLES, SQLNK_DATABASE: AddContextItem(CM, 'Creer...', 1100);
+ End;
+ If CM.ItemCount > 0 Then CM.Visible := True;
+ DrawContextMenu(CM);
+End;
+
 { --- Ouvrir (ou activer si deja ouvert) l onglet Explorateur d objets SQL
   Server - meme patron exact que CreateExtManagerWindow (singleton, aucun
   tableau parallele par index). --- }
@@ -18567,6 +19020,20 @@ Begin
     If ST.GridScrollRow < 0 Then ST.GridScrollRow := 0;
     If ST.GridScrollRow > GMaxScroll Then ST.GridScrollRow := GMaxScroll;
     ST.NeedRepaint := True;
+   End;
+   Exit;
+  End;
+  { Clic droit : menu contextuel "Creer..." (2026-10-11, demande explicite }
+  { de l'utilisateur) - meme patron exact que le clic droit de             }
+  { l'Explorateur de solution (ShowExplorerContextMenu) juste au-dessus     }
+  { du test de la barre d'outils, pour que le clic droit fonctionne         }
+  { partout dans l'arbre, pas seulement sur un noeud deja selectionne. }
+  If Ev.MouseBtn = MB_RIGHT Then Begin
+   HitIdx := SqlNodeHitTest(ST, Ev.MouseY);
+   If HitIdx >= 0 Then Begin
+    ST.SelectedIdx := HitIdx;
+    ST.NeedRepaint := True;
+    ShowSqlExplorerContextMenu(CtxMenu, HitIdx, Ev.MouseX, Ev.MouseY);
    End;
    Exit;
   End;
@@ -241331,6 +241798,8 @@ Begin
   DrawInputBox(RenameFileDlg);
  If SqlNewConnDlg.Base.Visible Then
   DrawInputBox(SqlNewConnDlg);
+ If CreateTableDlg.Base.Visible Then
+  DrawCreateTableDialog;
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
  { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) -
@@ -245053,6 +245522,13 @@ Begin
      951: EmuDbg_CtxDisasmFromIP;
      952: EmuDbg_CtxSaveText;
      953: EmuDbg_CtxEntropy;
+     { Menu contextuel (clic droit) de l'Explorateur d'objets SQL Server     }
+     { (2026-10-11, demande explicite) - voir ShowSqlExplorerContextMenu/    }
+     { InitCreateTableDialog ci-dessus dans le fichier. }
+     1100: Begin { Creer... }
+      InitCreateTableDialog(CtxMenu.NodeIdx);
+      DrawCreateTableDialog;
+     End;
      311, 411: Begin { Ajouter un fichier }
       InitFileDialog(FileDlg, False);
       LoadDirectoryFiles(FileDlg);
@@ -245509,6 +245985,18 @@ Begin
    FullRepaintNeeded := True;
   End Else
    DrawInputBox(SqlNewConnDlg);
+  Exit;
+ End;
+ { "Creer..." du menu contextuel de l Explorateur d objets SQL Server       }
+ { (2026-10-11, demande explicite) - meme motif image-par-image exact que   }
+ { SqlNewConnDlg ci-dessus. }
+ If CreateTableDlg.Base.Visible Then Begin
+  HandleCreateTableDialogEvent(Ev);
+  If Not CreateTableDlg.Base.Visible Then Begin
+   ApplyCreateTableDialog;
+   FullRepaintNeeded := True;
+  End Else
+   DrawCreateTableDialog;
   Exit;
  End;
  { Sous-boite Ajouter/Modifier en premier : elle doit recevoir les
