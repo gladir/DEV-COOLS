@@ -1392,6 +1392,53 @@ Function Os2Tcp_getservbyname(Name, Proto: PChar): PMdbcServEnt;
 Function Os2Tcp_getservbyport(Port: LongInt; Proto: PChar): PMdbcServEnt;
          StdCall; External 'ws2_32.dll' Name 'getservbyport';
 
+{ BSD Sockets d'OS/2 (2026-10-11, demande explicite - liste complete de 41  }
+{ entrees fournie par l'utilisateur, TCPIP32.DLL) : liaisons REELLEMENT     }
+{ nouvelles par rapport au premier lot (socket/bind/listen/accept/connect/  }
+{ send/recv/sendto/recvfrom/shutdown/closesocket/getsockname/getpeername/   }
+{ getsockopt/setsockopt/ioctl/select/gethostbyname/gethostbyaddr/           }
+{ getservbyname/getservbyport, deja lies plus haut). htonl/ntohl/ntohs/     }
+{ inet_ntoa/getprotobyname/getprotobynumber sont des exports REELS de       }
+{ ws2_32.dll (meme discipline que le 1er lot - jamais simules). gethostname }
+{ reutilise directement IpCfg_gethostname (deja lie pour la commande        }
+{ IPCONFIG, meme export ws2_32.dll). inet_network/inet_lnaof/inet_netof/    }
+{ inet_makeaddr N'EXISTENT PAS dans Winsock (fonctions BSD historiques,     }
+{ jamais exportees par ws2_32.dll) - reimplementees ci-dessous en Pascal    }
+{ pur (arithmetique de classes d'adresses IPv4 A/B/C, algorithme BSD        }
+{ standard, aucun appel reseau necessaire). sethostname/setdomainname/      }
+{ getdomainname N'ONT PAS de forme Winsock et renommer la VRAIE machine     }
+{ hote serait un effet de bord dangereux et irreversible pour un simple     }
+{ test d'emulateur - simules via un etat EN MEMOIRE PROPRE A L'EMULATEUR    }
+{ (Os2SimHostName/Os2SimDomainName, jamais ecrits vers le vrai systeme      }
+{ d'exploitation hote). socketpair n'a pas d'equivalent AF_UNIX sous        }
+{ Winsock (pas de domaine AF_UNIX sur ce Windows) - emule via une VRAIE     }
+{ paire de sockets 127.0.0.1 connectes entre eux (meme technique qu'un      }
+{ "socketpair" sous Unix, juste transporte sur boucle locale IPv4 reelle    }
+{ plutot que sur un socket de domaine Unix). fcntl ne gere que F_GETFL/     }
+{ F_SETFL/O_NONBLOCK (constantes POSIX usuelles 3/4/$0004 - PAS verifiees   }
+{ contre un en-tete EMX/OS2 reel, disclosure honnete). sendmsg/recvmsg ne   }
+{ gerent qu'UN SEUL iovec (pas de vraie dispersion/rassemblement multi-     }
+{ tampons, pas de donnees annexes/droits de fichiers SCM_RIGHTS). }
+Type
+ PMdbcProtoEnt = ^TMdbcProtoEnt;
+ TMdbcProtoEnt = Record
+  p_name    : PChar;
+  p_aliases : Pointer;
+  p_proto   : SmallInt;
+ End;
+Function Os2Tcp_getprotobyname(Name: PChar): PMdbcProtoEnt;
+         StdCall; External 'ws2_32.dll' Name 'getprotobyname';
+Function Os2Tcp_getprotobynumber(Number: LongInt): PMdbcProtoEnt;
+         StdCall; External 'ws2_32.dll' Name 'getprotobynumber';
+Function Os2Tcp_inet_ntoa(InAddr: LongWord): PChar;
+         StdCall; External 'ws2_32.dll' Name 'inet_ntoa';
+Function Os2Tcp_htonl(HostLong: LongWord): LongWord;
+         StdCall; External 'ws2_32.dll' Name 'htonl';
+Function Os2Tcp_ntohl(NetLong: LongWord): LongWord;
+         StdCall; External 'ws2_32.dll' Name 'ntohl';
+Function Os2Tcp_ntohs(NetShort: Word): Word;
+         StdCall; External 'ws2_32.dll' Name 'ntohs';
+
 { IPCONFIG (2026-10-04, demande explicite - voir                           }
 { C:\SOURCE\GITHUB\NETWORKKIT-P\IPCONFIG.PAS) : contrairement a la          }
 { reference (un seul gethostbyname, pas de masque/passerelle reels, MAC     }
@@ -6992,11 +7039,32 @@ Type
   Z8001Cpm        : Boolean;     { API CP/M-8000 (BDOS reel via SC #2) integree }
                                   { dans l'emulateur, active par defaut }
   { Emulateur > OS/2 (2026-10-11, demande explicite de l'utilisateur -      }
-  { "rajoute une case a cocher Reseau MPTS... cochee par defaut"). Gate     }
-  { directement le branchement TCPIP32/TCP32DLL/SO32DLL/TCPIPDLL de         }
-  { Lx_DoDosCall (voir project_devenv_os2_tcpip32.md) - decochee, ces       }
-  { modules importes tombent dans le "Appel systeme non supporte" normal.  }
-  Os2Mpts         : Boolean;     { reseau MPTS (TCPIP32) emule, actif par defaut }
+  { 1er message : case "Reseau MPTS" ; 2e message (meme session) : renommee }
+  { "BSD Sockets d'OS/2" ; 3e message : l'utilisateur a precise vouloir LES }
+  { DEUX cases DISTINCTES, "elle [BSD Sockets] n'utilise pas toutes les     }
+  { memes API appelees par un programme OS/2" - un vrai programme OS/2      }
+  { peut appeler des utilitaires TCP/IP (resolution de noms/domaines,       }
+  { conversion d'octets, /etc/services, /etc/protocol) SANS jamais ouvrir   }
+  { de socket. Deux cases desormais, gatant chacune un sous-ensemble        }
+  { DIFFERENT du branchement TCPIP32/TCP32DLL/SO32DLL/TCPIPDLL de           }
+  { Lx_DoDosCall (voir project_devenv_os2_tcpip32.md et                    }
+  { project_devenv_os2_bsdsockets.md) : }
+  { - Os2Mpts (case du HAUT, maitresse) : reconnaissance du module meme -   }
+  {   decochee, AUCUNE des 41 fonctions ne repond (le module entier tombe   }
+  {   dans "Appel systeme non supporte"). }
+  { - Os2BsdSockets (case du BAS, sous-ensemble) : les 21 fonctions dont le }
+  {   TYPE fourni par l'utilisateur est "BSD Socket"/"TCP"/"UDP"/"BSD/OS2"  }
+  {   (socket/bind/listen/accept/connect/shutdown/closesocket/send/recv/    }
+  {   sendto/recvfrom/sendmsg/recvmsg/getsockname/getpeername/getsockopt/   }
+  {   setsockopt/ioctl/select/socketpair/fcntl - la creation/le transfert/  }
+  {   le controle reel d'un socket) - decochee (mais Os2Mpts cochee), ces   }
+  {   21 fonctions SEULES tombent dans "Appel systeme non supporte" ; les   }
+  {   20 autres (DNS/TCP-IP/IPv4/etc-services/etc-protocol - resolution de  }
+  {   noms, conversion d'adresses/octets, recherche service/protocole)      }
+  {   continuent de repondre normalement, puisqu'elles n'ouvrent jamais     }
+  {   elles-memes de socket. }
+  Os2Mpts         : Boolean;     { MPTS (TCPIP32) reconnu du tout, actif par defaut }
+  Os2BsdSockets   : Boolean;     { sous-ensemble "creation/transfert de socket" (21/41) }
  End;
 
  { Dialogue des options de l IDE }
@@ -127429,6 +127497,108 @@ Var
  LxTcpBuf: Array[0..65535] Of Byte; { tampon de marshaling send/recv/sockopt - }
                                      { GLOBAL (jamais local), voir le bogue    }
                                      { reel de pile corrige dans DISPAK.PAS.   }
+ { sethostname/setdomainname (2026-10-11, demande explicite - liste BSD      }
+ { Sockets complete) : etat PUREMENT EN MEMOIRE, JAMAIS ecrit vers le vrai    }
+ { systeme d'exploitation hote (renommer la VRAIE machine serait un effet de }
+ { bord dangereux/irreversible pour un simple test d'emulateur). Vide par    }
+ { defaut : gethostname/getdomainname retombent alors sur le vrai nom hote   }
+ { (IpCfg_gethostname) / une chaine vide tant qu aucun setXxxname n a ete    }
+ { appele par le programme invite. }
+ Os2SimHostName: String;
+ Os2SimDomainName: String;
+ { fcntl (F_GETFL) : Winsock n expose aucun moyen de RELIRE l etat non       }
+ { bloquant d un socket - trace localement, par poignee, le dernier etat     }
+ { pose par un F_SETFL/O_NONBLOCK (ou par IOCTL/FIONBIO, meme drapeau        }
+ { logique) vu par CET emulateur. Table plate (pas de table de hachage       }
+ { necessaire, LX_MAX_TRAP_SLOTS-order de grandeur de sockets simultanes,    }
+ { tres en-dessous de 256 en pratique). }
+ Os2FcntlNbCount: Integer;
+ Os2FcntlNbSock: Array[0..255] Of LongInt;
+ Os2FcntlNbFlag: Array[0..255] Of Boolean;
+
+{ Enregistre/relit le dernier etat non bloquant connu d'un socket - voir    }
+{ Os2FcntlNbSock/Flag ci-dessus. Table pleine (256 sockets simultanement    }
+{ suivis) : la plus ancienne entree est silencieusement reutilisee plutot   }
+{ que de refuser (F_GETFL retournerait alors juste une valeur par defaut    }
+{ raisonnable, jamais une erreur bloquante pour un cas limite aussi rare). }
+Procedure Os2Fcntl_SetNb(Sock: LongInt; NonBlock: Boolean);
+Var I: Integer;
+Begin
+ For I := 0 To Os2FcntlNbCount - 1 Do
+  If Os2FcntlNbSock[I] = Sock Then Begin Os2FcntlNbFlag[I] := NonBlock; Exit; End;
+ If Os2FcntlNbCount >= 256 Then Os2FcntlNbCount := 0; { reutilise l'entree 0 }
+ Os2FcntlNbSock[Os2FcntlNbCount] := Sock;
+ Os2FcntlNbFlag[Os2FcntlNbCount] := NonBlock;
+ Inc(Os2FcntlNbCount);
+End;
+
+Function Os2Fcntl_GetNb(Sock: LongInt): Boolean;
+Var I: Integer;
+Begin
+ Os2Fcntl_GetNb := False; { bloquant par defaut, comme un socket Winsock neuf }
+ For I := 0 To Os2FcntlNbCount - 1 Do
+  If Os2FcntlNbSock[I] = Sock Then Begin Os2Fcntl_GetNb := Os2FcntlNbFlag[I]; Exit; End;
+End;
+
+{ inet_network/inet_lnaof/inet_netof/inet_makeaddr (2026-10-11, demande     }
+{ explicite - liste BSD Sockets complete) : AUCUN de ces 4 noms n est        }
+{ exporte par ws2_32.dll (fonctions BSD historiques, disparues de Winsock)  }
+{ - reimplementees ici en Pascal pur d apres l algorithme BSD standard des   }
+{ classes d adresse IPv4 A/B/C (glibc/4.4BSD inet_lnaof.c/inet_netof.c/      }
+{ inet_makeaddr.c - aucun appel reseau necessaire, arithmetique pure). }
+Const
+ OS2_CLASSA_NET   = LongWord($FF000000);
+ OS2_CLASSA_HOST  = LongWord($00FFFFFF);
+ OS2_CLASSB_NET   = LongWord($FFFF0000);
+ OS2_CLASSB_HOST  = LongWord($0000FFFF);
+ OS2_CLASSC_NET   = LongWord($FFFFFF00);
+ OS2_CLASSC_HOST  = LongWord($000000FF);
+
+{ inet_network(cp) : analyse la chaine EXACTEMENT comme inet_addr (forme     }
+{ "a.b.c.d" complete) puis convertit en ordre HOTE - couvre l'usage          }
+{ ecrasant majoritaire ; les formes "classfull" courtes de la reference BSD  }
+{ (ex. "10.1" = reseau 10, hote 1) ne sont PAS reconnues specialement        }
+{ (disclosure honnete, meme esprit que gethostbyname/h_addr_list[0] plus     }
+{ haut - Mdbc_inet_addr echoue simplement sur ces formes rares). }
+Function Os2_inet_network(Const Cp: String): LongWord;
+Begin
+ Os2_inet_network := Os2Tcp_ntohl(Mdbc_inet_addr(PChar(AnsiString(Cp))));
+End;
+
+{ inet_lnaof(in) : partie "numero de machine" d'une adresse (ordre reseau    }
+{ en entree, comme le vrai struct in_addr). }
+Function Os2_inet_lnaof(InAddrNet: LongWord): LongWord;
+Var H: LongWord;
+Begin
+ H := Os2Tcp_ntohl(InAddrNet);
+ If (H And $80000000) = 0 Then Os2_inet_lnaof := H And OS2_CLASSA_HOST
+ Else If (H And $C0000000) = $80000000 Then Os2_inet_lnaof := H And OS2_CLASSB_HOST
+ Else Os2_inet_lnaof := H And OS2_CLASSC_HOST;
+End;
+
+{ inet_netof(in) : partie "numero de reseau" d'une adresse (ordre reseau     }
+{ en entree ; retour en ordre HOTE, comme la vraie fonction BSD). }
+Function Os2_inet_netof(InAddrNet: LongWord): LongWord;
+Var H: LongWord;
+Begin
+ H := Os2Tcp_ntohl(InAddrNet);
+ If (H And $80000000) = 0 Then Os2_inet_netof := (H And OS2_CLASSA_NET) Shr 24
+ Else If (H And $C0000000) = $80000000 Then Os2_inet_netof := (H And OS2_CLASSB_NET) Shr 16
+ Else Os2_inet_netof := (H And OS2_CLASSC_NET) Shr 8;
+End;
+
+{ inet_makeaddr(net, host) : recombine une adresse complete (ordre reseau    }
+{ en sortie, comme la vraie fonction BSD) - la magnitude de "net" determine  }
+{ implicitement la classe visee, exactement comme l algorithme de reference.}
+Function Os2_inet_makeaddr(Net, Host: LongWord): LongWord;
+Var A: LongWord;
+Begin
+ If Net < 128 Then A := (Net Shl 24) Or (Host And OS2_CLASSA_HOST)
+ Else If Net < 65536 Then A := (Net Shl 16) Or (Host And OS2_CLASSB_HOST)
+ Else If Net < 16777216 Then A := (Net Shl 8) Or (Host And OS2_CLASSC_HOST)
+ Else A := Net Or Host;
+ Os2_inet_makeaddr := Os2Tcp_htonl(A);
+End;
 
 Procedure Lx_NbPackAddr(Addr: LongInt; Var Seg, Ofs: Word);
 Begin
@@ -128183,6 +128353,22 @@ Var
  TcpFdReadPtr, TcpFdWritePtr, TcpFdExceptPtr, TcpTimeoutPtr: LongInt;
  TcpTv: TLxTimeVal;
  TcpSelResult: LongInt;
+ { BSD Sockets d'OS/2, 2e lot (2026-10-11, demande explicite - liste        }
+ { complete de 41 entrees) - variables locales des 20 nouveaux cas          }
+ { ci-dessous, meme convention de prefixe Tcp* que le 1er lot. }
+ TcpPe: PMdbcProtoEnt;
+ TcpPeName, TcpPeProtoName: String;
+ TcpPeAddr, TcpPeStrAddr, TcpPeCbAlloc: LongInt;
+ TcpMsgPtr, TcpMsgName, TcpMsgNameLen, TcpMsgIov, TcpMsgIovLen: LongInt;
+ TcpIovBase, TcpIovLen: LongInt;
+ TcpDomain, TcpSv: LongInt;
+ TcpListenS, TcpS1, TcpS2: LongInt;
+ TcpA1, TcpA2: TMdbcSockAddrIn;
+ TcpA1Len: LongInt;
+ TcpCmd2, TcpArgVal2: LongInt;
+ TcpNbFlag: LongWord;
+ TcpStr1: String;
+ TcpPCharRes: PChar;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= LX_ImportSlotCount) Then Begin
   Lx_Halt('Emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
@@ -128480,11 +128666,17 @@ Begin
  { Dispatch par NOM REEL (LX_ImportNameStr), meme discipline qu'ACSNETB/   }
  { NETAPI ci-dessus : aucun ordinal MPTS verifie contre une source         }
  { primaire n'est disponible (contrairement a DOSCALLS/PMWIN). }
- { Case a cocher "Emulateur > OS/2 > Reseau MPTS (TCPIP32)" (2026-10-11,     }
- { demande explicite - voir Os2Mpts), cochee par defaut : decochee, ces      }
- { 4 modules tombent simplement dans le "Not Handled" ci-dessous (meme       }
- { message "Appel systeme non supporte" qu'un module reellement inconnu),   }
- { aucun acces reseau reel n'est jamais tente. }
+ { Case a cocher "Emulateur > OS/2 > MPTS (TCPIP32)" (2026-10-11, demande    }
+ { explicite - voir Os2Mpts), cochee par defaut : decochee, ces 4 modules   }
+ { tombent simplement dans le "Not Handled" ci-dessous (meme message        }
+ { "Appel systeme non supporte" qu'un module reellement inconnu), AUCUNE    }
+ { des 41 fonctions ne repond. "BSD Sockets d'OS/2" (Os2BsdSockets) est un   }
+ { 2e gate, plus fin, applique PLUS BAS uniquement aux 21 fonctions qui      }
+ { creent/transferent/controlent reellement un socket (voir le bloc         }
+ { "If OptionsDlg.Data.Os2BsdSockets Then" juste apres TcpFuncName) - les    }
+ { 20 autres (resolution de noms/domaines, conversion d'octets/adresses,    }
+ { /etc/services, /etc/protocol) repondent tant que SEUL MPTS est coche,    }
+ { un vrai programme OS/2 pouvant les appeler sans jamais ouvrir de socket. }
  If ((ModName = 'TCPIP32') Or (ModName = 'TCP32DLL') Or (ModName = 'SO32DLL') Or
      (ModName = 'TCPIPDLL')) And (Not IsOrd) And OptionsDlg.Data.Os2Mpts And
     (SlotIndex >= 0) And (SlotIndex < LX_MAX_TRAP_SLOTS) Then Begin
@@ -128493,6 +128685,10 @@ Begin
   End;
   TcpFuncName := UpCaseStr(LX_ImportNameStr[SlotIndex]);
 
+  { Sous-ensemble "BSD Sockets d'OS/2" (21/41 fonctions, voir le            }
+  { commentaire de tete ci-dessus et celui de Os2BsdSockets dans            }
+  { TOptionsDialogData) - decoche independamment de MPTS. }
+  If OptionsDlg.Data.Os2BsdSockets Then Begin
   If TcpFuncName = 'SOCKET' Then Begin
    { int socket(int af, int type, int protocol) }
    TcpAF    := Lx_ReadDWord(LX_Reg.ESP + 4);
@@ -128906,6 +129102,369 @@ Begin
     End;
    End;
    NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SENDMSG' Then Begin
+   { int sendmsg(int s, const struct msghdr *msg, int flags) - UN SEUL       }
+   { iovec supporte (pas de vraie dispersion multi-tampons), aucune donnee   }
+   { annexe (msg_control/SCM_RIGHTS) geree - disclosure en tete de ce bloc.  }
+   TcpSock    := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpMsgPtr  := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpFlags   := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpMsgName    := Lx_ReadDWord(TcpMsgPtr + 0);
+   TcpMsgNameLen := Lx_ReadDWord(TcpMsgPtr + 4);
+   TcpMsgIov     := Lx_ReadDWord(TcpMsgPtr + 8);
+   TcpMsgIovLen  := Lx_ReadDWord(TcpMsgPtr + 12);
+   If TcpMsgIovLen <> 1 Then LX_Reg.EAX := -1
+   Else Begin
+    TcpIovBase := Lx_ReadDWord(TcpMsgIov + 0);
+    TcpIovLen  := Lx_ReadDWord(TcpMsgIov + 4);
+    If TcpIovLen > SizeOf(LxTcpBuf) Then TcpIovLen := SizeOf(LxTcpBuf);
+    If TcpIovLen < 0 Then TcpIovLen := 0;
+    For TcpI := 0 To TcpIovLen - 1 Do LxTcpBuf[TcpI] := Lx_ReadByte(TcpIovBase + TcpI);
+    If TcpMsgName <> 0 Then Begin
+     TcpSockAddr := Lx_ReadSockAddrIn(TcpMsgName);
+     LX_Reg.EAX := Os2Tcp_sendto(TcpSock, LxTcpBuf, TcpIovLen, TcpFlags, TcpSockAddr, TcpMsgNameLen);
+    End Else
+     LX_Reg.EAX := Mdbc_send(TcpSock, LxTcpBuf, TcpIovLen, TcpFlags);
+   End;
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'RECVMSG' Then Begin
+   { int recvmsg(int s, struct msghdr *msg, int flags) - meme limite UN      }
+   { SEUL iovec que SENDMSG ; msg_flags en sortie toujours remis a 0 (aucun  }
+   { MSG_TRUNC/etc. detecte - disclosure honnete, pas invente). }
+   TcpSock   := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpMsgPtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpFlags  := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpMsgName    := Lx_ReadDWord(TcpMsgPtr + 0);
+   TcpMsgNameLen := Lx_ReadDWord(TcpMsgPtr + 4);
+   TcpMsgIov     := Lx_ReadDWord(TcpMsgPtr + 8);
+   TcpMsgIovLen  := Lx_ReadDWord(TcpMsgPtr + 12);
+   If TcpMsgIovLen <> 1 Then LX_Reg.EAX := -1
+   Else Begin
+    TcpIovBase := Lx_ReadDWord(TcpMsgIov + 0);
+    TcpIovLen  := Lx_ReadDWord(TcpMsgIov + 4);
+    If TcpIovLen > SizeOf(LxTcpBuf) Then TcpIovLen := SizeOf(LxTcpBuf);
+    If TcpIovLen < 0 Then TcpIovLen := 0;
+    FillChar(TcpSockAddr, SizeOf(TcpSockAddr), 0);
+    If TcpMsgName <> 0 Then
+     TcpResult := Os2Tcp_recvfrom(TcpSock, LxTcpBuf, TcpIovLen, TcpFlags, TcpSockAddr, TcpMsgNameLen)
+    Else
+     TcpResult := Mdbc_recv(TcpSock, LxTcpBuf, TcpIovLen, TcpFlags);
+    If TcpResult > 0 Then
+     For TcpI := 0 To TcpResult - 1 Do Lx_WriteByte(TcpIovBase + TcpI, LxTcpBuf[TcpI]);
+    If (TcpMsgName <> 0) And (TcpResult >= 0) Then Begin
+     Lx_WriteSockAddrIn(TcpMsgName, TcpSockAddr);
+     Lx_WriteDWord(TcpMsgPtr + 4, TcpMsgNameLen);
+    End;
+    Lx_WriteDWord(TcpMsgPtr + 24, 0); { msg_flags = 0 (rien detecte) }
+    LX_Reg.EAX := TcpResult;
+   End;
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SOCKETPAIR' Then Begin
+   { int socketpair(int domain, int type, int protocol, int sv[2]) - AUCUN   }
+   { domaine AF_UNIX sous Winsock : emule via une VRAIE paire de sockets     }
+   { 127.0.0.1 connectes entre eux (TCP si SOCK_STREAM, UDP si SOCK_DGRAM),  }
+   { quel que soit le "domain" demande - disclosure en tete de ce bloc.      }
+   TcpDomain := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpTyp    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpProto  := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpSv     := Lx_ReadDWord(LX_Reg.ESP + 16);
+   TcpS1 := -1; TcpS2 := -1;
+   If TcpTyp = 1 Then Begin { SOCK_STREAM : via un listener local ephemere }
+    TcpListenS := Mdbc_socket(2, 1, 6);
+    FillChar(TcpA1, SizeOf(TcpA1), 0);
+    TcpA1.sin_family := 2; TcpA1.sin_port := 0;
+    TcpA1.sin_addr := Mdbc_inet_addr('127.0.0.1');
+    If (TcpListenS <> -1) And (Os2Tcp_bind(TcpListenS, TcpA1, SizeOf(TcpA1)) = 0) And
+       (Os2Tcp_listen(TcpListenS, 1) = 0) Then Begin
+     TcpA1Len := SizeOf(TcpA1);
+     Os2Tcp_getsockname(TcpListenS, TcpA1, TcpA1Len);
+     TcpS1 := Mdbc_socket(2, 1, 6);
+     If (TcpS1 <> -1) And (Mdbc_connect(TcpS1, TcpA1, SizeOf(TcpA1)) = 0) Then Begin
+      TcpA1Len := SizeOf(TcpA2);
+      TcpS2 := Os2Tcp_accept(TcpListenS, TcpA2, TcpA1Len);
+     End;
+    End;
+    Mdbc_closesocket(TcpListenS);
+   End Else If TcpTyp = 2 Then Begin { SOCK_DGRAM : 2 sockets UDP connectes l'un a l'autre }
+    TcpS1 := Mdbc_socket(2, 2, 17);
+    TcpS2 := Mdbc_socket(2, 2, 17);
+    If (TcpS1 <> -1) And (TcpS2 <> -1) Then Begin
+     FillChar(TcpA1, SizeOf(TcpA1), 0);
+     TcpA1.sin_family := 2; TcpA1.sin_port := 0;
+     TcpA1.sin_addr := Mdbc_inet_addr('127.0.0.1');
+     Os2Tcp_bind(TcpS1, TcpA1, SizeOf(TcpA1));
+     Os2Tcp_bind(TcpS2, TcpA1, SizeOf(TcpA1));
+     TcpA1Len := SizeOf(TcpA1);
+     Os2Tcp_getsockname(TcpS1, TcpA1, TcpA1Len);
+     TcpA2 := TcpA1; { adresse locale de S1, cible de connect() pour S2 }
+     TcpA1Len := SizeOf(TcpA1);
+     Os2Tcp_getsockname(TcpS2, TcpA1, TcpA1Len); { reutilise TcpA1 pour l'adresse de S2 }
+     Mdbc_connect(TcpS1, TcpA1, SizeOf(TcpA1));  { S1 -> adresse de S2 }
+     Mdbc_connect(TcpS2, TcpA2, SizeOf(TcpA2));  { S2 -> adresse de S1 }
+    End;
+   End;
+   If (TcpS1 <> -1) And (TcpS2 <> -1) And (TcpSv <> 0) Then Begin
+    Lx_WriteDWord(TcpSv, TcpS1);
+    Lx_WriteDWord(TcpSv + 4, TcpS2);
+    LX_Reg.EAX := 0;
+   End Else Begin
+    If TcpS1 <> -1 Then Mdbc_closesocket(TcpS1);
+    If TcpS2 <> -1 Then Mdbc_closesocket(TcpS2);
+    LX_Reg.EAX := -1;
+   End;
+   NArgsPopped := 4;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'FCNTL' Then Begin
+   { int fcntl(int fd, int cmd, ... arg) - UNIQUEMENT F_GETFL(3)/F_SETFL(4)/ }
+   { O_NONBLOCK($0004, constantes POSIX usuelles, PAS verifiees contre un    }
+   { en-tete EMX/OS2 reel - disclosure en tete de ce bloc). Tout autre cmd   }
+   { retourne -1 proprement (jamais invente). Appel ATTENDU avec TOUJOURS 3  }
+   { arguments empiles (meme pour F_GETFL ou le 3e n'est pas lu) - ce        }
+   { dispatcheur n'est pas variadique, voir NArgsPopped fixe ci-dessous. }
+   TcpSock := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpCmd2 := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpArgVal2 := Lx_ReadDWord(LX_Reg.ESP + 12);
+   If TcpCmd2 = 3 Then { F_GETFL }
+    If Os2Fcntl_GetNb(TcpSock) Then LX_Reg.EAX := $0004 Else LX_Reg.EAX := 0
+   Else If TcpCmd2 = 4 Then Begin { F_SETFL }
+    Os2Fcntl_SetNb(TcpSock, (TcpArgVal2 And $0004) <> 0);
+    TcpNbFlag := LongWord(Ord((TcpArgVal2 And $0004) <> 0));
+    Wtcp_ioctlsocket(TcpSock, LongInt(LongWord($8004667E)), TcpNbFlag); { FIONBIO }
+    LX_Reg.EAX := 0;
+   End Else
+    LX_Reg.EAX := -1;
+   NArgsPopped := 3;
+   Handled := True;
+  End;
+  End; { fin du sous-ensemble "BSD Sockets d'OS/2" (Os2BsdSockets) }
+
+  { Les 20 fonctions ci-dessous (resolution de noms/domaines, conversion    }
+  { d'octets/adresses, recherche service/protocole) NE font PAS partie du   }
+  { sous-ensemble "BSD Sockets d'OS/2" - elles repondent des que MPTS seul  }
+  { est coche, meme si Os2BsdSockets est decoche (voir le commentaire de    }
+  { tete plus haut : un vrai programme OS/2 peut les appeler sans jamais    }
+  { ouvrir de socket). }
+  If TcpFuncName = 'GETHOSTNAME' Then Begin
+   { int gethostname(char *name, int namelen) - vrai nom de l'hote (ou le    }
+   { nom simule par un sethostname() precedent du MEME programme invite,     }
+   { voir Os2SimHostName et la disclosure en tete de ce bloc). }
+   TcpBufPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpLen    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   If Os2SimHostName <> '' Then TcpHostName := Os2SimHostName
+   Else Begin
+    FillChar(LxTcpBuf, 256, 0);
+    If IpCfg_gethostname(PChar(@LxTcpBuf[0]), 256) = 0 Then Begin
+     TcpHostName := '';
+     TcpI := 0;
+     While (TcpI < 256) And (LxTcpBuf[TcpI] <> 0) Do Begin
+      TcpHostName := TcpHostName + Chr(LxTcpBuf[TcpI]); Inc(TcpI);
+     End;
+    End Else TcpHostName := '';
+   End;
+   If Length(TcpHostName) + 1 > TcpLen Then LX_Reg.EAX := -1
+   Else Begin
+    For TcpI := 1 To Length(TcpHostName) Do
+     Lx_WriteByte(TcpBufPtr + TcpI - 1, Ord(TcpHostName[TcpI]));
+    Lx_WriteByte(TcpBufPtr + Length(TcpHostName), 0);
+    LX_Reg.EAX := 0;
+   End;
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SETHOSTNAME' Then Begin
+   { int sethostname(const char *name, int namelen) - etat SIMULE uniquement }
+   { (Os2SimHostName), ne renomme JAMAIS la vraie machine hote - disclosure   }
+   { en tete de ce bloc TCPIP32. }
+   TcpBufPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpLen    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   If TcpLen > 255 Then TcpLen := 255;
+   If TcpLen < 0 Then TcpLen := 0;
+   TcpStr1 := '';
+   For TcpI := 0 To TcpLen - 1 Do TcpStr1 := TcpStr1 + Chr(Lx_ReadByte(TcpBufPtr + TcpI));
+   Os2SimHostName := TcpStr1;
+   LX_Reg.EAX := 0;
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETDOMAINNAME' Then Begin
+   { int getdomainname(char *name, int namelen) - etat SIMULE               }
+   { (Os2SimDomainName, chaine vide tant qu'aucun setdomainname() n'a ete    }
+   { appele - Windows n'a pas de concept NIS de "nom de domaine" directement }
+   { lisible via Winsock). }
+   TcpBufPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpLen    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   If Length(Os2SimDomainName) + 1 > TcpLen Then LX_Reg.EAX := -1
+   Else Begin
+    For TcpI := 1 To Length(Os2SimDomainName) Do
+     Lx_WriteByte(TcpBufPtr + TcpI - 1, Ord(Os2SimDomainName[TcpI]));
+    Lx_WriteByte(TcpBufPtr + Length(Os2SimDomainName), 0);
+    LX_Reg.EAX := 0;
+   End;
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SETDOMAINNAME' Then Begin
+   TcpBufPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpLen    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   If TcpLen > 255 Then TcpLen := 255;
+   If TcpLen < 0 Then TcpLen := 0;
+   TcpStr1 := '';
+   For TcpI := 0 To TcpLen - 1 Do TcpStr1 := TcpStr1 + Chr(Lx_ReadByte(TcpBufPtr + TcpI));
+   Os2SimDomainName := TcpStr1;
+   LX_Reg.EAX := 0;
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETPROTOBYNAME' Then Begin
+   { struct protoent *getprotobyname(const char *name) - meme marshaling que }
+   { GETSERVBYNAME (p_aliases=NULL, disclosure identique). }
+   TcpNamePtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpPeName := '';
+   While (TcpNamePtr >= 0) And (TcpNamePtr <= High(LX_Mem)) And
+         (Lx_ReadByte(TcpNamePtr) <> 0) And (Length(TcpPeName) < 63) Do Begin
+    TcpPeName := TcpPeName + Chr(Lx_ReadByte(TcpNamePtr));
+    Inc(TcpNamePtr);
+   End;
+   LX_Reg.EAX := 0;
+   TcpPe := Os2Tcp_getprotobyname(PChar(AnsiString(TcpPeName)));
+   If TcpPe <> Nil Then Begin
+    TcpPeProtoName := '';
+    If TcpPe^.p_name <> Nil Then TcpPeProtoName := StrPas(TcpPe^.p_name);
+    If Length(TcpPeProtoName) > 63 Then TcpPeProtoName := Copy(TcpPeProtoName, 1, 63);
+    TcpPeCbAlloc := (Length(TcpPeProtoName) + 1 + 12 + 15) And Not 15;
+    If LX_HeapNext + TcpPeCbAlloc <= LX_FS_BASE Then Begin
+     TcpPeStrAddr := LX_HeapNext;
+     TcpPeAddr    := TcpPeStrAddr + Length(TcpPeProtoName) + 1;
+     LX_HeapNext  := LX_HeapNext + TcpPeCbAlloc;
+     For TcpI := 1 To Length(TcpPeProtoName) Do
+      Lx_WriteByte(TcpPeStrAddr + TcpI - 1, Ord(TcpPeProtoName[TcpI]));
+     Lx_WriteByte(TcpPeStrAddr + Length(TcpPeProtoName), 0);
+     Lx_WriteDWord(TcpPeAddr, TcpPeStrAddr);      { p_name }
+     Lx_WriteDWord(TcpPeAddr + 4, 0);             { p_aliases = NULL }
+     Lx_WriteWord(TcpPeAddr + 8, TcpPe^.p_proto); { p_proto }
+     LX_Reg.EAX := TcpPeAddr;
+    End;
+   End;
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETPROTOBYNUMBER' Then Begin
+   TcpResult := Lx_ReadDWord(LX_Reg.ESP + 4);
+   LX_Reg.EAX := 0;
+   TcpPe := Os2Tcp_getprotobynumber(TcpResult);
+   If TcpPe <> Nil Then Begin
+    TcpPeProtoName := '';
+    If TcpPe^.p_name <> Nil Then TcpPeProtoName := StrPas(TcpPe^.p_name);
+    If Length(TcpPeProtoName) > 63 Then TcpPeProtoName := Copy(TcpPeProtoName, 1, 63);
+    TcpPeCbAlloc := (Length(TcpPeProtoName) + 1 + 12 + 15) And Not 15;
+    If LX_HeapNext + TcpPeCbAlloc <= LX_FS_BASE Then Begin
+     TcpPeStrAddr := LX_HeapNext;
+     TcpPeAddr    := TcpPeStrAddr + Length(TcpPeProtoName) + 1;
+     LX_HeapNext  := LX_HeapNext + TcpPeCbAlloc;
+     For TcpI := 1 To Length(TcpPeProtoName) Do
+      Lx_WriteByte(TcpPeStrAddr + TcpI - 1, Ord(TcpPeProtoName[TcpI]));
+     Lx_WriteByte(TcpPeStrAddr + Length(TcpPeProtoName), 0);
+     Lx_WriteDWord(TcpPeAddr, TcpPeStrAddr);
+     Lx_WriteDWord(TcpPeAddr + 4, 0);
+     Lx_WriteWord(TcpPeAddr + 8, TcpPe^.p_proto);
+     LX_Reg.EAX := TcpPeAddr;
+    End;
+   End;
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'INET_ADDR' Then Begin
+   TcpNamePtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpHostName := '';
+   While (TcpNamePtr >= 0) And (TcpNamePtr <= High(LX_Mem)) And
+         (Lx_ReadByte(TcpNamePtr) <> 0) And (Length(TcpHostName) < 255) Do Begin
+    TcpHostName := TcpHostName + Chr(Lx_ReadByte(TcpNamePtr));
+    Inc(TcpNamePtr);
+   End;
+   LX_Reg.EAX := LongInt(Mdbc_inet_addr(PChar(AnsiString(TcpHostName))));
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'INET_NTOA' Then Begin
+   { char *inet_ntoa(struct in_addr in) - le vrai in_addr est passe PAR      }
+   { VALEUR (4 octets empiles comme n'importe quel DWORD) ; le pointeur      }
+   { retourne par ws2_32.dll pointe vers de la memoire HOTE, jamais          }
+   { dereferencable par l'invite - recopie dans le tas invite (meme patron   }
+   { bump allocator que GETHOSTBYNAME/GETSERVBYNAME ci-dessus). }
+   TcpIpAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   LX_Reg.EAX := 0;
+   TcpPCharRes := Os2Tcp_inet_ntoa(LongWord(TcpIpAddr));
+   If TcpPCharRes <> Nil Then Begin
+    TcpHostName := StrPas(TcpPCharRes);
+    TcpCbAlloc := (Length(TcpHostName) + 1 + 15) And Not 15;
+    If LX_HeapNext + TcpCbAlloc <= LX_FS_BASE Then Begin
+     TcpStrAddr := LX_HeapNext;
+     LX_HeapNext := LX_HeapNext + TcpCbAlloc;
+     For TcpI := 1 To Length(TcpHostName) Do
+      Lx_WriteByte(TcpStrAddr + TcpI - 1, Ord(TcpHostName[TcpI]));
+     Lx_WriteByte(TcpStrAddr + Length(TcpHostName), 0);
+     LX_Reg.EAX := TcpStrAddr;
+    End;
+   End;
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'INET_NETWORK' Then Begin
+   TcpNamePtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpHostName := '';
+   While (TcpNamePtr >= 0) And (TcpNamePtr <= High(LX_Mem)) And
+         (Lx_ReadByte(TcpNamePtr) <> 0) And (Length(TcpHostName) < 255) Do Begin
+    TcpHostName := TcpHostName + Chr(Lx_ReadByte(TcpNamePtr));
+    Inc(TcpNamePtr);
+   End;
+   LX_Reg.EAX := LongInt(Os2_inet_network(TcpHostName));
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'INET_LNAOF' Then Begin
+   TcpIpAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   LX_Reg.EAX := LongInt(Os2_inet_lnaof(LongWord(TcpIpAddr)));
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'INET_NETOF' Then Begin
+   TcpIpAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   LX_Reg.EAX := LongInt(Os2_inet_netof(LongWord(TcpIpAddr)));
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'INET_MAKEADDR' Then Begin
+   TcpResult := Lx_ReadDWord(LX_Reg.ESP + 4);  { net }
+   TcpIpAddr := Lx_ReadDWord(LX_Reg.ESP + 8);  { host }
+   LX_Reg.EAX := LongInt(Os2_inet_makeaddr(LongWord(TcpResult), LongWord(TcpIpAddr)));
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'HTONL' Then Begin
+   LX_Reg.EAX := LongInt(Os2Tcp_htonl(LongWord(Lx_ReadDWord(LX_Reg.ESP + 4))));
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'HTONS' Then Begin
+   LX_Reg.EAX := Mdbc_htons(Word(Lx_ReadDWord(LX_Reg.ESP + 4)));
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'NTOHL' Then Begin
+   LX_Reg.EAX := LongInt(Os2Tcp_ntohl(LongWord(Lx_ReadDWord(LX_Reg.ESP + 4))));
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'NTOHS' Then Begin
+   LX_Reg.EAX := Os2Tcp_ntohs(Word(Lx_ReadDWord(LX_Reg.ESP + 4)));
+   NArgsPopped := 1;
    Handled := True;
   End;
  End;
@@ -228090,6 +228649,7 @@ Begin
  D.DosLogDiag := False;
  D.Z8001Cpm := True; { coche par defaut (demande explicite de l utilisateur) }
  D.Os2Mpts := True; { coche par defaut (demande explicite de l utilisateur) }
+ D.Os2BsdSockets := True; { coche par defaut (demande explicite de l utilisateur) }
 End;
 
 { Recalcule Visible pour tous les noeuds de l arbre a partir de l etat    }
@@ -229490,37 +230050,38 @@ Begin
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
  DrawText(FX, BaseY, 'Emulateur > OS/2', CLR_WINDOWTEXT);
  BaseY := BaseY + OPT_ROW_SPACING;
- Check(Dlg.Data.Os2Mpts, 'Reseau MPTS (TCPIP32)');                { Row 0 }
+ { 2 cases DISTINCTES (2026-10-11, demande explicite de l utilisateur -     }
+ { "elle [BSD Sockets] n'utilise pas toutes les memes API appelees par un   }
+ { programme OS/2") : MPTS = module reconnu du tout ; BSD Sockets = sous-   }
+ { ensemble des 21/41 fonctions qui creent/transferent/controlent un        }
+ { socket reel - voir le commentaire de Os2Mpts/Os2BsdSockets dans          }
+ { TOptionsDialogData pour la liste exacte des 21 vs les 20 autres. }
+ Check(Dlg.Data.Os2Mpts, 'MPTS (TCPIP32)');                        { Row 0 }
+ Check(Dlg.Data.Os2BsdSockets, 'BSD Sockets d''OS/2');              { Row 1 }
  BaseY := BaseY + OPT_ROW_SPACING Div 2;
  { Lignes courtes a dessein (<= 48 caracteres, police fixe 8 px/caractere   }
  { - voir GetTextWidth : FW=620-200-24=396 px -> ~49 caracteres max avant   }
  { de deborder hors du panneau) - BOGUE REEL trouve par l utilisateur      }
  { ("deborde en dehors de l'affichage") sur une 1ere version plus verbeuse }
- { de ce texte (lignes de 70+ caracteres, jamais testees contre la vraie   }
- { largeur du panneau avant d etre ecrites). }
- DrawText(FX, BaseY,
-  'Un executable LX qui importe TCPIP32/',
-  CLR_BORDER);
+ { de ce texte, jamais testee contre la vraie largeur du panneau avant     }
+ { d'etre ecrite. }
+ DrawText(FX, BaseY, 'MPTS : reconnaissance du module', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY,
-  'TCP32DLL/SO32DLL/TCPIPDLL (socket,',
-  CLR_BORDER);
+ DrawText(FX, BaseY, 'TCPIP32/TCP32DLL/SO32DLL/TCPIPDLL.', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY,
-  'bind, connect, gethostbyname...)',
-  CLR_BORDER);
+ DrawText(FX, BaseY, 'Decochee, aucune des 41 ne repond.', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY,
-  'atteint le vrai reseau de l''hote via',
-  CLR_BORDER);
+ DrawText(FX, BaseY, 'BSD Sockets : cree/transfere un', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY,
-  'Winsock. Decochee : appel refuse',
-  CLR_BORDER);
+ DrawText(FX, BaseY, 'socket reel (socket, connect,', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY,
-  '("non supporte"), aucun acces reseau.',
-  CLR_BORDER);
+ DrawText(FX, BaseY, 'send, recv...). Decochee (MPTS', CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'cochee), les 20 autres (DNS,', CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'adresses, /etc/services...)', CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'repondent quand meme.', CLR_BORDER);
 End;
 
 Procedure DrawOptionsEmuStub(Var Dlg: TOptionsDialog; Const EmuName: String);
@@ -230361,6 +230922,10 @@ Begin
       Case FieldIdx Of
        0: Begin
         Dlg.Data.Os2Mpts := Not Dlg.Data.Os2Mpts;
+        Dlg.Modified := True;
+       End;
+       1: Begin
+        Dlg.Data.Os2BsdSockets := Not Dlg.Data.Os2BsdSockets;
         Dlg.Modified := True;
        End;
       End;
