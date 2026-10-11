@@ -737,6 +737,143 @@ Begin
  BuildLXFile(OutPath, Code, Data, Fixups, ['TCPIP32', 'DOSCALLS']);
 End;
 
+{ =====================================================================    }
+{ Programme de test 4 : RPCTEST - IBM TCP/IP, client ONC/Sun RPC            }
+{ (RPC32DLL.DLL, 2026-10-11, demande explicite - 11 fonctions) : exerce     }
+{ callrpc/clnt_create/clnt_control(x3)/clnt_call/clnt_geterr/clnt_perrno/   }
+{ clnt_sperrno/clnt_sperror/clnt_freeres/clnt_destroy contre le PORTMAPPER  }
+{ (programme RPC 100000, le service RPC le plus basique qui soit) de        }
+{ 127.0.0.1 - AUCUNE dependance envers un service RPC applicatif tiers,     }
+{ juste le portmapper/rpcbind lui-meme. Sur un hote Windows typique (SANS   }
+{ portmapper par defaut), le resultat HONNETE attendu est RPC_TIMEDOUT(5)   }
+{ sur callrpc/clnt_call - PAS un bogue, voir README_MPTS.txt. }
+Procedure BuildRpcTest(Const OutPath: String);
+Const
+ D_RESULTS   = $00; { 10 dwords : R0..R9 }
+ D_HOSTSTR   = $30; { "127.0.0.1"+0 }
+ D_PROTOSTR  = $40; { "udp"+0 }
+ D_ADDRBUF   = $50; { 16 octets : sockaddr_in rempli par CLGET_SERVER_ADDR }
+ D_TOBUF     = $60; { 8 octets : struct timeval (tv_sec/tv_usec) }
+ D_ERRBUF    = $70; { 16 octets : struct rpc_err (seul re_status a un sens) }
+ D_PREFIXSTR = $80; { "TEST"+0 }
+ D_END       = $90;
+Var
+ Code, Data: TByteBuf;
+ Fixups: TFixupArr;
+Begin
+ BufInit(Data);
+ BufPad(Data, D_RESULTS + 40);
+ BufStr(Data, '127.0.0.1'); BufByte(Data, 0);
+ BufPad(Data, D_PROTOSTR);
+ BufStr(Data, 'udp'); BufByte(Data, 0);
+ BufPad(Data, D_ADDRBUF + 16);
+ BufDWord(Data, 3); BufDWord(Data, 0); { D_TOBUF : tv_sec=3 tv_usec=0 }
+ BufPad(Data, D_ERRBUF + 16);
+ BufStr(Data, 'TEST'); BufByte(Data, 0);
+ BufPad(Data, D_END);
+
+ BufInit(Code);
+ SetLength(Fixups, 0);
+ { Modules importes = ['RPC32DLL','DOSCALLS'] -> ModOrd 1=RPC32DLL, 2=DOSCALLS}
+
+ { R0 := callrpc("127.0.0.1", 100000, 2, 0/*PMAPPROC_NULL*/, 0,0,0,0) }
+ AsmPushImm32(Code, 0); AsmPushImm32(Code, 0); AsmPushImm32(Code, 0); AsmPushImm32(Code, 0);
+ AsmPushImm32(Code, 0);     { procnum = 0, PMAPPROC_NULL }
+ AsmPushImm32(Code, 2);     { versnum }
+ AsmPushImm32(Code, 100000); { prognum = PMAPPROG }
+ AsmPushImm32(Code, DATA_BASE + D_HOSTSTR);
+ EmitCall(Code, Fixups, 1, 'CALLRPC');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $00);
+
+ { R1 := clnt_create("127.0.0.1", 100000, 2, "udp") }
+ AsmPushImm32(Code, DATA_BASE + D_PROTOSTR);
+ AsmPushImm32(Code, 2);
+ AsmPushImm32(Code, 100000);
+ AsmPushImm32(Code, DATA_BASE + D_HOSTSTR);
+ EmitCall(Code, Fixups, 1, 'CLNT_CREATE');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $04);
+
+ { R2 := clnt_control(R1, 1/*CLGET_SERVER_ADDR*/, &D_ADDRBUF) }
+ AsmPushImm32(Code, DATA_BASE + D_ADDRBUF);
+ AsmPushImm32(Code, 1);
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_CONTROL');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $08);
+
+ { R3 := clnt_control(R1, 4/*CLSET_TIMEOUT*/, &D_TOBUF) - D_TOBUF deja       }
+ { prerempli tv_sec=3/tv_usec=0 dans les donnees du fichier. }
+ AsmPushImm32(Code, DATA_BASE + D_TOBUF);
+ AsmPushImm32(Code, 4);
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_CONTROL');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $0C);
+
+ { R4 := clnt_control(R1, 5/*CLGET_TIMEOUT*/, &D_TOBUF) - ecrase D_TOBUF    }
+ { avec la valeur RELUE : doit redonner EXACTEMENT 3/0 (aller-retour pur). }
+ AsmPushImm32(Code, DATA_BASE + D_TOBUF);
+ AsmPushImm32(Code, 5);
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_CONTROL');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $10);
+
+ { R5 := clnt_call(R1, 0/*PMAPPROC_NULL*/, 0,0,0,0, tv_sec=3, tv_usec=0) }
+ AsmPushImm32(Code, 0); AsmPushImm32(Code, 3);
+ AsmPushImm32(Code, 0); AsmPushImm32(Code, 0); AsmPushImm32(Code, 0); AsmPushImm32(Code, 0);
+ AsmPushImm32(Code, 0);
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_CALL');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $14);
+
+ { clnt_geterr(R1, &D_ERRBUF) puis R6 := [D_ERRBUF] (re_status) - doit      }
+ { redonner EXACTEMENT R5 (aller-retour pur, meme donnee relue 2 fois). }
+ AsmPushImm32(Code, DATA_BASE + D_ERRBUF);
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_GETERR');
+ AsmMovEaxMem32(Code, DATA_BASE + D_ERRBUF);
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $18);
+
+ { clnt_perrno(R5) - imprime DIRECTEMENT dans le Terminal (cote emulateur,  }
+ { aucun DosWrite necessaire ici) le texte correspondant a R5 ("RPC:        }
+ { Success" ou "RPC: Timed out" etc. - voir Os2Rpc_StatusMsg). }
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $14);
+ EmitCall(Code, Fixups, 1, 'CLNT_PERRNO');
+
+ { R7 := clnt_sperrno(R5) - pointeur invite (chaine allouee dans le tas),   }
+ { inspectable via LXDUMP, non imprime ici (longueur variable inconnue a    }
+ { la construction - voir README). }
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $14);
+ EmitCall(Code, Fixups, 1, 'CLNT_SPERRNO');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $1C);
+
+ { R8 := clnt_sperror(R1, "TEST") - idem, pointeur invite stocke, non       }
+ { imprime. }
+ AsmPushImm32(Code, DATA_BASE + D_PREFIXSTR);
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_SPERROR');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $20);
+
+ { R9 := clnt_freeres(R1, 0, 0) - doit TOUJOURS valoir 1 (TRUE), voir la    }
+ { disclosure dans DEVENV.PAS. }
+ AsmPushImm32(Code, 0); AsmPushImm32(Code, 0);
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_FREERES');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $24);
+
+ { clnt_destroy(R1) }
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $04);
+ EmitCall(Code, Fixups, 1, 'CLNT_DESTROY');
+
+ { DosExit(0, R5) - le VRAI clnt_stat de l'appel PMAPPROC_NULL : 0          }
+ { (RPC_SUCCESS) si un portmapper repond reellement sur cette machine, 5    }
+ { (RPC_TIMEDOUT) sinon - LES DEUX sont des resultats honnetes attendus,    }
+ { voir README_MPTS.txt. }
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $14);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 2, 'DosExit');
+
+ BuildLXFile(OutPath, Code, Data, Fixups, ['RPC32DLL', 'DOSCALLS']);
+End;
+
 Var
  OutDir: String;
 Begin
@@ -744,5 +881,6 @@ Begin
  BuildTcpSock(OutDir + '\TCPSOCK.EXE');
  BuildTcpName(OutDir + '\TCPNAME.EXE');
  BuildTcpOpt(OutDir + '\TCPOPT.EXE');
+ BuildRpcTest(OutDir + '\RPCTEST.EXE');
  WriteLn('Termine.');
 End.

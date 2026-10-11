@@ -7065,6 +7065,11 @@ Type
   {   elles-memes de socket. }
   Os2Mpts         : Boolean;     { MPTS (TCPIP32) reconnu du tout, actif par defaut }
   Os2BsdSockets   : Boolean;     { sous-ensemble "creation/transfert de socket" (21/41) }
+  { 4e message (meme session) : "IBM TCP/IP" - 3e case DISTINCTE, gate       }
+  { UNIQUEMENT le module RPC32DLL (client ONC/Sun RPC, 11 fonctions) -       }
+  { totalement INDEPENDANTE de Os2Mpts/Os2BsdSockets (module Winsock         }
+  { different, voir le branchement RPC32DLL de Lx_DoDosCall). }
+  Os2IbmTcpIp     : Boolean;     { RPC32DLL (ONC RPC client) reconnu, actif par defaut }
  End;
 
  { Dialogue des options de l IDE }
@@ -127516,6 +127521,31 @@ Var
  Os2FcntlNbSock: Array[0..255] Of LongInt;
  Os2FcntlNbFlag: Array[0..255] Of Boolean;
 
+{ IBM TCP/IP - RPC32DLL.DLL (2026-10-11, demande explicite - liste de 11    }
+{ fonctions client ONC/Sun RPC fournie par l'utilisateur) : chaque poignee  }
+{ "CLIENT*" rendue au programme invite est en realite une petite adresse   }
+{ allouee dans le tas invite (meme bump allocator LX_HeapNext que les       }
+{ structures hostent/servent plus haut) contenant juste l'INDEX dans cette  }
+{ table - voir le branchement RPC32DLL de Lx_DoDosCall pour le detail       }
+{ complet du protocole ONC RPC (RFC 1831/1833) reimplante ici a la main.    }
+Type
+ TOs2RpcClient = Record
+  InUse      : Boolean;
+  Sock       : LongInt;
+  IsTcp      : Boolean;
+  Prog       : LongWord;
+  Vers       : LongWord;
+  ServerIP   : LongWord; { ordre reseau }
+  ServerPort : Word;     { ordre hote }
+  TimeoutSec : LongInt;
+  LastStat   : LongInt;  { dernier clnt_stat (0=RPC_SUCCESS) }
+ End;
+Const
+ OS2_RPC_MAX_CLIENTS = 32;
+Var
+ Os2RpcClients: Array[0..OS2_RPC_MAX_CLIENTS - 1] Of TOs2RpcClient;
+ Os2RpcXidCounter: LongWord;
+
 { Enregistre/relit le dernier etat non bloquant connu d'un socket - voir    }
 { Os2FcntlNbSock/Flag ci-dessus. Table pleine (256 sockets simultanement    }
 { suivis) : la plus ancienne entree est silencieusement reutilisee plutot   }
@@ -127598,6 +127628,241 @@ Begin
  Else If Net < 16777216 Then A := (Net Shl 8) Or (Host And OS2_CLASSC_HOST)
  Else A := Net Or Host;
  Os2_inet_makeaddr := Os2Tcp_htonl(A);
+End;
+
+{ ========================================================================= }
+{ IBM TCP/IP - RPC32DLL.DLL (2026-10-11, demande explicite - 11 fonctions   }
+{ client ONC/Sun RPC). PAS une DLL Winsock : RPC32DLL.DLL implante le       }
+{ VRAI protocole ONC RPC (RFC 1831, messages CALL/REPLY en-tete 40 octets,  }
+{ XDR = gros-boutiste) par-dessus un simple socket UDP ou TCP - aucune      }
+{ equivalence native sous ws2_32.dll, contrairement a TCPIP32. Reimplante   }
+{ ici EN PASCAL PUR, directement sur les sockets Winsock deja lies          }
+{ (Mdbc_socket/connect/send/recv), le protocole de Resolution de Port       }
+{ (RFC 1833, "portmapper", programme RPC 100000 version 2, UDP port 111)    }
+{ ET un vrai aller-retour RPC CALL/REPLY - REEL, pas simule : contre un     }
+{ hote qui ne parle pas RPC (cas tres probable sur Windows, qui n'expose    }
+{ pas de portmapper par defaut), le resultat honnete est RPC_TIMEDOUT,      }
+{ jamais un faux succes. PORTEE ASSUMEE ET DISCLOSEE (meme discipline que   }
+{ ioctl/fcntl/sendmsg/recvmsg plus haut) : la serialisation XDR des         }
+{ arguments/resultats reels d'une procedure RPC applicative necessiterait   }
+{ de RAPPELER les fonctions de filtrage XDR (inproc/outproc) fournies par   }
+{ le programme invite lui-meme - un vrai mecanisme de rappel reentrant      }
+{ dans le code invite, hors de portee de ce dispatcheur. Seules les         }
+{ procedures SANS ARGUMENT NI RESULTAT (xdr_void des 2 cotes - le cas de    }
+{ TOUTE procedure 0/NULL, le "ping" RPC standard utilise pour tester la     }
+{ joignabilite d'un service, et le seul cas garanti par le protocole lui-   }
+{ meme) sont donc reellement et correctement serialisees ; pour toute       }
+{ autre procedure, l'appel atteint quand meme reellement le serveur (en-    }
+{ tete RPC correct, procnum demande) mais SANS les arguments reels - le     }
+{ serveur repondra alors normalement PROC_UNAVAIL/GARBAGE_ARGS selon son    }
+{ implementation, jamais un succes invente. }
+
+Procedure Os2Rpc_PutU32(Var Buf: Array Of Byte; Ofs: LongInt; V: LongWord);
+Begin
+ Buf[Ofs]     := Byte((V Shr 24) And $FF);
+ Buf[Ofs + 1] := Byte((V Shr 16) And $FF);
+ Buf[Ofs + 2] := Byte((V Shr 8) And $FF);
+ Buf[Ofs + 3] := Byte(V And $FF);
+End;
+
+Function Os2Rpc_GetU32(Const Buf: Array Of Byte; Ofs: LongInt): LongWord;
+Begin
+ Os2Rpc_GetU32 := (LongWord(Buf[Ofs]) Shl 24) Or (LongWord(Buf[Ofs + 1]) Shl 16) Or
+  (LongWord(Buf[Ofs + 2]) Shl 8) Or LongWord(Buf[Ofs + 3]);
+End;
+
+Function Os2Rpc_ReadCStr(Ptr: LongInt): String;
+Var S: String;
+Begin
+ S := '';
+ While (Ptr >= 0) And (Ptr <= High(LX_Mem)) And (Lx_ReadByte(Ptr) <> 0) And
+       (Length(S) < 255) Do Begin
+  S := S + Chr(Lx_ReadByte(Ptr));
+  Inc(Ptr);
+ End;
+ Os2Rpc_ReadCStr := S;
+End;
+
+{ Table de textes calquee sur la vraie clnt_sperrno() (Sun/BSD/glibc,       }
+{ <rpc/clnt.h> - formulation identique, valeurs d'enum stables et           }
+{ documentees publiquement 0-13 ; toute valeur au-dela, specifique a        }
+{ certaines implementations, est rapportee honnetement comme "inconnue"     }
+{ plutot que devinee). }
+Function Os2Rpc_StatusMsg(Stat: LongInt): String;
+Begin
+ Case Stat Of
+  0:  Os2Rpc_StatusMsg := 'RPC: Success';
+  1:  Os2Rpc_StatusMsg := 'RPC: Can''t encode arguments';
+  2:  Os2Rpc_StatusMsg := 'RPC: Can''t decode result';
+  3:  Os2Rpc_StatusMsg := 'RPC: Unable to send';
+  4:  Os2Rpc_StatusMsg := 'RPC: Unable to receive';
+  5:  Os2Rpc_StatusMsg := 'RPC: Timed out';
+  6:  Os2Rpc_StatusMsg := 'RPC: Incompatible versions of RPC';
+  7:  Os2Rpc_StatusMsg := 'RPC: Authentication error';
+  8:  Os2Rpc_StatusMsg := 'RPC: Program not registered';
+  9:  Os2Rpc_StatusMsg := 'RPC: Program/version mismatch';
+  10: Os2Rpc_StatusMsg := 'RPC: Procedure unavailable';
+  11: Os2Rpc_StatusMsg := 'RPC: Server can''t decode arguments';
+  12: Os2Rpc_StatusMsg := 'RPC: Remote system error';
+  13: Os2Rpc_StatusMsg := 'RPC: Unknown host';
+  Else Os2Rpc_StatusMsg := 'RPC: Unknown error (' + IntToStr(Stat) + ')';
+ End;
+End;
+
+{ Analyse un en-tete de reponse RPC (RFC 1831, section 8) recu dans Buf (N  }
+{ octets), verifie le xid, et renvoie soit l'offset DANS Buf ou commence le }
+{ corps des resultats (succes uniquement), soit -1 avec un clnt_stat        }
+{ explicite dans OutStat. Gere le cas MSG_DENIED de facon simplifiee        }
+{ (rapporte RPC_AUTHERROR dans tous les cas - les 2 sous-cas reels          }
+{ RPC_MISMATCH/AUTH_ERROR necessiteraient quelques octets de plus, non      }
+{ distingues ici, disclosure honnete plutot qu'une fausse precision). }
+Function Os2Rpc_ParseReply(Const Buf: Array Of Byte; N: LongInt; Xid: LongWord;
+ Var OutStat: LongInt): LongInt;
+Var
+ ReplyStat, VerfLen, AcceptStat, Ofs: LongInt;
+Begin
+ Os2Rpc_ParseReply := -1;
+ OutStat := 12; { RPC_SYSTEMERROR par defaut (reponse illisible) }
+ If N < 12 Then Exit;
+ If LongWord(Os2Rpc_GetU32(Buf, 0)) <> Xid Then Exit;
+ If Os2Rpc_GetU32(Buf, 4) <> 1 Then Exit; { pas un REPLY }
+ ReplyStat := Os2Rpc_GetU32(Buf, 8);
+ If ReplyStat <> 0 Then Begin OutStat := 7 { RPC_AUTHERROR }; Exit; End;
+ If N < 20 Then Exit;
+ VerfLen := Os2Rpc_GetU32(Buf, 16);
+ Ofs := 20 + VerfLen;
+ If N < Ofs + 4 Then Exit;
+ AcceptStat := Os2Rpc_GetU32(Buf, Ofs);
+ Case AcceptStat Of
+  0: Begin OutStat := 0; Os2Rpc_ParseReply := Ofs + 4; Exit; End; { SUCCESS }
+  1: OutStat := 8;  { PROG_UNAVAIL      -> RPC_PROGUNAVAIL }
+  2: OutStat := 9;  { PROG_MISMATCH     -> RPC_PROGVERSMISMATCH }
+  3: OutStat := 10; { PROC_UNAVAIL      -> RPC_PROCUNAVAIL }
+  4: OutStat := 11; { GARBAGE_ARGS      -> RPC_CANTDECODEARGS }
+  Else OutStat := 12; { SYSTEM_ERR/inconnu -> RPC_SYSTEMERROR }
+ End;
+End;
+
+{ Interroge le portmapper (PMAPPROG=100000/PMAPVERS=2/PMAPPROC_GETPORT=3,   }
+{ port UDP 111 FIXE par convention - RFC 1833) du serveur donne pour        }
+{ obtenir le VRAI port du service (Prog,Vers,Prot) - retourne 0 si          }
+{ injoignable (delai de 3 s) ou non enregistre, jamais invente. }
+Function Os2Rpc_PortmapGetPort(ServerIP: LongWord; Prog, Vers, Prot: LongWord): LongWord;
+Var
+ S: LongInt;
+ Addr: TMdbcSockAddrIn;
+ Buf: Array[0..63] Of Byte;
+ N, Rc, Ofs, Dummy: LongInt;
+ Xid: LongWord;
+ Fds: TWtcpFdSet;
+ Tv: TWtcpTimeVal;
+Begin
+ Os2Rpc_PortmapGetPort := 0;
+ S := Mdbc_socket(2, 2, 17); { AF_INET, SOCK_DGRAM, IPPROTO_UDP }
+ If S = -1 Then Exit;
+ FillChar(Addr, SizeOf(Addr), 0);
+ Addr.sin_family := 2;
+ Addr.sin_port := Mdbc_htons(111);
+ Addr.sin_addr := ServerIP;
+ If Mdbc_connect(S, Addr, SizeOf(Addr)) <> 0 Then Begin Mdbc_closesocket(S); Exit; End;
+ Inc(Os2RpcXidCounter);
+ Xid := Os2RpcXidCounter;
+ Os2Rpc_PutU32(Buf, 0, Xid);
+ Os2Rpc_PutU32(Buf, 4, 0);       { msg_type = CALL }
+ Os2Rpc_PutU32(Buf, 8, 2);       { rpcvers = 2 }
+ Os2Rpc_PutU32(Buf, 12, 100000); { prog = PMAPPROG }
+ Os2Rpc_PutU32(Buf, 16, 2);      { vers = PMAPVERS }
+ Os2Rpc_PutU32(Buf, 20, 3);      { proc = PMAPPROC_GETPORT }
+ Os2Rpc_PutU32(Buf, 24, 0);      { cred.flavor = AUTH_NONE }
+ Os2Rpc_PutU32(Buf, 28, 0);      { cred.length = 0 }
+ Os2Rpc_PutU32(Buf, 32, 0);      { verf.flavor = AUTH_NONE }
+ Os2Rpc_PutU32(Buf, 36, 0);      { verf.length = 0 }
+ Os2Rpc_PutU32(Buf, 40, Prog);
+ Os2Rpc_PutU32(Buf, 44, Vers);
+ Os2Rpc_PutU32(Buf, 48, Prot);
+ Os2Rpc_PutU32(Buf, 52, 0);      { port, ignore cote requete }
+ If Mdbc_send(S, Buf, 56, 0) <> 56 Then Begin Mdbc_closesocket(S); Exit; End;
+ Tv.tv_sec := 3; Tv.tv_usec := 0;
+ Fds.fd_count := 1; Fds.fd_array := S;
+ Rc := Wtcp_select(0, @Fds, Nil, Nil, @Tv);
+ If Rc <= 0 Then Begin Mdbc_closesocket(S); Exit; End; { pas de reponse a temps }
+ N := Mdbc_recv(S, Buf, SizeOf(Buf), 0);
+ Mdbc_closesocket(S);
+ If N < 1 Then Exit;
+ Ofs := Os2Rpc_ParseReply(Buf, N, Xid, Dummy);
+ If (Ofs < 0) Or (N < Ofs + 4) Then Exit;
+ Os2Rpc_PortmapGetPort := Os2Rpc_GetU32(Buf, Ofs);
+End;
+
+{ Effectue un VRAI aller-retour RPC CALL/REPLY sur le socket deja connecte  }
+{ de C (portee xdr_void uniquement - voir le commentaire de tete de ce      }
+{ bloc). TCP utilise le marquage d'enregistrement standard ONC RPC (4       }
+{ octets, bit de poids fort = "dernier fragment" + longueur sur 31 bits)    }
+{ avant chaque message - un seul fragment ici, toujours suffisant pour un   }
+{ message de 40 octets sans argument. }
+Function Os2Rpc_DoCall(Var C: TOs2RpcClient; ProcNum: LongWord; TimeoutSec: LongInt;
+ Var OutStat: LongInt): Boolean;
+Var
+ Buf: Array[0..127] Of Byte;
+ TcpBuf: Array[0..131] Of Byte;
+ N, Rc, Ofs: LongInt;
+ Xid: LongWord;
+ Fds: TWtcpFdSet;
+ Tv: TWtcpTimeVal;
+ FragHdr: LongWord;
+Begin
+ Os2Rpc_DoCall := False;
+ Inc(Os2RpcXidCounter);
+ Xid := Os2RpcXidCounter;
+ Os2Rpc_PutU32(Buf, 0, Xid);
+ Os2Rpc_PutU32(Buf, 4, 0);
+ Os2Rpc_PutU32(Buf, 8, 2);
+ Os2Rpc_PutU32(Buf, 12, C.Prog);
+ Os2Rpc_PutU32(Buf, 16, C.Vers);
+ Os2Rpc_PutU32(Buf, 20, ProcNum);
+ Os2Rpc_PutU32(Buf, 24, 0);
+ Os2Rpc_PutU32(Buf, 28, 0);
+ Os2Rpc_PutU32(Buf, 32, 0);
+ Os2Rpc_PutU32(Buf, 36, 0);
+ { 40 octets, AUCUN argument (xdr_void) - voir disclosure de tete. }
+ If C.IsTcp Then Begin
+  FragHdr := LongWord($80000000) Or LongWord(40);
+  Os2Rpc_PutU32(TcpBuf, 0, FragHdr);
+  Move(Buf, TcpBuf[4], 40);
+  N := Mdbc_send(C.Sock, TcpBuf, 44, 0);
+  If N <> 44 Then Begin OutStat := 3 { RPC_CANTSEND }; Exit; End;
+ End Else Begin
+  N := Mdbc_send(C.Sock, Buf, 40, 0);
+  If N <> 40 Then Begin OutStat := 3; Exit; End;
+ End;
+ Tv.tv_sec := TimeoutSec;
+ If Tv.tv_sec > 10 Then Tv.tv_sec := 10;
+ If Tv.tv_sec < 1 Then Tv.tv_sec := 1;
+ Tv.tv_usec := 0;
+ Fds.fd_count := 1; Fds.fd_array := C.Sock;
+ Rc := Wtcp_select(0, @Fds, Nil, Nil, @Tv);
+ If Rc <= 0 Then Begin OutStat := 5 { RPC_TIMEDOUT }; Exit; End;
+ If C.IsTcp Then Begin
+  N := Mdbc_recv(C.Sock, TcpBuf, SizeOf(TcpBuf), 0);
+  If N < 4 Then Begin OutStat := 4 { RPC_CANTRECV }; Exit; End;
+  N := N - 4; { en-tete de fragment ignore (1 seul fragment suppose) }
+  Move(TcpBuf[4], Buf, N);
+ End Else Begin
+  N := Mdbc_recv(C.Sock, Buf, SizeOf(Buf), 0);
+  If N < 1 Then Begin OutStat := 4; Exit; End;
+ End;
+ Ofs := Os2Rpc_ParseReply(Buf, N, Xid, OutStat);
+ If Ofs < 0 Then Exit;
+ OutStat := 0;
+ Os2Rpc_DoCall := True;
+End;
+
+Function Os2Rpc_FindFreeSlot: Integer;
+Var I: Integer;
+Begin
+ Os2Rpc_FindFreeSlot := -1;
+ For I := 0 To OS2_RPC_MAX_CLIENTS - 1 Do
+  If Not Os2RpcClients[I].InUse Then Begin Os2Rpc_FindFreeSlot := I; Exit; End;
 End;
 
 Procedure Lx_NbPackAddr(Addr: LongInt; Var Seg, Ofs: Word);
@@ -128369,6 +128634,19 @@ Var
  TcpNbFlag: LongWord;
  TcpStr1: String;
  TcpPCharRes: PChar;
+ { IBM TCP/IP - RPC32DLL.DLL (2026-10-11, demande explicite - 11 fonctions  }
+ { client ONC/Sun RPC) - variables locales du branchement RPC32DLL plus bas.}
+ TcpRpcIdx: Integer;
+ TcpRpcClntPtr: LongInt;
+ TcpRpcHostPtr, TcpRpcProtoPtr, TcpRpcInfoPtr, TcpRpcSPtr, TcpRpcErrPtr: LongInt;
+ TcpRpcHostName, TcpRpcProtoName, TcpRpcSStr, TcpRpcMsg: String;
+ TcpRpcProg, TcpRpcVers, TcpRpcProc: LongWord;
+ TcpRpcIsTcp: Boolean;
+ TcpRpcIP, TcpRpcPort: LongWord;
+ TcpRpcSock: LongInt;
+ TcpRpcAddr: TMdbcSockAddrIn;
+ TcpRpcStat, TcpRpcReq, TcpRpcTimeoutSec: LongInt;
+ TcpRpcTempClient: TOs2RpcClient;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= LX_ImportSlotCount) Then Begin
   Lx_Halt('Emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
@@ -129465,6 +129743,301 @@ Begin
   If TcpFuncName = 'NTOHS' Then Begin
    LX_Reg.EAX := Os2Tcp_ntohs(Word(Lx_ReadDWord(LX_Reg.ESP + 4)));
    NArgsPopped := 1;
+   Handled := True;
+  End;
+ End;
+ { IBM TCP/IP - RPC32DLL.DLL (2026-10-11, demande explicite - case a        }
+ { cocher "Emulateur > OS/2 > IBM TCP/IP", Os2IbmTcpIp, cochee par defaut,  }
+ { TOTALEMENT INDEPENDANTE de Os2Mpts/Os2BsdSockets ci-dessus : module      }
+ { Winsock different (ONC/Sun RPC, pas de rapport avec TCPIP32/MPTS). Voir  }
+ { le commentaire de tete pres de TOs2RpcClient pour le detail complet du   }
+ { protocole reimplante (RFC 1831/1833) et la portee assumee (xdr_void      }
+ { uniquement). }
+ If (ModName = 'RPC32DLL') And (Not IsOrd) And OptionsDlg.Data.Os2IbmTcpIp And
+    (SlotIndex >= 0) And (SlotIndex < LX_MAX_TRAP_SLOTS) Then Begin
+  If Not LxTcpWsReady Then Begin
+   If Mdbc_WSAStartup($0202, TcpWsd) = 0 Then LxTcpWsReady := True;
+  End;
+  TcpFuncName := UpCaseStr(LX_ImportNameStr[SlotIndex]);
+
+  If TcpFuncName = 'CLNT_CREATE' Then Begin
+   { CLIENT *clnt_create(const char *host, u_long prog, u_long vers,        }
+   { const char *proto) - "udp" ou "tcp" (insensible a la casse) ; toute    }
+   { autre valeur de proto est refusee proprement (NULL, jamais simulee). }
+   TcpRpcHostPtr  := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcProg     := LongWord(Lx_ReadDWord(LX_Reg.ESP + 8));
+   TcpRpcVers     := LongWord(Lx_ReadDWord(LX_Reg.ESP + 12));
+   TcpRpcProtoPtr := Lx_ReadDWord(LX_Reg.ESP + 16);
+   TcpRpcHostName := Os2Rpc_ReadCStr(TcpRpcHostPtr);
+   TcpRpcProtoName := UpCaseStr(Os2Rpc_ReadCStr(TcpRpcProtoPtr));
+   LX_Reg.EAX := 0; { NULL par defaut }
+   If (TcpRpcProtoName = 'UDP') Or (TcpRpcProtoName = 'TCP') Then Begin
+    TcpRpcIsTcp := (TcpRpcProtoName = 'TCP');
+    TcpRpcIP := Mdbc_inet_addr(PChar(AnsiString(TcpRpcHostName)));
+    If TcpRpcIP = LongWord($FFFFFFFF) Then Begin
+     TcpHe := Mdbc_gethostbyname(PChar(AnsiString(TcpRpcHostName)));
+     If TcpHe <> Nil Then TcpRpcIP := LongWord(PLongWord(TcpHe^.h_addr_list^)^)
+     Else TcpRpcIP := 0;
+    End;
+    If TcpRpcIP <> 0 Then Begin
+     If TcpRpcProg = 100000 Then TcpRpcPort := 111 { PMAPPORT, pas de       }
+      { boucle sur le portmapper lui-meme - cas special bien connu de       }
+      { toute implementation RPC reelle. }
+     Else If TcpRpcIsTcp Then TcpRpcPort := Os2Rpc_PortmapGetPort(TcpRpcIP, TcpRpcProg, TcpRpcVers, 6)
+     Else TcpRpcPort := Os2Rpc_PortmapGetPort(TcpRpcIP, TcpRpcProg, TcpRpcVers, 17);
+     If TcpRpcPort <> 0 Then Begin
+      If TcpRpcIsTcp Then TcpRpcSock := Mdbc_socket(2, 1, 6)
+      Else TcpRpcSock := Mdbc_socket(2, 2, 17);
+      If TcpRpcSock <> -1 Then Begin
+       FillChar(TcpRpcAddr, SizeOf(TcpRpcAddr), 0);
+       TcpRpcAddr.sin_family := 2;
+       TcpRpcAddr.sin_port := Mdbc_htons(Word(TcpRpcPort));
+       TcpRpcAddr.sin_addr := TcpRpcIP;
+       If Mdbc_connect(TcpRpcSock, TcpRpcAddr, SizeOf(TcpRpcAddr)) = 0 Then Begin
+        TcpRpcIdx := Os2Rpc_FindFreeSlot;
+        If TcpRpcIdx >= 0 Then Begin
+         Os2RpcClients[TcpRpcIdx].InUse := True;
+         Os2RpcClients[TcpRpcIdx].Sock := TcpRpcSock;
+         Os2RpcClients[TcpRpcIdx].IsTcp := TcpRpcIsTcp;
+         Os2RpcClients[TcpRpcIdx].Prog := TcpRpcProg;
+         Os2RpcClients[TcpRpcIdx].Vers := TcpRpcVers;
+         Os2RpcClients[TcpRpcIdx].ServerIP := TcpRpcIP;
+         Os2RpcClients[TcpRpcIdx].ServerPort := Word(TcpRpcPort);
+         Os2RpcClients[TcpRpcIdx].TimeoutSec := 10;
+         Os2RpcClients[TcpRpcIdx].LastStat := 0;
+         If LX_HeapNext + 16 <= LX_FS_BASE Then Begin
+          TcpRpcClntPtr := LX_HeapNext;
+          LX_HeapNext := LX_HeapNext + 16;
+          Lx_WriteDWord(TcpRpcClntPtr, TcpRpcIdx);
+          LX_Reg.EAX := TcpRpcClntPtr;
+         End Else Begin
+          Mdbc_closesocket(TcpRpcSock);
+          Os2RpcClients[TcpRpcIdx].InUse := False;
+         End;
+        End Else Mdbc_closesocket(TcpRpcSock);
+       End Else Mdbc_closesocket(TcpRpcSock);
+      End;
+     End;
+    End;
+   End;
+   NArgsPopped := 4;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_CALL' Then Begin
+   { enum clnt_stat clnt_call(CLIENT *clnt, u_long procnum, xdrproc_t       }
+   { inproc, char *in, xdrproc_t outproc, char *out, struct timeval tout)  }
+   { - "tout" (struct timeval) est PASSEE PAR VALEUR (2 DWORDs de plus).   }
+   { PORTEE : voir la disclosure de tete (xdr_void uniquement, inproc/     }
+   { outproc jamais reellement appeles). }
+   TcpRpcClntPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcProc    := LongWord(Lx_ReadDWord(LX_Reg.ESP + 8));
+   TcpRpcTimeoutSec := Lx_ReadDWord(LX_Reg.ESP + 28); { tout.tv_sec }
+   TcpRpcIdx := -1;
+   If (TcpRpcClntPtr >= 0) And (TcpRpcClntPtr + 4 <= High(LX_Mem)) Then
+    TcpRpcIdx := Lx_ReadDWord(TcpRpcClntPtr);
+   If (TcpRpcIdx >= 0) And (TcpRpcIdx < OS2_RPC_MAX_CLIENTS) And
+      Os2RpcClients[TcpRpcIdx].InUse Then Begin
+    Os2Rpc_DoCall(Os2RpcClients[TcpRpcIdx], TcpRpcProc, TcpRpcTimeoutSec, TcpRpcStat);
+    Os2RpcClients[TcpRpcIdx].LastStat := TcpRpcStat;
+    LX_Reg.EAX := TcpRpcStat;
+   End Else
+    LX_Reg.EAX := 13; { RPC_UNKNOWNHOST, approximation honnete d'une poignee invalide }
+   NArgsPopped := 8;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_DESTROY' Then Begin
+   TcpRpcClntPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcIdx := -1;
+   If (TcpRpcClntPtr >= 0) And (TcpRpcClntPtr + 4 <= High(LX_Mem)) Then
+    TcpRpcIdx := Lx_ReadDWord(TcpRpcClntPtr);
+   If (TcpRpcIdx >= 0) And (TcpRpcIdx < OS2_RPC_MAX_CLIENTS) And
+      Os2RpcClients[TcpRpcIdx].InUse Then Begin
+    Mdbc_closesocket(Os2RpcClients[TcpRpcIdx].Sock);
+    Os2RpcClients[TcpRpcIdx].InUse := False;
+   End;
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_CONTROL' Then Begin
+   { bool_t clnt_control(CLIENT *cl, u_int req, char *info) - PORTEE :      }
+   { CLGET_SERVER_ADDR(1, ecrit un VRAI sockaddr_in - adresse/port du       }
+   { serveur reellement connecte), CLSET_TIMEOUT(4)/CLGET_TIMEOUT(5) (lit/  }
+   { ecrit notre struct timeval interne) - tout autre "req" retourne FALSE  }
+   { proprement (jamais invente). }
+   TcpRpcClntPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcReq     := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpRpcInfoPtr := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpRpcIdx := -1;
+   If (TcpRpcClntPtr >= 0) And (TcpRpcClntPtr + 4 <= High(LX_Mem)) Then
+    TcpRpcIdx := Lx_ReadDWord(TcpRpcClntPtr);
+   LX_Reg.EAX := 0; { FALSE par defaut }
+   If (TcpRpcIdx >= 0) And (TcpRpcIdx < OS2_RPC_MAX_CLIENTS) And
+      Os2RpcClients[TcpRpcIdx].InUse Then Begin
+    Case TcpRpcReq Of
+     1: Begin { CLGET_SERVER_ADDR }
+      FillChar(TcpRpcAddr, SizeOf(TcpRpcAddr), 0);
+      TcpRpcAddr.sin_family := 2;
+      TcpRpcAddr.sin_port := Mdbc_htons(Os2RpcClients[TcpRpcIdx].ServerPort);
+      TcpRpcAddr.sin_addr := Os2RpcClients[TcpRpcIdx].ServerIP;
+      Lx_WriteSockAddrIn(TcpRpcInfoPtr, TcpRpcAddr);
+      LX_Reg.EAX := 1;
+     End;
+     4: Begin { CLSET_TIMEOUT }
+      Os2RpcClients[TcpRpcIdx].TimeoutSec := Lx_ReadDWord(TcpRpcInfoPtr);
+      LX_Reg.EAX := 1;
+     End;
+     5: Begin { CLGET_TIMEOUT }
+      Lx_WriteDWord(TcpRpcInfoPtr, Os2RpcClients[TcpRpcIdx].TimeoutSec);
+      Lx_WriteDWord(TcpRpcInfoPtr + 4, 0);
+      LX_Reg.EAX := 1;
+     End;
+    End;
+   End;
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_FREERES' Then Begin
+   { bool_t clnt_freeres(CLIENT *cl, xdrproc_t outproc, char *out) - notre  }
+   { portee (xdr_void uniquement) n'alloue JAMAIS de memoire invite pour un }
+   { resultat - rien a liberer, TRUE toujours (comportement honnete :       }
+   { correspond exactement a la vraie semantique quand xdr_void est         }
+   { effectivement utilise). }
+   LX_Reg.EAX := 1;
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_GETERR' Then Begin
+   { void clnt_geterr(CLIENT *cl, struct rpc_err *errp) - seul le 1er champ }
+   { (re_status) est rempli avec un sens reel ; le reste de la structure     }
+   { (specifique a l'implementation EMX/OS2, jamais verifiee contre un      }
+   { en-tete reel) est mis a zero plutot que laisse indetermine. }
+   TcpRpcClntPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcErrPtr  := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpRpcIdx := -1;
+   If (TcpRpcClntPtr >= 0) And (TcpRpcClntPtr + 4 <= High(LX_Mem)) Then
+    TcpRpcIdx := Lx_ReadDWord(TcpRpcClntPtr);
+   If TcpRpcErrPtr <> 0 Then Begin
+    For TcpI := 0 To 3 Do Lx_WriteDWord(TcpRpcErrPtr + TcpI * 4, 0);
+    If (TcpRpcIdx >= 0) And (TcpRpcIdx < OS2_RPC_MAX_CLIENTS) And
+       Os2RpcClients[TcpRpcIdx].InUse Then
+     Lx_WriteDWord(TcpRpcErrPtr, Os2RpcClients[TcpRpcIdx].LastStat);
+   End;
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_PERRNO' Then Begin
+   { void clnt_perrno(enum clnt_stat stat) - imprime dans le Terminal (pas  }
+   { de vrai "stderr" dans cet emulateur, meme convention que DosWrite       }
+   { ailleurs dans ce fichier). }
+   TcpRpcStat := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcMsg := Os2Rpc_StatusMsg(TcpRpcStat);
+   If LX_Panel <> Nil Then EmuVScr_WriteStr(LX_Panel^, TcpRpcMsg);
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_PERROR' Then Begin
+   TcpRpcClntPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcSPtr    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpRpcSStr := Os2Rpc_ReadCStr(TcpRpcSPtr);
+   TcpRpcIdx := -1;
+   If (TcpRpcClntPtr >= 0) And (TcpRpcClntPtr + 4 <= High(LX_Mem)) Then
+    TcpRpcIdx := Lx_ReadDWord(TcpRpcClntPtr);
+   TcpRpcStat := 12;
+   If (TcpRpcIdx >= 0) And (TcpRpcIdx < OS2_RPC_MAX_CLIENTS) And
+      Os2RpcClients[TcpRpcIdx].InUse Then
+    TcpRpcStat := Os2RpcClients[TcpRpcIdx].LastStat;
+   TcpRpcMsg := TcpRpcSStr + ': ' + Os2Rpc_StatusMsg(TcpRpcStat);
+   If LX_Panel <> Nil Then EmuVScr_WriteStr(LX_Panel^, TcpRpcMsg);
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_SPERRNO' Then Begin
+   { char *clnt_sperrno(enum clnt_stat stat) - pointeur HOTE reel           }
+   { impossible a dereferencer cote invite : chaine recopiee dans le tas    }
+   { invite (meme patron bump allocator que INET_NTOA/GETHOSTBYNAME plus   }
+   { haut). }
+   TcpRpcStat := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcMsg := Os2Rpc_StatusMsg(TcpRpcStat);
+   LX_Reg.EAX := 0;
+   TcpCbAlloc := (Length(TcpRpcMsg) + 1 + 15) And Not 15;
+   If LX_HeapNext + TcpCbAlloc <= LX_FS_BASE Then Begin
+    TcpStrAddr := LX_HeapNext;
+    LX_HeapNext := LX_HeapNext + TcpCbAlloc;
+    For TcpI := 1 To Length(TcpRpcMsg) Do
+     Lx_WriteByte(TcpStrAddr + TcpI - 1, Ord(TcpRpcMsg[TcpI]));
+    Lx_WriteByte(TcpStrAddr + Length(TcpRpcMsg), 0);
+    LX_Reg.EAX := TcpStrAddr;
+   End;
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CLNT_SPERROR' Then Begin
+   TcpRpcClntPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcSPtr    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpRpcSStr := Os2Rpc_ReadCStr(TcpRpcSPtr);
+   TcpRpcIdx := -1;
+   If (TcpRpcClntPtr >= 0) And (TcpRpcClntPtr + 4 <= High(LX_Mem)) Then
+    TcpRpcIdx := Lx_ReadDWord(TcpRpcClntPtr);
+   TcpRpcStat := 12;
+   If (TcpRpcIdx >= 0) And (TcpRpcIdx < OS2_RPC_MAX_CLIENTS) And
+      Os2RpcClients[TcpRpcIdx].InUse Then
+    TcpRpcStat := Os2RpcClients[TcpRpcIdx].LastStat;
+   TcpRpcMsg := TcpRpcSStr + ': ' + Os2Rpc_StatusMsg(TcpRpcStat);
+   LX_Reg.EAX := 0;
+   TcpCbAlloc := (Length(TcpRpcMsg) + 1 + 15) And Not 15;
+   If LX_HeapNext + TcpCbAlloc <= LX_FS_BASE Then Begin
+    TcpStrAddr := LX_HeapNext;
+    LX_HeapNext := LX_HeapNext + TcpCbAlloc;
+    For TcpI := 1 To Length(TcpRpcMsg) Do
+     Lx_WriteByte(TcpStrAddr + TcpI - 1, Ord(TcpRpcMsg[TcpI]));
+    Lx_WriteByte(TcpStrAddr + Length(TcpRpcMsg), 0);
+    LX_Reg.EAX := TcpStrAddr;
+   End;
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CALLRPC' Then Begin
+   { enum clnt_stat callrpc(char *host, u_long prognum, u_long versnum,     }
+   { u_long procnum, xdrproc_t inproc, char *in, xdrproc_t outproc,         }
+   { char *out) - equivalent a clnt_create("udp")+clnt_call+clnt_destroy,   }
+   { MEME portee xdr_void que CLNT_CALL ci-dessus. }
+   TcpRpcHostPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpRpcProg    := LongWord(Lx_ReadDWord(LX_Reg.ESP + 8));
+   TcpRpcVers    := LongWord(Lx_ReadDWord(LX_Reg.ESP + 12));
+   TcpRpcProc    := LongWord(Lx_ReadDWord(LX_Reg.ESP + 16));
+   TcpRpcHostName := Os2Rpc_ReadCStr(TcpRpcHostPtr);
+   LX_Reg.EAX := 13; { RPC_UNKNOWNHOST par defaut }
+   TcpRpcIP := Mdbc_inet_addr(PChar(AnsiString(TcpRpcHostName)));
+   If TcpRpcIP = LongWord($FFFFFFFF) Then Begin
+    TcpHe := Mdbc_gethostbyname(PChar(AnsiString(TcpRpcHostName)));
+    If TcpHe <> Nil Then TcpRpcIP := LongWord(PLongWord(TcpHe^.h_addr_list^)^)
+    Else TcpRpcIP := 0;
+   End;
+   If TcpRpcIP <> 0 Then Begin
+    If TcpRpcProg = 100000 Then TcpRpcPort := 111
+    Else TcpRpcPort := Os2Rpc_PortmapGetPort(TcpRpcIP, TcpRpcProg, TcpRpcVers, 17);
+    If TcpRpcPort = 0 Then LX_Reg.EAX := 8 { RPC_PROGUNAVAIL }
+    Else Begin
+     TcpRpcSock := Mdbc_socket(2, 2, 17);
+     If TcpRpcSock <> -1 Then Begin
+      FillChar(TcpRpcAddr, SizeOf(TcpRpcAddr), 0);
+      TcpRpcAddr.sin_family := 2;
+      TcpRpcAddr.sin_port := Mdbc_htons(Word(TcpRpcPort));
+      TcpRpcAddr.sin_addr := TcpRpcIP;
+      If Mdbc_connect(TcpRpcSock, TcpRpcAddr, SizeOf(TcpRpcAddr)) = 0 Then Begin
+       FillChar(TcpRpcTempClient, SizeOf(TcpRpcTempClient), 0);
+       TcpRpcTempClient.Sock := TcpRpcSock;
+       TcpRpcTempClient.IsTcp := False;
+       TcpRpcTempClient.Prog := TcpRpcProg;
+       TcpRpcTempClient.Vers := TcpRpcVers;
+       Os2Rpc_DoCall(TcpRpcTempClient, TcpRpcProc, 10, TcpRpcStat);
+       LX_Reg.EAX := TcpRpcStat;
+      End Else LX_Reg.EAX := 3; { RPC_CANTSEND, approximation pour connect() echoue }
+      Mdbc_closesocket(TcpRpcSock);
+     End;
+    End;
+   End;
+   NArgsPopped := 8;
    Handled := True;
   End;
  End;
@@ -228650,6 +229223,7 @@ Begin
  D.Z8001Cpm := True; { coche par defaut (demande explicite de l utilisateur) }
  D.Os2Mpts := True; { coche par defaut (demande explicite de l utilisateur) }
  D.Os2BsdSockets := True; { coche par defaut (demande explicite de l utilisateur) }
+ D.Os2IbmTcpIp := True; { coche par defaut (demande explicite de l utilisateur) }
 End;
 
 { Recalcule Visible pour tous les noeuds de l arbre a partir de l etat    }
@@ -230050,38 +230624,33 @@ Begin
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
  DrawText(FX, BaseY, 'Emulateur > OS/2', CLR_WINDOWTEXT);
  BaseY := BaseY + OPT_ROW_SPACING;
- { 2 cases DISTINCTES (2026-10-11, demande explicite de l utilisateur -     }
- { "elle [BSD Sockets] n'utilise pas toutes les memes API appelees par un   }
- { programme OS/2") : MPTS = module reconnu du tout ; BSD Sockets = sous-   }
- { ensemble des 21/41 fonctions qui creent/transferent/controlent un        }
- { socket reel - voir le commentaire de Os2Mpts/Os2BsdSockets dans          }
- { TOptionsDialogData pour la liste exacte des 21 vs les 20 autres. }
+ { 3 cases DISTINCTES (2026-10-11) : MPTS/BSD Sockets/IBM TCP/IP gatent     }
+ { chacune un sous-ensemble DIFFERENT (voir Os2Mpts/Os2BsdSockets/          }
+ { Os2IbmTcpIp dans TOptionsDialogData pour le detail complet de chaque     }
+ { sous-ensemble - texte ci-dessous volontairement condense pour tenir      }
+ { dans la hauteur du panneau avec 3 cases, voir GetTextWidth/OPT_DLG_*     }
+ { pour le calcul du budget ~49 car./ligne, ~9 lignes au total ici). }
  Check(Dlg.Data.Os2Mpts, 'MPTS (TCPIP32)');                        { Row 0 }
  Check(Dlg.Data.Os2BsdSockets, 'BSD Sockets d''OS/2');              { Row 1 }
+ Check(Dlg.Data.Os2IbmTcpIp, 'IBM TCP/IP');                         { Row 2 }
  BaseY := BaseY + OPT_ROW_SPACING Div 2;
- { Lignes courtes a dessein (<= 48 caracteres, police fixe 8 px/caractere   }
- { - voir GetTextWidth : FW=620-200-24=396 px -> ~49 caracteres max avant   }
- { de deborder hors du panneau) - BOGUE REEL trouve par l utilisateur      }
- { ("deborde en dehors de l'affichage") sur une 1ere version plus verbeuse }
- { de ce texte, jamais testee contre la vraie largeur du panneau avant     }
- { d'etre ecrite. }
- DrawText(FX, BaseY, 'MPTS : reconnaissance du module', CLR_BORDER);
+ DrawText(FX, BaseY, 'MPTS : module TCPIP32 reconnu.', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'TCPIP32/TCP32DLL/SO32DLL/TCPIPDLL.', CLR_BORDER);
+ DrawText(FX, BaseY, 'Decochee, les 41 fonctions TCP/IP', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'Decochee, aucune des 41 ne repond.', CLR_BORDER);
+ DrawText(FX, BaseY, 'refusent (sauf RPC32DLL).', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'BSD Sockets : cree/transfere un', CLR_BORDER);
+ DrawText(FX, BaseY, 'BSD Sockets : 21/41 (socket,', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'socket reel (socket, connect,', CLR_BORDER);
+ DrawText(FX, BaseY, 'connect, send...). Decochee', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'send, recv...). Decochee (MPTS', CLR_BORDER);
+ DrawText(FX, BaseY, '(MPTS coche), les 20 autres', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'cochee), les 20 autres (DNS,', CLR_BORDER);
+ DrawText(FX, BaseY, '(DNS, adresses...) repondent.', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'adresses, /etc/services...)', CLR_BORDER);
+ DrawText(FX, BaseY, 'IBM TCP/IP : module RPC32DLL', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'repondent quand meme.', CLR_BORDER);
+ DrawText(FX, BaseY, '(ONC RPC, 11 fonctions) reconnu.', CLR_BORDER);
 End;
 
 Procedure DrawOptionsEmuStub(Var Dlg: TOptionsDialog; Const EmuName: String);
@@ -230926,6 +231495,10 @@ Begin
        End;
        1: Begin
         Dlg.Data.Os2BsdSockets := Not Dlg.Data.Os2BsdSockets;
+        Dlg.Modified := True;
+       End;
+       2: Begin
+        Dlg.Data.Os2IbmTcpIp := Not Dlg.Data.Os2IbmTcpIp;
         Dlg.Modified := True;
        End;
       End;

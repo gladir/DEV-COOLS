@@ -192,6 +192,15 @@ Var
  End;
 
 Begin
+ { Garde chemin vide (2026-10-11, bogue REEL trouve en testant RPCTEST.EXE  }
+ { avec ParamCount superieur au nombre d arguments reels fournis - meme     }
+ { piege deja documente dans feedback_fpc_empty_filename_hang.md :          }
+ { Reset(F,1) sur un Assign('') REUSSIT silencieusement sous FPC/Windows    }
+ { (IOResult=0), seul un BlockRead ulterieur echoue - hors de la garde      }
+ { d entrees-sorties desactivee a ce moment-la, ce qui leve une              }
+ { EInOutError non geree et tue tout le programme. Verifier Path vide       }
+ { AVANT tout Assign/Reset, jamais apres. }
+ If Path = '' Then Exit;
  WriteLn('=== Verification de ', Path, ' ===');
  Assign(F, Path);
  {$I-} Reset(F, 1); {$I+}
@@ -287,11 +296,11 @@ Begin
  WriteLn;
 End;
 
+Var
+ ArgI: Integer;
 Begin
  AnyFailure := False;
- VerifyFile(ParamStr(1));
- VerifyFile(ParamStr(2));
- VerifyFile(ParamStr(3));
+ For ArgI := 1 To ParamCount Do VerifyFile(ParamStr(ArgI));
  If AnyFailure Then Begin
   WriteLn('=== AU MOINS UN ECHEC DETECTE ===');
   Halt(1);
