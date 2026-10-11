@@ -1336,6 +1336,62 @@ Function Wtcp_IcmpSendEcho(IcmpHandle: LongInt; DestinationAddress: LongWord;
  Timeout: LongWord): LongWord;
          StdCall; External 'icmp.dll' Name 'IcmpSendEcho';
 
+{ OS/2 MPTS TCPIP32.DLL (2026-10-11, demande explicite - liste de 20       }
+{ fonctions BSD Sockets fournie par l utilisateur, TCP32DLL/SO32DLL/        }
+{ TCPIPDLL traites comme des alias historiques de la meme API, voir le     }
+{ branchement Lx_DoDosCall plus bas). Reutilise socket/connect/send/recv/  }
+{ closesocket/htons/inet_addr/gethostbyname (Mdbc_*) et ioctlsocket/       }
+{ select/shutdown (Wtcp_*) deja lies plus haut - seules les liaisons       }
+{ ws2_32.dll VRAIMENT nouvelles sont declarees ici (prefixe Os2Tcp_). }
+Function Os2Tcp_bind(s: LongInt; Var Addr: TMdbcSockAddrIn; NameLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'bind';
+Function Os2Tcp_listen(s: LongInt; Backlog: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'listen';
+Function Os2Tcp_accept(s: LongInt; Var Addr: TMdbcSockAddrIn; Var AddrLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'accept';
+Function Os2Tcp_sendto(s: LongInt; Var Buf; Len: LongInt; Flags: LongInt;
+ Var ToAddr: TMdbcSockAddrIn; ToLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'sendto';
+Function Os2Tcp_recvfrom(s: LongInt; Var Buf; Len: LongInt; Flags: LongInt;
+ Var FromAddr: TMdbcSockAddrIn; Var FromLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'recvfrom';
+Function Os2Tcp_getsockname(s: LongInt; Var Addr: TMdbcSockAddrIn; Var AddrLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'getsockname';
+Function Os2Tcp_getpeername(s: LongInt; Var Addr: TMdbcSockAddrIn; Var AddrLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'getpeername';
+Function Os2Tcp_getsockopt(s: LongInt; Level, OptName: LongInt; Var OptVal;
+ Var OptLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'getsockopt';
+Function Os2Tcp_setsockopt(s: LongInt; Level, OptName: LongInt; Var OptVal;
+ OptLen: LongInt): LongInt;
+         StdCall; External 'ws2_32.dll' Name 'setsockopt';
+Function Os2Tcp_gethostbyaddr(Var Addr; Len, AF: LongInt): PMdbcHostEnt;
+         StdCall; External 'ws2_32.dll' Name 'gethostbyaddr';
+Type
+ PMdbcServEnt = ^TMdbcServEnt;
+ TMdbcServEnt = Record
+  s_name    : PChar;
+  s_aliases : Pointer;
+  s_port    : SmallInt;
+  s_proto   : PChar;
+ End;
+ { fd_set Winsock reel (tableau de poignees, PAS un masque de bits BSD -    }
+ { OS/2 MPTS utilise la meme convention que Winsock sur ce point, les deux  }
+ { ayant des descripteurs de socket opaques plutot que de petits entiers    }
+ { sequentiels comme Unix - voir le branchement SELECT plus bas). }
+ TLxFdSet = Record
+  fd_count : LongWord;
+  fd_array : Array[0..63] Of LongInt;
+ End;
+ TLxTimeVal = Record
+  tv_sec  : LongInt;
+  tv_usec : LongInt;
+ End;
+Function Os2Tcp_getservbyname(Name, Proto: PChar): PMdbcServEnt;
+         StdCall; External 'ws2_32.dll' Name 'getservbyname';
+Function Os2Tcp_getservbyport(Port: LongInt; Proto: PChar): PMdbcServEnt;
+         StdCall; External 'ws2_32.dll' Name 'getservbyport';
+
 { IPCONFIG (2026-10-04, demande explicite - voir                           }
 { C:\SOURCE\GITHUB\NETWORKKIT-P\IPCONFIG.PAS) : contrairement a la          }
 { reference (un seul gethostbyname, pas de masque/passerelle reels, MAC     }
@@ -126733,6 +126789,30 @@ Begin
  Lx_WriteWord(Addr + 2, Word(LongWord(V) Shr 16));
 End;
 
+{ Marshaling d un struct sockaddr_in invite <-> TMdbcSockAddrIn hote - la   }
+{ disposition BSD (sin_family Word, sin_port Word, sin_addr LongWord,      }
+{ sin_zero[8]) est identique des 2 cotes (verifiee : OS/2 MPTS reprend le   }
+{ meme <netinet/in.h> BSD que Winsock) - voir le branchement TCPIP32 plus   }
+{ bas. }
+Function Lx_ReadSockAddrIn(Addr: LongInt): TMdbcSockAddrIn;
+Var R: TMdbcSockAddrIn; I: Integer;
+Begin
+ R.sin_family := Lx_ReadWord(Addr);
+ R.sin_port   := Lx_ReadWord(Addr + 2);
+ R.sin_addr   := LongWord(Lx_ReadDWord(Addr + 4));
+ For I := 0 To 7 Do R.sin_zero[I] := Lx_ReadByte(Addr + 8 + I);
+ Lx_ReadSockAddrIn := R;
+End;
+
+Procedure Lx_WriteSockAddrIn(Addr: LongInt; Var S: TMdbcSockAddrIn);
+Var I: Integer;
+Begin
+ Lx_WriteWord(Addr, S.sin_family);
+ Lx_WriteWord(Addr + 2, S.sin_port);
+ Lx_WriteDWord(Addr + 4, LongInt(S.sin_addr));
+ For I := 0 To 7 Do Lx_WriteByte(Addr + 8 + I, S.sin_zero[I]);
+End;
+
 Function Lx_FetchByte(Step: Integer): Byte;
 Begin
  Lx_FetchByte := Lx_ReadByte(LX_EIP + Step);
@@ -127326,6 +127406,13 @@ Function Emu_NbQueuePopInto(Var Q: TEmuNbDgQueue; Var Dg: TEmuNbDgram): Boolean;
 Var
  LxNetBios: TEmuNetBiosState;
  LxNetBiosOpen: Boolean;
+ { Etat TCPIP32 (MPTS) - voir le branchement Lx_DoDosCall plus bas. Drapeau }
+ { d amorcage Winsock INDEPENDANT (meme convention que EmuWatTcpWsReady/   }
+ { MdbcWinsockReady - chaque fonctionnalite garde le sien, jamais partage). }
+ LxTcpWsReady: Boolean;
+ LxTcpBuf: Array[0..65535] Of Byte; { tampon de marshaling send/recv/sockopt - }
+                                     { GLOBAL (jamais local), voir le bogue    }
+                                     { reel de pile corrige dans DISPAK.PAS.   }
 
 Procedure Lx_NbPackAddr(Addr: LongInt; Var Seg, Ofs: Word);
 Begin
@@ -128059,6 +128146,27 @@ Var
  { NETAPI.DLL, dispatch par nom - voir plus bas). }
  NbFuncName: String;
  NbPhf, NbPncb, NbPBuf, NbPCb: LongInt;
+ { TCPIP32 (MPTS, dispatch par nom - voir plus bas). }
+ TcpFuncName: String;
+ TcpSock, TcpAF, TcpTyp, TcpProto, TcpBacklog, TcpResult: LongInt;
+ TcpAddrPtr, TcpAddrLen, TcpAddrLenPtr: LongInt;
+ TcpBufPtr, TcpLen, TcpFlags, TcpHow: LongInt;
+ TcpLevel, TcpOptName, TcpOptValPtr, TcpOptLen, TcpOptLenPtr: LongInt;
+ TcpCmd, TcpArgPtr: LongInt;
+ TcpArgVal: LongWord;
+ TcpSockAddr: TMdbcSockAddrIn;
+ TcpI: LongInt;
+ TcpWsd: TMdbcWSAData;
+ TcpProtoPtr, TcpNamePtr: LongInt;
+ TcpHostName, TcpProtoName: String;
+ TcpHe: PMdbcHostEnt;
+ TcpSe: PMdbcServEnt;
+ TcpHeAddr, TcpStrAddr, TcpListAddr, TcpIpAddr: LongInt;
+ TcpCbAlloc: LongInt;
+ TcpFdRead, TcpFdWrite, TcpFdExcept: TLxFdSet;
+ TcpFdReadPtr, TcpFdWritePtr, TcpFdExceptPtr, TcpTimeoutPtr: LongInt;
+ TcpTv: TLxTimeVal;
+ TcpSelResult: LongInt;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= LX_ImportSlotCount) Then Begin
   Lx_Halt('Emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
@@ -128341,6 +128449,441 @@ Begin
    End;
    If (NbPCb >= 0) And (NbPCb + 2 <= High(LX_Mem)) Then Lx_WriteWord(NbPCb, 2);
    LX_Reg.EAX := 0;
+   NArgsPopped := 2;
+   Handled := True;
+  End;
+ End;
+ { TCPIP32.DLL (MPTS - 2026-10-11, demande explicite, liste de 20 fonctions }
+ { BSD Sockets fournie par l'utilisateur) - TCP32DLL/SO32DLL/TCPIPDLL sont  }
+ { des DLL MPTS historiquement distinctes (socket 16 bits / complement     }
+ { 32 bits) mais exportent la MEME API BSD : routees ici vers les memes    }
+ { gestionnaires. Reseau REEL via Winsock (meme principe que WATTCP pour   }
+ { la pile DOS, voir project_devenv_wattcp.md) - PAS une boucle locale,    }
+ { contrairement a IPX/NetBIOS ci-dessus : un socket() invite devient un   }
+ { vrai socket() Winsock, connect() atteint reellement l'hote distant.     }
+ { Dispatch par NOM REEL (LX_ImportNameStr), meme discipline qu'ACSNETB/   }
+ { NETAPI ci-dessus : aucun ordinal MPTS verifie contre une source         }
+ { primaire n'est disponible (contrairement a DOSCALLS/PMWIN). }
+ If ((ModName = 'TCPIP32') Or (ModName = 'TCP32DLL') Or (ModName = 'SO32DLL') Or
+     (ModName = 'TCPIPDLL')) And (Not IsOrd) And
+    (SlotIndex >= 0) And (SlotIndex < LX_MAX_TRAP_SLOTS) Then Begin
+  If Not LxTcpWsReady Then Begin
+   If Mdbc_WSAStartup($0202, TcpWsd) = 0 Then LxTcpWsReady := True;
+  End;
+  TcpFuncName := UpCaseStr(LX_ImportNameStr[SlotIndex]);
+
+  If TcpFuncName = 'SOCKET' Then Begin
+   { int socket(int af, int type, int protocol) }
+   TcpAF    := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpTyp   := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpProto := Lx_ReadDWord(LX_Reg.ESP + 12);
+   LX_Reg.EAX := Mdbc_socket(TcpAF, TcpTyp, TcpProto);
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'BIND' Then Begin
+   { int bind(int s, Const struct sockaddr *name, int namelen) }
+   TcpSock    := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpAddrPtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpAddrLen := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpSockAddr := Lx_ReadSockAddrIn(TcpAddrPtr);
+   LX_Reg.EAX := Os2Tcp_bind(TcpSock, TcpSockAddr, TcpAddrLen);
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'LISTEN' Then Begin
+   { int listen(int s, int backlog) }
+   TcpSock    := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpBacklog := Lx_ReadDWord(LX_Reg.ESP + 8);
+   LX_Reg.EAX := Os2Tcp_listen(TcpSock, TcpBacklog);
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'ACCEPT' Then Begin
+   { int accept(int s, struct sockaddr *addr, int *addrlen) - addr/addrlen }
+   { peuvent etre NULL (adresse de l'appelant non demandee). }
+   TcpSock       := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpAddrPtr    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpAddrLenPtr := Lx_ReadDWord(LX_Reg.ESP + 12);
+   If TcpAddrLenPtr <> 0 Then TcpAddrLen := Lx_ReadDWord(TcpAddrLenPtr)
+   Else TcpAddrLen := SizeOf(TcpSockAddr);
+   FillChar(TcpSockAddr, SizeOf(TcpSockAddr), 0);
+   TcpResult := Os2Tcp_accept(TcpSock, TcpSockAddr, TcpAddrLen);
+   If (TcpAddrPtr <> 0) And (TcpResult <> -1) Then
+    Lx_WriteSockAddrIn(TcpAddrPtr, TcpSockAddr);
+   If TcpAddrLenPtr <> 0 Then Lx_WriteDWord(TcpAddrLenPtr, TcpAddrLen);
+   LX_Reg.EAX := TcpResult;
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'CONNECT' Then Begin
+   { int connect(int s, Const struct sockaddr *name, int namelen) - BLOQUANT}
+   { (meme compromis deja accepte pour MongoDB/Redis dans ce fichier - pas  }
+   { de machine a etats non bloquante ici, contrairement a WATTCP qui doit  }
+   { rester reactif DANS la boucle d'emulation CPU ; un programme OS/2      }
+   { console attendant un connect() n'a pas cette contrainte). }
+   TcpSock    := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpAddrPtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpAddrLen := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpSockAddr := Lx_ReadSockAddrIn(TcpAddrPtr);
+   LX_Reg.EAX := Mdbc_connect(TcpSock, TcpSockAddr, TcpAddrLen);
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SEND' Then Begin
+   { int send(int s, Const char *buf, int len, int flags) }
+   TcpSock    := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpBufPtr  := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpLen     := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpFlags   := Lx_ReadDWord(LX_Reg.ESP + 16);
+   If TcpLen > SizeOf(LxTcpBuf) Then TcpLen := SizeOf(LxTcpBuf);
+   If TcpLen < 0 Then TcpLen := 0;
+   For TcpI := 0 To TcpLen - 1 Do LxTcpBuf[TcpI] := Lx_ReadByte(TcpBufPtr + TcpI);
+   LX_Reg.EAX := Mdbc_send(TcpSock, LxTcpBuf, TcpLen, TcpFlags);
+   NArgsPopped := 4;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'RECV' Then Begin
+   { int recv(int s, char *buf, int len, int flags) }
+   TcpSock   := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpBufPtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpLen    := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpFlags  := Lx_ReadDWord(LX_Reg.ESP + 16);
+   If TcpLen > SizeOf(LxTcpBuf) Then TcpLen := SizeOf(LxTcpBuf);
+   If TcpLen < 0 Then TcpLen := 0;
+   TcpResult := Mdbc_recv(TcpSock, LxTcpBuf, TcpLen, TcpFlags);
+   If TcpResult > 0 Then
+    For TcpI := 0 To TcpResult - 1 Do Lx_WriteByte(TcpBufPtr + TcpI, LxTcpBuf[TcpI]);
+   LX_Reg.EAX := TcpResult;
+   NArgsPopped := 4;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SENDTO' Then Begin
+   { int sendto(int s, Const char *buf, int len, int flags,                }
+   {  Const struct sockaddr *to, int tolen) }
+   TcpSock    := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpBufPtr  := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpLen     := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpFlags   := Lx_ReadDWord(LX_Reg.ESP + 16);
+   TcpAddrPtr := Lx_ReadDWord(LX_Reg.ESP + 20);
+   TcpAddrLen := Lx_ReadDWord(LX_Reg.ESP + 24);
+   TcpSockAddr := Lx_ReadSockAddrIn(TcpAddrPtr);
+   If TcpLen > SizeOf(LxTcpBuf) Then TcpLen := SizeOf(LxTcpBuf);
+   If TcpLen < 0 Then TcpLen := 0;
+   For TcpI := 0 To TcpLen - 1 Do LxTcpBuf[TcpI] := Lx_ReadByte(TcpBufPtr + TcpI);
+   LX_Reg.EAX := Os2Tcp_sendto(TcpSock, LxTcpBuf, TcpLen, TcpFlags, TcpSockAddr, TcpAddrLen);
+   NArgsPopped := 6;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'RECVFROM' Then Begin
+   { int recvfrom(int s, char *buf, int len, int flags,                    }
+   {  struct sockaddr *from, int *fromlen) }
+   TcpSock       := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpBufPtr     := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpLen        := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpFlags      := Lx_ReadDWord(LX_Reg.ESP + 16);
+   TcpAddrPtr    := Lx_ReadDWord(LX_Reg.ESP + 20);
+   TcpAddrLenPtr := Lx_ReadDWord(LX_Reg.ESP + 24);
+   If TcpAddrLenPtr <> 0 Then TcpAddrLen := Lx_ReadDWord(TcpAddrLenPtr)
+   Else TcpAddrLen := SizeOf(TcpSockAddr);
+   If TcpLen > SizeOf(LxTcpBuf) Then TcpLen := SizeOf(LxTcpBuf);
+   If TcpLen < 0 Then TcpLen := 0;
+   FillChar(TcpSockAddr, SizeOf(TcpSockAddr), 0);
+   TcpResult := Os2Tcp_recvfrom(TcpSock, LxTcpBuf, TcpLen, TcpFlags, TcpSockAddr, TcpAddrLen);
+   If TcpResult > 0 Then
+    For TcpI := 0 To TcpResult - 1 Do Lx_WriteByte(TcpBufPtr + TcpI, LxTcpBuf[TcpI]);
+   If TcpAddrPtr <> 0 Then Lx_WriteSockAddrIn(TcpAddrPtr, TcpSockAddr);
+   If TcpAddrLenPtr <> 0 Then Lx_WriteDWord(TcpAddrLenPtr, TcpAddrLen);
+   LX_Reg.EAX := TcpResult;
+   NArgsPopped := 6;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SHUTDOWN' Then Begin
+   { int shutdown(int s, int how) }
+   TcpSock := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpHow  := Lx_ReadDWord(LX_Reg.ESP + 8);
+   LX_Reg.EAX := Wtcp_shutdown(TcpSock, TcpHow);
+   NArgsPopped := 2;
+   Handled := True;
+  End Else
+  If (TcpFuncName = 'CLOSESOCKET') Or (TcpFuncName = 'SOCLOSE') Then Begin
+   { int soclose(int s) / int closesocket(int s) - 2 noms reels selon la    }
+   { generation MPTS (soclose = API 4.3 historique de TCP32DLL/SO32DLL). }
+   TcpSock := Lx_ReadDWord(LX_Reg.ESP + 4);
+   LX_Reg.EAX := Mdbc_closesocket(TcpSock);
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETSOCKNAME' Then Begin
+   { int getsockname(int s, struct sockaddr *name, int *namelen) }
+   TcpSock       := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpAddrPtr    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpAddrLenPtr := Lx_ReadDWord(LX_Reg.ESP + 12);
+   If TcpAddrLenPtr <> 0 Then TcpAddrLen := Lx_ReadDWord(TcpAddrLenPtr)
+   Else TcpAddrLen := SizeOf(TcpSockAddr);
+   FillChar(TcpSockAddr, SizeOf(TcpSockAddr), 0);
+   LX_Reg.EAX := Os2Tcp_getsockname(TcpSock, TcpSockAddr, TcpAddrLen);
+   If TcpAddrPtr <> 0 Then Lx_WriteSockAddrIn(TcpAddrPtr, TcpSockAddr);
+   If TcpAddrLenPtr <> 0 Then Lx_WriteDWord(TcpAddrLenPtr, TcpAddrLen);
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETPEERNAME' Then Begin
+   { int getpeername(int s, struct sockaddr *name, int *namelen) }
+   TcpSock       := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpAddrPtr    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpAddrLenPtr := Lx_ReadDWord(LX_Reg.ESP + 12);
+   If TcpAddrLenPtr <> 0 Then TcpAddrLen := Lx_ReadDWord(TcpAddrLenPtr)
+   Else TcpAddrLen := SizeOf(TcpSockAddr);
+   FillChar(TcpSockAddr, SizeOf(TcpSockAddr), 0);
+   LX_Reg.EAX := Os2Tcp_getpeername(TcpSock, TcpSockAddr, TcpAddrLen);
+   If TcpAddrPtr <> 0 Then Lx_WriteSockAddrIn(TcpAddrPtr, TcpSockAddr);
+   If TcpAddrLenPtr <> 0 Then Lx_WriteDWord(TcpAddrLenPtr, TcpAddrLen);
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETSOCKOPT' Then Begin
+   { int getsockopt(int s, int level, int optname, char *optval, int *optlen) }
+   TcpSock       := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpLevel      := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpOptName    := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpOptValPtr  := Lx_ReadDWord(LX_Reg.ESP + 16);
+   TcpOptLenPtr  := Lx_ReadDWord(LX_Reg.ESP + 20);
+   If TcpOptLenPtr <> 0 Then TcpOptLen := Lx_ReadDWord(TcpOptLenPtr) Else TcpOptLen := 0;
+   If TcpOptLen > SizeOf(LxTcpBuf) Then TcpOptLen := SizeOf(LxTcpBuf);
+   If TcpOptLen < 0 Then TcpOptLen := 0;
+   LX_Reg.EAX := Os2Tcp_getsockopt(TcpSock, TcpLevel, TcpOptName, LxTcpBuf, TcpOptLen);
+   If TcpOptValPtr <> 0 Then
+    For TcpI := 0 To TcpOptLen - 1 Do Lx_WriteByte(TcpOptValPtr + TcpI, LxTcpBuf[TcpI]);
+   If TcpOptLenPtr <> 0 Then Lx_WriteDWord(TcpOptLenPtr, TcpOptLen);
+   NArgsPopped := 5;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SETSOCKOPT' Then Begin
+   { int setsockopt(int s, int level, int optname, Const char *optval, int optlen) }
+   TcpSock      := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpLevel     := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpOptName   := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpOptValPtr := Lx_ReadDWord(LX_Reg.ESP + 16);
+   TcpOptLen    := Lx_ReadDWord(LX_Reg.ESP + 20);
+   If TcpOptLen > SizeOf(LxTcpBuf) Then TcpOptLen := SizeOf(LxTcpBuf);
+   If TcpOptLen < 0 Then TcpOptLen := 0;
+   For TcpI := 0 To TcpOptLen - 1 Do LxTcpBuf[TcpI] := Lx_ReadByte(TcpOptValPtr + TcpI);
+   LX_Reg.EAX := Os2Tcp_setsockopt(TcpSock, TcpLevel, TcpOptName, LxTcpBuf, TcpOptLen);
+   NArgsPopped := 5;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'IOCTL' Then Begin
+   { int ioctl(int s, int cmd, char *argp, int len) - forme OS/2 MPTS a 4    }
+   { arguments (contrairement a Winsock ioctlsocket, 3 arguments) ; seul le  }
+   { 1er DWORD de *argp est marshale (couvre FIONBIO/FIONREAD, les 2 usages  }
+   { reels courants - une commande exigeant une structure plus grande que 4  }
+   { octets n est pas geree, disclosure honnete plutot qu un faux succes). }
+   TcpSock   := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpCmd    := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpArgPtr := Lx_ReadDWord(LX_Reg.ESP + 12);
+   If TcpArgPtr <> 0 Then TcpArgVal := LongWord(Lx_ReadDWord(TcpArgPtr)) Else TcpArgVal := 0;
+   LX_Reg.EAX := Wtcp_ioctlsocket(TcpSock, TcpCmd, TcpArgVal);
+   If TcpArgPtr <> 0 Then Lx_WriteDWord(TcpArgPtr, LongInt(TcpArgVal));
+   NArgsPopped := 4;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'SELECT' Then Begin
+   { int select(int nfds, fd_set *readfds, fd_set *writefds,                }
+   {  fd_set *exceptfds, Const struct timeval *timeout) - fd_set MPTS/      }
+   { Winsock = tableau de poignees (PAS un masque de bits BSD), meme        }
+   { disposition des 2 cotes, voir TLxFdSet. SECURITE : un timeout NULL     }
+   { (attente infinie) gelerait tout l'emulateur mono-thread - borne a 10 s }
+   { au lieu d'une attente reellement infinie (meme philosophie que les     }
+   { boucles d'attente bornees de WATTCP - jamais un vrai blocage sans      }
+   { fin). }
+   TcpResult      := Lx_ReadDWord(LX_Reg.ESP + 4); { nfds, ignore (Winsock aussi) }
+   TcpFdReadPtr   := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpFdWritePtr  := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpFdExceptPtr := Lx_ReadDWord(LX_Reg.ESP + 16);
+   TcpTimeoutPtr  := Lx_ReadDWord(LX_Reg.ESP + 20);
+   FillChar(TcpFdRead, SizeOf(TcpFdRead), 0);
+   FillChar(TcpFdWrite, SizeOf(TcpFdWrite), 0);
+   FillChar(TcpFdExcept, SizeOf(TcpFdExcept), 0);
+   If TcpFdReadPtr <> 0 Then Begin
+    TcpFdRead.fd_count := LongWord(Lx_ReadDWord(TcpFdReadPtr));
+    If TcpFdRead.fd_count > 64 Then TcpFdRead.fd_count := 64;
+    For TcpI := 0 To LongInt(TcpFdRead.fd_count) - 1 Do
+     TcpFdRead.fd_array[TcpI] := Lx_ReadDWord(TcpFdReadPtr + 4 + TcpI * 4);
+   End;
+   If TcpFdWritePtr <> 0 Then Begin
+    TcpFdWrite.fd_count := LongWord(Lx_ReadDWord(TcpFdWritePtr));
+    If TcpFdWrite.fd_count > 64 Then TcpFdWrite.fd_count := 64;
+    For TcpI := 0 To LongInt(TcpFdWrite.fd_count) - 1 Do
+     TcpFdWrite.fd_array[TcpI] := Lx_ReadDWord(TcpFdWritePtr + 4 + TcpI * 4);
+   End;
+   If TcpFdExceptPtr <> 0 Then Begin
+    TcpFdExcept.fd_count := LongWord(Lx_ReadDWord(TcpFdExceptPtr));
+    If TcpFdExcept.fd_count > 64 Then TcpFdExcept.fd_count := 64;
+    For TcpI := 0 To LongInt(TcpFdExcept.fd_count) - 1 Do
+     TcpFdExcept.fd_array[TcpI] := Lx_ReadDWord(TcpFdExceptPtr + 4 + TcpI * 4);
+   End;
+   TcpTv.tv_sec := 10; TcpTv.tv_usec := 0; { borne de securite, voir ci-dessus }
+   If TcpTimeoutPtr <> 0 Then Begin
+    TcpTv.tv_sec := Lx_ReadDWord(TcpTimeoutPtr);
+    TcpTv.tv_usec := Lx_ReadDWord(TcpTimeoutPtr + 4);
+    If TcpTv.tv_sec > 10 Then Begin TcpTv.tv_sec := 10; TcpTv.tv_usec := 0; End;
+   End;
+   TcpSelResult := Wtcp_select(0, @TcpFdRead, @TcpFdWrite, @TcpFdExcept, @TcpTv);
+   If TcpFdReadPtr <> 0 Then Begin
+    Lx_WriteDWord(TcpFdReadPtr, LongInt(TcpFdRead.fd_count));
+    For TcpI := 0 To LongInt(TcpFdRead.fd_count) - 1 Do
+     Lx_WriteDWord(TcpFdReadPtr + 4 + TcpI * 4, TcpFdRead.fd_array[TcpI]);
+   End;
+   If TcpFdWritePtr <> 0 Then Begin
+    Lx_WriteDWord(TcpFdWritePtr, LongInt(TcpFdWrite.fd_count));
+    For TcpI := 0 To LongInt(TcpFdWrite.fd_count) - 1 Do
+     Lx_WriteDWord(TcpFdWritePtr + 4 + TcpI * 4, TcpFdWrite.fd_array[TcpI]);
+   End;
+   If TcpFdExceptPtr <> 0 Then Begin
+    Lx_WriteDWord(TcpFdExceptPtr, LongInt(TcpFdExcept.fd_count));
+    For TcpI := 0 To LongInt(TcpFdExcept.fd_count) - 1 Do
+     Lx_WriteDWord(TcpFdExceptPtr + 4 + TcpI * 4, TcpFdExcept.fd_array[TcpI]);
+   End;
+   LX_Reg.EAX := TcpSelResult;
+   NArgsPopped := 5;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETHOSTBYNAME' Then Begin
+   { struct hostent *gethostbyname(Const char *name) - marshaling en       }
+   { memoire invite (bump allocator LX_HeapNext, meme patron que           }
+   { WinQueryClipbrdData plus haut) : PORTEE ASSUMEE ET DISCLOSEE, une      }
+   { seule adresse resolue (h_addr_list[0]) et aucun alias (h_aliases=0) -  }
+   { couvre l'usage ecrasant majoritaire (gethostbyname("www.exemple.com") }
+   { puis lecture de h_addr_list[0]) sans reconstruire un arbre complet de  }
+   { pointeurs invite pour un cas tres rarement exploite en pratique. }
+   TcpNamePtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpHostName := '';
+   While (TcpNamePtr >= 0) And (TcpNamePtr <= High(LX_Mem)) And
+         (Lx_ReadByte(TcpNamePtr) <> 0) And (Length(TcpHostName) < 255) Do Begin
+    TcpHostName := TcpHostName + Chr(Lx_ReadByte(TcpNamePtr));
+    Inc(TcpNamePtr);
+   End;
+   LX_Reg.EAX := 0;
+   TcpHe := Mdbc_gethostbyname(PChar(AnsiString(TcpHostName)));
+   If TcpHe <> Nil Then Begin
+    TcpCbAlloc := (Length(TcpHostName) + 1 + 4 + 8 + 16 + 15) And Not 15;
+    If LX_HeapNext + TcpCbAlloc <= LX_FS_BASE Then Begin
+     TcpStrAddr  := LX_HeapNext;
+     TcpIpAddr   := TcpStrAddr + Length(TcpHostName) + 1;
+     TcpListAddr := TcpIpAddr + 4;
+     TcpHeAddr   := TcpListAddr + 8;
+     LX_HeapNext := LX_HeapNext + TcpCbAlloc;
+     For TcpI := 1 To Length(TcpHostName) Do
+      Lx_WriteByte(TcpStrAddr + TcpI - 1, Ord(TcpHostName[TcpI]));
+     Lx_WriteByte(TcpStrAddr + Length(TcpHostName), 0);
+     Lx_WriteDWord(TcpIpAddr, LongInt(PLongWord(TcpHe^.h_addr_list^)^));
+     Lx_WriteDWord(TcpListAddr, TcpIpAddr);     { h_addr_list[0] }
+     Lx_WriteDWord(TcpListAddr + 4, 0);         { h_addr_list[1] = NULL }
+     Lx_WriteDWord(TcpHeAddr, TcpStrAddr);      { h_name }
+     Lx_WriteDWord(TcpHeAddr + 4, 0);           { h_aliases = NULL }
+     Lx_WriteWord(TcpHeAddr + 8, 2);            { h_addrtype = AF_INET }
+     Lx_WriteWord(TcpHeAddr + 10, 4);           { h_length = 4 }
+     Lx_WriteDWord(TcpHeAddr + 12, TcpListAddr); { h_addr_list }
+     LX_Reg.EAX := TcpHeAddr;
+    End;
+   End;
+   NArgsPopped := 1;
+   Handled := True;
+  End Else
+  If TcpFuncName = 'GETHOSTBYADDR' Then Begin
+   { struct hostent *gethostbyaddr(Const char *addr, int len, int type) -   }
+   { meme marshaling que GETHOSTBYNAME ci-dessus (h_name resout ici en une  }
+   { chaine vide si le DNS inverse echoue, comportement honnete plutot      }
+   { qu'invente). }
+   TcpAddrPtr := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpAddrLen := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpAF      := Lx_ReadDWord(LX_Reg.ESP + 12);
+   TcpIpAddr  := LongInt(LongWord(Lx_ReadDWord(TcpAddrPtr)));
+   LX_Reg.EAX := 0;
+   TcpHe := Os2Tcp_gethostbyaddr(TcpIpAddr, TcpAddrLen, TcpAF);
+   If TcpHe <> Nil Then Begin
+    TcpHostName := '';
+    If TcpHe^.h_name <> Nil Then TcpHostName := StrPas(TcpHe^.h_name);
+    If Length(TcpHostName) > 200 Then TcpHostName := Copy(TcpHostName, 1, 200);
+    TcpCbAlloc := (Length(TcpHostName) + 1 + 4 + 8 + 16 + 15) And Not 15;
+    If LX_HeapNext + TcpCbAlloc <= LX_FS_BASE Then Begin
+     TcpStrAddr  := LX_HeapNext;
+     TcpListAddr := TcpStrAddr + Length(TcpHostName) + 1;
+     TcpHeAddr   := TcpListAddr + 8;
+     LX_HeapNext := LX_HeapNext + TcpCbAlloc;
+     For TcpI := 1 To Length(TcpHostName) Do
+      Lx_WriteByte(TcpStrAddr + TcpI - 1, Ord(TcpHostName[TcpI]));
+     Lx_WriteByte(TcpStrAddr + Length(TcpHostName), 0);
+     Lx_WriteDWord(TcpListAddr, TcpAddrPtr);    { h_addr_list[0] = adresse d'origine }
+     Lx_WriteDWord(TcpListAddr + 4, 0);
+     Lx_WriteDWord(TcpHeAddr, TcpStrAddr);
+     Lx_WriteDWord(TcpHeAddr + 4, 0);
+     Lx_WriteWord(TcpHeAddr + 8, 2);
+     Lx_WriteWord(TcpHeAddr + 10, 4);
+     Lx_WriteDWord(TcpHeAddr + 12, TcpListAddr);
+     LX_Reg.EAX := TcpHeAddr;
+    End;
+   End;
+   NArgsPopped := 3;
+   Handled := True;
+  End Else
+  If (TcpFuncName = 'GETSERVBYNAME') Or (TcpFuncName = 'GETSERVBYPORT') Then Begin
+   { struct servent *getservbyname(Const char *name, Const char *proto) /   }
+   { struct servent *getservbyport(int port, Const char *proto) - meme      }
+   { marshaling (chaine de nom + chaine de protocole recopiees en memoire   }
+   { invite, s_aliases=NULL - meme disclosure que GETHOSTBYNAME). }
+   TcpNamePtr  := Lx_ReadDWord(LX_Reg.ESP + 4);
+   TcpProtoPtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+   TcpProtoName := '';
+   If TcpProtoPtr <> 0 Then
+    While (TcpProtoPtr <= High(LX_Mem)) And (Lx_ReadByte(TcpProtoPtr) <> 0) And
+          (Length(TcpProtoName) < 15) Do Begin
+     TcpProtoName := TcpProtoName + Chr(Lx_ReadByte(TcpProtoPtr));
+     Inc(TcpProtoPtr);
+    End;
+   LX_Reg.EAX := 0;
+   If TcpFuncName = 'GETSERVBYNAME' Then Begin
+    TcpHostName := '';
+    While (TcpNamePtr >= 0) And (TcpNamePtr <= High(LX_Mem)) And
+          (Lx_ReadByte(TcpNamePtr) <> 0) And (Length(TcpHostName) < 63) Do Begin
+     TcpHostName := TcpHostName + Chr(Lx_ReadByte(TcpNamePtr));
+     Inc(TcpNamePtr);
+    End;
+    TcpSe := Os2Tcp_getservbyname(PChar(AnsiString(TcpHostName)),
+     PChar(AnsiString(TcpProtoName)));
+   End Else Begin
+    TcpSe := Os2Tcp_getservbyport(Mdbc_htons(Word(TcpNamePtr)),
+     PChar(AnsiString(TcpProtoName)));
+    TcpHostName := '';
+   End;
+   If TcpSe <> Nil Then Begin
+    If TcpSe^.s_name <> Nil Then TcpHostName := StrPas(TcpSe^.s_name);
+    If Length(TcpHostName) > 63 Then TcpHostName := Copy(TcpHostName, 1, 63);
+    If TcpProtoName = '' Then Begin
+     If TcpSe^.s_proto <> Nil Then TcpProtoName := StrPas(TcpSe^.s_proto);
+     If Length(TcpProtoName) > 15 Then TcpProtoName := Copy(TcpProtoName, 1, 15);
+    End;
+    TcpCbAlloc := (Length(TcpHostName) + 1 + Length(TcpProtoName) + 1 + 16 + 15)
+     And Not 15;
+    If LX_HeapNext + TcpCbAlloc <= LX_FS_BASE Then Begin
+     TcpStrAddr   := LX_HeapNext;
+     TcpProtoPtr  := TcpStrAddr + Length(TcpHostName) + 1;
+     TcpHeAddr    := TcpProtoPtr + Length(TcpProtoName) + 1;
+     LX_HeapNext  := LX_HeapNext + TcpCbAlloc;
+     For TcpI := 1 To Length(TcpHostName) Do
+      Lx_WriteByte(TcpStrAddr + TcpI - 1, Ord(TcpHostName[TcpI]));
+     Lx_WriteByte(TcpStrAddr + Length(TcpHostName), 0);
+     For TcpI := 1 To Length(TcpProtoName) Do
+      Lx_WriteByte(TcpProtoPtr + TcpI - 1, Ord(TcpProtoName[TcpI]));
+     Lx_WriteByte(TcpProtoPtr + Length(TcpProtoName), 0);
+     Lx_WriteDWord(TcpHeAddr, TcpStrAddr);           { s_name }
+     Lx_WriteDWord(TcpHeAddr + 4, 0);                { s_aliases = NULL }
+     Lx_WriteWord(TcpHeAddr + 8, TcpSe^.s_port);      { s_port }
+     Lx_WriteDWord(TcpHeAddr + 10, TcpProtoPtr);      { s_proto }
+     LX_Reg.EAX := TcpHeAddr;
+    End;
+   End;
    NArgsPopped := 2;
    Handled := True;
   End;
