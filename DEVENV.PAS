@@ -103189,7 +103189,25 @@ Begin
   { voir plus bas) ecrirait alors dans la memoire d'un AUTRE segment. }
   If I = Hdr.ne_autodata Then Begin
    AutoDataMinAlloc := RealLen;
-   LongTmp := LongInt(RealLen) + Hdr.ne_heap;
+   { BOGUE REEL CORRIGE (2026-10-11, investigation graduations/aiguilles      }
+   { CLOCK.EXE) : Hdr.ne_stack (la VRAIE pile, placee par un chargeur NE       }
+   { AU-DESSUS du tas local dans le MEME segment de donnees automatique        }
+   { quand ne_ss=ne_autodata, cas standard "small model") manquait ici -       }
+   { seul ne_heap etait ajoute. La MEME formule correcte (MinAlloc+heap+       }
+   { stack) existe deja ailleurs dans ce fichier pour GetCodeInfo (ordinal     }
+   { KERNEL, ~ligne 109845) - jamais reutilisee ici par erreur. Consequence    }
+   { reelle confirmee en direct sur CLOCK.EXE : Hdr.ne_sp place le sommet de   }
+   { pile PRES DU SOMMET de la region VOULUE (MinAlloc+heap+stack), mais        }
+   { comme ce segment etait alloue SANS la pile, SP pointait en realite        }
+   { au-dela de la fin REELLE du bloc reserve - toute donnee STATIQUE de ce     }
+   { meme segment situee entre l'ancienne fin (MinAlloc+heap, trop petite)      }
+   { et son adresse logique reelle se faisait donc lire comme zero des que       }
+   { son offset depassait ce seuil trop bas (ex. la table de deltas dx/dy        }
+   { des graduations du cadran, dont les entrees au-dela d'un certain index      }
+   { tombaient hors de l'ancien bloc trop court) - CECI explique a la fois       }
+   { les graduations manquantes (moitie gauche du cadran) et le comportement     }
+   { degrade des aiguilles, memes symptomes, meme cause racine. }
+   LongTmp := LongInt(RealLen) + Hdr.ne_heap + Hdr.ne_stack;
    If LongTmp > $FFFF Then LongTmp := $FFFF;
    RealLen := Word(LongTmp);
    AutoDataLimit := RealLen;
@@ -113735,8 +113753,7 @@ Begin
     FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
     Win16_GdiTraceLog('FillRect client=(' + IntToStr(FRLeft) + ',' +
      IntToStr(FRTop) + ')-(' + IntToStr(FRRight) + ',' + IntToStr(FRBottom) +
-     ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow) + ' hBrush=' +
-     IntToStr(FRHBrush) + ' color=' + IntToStr(FRBrushColor));
+     ') hBrush=' + IntToStr(FRHBrush) + ' color=' + IntToStr(FRBrushColor));
     If Win16_ActiveDCWindow >= 0 Then Begin
      FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
      FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
