@@ -197,6 +197,7 @@ Var
  SegmentType:Byte;
  Segments,LastSegment:PObjectSegment;
  Inputs:PInputName;
+ EditorProtectedSource:TString;
  InitialSlot,InitialDrive,InitialVolume,SourceSlot,SourceDrive,SourceVolume:Integer;
  DeviceRoots:Array[1..7,1..2] Of TString;
  DeviceVolumes:Array[1..7,1..2] Of Integer;
@@ -2455,7 +2456,9 @@ Procedure Help;Begin
  WriteLn(' Sans modele: disque de donnees non amorcable; aucun DOS de demarrage inclus.');
  WriteLn(' Le modele et les fichiers existants ne sont jamais remplaces dans l''image.');
  WriteLn(' S1..7,D1..2 designent le lecteur virtuel /DSK; V0..254 fixe son volume.');
- WriteLn(' Source et CHN restent des fichiers de l''hote; pas d''editeur interactif.');
+ WriteLn(' Source et CHN restent des fichiers de l''hote.');
+ WriteLn(' EDASM sans argument ou /EDIT [source]: editeur interactif a lignes.');
+ WriteLn(' /EXEC fichier: execute les commandes de l''editeur puis revient au clavier.');
  WriteLn(' Objet disque: binaire absolu 1..65535 octets avec en-tete adresse/longueur.');
  WriteLn;
  WriteLn('Conditions: DO/IFNE IFEQ IFLT IFLE IFGT IFGE, ELSE unique, FIN; 64 niveaux.');
@@ -2894,6 +2897,7 @@ Function SafeOutputName(Name:TString):Boolean;
 Var P:PInputName; Canon:TString;
 Begin
  Canon:=Up(FExpand(Name)); SafeOutputName:=False;
+ If (EditorProtectedSource<>'') And (Canon=Up(FExpand(EditorProtectedSource))) Then Exit;
  P:=Inputs;
  While P<>Nil Do Begin
   If Up(P^.Name)=Canon Then Exit;
@@ -2981,13 +2985,15 @@ Begin
  While Inputs<>Nil Do Begin N:=Inputs; Inputs:=N^.Next; Dispose(N); End;
 End;
 
-BEGIN
+Procedure RunAssembly;
+Begin
  Instructions:=Nil; Conditions:=Nil; Segments:=Nil; LastSegment:=Nil; SegmentCount:=0; Inputs:=Nil;
- ParseArgs; BuildDate:=''; FirstPassFailure:=''; InitializeListing;
+ BuildDate:=''; FirstPassFailure:=''; InitializeListing;
  SymbolCount:=0; NextEsdNumber:=1; Errors:=0; Pass:=1; AssembleOnePass;
  If UseListing Then Begin
   Assign(ListText,ListName); Rewrite(ListText); If IOResult<>0 Then Begin
-   WriteLn('EDASM: impossible de creer ',ListName); Halt(3);
+   WriteLn('EDASM: impossible de creer ',ListName);
+   Errors:=1; FreeSegments; FreeObjectImage; Exit;
   End;
  End;
  { Stabilise les etiquettes et les choix page-zero/absolu apres la passe
@@ -3022,6 +3028,436 @@ BEGIN
    WriteLn('Attributs ProDOS requis: TYPE=$FE, AUXTYPE=$',Hex(ObjectMin,4),'.');
  End Else
  Begin
-  WriteLn(Errors,' erreur(s); objet invalide.'); FreeSegments; FreeObjectImage; Halt(4);
+  WriteLn(Errors,' erreur(s); objet invalide.'); FreeSegments; FreeObjectImage; Exit;
  End; FreeSegments; FreeObjectImage;
+End;
+
+{ Editeur de lignes: le tampon et les fichiers EXEC sont independants du
+  lecteur source de l'assembleur. Les numeros sont relatifs, a partir de 1. }
+Procedure RunEditor;
+Type
+ PEditLine=^TEditLine;
+ TEditLine=Record Next:PEditLine; Text:TString; End;
+Var
+ Head,ExecHead,Visited:PEditLine;
+ Count,I,Scan:Integer;
+ FileName,Command,Op,Args,Spec,OldText,NewText,LastList:TString;
+ P,Q,Loaded:PEditLine;
+ Done,Failed,SessionFailed,AllChanges,Changed,ExecActive:Boolean;
+ Delimiter,QuoteChar:Char;
+
+Procedure ClearLines(Var H:PEditLine);
+Var L:PEditLine;
+Begin While H<>Nil Do Begin L:=H; H:=H^.Next; Dispose(L); End; End;
+
+Procedure Bad(S:TString);
+Begin
+ WriteLn('EDITEUR: ',S); Failed:=True; SessionFailed:=True;
+ ClearLines(ExecHead); ExecActive:=False;
+End;
+
+Function LineAt(H:PEditLine; Index:Integer):PEditLine;
+Begin
+ While (Index>1) And (H<>Nil) Do Begin H:=H^.Next; Dec(Index); End;
+ LineAt:=H;
+End;
+
+Procedure PutLine(Var H:PEditLine; Position:Integer; S:TString);
+Var L,Before:PEditLine;
+Begin
+ New(L); L^.Text:=S;
+ If Position=1 Then Begin L^.Next:=H; H:=L; End
+ Else Begin Before:=LineAt(H,Position-1); L^.Next:=Before^.Next; Before^.Next:=L; End;
+End;
+
+Procedure RemoveRange(A,B:Integer);
+Var Before,L,Next:PEditLine; K:Integer;
+Begin
+ Before:=Nil; If A>1 Then Before:=LineAt(Head,A-1);
+ If Before=Nil Then L:=Head Else L:=Before^.Next;
+ For K:=A To B Do Begin Next:=L^.Next; Dispose(L); L:=Next; End;
+ If Before=Nil Then Head:=L Else Before^.Next:=L;
+ Dec(Count,B-A+1); Changed:=True;
+End;
+
+Function Number(S:TString; Var V:Integer):Boolean;
+Var K,E:Integer; L:LongInt;
+Begin
+ Number:=False; S:=Trim(S); If S='' Then Exit;
+ For K:=1 To Length(S) Do If Not (S[K] In ['0'..'9']) Then Exit;
+ Val(S,L,E); If (E<>0) Or (L<1) Or (L>30000) Then Exit;
+ V:=L; Number:=True;
+End;
+
+Function Range(S:TString; Var A,B:Integer; AllowEmpty:Boolean):Boolean;
+Var K:Integer;
+Begin
+ Range:=False; S:=Trim(S); A:=1; B:=Count;
+ If S='' Then Begin
+  If AllowEmpty Then Range:=True Else Bad('Numero de ligne requis'); Exit;
+ End;
+ K:=Pos('-',S);
+ If K=0 Then Begin If Not Number(S,A) Then Begin Bad('Numero invalide'); Exit; End; B:=A; End
+ Else Begin
+  If Not Number(Copy(S,1,K-1),A) Then Begin Bad('Debut de plage invalide'); Exit; End;
+  If K=Length(S) Then B:=Count
+  Else If Not Number(Copy(S,K+1,255),B) Then Begin Bad('Fin de plage invalide'); Exit; End;
+ End;
+ If (A<1) Or (A>B) Or (B>Count) Then Begin Bad('Plage hors tampon'); Exit; End;
+ Range:=True;
+End;
+
+Function PathName(S:TString):TString;
+Begin
+ S:=Trim(S);
+ If (Length(S)>=2) And (S[1] In ['"',#39]) Then
+  If S[Length(S)]=S[1] Then S:=Copy(S,2,Length(S)-2);
+ PathName:=S;
+End;
+
+Function ReadLines(Name:TString; Var H:PEditLine; Var Total:Integer):Boolean;
+Var F:File; B:Byte; Got:Word; E:Integer; S:TString;
+    Tail,L:PEditLine; PreviousCR,OK:Boolean;
+
+Procedure AddLoaded;
+Begin
+ If Total=30000 Then Begin OK:=False; Exit; End;
+ New(L); L^.Next:=Nil; L^.Text:=S;
+ If Tail=Nil Then H:=L Else Tail^.Next:=L;
+ Tail:=L; Inc(Total); S:='';
+End;
+
+Begin
+ H:=Nil; Tail:=Nil; Total:=0; ReadLines:=False;
+ Name:=PathName(Name); If Name='' Then Begin Bad('Nom de fichier requis'); Exit; End;
+ Assign(F,Name); Reset(F,1); E:=IOResult;
+ If E<>0 Then Begin Bad('Lecture impossible: '+Name); Exit; End;
+ S:=''; PreviousCR:=False; OK:=True;
+ Repeat
+  BlockRead(F,B,1,Got); E:=IOResult;
+  If E<>0 Then OK:=False;
+  If (Got=1) And OK Then Begin
+   If B=13 Then Begin AddLoaded; PreviousCR:=True; End
+   Else If B=10 Then Begin If Not PreviousCR Then AddLoaded; PreviousCR:=False; End
+   Else Begin
+    PreviousCR:=False;
+    If (B=0) Or (Length(S)=255) Then OK:=False Else S:=S+Chr(B);
+   End;
+  End;
+ Until (Got=0) Or Not OK;
+ If OK And (S<>'') Then AddLoaded;
+ Close(F); E:=IOResult; If E<>0 Then OK:=False;
+ If Not OK Then Begin ClearLines(H); Total:=0;
+  Bad('Fichier illisible, ligne >255 caracteres ou tampon >30000 lignes: '+Name); Exit;
+ End;
+ ReadLines:=True;
+End;
+
+Function WriteLines(Name:TString; A,B:Integer):Boolean;
+Var F:Text; L:PEditLine; K,E:Integer; TempName,Backup:TString; OK,HadOriginal:Boolean;
+Begin
+ WriteLines:=False; Name:=PathName(Name);
+ If Name='' Then Begin Bad('Nom de fichier requis'); Exit; End;
+ If Length(Name)>210 Then Begin Bad('Chemin trop long'); Exit; End;
+ { Ecrire integralement avant de remplacer le fichier existant. }
+ K:=0;
+ Repeat
+  Str(K,TempName); TempName:=Name+'.edasm-edit-'+TempName;
+  Backup:=TempName+'.bak'; Inc(K);
+ Until (Not HostFileExists(TempName)) And (Not HostFileExists(Backup));
+ Assign(F,TempName); Rewrite(F); E:=IOResult;
+ If E<>0 Then Begin Bad('Creation impossible: '+Name); Exit; End;
+ OK:=True; L:=LineAt(Head,A);
+ For K:=A To B Do Begin
+  WriteLn(F,L^.Text); E:=IOResult; If E<>0 Then OK:=False;
+  L:=L^.Next;
+ End;
+ Close(F); E:=IOResult; If E<>0 Then OK:=False;
+ HadOriginal:=HostFileExists(Name);
+ If OK And HadOriginal Then Begin
+  Assign(F,Name); Rename(F,Backup); E:=IOResult; OK:=E=0;
+ End;
+ If OK Then Begin
+  Assign(F,TempName); Rename(F,Name); E:=IOResult; OK:=E=0;
+  If Not OK And HadOriginal Then Begin Assign(F,Backup); Rename(F,Name); E:=IOResult; End;
+ End;
+ If OK Then Begin
+  If HadOriginal Then Begin Assign(F,Backup); Erase(F); E:=IOResult;
+   If E<>0 Then WriteLn('Sauvegarde precedente conservee: ',Backup);
+  End;
+  WriteLines:=True;
+ End Else Begin
+  Assign(F,TempName); Erase(F); E:=IOResult; Bad('Sauvegarde impossible: '+Name);
+ End;
+End;
+
+Function Keyboard(Var S:TString):Boolean;
+Var LongLine:TDataText;
+Begin
+ Keyboard:=False; If Eof(Input) Then Exit;
+ ReadLn(LongLine); If IOResult<>0 Then Begin Bad('Lecture console impossible'); Exit; End;
+ If Length(LongLine)>255 Then Begin Bad('Ligne >255 caracteres'); Exit; End;
+ S:=LongLine; Keyboard:=True;
+End;
+
+Procedure EnterLines(Position:Integer);
+Var S:TString;
+Begin
+ While Not Failed Do Begin
+  Write(Position:5,' ');
+  If Not Keyboard(S) Then Exit;
+  If (S='') Or (S=#4) Then Exit;
+  If Count=30000 Then Begin Bad('Tampon plein'); Exit; End;
+  PutLine(Head,Position,S); Inc(Position); Inc(Count); Changed:=True;
+ End;
+End;
+
+Function MatchAt(S,Pattern:TString; At:Integer):Boolean;
+Var K:Integer;
+Begin
+ MatchAt:=False;
+ If At+Length(Pattern)-1>Length(S) Then Exit;
+ For K:=1 To Length(Pattern) Do
+  If (Pattern[K]<>#1) And (Pattern[K]<>S[At+K-1]) Then Exit;
+ MatchAt:=True;
+End;
+
+Procedure Search(ChangeText:Boolean);
+Var A,B,K,Start,At,Hits:Integer; D:Char; S,T,Answer:TString;
+    L,Stage,Tail,V:PEditLine; Accept,Cancelled:Boolean;
+Begin
+ S:=Trim(Args); K:=1;
+ While (K<=Length(S)) And (S[K] In ['0'..'9','-',' ',#9]) Do Inc(K);
+ If Not Range(Copy(S,1,K-1),A,B,True) Then Exit;
+ Delete(S,1,K-1);
+ If (S='') Or (S[1] In ['A'..'Z','a'..'z','0'..'9','-',',',' ',#9]) Then Begin Bad('Delimiteur de recherche requis'); Exit; End;
+ D:=S[1]; Delete(S,1,1); K:=Pos(D,S);
+ If K=0 Then Begin Bad('Recherche non delimitee'); Exit; End;
+ OldText:=Copy(S,1,K-1); Delete(S,1,K);
+ If OldText='' Then Begin Bad('Recherche vide interdite'); Exit; End;
+ If ChangeText Then Begin
+  K:=Pos(D,S); If K=0 Then Begin NewText:=S; S:=''; End
+  Else Begin NewText:=Copy(S,1,K-1); Delete(S,1,K); End;
+  If Trim(S)<>'' Then Begin Bad('Texte apres CHANGE'); Exit; End;
+  Repeat
+   Write('ALL OR SOME (A/S) '); If Not Keyboard(Answer) Then Exit;
+   Answer:=Up(Trim(Answer));
+  Until (Answer='A') Or (Answer='S') Or Failed;
+  If Failed Then Exit; AllChanges:=Answer='A';
+ End Else If Trim(S)<>'' Then Begin Bad('Texte apres FIND'); Exit; End;
+ L:=LineAt(Head,A); Stage:=Nil; Tail:=Nil; Hits:=0; Cancelled:=False;
+ For K:=A To B Do Begin
+  T:=L^.Text; At:=1; Start:=0;
+  While (At<=Length(T)-Length(OldText)+1) And Not Cancelled And Not Failed Do Begin
+   If MatchAt(T,OldText,At) Then Begin
+    Inc(Hits); Start:=1;
+    If Not ChangeText Then Break;
+    Accept:=AllChanges;
+    If Length(T)-Length(OldText)+Length(NewText)>255 Then Begin Bad('Remplacement >255 caracteres'); Break; End;
+    S:=Copy(T,1,At-1)+NewText+Copy(T,At+Length(OldText),255);
+    If Not AllChanges Then Begin
+     WriteLn(K:5,' ',S);
+     Repeat
+      Write('Y/N '); If Not Keyboard(Answer) Then Begin Cancelled:=True; Break; End;
+      Answer:=Up(Trim(Answer));
+     Until (Answer='Y') Or (Answer='N') Or (Answer=#3) Or Failed;
+     Accept:=Answer='Y'; If Answer=#3 Then Cancelled:=True;
+    End;
+    If Accept Then Begin T:=S; Inc(At,Length(NewText)); End
+    Else Inc(At,Length(OldText));
+   End Else Inc(At);
+  End;
+  If ChangeText Then Begin
+   New(V); V^.Text:=T; V^.Next:=Nil;
+   If Tail=Nil Then Stage:=V Else Tail^.Next:=V; Tail:=V;
+  End Else If Start<>0 Then WriteLn(K:5,' ',L^.Text);
+  L:=L^.Next;
+ End;
+ If ChangeText And Not Failed Then Begin
+  L:=LineAt(Head,A); V:=Stage;
+  While V<>Nil Do Begin If L^.Text<>V^.Text Then Changed:=True;
+   L^.Text:=V^.Text; V:=V^.Next; L:=L^.Next; End;
+ End;
+ ClearLines(Stage); If Not Failed Then WriteLn(Hits,' occurrence(s).');
+End;
+
+Procedure EditorAssembly;
+Var TempName,Target,Source,Fields:TString; K,E:Integer; F:File;
+Begin
+ { ASM sans source assemble le tampon, meme s'il n'a pas ete sauvegarde.
+   Un fichier ephemere dans son repertoire conserve les chemins INCLUDE. }
+ Fields:=Trim(Args); K:=Pos(',',Fields); Source:=''; Target:='';
+ If K>0 Then Begin Source:=PathName(Copy(Fields,1,K-1)); Target:=PathName(Copy(Fields,K+1,255)); End
+ Else Source:=PathName(Fields);
+ TempName:='';
+ If Source='' Then Begin
+  If FileName='' Then Source:='UNTITLED.S' Else Source:=FileName;
+  If Target='' Then Target:=BaseName(Source)+'.OBJ';
+  K:=0;
+  Repeat Str(K,TempName); TempName:=SourceDirectory(Source)+'EDASM-BUFFER-'+TempName+'.TMP'; Inc(K);
+  Until Not HostFileExists(TempName);
+  If Not WriteLines(TempName,1,Count) Then Exit;
+  Source:=TempName;
+ End;
+ If Target='' Then Target:=BaseName(Source)+'.OBJ';
+ If (Up(FExpand(Target))=Up(FExpand(Source))) Or
+    ((FileName<>'') And ((Up(FExpand(Target))=Up(FExpand(FileName))) Or
+     (Up(FExpand(Target+'.prodos'))=Up(FExpand(FileName))))) Then Begin
+  Bad('Objet en conflit avec le source');
+ End Else Begin
+  SrcName:=Source; ObjName:=Target; ListName:=''; UseListing:=False;
+  Quiet:=False; AppleBinaryHeader:=False; StrictSource:=True; MultiObjects:=True;
+  InteractivePause:=False; DiskName:=''; DiskTemplate:=''; DosName:='';
+  DosSlot:=6; DosDrive:=1; DosVolume:=254;
+  InitialSlot:=6; InitialDrive:=1; InitialVolume:=254;
+  For K:=1 To 7 Do For E:=1 To 2 Do Begin DeviceRoots[K,E]:=''; DeviceVolumes[K,E]:=254; End;
+  DeviceRoots[6,1]:=SourceDirectory(FExpand(Source));
+  EditorProtectedSource:=FileName;
+  RunAssembly; EditorProtectedSource:='';
+  If Errors<>0 Then Bad('Assemblage echoue');
+ End;
+ If TempName<>'' Then Begin Assign(F,TempName); Erase(F); E:=IOResult;
+  If E<>0 Then Bad('Suppression du source temporaire impossible'); End;
+End;
+
+Procedure Execute(S:TString);
+Var K,A,B,Destination,Total:Integer; T,U:TString; L,Tail,CopyHead:PEditLine;
+Begin
+ S:=Trim(S); If S='' Then Exit;
+ K:=1; While (K<=Length(S)) And (S[K] In ['A'..'Z','a'..'z','?']) Do Inc(K);
+ Op:=Up(Copy(S,1,K-1)); Args:=Trim(Copy(S,K,255));
+ If (Op='EXIT') Or (Op='QUIT') Or (Op='END') Then Begin Done:=True; Exit; End;
+ If (Op='HELP') Or (Op='?') Then Begin
+  WriteLn('LOAD fichier | SAVE [plage] [fichier] | APPEND [ligne] fichier | FILE');
+  WriteLn('NEW | ADD [ligne] | INSERT ligne | DEL plage | REPLACE plage');
+  WriteLn('COPY plage TO ligne | LIST [plage] | PRINT [plage]');
+  WriteLn('FIND [plage] .texte. | CHANGE [plage] .ancien.nouveau.');
+  WriteLn('EXEC fichier | ASM [source][,objet] | SET DELIM caractere | EXIT');
+  WriteLn('Saisie: ligne vide ou Ctrl-D termine; EXEC suspend sa lecture pendant la saisie.'); Exit;
+ End;
+ If Op='NEW' Then Begin ClearLines(Head); Count:=0; FileName:=''; Changed:=False; Exit; End;
+ If Op='FILE' Then Begin WriteLn(FileName,' : ',Count,' ligne(s), modifie=',Changed); Exit; End;
+ If (Op='LOAD') Or (Op='LO') Or (Op='APPEND') Then Begin
+  A:=Count+1; T:=Args;
+  If (Op='APPEND') And (T<>'') Then If T[1] In ['0'..'9'] Then Begin
+   K:=Pos(' ',T); If K=0 Then Begin Bad('APPEND ligne fichier attendu'); Exit; End;
+   If Not Number(Copy(T,1,K-1),A) Or (A>Count+1) Then Begin Bad('Ligne APPEND invalide'); Exit; End;
+   T:=Trim(Copy(T,K+1,255));
+  End;
+  Loaded:=Nil;
+  If Not ReadLines(T,Loaded,Total) Then Exit;
+  If Op<>'APPEND' Then Begin ClearLines(Head); Count:=0; A:=1; FileName:=PathName(T); End;
+  If A-1+Total>30000 Then Begin ClearLines(Loaded); Bad('Tampon plein'); Exit; End;
+  If A<=Count Then RemoveRange(A,Count);
+  If Head=Nil Then Head:=Loaded Else Begin Tail:=LineAt(Head,Count); Tail^.Next:=Loaded; End;
+  Inc(Count,Total); Changed:=Op='APPEND'; Exit;
+ End;
+ If (Op='SAVE') Or (Op='SA') Then Begin
+  A:=1; B:=Count; T:=Args;
+  If (T<>'') And (T[1] In ['0'..'9']) Then Begin
+   K:=Pos(' ',T); If K=0 Then Begin U:=T; T:=''; End
+   Else Begin U:=Copy(T,1,K-1); T:=Trim(Copy(T,K+1,255)); End;
+   If Not Range(U,A,B,False) Then Exit;
+  End;
+  If T='' Then T:=FileName;
+  If WriteLines(T,A,B) Then Begin FileName:=PathName(T); If (A=1) And (B=Count) Then Changed:=False; End;
+  Exit;
+ End;
+ If (Op='ADD') Or (Op='A') Or (Op='AD') Or (Op='INSERT') Or (Op='I') Then Begin
+  A:=Count+1;
+  If Args<>'' Then Begin
+   If Not Number(Args,A) Then Begin Bad('Numero invalide'); Exit; End;
+   If (Op='ADD') Or (Op='A') Or (Op='AD') Then Inc(A);
+  End Else If (Op='INSERT') Or (Op='I') Then Begin Bad('INSERT exige une ligne'); Exit; End;
+  If A>Count+1 Then Begin Bad('Insertion hors tampon'); Exit; End;
+  EnterLines(A); Exit;
+ End;
+ If (Op='DEL') Or (Op='DELETE') Or (Op='REPLACE') Or (Op='R') Then Begin
+  If Not Range(Args,A,B,False) Then Exit;
+  RemoveRange(A,B); If (Op='REPLACE') Or (Op='R') Then EnterLines(A); Exit;
+ End;
+ If (Op='COPY') Or (Op='CO') Then Begin
+  K:=Pos(' TO ',Up(Args)); If K=0 Then Begin Bad('COPY plage TO ligne attendu'); Exit; End;
+  If Not Range(Copy(Args,1,K-1),A,B,False) Then Exit;
+  If Not Number(Copy(Args,K+4,255),Destination) Then Begin Bad('Destination invalide'); Exit; End;
+  If (Destination>Count+1) Or ((Destination>=A) And (Destination<=B)) Or
+     (LongInt(Count)+B-A+1>30000) Then Begin Bad('Destination dans la plage ou tampon plein'); Exit; End;
+  CopyHead:=Nil; Tail:=Nil; L:=LineAt(Head,A);
+  For K:=A To B Do Begin New(Q); Q^.Text:=L^.Text; Q^.Next:=Nil;
+   If Tail=Nil Then CopyHead:=Q Else Tail^.Next:=Q; Tail:=Q; L:=L^.Next; End;
+  If Destination=1 Then Begin Tail^.Next:=Head; Head:=CopyHead; End
+  Else Begin L:=LineAt(Head,Destination-1); Tail^.Next:=L^.Next; L^.Next:=CopyHead; End;
+  Inc(Count,B-A+1); Changed:=True; Exit;
+ End;
+ If (Op='LIST') Or (Op='L') Or (Op='PRINT') Or (Op='P') Then Begin
+  If Not Range(Args,A,B,True) Then Exit;
+  If (Op='LIST') Or (Op='L') Then LastList:=Args;
+  L:=LineAt(Head,A); For K:=A To B Do Begin
+   If (Op='LIST') Or (Op='L') Then Write(K:5,' '); WriteLn(L^.Text); L:=L^.Next;
+  End; Exit;
+ End;
+ If (Op='FIND') Or (Op='F') Then Begin Search(False); Exit; End;
+ If (Op='CHANGE') Or (Op='C') Then Begin Search(True); Exit; End;
+ If Op='SET' Then Begin
+  T:=Trim(Args); If Copy(Up(T),1,5)='DELIM' Then Begin
+   T:=Trim(Copy(T,6,255)); If Length(T)=1 Then Begin Delimiter:=T[1]; Exit; End;
+  End; Bad('SET DELIM caractere attendu'); Exit;
+ End;
+ If Op='EXEC' Then Begin
+  T:=PathName(Args);
+  L:=Visited; While L<>Nil Do Begin
+   If Up(FExpand(T))=L^.Text Then Begin Bad('Cycle EXEC: '+T); Exit; End; L:=L^.Next;
+  End;
+  Loaded:=Nil; If Not ReadLines(T,Loaded,Total) Then Exit;
+  ClearLines(ExecHead); ExecHead:=Loaded; ExecActive:=True;
+  PutLine(Visited,1,Up(FExpand(T))); Exit;
+ End;
+ If Op='ASM' Then Begin EditorAssembly; Exit; End;
+ Bad('Commande inconnue: '+Op);
+End;
+
+Begin
+ Head:=Nil; ExecHead:=Nil; Visited:=Nil; Count:=0; FileName:=''; LastList:='';
+ Done:=False; Failed:=False; SessionFailed:=False; Changed:=False;
+ ExecActive:=False; Delimiter:=':';
+ WriteLn('EDASM ',VERSION,' - editeur interactif. HELP affiche les commandes.');
+ If ParamCount>1 Then Begin
+  If ParamCount>2 Then Bad('Syntaxe: EDASM /EDIT [source] ou /EXEC fichier')
+  Else If Up(ParamStr(1))='/EXEC' Then Execute('EXEC '+ParamStr(2))
+  Else Execute('LOAD '+ParamStr(2));
+ End Else If (ParamCount=1) And (Up(ParamStr(1))='/EXEC') Then Bad('/EXEC exige un fichier')
+ Else If HostFileExists('EDASM.AUTOST') Then Execute('EXEC EDASM.AUTOST');
+ While Not Done Do Begin
+  Failed:=False;
+  If ExecHead<>Nil Then Begin
+   P:=ExecHead; Command:=P^.Text; ExecHead:=P^.Next; Dispose(P); WriteLn('+',Command);
+  End Else Begin
+   If ExecActive Then Begin ExecActive:=False; ClearLines(Visited); End;
+   Write(':'); If Not Keyboard(Command) Then Break;
+  End;
+  If Command=#18 Then Command:='LIST '+LastList;
+  { Le separateur ne coupe ni les chemins Windows ni les noms entre guillemets. }
+  While (Trim(Command)<>'') And Not Done And Not Failed Do Begin
+   Spec:=Up(Trim(Command));
+   I:=0; QuoteChar:=#0;
+   If Copy(Spec,1,3)<>'SET' Then For Scan:=1 To Length(Command) Do Begin
+    If QuoteChar<>#0 Then Begin If Command[Scan]=QuoteChar Then QuoteChar:=#0; End
+    Else If Command[Scan]=Delimiter Then Begin
+     If Not ((Delimiter=':') And (Scan>1) And (Scan<Length(Command)) And
+       (Command[Scan-1] In ['A'..'Z','a'..'z']) And (Command[Scan+1] In ['\','/'])) Then Begin I:=Scan; Break; End;
+    End Else If Command[Scan] In ['"',#39] Then QuoteChar:=Command[Scan];
+   End;
+   If I=0 Then Begin Spec:=Command; Command:=''; End
+   Else Begin Spec:=Copy(Command,1,I-1); Delete(Command,1,I); End;
+   Execute(Spec);
+  End;
+  If Failed Then ClearLines(Visited);
+ End;
+ ClearLines(Head); ClearLines(ExecHead); ClearLines(Visited);
+ If SessionFailed Then Halt(1);
+End;
+
+BEGIN
+ If (ParamCount=0) Or (Up(ParamStr(1))='/EDIT') Or (Up(ParamStr(1))='/EXEC') Then RunEditor
+ Else Begin ParseArgs; RunAssembly; If Errors<>0 Then Halt(4); End;
 END.
