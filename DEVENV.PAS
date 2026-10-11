@@ -1970,7 +1970,16 @@ Const
                                  { atteint dans cette limite est un ECHEC    }
                                  { ("boucle infinie possible"), jamais un    }
                                  { blocage reel de l IDE. }
- MAX_OPT_CATEGORIES   = 40;      { nombre max de categories         }
+ { BOGUE REEL trouve+corrige (2026-10-11, demande explicite utilisateur     }
+ { "Impossible de voir Emulateur OS/2") : l'ajout du noeud "OS/2" (41e       }
+ { AddNode dans BuildOptionsCategoryTree, en comptant la racine de chaque   }
+ { section) depassait silencieusement cette limite - AddNode contient une   }
+ { garde "If Dlg.CategoryCount >= MAX_OPT_CATEGORIES Then Exit" qui          }
+ { abandonne l'ajout SANS AUCUNE erreur ni avertissement, laissant le        }
+ { noeud invisible dans l'arbre bien que compile sans probleme. Relevee a   }
+ { 64 (large marge au-dela des 41 actuels) pour absorber les prochains       }
+ { emulateurs sans repeter ce bogue silencieux a chaque nouvel ajout.        }
+ MAX_OPT_CATEGORIES   = 64;      { nombre max de categories         }
  MAX_OPT_PAGES        = 16;      { nombre max de pages              }
  OPT_CFG_FILENAME     = 'DEVENV.CFG'; { fichier de configuration    }
 
@@ -6862,7 +6871,8 @@ Type
   OC_EMU_ADAM,           { Emulateur > Adam                   }
   OC_EMU_COCO3,          { Emulateur > CoCo 3                 }
   OC_EMU_CRAY1,          { Emulateur > Cray 1                 }
-  OC_EMU_Z8001           { Emulateur > Z8001 (2026-09-20, demande explicite) }
+  OC_EMU_Z8001,          { Emulateur > Z8001 (2026-09-20, demande explicite) }
+  OC_EMU_OS2             { Emulateur > OS/2 (2026-10-11, demande explicite) }
  );
 
  { Liste des index de categories actuellement visibles (Visible=True),  }
@@ -6981,6 +6991,12 @@ Type
   { integree si la case CP/M est cochee, cochee par defaut"). }
   Z8001Cpm        : Boolean;     { API CP/M-8000 (BDOS reel via SC #2) integree }
                                   { dans l'emulateur, active par defaut }
+  { Emulateur > OS/2 (2026-10-11, demande explicite de l'utilisateur -      }
+  { "rajoute une case a cocher Reseau MPTS... cochee par defaut"). Gate     }
+  { directement le branchement TCPIP32/TCP32DLL/SO32DLL/TCPIPDLL de         }
+  { Lx_DoDosCall (voir project_devenv_os2_tcpip32.md) - decochee, ces       }
+  { modules importes tombent dans le "Appel systeme non supporte" normal.  }
+  Os2Mpts         : Boolean;     { reseau MPTS (TCPIP32) emule, actif par defaut }
  End;
 
  { Dialogue des options de l IDE }
@@ -128464,8 +128480,13 @@ Begin
  { Dispatch par NOM REEL (LX_ImportNameStr), meme discipline qu'ACSNETB/   }
  { NETAPI ci-dessus : aucun ordinal MPTS verifie contre une source         }
  { primaire n'est disponible (contrairement a DOSCALLS/PMWIN). }
+ { Case a cocher "Emulateur > OS/2 > Reseau MPTS (TCPIP32)" (2026-10-11,     }
+ { demande explicite - voir Os2Mpts), cochee par defaut : decochee, ces      }
+ { 4 modules tombent simplement dans le "Not Handled" ci-dessous (meme       }
+ { message "Appel systeme non supporte" qu'un module reellement inconnu),   }
+ { aucun acces reseau reel n'est jamais tente. }
  If ((ModName = 'TCPIP32') Or (ModName = 'TCP32DLL') Or (ModName = 'SO32DLL') Or
-     (ModName = 'TCPIPDLL')) And (Not IsOrd) And
+     (ModName = 'TCPIPDLL')) And (Not IsOrd) And OptionsDlg.Data.Os2Mpts And
     (SlotIndex >= 0) And (SlotIndex < LX_MAX_TRAP_SLOTS) Then Begin
   If Not LxTcpWsReady Then Begin
    If Mdbc_WSAStartup($0202, TcpWsd) = 0 Then LxTcpWsReady := True;
@@ -227962,6 +227983,7 @@ Begin
   OC_EMU_COCO3:          OptionCategoryName := 'CoCo 3';
   OC_EMU_CRAY1:          OptionCategoryName := 'Cray 1';
   OC_EMU_Z8001:          OptionCategoryName := 'Z8001';
+  OC_EMU_OS2:            OptionCategoryName := 'OS/2';
  Else
   OptionCategoryName := '???';
  End;
@@ -228067,6 +228089,7 @@ Begin
  D.DosLogInt21 := False;
  D.DosLogDiag := False;
  D.Z8001Cpm := True; { coche par defaut (demande explicite de l utilisateur) }
+ D.Os2Mpts := True; { coche par defaut (demande explicite de l utilisateur) }
 End;
 
 { Recalcule Visible pour tous les noeuds de l arbre a partir de l etat    }
@@ -228210,6 +228233,7 @@ Begin
  AddNode('CoCo 3', 19, 1, False, OC_EMU_COCO3);
  AddNode('Cray 1', 19, 1, False, OC_EMU_CRAY1);
  AddNode('Z8001', 19, 1, False, OC_EMU_Z8001);
+ AddNode('OS/2', 19, 1, False, OC_EMU_OS2);
  UpdateOptionsTreeVisibility(Dlg);
 End;
 
@@ -229361,15 +229385,26 @@ Begin
   'Journal des appels INT21h (EMU21.LOG)');
  Check(Dlg.Data.DosLogDiag,                                      { Row 1 }
   'Diagnostics ponctuels (EMUDIAG.LOG)');
+ { Lignes courtes a dessein (<= 48 caracteres, police fixe 8 px/caractere   }
+ { - voir le commentaire de GetTextWidth/DrawOptionsEmuOS2 : FW=620-200-   }
+ { 24=396px -> ~49 caracteres max avant de deborder hors du panneau) -      }
+ { BOGUE REEL signale par l'utilisateur (2026-10-11, "le meme probleme     }
+ { dans Emulateur DOS: Debug"), corrige a l'identique de DrawOptionsEmuOS2.}
  DrawText(FX, BaseY,
-  'Journaux ecrits dans le repertoire de DEVENV.exe. EMU21.LOG grossit',
+  'Journaux ecrits dans le repertoire de',
   CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
  DrawText(FX, BaseY,
-  'vite et ralentit l emulation : a activer ponctuellement, pas en usage',
+  'DEVENV.exe. EMU21.LOG grossit vite et',
   CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'normal.', CLR_BORDER);
+ DrawText(FX, BaseY,
+  'ralentit l''emulation : a activer',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'ponctuellement, pas en usage normal.',
+  CLR_BORDER);
 End;
 
 { --- Dessiner une page Emulateur > X pas encore detaillee (stub) --- }
@@ -229397,20 +229432,94 @@ Begin
  BaseY := BaseY + OPT_ROW_SPACING;
  Check(Dlg.Data.Z8001Cpm, 'API CP/M-8000 integree (BDOS reel, appel SC #2)'); { Row 0 }
  BaseY := BaseY + OPT_ROW_SPACING Div 2;
+ { Lignes courtes a dessein (<= 48 caracteres - voir le commentaire de      }
+ { DrawOptionsEmuDOSDebug/DrawOptionsEmuOS2) - BOGUE REEL signale par       }
+ { l'utilisateur (2026-10-11, "le meme probleme dans Emulateur Z8001"),     }
+ { corrige a l'identique. }
  DrawText(FX, BaseY,
-  'Un fichier .Z8K ouvert (Norton Commander, Entree) lance l''emulateur',
+  'Un fichier .Z8K ouvert (Norton',
   CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
  DrawText(FX, BaseY,
-  'Zilog Z8001 (registres/segmentation/instructions de base). Cette case',
+  'Commander, Entree) lance l''emulateur',
   CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
  DrawText(FX, BaseY,
-  'active en plus le noyau CP/M-8000 (Digital Research) - appels BDOS',
+  'Zilog Z8001 (registres/segmentation/',
   CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
  DrawText(FX, BaseY,
-  'reels compatibles CP/M-80 pour les fonctions 0-35.',
+  'instructions de base). Cette case',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'active en plus le noyau CP/M-8000',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  '(Digital Research) - appels BDOS',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'reels compatibles CP/M-80 pour les',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'fonctions 0-35.',
+  CLR_BORDER);
+End;
+
+{ --- Dessiner la page Emulateur > OS/2 (2026-10-11, demande explicite      }
+{ de l'utilisateur) --- }
+Procedure DrawOptionsEmuOS2(Var Dlg: TOptionsDialog);
+Var
+ FX, BaseY, PX: Integer;
+
+ Procedure Check(Checked: Boolean; Const Caption: String);
+ Begin
+  DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
+   BaseY + OPT_CHECK_SIZE, CLR_BORDER);
+  If Checked Then DrawCheckMark(FX, BaseY, OPT_CHECK_SIZE);
+  DrawText(FX + OPT_CHECK_SIZE + 6, BaseY, Caption, CLR_WINDOWTEXT);
+  BaseY := BaseY + OPT_ROW_SPACING;
+ End;
+
+Begin
+ PX := Dlg.Base.X + OPT_TREE_WIDTH + OPT_PANEL_PADDING;
+ FX := PX;
+ BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
+ DrawText(FX, BaseY, 'Emulateur > OS/2', CLR_WINDOWTEXT);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ Check(Dlg.Data.Os2Mpts, 'Reseau MPTS (TCPIP32)');                { Row 0 }
+ BaseY := BaseY + OPT_ROW_SPACING Div 2;
+ { Lignes courtes a dessein (<= 48 caracteres, police fixe 8 px/caractere   }
+ { - voir GetTextWidth : FW=620-200-24=396 px -> ~49 caracteres max avant   }
+ { de deborder hors du panneau) - BOGUE REEL trouve par l utilisateur      }
+ { ("deborde en dehors de l'affichage") sur une 1ere version plus verbeuse }
+ { de ce texte (lignes de 70+ caracteres, jamais testees contre la vraie   }
+ { largeur du panneau avant d etre ecrites). }
+ DrawText(FX, BaseY,
+  'Un executable LX qui importe TCPIP32/',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'TCP32DLL/SO32DLL/TCPIPDLL (socket,',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'bind, connect, gethostbyname...)',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'atteint le vrai reseau de l''hote via',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  'Winsock. Decochee : appel refuse',
+  CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY,
+  '("non supporte"), aucun acces reseau.',
   CLR_BORDER);
 End;
 
@@ -229435,10 +229544,23 @@ Var
  Cat: TOptionCategory;
  PX, PY, PW, PH: Integer;
 Begin
- { Effacer le panneau droit }
+ { Effacer le panneau droit. BOGUE REEL trouve par l'utilisateur          }
+ { (2026-10-11, "le contour noir de la boite de dialogue ne s'affiche     }
+ { pas toujours... on ne sait pas ou la boite de dialogue finit") :       }
+ { avec l'ancien calcul (Width-OPT_TREE_WIDTH-2), PX+PW tombait EXACTEMENT}
+ { sur X1+Width-1 = la MEME colonne que le bord droit deja trace par      }
+ { DrawDialogFrame (appele juste avant, voir DrawOptionsDialog) - Bar()   }
+ { remplit ses 2 coins INCLUS (semantique BGI standard), donc ce          }
+ { DrawFilledRect repeignait purement et simplement la colonne du bord    }
+ { en CLR_BACKGROUND a CHAQUE redessin du panneau (c est-a-dire en        }
+ { permanence des qu une case/page change). Corrige en s'arretant 1       }
+ { pixel plus tot (-3 au lieu de -2) : la colonne du bord lui-meme n'est   }
+ { plus jamais touchee, sans aucun impact visuel sur le contenu (la       }
+ { colonne juste a l'interieur est deja remplie de la MEME couleur par    }
+ { DrawDialogFrame, aucune couture visible). }
  PX := Dlg.Base.X + OPT_TREE_WIDTH + 1;
  PY := Dlg.Base.Y + DLG_TITLE_HEIGHT + 1;
- PW := Dlg.Base.Width - OPT_TREE_WIDTH - 2;
+ PW := Dlg.Base.Width - OPT_TREE_WIDTH - 3;
  PH := Dlg.Base.Height - DLG_TITLE_HEIGHT -
   DLG_PADDING - DLG_BUTTON_HEIGHT - DLG_PADDING - 1;
  DrawFilledRect(PX, PY, PX + PW, PY + PH, CLR_BACKGROUND);
@@ -229481,6 +229603,7 @@ Begin
   OC_EMU_COCO3:           DrawOptionsEmuStub(Dlg, 'CoCo 3');
   OC_EMU_CRAY1:           DrawOptionsEmuStub(Dlg, 'Cray 1');
   OC_EMU_Z8001:           DrawOptionsEmuZ8001(Dlg);
+  OC_EMU_OS2:             DrawOptionsEmuOS2(Dlg);
  End;
 End;
 
@@ -230230,6 +230353,14 @@ Begin
       Case FieldIdx Of
        0: Begin
         Dlg.Data.Z8001Cpm := Not Dlg.Data.Z8001Cpm;
+        Dlg.Modified := True;
+       End;
+      End;
+     { Emulateur > OS/2 (2026-10-11, demande explicite de l'utilisateur). }
+     OC_EMU_OS2:
+      Case FieldIdx Of
+       0: Begin
+        Dlg.Data.Os2Mpts := Not Dlg.Data.Os2Mpts;
         Dlg.Modified := True;
        End;
       End;
