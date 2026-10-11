@@ -8886,6 +8886,27 @@ Var
  { appels de remplissage existants (FillRgn/PatBlt/etc.) continuent          }
  { d'utiliser leur noir fixe deja etabli. }
  Win16_LastBrushColor: LongInt;
+ { Table de pinceaux "crees" REELLEMENT distincts (2026-10-11, correctif     }
+ { CLOCK.EXE) : CreateSolidBrush/CreateBrushIndirect/CreateHatchBrush         }
+ { renvoyaient TOUS un handle synthetique fixe (=1, meme simplification       }
+ { documentee que CreatePen/CreateFont/CreateBitmap), rendant 2 pinceaux      }
+ { crees successivement INDISTINGUABLES l'un de l'autre pour tout code qui    }
+ { lit l'argument hBrush lui-meme (ex. FillRect/$81, FrameRect/$83) - seul     }
+ { Win16_LastBrushColor (un global UNIQUE, ecrase a CHAQUE creation) restait   }
+ { disponible, ce qui ne refletait QUE le DERNIER pinceau CREE, jamais celui   }
+ { reellement PASSE en argument a un appel donne. Bogue reel trouve ainsi :    }
+ { CLOCK.EXE cree un pinceau blanc (fond) puis un pinceau noir (graduations)   }
+ { - ou l'inverse - et les 60 FillRect de graduation du cadran ressortaient    }
+ { TOUS avec la couleur du DERNIER pinceau cree (blanc sur blanc, invisible)   }
+ { au lieu de leur VRAI pinceau respectif. Chaque appel de creation recoit      }
+ { maintenant un handle REELLEMENT distinct ($E000+index, plage jamais          }
+ { utilisee par les handles de fenetre/DC ni par les handles d'objets stock     }
+ { $F000-$F0FF deja geres par SelectObject/$2D) et sa couleur est conservee      }
+ { dans cette table, indexee par ce meme index - resolue directement par         }
+ { FillRect/FrameRect (comme pour un handle stock) plutot que de dependre        }
+ { uniquement du global Win16_LastBrushColor. }
+ Win16_BrushColorTab: Array[0..63] Of LongInt;
+ Win16_BrushHandleNext: Integer;
  { GDI.EXE CreatePenIndirect (2026-09-12, demande explicite) - SEPARE de    }
  { Win16_LastBrushColor (un stylo et un pinceau sont des objets              }
  { conceptuellement distincts), meme discipline "reel mais non consomme". }
@@ -103116,6 +103137,7 @@ Begin
  Win16_SystemPaletteUse := 1; { SYSPAL_STATIC, defaut reel documente }
  Win16_AbortProcSeg := 0; Win16_AbortProcOfs := 0;
  Win16_LastBrushColor := 0;
+ Win16_BrushHandleNext := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
@@ -105338,6 +105360,43 @@ Begin
  Inc(Win16_GdiTraceCount);
 End;
 
+{ Alloue un handle de pinceau REELLEMENT distinct (2026-10-11, correctif     }
+{ CLOCK.EXE - voir Win16_BrushColorTab) et y conserve sa couleur. Plage       }
+{ $E000-$E03F : jamais utilisee par un handle de fenetre/DC (petits entiers   }
+{ directs) ni par la plage $F000-$F0FF des objets stock (GetStockObject/      }
+{ SelectObject). Rebouclage apres 64 pinceaux crees (amplement suffisant      }
+{ pour un seul programme invite a la fois - DeleteObject/$69 ne libere        }
+{ reellement aucune entree, meme simplification "toujours succes" deja        }
+{ etablie, donc un reel epuisement total resterait theorique). }
+Function Win16_AllocBrushHandle(ColorVal: LongInt): Word;
+Begin
+ Win16_BrushColorTab[Win16_BrushHandleNext] := ColorVal;
+ Win16_AllocBrushHandle := Word($E000 + Win16_BrushHandleNext);
+ Win16_BrushHandleNext := (Win16_BrushHandleNext + 1) Mod 64;
+End;
+
+{ Resout la VRAIE couleur d'un handle de pinceau passe en argument EXPLICITE  }
+{ (ex. hBrush de FillRect/FrameRect) - reconnait a la fois un handle stock     }
+{ ($F000+index, deja decode ailleurs par SelectObject/$2D) et un handle        }
+{ "cree" distinct (Win16_AllocBrushHandle ci-dessus) ; pour tout AUTRE cas      }
+{ (handle=1 historique, programme qui ne cree jamais de pinceau et ne           }
+{ s'appuie que sur le dernier SELECTIONNE), retombe sur DefaultColor           }
+{ (typiquement Win16_LastBrushColor, repli deja etabli). }
+Function Win16_ResolveBrushColor(HBrush: Word; DefaultColor: LongInt): Byte;
+Begin
+ Win16_ResolveBrushColor := Byte(DefaultColor And $FF);
+ If (HBrush And $FF00) = $F000 Then Begin
+  Case HBrush And $FF Of
+   0: Win16_ResolveBrushColor := 15;  { WHITE_BRUSH }
+   1: Win16_ResolveBrushColor := 7;   { LTGRAY_BRUSH }
+   2: Win16_ResolveBrushColor := 24;  { GRAY_BRUSH }
+   3: Win16_ResolveBrushColor := 8;   { DKGRAY_BRUSH }
+   4: Win16_ResolveBrushColor := 0;   { BLACK_BRUSH }
+  End;
+ End Else If (HBrush And $FFC0) = $E000 Then
+  Win16_ResolveBrushColor := Byte(Win16_BrushColorTab[HBrush And $3F] And $FF);
+End;
+
 { Applique REELLEMENT Win16_CurrentROP2 (SetROP2, voir sa declaration) au   }
 { lieu d'ecraser inconditionnellement le pixel - R2_NOT(6) inverse le       }
 { pixel EXISTANT (ignore Color, "NOT(NOT(x))=x" : retracer EXACTEMENT le    }
@@ -107528,6 +107587,8 @@ Var
  FRLpSeg, FRLpOfs: Word;
  FRLeft, FRTop, FRRight, FRBottom: SmallInt;
  FRX, FRY: Integer;
+ FRHBrush: Word;
+ FRBrushColor: Byte;
  IFDx, IFDy: SmallInt;
  SWHWndArg: Word;
  SWWIdx: Integer;
@@ -113651,22 +113712,31 @@ Begin
    End;
    81: Begin
     { FillRect(hdc,lpRect,hBrush):bool - ordinal VERIFIE via                }
-    { user.exe16.spec (word,ptr,word). hdc/hBrush ignores (memes            }
-    { simplifications documentees que GetDC/SelectObject : aucun VRAI        }
-    { contexte ni pinceau resolu) - remplit reellement le RECT en blanc     }
-    { (15), coordonnees CLIENT converties en pixels ABSOLUS comme            }
-    { MoveTo/LineTo/Ellipse ci-dessus. Utilise typiquement par une WNDPROC   }
-    { pour effacer le cadran avant de retracer les aiguilles (evite la       }
-    { trainee des anciennes positions). }
+    { user.exe16.spec (word,ptr,word). hdc ignore (meme simplification       }
+    { documentee que GetDC/SelectObject : aucun VRAI contexte resolu) -      }
+    { MAIS remplit reellement le RECT avec la VRAIE couleur du pinceau       }
+    { PASSE EN ARGUMENT (corrige 2026-10-11, remplissait auparavant           }
+    { toujours en blanc (15) quel que soit le pinceau, rendant par ex. les    }
+    { graduations du cadran de CLOCK.EXE invisibles - blanc sur blanc).        }
+    { Win16_ResolveBrushColor (voir sa declaration, juste apres                }
+    { Win16_GdiTraceLog) decode hBrush lui-meme plutot que de ne compter        }
+    { que sur Win16_LastBrushColor (un simple global "dernier pinceau            }
+    { CREE", inutilisable des que DEUX pinceaux distincts coexistent -           }
+    { exactement le cas de CLOCK.EXE : un pinceau blanc pour effacer le           }
+    { fond, un pinceau noir pour les 60 graduations, tous deux crees UNE          }
+    { fois puis reutilises par handle sur de nombreux FillRect). }
     FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRHBrush := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRBrushColor := Win16_ResolveBrushColor(FRHBrush, Win16_LastBrushColor);
     FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
     FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
     FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
     FRBottom := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 6)));
     Win16_GdiTraceLog('FillRect client=(' + IntToStr(FRLeft) + ',' +
      IntToStr(FRTop) + ')-(' + IntToStr(FRRight) + ',' + IntToStr(FRBottom) +
-     ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow));
+     ') ActiveDC=' + IntToStr(Win16_ActiveDCWindow) + ' hBrush=' +
+     IntToStr(FRHBrush) + ' color=' + IntToStr(FRBrushColor));
     If Win16_ActiveDCWindow >= 0 Then Begin
      FRLeft := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRLeft);
      FRTop := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRTop);
@@ -113674,7 +113744,7 @@ Begin
      FRBottom := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRBottom);
      For FRY := FRTop To FRBottom - 1 Do
       For FRX := FRLeft To FRRight - 1 Do
-       Emu_VidSetPixel(FRX, FRY, 15);
+       Emu_VidSetPixel(FRX, FRY, FRBrushColor);
     End;
     P.CPU.Regs.AX := 1;
     ArgWords := 3;
@@ -113711,13 +113781,16 @@ Begin
    83: Begin
     { FrameRect(hdc,lpRect,hBrush):bool - ordinal/signature VERIFIES via   }
     { le VRAI source Wine (user.exe16.spec : "pascal -ret16 FrameRect(word    }
-    { ptr word) FrameRect16", 1+2+1 = 4 mots). REEL EN PARTIE : hdc/hBrush       }
-    { ignores (meme simplification documentee que FillRect/$81, aucun            }
-    { pinceau reellement resolu) - dessine REELLEMENT une BORDURE d'un              }
-    { pixel (CONTRAIREMENT a FillRect qui remplit tout l'interieur) en                }
-    { blanc (15), coordonnees CLIENT->ABSOLUES. }
+    { ptr word) FrameRect16", 1+2+1 = 4 mots). REEL EN PARTIE : hdc ignore        }
+    { (meme simplification documentee que FillRect/$81) - dessine REELLEMENT    }
+    { une BORDURE d'un pixel (CONTRAIREMENT a FillRect qui remplit tout           }
+    { l'interieur) avec la VRAIE couleur du pinceau - hBrush EST reellement        }
+    { resolu (meme decodage de handle stock $F000+index que FillRect/$81          }
+    { ci-dessus, 2026-10-11), coordonnees CLIENT->ABSOLUES. }
     FRLpOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     FRLpSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    FRHBrush := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    FRBrushColor := Win16_ResolveBrushColor(FRHBrush, Win16_LastBrushColor);
     FRLeft := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, FRLpOfs));
     FRTop := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 2)));
     FRRight := SmallInt(Emu_ReadWord(P.CPU, FRLpSeg, Word(FRLpOfs + 4)));
@@ -113728,12 +113801,12 @@ Begin
      FRRight := SmallInt(Win16_WindowX[Win16_ActiveDCWindow] + 1 + FRRight);
      FRBottom := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + FRBottom);
      For FRX := FRLeft To FRRight - 1 Do Begin
-      Emu_VidSetPixel(FRX, FRTop, 15);
-      Emu_VidSetPixel(FRX, FRBottom - 1, 15);
+      Emu_VidSetPixel(FRX, FRTop, FRBrushColor);
+      Emu_VidSetPixel(FRX, FRBottom - 1, FRBrushColor);
      End;
      For FRY := FRTop To FRBottom - 1 Do Begin
-      Emu_VidSetPixel(FRLeft, FRY, 15);
-      Emu_VidSetPixel(FRRight - 1, FRY, 15);
+      Emu_VidSetPixel(FRLeft, FRY, FRBrushColor);
+      Emu_VidSetPixel(FRRight - 1, FRY, FRBrushColor);
      End;
     End;
     P.CPU.Regs.AX := 1;
@@ -119906,8 +119979,15 @@ Begin
     { REELLEMENT a jour Win16_LastBrushColor/LastPenColor - sinon           }
     { LTGRAY_BRUSH etc. selectionne restait invisible et les remplissages    }
     { (Win16_PatBlt, PATCOPY) gardaient leur defaut noir fixe. Un handle      }
-    { "normal" (CreateSolidBrush/CreatePenIndirect/etc., toujours =1) ne     }
-    { tombe jamais dans cette plage $F000-$F0FF, aucune ambiguite possible. }
+    { "normal" (CreatePenIndirect/etc., toujours =1) ne tombe jamais dans      }
+    { cette plage $F000-$F0FF, aucune ambiguite possible. ETENDU 2026-10-11   }
+    { (correctif CLOCK.EXE) : un pinceau "cree" (CreateSolidBrush/              }
+    { CreateBrushIndirect/CreateHatchBrush) a desormais lui aussi un handle      }
+    { REELLEMENT distinct ($E000+index, voir Win16_AllocBrushHandle) - reconnu   }
+    { ici de la meme facon pour que Win16_LastBrushColor reflete le VRAI          }
+    { pinceau SELECTIONNE (utile aux consommateurs qui n'inspectent QUE ce         }
+    { global, ex. Win16_PatBlt/PATCOPY, jamais l'argument hBrush explicite          }
+    { d'un appel comme FillRect/$81 qui, lui, resout hBrush directement). }
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     If (GDIIdx And $FF00) = $F000 Then Begin
      Case GDIIdx And $FF Of
@@ -119919,7 +119999,8 @@ Begin
       6: Win16_LastPenColor := 15;    { WHITE_PEN }
       7: Win16_LastPenColor := 0;     { BLACK_PEN }
      End;
-    End;
+    End Else If (GDIIdx And $FFC0) = $E000 Then
+     Win16_LastBrushColor := Win16_BrushColorTab[GDIIdx And $3F];
     P.CPU.Regs.AX := 1;
     ArgWords := 2;
    End;
@@ -119973,7 +120054,10 @@ Begin
     LBColorLo := Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 2));
     LBColorHi := Emu_ReadWord(P.CPU, LBSeg, Word(LBOfs + 4));
     Win16_LastBrushColor := (LongInt(LBColorHi) Shl 16) Or LongInt(LBColorLo);
-    P.CPU.Regs.AX := 1;
+    { Handle REELLEMENT distinct (2026-10-11, voir Win16_AllocBrushHandle) -  }
+    { pas seulement Win16_LastBrushColor, qui serait ecrasee par le PROCHAIN   }
+    { pinceau cree avant que CELUI-CI soit utilise. }
+    P.CPU.Regs.AX := Win16_AllocBrushHandle(Win16_LastBrushColor);
     ArgWords := 2;
    End;
    51: Begin
@@ -120083,7 +120167,9 @@ Begin
     LBColorHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     LBColorLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Win16_LastBrushColor := (LongInt(LBColorHi) Shl 16) Or LongInt(LBColorLo);
-    P.CPU.Regs.AX := 1;
+    { Handle REELLEMENT distinct, meme correctif que CreateBrushIndirect/$50  }
+    { ci-dessus (2026-10-11, voir Win16_AllocBrushHandle). }
+    P.CPU.Regs.AX := Win16_AllocBrushHandle(Win16_LastBrushColor);
     ArgWords := 3;
    End;
    60: Begin
@@ -120203,7 +120289,15 @@ Begin
     LBColorHi := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     LBColorLo := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Win16_LastBrushColor := (LongInt(LBColorHi) Shl 16) Or LongInt(LBColorLo);
-    P.CPU.Regs.AX := 1;
+    { Handle REELLEMENT distinct, meme correctif que CreateBrushIndirect/$50  }
+    { et CreateHatchBrush/$58 ci-dessus (2026-10-11, voir                      }
+    { Win16_AllocBrushHandle) - bogue reel trouve sur CLOCK.EXE : 2 pinceaux   }
+    { (fond blanc, graduations noires) crees via CET ordinal retournaient        }
+    { avant TOUS deux le MEME handle synthetique (=1), rendant                   }
+    { indistinguable lequel etait passe a un FillRect donne - seul              }
+    { Win16_LastBrushColor (ecrasee par le DERNIER pinceau cree) restait          }
+    { disponible, jamais le bon pour un appel anterieur. }
+    P.CPU.Regs.AX := Win16_AllocBrushHandle(Win16_LastBrushColor);
     ArgWords := 2;
    End;
    67: Begin
