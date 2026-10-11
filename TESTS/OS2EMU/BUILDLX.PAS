@@ -874,6 +874,188 @@ Begin
  BuildLXFile(OutPath, Code, Data, Fixups, ['RPC32DLL', 'DOSCALLS']);
 End;
 
+{ =====================================================================    }
+{ Programme de test 5 : LANTEST - LAN (NETAPI.DLL, 2026-10-11, demande     }
+{ explicite - 33 fonctions "LAN Server") : exerce les 11 fonctions          }
+{ LECTURE SEULE reellement pontees vers le vrai netapi32.dll de la          }
+{ machine hote (NetWkstaGetInfo/NetServerGetInfo/NetShareEnum/              }
+{ NetShareGetInfo/NetUserEnum/NetUserGetInfo/NetGroupEnum/                  }
+{ NetGroupGetInfo/NetSessionEnum/NetUseEnum/NetRemoteTOD) PUIS 2 des 22     }
+{ fonctions MUTATRICES deliberement REFUSEES (NetShareDel, NetUserAdd) -    }
+{ preuve directe que le garde-fou de securite fonctionne (ERROR_NOT_        }
+{ SUPPORTED=50 a chaque fois, JAMAIS une fausse reussite qui laisserait     }
+{ croire qu'un partage/utilisateur reel a ete modifie sur la machine hote). }
+{ =====================================================================    }
+Procedure BuildLanTest(Const OutPath: String);
+Const
+ D_RESULTS   = $000; { 16 dwords : R0..R15 }
+ D_NEEDED    = $040; { scratch pcBytesNeeded, reutilise entre appels }
+ D_READ      = $044; { scratch pcEntriesRead }
+ D_TOTAL     = $048; { scratch pcTotalEntries }
+ D_WKSTABUF  = $050; { 20 octets }
+ D_SERVERBUF = $070; { 8 octets }
+ D_SHAREBUF  = $080; { 240 octets = 20 entrees * 12 }
+ D_SHAREGET  = $170; { 12 octets }
+ D_USERBUF   = $180; { 200 octets = 50 entrees * 4 }
+ D_USERGET   = $250; { 4 octets }
+ D_GROUPBUF  = $260; { 200 octets }
+ D_GROUPGET  = $330; { 4 octets }
+ D_SESSBUF   = $340; { 200 octets }
+ D_USEBUF    = $420; { 160 octets = 20 entrees * 8 }
+ D_TODBUF    = $4C0; { 48 octets }
+ D_IPCSTR    = $4F0; { "IPC$"+0 - partage administratif quasi universel }
+ D_END       = $500;
+Var
+ Code, Data: TByteBuf;
+ Fixups: TFixupArr;
+Begin
+ BufInit(Data);
+ BufPad(Data, D_END); { tout le reste est du scratch/sortie, zero-initialise }
+ BufPad(Data, D_IPCSTR);
+ BufStr(Data, 'IPC$'); BufByte(Data, 0);
+ BufPad(Data, D_END);
+
+ BufInit(Code);
+ SetLength(Fixups, 0);
+ { Modules importes = ['NETAPI','DOSCALLS'] -> ModOrd 1=NETAPI, 2=DOSCALLS }
+
+ { R0 := NetWkstaGetInfo(0, &D_WKSTABUF, 20, &D_NEEDED) }
+ AsmPushImm32(Code, DATA_BASE + D_NEEDED);
+ AsmPushImm32(Code, 20);
+ AsmPushImm32(Code, DATA_BASE + D_WKSTABUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETWKSTAGETINFO');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $00);
+
+ { R1 := NetServerGetInfo(0, &D_SERVERBUF, 8, &D_NEEDED) }
+ AsmPushImm32(Code, DATA_BASE + D_NEEDED);
+ AsmPushImm32(Code, 8);
+ AsmPushImm32(Code, DATA_BASE + D_SERVERBUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETSERVERGETINFO');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $04);
+
+ { R2 := NetShareEnum(0, &D_SHAREBUF, 240, &D_READ, &D_TOTAL) ; R3 := [D_READ] }
+ AsmPushImm32(Code, DATA_BASE + D_TOTAL);
+ AsmPushImm32(Code, DATA_BASE + D_READ);
+ AsmPushImm32(Code, 240);
+ AsmPushImm32(Code, DATA_BASE + D_SHAREBUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETSHAREENUM');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $08);
+ AsmMovEaxMem32(Code, DATA_BASE + D_READ);
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $0C);
+
+ { R4 := NetShareGetInfo(0, "IPC$", &D_SHAREGET, 12, &D_NEEDED) }
+ AsmPushImm32(Code, DATA_BASE + D_NEEDED);
+ AsmPushImm32(Code, 12);
+ AsmPushImm32(Code, DATA_BASE + D_SHAREGET);
+ AsmPushImm32(Code, DATA_BASE + D_IPCSTR);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETSHAREGETINFO');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $10);
+
+ { R5 := NetUserEnum(0, &D_USERBUF, 200, &D_READ, &D_TOTAL) ; R6 := [D_READ] }
+ AsmPushImm32(Code, DATA_BASE + D_TOTAL);
+ AsmPushImm32(Code, DATA_BASE + D_READ);
+ AsmPushImm32(Code, 200);
+ AsmPushImm32(Code, DATA_BASE + D_USERBUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETUSERENUM');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $14);
+ AsmMovEaxMem32(Code, DATA_BASE + D_READ);
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $18);
+
+ { R7 := NetUserGetInfo(0, [D_USERBUF+0] (1er nom enumere), &D_USERGET, 4,  }
+ { &D_NEEDED) - reutilise directement le pointeur invite deja ecrit par     }
+ { NETUSERENUM ci-dessus (pas besoin de connaitre un nom d'utilisateur a    }
+ { la construction). }
+ AsmPushImm32(Code, DATA_BASE + D_NEEDED);
+ AsmPushImm32(Code, 4);
+ AsmPushImm32(Code, DATA_BASE + D_USERGET);
+ AsmPushMem32(Code, DATA_BASE + D_USERBUF + 0);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETUSERGETINFO');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $1C);
+
+ { R8 := NetGroupEnum(0, &D_GROUPBUF, 200, &D_READ, &D_TOTAL) ; R9 := [D_READ] }
+ AsmPushImm32(Code, DATA_BASE + D_TOTAL);
+ AsmPushImm32(Code, DATA_BASE + D_READ);
+ AsmPushImm32(Code, 200);
+ AsmPushImm32(Code, DATA_BASE + D_GROUPBUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETGROUPENUM');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $20);
+ AsmMovEaxMem32(Code, DATA_BASE + D_READ);
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $24);
+
+ { R10 := NetGroupGetInfo(0, [D_GROUPBUF+0], &D_GROUPGET, 4, &D_NEEDED) }
+ AsmPushImm32(Code, DATA_BASE + D_NEEDED);
+ AsmPushImm32(Code, 4);
+ AsmPushImm32(Code, DATA_BASE + D_GROUPGET);
+ AsmPushMem32(Code, DATA_BASE + D_GROUPBUF + 0);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETGROUPGETINFO');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $28);
+
+ { R11 := NetSessionEnum(0, &D_SESSBUF, 200, &D_READ, &D_TOTAL) - peut       }
+ { honnetement echouer ERROR_ACCESS_DENIED(5) sans privilege eleve. }
+ AsmPushImm32(Code, DATA_BASE + D_TOTAL);
+ AsmPushImm32(Code, DATA_BASE + D_READ);
+ AsmPushImm32(Code, 200);
+ AsmPushImm32(Code, DATA_BASE + D_SESSBUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETSESSIONENUM');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $2C);
+
+ { R12 := NetUseEnum(0, &D_USEBUF, 160, &D_READ, &D_TOTAL) }
+ AsmPushImm32(Code, DATA_BASE + D_TOTAL);
+ AsmPushImm32(Code, DATA_BASE + D_READ);
+ AsmPushImm32(Code, 160);
+ AsmPushImm32(Code, DATA_BASE + D_USEBUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETUSEENUM');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $30);
+
+ { R13 := NetRemoteTOD(0, &D_TODBUF, 48, &D_NEEDED) }
+ AsmPushImm32(Code, DATA_BASE + D_NEEDED);
+ AsmPushImm32(Code, 48);
+ AsmPushImm32(Code, DATA_BASE + D_TODBUF);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETREMOTETOD');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $34);
+
+ { R14 := NetShareDel(0, "IPC$", 0) - MUTATEUR REFUSE : doit TOUJOURS       }
+ { valoir 50 (ERROR_NOT_SUPPORTED), quel que soit l'etat reel de la         }
+ { machine hote - JAMAIS de suppression reelle de partage. }
+ AsmPushImm32(Code, 0);
+ AsmPushImm32(Code, DATA_BASE + D_IPCSTR);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETSHAREDEL');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $38);
+
+ { R15 := NetUserAdd(0, 0, 0, 0) - MUTATEUR REFUSE : doit TOUJOURS valoir   }
+ { 50 (ERROR_NOT_SUPPORTED) - JAMAIS de creation reelle de compte           }
+ { utilisateur sur la machine hote. SIGNAL PRINCIPAL de ce test (voir       }
+ { DosExit ci-dessous) : contrairement aux 11 appels reels precedents       }
+ { (dont le resultat depend legitimement de l'etat de la machine hote),     }
+ { celui-ci est garanti IDENTIQUE partout - la preuve la plus simple et la  }
+ { plus deterministe que le garde-fou de securite fonctionne reellement. }
+ AsmPushImm32(Code, 0);
+ AsmPushImm32(Code, 0);
+ AsmPushImm32(Code, 0);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 1, 'NETUSERADD');
+ AsmMovMem32Eax(Code, DATA_BASE + D_RESULTS + $3C);
+
+ { DosExit(0, R15) - doit TOUJOURS valoir 50. }
+ AsmPushMem32(Code, DATA_BASE + D_RESULTS + $3C);
+ AsmPushImm32(Code, 0);
+ EmitCall(Code, Fixups, 2, 'DosExit');
+
+ BuildLXFile(OutPath, Code, Data, Fixups, ['NETAPI', 'DOSCALLS']);
+End;
+
 Var
  OutDir: String;
 Begin
@@ -882,5 +1064,6 @@ Begin
  BuildTcpName(OutDir + '\TCPNAME.EXE');
  BuildTcpOpt(OutDir + '\TCPOPT.EXE');
  BuildRpcTest(OutDir + '\RPCTEST.EXE');
+ BuildLanTest(OutDir + '\LANTEST.EXE');
  WriteLn('Termine.');
 End.

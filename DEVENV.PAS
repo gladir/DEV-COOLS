@@ -7070,6 +7070,15 @@ Type
   { totalement INDEPENDANTE de Os2Mpts/Os2BsdSockets (module Winsock         }
   { different, voir le branchement RPC32DLL de Lx_DoDosCall). }
   Os2IbmTcpIp     : Boolean;     { RPC32DLL (ONC RPC client) reconnu, actif par defaut }
+  { 5e message (meme session) : "LAN" - 4e case DISTINCTE, gate UNIQUEMENT  }
+  { les 33 fonctions LAN Server (NetServerXxx/NetShareXxx/NetSessionXxx/    }
+  { NetWkstaXxx/NetUseXxx/NetAccessXxx/NetUserXxx/NetGroupXxx/              }
+  { NetMessageNameXxx/NetMessageBufferSend/NetRemoteTOD) - PAS les 4        }
+  { fonctions NetBios/NetBiosOpen/NetBiosSubmit/NetBiosEnum deja existantes }
+  { (meme DLL NETAPI.DLL historiquement, mais concept DIFFERENT - meme      }
+  { discipline que Os2Mpts/Os2BsdSockets, voir                              }
+  { feedback_dont_merge_distinct_gates.md). }
+  Os2Lan          : Boolean;     { API LAN Server (NETAPI.DLL, 33 fonctions) actif par defaut }
  End;
 
  { Dialogue des options de l IDE }
@@ -127865,6 +127874,389 @@ Begin
   If Not Os2RpcClients[I].InUse Then Begin Os2Rpc_FindFreeSlot := I; Exit; End;
 End;
 
+{ ========================================================================= }
+{ LAN (2026-10-11, demande explicite - 33 fonctions NETAPI.DLL "LAN         }
+{ Server") - CONTRAIREMENT a RPC32DLL (aucun equivalent Win32) et comme     }
+{ TCPIP32 (equivalent Winsock quasi direct), la VRAIE API LAN Manager       }
+{ d'IBM (NETAPI.DLL OS/2) est l'ANCETRE DIRECT de la VRAIE API LAN Manager  }
+{ de Windows (netapi32.dll) - memes noms de fonctions, meme famille de      }
+{ structures "niveau d'information" (SERVER_INFO_100, SHARE_INFO_1,        }
+{ USER_INFO_0...), heritage partage documente publiquement. Les 11          }
+{ fonctions LECTURE SEULE les plus utiles sont donc REELLEMENT pontees      }
+{ vers le VRAI netapi32.dll de la machine hote (conversion UTF-16->ASCII    }
+{ simplifiee - octet bas de chaque caractere large, les noms non-ASCII      }
+{ seraient tronques/deformes, cas rare pour des noms de serveur/partage/    }
+{ utilisateur Windows typiques) : l'invite voit alors les VRAIS partages/   }
+{ utilisateurs/groupes/sessions de LA MACHINE HOTE ELLE-MEME (pszServer     }
+{ TOUJOURS ignore - jamais de requete vers un serveur distant nomme).       }
+{ Les 22 AUTRES fonctions (mutateurs Add/Del/SetInfo qui CREERAIENT/        }
+{ SUPPRIMERAIENT reellement des comptes utilisateur/groupes/partages sur    }
+{ la VRAIE machine hote si elles etaient reellement appliquees - un         }
+{ risque de securite bien plus serieux que renommer l'hote, voir            }
+{ Os2SimHostName plus haut - ou qui n'ont plus d'equivalent sur un          }
+{ Windows moderne) sont donc TOUJOURS REFUSEES PROPREMENT (ERROR_NOT_       }
+{ SUPPORTED=50, jamais une fausse reussite), voir le commentaire de         }
+{ chacune au point d'appel dans Lx_DoDosCall. CONVENTION D'APPEL (ordre     }
+{ des parametres) choisie raisonnablement et AUTO-COHERENTE, NON verifiee   }
+{ contre un en-tete OS/2 NETAPI.H reel (aucune source primaire disponible   }
+{ pour les 16/32 bits OS/2 historiques) - meme disclosure que les           }
+{ constantes fcntl plus haut : Enum(pszServer,pBuffer,cbBuffer,             }
+{ pcEntriesRead,pcTotalEntries) 5 args ; GetInfo-par-nom(pszServer,pszNom,  }
+{ pBuffer,cbBuffer,pcBytesNeeded) 5 args ; GetInfo-singulier(pszServer,     }
+{ pBuffer,cbBuffer,pcBytesNeeded) 4 args - le programme de test fourni      }
+{ respecte cette meme convention des deux cotes. }
+Function Os2Lan_NetServerGetInfo(ServerName: PWideChar; Level: LongWord; Var BufPtr: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetServerGetInfo';
+Function Os2Lan_NetWkstaGetInfo(ServerName: PWideChar; Level: LongWord; Var BufPtr: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetWkstaGetInfo';
+Function Os2Lan_NetShareEnum(ServerName: PWideChar; Level: LongWord; Var BufPtr: Pointer;
+ PrefMaxLen: LongWord; Var EntriesRead, TotalEntries: LongWord; ResumeHandle: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetShareEnum';
+Function Os2Lan_NetShareGetInfo(ServerName, NetName: PWideChar; Level: LongWord; Var BufPtr: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetShareGetInfo';
+Function Os2Lan_NetUserEnum(ServerName: PWideChar; Level, Filter: LongWord; Var BufPtr: Pointer;
+ PrefMaxLen: LongWord; Var EntriesRead, TotalEntries: LongWord; ResumeHandle: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetUserEnum';
+Function Os2Lan_NetUserGetInfo(ServerName, UserName: PWideChar; Level: LongWord; Var BufPtr: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetUserGetInfo';
+Function Os2Lan_NetLocalGroupEnum(ServerName: PWideChar; Level: LongWord; Var BufPtr: Pointer;
+ PrefMaxLen: LongWord; Var EntriesRead, TotalEntries: LongWord; ResumeHandle: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetLocalGroupEnum';
+Function Os2Lan_NetLocalGroupGetInfo(ServerName, GroupName: PWideChar; Level: LongWord; Var BufPtr: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetLocalGroupGetInfo';
+Function Os2Lan_NetSessionEnum(ServerName, ClientName, UserName: PWideChar; Level: LongWord;
+ Var BufPtr: Pointer; PrefMaxLen: LongWord; Var EntriesRead, TotalEntries: LongWord;
+ ResumeHandle: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetSessionEnum';
+Function Os2Lan_NetUseEnum(ServerName: PWideChar; Level: LongWord; Var BufPtr: Pointer;
+ PrefMaxLen: LongWord; Var EntriesRead, TotalEntries: LongWord; ResumeHandle: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetUseEnum';
+Function Os2Lan_NetRemoteTOD(ServerName: PWideChar; Var BufPtr: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetRemoteTOD';
+Function Os2Lan_NetApiBufferFree(Buffer: Pointer): LongWord;
+ StdCall; External 'netapi32.dll' Name 'NetApiBufferFree';
+
+{ Lecture generique par octet de decalage dans un tampon Win32 opaque -    }
+{ tous les champs des structures "niveau d'information" LAN Manager         }
+{ utilisees ici sont soit des DWORD, soit des pointeurs pres (LPWSTR), les  }
+{ deux larges de 4 octets sur Win32 32 bits - une seule paire de lecteurs   }
+{ generiques suffit donc, pas besoin d'un type Record different par         }
+{ fonction/niveau. }
+Function Os2Lan_PtrAt(P: Pointer; Ofs: LongInt): Pointer;
+Begin
+ Os2Lan_PtrAt := Pointer(PtrUInt(P) + PtrUInt(Ofs));
+End;
+Function Os2Lan_DWAt(P: Pointer; Ofs: LongInt): LongWord;
+Begin
+ Os2Lan_DWAt := PLongWord(Os2Lan_PtrAt(P, Ofs))^;
+End;
+Function Os2Lan_WSAt(P: Pointer; Ofs: LongInt): PWideChar;
+Begin
+ Os2Lan_WSAt := PWideChar(Pointer(PLongWord(Os2Lan_PtrAt(P, Ofs))^));
+End;
+
+{ UTF-16 -> ASCII simplifiee (octet bas de chaque caractere large) - voir   }
+{ la disclosure de tete de ce bloc. }
+Function Os2Lan_WToA(P: PWideChar): String;
+Var S: String;
+Begin
+ S := '';
+ If P <> Nil Then
+  While (PWord(P)^ <> 0) And (Length(S) < 200) Do Begin
+   If PWord(P)^ < 256 Then S := S + Chr(PWord(P)^) Else S := S + '?';
+   Inc(P);
+  End;
+ Os2Lan_WToA := S;
+End;
+
+{ ASCII -> UTF-16 (nul-termine), pour les 3 fonctions GetInfo-par-nom qui   }
+{ doivent repasser un nom au VRAI netapi32.dll - meme conversion            }
+{ simplifiee, sens inverse. Type nomme (plutot qu'un tableau borne anonyme  }
+{ en parametre, non accepte tel quel par FPC) reutilise aux 3 points        }
+{ d'appel (NetShareGetInfo/NetUserGetInfo/NetGroupGetInfo). }
+Type
+ TOs2LanWStr = Array[0..255] Of WideChar;
+Procedure Os2Lan_AToW(Const S: String; Var WBuf: TOs2LanWStr);
+Var I: Integer;
+Begin
+ FillChar(WBuf, SizeOf(WBuf), 0);
+ For I := 1 To Length(S) Do If I <= 255 Then WBuf[I - 1] := WideChar(Word(Ord(S[I])));
+End;
+
+{ Meme bump allocator LX_HeapNext que GETHOSTBYNAME/INET_NTOA/etc. plus     }
+{ haut - recopie une chaine ASCII hote dans le tas invite. }
+Function Os2Lan_AllocGuestStr(Const S: String): LongInt;
+Var Addr, CbAlloc, I: LongInt;
+Begin
+ Os2Lan_AllocGuestStr := 0;
+ CbAlloc := (Length(S) + 1 + 15) And Not 15;
+ If LX_HeapNext + CbAlloc > LX_FS_BASE Then Exit;
+ Addr := LX_HeapNext;
+ LX_HeapNext := LX_HeapNext + CbAlloc;
+ For I := 1 To Length(S) Do Lx_WriteByte(Addr + I - 1, Ord(S[I]));
+ Lx_WriteByte(Addr + Length(S), 0);
+ Os2Lan_AllocGuestStr := Addr;
+End;
+
+{ --- NetServerGetInfo (niveau 100 uniquement : platform_id + nom) --- }
+Function Os2Lan_DoServerGetInfo(BufAddr, CbBuf: LongInt; Var BytesNeeded: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc, PlatformId: LongWord;
+ NameA: String;
+Begin
+ BytesNeeded := 8;
+ If CbBuf < 8 Then Begin Os2Lan_DoServerGetInfo := 234 { ERROR_MORE_DATA }; Exit; End;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetServerGetInfo(Nil, 100, WinBuf);
+ If (Rc <> 0) Or (WinBuf = Nil) Then Begin Os2Lan_DoServerGetInfo := Rc; Exit; End;
+ PlatformId := Os2Lan_DWAt(WinBuf, 0);
+ NameA := Os2Lan_WToA(Os2Lan_WSAt(WinBuf, 4));
+ Os2Lan_NetApiBufferFree(WinBuf);
+ Lx_WriteDWord(BufAddr + 0, LongInt(PlatformId));
+ Lx_WriteDWord(BufAddr + 4, Os2Lan_AllocGuestStr(NameA));
+ Os2Lan_DoServerGetInfo := 0;
+End;
+
+{ --- NetWkstaGetInfo (niveau 100) --- }
+Function Os2Lan_DoWkstaGetInfo(BufAddr, CbBuf: LongInt; Var BytesNeeded: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc, PlatformId, VerMaj, VerMin: LongWord;
+ NameA, GroupA: String;
+Begin
+ BytesNeeded := 20;
+ If CbBuf < 20 Then Begin Os2Lan_DoWkstaGetInfo := 234; Exit; End;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetWkstaGetInfo(Nil, 100, WinBuf);
+ If (Rc <> 0) Or (WinBuf = Nil) Then Begin Os2Lan_DoWkstaGetInfo := Rc; Exit; End;
+ PlatformId := Os2Lan_DWAt(WinBuf, 0);
+ NameA := Os2Lan_WToA(Os2Lan_WSAt(WinBuf, 4));
+ GroupA := Os2Lan_WToA(Os2Lan_WSAt(WinBuf, 8));
+ VerMaj := Os2Lan_DWAt(WinBuf, 12);
+ VerMin := Os2Lan_DWAt(WinBuf, 16);
+ Os2Lan_NetApiBufferFree(WinBuf);
+ Lx_WriteDWord(BufAddr + 0, LongInt(PlatformId));
+ Lx_WriteDWord(BufAddr + 4, Os2Lan_AllocGuestStr(NameA));
+ Lx_WriteDWord(BufAddr + 8, Os2Lan_AllocGuestStr(GroupA));
+ Lx_WriteDWord(BufAddr + 12, LongInt(VerMaj));
+ Lx_WriteDWord(BufAddr + 16, LongInt(VerMin));
+ Os2Lan_DoWkstaGetInfo := 0;
+End;
+
+{ --- NetShareEnum (niveau 1 : nom/type/commentaire, 12 octets/entree) --- }
+Function Os2Lan_DoShareEnum(BufAddr, CbBuf: LongInt; Var EntriesRead, TotalEntries: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ I, MaxFit: LongInt;
+ NameA, RemarkA: String;
+ Rec: Pointer;
+Begin
+ EntriesRead := 0; TotalEntries := 0;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetShareEnum(Nil, 1, WinBuf, LongWord($FFFFFFFF), EntriesRead, TotalEntries, Nil);
+ If (Rc <> 0) And (Rc <> 234) Then Begin Os2Lan_DoShareEnum := Rc; Exit; End;
+ MaxFit := CbBuf Div 12;
+ If MaxFit > LongInt(EntriesRead) Then MaxFit := LongInt(EntriesRead);
+ For I := 0 To MaxFit - 1 Do Begin
+  Rec := Os2Lan_PtrAt(WinBuf, I * 12);
+  NameA := Os2Lan_WToA(Os2Lan_WSAt(Rec, 0));
+  RemarkA := Os2Lan_WToA(Os2Lan_WSAt(Rec, 8));
+  Lx_WriteDWord(BufAddr + I * 12 + 0, Os2Lan_AllocGuestStr(NameA));
+  Lx_WriteDWord(BufAddr + I * 12 + 4, LongInt(Os2Lan_DWAt(Rec, 4)));
+  Lx_WriteDWord(BufAddr + I * 12 + 8, Os2Lan_AllocGuestStr(RemarkA));
+ End;
+ If WinBuf <> Nil Then Os2Lan_NetApiBufferFree(WinBuf);
+ EntriesRead := LongWord(MaxFit);
+ If LongWord(MaxFit) < TotalEntries Then Os2Lan_DoShareEnum := 234 Else Os2Lan_DoShareEnum := 0;
+End;
+
+{ --- NetShareGetInfo (niveau 1, par nom) --- }
+Function Os2Lan_DoShareGetInfo(Const NetName: String; BufAddr, CbBuf: LongInt;
+ Var BytesNeeded: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ NameA, RemarkA: String;
+ WName: TOs2LanWStr;
+Begin
+ BytesNeeded := 12;
+ If CbBuf < 12 Then Begin Os2Lan_DoShareGetInfo := 234; Exit; End;
+ Os2Lan_AToW(NetName, WName);
+ WinBuf := Nil;
+ Rc := Os2Lan_NetShareGetInfo(Nil, @WName[0], 1, WinBuf);
+ If (Rc <> 0) Or (WinBuf = Nil) Then Begin Os2Lan_DoShareGetInfo := Rc; Exit; End;
+ NameA := Os2Lan_WToA(Os2Lan_WSAt(WinBuf, 0));
+ RemarkA := Os2Lan_WToA(Os2Lan_WSAt(WinBuf, 8));
+ Lx_WriteDWord(BufAddr + 0, Os2Lan_AllocGuestStr(NameA));
+ Lx_WriteDWord(BufAddr + 4, LongInt(Os2Lan_DWAt(WinBuf, 4)));
+ Lx_WriteDWord(BufAddr + 8, Os2Lan_AllocGuestStr(RemarkA));
+ Os2Lan_NetApiBufferFree(WinBuf);
+ Os2Lan_DoShareGetInfo := 0;
+End;
+
+{ --- NetUserEnum (niveau 0 : nom seul, 4 octets/entree) --- }
+Function Os2Lan_DoUserEnum(BufAddr, CbBuf: LongInt; Var EntriesRead, TotalEntries: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ I, MaxFit: LongInt;
+ NameA: String;
+Begin
+ EntriesRead := 0; TotalEntries := 0;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetUserEnum(Nil, 0, 0, WinBuf, LongWord($FFFFFFFF), EntriesRead, TotalEntries, Nil);
+ If (Rc <> 0) And (Rc <> 234) Then Begin Os2Lan_DoUserEnum := Rc; Exit; End;
+ MaxFit := CbBuf Div 4;
+ If MaxFit > LongInt(EntriesRead) Then MaxFit := LongInt(EntriesRead);
+ For I := 0 To MaxFit - 1 Do Begin
+  NameA := Os2Lan_WToA(Os2Lan_WSAt(Os2Lan_PtrAt(WinBuf, I * 4), 0));
+  Lx_WriteDWord(BufAddr + I * 4, Os2Lan_AllocGuestStr(NameA));
+ End;
+ If WinBuf <> Nil Then Os2Lan_NetApiBufferFree(WinBuf);
+ EntriesRead := LongWord(MaxFit);
+ If LongWord(MaxFit) < TotalEntries Then Os2Lan_DoUserEnum := 234 Else Os2Lan_DoUserEnum := 0;
+End;
+
+{ --- NetUserGetInfo (niveau 0, par nom) --- }
+Function Os2Lan_DoUserGetInfo(Const UserName: String; BufAddr, CbBuf: LongInt;
+ Var BytesNeeded: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ NameA: String;
+ WName: TOs2LanWStr;
+Begin
+ BytesNeeded := 4;
+ If CbBuf < 4 Then Begin Os2Lan_DoUserGetInfo := 234; Exit; End;
+ Os2Lan_AToW(UserName, WName);
+ WinBuf := Nil;
+ Rc := Os2Lan_NetUserGetInfo(Nil, @WName[0], 0, WinBuf);
+ If (Rc <> 0) Or (WinBuf = Nil) Then Begin Os2Lan_DoUserGetInfo := Rc; Exit; End;
+ NameA := Os2Lan_WToA(Os2Lan_WSAt(WinBuf, 0));
+ Os2Lan_NetApiBufferFree(WinBuf);
+ Lx_WriteDWord(BufAddr, Os2Lan_AllocGuestStr(NameA));
+ Os2Lan_DoUserGetInfo := 0;
+End;
+
+{ --- NetGroupEnum (ponte vers NetLocalGroupEnum - "groupes de domaine" au  }
+{ sens Win32 n'a pas de sens sur un poste autonome ; les groupes LOCAUX     }
+{ sont l'equivalent le plus proche et le plus utile, substitution           }
+{ disclosee) - niveau 0, 4 octets/entree. --- }
+Function Os2Lan_DoGroupEnum(BufAddr, CbBuf: LongInt; Var EntriesRead, TotalEntries: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ I, MaxFit: LongInt;
+ NameA: String;
+Begin
+ EntriesRead := 0; TotalEntries := 0;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetLocalGroupEnum(Nil, 0, WinBuf, LongWord($FFFFFFFF), EntriesRead, TotalEntries, Nil);
+ If (Rc <> 0) And (Rc <> 234) Then Begin Os2Lan_DoGroupEnum := Rc; Exit; End;
+ MaxFit := CbBuf Div 4;
+ If MaxFit > LongInt(EntriesRead) Then MaxFit := LongInt(EntriesRead);
+ For I := 0 To MaxFit - 1 Do Begin
+  NameA := Os2Lan_WToA(Os2Lan_WSAt(Os2Lan_PtrAt(WinBuf, I * 4), 0));
+  Lx_WriteDWord(BufAddr + I * 4, Os2Lan_AllocGuestStr(NameA));
+ End;
+ If WinBuf <> Nil Then Os2Lan_NetApiBufferFree(WinBuf);
+ EntriesRead := LongWord(MaxFit);
+ If LongWord(MaxFit) < TotalEntries Then Os2Lan_DoGroupEnum := 234 Else Os2Lan_DoGroupEnum := 0;
+End;
+
+{ --- NetGroupGetInfo (ponte vers NetLocalGroupGetInfo, meme disclosure) --- }
+Function Os2Lan_DoGroupGetInfo(Const GroupName: String; BufAddr, CbBuf: LongInt;
+ Var BytesNeeded: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ NameA: String;
+ WName: TOs2LanWStr;
+Begin
+ BytesNeeded := 4;
+ If CbBuf < 4 Then Begin Os2Lan_DoGroupGetInfo := 234; Exit; End;
+ Os2Lan_AToW(GroupName, WName);
+ WinBuf := Nil;
+ Rc := Os2Lan_NetLocalGroupGetInfo(Nil, @WName[0], 0, WinBuf);
+ If (Rc <> 0) Or (WinBuf = Nil) Then Begin Os2Lan_DoGroupGetInfo := Rc; Exit; End;
+ NameA := Os2Lan_WToA(Os2Lan_WSAt(WinBuf, 0));
+ Os2Lan_NetApiBufferFree(WinBuf);
+ Lx_WriteDWord(BufAddr, Os2Lan_AllocGuestStr(NameA));
+ Os2Lan_DoGroupGetInfo := 0;
+End;
+
+{ --- NetSessionEnum (niveau 0 : nom client seul, 4 octets/entree) - peut   }
+{ echouer ERROR_ACCESS_DENIED(5) sans privilege eleve, rapporte            }
+{ honnetement tel quel. --- }
+Function Os2Lan_DoSessionEnum(BufAddr, CbBuf: LongInt; Var EntriesRead, TotalEntries: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ I, MaxFit: LongInt;
+ NameA: String;
+Begin
+ EntriesRead := 0; TotalEntries := 0;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetSessionEnum(Nil, Nil, Nil, 0, WinBuf, LongWord($FFFFFFFF), EntriesRead, TotalEntries, Nil);
+ If (Rc <> 0) And (Rc <> 234) Then Begin Os2Lan_DoSessionEnum := Rc; Exit; End;
+ MaxFit := CbBuf Div 4;
+ If MaxFit > LongInt(EntriesRead) Then MaxFit := LongInt(EntriesRead);
+ For I := 0 To MaxFit - 1 Do Begin
+  NameA := Os2Lan_WToA(Os2Lan_WSAt(Os2Lan_PtrAt(WinBuf, I * 4), 0));
+  Lx_WriteDWord(BufAddr + I * 4, Os2Lan_AllocGuestStr(NameA));
+ End;
+ If WinBuf <> Nil Then Os2Lan_NetApiBufferFree(WinBuf);
+ EntriesRead := LongWord(MaxFit);
+ If LongWord(MaxFit) < TotalEntries Then Os2Lan_DoSessionEnum := 234 Else Os2Lan_DoSessionEnum := 0;
+End;
+
+{ --- NetUseEnum (niveau 0 : local/distant, 8 octets/entree) --- }
+Function Os2Lan_DoUseEnum(BufAddr, CbBuf: LongInt; Var EntriesRead, TotalEntries: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ I, MaxFit: LongInt;
+ LocalA, RemoteA: String;
+ Rec: Pointer;
+Begin
+ EntriesRead := 0; TotalEntries := 0;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetUseEnum(Nil, 0, WinBuf, LongWord($FFFFFFFF), EntriesRead, TotalEntries, Nil);
+ If (Rc <> 0) And (Rc <> 234) Then Begin Os2Lan_DoUseEnum := Rc; Exit; End;
+ MaxFit := CbBuf Div 8;
+ If MaxFit > LongInt(EntriesRead) Then MaxFit := LongInt(EntriesRead);
+ For I := 0 To MaxFit - 1 Do Begin
+  Rec := Os2Lan_PtrAt(WinBuf, I * 8);
+  LocalA := Os2Lan_WToA(Os2Lan_WSAt(Rec, 0));
+  RemoteA := Os2Lan_WToA(Os2Lan_WSAt(Rec, 4));
+  Lx_WriteDWord(BufAddr + I * 8 + 0, Os2Lan_AllocGuestStr(LocalA));
+  Lx_WriteDWord(BufAddr + I * 8 + 4, Os2Lan_AllocGuestStr(RemoteA));
+ End;
+ If WinBuf <> Nil Then Os2Lan_NetApiBufferFree(WinBuf);
+ EntriesRead := LongWord(MaxFit);
+ If LongWord(MaxFit) < TotalEntries Then Os2Lan_DoUseEnum := 234 Else Os2Lan_DoUseEnum := 0;
+End;
+
+{ --- NetRemoteTOD (structure fixe de 12 DWORD/LONG, copie directe sans    }
+{ chaine) --- }
+Function Os2Lan_DoRemoteTOD(BufAddr, CbBuf: LongInt; Var BytesNeeded: LongWord): LongWord;
+Var
+ WinBuf: Pointer;
+ Rc: LongWord;
+ I: Integer;
+Begin
+ BytesNeeded := 48;
+ If CbBuf < 48 Then Begin Os2Lan_DoRemoteTOD := 234; Exit; End;
+ WinBuf := Nil;
+ Rc := Os2Lan_NetRemoteTOD(Nil, WinBuf);
+ If (Rc <> 0) Or (WinBuf = Nil) Then Begin Os2Lan_DoRemoteTOD := Rc; Exit; End;
+ For I := 0 To 11 Do Lx_WriteDWord(BufAddr + I * 4, LongInt(Os2Lan_DWAt(WinBuf, I * 4)));
+ Os2Lan_NetApiBufferFree(WinBuf);
+ Os2Lan_DoRemoteTOD := 0;
+End;
+
 Procedure Lx_NbPackAddr(Addr: LongInt; Var Seg, Ofs: Word);
 Begin
  Seg := Word((Addr Shr 16) And $FFFF);
@@ -128647,6 +129039,14 @@ Var
  TcpRpcAddr: TMdbcSockAddrIn;
  TcpRpcStat, TcpRpcReq, TcpRpcTimeoutSec: LongInt;
  TcpRpcTempClient: TOs2RpcClient;
+ { LAN (2026-10-11, demande explicite - 33 fonctions NETAPI.DLL "LAN        }
+ { Server") - variables locales du branchement NETAPI etendu plus bas.      }
+ TcpLanBufAddr, TcpLanCbBuf: LongInt;
+ TcpLanOutPtr1, TcpLanOutPtr2: LongInt;
+ TcpLanNamePtr: LongInt;
+ TcpLanNameStr: String;
+ TcpLanRead, TcpLanTotal, TcpLanNeeded: LongWord;
+ TcpLanRc: LongWord;
 Begin
  If (SlotIndex < 0) Or (SlotIndex >= LX_ImportSlotCount) Then Begin
   Lx_Halt('Emplacement de trappe invalide (' + IntToStr(SlotIndex) + ')');
@@ -128931,6 +129331,227 @@ Begin
    LX_Reg.EAX := 0;
    NArgsPopped := 2;
    Handled := True;
+  End Else
+  { Case a cocher "Emulateur > OS/2 > LAN" (2026-10-11, demande explicite - }
+  { voir Os2Lan), cochee par defaut, INDEPENDANTE des 4 fonctions NetBios*  }
+  { ci-dessus (meme DLL NETAPI.DLL historiquement, concept DIFFERENT - voir }
+  { feedback_dont_merge_distinct_gates.md) : decochee, les 33 fonctions     }
+  { "LAN Server" ci-dessous tombent dans le "Not Handled" final, les 4      }
+  { fonctions NetBios* restent inchangees. }
+  If OptionsDlg.Data.Os2Lan Then Begin
+   { --- 11 fonctions LECTURE SEULE reellement pontees vers le vrai         }
+   { netapi32.dll de la machine hote - voir le commentaire de tete pres de  }
+   { Os2Lan_NetServerGetInfo pour la convention d'appel complete. }
+   If NbFuncName = 'NETSERVERGETINFO' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanRc := Os2Lan_DoServerGetInfo(TcpLanBufAddr, TcpLanCbBuf, TcpLanNeeded);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanNeeded));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 4;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETWKSTAGETINFO' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanRc := Os2Lan_DoWkstaGetInfo(TcpLanBufAddr, TcpLanCbBuf, TcpLanNeeded);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanNeeded));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 4;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETSHAREENUM' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12); { pcEntriesRead }
+    TcpLanOutPtr2 := Lx_ReadDWord(LX_Reg.ESP + 16); { pcTotalEntries }
+    TcpLanRc := Os2Lan_DoShareEnum(TcpLanBufAddr, TcpLanCbBuf, TcpLanRead, TcpLanTotal);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanRead));
+    If TcpLanOutPtr2 <> 0 Then Lx_WriteDWord(TcpLanOutPtr2, LongInt(TcpLanTotal));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETSHAREGETINFO' Then Begin
+    TcpLanNamePtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanNameStr := Os2Rpc_ReadCStr(TcpLanNamePtr);
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 16);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 20);
+    TcpLanRc := Os2Lan_DoShareGetInfo(TcpLanNameStr, TcpLanBufAddr, TcpLanCbBuf, TcpLanNeeded);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanNeeded));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETUSERENUM' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanOutPtr2 := Lx_ReadDWord(LX_Reg.ESP + 16);
+    TcpLanRc := Os2Lan_DoUserEnum(TcpLanBufAddr, TcpLanCbBuf, TcpLanRead, TcpLanTotal);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanRead));
+    If TcpLanOutPtr2 <> 0 Then Lx_WriteDWord(TcpLanOutPtr2, LongInt(TcpLanTotal));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETUSERGETINFO' Then Begin
+    TcpLanNamePtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanNameStr := Os2Rpc_ReadCStr(TcpLanNamePtr);
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 16);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 20);
+    TcpLanRc := Os2Lan_DoUserGetInfo(TcpLanNameStr, TcpLanBufAddr, TcpLanCbBuf, TcpLanNeeded);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanNeeded));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETGROUPENUM' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanOutPtr2 := Lx_ReadDWord(LX_Reg.ESP + 16);
+    TcpLanRc := Os2Lan_DoGroupEnum(TcpLanBufAddr, TcpLanCbBuf, TcpLanRead, TcpLanTotal);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanRead));
+    If TcpLanOutPtr2 <> 0 Then Lx_WriteDWord(TcpLanOutPtr2, LongInt(TcpLanTotal));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETGROUPGETINFO' Then Begin
+    TcpLanNamePtr := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanNameStr := Os2Rpc_ReadCStr(TcpLanNamePtr);
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 16);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 20);
+    TcpLanRc := Os2Lan_DoGroupGetInfo(TcpLanNameStr, TcpLanBufAddr, TcpLanCbBuf, TcpLanNeeded);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanNeeded));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETSESSIONENUM' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanOutPtr2 := Lx_ReadDWord(LX_Reg.ESP + 16);
+    TcpLanRc := Os2Lan_DoSessionEnum(TcpLanBufAddr, TcpLanCbBuf, TcpLanRead, TcpLanTotal);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanRead));
+    If TcpLanOutPtr2 <> 0 Then Lx_WriteDWord(TcpLanOutPtr2, LongInt(TcpLanTotal));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETUSEENUM' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanOutPtr2 := Lx_ReadDWord(LX_Reg.ESP + 16);
+    TcpLanRc := Os2Lan_DoUseEnum(TcpLanBufAddr, TcpLanCbBuf, TcpLanRead, TcpLanTotal);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanRead));
+    If TcpLanOutPtr2 <> 0 Then Lx_WriteDWord(TcpLanOutPtr2, LongInt(TcpLanTotal));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 5;
+    Handled := True;
+   End Else
+   If NbFuncName = 'NETREMOTETOD' Then Begin
+    TcpLanBufAddr := Lx_ReadDWord(LX_Reg.ESP + 4);
+    TcpLanCbBuf   := Lx_ReadDWord(LX_Reg.ESP + 8);
+    TcpLanOutPtr1 := Lx_ReadDWord(LX_Reg.ESP + 12);
+    TcpLanRc := Os2Lan_DoRemoteTOD(TcpLanBufAddr, TcpLanCbBuf, TcpLanNeeded);
+    If TcpLanOutPtr1 <> 0 Then Lx_WriteDWord(TcpLanOutPtr1, LongInt(TcpLanNeeded));
+    LX_Reg.EAX := LongInt(TcpLanRc);
+    NArgsPopped := 4;
+    Handled := True;
+   End Else
+   { --- 22 fonctions REFUSEES PROPREMENT (ERROR_NOT_SUPPORTED=50) :        }
+   { mutateurs qui CREERAIENT/SUPPRIMERAIENT/MODIFIERAIENT reellement des   }
+   { comptes utilisateur, groupes, partages ou connexions sur la VRAIE      }
+   { machine hote si elles etaient vraiment appliquees (risque de securite  }
+   { bien plus serieux que renommer l'hote, voir Os2SimHostName plus haut), }
+   { ou fonctions sans equivalent sur un Windows moderne (NetAccessGetInfo  }
+   { = securite "niveau partage" LAN Manager, retiree au profit des ACL     }
+   { NTFS ; NetMessageNameEnum/NetMessageBufferSend = service Messenger,    }
+   { retire depuis Windows Vista) - JAMAIS une fausse reussite. Nombre      }
+   { d'arguments estime raisonnablement (meme convention pszServer en tete, }
+   { ignore) - non verifie contre un en-tete OS/2 reel, voir la disclosure  }
+   { de tete de ce bloc ; le programme de test respecte la meme convention. }
+   If NbFuncName = 'NETSERVERENUM' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETSERVERSETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 4; Handled := True;
+   End Else
+   If NbFuncName = 'NETSHARESETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETSHAREADD' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 4; Handled := True;
+   End Else
+   If NbFuncName = 'NETSHAREDEL' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 3; Handled := True;
+   End Else
+   If NbFuncName = 'NETSESSIONGETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETSESSIONDEL' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 3; Handled := True;
+   End Else
+   If NbFuncName = 'NETWKSTASETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 4; Handled := True;
+   End Else
+   If NbFuncName = 'NETUSEGETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETUSEADD' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 4; Handled := True;
+   End Else
+   If NbFuncName = 'NETUSEDEL' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 3; Handled := True;
+   End Else
+   If NbFuncName = 'NETACCESSGETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETACCESSSETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETUSERADD' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 4; Handled := True;
+   End Else
+   If NbFuncName = 'NETUSERDEL' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 2; Handled := True;
+   End Else
+   If NbFuncName = 'NETUSERSETINFO' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETGROUPADD' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 4; Handled := True;
+   End Else
+   If NbFuncName = 'NETGROUPDEL' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 2; Handled := True;
+   End Else
+   If NbFuncName = 'NETGROUPADDUSER' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 3; Handled := True;
+   End Else
+   If NbFuncName = 'NETGROUPDELUSER' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 3; Handled := True;
+   End Else
+   If NbFuncName = 'NETMESSAGENAMEADD' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 3; Handled := True;
+   End Else
+   If NbFuncName = 'NETMESSAGENAMEDEL' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 3; Handled := True;
+   End Else
+   If NbFuncName = 'NETMESSAGENAMEENUM' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End Else
+   If NbFuncName = 'NETMESSAGEBUFFERSEND' Then Begin
+    LX_Reg.EAX := 50; NArgsPopped := 5; Handled := True;
+   End;
   End;
  End;
  { TCPIP32.DLL (MPTS - 2026-10-11, demande explicite, liste de 20 fonctions }
@@ -229224,6 +229845,7 @@ Begin
  D.Os2Mpts := True; { coche par defaut (demande explicite de l utilisateur) }
  D.Os2BsdSockets := True; { coche par defaut (demande explicite de l utilisateur) }
  D.Os2IbmTcpIp := True; { coche par defaut (demande explicite de l utilisateur) }
+ D.Os2Lan := True; { coche par defaut (demande explicite de l utilisateur) }
 End;
 
 { Recalcule Visible pour tous les noeuds de l arbre a partir de l etat    }
@@ -230624,33 +231246,32 @@ Begin
  BaseY := Dlg.Base.Y + DLG_TITLE_HEIGHT + OPT_PANEL_PADDING;
  DrawText(FX, BaseY, 'Emulateur > OS/2', CLR_WINDOWTEXT);
  BaseY := BaseY + OPT_ROW_SPACING;
- { 3 cases DISTINCTES (2026-10-11) : MPTS/BSD Sockets/IBM TCP/IP gatent     }
- { chacune un sous-ensemble DIFFERENT (voir Os2Mpts/Os2BsdSockets/          }
- { Os2IbmTcpIp dans TOptionsDialogData pour le detail complet de chaque     }
- { sous-ensemble - texte ci-dessous volontairement condense pour tenir      }
- { dans la hauteur du panneau avec 3 cases, voir GetTextWidth/OPT_DLG_*     }
- { pour le calcul du budget ~49 car./ligne, ~9 lignes au total ici). }
+ { 4 cases DISTINCTES (2026-10-11) : MPTS/BSD Sockets/IBM TCP/IP/LAN        }
+ { gatent chacune un sous-ensemble DIFFERENT (voir Os2Mpts/Os2BsdSockets/   }
+ { Os2IbmTcpIp/Os2Lan dans TOptionsDialogData pour le detail complet -      }
+ { texte ci-dessous recompacte a chaque nouvelle case, voir GetTextWidth/   }
+ { OPT_DLG_* pour le budget ~49 car./ligne, ~8 lignes au total avec 4       }
+ { cases). }
  Check(Dlg.Data.Os2Mpts, 'MPTS (TCPIP32)');                        { Row 0 }
  Check(Dlg.Data.Os2BsdSockets, 'BSD Sockets d''OS/2');              { Row 1 }
  Check(Dlg.Data.Os2IbmTcpIp, 'IBM TCP/IP');                         { Row 2 }
+ Check(Dlg.Data.Os2Lan, 'LAN');                                     { Row 3 }
  BaseY := BaseY + OPT_ROW_SPACING Div 2;
  DrawText(FX, BaseY, 'MPTS : module TCPIP32 reconnu.', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'Decochee, les 41 fonctions TCP/IP', CLR_BORDER);
+ DrawText(FX, BaseY, 'BSD Sockets : 21/41 fonctions', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'refusent (sauf RPC32DLL).', CLR_BORDER);
- BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'BSD Sockets : 21/41 (socket,', CLR_BORDER);
- BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, 'connect, send...). Decochee', CLR_BORDER);
- BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, '(MPTS coche), les 20 autres', CLR_BORDER);
- BaseY := BaseY + OPT_ROW_SPACING;
- DrawText(FX, BaseY, '(DNS, adresses...) repondent.', CLR_BORDER);
+ DrawText(FX, BaseY, 'socket (si MPTS aussi coche).', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
  DrawText(FX, BaseY, 'IBM TCP/IP : module RPC32DLL', CLR_BORDER);
  BaseY := BaseY + OPT_ROW_SPACING;
  DrawText(FX, BaseY, '(ONC RPC, 11 fonctions) reconnu.', CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'LAN : module NETAPI.DLL LAN', CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'Server (33 fonctions - partage,', CLR_BORDER);
+ BaseY := BaseY + OPT_ROW_SPACING;
+ DrawText(FX, BaseY, 'utilisateurs, groupes) reconnu.', CLR_BORDER);
 End;
 
 Procedure DrawOptionsEmuStub(Var Dlg: TOptionsDialog; Const EmuName: String);
@@ -231499,6 +232120,10 @@ Begin
        End;
        2: Begin
         Dlg.Data.Os2IbmTcpIp := Not Dlg.Data.Os2IbmTcpIp;
+        Dlg.Modified := True;
+       End;
+       3: Begin
+        Dlg.Data.Os2Lan := Not Dlg.Data.Os2Lan;
         Dlg.Modified := True;
        End;
       End;
