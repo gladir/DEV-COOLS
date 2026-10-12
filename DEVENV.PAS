@@ -2987,7 +2987,7 @@ Type
  End;
 
  { Type de contenu affiche par une fenetre d edition }
- TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER, WK_BROWSER);
+ TWinKind = (WK_TEXT, WK_HEX, WK_FORM, WK_EMU, WK_EXTMGR, WK_GRID, WK_SQLEXPLORER, WK_BROWSER, WK_IIS);
 
  { Fenetre d editeur }
  PEditorWindow = ^TEditorWindow;
@@ -7644,6 +7644,113 @@ Type
   ActionMsg    : String[127]; { resultat de la derniere compilation      }
  End;
 
+ { "IIS" (2026-10-11, demande explicite de l'utilisateur, voir IIS.PAS -   }
+ { un clone autonome complet deja present dans ce depot, jamais branche a   }
+ { DEVENV.PAS) : onglet MDI "Outils > IIS" - PAS un vrai serveur multi-     }
+ { tache (disclosure explicite de l'utilisateur lui-meme : "il ne s'agit   }
+ { pas d'un veritable serveur IIS ou de multi-tache") - seulement un PONT   }
+ { de configuration consulte par le Navigateur Web QUAND on choisit une     }
+ { URL correspondant a un "site" configure ici : resout le nom d'hote        }
+ { virtuel vers un chemin physique local (le "DNS"), et determine si         }
+ { l'extension du fichier resolu doit etre EXECUTEE par un gestionnaire      }
+ { configure (ASP.NET/.aspx, PHP, etc. - meme principe que les mappages      }
+ { de gestionnaire CGI reels d'IIS) plutot que servie telle quelle. Portee   }
+ { volontairement reduite par rapport aux 25 points du clone IIS.PAS         }
+ { autonome (Pools d'applications, SSL, journalisation, etc. sont des        }
+ { fonctionnalites SANS AUCUNE logique reelle meme dans IIS.PAS, de purs      }
+ { panneaux d'icones decoratifs) : seuls les Sites (nom/chemin physique/      }
+ { port) et les Mappages de gestionnaire (extension->executable), les         }
+ { 2 SEULS elements avec une vraie logique porteuse de sens dans IIS.PAS       }
+ { (TSiteInfo/TCGIEntry/ExecCGI), sont repris ici. }
+Const
+ IIS_MAX_SITES    = 20;
+ IIS_MAX_HANDLERS = 30;
+ IIS_MAX_NODES    = IIS_MAX_SITES + IIS_MAX_HANDLERS + 4;
+ IIS_ROW_H        = 20;  { hauteur d'une ligne de texte du panneau de details }
+Type
+ TIISSite = Record
+  Name     : String[100];  { nom du site ET hote virtuel de resolution }
+  PhysPath : String[255];
+  Port     : Integer;
+ End;
+ TIISHandler = Record
+  Extension: String[20];   { ex: '.aspx', '.php' - comparaison insensible a la casse }
+  ExePath  : String[255];  { executable invoque avec le fichier resolu en argument }
+  Enabled  : Boolean;
+ End;
+ { EXTENSION (2026-10-12, correction explicite de l'utilisateur : "je         }
+ { m'attendais que tu aurais fais un arbre a gauche dans l'onglet comme       }
+ { l'IIS.PAS et non pas des onglets ... et que tu aurais repris des           }
+ { icones") : remplace les 2 sous-onglets horizontaux + liste + pied de       }
+ { page par une VRAIE arborescence, meme patron EXACT (tableau PLAT avec      }
+ { ParentIdx/Level/Expanded/HasChildren) que TSqlExplorerNode/                }
+ { TExplorerNode - mais un type INDEPENDANT, meme discipline que              }
+ { TSqlExplorerNode vis-a-vis de TExplorerNode (voir le commentaire de        }
+ { tete de TSqlExplorerNode). Contrairement a l'arbre SQL Server, celui-ci    }
+ { n'a aucun chargement paresseux : il est entierement RECONSTRUIT depuis     }
+ { Sites[]/Handlers[] a chaque modification (BuildIISTree), donc les          }
+ { noeuds sont toujours ajoutes dans l'ordre d'un parcours en profondeur -     }
+ { aucune insertion au milieu du tableau n'est jamais necessaire (plus        }
+ { simple que SqlAddChildNode/SqlInsertNodeAt). }
+ TIISNodeKind = (IISNK_ROOT, IISNK_SITES_FOLDER, IISNK_SITE,
+                 IISNK_HANDLERS_FOLDER, IISNK_HANDLER);
+ { Icones 16x16 des noeuds de cet arbre (voir MakeIconIISRoot/MakeIconIISSite/ }
+ { MakeIconIISHandler plus bas, meme famille TIcon16/DrawIcon16x16/IconRect/   }
+ { IconFillRect/IconHLine/IconVLine que ExplorerIcons - le dossier "Sites"      }
+ { et le dossier "Mappages de gestionnaire" reutilisent directement             }
+ { MakeIconFolderNode, deja utilisee par l'Explorateur de solution, plutot      }
+ { que d'inventer une icone de dossier redondante). }
+ TIISIconKind = (IISIK_ROOT, IISIK_FOLDER, IISIK_SITE, IISIK_HANDLER);
+ TIISNode = Record
+  Caption    : String[100];
+  Kind       : TIISNodeKind;
+  ParentIdx  : Integer;
+  Level      : Integer;
+  Expanded   : Boolean;
+  HasChildren: Boolean;
+  DataIdx    : Integer;  { index dans Sites[]/Handlers[] pour un noeud SITE/ }
+                          { HANDLER (-1 pour la racine et les 2 dossiers).   }
+ End;
+ TIISState = Record
+  Visible      : Boolean;
+  NeedRepaint  : Boolean;
+  X, Y         : Integer;
+  Width, Height: Integer;
+  Nodes        : Array[0..IIS_MAX_NODES - 1] Of TIISNode;
+  NodeCount    : Integer;
+  SelectedIdx  : Integer;
+  ScrollTop    : Integer;
+  Sites        : Array[0..IIS_MAX_SITES - 1] Of TIISSite;
+  SiteCount    : Integer;
+  Handlers     : Array[0..IIS_MAX_HANDLERS - 1] Of TIISHandler;
+  HandlerCount : Integer;
+  ConfigLoaded : Boolean;   { IIS.CFG lu au moins une fois (voir            }
+                             { IIS_EnsureConfigLoaded - le navigateur peut   }
+                             { avoir besoin de la config SANS que l'onglet    }
+                             { "Outils > IIS" ait jamais ete ouvert). }
+ End;
+
+ { Boite de dialogue generique "Ajouter..." a N champs texte fixes (meme    }
+ { patron exact que TCreateTableDialog/InitCreateTableDialog - Insert/      }
+ { Delete-au-curseur, Base: TDialog deja prouve - mais SANS la complexite    }
+ { de liste a croissance dynamique, puisque le nombre de champs est connu    }
+ { d'avance ici : 3 pour un site, 2 pour un mappage). }
+Const
+ IIS_DLG_MAX_FIELDS = 3;
+ IIS_DLG_PURPOSE_SITE    = 1;
+ IIS_DLG_PURPOSE_HANDLER = 2;
+Type
+ TIISFieldDialog = Record
+  Base       : TDialog;
+  Purpose    : Integer;
+  FieldCount : Integer;
+  FieldLabel : Array[0..IIS_DLG_MAX_FIELDS - 1] Of String[40];
+  FieldValue : Array[0..IIS_DLG_MAX_FIELDS - 1] Of String[255];
+  FieldCursor: Array[0..IIS_DLG_MAX_FIELDS - 1] Of Integer;
+  EditTarget : Integer;
+  Cancelled  : Boolean;
+ End;
+
  { Explorateur d objets SQL Server (menu Affichage) : arbre de connexions,
    calque sur TSolutionExplorer/TExplorerNode (tableau PLAT avec ParentIdx/
    Level/Expanded, pas une vraie structure pointee - meme discipline que
@@ -8147,6 +8254,9 @@ Var
  StartPage      : TStartPage;
  ExtMgr         : TExtManager;   { Gestionnaire d extensions (singleton) }
  SqlExplorer    : TSqlExplorerState; { Explorateur d objets SQL Server (singleton) }
+ IISMgr         : TIISState;     { Outils > IIS (singleton) }
+ IISFieldDlg    : TIISFieldDialog; { boite "Ajouter..." de IISMgr }
+ IISIcons       : Array[TIISIconKind] Of TIcon16; { voir InitIISIcons }
  { Dialogue nouveau projet / nouvelle solution }
  NewProjDlg     : TNewProjectDialog;
  { Dialogue nouveau fichier }
@@ -14161,6 +14271,7 @@ Begin
  AddMenuItem(CurMenu^, 'Personnaliser...', '', 701);
  AddMenuSeparator(CurMenu^);
  AddMenuItem(CurMenu^, 'Gestionnaire d''extensions...', '', 710);
+ AddMenuItem(CurMenu^, 'IIS...', '', 711);
  AddMenuSeparator(CurMenu^);
  AddMenuItem(CurMenu^, 'Ligne de commande externe', '', 720);
  AddMenuItem(CurMenu^, 'COMMENT', '', 721);
@@ -14508,6 +14619,7 @@ Procedure HandleRunCommentTool; Forward;
 Procedure HandleRunRePascalTool; Forward;
 Procedure CreateExtManagerWindow; Forward;
 Procedure CreateSqlObjectExplorerWindow; Forward;
+Procedure CreateIISWindow; Forward;
 { Etape 3 (Explorateur d objets SQL Server) : SqlCmdEnsureMasterMdf a       }
 { besoin de signaler un echec dans le panneau de sortie, dont la vraie      }
 { implementation (~ligne 37000+) est definie plus bas que ce bloc. }
@@ -15253,6 +15365,10 @@ Begin
        End;
   710: Begin { Gestionnaire d extensions... }
         CreateExtManagerWindow;
+        FullRepaintNeeded := True;
+       End;
+  711: Begin { IIS... }
+        CreateIISWindow;
         FullRepaintNeeded := True;
        End;
   701: Begin { Personnaliser... }
@@ -16314,6 +16430,52 @@ Begin
  SqlToolbarTooltips[2] := 'Nouvelle requete';
 End;
 
+{ --- Icones de l'arbre "Outils > IIS" (2026-10-12, correction explicite    }
+{ de l'utilisateur demandant de vraies icones, meme famille que              }
+{ ExplorerIcons/SqlToolbarIcons - voir IISIK_* et DrawIISNode). --- }
+
+Procedure MakeIconIISRoot(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Petit boitier d'ordinateur (racine "IIS (ordinateur local)"). }
+ IconFillRect(Icon, 1, 2, 14, 10, 9);
+ IconRect(Icon, 1, 2, 14, 10, 1);
+ IconFillRect(Icon, 2, 3, 13, 9, 15);
+ IconRect(Icon, 2, 3, 13, 9, 8);
+ IconFillRect(Icon, 6, 11, 9, 13, 9);
+ IconHLine(Icon, 4, 11, 14, 1);
+End;
+
+Procedure MakeIconIISSite(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Globe simplifie (meridien + paralleles) pour un site/hote virtuel. }
+ IconRect(Icon, 2, 2, 13, 13, 2);
+ IconHLine(Icon, 2, 13, 4, 2);
+ IconHLine(Icon, 2, 13, 7, 2);
+ IconHLine(Icon, 2, 13, 10, 2);
+ IconVLine(Icon, 7, 2, 13, 2);
+End;
+
+Procedure MakeIconIISHandler(Var Icon: TIcon16);
+Begin
+ ClearIcon(Icon, 255);
+ { Fleche "->" pour un mappage extension -> executable. }
+ IconHLine(Icon, 1, 10, 7, 9);
+ IconHLine(Icon, 1, 10, 8, 9);
+ IconVLine(Icon, 10, 4, 11, 9);
+ IconHLine(Icon, 8, 13, 4, 9);
+ IconHLine(Icon, 8, 13, 11, 9);
+End;
+
+Procedure InitIISIcons;
+Begin
+ MakeIconIISRoot(IISIcons[IISIK_ROOT]);
+ MakeIconFolderNode(IISIcons[IISIK_FOLDER]);
+ MakeIconIISSite(IISIcons[IISIK_SITE]);
+ MakeIconIISHandler(IISIcons[IISIK_HANDLER]);
+End;
+
 { --- Icones de la mini barre d outils de l onglet "Modification Git" -   }
 { EXTENSION (2026-08-08). --- }
 
@@ -17363,6 +17525,743 @@ Begin
  WinMgr.ActiveNode := Node;
  EditorReady := True;
 End;
+
+{ ============================================================================
+  OUTILS > IIS (2026-10-11, demande explicite de l'utilisateur)
+  ============================================================================
+  Voir le commentaire de tete de TIISState (pres de TExtManager) pour la
+  disclosure complete de la portee : PAS un serveur, un simple pont de
+  configuration (Sites = nom d'hote virtuel -> chemin physique local,
+  Mappages de gestionnaire = extension -> executable) consulte par
+  DisplayCurrentTarget (voir le navigateur Web) UNIQUEMENT quand une URL
+  navigee correspond a un site ici configure. }
+
+{ --- Validation du chemin d'executable (PORT DIRECT de IsValidExePath,     }
+{ IIS.PAS ~ligne 1653 - memes caracteres d'injection shell refuses, meme    }
+{ refus des sequences de traversee de repertoire '..') : les chemins         }
+{ d'executable de mappage de gestionnaire viennent d'une saisie utilisateur  }
+{ libre et sont ensuite REELLEMENT executes (voir IISResolveTarget plus       }
+{ bas), meme discipline de securite que l'original. --- }
+Function IISValidExePath(Const APath: String): Boolean;
+Var I: Integer;
+Begin
+ IISValidExePath := False;
+ If Length(APath) = 0 Then Exit;
+ For I := 1 To Length(APath) Do
+  If APath[I] In [';', '|', '&', '`', '$', '<', '>', '(', ')', '{', '}',
+                   '*', '?', '#', '!', '^'] Then Exit;
+ If Pos('..', APath) > 0 Then Exit;
+ IISValidExePath := True;
+End;
+
+Function FindIISWindow: Integer;
+Var I: Integer;
+Begin
+ FindIISWindow := -1;
+ For I := 0 To WinMgr.WinCount - 1 Do
+  If WindowNodeAt(I)^.Win.Kind = WK_IIS Then Begin
+   FindIISWindow := I;
+   Exit;
+  End;
+End;
+
+{ --- Persistance IIS.CFG (meme format cle=valeur que IIS.PAS/SaveConfig-   }
+{ LoadConfig ~ligne 1544-1645, mais relu/reecrit ici independamment -        }
+{ IIS.PAS reste un clone AUTONOME jamais invoque par DEVENV.PAS, seul le      }
+{ FORMAT de fichier est repris pour qu'un IIS.CFG produit par l'un reste      }
+{ lisible par l'autre). --- }
+Procedure IIS_SaveConfig;
+Var
+ F: Text;
+ I: Integer;
+Begin
+ {$I-}
+ Assign(F, 'IIS.CFG');
+ Rewrite(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ WriteLn(F, 'SiteCount=' + IntToStr(IISMgr.SiteCount));
+ For I := 0 To IISMgr.SiteCount - 1 Do Begin
+  WriteLn(F, 'Site' + IntToStr(I) + '.Name=' + IISMgr.Sites[I].Name);
+  WriteLn(F, 'Site' + IntToStr(I) + '.PhysPath=' + IISMgr.Sites[I].PhysPath);
+  WriteLn(F, 'Site' + IntToStr(I) + '.Port=' + IntToStr(IISMgr.Sites[I].Port));
+ End;
+ WriteLn(F, 'HandlerCount=' + IntToStr(IISMgr.HandlerCount));
+ For I := 0 To IISMgr.HandlerCount - 1 Do Begin
+  WriteLn(F, 'Handler' + IntToStr(I) + '.Ext=' + IISMgr.Handlers[I].Extension);
+  WriteLn(F, 'Handler' + IntToStr(I) + '.Path=' + IISMgr.Handlers[I].ExePath);
+  If IISMgr.Handlers[I].Enabled Then
+   WriteLn(F, 'Handler' + IntToStr(I) + '.Enabled=1')
+  Else
+   WriteLn(F, 'Handler' + IntToStr(I) + '.Enabled=0');
+ End;
+ {$I-} Close(F); {$I+} If IOResult <> 0 Then ;
+End;
+
+Procedure IIS_LoadConfig;
+Var
+ F: Text;
+ Line, Key, Val: String;
+ Pos1, N: Integer;
+Begin
+ IISMgr.SiteCount := 0;
+ IISMgr.HandlerCount := 0;
+ {$I-}
+ Assign(F, 'IIS.CFG');
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While Not EOF(F) Do Begin
+  ReadLn(F, Line);
+  Line := TrimStr(Line);
+  If Length(Line) = 0 Then Continue;
+  Pos1 := 1;
+  While (Pos1 <= Length(Line)) And (Line[Pos1] <> '=') Do Inc(Pos1);
+  If Pos1 > Length(Line) Then Continue;
+  Key := TrimStr(Copy(Line, 1, Pos1 - 1));
+  Val := TrimStr(Copy(Line, Pos1 + 1, Length(Line)));
+  If Key = 'SiteCount' Then Begin
+   N := StrToInt(Val);
+   If N > IIS_MAX_SITES Then N := IIS_MAX_SITES;
+   IISMgr.SiteCount := N;
+  End Else If Key = 'HandlerCount' Then Begin
+   N := StrToInt(Val);
+   If N > IIS_MAX_HANDLERS Then N := IIS_MAX_HANDLERS;
+   IISMgr.HandlerCount := N;
+  End Else Begin
+   For N := 0 To IIS_MAX_SITES - 1 Do Begin
+    If Key = 'Site' + IntToStr(N) + '.Name' Then IISMgr.Sites[N].Name := Val;
+    If Key = 'Site' + IntToStr(N) + '.PhysPath' Then IISMgr.Sites[N].PhysPath := Val;
+    If Key = 'Site' + IntToStr(N) + '.Port' Then Begin
+     IISMgr.Sites[N].Port := StrToInt(Val);
+     If IISMgr.Sites[N].Port <= 0 Then IISMgr.Sites[N].Port := 80;
+    End;
+   End;
+   For N := 0 To IIS_MAX_HANDLERS - 1 Do Begin
+    If Key = 'Handler' + IntToStr(N) + '.Ext' Then IISMgr.Handlers[N].Extension := Val;
+    If Key = 'Handler' + IntToStr(N) + '.Path' Then IISMgr.Handlers[N].ExePath := Val;
+    If Key = 'Handler' + IntToStr(N) + '.Enabled' Then IISMgr.Handlers[N].Enabled := Val = '1';
+   End;
+  End;
+ End;
+ {$I-} Close(F); {$I+} If IOResult <> 0 Then ;
+End;
+
+{ --- Charge IIS.CFG au premier besoin, que ce soit via l'onglet "Outils >  }
+{ IIS" OU via une navigation du Navigateur Web qui n'a encore jamais         }
+{ ouvert cet onglet cette session (CreateIISWindow ET IISResolveTarget       }
+{ appellent tous deux ceci en premier). --- }
+Procedure IIS_EnsureConfigLoaded;
+Begin
+ If IISMgr.ConfigLoaded Then Exit;
+ IISMgr.SiteCount := 0;
+ IISMgr.HandlerCount := 0;
+ IIS_LoadConfig;
+ IISMgr.ConfigLoaded := True;
+End;
+
+{ --- Ajoute un noeud en FIN de tableau (jamais au milieu : voir le          }
+{ commentaire de tete de TIISNode - l'arbre est toujours entierement        }
+{ reconstruit depuis Sites[]/Handlers[] par BuildIISTree ci-dessous, donc    }
+{ les noeuds arrivent toujours dans l'ordre d'un parcours en profondeur,     }
+{ aucune insertion/decalage n'est jamais necessaire, contrairement a         }
+{ SqlAddChildNode/SqlInsertNodeAt). --- }
+Function IISAddNode(Var IM: TIISState; Const ACaption: String;
+ AKind: TIISNodeKind; AParentIdx, ADataIdx: Integer): Integer;
+Var
+ NIdx: Integer;
+Begin
+ IISAddNode := -1;
+ If IM.NodeCount >= IIS_MAX_NODES Then Exit;
+ NIdx := IM.NodeCount;
+ IM.Nodes[NIdx].Caption := ACaption;
+ IM.Nodes[NIdx].Kind := AKind;
+ IM.Nodes[NIdx].ParentIdx := AParentIdx;
+ If AParentIdx >= 0 Then
+  IM.Nodes[NIdx].Level := IM.Nodes[AParentIdx].Level + 1
+ Else
+  IM.Nodes[NIdx].Level := 0;
+ IM.Nodes[NIdx].Expanded := False;
+ IM.Nodes[NIdx].HasChildren := False;
+ IM.Nodes[NIdx].DataIdx := ADataIdx;
+ If AParentIdx >= 0 Then IM.Nodes[AParentIdx].HasChildren := True;
+ Inc(IM.NodeCount);
+ IISAddNode := NIdx;
+End;
+
+{ --- Reconstruit tout l'arbre "IIS (ordinateur local)" > "Sites"/          }
+{ "Mappages de gestionnaire" > enfants, depuis Sites[]/Handlers[] -         }
+{ appelee a l'ouverture ET apres tout Ajouter/Supprimer. Preserve l'etat     }
+{ deplie/replie des 2 dossiers a travers un rebuild (sinon l'arbre se        }
+{ refermerait a chaque modification, ce qui surprendrait l'utilisateur). --- }
+Procedure BuildIISTree(Var IM: TIISState);
+Var
+ RootIdx, SitesIdx, HandlersIdx, I: Integer;
+ KeepExpandSites, KeepExpandHandlers: Boolean;
+Begin
+ KeepExpandSites := True;
+ KeepExpandHandlers := True;
+ For I := 0 To IM.NodeCount - 1 Do Begin
+  If IM.Nodes[I].Kind = IISNK_SITES_FOLDER Then KeepExpandSites := IM.Nodes[I].Expanded;
+  If IM.Nodes[I].Kind = IISNK_HANDLERS_FOLDER Then KeepExpandHandlers := IM.Nodes[I].Expanded;
+ End;
+ IM.NodeCount := 0;
+ RootIdx := IISAddNode(IM, 'IIS (ordinateur local)', IISNK_ROOT, -1, -1);
+ IM.Nodes[RootIdx].Expanded := True;
+ SitesIdx := IISAddNode(IM, 'Sites', IISNK_SITES_FOLDER, RootIdx, -1);
+ IM.Nodes[SitesIdx].Expanded := KeepExpandSites;
+ For I := 0 To IM.SiteCount - 1 Do
+  IISAddNode(IM, IM.Sites[I].Name, IISNK_SITE, SitesIdx, I);
+ HandlersIdx := IISAddNode(IM, 'Mappages de gestionnaire', IISNK_HANDLERS_FOLDER, RootIdx, -1);
+ IM.Nodes[HandlersIdx].Expanded := KeepExpandHandlers;
+ For I := 0 To IM.HandlerCount - 1 Do
+  IISAddNode(IM, IM.Handlers[I].Extension, IISNK_HANDLER, HandlersIdx, I);
+ If (IM.SelectedIdx < 0) Or (IM.SelectedIdx >= IM.NodeCount) Then
+  IM.SelectedIdx := RootIdx;
+ IM.NeedRepaint := True;
+End;
+
+{ --- Un noeud est visible si TOUS ses ancetres sont Expanded - meme         }
+{ discipline que SqlNodeVisible (calcule a la demande, jamais mis en         }
+{ cache : cet arbre reste petit). --- }
+Function IISNodeVisible(Var IM: TIISState; NodeIdx: Integer): Boolean;
+Var P: Integer;
+Begin
+ IISNodeVisible := True;
+ P := IM.Nodes[NodeIdx].ParentIdx;
+ While P >= 0 Do Begin
+  If Not IM.Nodes[P].Expanded Then Begin
+   IISNodeVisible := False;
+   Exit;
+  End;
+  P := IM.Nodes[P].ParentIdx;
+ End;
+End;
+
+Function IISCountVisibleNodes(Var IM: TIISState): Integer;
+Var I, Cnt: Integer;
+Begin
+ Cnt := 0;
+ For I := 0 To IM.NodeCount - 1 Do
+  If IISNodeVisible(IM, I) Then Inc(Cnt);
+ IISCountVisibleNodes := Cnt;
+End;
+
+Procedure IISToggleNode(Var IM: TIISState; NodeIdx: Integer);
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= IM.NodeCount) Then Exit;
+ If Not IM.Nodes[NodeIdx].HasChildren Then Exit;
+ IM.Nodes[NodeIdx].Expanded := Not IM.Nodes[NodeIdx].Expanded;
+ IM.NeedRepaint := True;
+End;
+
+Procedure InitIISState(Var IM: TIISState);
+Begin
+ IM.Visible := True;
+ IM.NodeCount := 0;
+ IM.SelectedIdx := -1;
+ IM.ScrollTop := 0;
+ IM.NeedRepaint := True;
+ BuildIISTree(IM);
+End;
+
+Procedure CreateIISWindow;
+Var
+ Idx: Integer;
+ Node: PWindowNode;
+Begin
+ Idx := FindIISWindow;
+ If Idx >= 0 Then Begin
+  ActivateWindow(Idx);
+  Exit;
+ End;
+ SyncActiveWindowOut;
+ EmuPanel.Base.Visible := False;
+ Idx := WinMgr.WinCount;
+ Node := AppendWindowNode;
+ Node^.Win.Kind := WK_IIS;
+ Node^.Win.FileName := '';
+ Node^.Win.Title := 'IIS';
+ Node^.Win.TabIndex := Idx;
+ Node^.Win.Visible := True;
+ Node^.Win.Maximized := True;
+ Node^.Win.X := 0;
+ Node^.Win.Y := MENUBAR_HEIGHT + TOOLBAR_HEIGHT + TAB_HEIGHT;
+ Node^.Win.Width := GetScreenWidth - EXPLORER_WIDTH;
+ Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
+   - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
+ IIS_EnsureConfigLoaded;
+ InitIISState(IISMgr);
+ IISMgr.X := Node^.Win.X;
+ IISMgr.Y := Node^.Win.Y;
+ IISMgr.Width := Node^.Win.Width;
+ IISMgr.Height := Node^.Win.Height;
+ Inc(WinMgr.WinCount);
+ WinMgr.ActiveIdx := Idx;
+ WinMgr.ActiveNode := Node;
+ EditorReady := True;
+End;
+
+{ ----------------------------------------------------------------------
+  Boite "Ajouter..." generique a champs fixes (site ou mappage)
+  ---------------------------------------------------------------------- }
+
+Procedure InitIISFieldDialog(Purpose: Integer);
+Var I: Integer;
+Begin
+ For I := 0 To IIS_DLG_MAX_FIELDS - 1 Do Begin
+  IISFieldDlg.FieldValue[I] := '';
+  IISFieldDlg.FieldCursor[I] := 0;
+ End;
+ IISFieldDlg.Purpose := Purpose;
+ If Purpose = IIS_DLG_PURPOSE_SITE Then Begin
+  InitDialog(IISFieldDlg.Base, 'Ajouter un site', 480, 220);
+  IISFieldDlg.FieldCount := 3;
+  IISFieldDlg.FieldLabel[0] := 'Nom du site (hote virtuel) :';
+  IISFieldDlg.FieldLabel[1] := 'Chemin physique :';
+  IISFieldDlg.FieldLabel[2] := 'Port :';
+  IISFieldDlg.FieldValue[2] := '80';
+ End Else Begin
+  InitDialog(IISFieldDlg.Base, 'Ajouter un mappage de gestionnaire', 480, 180);
+  IISFieldDlg.FieldCount := 2;
+  IISFieldDlg.FieldLabel[0] := 'Extension (ex: .aspx) :';
+  IISFieldDlg.FieldLabel[1] := 'Executable :';
+ End;
+ IISFieldDlg.Base.HasCancel := True;
+ IISFieldDlg.EditTarget := 0;
+ IISFieldDlg.Cancelled := False;
+ IISFieldDlg.Base.Visible := True;
+End;
+
+Procedure DrawIISFieldDialog;
+Var
+ PX, RowY, I: Integer;
+Begin
+ If Not IISFieldDlg.Base.Visible Then Exit;
+ DrawDialogFrame(IISFieldDlg.Base);
+ PX := IISFieldDlg.Base.X + DLG_PADDING;
+ RowY := IISFieldDlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+ For I := 0 To IISFieldDlg.FieldCount - 1 Do Begin
+  SetColor(CLR_MENU_TEXT);
+  OutTextXY(PX, RowY, IISFieldDlg.FieldLabel[I]);
+  SetFillStyle(SolidFill, CLR_EDITOR_BG);
+  Bar(PX, RowY + 16, PX + DLG_INPUT_WIDTH - 1, RowY + 16 + DLG_INPUT_HEIGHT - 1);
+  SetColor(CLR_BORDER);
+  Rectangle(PX, RowY + 16, PX + DLG_INPUT_WIDTH - 1, RowY + 16 + DLG_INPUT_HEIGHT - 1);
+  SetColor(CLR_EDITOR_TEXT);
+  OutTextXY(PX + 3, RowY + 19, IISFieldDlg.FieldValue[I]);
+  If I = IISFieldDlg.EditTarget Then Begin
+   SetColor(CLR_CURSOR);
+   Line(PX + 3 + TextWidth(Copy(IISFieldDlg.FieldValue[I], 1, IISFieldDlg.FieldCursor[I])),
+    RowY + 18,
+    PX + 3 + TextWidth(Copy(IISFieldDlg.FieldValue[I], 1, IISFieldDlg.FieldCursor[I])),
+    RowY + 16 + DLG_INPUT_HEIGHT - 3);
+  End;
+  RowY := RowY + 16 + DLG_INPUT_HEIGHT + 10;
+ End;
+ DrawDialogButtons(IISFieldDlg.Base);
+End;
+
+Procedure IIS_DlgHandleKey(Key: Char);
+Var I: Integer;
+Begin
+ I := IISFieldDlg.EditTarget;
+ If (I < 0) Or (I >= IISFieldDlg.FieldCount) Then Exit;
+ If Key = #8 Then Begin
+  If (IISFieldDlg.FieldCursor[I] > 0) And
+     (Length(IISFieldDlg.FieldValue[I]) > 0) Then Begin
+   Delete(IISFieldDlg.FieldValue[I], IISFieldDlg.FieldCursor[I], 1);
+   Dec(IISFieldDlg.FieldCursor[I]);
+  End;
+ End Else If (Key >= ' ') And (Key <= '~') Then Begin
+  If Length(IISFieldDlg.FieldValue[I]) < 250 Then Begin
+   Inc(IISFieldDlg.FieldCursor[I]);
+   Insert(Key, IISFieldDlg.FieldValue[I], IISFieldDlg.FieldCursor[I]);
+  End;
+ End;
+End;
+
+Procedure HandleIISFieldDialogEvent(Var Ev: TEvent);
+Var
+ Idx, PX, RowY, I: Integer;
+Begin
+ If Not IISFieldDlg.Base.Visible Then Exit;
+ If Ev.Kind = EV_MOUSE_DOWN Then Begin
+  If Not IsInsideDialog(IISFieldDlg.Base, Ev.MouseX, Ev.MouseY) Then Exit;
+  Idx := DialogButtonHitTest(IISFieldDlg.Base, Ev.MouseX, Ev.MouseY);
+  If Idx = 0 Then Begin
+   IISFieldDlg.Cancelled := False;
+   CloseDialog(IISFieldDlg.Base);
+   Exit;
+  End Else If Idx = 1 Then Begin
+   IISFieldDlg.Cancelled := True;
+   CloseDialog(IISFieldDlg.Base);
+   Exit;
+  End;
+  PX := IISFieldDlg.Base.X + DLG_PADDING;
+  RowY := IISFieldDlg.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
+  For I := 0 To IISFieldDlg.FieldCount - 1 Do Begin
+   If (Ev.MouseY >= RowY + 16) And (Ev.MouseY < RowY + 16 + DLG_INPUT_HEIGHT) And
+      (Ev.MouseX >= PX) And (Ev.MouseX < PX + DLG_INPUT_WIDTH) Then Begin
+    IISFieldDlg.EditTarget := I;
+    IISFieldDlg.FieldCursor[I] := Length(IISFieldDlg.FieldValue[I]);
+    Exit;
+   End;
+   RowY := RowY + 16 + DLG_INPUT_HEIGHT + 10;
+  End;
+ End Else If Ev.Kind = EV_KEY_CHAR Then Begin
+  If Ev.KeyChar = #13 Then Begin
+   IISFieldDlg.Cancelled := False;
+   CloseDialog(IISFieldDlg.Base);
+  End Else If Ev.KeyChar = #27 Then Begin
+   IISFieldDlg.Cancelled := True;
+   CloseDialog(IISFieldDlg.Base);
+  End Else If Ev.KeyChar = #9 Then Begin
+   IISFieldDlg.EditTarget := (IISFieldDlg.EditTarget + 1) Mod IISFieldDlg.FieldCount;
+   IISFieldDlg.FieldCursor[IISFieldDlg.EditTarget] :=
+    Length(IISFieldDlg.FieldValue[IISFieldDlg.EditTarget]);
+  End Else
+   IIS_DlgHandleKey(Ev.KeyChar);
+ End;
+End;
+
+Procedure ApplyIISFieldDialog;
+Var
+ I: Integer;
+Begin
+ If IISFieldDlg.Cancelled Then Exit;
+ IIS_EnsureConfigLoaded;
+ If IISFieldDlg.Purpose = IIS_DLG_PURPOSE_SITE Then Begin
+  If TrimStr(IISFieldDlg.FieldValue[0]) = '' Then Begin
+   AppendOutputEx(OutputPanel, 'IIS : nom de site requis.',
+    Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+   Exit;
+  End;
+  If IISMgr.SiteCount >= IIS_MAX_SITES Then Begin
+   AppendOutputEx(OutputPanel, 'IIS : nombre maximum de sites atteint.',
+    Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+   Exit;
+  End;
+  IISMgr.Sites[IISMgr.SiteCount].Name := TrimStr(IISFieldDlg.FieldValue[0]);
+  IISMgr.Sites[IISMgr.SiteCount].PhysPath := TrimStr(IISFieldDlg.FieldValue[1]);
+  IISMgr.Sites[IISMgr.SiteCount].Port := StrToInt(TrimStr(IISFieldDlg.FieldValue[2]));
+  If IISMgr.Sites[IISMgr.SiteCount].Port <= 0 Then IISMgr.Sites[IISMgr.SiteCount].Port := 80;
+  Inc(IISMgr.SiteCount);
+  AppendOutputEx(OutputPanel, 'IIS : site "' + TrimStr(IISFieldDlg.FieldValue[0]) +
+   '" ajoute.', Ord(OTK_BUILD), OLK_INFO, '', 0, 0);
+  { Depliage automatique du dossier "Sites" + arbre reconstruit, pour que    }
+  { le nouveau noeud soit immediatement visible (2026-10-12, suite directe   }
+  { de la correction utilisateur demandant une vraie arborescence). }
+  For I := 0 To IISMgr.NodeCount - 1 Do
+   If IISMgr.Nodes[I].Kind = IISNK_SITES_FOLDER Then IISMgr.Nodes[I].Expanded := True;
+ End Else Begin
+  If TrimStr(IISFieldDlg.FieldValue[0]) = '' Then Begin
+   AppendOutputEx(OutputPanel, 'IIS : extension requise.',
+    Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+   Exit;
+  End;
+  If Not IISValidExePath(TrimStr(IISFieldDlg.FieldValue[1])) Then Begin
+   AppendOutputEx(OutputPanel, 'IIS : chemin d''executable invalide.',
+    Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+   Exit;
+  End;
+  If IISMgr.HandlerCount >= IIS_MAX_HANDLERS Then Begin
+   AppendOutputEx(OutputPanel, 'IIS : nombre maximum de mappages atteint.',
+    Ord(OTK_BUILD), OLK_ERROR, '', 0, 0);
+   Exit;
+  End;
+  IISMgr.Handlers[IISMgr.HandlerCount].Extension := TrimStr(IISFieldDlg.FieldValue[0]);
+  IISMgr.Handlers[IISMgr.HandlerCount].ExePath := TrimStr(IISFieldDlg.FieldValue[1]);
+  IISMgr.Handlers[IISMgr.HandlerCount].Enabled := True;
+  Inc(IISMgr.HandlerCount);
+  AppendOutputEx(OutputPanel, 'IIS : mappage "' + TrimStr(IISFieldDlg.FieldValue[0]) +
+   '" ajoute.', Ord(OTK_BUILD), OLK_INFO, '', 0, 0);
+  For I := 0 To IISMgr.NodeCount - 1 Do
+   If IISMgr.Nodes[I].Kind = IISNK_HANDLERS_FOLDER Then IISMgr.Nodes[I].Expanded := True;
+ End;
+ IIS_SaveConfig;
+ BuildIISTree(IISMgr);
+ IISMgr.NeedRepaint := True;
+End;
+
+{ ----------------------------------------------------------------------
+  Rendu et interaction de l'onglet IIS : arbre a gauche (Sites/Mappages
+  de gestionnaire, avec icones - 2026-10-12, correction explicite de
+  l'utilisateur demandant une vraie arborescence "comme IIS.PAS" au lieu
+  des sous-onglets horizontaux, meme patron general exact que
+  DrawSqlExplorer/DrawSqlExplorerNode) + panneau de details a droite pour
+  le noeud selectionne (remplace le pied de page Ajouter/Supprimer -
+  l'ajout/la suppression passent desormais par le menu contextuel clic
+  droit, voir ShowIISContextMenu, meme convention que l'Explorateur SQL).
+  ---------------------------------------------------------------------- }
+
+{ --- Largeur de la portion ARBRE (le reste est le panneau de details) -   }
+{ fonction UNIQUE partagee par le dessin ET le test de clic, meme           }
+{ discipline que SqlTreeWidth. --- }
+Function IISTreeWidth(Var IM: TIISState): Integer;
+Var W: Integer;
+Begin
+ W := (IM.Width * 35) Div 100;
+ If W < 180 Then W := 180;
+ If W > IM.Width - 150 Then W := IM.Width - 150;
+ If W > IM.Width Then W := IM.Width;
+ If W < 0 Then W := 0;
+ IISTreeWidth := W;
+End;
+
+Procedure DrawIISNode(Var IM: TIISState; NodeIdx, DrawY, TreeW: Integer);
+Var
+ DrawX, TriX, TriY: Integer;
+Begin
+ If (NodeIdx < 0) Or (NodeIdx >= IM.NodeCount) Then Exit;
+ DrawX := IM.X + 4 + IM.Nodes[NodeIdx].Level * EXPLORER_INDENT;
+ If NodeIdx = IM.SelectedIdx Then Begin
+  SetFillStyle(SolidFill, CLR_SELECTION);
+  Bar(IM.X, DrawY, IM.X + TreeW - 1, DrawY + EXPLORER_NODE_HEIGHT - 1);
+ End;
+ If IM.Nodes[NodeIdx].HasChildren Then Begin
+  TriX := DrawX;
+  TriY := DrawY + EXPLORER_NODE_HEIGHT Div 2;
+  SetColor(CLR_MENU_TEXT);
+  If IM.Nodes[NodeIdx].Expanded Then Begin
+   Line(TriX, TriY - 3, TriX + 6, TriY - 3);
+   Line(TriX, TriY - 3, TriX + 3, TriY + 3);
+   Line(TriX + 6, TriY - 3, TriX + 3, TriY + 3);
+  End Else Begin
+   Line(TriX, TriY - 4, TriX, TriY + 4);
+   Line(TriX, TriY - 4, TriX + 6, TriY);
+   Line(TriX, TriY + 4, TriX + 6, TriY);
+  End;
+ End;
+ DrawX := DrawX + 10;
+ Case IM.Nodes[NodeIdx].Kind Of
+  IISNK_ROOT: DrawIcon16x16(DrawX, DrawY + 1, IISIcons[IISIK_ROOT]);
+  IISNK_SITES_FOLDER, IISNK_HANDLERS_FOLDER:
+   DrawIcon16x16(DrawX, DrawY + 1, IISIcons[IISIK_FOLDER]);
+  IISNK_SITE: DrawIcon16x16(DrawX, DrawY + 1, IISIcons[IISIK_SITE]);
+  IISNK_HANDLER: DrawIcon16x16(DrawX, DrawY + 1, IISIcons[IISIK_HANDLER]);
+ End;
+ DrawX := DrawX + EXPLORER_ICON_SIZE;
+ If NodeIdx = IM.SelectedIdx Then
+  SetColor(CLR_HIGHLIGHTTEXT)
+ Else
+  SetColor(CLR_EDITOR_TEXT);
+ { Troncature avec ellipse (2026-10-12, bogue reel trouve via verification  }
+ { en direct : "Mappages de gestionnaire" debordait par-dessus la ligne de  }
+ { separation dans le panneau de details, OutTextXY ne decoupant jamais     }
+ { son texte) - meme fonction que TruncateTitleToWidth (titres d'onglet),    }
+ { deja Forward-declaree bien avant ce point du fichier. }
+ OutTextXY(DrawX, DrawY + 3,
+  TruncateTitleToWidth(IM.Nodes[NodeIdx].Caption, IM.X + TreeW - DrawX - 4));
+End;
+
+{ --- Panneau de details du noeud selectionne, a droite de l'arbre - meme   }
+{ esprit que le panneau d'actions a droite de IIS.PAS, simplifie a du       }
+{ texte en lecture seule (les actions reelles - Ajouter/Supprimer - se      }
+{ font via le menu contextuel clic droit sur l'arbre, pas depuis ici). --- }
+Procedure DrawIISDetailPanel(Var IM: TIISState; DX, DY, DW: Integer);
+Var
+ RowY, DataIdx: Integer;
+Begin
+ SetColor(CLR_BORDER);
+ Line(DX, IM.Y, DX, IM.Y + IM.Height - 1);
+ RowY := DY + 8;
+ SetColor(CLR_MENU_TEXT);
+ If (IM.SelectedIdx < 0) Or (IM.SelectedIdx >= IM.NodeCount) Then Exit;
+ DataIdx := IM.Nodes[IM.SelectedIdx].DataIdx;
+ Case IM.Nodes[IM.SelectedIdx].Kind Of
+  IISNK_ROOT: Begin
+   OutTextXY(DX + 10, RowY, 'Pont de configuration pour');
+   RowY := RowY + IIS_ROW_H;
+   OutTextXY(DX + 10, RowY, 'le navigateur Web (pas un');
+   RowY := RowY + IIS_ROW_H;
+   OutTextXY(DX + 10, RowY, 'vrai serveur multi-tache).');
+  End;
+  IISNK_SITES_FOLDER: Begin
+   OutTextXY(DX + 10, RowY, IntToStr(IM.SiteCount) + ' site(s) configure(s).');
+   RowY := RowY + IIS_ROW_H * 2;
+   OutTextXY(DX + 10, RowY, 'Clic droit ici pour "Ajouter un site...".');
+  End;
+  IISNK_HANDLERS_FOLDER: Begin
+   OutTextXY(DX + 10, RowY, IntToStr(IM.HandlerCount) + ' mappage(s) configure(s).');
+   RowY := RowY + IIS_ROW_H * 2;
+   OutTextXY(DX + 10, RowY, 'Clic droit ici pour "Ajouter un mappage...".');
+  End;
+  IISNK_SITE: Begin
+   If (DataIdx < 0) Or (DataIdx >= IM.SiteCount) Then Exit;
+   OutTextXY(DX + 10, RowY, 'Site : ' + IM.Sites[DataIdx].Name);
+   RowY := RowY + IIS_ROW_H;
+   OutTextXY(DX + 10, RowY, 'Hote virtuel : ' + IM.Sites[DataIdx].Name);
+   RowY := RowY + IIS_ROW_H;
+   OutTextXY(DX + 10, RowY, 'Chemin physique : ' + IM.Sites[DataIdx].PhysPath);
+   RowY := RowY + IIS_ROW_H;
+   OutTextXY(DX + 10, RowY, 'Port : ' + IntToStr(IM.Sites[DataIdx].Port));
+   RowY := RowY + IIS_ROW_H * 2;
+   OutTextXY(DX + 10, RowY, 'Clic droit ici pour "Supprimer".');
+  End;
+  IISNK_HANDLER: Begin
+   If (DataIdx < 0) Or (DataIdx >= IM.HandlerCount) Then Exit;
+   OutTextXY(DX + 10, RowY, 'Mappage : ' + IM.Handlers[DataIdx].Extension);
+   RowY := RowY + IIS_ROW_H;
+   OutTextXY(DX + 10, RowY, 'Executable : ' + IM.Handlers[DataIdx].ExePath);
+   RowY := RowY + IIS_ROW_H;
+   If IM.Handlers[DataIdx].Enabled Then
+    OutTextXY(DX + 10, RowY, 'Actif : Oui')
+   Else
+    OutTextXY(DX + 10, RowY, 'Actif : Non');
+   RowY := RowY + IIS_ROW_H * 2;
+   OutTextXY(DX + 10, RowY, 'Clic droit ici pour "Supprimer".');
+  End;
+ End;
+End;
+
+Procedure DrawIIS(Var IM: TIISState);
+Var
+ DrawY, I, TreeW, VisLines, TotalVis, MaxScroll, VisCount: Integer;
+Begin
+ SetColor(CLR_EDITOR_BG);
+ SetFillStyle(SolidFill, CLR_EDITOR_BG);
+ Bar(IM.X, IM.Y, IM.X + IM.Width - 1, IM.Y + IM.Height - 1);
+ TreeW := IISTreeWidth(IM);
+ VisLines := IM.Height Div EXPLORER_NODE_HEIGHT;
+ If VisLines < 1 Then VisLines := 1;
+ TotalVis := IISCountVisibleNodes(IM);
+ MaxScroll := TotalVis - VisLines;
+ If MaxScroll < 0 Then MaxScroll := 0;
+ If IM.ScrollTop > MaxScroll Then IM.ScrollTop := MaxScroll;
+ If IM.ScrollTop < 0 Then IM.ScrollTop := 0;
+ DrawY := IM.Y;
+ VisCount := 0;
+ For I := 0 To IM.NodeCount - 1 Do
+  If IISNodeVisible(IM, I) Then Begin
+   If VisCount < IM.ScrollTop Then Begin
+    Inc(VisCount);
+    Continue;
+   End;
+   DrawIISNode(IM, I, DrawY, TreeW);
+   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+   If DrawY >= IM.Y + IM.Height Then Break;
+  End;
+ DrawIISDetailPanel(IM, IM.X + TreeW, IM.Y, IM.Width - TreeW);
+End;
+
+{ --- Trouve le noeud sous MY (dans la portion ARBRE uniquement) - meme     }
+{ patron exact que SqlNodeHitTest. --- }
+Function IISNodeHitTest(Var IM: TIISState; MY: Integer): Integer;
+Var
+ DrawY, I, VisCount: Integer;
+Begin
+ IISNodeHitTest := -1;
+ DrawY := IM.Y;
+ VisCount := 0;
+ For I := 0 To IM.NodeCount - 1 Do
+  If IISNodeVisible(IM, I) Then Begin
+   If VisCount < IM.ScrollTop Then Begin
+    Inc(VisCount);
+    Continue;
+   End;
+   If (MY >= DrawY) And (MY < DrawY + EXPLORER_NODE_HEIGHT) Then Begin
+    IISNodeHitTest := I;
+    Exit;
+   End;
+   DrawY := DrawY + EXPLORER_NODE_HEIGHT;
+   If DrawY >= IM.Y + IM.Height Then Break;
+   Inc(VisCount);
+  End;
+End;
+
+{ --- Menu contextuel clic droit de l'arbre IIS (2026-10-12) - meme patron  }
+{ exact que ShowSqlExplorerContextMenu : "Ajouter un site..." sur le        }
+{ dossier "Sites", "Ajouter un mappage..." sur le dossier "Mappages de      }
+{ gestionnaire", "Supprimer" sur un site ou un mappage existant. --- }
+Procedure ShowIISContextMenu(Var CM: TContextMenu; NodeIdx, MX, MY: Integer);
+Begin
+ InitContextMenu(CM);
+ CM.X := MX;
+ CM.Y := MY;
+ CM.NodeIdx := NodeIdx;
+ If (NodeIdx < 0) Or (NodeIdx >= IISMgr.NodeCount) Then Exit;
+ Case IISMgr.Nodes[NodeIdx].Kind Of
+  IISNK_SITES_FOLDER: AddContextItem(CM, 'Ajouter un site...', 1200);
+  IISNK_HANDLERS_FOLDER: AddContextItem(CM, 'Ajouter un mappage de gestionnaire...', 1201);
+  IISNK_SITE, IISNK_HANDLER: AddContextItem(CM, 'Supprimer', 1202);
+ End;
+ If CM.ItemCount > 0 Then CM.Visible := True;
+ DrawContextMenu(CM);
+End;
+
+{ --- Supprime le site/mappage du noeud actuellement selectionne (appele    }
+{ depuis le dispatch du tag 1202) - retrouve l'entree via DataIdx, la       }
+{ retire de Sites[]/Handlers[] (decalage, meme motif que l'ancien pied de   }
+{ page), sauvegarde IIS.CFG puis reconstruit l'arbre. --- }
+Procedure IIS_RemoveSelectedNode;
+Var
+ I, DataIdx: Integer;
+ Kind: TIISNodeKind;
+Begin
+ If (IISMgr.SelectedIdx < 0) Or (IISMgr.SelectedIdx >= IISMgr.NodeCount) Then Exit;
+ Kind := IISMgr.Nodes[IISMgr.SelectedIdx].Kind;
+ DataIdx := IISMgr.Nodes[IISMgr.SelectedIdx].DataIdx;
+ If (Kind <> IISNK_SITE) And (Kind <> IISNK_HANDLER) Then Exit;
+ If DataIdx < 0 Then Exit;
+ IIS_EnsureConfigLoaded;
+ If Kind = IISNK_SITE Then Begin
+  If DataIdx >= IISMgr.SiteCount Then Exit;
+  For I := DataIdx To IISMgr.SiteCount - 2 Do
+   IISMgr.Sites[I] := IISMgr.Sites[I + 1];
+  If IISMgr.SiteCount > 0 Then Dec(IISMgr.SiteCount);
+ End Else Begin
+  If DataIdx >= IISMgr.HandlerCount Then Exit;
+  For I := DataIdx To IISMgr.HandlerCount - 2 Do
+   IISMgr.Handlers[I] := IISMgr.Handlers[I + 1];
+  If IISMgr.HandlerCount > 0 Then Dec(IISMgr.HandlerCount);
+ End;
+ IISMgr.SelectedIdx := -1;
+ IIS_SaveConfig;
+ BuildIISTree(IISMgr);
+ IISMgr.NeedRepaint := True;
+End;
+
+Procedure HandleIISMouse(Var IM: TIISState; Ev: TEvent);
+Var
+ TreeW, HitIdx, TriLeft: Integer;
+Begin
+ If Ev.Kind <> EV_MOUSE_DOWN Then Exit;
+ TreeW := IISTreeWidth(IM);
+ { Clic droit : menu contextuel Ajouter/Supprimer (2026-10-12, meme         }
+ { patron exact que le clic droit de l'Explorateur SQL Server) - seulement  }
+ { dans la portion ARBRE, jamais dans le panneau de details a droite. }
+ If (Ev.MouseBtn = MB_RIGHT) And (Ev.MouseX < IM.X + TreeW) Then Begin
+  HitIdx := IISNodeHitTest(IM, Ev.MouseY);
+  If HitIdx >= 0 Then Begin
+   IM.SelectedIdx := HitIdx;
+   IM.NeedRepaint := True;
+   ShowIISContextMenu(CtxMenu, HitIdx, Ev.MouseX, Ev.MouseY);
+  End;
+  Exit;
+ End;
+ If Ev.MouseX >= IM.X + TreeW Then Exit; { panneau de details : lecture seule }
+ HitIdx := IISNodeHitTest(IM, Ev.MouseY);
+ If HitIdx < 0 Then Exit;
+ IM.SelectedIdx := HitIdx;
+ If IM.Nodes[HitIdx].HasChildren Then Begin
+  TriLeft := IM.X + 4 + IM.Nodes[HitIdx].Level * EXPLORER_INDENT;
+  If (Ev.MouseX >= TriLeft) And (Ev.MouseX < TriLeft + 10) Then
+   IISToggleNode(IM, HitIdx);
+ End;
+ IM.NeedRepaint := True;
+End;
+
+{ Note : la resolution "DNS + gestionnaire" (IISResolveTarget/              }
+{ IISRunHandlerIfMapped) est definie plus bas dans ce fichier, juste         }
+{ avant DisplayCurrentTarget qui les utilise - ces 2 fonctions ont besoin    }
+{ de IsRemoteURL/HTMLLowerCase/ExecuteCompiler/BROWSER_EXEC_TEMP_FILE/        }
+{ FTPEscapeText, tous definis dans la region chaines longues (AnsiString)     }
+{ du navigateur Web, qui commence APRES ce point-ci de l'unite (region        }
+{ chaines courtes ici) - un parametre "Var ... : String" doit correspondre    }
+{ EXACTEMENT au mode chaine actif a son PROPRE point de declaration,         }
+{ jamais a celui de l'appelant, d'ou ce placement physique juste a cote       }
+{ de leur unique appelant plutot qu'ici a cote de CreateIISWindow. }
 
 { ============================================================================
   EXPLORATEUR D OBJETS SQL SERVER (menu Affichage)
@@ -20166,6 +21065,8 @@ Begin
   { par-index comme HexEditors[]/FormEditors[]. }
  End Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then Begin
   { Rien a synchroniser : SqlExplorer est aussi un singleton global. }
+ End Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then Begin
+  { Rien a synchroniser : IISMgr est aussi un singleton global. }
  End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
   If WinMgr.ActiveNode^.GridEditor <> Nil Then
    WinMgr.ActiveNode^.GridEditor^ := ActiveGridEditor;
@@ -20238,6 +21139,8 @@ Begin
   { Rien a restaurer : ExtMgr est un singleton global. }
  End Else If Node^.Win.Kind = WK_SQLEXPLORER Then Begin
   { Rien a restaurer : SqlExplorer est aussi un singleton global. }
+ End Else If Node^.Win.Kind = WK_IIS Then Begin
+  { Rien a restaurer : IISMgr est aussi un singleton global. }
  End Else If Node^.Win.Kind = WK_GRID Then Begin
   If Node^.GridEditor <> Nil Then
    ActiveGridEditor := Node^.GridEditor^;
@@ -237555,6 +238458,8 @@ Begin
    SB.Language := 'Grille'
   Else If Node^.Win.Kind = WK_SQLEXPLORER Then
    SB.Language := 'SQL Server'
+  Else If Node^.Win.Kind = WK_IIS Then
+   SB.Language := 'IIS'
   Else If Node^.Win.Kind = WK_BROWSER Then
    SB.Language := 'Navigateur'
   Else
@@ -241807,6 +242712,8 @@ Begin
    DrawGridEditor(ActiveGridEditor)
   Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then
    DrawSqlExplorer(SqlExplorer)
+  Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then
+   DrawIIS(IISMgr)
   Else If WinMgr.ActiveNode^.Win.Kind = WK_BROWSER Then Begin
    { BOGUE REEL DE PERFORMANCE (2026-09-28, "5 minutes a chaque touche...
      il y a encore d'autres mecanismes") : DrawAllWidgets est appelee
@@ -241926,6 +242833,8 @@ Begin
   DrawInputBox(SqlNewConnDlg);
  If CreateTableDlg.Base.Visible Then
   DrawCreateTableDialog;
+ If IISFieldDlg.Base.Visible Then
+  DrawIISFieldDialog;
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
  { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) -
@@ -245655,6 +246564,20 @@ Begin
       InitCreateTableDialog(CtxMenu.NodeIdx);
       DrawCreateTableDialog;
      End;
+     { Menu contextuel (clic droit) de l'arbre "Outils > IIS" (2026-10-12)   }
+     { - voir ShowIISContextMenu ci-dessus dans le fichier. }
+     1200: Begin { Ajouter un site... }
+      InitIISFieldDialog(IIS_DLG_PURPOSE_SITE);
+      DrawIISFieldDialog;
+     End;
+     1201: Begin { Ajouter un mappage de gestionnaire... }
+      InitIISFieldDialog(IIS_DLG_PURPOSE_HANDLER);
+      DrawIISFieldDialog;
+     End;
+     1202: Begin { Supprimer (site ou mappage) }
+      IISMgr.SelectedIdx := CtxMenu.NodeIdx;
+      IIS_RemoveSelectedNode;
+     End;
      311, 411: Begin { Ajouter un fichier }
       InitFileDialog(FileDlg, False);
       LoadDirectoryFiles(FileDlg);
@@ -246125,6 +247048,17 @@ Begin
    DrawCreateTableDialog;
   Exit;
  End;
+ { "Ajouter..." de l onglet Outils > IIS (2026-10-11, demande explicite) -   }
+ { meme motif image-par-image exact que CreateTableDlg ci-dessus. }
+ If IISFieldDlg.Base.Visible Then Begin
+  HandleIISFieldDialogEvent(Ev);
+  If Not IISFieldDlg.Base.Visible Then Begin
+   ApplyIISFieldDialog;
+   FullRepaintNeeded := True;
+  End Else
+   DrawIISFieldDialog;
+  Exit;
+ End;
  { Sous-boite Ajouter/Modifier en premier : elle doit recevoir les
    evenements en priorite quand elle est ouverte par-dessus le
    gestionnaire de disques virtuels. }
@@ -246581,6 +247515,9 @@ Begin
     { Gestionnaire d extensions : pilote a la souris, aucune frappe traitee }
    End Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then Begin
     HandleSqlExplorerEvent(SqlExplorer, Ev);
+   End Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then Begin
+    { IIS : pilote a la souris (comme le Gestionnaire d extensions), aucune  }
+    { frappe traitee ici - voir IISFieldDlg plus haut pour la saisie texte.  }
    End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
     HandleGridEditorKey(ActiveGridEditor, Ev);
     If WinMgr.ActiveNode^.GridEditor <> Nil Then
@@ -246640,6 +247577,8 @@ Begin
      HandleExtManagerMouse(ExtMgr, Ev);
     End Else If WinMgr.ActiveNode^.Win.Kind = WK_SQLEXPLORER Then Begin
      HandleSqlExplorerEvent(SqlExplorer, Ev);
+    End Else If WinMgr.ActiveNode^.Win.Kind = WK_IIS Then Begin
+     HandleIISMouse(IISMgr, Ev);
     End Else If WinMgr.ActiveNode^.Win.Kind = WK_GRID Then Begin
      HandleGridEditorMouse(ActiveGridEditor, Ev);
      If WinMgr.ActiveNode^.GridEditor <> Nil Then
@@ -272034,6 +272973,109 @@ Begin
  ExpandHTMLIFrames:=ResultText
 End;
 
+{ --- Resolution "DNS + gestionnaire" IIS pour le Navigateur Web (voir      }
+{ DisplayCurrentTarget juste en-dessous, et TIISState/IISMgr pres de         }
+{ CreateIISWindow) : etant donne l'URL/cible navigee, determine si son        }
+{ "hote" correspond a un site IIS configure, et si oui calcule le             }
+{ chemin physique REEL a ouvrir. Ne considere JAMAIS un vrai chemin hote       }
+{ (lettre de lecteur, UNC, antislash) comme un hote virtuel - seul un           }
+{ antislash ABSENT et une correspondance EXACTE avec un nom de site             }
+{ configure declenche une interception, donc une vraie URL distante            }
+{ (http://google.com) ou un vrai chemin de fichier local ne sont JAMAIS         }
+{ affectes tant qu'aucun site du meme nom n'a ete configure. Definie ICI       }
+{ (region chaines longues/AnsiString du navigateur) plutot que pres de ses     }
+{ autres voisines IIS (region chaines courtes) : ses parametres Var String     }
+{ doivent correspondre EXACTEMENT au mode chaine de son unique appelant        }
+{ ci-dessous. --- }
+Function IISResolveTarget(Const TargetURL: String; Var PhysFile: String): Boolean;
+Var
+ S, HostPart, ReqPath: String;
+ SlashPos, ColonPos, I: Integer;
+Begin
+ IISResolveTarget := False;
+ PhysFile := '';
+ IIS_EnsureConfigLoaded;
+ If IISMgr.SiteCount = 0 Then Exit;
+ S := TargetURL;
+ If IsRemoteURL(S) Then Begin
+  If Copy(HTMLLowerCase(S), 1, 7) = 'http://' Then Delete(S, 1, 7)
+  Else If Copy(HTMLLowerCase(S), 1, 8) = 'https://' Then Delete(S, 1, 8);
+ End Else Begin
+  If Pos('\', S) > 0 Then Exit;         { vrai chemin hote - jamais intercepte }
+  If (Length(S) >= 2) And (S[2] = ':') Then Exit; { lettre de lecteur }
+ End;
+ SlashPos := Pos('/', S);
+ If SlashPos > 0 Then Begin
+  HostPart := Copy(S, 1, SlashPos - 1);
+  ReqPath := Copy(S, SlashPos + 1, Length(S) - SlashPos);
+ End Else Begin
+  HostPart := S;
+  ReqPath := '';
+ End;
+ ColonPos := Pos(':', HostPart);
+ If ColonPos > 0 Then HostPart := Copy(HostPart, 1, ColonPos - 1);
+ If TrimStr(HostPart) = '' Then Exit;
+ For I := 0 To IISMgr.SiteCount - 1 Do
+  If UpCaseStr(TrimStr(IISMgr.Sites[I].Name)) = UpCaseStr(TrimStr(HostPart)) Then Begin
+   PhysFile := IISMgr.Sites[I].PhysPath;
+   If (Length(PhysFile) > 0) And (PhysFile[Length(PhysFile)] <> '\') Then
+    PhysFile := PhysFile + '\';
+   If ReqPath = '' Then ReqPath := 'index.html';
+   PhysFile := PhysFile + ReqPath;
+   IISResolveTarget := True;
+   Exit;
+  End;
+End;
+
+{ --- Si l'extension du fichier resolu correspond a un mappage de            }
+{ gestionnaire ACTIF, EXECUTE reellement cet executable avec le fichier       }
+{ en argument et recupere sa VRAIE sortie standard (meme mecanisme exact       }
+{ que le prefixe "exec:" existant pour les .psp, voir plus bas dans           }
+{ DisplayCurrentTarget - ExecuteCompiler + fichier temporaire +                }
+{ LoadTextFileAsString) plutot que de servir le fichier source tel quel -      }
+{ c'est la partie "determiner quel script/executable appeler" demandee         }
+{ explicitement par l'utilisateur (technologies type .NET : le fichier         }
+{ .aspx n'est JAMAIS le vrai contenu a afficher, seule la sortie de son         }
+{ gestionnaire l'est). --- }
+Function IISRunHandlerIfMapped(Const PhysFile: String; Var Output: String): Boolean;
+Var
+ Ext: String;
+ I, ExitCode: Integer;
+ CmdLine: String;
+ TempF: File;
+Begin
+ IISRunHandlerIfMapped := False;
+ Output := '';
+ Ext := HTMLLowerCase(ExtractFileExt(PhysFile));
+ For I := 0 To IISMgr.HandlerCount - 1 Do
+  If IISMgr.Handlers[I].Enabled And
+     (HTMLLowerCase(TrimStr(IISMgr.Handlers[I].Extension)) = Ext) Then Begin
+   If Not IISValidExePath(IISMgr.Handlers[I].ExePath) Then Begin
+    Output := 'Erreur IIS : chemin d''executable de gestionnaire invalide.';
+    Exit;
+   End;
+   If Not FileExists(IISMgr.Handlers[I].ExePath) Then Begin
+    Output := 'Erreur IIS : executable de gestionnaire introuvable - ' +
+     IISMgr.Handlers[I].ExePath;
+    Exit;
+   End;
+   CmdLine := '"' + IISMgr.Handlers[I].ExePath + '" "' + PhysFile + '"';
+   ExitCode := ExecuteCompiler(CmdLine, BROWSER_EXEC_TEMP_FILE);
+   Output := LoadTextFileAsString(BROWSER_EXEC_TEMP_FILE);
+   {$I-}
+   Assign(TempF, BROWSER_EXEC_TEMP_FILE);
+   Erase(TempF);
+   {$I+}
+   If IOResult <> 0 Then ; { fichier temporaire deja absent, ignorer }
+   { Meme discipline que le prefixe "exec:" (.psp) plus bas : un code de      }
+   { sortie non nul est une VRAIE erreur du gestionnaire, pas seulement        }
+   { "aucune sortie" - sa propre sortie (souvent un message d'erreur utile)    }
+   { reste quand meme affichee, mais jamais interpretee comme un succes.      }
+   IISRunHandlerIfMapped := (ExitCode = 0) And (Length(Output) > 0);
+   Exit;
+  End;
+End;
+
 { Charger et afficher la cible courante. }
 Procedure DisplayCurrentTarget;
 Var
@@ -272054,6 +273096,8 @@ Var
  ExecExeName: String;
  ExecExitCode: Integer;
  ExecTempF: File;
+ IISPhysFile: String;
+ IISOutput: String;
  {$IFDEF WINDOWS}
  PageBody: String;
  StatusCode: LongInt;
@@ -272261,6 +273305,34 @@ Begin
   End Else Begin
    MessageText := '<html><body><h2>Erreur PDF</h2><p>Impossible de lire ou d''analyser : ' +
     CurrentURL + '</p></body></html>';
+   If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  End;
+  FreeHTMLSource(HTML);
+  Exit;
+ End;
+
+ { "IIS" (2026-10-11, demande explicite de l'utilisateur, voir Outils >   }
+ { IIS/IISResolveTarget juste apres CreateExtManagerWindow) : si l'hote     }
+ { de CurrentURL correspond a un site IIS configure, resout VRAIMENT         }
+ { localement (jamais de reseau, jamais un vrai serveur) - le fichier         }
+ { physique obtenu est execute par son gestionnaire mappe s'il y en a un      }
+ { (meme mecanisme exact que le prefixe "exec:" ci-dessus), sinon servi tel    }
+ { quel comme n'importe quel fichier local. AUCUN site configure (le cas       }
+ { par defaut) => IISResolveTarget echoue immediatement et ce bloc entier       }
+ { ne change rien au comportement existant. }
+ If IISResolveTarget(CurrentURL, IISPhysFile) Then Begin
+  If IISRunHandlerIfMapped(IISPhysFile, IISOutput) Then Begin
+   If SetHTMLSourceFromString(IISOutput, HTML) Then TestHTMLRender(HTML);
+  End Else If IISOutput <> '' Then Begin
+   { Un gestionnaire etait mappe mais a echoue (chemin invalide/introuvable) }
+   MessageText := '<html><body><h2>Erreur IIS</h2><pre>' +
+    FTPEscapeText(IISOutput) + '</pre></body></html>';
+   If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
+  End Else If LoadHTMLFile(IISPhysFile, HTML) Then Begin
+   TestHTMLRender(HTML);
+  End Else Begin
+   MessageText := '<html><body><h2>Erreur IIS</h2><p>Site resolu mais ' +
+    'fichier introuvable : ' + IISPhysFile + '</p></body></html>';
    If SetHTMLSourceFromString(MessageText, HTML) Then TestHTMLRender(HTML);
   End;
   FreeHTMLSource(HTML);
@@ -274082,6 +275154,7 @@ BEGIN
  InitToolBar;
  InitExplorerIcons;
  InitSqlExplorerIcons;
+ InitIISIcons;
  DrawToolBar;
  InitWindowManager;
  DrawWindowTabs;
