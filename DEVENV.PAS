@@ -8211,6 +8211,14 @@ Var
  { Deboguer > Commandes... : console de commandes SoftICE/Visual Studio/GDB }
  EmuCmdConsole : TEmuCmdConsole;
  EmuCmdConsoleArmOnLoad : Boolean;
+ { "DEBUG ... /SOFTICE:fichier" (2026-10-12, demande explicite de            }
+ { l'utilisateur - executer un script de commandes SoftICE SANS souris/       }
+ { clavier reel, pour piloter le Debogueur depuis un .bat lance via           }
+ { /TERMINALDOS: - voir EmuDbg_LoadScriptFile/EmuDbg_PumpPauseScript). }
+ EmuDbgScriptArmOnLoad : String;
+ EmuDbgScriptLines     : Array[0..199] Of String;
+ EmuDbgScriptCount     : Integer;
+ EmuDbgScriptPos       : Integer;  { -1 = aucun script actif }
  { Contexte compilateur C# }
  CSCContext     : TCSCCompilerContext;
  { Contexte compilateur VB.NET }
@@ -14325,6 +14333,8 @@ Procedure RunDisassemblerOnEmulatorBinary; Forward;
 Procedure EmuDbg_Init; Forward;
 Procedure EmuDbg_Continue; Forward;
 Procedure EmuDbg_Stop; Forward;
+Procedure EmuDbg_LoadScriptFile(Const Path: String); Forward;
+Procedure EmuDbg_DumpConsoleTranscript; Forward;
 Procedure EmuDbg_StepInto; Forward;
 Procedure EmuDbg_StepOver; Forward;
 Procedure EmuDbg_StepOut; Forward;
@@ -168186,7 +168196,7 @@ Var
  BPErr1, BPErr2, BPErr3, BPErr4: Word;
  BPN, BPLen: LongInt;
  BPIdx: Integer;
- ArgCmd3, ArgCmd4: String;
+ ArgCmd3, ArgCmd4, ArgCmd5: String;
  PSCmdID: Word;
  GulamAliasI: Integer;
  Os9BuildF: File;
@@ -168273,6 +168283,9 @@ Begin
  { "disque hote uniquement" que le repli generique "commande inconnue ->   }
  { executable" plus bas (lecteurs virtuels non geres ici). }
  If CurrCmd = 'DEBUG' Then Begin
+  { Jamais d'arme residuelle d'un precedent DEBUG sans /SOFTICE: - voir       }
+  { EmuDbg_LoadScriptFile/EmuDbg_PumpPauseScript. }
+  EmuDbgScriptArmOnLoad := '';
   ArgFile := TermExtractParam(ParamStr, 1);
   ArgSwitch := TermExtractParam(ParamStr, 2);
   If (UpCaseStr(ArgFile) = '/?') Or (UpCaseStr(ArgSwitch) = '/?') Then Begin
@@ -168300,13 +168313,34 @@ Begin
    TermAddLine(TP, '                debogueur (SoftICE/Visual Studio/GDB),');
    TermAddLine(TP, '                entre le panneau emulateur et le debogueur.');
    TermAddLine(TP, '                Implique /GUI (inutile de le repeter).');
+   TermAddLine(TP, '  /SOFTICE:fichier  Execute automatiquement, des la pause,');
+   TermAddLine(TP, '                une commande SoftICE par ligne de fichier');
+   TermAddLine(TP, '                (lignes vides et lignes debutant par ; ou #');
+   TermAddLine(TP, '                ignorees) - exactement comme si chaque ligne');
+   TermAddLine(TP, '                avait ete tapee dans la Console de commandes');
+   TermAddLine(TP, '                (BPX/G/WATCH/D/U/R/...). Une commande "G"');
+   TermAddLine(TP, '                relance reellement l''execution jusqu''au');
+   TermAddLine(TP, '                prochain arret, ou le script reprend ensuite');
+   TermAddLine(TP, '                ses lignes suivantes. Implique /CMD (inutile');
+   TermAddLine(TP, '                de le repeter). Combine avec /TERMINALDOS:');
+   TermAddLine(TP, '                (commande DEVENV.exe), cela permet de rejouer');
+   TermAddLine(TP, '                toute une enquete SANS souris ni clavier reel.');
    TermAddLine(TP, '  Exemples : DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:265B');
    TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:B6A2:50');
    TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /BP:201F:30BD::256');
    TermAddLine(TP, '             DEBUG C:\SYMANTEC\NC3\NC.EXE /GUI /CMD');
+   TermAddLine(TP, '             DEBUG TURBO.EXE /SOFTICE:enquete.txt');
    Exit;
   End;
-  If (ArgFile = '') Or (UpCaseStr(ArgSwitch) <> '/GUI') Then
+  { BOGUE REEL CORRIGE (2026-10-12, signale par l'utilisateur) : "/CMD      }
+  { implique /GUI (inutile de le repeter)" est documente ci-dessus (aide    }
+  { /?) mais n'etait JAMAIS honore ici - seul /GUI litteral en position 2   }
+  { etait accepte, rejetant "DEBUG fichier /CMD" avec l'erreur de syntaxe   }
+  { generique alors que la commande devrait reconnaitre /CMD seul, pile ce  }
+  { que l'aide promet. }
+  If (ArgFile = '') Or
+     ((UpCaseStr(ArgSwitch) <> '/GUI') And (UpCaseStr(ArgSwitch) <> '/CMD') And
+      (Not ((Length(ArgSwitch) > 9) And (UpCaseStr(Copy(ArgSwitch, 1, 9)) = '/SOFTICE:')))) Then
    TermAddLine(TP, 'Syntaxe : DEBUG <fichier.exe|.com|.prg|.xex> /GUI [/BP:SEG:OFS[:N]]')
   Else If TP.VirtDrive >= 0 Then
    TermAddLine(TP,
@@ -168346,8 +168380,30 @@ Begin
       ci-dessous, consomme dans CreateEmulatorTab. }
     ArgCmd3 := TermExtractParam(ParamStr, 3);
     ArgCmd4 := TermExtractParam(ParamStr, 4);
-    If (UpCaseStr(ArgCmd3) = '/CMD') Or (UpCaseStr(ArgCmd4) = '/CMD') Then
+    ArgCmd5 := TermExtractParam(ParamStr, 5);
+    If (UpCaseStr(ArgSwitch) = '/CMD') Or (UpCaseStr(ArgCmd3) = '/CMD') Or
+       (UpCaseStr(ArgCmd4) = '/CMD') Or (UpCaseStr(ArgCmd5) = '/CMD') Then
      EmuCmdConsoleArmOnLoad := True;
+    { "/SOFTICE:fichier" (2026-10-12, demande explicite) - meme souplesse de  }
+    { position que /CMD ci-dessus (n'importe laquelle des positions 2 a 5) ; }
+    { implique /CMD (le script a besoin du dialecte/etat de la Console de    }
+    { commandes, meme si elle reste a l'ecran sans jamais recevoir de clic    }
+    { ni de frappe reelle) - voir EmuDbg_LoadScriptFile/PumpPauseScript. }
+    If (Length(ArgSwitch) > 9) And (UpCaseStr(Copy(ArgSwitch, 1, 9)) = '/SOFTICE:') Then
+     EmuDbgScriptArmOnLoad := Copy(ArgSwitch, 10, Length(ArgSwitch) - 9)
+    Else If (Length(ArgCmd3) > 9) And (UpCaseStr(Copy(ArgCmd3, 1, 9)) = '/SOFTICE:') Then
+     EmuDbgScriptArmOnLoad := Copy(ArgCmd3, 10, Length(ArgCmd3) - 9)
+    Else If (Length(ArgCmd4) > 9) And (UpCaseStr(Copy(ArgCmd4, 1, 9)) = '/SOFTICE:') Then
+     EmuDbgScriptArmOnLoad := Copy(ArgCmd4, 10, Length(ArgCmd4) - 9)
+    Else If (Length(ArgCmd5) > 9) And (UpCaseStr(Copy(ArgCmd5, 1, 9)) = '/SOFTICE:') Then
+     EmuDbgScriptArmOnLoad := Copy(ArgCmd5, 10, Length(ArgCmd5) - 9);
+    If EmuDbgScriptArmOnLoad <> '' Then Begin
+     EmuCmdConsoleArmOnLoad := True;
+     If Not FileExists(EmuDbgScriptArmOnLoad) Then
+      TermAddLine(TP, 'Attention : script SoftICE introuvable : ' + EmuDbgScriptArmOnLoad)
+     Else
+      TermAddLine(TP, 'Script SoftICE arme : ' + EmuDbgScriptArmOnLoad);
+    End;
     EmuDbgArmPauseOnLoad := True;
     CreateEmulatorTab(DbgPath, DbgTarget, '');
     { Parametre optionnel /BP:SEG:OFS (hexa, ex. /BP:201F:265B) : pose un   }
@@ -185304,7 +185360,7 @@ End;
 { EmuDriveCwd change. Chemin DOS tronque a 64 caracteres utiles (67 octets  }
 { de champ moins "X:\" et le NUL final) - limite honnete plutot que de       }
 { risquer un debordement du champ curdir_text reel. }
-Procedure Emu_CdsRefreshPath(Var P: TEmulatorPanel; Idx: Integer);
+Procedure Emu_CdsRefreshPath(Var C: TEmuCPU; Idx: Integer);
 Var Seg, Ofs: Word; PathStr: String; J: Integer;
 Begin
  If (Idx < 0) Or (Idx >= EMU_CDS_COUNT) Then Exit;
@@ -185313,8 +185369,46 @@ Begin
  PathStr := Chr(Ord('A') + Idx) + ':\' + EmuDriveCwd[Idx];
  If Length(PathStr) > 66 Then PathStr := Copy(PathStr, 1, 66);
  For J := 1 To 67 Do
-  If J <= Length(PathStr) Then Emu_WriteByte(P.CPU, Seg, Ofs + J - 1, Byte(PathStr[J]))
-  Else Emu_WriteByte(P.CPU, Seg, Ofs + J - 1, 0);
+  If J <= Length(PathStr) Then Emu_WriteByte(C, Seg, Ofs + J - 1, Byte(PathStr[J]))
+  Else Emu_WriteByte(C, Seg, Ofs + J - 1, 0);
+End;
+
+{ --- BOGUE REEL (2026-10-12, signale par l'utilisateur : TPC.EXE lance    }
+{ depuis C:\LANGAGE\TP6\ via le Terminal "Norton Commander" natif ne        }
+{ trouvait pas TURBO.TPL, pourtant present dans ce meme repertoire).        }
+{ Cause racine : EmuExeDir (repertoire REEL du fichier charge, deja         }
+{ utilise par Emu_HostPath comme repli pour une OUVERTURE relative          }
+{ implicite) et EmuDriveCwd/CDS (consulte par AH=47h "Get Current           }
+{ Directory", la methode REELLEMENT employee par TPC.EXE pour localiser     }
+{ TURBO.TPL - meme technique que les vrais outils Borland de cette          }
+{ epoque) etaient 2 etats COMPLETEMENT deconnectes : EmuDriveCwd reste a     }
+{ la racine ('') tant qu'aucun CHDIR explicite (AH=3Bh) n'a ete emis PAR     }
+{ LE PROGRAMME INVITE lui-meme - correct pour un vrai DOS ou COMMAND.COM     }
+{ a deja fait ce CHDIR avant l'EXEC, mais le lanceur natif ici (le shell     }
+{ Terminal "Norton Commander", code Pascal natif de ce projet, PAS un        }
+{ vrai NC.EXE invite) ne passe jamais par INT 21h AH=3Bh - rien ne           }
+{ synchronisait donc jamais EmuDriveCwd avec le repertoire reel de           }
+{ lancement. Corrige en seedant EmuDriveCwd/CDS depuis EmuExeDir au          }
+{ chargement de PREMIER NIVEAU (McbInit=True) UNIQUEMENT - un enfant EXEC    }
+{ (McbInit=False) doit au contraire HERITER du repertoire courant deja       }
+{ actif, exactement comme un vrai DOS (COMMAND.COM n'effectue aucun CHDIR    }
+{ implicite pour un enfant). --- }
+Procedure Emu_CdsSyncToExeDir(Var C: TEmuCPU; Const ExeDir: String);
+Var
+ DriveIdx: Integer;
+ RelPath: String;
+Begin
+ If Length(ExeDir) = 0 Then Exit;
+ RelPath := ExeDir;
+ If (Length(RelPath) >= 2) And (RelPath[2] = ':') Then Begin
+  DriveIdx := Ord(UpCase(RelPath[1])) - Ord('A');
+  Delete(RelPath, 1, 2);
+ End Else
+  DriveIdx := 2; { C: par defaut, meme convention que AH=47h DL=0 }
+ If (Length(RelPath) > 0) And (RelPath[1] = '\') Then Delete(RelPath, 1, 1);
+ If (DriveIdx < 0) Or (DriveIdx >= EMU_CDS_COUNT) Then Exit;
+ EmuDriveCwd[DriveIdx] := RelPath;
+ Emu_CdsRefreshPath(C, DriveIdx);
 End;
 
 { SFT (System File Table, 59 octets/entree DOS 4.0+ avec UID/PID/MFT) -     }
@@ -185514,6 +185608,7 @@ Begin
    EmuExeDir := Copy(FileName, 1, I - 1);
    Break;
   End;
+ If McbInit Then Emu_CdsSyncToExeDir(C, EmuExeDir);
  { Construire un PSP minimal }
  FillChar(PSP, SizeOf(PSP), 0);
  PSP.Int20h := $20CD;
@@ -185672,6 +185767,7 @@ Begin
    EmuExeDir := Copy(FileName, 1, I - 1);
    Break;
   End;
+ If McbInit Then Emu_CdsSyncToExeDir(C, EmuExeDir);
  C.IP := Exe.IP;
  C.Segs.CS := Word(LoadSeg + Exe.OfsLoad);
  C.Segs.DS := PSPSeg;        { au demarrage DS = ES = PSPSeg }
@@ -194745,7 +194841,7 @@ Begin
       Else
        NewCwd := '';
       EmuDriveCwd[CdsIdx] := NewCwd;
-      Emu_CdsRefreshPath(P, CdsIdx);
+      Emu_CdsRefreshPath(P.CPU, CdsIdx);
      End;
     End Else
      Emu_SetDosErr(P, 3);
@@ -225042,6 +225138,14 @@ Var
  LogF_R: Text;
  Idx_R, KK_R: Integer;
 Begin
+ { "DEBUG ... /SOFTICE:fichier" (2026-10-12) : si la derniere ligne du       }
+ { script etait un "G" qui a fait tourner le programme jusqu'a SA PROPRE     }
+ { fin (succes ou faute CPU) plutot que jusqu'a un prochain point d'arret,    }
+ { EmuDbg_EnterPause n'est plus jamais rappelee - vider quand meme la        }
+ { transcription ICI pour que EMUSOFTICE.LOG reflete toujours le DERNIER     }
+ { etat connu, meme dans ce cas. Sans rapport avec DosLogDiag (toujours      }
+ { ecrit si un script etait actif, pas seulement sur demande). }
+ If EmuCmdConsole.Base.Visible Then EmuDbg_DumpConsoleTranscript;
  P.Fault := P.CPU.Fault;
  { Resume EMUDIAG.LOG de fin de session - voir Options > Emulateur >      }
  { DOS: Debug (DosLogDiag) pour activer/desactiver. Ecrit systematiquement }
@@ -228309,6 +228413,20 @@ Begin NesActive := False;
    ShowEmuCmdConsole(EmuCmdConsole);
    EmuCmdConsoleArmOnLoad := False;
   End;
+  { "DEBUG ... /SOFTICE:fichier" : charge le script maintenant que la         }
+  { Console de commandes vient d'etre initialisee (ShowEmuCmdConsole) -       }
+  { voir EmuDbg_LoadScriptFile/EmuDbg_PumpPauseScript. }
+  If EmuDbgScriptArmOnLoad <> '' Then Begin
+   EmuDbg_LoadScriptFile(EmuDbgScriptArmOnLoad);
+   EmuDbgScriptArmOnLoad := '';
+   { BOGUE REEL trouve EN TESTANT CE CHANTIER (2026-10-12) : un appel a       }
+   { EmuPanel_TryResume ICI echouait TOUJOURS silencieusement (son garde      }
+   { `P.Loaded` reste False jusqu'a la toute fin de cette MEME procedure,     }
+   { voir "P.Loaded := True" bien plus bas) - deplace donc dans              }
+   { CreateEmulatorTab, APRES le retour de ShowEmulatorPanel (voir            }
+   { commentaire jumeau la-bas), le seul point ou P.Loaded est deja garanti   }
+   { vrai pour TOUTES les cibles, DOS (-CD) incluse. }
+  End;
  End;
  P.Fault := 0;
  { Correctif 2026-08-16 (signale par l utilisateur : "ABAP86 ../../samples/  }
@@ -230951,6 +231069,15 @@ Begin
  Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  ShowEmulatorPanel(EmuPanel, BinaryPath, TargetCPU, Args);
+ { "DEBUG ... /SOFTICE:fichier" (2026-10-12) : amorcer la toute premiere     }
+ { instruction maintenant que ShowEmulatorPanel est revenue (donc           }
+ { EmuPanel.Loaded garanti vrai, meme pour DOS -CD/-CP - voir le             }
+ { commentaire jumeau a l'ancien site d'appel, dans ShowEmulatorPanel) -     }
+ { sans cela, un script resterait fige pour toujours a "Charge, en attente   }
+ { (F5 pour demarrer le debogage)" puisque EmuDbg_EnterPause (seul           }
+ { endroit qui consomme le script, voir EmuDbg_PumpPauseScript) n'est        }
+ { rappelee qu'au premier PAS REEL. }
+ If EmuDbgScriptPos >= 0 Then EmuPanel_TryResume;
  Node^.EmuTab := EmuPanel;
  If TargetCPU = '-CC64' Then C64_SaveState(Node^.C64Snap)
  Else If TargetCPU = '-CNES' Then Nes_SaveState(Node^.NesSnap)
@@ -246135,6 +246262,98 @@ Begin
  End;
 End;
 
+{ --- Ecrit (ecrase) TOUT l'historique de sortie actuel de la Console de    }
+{ commandes (OutHead..OutTail, le meme texte que ce qui serait visible a    }
+{ l'ecran) dans EMUSOFTICE.LOG - seul moyen de lire le resultat d'un        }
+{ script /SOFTICE: sans jamais avoir besoin d'une capture d'ecran, puisque  }
+{ EmuCmdConsole_AddLine n'alimente qu'une liste chainee EN MEMOIRE (voir     }
+{ TEmuCmdConsole.OutHead), jamais un fichier. Appelee a chaque reprise de    }
+{ script (EmuDbg_PumpPauseScript) - reecrit le fichier EN ENTIER plutot      }
+{ qu'ajouter seulement les nouvelles lignes : plus simple, et la console      }
+{ reste de toute facon de taille modeste pour une enquete ponctuelle. --- }
+Procedure EmuDbg_DumpConsoleTranscript;
+Var
+ F: Text;
+ Node: PEmuCmdLine;
+Begin
+ {$I-} Assign(F, 'EMUSOFTICE.LOG'); Rewrite(F); {$I+}
+ If IOResult <> 0 Then Exit;
+ Node := EmuCmdConsole.OutHead;
+ While Node <> Nil Do Begin
+  WriteLn(F, Node^.S);
+  Node := Node^.Next;
+ End;
+ {$I-} Close(F); {$I+} If IOResult <> 0 Then ;
+End;
+
+{ --- "DEBUG ... /SOFTICE:fichier" (2026-10-12, demande explicite de         }
+{ l'utilisateur) : charge un script texte, une commande SoftICE par ligne   }
+{ (lignes vides ignorees) - consomme par EmuDbg_PumpPauseScript ci-dessous, }
+{ jamais directement par l'utilisateur. Chemin resolu par l'appelant        }
+{ (TermCmd_DEBUG) AVANT d'etre stocke dans EmuDbgScriptArmOnLoad - ce       }
+{ chargement n'a donc jamais besoin de connaitre le repertoire courant. --- }
+Procedure EmuDbg_LoadScriptFile(Const Path: String);
+Var
+ F: Text;
+ Line: String;
+Begin
+ EmuDbgScriptCount := 0;
+ EmuDbgScriptPos := -1;
+ If Path = '' Then Exit;
+ {$I-}
+ Assign(F, Path);
+ Reset(F);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ While (Not Eof(F)) And (EmuDbgScriptCount < 200) Do Begin
+  ReadLn(F, Line);
+  Line := TrimStr(Line);
+  If (Length(Line) > 0) And (Line[1] <> ';') And (Line[1] <> '#') Then Begin
+   EmuDbgScriptLines[EmuDbgScriptCount] := Line;
+   Inc(EmuDbgScriptCount);
+  End;
+ End;
+ {$I-} Close(F); {$I+} If IOResult <> 0 Then ;
+ If EmuDbgScriptCount > 0 Then EmuDbgScriptPos := 0;
+End;
+
+{ --- Variante script de EmuDbg_PumpPause (meme role : appelee depuis        }
+{ EmuDbg_EnterPause tant que le debogueur est en pause) - au lieu           }
+{ d'attendre un vrai evenement souris/clavier (PollEvents), consomme les     }
+{ lignes du script courant en appelant EmuCmdConsole_Submit DIRECTEMENT,     }
+{ exactement comme si l'utilisateur les avait tapees une a une dans la      }
+{ Console de commandes puis appuye sur Entree a chaque fois - AUCUNE des    }
+{ commandes existantes (BPX/G/WATCH/D/U/R...) n'a besoin d'etre modifiee,    }
+{ EmuCmdConsole_Submit ne verifie ni Visible ni WinFocused. Une commande     }
+{ "G" (EmuCmdConsole_CmdG) appelle EmuDbg_Continue, qui remet EmuDbg.Paused  }
+{ a False - la boucle ci-dessous s'arrete alors naturellement, laissant      }
+{ l'execution REELLE reprendre normalement jusqu'au prochain point d'arret   }
+{ (qui rappelera EmuDbg_EnterPause, et donc cette meme fonction si des       }
+{ lignes de script restent). Si le script s'epuise SANS "G" final (ex. un    }
+{ script qui ne fait qu'inspecter l'etat puis s'arrete), on retombe sur la   }
+{ pause interactive normale plutot que de laisser l'IDE parraitre fige. --- }
+Procedure EmuDbg_PumpPauseScript;
+Begin
+ EmuDbg.WinVisible := True;
+ While (EmuDbgScriptPos >= 0) And (EmuDbgScriptPos < EmuDbgScriptCount) And
+       EmuDbg.Paused And (Not QuitRequested) Do Begin
+  EmuCmdConsole.InputText := EmuDbgScriptLines[EmuDbgScriptPos];
+  EmuCmdConsole.InputCursor := Length(EmuCmdConsole.InputText);
+  Inc(EmuDbgScriptPos);
+  EmuCmdConsole_Submit(EmuCmdConsole);
+ End;
+ EmuDbg_DumpConsoleTranscript;
+ If EmuDbgScriptPos >= EmuDbgScriptCount Then Begin
+  { Script epuise : desarme pour de bon (sinon un EVENTUEL futur arret de    }
+  { pause, meme sans rapport, retenterait de consommer un tableau vide). }
+  EmuDbgScriptPos := -1;
+ End;
+ { Script epuise sans commande "G"/continue finale : repasser en mode        }
+ { interactif normal plutot que de laisser l'IDE paraitre fige sans aucune   }
+ { boucle d'evenements active. }
+ If EmuDbg.Paused Then EmuDbg_PumpPause;
+End;
+
 { --- Entrer en pause : appele par les hooks pre-step des emulateurs --- }
 
 Procedure EmuDbg_EnterPause(ACPU: TEmuDbgCPU);
@@ -246163,7 +246382,10 @@ Begin
    deja pour ce cas). Permet de voir tout ce qui a mene a un point d arret
    PRECIS (ex. /BP:SEG:OFS:N) sans devoir laisser tourner jusqu a la fin. }
  If OptionsDlg.Data.DosLogDiag Then Emu_DumpTrace;
- EmuDbg_PumpPause;
+ { "DEBUG ... /SOFTICE:fichier" : tant qu'un script est arme (EmuDbgScriptPos }
+ { >= 0), consommer ses lignes directement plutot que d'attendre un vrai     }
+ { evenement souris/clavier - voir EmuDbg_PumpPauseScript. }
+ If EmuDbgScriptPos >= 0 Then EmuDbg_PumpPauseScript Else EmuDbg_PumpPause;
  { Sortie de pause : redessiner toute l interface puis le panneau
    emulateur afin que la zone qui etait sous la fenetre debug soit
    restauree avant de relancer la boucle CPU. Les emulateurs avec
