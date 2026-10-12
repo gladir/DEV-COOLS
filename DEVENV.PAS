@@ -239054,6 +239054,21 @@ Begin
   { ExitCode (jamais affectee ici, resterait indeterminee). }
   Exit;
  End
+ Else If (Ext = '.html') Or (Ext = '.htm') Then Begin
+  { HTML statique (2026-10-11, demande explicite de l'utilisateur) : F5    }
+  { ouvre directement un onglet "Navigateur Web" sur le fichier LUI-MEME   }
+  { (chemin hote brut, aucun schema - DisplayCurrentTarget/WK_BROWSER le   }
+  { charge deja comme un fichier local des que IsRemoteURL() est faux,     }
+  { meme mecanisme que la commande Terminal BROWSER FILE) plutot que de    }
+  { tenter une compilation - contrairement a .psp (schema "exec:", qui      }
+  { regenere le HTML a CHAQUE navigation via PSPCW32), du HTML statique n a }
+  { besoin d aucune etape de generation. }
+  CreateBrowserWindow(SourceFile);
+  { Sortie explicite : meme raison que les scripts interpretes ci-dessus -  }
+  { aucun ExeName/ExitCode n est jamais affecte ici, ne jamais tomber dans  }
+  { l epilogue partage "Afficher le resultat". }
+  Exit;
+ End
  Else Begin
   AppendOutput(OutputPanel,
    'Erreur : type de fichier non supporte (' + Ext + ').',
