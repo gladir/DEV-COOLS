@@ -206828,12 +206828,37 @@ Const
  { AH=C2h/10h-12h), pas SI un vecteur existe. }
  Always: Array[0..11] Of Byte =
   ($08,$10,$11,$12,$13,$15,$16,$1A,$20,$21,$27,$2F);
+ { Signature standard LIM EMS 3.2+ (voir commentaire plus bas, bogue EMS). }
+ EmuEmsSignature: Array[0..7] Of Char = 'EMMXXXX0';
 Var I: Integer;
 Begin
  For I := 0 To 11 Do Emu_WriteDefaultVector(P, Always[I]);
  If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
- If EmuEms.Active     Then Emu_WriteDefaultVector(P, $67);
+ If EmuEms.Active     Then Begin
+  Emu_WriteDefaultVector(P, $67);
+  { BOGUE REEL (2026-10-12, enquete TURBO.EXE/TP6 - voir                   }
+  { [[project_devenv_turbo6_divzero_investigation]]) : un vrai pilote EMS  }
+  { (EMM386, QEMM...) s'installe TOUJOURS comme un pilote de peripherique  }
+  { DOS dont l'en-tete (18 octets) commence a l'offset 0 du SEGMENT que    }
+  { pointe le vecteur INT 67h, avec le nom du pilote (8 caracteres, PAS de }
+  { zero terminal) a l'offset +$0A = "EMMXXXX0" - c'est la methode de      }
+  { detection LIM EMS 3.2+ standard (AH=35h,AL=$67 -> ES:BX puis comparer  }
+  { ES:[$0A..$11]) utilisee par TOUT programme EMS-aware, y compris TP6.   }
+  { Notre trampoline (Emu_WriteDefaultVector) ne pose que "CD 67 CF" a     }
+  { EMU_DEFAULT_IVT_OFS0+$67*4=$049C, SANS aucun en-tete/signature - un    }
+  { programme qui verifie correctement la signature (au lieu de juste      }
+  { tester si le vecteur est non-nul) conclut a tort qu'aucun EMS reel     }
+  { n'est installe et bascule sur un chemin sans EMS. Offsets $000A-$0011  }
+  { du segment partage EMU_DEFAULT_IVT_SEG sont libres (EMU_DEFAULT_IVT_OFS0}
+  { =$0300, aucun autre trampoline n'descend en dessous). }
+  Emu_WriteWord(P.CPU, EMU_DEFAULT_IVT_SEG, $00, $FFFF); { NextDevice ofs }
+  Emu_WriteWord(P.CPU, EMU_DEFAULT_IVT_SEG, $02, $FFFF); { NextDevice seg }
+  Emu_WriteWord(P.CPU, EMU_DEFAULT_IVT_SEG, $04, $8000); { Attributs : peripherique caractere }
+  Emu_WriteWord(P.CPU, EMU_DEFAULT_IVT_SEG, $06, EMU_DEFAULT_IVT_OFS0 + Word($67) * 4); { Strategy }
+  Emu_WriteWord(P.CPU, EMU_DEFAULT_IVT_SEG, $08, EMU_DEFAULT_IVT_OFS0 + Word($67) * 4); { Interrupt }
+  Emu_WriteBlock(P.CPU, EMU_DEFAULT_IVT_SEG, $0A, EmuEmsSignature, 8);
+ End;
  If EmuIpx.Active     Then Emu_WriteDefaultVector(P, $7A);
  If EmuNetBios.Active Then Emu_WriteDefaultVector(P, $5C);
  { INT 41h/46h : table de parametres du disque fixe, voir                   }
