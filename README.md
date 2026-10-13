@@ -978,6 +978,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer l'analyseur statique de bytecode Java.</td>
 		</tr>
 		<tr>
+			<td><b>SQL4CDS.PAS</b></td>
+			<td> Cette commande permet de lancer le convertisseur SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP (Dataverse).</td>
+		</tr>
+		<tr>
 			<td><b>SQLCMD.PAS</b></td>
 			<td>Cette commande permet de lancer un clone SQL Server en ligne de commande. Lit directement dans un fichier «.MDF».</td>
 		</tr>
