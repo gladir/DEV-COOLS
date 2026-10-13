@@ -18,7 +18,9 @@ Program SQL4CDS(Input,Output);
   Sans arguments : lecture de l'entree standard jusqu'a EOF.
 
   SELECT [DISTINCT] [TOP n] colonnes FROM [dbo.]entite [AS alias]
-  INNER/LEFT JOIN entite alias ON alias.colonne = alias.colonne
+  INNER/LEFT/RIGHT JOIN entite alias ON alias.colonne = alias.colonne
+  ON accepte des conditions AND supplementaires sur la table liee.
+  RIGHT JOIN est limite a une jointure entre deux tables.
   WHERE : AND, OR, parentheses, =, <>, !=, <, <=, >, >=,
           [NOT] LIKE, [NOT] IN, [NOT] BETWEEN, IS [NOT] NULL.
   ORDER BY colonnes [ASC|DESC]; GROUP BY colonnes;
@@ -42,10 +44,11 @@ Program SQL4CDS(Input,Output);
   DELETE genere une requete HTTP DELETE par GUID, sans corps JSON.
   Un seul SELECT, INSERT, UPDATE ou DELETE. Pas de sous-requetes, HAVING, fonctions scalaires,
   expressions calculees, UNION, parametres ou negation d'un groupe.
-  Les jointures ON sont une egalite entre colonnes, sans autre predicat.
+  ON : egalite entre colonnes qualifiees, puis AND (filtres table liee).
+  Pas de FULL/CROSS JOIN, ni de cle de jointure composite.
   Les colonnes non qualifiees designent l'entite principale.
   Limites verifiees : SQL/XML 30000 octets, 1024 jetons, 255 octets
-  par jeton, 32 entites, 128 projections/tris, 256 noeuds WHERE.
+  par jeton, 16 entites (15 jointures), 128 projections/tris, 256 noeuds WHERE/ON.
   Les buffers et jetons sont alloues sur le tas pour Turbo Pascal.
   Arguments limites a 254 octets; utiliser -i pour les requetes longues.
   Fichiers UTF-8 (avec ou sans BOM); octets UTF-8 preserves.
@@ -57,7 +60,7 @@ Program SQL4CDS(Input,Output);
 {$M 32768,0,655360}
 {$R+}
 Uses DOS;
-Const MaxBuf=30000; MaxTok=1024; MaxEntity=32; MaxField=128;
+Const MaxBuf=30000; MaxTok=1024; MaxEntity=16; MaxField=128;
       MaxNode=256;
 Type
  PStr=^String;
@@ -67,7 +70,7 @@ Type
  TTokens=Array[1..MaxTok] of TToken;
  PTokens=^TTokens;
  TEntity=Record Name,AliasName,FromCol,ToCol:String[80];
-                Parent:Integer; OuterJoin:Boolean End;
+                Parent,FilterRoot:Integer; OuterJoin:Boolean End;
  TField=Record Qual,Name,AliasName:String[80]; Agg:String[16];
                Ent:Integer; Grouped,DistinctValue,Descending:Boolean End;
  TFields=Array[1..MaxField] of TField;
@@ -83,10 +86,10 @@ Type
  PIDs=^TIDs;
 Var Source,XML:PBuffer; Tokens:PTokens; Nodes:PNodes;
     SourceLen,XMLLen,TokenCount,AtToken,EntityCount,FieldCount,
-    OrderCount,NodeCount,Root,Depth:Integer;
+    OrderCount,NodeCount,Root,Depth,BaseEntity:Integer;
     Entities:Array[1..MaxEntity] of TEntity;
     Fields,Orders:PFields;
-    DistinctRows,AggregateQuery:Boolean;
+    DistinctRows,AggregateQuery,InJoinCondition:Boolean;
     TopValue,InputName,OutputName,Query,EntitySet,PrimaryKey:String;
     F:Text;
 
@@ -279,7 +282,7 @@ End;
 Procedure ReadEntity;
 Var S:String; I:Integer;
 Begin
- If EntityCount=MaxEntity Then Syntax('Trop d''entites');
+ If EntityCount=MaxEntity Then Syntax('FetchXML accepte au maximum 15 jointures');
  Inc(EntityCount); FillChar(Entities[EntityCount],SizeOf(TEntity),0);
  S:=Ident;
  If Tok='.' Then Begin
@@ -330,6 +333,8 @@ Begin
   Inc(AtToken); N:=ParseOr; Need(')');
  End Else Begin
   ReadField(A); Resolve(A);
+  If InJoinCondition and(A.Qual='') Then
+   Syntax('Qualifier les colonnes des conditions ON');
   If A.Name='*' Then Syntax('Colonne attendue dans WHERE');
   N:=NewNode('C',0,0); Nodes^[N].Name:=A.Name; Nodes^[N].Ent:=A.Ent;
   Neg:=False;
@@ -391,11 +396,22 @@ Begin
  ParseOr:=N;
 End;
 
+Procedure CheckJoinFilter(N,E:Integer);
+Begin
+ If Nodes^[N].Kind='C' Then Begin
+  If Nodes^[N].Ent<>E Then
+   Syntax('Conditions ON supplementaires : colonnes de la table liee seulement');
+ End Else Begin
+  CheckJoinFilter(Nodes^[N].L,E); CheckJoinFilter(Nodes^[N].R,E);
+ End;
+End;
+
 Procedure Parse;
-Var A,B:TField; I,J,E,Code:Integer; S:String; OuterJ,Found:Boolean;
+Var A,B:TField; I,J,E,Linked,Code:Integer; S:String;
+    OuterJ,RightJ,RightJoined,Paren,Found:Boolean;
     TopN:LongInt;
 Begin
- AtToken:=1; Need('SELECT');
+ AtToken:=1; Need('SELECT'); RightJoined:=False;
  If IsWord('DISTINCT') Then Begin DistinctRows:=True; Inc(AtToken) End;
  If IsWord('TOP') Then Begin
   Inc(AtToken); Found:=Tok='('; If Found Then Inc(AtToken);
@@ -424,13 +440,17 @@ Begin
   Found:=Tok=','; If Found Then Inc(AtToken);
  Until Not Found;
  Need('FROM'); ReadEntity;
- While IsWord('JOIN')or IsWord('INNER')or IsWord('LEFT') do Begin
-  OuterJ:=IsWord('LEFT');
+ While IsWord('JOIN')or IsWord('INNER')or IsWord('LEFT')or IsWord('RIGHT') do Begin
+  If RightJoined Then Syntax('RIGHT JOIN limite a deux tables');
+  RightJ:=IsWord('RIGHT'); OuterJ:=IsWord('LEFT')or RightJ;
+  If RightJ and(EntityCount<>1) Then Syntax('RIGHT JOIN limite a deux tables');
   If Not IsWord('JOIN') Then Begin
    Inc(AtToken); If OuterJ and IsWord('OUTER') Then Inc(AtToken);
   End;
   Need('JOIN'); ReadEntity; E:=EntityCount; Need('ON');
+  Paren:=Tok='('; If Paren Then Inc(AtToken);
   ReadField(A); Resolve(A); Need('='); ReadField(B); Resolve(B);
+  If Paren and(Tok=')') Then Begin Need(')'); Paren:=False End;
   If (A.Qual='')or(B.Qual='')or(A.Name='*')or(B.Name='*') Then
    Syntax('ON exige deux colonnes qualifiees');
   If B.Ent=E Then Begin
@@ -438,12 +458,26 @@ Begin
   End;
   If (A.Ent<>E)or(B.Ent>=E) Then
    Syntax('ON doit relier la nouvelle entite a une entite precedente');
-  Entities[E].Parent:=B.Ent; Entities[E].FromCol:=A.Name;
-  Entities[E].ToCol:=B.Name; Entities[E].OuterJoin:=OuterJ;
+  Linked:=E;
+  If RightJ Then Begin
+   BaseEntity:=E; RightJoined:=True; Linked:=1;
+   Entities[1].Parent:=E; Entities[1].FromCol:=B.Name;
+   Entities[1].ToCol:=A.Name; Entities[1].OuterJoin:=True;
+  End Else Begin
+   Entities[E].Parent:=B.Ent; Entities[E].FromCol:=A.Name;
+   Entities[E].ToCol:=B.Name; Entities[E].OuterJoin:=OuterJ;
+  End;
+  If IsWord('AND') Then Begin
+   Inc(AtToken); InJoinCondition:=True;
+   Entities[Linked].FilterRoot:=ParseAnd; InJoinCondition:=False;
+   CheckJoinFilter(Entities[Linked].FilterRoot,Linked);
+  End;
+  If Paren Then Need(')');
   I:=B.Ent;
   While I>1 do Begin
-   If (Not OuterJ)and Entities[I].OuterJoin Then
-    Syntax('INNER JOIN sous une LEFT JOIN non supporte');
+   { Une jointure INNER dependante exige des lignes dans ses ancetres.
+     Leurs LEFT deviennent INNER; les branches independantes restent LEFT. }
+   If Not OuterJ Then Entities[I].OuterJoin:=False;
    I:=Entities[I].Parent;
   End;
  End;
@@ -531,14 +565,14 @@ Procedure Indent(N:Integer);
 Var I:Integer;
 Begin For I:=1 to N do Emit('  ') End;
 
-Procedure EmitFilter(N,Level:Integer);
+Procedure EmitFilter(N,Level,Scope:Integer);
 Var I:Integer;
 Begin
  If N=0 Then Exit;
  Indent(Level);
  If Nodes^[N].Kind='C' Then Begin
   Emit('<condition'); Attr('attribute',Nodes^[N].Name);
-  If Nodes^[N].Ent<>1 Then
+  If Nodes^[N].Ent<>Scope Then
    Attr('entityname',Entities[Nodes^[N].Ent].AliasName);
   Attr('operator',Nodes^[N].Op);
   If Nodes^[N].FirstValue=0 Then Emit(' />')
@@ -557,7 +591,7 @@ Begin
   Emit('<filter');
   If Nodes^[N].Kind='A' Then Attr('type','and') Else Attr('type','or');
   Emit('>'); Line;
-  EmitFilter(Nodes^[N].L,Level+1); EmitFilter(Nodes^[N].R,Level+1);
+  EmitFilter(Nodes^[N].L,Level+1,Scope); EmitFilter(Nodes^[N].R,Level+1,Scope);
   Indent(Level); Emit('</filter>'); Line;
  End;
 End;
@@ -566,16 +600,17 @@ Procedure EmitEntity(E,Level:Integer);
 Var I:Integer; A:TField;
 Begin
  Indent(Level);
- If E=1 Then Emit('<entity') Else Emit('<link-entity');
+ If E=BaseEntity Then Emit('<entity') Else Emit('<link-entity');
  Attr('name',Entities[E].Name);
- If E<>1 Then Begin
+ If E<>BaseEntity Then Begin
   Attr('alias',Entities[E].AliasName); Attr('from',Entities[E].FromCol);
   Attr('to',Entities[E].ToCol);
   If Entities[E].OuterJoin Then Attr('link-type','outer')
   Else Attr('link-type','inner');
  End;
  Emit('>'); Line;
- For I:=1 to FieldCount do If Fields^[I].Ent=E Then Begin
+ For I:=1 to FieldCount do
+  If (Fields^[I].Ent=E)or((Fields^[I].Name='*')and(Fields^[I].Qual='')) Then Begin
   A:=Fields^[I]; Indent(Level+1);
   If A.Name='*' Then Emit('<all-attributes />') Else Begin
    Emit('<attribute'); Attr('name',A.Name);
@@ -587,13 +622,18 @@ Begin
   End;
   Line;
  End;
- If E=1 Then Begin
+ If Entities[E].FilterRoot<>0 Then Begin
+  Indent(Level+1); Emit('<filter type="and">'); Line;
+  EmitFilter(Entities[E].FilterRoot,Level+2,E);
+  Indent(Level+1); Emit('</filter>'); Line;
+ End;
+ If E=BaseEntity Then Begin
   For I:=1 to OrderCount do Begin
    A:=Orders^[I]; Indent(Level+1); Emit('<order');
    If A.AliasName<>'' Then Attr('alias',A.AliasName)
    Else Begin
     Attr('attribute',A.Name);
-    If A.Ent<>1 Then Attr('entityname',Entities[A.Ent].AliasName);
+    If A.Ent<>BaseEntity Then Attr('entityname',Entities[A.Ent].AliasName);
    End;
    If A.Descending Then Attr('descending','true')
    Else Attr('descending','false');
@@ -601,13 +641,13 @@ Begin
   End;
   If Root<>0 Then Begin
    Indent(Level+1); Emit('<filter type="and">'); Line;
-   EmitFilter(Root,Level+2);
+   EmitFilter(Root,Level+2,BaseEntity);
    Indent(Level+1); Emit('</filter>'); Line;
   End;
  End;
- For I:=2 to EntityCount do If Entities[I].Parent=E Then EmitEntity(I,Level+1);
+ For I:=1 to EntityCount do If Entities[I].Parent=E Then EmitEntity(I,Level+1);
  Indent(Level);
- If E=1 Then Emit('</entity>') Else Emit('</link-entity>'); Line;
+ If E=BaseEntity Then Emit('</entity>') Else Emit('</link-entity>'); Line;
 End;
 
 { INSERT/UPDATE utilisent le meme analyseur lexical, avec sortie JSON HTTP.
@@ -843,7 +883,9 @@ Begin
  WriteLn('  --primary-key nom    PrimaryIdAttribute pour UPDATE/DELETE');
  WriteLn;
  WriteLn('Sans arguments : entree standard. Sans -o : sortie standard.');
- WriteLn('SELECT, DISTINCT, TOP, INNER/LEFT JOIN, WHERE, GROUP BY, ORDER BY.');
+ WriteLn('SELECT, DISTINCT, TOP, INNER/LEFT/RIGHT JOIN, WHERE, GROUP BY, ORDER BY.');
+ WriteLn('ON : egalite de colonnes, puis AND (filtres de la table liee).');
+ WriteLn('RIGHT JOIN : deux tables seulement. Limite FetchXML : 15 jointures.');
  WriteLn('Agregats : COUNT(col), COUNT(DISTINCT col), SUM, AVG, MIN, MAX.');
  WriteLn('Utiliser les noms logiques et qualifier les colonnes des jointures.');
  WriteLn('INSERT INTO entite (colonnes) VALUES (...), (...) ou DEFAULT VALUES.');
@@ -943,6 +985,7 @@ Begin
  New(Source); New(XML); New(Tokens); New(Nodes); New(Fields); New(Orders);
  SourceLen:=0; XMLLen:=0; TokenCount:=0; EntityCount:=0;
  FieldCount:=0; OrderCount:=0; NodeCount:=0; Root:=0; Depth:=0;
+ BaseEntity:=1; InJoinCondition:=False;
  DistinctRows:=False; AggregateQuery:=False;
  TopValue:=''; InputName:=''; OutputName:=''; Query:=''; EntitySet:=''; PrimaryKey:='';
  Args;
@@ -967,7 +1010,7 @@ Begin
   If TopValue<>'' Then Attr('top',TopValue);
   If DistinctRows Then Attr('distinct','true');
   If AggregateQuery Then Attr('aggregate','true');
-  Emit('>'); Line; EmitEntity(1,1); Emit('</fetch>'); Line;
+  Emit('>'); Line; EmitEntity(BaseEntity,1); Emit('</fetch>'); Line;
  End;
  If OutputName='' Then WriteXML(Output) Else Begin
   Assign(F,OutputName); {$I-}Rewrite(F); Err:=IOResult;{$I+}
