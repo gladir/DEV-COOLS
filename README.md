@@ -979,7 +979,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>SQL4CDS.PAS</b></td>
-			<td>Cette commande permet de lancer le convertisseur SQL SELECT vers FetchXML (Dataverse).</td>
+			<td> Cette commande permet de lancer le convertisseur SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP (Dataverse).</td>
 		</tr>
 		<tr>
 			<td><b>SQLCMD.PAS</b></td>
