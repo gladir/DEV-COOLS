@@ -1056,7 +1056,8 @@ End;
 
 Procedure Help;
 Begin
- WriteLn('SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP (Dataverse)');
+ WriteLn('SQL4CDS - Cette commande permet de lancer le convertisseur SELECT vers FetchXML, ',
+         'INSERT/UPDATE/DELETE vers HTTP (Dataverse)');
  WriteLn;
  WriteLn('Syntaxe : SQL4CDS source.sql [sortie.xml]');
  WriteLn('          SQL4CDS -q "SELECT name FROM account" [-o sortie.xml]');
