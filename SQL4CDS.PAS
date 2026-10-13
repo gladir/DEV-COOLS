@@ -15,6 +15,7 @@ Program SQL4CDS(Input,Output);
 
   SQL4CDS source.sql [sortie.xml]
   SQL4CDS -q "SELECT name FROM account" [-o sortie.xml]
+  Alias : -query pour -q, -file pour -i, -output pour -o.
   Sans arguments : lecture de l'entree standard jusqu'a EOF.
 
   SELECT [DISTINCT] [TOP n] colonnes FROM [dbo.]entite [AS alias]
@@ -874,11 +875,13 @@ Begin
  WriteLn('Syntaxe : SQL4CDS source.sql [sortie.xml]');
  WriteLn('          SQL4CDS -q "SELECT name FROM account" [-o sortie.xml]');
  WriteLn('          SQL4CDS -i source.sql [-o sortie.xml]');
+ WriteLn('          SQL4CDS -query "SQL" [-output fichier]');
+ WriteLn('          SQL4CDS -file source.sql [-output fichier]');
  WriteLn;
  WriteLn('  -h, --help, /?       Affiche cette aide');
- WriteLn('  -q "SQL"             Requete SQL a convertir');
- WriteLn('  -i source.sql        Fichier SQL source');
- WriteLn('  -o fichier           Sortie FetchXML (SELECT) ou HTTP (INSERT/UPDATE/DELETE)');
+ WriteLn('  -q, -query "SQL"     Requete SQL a convertir');
+ WriteLn('  -i, -file source.sql Charger une requete depuis un fichier SQL');
+ WriteLn('  -o, -output fichier  Enregistrer le FetchXML ou les requetes HTTP');
  WriteLn('  --entity-set nom     Collection Web API pour INSERT/UPDATE/DELETE');
  WriteLn('  --primary-key nom    PrimaryIdAttribute pour UPDATE/DELETE');
  WriteLn;
@@ -910,6 +913,9 @@ Begin
  I:=1;
  While I<=ParamCount do Begin
   S:=Argument(I);
+  If S='-query' Then S:='-q';
+  If S='-file' Then S:='-i';
+  If S='-output' Then S:='-o';
   If (S='-h')or(S='--help')or(S='/?') Then Begin Help; Halt(0) End;
   If (S='-q')or(S='-i')or(S='-o')or(S='--entity-set')or(S='--primary-key') Then Begin
    Inc(I); If I>ParamCount Then Begin Help; Halt(2) End;
