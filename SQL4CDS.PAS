@@ -2,13 +2,13 @@
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Free Pascal 3.2)
-  @description: Conversion SQL SELECT vers FetchXML pour Dataverse.
+  @description: SQL SELECT vers FetchXML et INSERT vers HTTP POST Dataverse.
   @license: MIT
 }
 
 Program SQL4CDS(Input,Output);
 
-{ SQL4CDS - Conversion SQL SELECT vers FetchXML pour Dataverse.
+{ SQL4CDS - SQL SELECT vers FetchXML, INSERT vers HTTP POST Dataverse.
   Implementation autonome; aucune dependance .NET ni connexion reseau.
   Reference fonctionnelle : https://github.com/MarkMpn/Sql4Cds
   Target: Turbo Pascal 7 / Free Pascal (-Mtp). License: MIT.
@@ -25,7 +25,15 @@ Program SQL4CDS(Input,Output);
   COUNT(colonne), COUNT(DISTINCT colonne), SUM, AVG, MIN, MAX.
   COUNT(*) exige les metadonnees de la cle primaire : utiliser COUNT(id).
   Les noms sont les noms logiques Dataverse, pas les libelles affiches.
-  Un seul SELECT. Pas de DML, sous-requetes, HAVING, fonctions scalaires,
+  INSERT INTO [dbo.]entite (colonnes) VALUES (valeurs), (valeurs), ...;
+  INSERT INTO entite DEFAULT VALUES;
+  INSERT genere un fichier HTTP avec JSON, pas du FetchXML.
+  --entity-set collection : EntitySetName Dataverse de la cible INSERT.
+  Sans cette option : variable HTTP entitySet a renseigner.
+  Variables HTTP orgUrl et accessToken a renseigner pour l'envoi.
+  Valeurs INSERT : chaines, nombres, NULL, DEFAULT, CAST(0|1 AS BIT).
+  DEFAULT omet la propriete pour laisser Dataverse appliquer sa valeur.
+  Un seul SELECT ou INSERT. Pas d'UPDATE/DELETE, sous-requetes, HAVING, fonctions scalaires,
   expressions calculees, UNION, parametres ou negation d'un groupe.
   Les jointures ON sont une egalite entre colonnes, sans autre predicat.
   Les colonnes non qualifiees designent l'entite principale.
@@ -67,7 +75,7 @@ Var Source,XML:PBuffer; Tokens:PTokens; Nodes:PNodes;
     Entities:Array[1..MaxEntity] of TEntity;
     Fields,Orders:PFields;
     DistinctRows,AggregateQuery:Boolean;
-    TopValue,InputName,OutputName,Query:String;
+    TopValue,InputName,OutputName,Query,EntitySet:String;
     F:Text;
 
 Procedure Fail(S:String);
@@ -113,7 +121,11 @@ End;
 
 Procedure Need(S:String);
 Begin
- If Upper(Tok)<>S Then Syntax('Attendu : '+S);
+ If AtToken>TokenCount Then Syntax('Attendu : '+S);
+ If S[1] in ['A'..'Z'] Then Begin
+  If Not IsWord(S) Then Syntax('Attendu : '+S);
+ End Else
+  If (Tok<>S)or(Tokens^[AtToken].Kind<>'P') Then Syntax('Attendu : '+S);
  Inc(AtToken);
 End;
 
@@ -479,7 +491,7 @@ End;
 Procedure Emit(S:String);
 Var I:Integer;
 Begin
- If XMLLen+Length(S)>MaxBuf Then Fail('FetchXML trop long');
+ If XMLLen+Length(S)>MaxBuf Then Fail('Sortie trop longue');
  For I:=1 to Length(S) do Begin Inc(XMLLen); XML^[XMLLen]:=S[I] End;
 End;
 
@@ -586,24 +598,141 @@ Begin
  If E=1 Then Emit('</entity>') Else Emit('</link-entity>'); Line;
 End;
 
+{ INSERT utilise le meme analyseur lexical mais produit du JSON HTTP.
+  Aucun POST n'est execute par le convertisseur. }
+Procedure JSONString(S:String);
+Const Hex='0123456789abcdef';
+Var I,C:Integer;
+Begin
+ Emit('"');
+ For I:=1 to Length(S) do Begin
+  C:=Ord(S[I]);
+  Case S[I] of
+   '"':Emit('\"'); '\':Emit('\\');
+   Else If C<32 Then Begin
+    Emit('\u00'); Emit(Hex[(C div 16)+1]); Emit(Hex[(C mod 16)+1]);
+   End Else Emit(S[I]);
+  End;
+ End;
+ Emit('"');
+End;
+
+Function JSONNumber(S:String):String;
+Var Negative:Boolean;
+Begin
+ Negative:=False;
+ If S[1] in ['+','-'] Then Begin
+  Negative:=S[1]='-'; Delete(S,1,1);
+ End;
+ While (Length(S)>1)and(S[1]='0')and(S[2]<>'.') do Delete(S,1,1);
+ If Negative Then S:='-'+S;
+ JSONNumber:=S;
+End;
+
+Procedure InsertValue(Var K:Char; Var S:String);
+Var V:Integer; CastBit:Boolean;
+Begin
+ K:=#0; S:=''; CastBit:=IsWord('CAST');
+ If CastBit Then Begin Inc(AtToken); Need('(') End;
+ If IsWord('NULL') Then Begin K:='N'; Inc(AtToken) End
+ Else If IsWord('DEFAULT') Then Begin K:='D'; Inc(AtToken) End
+ Else Begin
+  V:=Literal; K:=Tokens^[V].Kind; S:=Tokens^[V].S^;
+  If K='V' Then S:=JSONNumber(S);
+ End;
+ If CastBit Then Begin
+  Need('AS'); Need('BIT'); Need(')');
+  If K<>'N' Then Begin
+   If (K<>'V')or((S<>'0')and(S<>'1')and(S<>'-0')) Then
+    Syntax('CAST AS BIT exige 0, 1 ou NULL');
+   K:='B'; If S='1' Then S:='true' Else S:='false';
+  End;
+ End;
+End;
+
+Procedure InsertHeader(Row:Integer);
+Begin
+ Emit('### INSERT '); Emit(Entities[1].Name); Emit(' - ligne '); Emit(Num(Row)); Line;
+ Emit('POST {{orgUrl}}/api/data/v9.2/');
+ If EntitySet='' Then Emit('{{entitySet}}') Else Emit(EntitySet);
+ Line;
+ Emit('Authorization: Bearer {{accessToken}}'); Line;
+ Emit('Content-Type: application/json; charset=utf-8'); Line;
+ Emit('Accept: application/json'); Line;
+ Emit('OData-MaxVersion: 4.0'); Line;
+ Emit('OData-Version: 4.0'); Line;
+ Line;
+End;
+
+Procedure ParseInsert;
+Var I,J,Row:Integer; K:Char; S:String; More,Written:Boolean;
+Begin
+ AtToken:=1; Need('INSERT'); Need('INTO');
+ EntityCount:=1; FillChar(Entities[1],SizeOf(TEntity),0);
+ S:=Ident;
+ If Tok='.' Then Begin
+  If S<>'dbo' Then Syntax('Seul le schema dbo est supporte');
+  Inc(AtToken); S:=Ident;
+ End;
+ Entities[1].Name:=S;
+ If IsWord('DEFAULT') Then Begin
+  Inc(AtToken); Need('VALUES'); InsertHeader(1); Emit('{}'); Line;
+ End Else Begin
+  Need('(');
+  Repeat
+   If FieldCount=MaxField Then Syntax('Trop de colonnes INSERT');
+   S:=Ident;
+   For J:=1 to FieldCount do
+    If Fields^[J].Name=S Then Syntax('Colonne INSERT dupliquee : '+S);
+   Inc(FieldCount); FillChar(Fields^[FieldCount],SizeOf(TField),0);
+   Fields^[FieldCount].Name:=S;
+   More:=Tok=','; If More Then Inc(AtToken);
+  Until Not More;
+  Need(')'); Need('VALUES'); Row:=0;
+  Repeat
+   Inc(Row); Need('('); InsertHeader(Row); Emit('{'); Written:=False;
+   For I:=1 to FieldCount do Begin
+    If I>1 Then Need(',');
+    InsertValue(K,S);
+    If K<>'D' Then Begin
+     If Written Then Emit(','); Line; Indent(1);
+     JSONString(Fields^[I].Name); Emit(': ');
+     Case K of
+      'N':Emit('null'); 'S':JSONString(S); 'V','B':Emit(S);
+     End;
+     Written:=True;
+    End;
+   End;
+   Need(')'); If Written Then Line; Emit('}'); Line;
+   More:=Tok=','; If More Then Begin Inc(AtToken); Line End;
+  Until Not More;
+ End;
+ If Tok=';' Then Inc(AtToken);
+ If AtToken<=TokenCount Then Syntax('Construction INSERT non supportee');
+End;
+
 Procedure Help;
 Begin
- WriteLn('SQL4CDS - Cette commande permet de lancer le convertisseur SQL SELECT vers FetchXML (Dataverse)');
+ WriteLn('SQL4CDS - SELECT vers FetchXML, INSERT vers HTTP POST (Dataverse)');
  WriteLn;
  WriteLn('Syntaxe : SQL4CDS source.sql [sortie.xml]');
  WriteLn('          SQL4CDS -q "SELECT name FROM account" [-o sortie.xml]');
  WriteLn('          SQL4CDS -i source.sql [-o sortie.xml]');
  WriteLn;
  WriteLn('  -h, --help, /?       Affiche cette aide');
- WriteLn('  -q "SQL"             Requete SQL a executer');
+ WriteLn('  -q "SQL"             Requete SQL a convertir');
  WriteLn('  -i source.sql        Fichier SQL source');
- WriteLn('  -o sortie.xml        Fichier XML de sortie');
+ WriteLn('  -o fichier           Sortie FetchXML (SELECT) ou HTTP (INSERT)');
+ WriteLn('  --entity-set nom     Collection Web API pour INSERT (ex. accounts)');
  WriteLn;
  WriteLn('Sans arguments : entree standard. Sans -o : sortie standard.');
  WriteLn('SELECT, DISTINCT, TOP, INNER/LEFT JOIN, WHERE, GROUP BY, ORDER BY.');
  WriteLn('Agregats : COUNT(col), COUNT(DISTINCT col), SUM, AVG, MIN, MAX.');
  WriteLn('Utiliser les noms logiques et qualifier les colonnes des jointures.');
- WriteLn('Un seul SELECT; COUNT(*) et les expressions ne sont pas supportes.');
+ WriteLn('INSERT INTO entite (colonnes) VALUES (...), (...) ou DEFAULT VALUES.');
+ WriteLn('INSERT produit du HTTP/JSON; renseigner orgUrl, accessToken, entitySet.');
+ WriteLn('Un seul SELECT/INSERT; aucune requete reseau executee.');
+ WriteLn('COUNT(*) et les expressions ne sont pas supportes.');
 End;
 
 Procedure Args;
@@ -620,7 +749,7 @@ Begin
  While I<=ParamCount do Begin
   S:=Argument(I);
   If (S='-h')or(S='--help')or(S='/?') Then Begin Help; Halt(0) End;
-  If (S='-q')or(S='-i')or(S='-o') Then Begin
+  If (S='-q')or(S='-i')or(S='-o')or(S='--entity-set') Then Begin
    Inc(I); If I>ParamCount Then Begin Help; Halt(2) End;
    If S='-q' Then Begin
     If (Query<>'')or(InputName<>'') Then Begin Help; Halt(2) End;
@@ -635,12 +764,20 @@ Begin
     If OutputName<>'' Then Begin Help; Halt(2) End;
     OutputName:=Argument(I);
    End;
+   If S='--entity-set' Then Begin
+    If EntitySet<>'' Then Begin Help; Halt(2) End;
+    EntitySet:=Argument(I);
+    If EntitySet='' Then Fail('EntitySetName vide');
+   End;
   End Else If (Length(S)>0)and(S[1]='-') Then Begin Help; Halt(2) End
   Else If (InputName='')and(Query='') Then InputName:=S
   Else If (OutputName='')and(Query='') Then OutputName:=S
   Else Begin Help; Halt(2) End;
   Inc(I);
  End;
+ For I:=1 to Length(EntitySet) do
+  If Not(EntitySet[I] in ['A'..'Z','a'..'z','0'..'9','_']) Then
+   Fail('EntitySetName invalide');
  If (InputName<>'')and(OutputName<>'')and
   (Upper(FExpand(InputName))=Upper(FExpand(OutputName))) Then
    Fail('Source et cible identiques');
@@ -679,7 +816,7 @@ Begin
  SourceLen:=0; XMLLen:=0; TokenCount:=0; EntityCount:=0;
  FieldCount:=0; OrderCount:=0; NodeCount:=0; Root:=0; Depth:=0;
  DistinctRows:=False; AggregateQuery:=False;
- TopValue:=''; InputName:=''; OutputName:=''; Query:='';
+ TopValue:=''; InputName:=''; OutputName:=''; Query:=''; EntitySet:='';
  Args;
  If Query<>'' Then For I:=1 to Length(Query) do AddSource(Query[I])
  Else If InputName='' Then ReadSQL(Input)
@@ -688,12 +825,16 @@ Begin
   If Err<>0 Then Fail('Impossible d''ouvrir '+InputName);
   ReadSQL(F); Close(F);
  End;
- Lex; Parse;
- Emit('<fetch mapping="logical"');
- If TopValue<>'' Then Attr('top',TopValue);
- If DistinctRows Then Attr('distinct','true');
- If AggregateQuery Then Attr('aggregate','true');
- Emit('>'); Line; EmitEntity(1,1); Emit('</fetch>'); Line;
+ Lex; AtToken:=1;
+ If IsWord('INSERT') Then ParseInsert Else Begin
+  If EntitySet<>'' Then Fail('--entity-set est reserve a INSERT');
+  Parse;
+  Emit('<fetch mapping="logical"');
+  If TopValue<>'' Then Attr('top',TopValue);
+  If DistinctRows Then Attr('distinct','true');
+  If AggregateQuery Then Attr('aggregate','true');
+  Emit('>'); Line; EmitEntity(1,1); Emit('</fetch>'); Line;
+ End;
  If OutputName='' Then WriteXML(Output) Else Begin
   Assign(F,OutputName); {$I-}Rewrite(F); Err:=IOResult;{$I+}
   If Err<>0 Then Fail('Impossible de creer '+OutputName);
