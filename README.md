@@ -978,6 +978,26 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer l'analyseur statique de bytecode Java.</td>
 		</tr>
 		<tr>
+			<td><b>SQL2CSV.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier SQL en CSV.</td>
+		</tr>
+		<tr>
+			<td><b>SQL2DBF.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier SQL en DBF.</td>
+		</tr>
+		<tr>
+			<td><b>SQL2HTML.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier SQL en HTML.</td>
+		</tr>
+		<tr>
+			<td><b>SQL2JSON.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier SQL en JSON.</td>
+		</tr>
+		<tr>
+			<td><b>SQL2XML.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier SQL en XML.</td>
+		</tr>
+		<tr>
 			<td><b>SQL4CDS.PAS</b></td>
 			<td> Cette commande permet de lancer le convertisseur SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP (Dataverse).</td>
 		</tr>
