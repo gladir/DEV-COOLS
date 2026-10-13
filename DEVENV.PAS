@@ -2610,7 +2610,26 @@ Const
  { emulateur qui ne reproduit pas la machine a etats de reentrance interne }
  { du vrai noyau DOS) reste a zero, comme le serait une zone jamais         }
  { touchee depuis le demarrage sur un vrai DOS inactif. }
- EMU_SDA_SEG  = $E000;
+ { BOGUE REEL MAJEUR (2026-10-13, demande explicite de l utilisateur -     }
+ { "compare INT 67h EMS entre DOSBox et DEVENV.PAS, trouve les differences }
+ { et corrige-les") : EMU_SDA_SEG/DPB/CDS/SFT/ASSIGN ci-dessous valaient    }
+ { TOUS $E000-$E4FF - EXACTEMENT la plage que couvre EMU_EMS_FRAME_SEG=    }
+ { $E000 (fenetre "page frame" EMS, 4x16 Ko = E000-EFFF ENTIER) ! Chaque   }
+ { mapping EMS (AH=44h) vers l emplacement physique 0 ecrasait SDA/DPB/    }
+ { CDS/SFT avec le contenu d une page EMS, et chaque flush EMS recopiait    }
+ { au contraire des octets de noyau DOS a la place du vrai contenu EMS -    }
+ { corruption croisee silencieuse des QUE le gestionnaire d'overlay de     }
+ { TP6 (ou tout autre programme) entrelace mapping EMS et operations        }
+ { fichier (SFT/CDS) - exactement le schema observe lors de l'enquete       }
+ { TURBO.EXE (enregistrement de composants IDE qui s'arretait net apres    }
+ { 68 elements, sans la moindre erreur EMS visible - coherent avec une      }
+ { corruption PROGRESSIVE plutot qu'un code d'erreur franc). Relogees ici   }
+ { dans le vaste espace libre du segment $F000 (voir EMU_DRVINIT_SENT_OFS  }
+ { ci-dessus : 0080-0140 et 0300-06FF deja pris, LOL a $F600 - la plage     }
+ { 0700-F5FF, >60 Ko, est entierement libre) plutot que de deplacer EMS    }
+ { lui-meme (qui reste a $E000, l'emplacement standard/attendu, identique  }
+ { a dosbox-staging/src/ints/ems.cpp EMM_PAGEFRAME). }
+ EMU_SDA_SEG  = $F070;
  EMU_SDA_OFS  = $0000;
  EMU_SDA_SIZE = $073C;
 
@@ -2618,7 +2637,7 @@ Const
  { publie, DPB.INC (33 octets/entree). Une entree par lecteur monte        }
  { (FatVol[0..3], voir Fat_TryMount), chainees par dpb_next_dpb - voir      }
  { Emu_DpbInit. }
- EMU_DPB_SEG        = $E100;
+ EMU_DPB_SEG        = $F170;
  EMU_DPB_OFS        = $0000;
  EMU_DPB_ENTRY_SIZE = 33;
 
@@ -2630,7 +2649,7 @@ Const
  { nouveau suivi EmuDriveCwd, qui comble un vrai manque : AH=3Bh/47h ne      }
  { suivaient auparavant AUCUN repertoire par lettre de lecteur, voir         }
  { Emu_DoInt21 cases $3B/$47). }
- EMU_CDS_SEG       = $E200;
+ EMU_CDS_SEG       = $F270;
  EMU_CDS_OFS       = $0000;
  EMU_CDS_ENTRY_SIZE = 88;
  EMU_CDS_COUNT      = 5; { A: B: C: D: E: - LASTDRIVE=E par defaut }
@@ -2640,7 +2659,7 @@ Const
  { Une entree par handle EmuFileH[5..31] deja existant (voir Emu_SftInit/  }
  { Emu_SftSetEntry/Emu_SftClearEntry, appelees aux memes points que         }
  { EmuFileOpen). }
- EMU_SFT_SEG        = $E300;
+ EMU_SFT_SEG        = $F370;
  EMU_SFT_OFS        = $0000;
  EMU_SFT_ENTRY_SIZE = 59;
  EMU_SFT_HDR_SIZE   = 6;
@@ -2655,7 +2674,7 @@ Const
  { (Emu_HostPath ignore deja la lettre de lecteur pour tout acces fichier,  }
  { voir l enquete CDS/DPB plus haut - faire suivre une vraie redirection     }
  { de lettre jusque-la serait un chantier separe, plus large). }
- EMU_ASSIGN_SEG     = $E400;
+ EMU_ASSIGN_SEG     = $F470;
  EMU_ASSIGN_TBL_OFS = $0103;
 
  { INT 15h AH=C0h ("Get System Configuration Parameters") - voir                }
@@ -5596,13 +5615,24 @@ Type
   Version    : Byte;            { 0=3.0, 1=3.2, 2=4.0 (voir DosEMSVersion)}
   TotalPages : LongInt;         { capacite totale, en pages de 16 Ko      }
   UsedPages  : LongInt;         { allocateur "bump" en pages              }
-  { Handle 0 n existe pas en EMS reel (contrairement a XMS) - la table     }
-  { commence donc a l indice 1 comme les vrais handles EMM. }
+  { Handle 0 n est jamais ALLOUABLE via AH=43h (contrairement a XMS) - la  }
+  { table d'ALLOCATION commence donc a l indice 1 comme les vrais handles  }
+  { EMM. MAIS (bogue reel corrige le 2026-10-13, comparaison directe avec  }
+  { dosbox-staging/src/ints/ems.cpp EMM_SavePageMap/EMM_RestorePageMap) :  }
+  { le handle 0 EST un handle "systeme" TOUJOURS valide pour 47h/48h       }
+  { (Save/Restore Page Map), meme sans jamais avoir ete alloue - c'est la  }
+  { convention standard LIM EMS, utilisee par un programme qui veut juste  }
+  { sauvegarder/restaurer SON mapping courant sans posseder de poignee a   }
+  { lui. D'ou SystemSavedSlot*/Valid ci-dessous, EN DEHORS des tableaux 1- }
+  { bases (le handle 0 n'a pas de case dans Handles/SavedSlots). }
   Handles    : Array[1..EMU_EMS_MAX_HANDLES] Of TEmuEmsHandle;
   Slots      : Array[0..3] Of TEmuEmsSlot;
   { Contexte de sauvegarde par poignee (fonctions 47h/48h, EMS 3.2+). }
   SavedSlots      : Array[1..EMU_EMS_MAX_HANDLES] Of Array[0..3] Of TEmuEmsSlot;
   SavedSlotsValid : Array[1..EMU_EMS_MAX_HANDLES] Of Boolean;
+  { Case dediee pour le handle 0 "systeme" (voir commentaire ci-dessus). }
+  SystemSavedSlot      : Array[0..3] Of TEmuEmsSlot;
+  SystemSavedSlotValid : Boolean;
  End;
 
  { ========================================================================
@@ -194291,7 +194321,12 @@ Var
  { --- AH=3Bh/47h (voir EmuDriveCwd/Emu_CdsRefreshPath) --- }
  CdsIdx: Integer;
  NewCwd: String;
+ DiagAHIn21: Byte;
+ DiagF21C: Text;
+ DiagStr09: String; DiagF09: Text; DiagJ: Integer; DiagB09: Byte;
+ DiagStr40: String; DiagF40: Text; DiagJ40: Integer; DiagB40: Byte;
 Begin
+ DiagAHIn21 := P.CPU.Regs.AH;
  Case P.CPU.Regs.AH Of
   $00:
    Begin
@@ -194341,6 +194376,21 @@ Begin
   $09:
    Begin
     Ofs := P.CPU.Regs.DX;
+    { TEMP DIAG (enquete EMS TURBO.EXE) : capturer le texte + l appelant }
+    Begin
+     DiagStr09 := '';
+     For DiagJ := 0 To 200 Do Begin
+      DiagB09 := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + DiagJ);
+      If Chr(DiagB09) = '$' Then Break;
+      If (DiagB09 >= 32) And (DiagB09 < 127) Then DiagStr09 := DiagStr09 + Chr(DiagB09);
+     End;
+     {$I-} Assign(DiagF09, 'DIAGPRINT9.LOG'); Append(DiagF09);
+     If IOResult <> 0 Then Begin Rewrite(DiagF09); If IOResult <> 0 Then ; End;
+     {$I+}
+     WriteLn(DiagF09, 'step=', P.TotalSteps, ' CS:IP=', HexWord(P.CPU.Segs.CS), ':',
+      HexWord(P.CPU.IP), ' text="', DiagStr09, '"');
+     {$I-} Close(DiagF09); {$I+} If IOResult <> 0 Then ;
+    End;
     For I := 0 To 8191 Do Begin
      B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
      If Chr(B) = '$' Then Break;
@@ -194967,6 +195017,22 @@ Begin
     Ofs := P.CPU.Regs.DX;
     H := P.CPU.Regs.BX;
     If (H = 1) Or (H = 2) Then Begin
+     { TEMP DIAG (enquete EMS TURBO.EXE) }
+     Begin
+      DiagStr40 := '';
+      For DiagJ40 := 0 To P.CPU.Regs.CX - 1 Do Begin
+       DiagB40 := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + DiagJ40);
+       If (DiagB40 >= 32) And (DiagB40 < 127) Then DiagStr40 := DiagStr40 + Chr(DiagB40)
+       Else If DiagB40 = 13 Then DiagStr40 := DiagStr40 + '\r'
+       Else If DiagB40 = 10 Then DiagStr40 := DiagStr40 + '\n';
+      End;
+      {$I-} Assign(DiagF40, 'DIAGPRINT9.LOG'); Append(DiagF40);
+      If IOResult <> 0 Then Begin Rewrite(DiagF40); If IOResult <> 0 Then ; End;
+      {$I+}
+      WriteLn(DiagF40, 'AH40 step=', P.TotalSteps, ' CS:IP=', HexWord(P.CPU.Segs.CS), ':',
+       HexWord(P.CPU.IP), ' text="', DiagStr40, '"');
+      {$I-} Close(DiagF40); {$I+} If IOResult <> 0 Then ;
+     End;
      For I := 0 To P.CPU.Regs.CX - 1 Do Begin
       B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
       EmuVScr_PutChar(P, Chr(B));
@@ -196240,6 +196306,15 @@ Begin
    End;
   Else
    Emu_SetDosErr(P, 1);
+ End;
+ If (DiagAHIn21 In [$3D,$3E,$3F,$42,$41,$43,$4B]) And
+    (EFG_CF In P.CPU.Flags.s) Then Begin
+  {$I-} Assign(DiagF21C, 'DIAGFILEFAIL.LOG'); Append(DiagF21C);
+  If IOResult <> 0 Then Begin Rewrite(DiagF21C); If IOResult <> 0 Then ; End;
+  {$I+}
+  WriteLn(DiagF21C, 'AH=', HexByte(DiagAHIn21), ' -> ERREUR AX=', HexWord(P.CPU.Regs.AX),
+   ' step=', P.TotalSteps, ' CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
+  {$I-} Close(DiagF21C); {$I+} If IOResult <> 0 Then ;
  End;
 End;
 
@@ -203553,18 +203628,30 @@ Begin
   P.CPU.Regs.AH := $8B; { page physique hors limites }
   Exit;
  End;
+ { BOGUE REEL (2026-10-13, comparaison directe avec dosbox-staging/src/     }
+ { ints/ems.cpp, EMM_MapPage) : le VRAI comportement LIM EMS ne valide le   }
+ { handle (DX) QUE si on mappe reellement une page (Logical<>$FFFF) -       }
+ { demapper (Logical=$FFFF) n'utilise JAMAIS le handle, donc DOSBox saute   }
+ { carrement la validation dans ce cas ("Unmapping doesn't need valid       }
+ { handle (as handle isn't used)", commentaire du code source reel). Notre  }
+ { ancien code validait le handle AVANT de regarder Logical, rejetant donc  }
+ { a tort (AH=$83) tout demappage avec un DX perime/non-alloue - exactement}
+ { ce qu'un programme comme TP6 peut faire en nettoyant un emplacement de   }
+ { page frame avant de reutiliser le handle pour autre chose. }
+ If Logical = $FFFF Then Begin
+  Emu_EmsSetSlot(P, Phys, 0, 0); { demapper cet emplacement, handle ignore }
+  P.CPU.Regs.AH := 0;
+  Exit;
+ End;
  If Not Emu_EmsHandleValid(H) Then Begin
   P.CPU.Regs.AH := $83;
   Exit;
  End;
- If Logical <> $FFFF Then Begin
-  If Logical >= EmuEms.Handles[H].PageCount Then Begin
-   P.CPU.Regs.AH := $8A; { page logique hors limites }
-   Exit;
-  End;
-  Emu_EmsSetSlot(P, Phys, H, Logical);
- End Else
-  Emu_EmsSetSlot(P, Phys, 0, 0); { BX=FFFFh = demapper cet emplacement }
+ If Logical >= EmuEms.Handles[H].PageCount Then Begin
+  P.CPU.Regs.AH := $8A; { page logique hors limites }
+  Exit;
+ End;
+ Emu_EmsSetSlot(P, Phys, H, Logical);
  P.CPU.Regs.AH := 0;
 End;
 
@@ -203586,8 +203673,19 @@ Procedure Emu_Ems_SavePageMap(Var P: TEmulatorPanel);
 Var H: Word; I: Integer;
 Begin
  H := P.CPU.Regs.DX;
- If Not Emu_EmsHandleValid(H) Then Begin
+ { BOGUE REEL (2026-10-13, voir commentaire de TEmuEmsState.SystemSavedSlot}
+ { ci-dessus) : le handle 0 est TOUJOURS valide pour 47h, meme non-alloue. }
+ If (H <> 0) And (Not Emu_EmsHandleValid(H)) Then Begin
   P.CPU.Regs.AH := $83; Exit;
+ End;
+ If H = 0 Then Begin
+  If EmuEms.SystemSavedSlotValid Then Begin
+   P.CPU.Regs.AH := $8D; Exit;
+  End;
+  For I := 0 To 3 Do EmuEms.SystemSavedSlot[I] := EmuEms.Slots[I];
+  EmuEms.SystemSavedSlotValid := True;
+  P.CPU.Regs.AH := 0;
+  Exit;
  End;
  If EmuEms.SavedSlotsValid[H] Then Begin
   P.CPU.Regs.AH := $8D; { la zone de sauvegarde contient deja un contexte }
@@ -203602,8 +203700,20 @@ Procedure Emu_Ems_RestorePageMap(Var P: TEmulatorPanel);
 Var H: Word; I: Integer;
 Begin
  H := P.CPU.Regs.DX;
- If Not Emu_EmsHandleValid(H) Then Begin
+ { BOGUE REEL (2026-10-13) : meme exception handle 0 que SavePageMap. }
+ If (H <> 0) And (Not Emu_EmsHandleValid(H)) Then Begin
   P.CPU.Regs.AH := $83; Exit;
+ End;
+ If H = 0 Then Begin
+  If Not EmuEms.SystemSavedSlotValid Then Begin
+   P.CPU.Regs.AH := $8E; Exit;
+  End;
+  For I := 0 To 3 Do
+   Emu_EmsSetSlot(P, I, EmuEms.SystemSavedSlot[I].MappedHandle,
+    EmuEms.SystemSavedSlot[I].MappedPage);
+  EmuEms.SystemSavedSlotValid := False;
+  P.CPU.Regs.AH := 0;
+  Exit;
  End;
  If Not EmuEms.SavedSlotsValid[H] Then Begin
   P.CPU.Regs.AH := $8E; { aucun contexte en zone de sauvegarde }
