@@ -2,13 +2,13 @@
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Free Pascal 3.2)
-  @description: SQL SELECT vers FetchXML et INSERT vers HTTP POST Dataverse.
+  @description: SELECT vers FetchXML, INSERT/UPDATE vers HTTP Dataverse.
   @license: MIT
 }
 
 Program SQL4CDS(Input,Output);
 
-{ SQL4CDS - SQL SELECT vers FetchXML, INSERT vers HTTP POST Dataverse.
+{ SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE vers HTTP Dataverse.
   Implementation autonome; aucune dependance .NET ni connexion reseau.
   Reference fonctionnelle : https://github.com/MarkMpn/Sql4Cds
   Target: Turbo Pascal 7 / Free Pascal (-Mtp). License: MIT.
@@ -28,12 +28,17 @@ Program SQL4CDS(Input,Output);
   INSERT INTO [dbo.]entite (colonnes) VALUES (valeurs), (valeurs), ...;
   INSERT INTO entite DEFAULT VALUES;
   INSERT genere un fichier HTTP avec JSON, pas du FetchXML.
-  --entity-set collection : EntitySetName Dataverse de la cible INSERT.
+  --entity-set collection : EntitySetName Dataverse de la cible INSERT/UPDATE.
   Sans cette option : variable HTTP entitySet a renseigner.
   Variables HTTP orgUrl et accessToken a renseigner pour l'envoi.
   Valeurs INSERT : chaines, nombres, NULL, DEFAULT, CAST(0|1 AS BIT).
   DEFAULT omet la propriete pour laisser Dataverse appliquer sa valeur.
-  Un seul SELECT ou INSERT. Pas d'UPDATE/DELETE, sous-requetes, HAVING, fonctions scalaires,
+  UPDATE [dbo.]entite [AS alias] SET colonne=valeur, ... WHERE cle='GUID';
+  WHERE UPDATE : egalites/IN sur la cle primaire, combinees par OR.
+  --primary-key colonne : cle primaire UPDATE (accountid/contactid connus).
+  UPDATE genere un PATCH par GUID avec If-Match: * (pas d'upsert).
+  DEFAULT dans SET non supporte sans metadonnees de la valeur par defaut.
+  Un seul SELECT, INSERT ou UPDATE. Pas de DELETE, sous-requetes, HAVING, fonctions scalaires,
   expressions calculees, UNION, parametres ou negation d'un groupe.
   Les jointures ON sont une egalite entre colonnes, sans autre predicat.
   Les colonnes non qualifiees designent l'entite principale.
@@ -69,13 +74,18 @@ Type
               Name:String[80]; Ent:Integer; Op:String[16] End;
  TNodes=Array[1..MaxNode] of TNode;
  PNodes=^TNodes;
+ TAssignment=Record Name:String[80]; Value:String; Kind:Char End;
+ TAssignments=Array[1..MaxField] of TAssignment;
+ PAssignments=^TAssignments;
+ TIDs=Array[1..MaxTok] of String[36];
+ PIDs=^TIDs;
 Var Source,XML:PBuffer; Tokens:PTokens; Nodes:PNodes;
     SourceLen,XMLLen,TokenCount,AtToken,EntityCount,FieldCount,
     OrderCount,NodeCount,Root,Depth:Integer;
     Entities:Array[1..MaxEntity] of TEntity;
     Fields,Orders:PFields;
     DistinctRows,AggregateQuery:Boolean;
-    TopValue,InputName,OutputName,Query,EntitySet:String;
+    TopValue,InputName,OutputName,Query,EntitySet,PrimaryKey:String;
     F:Text;
 
 Procedure Fail(S:String);
@@ -234,7 +244,7 @@ Begin
  Clause:=IsWord('FROM')or IsWord('WHERE')or IsWord('ORDER')or
   IsWord('GROUP')or IsWord('INNER')or IsWord('LEFT')or IsWord('JOIN')or
   IsWord('ON')or IsWord('RIGHT')or IsWord('FULL')or IsWord('CROSS')or
-  IsWord('HAVING')or IsWord('UNION')or IsWord('OFFSET');
+  IsWord('HAVING')or IsWord('UNION')or IsWord('OFFSET')or IsWord('SET');
 End;
 
 Procedure ReadField(Var A:TField);
@@ -598,8 +608,8 @@ Begin
  If E=1 Then Emit('</entity>') Else Emit('</link-entity>'); Line;
 End;
 
-{ INSERT utilise le meme analyseur lexical mais produit du JSON HTTP.
-  Aucun POST n'est execute par le convertisseur. }
+{ INSERT/UPDATE utilisent le meme analyseur lexical, avec sortie JSON HTTP.
+  Aucune requete HTTP n'est executee par le convertisseur. }
 Procedure JSONString(S:String);
 Const Hex='0123456789abcdef';
 Var I,C:Integer;
@@ -711,9 +721,101 @@ Begin
  If AtToken<=TokenCount Then Syntax('Construction INSERT non supportee');
 End;
 
+Function GUIDValue(S:String):String;
+Var I:Integer;
+Begin
+ If Length(S)<>36 Then Syntax('GUID attendu au format 8-4-4-4-12');
+ For I:=1 to 36 do Begin
+  If (I=9)or(I=14)or(I=19)or(I=24) Then Begin
+   If S[I]<>'-' Then Syntax('GUID invalide');
+  End Else If Not(S[I] in ['0'..'9','a'..'f','A'..'F']) Then Syntax('GUID invalide');
+ End;
+ GUIDValue:=Lower(S);
+End;
+
+Procedure ParseUpdate;
+Var Assignments:PAssignments; Count,I,J,N:Integer;
+    A:TField; K:Char; S:String; More:Boolean;
+    IDs:PIDs; IDCount:Integer;
+
+ Procedure CollectIDs(Node:Integer);
+ Var T,X,Y,Z:Integer; G:String[36]; Seen:Boolean;
+ Begin
+  If Nodes^[Node].Kind='O' Then Begin
+   CollectIDs(Nodes^[Node].L); CollectIDs(Nodes^[Node].R);
+  End Else Begin
+   If (Nodes^[Node].Kind<>'C')or(Nodes^[Node].Name<>PrimaryKey)or
+    ((Nodes^[Node].Op<>'eq')and(Nodes^[Node].Op<>'in')) Then
+     Syntax('WHERE UPDATE exige egalite/IN sur la cle primaire, ou OR');
+   X:=Nodes^[Node].FirstValue; Y:=Nodes^[Node].LastValue;
+   If Y=0 Then Y:=X;
+   For T:=X to Y do Begin
+    If Tokens^[T].Kind<>'P' Then Begin
+     If Tokens^[T].Kind<>'S' Then Syntax('La cle primaire exige un GUID entre apostrophes');
+     G:=GUIDValue(Tokens^[T].S^); Seen:=False;
+     For Z:=1 to IDCount do If IDs^[Z]=G Then Seen:=True;
+     If Not Seen Then Begin
+      If IDCount=MaxTok Then Syntax('Trop de GUID');
+      Inc(IDCount); IDs^[IDCount]:=G;
+     End;
+    End;
+   End;
+  End;
+ End;
+
+Begin
+ AtToken:=1; Need('UPDATE'); ReadEntity;
+ If PrimaryKey='' Then Begin
+  If Entities[1].Name='account' Then PrimaryKey:='accountid';
+  If Entities[1].Name='contact' Then PrimaryKey:='contactid';
+  If PrimaryKey='' Then Syntax('Fournir --primary-key avec PrimaryIdAttribute de la table');
+ End;
+ Need('SET'); New(Assignments); New(IDs); Count:=0; IDCount:=0;
+ Repeat
+  ReadField(A); Resolve(A);
+  If (A.Name='*')or(A.Name=PrimaryKey) Then Syntax('Colonne SET invalide ou cle primaire non modifiable');
+  For J:=1 to Count do
+   If Assignments^[J].Name=A.Name Then Syntax('Colonne SET dupliquee : '+A.Name);
+  If Count=MaxField Then Syntax('Trop de colonnes SET');
+  Need('='); InsertValue(K,S);
+  If K='D' Then Syntax('DEFAULT dans UPDATE exige les metadonnees de la valeur par defaut');
+  Inc(Count); Assignments^[Count].Name:=A.Name;
+  Assignments^[Count].Kind:=K; Assignments^[Count].Value:=S;
+  More:=Tok=','; If More Then Inc(AtToken);
+ Until Not More;
+ Need('WHERE'); N:=ParseOr;
+ If Tok=';' Then Inc(AtToken);
+ If AtToken<=TokenCount Then Syntax('Construction UPDATE non supportee');
+ CollectIDs(N);
+ For I:=1 to IDCount do Begin
+  If I>1 Then Line;
+  Emit('### UPDATE '); Emit(Entities[1].Name); Emit(' - '); Emit(IDs^[I]); Line;
+  Emit('PATCH {{orgUrl}}/api/data/v9.2/');
+  If EntitySet='' Then Emit('{{entitySet}}') Else Emit(EntitySet);
+  Emit('('); Emit(IDs^[I]); Emit(')'); Line;
+  Emit('Authorization: Bearer {{accessToken}}'); Line;
+  Emit('Content-Type: application/json; charset=utf-8'); Line;
+  Emit('Accept: application/json'); Line;
+  Emit('OData-MaxVersion: 4.0'); Line;
+  Emit('OData-Version: 4.0'); Line;
+  Emit('If-Match: *'); Line; Line;
+  Emit('{'); Line;
+  For J:=1 to Count do Begin
+   Indent(1); JSONString(Assignments^[J].Name); Emit(': ');
+   Case Assignments^[J].Kind of
+    'N':Emit('null'); 'S':JSONString(Assignments^[J].Value);
+    'V','B':Emit(Assignments^[J].Value);
+   End;
+   If J<Count Then Emit(','); Line;
+  End;
+  Emit('}'); Line;
+ End;
+ Dispose(IDs); Dispose(Assignments);
+End;
+
 Procedure Help;
 Begin
- WriteLn('SQL4CDS - SELECT vers FetchXML, INSERT vers HTTP POST (Dataverse)');
+ WriteLn('SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE vers HTTP (Dataverse)');
  WriteLn;
  WriteLn('Syntaxe : SQL4CDS source.sql [sortie.xml]');
  WriteLn('          SQL4CDS -q "SELECT name FROM account" [-o sortie.xml]');
@@ -722,8 +824,9 @@ Begin
  WriteLn('  -h, --help, /?       Affiche cette aide');
  WriteLn('  -q "SQL"             Requete SQL a convertir');
  WriteLn('  -i source.sql        Fichier SQL source');
- WriteLn('  -o fichier           Sortie FetchXML (SELECT) ou HTTP (INSERT)');
- WriteLn('  --entity-set nom     Collection Web API pour INSERT (ex. accounts)');
+ WriteLn('  -o fichier           Sortie FetchXML (SELECT) ou HTTP (INSERT/UPDATE)');
+ WriteLn('  --entity-set nom     Collection Web API pour INSERT/UPDATE');
+ WriteLn('  --primary-key nom    PrimaryIdAttribute pour UPDATE');
  WriteLn;
  WriteLn('Sans arguments : entree standard. Sans -o : sortie standard.');
  WriteLn('SELECT, DISTINCT, TOP, INNER/LEFT JOIN, WHERE, GROUP BY, ORDER BY.');
@@ -731,7 +834,9 @@ Begin
  WriteLn('Utiliser les noms logiques et qualifier les colonnes des jointures.');
  WriteLn('INSERT INTO entite (colonnes) VALUES (...), (...) ou DEFAULT VALUES.');
  WriteLn('INSERT produit du HTTP/JSON; renseigner orgUrl, accessToken, entitySet.');
- WriteLn('Un seul SELECT/INSERT; aucune requete reseau executee.');
+ WriteLn('UPDATE entite SET col=valeur,... WHERE cle=''GUID'' ou cle IN (...).');
+ WriteLn('WHERE UPDATE : cle primaire seulement; combinaisons OR acceptees.');
+ WriteLn('Un seul SELECT/INSERT/UPDATE; aucune requete reseau executee.');
  WriteLn('COUNT(*) et les expressions ne sont pas supportes.');
 End;
 
@@ -749,7 +854,7 @@ Begin
  While I<=ParamCount do Begin
   S:=Argument(I);
   If (S='-h')or(S='--help')or(S='/?') Then Begin Help; Halt(0) End;
-  If (S='-q')or(S='-i')or(S='-o')or(S='--entity-set') Then Begin
+  If (S='-q')or(S='-i')or(S='-o')or(S='--entity-set')or(S='--primary-key') Then Begin
    Inc(I); If I>ParamCount Then Begin Help; Halt(2) End;
    If S='-q' Then Begin
     If (Query<>'')or(InputName<>'') Then Begin Help; Halt(2) End;
@@ -769,6 +874,11 @@ Begin
     EntitySet:=Argument(I);
     If EntitySet='' Then Fail('EntitySetName vide');
    End;
+   If S='--primary-key' Then Begin
+    If PrimaryKey<>'' Then Begin Help; Halt(2) End;
+    PrimaryKey:=Lower(Argument(I));
+    If (Length(PrimaryKey)=0)or(Length(PrimaryKey)>80) Then Fail('PrimaryIdAttribute invalide');
+   End;
   End Else If (Length(S)>0)and(S[1]='-') Then Begin Help; Halt(2) End
   Else If (InputName='')and(Query='') Then InputName:=S
   Else If (OutputName='')and(Query='') Then OutputName:=S
@@ -778,6 +888,9 @@ Begin
  For I:=1 to Length(EntitySet) do
   If Not(EntitySet[I] in ['A'..'Z','a'..'z','0'..'9','_']) Then
    Fail('EntitySetName invalide');
+ For I:=1 to Length(PrimaryKey) do
+  If Not(PrimaryKey[I] in ['a'..'z','0'..'9','_']) Then
+   Fail('PrimaryIdAttribute invalide');
  If (InputName<>'')and(OutputName<>'')and
   (Upper(FExpand(InputName))=Upper(FExpand(OutputName))) Then
    Fail('Source et cible identiques');
@@ -816,7 +929,7 @@ Begin
  SourceLen:=0; XMLLen:=0; TokenCount:=0; EntityCount:=0;
  FieldCount:=0; OrderCount:=0; NodeCount:=0; Root:=0; Depth:=0;
  DistinctRows:=False; AggregateQuery:=False;
- TopValue:=''; InputName:=''; OutputName:=''; Query:=''; EntitySet:='';
+ TopValue:=''; InputName:=''; OutputName:=''; Query:=''; EntitySet:=''; PrimaryKey:='';
  Args;
  If Query<>'' Then For I:=1 to Length(Query) do AddSource(Query[I])
  Else If InputName='' Then ReadSQL(Input)
@@ -826,8 +939,13 @@ Begin
   ReadSQL(F); Close(F);
  End;
  Lex; AtToken:=1;
- If IsWord('INSERT') Then ParseInsert Else Begin
-  If EntitySet<>'' Then Fail('--entity-set est reserve a INSERT');
+ If IsWord('UPDATE') Then ParseUpdate
+ Else If IsWord('INSERT') Then Begin
+  If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE');
+  ParseInsert;
+ End Else Begin
+  If EntitySet<>'' Then Fail('--entity-set est reserve a INSERT/UPDATE');
+  If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE');
   Parse;
   Emit('<fetch mapping="logical"');
   If TopValue<>'' Then Attr('top',TopValue);
