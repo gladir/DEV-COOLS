@@ -2,20 +2,29 @@
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Free Pascal 3.2)
-  @description: SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP Dataverse.
+  @description: Conversion SQL et communication Dataverse via WinHTTP sous Windows.
   @license: MIT
 }
 
 Program SQL4CDS(Input,Output);
 
 { SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP Dataverse.
-  Implementation autonome; aucune dependance .NET ni connexion reseau.
+  Implementation autonome; aucune dependance .NET.
+  Sous Windows/Free Pascal : communication HTTPS native par winhttp.dll.
+  -execute active l'envoi; sinon la commande reste un convertisseur.
   Reference fonctionnelle : https://github.com/MarkMpn/Sql4Cds
   Target: Turbo Pascal 7 / Free Pascal (-Mtp). License: MIT.
 
   SQL4CDS source.sql [sortie.xml]
   SQL4CDS -q "SELECT name FROM account" [-o sortie.xml]
   Alias : -query pour -q, -file pour -i, -output pour -o.
+  -connection nom : profil de SQL4CDS.INI (repertoire courant).
+  SQL4CDS_CONFIG peut designer un autre fichier de profils.
+  Profil INI : [nom], OrgUrl=https://organisation.crm.dynamics.com,
+               TokenEnv=DATAVERSE_TOKEN, ApiVersion=v9.2 (facultatif).
+  La conversion HTTP reference TokenEnv, sans lire ni enregistrer son jeton.
+  -execute lit le jeton depuis l'environnement, puis renvoie les resultats JSON.
+  -execute exige -connection et --entity-set, y compris pour SELECT.
   Sans arguments : lecture de l'entree standard jusqu'a EOF.
 
   SELECT [DISTINCT] [TOP n] colonnes FROM [dbo.]entite [AS alias]
@@ -58,12 +67,28 @@ Program SQL4CDS(Input,Output);
 }
 
 {$IFDEF FPC}{$MODE TP}{$ENDIF}
+{$IFDEF FPC}
+ {$IFDEF MSWINDOWS}
+  {$IFNDEF SQL4CDS_NO_WINHTTP}{$DEFINE DATAVERSE_WINDOWS}{$ENDIF}
+ {$ENDIF}
+{$ENDIF}
 {$M 32768,0,655360}
 {$R+}
 Uses DOS;
 Const MaxBuf=30000; MaxTok=1024; MaxEntity=16; MaxField=128;
       MaxNode=256;
+ {$IFDEF DATAVERSE_WINDOWS}
+      CP_UTF8=65001;
+      MB_ERR_INVALID_CHARS=$00000008;
+      ERROR_INSUFFICIENT_BUFFER=122;
+ {$ENDIF}
 Type
+ {$IFDEF DATAVERSE_WINDOWS}
+ { API WinHTTP : ABI DWORD/BOOL 32 bits, handles et contexte taille pointeur.
+   Les appels sont synchrones et les chaines API sont UTF-16. }
+ THttpHandle=Pointer;
+ PHttpDWORD=^LongWord;
+ {$ENDIF}
  PStr=^String;
  TBuffer=Array[1..MaxBuf] of Char;
  PBuffer=^TBuffer;
@@ -90,9 +115,58 @@ Var Source,XML:PBuffer; Tokens:PTokens; Nodes:PNodes;
     OrderCount,NodeCount,Root,Depth,BaseEntity:Integer;
     Entities:Array[1..MaxEntity] of TEntity;
     Fields,Orders:PFields;
-    DistinctRows,AggregateQuery,InJoinCondition:Boolean;
+    DistinctRows,AggregateQuery,InJoinCondition,ExecuteRemote:Boolean;
     TopValue,InputName,OutputName,Query,EntitySet,PrimaryKey:String;
+    ConnectionName,ConnectionFile,OrgUrl,TokenEnv,ApiVersion:String;
     F:Text;
+ {$IFDEF DATAVERSE_WINDOWS}
+ NativeSession,NativeConnection,NativeRequest:THttpHandle;
+ NativeToken,NativeOutput:AnsiString;
+ NativeCompleted:LongWord;
+
+{ Entrees Kernel32 directes, sans unite Windows. }
+Function GetLastError:LongWord; StdCall;
+ external 'kernel32.dll' name 'GetLastError';
+Function GetEnvironmentVariableW(Name,Buffer:PWideChar; Size:LongWord):LongWord; StdCall;
+ external 'kernel32.dll' name 'GetEnvironmentVariableW';
+Function MultiByteToWideChar(CodePage,Flags:LongWord; Source:PAnsiChar;
+ SourceLength:LongInt; Target:PWideChar; TargetLength:LongInt):LongInt; StdCall;
+ external 'kernel32.dll' name 'MultiByteToWideChar';
+Function WideCharToMultiByte(CodePage,Flags:LongWord; Source:PWideChar;
+ SourceLength:LongInt; Target:PAnsiChar; TargetLength:LongInt;
+ DefaultChar:PAnsiChar; UsedDefaultChar:Pointer):LongInt; StdCall;
+ external 'kernel32.dll' name 'WideCharToMultiByte';
+
+Function WinHttpOpen(Agent:PWideChar; AccessType:LongWord;
+ Proxy,Bypass:PWideChar; Flags:LongWord):THttpHandle; StdCall;
+ external 'winhttp.dll' name 'WinHttpOpen';
+Function WinHttpConnect(Session:THttpHandle; Server:PWideChar;
+ Port:Word; Reserved:LongWord):THttpHandle; StdCall;
+ external 'winhttp.dll' name 'WinHttpConnect';
+Function WinHttpOpenRequest(Connection:THttpHandle; Verb,Path,Version,
+ Referrer:PWideChar; AcceptTypes:Pointer; Flags:LongWord):THttpHandle; StdCall;
+ external 'winhttp.dll' name 'WinHttpOpenRequest';
+Function WinHttpSetTimeouts(Handle:THttpHandle; ResolveTimeout,ConnectTimeout,
+ SendTimeout,ReceiveTimeout:LongInt):LongBool; StdCall;
+ external 'winhttp.dll' name 'WinHttpSetTimeouts';
+Function WinHttpSetOption(Handle:THttpHandle; Option:LongWord;
+ Buffer:Pointer; BufferLength:LongWord):LongBool; StdCall;
+ external 'winhttp.dll' name 'WinHttpSetOption';
+Function WinHttpSendRequest(Request:THttpHandle; Headers:PWideChar;
+ HeadersLength:LongWord; Data:Pointer; DataLength,TotalLength:LongWord;
+ Context:PtrUInt):LongBool; StdCall;
+ external 'winhttp.dll' name 'WinHttpSendRequest';
+Function WinHttpReceiveResponse(Request:THttpHandle; Reserved:Pointer):LongBool; StdCall;
+ external 'winhttp.dll' name 'WinHttpReceiveResponse';
+Function WinHttpQueryHeaders(Request:THttpHandle; InfoLevel:LongWord;
+ Name:PWideChar; Buffer:Pointer; BufferLength,Index:PHttpDWORD):LongBool; StdCall;
+ external 'winhttp.dll' name 'WinHttpQueryHeaders';
+Function WinHttpReadData(Request:THttpHandle; Buffer:Pointer;
+ BytesToRead:LongWord; BytesRead:PHttpDWORD):LongBool; StdCall;
+ external 'winhttp.dll' name 'WinHttpReadData';
+Function WinHttpCloseHandle(Handle:THttpHandle):LongBool; StdCall;
+ external 'winhttp.dll' name 'WinHttpCloseHandle';
+ {$ENDIF}
 
 Procedure Fail(S:String);
 Begin
@@ -111,6 +185,118 @@ Begin
  For I:=1 to Length(S) do If S[I] in ['A'..'Z'] Then
   S[I]:=Chr(Ord(S[I])+32);
  Lower:=S;
+End;
+
+Function Trim(S:String):String;
+Begin
+ While (Length(S)>0)and(S[1] in [' ',#9]) do Delete(S,1,1);
+ While (Length(S)>0)and(S[Length(S)] in [' ',#9]) do Delete(S,Length(S),1);
+ Trim:=S;
+End;
+
+Procedure LoadConnection;
+Var Config:Text; S,Section,Key,Value,Host,PortText:String;
+    I,P,Err,Code:Integer; PortValue:LongInt;
+    Selected,Found,HaveUrl,HaveToken,HaveVersion,FirstLine:Boolean;
+
+ Function ReadLine(Var LineText:String):Boolean;
+ Var C:Char; Done:Boolean; ReadErr:Integer;
+ Begin
+  LineText:=''; Done:=False;
+  {$I-}
+  ReadLine:=Not EOF(Config); ReadErr:=IOResult;
+  If ReadErr<>0 Then Fail('Erreur de lecture du fichier de connexions');
+  While Not Done do Begin
+   If EOF(Config) Then Done:=True Else Begin
+    Read(Config,C); ReadErr:=IOResult;
+    If ReadErr<>0 Then Fail('Erreur de lecture du fichier de connexions');
+    If C in [#10,#13] Then Done:=True Else Begin
+     If Length(LineText)=255 Then Fail('Ligne de configuration trop longue');
+     LineText:=LineText+C;
+    End;
+   End;
+   ReadErr:=IOResult;
+   If ReadErr<>0 Then Fail('Erreur de lecture du fichier de connexions');
+  End;
+  {$I+}
+ End;
+
+Begin
+ If ConnectionName='' Then Exit;
+ ConnectionFile:=GetEnv('SQL4CDS_CONFIG');
+ If ConnectionFile='' Then ConnectionFile:='SQL4CDS.INI';
+ If Length(ConnectionFile)>=255 Then Fail('Chemin du fichier de connexions trop long');
+ If (OutputName<>'')and
+  (Upper(FExpand(ConnectionFile))=Upper(FExpand(OutputName))) Then
+   Fail('Le fichier de sortie ne doit pas remplacer les connexions');
+ Assign(Config,ConnectionFile); {$I-}Reset(Config); Err:=IOResult;{$I+}
+ If Err<>0 Then Fail('Impossible d''ouvrir le fichier de connexions '+ConnectionFile);
+ Selected:=False; Found:=False; HaveUrl:=False; HaveToken:=False;
+ HaveVersion:=False; FirstLine:=True;
+ While ReadLine(S) do Begin
+  If FirstLine Then Begin
+   If Copy(S,1,3)=#239#187#191 Then Delete(S,1,3);
+   FirstLine:=False;
+  End;
+  S:=Trim(S);
+  If (S<>'')and Not(S[1] in [';','#']) Then Begin
+   If S[1]='[' Then Begin
+    If (Length(S)<3)or(S[Length(S)]<>']') Then
+     Fail('Section de connexion invalide');
+    Section:=Trim(Copy(S,2,Length(S)-2));
+    Selected:=Upper(Section)=Upper(ConnectionName);
+    If Selected Then Begin
+     If Found Then Fail('Profil de connexion duplique : '+ConnectionName);
+     Found:=True;
+    End;
+   End Else If Selected Then Begin
+    P:=Pos('=',S);
+    If P=0 Then Fail('Propriete de connexion sans signe egal');
+    Key:=Upper(Trim(Copy(S,1,P-1))); Value:=Trim(Copy(S,P+1,255));
+    If Key='ORGURL' Then Begin
+     If HaveUrl Then Fail('OrgUrl duplique');
+     HaveUrl:=True; OrgUrl:=Value;
+    End Else If Key='TOKENENV' Then Begin
+     If HaveToken Then Fail('TokenEnv duplique');
+     HaveToken:=True; TokenEnv:=Value;
+    End Else If Key='APIVERSION' Then Begin
+     If HaveVersion Then Fail('ApiVersion duplique');
+     HaveVersion:=True; ApiVersion:=Value;
+    End Else Fail('Propriete de connexion non supportee');
+   End;
+  End;
+ End;
+ {$I-}Close(Config); Err:=IOResult;{$I+}
+ If Err<>0 Then Fail('Erreur de fermeture du fichier de connexions');
+ If Not Found Then Fail('Connexion inconnue : '+ConnectionName);
+ If (Not HaveUrl)or(Length(OrgUrl)<9)or(Length(OrgUrl)>200)or
+  (Lower(Copy(OrgUrl,1,8))<>'https://') Then Fail('OrgUrl HTTPS invalide');
+ If OrgUrl[Length(OrgUrl)]='/' Then Delete(OrgUrl,Length(OrgUrl),1);
+ Host:=Copy(OrgUrl,9,255); P:=Pos(':',Host);
+ If P<>0 Then Begin
+  PortText:=Copy(Host,P+1,255); Delete(Host,P,255);
+  If PortText='' Then Fail('Port OrgUrl invalide');
+  For I:=1 to Length(PortText) do
+   If Not(PortText[I] in ['0'..'9']) Then Fail('Port OrgUrl invalide');
+  Val(PortText,PortValue,Code);
+  If (Code<>0)or(PortValue<1)or(PortValue>65535) Then Fail('Port OrgUrl invalide');
+ End;
+ If Host='' Then Fail('Hote OrgUrl invalide');
+ For I:=1 to Length(Host) do
+  If Not(Host[I] in ['a'..'z','A'..'Z','0'..'9','.','-']) Then
+   Fail('OrgUrl doit contenir uniquement le nom d''hote et un port facultatif');
+ If Not(Host[1] in ['a'..'z','A'..'Z','0'..'9'])or
+  Not(Host[Length(Host)] in ['a'..'z','A'..'Z','0'..'9']) Then Fail('Hote OrgUrl invalide');
+ If (Not HaveToken)or(Length(TokenEnv)=0)or(Length(TokenEnv)>80) Then Fail('TokenEnv requis');
+ If Not(TokenEnv[1] in ['A'..'Z','a'..'z','_']) Then Fail('TokenEnv invalide');
+ For I:=1 to Length(TokenEnv) do
+  If Not(TokenEnv[I] in ['A'..'Z','a'..'z','0'..'9','_']) Then Fail('TokenEnv invalide');
+ If (Length(ApiVersion)<4)or(Length(ApiVersion)>16)or(ApiVersion[1]<>'v') Then
+  Fail('ApiVersion invalide (exemple : v9.2)');
+ P:=Pos('.',ApiVersion);
+ If (P<3)or(P=Length(ApiVersion)) Then Fail('ApiVersion invalide');
+ For I:=2 to Length(ApiVersion) do
+  If (I<>P)and Not(ApiVersion[I] in ['0'..'9']) Then Fail('ApiVersion invalide');
 End;
 
 Function Num(I:Integer):String;
@@ -706,7 +892,7 @@ End;
 Procedure InsertHeader(Row:Integer);
 Begin
  Emit('### INSERT '); Emit(Entities[1].Name); Emit(' - ligne '); Emit(Num(Row)); Line;
- Emit('POST {{orgUrl}}/api/data/v9.2/');
+ Emit('POST {{orgUrl}}/api/data/'); Emit(ApiVersion); Emit('/');
  If EntitySet='' Then Emit('{{entitySet}}') Else Emit(EntitySet);
  Line;
  Emit('Authorization: Bearer {{accessToken}}'); Line;
@@ -842,7 +1028,7 @@ Begin
   If I>1 Then Line;
   Emit('### '+Operation+' '); Emit(Entities[1].Name); Emit(' - '); Emit(IDs^[I]); Line;
   If IsDelete Then Emit('DELETE') Else Emit('PATCH');
-  Emit(' {{orgUrl}}/api/data/v9.2/');
+  Emit(' {{orgUrl}}/api/data/'); Emit(ApiVersion); Emit('/');
   If EntitySet='' Then Emit('{{entitySet}}') Else Emit(EntitySet);
   Emit('('); Emit(IDs^[I]); Emit(')'); Line;
   Emit('Authorization: Bearer {{accessToken}}'); Line;
@@ -882,6 +1068,8 @@ Begin
  WriteLn('  -q, -query "SQL"     Requete SQL a convertir');
  WriteLn('  -i, -file source.sql Charger une requete depuis un fichier SQL');
  WriteLn('  -o, -output fichier  Enregistrer le FetchXML ou les requetes HTTP');
+ WriteLn('  -connection nom      Profil Dataverse dans SQL4CDS.INI');
+ WriteLn('  -execute             Envoyer les requetes (Windows/Free Pascal, WinHTTP)');
  WriteLn('  --entity-set nom     Collection Web API pour INSERT/UPDATE/DELETE');
  WriteLn('  --primary-key nom    PrimaryIdAttribute pour UPDATE/DELETE');
  WriteLn;
@@ -896,12 +1084,15 @@ Begin
  WriteLn('UPDATE entite SET col=valeur,... WHERE cle=''GUID'' ou cle IN (...).');
  WriteLn('DELETE FROM entite WHERE cle=''GUID'' ou cle IN (...).');
  WriteLn('WHERE UPDATE/DELETE : cle primaire seulement, OR accepte, WHERE obligatoire.');
- WriteLn('Un seul SELECT/INSERT/UPDATE/DELETE; aucune requete reseau executee.');
+ WriteLn('Un seul SELECT/INSERT/UPDATE/DELETE; conversion par defaut, envoi avec -execute.');
+ WriteLn('-execute exige -connection et --entity-set, y compris pour SELECT.');
+ WriteLn('Connexions : OrgUrl, TokenEnv, ApiVersion dans une section [nom].');
+ WriteLn('SQL4CDS_CONFIG : chemin facultatif du fichier de connexions.');
  WriteLn('COUNT(*) et les expressions ne sont pas supportes.');
 End;
 
 Procedure Args;
-Var I:Integer; S:String;
+Var I,J:Integer; S:String;
  Function Argument(N:Integer):String;
  Var V:String;
  Begin
@@ -917,7 +1108,12 @@ Begin
   If S='-file' Then S:='-i';
   If S='-output' Then S:='-o';
   If (S='-h')or(S='--help')or(S='/?') Then Begin Help; Halt(0) End;
-  If (S='-q')or(S='-i')or(S='-o')or(S='--entity-set')or(S='--primary-key') Then Begin
+  If S='-execute' Then Begin
+   If ExecuteRemote Then Begin Help; Halt(2) End;
+   ExecuteRemote:=True;
+  End Else
+  If (S='-q')or(S='-i')or(S='-o')or(S='--entity-set')or(S='--primary-key')or
+   (S='-connection') Then Begin
    Inc(I); If I>ParamCount Then Begin Help; Halt(2) End;
    If S='-q' Then Begin
     If (Query<>'')or(InputName<>'') Then Begin Help; Halt(2) End;
@@ -942,11 +1138,25 @@ Begin
     PrimaryKey:=Lower(Argument(I));
     If (Length(PrimaryKey)=0)or(Length(PrimaryKey)>80) Then Fail('PrimaryIdAttribute invalide');
    End;
+   If S='-connection' Then Begin
+    If ConnectionName<>'' Then Begin Help; Halt(2) End;
+    ConnectionName:=Trim(Argument(I));
+    If (ConnectionName='')or(Length(ConnectionName)>80) Then Begin Help; Halt(2) End;
+    For J:=1 to Length(ConnectionName) do
+     If Not(ConnectionName[J] in ['a'..'z','A'..'Z','0'..'9','_','-','.',' ']) Then Begin Help; Halt(2) End;
+   End;
   End Else If (Length(S)>0)and(S[1]='-') Then Begin Help; Halt(2) End
   Else If (InputName='')and(Query='') Then InputName:=S
   Else If (OutputName='')and(Query='') Then OutputName:=S
   Else Begin Help; Halt(2) End;
   Inc(I);
+ End;
+ If ExecuteRemote Then Begin
+  {$IFNDEF DATAVERSE_WINDOWS}
+  Fail('-execute exige Free Pascal sous Windows avec WinHTTP');
+  {$ENDIF}
+  If ConnectionName='' Then Fail('-execute exige -connection');
+  If EntitySet='' Then Fail('-execute exige --entity-set pour la table cible');
  End;
  For I:=1 to Length(EntitySet) do
   If Not(EntitySet[I] in ['A'..'Z','a'..'z','0'..'9','_']) Then
@@ -986,15 +1196,283 @@ Begin
  If Err<>0 Then Fail('Erreur d''ecriture '+Num(Err));
 End;
 
+Procedure EmitConnection;
+Begin
+ Emit('# Connexion : '); Emit(ConnectionName); Line;
+ Emit('@orgUrl = '); Emit(OrgUrl); Line;
+ Emit('@accessToken = {{$processEnv '); Emit(TokenEnv); Emit('}}'); Line; Line;
+End;
+
+{$IFDEF DATAVERSE_WINDOWS}
+Const NativeResponseLimit=16*1024*1024;
+      NativeOutputLimit=64*1024*1024;
+      HTTP_FLAG_SECURE=$00800000;
+      HTTP_QUERY_STATUS_NUMBER=$20000013;
+      HTTP_QUERY_CUSTOM=65535;
+      HTTP_OPTION_REDIRECT_POLICY=88;
+      HTTP_REDIRECT_NEVER=0;
+
+Function NativeNum(N:LongWord):AnsiString;
+Var S:String;
+Begin Str(N,S); NativeNum:=S End;
+
+Procedure CloseNative;
+Begin
+ If NativeRequest<>Nil Then Begin WinHttpCloseHandle(NativeRequest); NativeRequest:=Nil End;
+ If NativeConnection<>Nil Then Begin WinHttpCloseHandle(NativeConnection); NativeConnection:=Nil End;
+ If NativeSession<>Nil Then Begin WinHttpCloseHandle(NativeSession); NativeSession:=Nil End;
+ NativeToken:='';
+End;
+
+Procedure NativeFail(S:String; Code:LongWord);
+Var MessageText:String;
+Begin
+ MessageText:=S;
+ If Code<>0 Then MessageText:=MessageText+' (code '+String(NativeNum(Code))+')';
+ If NativeCompleted<>0 Then MessageText:=MessageText+'; '+
+  String(NativeNum(NativeCompleted))+' requete(s) deja terminee(s)';
+ CloseNative; Fail(MessageText);
+End;
+
+Function NativeWide(S:AnsiString):WideString;
+Var Count:LongInt; W:WideString;
+Begin
+ W:='';
+ If Length(S)>0 Then Begin
+  Count:=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,PAnsiChar(S),Length(S),Nil,0);
+  If Count=0 Then NativeFail('Texte UTF-8 invalide',GetLastError);
+  SetLength(W,Count);
+  If MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,PAnsiChar(S),Length(S),PWideChar(W),Count)=0 Then
+   NativeFail('Conversion UTF-16 impossible',GetLastError);
+ End;
+ NativeWide:=W;
+End;
+
+Function NativeUTF8(W:WideString):AnsiString;
+Var Count:LongInt; S:AnsiString;
+Begin
+ S:='';
+ If Length(W)>0 Then Begin
+  Count:=WideCharToMultiByte(CP_UTF8,0,PWideChar(W),Length(W),Nil,0,Nil,Nil);
+  If Count=0 Then NativeFail('Conversion UTF-8 impossible',GetLastError);
+  SetLength(S,Count);
+  If WideCharToMultiByte(CP_UTF8,0,PWideChar(W),Length(W),PAnsiChar(S),Count,Nil,Nil)=0 Then
+   NativeFail('Conversion UTF-8 impossible',GetLastError);
+ End;
+ NativeUTF8:=S;
+End;
+
+Function NativeEnv(Name:String):AnsiString;
+Var WName,WValue:WideString; Count,ReadCount:LongWord;
+Begin
+ WName:=NativeWide(Name);
+ Count:=GetEnvironmentVariableW(PWideChar(WName),Nil,0);
+ If Count=0 Then NativeFail('Variable du jeton absente ou vide : '+Name,0);
+ If Count>65536 Then NativeFail('Jeton trop long',0);
+ SetLength(WValue,Count);
+ ReadCount:=GetEnvironmentVariableW(PWideChar(WName),PWideChar(WValue),Count);
+ If (ReadCount=0)or(ReadCount>=Count) Then NativeFail('Lecture du jeton impossible',0);
+ SetLength(WValue,ReadCount); NativeEnv:=NativeUTF8(WValue);
+End;
+
+Function PercentEncode(S:AnsiString):AnsiString;
+Const Hex='0123456789ABCDEF';
+Var I,P,C:LongInt; Encoded:AnsiString;
+Begin
+ SetLength(Encoded,Length(S)*3); P:=0;
+ For I:=1 to Length(S) do Begin
+  If S[I] in ['A'..'Z','a'..'z','0'..'9','-','_','.','~'] Then Begin
+   Inc(P); Encoded[P]:=S[I];
+  End Else Begin
+   C:=Ord(S[I]); Inc(P); Encoded[P]:='%';
+   Inc(P); Encoded[P]:=Hex[(C div 16)+1]; Inc(P); Encoded[P]:=Hex[(C mod 16)+1];
+  End;
+ End;
+ SetLength(Encoded,P); PercentEncode:=Encoded;
+End;
+
+Function NativeQuote(S:AnsiString):AnsiString;
+Const Hex='0123456789abcdef';
+Var I,P,C:LongInt; Q:AnsiString;
+Begin
+ SetLength(Q,Length(S)*6+2); Q[1]:='"'; P:=1;
+ For I:=1 to Length(S) do Begin
+  C:=Ord(S[I]);
+  If S[I] in ['"','\'] Then Begin Inc(P); Q[P]:='\'; Inc(P); Q[P]:=S[I] End
+  Else If C<32 Then Begin
+   Inc(P); Q[P]:='\'; Inc(P); Q[P]:='u'; Inc(P); Q[P]:='0'; Inc(P); Q[P]:='0';
+   Inc(P); Q[P]:=Hex[(C div 16)+1]; Inc(P); Q[P]:=Hex[(C mod 16)+1];
+  End Else Begin Inc(P); Q[P]:=S[I] End;
+ End;
+ Inc(P); Q[P]:='"'; SetLength(Q,P); NativeQuote:=Q;
+End;
+
+Function SendNative(Verb,Path,Body:AnsiString; IfMatch:Boolean;
+ Var Status:LongWord; Var EntityURI:AnsiString):AnsiString;
+Var WVerb,WPath,WHeaders,WName,WHeader:WideString;
+    Headers,Response,Part:AnsiString;
+    Size,ReadCount,Policy,ErrorCode:LongWord; DataPointer:Pointer;
+    Bytes:Array[0..8191] of Char;
+Begin
+ WVerb:=NativeWide(Verb); WPath:=NativeWide(Path);
+ NativeRequest:=WinHttpOpenRequest(NativeConnection,PWideChar(WVerb),PWideChar(WPath),
+  Nil,Nil,Nil,HTTP_FLAG_SECURE);
+ If NativeRequest=Nil Then NativeFail('WinHttpOpenRequest',GetLastError);
+ Policy:=HTTP_REDIRECT_NEVER;
+ If Not WinHttpSetOption(NativeRequest,HTTP_OPTION_REDIRECT_POLICY,@Policy,SizeOf(Policy)) Then
+  NativeFail('WinHttpSetOption (redirections)',GetLastError);
+ Headers:='Authorization: Bearer '+NativeToken+#13#10+
+  'Accept: application/json'+#13#10+'Content-Type: application/json; charset=utf-8'+#13#10+
+  'OData-MaxVersion: 4.0'+#13#10+'OData-Version: 4.0'+#13#10;
+ If IfMatch Then Headers:=Headers+'If-Match: *'+#13#10;
+ WHeaders:=NativeWide(Headers); DataPointer:=Nil;
+ If Length(Body)>0 Then DataPointer:=PAnsiChar(Body);
+ If Not WinHttpSendRequest(NativeRequest,PWideChar(WHeaders),Length(WHeaders),DataPointer,
+  Length(Body),Length(Body),0) Then NativeFail('WinHttpSendRequest',GetLastError);
+ If Not WinHttpReceiveResponse(NativeRequest,Nil) Then NativeFail('WinHttpReceiveResponse',GetLastError);
+ Size:=SizeOf(Status);
+ If Not WinHttpQueryHeaders(NativeRequest,HTTP_QUERY_STATUS_NUMBER,Nil,@Status,@Size,Nil) Then
+  NativeFail('WinHttpQueryHeaders (statut)',GetLastError);
+ If (Status<200)or(Status>=300) Then
+  NativeFail('Dataverse a retourne HTTP '+String(NativeNum(Status)),0);
+ { Le serveur peut avoir modifie les donnees, meme si la lecture echoue ensuite. }
+ Inc(NativeCompleted);
+ EntityURI:=''; Size:=0; WName:='OData-EntityId';
+ If Not WinHttpQueryHeaders(NativeRequest,HTTP_QUERY_CUSTOM,PWideChar(WName),Nil,@Size,Nil) Then Begin
+  ErrorCode:=GetLastError;
+  If ErrorCode=ERROR_INSUFFICIENT_BUFFER Then Begin
+   If Size>65536 Then NativeFail('En-tete de reponse trop long',0);
+   SetLength(WHeader,(Size+1)div 2);
+   If Not WinHttpQueryHeaders(NativeRequest,HTTP_QUERY_CUSTOM,PWideChar(WName),PWideChar(WHeader),@Size,Nil) Then
+    NativeFail('WinHttpQueryHeaders (identifiant)',GetLastError);
+   While (Length(WHeader)>0)and(WHeader[Length(WHeader)]=#0) do SetLength(WHeader,Length(WHeader)-1);
+   EntityURI:=NativeUTF8(WHeader);
+  End Else If ErrorCode<>12150 Then NativeFail('WinHttpQueryHeaders (identifiant)',ErrorCode);
+ End;
+ Response:='';
+ Repeat
+  ReadCount:=0;
+  If Not WinHttpReadData(NativeRequest,@Bytes[0],SizeOf(Bytes),@ReadCount) Then
+   NativeFail('WinHttpReadData',GetLastError);
+  If ReadCount>SizeOf(Bytes) Then NativeFail('Taille de lecture WinHTTP invalide',0);
+  If Length(Response)+ReadCount>NativeResponseLimit Then NativeFail('Reponse HTTP trop volumineuse',0);
+  If ReadCount>0 Then Begin
+   SetLength(Part,ReadCount); Move(Bytes[0],Part[1],ReadCount); Response:=Response+Part;
+  End;
+ Until ReadCount=0;
+ WinHttpCloseHandle(NativeRequest); NativeRequest:=Nil;
+ SendNative:=Response;
+End;
+
+Procedure ExecuteDataverse;
+Var Host,PortText,Converted,LineText,Verb,Path,Body,Response,EntityURI,Entry:AnsiString;
+    WHost,Agent:WideString; Port:Word; P,I,AtLine,StartLine,RequestCount:LongInt;
+    PortValue:LongInt; Code:Integer; Status:LongWord;
+    DataState,IfMatch:Boolean;
+
+ Procedure AppendOutput(S:AnsiString);
+ Begin
+  If Length(NativeOutput)+Length(S)>NativeOutputLimit Then NativeFail('Resultats trop volumineux',0);
+  NativeOutput:=NativeOutput+S;
+ End;
+
+ Procedure Submit;
+ Begin
+  If Verb='' Then Exit;
+  If Copy(Path,1,10)<>'{{orgUrl}}' Then NativeFail('Chemin HTTP genere invalide',0);
+  Delete(Path,1,10);
+  While (Length(Body)>0)and(Body[Length(Body)] in [#13,#10]) do SetLength(Body,Length(Body)-1);
+  If (Verb='DELETE')and(Body<>'') Then NativeFail('DELETE ne doit pas avoir de corps',0);
+  Response:=SendNative(Verb,Path,Body,IfMatch,Status,EntityURI);
+  If RequestCount>0 Then AppendOutput(','+#13#10);
+  Entry:='  {"method":'+NativeQuote(Verb)+',"status":'+NativeNum(Status)+
+   ',"entityId":'+NativeQuote(EntityURI)+',"body":'+NativeQuote(Response)+'}';
+  AppendOutput(Entry); Inc(RequestCount); Verb:=''; Body:='';
+ End;
+
+Begin
+ NativeSession:=Nil; NativeConnection:=Nil; NativeRequest:=Nil;
+ NativeCompleted:=0; NativeOutput:=''; NativeToken:=NativeEnv(TokenEnv);
+ For I:=1 to Length(NativeToken) do
+  If Not(NativeToken[I] in ['A'..'Z','a'..'z','0'..'9','-','.','_','~','+','/','=']) Then
+   NativeFail('Jeton Bearer invalide',0);
+ Host:=Copy(OrgUrl,9,255); Port:=443; P:=Pos(':',Host);
+ If P<>0 Then Begin
+  PortText:=Copy(Host,P+1,255); Delete(Host,P,255); Val(PortText,PortValue,Code);
+  If Code<>0 Then NativeFail('Port HTTPS invalide',0); Port:=PortValue;
+ End;
+ Agent:='SQL4CDS/1.0'; WHost:=NativeWide(Host);
+ NativeSession:=WinHttpOpen(PWideChar(Agent),0,Nil,Nil,0);
+ If NativeSession=Nil Then NativeFail('WinHttpOpen',GetLastError);
+ If Not WinHttpSetTimeouts(NativeSession,10000,10000,30000,30000) Then
+  NativeFail('WinHttpSetTimeouts',GetLastError);
+ NativeConnection:=WinHttpConnect(NativeSession,PWideChar(WHost),Port,0);
+ If NativeConnection=Nil Then NativeFail('WinHttpConnect',GetLastError);
+ SetLength(Converted,XMLLen); If XMLLen>0 Then Move(XML^[1],Converted[1],XMLLen);
+ If Tokens^[1].S^<>'' Then Begin
+  If Upper(Tokens^[1].S^)='SELECT' Then Begin
+   Path:='/api/data/'+AnsiString(ApiVersion)+'/'+AnsiString(EntitySet)+'?fetchXml='+PercentEncode(Converted);
+   NativeOutput:=SendNative('GET',Path,'',False,Status,EntityURI);
+  End Else Begin
+   AppendOutput('['+#13#10); AtLine:=1; RequestCount:=0; Verb:=''; Body:=''; DataState:=False; IfMatch:=False;
+   While AtLine<=Length(Converted) do Begin
+    StartLine:=AtLine;
+    While (AtLine<=Length(Converted))and(Converted[AtLine]<>#10) do Inc(AtLine);
+    LineText:=Copy(Converted,StartLine,AtLine-StartLine); Inc(AtLine);
+    If (Length(LineText)>0)and(LineText[Length(LineText)]=#13) Then SetLength(LineText,Length(LineText)-1);
+    If Copy(LineText,1,3)='###' Then Begin
+     Submit; DataState:=False; IfMatch:=False;
+    End Else If (Copy(LineText,1,5)='POST ')or(Copy(LineText,1,6)='PATCH ')or
+     (Copy(LineText,1,7)='DELETE ') Then Begin
+     P:=Pos(' ',LineText); Verb:=Copy(LineText,1,P-1); Path:=Copy(LineText,P+1,Length(LineText));
+    End Else If Verb<>'' Then Begin
+     If DataState Then Body:=Body+LineText+#13#10
+     Else If LineText='' Then DataState:=True
+     Else If LineText='If-Match: *' Then IfMatch:=True;
+    End;
+   End;
+   Submit; AppendOutput(#13#10+']'+#13#10);
+   If RequestCount=0 Then NativeFail('Aucune requete HTTP generee',0);
+  End;
+ End;
+ CloseNative;
+End;
+
+Procedure WriteNative(Var T:Text);
+Var I:LongInt; ErrorCode:Integer;
+Begin
+ {$I-}
+ For I:=1 to Length(NativeOutput) do Begin
+  Write(T,NativeOutput[I]); ErrorCode:=IOResult;
+  If ErrorCode<>0 Then NativeFail('Erreur d''ecriture des resultats',ErrorCode);
+ End;
+ Flush(T); ErrorCode:=IOResult;
+ {$I+}
+ If ErrorCode<>0 Then NativeFail('Erreur d''ecriture des resultats',ErrorCode);
+End;
+{$ELSE}
+Procedure ExecuteDataverse;
+Begin Fail('Communication WinHTTP indisponible sur cette compilation') End;
+{$ENDIF}
+
+Procedure WriteResult(Var T:Text);
+Begin
+ {$IFDEF DATAVERSE_WINDOWS}
+ If ExecuteRemote Then WriteNative(T) Else
+ {$ENDIF}
+ WriteXML(T);
+End;
+
 Var I,Err:Integer;
 Begin
  New(Source); New(XML); New(Tokens); New(Nodes); New(Fields); New(Orders);
  SourceLen:=0; XMLLen:=0; TokenCount:=0; EntityCount:=0;
  FieldCount:=0; OrderCount:=0; NodeCount:=0; Root:=0; Depth:=0;
  BaseEntity:=1; InJoinCondition:=False;
- DistinctRows:=False; AggregateQuery:=False;
+ DistinctRows:=False; AggregateQuery:=False; ExecuteRemote:=False;
  TopValue:=''; InputName:=''; OutputName:=''; Query:=''; EntitySet:=''; PrimaryKey:='';
- Args;
+ ConnectionName:=''; ConnectionFile:=''; OrgUrl:=''; TokenEnv:=''; ApiVersion:='v9.2';
+ Args; LoadConnection;
  If Query<>'' Then For I:=1 to Length(Query) do AddSource(Query[I])
  Else If InputName='' Then ReadSQL(Input)
  Else Begin
@@ -1003,13 +1481,15 @@ Begin
   ReadSQL(F); Close(F);
  End;
  Lex; AtToken:=1;
+ If (ConnectionName<>'')and(IsWord('INSERT')or IsWord('UPDATE')or IsWord('DELETE')) Then
+  EmitConnection;
  If IsWord('UPDATE') Then ParseModification(False)
  Else If IsWord('DELETE') Then ParseModification(True)
  Else If IsWord('INSERT') Then Begin
   If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE/DELETE');
   ParseInsert;
  End Else Begin
-  If EntitySet<>'' Then Fail('--entity-set est reserve a INSERT/UPDATE/DELETE');
+  If (EntitySet<>'')and Not ExecuteRemote Then Fail('--entity-set est reserve a INSERT/UPDATE/DELETE ou SELECT -execute');
   If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE/DELETE');
   Parse;
   Emit('<fetch mapping="logical"');
@@ -1018,11 +1498,22 @@ Begin
   If AggregateQuery Then Attr('aggregate','true');
   Emit('>'); Line; EmitEntity(BaseEntity,1); Emit('</fetch>'); Line;
  End;
- If OutputName='' Then WriteXML(Output) Else Begin
+ If ExecuteRemote Then ExecuteDataverse;
+ If OutputName='' Then WriteResult(Output) Else Begin
   Assign(F,OutputName); {$I-}Rewrite(F); Err:=IOResult;{$I+}
-  If Err<>0 Then Fail('Impossible de creer '+OutputName);
-  WriteXML(F); {$I-}Close(F); Err:=IOResult;{$I+}
-  If Err<>0 Then Fail('Erreur de fermeture du fichier');
+  If Err<>0 Then Begin
+   {$IFDEF DATAVERSE_WINDOWS}
+   If ExecuteRemote Then NativeFail('Impossible de creer '+OutputName,Err);
+   {$ENDIF}
+   Fail('Impossible de creer '+OutputName);
+  End;
+  WriteResult(F); {$I-}Close(F); Err:=IOResult;{$I+}
+  If Err<>0 Then Begin
+   {$IFDEF DATAVERSE_WINDOWS}
+   If ExecuteRemote Then NativeFail('Erreur de fermeture du fichier',Err);
+   {$ENDIF}
+   Fail('Erreur de fermeture du fichier');
+  End;
  End;
  For I:=1 to TokenCount do Dispose(Tokens^[I].S);
  Dispose(Orders); Dispose(Fields);
