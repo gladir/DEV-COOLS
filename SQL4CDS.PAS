@@ -2,13 +2,13 @@
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Free Pascal 3.2)
-  @description: SELECT vers FetchXML, INSERT/UPDATE vers HTTP Dataverse.
+  @description: SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP Dataverse.
   @license: MIT
 }
 
 Program SQL4CDS(Input,Output);
 
-{ SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE vers HTTP Dataverse.
+{ SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP Dataverse.
   Implementation autonome; aucune dependance .NET ni connexion reseau.
   Reference fonctionnelle : https://github.com/MarkMpn/Sql4Cds
   Target: Turbo Pascal 7 / Free Pascal (-Mtp). License: MIT.
@@ -28,17 +28,19 @@ Program SQL4CDS(Input,Output);
   INSERT INTO [dbo.]entite (colonnes) VALUES (valeurs), (valeurs), ...;
   INSERT INTO entite DEFAULT VALUES;
   INSERT genere un fichier HTTP avec JSON, pas du FetchXML.
-  --entity-set collection : EntitySetName Dataverse de la cible INSERT/UPDATE.
+  --entity-set collection : EntitySetName Dataverse pour INSERT/UPDATE/DELETE.
   Sans cette option : variable HTTP entitySet a renseigner.
   Variables HTTP orgUrl et accessToken a renseigner pour l'envoi.
   Valeurs INSERT : chaines, nombres, NULL, DEFAULT, CAST(0|1 AS BIT).
   DEFAULT omet la propriete pour laisser Dataverse appliquer sa valeur.
   UPDATE [dbo.]entite [AS alias] SET colonne=valeur, ... WHERE cle='GUID';
-  WHERE UPDATE : egalites/IN sur la cle primaire, combinees par OR.
-  --primary-key colonne : cle primaire UPDATE (accountid/contactid connus).
+  DELETE FROM [dbo.]entite [AS alias] WHERE cle='GUID';
+  WHERE UPDATE/DELETE : egalites/IN sur la cle primaire, combinees par OR.
+  --primary-key colonne : cle UPDATE/DELETE (accountid/contactid connus).
   UPDATE genere un PATCH par GUID avec If-Match: * (pas d'upsert).
   DEFAULT dans SET non supporte sans metadonnees de la valeur par defaut.
-  Un seul SELECT, INSERT ou UPDATE. Pas de DELETE, sous-requetes, HAVING, fonctions scalaires,
+  DELETE genere une requete HTTP DELETE par GUID, sans corps JSON.
+  Un seul SELECT, INSERT, UPDATE ou DELETE. Pas de sous-requetes, HAVING, fonctions scalaires,
   expressions calculees, UNION, parametres ou negation d'un groupe.
   Les jointures ON sont une egalite entre colonnes, sans autre predicat.
   Les colonnes non qualifiees designent l'entite principale.
@@ -733,10 +735,12 @@ Begin
  GUIDValue:=Lower(S);
 End;
 
-Procedure ParseUpdate;
+{ Analyse commune : UPDATE et DELETE partagent le ciblage par cle primaire. }
+Procedure ParseModification(IsDelete:Boolean);
 Var Assignments:PAssignments; Count,I,J,N:Integer;
     A:TField; K:Char; S:String; More:Boolean;
     IDs:PIDs; IDCount:Integer;
+    Operation:String[6];
 
  Procedure CollectIDs(Node:Integer);
  Var T,X,Y,Z:Integer; G:String[36]; Seen:Boolean;
@@ -746,7 +750,7 @@ Var Assignments:PAssignments; Count,I,J,N:Integer;
   End Else Begin
    If (Nodes^[Node].Kind<>'C')or(Nodes^[Node].Name<>PrimaryKey)or
     ((Nodes^[Node].Op<>'eq')and(Nodes^[Node].Op<>'in')) Then
-     Syntax('WHERE UPDATE exige egalite/IN sur la cle primaire, ou OR');
+     Syntax('WHERE '+Operation+' exige egalite/IN sur la cle primaire, ou OR');
    X:=Nodes^[Node].FirstValue; Y:=Nodes^[Node].LastValue;
    If Y=0 Then Y:=X;
    For T:=X to Y do Begin
@@ -764,14 +768,19 @@ Var Assignments:PAssignments; Count,I,J,N:Integer;
  End;
 
 Begin
- AtToken:=1; Need('UPDATE'); ReadEntity;
+ If IsDelete Then Operation:='DELETE' Else Operation:='UPDATE';
+ AtToken:=1; Need(Operation);
+ If IsDelete Then Need('FROM');
+ ReadEntity;
  If PrimaryKey='' Then Begin
   If Entities[1].Name='account' Then PrimaryKey:='accountid';
   If Entities[1].Name='contact' Then PrimaryKey:='contactid';
   If PrimaryKey='' Then Syntax('Fournir --primary-key avec PrimaryIdAttribute de la table');
  End;
- Need('SET'); New(Assignments); New(IDs); Count:=0; IDCount:=0;
- Repeat
+ New(IDs); Assignments:=Nil; Count:=0; IDCount:=0;
+ If Not IsDelete Then Begin
+  Need('SET'); New(Assignments);
+  Repeat
   ReadField(A); Resolve(A);
   If (A.Name='*')or(A.Name=PrimaryKey) Then Syntax('Colonne SET invalide ou cle primaire non modifiable');
   For J:=1 to Count do
@@ -782,15 +791,17 @@ Begin
   Inc(Count); Assignments^[Count].Name:=A.Name;
   Assignments^[Count].Kind:=K; Assignments^[Count].Value:=S;
   More:=Tok=','; If More Then Inc(AtToken);
- Until Not More;
+  Until Not More;
+ End;
  Need('WHERE'); N:=ParseOr;
  If Tok=';' Then Inc(AtToken);
- If AtToken<=TokenCount Then Syntax('Construction UPDATE non supportee');
+ If AtToken<=TokenCount Then Syntax('Construction '+Operation+' non supportee');
  CollectIDs(N);
  For I:=1 to IDCount do Begin
   If I>1 Then Line;
-  Emit('### UPDATE '); Emit(Entities[1].Name); Emit(' - '); Emit(IDs^[I]); Line;
-  Emit('PATCH {{orgUrl}}/api/data/v9.2/');
+  Emit('### '+Operation+' '); Emit(Entities[1].Name); Emit(' - '); Emit(IDs^[I]); Line;
+  If IsDelete Then Emit('DELETE') Else Emit('PATCH');
+  Emit(' {{orgUrl}}/api/data/v9.2/');
   If EntitySet='' Then Emit('{{entitySet}}') Else Emit(EntitySet);
   Emit('('); Emit(IDs^[I]); Emit(')'); Line;
   Emit('Authorization: Bearer {{accessToken}}'); Line;
@@ -798,24 +809,27 @@ Begin
   Emit('Accept: application/json'); Line;
   Emit('OData-MaxVersion: 4.0'); Line;
   Emit('OData-Version: 4.0'); Line;
-  Emit('If-Match: *'); Line; Line;
-  Emit('{'); Line;
-  For J:=1 to Count do Begin
+  If Not IsDelete Then Begin Emit('If-Match: *'); Line End;
+  Line;
+  If Not IsDelete Then Begin
+   Emit('{'); Line;
+   For J:=1 to Count do Begin
    Indent(1); JSONString(Assignments^[J].Name); Emit(': ');
    Case Assignments^[J].Kind of
     'N':Emit('null'); 'S':JSONString(Assignments^[J].Value);
     'V','B':Emit(Assignments^[J].Value);
    End;
    If J<Count Then Emit(','); Line;
+   End;
+   Emit('}'); Line;
   End;
-  Emit('}'); Line;
  End;
- Dispose(IDs); Dispose(Assignments);
+ Dispose(IDs); If Assignments<>Nil Then Dispose(Assignments);
 End;
 
 Procedure Help;
 Begin
- WriteLn('SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE vers HTTP (Dataverse)');
+ WriteLn('SQL4CDS - SELECT vers FetchXML, INSERT/UPDATE/DELETE vers HTTP (Dataverse)');
  WriteLn;
  WriteLn('Syntaxe : SQL4CDS source.sql [sortie.xml]');
  WriteLn('          SQL4CDS -q "SELECT name FROM account" [-o sortie.xml]');
@@ -824,9 +838,9 @@ Begin
  WriteLn('  -h, --help, /?       Affiche cette aide');
  WriteLn('  -q "SQL"             Requete SQL a convertir');
  WriteLn('  -i source.sql        Fichier SQL source');
- WriteLn('  -o fichier           Sortie FetchXML (SELECT) ou HTTP (INSERT/UPDATE)');
- WriteLn('  --entity-set nom     Collection Web API pour INSERT/UPDATE');
- WriteLn('  --primary-key nom    PrimaryIdAttribute pour UPDATE');
+ WriteLn('  -o fichier           Sortie FetchXML (SELECT) ou HTTP (INSERT/UPDATE/DELETE)');
+ WriteLn('  --entity-set nom     Collection Web API pour INSERT/UPDATE/DELETE');
+ WriteLn('  --primary-key nom    PrimaryIdAttribute pour UPDATE/DELETE');
  WriteLn;
  WriteLn('Sans arguments : entree standard. Sans -o : sortie standard.');
  WriteLn('SELECT, DISTINCT, TOP, INNER/LEFT JOIN, WHERE, GROUP BY, ORDER BY.');
@@ -835,8 +849,9 @@ Begin
  WriteLn('INSERT INTO entite (colonnes) VALUES (...), (...) ou DEFAULT VALUES.');
  WriteLn('INSERT produit du HTTP/JSON; renseigner orgUrl, accessToken, entitySet.');
  WriteLn('UPDATE entite SET col=valeur,... WHERE cle=''GUID'' ou cle IN (...).');
- WriteLn('WHERE UPDATE : cle primaire seulement; combinaisons OR acceptees.');
- WriteLn('Un seul SELECT/INSERT/UPDATE; aucune requete reseau executee.');
+ WriteLn('DELETE FROM entite WHERE cle=''GUID'' ou cle IN (...).');
+ WriteLn('WHERE UPDATE/DELETE : cle primaire seulement, OR accepte, WHERE obligatoire.');
+ WriteLn('Un seul SELECT/INSERT/UPDATE/DELETE; aucune requete reseau executee.');
  WriteLn('COUNT(*) et les expressions ne sont pas supportes.');
 End;
 
@@ -939,13 +954,14 @@ Begin
   ReadSQL(F); Close(F);
  End;
  Lex; AtToken:=1;
- If IsWord('UPDATE') Then ParseUpdate
+ If IsWord('UPDATE') Then ParseModification(False)
+ Else If IsWord('DELETE') Then ParseModification(True)
  Else If IsWord('INSERT') Then Begin
-  If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE');
+  If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE/DELETE');
   ParseInsert;
  End Else Begin
-  If EntitySet<>'' Then Fail('--entity-set est reserve a INSERT/UPDATE');
-  If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE');
+  If EntitySet<>'' Then Fail('--entity-set est reserve a INSERT/UPDATE/DELETE');
+  If PrimaryKey<>'' Then Fail('--primary-key est reserve a UPDATE/DELETE');
   Parse;
   Emit('<fetch mapping="logical"');
   If TopValue<>'' Then Attr('top',TopValue);
