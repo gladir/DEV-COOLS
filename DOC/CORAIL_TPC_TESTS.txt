@@ -202,7 +202,10 @@ supprime. Le script TESTS/CORAIL_TPC/embed_tpc.py permet seulement de
 recopier une version plus recente de TPC.PAS dans cette section. Les options
 compatibles TPC (-B -D -E -F -GD -GP -GS -I -L -M -O -Q -R -T -U -V -$) sont
 transmises au moteur; -tp4/-tp5/-tp55/-tp6 definissent VER40..VER60 au lieu
-de VER70. L'ancien generateur reste disponible avec --dos-native.
+de VER70. L'ancien generateur reste disponible avec --dos-native et reste
+utilise par -CD dans les modes --quickpascal, --applepascal et --sane
+(unites MSGraph, SANE, TRANSCEND inconnues du moteur TPC): sorties
+identiques octet pour octet a celles de la version precedente.
 
 Resultats avec TPCW32 -CD -tp7:
   Sources compiles .............. 473 / 525 (les memes que TPC)

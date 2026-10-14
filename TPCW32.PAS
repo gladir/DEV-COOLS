@@ -30,7 +30,9 @@
   executables produits sont identiques a ceux de TPC et ont ete valides
   sur les 525 sources du projet CORAIL (DOC/CORAIL_TPC_TESTS.txt).
   L'ancien generateur DOS 16 bits interne reste accessible avec
-  --dos-native.
+  --dos-native; il est aussi utilise automatiquement par -CD dans les
+  modes --quickpascal, --applepascal et --sane (unites MSGraph, SANE et
+  TRANSCEND), qui se comportent donc exactement comme auparavant.
 
   Compilateur Turbo Pascal pour Windows 32 bits. Meme
   l instruction ASM avec de l assembleur 8086/8088 est
@@ -419,6 +421,7 @@ Begin
   WriteLn('Destination :');
   WriteLn('  -CD            Destination mode DOS reel (moteur du compilateur TPC.PAS)');
   WriteLn('  --dos-native   Avec -CD : ancien generateur DOS 16 bits interne');
+  WriteLn('                 (aussi utilise par -CD avec --quickpascal, --applepascal, --sane)');
   WriteLn('  -CP            Destination mode protege DOS');
   WriteLn('  -CW            Destination Windows 3.0');
   WriteLn('  -CW32          Destination Windows 32 bits');
@@ -51646,7 +51649,11 @@ End;
 
 Procedure Run;
 Begin
-  If (Opts.DestTarget = DEST_DOSR) And Not Opts.DosNative Then
+  { -CD : moteur TPC integre, sauf --dos-native et les modes QuickPascal,
+    Apple Pascal et SANE (unites MSGraph, SANE, TRANSCEND) qui restent
+    traites par le generateur interne comme auparavant. }
+  If (Opts.DestTarget = DEST_DOSR) And Not Opts.DosNative And
+     Not Opts.QuickPascal And Not Opts.ApplePascal And Not Opts.Sane Then
   Begin
     RunTpcEngine;
     Exit;
