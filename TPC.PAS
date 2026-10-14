@@ -3909,7 +3909,7 @@ End;
 
 Function Term: Byte;
 Var
- T, R, Op: Byte;
+ T, R, Op: Byte; RightKnown,MixedWide: Boolean; RightValue: Longint;
  Skip,ShiftLoop,CV: Word; ConstOp: Boolean;
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
@@ -3932,12 +3932,19 @@ Begin
   WideLeft:=(T=ttInteger) And (Types[LeftType].Width=4);
   If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52); Emit($50) End;
   NextToken; R:=Factor; ExprLiteral:=False;
+  RightKnown:=ExprKnown; RightValue:=ExprValue;
+  { Word op Integer (signes differents, ni constante positive): Longint comme TP }
+  If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And Not (Op In [tkShl,tkShr]) And
+     Not (LeftUnsigned And RightKnown And (RightValue>=0) And (RightValue<=65535)) And
+     Not (ExprUnsigned And LeftKnown And (LeftValue>=0) And (LeftValue<=65535)) Then Begin
+   If Not ((Types[LeftType].Width=4) Or (Types[ExprType].Width=4)) Then MixedWide:=True;
+  End Else MixedWide:=False;
   If (T=ttReal) Or (R=ttReal) Or (Op=tkSlash) Then Begin
    If Not (Op In [tkTimes,tkSlash]) Then Fail(26,'Operation reelle invalide');
    If Op=tkTimes Then RealBinary(LeftType,ExprType,3,False) Else RealBinary(LeftType,ExprType,4,False);
    T:=ttReal; Continue;
   End;
-  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); WideResult:=WideLeft Or WideRight;
+  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); WideResult:=WideLeft Or WideRight Or MixedWide;
   If WideResult Then Begin
    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
    Emit2($89,$C3); Emit2($89,$D1); Emit($58);
@@ -3972,7 +3979,7 @@ Begin
    tkDiv,tkMod:
    Begin
     Emit2($09,$DB); Emit2($75,6); LoadImmediate(200); CallTo(RuntimeError);
-    If LeftUnsigned And ExprUnsigned Then Begin Emit2($31,$D2); Emit2($F7,$F3) End
+    If LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>0))) Then Begin Emit2($31,$D2); Emit2($F7,$F3) End
     Else Begin
      Emit($3D); EmitWord($8000); Emit2($75,12);
      Emit2($81,$FB); EmitWord($FFFF); Emit2($75,6); LoadImmediate(200); CallTo(RuntimeError);
@@ -4009,7 +4016,11 @@ Begin
   End;
  End;
  If T=ttInteger Then Begin
-  If WideResult Then ExprType:=9 Else If LeftUnsigned And ExprUnsigned Then ExprType:=3 Else ExprType:=1;
+  { Comme TP: Word shl n reste Word; un operande Word avec une constante positive reste Word. }
+  If WideResult Then ExprType:=9
+  Else If Op In [tkShl,tkShr] Then Begin If LeftUnsigned Then ExprType:=3 Else ExprType:=1 End
+  Else If (LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>=0)))) Or
+          (ExprUnsigned And LeftKnown And (LeftValue>=0)) Then ExprType:=3 Else ExprType:=1;
   ExprUnsigned:=ExprType=3;
  End Else ExprType:=LeftType;
 End;
@@ -4023,7 +4034,7 @@ Var
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
  LeftKnown: Boolean; LeftValue: Longint; Check: Real;
- StrTemp,LeftArray: Boolean; RightT: Word;
+ StrTemp,LeftArray,RightKnown,MixedWide: Boolean; RightT: Word; RightValue: Longint;
 Begin
  Sign:=0; StrTemp:=False;
  If Token In [tkPlus,tkMinus] Then Begin
@@ -4104,12 +4115,18 @@ Begin
   WideLeft:=(T=ttInteger) And (Types[LeftType].Width=4);
   If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52); Emit($50) End;
   NextToken; R:=Term; ExprLiteral:=False;
+  RightKnown:=ExprKnown; RightValue:=ExprValue;
+  If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And (Op In [tkPlus,tkMinus]) And
+     Not (LeftUnsigned And RightKnown And (RightValue>=0) And (RightValue<=65535)) And
+     Not (ExprUnsigned And LeftKnown And (LeftValue>=0) And (LeftValue<=65535)) Then Begin
+   If Not ((Types[LeftType].Width=4) Or (Types[ExprType].Width=4)) Then MixedWide:=True;
+  End Else MixedWide:=False;
   If (T=ttReal) Or (R=ttReal) Then Begin
    If Not (Op In [tkPlus,tkMinus]) Then Fail(26,'Operation reelle invalide');
    If Op=tkPlus Then RealBinary(LeftType,ExprType,1,False) Else RealBinary(LeftType,ExprType,2,False);
    T:=ttReal; Continue;
   End;
-  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); WideResult:=WideLeft Or WideRight;
+  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); WideResult:=WideLeft Or WideRight Or MixedWide;
   ConstOp:=False;
   If WideResult Then Begin
    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
@@ -4144,7 +4161,9 @@ Begin
    End;
   End;
   If T=ttInteger Then Begin
-  If WideResult Then ExprType:=9 Else If LeftUnsigned And ExprUnsigned Then ExprType:=3 Else ExprType:=1;
+   If WideResult Then ExprType:=9
+   Else If (LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>=0)))) Or
+           (ExprUnsigned And LeftKnown And (LeftValue>=0)) Then ExprType:=3 Else ExprType:=1;
    ExprUnsigned:=ExprType=3;
   End Else ExprType:=LeftType;
  End;
@@ -4229,6 +4248,10 @@ Begin
    End;
   End Else Begin
    WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); Wide:=WideLeft Or WideRight;
+   { Word compare a Integer (signes differents): comparaison 32 bits comme TP,
+     sauf avec une constante positive ou la comparaison non signee suffit. }
+   If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And
+      Not (LeftUnsigned And ExprKnown And (ExprValue>=0) And (ExprValue<=65535)) Then Wide:=True;
    If Wide Then Begin
     If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
     Emit2($89,$C3); Emit2($89,$D1); Emit($58);
@@ -4248,7 +4271,7 @@ Begin
    End;
    If TailConst(CV) Then Begin Emit($3D); EmitWord(CV) End
    Else Begin Emit2($89,$C3); Emit($58); Emit2($39,$D8) End;
-   If (T In [ttChar,ttBoolean,ttEnum]) Or (LeftUnsigned And ExprUnsigned) Then
+   If (T In [ttChar,ttBoolean,ttEnum]) Or (LeftUnsigned And (ExprUnsigned Or (ExprKnown And (ExprValue>=0)))) Then
     Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76 End;
   End;
   LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize; CondJcc:=Jcc;
@@ -6376,6 +6399,9 @@ Begin
   NextToken; Ignored:=Expression;
   If Not CompatibleTypes(SymbolType(I),ExprType) Then Fail(26,'Borne FOR');
   If OptionBits And 2<>0 Then RangeBounds(Types[SymbolType(I)].LowBound,Types[SymbolType(I)].HighBound,ExprType);
+  { Comme TP, la borne est tronquee a la taille de la variable de controle
+    (For B:=1 To -1 avec B: Byte boucle jusqu'a 255 puis s'arrete). }
+  If Symbols[I].Width=1 Then Emit2($30,$E4);
   Emit($50); Need(tkDo);
   Start:=CodeSize; LoadSymbol(I); Emit2($89,$E3); Emit($36); Emit2($3B,$07);
   If Types[SymbolType(I)].Signed Then Begin
