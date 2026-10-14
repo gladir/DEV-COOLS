@@ -177,3 +177,48 @@ attribuable au compilateur:
     34h-3Fh, 75h), pas celui de TPC, et les adresses des gestionnaires
     dependent de toute facon du programme charge. EQUIP indiquait un
     coprocesseur present (Test8087) avant correction; identique depuis.
+
+5. TPCW32.PAS, cible -CD (DOS mode reel)
+-----------------------------------------
+La meme verification a ete appliquee a TPCW32.PAS avec les options -CD -tp7.
+
+Etat initial: 322 des 525 sources compilaient; les 203 echecs venaient
+surtout du type File sans type ("Type non declare: FILE", 161 sources), du
+type Registers de l'unite Dos (13) et des pointeurs vers des types declares
+plus loin. Les executables produits n'etaient pas utilisables: le generateur
+DOS 16 bits interne traduisait le code 80386 emis pour Windows (Integer et
+Word sur 4 octets, pointeurs plats) avec un mini-assembleur 8086, et son
+runtime ne comportait ni ParamStr/ParamCount, ni fichiers (Assign, Reset,
+BlockRead, Eof, IOResult...), ni Crt, ni Dos. Sur 169 programmes executes en
+mode help, 7 donnaient la sortie attendue, 78 restaient bloques et 84
+affichaient autre chose (ParamCount valait par exemple 7459).
+
+Correction retenue: pour la cible -CD, TPCW32 confie la compilation au moteur
+de TPC.PAS, valide ci-dessus. Une copie de TPC.PAS est inseree dans
+TPCW32.PAS (section "MOTEUR TPC", generee par TESTS/CORAIL_TPC/embed_tpc.py;
+quatre identificateurs en collision sont prefixes Tp) et les options
+compatibles TPC (-B -D -E -F -GD -GP -GS -I -L -M -O -Q -R -T -U -V -$) lui
+sont transmises; -tp4/-tp5/-tp55/-tp6 definissent VER40..VER60 au lieu de
+VER70. L'ancien generateur reste disponible avec --dos-native.
+
+Resultats avec TPCW32 -CD -tp7:
+  Sources compiles .............. 473 / 525 (les memes que TPC)
+  Executables identiques a TPC .. 473 / 473 (octet pour octet)
+Les resultats d'execution comparee des sections 2 et 4 s'appliquent donc
+tels quels a TPCW32 -CD.
+
+Autres cibles: les sorties des 28 autres cibles et modes de TPCW32 (-CW32,
+-CP, -CW, -CZ80, -C6502, -C6809, -C68000, -CATARIST, -CAMIGA, -CAPPLEII,
+-CC64, -CCOCO3, -CTRS80, -CATARI400, -CATARI800, -CMSX, -CNES, -CATARI2600,
+-CADAM, -CCRAY1, -CTO7, -obj, -asm, --quickpascal, --applepascal, -tp6,
+-tp55, -tp4) sur les 105 programmes de SAMPLES/TURBOPASCAL/ sont restees
+identiques octet pour octet (TESTS/CORAIL_TPC/golden_tpcw32.sh).
+
+Corrections apportees au tronc commun de TPCW32 (toutes cibles): plantage du
+compilateur sur une constante reelle a tres grand exposant (1E2466 dans
+123.PAS: debordement dans l'analyseur lexical puis dans Trunc).
+
+Non traite pour la cible -CW32 (hors du perimetre de cette verification,
+mais releve par la compilation des sources CORAIL): type File sans type,
+type Registers, pointeurs vers un type declare plus loin (^TByte...),
+variables de type procedural.
