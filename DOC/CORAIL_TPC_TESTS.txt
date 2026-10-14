@@ -135,7 +135,13 @@ TPC et EXE Borland present dans BIN16/). Delai de 25 secondes par execution.
   help        405      395           5              5
   noarg       405      312          79             14
   nofile      405      368          29              8
-  sample      256      SAMPLE_IDENT  SAMPLE_TO     SAMPLE_DIFF
+  sample      256      247           6              3
+
+Soit 1322 executions identiques sur 1471, 119 programmes interactifs non
+comparables et 30 differences, toutes expliquees ci-dessous (aucune n'est
+attribuable au compilateur). Resultats obtenus avec la version finale de
+TPC.PAS (passe r12); les scripts de TESTS/CORAIL_TPC/ permettent de rejouer
+la comparaison.
 
 "Delai des deux" designe les programmes interactifs (editeurs, shells,
 emulateurs, filtres lisant l'entree standard: VI, LESS, MORE, SORT, CSH, KSH,
@@ -159,6 +165,8 @@ attribuable au compilateur:
     (Runtime error 202, debordement de pile) alors que les versions TPC
     fonctionnent; BIN16/ASC2CSP.EXE a ete produit par une version plus
     ancienne du source (texte d'aide different).
+  - Mode sample, programmes interactifs (delai des deux): APPLY FIND GREP
+    MD5BRUTE TR TS lisent l'entree standard ou attendent une touche.
   - Programme defectueux: DOS2UNIX ecrit avec BlockWrite(F,S[1],Length(S))
     sur un fichier ouvert par Rewrite(F) sans taille de record (128 octets):
     les deux versions ecrivent 6016 octets dont la plus grande partie est
