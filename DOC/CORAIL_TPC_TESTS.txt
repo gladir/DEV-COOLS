@@ -120,3 +120,39 @@ Type.Champ, saut vers une etiquette Pascal.
 
 4. Resultats de l'execution comparee
 ------------------------------------
+405 programmes ont pu etre executes dans les deux versions (EXE produit par
+TPC et EXE Borland present dans BIN16/). Delai de 25 secondes par execution.
+
+  Mode      Total  Identique  Delai des deux  Differences
+  help        405      395           5              5
+  noarg       405      312          79             14
+  nofile      405      368          29              8
+  sample      256      SAMPLE_IDENT  SAMPLE_TO     SAMPLE_DIFF
+
+"Delai des deux" designe les programmes interactifs (editeurs, shells,
+emulateurs, filtres lisant l'entree standard: VI, LESS, MORE, SORT, CSH, KSH,
+APPLEDOS, CPM86, FLEX, PCTOOLS, EMSTEST qui attend une touche...) qui
+attendent une saisie dans les deux versions: comportement identique mais non
+comparable automatiquement.
+
+Toutes les differences restantes ont ete examinees une par une; aucune n'est
+attribuable au compilateur:
+
+  - Valeurs aleatoires ou horodatees: GUID et GETGUID (identifiant
+    aleatoire), MKTEMP (nom de fichier aleatoire), TIME, TOD, FINGER et STAT
+    (heure courante), PHOTORAM (image de la memoire).
+  - Taille de l'executable: DIR, FS et CATALOG listent le repertoire courant
+    qui contient l'EXE lui-meme; l'EXE TPC est plus gros que celui de
+    Borland, d'ou des tailles, des totaux et des numeros de cluster
+    differents. Le format d'affichage est identique.
+  - Executables de reference inutilisables: BIN16/CSV2ASM.EXE et
+    BIN16/CSV2BAS.EXE sont des executables Windows ("This program cannot be
+    run in DOS mode"); BIN16/GRAFTABL.EXE et BIN16/RTMRES.EXE plantent
+    (Runtime error 202, debordement de pile) alors que les versions TPC
+    fonctionnent; BIN16/ASC2CSP.EXE a ete produit par une version plus
+    ancienne du source (texte d'aide different).
+  - Environnement: DIVT affiche la table des vecteurs d'interruption; le
+    runtime Borland installe ses propres gestionnaires (INT 00h, 23h, 24h,
+    34h-3Fh, 75h), pas celui de TPC, et les adresses des gestionnaires
+    dependent de toute facon du programme charge. EQUIP indiquait un
+    coprocesseur present (Test8087) avant correction; identique depuis.
