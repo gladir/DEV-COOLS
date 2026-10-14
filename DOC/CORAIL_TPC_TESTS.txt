@@ -193,13 +193,16 @@ BlockRead, Eof, IOResult...), ni Crt, ni Dos. Sur 169 programmes executes en
 mode help, 7 donnaient la sortie attendue, 78 restaient bloques et 84
 affichaient autre chose (ParamCount valait par exemple 7459).
 
-Correction retenue: pour la cible -CD, TPCW32 confie la compilation au moteur
-de TPC.PAS, valide ci-dessus. Une copie de TPC.PAS est inseree dans
-TPCW32.PAS (section "MOTEUR TPC", generee par TESTS/CORAIL_TPC/embed_tpc.py;
-quatre identificateurs en collision sont prefixes Tp) et les options
-compatibles TPC (-B -D -E -F -GD -GP -GS -I -L -M -O -Q -R -T -U -V -$) lui
-sont transmises; -tp4/-tp5/-tp55/-tp6 definissent VER40..VER60 au lieu de
-VER70. L'ancien generateur reste disponible avec --dos-native.
+Correction retenue: pour la cible -CD, TPCW32 utilise le moteur de
+compilation de TPC.PAS, valide ci-dessus, integre a TPCW32.PAS sous forme de
+copie (section "MOTEUR TPC"; quatre identificateurs en collision sont
+prefixes Tp). TPCW32.PAS reste autonome: aucun include, aucune unite autre
+que DOS, aucun appel au programme TPC; il fonctionne meme si TPC.PAS est
+supprime. Le script TESTS/CORAIL_TPC/embed_tpc.py permet seulement de
+recopier une version plus recente de TPC.PAS dans cette section. Les options
+compatibles TPC (-B -D -E -F -GD -GP -GS -I -L -M -O -Q -R -T -U -V -$) sont
+transmises au moteur; -tp4/-tp5/-tp55/-tp6 definissent VER40..VER60 au lieu
+de VER70. L'ancien generateur reste disponible avec --dos-native.
 
 Resultats avec TPCW32 -CD -tp7:
   Sources compiles .............. 473 / 525 (les memes que TPC)

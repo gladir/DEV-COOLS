@@ -55,9 +55,10 @@ Les resultats obtenus sont consignes dans DOC/CORAIL_TPC_TESTS.txt.
 
 TPCW32 -CD
 ----------
-TPCW32.PAS (cible -CD, DOS mode reel) utilise le moteur de TPC.PAS: une copie
-de TPC.PAS est inseree dans TPCW32.PAS entre les marqueurs "DEBUT MOTEUR TPC"
-et "FIN MOTEUR TPC". Apres toute modification de TPC.PAS, regenerer avec:
+TPCW32.PAS (cible -CD, DOS mode reel) contient une copie integree du moteur
+de TPC.PAS entre les marqueurs "DEBUT MOTEUR TPC" et "FIN MOTEUR TPC".
+TPCW32.PAS reste autonome (aucune dependance a TPC.PAS, aucun include, seule
+l'unite DOS). Pour recopier une version plus recente de TPC.PAS (facultatif):
   python3 TESTS/CORAIL_TPC/embed_tpc.py TPC.PAS TPCW32.PAS TPCW32.PAS \
           DefineCount,TotalLines,TypeCount,EmitRuntime
 (la liste finale enumere les identificateurs globaux de TPC.PAS qui existent

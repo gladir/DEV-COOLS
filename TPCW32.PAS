@@ -18,15 +18,19 @@
   Avec le parametre -asm, produit egalement un fichier .ASM lisible.
   Avec le parametre -dos16, produit un executable DOS 16 bits.
 
-  Cible -CD (DOS mode reel) : la compilation est confiee au moteur
-  du compilateur TPC.PAS de ce depot (clone de TPC.EXE de Turbo
-  Pascal 7.0), dont une copie est inseree dans ce fichier entre les
-  marqueurs "DEBUT MOTEUR TPC" et "FIN MOTEUR TPC" par le script
-  TESTS/CORAIL_TPC/embed_tpc.py (ne pas editer cette section a la
-  main : modifier TPC.PAS puis regenerer). Les executables produits
-  sont identiques a ceux de TPC et ont ete valides sur les 525
-  sources du projet CORAIL (DOC/CORAIL_TPC_TESTS.txt). L'ancien
-  generateur DOS 16 bits interne reste accessible avec --dos-native.
+  Cible -CD (DOS mode reel) : le code est produit par le moteur de
+  compilation Turbo Pascal 7.0 INTEGRE a ce fichier (section entre les
+  marqueurs "DEBUT MOTEUR TPC" et "FIN MOTEUR TPC", avec ses unites
+  Crt, Dos, Strings et Printer embarquees). Ce moteur est une copie
+  du compilateur TPC.PAS de ce depot : TPCW32.PAS reste entierement
+  autonome (aucun include, aucune unite autre que DOS, aucun appel a un
+  autre programme) et fonctionne meme si TPC.PAS est absent. Le script
+  TESTS/CORAIL_TPC/embed_tpc.py sert seulement, de facon facultative, a
+  recopier une version plus recente de TPC.PAS dans cette section. Les
+  executables produits sont identiques a ceux de TPC et ont ete valides
+  sur les 525 sources du projet CORAIL (DOC/CORAIL_TPC_TESTS.txt).
+  L'ancien generateur DOS 16 bits interne reste accessible avec
+  --dos-native.
 
   Compilateur Turbo Pascal pour Windows 32 bits. Meme
   l instruction ASM avec de l assembleur 8086/8088 est
@@ -39939,9 +39943,10 @@ End;
   fidele a Turbo Pascal 7.0. Les options compatibles TPC sont transmises. }
 { === DEBUT MOTEUR TPC ===
   Moteur de compilation Turbo Pascal 7.0 pour la cible DOS mode reel (-CD):
-  copie du compilateur TPC.PAS de ce depot, inseree par
-  TESTS/CORAIL_TPC/embed_tpc.py. NE PAS EDITER ICI: modifier TPC.PAS puis
-  regenerer. Les identificateurs en collision avec TPCW32 sont prefixes Tp. }
+  copie integree du compilateur TPC.PAS de ce depot (TPCW32.PAS n'en depend
+  pas: tout est contenu ici). Pour reprendre une version plus recente de
+  TPC.PAS, utiliser TESTS/CORAIL_TPC/embed_tpc.py qui remplace cette section.
+  Les identificateurs en collision avec TPCW32 sont prefixes Tp. }
 {$A-}{$R-}{$Q-}{$I+}
 Var
   EngineArgs: Array[1..64] Of String;
