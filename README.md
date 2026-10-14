@@ -1026,6 +1026,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de convertir un fichier de TOKEN (GWBASIC, CoCo,...) de BASIC en BASIC ASCII.</td>
 		</tr>
 		<tr>
+			<td><b>TPC.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Turbo Pascal 7.0 en ligne de commande (clone de TPC.EXE) produisant des exécutables DOS 8086 et des unités au format TPUQ.</td>
+		</tr>
+		<tr>
 			<td><b>TPCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Turbo Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
