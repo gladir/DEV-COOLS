@@ -1,0 +1,2 @@
+<%@ Page Language="C#" %>
+<html><body><% Response.Write("Hello"); %></body></html>

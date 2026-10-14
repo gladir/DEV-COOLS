@@ -29,7 +29,29 @@ Program TPC;
      A+ B- D+ E+ F- G- I+ L+ N- O- P- Q- R- S+ T- V+ X+;
    - messages du compilateur en francais, numeros d'erreurs de la table de
      Turbo Pascal 7.0, affichage FICHIER(ligne) et resume
-     "n lignes, s secondes, c octets de code, d octets de donnees".
+     "n lignes, s secondes, c octets de code, d octets de donnees";
+   - unites standard CRT, DOS, STRINGS et PRINTER integrees (sources Pascal
+     embarques, compiles a la demande quand aucune TPU n'est trouvee);
+   - disposition memoire de TP: code en CS, constantes et chaines en DS,
+     variables globales non initialisees apres les constantes (hors de
+     l'EXE, remises a zero au demarrage), temporaires des expressions
+     chaine dans la frame de la procedure, pile separee;
+   - erreurs d'execution "Erreur d'execution NNN a SSSS:OOOO." (numero sur
+     trois chiffres comme TP), codes 100..106 des fichiers comme TP;
+   - tableaux de caracteres compatibles chaine dans les expressions
+     (concatenation, Copy, Length, Write, ReadLn, tableau := constante),
+     pliage des constantes chaine juxtaposees, Type(Variable) := valeur,
+     TRec(Pointer(P)^), constantes typees pointeur = @Variable, constante
+     chaine pour un parametre "array of Char" ouvert, System.Ident, ^M^J;
+   - typage Word/Integer de TP (Word shl n reste Word, Word op Integer
+     donne un Longint, comparaison Word/Integer en 32 bits);
+   - assembleur integre: expressions constantes (+ - * / NOT AND OR SHL SHR,
+     LOW/HIGH, 5Ch*4, TRUE/FALSE), @Result, Var.Word[n], OFFSET d'une
+     variable locale, d'une procedure ou d'un Type.Champ, saut vers une
+     etiquette Pascal.
+  La conformite a ete verifiee en compilant les 525 sources du projet CORAIL
+  et en comparant les executables a ceux de Borland sous DOSBox, voir
+  DOC/CORAIL_TPC_TESTS.txt et TESTS/CORAIL_TPC/.
   Contrainte du projet: tout dans TPC.PAS, aucun fichier d'inclusion,
   aucune unite auxiliaire; Uses DOS uniquement.
   Hote valide: Free Pascal 3.2, mode TP, strings courts uniquement.
