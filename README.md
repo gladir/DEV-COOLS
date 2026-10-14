@@ -585,6 +585,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
 		</tr>
 		<tr>
+			<td><b>DISOVL.PAS</b></td>
+			<td>Cette commande permet de desassembler un overlay DOS (.OVL).</td>
+		</tr>
+		<tr>
 			<td><b>DISPCODE.PAS</b></td>
 			<td>Cette commande permet de lancer le désassembleur de p-Code UCSD p-System.</td>
 		</tr>
