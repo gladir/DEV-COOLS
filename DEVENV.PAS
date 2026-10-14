@@ -9322,7 +9322,6 @@ Var
  { dur/CD-ROM reel) - flag SEPARE de EmuOvrDumped (deja utilise par 2       }
  { AUTRES diagnostics ponctuels sans rapport, voir ~89091/~100163) pour ne }
  { jamais interferer avec eux. Voir DOS_RunOneChunk. }
- DiagDpmiCount : LongInt; { TEMP (2026-10-14), enquete "atteindre l IDE" }
  EmuCS0Dumped   : Boolean;
  { True des que CS a ete vu different de 0 au moins une fois depuis le    }
  { debut de CETTE session -CD (voir DOS_RunOneChunk) - un vrai secteur de }
@@ -204887,10 +204886,29 @@ Begin
   Exit;
  End;
  FillChar(EmuDpmiExtMem^, SizeOf(EmuDpmiExtMem^), 0);
- { Trampoline de commutation reel -> protege (voir Dpmi_Switch) : INT FBh, }
- { jamais rencontre par du logiciel DOS reel. }
+ { Trampoline de commutation reel -> protege (voir Dpmi_Switch) : INT FBh. }
+ { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", suite #12) : le       }
+ { commentaire "jamais rencontre par du logiciel DOS reel" etait FAUX -    }
+ { confirme en direct : un CLIENT PROTEGE (RTM.EXE) FAR-CALLE ce MEME      }
+ { point d entree UNE SECONDE FOIS, alors qu il est DEJA en mode protege   }
+ { (verifiant/re-confirmant la presence DPMI avant de continuer - un        }
+ { usage legitime, prevu par la vraie spec AX=1687h). Notre garde "deja en  }
+ { mode protege" (voir Emu_DoInt, Case $FB) fait desormais CORRECTEMENT un  }
+ { no-op au lieu de rappeler Dpmi_Switch - MAIS, puisque le client est      }
+ { arrive ici via un VRAI FAR CALL x86 (poussant CS:IP de retour), ce no-op }
+ { doit ENCORE RENDRE LA MAIN A L APPELANT, sans quoi l execution tombe     }
+ { dans la memoire NON INITIALISEE juste apres ces 2 octets (jamais ecrite  }
+ { au-dela) - confirme : plantage/sortie prematuree de RTM.EXE a ce point   }
+ { precis. Ajoute donc un RETF (CBh) immediatement apres "INT FBh" : sur    }
+ { la VRAIE premiere entree (reel -> protege), Dpmi_Switch redirige EIP/CS  }
+ { entierement et ce RETF n est JAMAIS atteint (code mort dans ce cas) ;    }
+ { sur CETTE reentree (deja protege), l "INT FBh" devient un pur no-op et   }
+ { l execution tombe DANS ce RETF, qui depile correctement l adresse de     }
+ { retour que le FAR CALL du client venait de pousser - exactement le       }
+ { comportement attendu d une fonction qui "ne fait rien et revient". }
  Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS,     $CD);
  Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS + 1, $FB);
+ Emu_WriteByte(P.CPU, EMU_DPMI_STUB_SEG, EMU_DPMI_STUB_OFS + 2, $CB);
 End;
 
 { Gestionnaire du point d entree DPMI (voir DOC/DPMI.txt 3.2) - execute    }
@@ -204909,21 +204927,10 @@ Var
  Want32: Boolean;
  CodeSel, DataSel, EsSel, SsSel: Word;
  CodeIdx: Integer;
- DiagSwF: Text;
 Begin
  If Not EmuDpmi.Active Then Exit; { securite, ne devrait pas arriver }
  RetIP := Emu_PopWord(P.CPU);
  RetCS := Emu_PopWord(P.CPU);
- { TEMP (2026-10-14), enquete "atteindre l IDE" }
- {$I-}
- Assign(DiagSwF, 'DIAGSWITCH.LOG'); Append(DiagSwF);
- If IOResult <> 0 Then Begin Rewrite(DiagSwF); If IOResult <> 0 Then ; End;
- {$I+}
- WriteLn(DiagSwF, 'Dpmi_Switch: RetCS=', HexWord(RetCS), ' RetIP=',
-  HexWord(Word(RetIP)), ' P.CPU.Segs.SS=', HexWord(P.CPU.Segs.SS),
-  ' P.CPU.Regs.SP(apres pops)=', HexWord(P.CPU.Regs.SP),
-  ' P.CPU.Segs.CS(avant)=', HexWord(P.CPU.Segs.CS));
- {$I-} Close(DiagSwF); If IOResult <> 0 Then ; {$I+}
  Want32 := P.CPU.Regs.AX <> 0;
  FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
  DpmiCPU.Is32Bit := Want32;
@@ -204935,14 +204942,33 @@ Begin
   DpmiCPU.LDT[CodeIdx].IsCode := True;
  End;
  DataSel := Dpmi_SegToSel(P.CPU.Segs.DS);
- EsSel := Dpmi_SegToSel(P.CPU.Segs.ES);
+ { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", 8e trouvaille) :      }
+ { contrairement a CS/DS/SS (alias 64 Ko du segment reel d entree), la     }
+ { VRAIE specification INT 2Fh/AX=1687h (voir DOC/DPMI.txt et             }
+ { geoffchappell.com/notes/dos/interrupts/2Fh/16h/pmswitch.htm) exige que   }
+ { ES devienne un selecteur de 100h octets (256) pointant sur le PSP de     }
+ { L APPELANT - PAS un alias du ES d ENTREE (qui, par protocole, contient   }
+ { le segment de la "zone de donnees privees du hote" que le client vient  }
+ { tout juste d allouer via AH=48h et qui n a jamais ete peuplee par nous). }
+ { Confirme en direct : RTM.EXE relit des valeurs GARBAGE (ex. un          }
+ { "selecteur" 0x384 jamais configure, Base=0) via ES juste apres son      }
+ { retour de Dpmi_Switch - cause probable du plantage final. }
+ If Dpmi_AllocLDT(1, EsSel) Then Begin
+  Dpmi_SetDescBase(EsSel, LongInt(EmuPspSeg) Shl 4);
+  Dpmi_SetDescLimit(EsSel, $FF);
+ End Else EsSel := DataSel;
  SsSel := Dpmi_SegToSel(P.CPU.Segs.SS);
  DpmiCPU.SegSel[0] := EsSel;   { ES }
  DpmiCPU.SegSel[1] := CodeSel; { CS }
  DpmiCPU.SegSel[2] := SsSel;   { SS }
  DpmiCPU.SegSel[3] := DataSel; { DS }
- DpmiCPU.SegSel[4] := DataSel; { FS - alias de DS par defaut }
- DpmiCPU.SegSel[5] := DataSel; { GS - alias de DS par defaut }
+ DpmiCPU.SegSel[4] := 0;       { FS = selecteur nul, voir pmswitch.htm }
+ DpmiCPU.SegSel[5] := 0;       { GS = selecteur nul, idem }
+ { Idem (pmswitch.htm) : "At PSP offset 002Ch, the environment segment      }
+ { becomes a selector" - le PSP de l appelant est en memoire REELLE          }
+ { (EmuPspSeg), donc modifiable directement ici avant la bascule. }
+ Emu_WriteWord(P.CPU, EmuPspSeg, $2C,
+  Dpmi_SegToSel(Emu_ReadWord(P.CPU, EmuPspSeg, $2C)));
  DpmiCPU.Reg := P.CPU.Regs;    { copie EAX..EDI/AX..DI (le meme record      }
                                 { variant TEmuRegs) pour continuite - ESP    }
                                 { reflete deja la pile APRES le pop ci-dessus}
@@ -205094,21 +205120,7 @@ Var
  StructAddr: LongInt;
  IntNum: Byte;
  CbIdx: Integer;
- DiagInt31F: Text;
 Begin
- { TEMP (2026-10-14), enquete "atteindre l IDE" : voir DiagDpmiCount dans }
- { Dpmi_Step - journalise CHAQUE appel INT 31h dans la meme fenetre. }
- If (DiagDpmiCount >= 50500) And (DiagDpmiCount <= 300000) Then Begin
-  {$I-}
-  Assign(DiagInt31F, 'DIAGINT31.LOG'); Append(DiagInt31F);
-  If IOResult <> 0 Then Begin Rewrite(DiagInt31F); If IOResult <> 0 Then ; End;
-  {$I+}
-  WriteLn(DiagInt31F, '#', DiagDpmiCount, ' AX=', HexWord(DpmiCPU.Reg.AX),
-   ' BX=', HexWord(DpmiCPU.Reg.BX), ' CX=', HexWord(DpmiCPU.Reg.CX),
-   ' DX=', HexWord(DpmiCPU.Reg.DX), ' SI=', HexWord(Word(DpmiCPU.Reg.ESI)),
-   ' DI=', HexWord(Word(DpmiCPU.Reg.EDI)));
-  {$I-} Close(DiagInt31F); If IOResult <> 0 Then ; {$I+}
- End;
  Exclude(DpmiCPU.Flags.s, EFG_CF);
  Case DpmiCPU.Reg.AX Of
   $0000: Begin
@@ -205889,6 +205901,102 @@ Begin
  DpmiCPU.EIP := DpmiCPU.IntOfs[Num];
 End;
 
+{ Variante pour les exceptions qui empilent un CODE D ERREUR (ex. #0D GPF,   }
+{ #0E Page Fault, #08 Double Fault...) - EXACTEMENT la meme trame que        }
+{ Dpmi_FireProtectedHandler (EFLAGS/CS/EIP, voir x86 reel) PUIS le code      }
+{ d erreur empile EN DERNIER (donc au SOMMET de la pile a l entree du        }
+{ gestionnaire, comme sur un VRAI 386+ - le gestionnaire doit le depiler     }
+{ lui-meme, ex. ADD ESP,4, avant IRETD). }
+Procedure Dpmi_FireProtectedHandlerEC(Var P: TEmulatorPanel; Num: Byte;
+ ErrorCode: LongInt);
+Begin
+ Dpmi_FireProtectedHandler(P, Num);
+ Dpmi_Push32(P, ErrorCode);
+End;
+
+{ BOGUE REEL (2026-10-14, enquete "atteindre l IDE", chantier GPF demande    }
+{ explicitement par l utilisateur) : Dpmi_Step chargeait n importe quel      }
+{ NewSel dans CS (ou un autre registre de segment) SANS verifier qu il       }
+{ s agit d un VRAI selecteur present - une vraie CPU 286+/386+ genererait    }
+{ une exception #0D (GPF) des le chargement. Confirme en direct : un         }
+{ CALL FAR [mem] vers un selecteur jamais alloue (0x384, LDT absent)         }
+{ chargeait silencieusement CS=0x384 (Base=0 par defaut), menant a lire des  }
+{ octets de donnees/chaines ASCII sans rapport comme si c etait du code -    }
+{ plantage "opcode non supporte" loin en aval, sans aucun diagnostic utile.  }
+{ Desormais : si le client a installe un gestionnaire protege pour le        }
+{ vecteur #0D (AX=0203h/0205h, voir DpmiCPU.IntSel), on le relance (avec un  }
+{ code d erreur = le selecteur fautif, masque RPL/TI comme sur un vrai       }
+{ processeur) - EXACTEMENT ce qu un vrai hote DPMI (CWSDPMI/PMODE/W/DOS32A)  }
+{ ferait, permettant au programme invite de reagir proprement ; sinon, arret }
+{ honnete (sfInvalidCode) plutot que de continuer avec un etat CPU fabrique. }
+{ AllowNull=True pour DS/ES/FS/GS (un selecteur NUL y est legal tant qu il    }
+{ n est pas utilise pour acceder a la memoire - seul CS/SS l interdisent     }
+{ absolument, voir le Volume 3 Intel SDM chap. 3.4.2). }
+Function Dpmi_SelValidForLoad(Sel: Word; AllowNull: Boolean): Boolean;
+Var Idx: Integer;
+Begin
+ If AllowNull And ((Sel And $FFFC) = 0) Then Begin
+  Dpmi_SelValidForLoad := True; Exit;
+ End;
+ Dpmi_SelValidForLoad := Dpmi_SelToIdx(Sel, Idx);
+End;
+
+{ EXPERIENCE PRAGMATIQUE (2026-10-14, chantier GPF, suite directe) : avant   }
+{ de faire honnetement #0D, tenter UN SEUL repli - si NewSel RESSEMBLE a un  }
+{ segment reel reloge (verifie en direct sur RTM.EXE : "MOV AX,01D5h ;       }
+{ MOV DS,AX" juste apres un retour en mode protege, ou 01D5h = 00B1h+       }
+{ LoadSeg EXACTEMENT, confirme OCTET PAR OCTET dans le fichier RTM.EXE brut  }
+{ - donc PAS un selecteur calcule, une VRAIE constante de lien), au lieu de  }
+{ planter, ALIASER A LA VOLEE ce "segment reel" (Base=NewSel*16, 64 Ko,      }
+{ IsCode=False) et RENVOYER LE NOUVEAU SELECTEUR ALLOUE (PAS NewSel lui-     }
+{ meme) - fonctionnellement equivalent a ce qu un hote DPMI reel ferait      }
+{ AVEC un appel AX=0007h que RTM.EXE n emet jamais (confirme : aucun         }
+{ AX=0000h/0002h ne precede ce chargement dans tout le journal exhaustif).   }
+{ Hypothese documentee (voir project_devenv_xms_int2f_recursion.md, SUITE    }
+{ #7/#8) : RTM.EXE a ete lie contre le VRAI DPMI16BI.OVL de Borland, dont    }
+{ la convention exacte de numerotation des selecteurs n a PAS pu etre        }
+{ confirmee par desassemblage (la plupart du fichier reste mal classee       }
+{ "donnees" par DISOVL/DISEXE - limite documentee et non corrigee). Ce       }
+{ repli est donc UN TEST EMPIRIQUE, PAS une implementation DPMI normative -  }
+{ exclut explicitement notre PROPRE marqueur ($FFF8, voir                   }
+{ EMU_DPMI_RAWSWITCH_SEL) pour ne jamais masquer un VRAI bogue de bascule.   }
+Function Dpmi_AutoAliasRealSeg(NewSel: Word): Word;
+Var Sel: Word;
+Begin
+ Dpmi_AutoAliasRealSeg := 0;
+ If NewSel = EMU_DPMI_RAWSWITCH_SEL Then Exit;
+ If (NewSel And $FFFC) = 0 Then Exit; { nul, pas un segment plausible ici }
+ If Not Dpmi_AllocLDT(1, Sel) Then Exit;
+ Dpmi_SetDescBase(Sel, LongInt(NewSel) Shl 4);
+ Dpmi_SetDescLimit(Sel, $FFFF);
+ Dpmi_AutoAliasRealSeg := Sel;
+End;
+
+{ Point d appel unique pour TOUTE tentative de charger NewSel dans CS/SS (ou }
+{ DS/ES/FS/GS avec AllowNull) : leve #0D si invalide (apres l essai de       }
+{ repli ci-dessus), sinon renvoie True (NewSel EVENTUELLEMENT REECRIT par    }
+{ le repli - voir Dpmi_AutoAliasRealSeg) et laisse l appelant completer le   }
+{ chargement normalement. }
+Function Dpmi_LoadSelOrFault(Var P: TEmulatorPanel; Var NewSel: Word;
+ AllowNull: Boolean): Boolean;
+Var Aliased: Word;
+Begin
+ If Dpmi_SelValidForLoad(NewSel, AllowNull) Then Begin
+  Dpmi_LoadSelOrFault := True; Exit;
+ End;
+ Aliased := Dpmi_AutoAliasRealSeg(NewSel);
+ If Aliased <> 0 Then Begin
+  NewSel := Aliased;
+  Dpmi_LoadSelOrFault := True; Exit;
+ End;
+ Dpmi_LoadSelOrFault := False;
+ If DpmiCPU.IntSel[$0D] <> 0 Then
+  Dpmi_FireProtectedHandlerEC(P, $0D, LongInt(NewSel And $FFF8))
+ Else Begin
+  P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
+ End;
+End;
+
 { Forwarde un INT Num execute DIRECTEMENT par le client protege (sans       }
 { passer par AX=0300h) vers le coeur 8086 REEL (Emu_DoInt), pour le cas ou  }
 { aucun gestionnaire protege n a ete installe (voir Dpmi_FireProtectedHandler}
@@ -205942,17 +206050,7 @@ End;
 { dans Dpmi_Step) ne les remplace par le selecteur marqueur - a passer      }
 { explicitement puisque cette procedure est appelee APRES ce remplacement. }
 Procedure Dpmi_RawSwitchToReal(Var P: TEmulatorPanel; RetCS: Word; RetIP: LongInt);
-Var DiagRswF: Text;
 Begin
- { TEMP (2026-10-14), enquete "atteindre l IDE" }
- {$I-}
- Assign(DiagRswF, 'DIAGSWITCH.LOG'); Append(DiagRswF);
- If IOResult <> 0 Then Begin Rewrite(DiagRswF); If IOResult <> 0 Then ; End;
- {$I+}
- WriteLn(DiagRswF, 'Dpmi_RawSwitchToReal: RetCS(sel)=', HexWord(RetCS),
-  ' Dpmi_SelBase(RetCS)=', HexLong(Dpmi_SelBase(RetCS)),
-  ' RetIP=', HexLong(RetIP));
- {$I-} Close(DiagRswF); If IOResult <> 0 Then ; {$I+}
  P.CPU.Regs := DpmiCPU.Reg;
  P.CPU.Flags.s := DpmiCPU.Flags.s;
  P.CPU.Segs.CS := Word(Dpmi_SelBase(RetCS) Div 16);
@@ -205964,10 +206062,6 @@ Begin
  P.CPU.FS := Word(Dpmi_SelBase(DpmiCPU.SegSel[4]) Div 16);
  P.CPU.GS := Word(Dpmi_SelBase(DpmiCPU.SegSel[5]) Div 16);
  DpmiCPU.Active := False;
- { TEMP (2026-10-14), enquete "atteindre l IDE" : reutilise EmuTraceCnt/   }
- { EMUSTEP.LOG (voir Emu_StepOne) pour voir EXACTEMENT ce qui se passe en }
- { mode reel juste apres ce retour. }
- EmuTraceCnt := 400;
 End;
 
 { Symetrique de Dpmi_RawSwitchToReal ci-dessus, pour l AUTRE sens du       }
@@ -206028,9 +206122,10 @@ Var
  SrcOfs, DstOfs: LongInt;
  SrcV, DstV: LongInt;
  Cont: Boolean;
+ V16: Word; V32: LongInt; { $6C-$6F INS/OUTS }
 Begin
  If (RepMode <> 0) And (DpmiCPU.Reg.ECX = 0) Then Exit;
- If Op2 In [$A4, $A6, $AA, $AC, $AE] Then Sz := 1 Else Sz := OpSize;
+ If Op2 In [$A4, $A6, $AA, $AC, $AE, $6C, $6E] Then Sz := 1 Else Sz := OpSize;
  If EFG_DF In DpmiCPU.Flags.s Then Dir := -1 Else Dir := 1;
  If DpmiCPU.Is32Bit Then Begin
   SrcOfs := DpmiCPU.Reg.ESI; DstOfs := DpmiCPU.Reg.EDI;
@@ -206094,6 +206189,44 @@ Begin
    Dpmi_Alu(P, 7, SrcV, DstV, Sz);
    DstOfs := DstOfs + Dir * Sz;
   End;
+  $6C, $6D: Begin { INS(B/W/D) - BOGUE REEL (2026-10-14, chantier GPF/suite, }
+   { "RETF/IN-OUT" demande explicitement) : famille $6C-$6F entierement      }
+   { absente de Dpmi_Step jusqu ici, meme famille/meme correctif que les      }
+   { ports $E4-$EF un peu plus haut - ES:[DI] := IN(DX), DI avance de +/-Sz. }
+   Case Sz Of
+    1: Dpmi_WriteByte(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
+        Emu_PortRead(P, Word(DpmiCPU.Reg.DX)));
+    2: Dpmi_WriteWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
+        Word(Emu_PortRead(P, Word(DpmiCPU.Reg.DX))) Or
+        (Word(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 1)) Shl 8));
+   Else
+     Dpmi_WriteDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
+      LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX)))) Or
+      (LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 1))) Shl 8) Or
+      (LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 2))) Shl 16) Or
+      (LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 3))) Shl 24));
+   End;
+   DstOfs := DstOfs + Dir * Sz;
+  End;
+  $6E, $6F: Begin { OUTS(B/W/D) - symetrique de $6C/$6D : OUT(DX) :=        }
+   { [DefSeg:SI], SI avance de +/-Sz. }
+   Case Sz Of
+    1: Emu_PortWrite(P, Word(DpmiCPU.Reg.DX),
+        Byte(Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, SrcOfs))));
+    2: Begin
+     V16 := Dpmi_ReadWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+     Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), Byte(V16));
+     Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 1, Byte(V16 Shr 8));
+    End;
+   Else
+    V32 := Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), Byte(V32));
+    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 1, Byte(V32 Shr 8));
+    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 2, Byte(V32 Shr 16));
+    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 3, Byte(V32 Shr 24));
+   End;
+   SrcOfs := SrcOfs + Dir * Sz;
+  End;
  End;
  If DpmiCPU.Is32Bit Then Begin
   DpmiCPU.Reg.ESI := SrcOfs; DpmiCPU.Reg.EDI := DstOfs;
@@ -206131,26 +206264,8 @@ Var
  NewSel: Word; { nouveau CS, voir groupe FF /3 (CALLF) et /5 (JMPF) indirects }
  RetIP32: LongInt; RetCS16: Word; { "raw mode switch" EMU_DPMI_RAWSWITCH_SEL }
  MulRes: LongInt; MulRes64: Int64; { IMUL $69/$6B }
- DiagDpmiF: Text;
 Begin
  If Not DpmiCPU.Active Then Exit;
- Inc(DiagDpmiCount);
- If (DiagDpmiCount >= 50588) And (DiagDpmiCount <= 50610) Then Begin
-  {$I-} Assign(DiagDpmiF, 'DIAGRTM.LOG'); Append(DiagDpmiF);
-  If IOResult <> 0 Then Begin Rewrite(DiagDpmiF); If IOResult <> 0 Then ; End;
-  {$I+}
-  WriteLn(DiagDpmiF, '#', DiagDpmiCount, ' CS=', HexWord(DpmiCPU.SegSel[1]),
-   ' CSBase=', HexLong(Dpmi_SelBase(DpmiCPU.SegSel[1])),
-   ' EIP=', HexWord(DpmiCPU.EIP),
-   ' EAX=', HexLong(DpmiCPU.Reg.EAX), ' EBX=', HexLong(DpmiCPU.Reg.EBX),
-   ' ECX=', HexLong(DpmiCPU.Reg.ECX), ' EDX=', HexLong(DpmiCPU.Reg.EDX),
-   ' ESI=', HexLong(DpmiCPU.Reg.ESI), ' EDI=', HexLong(DpmiCPU.Reg.EDI),
-   ' EBP=', HexLong(DpmiCPU.Reg.EBP), ' ESP=', HexLong(DpmiCPU.Reg.ESP),
-   ' DS=', HexWord(DpmiCPU.SegSel[3]), ' ES=', HexWord(DpmiCPU.SegSel[0]),
-   ' bytes=', HexByte(Dpmi_FetchByte(P, 0)), ' ', HexByte(Dpmi_FetchByte(P, 1)),
-   ' ', HexByte(Dpmi_FetchByte(P, 2)), ' ', HexByte(Dpmi_FetchByte(P, 3)));
-  {$I-} Close(DiagDpmiF); If IOResult <> 0 Then ; {$I+}
- End;
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
  EIPStart := DpmiCPU.EIP;
@@ -206343,13 +206458,17 @@ Begin
    End;
    If OpSize = 2 Then Dpmi_Push16(P, Word(Imm)) Else Dpmi_Push32(P, Imm);
   End;
-  $07, $17, $1F: Begin { POP ES/SS/DS (pas de POP CS en mode 32 bits) }
+  $07, $17, $1F: Begin { POP ES/SS/DS (pas de POP CS en mode 32 bits) -      }
+   { meme validation que $8E (Dpmi_LoadSelOrFault) : SS (B=$17) n accepte    }
+   { pas de selecteur nul, ES/DS si. }
    If OpSize = 2 Then Imm := Dpmi_Pop16(P) Else Imm := Word(Dpmi_Pop32(P));
-   Case B Of
-    $07: DpmiCPU.SegSel[0] := Word(Imm);
-    $17: DpmiCPU.SegSel[2] := Word(Imm);
-   Else  DpmiCPU.SegSel[3] := Word(Imm); { $1F }
-   End;
+   NewSel := Word(Imm);
+   If Dpmi_LoadSelOrFault(P, NewSel, B <> $17) Then
+    Case B Of
+     $07: DpmiCPU.SegSel[0] := NewSel;
+     $17: DpmiCPU.SegSel[2] := NewSel;
+    Else  DpmiCPU.SegSel[3] := NewSel; { $1F }
+    End;
   End;
   $68: Begin { PUSH Iz }
    If OpSize = 2 Then Begin
@@ -206367,6 +206486,36 @@ Begin
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
    If Dpmi_TestCond(B And $F) Then DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+  End;
+  $E0, $E1, $E2, $E3: Begin { LOOPNE/LOOPNZ, LOOPE/LOOPZ, LOOP, JCXZ -          }
+   { BOGUE REEL CORRIGE (2026-10-14, enquete "atteindre l IDE" suite #13) :    }
+   { toute cette famille manquait de ce sous-ensemble (meme classe de bogue    }
+   { que RETF/IN-OUT/INS-OUTS, corriges plus tot dans la meme enquete) et      }
+   { tombait dans le "Else" generique (opcode non reconnu). Trouve en          }
+   { tracant TPX.EXE instruction par instruction APRES la bascule DPMI (voir   }
+   { Dpmi_LoadSelOrFault / le RETF ajoute au stub, suite #12) : le tout         }
+   { premier JCXZ rencontre y stoppait net l execution. CX/ECX suit            }
+   { DpmiCPU.Is32Bit (taille d ADRESSE), meme convention deja etablie par      }
+   { Dpmi_StringOp pour REP - pas de prefixe $67 distinct gere ici. }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   If B = $E3 Then Begin
+    If DpmiCPU.Is32Bit Then A := DpmiCPU.Reg.ECX Else A := DpmiCPU.Reg.CX;
+    If A = 0 Then DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+   End Else Begin
+    If DpmiCPU.Is32Bit Then Begin
+     DpmiCPU.Reg.ECX := DpmiCPU.Reg.ECX - 1; A := DpmiCPU.Reg.ECX;
+    End Else Begin
+     DpmiCPU.Reg.CX := DpmiCPU.Reg.CX - 1; A := DpmiCPU.Reg.CX;
+    End;
+    Case B Of
+     $E0: If (A <> 0) And Not (EFG_ZF In DpmiCPU.Flags.s) Then
+           DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+     $E1: If (A <> 0) And (EFG_ZF In DpmiCPU.Flags.s) Then
+           DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+     $E2: If A <> 0 Then DpmiCPU.EIP := DpmiCPU.EIP + Imm;
+    End;
+   End;
   End;
   $80, $81, $82, $83: Begin { groupe ALU immediat : Eb,Ib / Ev,Iz / Ev,Ib(signe) }
    { BOGUE REEL (2026-10-14, meme enquete "TPX.EXE plante apres bascule      }
@@ -206451,6 +206600,37 @@ Begin
    Else
     Dpmi_PutOp(P, Op, 4, Dpmi_Shift(P, Sub, Dpmi_GetOp(P, Op, 4), V8, 4));
   End;
+  $D4: Begin { AAM - BOGUE REEL CORRIGE (2026-10-14) : absent de ce sous-      }
+   { ensemble, meme symptome que les corrections precedentes de cette         }
+   { enquete (trouve en tracant TPX.EXE jusqu a sa routine de conversion       }
+   { decimale, rencontree apres la bascule DPMI). Meme semantique que          }
+   { Emu_StepOne (~209041, 8086 reel) : imm8 = base, #DE si base=0 (pas        }
+   { encore relaye vers un handler protege - simple arret honnete). }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   If Imm = 0 Then Begin
+    P.CPU.Fault := sfDivision0; DpmiCPU.Active := False;
+   End Else Begin
+    DpmiCPU.Reg.AH := DpmiCPU.Reg.AL Div Byte(Imm);
+    DpmiCPU.Reg.AL := DpmiCPU.Reg.AL Mod Byte(Imm);
+    If (DpmiCPU.Reg.AL And $80) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+    Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+    If DpmiCPU.Reg.AL = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF)
+    Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+    If P.CPU.ParityTable[DpmiCPU.Reg.AL] Then Include(DpmiCPU.Flags.s, EFG_PF)
+    Else Exclude(DpmiCPU.Flags.s, EFG_PF);
+   End;
+  End;
+  $D5: Begin { AAD - meme contexte que $D4 ci-dessus. }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   DpmiCPU.Reg.AL := Byte(DpmiCPU.Reg.AL + (DpmiCPU.Reg.AH * Byte(Imm)));
+   DpmiCPU.Reg.AH := 0;
+   If (DpmiCPU.Reg.AL And $80) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+   If DpmiCPU.Reg.AL = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+   If P.CPU.ParityTable[DpmiCPU.Reg.AL] Then Include(DpmiCPU.Flags.s, EFG_PF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_PF);
+  End;
   $84, $85: Begin { TEST Eb,Gb / Ev,Gv }
    ModRM := Dpmi_FetchByte(P, 0);
    Reg := (ModRM Shr 3) And 7;
@@ -206511,12 +206691,16 @@ Begin
    Inc(DpmiCPU.EIP, Op.Len);
    If Reg <= 5 Then Dpmi_PutOp(P, Op, 2, DpmiCPU.SegSel[Reg]);
   End;
-  $8E: Begin { MOV Sw,Ew }
+  $8E: Begin { MOV Sw,Ew - voir Dpmi_LoadSelOrFault : SS (Reg=2) n accepte    }
+   { pas de selecteur nul (voir Dpmi_SelValidForLoad), ES/DS/FS/GS si.        }
    ModRM := Dpmi_FetchByte(P, 0);
    Reg := (ModRM Shr 3) And 7;
    Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
    Inc(DpmiCPU.EIP, Op.Len);
-   If Reg <= 5 Then DpmiCPU.SegSel[Reg] := Word(Dpmi_GetOp(P, Op, 2));
+   If Reg <= 5 Then Begin
+    NewSel := Word(Dpmi_GetOp(P, Op, 2));
+    If Dpmi_LoadSelOrFault(P, NewSel, Reg <> 2) Then DpmiCPU.SegSel[Reg] := NewSel;
+   End;
   End;
   $8D: Begin { LEA Gv,M }
    ModRM := Dpmi_FetchByte(P, 0);
@@ -206596,7 +206780,8 @@ Begin
    Else
     Dpmi_WriteDWord(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg32(DpmiCPU.Reg, 0));
   End;
-  $A4, $A5, $A6, $A7, $AA, $AB, $AC, $AD, $AE, $AF:
+  $A4, $A5, $A6, $A7, $AA, $AB, $AC, $AD, $AE, $AF,
+  $6C, $6D, $6E, $6F:
    Dpmi_StringOp(P, B, OpSize, RepMode, DefSeg, EIPStart);
   $A8: Begin { TEST AL,Ib }
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
@@ -206631,6 +206816,73 @@ Begin
   End;
   $C3: Begin { RET (proche) }
    If OpSize = 2 Then DpmiCPU.EIP := Dpmi_Pop16(P) Else DpmiCPU.EIP := Dpmi_Pop32(P);
+  End;
+  $CA, $CB: Begin { RETF (lointain), avec ou sans Iw a depiler - BOGUE REEL   }
+   { (2026-10-14, enquete "atteindre l IDE", chantier GPF) : totalement       }
+   { absent de Dpmi_Step jusqu ici (seule la version reelle d Emu_StepOne     }
+   { l implementait) - tombait dans le Else generique (sfInvalidCode) des     }
+   { qu un programme protege faisait un retour lointain NORMAL (le cas le     }
+   { plus courant pour toute fonction appelee via CALL FAR). Valide le CS     }
+   { depile via Dpmi_LoadSelOrFault (meme #0D GPF honnete qu ailleurs plutot  }
+   { que de continuer avec un etat fabrique) avant de l affecter. }
+   { L operande Iw (s il existe) suit IMMEDIATEMENT l opcode, donc se lit    }
+   { AVANT d ecraser EIP avec l adresse de retour depilee (Dpmi_Pop16/32 ne   }
+   { touchent que SS:ESP, jamais EIP - l ordre entre les deux n a cependant   }
+   { d importance QUE pour ce Imm, qui doit etre lu alors qu EIP pointe       }
+   { encore juste apres l opcode CA/CB). }
+   If B = $CA Then Imm := Dpmi_FetchWord(P, 0) Else Imm := 0;
+   If OpSize = 2 Then Begin
+    RetIP32 := Dpmi_Pop16(P); RetCS16 := Dpmi_Pop16(P);
+   End Else Begin
+    RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
+   End;
+   If Dpmi_LoadSelOrFault(P, RetCS16, False) Then Begin
+    DpmiCPU.EIP := RetIP32;
+    DpmiCPU.SegSel[1] := RetCS16;
+    If B = $CA Then DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + Imm;
+   End;
+  End;
+  $E4: Begin { IN AL,imm8 - BOGUE REEL (2026-10-14, chantier GPF/suite) :    }
+   { toute la famille IN/OUT ($E4-$E7/$EC-$EF) etait absente de Dpmi_Step,   }
+   { meme symptome que RETF/IMUL avant elle (sfInvalidCode des le premier    }
+   { client protege qui fait de l E/S port directe - rencontre par RTM.EXE   }
+   { juste apres avoir enfin atteint un nouveau segment de code, CS=008Ch).  }
+   { Reutilise Emu_PortRead/Emu_PortWrite (meme materiel emule que le coeur  }
+   { reel, voir Emu_StepOne $E4-$EF) - aucune duplication de logique E/S. }
+   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
+   DpmiCPU.Reg.AL := Emu_PortRead(P, Byte(Imm));
+  End;
+  $E5: Begin { IN AX,imm8 }
+   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
+   DpmiCPU.Reg.AL := Emu_PortRead(P, Byte(Imm));
+   DpmiCPU.Reg.AH := Emu_PortRead(P, Byte(Imm) + 1);
+  End;
+  $E6: Begin { OUT imm8,AL }
+   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
+   Emu_PortWrite(P, Byte(Imm), DpmiCPU.Reg.AL);
+  End;
+  $E7: Begin { OUT imm8,AX }
+   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
+   Emu_PortWrite(P, Byte(Imm), DpmiCPU.Reg.AL);
+   Emu_PortWrite(P, Byte(Imm) + 1, DpmiCPU.Reg.AH);
+  End;
+  $EC: Begin { IN AL,DX }
+   Inc(DpmiCPU.EIP);
+   DpmiCPU.Reg.AL := Emu_PortRead(P, Word(DpmiCPU.Reg.DX));
+  End;
+  $ED: Begin { IN AX,DX }
+   Inc(DpmiCPU.EIP);
+   DpmiCPU.Reg.AL := Emu_PortRead(P, Word(DpmiCPU.Reg.DX));
+   DpmiCPU.Reg.AH := Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 1);
+  End;
+  $EE: Begin { OUT DX,AL }
+   Inc(DpmiCPU.EIP);
+   Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), DpmiCPU.Reg.AL);
+  End;
+  $EF: Begin { OUT DX,AX }
+   Inc(DpmiCPU.EIP);
+   Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), DpmiCPU.Reg.AL);
+   Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 1, DpmiCPU.Reg.AH);
   End;
   $C6: Begin { MOV Eb,Ib }
    ModRM := Dpmi_FetchByte(P, 0);
@@ -206937,7 +207189,7 @@ Begin
        RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
       End;
       Dpmi_RawSwitchToReal(P, RetCS16, RetIP32);
-     End Else Begin
+     End Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
       If OpSize = 2 Then Begin
        Dpmi_Push16(P, DpmiCPU.SegSel[1]); Dpmi_Push16(P, Word(DpmiCPU.EIP));
       End Else Begin
@@ -206964,7 +207216,7 @@ Begin
        RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
       End;
       Dpmi_RawSwitchToReal(P, RetCS16, RetIP32);
-     End Else Begin
+     End Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
       DpmiCPU.SegSel[1] := NewSel;
       DpmiCPU.EIP := Target;
      End;
@@ -207771,9 +208023,25 @@ Begin
    If Geos_Active Then
     Geos_DispatchCall(P, Emu_ReadWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP));
   End;
-  $FB: If EmuDpmi.Active Then Dpmi_Switch(P); { trampoline de commutation    }
-       { reel -> protege DPMI, voir Dpmi_Switch/Emu_DpmiInit. Jamais         }
-       { atteint par du logiciel DOS reel. }
+  $FB: If EmuDpmi.Active And Not DpmiCPU.Active Then Dpmi_Switch(P); { trampoline }
+       { de commutation reel -> protege DPMI, voir Dpmi_Switch/Emu_DpmiInit. }
+       { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", suite #9) : le   }
+       { commentaire d origine ("jamais atteint par du logiciel DOS reel")   }
+       { etait FAUX - confirme en direct : le CLIENT (RTM.EXE/TPX.EXE,        }
+       { meme stub DPMI partage) execute "INT FBh" DIRECTEMENT, EN PLEIN     }
+       { MODE PROTEGE, pour une raison qui lui est propre (sans rapport avec }
+       { notre marqueur interne - $FBh n est PAS un vecteur reserve par la    }
+       { vraie spec DPMI, juste un choix arbitraire de ce projet). SANS       }
+       { cette garde, Dpmi_ForwardIntToReal (qui ne met PAS a jour            }
+       { P.CPU.Segs.SS - seuls Regs et CS le sont, voir son commentaire de    }
+       { tete) relance Dpmi_Switch, qui depile RetIP/RetCS depuis SS:SP        }
+       { PERIMES (le SS reel D ORIGINE du client, jamais mis a jour, combine  }
+       { a un SP qui est en realite DpmiCPU.Reg.ESP - un decalage de PILE      }
+       { PROTEGEE interprete a tort comme un decalage de PILE REELLE) :       }
+       { l execution "reprenait" alors sur un couple CS:IP GARBAGE issu de    }
+       { cette zone perimee (confirme : systematiquement IDENTIQUE a RetIP du }
+       { tout premier Dpmi_Switch de toute la session, 0429h, pure coincidence}
+       { de memoire non reecrite). }
   $FC: If EmuMouseCallPending Then Emu_MouseCont(P); { continuation interne  }
        { de l upcall gestionnaire souris/callback BIOS PS/2 - voir           }
        { Emu_MouseCont. Jamais atteint par du logiciel DOS reel. }
