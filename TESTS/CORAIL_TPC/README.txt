@@ -55,19 +55,9 @@ Les resultats obtenus sont consignes dans DOC/CORAIL_TPC_TESTS.txt.
 
 TPCW32 -CD
 ----------
-TPCW32.PAS (cible -CD, DOS mode reel) contient une copie integree du moteur
-de TPC.PAS entre les marqueurs "DEBUT MOTEUR TPC" et "FIN MOTEUR TPC".
-TPCW32.PAS reste autonome (aucune dependance a TPC.PAS, aucun include, seule
-l'unite DOS). Pour recopier une version plus recente de TPC.PAS (facultatif):
-  python3 TESTS/CORAIL_TPC/embed_tpc.py TPC.PAS TPCW32.PAS TPCW32.PAS \
-          DefineCount,TotalLines,TypeCount,EmitRuntime
-(la liste finale enumere les identificateurs globaux de TPC.PAS qui existent
-aussi dans TPCW32.PAS; ils sont prefixes "Tp" dans la copie; en cas de nouvelle
-collision, Free Pascal signale "Duplicate identifier": ajouter le nom a la
-liste. Les procedures homonymes ne sont PAS signalees par Free Pascal
-(surcharge): verifier aussi l'intersection des noms de procedures).
-Les executables -CD sont alors identiques a ceux de TPC, et run_all.sh peut
-etre utilise avec le binaire TPCW32 en passant les options par la variable
-TPC_OPTS="-CD -tp7" (voir run_all.sh).
+run_all.sh accepte un autre compilateur et des options via TPC_OPTS, par
+exemple pour TPCW32 (generateur DOS 16 bits interne):
+  CORAIL=/tmp/corail WORK=/tmp/w32-tests TPC_OPTS="-CD -tp7" \
+    ./TESTS/CORAIL_TPC/run_all.sh /tmp/TPCW32
 golden_tpcw32.sh enregistre les md5 des sorties de toutes les cibles de
 TPCW32 pour verifier qu'une modification ne change pas les autres cibles.
