@@ -202689,10 +202689,8 @@ End;
 { interruption reelle - voir Emu_DoIntFE, atteint uniquement via le        }
 { trampoline installe par Emu_XmsInit). Numero de fonction dans AH. --- }
 Procedure Emu_DoIntFE(Var P: TEmulatorPanel);
-Var DiagXF: Text; DiagAH: Byte;
 Begin
  P.CPU.Regs.BL := 0; { pas d erreur par defaut }
- DiagAH := P.CPU.Regs.AH;
  Case P.CPU.Regs.AH Of
   $00: Emu_Xms_GetVersion(P);
   $01: Emu_Xms_RequestHMA(P);
@@ -202722,13 +202720,6 @@ Begin
   P.CPU.Regs.BL := $80; { fonction non implantee }
  End;
  End;
- {$I-} Assign(DiagXF, 'DIAGXMS.LOG'); Append(DiagXF);
- If IOResult <> 0 Then Begin Rewrite(DiagXF); If IOResult <> 0 Then ; End;
- {$I+}
- WriteLn(DiagXF, 'AH=', HexByte(DiagAH), ' -> AX=', HexWord(P.CPU.Regs.AX),
-  ' BL=', HexByte(P.CPU.Regs.BL), ' DX=', HexWord(P.CPU.Regs.DX),
-  ' BX=', HexWord(P.CPU.Regs.BX));
- {$I-} Close(DiagXF); If IOResult <> 0 Then ; {$I+}
 End;
 
 { ========================================================================= }
@@ -206264,8 +206255,19 @@ Var
  NewSel: Word; { nouveau CS, voir groupe FF /3 (CALLF) et /5 (JMPF) indirects }
  RetIP32: LongInt; RetCS16: Word; { "raw mode switch" EMU_DPMI_RAWSWITCH_SEL }
  MulRes: LongInt; MulRes64: Int64; { IMUL $69/$6B }
+ DiagF: Text;
 Begin
  If Not DpmiCPU.Active Then Exit;
+ { TEMP (2026-10-14), enquete "PKUNZIP.EXE opcode non supporte" }
+ {$I-} Assign(DiagF, 'DIAGPKZDPMI.LOG'); Append(DiagF);
+ If IOResult <> 0 Then Begin Rewrite(DiagF); If IOResult <> 0 Then ; End;
+ {$I+}
+ WriteLn(DiagF, 'EIP=', HexLong(DpmiCPU.EIP), ' CS=', HexWord(DpmiCPU.SegSel[1]),
+  ' AX=', HexLong(DpmiCPU.Reg.EAX), ' BX=', HexLong(DpmiCPU.Reg.EBX),
+  ' CX=', HexLong(DpmiCPU.Reg.ECX), ' DX=', HexLong(DpmiCPU.Reg.EDX),
+  ' bytes=', HexByte(Dpmi_FetchByte(P, 0)), ' ', HexByte(Dpmi_FetchByte(P, 1)),
+  ' ', HexByte(Dpmi_FetchByte(P, 2)), ' ', HexByte(Dpmi_FetchByte(P, 3)));
+ {$I-} Close(DiagF); If IOResult <> 0 Then ; {$I+}
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
  EIPStart := DpmiCPU.EIP;
@@ -206715,7 +206717,42 @@ Begin
    If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Res))
    Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
   End;
+  $C4, $C5: Begin { LES/LDS Gv,Mp - BOGUE REEL CORRIGE (2026-10-14, enquete   }
+   { "PKUNZIP.EXE opcode non supporte") : totalement absents de Dpmi_Step    }
+   { (seule la version reelle d Emu_StepOne les implementait) - rencontres   }
+   { des que PKUNZIP.EXE bascule reellement en mode protege DPMI (son       }
+   { propre code, pas une re-verification comme chez TPX.EXE) et charge un  }
+   { pointeur lointain depuis la memoire. Meme validation que $8E (segment  }
+   { nul refuse pour ES/DS comme pour toute charge de selecteur normale). }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   Res := Dpmi_GetOp(P, Op, OpSize);
+   NewSel := Dpmi_ReadWord(P, Op.LinAddr + OpSize);
+   If Dpmi_LoadSelOrFault(P, NewSel, True) Then Begin
+    If B = $C4 Then DpmiCPU.SegSel[0] := NewSel { ES }
+    Else DpmiCPU.SegSel[3] := NewSel;           { DS }
+    If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Res))
+    Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
+   End;
+  End;
   $90: ; { NOP }
+  $91..$97: Begin { XCHG eAX,reg - BOGUE REEL CORRIGE (2026-10-14, enquete     }
+   { "PKUNZIP.EXE opcode non supporte") : toute la famille manquait de        }
+   { Dpmi_Step (seules les versions PE/ELF64/reelles l implementaient) -      }
+   { rencontre juste apres le correctif LES/LDS ci-dessus, encore dans le     }
+   { tout premier code protege genuinement execute par PKUNZIP.EXE. }
+   If OpSize = 2 Then Begin
+    Res := Dpmi_GetReg16(DpmiCPU.Reg, B And 7);
+    Dpmi_SetReg16(DpmiCPU.Reg, B And 7, DpmiCPU.Reg.AX);
+    DpmiCPU.Reg.AX := Word(Res);
+   End Else Begin
+    Res := Dpmi_GetReg32(DpmiCPU.Reg, B And 7);
+    Dpmi_SetReg32(DpmiCPU.Reg, B And 7, DpmiCPU.Reg.EAX);
+    DpmiCPU.Reg.EAX := Res;
+   End;
+  End;
   $F4: ; { HLT - aucun arret CPU reel modelise ici, simple no-op honnete    }
        { (meme limite que le coeur 8086 reel, voir Emu_StepOne). }
   $F5: Begin { CMC - BOGUE REEL (2026-10-14), voir $A0-$A3/$82/$86 plus     }
@@ -209160,7 +209197,25 @@ Begin
     { Correctif : avant le IRET qui va suivre, ecrire PAR-DESSUS le mot      }
     { FLAGS deja empile (a SS:[SP+4], sous IP et CS empiles ensuite par le   }
     { CALL FAR) la valeur REELLE que Emu_DoInt vient de calculer. }
-    If P.CPU.Segs.CS = EMU_DEFAULT_IVT_SEG Then
+    { BOGUE REEL CORRIGE (2026-10-14, enquete "PKUNZIP.EXE plante sur HLT") : }
+    { la garde ne verifiait QUE "CS = EMU_DEFAULT_IVT_SEG" ($F000) - or       }
+    { PLUSIEURS AUTRES stubs internes (XMS, DPMI...) vivent EUX AUSSI a ce    }
+    { MEME segment $F000 (voir EMU_XMS_STUB_SEG/EMU_DPMI_STUB_SEG), a des     }
+    { offsets fixes ($00C0/$0120) bien EN DEHORS de la vraie plage du         }
+    { trampoline "INT n ; IRET" (EMU_DEFAULT_IVT_OFS0=$0300 a +256*4=$0700,   }
+    { voir Emu_WriteDefaultVector). Confirme en direct : PKUNZIP.EXE appelle  }
+    { le pilote XMS via CALL FAR vers $F000:00C0 (stub "INT FEh ; RETF", PAS  }
+    { le trampoline IRET) - cette ecriture erronee a SS:[SP+4] ecrasait        }
+    { SILENCIEUSEMENT l adresse de retour LEGITIME du VRAI appelant (empilee  }
+    { 2 niveaux plus haut par son PROPRE CALL proche), substituee par la      }
+    { valeur de FLAGS - le prochain RET de ce VRAI appelant sautait alors     }
+    { en pleine boucle non apparentee avec CX=0, provoquant un "LOOP" qui     }
+    { boucle 65536 fois avant de finir par executer un octet de donnees       }
+    { (HLT) pris pour du code. Restreint desormais la garde a la VRAIE plage  }
+    { du trampoline, pas seulement au segment. }
+    If (P.CPU.Segs.CS = EMU_DEFAULT_IVT_SEG) And
+       (P.CPU.IP >= EMU_DEFAULT_IVT_OFS0) And
+       (P.CPU.IP < EMU_DEFAULT_IVT_OFS0 + 256 * 4) Then
      Emu_WriteWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4),
        P.CPU.Flags.Base);
    End;
