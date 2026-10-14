@@ -206255,19 +206255,11 @@ Var
  NewSel: Word; { nouveau CS, voir groupe FF /3 (CALLF) et /5 (JMPF) indirects }
  RetIP32: LongInt; RetCS16: Word; { "raw mode switch" EMU_DPMI_RAWSWITCH_SEL }
  MulRes: LongInt; MulRes64: Int64; { IMUL $69/$6B }
- DiagF: Text;
+ R8, S8: Byte; R16, V16: Word; V32: LongInt; Borrow1: Boolean; ScanI: Integer;
+ { DAA/DAS/AAA/AAS/BOUND/ENTER/PUSHA-POPA, voir l audit "Case B Of" complet  }
+ { (2026-10-14, demande explicite de l utilisateur, suite enquete PKUNZIP). }
 Begin
  If Not DpmiCPU.Active Then Exit;
- { TEMP (2026-10-14), enquete "PKUNZIP.EXE opcode non supporte" }
- {$I-} Assign(DiagF, 'DIAGPKZDPMI.LOG'); Append(DiagF);
- If IOResult <> 0 Then Begin Rewrite(DiagF); If IOResult <> 0 Then ; End;
- {$I+}
- WriteLn(DiagF, 'EIP=', HexLong(DpmiCPU.EIP), ' CS=', HexWord(DpmiCPU.SegSel[1]),
-  ' AX=', HexLong(DpmiCPU.Reg.EAX), ' BX=', HexLong(DpmiCPU.Reg.EBX),
-  ' CX=', HexLong(DpmiCPU.Reg.ECX), ' DX=', HexLong(DpmiCPU.Reg.EDX),
-  ' bytes=', HexByte(Dpmi_FetchByte(P, 0)), ' ', HexByte(Dpmi_FetchByte(P, 1)),
-  ' ', HexByte(Dpmi_FetchByte(P, 2)), ' ', HexByte(Dpmi_FetchByte(P, 3)));
- {$I-} Close(DiagF); If IOResult <> 0 Then ; {$I+}
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
  EIPStart := DpmiCPU.EIP;
@@ -207266,6 +207258,289 @@ Begin
    End;
    End;
   End;
+  { ======================================================================= }
+  { BOGUE REEL CORRIGE (2026-10-14, demande explicite de l utilisateur :     }
+  { "mets en ordre de tri numerique les opcodes du Case B Of du DPMI, tu     }
+  { devrais trouver plusieurs opcodes manquants") - audit SYSTEMATIQUE de    }
+  { TOUS les octets $00-$FF contre ce sous-ensemble (suite a l enquete       }
+  { PKUNZIP.EXE, qui a REELLEMENT bascule en DPMI protege et rencontre LES/  }
+  { LDS puis XCHG eAX,reg manquants) : exactement 31 octets manquaient       }
+  { encore, tous ajoutes ci-dessous (meme patron que chaque correctif        }
+  { precedent de cette enquete : port direct du coeur reel 8086/              }
+  { Emu_StepOne, adapte a OpSize/DpmiCPU). }
+  $27: Begin { DAA - meme formule verifiee (corpus SST286, 8086 vs 80286+)   }
+   { que Emu_StepOne (~208924) - BCD, opere TOUJOURS sur AL 8 bits seul,      }
+   { OpSize non pertinent ici (vrai sur du 386+ reel aussi). }
+   V8 := DpmiCPU.Reg.AL; R8 := V8;
+   R16 := 0; If EFG_CF In DpmiCPU.Flags.s Then R16 := 1;
+   S8 := 0; If EFG_AF In DpmiCPU.Flags.s Then S8 := 1;
+   If ((V8 And $0F) > 9) Or (S8 = 1) Then Begin
+    If (Word(V8) + 6) > $FF Then Include(DpmiCPU.Flags.s, EFG_CF);
+    V8 := Byte(V8 + 6);
+    Include(DpmiCPU.Flags.s, EFG_AF);
+   End Else Exclude(DpmiCPU.Flags.s, EFG_AF);
+   If (R8 > $9F) Or (R16 = 1) Or
+      ((R8 >= $9A) And (R8 <= $9F) And (EmuCpu286Plus Or (S8 = 0))) Then Begin
+    V8 := Byte(V8 + $60);
+    Include(DpmiCPU.Flags.s, EFG_CF);
+   End Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   DpmiCPU.Reg.AL := V8;
+   If (V8 And $80) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF) Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+   If V8 = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF) Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+   If P.CPU.ParityTable[V8] Then Include(DpmiCPU.Flags.s, EFG_PF) Else Exclude(DpmiCPU.Flags.s, EFG_PF);
+  End;
+  $2F: Begin { DAS - meme formule que Emu_StepOne (~208973), voir DAA ci-dessus }
+   V8 := DpmiCPU.Reg.AL; R8 := V8;
+   R16 := 0; If EFG_CF In DpmiCPU.Flags.s Then R16 := 1;
+   S8 := 0; If EFG_AF In DpmiCPU.Flags.s Then S8 := 1;
+   Borrow1 := False;
+   If ((V8 And $0F) > 9) Or (S8 = 1) Then Begin
+    If V8 < 6 Then Begin Include(DpmiCPU.Flags.s, EFG_CF); Borrow1 := True; End;
+    V8 := Byte(V8 - 6);
+    Include(DpmiCPU.Flags.s, EFG_AF);
+   End Else Exclude(DpmiCPU.Flags.s, EFG_AF);
+   If (R8 > $9F) Or (R16 = 1) Or
+      ((R8 >= $9A) And (R8 <= $9F) And (EmuCpu286Plus Or (S8 = 0))) Then Begin
+    V8 := Byte(V8 - $60);
+    Include(DpmiCPU.Flags.s, EFG_CF);
+   End Else Begin
+    If EmuCpu286Plus And Borrow1 Then Include(DpmiCPU.Flags.s, EFG_CF)
+                                  Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   DpmiCPU.Reg.AL := V8;
+   If (V8 And $80) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF) Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+   If V8 = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF) Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+   If P.CPU.ParityTable[V8] Then Include(DpmiCPU.Flags.s, EFG_PF) Else Exclude(DpmiCPU.Flags.s, EFG_PF);
+  End;
+  $37: Begin { AAA - meme formule que Emu_StepOne (~209026) }
+   If ((DpmiCPU.Reg.AL And $0F) > 9) Or (EFG_AF In DpmiCPU.Flags.s) Then Begin
+    If EmuCpu286Plus And (Word(DpmiCPU.Reg.AL) + 6 > 255) Then
+     DpmiCPU.Reg.AH := Byte(DpmiCPU.Reg.AH + 2)
+    Else
+     DpmiCPU.Reg.AH := Byte(DpmiCPU.Reg.AH + 1);
+    DpmiCPU.Reg.AL := Byte(DpmiCPU.Reg.AL + 6);
+    Include(DpmiCPU.Flags.s, EFG_AF);
+    Include(DpmiCPU.Flags.s, EFG_CF);
+   End Else Begin
+    Exclude(DpmiCPU.Flags.s, EFG_AF);
+    Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   DpmiCPU.Reg.AL := DpmiCPU.Reg.AL And $0F;
+  End;
+  $3F: Begin { AAS - meme formule que Emu_StepOne (~209052) }
+   If ((DpmiCPU.Reg.AL And $0F) > 9) Or (EFG_AF In DpmiCPU.Flags.s) Then Begin
+    If EmuCpu286Plus And (Integer(DpmiCPU.Reg.AL) - 6 < 0) Then
+     DpmiCPU.Reg.AH := Byte(DpmiCPU.Reg.AH - 2)
+    Else
+     DpmiCPU.Reg.AH := Byte(DpmiCPU.Reg.AH - 1);
+    DpmiCPU.Reg.AL := Byte(DpmiCPU.Reg.AL - 6);
+    Include(DpmiCPU.Flags.s, EFG_AF);
+    Include(DpmiCPU.Flags.s, EFG_CF);
+   End Else Begin
+    Exclude(DpmiCPU.Flags.s, EFG_AF);
+    Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   DpmiCPU.Reg.AL := DpmiCPU.Reg.AL And $0F;
+  End;
+  $60: Begin { PUSHA/PUSHAD (80186+) }
+   If OpSize = 2 Then Begin
+    V16 := DpmiCPU.Reg.SP;
+    Dpmi_Push16(P, DpmiCPU.Reg.AX); Dpmi_Push16(P, DpmiCPU.Reg.CX);
+    Dpmi_Push16(P, DpmiCPU.Reg.DX); Dpmi_Push16(P, DpmiCPU.Reg.BX);
+    Dpmi_Push16(P, V16); Dpmi_Push16(P, DpmiCPU.Reg.BP);
+    Dpmi_Push16(P, DpmiCPU.Reg.SI); Dpmi_Push16(P, DpmiCPU.Reg.DI);
+   End Else Begin
+    V32 := DpmiCPU.Reg.ESP;
+    Dpmi_Push32(P, DpmiCPU.Reg.EAX); Dpmi_Push32(P, DpmiCPU.Reg.ECX);
+    Dpmi_Push32(P, DpmiCPU.Reg.EDX); Dpmi_Push32(P, DpmiCPU.Reg.EBX);
+    Dpmi_Push32(P, V32); Dpmi_Push32(P, DpmiCPU.Reg.EBP);
+    Dpmi_Push32(P, DpmiCPU.Reg.ESI); Dpmi_Push32(P, DpmiCPU.Reg.EDI);
+   End;
+  End;
+  $61: Begin { POPA/POPAD (80186+) }
+   If OpSize = 2 Then Begin
+    DpmiCPU.Reg.DI := Dpmi_Pop16(P); DpmiCPU.Reg.SI := Dpmi_Pop16(P);
+    DpmiCPU.Reg.BP := Dpmi_Pop16(P); V16 := Dpmi_Pop16(P); { SP ignore }
+    DpmiCPU.Reg.BX := Dpmi_Pop16(P); DpmiCPU.Reg.DX := Dpmi_Pop16(P);
+    DpmiCPU.Reg.CX := Dpmi_Pop16(P); DpmiCPU.Reg.AX := Dpmi_Pop16(P);
+   End Else Begin
+    DpmiCPU.Reg.EDI := Dpmi_Pop32(P); DpmiCPU.Reg.ESI := Dpmi_Pop32(P);
+    DpmiCPU.Reg.EBP := Dpmi_Pop32(P); V32 := Dpmi_Pop32(P); { ESP ignore }
+    DpmiCPU.Reg.EBX := Dpmi_Pop32(P); DpmiCPU.Reg.EDX := Dpmi_Pop32(P);
+    DpmiCPU.Reg.ECX := Dpmi_Pop32(P); DpmiCPU.Reg.EAX := Dpmi_Pop32(P);
+   End;
+  End;
+  $62: Begin { BOUND Gv,Ma (80186+) - #BR (exception 5) relaye vers un         }
+   { gestionnaire installe par l invite si present, meme philosophie que      }
+   { toutes les autres fautes de cette enquete (sinon arret honnete). }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If OpSize = 2 Then Begin
+    R16 := Dpmi_GetReg16(DpmiCPU.Reg, Reg);
+    A := Dpmi_ReadWord(P, Op.LinAddr);
+    Res := Dpmi_ReadWord(P, Op.LinAddr + 2);
+    If (SmallInt(R16) < SmallInt(Word(A))) Or (SmallInt(R16) > SmallInt(Word(Res))) Then Begin
+     If DpmiCPU.IntSel[5] <> 0 Then Dpmi_FireProtectedHandler(P, 5)
+     Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    End;
+   End Else Begin
+    A := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
+    Res := Dpmi_ReadDWord(P, Op.LinAddr);
+    Target := Dpmi_ReadDWord(P, Op.LinAddr + 4);
+    If (A < Res) Or (A > Target) Then Begin
+     If DpmiCPU.IntSel[5] <> 0 Then Dpmi_FireProtectedHandler(P, 5)
+     Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    End;
+   End;
+  End;
+  $63: Begin { ARPL Ew,Gw - RPL (bits 0-1), authentiquement pertinent ICI     }
+   { (vrai mode protege, contrairement au coeur reel ou ce n est qu une       }
+   { curiosite arithmetique - voir Emu_StepOne ~209449 pour le contexte). }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   A := Dpmi_GetOp(P, Op, 2);
+   Res := Dpmi_GetReg16(DpmiCPU.Reg, Reg);
+   If (A And 3) < (Res And 3) Then Begin
+    A := (A And $FFFC) Or (Res And 3);
+    Dpmi_PutOp(P, Op, 2, A);
+    Include(DpmiCPU.Flags.s, EFG_ZF);
+   End Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+  End;
+  $8F: Begin { POP Ev (groupe 1A : seul subop 0 defini, meme simplification   }
+   { que Emu_StepOne ~210748) }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If OpSize = 2 Then Dpmi_PutOp(P, Op, 2, Dpmi_Pop16(P))
+   Else Dpmi_PutOp(P, Op, 4, Dpmi_Pop32(P));
+  End;
+  $98: Begin { CBW/CWDE }
+   If OpSize = 4 Then Begin
+    If (DpmiCPU.Reg.AX And $8000) <> 0 Then
+     DpmiCPU.Reg.EAX := LongInt(Word(DpmiCPU.Reg.AX)) Or LongInt($FFFF0000)
+    Else DpmiCPU.Reg.EAX := LongInt(Word(DpmiCPU.Reg.AX));
+   End Else Begin
+    If (DpmiCPU.Reg.AL And $80) <> 0 Then DpmiCPU.Reg.AH := $FF Else DpmiCPU.Reg.AH := 0;
+   End;
+  End;
+  $99: Begin { CWD/CDQ }
+   If OpSize = 4 Then Begin
+    If (DpmiCPU.Reg.EAX And LongInt($80000000)) <> 0 Then DpmiCPU.Reg.EDX := LongInt($FFFFFFFF)
+    Else DpmiCPU.Reg.EDX := 0;
+   End Else Begin
+    If (DpmiCPU.Reg.AX And $8000) <> 0 Then DpmiCPU.Reg.DX := $FFFF Else DpmiCPU.Reg.DX := 0;
+   End;
+  End;
+  $9A: Begin { CALL ptr16:16/32 (lointain, direct - PAS indirect, voir FF /3  }
+   { pour la forme memoire) : le selecteur cible passe par la MEME validation }
+   { que tout autre chargement de CS (Dpmi_LoadSelOrFault). }
+   If OpSize = 2 Then Begin
+    Target := Dpmi_FetchWord(P, 0); NewSel := Dpmi_FetchWord(P, 2);
+    Inc(DpmiCPU.EIP, 4);
+   End Else Begin
+    Target := Dpmi_FetchDWord(P, 0); NewSel := Dpmi_FetchWord(P, 4);
+    Inc(DpmiCPU.EIP, 6);
+   End;
+   If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
+    If OpSize = 2 Then Begin
+     Dpmi_Push16(P, DpmiCPU.SegSel[1]); Dpmi_Push16(P, Word(DpmiCPU.EIP));
+    End Else Begin
+     Dpmi_Push32(P, DpmiCPU.SegSel[1]); Dpmi_Push32(P, DpmiCPU.EIP);
+    End;
+    DpmiCPU.SegSel[1] := NewSel; DpmiCPU.EIP := Target;
+   End;
+  End;
+  $9B: ; { WAIT/FWAIT - synchronisation bus/exceptions non modelisee, sans    }
+        { effet, meme convention que le coeur reel. }
+  $9C: Begin { PUSHF/PUSHFD }
+   If OpSize = 2 Then Dpmi_Push16(P, DpmiCPU.Flags.Base)
+   Else Dpmi_Push32(P, LongInt(LongWord(DpmiCPU.Flags.Base)));
+  End;
+  $9D: Begin { POPF/POPFD }
+   If OpSize = 2 Then DpmiCPU.Flags.Base := Dpmi_Pop16(P)
+   Else DpmiCPU.Flags.Base := Word(Dpmi_Pop32(P));
+  End;
+  $9E: DpmiCPU.Flags.Base := (DpmiCPU.Flags.Base And $FF00) Or DpmiCPU.Reg.AH; { SAHF }
+  $9F: DpmiCPU.Reg.AH := Byte(DpmiCPU.Flags.Base); { LAHF }
+  $C8: Begin { ENTER imm16,imm8 (80186+) - chainage complet des pointeurs de  }
+   { frame pour level>0, meme algorithme que Emu_StepOne (~209400). }
+   Imm := Dpmi_FetchWord(P, 0);
+   A := Dpmi_FetchByte(P, 2) And 31;
+   Inc(DpmiCPU.EIP, 3);
+   If OpSize = 2 Then Begin
+    Dpmi_Push16(P, DpmiCPU.Reg.BP);
+    V16 := DpmiCPU.Reg.SP;
+    If A > 0 Then Begin
+     For ScanI := 1 To A - 1 Do Begin
+      DpmiCPU.Reg.BP := DpmiCPU.Reg.BP - 2;
+      Dpmi_Push16(P, Dpmi_ReadWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.BP)));
+     End;
+     Dpmi_Push16(P, V16);
+    End;
+    DpmiCPU.Reg.BP := V16;
+    DpmiCPU.Reg.SP := DpmiCPU.Reg.SP - Imm;
+   End Else Begin
+    Dpmi_Push32(P, DpmiCPU.Reg.EBP);
+    V32 := DpmiCPU.Reg.ESP;
+    If A > 0 Then Begin
+     For ScanI := 1 To A - 1 Do Begin
+      DpmiCPU.Reg.EBP := DpmiCPU.Reg.EBP - 4;
+      Dpmi_Push32(P, Dpmi_ReadDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.EBP)));
+     End;
+     Dpmi_Push32(P, V32);
+    End;
+    DpmiCPU.Reg.EBP := V32;
+    DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP - Imm;
+   End;
+  End;
+  $CE: Begin { INTO : declenche l exception 4 (Overflow) SEULEMENT si OF=1 }
+   If EFG_OF In DpmiCPU.Flags.s Then Begin
+    If DpmiCPU.IntSel[4] <> 0 Then Dpmi_FireProtectedHandler(P, 4)
+    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+   End;
+  End;
+  $D6: Begin { SALC/SETALC (non documente, tous les 386+ reels) }
+   If EFG_CF In DpmiCPU.Flags.s Then DpmiCPU.Reg.AL := $FF Else DpmiCPU.Reg.AL := $00;
+  End;
+  $D7: Begin { XLAT - AL := [DefSeg:(e)BX+AL] }
+   If DpmiCPU.Is32Bit Then
+    DpmiCPU.Reg.AL := Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, DpmiCPU.Reg.EBX + DpmiCPU.Reg.AL))
+   Else
+    DpmiCPU.Reg.AL := Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, Word(DpmiCPU.Reg.BX + DpmiCPU.Reg.AL)));
+  End;
+  $D8..$DF: Begin { ESC (x87) - pas de vraie FPU modelisee en mode protege,   }
+   { meme strategie "NOP honnete" que Emu_StepOne (simuler un CPU SANS 8087 : }
+   { ne fait QUE consommer le ModRM/SIB/deplacement, zero ecriture memoire,   }
+   { zero modification de registre) - laisse un test de presence FPU          }
+   { classique (FNINIT+FNSTSW, FSTCW+motif) conclure correctement "pas de     }
+   { FPU". Une vraie emulation x87 EXISTE deja dans ce fichier (coeur PE32,    }
+   { PE_FpuReg et consorts, ~128054-128266) - chantier distinct si un futur   }
+   { client DPMI s avere reellement en avoir besoin. }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+  End;
+  $EA: Begin { JMP ptr16:16/32 (lointain, direct) }
+   If OpSize = 2 Then Begin
+    Target := Dpmi_FetchWord(P, 0); NewSel := Dpmi_FetchWord(P, 2);
+    Inc(DpmiCPU.EIP, 4);
+   End Else Begin
+    Target := Dpmi_FetchDWord(P, 0); NewSel := Dpmi_FetchWord(P, 4);
+    Inc(DpmiCPU.EIP, 6);
+   End;
+   If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
+    DpmiCPU.SegSel[1] := NewSel; DpmiCPU.EIP := Target;
+   End;
+  End;
+  $F1: Begin { INT1/ICEBP (non documente, tous les 386+ reels) }
+   If DpmiCPU.IntSel[1] <> 0 Then Dpmi_FireProtectedHandler(P, 1)
+   Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+  End;
+  { ======================================================================= }
  Else Begin
   { Opcode non reconnu par ce sous-ensemble (voir le commentaire de tete de}
   { section) : relance l exception #6 (Invalid Opcode) vers le gestionnaire}
