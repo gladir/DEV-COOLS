@@ -95,6 +95,14 @@ des ecarts qui ne se voyaient pas a la compilation:
     fichier invalide au lieu d'afficher "Ligne trop large")
   - Borne d'une boucle FOR tronquee a la taille de la variable de controle
     (For I:=1 To Len-1 avec I,Len: Byte et Len=0 bouclait sans fin). (ISBN)
+  - Eof sur un fichier type ou sans type: TP compare la position et la taille
+    en octets, un dernier record incomplet n'est donc pas la fin du fichier;
+    TPC comparait des nombres de records. (BIN2C, BIN2PAS, BASE64 ignoraient
+    un fichier plus court qu'un record de 128 octets)
+  - Ordre des variables globales en memoire: TP les place dans l'ordre de
+    declaration; TPC les placait en ordre inverse, si bien qu'un debordement
+    de tampon (BlockRead de 128 octets dans un tableau d'un octet, BIN2C)
+    n'ecrasait pas les memes variables que sous TP.
   - Constante reelle au-dela du Double: plantage du compilateur (erreur 205
     de Free Pascal) remplace par l'erreur 76. (123)
   - Taille des executables: les variables globales etaient stockees dans
@@ -151,6 +159,11 @@ attribuable au compilateur:
     (Runtime error 202, debordement de pile) alors que les versions TPC
     fonctionnent; BIN16/ASC2CSP.EXE a ete produit par une version plus
     ancienne du source (texte d'aide different).
+  - Programme defectueux: DOS2UNIX ecrit avec BlockWrite(F,S[1],Length(S))
+    sur un fichier ouvert par Rewrite(F) sans taille de record (128 octets):
+    les deux versions ecrivent 6016 octets dont la plus grande partie est
+    le contenu de la memoire qui suit la chaine, different d'un compilateur a
+    l'autre. BMP2DCM inscrit l'heure courante dans le fichier DICOM produit.
   - Environnement: DIVT affiche la table des vecteurs d'interruption; le
     runtime Borland installe ses propres gestionnaires (INT 00h, 23h, 24h,
     34h-3Fh, 75h), pas celui de TPC, et les adresses des gestionnaires
