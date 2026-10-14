@@ -2471,7 +2471,19 @@ Const
  EMU_DPMI_DOSMEM_START  = $1000; { offset de debut (paragraphe $100) }
  EMU_DPMI_DOSMEM_CAP    = $8000; { plafond ~32 Ko, largement suffisant pour }
                                   { les tampons de transfert mode reel usuels}
- EMU_DPMI_MAX_SEL       = 255;   { nombre d entrees LDT logicielles }
+ { BOGUE REEL (2026-10-14, enquete "TPX.EXE plante apres bascule DPMI") :  }
+ { 255 entrees LDT suffisaient pour les tout premiers clients DPMI testes   }
+ { mais pas pour un IDE de la taille de TPX.EXE (Borland Pascal 7, mode     }
+ { protege) - confirme en direct : une fois le vrai bogue de ce chantier    }
+ { corrige ailleurs (DpmiCPU.Active jamais remis a False au retour d un     }
+ { EXEC, voir Emu_DosTerminate), TPX.EXE affiche son PROPRE message         }
+ { d erreur honnete et explicite "Loader error (0002): out of selectors" -  }
+ { pas un plantage de notre emulateur, mais un manque reel de capacite.     }
+ { Releve a la VRAIE limite architecturale x86 : un selecteur 16 bits        }
+ { encode l index LDT sur les bits 3-15 (13 bits, voir Dpmi_SelToIdx :       }
+ { "Idx := Sel Shr 3"), donc 0..8191 est le maximum materiel possible, pas   }
+ { une valeur arbitraire plus genereuse. }
+ EMU_DPMI_MAX_SEL       = 8191;  { nombre d entrees LDT logicielles }
  EMU_DPMI_MAX_HANDLE    = 32;    { poignees de memoire etendue DPMI }
  EMU_DPMI_MAX_CALLBACK  = 16;    { rappels mode reel (AX=0303h) }
  EMU_DPMI_EXT_BASE      = $100000; { 1 Mo - debut de la "memoire etendue"   }
@@ -194190,6 +194202,29 @@ Begin
   EmuExtErrCls := EmuExecStack[EmuExecDepth].ExtErrCls;
   EmuExtErrAct := EmuExecStack[EmuExecDepth].ExtErrAct;
   EmuExtErrLoc := EmuExecStack[EmuExecDepth].ExtErrLoc;
+  { BOGUE REEL (2026-10-14, enquete "TPX.EXE plante apres bascule DPMI") :  }
+  { un client DPMI (ex. TPX.EXE, IDE Borland Pascal 7 protege) lance via    }
+  { EXEC (ici par le propre DEBUG.COM du Terminal) et qui bascule en mode   }
+  { protege (Dpmi_Switch, DpmiCPU.Active:=True) PUIS termine par un simple  }
+  { "retour au parent" (CE chemin EmuExecDepth>0, PAS le chemin sfEndProgram}
+  { juste en-dessous) laissait DpmiCPU.Active a True pour de bon - "tant    }
+  { que le programme est en mode protege" (voir le commentaire de tete de  }
+  { la boucle principale) ne redevenait donc JAMAIS vrai pour ce cas precis.}
+  { Consequence concrete, confirmee en tracant chaque interruption reelle   }
+  { forwardee depuis le coeur protege (Dpmi_ForwardIntToReal) : le TOUT     }
+  { PREMIER et SEUL appel reel observe etait "INT 21h AH=4Ch AL=02" (sortie }
+  { normale de TPX.EXE) - apres quoi l execution continuait MALGRE TOUT     }
+  { dans Dpmi_Step, qui se mettait alors a interpreter le VRAI code reel-   }
+  { mode DESORMAIS REPRIS (celui du parent EXEC, ici DEBUG.COM) comme s il   }
+  { s agissait encore de code protege 32 bits - door toutes les anomalies   }
+  { observees en aval (opcodes "manquants" qui n etaient en realite que des }
+  { octets de code reel mal decodes, jusqu a la division par zero finale   }
+  { sur un operande garbage). Tous les correctifs d opcodes DPMI ajoutes    }
+  { au passage pendant cette enquete restent neanmoins reels et utiles      }
+  { (couvraient un vrai manque pour TOUT futur client DPMI authentique),    }
+  { mais ne sont pas LA cause du symptome original - cette seule ligne      }
+  { l est. }
+  DpmiCPU.Active := False;
   Exclude(P.CPU.Flags.s, EFG_CF);  { EXEC "reussit" du point de vue du parent }
   P.StatusMsg := '';
  End Else Begin
@@ -205423,6 +205458,97 @@ Begin
  Dpmi_Alu := Res;
 End;
 
+{ Groupe 2 (decalages/rotations) - BOGUE REEL (2026-10-14), enquete         }
+{ "TPX.EXE plante apres bascule DPMI" : $C0/$C1/$D0/$D1/$D2/$D3 (SHL/SHR/   }
+{ SAR/ROL/ROR/RCL/RCR) etaient completement absents du coeur protege, voir  }
+{ les corrections precedentes ci-dessus pour le contexte complet. Meme      }
+{ algorithme standard 80386+ (compte masque a 5 bits par l appelant) qu     }
+{ Emu_StepOne (coeur 8086 reel, ~210161) mais simplifie : OF n est calcule  }
+{ que pour un compte de 1 (comportement non-defini par Intel au-dela, meme  }
+{ limite deja assumee ailleurs dans ce fichier) ; SF/ZF/PF uniquement pour  }
+{ SHL/SHR/SAR (PAS les rotations pures, conforme au vrai x86). }
+Function Dpmi_Shift(Var P: TEmulatorPanel; SubOp: Byte; A: LongInt;
+ Cnt: Byte; Size: Byte): LongInt;
+Var
+ UA, SignBit, MaskU: LongWord;
+ I: Integer;
+ Bit, NewMsb: Boolean;
+ OrigCnt: Byte;
+Begin
+ OrigCnt := Cnt;
+ Case Size Of
+  1: Begin UA := Byte(A); SignBit := $80; MaskU := $FF; End;
+  2: Begin UA := Word(A); SignBit := $8000; MaskU := $FFFF; End;
+ Else Begin UA := LongWord(A); SignBit := $80000000; MaskU := $FFFFFFFF; End;
+ End;
+ For I := 1 To Cnt Do Begin
+  Case SubOp Of
+   0: Begin { ROL }
+    Bit := (UA And SignBit) <> 0;
+    UA := ((UA Shl 1) Or Ord(Bit)) And MaskU;
+    If Bit Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   1: Begin { ROR }
+    Bit := (UA And 1) <> 0;
+    UA := UA Shr 1;
+    If Bit Then UA := UA Or SignBit;
+    UA := UA And MaskU;
+    If Bit Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   2: Begin { RCL : rotation a travers CF }
+    Bit := (UA And SignBit) <> 0;
+    UA := ((UA Shl 1) Or Ord(EFG_CF In DpmiCPU.Flags.s)) And MaskU;
+    If Bit Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   3: Begin { RCR }
+    Bit := (UA And 1) <> 0;
+    UA := UA Shr 1;
+    If EFG_CF In DpmiCPU.Flags.s Then UA := UA Or SignBit;
+    UA := UA And MaskU;
+    If Bit Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   4, 6: Begin { SHL/SAL (6 = alias non documente, voir le coeur 8086 reel) }
+    Bit := (UA And SignBit) <> 0;
+    UA := (UA Shl 1) And MaskU;
+    If Bit Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   5: Begin { SHR }
+    Bit := (UA And 1) <> 0;
+    UA := UA Shr 1;
+    If Bit Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+   7: Begin { SAR }
+    Bit := (UA And 1) <> 0;
+    If (UA And SignBit) <> 0 Then UA := (UA Shr 1) Or SignBit
+    Else UA := UA Shr 1;
+    If Bit Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+   End;
+  End;
+ End;
+ If OrigCnt > 0 Then Begin
+  If OrigCnt = 1 Then Begin
+   NewMsb := (UA And SignBit) <> 0;
+   Case SubOp Of
+    0, 2, 4, 6: If NewMsb <> (EFG_CF In DpmiCPU.Flags.s) Then
+     Include(DpmiCPU.Flags.s, EFG_OF) Else Exclude(DpmiCPU.Flags.s, EFG_OF);
+    5: If (Byte(A) And SignBit) <> 0 Then { SHR : OF = bit de signe d origine }
+        Include(DpmiCPU.Flags.s, EFG_OF) Else Exclude(DpmiCPU.Flags.s, EFG_OF);
+    7: Exclude(DpmiCPU.Flags.s, EFG_OF); { SAR : jamais de debordement }
+   Else Exclude(DpmiCPU.Flags.s, EFG_OF); { ROR/RCR : approxime, cas rare }
+   End;
+  End;
+  If SubOp In [4, 5, 6, 7] Then Begin { SF/ZF/PF : SHL/SHR/SAR seulement }
+   If (UA And SignBit) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+   If (UA And MaskU) = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+   If P.CPU.ParityTable[Byte(UA And $FF)] Then Include(DpmiCPU.Flags.s, EFG_PF)
+   Else Exclude(DpmiCPU.Flags.s, EFG_PF);
+  End;
+ End;
+ Dpmi_Shift := LongInt(UA);
+End;
+
 Function Dpmi_TestCond(CC: Byte): Boolean;
 Var Res: Boolean;
 Begin
@@ -205600,6 +205726,7 @@ Var
  A, Imm, Res, Target, OldCF: LongInt;
  Op2: Byte;
  V8: Byte;    { octet de droits d acces GDT, voir $0F 00/01 }
+ A64: Int64;  { dividende/produit 64 bits, voir groupe F6/F7 MUL/IMUL/DIV/IDIV }
 Begin
  If Not DpmiCPU.Active Then Exit;
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
@@ -205746,6 +205873,25 @@ Begin
    If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, B And 7, Dpmi_Pop16(P))
    Else Dpmi_SetReg32(DpmiCPU.Reg, B And 7, Dpmi_Pop32(P));
   End;
+  $06, $0E, $16, $1E: Begin { PUSH ES/CS/SS/DS - BOGUE REEL (2026-10-14),    }
+             { voir les corrections ci-dessus : toute la famille             }
+             { PUSH/POP segment manquait completement ici. }
+   Case B Of
+    $06: Imm := DpmiCPU.SegSel[0];
+    $0E: Imm := DpmiCPU.SegSel[1];
+    $16: Imm := DpmiCPU.SegSel[2];
+   Else  Imm := DpmiCPU.SegSel[3]; { $1E }
+   End;
+   If OpSize = 2 Then Dpmi_Push16(P, Word(Imm)) Else Dpmi_Push32(P, Imm);
+  End;
+  $07, $17, $1F: Begin { POP ES/SS/DS (pas de POP CS en mode 32 bits) }
+   If OpSize = 2 Then Imm := Dpmi_Pop16(P) Else Imm := Word(Dpmi_Pop32(P));
+   Case B Of
+    $07: DpmiCPU.SegSel[0] := Word(Imm);
+    $17: DpmiCPU.SegSel[2] := Word(Imm);
+   Else  DpmiCPU.SegSel[3] := Word(Imm); { $1F }
+   End;
+  End;
   $68: Begin { PUSH Iz }
    If OpSize = 2 Then Begin
     Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2); Dpmi_Push16(P, Word(Imm));
@@ -205763,12 +205909,17 @@ Begin
    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
    If Dpmi_TestCond(B And $F) Then DpmiCPU.EIP := DpmiCPU.EIP + Imm;
   End;
-  $80, $81, $83: Begin { groupe ALU immediat : Eb,Ib / Ev,Iz / Ev,Ib(signe) }
+  $80, $81, $82, $83: Begin { groupe ALU immediat : Eb,Ib / Ev,Iz / Ev,Ib(signe) }
+   { BOGUE REEL (2026-10-14, meme enquete "TPX.EXE plante apres bascule      }
+   { DPMI" que $A0-$A3 ci-dessus) : $82 ("Eb,Ib", alias non documente mais    }
+   { strictement identique a $80 - duplication historique 8086 que les       }
+   { compilateurs Borland de cette epoque emettent encore) manquait et        }
+   { tombait dans le "Else" generique (opcode non reconnu). }
    ModRM := Dpmi_FetchByte(P, 0);
    Reg := (ModRM Shr 3) And 7;
    Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
    Inc(DpmiCPU.EIP, Op.Len);
-   If B = $80 Then Begin
+   If (B = $80) Or (B = $82) Then Begin
     A := Dpmi_GetOp(P, Op, 1);
     Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
     Res := Dpmi_Alu(P, Reg, A, Imm, 1);
@@ -205786,6 +205937,28 @@ Begin
     If Reg <> 7 Then Dpmi_PutOp(P, Op, OpSize, Res);
    End;
   End;
+  $C0, $C1, $D0, $D1, $D2, $D3: Begin { groupe 2 (decalages/rotations) -    }
+   { BOGUE REEL (2026-10-14), voir Dpmi_Shift ci-dessus pour le contexte     }
+   { complet : famille entiere absente, meme symptome que les corrections   }
+   { precedentes de cette enquete. }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Sub := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If (B = $C0) Or (B = $C1) Then Begin
+    V8 := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+    V8 := V8 And $1F;
+   End Else If (B = $D2) Or (B = $D3) Then
+    V8 := Byte(DpmiCPU.Reg.ECX) And $1F
+   Else
+    V8 := 1;
+   If (B = $C0) Or (B = $D0) Or (B = $D2) Then
+    Dpmi_PutOp(P, Op, 1, Dpmi_Shift(P, Sub, Dpmi_GetOp(P, Op, 1), V8, 1))
+   Else If OpSize = 2 Then
+    Dpmi_PutOp(P, Op, 2, Dpmi_Shift(P, Sub, Dpmi_GetOp(P, Op, 2), V8, 2))
+   Else
+    Dpmi_PutOp(P, Op, 4, Dpmi_Shift(P, Sub, Dpmi_GetOp(P, Op, 4), V8, 4));
+  End;
   $84, $85: Begin { TEST Eb,Gb / Ev,Gv }
    ModRM := Dpmi_FetchByte(P, 0);
    Reg := (ModRM Shr 3) And 7;
@@ -205797,6 +205970,30 @@ Begin
     Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 2), Dpmi_GetReg16(DpmiCPU.Reg, Reg), 2)
    Else
     Dpmi_Alu(P, 4, Dpmi_GetOp(P, Op, 4), Dpmi_GetReg32(DpmiCPU.Reg, Reg), 4);
+  End;
+  $86: Begin { XCHG Eb,Gb - BOGUE REEL (2026-10-14), voir $A0-$A3/$82 plus   }
+             { haut : famille XCHG completement absente, meme symptome.     }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   A := Dpmi_GetOp(P, Op, 1);
+   Dpmi_PutOp(P, Op, 1, Dpmi_GetReg8(DpmiCPU.Reg, Reg));
+   Dpmi_SetReg8(DpmiCPU.Reg, Reg, Byte(A));
+  End;
+  $87: Begin { XCHG Ev,Gv }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   A := Dpmi_GetOp(P, Op, OpSize);
+   If OpSize = 2 Then Begin
+    Dpmi_PutOp(P, Op, 2, Dpmi_GetReg16(DpmiCPU.Reg, Reg));
+    Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(A));
+   End Else Begin
+    Dpmi_PutOp(P, Op, 4, Dpmi_GetReg32(DpmiCPU.Reg, Reg));
+    Dpmi_SetReg32(DpmiCPU.Reg, Reg, A);
+   End;
   End;
   $88, $89, $8A, $8B: Begin { MOV }
    ModRM := Dpmi_FetchByte(P, 0);
@@ -205812,6 +206009,23 @@ Begin
          Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Dpmi_GetOp(P, Op, 4));
    End;
   End;
+  $8C: Begin { MOV Ew,Sw - BOGUE REEL (2026-10-14), voir les corrections     }
+             { ci-dessus : famille MOV segment<->registre completement       }
+             { absente. Reg encode 0=ES/1=CS/2=SS/3=DS/4=FS/5=GS, exactement  }
+             { l indexation deja utilisee par DpmiCPU.SegSel. }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If Reg <= 5 Then Dpmi_PutOp(P, Op, 2, DpmiCPU.SegSel[Reg]);
+  End;
+  $8E: Begin { MOV Sw,Ew }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   If Reg <= 5 Then DpmiCPU.SegSel[Reg] := Word(Dpmi_GetOp(P, Op, 2));
+  End;
   $8D: Begin { LEA Gv,M }
    ModRM := Dpmi_FetchByte(P, 0);
    Reg := (ModRM Shr 3) And 7;
@@ -205826,6 +206040,54 @@ Begin
    Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
   End;
   $90: ; { NOP }
+  $F4: ; { HLT - aucun arret CPU reel modelise ici, simple no-op honnete    }
+       { (meme limite que le coeur 8086 reel, voir Emu_StepOne). }
+  $F5: Begin { CMC - BOGUE REEL (2026-10-14), voir $A0-$A3/$82/$86 plus     }
+             { haut : toute la famille de controle de drapeaux ($F4-$FD)    }
+             { manquait completement ici. }
+   If EFG_CF In DpmiCPU.Flags.s Then Exclude(DpmiCPU.Flags.s, EFG_CF)
+   Else Include(DpmiCPU.Flags.s, EFG_CF);
+  End;
+  $F8: Exclude(DpmiCPU.Flags.s, EFG_CF); { CLC }
+  $F9: Include(DpmiCPU.Flags.s, EFG_CF); { STC }
+  $FA: Exclude(DpmiCPU.Flags.s, EFG_IF); { CLI }
+  $FB: Include(DpmiCPU.Flags.s, EFG_IF); { STI }
+  $FC: Exclude(DpmiCPU.Flags.s, EFG_DF); { CLD }
+  $FD: Include(DpmiCPU.Flags.s, EFG_DF); { STD }
+  $A0: Begin { MOV AL,moffs8 - BOGUE REEL (2026-10-14, enquete "TPX.EXE      }
+             { plante apres bascule DPMI") : toute la famille $A0-$A3        }
+             { (MOV AL/eAX <-> [adresse directe 32 bits], sans ModRM)         }
+             { manquait completement ici, tombant dans le "Else" generique   }
+             { (opcode non reconnu, DpmiCPU.Active:=False) - confirme en      }
+             { direct : TPX.EXE (Borland Pascal 7, mode protege DPMI)         }
+             { utilise $A3 des sa toute premiere sequence d initialisation,   }
+             { provoquant un faux retour force au mode reel vers CS:IP=0000: }
+             { 0000 (voir Dpmi_Switch - rien ne recalculait honnetement un    }
+             { CS:IP reel coherent pour ce cas, d ou le plantage visible).    }
+             { Meme convention d adressage direct 32 bits que Dpmi_DecodeModRM}
+             { (Mode=0,RM=5) juste au-dessus - pas de prefixe de taille       }
+             { d adresse distinct trace ici (voir $67 plus haut). }
+   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   Dpmi_SetReg8(DpmiCPU.Reg, 0, Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, Imm)));
+  End;
+  $A1: Begin { MOV eAX,moffs16/32 }
+   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   If OpSize = 2 Then
+    Dpmi_SetReg16(DpmiCPU.Reg, 0, Dpmi_ReadWord(P, Dpmi_LinAddr(DefSeg, Imm)))
+   Else
+    Dpmi_SetReg32(DpmiCPU.Reg, 0, Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, Imm)));
+  End;
+  $A2: Begin { MOV moffs8,AL }
+   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   Dpmi_WriteByte(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg8(DpmiCPU.Reg, 0));
+  End;
+  $A3: Begin { MOV moffs16/32,eAX }
+   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   If OpSize = 2 Then
+    Dpmi_WriteWord(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg16(DpmiCPU.Reg, 0))
+   Else
+    Dpmi_WriteDWord(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg32(DpmiCPU.Reg, 0));
+  End;
   $A8: Begin { TEST AL,Ib }
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
    Dpmi_Alu(P, 4, DpmiCPU.Reg.AL, Imm, 1);
@@ -205941,7 +206203,13 @@ Begin
    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
    DpmiCPU.EIP := DpmiCPU.EIP + Imm;
   End;
-  $F6, $F7: Begin { groupe TEST/NOT/NEG (partiel, voir tete de section) }
+  $F6, $F7: Begin { groupe TEST/NOT/NEG/MUL/IMUL/DIV/IDIV }
+   { BOGUE REEL (2026-10-14) : Sub 4-7 (MUL/IMUL/DIV/IDIV) manquaient,       }
+   { meme symptome/enquete que toutes les corrections precedentes           }
+   { ci-dessus - voir Dpmi_Shift pour le contexte complet. Division par     }
+   { zero : pas de vrai vecteur d exception #DE simule ici (meme limite     }
+   { honnete que le reste de ce coeur protege partiel), on s arrete          }
+   { proprement (sfInvalidCode) plutot que de produire un resultat fabrique.}
    ModRM := Dpmi_FetchByte(P, 0);
    Sub := (ModRM Shr 3) And 7;
    If B = $F6 Then Begin
@@ -205954,7 +206222,42 @@ Begin
      End;
      2: Dpmi_PutOp(P, Op, 1, Not Dpmi_GetOp(P, Op, 1));
      3: Dpmi_PutOp(P, Op, 1, Dpmi_Alu(P, 5, 0, Dpmi_GetOp(P, Op, 1), 1));
-    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+     4: Begin { MUL r/m8 : AX := AL * r/m8 (non signe) }
+      A := LongInt(Byte(DpmiCPU.Reg.AL)) * Dpmi_GetOp(P, Op, 1);
+      Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(A));
+      If (A And $FF00) <> 0 Then Begin
+       Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+      End Else Begin
+       Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+      End;
+     End;
+     5: Begin { IMUL r/m8 : AX := AL * r/m8 (signe) }
+      A := ShortInt(DpmiCPU.Reg.AL) * LongInt(ShortInt(Dpmi_GetOp(P, Op, 1)));
+      Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(A));
+      If (A < -128) Or (A > 127) Then Begin
+       Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+      End Else Begin
+       Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+      End;
+     End;
+     6: Begin { DIV r/m8 : AL := AX div r/m8, AH := AX mod r/m8 (non signe) }
+      V8 := Byte(Dpmi_GetOp(P, Op, 1));
+      If V8 = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+      Else Begin
+       A := Word(DpmiCPU.Reg.AX) Div V8;
+       Dpmi_SetReg8(DpmiCPU.Reg, 4, Byte(Word(DpmiCPU.Reg.AX) Mod V8)); { AH }
+       Dpmi_SetReg8(DpmiCPU.Reg, 0, Byte(A));                          { AL }
+      End;
+     End;
+     7: Begin { IDIV r/m8 (signe) }
+      V8 := Byte(Dpmi_GetOp(P, Op, 1));
+      If V8 = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+      Else Begin
+       A := SmallInt(DpmiCPU.Reg.AX) Div ShortInt(V8);
+       Dpmi_SetReg8(DpmiCPU.Reg, 4, Byte(SmallInt(DpmiCPU.Reg.AX) Mod ShortInt(V8)));
+       Dpmi_SetReg8(DpmiCPU.Reg, 0, Byte(A));
+      End;
+     End;
     End;
    End Else Begin
     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
@@ -205971,7 +206274,86 @@ Begin
      End;
      2: Dpmi_PutOp(P, Op, OpSize, Not Dpmi_GetOp(P, Op, OpSize));
      3: Dpmi_PutOp(P, Op, OpSize, Dpmi_Alu(P, 5, 0, Dpmi_GetOp(P, Op, OpSize), OpSize));
-    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+     4: Begin { MUL r/m16/32 : DX:AX ou EDX:EAX := eAX * r/m (non signe) }
+      If OpSize = 2 Then Begin
+       Target := LongInt(Word(DpmiCPU.Reg.AX)) * LongInt(Word(Dpmi_GetOp(P, Op, 2)));
+       Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(Target));
+       Dpmi_SetReg16(DpmiCPU.Reg, 2, Word(Target Shr 16));
+       If (Target And $FFFF0000) <> 0 Then Begin
+        Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+       End Else Begin
+        Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+       End;
+      End Else Begin
+       A64 := Int64(LongWord(DpmiCPU.Reg.EAX)) * Int64(LongWord(Dpmi_GetOp(P, Op, 4)));
+       Dpmi_SetReg32(DpmiCPU.Reg, 0, LongInt(LongWord(A64 And $FFFFFFFF)));
+       Dpmi_SetReg32(DpmiCPU.Reg, 2, LongInt(LongWord(A64 Shr 32)));
+       If (A64 Shr 32) <> 0 Then Begin
+        Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+       End Else Begin
+        Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+       End;
+      End;
+     End;
+     5: Begin { IMUL r/m16/32 (signe) }
+      If OpSize = 2 Then Begin
+       Target := LongInt(SmallInt(DpmiCPU.Reg.AX)) * LongInt(SmallInt(Dpmi_GetOp(P, Op, 2)));
+       Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(Target));
+       Dpmi_SetReg16(DpmiCPU.Reg, 2, Word(Target Shr 16));
+       If (Target < -32768) Or (Target > 32767) Then Begin
+        Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+       End Else Begin
+        Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+       End;
+      End Else Begin
+       A64 := Int64(LongInt(DpmiCPU.Reg.EAX)) * Int64(LongInt(Dpmi_GetOp(P, Op, 4)));
+       Dpmi_SetReg32(DpmiCPU.Reg, 0, LongInt(LongWord(A64 And $FFFFFFFF)));
+       Dpmi_SetReg32(DpmiCPU.Reg, 2, LongInt(LongWord(A64 Shr 32)));
+       If (A64 < -2147483648) Or (A64 > 2147483647) Then Begin
+        Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+       End Else Begin
+        Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+       End;
+      End;
+     End;
+     6: Begin { DIV r/m16/32 (non signe) }
+      If OpSize = 2 Then Begin
+       Target := Word(Dpmi_GetOp(P, Op, 2));
+       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       Else Begin
+        A64 := (Int64(Word(DpmiCPU.Reg.DX)) Shl 16) Or Int64(Word(DpmiCPU.Reg.AX));
+        Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(A64 Div Target));
+        Dpmi_SetReg16(DpmiCPU.Reg, 2, Word(A64 Mod Target));
+       End;
+      End Else Begin
+       Target := Dpmi_GetOp(P, Op, 4);
+       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       Else Begin
+        A64 := (Int64(LongWord(DpmiCPU.Reg.EDX)) Shl 32) Or Int64(LongWord(DpmiCPU.Reg.EAX));
+        Dpmi_SetReg32(DpmiCPU.Reg, 0, LongInt(LongWord(A64 Div LongWord(Target))));
+        Dpmi_SetReg32(DpmiCPU.Reg, 2, LongInt(LongWord(A64 Mod LongWord(Target))));
+       End;
+      End;
+     End;
+     7: Begin { IDIV r/m16/32 (signe) }
+      If OpSize = 2 Then Begin
+       Target := SmallInt(Dpmi_GetOp(P, Op, 2));
+       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       Else Begin
+        A64 := Int64((LongInt(Word(DpmiCPU.Reg.DX)) Shl 16) Or LongInt(Word(DpmiCPU.Reg.AX)));
+        Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(A64 Div Target));
+        Dpmi_SetReg16(DpmiCPU.Reg, 2, Word(A64 Mod Target));
+       End;
+      End Else Begin
+       Target := Dpmi_GetOp(P, Op, 4);
+       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       Else Begin
+        A64 := (Int64(LongInt(DpmiCPU.Reg.EDX)) Shl 32) Or Int64(LongWord(DpmiCPU.Reg.EAX));
+        Dpmi_SetReg32(DpmiCPU.Reg, 0, LongInt(A64 Div Target));
+        Dpmi_SetReg32(DpmiCPU.Reg, 2, LongInt(A64 Mod Target));
+       End;
+      End;
+     End;
     End;
    End;
   End;
@@ -206272,10 +206654,35 @@ Begin
    Exit;
   End;
  End;
- IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
- IvtSeg := Emu_ReadWord(P.CPU, 0, Word($2F) * 4 + 2);
- If IvtSeg <> 0 Then Emu_FireHwInt(P, $2F);
- If IvtOfs = IvtOfs Then ; { evite un avertissement }
+ { BOGUE REEL (2026-10-14, enquete "TPX.EXE ne demarre pas", demande        }
+ { explicite de l utilisateur de comparer XMS avec DOSBox) : trouve en       }
+ { tracant les appels INT 2Fh (pas directement un bogue XMS, mais c est ce   }
+ { chemin precis qui bloquait TPX.EXE au demarrage). Quand un invite hooke   }
+ { reellement INT 2Fh puis chaine vers "l ancien" gestionnaire (convention   }
+ { universelle PUSHF;CALL FAR [ancien_vecteur]), l execution atterrit DANS   }
+ { notre propre trampoline par defaut (CS=EMU_DEFAULT_IVT_SEG, voir          }
+ { Emu_WriteDefaultVector/Emu_IntIsHooked). Pour une sous-fonction AX non    }
+ { reconnue ci-dessus (ex. simple sonde de presence sans rapport), le code   }
+ { relisait l IVT[2Fh] et appelait Emu_FireHwInt INCONDITIONNELLEMENT des    }
+ { que le segment n etait pas nul - OR l IVT[2Fh] par defaut pointe          }
+ { JUSTEMENT vers CE MEME trampoline (rien ne l a reellement hooke plus      }
+ { bas) : Emu_FireHwInt empilait donc FLAGS/CS/IP et sautait... au DEBUT du  }
+ { trampoline courant, qui re-executait "INT 2Fh", retombait ICI, et         }
+ { recommencait - boucle infinie qui empile 6 octets de pile a CHAQUE tour   }
+ { sans jamais les depiler (confirme en direct : ESP progressait de         }
+ { plusieurs milliers d octets entre deux captures d ecran rapprochees, et   }
+ { le journal INT2Fh montrait des centaines d appels consecutifs identiques, }
+ { un par pas CPU). Corrige en appliquant EXACTEMENT le meme garde-fou que   }
+ { Emu_IntIsHooked utilise deja pour ce cas precis : ne JAMAIS re-chainer    }
+ { quand on execute deja DANS le trampoline par defaut - il n y a alors      }
+ { plus rien de "reel" vers qui chainer, le IRET du trampoline suffit a      }
+ { rendre la main a l appelant original. }
+ If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
+  IvtOfs := Emu_ReadWord(P.CPU, 0, Word($2F) * 4);
+  IvtSeg := Emu_ReadWord(P.CPU, 0, Word($2F) * 4 + 2);
+  If IvtSeg <> 0 Then Emu_FireHwInt(P, $2F);
+  If IvtOfs = IvtOfs Then ; { evite un avertissement }
+ End;
 End;
 
 { Vrai si le programme invite a REELLEMENT remplace le vecteur Num (via     }
@@ -206686,7 +207093,8 @@ Begin
    If EmuMouseActive Then Begin
     If Emu_IntIsHooked(P, $33) Then Emu_FireHwInt(P, $33) Else Emu_DoInt33(P);
    End
-   Else Begin
+   Else If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
+    { BOGUE REEL (2026-10-14) : garde anti-reboucle, voir Emu_DoInt2F. }
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($33) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($33) * 4 + 2);
     If IvtSeg <> 0 Then Emu_FireHwInt(P, $33);
@@ -206703,7 +207111,8 @@ Begin
    If EmuNetBios.Active Then Begin
     If Emu_IntIsHooked(P, $5C) Then Emu_FireHwInt(P, $5C) Else Emu_DoInt5C(P);
    End
-   Else Begin
+   Else If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
+    { BOGUE REEL (2026-10-14) : garde anti-reboucle, voir Emu_DoInt2F. }
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($5C) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($5C) * 4 + 2);
     If IvtSeg <> 0 Then Emu_FireHwInt(P, $5C);
@@ -206718,7 +207127,8 @@ Begin
    If EmuPkt.Active Then Begin
     If Emu_IntIsHooked(P, $60) Then Emu_FireHwInt(P, $60) Else Emu_DoInt60(P);
    End
-   Else Begin
+   Else If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
+    { BOGUE REEL (2026-10-14) : garde anti-reboucle, voir Emu_DoInt2F. }
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($60) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($60) * 4 + 2);
     If IvtSeg <> 0 Then Emu_FireHwInt(P, $60);
@@ -206733,7 +207143,8 @@ Begin
    If EmuEms.Active Then Begin
     If Emu_IntIsHooked(P, $67) Then Emu_FireHwInt(P, $67) Else Emu_DoInt67(P);
    End
-   Else Begin
+   Else If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
+    { BOGUE REEL (2026-10-14) : garde anti-reboucle, voir Emu_DoInt2F. }
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($67) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($67) * 4 + 2);
     If IvtSeg <> 0 Then Emu_FireHwInt(P, $67);
@@ -206749,7 +207160,8 @@ Begin
    If EmuIpx.Active Then Begin
     If Emu_IntIsHooked(P, $7A) Then Emu_FireHwInt(P, $7A) Else Emu_DoInt7A(P);
    End
-   Else Begin
+   Else If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
+    { BOGUE REEL (2026-10-14) : garde anti-reboucle, voir Emu_DoInt2F. }
     IvtOfs := Emu_ReadWord(P.CPU, 0, Word($7A) * 4);
     IvtSeg := Emu_ReadWord(P.CPU, 0, Word($7A) * 4 + 2);
     If IvtSeg <> 0 Then Emu_FireHwInt(P, $7A);
@@ -206793,12 +207205,19 @@ Begin
        { contrairement a $60/$7A - pas de repli generique necessaire). }
   Else Begin
    { Pour les autres INT, si l application a installe un ISR
-     via INT 21h AH=25h, on saute dedans. Sinon on ignore. }
-   IvtOfs := Emu_ReadWord(P.CPU, 0, Word(Num) * 4);
-   IvtSeg := Emu_ReadWord(P.CPU, 0, Word(Num) * 4 + 2);
-   If IvtSeg <> 0 Then Emu_FireHwInt(P, Num);
-   { Compatibilite : si IvtSeg=0, on ignore silencieusement. }
-   If IvtOfs = IvtOfs Then ;  { dummy pour eviter warning hint }
+     via INT 21h AH=25h, on saute dedans. Sinon on ignore.
+     BOGUE REEL (2026-10-14, voir Emu_DoInt2F pour le contexte complet) :
+     garde CS<>EMU_DEFAULT_IVT_SEG indispensable ICI AUSSI - sans elle,
+     tout numero d INT non liste ci-dessus, chaine depuis notre propre
+     trampoline par defaut (IVT pointant encore dessus, rien ne l a
+     reellement hooke), rebouclait indefiniment sur lui-meme. }
+   If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
+    IvtOfs := Emu_ReadWord(P.CPU, 0, Word(Num) * 4);
+    IvtSeg := Emu_ReadWord(P.CPU, 0, Word(Num) * 4 + 2);
+    If IvtSeg <> 0 Then Emu_FireHwInt(P, Num);
+    { Compatibilite : si IvtSeg=0, on ignore silencieusement. }
+    If IvtOfs = IvtOfs Then ;  { dummy pour eviter warning hint }
+   End;
   End;
  End;
 End;
