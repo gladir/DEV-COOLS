@@ -403,7 +403,7 @@ Var
  LookupRequested: Boolean;
  LookupAddress: Longint;
  UnitFeatures: Array[0..MaxUnits] Of Byte;
- FPUStartup: Word;
+ FPUStartup, BssPatch: Word;
  RealReady,EmulatorReady: Boolean;
  RealCodeBase,RealCodeEnd,RealDataBase,RealDataEnd: Word;
  EmulatorCodeBase,EmulatorCodeEnd,EmulatorDataBase,EmulatorDataEnd: Word;
@@ -4467,7 +4467,7 @@ Begin
  End Else If (Name='FILEPOS') Or (Name='FILESIZE') Then Begin
   Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'FilePos/Size exige File');
   Need(tkRP); If Name='FILEPOS' Then LoadImmediate(0) Else LoadImmediate(1);
-  CallTo(RuntimeStandard[38]); Emit($52); Emit($50); Emit2($09,$C9); Emit2($74,3); P:=Jump;
+  CallTo(RuntimeStandard[38]); Emit($52); Emit($50); Emit2($09,$C9); Emit2($75,3); P:=Jump;
   Emit2($89,$C8); CallTo(RuntimeStandard[24]); PatchJump(P,CodeSize);
   If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]); Emit($58); Emit($5A); StandardFunction:=9;
  End Else If (Name='EOF') Or (Name='EOLN') Or (Name='SEEKEOF') Or (Name='SEEKEOLN') Then Begin
@@ -4553,7 +4553,8 @@ Begin
    LoadImmediate(2); A:=Jump;
    PatchJump(Q,CodeSize); LoadImmediate(1); T:=Jump;
    PatchJump(P,CodeSize); LoadImmediate(0); PatchJump(A,CodeSize); PatchJump(T,CodeSize);
-  End Else Begin
+  End Else If OptionBits And $80=0 Then LoadImmediate(0) { comme TP: 0 en $N- }
+  Else Begin
    { bit 1 du mot d'equipement BIOS: coprocesseur present (3 = 80387) }
    Emit($06); LoadImmediate($40); Emit2($8E,$C0); Emit($26); Emit($A1); EmitWord($10); Emit($07);
    Emit($25); EmitWord(2); Emit2($74,3); LoadImmediate(3);
@@ -5137,7 +5138,7 @@ Begin
      Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); Q:=Jump;
      Emit($26); Emit2($83,$7D); Emit(4); Emit(1); Emit2($75,3); A:=Jump;
      Emit($26); Emit2($8B,$05); CallTo(RuntimeStandard[40]); B:=Jump;
-     PatchJump(P,CodeSize); LoadImmediate(102); P:=Jump;
+     PatchJump(P,CodeSize); LoadImmediate(105); P:=Jump; { non assigne: 105 comme TP }
      PatchJump(Q,CodeSize); LoadImmediate(103); Q:=Jump;
      PatchJump(A,CodeSize); LoadImmediate(105); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
      CallTo(RuntimeStandard[24]); PatchJump(B,CodeSize);
@@ -9641,7 +9642,10 @@ Begin
  RuntimeStandard[35]:=CodeSize;
  FinishCount:=0; ErrorCount:=0;
  Emit($55); Emit2($89,$E5); Emit($1E); Emit($06); Emit($57); Emit($53); Emit($50);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,102);
+ { Fichier non assigne: 102 pour Reset/Rewrite/Append/Erase, 103 sinon (comme TP) }
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,19);
+ Emit($3D); EmitWord(3); FailIf($76,102); Emit($3D); EmitWord(5); FailIf($74,102);
+ Inc(ErrorCount); ErrorAddresses[ErrorCount]:=Jump; ErrorCodes[ErrorCount]:=103;
  For I:=1 To 7 Do Begin Emit($3D); EmitWord(I); Emit2($75,3); Dispatch[I]:=Jump End;
  LoadImmediate(1); FinishIO;
 
@@ -9703,7 +9707,7 @@ Begin
  Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(12);
  Emit2($89,$46); Emit($FE); Emit2($89,$4E); Emit($FC); Emit2($89,$56); Emit($FA);
  Emit2($89,$7E); Emit($F6); Emit2($8C,$46); Emit($F4);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,102);
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  Emit2($09,$C0); Emit2($75,13);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(2); FailIf($74,104); P:=Jump;
@@ -9730,7 +9734,7 @@ Begin
  RuntimeStandard[37]:=CodeSize; { Seek, position en records DX:AX }
  FinishCount:=0; ErrorCount:=0;
  Emit($55); Emit2($89,$E5); Emit($06); Emit($57);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,102);
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  Emit($26); Emit2($8B,$5D); Emit(2); Emit2($31,$C9); CallTo(RuntimeStandard[14]);
  Emit2($89,$D1); Emit2($89,$C2); Emit($26); Emit2($8B,$1D);
@@ -9746,7 +9750,7 @@ Begin
  FinishCount:=0; ErrorCount:=0;
  Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(24);
  Emit2($89,$46); Emit($FE); Emit2($89,$7E); Emit($E8); Emit2($8C,$46); Emit($EA);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,102);
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  Emit($26); Emit2($8B,$5D); Emit(2); Emit2($09,$DB); FailIf($74,106);
  Emit2($89,$5E); Emit($FC); Emit($26); Emit2($8B,$1D);
@@ -9846,7 +9850,7 @@ Begin
  Emit($26); Emit2($8B,$45); Emit(6); Emit($A3); DataAddress(InputAhead); Done:=Jump;
  PatchJump(P,CodeSize); Emit($A1); DataAddress(InputConsoleAhead); Emit($A3); DataAddress(InputAhead);
  Emit2($C7,$06); DataAddress(InputHandle); EmitWord(0); P:=Jump;
- PatchJump(Q,CodeSize); LoadImmediate(102); Q:=Jump;
+ PatchJump(Q,CodeSize); LoadImmediate(104); Q:=Jump; { non assigne: 104 comme TP }
  PatchJump(R,CodeSize); LoadImmediate(103); R:=Jump;
  PatchJump(S,CodeSize); LoadImmediate(104); PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
  CallTo(RuntimeStandard[24]); Emit2($C7,$06); DataAddress(InputAhead); EmitWord(26);
@@ -10501,6 +10505,9 @@ Begin
  { DS := segment de donnees (relocalise), PrefixSeg := ES (PSP), ES := DS }
  Emit($B8); AddSegmentRelocation(CodeSize,3); EmitWord(0); Emit2($8E,$D8);
  Emit2($8C,$06); DataAddress(PrefixSeg); Emit2($8E,$C0); Emit($FC);
+ { Mise a zero de la fin du segment de donnees non stockee dans l'EXE
+   (mov di,N; mov cx,M; xor ax,ax; rep stosb), valeurs fixees par WriteExecutable. }
+ BssPatch:=CodeSize; Emit($BF); EmitWord(0); Emit($B9); EmitWord(0); Emit2($31,$C0); Emit2($F3,$AA);
  FPUStartup:=CodeSize; Emit($90); Emit($90); Emit($90);
  EntryFixup:=Jump;
  DataSegVar:=CodeSize; AddSegmentRelocation(CodeSize,3); EmitWord(0);
@@ -10938,8 +10945,8 @@ Procedure WriteExecutable;
 Var
  H: Array[0..15] Of Word;
  F: File;
- Size, AllocParas, HeaderBytes, Location, Written, Chunk: Longint;
- I, Base, StackSeg, Pad, N, DataParas: Word;
+ Size, FullSize, AllocParas, HeaderBytes, Location, Written, Chunk: Longint;
+ I, Base, StackSeg, Pad, N, DataParas, StoredData: Word;
  E: Integer;
  Path: TShortString;
  NativeSegment: Word;
@@ -10959,7 +10966,20 @@ Begin
  { Le code est en CS:0000 et les donnees dans leur propre segment, place au
    paragraphe suivant la fin du code (comme TP: CS puis DS puis pile). }
  LinkedDataBase:=Align16(CodeSize); DataParas:=LinkedDataBase Div 16;
- Size:=LinkedDataBase+DataSize;
+ { Comme TP, seules les donnees initialisees sont stockees dans l'EXE: la
+   fin nulle du segment de donnees est reservee par e_minalloc et remise a
+   zero par le code de demarrage. }
+ StoredData:=DataSize;
+ If Not NativeNeeded And (ObjectCount=0) Then Begin
+  While (StoredData>0) And (Data[StoredData-1]=0) Do Dec(StoredData);
+  For I:=1 To DataFixupCount Do
+   If Longint(DataFixups[I])+4>StoredData Then StoredData:=DataFixups[I]+4;
+  If Odd(StoredData) Then Inc(StoredData);
+  If StoredData>DataSize Then StoredData:=DataSize;
+ End;
+ PatchWord(BssPatch+1,StoredData); PatchWord(BssPatch+4,DataSize-StoredData);
+ FullSize:=LinkedDataBase+DataSize;
+ Size:=LinkedDataBase+StoredData;
  New(LinkedImage); FillChar(LinkedImage^,SizeOf(TLinkedImage),0);
  For I:=1 To FixupCount Do    PatchWord(Fixups[I].Position,Fixups[I].DataOffset);
  For I:=1 To DataFixupCount Do Begin
@@ -10969,7 +10989,7 @@ Begin
   Relocations[RelocationCount].Offs:=DataFixups[I]+2; RelocationKinds[RelocationCount]:=2;
  End;
  Move(Image,LinkedImage^,CodeSize);
- If DataSize<>0 Then Move(Data,LinkedImage^[LinkedDataBase],DataSize);
+ If StoredData<>0 Then Move(Data,LinkedImage^[LinkedDataBase],StoredData);
  NativeSegment:=0;
  If NativeNeeded Then Begin
   NativeSegment:=Align16(Size) Div 16;
@@ -10988,7 +11008,8 @@ Begin
   End;
  End;
  LinkedSize:=Size; LinkObjects; Size:=LinkedSize;
- StackSeg:=(Size+15) Div 16;
+ If FullSize<Size Then FullSize:=Size;
+ StackSeg:=(FullSize+15) Div 16;
  Pad:=StackSeg*16-Size;
   { Pile non stockee dans le fichier: e_minalloc la reserve a la charge. }
  AllocParas:=(Longint(StackSize)+Pad+15) Div 16;
