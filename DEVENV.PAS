@@ -183959,7 +183959,47 @@ Begin
  { fonction avec une adresse hors bornes en temps normal, mais la garde       }
  { reste utile pour tout appelant direct (Emu_ReadAbsBlock est aussi         }
  { invoquee avec des adresses deja calculees ailleurs dans ce fichier). }
- If (Addr < 0) Or (Addr >= SizeOf(TEmuMemBuf)) Then Exit;
+ { BOGUE REEL CORRIGE (2026-10-14, enquete "TPX.EXE/RTM.EXE via le vrai      }
+ { DPMI16BI.OVL", chantier memoire etendue) : TEmuMemBuf ($10FFEF, ~1 Mo +   }
+ { HMA) etait auparavant le SEUL espace adressable par du code reel-mode/    }
+ { "unreal mode" - tout acces au-dela (Addr>=SizeOf(TEmuMemBuf)) etait un    }
+ { Exit silencieux, rendant impossible toute SONDE DIRECTE de memoire        }
+ { etendue (ecrire un motif au-dela de 1 Mo+HMA via un descripteur "unreal   }
+ { mode" a grande limite, le relire pour confirmer une RAM reelle -          }
+ { technique classique de certains extenseurs DOS du debut des annees 1990   }
+ { mefiants envers un BIOS INT 15h peu fiable). Plutot que d agrandir        }
+ { TEmuMemBuf (cout memoire/perf de base pour TOUTE session, meme sans XMS/  }
+ { DPMI), redirection vers EmuDpmiExtMem - le MEME tampon "memoire etendue"  }
+ { deja alloue/libere/sauvegarde en snapshot par Emu_DpmiInit (voir          }
+ { EmuDpmi.Active/ExtCapBytes) et DEJA utilise pour ce role exact par        }
+ { Dpmi_ReadByte/Dpmi_WriteByte (voir leur commentaire de tete, meme formule }
+ { "Addr-EMU_DPMI_EXT_BASE") : aucune nouvelle allocation, aucun nouveau     }
+ { cycle de vie a cabler. Resultat : une adresse physique donnee au-dela de  }
+ { SizeOf(TEmuMemBuf) voit desormais EXACTEMENT le meme octet, que ce soit   }
+ { du code reel-mode "unreal" (ici) ou un client DPMI protege (Dpmi_Read/    }
+ { WriteByte) qui la sonde - coherent. Si EmuDpmi.Active est Faux            }
+ { (EmuDpmiExtMem=Nil, case Options decochee), comportement inchange (Exit   }
+ { silencieux, honnete). NOTE HONNETE : correctif reel et verifie (confirme  }
+ { que cette redirection fonctionne pour un acces direct), MAIS ne resout    }
+ { PAS a lui seul le "DPMI error (400A): insufficient extended memory" d un  }
+ { DPMI16BI.OVL reel - tracage exhaustif (INT 21h/2Fh/1Ah/11h TOUS captures, }
+ { Emu_SetUnrealBase JAMAIS appelee, memoire conventionnelle confirmee       }
+ { abondante via AH=48h/BX=FFFFh) sans trouver le mecanisme EXACT qu il      }
+ { utilise pour decider "insuffisant" - DPMI16BI.OVL est un extenseur        }
+ { proprietaire sans source publique ; ce correctif reste la bonne           }
+ { fondation architecturale pour TOUT futur client qui sonderait la memoire  }
+ { etendue directement, mais identifier le SIGNAL EXACT que DPMI16BI.OVL     }
+ { consulte resterait a retro-ingenierer davantage si quelqu un reprend ce   }
+ { chantier (voir project_devenv_xms_int2f_recursion.md pour le detail       }
+ { complet des hypotheses deja testees et ecartees). }
+ If (Addr < 0) Then Exit;
+ If (Addr >= SizeOf(TEmuMemBuf)) Then Begin
+  If (EmuDpmiExtMem = Nil) Or (Addr >= EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) Then Exit;
+  If Addr + LongInt(SizeBytes) > EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes Then
+   SizeBytes := Word(EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes - Addr);
+  Move(EmuDpmiExtMem^[Addr - EMU_DPMI_EXT_BASE], Buffer, SizeBytes);
+  Exit;
+ End;
  If Addr + LongInt(SizeBytes) > SizeOf(TEmuMemBuf) Then
   SizeBytes := Word(LongInt(SizeOf(TEmuMemBuf)) - Addr);
  Move(C.Memory^[Addr], Buffer, SizeBytes);
@@ -184116,10 +184156,17 @@ Var
  DBPtr: ^Byte; DumpJ: Word; DumpB: Byte; DumpS: String;
 Begin
  If Not C.MemReady Then Exit;
- { Voir le commentaire jumeau dans Emu_ReadAbsBlock (borne HMA). }
- If (Addr < 0) Or (Addr >= SizeOf(TEmuMemBuf)) Then Exit;
- If Addr + LongInt(SizeBytes) > SizeOf(TEmuMemBuf) Then
-  SizeBytes := Word(LongInt(SizeOf(TEmuMemBuf)) - Addr);
+ { Voir le commentaire jumeau dans Emu_ReadAbsBlock (borne HMA + redirection }
+ { EmuDpmiExtMem au-dela de TEmuMemBuf, meme chantier 2026-10-14). }
+ If (Addr < 0) Then Exit;
+ If (Addr >= SizeOf(TEmuMemBuf)) Then Begin
+  If (EmuDpmiExtMem = Nil) Or (Addr >= EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) Then Exit;
+  If Addr + LongInt(SizeBytes) > EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes Then
+   SizeBytes := Word(EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes - Addr);
+ End Else Begin
+  If Addr + LongInt(SizeBytes) > SizeOf(TEmuMemBuf) Then
+   SizeBytes := Word(LongInt(SizeOf(TEmuMemBuf)) - Addr);
+ End;
  { Watch : point de passage UNIQUE pour toute ecriture physique (seg:ofs   }
  { 16 bits via Emu_WriteBlock/Emu_WriteByte, OU adressage 32 bits via      }
  { Emu_WriteByteL/Emu_WriteWordL/Emu_WriteDWordL/Emu_AddrL - ce dernier    }
@@ -184161,7 +184208,10 @@ Begin
   Close(WLog);
   {$I+} If IOResult <> 0 Then ;
  End;
- Move(Buffer, C.Memory^[Addr], SizeBytes);
+ If Addr >= SizeOf(TEmuMemBuf) Then
+  Move(Buffer, EmuDpmiExtMem^[Addr - EMU_DPMI_EXT_BASE], SizeBytes)
+ Else
+  Move(Buffer, C.Memory^[Addr], SizeBytes);
 End;
 
 { --- Ecrire un bloc seg:ofs --- }
@@ -191104,6 +191154,7 @@ Function Emu_CMOS_ReadReg(Reg: Byte): Byte;
 Var
  Yr, Mo, Dy, Wd: Word;
  Hr, Mn, Sc, Cs: Word;
+ ExtKB: LongInt;
 Begin
  Case Reg Of
   $00: Begin GetTime(Hr, Mn, Sc, Cs); Emu_CMOS_ReadReg := Emu_BCD(Sc); End;
@@ -191117,6 +191168,26 @@ Begin
   $0A: Emu_CMOS_ReadReg := EmuCMOS_Reg[$0A] And $7F;
   { Registre D : bit7 (VRT) toujours a 1 - pile CMOS toujours valide }
   $0D: Emu_CMOS_ReadReg := EmuCMOS_Reg[$0D] Or $80;
+  { $17/$18 (Ko memoire etendue CONFIGUREE) et $30/$31 (Ko memoire etendue }
+  { MESUREE au POST - traditionnellement identiques sur un clone, voir     }
+  { RBIL) - BOGUE REEL CORRIGE (2026-10-14, enquete "TPX.EXE/RTM.EXE via   }
+  { le vrai DPMI16BI.OVL") : ces 4 registres n etaient JAMAIS initialises  }
+  { (FillChar a 0 dans Emu_CMOSInit, jamais touches ensuite) et se         }
+  { lisaient donc a 0 Ko - une divergence reelle avec un vrai AT peu       }
+  { importe qui la lit. Meme formule que le correctif INT 15h AH=88h (voir}
+  { Emu_DoInt15AT) : reflete la taille REELLEMENT configuree              }
+  { (OptionsDlg.Data.DosXMSSize), plafonnee a 65535 Ko (limite du mot 16   }
+  { bits que ces 2 registres encodent ensemble). N A PAS resolu a lui seul}
+  { le "DPMI error (400A)" de DPMI16BI.OVL (confirme par tracage : il ne   }
+  { lit JAMAIS ces registres, ni XMS, ni INT 15h - voir la note de tete de}
+  { Emu_ReadAbsBlock/Emu_WriteAbsBlock pour la vraie cause). }
+  $17, $18, $30, $31: Begin
+   ExtKB := OptionsDlg.Data.DosXMSSize;
+   If ExtKB > 65535 Then ExtKB := 65535;
+   If ExtKB < 0 Then ExtKB := 0;
+   If (Reg = $17) Or (Reg = $30) Then Emu_CMOS_ReadReg := Byte(ExtKB And $FF)
+   Else Emu_CMOS_ReadReg := Byte((ExtKB Shr 8) And $FF);
+  End;
   Else Emu_CMOS_ReadReg := EmuCMOS_Reg[Reg];
  End;
 End;
@@ -197681,6 +197752,7 @@ Procedure Emu_DoInt15AT(Var P: TEmulatorPanel);
 Var Seg, Ofs: Word;
     Int87SrcBase, Int87DstBase, Int87I: LongInt;
     Int87TmpByte: Byte;
+    Int88ExtKB: LongInt;
 Begin
  Exclude(P.CPU.Flags.s, EFG_CF);
  Case P.CPU.Regs.AH Of
@@ -197734,7 +197806,23 @@ Begin
               { convention universelle "64 Ko" (65520 div 1024 tronque a 63   }
               { ferait echouer a tort le test ">=64" reel alors que la HMA    }
               { EST reellement backee au complet). }
-   P.CPU.Regs.AX := 64;
+   { BOGUE REEL CORRIGE (2026-10-14, enquete "TPX.EXE/RTM.EXE via le vrai  }
+   { DPMI16BI.OVL") : la valeur $0040 (64 Ko) ci-dessus etait un fixe      }
+   { CODE EN DUR, suffisant pour le seul test ">=64" de HIMEM.SYS mais     }
+   { ignorant TOTALEMENT la memoire etendue REELLEMENT configuree         }
+   { (OptionsDlg.Data.DosXMSSize, 16384 Ko par defaut) - une divergence    }
+   { reelle avec un vrai BIOS AT peu importe qui appelle AH=88h. Reflete   }
+   { maintenant la VRAIE taille configuree, plafonnee a $FFFF (limite 16   }
+   { bits de AH=88h, voir AX=E801h pour plus - non implante ici), plancher }
+   { a 64 pour ne pas regresser le cas HIMEM.SYS/HMA ci-dessus. N A PAS    }
+   { resolu a lui seul le "DPMI error (400A)" de DPMI16BI.OVL (confirme    }
+   { par tracage : il n appelle JAMAIS INT 15h AH=88h non plus - voir la   }
+   { note de tete de Emu_ReadAbsBlock/Emu_WriteAbsBlock pour la vraie      }
+   { cause, une limite d architecture memoire plus profonde). }
+   Int88ExtKB := OptionsDlg.Data.DosXMSSize;
+   If Int88ExtKB > 65535 Then Int88ExtKB := 65535;
+   If Int88ExtKB < 64 Then Int88ExtKB := 64;
+   P.CPU.Regs.AX := Word(Int88ExtKB);
   End;
   $87: Begin { Deplacement de bloc en memoire etendue (service BIOS           }
              { classique). BOGUE REEL CORRIGE (2026-08-25, trouve en tracant  }
@@ -202601,8 +202689,10 @@ End;
 { interruption reelle - voir Emu_DoIntFE, atteint uniquement via le        }
 { trampoline installe par Emu_XmsInit). Numero de fonction dans AH. --- }
 Procedure Emu_DoIntFE(Var P: TEmulatorPanel);
+Var DiagXF: Text; DiagAH: Byte;
 Begin
  P.CPU.Regs.BL := 0; { pas d erreur par defaut }
+ DiagAH := P.CPU.Regs.AH;
  Case P.CPU.Regs.AH Of
   $00: Emu_Xms_GetVersion(P);
   $01: Emu_Xms_RequestHMA(P);
@@ -202632,6 +202722,13 @@ Begin
   P.CPU.Regs.BL := $80; { fonction non implantee }
  End;
  End;
+ {$I-} Assign(DiagXF, 'DIAGXMS.LOG'); Append(DiagXF);
+ If IOResult <> 0 Then Begin Rewrite(DiagXF); If IOResult <> 0 Then ; End;
+ {$I+}
+ WriteLn(DiagXF, 'AH=', HexByte(DiagAH), ' -> AX=', HexWord(P.CPU.Regs.AX),
+  ' BL=', HexByte(P.CPU.Regs.BL), ' DX=', HexWord(P.CPU.Regs.DX),
+  ' BX=', HexWord(P.CPU.Regs.BX));
+ {$I-} Close(DiagXF); If IOResult <> 0 Then ; {$I+}
 End;
 
 { ========================================================================= }
