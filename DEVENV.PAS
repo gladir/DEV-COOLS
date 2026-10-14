@@ -2438,6 +2438,20 @@ Const
  { ecrire un octet d opcode comme pour les autres trampolines de $F000. }
  EMU_DPMI_RMCALL_SEG  = $F000;
  EMU_DPMI_RMCALL_OFS  = $0140;
+ { Selecteur marqueur du "raw mode switch" (AX=0306h) - BOGUE REEL CORRIGE  }
+ { (2026-10-14, enquete "TPX.EXE : boucle sur memoire zero", 5e trouvaille):}
+ { AX=0306h renvoyait auparavant des valeurs factices (BX=0,CX=$F000,SI=0,  }
+ { DI=$F100) accompagnees d un commentaire "non censees etre dereferencees  }
+ { par un client bien ecrit" - faux pour TPX.EXE/DOS4GW, qui APPELLE        }
+ { reellement cette adresse pour revenir rapidement en mode reel sans       }
+ { passer par INT 31h. Ce selecteur special (TI=0/GDT, jamais produit par   }
+ { Dpmi_AllocLDT qui n alloue que du TI=1/LDT via (I Shl 3) Or 4) sert de    }
+ { marqueur reconnu explicitement dans le groupe FF /3 et /5 de Dpmi_Step    }
+ { pour declencher une VRAIE bascule protege->reel (voir son commentaire de }
+ { tete) plutot qu un vulgaire saut vers une base de descripteur inexistante}
+ { (d ou la boucle "DIV DH" sur de la memoire non mappee observee avant ce   }
+ { correctif). }
+ EMU_DPMI_RAWSWITCH_SEL = $FFF8;
  { Trampolines "vecteur par defaut" (chainage reel INT n <-> AH=25h/35h,   }
  { voir Emu_DefaultVectorsInit/Emu_IntIsHooked/Emu_DoInt) - un emplacement }
  { de 4 octets par numero d interruption potentiellement chainable (256    }
@@ -204528,6 +204542,21 @@ End;
 { seul l INDEX (bits 15-3) est significatif. --- }
 Function Dpmi_SelToIdx(Sel: Word; Var Idx: Integer): Boolean;
 Begin
+ { BOGUE REEL (2026-10-14, enquete "TPX.EXE : boucle sur memoire zero") :      }
+ { un selecteur dont l index (bits 3-15) vaut 0 ET dont le bit TI (bit 2) vaut }
+ { 0 (table GDT) est le "selecteur nul" de l architecture x86 (valeurs 0-3,    }
+ { un par RPL) : il doit TOUJOURS etre invalide, quel que soit le contenu de  }
+ { la table. Comme ce modele n a qu un seul tableau LDT[] indexe par Sel Shr 3}
+ { sans tenir compte du bit TI, le selecteur nul (index 0, TI=0) se confondait}
+ { avec un vrai selecteur LDT d index 0 (TI=1, ex. Sel=4) : un appel DPMI tel }
+ { que AX=0007h (Set Segment Base Address) avec BX=0000h ecrasait alors la   }
+ { base du DESCRIPTEUR DE CS COURANT (LDT[0]), deroutant tous les fetchs     }
+ { suivants vers une zone memoire non mappee (vue comme des octets $00).     }
+ If (Sel And $FFFC) = 0 Then Begin
+  Idx := 0;
+  Dpmi_SelToIdx := False;
+  Exit;
+ End;
  Idx := Sel Shr 3;
  Dpmi_SelToIdx := (Idx >= 0) And (Idx <= EMU_DPMI_MAX_SEL) And
   DpmiCPU.LDT[Idx].Present;
@@ -205195,18 +205224,35 @@ Begin
    Else Begin Include(DpmiCPU.Flags.s, EFG_CF); DpmiCPU.Reg.AX := $8024; End;
   End;
   $0305: Begin
+   { BOGUE REEL CORRIGE (2026-10-14, enquete "TPX.EXE : boucle sur memoire   }
+   { zero", 5e trouvaille, suite de EMU_DPMI_RAWSWITCH_SEL) : AX=0305h       }
+   { "Get Version" NE DEFINIT PAS SI en sortie dans la vraie specification   }
+   { DPMI - un hote reel le laisse donc INTACT. Cette ligne y ecrivait       }
+   { pourtant EMU_DPMI_MAX_CALLBACK (une invention locale sans rapport),     }
+   { ecrasant au passage le SI laisse par le PRECEDENT appel AX=0306h (le    }
+   { selecteur marqueur du "raw mode switch" 32 bits) - TPX.EXE/DOS4GW       }
+   { enchaine justement 0306h PUIS 0305h PUIS sauvegarde SI en memoire,      }
+   { comptant sur le fait qu un hote honnete ne touche pas a SI entre les    }
+   { deux. Confirme en tracant TOUTES les ecritures DS:0080-0089 (DIAGWATCH, }
+   { Dpmi_WriteByte) : rien n y reecrit apres la sous-routine de demarrage - }
+   { [0088] gardait donc EMU_DPMI_MAX_CALLBACK pour de bon au lieu du vrai    }
+   { selecteur, et le CALLF [0086] plus tard dans le programme sautait vers  }
+   { une base de descripteur inexistante (boucle "DIV DH" sur memoire vide). }
    DpmiCPU.Reg.AX := 90;  { version DPMI 0.9 * 100 }
    DpmiCPU.Reg.BX := 1;   { bit0=1 : 32 bits supporte }
    DpmiCPU.Reg.CL := 3;   { 80386 }
    DpmiCPU.Reg.DH := 0; DpmiCPU.Reg.DL := $5A;
-   DpmiCPU.Reg.SI := EMU_DPMI_MAX_CALLBACK;
   End;
   $0306: Begin
-   { Adresses "pile de commutation" - sans objet dans ce modele d emulation }
-   { (aucune vraie pile de commutation materielle a exposer) ; valeurs      }
-   { plausibles mais non dereferencees par un client DPMI bien ecrit. }
-   DpmiCPU.Reg.BX := 0; DpmiCPU.Reg.CX := $F000;
-   DpmiCPU.Reg.SI := 0; DpmiCPU.Reg.DI := $F100;
+   { Adresses "raw mode switch" - BOGUE REEL CORRIGE (2026-10-14, voir       }
+   { EMU_DPMI_RAWSWITCH_SEL) : renvoyait auparavant des valeurs factices,    }
+   { jamais censees etre dereferencees - faux pour TPX.EXE/DOS4GW qui les    }
+   { appelle reellement. BX:CX (16 bits) et SI:DI (32 bits) pointent         }
+   { maintenant tous deux sur le meme selecteur marqueur, reconnu par le     }
+   { groupe FF /3 et /5 de Dpmi_Step pour effectuer une VRAIE bascule        }
+   { protege->reel (l offset n est pas significatif, mis a 0). }
+   DpmiCPU.Reg.BX := EMU_DPMI_RAWSWITCH_SEL; DpmiCPU.Reg.CX := 0;
+   DpmiCPU.Reg.SI := EMU_DPMI_RAWSWITCH_SEL; DpmiCPU.Reg.DI := 0;
   End;
   $0400: Begin
    DpmiCPU.Reg.AX := $005A; { version DPMI 0.90 (BH=0,BL=90 -> voir AH/AL   }
@@ -205323,41 +205369,85 @@ Begin
  ExtraLen := 0;
  StackBased := False;
  EA := 0;
- If RM = 4 Then Begin
-  Sib := Dpmi_FetchByte(P, 1);
-  Inc(ExtraLen);
-  Scale := (Sib Shr 6) And 3;
-  SIdx := (Sib Shr 3) And 7;
-  SBase := Sib And 7;
-  If SIdx <> 4 Then
-   EA := Dpmi_GetReg32(DpmiCPU.Reg, SIdx) Shl Scale;
-  If (SBase = 5) And (Mode = 0) Then Begin
-   Disp := Dpmi_FetchDWord(P, 1 + ExtraLen);
-   Inc(ExtraLen, 4);
-   EA := EA + Disp;
-  End Else Begin
-   EA := EA + Dpmi_GetReg32(DpmiCPU.Reg, SBase);
-   StackBased := (SBase = 4) Or (SBase = 5); { ESP ou EBP comme base }
+ If Not DpmiCPU.Is32Bit Then Begin
+  { BOGUE REEL (2026-10-14, enquete "TPX.EXE : out of selectors") : ce       }
+  { decodeur ne gerait QUE l'adressage 32 bits, alors qu'un segment de code  }
+  { 16 bits (DpmiCPU.Is32Bit=False - cas reel observe : DOS4GW/TPX.EXE       }
+  { negocie d'abord en mode protege 16 bits avant de basculer en 32 bits)    }
+  { utilise les 8 formes d'adressage 8086 CLASSIQUES (BX+SI/BX+DI/BP+SI/     }
+  { BP+DI/SI/DI/disp16/BX), totalement differentes du schema ModRM/SIB 32   }
+  { bits ci-dessous - confirme en tracant octet par octet : EIP n'avancait   }
+  { que de 2 octets pour un "MOV [disp16],BX" (mod=00,rm=110, qui ne veut    }
+  { dire "[ESI]" qu'en adressage 32 bits) au lieu des 4 reels (2 octets de   }
+  { deplacement jamais consommes), desalignant TOUTE l'execution qui suit   }
+  { des la toute premiere instruction memoire du handshake DOS4GW. }
+  Case RM Of
+   0: EA := Word(DpmiCPU.Reg.BX) + Word(DpmiCPU.Reg.SI);
+   1: EA := Word(DpmiCPU.Reg.BX) + Word(DpmiCPU.Reg.DI);
+   2: Begin EA := Word(DpmiCPU.Reg.BP) + Word(DpmiCPU.Reg.SI); StackBased := True; End;
+   3: Begin EA := Word(DpmiCPU.Reg.BP) + Word(DpmiCPU.Reg.DI); StackBased := True; End;
+   4: EA := Word(DpmiCPU.Reg.SI);
+   5: EA := Word(DpmiCPU.Reg.DI);
+   6: If Mode = 0 Then Begin
+       Disp := Dpmi_FetchWord(P, 1);
+       Inc(ExtraLen, 2);
+       EA := Disp;
+      End Else Begin
+       EA := Word(DpmiCPU.Reg.BP); StackBased := True;
+      End;
+  Else { 7 } EA := Word(DpmiCPU.Reg.BX);
   End;
- End Else If (RM = 5) And (Mode = 0) Then Begin
-  Disp := Dpmi_FetchDWord(P, 1);
-  Inc(ExtraLen, 4);
-  EA := Disp;
+  Case Mode Of
+   1: Begin
+    Disp := Dpmi_FetchByte(P, 1 + ExtraLen);
+    If (Disp And $80) <> 0 Then Disp := Disp Or LongInt($FFFFFF00);
+    EA := EA + Disp;
+    Inc(ExtraLen);
+   End;
+   2: Begin
+    Disp := Dpmi_FetchWord(P, 1 + ExtraLen);
+    EA := EA + Disp;
+    Inc(ExtraLen, 2);
+   End;
+  End;
+  EA := EA And $FFFF;
  End Else Begin
-  EA := Dpmi_GetReg32(DpmiCPU.Reg, RM);
-  StackBased := (RM = 5); { EBP }
- End;
- Case Mode Of
-  1: Begin
-   Disp := Dpmi_FetchByte(P, 1 + ExtraLen);
-   If (Disp And $80) <> 0 Then Disp := Disp Or LongInt($FFFFFF00);
-   EA := EA + Disp;
+  If RM = 4 Then Begin
+   Sib := Dpmi_FetchByte(P, 1);
    Inc(ExtraLen);
-  End;
-  2: Begin
-   Disp := Dpmi_FetchDWord(P, 1 + ExtraLen);
-   EA := EA + Disp;
+   Scale := (Sib Shr 6) And 3;
+   SIdx := (Sib Shr 3) And 7;
+   SBase := Sib And 7;
+   If SIdx <> 4 Then
+    EA := Dpmi_GetReg32(DpmiCPU.Reg, SIdx) Shl Scale;
+   If (SBase = 5) And (Mode = 0) Then Begin
+    Disp := Dpmi_FetchDWord(P, 1 + ExtraLen);
+    Inc(ExtraLen, 4);
+    EA := EA + Disp;
+   End Else Begin
+    EA := EA + Dpmi_GetReg32(DpmiCPU.Reg, SBase);
+    StackBased := (SBase = 4) Or (SBase = 5); { ESP ou EBP comme base }
+   End;
+  End Else If (RM = 5) And (Mode = 0) Then Begin
+   Disp := Dpmi_FetchDWord(P, 1);
    Inc(ExtraLen, 4);
+   EA := Disp;
+  End Else Begin
+   EA := Dpmi_GetReg32(DpmiCPU.Reg, RM);
+   StackBased := (RM = 5); { EBP }
+  End;
+  Case Mode Of
+   1: Begin
+    Disp := Dpmi_FetchByte(P, 1 + ExtraLen);
+    If (Disp And $80) <> 0 Then Disp := Disp Or LongInt($FFFFFF00);
+    EA := EA + Disp;
+    Inc(ExtraLen);
+   End;
+   2: Begin
+    Disp := Dpmi_FetchDWord(P, 1 + ExtraLen);
+    EA := EA + Disp;
+    Inc(ExtraLen, 4);
+   End;
   End;
  End;
  If StackBased And (Not HasOvr) Then Seg := DpmiCPU.SegSel[2]; { SS }
@@ -205713,6 +205803,142 @@ Begin
  Else Exclude(DpmiCPU.Flags.s, EFG_CF);
 End;
 
+{ Implemente le "raw mode switch" (AX=0306h, voir EMU_DPMI_RAWSWITCH_SEL)   }
+{ reellement : bascule DpmiCPU.Active a Faux et reprend l execution en     }
+{ mode reel exactement a l adresse de retour de la FAR CALL que le client  }
+{ protege vient de faire a travers notre selecteur marqueur - c est tout    }
+{ le contrat de cette primitive DPMI (contrairement a INT 31h AX=0300h qui  }
+{ saute vers un CS:IP reel ARBITRAIRE choisi par l appelant, celle-ci       }
+{ CONTINUE "sur place", juste traduite en mode reel). EXACT, pas           }
+{ approximatif, pour TOUT selecteur cree par Dpmi_SegToSel (le cas normal   }
+{ ici : CS/DS/ES/SS courants, tous alias directs de segments reels, voir    }
+{ Dpmi_Switch) puisque sa Base est TOUJOURS un multiple de 16 par           }
+{ construction (meme limite assumee que Dpmi_ForwardIntToReal pour un       }
+{ selecteur personnalise dont la base ne le serait pas). RetCS/RetIP sont   }
+{ deja DpmiCPU.SegSel[1]/DpmiCPU.EIP AVANT que l appelant (FF /3 ou /5      }
+{ dans Dpmi_Step) ne les remplace par le selecteur marqueur - a passer      }
+{ explicitement puisque cette procedure est appelee APRES ce remplacement. }
+Procedure Dpmi_RawSwitchToReal(Var P: TEmulatorPanel; RetCS: Word; RetIP: LongInt);
+Begin
+ P.CPU.Regs := DpmiCPU.Reg;
+ P.CPU.Flags.s := DpmiCPU.Flags.s;
+ P.CPU.Segs.CS := Word(Dpmi_SelBase(RetCS) Div 16);
+ P.CPU.IP := Word(RetIP);
+ P.CPU.Segs.SS := Word(Dpmi_SelBase(DpmiCPU.SegSel[2]) Div 16);
+ P.CPU.Regs.SP := Word(DpmiCPU.Reg.ESP);
+ P.CPU.Segs.ES := Word(Dpmi_SelBase(DpmiCPU.SegSel[0]) Div 16);
+ P.CPU.Segs.DS := Word(Dpmi_SelBase(DpmiCPU.SegSel[3]) Div 16);
+ P.CPU.FS := Word(Dpmi_SelBase(DpmiCPU.SegSel[4]) Div 16);
+ P.CPU.GS := Word(Dpmi_SelBase(DpmiCPU.SegSel[5]) Div 16);
+ DpmiCPU.Active := False;
+End;
+
+{ BOGUE REEL (2026-10-14, enquete "TPX.EXE : boucle sur memoire zero",      }
+{ 3e trouvaille) : toute la famille MOVS/CMPS/STOS/LODS/SCAS ($A4-$A7,      }
+{ $AA-$AF) manquait ici, qu elle soit prefixee REP ou non - absente du      }
+{ grand Case B de Dpmi_Step, elle tombait dans le Else generique            }
+{ (sfInvalidCode, DpmiCPU.Active:=False), ce qui ARRETAIT silencieusement   }
+{ le mode protege des le premier REP MOVSW rencontre (confirme en direct :  }
+{ TPX.EXE/DOS4GW l utilise tres tot pour copier son image chargee). Meme    }
+{ patron et meme correctif ECX=0 que Pe_StringOp/Lx_StringOp (chantier PE/  }
+{ Win32, 2026-09-12) : un vrai processeur teste ECX AVANT le corps pour un  }
+{ prefixe REP/REPE/REPNE, sinon un compte initial de 0 deborderait a        }
+{ $FFFFFFFF en decrementant apres coup. SI/DI utilisent la taille d adresse }
+{ courante (DpmiCPU.Is32Bit, meme simplification que Dpmi_DecodeModRM -     }
+{ pas de suivi $67 distinct) ; le segment de ESI suit DefSeg/HasOvr (DS par }
+{ defaut, override possible), celui de EDI est TOUJOURS ES (non              }
+{ surchargeable, comme sur un vrai x86). }
+Procedure Dpmi_StringOp(Var P: TEmulatorPanel; Op2: Byte; OpSize: Byte;
+ RepMode: Byte; DefSeg: Word; EIPStart: LongInt);
+Var
+ Sz: Byte;
+ Dir: Integer;
+ SrcOfs, DstOfs: LongInt;
+ SrcV, DstV: LongInt;
+ Cont: Boolean;
+Begin
+ If (RepMode <> 0) And (DpmiCPU.Reg.ECX = 0) Then Exit;
+ If Op2 In [$A4, $A6, $AA, $AC, $AE] Then Sz := 1 Else Sz := OpSize;
+ If EFG_DF In DpmiCPU.Flags.s Then Dir := -1 Else Dir := 1;
+ If DpmiCPU.Is32Bit Then Begin
+  SrcOfs := DpmiCPU.Reg.ESI; DstOfs := DpmiCPU.Reg.EDI;
+ End Else Begin
+  SrcOfs := DpmiCPU.Reg.SI; DstOfs := DpmiCPU.Reg.DI;
+ End;
+ Case Op2 Of
+  $A4, $A5: Begin { MOVS }
+   Case Sz Of
+    1: Dpmi_WriteByte(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
+        Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, SrcOfs)));
+    2: Dpmi_WriteWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
+        Dpmi_ReadWord(P, Dpmi_LinAddr(DefSeg, SrcOfs)));
+   Else
+     Dpmi_WriteDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
+      Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, SrcOfs)));
+   End;
+   SrcOfs := SrcOfs + Dir * Sz; DstOfs := DstOfs + Dir * Sz;
+  End;
+  $AA, $AB: Begin { STOS }
+   Case Sz Of
+    1: Dpmi_WriteByte(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs), DpmiCPU.Reg.AL);
+    2: Dpmi_WriteWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs), DpmiCPU.Reg.AX);
+   Else
+     Dpmi_WriteDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs), DpmiCPU.Reg.EAX);
+   End;
+   DstOfs := DstOfs + Dir * Sz;
+  End;
+  $AC, $AD: Begin { LODS }
+   Case Sz Of
+    1: DpmiCPU.Reg.AL := Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+    2: DpmiCPU.Reg.AX := Dpmi_ReadWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+   Else
+     DpmiCPU.Reg.EAX := Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+   End;
+   SrcOfs := SrcOfs + Dir * Sz;
+  End;
+  $A6, $A7: Begin { CMPS }
+   SrcV := Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+   DstV := Dpmi_ReadByte(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs));
+   If Sz = 2 Then Begin
+    SrcV := Dpmi_ReadWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+    DstV := Dpmi_ReadWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs));
+   End Else If Sz = 4 Then Begin
+    SrcV := Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
+    DstV := Dpmi_ReadDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs));
+   End;
+   Dpmi_Alu(P, 7, SrcV, DstV, Sz);
+   SrcOfs := SrcOfs + Dir * Sz; DstOfs := DstOfs + Dir * Sz;
+  End;
+  $AE, $AF: Begin { SCAS }
+   DstV := Dpmi_ReadByte(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs));
+   SrcV := DpmiCPU.Reg.AL;
+   If Sz = 2 Then Begin
+    DstV := Dpmi_ReadWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs));
+    SrcV := DpmiCPU.Reg.AX;
+   End Else If Sz = 4 Then Begin
+    DstV := Dpmi_ReadDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs));
+    SrcV := DpmiCPU.Reg.EAX;
+   End;
+   Dpmi_Alu(P, 7, SrcV, DstV, Sz);
+   DstOfs := DstOfs + Dir * Sz;
+  End;
+ End;
+ If DpmiCPU.Is32Bit Then Begin
+  DpmiCPU.Reg.ESI := SrcOfs; DpmiCPU.Reg.EDI := DstOfs;
+ End Else Begin
+  DpmiCPU.Reg.SI := Word(SrcOfs); DpmiCPU.Reg.DI := Word(DstOfs);
+ End;
+ If RepMode <> 0 Then Begin
+  DpmiCPU.Reg.ECX := DpmiCPU.Reg.ECX - 1;
+  Cont := DpmiCPU.Reg.ECX <> 0;
+  If (Op2 In [$A6, $A7, $AE, $AF]) And Cont Then Begin
+   If RepMode = 1 Then Cont := EFG_ZF In DpmiCPU.Flags.s
+   Else Cont := Not (EFG_ZF In DpmiCPU.Flags.s);
+  End;
+  If Cont Then DpmiCPU.EIP := EIPStart;
+ End;
+End;
+
 { Execute une seule instruction protegee. Ne fait rien si DpmiCPU.Active   }
 { est faux (securite - ne devrait pas etre appelee dans ce cas, voir le    }
 { branchement dans la boucle principale). }
@@ -205727,10 +205953,16 @@ Var
  Op2: Byte;
  V8: Byte;    { octet de droits d acces GDT, voir $0F 00/01 }
  A64: Int64;  { dividende/produit 64 bits, voir groupe F6/F7 MUL/IMUL/DIV/IDIV }
+ Idx: Integer; { index LDT, voir $0F 02/03 (LAR/LSL) }
+ RepMode: Byte; { 0=aucun, 1=REP/REPE, 2=REPNE - voir $A4-$A5/$A6-$A7/$AA-$AF }
+ EIPStart: LongInt; { EIP avant prefixes, pour rejouer l instruction REP     }
+ NewSel: Word; { nouveau CS, voir groupe FF /3 (CALLF) et /5 (JMPF) indirects }
 Begin
  If Not DpmiCPU.Active Then Exit;
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
+ EIPStart := DpmiCPU.EIP;
+ RepMode := 0;
  Repeat
   B := Dpmi_FetchByte(P, 0);
   Case B Of
@@ -205744,8 +205976,11 @@ Begin
    $3E: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[3]; Inc(DpmiCPU.EIP); End;
    $64: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[4]; Inc(DpmiCPU.EIP); End;
    $65: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[5]; Inc(DpmiCPU.EIP); End;
-   $67, $F0, $F2, $F3: Inc(DpmiCPU.EIP); { taille d adresse/LOCK/REP - voir  }
-                                         { le commentaire de tete (portee)   }
+   $67, $F0: Inc(DpmiCPU.EIP); { taille d adresse/LOCK - voir le commentaire }
+                               { de tete (portee) - adresse toujours selon   }
+                               { DpmiCPU.Is32Bit, pas de suivi $67 distinct. }
+   $F2: Begin RepMode := 2; Inc(DpmiCPU.EIP); End; { REPNE/REPNZ }
+   $F3: Begin RepMode := 1; Inc(DpmiCPU.EIP); End; { REP/REPE/REPZ }
   Else Break;
   End;
  Until False;
@@ -205837,6 +206072,38 @@ Begin
       6: DpmiCPU.CR0 := (DpmiCPU.CR0 And Not 1) Or       { LMSW }
           (Dpmi_GetOp(P, Op, 2) And 1);
      End;
+    End;
+    $02: Begin { LAR Gv,Ew - BOGUE REEL (2026-10-14), enquete "TPX.EXE :     }
+         { out of selectors" : manquait, rencontre pour la 1ere fois une    }
+         { fois le vrai bogue d adressage 16 bits (voir Dpmi_DecodeModRM)    }
+         { corrige - TPX.EXE/DOS4GW l utilise pour verifier un selecteur     }
+         { avant de s en servir. Octet de droits d acces (deja conserve tel  }
+         { quel par descripteur, voir TDpmiDescriptor.AccessByte) place en   }
+         { bits 8-15 du registre destination, ZF=1 si le selecteur existe. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     A := Dpmi_GetOp(P, Op, 2);
+     If Dpmi_SelToIdx(Word(A), Idx) Then Begin
+      Res := LongInt(DpmiCPU.LDT[Idx].AccessByte) Shl 8;
+      If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Res))
+      Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
+      Include(DpmiCPU.Flags.s, EFG_ZF);
+     End Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+    End;
+    $03: Begin { LSL Gv,Ew - meme bogue/contexte que $02 ci-dessus. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     A := Dpmi_GetOp(P, Op, 2);
+     If Dpmi_SelToIdx(Word(A), Idx) Then Begin
+      Res := DpmiCPU.LDT[Idx].Limit;
+      If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Res))
+      Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
+      Include(DpmiCPU.Flags.s, EFG_ZF);
+     End Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
     End;
    Else Begin
     P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
@@ -206054,40 +206321,58 @@ Begin
   $FB: Include(DpmiCPU.Flags.s, EFG_IF); { STI }
   $FC: Exclude(DpmiCPU.Flags.s, EFG_DF); { CLD }
   $FD: Include(DpmiCPU.Flags.s, EFG_DF); { STD }
-  $A0: Begin { MOV AL,moffs8 - BOGUE REEL (2026-10-14, enquete "TPX.EXE      }
-             { plante apres bascule DPMI") : toute la famille $A0-$A3        }
-             { (MOV AL/eAX <-> [adresse directe 32 bits], sans ModRM)         }
-             { manquait completement ici, tombant dans le "Else" generique   }
-             { (opcode non reconnu, DpmiCPU.Active:=False) - confirme en      }
-             { direct : TPX.EXE (Borland Pascal 7, mode protege DPMI)         }
-             { utilise $A3 des sa toute premiere sequence d initialisation,   }
-             { provoquant un faux retour force au mode reel vers CS:IP=0000: }
-             { 0000 (voir Dpmi_Switch - rien ne recalculait honnetement un    }
-             { CS:IP reel coherent pour ce cas, d ou le plantage visible).    }
-             { Meme convention d adressage direct 32 bits que Dpmi_DecodeModRM}
-             { (Mode=0,RM=5) juste au-dessus - pas de prefixe de taille       }
-             { d adresse distinct trace ici (voir $67 plus haut). }
-   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+  $A0: Begin { MOV AL,moffs8 }
+             { BOGUE REEL (2026-10-14, enquete "TPX.EXE : boucle sur memoire }
+             { zero", 2e trouvaille) : toute la famille $A0-$A3 fetchait     }
+             { INCONDITIONNELLEMENT un moffs de 4 octets (Dpmi_FetchDWord),  }
+             { alors qu en adressage 16 bits (DpmiCPU.Is32Bit=False, le cas  }
+             { normal pour TPX/DOS4GW qui negocie le mode protege 16 bits    }
+             { en premier) le moffs ne fait que 2 octets. Les 2 octets de    }
+             { trop etaient donc lus comme faisant partie du deplacement ET  }
+             { desynchronisaient EIP de 2 par rapport a l instruction        }
+             { suivante reelle - confirme par trace : "A3 1E 00" (3 octets   }
+             { attendus, MOV [001E],AX) faisait sauter EIP de +5 au lieu de  }
+             { +3, et l ecriture visait une adresse 32 bits bidon au lieu de }
+             { l offset 001E reellement vise. }
+   If DpmiCPU.Is32Bit Then Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   End Else Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+   End;
    Dpmi_SetReg8(DpmiCPU.Reg, 0, Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, Imm)));
   End;
   $A1: Begin { MOV eAX,moffs16/32 }
-   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   If DpmiCPU.Is32Bit Then Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   End Else Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+   End;
    If OpSize = 2 Then
     Dpmi_SetReg16(DpmiCPU.Reg, 0, Dpmi_ReadWord(P, Dpmi_LinAddr(DefSeg, Imm)))
    Else
     Dpmi_SetReg32(DpmiCPU.Reg, 0, Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, Imm)));
   End;
   $A2: Begin { MOV moffs8,AL }
-   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   If DpmiCPU.Is32Bit Then Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   End Else Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+   End;
    Dpmi_WriteByte(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg8(DpmiCPU.Reg, 0));
   End;
   $A3: Begin { MOV moffs16/32,eAX }
-   Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   If DpmiCPU.Is32Bit Then Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   End Else Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+   End;
    If OpSize = 2 Then
     Dpmi_WriteWord(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg16(DpmiCPU.Reg, 0))
    Else
     Dpmi_WriteDWord(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg32(DpmiCPU.Reg, 0));
   End;
+  $A4, $A5, $A6, $A7, $AA, $AB, $AC, $AD, $AE, $AF:
+   Dpmi_StringOp(P, B, OpSize, RepMode, DefSeg, EIPStart);
   $A8: Begin { TEST AL,Ib }
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
    Dpmi_Alu(P, 4, DpmiCPU.Reg.AL, Imm, 1);
@@ -206387,7 +206672,47 @@ Begin
      If OpSize = 2 Then Dpmi_Push16(P, Word(DpmiCPU.EIP)) Else Dpmi_Push32(P, DpmiCPU.EIP);
      DpmiCPU.EIP := Target;
     End;
+    3: Begin { CALL FAR indirect, Ep memoire - BOGUE REEL (2026-10-14,        }
+         { enquete "TPX.EXE : boucle sur memoire zero", 4e trouvaille) :      }
+         { absent, tombait dans le Else generique (sfInvalidCode) - rencontre }
+         { par TPX.EXE/DOS4GW via un CALLF [mem] peu apres le 3e REP MOVSW.   }
+     If OpSize = 2 Then Begin
+      Target := Dpmi_ReadWord(P, Op.LinAddr);
+      NewSel := Dpmi_ReadWord(P, Op.LinAddr + 2);
+     End Else Begin
+      Target := Dpmi_ReadDWord(P, Op.LinAddr);
+      NewSel := Dpmi_ReadWord(P, Op.LinAddr + 4);
+     End;
+     If NewSel = EMU_DPMI_RAWSWITCH_SEL Then
+      { "raw mode switch" (AX=0306h) : voir Dpmi_RawSwitchToReal - continue  }
+      { EN MODE REEL juste apres cette instruction, rien a empiler. }
+      Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP)
+     Else Begin
+      If OpSize = 2 Then Begin
+       Dpmi_Push16(P, DpmiCPU.SegSel[1]); Dpmi_Push16(P, Word(DpmiCPU.EIP));
+      End Else Begin
+       Dpmi_Push32(P, DpmiCPU.SegSel[1]); Dpmi_Push32(P, DpmiCPU.EIP);
+      End;
+      DpmiCPU.SegSel[1] := NewSel;
+      DpmiCPU.EIP := Target;
+     End;
+    End;
     4: DpmiCPU.EIP := Dpmi_GetOp(P, Op, OpSize); { JMP near indirect }
+    5: Begin { JMP FAR indirect, Ep memoire - meme famille que Sub=3 ci-dessus}
+     If OpSize = 2 Then Begin
+      Target := Dpmi_ReadWord(P, Op.LinAddr);
+      NewSel := Dpmi_ReadWord(P, Op.LinAddr + 2);
+     End Else Begin
+      Target := Dpmi_ReadDWord(P, Op.LinAddr);
+      NewSel := Dpmi_ReadWord(P, Op.LinAddr + 4);
+     End;
+     If NewSel = EMU_DPMI_RAWSWITCH_SEL Then
+      Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP)
+     Else Begin
+      DpmiCPU.SegSel[1] := NewSel;
+      DpmiCPU.EIP := Target;
+     End;
+    End;
     6: If OpSize = 2 Then Dpmi_Push16(P, Word(Dpmi_GetOp(P, Op, 2)))
        Else Dpmi_Push32(P, Dpmi_GetOp(P, Op, 4)); { PUSH Ev }
    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
