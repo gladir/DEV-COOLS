@@ -1917,6 +1917,8 @@ Var
  TokenIsString, Active: Boolean;
  CodeSize, DataSize, SymbolCount, FixupCount, DefineCount: Word;
  BssTop: Longint;             { variables globales non initialisees: allouees a partir de 65536 vers le bas }
+ BssCount: Word;              { table des variables BSS pour retablir l'ordre de declaration }
+ BssStart, BssLen: Array[1..MaxSymbols] Of Word;
  CondDepth: Byte;
  SourceName, OutputDir, UnitDirs, InputName, InspectName: TShortString;
  TurboDirs, LibraryName, InspectLibraryName: TShortString;
@@ -2800,16 +2802,24 @@ Begin BssSize:=65536-BssTop End;
 Function AllocBss(N: Word): Word;
 { Variable globale du programme (non initialisee). Les adresses provisoires
   sont dans [BssTop,65536) et sont ramenees apres les constantes par
-  FinalDataAddress lors de l'edition des liens. }
+  FinalDataAddress lors de l'edition des liens, dans l'ordre de declaration
+  (comme TP: un debordement de tampon atteint les variables suivantes). }
 Begin
  If Longint(DataSize)+BssSize+N>MaxImage Then Fail(49,'Segment de donnees trop grand');
- BssTop:=BssTop-N; AllocBss:=Word(BssTop);
+ If BssCount=MaxSymbols Then Unsupported('trop de variables globales');
+ BssTop:=BssTop-N; Inc(BssCount); BssStart[BssCount]:=Word(BssTop); BssLen[BssCount]:=N;
+ AllocBss:=Word(BssTop);
 End;
 
 Function FinalDataAddress(A: Word): Word;
+Var Lo,Hi,Mid: Word;
 Begin
- If (BssTop<65536) And (A>=BssTop) Then FinalDataAddress:=DataSize+(A-BssTop)
- Else FinalDataAddress:=A;
+ If (BssTop<65536) And (A>=BssTop) Then Begin
+  { BssStart est decroissant: trouver la variable contenant A }
+  Lo:=1; Hi:=BssCount;
+  While Lo<Hi Do Begin Mid:=(Lo+Hi) Div 2; If BssStart[Mid]<=A Then Hi:=Mid Else Lo:=Mid+1 End;
+  FinalDataAddress:=DataSize+Word(65536-Longint(BssStart[Lo])-BssLen[Lo])+(A-BssStart[Lo]);
+ End Else FinalDataAddress:=A;
 End;
 
 Function AllocData(N: Word): Word;
@@ -10162,7 +10172,7 @@ Begin
  For I:=1 To FinishCount Do PatchJump(Finish[I],CodeSize);
  Emit($A3); DataAddress(InputError); Emit($5F); Emit($07); Emit2($89,$EC); Emit($5D); Emit($C3);
 
- RuntimeStandard[38]:=CodeSize; { FilePos/Size, resultat DX:AX, erreur CX }
+ RuntimeStandard[38]:=CodeSize; { FilePos/Size, resultat DX:AX, erreur CX; AX bit0: 0=position 1=taille, bit1: en octets }
  FinishCount:=0; ErrorCount:=0;
  Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(24);
  Emit2($89,$46); Emit($FE); Emit2($89,$7E); Emit($E8); Emit2($8C,$46); Emit($EA);
@@ -10171,13 +10181,14 @@ Begin
  Emit($26); Emit2($8B,$5D); Emit(2); Emit2($09,$DB); FailIf($74,106);
  Emit2($89,$5E); Emit($FC); Emit($26); Emit2($8B,$1D);
  Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4201); Emit2($CD,$21); FailIf($72,0);
- Emit2($83,$7E); Emit($FE); Emit(0); Emit2($75,3); P:=Jump;
+ Emit2($F6,$46); Emit($FE); Emit(1); Emit2($75,3); P:=Jump;
  Emit2($89,$46); Emit($F4); Emit2($89,$56); Emit($F2);
  Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4202); Emit2($CD,$21); FailIf($72,0);
  Emit2($89,$46); Emit($F0); Emit2($89,$56); Emit($EE);
  Emit2($8B,$4E); Emit($F2); Emit2($8B,$56); Emit($F4); LoadImmediate($4200); Emit2($CD,$21); FailIf($72,0);
  Emit2($8B,$46); Emit($F0); Emit2($8B,$56); Emit($EE);
- PatchJump(P,CodeSize); Emit2($8B,$5E); Emit($FC); Emit2($31,$C9); CallTo(RuntimeStandard[15]);
+ PatchJump(P,CodeSize); Emit2($F6,$46); Emit($FE); Emit(2); Emit2($75,8); { en octets: pas de division }
+ Emit2($8B,$5E); Emit($FC); Emit2($31,$C9); CallTo(RuntimeStandard[15]);
  Emit2($31,$C9); FinishIO;
  For I:=1 To ErrorCount Do Begin
   PatchJump(ErrorAddresses[I],CodeSize); If ErrorCodes[I]<>0 Then LoadImmediate(ErrorCodes[I]);
@@ -10236,9 +10247,10 @@ Begin
  PatchJump(Done,CodeSize); Emit($59); Emit($5B); Emit($5E); Emit($5F); Emit($07);
  Emit($B8); DataAddress(StringScratch2); Emit2($8C,$DA); Emit($C3);
 
- RuntimeStandard[45]:=CodeSize; { Eof(File): compare position et nombre de records }
- LoadImmediate(0); CallTo(RuntimeStandard[38]); Emit2($09,$C9); Emit2($74,3); P:=Jump;
- Emit($52); Emit($50); LoadImmediate(1); CallTo(RuntimeStandard[38]);
+ RuntimeStandard[45]:=CodeSize; { Eof(File): compare la position et la taille en octets (comme TP:
+   un dernier record incomplet n'est pas la fin du fichier) }
+ LoadImmediate(2); CallTo(RuntimeStandard[38]); Emit2($09,$C9); Emit2($74,3); P:=Jump;
+ Emit($52); Emit($50); LoadImmediate(3); CallTo(RuntimeStandard[38]);
  Emit2($89,$D6); Emit($5B); Emit($5A); Emit2($09,$C9); Emit2($74,3); Q:=Jump;
  Emit2($39,$F2); Emit2($73,3); R:=Jump;
  Emit2($74,3); S:=Jump;
@@ -10893,7 +10905,7 @@ Procedure CompileProgram;
 Var
  I: Word;
 Begin
- CodeSize:=0; DataSize:=0; BssTop:=65536; SymbolCount:=0; FixupCount:=0;
+ CodeSize:=0; DataSize:=0; BssTop:=65536; BssCount:=0; SymbolCount:=0; FixupCount:=0;
  DebugCount:=0; DebugCaptured:=[]; RealReady:=False; EmulatorReady:=False;
  RealCodeBase:=0; RealCodeEnd:=0; RealDataBase:=0; RealDataEnd:=0;
  EmulatorCodeBase:=0; EmulatorCodeEnd:=0; EmulatorDataBase:=0; EmulatorDataEnd:=0;
