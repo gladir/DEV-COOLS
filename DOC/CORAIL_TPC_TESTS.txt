@@ -1,0 +1,122 @@
+VERIFICATION DU COMPILATEUR TPC.PAS AVEC LES SOURCES DU PROJET CORAIL
+=====================================================================
+
+1. Objectif
+-----------
+TPC.PAS est un clone du compilateur en ligne de commande de Turbo Pascal 7.0.
+Pour verifier qu'il compile reellement du code Turbo Pascal 7 et qu'il
+produit des programmes au comportement identique, on a pris les 525 fichiers
+.PAS du projet CORAIL (https://github.com/gladir/corail), ecrits pour Turbo
+Pascal 7.0, dont le depot fournit aussi les executables produits par le
+compilateur Borland (repertoire BIN16/, 517 fichiers EXE).
+
+Methode:
+  1. compiler chaque .PAS avec TPC (fpc -Mtp -O1 TPC.PAS, hote Linux);
+  2. pour chaque programme dont TPC a produit un EXE et dont l'EXE Borland
+     existe, executer les deux sous DOSBox (sans fenetre, SDL_VIDEODRIVER=
+     dummy) avec les memes arguments et le meme repertoire de travail;
+  3. comparer la sortie standard (redirection > OUT.TXT), le texte de l'ecran
+     (capture de la memoire video par SCRDUMP.PAS, lui-meme compile par TPC)
+     et les fichiers produits.
+Quatre jeux d'arguments ont ete appliques a chaque programme, en tenant
+compte de la ligne "Syntaxe" de son aide:
+  help    NOM /?                   (ecran d'aide)
+  noarg   NOM                      (sans argument)
+  nofile  NOM NOFILE.TXT           (fichier inexistant)
+  sample  NOM <arguments deduits>  (fichier(s) d'exemple SAMPLE.* du type
+                                    attendu, fichier de sortie, etc.)
+Le mode sample ne concerne que les 256 programmes dont la syntaxe permet de
+deduire des arguments non interactifs.
+Les scripts et les fichiers d'exemple sont dans TESTS/CORAIL_TPC/.
+
+2. Resultats de compilation
+---------------------------
+Au depart du travail, TPC (herite du clone Turbo Pascal 6.0) compilait 34 des
+525 sources. Chaque passe de compilation a servi a reperer les constructions
+manquantes et les erreurs du compilateur, corrigees dans TPC.PAS, jusqu'au
+resultat final:
+
+  Sources compiles sans erreur ........ 473 / 525
+  Echecs ..............................  52 / 525, repartis ainsi:
+
+  a) Segment de code trop grand (24): 4DOS ADAM ARJ BASIC BASICA C128 C64 CMD
+     COCO3 CV DEBUG32 FDISK FORMAT MSXBASIC NC NDOS PERL REXX RUNZ80 SH SYS
+     TB TRSDOS UNZIP.
+     Le code genere par TPC est environ trois fois plus volumineux que celui
+     de Borland (compilateur a une passe sans allocation de registres); ces
+     gros programmes (executables Borland de 32 a 83 Ko) depassent le segment
+     de code de 64 Ko. Une reduction supplementaire de la taille du code
+     serait necessaire pour les compiler.
+  b) Unite GRAPH absente (13): AMIGADOS BAR GWBASIC LOGO NES VIEWBGX VIEWBMP
+     VIEWLSP VIEWPPM VIEWSVG VIEWWPG VIEWXBM WEBGRAPH.
+     TPC integre CRT, DOS, STRINGS et PRINTER mais pas l'unite graphique BGI.
+  c) Types reels 8087 ($N+: Single, Double, Comp, Extended) (8): 123 CAT
+     CSV2WK1 DI LASTLOG TOKEN2BAS TYPE VIEWBAS. TPC ne gere que le Real de
+     six octets; 123.PAS declare en outre la constante 1E2466 (Extended).
+  d) Sources qui ne sont pas du Turbo Pascal 7 (4): CURL ($mode objfpc),
+     GETMAC (unite WINDOWS), TASKKILL et TASKLIST (unite BASEUNIX); Turbo
+     Pascal 7.0 ne les compile pas non plus.
+  e) Autres (3): CLICK (variable de type procedural), ASM6502 (expression
+     constante sur des ensembles: alphanum = alpha + numeric), DOSKEY
+     (procedure utilisee comme etiquette de donnees en assembleur:
+     Jmp CsData.CsDataRec.Dos21Vec).
+
+Taille des executables (465 programmes compiles par les deux compilateurs):
+  total Borland 4574 Ko, total TPC 12759 Ko, rapport median 3,05.
+  Les variables globales non initialisees ne sont plus stockees dans l'EXE
+  (region BSS reservee par e_minalloc, comme Borland); l'ecart restant vient
+  de la densite du code.
+
+3. Defauts du compilateur reveles par les tests et corriges
+-----------------------------------------------------------
+La comparaison des sorties avec les executables Borland a mis en evidence
+des ecarts qui ne se voyaient pas a la compilation:
+
+  - BlockRead/BlockWrite sans variable resultat: le test "nombre de records
+    transferes = nombre demande" etait inverse (erreur 100/101 a tort sur
+    les transferts corrects, aucune erreur sur une lecture courte); Count*
+    RecSize > 65535 provoquait une erreur alors que TP ne garde que le mot de
+    poids faible. (CSV2XLS, D2U, DESTROY, DOS2UNIX, EXE2BIN, PIFINFO, U2D,
+    UNIX2DOS, WIPEINFO)
+  - FilePos/FileSize sur un fichier non ouvert ne signalaient pas d'erreur
+    (saut conditionnel inverse).
+  - Codes d'erreur sur un fichier non assigne: TP donne 104 (lecture texte),
+    105 (ecriture), 103 (Close, BlockRead, Seek...) et 102 seulement pour
+    Reset/Rewrite/Append/Erase; TPC donnait 102 partout. (programmes ASC2*)
+  - Numero d'erreur d'execution affiche sur trois chiffres comme TP
+    ("Erreur d'execution 002 a 0000:0191.").
+  - Test8087 vaut 0 en $N- (la detection du coprocesseur n'est liee qu'en
+    $N+). (EQUIP)
+  - (P)^ et TypePointeur(expression)^ dereferencaient deux fois le pointeur.
+    (EMSTEST detectait a tort l'absence de gestionnaire EMS)
+  - Comparaison Word/constante et Word/Integer effectuee en signe: TP compare
+    en 32 bits; Word shl n doit rester Word; Word op constante positive
+    reste Word; Word op Integer donne un Longint. (BGX2XBM bouclait sur un
+    fichier invalide au lieu d'afficher "Ligne trop large")
+  - Borne d'une boucle FOR tronquee a la taille de la variable de controle
+    (For I:=1 To Len-1 avec I,Len: Byte et Len=0 bouclait sans fin). (ISBN)
+  - Constante reelle au-dela du Double: plantage du compilateur (erreur 205
+    de Free Pascal) remplace par l'erreur 76. (123)
+  - Taille des executables: les variables globales etaient stockees dans
+    l'EXE (DIR, FS et CATALOG affichaient des tailles et des numeros de
+    cluster differents); chaque concatenation de chaines, Copy, Concat et
+    Write de reel reservait 256 octets de donnees statiques, ce qui faisait
+    depasser 64 Ko de donnees a douze programmes (ARC, CV, DEBUG, DIS68K,
+    DIS8086, DISKPC, NC, PCIINFO, SYMDEB, TV, UNDISKPC...). Les temporaires
+    sont maintenant dans la frame de la procedure, comme TP.
+
+Constructions Turbo Pascal 7 ajoutees pour compiler les sources CORAIL (en
+plus des unites CRT, DOS, STRINGS et PRINTER integrees): tableaux de
+caracteres dans les expressions chaine (concatenation, Copy, Length, Write,
+ReadLn, affectation d'une constante plus courte avec zero terminal,
+Tableau+n), pliage des constantes chaine juxtaposees ('a'+#13+'b'), ^M^J,
+System.Ident, Type(Variable) := valeur, TRec(Pointer(P)^), constante typee
+pointeur = @Variable, constante chaine pour un parametre "array of Char"
+ouvert, Mem[] en parametre var, constantes ensembles avec espace apres "=",
+variables locales jusqu'a 64 Ko, et dans l'assembleur integre: expressions
+constantes (5Ch*4, NOT(16+32), LOW(NOT 80h), TRUE/FALSE), @Result,
+Var.Word[n], OFFSET d'une variable locale, d'une procedure ou d'un
+Type.Champ, saut vers une etiquette Pascal.
+
+4. Resultats de l'execution comparee
+------------------------------------
