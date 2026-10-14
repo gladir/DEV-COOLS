@@ -9322,6 +9322,7 @@ Var
  { dur/CD-ROM reel) - flag SEPARE de EmuOvrDumped (deja utilise par 2       }
  { AUTRES diagnostics ponctuels sans rapport, voir ~89091/~100163) pour ne }
  { jamais interferer avec eux. Voir DOS_RunOneChunk. }
+ DiagDpmiCount : LongInt; { TEMP (2026-10-14), enquete "atteindre l IDE" }
  EmuCS0Dumped   : Boolean;
  { True des que CS a ete vu different de 0 au moins une fois depuis le    }
  { debut de CETTE session -CD (voir DOS_RunOneChunk) - un vrai secteur de }
@@ -204908,10 +204909,21 @@ Var
  Want32: Boolean;
  CodeSel, DataSel, EsSel, SsSel: Word;
  CodeIdx: Integer;
+ DiagSwF: Text;
 Begin
  If Not EmuDpmi.Active Then Exit; { securite, ne devrait pas arriver }
  RetIP := Emu_PopWord(P.CPU);
  RetCS := Emu_PopWord(P.CPU);
+ { TEMP (2026-10-14), enquete "atteindre l IDE" }
+ {$I-}
+ Assign(DiagSwF, 'DIAGSWITCH.LOG'); Append(DiagSwF);
+ If IOResult <> 0 Then Begin Rewrite(DiagSwF); If IOResult <> 0 Then ; End;
+ {$I+}
+ WriteLn(DiagSwF, 'Dpmi_Switch: RetCS=', HexWord(RetCS), ' RetIP=',
+  HexWord(Word(RetIP)), ' P.CPU.Segs.SS=', HexWord(P.CPU.Segs.SS),
+  ' P.CPU.Regs.SP(apres pops)=', HexWord(P.CPU.Regs.SP),
+  ' P.CPU.Segs.CS(avant)=', HexWord(P.CPU.Segs.CS));
+ {$I-} Close(DiagSwF); If IOResult <> 0 Then ; {$I+}
  Want32 := P.CPU.Regs.AX <> 0;
  FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
  DpmiCPU.Is32Bit := Want32;
@@ -205082,7 +205094,21 @@ Var
  StructAddr: LongInt;
  IntNum: Byte;
  CbIdx: Integer;
+ DiagInt31F: Text;
 Begin
+ { TEMP (2026-10-14), enquete "atteindre l IDE" : voir DiagDpmiCount dans }
+ { Dpmi_Step - journalise CHAQUE appel INT 31h dans la meme fenetre. }
+ If (DiagDpmiCount >= 50500) And (DiagDpmiCount <= 300000) Then Begin
+  {$I-}
+  Assign(DiagInt31F, 'DIAGINT31.LOG'); Append(DiagInt31F);
+  If IOResult <> 0 Then Begin Rewrite(DiagInt31F); If IOResult <> 0 Then ; End;
+  {$I+}
+  WriteLn(DiagInt31F, '#', DiagDpmiCount, ' AX=', HexWord(DpmiCPU.Reg.AX),
+   ' BX=', HexWord(DpmiCPU.Reg.BX), ' CX=', HexWord(DpmiCPU.Reg.CX),
+   ' DX=', HexWord(DpmiCPU.Reg.DX), ' SI=', HexWord(Word(DpmiCPU.Reg.ESI)),
+   ' DI=', HexWord(Word(DpmiCPU.Reg.EDI)));
+  {$I-} Close(DiagInt31F); If IOResult <> 0 Then ; {$I+}
+ End;
  Exclude(DpmiCPU.Flags.s, EFG_CF);
  Case DpmiCPU.Reg.AX Of
   $0000: Begin
@@ -205916,7 +205942,17 @@ End;
 { dans Dpmi_Step) ne les remplace par le selecteur marqueur - a passer      }
 { explicitement puisque cette procedure est appelee APRES ce remplacement. }
 Procedure Dpmi_RawSwitchToReal(Var P: TEmulatorPanel; RetCS: Word; RetIP: LongInt);
+Var DiagRswF: Text;
 Begin
+ { TEMP (2026-10-14), enquete "atteindre l IDE" }
+ {$I-}
+ Assign(DiagRswF, 'DIAGSWITCH.LOG'); Append(DiagRswF);
+ If IOResult <> 0 Then Begin Rewrite(DiagRswF); If IOResult <> 0 Then ; End;
+ {$I+}
+ WriteLn(DiagRswF, 'Dpmi_RawSwitchToReal: RetCS(sel)=', HexWord(RetCS),
+  ' Dpmi_SelBase(RetCS)=', HexLong(Dpmi_SelBase(RetCS)),
+  ' RetIP=', HexLong(RetIP));
+ {$I-} Close(DiagRswF); If IOResult <> 0 Then ; {$I+}
  P.CPU.Regs := DpmiCPU.Reg;
  P.CPU.Flags.s := DpmiCPU.Flags.s;
  P.CPU.Segs.CS := Word(Dpmi_SelBase(RetCS) Div 16);
@@ -205928,6 +205964,45 @@ Begin
  P.CPU.FS := Word(Dpmi_SelBase(DpmiCPU.SegSel[4]) Div 16);
  P.CPU.GS := Word(Dpmi_SelBase(DpmiCPU.SegSel[5]) Div 16);
  DpmiCPU.Active := False;
+ { TEMP (2026-10-14), enquete "atteindre l IDE" : reutilise EmuTraceCnt/   }
+ { EMUSTEP.LOG (voir Emu_StepOne) pour voir EXACTEMENT ce qui se passe en }
+ { mode reel juste apres ce retour. }
+ EmuTraceCnt := 400;
+End;
+
+{ Symetrique de Dpmi_RawSwitchToReal ci-dessus, pour l AUTRE sens du       }
+{ "raw mode switch" (AX=0306h) - voir DOC/DPMI.txt 7.7 : BX:CX = adresse   }
+{ de la "pile mode reel vers mode protege". Decouvert en direct (2026-10- }
+{ 14, enquete "atteindre l IDE", 6e trouvaille) : une fois de retour en    }
+{ mode reel (voir Dpmi_RawSwitchToReal), le CLIENT continue un peu de     }
+{ code reel PUIS refait un "JMP FAR" (pas un CALL, donc rien d empile par  }
+{ le client cette fois) a travers ce MEME marqueur EMU_DPMI_RAWSWITCH_SEL  }
+{ stocke a une AUTRE adresse (BX:CX au lieu de SI:DI) pour REVENIR en      }
+{ mode protege - jusqu ici, rien dans Emu_StepOne ne reconnaissait ce      }
+{ marqueur en mode REEL, et le CPU reel sautait donc vers un VRAI segment  }
+{ reel $FFF8 (memoire jamais ecrite, donc vide) au lieu de rebasculer :    }
+{ "DpmiCPU" et "P.CPU" representent la MEME machine logique, juste vue     }
+{ sous deux angles (reel/protege) - on reprend donc EXACTEMENT a l adresse }
+{ qui suit ce JMP, traduite en selecteur (reutilise le selecteur 4 s il    }
+{ alias deja la meme base reelle, plutot que d en allouer un nouveau a     }
+{ chaque aller-retour). }
+Procedure Emu_RawSwitchToProtected(Var P: TEmulatorPanel; ContCS: Word; ContIP: Word);
+Var Sel: Word;
+Begin
+ If Dpmi_SelBase(DpmiCPU.SegSel[1]) = (LongInt(ContCS) Shl 4) Then
+  Sel := DpmiCPU.SegSel[1]
+ Else Sel := Dpmi_SegToSel(ContCS);
+ DpmiCPU.SegSel[1] := Sel;
+ DpmiCPU.EIP := ContIP;
+ DpmiCPU.Reg := P.CPU.Regs;
+ DpmiCPU.Flags.s := P.CPU.Flags.s;
+ DpmiCPU.SegSel[0] := Dpmi_SegToSel(P.CPU.Segs.ES);
+ DpmiCPU.SegSel[2] := Dpmi_SegToSel(P.CPU.Segs.SS);
+ DpmiCPU.SegSel[3] := Dpmi_SegToSel(P.CPU.Segs.DS);
+ DpmiCPU.SegSel[4] := Dpmi_SegToSel(P.CPU.FS);
+ DpmiCPU.SegSel[5] := Dpmi_SegToSel(P.CPU.GS);
+ DpmiCPU.Reg.ESP := P.CPU.Regs.SP;
+ DpmiCPU.Active := True;
 End;
 
 { BOGUE REEL (2026-10-14, enquete "TPX.EXE : boucle sur memoire zero",      }
@@ -206054,8 +206129,28 @@ Var
  RepMode: Byte; { 0=aucun, 1=REP/REPE, 2=REPNE - voir $A4-$A5/$A6-$A7/$AA-$AF }
  EIPStart: LongInt; { EIP avant prefixes, pour rejouer l instruction REP     }
  NewSel: Word; { nouveau CS, voir groupe FF /3 (CALLF) et /5 (JMPF) indirects }
+ RetIP32: LongInt; RetCS16: Word; { "raw mode switch" EMU_DPMI_RAWSWITCH_SEL }
+ MulRes: LongInt; MulRes64: Int64; { IMUL $69/$6B }
+ DiagDpmiF: Text;
 Begin
  If Not DpmiCPU.Active Then Exit;
+ Inc(DiagDpmiCount);
+ If (DiagDpmiCount >= 50588) And (DiagDpmiCount <= 50610) Then Begin
+  {$I-} Assign(DiagDpmiF, 'DIAGRTM.LOG'); Append(DiagDpmiF);
+  If IOResult <> 0 Then Begin Rewrite(DiagDpmiF); If IOResult <> 0 Then ; End;
+  {$I+}
+  WriteLn(DiagDpmiF, '#', DiagDpmiCount, ' CS=', HexWord(DpmiCPU.SegSel[1]),
+   ' CSBase=', HexLong(Dpmi_SelBase(DpmiCPU.SegSel[1])),
+   ' EIP=', HexWord(DpmiCPU.EIP),
+   ' EAX=', HexLong(DpmiCPU.Reg.EAX), ' EBX=', HexLong(DpmiCPU.Reg.EBX),
+   ' ECX=', HexLong(DpmiCPU.Reg.ECX), ' EDX=', HexLong(DpmiCPU.Reg.EDX),
+   ' ESI=', HexLong(DpmiCPU.Reg.ESI), ' EDI=', HexLong(DpmiCPU.Reg.EDI),
+   ' EBP=', HexLong(DpmiCPU.Reg.EBP), ' ESP=', HexLong(DpmiCPU.Reg.ESP),
+   ' DS=', HexWord(DpmiCPU.SegSel[3]), ' ES=', HexWord(DpmiCPU.SegSel[0]),
+   ' bytes=', HexByte(Dpmi_FetchByte(P, 0)), ' ', HexByte(Dpmi_FetchByte(P, 1)),
+   ' ', HexByte(Dpmi_FetchByte(P, 2)), ' ', HexByte(Dpmi_FetchByte(P, 3)));
+  {$I-} Close(DiagDpmiF); If IOResult <> 0 Then ; {$I+}
+ End;
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
  EIPStart := DpmiCPU.EIP;
@@ -206299,6 +206394,39 @@ Begin
     End;
     Res := Dpmi_Alu(P, Reg, A, Imm, OpSize);
     If Reg <> 7 Then Dpmi_PutOp(P, Op, OpSize, Res);
+   End;
+  End;
+  $69, $6B: Begin { IMUL Gv,Ev,Iz/Ib - BOGUE REEL (2026-10-14, enquete       }
+   { "atteindre l IDE", 7e trouvaille) : absent, tombait dans le Else        }
+   { generique (sfInvalidCode) - rencontre par RTM.EXE juste apres avoir     }
+   { atteint son routine d affichage d erreur reelle (CS=0384), le premier   }
+   { code "applicatif" (pas plomberie DPMI) touche dans toute cette enquete. }
+   ModRM := Dpmi_FetchByte(P, 0);
+   Reg := (ModRM Shr 3) And 7;
+   Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+   Inc(DpmiCPU.EIP, Op.Len);
+   A := Dpmi_GetOp(P, Op, OpSize);
+   If B = $6B Then Begin
+    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
+   End Else If OpSize = 2 Then Begin
+    Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
+    If (Imm And $8000) <> 0 Then Imm := Imm Or LongInt($FFFF0000);
+   End Else Begin
+    Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
+   End;
+   If OpSize = 2 Then Begin
+    MulRes := LongInt(SmallInt(Word(A))) * LongInt(SmallInt(Word(Imm)));
+    Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(MulRes));
+    If (MulRes < -32768) Or (MulRes > 32767) Then
+     Begin Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF); End
+    Else Begin Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF); End;
+   End Else Begin
+    MulRes64 := Int64(A) * Int64(Imm);
+    Dpmi_SetReg32(DpmiCPU.Reg, Reg, LongInt(LongWord(MulRes64 And $FFFFFFFF)));
+    If (MulRes64 < -2147483648) Or (MulRes64 > 2147483647) Then
+     Begin Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF); End
+    Else Begin Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF); End;
    End;
   End;
   $C0, $C1, $D0, $D1, $D2, $D3: Begin { groupe 2 (decalages/rotations) -    }
@@ -206780,11 +206908,36 @@ Begin
       Target := Dpmi_ReadDWord(P, Op.LinAddr);
       NewSel := Dpmi_ReadWord(P, Op.LinAddr + 4);
      End;
-     If NewSel = EMU_DPMI_RAWSWITCH_SEL Then
-      { "raw mode switch" (AX=0306h) : voir Dpmi_RawSwitchToReal - continue  }
-      { EN MODE REEL juste apres cette instruction, rien a empiler. }
-      Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP)
-     Else Begin
+     If NewSel = EMU_DPMI_RAWSWITCH_SEL Then Begin
+      { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", 5e trouvaille) :    }
+      { ce CALL FAR ne "continue PAS sur place" - voir DOC/DPMI.txt 7.7, qui   }
+      { decrit SI:DI/BX:CX comme l adresse d une "pile de commutation", pas   }
+      { un point d entree a sauter-et-continuer. Confirme en direct : le      }
+      { client encapsule l appel dans un petit "helper" (empile ES,DI,AX,     }
+      { DS->ES avant d appeler [ptr], les depile APRES dans son epilogue      }
+      { "POP AX;POP DI;POP ES;RETF") et son APPELANT a lui-meme empile un CS   }
+      { "manuel" (PUSH CS) avant d appeler ce helper par CALL PROCHE - but :    }
+      { faire agir le futur RETF du helper comme un retour LOIN jusqu a        }
+      { l appelant (CS pousse = son propre selecteur courant). La 1ere        }
+      { version ("continue a l EIP courant") laissait cet epilogue s executer }
+      { en mode REEL, ou "CS=4" (un SELECTEUR, laisse par le client) etait pris}
+      { a tort pour un VRAI segment reel (adresse IVT/garbage). Le retour      }
+      { reel ne doit se faire qu APRES avoir rejoue cet epilogue (depiler les  }
+      { 3 mots AX/DI/ES du helper), PUIS traduire IP:CS par la pile - seule    }
+      { facon de retrouver le CS=4->0124h attendu. }
+      If OpSize = 2 Then Begin
+       DpmiCPU.Reg.AX := Dpmi_Pop16(P);
+       DpmiCPU.Reg.DI := Dpmi_Pop16(P);
+       DpmiCPU.SegSel[0] := Dpmi_Pop16(P); { ES }
+       RetIP32 := Dpmi_Pop16(P); RetCS16 := Dpmi_Pop16(P);
+      End Else Begin
+       DpmiCPU.Reg.EAX := Dpmi_Pop32(P);
+       DpmiCPU.Reg.EDI := Dpmi_Pop32(P);
+       DpmiCPU.SegSel[0] := Word(Dpmi_Pop32(P)); { ES }
+       RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
+      End;
+      Dpmi_RawSwitchToReal(P, RetCS16, RetIP32);
+     End Else Begin
       If OpSize = 2 Then Begin
        Dpmi_Push16(P, DpmiCPU.SegSel[1]); Dpmi_Push16(P, Word(DpmiCPU.EIP));
       End Else Begin
@@ -206803,9 +206956,15 @@ Begin
       Target := Dpmi_ReadDWord(P, Op.LinAddr);
       NewSel := Dpmi_ReadWord(P, Op.LinAddr + 4);
      End;
-     If NewSel = EMU_DPMI_RAWSWITCH_SEL Then
-      Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP)
-     Else Begin
+     If NewSel = EMU_DPMI_RAWSWITCH_SEL Then Begin
+      { Meme bogue/correctif que Sub=3 ci-dessus - voir ce commentaire. }
+      If OpSize = 2 Then Begin
+       RetIP32 := Dpmi_Pop16(P); RetCS16 := Dpmi_Pop16(P);
+      End Else Begin
+       RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
+      End;
+      Dpmi_RawSwitchToReal(P, RetCS16, RetIP32);
+     End Else Begin
       DpmiCPU.SegSel[1] := NewSel;
       DpmiCPU.EIP := Target;
      End;
@@ -210794,11 +210953,19 @@ Begin
          Exit;
         End;
      3: Begin                                   { CALL FAR m16:16 }
+         NewIP := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
+         NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+         If NewCS = EMU_DPMI_RAWSWITCH_SEL Then Begin
+          { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", 6e trouvaille) : }
+          { voir Emu_RawSwitchToProtected - symetrique de Sub=3/5 dans          }
+          { Dpmi_Step, meme marqueur mais sens reel -> protege. }
+          Inc(P.CPU.IP, 1 + Op.Len);
+          Emu_RawSwitchToProtected(P, P.CPU.Segs.CS, P.CPU.IP);
+          Exit;
+         End;
          Inc(P.CPU.IP, 1 + Op.Len);
          Emu_PushWord(P.CPU, P.CPU.Segs.CS);
          Emu_PushWord(P.CPU, P.CPU.IP);
-         NewIP := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
-         NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
          P.CPU.IP := NewIP;
          P.CPU.Segs.CS := NewCS;
          Exit;
@@ -210810,6 +210977,11 @@ Begin
      5: Begin                                   { JMP FAR m16:16 }
          NewIP := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
          NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+         If NewCS = EMU_DPMI_RAWSWITCH_SEL Then Begin
+          { Meme bogue/correctif que Sub=3 ci-dessus - voir Emu_RawSwitchToProtected. }
+          Emu_RawSwitchToProtected(P, P.CPU.Segs.CS, Word(P.CPU.IP + 1 + Op.Len));
+          Exit;
+         End;
          P.CPU.IP := NewIP;
          P.CPU.Segs.CS := NewCS;
          Exit;
