@@ -207223,15 +207223,28 @@ Begin
     End;
     6: If OpSize = 2 Then Dpmi_Push16(P, Word(Dpmi_GetOp(P, Op, 2)))
        Else Dpmi_Push32(P, Dpmi_GetOp(P, Op, 4)); { PUSH Ev }
-   Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+   Else Begin
+    If DpmiCPU.IntSel[6] <> 0 Then Dpmi_FireProtectedHandler(P, 6)
+    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+   End;
    End;
   End;
  Else Begin
   { Opcode non reconnu par ce sous-ensemble (voir le commentaire de tete de}
-  { section) : arreter proprement plutot que de continuer avec un etat CPU}
-  { incorrect - honnete plutot que fabrique. }
-  P.CPU.Fault := sfInvalidCode;
-  DpmiCPU.Active := False;
+  { section) : relance l exception #6 (Invalid Opcode) vers le gestionnaire}
+  { INSTALLE PAR L INVITE le cas echeant - BOGUE REEL CORRIGE (2026-10-14, }
+  { enquete "atteindre l IDE" suite #16) : jusqu ici cette branche arretait}
+  { TOUJOURS net (sfInvalidCode), meme quand le CLIENT avait DEJA installe }
+  { un gestionnaire #6 (AX=0203h/0204h) - un vrai hote DPMI le relancerait }
+  { TOUJOURS la, lui laissant une chance de se retablir ou de terminer     }
+  { proprement par ses propres moyens (meme philosophie deja appliquee a  }
+  { #0 et #0D ci-dessus/dans Dpmi_LoadSelOrFault) - repli honnete           }
+  { seulement si AUCUN gestionnaire n est installe. }
+  If DpmiCPU.IntSel[6] <> 0 Then Dpmi_FireProtectedHandler(P, 6)
+  Else Begin
+   P.CPU.Fault := sfInvalidCode;
+   DpmiCPU.Active := False;
+  End;
  End;
  End;
 End;
