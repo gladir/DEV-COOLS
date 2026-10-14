@@ -10366,17 +10366,9 @@ Begin
  Emit2($88,$05); Emit($4F);                                 { mov [di],al; dec di }
  For K:=1 To 4 Do Emit2($D1,$EB);                           { shr bx,1 }
  Emit($E2); Emit(Byte(Longint(L2)-CodeSize-1));
- { prefixe (19 octets), puis le nombre sans zeros de tete, puis le suffixe }
- Emit2($B4,$40); Emit($BB); EmitWord(1); Emit($B9); EmitWord(19);
+ { Comme TP, le numero est affiche sur trois chiffres ("Runtime error 002 at ...") }
+ Emit2($B4,$40); Emit($BB); EmitWord(1); Emit($B9); EmitWord(Length(Msg));
  Emit($BA); DataAddress(RuntimeErrorText); Emit2($CD,$21);
- Emit($BA); DataAddress(RuntimeErrorText+19); Emit($B9); EmitWord(3);
- L1:=CodeSize;
- Emit2($89,$D7); Emit2($80,$3D); Emit(Ord('0')); Emit2($75,12); { mov di,dx; cmp byte [di],'0'; jne fin }
- Emit2($83,$F9); Emit(1); Emit2($76,2); Emit($42); Emit($49);  { cmp cx,1; jbe fin; inc dx; dec cx }
- Emit2($83,$F9); Emit(1); Emit2($77,Byte(Longint(L1)-CodeSize-2)); { cmp cx,1; ja boucle }
- Emit2($B4,$40); Emit($BB); EmitWord(1); Emit2($CD,$21);
- Emit2($B4,$40); Emit($BB); EmitWord(1); Emit($B9); EmitWord(Length(Msg)-22);
- Emit($BA); DataAddress(RuntimeErrorText+22); Emit2($CD,$21);
  Emit($58); Emit2($B4,$4C); Emit2($CD,$21);                 { pop ax; exit(al) }
 End;
 
