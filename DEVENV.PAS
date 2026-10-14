@@ -193179,15 +193179,28 @@ Begin
     Emu_HostPath := EmuExeDir + '\' + S;
     Exit;
   End;
-  { Fallback : chemin relatif introuvable dans le repertoire courant
-    (celui de DEVENV.exe) -> tenter le repertoire de l EXE charge.
-    Indispensable pour TP4/TP5/TP6/QP qui cherchent TURBO.TPL,
-    TURBO.HLP, QPL.COM, etc. au repertoire courant. }
-  If (Length(EmuExeDir) > 0) And (Not FileExists(S)) Then Begin
-    If FileExists(EmuExeDir + '\' + S) Then Begin
-      Emu_HostPath := EmuExeDir + '\' + S;
-      Exit;
-    End;
+  { BOGUE REEL (2026-10-13, demande explicite de l utilisateur - enquete    }
+  { "TURBO.TPL is invalid") : l ancien ordre ("si S n existe PAS au         }
+  { repertoire de travail de DEVENV.exe, essayer EmuExeDir") privilegiait   }
+  { a tort le repertoire de l HOTE plutot que celui du programme INVITE -   }
+  { un chemin relatif DOS doit TOUJOURS se resoudre par rapport au          }
+  { repertoire courant de l'INVITE (EmuExeDir), jamais par accident contre  }
+  { celui de DEVENV.exe lui-meme. Decouvert concretement : un VIEUX fichier }
+  { TURBO.TPL (1987, 36816 octets) traine depuis des annees a la racine du  }
+  { depot (le repertoire de travail de DEVENV.exe) - comme ce fichier       }
+  { EXISTE (juste avec un contenu perime/tronque par rapport au vrai        }
+  { TURBO.TPL de 1990 dans C:\LANGAGE\TP6\, 45344 octets), l ancienne        }
+  { condition "Not FileExists(S)" etait FAUSSE et EmuExeDir n etait JAMAIS  }
+  { consulte - TURBO.EXE ouvrait silencieusement le mauvais fichier,        }
+  { tronque, d ou "TURBO.TPL is invalid" (le fichier ouvert etait            }
+  { REELLEMENT invalide/incomplet, juste pas celui prevu). Desormais :      }
+  { EmuExeDir est TOUJOURS tente EN PREMIER s il contient reellement le     }
+  { fichier - le repertoire de travail de DEVENV.exe ne sert plus que de    }
+  { tout dernier recours (programme sans EmuExeDir connu, demarrage tres    }
+  { precoce). }
+  If (Length(EmuExeDir) > 0) And FileExists(EmuExeDir + '\' + S) Then Begin
+    Emu_HostPath := EmuExeDir + '\' + S;
+    Exit;
   End;
   Emu_HostPath := S;
 End;
@@ -194323,8 +194336,6 @@ Var
  NewCwd: String;
  DiagAHIn21: Byte;
  DiagF21C: Text;
- DiagStr09: String; DiagF09: Text; DiagJ: Integer; DiagB09: Byte;
- DiagStr40: String; DiagF40: Text; DiagJ40: Integer; DiagB40: Byte;
 Begin
  DiagAHIn21 := P.CPU.Regs.AH;
  Case P.CPU.Regs.AH Of
@@ -194376,21 +194387,6 @@ Begin
   $09:
    Begin
     Ofs := P.CPU.Regs.DX;
-    { TEMP DIAG (enquete EMS TURBO.EXE) : capturer le texte + l appelant }
-    Begin
-     DiagStr09 := '';
-     For DiagJ := 0 To 200 Do Begin
-      DiagB09 := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + DiagJ);
-      If Chr(DiagB09) = '$' Then Break;
-      If (DiagB09 >= 32) And (DiagB09 < 127) Then DiagStr09 := DiagStr09 + Chr(DiagB09);
-     End;
-     {$I-} Assign(DiagF09, 'DIAGPRINT9.LOG'); Append(DiagF09);
-     If IOResult <> 0 Then Begin Rewrite(DiagF09); If IOResult <> 0 Then ; End;
-     {$I+}
-     WriteLn(DiagF09, 'step=', P.TotalSteps, ' CS:IP=', HexWord(P.CPU.Segs.CS), ':',
-      HexWord(P.CPU.IP), ' text="', DiagStr09, '"');
-     {$I-} Close(DiagF09); {$I+} If IOResult <> 0 Then ;
-    End;
     For I := 0 To 8191 Do Begin
      B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
      If Chr(B) = '$' Then Break;
@@ -195017,22 +195013,6 @@ Begin
     Ofs := P.CPU.Regs.DX;
     H := P.CPU.Regs.BX;
     If (H = 1) Or (H = 2) Then Begin
-     { TEMP DIAG (enquete EMS TURBO.EXE) }
-     Begin
-      DiagStr40 := '';
-      For DiagJ40 := 0 To P.CPU.Regs.CX - 1 Do Begin
-       DiagB40 := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + DiagJ40);
-       If (DiagB40 >= 32) And (DiagB40 < 127) Then DiagStr40 := DiagStr40 + Chr(DiagB40)
-       Else If DiagB40 = 13 Then DiagStr40 := DiagStr40 + '\r'
-       Else If DiagB40 = 10 Then DiagStr40 := DiagStr40 + '\n';
-      End;
-      {$I-} Assign(DiagF40, 'DIAGPRINT9.LOG'); Append(DiagF40);
-      If IOResult <> 0 Then Begin Rewrite(DiagF40); If IOResult <> 0 Then ; End;
-      {$I+}
-      WriteLn(DiagF40, 'AH40 step=', P.TotalSteps, ' CS:IP=', HexWord(P.CPU.Segs.CS), ':',
-       HexWord(P.CPU.IP), ' text="', DiagStr40, '"');
-      {$I-} Close(DiagF40); {$I+} If IOResult <> 0 Then ;
-     End;
      For I := 0 To P.CPU.Regs.CX - 1 Do Begin
       B := Emu_ReadByte(P.CPU, P.CPU.Segs.DS, Ofs + I);
       EmuVScr_PutChar(P, Chr(B));
@@ -207875,6 +207855,33 @@ Begin
     Imm8 := Emu_FetchByte(P.CPU, 1);
     Inc(P.CPU.IP, 2);
     Emu_DoInt(P, Imm8);
+    { BOGUE REEL (2026-10-14, enquete "TURBO.TPL is invalid") : quand ce     }
+    { "INT n" s execute DEPUIS notre propre trampoline par defaut           }
+    { (Emu_WriteDefaultVector : octets bruts "INT n ; IRET" a                }
+    { EMU_DEFAULT_IVT_SEG, voir Emu_IntIsHooked qui reconnait ce CS), l      }
+    { instruction IRET qui suit IMMEDIATEMENT va depiler FLAGS:CS:IP non     }
+    { pas depuis un etat "live", mais depuis le TRIPLET pousse par l invite  }
+    { lui-meme via la convention universelle de chainage reel-mode          }
+    { "PUSHF ; CALL FAR [ancien_vecteur]" (seule facon saine d invoquer un   }
+    { vecteur cense se terminer par IRET). Resultat : CF (et les autres      }
+    { flags) que Emu_DoInt21/Emu_DoInt10/etc. viennent de calculer dans      }
+    { P.CPU.Flags.s ci-dessus sont ENTIEREMENT ignores par ce IRET, qui      }
+    { restaure plutot les flags TELS QU ILS ETAIENT AVANT l appel (figes par }
+    { le PUSHF de l invite, AVANT que le resultat reel soit connu) - un      }
+    { CF perime totalement sans rapport (ex. laisse par un calcul           }
+    { arithmetique precedent sans rapport) ecrase donc le vrai resultat      }
+    { (succes/echec) a chaque fois qu un programme invite a REELLEMENT       }
+    { hooke un vecteur puis chaine vers l ancien gestionnaire - confirme     }
+    { en direct : TURBO.EXE (IDE Turbo Pascal 6) hooke INT 21h (IVT          }
+    { pointant hors de EMU_DEFAULT_IVT_SEG), et sa lecture AH=3Fh de         }
+    { TURBO.TPL - qui reussit reellement, CF efface par Emu_DoInt21 - revient}
+    { avec CF=1 perime, faisant croire a TURBO.EXE que la lecture a echoue.  }
+    { Correctif : avant le IRET qui va suivre, ecrire PAR-DESSUS le mot      }
+    { FLAGS deja empile (a SS:[SP+4], sous IP et CS empiles ensuite par le   }
+    { CALL FAR) la valeur REELLE que Emu_DoInt vient de calculer. }
+    If P.CPU.Segs.CS = EMU_DEFAULT_IVT_SEG Then
+     Emu_WriteWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4),
+       P.CPU.Flags.Base);
    End;
   $CC: { INT 3 (1 octet, vecteur fixe 3) - deja gere par le coeur 32     }
        { bits protege (Dpmi_Step), manquait ici pour le coeur reel-mode. }
