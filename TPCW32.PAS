@@ -9637,6 +9637,7 @@ End;
 
 Var
   LastSuccPredType : Integer;   { type de l operande du dernier Succ/Pred }
+  LastIndexIsStrLen : Boolean;  { la derniere lvalue indexee est S[0] (octet de longueur) }
 
 { CharLitArgFollows : l argument qui suit est un litteral d un seul caractere : ('x') }
 Function CharLitArgFollows : Boolean;
@@ -10727,6 +10728,12 @@ Begin
           GenLoadScalar('[EBX]', LI);
           EmitInstr('ADD EAX,ECX');
           GenStoreScalar('[EBX]', LI);
+          If LastIndexIsStrLen Then
+          Begin
+            EmitInstr('MOVZX ECX,AL');
+            EmitInstr('ADD ECX,EBX');
+            EmitInstr('MOV BYTE PTR [ECX+1],0');
+          End;
         End;
         EPMatch(')');
       End;
@@ -10753,6 +10760,12 @@ Begin
           GenLoadScalar('[EBX]', LI);
           EmitInstr('SUB EAX,ECX');
           GenStoreScalar('[EBX]', LI);
+          If LastIndexIsStrLen Then
+          Begin
+            EmitInstr('MOVZX ECX,AL');
+            EmitInstr('ADD ECX,EBX');
+            EmitInstr('MOV BYTE PTR [ECX+1],0');
+          End;
         End;
         EPMatch(')');
       End;
@@ -17276,9 +17289,13 @@ End;
 Procedure ParseIndexW32(PI : Integer; Var T : Integer);
 Var
   ElemSz, ET : Integer;
+  IsZero : Boolean;
 Begin
+  LastIndexIsStrLen := False;
   Repeat
     EmitInstr('PUSH EAX');
+    IsZero := (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) And (TokenPool[EP].IntVal = 0) And
+              (EP + 1 < EPEnd) And (TokenPool[EP + 1].Kind = TK_PUNCT) And (TokenPool[EP + 1].Val = ']');
     ParseExpr(PI);
     If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_ARRAY) Then
     Begin
@@ -17296,7 +17313,10 @@ Begin
     End
     Else If (T >= 0) And (T < TypeCount) And
             ((TypeTab[T].Kind = TYK_STRING) Or (TypeTab[T].Kind = TYK_PCHAR)) Then
-      T := TY_IDX_CHAR          { S[i] : octet i (S[0] = longueur) }
+    Begin
+      If (TypeTab[T].Kind = TYK_STRING) And IsZero Then LastIndexIsStrLen := True;
+      T := TY_IDX_CHAR;         { S[i] : octet i (S[0] = longueur) }
+    End
     Else
     Begin
       EmitInstr('SHL EAX,2');
@@ -17432,6 +17452,7 @@ Begin
   If (TokenPool[EP].Kind <> TK_IDENT) And (TokenPool[EP].Kind <> TK_KEYWORD) Then Exit;
   Up := StrUpperCase(TokenPool[EP].Val);
   ParseLValueAddrW32 := True;
+  LastIndexIsStrLen := False;
   WI := -1;
   If WithDepth > 0 Then
     WI := WithFieldIndex(Up, FOfs);
@@ -25902,6 +25923,13 @@ Begin
           WantCharLit := False;
           EmitInstr('POP EBX');
           GenStoreToAddr(TIdx);
+          If LastIndexIsStrLen Then
+          Begin
+            { S[0] := n : maintenir le terminateur NUL de la vue ASCIIZ }
+            EmitInstr('MOVZX ECX,AL');
+            EmitInstr('ADD ECX,EBX');
+            EmitInstr('MOV BYTE PTR [ECX+1],0');
+          End;
         End;
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
