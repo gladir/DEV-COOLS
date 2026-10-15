@@ -11219,6 +11219,7 @@ Begin
             EmitInstr('PUSH EAX');
             EmitInstr('CALL ' + TP_RT_PFX + 'EOF_FILE');
             EmitInstr('ADD ESP,4');
+            EmitIoCheck;
           End;
         End;
         EPMatch(')');
@@ -11348,6 +11349,7 @@ Begin
       EmitInstr('PUSH EAX');          { adresse de la variable fichier }
       EmitInstr('CALL ' + TP_RT_PFX + 'FILEPOS');
       EmitInstr('ADD ESP,4');
+      EmitIoCheck;
       { EAX = position courante en enregistrements }
       Exit;
     End;
@@ -11368,6 +11370,7 @@ Begin
       EmitInstr('PUSH EAX');          { adresse de la variable fichier }
       EmitInstr('CALL ' + TP_RT_PFX + 'FILESIZE');
       EmitInstr('ADD ESP,4');
+      EmitIoCheck;
       { EAX = taille du fichier en enregistrements }
       Exit;
     End;
@@ -20459,6 +20462,9 @@ Begin
       FileArgName := TokenPool[EP].Val;
       GenLoadAddr(PI, TokenPool[EP].Val);
       Inc(EP);
+      EmitInstr('MOV EBX,EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+      EmitIoCheck;
       EmitInstr('MOV EAX,DWORD PTR [EAX]');    { charger le handle }
       EmitInstr('MOV DWORD PTR [FILE_WRHND],EAX');
       { Sauter la virgule si presente }
@@ -20711,6 +20717,7 @@ Begin
         EmitInstr('PUSH EAX');  { adresse de la variable fichier }
         EmitInstr('CALL ' + TP_RT_PFX + 'READLN_FILE');
         EmitInstr('ADD ESP,4');
+        EmitIoCheck;
       End;
     End;
   End;
@@ -20731,6 +20738,7 @@ Begin
         EmitInstr('PUSH 1');
         EmitInstr('CALL ' + TP_RT_PFX + 'BLOCKREAD');
         EmitInstr('ADD ESP,12');
+        EmitIoCheck;
       End
       Else Inc(EP);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then Inc(EP)
@@ -20753,6 +20761,7 @@ Begin
         EmitInstr('PUSH EAX');
         EmitInstr('CALL ' + TP_RT_PFX + 'READCH_FILE');
         EmitInstr('ADD ESP,4');
+        EmitIoCheck;
         GenStoreVar(PI, VName);
       End
       Else Inc(EP);
@@ -22980,6 +22989,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'SEEK');
       EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -23067,6 +23077,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + Lbl);
       EmitInstr('ADD ESP,12');
+      EmitIoCheck;
       If ArgName <> '' Then
       Begin
         EmitInstr('PUSH EAX');
@@ -23145,6 +23156,12 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        If Not LastExprIsPascalStr Then
+        Begin
+          { le chemin doit etre une chaine Pascal (litteral ASCIIZ, PChar...) }
+          GenStrSourceESI;
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+        End;
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);
@@ -29019,6 +29036,7 @@ Begin
   EmitInstr('PUSH EDX');
   EmitInstr('PUSH ESI');
   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('CMP DWORD PTR [EBX],-1');
   EmitInstr('JE ' + TP_RT_PFX + 'TF_EF_YES');
   EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + '],0');
@@ -29151,6 +29169,7 @@ Begin
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
   EmitInstr('CMP EAX,-1');
   EmitInstr('JNE ' + TP_RT_PFX + 'TF_RC_OK');
@@ -29170,6 +29189,7 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('XOR ECX,ECX');
   EmitLabel(TP_RT_PFX + 'TF_RF_NX');
   EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
@@ -29203,6 +29223,7 @@ Begin
   EmitInstr('PUSH EDX');
   EmitInstr('PUSH ESI');
   EmitInstr('MOV EBX,DWORD PTR [EBP+16]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('MOV ESI,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
   EmitInstr('CMP ESI,0');
   EmitInstr('JNE ' + TP_RT_PFX + 'TF_BR_RS');
@@ -29234,6 +29255,7 @@ Begin
   EmitInstr('PUSH EDX');
   EmitInstr('PUSH ESI');
   EmitInstr('MOV EBX,DWORD PTR [EBP+16]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('MOV ESI,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
   EmitInstr('CMP ESI,0');
   EmitInstr('JNE ' + TP_RT_PFX + 'TF_BW_RS');
@@ -29262,6 +29284,7 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
   EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('MOV ECX,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
   EmitInstr('CMP ECX,0');
   EmitInstr('JNE ' + TP_RT_PFX + 'TF_SK_RS');
@@ -29288,6 +29311,7 @@ Begin
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('PUSH 1');
   EmitInstr('PUSH 0');
   EmitInstr('PUSH 0');
@@ -29313,6 +29337,7 @@ Begin
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
   EmitInstr('PUSH 0');
   EmitInstr('PUSH DWORD PTR [EBX]');
   EmitInstr('CALL GetFileSize');
@@ -31199,6 +31224,22 @@ Begin
   EmitInstr('CALL GetFullPathNameA');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JNZ ' + TP_RT_PFX + 'FE_OK');
+  { chemin vide ou invalide : repertoire courant suivi de '' (comme FExpand de FPC) }
+  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('PUSH 250');
+  EmitInstr('CALL GetCurrentDirectoryA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FE_EMPTY');
+  EmitInstr('CMP EAX,249');
+  EmitInstr('JA ' + TP_RT_PFX + 'FE_EMPTY');
+  EmitInstr('LEA EDX,[DOS_PATHBUF]');
+  EmitInstr('ADD EDX,EAX');
+  EmitInstr('CMP BYTE PTR [EDX-1],''\''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FE_OK');
+  EmitInstr('MOV BYTE PTR [EDX],''\''');
+  EmitInstr('MOV BYTE PTR [EDX+1],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FE_OK');
+  EmitLabel(TP_RT_PFX + 'FE_EMPTY');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF],0');
   EmitLabel(TP_RT_PFX + 'FE_OK');
   EmitInstr('LEA EAX,[DOS_PATHBUF]');
@@ -31388,8 +31429,36 @@ Begin
   EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
   EmitInstr('MOV BYTE PTR [EDI],0');
   EmitLabel(TP_RT_PFX + 'FSP_RET');
+  { terminateurs NUL (vue ASCIIZ des chaines Pascal) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+16]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRNUL');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRNUL');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRNUL');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRNUL : EDI = chaine Pascal -> ecrit le NUL apres les caracteres ---- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRNUL');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOVZX ECX,BYTE PTR [EDI]');
+  EmitInstr('ADD EDI,ECX');
+  EmitInstr('MOV BYTE PTR [EDI+1],0');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FCHKOPEN : EBX = enregistrement fichier ; fichier ferme -> erreur 103 ---- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FCHKOPEN');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FCO_OK');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],103');
+  EmitLabel(TP_RT_PFX + 'FCO_OK');
   EmitInstr('RET');
 
   { ------ _TPRT_FINDFIRST : FindFirst(Path, Attr, SR) ---------- }

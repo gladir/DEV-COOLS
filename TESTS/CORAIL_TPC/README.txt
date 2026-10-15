@@ -61,3 +61,17 @@ exemple pour TPCW32 (generateur DOS 16 bits interne):
     ./TESTS/CORAIL_TPC/run_all.sh /tmp/TPCW32
 golden_tpcw32.sh enregistre les md5 des sorties de toutes les cibles de
 TPCW32 pour verifier qu'une modification ne change pas les autres cibles.
+
+TPCW32 -CW32 (Windows 32 bits)
+------------------------------
+Le depot CORAIL fournit aussi dans WIN32/ les executables produits par Free
+Pascal pour Windows. w32_run_all.sh applique la meme methode a la cible -CW32
+de TPCW32: compilation des 525 sources, puis execution de notre executable et
+de l'executable Free Pascal sous Wine (pseudo-terminal 80x25, rendu par le
+module Python pyte) avec les quatre jeux d'arguments, et comparaison par
+w32_compare.py (memes classes que compare.py, sans capture d'ecran: la sortie
+comparee est le texte rendu dans le terminal).
+  CORAIL=/tmp/corail WORK=/tmp/w32-tests ./TESTS/CORAIL_TPC/w32_run_all.sh /tmp/TPCW32
+Fichiers: w32_run_all.sh, w32_run_one.sh (une execution sous Wine),
+w32_ptyrun.py (pseudo-terminal), w32_compare.py (classement). Les resultats
+sont consignes dans DOC/CORAIL_TPC_TESTS.txt (section 6).
