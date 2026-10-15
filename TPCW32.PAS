@@ -5129,6 +5129,7 @@ Begin
   EmitRaw('DOS_FINDDATA DB 320 DUP(0)');{ WIN32_FIND_DATAA (318 bytes)          }
   EmitRaw('DOS_FINDHDL DD -1');         { handle FindFirstFile                   }
   EmitRaw('DOS_FINDATTR DD 0');         { attributs demandes par FindFirst       }
+  EmitRaw('DOS_FTTMP DB 12 DUP(0)');     { FILETIME locale + date/heure DOS       }
   EmitRaw('DOS_PROCINFO DB 16 DUP(0)');{ PROCESS_INFORMATION (16 bytes)         }
   EmitRaw('DOS_STARTINFO DB 68 DUP(0)');{ STARTUPINFOA (68 bytes)               }
   EmitRaw('DOS_EXITVAL DD 0');          { code sortie processus                  }
@@ -5974,6 +5975,10 @@ End;
 { RecAlignOfs : aligner l offset Ofs sur Al (record non packed) et noter l alignement du record }
 Procedure RecAlignOfs(TIdx : Integer; Var Ofs : Integer; Al : Integer);
 Begin
+  { Free Pascal en mode TP (reference Win32) range les champs sans remplissage,    }
+  { comme Turbo Pascal : ICO2C lit idEntries a l offset 6 d un record Word,Word,Word }
+  { puis tableau de records. L alignement n est donc pas applique.                  }
+  Exit;
   If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
   If TypeTab[TIdx].IsPacked Or (Al <= 1) Then Exit;
   If Ofs Mod Al <> 0 Then Ofs := Ofs + (Al - Ofs Mod Al);
@@ -7897,12 +7902,15 @@ Begin
   End;
 End;
 
+Function W32IsAggregate(T : Integer) : Boolean; Forward;
+
 Procedure ParseProcDecls;
 Var
   I         : Integer;
   Depth     : Integer;
   AbsOfs    : Integer;    { X : T absolute Y : offset de Y }
   AbsFound  : Boolean;
+  AbsInd    : Boolean;    { Y est un parametre VAR : acces indirect }
   Up        : TString;
   PI        : Integer;
   PName     : TString;
@@ -8401,10 +8409,18 @@ Begin
                   For J := 0 To GrpStart - 1 Do
                     If ProcTab[PI].Locals[J].Name = LTName Then
                     Begin AbsOfs := ProcTab[PI].Locals[J].Offset; AbsFound := True; End;
+                  AbsInd := False;
                   If Not AbsFound Then
                     For J := 0 To ProcTab[PI].ParamCount - 1 Do
                       If ProcTab[PI].Params[J].Name = LTName Then
-                      Begin AbsOfs := ProcTab[PI].Params[J].Offset; AbsFound := True; End;
+                      Begin
+                        AbsOfs := ProcTab[PI].Params[J].Offset; AbsFound := True;
+                        { parametre VAR (ou chaine/agregat passe par adresse) : la case contient }
+                        { l adresse ; la variable absolute est alors un parametre VAR fantome   }
+                        AbsInd := ProcTab[PI].Params[J].IsVar Or
+                                  TypeIsString(ProcTab[PI].Params[J].TypeIdx) Or
+                                  W32IsAggregate(ProcTab[PI].Params[J].TypeIdx);
+                      End;
                   Inc(I, 2);
                 End;
                 For J := GrpStart To LC - 1 Do
@@ -8418,6 +8434,19 @@ Begin
                     LocalOfs := LocalOfs + LSz;
                     ProcTab[PI].Locals[J].Offset := -LocalOfs;
                   End;
+                End;
+                If AbsFound And AbsInd Then
+                Begin
+                  For J := GrpStart To LC - 1 Do
+                    If ProcTab[PI].ParamCount < MAX_PARAM Then
+                    Begin
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].Name    := ProcTab[PI].Locals[J].Name;
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].TypeIdx := LTIdx;
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].Offset  := AbsOfs;
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].IsVar   := True;
+                      Inc(ProcTab[PI].ParamCount);
+                      ProcTab[PI].Locals[J].Name := '';   { la locale s efface derriere le parametre }
+                    End;
                 End;
               End;
 
@@ -9503,7 +9532,6 @@ End;
 { EAX (ou MOVZX pour les bytes/chars/booleans)                 }
 { ------------------------------------------------------------ }
 
-Function W32IsAggregate(T : Integer) : Boolean; Forward;
 
 { ------------------------------------------------------------ }
 { GenLoadScalar / GenStoreScalar : charger dans EAX / stocker  }
@@ -21735,6 +21763,7 @@ Var
   LblTest  : TString;
   LblEnd   : TString;
   LblCont  : TString;
+  LblBody  : TString;
   IsDownTo : Boolean;
   AIIDepth : Integer;
   AIIUp    : TString;
@@ -21801,6 +21830,7 @@ Begin
   LblTest := LabelGen;
   LblEnd  := LabelGen;
   LblCont := LabelGen;
+  LblBody := LabelGen;
 
   { Consommer DO }
   If Not EPAtEnd Then
@@ -21818,6 +21848,7 @@ Begin
     EmitInstr('JL ' + LblEnd)
   Else
     EmitInstr('JG ' + LblEnd);
+  EmitLabel(LblBody);
 
   { Empiler le contexte de boucle }
   LoopPush(LblEnd, LblCont);
@@ -21832,19 +21863,18 @@ Begin
 
   { Label continue (increment) }
   EmitLabel(LblCont);
-
-  { Increment ou decrement de la variable }
+  { Fin de boucle quand la variable a atteint la limite AVANT de l incrementer : }
+  { un compteur Word ou Byte (For J := N DownTo 0, For B := 0 To 255) ne deborde pas }
   GenLoadVar(PI, VarName);
+  EmitInstr('CMP EAX,DWORD PTR [' + LimLabel + ']');
+  EmitInstr('JE ' + LblEnd);
   If IsDownTo Then
     EmitInstr('DEC EAX')
   Else
     EmitInstr('INC EAX');
   GenStoreVar(PI, VarName);
+  EmitInstr('JMP ' + LblBody);
 
-  { Retour au test }
-  EmitInstr('JMP ' + LblTest);
-
-  { Label fin }
   EmitLabel(LblEnd);
 
   { Depiler le contexte de boucle }
@@ -31868,7 +31898,7 @@ Begin
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
   EmitInstr('MOV WORD PTR [EDI],AX');        { SR.Attr }
   { Time = ftLastWriteTime.dwLowDateTime (stub: 0) }
-  EmitInstr('MOV DWORD PTR [EDI+4],0');      { SR.Time }
+  EmitInstr('CALL ' + TP_RT_PFX + 'FF_TIME');  { SR.Time = date/heure DOS }
   { Size = nFileSizeLow (offset 32) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA+32]');
   EmitInstr('MOV DWORD PTR [EDI+8],EAX');   { SR.Size }
@@ -31897,6 +31927,21 @@ Begin
   EmitLabel(TP_RT_PFX + 'FF_DN');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FF_TIME : [EDI+4] = date/heure DOS (format TP) de ftLastWriteTime ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FF_TIME');
+  EmitInstr('PUSH OFFSET DOS_FTTMP');          { FILETIME locale }
+  EmitInstr('PUSH OFFSET DOS_FINDDATA+20');    { ftLastWriteTime }
+  EmitInstr('CALL FileTimeToLocalFileTime');
+  EmitInstr('PUSH OFFSET DOS_FTTMP+10');       { heure DOS }
+  EmitInstr('PUSH OFFSET DOS_FTTMP+8');        { date DOS }
+  EmitInstr('PUSH OFFSET DOS_FTTMP');
+  EmitInstr('CALL FileTimeToDosDateTime');
+  EmitInstr('MOV EAX,DWORD PTR [DOS_FTTMP+8]'); { date dans le mot haut, heure dans le mot bas }
+  EmitInstr('ROL EAX,16');
+  EmitInstr('MOV DWORD PTR [EDI+4],EAX');
   EmitInstr('RET');
 
   { ------ _TPRT_FF_WANT : l entree de DOS_FINDDATA est-elle retenue ? ------ }
@@ -31953,7 +31998,7 @@ Begin
   EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
   EmitInstr('MOV WORD PTR [EDI],AX');
-  EmitInstr('MOV DWORD PTR [EDI+4],0');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FF_TIME');
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA+32]');
   EmitInstr('MOV DWORD PTR [EDI+8],EAX');
   EmitInstr('LEA ESI,[DOS_FINDDATA+44]');
@@ -36435,6 +36480,7 @@ Begin
   BcIsImport := (U = 'EXITPROCESS') Or (U = 'GETSTDHANDLE') Or
     (U = 'SPRINTF') Or (U = 'STRTOD') Or
     (U = 'SETUNHANDLEDEXCEPTIONFILTER') Or (U = 'GETLASTERROR') Or
+    (U = 'FILETIMETOLOCALFILETIME') Or (U = 'FILETIMETODOSDATETIME') Or
     (U = 'WRITEFILE') Or (U = 'READFILE') Or
     (U = 'GETPROCESSHEAP') Or (U = 'HEAPALLOC') Or
     (U = 'HEAPFREE') Or (U = 'HEAPSIZE') Or (U = 'CREATEFILEA') Or
@@ -37818,6 +37864,24 @@ Begin { BcAssemble }
         If Mnem = 'SHL' Then BcEmitB($E0 + Reg1)
         Else BcEmitB($E8 + Reg1);
         BcEmitB(Byte(ImmVal)); End;
+    End;
+    Exit;
+  End;
+
+  { ---- ROL / ROR / SAR reg32,imm8 | CL : C1 /0 /1 /7, D3 /0 /1 /7 ---- }
+  If (Mnem = 'ROL') Or (Mnem = 'ROR') Or (Mnem = 'SAR') Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Mnem = 'ROL' Then Reg2 := $C0 Else If Mnem = 'ROR' Then Reg2 := $C8 Else Reg2 := $F8;
+    If (Reg1 >= 0) And (StrUpperCase(Op2) = 'CL') Then
+    Begin
+      BcEmitB($D3); BcEmitB(Reg2 + Reg1);
+      Exit;
+    End;
+    If (Reg1 >= 0) And BcParseImm(Op2, ImmVal) Then
+    Begin
+      If ImmVal = 1 Then Begin BcEmitB($D1); BcEmitB(Reg2 + Reg1); End
+      Else Begin BcEmitB($C1); BcEmitB(Reg2 + Reg1); BcEmitB(Byte(ImmVal)); End;
     End;
     Exit;
   End;
@@ -40307,6 +40371,7 @@ Begin
   BcDefineDataLabel('DOS_FINDDATA');BcDataZeros(320);
   BcDefineDataLabel('DOS_FINDHDL'); BcDataD(-1);
   BcDefineDataLabel('DOS_FINDATTR'); BcDataD(0);
+  BcDefineDataLabel('DOS_FTTMP');   BcDataZeros(12);
   BcDefineDataLabel('DOS_PROCINFO');BcDataZeros(16);
   BcDefineDataLabel('DOS_STARTINFO');BcDataZeros(68);
   BcDefineDataLabel('DOS_EXITVAL'); BcDataD(0);
