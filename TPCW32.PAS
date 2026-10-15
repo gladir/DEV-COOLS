@@ -2405,6 +2405,7 @@ End;
 
 { ---- PPInitDefines : initialiser symboles predefinis ---- }
 Procedure PPInitDefines;
+Var DefSym : TString; DefI : Integer;
 Begin
   DefineCount := 0;
   IncTop      := -1;
@@ -2426,6 +2427,23 @@ Begin
     { Les executables de reference sont produits par Free Pascal : les branches }
     { IFDEF FPC des sources (unites, messages, File of Byte...) sont celles a suivre }
     DefineAdd('FPC');
+  End;
+
+  { Symboles de la ligne de commande : -Dsym1,sym2 }
+  If Opts.Defines <> '' Then
+  Begin
+    DefSym := '';
+    For DefI := 1 To Length(Opts.Defines) Do
+    Begin
+      If (Opts.Defines[DefI] = ',') Or (Opts.Defines[DefI] = ';') Then
+      Begin
+        If DefSym <> '' Then DefineAdd(DefSym);
+        DefSym := '';
+      End
+      Else
+        DefSym := DefSym + Opts.Defines[DefI];
+    End;
+    If DefSym <> '' Then DefineAdd(DefSym);
   End;
 
   { Symboles MSDOS, CPU86, CPU87 }
