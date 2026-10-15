@@ -961,6 +961,7 @@ Type
     StrVal    : TString;     { contenu chaine (pour DK_STR)            }
     ElemCount : LongInt;     { nombre d elements (pour DK_ARRAY)       }
     ElemSize  : LongInt;     { taille d un element (pour DK_ARRAY)     }
+    IsPStr    : Boolean;     { DK_STR au format Pascal (octet de longueur, contient #0) }
   End;
 
   { Taille connue d un type Turbo Pascal }
@@ -2519,6 +2520,7 @@ Begin
   DataTab[DataCount].StrVal    := AStrVal;
   DataTab[DataCount].ElemCount := AElemCount;
   DataTab[DataCount].ElemSize  := AElemSize;
+  DataTab[DataCount].IsPStr    := False;
   DataAdd := DataCount;
   Inc(DataCount);
 End;
@@ -2526,11 +2528,19 @@ End;
 { ---- DataAddStr : ajouter une chaine avec label auto-genere ---- }
 { Retourne le label (ex: _TPK_1) }
 Function DataAddStr(Const S : TString) : TString;
-Var Lbl : TString;
+Var Lbl : TString; K : Integer;
 Begin
   Inc(LabelGenSeq);
   Lbl := TP_STR_PFX + IntToStr_(LabelGenSeq);
-  DataAdd(Lbl, DK_STR, 0, S, 0, 0);
+  { Un litteral contenant #0 ('SONY'#0) ne peut pas etre ASCIIZ : il est emis au format }
+  { Pascal (octet de longueur puis caracteres) et charge comme une chaine Pascal.         }
+  If (Pos(#0, S) > 0) And (Length(S) < 255) And ((Opts.DestTarget = DEST_WIN32) Or (Opts.DestTarget = DEST_W32)) And (Not Opts.Dos16Mode) Then
+  Begin
+    K := DataAdd(Lbl, DK_STR, 0, Chr(Length(S)) + S, 0, 0);
+    If K >= 0 Then DataTab[K].IsPStr := True;
+  End
+  Else
+    DataAdd(Lbl, DK_STR, 0, S, 0, 0);
   DataAddStr := Lbl;
 End;
 
@@ -9959,7 +9969,7 @@ Begin
       Begin
         EmitInstr('LEA EAX,[' + DataTab[SymTab[SI].Offset].LblName + ']');
         LastVarTypeIdx := TY_IDX_STRING;
-        LastExprIsPascalStr := False;
+        LastExprIsPascalStr := DataTab[SymTab[SI].Offset].IsPStr;   { constante avec #0 : format Pascal }
         Exit;
       End;
       If TypeIsReal(SymTab[SI].TypeIdx) And W32Fpu And (SymTab[SI].Offset >= 0) And
@@ -10141,6 +10151,15 @@ Begin
   Begin
     If TypeTab[T].Kind = TYK_STRING Then
     Begin
+      If LastExprIsPascalStr And (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+      Begin
+        { source Pascal : copie selon l octet de longueur (les #0 inclus sont conserves) }
+        CoerceCharArray;
+        EmitInstr('MOV ESI,EAX');
+        EmitInstr('MOV EDI,EBX');
+        EmitInstr('CALL ' + TP_RT_PFX + 'PSTRASSIGN');
+        Exit;
+      End;
       GenStrSourceESI;
       EmitInstr('MOV EDI,EBX');
       EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
@@ -10879,6 +10898,9 @@ Begin
       EmitInstr('LEA EAX,[' + Lbl + ']');
     LastVarTypeIdx := TY_IDX_STRING;
     LastExprIsPascalStr := False;  { literal ASCIIZ, pas format Pascal }
+    If (Pos(#0, TokenPool[EP].Val) > 0) And (Length(TokenPool[EP].Val) < 255) And
+       ((Opts.DestTarget = DEST_WIN32) Or (Opts.DestTarget = DEST_W32)) And (Not Opts.Dos16Mode) Then
+      LastExprIsPascalStr := True;   { litteral avec #0 : emis au format Pascal (voir DataAddStr) }
     Inc(EP);
     Exit;
   End;
@@ -10934,10 +10956,10 @@ Begin
       Exit;
     End;
 
-    { Test8086 (variable de l unite System de FPC) : 2 = 80386 ou superieur }
-    If (Up = 'TEST8086') And W32Fpu And (SymFind(Up) < 0) Then
+    { Test8086 / Test8087 (variables de l unite System de FPC) : 2 = 80386 ou superieur, 3 = 80387 }
+    If ((Up = 'TEST8086') Or (Up = 'TEST8087')) And W32Fpu And (SymFind(Up) < 0) Then
     Begin
-      EmitInstr('MOV EAX,2');
+      If Up = 'TEST8086' Then EmitInstr('MOV EAX,2') Else EmitInstr('MOV EAX,3');
       LastVarTypeIdx := TY_IDX_BYTE;
       Inc(EP);
       Exit;
@@ -27763,10 +27785,7 @@ Begin
           EmitInstr('MOV ESI,DWORD PTR ' + EBPOfs(ProcTab[FI].Params[PK].Offset));
           EmitInstr('LEA EDI,' + EBPOfs(-CopyOfs));
           If TypeIsString(ProcTab[FI].Params[PK].TypeIdx) Then
-          Begin
-            EmitInstr('INC ESI');
-            EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
-          End
+            EmitInstr('CALL ' + TP_RT_PFX + 'PSTRASSIGN')   { copie selon l octet de longueur }
           Else
           Begin
             EmitInstr('MOV ECX,' + IntToStr_(CopySz));
@@ -30825,6 +30844,17 @@ Begin
   EmitInstr('MOV BYTE PTR [EDI],0');
   EmitInstr('POPAD');
   EmitInstr('RET');
+
+  { ------ _TPRT_PSTRASSIGN : copier une chaine Pascal (ESI = octet de longueur) ------ }
+  { vers EDI (format Pascal + NUL) ; la longueur vient de l octet de longueur, les #0  }
+  { inclus dans la chaine sont donc conserves.                                           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PSTRASSIGN');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');
+  EmitInstr('INC ESI');
+  EmitInstr('MOV EBX,ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SASG_OK');
 
   { ------ _TPRT_STRASSIGN_PCHAR : copier ASCIIZ brut -------- }
   { Entree : ESI = source ASCIIZ, EDI = destination ASCIIZ     }

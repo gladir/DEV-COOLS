@@ -340,3 +340,148 @@ ne reproduisons pas a l'identique:
   - CSV2ASM et CSV2BAS: les references BIN16 sont des executables Win32;
   - ASC2CSP: le source (".CSP") est plus recent que la reference (".C").
   - DOSKEY: programme resident (Keep), ne rend pas la main.
+
+6. TPCW32.PAS, cible -CW32 (Windows 32 bits)
+---------------------------------------------
+La cible -CW32 produit des executables PE Win32 (assembleur texte 80386
+assemble par l'assembleur integre, imports kernel32/user32/msvcrt). La
+meme methode de verification lui est appliquee: les 525 sources de CORAIL
+sont compilees avec TPCW32 -CW32, les executables sont lances sous Wine
+dans un pseudo-terminal et leur sortie est comparee a celle des
+executables WIN32/* de CORAIL (compiles par Free Pascal, references) avec
+les memes arguments: aucun argument ("noarg"), "/?" ("help"), un nom de
+fichier inexistant ("nofile") et un jeu d'arguments avec fichiers
+d'exemple (TESTS/CORAIL_TPC/sample_args.txt, "sample"). Les instructions
+qui n'existent pas en Win32 (Mem, MemW, Port, Intr, MsDos...) sont
+acceptees et compilees (sans effet ou valeur neutre) pour que les sources
+restent compilables. TPC.PAS n'est pas touche; TPCW32.PAS reste autonome
+(aucun include, seule l'unite Dos du compilateur hote).
+
+Harnais (TESTS/CORAIL_TPC): w32_run_all.sh (CORAIL=... WORK=... [TPCW32]
+[modes]) compile, execute (w32_run_one.sh, w32_ptyrun.py: pseudo-terminal,
+delai, fichiers produits) et compare (w32_compare.py: codes de retour,
+sorties normalisees, fichiers ecrits). Les references sont executees une
+fois et mises en cache dans WORK/runs_<mode>/ref_<NOM>. Un test
+differentiel complementaire compile des programmes de test avec Free
+Pascal (reference) et avec TPCW32 -CW32 (Wine) pour isoler chaque defaut
+de generation.
+
+Conventions adoptees pour ressembler aux references FPC:
+  - le symbole conditionnel FPC est defini pour la cible -CW32 (les
+    sources choisissent leurs branches {$IFDEF FPC} comme les references);
+    WINDOWS n'est pas defini (90 sources utilisent alors l'unite Windows);
+  - Integer et Word sur 16 bits, Longint/LongWord sur 32 bits, records
+    sans remplissage (FPC en mode TP n'aligne pas les champs), Real =
+    Double 8 octets, Single 4, Extended 10, calculs sur le coprocesseur
+    x87, Round vers le pair le plus proche, Write(r) au format
+    exponentiel de FPC, Str/Write(r:w:d) par sprintf de msvcrt;
+  - verification des bornes active par defaut (les references WIN32 sont
+    compilees avec -Cr): erreur 201 sur affectation hors bornes (Byte,
+    Word, ShortInt, Integer, sous-intervalle, enumeration), Inc/Dec,
+    indice de tableau et de chaine; {$R-} la desactive;
+  - erreurs d'execution affichees comme FPC ("Runtime error N at $ADDR"):
+    216 acces memoire invalide, 200 division par zero, 207 operation
+    flottante invalide, 205/206 debordement flottant, 215 debordement
+    entier, 202 pile, 2/3/5/103/104/105/106 entrees-sorties (commutateur
+    I+), 201 bornes;
+  - IOResult recoit le code GetLastError des operations fichier et
+    repertoire (Reset, Rewrite, Append (fichier existant obligatoire),
+    Erase, Rename, ChDir, MkDir, RmDir, Seek), une erreur reste en attente
+    jusqu'a sa lecture; DiskFree/DiskSize valent -1 pour un lecteur
+    absent; FindFirst retourne '.' et '..' et filtre par attributs;
+    DosVersion vient de GetVersion; Test8086 = 2.
+
+Resultats des passes (programmes dont la reference existe: 459, dont 244
+avec arguments d'exemple; "identiques" = sortie, code de retour et
+fichiers produits identiques a la reference):
+
+  Passe  Compiles   help      noarg     nofile    sample    Remarque
+  w1     323 / 525  195       103        49        19       version de la branche main
+  w2     320 / 525  239       -          -         -        pool de jetons complet, PE > 32 Ko
+  w3     320 / 525  248       105        58        19       chaines, lvalues, ensembles
+  w4     474 / 525  387       222       207        34       Integer/Word 16 bits, tampon de sortie
+  w5     519 / 525  414       244       217        39       Low/High, Break/Continue
+  w6     519 / 525  425       257       243        67       verification des E/S (I+)
+  w7     519 / 525  428       266       257        91       Integer 32 bits dans le compilateur, ^N
+  w8     518 / 525  434       270       318       139       procedures Assembler, constantes typees
+  w9     522 / 525  439       273       351       163       GetDate/GetTime/FindFirst, locaux masquant
+  w10    522 / 525  439       279       359       167       nombres reels x87
+  w11    521 / 525  439       326       360       -         symbole FPC, erreur 103, FExpand
+  w13    521 / 525  439       323       377       223       absolute, records non alignes, dates
+  w15    521 / 525  439       325       382       233       procedures imbriquees, bornes (R+), Seg
+
+Les 4 sources restantes (CURL, GETMAC, IPCONFIG, TASKLIST) utilisent des
+types et unites propres a Free Pascal (fphttpclient, Windows, sockets).
+
+Defauts corriges par les passes d'execution (chacun isole en comparant
+notre sortie a celle de la reference, puis reproduit par un programme de
+test minimal):
+  - compilateur: index de jetons et tailles sur 16 bits (programmes de
+    plus de 32767 jetons: QB2BBC, WHOIS, GWBASIC, TD), ^N decoupe en deux
+    jetons, compteur de profondeur trompe par la partie variante d'un
+    record ou par OBJECT/UNTIL, boucles d'instructions bloquees sur un
+    jeton inattendu, procedures Assembler/ASM avalant les sections
+    suivantes (FORMAT), procedures imbriquees a plusieurs niveaux
+    (l'entree ProcTab etait reutilisee par la recursion: DIS6809, DISCIL,
+    DIS6502), ELSE d'un CASE rattache au IF qui precede (RTF2HTML);
+  - portee des noms: une variable locale, un parametre, une variable
+    d'une procedure englobante ou une variable globale portant le nom
+    d'un sous-programme predefini (Str, Val, Pos, Line) l'emportent
+    (PWD, DISCIL); identificateur non declare (FileMode) traite comme une
+    variable implicite (UUENCODE ecrasait HSTDOUT); Test8086;
+  - procedures imbriquees: acces aux variables et parametres de la
+    procedure englobante par la chaine des EBP sauvegardes (lien
+    ParentIdx);
+  - variables ABSOLUTE locales et globales, y compris sur un parametre
+    VAR ou un parametre sans type (Block: PBlock absolute Buffer dans MD5,
+    T: Array[0..65520] of Byte absolute Buf dans les desassembleurs);
+  - passage par adresse des tampons de Move, FillChar, BlockRead,
+    StrPCopy (un element de tableau etait passe par valeur: MD5);
+    GetTime/GetDate/GetFAttr/GetVerify ecrivaient a travers la valeur du
+    parametre (TIME, TOD, CAL, INFO plantaient); SizeOf suit les suffixes
+    .champ, ^ et [i];
+  - chaines: StrPas sans terminateur et dans un tampon unique (WHOIS
+    affichait "Canadaupe"), Write(PChar), adresses de chaines et @ident
+    dans les constantes typees (tableaux de records avec champs PChar),
+    ReadLn(F, S) d'un type chaine nomme lu comme un nombre (DIFF3);
+  - fichiers: FExpand('') vide (DBF2* lisaient l'entree standard),
+    FSplit sur un litteral ASCIIZ, Reset d'un fichier ferme (103), erreur
+    en attente jusqu'a IOResult (QB2BBC: 103 au lieu de 2), ChDir/MkDir/
+    RmDir/Erase/Rename sans code d'erreur, Append creant le fichier,
+    Seek sur l'entree standard ignore (LESS bloquait), GetDiskFreeSpaceA
+    avec les parametres dans le mauvais ordre et division par zero (DF,
+    INFO), FindFirst sans terminateur NUL, sans filtre d'attributs et
+    sans date;
+  - boucles For sur un compteur Word ou Byte (For J := Height-1 DownTo 0:
+    ICO2C bouclait indefiniment), For sur Byte jusqu'a 255;
+  - reels: types Real/Single/Double/Extended/Comp, constantes reelles,
+    parametres et resultats reels, Round/Trunc/Int/Frac/Abs/Sqr/Pi,
+    Str/Val/Write/Read avec largeur et decimales, comparaisons;
+  - Write(x:w) et Str(x:w): largeur constante seulement quand le litteral
+    est suivi de ',' ')' ou ':'.
+
+Resultats restants non identiques (passe w15), par classe:
+  - "Attente clavier": programmes Crt interactifs (NC, FDISK, DOSSHELL,
+    editeurs) qui attendent une touche des deux cotes (delai depasse);
+  - environnement: heure, date, GUID, nombres aleatoires avec Randomize,
+    taille et date des fichiers du repertoire de travail (DIR, CATALOG,
+    STAT, CMDSAVE), variables d'environnement (PRINTENV, UMASK, GROUPS,
+    LASTLOG, FINGER), volumes et lecteurs (DI, DF, JOIN, LABEL, SUBST,
+    CHKDSK, INFO, EQUIP);
+  - unite Windows et exceptions FPC: sources dont la branche {$IFDEF FPC}
+    utilise GetCommandLineW, GetEnvironmentVariable, Try/Except,
+    SysUtils (AWK, FINGER, TASKKILL, VIEWXBM, GETCLIP);
+  - references plus anciennes ou plus recentes que la source (DRDOS,
+    NDOS, T-CHAR, WC: texte d'aide different), reference qui plante
+    (ASM6502: erreur 123; GETCLIP: erreur 216);
+  - artefacts du pseudo-terminal de Wine: caractere Ctrl-Z (NES), lignes
+    vides supplementaires produites par les deplacements de curseur de la
+    console FPC (BANNER);
+  - adresses et traces des erreurs d'execution: le message "Runtime
+    error N" est identique, l'adresse et la pile d'appels de FPC ne sont
+    pas reproduites (APPEND, ISBN, CAL, BGX2XBM, PRINT, SYS, PIFINFO);
+  - Int64 non supporte (tailles de disque: DI, DF, INFO), String[n]
+    occupant toujours 256 octets, formatage par defaut des reels Extended
+    (FPC affiche plus de chiffres que sprintf sur un Double), detection du
+    processeur par instructions asm (CPUTEST affiche 80386 comme FPC via
+    Test8086).
