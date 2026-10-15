@@ -22218,6 +22218,7 @@ Var
   Up    : TString;
   VName : TString;
   Lbl   : TString;
+  Lbl2  : TString;
   ArgName : TString;      { variable resultat de BlockRead/BlockWrite }
   RecSz   : Integer;      { taille d enregistrement pour Reset/Rewrite }
   SI    : Integer;
@@ -23717,6 +23718,20 @@ Begin
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + Lbl);
+      If ArgName = '' Then
+      Begin
+        { sans variable resultat : transfert incomplet = erreur 100 (lecture) / 101 (ecriture), comme TP et FPC }
+        Lbl2 := LabelGen;
+        EmitInstr('CMP DWORD PTR [FILE_IOERR],0');
+        EmitInstr('JNE ' + Lbl2);
+        EmitInstr('CMP EAX,DWORD PTR [ESP]');      { [ESP] = nombre demande }
+        EmitInstr('JE ' + Lbl2);
+        If Lbl = 'BLOCKREAD' Then
+          EmitInstr('MOV DWORD PTR [FILE_IOERR],100')
+        Else
+          EmitInstr('MOV DWORD PTR [FILE_IOERR],101');
+        EmitLabel(Lbl2);
+      End;
       EmitInstr('ADD ESP,12');
       EmitIoCheck;
       If ArgName <> '' Then
