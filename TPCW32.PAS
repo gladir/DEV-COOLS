@@ -4926,6 +4926,8 @@ Begin
   EmitRaw('NUMBUF    DB 32 DUP(0)');   { buffer pour nombres   }
   EmitRaw('INBUF     DB 256 DUP(0)');  { buffer pour lecture    }
   EmitRaw('CHRBUF    DB 4 DUP(0)');    { caractere -> chaine    }
+  EmitRaw('OUTBUF    DB 4096 DUP(0)'); { tampon sortie standard }
+  EmitRaw('OUTBUFLEN DD 0');
   EmitRaw('BYTESWR   DD 0');           { octets ecrits         }
   EmitRaw('BYTESRD   DD 0');           { octets lus            }
   EmitRaw('CRLF      DB 13,10,0');     { retour chariot        }
@@ -20720,6 +20722,7 @@ Begin
       Else
         EmitInstr('XOR EAX,EAX');
       EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -20739,6 +20742,7 @@ Begin
       Else
         EmitInstr('MOV EAX,0');
       EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -20881,6 +20885,7 @@ Begin
       Else
         EmitInstr('XOR EAX,EAX');
       EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -20900,6 +20905,7 @@ Begin
       Else
         EmitInstr('MOV EAX,0');
       EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -22762,6 +22768,7 @@ Begin
             { Sous Win32, Keep = ExitProcess }
             ParseExpr(PI);
             EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
             EmitInstr('CALL ExitProcess');
           End;
         End; { Case }
@@ -26772,6 +26779,7 @@ Begin
     Begin
       { Sortie propre Win32 }
       EmitInstr('PUSH 0');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       EmitEpilog;
     End;
@@ -27846,6 +27854,7 @@ Begin
   EmitInstr('RET');
   EmitComment('_TPRT_FFILL : EBX=fichier ; remplit le tampon (256 octets), pose Eof si rien lu');
   EmitLabel(TP_RT_PFX + 'FFILL');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
@@ -28251,14 +28260,52 @@ Begin
   { ECX = longueur, ESI = debut de la chaine }
   EmitInstr('TEST ECX,ECX');
   EmitInstr('JZ ' + TP_RT_PFX + 'PSTR_D');
-  { Appeler WriteFile(HSTDOUT, ESI, ECX, &BYTESWR, 0) }
+  { Tampon de ligne (comme FPC) : accumuler dans OUTBUF, vider sur LF ou tampon plein }
+  EmitInstr('MOV EDX,[OUTBUFLEN]');
+  EmitInstr('LEA EAX,[EDX+ECX]');
+  EmitInstr('CMP EAX,4000');
+  EmitInstr('JBE ' + TP_RT_PFX + 'PSTR_B');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('CMP ECX,4000');
+  EmitInstr('JBE ' + TP_RT_PFX + 'PSTR_B');
+  { chaine trop longue pour le tampon : ecriture directe }
   EmitInstr('PUSH 0');                     { lpOverlapped         }
   EmitInstr('PUSH OFFSET BYTESWR');        { lpNumberOfBytesWritten }
   EmitInstr('PUSH ECX');                   { nNumberOfBytesToWrite }
   EmitInstr('PUSH ESI');                   { lpBuffer             }
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');   { hFile                }
   EmitInstr('CALL WriteFile');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PSTR_D');
+  EmitLabel(TP_RT_PFX + 'PSTR_B');
+  EmitInstr('MOV EDI,OFFSET OUTBUF');
+  EmitInstr('ADD EDI,EDX');
+  EmitInstr('ADD EDX,ECX');
+  EmitInstr('MOV [OUTBUFLEN],EDX');
+  EmitInstr('CLD');
+  EmitInstr('REP MOVSB');
+  EmitInstr('CMP BYTE PTR [EDI-1],10');     { la chaine se termine par LF : vider }
+  EmitInstr('JNE ' + TP_RT_PFX + 'PSTR_D');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitLabel(TP_RT_PFX + 'PSTR_D');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_OFLUSH : vider le tampon de sortie standard -------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'OFLUSH');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ECX,[OUTBUFLEN]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'OFL_D');
+  EmitInstr('MOV DWORD PTR [OUTBUFLEN],0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH OFFSET OUTBUF');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL WriteFile');
+  EmitLabel(TP_RT_PFX + 'OFL_D');
   EmitInstr('POPAD');
   EmitInstr('RET');
 
@@ -28686,6 +28733,7 @@ Begin
   { Si fenetre graphique ouverte, lit depuis le ring buffer     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'READLN');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   { Si mode graphique actif, utiliser la fenetre }
   EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
@@ -29159,6 +29207,7 @@ Begin
   { puis SetConsoleCursorPosition pour positionner en (0,0)        }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'CLRSCR');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   { Obtenir les informations du buffer console }
   EmitInstr('PUSH OFFSET CRT_CSBI');
@@ -29195,6 +29244,7 @@ Begin
   { ------ _TPRT_CLREOL : effacer de curseur a fin de ligne ----- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'CLREOL');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
@@ -29220,6 +29270,7 @@ Begin
   { Parametres sur pile : [ESP+4] = X (1-based), [ESP+8] = Y       }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'GOTOXY');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -29243,6 +29294,7 @@ Begin
   { ------ _TPRT_WHEREX : colonne courante -> EAX --------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'WHEREX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
@@ -29255,6 +29307,7 @@ Begin
   { ------ _TPRT_WHEREY : ligne courante -> EAX ----------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'WHEREY');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
@@ -29268,6 +29321,7 @@ Begin
   { Parametre sur pile : [ESP+4] = couleur (0..15)                 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'TEXTCOLOR');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -29290,6 +29344,7 @@ Begin
   { Parametre sur pile : [ESP+4] = couleur (0..7)                  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'TEXTBG');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -29311,6 +29366,7 @@ Begin
   { ------ _TPRT_HIGHVIDEO : attribut haute intensite ------------ }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'HIGHVIDEO');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EAX');
   EmitInstr('MOV EAX,DWORD PTR [TEXTATTR]');
   EmitInstr('OR EAX,08h');                         { bit intensite }
@@ -29324,6 +29380,7 @@ Begin
   { ------ _TPRT_LOWVIDEO : attribut basse intensite ------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'LOWVIDEO');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EAX');
   EmitInstr('MOV EAX,DWORD PTR [TEXTATTR]');
   EmitInstr('AND EAX,0F7h');                       { enlever bit intensite }
@@ -29337,6 +29394,7 @@ Begin
   { ------ _TPRT_NORMVIDEO : attribut normal --------------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'NORMVIDEO');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EAX');
   EmitInstr('MOV EAX,7');                          { gris sur noir }
   EmitInstr('MOV DWORD PTR [TEXTATTR],EAX');
@@ -29351,6 +29409,7 @@ Begin
   { Stocke dans WINDMIN/WINDMAX                                     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'WINDOW');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -29381,6 +29440,7 @@ Begin
   { Si fenetre graphique ouverte, pompe les messages + ring buffer  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'KEYPRESSED');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   { Si mode graphique actif, utiliser la fenetre }
@@ -29456,6 +29516,7 @@ Begin
   { Si fenetre graphique ouverte, lit depuis le ring buffer         }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'READKEY');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   { Si mode graphique actif, utiliser la fenetre }
@@ -29539,6 +29600,7 @@ Begin
   { Deplace les lignes vers le bas depuis la position courante                 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'INSLINE');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   { GetConsoleScreenBufferInfo(hStdout, &CRT_CSBI) }
   EmitInstr('PUSH OFFSET CRT_CSBI');
@@ -29600,6 +29662,7 @@ Begin
   { Deplace les lignes vers le haut depuis la position courante+1             }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'DELLINE');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
@@ -29639,6 +29702,7 @@ Begin
   { Reset TEXTATTR, WINDMIN, WINDMAX, appelle ClrScr                  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'TEXTMODE');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -30211,6 +30275,7 @@ Begin
   { Params : [ESP+4]=Path, [ESP+8]=CmdLine (Pascal strings)        }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'EXEC');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
@@ -30280,6 +30345,7 @@ Begin
   EmitInstr('JNE ' + TP_RT_PFX + 'MS_N4C');
   EmitInstr('MOVZX EAX,BYTE PTR [EBX]');    { AL = code sortie }
   EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('CALL ExitProcess');
   EmitLabel(TP_RT_PFX + 'MS_N4C');
   { Fonction 30h : DosVersion - retourne 7.0 dans AL.AH }
@@ -30354,6 +30420,11 @@ Begin
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FPRINTSTR');
   EmitInstr('PUSHAD');
+  EmitInstr('MOV EAX,[FILE_WRHND]');
+  EmitInstr('CMP EAX,[HSTDOUT]');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FPS_NF');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
+  EmitLabel(TP_RT_PFX + 'FPS_NF');
   { Calculer la longueur de la chaine }
   EmitInstr('XOR ECX,ECX');
   EmitLabel(TP_RT_PFX + 'FPS_L');
@@ -38028,6 +38099,8 @@ Begin
   BcDefineDataLabel('NUMBUF');    BcDataZeros(32);
   BcDefineDataLabel('INBUF');     BcDataZeros(256);
   BcDefineDataLabel('CHRBUF');    BcDataZeros(4);
+  BcDefineDataLabel('OUTBUF');    BcDataZeros(4096);
+  BcDefineDataLabel('OUTBUFLEN'); BcDataD(0);
   BcDefineDataLabel('BYTESWR');   BcDataD(0);
   BcDefineDataLabel('BYTESRD');   BcDataD(0);
   BcDefineDataLabel('CRLF');      BcDataB(13); BcDataB(10); BcDataB(0);
