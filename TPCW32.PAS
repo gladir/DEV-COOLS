@@ -2132,6 +2132,12 @@ Begin
   End;
 End;
 
+{ Etat du commutateur I (verification des E/S) par position dans le pool de jetons (cible Win32) }
+Var
+  IoSwitchPos : Array[0..255] Of LongInt;
+  IoSwitchOn  : Array[0..255] Of Boolean;
+  IoSwitchCnt : Integer;
+
 (* ---- LexHandleDollarDirective : traiter dollar-directives *)
 (* Appelee quand LexColNo pointe sur accolade et le suivant est dollar *)
 (* Gere: I/INCLUDE, DEFINE, UNDEF, IFDEF, IFNDEF, IFOPT, *)
@@ -2167,7 +2173,15 @@ Begin
       Inc(LexColNo);
     { Appliquer la commutation }
     Case Dir[1] Of
-      'I' : OptIO          := (Sw = '+');
+      'I' : Begin
+              OptIO := (Sw = '+');
+              If IoSwitchCnt < 256 Then
+              Begin
+                IoSwitchPos[IoSwitchCnt] := TokenCount;
+                IoSwitchOn[IoSwitchCnt]  := OptIO;
+                Inc(IoSwitchCnt);
+              End;
+            End;
       'R' : OptRange       := (Sw = '+');
       'B' : OptBoolEval    := (Sw = '+');
       'Q' : OptOverflow    := (Sw = '+');
@@ -4928,6 +4942,9 @@ Begin
   EmitRaw('CHRBUF    DB 4 DUP(0)');    { caractere -> chaine    }
   EmitRaw('OUTBUF    DB 4096 DUP(0)'); { tampon sortie standard }
   EmitRaw('OUTBUFLEN DD 0');
+  EmitRaw('RTERR_MSG DB ''Runtime error '',0');
+  EmitRaw('RTERR_AT  DB '' at $'',0');
+  EmitRaw('HEXBUF    DB 12 DUP(0)');
   EmitRaw('BYTESWR   DD 0');           { octets ecrits         }
   EmitRaw('BYTESRD   DD 0');           { octets lus            }
   EmitRaw('CRLF      DB 13,10,0');     { retour chariot        }
@@ -9482,6 +9499,24 @@ Procedure ParseAsmBlock(PI : Integer); Forward;
 { FileRecSize : taille d enregistrement pour Reset/Rewrite :    }
 { 0 pour Text, SizeOf(T) pour File Of T, 128 pour File.         }
 { ------------------------------------------------------------ }
+{ IoCheckAt : la verification des E/S est-elle active a la position P du pool ? }
+Function IoCheckAt(P : LongInt) : Boolean;
+Var K : Integer;
+Begin
+  IoCheckAt := True;
+  For K := 0 To IoSwitchCnt - 1 Do
+    If IoSwitchPos[K] <= P Then IoCheckAt := IoSwitchOn[K]
+    Else Break;
+End;
+
+{ EmitIoCheck : apres une operation fichier, erreur d execution si FILE_IOERR <> 0 }
+Procedure EmitIoCheck;
+Begin
+  If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) And
+     IoCheckAt(EP) Then
+    EmitInstr('CALL ' + TP_RT_PFX + 'IOCHECK');
+End;
+
 Function FileVarType(PI : Integer; Const Name : TString) : Integer;
 Var Up : TString; LI, SI : Integer;
 Begin
@@ -20909,9 +20944,7 @@ Begin
       End
       Else
         EmitInstr('MOV EAX,0');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
-      EmitInstr('CALL ExitProcess');
+      EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -21072,9 +21105,7 @@ Begin
       End
       Else
         EmitInstr('MOV EAX,0');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
-      EmitInstr('CALL ExitProcess');
+      EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -21904,6 +21935,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'RESET');
       EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -21937,6 +21969,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'REWRITE');
       EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -21959,6 +21992,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'CLOSE');
       EmitInstr('ADD ESP,4');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -21981,6 +22015,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'APPEND');
       EmitInstr('ADD ESP,4');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -28012,6 +28047,12 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
   EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  { fichier non ouvert : erreur 103 (comme TP/FPC) }
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_CL_OP');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],103');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_CL_DN');
+  EmitLabel(TP_RT_PFX + 'TF_CL_OP');
   EmitInstr('MOV EAX,DWORD PTR [EBX]');
   EmitInstr('CMP EAX,-1');
   EmitInstr('JE ' + TP_RT_PFX + 'TF_CL_DN');
@@ -28483,6 +28524,58 @@ Begin
   EmitLabel(TP_RT_PFX + 'OFL_D');
   EmitInstr('POPAD');
   EmitInstr('RET');
+
+  { ------ _TPRT_IOCHECK : erreur d execution si FILE_IOERR <> 0 (commutateur I+) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'IOCHECK');
+  EmitInstr('CMP DWORD PTR [FILE_IOERR],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'IOC_OK');
+  EmitInstr('MOV EAX,[FILE_IOERR]');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],0');
+  EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
+  EmitLabel(TP_RT_PFX + 'IOC_OK');
+  EmitInstr('RET');
+
+  { ------ _TPRT_RTERROR : EAX = code -> "Runtime error N at $ADRESSE" puis sortie ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'RTERROR');
+  EmitInstr('MOV EDX,[ESP]');               { adresse de retour = position de l erreur }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('LEA ESI,[RTERR_MSG]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('LEA ESI,[NUMBUF]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('LEA ESI,[RTERR_AT]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  { adresse en hexadecimal sur 8 chiffres dans HEXBUF }
+  EmitInstr('POP EDX');
+  EmitInstr('LEA EDI,[HEXBUF]');
+  EmitInstr('MOV ECX,8');
+  EmitLabel(TP_RT_PFX + 'RTE_H');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('SHR EAX,28');
+  EmitInstr('AND EAX,15');
+  EmitInstr('CMP EAX,10');
+  EmitInstr('JB ' + TP_RT_PFX + 'RTE_D');
+  EmitInstr('ADD EAX,7');
+  EmitLabel(TP_RT_PFX + 'RTE_D');
+  EmitInstr('ADD EAX,48');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC EDI');
+  EmitInstr('SHL EDX,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'RTE_H');
+  EmitInstr('MOV BYTE PTR [EDI],13');
+  EmitInstr('MOV BYTE PTR [EDI+1],10');
+  EmitInstr('MOV BYTE PTR [EDI+2],0');
+  EmitInstr('LEA ESI,[HEXBUF]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
+  EmitInstr('POP EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ExitProcess');
 
   { ------ _TPRT_PADPRINT : afficher avec padding ------------ }
   { Entree : ESI = pointeur vers chaine ASCIIZ                }
@@ -38318,6 +38411,9 @@ Begin
   BcDefineDataLabel('CHRBUF');    BcDataZeros(4);
   BcDefineDataLabel('OUTBUF');    BcDataZeros(4096);
   BcDefineDataLabel('OUTBUFLEN'); BcDataD(0);
+  BcDefineDataLabel('RTERR_MSG'); BcDataStr('Runtime error ');
+  BcDefineDataLabel('RTERR_AT');  BcDataStr(' at $');
+  BcDefineDataLabel('HEXBUF');    BcDataZeros(12);
   BcDefineDataLabel('BYTESWR');   BcDataD(0);
   BcDefineDataLabel('BYTESRD');   BcDataD(0);
   BcDefineDataLabel('CRLF');      BcDataB(13); BcDataB(10); BcDataB(0);
