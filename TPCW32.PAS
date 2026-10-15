@@ -2340,9 +2340,9 @@ End;
 { ---- Table des tailles de types Turbo Pascal (Win32) ---- }
 Const
   TPTypeSizes : Array[0..MAX_TP_TYPE_SIZES - 1] Of TTPSizeInfo = (
-    (Name: 'INTEGER';   Size: 4),   { LongInt 32 bits en Win32          }
+    (Name: 'INTEGER';   Size: 2),   { entier signe 16 bits (TP)         }
     (Name: 'LONGINT';   Size: 4),   { LongInt 32 bits                   }
-    (Name: 'WORD';      Size: 4),   { elargi a 32 bits en Win32         }
+    (Name: 'WORD';      Size: 2),   { mot 16 bits non signe (TP)        }
     (Name: 'BYTE';      Size: 1),   { 8 bits non signe                  }
     (Name: 'SHORTINT';  Size: 1),   { 8 bits signe                      }
     (Name: 'CHAR';      Size: 1),   { caractere 8 bits                  }
@@ -2359,11 +2359,11 @@ Const
     (Name: 'FILE';      Size: 552), { enregistrement de fichier (TFR_SIZE) }
     (Name: 'LONGWORD';  Size: 4),   { mot 32 bits non signe (TP8)       }
     { Types de l unite Dos }
-    (Name: 'DIRSTR';   Size: 68),  { String[67] + length byte          }
-    (Name: 'NAMESTR';  Size: 9),   { String[8]  + length byte          }
-    (Name: 'EXTSTR';   Size: 5),   { String[4]  + length byte          }
-    (Name: 'PATHSTR';  Size: 80),  { String[79] + length byte          }
-    (Name: 'COMSTR';   Size: 128), { String[127]+ length byte          }
+    (Name: 'DIRSTR';   Size: 256), { chaine (256 octets, comme String) }
+    (Name: 'NAMESTR';  Size: 256), { chaine                            }
+    (Name: 'EXTSTR';   Size: 256), { chaine                            }
+    (Name: 'PATHSTR';  Size: 256), { chaine                            }
+    (Name: 'COMSTR';   Size: 256), { chaine                            }
     (Name: 'DATETIME'; Size: 12),  { record 6 x Word = 12 octets      }
     { Type QuickPascal }
     (Name: 'CSTRING';  Size: 256), { CSTRING : String + nul terminal   }
@@ -3937,10 +3937,10 @@ Begin
   { Les index doivent correspondre aux constantes TY_IDX_xxx       }
 
   { idx 0 : Integer (LongInt 32 bits signe) }
-  TypeAdd(TYK_INTEGER, 'INTEGER', 4, 4, False, TY_UNKNOWN);
+  TypeAdd(TYK_INTEGER, 'INTEGER', 2, 2, False, TY_UNKNOWN);
 
   { idx 1 : Word (32 bits non signe en Win32) }
-  TypeAdd(TYK_WORD, 'WORD', 4, 4, True, TY_UNKNOWN);
+  TypeAdd(TYK_WORD, 'WORD', 2, 2, True, TY_UNKNOWN);
 
   { idx 2 : Byte (8 bits non signe) }
   TypeAdd(TYK_BYTE, 'BYTE', 1, 1, True, TY_UNKNOWN);
@@ -3992,7 +3992,7 @@ Begin
   { alias Free Pascal / Windows rencontres dans les sources TP : DWord, Cardinal, SmallInt }
   TypeAdd(TYK_WORD, 'DWORD', 4, 4, True, TY_IDX_WORD);
   TypeAdd(TYK_WORD, 'CARDINAL', 4, 4, True, TY_IDX_WORD);
-  TypeAdd(TYK_INTEGER, 'SMALLINT', 4, 4, False, TY_IDX_INTEGER);
+  TypeAdd(TYK_INTEGER, 'SMALLINT', 2, 2, False, TY_IDX_INTEGER);
 
   { Types chaines de l unite Dos }
   TypeAdd(TYK_STRING, 'DIRSTR',  256, 1, False, TY_UNKNOWN);   { String[67] }
@@ -6931,12 +6931,28 @@ Begin
               End;
             End;
 
-            { Constante non-typee : juste registrer dans SymTab }
-            SIdx := SymAdd(VName, SK_CONST, -1);
+            { Constante non-typee : registrer dans SymTab ; chaine -> donnee ASCIIZ (Offset = }
+            { index DataTab, TypeIdx = STRING) ; caractere -> code ordinal (TypeIdx = CHAR)   }
+            TIdx := -1;
+            DIdx := -1;
+            If Length(InitStr) = 1 Then
+            Begin
+              InitVal := Ord(InitStr[1]);
+              TIdx := TY_IDX_CHAR;
+            End
+            Else If InitStr <> '' Then
+            Begin
+              TName := DataGetOrAddStr(InitStr);
+              For J := 0 To DataCount - 1 Do
+                If DataTab[J].LblName = TName Then DIdx := J;
+              TIdx := TY_IDX_STRING;
+            End;
+            SIdx := SymAdd(VName, SK_CONST, TIdx);
             If SIdx >= 0 Then
             Begin
               SymTab[SIdx].IsGlobal := True;
               SymTab[SIdx].ImmVal   := InitVal;
+              If DIdx >= 0 Then SymTab[SIdx].Offset := DIdx;
             End;
           End;
 
@@ -8891,6 +8907,47 @@ End;
 
 Function W32IsAggregate(T : Integer) : Boolean; Forward;
 
+{ ------------------------------------------------------------ }
+{ GenLoadScalar / GenStoreScalar : charger dans EAX / stocker  }
+{ EAX a l operande memoire Mem ('[EBP-8]', '[_TPV_X]', '[EBX]') }
+{ selon la taille du type T : 1 et 2 octets etendus (signe pour }
+{ ShortInt/Integer/SmallInt, zero sinon), 4 octets directs.     }
+{ ------------------------------------------------------------ }
+
+Function TypeIsSignedSmall(T : Integer) : Boolean;
+Begin
+  TypeIsSignedSmall := (T >= 0) And (T < TypeCount) And (Not TypeTab[T].IsUnsigned) And
+    ((TypeTab[T].Kind = TYK_INTEGER) Or (TypeTab[T].Kind = TYK_SHORTINT) Or
+     ((TypeTab[T].Kind = TYK_SUBRANGE) And (TypeTab[T].Lo < 0)));
+End;
+
+Procedure GenLoadScalar(Const Mem : TString; T : Integer);
+Var Sz : LongInt;
+Begin
+  Sz := TypeSizeofIdx(T);
+  If Sz = 1 Then
+  Begin
+    If TypeIsSignedSmall(T) Then EmitInstr('MOVSX EAX,BYTE PTR ' + Mem)
+    Else EmitInstr('MOVZX EAX,BYTE PTR ' + Mem);
+  End
+  Else If Sz = 2 Then
+  Begin
+    If TypeIsSignedSmall(T) Then EmitInstr('MOVSX EAX,WORD PTR ' + Mem)
+    Else EmitInstr('MOVZX EAX,WORD PTR ' + Mem);
+  End
+  Else
+    EmitInstr('MOV EAX,DWORD PTR ' + Mem);
+End;
+
+Procedure GenStoreScalar(Const Mem : TString; T : Integer);
+Var Sz : LongInt;
+Begin
+  Sz := TypeSizeofIdx(T);
+  If Sz = 1 Then EmitInstr('MOV BYTE PTR ' + Mem + ',AL')
+  Else If Sz = 2 Then EmitInstr('MOV WORD PTR ' + Mem + ',AX')
+  Else EmitInstr('MOV DWORD PTR ' + Mem + ',EAX');
+End;
+
 Procedure GenLoadVar(PI : Integer; Const Name : TString);
 Var
   LI, ParI, SI : Integer;
@@ -8933,10 +8990,8 @@ Begin
           EmitInstr('LEA EAX,[' + ProcTab[PI].Locals[LI].StaticLbl + ']');
           If TypeIsString(SI) Then LastExprIsPascalStr := True;
         End
-        Else If TypeSizeofIdx(SI) = 1 Then
-          EmitInstr('MOVZX EAX,BYTE PTR [' + ProcTab[PI].Locals[LI].StaticLbl + ']')
         Else
-          EmitInstr('MOV EAX,DWORD PTR [' + ProcTab[PI].Locals[LI].StaticLbl + ']');
+          GenLoadScalar('[' + ProcTab[PI].Locals[LI].StaticLbl + ']', SI);
         Exit;
       End;
       If (ProcTab[PI].Locals[LI].TypeIdx >= 0) And
@@ -8952,10 +9007,7 @@ Begin
           LastExprIsPascalStr := True;
         Exit;
       End;
-      If ProcTab[PI].Locals[LI].Size = 1 Then
-        EmitInstr('MOVZX EAX,BYTE PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset))
-      Else
-        EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+      GenLoadScalar(EBPOfs(ProcTab[PI].Locals[LI].Offset), ProcTab[PI].Locals[LI].TypeIdx);
       Exit;
     End;
 
@@ -8973,10 +9025,7 @@ Begin
       Else If ProcTab[PI].Params[ParI].IsVar Then
       Begin
         EmitInstr('MOV EBX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
-        If TypeSizeofIdx(SI) = 1 Then
-          EmitInstr('MOVZX EAX,BYTE PTR [EBX]')
-        Else
-          EmitInstr('MOV EAX,[EBX]');
+        GenLoadScalar('[EBX]', SI);
       End
       Else
         EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
@@ -8990,7 +9039,16 @@ Begin
   Begin
     If SymTab[SI].Kind = SK_CONST Then
     Begin
+      If (SymTab[SI].TypeIdx = TY_IDX_STRING) And (SymTab[SI].Offset >= 0) And
+         (SymTab[SI].Offset < DataCount) And (DataTab[SymTab[SI].Offset].Kind = DK_STR) Then
+      Begin
+        EmitInstr('LEA EAX,[' + DataTab[SymTab[SI].Offset].LblName + ']');
+        LastVarTypeIdx := TY_IDX_STRING;
+        LastExprIsPascalStr := False;
+        Exit;
+      End;
       EmitInstr('MOV EAX,' + IntToStr_(SymTab[SI].ImmVal));
+      If SymTab[SI].TypeIdx >= 0 Then LastVarTypeIdx := SymTab[SI].TypeIdx;
       Exit;
     End;
     If SymTab[SI].Kind = SK_VAR Then
@@ -9051,10 +9109,8 @@ Begin
       End;
       If Opts.DestTarget = DEST_CRAY1 Then
         EmitInstr('LDS S1,' + Ref)
-      Else If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
-        EmitInstr('MOVZX EAX,BYTE PTR [' + Ref + ']')
       Else
-        EmitInstr('MOV EAX,DWORD PTR [' + Ref + ']');
+        GenLoadScalar('[' + Ref + ']', SymTab[SI].TypeIdx);
       Exit;
     End;
   End;
@@ -9080,7 +9136,7 @@ Begin
   Else If Opts.DestTarget = DEST_CRAY1 Then
     EmitInstr('LDS S1,' + TP_VAR_PFX + Up)
   Else
-    EmitInstr('MOV EAX,DWORD PTR [' + TP_VAR_PFX + Up + ']');
+    GenLoadScalar('[' + TP_VAR_PFX + Up + ']', GetVarTypeIdx(PI, Up));
 End;
 
 { ------------------------------------------------------------ }
@@ -9101,8 +9157,40 @@ End;
 { sauter l octet de longueur ; caractere : via CHRBUF)          }
 { ------------------------------------------------------------ }
 
+{ IsCharArray / CoerceCharArray : un Array[..] Of Char (idiome TP) utilise dans un
+  contexte de chaine est copie en chaine Pascal dans l anneau STRRING }
+Function IsCharArray(T : Integer) : Boolean;
+Begin
+  IsCharArray := (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_ARRAY) And
+    (TypeTab[T].BaseTypeIdx >= 0) And (TypeTab[T].BaseTypeIdx < TypeCount) And
+    (TypeTab[TypeTab[T].BaseTypeIdx].Kind = TYK_CHAR);
+End;
+
+Procedure CoerceCharArray;
+Begin
+  If (LastVarTypeIdx = TY_IDX_CHAR) And (Not LastExprIsPascalStr) Then
+  Begin
+    { caractere -> chaine d un caractere (Pos(Sep, S), Copy(C, ...)) }
+    EmitInstr('MOVZX EAX,AL');
+    EmitInstr('MOV [CHRBUF],EAX');
+    EmitInstr('LEA ESI,[CHRBUF]');
+    EmitInstr('MOV ECX,1');
+    EmitInstr('CALL ' + TP_RT_PFX + 'CARR2STR');
+    LastVarTypeIdx := TY_IDX_STRING;
+    LastExprIsPascalStr := True;
+    Exit;
+  End;
+  If Not IsCharArray(LastVarTypeIdx) Then Exit;
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('MOV ECX,' + IntToStr_(TypeTab[LastVarTypeIdx].Size));
+  EmitInstr('CALL ' + TP_RT_PFX + 'CARR2STR');
+  LastVarTypeIdx := TY_IDX_STRING;
+  LastExprIsPascalStr := True;
+End;
+
 Procedure GenStrSourceESI;
 Begin
+  CoerceCharArray;
   If LastExprIsPascalStr Then
   Begin
     EmitInstr('MOV ESI,EAX');
@@ -9142,13 +9230,8 @@ Begin
       EmitInstr('REP MOVSB');
       Exit;
     End;
-    If TypeSizeofIdx(T) = 1 Then
-    Begin
-      EmitInstr('MOV BYTE PTR [EBX],AL');
-      Exit;
-    End;
   End;
-  EmitInstr('MOV [EBX],EAX');
+  GenStoreScalar('[EBX]', T);
 End;
 
 { ------------------------------------------------------------ }
@@ -9168,13 +9251,8 @@ Begin
       Exit;
     End;
     If W32IsAggregate(T) Or (TypeTab[T].Kind = TYK_SET) Then Exit;
-    If TypeSizeofIdx(T) = 1 Then
-    Begin
-      EmitInstr('MOVZX EAX,BYTE PTR [EAX]');
-      Exit;
-    End;
   End;
-  EmitInstr('MOV EAX,[EAX]');
+  GenLoadScalar('[EAX]', T);
 End;
 
 { ------------------------------------------------------------ }
@@ -9229,10 +9307,7 @@ Begin
         GenStoreToAddr(VarTI);
         Exit;
       End;
-      If ProcTab[PI].Locals[LI].Size = 1 Then
-        EmitInstr('MOV BYTE PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset) + ',AL')
-      Else
-        EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset) + ',EAX');
+      GenStoreScalar(EBPOfs(ProcTab[PI].Locals[LI].Offset), VarTI);
       Exit;
     End;
 
@@ -9273,10 +9348,8 @@ Begin
       End;
       If Opts.DestTarget = DEST_CRAY1 Then
         EmitInstr('STS S1,' + Ref)
-      Else If TypeSizeofIdx(VarTI) = 1 Then
-        EmitInstr('MOV BYTE PTR [' + Ref + '],AL')
       Else
-        EmitInstr('MOV DWORD PTR [' + Ref + '],EAX');
+        GenStoreScalar('[' + Ref + ']', VarTI);
       Exit;
     End;
   End;
@@ -9292,7 +9365,7 @@ Begin
   Else If Opts.DestTarget = DEST_CRAY1 Then
     EmitInstr('STS S1,' + TP_VAR_PFX + Up)
   Else
-    EmitInstr('MOV DWORD PTR [' + TP_VAR_PFX + Up + '],EAX');
+    GenStoreScalar('[' + TP_VAR_PFX + Up + ']', VarTI);
 End;
 
 { ------------------------------------------------------------ }
@@ -9698,7 +9771,7 @@ Begin
     End;
 
     { Typecast : TypeName(expr) -> evaluer expr, resultat dans EAX }
-    If ((Up = 'INTEGER') Or (Up = 'LONGINT') Or (Up = 'WORD') Or
+    If ((Up = 'INTEGER') Or (Up = 'LONGINT') Or (Up = 'WORD') Or (Up = 'SMALLINT') Or
         (Up = 'BYTE') Or (Up = 'SHORTINT') Or (Up = 'CHAR') Or
         (Up = 'BOOLEAN') Or (Up = 'POINTER') Or (Up = 'PCHAR') Or
         (Up = 'REAL') Or (Up = 'SINGLE') Or (Up = 'DOUBLE') Or
@@ -9711,12 +9784,15 @@ Begin
       Inc(EP);  { sauter '(' }
       ParseExpr(PI);
       EPMatch(')');
-      { Masquer selon la taille du type cible }
-      If (Up = 'BYTE') Or (Up = 'SHORTINT') Or (Up = 'CHAR') Or
-         (Up = 'BOOLEAN') Then
+      { Masquer / etendre selon la taille du type cible }
+      If (Up = 'BYTE') Or (Up = 'CHAR') Or (Up = 'BOOLEAN') Then
         EmitInstr('AND EAX,0FFh')
+      Else If Up = 'SHORTINT' Then
+        EmitInstr('MOVSX EAX,AL')
       Else If Up = 'WORD' Then
-        EmitInstr('AND EAX,0FFFFh');
+        EmitInstr('AND EAX,0FFFFh')
+      Else If (Up = 'INTEGER') Or (Up = 'SMALLINT') Then
+        EmitInstr('MOVSX EAX,AX');
       If Up = 'CHAR' Then LastVarTypeIdx := TY_IDX_CHAR
       Else If Up = 'BOOLEAN' Then LastVarTypeIdx := TY_IDX_BOOLEAN
       Else LastVarTypeIdx := TY_IDX_INTEGER;
@@ -10648,18 +10724,9 @@ Begin
           Else
             EmitInstr('MOV ECX,1');
           EmitInstr('POP EBX');
-          If (LI >= 0) And (LI < TypeCount) And (TypeSizeofIdx(LI) = 1) Then
-          Begin
-            EmitInstr('MOVZX EAX,BYTE PTR [EBX]');
-            EmitInstr('ADD EAX,ECX');
-            EmitInstr('MOV BYTE PTR [EBX],AL');
-          End
-          Else
-          Begin
-            EmitInstr('MOV EAX,[EBX]');
-            EmitInstr('ADD EAX,ECX');
-            EmitInstr('MOV [EBX],EAX');
-          End;
+          GenLoadScalar('[EBX]', LI);
+          EmitInstr('ADD EAX,ECX');
+          GenStoreScalar('[EBX]', LI);
         End;
         EPMatch(')');
       End;
@@ -10683,18 +10750,9 @@ Begin
           Else
             EmitInstr('MOV ECX,1');
           EmitInstr('POP EBX');
-          If (LI >= 0) And (LI < TypeCount) And (TypeSizeofIdx(LI) = 1) Then
-          Begin
-            EmitInstr('MOVZX EAX,BYTE PTR [EBX]');
-            EmitInstr('SUB EAX,ECX');
-            EmitInstr('MOV BYTE PTR [EBX],AL');
-          End
-          Else
-          Begin
-            EmitInstr('MOV EAX,[EBX]');
-            EmitInstr('SUB EAX,ECX');
-            EmitInstr('MOV [EBX],EAX');
-          End;
+          GenLoadScalar('[EBX]', LI);
+          EmitInstr('SUB EAX,ECX');
+          GenStoreScalar('[EBX]', LI);
         End;
         EPMatch(')');
       End;
@@ -12224,6 +12282,7 @@ Begin
           Else
           Begin
             ParseExpr(PI);
+            CoerceCharArray;
             EmitInstr('MOV ESI,EAX');
             If LastExprIsPascalStr Then
               EmitInstr('CALL ' + TP_RT_PFX + 'LENGTH')
@@ -12348,6 +12407,7 @@ Begin
           Begin
             { --- Intel 80386 (Win32) --- }
             ParseExpr(PI);
+            CoerceCharArray;
             If LastExprIsPascalStr Then
               EmitInstr('INC EAX');        { sauter l octet de longueur }
             EmitInstr('PUSH EAX');
@@ -12467,11 +12527,13 @@ Begin
           Begin
             { --- Intel 80386 (Win32) --- }
             ParseExpr(PI);
+            CoerceCharArray;
             If LastExprIsPascalStr Then
               EmitInstr('INC EAX');
             EmitInstr('PUSH EAX');
             EPMatch(',');
             ParseExpr(PI);
+            CoerceCharArray;
             If LastExprIsPascalStr Then
               EmitInstr('INC EAX');
             EmitInstr('MOV ESI,EAX');
@@ -16081,6 +16143,8 @@ Begin
           EmitInstr('PUSH EAX');
           EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
           EmitInstr('ADD ESP,4');
+          LastVarTypeIdx := TY_IDX_STRING;
+          LastExprIsPascalStr := True;    { STR_PASBUF est au format Pascal }
         End;
       End;
       Exit;
@@ -17491,6 +17555,7 @@ End;
 Procedure ParseUnary(PI : Integer);
 Var
   Up : TString;
+  ATIdx : Integer;
 Begin
   If EPAtEnd Then Exit;
 
@@ -17525,15 +17590,30 @@ Begin
     Exit;
   End;
 
-  { Adresse @ }
+  { Adresse @ : variable, element de tableau, champ, procedure }
   If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '@') Then
   Begin
     Inc(EP);
     If Not EPAtEnd Then
     Begin
       Up := StrUpperCase(TokenPool[EP].Val);
-      GenLoadAddr(PI, Up);
-      Inc(EP);
+      If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) And
+         (SymFind(Up) >= 0) And ((SymTab[SymFind(Up)].Kind = SK_PROC) Or (SymTab[SymFind(Up)].Kind = SK_FUNC)) Then
+      Begin
+        EmitInstr('LEA EAX,[' + SymTab[SymFind(Up)].MangledName + ']');
+        Inc(EP);
+      End
+      Else If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+      Begin
+        ParseLValueAddrW32(PI, ATIdx);
+      End
+      Else
+      Begin
+        GenLoadAddr(PI, Up);
+        Inc(EP);
+      End;
+      LastVarTypeIdx := TY_IDX_POINTER;
+      LastExprIsPascalStr := False;
     End;
     Exit;
   End;
@@ -17731,6 +17811,11 @@ Begin
     Prec := BinOpPrec(Op);
     If (Prec = 0) Or (Prec < MinPrec) Then Break;
 
+    { tableau de Char compare ou concatene : convertir en chaine }
+    If IsCharArray(LastVarTypeIdx) And ((Prec = 1) Or (Op = '+')) And
+       (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) Then
+      CoerceCharArray;
+
     { Detecter si la partie gauche est une chaine }
     LeftIsStr := TypeIsString(LastVarTypeIdx);
     LeftPascal := LastExprIsPascalStr;
@@ -17770,6 +17855,7 @@ Begin
       EmitInstr('MOV EDI,ESP');
       EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN_PCHAR');
       ParseExprPrec(PI, Prec + 1);
+      CoerceCharArray;
       If (LastVarTypeIdx = TY_IDX_CHAR) And (Not LastExprIsPascalStr) Then
       Begin
         EmitInstr('MOVZX EAX,AL');
@@ -17802,6 +17888,7 @@ Begin
         EmitInstr('INC EAX');           { sauter l octet de longueur gauche }
       EmitInstr('PUSH EAX');            { sauver gauche }
       ParseExprPrec(PI, Prec + 1);
+      CoerceCharArray;
       EmitInstr('MOV EDI,EAX');         { EDI = droite  }
       If LastExprIsPascalStr Then
         EmitInstr('INC EDI');           { sauter l octet de longueur droite }
@@ -19587,6 +19674,7 @@ Begin
 
     { Evaluer l expression }
     ParseExpr(PI);
+    If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) Then CoerceCharArray;
     { le type constate par l emetteur l emporte quand il est sur (chaine Pascal, Char, Boolean) }
     If LastExprIsPascalStr Then
       TIdx := TY_IDX_STRING
@@ -19994,6 +20082,7 @@ Begin
   If Not EPMatch('(') Then Exit;
 
   ParseExpr(PI);
+  CoerceCharArray;
   If LastExprIsPascalStr Then
     EmitInstr('INC EAX');   { Pascal -> ASCIIZ : sauter l octet de longueur }
   EmitInstr('MOV ESI,EAX');
@@ -20358,6 +20447,7 @@ Procedure ParseRepeatStmt(PI : Integer);
 Var
   LblBeg : TString;
   LblEnd : TString;
+  LblCont : TString;
 Begin
   EmitComment('repeat');
 
@@ -20372,12 +20462,13 @@ Begin
 
   LblBeg := LabelGen;
   LblEnd := LabelGen;
+  LblCont := LabelGen;
 
   { Label debut }
   EmitLabel(LblBeg);
 
-  { Empiler le contexte de boucle }
-  LoopPush(LblEnd, LblBeg);
+  { Empiler le contexte de boucle (Continue -> evaluation de la condition UNTIL) }
+  LoopPush(LblEnd, LblCont);
 
   { Parser les instructions jusqu a UNTIL }
   While Not EPAtEnd Do
@@ -20398,6 +20489,7 @@ Begin
       Inc(EP);
 
   { Evaluer la condition }
+  EmitLabel(LblCont);
   ParseExpr(PI);
 
   { TEST EAX,EAX / JZ debut (si faux, on boucle) }
@@ -20613,6 +20705,24 @@ Begin
   Begin
     Inc(EP);
     Exit;
+  End;
+
+  { BREAK / CONTINUE : identificateurs (pas des mots reserves TP) ; saut vers la boucle englobante }
+  If (TokenPool[EP].Kind = TK_IDENT) And (LoopTop >= 0) Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    If ((Up = 'BREAK') Or (Up = 'CONTINUE')) And (SymFind(Up) < 0) Then
+    Begin
+      Inc(EP);
+      If Up = 'BREAK' Then
+        EmitInstr('JMP ' + LoopBreakLbl[LoopTop])
+      Else
+        EmitInstr('JMP ' + LoopContLbl[LoopTop]);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
   End;
 
   { Mots-cles }
@@ -29014,6 +29124,35 @@ Begin
   EmitInstr('POP EDI');
   EmitInstr('RET');
 
+  { ------ _TPRT_CARR2STR : ESI = tableau de Char, ECX = longueur -> EAX = chaine Pascal ---- }
+  { dans le prochain tampon de l anneau STRRING                                           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'CARR2STR');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV EAX,[STRRINGIDX]');
+  EmitInstr('INC EAX');
+  EmitInstr('AND EAX,15');
+  EmitInstr('MOV [STRRINGIDX],EAX');
+  EmitInstr('SHL EAX,8');
+  EmitInstr('MOV EDI,OFFSET STRRING');
+  EmitInstr('ADD EDI,EAX');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JBE ' + TP_RT_PFX + 'CA2S_OK');
+  EmitInstr('MOV ECX,255');
+  EmitLabel(TP_RT_PFX + 'CA2S_OK');
+  EmitInstr('MOV EAX,EDI');
+  EmitInstr('MOV BYTE PTR [EDI],CL');
+  EmitInstr('INC EDI');
+  EmitInstr('CLD');
+  EmitInstr('REP MOVSB');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('POP ESI');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EDI');
+  EmitInstr('RET');
+
   { ------ _TPRT_STRCPY255 : copier ASCIIZ ESI -> EDI, 255 max --- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'STRCPY255');
@@ -35390,20 +35529,33 @@ Begin { BcAssemble }
   End;
 
   { ---- MOVZX ---- }
-  If Mnem = 'MOVZX' Then
+  If (Mnem = 'MOVZX') Or (Mnem = 'MOVSX') Then
   Begin
     Reg1 := BcParseReg32(Op1);
     If Reg1 >= 0 Then
     Begin
-      BcEmitB($0F); BcEmitB($B6);
+      BcEmitB($0F);
       Tmp := StripSizePrefix(Op2);
       If Not StartsWithBracket(Tmp) Then
       Begin
         Reg2 := BcParseReg8(Tmp);
         If Reg2 >= 0 Then
-        Begin BcEmitB($C0 + Reg1 * 8 + Reg2); Exit; End;
+        Begin
+          If Mnem = 'MOVZX' Then BcEmitB($B6) Else BcEmitB($BE);
+          BcEmitB($C0 + Reg1 * 8 + Reg2); Exit;
+        End;
+        Reg2 := BcParseReg16(Tmp);
+        If Reg2 >= 0 Then
+        Begin
+          If Mnem = 'MOVZX' Then BcEmitB($B7) Else BcEmitB($BF);
+          BcEmitB($C0 + Reg1 * 8 + Reg2); Exit;
+        End;
         Tmp := Op2;
       End;
+      If HasWordPrefix(Op2) Then
+      Begin If Mnem = 'MOVZX' Then BcEmitB($B7) Else BcEmitB($BF); End
+      Else
+      Begin If Mnem = 'MOVZX' Then BcEmitB($B6) Else BcEmitB($BE); End;
       If StartsWithBracket(Tmp) Then
         BcEmitMemRM(Tmp, Reg1, DataLbl, DataAdd);
     End;
