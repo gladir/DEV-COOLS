@@ -7061,15 +7061,17 @@ Begin
       { --- Section PROCEDURE ou FUNCTION : sauter entierement --- }
       If ((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) And Not TokIsProcType(I) Then
       Begin
-        { Avancer jusqu au BEGIN puis au END correspondant }
+        { Avancer jusqu au BEGIN (ou ASM) puis au END correspondant }
         Inc(I);
         While (I < TokenCount) Do
         Begin
           If ((TokenPool[I].Kind = TK_KEYWORD) Or
               (TokenPool[I].Kind = TK_IDENT)) And
-             (StrUpperCase(TokenPool[I].Val) = 'FORWARD') Then
+             ((StrUpperCase(TokenPool[I].Val) = 'FORWARD') Or
+              (StrUpperCase(TokenPool[I].Val) = 'EXTERNAL') Or
+              (StrUpperCase(TokenPool[I].Val) = 'INLINE')) Then
           Begin
-            { Declaration FORWARD : avancer jusqu au ';' }
+            { Declaration FORWARD / EXTERNAL / INLINE : pas de corps, avancer jusqu au ';' }
             Inc(I);
             While (I < TokenCount) And
                   Not ((TokenPool[I].Kind = TK_PUNCT) And
@@ -7079,7 +7081,8 @@ Begin
             Break;
           End;
           If (TokenPool[I].Kind = TK_KEYWORD) And
-             (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+             ((StrUpperCase(TokenPool[I].Val) = 'BEGIN') Or
+              (StrUpperCase(TokenPool[I].Val) = 'ASM')) Then
           Begin
             Inc(I);
             SkipToMatchingEnd(I);
@@ -7729,6 +7732,16 @@ Begin
           Inc(I);
         If I < TokenCount Then Inc(I);
 
+        { Directives sans effet : Assembler; Near; Far; Interrupt; }
+        While (I + 1 < TokenCount) And
+              ((TokenPool[I].Kind = TK_KEYWORD) Or (TokenPool[I].Kind = TK_IDENT)) And
+              ((StrUpperCase(TokenPool[I].Val) = 'ASSEMBLER') Or
+               (StrUpperCase(TokenPool[I].Val) = 'NEAR') Or
+               (StrUpperCase(TokenPool[I].Val) = 'FAR') Or
+               (StrUpperCase(TokenPool[I].Val) = 'INTERRUPT')) And
+              (TokenPool[I + 1].Kind = TK_PUNCT) And (TokenPool[I + 1].Val = ';') Do
+          Inc(I, 2);
+
         { Verifier FORWARD }
         If (I < TokenCount) And
            ((TokenPool[I].Kind = TK_KEYWORD) Or
@@ -7759,11 +7772,12 @@ Begin
           Continue;
         End;
 
-        { Verifier EXTERNAL }
+        { Verifier EXTERNAL (ou INLINE(...) : code machine 8086 sans corps) }
         If (I < TokenCount) And
            ((TokenPool[I].Kind = TK_KEYWORD) Or
             (TokenPool[I].Kind = TK_IDENT)) And
-           (StrUpperCase(TokenPool[I].Val) = 'EXTERNAL') Then
+           ((StrUpperCase(TokenPool[I].Val) = 'EXTERNAL') Or
+            (StrUpperCase(TokenPool[I].Val) = 'INLINE')) Then
         Begin
           ProcTab[PI].IsExternal := True;
           While (I < TokenCount) And
@@ -7796,7 +7810,7 @@ Begin
         Begin
           Up := StrUpperCase(TokenPool[I].Val);
           If (Up <> 'VAR') And (Up <> 'CONST') And (Up <> 'TYPE') And
-             (Up <> 'LABEL') And (Up <> 'BEGIN') And
+             (Up <> 'LABEL') And (Up <> 'BEGIN') And (Up <> 'ASM') And
              (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') And
              (Up <> 'SEGMENT') Then
           Begin
@@ -8241,9 +8255,10 @@ Begin
                   ProcTab[NI].LocalCount := NLC;
                   ProcTab[NI].LocalSize  := NLocalOfs;
 
-                  { Localiser le corps (BEGIN ... END) }
+                  { Localiser le corps (BEGIN ... END, ou ASM ... END) }
                   If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-                     (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+                     ((StrUpperCase(TokenPool[I].Val) = 'BEGIN') Or
+                      (StrUpperCase(TokenPool[I].Val) = 'ASM')) Then
                   Begin
                     ProcTab[NI].BodyStart := I;
                     Inc(I);
@@ -8297,9 +8312,10 @@ Begin
         ProcTab[PI].LocalCount := LC;
         ProcTab[PI].LocalSize  := LocalOfs;
 
-        { Localiser le corps (BEGIN ... END) }
+        { Localiser le corps (BEGIN ... END, ou ASM ... END) }
         If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-           (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+           ((StrUpperCase(TokenPool[I].Val) = 'BEGIN') Or
+            (StrUpperCase(TokenPool[I].Val) = 'ASM')) Then
         Begin
           ProcTab[PI].BodyStart := I;
           Inc(I); { sauter BEGIN }
