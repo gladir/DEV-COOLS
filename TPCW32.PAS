@@ -31351,7 +31351,8 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_GOTOXY : positionner curseur ------------------- }
-  { Parametres sur pile : [ESP+4] = X (1-based), [ESP+8] = Y       }
+  { Parametres sur pile : X empile en premier puis Y :             }
+  { [ESP+8] = X (1-based), [ESP+4] = Y (1-based)                   }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'GOTOXY');
   EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
@@ -31359,11 +31360,11 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH EDX');
-  { X = [EBP+8] (1-based -> 0-based), Y = [EBP+12] }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');         { X }
+  { X = [EBP+12] (1-based -> 0-based), Y = [EBP+8] }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');        { X }
   EmitInstr('DEC EAX');                             { 0-based }
   EmitInstr('AND EAX,0FFFFh');
-  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');        { Y }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');         { Y }
   EmitInstr('DEC EDX');                             { 0-based }
   EmitInstr('SHL EDX,16');
   EmitInstr('OR EAX,EDX');                          { packed COORD }
