@@ -10921,6 +10921,15 @@ Begin
       Exit;
     End;
 
+    { Test8086 (variable de l unite System de FPC) : 2 = 80386 ou superieur }
+    If (Up = 'TEST8086') And W32Fpu And (SymFind(Up) < 0) Then
+    Begin
+      EmitInstr('MOV EAX,2');
+      LastVarTypeIdx := TY_IDX_BYTE;
+      Inc(EP);
+      Exit;
+    End;
+
     { Typecast : TypeName(expr) -> evaluer expr, resultat dans EAX }
     If ((Up = 'INTEGER') Or (Up = 'LONGINT') Or (Up = 'WORD') Or (Up = 'SMALLINT') Or
         (Up = 'BYTE') Or (Up = 'SHORTINT') Or (Up = 'CHAR') Or
@@ -29950,6 +29959,13 @@ Begin
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH DWORD PTR [EBX]');
   EmitInstr('CALL SetFilePointer');
+  EmitInstr('CMP EAX,-1');                   { echec (handle non positionnable : entree standard) }
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_SK_OK');
+  EmitInstr('CALL GetLastError');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'TF_SK_OK');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+  EmitLabel(TP_RT_PFX + 'TF_SK_OK');
   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + '],0');
   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + '],0');
   EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_EOF) + '],0');
