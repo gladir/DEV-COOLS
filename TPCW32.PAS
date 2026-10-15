@@ -9573,6 +9573,29 @@ Begin
     (TokenPool[EP + 1].Kind = TK_PUNCT) And (TokenPool[EP + 1].Val = ')');
 End;
 
+{ TypeBoundValue : Low/High d un type (tableau : bornes d index ; chaine : 0..255 ;
+  enumeration, sous-intervalle, ordinaux) }
+Function TypeBoundValue(TI : Integer; IsHigh : Boolean) : LongInt;
+Begin
+  TypeBoundValue := 0;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  Case TypeTab[TI].Kind Of
+    TYK_ARRAY, TYK_SUBRANGE :
+      If IsHigh Then TypeBoundValue := TypeTab[TI].Hi Else TypeBoundValue := TypeTab[TI].Lo;
+    TYK_STRING : If IsHigh Then TypeBoundValue := 255;
+    TYK_ENUM : If IsHigh Then TypeBoundValue := TypeTab[TI].EnumCount - 1;
+    TYK_BYTE, TYK_CHAR : If IsHigh Then TypeBoundValue := 255;
+    TYK_BOOLEAN : If IsHigh Then TypeBoundValue := 1;
+    TYK_SHORTINT : If IsHigh Then TypeBoundValue := 127 Else TypeBoundValue := -128;
+    TYK_WORD : If IsHigh Then TypeBoundValue := 65535;
+    TYK_INTEGER :
+      If TypeTab[TI].Name = 'INTEGER' Then
+      Begin If IsHigh Then TypeBoundValue := 32767 Else TypeBoundValue := -32768 End
+      Else
+      Begin If IsHigh Then TypeBoundValue := 2147483647 Else TypeBoundValue := -2147483647 - 1 End;
+  End;
+End;
+
 Procedure ParsePrimaryInner(PI : Integer);
 Var
   Up     : TString;
@@ -10563,7 +10586,7 @@ Begin
       Exit;
     End;
 
-    { LOW(T) / HIGH(T) }
+    { LOW(T) / HIGH(T) : type nomme ou variable (tableau, chaine, enumeration, ordinal) }
     If (Up = 'LOW') Or (Up = 'HIGH') Then
     Begin
       Lbl := Up;
@@ -10574,21 +10597,34 @@ Begin
         Begin
           Up := StrUpperCase(TokenPool[EP].Val);
           SI := TypeFindByName(Up);
-          If SI >= 0 Then
-          Begin
-            If Lbl = 'LOW' Then
-              EmitInstr('MOV EAX,' + IntToStr_(TypeTab[SI].Lo))
-            Else
-              EmitInstr('MOV EAX,' + IntToStr_(TypeTab[SI].Hi));
-          End
-          Else
-          Begin
-            If Lbl = 'LOW' Then
-              EmitInstr('MOV EAX,0')
-            Else
-              EmitInstr('MOV EAX,0');
-          End;
+          If SI < 0 Then SI := GetVarTypeIdx(PI, Up);
           Inc(EP);
+          { suffixes ^ et .champ : suivre le type }
+          While (Not EPAtEnd) And (SI >= 0) And (SI < TypeCount) And
+                (((TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '^')) Or
+                 ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '.'))) Do
+          Begin
+            If TokenPool[EP].Val = '^' Then
+            Begin
+              Inc(EP);
+              If TypeTab[SI].Kind = TYK_POINTER Then SI := TypeTab[SI].BaseTypeIdx Else SI := -1;
+            End
+            Else
+            Begin
+              Inc(EP);
+              If EPAtEnd Then Break;
+              Up := StrUpperCase(TokenPool[EP].Val);
+              Inc(EP);
+              LI := -1;
+              For WI := 0 To TypeTab[SI].FieldCount - 1 Do
+                If TypeTab[SI].Fields[WI].Name = Up Then LI := TypeTab[SI].Fields[WI].TypeIdx;
+              SI := LI;
+            End;
+          End;
+          EmitInstr('MOV EAX,' + IntToStr_(TypeBoundValue(SI, Lbl = 'HIGH')));
+          LastVarTypeIdx := TY_IDX_INTEGER;
+          If (SI >= 0) And (SI < TypeCount) And (TypeTab[SI].Kind = TYK_CHAR) Then
+            LastVarTypeIdx := TY_IDX_CHAR;
         End;
         EPMatch(')');
       End;
