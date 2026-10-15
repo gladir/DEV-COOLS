@@ -970,8 +970,17 @@ Type
 
 Const
   DATA_INIT_MAX = {$IFDEF FPC}4194304{$ELSE}8192{$ENDIF};
+  DATA_INIT_FIX_MAX = {$IFDEF FPC}8192{$ELSE}64{$ENDIF};
 
 Var
+  { Adresses a resoudre dans les constantes typees (PChar, @variable, @procedure) : }
+  { octet marque dans DataInitFixMark, label dans DataInitFixLbl ('@NOM' = variable }
+  { _TPV_NOM ou procedure _TPF_NOM, resolu a l edition de liens)                     }
+  DataInitFixCnt  : Integer;
+  DataInitFixOfs  : Array[0..DATA_INIT_FIX_MAX - 1] Of LongInt;
+  DataInitFixLbl  : Array[0..DATA_INIT_FIX_MAX - 1] Of TString;
+  DataInitFixMark : Array[0..DATA_INIT_MAX - 1] Of Boolean;
+
   { Pool de donnees (segment .DATA) }
   DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount  : Integer;
@@ -2400,6 +2409,7 @@ Var I : Integer;
 Begin
   DataCount   := 0;
   DataInitCount := 0;
+  DataInitFixCnt := 0;
   LabelGenSeq := 0;
   TokenCount  := 0;
   For I := 0 To MAX_DATA - 1 Do
@@ -4990,10 +5000,15 @@ End;
 { et les variables runtime du compilateur                      }
 { ------------------------------------------------------------ }
 
+Function DataInitFixAt(Ofs : LongInt) : Integer; Forward;
+Function DataInitFixAsmLabel(F : Integer) : TString; Forward;
+
 Procedure EmitDataSeg;
 Var
   I, J : Integer;
   S    : TString;
+  Pfx  : TString;
+  FixI : Integer;
   C    : Char;
 Begin
   EmitComment('--- Segment de donnees ---');
@@ -5309,21 +5324,32 @@ Begin
 
       DK_INIT:
       Begin
-        { Octets initialises : LABEL DB b,b,... (16 par ligne) }
+        { Octets initialises : LABEL DB b,b,... (16 par ligne), DD OFFSET pour les adresses }
         S := '';
-        For J := 0 To DataTab[I].ElemCount - 1 Do
+        Pfx := DataTab[I].LblName + '  ';
+        J := 0;
+        While J < DataTab[I].ElemCount Do
         Begin
+          FixI := DataInitFixAt(DataTab[I].IntVal + J);
+          If (FixI >= 0) And (J + 4 <= DataTab[I].ElemCount) Then
+          Begin
+            If S <> '' Then Begin EmitRaw(Pfx + 'DB ' + S); S := ''; Pfx := '        '; End;
+            EmitRaw(Pfx + 'DD OFFSET ' + DataInitFixAsmLabel(FixI));
+            Pfx := '        ';
+            Inc(J, 4);
+            Continue;
+          End;
           If S <> '' Then S := S + ',';
           S := S + IntToStr_(DataInitPool[DataTab[I].IntVal + J]);
-          If (J Mod 16 = 15) Or (J = DataTab[I].ElemCount - 1) Then
+          Inc(J);
+          If (J Mod 16 = 0) Or (J = DataTab[I].ElemCount) Then
           Begin
-            If J < 16 Then
-              EmitRaw(DataTab[I].LblName + '  DB ' + S)
-            Else
-              EmitRaw('        DB ' + S);
+            EmitRaw(Pfx + 'DB ' + S);
+            Pfx := '        ';
             S := '';
           End;
         End;
+        If S <> '' Then EmitRaw(Pfx + 'DB ' + S);
         If DataTab[I].ElemCount = 0 Then
           EmitRaw(DataTab[I].LblName + '  DD 0');
       End;
@@ -6172,9 +6198,59 @@ Begin
     DataInitAlloc := -1;
     Exit;
   End;
-  For K := DataInitCount To DataInitCount + Sz - 1 Do DataInitPool[K] := 0;
+  For K := DataInitCount To DataInitCount + Sz - 1 Do
+  Begin
+    DataInitPool[K] := 0;
+    DataInitFixMark[K] := False;
+  End;
   DataInitAlloc := DataInitCount;
   DataInitCount := DataInitCount + Sz;
+End;
+
+{ DataInitAddFix : l adresse du label Lbl sera ecrite (32 bits) a l offset Ofs }
+Procedure DataInitAddFix(Ofs : LongInt; Const Lbl : TString);
+Begin
+  If (Ofs < 0) Or (Ofs + 3 >= DATA_INIT_MAX) Then Exit;
+  If DataInitFixCnt >= DATA_INIT_FIX_MAX Then
+  Begin
+    WarnMsg('trop d adresses dans les constantes typees');
+    Exit;
+  End;
+  DataInitFixOfs[DataInitFixCnt] := Ofs;
+  DataInitFixLbl[DataInitFixCnt] := Lbl;
+  DataInitFixMark[Ofs] := True;
+  Inc(DataInitFixCnt);
+End;
+
+{ DataInitFixAt : index du fixup commencant a l offset Ofs, ou -1 }
+Function DataInitFixAt(Ofs : LongInt) : Integer;
+Var K : Integer;
+Begin
+  DataInitFixAt := -1;
+  If (Ofs < 0) Or (Ofs >= DATA_INIT_MAX) Then Exit;
+  If Not DataInitFixMark[Ofs] Then Exit;
+  For K := DataInitFixCnt - 1 DownTo 0 Do
+    If DataInitFixOfs[K] = Ofs Then
+    Begin
+      DataInitFixAt := K;
+      Exit;
+    End;
+End;
+
+{ DataInitFixAsmLabel : label ASM d un fixup ('@NOM' -> _TPV_NOM si variable connue, sinon _TPF_NOM) }
+Function DataInitFixAsmLabel(F : Integer) : TString;
+Var Nm : TString; K : Integer;
+Begin
+  DataInitFixAsmLabel := DataInitFixLbl[F];
+  If (Length(DataInitFixLbl[F]) > 1) And (DataInitFixLbl[F][1] = '@') Then
+  Begin
+    Nm := Copy(DataInitFixLbl[F], 2, 255);
+    K := SymFind(Nm);
+    If (K >= 0) And ((SymTab[K].Kind = SK_PROC) Or (SymTab[K].Kind = SK_FUNC)) Then
+      DataInitFixAsmLabel := TP_FUNC_PFX + Nm
+    Else
+      DataInitFixAsmLabel := TP_VAR_PFX + Nm;
+  End;
 End;
 
 Procedure DataInitPutInt(Base : LongInt; Sz : Integer; V : LongInt);
@@ -6334,10 +6410,31 @@ Begin
     Exit;
   End;
 
+  { pointeur : chaine litterale (PChar) -> adresse de la chaine ASCIIZ }
+  If ((Kd = TYK_POINTER) Or (Kd = TYK_PCHAR)) And
+     ((TokenPool[I].Kind = TK_STRING) Or (TokenPool[I].Kind = TK_CHAR)) Then
+  Begin
+    If TokenPool[I].Kind = TK_STRING Then SVal := TokenPool[I].Val
+    Else SVal := Chr(TokenPool[I].IntVal);
+    Inc(I);
+    While TokIsOp(I, '+') And (I + 1 < TokenCount) And
+          ((TokenPool[I + 1].Kind = TK_STRING) Or (TokenPool[I + 1].Kind = TK_CHAR)) Do
+    Begin
+      Inc(I);
+      If TokenPool[I].Kind = TK_STRING Then SVal := SVal + TokenPool[I].Val
+      Else SVal := SVal + Chr(TokenPool[I].IntVal);
+      Inc(I);
+    End;
+    DataInitAddFix(Base, DataGetOrAddStr(SVal));
+    Exit;
+  End;
+
   { scalaire : entier, caractere, booleen, pointeur (NIL), @ident }
   If TokIsOp(I, '@') Then
   Begin
-    { adresse : non supporte en donnees initialisees -> 0 }
+    { @variable ou @procedure : adresse resolue a l edition de liens }
+    If (I + 1 < TokenCount) And (TokenPool[I + 1].Kind = TK_IDENT) And (Sz >= 4) Then
+      DataInitAddFix(Base, '@' + StrUpperCase(TokenPool[I + 1].Val));
     Inc(I);
     While (I < TokenCount) And Not TokIsPunct(I, ',') And Not TokIsPunct(I, ')') And
           Not TokIsPunct(I, ';') Do
@@ -16291,8 +16388,13 @@ Begin
           EmitInstr('PUSH EAX');
           EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
           EmitInstr('ADD ESP,4');
+          { resultat dans l anneau des chaines temporaires : StrPas(a) et StrPas(b) }
+          { peuvent coexister dans une meme expression                              }
+          EmitInstr('MOV ESI,EAX');
+          EmitInstr('INC ESI');           { STRRET attend une chaine ASCIIZ }
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
           LastVarTypeIdx := TY_IDX_STRING;
-          LastExprIsPascalStr := True;    { STR_PASBUF est au format Pascal }
+          LastExprIsPascalStr := True;    { format Pascal }
         End;
       End;
       Exit;
@@ -18461,7 +18563,13 @@ Begin
   End;
 
   { --- Mode x86 --- }
-  If IsStrType Then
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) And (TypeTab[TypeIdx].Kind = TYK_PCHAR) Then
+  Begin
+    { EAX = PChar : chaine ASCIIZ }
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  End
+  Else If IsStrType Then
   Begin
     { EAX = pointeur vers chaine }
     EmitInstr('MOV ESI,EAX');
@@ -18514,7 +18622,13 @@ Begin
   IsStrType := (TypeIdx = TY_IDX_STRING) Or
                ((TypeIdx >= 0) And (TypeIdx < TypeCount) And
                 (TypeTab[TypeIdx].Kind = TYK_STRING));
-  If IsStrType Then
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) And (TypeTab[TypeIdx].Kind = TYK_PCHAR) Then
+  Begin
+    { EAX = PChar : chaine ASCIIZ }
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  End
+  Else If IsStrType Then
   Begin
     EmitInstr('MOV ESI,EAX');
     If LastExprIsPascalStr Then
@@ -18570,7 +18684,9 @@ Begin
                ((TIdx >= 0) And (TIdx < TypeCount) And
                 (TypeTab[TIdx].Kind = TYK_STRING));
   { ESI = chaine ASCIIZ a afficher }
-  If IsStrType Then
+  If (TIdx >= 0) And (TIdx < TypeCount) And (TypeTab[TIdx].Kind = TYK_PCHAR) Then
+    EmitInstr('MOV ESI,EAX')
+  Else If IsStrType Then
   Begin
     EmitInstr('MOV ESI,EAX');
     If LastExprIsPascalStr Then
@@ -33310,6 +33426,7 @@ Begin
   EmitInstr('MOV ECX,EAX');
   EmitInstr('INC EDI');
   EmitInstr('REP MOVSB');
+  EmitInstr('MOV BYTE PTR [EDI],0');        { terminateur NUL apres les caracteres }
   EmitInstr('MOV EAX,OFFSET STR_PASBUF');
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
@@ -34621,6 +34738,10 @@ Var
   BcDLabels  : Array[0..BC_MAX_DLABEL-1] of TBcLabel;
   BcDLabelCnt: Integer;
   BcFixups   : Array[0..BC_MAX_FIXUP-1] of TBcFixup;
+  { Adresses 32 bits a ecrire dans la section .data (constantes typees) }
+  BcDFixCnt  : LongInt;
+  BcDFixOfs  : Array[0..DATA_INIT_FIX_MAX-1] of LongInt;
+  BcDFixLbl  : Array[0..DATA_INIT_FIX_MAX-1] of TString;
   BcFixupCnt : LongInt;
   BcImports  : Array[0..BC_MAX_IMP-1] of TBcImport;
   BcImportCnt: Integer;
@@ -34674,7 +34795,7 @@ End;
 
 Procedure BcInit;
 Begin
-  BcCodeLen := 0; BcDataLen := 0;
+  BcCodeLen := 0; BcDataLen := 0; BcDFixCnt := 0;
   BcLabelCnt := 0; BcDLabelCnt := 0;
   BcFixupCnt := 0; BcImportCnt := 0;
   BcActive := False;
@@ -34729,6 +34850,34 @@ Procedure BcDataZeros(N: LongInt);
 Var I: LongInt;
 Begin
   For I := 1 To N Do BcDataB(0);
+End;
+
+{ BcDataInitBytes : copier Count octets du pool d initialisation en reservant }
+{ les emplacements d adresses (fixups) resolus par BcResolveFixups            }
+Procedure BcDataInitBytes(PoolOfs, Count: LongInt);
+Var J: LongInt; F: Integer;
+Begin
+  J := 0;
+  While J < Count Do
+  Begin
+    F := DataInitFixAt(PoolOfs + J);
+    If (F >= 0) And (J + 4 <= Count) Then
+    Begin
+      If BcDFixCnt < DATA_INIT_FIX_MAX Then
+      Begin
+        BcDFixOfs[BcDFixCnt] := BcDataLen;
+        BcDFixLbl[BcDFixCnt] := DataInitFixLbl[F];
+        Inc(BcDFixCnt);
+      End;
+      BcDataZeros(4);
+      Inc(J, 4);
+    End
+    Else
+    Begin
+      BcDataB(DataInitPool[PoolOfs + J]);
+      Inc(J);
+    End;
+  End;
 End;
 
 { --- Gestion des labels de donnees --- }
@@ -38420,7 +38569,7 @@ End;
 Procedure BcBuildData;
 Var I, J: Integer; S: TString;
 Begin
-  BcDataLen := 0; BcDLabelCnt := 0;
+  BcDataLen := 0; BcDLabelCnt := 0; BcDFixCnt := 0;
 
   If Is68kTarget Then
   Begin
@@ -38708,8 +38857,7 @@ Begin
         If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
         Else BcDataD(0);
       DK_INIT:
-        For J := 0 To DataTab[I].ElemCount - 1 Do
-          BcDataB(DataInitPool[DataTab[I].IntVal + J]);
+        BcDataInitBytes(DataTab[I].IntVal, DataTab[I].ElemCount);
     End;
   End;
 End;
@@ -38720,7 +38868,39 @@ Var
   I: LongInt;
   TargetOfs, FixOfs: LongInt;
   Val: LongInt;
+  Nm: TString;
 Begin
+  { Adresses dans la section .data (constantes typees : PChar, @variable, @procedure) }
+  For I := 0 To BcDFixCnt - 1 Do
+  Begin
+    Val := 0;
+    Nm := BcDFixLbl[I];
+    If (Length(Nm) > 1) And (Nm[1] = '@') Then
+    Begin
+      Nm := Copy(Nm, 2, 255);
+      TargetOfs := BcFindDataLabel(TP_VAR_PFX + Nm);
+      If TargetOfs >= 0 Then Val := DataVA + TargetOfs
+      Else
+      Begin
+        TargetOfs := BcFindLabel(TP_FUNC_PFX + Nm);
+        If TargetOfs >= 0 Then Val := (PE_IMG_BASE + PE_TEXT_RVA) + TargetOfs;
+      End;
+    End
+    Else
+    Begin
+      TargetOfs := BcFindDataLabel(Nm);
+      If TargetOfs >= 0 Then Val := DataVA + TargetOfs;
+    End;
+    FixOfs := BcDFixOfs[I];
+    If (FixOfs >= 0) And (FixOfs + 3 < BcDataLen) Then
+    Begin
+      BcData[FixOfs] := Byte(Val);
+      BcData[FixOfs + 1] := Byte(Val Shr 8);
+      BcData[FixOfs + 2] := Byte(Val Shr 16);
+      BcData[FixOfs + 3] := Byte(Val Shr 24);
+    End;
+  End;
+
   For I := 0 To BcFixupCnt - 1 Do
   Begin
     FixOfs := BcFixups[I].CodeOfs;
