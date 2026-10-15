@@ -48529,7 +48529,7 @@ Begin
 End;
 
 Const
-  D16SRC_SYS_N = 1471;
+  D16SRC_SYS_N = 1485;
   D16SrcSys1 : Array[1..400] Of String[96] = (
     'Unit System;',
     'Interface',
@@ -48760,6 +48760,7 @@ Const
     'Procedure __OpenText(Var T : TextRec; Mode : Word);',
     'Var H : Word;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
     '  If T.Mode <> fmClosed Then',
     '  Begin',
     '    If T.Mode = fmOutput Then __TextOut(T);',
@@ -48807,6 +48808,7 @@ Const
     '',
     'Procedure __Close(Var T : TextRec);',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
     '  If T.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  If T.Mode = fmOutput Then __TextOut(T);',
     '  If Not __IsConsole(T) Then __DosClose(T.Handle);',
@@ -48845,6 +48847,7 @@ Const
     'Procedure __WrChars(Var T : TextRec; Var Buf; Count : Word);',
     'Var I : Word; P : ^Char; B : ^TextBuf;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
     '  If T.Mode <> fmOutput Then',
     '  Begin',
     '    InOutRes := 105;  { TP : toute ecriture hors fmOutput -> 105 }',
@@ -48927,12 +48930,13 @@ Const
     '',
     '{ Caractere courant du tampon sans le consommer ; #26 en fin de fichier }',
     'Function __RdPeek(Var T : TextRec) : Char;',
-    'Var B : ^TextBuf;',
-    'Begin',
-    '  If T.Mode <> fmInput Then',
-    '  Begin'
+    'Var B : ^TextBuf;'
   );
   D16SrcSys2 : Array[1..400] Of String[96] = (
+    'Begin',
+    '  If InOutRes <> 0 Then Begin __RdPeek := #26; Exit End;   { TP : E/S suspendues }',
+    '  If T.Mode <> fmInput Then',
+    '  Begin',
     '    InOutRes := 104;  { TP : toute lecture hors fmInput -> 104 }',
     '    __RdPeek := #26; Exit;',
     '  End;',
@@ -49125,6 +49129,7 @@ Const
     'Procedure __OpenFile(Var F : FileRec; RecSize : Word; Create : Boolean);',
     'Var H : Word;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
     '  If F.Mode <> fmClosed Then Begin __FClose(F); InOutRes := 0 End;',
     '  { nom vide : entree ou sortie standard (comme TP, aussi pour les fichiers) }',
     '  If F.Name[0] = #0 Then',
@@ -49160,6 +49165,7 @@ Const
     '',
     'Procedure __FClose(Var F : FileRec);',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  If F.Name[0] <> #0 Then __DosClose(F.Handle);',
     '  F.Mode := fmClosed;',
@@ -49167,6 +49173,7 @@ Const
     '',
     'Procedure __FWriteRec(Var F : FileRec; Var Buf);',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  __DosWrite(F.Handle, Buf, F.RecSize);',
     'End;',
@@ -49174,6 +49181,7 @@ Const
     'Procedure __FReadRec(Var F : FileRec; Var Buf);',
     'Var N : Word;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  N := __DosRead(F.Handle, Buf, F.RecSize);',
     '  If (N < F.RecSize) And (InOutRes = 0) Then InOutRes := 100;',
@@ -49182,6 +49190,7 @@ Const
     'Procedure __BlockRead(Var F : FileRec; Var Buf; Count : Word; Var Result : Word);',
     'Var N : Word; P : Pointer;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  N := __DosRead(F.Handle, Buf, Count * F.RecSize);',
     '  P := @Result;',
@@ -49192,6 +49201,7 @@ Const
     'Procedure __BlockWrite(Var F : FileRec; Var Buf; Count : Word; Var Result : Word);',
     'Var R : TRegs; P : Pointer;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  R.AX := $4000; R.BX := F.Handle; R.CX := Count * F.RecSize; R.DS := Seg(Buf); R.DX :=',
     ' Ofs(Buf);',
@@ -49205,6 +49215,7 @@ Const
     'Procedure __Seek(Var F : FileRec; Pos : Longint);',
     'Var R : TRegs; L : Longint;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  L := Pos * F.RecSize;',
     '  R.AX := $4200; R.BX := F.Handle; R.CX := L Shr 16; R.DX := L And $FFFF;',
@@ -49215,6 +49226,7 @@ Const
     'Function __FilePos(Var F : FileRec) : Longint;',
     'Var R : TRegs; L : Longint;',
     'Begin',
+    '  If InOutRes <> 0 Then Begin __FilePos := 0; Exit End;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; __FilePos := 0; Exit End;',
     '  R.AX := $4201; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
     '  __Intr($21, R);',
@@ -49225,6 +49237,7 @@ Const
     'Function __FileSize(Var F : FileRec) : Longint;',
     'Var R : TRegs; L, Cur : Longint;',
     'Begin',
+    '  If InOutRes <> 0 Then Begin __FileSize := 0; Exit End;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; __FileSize := 0; Exit End;',
     '  R.AX := $4201; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
     '  __Intr($21, R);',
@@ -49245,6 +49258,7 @@ Const
     'Procedure __Truncate(Var F : FileRec);',
     'Var R : TRegs;',
     'Begin',
+    '  If InOutRes <> 0 Then Exit;',
     '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
     '  R.AX := $4000; R.BX := F.Handle; R.CX := 0;',
     '  __Intr($21, R);',
@@ -49318,7 +49332,9 @@ Const
     'Function __ParamStr(N : Integer) : String;',
     'Var P : ^Char; L : Byte; Cnt : Word; InArg : Boolean; S : String; E : ^Char; I : Word;',
     'Begin',
-    '  S := '''';',
+    '  S := '''';'
+  );
+  D16SrcSys3 : Array[1..400] Of String[96] = (
     '  If N = 0 Then',
     '  Begin',
     '    { nom du programme : apres les variables d environnement }',
@@ -49332,9 +49348,7 @@ Const
     '    __ParamStr := S; Exit;',
     '  End;',
     '  P := Ptr(PrefixSeg, $81);',
-    '  L := Mem[PrefixSeg:$80];'
-  );
-  D16SrcSys3 : Array[1..400] Of String[96] = (
+    '  L := Mem[PrefixSeg:$80];',
     '  Cnt := 0; InArg := False;',
     '  While L > 0 Do',
     '  Begin',
@@ -49720,7 +49734,9 @@ Const
     '  Inc(sum.e); r:=sum;',
     '  if n=1 then begin DecimalFloat(''1.5707963267948966'',b); r.neg:=True; Add(b,r,r) end;',
     '  r.neg:=neg',
-    ' end',
+    ' end'
+  );
+  D16SrcSys4 : Array[1..285] Of String[96] = (
     'end;',
     'procedure RInt(n:Longint; var r:RBytes);',
     'var a:Float;',
@@ -49734,9 +49750,7 @@ Const
     ' else if op=5 then begin if not Empty(z) then z.neg:=not z.neg end',
     ' else if op=6 then z.neg:=False else if op=7 then Multiply(x,x,z)',
     ' else if (op=8) or (op=9) then begin',
-    '  if z.e<0 then Zero(z) else if z.e<47 then begin bits:=47-z.e;'
-  );
-  D16SrcSys4 : Array[1..271] Of String[96] = (
+    '  if z.e<0 then Zero(z) else if z.e<47 then begin bits:=47-z.e;',
     '   for i:=1 to bits do Right(z.m); for i:=1 to bits do Left(z.m); Normalize(z)',
     '  end;',
     '  if op=9 then begin z.neg:=not z.neg; Add(x,z,z) end',
