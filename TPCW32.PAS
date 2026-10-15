@@ -56,6 +56,14 @@ Program TPCW32;
 {$ENDIF}
 {$I-}
 
+{$IFDEF FPC}
+{ Sous FPC, Integer vaut 16 bits en mode TP : les index de jetons, tailles  }
+{ de types et offsets du compilateur depassent 32767 sur les gros sources,  }
+{ on redefinit donc Integer en 32 bits pour tout le compilateur.            }
+Type
+  Integer = LongInt;
+{$ENDIF}
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE ET OPTIONS                [IMPLEMENTE] }
 { ============================================================ }
@@ -2942,6 +2950,66 @@ Begin
   End;
   TokenPool[TokenCount] := T;
   Inc(TokenCount);
+End;
+
+{ ---- TokenPoolMergeCaretChars : constantes caracteres de controle ---- }
+{ Le lexeur produit OP(^) IDENT(N) pour ^N ; en position d expression  }
+{ (etiquette CASE, comparaison, argument), ^N est le caractere #14.    }
+{ On fusionne les deux jetons quand la lettre est seule et collee au ^, }
+{ et que le ^ n est ni un dereferencement (apres IDENT, ')', ']', '^') }
+{ ni un type pointeur (apres ':', ou apres '=' / OF et suivi de ';' ')'). }
+Procedure TokenPoolMergeCaretChars;
+Var
+  I, J : Integer;
+  Ch : Char;
+  IsDeref, IsType : Boolean;
+Begin
+  I := 0;
+  J := 0;
+  While I < TokenCount Do
+  Begin
+    If (TokenPool[I].Kind = TK_OP) And (TokenPool[I].Val = '^') And
+       (I + 1 < TokenCount) And (TokenPool[I + 1].Kind = TK_IDENT) And
+       (Length(TokenPool[I + 1].Val) = 1) And
+       (TokenPool[I + 1].Line = TokenPool[I].Line) And
+       (TokenPool[I + 1].Col = TokenPool[I].Col + 1) Then
+    Begin
+      IsDeref := False;
+      IsType := False;
+      If J > 0 Then
+      Begin
+        If (TokenPool[J - 1].Kind = TK_IDENT) Or
+           ((TokenPool[J - 1].Kind = TK_PUNCT) And
+            ((TokenPool[J - 1].Val = ')') Or (TokenPool[J - 1].Val = ']'))) Or
+           ((TokenPool[J - 1].Kind = TK_OP) And (TokenPool[J - 1].Val = '^')) Then
+          IsDeref := True;
+        If (TokenPool[J - 1].Kind = TK_PUNCT) And (TokenPool[J - 1].Val = ':') Then
+          IsType := True;
+        { TYPE P = ^T;  ou  Array[..] Of ^T;  : la lettre est suivie de ';' ou ')' }
+        If (((TokenPool[J - 1].Kind = TK_OP) And (TokenPool[J - 1].Val = '=')) Or
+            ((TokenPool[J - 1].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[J - 1].Val) = 'OF'))) And
+           (I + 2 < TokenCount) And (TokenPool[I + 2].Kind = TK_PUNCT) And
+           ((TokenPool[I + 2].Val = ';') Or (TokenPool[I + 2].Val = ')')) Then
+          IsType := True;
+      End;
+      If Not IsDeref And Not IsType Then
+      Begin
+        Ch := UpCase(TokenPool[I + 1].Val[1]);
+        TokenPool[J] := TokenPool[I];
+        TokenPool[J].Kind := TK_CHAR;
+        TokenPool[J].IntVal := Ord(Ch) Xor 64;
+        TokenPool[J].Val := '#' + IntToStr_(TokenPool[J].IntVal);
+        Inc(J);
+        Inc(I, 2);
+        Continue;
+      End;
+    End;
+    If J <> I Then TokenPool[J] := TokenPool[I];
+    Inc(J);
+    Inc(I);
+  End;
+  TokenCount := J;
 End;
 
 { ---- TokenPoolRegisterStrings : enregistrer toutes les chaines ---- }
@@ -7459,10 +7527,16 @@ Begin
     Begin
       Up := StrUpperCase(TokenPool[I].Val);
 
+      { le CASE d une partie variante de RECORD n a pas de END propre }
+      If (Up = 'CASE') And TokVariantCase[I] Then
+      Begin
+        Inc(I);
+        Continue;
+      End;
       If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'REPEAT') Or
-         (Up = 'CASE') Or (Up = 'ASM') Then
+         (Up = 'CASE') Or (Up = 'ASM') Or (Up = 'OBJECT') Then
         Inc(Depth)
-      Else If Up = 'END' Then
+      Else If (Up = 'END') Or (Up = 'UNTIL') Then
       Begin
         If Depth > 0 Then
           Dec(Depth);
@@ -8887,6 +8961,16 @@ Var
 Function EPAtEnd : Boolean;
 Begin
   EPAtEnd := (EP >= EPEnd);
+End;
+
+{ SkipStuckToken : ParseStmt n a pas avance (construction non reconnue) : }
+{ signaler le jeton en mode -d et le sauter pour eviter une boucle infinie }
+Procedure SkipStuckToken;
+Begin
+  If Opts.DebugMode And (EP < TokenCount) Then
+    WriteLn('  [stmt] jeton inattendu ligne ', TokenPool[EP].Line, ' : ',
+            TokenPool[EP].Val);
+  Inc(EP);
 End;
 
 { ------------------------------------------------------------ }
@@ -20266,6 +20350,7 @@ Var
   Up      : TString;
   CaseVal : LongInt;
   RangeHi : LongInt;
+  SI      : Integer;
 Begin
   EmitComment('case');
 
@@ -20408,10 +20493,12 @@ Begin
         If (TokenPool[EP].Kind = TK_KEYWORD) And
            (StrUpperCase(TokenPool[EP].Val) = 'END') Then
           Break;
+        SI := EP;
         ParseStmt(PI);
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
           Inc(EP);
+        If EP = SI Then SkipStuckToken;
       End;
     End;
   End;
@@ -20504,6 +20591,7 @@ Var
   LblBeg : TString;
   LblEnd : TString;
   LblCont : TString;
+  SI : Integer;
 Begin
   EmitComment('repeat');
 
@@ -20532,10 +20620,12 @@ Begin
     If (TokenPool[EP].Kind = TK_KEYWORD) And
        (StrUpperCase(TokenPool[EP].Val) = 'UNTIL') Then
       Break;
+    SI := EP;
     ParseStmt(PI);
     If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
        (TokenPool[EP].Val = ';') Then
       Inc(EP);
+    If EP = SI Then SkipStuckToken;
   End;
 
   { Consommer UNTIL }
@@ -20741,6 +20831,8 @@ Var
   WI      : Integer;
 Begin
   If EPAtEnd Then Exit;
+  If Opts.DebugMode And Opts.Verbose Then
+    WriteLn('  [stmt] ligne ', TokenPool[EP].Line, ' : ', TokenPool[EP].Val);
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
   If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
@@ -20819,8 +20911,7 @@ Begin
            (TokenPool[EP].Val = ';') Then
           Inc(EP);
         { Securite : si EP n a pas avance, forcer l avancement }
-        If EP = SI Then
-          Inc(EP);
+        If EP = SI Then SkipStuckToken;
       End;
       Exit;
     End;
@@ -26103,8 +26194,7 @@ Begin
     PrevEP := EP;
     ParseStmt(PI);
     { Securite : si EP n a pas avance, forcer l avancement }
-    If EP = PrevEP Then
-      Inc(EP);
+    If EP = PrevEP Then SkipStuckToken;
   End;
 
   { Restaurer le contexte }
@@ -54379,6 +54469,8 @@ End;
 { D16-END }
 
 Procedure Run;
+Var
+  I : Integer;
 Begin
   ShowBanner;
 
@@ -54438,6 +54530,9 @@ Begin
     Exit;
   End;
 
+  { ^N en position d expression : caractere de controle }
+  TokenPoolMergeCaretChars;
+
   { Enregistrer toutes les chaines dans le pool de donnees }
   TokenPoolRegisterStrings;
 
@@ -54483,6 +54578,10 @@ Begin
   If Opts.Verbose Then
     WriteLn('  Apres ParseProcDecls: Procedures=', ProcCount,
             '  Symboles=', SymCount);
+  If Opts.DebugMode Then
+    For I := 0 To ProcCount - 1 Do
+      WriteLn('  [proc] ', ProcTab[I].Name, ' params=', ProcTab[I].ParamCount,
+              ' locaux=', ProcTab[I].LocalCount, ' ret=', ProcTab[I].RetTypeIdx);
 
   { Generation du code Win32 : pipeline d emission (texte ASM + binaire PE) }
   { La pipeline s execute si -asm est demande OU si un PE doit etre genere }
