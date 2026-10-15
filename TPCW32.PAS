@@ -2892,7 +2892,7 @@ End;
 Procedure TokenPoolInit;
 Begin
   TokenCount := 0;
-  TokenPoolLimit := TOKENS_W32;
+  TokenPoolLimit := MAX_TOKENS;
 End;
 
 { ---- TokenPoolAdd : ajouter un token dans le pool ---- }
@@ -8805,9 +8805,11 @@ End;
 { ------------------------------------------------------------ }
 { ParsePrimary : parser une expression primaire                 }
 { Resultat dans EAX                                             }
+{ (ParsePrimaryInner : corps ; ParsePrimary ci-apres corrige le }
+{  type de la derniere expression apres un appel de fonction)   }
 { ------------------------------------------------------------ }
 
-Procedure ParsePrimary(PI : Integer);
+Procedure ParsePrimaryInner(PI : Integer);
 Var
   Up     : TString;
   Lbl    : TString;
@@ -16294,6 +16296,60 @@ Begin
 
   { Token non reconnu : avancer }
   Inc(EP);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimary : apres une fonction (integree ou utilisateur), le }
+{ type de la derniere expression (LastVarTypeIdx) est celui du    }
+{ resultat de la fonction et non celui de son dernier argument :  }
+{ Length(S) = 0 compilait en comparaison de chaines et plantait.  }
+{ ------------------------------------------------------------ }
+Function BuiltinFuncResultKind(Const Up : TString) : Integer;
+{ 0 = inconnu/entier, 1 = chaine, 2 = caractere, 3 = booleen }
+Begin
+  BuiltinFuncResultKind := 0;
+  If (Up = 'COPY') Or (Up = 'CONCAT') Or (Up = 'PARAMSTR') Or (Up = 'STRPAS') Or
+     (Up = 'GETENV') Or (Up = 'FEXPAND') Or (Up = 'FSEARCH') Or (Up = 'ENVSTR') Or
+     (Up = 'GETDRIVERNAME') Or (Up = 'GETMODENAME') Or (Up = 'GRAPHERRORMSG') Or
+     (Up = 'STRUPPER') Or (Up = 'STRLOWER') Or (Up = 'STRCAT') Or (Up = 'STRCOPY') Or
+     (Up = 'STRECOPY') Or (Up = 'STREND') Or (Up = 'STRLCAT') Or (Up = 'STRLCOPY') Or
+     (Up = 'STRMOVE') Or (Up = 'STRNEW') Or (Up = 'STRPOS') Or (Up = 'STRRSCAN') Or
+     (Up = 'STRSCAN') Or (Up = 'STRPCOPY') Or (Up = 'NEWSTR') Then
+    BuiltinFuncResultKind := 1
+  Else If (Up = 'CHR') Or (Up = 'UPCASE') Or (Up = 'READKEY') Then
+    BuiltinFuncResultKind := 2
+  Else If (Up = 'EOF') Or (Up = 'EOLN') Or (Up = 'SEEKEOF') Or (Up = 'SEEKEOLN') Or
+          (Up = 'KEYPRESSED') Or (Up = 'ODD') Or (Up = 'ASSIGNED') Then
+    BuiltinFuncResultKind := 3;
+End;
+
+Procedure ParsePrimary(PI : Integer);
+Var
+  Up : TString; SI, K : Integer;
+Begin
+  Up := '';
+  If (Not EPAtEnd) And ((TokenPool[EP].Kind = TK_IDENT) Or (TokenPool[EP].Kind = TK_KEYWORD)) Then
+    Up := StrUpperCase(TokenPool[EP].Val);
+  ParsePrimaryInner(PI);
+  If Up = '' Then Exit;
+  SI := SymFind(Up);
+  If (SI < 0) Or (SymTab[SI].Kind <> SK_FUNC) Then Exit;
+  If SymTab[SI].IsExternal Then
+  Begin
+    { fonction integree }
+    K := BuiltinFuncResultKind(Up);
+    If K = 1 Then Exit;                   { chaine : indicateurs poses par l emetteur }
+    If K = 2 Then LastVarTypeIdx := TY_IDX_CHAR
+    Else If K = 3 Then LastVarTypeIdx := TY_IDX_BOOLEAN
+    Else LastVarTypeIdx := TY_IDX_INTEGER;
+    LastExprIsPascalStr := False;
+  End
+  Else If (SymTab[SI].TypeIdx >= 0) And Not TypeIsString(SymTab[SI].TypeIdx) Then
+  Begin
+    { fonction utilisateur a resultat non chaine }
+    LastVarTypeIdx := SymTab[SI].TypeIdx;
+    LastExprIsPascalStr := False;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -38716,7 +38772,8 @@ Var
   DnmPerDll: Array[0..MAX_DLL_PE-1] Of LongInt;
   IatVA: LongInt;
   CurOfs: LongInt;
-  DI, AI, I, J: Integer;
+  DI, AI: Integer;
+  I, J: LongInt;
   Found: Boolean;
   ImpIdx: Integer;
   IdataVirtSize: LongInt;
@@ -52122,6 +52179,10 @@ Begin
     LexNextToken;
     If CurToken.Kind <> TK_EOF Then
       TokenPoolAdd(CurToken);
+    { fin du programme ou de l unite : END. ; le reste du fichier est ignore (comme TP) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') And (TokenCount >= 2) And
+       (TokenPool[TokenCount - 2].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[TokenCount - 2].Val) = 'END') Then Break;
   Until CurToken.Kind = TK_EOF;
 
   { Cible DOS 16 bits native (-CD) : moteur 8086 autonome (TODO 30) }
