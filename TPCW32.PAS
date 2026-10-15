@@ -20711,7 +20711,8 @@ Begin
   If (TokenPool[EP].Kind = TK_IDENT) And (LoopTop >= 0) Then
   Begin
     Up := StrUpperCase(TokenPool[EP].Val);
-    If ((Up = 'BREAK') Or (Up = 'CONTINUE')) And (SymFind(Up) < 0) Then
+    If ((Up = 'BREAK') Or (Up = 'CONTINUE')) And
+       ((SymFind(Up) < 0) Or SymTab[SymFind(Up)].IsExternal) Then
     Begin
       Inc(EP);
       If Up = 'BREAK' Then
