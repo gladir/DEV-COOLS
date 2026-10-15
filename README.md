@@ -1031,7 +1031,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>TPCW32.PAS</b></td>
-			<td>Cette commande permet de lancer le compilateur Turbo Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
+			<td>Cette commande permet de lancer le compilateur Turbo Pascal multi-cibles : assembleur 80386 et exécutable Windows 32 bits par défaut, exécutable DOS 16 bits en code 8086 natif avec -CD (unités System, Crt, Dos, Strings, Printer et Graph intégrées), et autres cibles (-CZ80, -C6502, -C68000, ...).</td>
 		</tr>
 		<tr>
 			<td><b>TP2JS.PAS</b></td>

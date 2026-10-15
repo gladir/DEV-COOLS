@@ -18,6 +18,8 @@ names=sorted(set(d.split('_',1)[1] for d in os.listdir(R) if d.startswith('ref_'
 rows=[]
 for n in names:
     rd=f'{R}/ref_{n}'; od=f'{R}/our_{n}'
+    if not os.path.isdir(od):
+        rows.append((n,'ERREUR_EXEC',0,0,'executable non produit')); continue
     ro=read(rd+'/OUT.TXT'); rs=read(rd+'/SCREEN.TXT'); rt=os.path.exists(rd+'/TIMEOUT.TXT')
     oo=read(od+'/OUT.TXT'); os_=read(od+'/SCREEN.TXT'); ot=os.path.exists(od+'/TIMEOUT.TXT')
     note=''

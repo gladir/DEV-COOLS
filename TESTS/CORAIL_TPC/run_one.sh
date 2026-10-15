@@ -35,7 +35,7 @@ SCRDUMP.EXE SCREEN.TXT
 exit
 CONF
 cd "$W"
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout $TIMEOUT_SEC dosbox -conf run.conf -noconsole > dosbox.log 2>&1
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout -k 5 $TIMEOUT_SEC dosbox -conf run.conf -noconsole > dosbox.log 2>&1
 rc=$?
 [ -f SCREEN.TXT ] || echo "TIMEOUT rc=$rc" > TIMEOUT.TXT
 rm -f "$W/$NAME.EXE" "$W/SCRDUMP.EXE" "$W/run.conf" "$W/dosbox.log"

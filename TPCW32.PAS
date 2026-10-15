@@ -1407,6 +1407,23 @@ Begin
   FracDiv := 10.0;
   ExpVal  := 0;
 
+  { Cible DOS 16 : 0FFh / 530Eh (suffixe h) = entier hexadecimal (blocs asm) }
+  If D16Selected Then
+  Begin
+    ExpVal := LexColNo;
+    While (ExpVal <= Length(LexLine)) And IsHexDigit(LexLine[ExpVal]) Do Inc(ExpVal);
+    If (ExpVal <= Length(LexLine)) And ((LexLine[ExpVal] = 'h') Or (LexLine[ExpVal] = 'H')) And
+       ((ExpVal = Length(LexLine)) Or Not IsIdentCont(LexLine[ExpVal + 1])) Then
+    Begin
+      While LexColNo < ExpVal Do
+      Begin N := N * 16 + HexVal(LexLine[LexColNo]); Inc(LexColNo) End;
+      Inc(LexColNo);
+      CurToken.Kind := TK_INTEGER; CurToken.IntVal := N; CurToken.RealVal := 0.0;
+      Str(N, CurToken.Val);
+      Exit;
+    End;
+    ExpVal := 0;
+  End;
   { Partie entiere decimale }
   While (LexColNo <= Length(LexLine)) And
         (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
@@ -41372,6 +41389,7 @@ Type
     Defined   : Boolean;
     IsInterrupt : Boolean;
     IsInline  : Boolean;
+    IsAsm     : Boolean;
     IsExternal: Boolean;
     LocalSize : LongInt;
     SymIdx    : LongInt;
@@ -42075,9 +42093,18 @@ Begin
         D16Next;
         U := D16ExpectIdent;
         S := D16Lookup(U);
-        If (S < 0) Or (D16Syms[S].Kind <> DSK_PROC) Then D16Error('procedure attendue apres @');
-        C.Kind := DT_POINTER; C.TypeIdx := DTI_POINTER;
-        C.Lbl := D16LabelRef(D16Procs[D16Syms[S].ProcIdx].Lbl);
+        If (S >= 0) And (D16Syms[S].Kind = DSK_VAR) And (D16Syms[S].Loc = LOC_GLOBAL) Then
+        Begin
+          C.Kind := DT_POINTER; C.TypeIdx := DTI_POINTER;
+          C.Lbl := D16Syms[S].Lbl;
+          { @Var.Champ : non supporte dans une constante ; ignorer les suffixes simples }
+        End
+        Else
+        Begin
+          If (S < 0) Or (D16Syms[S].Kind <> DSK_PROC) Then D16Error('procedure ou variable attendue apres @');
+          C.Kind := DT_POINTER; C.TypeIdx := DTI_POINTER;
+          C.Lbl := D16LabelRef(D16Procs[D16Syms[S].ProcIdx].Lbl);
+        End;
       End
       Else If D16IsOp('^') Then
       Begin
@@ -42296,7 +42323,9 @@ Begin
   Begin
     Op := StrLowerCase(D16Val); D16Next;
     D16ConstTerm(C2);
-    If (C.Kind = DT_STRING) Or (C2.Kind = DT_STRING) Then
+    If (C.Kind = DT_STRING) Or (C2.Kind = DT_STRING) Or
+       ((Op = '+') And (C.Kind = DT_INT) And (C2.Kind = DT_INT) And
+        (D16Types[C.TypeIdx].Kind = DT_CHAR) And (D16Types[C2.TypeIdx].Kind = DT_CHAR)) Then
     Begin
       If Op <> '+' Then D16Error('operateur invalide pour des chaines');
       D16ConstToStr(C); D16ConstToStr(C2);
@@ -43112,6 +43141,7 @@ Var
   D16PendCC : Integer;     { condition en attente (-1 aucune) : le resultat
                              booleen n a pas encore ete materialise dans AL }
   D16FoldOK : Boolean;     { le prochain facteur est en tete d expression }
+  D16ConstLine : LongInt;  { blocs asm : l expression constante ne depasse pas cette ligne (-1 = libre) }
 
 { Emettre une instruction (listing + assemblage) }
 Procedure D16E(Const S : TString);
@@ -43555,6 +43585,8 @@ Function D16CallProc(P : Integer) : Integer; Forward;
 Function D16Builtin(Const U : TString; Var IsFunc : Boolean) : Integer; Forward;
 Function D16CallProcVar(Const A : TD16Addr; T : Integer) : Integer; Forward;
 Procedure D16Statement; Forward;
+Procedure D16AsmBlock; Forward;
+Procedure D16InlineStmt; Forward;
 Procedure D16Statements; Forward;
 
 { ------------------------------------------------------------ }
@@ -43739,9 +43771,29 @@ End;
 { Analyse de la liste d arguments et appel }
 Function D16CallProc(P : Integer) : Integer;
 Var
-  I : Integer; RT : Integer; O : LongInt; A : TD16Addr; HasArgs : Boolean;
+  I : Integer; RT : Integer; O : LongInt; A : TD16Addr; HasArgs : Boolean; Save : LongInt;
 Begin
   RT := D16Procs[P].RetType;
+  If D16Procs[P].IsInline Then
+  Begin
+    { procedure Inline : parametres empiles puis octets inseres }
+    If D16IsPunct('(') Then
+    Begin
+      D16Next;
+      For I := 0 To D16Procs[P].PCount - 1 Do
+      Begin
+        If I > 0 Then D16ExpectPunct(',');
+        D16PushArg(D16Params[D16Procs[P].PStart + I].TypeIdx, D16Params[D16Procs[P].PStart + I].Mode);
+      End;
+      D16ExpectPunct(')');
+    End;
+    Save := D16Pos;
+    D16Pos := D16Procs[P].InlineStart;
+    D16InlineStmt;
+    D16Pos := Save;
+    D16PendCC := -1;
+    D16CallProc := RT; Exit;
+  End;
   O := 0;
   { grand resultat : adresse du temporaire empilee en premier }
   If (RT <> 0) And D16IsLarge(RT) Then
@@ -44081,6 +44133,7 @@ Begin
   P := D16Pos; Depth := 0; Ops := 0; Operands := 0; Ok := True;
   While (P < D16End) And Ok Do
   Begin
+    If (D16ConstLine >= 0) And (TokenPool[P].Line <> D16ConstLine) Then Break;
     Case TokenPool[P].Kind Of
       TK_INTEGER : Inc(Operands);
       TK_IDENT :
@@ -44157,10 +44210,13 @@ Begin
     Begin
       Lit := TokenPool[D16Pos].Val;
       D16Next;
-      { suite de ^X : concatenation implicite }
-      While D16IsOp('^') And (D16PeekKind(1) = TK_IDENT) And (Length(D16PeekVal(1)) = 1) Do
+      { suite de ^X ou de litteraux adjacents : concatenation implicite }
+      While (D16IsOp('^') And (D16PeekKind(1) = TK_IDENT) And (Length(D16PeekVal(1)) = 1)) Or
+            (D16Kind = TK_STRING) Or (D16Kind = TK_CHAR) Do
       Begin
-        D16Next; Lit := Lit + Chr(Ord(UpCase(D16Val[1])) - 64); D16Next;
+        If D16IsOp('^') Then Begin D16Next; Lit := Lit + Chr(Ord(UpCase(D16Val[1])) - 64) End
+        Else Lit := Lit + TokenPool[D16Pos].Val;
+        D16Next;
       End;
       If Length(Lit) = 1 Then
       Begin
@@ -44508,7 +44564,7 @@ Begin
               D16Next;
               D16PtrToAddr(A);
               T := D16Selectors(A, D16Types[T2].Base);
-              D16Load(A, T);
+              If T = DTI_NONE Then D16AddrToDXAX(A, 0) Else D16Load(A, T);
               D16Factor := T; Exit;
             End;
             If (D16Types[T2].Kind = DT_PROCVAR) And D16IsPunct('(') Then
@@ -44725,6 +44781,7 @@ Begin
     End;
     If Not D16IsInteger(T2) Then D16Error('operande entier attendu');
     D16Flush;
+    D16Convert(T2, D16ArithType(T2));   { octet -> mot (AH) avant tout }
     T2 := D16ArithType(T2);
     R := D16CommonInt(R, T2);
     If (D16Types[R].Size = 4) And (D16Types[D16ArithType(T)].Size < 4) Then
@@ -44908,6 +44965,7 @@ Begin
     End;
     If Not D16IsInteger(T2) Then D16Error('operande entier attendu');
     D16Flush;
+    D16Convert(T2, D16ArithType(T2));
     T2 := D16ArithType(T2);
     R := D16CommonInt(R, T2);
     If (D16Types[R].Size = 4) And (D16Types[D16ArithType(T)].Size < 4) Then
@@ -45091,6 +45149,7 @@ Begin
       End;
       If Not D16IsInteger(T2) Then D16Error('entier attendu');
       D16Flush;
+      D16Convert(T2, D16ArithType(T2));
       T2 := D16ArithType(T2);
       R := D16CommonInt(R, T2);
       If D16Types[R].Size = 4 Then
@@ -45166,14 +45225,45 @@ Begin
   D16IsPCharType := (D16Types[T].Kind = DT_POINTER) And (D16Types[T].Base = DTI_CHAR);
 End;
 
-Function D16ExprTo(Target : Integer) : Integer;
-Var T : Integer; A : TD16Addr;
+{ Une expression constante chaine suit-elle (litteraux, ^X, constantes, +) ? }
+Function D16StrConstAhead : Boolean;
+Var P : LongInt; S : LongInt; Ok : Boolean; N : Integer;
 Begin
-  If D16IsPCharType(Target) And ((D16Kind = TK_STRING) Or (D16Kind = TK_CHAR)) And
-     (D16PeekKind(1) = TK_PUNCT) And ((D16PeekVal(1) = ',') Or (D16PeekVal(1) = ')') Or
-     (D16PeekVal(1) = ';') Or (D16PeekVal(1) = ']')) Then
+  D16StrConstAhead := False;
+  P := D16Pos; Ok := True; N := 0;
+  While (P < D16End) And Ok Do
   Begin
-    D16PCharLiteral(TokenPool[D16Pos].Val); D16Next;
+    Case TokenPool[P].Kind Of
+      TK_STRING, TK_CHAR : Inc(N);
+      TK_OP :
+        If TokenPool[P].Val = '+' Then
+        Else If (TokenPool[P].Val = '^') And (P + 1 < D16End) And (TokenPool[P + 1].Kind = TK_IDENT) And
+                (Length(TokenPool[P + 1].Val) = 1) Then Inc(P)
+        Else Ok := False;
+      TK_IDENT :
+      Begin
+        S := D16Lookup(StrUpperCase(TokenPool[P].Val));
+        If (S < 0) Or (D16Syms[S].Kind <> DSK_CONST) Or
+           Not (D16Types[D16Syms[S].TypeIdx].Kind In [DT_STRING, DT_CHAR]) Then Exit;
+        Inc(N);
+      End;
+    Else Ok := False;
+    End;
+    If Ok Then Inc(P);
+  End;
+  If N = 0 Then Exit;
+  If Not ((TokenPool[P].Kind = TK_PUNCT) And ((TokenPool[P].Val = ',') Or (TokenPool[P].Val = ')') Or
+          (TokenPool[P].Val = ';') Or (TokenPool[P].Val = ']'))) Then Exit;
+  D16StrConstAhead := True;
+End;
+
+Function D16ExprTo(Target : Integer) : Integer;
+Var T : Integer; A : TD16Addr; C : TD16Const;
+Begin
+  If D16IsPCharType(Target) And D16StrConstAhead Then
+  Begin
+    D16ConstExpr(C); D16ConstToStr(C);
+    D16PCharLiteral(C.SVal);
     D16PendCC := -1;
     D16ExprTo := Target; Exit;
   End;
@@ -45197,6 +45287,519 @@ Begin
   End
   Else D16Flush;
   D16ExprTo := T;
+End;
+
+{ ------------------------------------------------------------ }
+{ D16 : assembleur integre (blocs ASM, procedures ASSEMBLER,    }
+{ INLINE). Les tokens Pascal du bloc sont traduits ligne par    }
+{ ligne en texte pour D16Asm : variables Pascal -> operandes    }
+{ memoire, constantes -> immediats, @labels -> labels locaux.    }
+{ ------------------------------------------------------------ }
+
+Function D16AsmIsReg(Const U : TString) : Boolean;
+Begin
+  D16AsmIsReg := (D16RegIndex16(U) >= 0) Or (D16RegIndex8(U) >= 0) Or (D16SRegIndex(U) >= 0);
+End;
+
+{ Nombre avec suffixe hexadecimal eventuel (0FFh lexe en 0 + FFh) }
+Function D16AsmNumber : LongInt;
+Var V : LongInt; S : TString; I : Integer; Nxt : TString;
+Begin
+  V := TokenPool[D16Pos].IntVal;
+  S := TokenPool[D16Pos].Val;
+  D16Next;
+  If (D16Kind = TK_IDENT) And (TokenPool[D16Pos].Line = TokenPool[D16Pos - 1].Line) And
+     (TokenPool[D16Pos].Col <= TokenPool[D16Pos - 1].Col + 8) Then
+  Begin
+    Nxt := StrUpperCase(D16Val);
+    If Nxt[Length(Nxt)] = 'H' Then
+    Begin
+      { verifier que ce sont des chiffres hexa }
+      For I := 1 To Length(Nxt) - 1 Do
+        If Not IsHexDigit(Nxt[I]) Then Begin D16AsmNumber := V; Exit End;
+      S := S + Copy(Nxt, 1, Length(Nxt) - 1);
+      V := 0;
+      For I := 1 To Length(S) Do V := V * 16 + HexVal(S[I]);
+      D16Next;
+    End;
+  End;
+  D16AsmNumber := V;
+End;
+
+Function D16AsmConstAhead(Line : Integer) : Boolean;
+Begin
+  D16ConstLine := Line;
+  D16AsmConstAhead := D16ConstAhead;
+  D16ConstLine := -1;
+End;
+
+Var D16AsmBlockSeq : LongInt;
+
+Function D16AsmLabelName(Const Nm : TString) : TString;
+Begin
+  D16AsmLabelName := 'A' + IntToStr_(D16AsmBlockSeq) + '_' + Nm;
+End;
+
+{ Un operande : retourne son texte pour D16Asm }
+Function D16AsmOperand(Line : Integer) : TString;
+Var
+  U, Res, Pre, Ovr, Regs, Lbl : TString; Size : Integer; IsOffset, IsSeg, IsMem, HasBP : Boolean;
+  Disp : LongInt; S, F : LongInt; T : Integer; Sym : LongInt; Sg : Integer; V : LongInt;
+  C : TD16Const;
+
+  Function AtEnd : Boolean;
+  Begin
+    AtEnd := (D16Pos >= D16End) Or (TokenPool[D16Pos].Line <> Line) Or D16IsPunct(',') Or
+             D16IsPunct(';') Or D16IsKw('end');
+  End;
+
+  Procedure AddDisp(D : LongInt);
+  Begin Disp := Disp + D End;
+
+  Procedure AddReg(Const R : TString);
+  Begin
+    If Regs <> '' Then Regs := Regs + '+';
+    Regs := Regs + R;
+    If R = 'BP' Then HasBP := True;
+  End;
+
+  { contenu entre crochets }
+  Procedure Bracket;
+  Var Sign : Integer; U2 : TString; S2 : LongInt;
+  Begin
+    D16Next; { [ }
+    Sign := 1;
+    While Not D16IsPunct(']') Do
+    Begin
+      If AtEnd Then D16Error('asm: "]" attendu');
+      If D16IsOp('+') Then Begin Sign := 1; D16Next End
+      Else If D16IsOp('-') Then Begin Sign := -1; D16Next End
+      Else If D16Kind = TK_INTEGER Then AddDisp(Sign * D16AsmNumber)
+      Else If D16Kind = TK_IDENT Then
+      Begin
+        U2 := D16UVal;
+        If D16RegIndex16(U2) >= 0 Then Begin AddReg(U2); D16Next End
+        Else
+        Begin
+          S2 := D16Lookup(U2);
+          If S2 < 0 Then D16Error('asm: identificateur inconnu: ' + U2);
+          If D16Syms[S2].Kind = DSK_CONST Then Begin AddDisp(Sign * D16Syms[S2].Val); D16Next End
+          Else If D16Syms[S2].Kind = DSK_TYPE Then
+          Begin
+            T := D16Syms[S2].TypeIdx; D16Next;
+            While D16IsPunct('.') Do
+            Begin
+              D16Next; U2 := D16UVal;
+              F := D16FindField(T, U2);
+              If F < 0 Then D16Error('asm: champ inconnu: ' + U2);
+              AddDisp(Sign * D16Fields[F].Offset); T := D16Fields[F].TypeIdx; D16Next;
+            End;
+          End
+          Else If D16Syms[S2].Kind = DSK_VAR Then
+          Begin
+            D16Next;
+            If D16Syms[S2].Loc = LOC_GLOBAL Then
+            Begin Lbl := D16Labels[D16Syms[S2].Lbl].Name; AddDisp(D16Syms[S2].Ofs) End
+            Else Begin AddReg('BP'); AddDisp(D16Syms[S2].Ofs) End;
+            IsMem := True;
+          End
+          Else D16Error('asm: operande invalide: ' + U2);
+        End;
+      End
+      Else D16Error('asm: expression d adresse invalide');
+    End;
+    D16Next; { ] }
+    IsMem := True;
+  End;
+
+  { suffixes apres une variable : .champ .Word [index] }
+  Procedure Suffixes(T : Integer);
+  Var U2 : TString; F2 : LongInt;
+  Begin
+    While Not AtEnd Do
+    Begin
+      If D16IsPunct('.') Then
+      Begin
+        D16Next;
+        U2 := D16UVal;
+        If (U2 = 'BYTE') Then Begin Size := 1; D16Next End
+        Else If (U2 = 'WORD') Then Begin Size := 2; D16Next End
+        Else If (U2 = 'DWORD') Then Begin Size := 4; D16Next End
+        Else
+        Begin
+          F2 := D16FindField(T, U2);
+          If F2 < 0 Then D16Error('asm: champ inconnu: ' + U2);
+          AddDisp(D16Fields[F2].Offset); T := D16Fields[F2].TypeIdx;
+          Size := D16Types[T].Size;
+          D16Next;
+        End;
+      End
+      Else If D16IsPunct('[') Then Bracket
+      Else If D16IsOp('+') Or D16IsOp('-') Then
+      Begin
+        { variable+2 }
+        If D16IsOp('+') Then Begin D16Next; AddDisp(D16AsmNumber) End
+        Else Begin D16Next; AddDisp(-D16AsmNumber) End;
+      End
+      Else Break;
+    End;
+  End;
+
+Begin
+  Res := ''; Pre := ''; Ovr := ''; Regs := ''; Lbl := ''; Size := 0; Disp := 0;
+  IsOffset := False; IsSeg := False; IsMem := False; HasBP := False;
+  If AtEnd Then D16Error('asm: operande attendu');
+  { prefixes de taille : BYTE PTR / WORD PTR / DWORD PTR }
+  If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    If ((U = 'BYTE') Or (U = 'WORD') Or (U = 'DWORD')) And (D16PeekKind(1) = TK_IDENT) And
+       (StrUpperCase(D16PeekVal(1)) = 'PTR') Then
+    Begin
+      If U = 'BYTE' Then Size := 1 Else If U = 'WORD' Then Size := 2 Else Size := 4;
+      D16Next; D16Next;
+    End;
+  End;
+  If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    If U = 'OFFSET' Then Begin IsOffset := True; D16Next End
+    Else If U = 'SEG' Then Begin IsSeg := True; D16Next End;
+  End;
+  { prefixe de segment ES: }
+  If D16IsIdent And (D16SRegIndex(D16UVal) >= 0) And (D16PeekKind(1) = TK_PUNCT) And (D16PeekVal(1) = ':') Then
+  Begin
+    Ovr := D16UVal + ':'; D16Next; D16Next;
+  End;
+  { @Result, @label }
+  If D16IsOp('@') Then
+  Begin
+    D16Next;
+    If D16IsOp('@') Then D16Next;
+    If D16IsIdentU('RESULT') Then
+    Begin
+      D16Next;
+      If (D16CurProc < 0) Or (D16Procs[D16CurProc].RetType = 0) Then D16Error('asm: @Result hors d une fonction');
+      T := D16Procs[D16CurProc].RetType;
+      If D16IsLarge(T) Then
+      Begin
+        { pointeur vers le resultat }
+        D16AsmOperand := 'DWORD PTR SS:[BP+' + IntToStr_(D16Procs[D16CurProc].ResultOfs) + ']';
+      End
+      Else
+      Begin
+        Case D16Types[T].Size Of
+          1 : Pre := 'BYTE PTR ';
+          2 : Pre := 'WORD PTR ';
+        Else Pre := 'DWORD PTR ';
+        End;
+        D16AsmOperand := Pre + 'SS:[BP' + IntToStr_(D16Procs[D16CurProc].ResultOfs) + ']';
+      End;
+      Exit;
+    End;
+    If D16Kind = TK_INTEGER Then U := IntToStr_(TokenPool[D16Pos].IntVal) Else U := D16UVal;
+    D16Next;
+    D16AsmOperand := D16AsmLabelName(U);
+    Exit;
+  End;
+  { registre }
+  If D16IsIdent And D16AsmIsReg(D16UVal) And Not IsOffset And Not IsSeg Then
+  Begin
+    U := D16UVal; D16Next;
+    If Not AtEnd And Not D16IsPunct('[') Then D16Error('asm: operande inattendu apres ' + U);
+    If D16IsPunct('[') Then
+    Begin
+      { reg[...] n est pas une forme TP ; traiter comme [reg+...] }
+      AddReg(U); Bracket; Suffixes(DTI_NONE);
+    End
+    Else Begin D16AsmOperand := U; Exit End;
+  End
+  Else If D16IsPunct('[') Then Begin Bracket; Suffixes(DTI_NONE) End
+  Else If D16IsKw('not') Or D16IsPunct('(') Or D16AsmConstAhead(Line) Then
+  Begin
+    { expression constante : NOT(16+32), (A+B)*2 ... }
+    D16ConstLine := Line;
+    D16ConstExpr(C);
+    D16ConstLine := -1;
+    If C.Kind <> DT_INT Then D16Error('asm: constante entiere attendue');
+    D16AsmOperand := IntToStr_(C.IVal); Exit;
+  End
+  Else If D16IsIdent And ((D16UVal = 'LOW') Or (D16UVal = 'HIGH')) And (D16PeekKind(1) = TK_PUNCT) And
+          (D16PeekVal(1) = '(') Then
+  Begin
+    { LOW(expr) / HIGH(expr) : octet bas / haut d une constante }
+    U := D16UVal; D16Next; D16Next;
+    D16ConstLine := Line; D16ConstExpr(C); D16ConstLine := -1;
+    D16ExpectPunct(')');
+    If U = 'LOW' Then D16AsmOperand := IntToStr_(C.IVal And $FF)
+    Else D16AsmOperand := IntToStr_((C.IVal Shr 8) And $FF);
+    Exit;
+  End
+  Else If D16Kind = TK_INTEGER Then
+  Begin
+    V := D16AsmNumber;
+    If Not AtEnd And D16IsPunct('[') Then Begin AddDisp(V); Bracket End
+    Else Begin D16AsmOperand := Pre + IntToStr_(V); If Size = 0 Then Exit; D16AsmOperand := IntToStr_(V); Exit End;
+  End
+  Else If D16IsCharTok Then
+  Begin
+    V := D16CharTokVal; D16Next;
+    D16AsmOperand := IntToStr_(V); Exit;
+  End
+  Else If D16IsOp('-') Then
+  Begin
+    D16Next;
+    If D16Kind <> TK_INTEGER Then D16Error('asm: nombre attendu');
+    V := -D16AsmNumber;
+    D16AsmOperand := IntToStr_(V); Exit;
+  End
+  Else If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    Sym := D16Lookup(U);
+    If Sym < 0 Then
+    Begin
+      { label Pascal ou identificateur de label asm sans @ }
+      D16Next;
+      D16AsmOperand := D16AsmLabelName(U); Exit;
+    End;
+    Case D16Syms[Sym].Kind Of
+      DSK_CONST :
+      Begin
+        D16Next;
+        If D16Types[D16Syms[Sym].TypeIdx].Kind = DT_STRING Then D16Error('asm: constante chaine invalide');
+        D16AsmOperand := IntToStr_(D16Syms[Sym].Val); Exit;
+      End;
+      DSK_TYPE :
+      Begin
+        { Type.Champ : offset du champ }
+        T := D16Syms[Sym].TypeIdx; D16Next;
+        While D16IsPunct('.') Do
+        Begin
+          D16Next; U := D16UVal;
+          F := D16FindField(T, U);
+          If F < 0 Then D16Error('asm: champ inconnu: ' + U);
+          AddDisp(D16Fields[F].Offset); T := D16Fields[F].TypeIdx; D16Next;
+        End;
+        D16AsmOperand := IntToStr_(Disp); Exit;
+      End;
+      DSK_LABEL :
+      Begin
+        D16Next;
+        D16AsmOperand := D16Syms[Sym].SVal; Exit;
+      End;
+      DSK_PROC :
+      Begin
+        D16Next;
+        If D16IsPunct('.') Then
+        Begin
+          { Proc.Type.Champ : donnees dans le segment de code }
+          Lbl := D16Procs[D16Syms[Sym].ProcIdx].Lbl;
+          D16Next; U := D16UVal; S := D16Lookup(U);
+          If (S < 0) Or (D16Syms[S].Kind <> DSK_TYPE) Then D16Error('asm: type attendu: ' + U);
+          T := D16Syms[S].TypeIdx; D16Next;
+          Size := D16Types[T].Size;
+          Suffixes(T);
+          If Ovr = '' Then Ovr := 'CS:';
+          IsMem := True;
+        End
+        Else If IsOffset Then D16AsmOperand := 'OFFSET ' + D16Procs[D16Syms[Sym].ProcIdx].Lbl
+        Else If IsSeg Then D16AsmOperand := 'SEG ' + D16Procs[D16Syms[Sym].ProcIdx].Lbl
+        Else D16AsmOperand := 'FAR PTR ' + D16Procs[D16Syms[Sym].ProcIdx].Lbl;
+        If Not IsMem Then Exit;
+      End;
+      DSK_VAR :
+      Begin
+        D16Next;
+        T := D16Syms[Sym].TypeIdx;
+        If Size = 0 Then Size := D16Types[T].Size;
+        Case D16Syms[Sym].Loc Of
+          LOC_GLOBAL : Begin Lbl := D16Labels[D16Syms[Sym].Lbl].Name; AddDisp(D16Syms[Sym].Ofs) End;
+          LOC_LOCAL, LOC_REFPARAM, LOC_RESULT :
+          Begin
+            If D16Syms[Sym].Level <> D16Level Then D16Error('asm: variable d un niveau englobant');
+            AddReg('BP'); AddDisp(D16Syms[Sym].Ofs);
+            If D16Syms[Sym].Loc <> LOC_LOCAL Then Size := 4;
+          End;
+          LOC_ABS :
+          Begin
+            Ovr := 'ES:'; AddDisp(D16Syms[Sym].Ofs);
+            D16Error('asm: variable ABSOLUTE non supportee');
+          End;
+        End;
+        IsMem := True;
+        Suffixes(T);
+      End;
+    Else D16Error('asm: operande invalide: ' + U);
+    End;
+  End
+  Else D16Error('asm: operande invalide');
+  { construction de l operande memoire / offset }
+  If IsOffset Then
+  Begin
+    If Lbl <> '' Then
+    Begin
+      If Disp <> 0 Then D16AsmOperand := 'OFFSET ' + Lbl + '+' + IntToStr_(Disp)
+      Else D16AsmOperand := 'OFFSET ' + Lbl;
+    End
+    Else D16AsmOperand := IntToStr_(Disp);
+    Exit;
+  End;
+  If IsSeg Then
+  Begin
+    If Lbl <> '' Then D16AsmOperand := 'SEG ' + Lbl Else D16AsmOperand := 'SS';
+    Exit;
+  End;
+  Case Size Of
+    1 : Pre := 'BYTE PTR ';
+    2 : Pre := 'WORD PTR ';
+    4 : Pre := 'DWORD PTR ';
+  Else Pre := '';
+  End;
+  If (Ovr = '') And HasBP Then Ovr := 'SS:';
+  Res := Pre + Ovr + '[';
+  If Regs <> '' Then Res := Res + Regs;
+  If Lbl <> '' Then
+  Begin
+    If Regs <> '' Then Res := Res + '+';
+    Res := Res + Lbl;
+  End;
+  If (Disp <> 0) Or ((Regs = '') And (Lbl = '')) Then
+  Begin
+    If (Disp >= 0) And ((Regs <> '') Or (Lbl <> '')) Then Res := Res + '+';
+    Res := Res + IntToStr_(Disp);
+  End;
+  D16AsmOperand := Res + ']';
+End;
+
+{ Bloc asm ... end }
+Procedure D16AsmBlock;
+Var
+  Line : Integer; Mnem, Ops, Op : TString; U : TString; N : LongInt;
+Begin
+  D16Next; { asm }
+  D16HasAsmBlocks := True;
+  Inc(D16AsmBlockSeq);
+  While Not D16IsKw('end') Do
+  Begin
+    If D16Pos >= D16End Then D16Error('asm: END attendu');
+    Line := TokenPool[D16Pos].Line;
+    { commentaire ; jusqu a la fin de la ligne }
+    If D16IsPunct(';') Then
+    Begin
+      While (D16Pos < D16End) And (TokenPool[D16Pos].Line = Line) And Not D16IsKw('end') Do D16Next;
+      Continue;
+    End;
+    { label @nom: ou @@nom: ou nom: }
+    If D16IsOp('@') Then
+    Begin
+      D16Next;
+      If D16IsOp('@') Then D16Next;
+      If D16Kind = TK_INTEGER Then U := IntToStr_(TokenPool[D16Pos].IntVal) Else U := D16UVal;
+      D16Next;
+      D16ExpectPunct(':');
+      D16L(D16AsmLabelName(U));
+      Continue;
+    End;
+    If D16IsIdent And (D16PeekKind(1) = TK_PUNCT) And (D16PeekVal(1) = ':') And
+       Not D16AsmIsReg(D16UVal) Then
+    Begin
+      U := D16UVal; D16Next; D16Next;
+      N := D16Lookup(U);
+      If (N >= 0) And (D16Syms[N].Kind = DSK_LABEL) Then
+      Begin D16L(D16Syms[N].SVal); D16Syms[N].Val := 1 End
+      Else D16L(D16AsmLabelName(U));
+      Continue;
+    End;
+    { les mnemoniques AND OR XOR NOT SHL SHR DIV MOD IN sont des mots-cles Pascal }
+    If Not (D16IsIdent Or (D16Kind = TK_KEYWORD)) Then D16Error('asm: mnemonique attendu');
+    Mnem := D16UVal; D16Next;
+    { prefixe REP }
+    If ((Mnem = 'REP') Or (Mnem = 'REPE') Or (Mnem = 'REPNE') Or (Mnem = 'REPZ') Or (Mnem = 'REPNZ')) And
+       D16IsIdent And (TokenPool[D16Pos].Line = Line) Then
+    Begin
+      Mnem := Mnem + ' ' + D16UVal; D16Next;
+    End;
+    Ops := ''; N := 0;
+    While (D16Pos < D16End) And (TokenPool[D16Pos].Line = Line) And Not D16IsKw('end') And
+          Not D16IsPunct(';') Do
+    Begin
+      If N > 0 Then
+      Begin
+        If Not D16IsPunct(',') Then D16Error('asm: "," attendue');
+        D16Next;
+      End;
+      If (Mnem = 'DB') Or (Mnem = 'DW') Or (Mnem = 'DD') Then
+      Begin
+        If D16Kind = TK_INTEGER Then Op := IntToStr_(D16AsmNumber)
+        Else If (D16Kind = TK_STRING) Or (D16Kind = TK_CHAR) Then
+        Begin Op := '''' + TokenPool[D16Pos].Val + ''''; D16Next End
+        Else If D16IsOp('-') Then
+        Begin D16Next; Op := IntToStr_(-D16AsmNumber) End
+        Else Op := D16AsmOperand(Line);
+      End
+      Else If (Mnem = 'SHORT') Then Op := ''
+      Else Op := D16AsmOperand(Line);
+      If (Mnem = 'JMP') Or (Mnem = 'CALL') Then
+      Begin
+        If Copy(Op, 1, 8) = 'FAR PTR ' Then
+        Else If (Mnem = 'CALL') And (Pos('[', Op) = 0) And (Pos('P_', Op) = 1) Then Op := 'FAR PTR ' + Op;
+      End;
+      If N > 0 Then Ops := Ops + ',' + Op Else Ops := Op;
+      Inc(N);
+    End;
+    { sauter un commentaire ; en fin de ligne }
+    If D16IsPunct(';') Then
+      While (D16Pos < D16End) And (TokenPool[D16Pos].Line = Line) And Not D16IsKw('end') Do D16Next;
+    If Ops <> '' Then D16E(Mnem + ' ' + Ops) Else D16E(Mnem);
+  End;
+  D16Next; { end }
+  D16PendCC := -1;
+End;
+
+{ Inline(octets / mots) : emission directe }
+Procedure D16InlineStmt;
+Var V : LongInt; Wide : Boolean; S : LongInt; U : TString;
+Begin
+  D16Next; { inline }
+  D16ExpectPunct('(');
+  Repeat
+    Wide := False;
+    If D16IsOp('>') Then Begin Wide := True; D16Next End
+    Else If D16IsOp('<') Then D16Next;
+    If D16Kind = TK_INTEGER Then
+    Begin
+      V := TokenPool[D16Pos].IntVal; D16Next;
+      { +/- constante }
+      While D16IsOp('+') Or D16IsOp('-') Do
+      Begin
+        If D16IsOp('+') Then Begin D16Next; V := V + TokenPool[D16Pos].IntVal End
+        Else Begin D16Next; V := V - TokenPool[D16Pos].IntVal End;
+        D16Next;
+      End;
+      If Wide Or (V > 255) Or (V < 0) Then D16E('DW ' + IntToStr_(V And $FFFF))
+      Else D16E('DB ' + IntToStr_(V));
+    End
+    Else If D16IsIdent Then
+    Begin
+      U := D16UVal; S := D16Lookup(U); D16Next;
+      If (S >= 0) And (D16Syms[S].Kind = DSK_CONST) Then
+      Begin
+        V := D16Syms[S].Val;
+        If Wide Or (V > 255) Then D16E('DW ' + IntToStr_(V And $FFFF)) Else D16E('DB ' + IntToStr_(V));
+      End
+      Else If (S >= 0) And (D16Syms[S].Kind = DSK_VAR) Then
+      Begin
+        If D16Syms[S].Loc = LOC_GLOBAL Then D16E('DW ' + D16Labels[D16Syms[S].Lbl].Name)
+        Else D16E('DW ' + IntToStr_(D16Syms[S].Ofs And $FFFF));
+      End
+      Else D16Error('inline: identificateur invalide: ' + U);
+    End
+    Else D16Error('inline: element invalide');
+    If D16IsOp('/') Then D16Next Else Break;
+  Until False;
+  D16ExpectPunct(')');
+  D16PendCC := -1;
 End;
 
 { ------------------------------------------------------------ }
@@ -45455,6 +46058,18 @@ Begin
           D16E('PUSH DX'); D16E('PUSH AX');
           D16CallSys('__RDREAL');
           If D16AddrDynamic(A) Then D16AddrPop(A);
+        End;
+        DT_ARRAY :
+        Begin
+          If Not D16IsCharArray(T) Then D16Error('type non lisible');
+          O := D16AllocTemp(256);
+          D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('PUSH AX');
+          D16E('MOV AX,' + D16Str(D16Types[T].Size)); D16E('PUSH AX');
+          D16CallSys('__RDSTR');
+          If D16AddrDynamic(A) Then D16AddrPop(A);
+          D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+          D16AddrToESDI(A, 0);
+          D16E('MOV CX,' + D16Str(D16Types[T].Size)); D16CallRT('STRTOARR');
         End;
       Else D16Error('type non lisible');
       End;
@@ -46689,7 +47304,13 @@ Begin
   Begin
     D16Next; D16ExpectPunct('.');
     U := D16UVal; S := D16Lookup(U);
-    If S < 0 Then D16Error('identificateur inconnu: ' + U);
+    If S < 0 Then
+    Begin
+      { System.Move, System.Halt ... : procedure standard qualifiee }
+      D16Builtin(U, IsFunc);
+      If IsFunc Then D16Error('appel de fonction utilise comme instruction: ' + U);
+      Exit;
+    End;
   End;
   Case D16Syms[S].Kind Of
     DSK_PROC :
@@ -46781,8 +47402,8 @@ Begin
   Else If D16IsKw('case') Then D16CaseStmt
   Else If D16IsKw('with') Then D16WithStmt
   Else If D16IsKw('goto') Then D16GotoStmt
-  Else If D16IsKw('asm') Then D16Error('les blocs ASM ne sont pas encore supportes par la cible DOS 16 bits')
-  Else If D16IsKw('inline') Then D16Error('INLINE n est pas supporte par la cible DOS 16 bits')
+  Else If D16IsKw('asm') Then D16AsmBlock
+  Else If D16IsKw('inline') Then D16InlineStmt
   Else If D16IsPunct(';') Or D16IsKw('end') Or D16IsKw('until') Or D16IsKw('else') Then
   Else D16Error('instruction attendue');
   D16LocalOfs := Mark;
@@ -46889,15 +47510,13 @@ Begin
   If IsFwdDef Then
   Begin
     P := D16Syms[Existing].ProcIdx;
-    { la liste de parametres peut etre repetee : la sauter }
+    { la liste de parametres peut etre repetee : reprendre les noms de l implementation }
     If D16IsPunct('(') Then
     Begin
-      I := 1; D16Next;
-      While (I > 0) And (D16Kind <> TK_EOF) Do
-      Begin
-        If D16IsPunct('(') Then Inc(I) Else If D16IsPunct(')') Then Dec(I);
-        D16Next;
-      End;
+      D16ParseParams(PS, PC, PB, HasLink);
+      If PC = D16Procs[P].PCount Then
+        For I := 0 To PC - 1 Do D16Params[D16Procs[P].PStart + I].Name := D16Params[PS + I].Name;
+      D16ParamCnt := PS;   { liberer la copie }
     End;
     If D16IsPunct(':') Then Begin D16Next; D16ParseType End;
     D16ExpectPunct(';');
@@ -46914,6 +47533,7 @@ Begin
     D16Procs[P].IsForward := False;
     D16Procs[P].Defined := False;
     D16Procs[P].IsInterrupt := False;
+    D16Procs[P].IsAsm := False;
     D16Procs[P].IsInline := False;
     D16Procs[P].IsExternal := False;
     D16Procs[P].SymIdx := S;
@@ -46951,11 +47571,13 @@ Begin
       Begin
         D16Next; D16ExpectPunct(';'); D16Procs[P].IsInterrupt := True;
       End
-      Else If (D16IsIdentU('NEAR')) Or (D16IsIdentU('FAR')) Or (D16IsIdentU('ASSEMBLER')) Then
+      Else If (D16IsIdentU('NEAR')) Or (D16IsIdentU('FAR')) Then
       Begin
         D16Next; D16ExpectPunct(';');
-        If StrUpperCase(TokenPool[D16Pos - 2].Val) = 'ASSEMBLER' Then
-          D16Error('les procedures ASSEMBLER ne sont pas supportees par la cible DOS 16 bits');
+      End
+      Else If D16IsIdentU('ASSEMBLER') Then
+      Begin
+        D16Next; D16ExpectPunct(';'); D16Procs[P].IsAsm := True;
       End
       Else If D16IsIdentU('EXTERNAL') Then
       Begin
@@ -46970,7 +47592,14 @@ Begin
     If D16InInterface Then Begin D16Procs[P].IsForward := True; Exit End;
     If D16Procs[P].IsForward Then Exit;
     If D16IsKw('inline') Then
-      D16Error('INLINE n est pas supporte par la cible DOS 16 bits');
+    Begin
+      { procedure Inline(...) : octets inseres a chaque appel }
+      D16Procs[P].IsInline := True; D16Procs[P].Defined := True;
+      D16Procs[P].InlineStart := D16Pos;
+      While Not D16IsPunct(')') Do D16Next;
+      D16Next; D16ExpectPunct(';');
+      Exit;
+    End;
   End;
   If D16Procs[P].IsInterrupt And (D16Procs[P].PCount > 0) Then
     D16Error('parametres de procedure INTERRUPT non supportes');
@@ -47085,16 +47714,24 @@ Begin
           D16E('CALL FAR PTR INIT_' + D16UnitNames[S]);
     End;
   End;
-  D16ExpectKw('begin');
-  D16Statements;
-  D16ExpectKw('end');
+  If (ProcIdx >= 0) And D16Procs[ProcIdx].IsAsm Then
+  Begin
+    If Not D16IsKw('asm') Then D16Error('ASM attendu dans une procedure ASSEMBLER');
+    D16AsmBlock;
+  End
+  Else
+  Begin
+    D16ExpectKw('begin');
+    D16Statements;
+    D16ExpectKw('end');
+  End;
   D16L(D16ExitLbl);
   { labels declares mais jamais definis : toleres (comme TP) }
   If ProcIdx >= 0 Then
   Begin
     P := ProcIdx;
     RT := D16Procs[P].RetType;
-    If (RT <> 0) And Not D16IsLarge(RT) Then
+    If (RT <> 0) And Not D16IsLarge(RT) And Not D16Procs[P].IsAsm Then
     Begin
       D16AddrClear(A); A.Seg := 1; A.UseBP := True; A.Disp := D16Procs[P].ResultOfs;
       D16Load(A, RT);
@@ -49904,6 +50541,725 @@ Begin
   End;
 End;
 
+Const
+  D16SRC_GRAPH_N = 703;
+  D16SrcGraph1 : Array[1..400] Of String[96] = (
+    'Unit Graph;',
+    '{ Unite GRAPH de Turbo Pascal 7.0 (sous-ensemble) : VGA 640x480x16 (VGAHi)',
+    '  via le BIOS video (INT 10h). Le traitement des pixels passe par les',
+    '  fonctions 0Ch/0Dh du BIOS ; les traces sont calcules en Pascal. }',
+    'Interface',
+    'Const',
+    '  grOk = 0; grNoInitGraph = -1; grNotDetected = -2; grFileNotFound = -3;',
+    '  grInvalidDriver = -4; grNoLoadMem = -5; grNoScanMem = -6; grNoFloodMem = -7;',
+    '  grFontNotFound = -8; grNoFontMem = -9; grInvalidMode = -10; grError = -11;',
+    '  grIOerror = -12; grInvalidFont = -13; grInvalidFontNum = -14;',
+    '  CurrentDriver = -128; Detect = 0; CGA = 1; MCGA = 2; EGA = 3; EGA64 = 4; EGAMono = 5;',
+    '  IBM8514 = 6; HercMono = 7; ATT400 = 8; VGA = 9; PC3270 = 10;',
+    '  CGAC0 = 0; CGAC1 = 1; CGAC2 = 2; CGAC3 = 3; CGAHi = 4;',
+    '  EGALo = 0; EGAHi = 1; VGALo = 0; VGAMed = 1; VGAHi = 2;',
+    '  Black = 0; Blue = 1; Green = 2; Cyan = 3; Red = 4; Magenta = 5; Brown = 6; LightGray = 7;',
+    '  DarkGray = 8; LightBlue = 9; LightGreen = 10; LightCyan = 11; LightRed = 12;',
+    '  LightMagenta = 13; Yellow = 14; White = 15;',
+    '  EmptyFill = 0; SolidFill = 1; LineFill = 2; LtSlashFill = 3; SlashFill = 4; BkSlashFill = 5;',
+    '  LtBkSlashFill = 6; HatchFill = 7; XHatchFill = 8; InterleaveFill = 9; WideDotFill = 10;',
+    '  CloseDotFill = 11; UserFill = 12;',
+    '  SolidLn = 0; DottedLn = 1; CenterLn = 2; DashedLn = 3; UserBitLn = 4;',
+    '  NormWidth = 1; ThickWidth = 3;',
+    '  DefaultFont = 0; TriplexFont = 1; SmallFont = 2; SansSerifFont = 3; GothicFont = 4;',
+    '  HorizDir = 0; VertDir = 1; UserCharSize = 0;',
+    '  LeftText = 0; CenterText = 1; RightText = 2; BottomText = 0; TopText = 2;',
+    '  NormalPut = 0; CopyPut = 0; XORPut = 1; OrPut = 2; AndPut = 3; NotPut = 4;',
+    '  MaxColors = 15;',
+    'Type',
+    '  PointType = Record X, Y : Integer End;',
+    '  ViewPortType = Record X1, Y1, X2, Y2 : Integer; Clip : Boolean End;',
+    '  PaletteType = Record Size : Byte; Colors : Array[0..MaxColors] Of ShortInt End;',
+    '  FillPatternType = Array[1..8] Of Byte;',
+    '  FillSettingsType = Record Pattern : Word; Color : Word End;',
+    '  LineSettingsType = Record LineStyle : Word; Pattern : Word; Thickness : Word End;',
+    '  TextSettingsType = Record Font : Word; Direction : Word; CharSize : Word; Horiz : Word; Vert',
+    ' : Word End;',
+    '  ArcCoordsType = Record X, Y, XStart, YStart, XEnd, YEnd : Integer End;',
+    'Var',
+    '  GraphFreeMemPtr, GraphGetMemPtr : Pointer;',
+    'Procedure InitGraph(Var GraphDriver : Integer; Var GraphMode : Integer; PathToDriver : String);',
+    'Procedure CloseGraph;',
+    'Procedure DetectGraph(Var GraphDriver, GraphMode : Integer);',
+    'Function GraphResult : Integer;',
+    'Function GraphErrorMsg(ErrorCode : Integer) : String;',
+    'Function GetMaxX : Integer;',
+    'Function GetMaxY : Integer;',
+    'Function GetMaxColor : Word;',
+    'Function GetX : Integer;',
+    'Function GetY : Integer;',
+    'Function GetColor : Word;',
+    'Function GetBkColor : Word;',
+    'Function GetGraphMode : Integer;',
+    'Function GetMaxMode : Word;',
+    'Function GetDriverName : String;',
+    'Function GetModeName(ModeNumber : Integer) : String;',
+    'Procedure SetGraphMode(Mode : Integer);',
+    'Procedure RestoreCrtMode;',
+    'Procedure ClearDevice;',
+    'Procedure ClearViewPort;',
+    'Procedure SetViewPort(X1, Y1, X2, Y2 : Integer; Clip : Boolean);',
+    'Procedure GetViewSettings(Var ViewPort : ViewPortType);',
+    'Procedure SetColor(Color : Word);',
+    'Procedure SetBkColor(ColorNum : Word);',
+    'Procedure SetFillStyle(Pattern : Word; Color : Word);',
+    'Procedure SetFillPattern(Pattern : FillPatternType; Color : Word);',
+    'Procedure GetFillSettings(Var FillInfo : FillSettingsType);',
+    'Procedure SetLineStyle(LineStyle : Word; Pattern : Word; Thickness : Word);',
+    'Procedure GetLineSettings(Var LineInfo : LineSettingsType);',
+    'Procedure SetWriteMode(WriteMode : Integer);',
+    'Procedure PutPixel(X, Y : Integer; Pixel : Word);',
+    'Function GetPixel(X, Y : Integer) : Word;',
+    'Procedure MoveTo(X, Y : Integer);',
+    'Procedure MoveRel(Dx, Dy : Integer);',
+    'Procedure Line(X1, Y1, X2, Y2 : Integer);',
+    'Procedure LineTo(X, Y : Integer);',
+    'Procedure LineRel(Dx, Dy : Integer);',
+    'Procedure Rectangle(X1, Y1, X2, Y2 : Integer);',
+    'Procedure Bar(X1, Y1, X2, Y2 : Integer);',
+    'Procedure Bar3D(X1, Y1, X2, Y2 : Integer; Depth : Word; Top : Boolean);',
+    'Procedure Circle(X, Y : Integer; Radius : Word);',
+    'Procedure Ellipse(X, Y : Integer; StAngle, EndAngle : Word; XRadius, YRadius : Word);',
+    'Procedure FillEllipse(X, Y : Integer; XRadius, YRadius : Word);',
+    'Procedure Arc(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Procedure PieSlice(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Procedure Sector(X, Y : Integer; StAngle, EndAngle, XRadius, YRadius : Word);',
+    'Procedure DrawPoly(NumPoints : Word; Var PolyPoints);',
+    'Procedure FillPoly(NumPoints : Word; Var PolyPoints);',
+    'Procedure FloodFill(X, Y : Integer; Border : Word);',
+    'Procedure OutText(TextString : String);',
+    'Procedure OutTextXY(X, Y : Integer; TextString : String);',
+    'Procedure SetTextStyle(Font, Direction : Word; CharSize : Word);',
+    'Procedure SetTextJustify(Horiz, Vert : Word);',
+    'Procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word);',
+    'Procedure GetTextSettings(Var TextInfo : TextSettingsType);',
+    'Function TextWidth(TextString : String) : Word;',
+    'Function TextHeight(TextString : String) : Word;',
+    'Function ImageSize(X1, Y1, X2, Y2 : Integer) : Word;',
+    'Procedure GetImage(X1, Y1, X2, Y2 : Integer; Var BitMap);',
+    'Procedure PutImage(X, Y : Integer; Var BitMap; BitBlt : Word);',
+    'Procedure SetRGBPalette(ColorNum, RedValue, GreenValue, BlueValue : Integer);',
+    'Procedure SetPalette(ColorNum : Word; Color : ShortInt);',
+    'Procedure SetAllPalette(Var Palette);',
+    'Procedure GetPalette(Var Palette : PaletteType);',
+    'Procedure GetDefaultPalette(Var Palette : PaletteType);',
+    'Function GetPaletteSize : Integer;',
+    'Procedure GetAspectRatio(Var Xasp, Yasp : Word);',
+    'Procedure SetAspectRatio(Xasp, Yasp : Word);',
+    'Procedure SetActivePage(Page : Word);',
+    'Procedure SetVisualPage(Page : Word);',
+    'Procedure GetArcCoords(Var ArcCoords : ArcCoordsType);',
+    'Function InstallUserDriver(Name : String; AutoDetectPtr : Pointer) : Integer;',
+    'Function InstallUserFont(FontFileName : String) : Integer;',
+    'Function RegisterBGIdriver(Driver : Pointer) : Integer;',
+    'Function RegisterBGIfont(Font : Pointer) : Integer;',
+    'Procedure SetGraphBufSize(BufSize : Word);',
+    'Function GetModeRange(GraphDriver : Integer; Var LoMode, HiMode : Integer) : Integer;',
+    'Procedure GraphDefaults;',
+    '',
+    'Implementation',
+    '',
+    'Var',
+    '  GResult : Integer;',
+    '  GMode, GDriver : Integer;',
+    '  MaxX, MaxY : Integer;',
+    '  CurColor, BkColor, FillColor, FillPat : Word;',
+    '  LineSty, LinePat, LineThick : Word;',
+    '  CPX, CPY : Integer;',
+    '  VP : ViewPortType;',
+    '  TxtFont, TxtDir, TxtSize, TxtHoriz, TxtVert : Word;',
+    '  WriteMode : Integer;',
+    '  Active : Boolean;',
+    '  FontSeg, FontOfs : Word;',
+    '  Arc_ : ArcCoordsType;',
+    '  Pal : PaletteType;',
+    '',
+    'Procedure Int10(Var R : TRegs);',
+    'Begin',
+    '  __Intr($10, R);',
+    'End;',
+    '',
+    'Procedure RawPixel(X, Y : Integer; C : Word);',
+    'Var R : TRegs;',
+    'Begin',
+    '  If (X < 0) Or (Y < 0) Or (X > MaxX) Or (Y > MaxY) Then Exit;',
+    '  R.AX := $0C00 Or (C And $FF); R.BX := 0; R.CX := X; R.DX := Y;',
+    '  If WriteMode = XORPut Then R.AX := R.AX Or $80;',
+    '  Int10(R);',
+    'End;',
+    '',
+    'Function RawGetPixel(X, Y : Integer) : Word;',
+    'Var R : TRegs;',
+    'Begin',
+    '  If (X < 0) Or (Y < 0) Or (X > MaxX) Or (Y > MaxY) Then Begin RawGetPixel := 0; Exit End;',
+    '  R.AX := $0D00; R.BX := 0; R.CX := X; R.DX := Y;',
+    '  Int10(R);',
+    '  RawGetPixel := R.AX And $FF;',
+    'End;',
+    '',
+    'Procedure VPixel(X, Y : Integer; C : Word);',
+    'Begin',
+    '  X := X + VP.X1; Y := Y + VP.Y1;',
+    '  If VP.Clip And ((X < VP.X1) Or (Y < VP.Y1) Or (X > VP.X2) Or (Y > VP.Y2)) Then Exit;',
+    '  RawPixel(X, Y, C);',
+    'End;',
+    '',
+    'Procedure PutPixel(X, Y : Integer; Pixel : Word);',
+    'Begin',
+    '  VPixel(X, Y, Pixel);',
+    'End;',
+    '',
+    'Function GetPixel(X, Y : Integer) : Word;',
+    'Begin',
+    '  GetPixel := RawGetPixel(X + VP.X1, Y + VP.Y1);',
+    'End;',
+    '',
+    'Procedure GraphDefaults;',
+    'Begin',
+    '  VP.X1 := 0; VP.Y1 := 0; VP.X2 := MaxX; VP.Y2 := MaxY; VP.Clip := True;',
+    '  CurColor := White; BkColor := Black; FillColor := White; FillPat := SolidFill;',
+    '  LineSty := SolidLn; LinePat := 0; LineThick := NormWidth;',
+    '  CPX := 0; CPY := 0;',
+    '  TxtFont := DefaultFont; TxtDir := HorizDir; TxtSize := 1; TxtHoriz := LeftText; TxtVert :=',
+    ' TopText;',
+    '  WriteMode := CopyPut;',
+    'End;',
+    '',
+    'Procedure SetVideoMode(M : Byte);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := M; Int10(R);',
+    'End;',
+    '',
+    'Procedure InitFont;',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $1130; R.BX := $0300; Int10(R);',
+    '  FontSeg := R.ES; FontOfs := R.BP;',
+    'End;',
+    '',
+    'Procedure DetectGraph(Var GraphDriver, GraphMode : Integer);',
+    'Begin',
+    '  GraphDriver := VGA; GraphMode := VGAHi;',
+    'End;',
+    '',
+    'Procedure SetGraphMode(Mode : Integer);',
+    'Begin',
+    '  GMode := Mode;',
+    '  Case Mode Of',
+    '    VGALo : Begin SetVideoMode($12); MaxX := 639; MaxY := 199 End;',
+    '    VGAMed : Begin SetVideoMode($12); MaxX := 639; MaxY := 349 End;',
+    '  Else Begin SetVideoMode($12); MaxX := 639; MaxY := 479; GMode := VGAHi End;',
+    '  End;',
+    '  Active := True;',
+    '  GraphDefaults;',
+    'End;',
+    '',
+    'Procedure InitGraph(Var GraphDriver : Integer; Var GraphMode : Integer; PathToDriver : String);',
+    'Begin',
+    '  If GraphDriver = Detect Then DetectGraph(GraphDriver, GraphMode);',
+    '  If (GraphDriver < 0) Or (GraphDriver > PC3270) Then',
+    '  Begin GResult := grInvalidDriver; GraphDriver := grInvalidDriver; Exit End;',
+    '  GDriver := GraphDriver;',
+    '  InitFont;',
+    '  SetGraphMode(GraphMode);',
+    '  GResult := grOk;',
+    'End;',
+    '',
+    'Procedure CloseGraph;',
+    'Begin',
+    '  If Active Then SetVideoMode(3);',
+    '  Active := False;',
+    'End;',
+    '',
+    'Procedure RestoreCrtMode;',
+    'Begin',
+    '  SetVideoMode(3); Active := False;',
+    'End;',
+    '',
+    'Function GraphResult : Integer;',
+    'Begin',
+    '  GraphResult := GResult; GResult := grOk;',
+    'End;',
+    '',
+    'Function GraphErrorMsg(ErrorCode : Integer) : String;',
+    'Begin',
+    '  Case ErrorCode Of',
+    '    grOk : GraphErrorMsg := ''No error'';',
+    '    grNoInitGraph : GraphErrorMsg := ''(BGI) graphics not installed (use InitGraph)'';',
+    '    grNotDetected : GraphErrorMsg := ''Graphics hardware not detected'';',
+    '    grFileNotFound : GraphErrorMsg := ''Device driver file not found'';',
+    '    grInvalidDriver : GraphErrorMsg := ''Invalid device driver file'';',
+    '    grNoLoadMem : GraphErrorMsg := ''Not enough memory to load driver'';',
+    '    grNoScanMem : GraphErrorMsg := ''Out of memory in scan fill'';',
+    '    grNoFloodMem : GraphErrorMsg := ''Out of memory in flood fill'';',
+    '    grFontNotFound : GraphErrorMsg := ''Font file not found'';',
+    '    grNoFontMem : GraphErrorMsg := ''Not enough memory to load font'';',
+    '    grInvalidMode : GraphErrorMsg := ''Invalid graphics mode for selected driver'';',
+    '    grError : GraphErrorMsg := ''Graphics error'';',
+    '    grIOerror : GraphErrorMsg := ''Graphics I/O error'';',
+    '    grInvalidFont : GraphErrorMsg := ''Invalid font file'';',
+    '    grInvalidFontNum : GraphErrorMsg := ''Invalid font number'';',
+    '  Else GraphErrorMsg := ''Graphics error'';',
+    '  End;',
+    'End;',
+    '',
+    'Function GetMaxX : Integer; Begin GetMaxX := MaxX End;',
+    'Function GetMaxY : Integer; Begin GetMaxY := MaxY End;',
+    'Function GetMaxColor : Word; Begin GetMaxColor := 15 End;',
+    'Function GetX : Integer; Begin GetX := CPX End;',
+    'Function GetY : Integer; Begin GetY := CPY End;',
+    'Function GetColor : Word; Begin GetColor := CurColor End;',
+    'Function GetBkColor : Word; Begin GetBkColor := BkColor End;',
+    'Function GetGraphMode : Integer; Begin GetGraphMode := GMode End;',
+    'Function GetMaxMode : Word; Begin GetMaxMode := VGAHi End;',
+    'Function GetDriverName : String; Begin GetDriverName := ''EGAVGA'' End;',
+    'Function GetModeName(ModeNumber : Integer) : String;',
+    'Begin',
+    '  Case ModeNumber Of',
+    '    VGALo : GetModeName := ''640 x 200 VGA'';',
+    '    VGAMed : GetModeName := ''640 x 350 VGA'';',
+    '  Else GetModeName := ''640 x 480 VGA'';',
+    '  End;',
+    'End;',
+    'Function GetModeRange(GraphDriver : Integer; Var LoMode, HiMode : Integer) : Integer;',
+    'Begin LoMode := VGALo; HiMode := VGAHi; GetModeRange := 0 End;',
+    '',
+    'Procedure ClearDevice;',
+    'Begin',
+    '  SetVideoMode($12);',
+    '  CPX := 0; CPY := 0;',
+    'End;',
+    '',
+    'Procedure SetViewPort(X1, Y1, X2, Y2 : Integer; Clip : Boolean);',
+    'Begin',
+    '  If (X1 < 0) Or (Y1 < 0) Or (X2 > MaxX) Or (Y2 > MaxY) Or (X1 > X2) Or (Y1 > Y2) Then',
+    '  Begin GResult := grError; Exit End;',
+    '  VP.X1 := X1; VP.Y1 := Y1; VP.X2 := X2; VP.Y2 := Y2; VP.Clip := Clip;',
+    '  CPX := 0; CPY := 0;',
+    'End;',
+    '',
+    'Procedure GetViewSettings(Var ViewPort : ViewPortType);',
+    'Begin ViewPort := VP End;',
+    '',
+    'Procedure HLine(X1, X2, Y : Integer; C : Word);',
+    'Var X : Integer;',
+    'Begin',
+    '  If X1 > X2 Then Begin X := X1; X1 := X2; X2 := X End;',
+    '  For X := X1 To X2 Do VPixel(X, Y, C);',
+    'End;',
+    '',
+    'Procedure ClearViewPort;',
+    'Var Y : Integer;',
+    'Begin',
+    '  For Y := 0 To VP.Y2 - VP.Y1 Do HLine(0, VP.X2 - VP.X1, Y, BkColor);',
+    '  CPX := 0; CPY := 0;',
+    'End;',
+    '',
+    'Procedure SetColor(Color : Word); Begin CurColor := Color And 15 End;',
+    '',
+    'Procedure SetBkColor(ColorNum : Word);',
+    'Var R : TRegs;',
+    'Begin',
+    '  BkColor := ColorNum And 15;',
+    '  R.AX := $0B00; R.BX := BkColor; Int10(R);',
+    'End;',
+    '',
+    'Procedure SetFillStyle(Pattern : Word; Color : Word);',
+    'Begin FillPat := Pattern; FillColor := Color And 15 End;',
+    '',
+    'Procedure SetFillPattern(Pattern : FillPatternType; Color : Word);',
+    'Begin FillPat := UserFill; FillColor := Color And 15 End;',
+    '',
+    'Procedure GetFillSettings(Var FillInfo : FillSettingsType);',
+    'Begin FillInfo.Pattern := FillPat; FillInfo.Color := FillColor End;',
+    '',
+    'Procedure SetLineStyle(LineStyle : Word; Pattern : Word; Thickness : Word);',
+    'Begin LineSty := LineStyle; LinePat := Pattern; LineThick := Thickness End;',
+    '',
+    'Procedure GetLineSettings(Var LineInfo : LineSettingsType);',
+    'Begin LineInfo.LineStyle := LineSty; LineInfo.Pattern := LinePat; LineInfo.Thickness :=',
+    ' LineThick End;',
+    '',
+    'Procedure SetWriteMode(WriteMode_ : Integer); Begin WriteMode := WriteMode_ End;',
+    '',
+    'Procedure MoveTo(X, Y : Integer); Begin CPX := X; CPY := Y End;',
+    'Procedure MoveRel(Dx, Dy : Integer); Begin CPX := CPX + Dx; CPY := CPY + Dy End;',
+    '',
+    '{ Trace d un segment (Bresenham) avec style pointille/epaisseur simplifies }',
+    'Procedure DrawLine(X1, Y1, X2, Y2 : Integer; C : Word);',
+    'Var Dx, Dy, Sx, Sy, Err, E2, N : Integer; T : Integer;',
+    'Begin',
+    '  Dx := Abs(X2 - X1); Dy := Abs(Y2 - Y1);',
+    '  If X1 < X2 Then Sx := 1 Else Sx := -1;',
+    '  If Y1 < Y2 Then Sy := 1 Else Sy := -1;',
+    '  Err := Dx - Dy; N := 0;',
+    '  While True Do',
+    '  Begin',
+    '    If (LineSty = SolidLn) Or (LineSty = UserBitLn) Or ((N And 2) = 0) Then',
+    '    Begin',
+    '      VPixel(X1, Y1, C);',
+    '      If LineThick = ThickWidth Then',
+    '      Begin',
+    '        If Dx >= Dy Then Begin VPixel(X1, Y1 - 1, C); VPixel(X1, Y1 + 1, C) End',
+    '        Else Begin VPixel(X1 - 1, Y1, C); VPixel(X1 + 1, Y1, C) End;',
+    '      End;',
+    '    End;',
+    '    Inc(N);',
+    '    If (X1 = X2) And (Y1 = Y2) Then Break;',
+    '    E2 := 2 * Err;',
+    '    If E2 > -Dy Then Begin Err := Err - Dy; X1 := X1 + Sx End;',
+    '    If E2 < Dx Then Begin Err := Err + Dx; Y1 := Y1 + Sy End;',
+    '  End;',
+    'End;',
+    '',
+    'Procedure Line(X1, Y1, X2, Y2 : Integer); Begin DrawLine(X1, Y1, X2, Y2, CurColor) End;',
+    'Procedure LineTo(X, Y : Integer); Begin DrawLine(CPX, CPY, X, Y, CurColor); CPX := X; CPY := Y',
+    ' End;',
+    'Procedure LineRel(Dx, Dy : Integer); Begin LineTo(CPX + Dx, CPY + Dy) End;',
+    '',
+    'Procedure Rectangle(X1, Y1, X2, Y2 : Integer);',
+    'Begin',
+    '  DrawLine(X1, Y1, X2, Y1, CurColor); DrawLine(X2, Y1, X2, Y2, CurColor);',
+    '  DrawLine(X2, Y2, X1, Y2, CurColor); DrawLine(X1, Y2, X1, Y1, CurColor);',
+    'End;',
+    '',
+    '{ Remplissage d une ligne horizontale selon le motif courant }',
+    'Procedure FillLine(X1, X2, Y : Integer);',
+    'Var X, T : Integer; On : Boolean;',
+    'Begin',
+    '  If FillPat = EmptyFill Then Begin HLine(X1, X2, Y, BkColor); Exit End;',
+    '  If FillPat = SolidFill Then Begin HLine(X1, X2, Y, FillColor); Exit End;',
+    '  If X1 > X2 Then Begin T := X1; X1 := X2; X2 := T End;',
+    '  For X := X1 To X2 Do',
+    '  Begin',
+    '    Case FillPat Of',
+    '      LineFill : On := (Y And 1) = 0;',
+    '      LtSlashFill, SlashFill : On := ((X + Y) And 3) = 0;',
+    '      BkSlashFill, LtBkSlashFill : On := ((X - Y) And 3) = 0;',
+    '      HatchFill : On := ((X And 3) = 0) Or ((Y And 3) = 0);',
+    '      XHatchFill : On := (((X + Y) And 3) = 0) Or (((X - Y) And 3) = 0);'
+  );
+  D16SrcGraph2 : Array[1..303] Of String[96] = (
+    '      InterleaveFill : On := ((X + Y) And 1) = 0;',
+    '      WideDotFill : On := ((X And 3) = 0) And ((Y And 3) = 0);',
+    '      CloseDotFill : On := ((X And 1) = 0) And ((Y And 1) = 0);',
+    '    Else On := True;',
+    '    End;',
+    '    If On Then VPixel(X, Y, FillColor) Else VPixel(X, Y, BkColor);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure Bar(X1, Y1, X2, Y2 : Integer);',
+    'Var Y, T : Integer;',
+    'Begin',
+    '  If Y1 > Y2 Then Begin T := Y1; Y1 := Y2; Y2 := T End;',
+    '  For Y := Y1 To Y2 Do FillLine(X1, X2, Y);',
+    'End;',
+    '',
+    'Procedure Bar3D(X1, Y1, X2, Y2 : Integer; Depth : Word; Top : Boolean);',
+    'Begin',
+    '  Bar(X1, Y1, X2, Y2);',
+    '  Rectangle(X1, Y1, X2, Y2);',
+    '  If Depth > 0 Then',
+    '  Begin',
+    '    DrawLine(X2, Y2, X2 + Depth, Y2 - Depth, CurColor);',
+    '    DrawLine(X2 + Depth, Y2 - Depth, X2 + Depth, Y1 - Depth, CurColor);',
+    '    If Top Then',
+    '    Begin',
+    '      DrawLine(X1, Y1, X1 + Depth, Y1 - Depth, CurColor);',
+    '      DrawLine(X1 + Depth, Y1 - Depth, X2 + Depth, Y1 - Depth, CurColor);',
+    '      DrawLine(X2, Y1, X2 + Depth, Y1 - Depth, CurColor);',
+    '    End;',
+    '  End;',
+    'End;',
+    '',
+    '{ Ellipse par l algorithme du point milieu ; Fill : remplir }',
+    'Procedure DrawEllipse(XC, YC : Integer; RX, RY : Word; Fill : Boolean; StA, EndA : Word);',
+    'Var X, Y : Longint; A2, B2, FA2, FB2, Sigma : Longint; LastY : Longint;',
+    '  Procedure Plot4(PX, PY : Longint);',
+    '  Begin',
+    '    If Fill Then',
+    '    Begin',
+    '      If PY <> LastY Then',
+    '      Begin',
+    '        FillLine(XC - PX, XC + PX, YC + PY);',
+    '        If PY <> 0 Then FillLine(XC - PX, XC + PX, YC - PY);',
+    '        LastY := PY;',
+    '      End;',
+    '    End',
+    '    Else',
+    '    Begin',
+    '      VPixel(XC + PX, YC + PY, CurColor); VPixel(XC - PX, YC + PY, CurColor);',
+    '      VPixel(XC + PX, YC - PY, CurColor); VPixel(XC - PX, YC - PY, CurColor);',
+    '    End;',
+    '  End;',
+    'Begin',
+    '  If (RX = 0) And (RY = 0) Then Begin VPixel(XC, YC, CurColor); Exit End;',
+    '  A2 := Longint(RX) * RX; B2 := Longint(RY) * RY;',
+    '  FA2 := 4 * A2; FB2 := 4 * B2; LastY := -1;',
+    '  X := 0; Y := RY; Sigma := 2 * B2 + A2 * (1 - 2 * Longint(RY));',
+    '  While B2 * X <= A2 * Y Do',
+    '  Begin',
+    '    Plot4(X, Y);',
+    '    If Sigma >= 0 Then Begin Sigma := Sigma + FA2 * (1 - Y); Dec(Y) End;',
+    '    Sigma := Sigma + B2 * (4 * X + 6);',
+    '    Inc(X);',
+    '  End;',
+    '  X := RX; Y := 0; Sigma := 2 * A2 + B2 * (1 - 2 * Longint(RX)); LastY := -1;',
+    '  While A2 * Y <= B2 * X Do',
+    '  Begin',
+    '    Plot4(X, Y);',
+    '    If Sigma >= 0 Then Begin Sigma := Sigma + FB2 * (1 - X); Dec(X) End;',
+    '    Sigma := Sigma + A2 * (4 * Y + 6);',
+    '    Inc(Y);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure Circle(X, Y : Integer; Radius : Word);',
+    'Begin DrawEllipse(X, Y, Radius, Longint(Radius) * 10 Div 10, False, 0, 360) End;',
+    '',
+    'Procedure Ellipse(X, Y : Integer; StAngle, EndAngle : Word; XRadius, YRadius : Word);',
+    'Begin DrawEllipse(X, Y, XRadius, YRadius, False, StAngle, EndAngle) End;',
+    '',
+    'Procedure FillEllipse(X, Y : Integer; XRadius, YRadius : Word);',
+    'Begin DrawEllipse(X, Y, XRadius, YRadius, True, 0, 360); DrawEllipse(X, Y, XRadius, YRadius,',
+    ' False, 0, 360) End;',
+    '',
+    'Procedure Arc(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Begin',
+    '  DrawEllipse(X, Y, Radius, Radius, False, StAngle, EndAngle);',
+    '  Arc_.X := X; Arc_.Y := Y; Arc_.XStart := X + Radius; Arc_.YStart := Y;',
+    '  Arc_.XEnd := X + Radius; Arc_.YEnd := Y;',
+    'End;',
+    '',
+    'Procedure PieSlice(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Begin DrawEllipse(X, Y, Radius, Radius, True, StAngle, EndAngle); DrawEllipse(X, Y, Radius,',
+    ' Radius, False, StAngle, EndAngle) End;',
+    '',
+    'Procedure Sector(X, Y : Integer; StAngle, EndAngle, XRadius, YRadius : Word);',
+    'Begin DrawEllipse(X, Y, XRadius, YRadius, True, StAngle, EndAngle); DrawEllipse(X, Y, XRadius,',
+    ' YRadius, False, StAngle, EndAngle) End;',
+    '',
+    'Procedure GetArcCoords(Var ArcCoords : ArcCoordsType); Begin ArcCoords := Arc_ End;',
+    '',
+    'Procedure DrawPoly(NumPoints : Word; Var PolyPoints);',
+    'Var P : ^PointType; I : Word; X0, Y0, PX, PY : Integer;',
+    'Begin',
+    '  If NumPoints = 0 Then Exit;',
+    '  P := @PolyPoints; X0 := P^.X; Y0 := P^.Y; PX := X0; PY := Y0;',
+    '  For I := 2 To NumPoints Do',
+    '  Begin',
+    '    Inc(P);',
+    '    DrawLine(PX, PY, P^.X, P^.Y, CurColor);',
+    '    PX := P^.X; PY := P^.Y;',
+    '  End;',
+    'End;',
+    '',
+    'Procedure FillPoly(NumPoints : Word; Var PolyPoints);',
+    'Var P : ^PointType; I, J : Word; MinY, MaxYY, Y : Integer; Xs : Array[0..63] Of Integer; N :',
+    ' Integer;',
+    '    X1, Y1, X2, Y2, T : Integer; Q : ^PointType;',
+    'Begin',
+    '  If NumPoints < 3 Then Begin DrawPoly(NumPoints, PolyPoints); Exit End;',
+    '  P := @PolyPoints; MinY := P^.Y; MaxYY := P^.Y;',
+    '  For I := 1 To NumPoints Do',
+    '  Begin',
+    '    If P^.Y < MinY Then MinY := P^.Y;',
+    '    If P^.Y > MaxYY Then MaxYY := P^.Y;',
+    '    Inc(P);',
+    '  End;',
+    '  For Y := MinY To MaxYY Do',
+    '  Begin',
+    '    N := 0; P := @PolyPoints;',
+    '    For I := 1 To NumPoints Do',
+    '    Begin',
+    '      X1 := P^.X; Y1 := P^.Y;',
+    '      If I = NumPoints Then Q := @PolyPoints Else Begin Q := P; Inc(Q) End;',
+    '      X2 := Q^.X; Y2 := Q^.Y;',
+    '      If Y1 <> Y2 Then',
+    '        If ((Y >= Y1) And (Y < Y2)) Or ((Y >= Y2) And (Y < Y1)) Then',
+    '        Begin',
+    '          If N < 64 Then Begin Xs[N] := X1 + Longint(Y - Y1) * (X2 - X1) Div (Y2 - Y1); Inc(N)',
+    ' End;',
+    '        End;',
+    '      Inc(P);',
+    '    End;',
+    '    For I := 1 To N - 1 Do For J := 0 To N - 2 Do',
+    '      If Xs[J] > Xs[J + 1] Then Begin T := Xs[J]; Xs[J] := Xs[J + 1]; Xs[J + 1] := T End;',
+    '    I := 0;',
+    '    While I + 1 < N Do Begin FillLine(Xs[I], Xs[I + 1], Y); Inc(I, 2) End;',
+    '  End;',
+    '  DrawPoly(NumPoints, PolyPoints);',
+    '  P := @PolyPoints; Q := P; For I := 2 To NumPoints Do Inc(Q);',
+    '  DrawLine(Q^.X, Q^.Y, P^.X, P^.Y, CurColor);',
+    'End;',
+    '',
+    'Procedure FloodFill(X, Y : Integer; Border : Word);',
+    'Var XL, XR : Integer; C : Word;',
+    'Begin',
+    '  { remplissage simplifie : la ligne courante seulement, puis les voisines tant que possible }',
+    '  C := GetPixel(X, Y);',
+    '  If C = Border Then Exit;',
+    '  XL := X; While (XL > 0) And (GetPixel(XL - 1, Y) <> Border) Do Dec(XL);',
+    '  XR := X; While (XR < VP.X2 - VP.X1) And (GetPixel(XR + 1, Y) <> Border) Do Inc(XR);',
+    '  FillLine(XL, XR, Y);',
+    'End;',
+    '',
+    'Procedure DrawChar(X, Y : Integer; Ch : Char);',
+    'Var Row, Col : Integer; B : Byte; Sx, Sy : Integer;',
+    'Begin',
+    '  For Row := 0 To 7 Do',
+    '  Begin',
+    '    B := Mem[FontSeg:FontOfs + Ord(Ch) * 8 + Row];',
+    '    For Col := 0 To 7 Do',
+    '      If (B And ($80 Shr Col)) <> 0 Then',
+    '        For Sy := 0 To TxtSize - 1 Do For Sx := 0 To TxtSize - 1 Do',
+    '          If TxtDir = HorizDir Then VPixel(X + Col * TxtSize + Sx, Y + Row * TxtSize + Sy,',
+    ' CurColor)',
+    '          Else VPixel(X + Row * TxtSize + Sy, Y - Col * TxtSize - Sx, CurColor);',
+    '  End;',
+    'End;',
+    '',
+    'Function TextWidth(TextString : String) : Word;',
+    'Begin TextWidth := Length(TextString) * 8 * TxtSize End;',
+    '',
+    'Function TextHeight(TextString : String) : Word;',
+    'Begin TextHeight := 8 * TxtSize End;',
+    '',
+    'Procedure OutTextXY(X, Y : Integer; TextString : String);',
+    'Var I : Integer; W, H : Integer;',
+    'Begin',
+    '  W := TextWidth(TextString); H := TextHeight(TextString);',
+    '  If TxtDir = HorizDir Then',
+    '  Begin',
+    '    If TxtHoriz = CenterText Then X := X - W Div 2 Else If TxtHoriz = RightText Then X := X - W;',
+    '    If TxtVert = CenterText Then Y := Y - H Div 2 Else If TxtVert = BottomText Then Y := Y - H;',
+    '    For I := 1 To Length(TextString) Do DrawChar(X + (I - 1) * 8 * TxtSize, Y, TextString[I]);',
+    '  End',
+    '  Else',
+    '  Begin',
+    '    If TxtHoriz = CenterText Then X := X - H Div 2 Else If TxtHoriz = RightText Then X := X - H;',
+    '    If TxtVert = CenterText Then Y := Y + W Div 2 Else If TxtVert = TopText Then Y := Y + W;',
+    '    For I := 1 To Length(TextString) Do DrawChar(X, Y - (I - 1) * 8 * TxtSize, TextString[I]);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure OutText(TextString : String);',
+    'Begin',
+    '  OutTextXY(CPX, CPY, TextString);',
+    '  If (TxtDir = HorizDir) And (TxtHoriz = LeftText) Then CPX := CPX + TextWidth(TextString);',
+    'End;',
+    '',
+    'Procedure SetTextStyle(Font, Direction : Word; CharSize : Word);',
+    'Begin',
+    '  TxtFont := Font; TxtDir := Direction;',
+    '  If CharSize = 0 Then CharSize := 1;',
+    '  If CharSize > 10 Then CharSize := 10;',
+    '  TxtSize := CharSize;',
+    'End;',
+    '',
+    'Procedure SetTextJustify(Horiz, Vert : Word); Begin TxtHoriz := Horiz; TxtVert := Vert End;',
+    'Procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word); Begin End;',
+    'Procedure GetTextSettings(Var TextInfo : TextSettingsType);',
+    'Begin',
+    '  TextInfo.Font := TxtFont; TextInfo.Direction := TxtDir; TextInfo.CharSize := TxtSize;',
+    '  TextInfo.Horiz := TxtHoriz; TextInfo.Vert := TxtVert;',
+    'End;',
+    '',
+    'Function ImageSize(X1, Y1, X2, Y2 : Integer) : Word;',
+    'Begin',
+    '  ImageSize := 4 + Longint(X2 - X1 + 1) * (Y2 - Y1 + 1);',
+    'End;',
+    '',
+    'Procedure GetImage(X1, Y1, X2, Y2 : Integer; Var BitMap);',
+    'Var P : ^Byte; W : ^Word; X, Y : Integer;',
+    'Begin',
+    '  W := @BitMap; W^ := X2 - X1; Inc(W); W^ := Y2 - Y1;',
+    '  P := @BitMap; Inc(P, 4);',
+    '  For Y := Y1 To Y2 Do For X := X1 To X2 Do Begin P^ := GetPixel(X, Y); Inc(P) End;',
+    'End;',
+    '',
+    'Procedure PutImage(X, Y : Integer; Var BitMap; BitBlt : Word);',
+    'Var P : ^Byte; W : ^Word; I, J, Wd, Ht : Integer; C : Word;',
+    'Begin',
+    '  W := @BitMap; Wd := W^; Inc(W); Ht := W^;',
+    '  P := @BitMap; Inc(P, 4);',
+    '  For J := 0 To Ht Do For I := 0 To Wd Do',
+    '  Begin',
+    '    C := P^;',
+    '    Case BitBlt Of',
+    '      XORPut : C := C Xor GetPixel(X + I, Y + J);',
+    '      OrPut : C := C Or GetPixel(X + I, Y + J);',
+    '      AndPut : C := C And GetPixel(X + I, Y + J);',
+    '      NotPut : C := (Not C) And 15;',
+    '    End;',
+    '    VPixel(X + I, Y + J, C);',
+    '    Inc(P);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure SetRGBPalette(ColorNum, RedValue, GreenValue, BlueValue : Integer);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $1010; R.BX := ColorNum And 15;',
+    '  R.DX := (RedValue And 63) Shl 8; R.CX := ((GreenValue And 63) Shl 8) Or (BlueValue And 63);',
+    '  Int10(R);',
+    'End;',
+    '',
+    'Procedure SetPalette(ColorNum : Word; Color : ShortInt);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $1000; R.BX := (Word(Color And 63) Shl 8) Or (ColorNum And 15); Int10(R);',
+    '  If ColorNum <= MaxColors Then Pal.Colors[ColorNum] := Color;',
+    'End;',
+    '',
+    'Procedure SetAllPalette(Var Palette);',
+    'Var P : ^PaletteType; I : Integer;',
+    'Begin',
+    '  P := @Palette;',
+    '  For I := 0 To P^.Size - 1 Do If P^.Colors[I] >= 0 Then SetPalette(I, P^.Colors[I]);',
+    'End;',
+    '',
+    'Procedure GetPalette(Var Palette : PaletteType); Begin Palette := Pal End;',
+    'Procedure GetDefaultPalette(Var Palette : PaletteType); Begin Palette := Pal End;',
+    'Function GetPaletteSize : Integer; Begin GetPaletteSize := 16 End;',
+    'Procedure GetAspectRatio(Var Xasp, Yasp : Word); Begin Xasp := 10000; Yasp := 10000 End;',
+    'Procedure SetAspectRatio(Xasp, Yasp : Word); Begin End;',
+    'Procedure SetActivePage(Page : Word); Begin End;',
+    'Procedure SetVisualPage(Page : Word); Begin End;',
+    'Function InstallUserDriver(Name : String; AutoDetectPtr : Pointer) : Integer; Begin',
+    ' InstallUserDriver := grError End;',
+    'Function InstallUserFont(FontFileName : String) : Integer; Begin InstallUserFont := grError End;',
+    'Function RegisterBGIdriver(Driver : Pointer) : Integer; Begin RegisterBGIdriver := grError End;',
+    'Function RegisterBGIfont(Font : Pointer) : Integer; Begin RegisterBGIfont := grError End;',
+    'Procedure SetGraphBufSize(BufSize : Word); Begin End;',
+    '',
+    'Var I : Integer;',
+    'Begin',
+    '  GResult := grNoInitGraph; Active := False; MaxX := 639; MaxY := 479;',
+    '  Pal.Size := 16;',
+    '  For I := 0 To 15 Do Pal.Colors[I] := I;',
+    '  Pal.Colors[6] := 20; For I := 8 To 15 Do Pal.Colors[I] := I + 48;',
+    '  GraphFreeMemPtr := Nil; GraphGetMemPtr := Nil;',
+    '  GraphDefaults;',
+    'End.'
+  );
+
+Function D16SrcGraphLine(N : LongInt) : TString;
+Begin
+  Case N Div 400 Of
+    0 : D16SrcGraphLine := D16SrcGraph1[N Mod 400 + 1];
+    1 : D16SrcGraphLine := D16SrcGraph2[N Mod 400 + 1];
+  Else D16SrcGraphLine := '';
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { D16 : pilote (predefinitions, unites integrees, programme)   }
 { ------------------------------------------------------------ }
@@ -49922,6 +51278,7 @@ Begin
     3 : D16EmbCount := D16SRC_DOS_N;
     4 : D16EmbCount := D16SRC_STRINGS_N;
     5 : D16EmbCount := D16SRC_PRINTER_N;
+    6 : D16EmbCount := D16SRC_GRAPH_N;
   Else D16EmbCount := 0;
   End;
 End;
@@ -49934,6 +51291,7 @@ Begin
     3 : D16MemLine := D16SrcDosLine(N);
     4 : D16MemLine := D16SrcStringsLine(N);
     5 : D16MemLine := D16SrcPrinterLine(N);
+    6 : D16MemLine := D16SrcGraphLine(N);
   Else D16MemLine := '';
   End;
 End;
@@ -50165,7 +51523,7 @@ Begin
           D16UnitUsed[I] := True;
           S := D16SymAdd(U, DSK_UNIT, 0);
         End;
-      If Not Found Then D16Error('unite introuvable: ' + U + ' (seules les unites integrees System, Crt, Dos, Strings et Printer sont disponibles)');
+      If Not Found Then D16Error('unite introuvable: ' + U + ' (seules les unites integrees System, Crt, Dos, Strings, Printer et Graph sont disponibles)');
       If D16IsPunct(',') Then D16Next Else Break;
     Until False;
     D16ExpectPunct(';');
@@ -50186,7 +51544,7 @@ Begin
   D16LitCnt := 0; D16LabelSeq := 0; D16DataSeq := 0; D16PendingZCnt := 0; D16WithCnt := 0; D16LoopCnt := 0;
   D16Level := 0; D16CurProc := -1; D16CurUnit := 0; D16InInterface := False;
   D16IoCheck := True; D16RangeCheck := False; D16OvfCheck := False; D16StackCheck := True;
-  D16SwitchPos := 0; D16PendCC := -1; D16ExitLbl := '';
+  D16SwitchPos := 0; D16PendCC := -1; D16ExitLbl := ''; D16ConstLine := -1; D16AsmBlockSeq := 0;
   For I := 0 To D16_SYM_HASH - 1 Do D16SymHash[I] := -1;
   For I := 0 To D16_MAX_UNITS Do
   Begin
@@ -50197,8 +51555,8 @@ Begin
   TotalLinesSrc := TotalLines;
   { lexer les unites integrees a la suite du programme }
   D16UnitNames[1] := 'SYSTEM'; D16UnitNames[2] := 'CRT'; D16UnitNames[3] := 'DOS';
-  D16UnitNames[4] := 'STRINGS'; D16UnitNames[5] := 'PRINTER';
-  D16UnitCount := 5;
+  D16UnitNames[4] := 'STRINGS'; D16UnitNames[5] := 'PRINTER'; D16UnitNames[6] := 'GRAPH';
+  D16UnitCount := 6;
   For I := 1 To D16UnitCount Do
   Begin
     D16LexEmbedded(I, S, E);

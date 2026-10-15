@@ -183,9 +183,9 @@ attribuable au compilateur:
 TPCW32.PAS est un compilateur distinct de TPC.PAS: multi-cibles et
 multi-passes, avec ses propres modes (-tp1..-tp8, --quickpascal,
 --applepascal). La meme methode de verification lui est appliquee avec les
-options -CD -tp7, et les corrections sont faites dans son propre code
-(front-end commun a toutes les cibles, generateur DOS 16 bits et runtime
-DOS), sans reprendre le code de TPC.PAS.
+options -CD -tp7. TPC.PAS n'est pas touche et n'est pas reutilise: les
+corrections sont faites dans TPCW32.PAS lui-meme, qui reste un fichier
+autonome (aucun include, seule l'unite Dos du compilateur hote).
 
 Etat initial (version de la branche main): 322 des 525 sources compilaient.
 Les 203 echecs venaient surtout du type File sans type ("Type non declare:
@@ -199,8 +199,64 @@ ni fichiers (Assign, Reset, BlockRead, Eof, IOResult...), ni Crt, ni Dos.
 Sur 169 programmes executes en mode help, 7 donnaient la sortie attendue,
 78 restaient bloques et 84 affichaient autre chose.
 
-Les resultats des corrections successives sont consignes ci-dessous au fil
-du travail (passes c1, c2, ...).
+Option retenue ("B, vrai 8086 16 bits"): un moteur de generation natif
+8086 pour la cible -CD, utilise pour toutes les versions -tp1..-tp8 tant
+que la directive {$386+} (ou {$3+}) n'est pas presente. Il remplace, pour
+cette cible seulement, l'ancien pipeline 80386 traduit; les autres cibles
+(-CW32, -CZ80, -C6502, ...) produisent exactement les memes fichiers
+qu'avant (verifie par empreintes md5 sur SAMPLES/TURBOPASCAL, 27 cibles
+et modes identiques).
+
+Architecture du moteur (section "TODO 30" de TPCW32.PAS):
+  - meme lexeur et preprocesseur que les autres cibles (TokenPool), avec
+    enregistrement positionnel des directives {$I+/-}, {$R}, {$M};
+  - tables propres: types Turbo Pascal (Integer/Word 2 octets, Longint
+    dans DX:AX, pointeurs far, chaines de 256 octets, Real logiciel
+    6 octets, ensembles de 32 octets, Text/File aux formats TextRec et
+    FileRec de TP 7), symboles avec table de hachage et portees,
+    procedures imbriquees avec lien statique;
+  - analyse complete des declarations (constantes typees, records a
+    partie variable, ^Type en avant, String[n], tableaux ouverts, types
+    procedure) et des instructions, generation en assembleur texte 8086
+    (fichier .ASM avec -asm) assemble par un assembleur 8086 complet
+    (ModRM, prefixes de segment, sauts courts/longs, fixups, segments de
+    code multiples de 64 Ko, relocations MZ);
+  - assembleur integre pour les blocs asm, les procedures Assembler et
+    Inline(...);
+  - runtime en deux couches: noyau en assembleur (chaines, Longint,
+    ensembles, erreurs d'execution, interruptions) et unites SYSTEM, CRT,
+    DOS, STRINGS, PRINTER et GRAPH ecrites en Pascal, integrees comme
+    constantes dans TPCW32.PAS et compilees par ce meme moteur a chaque
+    compilation (seules les unites utilisees sont generees). Les reels
+    (format 6 octets de TP) sont calcules par la couche Pascal.
+
+Methode: a chaque increment, recensement de compilation des 525 sources
+(TESTS/CORAIL_TPC avec TPC_OPTS="-CD -tp7") puis execution sous DOSBox et
+comparaison avec BIN16. Un test differentiel complementaire compile les
+memes programmes de test avec Free Pascal (reference) et avec TPCW32 -CD
+(execute sous DOSBox) et compare les sorties; il a servi a isoler les
+erreurs de generation (extension des octets, [BP+BX] inexistant,
+tableaux ouverts, pliage des constantes, operateur In...).
 
   Passe  Sources compiles  Remarque
   c1     322 / 525         version de la branche main
+  c2     142 / 525         premier moteur 8086 (SYSTEM seule)
+  c3     372 / 525         unites CRT, DOS, STRINGS, PRINTER integrees
+  c4     458 / 525         PChar (constantes, arithmetique), Mem/Port
+  c5     472 / 525         System.xxx, tableaux ouverts, labels
+  c6     475 / 525         comparaison de pointeurs, litteraux ^M^J
+  c8     480 / 525         blocs asm, procedures Assembler, Inline
+  c9     486 / 525         mnemoniques mots-cles (and, shl...)
+  c10    496 / 525         .Word/.Byte, Proc.Type.Champ, 0FFh/530Eh
+  c11    499 / 525         LOW/HIGH et expressions constantes en asm
+  c12    502 / 525         labels asm par bloc, 'a'#13'b', ReadLn(tableau)
+  c14    505 / 525         constantes char+char, System.Move
+  c15    518 / 525         unite GRAPH integree (VGA 640x480x16)
+  c16    518 / 525         correction de l'extension des octets (AH)
+
+Les 7 sources restantes utilisent des unites Free Pascal (BaseUnix,
+fphttpclient, Windows: 4), des objets (1) ou des constructions non prises
+en charge (@ sur un parametre Var, pointeur + entier sur un tableau: 2).
+
+Resultats d'execution (DOSBox, comparaison avec BIN16): voir le tableau
+ci-dessous, mis a jour a chaque passe d'execution.
