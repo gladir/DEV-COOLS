@@ -44574,10 +44574,14 @@ Begin
           If Not D16IsInteger(T) Then D16Error('operande invalide pour -');
           T := D16ArithType(T);
           D16Convert(D16BaseType(T), T);
+          If T = DTI_WORD Then
+          Begin
+            { -Word : resultat Longint (TP) ; -32768, -32769 doivent garder leurs 32 bits }
+            D16E('XOR DX,DX'); T := DTI_LONGINT;
+          End;
           If D16Types[T].Size = 4 Then
           Begin D16E('NEG AX'); D16E('ADC DX,0'); D16E('NEG DX') End
-          Else Begin D16E('NEG AX'); If T = DTI_WORD Then T := DTI_LONGINT End;
-          If (T = DTI_LONGINT) And (D16Types[D16ArithType(T)].Size = 2) Then Begin D16E('CWD') End;
+          Else D16E('NEG AX');
         End;
         D16Factor := T;
       End
@@ -48529,7 +48533,7 @@ Begin
 End;
 
 Const
-  D16SRC_SYS_N = 1485;
+  D16SRC_SYS_N = 1499;
   D16SrcSys1 : Array[1..400] Of String[96] = (
     'Unit System;',
     'Interface',
@@ -48604,7 +48608,7 @@ Const
     'Procedure __WrFlush(Var T : TextRec);',
     'Function __RdRawChar(Var T : TextRec) : Char;',
     'Procedure __RdLn(Var T : TextRec);',
-    'Procedure __RdChar(Var T : TextRec; Var C : Char);',
+    'Function __RdChar(Var T : TextRec) : Char;',
     'Procedure __RdStr(Var T : TextRec; Var S : String; Max : Byte);',
     'Procedure __RdInt(Var T : TextRec; Var V : Longint);',
     'Procedure __RdReal(Var T : TextRec; Var R : TReal6);',
@@ -48998,10 +49002,10 @@ Const
     '  { CR LF : le LF termine ; un CR seul suivi de LF est consomme }',
     'End;',
     '',
-    'Procedure __RdChar(Var T : TextRec; Var C : Char);',
+    '{ Read(F, C) : le generateur attend le caractere dans AL }',
+    'Function __RdChar(Var T : TextRec) : Char;',
     'Begin',
-    '  C := __RdRawChar(T);',
-    '  If C = #26 Then C := #26;',
+    '  __RdChar := __RdRawChar(T);',
     'End;',
     '',
     'Procedure __RdStr(Var T : TextRec; Var S : String; Max : Byte);',
@@ -49250,9 +49254,23 @@ Const
     '  __FileSize := L Div F.RecSize;',
     'End;',
     '',
+    '{ Eof d un fichier : comparaison en octets comme TP (un dernier enregistrement',
+    '  incomplet n est pas encore la fin) }',
     'Function __FEof(Var F : FileRec) : Boolean;',
+    'Var R : TRegs; Cur, L : Longint;',
     'Begin',
-    '  __FEof := __FilePos(F) >= __FileSize(F);',
+    '  __FEof := True;',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  R.AX := $4201; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    '  Cur := R.DX; Cur := (Cur Shl 16) Or R.AX;',
+    '  R.AX := $4202; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    '  L := R.DX; L := (L Shl 16) Or R.AX;',
+    '  R.AX := $4200; R.BX := F.Handle; R.CX := Cur Shr 16; R.DX := Cur And $FFFF;',
+    '  __Intr($21, R);',
+    '  __FEof := Cur >= L;',
     'End;',
     '',
     'Procedure __Truncate(Var F : FileRec);',
@@ -49318,7 +49336,9 @@ Const
     'Var P : ^Char; N : Byte; Cnt : Word; InArg : Boolean;',
     'Begin',
     '  P := Ptr(PrefixSeg, $81);',
-    '  N := Mem[PrefixSeg:$80];',
+    '  N := Mem[PrefixSeg:$80];'
+  );
+  D16SrcSys3 : Array[1..400] Of String[96] = (
     '  Cnt := 0; InArg := False;',
     '  While N > 0 Do',
     '  Begin',
@@ -49332,9 +49352,7 @@ Const
     'Function __ParamStr(N : Integer) : String;',
     'Var P : ^Char; L : Byte; Cnt : Word; InArg : Boolean; S : String; E : ^Char; I : Word;',
     'Begin',
-    '  S := '''';'
-  );
-  D16SrcSys3 : Array[1..400] Of String[96] = (
+    '  S := '''';',
     '  If N = 0 Then',
     '  Begin',
     '    { nom du programme : apres les variables d environnement }',
@@ -49720,7 +49738,9 @@ Const
     ' RunError(205); Zero(r) end',
     '  else begin IntegerFloat(n,c); Multiply(b,c,c); c.neg:=not c.neg; Add(a,c,x);',
     '   sum:=one; term:=one; for i:=1 to 24 do begin Multiply(term,x,term); IntegerFloat(i,c);',
-    ' Divide(term,c,term); Add(sum,term,sum) end;',
+    ' Divide(term,c,term); Add(sum,term,sum) end;'
+  );
+  D16SrcSys4 : Array[1..299] Of String[96] = (
     '   r:=sum; Inc(r.e,n)',
     '  end',
     ' end else if op=13 then begin',
@@ -49734,9 +49754,7 @@ Const
     '  Inc(sum.e); r:=sum;',
     '  if n=1 then begin DecimalFloat(''1.5707963267948966'',b); r.neg:=True; Add(b,r,r) end;',
     '  r.neg:=neg',
-    ' end'
-  );
-  D16SrcSys4 : Array[1..285] Of String[96] = (
+    ' end',
     'end;',
     'procedure RInt(n:Longint; var r:RBytes);',
     'var a:Float;',
