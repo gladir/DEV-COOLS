@@ -6839,6 +6839,33 @@ Begin
             TIdx := ParseTypeExprAt(I);
             ElemSz := TypeSizeofIdx(TIdx);
             If ElemSz < 1 Then ElemSz := 4;
+            { X : ... absolute Y : meme emplacement que Y }
+            If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+               (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+               (TokenPool[I + 1].Kind = TK_IDENT) Then
+            Begin
+              TName := StrUpperCase(TokenPool[I + 1].Val);
+              Inc(I, 2);
+              For J := 0 To NCount - 1 Do
+              Begin
+                SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+                If SIdx >= 0 Then
+                Begin
+                  SymTab[SIdx].IsGlobal := True;
+                  SymTab[SIdx].Offset   := -1;
+                  DIdx := SymFind(TName);
+                  If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                    SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                  Else
+                    SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+                End;
+              End;
+              While (I < TokenCount) And
+                    Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+                Inc(I);
+              If I < TokenCount Then Inc(I);
+              Continue;
+            End;
             { Creer une entree tableau pour chaque variable }
             For J := 0 To NCount - 1 Do
             Begin
@@ -6866,6 +6893,33 @@ Begin
           Begin
             TIdx := ParseTypeExprAt(I);
             FOfs := TypeSizeofIdx(TIdx);
+            { X : ... absolute Y : meme emplacement que Y }
+            If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+               (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+               (TokenPool[I + 1].Kind = TK_IDENT) Then
+            Begin
+              TName := StrUpperCase(TokenPool[I + 1].Val);
+              Inc(I, 2);
+              For J := 0 To NCount - 1 Do
+              Begin
+                SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+                If SIdx >= 0 Then
+                Begin
+                  SymTab[SIdx].IsGlobal := True;
+                  SymTab[SIdx].Offset   := -1;
+                  DIdx := SymFind(TName);
+                  If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                    SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                  Else
+                    SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+                End;
+              End;
+              While (I < TokenCount) And
+                    Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+                Inc(I);
+              If I < TokenCount Then Inc(I);
+              Continue;
+            End;
             For J := 0 To NCount - 1 Do
             Begin
               DIdx := DataAddStruct(TP_VAR_PFX + Names[J], FOfs);
@@ -7111,19 +7165,30 @@ Begin
             End
             Else
             Begin
-              { absolute suivi d'un identifiant (variable overlay) }
+              { absolute suivi d'un identifiant (variable overlay) : meme emplacement }
+              TName := '';
               If (I < TokenCount) And
                  ((TokenPool[I].Kind = TK_IDENT) Or
                   (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin
+                TName := StrUpperCase(TokenPool[I].Val);
                 Inc(I); { sauter le nom de variable }
+              End;
               For J := 0 To NCount - 1 Do
               Begin
-                DIdx := DataAddGlobalVar(Names[J], TName, 0);
                 SIdx := SymAdd(Names[J], SK_VAR, TIdx);
                 If SIdx >= 0 Then
                 Begin
                   SymTab[SIdx].IsGlobal := True;
-                  SymTab[SIdx].Offset   := DIdx;
+                  SymTab[SIdx].Offset   := -1;
+                  If TName <> '' Then
+                  Begin
+                    DIdx := SymFind(TName);
+                    If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                      SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                    Else
+                      SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+                  End;
                 End;
               End;
             End;
@@ -7137,6 +7202,35 @@ Begin
             Continue;
           End;
 
+          { X : Type absolute Y (tableau, record...) : X occupe l emplacement de Y }
+          If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+             (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+             (TokenPool[I + 1].Kind = TK_IDENT) Then
+          Begin
+            TName := StrUpperCase(TokenPool[I + 1].Val);
+            Inc(I, 2);
+            For J := 0 To NCount - 1 Do
+            Begin
+              If Opts.DebugMode Then
+                WriteLn('  [var] ', Names[J], ' absolute ', TName, ' -> type ', TIdx);
+              SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].IsGlobal := True;
+                SymTab[SIdx].Offset   := -1;
+                DIdx := SymFind(TName);
+                If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                  SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                Else
+                  SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+              End;
+            End;
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
           { Creer les entrees DataTab et SymTab pour chaque variable }
           For J := 0 To NCount - 1 Do
           Begin
@@ -7807,6 +7901,8 @@ Procedure ParseProcDecls;
 Var
   I         : Integer;
   Depth     : Integer;
+  AbsOfs    : Integer;    { X : T absolute Y : offset de Y }
+  AbsFound  : Boolean;
   Up        : TString;
   PI        : Integer;
   PName     : TString;
@@ -8295,12 +8391,33 @@ Begin
                 If LSz < 4 Then LSz := 4;
                 If (LSz And 3) <> 0 Then
                   LSz := (LSz + 3) And (Not 3);
+                { X : T absolute Y : X occupe l emplacement de la locale ou du parametre Y }
+                AbsOfs := 0; AbsFound := False;
+                If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+                   (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+                   (TokenPool[I + 1].Kind = TK_IDENT) Then
+                Begin
+                  LTName := StrUpperCase(TokenPool[I + 1].Val);
+                  For J := 0 To GrpStart - 1 Do
+                    If ProcTab[PI].Locals[J].Name = LTName Then
+                    Begin AbsOfs := ProcTab[PI].Locals[J].Offset; AbsFound := True; End;
+                  If Not AbsFound Then
+                    For J := 0 To ProcTab[PI].ParamCount - 1 Do
+                      If ProcTab[PI].Params[J].Name = LTName Then
+                      Begin AbsOfs := ProcTab[PI].Params[J].Offset; AbsFound := True; End;
+                  Inc(I, 2);
+                End;
                 For J := GrpStart To LC - 1 Do
                 Begin
                   ProcTab[PI].Locals[J].TypeIdx := LTIdx;
                   ProcTab[PI].Locals[J].Size    := LSz;
-                  LocalOfs := LocalOfs + LSz;
-                  ProcTab[PI].Locals[J].Offset := -LocalOfs;
+                  If AbsFound Then
+                    ProcTab[PI].Locals[J].Offset := AbsOfs
+                  Else
+                  Begin
+                    LocalOfs := LocalOfs + LSz;
+                    ProcTab[PI].Locals[J].Offset := -LocalOfs;
+                  End;
                 End;
               End;
 
@@ -8559,12 +8676,32 @@ Begin
                           NLSz := TypeSizeofIdx(NLTIdx);
                           If NLSz < 4 Then NLSz := 4;
                           If (NLSz And 3) <> 0 Then NLSz := (NLSz + 3) And (Not 3);
+                          AbsOfs := 0; AbsFound := False;
+                          If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+                             (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+                             (TokenPool[I + 1].Kind = TK_IDENT) Then
+                          Begin
+                            LTName := StrUpperCase(TokenPool[I + 1].Val);
+                            For NK := 0 To NGrpSt - 1 Do
+                              If ProcTab[NI].Locals[NK].Name = LTName Then
+                              Begin AbsOfs := ProcTab[NI].Locals[NK].Offset; AbsFound := True; End;
+                            If Not AbsFound Then
+                              For NK := 0 To ProcTab[NI].ParamCount - 1 Do
+                                If ProcTab[NI].Params[NK].Name = LTName Then
+                                Begin AbsOfs := ProcTab[NI].Params[NK].Offset; AbsFound := True; End;
+                            Inc(I, 2);
+                          End;
                           For NK := NGrpSt To NLC - 1 Do
                           Begin
                             ProcTab[NI].Locals[NK].TypeIdx := NLTIdx;
                             ProcTab[NI].Locals[NK].Size    := NLSz;
-                            NLocalOfs := NLocalOfs + NLSz;
-                            ProcTab[NI].Locals[NK].Offset := -NLocalOfs;
+                            If AbsFound Then
+                              ProcTab[NI].Locals[NK].Offset := AbsOfs
+                            Else
+                            Begin
+                              NLocalOfs := NLocalOfs + NLSz;
+                              ProcTab[NI].Locals[NK].Offset := -NLocalOfs;
+                            End;
                           End;
                         End;
                         While (I < TokenCount) And
@@ -17056,11 +17193,19 @@ Begin
           End;
           Else
           Begin
-            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            ParseVarArgAddr(PI);  EmitInstr('PUSH EAX');     { Dest (PChar ou tableau de Char) }
             EPMatch(',');
-            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            ParseExpr(PI);                                   { Source : chaine Pascal }
+            If Not LastExprIsPascalStr Then
+            Begin
+              GenStrSourceESI;
+              EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+            End;
+            EmitInstr('PUSH EAX');
             EmitInstr('CALL ' + TP_RT_PFX + 'STRPCOPY');
             EmitInstr('ADD ESP,8');
+            LastVarTypeIdx := TY_IDX_PCHAR;
+            LastExprIsPascalStr := False;
           End;
         End; { Case }
         EPMatch(')');
@@ -27058,7 +27203,15 @@ Begin
       { Appel de fonction (via SymTab) }
       If (SI >= 0) And (SymTab[SI].Kind = SK_FUNC) Then
       Begin
-        ParseFuncCall(PI, Up);
+        If SymTab[SI].IsExternal And W32Fpu Then
+        Begin
+          { fonction predefinie (StrPCopy, StrCat...) en instruction : evaluer, resultat ignore }
+          Dec(EP);
+          ParseExpr(PI);
+          If TypeIsReal(LastVarTypeIdx) Then EmitInstr('FSTP ST(0)');
+        End
+        Else
+          ParseFuncCall(PI, Up);
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
           Inc(EP);
@@ -34671,14 +34824,14 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH ESI');
   EmitInstr('PUSH EDI');
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { Dest }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');  { Source (Pascal string) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');  { Dest (empile en premier) }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { Source (Pascal string) }
   EmitInstr('XOR ECX,ECX');
   EmitInstr('MOV CL,BYTE PTR [ESI]');       { longueur Pascal }
   EmitInstr('INC ESI');                      { sauter octet longueur }
   EmitInstr('REP MOVSB');
   EmitInstr('MOV BYTE PTR [EDI],0');         { zero terminal }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { retourne Dest }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');  { retourne Dest }
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
   EmitInstr('POP EBP');
