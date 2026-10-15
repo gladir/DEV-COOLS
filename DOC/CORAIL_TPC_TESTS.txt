@@ -253,10 +253,73 @@ tableaux ouverts, pliage des constantes, operateur In...).
   c14    505 / 525         constantes char+char, System.Move
   c15    518 / 525         unite GRAPH integree (VGA 640x480x16)
   c16    518 / 525         correction de l'extension des octets (AH)
+  c17    518 / 525         corrections d'execution (voir ci-dessous)
+  c18    518 / 525         Random de TP, Assembler sur procedure annoncee
+  c19    518 / 525         elimination du code mort (taille des EXE)
 
 Les 7 sources restantes utilisent des unites Free Pascal (BaseUnix,
 fphttpclient, Windows: 4), des objets (1) ou des constructions non prises
 en charge (@ sur un parametre Var, pointeur + entier sur un tableau: 2).
 
-Resultats d'execution (DOSBox, comparaison avec BIN16): voir le tableau
-ci-dessous, mis a jour a chaque passe d'execution.
+Corrections apportees par les passes d'execution c17 a c19 (chacune
+isolee en comparant la sortie DOSBox de notre executable a celle de
+l'executable Borland):
+  - segment de code: une procedure de plus de 4 Ko commencant au-dela de
+    60 Ko faisait deborder le segment (VIEWBAS, CAT: plantage au
+    demarrage); la procedure est maintenant deplacee dans un nouveau
+    segment apres coup (labels et fixups relocalises);
+  - erreurs d'entree/sortie: RunError appele par IOCheck (33 programmes
+    n'affichaient pas "Runtime error 002" sur un fichier absent), codes
+    104/105 de TP pour toute lecture/ecriture sur un Text non ouvert dans
+    ce sens (ASC2*), nom de fichier vide = entree/sortie standard aussi
+    pour les fichiers types et non types (PHOTORAM ecrit 640 Ko sur la
+    sortie standard comme TP);
+  - blocs asm: le ";" separe deux instructions sur une ligne comme dans
+    TP (DB $66;SHL AX,CL de PCIINFO: l'EXE Borland contient bien 66 D3 E0),
+    il n'ouvre pas un commentaire; directive Assembler acceptee sur
+    l'implementation d'une procedure annoncee dans l'interface;
+  - constantes typees: les chaines des champs PChar d'un tableau de
+    records (WHOIS: 1075 enregistrements) etaient emises au milieu du
+    tableau toutes les 64 chaines; elles sont maintenant toutes placees
+    apres la constante;
+  - variables Absolute Seg:Ofs indexees (CMDSAVE lisait toujours ES:[0]);
+  - Random(N) suit exactement TP: graine := graine*134775813+1 puis
+    (graine non signee 32 bits * N) shr 32, et Random reel = graine/2^32
+    (verifie sur GUID, dont les 5 valeurs de Random(65535) sont fixes);
+  - Test8086 renseigne par detection du processeur (CPUTEST);
+  - controle de pile ($S+) et limite du tas (203) comme TP;
+  - elimination du code mort: les procedures des unites integrees (et le
+    noyau asm) qui ne sont pas atteignables depuis le programme sont
+    retirees de l'EXE (HELLO: 33 Ko -> 7,7 Ko; FS: 48 Ko -> 17 Ko, Borland
+    8,9 Ko).
+
+Resultats d'execution (DOSBox, passe c19, 510 programmes dont la
+reference BIN16 existe; "sample" = 256 programmes avec arguments):
+
+  Mode     Identiques  Attente clavier  Env.  Quirk TP  Autre
+  help     498 / 510    7                0     2         3 (ASC2CSP, CSV2ASM, CSV2BAS)
+  noarg    373 / 510  119               11     3         4 (CSV2ASM, CSV2BAS, DOSKEY, LOGO)
+  nofile   (passe finale en cours)
+  sample   (passe finale en cours)
+
+"Attente clavier": programmes interactifs qui attendent une touche dans
+les deux cas (delai depasse des deux cotes). "Env.": sorties dependant de
+l'environnement (heure, date, nombres aleatoires avec Randomize, taille
+des fichiers du repertoire, memoire libre, DX non initialise lu par un
+bloc asm dans IPCONFIG). "Quirk TP": comportement propre a Turbo Pascal
+que nous ne reproduisons pas a l'identique:
+  - GRAFTABL ({$M 1024}), RTMRES ({$M 2048}) et ACALC: TP alloue des
+    temporaires de 1,5 a 27 Ko dans le programme principal et son
+    controle de pile donne l'erreur 202 au demarrage; nos temporaires
+    sont plus petits et le programme s'execute;
+  - MEM et SYSINFO: un bloc Inline(...) lit ses parametres a [BP+4] et
+    [BP+8], c'est-a-dire avec la disposition d'un appel NEAR (TP appelle
+    en near les procedures du programme); notre moteur appelle toutes
+    les procedures en far, la partie XMS affiche donc des valeurs
+    fausses;
+  - LOGO: notre unite Graph est integree (pas de fichier EGAVGA.BGI a
+    charger), le programme demarre alors que l'EXE Borland s'arrete sur
+    "Device driver file not found";
+  - CSV2ASM et CSV2BAS: les references BIN16 sont des executables Win32;
+  - ASC2CSP: le source (".CSP") est plus recent que la reference (".C").
+  - DOSKEY: programme resident (Keep), ne rend pas la main.
