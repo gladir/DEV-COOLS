@@ -6743,6 +6743,7 @@ Var
   InitVal : LongInt;
   InitStr : TString;
   RealLit : Boolean;     { constante reelle non typee }
+  CxGen   : Boolean;     { expression constante generale a evaluer }
   RealV   : Real;
   RealK   : Integer;
   VName   : TString;
@@ -7398,6 +7399,24 @@ Begin
             InitStr := '';
             RealLit := False;
 
+            { Expression constante generale (Byte(' '), Ord('A'), Chr(65), N*2+1) : plus d un }
+            { jeton avant le ';' sans litteral chaine ni reel -> evaluateur d expressions.       }
+            J := I; ArrElem := 0; CxGen := False;
+            While (J < TokenCount) And Not ((TokenPool[J].Kind = TK_PUNCT) And (TokenPool[J].Val = ';')) Do
+            Begin
+              If (TokenPool[J].Kind = TK_REAL) Or
+                 ((TokenPool[J].Kind = TK_STRING) And (Length(TokenPool[J].Val) <> 1)) Then CxGen := True;
+              Inc(ArrElem); Inc(J);
+            End;
+            If (ArrElem > 1) And (Not CxGen) And (I < TokenCount) And
+               Not ((ArrElem = 2) And (TokenPool[I].Kind = TK_OP) And (TokenPool[I].Val = '-')) Then
+            Begin
+              Up := StrUpperCase(TokenPool[I].Val);
+              InitVal := ConstTokExprAt(I);
+              If ((Up = 'CHAR') Or (Up = 'CHR')) And (ArrElem >= 3) Then
+                InitStr := Chr(InitVal And 255);       { Char(66) / Chr(65) : constante caractere }
+            End
+            Else
             If (I < TokenCount) Then
             Begin
               If (TokenPool[I].Kind = TK_INTEGER) Then
