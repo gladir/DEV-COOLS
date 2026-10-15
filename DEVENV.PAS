@@ -204915,16 +204915,34 @@ End;
 Procedure Dpmi_Switch(Var P: TEmulatorPanel);
 Var
  RetIP, RetCS: Word;
- Want32: Boolean;
  CodeSel, DataSel, EsSel, SsSel: Word;
  CodeIdx: Integer;
 Begin
  If Not EmuDpmi.Active Then Exit; { securite, ne devrait pas arriver }
  RetIP := Emu_PopWord(P.CPU);
  RetCS := Emu_PopWord(P.CPU);
- Want32 := P.CPU.Regs.AX <> 0;
  FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
- DpmiCPU.Is32Bit := Want32;
+ { BOGUE REEL CORRIGE (2026-10-14, enquete PKUNZIP.EXE) : Is32Bit pilotait  }
+ { la taille d operande/adresse par defaut du DECODAGE directement depuis   }
+ { Want32 (choix du CLIENT, AX=0/1 au point d entree DPMI - "je veux etre   }
+ { traite comme client 16 ou 32 bits") - or le code qui continue ICI MEME   }
+ { est PROUVABLEMENT le MEME flux d octets reel-mode qui tournait l instant }
+ { d avant (Base=RealCS*16, EIP=RealIP, voir le commentaire de tete de      }
+ { Dpmi_Switch) : du vrai code reel-mode est TOUJOURS 16 bits par defaut    }
+ { (un vrai CPU, en mode reel, ne peut pas decoder autrement) - Want32=True  }
+ { ne change RIEN a cela, il ne concerne QUE la convention de registres de  }
+ { l API DPMI, pas la largeur d instruction du code en cours. Confirme en   }
+ { direct : PKUNZIP.EXE (PKLITE, 16 bits ordinaire, AUCUN rapport avec un   }
+ { extendeur 32 bits) demande AX=1 au point d entree (le detecteur DPMI     }
+ { annonce BX=1="32 bits supporte" et PKUNZIP le redemande par optimisme)   }
+ { - avec l ancien code, un simple CALL rel16 (2 octets de deplacement)     }
+ { etait alors lu comme CALL rel32 (4 octets, 2 de trop empruntes aux       }
+ { octets suivants), donnant un deplacement absurde qui envoie EIP dans la  }
+ { memoire etendue non initialisee (boucle infinie sur des octets zero).    }
+ { Les eventuels prefixes $66/$67 explicites (deja geres plus bas) restent  }
+ { le SEUL mecanisme legitime pour qu une instruction isolee soit 32 bits   }
+ { dans ce flux encore reel-mode - comportement identique sur un VRAI CPU.  }
+ DpmiCPU.Is32Bit := False;
  DpmiCPU.RealCS := RetCS; DpmiCPU.RealIP := RetIP;
  DpmiCPU.RealSS := P.CPU.Segs.SS; DpmiCPU.RealSP := P.CPU.Regs.SP;
  CodeSel := Dpmi_SegToSel(RetCS);
