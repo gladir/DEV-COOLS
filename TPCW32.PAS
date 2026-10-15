@@ -48529,7 +48529,7 @@ Begin
 End;
 
 Const
-  D16SRC_SYS_N = 1444;
+  D16SRC_SYS_N = 1471;
   D16SrcSys1 : Array[1..400] Of String[96] = (
     'Unit System;',
     'Interface',
@@ -49736,7 +49736,7 @@ Const
     ' else if (op=8) or (op=9) then begin',
     '  if z.e<0 then Zero(z) else if z.e<47 then begin bits:=47-z.e;'
   );
-  D16SrcSys4 : Array[1..244] Of String[96] = (
+  D16SrcSys4 : Array[1..271] Of String[96] = (
     '   for i:=1 to bits do Right(z.m); for i:=1 to bits do Left(z.m); Normalize(z)',
     '  end;',
     '  if op=9 then begin z.neg:=not z.neg; Add(x,z,z) end',
@@ -49899,10 +49899,31 @@ Const
     '  __Halt(Code);',
     'End;',
     '',
+    '{ INT 0 (division par zero) : TP installe son propre gestionnaire et signale',
+    '  l erreur 200 a l adresse de l instruction fautive (CS:IP du cadre d interruption) }',
+    'Var __SaveInt0 : Pointer;',
+    '',
+    'Procedure __DivZero; Interrupt;',
+    'Var P : Pointer;',
+    'Begin',
+    '  Asm',
+    '    MOV AX,[BP+18]',
+    '    MOV WORD PTR P,AX',
+    '    MOV AX,[BP+20]',
+    '    MOV WORD PTR P+2,AX',
+    '  End;',
+    '  __RunError(200, P);',
+    'End;',
+    '',
     'Procedure __Halt(Code : Word);',
     'Var S, N : String; Sg : Word; P : Pointer; R : TRegs;',
     'Begin',
     '  ExitCode := Code;',
+    '  If __SaveInt0 <> Nil Then',
+    '  Begin',
+    '    R.AX := $2500; R.DS := Seg(__SaveInt0^); R.DX := Ofs(__SaveInt0^); __Intr($21, R);',
+    '    __SaveInt0 := Nil;',
+    '  End;',
     '  { chaine des procedures de sortie }',
     '  While ExitProc <> Nil Do',
     '  Begin',
@@ -49960,6 +49981,7 @@ Const
     'End;',
     '',
     'Procedure __SysInit;',
+    'Var R : TRegs; P : Pointer;',
     'Begin',
     '  InOutRes := 0; ExitCode := 0; ExitProc := Nil; ErrorAddr := Nil;',
     '  FileMode := 2; Test8087 := 0; RandSeed := 0; Test8086 := __DetectCPU;',
@@ -49972,6 +49994,11 @@ Const
     '    HeapEnd := Ptr(__HeapStartSeg + __HeapMaxParas, 0);',
     '  FreePtr := HeapEnd;',
     '  __StackLimit := 128;',
+    '  { vecteur INT 0 : sauvegarde puis installation de __DivZero }',
+    '  R.AX := $3500; __Intr($21, R);',
+    '  __SaveInt0 := Ptr(R.ES, R.BX);',
+    '  P := @__DivZero;',
+    '  R.AX := $2500; R.DS := Seg(P^); R.DX := Ofs(P^); __Intr($21, R);',
     '  __AssignText(TextRec(Input), '''');',
     '  TextRec(Input).BufPtr := @__StdInBuf;',
     '  __OpenText(TextRec(Input), fmInput);',
