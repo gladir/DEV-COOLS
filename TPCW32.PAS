@@ -30451,22 +30451,35 @@ Begin
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+1],'':''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+2],''\''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+3],0');
-  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('MOV ECX,OFFSET DOS_PATHBUF');
   EmitInstr('JMP ' + TP_RT_PFX + 'DF_GO');
   EmitLabel(TP_RT_PFX + 'DF_CUR');
-  EmitInstr('PUSH 0');          { NULL = lecteur courant }
+  EmitInstr('XOR ECX,ECX');          { NULL = lecteur courant }
   EmitLabel(TP_RT_PFX + 'DF_GO');
   { GetDiskFreeSpaceA(root, &SectPerClust, &BytesPerSect, &FreeClusters, &TotClusters) }
   EmitInstr('PUSH OFFSET DOS_DKFREE+12');    { TotalClusters  }
   EmitInstr('PUSH OFFSET DOS_DKFREE+8');     { FreeClusters   }
   EmitInstr('PUSH OFFSET DOS_DKFREE+4');     { BytesPerSector }
   EmitInstr('PUSH OFFSET DOS_DKFREE+0');     { SectorsPerCluster }
+  EmitInstr('PUSH ECX');                            { lpRootPathName (1er parametre) }
   EmitInstr('CALL GetDiskFreeSpaceA');        { passe root en 5e param deja PUSH }
-  { Resultat = FreeClusters * SectorsPerCluster * BytesPerSector }
+  EmitInstr('MOV ECX,-1');                           { echec (lecteur absent) : -1 }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DF_RES');
+  { Resultat = FreeClusters * SectorsPerCluster * BytesPerSector (sature a MaxLongInt) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_DKFREE+8]');    { FreeClusters }
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+0]');   { * SectPerClust }
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+4]');   { * BytesPerSect }
-  EmitInstr('MOV DWORD PTR [EBP-4],EAX');            { sauver resultat }
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+0]');        { * SectPerClust (EDX:EAX) }
+  EmitInstr('MOV ECX,7FFFFFFFh');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DF_RES');
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+4]');        { * BytesPerSect }
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DF_RES');
+  EmitInstr('CMP EAX,7FFFFFFFh');
+  EmitInstr('JA ' + TP_RT_PFX + 'DF_RES');
+  EmitInstr('MOV ECX,EAX');
+  EmitLabel(TP_RT_PFX + 'DF_RES');
+  EmitInstr('MOV DWORD PTR [EBP-4],ECX');            { sauver resultat }
   EmitInstr('POPAD');
   EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
   EmitInstr('POP EBP');
@@ -30486,21 +30499,34 @@ Begin
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+1],'':''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+2],''\''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+3],0');
-  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('MOV ECX,OFFSET DOS_PATHBUF');
   EmitInstr('JMP ' + TP_RT_PFX + 'DS_GO');
   EmitLabel(TP_RT_PFX + 'DS_CUR');
-  EmitInstr('PUSH 0');
+  EmitInstr('XOR ECX,ECX');
   EmitLabel(TP_RT_PFX + 'DS_GO');
   EmitInstr('PUSH OFFSET DOS_DKFREE+12');
   EmitInstr('PUSH OFFSET DOS_DKFREE+8');
   EmitInstr('PUSH OFFSET DOS_DKFREE+4');
   EmitInstr('PUSH OFFSET DOS_DKFREE+0');
+  EmitInstr('PUSH ECX');                            { lpRootPathName (1er parametre) }
   EmitInstr('CALL GetDiskFreeSpaceA');
-  { TotalClusters * SectorsPerCluster * BytesPerSector }
+  EmitInstr('MOV ECX,-1');                           { echec (lecteur absent) : -1 }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DS_RES');
+  { TotalClusters * SectorsPerCluster * BytesPerSector (sature a MaxLongInt) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_DKFREE+12]');
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+0]');
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+4]');
-  EmitInstr('MOV DWORD PTR [EBP-4],EAX');
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+0]');
+  EmitInstr('MOV ECX,7FFFFFFFh');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DS_RES');
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+4]');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DS_RES');
+  EmitInstr('CMP EAX,7FFFFFFFh');
+  EmitInstr('JA ' + TP_RT_PFX + 'DS_RES');
+  EmitInstr('MOV ECX,EAX');
+  EmitLabel(TP_RT_PFX + 'DS_RES');
+  EmitInstr('MOV DWORD PTR [EBP-4],ECX');
   EmitInstr('POPAD');
   EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
   EmitInstr('POP EBP');
@@ -35835,7 +35861,13 @@ Begin { BcAssemble }
     Reg1 := BcParseReg32(Op1);
     If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($E0 + Reg1); Exit; End;
     Reg1 := BcParseReg8(Op1);
-    If Reg1 >= 0 Then Begin BcEmitB($F6); BcEmitB($E0 + Reg1); End;
+    If Reg1 >= 0 Then Begin BcEmitB($F6); BcEmitB($E0 + Reg1); Exit; End;
+    Tmp := StripSizePrefix(Op1);
+    If StartsWithBracket(Tmp) Then
+    Begin
+      { MUL DWORD PTR [mem] : F7 /4 (EDX:EAX = EAX * [mem]) }
+      BcEmitB($F7); BcEmitMemRM(Tmp, 4, DataLbl, DataAdd);
+    End;
     Exit;
   End;
 
