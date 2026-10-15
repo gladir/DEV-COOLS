@@ -5082,6 +5082,8 @@ Begin
   EmitRaw('FMTBUF    DB 96 DUP(0)');    { tampon sprintf                }
   EmitRaw('FMT_FIX   DB ''%*.*f'',0');  { format :w:d                   }
   EmitRaw('FMT_SCI   DB ''% .*E'',0');  { format scientifique           }
+  EmitRaw('FPUCW     DW 1332h');        { mot de controle x87 de FPC : exceptions IE/ZE/OE non masquees }
+  EmitRaw('          DW 0');
   EmitRaw('BYTESWR   DD 0');           { octets ecrits         }
   EmitRaw('BYTESRD   DD 0');           { octets lus            }
   EmitRaw('CRLF      DB 13,10,0');     { retour chariot        }
@@ -12244,6 +12246,13 @@ Begin
               EmitInstr('INC EAX');        { Pascal -> ASCIIZ }
             EmitInstr('PUSH EAX');
             EmitInstr('CALL SetCurrentDirectoryA');
+            Lbl := LabelGen;
+            EmitInstr('TEST EAX,EAX');
+            EmitInstr('JNZ ' + Lbl);
+            EmitInstr('CALL GetLastError');
+            EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+            EmitLabel(Lbl);
+            EmitIoCheck;
           End;
         End; { Case }
         EPMatch(')');
@@ -12303,6 +12312,13 @@ Begin
             EmitInstr('PUSH 0');           { lpSecurityAttributes = NULL }
             EmitInstr('PUSH EAX');         { lpPathName }
             EmitInstr('CALL CreateDirectoryA');
+            Lbl := LabelGen;
+            EmitInstr('TEST EAX,EAX');
+            EmitInstr('JNZ ' + Lbl);
+            EmitInstr('CALL GetLastError');
+            EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+            EmitLabel(Lbl);
+            EmitIoCheck;
           End;
         End; { Case }
         EPMatch(')');
@@ -12361,6 +12377,13 @@ Begin
               EmitInstr('INC EAX');        { Pascal -> ASCIIZ }
             EmitInstr('PUSH EAX');
             EmitInstr('CALL RemoveDirectoryA');
+            Lbl := LabelGen;
+            EmitInstr('TEST EAX,EAX');
+            EmitInstr('JNZ ' + Lbl);
+            EmitInstr('CALL GetLastError');
+            EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+            EmitLabel(Lbl);
+            EmitIoCheck;
           End;
         End; { Case }
         EPMatch(')');
@@ -22931,6 +22954,13 @@ Begin
       EmitInstr('ADD EAX,' + IntToStr_(TFR_NAME));   { nom ASCIIZ dans l enregistrement }
       EmitInstr('PUSH EAX');
       EmitInstr('CALL DeleteFileA');
+      Lbl := LabelGen;
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JNZ ' + Lbl);
+      EmitInstr('CALL GetLastError');
+      EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');   { 2 fichier introuvable, 5 acces refuse... }
+      EmitLabel(Lbl);
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -27818,6 +27848,10 @@ Begin
       EmitComment('Obtenir le tas du processus');
       EmitInstr('CALL GetProcessHeap');
       EmitInstr('MOV [HHEAP],EAX');
+      EmitComment('Erreurs d execution materielles (216, 200, 207...) et exceptions x87 comme FPC');
+      EmitInstr('PUSH OFFSET ' + TP_RT_PFX + 'EXCFILTER');
+      EmitInstr('CALL SetUnhandledExceptionFilter');
+      EmitInstr('FLDCW WORD PTR [FPUCW]');
     End;
 
     { Parser et emettre le corps du programme }
@@ -29464,6 +29498,7 @@ Begin
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'RTERROR');
   EmitInstr('MOV EDX,[ESP]');               { adresse de retour = position de l erreur }
+  EmitLabel(TP_RT_PFX + 'RTERROR_AT');      { EAX = code, EDX = adresse }
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH EDX');
   EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
@@ -29500,6 +29535,41 @@ Begin
   EmitInstr('POP EAX');
   EmitInstr('PUSH EAX');
   EmitInstr('CALL ExitProcess');
+
+  { ------ _TPRT_EXCFILTER : filtre d exceptions non gerees (SetUnhandledExceptionFilter) ------ }
+  { [ESP+4] = EXCEPTION_POINTERS : code et adresse de l exception -> "Runtime error N at $ADR"  }
+  { 216 acces memoire, 200 division par zero, 207 operation flottante invalide, 205 debordement, }
+  { 206 sous-depassement, 215 debordement entier, 202 debordement de pile (codes de FPC)         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'EXCFILTER');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('MOV ECX,DWORD PTR [EAX]');          { EXCEPTION_RECORD }
+  EmitInstr('MOV EDX,DWORD PTR [ECX+12]');       { ExceptionAddress }
+  EmitInstr('MOV EAX,DWORD PTR [ECX]');          { ExceptionCode }
+  EmitInstr('MOV EBX,200');
+  EmitInstr('CMP EAX,-1073741682');              { C000008E : division flottante par zero }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('CMP EAX,-1073741676');              { C0000094 : division entiere par zero }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,207');
+  EmitInstr('CMP EAX,-1073741680');              { C0000090 : operation flottante invalide }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,205');
+  EmitInstr('CMP EAX,-1073741679');              { C0000091 : debordement flottant }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,206');
+  EmitInstr('CMP EAX,-1073741677');              { C0000093 : sous-depassement flottant }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,215');
+  EmitInstr('CMP EAX,-1073741675');              { C0000095 : debordement entier }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,202');
+  EmitInstr('CMP EAX,-1073741571');              { C00000FD : debordement de pile }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,216');                      { C0000005 et autres : acces memoire }
+  EmitLabel(TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RTERROR_AT');  { affiche et termine le processus }
 
   { ------ _TPRT_PADPRINT : afficher avec padding ------------ }
   { Entree : ESI = pointeur vers chaine ASCIIZ                }
@@ -31456,6 +31526,8 @@ Begin
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FCHKOPEN');
   EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FCO_OK');
+  EmitInstr('CMP DWORD PTR [FILE_IOERR],0');      { une erreur en attente (Reset sous $I-) est conservee }
   EmitInstr('JNE ' + TP_RT_PFX + 'FCO_OK');
   EmitInstr('MOV DWORD PTR [FILE_IOERR],103');
   EmitLabel(TP_RT_PFX + 'FCO_OK');
@@ -36062,6 +36134,7 @@ Begin
   U := StrUpperCase(BcNormalizeApi(Name));
   BcIsImport := (U = 'EXITPROCESS') Or (U = 'GETSTDHANDLE') Or
     (U = 'SPRINTF') Or (U = 'STRTOD') Or
+    (U = 'SETUNHANDLEDEXCEPTIONFILTER') Or (U = 'GETLASTERROR') Or
     (U = 'WRITEFILE') Or (U = 'READFILE') Or
     (U = 'GETPROCESSHEAP') Or (U = 'HEAPALLOC') Or
     (U = 'HEAPFREE') Or (U = 'HEAPSIZE') Or (U = 'CREATEFILEA') Or
@@ -39893,6 +39966,7 @@ Begin
   BcDefineDataLabel('FMTBUF');    BcDataZeros(96);
   BcDefineDataLabel('FMT_FIX');   BcDataStr('%*.*f');
   BcDefineDataLabel('FMT_SCI');   BcDataStr('% .*E');
+  BcDefineDataLabel('FPUCW');     BcDataB($32); BcDataB($13); BcDataB(0); BcDataB(0);
   BcDefineDataLabel('HEXBUF');    BcDataZeros(12);
   BcDefineDataLabel('BYTESWR');   BcDataD(0);
   BcDefineDataLabel('BYTESRD');   BcDataD(0);
