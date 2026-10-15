@@ -2390,7 +2390,13 @@ Begin
   OptExtSyntax   := True;   { $X+ en TP7 }
 
   { Symbole WIN32 defini sauf pour la cible DOS 16 bits native }
-  If Not D16Selected Then DefineAdd('WIN32');
+  If Not D16Selected Then
+  Begin
+    DefineAdd('WIN32');
+    { Les executables de reference sont produits par Free Pascal : les branches }
+    { IFDEF FPC des sources (unites, messages, File of Byte...) sont celles a suivre }
+    DefineAdd('FPC');
+  End;
 
   { Symboles MSDOS, CPU86, CPU87 }
   DefineAdd('MSDOS');
@@ -20523,14 +20529,17 @@ Begin
         Inc(EP); { consommer : }
         If Not EPAtEnd Then
         Begin
-          If TokenPool[EP].Kind = TK_INTEGER Then
+          If (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+             (TokenPool[EP + 1].Kind = TK_PUNCT) And
+             ((TokenPool[EP + 1].Val = ',') Or (TokenPool[EP + 1].Val = ')') Or
+              (TokenPool[EP + 1].Val = ':')) Then
           Begin
             FmtWidth := TokenPool[EP].IntVal;
             Inc(EP);
           End
           Else
           Begin
-            { Largeur dynamique : evaluer dans ECX }
+            { Largeur dynamique (expression) : evaluer dans ECX }
             SavedTIdx := LastVarTypeIdx; SavedPascal := LastExprIsPascalStr;
             EmitInstr('PUSH EAX');
             ParseExpr(PI);
@@ -20548,7 +20557,9 @@ Begin
             Inc(EP);
             If Not EPAtEnd Then
             Begin
-              If TokenPool[EP].Kind = TK_INTEGER Then
+              If (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+                 (TokenPool[EP + 1].Kind = TK_PUNCT) And
+                 ((TokenPool[EP + 1].Val = ',') Or (TokenPool[EP + 1].Val = ')')) Then
               Begin
                 FmtDec := TokenPool[EP].IntVal;
                 Inc(EP);
@@ -20865,7 +20876,9 @@ Begin
   If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
   Begin
     Inc(EP);
-    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) Then
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+       (TokenPool[EP + 1].Kind = TK_PUNCT) And
+       ((TokenPool[EP + 1].Val = ',') Or (TokenPool[EP + 1].Val = ':')) Then
     Begin
       Width := TokenPool[EP].IntVal;
       Inc(EP);
@@ -20882,7 +20895,8 @@ Begin
     If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
     Begin
       Inc(EP);
-      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) Then
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+         (TokenPool[EP + 1].Kind = TK_PUNCT) And (TokenPool[EP + 1].Val = ',') Then
       Begin
         Dec := TokenPool[EP].IntVal;
         Inc(EP);
