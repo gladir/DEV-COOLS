@@ -2198,6 +2198,11 @@ Var
   IoSwitchPos : Array[0..255] Of LongInt;
   IoSwitchOn  : Array[0..255] Of Boolean;
   IoSwitchCnt : Integer;
+{ Etat du commutateur R (verification des bornes) par position dans le pool de jetons   }
+{ (cible Win32). Actif par defaut comme les references FPC (-Cr) ; R- le desactive.      }
+  RangeSwitchPos : Array[0..255] Of LongInt;
+  RangeSwitchOn  : Array[0..255] Of Boolean;
+  RangeSwitchCnt : Integer;
 
 (* ---- LexHandleDollarDirective : traiter dollar-directives *)
 (* Appelee quand LexColNo pointe sur accolade et le suivant est dollar *)
@@ -2225,33 +2230,57 @@ Begin
   If (Length(Dir) = 1) And (LexColNo <= Length(LexLine)) And
      ((LexLine[LexColNo] = '+') Or (LexLine[LexColNo] = '-')) Then
   Begin
-    Sw := LexLine[LexColNo];
-    Inc(LexColNo);
+    { Liste de commutateurs separes par des virgules : dollar A-,R-,I+ }
+    While (Length(Dir) = 1) And (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] = '+') Or (LexLine[LexColNo] = '-')) Do
+    Begin
+      Sw := LexLine[LexColNo];
+      Inc(LexColNo);
+      { Appliquer la commutation }
+      Case Dir[1] Of
+        'I' : Begin
+                OptIO := (Sw = '+');
+                If IoSwitchCnt < 256 Then
+                Begin
+                  IoSwitchPos[IoSwitchCnt] := TokenCount;
+                  IoSwitchOn[IoSwitchCnt]  := OptIO;
+                  Inc(IoSwitchCnt);
+                End;
+              End;
+        'R' : Begin
+                OptRange := (Sw = '+');
+                If RangeSwitchCnt < 256 Then
+                Begin
+                  RangeSwitchPos[RangeSwitchCnt] := TokenCount;
+                  RangeSwitchOn[RangeSwitchCnt]  := OptRange;
+                  Inc(RangeSwitchCnt);
+                End;
+              End;
+        'B' : OptBoolEval    := (Sw = '+');
+        'Q' : OptOverflow    := (Sw = '+');
+        'A' : OptAlign       := (Sw = '+');
+        'N' : OptNCoprocessor:= (Sw = '+');
+        'G' : OptGen286      := (Sw = '+');
+        'X' : OptExtSyntax   := (Sw = '+');
+      End;
+      If D16Selected Then D16RecordSwitch(Dir[1], Sw = '+');
+      { Virgule : commutateur suivant }
+      Dir := '';
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = ',') Then
+      Begin
+        Inc(LexColNo);
+        While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+        Begin
+          Dir := Dir + UpCase(LexLine[LexColNo]);
+          Inc(LexColNo);
+        End;
+      End;
+    End;
     { Consommer jusqu a accolade fermante }
     While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] <> '}') Do
       Inc(LexColNo);
     If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '}') Then
       Inc(LexColNo);
-    { Appliquer la commutation }
-    Case Dir[1] Of
-      'I' : Begin
-              OptIO := (Sw = '+');
-              If IoSwitchCnt < 256 Then
-              Begin
-                IoSwitchPos[IoSwitchCnt] := TokenCount;
-                IoSwitchOn[IoSwitchCnt]  := OptIO;
-                Inc(IoSwitchCnt);
-              End;
-            End;
-      'R' : OptRange       := (Sw = '+');
-      'B' : OptBoolEval    := (Sw = '+');
-      'Q' : OptOverflow    := (Sw = '+');
-      'A' : OptAlign       := (Sw = '+');
-      'N' : OptNCoprocessor:= (Sw = '+');
-      'G' : OptGen286      := (Sw = '+');
-      'X' : OptExtSyntax   := (Sw = '+');
-    End;
-    If D16Selected Then D16RecordSwitch(Dir[1], Sw = '+');
     Exit;
   End;
 
@@ -4938,6 +4967,7 @@ Begin
   EmitRaw('EXTRN _FlushFileBuffers@4:NEAR');
   EmitRaw('EXTRN _SetEndOfFile@4:NEAR');
   EmitRaw('EXTRN _GetLastError@0:NEAR');
+  EmitRaw('EXTRN _GetVersion@0:NEAR');
   EmitRaw('EXTRN _CreateDirectoryA@8:NEAR');
   EmitRaw('EXTRN _RemoveDirectoryA@4:NEAR');
   EmitRaw('EXTRN _SetCurrentDirectoryA@4:NEAR');
@@ -10461,6 +10491,72 @@ Begin
     EmitInstr('CALL ' + TP_RT_PFX + 'IOCHECK');
 End;
 
+{ RangeCheckAt : la verification des bornes (R+) est-elle active a la position P ? }
+{ Actif par defaut pour la cible Win32, comme les references FPC compilees avec -Cr. }
+Function RangeCheckAt(P : LongInt) : Boolean;
+Var K : Integer;
+Begin
+  RangeCheckAt := True;
+  For K := 0 To RangeSwitchCnt - 1 Do
+    If RangeSwitchPos[K] <= P Then RangeCheckAt := RangeSwitchOn[K]
+    Else Break;
+End;
+
+{ RangeBoundsOf : bornes d un type ordinal etroit (Byte, Word, ShortInt, Integer 16 bits, }
+{ sous-intervalle, enumeration). Faux pour les types 32 bits et les autres types.          }
+Function RangeBoundsOf(T : Integer; Var Lo, Hi : LongInt) : Boolean;
+Var R : Integer;
+Begin
+  RangeBoundsOf := False;
+  If (T < 0) Or (T >= TypeCount) Then Exit;
+  { LongInt / LongWord : 32 bits, jamais de bornes (meme si alias d Integer / Word) }
+  If (TypeTab[T].Kind In [TYK_INTEGER, TYK_WORD]) And (TypeTab[T].Size = 4) Then Exit;
+  If TypeTab[T].Kind = TYK_SUBRANGE Then
+  Begin
+    Lo := TypeTab[T].Lo; Hi := TypeTab[T].Hi;
+    RangeBoundsOf := Hi >= Lo;
+    Exit;
+  End;
+  R := TypeResolve(T);
+  If (R < 0) Or (R >= TypeCount) Then Exit;
+  Case TypeTab[R].Kind Of
+    TYK_BYTE     : Begin Lo := 0; Hi := 255; RangeBoundsOf := True; End;
+    TYK_SHORTINT : Begin Lo := -128; Hi := 127; RangeBoundsOf := True; End;
+    TYK_WORD     : If TypeTab[R].Size = 2 Then Begin Lo := 0; Hi := 65535; RangeBoundsOf := True; End
+                   Else If TypeTab[R].Size = 1 Then Begin Lo := 0; Hi := 255; RangeBoundsOf := True; End;
+    TYK_INTEGER  : If TypeTab[R].Size = 2 Then Begin Lo := -32768; Hi := 32767; RangeBoundsOf := True; End
+                   Else If TypeTab[R].Size = 1 Then Begin Lo := -128; Hi := 127; RangeBoundsOf := True; End;
+    TYK_ENUM     : If TypeTab[R].EnumCount > 0 Then
+                   Begin Lo := 0; Hi := TypeTab[R].EnumCount - 1; RangeBoundsOf := True; End;
+  End;
+End;
+
+{ GenRangeCheck : EAX = valeur a ranger dans une variable de type T ; erreur 201 si hors bornes }
+Procedure GenRangeCheck(T : Integer);
+Var Lo, Hi : LongInt;
+Begin
+  If Not ((Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode)) Then Exit;
+  If Not RangeCheckAt(EP) Then Exit;
+  If Not RangeBoundsOf(T, Lo, Hi) Then Exit;
+  EmitInstr('CMP EAX,' + IntToStr_(Lo));
+  EmitInstr('JL ' + TP_RT_PFX + 'RANGEERR');
+  EmitInstr('CMP EAX,' + IntToStr_(Hi));
+  EmitInstr('JG ' + TP_RT_PFX + 'RANGEERR');
+End;
+
+{ GenRangeCheckAssign : apres ParseExpr d une affectation vers une variable de type T.   }
+{ Pas de verification pour un litteral entier seul (verifie a la compilation par FPC), ni }
+{ quand l expression est deja du type etroit de la destination (Byte := Byte).            }
+Procedure GenRangeCheckAssign(T : Integer);
+Var Lo, Hi : LongInt;
+Begin
+  If (EP >= 2) And (TokenPool[EP - 1].Kind = TK_INTEGER) And
+     (TokenPool[EP - 2].Kind = TK_OP) And (TokenPool[EP - 2].Val = ':=') Then Exit;
+  If (LastVarTypeIdx >= 0) And (T >= 0) And (LastVarTypeIdx <> TY_IDX_INTEGER) And
+     (TypeResolve(LastVarTypeIdx) = TypeResolve(T)) And RangeBoundsOf(LastVarTypeIdx, Lo, Hi) Then Exit;
+  GenRangeCheck(T);
+End;
+
 Function FileVarType(PI : Integer; Const Name : TString) : Integer;
 Var Up : TString; LI, SI : Integer;
 Begin
@@ -11890,6 +11986,7 @@ Begin
           EmitInstr('POP EBX');
           GenLoadScalar('[EBX]', LI);
           EmitInstr('ADD EAX,ECX');
+          GenRangeCheck(LI);
           GenStoreScalar('[EBX]', LI);
           If LastIndexIsStrLen Then
           Begin
@@ -11922,6 +12019,7 @@ Begin
           EmitInstr('POP EBX');
           GenLoadScalar('[EBX]', LI);
           EmitInstr('SUB EAX,ECX');
+          GenRangeCheck(LI);
           GenStoreScalar('[EBX]', LI);
           If LastIndexIsStrLen Then
           Begin
@@ -18501,6 +18599,14 @@ Begin
     ParseExpr(PI);
     If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_ARRAY) Then
     Begin
+      If RangeCheckAt(EP) And (TypeTab[T].Hi >= TypeTab[T].Lo) Then
+      Begin
+        { R+ : indice hors bornes -> erreur 201 }
+        EmitInstr('CMP EAX,' + IntToStr_(TypeTab[T].Lo));
+        EmitInstr('JL ' + TP_RT_PFX + 'RANGEERR');
+        EmitInstr('CMP EAX,' + IntToStr_(TypeTab[T].Hi));
+        EmitInstr('JG ' + TP_RT_PFX + 'RANGEERR');
+      End;
       If TypeTab[T].Lo <> 0 Then
         EmitInstr('SUB EAX,' + IntToStr_(TypeTab[T].Lo));
       ET := TypeTab[T].BaseTypeIdx;
@@ -18517,6 +18623,12 @@ Begin
             ((TypeTab[T].Kind = TYK_STRING) Or (TypeTab[T].Kind = TYK_PCHAR)) Then
     Begin
       If (TypeTab[T].Kind = TYK_STRING) And IsZero Then LastIndexIsStrLen := True;
+      If (TypeTab[T].Kind = TYK_STRING) And RangeCheckAt(EP) And Not IsZero Then
+      Begin
+        { R+ : indice de chaine hors de 0..255 -> erreur 201 (comparaison non signee) }
+        EmitInstr('CMP EAX,255');
+        EmitInstr('JA ' + TP_RT_PFX + 'RANGEERR');
+      End;
       T := TY_IDX_CHAR;         { S[i] : octet i (S[0] = longueur) }
     End
     Else
@@ -18792,7 +18904,19 @@ Begin
     If LastVarTypeIdx = TY_IDX_BOOLEAN Then
       EmitInstr('XOR EAX,1')
     Else
+    Begin
       EmitInstr('NOT EAX');
+      { Not sur un Byte / Word : resultat de la meme largeur (comme FPC) }
+      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+         (TypeTab[LastVarTypeIdx].Size < 4) Then
+      Begin
+        If TypeTab[TypeResolve(LastVarTypeIdx)].Kind = TYK_BYTE Then
+          EmitInstr('AND EAX,0FFh')
+        Else If (TypeTab[TypeResolve(LastVarTypeIdx)].Kind = TYK_WORD) And
+                (TypeTab[TypeResolve(LastVarTypeIdx)].Size = 2) Then
+          EmitInstr('AND EAX,0FFFFh');
+      End;
+    End;
     Exit;
   End;
 
@@ -21295,6 +21419,14 @@ Begin
           TIdx := SymTab[SI].TypeIdx;
       End;
 
+      If W32Fpu Then
+      Begin
+        { Types nommes (TLine = String[255]), variables englobantes : type resolu }
+        LI := GetVarTypeIdx(PI, Up);
+        If LI >= 0 Then TIdx := LI;
+        If (TIdx >= 0) And (TIdx < TypeCount) Then TIdx := TypeResolve(TIdx);
+        If TypeIsString(TIdx) Then TIdx := TY_IDX_STRING;
+      End;
       If (TIdx = TY_IDX_STRING) Or (TIdx = TY_IDX_PCHAR) Then
       Begin
         { Copier INBUF vers la variable string }
@@ -21570,11 +21702,14 @@ Begin
   { Parser l instruction du THEN }
   ParseStmt(PI);
 
-  { Detecter ELSE }
+  { Detecter ELSE. Un ';' juste avant ELSE termine le IF : l ELSE appartient     }
+  { alors au CASE englobant (Case C of '~':If X Then Begin ... End; Else ...).    }
   HasElse := False;
   If Not EPAtEnd Then
     If (TokenPool[EP].Kind = TK_KEYWORD) And
-       (StrUpperCase(TokenPool[EP].Val) = 'ELSE') Then
+       (StrUpperCase(TokenPool[EP].Val) = 'ELSE') And
+       Not ((EP > 0) And (TokenPool[EP - 1].Kind = TK_PUNCT) And
+            (TokenPool[EP - 1].Val = ';')) Then
       HasElse := True;
 
   If HasElse Then
@@ -22425,6 +22560,7 @@ Begin
         WantCharLit := (TIdx = TY_IDX_CHAR);
         ParseExpr(PI);
         WantCharLit := False;
+        GenRangeCheckAssign(TIdx);
         EmitInstr('POP EBX');
         GenStoreToAddr(TIdx);
         If LastIndexIsStrLen Then
@@ -27331,6 +27467,7 @@ Begin
           WantCharLit := (TIdx = TY_IDX_CHAR);
           ParseExpr(PI);
           WantCharLit := False;
+          GenRangeCheckAssign(TIdx);
           EmitInstr('POP EBX');
           GenStoreToAddr(TIdx);
         End;
@@ -27359,6 +27496,7 @@ Begin
           WantCharLit := (TIdx = TY_IDX_CHAR);
           ParseExpr(PI);               { EAX = valeur (ou adresse source) }
           WantCharLit := False;
+          GenRangeCheckAssign(TIdx);
           EmitInstr('POP EBX');
           GenStoreToAddr(TIdx);
           If LastIndexIsStrLen Then
@@ -27411,6 +27549,10 @@ Begin
         WantCharLit := (FileVarType(PI, VName) = TY_IDX_CHAR);
         ParseExpr(PI);
         WantCharLit := False;
+        If (PI >= 0) And ProcTab[PI].IsFunction And (ProcTab[PI].Name = Up) Then
+          GenRangeCheckAssign(ProcTab[PI].RetTypeIdx)
+        Else
+          GenRangeCheckAssign(TIdx);
         GenStoreVar(PI, VName);
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
@@ -29398,7 +29540,7 @@ Begin
   EmitInstr('MOV ESI,0C0000000h');
   EmitInstr('JMP ' + TP_RT_PFX + 'TF_FO_GO');
   EmitLabel(TP_RT_PFX + 'TF_FO_AP');
-  EmitInstr('MOV EDI,4');
+  EmitInstr('MOV EDI,3');                   { Append : le fichier doit exister (OPEN_EXISTING), sinon erreur 2 }
   EmitLabel(TP_RT_PFX + 'TF_FO_GO');
   EmitInstr('PUSH 0');
   EmitInstr('PUSH 128');
@@ -29975,6 +30117,12 @@ Begin
   EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
   EmitLabel(TP_RT_PFX + 'IOC_OK');
   EmitInstr('RET');
+
+  { ------ _TPRT_RANGEERR : erreur d execution 201 (verification des bornes, R+) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'RANGEERR');
+  EmitInstr('MOV EAX,201');
+  EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
 
   { ------ _TPRT_RTERROR : EAX = code -> "Runtime error N at $ADRESSE" puis sortie ------ }
   EmitBlankLine;
@@ -31628,7 +31776,8 @@ Begin
   { Retourne 7 dans EAX (emulation DOS 7.0)                       }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'DOSVERSION');
-  EmitInstr('MOV EAX,7');
+  EmitInstr('CALL GetVersion');            { comme FPC : majeur (octet bas), mineur (octet haut) }
+  EmitInstr('AND EAX,0FFFFh');
   EmitInstr('RET');
 
   { ------ _TPRT_DISKFREE : espace libre sur disque ------------- }
@@ -32097,22 +32246,11 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_FF_WANT : l entree de DOS_FINDDATA est-elle retenue ? ------ }
-  { Sortie : ZF=0 (JNZ) si retenue ; ZF=1 si '.' / '..' ou attribut non demande }
+  { Sortie : ZF=0 (JNZ) si retenue ; ZF=1 si un attribut present n est pas demande }
   { (cache 2, systeme 4, repertoire 16 absents de DOS_FINDATTR)                 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FF_WANT');
-  EmitInstr('MOV AL,BYTE PTR [DOS_FINDDATA+44]');
-  EmitInstr('CMP AL,''.''');
-  EmitInstr('JNE ' + TP_RT_PFX + 'FFW_AT');
-  EmitInstr('MOV AL,BYTE PTR [DOS_FINDDATA+45]');
-  EmitInstr('TEST AL,AL');
-  EmitInstr('JZ ' + TP_RT_PFX + 'FFW_NO');
-  EmitInstr('CMP AL,''.''');
-  EmitInstr('JNE ' + TP_RT_PFX + 'FFW_AT');
-  EmitInstr('MOV AL,BYTE PTR [DOS_FINDDATA+46]');
-  EmitInstr('TEST AL,AL');
-  EmitInstr('JZ ' + TP_RT_PFX + 'FFW_NO');
-  EmitLabel(TP_RT_PFX + 'FFW_AT');
+  { '.' et '..' sont retournes comme par FPC (filtres seulement par l attribut Directory) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
   EmitInstr('AND EAX,16h');                 { cache, systeme, repertoire }
   EmitInstr('MOV ECX,DWORD PTR [DOS_FINDATTR]');
@@ -36631,7 +36769,7 @@ Begin
   U := StrUpperCase(BcNormalizeApi(Name));
   BcIsImport := (U = 'EXITPROCESS') Or (U = 'GETSTDHANDLE') Or
     (U = 'SPRINTF') Or (U = 'STRTOD') Or
-    (U = 'SETUNHANDLEDEXCEPTIONFILTER') Or (U = 'GETLASTERROR') Or
+    (U = 'SETUNHANDLEDEXCEPTIONFILTER') Or (U = 'GETLASTERROR') Or (U = 'GETVERSION') Or
     (U = 'FILETIMETOLOCALFILETIME') Or (U = 'FILETIMETODOSDATETIME') Or
     (U = 'WRITEFILE') Or (U = 'READFILE') Or
     (U = 'GETPROCESSHEAP') Or (U = 'HEAPALLOC') Or
