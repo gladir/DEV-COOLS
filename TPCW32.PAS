@@ -10690,18 +10690,53 @@ Begin
             EmitInstr('MOV EAX,' + IntToStr_(TypeSizeofIdx(SI)))
           Else
           Begin
-            { Chercher comme variable }
+            { Chercher comme variable, puis suivre les suffixes .champ ^ [..] }
+            SI := GetVarTypeIdx(PI, Up);
             LI := FindLocal(PI, Up);
-            If LI >= 0 Then
-              EmitInstr('MOV EAX,' + IntToStr_(ProcTab[PI].Locals[LI].Size))
-            Else
+            If (SI < 0) And (LI >= 0) Then SI := ProcTab[PI].Locals[LI].TypeIdx;
+            Inc(EP);
+            While (Not EPAtEnd) And (SI >= 0) And (SI < TypeCount) And
+                  (((TokenPool[EP].Kind = TK_PUNCT) And
+                    ((TokenPool[EP].Val = '.') Or (TokenPool[EP].Val = '['))) Or
+                   ((TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '^'))) Do
             Begin
-              SI := SymFind(Up);
-              If (SI >= 0) And (SymTab[SI].TypeIdx >= 0) Then
-                EmitInstr('MOV EAX,' + IntToStr_(TypeSizeofIdx(SymTab[SI].TypeIdx)))
+              If TokenPool[EP].Val = '^' Then
+              Begin
+                Inc(EP);
+                If TypeTab[SI].Kind = TYK_POINTER Then SI := TypeTab[SI].BaseTypeIdx Else SI := -1;
+              End
+              Else If TokenPool[EP].Val = '[' Then
+              Begin
+                LI := 0;
+                While Not EPAtEnd Do
+                Begin
+                  If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then Inc(LI)
+                  Else If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ']') Then Dec(LI);
+                  Inc(EP);
+                  If LI = 0 Then Break;
+                End;
+                If TypeTab[SI].Kind = TYK_ARRAY Then SI := TypeTab[SI].BaseTypeIdx
+                Else If TypeTab[SI].Kind = TYK_STRING Then SI := TY_IDX_CHAR
+                Else SI := -1;
+              End
               Else
-                EmitInstr('MOV EAX,4');
+              Begin
+                Inc(EP);
+                If EPAtEnd Then Break;
+                Up := StrUpperCase(TokenPool[EP].Val);
+                Inc(EP);
+                LI := -1;
+                If (TypeTab[SI].Kind = TYK_RECORD) Or (TypeTab[SI].Kind = TYK_OBJECT) Then
+                  For WI := 0 To TypeTab[SI].FieldCount - 1 Do
+                    If TypeTab[SI].Fields[WI].Name = Up Then LI := TypeTab[SI].Fields[WI].TypeIdx;
+                SI := LI;
+              End;
             End;
+            If SI >= 0 Then
+              EmitInstr('MOV EAX,' + IntToStr_(TypeSizeofIdx(SI)))
+            Else
+              EmitInstr('MOV EAX,4');
+            Dec(EP);   { compense le Inc(EP) commun ci-dessous }
           End;
           Inc(EP);
         End;
