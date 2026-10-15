@@ -10531,6 +10531,22 @@ Begin
   End;
 End;
 
+{ GenRangeCheckLoHi : EAX doit etre dans Lo..Hi, sinon erreur 201. L appel a RANGEERR est  }
+{ place dans le code utilisateur pour que l adresse signalee soit celle de l instruction.   }
+Procedure GenRangeCheckLoHi(Lo, Hi : LongInt);
+Var L1, L2 : TString;
+Begin
+  L1 := LabelGen; L2 := LabelGen;
+  EmitInstr('CMP EAX,' + IntToStr_(Lo));
+  EmitInstr('JGE ' + L1);
+  EmitInstr('CALL ' + TP_RT_PFX + 'RANGEERR');
+  EmitLabel(L1);
+  EmitInstr('CMP EAX,' + IntToStr_(Hi));
+  EmitInstr('JLE ' + L2);
+  EmitInstr('CALL ' + TP_RT_PFX + 'RANGEERR');
+  EmitLabel(L2);
+End;
+
 { GenRangeCheck : EAX = valeur a ranger dans une variable de type T ; erreur 201 si hors bornes }
 Procedure GenRangeCheck(T : Integer);
 Var Lo, Hi : LongInt;
@@ -10538,10 +10554,7 @@ Begin
   If Not ((Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode)) Then Exit;
   If Not RangeCheckAt(EP) Then Exit;
   If Not RangeBoundsOf(T, Lo, Hi) Then Exit;
-  EmitInstr('CMP EAX,' + IntToStr_(Lo));
-  EmitInstr('JL ' + TP_RT_PFX + 'RANGEERR');
-  EmitInstr('CMP EAX,' + IntToStr_(Hi));
-  EmitInstr('JG ' + TP_RT_PFX + 'RANGEERR');
+  GenRangeCheckLoHi(Lo, Hi);
 End;
 
 { GenRangeCheckAssign : apres ParseExpr d une affectation vers une variable de type T.   }
@@ -12513,6 +12526,36 @@ Begin
         End;
         EPMatch(')');
       End;
+      Exit;
+    End;
+
+    { SEG(x) -> 0 en mode plat Win32 (comme FPC) ; l argument est seulement consomme }
+    If (Up = 'SEG') And W32Fpu And (SymFind(Up) >= 0) And SymTab[SymFind(Up)].IsExternal Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        If Not EPAtEnd Then
+        Begin
+          Lbl := TokenPool[EP].Val;
+          Inc(EP);
+          If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
+          Begin
+            { Seg(Path[1]) : sauter l indice }
+            WI := 0;
+            While Not EPAtEnd Do
+            Begin
+              If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then Inc(WI)
+              Else If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ']') Then Dec(WI);
+              Inc(EP);
+              If WI = 0 Then Break;
+            End;
+          End;
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');
+      LastVarTypeIdx := TY_IDX_WORD;
       Exit;
     End;
 
@@ -18609,13 +18652,7 @@ Begin
     If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_ARRAY) Then
     Begin
       If RangeCheckAt(EP) And (TypeTab[T].Hi >= TypeTab[T].Lo) Then
-      Begin
-        { R+ : indice hors bornes -> erreur 201 }
-        EmitInstr('CMP EAX,' + IntToStr_(TypeTab[T].Lo));
-        EmitInstr('JL ' + TP_RT_PFX + 'RANGEERR');
-        EmitInstr('CMP EAX,' + IntToStr_(TypeTab[T].Hi));
-        EmitInstr('JG ' + TP_RT_PFX + 'RANGEERR');
-      End;
+        GenRangeCheckLoHi(TypeTab[T].Lo, TypeTab[T].Hi);   { R+ : indice hors bornes -> erreur 201 }
       If TypeTab[T].Lo <> 0 Then
         EmitInstr('SUB EAX,' + IntToStr_(TypeTab[T].Lo));
       ET := TypeTab[T].BaseTypeIdx;
@@ -18633,11 +18670,7 @@ Begin
     Begin
       If (TypeTab[T].Kind = TYK_STRING) And IsZero Then LastIndexIsStrLen := True;
       If (TypeTab[T].Kind = TYK_STRING) And RangeCheckAt(EP) And Not IsZero Then
-      Begin
-        { R+ : indice de chaine hors de 0..255 -> erreur 201 (comparaison non signee) }
-        EmitInstr('CMP EAX,255');
-        EmitInstr('JA ' + TP_RT_PFX + 'RANGEERR');
-      End;
+        GenRangeCheckLoHi(0, 255);   { R+ : indice de chaine hors de 0..255 -> erreur 201 }
       T := TY_IDX_CHAR;         { S[i] : octet i (S[0] = longueur) }
     End
     Else
@@ -30153,7 +30186,7 @@ Begin
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'RANGEERR');
   EmitInstr('MOV EAX,201');
-  EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RTERROR');  { [ESP] = adresse de retour dans le code fautif }
 
   { ------ _TPRT_RTERROR : EAX = code -> "Runtime error N at $ADRESSE" puis sortie ------ }
   EmitBlankLine;
