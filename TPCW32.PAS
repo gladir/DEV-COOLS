@@ -5946,6 +5946,40 @@ Begin
 End;
 
 { --- Liste de champs d un record (jusqu a END ou ')') ; gere CASE ... OF variantes --- }
+{ TypeAlignOf : alignement d un champ de ce type dans un record non packed    }
+{ (regle de Free Pascal sur i386 : taille naturelle, 4 au plus ; chaines 1) }
+Function TypeAlignOf(T : Integer) : Integer;
+Var Sz : LongInt;
+Begin
+  TypeAlignOf := 1;
+  If (T < 0) Or (T >= TypeCount) Then Exit;
+  Case TypeTab[T].Kind Of
+    TYK_STRING : TypeAlignOf := 1;
+    TYK_ARRAY  : TypeAlignOf := TypeAlignOf(TypeTab[T].BaseTypeIdx);
+    TYK_RECORD, TYK_OBJECT :
+      Begin
+        If (TypeTab[T].Align >= 1) And (TypeTab[T].Align <= 4) Then TypeAlignOf := TypeTab[T].Align
+        Else TypeAlignOf := 1;
+      End;
+  Else
+    Begin
+      Sz := TypeTab[T].Size;
+      If Sz >= 4 Then TypeAlignOf := 4
+      Else If Sz >= 2 Then TypeAlignOf := 2
+      Else TypeAlignOf := 1;
+    End;
+  End;
+End;
+
+{ RecAlignOfs : aligner l offset Ofs sur Al (record non packed) et noter l alignement du record }
+Procedure RecAlignOfs(TIdx : Integer; Var Ofs : Integer; Al : Integer);
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
+  If TypeTab[TIdx].IsPacked Or (Al <= 1) Then Exit;
+  If Ofs Mod Al <> 0 Then Ofs := Ofs + (Al - Ofs Mod Al);
+  If Al > TypeTab[TIdx].Align Then TypeTab[TIdx].Align := Al;
+End;
+
 Procedure ParseRecordFieldsAt(TIdx : Integer; Var I : Integer; Var Ofs : Integer);
 Var
   FNames : Array[0..31] Of TString;
@@ -5967,6 +6001,7 @@ Begin
         Up := StrUpperCase(TokenPool[I].Val);
         Inc(I, 2);
         FTIdx := ParseTypeExprAt(I);
+        RecAlignOfs(TIdx, Ofs, TypeAlignOf(FTIdx));
         FC := TypeTab[TIdx].FieldCount;
         If FC < MAX_FIELDS Then
         Begin
@@ -6029,6 +6064,7 @@ Begin
     FSz := TypeSizeofIdx(FTIdx);
     For K := 0 To FNC - 1 Do
     Begin
+      RecAlignOfs(TIdx, Ofs, TypeAlignOf(FTIdx));
       FC := TypeTab[TIdx].FieldCount;
       If FC < MAX_FIELDS Then
       Begin
@@ -6048,13 +6084,15 @@ Function ParseTypeExprAt(Var I : Integer) : Integer;
 Var
   Up, BaseTN : TString;
   TI, BT, K, Depth : Integer;
+  IsPk : Boolean;
   Lo, Hi : LongInt;
   DimLo, DimHi : Array[0..7] Of LongInt;
   DimCount, Ofs, ElemSz : Integer;
 Begin
   ParseTypeExprAt := TY_IDX_INTEGER;
   If I >= TokenCount Then Exit;
-  While TokIsKw(I, 'PACKED') Do Inc(I);
+  IsPk := False;
+  While TokIsKw(I, 'PACKED') Do Begin IsPk := True; Inc(I); End;
   If I >= TokenCount Then Exit;
 
   { ^T }
@@ -6148,7 +6186,7 @@ Begin
     Begin
       Lo := DimHi[K] - DimLo[K] + 1;
       If Lo < 1 Then Lo := 1;
-      TI := TypeAdd(TYK_ARRAY, '', Lo * ElemSz, 4, False, BT);
+      TI := TypeAdd(TYK_ARRAY, '', Lo * ElemSz, TypeAlignOf(BT), False, BT);
       If TI >= 0 Then
       Begin
         TypeTab[TI].Lo := DimLo[K];
@@ -6165,11 +6203,18 @@ Begin
   If Up = 'RECORD' Then
   Begin
     Inc(I);
-    TI := TypeAdd(TYK_RECORD, '', 0, 4, False, -1);
+    TI := TypeAdd(TYK_RECORD, '', 0, 1, False, -1);
+    If TI >= 0 Then TypeTab[TI].IsPacked := IsPk;
     Ofs := 0;
     ParseRecordFieldsAt(TI, I, Ofs);
     If TokIsKw(I, 'END') Then Inc(I);
-    If TI >= 0 Then TypeTab[TI].Size := Ofs;
+    If TI >= 0 Then
+    Begin
+      { taille arrondie a l alignement du record (FPC) }
+      If (Not TypeTab[TI].IsPacked) And (TypeTab[TI].Align > 1) And (Ofs Mod TypeTab[TI].Align <> 0) Then
+        Ofs := Ofs + (TypeTab[TI].Align - Ofs Mod TypeTab[TI].Align);
+      TypeTab[TI].Size := Ofs;
+    End;
     ParseTypeExprAt := TI;
     Exit;
   End;
@@ -9429,6 +9474,55 @@ Begin
 End;
 
 
+{ EnsureImplicitGlobal : un identificateur non declare (FileMode, variable d une   }
+{ unite absente...) recoit un emplacement de 4 octets au lieu de viser le debut   }
+{ de la section de donnees                                                        }
+Procedure EnsureImplicitGlobal(Const Up : TString);
+Var SI, K : Integer;
+Begin
+  If SymFind(Up) >= 0 Then Exit;
+  For K := 0 To DataCount - 1 Do
+    If DataTab[K].LblName = TP_VAR_PFX + Up Then Exit;
+  If Opts.DebugMode Then WriteLn('  [var] ', Up, ' : non declaree, emplacement implicite');
+  DataAdd(TP_VAR_PFX + Up, DK_DWORD, 0, '', 0, 0);
+  SI := SymAdd(Up, SK_VAR, TY_IDX_LONGINT);
+  If SI >= 0 Then
+  Begin
+    SymTab[SI].IsGlobal := True;
+    SymTab[SI].MangledName := TP_VAR_PFX + Up;
+  End;
+End;
+
+{ ParseVarArgAddr : argument "var" sans type (Move, FillChar, BlockRead...) : EAX = adresse }
+{ d une variable, d un element de tableau, d un champ ou d un pointeur dereference ;   }
+{ sinon la valeur de l expression (pointeur, agregat deja represente par son adresse)   }
+Procedure ParseVarArgAddr(PI : Integer);
+Var
+  T, SI : Integer;
+  FOfs : LongInt;
+  Up : TString;
+  IsVarName : Boolean;
+Begin
+  If W32Fpu And (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    IsVarName := False;
+    If (PI >= 0) And ((FindLocal(PI, Up) >= 0) Or (FindParam(PI, Up) >= 0)) Then IsVarName := True
+    Else
+    Begin
+      SI := SymFind(Up);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_VAR) Then IsVarName := True
+      Else If (SI < 0) And (WithDepth > 0) And (WithFieldIndex(Up, FOfs) >= 0) Then IsVarName := True;
+    End;
+    If IsVarName Then
+    Begin
+      ParseLValueAddrW32(PI, T);
+      Exit;
+    End;
+  End;
+  ParseExpr(PI);
+End;
+
 Procedure GenLoadScalar(Const Mem : TString; T : Integer);
 Var Sz : LongInt;
 Begin
@@ -9660,6 +9754,7 @@ Begin
   End;
 
   { Par defaut : globale }
+  If W32Fpu Then EnsureImplicitGlobal(Up);
   If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
      ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
       (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) Or
@@ -9904,6 +9999,7 @@ Begin
   End;
 
   { Par defaut : variable globale standard }
+  If W32Fpu Then EnsureImplicitGlobal(Up);
   VarTI := GetVarTypeIdx(PI, Up);
   If ((VarTI >= 0) And (VarTI < TypeCount) And
       (TypeTab[VarTI].Kind = TYK_STRING)) Or W32IsAggregate(VarTI) Then
@@ -9974,6 +10070,7 @@ Begin
     End;
   End;
 
+  If W32Fpu Then EnsureImplicitGlobal(Up);
   SI := SymFind(Up);
   If SI >= 0 Then
     VarRef := SymTab[SI].MangledName
@@ -11701,10 +11798,10 @@ Begin
           Else
           Begin
             { --- Intel 80386 (Win32) --- }
-            ParseExpr(PI);      { source dans EAX }
+            ParseVarArgAddr(PI);   { source : adresse dans EAX }
             EmitInstr('PUSH EAX');
             EPMatch(',');
-            ParseExpr(PI);      { dest dans EAX }
+            ParseVarArgAddr(PI);   { dest : adresse dans EAX }
             EmitInstr('PUSH EAX');
             EPMatch(',');
             ParseExpr(PI);      { count dans EAX }
@@ -11842,7 +11939,7 @@ Begin
           Else
           Begin
             { --- Intel 80386 (Win32) --- }
-            ParseExpr(PI);      { dest dans EAX }
+            ParseVarArgAddr(PI);   { dest : adresse dans EAX }
             EmitInstr('PUSH EAX');
             EPMatch(',');
             ParseExpr(PI);      { count dans EAX }
@@ -12250,6 +12347,10 @@ Begin
             EmitInstr('TEST EAX,EAX');
             EmitInstr('JNZ ' + Lbl);
             EmitInstr('CALL GetLastError');
+            EmitInstr('CMP EAX,2');                 { fichier introuvable -> chemin introuvable (FPC) }
+            EmitInstr('JNE ' + Lbl + 'b');
+            EmitInstr('MOV EAX,3');
+            EmitLabel(Lbl + 'b');
             EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
             EmitLabel(Lbl);
             EmitIoCheck;
@@ -21623,7 +21724,8 @@ Var
 Begin
   If EPAtEnd Then Exit;
   If Opts.DebugMode And Opts.Verbose Then
-    WriteLn('  [stmt] ligne ', TokenPool[EP].Line, ' : ', TokenPool[EP].Val);
+    WriteLn('  [stmt] ligne ', TokenPool[EP].Line, ' : ', TokenPool[EP].Val,
+            ' @', BcGetCodeLen);   { offset dans le code (adresse = 401000h + offset) }
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
   If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
@@ -23088,7 +23190,7 @@ Begin
         End;
         EmitInstr('PUSH EAX');        { adresse de la variable fichier }
         EPMatch(',');
-        ParseExpr(PI);                { adresse du tampon }
+        ParseVarArgAddr(PI);          { adresse du tampon }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);                { nombre d enregistrements }
@@ -23110,10 +23212,13 @@ Begin
       EmitIoCheck;
       If ArgName <> '' Then
       Begin
+        { nombre d enregistrements transferes -> variable (Word, Integer, LongInt...) }
         EmitInstr('PUSH EAX');
         GenLoadAddr(PI, ArgName);
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EAX],EDX');
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+        LastVarTypeIdx := TY_IDX_INTEGER;
+        GenStoreToAddr(GetVarTypeIdx(PI, ArgName));
       End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
