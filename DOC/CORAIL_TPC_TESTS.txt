@@ -256,10 +256,10 @@ tableaux ouverts, pliage des constantes, operateur In...).
   c17    518 / 525         corrections d'execution (voir ci-dessous)
   c18    518 / 525         Random de TP, Assembler sur procedure annoncee
   c19    518 / 525         elimination du code mort (taille des EXE)
+  c20    520 / 525         @X en parametre Var pointeur, tableau de Char + entier
 
-Les 7 sources restantes utilisent des unites Free Pascal (BaseUnix,
-fphttpclient, Windows: 4), des objets (1) ou des constructions non prises
-en charge (@ sur un parametre Var, pointeur + entier sur un tableau: 2).
+Les 5 sources restantes utilisent des unites Free Pascal (BaseUnix,
+fphttpclient, Windows: 4) ou des objets (1).
 
 Corrections apportees par les passes d'execution c17 a c19 (chacune
 isolee en comparant la sortie DOSBox de notre executable a celle de
@@ -287,31 +287,48 @@ l'executable Borland):
     (graine non signee 32 bits * N) shr 32, et Random reel = graine/2^32
     (verifie sur GUID, dont les 5 valeurs de Random(65535) sont fixes);
   - Test8086 renseigne par detection du processeur (CPUTEST);
-  - controle de pile ($S+) et limite du tas (203) comme TP;
+  - controle de pile ($S+) et limite du tas (203) comme TP; la directive
+    $M, vue pendant l'analyse lexicale, etait perdue a l'initialisation de
+    l'assembleur (GRAFTABL avec {$M 1024} donne maintenant l'erreur 202
+    comme TP);
+  - division par zero: SYSTEM installe son gestionnaire INT 0 comme TP
+    (erreur 200 a l'adresse de l'instruction) et le restaure a la sortie;
+  - E/S suspendues tant qu'une erreur n'a pas ete lue par IOResult
+    (QB2BBC: "Runtime error 002" au lieu de 104);
+  - Read(F, C) sur un Text appelait __RdChar avec une mauvaise signature,
+    le caractere etait ecrit a une adresse quelconque (JSON2XML, JSON2YML,
+    SVG2LSP, CSV2TSV, TSV2CSV);
+  - Eof d'un fichier type ou non type compare les positions en octets
+    (BIN2C, BIN2PAS, BASE64: un dernier enregistrement incomplet n'est pas
+    la fin);
+  - la negation d'une constante Word (-32768, -32769) donne un Longint
+    complet; le mot haut restait indefini et Val vers un Integer echouait;
   - elimination du code mort: les procedures des unites integrees (et le
     noyau asm) qui ne sont pas atteignables depuis le programme sont
     retirees de l'EXE (HELLO: 33 Ko -> 7,7 Ko; FS: 48 Ko -> 17 Ko, Borland
     8,9 Ko).
 
-Resultats d'execution (DOSBox, passe c19, 510 programmes dont la
+Resultats d'execution (DOSBox, passe c20, 512 programmes dont la
 reference BIN16 existe; "sample" = 256 programmes avec arguments):
 
   Mode     Identiques  Attente clavier  Env.  Quirk TP  Autre
-  help     498 / 510    7                0     2         3 (ASC2CSP, CSV2ASM, CSV2BAS)
-  noarg    373 / 510  119               11     3         4 (CSV2ASM, CSV2BAS, DOSKEY, LOGO)
-  nofile   (passe finale en cours)
-  sample   (passe finale en cours)
+  help     501 / 512    7                0     1         3 (ASC2CSP, CSV2ASM, CSV2BAS)
+  noarg    375 / 512  119               12     2         4 (CSV2ASM, CSV2BAS, DOSKEY, LOGO)
+  nofile   442 / 512   59                5     2         4 (CSV2ASM, CSV2BAS, DOSKEY, LOGO)
+  sample   247 / 256    6                3     0         0
 
 "Attente clavier": programmes interactifs qui attendent une touche dans
 les deux cas (delai depasse des deux cotes). "Env.": sorties dependant de
 l'environnement (heure, date, nombres aleatoires avec Randomize, taille
-des fichiers du repertoire, memoire libre, DX non initialise lu par un
-bloc asm dans IPCONFIG). "Quirk TP": comportement propre a Turbo Pascal
-que nous ne reproduisons pas a l'identique:
-  - GRAFTABL ({$M 1024}), RTMRES ({$M 2048}) et ACALC: TP alloue des
-    temporaires de 1,5 a 27 Ko dans le programme principal et son
-    controle de pile donne l'erreur 202 au demarrage; nos temporaires
-    sont plus petits et le programme s'execute;
+des fichiers du repertoire, memoire libre, contenu de la memoire vive
+(PHOTORAM, DOS2UNIX qui ecrit des enregistrements de 128 octets), table
+des vecteurs d'interruption (DIVT: adresse du gestionnaire INT 0), DX non
+initialise lu par un bloc asm dans IPCONFIG, lecture hors bornes d'un
+tableau dans CAL). "Quirk TP": comportement propre a Turbo Pascal que nous
+ne reproduisons pas a l'identique:
+  - RTMRES ({$M 2048}): TP alloue 1,5 Ko de temporaires dans le programme
+    principal et son controle de pile donne l'erreur 202 au demarrage;
+    nos temporaires sont plus petits et le programme s'execute;
   - MEM et SYSINFO: un bloc Inline(...) lit ses parametres a [BP+4] et
     [BP+8], c'est-a-dire avec la disposition d'un appel NEAR (TP appelle
     en near les procedures du programme); notre moteur appelle toutes
