@@ -23240,6 +23240,7 @@ Begin
       { _TPRT_RENAME(ancien nom, nouveau nom) : copie le nouveau nom en ASCIIZ puis MoveFileA }
       EmitInstr('CALL ' + TP_RT_PFX + 'RENAME');
       EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -29666,6 +29667,11 @@ Begin
   EmitInstr('PUSH OFFSET FILE_RENBUF');
   EmitInstr('PUSH DWORD PTR [EBP+12]');
   EmitInstr('CALL MoveFileA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'TF_RN_OK');
+  EmitInstr('CALL GetLastError');            { echec : IOResult = code Windows (2, 3, 5...) }
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+  EmitLabel(TP_RT_PFX + 'TF_RN_OK');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
