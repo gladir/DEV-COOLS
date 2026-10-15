@@ -3111,6 +3111,38 @@ Begin
   TokenCount := J;
 End;
 
+{ ---- TokenPoolStripUnitQualifiers : System.Move, Dos.GetDate, Crt.ClrScr ... ---- }
+{ Le prefixe d unite (System, Dos, Crt, Strings, Printer, Graph) suivi de '.' est  }
+{ retire devant un identificateur : les sous-programmes de ces unites sont integres. }
+Procedure TokenPoolStripUnitQualifiers;
+Var
+  I, J : Integer;
+  Up : TString;
+Begin
+  I := 0;
+  J := 0;
+  While I < TokenCount Do
+  Begin
+    If (TokenPool[I].Kind = TK_IDENT) And (I + 2 < TokenCount) And
+       (TokenPool[I + 1].Kind = TK_PUNCT) And (TokenPool[I + 1].Val = '.') And
+       ((TokenPool[I + 2].Kind = TK_IDENT) Or (TokenPool[I + 2].Kind = TK_KEYWORD)) And
+       Not ((J > 0) And (TokenPool[J - 1].Kind = TK_PUNCT) And (TokenPool[J - 1].Val = '.')) Then
+    Begin
+      Up := StrUpperCase(TokenPool[I].Val);
+      If (Up = 'SYSTEM') Or (Up = 'DOS') Or (Up = 'CRT') Or (Up = 'STRINGS') Or
+         (Up = 'PRINTER') Or (Up = 'GRAPH') Then
+      Begin
+        Inc(I, 2);   { sauter Unite et '.' ; l identificateur suit }
+        Continue;
+      End;
+    End;
+    If J <> I Then TokenPool[J] := TokenPool[I];
+    Inc(J);
+    Inc(I);
+  End;
+  TokenCount := J;
+End;
+
 { ---- TokenPoolRegisterStrings : enregistrer toutes les chaines ---- }
 { du pool de tokens dans le pool de donnees, en evitant les doublons }
 Procedure TokenPoolRegisterStrings;
@@ -56796,6 +56828,8 @@ Begin
 
   { ^N en position d expression : caractere de controle }
   TokenPoolMergeCaretChars;
+  { System.Move, Dos.GetDate ... : retirer le prefixe d unite }
+  TokenPoolStripUnitQualifiers;
 
   { Enregistrer toutes les chaines dans le pool de donnees }
   TokenPoolRegisterStrings;
