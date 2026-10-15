@@ -9493,36 +9493,6 @@ Begin
   End;
 End;
 
-{ ParseVarArgAddr : argument "var" sans type (Move, FillChar, BlockRead...) : EAX = adresse }
-{ d une variable, d un element de tableau, d un champ ou d un pointeur dereference ;   }
-{ sinon la valeur de l expression (pointeur, agregat deja represente par son adresse)   }
-Procedure ParseVarArgAddr(PI : Integer);
-Var
-  T, SI : Integer;
-  FOfs : LongInt;
-  Up : TString;
-  IsVarName : Boolean;
-Begin
-  If W32Fpu And (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
-  Begin
-    Up := StrUpperCase(TokenPool[EP].Val);
-    IsVarName := False;
-    If (PI >= 0) And ((FindLocal(PI, Up) >= 0) Or (FindParam(PI, Up) >= 0)) Then IsVarName := True
-    Else
-    Begin
-      SI := SymFind(Up);
-      If (SI >= 0) And (SymTab[SI].Kind = SK_VAR) Then IsVarName := True
-      Else If (SI < 0) And (WithDepth > 0) And (WithFieldIndex(Up, FOfs) >= 0) Then IsVarName := True;
-    End;
-    If IsVarName Then
-    Begin
-      ParseLValueAddrW32(PI, T);
-      Exit;
-    End;
-  End;
-  ParseExpr(PI);
-End;
-
 Procedure GenLoadScalar(Const Mem : TString; T : Integer);
 Var Sz : LongInt;
 Begin
@@ -10108,6 +10078,37 @@ Procedure ParseExprPrec(PI : Integer; MinPrec : Integer); Forward;
 Procedure ParseBody(PI : Integer); Forward;
 Function ParseLValueAddrW32(PI : Integer; Var T : Integer) : Boolean; Forward;
 Function WithFieldIndex(Const Up : TString; Var FOfs : LongInt) : Integer; Forward;
+
+{ ParseVarArgAddr : argument "var" sans type (Move, FillChar, BlockRead...) : EAX = adresse }
+{ d une variable, d un element de tableau, d un champ ou d un pointeur dereference ;   }
+{ sinon la valeur de l expression (pointeur, agregat deja represente par son adresse)   }
+Procedure ParseVarArgAddr(PI : Integer);
+Var
+  T, SI : Integer;
+  FOfs : LongInt;
+  Up : TString;
+  IsVarName : Boolean;
+Begin
+  If W32Fpu And (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    IsVarName := False;
+    If (PI >= 0) And ((FindLocal(PI, Up) >= 0) Or (FindParam(PI, Up) >= 0)) Then IsVarName := True
+    Else
+    Begin
+      SI := SymFind(Up);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_VAR) Then IsVarName := True
+      Else If (SI < 0) And (WithDepth > 0) And (WithFieldIndex(Up, FOfs) >= 0) Then IsVarName := True;
+    End;
+    If IsVarName Then
+    Begin
+      ParseLValueAddrW32(PI, T);
+      Exit;
+    End;
+  End;
+  ParseExpr(PI);
+End;
+
 
 { ------------------------------------------------------------ }
 { Forward declarations TODO 13                                  }
