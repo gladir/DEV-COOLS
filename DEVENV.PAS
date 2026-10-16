@@ -9460,6 +9460,21 @@ Var
  EmuDiag_LastMode : Byte;
  EmuDiag_DrawCnt  : LongInt;
  EmuExeDir      : String;   { repertoire de l EXE charge (fallback fichiers) }
+ { BOGUE REEL (2026-10-18, enquete WIN.COM 386 Enhanced Mode) : EmuExeDir   }
+ { est ECRASE par CHAQUE chargement (EXEC enfant inclus, McbInit=False),    }
+ { contrairement a EmuDriveCwd/CDS qui ne se re-seed qu au niveau racine -  }
+ { un enfant EXEC charge depuis un AUTRE sous-dossier (ex. WIN386.EXE       }
+ { reellement situe dans ...\SYSTEM\, charge par WIN.COM situe a la        }
+ { racine du dossier Windows) deplace alors EmuExeDir vers CE sous-dossier  }
+ { pour le reste de la session (le "retour" EmuExecStack ne se declenche   }
+ { que si l enfant termine proprement par sfEndProgram, ce que WIN386.EXE  }
+ { ne fait jamais - il devient le programme resident jusqu a la fin). Un   }
+ { fichier ouvert en relatif APRES ce point (ex. "SYSTEM.INI", par le        }
+ { noyau 386 Enhanced Mode) se resolvait alors a tort contre ...\SYSTEM\   }
+ { au lieu du vrai dossier Windows - EmuTopExeDir fige le dossier du        }
+ { PREMIER programme charge (McbInit=True) et sert de repli final dans      }
+ { Emu_HostPath, independant de toute profondeur d EXEC ulterieure. }
+ EmuTopExeDir   : String;
  EmuFindMask    : String;
  EmuFindAttr    : Byte;
  EmuFindResults : Array[0..63] Of String;
@@ -185776,7 +185791,10 @@ Begin
    EmuExeDir := Copy(FileName, 1, I - 1);
    Break;
   End;
- If McbInit Then Emu_CdsSyncToExeDir(C, EmuExeDir);
+ If McbInit Then Begin
+  Emu_CdsSyncToExeDir(C, EmuExeDir);
+  EmuTopExeDir := EmuExeDir;
+ End;
  { Construire un PSP minimal }
  FillChar(PSP, SizeOf(PSP), 0);
  PSP.Int20h := $20CD;
@@ -185935,7 +185953,10 @@ Begin
    EmuExeDir := Copy(FileName, 1, I - 1);
    Break;
   End;
- If McbInit Then Emu_CdsSyncToExeDir(C, EmuExeDir);
+ If McbInit Then Begin
+  Emu_CdsSyncToExeDir(C, EmuExeDir);
+  EmuTopExeDir := EmuExeDir;
+ End;
  C.IP := Exe.IP;
  C.Segs.CS := Word(LoadSeg + Exe.OfsLoad);
  C.Segs.DS := PSPSeg;        { au demarrage DS = ES = PSPSeg }
@@ -193359,6 +193380,15 @@ Begin
   { precoce). }
   If (Length(EmuExeDir) > 0) And FileExists(EmuExeDir + '\' + S) Then Begin
     Emu_HostPath := EmuExeDir + '\' + S;
+    Exit;
+  End;
+  { Voir le commentaire de tete d EmuTopExeDir : un enfant EXEC charge     }
+  { depuis un sous-dossier (ex. WIN386.EXE dans ...\SYSTEM\) a deplace     }
+  { EmuExeDir loin du dossier Windows reel - tenter aussi le dossier du    }
+  { tout premier programme charge avant d abandonner. }
+  If (Length(EmuTopExeDir) > 0) And (EmuTopExeDir <> EmuExeDir) And
+     FileExists(EmuTopExeDir + '\' + S) Then Begin
+    Emu_HostPath := EmuTopExeDir + '\' + S;
     Exit;
   End;
   Emu_HostPath := S;
@@ -210331,6 +210361,55 @@ Begin
           End;
      $A0: Begin Emu_PushWord(P.CPU, P.CPU.FS); Inc(P.CPU.IP, 2); End; { PUSH FS }
      $A1: Begin P.CPU.FS := Emu_PopWord(P.CPU); Inc(P.CPU.IP, 2); End; { POP FS }
+     { BOGUE REEL CORRIGE (2026-10-18, enquete WIN.COM - demarrage graphique }
+     { 386 Enhanced Mode) : $A6/$A7 (CMPXCHG Eb,Gb / CMPXCHG Ev,Gv, encodage }
+     { PRE-PRODUCTION des tout premiers 80386 - Intel les a reassignes a      }
+     { $B0/$B1 pour la production, mais un vrai pilote/noyau de l epoque qui }
+     { sonde la disponibilite de CMPXCHG peut encore essayer CETTE ancienne  }
+     { forme en premier) tombaient dans le Else generique en fin de           }
+     { dispatch $0F ("opcode inconnu, avance de 2 octets SEULEMENT") qui ne   }
+     { tient pas compte de l octet ModRM - confirme en direct : le VRAI      }
+     { WIN386.EXE/pilote d affichage de Windows 3.1 (396 Enhanced Mode)       }
+     { execute "0F A6 CA" juste apres avoir sonde BSWAP ($0F C8-CF, meme      }
+     { categorie de sonde de capacite CPU) - avec l ancien code, IP           }
+     { atterrissait alors EN PLEIN sur l octet ModRM (CAh), REINTERPRETE a    }
+     { tort comme un opcode autonome ($CA = RETF imm16!), depilant n importe }
+     { quoi de la pile comme "adresse de retour" - plantage silencieux       }
+     { (CS:IP=0000:0007) juste avant que WIN.COM n affiche quoi que ce soit.  }
+     { Portage DIRECT de $B0/$B1 ci-dessous (memes 2 octets de PLUS, memes    }
+     { semantiques CMPXCHG - ce sont litteralement le MEME opcode logique,    }
+     { Intel n a change que l encodage, pas le comportement). }
+     $A6: Begin { CMPXCHG r/m8, r8 (voir $B0 plus bas) }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
+           V8 := Emu_GetOpByte(P.CPU, Op);
+           R8 := Emu_AluByte(P.CPU, 5, P.CPU.Regs.AL, V8); { SUB pour les fanions }
+           If P.CPU.Regs.AL = V8 Then
+            Emu_PutOpByte(P.CPU, Op, Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7))
+           Else
+            P.CPU.Regs.AL := V8;
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
+     $A7: Begin { CMPXCHG r/m, r (voir $B1 plus bas) }
+           ModRM := Emu_FetchByte(P.CPU, 2);
+           Emu_DecodeModRM0F(P.CPU, ModRM, Op);
+           If P.CPU.OperandSize32 Then Begin
+            V32 := Emu_GetOpDWord(P.CPU, Op);
+            R32 := Emu_AluDWord(P.CPU, 5, P.CPU.Regs.EAX, V32);
+            If P.CPU.Regs.EAX = V32 Then
+             Emu_PutOpDWord(P.CPU, Op, Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7))
+            Else
+             P.CPU.Regs.EAX := V32;
+           End Else Begin
+            V16 := Emu_GetOpWord(P.CPU, Op);
+            R16 := Emu_AluWord(P.CPU, 5, P.CPU.Regs.AX, V16);
+            If P.CPU.Regs.AX = V16 Then
+             Emu_PutOpWord(P.CPU, Op, Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7))
+            Else
+             P.CPU.Regs.AX := V16;
+           End;
+           Inc(P.CPU.IP, 2 + Op.Len);
+          End;
      $A8: Begin Emu_PushWord(P.CPU, P.CPU.GS); Inc(P.CPU.IP, 2); End; { PUSH GS }
      $A9: Begin P.CPU.GS := Emu_PopWord(P.CPU); Inc(P.CPU.IP, 2); End; { POP GS }
      $B0: Begin { CMPXCHG r/m8, r8 }
