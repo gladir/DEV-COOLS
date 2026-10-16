@@ -367,9 +367,10 @@ Pascal (reference) et avec TPCW32 -CW32 (Wine) pour isoler chaque defaut
 de generation.
 
 Conventions adoptees pour ressembler aux references FPC:
-  - le symbole conditionnel FPC est defini pour la cible -CW32 (les
-    sources choisissent leurs branches {$IFDEF FPC} comme les references);
-    WINDOWS n'est pas defini (90 sources utilisent alors l'unite Windows);
+  - les symboles conditionnels FPC, WINDOWS et MSWINDOWS sont definis pour
+    la cible -CW32 (les sources choisissent leurs branches {$IFDEF FPC} et
+    {$IFDEF WINDOWS} comme les references); l'option -Dsym1,sym2 en
+    ajoute d'autres;
   - Integer et Word sur 16 bits, Longint/LongWord sur 32 bits, records
     sans remplissage (FPC en mode TP n'aligne pas les champs), Real =
     Double 8 octets, Single 4, Extended 10, calculs sur le coprocesseur
@@ -409,6 +410,7 @@ fichiers produits identiques a la reference):
   w11    521 / 525  439       326       360       -         symbole FPC, erreur 103, FExpand
   w13    521 / 525  439       323       377       223       absolute, records non alignes, dates
   w15    521 / 525  439       325       382       233       procedures imbriquees, bornes (R+), Seg
+  w16    521 / 525  440       327       384       237       symboles WINDOWS, chaines avec #0, System.X
 
 Les 4 sources restantes (CURL, GETMAC, IPCONFIG, TASKLIST) utilisent des
 types et unites propres a Free Pascal (fphttpclient, Windows, sockets).
@@ -432,6 +434,20 @@ test minimal):
   - procedures imbriquees: acces aux variables et parametres de la
     procedure englobante par la chaine des EBP sauvegardes (lien
     ParentIdx);
+  - unite Dos: PackTime(DT, L) et GetFTime(F, T) ecrivaient a travers la
+    valeur de la variable (erreur 216), SetFTime ne faisait rien, FSearch
+    recevait ses parametres inverses (resultat toujours egal a la liste de
+    repertoires), Seg(x) retournait une adresse 32 bits (erreur 201 dans
+    un champ Word: SUBST); Test8086 et Test8087 renseignes (CPUTEST,
+    EQUIP);
+  - unite Crt: GotoXY(X, Y) et Window(X1, Y1, X2, Y2) lisaient leurs
+    parametres dans l'ordre inverse de leur empilement (OS2CMD ecrivait a
+    la ligne 63 au lieu de la colonne 63);
+  - System.Move, Dos.GetDate...: le prefixe d'unite n'etait pas reconnu
+    (FORMAT: secteur d'amorcage vide); litteraux et constantes chaine
+    contenant #0 ('SONY'#0) tronques (BMP2ARW, BMP2CR2, BMP2DNG); valeur
+    d'une constante non typee formee d'une expression (Byte(' '), Ord('A'))
+    reduite a son premier jeton (UUENCODE);
   - variables ABSOLUTE locales et globales, y compris sur un parametre
     VAR ou un parametre sans type (Block: PBlock absolute Buffer dans MD5,
     T: Array[0..65520] of Byte absolute Buf dans les desassembleurs);
@@ -460,7 +476,7 @@ test minimal):
   - Write(x:w) et Str(x:w): largeur constante seulement quand le litteral
     est suivi de ',' ')' ou ':'.
 
-Resultats restants non identiques (passe w15), par classe:
+Resultats restants non identiques (passe w16), par classe:
   - "Attente clavier": programmes Crt interactifs (NC, FDISK, DOSSHELL,
     editeurs) qui attendent une touche des deux cotes (delai depasse);
   - environnement: heure, date, GUID, nombres aleatoires avec Randomize,
@@ -469,8 +485,9 @@ Resultats restants non identiques (passe w15), par classe:
     LASTLOG, FINGER), volumes et lecteurs (DI, DF, JOIN, LABEL, SUBST,
     CHKDSK, INFO, EQUIP);
   - unite Windows et exceptions FPC: sources dont la branche {$IFDEF FPC}
-    utilise GetCommandLineW, GetEnvironmentVariable, Try/Except,
-    SysUtils (AWK, FINGER, TASKKILL, VIEWXBM, GETCLIP);
+    ou {$IFDEF WINDOWS} utilise GetCommandLineW, GetEnvironmentVariable,
+    QueryDosDevice, Try/Except, SysUtils (AWK, FINGER, SUBST, TASKKILL,
+    VIEWXBM, GETCLIP);
   - references plus anciennes ou plus recentes que la source (DRDOS,
     NDOS, T-CHAR, WC: texte d'aide different), reference qui plante
     (ASM6502: erreur 123; GETCLIP: erreur 216);
