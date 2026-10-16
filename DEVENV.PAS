@@ -2563,6 +2563,44 @@ Const
                                     { DPMI (voir EmuDpmiExtMem) }
  EMU_DPMI_EXT_CAP_KB    = 65536;   { plafond 64 Mo, comme EMU_XMS_CAP_KB }
 
+ { VCPI (Virtual Control Program Interface, INT 67h AH=DEh) - BOGUE REEL     }
+ { CORRIGE/CHANTIER (2026-10-18, demande explicite de l utilisateur apres    }
+ { avoir fourni C:\BACKUP\dos-6.0\dev\emm386\vcpi.asm, le VRAI code source   }
+ { EMM386.EXE - "construire le vrai moteur de pagination d abord") : avant   }
+ { ce chantier, INT 67h AH=DEh/DFh n etait pas du tout reconnu (tombait dans }
+ { le Else generique d Emu_DoInt67, AH:=$84 "fonction EMS non definie" -      }
+ { une reponse plausible pour une sous-fonction EMS invalide, mais PAS pour  }
+ { VCPI, qui devrait repondre "fonction invalide" PROPRE a VCPI ou, mieux,    }
+ { ne pas exister du tout si VCPI est desactive). Portee retenue (voir       }
+ { l echange avec l utilisateur) : fidele a l API DOCUMENTEE (detection,      }
+ { fourniture d une interface mode protege, allocation/liberation de pages    }
+ { physiques 4 Ko, bascule reel<->protege reutilisant Dpmi_Switch/           }
+ { Dpmi_RawSwitchToReal deja eprouves) MAIS avec une pagination IDENTITY-     }
+ { MAP (voir EmuVcpiPageTables plus bas) plutot qu une vraie gestion de       }
+ { plusieurs jeux de tables de pages par client independants (ce qui          }
+ { exigerait un GDT/TSS par client, portee bien plus vaste, hors de ce        }
+ { chantier). Reservee a part dans l espace physique (au-dela du plafond      }
+ { max 64 Mo de EmuDpmiExtMem, donc JAMAIS atteignable par une allocation     }
+ { XMS/DPMI/VCPI legitime, quelle que soit la taille configuree) pour ne      }
+ { jamais entrer en collision avec la memoire etendue reellement allouee.     }
+ EMU_VCPI_PAGETABLES_BASE = EMU_DPMI_EXT_BASE + (EMU_DPMI_EXT_CAP_KB * 1024);
+ EMU_VCPI_PAGETABLES_SIZE = 8192; { 1 repertoire + 1 table (identity-map     }
+                                   { 0-1 Mo, voir Emu_VcpiBuildPageTables) }
+ EMU_VCPI_VERSION         = $0102; { BH.BL = 1.02, version VCPI 1.0 reelle   }
+ EMU_VCPI_MAXPAGES        = EMU_DPMI_EXT_CAP_KB Div 4; { pages de 4 Ko, pour }
+                                                        { le bitmap d alloc  }
+ { Marqueur de point d entree "repartiteur protege VCPI" (voir               }
+ { Emu_Vcpi_ModeInterface/Dpmi_Step) - equivalent VCPI de                     }
+ { EMU_DPMI_RAWSWITCH_SEL, mais portant sur la valeur de retour OFFSET (EBX)  }
+ { et non sur un SELECTEUR : contrairement a DPMI (ou le SERVEUR choisit      }
+ { enterement le point d entree), VCPI laisse le CLIENT choisir son propre    }
+ { emplacement de GDT pour le selecteur CS (non modelise par ce port, voir    }
+ { project_devenv_vcpi.md) - seul l OFFSET, entierement sous notre controle,  }
+ { peut donc servir de marqueur fiable. Valeur hors de portee de toute        }
+ { adresse lineaire reelle de ce projet (max actuel : quelques dizaines de    }
+ { Mo), donc jamais calculee par accident par du code client legitime.        }
+ EMU_VCPI_PROT_EIP_MARKER = LongInt($7FFFFFF0);
+
  { Plafond materiel arbitraire du tampon "memoire etendue" XMS, independant}
  { de la taille configuree par l utilisateur (DosXMSSize) qui ne peut que  }
  { l approcher par le bas - voir Emu_XmsInit. 64 Mo est tres genereux pour }
@@ -5746,6 +5784,33 @@ Type
                              { offset courant dans EMU_DPMI_DOSMEM_SEG }
  End;
 
+ { Etat VCPI (INT 67h AH=DEh/DFh) - voir le commentaire de tete d           }
+ { EMU_VCPI_PAGETABLES_BASE pour le contexte complet. Active en meme temps  }
+ { que EmuEms.Active (cases a cocher "EMS") : sur un VRAI PC d epoque, VCPI }
+ { est fourni PAR le gestionnaire de memoire expansee 386 (EMM386/QEMM),    }
+ { jamais par HIMEM/XMS seul - meme convention que le monde reel, voir      }
+ { l enquete WIN.COM/HIMEM.SYS qui a motive ce chantier. }
+ TEmuVcpiState = Record
+  Active    : Boolean;
+  UsedPages : LongInt;
+  { Bitmap d allocation (1 bit/page de 4 Ko) des pages VCPI, DISTINCT du     }
+  { bitmap XMS/DPMI - VCPI alloue depuis le MEME pool physique             }
+  { (EmuDpmiExtMem) mais avec sa PROPRE comptabilite, comme un VRAI EMM386   }
+  { gere XMS et VCPI comme 2 consommateurs independants d un seul tas       }
+  { physique. }
+  PageBitmap: Array[0..(EMU_VCPI_MAXPAGES Div 8) - 1] Of Byte;
+  { AL=0Ah/0Bh (Read/Set 8259 Mappings) - simple memoire, comme le vrai      }
+  { VCPIRead8259Mappings/Set8259Mappings (voir vcpi.asm : "il n y a aucun    }
+  { moyen de VRAIMENT relire les valeurs, donc les valeurs DOS par defaut    }
+  { sont retournees tant qu aucun Set8259Mappings n a ete appele"). }
+  MasterPicVec: Word;
+  SlavePicVec : Word;
+  { Point de reprise mode reel (AL=0Ch, SwitchToV86) - CS:IP/SS:SP captures }
+  { au moment de la commutation initiale, meme principe que                 }
+  { DpmiCPU.RealCS/RealIP/RealSS/RealSP (voir Dpmi_Switch). }
+  RealCS, RealIP, RealSS, RealSP: Word;
+ End;
+
  { Etat d execution du coeur CPU 32 bits protege - actif seulement entre    }
  { l entree en mode protege (INT 2Fh AX=1687h) et la sortie finale (fin du }
  { programme). Reutilise TEmuFlags (drapeaux CF/ZF/SF/OF/... identiques en }
@@ -5792,6 +5857,23 @@ Type
   IdtLimit : Word;
   TaskReg  : Word;
   LdtReg   : Word;
+  { CR2/CR3 (2026-10-18, chantier VCPI explicitement demande par           }
+  { l utilisateur : "construire le vrai moteur de pagination d abord") -   }
+  { CONTRAIREMENT a TEmuCPU.CR2/CR3 (simples valeurs sans effet, voir leur }
+  { commentaire de tete), CR3 ICI est REELLEMENT consulte par              }
+  { Dpmi_TranslateLin pour une VRAIE traduction lineaire->physique a 2      }
+  { niveaux (repertoire+table de pages, 4 Ko/page) des que CR0.PG (bit 31) }
+  { est positionne - voir le commentaire de tete de Dpmi_TranslateLin pour }
+  { le detail complet. Strictement additif/a la carte : tant qu aucun      }
+  { client ne positionne CR0.PG (le cas de TOUT code deja teste dans ce    }
+  { fichier a ce jour), le comportement reste IDENTIQUE a avant (traduction}
+  { triviale, lineaire=physique). CR2 reste une simple valeur lisible/      }
+  { inscriptible (adresse de faute de page) : aucune VRAIE faute de page   }
+  { n est levee ici (page non presente -> repli honnete, voir le           }
+  { commentaire de tete de Dpmi_TranslateLin), donc CR2 n est jamais       }
+  { rempli automatiquement, seulement via un MOV CR2,reg explicite. }
+  CR2      : LongInt;
+  CR3      : LongInt;
  End;
 
  { Operande decode a partir d un octet ModR/M (+ eventuel SIB) par          }
@@ -9667,6 +9749,9 @@ Var
  DpmiCPU        : TDpmiCPU;      { etat d execution du coeur 32 bits       }
                                   { protege (actif seulement entre l entree}
                                   { et la sortie DPMI, voir Dpmi_Switch).   }
+ { --- Etat VCPI (voir Emu_VcpiInit/EMU_VCPI_PAGETABLES_BASE) --- }
+ EmuVcpi           : TEmuVcpiState;
+ EmuVcpiPageTables : Array[0..EMU_VCPI_PAGETABLES_SIZE - 1] Of Byte;
  { --- Etat de la souris emulee (INT 33h) --- }
  EmuMouseInst   : Boolean;       { driver "installe" }
  EmuMouseVis    : Integer;       { compteur visible (>=0 visible) }
@@ -12445,6 +12530,11 @@ Procedure Emu_PktInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_NetBiosInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_XmsInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_EmsInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_VcpiInit(Var P: TEmulatorPanel); Forward;
+{ Corps defini bien plus bas (voir Emu_Vcpi_SwitchToProtected/              }
+{ Dpmi_VcpiSynthFlatSel, qui doivent exister avant), mais appele depuis      }
+{ Emu_DoInt67 qui, lui, precede ce bloc dans le fichier. }
+Procedure Emu_Vcpi_Dispatch(Var P: TEmulatorPanel); Forward;
 Procedure Emu_MouseInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_MscdexInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_DpmiInit(Var P: TEmulatorPanel); Forward;
@@ -12809,6 +12899,7 @@ Begin
      Emu_NetBiosInit(EmuPanel);
      Emu_XmsInit(EmuPanel);
      Emu_EmsInit(EmuPanel);
+     Emu_VcpiInit(EmuPanel);
      Emu_MouseInit(EmuPanel);
      Emu_MscdexInit(EmuPanel);
      Emu_DpmiInit(EmuPanel);
@@ -183969,20 +184060,40 @@ Var Raw: LongInt; IsATPlusHw: Boolean; UBase: LongInt; UFound: Boolean;
 Begin
  { BOGUE REEL CORRIGE (2026-08-24) : une adresse "unreal mode" (base 32     }
  { bits issue d un descripteur GDT, voir TEmuUnrealSeg) est une adresse     }
- { LINEAIRE PLATE reelle - elle ne suit NI la formule Seg*16 NI            }
- { l enveloppement 20 bits/gate A20 (qui ne concernent que l adressage     }
- { segmente reel classique). Verifiee AVANT toute autre logique. }
- UBase := Emu_UnrealBase(C, Seg, UFound);
- If UFound Then Begin
-  Emu_Addr := UBase + Ofs;
-  Exit;
- End;
- Raw := (LongInt(Seg) Shl 4) + Ofs;
+ { LINEAIRE PLATE reelle - elle NE SUIT PAS la formule Seg*16 classique.    }
+ { Verifiee AVANT toute autre logique. }
  Case OptionsDlg.Data.DosHardware Of
   2, 3, 6: IsATPlusHw := True;
  Else
   IsATPlusHw := False;
  End;
+ UBase := Emu_UnrealBase(C, Seg, UFound);
+ If UFound Then Begin
+  Emu_Addr := UBase + Ofs;
+  { BOGUE REEL CORRIGE (2026-10-16, enquete WIN.COM/WIN386.EXE "memoire      }
+  { etendue insuffisante") : l ancien commentaire ci-dessus affirmait que    }
+  { la gate A20 "ne concerne que l adressage segmente reel classique" -     }
+  { FAUX sur un VRAI 386+ : A20 est une gate MATERIELLE sur le BUS          }
+  { PHYSIQUE (ligne d adresse 20), totalement INDEPENDANTE de la facon dont }
+  { le CPU a calcule l adresse (segment classique OU base 32 bits "unreal   }
+  { mode" OU meme pagine) - elle s applique a TOUTE adresse qui transite    }
+  { par le bus physique. Confirme en direct via trace XMS complete          }
+  { (DIAGXMSALL.LOG) : WIN386.EXE fait EXACTEMENT la sequence classique de  }
+  { test de conformite A20 (RequestHMA, QueryA20=1, LocalDisableA20,        }
+  { QueryA20=0, LocalEnableA20) juste avant un ecart de ~46 000             }
+  { instructions menant a l abandon - un VRAI programme qui desactive A20   }
+  { puis verifie par ECRITURE/LECTURE un enveloppement a 1 Mo (via une      }
+  { base 32 bits "unreal mode", la technique habituelle de HIMEM.SYS/       }
+  { WIN386.EXE pour ce genre de sonde) ne voyait JAMAIS cet enveloppement   }
+  { ici, puisque ce chemin l ignorait totalement - echec de sonde plausible }
+  { expliquant l abandon. Seul le BIT 20 precis doit etre efface (PAS une   }
+  { troncature a 20 bits comme pour le chemin classique plus bas - une      }
+  { base 32 bits peut legitimement depasser tres largement 1 Mo). }
+  If IsATPlusHw And (Not Emu8042.A20Enabled) Then
+   Emu_Addr := (UBase + Ofs) And (Not LongInt($100000));
+  Exit;
+ End;
+ Raw := (LongInt(Seg) Shl 4) + Ofs;
  If IsATPlusHw And Emu8042.A20Enabled Then Emu_Addr := Raw
  Else Emu_Addr := Raw And $FFFFF;
 End;
@@ -183999,17 +184110,22 @@ Begin
  { Meme correctif "unreal mode" que Emu_Addr ci-dessus - voir ce commentaire  }
  { jumeau pour le contexte complet. C est le chemin REELLEMENT emprunte par   }
  { le REP MOVSD $67/$66 de HIMEM.SYS (Emu_Read/WriteDWordL). }
- UBase := Emu_UnrealBase(C, Seg, UFound);
- If UFound Then Begin
-  Emu_AddrL := UBase + Ofs;
-  Exit;
- End;
- Raw := (LongInt(Seg) Shl 4) + Ofs;
  Case OptionsDlg.Data.DosHardware Of
   2, 3, 6: IsATPlusHw := True;
  Else
   IsATPlusHw := False;
  End;
+ UBase := Emu_UnrealBase(C, Seg, UFound);
+ If UFound Then Begin
+  Emu_AddrL := UBase + Ofs;
+  { BOGUE REEL CORRIGE (2026-10-16) : meme correctif gate A20 que Emu_Addr   }
+  { ci-dessus - voir son commentaire pour le contexte complet (enquete       }
+  { WIN.COM/WIN386.EXE). }
+  If IsATPlusHw And (Not Emu8042.A20Enabled) Then
+   Emu_AddrL := (UBase + Ofs) And (Not LongInt($100000));
+  Exit;
+ End;
+ Raw := (LongInt(Seg) Shl 4) + Ofs;
  If IsATPlusHw And Emu8042.A20Enabled Then Emu_AddrL := Raw
  Else Emu_AddrL := Raw And $FFFFF;
 End;
@@ -189997,7 +190113,9 @@ Var
  Mode, RM: Byte;
  Disp: LongInt;
  DefSeg: Word;
- Sib: Byte;
+ Sib, Scale, IdxReg, BaseReg: Byte;
+ IdxVal, BaseVal: LongInt;
+ SibBaseIsDisp32: Boolean;
 Begin
  Op.IsReg := False;
  Op.RegNum := 0;
@@ -190013,12 +190131,54 @@ Begin
   Exit;
  End;
  DefSeg := C.Segs.DS;
+ SibBaseIsDisp32 := False;
  If RM = 4 Then Begin
-  { SIB - non implante, voir commentaire ci-dessus : consomme l octet pour   }
-  { rester synchronise, mais l adresse produite n est pas fiable.            }
+  { SIB - BOGUE REEL CORRIGE (enquete WIN.COM, 11e session, voir               }
+  { [[project_devenv_wincom_launch]]) : auparavant non implante du tout        }
+  { (Op.Ofs force a 0, l octet etait juste "consomme" pour rester              }
+  { synchronise) - desormais un vrai calcul scale*index+base, la forme         }
+  { generale reellement rencontree dans WIN386.EXE 386 Enhanced Mode           }
+  { ("67 66 8D 34 B6" = LEA ESI,[ESI*4+ESI], scale=4/index=ESI/base=ESI).      }
+  { Reglage "pas d index" standard = reg d index $4 (ESP) ; base omise =       }
+  { mod=00/base $5 (EBP), remplacee par un disp32 pur suivant le SIB. }
   Sib := Emu_FetchByte(C, 2);
-  Op.Ofs := 0;
   Op.Len := 2;
+  Scale := (Sib Shr 6) And 3;
+  IdxReg := (Sib Shr 3) And 7;
+  BaseReg := Sib And 7;
+  If IdxReg = 4 Then
+   IdxVal := 0
+  Else Begin
+   Case IdxReg Of
+    0: IdxVal := C.Regs.EAX;
+    1: IdxVal := C.Regs.ECX;
+    2: IdxVal := C.Regs.EDX;
+    3: IdxVal := C.Regs.EBX;
+    5: IdxVal := C.Regs.EBP;
+    6: IdxVal := C.Regs.ESI;
+    7: IdxVal := C.Regs.EDI;
+   End;
+   IdxVal := IdxVal Shl Scale;
+  End;
+  If (Mode = 0) And (BaseReg = 5) Then Begin
+   { base omise : disp32 pur suit immediatement le SIB }
+   BaseVal := Emu_FetchWord(C, 1 + Op.Len) Or
+    (LongInt(Emu_FetchWord(C, 3 + Op.Len)) Shl 16);
+   Inc(Op.Len, 4);
+   SibBaseIsDisp32 := True;
+  End Else Begin
+   Case BaseReg Of
+    0: BaseVal := C.Regs.EAX;
+    1: BaseVal := C.Regs.ECX;
+    2: BaseVal := C.Regs.EDX;
+    3: BaseVal := C.Regs.EBX;
+    4: Begin BaseVal := C.Regs.ESP; DefSeg := C.Segs.SS; End;
+    5: Begin BaseVal := C.Regs.EBP; DefSeg := C.Segs.SS; End;
+    6: BaseVal := C.Regs.ESI;
+    7: BaseVal := C.Regs.EDI;
+   End;
+  End;
+  Op.Ofs := IdxVal + BaseVal;
  End Else Begin
   Case RM Of
    0: Op.Ofs := C.Regs.EAX;
@@ -190039,8 +190199,9 @@ Begin
    7: Op.Ofs := C.Regs.EDI;
   End;
  End;
- { Ajouter le deplacement si mode <> 0 (sauf rm=5 mode=0 deja traite ci-dessus) }
- If Not ((RM = 5) And (Mode = 0)) Then
+ { Ajouter le deplacement si mode <> 0 (sauf rm=5 mode=0, et sauf SIB avec      }
+ { base omise mode=0/base=5 - disp32 deja consomme ci-dessus dans les 2 cas) }
+ If Not (((RM = 5) And (Mode = 0)) Or SibBaseIsDisp32) Then
   Case Mode Of
    1: Begin
        Disp := Emu_FetchByte(C, 1 + Op.Len);
@@ -204384,6 +204545,15 @@ End;
 { de le verifier quelque part - voir l en-tete de section. --- }
 Procedure Emu_DoInt67(Var P: TEmulatorPanel);
 Begin
+ { VCPI (voir Emu_Vcpi_Dispatch/project_devenv_vcpi.md) partage le meme     }
+ { vecteur INT 67h que EMS, distingue uniquement par AH=DEh (AH=DFh         }
+ { existe aussi dans la vraie spec mais n est utilise par aucun client      }
+ { connu de ce projet - non implante, meme principe que toute fonction      }
+ { jamais exercee en direct). }
+ If EmuVcpi.Active And (P.CPU.Regs.AH = $DE) Then Begin
+  Emu_Vcpi_Dispatch(P);
+  Exit;
+ End;
  Case P.CPU.Regs.AH Of
   $40: Emu_Ems_GetStatus(P);
   $41: Emu_Ems_GetPageFrame(P);
@@ -204459,6 +204629,63 @@ Begin
   Exit;
  End;
  FillChar(EmuEmsMem^, SizeOf(EmuEmsMem^), 0);
+ If P.CPU.Regs.AX = P.CPU.Regs.AX Then ; { evite un avertissement }
+End;
+
+{ Construit le repertoire + la table de pages "identity-map" du premier   }
+{ Mo (voir le commentaire de tete d EMU_VCPI_PAGETABLES_BASE) : PDE[0]     }
+{ pointe sur l unique table de pages, qui mappe les 256 pages de 4 Ko      }
+{ (100h*1000h = 100000h = 1 Mo) chacune sur SA PROPRE adresse physique     }
+{ (lineaire=physique, transparent pour tout code deja teste - voir         }
+{ Dpmi_TranslateLin). Present+Writable (bits 0-1) sur chaque entree        }
+{ utilisee ; les entrees au-dela (257e PDE, 257e-1024e PTE) restent a 0    }
+{ (non presentes) - un client VCPI qui a besoin de plus doit construire    }
+{ ses propres tables au-dela de ce premier Mo, exactement comme le ferait  }
+{ un vrai programme VCPI avec les pages qu il alloue lui-meme via          }
+{ Emu_Vcpi_AllocatePage. }
+Procedure Emu_VcpiBuildPageTables;
+Var
+ I: Integer;
+ PdeAddr, PteAddr: LongInt;
+Begin
+ FillChar(EmuVcpiPageTables, SizeOf(EmuVcpiPageTables), 0);
+ { PDE[0] = adresse physique de la table de pages (offset 4096 du meme      }
+ { tampon), bits Present(0)+Writable(1) = 3. }
+ PdeAddr := 0;
+ PteAddr := 4096;
+ EmuVcpiPageTables[PdeAddr]     := Byte((EMU_VCPI_PAGETABLES_BASE + PteAddr) And $FF);
+ EmuVcpiPageTables[PdeAddr + 1] := Byte(((EMU_VCPI_PAGETABLES_BASE + PteAddr) Shr 8) And $FF);
+ EmuVcpiPageTables[PdeAddr + 2] := Byte(((EMU_VCPI_PAGETABLES_BASE + PteAddr) Shr 16) And $FF);
+ EmuVcpiPageTables[PdeAddr + 3] := Byte((((EMU_VCPI_PAGETABLES_BASE + PteAddr) Shr 24) And $FF) Or 3);
+ { PTE[0..255] = identity-map (adresse physique = adresse lineaire), les    }
+ { 3 premiers octets de chaque entree portent deja les bits 0-1 a 0/0       }
+ { avant d ajouter Present+Writable sur le 4e (bits 24-31 du dword = bits    }
+ { 0-7 du 4e octet, meme recette que pour la PDE ci-dessus). }
+ For I := 0 To 255 Do Begin
+  EmuVcpiPageTables[PteAddr + I * 4]     := 0;
+  EmuVcpiPageTables[PteAddr + I * 4 + 1] := Byte(I);  { bits 12-19 = I }
+  EmuVcpiPageTables[PteAddr + I * 4 + 3] := 3;         { Present+Writable }
+ End;
+End;
+
+{ Active ou desactive VCPI (INT 67h AH=DEh/DFh) - voir le commentaire de   }
+{ tete de TEmuVcpiState : suit la MEME case a cocher que EMS ("EMS",        }
+{ EmuEms.Active), jamais une case separee - sur un vrai PC d epoque, VCPI   }
+{ est TOUJOURS fourni par le gestionnaire de memoire expansee 386, jamais   }
+{ par HIMEM/XMS seul. Appele juste apres Emu_EmsInit a chaque (re)demarrage.}
+Procedure Emu_VcpiInit(Var P: TEmulatorPanel);
+Begin
+ FillChar(EmuVcpi, SizeOf(EmuVcpi), 0);
+ EmuVcpi.Active := EmuEms.Active;
+ If Not EmuVcpi.Active Then Exit;
+ Emu_VcpiBuildPageTables;
+ { Valeurs par defaut reelles du vrai VCPIInitPage/vcpi.asm : le PIC maitre }
+ { est toujours reprogramme par le BIOS/DOS sur Int 08h ($08), l esclave   }
+ { sur Int 70h ($70) - voir Read8259Mappings qui ne fait QUE relire ces    }
+ { 2 mots, jamais interroger le vrai 8259 (code reel : "no way to read     }
+ { back", meme principe honnete que CR2 documente ailleurs ici). }
+ EmuVcpi.MasterPicVec := $08;
+ EmuVcpi.SlavePicVec  := $70;
  If P.CPU.Regs.AX = P.CPU.Regs.AX Then ; { evite un avertissement }
 End;
 
@@ -204754,26 +204981,104 @@ End;
 { separe, comme EmuXmsMem/EmuEmsMem). Hors bornes : 0 en lecture, ignore   }
 { en ecriture (meme convention defensive que Emu64_GetByte de l emulateur  }
 { ELF64). --- }
+Function Dpmi_ReadBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt): Byte;
+Begin
+ If (PhysAddr >= 0) And (PhysAddr < EMU_DPMI_EXT_BASE) Then
+  Dpmi_ReadBytePhys := P.CPU.Memory^[PhysAddr]
+ Else If (PhysAddr >= EMU_DPMI_EXT_BASE) And
+    (PhysAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
+    (EmuDpmiExtMem <> Nil) Then
+  Dpmi_ReadBytePhys := EmuDpmiExtMem^[PhysAddr - EMU_DPMI_EXT_BASE]
+ Else If (PhysAddr >= EMU_VCPI_PAGETABLES_BASE) And
+    (PhysAddr < EMU_VCPI_PAGETABLES_BASE + EMU_VCPI_PAGETABLES_SIZE) Then
+  { Repertoire/table de pages VCPI identity-map - voir le commentaire de    }
+  { tete d EMU_VCPI_PAGETABLES_BASE : reserve HORS de portee de toute        }
+  { allocation XMS/DPMI/VCPI legitime, quelle que soit la taille configuree.}
+  Dpmi_ReadBytePhys := EmuVcpiPageTables[PhysAddr - EMU_VCPI_PAGETABLES_BASE]
+ Else
+  Dpmi_ReadBytePhys := 0;
+End;
+
+Procedure Dpmi_WriteBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt; V: Byte);
+Begin
+ If (PhysAddr >= 0) And (PhysAddr < EMU_DPMI_EXT_BASE) Then
+  P.CPU.Memory^[PhysAddr] := V
+ Else If (PhysAddr >= EMU_DPMI_EXT_BASE) And
+    (PhysAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
+    (EmuDpmiExtMem <> Nil) Then
+  EmuDpmiExtMem^[PhysAddr - EMU_DPMI_EXT_BASE] := V
+ Else If (PhysAddr >= EMU_VCPI_PAGETABLES_BASE) And
+    (PhysAddr < EMU_VCPI_PAGETABLES_BASE + EMU_VCPI_PAGETABLES_SIZE) Then
+  EmuVcpiPageTables[PhysAddr - EMU_VCPI_PAGETABLES_BASE] := V;
+End;
+
+{ --- Traduction lineaire -> physique a 2 niveaux (repertoire de pages +   }
+{ table de pages, 4 Ko/page, EXACTEMENT le modele 80386) - BOGUE REEL      }
+{ CORRIGE (2026-10-18, chantier VCPI explicitement demande par            }
+{ l utilisateur : "construire le vrai moteur de pagination d abord", en    }
+{ consultant C:\BACKUP\dos-6.0\dev\emm386\vcpi.asm qui en depend TOTALEMENT}
+{ - VCPISwitchToProtected charge un VRAI CR3 que le client doit ensuite    }
+{ pouvoir utiliser) : avant ce correctif, DpmiCPU.CR3 etait un simple      }
+{ registre sans AUCUN effet (voir son commentaire de tete) - TOUTE adresse}
+{ lineaire etait utilisee TELLE QUELLE comme adresse physique, quel que    }
+{ soit l etat de CR0.PG. Desormais : STRICTEMENT A LA CARTE - si           }
+{ CR0.PG=0 (bit 31, le cas de TOUT code deja teste dans ce fichier a ce    }
+{ jour, AUCUNE regression possible), retourne LinAddr INCHANGE, bit pour   }
+{ bit identique au comportement d avant ce correctif. Si CR0.PG=1 (un      }
+{ futur client VCPI/DPMI qui active reellement la pagination) : vraie      }
+{ marche a 2 niveaux, repertoire index e par les bits 31-22, table par les }
+{ bits 21-12, les 12 bits bas restant un simple decalage dans la page de   }
+{ 4 Ko. "Present" (bit 0) absent sur l une ou l autre entree -> AUCUNE     }
+{ vraie faute de page n est levee ici (comme CR2 au-dessus, aucun          }
+{ mecanisme d exception n est modelise pour Dpmi_Step) : repli honnete,    }
+{ LinAddr est retourne TEL QUEL (mieux qu un plantage/une adresse 0        }
+{ arbitraire, et strictement un signal "page non mappee" pour qui          }
+{ deboguerait le probleme plus tard). Repertoire/table LUS en PHYSIQUE     }
+{ directement (Dpmi_ReadBytePhys, jamais Dpmi_ReadByte) - sur un vrai      }
+{ 80386, CR3/PDE/PTE contiennent TOUJOURS des adresses physiques, jamais   }
+{ une autre couche de traduction a appliquer dessus. }
+Function Dpmi_TranslateLin(Var P: TEmulatorPanel; LinAddr: LongInt): LongInt;
+Var
+ DirIdx, TblIdx, PageOfs: LongInt;
+ PdeAddr, PteAddr: LongInt;
+ Pde, Pte: LongInt;
+Begin
+ If (DpmiCPU.CR0 And LongInt($80000000)) = 0 Then Begin
+  Dpmi_TranslateLin := LinAddr;
+  Exit;
+ End;
+ DirIdx  := (LongWord(LinAddr) Shr 22) And $3FF;
+ TblIdx  := (LongWord(LinAddr) Shr 12) And $3FF;
+ PageOfs := LinAddr And $FFF;
+ PdeAddr := (DpmiCPU.CR3 And LongInt($FFFFF000)) + DirIdx * 4;
+ Pde := LongInt(Dpmi_ReadBytePhys(P, PdeAddr)) Or
+  (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 1)) Shl 8) Or
+  (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 2)) Shl 16) Or
+  (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 3)) Shl 24);
+ If (Pde And 1) = 0 Then Begin { PDE non presente : repli honnete }
+  Dpmi_TranslateLin := LinAddr;
+  Exit;
+ End;
+ PteAddr := (Pde And LongInt($FFFFF000)) + TblIdx * 4;
+ Pte := LongInt(Dpmi_ReadBytePhys(P, PteAddr)) Or
+  (LongInt(Dpmi_ReadBytePhys(P, PteAddr + 1)) Shl 8) Or
+  (LongInt(Dpmi_ReadBytePhys(P, PteAddr + 2)) Shl 16) Or
+  (LongInt(Dpmi_ReadBytePhys(P, PteAddr + 3)) Shl 24);
+ If (Pte And 1) = 0 Then Begin { PTE non presente : repli honnete }
+  Dpmi_TranslateLin := LinAddr;
+  Exit;
+ End;
+ Dpmi_TranslateLin := (Pte And LongInt($FFFFF000)) Or PageOfs;
+End;
+
 Function Dpmi_ReadByte(Var P: TEmulatorPanel; LinAddr: LongInt): Byte;
 Begin
- If (LinAddr >= 0) And (LinAddr < EMU_DPMI_EXT_BASE) Then
-  Dpmi_ReadByte := P.CPU.Memory^[LinAddr]
- Else If (LinAddr >= EMU_DPMI_EXT_BASE) And
-    (LinAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
-    (EmuDpmiExtMem <> Nil) Then
-  Dpmi_ReadByte := EmuDpmiExtMem^[LinAddr - EMU_DPMI_EXT_BASE]
- Else
-  Dpmi_ReadByte := 0;
+ Dpmi_ReadByte := Dpmi_ReadBytePhys(P, Dpmi_TranslateLin(P, LinAddr));
 End;
 
 Procedure Dpmi_WriteByte(Var P: TEmulatorPanel; LinAddr: LongInt; V: Byte);
 Begin
- If (LinAddr >= 0) And (LinAddr < EMU_DPMI_EXT_BASE) Then
-  P.CPU.Memory^[LinAddr] := V
- Else If (LinAddr >= EMU_DPMI_EXT_BASE) And
-    (LinAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
-    (EmuDpmiExtMem <> Nil) Then
-  EmuDpmiExtMem^[LinAddr - EMU_DPMI_EXT_BASE] := V;
+ Dpmi_WriteBytePhys(P, Dpmi_TranslateLin(P, LinAddr), V);
 End;
 
 Function Dpmi_ReadWord(Var P: TEmulatorPanel; LinAddr: LongInt): Word;
@@ -206315,6 +206620,342 @@ Begin
  DpmiCPU.Active := True;
 End;
 
+{ ========================================================================= }
+{ VCPI (INT 67h AH=DEh) - voir project_devenv_vcpi.md pour le contexte      }
+{ complet et les 2 decisions de portee validees par l utilisateur           }
+{ (AskUserQuestion). Port fidele de vcpi.asm                                }
+{ (C:\BACKUP\dos-6.0\dev\emm386\vcpi.asm, relu integralement pour ce bloc)  }
+{ a l exception explicite et deja acceptee du GDT/IDT/LDT/TSS propre au    }
+{ client (non modelise, voir Dpmi_VcpiSynthFlatSel ci-dessous). }
+{ ========================================================================= }
+
+{ Nombre de pages de 4 Ko REELLEMENT utilisables pour VCPI - borne par la   }
+{ memoire etendue VRAIMENT allouee (EmuDpmi.ExtCapBytes, voir               }
+{ Emu_DpmiInit/Fix #6), jamais par le plafond theorique EMU_VCPI_MAXPAGES   }
+{ seul (qui ne fait que dimensionner le bitmap). }
+Function Emu_Vcpi_UsablePages: LongInt;
+Begin
+ Emu_Vcpi_UsablePages := EmuDpmi.ExtCapBytes Div 4096;
+ If Emu_Vcpi_UsablePages > EMU_VCPI_MAXPAGES Then
+  Emu_Vcpi_UsablePages := EMU_VCPI_MAXPAGES;
+End;
+
+{ VCPICountFreePages (AL=3, reel ET protege - voir VCPICountFreePages/       }
+{ VCPICountFreePagesProt) : notre port simplifie n a qu UN SEUL pool VCPI    }
+{ (TEmuVcpiState.PageBitmap), contrairement au vrai EMM386 qui distingue    }
+{ "espace VCPI" et "pool EMS libre" - resultat fonctionnellement equivalent }
+{ (un seul compteur de pages libres), juste sans cette distinction interne. }
+Function Emu_Vcpi_FreePageCount: LongInt;
+Var I, Total, Used: LongInt;
+Begin
+ Total := Emu_Vcpi_UsablePages;
+ Used := 0;
+ For I := 0 To Total - 1 Do
+  If (EmuVcpi.PageBitmap[I Shr 3] And (1 Shl (I And 7))) <> 0 Then Inc(Used);
+ Emu_Vcpi_FreePageCount := Total - Used;
+End;
+
+{ VCPIAllocatePage (AL=4, reel ET protege) - cherche le premier bit libre   }
+{ du bitmap, physiquement situe dans EmuDpmiExtMem (meme pool PHYSIQUE que  }
+{ XMS/DPMI, comptabilite separee - voir le commentaire de tete de           }
+{ TEmuVcpiState). }
+Function Emu_Vcpi_AllocPageBit(Var PhysAddr: LongInt): Boolean;
+Var I, Total: LongInt;
+Begin
+ Emu_Vcpi_AllocPageBit := False;
+ Total := Emu_Vcpi_UsablePages;
+ For I := 0 To Total - 1 Do
+  If (EmuVcpi.PageBitmap[I Shr 3] And (1 Shl (I And 7))) = 0 Then Begin
+   EmuVcpi.PageBitmap[I Shr 3] := EmuVcpi.PageBitmap[I Shr 3] Or (1 Shl (I And 7));
+   Inc(EmuVcpi.UsedPages);
+   PhysAddr := EMU_DPMI_EXT_BASE + I * 4096;
+   Emu_Vcpi_AllocPageBit := True;
+   Exit;
+  End;
+End;
+
+{ VCPIFreePage (AL=5, reel ET protege) - symetrique de Emu_Vcpi_AllocPageBit}
+Function Emu_Vcpi_FreePageBit(PhysAddr: LongInt): Boolean;
+Var I, Total: LongInt;
+Begin
+ Emu_Vcpi_FreePageBit := False;
+ If PhysAddr < EMU_DPMI_EXT_BASE Then Exit;
+ I := (PhysAddr - EMU_DPMI_EXT_BASE) Div 4096;
+ Total := Emu_Vcpi_UsablePages;
+ If (I < 0) Or (I >= Total) Then Exit;
+ If (EmuVcpi.PageBitmap[I Shr 3] And (1 Shl (I And 7))) = 0 Then Exit;
+ EmuVcpi.PageBitmap[I Shr 3] := EmuVcpi.PageBitmap[I Shr 3] And Not (1 Shl (I And 7));
+ If EmuVcpi.UsedPages > 0 Then Dec(EmuVcpi.UsedPages);
+ Emu_Vcpi_FreePageBit := True;
+End;
+
+{ Le GDT propre au client VCPI n est PAS modelise par ce port (compromis    }
+{ explicitement accepte par l utilisateur, 2e AskUserQuestion - voir        }
+{ project_devenv_vcpi.md) : un selecteur CS fourni brut par le CLIENT       }
+{ (Switch_CS de Switch_to_protected_struc) n a donc AUCUN descripteur       }
+{ connu dans DpmiCPU.LDT[]. Tout extendeur DOS compatible VCPI utilisant    }
+{ des segments PLATS pour son propre code (le cas normal - EMM386 lui-meme  }
+{ copie ses propres descripteurs plats R1CODE_GSEL/RCODEA_GSEL dans         }
+{ VCPIModeInterface, voir vcpi.asm), on synthetise ICI un descripteur plat  }
+{ PRESENT (base 0, limite 4 Go) pour cet index precis - fidele en EFFET     }
+{ (le client s execute correctement des la 1ere instruction) sans pretendre}
+{ reproduire des octets qu on ne peut de toute facon pas connaitre (ils     }
+{ vivent dans la memoire du client, jamais transmis a ce point de l API). }
+Procedure Dpmi_VcpiSynthFlatSel(Sel: Word);
+Var Idx: Integer;
+Begin
+ Idx := Sel Shr 3;
+ If (Idx < 0) Or (Idx > EMU_DPMI_MAX_SEL) Then Exit;
+ FillChar(DpmiCPU.LDT[Idx], SizeOf(TDpmiDescriptor), 0);
+ DpmiCPU.LDT[Idx].Present    := True;
+ DpmiCPU.LDT[Idx].AccessByte := $9A; { code, lire/executer, present, DPL0 }
+ DpmiCPU.LDT[Idx].IsCode     := True;
+ DpmiCPU.LDT[Idx].Base       := 0;
+ DpmiCPU.LDT[Idx].Limit      := LongInt($FFFFFFFF);
+ DpmiCPU.LDT[Idx].Big        := True;
+End;
+
+{ VCPIModeInterface (AL=1) - voir vcpi.asm lignes 264-385 (relu              }
+{ integralement). ES:DI -> tampon de tables de pages 4 Ko du client, DS:SI   }
+{ -> 3 emplacements de descripteurs GDT du client. }
+Procedure Emu_Vcpi_ModeInterface(Var P: TEmulatorPanel);
+Var
+ I: Integer;
+ DI: LongInt;
+ PteVal: LongInt;
+Begin
+ DI := P.CPU.Regs.DI;
+ { 256 PTE du premier Mo, copiees depuis notre table identity-map deja       }
+ { construite (Emu_VcpiBuildPageTables). Le vrai code efface en plus des     }
+ { "bits utilisateur" propres a la comptabilite interne d EMM386 - non       }
+ { reproduite ici (notre bitmap d allocation, TEmuVcpiState.PageBitmap, est  }
+ { entierement SEPARE de ces PTE), donc rien a masquer cote port. }
+ For I := 0 To 255 Do Begin
+  PteVal := LongInt(EmuVcpiPageTables[4096 + I * 4]) Or
+   (LongInt(EmuVcpiPageTables[4096 + I * 4 + 1]) Shl 8) Or
+   (LongInt(EmuVcpiPageTables[4096 + I * 4 + 2]) Shl 16) Or
+   (LongInt(EmuVcpiPageTables[4096 + I * 4 + 3]) Shl 24);
+  Emu_WriteDWordL(P.CPU, P.CPU.Segs.ES, DI, PteVal);
+  DI := DI + 4;
+ End;
+ { 2 PTE supplementaires pointant sur NOS PROPRES tables (repertoire+table, }
+ { EMU_VCPI_PAGETABLES_SIZE=8192=2 pages), placees a l adresse lineaire     }
+ { 1 Mo - meme principe que le vrai "CEMM's PT's placed at 1MB". }
+ For I := 0 To (EMU_VCPI_PAGETABLES_SIZE Div 4096) - 1 Do Begin
+  Emu_WriteDWordL(P.CPU, P.CPU.Segs.ES, DI,
+   (EMU_VCPI_PAGETABLES_BASE + I * 4096) Or 3);
+  DI := DI + 4;
+ End;
+ P.CPU.Regs.DI := Word(DI);
+ { Les 3 descripteurs attendus a DS:SI exigent un vrai GDT client, jamais    }
+ { modelise par ce port (voir Dpmi_VcpiSynthFlatSel ci-dessus) - on y ecrit  }
+ { 3 descripteurs plats (base 0, limite 4 Go) PLAUSIBLES plutot que de       }
+ { laisser le tampon intact, puisqu un vrai extendeur VCPI utilise quasi-    }
+ { toujours des segments plats pour son propre code/donnees. Octets          }
+ { purement cosmetiques ici (notre reconnaissance du point d entree se fait }
+ { sur la valeur EBX ci-dessous, jamais en relisant ces descripteurs). }
+ For I := 0 To 2 Do Begin
+  Emu_WriteDWordL(P.CPU, P.CPU.Segs.DS, LongInt(P.CPU.Regs.SI) + I * 8, $0000FFFF);
+  Emu_WriteDWordL(P.CPU, P.CPU.Segs.DS, LongInt(P.CPU.Regs.SI) + I * 8 + 4, $00CF9A00);
+ End;
+ { Point d entree mode protege : un marqueur RESERVE (EMU_VCPI_PROT_EIP_    }
+ { MARKER, jamais une adresse lineaire atteignable par un vrai client),      }
+ { reconnu par Dpmi_Step comme equivalent VCPI de EMU_DPMI_RAWSWITCH_SEL -   }
+ { voir le commentaire de tete de cette constante : ici EBX porte l OFFSET  }
+ { (pas un selecteur, puisque c est le CLIENT qui choisit son propre         }
+ { emplacement de GDT, hors de notre controle). }
+ P.CPU.Regs.EBX := EMU_VCPI_PROT_EIP_MARKER;
+End;
+
+{ VCPISwitchToProtected (AL=0Ch depuis le mode reel) - voir vcpi.asm lignes  }
+{ 1753-1882 (relu integralement). ESI = adresse LINEAIRE (pas Seg:Off) de   }
+{ Switch_to_protected_struc : CR3 dd, GDTR_ptr dd, IDTR_ptr dd, LDT_sel dw, }
+{ TR_sel dw, EIP dd, CS dw - le premier Mo etant toujours identity-mappe    }
+{ dans ce projet, Seg=0 donne directement cette adresse lineaire. }
+Procedure Emu_Vcpi_SwitchToProtected(Var P: TEmulatorPanel);
+Var
+ StrucLin: LongInt;
+ StrucCR3: LongInt;
+ StrucEIP: LongInt;
+ StrucCS : Word;
+Begin
+ StrucLin := P.CPU.Regs.ESI;
+ StrucCR3 := Emu_ReadDWordL(P.CPU, 0, StrucLin);
+ StrucEIP := Emu_ReadDWordL(P.CPU, 0, StrucLin + 16);
+ StrucCS  := Emu_ReadWordL(P.CPU, 0, StrucLin + 20);
+ { GDTR_ptr/IDTR_ptr/LDT_sel/TR_sel (offsets 4/8/12/14) ne sont PAS honores  }
+ { - le GDT/IDT/LDT/TSS propre au client n est pas modelise par ce port     }
+ { (compromis explicitement accepte, voir project_devenv_vcpi.md) ; seuls   }
+ { CR3 et CS:EIP sont fideles. }
+ FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
+ DpmiCPU.Is32Bit := True; { un client VCPI est TOUJOURS un extendeur 32     }
+                          { bits - Switch_EIP/Switch_CS proviennent d une   }
+                          { structure ECRITE par un vrai programme 32 bits, }
+                          { jamais d un flux d octets encore 16 bits (voir  }
+                          { le commentaire de tete de Dpmi_Switch pour le   }
+                          { cas DPMI oppose). }
+ DpmiCPU.CR3 := StrucCR3 And LongInt($FFFFF000);
+ DpmiCPU.CR0 := LongInt($80000001); { PE+PG - VCPI implique TOUJOURS la     }
+                                    { pagination active, c est son unique   }
+                                    { raison d etre (voir Dpmi_TranslateLin)}
+ DpmiCPU.SegSel[1] := StrucCS;
+ Dpmi_VcpiSynthFlatSel(StrucCS);
+ DpmiCPU.EIP := StrucEIP;
+ { ES/SS/DS/FS/GS : le vrai VCPISwitchToProtected ne les touche pas non     }
+ { plus - le client est cense les recharger depuis SA PROPRE GDT des les    }
+ { premieres instructions. Pour que ce port reste UTILISABLE des cette      }
+ { meme premiere instruction (pile valide, entre autres pour                }
+ { Emu_Vcpi_SwitchToV86 plus bas), on les aliase ICI sur les valeurs reel-   }
+ { mode courantes via Dpmi_SegToSel - EXACT MEME principe deja utilise par  }
+ { Dpmi_Switch (bascule DPMI) juste au-dessus dans ce fichier. }
+ DpmiCPU.SegSel[0] := Dpmi_SegToSel(P.CPU.Segs.ES);
+ DpmiCPU.SegSel[2] := Dpmi_SegToSel(P.CPU.Segs.SS);
+ DpmiCPU.SegSel[3] := Dpmi_SegToSel(P.CPU.Segs.DS);
+ DpmiCPU.SegSel[4] := Dpmi_SegToSel(P.CPU.FS);
+ DpmiCPU.SegSel[5] := Dpmi_SegToSel(P.CPU.GS);
+ DpmiCPU.Reg := P.CPU.Regs;
+ DpmiCPU.Reg.ESP := P.CPU.Regs.SP;
+ DpmiCPU.Flags.s := P.CPU.Flags.s;
+ DpmiCPU.Active := True;
+End;
+
+{ Repartiteur reel INT 67h AH=DEh (voir VCPIDispatcher, vcpi.asm lignes     }
+{ 191-237, relu integralement) : AL=0..0Bh suit la convention "retour       }
+{ synchrone dans les registres" deja utilisee par TOUT Emu_DoInt67/         }
+{ Emu_DoInt2F (P.CPU.Regs EST deja l etat live, pas besoin de repliquer le  }
+{ cadre pushad/popad du vrai code) ; AL=0Ch (SwitchToProtected) est gere a  }
+{ PART et ne revient PAS a l appelant, exactement comme le vrai             }
+{ "cmp al,0Ch; jb Normal; PJmp...SwitchToProtected". }
+Procedure Emu_Vcpi_Dispatch(Var P: TEmulatorPanel);
+Var
+ I: Integer;
+ PhysAddr: LongInt;
+ CX16: Word;
+ PteVal: LongInt;
+ DiagF_Vcpi: Text; { DIAGNOSTIC TEMPORAIRE - a retirer }
+Begin
+ {$I-} Assign(DiagF_Vcpi, 'DIAGVCPICALL.LOG');
+ If FileExists('DIAGVCPICALL.LOG') Then Append(DiagF_Vcpi) Else Rewrite(DiagF_Vcpi);
+ {$I+}
+ If IOResult = 0 Then Begin
+  WriteLn(DiagF_Vcpi, 'Step=', P.TotalSteps, ' AL=', P.CPU.Regs.AL,
+   ' CS:IP=', P.CPU.Segs.CS, ':', P.CPU.IP);
+  Close(DiagF_Vcpi);
+ End;
+ If P.CPU.Regs.AL = $0C Then Begin
+  Emu_Vcpi_SwitchToProtected(P);
+  Exit;
+ End;
+ If P.CPU.Regs.AL > $0B Then Begin
+  P.CPU.Regs.AH := $8F; { INVALID_SUBFUNCTION - meme convention que le      }
+  Exit;                 { reste d Emu_DoInt67 (EMS) pour un code inconnu. }
+ End;
+ P.CPU.Regs.AH := 0; { SUCCESS par defaut, voir VCPIPresenceDetection etc. }
+ Case P.CPU.Regs.AL Of
+  $00: P.CPU.Regs.BX := EMU_VCPI_VERSION; { VCPIPresenceDetection }
+  $01: Emu_Vcpi_ModeInterface(P);
+  $02: P.CPU.Regs.EDX :=                  { VCPIMaxPhysicalAddress }
+        (EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes - 1) And Not $FFF;
+  $03: P.CPU.Regs.EDX := Emu_Vcpi_FreePageCount; { VCPICountFreePages }
+  $04: If Emu_Vcpi_AllocPageBit(PhysAddr) Then P.CPU.Regs.EDX := PhysAddr
+       Else P.CPU.Regs.AH := $8F; { VCPIAllocatePage }
+  $05: If Not Emu_Vcpi_FreePageBit(P.CPU.Regs.EDX) Then P.CPU.Regs.AH := $8F;
+       { VCPIFreePage }
+  $06: Begin { VCPIPagePhysicalAddress - CX = index page lineaire (>>12),   }
+             { valide uniquement dans le premier Mo identity-mappe. }
+   CX16 := P.CPU.Regs.CX;
+   If CX16 >= 256 Then P.CPU.Regs.AH := $8F
+   Else Begin
+    PteVal := LongInt(EmuVcpiPageTables[4096 + CX16 * 4]) Or
+     (LongInt(EmuVcpiPageTables[4096 + CX16 * 4 + 1]) Shl 8) Or
+     (LongInt(EmuVcpiPageTables[4096 + CX16 * 4 + 2]) Shl 16) Or
+     (LongInt(EmuVcpiPageTables[4096 + CX16 * 4 + 3]) Shl 24);
+    P.CPU.Regs.EDX := PteVal And LongInt($FFFFF000);
+   End;
+  End;
+  $07: P.CPU.Regs.EBX := DpmiCPU.CR0; { VCPIReadCR0 }
+  $08: For I := 0 To 7 Do              { VCPIReadDebugRegisters, ES:DI }
+        Emu_WriteDWordL(P.CPU, P.CPU.Segs.ES, LongInt(P.CPU.Regs.DI) + I * 4,
+         P.CPU.DebugRegs[I]);
+  $09: For I := 0 To 7 Do              { VCPILoadDebugRegisters, ES:DI }
+        P.CPU.DebugRegs[I] := Emu_ReadDWordL(P.CPU, P.CPU.Segs.ES,
+         LongInt(P.CPU.Regs.DI) + I * 4);
+  $0A: Begin { VCPIRead8259Mappings }
+   P.CPU.Regs.BX := EmuVcpi.MasterPicVec;
+   P.CPU.Regs.CX := EmuVcpi.SlavePicVec;
+  End;
+  $0B: Begin { VCPISet8259Mappings - "notification seulement", voir le      }
+             { commentaire reel : CEMM a deja reprogramme les PIC, cet appel}
+             { ne fait que memoriser les valeurs pour un futur Read. }
+   EmuVcpi.MasterPicVec := P.CPU.Regs.BX;
+   EmuVcpi.SlavePicVec  := P.CPU.Regs.CX;
+  End;
+ End;
+End;
+
+{ VCPISwitchToV86 (AL=0Ch depuis le mode protege) - voir vcpi.asm lignes    }
+{ 1663-1751 (relu integralement). ENTREE reelle : SS:ESP pointe un cadre    }
+{ IRETD-vers-V86 COMPLET (EIP,CS,EFLAGS,ESP,SS,ES,DS,FS,GS - 9 dwords) que  }
+{ le CLIENT a lui-meme empile AVANT son FAR CALL vers le repartiteur        }
+{ protege ; "add esp,8" (reel) saute les 8 octets d adresse de retour de ce }
+{ FAR CALL pour atteindre ce cadre. Ce projet n a pas de VRAI mode V86      }
+{ distinct du mode reel - "revenir en V86" signifie donc ICI simplement     }
+{ "revenir sous P.CPU (reel)", exactement le meme principe que               }
+{ Dpmi_RawSwitchToReal pour la bascule DPMI equivalente. }
+Procedure Emu_Vcpi_SwitchToV86(Var P: TEmulatorPanel);
+Var
+ FrameAddr: LongInt;
+ NewEip, NewEsp: LongInt;
+ NewCs, NewSs, NewEs, NewDs, NewFsV, NewGsV: Word;
+Begin
+ FrameAddr := Dpmi_LinAddr(DpmiCPU.SegSel[2], DpmiCPU.Reg.ESP) + 8;
+ NewEip  := Dpmi_ReadDWord(P, FrameAddr);
+ NewCs   := Word(Dpmi_ReadDWord(P, FrameAddr + 4));
+ NewEsp  := Dpmi_ReadDWord(P, FrameAddr + 12);
+ NewSs   := Word(Dpmi_ReadDWord(P, FrameAddr + 16));
+ NewEs   := Word(Dpmi_ReadDWord(P, FrameAddr + 20));
+ NewDs   := Word(Dpmi_ReadDWord(P, FrameAddr + 24));
+ NewFsV  := Word(Dpmi_ReadDWord(P, FrameAddr + 28));
+ NewGsV  := Word(Dpmi_ReadDWord(P, FrameAddr + 32));
+ { L octet $00023000 (VM=1+IOPL=3) du vrai code n a pas d equivalent a       }
+ { reproduire ici (pas de vrai mode V86/IOPL dans ce coeur reel) - les       }
+ { drapeaux courants (herites de DpmiCPU.Flags.s) restent donc inchanges,   }
+ { simplification deja documentee ailleurs pour des champs sans effet reel  }
+ { modelise (CR2, TestRegs, etc.). }
+ P.CPU.Regs := DpmiCPU.Reg;
+ P.CPU.Flags.s := DpmiCPU.Flags.s;
+ P.CPU.Segs.CS := NewCs;
+ P.CPU.IP := Word(NewEip);
+ P.CPU.Segs.SS := NewSs;
+ P.CPU.Regs.SP := Word(NewEsp);
+ P.CPU.Segs.ES := NewEs;
+ P.CPU.Segs.DS := NewDs;
+ P.CPU.FS := NewFsV;
+ P.CPU.GS := NewGsV;
+ DpmiCPU.Active := False;
+End;
+
+{ Repartiteur protege (VCPIProtectedDispatcher, vcpi.asm lignes 1204-1273,  }
+{ relu integralement) - atteint via le marqueur EMU_VCPI_PROT_EIP_MARKER    }
+{ (voir Dpmi_Step). Seuls AL=3/4/5/0Ch sont valides ici (protected_vector,  }
+{ vcpi.asm ligne 1189) - tous les autres (0/1/2/6/7/8/9/0Ah/0Bh, reserves   }
+{ au mode reel) renvoient VCPIInvalidFunction. }
+Procedure Emu_Vcpi_ProtectedDispatch(Var P: TEmulatorPanel);
+Var PhysAddr: LongInt;
+Begin
+ DpmiCPU.Reg.AH := 0;
+ Case DpmiCPU.Reg.AL Of
+  $03: DpmiCPU.Reg.EDX := Emu_Vcpi_FreePageCount;      { CountFreePagesProt }
+  $04: If Emu_Vcpi_AllocPageBit(PhysAddr) Then DpmiCPU.Reg.EDX := PhysAddr
+       Else DpmiCPU.Reg.AH := $8F;                     { AllocatePageProt }
+  $05: If Not Emu_Vcpi_FreePageBit(DpmiCPU.Reg.EDX) Then DpmiCPU.Reg.AH := $8F;
+       { FreePageProt }
+  $0C: Begin Emu_Vcpi_SwitchToV86(P); Exit; End;        { ne revient pas ici }
+ Else
+  DpmiCPU.Reg.AH := $8F;
+ End;
+End;
+
 { BOGUE REEL (2026-10-14, enquete "TPX.EXE : boucle sur memoire zero",      }
 { 3e trouvaille) : toute la famille MOVS/CMPS/STOS/LODS/SCAS ($A4-$A7,      }
 { $AA-$AF) manquait ici, qu elle soit prefixee REP ou non - absente du      }
@@ -206630,6 +207271,33 @@ Begin
       Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
       Include(DpmiCPU.Flags.s, EFG_ZF);
      End Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+    End;
+    $20: Begin { MOV r32, CRn - BOGUE REEL CORRIGE (2026-10-18, chantier VCPI   }
+         { explicitement demande par l utilisateur, "construire le vrai        }
+         { moteur de pagination d abord") : manquait completement dans         }
+         { Dpmi_Step (seul le coeur reel Emu_StepOne le gerait) - un vrai      }
+         { client VCPI/DPMI qui lit CR0/CR2/CR3 (ex. VCPIReadCR0, qui execute   }
+         { "MOV EAX,CR0" alors qu il tourne DEJA en mode protege, donc via ce   }
+         { coeur-ci, pas Emu_StepOne) tombait sur sfInvalidCode. ModRM TOUJOURS}
+         { registre-a-registre sur un vrai CPU (mod force a 11), 1 seul octet. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Inc(DpmiCPU.EIP, 1);
+     Case (ModRM Shr 3) And 7 Of
+      0: Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, DpmiCPU.CR0);
+      2: Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, DpmiCPU.CR2);
+      3: Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, DpmiCPU.CR3);
+     Else
+      Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, 0);
+     End;
+    End;
+    $22: Begin { MOV CRn, r32 - voir $20 ci-dessus pour le contexte complet. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Inc(DpmiCPU.EIP, 1);
+     Case (ModRM Shr 3) And 7 Of
+      0: DpmiCPU.CR0 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+      2: DpmiCPU.CR2 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+      3: DpmiCPU.CR3 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+     End;
     End;
    Else Begin
     P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
@@ -207090,6 +207758,18 @@ Begin
    End Else Begin
     RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
    End;
+   { NOTE VCPI (voir EMU_VCPI_PROT_EIP_MARKER) : ce RETF n est PAS           }
+   { intercepte ici, contrairement aux CALL FAR/JMP FAR indirects plus bas - }
+   { un "retf" depilant ce marqueur signifierait que le CLIENT l utilise     }
+   { comme trampoline d APPEL (push sel;push ebx;retf), auquel cas son       }
+   { propre retf de RETOUR serait deja perdu (ecrase par le pop ci-dessus)    }
+   { avant meme d atteindre Emu_Vcpi_ProtectedDispatch pour AL=3/4/5 (qui    }
+   { doivent au contraire REVENIR chez l appelant) - contrairement a         }
+   { EMU_DPMI_RAWSWITCH_SEL (bascule PURE, jamais un "retour" a honorer),    }
+   { ce cas n a pas de semantique sure sans un vrai client pour le confirmer }
+   { (voir project_devenv_vcpi.md) ; seuls les 2 idiomes CALL/JMP FAR        }
+   { indirects (le schema reellement documente par tout appelant VCPI lu     }
+   { dans vcpi.asm, ex. VCPIFreePage/"PCall") sont geres. }
    If Dpmi_LoadSelOrFault(P, RetCS16, False) Then Begin
     DpmiCPU.EIP := RetIP32;
     DpmiCPU.SegSel[1] := RetCS16;
@@ -207435,7 +208115,18 @@ Begin
       { definitive, confirmant que "continuer sur place" est la seule          }
       { semantique qui marche pour N IMPORTE QUEL client. }
       Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP);
-     End Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
+     End Else If EmuVcpi.Active And (Target = EMU_VCPI_PROT_EIP_MARKER) Then
+      { Repartiteur protege VCPI (voir Emu_Vcpi_ProtectedDispatch/           }
+      { EMU_VCPI_PROT_EIP_MARKER) : reconnu sur l OFFSET seul, PAS sur       }
+      { NewSel (selecteur choisi par le CLIENT dans sa propre GDT, jamais    }
+      { modelisee ici - voir le commentaire de tete de ce marqueur). Appel   }
+      { SYNCHRONE (AL=3/4/5 repondent directement dans les registres,        }
+      { meme principe que Dpmi_ForwardIntToReal) - EIP reste ou Dpmi_Step    }
+      { l a deja place (juste apres cette instruction), AUCUN saut reel ne   }
+      { doit avoir lieu, contrairement a Dpmi_RawSwitchToReal ci-dessus qui  }
+      { bascule reellement de coeur. }
+      Emu_Vcpi_ProtectedDispatch(P)
+     Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
       If OpSize = 2 Then Begin
        Dpmi_Push16(P, DpmiCPU.SegSel[1]); Dpmi_Push16(P, Word(DpmiCPU.EIP));
       End Else Begin
@@ -207457,7 +208148,10 @@ Begin
      If NewSel = EMU_DPMI_RAWSWITCH_SEL Then Begin
       { Meme bogue/correctif que Sub=3 ci-dessus - voir ce commentaire. }
       Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP);
-     End Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
+     End Else If EmuVcpi.Active And (Target = EMU_VCPI_PROT_EIP_MARKER) Then
+      { Meme repartiteur VCPI que Sub=3 ci-dessus - voir ce commentaire. }
+      Emu_Vcpi_ProtectedDispatch(P)
+     Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
       DpmiCPU.SegSel[1] := NewSel;
       DpmiCPU.EIP := Target;
      End;
@@ -211375,11 +212069,26 @@ Begin
     Emu_LoadSregUnreal(P.CPU, V16);
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $8D: { LEA r16, m }
+  $8D: { LEA r16/r32, m - BOGUE REEL CORRIGE (enquete WIN.COM, voir             }
+        { [[project_devenv_wincom_launch]]) : ignorait totalement le prefixe    }
+        { $67 (AddrSize32), decodait TOUJOURS en adressage 16 bits meme en      }
+        { presence d un octet SIB ("$67 $66 $8D /r" avec ModRM rm=100, ex.      }
+        { "LEA ESI,[ESI*4+ESI]" - forme reelle observee dans WIN386.EXE 386     }
+        { Enhanced Mode). En 16 bits, ModRM mod=00/rm=100 signifie simplement   }
+        { "[SI]" SANS octet supplementaire - l octet SIB reel n etait donc      }
+        { JAMAIS consomme, desynchronisant tout le flux d instructions suivant  }
+        { (le SIB residuel relu comme un opcode independant). Meme garde que    }
+        { $87 (deja corrige 2026-08-24) desormais appliquee ici ; la largeur    }
+        { du registre destination suit aussi OperandSize32 (LEA ESI,... vs      }
+        { LEA SI,...), comme pour n importe quel autre ModRM/reg de ce fichier. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, Word(Op.Ofs));
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.OperandSize32 Then
+     Emu_SetReg32(P.CPU, (ModRM Shr 3) And 7, Op.Ofs)
+    Else
+     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, Word(Op.Ofs));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $8F: { POP rm16 (groupe : seul subop 0 defini) }
@@ -231887,6 +232596,7 @@ Begin NesActive := False;
   Emu_NetBiosInit(P);
   Emu_XmsInit(P);
   Emu_EmsInit(P);
+  Emu_VcpiInit(P);
   Emu_MouseInit(P);
   Emu_MscdexInit(P);
   Emu_DpmiInit(P);
@@ -232416,6 +233126,7 @@ Begin NesActive := False;
  Emu_XmsInit(P);
  If EmuFakeDosSuppressed Then EmuXms.Active := False;
  Emu_EmsInit(P);
+ Emu_VcpiInit(P);
  Emu_MouseInit(P);
  Emu_MscdexInit(P);
  Emu_DpmiInit(P);
