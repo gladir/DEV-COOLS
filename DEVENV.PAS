@@ -2478,6 +2478,33 @@ Const
  EMU_FDPT_SEG    = $F000;
  EMU_FDPT_OFS0   = $0700; { disque 0 (INT 41h) : $0700-$070F }
  EMU_FDPT_OFS1   = $0710; { disque 1 (INT 46h) : $0710-$071F }
+ { "HandleInfo" XMS (INT 2Fh, AX=4309h) - BOGUE REEL CORRIGE (2026-10-18,  }
+ { enquete WIN.COM 386 Enhanced Mode, root cause finale apres consultation }
+ { du VRAI code source HIMEM.SYS, C:\BACKUP\dos-6.0\dev\himem\himem.asm/   }
+ { himem4.asm) : AX=4309h ("Function 43h, Subfunction 09h") est un sous-  }
+ { appel NON DOCUMENTE dans la specification XMS publique, mais REEL et    }
+ { implemente par le VRAI HIMEM.SYS - il retourne dans ES:BX un pointeur    }
+ { vers une petite structure "HandleInfo" (version, taille d une entree,   }
+ { nombre de handles, puis segment:offset de la VRAIE table de handles).   }
+ { WIN386.EXE (confirme par tracage live ET par desassemblage statique de  }
+ { WIN.COM) appelle CE sous-appel non documente pour construire SA PROPRE  }
+ { carte memoire interne AVANT de decider si assez de memoire etendue est  }
+ { disponible - notre emulateur ne repondait pas du tout a AX=4309h        }
+ { (seuls $4300/$4310 geres), laissant WIN386.EXE avec un pointeur ES:BX   }
+ { inchange/non pertinent : sa copie locale de 64 entrees restait donc     }
+ { TOUJOURS entierement a zero, menant a l abandon et au message "Memoire  }
+ { etendue insuffisante" en fin de parcours, meme avec des dizaines de Mo   }
+ { de XMS reellement libres et alloues avec succes. Mise en page de        }
+ { l'entree de handle (10 octets, deduite de l usage reel des champs       }
+ { .Flags/.cLock/.Len.lo/.Len.hi/.Base.lo/.Base.hi dans himem4.asm/         }
+ { himem4a.asm/himem4b.asm - Base/Len exprimes en KO, EXACTEMENT comme      }
+ { LockExtMemory (AH=0Ch) les convertit en adresse 32 bits reelle) :        }
+ { +0 Flags(1) +1 cLock(1) +2 Len(4, Ko) +6 Base(4, Ko). }
+ EMU_XMS_HANDLEINFO_SEG     = $F000;
+ EMU_XMS_HANDLEINFO_OFS     = $0720; { en-tete HandleInfo, 10 octets        }
+ EMU_XMS_HANDLETABLE_OFS    = $072A; { tableau des handles, juste apres     }
+ EMU_XMS_HANDLEINFO_COUNT   = 64;    { = High(EmuXms.Handles)              }
+ EMU_XMS_HANDLEENTRY_SIZE   = 10;
  { Bump allocator "memoire DOS basse" pour INT 31h AX=0100h (voir          }
  { Dpmi_AllocDosMem) - zone scratch dediee, largement apres tous les       }
  { autres trampolines de $F000 pour eviter toute collision. }
@@ -202603,6 +202630,63 @@ Begin
  P.CPU.Regs.AX := 1;
 End;
 
+{ --- INT 2Fh, AX=4309h ("Function 43h, Subfunction 09h") : sous-appel    }
+{ NON DOCUMENTE dans la specification XMS publique mais REEL et implante   }
+{ par le VRAI HIMEM.SYS (confirme via le code source MS-DOS 6.0,          }
+{ C:\BACKUP\dos-6.0\dev\himem\himem.asm, procedure Int2fHandler, et        }
+{ himem4.asm pour la structure HandleInfo/Handle - voir le commentaire de  }
+{ tete d EMU_XMS_HANDLEINFO_OFS pour le contexte complet du bogue). Construit}
+{ a chaque appel (pas de synchronisation separee a maintenir) : toujours   }
+{ coherent avec l etat COURANT de EmuXms.Handles. }
+Procedure Emu_Xms_BuildHandleInfo(Var P: TEmulatorPanel);
+Var
+ H: Integer;
+ Ofs: Word;
+ BaseKB, LenKB: LongInt;
+ FlagsB, LockB: Byte;
+Begin
+ { En-tete (10 octets) : version, taille d une entree, nb de handles,      }
+ { puis segment:offset de la VRAIE table (voir HandleInfo dans himem4.asm).}
+ Emu_WriteByte(P.CPU, EMU_XMS_HANDLEINFO_SEG, EMU_XMS_HANDLEINFO_OFS, 1);
+ Emu_WriteByte(P.CPU, EMU_XMS_HANDLEINFO_SEG, EMU_XMS_HANDLEINFO_OFS + 1,
+  EMU_XMS_HANDLEENTRY_SIZE);
+ Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, EMU_XMS_HANDLEINFO_OFS + 2,
+  EMU_XMS_HANDLEINFO_COUNT);
+ Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, EMU_XMS_HANDLEINFO_OFS + 4,
+  EMU_XMS_HANDLETABLE_OFS);
+ Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, EMU_XMS_HANDLEINFO_OFS + 6,
+  EMU_XMS_HANDLEINFO_SEG);
+ Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, EMU_XMS_HANDLEINFO_OFS + 8,
+  Word(EMU_XMS_HANDLETABLE_OFS + EMU_XMS_HANDLEINFO_COUNT * EMU_XMS_HANDLEENTRY_SIZE));
+ { Table des handles (10 octets/entree, deduite de l usage reel des champs }
+ { .Flags/.cLock/.Len.lo/.Len.hi/.Base.lo/.Base.hi dans himem4.asm/         }
+ { himem4a.asm/himem4b.asm) : +0 Flags(1) +1 cLock(1) +2 Len(4,Ko)         }
+ { +6 Base(4,Ko) - Base/Len EXACTEMENT comme LockExtMemory (AH=0Ch) les     }
+ { convertit en adresse 32 bits reelle (Ko*1024). Base calculee comme       }
+ { 1024 (1 Mo, debut de la memoire etendue - EMU_DPMI_EXT_BASE) + le        }
+ { decalage Ko de ce handle dans EmuXmsMem^. }
+ For H := 1 To EMU_XMS_HANDLEINFO_COUNT Do Begin
+  Ofs := Word(EMU_XMS_HANDLETABLE_OFS + (H - 1) * EMU_XMS_HANDLEENTRY_SIZE);
+  If (H <= High(EmuXms.Handles)) And EmuXms.Handles[H].InUse Then Begin
+   FlagsB := 1; { "USEDFLAG" - seule Base/Len non-nul importe pour WIN386.EXE }
+   LockB := EmuXms.Handles[H].LockCount;
+   LenKB := EmuXms.Handles[H].SizeKB;
+   BaseKB := 1024 + (EmuXms.Handles[H].StoreOffset Div 1024);
+  End Else Begin
+   FlagsB := 0;
+   LockB := 0;
+   LenKB := 0;
+   BaseKB := 0;
+  End;
+  Emu_WriteByte(P.CPU, EMU_XMS_HANDLEINFO_SEG, Ofs, FlagsB);
+  Emu_WriteByte(P.CPU, EMU_XMS_HANDLEINFO_SEG, Ofs + 1, LockB);
+  Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, Ofs + 2, Word(LenKB And $FFFF));
+  Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, Ofs + 4, Word((LenKB Shr 16) And $FFFF));
+  Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, Ofs + 6, Word(BaseKB And $FFFF));
+  Emu_WriteWord(P.CPU, EMU_XMS_HANDLEINFO_SEG, Ofs + 8, Word((BaseKB Shr 16) And $FFFF));
+ End;
+End;
+
 { --- AH=0Fh : Reallocate Extended Memory Block (16 bits, Ko) --- }
 { Voir la limite documentee en tete de section : n agrandit en place que   }
 { le DERNIER bloc alloue (celui dont StoreOffset+Taille = UsedBytes). }
@@ -204949,6 +205033,8 @@ End;
 { tampon "memoire etendue" separe. Appelee a chaque (re)demarrage de       }
 { l emulateur, comme Emu_EmsInit/Emu_MouseInit. }
 Procedure Emu_DpmiInit(Var P: TEmulatorPanel);
+Var
+ WantedKB: LongInt;
 Begin
  FillChar(EmuDpmi, SizeOf(EmuDpmi), 0);
  FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
@@ -204958,17 +205044,46 @@ Begin
   EmuDpmiExtMem := Nil;
  End;
  EmuDpmi.DosMemUsedOfs := EMU_DPMI_DOSMEM_START;
- If Not EmuDpmi.Active Then Exit;
- EmuDpmi.ExtCapBytes := LongInt(OptionsDlg.Data.DosDPMISize) * 1024;
+ { BOGUE REEL CORRIGE (2026-10-18, enquete WIN.COM : "Memoire etendue        }
+ { insuffisante" malgre DosXMSSize=16384) : le tampon "memoire etendue"      }
+ { (EmuDpmiExtMem, seul support reel derriere Emu_Read/WriteAbsBlock pour    }
+ { toute SONDE DIRECTE memoire en mode reel/"unreal" - voir leur commentaire }
+ { de tete) n etait alloue QUE si la case DPMI etait cochee, avec SA PROPRE  }
+ { taille (DosDPMISize) - totalement INDEPENDANTE de DosXMSSize, la taille   }
+ { REELLEMENT annoncee au client via XMS AH=08h/INT 15h AH=88h/CMOS          }
+ { $17-$18/$30-$31. Avec les valeurs de ce depot (XMS=16 Mo annonces, DPMI=  }
+ { 8 Mo seulement alloues), un vrai WIN.COM/HIMEM.SYS qui sonde physiquement }
+ { au-dela de 8 Mo (jusqu au 16 Mo annonce) tombe sur l Exit silencieux de   }
+ { Emu_Read/WriteAbsBlock (ni lu ni ecrit) - son motif de test ecrit puis    }
+ { relu ne correspond alors plus, exactement le signal qu un VRAI DOS         }
+ { extender/HIMEM interprete comme "memoire etendue non fiable", d ou le      }
+ { message Windows 3.1 "Memoire etendue insuffisante" malgre 16 Mo annonces. }
+ { Desormais : le tampon est dimensionne sur le PLUS GRAND des 2 besoins     }
+ { (XMS annonce, DPMI alloue) et existe des que L UN OU L AUTRE est actif -  }
+ { EmuDpmi.Active (et donc les VRAIS services DPMI/INT 31h, le trampoline    }
+ { ci-dessous...) restent gates EXACTEMENT comme avant, aucun changement de  }
+ { ce cote : seul le support physique de la sonde memoire est desormais      }
+ { coherent avec ce qui est annonce. }
+ WantedKB := 0;
+ If OptionsDlg.Data.DosXMS Then WantedKB := OptionsDlg.Data.DosXMSSize;
+ If EmuDpmi.Active And (LongInt(OptionsDlg.Data.DosDPMISize) > WantedKB) Then
+  WantedKB := OptionsDlg.Data.DosDPMISize;
+ EmuDpmi.ExtCapBytes := WantedKB * 1024;
  If EmuDpmi.ExtCapBytes > EMU_DPMI_EXT_CAP_KB * 1024 Then
   EmuDpmi.ExtCapBytes := EMU_DPMI_EXT_CAP_KB * 1024;
  If EmuDpmi.ExtCapBytes < 0 Then EmuDpmi.ExtCapBytes := 0;
- New(EmuDpmiExtMem);
+ If EmuDpmi.ExtCapBytes > 0 Then Begin
+  New(EmuDpmiExtMem);
+  If EmuDpmiExtMem = Nil Then
+   EmuDpmi.ExtCapBytes := 0
+  Else
+   FillChar(EmuDpmiExtMem^, SizeOf(EmuDpmiExtMem^), 0);
+ End;
+ If Not EmuDpmi.Active Then Exit;
  If EmuDpmiExtMem = Nil Then Begin
   EmuDpmi.Active := False;
   Exit;
  End;
- FillChar(EmuDpmiExtMem^, SizeOf(EmuDpmiExtMem^), 0);
  { Trampoline de commutation reel -> protege (voir Dpmi_Switch) : INT FBh. }
  { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", suite #12) : le       }
  { commentaire "jamais rencontre par du logiciel DOS reel" etait FAUX -    }
@@ -207685,6 +207800,17 @@ Begin
  If EmuXms.Active And (P.CPU.Regs.AX = $4310) Then Begin
   P.CPU.Segs.ES := EmuXms.StubSeg;
   P.CPU.Regs.BX := EmuXms.StubOfs;
+  Exit;
+ End;
+ If EmuXms.Active And (P.CPU.Regs.AX = $4309) Then Begin
+  { Voir le commentaire de tete d Emu_Xms_BuildHandleInfo/                  }
+  { EMU_XMS_HANDLEINFO_OFS : sous-appel non documente, REEL (vrai HIMEM.SYS,}
+  { confirme via le code source MS-DOS 6.0), utilise par WIN386.EXE 386     }
+  { Enhanced Mode pour construire sa propre carte memoire interne. }
+  Emu_Xms_BuildHandleInfo(P);
+  P.CPU.Regs.AL := $43;
+  P.CPU.Segs.ES := EMU_XMS_HANDLEINFO_SEG;
+  P.CPU.Regs.BX := EMU_XMS_HANDLEINFO_OFS;
   Exit;
  End;
  If EmuMscdexActive And (P.CPU.Regs.AH = $15) Then Begin
@@ -211699,14 +211825,30 @@ Begin
     Emu_PutOpByte(P.CPU, Op, Imm8);
     Inc(P.CPU.IP, 2 + Op.Len);
    End;
-  $C7: { MOV rm16, imm16 }
+  $C7: { MOV rm16, imm16 (imm32 si prefixe $66, voir le commentaire de tete }
+       { d EmuCpuFlags386Plus plus bas - BOGUE REEL CORRIGE (2026-10-18,    }
+       { enquete WIN.COM 386 Enhanced Mode) : ce cas ignorait totalement     }
+       { P.CPU.OperandSize32, lisant TOUJOURS un immediat 16 bits et         }
+       { n avancant IP que de 3+Op.Len meme quand le prefixe $66 imposait    }
+       { un immediat 32 bits - les 2 octets de poids fort de l immediat      }
+       { restaient alors dans le flux et etaient re-decodes comme un FAUX    }
+       { opcode independant au pas suivant (confirme en direct : fait        }
+       { deriver CS:IP dans des donnees - table GDT, chaine de message       }
+       { d erreur - jusqu a un plantage division-par-zero bien plus loin).   }
+       { Meme garde deja correcte juste au-dessus pour le MOV AX/EAX,[imm]. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
     Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
-     P.CPU.IP + 1 + Op.Len);
-    Emu_PutOpWord(P.CPU, Op, Imm16);
-    Inc(P.CPU.IP, 3 + Op.Len);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := Emu_ReadDWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP + 1 + Op.Len);
+     Emu_PutOpDWord(P.CPU, Op, V32);
+     Inc(P.CPU.IP, 5 + Op.Len);
+    End Else Begin
+     Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
+      P.CPU.IP + 1 + Op.Len);
+     Emu_PutOpWord(P.CPU, Op, Imm16);
+     Inc(P.CPU.IP, 3 + Op.Len);
+    End;
    End;
   $FE: { INC/DEC rm8 (group 4) }
    Begin
