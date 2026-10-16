@@ -2427,6 +2427,9 @@ Begin
     { Les executables de reference sont produits par Free Pascal : les branches }
     { IFDEF FPC des sources (unites, messages, File of Byte...) sont celles a suivre }
     DefineAdd('FPC');
+    { FPC pour Win32 definit aussi WINDOWS et MSWINDOWS (CHKDSK, EQUIP, T-CHAR...) }
+    DefineAdd('WINDOWS');
+    DefineAdd('MSWINDOWS');
   End;
 
   { Symboles de la ligne de commande : -Dsym1,sym2 }
@@ -5058,6 +5061,9 @@ Begin
   EmitRaw('EXTRN _GetEnvironmentStringsA@0:NEAR');
   EmitRaw('EXTRN _GetFileTime@16:NEAR');
   EmitRaw('EXTRN _FileTimeToDosDateTime@12:NEAR');
+  EmitRaw('EXTRN _DosDateTimeToFileTime@12:NEAR');
+  EmitRaw('EXTRN _LocalFileTimeToFileTime@8:NEAR');
+  EmitRaw('EXTRN _SetFileTime@16:NEAR');
   EmitComment('--- Imports Win32 pour unite Graph (TODO 20) ---');
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _RegisterClassA@4:NEAR');
@@ -5227,6 +5233,7 @@ Begin
   EmitRaw('DOS_FINDHDL DD -1');         { handle FindFirstFile                   }
   EmitRaw('DOS_FINDATTR DD 0');         { attributs demandes par FindFirst       }
   EmitRaw('DOS_FTTMP DB 12 DUP(0)');     { FILETIME locale + date/heure DOS       }
+  EmitRaw('SF_FTTMP DB 16 DUP(0)');      { SetFTime : FILETIME locale puis UTC    }
   EmitRaw('DOS_PROCINFO DB 16 DUP(0)');{ PROCESS_INFORMATION (16 bytes)         }
   EmitRaw('DOS_STARTINFO DB 68 DUP(0)');{ STARTUPINFOA (68 bytes)               }
   EmitRaw('DOS_EXITVAL DD 0');          { code sortie processus                  }
@@ -12626,22 +12633,17 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Not EPAtEnd Then
+        { Sauter l argument complet (Seg(S), Seg(Path[1]), Seg(Sector^)) jusqu a la ')' }
+        WI := 0;
+        While Not EPAtEnd Do
         Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
-          If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
+          If (TokenPool[EP].Kind = TK_PUNCT) And ((TokenPool[EP].Val = '(') Or (TokenPool[EP].Val = '[')) Then Inc(WI)
+          Else If (TokenPool[EP].Kind = TK_PUNCT) And ((TokenPool[EP].Val = ')') Or (TokenPool[EP].Val = ']')) Then
           Begin
-            { Seg(Path[1]) : sauter l indice }
-            WI := 0;
-            While Not EPAtEnd Do
-            Begin
-              If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then Inc(WI)
-              Else If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ']') Then Dec(WI);
-              Inc(EP);
-              If WI = 0 Then Break;
-            End;
+            If WI = 0 Then Break;
+            Dec(WI);
           End;
+          Inc(EP);
         End;
         EPMatch(')');
       End;
@@ -24147,10 +24149,10 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { file var -> addr in EAX }
+        ParseLValueAddrW32(PI, TIdx);   { variable fichier -> adresse }
         EmitInstr('PUSH EAX');      { save file addr }
         EPMatch(',');
-        ParseExpr(PI);              { var Time -> addr in EAX }
+        ParseLValueAddrW32(PI, TIdx);   { var Time (LongInt) -> adresse dans EAX }
         EmitInstr('PUSH EAX');      { push Time addr }
       End;
       EPMatch(')');
@@ -24167,7 +24169,7 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { file var -> addr in EAX }
+        ParseLValueAddrW32(PI, TIdx);   { variable fichier -> adresse }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);              { Time value in EAX }
@@ -24597,10 +24599,10 @@ Begin
           Else
           Begin
             { --- Intel 80386 (Win32) par defaut : PUSH EAX, CALL, ADD ESP,8 --- }
-            ParseExpr(PI);              { var T -> adresse dans EAX }
+            ParseExpr(PI);              { var T -> adresse dans EAX (record : par adresse) }
             EmitInstr('PUSH EAX');
             EPMatch(',');
-            ParseExpr(PI);              { var P -> adresse dans EAX }
+            ParseLValueAddrW32(PI, TIdx);   { var P (LongInt) -> adresse, pas valeur }
             EmitInstr('PUSH EAX');
           End;
         End; { Case }
@@ -31490,7 +31492,8 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_WINDOW : definir zone de texte ------------------ }
-  { Params : [ESP+4]=X1, [ESP+8]=Y1, [ESP+12]=X2, [ESP+16]=Y2    }
+  { Params (empiles dans l ordre X1, Y1, X2, Y2) :                   }
+  { [ESP+16]=X1, [ESP+12]=Y1, [ESP+8]=X2, [ESP+4]=Y2                }
   { Stocke dans WINDMIN/WINDMAX                                     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'WINDOW');
@@ -31500,18 +31503,18 @@ Begin
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH EDX');
   { WINDMIN = (Y1-1)*256 + (X1-1) }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');        { Y1 }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+16]');        { Y1 }
   EmitInstr('DEC EAX');
   EmitInstr('SHL EAX,8');
-  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');         { X1 }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+20]');        { X1 }
   EmitInstr('DEC EDX');
   EmitInstr('OR EAX,EDX');
   EmitInstr('MOV DWORD PTR [WINDMIN],EAX');
   { WINDMAX = (Y2-1)*256 + (X2-1) }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+20]');        { Y2 }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');         { Y2 }
   EmitInstr('DEC EAX');
   EmitInstr('SHL EAX,8');
-  EmitInstr('MOV EDX,DWORD PTR [EBP+16]');        { X2 }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');        { X2 }
   EmitInstr('DEC EDX');
   EmitInstr('OR EAX,EDX');
   EmitInstr('MOV DWORD PTR [WINDMAX],EAX');
@@ -32120,22 +32123,81 @@ Begin
   EmitLabel(TP_RT_PFX + 'FSEARCH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
   EmitInstr('PUSH ECX');
-  { Essayer GetFileAttributesA sur le nom seul d abord }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  { Empiles dans l ordre nom, liste : [EBP+12] = nom ASCIIZ, [EBP+8] = liste ASCIIZ }
+  { 1. le nom tel quel (repertoire courant ou chemin complet) }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
   EmitInstr('CALL GetFileAttributesA');
   EmitInstr('CMP EAX,-1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FS_SELF');
+  { 2. chaque repertoire de la liste (separateur ;) : Dir\Nom dans DOS_PATHBUF }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitLabel(TP_RT_PFX + 'FS_NEXT');
+  EmitInstr('CMP BYTE PTR [ESI],0');
   EmitInstr('JE ' + TP_RT_PFX + 'FS_NF');
-  { Fichier trouve - retourner le nom tel quel }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EDI,[DOS_PATHBUF]');
+  EmitLabel(TP_RT_PFX + 'FS_CPD');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_ED');
+  EmitInstr('CMP AL,'';''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_ED');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FS_CPD');
+  EmitLabel(TP_RT_PFX + 'FS_ED');
+  { repertoire vide : passer ; sinon ajouter \ si absent }
+  EmitInstr('LEA EBX,[DOS_PATHBUF]');
+  EmitInstr('CMP EDI,EBX');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_SKIP');
+  EmitInstr('MOV AL,BYTE PTR [EDI-1]');
+  EmitInstr('CMP AL,''\''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_NM');
+  EmitInstr('CMP AL,''/''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_NM');
+  EmitInstr('CMP AL,'':''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_NM');
+  EmitInstr('MOV BYTE PTR [EDI],''\''');
+  EmitInstr('INC EDI');
+  EmitLabel(TP_RT_PFX + 'FS_NM');
+  { ajouter le nom }
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitLabel(TP_RT_PFX + 'FS_CPN');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FS_CPN');
+  EmitInstr('POP ESI');
+  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('CALL GetFileAttributesA');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_SKIP');
+  EmitInstr('LEA EAX,[DOS_PATHBUF]');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FS_DN');
+  EmitLabel(TP_RT_PFX + 'FS_SKIP');
+  EmitInstr('CMP BYTE PTR [ESI],'';''');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FS_NEXT');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FS_NEXT');
+  EmitLabel(TP_RT_PFX + 'FS_SELF');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
   EmitInstr('JMP ' + TP_RT_PFX + 'FS_DN');
   EmitLabel(TP_RT_PFX + 'FS_NF');
   { Non trouve - retourner chaine vide }
   EmitInstr('MOV BYTE PTR [DOS_ENVBUF],0');
   EmitInstr('LEA EAX,[DOS_ENVBUF]');
   EmitLabel(TP_RT_PFX + 'FS_DN');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
   EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
@@ -33388,9 +33450,10 @@ Begin
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  { Get handle from FILE_HANDLE global (file handle stored there by runtime) }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_HANDLE]');
-  { GetFileTime(hFile, NULL, NULL, &ftWrite) - use 16 bytes on stack for FILETIME }
+  { handle dans la variable fichier ([EBP+12] -> [EBX]) }
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EAX,DWORD PTR [EBX]');
+  { GetFileTime(hFile, NULL, NULL, &ftWrite) - 16 octets sur la pile pour FILETIME }
   EmitInstr('SUB ESP,16');
   EmitInstr('MOV EDI,ESP');
   EmitInstr('PUSH EDI');           { lpLastWriteTime }
@@ -33398,7 +33461,10 @@ Begin
   EmitInstr('PUSH 0');             { lpCreationTime = NULL }
   EmitInstr('PUSH EAX');           { hFile }
   EmitInstr('CALL GetFileTime');
-  { Convert FILETIME to DOS time via FileTimeToDosDateTime }
+  { UTC -> heure locale (comme FPC), puis FILETIME -> date/heure DOS }
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL FileTimeToLocalFileTime');
   EmitInstr('LEA EAX,[EDI+8]');    { space for DosDate and DosTime (2 words each) }
   EmitInstr('LEA ECX,[EDI+12]');
   EmitInstr('PUSH ECX');           { lpFatTime }
@@ -33424,7 +33490,24 @@ Begin
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  EmitComment('SetFTime - stub Win32 (complex FILETIME conversion)');
+  { heure DOS (mot bas = heure, mot haut = date) -> FILETIME locale -> FILETIME UTC }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');          { Time : date:heure }
+  EmitInstr('PUSH OFFSET SF_FTTMP');               { FILETIME locale }
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('AND EDX,0FFFFh');
+  EmitInstr('PUSH EDX');                           { wFatTime }
+  EmitInstr('SHR EAX,16');
+  EmitInstr('PUSH EAX');                           { wFatDate }
+  EmitInstr('CALL DosDateTimeToFileTime');
+  EmitInstr('PUSH OFFSET SF_FTTMP+8');             { FILETIME UTC }
+  EmitInstr('PUSH OFFSET SF_FTTMP');
+  EmitInstr('CALL LocalFileTimeToFileTime');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');         { variable fichier }
+  EmitInstr('PUSH OFFSET SF_FTTMP+8');             { LastWriteTime }
+  EmitInstr('PUSH 0');                             { LastAccessTime }
+  EmitInstr('PUSH 0');                             { CreationTime }
+  EmitInstr('PUSH DWORD PTR [EBX]');               { handle }
+  EmitInstr('CALL SetFileTime');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -36935,6 +37018,7 @@ Begin
     (U = 'SPRINTF') Or (U = 'STRTOD') Or
     (U = 'SETUNHANDLEDEXCEPTIONFILTER') Or (U = 'GETLASTERROR') Or (U = 'GETVERSION') Or
     (U = 'FILETIMETOLOCALFILETIME') Or (U = 'FILETIMETODOSDATETIME') Or
+    (U = 'DOSDATETIMETOFILETIME') Or (U = 'LOCALFILETIMETOFILETIME') Or (U = 'SETFILETIME') Or
     (U = 'WRITEFILE') Or (U = 'READFILE') Or
     (U = 'GETPROCESSHEAP') Or (U = 'HEAPALLOC') Or
     (U = 'HEAPFREE') Or (U = 'HEAPSIZE') Or (U = 'CREATEFILEA') Or
@@ -40826,6 +40910,7 @@ Begin
   BcDefineDataLabel('DOS_FINDHDL'); BcDataD(-1);
   BcDefineDataLabel('DOS_FINDATTR'); BcDataD(0);
   BcDefineDataLabel('DOS_FTTMP');   BcDataZeros(12);
+  BcDefineDataLabel('SF_FTTMP');    BcDataZeros(16);
   BcDefineDataLabel('DOS_PROCINFO');BcDataZeros(16);
   BcDefineDataLabel('DOS_STARTINFO');BcDataZeros(68);
   BcDefineDataLabel('DOS_EXITVAL'); BcDataD(0);
