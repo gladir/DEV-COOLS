@@ -43479,6 +43479,35 @@ Var
  I: Integer;
 Begin
  CmdStr := TermTrim(CmdStr);
+ { BOGUE REEL CORRIGE (2026-10-16, enquete "C:\WIN31FRA\WIN.COM ne se      }
+ { lance pas") : la boucle generale ci-dessous s arrete au premier          }
+ { caractere hors `[A-Za-z_-0-9]` - ce qui EXCLUT ':' et '\' - pour couper  }
+ { correctement un nom de commande suivi d un COMMUTATEUR sans espace       }
+ { (ex. "DIR/W" -> CurrCmd="DIR", ParamStr="/W"). Mais ce MEME critere      }
+ { coupe TOUT chemin absolu des le 2e caractere : "C:\WIN31FRA\WIN.COM"     }
+ { devenait CurrCmd="C" (!) et ParamStr=":\WIN31FRA\WIN.COM" - la VRAIE     }
+ { commande etait perdue, et le repli "commande inconnue -> executable"     }
+ { cherchait alors un improbable "C.COM"/"C.EXE" dans le repertoire          }
+ { courant (confirme en direct : un executable "C.EXE" SANS RAPPORT,        }
+ { residu d un autre chantier, trainait par coincidence dans ce repertoire   }
+ { et se lancait a la place de WIN.COM - symptome totalement trompeur,       }
+ { "Impossible de trouver les fichiers necessaires pour executer Windows"   }
+ { etant en realite le message DOS-stub classique de CE AUTRE executable).  }
+ { Correctif cible : UNIQUEMENT quand l entree commence par un vrai         }
+ { prefixe de chemin absolu ("X:" ou "X:\", lettre de lecteur), le nom de   }
+ { commande s etend jusqu au premier ESPACE/TAB (comme un vrai chemin DOS   }
+ { peut contenir ':'/'\'/'.'), SANS toucher a la boucle generale ci-dessous }
+ { (qui reste necessaire telle quelle pour des raccourcis sans espace comme }
+ { "CD.." -> CurrCmd="CD", ParamStr=".." - '.' doit continuer a arreter la   }
+ { boucle generale dans TOUS LES AUTRES CAS). }
+ If (Length(CmdStr) >= 2) And (CmdStr[1] In ['A'..'Z', 'a'..'z']) And
+    (CmdStr[2] = ':') Then Begin
+  I := 1;
+  While (I <= Length(CmdStr)) And (Not (CmdStr[I] In [' ', #9])) Do Inc(I);
+  CurrCmd := TermStrToUpper(Copy(CmdStr, 1, I - 1));
+  ParamStr := TermTrimL(Copy(CmdStr, I, 255));
+  Exit;
+ End;
  For I := 1 To Length(CmdStr) Do Begin
   If Not (CmdStr[I] In ['A'..'Z', 'a'..'z', '_', '-',
    '0'..'9']) Then Begin
@@ -103820,6 +103849,7 @@ End;
 Procedure Emu_Done(Var C: TEmuCPU); Forward;
 Procedure Emu_WriteByte(Var C: TEmuCPU; Seg, Ofs: Word; X: Byte); Forward;
 Procedure Emu_WriteWord(Var C: TEmuCPU; Seg, Ofs, X: Word); Forward;
+Procedure Emu_WriteAsciiz(Var C: TEmuCPU; Seg, Ofs: Word; Const S: String); Forward;
 Procedure Emu_PushWord(Var C: TEmuCPU; Value: Word); Forward;
 Function Emu_PopWord(Var C: TEmuCPU): Word; Forward;
 { Emu_ReadWord et Emu_StepOne ont deja un Forward plus haut (~ligne 10539/ }
@@ -155147,8 +155177,20 @@ Var
  Base, UpName, Candidate: String;
 Begin
  TermFindDosExecutable := '';
- Base := Dir;
- If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ { BOGUE REEL CORRIGE (2026-10-16, enquete "C:\WIN31FRA\WIN.COM ne se      }
+ { lance pas", suite du correctif TermExtractCommand ci-dessus) : CmdName  }
+ { peut desormais arriver ICI comme un chemin ABSOLU complet (ex.          }
+ { "C:\WIN31FRA\WIN.COM") plutot qu un simple nom de fichier - l ancien      }
+ { code faisait TOUJOURS `Base + CmdName`, produisant un chemin absurde     }
+ { a DEUX lettres de lecteur ("C:\...DEV-COOLS\C:\WIN31FRA\WIN.COM"), que   }
+ { FileExists rejette silencieusement - un chemin deja absolu doit etre     }
+ { utilise TEL QUEL, sans le prefixer par le repertoire courant. }
+ If (Length(CmdName) >= 2) And (CmdName[1] In ['A'..'Z', 'a'..'z']) And
+    (CmdName[2] = ':') Then Base := ''
+ Else Begin
+  Base := Dir;
+  If (Length(Base) > 0) And (Base[Length(Base)] <> '\') Then Base := Base + '\';
+ End;
  UpName := UpCaseStr(CmdName);
  If (Length(UpName) > 4) And
     ((Copy(UpName, Length(UpName) - 3, 4) = '.COM') Or
@@ -184684,14 +184726,34 @@ End;
 { Environnement DOS synthetique par defaut - appele UNE FOIS au              }
 { chargement (Emu_LoadComAt/Emu_LoadExeAt ci-dessous), avant tout            }
 { Clear/Set-Variable eventuel. }
-Procedure Emu_DosEnvBuildDefault(Var C: TEmuCPU; EnvSeg: Word);
+Procedure Emu_DosEnvBuildDefault(Var C: TEmuCPU; EnvSeg: Word;
+ Const ExePath: String);
 Var
  Vars: Array[0..7] Of String;
+ I, Pos: Integer;
 Begin
  Vars[0] := 'COMSPEC=C:\COMMAND.EXE';
  Vars[1] := 'PATH=C:\';
  Vars[2] := 'PROMPT=$P$G';
  Emu_DosEnvWrite(C, EnvSeg, Vars, 3);
+ { BOGUE REEL CORRIGE (2026-10-16, enquete "C:\WIN31FRA\WIN.COM affiche    }
+ { 'Impossible de trouver les fichiers necessaires'") : un VRAI DOS ajoute }
+ { apres le double NUL terminant le bloc environnement normal un en-tete  }
+ { non documente mais UNIVERSELLEMENT exploite (voir "Undocumented DOS",  }
+ { RBIL) : un mot = 1 puis le CHEMIN COMPLET ASCIIZ de l executable       }
+ { lance - absent ici, cet en-tete n a JAMAIS ete ecrit (Emu_DosEnvWrite   }
+ { s arrete au double NUL normal). WIN.COM (et de nombreux installeurs de  }
+ { cette epoque) s en sert pour localiser SON PROPRE repertoire (pas le    }
+ { repertoire courant, qui peut etre different) et y chercher KRNL286/     }
+ { KRNL386/GDI/USER/SYSTEM.INI - sans ce chemin, il conclut "fichiers       }
+ { introuvables" des ses toute premieres instructions, AVANT meme de        }
+ { tenter la moindre ouverture de fichier reel (confirme en direct : aucun }
+ { AH=3Dh observe entre la verification EMS et ce message). }
+ Pos := 0;
+ For I := 0 To 2 Do Pos := Pos + Length(Vars[I]) + 1;
+ Inc(Pos); { le double NUL deja ecrit par Emu_DosEnvWrite (2e NUL du bloc) }
+ Emu_WriteWord(C, EnvSeg, Pos, 1);
+ Emu_WriteAsciiz(C, EnvSeg, Pos + 2, ExePath);
 End;
 
 { ========================================================================= }
@@ -185803,7 +185865,7 @@ Begin
  { avant que EmuNextFreeSeg ne soit calculable) via un patch cible de son   }
  { seul champ EnvSeg (offset $2C, convention PSP standard). }
  EmuDosEnvSeg := EmuNextFreeSeg;
- Emu_DosEnvBuildDefault(C, EmuDosEnvSeg);
+ Emu_DosEnvBuildDefault(C, EmuDosEnvSeg, FileName);
  Inc(EmuNextFreeSeg, 16);
  Emu_WriteWord(C, C.Segs.CS, $2C, EmuDosEnvSeg);
  Emu_LoadComAt := True;
@@ -185931,7 +185993,7 @@ Begin
  { le PSP (voir le commentaire sur PSPSeg ci-dessus) - jamais peuplee       }
  { jusqu'ici. Aucun carve/patch necessaire ici, juste la remplir. }
  EmuDosEnvSeg := AtSeg;
- Emu_DosEnvBuildDefault(C, EmuDosEnvSeg);
+ Emu_DosEnvBuildDefault(C, EmuDosEnvSeg, FileName);
  { Chaine MCB reelle (2026-09-06, voir Emu_McbChainInit ci-dessus, section  }
  { "Chaine MCB (Memory Control Block) reelle") : UNIQUEMENT au chargement   }
  { de premier niveau (McbInit=True) - un enfant EXEC (McbInit=False)        }
