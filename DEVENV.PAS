@@ -209073,6 +209073,33 @@ Var
  LslRawLimit, LslEffLimit: LongInt;    { limite brute puis apres granularite}
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
+ { BOGUE REEL (2026-10-18, enquete WIN.COM 386 Enhanced Mode, cause du      }
+ { plantage "CALL FAR FFFF:0000" - voir [[project_devenv_wincom_launch]]) :}
+ { FFFF:0000 (adresse physique $FFFF0) est l'emplacement traditionnel du    }
+ { vecteur de RESET du CPU x86 reel - utilise DELIBEREMENT par du code      }
+ { 286/386 d'epoque (HIMEM.SYS, et ici le VMM de Windows 3.1 386 Enhanced    }
+ { Mode) comme UNIQUE moyen "officiel" de repasser en mode reel depuis le   }
+ { mode protege (le 80286 n'a AUCUNE instruction pour cela) : le programme   }
+ { ecrit un code non-nul dans le registre CMOS $0F (octet d'etat d'arret,    }
+ { via les ports $70/$71, deja emule - voir Emu_CMOS_WriteReg) PUIS un       }
+ { pointeur FAR de reprise a l'adresse BIOS 0000:0467, puis force une         }
+ { "reinitialisation" materielle en sautant/appelant FFFF:0000. Un vrai       }
+ { BIOS, demarrant la depuis ce vecteur de reset, lit ce registre et saute    }
+ { directement a la reprise au lieu de refaire tout le POST. Avant ce         }
+ { correctif, cette zone n'avait AUCUN code reel (memoire non initialisee,   }
+ { lue comme $F6 repete) - le CPU "partait en vrille" en executant du bruit  }
+ { jusqu'a un div0 (Fault=8) sur une zone non mappee. }
+ If (P.CPU.Segs.CS = $FFFF) And (P.CPU.IP = $0000) Then Begin
+  If Emu_CMOS_ReadReg($0F) <> 0 Then Begin
+   Emu_CMOS_WriteReg($0F, 0); { le vrai BIOS la remet a 0 apres l avoir honoree }
+   NewIP := Emu_ReadWord(P.CPU, 0, $0467);
+   NewCS := Emu_ReadWord(P.CPU, 0, $0469);
+   P.CPU.Segs.CS := NewCS;
+   P.CPU.IP := NewIP;
+  End Else
+   P.CPU.Fault := sfColdBoot; { aucune reprise connue : vrai demarrage a froid }
+  Exit;
+ End;
  InstructionIP := P.CPU.IP;
  If (OptionsDlg.Data.DosLogDiag Or OptionsDlg.Data.DosLogInt13) And
    (((P.CPU.Segs.CS = $14F1) And (P.CPU.IP >= $007E) And
