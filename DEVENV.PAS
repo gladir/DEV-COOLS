@@ -208724,18 +208724,34 @@ End;
 { (POPF/POPFD, IRET/IRETD - voir Emu_StepOne $9D et $CF) - c est l une des }
 { techniques de detection CPU les plus classiques (voir TESTS/DOSEMU/      }
 { CPUDETECT.ASM) : pre-286 (8086/8088/NEC V20/V30/80186/80188) force ces   }
-{ bits a 1 quoi qu on y mette ; le 80286 reel (en mode reel) les force a 0 ;}
-{ le 80386+ rend les bits 12-13 (IOPL) et 14 (NT) reellement pilotables    }
-{ par le programme (bit 15 reste reserve a 1 dans les 3 cas 286+). }
+{ bits a 1 quoi qu on y mette ; le 80286 reel (en mode reel) les force a 0. }
+{ BOGUE REEL CORRIGE (2026-10-18, enquete "WIN.COM ne demarre pas" -       }
+{ [[project_devenv_wincom_launch]]) : le bit 15 etait FORCE a 1 pour       }
+{ 80386+ ("bit15 reste reserve a 1 dans les 3 cas 286+", AFFIRMATION         }
+{ FAUSSE - aucune source ne l etayait, c etait une supposition). Confirme  }
+{ FAUX en direct par desassemblage REEL de C:\WIN31FRA\WIN.COM (DISSYS,    }
+{ voir la routine a 3253h) : son propre test de detection CPU efface       }
+{ D ABORD TOUS les bits (XOR AX,AX;POPF) puis teste le bit 15 SEUL - s il   }
+{ est ENCORE a 1, il conclut IMMEDIATEMENT "pre-286, abandon" (code       }
+{ retour 0) - EXACTEMENT le chemin emprunte a tort par un VRAI 80386 avec  }
+{ l ancien code, qui forcait ce bit a 1 EXACTEMENT comme un pre-286. Seul  }
+{ un VRAI 80386 qui voit ce bit RETOMBER a 0 (comme sur du VRAI materiel)  }
+{ poursuit alors vers le test suivant (tenter de POSITIONNER les bits      }
+{ 12-14/IOPL+NT, ce qui reussit sur 386+ et echoue sur 286) pour conclure  }
+{ "0386h" - avec l ancien code, AUCUN programme ne pouvait JAMAIS atteindre}
+{ cette conclusion pour un CPU configure en 80386+, puisque le bit 15      }
+{ restait absurdement bloque a 1 (indiscernable d un 8086 reel) a chaque   }
+{ fois que le programme tentait de l effacer. Le VRAI 80386+ rend donc    }
+{ les bits 12-15 ENTIEREMENT pilotables (lecture/ecriture fidele, aucun     }
+{ forcage), le 80286 force 12-15 a 0 (12-14 ET 15), seul le pre-286 force  }
+{ 12-15 a 1 - un modele bien PLUS SIMPLE que les 3 cas distincts d avant.  }
 Procedure Emu_ApplyFlagsReservedBits(Var F: Word);
 Begin
  If Not EmuCpu286Plus Then Begin
   F := F Or $F000;
   Exit;
  End;
- If EmuCpuFlags386Plus Then
-  F := F Or $8000
- Else
+ If Not EmuCpuFlags386Plus Then
   F := F And $0FFF;
 End;
 
