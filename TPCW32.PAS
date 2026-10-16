@@ -5236,6 +5236,7 @@ Begin
   EmitRaw('SF_FTTMP DB 16 DUP(0)');      { SetFTime : FILETIME locale puis UTC    }
   EmitRaw('DOS_PROCINFO DB 16 DUP(0)');{ PROCESS_INFORMATION (16 bytes)         }
   EmitRaw('DOS_STARTINFO DB 68 DUP(0)');{ STARTUPINFOA (68 bytes)               }
+  EmitRaw('DOS_CMDBUF DB 520 DUP(0)');  { Exec : ligne de commande "Path" args   }
   EmitRaw('DOS_EXITVAL DD 0');          { code sortie processus                  }
   EmitBlankLine;
 
@@ -23974,9 +23975,11 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        If LastExprIsPascalStr Then EmitInstr('INC EAX');   { -> ASCIIZ }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);
+        If LastExprIsPascalStr Then EmitInstr('INC EAX');   { -> ASCIIZ }
         EmitInstr('PUSH EAX');
         EPMatch(')');
       End;
@@ -32548,7 +32551,9 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_EXEC : executer un programme -------------------- }
-  { Params : [ESP+4]=Path, [ESP+8]=CmdLine (Pascal strings)        }
+  { Params (empiles dans l ordre Path, CmdLine, chaines ASCIIZ) :   }
+  { [EBP+12]=Path, [EBP+8]=CmdLine. Comme FPC : CreateProcessA(nil,  }
+  { '"Path" CmdLine') puis attente ; DosError = GetLastError en echec }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'EXEC');
   EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
@@ -32561,23 +32566,52 @@ Begin
   EmitInstr('XOR AL,AL');
   EmitInstr('REP STOSB');
   EmitInstr('MOV DWORD PTR [DOS_STARTINFO],68');  { cb = sizeof(STARTUPINFO) }
-  { CreateProcessA(lpApp, lpCmd, 0,0, FALSE, 0, 0, 0, &si, &pi) }
+  { Ligne de commande : "Path" CmdLine dans DOS_CMDBUF (520 octets max) }
+  EmitInstr('LEA EDI,[DOS_CMDBUF]');
+  EmitInstr('MOV BYTE PTR [EDI],''"''');
+  EmitInstr('INC EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'EX_CP');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'EX_CP2');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JB ' + TP_RT_PFX + 'EX_CP');
+  EmitLabel(TP_RT_PFX + 'EX_CP2');
+  EmitInstr('MOV BYTE PTR [EDI],''"''');
+  EmitInstr('INC EDI');
+  EmitInstr('MOV BYTE PTR [EDI],'' ''');
+  EmitInstr('INC EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'EX_CC');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'EX_CC2');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JB ' + TP_RT_PFX + 'EX_CC');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'EX_CC2');
+  { CreateProcessA(NULL, cmd, 0,0, TRUE, 0, 0, 0, &si, &pi) }
   EmitInstr('PUSH OFFSET DOS_PROCINFO');
   EmitInstr('PUSH OFFSET DOS_STARTINFO');
   EmitInstr('PUSH 0');           { lpCurrentDirectory }
   EmitInstr('PUSH 0');           { lpEnvironment }
   EmitInstr('PUSH 0');           { dwCreationFlags }
-  EmitInstr('PUSH 0');           { bInheritHandles }
+  EmitInstr('PUSH 1');           { bInheritHandles : le fils herite de la console }
   EmitInstr('PUSH 0');           { lpThreadAttributes }
   EmitInstr('PUSH 0');           { lpProcessAttributes }
-  { CmdLine }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
-  EmitInstr('INC EAX');
-  EmitInstr('PUSH EAX');
-  { Path }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('INC EAX');
-  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH OFFSET DOS_CMDBUF');
+  EmitInstr('PUSH 0');           { lpApplicationName = NULL : recherche dans PATH }
   EmitInstr('CALL CreateProcessA');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JZ ' + TP_RT_PFX + 'EX_ER');
@@ -32599,7 +32633,8 @@ Begin
   EmitInstr('MOV DWORD PTR [DOSERROR],0');
   EmitInstr('JMP ' + TP_RT_PFX + 'EX_DN');
   EmitLabel(TP_RT_PFX + 'EX_ER');
-  EmitInstr('MOV DWORD PTR [DOSERROR],2');  { fichier non trouve }
+  EmitInstr('CALL GetLastError');
+  EmitInstr('MOV DWORD PTR [DOSERROR],EAX');  { 2 fichier non trouve, 3 chemin, 5 acces... }
   EmitLabel(TP_RT_PFX + 'EX_DN');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
@@ -40913,6 +40948,7 @@ Begin
   BcDefineDataLabel('SF_FTTMP');    BcDataZeros(16);
   BcDefineDataLabel('DOS_PROCINFO');BcDataZeros(16);
   BcDefineDataLabel('DOS_STARTINFO');BcDataZeros(68);
+  BcDefineDataLabel('DOS_CMDBUF');  BcDataZeros(520);
   BcDefineDataLabel('DOS_EXITVAL'); BcDataD(0);
 
   { Variables File I/O }
