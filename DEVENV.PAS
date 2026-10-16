@@ -207208,34 +207208,26 @@ Begin
       NewSel := Dpmi_ReadWord(P, Op.LinAddr + 4);
      End;
      If NewSel = EMU_DPMI_RAWSWITCH_SEL Then Begin
-      { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", 5e trouvaille) :    }
-      { ce CALL FAR ne "continue PAS sur place" - voir DOC/DPMI.txt 7.7, qui   }
-      { decrit SI:DI/BX:CX comme l adresse d une "pile de commutation", pas   }
-      { un point d entree a sauter-et-continuer. Confirme en direct : le      }
-      { client encapsule l appel dans un petit "helper" (empile ES,DI,AX,     }
-      { DS->ES avant d appeler [ptr], les depile APRES dans son epilogue      }
-      { "POP AX;POP DI;POP ES;RETF") et son APPELANT a lui-meme empile un CS   }
-      { "manuel" (PUSH CS) avant d appeler ce helper par CALL PROCHE - but :    }
-      { faire agir le futur RETF du helper comme un retour LOIN jusqu a        }
-      { l appelant (CS pousse = son propre selecteur courant). La 1ere        }
-      { version ("continue a l EIP courant") laissait cet epilogue s executer }
-      { en mode REEL, ou "CS=4" (un SELECTEUR, laisse par le client) etait pris}
-      { a tort pour un VRAI segment reel (adresse IVT/garbage). Le retour      }
-      { reel ne doit se faire qu APRES avoir rejoue cet epilogue (depiler les  }
-      { 3 mots AX/DI/ES du helper), PUIS traduire IP:CS par la pile - seule    }
-      { facon de retrouver le CS=4->0124h attendu. }
-      If OpSize = 2 Then Begin
-       DpmiCPU.Reg.AX := Dpmi_Pop16(P);
-       DpmiCPU.Reg.DI := Dpmi_Pop16(P);
-       DpmiCPU.SegSel[0] := Dpmi_Pop16(P); { ES }
-       RetIP32 := Dpmi_Pop16(P); RetCS16 := Dpmi_Pop16(P);
-      End Else Begin
-       DpmiCPU.Reg.EAX := Dpmi_Pop32(P);
-       DpmiCPU.Reg.EDI := Dpmi_Pop32(P);
-       DpmiCPU.SegSel[0] := Word(Dpmi_Pop32(P)); { ES }
-       RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
-      End;
-      Dpmi_RawSwitchToReal(P, RetCS16, RetIP32);
+      { BOGUE REEL CORRIGE (2026-10-14, enquete PKUNZIP.EXE, suite de la       }
+      { "5e trouvaille" ci-dessus) : l ancien correctif supposait un helper    }
+      { fixe (empile ES,DI,AX, depile pareil + CS manuel) reverse-ingenieurs   }
+      { sur UN SEUL client (TPX.EXE/DOS4GW) - confirme FAUX en direct avec un  }
+      { second client (PKUNZIP.EXE, PKLITE 16 bits ordinaire) : son propre     }
+      { appel "CALL FAR [mem-vers-FFF8:0]" ne pousse QU UN SEUL registre       }
+      { (PUSH EDI, sauvegarde generique) avant l appel - depiler 5 valeurs      }
+      { fixes lisait dans de la pile non pertinente, donnant un CS:IP perime.  }
+      { La VRAIE spec (DOC/DPMI.txt 7.7) decrit ce point d entree comme un    }
+      { BASCULEMENT DE MODE PUR : appele depuis le protege, il continue        }
+      { EXACTEMENT a l instruction suivante (meme octet physique que           }
+      { Base(CS)+EIP courant, EXACTEMENT le meme principe que Dpmi_Switch pour }
+      { le sens inverse - voir son commentaire de tete) mais desormais         }
+      { interprete en REEL - sans toucher a la pile ni deviner une convention  }
+      { d appel specifique a un client. PKUNZIP rappelle d ailleurs ce MEME     }
+      { point d entree une 2e fois un peu plus loin (AL=1 au lieu de 0) pour   }
+      { rebasculer en protege - bascule a DOUBLE SENS, pas une sortie          }
+      { definitive, confirmant que "continuer sur place" est la seule          }
+      { semantique qui marche pour N IMPORTE QUEL client. }
+      Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP);
      End Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
       If OpSize = 2 Then Begin
        Dpmi_Push16(P, DpmiCPU.SegSel[1]); Dpmi_Push16(P, Word(DpmiCPU.EIP));
@@ -207257,12 +207249,7 @@ Begin
      End;
      If NewSel = EMU_DPMI_RAWSWITCH_SEL Then Begin
       { Meme bogue/correctif que Sub=3 ci-dessus - voir ce commentaire. }
-      If OpSize = 2 Then Begin
-       RetIP32 := Dpmi_Pop16(P); RetCS16 := Dpmi_Pop16(P);
-      End Else Begin
-       RetIP32 := Dpmi_Pop32(P); RetCS16 := Word(Dpmi_Pop32(P));
-      End;
-      Dpmi_RawSwitchToReal(P, RetCS16, RetIP32);
+      Dpmi_RawSwitchToReal(P, DpmiCPU.SegSel[1], DpmiCPU.EIP);
      End Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
       DpmiCPU.SegSel[1] := NewSel;
       DpmiCPU.EIP := Target;
@@ -208259,6 +208246,29 @@ Begin
    If Emu_IntIsHooked(P, $29) Then Emu_FireHwInt(P, $29)
    Else EmuVScr_PutChar(P, Chr(P.CPU.Regs.AL));
   $2F: If Emu_IntIsHooked(P, $2F) Then Emu_FireHwInt(P, $2F) Else Emu_DoInt2F(P);
+  $31: If EmuDpmi.Active Then Begin
+   { BOGUE REEL CORRIGE (2026-10-14, enquete PKUNZIP.EXE) : un client qui    }
+   { vient de rebasculer en mode reel via le "raw mode switch" (voir         }
+   { Dpmi_RawSwitchToReal/Emu_RawSwitchToProtected) peut tout a fait          }
+   { rappeler INT 31h depuis ce mode reel (confirme en direct : PKUNZIP.EXE  }
+   { le fait, AX=0205h) - un VRAI hote DPMI repond encore a ces appels dans   }
+   { les deux sens (la plupart des services AX=00xx-23xx manipulent de la    }
+   { donnee hote, pas le CPU courant). Avant ce correctif, $31 tombait dans   }
+   { le repli generique ci-dessous (silencieux, CF inchange) : un client     }
+   { honnete qui teste CF pour detecter un service non supporte recevait un  }
+   { CF PERIME (d un calcul precedent sans rapport) au lieu du vrai "non      }
+   { supporte", le menant vers une adresse jamais initialisee (confirme :    }
+   { PKUNZIP.EXE finissait sur CS:IP=0000:0000 juste apres). Synchronise      }
+   { DpmiCPU.Reg/Flags depuis P.CPU (lus a jour, pas geles - DpmiCPU.Reg ne   }
+   { l est que DE la bascule precedente) avant d appeler Emu_DoInt31, meme    }
+   { patron que Dpmi_ForwardIntToReal pour le sens inverse. }
+   DpmiCPU.Reg := P.CPU.Regs;
+   DpmiCPU.Flags.s := P.CPU.Flags.s;
+   Emu_DoInt31(P);
+   P.CPU.Regs := DpmiCPU.Reg;
+   If EFG_CF In DpmiCPU.Flags.s Then Include(P.CPU.Flags.s, EFG_CF)
+   Else Exclude(P.CPU.Flags.s, EFG_CF);
+  End;
   $33: Begin
    { N intercepter reellement que si la case "Souris" est cochee            }
    { (EmuMouseActive) - sinon, comportement identique a toute autre         }
@@ -208527,13 +208537,26 @@ Const
  { TopView continue de determiner CE QUE repond notre trampoline (voir     }
  { Emu_DoInt, Case $15 - reponse "non supporte" CF=1/AH=86h en dehors de   }
  { AH=C2h/10h-12h), pas SI un vecteur existe. }
- Always: Array[0..11] Of Byte =
-  ($08,$10,$11,$12,$13,$15,$16,$1A,$20,$21,$27,$2F);
+ { BOGUE REEL CORRIGE (2026-10-16, enquete PKUNZIP.EXE - banniere invisible) :}
+ { $29 (INT 29h, "fast console output") manquait de cette liste, alors que   }
+ { Emu_DoInt le gere reellement depuis le 2026-09-06 (Case $29, voir son     }
+ { commentaire) - sans entree par defaut ecrite ici, Emu_IntIsHooked lisait  }
+ { un IVT[$29] JAMAIS initialise par nous (reste a sa valeur de depart,      }
+ { CS:IP=0000:002A observe en direct - memoire basse non pertinente, PAS un  }
+ { vrai gestionnaire), le rapportait donc TOUJOURS comme "hooke par          }
+ { l'invite", et chainait vers ce couple CS:IP via Emu_FireHwInt au lieu     }
+ { d'appeler EmuVScr_PutChar - chaque caractere ecrit par le programme via   }
+ { INT 29h (confirme : la banniere "Usage: PKUNZIP..." de PKUNZIP.EXE) etait }
+ { ainsi PERDU silencieusement (pas de plantage, juste aucune sortie), le    }
+ { CPU "atterrissant" sur de la memoire jamais ecrite qui ne fait rien       }
+ { d'observable. }
+ Always: Array[0..12] Of Byte =
+  ($08,$10,$11,$12,$13,$15,$16,$1A,$20,$21,$27,$29,$2F);
  { Signature standard LIM EMS 3.2+ (voir commentaire plus bas, bogue EMS). }
  EmuEmsSignature: Array[0..7] Of Char = 'EMMXXXX0';
 Var I: Integer;
 Begin
- For I := 0 To 11 Do Emu_WriteDefaultVector(P, Always[I]);
+ For I := 0 To 12 Do Emu_WriteDefaultVector(P, Always[I]);
  If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
  If EmuEms.Active     Then Begin
@@ -211581,9 +211604,26 @@ Begin
          P.CPU.IP := V16;
          Exit;
         End;
-     3: Begin                                   { CALL FAR m16:16 }
-         NewIP := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
-         NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+     3: Begin                                   { CALL FAR m16:16 (m16:32 si    }
+                                                 { OperandSize32 - voir ci-dessous}
+         { BOGUE REEL CORRIGE (2026-10-14, enquete PKUNZIP.EXE) : cette forme   }
+         { ne lisait JAMAIS que 2+2 octets (m16:16), meme sous prefixe $66 -     }
+         { un CALL/JMP FAR INDIRECT 32 bits (m16:32, 4+2 octets, le cas reel     }
+         { rencontre : PKUNZIP.EXE l utilise pour rappeler le "raw mode         }
+         { switch", voir Emu_RawSwitchToProtected) lisait alors les 2 PREMIERS  }
+         { octets du pointeur comme IP (au lieu des 4) et NewCS depuis un       }
+         { DECALAGE FAUX (Ofs+2 au lieu de Ofs+4) - retombant sur des octets    }
+         { qui n ont rien a voir avec le vrai selecteur, le marqueur            }
+         { EMU_DPMI_RAWSWITCH_SEL n etait alors JAMAIS reconnu, et le CPU         }
+         { sautait a CS:IP=0000:0000 (plantage silencieux, pris pour une fin    }
+         { de programme propre faute de code a cette adresse). }
+         If P.CPU.OperandSize32 Then Begin
+          V32 := Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs));
+          NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 4));
+         End Else Begin
+          V32 := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
+          NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+         End;
          If NewCS = EMU_DPMI_RAWSWITCH_SEL Then Begin
           { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", 6e trouvaille) : }
           { voir Emu_RawSwitchToProtected - symetrique de Sub=3/5 dans          }
@@ -211595,7 +211635,7 @@ Begin
          Inc(P.CPU.IP, 1 + Op.Len);
          Emu_PushWord(P.CPU, P.CPU.Segs.CS);
          Emu_PushWord(P.CPU, P.CPU.IP);
-         P.CPU.IP := NewIP;
+         P.CPU.IP := Word(V32);
          P.CPU.Segs.CS := NewCS;
          Exit;
         End;
@@ -211603,15 +211643,22 @@ Begin
          P.CPU.IP := V16;
          Exit;
         End;
-     5: Begin                                   { JMP FAR m16:16 }
-         NewIP := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
-         NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+     5: Begin                                   { JMP FAR m16:16 (m16:32 si      }
+                                                 { OperandSize32) - meme correctif}
+                                                 { que Sub=3 ci-dessus.           }
+         If P.CPU.OperandSize32 Then Begin
+          V32 := Emu_ReadDWord(P.CPU, Op.Seg, Word(Op.Ofs));
+          NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 4));
+         End Else Begin
+          V32 := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
+          NewCS := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
+         End;
          If NewCS = EMU_DPMI_RAWSWITCH_SEL Then Begin
           { Meme bogue/correctif que Sub=3 ci-dessus - voir Emu_RawSwitchToProtected. }
           Emu_RawSwitchToProtected(P, P.CPU.Segs.CS, Word(P.CPU.IP + 1 + Op.Len));
           Exit;
          End;
-         P.CPU.IP := NewIP;
+         P.CPU.IP := Word(V32);
          P.CPU.Segs.CS := NewCS;
          Exit;
         End;
