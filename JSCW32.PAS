@@ -14,7 +14,7 @@
   06. [IMPLEMENTE] Construire l'AST et l'analyse semantique : table des symboles et des scopes (global, fonction, bloc), hoisting de var/function, zone morte temporelle (TDZ) de let/const, erreur sur reaffectation d'une const, detection des variables capturees par des fonctions imbriquees (necessaire aux closures), resolution de this (global, methode, constructeur, fleche) et diagnostics de redeclaration/variable non declaree.
   07. [IMPLEMENTE] Definir le modele de valeurs runtime 32 bits et le gestionnaire memoire : valeurs etiquetees (undefined, null, booleen, nombre, chaine, objet, tableau, fonction/closure, RegExp), nombres IEEE 754 via FPU x87 avec chemin rapide entier, allocation sur le tas Windows (HeapAlloc/VirtualAlloc), tampons de chaines, pile d'appels, et ramasse-miettes simple (mark & sweep) ou strategie documentee de non-liberation.
   08. [IMPLEMENTE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
-  09. [A FAIRE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
+  09. [IMPLEMENTE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
   10. [A FAIRE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
   11. [A FAIRE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
   12. [A FAIRE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
@@ -316,6 +316,8 @@ Const
   STD_STR_COUNT = 21;
   STD_ATOM_FIRST = 15;
   STD_DBL_NEGZERO = 3;
+  STD_DBL_NAN = 4;
+  STD_DBL_INF = 5;
   StdStrings: Array[1..STD_STR_COUNT] Of String[20] = (
     '', 'undefined', 'null', 'true', 'false', 'NaN', 'Infinity', '-Infinity',
     'object', 'boolean', 'number', 'string', 'function', '[object Object]',
@@ -323,6 +325,13 @@ Const
     'valueOf'
   );
   RT_DATA_VAR_COUNT = 12;
+  { ---- Code genere (TODO 9) ---- }
+  SYMK_D = 1;                     { symbole du pool de donnees }
+  SYMK_X = 2;                     { symbole de code ou externe }
+  MAX_INSTR = {$IFDEF FPC}131072{$ELSE}2000{$ENDIF};
+  MAX_XSYMS = {$IFDEF FPC}4096{$ELSE}200{$ENDIF};
+  MAX_COMMENTS = {$IFDEF FPC}20000{$ELSE}500{$ENDIF};
+  MAX_PENDING = 200;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
     'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw'
@@ -382,6 +391,7 @@ Type
     dump_scopes : Boolean;
     dump_runtime: Boolean;
     dump_data   : Boolean;
+    dump_ir     : Boolean;
     output_name : TString;
   End;
 
@@ -528,6 +538,7 @@ Type
 
   TScope = Record
     node, parent, func, first_sym, last_sym, cap_count: LongInt;
+    nslots, args_slot, frame_size: LongInt;     { disposition de la trame }
     kind  : TScopeKind;
     fkind : TFuncKind;
     in_loop, uses_this, this_captured, uses_arguments, has_nested: Boolean;
@@ -535,6 +546,7 @@ Type
 
   TSymbol = Record
     name_tok, scope, node, next, flags, refs, writes: LongInt;
+    slot, name_str: LongInt;   { emplacement de trame ; chaine du nom (TDZ) }
     kind: TDeclKind;
     ds  : LongInt;             { symbole de donnees (variable statique) }
   End;
@@ -620,6 +632,53 @@ Type
     dt    : Array[0..MAX_DATA_IMG - 1] Of Byte;
   End;
 
+  TReg = (R_NONE, R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI);
+
+  TOpdKind = (OD_NONE, OD_REG, OD_IMM, OD_MEM, OD_ADDR, OD_LABEL);
+
+  { Instructions de l'IR ; les TODO suivants ajoutent les leurs. }
+  TOpc = (OP_NONE, OP_LABEL, OP_COMMENT, OP_PROC, OP_ENDP,
+          OP_MOV, OP_LEA, OP_PUSH, OP_POP, OP_ADD, OP_SUB, OP_CMP, OP_TEST,
+          OP_XOR, OP_AND, OP_JMP, OP_JE, OP_JNE, OP_JB, OP_JAE, OP_CALL,
+          OP_RET, OP_LEAVE, OP_NOP);
+
+  { Operande : registre, immediat (disp), memoire [base+disp] ou
+    [symbole+disp], adresse d'un symbole, etiquette locale (disp). }
+  TOperand = Record
+    kind   : TOpdKind;
+    reg    : TReg;
+    base   : TReg;
+    symkind: Byte;             { SYMK_D ou SYMK_X }
+    disp   : LongInt;
+    sym    : LongInt;
+  End;
+
+  TInstr = Record
+    op  : TOpc;
+    a, b: TOperand;
+    line: LongInt;
+  End;
+
+  TXSym = Record
+    name   : String[100];
+    defined: Boolean;
+  End;
+
+  TPendingRec = Record
+    line: LongInt;
+    what: String[60];
+  End;
+
+  TIrInfo = Record
+    built, failed: Boolean;
+    count, xsym_count, comment_count, label_count, proc_count,
+    pending_count, cg_fs, frame_patch, cur_line: LongInt;
+    instrs  : Array[1..MAX_INSTR] Of TInstr;
+    xsyms   : Array[1..MAX_XSYMS] Of TXSym;
+    comments: Array[1..MAX_COMMENTS] Of String[120];
+    pendings: Array[1..MAX_PENDING] Of TPendingRec;
+  End;
+
   TCompilerContext = Record
     options    : TPipelineOptions;
     source_name: TString;
@@ -636,6 +695,7 @@ Type
     sem        : TSemInfo;
     rt         : TRtModel;
     data       : TDataInfo;
+    ir         : TIrInfo;
   End;
 
 Const
@@ -788,6 +848,7 @@ Begin
   ctx.options.dump_scopes := False;
   ctx.options.dump_runtime := False;
   ctx.options.dump_data := False;
+  ctx.options.dump_ir := False;
   ctx.options.output_name := '';
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
@@ -887,6 +948,7 @@ Begin
   Writeln('  -scopes       affiche les portees, symboles et captures');
   Writeln('  -runtime      affiche le modele runtime (valeurs, tas, pile)');
   Writeln('  -data         affiche le pool de donnees (.rdata, .data)');
+  Writeln('  -ir           affiche le code 80386 genere');
   Writeln('  -version      affiche la version');
   Writeln('  -h, -?        affiche cette aide');
   Writeln;
@@ -929,6 +991,8 @@ Begin
         ctx.options.show_version := True
       Else If IsOption(arg, 'v') Or IsOption(arg, 'verbose') Then
         ctx.options.verbose := True
+      Else If IsOption(arg, 'ir') Then
+        ctx.options.dump_ir := True
       Else If IsOption(arg, 'data') Then
         ctx.options.dump_data := True
       Else If IsOption(arg, 'runtime') Then
@@ -5720,6 +5784,8 @@ Begin
         Write('  #', i, ' ', ScopeKindName(ctx.sem.scopes[i].kind));
       Write(' (', NodeKindName(ctx.ast.nodes[ctx.sem.scopes[i].node].kind), '@',
             ctx.lex.tokens[ctx.ast.nodes[ctx.sem.scopes[i].node].tok].line, ')');
+      If ctx.ir.built And (ctx.sem.scopes[i].frame_size > 0) Then
+        Write(' trame=', ctx.sem.scopes[i].frame_size);
       If ctx.sem.scopes[i].parent <> 0 Then
         Write(' parent=#', ctx.sem.scopes[i].parent);
       If ctx.sem.scopes[i].in_loop Then
@@ -5737,6 +5803,8 @@ Begin
           fl := ctx.sem.syms[sy].flags;
           Write('      ', DeclKindName(ctx.sem.syms[sy].kind), ' ',
                 SemTokText(ctx, ctx.sem.syms[sy].name_tok), ' (#', sy, ')');
+          If ctx.ir.built And (ctx.sem.syms[sy].slot > 0) Then
+            Write(' [ebp-', 8 * ctx.sem.syms[sy].slot, ']');
           If fl And SF_HOISTED <> 0 Then
             Write(' hisse');
           If fl And SF_STATIC <> 0 Then
@@ -6893,6 +6961,14 @@ Begin
           End;
       End;
     End;
+  { noms des variables qui exigent un test TDZ a l'execution }
+  For i := 1 To ctx.sem.sym_count Do
+    Begin
+      ctx.sem.syms[i].name_str := 0;
+      If ctx.sem.syms[i].flags And SF_TDZ_CHECK <> 0 Then
+        ctx.sem.syms[i].name_str :=
+          InternText(ctx, ctx.lex.tokens[ctx.sem.syms[i].name_tok].text);
+    End;
   { descripteurs de classes : apres ceux des membres }
   For i := 1 To ctx.ast.node_count Do
     If (ctx.ast.nodes[i].kind = N_CLASS_DECL) Or
@@ -7234,6 +7310,1255 @@ Begin
     End;
 End;
 
+{ ============================================================
+  TODO 9 - CODE 80386 DES VARIABLES ET DES PORTEES
+
+  Representation intermediaire (IR) : une liste d'instructions 80386
+  symboliques (mnemonique, deux operandes, etiquettes, commentaires,
+  debut et fin de procedure). Le TODO 22 l'ecrira en texte assembleur
+  et le TODO 23 l'encodera en octets COFF ; les routines du runtime sont
+  appelees par leur nom (_JSRT_nom) et resolues plus tard.
+
+  Convention : toute expression laisse sa valeur de 8 octets dans
+  EDX:EAX (hi:lo). ECX sert de registre de travail. Les routines du
+  runtime sont appelees en cdecl, valeurs de 8 octets poussees sur la
+  pile (poids fort d'abord), resultat dans EDX:EAX.
+
+  Variables :
+    statique   variable globale du programme : [_JSV_nom] dans .data
+    locale     emplacement de 8 octets sous EBP : [EBP-8*n]
+    cellule    l'emplacement contient un pointeur vers une cellule du
+               tas (variable capturee par une fonction imbriquee) ;
+               la valeur est a cellule+8
+    externe    variable d'une fonction englobante : closure en
+               [EBP+8], environnement en closure+12, pointeur de
+               cellule en environnement+12+4*(k-1)
+  Les symboles lexicaux qui exigent un test TDZ sont ranges avec la
+  marque TDZ jusqu'a leur initialisation ; chaque lecture ou ecriture
+  teste la marque et appelle _JSRT_throw_tdz.
+
+  Les constructions dont le code est ecrit par les TODO suivants
+  (operateurs, appels, controle de flux, fermetures, classes...) sont
+  emises comme un commentaire EN ATTENTE, avec la valeur undefined, et
+  comptees : le TODO 22 refusera de produire un programme tant qu'il en
+  reste.
+  ============================================================ }
+
+{ ---- Operandes et instructions ---- }
+
+Function ToLong(v: Int64): LongInt;
+Begin
+  v := v And $FFFFFFFF;
+  If v > 2147483647 Then
+    ToLong := v - 4294967296
+  Else
+    ToLong := v;
+End;
+
+Function TagImm(t: LongInt): LongInt;
+Begin
+  TagImm := ToLong(RT_TAG_BASE + t);
+End;
+
+Function RegOp(r: TReg): TOperand;
+Var
+  o: TOperand;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  o.kind := OD_REG;
+  o.reg := r;
+  RegOp := o;
+End;
+
+Function ImmOp(v: LongInt): TOperand;
+Var
+  o: TOperand;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  o.kind := OD_IMM;
+  o.disp := v;
+  ImmOp := o;
+End;
+
+Function MemReg(base: TReg; disp: LongInt): TOperand;
+Var
+  o: TOperand;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  o.kind := OD_MEM;
+  o.base := base;
+  o.disp := disp;
+  MemReg := o;
+End;
+
+{ Memoire a l'adresse d'un symbole de donnees (pool) ou externe. }
+Function MemSym(symkind, sym, disp: LongInt): TOperand;
+Var
+  o: TOperand;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  o.kind := OD_MEM;
+  o.symkind := symkind;
+  o.sym := sym;
+  o.disp := disp;
+  MemSym := o;
+End;
+
+Function AddrSym(symkind, sym: LongInt): TOperand;
+Var
+  o: TOperand;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  o.kind := OD_ADDR;
+  o.symkind := symkind;
+  o.sym := sym;
+  AddrSym := o;
+End;
+
+Function LabelOp(id: LongInt): TOperand;
+Var
+  o: TOperand;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  o.kind := OD_LABEL;
+  o.disp := id;
+  LabelOp := o;
+End;
+
+Function NoOp: TOperand;
+Var
+  o: TOperand;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  NoOp := o;
+End;
+
+Procedure Emit(Var ctx: TCompilerContext; op: TOpc; a, b: TOperand);
+Begin
+  If ctx.ir.count >= MAX_INSTR Then
+    Begin
+      If Not ctx.ir.failed Then
+        PipelineError(ctx, 'trop d''instructions generees');
+      ctx.ir.failed := True;
+      Exit;
+    End;
+  Inc(ctx.ir.count);
+  ctx.ir.instrs[ctx.ir.count].op := op;
+  ctx.ir.instrs[ctx.ir.count].a := a;
+  ctx.ir.instrs[ctx.ir.count].b := b;
+  ctx.ir.instrs[ctx.ir.count].line := ctx.ir.cur_line;
+End;
+
+Procedure Emit0(Var ctx: TCompilerContext; op: TOpc);
+Begin
+  Emit(ctx, op, NoOp, NoOp);
+End;
+
+Procedure Emit1(Var ctx: TCompilerContext; op: TOpc; a: TOperand);
+Begin
+  Emit(ctx, op, a, NoOp);
+End;
+
+Function NewLabel(Var ctx: TCompilerContext): LongInt;
+Begin
+  Inc(ctx.ir.label_count);
+  NewLabel := ctx.ir.label_count;
+End;
+
+Procedure PlaceLabel(Var ctx: TCompilerContext; id: LongInt);
+Begin
+  Emit1(ctx, OP_LABEL, LabelOp(id));
+End;
+
+Procedure EmitComment(Var ctx: TCompilerContext; Const text: TString);
+Begin
+  If ctx.ir.comment_count >= MAX_COMMENTS Then
+    Exit;
+  Inc(ctx.ir.comment_count);
+  ctx.ir.comments[ctx.ir.comment_count] := text;
+  Emit1(ctx, OP_COMMENT, ImmOp(ctx.ir.comment_count));
+End;
+
+{ Symbole externe ou de code, retrouve par son nom. }
+Function XSym(Var ctx: TCompilerContext; Const name: TString): LongInt;
+Var
+  i: LongInt;
+Begin
+  For i := 1 To ctx.ir.xsym_count Do
+    If ctx.ir.xsyms[i].name = name Then
+      Begin
+        XSym := i;
+        Exit;
+      End;
+  XSym := 0;
+  If ctx.ir.xsym_count >= MAX_XSYMS Then
+    Begin
+      PipelineError(ctx, 'trop de symboles externes');
+      Exit;
+    End;
+  Inc(ctx.ir.xsym_count);
+  ctx.ir.xsyms[ctx.ir.xsym_count].name := name;
+  ctx.ir.xsyms[ctx.ir.xsym_count].defined := False;
+  XSym := ctx.ir.xsym_count;
+End;
+
+{ Appel d'une routine du runtime : nargbytes octets d'arguments a retirer. }
+Procedure CallRt(Var ctx: TCompilerContext; Const name: TString; nargbytes: LongInt);
+Begin
+  Emit1(ctx, OP_CALL, AddrSym(SYMK_X, XSym(ctx, SymRt(name))));
+  If nargbytes > 0 Then
+    Emit(ctx, OP_ADD, RegOp(R_ESP), ImmOp(nargbytes));
+End;
+
+Procedure LoadUndefined(Var ctx: TCompilerContext);
+Begin
+  Emit(ctx, OP_XOR, RegOp(R_EAX), RegOp(R_EAX));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+End;
+
+{ ---- Disposition des trames ---- }
+
+Procedure LayoutFrames(Var ctx: TCompilerContext);
+Var
+  i, fs: LongInt;
+Begin
+  For i := 1 To ctx.sem.scope_count Do
+    Begin
+      ctx.sem.scopes[i].nslots := 0;
+      ctx.sem.scopes[i].args_slot := 0;
+    End;
+  For i := 1 To ctx.sem.sym_count Do
+    Begin
+      ctx.sem.syms[i].slot := 0;
+      If ctx.sem.syms[i].flags And SF_STATIC = 0 Then
+        Begin
+          fs := ctx.sem.scopes[ctx.sem.syms[i].scope].func;
+          Inc(ctx.sem.scopes[fs].nslots);
+          ctx.sem.syms[i].slot := ctx.sem.scopes[fs].nslots;
+        End;
+    End;
+  For i := 1 To ctx.sem.scope_count Do
+    If (ctx.sem.scopes[i].kind = SK_FUNCTION) And
+       ctx.sem.scopes[i].uses_arguments Then
+      Begin
+        Inc(ctx.sem.scopes[i].nslots);
+        ctx.sem.scopes[i].args_slot := ctx.sem.scopes[i].nslots;
+      End;
+End;
+
+Function AllocTemp(Var ctx: TCompilerContext): LongInt;
+Begin
+  Inc(ctx.sem.scopes[ctx.ir.cg_fs].nslots);
+  AllocTemp := ctx.sem.scopes[ctx.ir.cg_fs].nslots;
+End;
+
+Function SlotDisp(slot: LongInt): LongInt;
+Begin
+  SlotDisp := -RT_VALUE_SIZE * slot;
+End;
+
+{ Position de sy dans l'environnement de la fonction fs (1 = premier). }
+Function CapIndex(Var ctx: TCompilerContext; fs, sy: LongInt): LongInt;
+Var
+  i, k: LongInt;
+Begin
+  k := 0;
+  CapIndex := 0;
+  For i := 1 To ctx.sem.cap_count Do
+    If ctx.sem.caps[i].fscope = fs Then
+      Begin
+        Inc(k);
+        If ctx.sem.caps[i].sym = sy Then
+          Begin
+            CapIndex := k;
+            Exit;
+          End;
+      End;
+End;
+
+{ ---- Acces aux symboles ---- }
+
+{ Operandes memoire des deux moities (lo, hi) de la valeur du symbole.
+  Peut emettre du code qui charge ECX (cellule ou environnement). }
+Procedure SymAccess(Var ctx: TCompilerContext; sy: LongInt; Var lo, hi: TOperand);
+Var
+  sf, k: LongInt;
+Begin
+  sf := ctx.sem.scopes[ctx.sem.syms[sy].scope].func;
+  If ctx.sem.syms[sy].flags And SF_STATIC <> 0 Then
+    Begin
+      lo := MemSym(SYMK_D, ctx.sem.syms[sy].ds, 0);
+      hi := MemSym(SYMK_D, ctx.sem.syms[sy].ds, 4);
+    End
+  Else If sf = ctx.ir.cg_fs Then
+    Begin
+      If ctx.sem.syms[sy].flags And SF_CELL <> 0 Then
+        Begin
+          Emit(ctx, OP_MOV, RegOp(R_ECX),
+               MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)));
+          lo := MemReg(R_ECX, RT_CELL_VALUE);
+          hi := MemReg(R_ECX, RT_CELL_VALUE + 4);
+        End
+      Else
+        Begin
+          lo := MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot));
+          hi := MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot) + 4);
+        End;
+    End
+  Else
+    Begin
+      k := CapIndex(ctx, ctx.ir.cg_fs, sy);
+      If k = 0 Then
+        Begin
+          PipelineError(ctx, 'capture introuvable pour ' +
+                        ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+          k := 1;
+        End;
+      Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+      Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_ECX, RT_FN_ENV));
+      Emit(ctx, OP_MOV, RegOp(R_ECX),
+           MemReg(R_ECX, RT_ENV_CELLS + 4 * (k - 1)));
+      lo := MemReg(R_ECX, RT_CELL_VALUE);
+      hi := MemReg(R_ECX, RT_CELL_VALUE + 4);
+    End;
+End;
+
+{ Leve ReferenceError si la valeur d'octet haut hi est la marque TDZ. }
+Procedure TdzCheck(Var ctx: TCompilerContext; sy: LongInt; hi: TOperand);
+Var
+  ok: LongInt;
+Begin
+  ok := NewLabel(ctx);
+  Emit(ctx, OP_CMP, hi, ImmOp(TagImm(RT_T_TDZ)));
+  Emit1(ctx, OP_JNE, LabelOp(ok));
+  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.sem.syms[sy].name_str].sym));
+  CallRt(ctx, 'throw_tdz', 4);
+  PlaceLabel(ctx, ok);
+End;
+
+Procedure LoadSym(Var ctx: TCompilerContext; sy: LongInt);
+Var
+  lo, hi: TOperand;
+Begin
+  SymAccess(ctx, sy, lo, hi);
+  Emit(ctx, OP_MOV, RegOp(R_EAX), lo);
+  Emit(ctx, OP_MOV, RegOp(R_EDX), hi);
+  If ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0 Then
+    TdzCheck(ctx, sy, RegOp(R_EDX));
+End;
+
+{ Range EDX:EAX dans le symbole. init : premiere initialisation (pas de
+  test TDZ). }
+Procedure StoreSym(Var ctx: TCompilerContext; sy: LongInt; init: Boolean);
+Var
+  lo, hi: TOperand;
+Begin
+  If (ctx.sem.syms[sy].kind = DK_FNAME) And Not init Then
+    Exit;
+  SymAccess(ctx, sy, lo, hi);
+  If (Not init) And (ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0) Then
+    TdzCheck(ctx, sy, hi);
+  Emit(ctx, OP_MOV, lo, RegOp(R_EAX));
+  Emit(ctx, OP_MOV, hi, RegOp(R_EDX));
+End;
+
+{ ---- Constructions en attente ---- }
+
+Procedure PendingNote(Var ctx: TCompilerContext; n: LongInt; Const what: TString);
+Begin
+  Inc(ctx.ir.pending_count);
+  If ctx.ir.pending_count <= MAX_PENDING Then
+    Begin
+      ctx.ir.pendings[ctx.ir.pending_count].line :=
+        ctx.lex.tokens[ctx.ast.nodes[n].tok].line;
+      ctx.ir.pendings[ctx.ir.pending_count].what := what;
+    End;
+  EmitComment(ctx, 'EN ATTENTE : ' + what + ' (ligne ' +
+              LineOfTok(ctx, ctx.ast.nodes[n].tok) + ')');
+End;
+
+Procedure PendingExpr(Var ctx: TCompilerContext; n: LongInt);
+Var
+  what: TString;
+Begin
+  what := NodeKindName(ctx.ast.nodes[n].kind);
+  Case ctx.ast.nodes[n].kind Of
+    N_UNARY, N_BINARY, N_LOGICAL, N_ASSIGN, N_UPDATE:
+      what := what + ' ' + ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  End;
+  PendingNote(ctx, n, what);
+  LoadUndefined(ctx);
+End;
+
+{ ---- Expressions prises en charge par ce TODO ---- }
+
+Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt); Forward;
+Procedure BindTo(Var ctx: TCompilerContext; node, tslot: LongInt; init: Boolean); Forward;
+
+Procedure LoadTag(Var ctx: TCompilerContext; lo: LongInt; tag: LongInt);
+Begin
+  If lo = 0 Then
+    Emit(ctx, OP_XOR, RegOp(R_EAX), RegOp(R_EAX))
+  Else
+    Emit(ctx, OP_MOV, RegOp(R_EAX), ImmOp(lo));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(tag)));
+End;
+
+Procedure LoadDouble(Var ctx: TCompilerContext; id: LongInt);
+Begin
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, ctx.data.dbls[id].sym, 0));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, ctx.data.dbls[id].sym, 4));
+End;
+
+Procedure LoadStringConst(Var ctx: TCompilerContext; id: LongInt);
+Begin
+  Emit(ctx, OP_MOV, RegOp(R_EAX), AddrSym(SYMK_D, ctx.data.strs[id].sym));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_STRING)));
+End;
+
+Procedure GenThis(Var ctx: TCompilerContext; n: LongInt);
+Begin
+  If ctx.ast.nodes[n].aux = TB_GLOBAL Then
+    LoadUndefined(ctx)
+  Else If ctx.ast.nodes[n].e1 = 1 Then
+    Begin
+      { fleche : this lexical memorise dans la closure }
+      Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, RT_FN_THIS));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_ECX, RT_FN_THIS + 4));
+    End
+  Else
+    Begin
+      Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
+    End;
+End;
+
+Procedure GenIdent(Var ctx: TCompilerContext; n: LongInt);
+Var
+  name: TTokenText;
+  xs: LongInt;
+Begin
+  name := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  Case ctx.ast.nodes[n].aux Of
+    RK_LOCAL, RK_OUTER, RK_GLOBAL_IMPLICIT:
+      LoadSym(ctx, ctx.ast.nodes[n].sym);
+    RK_BUILTIN:
+      Begin
+        If name = 'undefined' Then
+          LoadUndefined(ctx)
+        Else If name = 'NaN' Then
+          LoadDouble(ctx, STD_DBL_NAN)
+        Else If name = 'Infinity' Then
+          LoadDouble(ctx, STD_DBL_INF)
+        Else
+          Begin
+            { objet global fourni par le runtime }
+            xs := XSym(ctx, SymRt('g_' + name));
+            Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_X, xs, 0));
+            Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_X, xs, 4));
+          End;
+      End;
+    RK_UNDECLARED_OK:
+      LoadUndefined(ctx);
+    RK_ARGUMENTS:
+      Begin
+        If ctx.sem.scopes[ctx.ir.cg_fs].args_slot <> 0 Then
+          Begin
+            Emit(ctx, OP_MOV, RegOp(R_EAX),
+                 MemReg(R_EBP, SlotDisp(ctx.sem.scopes[ctx.ir.cg_fs].args_slot)));
+            Emit(ctx, OP_MOV, RegOp(R_EDX),
+                 MemReg(R_EBP, SlotDisp(ctx.sem.scopes[ctx.ir.cg_fs].args_slot) + 4));
+          End
+        Else
+          PendingExpr(ctx, n);
+      End;
+  Else
+    PendingExpr(ctx, n);
+  End;
+End;
+
+{ Affectation simple ou destructurante ; la valeur reste dans EDX:EAX. }
+Procedure GenAssign(Var ctx: TCompilerContext; n: LongInt);
+Var
+  lhs, t: LongInt;
+Begin
+  lhs := ctx.ast.nodes[n].e1;
+  If ctx.lex.tokens[ctx.ast.nodes[n].tok].text <> '=' Then
+    Begin
+      PendingExpr(ctx, n);
+      Exit;
+    End;
+  If (lhs <> 0) And (ctx.ast.nodes[lhs].kind = N_IDENT) Then
+    Begin
+      If (ctx.ast.nodes[lhs].aux = RK_LOCAL) Or (ctx.ast.nodes[lhs].aux = RK_OUTER) Or
+         (ctx.ast.nodes[lhs].aux = RK_GLOBAL_IMPLICIT) Then
+        Begin
+          GenExpr(ctx, ctx.ast.nodes[n].e2);
+          StoreSym(ctx, ctx.ast.nodes[lhs].sym, False);
+        End
+      Else
+        PendingExpr(ctx, n);
+    End
+  Else If (lhs <> 0) And ((ctx.ast.nodes[lhs].kind = N_ARRAY_LIT) Or
+                          (ctx.ast.nodes[lhs].kind = N_OBJECT_LIT)) Then
+    Begin
+      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      t := AllocTemp(ctx);
+      Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(t)), RegOp(R_EAX));
+      Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(t) + 4), RegOp(R_EDX));
+      BindTo(ctx, lhs, t, False);
+      Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, SlotDisp(t)));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, SlotDisp(t) + 4));
+    End
+  Else
+    PendingExpr(ctx, n);
+End;
+
+Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt);
+Var
+  e: LongInt;
+Begin
+  If n = 0 Then
+    Begin
+      LoadUndefined(ctx);
+      Exit;
+    End;
+  Case ctx.ast.nodes[n].kind Of
+    N_NUMBER:
+      Begin
+        If ctx.ast.nodes[n].ds <> 0 Then
+          LoadDouble(ctx, ctx.ast.nodes[n].ds)
+        Else
+          LoadTag(ctx, Trunc(ctx.lex.tokens[ctx.ast.nodes[n].tok].num_val),
+                  RT_T_INT32);
+      End;
+    N_STRING, N_TEMPLATE_STR:
+      LoadStringConst(ctx, ctx.ast.nodes[n].ds);
+    N_TEMPLATE:
+      Begin
+        e := ctx.ast.nodes[n].e1;
+        If (e <> 0) And (ctx.ast.nodes[e].next = 0) Then
+          LoadStringConst(ctx, ctx.ast.nodes[e].ds)
+        Else
+          PendingExpr(ctx, n);
+      End;
+    N_BOOL:
+      Begin
+        If ctx.lex.tokens[ctx.ast.nodes[n].tok].text = 'true' Then
+          LoadTag(ctx, 1, RT_T_BOOLEAN)
+        Else
+          LoadTag(ctx, 0, RT_T_BOOLEAN);
+      End;
+    N_NULL:
+      LoadTag(ctx, 0, RT_T_NULL);
+    N_IDENT:
+      GenIdent(ctx, n);
+    N_THIS:
+      GenThis(ctx, n);
+    N_ASSIGN:
+      GenAssign(ctx, n);
+    N_SEQUENCE:
+      Begin
+        e := ctx.ast.nodes[n].e1;
+        While e <> 0 Do
+          Begin
+            GenExpr(ctx, e);
+            e := ctx.ast.nodes[e].next;
+          End;
+      End;
+  Else
+    PendingExpr(ctx, n);
+  End;
+End;
+
+{ ---- Destructuration ---- }
+
+Procedure StoreTemp(Var ctx: TCompilerContext; slot: LongInt);
+Begin
+  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(slot)), RegOp(R_EAX));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(slot) + 4), RegOp(R_EDX));
+End;
+
+Procedure PushTemp(Var ctx: TCompilerContext; slot: LongInt);
+Begin
+  Emit1(ctx, OP_PUSH, MemReg(R_EBP, SlotDisp(slot) + 4));
+  Emit1(ctx, OP_PUSH, MemReg(R_EBP, SlotDisp(slot)));
+End;
+
+{ Si EDX:EAX vaut undefined, evalue la valeur par defaut. }
+Procedure GenDefault(Var ctx: TCompilerContext; def: LongInt);
+Var
+  skip: LongInt;
+Begin
+  If def = 0 Then
+    Exit;
+  skip := NewLabel(ctx);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+  Emit1(ctx, OP_JNE, LabelOp(skip));
+  GenExpr(ctx, def);
+  PlaceLabel(ctx, skip);
+End;
+
+{ Lie EDX:EAX a la cible (identifiant ou sous-motif). }
+Procedure BindValue(Var ctx: TCompilerContext; target: LongInt; init: Boolean);
+Var
+  t: LongInt;
+Begin
+  If target = 0 Then
+    Exit;
+  Case ctx.ast.nodes[target].kind Of
+    N_BIND_IDENT:
+      StoreSym(ctx, ctx.ast.nodes[target].sym, True);
+    N_IDENT:
+      Begin
+        If (ctx.ast.nodes[target].aux = RK_LOCAL) Or
+           (ctx.ast.nodes[target].aux = RK_OUTER) Or
+           (ctx.ast.nodes[target].aux = RK_GLOBAL_IMPLICIT) Then
+          StoreSym(ctx, ctx.ast.nodes[target].sym, init)
+        Else
+          PendingNote(ctx, target, 'cible d''affectation ' +
+                      NodeKindName(ctx.ast.nodes[target].kind));
+      End;
+    N_ARRAY_PATTERN, N_OBJECT_PATTERN, N_ARRAY_LIT, N_OBJECT_LIT:
+      Begin
+        t := AllocTemp(ctx);
+        StoreTemp(ctx, t);
+        BindTo(ctx, target, t, init);
+      End;
+  Else
+    PendingNote(ctx, target, 'cible d''affectation ' +
+                NodeKindName(ctx.ast.nodes[target].kind));
+  End;
+End;
+
+{ Destructure la valeur rangee dans le temporaire tslot. node est un
+  motif de declaration ou un litteral utilise comme cible. }
+Procedure BindTo(Var ctx: TCompilerContext; node, tslot: LongInt; init: Boolean);
+Var
+  el, idx, target, def, key_atom, nkeys: LongInt;
+  rest, hole, pattern_kind: Boolean;
+  fl: LongInt;
+  kn: TNodeKind;
+Begin
+  kn := ctx.ast.nodes[node].kind;
+  If (kn = N_ARRAY_PATTERN) Or (kn = N_ARRAY_LIT) Then
+    Begin
+      idx := 0;
+      el := ctx.ast.nodes[node].e1;
+      While el <> 0 Do
+        Begin
+          rest := False;
+          hole := False;
+          def := 0;
+          target := 0;
+          If ctx.ast.nodes[el].kind = N_PATTERN_ELEM Then
+            Begin
+              target := ctx.ast.nodes[el].e1;
+              def := ctx.ast.nodes[el].e2;
+              rest := ctx.ast.nodes[el].flags And PF_REST <> 0;
+              hole := target = 0;
+            End
+          Else If ctx.ast.nodes[el].kind = N_ELISION Then
+            hole := True
+          Else If ctx.ast.nodes[el].kind = N_SPREAD Then
+            Begin
+              rest := True;
+              target := ctx.ast.nodes[el].e1;
+            End
+          Else If ctx.ast.nodes[el].kind = N_ASSIGN Then
+            Begin
+              target := ctx.ast.nodes[el].e1;
+              def := ctx.ast.nodes[el].e2;
+            End
+          Else
+            target := el;
+          If Not hole Then
+            Begin
+              If rest Then
+                Begin
+                  Emit1(ctx, OP_PUSH, ImmOp(idx));
+                  PushTemp(ctx, tslot);
+                  CallRt(ctx, 'array_rest', 12);
+                End
+              Else
+                Begin
+                  Emit1(ctx, OP_PUSH, ImmOp(idx));
+                  PushTemp(ctx, tslot);
+                  CallRt(ctx, 'get_index', 12);
+                  GenDefault(ctx, def);
+                End;
+              BindValue(ctx, target, init);
+            End;
+          Inc(idx);
+          el := ctx.ast.nodes[el].next;
+        End;
+    End
+  Else
+    Begin
+      nkeys := 0;
+      el := ctx.ast.nodes[node].e1;
+      While el <> 0 Do
+        Begin
+          If ctx.ast.nodes[el].kind = N_PATTERN_PROP Then
+            Begin
+              fl := ctx.ast.nodes[el].flags;
+              target := ctx.ast.nodes[el].e1;
+              def := ctx.ast.nodes[el].e2;
+              rest := fl And PP_REST <> 0;
+              pattern_kind := fl And PP_COMPUTED <> 0;
+              key_atom := ctx.ast.nodes[el].aux;
+              If pattern_kind Then
+                Begin
+                  GenExpr(ctx, ctx.ast.nodes[el].e3);
+                  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+                  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+                End;
+            End
+          Else
+            Begin
+              fl := ctx.ast.nodes[el].flags;
+              rest := fl And PR_SPREAD <> 0;
+              pattern_kind := fl And PR_COMPUTED <> 0;
+              target := ctx.ast.nodes[el].e1;
+              def := ctx.ast.nodes[el].e3;
+              key_atom := ctx.ast.nodes[el].aux;
+              If pattern_kind Then
+                Begin
+                  GenExpr(ctx, ctx.ast.nodes[el].e2);
+                  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+                  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+                End;
+              { dans a: b = 1, la valeur par defaut enveloppe la cible }
+              If (target <> 0) And (ctx.ast.nodes[target].kind = N_ASSIGN) And
+                 (fl And PR_SHORTHAND = 0) Then
+                Begin
+                  def := ctx.ast.nodes[target].e2;
+                  target := ctx.ast.nodes[target].e1;
+                End;
+            End;
+          If rest Then
+            Begin
+              { le reste d'objet exige la liste des cles exclues }
+              PendingNote(ctx, el, 'reste d''objet (...rest)');
+              LoadUndefined(ctx);
+            End
+          Else If pattern_kind Then
+            Begin
+              { cle calculee deja poussee : valeur puis cle }
+              PushTemp(ctx, tslot);
+              CallRt(ctx, 'get_member', 16);
+              GenDefault(ctx, def);
+            End
+          Else
+            Begin
+              Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[key_atom].sym));
+              PushTemp(ctx, tslot);
+              CallRt(ctx, 'get_prop', 12);
+              GenDefault(ctx, def);
+            End;
+          BindValue(ctx, target, init);
+          Inc(nkeys);
+          el := ctx.ast.nodes[el].next;
+        End;
+    End;
+End;
+
+{ ---- Entree de portee, declarations, instructions ---- }
+
+Procedure GenScopeEnter(Var ctx: TCompilerContext; sc: LongInt);
+Var
+  sy, tag: LongInt;
+Begin
+  sy := ctx.sem.scopes[sc].first_sym;
+  While sy <> 0 Do
+    Begin
+      If ctx.sem.syms[sy].flags And SF_STATIC = 0 Then
+        Begin
+          tag := RT_T_UNDEFINED;
+          If IsLexicalKind(ctx.sem.syms[sy].kind) And
+             (ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0) Then
+            tag := RT_T_TDZ;
+          If ctx.sem.syms[sy].flags And SF_CELL <> 0 Then
+            Begin
+              Emit1(ctx, OP_PUSH, ImmOp(TagImm(tag)));
+              CallRt(ctx, 'new_cell', 4);
+              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)),
+                   RegOp(R_EAX));
+            End
+          Else If (ctx.sem.syms[sy].kind = DK_VAR) Or
+                  (ctx.sem.syms[sy].kind = DK_FUNC) Or (tag = RT_T_TDZ) Then
+            Begin
+              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)),
+                   ImmOp(0));
+              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot) + 4),
+                   ImmOp(TagImm(tag)));
+            End;
+          If ctx.sem.syms[sy].kind = DK_FUNC Then
+            PendingNote(ctx, ctx.sem.syms[sy].node,
+                        'creation de la fonction hissee ' +
+                        ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+        End
+      Else If ctx.sem.syms[sy].kind = DK_FUNC Then
+        PendingNote(ctx, ctx.sem.syms[sy].node,
+                    'creation de la fonction hissee ' +
+                    ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+      sy := ctx.sem.syms[sy].next;
+    End;
+End;
+
+Procedure GenVarDecl(Var ctx: TCompilerContext; n: LongInt);
+Var
+  d, target, init, sy: LongInt;
+  t: LongInt;
+Begin
+  d := ctx.ast.nodes[n].e1;
+  While d <> 0 Do
+    Begin
+      target := ctx.ast.nodes[d].e1;
+      init := ctx.ast.nodes[d].e2;
+      If (target <> 0) And (ctx.ast.nodes[target].kind = N_BIND_IDENT) Then
+        Begin
+          sy := ctx.ast.nodes[target].sym;
+          If init <> 0 Then
+            Begin
+              GenExpr(ctx, init);
+              StoreSym(ctx, sy, True);
+            End
+          Else If ctx.sem.syms[sy].kind = DK_LET Then
+            Begin
+              LoadUndefined(ctx);
+              StoreSym(ctx, sy, True);
+            End;
+        End
+      Else If target <> 0 Then
+        Begin
+          GenExpr(ctx, init);
+          t := AllocTemp(ctx);
+          StoreTemp(ctx, t);
+          BindTo(ctx, target, t, True);
+        End;
+      d := ctx.ast.nodes[d].next;
+    End;
+End;
+
+Procedure GenStmtList(Var ctx: TCompilerContext; n: LongInt); Forward;
+
+Procedure GenStmt(Var ctx: TCompilerContext; n: LongInt);
+Begin
+  If n = 0 Then
+    Exit;
+  ctx.ir.cur_line := ctx.lex.tokens[ctx.ast.nodes[n].tok].line;
+  Case ctx.ast.nodes[n].kind Of
+    N_VAR_DECL:
+      GenVarDecl(ctx, n);
+    N_EXPR_STMT:
+      GenExpr(ctx, ctx.ast.nodes[n].e1);
+    N_EMPTY, N_FUNC_DECL:
+      ;
+    N_DEBUGGER:
+      Emit0(ctx, OP_NOP);
+    N_BLOCK:
+      Begin
+        If ctx.ast.nodes[n].flags <> 1 Then
+          GenScopeEnter(ctx, ctx.ast.nodes[n].scope);
+        GenStmtList(ctx, ctx.ast.nodes[n].e1);
+      End;
+  Else
+    PendingNote(ctx, n, NodeKindName(ctx.ast.nodes[n].kind));
+  End;
+End;
+
+Procedure GenStmtList(Var ctx: TCompilerContext; n: LongInt);
+Begin
+  While n <> 0 Do
+    Begin
+      GenStmt(ctx, n);
+      n := ctx.ast.nodes[n].next;
+    End;
+End;
+
+{ ---- Procedures ---- }
+
+{ Symbole de donnees d'une variable du runtime (_JSRT_v_nom). }
+Function RtVarSym(Var ctx: TCompilerContext; Const name: TString): LongInt;
+Var
+  i: LongInt;
+  full: TString;
+Begin
+  full := SymRt('v_' + name);
+  RtVarSym := 0;
+  For i := 1 To ctx.data.sym_count Do
+    If (ctx.data.syms[i].sec = SEC_DATA) And (ctx.data.syms[i].name = full) Then
+      Begin
+        RtVarSym := i;
+        Exit;
+      End;
+End;
+
+Procedure BeginProc(Var ctx: TCompilerContext; Const name: TString; fs: LongInt);
+Var
+  xs, ok: LongInt;
+Begin
+  xs := XSym(ctx, name);
+  ctx.ir.xsyms[xs].defined := True;
+  Inc(ctx.ir.proc_count);
+  ctx.ir.cg_fs := fs;
+  Emit1(ctx, OP_PROC, AddrSym(SYMK_X, xs));
+  Emit1(ctx, OP_PUSH, RegOp(R_EBP));
+  Emit(ctx, OP_MOV, RegOp(R_EBP), RegOp(R_ESP));
+  Emit(ctx, OP_SUB, RegOp(R_ESP), ImmOp(0));
+  ctx.ir.frame_patch := ctx.ir.count;
+  If fs <> 1 Then
+    Begin
+      { depassement de pile : RangeError }
+      ok := NewLabel(ctx);
+      Emit(ctx, OP_CMP, RegOp(R_ESP),
+           MemSym(SYMK_D, RtVarSym(ctx, 'stack_limit'), 0));
+      Emit1(ctx, OP_JAE, LabelOp(ok));
+      CallRt(ctx, 'stack_overflow', 0);
+      PlaceLabel(ctx, ok);
+    End;
+End;
+
+Procedure EndProc(Var ctx: TCompilerContext);
+Begin
+  LoadUndefined(ctx);
+  Emit0(ctx, OP_LEAVE);
+  Emit0(ctx, OP_RET);
+  Emit1(ctx, OP_ENDP, NoOp);
+  { taille definitive de la trame }
+  ctx.ir.instrs[ctx.ir.frame_patch].b.disp :=
+    RT_VALUE_SIZE * ctx.sem.scopes[ctx.ir.cg_fs].nslots;
+  ctx.sem.scopes[ctx.ir.cg_fs].frame_size :=
+    RT_VALUE_SIZE * ctx.sem.scopes[ctx.ir.cg_fs].nslots;
+End;
+
+{ Charge l'argument i (undefined s'il n'a pas ete fourni). }
+Procedure LoadArg(Var ctx: TCompilerContext; i: LongInt);
+Var
+  have, done: LongInt;
+Begin
+  have := NewLabel(ctx);
+  done := NewLabel(ctx);
+  Emit(ctx, OP_CMP, MemReg(R_EBP, RT_FRAME_ARGC), ImmOp(i + 1));
+  Emit1(ctx, OP_JAE, LabelOp(have));
+  LoadUndefined(ctx);
+  Emit1(ctx, OP_JMP, LabelOp(done));
+  PlaceLabel(ctx, have);
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS + RT_VALUE_SIZE * i));
+  Emit(ctx, OP_MOV, RegOp(R_EDX),
+       MemReg(R_EBP, RT_FRAME_ARGS + RT_VALUE_SIZE * i + 4));
+  PlaceLabel(ctx, done);
+End;
+
+Procedure GenParams(Var ctx: TCompilerContext; fn: LongInt);
+Var
+  p, i, target: LongInt;
+Begin
+  p := ctx.ast.nodes[fn].e1;
+  i := 0;
+  While p <> 0 Do
+    Begin
+      target := ctx.ast.nodes[p].e1;
+      If ctx.ast.nodes[p].flags And PF_REST <> 0 Then
+        Begin
+          Emit1(ctx, OP_PUSH, ImmOp(i));
+          Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
+          CallRt(ctx, 'args_rest', 12);
+        End
+      Else
+        Begin
+          LoadArg(ctx, i);
+          GenDefault(ctx, ctx.ast.nodes[p].e2);
+        End;
+      BindValue(ctx, target, True);
+      Inc(i);
+      p := ctx.ast.nodes[p].next;
+    End;
+End;
+
+{ Procedure d'une fonction, d'une methode, d'un initialiseur de champ ou
+  d'un bloc statique decrit par le descripteur fd. }
+Procedure GenFuncProc(Var ctx: TCompilerContext; fd: LongInt);
+Var
+  n, sc, sy, body: LongInt;
+Begin
+  n := ctx.data.fdescs[fd].node;
+  sc := ctx.ast.nodes[n].scope;
+  BeginProc(ctx, ctx.data.fdescs[fd].code_sym, sc);
+  ctx.ir.cur_line := ctx.lex.tokens[ctx.ast.nodes[n].tok].line;
+  EmitComment(ctx, 'fonction ' + StrText(ctx, ctx.data.fdescs[fd].name_str) +
+              ' (' + SymFdesc(fd) + ')');
+  GenScopeEnter(ctx, sc);
+  { nom d'une expression de fonction : la closure elle-meme }
+  sy := ctx.sem.scopes[sc].first_sym;
+  While sy <> 0 Do
+    Begin
+      If ctx.sem.syms[sy].kind = DK_FNAME Then
+        Begin
+          Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+          Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_FUNCTION)));
+          StoreSym(ctx, sy, True);
+        End;
+      sy := ctx.sem.syms[sy].next;
+    End;
+  If ctx.sem.scopes[sc].args_slot <> 0 Then
+    Begin
+      Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
+      CallRt(ctx, 'make_arguments', 8);
+      StoreTemp(ctx, ctx.sem.scopes[sc].args_slot);
+    End;
+  Case ctx.ast.nodes[n].kind Of
+    N_FUNC_DECL, N_FUNC_EXPR, N_METHOD:
+      Begin
+        GenParams(ctx, n);
+        body := ctx.ast.nodes[n].e2;
+        If (ctx.ast.nodes[n].kind = N_FUNC_EXPR) And
+           (ctx.ast.nodes[n].flags And FN_EXPR_BODY <> 0) Then
+          Begin
+            { corps expression d'une fleche : sa valeur est le resultat }
+            GenExpr(ctx, body);
+            Emit0(ctx, OP_LEAVE);
+            Emit0(ctx, OP_RET);
+          End
+        Else
+          GenStmtList(ctx, ctx.ast.nodes[body].e1);
+      End;
+    N_FIELD:
+      Begin
+        GenExpr(ctx, ctx.ast.nodes[n].e1);
+        Emit0(ctx, OP_LEAVE);
+        Emit0(ctx, OP_RET);
+      End;
+    N_STATIC_BLOCK:
+      GenStmt(ctx, ctx.ast.nodes[n].e1);
+  End;
+  EndProc(ctx);
+End;
+
+Function BuildIR(Var ctx: TCompilerContext): Boolean;
+Var
+  i: LongInt;
+Begin
+  BuildIR := False;
+  If Not ctx.data.built Then
+    Begin
+      PipelineError(ctx, 'pool de donnees absent avant la generation du code');
+      Exit;
+    End;
+  ctx.ir.count := 0;
+  ctx.ir.xsym_count := 0;
+  ctx.ir.comment_count := 0;
+  ctx.ir.label_count := 0;
+  ctx.ir.proc_count := 0;
+  ctx.ir.pending_count := 0;
+  ctx.ir.failed := False;
+  ctx.ir.cur_line := 1;
+  LayoutFrames(ctx);
+
+  { programme principal : portee globale }
+  BeginProc(ctx, SymRt('main'), 1);
+  EmitComment(ctx, 'programme principal');
+  GenScopeEnter(ctx, 1);
+  GenStmtList(ctx, ctx.ast.nodes[ctx.ast.root].e1);
+  EndProc(ctx);
+
+  For i := 1 To ctx.data.fd_count Do
+    If Not ctx.ir.failed Then
+      GenFuncProc(ctx, i);
+
+  ctx.ir.built := Not ctx.ir.failed;
+  If ctx.options.verbose Then
+    Writeln('Code   : ', ctx.ir.proc_count, ' procedures, ', ctx.ir.count,
+            ' instructions, ', ctx.ir.pending_count,
+            ' constructions en attente');
+  BuildIR := ctx.ir.built And (ctx.errors = 0);
+End;
+
+{ ---- Affichage de l'IR (option -ir) ---- }
+
+Function HexU(v: Int64): TString;
+Const
+  H = '0123456789ABCDEF';
+Var
+  s: TString;
+  i: Integer;
+Begin
+  v := v And $FFFFFFFF;
+  s := '';
+  For i := 1 To 8 Do
+    Begin
+      s := H[(v And 15) + 1] + s;
+      v := v Shr 4;
+    End;
+  HexU := s;
+End;
+
+Function ImmText(v: LongInt): TString;
+Var
+  s: String[12];
+Begin
+  If (v > -65536) And (v < 1048576) Then
+    Begin
+      Str(v, s);
+      ImmText := s;
+    End
+  Else
+    ImmText := '0' + HexU(v) + 'h';
+End;
+
+Function RegName(r: TReg): TString;
+Begin
+  Case r Of
+    R_EAX: RegName := 'eax';
+    R_ECX: RegName := 'ecx';
+    R_EDX: RegName := 'edx';
+    R_EBX: RegName := 'ebx';
+    R_ESP: RegName := 'esp';
+    R_EBP: RegName := 'ebp';
+    R_ESI: RegName := 'esi';
+    R_EDI: RegName := 'edi';
+  Else
+    RegName := '?';
+  End;
+End;
+
+Function SymNameOf(Var ctx: TCompilerContext; symkind, sym: LongInt): TString;
+Begin
+  If symkind = SYMK_D Then
+    SymNameOf := ctx.data.syms[sym].name
+  Else
+    SymNameOf := ctx.ir.xsyms[sym].name;
+End;
+
+Function DispText(d: LongInt): TString;
+Var
+  s: String[12];
+Begin
+  If d = 0 Then
+    DispText := ''
+  Else If d > 0 Then
+    Begin
+      Str(d, s);
+      DispText := '+' + s;
+    End
+  Else
+    Begin
+      Str(d, s);
+      DispText := s;
+    End;
+End;
+
+Function OperandText(Var ctx: TCompilerContext; Var o: TOperand): TString;
+Begin
+  Case o.kind Of
+    OD_REG:
+      OperandText := RegName(o.reg);
+    OD_IMM:
+      OperandText := ImmText(o.disp);
+    OD_MEM:
+      Begin
+        If o.symkind <> 0 Then
+          OperandText := 'dword ptr [' + SymNameOf(ctx, o.symkind, o.sym) +
+                         DispText(o.disp) + ']'
+        Else
+          OperandText := 'dword ptr [' + RegName(o.base) + DispText(o.disp) + ']';
+      End;
+    OD_ADDR:
+      OperandText := 'offset ' + SymNameOf(ctx, o.symkind, o.sym);
+    OD_LABEL:
+      OperandText := SymLabel(o.disp);
+  Else
+    OperandText := '';
+  End;
+End;
+
+Function OpName(op: TOpc): TString;
+Begin
+  Case op of
+    OP_MOV: OpName := 'mov';
+    OP_LEA: OpName := 'lea';
+    OP_PUSH: OpName := 'push';
+    OP_POP: OpName := 'pop';
+    OP_ADD: OpName := 'add';
+    OP_SUB: OpName := 'sub';
+    OP_CMP: OpName := 'cmp';
+    OP_TEST: OpName := 'test';
+    OP_XOR: OpName := 'xor';
+    OP_AND: OpName := 'and';
+    OP_JMP: OpName := 'jmp';
+    OP_JE: OpName := 'je';
+    OP_JNE: OpName := 'jne';
+    OP_JB: OpName := 'jb';
+    OP_JAE: OpName := 'jae';
+    OP_CALL: OpName := 'call';
+    OP_RET: OpName := 'ret';
+    OP_LEAVE: OpName := 'leave';
+    OP_NOP: OpName := 'nop';
+  Else
+    OpName := '?';
+  End;
+End;
+
+Procedure DumpIR(Var ctx: TCompilerContext);
+Var
+  i: LongInt;
+  a, b: TString;
+  op: TOpc;
+Begin
+  If Not ctx.ir.built Then
+    Exit;
+  Writeln('Code (', ctx.ir.proc_count, ' procedures, ', ctx.ir.count,
+          ' instructions) :');
+  For i := 1 To ctx.ir.count Do
+    Begin
+      op := ctx.ir.instrs[i].op;
+      Case op Of
+        OP_LABEL:
+          Writeln(OperandText(ctx, ctx.ir.instrs[i].a), ':');
+        OP_COMMENT:
+          Writeln('        ; ', ctx.ir.comments[ctx.ir.instrs[i].a.disp]);
+        OP_PROC:
+          Begin
+            Writeln;
+            Writeln(SymNameOf(ctx, ctx.ir.instrs[i].a.symkind, ctx.ir.instrs[i].a.sym), ' proc');
+          End;
+        OP_ENDP:
+          Writeln('        endp');
+      Else
+        Begin
+          a := OperandText(ctx, ctx.ir.instrs[i].a);
+          b := OperandText(ctx, ctx.ir.instrs[i].b);
+          If (op = OP_CALL) And (ctx.ir.instrs[i].a.kind = OD_ADDR) Then
+            a := SymNameOf(ctx, ctx.ir.instrs[i].a.symkind, ctx.ir.instrs[i].a.sym);
+          Write('        ', OpName(op));
+          If a <> '' Then
+            Write(' ', a);
+          If b <> '' Then
+            Write(', ', b);
+          Writeln;
+        End;
+      End;
+    End;
+  Writeln('Symboles externes (', ctx.ir.xsym_count, ') :');
+  For i := 1 To ctx.ir.xsym_count Do
+    If Not ctx.ir.xsyms[i].defined Then
+      Writeln('  ', ctx.ir.xsyms[i].name);
+  If ctx.ir.pending_count > 0 Then
+    Begin
+      Writeln('Constructions en attente (', ctx.ir.pending_count, ') :');
+      For i := 1 To ctx.ir.pending_count Do
+        If i <= MAX_PENDING Then
+          Writeln('  ligne ', ctx.ir.pendings[i].line, ' : ',
+                  ctx.ir.pendings[i].what);
+    End;
+End;
+
 { Les etapes sont implementees par les TODO suivants. Tant qu'une etape
   n'existe pas, elle echoue explicitement au lieu de produire un faux
   resultat. }
@@ -7257,6 +8582,15 @@ Begin
         { si l'analyse suit, l'AST est affiche annote apres elle }
         If ctx.options.dump_ast And Not ok Then
           DumpAst(ctx);
+      End;
+    CS_BUILD_IR:
+      Begin
+        ok := BuildIR(ctx);
+        RunStage := ok;
+        If ctx.options.dump_ir Then
+          DumpIR(ctx);
+        If ctx.options.dump_scopes And ctx.ir.built Then
+          DumpScopes(ctx);
       End;
     CS_ANALYZE:
       Begin
