@@ -56,6 +56,14 @@ Program TPCW32;
 {$ENDIF}
 {$I-}
 
+{$IFDEF FPC}
+{ Sous FPC, Integer vaut 16 bits en mode TP : les index de jetons, tailles  }
+{ de types et offsets du compilateur depassent 32767 sur les gros sources,  }
+{ on redefinit donc Integer en 32 bits pour tout le compilateur.            }
+Type
+  Integer = LongInt;
+{$ENDIF}
+
 { ============================================================ }
 { TODO 01 - INFRASTRUCTURE ET OPTIONS                [IMPLEMENTE] }
 { ============================================================ }
@@ -832,6 +840,7 @@ Type
     Val      : TString;      { valeur textuelle brute             }
     IntVal   : LongInt;      { valeur entiere (TK_INTEGER/CHAR)   }
     RealVal  : Real;         { valeur reelle (TK_REAL)            }
+    RealKind : Integer;      { TK_REAL : 4 Single, 8 Double, 10 Extended (plus petit type exact, comme FPC) }
     Line     : Integer;      { ligne source (1-base)              }
     Col      : Integer;      { colonne source (1-base)            }
   End;
@@ -864,18 +873,27 @@ Var
   OptNCoprocessor: Boolean;
   OptGen286      : Boolean;
   OptExtSyntax   : Boolean;
+  LexMemActive   : Boolean;      { source integre lu en memoire (cible DOS 16) }
+  LexMemIdx      : LongInt;
+  LexMemCount    : LongInt;
+  TokenPoolLimit : LongInt;      { capacite utilisee du pool de tokens          }
 
 { Forward declarations TODO 03 }
 Procedure LexHandleDollarDirective; Forward;
 Procedure IncludePop; Forward;
+Function  D16MemLine(N : LongInt) : TString; Forward;
+Procedure D16RecordSwitch(Ch : Char; Onn : Boolean); Forward;
+Procedure D16MDirective(Const Arg : TString); Forward;
+Function  D16Selected : Boolean; Forward;
 
 { ============================================================ }
 { TODO 04 - LITTERAUX ET CONSTANTES               [IMPLEMENTE] }
 { ============================================================ }
 
 Const
-  MAX_DATA   = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
-  MAX_TOKENS = {$IFDEF FPC}16384{$ELSE}4096{$ENDIF};
+  MAX_DATA   = {$IFDEF FPC}16384{$ELSE}128{$ENDIF};
+  MAX_TOKENS = {$IFDEF FPC}131072{$ELSE}4096{$ENDIF};
+  TOKENS_W32 = {$IFDEF FPC}16384{$ELSE}4096{$ENDIF};  { limite des autres cibles }
 
   { Prefixes de mangling pour les labels generes }
   TP_STR_PFX  = '_TPK_';   { constantes chaine                    }
@@ -908,6 +926,18 @@ Const
 
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
   MAX_TP_TYPE_SIZES = 27;
+  { Enregistrement de fichier Text/File (cible 80386) : Handle(0) BufPos(4) BufEnd(8) Eof(12)
+    RecSize(16) Mode(20) Std(24) reserve(28) Nom ASCIIZ(32..291) Tampon(292..547) }
+  TFR_SIZE    = 552;
+  TFR_HANDLE  = 0;
+  TFR_BUFPOS  = 4;
+  TFR_BUFEND  = 8;
+  TFR_EOF     = 12;
+  TFR_RECSIZE = 16;
+  TFR_MODE    = 20;
+  TFR_STD     = 24;
+  TFR_NAME    = 32;
+  TFR_BUF     = 292;
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -918,7 +948,9 @@ Type
     DK_ARRAY,   { tableau (DB ElemCount*ElemSize DUP(0))              }
     DK_RES,     { espace reserve (DB Size DUP(0))                     }
     DK_STRUCT,  { structure/record (DB Size DUP(0))                   }
-    DK_ZERO     { espace initialise a zero (DB Size DUP(0))          }
+    DK_ZERO,    { espace initialise a zero (DB Size DUP(0))          }
+    DK_INIT     { octets initialises (constante typee) : IntVal =     }
+                { offset dans DataInitPool, ElemCount = longueur      }
   );
 
   { Un enregistrement du pool de donnees }
@@ -927,8 +959,9 @@ Type
     Kind      : TDataKind;  { type de donnee                           }
     IntVal    : LongInt;     { valeur entiere (pour DK_DWORD, DK_BYTE) }
     StrVal    : TString;     { contenu chaine (pour DK_STR)            }
-    ElemCount : Integer;     { nombre d elements (pour DK_ARRAY)       }
-    ElemSize  : Integer;     { taille d un element (pour DK_ARRAY)     }
+    ElemCount : LongInt;     { nombre d elements (pour DK_ARRAY)       }
+    ElemSize  : LongInt;     { taille d un element (pour DK_ARRAY)     }
+    IsPStr    : Boolean;     { DK_STR au format Pascal (octet de longueur, contient #0) }
   End;
 
   { Taille connue d un type Turbo Pascal }
@@ -937,24 +970,41 @@ Type
     Size : Integer;         { taille en octets                          }
   End;
 
+Const
+  DATA_INIT_MAX = {$IFDEF FPC}4194304{$ELSE}8192{$ENDIF};
+  DATA_INIT_FIX_MAX = {$IFDEF FPC}8192{$ELSE}64{$ENDIF};
+
 Var
+  { Adresses a resoudre dans les constantes typees (PChar, @variable, @procedure) : }
+  { octet marque dans DataInitFixMark, label dans DataInitFixLbl ('@NOM' = variable }
+  { _TPV_NOM ou procedure _TPF_NOM, resolu a l edition de liens)                     }
+  DataInitFixCnt  : Integer;
+  DataInitFixOfs  : Array[0..DATA_INIT_FIX_MAX - 1] Of LongInt;
+  DataInitFixLbl  : Array[0..DATA_INIT_FIX_MAX - 1] Of TString;
+  DataInitFixMark : Array[0..DATA_INIT_MAX - 1] Of Boolean;
+
   { Pool de donnees (segment .DATA) }
   DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount  : Integer;
+  { Octets d initialisation des constantes typees (DK_INIT) }
+  DataInitPool  : Array[0..DATA_INIT_MAX - 1] Of Byte;
+  DataInitCount : LongInt;
 
   { Compteur de labels auto-generes }
   LabelGenSeq : Integer;
 
   { Pool de tokens (pour le parseur futur) }
   TokenPool  : Array[0..MAX_TOKENS - 1] Of TToken;
-  TokenCount : Integer;
+  { CASE d une partie variante de RECORD/OBJECT (sans END propre) }
+  TokVariantCase : Array[0..MAX_TOKENS - 1] Of Boolean;
+  TokenCount : LongInt;
 
 { ============================================================ }
 { TODO 05 - TABLE DES SYMBOLES                    [IMPLEMENTE] }
 { ============================================================ }
 
 Const
-  MAX_SYM   = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SYM   = {$IFDEF FPC}16384{$ELSE}100{$ENDIF};
   MAX_SCOPE = 64;   { profondeur max de scopes imbriques          }
 
   { Prefixes de mangling supplementaires pour les symboles }
@@ -1029,7 +1079,7 @@ Procedure SymRegisterBuiltins; Forward;
 { ============================================================ }
 
 Const
-  MAX_TYPE   = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TYPE   = {$IFDEF FPC}2048{$ELSE}64{$ENDIF};
   MAX_FIELDS = 64;    { nombre max de champs dans un record/objet  }
   MAX_ENUMS  = 256;   { nombre max de valeurs enum                 }
 
@@ -1088,14 +1138,14 @@ Type
   TFieldRec = Record
     Name    : TString;     { nom du champ                              }
     TypeIdx : Integer;     { index du type dans TypeTab                }
-    Offset  : Integer;     { offset en octets depuis le debut du record}
+    Offset  : LongInt;     { offset en octets depuis le debut du record}
   End;
 
   { Un enregistrement de la table des types }
   TTypeRec = Record
     Kind        : TTypeKind;   { categorie du type                     }
     Name        : TString;     { nom du type ('' si anonyme)           }
-    Size        : Integer;     { taille en octets                      }
+    Size        : LongInt;     { taille en octets                      }
     Align       : Integer;     { alignement en octets                  }
     BaseTypeIdx : Integer;     { type de base (pointeur, tableau, alias)}
     Lo          : LongInt;     { borne inferieure (subrange, array)    }
@@ -1120,7 +1170,7 @@ Var
 
 { Forward declarations TODO 06 }
 Procedure TypeInit; Forward;
-Function  TypeSizeofIdx(Idx : Integer) : Integer; Forward;
+Function  TypeSizeofIdx(Idx : Integer) : LongInt; Forward;
 Function  TypeFindByName(Const AName : TString) : Integer; Forward;
 Function  TypeResolve(Idx : Integer) : Integer; Forward;
 Function  TypeIsOrdinal(Idx : Integer) : Boolean; Forward;
@@ -1238,6 +1288,16 @@ End;
 Procedure LexNextLine;
 Begin
   If LexEOF Then Exit;
+  If LexMemActive Then
+  Begin
+    If LexMemIdx >= LexMemCount Then
+    Begin LexEOF := True; LexLine := ''; LexColNo := 1 End
+    Else
+    Begin
+      LexLine := D16MemLine(LexMemIdx); Inc(LexMemIdx); Inc(LexLineNo); LexColNo := 1;
+    End;
+    Exit;
+  End;
   If EOF(LexSrcF) Then
   Begin
     { Si on est dans un fichier inclus, depiler }
@@ -1380,6 +1440,13 @@ Var
   FracVal : Real;
   ExpVal  : Integer;
   FltVal  : Real;
+  FracInt : Int64;      { chiffres de la partie decimale (entier) }
+  FracDig : Integer;    { nombre de ces chiffres (-1 = trop)      }
+  HasExp  : Boolean;    { exposant E present                      }
+  RInt    : Real;       { partie entiere en reel (sans debordement) }
+  Mant    : Int64;
+  Pow5    : Int64;
+  K       : Integer;
 Begin
   N       := 0;
   IsReal  := False;
@@ -1387,12 +1454,34 @@ Begin
   FracVal := 0.0;
   FracDiv := 10.0;
   ExpVal  := 0;
+  FracInt := 0;
+  FracDig := 0;
+  HasExp  := False;
+  RInt    := 0.0;
 
+  { Cible DOS 16 : 0FFh / 530Eh (suffixe h) = entier hexadecimal (blocs asm) }
+  If D16Selected Then
+  Begin
+    ExpVal := LexColNo;
+    While (ExpVal <= Length(LexLine)) And IsHexDigit(LexLine[ExpVal]) Do Inc(ExpVal);
+    If (ExpVal <= Length(LexLine)) And ((LexLine[ExpVal] = 'h') Or (LexLine[ExpVal] = 'H')) And
+       ((ExpVal = Length(LexLine)) Or Not IsIdentCont(LexLine[ExpVal + 1])) Then
+    Begin
+      While LexColNo < ExpVal Do
+      Begin N := N * 16 + HexVal(LexLine[LexColNo]); Inc(LexColNo) End;
+      Inc(LexColNo);
+      CurToken.Kind := TK_INTEGER; CurToken.IntVal := N; CurToken.RealVal := 0.0;
+      Str(N, CurToken.Val);
+      Exit;
+    End;
+    ExpVal := 0;
+  End;
   { Partie entiere decimale }
   While (LexColNo <= Length(LexLine)) And
         (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
   Begin
     N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    RInt := RInt * 10.0 + (Ord(LexLine[LexColNo]) - Ord('0'));
     Inc(LexColNo);
   End;
 
@@ -1410,6 +1499,12 @@ Begin
     Begin
       FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
       FracDiv := FracDiv * 10.0;
+      If (FracDig >= 0) And (FracDig < 18) Then
+      Begin
+        FracInt := FracInt * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+        Inc(FracDig);
+      End
+      Else FracDig := -1;
       Inc(LexColNo);
     End;
   End;
@@ -1419,6 +1514,7 @@ Begin
      ((LexLine[LexColNo] = 'E') Or (LexLine[LexColNo] = 'e')) Then
   Begin
     IsReal := True;
+    HasExp := True;
     Inc(LexColNo);
     NegExp := False;
     If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
@@ -1439,15 +1535,39 @@ Begin
 
   If IsReal Then
   Begin
-    FltVal := N + FracVal;
+    FltVal := RInt + FracVal;
     While ExpVal > 0 Do
     Begin
       If NegExp Then FltVal := FltVal / 10.0
-      Else           FltVal := FltVal * 10.0;
+      Else If FltVal < 1.0E300 Then FltVal := FltVal * 10.0;  { borne: evite le debordement (1E2466) }
       Dec(ExpVal);
     End;
     CurToken.Kind    := TK_REAL;
     CurToken.RealVal := FltVal;
+    { Type du litteral : le plus petit type reel le representant exactement (FPC) }
+    CurToken.RealKind := 10;
+    If HasExp Then
+    Begin
+      { avec exposant : exact seulement si la valeur est un entier pas trop grand }
+      If (Not NegExp) And (FltVal = Int(FltVal)) And (Abs(FltVal) < 16777216.0) Then
+        CurToken.RealKind := 4
+      Else If (Not NegExp) And (FltVal = Int(FltVal)) And (Abs(FltVal) < 9007199254740992.0) Then
+        CurToken.RealKind := 8;
+    End
+    Else If (FracDig >= 0) And (RInt < 9007199254740992.0) Then
+    Begin
+      { N.F exact en binaire si F divisible par 5^d ; mantisse = N*2^d + F/5^d }
+      Pow5 := 1;
+      For K := 1 To FracDig Do Pow5 := Pow5 * 5;
+      If FracInt Mod Pow5 = 0 Then
+      Begin
+        Mant := Trunc(RInt);
+        For K := 1 To FracDig Do Mant := Mant * 2;
+        Mant := Mant + FracInt Div Pow5;
+        If Mant < 16777216 Then CurToken.RealKind := 4
+        Else If Mant < 9007199254740992 Then CurToken.RealKind := 8;
+      End;
+    End;
     If FltVal > 2147483647.0 Then N := 2147483647
     Else If FltVal < -2147483647.0 Then N := -2147483647
     Else N := Trunc(FltVal);
@@ -2074,6 +2194,17 @@ Begin
   End;
 End;
 
+{ Etat du commutateur I (verification des E/S) par position dans le pool de jetons (cible Win32) }
+Var
+  IoSwitchPos : Array[0..255] Of LongInt;
+  IoSwitchOn  : Array[0..255] Of Boolean;
+  IoSwitchCnt : Integer;
+{ Etat du commutateur R (verification des bornes) par position dans le pool de jetons   }
+{ (cible Win32). Actif par defaut comme les references FPC (-Cr) ; R- le desactive.      }
+  RangeSwitchPos : Array[0..255] Of LongInt;
+  RangeSwitchOn  : Array[0..255] Of Boolean;
+  RangeSwitchCnt : Integer;
+
 (* ---- LexHandleDollarDirective : traiter dollar-directives *)
 (* Appelee quand LexColNo pointe sur accolade et le suivant est dollar *)
 (* Gere: I/INCLUDE, DEFINE, UNDEF, IFDEF, IFNDEF, IFOPT, *)
@@ -2100,24 +2231,57 @@ Begin
   If (Length(Dir) = 1) And (LexColNo <= Length(LexLine)) And
      ((LexLine[LexColNo] = '+') Or (LexLine[LexColNo] = '-')) Then
   Begin
-    Sw := LexLine[LexColNo];
-    Inc(LexColNo);
+    { Liste de commutateurs separes par des virgules : dollar A-,R-,I+ }
+    While (Length(Dir) = 1) And (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] = '+') Or (LexLine[LexColNo] = '-')) Do
+    Begin
+      Sw := LexLine[LexColNo];
+      Inc(LexColNo);
+      { Appliquer la commutation }
+      Case Dir[1] Of
+        'I' : Begin
+                OptIO := (Sw = '+');
+                If IoSwitchCnt < 256 Then
+                Begin
+                  IoSwitchPos[IoSwitchCnt] := TokenCount;
+                  IoSwitchOn[IoSwitchCnt]  := OptIO;
+                  Inc(IoSwitchCnt);
+                End;
+              End;
+        'R' : Begin
+                OptRange := (Sw = '+');
+                If RangeSwitchCnt < 256 Then
+                Begin
+                  RangeSwitchPos[RangeSwitchCnt] := TokenCount;
+                  RangeSwitchOn[RangeSwitchCnt]  := OptRange;
+                  Inc(RangeSwitchCnt);
+                End;
+              End;
+        'B' : OptBoolEval    := (Sw = '+');
+        'Q' : OptOverflow    := (Sw = '+');
+        'A' : OptAlign       := (Sw = '+');
+        'N' : OptNCoprocessor:= (Sw = '+');
+        'G' : OptGen286      := (Sw = '+');
+        'X' : OptExtSyntax   := (Sw = '+');
+      End;
+      If D16Selected Then D16RecordSwitch(Dir[1], Sw = '+');
+      { Virgule : commutateur suivant }
+      Dir := '';
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = ',') Then
+      Begin
+        Inc(LexColNo);
+        While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+        Begin
+          Dir := Dir + UpCase(LexLine[LexColNo]);
+          Inc(LexColNo);
+        End;
+      End;
+    End;
     { Consommer jusqu a accolade fermante }
     While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] <> '}') Do
       Inc(LexColNo);
     If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '}') Then
       Inc(LexColNo);
-    { Appliquer la commutation }
-    Case Dir[1] Of
-      'I' : OptIO          := (Sw = '+');
-      'R' : OptRange       := (Sw = '+');
-      'B' : OptBoolEval    := (Sw = '+');
-      'Q' : OptOverflow    := (Sw = '+');
-      'A' : OptAlign       := (Sw = '+');
-      'N' : OptNCoprocessor:= (Sw = '+');
-      'G' : OptGen286      := (Sw = '+');
-      'X' : OptExtSyntax   := (Sw = '+');
-    End;
     Exit;
   End;
 
@@ -2141,7 +2305,9 @@ Begin
     Inc(LexColNo);
 
   { Dispatcher les directives }
-  If (Dir = 'I') Or (Dir = 'INCLUDE') Then
+  If (Dir = 'M') And D16Selected Then
+    D16MDirective(Arg)
+  Else If (Dir = 'I') Or (Dir = 'INCLUDE') Then
   Begin
     { Supprimer quotes eventuelles }
     If (Length(Arg) >= 2) And
@@ -2239,6 +2405,7 @@ End;
 
 { ---- PPInitDefines : initialiser symboles predefinis ---- }
 Procedure PPInitDefines;
+Var DefSym : TString; DefI : Integer;
 Begin
   DefineCount := 0;
   IncTop      := -1;
@@ -2253,8 +2420,34 @@ Begin
   OptGen286      := False;  { $G- }
   OptExtSyntax   := True;   { $X+ en TP7 }
 
-  { Symbole WIN32 toujours defini dans TPCW32 }
-  DefineAdd('WIN32');
+  { Symbole WIN32 defini sauf pour la cible DOS 16 bits native }
+  If Not D16Selected Then
+  Begin
+    DefineAdd('WIN32');
+    { Les executables de reference sont produits par Free Pascal : les branches }
+    { IFDEF FPC des sources (unites, messages, File of Byte...) sont celles a suivre }
+    DefineAdd('FPC');
+    { FPC pour Win32 definit aussi WINDOWS et MSWINDOWS (CHKDSK, EQUIP, T-CHAR...) }
+    DefineAdd('WINDOWS');
+    DefineAdd('MSWINDOWS');
+  End;
+
+  { Symboles de la ligne de commande : -Dsym1,sym2 }
+  If Opts.Defines <> '' Then
+  Begin
+    DefSym := '';
+    For DefI := 1 To Length(Opts.Defines) Do
+    Begin
+      If (Opts.Defines[DefI] = ',') Or (Opts.Defines[DefI] = ';') Then
+      Begin
+        If DefSym <> '' Then DefineAdd(DefSym);
+        DefSym := '';
+      End
+      Else
+        DefSym := DefSym + Opts.Defines[DefI];
+    End;
+    If DefSym <> '' Then DefineAdd(DefSym);
+  End;
 
   { Symboles MSDOS, CPU86, CPU87 }
   DefineAdd('MSDOS');
@@ -2279,30 +2472,30 @@ End;
 { ---- Table des tailles de types Turbo Pascal (Win32) ---- }
 Const
   TPTypeSizes : Array[0..MAX_TP_TYPE_SIZES - 1] Of TTPSizeInfo = (
-    (Name: 'INTEGER';   Size: 4),   { LongInt 32 bits en Win32          }
+    (Name: 'INTEGER';   Size: 2),   { entier signe 16 bits (TP)         }
     (Name: 'LONGINT';   Size: 4),   { LongInt 32 bits                   }
-    (Name: 'WORD';      Size: 4),   { elargi a 32 bits en Win32         }
+    (Name: 'WORD';      Size: 2),   { mot 16 bits non signe (TP)        }
     (Name: 'BYTE';      Size: 1),   { 8 bits non signe                  }
     (Name: 'SHORTINT';  Size: 1),   { 8 bits signe                      }
     (Name: 'CHAR';      Size: 1),   { caractere 8 bits                  }
     (Name: 'BOOLEAN';   Size: 1),   { booleen 8 bits                    }
     (Name: 'STRING';    Size: 256), { ShortString (255+1 longueur)      }
-    (Name: 'REAL';      Size: 4),   { stub entier, 4 octets en Win32    }
+    (Name: 'REAL';      Size: 8),   { Double (comme FPC Win32)          }
     (Name: 'SINGLE';    Size: 4),   { flottant 32 bits                  }
     (Name: 'DOUBLE';    Size: 8),   { flottant 64 bits                  }
     (Name: 'EXTENDED';  Size: 10),  { flottant 80 bits                  }
     (Name: 'COMP';      Size: 8),   { entier 64 bits en virgule fixe    }
     (Name: 'POINTER';   Size: 4),   { pointeur generique 32 bits        }
     (Name: 'PCHAR';     Size: 4),   { pointeur vers Char                }
-    (Name: 'TEXT';      Size: 4),   { handle fichier texte              }
-    (Name: 'FILE';      Size: 4),   { handle fichier                    }
+    (Name: 'TEXT';      Size: 552), { enregistrement de fichier (TFR_SIZE) }
+    (Name: 'FILE';      Size: 552), { enregistrement de fichier (TFR_SIZE) }
     (Name: 'LONGWORD';  Size: 4),   { mot 32 bits non signe (TP8)       }
     { Types de l unite Dos }
-    (Name: 'DIRSTR';   Size: 68),  { String[67] + length byte          }
-    (Name: 'NAMESTR';  Size: 9),   { String[8]  + length byte          }
-    (Name: 'EXTSTR';   Size: 5),   { String[4]  + length byte          }
-    (Name: 'PATHSTR';  Size: 80),  { String[79] + length byte          }
-    (Name: 'COMSTR';   Size: 128), { String[127]+ length byte          }
+    (Name: 'DIRSTR';   Size: 256), { chaine (256 octets, comme String) }
+    (Name: 'NAMESTR';  Size: 256), { chaine                            }
+    (Name: 'EXTSTR';   Size: 256), { chaine                            }
+    (Name: 'PATHSTR';  Size: 256), { chaine                            }
+    (Name: 'COMSTR';   Size: 256), { chaine                            }
     (Name: 'DATETIME'; Size: 12),  { record 6 x Word = 12 octets      }
     { Type QuickPascal }
     (Name: 'CSTRING';  Size: 256), { CSTRING : String + nul terminal   }
@@ -2316,6 +2509,8 @@ Procedure DataInit;
 Var I : Integer;
 Begin
   DataCount   := 0;
+  DataInitCount := 0;
+  DataInitFixCnt := 0;
   LabelGenSeq := 0;
   TokenCount  := 0;
   For I := 0 To MAX_DATA - 1 Do
@@ -2332,7 +2527,7 @@ End;
 { ---- DataAdd : ajouter une entree generique dans le pool ---- }
 Function DataAdd(Const Lbl : TString; Kind : TDataKind;
                  AIntVal : LongInt; Const AStrVal : TString;
-                 AElemCount : Integer; AElemSize : Integer) : Integer;
+                 AElemCount : LongInt; AElemSize : LongInt) : Integer;
 Begin
   If DataCount >= MAX_DATA Then
   Begin
@@ -2346,6 +2541,7 @@ Begin
   DataTab[DataCount].StrVal    := AStrVal;
   DataTab[DataCount].ElemCount := AElemCount;
   DataTab[DataCount].ElemSize  := AElemSize;
+  DataTab[DataCount].IsPStr    := False;
   DataAdd := DataCount;
   Inc(DataCount);
 End;
@@ -2353,11 +2549,19 @@ End;
 { ---- DataAddStr : ajouter une chaine avec label auto-genere ---- }
 { Retourne le label (ex: _TPK_1) }
 Function DataAddStr(Const S : TString) : TString;
-Var Lbl : TString;
+Var Lbl : TString; K : Integer;
 Begin
   Inc(LabelGenSeq);
   Lbl := TP_STR_PFX + IntToStr_(LabelGenSeq);
-  DataAdd(Lbl, DK_STR, 0, S, 0, 0);
+  { Un litteral contenant #0 ('SONY'#0) ne peut pas etre ASCIIZ : il est emis au format }
+  { Pascal (octet de longueur puis caracteres) et charge comme une chaine Pascal.         }
+  If (Pos(#0, S) > 0) And (Length(S) < 255) And ((Opts.DestTarget = DEST_WIN32) Or (Opts.DestTarget = DEST_W32)) And (Not Opts.Dos16Mode) Then
+  Begin
+    K := DataAdd(Lbl, DK_STR, 0, Chr(Length(S)) + S, 0, 0);
+    If K >= 0 Then DataTab[K].IsPStr := True;
+  End
+  Else
+    DataAdd(Lbl, DK_STR, 0, S, 0, 0);
   DataAddStr := Lbl;
 End;
 
@@ -2375,26 +2579,26 @@ End;
 
 { ---- DataAddArray : ajouter un tableau avec label ---- }
 Function DataAddArray(Const Lbl : TString;
-                      AElemCount : Integer;
-                      AElemSize : Integer) : Integer;
+                      AElemCount : LongInt;
+                      AElemSize : LongInt) : Integer;
 Begin
   DataAddArray := DataAdd(Lbl, DK_ARRAY, 0, '', AElemCount, AElemSize);
 End;
 
 { ---- DataAddRes : ajouter un espace reserve avec label ---- }
-Function DataAddRes(Const Lbl : TString; Size : Integer) : Integer;
+Function DataAddRes(Const Lbl : TString; Size : LongInt) : Integer;
 Begin
   DataAddRes := DataAdd(Lbl, DK_RES, Size, '', 0, 0);
 End;
 
 { ---- DataAddStruct : ajouter un record/structure ---- }
-Function DataAddStruct(Const Lbl : TString; Size : Integer) : Integer;
+Function DataAddStruct(Const Lbl : TString; Size : LongInt) : Integer;
 Begin
   DataAddStruct := DataAdd(Lbl, DK_STRUCT, Size, '', 0, 0);
 End;
 
 { ---- DataAddZero : ajouter un espace initialise a zero ---- }
-Function DataAddZero(Const Lbl : TString; Size : Integer) : Integer;
+Function DataAddZero(Const Lbl : TString; Size : LongInt) : Integer;
 Begin
   DataAddZero := DataAdd(Lbl, DK_ZERO, Size, '', 0, 0);
 End;
@@ -2427,7 +2631,7 @@ End;
 
 { ---- TPTypeSizeof : retourne la taille d un type TP de base ---- }
 { Retourne -1 si le type est inconnu }
-Function TPTypeSizeof(Const TypeName : TString) : Integer;
+Function TPTypeSizeof(Const TypeName : TString) : LongInt;
 Var
   I : Integer;
   N : TString;
@@ -2853,18 +3057,111 @@ End;
 Procedure TokenPoolInit;
 Begin
   TokenCount := 0;
+  TokenPoolLimit := MAX_TOKENS;
 End;
 
 { ---- TokenPoolAdd : ajouter un token dans le pool ---- }
 Procedure TokenPoolAdd(Const T : TToken);
 Begin
-  If TokenCount >= MAX_TOKENS Then
+  If TokenCount >= TokenPoolLimit Then
   Begin
     WarnMsg('pool de tokens plein');
     Exit;
   End;
   TokenPool[TokenCount] := T;
   Inc(TokenCount);
+End;
+
+{ ---- TokenPoolMergeCaretChars : constantes caracteres de controle ---- }
+{ Le lexeur produit OP(^) IDENT(N) pour ^N ; en position d expression  }
+{ (etiquette CASE, comparaison, argument), ^N est le caractere #14.    }
+{ On fusionne les deux jetons quand la lettre est seule et collee au ^, }
+{ et que le ^ n est ni un dereferencement (apres IDENT, ')', ']', '^') }
+{ ni un type pointeur (apres ':', ou apres '=' / OF et suivi de ';' ')'). }
+Procedure TokenPoolMergeCaretChars;
+Var
+  I, J : Integer;
+  Ch : Char;
+  IsDeref, IsType : Boolean;
+Begin
+  I := 0;
+  J := 0;
+  While I < TokenCount Do
+  Begin
+    If (TokenPool[I].Kind = TK_OP) And (TokenPool[I].Val = '^') And
+       (I + 1 < TokenCount) And (TokenPool[I + 1].Kind = TK_IDENT) And
+       (Length(TokenPool[I + 1].Val) = 1) And
+       (TokenPool[I + 1].Line = TokenPool[I].Line) And
+       (TokenPool[I + 1].Col = TokenPool[I].Col + 1) Then
+    Begin
+      IsDeref := False;
+      IsType := False;
+      If J > 0 Then
+      Begin
+        If (TokenPool[J - 1].Kind = TK_IDENT) Or
+           ((TokenPool[J - 1].Kind = TK_PUNCT) And
+            ((TokenPool[J - 1].Val = ')') Or (TokenPool[J - 1].Val = ']'))) Or
+           ((TokenPool[J - 1].Kind = TK_OP) And (TokenPool[J - 1].Val = '^')) Then
+          IsDeref := True;
+        If (TokenPool[J - 1].Kind = TK_PUNCT) And (TokenPool[J - 1].Val = ':') Then
+          IsType := True;
+        { TYPE P = ^T;  ou  Array[..] Of ^T;  : la lettre est suivie de ';' ou ')' }
+        If (((TokenPool[J - 1].Kind = TK_OP) And (TokenPool[J - 1].Val = '=')) Or
+            ((TokenPool[J - 1].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[J - 1].Val) = 'OF'))) And
+           (I + 2 < TokenCount) And (TokenPool[I + 2].Kind = TK_PUNCT) And
+           ((TokenPool[I + 2].Val = ';') Or (TokenPool[I + 2].Val = ')')) Then
+          IsType := True;
+      End;
+      If Not IsDeref And Not IsType Then
+      Begin
+        Ch := UpCase(TokenPool[I + 1].Val[1]);
+        TokenPool[J] := TokenPool[I];
+        TokenPool[J].Kind := TK_CHAR;
+        TokenPool[J].IntVal := Ord(Ch) Xor 64;
+        TokenPool[J].Val := '#' + IntToStr_(TokenPool[J].IntVal);
+        Inc(J);
+        Inc(I, 2);
+        Continue;
+      End;
+    End;
+    If J <> I Then TokenPool[J] := TokenPool[I];
+    Inc(J);
+    Inc(I);
+  End;
+  TokenCount := J;
+End;
+
+{ ---- TokenPoolStripUnitQualifiers : System.Move, Dos.GetDate, Crt.ClrScr ... ---- }
+{ Le prefixe d unite (System, Dos, Crt, Strings, Printer, Graph) suivi de '.' est  }
+{ retire devant un identificateur : les sous-programmes de ces unites sont integres. }
+Procedure TokenPoolStripUnitQualifiers;
+Var
+  I, J : Integer;
+  Up : TString;
+Begin
+  I := 0;
+  J := 0;
+  While I < TokenCount Do
+  Begin
+    If (TokenPool[I].Kind = TK_IDENT) And (I + 2 < TokenCount) And
+       (TokenPool[I + 1].Kind = TK_PUNCT) And (TokenPool[I + 1].Val = '.') And
+       ((TokenPool[I + 2].Kind = TK_IDENT) Or (TokenPool[I + 2].Kind = TK_KEYWORD)) And
+       Not ((J > 0) And (TokenPool[J - 1].Kind = TK_PUNCT) And (TokenPool[J - 1].Val = '.')) Then
+    Begin
+      Up := StrUpperCase(TokenPool[I].Val);
+      If (Up = 'SYSTEM') Or (Up = 'DOS') Or (Up = 'CRT') Or (Up = 'STRINGS') Or
+         (Up = 'PRINTER') Or (Up = 'GRAPH') Then
+      Begin
+        Inc(I, 2);   { sauter Unite et '.' ; l identificateur suit }
+        Continue;
+      End;
+    End;
+    If J <> I Then TokenPool[J] := TokenPool[I];
+    Inc(J);
+    Inc(I);
+  End;
+  TokenCount := J;
 End;
 
 { ---- TokenPoolRegisterStrings : enregistrer toutes les chaines ---- }
@@ -3042,6 +3339,13 @@ Begin
     If SymTab[Dup].IsExternal And
        (Kind In [SK_PROC, SK_FUNC, SK_VAR]) Then
     Begin
+      If (Kind = SK_VAR) And (SymTab[Dup].Kind In [SK_PROC, SK_FUNC]) Then
+      Begin
+        { Variable globale qui masque un sous-programme predefini (ex: Var Pos : Word) }
+        SymTab[Dup].MangledName := TP_VAR_PFX + Up;
+        SymTab[Dup].ParamCount  := 0;
+        SymTab[Dup].UnitName    := 'SYSTEM';   { marque : masque un nom predefini }
+      End;
       SymTab[Dup].Kind       := Kind;
       SymTab[Dup].TypeIdx    := TIdx;
       SymTab[Dup].IsExternal := False;
@@ -3811,7 +4115,7 @@ End;
 { ------------------------------------------------------------ }
 
 Function TypeAdd(Kind : TTypeKind; Const AName : TString;
-                 ASize : Integer; AAlign : Integer;
+                 ASize : LongInt; AAlign : Integer;
                  AUnsigned : Boolean;
                  ABaseTypeIdx : Integer) : Integer;
 Begin
@@ -3844,6 +4148,10 @@ End;
 { primitifs de Turbo Pascal                                    }
 { ------------------------------------------------------------ }
 
+Var
+  SetGenTypeIdx : Integer;   { type ensemble generique (constructeur [..], operations) }
+  SetBufSeq     : Integer;   { anneau des tampons SETBUF0..7 }
+
 Procedure TypeInit;
 Var I, TI : Integer;
 Begin
@@ -3870,10 +4178,10 @@ Begin
   { Les index doivent correspondre aux constantes TY_IDX_xxx       }
 
   { idx 0 : Integer (LongInt 32 bits signe) }
-  TypeAdd(TYK_INTEGER, 'INTEGER', 4, 4, False, TY_UNKNOWN);
+  TypeAdd(TYK_INTEGER, 'INTEGER', 2, 2, False, TY_UNKNOWN);
 
   { idx 1 : Word (32 bits non signe en Win32) }
-  TypeAdd(TYK_WORD, 'WORD', 4, 4, True, TY_UNKNOWN);
+  TypeAdd(TYK_WORD, 'WORD', 2, 2, True, TY_UNKNOWN);
 
   { idx 2 : Byte (8 bits non signe) }
   TypeAdd(TYK_BYTE, 'BYTE', 1, 1, True, TY_UNKNOWN);
@@ -3891,7 +4199,7 @@ Begin
   TypeAdd(TYK_STRING, 'STRING', 256, 1, False, TY_UNKNOWN);
 
   { idx 7 : Real (6 octets, format specifique Turbo Pascal) }
-  TypeAdd(TYK_REAL, 'REAL', 6, 2, False, TY_UNKNOWN);
+  TypeAdd(TYK_REAL, 'REAL', 8, 4, False, TY_UNKNOWN);
 
   { idx 8 : Single (flottant IEEE 32 bits) }
   TypeAdd(TYK_SINGLE, 'SINGLE', 4, 4, False, TY_UNKNOWN);
@@ -3912,7 +4220,7 @@ Begin
   TypeAdd(TYK_PCHAR, 'PCHAR', 4, 4, False, TY_IDX_CHAR);
 
   { idx 14 : Text (handle fichier texte) }
-  TypeAdd(TYK_TEXT, 'TEXT', 4, 4, False, TY_UNKNOWN);
+  TypeAdd(TYK_TEXT, 'TEXT', TFR_SIZE, 4, False, TY_UNKNOWN);  { enregistrement de fichier }
 
   { idx 15 : nil (constante pointeur nul) }
   TypeAdd(TYK_NIL, 'NIL', 4, 4, False, TY_UNKNOWN);
@@ -3922,13 +4230,17 @@ Begin
 
   { idx 17 : LongWord (TP8+, 32 bits non signe) }
   TypeAdd(TYK_WORD, 'LONGWORD', 4, 4, True, TY_IDX_WORD);
+  { alias Free Pascal / Windows rencontres dans les sources TP : DWord, Cardinal, SmallInt }
+  TypeAdd(TYK_WORD, 'DWORD', 4, 4, True, TY_IDX_WORD);
+  TypeAdd(TYK_WORD, 'CARDINAL', 4, 4, True, TY_IDX_WORD);
+  TypeAdd(TYK_INTEGER, 'SMALLINT', 2, 2, False, TY_IDX_INTEGER);
 
   { Types chaines de l unite Dos }
-  TypeAdd(TYK_STRING, 'DIRSTR',  68, 1, False, TY_UNKNOWN);   { String[67] }
-  TypeAdd(TYK_STRING, 'NAMESTR',  9, 1, False, TY_UNKNOWN);   { String[8]  }
-  TypeAdd(TYK_STRING, 'EXTSTR',   5, 1, False, TY_UNKNOWN);   { String[4]  }
-  TypeAdd(TYK_STRING, 'PATHSTR', 80, 1, False, TY_UNKNOWN);   { String[79] }
-  TypeAdd(TYK_STRING, 'COMSTR', 128, 1, False, TY_UNKNOWN);   { String[127]}
+  TypeAdd(TYK_STRING, 'DIRSTR',  256, 1, False, TY_UNKNOWN);   { String[67] }
+  TypeAdd(TYK_STRING, 'NAMESTR',  256, 1, False, TY_UNKNOWN);   { String[8]  }
+  TypeAdd(TYK_STRING, 'EXTSTR',   256, 1, False, TY_UNKNOWN);   { String[4]  }
+  TypeAdd(TYK_STRING, 'PATHSTR', 256, 1, False, TY_UNKNOWN);   { String[79] }
+  TypeAdd(TYK_STRING, 'COMSTR', 256, 1, False, TY_UNKNOWN);   { String[127]}
 
   { Type QuickPascal : CSTRING (String + nul terminal) }
   If Opts.QuickPascal Then TypeAdd(TYK_STRING, 'CSTRING', 256, 1, False, TY_UNKNOWN);
@@ -3942,6 +4254,11 @@ Begin
     If TI >= 0 Then Begin TypeTab[TI].Lo := 0; TypeTab[TI].Hi := 63; End;
   End;
 
+  { File non type : meme enregistrement que Text ; File Of T cree un type anonyme TYK_FILE
+    dont BaseTypeIdx donne la taille d enregistrement }
+  TypeAdd(TYK_FILE, 'FILE', TFR_SIZE, 4, False, TY_UNKNOWN);
+  SetGenTypeIdx := TypeAdd(TYK_SET, '', 32, 4, False, TY_IDX_BYTE);
+  SetBufSeq := 0;
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
 End;
@@ -3970,7 +4287,7 @@ End;
 { TypeSizeofIdx : retourne la taille d un type par son index   }
 { ------------------------------------------------------------ }
 
-Function TypeSizeofIdx(Idx : Integer) : Integer;
+Function TypeSizeofIdx(Idx : Integer) : LongInt;
 Begin
   If (Idx >= 0) And (Idx < TypeCount) Then
     TypeSizeofIdx := TypeTab[Idx].Size
@@ -4005,6 +4322,43 @@ Begin
     TypeTab[TI].Fields[3].TypeIdx := TY_IDX_STRING;
     TypeTab[TI].Fields[3].Offset  := 12;
     SI := SymAdd('SEARCHREC', SK_TYPE, TI);
+    If SI >= 0 Then SymTab[SI].IsGlobal := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ RegisterRegistersType : type Registers de l unite Dos        }
+{ Champs de 4 octets (Word = 32 bits dans cette cible) :       }
+{ AX(0) BX(4) CX(8) DX(12) BP(16) SI(20) DI(24) DS(28) ES(32)  }
+{ Flags(36) ; octets AL/AH BL/BH CL/CH DL/DH superposes.       }
+{ Le runtime Intr/MsDos (_TPRT_INTR, _TPRT_MSDOS) lit et ecrit }
+{ cette disposition.                                           }
+{ ------------------------------------------------------------ }
+Procedure RegisterRegistersType;
+Const
+  WN : Array[0..9] Of String[5] = ('AX','BX','CX','DX','BP','SI','DI','DS','ES','FLAGS');
+  BN : Array[0..7] Of String[2] = ('AL','AH','BL','BH','CL','CH','DL','DH');
+  BO : Array[0..7] Of Integer   = (0, 1, 4, 5, 8, 9, 12, 13);
+Var
+  TI, SI, K : Integer;
+Begin
+  TI := TypeAdd(TYK_RECORD, 'REGISTERS', 40, 4, False, -1);
+  If TI >= 0 Then
+  Begin
+    For K := 0 To 9 Do
+    Begin
+      TypeTab[TI].Fields[K].Name    := WN[K];
+      TypeTab[TI].Fields[K].TypeIdx := TY_IDX_WORD;
+      TypeTab[TI].Fields[K].Offset  := K * 4;
+    End;
+    For K := 0 To 7 Do
+    Begin
+      TypeTab[TI].Fields[10 + K].Name    := BN[K];
+      TypeTab[TI].Fields[10 + K].TypeIdx := TY_IDX_BYTE;
+      TypeTab[TI].Fields[10 + K].Offset  := BO[K];
+    End;
+    TypeTab[TI].FieldCount := 18;
+    SI := SymAdd('REGISTERS', SK_TYPE, TI);
     If SI >= 0 Then SymTab[SI].IsGlobal := True;
   End;
 End;
@@ -4513,6 +4867,7 @@ End;
 
 Procedure BcDefineLabel(Const Nm: TString); Forward;
 Procedure BcAssemble(Const S: TString); Forward;
+Function BcGetCodeLen : LongInt; Forward;
 Procedure BcAssemble8086(Const S: TString); Forward;
 Procedure BcAssembleZ80(Const S: TString); Forward;
 Procedure BcAssemble6502(Const S: TString); Forward;
@@ -4565,6 +4920,8 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure EmitInstr(Const S : TString);
+Var
+  BcLenBefore : LongInt;
 Begin
   If OutFOpen Then
     WriteLn(OutF, '        ', S);
@@ -4590,7 +4947,12 @@ Begin
             (Opts.DestTarget = DEST_DOSP) Then
       BcAssemble8086(S)
     Else
+    Begin
+      BcLenBefore := BcGetCodeLen;
       BcAssemble(S);
+      If Opts.DebugMode And (BcGetCodeLen = BcLenBefore) Then
+        WriteLn('  [asm] instruction non assemblee : ', S);
+    End;
   End;
 End;
 
@@ -4668,6 +5030,7 @@ Begin
   EmitRaw('EXTRN _FlushFileBuffers@4:NEAR');
   EmitRaw('EXTRN _SetEndOfFile@4:NEAR');
   EmitRaw('EXTRN _GetLastError@0:NEAR');
+  EmitRaw('EXTRN _GetVersion@0:NEAR');
   EmitRaw('EXTRN _CreateDirectoryA@8:NEAR');
   EmitRaw('EXTRN _RemoveDirectoryA@4:NEAR');
   EmitRaw('EXTRN _SetCurrentDirectoryA@4:NEAR');
@@ -4698,6 +5061,9 @@ Begin
   EmitRaw('EXTRN _GetEnvironmentStringsA@0:NEAR');
   EmitRaw('EXTRN _GetFileTime@16:NEAR');
   EmitRaw('EXTRN _FileTimeToDosDateTime@12:NEAR');
+  EmitRaw('EXTRN _DosDateTimeToFileTime@12:NEAR');
+  EmitRaw('EXTRN _LocalFileTimeToFileTime@8:NEAR');
+  EmitRaw('EXTRN _SetFileTime@16:NEAR');
   EmitComment('--- Imports Win32 pour unite Graph (TODO 20) ---');
   EmitComment('--- user32.dll ---');
   EmitRaw('EXTRN _RegisterClassA@4:NEAR');
@@ -4787,10 +5153,15 @@ End;
 { et les variables runtime du compilateur                      }
 { ------------------------------------------------------------ }
 
+Function DataInitFixAt(Ofs : LongInt) : Integer; Forward;
+Function DataInitFixAsmLabel(F : Integer) : TString; Forward;
+
 Procedure EmitDataSeg;
 Var
   I, J : Integer;
   S    : TString;
+  Pfx  : TString;
+  FixI : Integer;
   C    : Char;
 Begin
   EmitComment('--- Segment de donnees ---');
@@ -4804,12 +5175,27 @@ Begin
   EmitRaw('HHEAP     DD 0');           { handle heap           }
   EmitRaw('NUMBUF    DB 32 DUP(0)');   { buffer pour nombres   }
   EmitRaw('INBUF     DB 256 DUP(0)');  { buffer pour lecture    }
+  EmitRaw('CHRBUF    DB 4 DUP(0)');    { caractere -> chaine    }
+  EmitRaw('OUTBUF    DB 4096 DUP(0)'); { tampon sortie standard }
+  EmitRaw('OUTBUFLEN DD 0');
+  EmitRaw('RTERR_MSG DB ''Runtime error '',0');
+  EmitRaw('RTERR_AT  DB '' at $'',0');
+  EmitRaw('HEXBUF    DB 12 DUP(0)');
+  EmitRaw('REALTMP   DB 8 DUP(0)');     { reel temporaire (Double)      }
+  EmitRaw('FMTBUF    DB 96 DUP(0)');    { tampon sprintf                }
+  EmitRaw('FMT_FIX   DB ''%*.*f'',0');  { format :w:d                   }
+  EmitRaw('FMT_SCI   DB ''% .*E'',0');  { format scientifique           }
+  EmitRaw('FPUCW     DW 1332h');        { mot de controle x87 de FPC : exceptions IE/ZE/OE non masquees }
+  EmitRaw('          DW 0');
   EmitRaw('BYTESWR   DD 0');           { octets ecrits         }
   EmitRaw('BYTESRD   DD 0');           { octets lus            }
   EmitRaw('CRLF      DB 13,10,0');     { retour chariot        }
   EmitRaw('STRTMP    DB 256 DUP(0)');  { buffer temp chaine    }
   EmitRaw('STRBUF1   DB 256 DUP(0)');  { buffer concat/copy    }
   EmitRaw('STRBUF2   DB 256 DUP(0)');  { buffer concat/copy 2  }
+  EmitRaw('WITHPTR   DD 8 DUP(0)');    { adresses des WITH imbriques }
+  EmitRaw('SETBUF    DB 256 DUP(0)');  { 8 tampons ensemble de 32 octets }
+  EmitRaw('VALCODE   DD 0');           { code d erreur de Val      }
   EmitRaw('TRUE_STR  DB ''TRUE'',0');   { chaine TRUE           }
   EmitRaw('FALSE_STR DB ''FALSE'',0');  { chaine FALSE          }
   EmitBlankLine;
@@ -4845,8 +5231,12 @@ Begin
   EmitRaw('DOS_DKFREE DD 4 DUP(0)');   { 4 DWORDs pour GetDiskFreeSpace         }
   EmitRaw('DOS_FINDDATA DB 320 DUP(0)');{ WIN32_FIND_DATAA (318 bytes)          }
   EmitRaw('DOS_FINDHDL DD -1');         { handle FindFirstFile                   }
+  EmitRaw('DOS_FINDATTR DD 0');         { attributs demandes par FindFirst       }
+  EmitRaw('DOS_FTTMP DB 12 DUP(0)');     { FILETIME locale + date/heure DOS       }
+  EmitRaw('SF_FTTMP DB 16 DUP(0)');      { SetFTime : FILETIME locale puis UTC    }
   EmitRaw('DOS_PROCINFO DB 16 DUP(0)');{ PROCESS_INFORMATION (16 bytes)         }
   EmitRaw('DOS_STARTINFO DB 68 DUP(0)');{ STARTUPINFOA (68 bytes)               }
+  EmitRaw('DOS_CMDBUF DB 520 DUP(0)');  { Exec : ligne de commande "Path" args   }
   EmitRaw('DOS_EXITVAL DD 0');          { code sortie processus                  }
   EmitBlankLine;
 
@@ -4957,6 +5347,8 @@ Begin
   EmitComment('--- Variables Strings (unite Strings emulation) ---');
   EmitRaw('STR_TMPBUF  DB 256 DUP(0)');  { buffer temporaire pour conversions     }
   EmitRaw('STR_PASBUF  DB 256 DUP(0)');  { buffer pour StrPas (PChar->Pascal)     }
+  EmitRaw('STRRING     DB 4096 DUP(0)'); { anneau : resultats de fonctions String }
+  EmitRaw('STRRINGIDX  DD 0');
   EmitComment('--- Variables Printer (unite Printer emulation) ---');
   EmitRaw('PRN_HANDLE  DD -1');          { handle fichier imprimante (NUL)        }
   EmitRaw('PRN_FNAME   DB ''NUL'',0');   { nom fichier imprimante par defaut      }
@@ -5092,6 +5484,38 @@ Begin
         Else
           EmitRaw(DataTab[I].LblName + '  DD 0');
       End;
+
+      DK_INIT:
+      Begin
+        { Octets initialises : LABEL DB b,b,... (16 par ligne), DD OFFSET pour les adresses }
+        S := '';
+        Pfx := DataTab[I].LblName + '  ';
+        J := 0;
+        While J < DataTab[I].ElemCount Do
+        Begin
+          FixI := DataInitFixAt(DataTab[I].IntVal + J);
+          If (FixI >= 0) And (J + 4 <= DataTab[I].ElemCount) Then
+          Begin
+            If S <> '' Then Begin EmitRaw(Pfx + 'DB ' + S); S := ''; Pfx := '        '; End;
+            EmitRaw(Pfx + 'DD OFFSET ' + DataInitFixAsmLabel(FixI));
+            Pfx := '        ';
+            Inc(J, 4);
+            Continue;
+          End;
+          If S <> '' Then S := S + ',';
+          S := S + IntToStr_(DataInitPool[DataTab[I].IntVal + J]);
+          Inc(J);
+          If (J Mod 16 = 0) Or (J = DataTab[I].ElemCount) Then
+          Begin
+            EmitRaw(Pfx + 'DB ' + S);
+            Pfx := '        ';
+            S := '';
+          End;
+        End;
+        If S <> '' Then EmitRaw(Pfx + 'DB ' + S);
+        If DataTab[I].ElemCount = 0 Then
+          EmitRaw(DataTab[I].LblName + '  DD 0');
+      End;
     End; { case }
   End;
   EmitBlankLine;
@@ -5212,7 +5636,7 @@ End;
 { PUSH EBP / MOV EBP,ESP / SUB ESP,locals                     }
 { ------------------------------------------------------------ }
 
-Procedure EmitProlog(LocalSize : Integer);
+Procedure EmitProlog(LocalSize : LongInt);
 Begin
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
@@ -5376,6 +5800,993 @@ End;
 { Forward declaration pour SkipToMatchingEnd (TODO 09) }
 Procedure SkipToMatchingEnd(Var I : Integer); Forward;
 
+{ TokIsProcType : le mot-cle PROCEDURE/FUNCTION au jeton I est un type   }
+{ procedural (TName = Procedure... ou Var F : Procedure...) et non le     }
+{ debut d une declaration de sous-programme                               }
+Function TokIsProcType(I : Integer) : Boolean;
+Begin
+  TokIsProcType := (I > 0) And (I < TokenCount) And
+    ((TokenPool[I - 1].Val = '=') Or (TokenPool[I - 1].Val = ':'));
+End;
+
+{ ============================================================ }
+{ Analyseur de types unifie : ParseTypeExprAt(I) lit une        }
+{ expression de type a partir du jeton I (nom, ^T, String[n],   }
+{ Array[..] Of T, Record..End, Set Of, File Of, (enum), lo..hi, }
+{ Procedure/Function) et retourne l index TypeTab.              }
+{ ConstTokExprAt evalue une expression constante sur les jetons. }
+{ EncodeConstInitAt encode l initialiseur d une constante typee. }
+{ ============================================================ }
+
+Var
+  PendPtr2Idx  : Array[0..255] Of Integer;   { pointeurs ^T vers types non encore declares }
+  PendPtr2Name : Array[0..255] Of TString;
+  PendPtr2Cnt  : Integer;
+
+Procedure ResolvePendingPtrTypes;
+Var K : Integer;
+Begin
+  For K := 0 To PendPtr2Cnt - 1 Do
+    If (PendPtr2Idx[K] >= 0) And (TypeTab[PendPtr2Idx[K]].BaseTypeIdx < 0) Then
+      TypeTab[PendPtr2Idx[K]].BaseTypeIdx := TypeFindByName(PendPtr2Name[K]);
+End;
+
+Function TokIsPunct(I : Integer; Const V : TString) : Boolean;
+Begin
+  TokIsPunct := (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = V);
+End;
+
+Function TokIsOp(I : Integer; Const V : TString) : Boolean;
+Begin
+  TokIsOp := (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And (TokenPool[I].Val = V);
+End;
+
+Function TokIsKw(I : Integer; Const V : TString) : Boolean;
+Begin
+  TokIsKw := (I < TokenCount) And ((TokenPool[I].Kind = TK_KEYWORD) Or (TokenPool[I].Kind = TK_IDENT)) And
+             (StrUpperCase(TokenPool[I].Val) = V);
+End;
+
+Function ParseTypeExprAt(Var I : Integer) : Integer; Forward;
+
+{ --- Expression constante sur les jetons : entiers, caracteres, constantes nommees, }
+{     + - * DIV MOD SHL SHR AND OR XOR, parentheses, Ord Chr SizeOf Pred Succ Abs    }
+Function ConstTokExprAt(Var I : Integer) : LongInt; Forward;
+
+Function ConstTokAtomAt(Var I : Integer) : LongInt;
+Var
+  V : LongInt;
+  Up : TString;
+  SI, TI : Integer;
+Begin
+  V := 0;
+  If I >= TokenCount Then Begin ConstTokAtomAt := 0; Exit; End;
+  If TokIsOp(I, '-') Then
+  Begin
+    Inc(I); ConstTokAtomAt := -ConstTokAtomAt(I); Exit;
+  End;
+  If TokIsOp(I, '+') Then
+  Begin
+    Inc(I); ConstTokAtomAt := ConstTokAtomAt(I); Exit;
+  End;
+  If TokIsKw(I, 'NOT') Then
+  Begin
+    Inc(I); ConstTokAtomAt := Not ConstTokAtomAt(I); Exit;
+  End;
+  If TokIsPunct(I, '(') Then
+  Begin
+    Inc(I);
+    V := ConstTokExprAt(I);
+    If TokIsPunct(I, ')') Then Inc(I);
+    ConstTokAtomAt := V;
+    Exit;
+  End;
+  Case TokenPool[I].Kind Of
+    TK_INTEGER, TK_CHAR : Begin V := TokenPool[I].IntVal; Inc(I); End;
+    TK_STRING :
+      Begin
+        If Length(TokenPool[I].Val) >= 1 Then V := Ord(TokenPool[I].Val[1]);
+        Inc(I);
+      End;
+    TK_IDENT, TK_KEYWORD :
+      Begin
+        Up := StrUpperCase(TokenPool[I].Val);
+        Inc(I);
+        If Up = 'TRUE' Then V := 1
+        Else If (Up = 'FALSE') Or (Up = 'NIL') Then V := 0
+        Else If Up = 'MAXINT' Then V := 32767
+        Else If Up = 'MAXLONGINT' Then V := 2147483647
+        Else If (Up = 'ORD') Or (Up = 'CHR') Or (Up = 'ABS') Or (Up = 'PRED') Or
+                (Up = 'SUCC') Or (Up = 'LO') Or (Up = 'HI') Or (Up = 'BYTE') Or
+                (Up = 'WORD') Or (Up = 'INTEGER') Or (Up = 'LONGINT') Or (Up = 'CHAR') Then
+        Begin
+          If TokIsPunct(I, '(') Then Inc(I);
+          V := ConstTokExprAt(I);
+          If TokIsPunct(I, ')') Then Inc(I);
+          If Up = 'ABS' Then Begin If V < 0 Then V := -V; End
+          Else If Up = 'PRED' Then Dec(V)
+          Else If Up = 'SUCC' Then Inc(V)
+          Else If Up = 'LO' Then V := V And $FF
+          Else If Up = 'HI' Then V := (V Shr 8) And $FF;
+        End
+        Else If (Up = 'SIZEOF') Or (Up = 'HIGH') Or (Up = 'LOW') Then
+        Begin
+          If TokIsPunct(I, '(') Then Inc(I);
+          TI := -1;
+          If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) Then
+          Begin
+            TI := TypeFindByName(StrUpperCase(TokenPool[I].Val));
+            If TI < 0 Then
+            Begin
+              SI := SymFind(StrUpperCase(TokenPool[I].Val));
+              If SI >= 0 Then TI := SymTab[SI].TypeIdx;
+            End;
+            Inc(I);
+          End;
+          If TokIsPunct(I, ')') Then Inc(I);
+          If Up = 'SIZEOF' Then V := TypeSizeofIdx(TI)
+          Else If (TI >= 0) And (TI < TypeCount) Then
+          Begin
+            If Up = 'HIGH' Then
+            Begin
+              If TypeTab[TI].Kind = TYK_ENUM Then V := TypeTab[TI].EnumCount - 1
+              Else If (TypeTab[TI].Kind = TYK_BYTE) Or (TypeTab[TI].Kind = TYK_CHAR) Then V := 255
+              Else If TypeTab[TI].Kind = TYK_BOOLEAN Then V := 1
+              Else V := TypeTab[TI].Hi;
+            End
+            Else V := TypeTab[TI].Lo;
+          End;
+        End
+        Else
+        Begin
+          SI := SymFind(Up);
+          If (SI >= 0) And (SymTab[SI].Kind = SK_CONST) Then V := SymTab[SI].ImmVal;
+        End;
+      End;
+  Else
+    Inc(I);
+  End;
+  ConstTokAtomAt := V;
+End;
+
+Function ConstTokTermAt(Var I : Integer) : LongInt;
+Var V, R : LongInt; Up : TString;
+Begin
+  V := ConstTokAtomAt(I);
+  While I < TokenCount Do
+  Begin
+    Up := '';
+    If (TokenPool[I].Kind = TK_OP) Or (TokenPool[I].Kind = TK_KEYWORD) Then
+      Up := StrUpperCase(TokenPool[I].Val);
+    If (Up = '*') Or (Up = 'DIV') Or (Up = 'MOD') Or (Up = 'SHL') Or (Up = 'SHR') Or (Up = 'AND') Then
+    Begin
+      Inc(I);
+      R := ConstTokAtomAt(I);
+      If Up = '*' Then V := V * R
+      Else If Up = 'DIV' Then Begin If R <> 0 Then V := V Div R; End
+      Else If Up = 'MOD' Then Begin If R <> 0 Then V := V Mod R; End
+      Else If Up = 'SHL' Then V := V Shl R
+      Else If Up = 'SHR' Then V := V Shr R
+      Else V := V And R;
+    End
+    Else Break;
+  End;
+  ConstTokTermAt := V;
+End;
+
+Function ConstTokExprAt(Var I : Integer) : LongInt;
+Var V, R : LongInt; Up : TString;
+Begin
+  V := ConstTokTermAt(I);
+  While I < TokenCount Do
+  Begin
+    Up := '';
+    If (TokenPool[I].Kind = TK_OP) Or (TokenPool[I].Kind = TK_KEYWORD) Then
+      Up := StrUpperCase(TokenPool[I].Val);
+    If (Up = '+') Or (Up = '-') Or (Up = 'OR') Or (Up = 'XOR') Then
+    Begin
+      Inc(I);
+      R := ConstTokTermAt(I);
+      If Up = '+' Then V := V + R
+      Else If Up = '-' Then V := V - R
+      Else If Up = 'OR' Then V := V Or R
+      Else V := V Xor R;
+    End
+    Else Break;
+  End;
+  ConstTokExprAt := V;
+End;
+
+{ --- Bornes d un index de tableau : lo..hi, ou un type ordinal (Byte, Char, enum, sous-intervalle) --- }
+Procedure ParseIndexRangeAt(Var I : Integer; Var Lo, Hi : LongInt);
+Var
+  TI, Save : Integer;
+Begin
+  Lo := 0; Hi := 0;
+  Save := I;
+  If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+     Not TokIsPunct(I + 1, '..') And Not TokIsOp(I + 1, '..') Then
+  Begin
+    TI := TypeFindByName(StrUpperCase(TokenPool[I].Val));
+    If (TI >= 0) And (TI < TypeCount) And (Not TokIsPunct(I + 1, '(')) Then
+    Begin
+      Inc(I);
+      Case TypeTab[TI].Kind Of
+        TYK_BYTE, TYK_CHAR : Begin Lo := 0; Hi := 255; End;
+        TYK_BOOLEAN : Begin Lo := 0; Hi := 1; End;
+        TYK_SHORTINT : Begin Lo := -128; Hi := 127; End;
+        TYK_ENUM : Begin Lo := 0; Hi := TypeTab[TI].EnumCount - 1; End;
+        TYK_SUBRANGE : Begin Lo := TypeTab[TI].Lo; Hi := TypeTab[TI].Hi; End;
+      Else
+        Begin Lo := TypeTab[TI].Lo; Hi := TypeTab[TI].Hi; End;
+      End;
+      Exit;
+    End;
+  End;
+  I := Save;
+  Lo := ConstTokExprAt(I);
+  If TokIsPunct(I, '..') Or TokIsOp(I, '..') Then
+  Begin
+    Inc(I);
+    Hi := ConstTokExprAt(I);
+  End
+  Else
+    Hi := Lo;
+End;
+
+{ --- Sauter un groupe de jetons equilibre a partir du jeton ouvrant --- }
+Procedure SkipBalancedAt(Var I : Integer);
+Var Depth : Integer;
+Begin
+  Depth := 0;
+  While I < TokenCount Do
+  Begin
+    If TokIsPunct(I, '(') Or TokIsPunct(I, '[') Then Inc(Depth)
+    Else If TokIsPunct(I, ')') Or TokIsPunct(I, ']') Then
+    Begin
+      Dec(Depth);
+      If Depth <= 0 Then Begin Inc(I); Exit; End;
+    End;
+    Inc(I);
+  End;
+End;
+
+{ --- Liste de champs d un record (jusqu a END ou ')') ; gere CASE ... OF variantes --- }
+{ TypeAlignOf : alignement d un champ de ce type dans un record non packed    }
+{ (regle de Free Pascal sur i386 : taille naturelle, 4 au plus ; chaines 1) }
+Function TypeAlignOf(T : Integer) : Integer;
+Var Sz : LongInt;
+Begin
+  TypeAlignOf := 1;
+  If (T < 0) Or (T >= TypeCount) Then Exit;
+  Case TypeTab[T].Kind Of
+    TYK_STRING : TypeAlignOf := 1;
+    TYK_ARRAY  : TypeAlignOf := TypeAlignOf(TypeTab[T].BaseTypeIdx);
+    TYK_RECORD, TYK_OBJECT :
+      Begin
+        If (TypeTab[T].Align >= 1) And (TypeTab[T].Align <= 4) Then TypeAlignOf := TypeTab[T].Align
+        Else TypeAlignOf := 1;
+      End;
+  Else
+    Begin
+      Sz := TypeTab[T].Size;
+      If Sz >= 4 Then TypeAlignOf := 4
+      Else If Sz >= 2 Then TypeAlignOf := 2
+      Else TypeAlignOf := 1;
+    End;
+  End;
+End;
+
+{ RecAlignOfs : aligner l offset Ofs sur Al (record non packed) et noter l alignement du record }
+Procedure RecAlignOfs(TIdx : Integer; Var Ofs : Integer; Al : Integer);
+Begin
+  { Free Pascal en mode TP (reference Win32) range les champs sans remplissage,    }
+  { comme Turbo Pascal : ICO2C lit idEntries a l offset 6 d un record Word,Word,Word }
+  { puis tableau de records. L alignement n est donc pas applique.                  }
+  Exit;
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
+  If TypeTab[TIdx].IsPacked Or (Al <= 1) Then Exit;
+  If Ofs Mod Al <> 0 Then Ofs := Ofs + (Al - Ofs Mod Al);
+  If Al > TypeTab[TIdx].Align Then TypeTab[TIdx].Align := Al;
+End;
+
+Procedure ParseRecordFieldsAt(TIdx : Integer; Var I : Integer; Var Ofs : Integer);
+Var
+  FNames : Array[0..31] Of TString;
+  FNC, K, FTIdx, FSz, FC : Integer;
+  VarOfs, MaxVarSz, CurOfs : Integer;
+  Up : TString;
+Begin
+  While I < TokenCount Do
+  Begin
+    If TokIsKw(I, 'END') Or TokIsPunct(I, ')') Then Exit;
+    If TokIsPunct(I, ';') Then Begin Inc(I); Continue; End;
+    { --- partie variante : CASE [tag :] Type OF  val,val : ( champs ) ; ... --- }
+    If TokIsKw(I, 'CASE') Then
+    Begin
+      Inc(I);
+      If (I < TokenCount) And TokIsPunct(I + 1, ':') Then
+      Begin
+        { champ discriminant }
+        Up := StrUpperCase(TokenPool[I].Val);
+        Inc(I, 2);
+        FTIdx := ParseTypeExprAt(I);
+        RecAlignOfs(TIdx, Ofs, TypeAlignOf(FTIdx));
+        FC := TypeTab[TIdx].FieldCount;
+        If FC < MAX_FIELDS Then
+        Begin
+          TypeTab[TIdx].Fields[FC].Name := Up;
+          TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+          TypeTab[TIdx].Fields[FC].Offset := Ofs;
+          TypeTab[TIdx].FieldCount := FC + 1;
+        End;
+        Ofs := Ofs + TypeSizeofIdx(FTIdx);
+      End
+      Else
+        FTIdx := ParseTypeExprAt(I);      { CASE Type OF : pas de champ }
+      If TokIsKw(I, 'OF') Then Inc(I);
+      VarOfs := Ofs;
+      MaxVarSz := 0;
+      While (I < TokenCount) And Not TokIsKw(I, 'END') And Not TokIsPunct(I, ')') Do
+      Begin
+        { etiquettes de cas jusqu a ':' puis '(' }
+        While (I < TokenCount) And Not TokIsPunct(I, '(') And Not TokIsKw(I, 'END') And
+              Not TokIsPunct(I, ')') Do
+          Inc(I);
+        If Not TokIsPunct(I, '(') Then Break;
+        Inc(I);
+        CurOfs := VarOfs;
+        ParseRecordFieldsAt(TIdx, I, CurOfs);
+        If CurOfs - VarOfs > MaxVarSz Then MaxVarSz := CurOfs - VarOfs;
+        If TokIsPunct(I, ')') Then Inc(I);
+        If TokIsPunct(I, ';') Then Inc(I);
+      End;
+      Ofs := VarOfs + MaxVarSz;
+      TypeTab[TIdx].Size := Ofs;
+      Continue;
+    End;
+    { --- champ(s) : Nom [, Nom] : Type ; --- }
+    If (TokenPool[I].Kind <> TK_IDENT) And (TokenPool[I].Kind <> TK_KEYWORD) Then
+    Begin
+      Inc(I); Continue;
+    End;
+    FNC := 0;
+    While (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) Do
+    Begin
+      If FNC < 32 Then
+      Begin
+        FNames[FNC] := StrUpperCase(TokenPool[I].Val);
+        Inc(FNC);
+      End;
+      Inc(I);
+      If TokIsPunct(I, ',') Then Inc(I) Else Break;
+    End;
+    If Not TokIsPunct(I, ':') Then
+    Begin
+      { syntaxe inattendue : sauter jusqu au ';' }
+      While (I < TokenCount) And Not TokIsPunct(I, ';') And Not TokIsKw(I, 'END') And
+            Not TokIsPunct(I, ')') Do
+        Inc(I);
+      Continue;
+    End;
+    Inc(I);
+    FTIdx := ParseTypeExprAt(I);
+    FSz := TypeSizeofIdx(FTIdx);
+    For K := 0 To FNC - 1 Do
+    Begin
+      RecAlignOfs(TIdx, Ofs, TypeAlignOf(FTIdx));
+      FC := TypeTab[TIdx].FieldCount;
+      If FC < MAX_FIELDS Then
+      Begin
+        TypeTab[TIdx].Fields[FC].Name    := FNames[K];
+        TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
+        TypeTab[TIdx].Fields[FC].Offset  := Ofs;
+        TypeTab[TIdx].FieldCount := FC + 1;
+      End;
+      Ofs := Ofs + FSz;
+    End;
+    TypeTab[TIdx].Size := Ofs;
+    If TokIsPunct(I, ';') Then Inc(I);
+  End;
+End;
+
+Function ParseTypeExprAt(Var I : Integer) : Integer;
+Var
+  Up, BaseTN : TString;
+  TI, BT, K, Depth : Integer;
+  IsPk : Boolean;
+  Lo, Hi : LongInt;
+  DimLo, DimHi : Array[0..7] Of LongInt;
+  DimCount, Ofs, ElemSz : Integer;
+Begin
+  ParseTypeExprAt := TY_IDX_INTEGER;
+  If I >= TokenCount Then Exit;
+  IsPk := False;
+  While TokIsKw(I, 'PACKED') Do Begin IsPk := True; Inc(I); End;
+  If I >= TokenCount Then Exit;
+
+  { ^T }
+  If TokIsOp(I, '^') Or TokIsPunct(I, '^') Then
+  Begin
+    Inc(I);
+    BaseTN := '';
+    If I < TokenCount Then Begin BaseTN := StrUpperCase(TokenPool[I].Val); Inc(I); End;
+    BT := TypeFindByName(BaseTN);
+    If BaseTN = 'CHAR' Then Begin ParseTypeExprAt := TypeFindByName('PCHAR'); Exit; End;
+    TI := TypeAdd(TYK_POINTER, '', 4, 4, False, BT);
+    If (BT < 0) And (TI >= 0) And (PendPtr2Cnt < 256) Then
+    Begin
+      PendPtr2Idx[PendPtr2Cnt] := TI; PendPtr2Name[PendPtr2Cnt] := BaseTN; Inc(PendPtr2Cnt);
+    End;
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  { (a, b, c) : enumeration }
+  If TokIsPunct(I, '(') Then
+  Begin
+    Inc(I);
+    TI := TypeAdd(TYK_ENUM, '', 4, 4, False, -1);
+    K := 0;
+    While (I < TokenCount) And Not TokIsPunct(I, ')') Do
+    Begin
+      If (TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD) Then
+      Begin
+        BT := SymAdd(StrUpperCase(TokenPool[I].Val), SK_CONST, TI);
+        If BT >= 0 Then SymTab[BT].ImmVal := K;
+        Inc(K);
+      End;
+      Inc(I);
+    End;
+    If I < TokenCount Then Inc(I);
+    If TI >= 0 Then Begin TypeTab[TI].EnumCount := K; TypeTab[TI].Hi := K - 1; End;
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  { lo..hi : sous-intervalle (commence par un nombre, un signe, un caractere, ou ident suivi de ..) }
+  If (TokenPool[I].Kind = TK_INTEGER) Or (TokenPool[I].Kind = TK_CHAR) Or TokIsOp(I, '-') Or
+     (((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_STRING)) And
+      (TokIsPunct(I + 1, '..') Or TokIsOp(I + 1, '..'))) Then
+  Begin
+    ParseIndexRangeAt(I, Lo, Hi);
+    If (Lo >= 0) And (Hi <= 255) Then
+      TI := TypeAdd(TYK_SUBRANGE, '', 1, 1, True, TY_IDX_BYTE)
+    Else
+      TI := TypeAdd(TYK_SUBRANGE, '', 4, 4, False, TY_IDX_INTEGER);
+    If TI >= 0 Then Begin TypeTab[TI].Lo := Lo; TypeTab[TI].Hi := Hi; End;
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  If (TokenPool[I].Kind <> TK_IDENT) And (TokenPool[I].Kind <> TK_KEYWORD) Then
+  Begin
+    Inc(I);
+    Exit;
+  End;
+  Up := StrUpperCase(TokenPool[I].Val);
+
+  { ARRAY [d1, d2, ...] OF T }
+  If Up = 'ARRAY' Then
+  Begin
+    Inc(I);
+    DimCount := 0;
+    If TokIsPunct(I, '[') Then
+    Begin
+      Inc(I);
+      Repeat
+        ParseIndexRangeAt(I, Lo, Hi);
+        If DimCount < 8 Then
+        Begin
+          DimLo[DimCount] := Lo; DimHi[DimCount] := Hi; Inc(DimCount);
+        End;
+        If TokIsPunct(I, ',') Then Inc(I) Else Break;
+      Until I >= TokenCount;
+      If TokIsPunct(I, ']') Then Inc(I);
+    End;
+    If TokIsKw(I, 'OF') Then Inc(I);
+    BT := ParseTypeExprAt(I);
+    ElemSz := TypeSizeofIdx(BT);
+    If DimCount = 0 Then
+    Begin
+      DimLo[0] := 0; DimHi[0] := 0; DimCount := 1;
+    End;
+    TI := BT;
+    For K := DimCount - 1 DownTo 0 Do
+    Begin
+      Lo := DimHi[K] - DimLo[K] + 1;
+      If Lo < 1 Then Lo := 1;
+      TI := TypeAdd(TYK_ARRAY, '', Lo * ElemSz, TypeAlignOf(BT), False, BT);
+      If TI >= 0 Then
+      Begin
+        TypeTab[TI].Lo := DimLo[K];
+        TypeTab[TI].Hi := DimHi[K];
+      End;
+      BT := TI;
+      ElemSz := Lo * ElemSz;
+    End;
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  { RECORD ... END }
+  If Up = 'RECORD' Then
+  Begin
+    Inc(I);
+    TI := TypeAdd(TYK_RECORD, '', 0, 1, False, -1);
+    If TI >= 0 Then TypeTab[TI].IsPacked := IsPk;
+    Ofs := 0;
+    ParseRecordFieldsAt(TI, I, Ofs);
+    If TokIsKw(I, 'END') Then Inc(I);
+    If TI >= 0 Then
+    Begin
+      { taille arrondie a l alignement du record (FPC) }
+      If (Not TypeTab[TI].IsPacked) And (TypeTab[TI].Align > 1) And (Ofs Mod TypeTab[TI].Align <> 0) Then
+        Ofs := Ofs + (TypeTab[TI].Align - Ofs Mod TypeTab[TI].Align);
+      TypeTab[TI].Size := Ofs;
+    End;
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  { STRING [n] }
+  If Up = 'STRING' Then
+  Begin
+    Inc(I);
+    If TokIsPunct(I, '[') Then SkipBalancedAt(I);
+    ParseTypeExprAt := TY_IDX_STRING;
+    Exit;
+  End;
+
+  { SET OF T }
+  If Up = 'SET' Then
+  Begin
+    Inc(I);
+    If TokIsKw(I, 'OF') Then Inc(I);
+    BT := ParseTypeExprAt(I);
+    TI := TypeAdd(TYK_SET, '', 32, 4, False, BT);
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  { FILE [OF T] / TEXT }
+  If Up = 'FILE' Then
+  Begin
+    Inc(I);
+    BT := -1;
+    If TokIsKw(I, 'OF') Then
+    Begin
+      Inc(I);
+      BT := ParseTypeExprAt(I);
+    End;
+    TI := TypeAdd(TYK_FILE, '', TFR_SIZE, 4, False, BT);
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  { PROCEDURE / FUNCTION (...) [: T] }
+  If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+  Begin
+    Inc(I);
+    If TokIsPunct(I, '(') Then SkipBalancedAt(I);
+    If TokIsPunct(I, ':') Then
+    Begin
+      Inc(I);
+      BT := ParseTypeExprAt(I);
+    End;
+    TI := TypeAdd(TYK_PROCVAR, '', 4, 4, False, -1);
+    ParseTypeExprAt := TI;
+    Exit;
+  End;
+
+  { Nom de type }
+  TI := TypeFindByName(Up);
+  Inc(I);
+  If TI < 0 Then
+  Begin
+    { Unite.Type }
+    If TokIsPunct(I, '.') And (I + 1 < TokenCount) Then
+    Begin
+      TI := TypeFindByName(StrUpperCase(TokenPool[I + 1].Val));
+      Inc(I, 2);
+    End;
+  End;
+  If TI < 0 Then
+  Begin
+    K := TPTypeSizeof(Up);
+    If K = 1 Then TI := TY_IDX_BYTE
+    Else TI := TY_IDX_INTEGER;
+  End;
+  ParseTypeExprAt := TI;
+End;
+
+{ --- Reserver Sz octets (mis a zero) dans le pool d initialisation ; -1 si plein --- }
+Function DataInitAlloc(Sz : LongInt) : LongInt;
+Var K : LongInt;
+Begin
+  If (Sz < 0) Or (DataInitCount + Sz > DATA_INIT_MAX) Then
+  Begin
+    WarnMsg('pool d initialisation des constantes typees plein');
+    DataInitAlloc := -1;
+    Exit;
+  End;
+  For K := DataInitCount To DataInitCount + Sz - 1 Do
+  Begin
+    DataInitPool[K] := 0;
+    DataInitFixMark[K] := False;
+  End;
+  DataInitAlloc := DataInitCount;
+  DataInitCount := DataInitCount + Sz;
+End;
+
+{ DataInitAddFix : l adresse du label Lbl sera ecrite (32 bits) a l offset Ofs }
+Procedure DataInitAddFix(Ofs : LongInt; Const Lbl : TString);
+Begin
+  If (Ofs < 0) Or (Ofs + 3 >= DATA_INIT_MAX) Then Exit;
+  If DataInitFixCnt >= DATA_INIT_FIX_MAX Then
+  Begin
+    WarnMsg('trop d adresses dans les constantes typees');
+    Exit;
+  End;
+  DataInitFixOfs[DataInitFixCnt] := Ofs;
+  DataInitFixLbl[DataInitFixCnt] := Lbl;
+  DataInitFixMark[Ofs] := True;
+  Inc(DataInitFixCnt);
+End;
+
+{ DataInitFixAt : index du fixup commencant a l offset Ofs, ou -1 }
+Function DataInitFixAt(Ofs : LongInt) : Integer;
+Var K : Integer;
+Begin
+  DataInitFixAt := -1;
+  If (Ofs < 0) Or (Ofs >= DATA_INIT_MAX) Then Exit;
+  If Not DataInitFixMark[Ofs] Then Exit;
+  For K := DataInitFixCnt - 1 DownTo 0 Do
+    If DataInitFixOfs[K] = Ofs Then
+    Begin
+      DataInitFixAt := K;
+      Exit;
+    End;
+End;
+
+{ DataInitFixAsmLabel : label ASM d un fixup ('@NOM' -> _TPV_NOM si variable connue, sinon _TPF_NOM) }
+Function DataInitFixAsmLabel(F : Integer) : TString;
+Var Nm : TString; K : Integer;
+Begin
+  DataInitFixAsmLabel := DataInitFixLbl[F];
+  If (Length(DataInitFixLbl[F]) > 1) And (DataInitFixLbl[F][1] = '@') Then
+  Begin
+    Nm := Copy(DataInitFixLbl[F], 2, 255);
+    K := SymFind(Nm);
+    If (K >= 0) And ((SymTab[K].Kind = SK_PROC) Or (SymTab[K].Kind = SK_FUNC)) Then
+      DataInitFixAsmLabel := TP_FUNC_PFX + Nm
+    Else
+      DataInitFixAsmLabel := TP_VAR_PFX + Nm;
+  End;
+End;
+
+{ RealSizeCode : 4 / 8 / 10 pour le formatage (Write, Str) }
+Function RealSizeCode(T : Integer) : Integer;
+Begin
+  RealSizeCode := 8;
+  If (T >= 0) And (T < TypeCount) Then
+  Begin
+    If TypeTab[T].Kind = TYK_SINGLE Then RealSizeCode := 4
+    Else If TypeTab[T].Kind = TYK_EXTENDED Then RealSizeCode := 10;
+  End;
+End;
+
+{ ParamStackSize : octets occupes sur la pile par un parametre }
+Function ParamStackSize(T : Integer; IsVar : Boolean) : Integer;
+Begin
+  ParamStackSize := 4;
+  If IsVar Or (Not TypeIsReal(T)) Then Exit;
+  Case RealSizeCode(T) Of
+    4  : ParamStackSize := 4;
+    10 : ParamStackSize := 12;
+  Else ParamStackSize := 8;
+  End;
+End;
+
+Var
+  RealConstSeq : Integer;    { numerotation des constantes reelles _TPR_n }
+  LastExprIsLit : Boolean;   { la derniere expression primaire est un litteral numerique }
+
+{ DataInitPutReal : ecrire la valeur V au format du type T dans le pool d initialisation }
+Procedure DataInitPutReal(Base : LongInt; T : Integer; V : Real);
+Var
+  Sg : Single;
+  Db : Double;
+  Ex : Extended;
+  I64 : Int64;
+  K, Sz : Integer;
+  Buf : Array[0..9] Of Byte;
+Begin
+  If Base < 0 Then Exit;
+  Sz := 8;
+  If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_COMP) Then
+  Begin
+    I64 := Trunc(V);
+    Move(I64, Buf, 8);
+  End
+  Else
+  Case RealSizeCode(T) Of
+    4  : Begin Sg := V; Move(Sg, Buf, 4); Sz := 4; End;
+    10 : Begin Ex := V; Move(Ex, Buf, 10); Sz := 10; End;
+  Else Begin Db := V; Move(Db, Buf, 8); End;
+  End;
+  For K := 0 To Sz - 1 Do
+    If Base + K < DATA_INIT_MAX Then DataInitPool[Base + K] := Buf[K];
+End;
+
+{ RealConstLabel : constante reelle 8 octets (Double) en donnees ; retourne le label }
+Function RealConstLabel(V : Real) : TString;
+Var
+  Base : LongInt;
+  Lbl : TString;
+Begin
+  Inc(RealConstSeq);
+  Lbl := '_TPR_' + IntToStr_(RealConstSeq);
+  Base := DataInitAlloc(8);
+  DataInitPutReal(Base, TY_IDX_REAL, V);
+  If Base >= 0 Then DataAdd(Lbl, DK_INIT, Base, '', 8, 0)
+  Else DataAddStruct(Lbl, 8);
+  RealConstLabel := Lbl;
+End;
+
+Procedure DataInitPutInt(Base : LongInt; Sz : Integer; V : LongInt);
+Var K : Integer;
+Begin
+  If Base < 0 Then Exit;
+  For K := 0 To Sz - 1 Do
+  Begin
+    If Is68kTarget Then
+      DataInitPool[Base + Sz - 1 - K] := Byte(V And $FF)
+    Else
+      DataInitPool[Base + K] := Byte(V And $FF);
+    V := V Shr 8;
+  End;
+End;
+
+{ --- Encoder l initialiseur d une constante typee de type T a partir du jeton I --- }
+Procedure EncodeConstInitAt(T : Integer; Var I : Integer; Base : LongInt);
+Var
+  Kd : TTypeKind;
+  Sz, K, N, ElemSz, FT, FJ : Integer;
+  Up, SVal : TString;
+  V : LongInt;
+  FOfs : LongInt;
+  RV : Real;
+  RNeg : Boolean;
+Begin
+  If (I >= TokenCount) Or (Base < 0) Then Exit;
+  Sz := TypeSizeofIdx(T);
+  Kd := TYK_INTEGER;
+  If (T >= 0) And (T < TypeCount) Then Kd := TypeTab[T].Kind;
+
+  { chaine Pascal : [len][chars][NUL] }
+  If Kd = TYK_STRING Then
+  Begin
+    SVal := '';
+    If TokenPool[I].Kind = TK_STRING Then Begin SVal := TokenPool[I].Val; Inc(I); End
+    Else If TokenPool[I].Kind = TK_CHAR Then Begin SVal := Chr(TokenPool[I].IntVal); Inc(I); End
+    Else If (TokenPool[I].Kind = TK_IDENT) Then
+    Begin
+      K := SymFind(StrUpperCase(TokenPool[I].Val));
+      If (K >= 0) And (SymTab[K].Kind = SK_CONST) And (SymTab[K].Offset >= 0) And
+         (SymTab[K].Offset < DataCount) And (DataTab[SymTab[K].Offset].Kind = DK_STR) Then
+        SVal := DataTab[SymTab[K].Offset].StrVal;
+      Inc(I);
+    End
+    Else Inc(I);
+    { concatenation de litteraux : 'a' + 'b' + #13 }
+    While TokIsOp(I, '+') And (I + 1 < TokenCount) And
+          ((TokenPool[I + 1].Kind = TK_STRING) Or (TokenPool[I + 1].Kind = TK_CHAR)) Do
+    Begin
+      Inc(I);
+      If TokenPool[I].Kind = TK_STRING Then SVal := SVal + TokenPool[I].Val
+      Else SVal := SVal + Chr(TokenPool[I].IntVal);
+      Inc(I);
+    End;
+    N := Length(SVal);
+    If N > Sz - 2 Then N := Sz - 2;
+    If N < 0 Then N := 0;
+    DataInitPool[Base] := N;
+    For K := 1 To N Do DataInitPool[Base + K] := Byte(SVal[K]);
+    Exit;
+  End;
+
+  { tableau : (v1, v2, ...) ou 'chaine' pour un tableau de Char }
+  If Kd = TYK_ARRAY Then
+  Begin
+    N := TypeTab[T].Hi - TypeTab[T].Lo + 1;
+    ElemSz := TypeSizeofIdx(TypeTab[T].BaseTypeIdx);
+    If (TokenPool[I].Kind = TK_STRING) Then
+    Begin
+      SVal := TokenPool[I].Val; Inc(I);
+      For K := 1 To Length(SVal) Do
+        If K <= N Then DataInitPool[Base + (K - 1) * ElemSz] := Byte(SVal[K]);
+      Exit;
+    End;
+    If Not TokIsPunct(I, '(') Then Begin SkipBalancedAt(I); Exit; End;
+    Inc(I);
+    K := 0;
+    While (I < TokenCount) And Not TokIsPunct(I, ')') Do
+    Begin
+      If K < N Then
+        EncodeConstInitAt(TypeTab[T].BaseTypeIdx, I, Base + LongInt(K) * ElemSz)
+      Else
+      Begin
+        { element en trop : sauter }
+        If TokIsPunct(I, '(') Or TokIsPunct(I, '[') Then SkipBalancedAt(I) Else Inc(I);
+      End;
+      Inc(K);
+      If TokIsPunct(I, ',') Then Inc(I)
+      Else If Not TokIsPunct(I, ')') Then
+      Begin
+        { jeton inattendu : avancer }
+        If TokIsPunct(I, '(') Or TokIsPunct(I, '[') Then SkipBalancedAt(I) Else Inc(I);
+      End;
+    End;
+    If TokIsPunct(I, ')') Then Inc(I);
+    Exit;
+  End;
+
+  { record : (Champ : valeur ; ...) }
+  If (Kd = TYK_RECORD) Or (Kd = TYK_OBJECT) Then
+  Begin
+    If Not TokIsPunct(I, '(') Then Begin SkipBalancedAt(I); Exit; End;
+    Inc(I);
+    While (I < TokenCount) And Not TokIsPunct(I, ')') Do
+    Begin
+      If TokIsPunct(I, ';') Then Begin Inc(I); Continue; End;
+      If Not ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) Or
+         Not TokIsPunct(I + 1, ':') Then
+      Begin
+        If TokIsPunct(I, '(') Or TokIsPunct(I, '[') Then SkipBalancedAt(I) Else Inc(I);
+        Continue;
+      End;
+      Up := StrUpperCase(TokenPool[I].Val);
+      Inc(I, 2);
+      FT := -1; FOfs := 0;
+      For FJ := 0 To TypeTab[T].FieldCount - 1 Do
+        If TypeTab[T].Fields[FJ].Name = Up Then
+        Begin
+          FT := TypeTab[T].Fields[FJ].TypeIdx;
+          FOfs := TypeTab[T].Fields[FJ].Offset;
+          Break;
+        End;
+      If FT >= 0 Then
+        EncodeConstInitAt(FT, I, Base + FOfs)
+      Else
+      Begin
+        If TokIsPunct(I, '(') Or TokIsPunct(I, '[') Then SkipBalancedAt(I) Else Inc(I);
+      End;
+    End;
+    If TokIsPunct(I, ')') Then Inc(I);
+    Exit;
+  End;
+
+  { ensemble : [..] : bits (32 octets = 256 elements) }
+  If Kd = TYK_SET Then
+  Begin
+    If TokIsPunct(I, '[') Then
+    Begin
+      Inc(I);
+      While (I < TokenCount) And Not TokIsPunct(I, ']') Do
+      Begin
+        If TokIsPunct(I, ',') Then Begin Inc(I); Continue; End;
+        V := ConstTokExprAt(I);
+        N := V;
+        If TokIsPunct(I, '..') Or TokIsOp(I, '..') Then
+        Begin
+          Inc(I);
+          N := ConstTokExprAt(I);
+        End;
+        For K := V To N Do
+          If (K >= 0) And (K < Sz * 8) Then
+            DataInitPool[Base + K Div 8] := DataInitPool[Base + K Div 8] Or (1 Shl (K Mod 8));
+      End;
+      If TokIsPunct(I, ']') Then Inc(I);
+    End
+    Else Inc(I);
+    Exit;
+  End;
+
+  { reel : litteral (signe) ou expression constante entiere }
+  If TypeIsReal(T) Then
+  Begin
+    RNeg := False;
+    If TokIsOp(I, '-') Then Begin RNeg := True; Inc(I); End
+    Else If TokIsOp(I, '+') Then Inc(I);
+    If (I < TokenCount) And (TokenPool[I].Kind = TK_REAL) Then
+    Begin
+      RV := TokenPool[I].RealVal;
+      Inc(I);
+    End
+    Else
+      RV := ConstTokExprAt(I);
+    If RNeg Then RV := -RV;
+    DataInitPutReal(Base, T, RV);
+    Exit;
+  End;
+
+  { pointeur : chaine litterale (PChar) -> adresse de la chaine ASCIIZ }
+  If ((Kd = TYK_POINTER) Or (Kd = TYK_PCHAR)) And
+     ((TokenPool[I].Kind = TK_STRING) Or (TokenPool[I].Kind = TK_CHAR)) Then
+  Begin
+    If TokenPool[I].Kind = TK_STRING Then SVal := TokenPool[I].Val
+    Else SVal := Chr(TokenPool[I].IntVal);
+    Inc(I);
+    While TokIsOp(I, '+') And (I + 1 < TokenCount) And
+          ((TokenPool[I + 1].Kind = TK_STRING) Or (TokenPool[I + 1].Kind = TK_CHAR)) Do
+    Begin
+      Inc(I);
+      If TokenPool[I].Kind = TK_STRING Then SVal := SVal + TokenPool[I].Val
+      Else SVal := SVal + Chr(TokenPool[I].IntVal);
+      Inc(I);
+    End;
+    DataInitAddFix(Base, DataGetOrAddStr(SVal));
+    Exit;
+  End;
+
+  { scalaire : entier, caractere, booleen, pointeur (NIL), @ident }
+  If TokIsOp(I, '@') Then
+  Begin
+    { @variable ou @procedure : adresse resolue a l edition de liens }
+    If (I + 1 < TokenCount) And (TokenPool[I + 1].Kind = TK_IDENT) And (Sz >= 4) Then
+      DataInitAddFix(Base, '@' + StrUpperCase(TokenPool[I + 1].Val));
+    Inc(I);
+    While (I < TokenCount) And Not TokIsPunct(I, ',') And Not TokIsPunct(I, ')') And
+          Not TokIsPunct(I, ';') Do
+      Inc(I);
+    Exit;
+  End;
+  If (Kd = TYK_CHAR) And (TokenPool[I].Kind = TK_STRING) Then
+  Begin
+    If Length(TokenPool[I].Val) >= 1 Then DataInitPool[Base] := Byte(TokenPool[I].Val[1]);
+    Inc(I);
+    Exit;
+  End;
+  V := ConstTokExprAt(I);
+  If Sz > 4 Then Sz := 4;
+  If Sz < 1 Then Sz := 1;
+  DataInitPutInt(Base, Sz, V);
+End;
+
+{ MarkVariantCases : reperer les CASE situes directement dans un RECORD/OBJECT }
+{ (partie variante) : ils ne possedent pas de END propre, contrairement aux   }
+{ CASE d instructions. Utilise par tous les compteurs de profondeur BEGIN/END. }
+Procedure MarkVariantCases;
+Var
+  I, Depth : Integer;
+  IsRec : Array[0..255] Of Boolean;
+  Up : TString;
+Begin
+  Depth := 0;
+  For I := 0 To TokenCount - 1 Do
+  Begin
+    TokVariantCase[I] := False;
+    If TokenPool[I].Kind <> TK_KEYWORD Then Continue;
+    Up := StrUpperCase(TokenPool[I].Val);
+    If (Up = 'CASE') And (Depth > 0) And (Depth <= 256) And IsRec[Depth - 1] Then
+    Begin
+      TokVariantCase[I] := True;
+      Continue;
+    End;
+    If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or (Up = 'OBJECT') Or
+       (Up = 'REPEAT') Or (Up = 'ASM') Then
+    Begin
+      If Depth < 256 Then IsRec[Depth] := (Up = 'RECORD') Or (Up = 'OBJECT');
+      Inc(Depth);
+    End
+    Else If (Up = 'END') Or (Up = 'UNTIL') Then
+    Begin
+      If Depth > 0 Then Dec(Depth);
+    End;
+  End;
+End;
+
 Procedure ParseDataDecls;
 Var
   I       : Integer;
@@ -5389,6 +6800,10 @@ Var
   J       : Integer;
   InitVal : LongInt;
   InitStr : TString;
+  RealLit : Boolean;     { constante reelle non typee }
+  CxGen   : Boolean;     { expression constante generale a evaluer }
+  RealV   : Real;
+  RealK   : Integer;
   VName   : TString;
   Up      : TString;
   ArrLo   : LongInt;
@@ -5405,6 +6820,11 @@ Var
   BaseTN  : TString;
   BTIdx   : Integer;
 Begin
+  ResolvePendingPtrTypes;
+  If Opts.DebugMode Then
+    For I := 0 To TypeCount - 1 Do
+      WriteLn('  [type] ', I, ' ', TypeTab[I].Name, ' kind=', Ord(TypeTab[I].Kind), ' size=', TypeTab[I].Size,
+              ' base=', TypeTab[I].BaseTypeIdx, ' champs=', TypeTab[I].FieldCount, ' lo=', TypeTab[I].Lo, ' hi=', TypeTab[I].Hi);
   I := 0;
   Depth := 0;
 
@@ -5416,8 +6836,14 @@ Begin
       Up := StrUpperCase(TokenPool[I].Val);
 
       { Incrémenter depth sur BEGIN, RECORD, CASE, REPEAT }
+      { (le CASE d une partie variante de RECORD n a pas de END propre) }
+      If (Up = 'CASE') And TokVariantCase[I] Then
+      Begin
+        Inc(I);
+        Continue;
+      End;
       If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'CASE') Or
-         (Up = 'REPEAT') Or (Up = 'ASM') Then
+         (Up = 'REPEAT') Or (Up = 'ASM') Or (Up = 'OBJECT') Then
       Begin
         Inc(Depth);
         Inc(I);
@@ -5465,7 +6891,7 @@ Begin
           Begin
             Up := StrUpperCase(TokenPool[I].Val);
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
-               (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+               (((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) And Not TokIsProcType(I)) Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
                (Up = 'USES') Or (Up = 'PROGRAM') Or
                (Up = 'SEGMENT') Then
@@ -5517,80 +6943,44 @@ Begin
           TName := '';
           TIdx  := -1;
 
-          { Verifier si c'est ARRAY[lo..hi] OF TypeElem }
+          { Verifier si c'est ARRAY[lo..hi] OF TypeElem (bornes constantes, element quelconque) }
           If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
              (StrUpperCase(TokenPool[I].Val) = 'ARRAY') Then
           Begin
-            Inc(I); { sauter 'ARRAY' }
-            ArrLo := 0;
-            ArrHi := 0;
-            ElemType := 'INTEGER';
-
-            { Attendre '[' }
-            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-               (TokenPool[I].Val = '[') Then
+            TIdx := ParseTypeExprAt(I);
+            ElemSz := TypeSizeofIdx(TIdx);
+            If ElemSz < 1 Then ElemSz := 4;
+            { X : ... absolute Y : meme emplacement que Y }
+            If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+               (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+               (TokenPool[I + 1].Kind = TK_IDENT) Then
             Begin
-              Inc(I); { sauter '[' }
-              { Lire borne basse }
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+              TName := StrUpperCase(TokenPool[I + 1].Val);
+              Inc(I, 2);
+              For J := 0 To NCount - 1 Do
               Begin
-                ArrLo := TokenPool[I].IntVal;
-                Inc(I);
+                SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+                If SIdx >= 0 Then
+                Begin
+                  SymTab[SIdx].IsGlobal := True;
+                  SymTab[SIdx].Offset   := -1;
+                  DIdx := SymFind(TName);
+                  If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                    SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                  Else
+                    SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+                End;
               End;
-              { Attendre '..' }
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = '..') Then
+              While (I < TokenCount) And
+                    Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
                 Inc(I);
-              { Lire borne haute }
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
-              Begin
-                ArrHi := TokenPool[I].IntVal;
-                Inc(I);
-              End;
-              { Attendre ']' }
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = ']') Then
-                Inc(I);
+              If I < TokenCount Then Inc(I);
+              Continue;
             End;
-            { Attendre 'OF' }
-            If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-               (StrUpperCase(TokenPool[I].Val) = 'OF') Then
-              Inc(I);
-            { Lire le type d element }
-            If (I < TokenCount) And
-               ((TokenPool[I].Kind = TK_IDENT) Or
-                (TokenPool[I].Kind = TK_KEYWORD)) Then
-            Begin
-              ElemType := StrUpperCase(TokenPool[I].Val);
-              Inc(I);
-            End;
-
-            ArrElem := ArrHi - ArrLo + 1;
-            If ArrElem < 1 Then ArrElem := 1;
-            ElemSz := TPTypeSizeof(ElemType);
-            If ElemSz < 0 Then
-            Begin
-              BTIdx := TypeFindByName(ElemType);
-              If BTIdx >= 0 Then ElemSz := TypeTab[BTIdx].Size
-              Else ElemSz := 4;
-            End;
-
-            { Creer un type tableau anonyme }
-            TIdx := TypeAdd(TYK_ARRAY, '', ArrElem * ElemSz, 4, False, -1);
-            If TIdx >= 0 Then
-            Begin
-              TypeTab[TIdx].Lo := ArrLo;
-              TypeTab[TIdx].Hi := ArrHi;
-              BTIdx := TypeFindByName(ElemType);
-              If BTIdx < 0 Then BTIdx := TY_IDX_INTEGER;
-              TypeTab[TIdx].BaseTypeIdx := BTIdx;
-            End;
-
             { Creer une entree tableau pour chaque variable }
             For J := 0 To NCount - 1 Do
             Begin
-              DIdx := DataAddArray(TP_VAR_PFX + Names[J],
-                                    ArrElem, ElemSz);
+              DIdx := DataAddArray(TP_VAR_PFX + Names[J], ElemSz, 1);
               SIdx := SymAdd(Names[J], SK_VAR, TIdx);
               If SIdx >= 0 Then
               Begin
@@ -5612,62 +7002,35 @@ Begin
           If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
              (StrUpperCase(TokenPool[I].Val) = 'RECORD') Then
           Begin
-            Inc(I);
-            { Creer un type record anonyme }
-            TIdx := TypeAdd(TYK_RECORD, '', 0, 4, False, -1);
-            FOfs := 0;
-            FC := 0;
-
-            While I < TokenCount Do
+            TIdx := ParseTypeExprAt(I);
+            FOfs := TypeSizeofIdx(TIdx);
+            { X : ... absolute Y : meme emplacement que Y }
+            If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+               (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+               (TokenPool[I + 1].Kind = TK_IDENT) Then
             Begin
-              If (TokenPool[I].Kind = TK_KEYWORD) And
-                 (StrUpperCase(TokenPool[I].Val) = 'END') Then
+              TName := StrUpperCase(TokenPool[I + 1].Val);
+              Inc(I, 2);
+              For J := 0 To NCount - 1 Do
               Begin
-                Inc(I);
-                Break;
+                SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+                If SIdx >= 0 Then
+                Begin
+                  SymTab[SIdx].IsGlobal := True;
+                  SymTab[SIdx].Offset   := -1;
+                  DIdx := SymFind(TName);
+                  If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                    SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                  Else
+                    SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+                End;
               End;
-              If TokenPool[I].Kind <> TK_IDENT Then
-              Begin
+              While (I < TokenCount) And
+                    Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
                 Inc(I);
-                Continue;
-              End;
-              FName := StrUpperCase(TokenPool[I].Val);
-              Inc(I);
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = ':') Then
-                Inc(I);
-              FTName := 'INTEGER';
-              If (I < TokenCount) And
-                 ((TokenPool[I].Kind = TK_IDENT) Or
-                  (TokenPool[I].Kind = TK_KEYWORD)) Then
-              Begin
-                FTName := StrUpperCase(TokenPool[I].Val);
-                Inc(I);
-              End;
-              FSz := TPTypeSizeof(FTName);
-              If FSz < 0 Then
-              Begin
-                FTIdx := TypeFindByName(FTName);
-                If FTIdx >= 0 Then FSz := TypeTab[FTIdx].Size
-                Else FSz := 4;
-              End;
-              FTIdx := TypeFindByName(FTName);
-              If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
-              If (TIdx >= 0) And (FC < MAX_FIELDS) Then
-              Begin
-                TypeTab[TIdx].Fields[FC].Name    := FName;
-                TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
-                TypeTab[TIdx].Fields[FC].Offset  := FOfs;
-                Inc(FC);
-                TypeTab[TIdx].FieldCount := FC;
-                FOfs := FOfs + FSz;
-                TypeTab[TIdx].Size := FOfs;
-              End;
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = ';') Then
-                Inc(I);
+              If I < TokenCount Then Inc(I);
+              Continue;
             End;
-
             For J := 0 To NCount - 1 Do
             Begin
               DIdx := DataAddStruct(TP_VAR_PFX + Names[J], FOfs);
@@ -5777,6 +7140,32 @@ Begin
             TName := StrUpperCase(TokenPool[I].Val);
             Inc(I);
           End;
+          { File Of T : type fichier anonyme dont la base donne la taille d enregistrement }
+          If (TName = 'FILE') And (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[I].Val) = 'OF') Then
+          Begin
+            Inc(I);
+            BaseTN := '';
+            If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin BaseTN := StrUpperCase(TokenPool[I].Val); Inc(I) End;
+            BTIdx := TypeFindByName(BaseTN);
+            TIdx := TypeAdd(TYK_FILE, '', TFR_SIZE, 4, False, BTIdx);
+            For J := 0 To NCount - 1 Do
+            Begin
+              DIdx := DataAddGlobalVar(Names[J], 'FILE', 0);
+              SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].IsGlobal := True;
+                SymTab[SIdx].Offset   := DIdx;
+              End;
+            End;
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
 
           { Verifier type pointeur ^Type }
           If (I < TokenCount) And (TName = '') And
@@ -5799,6 +7188,30 @@ Begin
 
           { Trouver le type dans TypeTab }
           TIdx := TypeFindByName(TName);
+
+          { ^T non nomme : type pointeur anonyme (la base peut etre declaree plus loin) }
+          If (TIdx < 0) And (Length(TName) > 1) And (TName[1] = '^') Then
+          Begin
+            BTIdx := TypeFindByName(Copy(TName, 2, 255));
+            TIdx := TypeAdd(TYK_POINTER, TName, 4, 4, False, BTIdx);
+          End;
+          { Var P : Procedure(...) / Function(...) : Type : variable procedurale (4 octets) }
+          If (TIdx < 0) And ((TName = 'PROCEDURE') Or (TName = 'FUNCTION')) Then
+          Begin
+            TIdx := TypeAdd(TYK_PROCVAR, '', 4, 4, False, -1);
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '(') Then
+            Begin
+              J := 0;
+              Repeat
+                If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '(') Then Inc(J)
+                Else If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ')') Then Dec(J);
+                Inc(I);
+              Until (J = 0) Or (I >= TokenCount);
+            End;
+            If (TName = 'FUNCTION') And (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = ':') Then Begin Inc(I); If I < TokenCount Then Inc(I) End;
+            TName := 'POINTER';
+          End;
 
           { Type inconnu : erreur fatale (ex: ByteStream sans --applepascal) }
           If TIdx < 0 Then
@@ -5863,19 +7276,30 @@ Begin
             End
             Else
             Begin
-              { absolute suivi d'un identifiant (variable overlay) }
+              { absolute suivi d'un identifiant (variable overlay) : meme emplacement }
+              TName := '';
               If (I < TokenCount) And
                  ((TokenPool[I].Kind = TK_IDENT) Or
                   (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin
+                TName := StrUpperCase(TokenPool[I].Val);
                 Inc(I); { sauter le nom de variable }
+              End;
               For J := 0 To NCount - 1 Do
               Begin
-                DIdx := DataAddGlobalVar(Names[J], TName, 0);
                 SIdx := SymAdd(Names[J], SK_VAR, TIdx);
                 If SIdx >= 0 Then
                 Begin
                   SymTab[SIdx].IsGlobal := True;
-                  SymTab[SIdx].Offset   := DIdx;
+                  SymTab[SIdx].Offset   := -1;
+                  If TName <> '' Then
+                  Begin
+                    DIdx := SymFind(TName);
+                    If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                      SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                    Else
+                      SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+                  End;
                 End;
               End;
             End;
@@ -5889,9 +7313,40 @@ Begin
             Continue;
           End;
 
+          { X : Type absolute Y (tableau, record...) : X occupe l emplacement de Y }
+          If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+             (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+             (TokenPool[I + 1].Kind = TK_IDENT) Then
+          Begin
+            TName := StrUpperCase(TokenPool[I + 1].Val);
+            Inc(I, 2);
+            For J := 0 To NCount - 1 Do
+            Begin
+              If Opts.DebugMode Then
+                WriteLn('  [var] ', Names[J], ' absolute ', TName, ' -> type ', TIdx);
+              SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].IsGlobal := True;
+                SymTab[SIdx].Offset   := -1;
+                DIdx := SymFind(TName);
+                If (DIdx >= 0) And (SymTab[DIdx].Kind = SK_VAR) And (SymTab[DIdx].MangledName <> '') Then
+                  SymTab[SIdx].MangledName := SymTab[DIdx].MangledName
+                Else
+                  SymTab[SIdx].MangledName := TP_VAR_PFX + TName;
+              End;
+            End;
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
           { Creer les entrees DataTab et SymTab pour chaque variable }
           For J := 0 To NCount - 1 Do
           Begin
+            If Opts.DebugMode Then
+              WriteLn('  [var] ', Names[J], ' : ', TName, ' -> type ', TIdx);
             { Utiliser DataAddStruct pour les types structures }
             If (TIdx >= 0) And (TIdx < TypeCount) And
                ((TypeTab[TIdx].Kind = TYK_RECORD) Or
@@ -5936,7 +7391,7 @@ Begin
           Begin
             Up := StrUpperCase(TokenPool[I].Val);
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
-               (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+               (((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) And Not TokIsProcType(I)) Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
                (Up = 'USES') Or (Up = 'PROGRAM') Or
                (Up = 'SEGMENT') Then
@@ -5957,99 +7412,40 @@ Begin
           TName := '';
           InitVal := 0;
           InitStr := '';
+          RealLit := False;
+          RealV := 0.0;
+          RealK := 10;
 
           If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
              (TokenPool[I].Val = ':') Then
           Begin
-            { Constante typee : nom : Type = val }
+            { Constante typee : nom : Type = valeur (scalaire, chaine, tableau, record, ensemble) }
             Inc(I); { sauter ':' }
-
-            { Lire le type }
-            If (I < TokenCount) And
-               ((TokenPool[I].Kind = TK_IDENT) Or
-                (TokenPool[I].Kind = TK_KEYWORD)) Then
-            Begin
-              TName := StrUpperCase(TokenPool[I].Val);
-              Inc(I);
-            End;
-
-            { Attendre '=' }
+            TIdx := ParseTypeExprAt(I);
             If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
                (TokenPool[I].Val = '=') Then
               Inc(I);
-
-            { Lire la valeur }
-            If (I < TokenCount) Then
-            Begin
-              If (TokenPool[I].Kind = TK_INTEGER) Then
-              Begin
-                InitVal := TokenPool[I].IntVal;
-                Inc(I);
-              End
-              Else If (TokenPool[I].Kind = TK_CHAR) Then
-              Begin
-                InitVal := TokenPool[I].IntVal;
-                Inc(I);
-              End
-              Else If (TokenPool[I].Kind = TK_STRING) Then
-              Begin
-                InitStr := TokenPool[I].Val;
-                { Si le type est CHAR et la valeur est un seul caractere }
-                If (TName = 'CHAR') And (Length(InitStr) = 1) Then
-                Begin
-                  InitVal := Ord(InitStr[1]);
-                  InitStr := '';
-                End;
-                Inc(I);
-              End
-              Else If (TokenPool[I].Kind = TK_KEYWORD) Then
-              Begin
-                Up := StrUpperCase(TokenPool[I].Val);
-                If Up = 'TRUE' Then
-                  InitVal := 1
-                Else If Up = 'FALSE' Then
-                  InitVal := 0
-                Else If Up = 'NIL' Then
-                  InitVal := 0;
-                Inc(I);
-              End
-              Else If (TokenPool[I].Kind = TK_IDENT) Then
-              Begin
-                { Peut etre une constante nommee deja definie }
-                SIdx := SymFind(TokenPool[I].Val);
-                If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_CONST) Then
-                  InitVal := SymTab[SIdx].ImmVal;
-                Inc(I);
-              End
-              Else If (TokenPool[I].Kind = TK_OP) And
-                      (TokenPool[I].Val = '-') Then
-              Begin
-                { Valeur negative }
-                Inc(I);
-                If (I < TokenCount) And
-                   (TokenPool[I].Kind = TK_INTEGER) Then
-                Begin
-                  InitVal := -TokenPool[I].IntVal;
-                  Inc(I);
-                End;
-              End;
-            End;
-
-            TIdx := TypeFindByName(TName);
-
-            { Creer l entree DataTab }
-            If InitStr <> '' Then
-              DIdx := DataAddTypedConst(VName, TName, InitVal, InitStr)
+            ElemSz := TypeSizeofIdx(TIdx);
+            If ElemSz < 1 Then ElemSz := 4;
+            ArrElem := DataInitAlloc(ElemSz);
+            EncodeConstInitAt(TIdx, I, ArrElem);
+            If ArrElem >= 0 Then
+              DIdx := DataAdd(TP_VAR_PFX + VName, DK_INIT, ArrElem, '', ElemSz, 0)
             Else
-              DIdx := DataAddTypedConst(VName, TName, InitVal, '');
-
-            { Enregistrer dans SymTab comme SK_CONST }
-            SIdx := SymAdd(VName, SK_CONST, TIdx);
+              DIdx := DataAddStruct(TP_VAR_PFX + VName, ElemSz);
+            { Une constante typee est une variable initialisee }
+            SIdx := SymAdd(VName, SK_VAR, TIdx);
             If SIdx >= 0 Then
             Begin
               SymTab[SIdx].IsGlobal := True;
-              SymTab[SIdx].ImmVal   := InitVal;
               SymTab[SIdx].Offset   := DIdx;
+              If (ArrElem >= 0) And (ElemSz <= 4) Then
+              Begin
+                InitVal := 0;
+                For J := ElemSz - 1 DownTo 0 Do
+                  InitVal := (InitVal Shl 8) Or DataInitPool[ArrElem + J];
+                SymTab[SIdx].ImmVal := InitVal;
+              End;
             End;
           End
           Else If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
@@ -6059,7 +7455,26 @@ Begin
             Inc(I); { sauter '=' }
             InitVal := 0;
             InitStr := '';
+            RealLit := False;
 
+            { Expression constante generale (Byte(' '), Ord('A'), Chr(65), N*2+1) : plus d un }
+            { jeton avant le ';' sans litteral chaine ni reel -> evaluateur d expressions.       }
+            J := I; ArrElem := 0; CxGen := False;
+            While (J < TokenCount) And Not ((TokenPool[J].Kind = TK_PUNCT) And (TokenPool[J].Val = ';')) Do
+            Begin
+              If (TokenPool[J].Kind = TK_REAL) Or
+                 ((TokenPool[J].Kind = TK_STRING) And (Length(TokenPool[J].Val) <> 1)) Then CxGen := True;
+              Inc(ArrElem); Inc(J);
+            End;
+            If (ArrElem > 1) And (Not CxGen) And (I < TokenCount) And
+               Not ((ArrElem = 2) And (TokenPool[I].Kind = TK_OP) And (TokenPool[I].Val = '-')) Then
+            Begin
+              Up := StrUpperCase(TokenPool[I].Val);
+              InitVal := ConstTokExprAt(I);
+              If ((Up = 'CHAR') Or (Up = 'CHR')) And (ArrElem >= 3) Then
+                InitStr := Chr(InitVal And 255);       { Char(66) / Chr(65) : constante caractere }
+            End
+            Else
             If (I < TokenCount) Then
             Begin
               If (TokenPool[I].Kind = TK_INTEGER) Then
@@ -6107,22 +7522,63 @@ Begin
                 Begin
                   InitVal := -TokenPool[I].IntVal;
                   Inc(I);
+                End
+                Else If (I < TokenCount) And (TokenPool[I].Kind = TK_REAL) Then
+                Begin
+                  RealLit := True;
+                  RealV := -TokenPool[I].RealVal;
+                  RealK := TokenPool[I].RealKind;
+                  If Abs(RealV) < 2147483647.0 Then InitVal := Trunc(RealV) Else InitVal := 0;
+                  Inc(I);
                 End;
               End
               Else If (TokenPool[I].Kind = TK_REAL) Then
               Begin
-                { Constante reelle : stocker la partie entiere }
-                InitVal := Trunc(TokenPool[I].RealVal);
+                { Constante reelle : stocker la partie entiere (bornee) }
+                If Abs(TokenPool[I].RealVal) < 2147483647.0 Then
+                  InitVal := Trunc(TokenPool[I].RealVal)
+                Else InitVal := 0;
+                RealLit := True;
+                RealV := TokenPool[I].RealVal;
+                RealK := TokenPool[I].RealKind;
                 Inc(I);
               End;
             End;
 
-            { Constante non-typee : juste registrer dans SymTab }
-            SIdx := SymAdd(VName, SK_CONST, -1);
+            { Constante non-typee : registrer dans SymTab ; chaine -> donnee ASCIIZ (Offset = }
+            { index DataTab, TypeIdx = STRING) ; caractere -> code ordinal (TypeIdx = CHAR)   }
+            TIdx := -1;
+            DIdx := -1;
+            If Length(InitStr) = 1 Then
+            Begin
+              InitVal := Ord(InitStr[1]);
+              TIdx := TY_IDX_CHAR;
+            End
+            Else If InitStr <> '' Then
+            Begin
+              TName := DataGetOrAddStr(InitStr);
+              For J := 0 To DataCount - 1 Do
+                If DataTab[J].LblName = TName Then DIdx := J;
+              TIdx := TY_IDX_STRING;
+            End
+            Else If RealLit Then
+            Begin
+              { constante reelle : 8 octets (Double) en donnees, type selon le litteral }
+              TName := RealConstLabel(RealV);
+              For J := 0 To DataCount - 1 Do
+                If DataTab[J].LblName = TName Then DIdx := J;
+              Case RealK Of
+                4 : TIdx := TY_IDX_SINGLE;
+                8 : TIdx := TY_IDX_DOUBLE;
+              Else TIdx := TY_IDX_EXTENDED;
+              End;
+            End;
+            SIdx := SymAdd(VName, SK_CONST, TIdx);
             If SIdx >= 0 Then
             Begin
               SymTab[SIdx].IsGlobal := True;
               SymTab[SIdx].ImmVal   := InitVal;
+              If DIdx >= 0 Then SymTab[SIdx].Offset := DIdx;
             End;
           End;
 
@@ -6144,17 +7600,19 @@ Begin
       End;
 
       { --- Section PROCEDURE ou FUNCTION : sauter entierement --- }
-      If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+      If ((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) And Not TokIsProcType(I) Then
       Begin
-        { Avancer jusqu au BEGIN puis au END correspondant }
+        { Avancer jusqu au BEGIN (ou ASM) puis au END correspondant }
         Inc(I);
         While (I < TokenCount) Do
         Begin
           If ((TokenPool[I].Kind = TK_KEYWORD) Or
               (TokenPool[I].Kind = TK_IDENT)) And
-             (StrUpperCase(TokenPool[I].Val) = 'FORWARD') Then
+             ((StrUpperCase(TokenPool[I].Val) = 'FORWARD') Or
+              (StrUpperCase(TokenPool[I].Val) = 'EXTERNAL') Or
+              (StrUpperCase(TokenPool[I].Val) = 'INLINE')) Then
           Begin
-            { Declaration FORWARD : avancer jusqu au ';' }
+            { Declaration FORWARD / EXTERNAL / INLINE : pas de corps, avancer jusqu au ';' }
             Inc(I);
             While (I < TokenCount) And
                   Not ((TokenPool[I].Kind = TK_PUNCT) And
@@ -6164,7 +7622,8 @@ Begin
             Break;
           End;
           If (TokenPool[I].Kind = TK_KEYWORD) And
-             (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+             ((StrUpperCase(TokenPool[I].Val) = 'BEGIN') Or
+              (StrUpperCase(TokenPool[I].Val) = 'ASM')) Then
           Begin
             Inc(I);
             SkipToMatchingEnd(I);
@@ -6191,7 +7650,7 @@ End;
 { ============================================================ }
 
 Const
-  MAX_PROC  = {$IFDEF FPC}256{$ELSE}32{$ENDIF};   { max procedures/fonctions }
+  MAX_PROC  = {$IFDEF FPC}2048{$ELSE}32{$ENDIF};  { max procedures/fonctions }
   MAX_LOCAL = {$IFDEF FPC}64{$ELSE}16{$ENDIF};     { max variables locales par proc }
   MAX_PARAM = {$IFDEF FPC}32{$ELSE}8{$ENDIF};      { max parametres par proc }
 
@@ -6209,12 +7668,13 @@ Type
   TLocalVar = Record
     Name      : TString;     { nom de la variable (majuscules)      }
     TypeIdx   : Integer;     { index du type dans TypeTab            }
-    Offset    : Integer;     { offset dans la pile [EBP-N]          }
-    Size      : Integer;     { taille en octets                     }
+    Offset    : LongInt;     { offset dans la pile [EBP-N]          }
+    Size      : LongInt;     { taille en octets                     }
     IsStatic  : Boolean;     { variable statique (ABSOLUTE) ?       }
     StaticLbl : TString;     { label statique (_TPST_N)             }
     InitVal   : LongInt;     { valeur initiale                      }
     HasInit   : Boolean;     { a une initialisation ?               }
+    IsConst   : Boolean;     { constante locale (valeur immediate)  }
   End;
 
   { Information sur une procedure/fonction }
@@ -6227,12 +7687,13 @@ Type
     Params      : Array[0..MAX_PARAM - 1] Of TParamRec;
     LocalCount  : Integer;     { nombre de variables locales          }
     Locals      : Array[0..MAX_LOCAL - 1] Of TLocalVar;
-    LocalSize   : Integer;     { taille totale du cadre local (octets)}
+    LocalSize   : LongInt;     { taille totale du cadre local (octets)}
     BodyStart   : Integer;     { index debut du corps dans TokenPool  }
     BodyEnd     : Integer;     { index fin du corps dans TokenPool    }
     IsForward   : Boolean;     { declaration FORWARD ?                }
     IsExternal  : Boolean;     { declaration EXTERNAL ?               }
     SymIdx      : Integer;     { index dans SymTab                    }
+    ParentIdx   : Integer;     { procedure englobante (-1 = globale)  }
     VarMask     : LongInt;     { bitmask des parametres VAR           }
     RetOffset   : Integer;     { offset de la valeur de retour [EBP] }
   End;
@@ -6253,7 +7714,7 @@ Var
 { EBPOfs : generer une reference [EBP+N] ou [EBP-N]           }
 { ------------------------------------------------------------ }
 
-Function EBPOfs(Ofs : Integer) : TString;
+Function EBPOfs(Ofs : LongInt) : TString;
 Begin
   If Ofs >= 0 Then
     EBPOfs := '[EBP+' + IntToStr_(Ofs) + ']'
@@ -6407,10 +7868,12 @@ Begin
     If TokenPool[I].Kind = TK_KEYWORD Then
     Begin
       Up := StrUpperCase(TokenPool[I].Val);
-      If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or
-         (Up = 'REPEAT') Or (Up = 'ASM') Then
+      { le CASE d une partie variante de RECORD/OBJECT n a pas de END propre }
+      If (Up = 'CASE') And TokVariantCase[I] Then
+      Else If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or
+         (Up = 'REPEAT') Or (Up = 'ASM') Or (Up = 'OBJECT') Then
         Inc(Depth)
-      Else If Up = 'END' Then
+      Else If (Up = 'END') Or (Up = 'UNTIL') Then
         Dec(Depth);
     End;
     Inc(I);
@@ -6423,10 +7886,156 @@ End;
 { Remplit ProcTab avec les signatures et localise les corps.    }
 { ------------------------------------------------------------ }
 
+{ ------------------------------------------------------------ }
+{ ParseLocalConstType : section CONST ou TYPE locale d une      }
+{ procedure (I sur le mot-cle). Constantes scalaires -> locale  }
+{ immediate (IsConst) ; constantes typees et chaines -> donnees }
+{ statiques (IsStatic, label _TPST_n) ; types -> TypeTab.        }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLocalConstType(PI : Integer; Var I : Integer; Var LC : Integer);
+Var
+  IsType : Boolean;
+  Name, Lbl, Up : TString;
+  TI, SI, K : Integer;
+  Sz, Base, V : LongInt;
+
+  Procedure AddLocalEntry(Const AName : TString; ATI : Integer; Const ALbl : TString;
+                          ASz : LongInt; AConst : Boolean; AVal : LongInt);
+  Begin
+    If LC >= MAX_LOCAL Then Exit;
+    ProcTab[PI].Locals[LC].Name      := AName;
+    ProcTab[PI].Locals[LC].TypeIdx   := ATI;
+    ProcTab[PI].Locals[LC].Size      := ASz;
+    ProcTab[PI].Locals[LC].Offset    := 0;
+    ProcTab[PI].Locals[LC].IsStatic  := (ALbl <> '');
+    ProcTab[PI].Locals[LC].StaticLbl := ALbl;
+    ProcTab[PI].Locals[LC].InitVal   := AVal;
+    ProcTab[PI].Locals[LC].HasInit   := False;
+    ProcTab[PI].Locals[LC].IsConst   := AConst;
+    Inc(LC);
+  End;
+
+  Function NewStaticLabel : TString;
+  Begin
+    Inc(StaticVarSeq);
+    NewStaticLabel := TP_STA_PFX + IntToStr_(StaticVarSeq);
+  End;
+
+Begin
+  IsType := TokIsKw(I, 'TYPE');
+  Inc(I);
+  While I < TokenCount Do
+  Begin
+    If TokenPool[I].Kind = TK_KEYWORD Then
+    Begin
+      Up := StrUpperCase(TokenPool[I].Val);
+      If ((Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'BEGIN') Or
+          (Up = 'LABEL') Or (Up = 'SEGMENT') Or
+          (((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) And Not TokIsProcType(I))) Then
+        Break;
+    End;
+    If (TokenPool[I].Kind <> TK_IDENT) And (TokenPool[I].Kind <> TK_KEYWORD) Then
+    Begin
+      Inc(I); Continue;
+    End;
+    Name := StrUpperCase(TokenPool[I].Val);
+    Inc(I);
+    If IsType Then
+    Begin
+      { Nom = type }
+      If TokIsOp(I, '=') Then Inc(I);
+      TI := ParseTypeExprAt(I);
+      { un type local du meme nom dans une autre procedure : le plus recent l emporte }
+      For K := 0 To TypeCount - 1 Do
+        If (TypeTab[K].Name = Name) And (K <> TI) Then TypeTab[K].Name := '';
+      If (TI >= 0) Then TypeTab[TI].Name := Name;
+      SI := SymFind(Name);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_TYPE) Then SymTab[SI].TypeIdx := TI
+      Else If SI < 0 Then SymAdd(Name, SK_TYPE, TI);
+    End
+    Else If TokIsPunct(I, ':') Then
+    Begin
+      { constante typee : donnee statique initialisee }
+      Inc(I);
+      TI := ParseTypeExprAt(I);
+      If TokIsOp(I, '=') Then Inc(I);
+      Sz := TypeSizeofIdx(TI);
+      If Sz < 1 Then Sz := 4;
+      Base := DataInitAlloc(Sz);
+      EncodeConstInitAt(TI, I, Base);
+      Lbl := NewStaticLabel;
+      If Base >= 0 Then DataAdd(Lbl, DK_INIT, Base, '', Sz, 0)
+      Else DataAddStruct(Lbl, Sz);
+      AddLocalEntry(Name, TI, Lbl, Sz, False, 0);
+    End
+    Else If TokIsOp(I, '=') Then
+    Begin
+      Inc(I);
+      If (I < TokenCount) And (TokenPool[I].Kind = TK_STRING) And
+         ((Length(TokenPool[I].Val) <> 1) Or TokIsOp(I + 1, '+')) Then
+      Begin
+        { constante chaine : chaine Pascal statique }
+        Base := DataInitAlloc(256);
+        EncodeConstInitAt(TY_IDX_STRING, I, Base);
+        Lbl := NewStaticLabel;
+        If Base >= 0 Then DataAdd(Lbl, DK_INIT, Base, '', 256, 0)
+        Else DataAddStruct(Lbl, 256);
+        AddLocalEntry(Name, TY_IDX_STRING, Lbl, 256, False, 0);
+      End
+      Else If (I < TokenCount) And (TokenPool[I].Kind = TK_REAL) Then
+      Begin
+        { constante reelle locale : donnee statique Double }
+        Base := DataInitAlloc(8);
+        DataInitPutReal(Base, TY_IDX_REAL, TokenPool[I].RealVal);
+        Lbl := NewStaticLabel;
+        If Base >= 0 Then DataAdd(Lbl, DK_INIT, Base, '', 8, 0)
+        Else DataAddStruct(Lbl, 8);
+        Case TokenPool[I].RealKind Of
+          4 : TI := TY_IDX_SINGLE;
+          8 : TI := TY_IDX_DOUBLE;
+        Else TI := TY_IDX_EXTENDED;
+        End;
+        Inc(I);
+        AddLocalEntry(Name, TI, Lbl, 8, False, 0);
+      End
+      Else
+      Begin
+        TI := TY_IDX_INTEGER;
+        If (I < TokenCount) And ((TokenPool[I].Kind = TK_STRING) Or (TokenPool[I].Kind = TK_CHAR)) Then
+          TI := TY_IDX_CHAR
+        Else If (I < TokenCount) And ((StrUpperCase(TokenPool[I].Val) = 'TRUE') Or
+                (StrUpperCase(TokenPool[I].Val) = 'FALSE')) Then
+          TI := TY_IDX_BOOLEAN;
+        V := ConstTokExprAt(I);
+        AddLocalEntry(Name, TI, '', 4, True, V);
+        { aussi visible comme constante nommee (bornes de tableaux locaux, etc.) }
+        SI := SymFind(Name);
+        If (SI >= 0) And (SymTab[SI].Kind = SK_CONST) Then SymTab[SI].ImmVal := V
+        Else If SI < 0 Then
+        Begin
+          SI := SymAdd(Name, SK_CONST, TI);
+          If SI >= 0 Then SymTab[SI].ImmVal := V;
+        End;
+      End;
+    End;
+    While (I < TokenCount) And Not TokIsPunct(I, ';') Do
+    Begin
+      If TokIsPunct(I, '(') Or TokIsPunct(I, '[') Then SkipBalancedAt(I) Else Inc(I);
+    End;
+    If TokIsPunct(I, ';') Then Inc(I);
+  End;
+End;
+
+Function W32IsAggregate(T : Integer) : Boolean; Forward;
+
 Procedure ParseProcDecls;
 Var
   I         : Integer;
   Depth     : Integer;
+  AbsOfs    : Integer;    { X : T absolute Y : offset de Y }
+  AbsFound  : Boolean;
+  AbsInd    : Boolean;    { Y est un parametre VAR : acces indirect }
   Up        : TString;
   PI        : Integer;
   PName     : TString;
@@ -6438,7 +8047,7 @@ Var
   TIdx      : Integer;
   PC        : Integer;  { param count local }
   J         : Integer;
-  LocalOfs  : Integer;
+  LocalOfs  : LongInt;
   VM        : LongInt;
   SIdx      : Integer;
   RetTIdx   : Integer;
@@ -6447,24 +8056,6 @@ Var
   LSz       : Integer;
   LC        : Integer;
   { Variables pour procedures imbriquees (TODO 14) }
-  NI        : Integer;
-  NIsFunc   : Boolean;
-  NName     : TString;
-  NPC       : Integer;
-  NVM       : LongInt;
-  NIsVarP   : Boolean;
-  NIsConstP : Boolean;
-  NGrpSt    : Integer;
-  NTName    : TString;
-  NTIdx     : Integer;
-  NRetTIdx  : Integer;
-  NSIdx     : Integer;
-  NLC       : Integer;
-  NLocalOfs : Integer;
-  NLTName   : TString;
-  NLTIdx    : Integer;
-  NLSz      : Integer;
-  NK        : Integer;
   { Variables pour ARRAY inline dans var locales }
   ArrLo     : LongInt;
   ArrHi     : LongInt;
@@ -6472,6 +8063,363 @@ Var
   ElemType  : TString;
   ElemSz    : Integer;
   BTIdx     : Integer;
+  { RegisterNested : procedure ou fonction imbriquee dans la procedure PPI ; I est sur le }
+  { mot PROCEDURE/FUNCTION. Recursif : une procedure imbriquee peut en contenir d autres.  }
+  Procedure RegisterNested(PPI : Integer);
+  Var
+    NI : Integer;
+    NIsFunc : Boolean;
+    NName : TString;
+    NPC : Integer;
+    NVM : LongInt;
+    NIsVarP : Boolean;
+    NIsConstP : Boolean;
+    NGrpSt : Integer;
+    NTName : TString;
+    NTIdx : Integer;
+    NRetTIdx : Integer;
+    NSIdx : Integer;
+    NLC : Integer;
+    NLocalOfs : LongInt;
+    NLTName : TString;
+    NLTIdx : Integer;
+    NLSz : Integer;
+    NK : Integer;
+  Begin
+    { Parser les procedures/fonctions imbriquees (TODO 14) }
+    { Elles deviennent des entrees separees dans ProcTab }
+    If ProcCount < MAX_PROC Then
+    Begin
+      NIsFunc := (Up = 'FUNCTION');
+        Inc(I); { sauter PROCEDURE/FUNCTION }
+
+        { Lire le nom }
+        If (I < TokenCount) And
+           ((TokenPool[I].Kind = TK_IDENT) Or
+            (TokenPool[I].Kind = TK_KEYWORD)) Then
+        Begin
+          NName := StrUpperCase(TokenPool[I].Val);
+          Inc(I);
+        End
+        Else
+          NName := '';
+
+        NI := ProcCount;
+        Inc(ProcCount);  { reserver l entree tout de suite : la recursion en cree d autres }
+        ProcTab[NI].Name        := NName;
+        ProcTab[NI].MangledName := TP_FUNC_PFX + NName;
+        ProcTab[NI].IsFunction  := NIsFunc;
+        ProcTab[NI].RetTypeIdx  := -1;
+        ProcTab[NI].ParamCount  := 0;
+        ProcTab[NI].LocalCount  := 0;
+        ProcTab[NI].LocalSize   := 0;
+        ProcTab[NI].BodyStart   := -1;
+        ProcTab[NI].BodyEnd     := -1;
+        ProcTab[NI].IsForward   := False;
+        ProcTab[NI].IsExternal  := False;
+        ProcTab[NI].SymIdx      := -1;
+        ProcTab[NI].ParentIdx   := PPI;
+        ProcTab[NI].VarMask     := 0;
+        ProcTab[NI].RetOffset   := 0;
+
+        { Parser les parametres }
+        NPC := 0;
+        NVM := 0;
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+           (TokenPool[I].Val = '(') Then
+        Begin
+          Inc(I);
+          While (I < TokenCount) And
+                Not ((TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ')')) Do
+          Begin
+            NIsVarP := False;
+            NIsConstP := False;
+            If (TokenPool[I].Kind = TK_KEYWORD) Then
+            Begin
+              If StrUpperCase(TokenPool[I].Val) = 'VAR' Then
+              Begin NIsVarP := True; Inc(I); End
+              Else If StrUpperCase(TokenPool[I].Val) = 'CONST' Then
+              Begin NIsConstP := True; Inc(I); End;
+            End;
+            NGrpSt := NPC;
+            While (I < TokenCount) And
+                  ((TokenPool[I].Kind = TK_IDENT) Or
+                   (TokenPool[I].Kind = TK_KEYWORD)) Do
+            Begin
+              If NPC < MAX_PARAM Then
+              Begin
+                ProcTab[NI].Params[NPC].Name    := StrUpperCase(TokenPool[I].Val);
+                ProcTab[NI].Params[NPC].IsVar   := NIsVarP;
+                ProcTab[NI].Params[NPC].IsConst := NIsConstP;
+                ProcTab[NI].Params[NPC].TypeIdx := TY_IDX_INTEGER;
+                ProcTab[NI].Params[NPC].Offset  := 0;
+                If NIsVarP Then
+                  NVM := NVM Or (LongInt(1) Shl NPC);
+                Inc(NPC);
+              End;
+              Inc(I);
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ',') Then Inc(I) Else Break;
+            End;
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = ':') Then
+            Begin
+              Inc(I);
+              If (I < TokenCount) And
+                 ((TokenPool[I].Kind = TK_IDENT) Or
+                  (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin
+                NTName := StrUpperCase(TokenPool[I].Val);
+                NTIdx := TypeFindByName(NTName);
+                If NTIdx < 0 Then NTIdx := TY_IDX_INTEGER;
+                For NK := NGrpSt To NPC - 1 Do
+                  ProcTab[NI].Params[NK].TypeIdx := NTIdx;
+                Inc(I);
+              End;
+            End;
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = ';') Then Inc(I);
+          End;
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+             (TokenPool[I].Val = ')') Then Inc(I);
+        End;
+        ProcTab[NI].ParamCount := NPC;
+        ProcTab[NI].VarMask    := NVM;
+        NLocalOfs := 8;
+        For NK := NPC - 1 DownTo 0 Do
+        Begin
+          ProcTab[NI].Params[NK].Offset := NLocalOfs;
+          NLocalOfs := NLocalOfs + ParamStackSize(ProcTab[NI].Params[NK].TypeIdx,
+                                                  ProcTab[NI].Params[NK].IsVar);
+        End;
+
+        { Type de retour }
+        NRetTIdx := TY_IDX_INTEGER;
+        If NIsFunc Then
+        Begin
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+             (TokenPool[I].Val = ':') Then
+          Begin
+            Inc(I);
+            If (I < TokenCount) And
+               ((TokenPool[I].Kind = TK_IDENT) Or
+                (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin
+              NTName := StrUpperCase(TokenPool[I].Val);
+              NTIdx := TypeFindByName(NTName);
+              If NTIdx >= 0 Then NRetTIdx := NTIdx;
+              Inc(I);
+            End;
+          End;
+        End;
+        ProcTab[NI].RetTypeIdx := NRetTIdx;
+
+        { Attendre ';' apres la signature }
+        While (I < TokenCount) And
+              Not ((TokenPool[I].Kind = TK_PUNCT) And
+                   (TokenPool[I].Val = ';')) Do
+          Inc(I);
+        If I < TokenCount Then Inc(I);
+
+        { Verifier FORWARD }
+        If (I < TokenCount) And
+           ((TokenPool[I].Kind = TK_KEYWORD) Or
+            (TokenPool[I].Kind = TK_IDENT)) And
+           (StrUpperCase(TokenPool[I].Val) = 'FORWARD') Then
+        Begin
+          ProcTab[NI].IsForward := True;
+          While (I < TokenCount) And
+                Not ((TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ';')) Do
+            Inc(I);
+          If I < TokenCount Then Inc(I);
+        End
+        Else If (I < TokenCount) And
+                (TokenPool[I].Kind = TK_KEYWORD) And
+                (StrUpperCase(TokenPool[I].Val) <> 'VAR') And
+                (StrUpperCase(TokenPool[I].Val) <> 'CONST') And
+                (StrUpperCase(TokenPool[I].Val) <> 'TYPE') And
+                (StrUpperCase(TokenPool[I].Val) <> 'LABEL') And
+                (StrUpperCase(TokenPool[I].Val) <> 'BEGIN') And
+                (StrUpperCase(TokenPool[I].Val) <> 'PROCEDURE') And
+                (StrUpperCase(TokenPool[I].Val) <> 'FUNCTION') Then
+        Begin
+          { Pas de corps : declaration de type interface/forward implicite }
+          ProcTab[NI].IsForward := True;
+        End
+        Else
+        Begin
+          { Scanner les variables locales de la proc imbriquee }
+          NLocalOfs := 0;
+          NLC := 0;
+          If NIsFunc Then
+          Begin
+            NLocalOfs := NLocalOfs + ParamStackSize(ProcTab[NI].RetTypeIdx, False);
+            ProcTab[NI].RetOffset := -NLocalOfs;
+          End;
+          While (I < TokenCount) Do
+          Begin
+            If TokenPool[I].Kind <> TK_KEYWORD Then Break;
+            Up := StrUpperCase(TokenPool[I].Val);
+            If Up = 'VAR' Then
+            Begin
+              Inc(I);
+              While (I < TokenCount) Do
+              Begin
+                If (TokenPool[I].Kind = TK_KEYWORD) Then
+                Begin
+                  Up := StrUpperCase(TokenPool[I].Val);
+                  If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
+                     (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
+                     (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                     (Up = 'SEGMENT') Then
+                    Break;
+                End;
+                If (TokenPool[I].Kind <> TK_IDENT) And
+                   (TokenPool[I].Kind <> TK_KEYWORD) Then
+                Begin Inc(I); Continue; End;
+                NGrpSt := NLC;
+                While (I < TokenCount) And
+                      ((TokenPool[I].Kind = TK_IDENT) Or
+                       (TokenPool[I].Kind = TK_KEYWORD)) Do
+                Begin
+                  If NLC < MAX_LOCAL Then
+                  Begin
+                    ProcTab[NI].Locals[NLC].Name    := StrUpperCase(TokenPool[I].Val);
+                    ProcTab[NI].Locals[NLC].TypeIdx  := TY_IDX_INTEGER;
+                    ProcTab[NI].Locals[NLC].Size     := 4;
+                    ProcTab[NI].Locals[NLC].IsStatic := False;
+                    ProcTab[NI].Locals[NLC].StaticLbl:= '';
+                    ProcTab[NI].Locals[NLC].InitVal  := 0;
+                    ProcTab[NI].Locals[NLC].HasInit  := False;
+                    ProcTab[NI].Locals[NLC].IsConst  := False;
+                    Inc(NLC);
+                  End;
+                  Inc(I);
+                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT)
+                     And (TokenPool[I].Val = ',') Then Inc(I) Else Break;
+                End;
+                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                   (TokenPool[I].Val = ':') Then
+                Begin
+                  Inc(I);
+                  NLTIdx := ParseTypeExprAt(I);
+                  NLSz := TypeSizeofIdx(NLTIdx);
+                  If NLSz < 4 Then NLSz := 4;
+                  If (NLSz And 3) <> 0 Then NLSz := (NLSz + 3) And (Not 3);
+                  AbsOfs := 0; AbsFound := False;
+                  If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+                     (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+                     (TokenPool[I + 1].Kind = TK_IDENT) Then
+                  Begin
+                    LTName := StrUpperCase(TokenPool[I + 1].Val);
+                    For NK := 0 To NGrpSt - 1 Do
+                      If ProcTab[NI].Locals[NK].Name = LTName Then
+                      Begin AbsOfs := ProcTab[NI].Locals[NK].Offset; AbsFound := True; End;
+                    If Not AbsFound Then
+                      For NK := 0 To ProcTab[NI].ParamCount - 1 Do
+                        If ProcTab[NI].Params[NK].Name = LTName Then
+                        Begin AbsOfs := ProcTab[NI].Params[NK].Offset; AbsFound := True; End;
+                    Inc(I, 2);
+                  End;
+                  For NK := NGrpSt To NLC - 1 Do
+                  Begin
+                    ProcTab[NI].Locals[NK].TypeIdx := NLTIdx;
+                    ProcTab[NI].Locals[NK].Size    := NLSz;
+                    If AbsFound Then
+                      ProcTab[NI].Locals[NK].Offset := AbsOfs
+                    Else
+                    Begin
+                      NLocalOfs := NLocalOfs + NLSz;
+                      ProcTab[NI].Locals[NK].Offset := -NLocalOfs;
+                    End;
+                  End;
+                End;
+                While (I < TokenCount) And
+                      Not ((TokenPool[I].Kind = TK_PUNCT) And
+                           (TokenPool[I].Val = ';')) Do
+                  Inc(I);
+                If I < TokenCount Then Inc(I);
+              End;
+            End
+            Else If (Up = 'CONST') Or (Up = 'TYPE') Then
+              ParseLocalConstType(NI, I, NLC)
+            Else If Up = 'LABEL' Then
+            Begin
+              Inc(I);
+              While (I < TokenCount) Do
+              Begin
+                If (TokenPool[I].Kind = TK_KEYWORD) Then
+                Begin
+                  Up := StrUpperCase(TokenPool[I].Val);
+                  If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
+                     (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
+                     (Up = 'FUNCTION') Or (Up = 'LABEL') Or
+                     (Up = 'SEGMENT') Then
+                    Break;
+                End;
+                Inc(I);
+              End;
+            End
+            Else If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+              RegisterNested(NI)          { imbrication a plusieurs niveaux }
+            Else
+              Break;
+          End;
+          ProcTab[NI].LocalCount := NLC;
+          ProcTab[NI].LocalSize  := NLocalOfs;
+
+          { Localiser le corps (BEGIN ... END, ou ASM ... END) }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+             ((StrUpperCase(TokenPool[I].Val) = 'BEGIN') Or
+              (StrUpperCase(TokenPool[I].Val) = 'ASM')) Then
+          Begin
+            ProcTab[NI].BodyStart := I;
+            Inc(I);
+            SkipToMatchingEnd(I);
+            ProcTab[NI].BodyEnd := I - 1;
+          End;
+          { Sauter le ';' apres END }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+             (TokenPool[I].Val = ';') Then
+            Inc(I);
+        End;
+
+        { Enregistrer le symbole dans SymTab }
+        If NIsFunc Then
+          NSIdx := SymAdd(NName, SK_FUNC, NRetTIdx)
+        Else
+          NSIdx := SymAdd(NName, SK_PROC, -1);
+        If NSIdx >= 0 Then
+        Begin
+          SymTab[NSIdx].ParamCount  := NPC;
+          SymTab[NSIdx].IsGlobal    := True;
+          SymTab[NSIdx].MangledName := TP_FUNC_PFX + NName;
+        End;
+        ProcTab[NI].SymIdx := NSIdx;
+    End
+    Else
+    Begin
+      { Pas de place dans ProcTab : sauter }
+      Inc(I);
+      While (I < TokenCount) Do
+      Begin
+        If (TokenPool[I].Kind = TK_KEYWORD) And
+           (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+        Begin
+          Inc(I);
+          SkipToMatchingEnd(I);
+          Break;
+        End;
+        Inc(I);
+      End;
+      If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+         (TokenPool[I].Val = ';') Then
+        Inc(I);
+    End;
+  End;
+
 Begin
   ProcCount := 0;
   I := 0;
@@ -6484,10 +8432,16 @@ Begin
     Begin
       Up := StrUpperCase(TokenPool[I].Val);
 
+      { le CASE d une partie variante de RECORD n a pas de END propre }
+      If (Up = 'CASE') And TokVariantCase[I] Then
+      Begin
+        Inc(I);
+        Continue;
+      End;
       If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'REPEAT') Or
-         (Up = 'CASE') Or (Up = 'ASM') Then
+         (Up = 'CASE') Or (Up = 'ASM') Or (Up = 'OBJECT') Then
         Inc(Depth)
-      Else If Up = 'END' Then
+      Else If (Up = 'END') Or (Up = 'UNTIL') Then
       Begin
         If Depth > 0 Then
           Dec(Depth);
@@ -6510,7 +8464,7 @@ Begin
       End;
 
       { === Detecter PROCEDURE ou FUNCTION === }
-      If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
+      If ((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) And Not TokIsProcType(I) Then
       Begin
         If ProcCount >= MAX_PROC Then
         Begin
@@ -6543,6 +8497,7 @@ Begin
         If PI < 0 Then
         Begin
           PI := ProcCount;
+          Inc(ProcCount);  { reserver l entree : les procedures imbriquees en creent d autres }
           ProcTab[PI].Name        := PName;
           ProcTab[PI].MangledName := TP_FUNC_PFX + PName;
           ProcTab[PI].IsFunction  := IsFunc;
@@ -6555,6 +8510,7 @@ Begin
           ProcTab[PI].IsForward   := False;
           ProcTab[PI].IsExternal  := False;
           ProcTab[PI].SymIdx      := -1;
+          ProcTab[PI].ParentIdx   := -1;
           ProcTab[PI].VarMask     := 0;
           ProcTab[PI].RetOffset   := 0;
         End;
@@ -6648,8 +8604,13 @@ Begin
         { Calculer les offsets des parametres }
         { Pascal calling convention : params pousses gauche-a-droite }
         { param[0] = [EBP + 8 + (N-1)*4], param[N-1] = [EBP + 8] }
-        For J := 0 To PC - 1 Do
-          ProcTab[PI].Params[J].Offset := 8 + (PC - 1 - J) * 4;
+        LocalOfs := 8;   { reutilise comme offset courant : dernier parametre en [EBP+8] }
+        For J := PC - 1 DownTo 0 Do
+        Begin
+          ProcTab[PI].Params[J].Offset := LocalOfs;
+          LocalOfs := LocalOfs + ParamStackSize(ProcTab[PI].Params[J].TypeIdx,
+                                                ProcTab[PI].Params[J].IsVar);
+        End;
 
         { Type de retour pour les fonctions }
         RetTIdx := TY_IDX_INTEGER;
@@ -6679,6 +8640,16 @@ Begin
                    (TokenPool[I].Val = ';')) Do
           Inc(I);
         If I < TokenCount Then Inc(I);
+
+        { Directives sans effet : Assembler; Near; Far; Interrupt; }
+        While (I + 1 < TokenCount) And
+              ((TokenPool[I].Kind = TK_KEYWORD) Or (TokenPool[I].Kind = TK_IDENT)) And
+              ((StrUpperCase(TokenPool[I].Val) = 'ASSEMBLER') Or
+               (StrUpperCase(TokenPool[I].Val) = 'NEAR') Or
+               (StrUpperCase(TokenPool[I].Val) = 'FAR') Or
+               (StrUpperCase(TokenPool[I].Val) = 'INTERRUPT')) And
+              (TokenPool[I + 1].Kind = TK_PUNCT) And (TokenPool[I + 1].Val = ';') Do
+          Inc(I, 2);
 
         { Verifier FORWARD }
         If (I < TokenCount) And
@@ -6710,11 +8681,12 @@ Begin
           Continue;
         End;
 
-        { Verifier EXTERNAL }
+        { Verifier EXTERNAL (ou INLINE(...) : code machine 8086 sans corps) }
         If (I < TokenCount) And
            ((TokenPool[I].Kind = TK_KEYWORD) Or
             (TokenPool[I].Kind = TK_IDENT)) And
-           (StrUpperCase(TokenPool[I].Val) = 'EXTERNAL') Then
+           ((StrUpperCase(TokenPool[I].Val) = 'EXTERNAL') Or
+            (StrUpperCase(TokenPool[I].Val) = 'INLINE')) Then
         Begin
           ProcTab[PI].IsExternal := True;
           While (I < TokenCount) And
@@ -6747,7 +8719,7 @@ Begin
         Begin
           Up := StrUpperCase(TokenPool[I].Val);
           If (Up <> 'VAR') And (Up <> 'CONST') And (Up <> 'TYPE') And
-             (Up <> 'LABEL') And (Up <> 'BEGIN') And
+             (Up <> 'LABEL') And (Up <> 'BEGIN') And (Up <> 'ASM') And
              (Up <> 'PROCEDURE') And (Up <> 'FUNCTION') And
              (Up <> 'SEGMENT') Then
           Begin
@@ -6821,7 +8793,7 @@ Begin
         { Reserver l emplacement de la valeur de retour pour les fonctions }
         If IsFunc Then
         Begin
-          LocalOfs := LocalOfs + 4;
+          LocalOfs := LocalOfs + ParamStackSize(RetTIdx, False);
           ProcTab[PI].RetOffset := -LocalOfs;
         End;
 
@@ -6869,6 +8841,7 @@ Begin
                   ProcTab[PI].Locals[LC].StaticLbl:= '';
                   ProcTab[PI].Locals[LC].InitVal  := 0;
                   ProcTab[PI].Locals[LC].HasInit  := False;
+                  ProcTab[PI].Locals[LC].IsConst  := False;
                   Inc(LC);
                 End;
                 Inc(I);
@@ -6886,97 +8859,60 @@ Begin
                 Inc(I);
                 LTName := '';
 
-                { Verifier si c'est ARRAY [lo..hi] OF TypeElem (inline) }
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-                   (StrUpperCase(TokenPool[I].Val) = 'ARRAY') Then
+                { Type de la variable locale : nom, tableau, record, chaine, ensemble... }
+                LTIdx := ParseTypeExprAt(I);
+                LSz := TypeSizeofIdx(LTIdx);
+                If LSz < 4 Then LSz := 4;
+                If (LSz And 3) <> 0 Then
+                  LSz := (LSz + 3) And (Not 3);
+                { X : T absolute Y : X occupe l emplacement de la locale ou du parametre Y }
+                AbsOfs := 0; AbsFound := False;
+                If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) And
+                   (StrUpperCase(TokenPool[I].Val) = 'ABSOLUTE') And (I + 1 < TokenCount) And
+                   (TokenPool[I + 1].Kind = TK_IDENT) Then
                 Begin
-                  Inc(I); { sauter 'ARRAY' }
-                  ArrLo := 0;
-                  ArrHi := 0;
-                  ElemType := 'INTEGER';
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                     (TokenPool[I].Val = '[') Then
+                  LTName := StrUpperCase(TokenPool[I + 1].Val);
+                  For J := 0 To GrpStart - 1 Do
+                    If ProcTab[PI].Locals[J].Name = LTName Then
+                    Begin AbsOfs := ProcTab[PI].Locals[J].Offset; AbsFound := True; End;
+                  AbsInd := False;
+                  If Not AbsFound Then
+                    For J := 0 To ProcTab[PI].ParamCount - 1 Do
+                      If ProcTab[PI].Params[J].Name = LTName Then
+                      Begin
+                        AbsOfs := ProcTab[PI].Params[J].Offset; AbsFound := True;
+                        { parametre VAR (ou chaine/agregat passe par adresse) : la case contient }
+                        { l adresse ; la variable absolute est alors un parametre VAR fantome   }
+                        AbsInd := ProcTab[PI].Params[J].IsVar Or
+                                  TypeIsString(ProcTab[PI].Params[J].TypeIdx) Or
+                                  W32IsAggregate(ProcTab[PI].Params[J].TypeIdx);
+                      End;
+                  Inc(I, 2);
+                End;
+                For J := GrpStart To LC - 1 Do
+                Begin
+                  ProcTab[PI].Locals[J].TypeIdx := LTIdx;
+                  ProcTab[PI].Locals[J].Size    := LSz;
+                  If AbsFound Then
+                    ProcTab[PI].Locals[J].Offset := AbsOfs
+                  Else
                   Begin
-                    Inc(I);
-                    If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
-                    Begin ArrLo := TokenPool[I].IntVal; Inc(I); End;
-                    If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                       (TokenPool[I].Val = '..') Then Inc(I);
-                    If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
-                    Begin ArrHi := TokenPool[I].IntVal; Inc(I); End;
-                    { Gerer multi-dim : virgule dans [] }
-                    { TODO : support array[1..3,1..5] inline locals }
-                    If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                       (TokenPool[I].Val = ']') Then Inc(I);
-                  End;
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-                     (StrUpperCase(TokenPool[I].Val) = 'OF') Then Inc(I);
-                  If (I < TokenCount) And
-                     ((TokenPool[I].Kind = TK_IDENT) Or
-                      (TokenPool[I].Kind = TK_KEYWORD)) Then
-                  Begin ElemType := StrUpperCase(TokenPool[I].Val); Inc(I); End;
-
-                  ArrElem := ArrHi - ArrLo + 1;
-                  If ArrElem < 1 Then ArrElem := 1;
-                  ElemSz := TPTypeSizeof(ElemType);
-                  If ElemSz < 0 Then
-                  Begin
-                    BTIdx := TypeFindByName(ElemType);
-                    If BTIdx >= 0 Then ElemSz := TypeTab[BTIdx].Size
-                    Else ElemSz := 4;
-                  End;
-
-                  LTIdx := TypeAdd(TYK_ARRAY, '', ArrElem * ElemSz, 4, False, -1);
-                  If LTIdx >= 0 Then
-                  Begin
-                    TypeTab[LTIdx].Lo := ArrLo;
-                    TypeTab[LTIdx].Hi := ArrHi;
-                    BTIdx := TypeFindByName(ElemType);
-                    If BTIdx < 0 Then BTIdx := TY_IDX_INTEGER;
-                    TypeTab[LTIdx].BaseTypeIdx := BTIdx;
-                  End;
-                  LSz := ArrElem * ElemSz;
-                  If LSz < 4 Then LSz := 4;
-                  { Aligner sur 4 }
-                  If (LSz And 3) <> 0 Then
-                    LSz := (LSz + 3) And (Not 3);
-
-                  For J := GrpStart To LC - 1 Do
-                  Begin
-                    ProcTab[PI].Locals[J].TypeIdx := LTIdx;
-                    ProcTab[PI].Locals[J].Size    := LSz;
                     LocalOfs := LocalOfs + LSz;
-                    If (LocalOfs And 3) <> 0 Then
-                      LocalOfs := (LocalOfs + 3) And (Not 3);
                     ProcTab[PI].Locals[J].Offset := -LocalOfs;
                   End;
-                End
-                Else
+                End;
+                If AbsFound And AbsInd Then
                 Begin
-                  { Type simple (identifiant) }
-                  If (I < TokenCount) And
-                     ((TokenPool[I].Kind = TK_IDENT) Or
-                      (TokenPool[I].Kind = TK_KEYWORD)) Then
-                  Begin
-                    LTName := StrUpperCase(TokenPool[I].Val);
-                    Inc(I);
-                  End;
-
-                  LTIdx := TypeFindByName(LTName);
-                  If LTIdx < 0 Then LTIdx := TY_IDX_INTEGER;
-                  LSz := TypeSizeofIdx(LTIdx);
-                  If LSz < 4 Then LSz := 4;  { min 4 bytes alignment }
-
                   For J := GrpStart To LC - 1 Do
-                  Begin
-                    ProcTab[PI].Locals[J].TypeIdx := LTIdx;
-                    ProcTab[PI].Locals[J].Size    := LSz;
-                    LocalOfs := LocalOfs + LSz;
-                    { Aligner sur 4 octets }
-                    If (LocalOfs And 3) <> 0 Then
-                      LocalOfs := (LocalOfs + 3) And (Not 3);
-                    ProcTab[PI].Locals[J].Offset := -LocalOfs;
-                  End;
+                    If ProcTab[PI].ParamCount < MAX_PARAM Then
+                    Begin
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].Name    := ProcTab[PI].Locals[J].Name;
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].TypeIdx := LTIdx;
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].Offset  := AbsOfs;
+                      ProcTab[PI].Params[ProcTab[PI].ParamCount].IsVar   := True;
+                      Inc(ProcTab[PI].ParamCount);
+                      ProcTab[PI].Locals[J].Name := '';   { la locale s efface derriere le parametre }
+                    End;
                 End;
               End;
 
@@ -6988,9 +8924,11 @@ Begin
               If I < TokenCount Then Inc(I);
             End;
           End
-          Else If (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'LABEL') Then
+          Else If (Up = 'CONST') Or (Up = 'TYPE') Then
+            ParseLocalConstType(PI, I, LC)
+          Else If Up = 'LABEL' Then
           Begin
-            { Sauter les sections CONST/TYPE/LABEL locales }
+            { Sauter la section LABEL locale }
             Inc(I);
             While (I < TokenCount) Do
             Begin
@@ -7012,318 +8950,7 @@ Begin
             Inc(I);
           End
           Else If (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Then
-          Begin
-            { Parser les procedures/fonctions imbriquees (TODO 14) }
-            { Elles deviennent des entrees separees dans ProcTab }
-            If ProcCount < MAX_PROC Then
-            Begin
-              NIsFunc := (Up = 'FUNCTION');
-                Inc(I); { sauter PROCEDURE/FUNCTION }
-
-                { Lire le nom }
-                If (I < TokenCount) And
-                   ((TokenPool[I].Kind = TK_IDENT) Or
-                    (TokenPool[I].Kind = TK_KEYWORD)) Then
-                Begin
-                  NName := StrUpperCase(TokenPool[I].Val);
-                  Inc(I);
-                End
-                Else
-                  NName := '';
-
-                NI := ProcCount;
-                ProcTab[NI].Name        := NName;
-                ProcTab[NI].MangledName := TP_FUNC_PFX + NName;
-                ProcTab[NI].IsFunction  := NIsFunc;
-                ProcTab[NI].RetTypeIdx  := -1;
-                ProcTab[NI].ParamCount  := 0;
-                ProcTab[NI].LocalCount  := 0;
-                ProcTab[NI].LocalSize   := 0;
-                ProcTab[NI].BodyStart   := -1;
-                ProcTab[NI].BodyEnd     := -1;
-                ProcTab[NI].IsForward   := False;
-                ProcTab[NI].IsExternal  := False;
-                ProcTab[NI].SymIdx      := -1;
-                ProcTab[NI].VarMask     := 0;
-                ProcTab[NI].RetOffset   := 0;
-
-                { Parser les parametres }
-                NPC := 0;
-                NVM := 0;
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                   (TokenPool[I].Val = '(') Then
-                Begin
-                  Inc(I);
-                  While (I < TokenCount) And
-                        Not ((TokenPool[I].Kind = TK_PUNCT) And
-                             (TokenPool[I].Val = ')')) Do
-                  Begin
-                    NIsVarP := False;
-                    NIsConstP := False;
-                    If (TokenPool[I].Kind = TK_KEYWORD) Then
-                    Begin
-                      If StrUpperCase(TokenPool[I].Val) = 'VAR' Then
-                      Begin NIsVarP := True; Inc(I); End
-                      Else If StrUpperCase(TokenPool[I].Val) = 'CONST' Then
-                      Begin NIsConstP := True; Inc(I); End;
-                    End;
-                    NGrpSt := NPC;
-                    While (I < TokenCount) And
-                          ((TokenPool[I].Kind = TK_IDENT) Or
-                           (TokenPool[I].Kind = TK_KEYWORD)) Do
-                    Begin
-                      If NPC < MAX_PARAM Then
-                      Begin
-                        ProcTab[NI].Params[NPC].Name    := StrUpperCase(TokenPool[I].Val);
-                        ProcTab[NI].Params[NPC].IsVar   := NIsVarP;
-                        ProcTab[NI].Params[NPC].IsConst := NIsConstP;
-                        ProcTab[NI].Params[NPC].TypeIdx := TY_IDX_INTEGER;
-                        ProcTab[NI].Params[NPC].Offset  := 0;
-                        If NIsVarP Then
-                          NVM := NVM Or (LongInt(1) Shl NPC);
-                        Inc(NPC);
-                      End;
-                      Inc(I);
-                      If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                         (TokenPool[I].Val = ',') Then Inc(I) Else Break;
-                    End;
-                    If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                       (TokenPool[I].Val = ':') Then
-                    Begin
-                      Inc(I);
-                      If (I < TokenCount) And
-                         ((TokenPool[I].Kind = TK_IDENT) Or
-                          (TokenPool[I].Kind = TK_KEYWORD)) Then
-                      Begin
-                        NTName := StrUpperCase(TokenPool[I].Val);
-                        NTIdx := TypeFindByName(NTName);
-                        If NTIdx < 0 Then NTIdx := TY_IDX_INTEGER;
-                        For NK := NGrpSt To NPC - 1 Do
-                          ProcTab[NI].Params[NK].TypeIdx := NTIdx;
-                        Inc(I);
-                      End;
-                    End;
-                    If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                       (TokenPool[I].Val = ';') Then Inc(I);
-                  End;
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                     (TokenPool[I].Val = ')') Then Inc(I);
-                End;
-                ProcTab[NI].ParamCount := NPC;
-                ProcTab[NI].VarMask    := NVM;
-                For NK := 0 To NPC - 1 Do
-                  ProcTab[NI].Params[NK].Offset := 8 + (NPC - 1 - NK) * 4;
-
-                { Type de retour }
-                NRetTIdx := TY_IDX_INTEGER;
-                If NIsFunc Then
-                Begin
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                     (TokenPool[I].Val = ':') Then
-                  Begin
-                    Inc(I);
-                    If (I < TokenCount) And
-                       ((TokenPool[I].Kind = TK_IDENT) Or
-                        (TokenPool[I].Kind = TK_KEYWORD)) Then
-                    Begin
-                      NTName := StrUpperCase(TokenPool[I].Val);
-                      NTIdx := TypeFindByName(NTName);
-                      If NTIdx >= 0 Then NRetTIdx := NTIdx;
-                      Inc(I);
-                    End;
-                  End;
-                End;
-                ProcTab[NI].RetTypeIdx := NRetTIdx;
-
-                { Attendre ';' apres la signature }
-                While (I < TokenCount) And
-                      Not ((TokenPool[I].Kind = TK_PUNCT) And
-                           (TokenPool[I].Val = ';')) Do
-                  Inc(I);
-                If I < TokenCount Then Inc(I);
-
-                { Verifier FORWARD }
-                If (I < TokenCount) And
-                   ((TokenPool[I].Kind = TK_KEYWORD) Or
-                    (TokenPool[I].Kind = TK_IDENT)) And
-                   (StrUpperCase(TokenPool[I].Val) = 'FORWARD') Then
-                Begin
-                  ProcTab[NI].IsForward := True;
-                  While (I < TokenCount) And
-                        Not ((TokenPool[I].Kind = TK_PUNCT) And
-                             (TokenPool[I].Val = ';')) Do
-                    Inc(I);
-                  If I < TokenCount Then Inc(I);
-                End
-                Else If (I < TokenCount) And
-                        (TokenPool[I].Kind = TK_KEYWORD) And
-                        (StrUpperCase(TokenPool[I].Val) <> 'VAR') And
-                        (StrUpperCase(TokenPool[I].Val) <> 'CONST') And
-                        (StrUpperCase(TokenPool[I].Val) <> 'TYPE') And
-                        (StrUpperCase(TokenPool[I].Val) <> 'LABEL') And
-                        (StrUpperCase(TokenPool[I].Val) <> 'BEGIN') And
-                        (StrUpperCase(TokenPool[I].Val) <> 'PROCEDURE') And
-                        (StrUpperCase(TokenPool[I].Val) <> 'FUNCTION') Then
-                Begin
-                  { Pas de corps : declaration de type interface/forward implicite }
-                  ProcTab[NI].IsForward := True;
-                End
-                Else
-                Begin
-                  { Scanner les variables locales de la proc imbriquee }
-                  NLocalOfs := 0;
-                  NLC := 0;
-                  If NIsFunc Then
-                  Begin
-                    NLocalOfs := NLocalOfs + 4;
-                    ProcTab[NI].RetOffset := -NLocalOfs;
-                  End;
-                  While (I < TokenCount) Do
-                  Begin
-                    If TokenPool[I].Kind <> TK_KEYWORD Then Break;
-                    Up := StrUpperCase(TokenPool[I].Val);
-                    If Up = 'VAR' Then
-                    Begin
-                      Inc(I);
-                      While (I < TokenCount) Do
-                      Begin
-                        If (TokenPool[I].Kind = TK_KEYWORD) Then
-                        Begin
-                          Up := StrUpperCase(TokenPool[I].Val);
-                          If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
-                             (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                             (Up = 'FUNCTION') Or (Up = 'LABEL') Or
-                             (Up = 'SEGMENT') Then
-                            Break;
-                        End;
-                        If (TokenPool[I].Kind <> TK_IDENT) And
-                           (TokenPool[I].Kind <> TK_KEYWORD) Then
-                        Begin Inc(I); Continue; End;
-                        NGrpSt := NLC;
-                        While (I < TokenCount) And
-                              ((TokenPool[I].Kind = TK_IDENT) Or
-                               (TokenPool[I].Kind = TK_KEYWORD)) Do
-                        Begin
-                          If NLC < MAX_LOCAL Then
-                          Begin
-                            ProcTab[NI].Locals[NLC].Name    := StrUpperCase(TokenPool[I].Val);
-                            ProcTab[NI].Locals[NLC].TypeIdx  := TY_IDX_INTEGER;
-                            ProcTab[NI].Locals[NLC].Size     := 4;
-                            ProcTab[NI].Locals[NLC].IsStatic := False;
-                            ProcTab[NI].Locals[NLC].StaticLbl:= '';
-                            ProcTab[NI].Locals[NLC].InitVal  := 0;
-                            ProcTab[NI].Locals[NLC].HasInit  := False;
-                            Inc(NLC);
-                          End;
-                          Inc(I);
-                          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT)
-                             And (TokenPool[I].Val = ',') Then Inc(I) Else Break;
-                        End;
-                        If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                           (TokenPool[I].Val = ':') Then
-                        Begin
-                          Inc(I);
-                          NLTName := '';
-                          If (I < TokenCount) And
-                             ((TokenPool[I].Kind = TK_IDENT) Or
-                              (TokenPool[I].Kind = TK_KEYWORD)) Then
-                          Begin
-                            NLTName := StrUpperCase(TokenPool[I].Val);
-                            Inc(I);
-                          End;
-                          NLTIdx := TypeFindByName(NLTName);
-                          If NLTIdx < 0 Then NLTIdx := TY_IDX_INTEGER;
-                          NLSz := TypeSizeofIdx(NLTIdx);
-                          If NLSz < 4 Then NLSz := 4;
-                          For NK := NGrpSt To NLC - 1 Do
-                          Begin
-                            ProcTab[NI].Locals[NK].TypeIdx := NLTIdx;
-                            ProcTab[NI].Locals[NK].Size    := NLSz;
-                            NLocalOfs := NLocalOfs + NLSz;
-                            If (NLocalOfs And 3) <> 0 Then
-                              NLocalOfs := (NLocalOfs + 3) And (Not 3);
-                            ProcTab[NI].Locals[NK].Offset := -NLocalOfs;
-                          End;
-                        End;
-                        While (I < TokenCount) And
-                              Not ((TokenPool[I].Kind = TK_PUNCT) And
-                                   (TokenPool[I].Val = ';')) Do
-                          Inc(I);
-                        If I < TokenCount Then Inc(I);
-                      End;
-                    End
-                    Else If (Up = 'CONST') Or (Up = 'TYPE') Or (Up = 'LABEL') Then
-                    Begin
-                      Inc(I);
-                      While (I < TokenCount) Do
-                      Begin
-                        If (TokenPool[I].Kind = TK_KEYWORD) Then
-                        Begin
-                          Up := StrUpperCase(TokenPool[I].Val);
-                          If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
-                             (Up = 'BEGIN') Or (Up = 'PROCEDURE') Or
-                             (Up = 'FUNCTION') Or (Up = 'LABEL') Or
-                             (Up = 'SEGMENT') Then
-                            Break;
-                        End;
-                        Inc(I);
-                      End;
-                    End
-                    Else
-                      Break;
-                  End;
-                  ProcTab[NI].LocalCount := NLC;
-                  ProcTab[NI].LocalSize  := NLocalOfs;
-
-                  { Localiser le corps (BEGIN ... END) }
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-                     (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
-                  Begin
-                    ProcTab[NI].BodyStart := I;
-                    Inc(I);
-                    SkipToMatchingEnd(I);
-                    ProcTab[NI].BodyEnd := I - 1;
-                  End;
-                  { Sauter le ';' apres END }
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                     (TokenPool[I].Val = ';') Then
-                    Inc(I);
-                End;
-
-                { Enregistrer le symbole dans SymTab }
-                If NIsFunc Then
-                  NSIdx := SymAdd(NName, SK_FUNC, NRetTIdx)
-                Else
-                  NSIdx := SymAdd(NName, SK_PROC, -1);
-                If NSIdx >= 0 Then
-                Begin
-                  SymTab[NSIdx].ParamCount  := NPC;
-                  SymTab[NSIdx].IsGlobal    := True;
-                  SymTab[NSIdx].MangledName := TP_FUNC_PFX + NName;
-                End;
-                ProcTab[NI].SymIdx := NSIdx;
-                Inc(ProcCount);
-            End
-            Else
-            Begin
-              { Pas de place dans ProcTab : sauter }
-              Inc(I);
-              While (I < TokenCount) Do
-              Begin
-                If (TokenPool[I].Kind = TK_KEYWORD) And
-                   (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
-                Begin
-                  Inc(I);
-                  SkipToMatchingEnd(I);
-                  Break;
-                End;
-                Inc(I);
-              End;
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = ';') Then
-                Inc(I);
-            End;
-          End
+            RegisterNested(PI)
           Else
             Break;
         End;
@@ -7331,9 +8958,10 @@ Begin
         ProcTab[PI].LocalCount := LC;
         ProcTab[PI].LocalSize  := LocalOfs;
 
-        { Localiser le corps (BEGIN ... END) }
+        { Localiser le corps (BEGIN ... END, ou ASM ... END) }
         If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-           (StrUpperCase(TokenPool[I].Val) = 'BEGIN') Then
+           ((StrUpperCase(TokenPool[I].Val) = 'BEGIN') Or
+            (StrUpperCase(TokenPool[I].Val) = 'ASM')) Then
         Begin
           ProcTab[PI].BodyStart := I;
           Inc(I); { sauter BEGIN }
@@ -7421,9 +9049,15 @@ Var
   DimHi   : Array[0..7] Of LongInt;
   DimCount: Integer;
   DimK    : Integer;
+  { pointeurs vers des types declares plus loin : resolus en fin d analyse }
+  PendPtrIdx  : Array[0..255] Of Integer;
+  PendPtrName : Array[0..255] Of TString;
+  PendPtrCnt  : Integer;
+  PK          : Integer;
 Begin
   I := 0;
   Depth := 0;
+  PendPtrCnt := 0;
 
   While I < TokenCount Do
   Begin
@@ -7471,7 +9105,7 @@ Begin
           Begin
             Up := StrUpperCase(TokenPool[I].Val);
             If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
-               (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+               (((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) And Not TokIsProcType(I)) Or
                (Up = 'BEGIN') Or (Up = 'LABEL') Or
                (Up = 'USES') Or (Up = 'PROGRAM') Or
                (Up = 'SEGMENT') Then
@@ -7512,85 +9146,9 @@ Begin
           { --- ARRAY [lo..hi, lo2..hi2, ...] OF T --- }
           If (TokenPool[I].Kind = TK_KEYWORD) And (Up = 'ARRAY') Then
           Begin
-            Inc(I);
-            ElemType := 'INTEGER';
-
-            { Parser toutes les dimensions dans DimLo/DimHi }
-            DimCount := 0;
-            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-               (TokenPool[I].Val = '[') Then
-            Begin
-              Inc(I);
-              Repeat
-                ArrLo := 0; ArrHi := 0;
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
-                Begin ArrLo := TokenPool[I].IntVal; Inc(I); End;
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                   (TokenPool[I].Val = '..') Then Inc(I);
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
-                Begin ArrHi := TokenPool[I].IntVal; Inc(I); End;
-                If DimCount < 8 Then
-                Begin
-                  DimLo[DimCount] := ArrLo;
-                  DimHi[DimCount] := ArrHi;
-                  Inc(DimCount);
-                End;
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                   (TokenPool[I].Val = ',') Then
-                  Inc(I)
-                Else
-                  Break;
-              Until I >= TokenCount;
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = ']') Then
-                Inc(I);
-            End;
-
-            If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-               (StrUpperCase(TokenPool[I].Val) = 'OF') Then
-              Inc(I);
-
-            If (I < TokenCount) And
-               ((TokenPool[I].Kind = TK_IDENT) Or
-                (TokenPool[I].Kind = TK_KEYWORD)) Then
-            Begin
-              ElemType := StrUpperCase(TokenPool[I].Val);
-              Inc(I);
-            End;
-
-            { Determiner le type de base de l element }
-            ElemSz := TPTypeSizeof(ElemType);
-            If ElemSz < 0 Then
-            Begin
-              BTIdx := TypeFindByName(ElemType);
-              If BTIdx >= 0 Then ElemSz := TypeTab[BTIdx].Size
-              Else ElemSz := 4;
-            End;
-            BTIdx := TypeFindByName(ElemType);
-            If BTIdx < 0 Then BTIdx := TY_IDX_INTEGER;
-
-            { Construire les types imbriques de l interieur vers l exterieur }
-            { Pour array[1..3, 1..5] of Integer :                             }
-            {   d'abord inner = array[1..5] of Integer (size=5*4=20)          }
-            {   puis outer = array[1..3] of inner       (size=3*20=60)        }
-            For DimK := DimCount - 1 DownTo 0 Do
-            Begin
-              ArrElem := DimHi[DimK] - DimLo[DimK] + 1;
-              If ArrElem < 1 Then ArrElem := 1;
-              If DimK = 0 Then
-                TIdx := TypeAdd(TYK_ARRAY, TName, ArrElem * ElemSz, 4, False, -1)
-              Else
-                TIdx := TypeAdd(TYK_ARRAY, '', ArrElem * ElemSz, 4, False, -1);
-              If TIdx >= 0 Then
-              Begin
-                TypeTab[TIdx].Lo := DimLo[DimK];
-                TypeTab[TIdx].Hi := DimHi[DimK];
-                TypeTab[TIdx].BaseTypeIdx := BTIdx;
-              End;
-              { Le type courant devient le BaseTypeIdx de la dimension suivante }
-              BTIdx := TIdx;
-              ElemSz := ArrElem * ElemSz;
-            End;
+            TIdx := ParseTypeExprAt(I);
+            If (TIdx >= 0) And (TypeTab[TIdx].Name = '') Then
+              TypeTab[TIdx].Name := TName;
             SIdx := SymAdd(TName, SK_TYPE, TIdx);
 
             While (I < TokenCount) And
@@ -7601,276 +9159,14 @@ Begin
             Continue;
           End;
 
-          { --- RECORD ... END --- }
+          { --- RECORD ... END (champs, variantes CASE, records et tableaux imbriques) --- }
           If (TokenPool[I].Kind = TK_KEYWORD) And (Up = 'RECORD') Then
           Begin
-            Inc(I);
-            FC := 0;
-            FOfs := 0;
-
-            TIdx := TypeAdd(TYK_RECORD, TName, 0, 4, False, -1);
-
-            While I < TokenCount Do
-            Begin
-              If (TokenPool[I].Kind = TK_KEYWORD) And
-                 (StrUpperCase(TokenPool[I].Val) = 'END') Then
-              Begin
-                Inc(I);
-                Break;
-              End;
-              If (TokenPool[I].Kind = TK_KEYWORD) And
-                 (StrUpperCase(TokenPool[I].Val) = 'CASE') Then
-              Begin
-                { Variant record : CASE [tag :] Type OF val: (fields); ... }
-                Inc(I); { passer CASE }
-                { Lire le champ tag (optionnel) et le type discriminant }
-                { Forme: CASE tag: Type OF  ou  CASE Type OF }
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_IDENT) Then
-                Begin
-                  FName := StrUpperCase(TokenPool[I].Val);
-                  Inc(I);
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                     (TokenPool[I].Val = ':') Then
-                  Begin
-                    { Forme CASE tag: Type OF -> enregistrer le champ tag }
-                    Inc(I); { passer ':' }
-                    FTName := 'INTEGER';
-                    If (I < TokenCount) And
-                       ((TokenPool[I].Kind = TK_IDENT) Or
-                        (TokenPool[I].Kind = TK_KEYWORD)) Then
-                    Begin
-                      FTName := StrUpperCase(TokenPool[I].Val);
-                      Inc(I);
-                    End;
-                    FSz := TPTypeSizeof(FTName);
-                    If FSz < 0 Then FSz := 4;
-                    FTIdx := TypeFindByName(FTName);
-                    If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
-                    If (TIdx >= 0) And (FC < MAX_FIELDS) Then
-                    Begin
-                      TypeTab[TIdx].Fields[FC].Name    := FName;
-                      TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
-                      TypeTab[TIdx].Fields[FC].Offset  := FOfs;
-                      Inc(FC);
-                      TypeTab[TIdx].FieldCount := FC;
-                      FOfs := FOfs + FSz;
-                      TypeTab[TIdx].Size := FOfs;
-                    End;
-                  End;
-                  { Sinon c est CASE Type OF -> pas de champ tag }
-                End;
-                { Passer 'OF' }
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
-                   (StrUpperCase(TokenPool[I].Val) = 'OF') Then
-                  Inc(I);
-                { Parser les variantes : val: (field: Type; ...); }
-                { Tous les champs partagent le meme offset de depart }
-                VarOfs := FOfs;
-                MaxVarSz := 0;
-                While (I < TokenCount) And
-                      Not ((TokenPool[I].Kind = TK_KEYWORD) And
-                           (StrUpperCase(TokenPool[I].Val) = 'END')) Do
-                Begin
-                  { Sauter les labels de cas (nombres/idents) et ':' }
-                  While (I < TokenCount) And
-                        Not ((TokenPool[I].Kind = TK_PUNCT) And
-                             (TokenPool[I].Val = '(')) And
-                        Not ((TokenPool[I].Kind = TK_KEYWORD) And
-                             (StrUpperCase(TokenPool[I].Val) = 'END')) Do
-                    Inc(I);
-                  If (I >= TokenCount) Or
-                     ((TokenPool[I].Kind = TK_KEYWORD) And
-                      (StrUpperCase(TokenPool[I].Val) = 'END')) Then
-                    Break;
-                  Inc(I); { passer '(' }
-                  { Parser les champs de cette variante }
-                  CurVarSz := 0;
-                  While (I < TokenCount) And
-                        Not ((TokenPool[I].Kind = TK_PUNCT) And
-                             (TokenPool[I].Val = ')')) And
-                        Not ((TokenPool[I].Kind = TK_KEYWORD) And
-                             (StrUpperCase(TokenPool[I].Val) = 'END')) Do
-                  Begin
-                    If (TokenPool[I].Kind = TK_IDENT) Then
-                    Begin
-                      { Collecter noms de champs separes par virgules }
-                      FNames[0] := StrUpperCase(TokenPool[I].Val);
-                      FNC := 1;
-                      Inc(I);
-                      While (I < TokenCount) And
-                            (TokenPool[I].Kind = TK_PUNCT) And
-                            (TokenPool[I].Val = ',') Do
-                      Begin
-                        Inc(I);
-                        If (I < TokenCount) And
-                           (TokenPool[I].Kind = TK_IDENT) Then
-                        Begin
-                          If FNC < 16 Then
-                          Begin
-                            FNames[FNC] := StrUpperCase(TokenPool[I].Val);
-                            Inc(FNC);
-                          End;
-                          Inc(I);
-                        End;
-                      End;
-                      { Attendre ':' }
-                      If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT)
-                         And (TokenPool[I].Val = ':') Then
-                      Begin
-                        Inc(I);
-                        FTName := 'INTEGER';
-                        If (I < TokenCount) And
-                           ((TokenPool[I].Kind = TK_IDENT) Or
-                            (TokenPool[I].Kind = TK_KEYWORD)) Then
-                        Begin
-                          FTName := StrUpperCase(TokenPool[I].Val);
-                          Inc(I);
-                        End;
-                        FSz := TPTypeSizeof(FTName);
-                        If FSz < 0 Then
-                        Begin
-                          FTIdx := TypeFindByName(FTName);
-                          If FTIdx >= 0 Then
-                            FSz := TypeTab[FTIdx].Size
-                          Else
-                            FSz := 4;
-                        End;
-                        FTIdx := TypeFindByName(FTName);
-                        If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
-                        For FNI := 0 To FNC - 1 Do
-                        Begin
-                          If (TIdx >= 0) And (FC < MAX_FIELDS) Then
-                          Begin
-                            TypeTab[TIdx].Fields[FC].Name    := FNames[FNI];
-                            TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
-                            TypeTab[TIdx].Fields[FC].Offset  := VarOfs + CurVarSz;
-                            Inc(FC);
-                            TypeTab[TIdx].FieldCount := FC;
-                            CurVarSz := CurVarSz + FSz;
-                          End;
-                        End;
-                      End
-                      Else
-                      Begin
-                        { pas de ':', avancer }
-                        Inc(I);
-                      End;
-                    End
-                    Else
-                    Begin
-                      { Sauter les tokens inattendus (';' entre champs) }
-                      Inc(I);
-                    End;
-                  End;
-                  If CurVarSz > MaxVarSz Then
-                    MaxVarSz := CurVarSz;
-                  { Passer ')' et ';' }
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                     (TokenPool[I].Val = ')') Then
-                    Inc(I);
-                  If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                     (TokenPool[I].Val = ';') Then
-                    Inc(I);
-                End;
-                { Mettre a jour la taille totale du record }
-                FOfs := VarOfs + MaxVarSz;
-                If TIdx >= 0 Then
-                  TypeTab[TIdx].Size := FOfs;
-                Continue;
-              End;
-
-              { Lire le(s) nom(s) de champ (supporte X, Y: Integer) }
-              If (TokenPool[I].Kind <> TK_IDENT) Then
-              Begin
-                Inc(I);
-                Continue;
-              End;
-
-              { Collecter tous les noms de champ separes par des virgules }
-              FNames[0] := StrUpperCase(TokenPool[I].Val);
-              FNC := 1;
-              Inc(I);
-              While (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT)
-                    And (TokenPool[I].Val = ',') Do
-              Begin
-                Inc(I); { passer la virgule }
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_IDENT) Then
-                Begin
-                  If FNC < 16 Then
-                  Begin
-                    FNames[FNC] := StrUpperCase(TokenPool[I].Val);
-                    Inc(FNC);
-                  End;
-                  Inc(I);
-                End;
-              End;
-
-              { Attendre ':' }
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = ':') Then
-                Inc(I)
-              Else
-              Begin
-                While (I < TokenCount) And
-                      Not ((TokenPool[I].Kind = TK_PUNCT) And
-                           ((TokenPool[I].Val = ';') Or (TokenPool[I].Val = ')'))) And
-                      Not ((TokenPool[I].Kind = TK_KEYWORD) And
-                           (StrUpperCase(TokenPool[I].Val) = 'END')) Do
-                  Inc(I);
-                If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                   (TokenPool[I].Val = ';') Then Inc(I);
-                Continue;
-              End;
-
-              { Lire le type du champ }
-              FTName := 'INTEGER';
-              If (I < TokenCount) And
-                 ((TokenPool[I].Kind = TK_IDENT) Or
-                  (TokenPool[I].Kind = TK_KEYWORD)) Then
-              Begin
-                FTName := StrUpperCase(TokenPool[I].Val);
-                Inc(I);
-              End;
-
-              FSz := TPTypeSizeof(FTName);
-              If FSz < 0 Then
-              Begin
-                FTIdx := TypeFindByName(FTName);
-                If FTIdx >= 0 Then
-                  FSz := TypeTab[FTIdx].Size
-                Else
-                  FSz := 4;
-              End;
-              FTIdx := TypeFindByName(FTName);
-              If FTIdx < 0 Then FTIdx := TY_IDX_INTEGER;
-
-              { Enregistrer tous les champs collectes }
-              For FNI := 0 To FNC - 1 Do
-              Begin
-                If (TIdx >= 0) And (FC < MAX_FIELDS) Then
-                Begin
-                  TypeTab[TIdx].Fields[FC].Name    := FNames[FNI];
-                  TypeTab[TIdx].Fields[FC].TypeIdx := FTIdx;
-                  TypeTab[TIdx].Fields[FC].Offset  := FOfs;
-                  Inc(FC);
-                  TypeTab[TIdx].FieldCount := FC;
-                  FOfs := FOfs + FSz;
-                  TypeTab[TIdx].Size := FOfs;
-                End;
-              End;
-
-              { Passer le ';' entre champs }
-              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-                 (TokenPool[I].Val = ';') Then
-                Inc(I);
-            End;
-
+            TIdx := ParseTypeExprAt(I);
+            If (TIdx >= 0) And (TypeTab[TIdx].Name = '') Then
+              TypeTab[TIdx].Name := TName;
             SIdx := SymAdd(TName, SK_TYPE, TIdx);
-
-            { Passer le ';' apres END }
-            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
-               (TokenPool[I].Val = ';') Then
-              Inc(I);
+            If TokIsPunct(I, ';') Then Inc(I);
             Continue;
           End;
 
@@ -8091,6 +9387,70 @@ Begin
             Continue;
           End;
 
+          { --- Pointeur : TName = ^X (X peut etre declare plus loin : resolution en fin de section) --- }
+          If (TokenPool[I].Kind = TK_OP) And (TokenPool[I].Val = '^') Then
+          Begin
+            Inc(I);
+            BaseTN := '';
+            If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin BaseTN := StrUpperCase(TokenPool[I].Val); Inc(I) End;
+            BTIdx := TypeFindByName(BaseTN);
+            TIdx := TypeAdd(TYK_POINTER, TName, 4, 4, False, BTIdx);
+            If (BTIdx < 0) And (TIdx >= 0) And (PendPtrCnt < 256) Then
+            Begin
+              PendPtrIdx[PendPtrCnt] := TIdx; PendPtrName[PendPtrCnt] := BaseTN; Inc(PendPtrCnt);
+            End;
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { --- Type procedural : TName = Procedure(...) / Function(...) : T --- }
+          If (TokenPool[I].Kind = TK_KEYWORD) And ((Up = 'PROCEDURE') Or (Up = 'FUNCTION')) Then
+          Begin
+            Inc(I);
+            TIdx := TypeAdd(TYK_PROCVAR, TName, 4, 4, False, -1);
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '(') Then
+            Begin
+              FC := 0;
+              Repeat
+                If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '(') Then Inc(FC)
+                Else If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ')') Then Dec(FC);
+                Inc(I);
+              Until (FC = 0) Or (I >= TokenCount);
+            End;
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { --- File Of T / File (type fichier nomme) --- }
+          If (TokenPool[I].Kind = TK_KEYWORD) And (Up = 'FILE') Then
+          Begin
+            Inc(I);
+            BTIdx := TY_UNKNOWN;
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+               (StrUpperCase(TokenPool[I].Val) = 'OF') Then
+            Begin
+              Inc(I);
+              If (I < TokenCount) And ((TokenPool[I].Kind = TK_IDENT) Or (TokenPool[I].Kind = TK_KEYWORD)) Then
+              Begin BTIdx := TypeFindByName(StrUpperCase(TokenPool[I].Val)); Inc(I) End;
+            End;
+            TIdx := TypeAdd(TYK_FILE, TName, TFR_SIZE, 4, False, BTIdx);
+            SIdx := SymAdd(TName, SK_TYPE, TIdx);
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
           { --- Type alias or subrange --- }
           If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
           Begin
@@ -8153,6 +9513,10 @@ Begin
 
     Inc(I);
   End;
+  { Resolution des pointeurs vers des types declares apres eux }
+  For PK := 0 To PendPtrCnt - 1 Do
+    If (PendPtrIdx[PK] >= 0) And (TypeTab[PendPtrIdx[PK]].BaseTypeIdx < 0) Then
+      TypeTab[PendPtrIdx[PK]].BaseTypeIdx := TypeFindByName(PendPtrName[PK]);
 End;
 
 { ------------------------------------------------------------ }
@@ -8162,7 +9526,7 @@ End;
 { ------------------------------------------------------------ }
 
 Function FindFieldOffset(TIdx : Integer; Const FName : TString;
-                         Var FSize : Integer) : Integer;
+                         Var FSize : LongInt) : LongInt;
 Var
   J    : Integer;
   Up   : TString;
@@ -8188,6 +9552,13 @@ Begin
       Exit;
     End;
   End;
+  If Opts.DebugMode Then
+  Begin
+    Write('  [champ] ', Up, ' absent du type ', TIdx, ' (', TypeTab[TIdx].Name, ') champs :');
+    For J := 0 To TypeTab[TIdx].FieldCount - 1 Do
+      Write(' ', TypeTab[TIdx].Fields[J].Name, '@', TypeTab[TIdx].Fields[J].Offset);
+    WriteLn;
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -8195,10 +9566,89 @@ End;
 { parametre ou globale.                                        }
 { ------------------------------------------------------------ }
 
+{ FindOuterVar : variable locale ou parametre d une procedure englobante (procedures }
+{ imbriquees). Level = nombre de cadres a remonter, OPI = procedure proprietaire,  }
+{ LI / ParI = index de la locale / du parametre. Le cadre de la procedure            }
+{ englobante est atteint par les EBP sauvegardes (appel direct depuis le parent).   }
+Function FindOuterVar(PI : Integer; Const Up : TString;
+                      Var Level, OPI, LI, ParI : Integer) : Boolean;
+Var Q : Integer;
+Begin
+  FindOuterVar := False;
+  Level := 0; OPI := -1; LI := -1; ParI := -1;
+  If (PI < 0) Or (PI >= ProcCount) Then Exit;
+  Q := ProcTab[PI].ParentIdx;
+  While (Q >= 0) And (Q < ProcCount) And (Level < 8) Do
+  Begin
+    Inc(Level);
+    LI := FindLocal(Q, Up);
+    If LI >= 0 Then Begin OPI := Q; FindOuterVar := True; Exit; End;
+    ParI := FindParam(Q, Up);
+    If ParI >= 0 Then Begin OPI := Q; FindOuterVar := True; Exit; End;
+    Q := ProcTab[Q].ParentIdx;
+  End;
+End;
+
+{ IsShadowGlobal : Up est une variable globale declaree sous le nom d un sous-     }
+{ programme predefini (Var Pos : Word ; Var Line : String) : la variable l emporte  }
+Function IsShadowGlobal(Const Up : TString) : Boolean;
+Var SI : Integer;
+Begin
+  SI := SymFind(Up);
+  IsShadowGlobal := (SI >= 0) And (SymTab[SI].Kind = SK_VAR) And SymTab[SI].IsGlobal And
+                    (Not SymTab[SI].IsExternal) And (SymTab[SI].UnitName = 'SYSTEM');
+End;
+
+{ IsOuterVarName : Up est une variable ou un parametre d une procedure englobante }
+Function IsOuterVarName(PI : Integer; Const Up : TString) : Boolean;
+Var OLevel, OPI, OLI, OParI : Integer;
+Begin
+  IsOuterVarName := (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) And FindOuterVar(PI, Up, OLevel, OPI, OLI, OParI);
+End;
+
+{ EmitOuterFrame : EDX = EBP de la procedure englobante situee Level cadres plus haut }
+Procedure EmitOuterFrame(Level : Integer);
+Var K : Integer;
+Begin
+  EmitInstr('MOV EDX,DWORD PTR [EBP]');
+  For K := 2 To Level Do EmitInstr('MOV EDX,DWORD PTR [EDX]');
+End;
+
+Function EDXOfs(Ofs : LongInt) : TString;
+Begin
+  If Ofs >= 0 Then EDXOfs := '[EDX+' + IntToStr_(Ofs) + ']'
+  Else EDXOfs := '[EDX-' + IntToStr_(-Ofs) + ']';
+End;
+
+{ OuterVarAddrEAX : EAX = adresse de la variable englobante (locale, parametre) }
+Procedure OuterVarAddrEAX(Level, OPI, LI, ParI : Integer);
+Begin
+  If LI >= 0 Then
+  Begin
+    If ProcTab[OPI].Locals[LI].IsStatic Then
+    Begin
+      EmitInstr('LEA EAX,[' + ProcTab[OPI].Locals[LI].StaticLbl + ']');
+      Exit;
+    End;
+    EmitOuterFrame(Level);
+    EmitInstr('LEA EAX,' + EDXOfs(ProcTab[OPI].Locals[LI].Offset));
+    Exit;
+  End;
+  EmitOuterFrame(Level);
+  If ProcTab[OPI].Params[ParI].IsVar Or TypeIsString(ProcTab[OPI].Params[ParI].TypeIdx) Or
+     W32IsAggregate(ProcTab[OPI].Params[ParI].TypeIdx) Then
+    EmitInstr('MOV EAX,DWORD PTR ' + EDXOfs(ProcTab[OPI].Params[ParI].Offset))
+  Else
+    EmitInstr('LEA EAX,' + EDXOfs(ProcTab[OPI].Params[ParI].Offset));
+End;
+
+Procedure GenLoadFromAddr(T : Integer); Forward;
+
 Function GetVarTypeIdx(PI : Integer; Const Name : TString) : Integer;
 Var
   LI, ParI, SI : Integer;
   Up : TString;
+  OLevel, OPI, OLI, OParI : Integer;
 Begin
   GetVarTypeIdx := -1;
   Up := StrUpperCase(Name);
@@ -8215,6 +9665,12 @@ Begin
     If ParI >= 0 Then
     Begin
       GetVarTypeIdx := ProcTab[PI].Params[ParI].TypeIdx;
+      Exit;
+    End;
+    If FindOuterVar(PI, Up, OLevel, OPI, OLI, OParI) Then
+    Begin
+      If OLI >= 0 Then GetVarTypeIdx := ProcTab[OPI].Locals[OLI].TypeIdx
+      Else GetVarTypeIdx := ProcTab[OPI].Params[OParI].TypeIdx;
       Exit;
     End;
   End;
@@ -8238,6 +9694,7 @@ Var
   LastPrimaryName : TString; { dernier ident charge par ParsePrimary }
   LastVarTypeIdx : Integer; { type index du dernier ident charge }
   LastExprIsPascalStr : Boolean; { True = EAX pointe sur format Pascal [len][chars][NUL] }
+  WantCharLit : Boolean;   { contexte Char : un litteral d un caractere est un code, pas une chaine }
 
   { Pile de boucles pour Break/Continue (TODO 13) }
   LoopBreakLbl : Array[0..31] Of TString;
@@ -8251,6 +9708,16 @@ Var
 Function EPAtEnd : Boolean;
 Begin
   EPAtEnd := (EP >= EPEnd);
+End;
+
+{ SkipStuckToken : ParseStmt n a pas avance (construction non reconnue) : }
+{ signaler le jeton en mode -d et le sauter pour eviter une boucle infinie }
+Procedure SkipStuckToken;
+Begin
+  If Opts.DebugMode And (EP < TokenCount) Then
+    WriteLn('  [stmt] jeton inattendu ligne ', TokenPool[EP].Line, ' : ',
+            TokenPool[EP].Val);
+  Inc(EP);
 End;
 
 { ------------------------------------------------------------ }
@@ -8286,11 +9753,185 @@ End;
 { EAX (ou MOVZX pour les bytes/chars/booleans)                 }
 { ------------------------------------------------------------ }
 
+
+{ ------------------------------------------------------------ }
+{ GenLoadScalar / GenStoreScalar : charger dans EAX / stocker  }
+{ EAX a l operande memoire Mem ('[EBP-8]', '[_TPV_X]', '[EBX]') }
+{ selon la taille du type T : 1 et 2 octets etendus (signe pour }
+{ ShortInt/Integer/SmallInt, zero sinon), 4 octets directs.     }
+{ ------------------------------------------------------------ }
+
+Function TypeIsSignedSmall(T : Integer) : Boolean;
+Begin
+  TypeIsSignedSmall := (T >= 0) And (T < TypeCount) And (Not TypeTab[T].IsUnsigned) And
+    ((TypeTab[T].Kind = TYK_INTEGER) Or (TypeTab[T].Kind = TYK_SHORTINT) Or
+     ((TypeTab[T].Kind = TYK_SUBRANGE) And (TypeTab[T].Lo < 0)));
+End;
+
+{ ------------------------------------------------------------ }
+{ Reels (x87) : une valeur reelle est au sommet de la pile FPU  }
+{ ST(0) ; les types Real/Double font 8 octets, Single 4,        }
+{ Extended 10, Comp 8 (entier 64 bits).                         }
+{ ------------------------------------------------------------ }
+
+Function W32Fpu : Boolean;
+Begin
+  W32Fpu := (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode);
+End;
+
+{ RealMemPfx : prefixe de taille memoire pour FLD/FSTP }
+Function RealMemPfx(T : Integer) : TString;
+Begin
+  RealMemPfx := 'QWORD PTR';
+  If (T >= 0) And (T < TypeCount) Then
+  Begin
+    If TypeTab[T].Kind = TYK_SINGLE Then RealMemPfx := 'DWORD PTR'
+    Else If TypeTab[T].Kind = TYK_EXTENDED Then RealMemPfx := 'TBYTE PTR';
+  End;
+End;
+
+{ GenRealLoad / GenRealStore : charger / ranger ST(0) a l adresse Mem selon T }
+Procedure GenRealLoad(Const Mem : TString; T : Integer);
+Begin
+  If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_COMP) Then
+    EmitInstr('FILD QWORD PTR ' + Mem)
+  Else
+    EmitInstr('FLD ' + RealMemPfx(T) + ' ' + Mem);
+End;
+
+Procedure GenRealStore(Const Mem : TString; T : Integer);
+Begin
+  If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_COMP) Then
+    EmitInstr('FISTP QWORD PTR ' + Mem)
+  Else
+    EmitInstr('FSTP ' + RealMemPfx(T) + ' ' + Mem);
+End;
+
+{ GenIntToReal : EAX (entier signe) -> ST(0) }
+Procedure GenIntToReal;
+Begin
+  EmitInstr('PUSH EAX');
+  EmitInstr('FILD DWORD PTR [ESP]');
+  EmitInstr('ADD ESP,4');
+End;
+
+{ GenEnsureReal : la derniere expression doit etre dans ST(0) ; convertir un entier }
+Procedure GenEnsureReal;
+Begin
+  If Not TypeIsReal(LastVarTypeIdx) Then
+  Begin
+    GenIntToReal;
+    LastVarTypeIdx := TY_IDX_REAL;
+  End;
+End;
+
+{ RealResultType : type du resultat d une operation entre A et B (le plus grand) }
+Function RealResultType(A, B : Integer) : Integer;
+Var SA, SB : Integer;
+Begin
+  If TypeIsReal(A) Then SA := RealSizeCode(A) Else SA := 0;
+  If TypeIsReal(B) Then SB := RealSizeCode(B) Else SB := 0;
+  If (SA = 0) And (SB = 0) Then RealResultType := TY_IDX_REAL
+  Else If SA >= SB Then RealResultType := A
+  Else RealResultType := B;
+End;
+
+{ GenRealBuiltin : Sqrt/Sin/Cos/ArcTan/Ln/Exp sur ST(0) ; le resultat garde le type   }
+{ de l argument (Extended pour un entier), comme FPC                                   }
+Procedure GenRealBuiltin(Const Nm : TString);
+Var RT : Integer;
+Begin
+  If Not W32Fpu Then
+  Begin
+    EmitInstr('CALL ' + TP_RT_PFX + Nm);
+    Exit;
+  End;
+  RT := LastVarTypeIdx;
+  If (Not TypeIsReal(RT)) Or LastExprIsLit Then RT := TY_IDX_EXTENDED;
+  GenEnsureReal;
+  If Nm = 'SQRT' Then EmitInstr('FSQRT')
+  Else If Nm = 'SIN' Then EmitInstr('FSIN')
+  Else If Nm = 'COS' Then EmitInstr('FCOS')
+  Else If Nm = 'ARCTAN' Then Begin EmitInstr('FLD1'); EmitInstr('FPATAN'); End
+  Else If Nm = 'LN' Then Begin EmitInstr('FLDLN2'); EmitInstr('FXCH'); EmitInstr('FYL2X'); End
+  Else If Nm = 'EXP' Then EmitInstr('CALL ' + TP_RT_PFX + 'FEXP');
+  LastVarTypeIdx := RT;
+  LastExprIsPascalStr := False;
+End;
+
+
+{ EnsureImplicitGlobal : un identificateur non declare (FileMode, variable d une   }
+{ unite absente...) recoit un emplacement de 4 octets au lieu de viser le debut   }
+{ de la section de donnees                                                        }
+Procedure EnsureImplicitGlobal(Const Up : TString);
+Var SI, K : Integer;
+Begin
+  If SymFind(Up) >= 0 Then Exit;
+  For K := 0 To DataCount - 1 Do
+    If DataTab[K].LblName = TP_VAR_PFX + Up Then Exit;
+  If Opts.DebugMode Then WriteLn('  [var] ', Up, ' : non declaree, emplacement implicite');
+  DataAdd(TP_VAR_PFX + Up, DK_DWORD, 0, '', 0, 0);
+  SI := SymAdd(Up, SK_VAR, TY_IDX_LONGINT);
+  If SI >= 0 Then
+  Begin
+    SymTab[SI].IsGlobal := True;
+    SymTab[SI].MangledName := TP_VAR_PFX + Up;
+  End;
+End;
+
+Procedure GenLoadScalar(Const Mem : TString; T : Integer);
+Var Sz : LongInt;
+Begin
+  If TypeIsReal(T) And W32Fpu Then
+  Begin
+    GenRealLoad(Mem, T);
+    Exit;
+  End;
+  Sz := TypeSizeofIdx(T);
+  If Sz = 1 Then
+  Begin
+    If TypeIsSignedSmall(T) Then EmitInstr('MOVSX EAX,BYTE PTR ' + Mem)
+    Else EmitInstr('MOVZX EAX,BYTE PTR ' + Mem);
+  End
+  Else If Sz = 2 Then
+  Begin
+    If TypeIsSignedSmall(T) Then EmitInstr('MOVSX EAX,WORD PTR ' + Mem)
+    Else EmitInstr('MOVZX EAX,WORD PTR ' + Mem);
+  End
+  Else
+    EmitInstr('MOV EAX,DWORD PTR ' + Mem);
+End;
+
+Procedure GenStoreScalar(Const Mem : TString; T : Integer);
+Var Sz : LongInt;
+Begin
+  If TypeIsReal(T) And W32Fpu Then
+  Begin
+    GenEnsureReal;
+    GenRealStore(Mem, T);
+    LastVarTypeIdx := TY_IDX_INTEGER;   { ST(0) consomme }
+    Exit;
+  End;
+  If TypeIsReal(LastVarTypeIdx) And W32Fpu And (T <> TY_IDX_BOOLEAN) Then
+  Begin
+    { valeur reelle vers une destination entiere : arrondi (tolerance) }
+    EmitInstr('SUB ESP,4');
+    EmitInstr('FISTP DWORD PTR [ESP]');
+    EmitInstr('POP EAX');
+    LastVarTypeIdx := TY_IDX_INTEGER;
+  End;
+  Sz := TypeSizeofIdx(T);
+  If Sz = 1 Then EmitInstr('MOV BYTE PTR ' + Mem + ',AL')
+  Else If Sz = 2 Then EmitInstr('MOV WORD PTR ' + Mem + ',AX')
+  Else EmitInstr('MOV DWORD PTR ' + Mem + ',EAX');
+End;
+
 Procedure GenLoadVar(PI : Integer; Const Name : TString);
 Var
   LI, ParI, SI : Integer;
   Up           : TString;
   Ref          : TString;
+  OLevel, OPI, OLI, OParI : Integer;
 Begin
   Up := StrUpperCase(Name);
   LastVarTypeIdx := GetVarTypeIdx(PI, Up);
@@ -8302,13 +9943,42 @@ Begin
        ((ProcTab[PI].Name = Up) Or
         ((Up = 'RESULT') And (FindLocal(PI, 'RESULT') < 0))) Then
     Begin
+      If TypeIsReal(ProcTab[PI].RetTypeIdx) And W32Fpu Then
+      Begin
+        GenRealLoad(EBPOfs(ProcTab[PI].RetOffset), ProcTab[PI].RetTypeIdx);
+        LastVarTypeIdx := ProcTab[PI].RetTypeIdx;
+        Exit;
+      End;
       EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].RetOffset));
+      If TypeIsString(ProcTab[PI].RetTypeIdx) Then
+      Begin
+        LastVarTypeIdx := TY_IDX_STRING;
+        LastExprIsPascalStr := True;
+      End;
       Exit;
     End;
 
     LI := FindLocal(PI, Up);
     If LI >= 0 Then
     Begin
+      If ProcTab[PI].Locals[LI].IsConst Then
+      Begin
+        EmitInstr('MOV EAX,' + IntToStr_(ProcTab[PI].Locals[LI].InitVal));
+        Exit;
+      End;
+      If ProcTab[PI].Locals[LI].IsStatic Then
+      Begin
+        SI := ProcTab[PI].Locals[LI].TypeIdx;
+        If TypeIsString(SI) Or W32IsAggregate(SI) Or
+           ((SI >= 0) And (SI < TypeCount) And (TypeTab[SI].Kind = TYK_SET)) Then
+        Begin
+          EmitInstr('LEA EAX,[' + ProcTab[PI].Locals[LI].StaticLbl + ']');
+          If TypeIsString(SI) Then LastExprIsPascalStr := True;
+        End
+        Else
+          GenLoadScalar('[' + ProcTab[PI].Locals[LI].StaticLbl + ']', SI);
+        Exit;
+      End;
       If (ProcTab[PI].Locals[LI].TypeIdx >= 0) And
          (ProcTab[PI].Locals[LI].TypeIdx < TypeCount) And
          ((TypeTab[ProcTab[PI].Locals[LI].TypeIdx].Kind = TYK_RECORD) Or
@@ -8322,10 +9992,7 @@ Begin
           LastExprIsPascalStr := True;
         Exit;
       End;
-      If ProcTab[PI].Locals[LI].Size = 1 Then
-        EmitInstr('MOVZX EAX,BYTE PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset))
-      Else
-        EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+      GenLoadScalar(EBPOfs(ProcTab[PI].Locals[LI].Offset), ProcTab[PI].Locals[LI].TypeIdx);
       Exit;
     End;
 
@@ -8333,13 +10000,37 @@ Begin
     ParI := FindParam(PI, Up);
     If ParI >= 0 Then
     Begin
-      If ProcTab[PI].Params[ParI].IsVar Then
+      SI := ProcTab[PI].Params[ParI].TypeIdx;
+      If TypeIsString(SI) Or W32IsAggregate(SI) Then
+      Begin
+        { chaine / agregat : la case contient l adresse (VAR ou valeur) }
+        EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
+        If TypeIsString(SI) Then LastExprIsPascalStr := True;
+      End
+      Else If ProcTab[PI].Params[ParI].IsVar Then
       Begin
         EmitInstr('MOV EBX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
-        EmitInstr('MOV EAX,[EBX]');
+        GenLoadScalar('[EBX]', SI);
       End
+      Else If TypeIsReal(SI) And W32Fpu Then
+        GenRealLoad(EBPOfs(ProcTab[PI].Params[ParI].Offset), SI)
       Else
         EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
+      Exit;
+    End;
+
+    { Variable d une procedure englobante (procedure imbriquee) }
+    If W32Fpu And FindOuterVar(PI, Up, OLevel, OPI, OLI, OParI) Then
+    Begin
+      If (OLI >= 0) And ProcTab[OPI].Locals[OLI].IsConst Then
+      Begin
+        EmitInstr('MOV EAX,' + IntToStr_(ProcTab[OPI].Locals[OLI].InitVal));
+        Exit;
+      End;
+      If OLI >= 0 Then SI := ProcTab[OPI].Locals[OLI].TypeIdx
+      Else SI := ProcTab[OPI].Params[OParI].TypeIdx;
+      OuterVarAddrEAX(OLevel, OPI, OLI, OParI);
+      GenLoadFromAddr(SI);
       Exit;
     End;
   End;
@@ -8350,7 +10041,24 @@ Begin
   Begin
     If SymTab[SI].Kind = SK_CONST Then
     Begin
+      If (SymTab[SI].TypeIdx = TY_IDX_STRING) And (SymTab[SI].Offset >= 0) And
+         (SymTab[SI].Offset < DataCount) And (DataTab[SymTab[SI].Offset].Kind = DK_STR) Then
+      Begin
+        EmitInstr('LEA EAX,[' + DataTab[SymTab[SI].Offset].LblName + ']');
+        LastVarTypeIdx := TY_IDX_STRING;
+        LastExprIsPascalStr := DataTab[SymTab[SI].Offset].IsPStr;   { constante avec #0 : format Pascal }
+        Exit;
+      End;
+      If TypeIsReal(SymTab[SI].TypeIdx) And W32Fpu And (SymTab[SI].Offset >= 0) And
+         (SymTab[SI].Offset < DataCount) And (DataTab[SymTab[SI].Offset].Kind = DK_INIT) Then
+      Begin
+        EmitInstr('FLD QWORD PTR [' + DataTab[SymTab[SI].Offset].LblName + ']');
+        LastVarTypeIdx := SymTab[SI].TypeIdx;
+        LastExprIsPascalStr := False;
+        Exit;
+      End;
       EmitInstr('MOV EAX,' + IntToStr_(SymTab[SI].ImmVal));
+      If SymTab[SI].TypeIdx >= 0 Then LastVarTypeIdx := SymTab[SI].TypeIdx;
       Exit;
     End;
     If SymTab[SI].Kind = SK_VAR Then
@@ -8411,15 +10119,14 @@ Begin
       End;
       If Opts.DestTarget = DEST_CRAY1 Then
         EmitInstr('LDS S1,' + Ref)
-      Else If TypeSizeofIdx(SymTab[SI].TypeIdx) = 1 Then
-        EmitInstr('MOVZX EAX,BYTE PTR [' + Ref + ']')
       Else
-        EmitInstr('MOV EAX,DWORD PTR [' + Ref + ']');
+        GenLoadScalar('[' + Ref + ']', SymTab[SI].TypeIdx);
       Exit;
     End;
   End;
 
   { Par defaut : globale }
+  If W32Fpu Then EnsureImplicitGlobal(Up);
   If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
      ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
       (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) Or
@@ -8440,7 +10147,132 @@ Begin
   Else If Opts.DestTarget = DEST_CRAY1 Then
     EmitInstr('LDS S1,' + TP_VAR_PFX + Up)
   Else
-    EmitInstr('MOV EAX,DWORD PTR [' + TP_VAR_PFX + Up + ']');
+    GenLoadScalar('[' + TP_VAR_PFX + Up + ']', GetVarTypeIdx(PI, Up));
+End;
+
+{ ------------------------------------------------------------ }
+{ W32IsAggregate : type represente par son adresse (record,    }
+{ tableau, objet) : la copie se fait octet par octet            }
+{ ------------------------------------------------------------ }
+
+Function W32IsAggregate(T : Integer) : Boolean;
+Begin
+  W32IsAggregate := (T >= 0) And (T < TypeCount) And
+    ((TypeTab[T].Kind = TYK_RECORD) Or (TypeTab[T].Kind = TYK_ARRAY) Or
+     (TypeTab[T].Kind = TYK_OBJECT) Or (TypeTab[T].Kind = TYK_SET));
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStrSourceESI : ESI <- adresse ASCIIZ de la chaine que     }
+{ l expression vient de produire dans EAX (chaine Pascal :      }
+{ sauter l octet de longueur ; caractere : via CHRBUF)          }
+{ ------------------------------------------------------------ }
+
+{ IsCharArray / CoerceCharArray : un Array[..] Of Char (idiome TP) utilise dans un
+  contexte de chaine est copie en chaine Pascal dans l anneau STRRING }
+Function IsCharArray(T : Integer) : Boolean;
+Begin
+  IsCharArray := (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_ARRAY) And
+    (TypeTab[T].BaseTypeIdx >= 0) And (TypeTab[T].BaseTypeIdx < TypeCount) And
+    (TypeTab[TypeTab[T].BaseTypeIdx].Kind = TYK_CHAR);
+End;
+
+Procedure CoerceCharArray;
+Begin
+  If (LastVarTypeIdx = TY_IDX_CHAR) And (Not LastExprIsPascalStr) Then
+  Begin
+    { caractere -> chaine d un caractere (Pos(Sep, S), Copy(C, ...)) }
+    EmitInstr('MOVZX EAX,AL');
+    EmitInstr('MOV [CHRBUF],EAX');
+    EmitInstr('LEA ESI,[CHRBUF]');
+    EmitInstr('MOV ECX,1');
+    EmitInstr('CALL ' + TP_RT_PFX + 'CARR2STR');
+    LastVarTypeIdx := TY_IDX_STRING;
+    LastExprIsPascalStr := True;
+    Exit;
+  End;
+  If Not IsCharArray(LastVarTypeIdx) Then Exit;
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('MOV ECX,' + IntToStr_(TypeTab[LastVarTypeIdx].Size));
+  EmitInstr('CALL ' + TP_RT_PFX + 'CARR2STR');
+  LastVarTypeIdx := TY_IDX_STRING;
+  LastExprIsPascalStr := True;
+End;
+
+Procedure GenStrSourceESI;
+Begin
+  CoerceCharArray;
+  If LastExprIsPascalStr Then
+  Begin
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('INC ESI');
+  End
+  Else If LastVarTypeIdx = TY_IDX_CHAR Then
+  Begin
+    EmitInstr('MOVZX EAX,AL');
+    EmitInstr('MOV [CHRBUF],EAX');
+    EmitInstr('LEA ESI,[CHRBUF]');
+  End
+  Else
+    EmitInstr('MOV ESI,EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreToAddr : stocker EAX (valeur ou adresse source) a     }
+{ l adresse EBX selon le type T de la destination               }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreToAddr(T : Integer);
+Begin
+  If (T >= 0) And (T < TypeCount) Then
+  Begin
+    If TypeTab[T].Kind = TYK_STRING Then
+    Begin
+      If LastExprIsPascalStr And (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+      Begin
+        { source Pascal : copie selon l octet de longueur (les #0 inclus sont conserves) }
+        CoerceCharArray;
+        EmitInstr('MOV ESI,EAX');
+        EmitInstr('MOV EDI,EBX');
+        EmitInstr('CALL ' + TP_RT_PFX + 'PSTRASSIGN');
+        Exit;
+      End;
+      GenStrSourceESI;
+      EmitInstr('MOV EDI,EBX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+      Exit;
+    End;
+    If W32IsAggregate(T) Then
+    Begin
+      EmitInstr('MOV ESI,EAX');
+      EmitInstr('MOV EDI,EBX');
+      EmitInstr('MOV ECX,' + IntToStr_(TypeTab[T].Size));
+      EmitInstr('REP MOVSB');
+      Exit;
+    End;
+  End;
+  GenStoreScalar('[EBX]', T);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadFromAddr : EAX = adresse -> EAX = valeur de type T     }
+{ (les agregats et chaines restent representes par l adresse)   }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadFromAddr(T : Integer);
+Begin
+  LastVarTypeIdx := T;
+  LastExprIsPascalStr := False;
+  If (T >= 0) And (T < TypeCount) Then
+  Begin
+    If TypeTab[T].Kind = TYK_STRING Then
+    Begin
+      LastExprIsPascalStr := True;
+      Exit;
+    End;
+    If W32IsAggregate(T) Or (TypeTab[T].Kind = TYK_SET) Then Exit;
+  End;
+  GenLoadScalar('[EAX]', T);
 End;
 
 { ------------------------------------------------------------ }
@@ -8454,6 +10286,7 @@ Var
   Up           : TString;
   Ref          : TString;
   VarTI        : Integer;
+  OLevel, OPI, OLI, OParI : Integer;
 Begin
   Up := StrUpperCase(Name);
 
@@ -8466,37 +10299,39 @@ Begin
        ((ProcTab[PI].Name = Up) Or
         ((Up = 'RESULT') And (FindLocal(PI, 'RESULT') < 0))) Then
     Begin
-      EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[PI].RetOffset) + ',EAX');
+      If TypeIsString(ProcTab[PI].RetTypeIdx) Then
+      Begin
+        { resultat chaine : copie (format Pascal) dans l anneau STRRING }
+        GenStrSourceESI;
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+      End;
+      If TypeIsReal(ProcTab[PI].RetTypeIdx) And W32Fpu Then
+        GenStoreScalar(EBPOfs(ProcTab[PI].RetOffset), ProcTab[PI].RetTypeIdx)
+      Else
+        EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[PI].RetOffset) + ',EAX');
       Exit;
     End;
 
     LI := FindLocal(PI, Up);
     If LI >= 0 Then
     Begin
+      If ProcTab[PI].Locals[LI].IsConst Then Exit;
+      If ProcTab[PI].Locals[LI].IsStatic Then
+      Begin
+        EmitInstr('LEA EBX,[' + ProcTab[PI].Locals[LI].StaticLbl + ']');
+        GenStoreToAddr(ProcTab[PI].Locals[LI].TypeIdx);
+        Exit;
+      End;
       VarTI := ProcTab[PI].Locals[LI].TypeIdx;
-      { String : copier la chaine (EAX = src ptr) }
-      If (VarTI >= 0) And (VarTI < TypeCount) And
-         (TypeTab[VarTI].Kind = TYK_STRING) Then
+      { String / record / tableau : copier (EAX = adresse source) }
+      If ((VarTI >= 0) And (VarTI < TypeCount) And
+          (TypeTab[VarTI].Kind = TYK_STRING)) Or W32IsAggregate(VarTI) Then
       Begin
-        EmitInstr('MOV ESI,EAX');
-        EmitInstr('LEA EDI,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+        EmitInstr('LEA EBX,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
+        GenStoreToAddr(VarTI);
         Exit;
       End;
-      { Record : copier tout le record (EAX = adresse source) }
-      If (VarTI >= 0) And (VarTI < TypeCount) And
-         (TypeTab[VarTI].Kind = TYK_RECORD) Then
-      Begin
-        EmitInstr('MOV ESI,EAX');
-        EmitInstr('LEA EDI,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
-        EmitInstr('MOV ECX,' + IntToStr_(TypeTab[VarTI].Size));
-        EmitInstr('REP MOVSB');
-        Exit;
-      End;
-      If ProcTab[PI].Locals[LI].Size = 1 Then
-        EmitInstr('MOV BYTE PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset) + ',AL')
-      Else
-        EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[PI].Locals[LI].Offset) + ',EAX');
+      GenStoreScalar(EBPOfs(ProcTab[PI].Locals[LI].Offset), VarTI);
       Exit;
     End;
 
@@ -8504,13 +10339,41 @@ Begin
     ParI := FindParam(PI, Up);
     If ParI >= 0 Then
     Begin
-      If ProcTab[PI].Params[ParI].IsVar Then
+      VarTI := ProcTab[PI].Params[ParI].TypeIdx;
+      If ProcTab[PI].Params[ParI].IsVar Or
+         ((VarTI >= 0) And (VarTI < TypeCount) And
+          (TypeTab[VarTI].Kind = TYK_STRING)) Or W32IsAggregate(VarTI) Then
       Begin
+        { parametre VAR, ou chaine/agregat passe par adresse : stocker indirectement }
         EmitInstr('MOV EBX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
-        EmitInstr('MOV [EBX],EAX');
+        GenStoreToAddr(VarTI);
       End
+      Else If TypeIsReal(VarTI) And W32Fpu Then
+        GenStoreScalar(EBPOfs(ProcTab[PI].Params[ParI].Offset), VarTI)
       Else
         EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset) + ',EAX');
+      Exit;
+    End;
+
+    { Variable d une procedure englobante : EBX = adresse, puis rangement selon le type }
+    If W32Fpu And FindOuterVar(PI, Up, OLevel, OPI, OLI, OParI) Then
+    Begin
+      If (OLI >= 0) And ProcTab[OPI].Locals[OLI].IsConst Then Exit;
+      If OLI >= 0 Then VarTI := ProcTab[OPI].Locals[OLI].TypeIdx
+      Else VarTI := ProcTab[OPI].Params[OParI].TypeIdx;
+      If TypeIsReal(VarTI) Then
+      Begin
+        OuterVarAddrEAX(OLevel, OPI, OLI, OParI);
+        EmitInstr('MOV EBX,EAX');
+      End
+      Else
+      Begin
+        EmitInstr('PUSH EAX');
+        OuterVarAddrEAX(OLevel, OPI, OLI, OParI);
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+      End;
+      GenStoreToAddr(VarTI);
       Exit;
     End;
   End;
@@ -8523,56 +10386,35 @@ Begin
     Begin
       Ref := SymTab[SI].MangledName;
       VarTI := SymTab[SI].TypeIdx;
-      { String : copier la chaine (EAX = src ptr) }
-      If (VarTI >= 0) And (VarTI < TypeCount) And
-         (TypeTab[VarTI].Kind = TYK_STRING) Then
+      { String / record / tableau : copier (EAX = adresse source) }
+      If ((VarTI >= 0) And (VarTI < TypeCount) And
+          (TypeTab[VarTI].Kind = TYK_STRING)) Or W32IsAggregate(VarTI) Then
       Begin
-        EmitInstr('MOV ESI,EAX');
-        EmitInstr('LEA EDI,[' + Ref + ']');
-        EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
-        Exit;
-      End;
-      { Record : copier tout le record (EAX = adresse source) }
-      If (VarTI >= 0) And (VarTI < TypeCount) And
-         (TypeTab[VarTI].Kind = TYK_RECORD) Then
-      Begin
-        EmitInstr('MOV ESI,EAX');
-        EmitInstr('LEA EDI,[' + Ref + ']');
-        EmitInstr('MOV ECX,' + IntToStr_(TypeTab[VarTI].Size));
-        EmitInstr('REP MOVSB');
+        EmitInstr('LEA EBX,[' + Ref + ']');
+        GenStoreToAddr(VarTI);
         Exit;
       End;
       If Opts.DestTarget = DEST_CRAY1 Then
         EmitInstr('STS S1,' + Ref)
-      Else If TypeSizeofIdx(VarTI) = 1 Then
-        EmitInstr('MOV BYTE PTR [' + Ref + '],AL')
       Else
-        EmitInstr('MOV DWORD PTR [' + Ref + '],EAX');
+        GenStoreScalar('[' + Ref + ']', VarTI);
       Exit;
     End;
   End;
 
   { Par defaut : variable globale standard }
+  If W32Fpu Then EnsureImplicitGlobal(Up);
   VarTI := GetVarTypeIdx(PI, Up);
-  If (VarTI >= 0) And (VarTI < TypeCount) And
-     (TypeTab[VarTI].Kind = TYK_STRING) Then
+  If ((VarTI >= 0) And (VarTI < TypeCount) And
+      (TypeTab[VarTI].Kind = TYK_STRING)) Or W32IsAggregate(VarTI) Then
   Begin
-    EmitInstr('MOV ESI,EAX');
-    EmitInstr('LEA EDI,[' + TP_VAR_PFX + Up + ']');
-    EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
-  End
-  Else If (VarTI >= 0) And (VarTI < TypeCount) And
-          (TypeTab[VarTI].Kind = TYK_RECORD) Then
-  Begin
-    EmitInstr('MOV ESI,EAX');
-    EmitInstr('LEA EDI,[' + TP_VAR_PFX + Up + ']');
-    EmitInstr('MOV ECX,' + IntToStr_(TypeTab[VarTI].Size));
-    EmitInstr('REP MOVSB');
+    EmitInstr('LEA EBX,[' + TP_VAR_PFX + Up + ']');
+    GenStoreToAddr(VarTI);
   End
   Else If Opts.DestTarget = DEST_CRAY1 Then
     EmitInstr('STS S1,' + TP_VAR_PFX + Up)
   Else
-    EmitInstr('MOV DWORD PTR [' + TP_VAR_PFX + Up + '],EAX');
+    GenStoreScalar('[' + TP_VAR_PFX + Up + ']', VarTI);
 End;
 
 { ------------------------------------------------------------ }
@@ -8584,6 +10426,7 @@ Var
   LI, ParI, SI : Integer;
   Up           : TString;
   VarRef       : TString;
+  OLevel, OPI, OLI, OParI : Integer;
 Begin
   Up := StrUpperCase(Name);
 
@@ -8592,6 +10435,11 @@ Begin
     LI := FindLocal(PI, Up);
     If LI >= 0 Then
     Begin
+      If ProcTab[PI].Locals[LI].IsStatic Then
+      Begin
+        EmitInstr('LEA EAX,[' + ProcTab[PI].Locals[LI].StaticLbl + ']');
+        Exit;
+      End;
       Case Opts.DestTarget Of
         DEST_DOSR, DEST_DOSP:
           EmitInstr('LEA AX,' + EBPOfs(ProcTab[PI].Locals[LI].Offset));
@@ -8614,7 +10462,10 @@ Begin
         End;
         Else
         Begin
-          If ProcTab[PI].Params[ParI].IsVar Then
+          { parametre VAR, ou chaine/agregat (passe par adresse) : la case contient l adresse }
+          If ProcTab[PI].Params[ParI].IsVar Or
+             TypeIsString(ProcTab[PI].Params[ParI].TypeIdx) Or
+             W32IsAggregate(ProcTab[PI].Params[ParI].TypeIdx) Then
             EmitInstr('MOV EAX,DWORD PTR ' + EBPOfs(ProcTab[PI].Params[ParI].Offset))
           Else
             EmitInstr('LEA EAX,' + EBPOfs(ProcTab[PI].Params[ParI].Offset));
@@ -8624,6 +10475,12 @@ Begin
     End;
   End;
 
+  If W32Fpu And FindOuterVar(PI, Up, OLevel, OPI, OLI, OParI) Then
+  Begin
+    OuterVarAddrEAX(OLevel, OPI, OLI, OParI);
+    Exit;
+  End;
+  If W32Fpu Then EnsureImplicitGlobal(Up);
   SI := SymFind(Up);
   If SI >= 0 Then
     VarRef := SymTab[SI].MangledName
@@ -8659,6 +10516,39 @@ End;
 Procedure ParseExpr(PI : Integer); Forward;
 Procedure ParseExprPrec(PI : Integer; MinPrec : Integer); Forward;
 Procedure ParseBody(PI : Integer); Forward;
+Function ParseLValueAddrW32(PI : Integer; Var T : Integer) : Boolean; Forward;
+Function WithFieldIndex(Const Up : TString; Var FOfs : LongInt) : Integer; Forward;
+
+{ ParseVarArgAddr : argument "var" sans type (Move, FillChar, BlockRead...) : EAX = adresse }
+{ d une variable, d un element de tableau, d un champ ou d un pointeur dereference ;   }
+{ sinon la valeur de l expression (pointeur, agregat deja represente par son adresse)   }
+Procedure ParseVarArgAddr(PI : Integer);
+Var
+  T, SI : Integer;
+  FOfs : LongInt;
+  Up : TString;
+  IsVarName : Boolean;
+Begin
+  If W32Fpu And (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    IsVarName := False;
+    If (PI >= 0) And ((FindLocal(PI, Up) >= 0) Or (FindParam(PI, Up) >= 0)) Then IsVarName := True
+    Else
+    Begin
+      SI := SymFind(Up);
+      If (SI >= 0) And (SymTab[SI].Kind = SK_VAR) Then IsVarName := True
+      Else If (SI < 0) And (WithDepth > 0) And (WithFieldIndex(Up, FOfs) >= 0) Then IsVarName := True;
+    End;
+    If IsVarName Then
+    Begin
+      ParseLValueAddrW32(PI, T);
+      Exit;
+    End;
+  End;
+  ParseExpr(PI);
+End;
+
 
 { ------------------------------------------------------------ }
 { Forward declarations TODO 13                                  }
@@ -8674,6 +10564,144 @@ Procedure ParseGotoStmt(PI : Integer); Forward;
 Procedure ParseAsmBlock(PI : Integer); Forward;
 
 { ------------------------------------------------------------ }
+{ FileVarType : index de type d une variable fichier (locale,   }
+{ parametre ou globale) ; -1 si inconnue.                       }
+{ FileRecSize : taille d enregistrement pour Reset/Rewrite :    }
+{ 0 pour Text, SizeOf(T) pour File Of T, 128 pour File.         }
+{ ------------------------------------------------------------ }
+{ IoCheckAt : la verification des E/S est-elle active a la position P du pool ? }
+Function IoCheckAt(P : LongInt) : Boolean;
+Var K : Integer;
+Begin
+  IoCheckAt := True;
+  For K := 0 To IoSwitchCnt - 1 Do
+    If IoSwitchPos[K] <= P Then IoCheckAt := IoSwitchOn[K]
+    Else Break;
+End;
+
+{ EmitIoCheck : apres une operation fichier, erreur d execution si FILE_IOERR <> 0 }
+Procedure EmitIoCheck;
+Begin
+  If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) And
+     IoCheckAt(EP) Then
+    EmitInstr('CALL ' + TP_RT_PFX + 'IOCHECK');
+End;
+
+{ RangeCheckAt : la verification des bornes (R+) est-elle active a la position P ? }
+{ Actif par defaut pour la cible Win32, comme les references FPC compilees avec -Cr. }
+Function RangeCheckAt(P : LongInt) : Boolean;
+Var K : Integer;
+Begin
+  RangeCheckAt := True;
+  For K := 0 To RangeSwitchCnt - 1 Do
+    If RangeSwitchPos[K] <= P Then RangeCheckAt := RangeSwitchOn[K]
+    Else Break;
+End;
+
+{ RangeBoundsOf : bornes d un type ordinal etroit (Byte, Word, ShortInt, Integer 16 bits, }
+{ sous-intervalle, enumeration). Faux pour les types 32 bits et les autres types.          }
+Function RangeBoundsOf(T : Integer; Var Lo, Hi : LongInt) : Boolean;
+Var R : Integer;
+Begin
+  RangeBoundsOf := False;
+  If (T < 0) Or (T >= TypeCount) Then Exit;
+  { LongInt / LongWord : 32 bits, jamais de bornes (meme si alias d Integer / Word) }
+  If (TypeTab[T].Kind In [TYK_INTEGER, TYK_WORD]) And (TypeTab[T].Size = 4) Then Exit;
+  If TypeTab[T].Kind = TYK_SUBRANGE Then
+  Begin
+    Lo := TypeTab[T].Lo; Hi := TypeTab[T].Hi;
+    RangeBoundsOf := Hi >= Lo;
+    Exit;
+  End;
+  R := TypeResolve(T);
+  If (R < 0) Or (R >= TypeCount) Then Exit;
+  Case TypeTab[R].Kind Of
+    TYK_BYTE     : Begin Lo := 0; Hi := 255; RangeBoundsOf := True; End;
+    TYK_SHORTINT : Begin Lo := -128; Hi := 127; RangeBoundsOf := True; End;
+    TYK_WORD     : If TypeTab[R].Size = 2 Then Begin Lo := 0; Hi := 65535; RangeBoundsOf := True; End
+                   Else If TypeTab[R].Size = 1 Then Begin Lo := 0; Hi := 255; RangeBoundsOf := True; End;
+    TYK_INTEGER  : If TypeTab[R].Size = 2 Then Begin Lo := -32768; Hi := 32767; RangeBoundsOf := True; End
+                   Else If TypeTab[R].Size = 1 Then Begin Lo := -128; Hi := 127; RangeBoundsOf := True; End;
+    TYK_ENUM     : If TypeTab[R].EnumCount > 0 Then
+                   Begin Lo := 0; Hi := TypeTab[R].EnumCount - 1; RangeBoundsOf := True; End;
+  End;
+End;
+
+{ GenRangeCheckLoHi : EAX doit etre dans Lo..Hi, sinon erreur 201. L appel a RANGEERR est  }
+{ place dans le code utilisateur pour que l adresse signalee soit celle de l instruction.   }
+Procedure GenRangeCheckLoHi(Lo, Hi : LongInt);
+Var L1, L2 : TString;
+Begin
+  L1 := LabelGen; L2 := LabelGen;
+  EmitInstr('CMP EAX,' + IntToStr_(Lo));
+  EmitInstr('JGE ' + L1);
+  EmitInstr('CALL ' + TP_RT_PFX + 'RANGEERR');
+  EmitLabel(L1);
+  EmitInstr('CMP EAX,' + IntToStr_(Hi));
+  EmitInstr('JLE ' + L2);
+  EmitInstr('CALL ' + TP_RT_PFX + 'RANGEERR');
+  EmitLabel(L2);
+End;
+
+{ GenRangeCheck : EAX = valeur a ranger dans une variable de type T ; erreur 201 si hors bornes }
+Procedure GenRangeCheck(T : Integer);
+Var Lo, Hi : LongInt;
+Begin
+  If Not ((Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode)) Then Exit;
+  If Not RangeCheckAt(EP) Then Exit;
+  If Not RangeBoundsOf(T, Lo, Hi) Then Exit;
+  GenRangeCheckLoHi(Lo, Hi);
+End;
+
+{ GenRangeCheckAssign : apres ParseExpr d une affectation vers une variable de type T.   }
+{ Pas de verification pour un litteral entier seul (verifie a la compilation par FPC), ni }
+{ quand l expression est deja du type etroit de la destination (Byte := Byte).            }
+Procedure GenRangeCheckAssign(T : Integer);
+Var Lo, Hi : LongInt;
+Begin
+  If (EP >= 2) And (TokenPool[EP - 1].Kind = TK_INTEGER) And
+     (TokenPool[EP - 2].Kind = TK_OP) And (TokenPool[EP - 2].Val = ':=') Then Exit;
+  If (LastVarTypeIdx >= 0) And (T >= 0) And (LastVarTypeIdx <> TY_IDX_INTEGER) And
+     (TypeResolve(LastVarTypeIdx) = TypeResolve(T)) And RangeBoundsOf(LastVarTypeIdx, Lo, Hi) Then Exit;
+  GenRangeCheck(T);
+End;
+
+Function FileVarType(PI : Integer; Const Name : TString) : Integer;
+Var Up : TString; LI, SI : Integer;
+Begin
+  FileVarType := -1;
+  Up := StrUpperCase(Name);
+  If PI >= 0 Then
+  Begin
+    LI := FindLocal(PI, Up);
+    If LI >= 0 Then Begin FileVarType := ProcTab[PI].Locals[LI].TypeIdx; Exit End;
+    LI := FindParam(PI, Up);
+    If LI >= 0 Then Begin FileVarType := ProcTab[PI].Params[LI].TypeIdx; Exit End;
+  End;
+  SI := SymFind(Up);
+  If SI >= 0 Then FileVarType := SymTab[SI].TypeIdx;
+End;
+
+Function IsFileVarType(T : Integer) : Boolean;
+Begin
+  IsFileVarType := (T >= 0) And (T < TypeCount) And
+                   ((TypeTab[T].Kind = TYK_TEXT) Or (TypeTab[T].Kind = TYK_FILE));
+End;
+
+Function FileRecSize(T : Integer) : Integer;
+Var R : Integer;
+Begin
+  FileRecSize := 0;
+  If (T < 0) Or (T >= TypeCount) Then Exit;
+  If TypeTab[T].Kind <> TYK_FILE Then Exit;
+  R := 128;
+  If (TypeTab[T].BaseTypeIdx >= 0) And (TypeTab[T].BaseTypeIdx < TypeCount) Then
+    R := TypeTab[TypeTab[T].BaseTypeIdx].Size;
+  If R <= 0 Then R := 128;
+  FileRecSize := R;
+End;
+
+{ ------------------------------------------------------------ }
 { ParseFuncCall : parser un appel de procedure/fonction         }
 { nom(arg1, arg2, ...) -> PUSH args, CALL _TPF_nom             }
 { Convention stdcall : args gauche-a-droite                     }
@@ -8682,6 +10710,8 @@ Procedure ParseAsmBlock(PI : Integer); Forward;
 Procedure ParseFuncCall(PI : Integer; Const ProcName : TString);
 Var
   ArgCount  : Integer;
+  ArgBytes  : Integer;
+  PT        : Integer;
   Up        : TString;
   SI        : Integer;
   MName     : TString;
@@ -8689,9 +10719,11 @@ Var
   J         : Integer;
   IsVarArg  : Boolean;
   ArgName   : TString;
+  IsProcVarCall : Boolean;
 Begin
   Up := StrUpperCase(ProcName);
   ArgCount := 0;
+  ArgBytes := 0;
 
   { Trouver le symbole de la procedure/fonction }
   SI := SymFind(Up);
@@ -8699,6 +10731,12 @@ Begin
     MName := SymTab[SI].MangledName
   Else
     MName := TP_FUNC_PFX + Up;
+  { Variable de type procedure : appel indirect }
+  IsProcVarCall := False;
+  J := GetVarTypeIdx(PI, Up);
+  If (J >= 0) And (J < TypeCount) And (TypeTab[J].Kind = TYK_PROCVAR) And
+     ((SI < 0) Or (SymTab[SI].Kind = SK_VAR)) Then
+    IsProcVarCall := True;
 
   { Trouver l index dans ProcTab pour connaitre les params VAR }
   CalledPI := -1;
@@ -8729,8 +10767,7 @@ Begin
               (TokenPool[EP].Kind = TK_KEYWORD)) Then
           Begin
             ArgName := TokenPool[EP].Val;
-            Inc(EP);
-            GenLoadAddr(PI, ArgName);
+            ParseLValueAddrW32(PI, J);    { adresse de la variable, element ou champ }
             EmitInstr('PUSH EAX');
           End
           Else
@@ -8739,12 +10776,57 @@ Begin
             ParseExpr(PI);
             EmitInstr('PUSH EAX');
           End;
+          ArgBytes := ArgBytes + 4;
         End
         Else
         Begin
           { Parametre normal : evaluer et pousser la valeur }
+          PT := -1;
+          If (CalledPI >= 0) And (ArgCount < ProcTab[CalledPI].ParamCount) Then
+            PT := ProcTab[CalledPI].Params[ArgCount].TypeIdx;
+          WantCharLit := (PT = TY_IDX_CHAR);
           ParseExpr(PI);
-          EmitInstr('PUSH EAX');
+          WantCharLit := False;
+          { parametre chaine : l appele attend une chaine Pascal }
+          If (CalledPI >= 0) And (ArgCount < ProcTab[CalledPI].ParamCount) And
+             TypeIsString(ProcTab[CalledPI].Params[ArgCount].TypeIdx) And
+             (Not LastExprIsPascalStr) And (Not Is68kTarget) And
+             (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+          Begin
+            GenStrSourceESI;
+            EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+          End;
+          If TypeIsReal(PT) And W32Fpu Then
+          Begin
+            { parametre reel : la valeur (convertie) est rangee sur la pile }
+            GenEnsureReal;
+            J := ParamStackSize(PT, False);
+            EmitInstr('SUB ESP,' + IntToStr_(J));
+            GenRealStore('[ESP]', PT);
+            ArgBytes := ArgBytes + J;
+            LastVarTypeIdx := TY_IDX_INTEGER;
+          End
+          Else If TypeIsReal(LastVarTypeIdx) And W32Fpu And (PT < 0) Then
+          Begin
+            { type du parametre inconnu (variable procedure) : Double sur la pile }
+            EmitInstr('SUB ESP,8');
+            EmitInstr('FSTP QWORD PTR [ESP]');
+            ArgBytes := ArgBytes + 8;
+            LastVarTypeIdx := TY_IDX_INTEGER;
+          End
+          Else
+          Begin
+            If TypeIsReal(LastVarTypeIdx) And W32Fpu Then
+            Begin
+              { reel vers un parametre entier : arrondi (tolerance) }
+              EmitInstr('SUB ESP,4');
+              EmitInstr('FISTP DWORD PTR [ESP]');
+              LastVarTypeIdx := TY_IDX_INTEGER;
+            End
+            Else
+              EmitInstr('PUSH EAX');
+            ArgBytes := ArgBytes + 4;
+          End;
         End;
         Inc(ArgCount);
       Until Not EPMatch(',');
@@ -8753,19 +10835,62 @@ Begin
     End;
   End;
 
-  EmitInstr('CALL ' + MName);
+  If IsProcVarCall Then
+  Begin
+    GenLoadVar(PI, Up);
+    EmitInstr('CALL EAX');
+  End
+  Else
+    EmitInstr('CALL ' + MName);
 
   { Nettoyer la pile (convention cdecl/stdcall-like pour nos procs Pascal) }
-  If ArgCount > 0 Then
-    EmitInstr('ADD ESP,' + IntToStr_(ArgCount * 4));
+  If ArgBytes > 0 Then
+    EmitInstr('ADD ESP,' + IntToStr_(ArgBytes));
 End;
 
 { ------------------------------------------------------------ }
 { ParsePrimary : parser une expression primaire                 }
 { Resultat dans EAX                                             }
+{ (ParsePrimaryInner : corps ; ParsePrimary ci-apres corrige le }
+{  type de la derniere expression apres un appel de fonction)   }
 { ------------------------------------------------------------ }
 
-Procedure ParsePrimary(PI : Integer);
+Var
+  LastSuccPredType : Integer;   { type de l operande du dernier Succ/Pred }
+  LastIndexIsStrLen : Boolean;  { la derniere lvalue indexee est S[0] (octet de longueur) }
+
+{ CharLitArgFollows : l argument qui suit est un litteral d un seul caractere : ('x') }
+Function CharLitArgFollows : Boolean;
+Begin
+  CharLitArgFollows := (Not EPAtEnd) And (TokenPool[EP].Kind = TK_STRING) And
+    (Length(TokenPool[EP].Val) = 1) And (EP + 1 < EPEnd) And
+    (TokenPool[EP + 1].Kind = TK_PUNCT) And (TokenPool[EP + 1].Val = ')');
+End;
+
+{ TypeBoundValue : Low/High d un type (tableau : bornes d index ; chaine : 0..255 ;
+  enumeration, sous-intervalle, ordinaux) }
+Function TypeBoundValue(TI : Integer; IsHigh : Boolean) : LongInt;
+Begin
+  TypeBoundValue := 0;
+  If (TI < 0) Or (TI >= TypeCount) Then Exit;
+  Case TypeTab[TI].Kind Of
+    TYK_ARRAY, TYK_SUBRANGE :
+      If IsHigh Then TypeBoundValue := TypeTab[TI].Hi Else TypeBoundValue := TypeTab[TI].Lo;
+    TYK_STRING : If IsHigh Then TypeBoundValue := 255;
+    TYK_ENUM : If IsHigh Then TypeBoundValue := TypeTab[TI].EnumCount - 1;
+    TYK_BYTE, TYK_CHAR : If IsHigh Then TypeBoundValue := 255;
+    TYK_BOOLEAN : If IsHigh Then TypeBoundValue := 1;
+    TYK_SHORTINT : If IsHigh Then TypeBoundValue := 127 Else TypeBoundValue := -128;
+    TYK_WORD : If IsHigh Then TypeBoundValue := 65535;
+    TYK_INTEGER :
+      If TypeTab[TI].Name = 'INTEGER' Then
+      Begin If IsHigh Then TypeBoundValue := 32767 Else TypeBoundValue := -32768 End
+      Else
+      Begin If IsHigh Then TypeBoundValue := 2147483647 Else TypeBoundValue := -2147483647 - 1 End;
+  End;
+End;
+
+Procedure ParsePrimaryInner(PI : Integer);
 Var
   Up     : TString;
   Lbl    : TString;
@@ -8773,8 +10898,8 @@ Var
   LI     : Integer;
   ParI   : Integer;
   WI     : Integer;
-  WFOfs  : Integer;
-  WFSize : Integer;
+  WFOfs  : LongInt;
+  WFSize : LongInt;
   WJ     : Integer;
   LblDone : TString;
   LblLoop : TString;
@@ -8785,9 +10910,27 @@ Begin
 
   If EPAtEnd Then Exit;
 
+  LastExprIsLit := False;
+
+  { Litteral reel : constante 8 octets en donnees -> ST(0) }
+  If (TokenPool[EP].Kind = TK_REAL) And W32Fpu Then
+  Begin
+    LastExprIsLit := True;
+    EmitInstr('FLD QWORD PTR [' + RealConstLabel(TokenPool[EP].RealVal) + ']');
+    Case TokenPool[EP].RealKind Of
+      4  : LastVarTypeIdx := TY_IDX_SINGLE;
+      8  : LastVarTypeIdx := TY_IDX_DOUBLE;
+    Else LastVarTypeIdx := TY_IDX_EXTENDED;
+    End;
+    LastExprIsPascalStr := False;
+    Inc(EP);
+    Exit;
+  End;
+
   { Litteral entier }
   If TokenPool[EP].Kind = TK_INTEGER Then
   Begin
+    LastExprIsLit := True;
     If Is68kTarget Then
       EmitInstr('MOVE.L #' + IntToStr_(TokenPool[EP].IntVal) + ',D0')
     Else If Opts.DestTarget = DEST_CRAY1 Then
@@ -8807,6 +10950,7 @@ Begin
       EmitInstr('LDIMM S1,' + IntToStr_(TokenPool[EP].IntVal))
     Else
       EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
+    LastVarTypeIdx := TY_IDX_CHAR;
     Inc(EP);
     Exit;
   End;
@@ -8814,6 +10958,16 @@ Begin
   { Litteral chaine }
   If TokenPool[EP].Kind = TK_STRING Then
   Begin
+    { contexte Char (affectation a un Char, parametre Char) : 'x' est le code du caractere }
+    If WantCharLit And (Length(TokenPool[EP].Val) = 1) And (Not Is68kTarget) And
+       (Opts.DestTarget <> DEST_CRAY1) Then
+    Begin
+      EmitInstr('MOV EAX,' + IntToStr_(Ord(TokenPool[EP].Val[1])));
+      LastVarTypeIdx := TY_IDX_CHAR;
+      LastExprIsPascalStr := False;
+      Inc(EP);
+      Exit;
+    End;
     Lbl := DataGetOrAddStr(TokenPool[EP].Val);
     If Is68kTarget Then
       EmitInstr('LEA ' + Lbl + ',A0')
@@ -8821,6 +10975,9 @@ Begin
       EmitInstr('LEA EAX,[' + Lbl + ']');
     LastVarTypeIdx := TY_IDX_STRING;
     LastExprIsPascalStr := False;  { literal ASCIIZ, pas format Pascal }
+    If (Pos(#0, TokenPool[EP].Val) > 0) And (Length(TokenPool[EP].Val) < 255) And
+       ((Opts.DestTarget = DEST_WIN32) Or (Opts.DestTarget = DEST_W32)) And (Not Opts.Dos16Mode) Then
+      LastExprIsPascalStr := True;   { litteral avec #0 : emis au format Pascal (voir DataAddStr) }
     Inc(EP);
     Exit;
   End;
@@ -8831,16 +10988,39 @@ Begin
   Begin
     Up := StrUpperCase(TokenPool[EP].Val);
 
+    { Une variable locale ou un parametre masque les fonctions predefinies (ex: Str, Val, Pos) }
+    If (TokenPool[EP].Kind = TK_IDENT) And
+       (((PI >= 0) And
+         ((FindLocal(PI, Up) >= 0) Or (FindParam(PI, Up) >= 0) Or IsOuterVarName(PI, Up)) And
+         Not (ProcTab[PI].IsFunction And (ProcTab[PI].Name = Up))) Or
+        IsShadowGlobal(Up)) And
+       (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+    Begin
+      LastPrimaryName := Up;
+      LastVarTypeIdx := GetVarTypeIdx(PI, Up);
+      If Not ((LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+              (TypeTab[LastVarTypeIdx].Kind = TYK_PROCVAR) And
+              (EP + 1 < EPEnd) And (TokenPool[EP + 1].Kind = TK_PUNCT) And
+              (TokenPool[EP + 1].Val = '(')) Then
+      Begin
+        GenLoadVar(PI, Up);
+        Inc(EP);
+        Exit;
+      End;
+    End;
+
     { TRUE / FALSE }
     If Up = 'TRUE' Then
     Begin
       EmitInstr('MOV EAX,1');
+      LastVarTypeIdx := TY_IDX_BOOLEAN;
       Inc(EP);
       Exit;
     End;
     If Up = 'FALSE' Then
     Begin
       EmitInstr('XOR EAX,EAX');
+      LastVarTypeIdx := TY_IDX_BOOLEAN;
       Inc(EP);
       Exit;
     End;
@@ -8853,8 +11033,17 @@ Begin
       Exit;
     End;
 
+    { Test8086 / Test8087 (variables de l unite System de FPC) : 2 = 80386 ou superieur, 3 = 80387 }
+    If ((Up = 'TEST8086') Or (Up = 'TEST8087')) And W32Fpu And (SymFind(Up) < 0) Then
+    Begin
+      If Up = 'TEST8086' Then EmitInstr('MOV EAX,2') Else EmitInstr('MOV EAX,3');
+      LastVarTypeIdx := TY_IDX_BYTE;
+      Inc(EP);
+      Exit;
+    End;
+
     { Typecast : TypeName(expr) -> evaluer expr, resultat dans EAX }
-    If ((Up = 'INTEGER') Or (Up = 'LONGINT') Or (Up = 'WORD') Or
+    If ((Up = 'INTEGER') Or (Up = 'LONGINT') Or (Up = 'WORD') Or (Up = 'SMALLINT') Or
         (Up = 'BYTE') Or (Up = 'SHORTINT') Or (Up = 'CHAR') Or
         (Up = 'BOOLEAN') Or (Up = 'POINTER') Or (Up = 'PCHAR') Or
         (Up = 'REAL') Or (Up = 'SINGLE') Or (Up = 'DOUBLE') Or
@@ -8867,12 +11056,19 @@ Begin
       Inc(EP);  { sauter '(' }
       ParseExpr(PI);
       EPMatch(')');
-      { Masquer selon la taille du type cible }
-      If (Up = 'BYTE') Or (Up = 'SHORTINT') Or (Up = 'CHAR') Or
-         (Up = 'BOOLEAN') Then
+      { Masquer / etendre selon la taille du type cible }
+      If (Up = 'BYTE') Or (Up = 'CHAR') Or (Up = 'BOOLEAN') Then
         EmitInstr('AND EAX,0FFh')
+      Else If Up = 'SHORTINT' Then
+        EmitInstr('MOVSX EAX,AL')
       Else If Up = 'WORD' Then
-        EmitInstr('AND EAX,0FFFFh');
+        EmitInstr('AND EAX,0FFFFh')
+      Else If (Up = 'INTEGER') Or (Up = 'SMALLINT') Then
+        EmitInstr('MOVSX EAX,AX');
+      If Up = 'CHAR' Then LastVarTypeIdx := TY_IDX_CHAR
+      Else If Up = 'BOOLEAN' Then LastVarTypeIdx := TY_IDX_BOOLEAN
+      Else LastVarTypeIdx := TY_IDX_INTEGER;
+      LastExprIsPascalStr := False;
       Exit;
     End;
 
@@ -8890,18 +11086,53 @@ Begin
             EmitInstr('MOV EAX,' + IntToStr_(TypeSizeofIdx(SI)))
           Else
           Begin
-            { Chercher comme variable }
+            { Chercher comme variable, puis suivre les suffixes .champ ^ [..] }
+            SI := GetVarTypeIdx(PI, Up);
             LI := FindLocal(PI, Up);
-            If LI >= 0 Then
-              EmitInstr('MOV EAX,' + IntToStr_(ProcTab[PI].Locals[LI].Size))
-            Else
+            If (SI < 0) And (LI >= 0) Then SI := ProcTab[PI].Locals[LI].TypeIdx;
+            Inc(EP);
+            While (Not EPAtEnd) And (SI >= 0) And (SI < TypeCount) And
+                  (((TokenPool[EP].Kind = TK_PUNCT) And
+                    ((TokenPool[EP].Val = '.') Or (TokenPool[EP].Val = '['))) Or
+                   ((TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '^'))) Do
             Begin
-              SI := SymFind(Up);
-              If (SI >= 0) And (SymTab[SI].TypeIdx >= 0) Then
-                EmitInstr('MOV EAX,' + IntToStr_(TypeSizeofIdx(SymTab[SI].TypeIdx)))
+              If TokenPool[EP].Val = '^' Then
+              Begin
+                Inc(EP);
+                If TypeTab[SI].Kind = TYK_POINTER Then SI := TypeTab[SI].BaseTypeIdx Else SI := -1;
+              End
+              Else If TokenPool[EP].Val = '[' Then
+              Begin
+                LI := 0;
+                While Not EPAtEnd Do
+                Begin
+                  If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then Inc(LI)
+                  Else If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ']') Then Dec(LI);
+                  Inc(EP);
+                  If LI = 0 Then Break;
+                End;
+                If TypeTab[SI].Kind = TYK_ARRAY Then SI := TypeTab[SI].BaseTypeIdx
+                Else If TypeTab[SI].Kind = TYK_STRING Then SI := TY_IDX_CHAR
+                Else SI := -1;
+              End
               Else
-                EmitInstr('MOV EAX,4');
+              Begin
+                Inc(EP);
+                If EPAtEnd Then Break;
+                Up := StrUpperCase(TokenPool[EP].Val);
+                Inc(EP);
+                LI := -1;
+                If (TypeTab[SI].Kind = TYK_RECORD) Or (TypeTab[SI].Kind = TYK_OBJECT) Then
+                  For WI := 0 To TypeTab[SI].FieldCount - 1 Do
+                    If TypeTab[SI].Fields[WI].Name = Up Then LI := TypeTab[SI].Fields[WI].TypeIdx;
+                SI := LI;
+              End;
             End;
+            If SI >= 0 Then
+              EmitInstr('MOV EAX,' + IntToStr_(TypeSizeofIdx(SI)))
+            Else
+              EmitInstr('MOV EAX,4');
+            Dec(EP);   { compense le Inc(EP) commun ci-dessous }
           End;
           Inc(EP);
         End;
@@ -8916,9 +11147,11 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
+        WantCharLit := CharLitArgFollows;
         ParseExpr(PI);
         { EAX contient deja la valeur ordinale }
         EmitInstr('AND EAX,0FFh');
+        WantCharLit := False;
         EPMatch(')');
       End;
       Exit;
@@ -8943,8 +11176,11 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
+        WantCharLit := CharLitArgFollows;
         ParseExpr(PI);
         EmitInstr('INC EAX');
+        WantCharLit := False;
+        LastSuccPredType := LastVarTypeIdx;
         EPMatch(')');
       End;
       Exit;
@@ -8956,8 +11192,11 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
+        WantCharLit := CharLitArgFollows;
         ParseExpr(PI);
         EmitInstr('DEC EAX');
+        WantCharLit := False;
+        LastSuccPredType := LastVarTypeIdx;
         EPMatch(')');
       End;
       Exit;
@@ -8997,9 +11236,17 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CDQ');
-        EmitInstr('XOR EAX,EDX');
-        EmitInstr('SUB EAX,EDX');
+        If TypeIsReal(LastVarTypeIdx) And W32Fpu Then
+        Begin
+          EmitInstr('FABS');
+          If LastExprIsLit Then LastVarTypeIdx := TY_IDX_EXTENDED;
+        End
+        Else
+        Begin
+          EmitInstr('CDQ');
+          EmitInstr('XOR EAX,EDX');
+          EmitInstr('SUB EAX,EDX');
+        End;
         EPMatch(')');
       End;
       Exit;
@@ -9012,7 +11259,13 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('IMUL EAX,EAX');
+        If TypeIsReal(LastVarTypeIdx) And W32Fpu Then
+        Begin
+          EmitInstr('FMUL ST,ST(0)');
+          If LastExprIsLit Then LastVarTypeIdx := TY_IDX_EXTENDED;
+        End
+        Else
+          EmitInstr('IMUL EAX,EAX');
         EPMatch(')');
       End;
       Exit;
@@ -9053,7 +11306,7 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CALL ' + TP_RT_PFX + 'SQRT');
+        GenRealBuiltin('SQRT');
         EPMatch(')');
       End;
       Exit;
@@ -9066,7 +11319,7 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CALL ' + TP_RT_PFX + 'SIN');
+        GenRealBuiltin('SIN');
         EPMatch(')');
       End;
       Exit;
@@ -9079,7 +11332,7 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CALL ' + TP_RT_PFX + 'COS');
+        GenRealBuiltin('COS');
         EPMatch(')');
       End;
       Exit;
@@ -9092,7 +11345,7 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CALL ' + TP_RT_PFX + 'ARCTAN');
+        GenRealBuiltin('ARCTAN');
         EPMatch(')');
       End;
       Exit;
@@ -9105,7 +11358,7 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CALL ' + TP_RT_PFX + 'EXP');
+        GenRealBuiltin('EXP');
         EPMatch(')');
       End;
       Exit;
@@ -9118,7 +11371,7 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CALL ' + TP_RT_PFX + 'LN');
+        GenRealBuiltin('LN');
         EPMatch(')');
       End;
       Exit;
@@ -9132,7 +11385,7 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitInstr('CALL ' + TP_RT_PFX + 'ARCTAN');
+        GenRealBuiltin('ARCTAN');
         EPMatch(')');
       End;
       Exit;
@@ -9173,8 +11426,23 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        EmitComment('FRAC() stub: retourne 0 en mode entier');
-        EmitInstr('XOR EAX,EAX');
+        If W32Fpu Then
+        Begin
+          If Not TypeIsReal(LastVarTypeIdx) Then
+          Begin
+            GenIntToReal;
+            LastVarTypeIdx := TY_IDX_EXTENDED;
+          End;
+          If LastExprIsLit Then LastVarTypeIdx := TY_IDX_EXTENDED;
+          EmitInstr('FLD ST(0)');
+          EmitInstr('CALL ' + TP_RT_PFX + 'FINT');
+          EmitInstr('FSUBP ST(1),ST');       { x - Int(x) }
+        End
+        Else
+        Begin
+          EmitComment('FRAC() stub: retourne 0 en mode entier');
+          EmitInstr('XOR EAX,EAX');
+        End;
         EPMatch(')');
       End;
       Exit;
@@ -9187,7 +11455,16 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
-        { En mode entier, Int(x) = x }
+        If W32Fpu Then
+        Begin
+          If Not TypeIsReal(LastVarTypeIdx) Then
+          Begin
+            GenIntToReal;
+            LastVarTypeIdx := TY_IDX_EXTENDED;
+          End;
+          If LastExprIsLit Then LastVarTypeIdx := TY_IDX_EXTENDED;
+          EmitInstr('CALL ' + TP_RT_PFX + 'FINT');
+        End;
         EPMatch(')');
       End;
       Exit;
@@ -9212,21 +11489,54 @@ Begin
       End
       Else
       Begin
-        { Random sans argument -> Random(MaxInt) }
+        { Random sans argument -> reel dans [0,1) }
         EmitInstr('CALL ' + TP_RT_PFX + 'RANDOM');
+        If W32Fpu Then
+        Begin
+          EmitInstr('PUSH EAX');
+          EmitInstr('FILD DWORD PTR [ESP]');
+          EmitInstr('MOV DWORD PTR [ESP],47000000h');   { 32768.0 (Single) }
+          EmitInstr('FDIV DWORD PTR [ESP]');
+          EmitInstr('ADD ESP,4');
+          LastVarTypeIdx := TY_IDX_EXTENDED;
+          LastExprIsPascalStr := False;
+        End;
       End;
       Exit;
     End;
 
-    { ROUND(x) / TRUNC(x) -> stub : juste retourner la valeur }
+    { ROUND(x) / TRUNC(x) : reel -> entier (Round : au plus pres, pair si .5 comme FPC) }
     If (Up = 'ROUND') Or (Up = 'TRUNC') Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        If TypeIsReal(LastVarTypeIdx) And W32Fpu Then
+        Begin
+          If Up = 'TRUNC' Then
+            EmitInstr('CALL ' + TP_RT_PFX + 'FTRUNC')
+          Else
+          Begin
+            EmitInstr('SUB ESP,4');
+            EmitInstr('FISTP DWORD PTR [ESP]');
+            EmitInstr('POP EAX');
+          End;
+          LastVarTypeIdx := TY_IDX_LONGINT;
+          LastExprIsPascalStr := False;
+        End;
         EPMatch(')');
       End;
+      Exit;
+    End;
+
+    { PI -> constante du coprocesseur }
+    If (Up = 'PI') And W32Fpu And ((SymFind(Up) < 0) Or SymTab[SymFind(Up)].IsExternal) Then
+    Begin
+      Inc(EP);
+      EmitInstr('FLDPI');
+      LastVarTypeIdx := TY_IDX_EXTENDED;
+      LastExprIsPascalStr := False;
       Exit;
     End;
 
@@ -9577,6 +11887,7 @@ Begin
             EmitInstr('PUSH EAX');
             EmitInstr('CALL ' + TP_RT_PFX + 'EOF_FILE');
             EmitInstr('ADD ESP,4');
+            EmitIoCheck;
           End;
         End;
         EPMatch(')');
@@ -9701,16 +12012,13 @@ Begin
           GenLoadAddr(PI, TokenPool[EP].Val);
           Inc(EP);
         End;
-        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
         EPMatch(')');
       End;
-      { SetFilePointer(handle, 0, NULL, FILE_CURRENT=1) -> retourne position }
-      EmitInstr('PUSH 1');            { dwMoveMethod = FILE_CURRENT }
-      EmitInstr('PUSH 0');            { lpDistanceToMoveHigh       }
-      EmitInstr('PUSH 0');            { lDistanceToMove = 0        }
-      EmitInstr('PUSH EAX');          { hFile                      }
-      EmitInstr('CALL SetFilePointer');
-      { EAX = position courante }
+      EmitInstr('PUSH EAX');          { adresse de la variable fichier }
+      EmitInstr('CALL ' + TP_RT_PFX + 'FILEPOS');
+      EmitInstr('ADD ESP,4');
+      EmitIoCheck;
+      { EAX = position courante en enregistrements }
       Exit;
     End;
 
@@ -9725,18 +12033,17 @@ Begin
           GenLoadAddr(PI, TokenPool[EP].Val);
           Inc(EP);
         End;
-        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
         EPMatch(')');
       End;
-      { GetFileSize(handle, NULL) -> retourne taille }
-      EmitInstr('PUSH 0');            { lpFileSizeHigh }
-      EmitInstr('PUSH EAX');          { hFile          }
-      EmitInstr('CALL GetFileSize');
-      { EAX = taille du fichier }
+      EmitInstr('PUSH EAX');          { adresse de la variable fichier }
+      EmitInstr('CALL ' + TP_RT_PFX + 'FILESIZE');
+      EmitInstr('ADD ESP,4');
+      EmitIoCheck;
+      { EAX = taille du fichier en enregistrements }
       Exit;
     End;
 
-    { LOW(T) / HIGH(T) }
+    { LOW(T) / HIGH(T) : type nomme ou variable (tableau, chaine, enumeration, ordinal) }
     If (Up = 'LOW') Or (Up = 'HIGH') Then
     Begin
       Lbl := Up;
@@ -9747,79 +12054,100 @@ Begin
         Begin
           Up := StrUpperCase(TokenPool[EP].Val);
           SI := TypeFindByName(Up);
-          If SI >= 0 Then
-          Begin
-            If Lbl = 'LOW' Then
-              EmitInstr('MOV EAX,' + IntToStr_(TypeTab[SI].Lo))
-            Else
-              EmitInstr('MOV EAX,' + IntToStr_(TypeTab[SI].Hi));
-          End
-          Else
-          Begin
-            If Lbl = 'LOW' Then
-              EmitInstr('MOV EAX,0')
-            Else
-              EmitInstr('MOV EAX,0');
-          End;
+          If SI < 0 Then SI := GetVarTypeIdx(PI, Up);
           Inc(EP);
+          { suffixes ^ et .champ : suivre le type }
+          While (Not EPAtEnd) And (SI >= 0) And (SI < TypeCount) And
+                (((TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '^')) Or
+                 ((TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '.'))) Do
+          Begin
+            If TokenPool[EP].Val = '^' Then
+            Begin
+              Inc(EP);
+              If TypeTab[SI].Kind = TYK_POINTER Then SI := TypeTab[SI].BaseTypeIdx Else SI := -1;
+            End
+            Else
+            Begin
+              Inc(EP);
+              If EPAtEnd Then Break;
+              Up := StrUpperCase(TokenPool[EP].Val);
+              Inc(EP);
+              LI := -1;
+              For WI := 0 To TypeTab[SI].FieldCount - 1 Do
+                If TypeTab[SI].Fields[WI].Name = Up Then LI := TypeTab[SI].Fields[WI].TypeIdx;
+              SI := LI;
+            End;
+          End;
+          EmitInstr('MOV EAX,' + IntToStr_(TypeBoundValue(SI, Lbl = 'HIGH')));
+          LastVarTypeIdx := TY_IDX_INTEGER;
+          If (SI >= 0) And (SI < TypeCount) And (TypeTab[SI].Kind = TYK_CHAR) Then
+            LastVarTypeIdx := TY_IDX_CHAR;
         End;
         EPMatch(')');
       End;
       Exit;
     End;
 
-    { INC(x[,n]) }
+    { INC(x[,n]) : variable, element, champ, pointeur }
     If Up = 'INC' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Not EPAtEnd Then
+        If ParseLValueAddrW32(PI, LI) Then
         Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
+          EmitInstr('PUSH EAX');
           If EPMatch(',') Then
           Begin
             ParseExpr(PI);
             EmitInstr('MOV ECX,EAX');
-            GenLoadVar(PI, Lbl);
-            EmitInstr('ADD EAX,ECX');
           End
           Else
+            EmitInstr('MOV ECX,1');
+          EmitInstr('POP EBX');
+          GenLoadScalar('[EBX]', LI);
+          EmitInstr('ADD EAX,ECX');
+          GenRangeCheck(LI);
+          GenStoreScalar('[EBX]', LI);
+          If LastIndexIsStrLen Then
           Begin
-            GenLoadVar(PI, Lbl);
-            EmitInstr('INC EAX');
+            EmitInstr('MOVZX ECX,AL');
+            EmitInstr('ADD ECX,EBX');
+            EmitInstr('MOV BYTE PTR [ECX+1],0');
           End;
-          GenStoreVar(PI, Lbl);
         End;
         EPMatch(')');
       End;
       Exit;
     End;
 
-    { DEC(x[,n]) }
+    { DEC(x[,n]) : variable, element, champ, pointeur }
     If Up = 'DEC' Then
     Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Not EPAtEnd Then
+        If ParseLValueAddrW32(PI, LI) Then
         Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
+          EmitInstr('PUSH EAX');
           If EPMatch(',') Then
           Begin
             ParseExpr(PI);
             EmitInstr('MOV ECX,EAX');
-            GenLoadVar(PI, Lbl);
-            EmitInstr('SUB EAX,ECX');
           End
           Else
+            EmitInstr('MOV ECX,1');
+          EmitInstr('POP EBX');
+          GenLoadScalar('[EBX]', LI);
+          EmitInstr('SUB EAX,ECX');
+          GenRangeCheck(LI);
+          GenStoreScalar('[EBX]', LI);
+          If LastIndexIsStrLen Then
           Begin
-            GenLoadVar(PI, Lbl);
-            EmitInstr('DEC EAX');
+            EmitInstr('MOVZX ECX,AL');
+            EmitInstr('ADD ECX,EBX');
+            EmitInstr('MOV BYTE PTR [ECX+1],0');
           End;
-          GenStoreVar(PI, Lbl);
         End;
         EPMatch(')');
       End;
@@ -9832,15 +12160,21 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Not EPAtEnd Then
+        If ParseLValueAddrW32(PI, LI) Then
         Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
-          EmitInstr('PUSH 4');
+          EmitInstr('PUSH EAX');          { adresse de la variable pointeur }
+          { taille de l objet pointe }
+          ParI := 4;
+          If (LI >= 0) And (LI < TypeCount) And (TypeTab[LI].Kind = TYK_POINTER) And
+             (TypeTab[LI].BaseTypeIdx >= 0) Then
+            ParI := TypeSizeofIdx(TypeTab[LI].BaseTypeIdx);
+          If ParI < 4 Then ParI := 4;
+          EmitInstr('PUSH ' + IntToStr_(ParI));
           EmitInstr('PUSH 8');   { HEAP_ZERO_MEMORY }
           EmitInstr('PUSH DWORD PTR [HHEAP]');
           EmitInstr('CALL HeapAlloc');
-          GenStoreVar(PI, Lbl);
+          EmitInstr('POP EBX');
+          EmitInstr('MOV [EBX],EAX');
         End;
         EPMatch(')');
       End;
@@ -9855,9 +12189,7 @@ Begin
       Begin
         If Not EPAtEnd Then
         Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
-          GenLoadVar(PI, Lbl);
+          ParseExpr(PI);                  { valeur du pointeur }
           EmitInstr('PUSH EAX');
           EmitInstr('PUSH 0');
           EmitInstr('PUSH DWORD PTR [HHEAP]');
@@ -9874,17 +12206,17 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        If Not EPAtEnd Then
+        If ParseLValueAddrW32(PI, LI) Then
         Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
+          EmitInstr('PUSH EAX');          { adresse de la variable pointeur }
           EPMatch(',');
           ParseExpr(PI);   { taille dans EAX }
           EmitInstr('PUSH EAX');
           EmitInstr('PUSH 8');   { HEAP_ZERO_MEMORY }
           EmitInstr('PUSH DWORD PTR [HHEAP]');
           EmitInstr('CALL HeapAlloc');
-          GenStoreVar(PI, Lbl);
+          EmitInstr('POP EBX');
+          EmitInstr('MOV [EBX],EAX');
         End;
         EPMatch(')');
       End;
@@ -9899,15 +12231,15 @@ Begin
       Begin
         If Not EPAtEnd Then
         Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
+          ParseExpr(PI);                  { valeur du pointeur }
           If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
              (TokenPool[EP].Val = ',') Then
           Begin
             Inc(EP);
+            EmitInstr('PUSH EAX');
             ParseExpr(PI);  { ignorer la taille }
+            EmitInstr('POP EAX');
           End;
-          GenLoadVar(PI, Lbl);
           EmitInstr('PUSH EAX');
           EmitInstr('PUSH 0');
           EmitInstr('PUSH DWORD PTR [HHEAP]');
@@ -10037,10 +12369,10 @@ Begin
           Else
           Begin
             { --- Intel 80386 (Win32) --- }
-            ParseExpr(PI);      { source dans EAX }
+            ParseVarArgAddr(PI);   { source : adresse dans EAX }
             EmitInstr('PUSH EAX');
             EPMatch(',');
-            ParseExpr(PI);      { dest dans EAX }
+            ParseVarArgAddr(PI);   { dest : adresse dans EAX }
             EmitInstr('PUSH EAX');
             EPMatch(',');
             ParseExpr(PI);      { count dans EAX }
@@ -10178,7 +12510,7 @@ Begin
           Else
           Begin
             { --- Intel 80386 (Win32) --- }
-            ParseExpr(PI);      { dest dans EAX }
+            ParseVarArgAddr(PI);   { dest : adresse dans EAX }
             EmitInstr('PUSH EAX');
             EPMatch(',');
             ParseExpr(PI);      { count dans EAX }
@@ -10293,6 +12625,31 @@ Begin
         End;
         EPMatch(')');
       End;
+      Exit;
+    End;
+
+    { SEG(x) -> 0 en mode plat Win32 (comme FPC) ; l argument est seulement consomme }
+    If (Up = 'SEG') And W32Fpu And (SymFind(Up) >= 0) And SymTab[SymFind(Up)].IsExternal Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { Sauter l argument complet (Seg(S), Seg(Path[1]), Seg(Sector^)) jusqu a la ')' }
+        WI := 0;
+        While Not EPAtEnd Do
+        Begin
+          If (TokenPool[EP].Kind = TK_PUNCT) And ((TokenPool[EP].Val = '(') Or (TokenPool[EP].Val = '[')) Then Inc(WI)
+          Else If (TokenPool[EP].Kind = TK_PUNCT) And ((TokenPool[EP].Val = ')') Or (TokenPool[EP].Val = ']')) Then
+          Begin
+            If WI = 0 Then Break;
+            Dec(WI);
+          End;
+          Inc(EP);
+        End;
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');
+      LastVarTypeIdx := TY_IDX_WORD;
       Exit;
     End;
 
@@ -10582,6 +12939,17 @@ Begin
               EmitInstr('INC EAX');        { Pascal -> ASCIIZ }
             EmitInstr('PUSH EAX');
             EmitInstr('CALL SetCurrentDirectoryA');
+            Lbl := LabelGen;
+            EmitInstr('TEST EAX,EAX');
+            EmitInstr('JNZ ' + Lbl);
+            EmitInstr('CALL GetLastError');
+            EmitInstr('CMP EAX,2');                 { fichier introuvable -> chemin introuvable (FPC) }
+            EmitInstr('JNE ' + Lbl + 'b');
+            EmitInstr('MOV EAX,3');
+            EmitLabel(Lbl + 'b');
+            EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+            EmitLabel(Lbl);
+            EmitIoCheck;
           End;
         End; { Case }
         EPMatch(')');
@@ -10641,6 +13009,13 @@ Begin
             EmitInstr('PUSH 0');           { lpSecurityAttributes = NULL }
             EmitInstr('PUSH EAX');         { lpPathName }
             EmitInstr('CALL CreateDirectoryA');
+            Lbl := LabelGen;
+            EmitInstr('TEST EAX,EAX');
+            EmitInstr('JNZ ' + Lbl);
+            EmitInstr('CALL GetLastError');
+            EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+            EmitLabel(Lbl);
+            EmitIoCheck;
           End;
         End; { Case }
         EPMatch(')');
@@ -10699,6 +13074,13 @@ Begin
               EmitInstr('INC EAX');        { Pascal -> ASCIIZ }
             EmitInstr('PUSH EAX');
             EmitInstr('CALL RemoveDirectoryA');
+            Lbl := LabelGen;
+            EmitInstr('TEST EAX,EAX');
+            EmitInstr('JNZ ' + Lbl);
+            EmitInstr('CALL GetLastError');
+            EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+            EmitLabel(Lbl);
+            EmitIoCheck;
           End;
         End; { Case }
         EPMatch(')');
@@ -11021,7 +13403,7 @@ Begin
             ParseExpr(PI);   { I dans EAX }
             EmitInstr('MOV ECX,EAX');      { element }
             GenLoadAddr(PI, Lbl);
-            EmitInstr('BTS [EAX],ECX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETINCL');
           End;
         End; { Case }
         EPMatch(')');
@@ -11175,7 +13557,7 @@ Begin
             ParseExpr(PI);   { I dans EAX }
             EmitInstr('MOV ECX,EAX');      { element }
             GenLoadAddr(PI, Lbl);
-            EmitInstr('BTR [EAX],ECX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'SETEXCL');
           End;
         End; { Case }
         EPMatch(')');
@@ -11345,6 +13727,7 @@ Begin
           Else
           Begin
             ParseExpr(PI);
+            CoerceCharArray;
             EmitInstr('MOV ESI,EAX');
             If LastExprIsPascalStr Then
               EmitInstr('CALL ' + TP_RT_PFX + 'LENGTH')
@@ -11469,6 +13852,7 @@ Begin
           Begin
             { --- Intel 80386 (Win32) --- }
             ParseExpr(PI);
+            CoerceCharArray;
             If LastExprIsPascalStr Then
               EmitInstr('INC EAX');        { sauter l octet de longueur }
             EmitInstr('PUSH EAX');
@@ -11588,11 +13972,13 @@ Begin
           Begin
             { --- Intel 80386 (Win32) --- }
             ParseExpr(PI);
+            CoerceCharArray;
             If LastExprIsPascalStr Then
               EmitInstr('INC EAX');
             EmitInstr('PUSH EAX');
             EPMatch(',');
             ParseExpr(PI);
+            CoerceCharArray;
             If LastExprIsPascalStr Then
               EmitInstr('INC EAX');
             EmitInstr('MOV ESI,EAX');
@@ -11775,7 +14161,9 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
+        WantCharLit := CharLitArgFollows;
         ParseExpr(PI);
+        WantCharLit := False;
         Case Opts.DestTarget Of
           DEST_68000, DEST_ATARIST, DEST_AMIGA:
           Begin
@@ -15200,6 +17588,13 @@ Begin
           EmitInstr('PUSH EAX');
           EmitInstr('CALL ' + TP_RT_PFX + 'STRPAS');
           EmitInstr('ADD ESP,4');
+          { resultat dans l anneau des chaines temporaires : StrPas(a) et StrPas(b) }
+          { peuvent coexister dans une meme expression                              }
+          EmitInstr('MOV ESI,EAX');
+          EmitInstr('INC ESI');           { STRRET attend une chaine ASCIIZ }
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+          LastVarTypeIdx := TY_IDX_STRING;
+          LastExprIsPascalStr := True;    { format Pascal }
         End;
       End;
       Exit;
@@ -15256,11 +17651,19 @@ Begin
           End;
           Else
           Begin
-            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            ParseVarArgAddr(PI);  EmitInstr('PUSH EAX');     { Dest (PChar ou tableau de Char) }
             EPMatch(',');
-            ParseExpr(PI);  EmitInstr('PUSH EAX');
+            ParseExpr(PI);                                   { Source : chaine Pascal }
+            If Not LastExprIsPascalStr Then
+            Begin
+              GenStrSourceESI;
+              EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+            End;
+            EmitInstr('PUSH EAX');
             EmitInstr('CALL ' + TP_RT_PFX + 'STRPCOPY');
             EmitInstr('ADD ESP,8');
+            LastVarTypeIdx := TY_IDX_PCHAR;
+            LastExprIsPascalStr := False;
           End;
         End; { Case }
         EPMatch(')');
@@ -16118,6 +18521,16 @@ Begin
 
     { Appel de procedure/fonction ? }
     SI := SymFind(Up);
+    If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) And (Not SymTab[SI].IsExternal) And
+       Not ((EP + 1 < EPEnd) And (TokenPool[EP + 1].Kind = TK_PUNCT) And
+            (TokenPool[EP + 1].Val = '(')) Then
+    Begin
+      { nom de procedure dans une expression : son adresse (affectation a une variable procedure) }
+      EmitInstr('LEA EAX,[' + SymTab[SI].MangledName + ']');
+      LastVarTypeIdx := -1;
+      Inc(EP);
+      Exit;
+    End;
     If (SI >= 0) And
        ((SymTab[SI].Kind = SK_PROC) Or (SymTab[SI].Kind = SK_FUNC)) Then
     Begin
@@ -16125,8 +18538,18 @@ Begin
       ParseFuncCall(PI, Up);
       Exit;
     End;
+    { Variable de type procedure/fonction suivie de '(' : appel indirect }
+    LI := GetVarTypeIdx(PI, Up);
+    If (LI >= 0) And (LI < TypeCount) And (TypeTab[LI].Kind = TYK_PROCVAR) And
+       (EP + 1 < EPEnd) And (TokenPool[EP + 1].Kind = TK_PUNCT) And
+       (TokenPool[EP + 1].Val = '(') Then
+    Begin
+      Inc(EP);
+      ParseFuncCall(PI, Up);
+      Exit;
+    End;
 
-    { Verificr aussi dans ProcTab }
+    { Verifier aussi dans ProcTab }
     If SI < 0 Then
     Begin
       LI := 0;
@@ -16135,7 +18558,15 @@ Begin
         If ProcTab[LI].Name = Up Then
         Begin
           Inc(EP);
-          ParseFuncCall(PI, Up);
+          If (Not ProcTab[LI].IsFunction) And
+             Not ((Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+                  (TokenPool[EP].Val = '(')) Then
+          Begin
+            EmitInstr('LEA EAX,[' + TP_FUNC_PFX + Up + ']');
+            LastVarTypeIdx := -1;
+          End
+          Else
+            ParseFuncCall(PI, Up);
           Exit;
         End;
         Inc(LI);
@@ -16145,40 +18576,21 @@ Begin
     { WITH : resoudre champ implicite en lecture }
     If (WithDepth > 0) Then
     Begin
-      WI := WithDepth - 1;
-      While WI >= 0 Do
+      WI := WithFieldIndex(Up, WFOfs);
+      If WI >= 0 Then
       Begin
-        WFSize := 4;
-        WFOfs := FindFieldOffset(WithTypeIdx[WI], Up, WFSize);
-        If WFOfs >= 0 Then Break;
-        Dec(WI);
-      End;
-      If (WI >= 0) And (WFOfs >= 0) Then
-      Begin
-        GenLoadAddr(PI, WithVarName[WI]);
+        EmitInstr('MOV EAX,[WITHPTR+' + IntToStr_(WI * 4) + ']');
         If WFOfs > 0 Then
           EmitInstr('ADD EAX,' + IntToStr_(WFOfs));
-        { Mettre a jour le type du champ }
         LastVarTypeIdx := WithTypeIdx[WI];
-        For WJ := 0 To TypeTab[LastVarTypeIdx].FieldCount - 1 Do
-          If TypeTab[LastVarTypeIdx].Fields[WJ].Name = Up Then
-          Begin
-            LastVarTypeIdx := TypeTab[LastVarTypeIdx].Fields[WJ].TypeIdx;
-            Break;
-          End;
-        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-           (TypeTab[LastVarTypeIdx].Kind = TYK_STRING) Then
-        Begin
-          LastExprIsPascalStr := True;
-        End
-        Else If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-                ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
-                 (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT)) Then
-          { EAX pointe deja sur le sous-record }
-        Else If WFSize = 1 Then
-          EmitInstr('MOVZX EAX,BYTE PTR [EAX]')
+        WJ := 0;
+        While (WJ < TypeTab[LastVarTypeIdx].FieldCount) And
+              (TypeTab[LastVarTypeIdx].Fields[WJ].Name <> Up) Do
+          Inc(WJ);
+        If WJ < TypeTab[LastVarTypeIdx].FieldCount Then
+          GenLoadFromAddr(TypeTab[LastVarTypeIdx].Fields[WJ].TypeIdx)
         Else
-          EmitInstr('MOV EAX,[EAX]');
+          GenLoadFromAddr(-1);
         LastPrimaryName := Up;
         Inc(EP);
         Exit;
@@ -16193,51 +18605,48 @@ Begin
     Exit;
   End;
 
-  { Constructeur d ensemble : [elem1, elem2, lo..hi, ...] }
+  { Constructeur d ensemble : [elem1, elem2, lo..hi, ...] -> tampon de 32 octets (256 bits) }
   If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
   Begin
     Inc(EP); { sauter '[' }
-    EmitInstr('XOR EAX,EAX');  { EAX = ensemble vide (bitmask) }
+    Lbl := 'SETBUF+' + IntToStr_((SetBufSeq Mod 8) * 32);
+    Inc(SetBufSeq);
+    EmitInstr('LEA EDI,[' + Lbl + ']');
+    EmitInstr('MOV ECX,8');
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('REP STOSD');
+    WantCharLit := True;
     While (Not EPAtEnd) And
           Not ((TokenPool[EP].Kind = TK_PUNCT) And
                (TokenPool[EP].Val = ']')) Do
     Begin
-      EmitInstr('PUSH EAX');          { sauvegarder ensemble courant }
-      ParseExpr(PI);                  { EAX = valeur element }
-      { Verifier si c est un intervalle (lo..hi) }
-      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
-         (TokenPool[EP].Val = '..') Then
+      ParseExpr(PI);                  { EAX = valeur element (ou borne basse) }
+      If (Not EPAtEnd) And (((TokenPool[EP].Kind = TK_PUNCT) Or (TokenPool[EP].Kind = TK_OP)) And
+         (TokenPool[EP].Val = '..')) Then
       Begin
         Inc(EP);                      { sauter '..' }
         EmitInstr('PUSH EAX');        { sauvegarder lo }
         ParseExpr(PI);               { EAX = hi }
-        { EAX=hi, [ESP]=lo, [ESP+4]=ensemble }
-        EmitInstr('MOV EDX,EAX');     { EDX = hi }
-        EmitInstr('POP ECX');         { ECX = lo }
-        EmitInstr('POP EBX');         { EBX = ensemble courant }
-        Lbl := LabelGen;
-        EmitLabel(Lbl);
-        EmitInstr('CMP ECX,EDX');
-        EmitInstr('JG ' + Lbl + 'E');
-        EmitInstr('BTS EBX,ECX');
-        EmitInstr('INC ECX');
-        EmitInstr('JMP ' + Lbl);
-        EmitLabel(Lbl + 'E');
-        EmitInstr('MOV EAX,EBX');     { EAX = ensemble mis a jour }
+        EmitInstr('MOV EDX,EAX');
+        EmitInstr('POP ECX');
+        EmitInstr('LEA EBX,[' + Lbl + ']');
+        EmitInstr('CALL ' + TP_RT_PFX + 'SETRANGE');
       End
       Else
       Begin
-        { Element simple : positionner 1 bit }
-        EmitInstr('MOV ECX,EAX');     { ECX = numero du bit }
-        EmitInstr('POP EAX');         { EAX = ensemble courant }
-        EmitInstr('BTS EAX,ECX');     { positionner le bit }
+        EmitInstr('MOV ECX,EAX');
+        EmitInstr('LEA EAX,[' + Lbl + ']');
+        EmitInstr('CALL ' + TP_RT_PFX + 'SETINCL');
       End;
-      { Sauter la virgule si presente }
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ',') Then
         Inc(EP);
     End;
+    WantCharLit := False;
     If Not EPAtEnd Then Inc(EP);  { sauter ']' }
+    EmitInstr('LEA EAX,[' + Lbl + ']');
+    LastVarTypeIdx := SetGenTypeIdx;
+    LastExprIsPascalStr := False;
     Exit;
   End;
 
@@ -16255,6 +18664,272 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ ParsePrimary : apres une fonction (integree ou utilisateur), le }
+{ type de la derniere expression (LastVarTypeIdx) est celui du    }
+{ resultat de la fonction et non celui de son dernier argument :  }
+{ Length(S) = 0 compilait en comparaison de chaines et plantait.  }
+{ ------------------------------------------------------------ }
+Function BuiltinFuncResultKind(Const Up : TString) : Integer;
+{ 0 = inconnu/entier, 1 = chaine, 2 = caractere, 3 = booleen }
+Begin
+  BuiltinFuncResultKind := 0;
+  If (Up = 'COPY') Or (Up = 'CONCAT') Or (Up = 'PARAMSTR') Or (Up = 'STRPAS') Or
+     (Up = 'GETENV') Or (Up = 'FEXPAND') Or (Up = 'FSEARCH') Or (Up = 'ENVSTR') Or
+     (Up = 'GETDRIVERNAME') Or (Up = 'GETMODENAME') Or (Up = 'GRAPHERRORMSG') Or
+     (Up = 'STRUPPER') Or (Up = 'STRLOWER') Or (Up = 'STRCAT') Or (Up = 'STRCOPY') Or
+     (Up = 'STRECOPY') Or (Up = 'STREND') Or (Up = 'STRLCAT') Or (Up = 'STRLCOPY') Or
+     (Up = 'STRMOVE') Or (Up = 'STRNEW') Or (Up = 'STRPOS') Or (Up = 'STRRSCAN') Or
+     (Up = 'STRSCAN') Or (Up = 'STRPCOPY') Or (Up = 'NEWSTR') Then
+    BuiltinFuncResultKind := 1
+  Else If (Up = 'CHR') Or (Up = 'UPCASE') Or (Up = 'READKEY') Then
+    BuiltinFuncResultKind := 2
+  Else If (Up = 'EOF') Or (Up = 'EOLN') Or (Up = 'SEEKEOF') Or (Up = 'SEEKEOLN') Or
+          (Up = 'KEYPRESSED') Or (Up = 'ODD') Or (Up = 'ASSIGNED') Then
+    BuiltinFuncResultKind := 3;
+End;
+
+Procedure ParsePrimary(PI : Integer);
+Var
+  Up : TString; SI, K : Integer;
+Begin
+  Up := '';
+  If (Not EPAtEnd) And ((TokenPool[EP].Kind = TK_IDENT) Or (TokenPool[EP].Kind = TK_KEYWORD)) Then
+    Up := StrUpperCase(TokenPool[EP].Val);
+  ParsePrimaryInner(PI);
+  If Up = '' Then Exit;
+  SI := SymFind(Up);
+  If (SI < 0) Or (SymTab[SI].Kind <> SK_FUNC) Then Exit;
+  If SymTab[SI].IsExternal Then
+  Begin
+    { fonction integree }
+    If TypeIsReal(LastVarTypeIdx) And W32Fpu Then Exit;   { reel : type pose par l emetteur }
+    K := BuiltinFuncResultKind(Up);
+    If K = 1 Then Exit;                   { chaine : indicateurs poses par l emetteur }
+    If ((Up = 'SUCC') Or (Up = 'PRED')) And (LastSuccPredType = TY_IDX_CHAR) Then
+      K := 2;
+    If K = 2 Then LastVarTypeIdx := TY_IDX_CHAR
+    Else If K = 3 Then LastVarTypeIdx := TY_IDX_BOOLEAN
+    Else LastVarTypeIdx := TY_IDX_INTEGER;
+    LastExprIsPascalStr := False;
+  End
+  Else If (SymTab[SI].TypeIdx >= 0) And Not TypeIsString(SymTab[SI].TypeIdx) Then
+  Begin
+    { fonction utilisateur a resultat non chaine }
+    LastVarTypeIdx := SymTab[SI].TypeIdx;
+    LastExprIsPascalStr := False;
+  End
+  Else If (SymTab[SI].TypeIdx >= 0) Then
+  Begin
+    { fonction utilisateur a resultat chaine : pointeur Pascal dans l anneau STRRING }
+    LastVarTypeIdx := TY_IDX_STRING;
+    LastExprIsPascalStr := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseIndexW32 : apres '[' ; EAX = adresse de base, T = type   }
+{ (tableau, chaine ou PChar). Calcule l adresse de l element    }
+{ (dimensions separees par ',') ; T devient le type element.    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseIndexW32(PI : Integer; Var T : Integer);
+Var
+  ElemSz, ET : Integer;
+  IsZero : Boolean;
+Begin
+  LastIndexIsStrLen := False;
+  Repeat
+    EmitInstr('PUSH EAX');
+    IsZero := (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) And (TokenPool[EP].IntVal = 0) And
+              (EP + 1 < EPEnd) And (TokenPool[EP + 1].Kind = TK_PUNCT) And (TokenPool[EP + 1].Val = ']');
+    ParseExpr(PI);
+    If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_ARRAY) Then
+    Begin
+      If RangeCheckAt(EP) And (TypeTab[T].Hi >= TypeTab[T].Lo) Then
+        GenRangeCheckLoHi(TypeTab[T].Lo, TypeTab[T].Hi);   { R+ : indice hors bornes -> erreur 201 }
+      If TypeTab[T].Lo <> 0 Then
+        EmitInstr('SUB EAX,' + IntToStr_(TypeTab[T].Lo));
+      ET := TypeTab[T].BaseTypeIdx;
+      ElemSz := 4;
+      If ET >= 0 Then ElemSz := TypeSizeofIdx(ET);
+      If ElemSz = 1 Then
+      Else If ElemSz = 2 Then EmitInstr('SHL EAX,1')
+      Else If ElemSz = 4 Then EmitInstr('SHL EAX,2')
+      Else If ElemSz = 8 Then EmitInstr('SHL EAX,3')
+      Else EmitInstr('IMUL EAX,' + IntToStr_(ElemSz));
+      T := ET;
+    End
+    Else If (T >= 0) And (T < TypeCount) And
+            ((TypeTab[T].Kind = TYK_STRING) Or (TypeTab[T].Kind = TYK_PCHAR)) Then
+    Begin
+      If (TypeTab[T].Kind = TYK_STRING) And IsZero Then LastIndexIsStrLen := True;
+      If (TypeTab[T].Kind = TYK_STRING) And RangeCheckAt(EP) And Not IsZero Then
+        GenRangeCheckLoHi(0, 255);   { R+ : indice de chaine hors de 0..255 -> erreur 201 }
+      T := TY_IDX_CHAR;         { S[i] : octet i (S[0] = longueur) }
+    End
+    Else
+    Begin
+      EmitInstr('SHL EAX,2');
+      T := -1;
+    End;
+    EmitInstr('POP EBX');
+    EmitInstr('ADD EAX,EBX');
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+       (TokenPool[EP].Val = ',') Then
+      Inc(EP)
+    Else
+      Break;
+  Until False;
+  EPMatch(']');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLValueW32 : variable deja consommee ; applique les        }
+{ suffixes ^ [index] .champ et laisse dans EAX l adresse de la   }
+{ destination, T = son type                                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParseLValueSuffixW32(PI : Integer; Var T : Integer);
+Var
+  Up : TString;
+  FOfs, FSize : LongInt;
+  K : Integer;
+Begin
+  While Not EPAtEnd Do
+  Begin
+    { P^ : dereference }
+    If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '^') Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,[EAX]');
+      If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_POINTER) Then
+        T := TypeTab[T].BaseTypeIdx
+      Else If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_PCHAR) Then
+        T := TY_IDX_CHAR
+      Else
+        T := -1;
+      Continue;
+    End;
+    { [index] }
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
+    Begin
+      Inc(EP);
+      If (T >= 0) And (T < TypeCount) And (TypeTab[T].Kind = TYK_PCHAR) Then
+        EmitInstr('MOV EAX,[EAX]');     { P[i] : la base est la valeur du pointeur }
+      ParseIndexW32(PI, T);
+      Continue;
+    End;
+    { .champ }
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '.') Then
+    Begin
+      Inc(EP);
+      If EPAtEnd Then Break;
+      Up := StrUpperCase(TokenPool[EP].Val);
+      Inc(EP);
+      FSize := 4;
+      FOfs := FindFieldOffset(T, Up, FSize);
+      If FOfs >= 0 Then
+      Begin
+        If FOfs > 0 Then
+          EmitInstr('ADD EAX,' + IntToStr_(FOfs));
+        K := 0;
+        While (K < TypeTab[T].FieldCount) And (TypeTab[T].Fields[K].Name <> Up) Do
+          Inc(K);
+        If K < TypeTab[T].FieldCount Then
+          T := TypeTab[T].Fields[K].TypeIdx
+        Else
+          T := -1;
+      End
+      Else
+      Begin
+        EmitComment('champ inconnu: ' + Up + ' (type ' + IntToStr_(T) + ')');
+        T := -1;
+      End;
+      Continue;
+    End;
+    Break;
+  End;
+End;
+
+Procedure ParseLValueW32(PI : Integer; Const VName : TString; Var T : Integer);
+Begin
+  GenLoadAddr(PI, VName);
+  T := GetVarTypeIdx(PI, VName);
+  ParseLValueSuffixW32(PI, T);
+End;
+
+{ ------------------------------------------------------------ }
+{ WithFieldIndex : l identificateur Up est-il un champ d un     }
+{ WITH actif ? Retourne la profondeur (ou -1) et l offset       }
+{ ------------------------------------------------------------ }
+
+Function WithFieldIndex(Const Up : TString; Var FOfs : LongInt) : Integer;
+Var
+  WI : Integer;
+  FSize : LongInt;
+Begin
+  WithFieldIndex := -1;
+  WI := WithDepth - 1;
+  While WI >= 0 Do
+  Begin
+    FSize := 4;
+    FOfs := FindFieldOffset(WithTypeIdx[WI], Up, FSize);
+    If FOfs >= 0 Then
+    Begin
+      WithFieldIndex := WI;
+      Exit;
+    End;
+    Dec(WI);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseLValueAddrW32 : le jeton courant est un identificateur    }
+{ (variable ou champ d un WITH) ; consomme l identificateur et   }
+{ ses suffixes, laisse l adresse dans EAX et le type dans T.     }
+{ Retourne False si le jeton n est pas un identificateur.        }
+{ ------------------------------------------------------------ }
+
+Function ParseLValueAddrW32(PI : Integer; Var T : Integer) : Boolean;
+Var
+  Up : TString;
+  WI, K : Integer;
+  FOfs : LongInt;
+Begin
+  ParseLValueAddrW32 := False;
+  T := -1;
+  If EPAtEnd Then Exit;
+  If (TokenPool[EP].Kind <> TK_IDENT) And (TokenPool[EP].Kind <> TK_KEYWORD) Then Exit;
+  Up := StrUpperCase(TokenPool[EP].Val);
+  ParseLValueAddrW32 := True;
+  LastIndexIsStrLen := False;
+  WI := -1;
+  If WithDepth > 0 Then
+    WI := WithFieldIndex(Up, FOfs);
+  If WI >= 0 Then
+  Begin
+    Inc(EP);
+    EmitInstr('MOV EAX,[WITHPTR+' + IntToStr_(WI * 4) + ']');
+    If FOfs > 0 Then
+      EmitInstr('ADD EAX,' + IntToStr_(FOfs));
+    T := WithTypeIdx[WI];
+    K := 0;
+    While (K < TypeTab[T].FieldCount) And (TypeTab[T].Fields[K].Name <> Up) Do
+      Inc(K);
+    If K < TypeTab[T].FieldCount Then
+      T := TypeTab[T].Fields[K].TypeIdx
+    Else
+      T := -1;
+    ParseLValueSuffixW32(PI, T);
+  End
+  Else
+  Begin
+    Inc(EP);
+    ParseLValueW32(PI, Up, T);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
 { ParsePostfix : parser les suffixes apres une expression       }
 { primaire : [index], .champ, ^dereference                     }
 { ------------------------------------------------------------ }
@@ -16263,8 +18938,8 @@ Procedure ParsePostfix(PI : Integer);
 Var
   Up : TString;
   ElemSz : Integer;
-  FOfs : Integer;
-  FSize : Integer;
+  FOfs : LongInt;
+  FSize : LongInt;
   SavedTypeIdx : Integer;
 Begin
   While Not EPAtEnd Do
@@ -16273,91 +18948,25 @@ Begin
     If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '^') Then
     Begin
       Inc(EP);
-      EmitInstr('MOV EBX,EAX');
-      EmitInstr('MOV EAX,[EBX]');
+      SavedTypeIdx := LastVarTypeIdx;
+      If (SavedTypeIdx >= 0) And (SavedTypeIdx < TypeCount) And
+         (TypeTab[SavedTypeIdx].Kind = TYK_POINTER) Then
+        GenLoadFromAddr(TypeTab[SavedTypeIdx].BaseTypeIdx)
+      Else If (SavedTypeIdx >= 0) And (SavedTypeIdx < TypeCount) And
+              (TypeTab[SavedTypeIdx].Kind = TYK_PCHAR) Then
+        GenLoadFromAddr(TY_IDX_CHAR)
+      Else
+        GenLoadFromAddr(TY_IDX_INTEGER);
       Continue;
     End;
 
-    { Acces tableau : [index] ou [i,j] multi-dimensionnel }
+    { Acces tableau / chaine : [index] ou [i,j] multi-dimensionnel }
     If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
     Begin
       Inc(EP);
-      { Premiere dimension }
       SavedTypeIdx := LastVarTypeIdx;
-      EmitInstr('PUSH EAX');         { sauvegarder adresse base }
-      ParseExpr(PI);
-      LastVarTypeIdx := SavedTypeIdx;
-      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-         (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-         (TypeTab[LastVarTypeIdx].Lo <> 0) Then
-        EmitInstr('SUB EAX,' + IntToStr_(TypeTab[LastVarTypeIdx].Lo));
-      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-         (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-         (TypeTab[LastVarTypeIdx].BaseTypeIdx >= 0) Then
-      Begin
-        ElemSz := TypeSizeofIdx(TypeTab[LastVarTypeIdx].BaseTypeIdx);
-        If ElemSz = 1 Then
-        Else If ElemSz = 2 Then EmitInstr('SHL EAX,1')
-        Else If ElemSz = 4 Then EmitInstr('SHL EAX,2')
-        Else If ElemSz = 8 Then EmitInstr('SHL EAX,3')
-        Else EmitInstr('IMUL EAX,' + IntToStr_(ElemSz));
-        LastVarTypeIdx := TypeTab[LastVarTypeIdx].BaseTypeIdx;
-      End
-      Else
-        EmitInstr('SHL EAX,2');
-      EmitInstr('POP EBX');
-      EmitInstr('ADD EAX,EBX');      { EAX = adresse element }
-      { Dimensions supplementaires separees par ',' }
-      While (Not EPAtEnd) And
-            (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
-      Begin
-        Inc(EP);  { consommer ',' }
-        SavedTypeIdx := LastVarTypeIdx;
-        EmitInstr('PUSH EAX');
-        ParseExpr(PI);
-        LastVarTypeIdx := SavedTypeIdx;
-        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-           (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-           (TypeTab[LastVarTypeIdx].Lo <> 0) Then
-          EmitInstr('SUB EAX,' + IntToStr_(TypeTab[LastVarTypeIdx].Lo));
-        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-           (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-           (TypeTab[LastVarTypeIdx].BaseTypeIdx >= 0) Then
-        Begin
-          ElemSz := TypeSizeofIdx(TypeTab[LastVarTypeIdx].BaseTypeIdx);
-          If ElemSz = 1 Then
-          Else If ElemSz = 2 Then EmitInstr('SHL EAX,1')
-          Else If ElemSz = 4 Then EmitInstr('SHL EAX,2')
-          Else If ElemSz = 8 Then EmitInstr('SHL EAX,3')
-          Else EmitInstr('IMUL EAX,' + IntToStr_(ElemSz));
-          LastVarTypeIdx := TypeTab[LastVarTypeIdx].BaseTypeIdx;
-        End
-        Else
-          EmitInstr('SHL EAX,2');
-        EmitInstr('POP EBX');
-        EmitInstr('ADD EAX,EBX');
-      End;
-      { EAX = adresse finale de l element }
-      EmitInstr('MOV EBX,EAX');
-      { Charger la valeur selon le type de l element }
-      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) Then
-      Begin
-        If TypeTab[LastVarTypeIdx].Size = 1 Then
-          EmitInstr('MOVZX EAX,BYTE PTR [EBX]')
-        Else If (TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
-                (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT) Then
-          EmitInstr('LEA EAX,[EBX]')
-        Else If TypeTab[LastVarTypeIdx].Kind = TYK_STRING Then
-        Begin
-          EmitInstr('LEA EAX,[EBX]');
-          LastExprIsPascalStr := True;
-        End
-        Else
-          EmitInstr('MOV EAX,[EBX]');
-      End
-      Else
-        EmitInstr('MOV EAX,[EBX]');
-      EPMatch(']');
+      ParseIndexW32(PI, SavedTypeIdx);
+      GenLoadFromAddr(SavedTypeIdx);
       Continue;
     End;
 
@@ -16375,34 +18984,29 @@ Begin
         Begin
           If FOfs > 0 Then
             EmitInstr('ADD EAX,' + IntToStr_(FOfs));
-          { Mettre a jour le type courant }
+          { Type du champ }
+          SavedTypeIdx := -1;
           If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) Then
           Begin
             For ElemSz := 0 To TypeTab[LastVarTypeIdx].FieldCount - 1 Do
               If TypeTab[LastVarTypeIdx].Fields[ElemSz].Name = Up Then
               Begin
-                LastVarTypeIdx := TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx;
+                SavedTypeIdx := TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx;
                 Break;
               End;
           End;
-          { Charger la valeur du champ }
-          If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-             ((TypeTab[LastVarTypeIdx].Kind = TYK_RECORD) Or
-              (TypeTab[LastVarTypeIdx].Kind = TYK_OBJECT)) Then
-            { EAX pointe deja sur le sous-record }
-          Else If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-                  (TypeTab[LastVarTypeIdx].Kind = TYK_STRING) Then
-          Begin
-            { EAX pointe sur le champ String (Pascal string) }
-            LastExprIsPascalStr := True;
-          End
-          Else If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-                  (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) Then
-            { EAX pointe sur le debut du tableau }
+          If SavedTypeIdx >= 0 Then
+            GenLoadFromAddr(SavedTypeIdx)
           Else If FSize = 1 Then
-            EmitInstr('MOVZX EAX,BYTE PTR [EAX]')
+          Begin
+            EmitInstr('MOVZX EAX,BYTE PTR [EAX]');
+            LastVarTypeIdx := -1;
+          End
           Else
+          Begin
             EmitInstr('MOV EAX,[EAX]');
+            LastVarTypeIdx := -1;
+          End;
         End
         Else
           EmitComment('champ inconnu: ' + Up);
@@ -16422,6 +19026,7 @@ End;
 Procedure ParseUnary(PI : Integer);
 Var
   Up : TString;
+  ATIdx : Integer;
 Begin
   If EPAtEnd Then Exit;
 
@@ -16432,7 +19037,22 @@ Begin
   Begin
     Inc(EP);
     ParseUnary(PI);
-    EmitInstr('XOR EAX,1');
+    If LastVarTypeIdx = TY_IDX_BOOLEAN Then
+      EmitInstr('XOR EAX,1')
+    Else
+    Begin
+      EmitInstr('NOT EAX');
+      { Not sur un Byte / Word : resultat de la meme largeur (comme FPC) }
+      If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+         (TypeTab[LastVarTypeIdx].Size < 4) Then
+      Begin
+        If TypeTab[TypeResolve(LastVarTypeIdx)].Kind = TYK_BYTE Then
+          EmitInstr('AND EAX,0FFh')
+        Else If (TypeTab[TypeResolve(LastVarTypeIdx)].Kind = TYK_WORD) And
+                (TypeTab[TypeResolve(LastVarTypeIdx)].Size = 2) Then
+          EmitInstr('AND EAX,0FFFFh');
+      End;
+    End;
     Exit;
   End;
 
@@ -16441,7 +19061,10 @@ Begin
   Begin
     Inc(EP);
     ParseUnary(PI);
-    EmitInstr('NEG EAX');
+    If TypeIsReal(LastVarTypeIdx) And W32Fpu Then
+      EmitInstr('FCHS')
+    Else
+      EmitInstr('NEG EAX');
     Exit;
   End;
 
@@ -16453,15 +19076,30 @@ Begin
     Exit;
   End;
 
-  { Adresse @ }
+  { Adresse @ : variable, element de tableau, champ, procedure }
   If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '@') Then
   Begin
     Inc(EP);
     If Not EPAtEnd Then
     Begin
       Up := StrUpperCase(TokenPool[EP].Val);
-      GenLoadAddr(PI, Up);
-      Inc(EP);
+      If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) And
+         (SymFind(Up) >= 0) And ((SymTab[SymFind(Up)].Kind = SK_PROC) Or (SymTab[SymFind(Up)].Kind = SK_FUNC)) Then
+      Begin
+        EmitInstr('LEA EAX,[' + SymTab[SymFind(Up)].MangledName + ']');
+        Inc(EP);
+      End
+      Else If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+      Begin
+        ParseLValueAddrW32(PI, ATIdx);
+      End
+      Else
+      Begin
+        GenLoadAddr(PI, Up);
+        Inc(EP);
+      End;
+      LastVarTypeIdx := TY_IDX_POINTER;
+      LastExprIsPascalStr := False;
     End;
     Exit;
   End;
@@ -16622,15 +19260,8 @@ Begin
   { IN (ensemble) : BT [set], val }
   Else If Op = 'IN' Then
   Begin
-    LblTrue := LabelGen;
-    LblEnd  := LabelGen;
-    EmitInstr('BT EBX,EAX');
-    EmitInstr('JC ' + LblTrue);
-    EmitInstr('XOR EAX,EAX');
-    EmitInstr('JMP ' + LblEnd);
-    EmitLabel(LblTrue);
-    EmitInstr('MOV EAX,1');
-    EmitLabel(LblEnd);
+    { EAX = element, EBX = adresse de l ensemble (32 octets) }
+    EmitInstr('CALL ' + TP_RT_PFX + 'SETIN');
   End
   Else
     EmitComment('; operateur binaire inconnu: ' + Op);
@@ -16651,6 +19282,8 @@ Var
   LblE     : TString;
   LeftIsStr : Boolean;
   LeftPascal : Boolean;
+  LeftReal, RightReal : Boolean;
+  LeftT    : Integer;
 Begin
   ParseUnary(PI);
 
@@ -16666,26 +19299,69 @@ Begin
     Prec := BinOpPrec(Op);
     If (Prec = 0) Or (Prec < MinPrec) Then Break;
 
+    { tableau de Char compare ou concatene : convertir en chaine }
+    If IsCharArray(LastVarTypeIdx) And ((Prec = 1) Or (Op = '+')) And
+       (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) Then
+      CoerceCharArray;
+
     { Detecter si la partie gauche est une chaine }
     LeftIsStr := TypeIsString(LastVarTypeIdx);
     LeftPascal := LastExprIsPascalStr;
 
     Inc(EP); { consommer l operateur }
+    { --- Comparaison Char = 'x' : le litteral d un seul caractere est un code, pas une adresse --- }
+    If ((Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or (Op = '<=') Or (Op = '>=')) And
+       (LastVarTypeIdx = TY_IDX_CHAR) And (Not EPAtEnd) And (TokenPool[EP].Kind = TK_STRING) And
+       (Length(TokenPool[EP].Val) = 1) And (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) Then
+    Begin
+      EmitInstr('MOV EBX,' + IntToStr_(Ord(TokenPool[EP].Val[1])));
+      Inc(EP);
+      EmitBinOp(Op);
+      LastVarTypeIdx := TY_IDX_BOOLEAN;
+      Continue;
+    End;
 
     { --- Concatenation de chaines avec + (TODO 16) --- }
-    If (Op = '+') And LeftIsStr Then
+    { gauche : chaine ou Char ; la gauche est copiee dans un tampon sur la pile }
+    { pour que l evaluation de la droite puisse utiliser STRBUF1 (imbrication)  }
+    If (Op = '+') And (LeftIsStr Or (LastVarTypeIdx = TY_IDX_CHAR)) And
+       (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) Then
     Begin
-      EmitInstr('MOV ESI,EAX');        { ESI = chaine gauche  }
-      If LeftPascal Then
-        EmitInstr('INC ESI');           { sauter l octet de longueur }
-      EmitInstr('LEA EDI,[STRBUF1]');
+      If LeftIsStr Then
+      Begin
+        EmitInstr('MOV ESI,EAX');        { ESI = chaine gauche  }
+        If LeftPascal Then
+          EmitInstr('INC ESI');           { sauter l octet de longueur }
+      End
+      Else
+      Begin
+        EmitInstr('MOVZX EAX,AL');       { Char -> chaine d un caractere }
+        EmitInstr('MOV [CHRBUF],EAX');
+        EmitInstr('LEA ESI,[CHRBUF]');
+      End;
+      EmitInstr('SUB ESP,512');
+      EmitInstr('MOV EDI,ESP');
       EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN_PCHAR');
       ParseExprPrec(PI, Prec + 1);
-      EmitInstr('MOV EDI,EAX');        { EDI = chaine droite  }
-      If LastExprIsPascalStr Then
-        EmitInstr('INC EDI');           { sauter l octet de longueur }
-      EmitInstr('LEA ESI,[STRBUF1]');
+      CoerceCharArray;
+      If (LastVarTypeIdx = TY_IDX_CHAR) And (Not LastExprIsPascalStr) Then
+      Begin
+        EmitInstr('MOVZX EAX,AL');
+        EmitInstr('MOV [CHRBUF],EAX');
+        EmitInstr('LEA EDI,[CHRBUF]');
+      End
+      Else
+      Begin
+        EmitInstr('MOV EDI,EAX');        { EDI = chaine droite  }
+        If LastExprIsPascalStr Then
+          EmitInstr('INC EDI');           { sauter l octet de longueur }
+      End;
+      EmitInstr('MOV ESI,ESP');
       EmitInstr('CALL ' + TP_RT_PFX + 'CONCAT');
+      EmitInstr('MOV ESI,ESP');
+      EmitInstr('LEA EDI,[STRBUF1]');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRCPY255');
+      EmitInstr('ADD ESP,512');
       EmitInstr('LEA EAX,[STRBUF1]');
       LastVarTypeIdx := TY_IDX_STRING;
       LastExprIsPascalStr := False;     { STRBUF1 est ASCIIZ }
@@ -16700,6 +19376,7 @@ Begin
         EmitInstr('INC EAX');           { sauter l octet de longueur gauche }
       EmitInstr('PUSH EAX');            { sauver gauche }
       ParseExprPrec(PI, Prec + 1);
+      CoerceCharArray;
       EmitInstr('MOV EDI,EAX');         { EDI = droite  }
       If LastExprIsPascalStr Then
         EmitInstr('INC EDI');           { sauter l octet de longueur droite }
@@ -16747,8 +19424,8 @@ Begin
       Continue;
     End;
 
-    { --- Court-circuit AND (ET logique) --- }
-    If Op = 'AND' Then
+    { --- Court-circuit AND (ET logique) : seulement si la gauche est booleenne --- }
+    If (Op = 'AND') And (LastVarTypeIdx = TY_IDX_BOOLEAN) Then
     Begin
       LblF := LabelGen;
       LblE := LabelGen;
@@ -16765,8 +19442,8 @@ Begin
       Continue;
     End;
 
-    { --- Court-circuit OR (OU logique) --- }
-    If Op = 'OR' Then
+    { --- Court-circuit OR (OU logique) : seulement si la gauche est booleenne --- }
+    If (Op = 'OR') And (LastVarTypeIdx = TY_IDX_BOOLEAN) Then
     Begin
       LblF := LabelGen;
       LblE := LabelGen;
@@ -16780,17 +19457,116 @@ Begin
       EmitLabel(LblF);
       EmitInstr('MOV EAX,1');
       EmitLabel(LblE);
+      Continue;
+    End;
+
+    { --- Ensembles : union + difference - intersection * egalite = <> --- }
+    If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
+       (TypeTab[LastVarTypeIdx].Kind = TYK_SET) And
+       ((Op = '+') Or (Op = '-') Or (Op = '*') Or (Op = '=') Or (Op = '<>') Or (Op = '<=') Or (Op = '>=')) And
+       (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) Then
+    Begin
+      EmitInstr('PUSH EAX');            { adresse ensemble gauche }
+      ParseExprPrec(PI, Prec + 1);
+      EmitInstr('MOV EDI,EAX');         { droite }
+      EmitInstr('POP ESI');             { gauche }
+      If (Op = '+') Or (Op = '-') Or (Op = '*') Then
+      Begin
+        LblF := 'SETBUF+' + IntToStr_((SetBufSeq Mod 8) * 32);
+        Inc(SetBufSeq);
+        EmitInstr('LEA EDX,[' + LblF + ']');
+        If Op = '+' Then EmitInstr('CALL ' + TP_RT_PFX + 'SETUNION')
+        Else If Op = '-' Then EmitInstr('CALL ' + TP_RT_PFX + 'SETDIFF')
+        Else EmitInstr('CALL ' + TP_RT_PFX + 'SETINTER');
+        EmitInstr('MOV EAX,EDX');
+        LastVarTypeIdx := SetGenTypeIdx;
+      End
+      Else
+      Begin
+        If Op = '<=' Then
+        Begin
+          EmitInstr('MOV EAX,ESI');
+          EmitInstr('MOV ESI,EDI');
+          EmitInstr('MOV EDI,EAX');
+          EmitInstr('CALL ' + TP_RT_PFX + 'SETSUB')     { droite contient gauche }
+        End
+        Else If Op = '>=' Then
+          EmitInstr('CALL ' + TP_RT_PFX + 'SETSUB')
+        Else
+        Begin
+          EmitInstr('CALL ' + TP_RT_PFX + 'SETEQ');
+          If Op = '<>' Then EmitInstr('XOR EAX,1');
+        End;
+        LastVarTypeIdx := TY_IDX_BOOLEAN;
+      End;
+      LastExprIsPascalStr := False;
       Continue;
     End;
 
     { --- Operateurs binaires normaux --- }
-    { Sauver la valeur gauche (EAX) sur la pile }
+    { Sauver la valeur gauche (EAX) sur la pile ; une valeur reelle reste dans ST(0) }
+    LastExprIsLit := False;
+    LeftT := LastVarTypeIdx;
+    LeftReal := TypeIsReal(LeftT) And W32Fpu;
     If Opts.DestTarget = DEST_CRAY1 Then
       EmitInstr('CRSAVE')
-    Else
+    Else If Not LeftReal Then
       EmitInstr('PUSH EAX');
 
     ParseExprPrec(PI, Prec + 1);
+
+    { --- Reels : + - * / et comparaisons ; la division / est toujours reelle --- }
+    RightReal := TypeIsReal(LastVarTypeIdx) And W32Fpu;
+    If (LeftReal Or RightReal Or ((Op = '/') And W32Fpu)) And
+       ((Op = '+') Or (Op = '-') Or (Op = '*') Or (Op = '/') Or (Op = '=') Or (Op = '<>') Or
+        (Op = '<') Or (Op = '>') Or (Op = '<=') Or (Op = '>=')) Then
+    Begin
+      { ST(0) = droite, ST(1) = gauche }
+      If LeftReal And (Not RightReal) Then
+        GenIntToReal
+      Else If Not LeftReal Then
+      Begin
+        If Not RightReal Then GenIntToReal;      { droite -> ST(0) }
+        EmitInstr('FILD DWORD PTR [ESP]');        { gauche (entier empile) -> ST(0) }
+        EmitInstr('ADD ESP,4');
+        EmitInstr('FXCH');
+      End;
+      If Op = '+' Then EmitInstr('FADDP ST(1),ST')
+      Else If Op = '-' Then EmitInstr('FSUBP ST(1),ST')
+      Else If Op = '*' Then EmitInstr('FMULP ST(1),ST')
+      Else If Op = '/' Then EmitInstr('FDIVP ST(1),ST')
+      Else
+      Begin
+        { comparaison : FCOMPP compare ST(0)=droite a ST(1)=gauche ; C0 : droite < gauche }
+        EmitInstr('FCOMPP');
+        EmitInstr('FNSTSW AX');
+        EmitInstr('SAHF');
+        LblF := LabelGen;
+        LblE := LabelGen;
+        If Op = '=' Then EmitInstr('JE ' + LblF)
+        Else If Op = '<>' Then EmitInstr('JNE ' + LblF)
+        Else If Op = '>' Then EmitInstr('JB ' + LblF)
+        Else If Op = '<' Then EmitInstr('JA ' + LblF)
+        Else If Op = '>=' Then EmitInstr('JBE ' + LblF)
+        Else EmitInstr('JAE ' + LblF);
+        EmitInstr('XOR EAX,EAX');
+        EmitInstr('JMP ' + LblE);
+        EmitLabel(LblF);
+        EmitInstr('MOV EAX,1');
+        EmitLabel(LblE);
+        LastVarTypeIdx := TY_IDX_BOOLEAN;
+        LastExprIsPascalStr := False;
+        Continue;
+      End;
+      If LeftReal Or RightReal Then
+        LastVarTypeIdx := RealResultType(LeftT, LastVarTypeIdx)
+      Else
+        LastVarTypeIdx := TY_IDX_REAL;
+      LastExprIsPascalStr := False;
+      Continue;
+    End;
+    If LeftReal Then
+      EmitInstr('FSTP ST(0)');   { operateur non reel sur un reel : abandonner la valeur }
 
     If Opts.DestTarget = DEST_CRAY1 Then
     Begin
@@ -16820,6 +19596,12 @@ Begin
       EmitInstr('MOV EBX,EAX');
       EmitInstr('POP EAX');
       EmitBinOp(Op);
+      If (Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
+         (Op = '<=') Or (Op = '>=') Or (Op = 'IN') Then
+        LastVarTypeIdx := TY_IDX_BOOLEAN
+      Else If LastVarTypeIdx <> TY_IDX_BOOLEAN Then
+        LastVarTypeIdx := TY_IDX_INTEGER;
+      LastExprIsPascalStr := False;
     End;
   End;
 End;
@@ -16848,38 +19630,97 @@ Function InferExprType(PI : Integer) : Integer;
 Var
   Up : TString;
   SI, LI : Integer;
+  SP, SDepth : Integer;
   ResultType : Integer;
   FUp : TString;
   FJ  : Integer;
 
   { Descendre dans les types ARRAY si un '[' suit }
   Function ResolveArrayElement(TI : Integer) : Integer;
-  Var P, Depth : Integer;
+  { suit les suffixes ^ [i,j] .champ qui suivent l identificateur en EP }
+  Var P, Depth, FJ : Integer; FUp : TString;
   Begin
-    ResolveArrayElement := TI;
-    If (EP + 1 < EPEnd) And
-       (TokenPool[EP + 1].Kind = TK_PUNCT) And
-       (TokenPool[EP + 1].Val = '[') Then
+    P := EP + 1;
+    While (P < EPEnd) And (TI >= 0) And (TI < TypeCount) Do
     Begin
-      { Compter le nombre de dimensions (virgules + 1) en scannant }
-      P := EP + 2;
-      Depth := 0;
-      While (TI >= 0) And (TI < TypeCount) And
-            (TypeTab[TI].Kind = TYK_ARRAY) Do
+      If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '^') Then
       Begin
-        TI := TypeTab[TI].BaseTypeIdx;
-        Inc(Depth);
-        { Verifier s il y a une virgule pour la dimension suivante }
-        { Scan forward pour trouver la prochaine ',' au meme niveau }
-        { Approche simplifiee : descendre tant que c est un array }
-      End;
-      ResolveArrayElement := TI;
+        If TypeTab[TI].Kind = TYK_POINTER Then TI := TypeTab[TI].BaseTypeIdx
+        Else If TypeTab[TI].Kind = TYK_PCHAR Then TI := TY_IDX_CHAR
+        Else Break;
+        Inc(P);
+      End
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
+      Begin
+        If TypeTab[TI].Kind = TYK_ARRAY Then TI := TypeTab[TI].BaseTypeIdx
+        Else If (TypeTab[TI].Kind = TYK_STRING) Or (TypeTab[TI].Kind = TYK_PCHAR) Then TI := TY_IDX_CHAR
+        Else Break;
+        Depth := 1; Inc(P);
+        While (P < EPEnd) And (Depth > 0) Do
+        Begin
+          If TokenPool[P].Kind = TK_PUNCT Then
+          Begin
+            If (TokenPool[P].Val = '[') Or (TokenPool[P].Val = '(') Then Inc(Depth)
+            Else If (TokenPool[P].Val = ']') Or (TokenPool[P].Val = ')') Then Dec(Depth)
+            Else If (TokenPool[P].Val = ',') And (Depth = 1) And (TI >= 0) And
+                    (TI < TypeCount) And (TypeTab[TI].Kind = TYK_ARRAY) Then
+              TI := TypeTab[TI].BaseTypeIdx;
+          End;
+          Inc(P);
+        End;
+      End
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '.') And (P + 1 < EPEnd) Then
+      Begin
+        If (TypeTab[TI].Kind <> TYK_RECORD) And (TypeTab[TI].Kind <> TYK_OBJECT) Then Break;
+        FUp := StrUpperCase(TokenPool[P + 1].Val);
+        FJ := 0;
+        While (FJ < TypeTab[TI].FieldCount) And (TypeTab[TI].Fields[FJ].Name <> FUp) Do Inc(FJ);
+        If FJ < TypeTab[TI].FieldCount Then TI := TypeTab[TI].Fields[FJ].TypeIdx
+        Else Break;
+        Inc(P, 2);
+      End
+      Else Break;
     End;
+    ResolveArrayElement := TI;
   End;
 
 Begin
   InferExprType := TY_IDX_INTEGER;
   If EP >= EPEnd Then Exit;
+  { expression relationnelle ou logique au niveau superieur (hors parentheses et crochets)
+    jusqu a la fin de l argument : le resultat est un booleen (Write(A = B) affiche TRUE/FALSE) }
+  SP := EP; SDepth := 0;
+  While SP < EPEnd Do
+  Begin
+    If TokenPool[SP].Kind = TK_PUNCT Then
+    Begin
+      If (TokenPool[SP].Val = '(') Or (TokenPool[SP].Val = '[') Then Inc(SDepth)
+      Else If (TokenPool[SP].Val = ')') Or (TokenPool[SP].Val = ']') Then
+      Begin
+        If SDepth = 0 Then Break;
+        Dec(SDepth);
+      End
+      Else If (SDepth = 0) And ((TokenPool[SP].Val = ',') Or (TokenPool[SP].Val = ':') Or
+                                (TokenPool[SP].Val = ';')) Then Break;
+    End
+    Else If SDepth = 0 Then
+    Begin
+      If (TokenPool[SP].Kind = TK_OP) And ((TokenPool[SP].Val = '=') Or (TokenPool[SP].Val = '<>') Or
+         (TokenPool[SP].Val = '<') Or (TokenPool[SP].Val = '>') Or (TokenPool[SP].Val = '<=') Or
+         (TokenPool[SP].Val = '>=')) Then
+      Begin
+        InferExprType := TY_IDX_BOOLEAN;
+        Exit;
+      End;
+      If (TokenPool[SP].Kind = TK_KEYWORD) And ((StrUpperCase(TokenPool[SP].Val) = 'IN') Or
+         (StrUpperCase(TokenPool[SP].Val) = 'NOT')) Then
+      Begin
+        InferExprType := TY_IDX_BOOLEAN;
+        Exit;
+      End;
+    End;
+    Inc(SP);
+  End;
 
   If TokenPool[EP].Kind = TK_STRING Then
   Begin
@@ -16933,29 +19774,21 @@ Begin
 
     { Chercher dans les symboles globaux }
     SI := SymFind(Up);
+    { fonction integree : type du resultat (Chr -> Char, Eof -> Boolean, Length -> Integer...) }
+    If (SI >= 0) And (SymTab[SI].Kind = SK_FUNC) And SymTab[SI].IsExternal Then
+    Begin
+      Case BuiltinFuncResultKind(Up) Of
+        1 : InferExprType := TY_IDX_STRING;
+        2 : InferExprType := TY_IDX_CHAR;
+        3 : InferExprType := TY_IDX_BOOLEAN;
+      Else InferExprType := TY_IDX_INTEGER;
+      End;
+      Exit;
+    End;
     If SI >= 0 Then
     Begin
       ResultType := SymTab[SI].TypeIdx;
       ResultType := ResolveArrayElement(ResultType);
-      { Resoudre l acces champ record : Var.Field }
-      If (EP + 2 < EPEnd) And
-         (TokenPool[EP + 1].Kind = TK_PUNCT) And
-         (TokenPool[EP + 1].Val = '.') And
-         (TokenPool[EP + 2].Kind = TK_IDENT) Then
-      Begin
-        If (ResultType >= 0) And (ResultType < TypeCount) And
-           ((TypeTab[ResultType].Kind = TYK_RECORD) Or
-            (TypeTab[ResultType].Kind = TYK_OBJECT)) Then
-        Begin
-          FUp := StrUpperCase(TokenPool[EP + 2].Val);
-          For FJ := 0 To TypeTab[ResultType].FieldCount - 1 Do
-            If TypeTab[ResultType].Fields[FJ].Name = FUp Then
-            Begin
-              ResultType := TypeTab[ResultType].Fields[FJ].TypeIdx;
-              Break;
-            End;
-        End;
-      End;
       InferExprType := ResultType;
       Exit;
     End;
@@ -17016,7 +19849,13 @@ Begin
   End;
 
   { --- Mode x86 --- }
-  If IsStrType Then
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) And (TypeTab[TypeIdx].Kind = TYK_PCHAR) Then
+  Begin
+    { EAX = PChar : chaine ASCIIZ }
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  End
+  Else If IsStrType Then
   Begin
     { EAX = pointeur vers chaine }
     EmitInstr('MOV ESI,EAX');
@@ -17069,7 +19908,13 @@ Begin
   IsStrType := (TypeIdx = TY_IDX_STRING) Or
                ((TypeIdx >= 0) And (TypeIdx < TypeCount) And
                 (TypeTab[TypeIdx].Kind = TYK_STRING));
-  If IsStrType Then
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) And (TypeTab[TypeIdx].Kind = TYK_PCHAR) Then
+  Begin
+    { EAX = PChar : chaine ASCIIZ }
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  End
+  Else If IsStrType Then
   Begin
     EmitInstr('MOV ESI,EAX');
     If LastExprIsPascalStr Then
@@ -17102,6 +19947,82 @@ Begin
     EmitInstr('LEA ESI,[NUMBUF]');
     EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
   End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitWriteValue : afficher EAX (type TIdx) avec largeur        }
+{ optionnelle (Width > 0 : constante ; -1 : deja dans ECX) sur  }
+{ la sortie standard ou le fichier courant (FILE_WRHND)         }
+{ ------------------------------------------------------------ }
+
+Var
+  CurFmtDec : Integer;   { decimales du Write/Str courant : -1 aucune, -2 dynamique (EDX) }
+
+Procedure EmitWriteValue(TIdx : Integer; Width : Integer; ToFile : Boolean);
+Var
+  LblFalse, LblDone : TString;
+  IsStrType : Boolean;
+  Pfx : TString;
+Begin
+  If ToFile Then Pfx := 'F' Else Pfx := '';
+  If TypeIsReal(TIdx) And W32Fpu Then
+  Begin
+    { reel : ST(0) -> chaine formatee (largeur ECX, decimales EDX, taille EBX) }
+    If Width > 0 Then EmitInstr('MOV ECX,' + IntToStr_(Width))
+    Else If Width = 0 Then EmitInstr('XOR ECX,ECX');
+    If CurFmtDec >= 0 Then EmitInstr('MOV EDX,' + IntToStr_(CurFmtDec))
+    Else If CurFmtDec = -1 Then EmitInstr('MOV EDX,-1');
+    EmitInstr('MOV EBX,' + IntToStr_(RealSizeCode(TIdx)));
+    EmitInstr('CALL ' + TP_RT_PFX + 'REALSTR');
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('INC ESI');
+    EmitInstr('CALL ' + TP_RT_PFX + Pfx + 'PRINTSTR');
+    LastVarTypeIdx := TY_IDX_INTEGER;   { ST(0) consomme }
+    Exit;
+  End;
+  If Is68kTarget Or (Opts.DestTarget = DEST_CRAY1) Or (Width = 0) Then
+  Begin
+    If ToFile Then EmitFilePrintEAX(TIdx) Else EmitPrintEAX(TIdx);
+    Exit;
+  End;
+  IsStrType := (TIdx = TY_IDX_STRING) Or
+               ((TIdx >= 0) And (TIdx < TypeCount) And
+                (TypeTab[TIdx].Kind = TYK_STRING));
+  { ESI = chaine ASCIIZ a afficher }
+  If (TIdx >= 0) And (TIdx < TypeCount) And (TypeTab[TIdx].Kind = TYK_PCHAR) Then
+    EmitInstr('MOV ESI,EAX')
+  Else If IsStrType Then
+  Begin
+    EmitInstr('MOV ESI,EAX');
+    If LastExprIsPascalStr Then
+      EmitInstr('INC ESI');
+  End
+  Else If TIdx = TY_IDX_CHAR Then
+  Begin
+    EmitInstr('MOVZX EAX,AL');
+    EmitInstr('MOV [CHRBUF],EAX');
+    EmitInstr('LEA ESI,[CHRBUF]');
+  End
+  Else If TIdx = TY_IDX_BOOLEAN Then
+  Begin
+    LblFalse := LabelGen;
+    LblDone  := LabelGen;
+    EmitInstr('TEST EAX,EAX');
+    EmitInstr('JZ ' + LblFalse);
+    EmitInstr('LEA ESI,[TRUE_STR]');
+    EmitInstr('JMP ' + LblDone);
+    EmitLabel(LblFalse);
+    EmitInstr('LEA ESI,[FALSE_STR]');
+    EmitLabel(LblDone);
+  End
+  Else
+  Begin
+    EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+    EmitInstr('LEA ESI,[NUMBUF]');
+  End;
+  If Width > 0 Then
+    EmitInstr('MOV ECX,' + IntToStr_(Width));
+  EmitInstr('CALL ' + TP_RT_PFX + Pfx + 'PADPRINT');
 End;
 
 { ------------------------------------------------------------ }
@@ -18183,10 +21104,15 @@ Procedure ParseWriteStmt(PI : Integer; IsWriteLn : Boolean);
 Var
   TIdx : Integer;
   FmtWidth : Integer;
+  FmtDec   : Integer;
   IsFileWrite : Boolean;
   FVarTIdx    : Integer;
+  FileArgTIdx : Integer;
+  FileArgName : TString;
   Up          : TString;
   LI, SI      : Integer;
+  SavedTIdx : Integer;
+  SavedPascal : Boolean;
 Begin
   { Branche specialisee 6502 (Apple II / C64) : code natif }
   If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
@@ -18264,12 +21190,25 @@ Begin
       SI := SymFind(Up);
       If SI >= 0 Then FVarTIdx := SymTab[SI].TypeIdx;
     End;
-    If FVarTIdx = TY_IDX_TEXT Then
+    If (Up = 'OUTPUT') And (SymFind(Up) < 0) Then
+    Begin
+      { Write(Output, ...) : sortie standard }
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ',') Then
+        Inc(EP);
+    End
+    Else If IsFileVarType(FVarTIdx) Then
     Begin
       { Ecriture dans un fichier }
       IsFileWrite := True;
+      FileArgTIdx := FVarTIdx;
+      FileArgName := TokenPool[EP].Val;
       GenLoadAddr(PI, TokenPool[EP].Val);
       Inc(EP);
+      EmitInstr('MOV EBX,EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+      EmitIoCheck;
       EmitInstr('MOV EAX,DWORD PTR [EAX]');    { charger le handle }
       EmitInstr('MOV DWORD PTR [FILE_WRHND],EAX');
       { Sauter la virgule si presente }
@@ -18279,6 +21218,30 @@ Begin
     End;
   End;
 
+  If IsFileWrite And (TypeTab[FileArgTIdx].Kind = TYK_FILE) Then
+  Begin
+    { Write(F, V1, V2...) sur File Of T : BlockWrite d un enregistrement par variable }
+    While Not EPAtEnd Do
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then Break;
+      If TokenPool[EP].Kind = TK_IDENT Then
+      Begin
+        GenLoadAddr(PI, FileArgName);
+        EmitInstr('PUSH EAX');
+        GenLoadAddr(PI, TokenPool[EP].Val);
+        Inc(EP);
+        EmitInstr('PUSH EAX');
+        EmitInstr('PUSH 1');
+        EmitInstr('CALL ' + TP_RT_PFX + 'BLOCKWRITE');
+        EmitInstr('ADD ESP,12');
+      End
+      Else Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then Inc(EP)
+      Else Break;
+    End;
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then Inc(EP);
+    Exit;
+  End;
   { Boucle sur les arguments }
   While Not EPAtEnd Do
   Begin
@@ -18291,9 +21254,24 @@ Begin
 
     { Evaluer l expression }
     ParseExpr(PI);
+    If (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) Then CoerceCharArray;
+    { le type constate par l emetteur l emporte quand il est sur (chaine Pascal, Char, Boolean) }
+    If LastExprIsPascalStr Then
+      TIdx := TY_IDX_STRING
+    Else If (LastVarTypeIdx = TY_IDX_CHAR) Or (LastVarTypeIdx = TY_IDX_BOOLEAN) Then
+      TIdx := LastVarTypeIdx
+    Else If TypeIsString(LastVarTypeIdx) And (Not TypeIsString(TIdx)) Then
+      TIdx := LastVarTypeIdx
+    Else If (TIdx = TY_IDX_BOOLEAN) And (LastVarTypeIdx >= 0) And
+            (Not TypeIsString(LastVarTypeIdx)) Then
+      TIdx := LastVarTypeIdx;             { Not I : entier, pas booleen }
+
+    { une expression reelle (ST(0)) impose son type }
+    If TypeIsReal(LastVarTypeIdx) And W32Fpu Then TIdx := LastVarTypeIdx;
 
     { Detecter formatage :width }
     FmtWidth := 0;
+    FmtDec := -1;
     If Not EPAtEnd Then
     Begin
       If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
@@ -18301,20 +21279,27 @@ Begin
         Inc(EP); { consommer : }
         If Not EPAtEnd Then
         Begin
-          If TokenPool[EP].Kind = TK_INTEGER Then
+          If (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+             (TokenPool[EP + 1].Kind = TK_PUNCT) And
+             ((TokenPool[EP + 1].Val = ',') Or (TokenPool[EP + 1].Val = ')') Or
+              (TokenPool[EP + 1].Val = ':')) Then
           Begin
             FmtWidth := TokenPool[EP].IntVal;
             Inc(EP);
           End
           Else
           Begin
-            { Largeur dynamique : evaluer mais ignorer pour l instant }
+            { Largeur dynamique (expression) : evaluer dans ECX }
+            SavedTIdx := LastVarTypeIdx; SavedPascal := LastExprIsPascalStr;
             EmitInstr('PUSH EAX');
             ParseExpr(PI);
+            EmitInstr('MOV ECX,EAX');
             EmitInstr('POP EAX');
+            LastVarTypeIdx := SavedTIdx; LastExprIsPascalStr := SavedPascal;
+            FmtWidth := -1;
           End;
         End;
-        { Si :w:d (formatage flottant) : ignorer aussi d }
+        { :w:d (formatage des reels) : decimales constantes ou dynamiques (EDX) }
         If Not EPAtEnd Then
         Begin
           If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
@@ -18322,10 +21307,25 @@ Begin
             Inc(EP);
             If Not EPAtEnd Then
             Begin
-              If TokenPool[EP].Kind = TK_INTEGER Then
-                Inc(EP)
+              If (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+                 (TokenPool[EP + 1].Kind = TK_PUNCT) And
+                 ((TokenPool[EP + 1].Val = ',') Or (TokenPool[EP + 1].Val = ')')) Then
+              Begin
+                FmtDec := TokenPool[EP].IntVal;
+                Inc(EP);
+              End
               Else
+              Begin
+                SavedTIdx := LastVarTypeIdx; SavedPascal := LastExprIsPascalStr;
+                EmitInstr('PUSH ECX');
+                EmitInstr('PUSH EAX');
                 ParseExpr(PI);
+                EmitInstr('MOV EDX,EAX');
+                EmitInstr('POP EAX');
+                EmitInstr('POP ECX');
+                LastVarTypeIdx := SavedTIdx; LastExprIsPascalStr := SavedPascal;
+                FmtDec := -2;
+              End;
             End;
           End;
         End;
@@ -18333,17 +21333,9 @@ Begin
     End;
 
     { Afficher selon le type, avec padding si :width }
-    If (FmtWidth > 0) Then
-    Begin
-      EmitInstr('MOV ECX,' + IntToStr_(FmtWidth));
-      EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
-      EmitInstr('LEA ESI,[NUMBUF]');
-      EmitInstr('CALL ' + TP_RT_PFX + 'PADPRINT');
-    End
-    Else If IsFileWrite Then
-      EmitFilePrintEAX(TIdx)
-    Else
-      EmitPrintEAX(TIdx);
+    CurFmtDec := FmtDec;
+    EmitWriteValue(TIdx, FmtWidth, IsFileWrite);
+    CurFmtDec := -1;
 
     { Virgule entre arguments }
     If Not EPAtEnd Then
@@ -18392,7 +21384,12 @@ Var
   TIdx      : Integer;
   IsFileRead: Boolean;
   FVarTIdx  : Integer;
+  FileArgName  : TString;   { variable fichier de Read(F, ...) }
+  FileArgTIdx  : Integer;
+  FileByRecord : Boolean;   { File Of T : un enregistrement par variable }
+  FileByChar   : Boolean;   { Read(F, C) : caractere par caractere }
 Begin
+  FileArgName := ''; FileArgTIdx := -1; FileByRecord := False; FileByChar := False;
   If IsReadLn Then
     EmitComment('readln')
   Else
@@ -18432,20 +21429,91 @@ Begin
       SI := SymFind(Up);
       If SI >= 0 Then FVarTIdx := SymTab[SI].TypeIdx;
     End;
-    If FVarTIdx = TY_IDX_TEXT Then
+    If (Up = 'INPUT') And (SymFind(Up) < 0) Then
+    Begin
+      { Read(Input, ...) : entree standard }
+      Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ',') Then
+        Inc(EP);
+    End
+    Else If IsFileVarType(FVarTIdx) Then
     Begin
       { Lecture depuis un fichier }
       IsFileRead := True;
-      GenLoadAddr(PI, TokenPool[EP].Val);
+      FileArgName := TokenPool[EP].Val;
+      FileArgTIdx := FVarTIdx;
       Inc(EP);
-      EmitInstr('PUSH EAX');  { adresse de la variable fichier }
-      EmitInstr('CALL ' + TP_RT_PFX + 'READLN_FILE');
-      EmitInstr('ADD ESP,4');
       { Sauter la virgule si presente }
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ',') Then
         Inc(EP);
+      { Read(F, C) sur un Text : caractere par caractere ; File Of T : un enregistrement
+        par variable ; sinon lecture d une ligne dans INBUF }
+      If (TypeTab[FVarTIdx].Kind = TYK_FILE) Then
+        FileByRecord := True
+      Else If (Not IsReadLn) And (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) And
+              (FileVarType(PI, TokenPool[EP].Val) = TY_IDX_CHAR) Then
+        FileByChar := True
+      Else
+      Begin
+        GenLoadAddr(PI, FileArgName);
+        EmitInstr('PUSH EAX');  { adresse de la variable fichier }
+        EmitInstr('CALL ' + TP_RT_PFX + 'READLN_FILE');
+        EmitInstr('ADD ESP,4');
+        EmitIoCheck;
+      End;
     End;
+  End;
+  If FileByRecord Then
+  Begin
+    { Read(F, V1, V2...) sur File Of T : BlockRead d un enregistrement par variable }
+    While Not EPAtEnd Do
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then Break;
+      If TokenPool[EP].Kind = TK_IDENT Then
+      Begin
+        VName := TokenPool[EP].Val;
+        Inc(EP);
+        GenLoadAddr(PI, FileArgName);
+        EmitInstr('PUSH EAX');
+        GenLoadAddr(PI, VName);
+        EmitInstr('PUSH EAX');
+        EmitInstr('PUSH 1');
+        EmitInstr('CALL ' + TP_RT_PFX + 'BLOCKREAD');
+        EmitInstr('ADD ESP,12');
+        EmitIoCheck;
+      End
+      Else Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then Inc(EP)
+      Else Break;
+    End;
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then Inc(EP);
+    Exit;
+  End;
+  If FileByChar Then
+  Begin
+    { Read(F, C1, C2...) : un caractere par variable, sans consommer la fin de ligne }
+    While Not EPAtEnd Do
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then Break;
+      If TokenPool[EP].Kind = TK_IDENT Then
+      Begin
+        VName := TokenPool[EP].Val;
+        Inc(EP);
+        GenLoadAddr(PI, FileArgName);
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL ' + TP_RT_PFX + 'READCH_FILE');
+        EmitInstr('ADD ESP,4');
+        EmitIoCheck;
+        GenStoreVar(PI, VName);
+      End
+      Else Inc(EP);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then Inc(EP)
+      Else Break;
+    End;
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ')') Then Inc(EP);
+    Exit;
   End;
 
   If Not IsFileRead Then
@@ -18487,6 +21555,14 @@ Begin
           TIdx := SymTab[SI].TypeIdx;
       End;
 
+      If W32Fpu Then
+      Begin
+        { Types nommes (TLine = String[255]), variables englobantes : type resolu }
+        LI := GetVarTypeIdx(PI, Up);
+        If LI >= 0 Then TIdx := LI;
+        If (TIdx >= 0) And (TIdx < TypeCount) Then TIdx := TypeResolve(TIdx);
+        If TypeIsString(TIdx) Then TIdx := TY_IDX_STRING;
+      End;
       If (TIdx = TY_IDX_STRING) Or (TIdx = TY_IDX_PCHAR) Then
       Begin
         { Copier INBUF vers la variable string }
@@ -18502,11 +21578,21 @@ Begin
         EmitInstr('MOVZX EAX,BYTE PTR [INBUF]');
         GenStoreVar(PI, VName);
       End
+      Else If TypeIsReal(TIdx) And W32Fpu Then
+      Begin
+        { Reel : convertir INBUF (strtod) }
+        EmitInstr('LEA ESI,[INBUF]');
+        EmitInstr('CALL ' + TP_RT_PFX + 'VALREAL');
+        LastVarTypeIdx := TY_IDX_EXTENDED;
+        LastExprIsPascalStr := False;
+        GenStoreVar(PI, VName);
+      End
       Else
       Begin
         { Integer : convertir INBUF en nombre }
         EmitInstr('LEA ESI,[INBUF]');
         EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');
+        LastVarTypeIdx := TY_IDX_INTEGER;
         GenStoreVar(PI, VName);
       End;
     End
@@ -18536,121 +21622,161 @@ End;
 
 Procedure ParseStrStmt(PI : Integer);
 Var
-  VName : TString;
+  Width, T, Dec : Integer;
+  IsRealArg : Boolean;
 Begin
   EmitComment('str');
 
-  { Consommer ( }
   If Not EPMatch('(') Then Exit;
 
-  { Evaluer l expression numerique }
   ParseExpr(PI);
-
-  { Ignorer le formatage :width }
-  If Not EPAtEnd Then
+  IsRealArg := TypeIsReal(LastVarTypeIdx) And W32Fpu;
+  T := LastVarTypeIdx;
+  Dec := -1;
+  Width := 0;
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
   Begin
-    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
+    Inc(EP);
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+       (TokenPool[EP + 1].Kind = TK_PUNCT) And
+       ((TokenPool[EP + 1].Val = ',') Or (TokenPool[EP + 1].Val = ':')) Then
+    Begin
+      Width := TokenPool[EP].IntVal;
+      Inc(EP);
+    End
+    Else
+    Begin
+      EmitInstr('PUSH EAX');
+      ParseExpr(PI);
+      EmitInstr('MOV ECX,EAX');
+      EmitInstr('POP EAX');
+      Width := -1;
+    End;
+    { :w:d (reels) : decimales }
+    If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
     Begin
       Inc(EP);
-      If Not EPAtEnd Then
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) And (EP + 1 < EPEnd) And
+         (TokenPool[EP + 1].Kind = TK_PUNCT) And (TokenPool[EP + 1].Val = ',') Then
       Begin
-        If TokenPool[EP].Kind = TK_INTEGER Then
-          Inc(EP)
-        Else
-          ParseExpr(PI);
+        Dec := TokenPool[EP].IntVal;
+        Inc(EP);
+      End
+      Else
+      Begin
+        EmitInstr('PUSH ECX'); EmitInstr('PUSH EAX');
+        ParseExpr(PI);
+        EmitInstr('MOV EDX,EAX');
+        EmitInstr('POP EAX'); EmitInstr('POP ECX');
+        Dec := -2;
       End;
     End;
   End;
 
-  { Convertir en chaine }
-  EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
-
-  { Consommer , }
-  EPMatch(',');
-
-  { Variable cible }
-  If Not EPAtEnd Then
+  If IsRealArg Then
   Begin
-    If TokenPool[EP].Kind = TK_IDENT Then
-    Begin
-      VName := TokenPool[EP].Val;
-      Inc(EP);
-
-      { Copier NUMBUF vers la variable string }
-      EmitInstr('LEA ESI,[NUMBUF]');
-      GenLoadAddr(PI, VName);
-      EmitInstr('MOV EDI,EAX');
-      EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
-    End;
+    { reel : ST(0) -> chaine formatee dans l anneau STRRING }
+    If Width > 0 Then EmitInstr('MOV ECX,' + IntToStr_(Width))
+    Else If Width = 0 Then EmitInstr('XOR ECX,ECX');
+    If Dec >= 0 Then EmitInstr('MOV EDX,' + IntToStr_(Dec))
+    Else If Dec = -1 Then EmitInstr('MOV EDX,-1');
+    EmitInstr('MOV EBX,' + IntToStr_(RealSizeCode(T)));
+    EmitInstr('CALL ' + TP_RT_PFX + 'REALSTR');
+    EmitInstr('MOV ESI,EAX');
+    EmitInstr('INC ESI');
+    LastVarTypeIdx := TY_IDX_INTEGER;   { ST(0) consomme }
+  End
+  Else
+  Begin
+  EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+  If Width <> 0 Then
+  Begin
+    If Width > 0 Then
+      EmitInstr('MOV ECX,' + IntToStr_(Width));
+    EmitInstr('LEA ESI,[NUMBUF]');
+    EmitInstr('LEA EDI,[STRBUF2]');
+    EmitInstr('CALL ' + TP_RT_PFX + 'STRPAD');
+    EmitInstr('LEA ESI,[STRBUF2]');
+  End
+  Else
+    EmitInstr('LEA ESI,[NUMBUF]');
   End;
 
-  { Consommer ) }
+  EPMatch(',');
+
+  { destination : variable, element de tableau, champ... }
+  EmitInstr('PUSH ESI');
+  If ParseLValueAddrW32(PI, T) Then
+  Begin
+    EmitInstr('MOV EDI,EAX');
+    EmitInstr('POP ESI');
+    EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+  End
+  Else
+    EmitInstr('POP ESI');
+
   EPMatch(')');
 End;
 
-{ ------------------------------------------------------------ }
-{ ParseValStmt : parser Val(S, N, Code)                        }
-{ Convertit une chaine en nombre.                              }
-{ ------------------------------------------------------------ }
 
 Procedure ParseValStmt(PI : Integer);
 Var
-  VName : TString;
+  T : Integer;
 Begin
   EmitComment('val');
 
-  { Consommer ( }
   If Not EPMatch('(') Then Exit;
 
-  { Evaluer l expression chaine }
   ParseExpr(PI);
+  CoerceCharArray;
   If LastExprIsPascalStr Then
     EmitInstr('INC EAX');   { Pascal -> ASCIIZ : sauter l octet de longueur }
   EmitInstr('MOV ESI,EAX');
 
-  { Convertir en nombre }
-  EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');
-
-  { Consommer , }
   EPMatch(',');
 
-  { Variable numerique cible }
-  If Not EPAtEnd Then
+  { variable resultat : entier (STRTONUM) ou reel (VALREAL, strtod) selon son type }
+  EmitInstr('PUSH ESI');
+  If ParseLValueAddrW32(PI, T) Then
   Begin
-    If TokenPool[EP].Kind = TK_IDENT Then
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('POP ESI');
+    If TypeIsReal(T) And W32Fpu Then
     Begin
-      VName := TokenPool[EP].Val;
-      Inc(EP);
-      GenStoreVar(PI, VName);
+      EmitInstr('CALL ' + TP_RT_PFX + 'VALREAL');   { ST(0) = valeur, VALCODE = code }
+      LastVarTypeIdx := TY_IDX_EXTENDED;
+    End
+    Else
+    Begin
+      EmitInstr('PUSH EBX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');  { EAX = valeur, VALCODE = code d erreur }
+      EmitInstr('POP EBX');
+      LastVarTypeIdx := TY_IDX_INTEGER;
+    End;
+    LastExprIsPascalStr := False;
+    GenStoreToAddr(T);
+  End
+  Else
+  Begin
+    EmitInstr('POP ESI');
+    EmitInstr('CALL ' + TP_RT_PFX + 'STRTONUM');
+  End;
+
+  { variable code }
+  If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then
+  Begin
+    Inc(EP);
+    If ParseLValueAddrW32(PI, T) Then
+    Begin
+      EmitInstr('MOV EBX,EAX');
+      EmitInstr('MOV EAX,[VALCODE]');
+      GenStoreToAddr(T);
     End;
   End;
 
-  { Troisieme argument Code : stocker 0 (pas d erreur) }
-  If Not EPAtEnd Then
-  Begin
-    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Then
-    Begin
-      Inc(EP);
-      If Not EPAtEnd Then
-      Begin
-        If TokenPool[EP].Kind = TK_IDENT Then
-        Begin
-          VName := TokenPool[EP].Val;
-          Inc(EP);
-          EmitInstr('XOR EAX,EAX');
-          GenStoreVar(PI, VName);
-        End;
-      End;
-    End;
-  End;
-
-  { Consommer ) }
   EPMatch(')');
 End;
 
-{ ============================================================ }
-{ TODO 13 - STRUCTURES DE CONTROLE                [IMPLEMENTE] }
-{ ============================================================ }
 
 { ------------------------------------------------------------ }
 { LoopPush : empiler un contexte de boucle (Break/Continue)     }
@@ -18712,11 +21838,14 @@ Begin
   { Parser l instruction du THEN }
   ParseStmt(PI);
 
-  { Detecter ELSE }
+  { Detecter ELSE. Un ';' juste avant ELSE termine le IF : l ELSE appartient     }
+  { alors au CASE englobant (Case C of '~':If X Then Begin ... End; Else ...).    }
   HasElse := False;
   If Not EPAtEnd Then
     If (TokenPool[EP].Kind = TK_KEYWORD) And
-       (StrUpperCase(TokenPool[EP].Val) = 'ELSE') Then
+       (StrUpperCase(TokenPool[EP].Val) = 'ELSE') And
+       Not ((EP > 0) And (TokenPool[EP - 1].Kind = TK_PUNCT) And
+            (TokenPool[EP - 1].Val = ';')) Then
       HasElse := True;
 
   If HasElse Then
@@ -18744,6 +21873,7 @@ Var
   Up      : TString;
   CaseVal : LongInt;
   RangeHi : LongInt;
+  SI      : Integer;
 Begin
   EmitComment('case');
 
@@ -18788,18 +21918,15 @@ Begin
       If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ':') Then
         Break;
 
-      { Lire la valeur }
+      { Lire la valeur : constante (entier, caractere, constante nommee, expression constante) }
       CaseVal := 0;
-      If TokenPool[EP].Kind = TK_INTEGER Then
+      If (TokenPool[EP].Kind = TK_INTEGER) Or (TokenPool[EP].Kind = TK_CHAR) Or
+         ((TokenPool[EP].Kind = TK_STRING) And (Length(TokenPool[EP].Val) = 1)) Or
+         ((TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '-')) Or
+         ((TokenPool[EP].Kind = TK_IDENT) And (SymFind(StrUpperCase(TokenPool[EP].Val)) >= 0) And
+          (SymTab[SymFind(StrUpperCase(TokenPool[EP].Val))].Kind = SK_CONST)) Then
       Begin
-        CaseVal := TokenPool[EP].IntVal;
-        Inc(EP);
-      End
-      Else If (TokenPool[EP].Kind = TK_CHAR) And
-              (Length(TokenPool[EP].Val) > 0) Then
-      Begin
-        CaseVal := Ord(TokenPool[EP].Val[1]);
-        Inc(EP);
+        CaseVal := ConstTokExprAt(EP);
       End
       Else
       Begin
@@ -18825,17 +21952,12 @@ Begin
          (TokenPool[EP].Val = '..') Then
       Begin
         Inc(EP);  { consommer .. }
-        RangeHi := 0;
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_INTEGER) Then
-        Begin
-          RangeHi := TokenPool[EP].IntVal;
-          Inc(EP);
-        End;
+        RangeHi := ConstTokExprAt(EP);
         EmitInstr('MOV EAX,DWORD PTR [ESP]');
         EmitInstr('CMP EAX,' + IntToStr_(CaseVal));
-        EmitInstr('JB ' + LblNext);
+        EmitInstr('JL ' + LblNext);
         EmitInstr('CMP EAX,' + IntToStr_(RangeHi));
-        EmitInstr('JBE ' + LblHit);
+        EmitInstr('JLE ' + LblHit);
         EmitInstr('JMP ' + LblNext);
       End
       Else
@@ -18894,10 +22016,12 @@ Begin
         If (TokenPool[EP].Kind = TK_KEYWORD) And
            (StrUpperCase(TokenPool[EP].Val) = 'END') Then
           Break;
+        SI := EP;
         ParseStmt(PI);
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
           Inc(EP);
+        If EP = SI Then SkipStuckToken;
       End;
     End;
   End;
@@ -18989,6 +22113,8 @@ Procedure ParseRepeatStmt(PI : Integer);
 Var
   LblBeg : TString;
   LblEnd : TString;
+  LblCont : TString;
+  SI : Integer;
 Begin
   EmitComment('repeat');
 
@@ -19003,12 +22129,13 @@ Begin
 
   LblBeg := LabelGen;
   LblEnd := LabelGen;
+  LblCont := LabelGen;
 
   { Label debut }
   EmitLabel(LblBeg);
 
-  { Empiler le contexte de boucle }
-  LoopPush(LblEnd, LblBeg);
+  { Empiler le contexte de boucle (Continue -> evaluation de la condition UNTIL) }
+  LoopPush(LblEnd, LblCont);
 
   { Parser les instructions jusqu a UNTIL }
   While Not EPAtEnd Do
@@ -19016,10 +22143,12 @@ Begin
     If (TokenPool[EP].Kind = TK_KEYWORD) And
        (StrUpperCase(TokenPool[EP].Val) = 'UNTIL') Then
       Break;
+    SI := EP;
     ParseStmt(PI);
     If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
        (TokenPool[EP].Val = ';') Then
       Inc(EP);
+    If EP = SI Then SkipStuckToken;
   End;
 
   { Consommer UNTIL }
@@ -19029,6 +22158,7 @@ Begin
       Inc(EP);
 
   { Evaluer la condition }
+  EmitLabel(LblCont);
   ParseExpr(PI);
 
   { TEST EAX,EAX / JZ debut (si faux, on boucle) }
@@ -19055,6 +22185,7 @@ Var
   LblTest  : TString;
   LblEnd   : TString;
   LblCont  : TString;
+  LblBody  : TString;
   IsDownTo : Boolean;
   AIIDepth : Integer;
   AIIUp    : TString;
@@ -19085,7 +22216,9 @@ Begin
       Inc(EP);
 
   { Evaluer l expression de depart }
+  WantCharLit := (GetVarTypeIdx(PI, VarName) = TY_IDX_CHAR);
   ParseExpr(PI);
+  WantCharLit := False;
 
   { Stocker la valeur de depart dans la variable }
   GenStoreVar(PI, VarName);
@@ -19106,7 +22239,9 @@ Begin
   End;
 
   { Evaluer l expression limite }
+  WantCharLit := (GetVarTypeIdx(PI, VarName) = TY_IDX_CHAR);
   ParseExpr(PI);
+  WantCharLit := False;
 
   { Stocker la limite dans une variable data temporaire }
   LimLabel := LabelGen;
@@ -19117,6 +22252,7 @@ Begin
   LblTest := LabelGen;
   LblEnd  := LabelGen;
   LblCont := LabelGen;
+  LblBody := LabelGen;
 
   { Consommer DO }
   If Not EPAtEnd Then
@@ -19134,6 +22270,7 @@ Begin
     EmitInstr('JL ' + LblEnd)
   Else
     EmitInstr('JG ' + LblEnd);
+  EmitLabel(LblBody);
 
   { Empiler le contexte de boucle }
   LoopPush(LblEnd, LblCont);
@@ -19148,19 +22285,18 @@ Begin
 
   { Label continue (increment) }
   EmitLabel(LblCont);
-
-  { Increment ou decrement de la variable }
+  { Fin de boucle quand la variable a atteint la limite AVANT de l incrementer : }
+  { un compteur Word ou Byte (For J := N DownTo 0, For B := 0 To 255) ne deborde pas }
   GenLoadVar(PI, VarName);
+  EmitInstr('CMP EAX,DWORD PTR [' + LimLabel + ']');
+  EmitInstr('JE ' + LblEnd);
   If IsDownTo Then
     EmitInstr('DEC EAX')
   Else
     EmitInstr('INC EAX');
   GenStoreVar(PI, VarName);
+  EmitInstr('JMP ' + LblBody);
 
-  { Retour au test }
-  EmitInstr('JMP ' + LblTest);
-
-  { Label fin }
   EmitLabel(LblEnd);
 
   { Depiler le contexte de boucle }
@@ -19209,15 +22345,21 @@ Var
   Up    : TString;
   VName : TString;
   Lbl   : TString;
+  Lbl2  : TString;
+  ArgName : TString;      { variable resultat de BlockRead/BlockWrite }
+  RecSz   : Integer;      { taille d enregistrement pour Reset/Rewrite }
   SI    : Integer;
   LI    : Integer;
   TIdx    : Integer;
-  FOfs    : Integer;
-  FSize   : Integer;
+  FOfs    : LongInt;
+  FSize   : LongInt;
   ElemSz  : Integer;
   WI      : Integer;
 Begin
   If EPAtEnd Then Exit;
+  If Opts.DebugMode And Opts.Verbose Then
+    WriteLn('  [stmt] ligne ', TokenPool[EP].Line, ' : ', TokenPool[EP].Val,
+            ' @', BcGetCodeLen);   { offset dans le code (adresse = 401000h + offset) }
 
   { Cible 6502 (Apple II / C64) : interpretation pour tout le bloc }
   If Opts.AppleII Or Opts.C64 Or Opts.MSX Or Opts.CoCo3 Or Opts.TO7 Or Opts.Adam Or Opts.TRS80 Or Opts.Atari400 Or Opts.Atari800 Or Opts.NES Then
@@ -19238,6 +22380,25 @@ Begin
   Begin
     Inc(EP);
     Exit;
+  End;
+
+  { BREAK / CONTINUE : identificateurs (pas des mots reserves TP) ; saut vers la boucle englobante }
+  If (TokenPool[EP].Kind = TK_IDENT) And (LoopTop >= 0) Then
+  Begin
+    Up := StrUpperCase(TokenPool[EP].Val);
+    If ((Up = 'BREAK') Or (Up = 'CONTINUE')) And
+       ((SymFind(Up) < 0) Or SymTab[SymFind(Up)].IsExternal) Then
+    Begin
+      Inc(EP);
+      If Up = 'BREAK' Then
+        EmitInstr('JMP ' + LoopBreakLbl[LoopTop])
+      Else
+        EmitInstr('JMP ' + LoopContLbl[LoopTop]);
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
   End;
 
   { Mots-cles }
@@ -19277,8 +22438,7 @@ Begin
            (TokenPool[EP].Val = ';') Then
           Inc(EP);
         { Securite : si EP n a pas avance, forcer l avancement }
-        If EP = SI Then
-          Inc(EP);
+        If EP = SI Then SkipStuckToken;
       End;
       Exit;
     End;
@@ -19306,19 +22466,22 @@ Begin
     Begin
       EmitComment('with');
       Inc(EP);
-      { Lire le nom de la variable record }
+      { Lire la ou les variables record (expressions : A[2], P^, R.Sub) }
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
       Begin
-        VName := StrUpperCase(TokenPool[EP].Val);
-        Inc(EP);
-        { Empiler le contexte WITH }
-        If WithDepth < 8 Then
-        Begin
-          WithVarName[WithDepth] := VName;
-          WithVarPI[WithDepth]   := PI;
-          WithTypeIdx[WithDepth] := GetVarTypeIdx(PI, VName);
-          Inc(WithDepth);
-        End;
+        WI := 0;
+        Repeat
+          If Not ParseLValueAddrW32(PI, TIdx) Then Break;
+          If WithDepth < 8 Then
+          Begin
+            EmitInstr('MOV [WITHPTR+' + IntToStr_(WithDepth * 4) + '],EAX');
+            WithVarName[WithDepth] := '';
+            WithVarPI[WithDepth]   := PI;
+            WithTypeIdx[WithDepth] := TIdx;
+            Inc(WithDepth);
+            Inc(WI);
+          End;
+        Until Not EPMatch(',');
         { Attendre DO }
         While Not EPAtEnd Do
         Begin
@@ -19332,12 +22495,16 @@ Begin
         End;
         ParseStmt(PI);
         { Depiler le contexte WITH }
-        If WithDepth > 0 Then
-          Dec(WithDepth);
+        While WI > 0 Do
+        Begin
+          If WithDepth > 0 Then
+            Dec(WithDepth);
+          Dec(WI);
+        End;
       End
       Else
       Begin
-        { Pas de variable, avancer jusqu a DO }
+    { Pas de variable, avancer jusqu a DO }
         While Not EPAtEnd Do
         Begin
           If (TokenPool[EP].Kind = TK_KEYWORD) And
@@ -19376,6 +22543,7 @@ Begin
       Else
         EmitInstr('XOR EAX,EAX');
       EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -19394,8 +22562,7 @@ Begin
       End
       Else
         EmitInstr('MOV EAX,0');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ExitProcess');
+      EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -19510,6 +22677,42 @@ Begin
       Exit;
     End;
 
+    { Une variable locale ou un parametre masque les sous-programmes predefinis }
+    { (ex: Var Str : String ; Str[I] := C) : affectation directe                 }
+    If (((PI >= 0) And ((FindLocal(PI, Up) >= 0) Or (FindParam(PI, Up) >= 0) Or
+         IsOuterVarName(PI, Up))) Or IsShadowGlobal(Up)) And
+       (EP + 1 < EPEnd) And
+       (((TokenPool[EP + 1].Kind = TK_OP) And
+         ((TokenPool[EP + 1].Val = ':=') Or (TokenPool[EP + 1].Val = '^'))) Or
+        ((TokenPool[EP + 1].Kind = TK_PUNCT) And
+         ((TokenPool[EP + 1].Val = '[') Or (TokenPool[EP + 1].Val = '.')))) And
+       (Not Is68kTarget) And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+    Begin
+      ParseLValueAddrW32(PI, TIdx);   { EAX = adresse de la destination (et suffixes) }
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
+         (TokenPool[EP].Val = ':=') Then
+      Begin
+        Inc(EP);
+        EmitInstr('PUSH EAX');
+        WantCharLit := (TIdx = TY_IDX_CHAR);
+        ParseExpr(PI);
+        WantCharLit := False;
+        GenRangeCheckAssign(TIdx);
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);
+        If LastIndexIsStrLen Then
+        Begin
+          EmitInstr('MOVZX ECX,AL');
+          EmitInstr('ADD ECX,EBX');
+          EmitInstr('MOV BYTE PTR [ECX+1],0');
+        End;
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { INC/DEC/NEW/DISPOSE/GETMEM/FREEMEM/MOVE/FILLCHAR/MARK/RELEASE/SETTEXTBUF/CHDIR/MKDIR/RMDIR/GETDIR/INCLUDE/EXCLUDE }
     If (Up = 'INC') Or (Up = 'DEC') Or (Up = 'NEW') Or
        (Up = 'DISPOSE') Or (Up = 'GETMEM') Or (Up = 'FREEMEM') Or
@@ -19537,6 +22740,7 @@ Begin
       Else
         EmitInstr('XOR EAX,EAX');
       EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
@@ -19555,8 +22759,7 @@ Begin
       End
       Else
         EmitInstr('MOV EAX,0');
-      EmitInstr('PUSH EAX');
-      EmitInstr('CALL ExitProcess');
+      EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -19769,14 +22972,11 @@ Begin
       EmitComment('delete');
       If EPMatch('(') Then
       Begin
-        { S -> adresse du buffer }
-        If Not EPAtEnd Then
-        Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
-          GenLoadAddr(PI, Lbl);
-          EmitInstr('PUSH EAX');
-        End;
+        { S -> adresse de la chaine Pascal (variable, element, champ) }
+        If ParseLValueAddrW32(PI, TIdx) Then
+          EmitInstr('PUSH EAX')
+        Else
+          EmitInstr('PUSH 0');
         EPMatch(',');
         { Pos }
         ParseExpr(PI);
@@ -19786,8 +22986,12 @@ Begin
         ParseExpr(PI);
         EmitInstr('MOV ECX,EAX');
         EmitInstr('POP EBX');      { Pos }
-        EmitInstr('POP ESI');      { S   }
+        EmitInstr('POP ESI');      { S (Pascal) }
+        EmitInstr('PUSH ESI');
+        EmitInstr('INC ESI');      { partie ASCIIZ }
         EmitInstr('CALL ' + TP_RT_PFX + 'DELETE');
+        EmitInstr('POP EDI');
+        EmitInstr('CALL ' + TP_RT_PFX + 'FIXLEN');   { recalculer l octet de longueur }
         EPMatch(')');
       End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -19803,25 +23007,27 @@ Begin
       EmitComment('insert');
       If EPMatch('(') Then
       Begin
-        { Src }
+        { Src : chaine ASCIIZ }
         ParseExpr(PI);
-        EmitInstr('PUSH EAX');
+        GenStrSourceESI;
+        EmitInstr('PUSH ESI');
         EPMatch(',');
-        { Dst -> adresse du buffer }
-        If Not EPAtEnd Then
-        Begin
-          Lbl := TokenPool[EP].Val;
-          Inc(EP);
-          GenLoadAddr(PI, Lbl);
-          EmitInstr('PUSH EAX');
-        End;
+        { Dst -> adresse de la chaine Pascal }
+        If ParseLValueAddrW32(PI, TIdx) Then
+          EmitInstr('PUSH EAX')
+        Else
+          EmitInstr('PUSH 0');
         EPMatch(',');
         { Pos }
         ParseExpr(PI);
         EmitInstr('MOV EBX,EAX');
-        EmitInstr('POP EDI');      { Dst }
+        EmitInstr('POP EDI');      { Dst (Pascal) }
         EmitInstr('POP ESI');      { Src }
+        EmitInstr('PUSH EDI');
+        EmitInstr('INC EDI');
         EmitInstr('CALL ' + TP_RT_PFX + 'INSERT');
+        EmitInstr('POP EDI');
+        EmitInstr('CALL ' + TP_RT_PFX + 'FIXLEN');
         EPMatch(')');
       End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -20133,32 +23339,32 @@ Begin
         EmitInstr('PUSH OFFSET DOS_SYSTIME');
         EmitInstr('CALL GetLocalTime');
         { Year }
-        ParseExpr(PI);         { adresse var Year }
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+0]');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(',');
         { Month }
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+2]');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(',');
         { Day }
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+6]');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(',');
         { DayOfWeek }
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+4]');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(')');
       End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -20176,35 +23382,35 @@ Begin
         EmitInstr('PUSH OFFSET DOS_SYSTIME');
         EmitInstr('CALL GetLocalTime');
         { Hour }
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+8]');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(',');
         { Minute }
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+10]');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(',');
         { Second }
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+12]');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(',');
         { Sec100 (milliseconds / 10) }
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EmitInstr('PUSH EAX');
         EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+14]');
         EmitInstr('XOR EDX,EDX');
         EmitInstr('MOV ECX,10');
         EmitInstr('DIV ECX');
-        EmitInstr('POP EDX');
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');
+        GenStoreToAddr(TIdx);     { var Word (ou autre taille) }
         EPMatch(')');
       End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
@@ -20274,15 +23480,15 @@ Begin
         ParseExpr(PI);            { F = nom fichier (pointeur chaine) }
         EmitInstr('PUSH EAX');
         EPMatch(',');
-        ParseExpr(PI);            { Attr = var Word }
+        ParseLValueAddrW32(PI, TIdx);   { Attr = var Word }
         EmitInstr('PUSH EAX');    { sauver adresse var Attr }
         { Appeler GetFileAttributesA(nom) }
         EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
         EmitInstr('INC EAX');     { sauter octet longueur Pascal string }
         EmitInstr('PUSH EAX');
         EmitInstr('CALL GetFileAttributesA');
-        EmitInstr('POP EDX');     { adresse var Attr }
-        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('POP EBX');     { adresse var Attr }
+        GenStoreToAddr(TIdx);
         EmitInstr('ADD ESP,4');   { nettoyer F }
         { DosError = 0 si OK, sinon code erreur }
         EmitInstr('CMP EAX,-1');
@@ -20359,25 +23565,31 @@ Begin
     If Up = 'RESET' Then
     Begin
       Inc(EP);
+      RecSz := 0;
       If EPMatch('(') Then
       Begin
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
         Begin
+          RecSz := FileRecSize(FileVarType(PI, TokenPool[EP].Val));
           GenLoadAddr(PI, TokenPool[EP].Val);
           Inc(EP);
         End;
         EmitInstr('PUSH EAX');
-        { Ignorer le parametre optionnel de taille de bloc }
+        { taille d enregistrement : parametre optionnel, sinon celle du type }
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ',') Then
         Begin
           Inc(EP);
-          ParseExpr(PI);  { consommer le parametre }
-        End;
+          ParseExpr(PI);
+          EmitInstr('PUSH EAX');
+        End
+        Else
+          EmitInstr('PUSH ' + IntToStr_(RecSz));
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'RESET');
-      EmitInstr('ADD ESP,4');
+      EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20388,10 +23600,12 @@ Begin
     If Up = 'REWRITE' Then
     Begin
       Inc(EP);
+      RecSz := 0;
       If EPMatch('(') Then
       Begin
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
         Begin
+          RecSz := FileRecSize(FileVarType(PI, TokenPool[EP].Val));
           GenLoadAddr(PI, TokenPool[EP].Val);
           Inc(EP);
         End;
@@ -20401,11 +23615,15 @@ Begin
         Begin
           Inc(EP);
           ParseExpr(PI);
-        End;
+          EmitInstr('PUSH EAX');
+        End
+        Else
+          EmitInstr('PUSH ' + IntToStr_(RecSz));
         EPMatch(')');
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'REWRITE');
-      EmitInstr('ADD ESP,4');
+      EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20428,6 +23646,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'CLOSE');
       EmitInstr('ADD ESP,4');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20450,6 +23669,7 @@ Begin
       End;
       EmitInstr('CALL ' + TP_RT_PFX + 'APPEND');
       EmitInstr('ADD ESP,4');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20469,8 +23689,16 @@ Begin
         End;
         EPMatch(')');
       End;
-      EmitInstr('PUSH OFFSET FILE_NAMEBUF');
+      EmitInstr('ADD EAX,' + IntToStr_(TFR_NAME));   { nom ASCIIZ dans l enregistrement }
+      EmitInstr('PUSH EAX');
       EmitInstr('CALL DeleteFileA');
+      Lbl := LabelGen;
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JNZ ' + Lbl);
+      EmitInstr('CALL GetLastError');
+      EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');   { 2 fichier introuvable, 5 acces refuse... }
+      EmitLabel(Lbl);
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20483,9 +23711,14 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        { f : variable fichier - ignoree, FILE_NAMEBUF contient le nom depuis Assign }
+        { f : variable fichier ; son nom ASCIIZ est a TFR_NAME dans l enregistrement }
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          GenLoadAddr(PI, TokenPool[EP].Val);
           Inc(EP);
+        End;
+        EmitInstr('ADD EAX,' + IntToStr_(TFR_NAME));
+        EmitInstr('PUSH EAX');    { ancien nom }
         EPMatch(',');
         { newname : expression chaine }
         ParseExpr(PI);
@@ -20494,22 +23727,10 @@ Begin
         EmitInstr('PUSH EAX');    { save new name ptr }
         EPMatch(')');
       End;
-      { Copier le nouveau nom dans FILE_RENBUF }
-      EmitInstr('POP ESI');                  { source = new name ASCIIZ }
-      EmitInstr('LEA EDI,[FILE_RENBUF]');
-      EmitInstr('MOV ECX,259');
-      EmitLabel(TP_RT_PFX + 'REN_CP');
-      EmitInstr('LODSB');
-      EmitInstr('STOSB');
-      EmitInstr('TEST AL,AL');
-      EmitInstr('JZ ' + TP_RT_PFX + 'REN_GO');
-      EmitInstr('DEC ECX');
-      EmitInstr('JNZ ' + TP_RT_PFX + 'REN_CP');
-      EmitLabel(TP_RT_PFX + 'REN_GO');
-      { MoveFileA(FILE_NAMEBUF, FILE_RENBUF) }
-      EmitInstr('PUSH OFFSET FILE_RENBUF');
-      EmitInstr('PUSH OFFSET FILE_NAMEBUF');
-      EmitInstr('CALL MoveFileA');
+      { _TPRT_RENAME(ancien nom, nouveau nom) : copie le nouveau nom en ASCIIZ puis MoveFileA }
+      EmitInstr('CALL ' + TP_RT_PFX + 'RENAME');
+      EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20528,22 +23749,16 @@ Begin
           GenLoadAddr(PI, TokenPool[EP].Val);
           Inc(EP);
         End;
-        EmitInstr('MOV EAX,DWORD PTR [EAX]');  { handle fichier }
-        EmitInstr('PUSH EAX');                  { save handle }
+        EmitInstr('PUSH EAX');                  { adresse de la variable fichier }
         EPMatch(',');
-        { pos : expression entiere }
+        { pos : expression entiere (en enregistrements) }
         ParseExpr(PI);
-        EmitInstr('PUSH EAX');                  { save position }
+        EmitInstr('PUSH EAX');                  { position }
         EPMatch(')');
       End;
-      { SetFilePointer(handle, pos, NULL, FILE_BEGIN=0) }
-      EmitInstr('POP ECX');           { position }
-      EmitInstr('POP EBX');           { handle   }
-      EmitInstr('PUSH 0');            { dwMoveMethod = FILE_BEGIN }
-      EmitInstr('PUSH 0');            { lpDistanceToMoveHigh     }
-      EmitInstr('PUSH ECX');          { lDistanceToMove          }
-      EmitInstr('PUSH EBX');          { hFile                    }
-      EmitInstr('CALL SetFilePointer');
+      EmitInstr('CALL ' + TP_RT_PFX + 'SEEK');
+      EmitInstr('ADD ESP,8');
+      EmitIoCheck;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20596,96 +23811,66 @@ Begin
       Exit;
     End;
 
-    { BLOCKWRITE(f, buf, count [, result]) }
-    If Up = 'BLOCKWRITE' Then
+    { BLOCKWRITE(f, buf, count [, result]) / BLOCKREAD(f, buf, count [, result]) }
+    { _TPRT_BLOCKREAD/BLOCKWRITE(adresse f, buf, count) -> EAX = enregistrements transferes }
+    If (Up = 'BLOCKWRITE') Or (Up = 'BLOCKREAD') Then
     Begin
+      Lbl := Up;
       Inc(EP);
+      ArgName := '';
       If EPMatch('(') Then
       Begin
-        { f : file variable }
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
         Begin
           GenLoadAddr(PI, TokenPool[EP].Val);
           Inc(EP);
         End;
-        EmitInstr('MOV EAX,DWORD PTR [EAX]');
-        EmitInstr('MOV DWORD PTR [FILE_WRHND],EAX');
+        EmitInstr('PUSH EAX');        { adresse de la variable fichier }
         EPMatch(',');
-        { buf : buffer address }
-        ParseExpr(PI);
-        EmitInstr('PUSH EAX');        { save buf addr }
+        ParseVarArgAddr(PI);          { adresse du tampon }
+        EmitInstr('PUSH EAX');
         EPMatch(',');
-        { count }
-        ParseExpr(PI);
-        EmitInstr('PUSH EAX');        { save count }
-        { optional result var }
+        ParseExpr(PI);                { nombre d enregistrements }
+        EmitInstr('PUSH EAX');
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ',') Then
         Begin
           Inc(EP);
-          { result var - skip for now, use BYTESWR }
           If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+          Begin
+            ArgName := TokenPool[EP].Val;
             Inc(EP);
+          End;
         End;
         EPMatch(')');
       End;
-      { WriteFile(FILE_WRHND, buf, count, &BYTESWR, 0) }
-      EmitInstr('POP ECX');           { count }
-      EmitInstr('POP ESI');           { buf addr }
-      EmitInstr('PUSH 0');
-      EmitInstr('PUSH OFFSET BYTESWR');
-      EmitInstr('PUSH ECX');
-      EmitInstr('PUSH ESI');
-      EmitInstr('PUSH DWORD PTR [FILE_WRHND]');
-      EmitInstr('CALL WriteFile');
-      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
-         (TokenPool[EP].Val = ';') Then
-        Inc(EP);
-      Exit;
-    End;
-
-    { BLOCKREAD(f, buf, count [, result]) }
-    If Up = 'BLOCKREAD' Then
-    Begin
-      Inc(EP);
-      If EPMatch('(') Then
+      EmitInstr('CALL ' + TP_RT_PFX + Lbl);
+      If ArgName = '' Then
       Begin
-        { f : file variable }
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
-        Begin
-          GenLoadAddr(PI, TokenPool[EP].Val);
-          Inc(EP);
-        End;
-        EmitInstr('MOV EAX,DWORD PTR [EAX]');
-        EmitInstr('PUSH EAX');        { save handle }
-        EPMatch(',');
-        { buf : buffer address }
-        ParseExpr(PI);
-        EmitInstr('PUSH EAX');        { save buf addr }
-        EPMatch(',');
-        { count }
-        ParseExpr(PI);
-        EmitInstr('PUSH EAX');        { save count }
-        { optional result var }
-        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
-           (TokenPool[EP].Val = ',') Then
-        Begin
-          Inc(EP);
-          If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
-            Inc(EP);
-        End;
-        EPMatch(')');
+        { sans variable resultat : transfert incomplet = erreur 100 (lecture) / 101 (ecriture), comme TP et FPC }
+        Lbl2 := LabelGen;
+        EmitInstr('CMP DWORD PTR [FILE_IOERR],0');
+        EmitInstr('JNE ' + Lbl2);
+        EmitInstr('CMP EAX,DWORD PTR [ESP]');      { [ESP] = nombre demande }
+        EmitInstr('JE ' + Lbl2);
+        If Lbl = 'BLOCKREAD' Then
+          EmitInstr('MOV DWORD PTR [FILE_IOERR],100')
+        Else
+          EmitInstr('MOV DWORD PTR [FILE_IOERR],101');
+        EmitLabel(Lbl2);
       End;
-      { ReadFile(handle, buf, count, &FILE_BYTESRD, 0) }
-      EmitInstr('POP ECX');           { count }
-      EmitInstr('POP ESI');           { buf addr }
-      EmitInstr('POP EBX');           { handle }
-      EmitInstr('PUSH 0');
-      EmitInstr('PUSH OFFSET FILE_BYTESRD');
-      EmitInstr('PUSH ECX');
-      EmitInstr('PUSH ESI');
-      EmitInstr('PUSH EBX');
-      EmitInstr('CALL ReadFile');
+      EmitInstr('ADD ESP,12');
+      EmitIoCheck;
+      If ArgName <> '' Then
+      Begin
+        { nombre d enregistrements transferes -> variable (Word, Integer, LongInt...) }
+        EmitInstr('PUSH EAX');
+        GenLoadAddr(PI, ArgName);
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+        LastVarTypeIdx := TY_IDX_INTEGER;
+        GenStoreToAddr(GetVarTypeIdx(PI, ArgName));
+      End;
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then
         Inc(EP);
@@ -20757,6 +23942,12 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        If Not LastExprIsPascalStr Then
+        Begin
+          { le chemin doit etre une chaine Pascal (litteral ASCIIZ, PChar...) }
+          GenStrSourceESI;
+          EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+        End;
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);
@@ -20784,9 +23975,11 @@ Begin
       If EPMatch('(') Then
       Begin
         ParseExpr(PI);
+        If LastExprIsPascalStr Then EmitInstr('INC EAX');   { -> ASCIIZ }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);
+        If LastExprIsPascalStr Then EmitInstr('INC EAX');   { -> ASCIIZ }
         EmitInstr('PUSH EAX');
         EPMatch(')');
       End;
@@ -20922,13 +24115,16 @@ Begin
     If Up = 'GETVERIFY' Then
     Begin
       Inc(EP);
+      TIdx := TY_IDX_BOOLEAN;
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);
+        ParseLValueAddrW32(PI, TIdx);
         EPMatch(')');
       End;
       { Toujours retourner False (Win32 n a pas de verify DOS) }
-      EmitInstr('MOV DWORD PTR [EAX],0');
+      EmitInstr('MOV EBX,EAX');
+      EmitInstr('XOR EAX,EAX');
+      GenStoreToAddr(TIdx);
       If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = ';') Then Inc(EP);
       Exit;
@@ -20956,10 +24152,10 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { file var -> addr in EAX }
+        ParseLValueAddrW32(PI, TIdx);   { variable fichier -> adresse }
         EmitInstr('PUSH EAX');      { save file addr }
         EPMatch(',');
-        ParseExpr(PI);              { var Time -> addr in EAX }
+        ParseLValueAddrW32(PI, TIdx);   { var Time (LongInt) -> adresse dans EAX }
         EmitInstr('PUSH EAX');      { push Time addr }
       End;
       EPMatch(')');
@@ -20976,7 +24172,7 @@ Begin
       Inc(EP);
       If EPMatch('(') Then
       Begin
-        ParseExpr(PI);              { file var -> addr in EAX }
+        ParseLValueAddrW32(PI, TIdx);   { variable fichier -> adresse }
         EmitInstr('PUSH EAX');
         EPMatch(',');
         ParseExpr(PI);              { Time value in EAX }
@@ -21406,10 +24602,10 @@ Begin
           Else
           Begin
             { --- Intel 80386 (Win32) par defaut : PUSH EAX, CALL, ADD ESP,8 --- }
-            ParseExpr(PI);              { var T -> adresse dans EAX }
+            ParseExpr(PI);              { var T -> adresse dans EAX (record : par adresse) }
             EmitInstr('PUSH EAX');
             EPMatch(',');
-            ParseExpr(PI);              { var P -> adresse dans EAX }
+            ParseLValueAddrW32(PI, TIdx);   { var P (LongInt) -> adresse, pas valeur }
             EmitInstr('PUSH EAX');
           End;
         End; { Case }
@@ -21467,6 +24663,7 @@ Begin
             { Sous Win32, Keep = ExitProcess }
             ParseExpr(PI);
             EmitInstr('PUSH EAX');
+            EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
             EmitInstr('CALL ExitProcess');
           End;
         End; { Case }
@@ -24411,52 +27608,21 @@ Begin
     { WITH : resoudre champ implicite dans le scope WITH }
     If (WithDepth > 0) Then
     Begin
-      WI := WithDepth - 1;
-      While WI >= 0 Do
+      WI := WithFieldIndex(Up, FOfs);
+      If WI >= 0 Then
       Begin
-        FSize := 4;
-        FOfs := FindFieldOffset(WithTypeIdx[WI], Up, FSize);
-        If FOfs >= 0 Then Break;
-        Dec(WI);
-      End;
-      If (WI >= 0) And (FOfs >= 0) Then
-      Begin
-        Inc(EP);
-        { Affectation champ via WITH : field := expr }
+        ParseLValueAddrW32(PI, TIdx);   { EAX = adresse du champ (et suffixes) }
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
            (TokenPool[EP].Val = ':=') Then
         Begin
           Inc(EP);
-          GenLoadAddr(PI, WithVarName[WI]);
-          If FOfs > 0 Then
-            EmitInstr('ADD EAX,' + IntToStr_(FOfs));
           EmitInstr('PUSH EAX');
+          WantCharLit := (TIdx = TY_IDX_CHAR);
           ParseExpr(PI);
+          WantCharLit := False;
+          GenRangeCheckAssign(TIdx);
           EmitInstr('POP EBX');
-          If FSize = 1 Then
-            EmitInstr('MOV BYTE PTR [EBX],AL')
-          Else If (WithTypeIdx[WI] >= 0) And (WithTypeIdx[WI] < TypeCount) Then
-          Begin
-            { Verifier si le champ est un String }
-            LastVarTypeIdx := WithTypeIdx[WI];
-            For ElemSz := 0 To TypeTab[LastVarTypeIdx].FieldCount - 1 Do
-              If TypeTab[LastVarTypeIdx].Fields[ElemSz].Name = Up Then
-              Begin
-                If (TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx >= 0) And
-                   (TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx < TypeCount) And
-                   (TypeTab[TypeTab[LastVarTypeIdx].Fields[ElemSz].TypeIdx].Kind = TYK_STRING) Then
-                Begin
-                  EmitInstr('MOV ESI,EAX');
-                  EmitInstr('MOV EDI,EBX');
-                  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
-                End
-                Else
-                  EmitInstr('MOV [EBX],EAX');
-                Break;
-              End;
-          End
-          Else
-            EmitInstr('MOV [EBX],EAX');
+          GenStoreToAddr(TIdx);
         End;
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
@@ -24469,99 +27635,30 @@ Begin
     Inc(EP);
     If Not EPAtEnd Then
     Begin
-      { Affectation tableau : ident[index] := expr  (multi-dim, String) }
-      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '[') Then
+      { Affectation indirecte : ident[index] / ident.champ / ident^ ... := expr }
+      If ((TokenPool[EP].Kind = TK_PUNCT) And
+          ((TokenPool[EP].Val = '[') Or (TokenPool[EP].Val = '.'))) Or
+         ((TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '^')) Then
       Begin
-        Inc(EP);
-        LastVarTypeIdx := GetVarTypeIdx(PI, VName);
-        TIdx := LastVarTypeIdx;        { sauvegarder le type du tableau }
-        { Calculer l adresse de l element }
-        GenLoadAddr(PI, VName);
-        EmitInstr('PUSH EAX');         { sauvegarder adresse base }
-        ParseExpr(PI);                 { EAX = index }
-        LastVarTypeIdx := TIdx;        { restaurer le type du tableau }
-        { Soustraire borne inferieure }
-        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-           (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-           (TypeTab[LastVarTypeIdx].Lo <> 0) Then
-          EmitInstr('SUB EAX,' + IntToStr_(TypeTab[LastVarTypeIdx].Lo));
-        { Multiplier par la taille de l element }
-        If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-           (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-           (TypeTab[LastVarTypeIdx].BaseTypeIdx >= 0) Then
-        Begin
-          ElemSz := TypeSizeofIdx(TypeTab[LastVarTypeIdx].BaseTypeIdx);
-          If ElemSz = 1 Then
-            { rien }
-          Else If ElemSz = 2 Then
-            EmitInstr('SHL EAX,1')
-          Else If ElemSz = 4 Then
-            EmitInstr('SHL EAX,2')
-          Else If ElemSz = 8 Then
-            EmitInstr('SHL EAX,3')
-          Else
-            EmitInstr('IMUL EAX,' + IntToStr_(ElemSz));
-          TIdx := TypeTab[LastVarTypeIdx].BaseTypeIdx;  { avancer type }
-          LastVarTypeIdx := TIdx;
-        End
-        Else
-          EmitInstr('SHL EAX,2');
-        EmitInstr('POP EBX');
-        EmitInstr('ADD EAX,EBX');      { EAX = adresse element }
-        { Dimensions supplementaires separees par ',' }
-        While (Not EPAtEnd) And
-              (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ',') Do
-        Begin
-          Inc(EP);  { consommer ',' }
-          LastVarTypeIdx := TIdx;
-          EmitInstr('PUSH EAX');
-          ParseExpr(PI);
-          LastVarTypeIdx := TIdx;
-          If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-             (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-             (TypeTab[LastVarTypeIdx].Lo <> 0) Then
-            EmitInstr('SUB EAX,' + IntToStr_(TypeTab[LastVarTypeIdx].Lo));
-          If (LastVarTypeIdx >= 0) And (LastVarTypeIdx < TypeCount) And
-             (TypeTab[LastVarTypeIdx].Kind = TYK_ARRAY) And
-             (TypeTab[LastVarTypeIdx].BaseTypeIdx >= 0) Then
-          Begin
-            ElemSz := TypeSizeofIdx(TypeTab[LastVarTypeIdx].BaseTypeIdx);
-            If ElemSz = 1 Then
-            Else If ElemSz = 2 Then EmitInstr('SHL EAX,1')
-            Else If ElemSz = 4 Then EmitInstr('SHL EAX,2')
-            Else If ElemSz = 8 Then EmitInstr('SHL EAX,3')
-            Else EmitInstr('IMUL EAX,' + IntToStr_(ElemSz));
-            TIdx := TypeTab[LastVarTypeIdx].BaseTypeIdx;
-            LastVarTypeIdx := TIdx;
-          End
-          Else
-            EmitInstr('SHL EAX,2');
-          EmitInstr('POP EBX');
-          EmitInstr('ADD EAX,EBX');
-        End;
-        EmitInstr('PUSH EAX');         { sauvegarder adresse element }
-        EPMatch(']');
-        { Attendre ':=' }
+        ParseLValueW32(PI, VName, TIdx);   { EAX = adresse destination }
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
            (TokenPool[EP].Val = ':=') Then
         Begin
           Inc(EP);
-          ParseExpr(PI);               { EAX = valeur }
+          EmitInstr('PUSH EAX');
+          WantCharLit := (TIdx = TY_IDX_CHAR);
+          ParseExpr(PI);               { EAX = valeur (ou adresse source) }
+          WantCharLit := False;
+          GenRangeCheckAssign(TIdx);
           EmitInstr('POP EBX');
-          { Stocker selon le type de l element }
-          If (TIdx >= 0) And (TIdx < TypeCount) And
-             (TypeTab[TIdx].Kind = TYK_STRING) Then
+          GenStoreToAddr(TIdx);
+          If LastIndexIsStrLen Then
           Begin
-            { String : copier via STRASSIGN }
-            EmitInstr('MOV ESI,EAX');
-            EmitInstr('MOV EDI,EBX');
-            EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
-          End
-          Else If (TIdx >= 0) And (TIdx < TypeCount) And
-             (TypeSizeofIdx(TIdx) = 1) Then
-            EmitInstr('MOV BYTE PTR [EBX],AL')
-          Else
-            EmitInstr('MOV [EBX],EAX');
+            { S[0] := n : maintenir le terminateur NUL de la vue ASCIIZ }
+            EmitInstr('MOVZX ECX,AL');
+            EmitInstr('ADD ECX,EBX');
+            EmitInstr('MOV BYTE PTR [ECX+1],0');
+          End;
         End;
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
@@ -24569,37 +27666,12 @@ Begin
         Exit;
       End;
 
-      { Affectation champ : ident.field := expr }
-      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '.') Then
+      { Variable de type procedure : F; ou F(args); = appel indirect }
+      TIdx := GetVarTypeIdx(PI, VName);
+      If (TIdx >= 0) And (TIdx < TypeCount) And (TypeTab[TIdx].Kind = TYK_PROCVAR) And
+         Not ((TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = ':=')) Then
       Begin
-        Inc(EP);
-        If Not EPAtEnd Then
-        Begin
-          Up := StrUpperCase(TokenPool[EP].Val);
-          Inc(EP);
-          LastVarTypeIdx := GetVarTypeIdx(PI, VName);
-          FSize := 4;
-          FOfs := FindFieldOffset(LastVarTypeIdx, Up, FSize);
-          If FOfs >= 0 Then
-          Begin
-            GenLoadAddr(PI, VName);
-            If FOfs > 0 Then
-              EmitInstr('ADD EAX,' + IntToStr_(FOfs));
-            EmitInstr('PUSH EAX');     { sauvegarder adresse champ }
-            { Attendre ':=' }
-            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_OP) And
-               (TokenPool[EP].Val = ':=') Then
-            Begin
-              Inc(EP);
-              ParseExpr(PI);           { EAX = valeur }
-              EmitInstr('POP EBX');
-              If FSize = 1 Then
-                EmitInstr('MOV BYTE PTR [EBX],AL')
-              Else
-                EmitInstr('MOV [EBX],EAX');
-            End;
-          End;
-        End;
+        ParseFuncCall(PI, Up);
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
           Inc(EP);
@@ -24610,7 +27682,30 @@ Begin
       If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = ':=') Then
       Begin
         Inc(EP);
+        { variable procedure := nom de sous-programme : adresse }
+        If (TIdx >= 0) And (TIdx < TypeCount) And (TypeTab[TIdx].Kind = TYK_PROCVAR) And
+           (Not EPAtEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          FOfs := SymFind(StrUpperCase(TokenPool[EP].Val));
+          If (FOfs >= 0) And ((SymTab[FOfs].Kind = SK_PROC) Or (SymTab[FOfs].Kind = SK_FUNC)) And
+             (Not SymTab[FOfs].IsExternal) Then
+          Begin
+            EmitInstr('LEA EAX,[' + SymTab[FOfs].MangledName + ']');
+            Inc(EP);
+            GenStoreVar(PI, VName);
+            If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ';') Then
+              Inc(EP);
+            Exit;
+          End;
+        End;
+        WantCharLit := (FileVarType(PI, VName) = TY_IDX_CHAR);
         ParseExpr(PI);
+        WantCharLit := False;
+        If (PI >= 0) And ProcTab[PI].IsFunction And (ProcTab[PI].Name = Up) Then
+          GenRangeCheckAssign(ProcTab[PI].RetTypeIdx)
+        Else
+          GenRangeCheckAssign(TIdx);
         GenStoreVar(PI, VName);
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
@@ -24621,7 +27716,15 @@ Begin
       { Appel de fonction (via SymTab) }
       If (SI >= 0) And (SymTab[SI].Kind = SK_FUNC) Then
       Begin
-        ParseFuncCall(PI, Up);
+        If SymTab[SI].IsExternal And W32Fpu Then
+        Begin
+          { fonction predefinie (StrPCopy, StrCat...) en instruction : evaluer, resultat ignore }
+          Dec(EP);
+          ParseExpr(PI);
+          If TypeIsReal(LastVarTypeIdx) Then EmitInstr('FSTP ST(0)');
+        End
+        Else
+          ParseFuncCall(PI, Up);
         If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ';') Then
           Inc(EP);
@@ -24706,8 +27809,7 @@ Begin
     PrevEP := EP;
     ParseStmt(PI);
     { Securite : si EP n a pas avance, forcer l avancement }
-    If EP = PrevEP Then
-      Inc(EP);
+    If EP = PrevEP Then SkipStuckToken;
   End;
 
   { Restaurer le contexte }
@@ -24724,6 +27826,8 @@ End;
 Procedure EmitProcedures;
 Var
   FI       : Integer;
+  PK       : Integer;
+  Extra, CopyOfs, CopySz : LongInt;
 Begin
   For FI := 0 To ProcCount - 1 Do
   Begin
@@ -24733,11 +27837,60 @@ Begin
     EmitBlankLine;
     EmitComment('--- ' + ProcTab[FI].Name + ' ---');
     EmitLabel(ProcTab[FI].MangledName);
-    EmitProlog(ProcTab[FI].LocalSize);
+    { espace supplementaire : copies locales des parametres valeur chaine/agregat }
+    Extra := 0;
+    If Not Is68kTarget And (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+      For PK := 0 To ProcTab[FI].ParamCount - 1 Do
+        If (Not ProcTab[FI].Params[PK].IsVar) And (Not ProcTab[FI].Params[PK].IsConst) And
+           (TypeIsString(ProcTab[FI].Params[PK].TypeIdx) Or
+            W32IsAggregate(ProcTab[FI].Params[PK].TypeIdx)) Then
+          Extra := Extra + ((TypeSizeofIdx(ProcTab[FI].Params[PK].TypeIdx) + 3) And (Not 3));
+    EmitProlog(ProcTab[FI].LocalSize + Extra);
+    If Extra > 0 Then
+    Begin
+      CopyOfs := ProcTab[FI].LocalSize;
+      For PK := 0 To ProcTab[FI].ParamCount - 1 Do
+        If (Not ProcTab[FI].Params[PK].IsVar) And (Not ProcTab[FI].Params[PK].IsConst) And
+           (TypeIsString(ProcTab[FI].Params[PK].TypeIdx) Or
+            W32IsAggregate(ProcTab[FI].Params[PK].TypeIdx)) Then
+        Begin
+          CopySz := TypeSizeofIdx(ProcTab[FI].Params[PK].TypeIdx);
+          CopyOfs := CopyOfs + ((CopySz + 3) And (Not 3));
+          EmitInstr('MOV ESI,DWORD PTR ' + EBPOfs(ProcTab[FI].Params[PK].Offset));
+          EmitInstr('LEA EDI,' + EBPOfs(-CopyOfs));
+          If TypeIsString(ProcTab[FI].Params[PK].TypeIdx) Then
+            EmitInstr('CALL ' + TP_RT_PFX + 'PSTRASSIGN')   { copie selon l octet de longueur }
+          Else
+          Begin
+            EmitInstr('MOV ECX,' + IntToStr_(CopySz));
+            EmitInstr('REP MOVSB');
+          End;
+          EmitInstr('LEA EAX,' + EBPOfs(-CopyOfs));
+          EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[FI].Params[PK].Offset) + ',EAX');
+        End;
+    End;
 
-    { Initialiser la valeur de retour a 0 pour les fonctions }
+    { Initialiser la valeur de retour a 0 pour les fonctions (chaine : tampon vide de l anneau) }
     If ProcTab[FI].IsFunction Then
-      EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[FI].RetOffset) + ',0');
+    Begin
+      If TypeIsString(ProcTab[FI].RetTypeIdx) And Not Is68kTarget And
+         (Opts.DestTarget <> DEST_CRAY1) And (Not Opts.Dos16Mode) Then
+      Begin
+        EmitInstr('LEA ESI,[CRLF+2]');
+        EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+        EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[FI].RetOffset) + ',EAX');
+      End
+      Else
+      Begin
+        EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[FI].RetOffset) + ',0');
+        If TypeIsReal(ProcTab[FI].RetTypeIdx) And W32Fpu Then
+        Begin
+          EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[FI].RetOffset + 4) + ',0');
+          If RealSizeCode(ProcTab[FI].RetTypeIdx) = 10 Then
+            EmitInstr('MOV DWORD PTR ' + EBPOfs(ProcTab[FI].RetOffset + 8) + ',0');
+        End;
+      End;
+    End;
 
     { Label de retour }
     RetLbl := LabelGen;
@@ -24748,10 +27901,15 @@ Begin
     { Emettre le label de retour }
     EmitLabel(RetLbl);
 
-    { Charger la valeur de retour dans EAX pour les fonctions }
+    { Charger la valeur de retour dans EAX (ST(0) pour un reel) pour les fonctions }
     If ProcTab[FI].IsFunction Then
-      EmitInstr('MOV EAX,' + 'DWORD PTR ' +
-        EBPOfs(ProcTab[FI].RetOffset));
+    Begin
+      If TypeIsReal(ProcTab[FI].RetTypeIdx) And W32Fpu Then
+        GenRealLoad(EBPOfs(ProcTab[FI].RetOffset), ProcTab[FI].RetTypeIdx)
+      Else
+        EmitInstr('MOV EAX,' + 'DWORD PTR ' +
+          EBPOfs(ProcTab[FI].RetOffset));
+    End;
 
     EmitEpilog;
   End;
@@ -25365,8 +28523,8 @@ Begin
           Up := StrUpperCase(TokenPool[I].Val);
           If Up = 'END' Then
             Inc(Depth)
-          Else If (Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or
-                  (Up = 'ASM') Then
+          Else If ((Up = 'BEGIN') Or (Up = 'CASE') Or (Up = 'RECORD') Or
+                   (Up = 'ASM') Or (Up = 'OBJECT')) And Not TokVariantCase[I] Then
             Dec(Depth);
         End;
         If Depth > 0 Then Dec(I);
@@ -25459,6 +28617,10 @@ Begin
       EmitComment('Obtenir le tas du processus');
       EmitInstr('CALL GetProcessHeap');
       EmitInstr('MOV [HHEAP],EAX');
+      EmitComment('Erreurs d execution materielles (216, 200, 207...) et exceptions x87 comme FPC');
+      EmitInstr('PUSH OFFSET ' + TP_RT_PFX + 'EXCFILTER');
+      EmitInstr('CALL SetUnhandledExceptionFilter');
+      EmitInstr('FLDCW WORD PTR [FPUCW]');
     End;
 
     { Parser et emettre le corps du programme }
@@ -25546,6 +28708,7 @@ Begin
     Begin
       { Sortie propre Win32 }
       EmitInstr('PUSH 0');
+      EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
       EmitInstr('CALL ExitProcess');
       EmitEpilog;
     End;
@@ -26441,6 +29604,595 @@ Begin
   EmitInstr('RTS');
 End;
 
+{ ============================================================ }
+{ EmitFileRuntime : fichiers Text et File par enregistrement    }
+{ Chaque variable fichier occupe TFR_SIZE octets : handle,       }
+{ tampon de lecture, indicateur de fin, taille d enregistrement, }
+{ mode et nom ASCIIZ. Plusieurs fichiers peuvent etre ouverts    }
+{ simultanement (l ancien runtime partageait un seul tampon et   }
+{ un seul nom). Conventions : parametres empiles de gauche a     }
+{ droite, le premier est donc le plus haut dans la pile.         }
+{ ============================================================ }
+Procedure EmitFileRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment(' RUNTIME FICHIERS : enregistrement TFR par variable Text/File ');
+  EmitComment('_TPRT_ASSIGN : [EBP+12]=adresse fichier, [EBP+8]=nom ASCIIZ');
+  EmitLabel(TP_RT_PFX + 'ASSIGN');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV DWORD PTR [EBX],-1');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_EOF) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_STD) + '],0');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EDI,[EBX+' + IntToStr_(TFR_NAME) + ']');
+  EmitInstr('MOV ECX,259');
+  EmitLabel(TP_RT_PFX + 'TF_AS_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'TF_AS_DN');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'TF_AS_CP');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'TF_AS_DN');
+  EmitComment('copie aussi dans FILE_NAMEBUF (anciens usages)');
+  EmitInstr('LEA ESI,[EBX+' + IntToStr_(TFR_NAME) + ']');
+  EmitInstr('LEA EDI,[FILE_NAMEBUF]');
+  EmitInstr('MOV ECX,260');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_FOPEN : EBX=fichier, EAX=mode (1 Reset,2 Rewrite,3 Append), ECX=taille enreg.');
+  EmitLabel(TP_RT_PFX + 'FOPEN');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],EAX');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + '],ECX');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_EOF) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_STD) + '],0');
+  EmitInstr('CMP BYTE PTR [EBX+' + IntToStr_(TFR_NAME) + '],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FO_NAMED');
+  EmitComment('nom vide : entree ou sortie standard');
+  EmitInstr('MOV EDX,-11');
+  EmitInstr('CMP EAX,1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FO_STD');
+  EmitInstr('MOV EDX,-10');
+  EmitLabel(TP_RT_PFX + 'TF_FO_STD');
+  EmitInstr('PUSH EDX');
+  EmitInstr('CALL GetStdHandle');
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_STD) + '],1');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'TF_FO_NAMED');
+  EmitComment('acces : Reset texte = lecture ; Reset fichier = lecture+ecriture ; Rewrite = ecriture (+lecture si fichier)');
+  EmitInstr('MOV ESI,80000000h');
+  EmitInstr('MOV EDI,3');
+  EmitInstr('CMP EAX,1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FO_NR');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + '],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_FO_GO');
+  EmitInstr('MOV ESI,0C0000000h');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_FO_GO');
+  EmitLabel(TP_RT_PFX + 'TF_FO_NR');
+  EmitInstr('MOV ESI,40000000h');
+  EmitInstr('MOV EDI,2');
+  EmitInstr('CMP EAX,2');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FO_AP');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + '],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_FO_GO');
+  EmitInstr('MOV ESI,0C0000000h');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_FO_GO');
+  EmitLabel(TP_RT_PFX + 'TF_FO_AP');
+  EmitInstr('MOV EDI,3');                   { Append : le fichier doit exister (OPEN_EXISTING), sinon erreur 2 }
+  EmitLabel(TP_RT_PFX + 'TF_FO_GO');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 128');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 3');
+  EmitInstr('PUSH ESI');
+  EmitInstr('LEA EAX,[EBX+' + IntToStr_(TFR_NAME) + ']');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL CreateFileA');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FO_OK');
+  EmitComment('echec en lecture+ecriture : reessayer en lecture seule');
+  EmitInstr('CMP ESI,0C0000000h');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FO_ERR');
+  EmitInstr('MOV ESI,80000000h');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_FO_GO');
+  EmitLabel(TP_RT_PFX + 'TF_FO_ERR');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],2');
+  EmitInstr('MOV DWORD PTR [EBX],-1');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'TF_FO_OK');
+  EmitInstr('MOV DWORD PTR [EBX],EAX');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],3');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FO_DN');
+  EmitInstr('PUSH 2');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL SetFilePointer');
+  EmitLabel(TP_RT_PFX + 'TF_FO_DN');
+  EmitInstr('RET');
+  EmitComment('_TPRT_RESET : [EBP+12]=adresse fichier, [EBP+8]=taille enregistrement (0 = Text)');
+  EmitLabel(TP_RT_PFX + 'RESET');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FOPEN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_REWRITE : [EBP+12]=adresse fichier, [EBP+8]=taille enregistrement (0 = Text)');
+  EmitLabel(TP_RT_PFX + 'REWRITE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV ECX,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,2');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FOPEN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_APPEND : [EBP+8]=adresse fichier');
+  EmitLabel(TP_RT_PFX + 'APPEND');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV EAX,3');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FOPEN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_CLOSE : [EBP+8]=adresse fichier');
+  EmitLabel(TP_RT_PFX + 'CLOSE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  { fichier non ouvert : erreur 103 (comme TP/FPC) }
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_CL_OP');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],103');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_CL_DN');
+  EmitLabel(TP_RT_PFX + 'TF_CL_OP');
+  EmitInstr('MOV EAX,DWORD PTR [EBX]');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_CL_DN');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_STD) + '],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_CL_DN');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL CloseHandle');
+  EmitLabel(TP_RT_PFX + 'TF_CL_DN');
+  EmitInstr('MOV DWORD PTR [EBX],-1');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + '],0');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_FFILL : EBX=fichier ; remplit le tampon (256 octets), pose Eof si rien lu');
+  EmitLabel(TP_RT_PFX + 'FFILL');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET FILE_BYTESRD');
+  EmitInstr('PUSH 256');
+  EmitInstr('LEA EAX,[EBX+' + IntToStr_(TFR_BUF) + ']');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + '],EAX');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + '],0');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'TF_FF_DN');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_EOF) + '],1');
+  EmitLabel(TP_RT_PFX + 'TF_FF_DN');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EAX');
+  EmitInstr('RET');
+  EmitComment('_TPRT_FPEEK : EBX=fichier -> EAX=caractere courant, EAX=-1 si fin de fichier');
+  EmitLabel(TP_RT_PFX + 'FPEEK');
+  EmitInstr('MOV EAX,DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + ']');
+  EmitInstr('CMP EAX,DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + ']');
+  EmitInstr('JB ' + TP_RT_PFX + 'TF_FP_GC');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_EOF) + '],1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_FP_EOF');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FFILL');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + '],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_FP_EOF');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(TP_RT_PFX + 'TF_FP_GC');
+  EmitInstr('LEA EDX,[EBX+' + IntToStr_(TFR_BUF) + ']');
+  EmitInstr('ADD EDX,EAX');
+  EmitInstr('MOVZX EAX,BYTE PTR [EDX]');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'TF_FP_EOF');
+  EmitInstr('MOV EAX,-1');
+  EmitInstr('RET');
+  EmitComment('_TPRT_EOF_FILE : [EBP+8]=adresse fichier -> EAX=1 si fin de fichier');
+  EmitLabel(TP_RT_PFX + 'EOF_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('CMP DWORD PTR [EBX],-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_EF_YES');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + '],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_EF_TXT');
+  EmitComment('fichier type ou non type : position courante >= taille');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL SetFilePointer');
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL GetFileSize');
+  EmitInstr('CMP ESI,EAX');
+  EmitInstr('JAE ' + TP_RT_PFX + 'TF_EF_YES');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_EF_NO');
+  EmitLabel(TP_RT_PFX + 'TF_EF_TXT');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_EF_YES');
+  EmitLabel(TP_RT_PFX + 'TF_EF_NO');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_EF_DN');
+  EmitLabel(TP_RT_PFX + 'TF_EF_YES');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'TF_EF_DN');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_EOLN_FILE : [EBP+8]=adresse fichier -> EAX=1 si fin de ligne ou de fichier');
+  EmitLabel(TP_RT_PFX + 'EOLN_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_EN_YES');
+  EmitInstr('CMP AL,13');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_EN_YES');
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_EN_YES');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_EN_DN');
+  EmitLabel(TP_RT_PFX + 'TF_EN_YES');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'TF_EN_DN');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_SEEKEOF_FILE : saute blancs/fins de ligne puis teste la fin de fichier');
+  EmitLabel(TP_RT_PFX + 'SEEKEOF_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitLabel(TP_RT_PFX + 'TF_SE_LP');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SE_YES');
+  EmitInstr('CMP AL,32');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SE_SK');
+  EmitInstr('CMP AL,9');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SE_SK');
+  EmitInstr('CMP AL,13');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SE_SK');
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SE_SK');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_SE_DN');
+  EmitLabel(TP_RT_PFX + 'TF_SE_SK');
+  EmitInstr('INC DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + ']');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_SE_LP');
+  EmitLabel(TP_RT_PFX + 'TF_SE_YES');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'TF_SE_DN');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_SEEKEOLN_FILE : saute espaces/tabulations puis teste la fin de ligne');
+  EmitLabel(TP_RT_PFX + 'SEEKEOLN_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitLabel(TP_RT_PFX + 'TF_SL_LP');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SL_YES');
+  EmitInstr('CMP AL,32');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SL_SK');
+  EmitInstr('CMP AL,9');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SL_SK');
+  EmitInstr('CMP AL,13');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SL_YES');
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_SL_YES');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_SL_DN');
+  EmitLabel(TP_RT_PFX + 'TF_SL_SK');
+  EmitInstr('INC DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + ']');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_SL_LP');
+  EmitLabel(TP_RT_PFX + 'TF_SL_YES');
+  EmitInstr('MOV EAX,1');
+  EmitLabel(TP_RT_PFX + 'TF_SL_DN');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_READCH_FILE : [EBP+8]=adresse fichier -> EAX=caractere lu (26 en fin de fichier)');
+  EmitLabel(TP_RT_PFX + 'READCH_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_RC_OK');
+  EmitInstr('MOV EAX,26');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_RC_DN');
+  EmitLabel(TP_RT_PFX + 'TF_RC_OK');
+  EmitInstr('INC DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + ']');
+  EmitLabel(TP_RT_PFX + 'TF_RC_DN');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_READLN_FILE : [EBP+8]=adresse fichier ; la ligne (sans CR/LF) est copiee dans INBUF');
+  EmitLabel(TP_RT_PFX + 'READLN_FILE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'TF_RF_NX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPEEK');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_RF_DN');
+  EmitInstr('INC DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + ']');
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_RF_DN');
+  EmitInstr('CMP AL,13');
+  EmitInstr('JE ' + TP_RT_PFX + 'TF_RF_NX');
+  EmitInstr('CMP ECX,254');
+  EmitInstr('JAE ' + TP_RT_PFX + 'TF_RF_NX');
+  EmitInstr('LEA EDX,[INBUF]');
+  EmitInstr('ADD EDX,ECX');
+  EmitInstr('MOV BYTE PTR [EDX],AL');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'TF_RF_NX');
+  EmitLabel(TP_RT_PFX + 'TF_RF_DN');
+  EmitInstr('LEA EDX,[INBUF]');
+  EmitInstr('ADD EDX,ECX');
+  EmitInstr('MOV BYTE PTR [EDX],0');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_BLOCKREAD : [EBP+16]=adresse fichier, [EBP+12]=tampon, [EBP+8]=nb enreg. -> EAX=nb transferes');
+  EmitLabel(TP_RT_PFX + 'BLOCKREAD');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+16]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('MOV ESI,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
+  EmitInstr('CMP ESI,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_BR_RS');
+  EmitInstr('MOV ESI,1');
+  EmitLabel(TP_RT_PFX + 'TF_BR_RS');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('IMUL EAX,ESI');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET FILE_BYTESRD');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV ESI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_BLOCKWRITE : [EBP+16]=adresse fichier, [EBP+12]=tampon, [EBP+8]=nb enreg. -> EAX=nb transferes');
+  EmitLabel(TP_RT_PFX + 'BLOCKWRITE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+16]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('MOV ESI,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
+  EmitInstr('CMP ESI,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_BW_RS');
+  EmitInstr('MOV ESI,1');
+  EmitLabel(TP_RT_PFX + 'TF_BW_RS');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('IMUL EAX,ESI');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL WriteFile');
+  EmitInstr('MOV EAX,DWORD PTR [BYTESWR]');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV ESI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_SEEK : [EBP+12]=adresse fichier, [EBP+8]=position en enregistrements');
+  EmitLabel(TP_RT_PFX + 'SEEK');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('MOV ECX,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_SK_RS');
+  EmitInstr('MOV ECX,1');
+  EmitLabel(TP_RT_PFX + 'TF_SK_RS');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('IMUL EAX,ECX');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL SetFilePointer');
+  EmitInstr('CMP EAX,-1');                   { echec (handle non positionnable : entree standard) }
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_SK_OK');
+  EmitInstr('CALL GetLastError');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'TF_SK_OK');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+  EmitLabel(TP_RT_PFX + 'TF_SK_OK');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFPOS) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_BUFEND) + '],0');
+  EmitInstr('MOV DWORD PTR [EBX+' + IntToStr_(TFR_EOF) + '],0');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_FILEPOS : [EBP+8]=adresse fichier -> EAX=position en enregistrements');
+  EmitLabel(TP_RT_PFX + 'FILEPOS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL SetFilePointer');
+  EmitInstr('MOV ECX,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FPS_RS');
+  EmitInstr('MOV ECX,1');
+  EmitLabel(TP_RT_PFX + 'TF_FPS_RS');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV ECX');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_FILESIZE : [EBP+8]=adresse fichier -> EAX=taille en enregistrements');
+  EmitLabel(TP_RT_PFX + 'FILESIZE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FCHKOPEN');   { fichier ferme : erreur 103 }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH DWORD PTR [EBX]');
+  EmitInstr('CALL GetFileSize');
+  EmitInstr('MOV ECX,DWORD PTR [EBX+' + IntToStr_(TFR_RECSIZE) + ']');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'TF_FSZ_RS');
+  EmitInstr('MOV ECX,1');
+  EmitLabel(TP_RT_PFX + 'TF_FSZ_RS');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV ECX');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitComment('_TPRT_RENAME : [EBP+12]=ancien nom ASCIIZ, [EBP+8]=nouveau nom ASCIIZ');
+  EmitLabel(TP_RT_PFX + 'RENAME');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EDI,[FILE_RENBUF]');
+  EmitInstr('MOV ECX,259');
+  EmitLabel(TP_RT_PFX + 'TF_RN_CP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'TF_RN_GO');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'TF_RN_CP');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'TF_RN_GO');
+  EmitInstr('PUSH OFFSET FILE_RENBUF');
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
+  EmitInstr('CALL MoveFileA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'TF_RN_OK');
+  EmitInstr('CALL GetLastError');            { echec : IOResult = code Windows (2, 3, 5...) }
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],EAX');
+  EmitLabel(TP_RT_PFX + 'TF_RN_OK');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+End;
+
 Procedure EmitRuntime;
 Begin
   EmitBlankLine;
@@ -26463,16 +30215,148 @@ Begin
   { ECX = longueur, ESI = debut de la chaine }
   EmitInstr('TEST ECX,ECX');
   EmitInstr('JZ ' + TP_RT_PFX + 'PSTR_D');
-  { Appeler WriteFile(HSTDOUT, ESI, ECX, &BYTESWR, 0) }
+  { Tampon de ligne (comme FPC) : accumuler dans OUTBUF, vider sur LF ou tampon plein }
+  EmitInstr('MOV EDX,[OUTBUFLEN]');
+  EmitInstr('LEA EAX,[EDX+ECX]');
+  EmitInstr('CMP EAX,4000');
+  EmitInstr('JBE ' + TP_RT_PFX + 'PSTR_B');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('CMP ECX,4000');
+  EmitInstr('JBE ' + TP_RT_PFX + 'PSTR_B');
+  { chaine trop longue pour le tampon : ecriture directe }
   EmitInstr('PUSH 0');                     { lpOverlapped         }
   EmitInstr('PUSH OFFSET BYTESWR');        { lpNumberOfBytesWritten }
   EmitInstr('PUSH ECX');                   { nNumberOfBytesToWrite }
   EmitInstr('PUSH ESI');                   { lpBuffer             }
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');   { hFile                }
   EmitInstr('CALL WriteFile');
+  EmitInstr('JMP ' + TP_RT_PFX + 'PSTR_D');
+  EmitLabel(TP_RT_PFX + 'PSTR_B');
+  EmitInstr('MOV EDI,OFFSET OUTBUF');
+  EmitInstr('ADD EDI,EDX');
+  EmitInstr('ADD EDX,ECX');
+  EmitInstr('MOV [OUTBUFLEN],EDX');
+  EmitInstr('CLD');
+  EmitInstr('REP MOVSB');
+  EmitInstr('CMP BYTE PTR [EDI-1],10');     { la chaine se termine par LF : vider }
+  EmitInstr('JNE ' + TP_RT_PFX + 'PSTR_D');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitLabel(TP_RT_PFX + 'PSTR_D');
   EmitInstr('POPAD');
   EmitInstr('RET');
+
+  { ------ _TPRT_OFLUSH : vider le tampon de sortie standard -------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'OFLUSH');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ECX,[OUTBUFLEN]');
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'OFL_D');
+  EmitInstr('MOV DWORD PTR [OUTBUFLEN],0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH OFFSET OUTBUF');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL WriteFile');
+  EmitLabel(TP_RT_PFX + 'OFL_D');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_IOCHECK : erreur d execution si FILE_IOERR <> 0 (commutateur I+) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'IOCHECK');
+  EmitInstr('CMP DWORD PTR [FILE_IOERR],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'IOC_OK');
+  EmitInstr('MOV EAX,[FILE_IOERR]');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],0');
+  EmitInstr('CALL ' + TP_RT_PFX + 'RTERROR');
+  EmitLabel(TP_RT_PFX + 'IOC_OK');
+  EmitInstr('RET');
+
+  { ------ _TPRT_RANGEERR : erreur d execution 201 (verification des bornes, R+) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'RANGEERR');
+  EmitInstr('MOV EAX,201');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RTERROR');  { [ESP] = adresse de retour dans le code fautif }
+
+  { ------ _TPRT_RTERROR : EAX = code -> "Runtime error N at $ADRESSE" puis sortie ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'RTERROR');
+  EmitInstr('MOV EDX,[ESP]');               { adresse de retour = position de l erreur }
+  EmitLabel(TP_RT_PFX + 'RTERROR_AT');      { EAX = code, EDX = adresse }
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'NUMTOSTR');
+  EmitInstr('LEA ESI,[RTERR_MSG]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('LEA ESI,[NUMBUF]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('LEA ESI,[RTERR_AT]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  { adresse en hexadecimal sur 8 chiffres dans HEXBUF }
+  EmitInstr('POP EDX');
+  EmitInstr('LEA EDI,[HEXBUF]');
+  EmitInstr('MOV ECX,8');
+  EmitLabel(TP_RT_PFX + 'RTE_H');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('SHR EAX,28');
+  EmitInstr('AND EAX,15');
+  EmitInstr('CMP EAX,10');
+  EmitInstr('JB ' + TP_RT_PFX + 'RTE_D');
+  EmitInstr('ADD EAX,7');
+  EmitLabel(TP_RT_PFX + 'RTE_D');
+  EmitInstr('ADD EAX,48');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC EDI');
+  EmitInstr('SHL EDX,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'RTE_H');
+  EmitInstr('MOV BYTE PTR [EDI],13');
+  EmitInstr('MOV BYTE PTR [EDI+1],10');
+  EmitInstr('MOV BYTE PTR [EDI+2],0');
+  EmitInstr('LEA ESI,[HEXBUF]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'PRINTSTR');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
+  EmitInstr('POP EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ExitProcess');
+
+  { ------ _TPRT_EXCFILTER : filtre d exceptions non gerees (SetUnhandledExceptionFilter) ------ }
+  { [ESP+4] = EXCEPTION_POINTERS : code et adresse de l exception -> "Runtime error N at $ADR"  }
+  { 216 acces memoire, 200 division par zero, 207 operation flottante invalide, 205 debordement, }
+  { 206 sous-depassement, 215 debordement entier, 202 debordement de pile (codes de FPC)         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'EXCFILTER');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+  EmitInstr('MOV ECX,DWORD PTR [EAX]');          { EXCEPTION_RECORD }
+  EmitInstr('MOV EDX,DWORD PTR [ECX+12]');       { ExceptionAddress }
+  EmitInstr('MOV EAX,DWORD PTR [ECX]');          { ExceptionCode }
+  EmitInstr('MOV EBX,200');
+  EmitInstr('CMP EAX,-1073741682');              { C000008E : division flottante par zero }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('CMP EAX,-1073741676');              { C0000094 : division entiere par zero }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,207');
+  EmitInstr('CMP EAX,-1073741680');              { C0000090 : operation flottante invalide }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,205');
+  EmitInstr('CMP EAX,-1073741679');              { C0000091 : debordement flottant }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,206');
+  EmitInstr('CMP EAX,-1073741677');              { C0000093 : sous-depassement flottant }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,215');
+  EmitInstr('CMP EAX,-1073741675');              { C0000095 : debordement entier }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,202');
+  EmitInstr('CMP EAX,-1073741571');              { C00000FD : debordement de pile }
+  EmitInstr('JE ' + TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EBX,216');                      { C0000005 et autres : acces memoire }
+  EmitLabel(TP_RT_PFX + 'EXF_GO');
+  EmitInstr('MOV EAX,EBX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RTERROR_AT');  { affiche et termine le processus }
 
   { ------ _TPRT_PADPRINT : afficher avec padding ------------ }
   { Entree : ESI = pointeur vers chaine ASCIIZ                }
@@ -26512,6 +30396,37 @@ Begin
   EmitInstr('POPAD');
   EmitInstr('RET');
 
+  { ------ _TPRT_FPADPRINT : idem PADPRINT vers le fichier courant ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FPADPRINT');
+  EmitInstr('PUSHAD');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('MOV EBX,ESI');
+  EmitLabel(TP_RT_PFX + 'FPAD_C');
+  EmitInstr('CMP BYTE PTR [ESI+EDX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'FPAD_P');
+  EmitInstr('INC EDX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FPAD_C');
+  EmitLabel(TP_RT_PFX + 'FPAD_P');
+  EmitInstr('SUB ECX,EDX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'FPAD_S');
+  EmitLabel(TP_RT_PFX + 'FPAD_L');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV BYTE PTR [STRTMP],32');
+  EmitInstr('MOV BYTE PTR [STRTMP+1],0');
+  EmitInstr('LEA ESI,[STRTMP]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  EmitInstr('POP EBX');
+  EmitInstr('POP ECX');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'FPAD_L');
+  EmitLabel(TP_RT_PFX + 'FPAD_S');
+  EmitInstr('MOV ESI,EBX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FPRINTSTR');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
   { ------ _TPRT_NUMTOSTR : EAX -> NUMBUF (ASCIIZ) ---------- }
   { Entree : EAX = entier signe 32 bits                       }
   { Sortie : NUMBUF contient la representation decimale        }
@@ -26547,40 +30462,318 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_STRTONUM : ESI -> EAX (entier) ------------- }
-  { Entree : ESI = pointeur vers chaine ASCIIZ decimale        }
-  { Sortie : EAX = valeur entiere                              }
+  { Entree : ESI = pointeur vers chaine ASCIIZ                  }
+  { Sortie : EAX = valeur ; VALCODE = 0 si tout est valide,     }
+  {          sinon position (1-based) du premier caractere      }
+  {          invalide (Val). Espaces de tete, signe, $hexa.     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'STRTONUM');
   EmitInstr('PUSH EBX');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EDI,ESI');        { debut de la chaine }
   EmitInstr('XOR EAX,EAX');
-  EmitInstr('XOR ECX,ECX');        { flag signe }
-  EmitInstr('CMP BYTE PTR [ESI],45'); { '-' }
+  EmitInstr('XOR ECX,ECX');        { bit0 = negatif, bit1 = au moins un chiffre }
+  EmitInstr('MOV DWORD PTR [VALCODE],0');
+  { espaces de tete }
+  EmitLabel(TP_RT_PFX + 'STN_SP');
+  EmitInstr('CMP BYTE PTR [ESI],32');
+  EmitInstr('JE ' + TP_RT_PFX + 'STN_SP1');
+  EmitInstr('CMP BYTE PTR [ESI],9');
+  EmitInstr('JNE ' + TP_RT_PFX + 'STN_SG');
+  EmitLabel(TP_RT_PFX + 'STN_SP1');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_SP');
+  { signe }
+  EmitLabel(TP_RT_PFX + 'STN_SG');
+  EmitInstr('CMP BYTE PTR [ESI],45');
+  EmitInstr('JNE ' + TP_RT_PFX + 'STN_PL');
+  EmitInstr('INC ESI');
+  EmitInstr('OR ECX,1');
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_HX');
+  EmitLabel(TP_RT_PFX + 'STN_PL');
+  EmitInstr('CMP BYTE PTR [ESI],43');
+  EmitInstr('JNE ' + TP_RT_PFX + 'STN_HX');
+  EmitInstr('INC ESI');
+  { hexadecimal $ }
+  EmitLabel(TP_RT_PFX + 'STN_HX');
+  EmitInstr('CMP BYTE PTR [ESI],36');
   EmitInstr('JNE ' + TP_RT_PFX + 'STN_LP');
   EmitInstr('INC ESI');
-  EmitInstr('INC ECX');
+  EmitLabel(TP_RT_PFX + 'STN_HL');
+  EmitInstr('MOVZX EDX,BYTE PTR [ESI]');
+  EmitInstr('TEST DL,DL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'STN_DN');
+  EmitInstr('CMP DL,48');
+  EmitInstr('JB ' + TP_RT_PFX + 'STN_BAD');
+  EmitInstr('CMP DL,57');
+  EmitInstr('JA ' + TP_RT_PFX + 'STN_HA');
+  EmitInstr('SUB DL,48');
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_HD');
+  EmitLabel(TP_RT_PFX + 'STN_HA');
+  EmitInstr('OR DL,32');            { minuscule }
+  EmitInstr('CMP DL,97');
+  EmitInstr('JB ' + TP_RT_PFX + 'STN_BAD');
+  EmitInstr('CMP DL,102');
+  EmitInstr('JA ' + TP_RT_PFX + 'STN_BAD');
+  EmitInstr('SUB DL,87');
+  EmitLabel(TP_RT_PFX + 'STN_HD');
+  EmitInstr('SHL EAX,4');
+  EmitInstr('ADD EAX,EDX');
+  EmitInstr('OR ECX,2');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_HL');
+  { decimal }
   EmitLabel(TP_RT_PFX + 'STN_LP');
   EmitInstr('MOVZX EDX,BYTE PTR [ESI]');
   EmitInstr('TEST DL,DL');
   EmitInstr('JZ ' + TP_RT_PFX + 'STN_DN');
-  EmitInstr('CMP DL,48'); { '0' }
-  EmitInstr('JB ' + TP_RT_PFX + 'STN_DN');
-  EmitInstr('CMP DL,57'); { '9' }
-  EmitInstr('JA ' + TP_RT_PFX + 'STN_DN');
+  EmitInstr('CMP DL,48');
+  EmitInstr('JB ' + TP_RT_PFX + 'STN_BAD');
+  EmitInstr('CMP DL,57');
+  EmitInstr('JA ' + TP_RT_PFX + 'STN_BAD');
   EmitInstr('SUB DL,48');
   EmitInstr('IMUL EAX,EAX,10');
   EmitInstr('ADD EAX,EDX');
+  EmitInstr('OR ECX,2');
   EmitInstr('INC ESI');
   EmitInstr('JMP ' + TP_RT_PFX + 'STN_LP');
+  { caractere invalide : VALCODE = position 1-based }
+  EmitLabel(TP_RT_PFX + 'STN_BAD');
+  EmitInstr('MOV EDX,ESI');
+  EmitInstr('SUB EDX,EDI');
+  EmitInstr('INC EDX');
+  EmitInstr('MOV [VALCODE],EDX');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_RT');
   EmitLabel(TP_RT_PFX + 'STN_DN');
-  EmitInstr('TEST ECX,ECX');
+  EmitInstr('TEST ECX,2');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'STN_OK');
+  { aucun chiffre : erreur a la position courante (chaine vide -> 1) }
+  EmitInstr('MOV EDX,ESI');
+  EmitInstr('SUB EDX,EDI');
+  EmitInstr('INC EDX');
+  EmitInstr('MOV [VALCODE],EDX');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'STN_RT');
+  EmitLabel(TP_RT_PFX + 'STN_OK');
+  EmitInstr('TEST ECX,1');
   EmitInstr('JZ ' + TP_RT_PFX + 'STN_RT');
   EmitInstr('NEG EAX');
   EmitLabel(TP_RT_PFX + 'STN_RT');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
   EmitInstr('POP EDX');
   EmitInstr('POP ECX');
   EmitInstr('POP EBX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FIXLEN : EDI = chaine Pascal dont la partie ASCIIZ a change : }
+  {        recalcule l octet de longueur (max 255)                              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FIXLEN');
+  EmitInstr('PUSHAD');
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV EDX,EDI');
+  EmitInstr('INC EDX');              { EDX = debut de la partie ASCIIZ }
+  EmitLabel(TP_RT_PFX + 'FXL_L');
+  EmitInstr('CMP BYTE PTR [EDX+ECX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'FXL_D');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JB ' + TP_RT_PFX + 'FXL_L');
+  EmitInstr('MOV BYTE PTR [EDI+256],0');
+  EmitLabel(TP_RT_PFX + 'FXL_D');
+  EmitInstr('MOV BYTE PTR [EDI],CL');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRPAD : EDI <- ESI cadre a droite sur ECX caracteres (Str(x:w,s)) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRPAD');
+  EmitInstr('PUSHAD');
+  EmitInstr('XOR EDX,EDX');
+  EmitLabel(TP_RT_PFX + 'SPD_C');
+  EmitInstr('CMP BYTE PTR [ESI+EDX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'SPD_P');
+  EmitInstr('INC EDX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SPD_C');
+  EmitLabel(TP_RT_PFX + 'SPD_P');
+  EmitInstr('SUB ECX,EDX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SPD_S');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JLE ' + TP_RT_PFX + 'SPD_L');
+  EmitInstr('MOV ECX,255');
+  EmitLabel(TP_RT_PFX + 'SPD_L');
+  EmitInstr('MOV BYTE PTR [EDI],32');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SPD_L');
+  EmitLabel(TP_RT_PFX + 'SPD_S');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN_PCHAR');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ Ensembles de 256 bits (32 octets) ---------------------------------- }
+  { SETIN    : EAX = element, EBX = ensemble -> EAX = 0/1                        }
+  { SETINCL  : EAX = ensemble, ECX = element   ; SETEXCL idem (retire)           }
+  { SETRANGE : EBX = ensemble, ECX = lo, EDX = hi                                }
+  { SETUNION/SETDIFF/SETINTER : ESI, EDI -> EDX                                  }
+  { SETEQ : ESI = EDI ? -> EAX ; SETSUB : EDI inclus dans ESI ? -> EAX           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETIN');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOVZX EAX,AL');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('SHR EAX,3');
+  EmitInstr('MOVZX EDX,BYTE PTR [EBX+EAX]');
+  EmitInstr('AND ECX,7');
+  EmitInstr('SHR EDX,CL');
+  EmitInstr('MOV EAX,EDX');
+  EmitInstr('AND EAX,1');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETINCL');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOVZX ECX,CL');
+  EmitInstr('MOV EDX,ECX');
+  EmitInstr('SHR EDX,3');
+  EmitInstr('AND ECX,7');
+  EmitInstr('MOV EBX,1');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('MOVZX ECX,BYTE PTR [EAX+EDX]');
+  EmitInstr('OR ECX,EBX');
+  EmitInstr('MOV BYTE PTR [EAX+EDX],CL');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETEXCL');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOVZX ECX,CL');
+  EmitInstr('MOV EDX,ECX');
+  EmitInstr('SHR EDX,3');
+  EmitInstr('AND ECX,7');
+  EmitInstr('MOV EBX,1');
+  EmitInstr('SHL EBX,CL');
+  EmitInstr('NOT EBX');
+  EmitInstr('MOVZX ECX,BYTE PTR [EAX+EDX]');
+  EmitInstr('AND ECX,EBX');
+  EmitInstr('MOV BYTE PTR [EAX+EDX],CL');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETRANGE');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EAX,EBX');
+  EmitLabel(TP_RT_PFX + 'SRG_L');
+  EmitInstr('CMP ECX,EDX');
+  EmitInstr('JG ' + TP_RT_PFX + 'SRG_D');
+  EmitInstr('CALL ' + TP_RT_PFX + 'SETINCL');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SRG_L');
+  EmitLabel(TP_RT_PFX + 'SRG_D');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETUNION');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ECX,8');
+  EmitLabel(TP_RT_PFX + 'SUN_L');
+  EmitInstr('MOV EAX,[ESI]');
+  EmitInstr('OR EAX,[EDI]');
+  EmitInstr('MOV [EDX],EAX');
+  EmitInstr('ADD ESI,4');
+  EmitInstr('ADD EDI,4');
+  EmitInstr('ADD EDX,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SUN_L');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETDIFF');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ECX,8');
+  EmitLabel(TP_RT_PFX + 'SDF_L');
+  EmitInstr('MOV EAX,[EDI]');
+  EmitInstr('NOT EAX');
+  EmitInstr('AND EAX,[ESI]');
+  EmitInstr('MOV [EDX],EAX');
+  EmitInstr('ADD ESI,4');
+  EmitInstr('ADD EDI,4');
+  EmitInstr('ADD EDX,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SDF_L');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETINTER');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ECX,8');
+  EmitLabel(TP_RT_PFX + 'SIN_L');
+  EmitInstr('MOV EAX,[ESI]');
+  EmitInstr('AND EAX,[EDI]');
+  EmitInstr('MOV [EDX],EAX');
+  EmitInstr('ADD ESI,4');
+  EmitInstr('ADD EDI,4');
+  EmitInstr('ADD EDX,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SIN_L');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETEQ');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ECX,32');
+  EmitInstr('REPE CMPSB');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('JE ' + TP_RT_PFX + 'SEQ_D');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(TP_RT_PFX + 'SEQ_D');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'SETSUB');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ECX,8');
+  EmitLabel(TP_RT_PFX + 'SSB_L');
+  EmitInstr('MOV EAX,[EDI]');
+  EmitInstr('MOV EDX,[ESI]');
+  EmitInstr('NOT EDX');
+  EmitInstr('AND EAX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SSB_N');
+  EmitInstr('ADD ESI,4');
+  EmitInstr('ADD EDI,4');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SSB_L');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SSB_D');
+  EmitLabel(TP_RT_PFX + 'SSB_N');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel(TP_RT_PFX + 'SSB_D');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
   EmitInstr('RET');
 
   { ------ _TPRT_READLN : lire une ligne de STDIN ----------- }
@@ -26589,6 +30782,7 @@ Begin
   { Si fenetre graphique ouverte, lit depuis le ring buffer     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'READLN');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   { Si mode graphique actif, utiliser la fenetre }
   EmitInstr('CMP DWORD PTR [GR_ACTIVE],0');
@@ -26725,6 +30919,17 @@ Begin
   EmitInstr('POPAD');
   EmitInstr('RET');
 
+  { ------ _TPRT_PSTRASSIGN : copier une chaine Pascal (ESI = octet de longueur) ------ }
+  { vers EDI (format Pascal + NUL) ; la longueur vient de l octet de longueur, les #0  }
+  { inclus dans la chaine sont donc conserves.                                           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'PSTRASSIGN');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');
+  EmitInstr('INC ESI');
+  EmitInstr('MOV EBX,ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'SASG_OK');
+
   { ------ _TPRT_STRASSIGN_PCHAR : copier ASCIIZ brut -------- }
   { Entree : ESI = source ASCIIZ, EDI = destination ASCIIZ     }
   { Copie simple byte par byte (pour buffers internes)         }
@@ -26813,6 +31018,71 @@ Begin
   EmitInstr('INC EDI');
   EmitInstr('JMP ' + TP_RT_PFX + 'CAT_L');
   EmitLabel(TP_RT_PFX + 'CAT_D');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRRET : ESI = chaine ASCIIZ -> EAX = copie au format Pascal dans ---- }
+  { le prochain tampon de l anneau STRRING (16 x 256) : resultats de fonctions String      }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRRET');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EAX,[STRRINGIDX]');
+  EmitInstr('INC EAX');
+  EmitInstr('AND EAX,15');
+  EmitInstr('MOV [STRRINGIDX],EAX');
+  EmitInstr('SHL EAX,8');
+  EmitInstr('MOV EDI,OFFSET STRRING');
+  EmitInstr('ADD EAX,EDI');
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRASSIGN');
+  EmitInstr('POP EDI');
+  EmitInstr('RET');
+
+  { ------ _TPRT_CARR2STR : ESI = tableau de Char, ECX = longueur -> EAX = chaine Pascal ---- }
+  { dans le prochain tampon de l anneau STRRING                                           }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'CARR2STR');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV EAX,[STRRINGIDX]');
+  EmitInstr('INC EAX');
+  EmitInstr('AND EAX,15');
+  EmitInstr('MOV [STRRINGIDX],EAX');
+  EmitInstr('SHL EAX,8');
+  EmitInstr('MOV EDI,OFFSET STRRING');
+  EmitInstr('ADD EDI,EAX');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JBE ' + TP_RT_PFX + 'CA2S_OK');
+  EmitInstr('MOV ECX,255');
+  EmitLabel(TP_RT_PFX + 'CA2S_OK');
+  EmitInstr('MOV EAX,EDI');
+  EmitInstr('MOV BYTE PTR [EDI],CL');
+  EmitInstr('INC EDI');
+  EmitInstr('CLD');
+  EmitInstr('REP MOVSB');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('POP ESI');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EDI');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRCPY255 : copier ASCIIZ ESI -> EDI, 255 max --- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRCPY255');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ECX,255');
+  EmitLabel(TP_RT_PFX + 'SC255_L');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'SC255_D');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'SC255_L');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'SC255_D');
   EmitInstr('POPAD');
   EmitInstr('RET');
 
@@ -27026,6 +31296,7 @@ Begin
   { puis SetConsoleCursorPosition pour positionner en (0,0)        }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'CLRSCR');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   { Obtenir les informations du buffer console }
   EmitInstr('PUSH OFFSET CRT_CSBI');
@@ -27062,6 +31333,7 @@ Begin
   { ------ _TPRT_CLREOL : effacer de curseur a fin de ligne ----- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'CLREOL');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
@@ -27084,19 +31356,30 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_GOTOXY : positionner curseur ------------------- }
-  { Parametres sur pile : [ESP+4] = X (1-based), [ESP+8] = Y       }
+  { Parametres sur pile : X empile en premier puis Y :             }
+  { [ESP+8] = X (1-based), [ESP+4] = Y (1-based)                   }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'GOTOXY');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH EDX');
-  { X = [EBP+8] (1-based -> 0-based), Y = [EBP+12] }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');         { X }
+  { X = [EBP+12] (1-based -> 0-based), Y = [EBP+8] ; relatifs a la fenetre (WINDMIN) comme TP/FPC }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');        { X }
   EmitInstr('DEC EAX');                             { 0-based }
+  EmitInstr('MOV EDX,DWORD PTR [WINDMIN]');
+  EmitInstr('AND EDX,0FFh');
+  EmitInstr('ADD EAX,EDX');                         { + colonne gauche de la fenetre }
   EmitInstr('AND EAX,0FFFFh');
-  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');        { Y }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');         { Y }
   EmitInstr('DEC EDX');                             { 0-based }
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV ECX,DWORD PTR [WINDMIN]');
+  EmitInstr('SHR ECX,8');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('ADD EDX,ECX');                         { + ligne haute de la fenetre }
+  EmitInstr('POP ECX');
   EmitInstr('SHL EDX,16');
   EmitInstr('OR EAX,EDX');                          { packed COORD }
   EmitInstr('PUSH EAX');
@@ -27110,11 +31393,15 @@ Begin
   { ------ _TPRT_WHEREX : colonne courante -> EAX --------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'WHEREX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
   EmitInstr('CALL GetConsoleScreenBufferInfo');
   EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+4]');   { dwCursorPosition.X }
+  EmitInstr('MOV ECX,DWORD PTR [WINDMIN]');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('SUB EAX,ECX');                         { relatif a la fenetre }
   EmitInstr('INC EAX');                             { 1-based }
   EmitInstr('POP ECX');
   EmitInstr('RET');
@@ -27122,11 +31409,16 @@ Begin
   { ------ _TPRT_WHEREY : ligne courante -> EAX ----------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'WHEREY');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
   EmitInstr('CALL GetConsoleScreenBufferInfo');
   EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+6]');   { dwCursorPosition.Y }
+  EmitInstr('MOV ECX,DWORD PTR [WINDMIN]');
+  EmitInstr('SHR ECX,8');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('SUB EAX,ECX');                         { relatif a la fenetre }
   EmitInstr('INC EAX');                             { 1-based }
   EmitInstr('POP ECX');
   EmitInstr('RET');
@@ -27135,6 +31427,7 @@ Begin
   { Parametre sur pile : [ESP+4] = couleur (0..15)                 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'TEXTCOLOR');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -27157,6 +31450,7 @@ Begin
   { Parametre sur pile : [ESP+4] = couleur (0..7)                  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'TEXTBG');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -27178,6 +31472,7 @@ Begin
   { ------ _TPRT_HIGHVIDEO : attribut haute intensite ------------ }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'HIGHVIDEO');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EAX');
   EmitInstr('MOV EAX,DWORD PTR [TEXTATTR]');
   EmitInstr('OR EAX,08h');                         { bit intensite }
@@ -27191,6 +31486,7 @@ Begin
   { ------ _TPRT_LOWVIDEO : attribut basse intensite ------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'LOWVIDEO');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EAX');
   EmitInstr('MOV EAX,DWORD PTR [TEXTATTR]');
   EmitInstr('AND EAX,0F7h');                       { enlever bit intensite }
@@ -27204,6 +31500,7 @@ Begin
   { ------ _TPRT_NORMVIDEO : attribut normal --------------------- }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'NORMVIDEO');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EAX');
   EmitInstr('MOV EAX,7');                          { gris sur noir }
   EmitInstr('MOV DWORD PTR [TEXTATTR],EAX');
@@ -27214,27 +31511,29 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_WINDOW : definir zone de texte ------------------ }
-  { Params : [ESP+4]=X1, [ESP+8]=Y1, [ESP+12]=X2, [ESP+16]=Y2    }
+  { Params (empiles dans l ordre X1, Y1, X2, Y2) :                   }
+  { [ESP+16]=X1, [ESP+12]=Y1, [ESP+8]=X2, [ESP+4]=Y2                }
   { Stocke dans WINDMIN/WINDMAX                                     }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'WINDOW');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH EDX');
   { WINDMIN = (Y1-1)*256 + (X1-1) }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');        { Y1 }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+16]');        { Y1 }
   EmitInstr('DEC EAX');
   EmitInstr('SHL EAX,8');
-  EmitInstr('MOV EDX,DWORD PTR [EBP+8]');         { X1 }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+20]');        { X1 }
   EmitInstr('DEC EDX');
   EmitInstr('OR EAX,EDX');
   EmitInstr('MOV DWORD PTR [WINDMIN],EAX');
   { WINDMAX = (Y2-1)*256 + (X2-1) }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+20]');        { Y2 }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');         { Y2 }
   EmitInstr('DEC EAX');
   EmitInstr('SHL EAX,8');
-  EmitInstr('MOV EDX,DWORD PTR [EBP+16]');        { X2 }
+  EmitInstr('MOV EDX,DWORD PTR [EBP+12]');        { X2 }
   EmitInstr('DEC EDX');
   EmitInstr('OR EAX,EDX');
   EmitInstr('MOV DWORD PTR [WINDMAX],EAX');
@@ -27248,6 +31547,7 @@ Begin
   { Si fenetre graphique ouverte, pompe les messages + ring buffer  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'KEYPRESSED');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   { Si mode graphique actif, utiliser la fenetre }
@@ -27323,6 +31623,7 @@ Begin
   { Si fenetre graphique ouverte, lit depuis le ring buffer         }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'READKEY');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH ECX');
   EmitInstr('PUSH EDX');
   { Si mode graphique actif, utiliser la fenetre }
@@ -27336,6 +31637,25 @@ Begin
   EmitInstr('PUSH OFFSET CRT_INREC');
   EmitInstr('PUSH DWORD PTR [HSTDIN]');
   EmitInstr('CALL ReadConsoleInputA');
+  { Entree standard qui n est pas une console (tube, fichier) : lire un octet, }
+  { Ctrl-Z (26) en fin de fichier, au lieu de boucler sans fin                   }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'RK_EV');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET CRT_NEVT');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET CRT_INREC');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,26');
+  EmitInstr('CMP DWORD PTR [CRT_NEVT],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'RK_RF');
+  EmitInstr('MOVZX EAX,BYTE PTR [CRT_INREC]');
+  EmitLabel(TP_RT_PFX + 'RK_RF');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'RK_EV');
   { Verifier EventType == KEY_EVENT (1) }
   EmitInstr('MOVZX EAX,WORD PTR [CRT_INREC]');
   EmitInstr('CMP EAX,1');
@@ -27406,6 +31726,7 @@ Begin
   { Deplace les lignes vers le bas depuis la position courante                 }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'INSLINE');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   { GetConsoleScreenBufferInfo(hStdout, &CRT_CSBI) }
   EmitInstr('PUSH OFFSET CRT_CSBI');
@@ -27467,6 +31788,7 @@ Begin
   { Deplace les lignes vers le haut depuis la position courante+1             }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'DELLINE');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSHAD');
   EmitInstr('PUSH OFFSET CRT_CSBI');
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
@@ -27506,6 +31828,7 @@ Begin
   { Reset TEXTATTR, WINDMIN, WINDMAX, appelle ClrScr                  }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'TEXTMODE');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
@@ -27658,7 +31981,8 @@ Begin
   { Retourne 7 dans EAX (emulation DOS 7.0)                       }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'DOSVERSION');
-  EmitInstr('MOV EAX,7');
+  EmitInstr('CALL GetVersion');            { comme FPC : majeur (octet bas), mineur (octet haut) }
+  EmitInstr('AND EAX,0FFFFh');
   EmitInstr('RET');
 
   { ------ _TPRT_DISKFREE : espace libre sur disque ------------- }
@@ -27678,22 +32002,35 @@ Begin
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+1],'':''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+2],''\''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+3],0');
-  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('MOV ECX,OFFSET DOS_PATHBUF');
   EmitInstr('JMP ' + TP_RT_PFX + 'DF_GO');
   EmitLabel(TP_RT_PFX + 'DF_CUR');
-  EmitInstr('PUSH 0');          { NULL = lecteur courant }
+  EmitInstr('XOR ECX,ECX');          { NULL = lecteur courant }
   EmitLabel(TP_RT_PFX + 'DF_GO');
   { GetDiskFreeSpaceA(root, &SectPerClust, &BytesPerSect, &FreeClusters, &TotClusters) }
   EmitInstr('PUSH OFFSET DOS_DKFREE+12');    { TotalClusters  }
   EmitInstr('PUSH OFFSET DOS_DKFREE+8');     { FreeClusters   }
   EmitInstr('PUSH OFFSET DOS_DKFREE+4');     { BytesPerSector }
   EmitInstr('PUSH OFFSET DOS_DKFREE+0');     { SectorsPerCluster }
+  EmitInstr('PUSH ECX');                            { lpRootPathName (1er parametre) }
   EmitInstr('CALL GetDiskFreeSpaceA');        { passe root en 5e param deja PUSH }
-  { Resultat = FreeClusters * SectorsPerCluster * BytesPerSector }
+  EmitInstr('MOV ECX,-1');                           { echec (lecteur absent) : -1 }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DF_RES');
+  { Resultat = FreeClusters * SectorsPerCluster * BytesPerSector (sature a MaxLongInt) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_DKFREE+8]');    { FreeClusters }
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+0]');   { * SectPerClust }
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+4]');   { * BytesPerSect }
-  EmitInstr('MOV DWORD PTR [EBP-4],EAX');            { sauver resultat }
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+0]');        { * SectPerClust (EDX:EAX) }
+  EmitInstr('MOV ECX,7FFFFFFFh');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DF_RES');
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+4]');        { * BytesPerSect }
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DF_RES');
+  EmitInstr('CMP EAX,7FFFFFFFh');
+  EmitInstr('JA ' + TP_RT_PFX + 'DF_RES');
+  EmitInstr('MOV ECX,EAX');
+  EmitLabel(TP_RT_PFX + 'DF_RES');
+  EmitInstr('MOV DWORD PTR [EBP-4],ECX');            { sauver resultat }
   EmitInstr('POPAD');
   EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
   EmitInstr('POP EBP');
@@ -27713,21 +32050,34 @@ Begin
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+1],'':''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+2],''\''');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF+3],0');
-  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('MOV ECX,OFFSET DOS_PATHBUF');
   EmitInstr('JMP ' + TP_RT_PFX + 'DS_GO');
   EmitLabel(TP_RT_PFX + 'DS_CUR');
-  EmitInstr('PUSH 0');
+  EmitInstr('XOR ECX,ECX');
   EmitLabel(TP_RT_PFX + 'DS_GO');
   EmitInstr('PUSH OFFSET DOS_DKFREE+12');
   EmitInstr('PUSH OFFSET DOS_DKFREE+8');
   EmitInstr('PUSH OFFSET DOS_DKFREE+4');
   EmitInstr('PUSH OFFSET DOS_DKFREE+0');
+  EmitInstr('PUSH ECX');                            { lpRootPathName (1er parametre) }
   EmitInstr('CALL GetDiskFreeSpaceA');
-  { TotalClusters * SectorsPerCluster * BytesPerSector }
+  EmitInstr('MOV ECX,-1');                           { echec (lecteur absent) : -1 }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DS_RES');
+  { TotalClusters * SectorsPerCluster * BytesPerSector (sature a MaxLongInt) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_DKFREE+12]');
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+0]');
-  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+4]');
-  EmitInstr('MOV DWORD PTR [EBP-4],EAX');
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+0]');
+  EmitInstr('MOV ECX,7FFFFFFFh');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DS_RES');
+  EmitInstr('MUL DWORD PTR [DOS_DKFREE+4]');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'DS_RES');
+  EmitInstr('CMP EAX,7FFFFFFFh');
+  EmitInstr('JA ' + TP_RT_PFX + 'DS_RES');
+  EmitInstr('MOV ECX,EAX');
+  EmitLabel(TP_RT_PFX + 'DS_RES');
+  EmitInstr('MOV DWORD PTR [EBP-4],ECX');
   EmitInstr('POPAD');
   EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
   EmitInstr('POP EBP');
@@ -27780,6 +32130,22 @@ Begin
   EmitInstr('CALL GetFullPathNameA');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JNZ ' + TP_RT_PFX + 'FE_OK');
+  { chemin vide ou invalide : repertoire courant suivi de '' (comme FExpand de FPC) }
+  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('PUSH 250');
+  EmitInstr('CALL GetCurrentDirectoryA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FE_EMPTY');
+  EmitInstr('CMP EAX,249');
+  EmitInstr('JA ' + TP_RT_PFX + 'FE_EMPTY');
+  EmitInstr('LEA EDX,[DOS_PATHBUF]');
+  EmitInstr('ADD EDX,EAX');
+  EmitInstr('CMP BYTE PTR [EDX-1],''\''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FE_OK');
+  EmitInstr('MOV BYTE PTR [EDX],''\''');
+  EmitInstr('MOV BYTE PTR [EDX+1],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FE_OK');
+  EmitLabel(TP_RT_PFX + 'FE_EMPTY');
   EmitInstr('MOV BYTE PTR [DOS_PATHBUF],0');
   EmitLabel(TP_RT_PFX + 'FE_OK');
   EmitInstr('LEA EAX,[DOS_PATHBUF]');
@@ -27795,22 +32161,81 @@ Begin
   EmitLabel(TP_RT_PFX + 'FSEARCH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
   EmitInstr('PUSH ECX');
-  { Essayer GetFileAttributesA sur le nom seul d abord }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  { Empiles dans l ordre nom, liste : [EBP+12] = nom ASCIIZ, [EBP+8] = liste ASCIIZ }
+  { 1. le nom tel quel (repertoire courant ou chemin complet) }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');
   EmitInstr('CALL GetFileAttributesA');
   EmitInstr('CMP EAX,-1');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FS_SELF');
+  { 2. chaque repertoire de la liste (separateur ;) : Dir\Nom dans DOS_PATHBUF }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitLabel(TP_RT_PFX + 'FS_NEXT');
+  EmitInstr('CMP BYTE PTR [ESI],0');
   EmitInstr('JE ' + TP_RT_PFX + 'FS_NF');
-  { Fichier trouve - retourner le nom tel quel }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('LEA EDI,[DOS_PATHBUF]');
+  EmitLabel(TP_RT_PFX + 'FS_CPD');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_ED');
+  EmitInstr('CMP AL,'';''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_ED');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FS_CPD');
+  EmitLabel(TP_RT_PFX + 'FS_ED');
+  { repertoire vide : passer ; sinon ajouter \ si absent }
+  EmitInstr('LEA EBX,[DOS_PATHBUF]');
+  EmitInstr('CMP EDI,EBX');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_SKIP');
+  EmitInstr('MOV AL,BYTE PTR [EDI-1]');
+  EmitInstr('CMP AL,''\''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_NM');
+  EmitInstr('CMP AL,''/''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_NM');
+  EmitInstr('CMP AL,'':''');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_NM');
+  EmitInstr('MOV BYTE PTR [EDI],''\''');
+  EmitInstr('INC EDI');
+  EmitLabel(TP_RT_PFX + 'FS_NM');
+  { ajouter le nom }
+  EmitInstr('PUSH ESI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitLabel(TP_RT_PFX + 'FS_CPN');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FS_CPN');
+  EmitInstr('POP ESI');
+  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('CALL GetFileAttributesA');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_SKIP');
+  EmitInstr('LEA EAX,[DOS_PATHBUF]');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FS_DN');
+  EmitLabel(TP_RT_PFX + 'FS_SKIP');
+  EmitInstr('CMP BYTE PTR [ESI],'';''');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FS_NEXT');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FS_NEXT');
+  EmitLabel(TP_RT_PFX + 'FS_SELF');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
   EmitInstr('JMP ' + TP_RT_PFX + 'FS_DN');
   EmitLabel(TP_RT_PFX + 'FS_NF');
   { Non trouve - retourner chaine vide }
   EmitInstr('MOV BYTE PTR [DOS_ENVBUF],0');
   EmitInstr('LEA EAX,[DOS_ENVBUF]');
   EmitLabel(TP_RT_PFX + 'FS_DN');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
   EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 
@@ -27969,8 +32394,38 @@ Begin
   EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
   EmitInstr('MOV BYTE PTR [EDI],0');
   EmitLabel(TP_RT_PFX + 'FSP_RET');
+  { terminateurs NUL (vue ASCIIZ des chaines Pascal) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+16]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRNUL');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRNUL');
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRNUL');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_STRNUL : EDI = chaine Pascal -> ecrit le NUL apres les caracteres ---- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'STRNUL');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOVZX ECX,BYTE PTR [EDI]');
+  EmitInstr('ADD EDI,ECX');
+  EmitInstr('MOV BYTE PTR [EDI+1],0');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FCHKOPEN : EBX = enregistrement fichier ; fichier ferme -> erreur 103 ---- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FCHKOPEN');
+  EmitInstr('CMP DWORD PTR [EBX+' + IntToStr_(TFR_MODE) + '],0');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FCO_OK');
+  EmitInstr('CMP DWORD PTR [FILE_IOERR],0');      { une erreur en attente (Reset sous $I-) est conservee }
+  EmitInstr('JNE ' + TP_RT_PFX + 'FCO_OK');
+  EmitInstr('MOV DWORD PTR [FILE_IOERR],103');
+  EmitLabel(TP_RT_PFX + 'FCO_OK');
   EmitInstr('RET');
 
   { ------ _TPRT_FINDFIRST : FindFirst(Path, Attr, SR) ---------- }
@@ -27989,13 +32444,26 @@ Begin
   EmitInstr('MOV DWORD PTR [DOS_FINDHDL],EAX');
   EmitInstr('CMP EAX,-1');
   EmitInstr('JE ' + TP_RT_PFX + 'FF_NF');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');  { Attr demandes }
+  EmitInstr('MOV DWORD PTR [DOS_FINDATTR],EAX');
+  { Entrees '.' et '..' et attributs non demandes (cache, systeme, repertoire) : passer }
+  EmitLabel(TP_RT_PFX + 'FF_CHK');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FF_WANT');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'FF_FILL');
+  EmitInstr('PUSH OFFSET DOS_FINDDATA');
+  EmitInstr('PUSH DWORD PTR [DOS_FINDHDL]');
+  EmitInstr('CALL FindNextFileA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FF_NF');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FF_CHK');
+  EmitLabel(TP_RT_PFX + 'FF_FILL');
   { Succes : remplir SearchRec = (Attr:Word, Time:LongInt, Size:LongInt, Name:String) }
   EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { SearchRec addr (last pushed) }
   { Attr = dwFileAttributes (offset 0 dans WIN32_FIND_DATA) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
   EmitInstr('MOV WORD PTR [EDI],AX');        { SR.Attr }
   { Time = ftLastWriteTime.dwLowDateTime (stub: 0) }
-  EmitInstr('MOV DWORD PTR [EDI+4],0');      { SR.Time }
+  EmitInstr('CALL ' + TP_RT_PFX + 'FF_TIME');  { SR.Time = date/heure DOS }
   { Size = nFileSizeLow (offset 32) }
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA+32]');
   EmitInstr('MOV DWORD PTR [EDI+8],EAX');   { SR.Size }
@@ -28011,9 +32479,10 @@ Begin
   EmitInstr('JZ ' + TP_RT_PFX + 'FF_CE');
   EmitInstr('STOSB');
   EmitInstr('INC ECX');
-  EmitInstr('CMP ECX,79');
+  EmitInstr('CMP ECX,255');
   EmitInstr('JB ' + TP_RT_PFX + 'FF_CP');
   EmitLabel(TP_RT_PFX + 'FF_CE');
+  EmitInstr('MOV BYTE PTR [EDI],0');        { terminateur NUL }
   EmitInstr('POP EDI');
   EmitInstr('MOV BYTE PTR [EDI],CL');       { longueur Pascal }
   EmitInstr('MOV DWORD PTR [DOSERROR],0');
@@ -28023,6 +32492,40 @@ Begin
   EmitLabel(TP_RT_PFX + 'FF_DN');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FF_TIME : [EDI+4] = date/heure DOS (format TP) de ftLastWriteTime ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FF_TIME');
+  EmitInstr('PUSH OFFSET DOS_FTTMP');          { FILETIME locale }
+  EmitInstr('PUSH OFFSET DOS_FINDDATA+20');    { ftLastWriteTime }
+  EmitInstr('CALL FileTimeToLocalFileTime');
+  EmitInstr('PUSH OFFSET DOS_FTTMP+10');       { heure DOS }
+  EmitInstr('PUSH OFFSET DOS_FTTMP+8');        { date DOS }
+  EmitInstr('PUSH OFFSET DOS_FTTMP');
+  EmitInstr('CALL FileTimeToDosDateTime');
+  EmitInstr('MOV EAX,DWORD PTR [DOS_FTTMP+8]'); { date dans le mot haut, heure dans le mot bas }
+  EmitInstr('ROL EAX,16');
+  EmitInstr('MOV DWORD PTR [EDI+4],EAX');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FF_WANT : l entree de DOS_FINDDATA est-elle retenue ? ------ }
+  { Sortie : ZF=0 (JNZ) si retenue ; ZF=1 si un attribut present n est pas demande }
+  { (cache 2, systeme 4, repertoire 16 absents de DOS_FINDATTR)                 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FF_WANT');
+  { '.' et '..' sont retournes comme par FPC (filtres seulement par l attribut Directory) }
+  EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
+  EmitInstr('AND EAX,16h');                 { cache, systeme, repertoire }
+  EmitInstr('MOV ECX,DWORD PTR [DOS_FINDATTR]');
+  EmitInstr('NOT ECX');
+  EmitInstr('AND EAX,ECX');                 { attributs presents mais non demandes }
+  EmitInstr('JNZ ' + TP_RT_PFX + 'FFW_NO');
+  EmitInstr('MOV EAX,1');
+  EmitInstr('TEST EAX,EAX');                { ZF=0 : retenue }
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'FFW_NO');
+  EmitInstr('XOR EAX,EAX');                 { ZF=1 : passer }
   EmitInstr('RET');
 
   { ------ _TPRT_FINDNEXT : FindNext(SR) ------------------------ }
@@ -28035,14 +32538,21 @@ Begin
   { FindNextFileA(handle, &finddata) }
   EmitInstr('PUSH OFFSET DOS_FINDDATA');
   EmitInstr('PUSH DWORD PTR [DOS_FINDHDL]');
+  EmitLabel(TP_RT_PFX + 'FN_CHK');
   EmitInstr('CALL FindNextFileA');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JZ ' + TP_RT_PFX + 'FN_NF');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FF_WANT');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'FN_FILL');
+  EmitInstr('PUSH OFFSET DOS_FINDDATA');
+  EmitInstr('PUSH DWORD PTR [DOS_FINDHDL]');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FN_CHK');
+  EmitLabel(TP_RT_PFX + 'FN_FILL');
   { Remplir SearchRec }
   EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
   EmitInstr('MOV WORD PTR [EDI],AX');
-  EmitInstr('MOV DWORD PTR [EDI+4],0');
+  EmitInstr('CALL ' + TP_RT_PFX + 'FF_TIME');
   EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA+32]');
   EmitInstr('MOV DWORD PTR [EDI+8],EAX');
   EmitInstr('LEA ESI,[DOS_FINDDATA+44]');
@@ -28056,9 +32566,10 @@ Begin
   EmitInstr('JZ ' + TP_RT_PFX + 'FN_CE');
   EmitInstr('STOSB');
   EmitInstr('INC ECX');
-  EmitInstr('CMP ECX,79');
+  EmitInstr('CMP ECX,255');
   EmitInstr('JB ' + TP_RT_PFX + 'FN_CP');
   EmitLabel(TP_RT_PFX + 'FN_CE');
+  EmitInstr('MOV BYTE PTR [EDI],0');        { terminateur NUL }
   EmitInstr('POP EDI');
   EmitInstr('MOV BYTE PTR [EDI],CL');
   EmitInstr('MOV DWORD PTR [DOSERROR],0');
@@ -28075,9 +32586,12 @@ Begin
   EmitInstr('RET');
 
   { ------ _TPRT_EXEC : executer un programme -------------------- }
-  { Params : [ESP+4]=Path, [ESP+8]=CmdLine (Pascal strings)        }
+  { Params (empiles dans l ordre Path, CmdLine, chaines ASCIIZ) :   }
+  { [EBP+12]=Path, [EBP+8]=CmdLine. Comme FPC : CreateProcessA(nil,  }
+  { '"Path" CmdLine') puis attente ; DosError = GetLastError en echec }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'EXEC');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
@@ -28087,23 +32601,52 @@ Begin
   EmitInstr('XOR AL,AL');
   EmitInstr('REP STOSB');
   EmitInstr('MOV DWORD PTR [DOS_STARTINFO],68');  { cb = sizeof(STARTUPINFO) }
-  { CreateProcessA(lpApp, lpCmd, 0,0, FALSE, 0, 0, 0, &si, &pi) }
+  { Ligne de commande : "Path" CmdLine dans DOS_CMDBUF (520 octets max) }
+  EmitInstr('LEA EDI,[DOS_CMDBUF]');
+  EmitInstr('MOV BYTE PTR [EDI],''"''');
+  EmitInstr('INC EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'EX_CP');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'EX_CP2');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JB ' + TP_RT_PFX + 'EX_CP');
+  EmitLabel(TP_RT_PFX + 'EX_CP2');
+  EmitInstr('MOV BYTE PTR [EDI],''"''');
+  EmitInstr('INC EDI');
+  EmitInstr('MOV BYTE PTR [EDI],'' ''');
+  EmitInstr('INC EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'EX_CC');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],AL');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE ' + TP_RT_PFX + 'EX_CC2');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,255');
+  EmitInstr('JB ' + TP_RT_PFX + 'EX_CC');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitLabel(TP_RT_PFX + 'EX_CC2');
+  { CreateProcessA(NULL, cmd, 0,0, TRUE, 0, 0, 0, &si, &pi) }
   EmitInstr('PUSH OFFSET DOS_PROCINFO');
   EmitInstr('PUSH OFFSET DOS_STARTINFO');
   EmitInstr('PUSH 0');           { lpCurrentDirectory }
   EmitInstr('PUSH 0');           { lpEnvironment }
   EmitInstr('PUSH 0');           { dwCreationFlags }
-  EmitInstr('PUSH 0');           { bInheritHandles }
+  EmitInstr('PUSH 1');           { bInheritHandles : le fils herite de la console }
   EmitInstr('PUSH 0');           { lpThreadAttributes }
   EmitInstr('PUSH 0');           { lpProcessAttributes }
-  { CmdLine }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
-  EmitInstr('INC EAX');
-  EmitInstr('PUSH EAX');
-  { Path }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
-  EmitInstr('INC EAX');
-  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH OFFSET DOS_CMDBUF');
+  EmitInstr('PUSH 0');           { lpApplicationName = NULL : recherche dans PATH }
   EmitInstr('CALL CreateProcessA');
   EmitInstr('TEST EAX,EAX');
   EmitInstr('JZ ' + TP_RT_PFX + 'EX_ER');
@@ -28125,7 +32668,8 @@ Begin
   EmitInstr('MOV DWORD PTR [DOSERROR],0');
   EmitInstr('JMP ' + TP_RT_PFX + 'EX_DN');
   EmitLabel(TP_RT_PFX + 'EX_ER');
-  EmitInstr('MOV DWORD PTR [DOSERROR],2');  { fichier non trouve }
+  EmitInstr('CALL GetLastError');
+  EmitInstr('MOV DWORD PTR [DOSERROR],EAX');  { 2 fichier non trouve, 3 chemin, 5 acces... }
   EmitLabel(TP_RT_PFX + 'EX_DN');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
@@ -28147,6 +32691,7 @@ Begin
   EmitInstr('JNE ' + TP_RT_PFX + 'MS_N4C');
   EmitInstr('MOVZX EAX,BYTE PTR [EBX]');    { AL = code sortie }
   EmitInstr('PUSH EAX');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
   EmitInstr('CALL ExitProcess');
   EmitLabel(TP_RT_PFX + 'MS_N4C');
   { Fonction 30h : DosVersion - retourne 7.0 dans AL.AH }
@@ -28163,11 +32708,11 @@ Begin
   EmitInstr('CALL GetLocalTime');
   { CX = annee, DH = mois, DL = jour, AL = jour semaine }
   EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+0]');   { wYear }
-  EmitInstr('MOV WORD PTR [EBX+4],AX');               { CX = annee }
+  EmitInstr('MOV WORD PTR [EBX+8],AX');               { CX = annee }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+2]');       { wMonth }
-  EmitInstr('MOV BYTE PTR [EBX+7],AL');                 { DH = mois }
+  EmitInstr('MOV BYTE PTR [EBX+13],AL');                 { DH = mois }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+6]');       { wDay }
-  EmitInstr('MOV BYTE PTR [EBX+6],AL');                { DL = jour }
+  EmitInstr('MOV BYTE PTR [EBX+12],AL');                { DL = jour }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+4]');       { wDayOfWeek }
   EmitInstr('MOV BYTE PTR [EBX],AL');                  { AL = dow }
   EmitInstr('JMP ' + TP_RT_PFX + 'MS_DN');
@@ -28178,22 +32723,22 @@ Begin
   EmitInstr('PUSH OFFSET DOS_SYSTIME');
   EmitInstr('CALL GetLocalTime');
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+8]');       { wHour }
-  EmitInstr('MOV BYTE PTR [EBX+5],AL');                { CH = heure }
+  EmitInstr('MOV BYTE PTR [EBX+9],AL');                { CH = heure }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+10]');      { wMinute }
-  EmitInstr('MOV BYTE PTR [EBX+4],AL');                { CL = minute }
+  EmitInstr('MOV BYTE PTR [EBX+8],AL');                { CL = minute }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+12]');      { wSecond }
-  EmitInstr('MOV BYTE PTR [EBX+7],AL');                { DH = seconde }
+  EmitInstr('MOV BYTE PTR [EBX+13],AL');                { DH = seconde }
   EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+14]');      { wMs (0..999) }
   EmitInstr('XOR AH,AH');
   EmitInstr('MOV CL,10');
   EmitInstr('DIV CL');                                  { AL = centieme }
-  EmitInstr('MOV BYTE PTR [EBX+6],AL');                { DL = centieme }
+  EmitInstr('MOV BYTE PTR [EBX+12],AL');                { DL = centieme }
   EmitInstr('JMP ' + TP_RT_PFX + 'MS_DN');
   EmitLabel(TP_RT_PFX + 'MS_N2C');
   { Fonction 02h : ecrire caractere DL }
   EmitInstr('CMP AL,02h');
   EmitInstr('JNE ' + TP_RT_PFX + 'MS_N02');
-  EmitInstr('MOV AL,BYTE PTR [EBX+6]');               { DL }
+  EmitInstr('MOV AL,BYTE PTR [EBX+12]');               { DL }
   EmitInstr('MOV BYTE PTR [NUMBUF],AL');
   EmitInstr('PUSH OFFSET BYTESWR');
   EmitInstr('PUSH 0');
@@ -28213,247 +32758,19 @@ Begin
   { ========== ROUTINES FILE I/O (Assign, Reset, Close, EOF) ======= }
   { ================================================================ }
 
-  { ------ _TPRT_ASSIGN : associer fichier et nom --------------- }
-  { [ESP+4]=adresse variable fichier, [ESP+8]=nom ASCIIZ         }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'ASSIGN');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSHAD');
-  { Stack (pushed L-to-R) : [EBP+12]=f addr (first), [EBP+8]=name (last) }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');   { adresse variable fichier (first pushed) }
-  EmitInstr('MOV DWORD PTR [EDI],-1');         { handle = invalide }
-  { Copier le nom de fichier dans FILE_NAMEBUF }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');    { nom ASCIIZ (last pushed) }
-  EmitInstr('LEA EDI,[FILE_NAMEBUF]');
-  EmitLabel(TP_RT_PFX + 'AS_CP');
-  EmitInstr('LODSB');
-  EmitInstr('STOSB');
-  EmitInstr('TEST AL,AL');
-  EmitInstr('JNZ ' + TP_RT_PFX + 'AS_CP');
-  EmitInstr('POPAD');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
-  { ------ _TPRT_RESET : ouvrir fichier en lecture --------------- }
-  { [ESP+4]=adresse variable fichier                               }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'RESET');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSHAD');
-  { CreateFileA(FILE_NAMEBUF, GENERIC_READ, FILE_SHARE_READ, }
-  {             NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL) }
-  EmitInstr('PUSH 0');                          { hTemplateFile }
-  EmitInstr('PUSH 128');                        { FILE_ATTRIBUTE_NORMAL }
-  EmitInstr('PUSH 3');                          { OPEN_EXISTING }
-  EmitInstr('PUSH 0');                          { lpSecurityAttributes }
-  EmitInstr('PUSH 1');                          { FILE_SHARE_READ }
-  EmitInstr('PUSH 80000000h');                  { GENERIC_READ }
-  EmitInstr('PUSH OFFSET FILE_NAMEBUF');        { lpFileName }
-  EmitInstr('CALL CreateFileA');
-  { Stocker le handle dans la variable fichier }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
-  EmitInstr('MOV DWORD PTR [EDI],EAX');
-  { Initialiser le buffer de lecture }
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],0');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],0');
-  EmitInstr('POPAD');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
-  { ------ _TPRT_REWRITE : ouvrir fichier en ecriture ----------- }
-  { [ESP+4]=adresse variable fichier                               }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'REWRITE');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSHAD');
-  EmitInstr('PUSH 0');                          { hTemplateFile }
-  EmitInstr('PUSH 128');                        { FILE_ATTRIBUTE_NORMAL }
-  EmitInstr('PUSH 2');                          { CREATE_ALWAYS }
-  EmitInstr('PUSH 0');                          { lpSecurityAttributes }
-  EmitInstr('PUSH 0');                          { dwShareMode }
-  EmitInstr('PUSH 40000000h');                  { GENERIC_WRITE }
-  EmitInstr('PUSH OFFSET FILE_NAMEBUF');        { lpFileName }
-  EmitInstr('CALL CreateFileA');
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
-  EmitInstr('MOV DWORD PTR [EDI],EAX');
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],0');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],0');
-  EmitInstr('POPAD');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
-  { ------ _TPRT_CLOSE : fermer fichier ------------------------- }
-  { [ESP+4]=adresse variable fichier                               }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'CLOSE');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSHAD');
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
-  EmitInstr('MOV EAX,DWORD PTR [EDI]');       { handle }
-  EmitInstr('CMP EAX,-1');
-  EmitInstr('JE ' + TP_RT_PFX + 'CL_DN');
-  EmitInstr('PUSH EAX');
-  EmitInstr('CALL CloseHandle');
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
-  EmitInstr('MOV DWORD PTR [EDI],-1');
-  EmitLabel(TP_RT_PFX + 'CL_DN');
-  EmitInstr('POPAD');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
-  { ------ _TPRT_APPEND : ouvrir fichier texte en ajout ---------- }
-  { [ESP+4]=adresse variable fichier                                }
-  { Ouvre avec OPEN_EXISTING et FILE_APPEND_DATA                    }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'APPEND');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSHAD');
-  EmitInstr('PUSH 0');                               { hTemplateFile }
-  EmitInstr('PUSH 128');                             { dwFlagsAndAttributes }
-  EmitInstr('PUSH 4');                               { OPEN_ALWAYS }
-  EmitInstr('PUSH 0');                               { lpSecurityAttributes }
-  EmitInstr('PUSH 0');                               { dwShareMode }
-  EmitInstr('PUSH 40000000h');                       { GENERIC_WRITE }
-  EmitInstr('PUSH OFFSET FILE_NAMEBUF');             { lpFileName }
-  EmitInstr('CALL CreateFileA');
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
-  EmitInstr('MOV DWORD PTR [EDI],EAX');
-  { Seek to end of file }
-  EmitInstr('PUSH 2');                               { FILE_END }
-  EmitInstr('PUSH 0');                               { lpDistanceToMoveHigh }
-  EmitInstr('PUSH 0');                               { lDistanceToMove }
-  EmitInstr('PUSH EAX');                             { hFile }
-  EmitInstr('CALL SetFilePointer');
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],0');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],0');
-  EmitInstr('POPAD');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
-  { ------ _TPRT_EOF_FILE : tester EOF d un fichier ------------- }
-  { [ESP+4]=adresse variable fichier                               }
-  { Retourne EAX=1 si EOF, EAX=0 sinon                            }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'EOF_FILE');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSH EBX');
-  EmitInstr('PUSH ESI');
-  EmitInstr('PUSH EDI');
-  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { adresse variable fichier }
-  EmitInstr('MOV EAX,DWORD PTR [EBX]');       { handle }
-  EmitInstr('CMP EAX,-1');
-  EmitInstr('JE ' + TP_RT_PFX + 'EF_YES');
-  { Verifier s il y a des donnees en buffer }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
-  EmitInstr('JB ' + TP_RT_PFX + 'EF_NO');
-  { Buffer vide : verifier le flag EOF }
-  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
-  EmitInstr('JE ' + TP_RT_PFX + 'EF_YES');
-  { Tenter de remplir le buffer }
-  EmitInstr('PUSH 0');
-  EmitInstr('PUSH OFFSET FILE_BYTESRD');
-  EmitInstr('PUSH 256');
-  EmitInstr('PUSH OFFSET FILE_RDBUF');
-  EmitInstr('PUSH DWORD PTR [EBX]');           { file handle }
-  EmitInstr('CALL ReadFile');
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
-  EmitInstr('TEST EAX,EAX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'EF_SET');
-  { Des donnees ont ete lues }
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  EmitLabel(TP_RT_PFX + 'EF_NO');
-  EmitInstr('XOR EAX,EAX');                   { retourne 0 = pas EOF }
-  EmitInstr('POP EDI');
-  EmitInstr('POP ESI');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-  EmitLabel(TP_RT_PFX + 'EF_SET');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
-  EmitLabel(TP_RT_PFX + 'EF_YES');
-  EmitInstr('MOV EAX,1');                     { retourne 1 = EOF }
-  EmitInstr('POP EDI');
-  EmitInstr('POP ESI');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
-  { ------ _TPRT_READLN_FILE : lire une ligne depuis fichier ---- }
-  { [ESP+4]=adresse variable fichier                                }
-  { Sortie : INBUF contient la ligne, terminee par NUL             }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'READLN_FILE');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSHAD');
-  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { adresse variable fichier }
-  EmitInstr('MOV EBX,DWORD PTR [EBX]');      { charger le handle }
-  EmitInstr('XOR ECX,ECX');                    { compteur octets dans INBUF }
-  EmitLabel(TP_RT_PFX + 'RF_NX');
-  { Verifier si le buffer est vide }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
-  EmitInstr('JB ' + TP_RT_PFX + 'RF_GC');
-  { Remplir le buffer depuis le fichier }
-  EmitInstr('PUSH ECX');                       { sauver compteur }
-  EmitInstr('PUSH 0');
-  EmitInstr('PUSH OFFSET FILE_BYTESRD');
-  EmitInstr('PUSH 256');
-  EmitInstr('PUSH OFFSET FILE_RDBUF');
-  EmitInstr('PUSH EBX');                       { file handle }
-  EmitInstr('CALL ReadFile');
-  EmitInstr('POP ECX');                        { restaurer compteur }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
-  EmitInstr('TEST EAX,EAX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'RF_EF');     { 0 octets = EOF }
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  EmitInstr('XOR EAX,EAX');
-  EmitLabel(TP_RT_PFX + 'RF_GC');
-  { Lire un caractere du buffer }
-  EmitInstr('LEA ESI,[FILE_RDBUF]');
-  EmitInstr('ADD ESI,EAX');
-  EmitInstr('INC DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
-  EmitInstr('CMP AL,10');                      { LF = fin de ligne }
-  EmitInstr('JE ' + TP_RT_PFX + 'RF_DN');
-  EmitInstr('CMP AL,13');                      { CR = sauter }
-  EmitInstr('JE ' + TP_RT_PFX + 'RF_NX');
-  { Stocker le caractere dans INBUF }
-  EmitInstr('LEA EDI,[INBUF]');
-  EmitInstr('ADD EDI,ECX');
-  EmitInstr('MOV BYTE PTR [EDI],AL');
-  EmitInstr('INC ECX');
-  EmitInstr('CMP ECX,254');
-  EmitInstr('JAE ' + TP_RT_PFX + 'RF_DN');
-  EmitInstr('JMP ' + TP_RT_PFX + 'RF_NX');
-  EmitLabel(TP_RT_PFX + 'RF_EF');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
-  EmitLabel(TP_RT_PFX + 'RF_DN');
-  EmitInstr('LEA EDI,[INBUF]');
-  EmitInstr('ADD EDI,ECX');
-  EmitInstr('MOV BYTE PTR [EDI],0');    { terminer par NUL }
-  EmitInstr('POPAD');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
+  { Fichiers Text/File par enregistrement (TFR_*) : voir EmitFileRuntime }
+  EmitFileRuntime;
   { ------ _TPRT_FPRINTSTR : ecrire chaine ASCIIZ dans fichier - }
   { Entree : ESI = pointeur vers chaine ASCIIZ                    }
   { Utilise : WriteFile(FILE_WRHND, ESI, len, &BYTESWR, 0)        }
   EmitBlankLine;
   EmitLabel(TP_RT_PFX + 'FPRINTSTR');
   EmitInstr('PUSHAD');
+  EmitInstr('MOV EAX,[FILE_WRHND]');
+  EmitInstr('CMP EAX,[HSTDOUT]');
+  EmitInstr('JNE ' + TP_RT_PFX + 'FPS_NF');
+  EmitInstr('CALL ' + TP_RT_PFX + 'OFLUSH');
+  EmitLabel(TP_RT_PFX + 'FPS_NF');
   { Calculer la longueur de la chaine }
   EmitInstr('XOR ECX,ECX');
   EmitLabel(TP_RT_PFX + 'FPS_L');
@@ -28475,66 +32792,6 @@ Begin
   EmitInstr('POPAD');
   EmitInstr('RET');
 
-  { ------ _TPRT_EOLN_FILE : tester si char courant est CR/LF --- }
-  { [ESP+4]=adresse variable fichier                                }
-  { Retourne EAX=1 si EOL, EAX=0 sinon                             }
-  { Verifie le buffer de lecture - le prochain caractere est CR/LF  }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'EOLN_FILE');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSH EBX');
-  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');    { adresse variable fichier }
-  { Verifier s il y a des donnees en buffer }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
-  EmitInstr('JAE ' + TP_RT_PFX + 'EN_RD');
-  { Il y a des donnees : tester le caractere courant }
-  EmitInstr('LEA EDX,[FILE_RDBUF]');
-  EmitInstr('ADD EDX,EAX');
-  EmitInstr('MOVZX EAX,BYTE PTR [EDX]');
-  EmitInstr('CMP AL,13');                      { CR ? }
-  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
-  EmitInstr('CMP AL,10');                      { LF ? }
-  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
-  EmitInstr('XOR EAX,EAX');                   { pas EOL }
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-  EmitLabel(TP_RT_PFX + 'EN_RD');
-  { Buffer vide : si EOF => EOL=true, sinon lire }
-  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
-  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
-  { Remplir le buffer }
-  EmitInstr('PUSH 0');
-  EmitInstr('PUSH OFFSET FILE_BYTESRD');
-  EmitInstr('PUSH 256');
-  EmitInstr('PUSH OFFSET FILE_RDBUF');
-  EmitInstr('PUSH DWORD PTR [EBX]');           { file handle }
-  EmitInstr('CALL ReadFile');
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
-  EmitInstr('TEST EAX,EAX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'EN_EOF');
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  { Tester le premier caractere }
-  EmitInstr('MOVZX EAX,BYTE PTR [FILE_RDBUF]');
-  EmitInstr('CMP AL,13');
-  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
-  EmitInstr('CMP AL,10');
-  EmitInstr('JE ' + TP_RT_PFX + 'EN_YES');
-  EmitInstr('XOR EAX,EAX');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-  EmitLabel(TP_RT_PFX + 'EN_EOF');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
-  EmitLabel(TP_RT_PFX + 'EN_YES');
-  EmitInstr('MOV EAX,1');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
   { ------ _TPRT_EOLN_STDIN : tester EOL sur stdin -------------- }
   { Retourne EAX=1 si stdin EOF ou dernier char CR/LF, 0 sinon    }
   EmitBlankLine;
@@ -28547,131 +32804,6 @@ Begin
   EmitInstr('RET');
   EmitLabel(TP_RT_PFX + 'ES_YES');
   EmitInstr('MOV EAX,1');
-  EmitInstr('RET');
-
-  { ------ _TPRT_SEEKEOF_FILE : sauter blancs puis tester EOF --- }
-  { [ESP+4]=adresse variable fichier                                }
-  { Retourne EAX=1 si EOF apres blancs, EAX=0 sinon                }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'SEEKEOF_FILE');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSH EBX');
-  EmitInstr('PUSH ESI');
-  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
-  EmitLabel(TP_RT_PFX + 'SE_LP');
-  { Verifier le buffer }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
-  EmitInstr('JAE ' + TP_RT_PFX + 'SE_RD');
-  { Tester le caractere courant }
-  EmitInstr('LEA ESI,[FILE_RDBUF]');
-  EmitInstr('ADD ESI,EAX');
-  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
-  EmitInstr('CMP AL,32');                     { espace }
-  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
-  EmitInstr('CMP AL,9');                      { tab }
-  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
-  EmitInstr('CMP AL,13');                     { CR }
-  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
-  EmitInstr('CMP AL,10');                     { LF }
-  EmitInstr('JE ' + TP_RT_PFX + 'SE_SK');
-  { Caractere non-blanc : pas EOF }
-  EmitInstr('XOR EAX,EAX');
-  EmitInstr('POP ESI');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-  EmitLabel(TP_RT_PFX + 'SE_SK');
-  EmitInstr('INC DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('JMP ' + TP_RT_PFX + 'SE_LP');
-  EmitLabel(TP_RT_PFX + 'SE_RD');
-  { Buffer vide : verifier EOF }
-  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
-  EmitInstr('JE ' + TP_RT_PFX + 'SE_YES');
-  { Remplir le buffer }
-  EmitInstr('PUSH 0');
-  EmitInstr('PUSH OFFSET FILE_BYTESRD');
-  EmitInstr('PUSH 256');
-  EmitInstr('PUSH OFFSET FILE_RDBUF');
-  EmitInstr('PUSH DWORD PTR [EBX]');
-  EmitInstr('CALL ReadFile');
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
-  EmitInstr('TEST EAX,EAX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'SE_SET');
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  EmitInstr('JMP ' + TP_RT_PFX + 'SE_LP');
-  EmitLabel(TP_RT_PFX + 'SE_SET');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
-  EmitLabel(TP_RT_PFX + 'SE_YES');
-  EmitInstr('MOV EAX,1');
-  EmitInstr('POP ESI');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-
-  { ------ _TPRT_SEEKEOLN_FILE : sauter blancs puis tester EOL -- }
-  { [ESP+4]=adresse variable fichier                                }
-  { Retourne EAX=1 si EOL apres blancs, EAX=0 sinon                }
-  EmitBlankLine;
-  EmitLabel(TP_RT_PFX + 'SEEKEOLN_FILE');
-  EmitInstr('PUSH EBP');
-  EmitInstr('MOV EBP,ESP');
-  EmitInstr('PUSH EBX');
-  EmitInstr('PUSH ESI');
-  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');
-  EmitLabel(TP_RT_PFX + 'SL_LP');
-  { Verifier le buffer }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('CMP EAX,DWORD PTR [FILE_BUFEND]');
-  EmitInstr('JAE ' + TP_RT_PFX + 'SL_RD');
-  { Tester le caractere courant }
-  EmitInstr('LEA ESI,[FILE_RDBUF]');
-  EmitInstr('ADD ESI,EAX');
-  EmitInstr('MOVZX EAX,BYTE PTR [ESI]');
-  EmitInstr('CMP AL,32');                     { espace }
-  EmitInstr('JE ' + TP_RT_PFX + 'SL_SK');
-  EmitInstr('CMP AL,9');                      { tab }
-  EmitInstr('JE ' + TP_RT_PFX + 'SL_SK');
-  { Pas espace/tab : est-ce CR/LF ? }
-  EmitInstr('CMP AL,13');                     { CR }
-  EmitInstr('JE ' + TP_RT_PFX + 'SL_YES');
-  EmitInstr('CMP AL,10');                     { LF }
-  EmitInstr('JE ' + TP_RT_PFX + 'SL_YES');
-  { Caractere normal : pas EOLN }
-  EmitInstr('XOR EAX,EAX');
-  EmitInstr('POP ESI');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
-  EmitInstr('RET');
-  EmitLabel(TP_RT_PFX + 'SL_SK');
-  EmitInstr('INC DWORD PTR [FILE_BUFPOS]');
-  EmitInstr('JMP ' + TP_RT_PFX + 'SL_LP');
-  EmitLabel(TP_RT_PFX + 'SL_RD');
-  { Buffer vide : si EOF => EOL=true }
-  EmitInstr('CMP DWORD PTR [FILE_EOFFLG],1');
-  EmitInstr('JE ' + TP_RT_PFX + 'SL_YES');
-  { Remplir le buffer }
-  EmitInstr('PUSH 0');
-  EmitInstr('PUSH OFFSET FILE_BYTESRD');
-  EmitInstr('PUSH 256');
-  EmitInstr('PUSH OFFSET FILE_RDBUF');
-  EmitInstr('PUSH DWORD PTR [EBX]');
-  EmitInstr('CALL ReadFile');
-  EmitInstr('MOV EAX,DWORD PTR [FILE_BYTESRD]');
-  EmitInstr('TEST EAX,EAX');
-  EmitInstr('JZ ' + TP_RT_PFX + 'SL_SET');
-  EmitInstr('MOV DWORD PTR [FILE_BUFEND],EAX');
-  EmitInstr('MOV DWORD PTR [FILE_BUFPOS],0');
-  EmitInstr('JMP ' + TP_RT_PFX + 'SL_LP');
-  EmitLabel(TP_RT_PFX + 'SL_SET');
-  EmitInstr('MOV DWORD PTR [FILE_EOFFLG],1');
-  EmitLabel(TP_RT_PFX + 'SL_YES');
-  EmitInstr('MOV EAX,1');
-  EmitInstr('POP ESI');
-  EmitInstr('POP EBX');
-  EmitInstr('POP EBP');
   EmitInstr('RET');
 
   { ================================================================ }
@@ -29388,9 +33520,10 @@ Begin
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  { Get handle from FILE_HANDLE global (file handle stored there by runtime) }
-  EmitInstr('MOV EAX,DWORD PTR [FILE_HANDLE]');
-  { GetFileTime(hFile, NULL, NULL, &ftWrite) - use 16 bytes on stack for FILETIME }
+  { handle dans la variable fichier ([EBP+12] -> [EBX]) }
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');
+  EmitInstr('MOV EAX,DWORD PTR [EBX]');
+  { GetFileTime(hFile, NULL, NULL, &ftWrite) - 16 octets sur la pile pour FILETIME }
   EmitInstr('SUB ESP,16');
   EmitInstr('MOV EDI,ESP');
   EmitInstr('PUSH EDI');           { lpLastWriteTime }
@@ -29398,7 +33531,10 @@ Begin
   EmitInstr('PUSH 0');             { lpCreationTime = NULL }
   EmitInstr('PUSH EAX');           { hFile }
   EmitInstr('CALL GetFileTime');
-  { Convert FILETIME to DOS time via FileTimeToDosDateTime }
+  { UTC -> heure locale (comme FPC), puis FILETIME -> date/heure DOS }
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CALL FileTimeToLocalFileTime');
   EmitInstr('LEA EAX,[EDI+8]');    { space for DosDate and DosTime (2 words each) }
   EmitInstr('LEA ECX,[EDI+12]');
   EmitInstr('PUSH ECX');           { lpFatTime }
@@ -29424,7 +33560,24 @@ Begin
   EmitInstr('PUSH EBP');
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSHAD');
-  EmitComment('SetFTime - stub Win32 (complex FILETIME conversion)');
+  { heure DOS (mot bas = heure, mot haut = date) -> FILETIME locale -> FILETIME UTC }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');          { Time : date:heure }
+  EmitInstr('PUSH OFFSET SF_FTTMP');               { FILETIME locale }
+  EmitInstr('MOV EDX,EAX');
+  EmitInstr('AND EDX,0FFFFh');
+  EmitInstr('PUSH EDX');                           { wFatTime }
+  EmitInstr('SHR EAX,16');
+  EmitInstr('PUSH EAX');                           { wFatDate }
+  EmitInstr('CALL DosDateTimeToFileTime');
+  EmitInstr('PUSH OFFSET SF_FTTMP+8');             { FILETIME UTC }
+  EmitInstr('PUSH OFFSET SF_FTTMP');
+  EmitInstr('CALL LocalFileTimeToFileTime');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+12]');         { variable fichier }
+  EmitInstr('PUSH OFFSET SF_FTTMP+8');             { LastWriteTime }
+  EmitInstr('PUSH 0');                             { LastAccessTime }
+  EmitInstr('PUSH 0');                             { CreationTime }
+  EmitInstr('PUSH DWORD PTR [EBX]');               { handle }
+  EmitInstr('CALL SetFileTime');
   EmitInstr('POPAD');
   EmitInstr('POP EBP');
   EmitInstr('RET');
@@ -31121,10 +35274,238 @@ Begin
   EmitInstr('MOV ECX,EAX');
   EmitInstr('INC EDI');
   EmitInstr('REP MOVSB');
+  EmitInstr('MOV BYTE PTR [EDI],0');        { terminateur NUL apres les caracteres }
   EmitInstr('MOV EAX,OFFSET STR_PASBUF');
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
   EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_REALSTR : ST(0) = valeur, ECX = largeur (0 = aucune), EDX = decimales ---- }
+  { (-1 = notation scientifique), EBX = taille du type (4/8/10) -> EAX = chaine Pascal       }
+  { dans l anneau STRRING. Formatage par sprintf (msvcrt) : %*.*f ou % .*E, exposant ajuste  }
+  { a 2 / 3 / 4 chiffres (Single / Double / Extended) comme FPC.                            }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'REALSTR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('SUB ESP,16');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('CMP EBX,4');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RS_ST');
+  EmitInstr('FSTP DWORD PTR [EBP-8]');          { Single : arrondir a 32 bits }
+  EmitInstr('FLD DWORD PTR [EBP-8]');
+  EmitLabel(TP_RT_PFX + 'RS_ST');
+  EmitInstr('FSTP QWORD PTR [EBP-8]');
+  EmitInstr('CMP EDX,0');
+  EmitInstr('JL ' + TP_RT_PFX + 'RS_SCI');
+  { fixe : sprintf(FMTBUF, "%*.*f", largeur, decimales, valeur) }
+  EmitInstr('PUSH DWORD PTR [EBP-4]');
+  EmitInstr('PUSH DWORD PTR [EBP-8]');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH OFFSET FMT_FIX');
+  EmitInstr('PUSH OFFSET FMTBUF');
+  EmitInstr('CALL sprintf');
+  EmitInstr('ADD ESP,24');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RS_DONE');
+  EmitLabel(TP_RT_PFX + 'RS_SCI');
+  { chiffres de l exposant : 2 (Single), 3 (Double), 4 (Extended) }
+  EmitInstr('MOV EAX,3');
+  EmitInstr('CMP EBX,4');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RS_E1');
+  EmitInstr('MOV EAX,2');
+  EmitLabel(TP_RT_PFX + 'RS_E1');
+  EmitInstr('CMP EBX,10');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RS_E2');
+  EmitInstr('MOV EAX,4');
+  EmitLabel(TP_RT_PFX + 'RS_E2');
+  EmitInstr('MOV DWORD PTR [EBP-16],EAX');
+  { decimales maximales : 9 / 16 / 20 }
+  EmitInstr('MOV EDX,16');
+  EmitInstr('CMP EBX,4');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RS_D1');
+  EmitInstr('MOV EDX,9');
+  EmitLabel(TP_RT_PFX + 'RS_D1');
+  EmitInstr('CMP EBX,10');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RS_D2');
+  EmitInstr('MOV EDX,20');
+  EmitLabel(TP_RT_PFX + 'RS_D2');
+  { avec largeur : decimales = largeur - (exposant + 5), au moins 1, au plus le maximum }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RS_F');
+  EmitInstr('MOV EBX,ECX');
+  EmitInstr('SUB EBX,EAX');
+  EmitInstr('SUB EBX,5');
+  EmitInstr('CMP EBX,1');
+  EmitInstr('JGE ' + TP_RT_PFX + 'RS_D3');
+  EmitInstr('MOV EBX,1');
+  EmitLabel(TP_RT_PFX + 'RS_D3');
+  EmitInstr('CMP EBX,EDX');
+  EmitInstr('JGE ' + TP_RT_PFX + 'RS_F');
+  EmitInstr('MOV EDX,EBX');
+  EmitLabel(TP_RT_PFX + 'RS_F');
+  EmitInstr('MOV DWORD PTR [EBP-12],ECX');      { largeur conservee }
+  EmitInstr('PUSH DWORD PTR [EBP-4]');
+  EmitInstr('PUSH DWORD PTR [EBP-8]');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH OFFSET FMT_SCI');
+  EmitInstr('PUSH OFFSET FMTBUF');
+  EmitInstr('CALL sprintf');
+  EmitInstr('ADD ESP,20');
+  { ajuster le nombre de chiffres de l exposant }
+  EmitInstr('LEA EDI,[FMTBUF]');
+  EmitLabel(TP_RT_PFX + 'RS_S1');
+  EmitInstr('MOV AL,BYTE PTR [EDI]');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'RS_PAD');
+  EmitInstr('CMP AL,''E''');
+  EmitInstr('JE ' + TP_RT_PFX + 'RS_S2');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RS_S1');
+  EmitLabel(TP_RT_PFX + 'RS_S2');
+  EmitInstr('ADD EDI,2');                       { premier chiffre de l exposant }
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'RS_S3');
+  EmitInstr('CMP BYTE PTR [EDI+ECX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'RS_S4');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RS_S3');
+  EmitLabel(TP_RT_PFX + 'RS_S4');
+  EmitInstr('MOV EDX,DWORD PTR [EBP-16]');      { chiffres voulus }
+  EmitLabel(TP_RT_PFX + 'RS_S5');
+  EmitInstr('CMP ECX,EDX');
+  EmitInstr('JLE ' + TP_RT_PFX + 'RS_S7');
+  EmitInstr('CMP BYTE PTR [EDI],''0''');
+  EmitInstr('JNE ' + TP_RT_PFX + 'RS_S7');
+  EmitInstr('MOV ESI,EDI');                     { supprimer un zero de tete }
+  EmitLabel(TP_RT_PFX + 'RS_S6');
+  EmitInstr('MOV AL,BYTE PTR [ESI+1]');
+  EmitInstr('MOV BYTE PTR [ESI],AL');
+  EmitInstr('INC ESI');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'RS_S6');
+  EmitInstr('DEC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RS_S5');
+  EmitLabel(TP_RT_PFX + 'RS_S7');
+  EmitInstr('CMP ECX,EDX');
+  EmitInstr('JGE ' + TP_RT_PFX + 'RS_PAD');
+  EmitInstr('LEA ESI,[EDI+ECX]');               { inserer un zero : decaler a droite }
+  EmitLabel(TP_RT_PFX + 'RS_S8');
+  EmitInstr('MOV AL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [ESI+1],AL');
+  EmitInstr('CMP ESI,EDI');
+  EmitInstr('JE ' + TP_RT_PFX + 'RS_S9');
+  EmitInstr('DEC ESI');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RS_S8');
+  EmitLabel(TP_RT_PFX + 'RS_S9');
+  EmitInstr('MOV BYTE PTR [EDI],''0''');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP ' + TP_RT_PFX + 'RS_S7');
+  { cadrage a droite sur la largeur demandee }
+  EmitLabel(TP_RT_PFX + 'RS_PAD');
+  EmitInstr('MOV ECX,DWORD PTR [EBP-12]');
+  EmitInstr('LEA ESI,[FMTBUF]');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL lstrlenA');
+  EmitInstr('MOV ECX,DWORD PTR [EBP-12]');
+  EmitInstr('CMP EAX,ECX');
+  EmitInstr('JGE ' + TP_RT_PFX + 'RS_DONE');
+  EmitInstr('CMP ECX,90');
+  EmitInstr('JA ' + TP_RT_PFX + 'RS_DONE');
+  EmitInstr('SUB ECX,EAX');                     { nombre d espaces a inserer }
+  EmitInstr('LEA ESI,[FMTBUF]');
+  EmitInstr('ADD ESI,EAX');                     { ESI -> NUL }
+  EmitInstr('LEA EDI,[ESI+ECX]');               { EDI -> nouvelle position du NUL }
+  EmitInstr('INC EAX');                         { octets a deplacer (avec le NUL) }
+  EmitLabel(TP_RT_PFX + 'RS_P1');
+  EmitInstr('MOV DL,BYTE PTR [ESI]');
+  EmitInstr('MOV BYTE PTR [EDI],DL');
+  EmitInstr('DEC ESI');
+  EmitInstr('DEC EDI');
+  EmitInstr('DEC EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'RS_P1');
+  EmitInstr('LEA EDI,[FMTBUF]');
+  EmitInstr('MOV AL,'' ''');
+  EmitInstr('REP STOSB');
+  EmitLabel(TP_RT_PFX + 'RS_DONE');
+  EmitInstr('LEA ESI,[FMTBUF]');
+  EmitInstr('CALL ' + TP_RT_PFX + 'STRRET');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBX');
+  EmitInstr('MOV ESP,EBP');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_VALREAL : ESI = chaine ASCIIZ -> ST(0) = valeur (strtod), VALCODE ---- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'VALREAL');
+  EmitInstr('PUSH OFFSET REALTMP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('CALL strtod');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('MOV EAX,DWORD PTR [REALTMP]');      { fin de la conversion }
+  EmitInstr('CMP EAX,ESI');
+  EmitInstr('JNE ' + TP_RT_PFX + 'VR_1');
+  EmitInstr('MOV DWORD PTR [VALCODE],1');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'VR_1');
+  EmitInstr('CMP BYTE PTR [EAX],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'VR_OK');
+  EmitInstr('SUB EAX,ESI');
+  EmitInstr('INC EAX');
+  EmitInstr('MOV DWORD PTR [VALCODE],EAX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'VR_OK');
+  EmitInstr('MOV DWORD PTR [VALCODE],0');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FINT : ST(0) -> partie entiere (troncature vers zero) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FINT');
+  EmitInstr('SUB ESP,8');
+  EmitInstr('FNSTCW WORD PTR [ESP]');
+  EmitInstr('MOV AX,WORD PTR [ESP]');
+  EmitInstr('OR AX,0C00h');
+  EmitInstr('MOV WORD PTR [ESP+4],AX');
+  EmitInstr('FLDCW WORD PTR [ESP+4]');
+  EmitInstr('FRNDINT');
+  EmitInstr('FLDCW WORD PTR [ESP]');
+  EmitInstr('ADD ESP,8');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FTRUNC : ST(0) -> EAX (troncature vers zero) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FTRUNC');
+  EmitInstr('SUB ESP,12');
+  EmitInstr('FNSTCW WORD PTR [ESP]');
+  EmitInstr('MOV AX,WORD PTR [ESP]');
+  EmitInstr('OR AX,0C00h');
+  EmitInstr('MOV WORD PTR [ESP+4],AX');
+  EmitInstr('FLDCW WORD PTR [ESP+4]');
+  EmitInstr('FISTP DWORD PTR [ESP+8]');
+  EmitInstr('FLDCW WORD PTR [ESP]');
+  EmitInstr('MOV EAX,DWORD PTR [ESP+8]');
+  EmitInstr('ADD ESP,12');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FEXP : ST(0) = x -> ST(0) = exp(x) ------ }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FEXP');
+  EmitInstr('FLDL2E');
+  EmitInstr('FMULP ST(1),ST');       { y = x * log2(e) }
+  EmitInstr('FLD ST(0)');
+  EmitInstr('FRNDINT');              { n, y }
+  EmitInstr('FXCH');                 { y, n }
+  EmitInstr('FSUB ST,ST(1)');        { f = y - n, n }
+  EmitInstr('F2XM1');                { 2^f - 1, n }
+  EmitInstr('FLD1');
+  EmitInstr('FADDP ST(1),ST');       { 2^f, n }
+  EmitInstr('FSCALE');               { 2^f * 2^n, n }
+  EmitInstr('FSTP ST(1)');
   EmitInstr('RET');
 
   { ------ _TPR_STRPCOPY : copier Pascal string vers PChar ------- }
@@ -31136,14 +35517,14 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH ESI');
   EmitInstr('PUSH EDI');
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');   { Dest }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');  { Source (Pascal string) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');  { Dest (empile en premier) }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { Source (Pascal string) }
   EmitInstr('XOR ECX,ECX');
   EmitInstr('MOV CL,BYTE PTR [ESI]');       { longueur Pascal }
   EmitInstr('INC ESI');                      { sauter octet longueur }
   EmitInstr('REP MOVSB');
   EmitInstr('MOV BYTE PTR [EDI],0');         { zero terminal }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { retourne Dest }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');  { retourne Dest }
   EmitInstr('POP EDI');
   EmitInstr('POP ESI');
   EmitInstr('POP EBP');
@@ -32289,15 +36670,16 @@ Begin
   L5 := LabelGen;  { fin }
   L6 := LabelGen;  { defaut }
   { Charger IntNo }
-  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');    { IntNo }
-  EmitInstr('MOV ESI,DWORD PTR [EBP+12]');   { pointeur Registers }
+  { Intr(IntNo, Regs) : IntNo empile en premier -> [EBP+12], Regs en second -> [EBP+8] }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');   { IntNo }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');    { pointeur Registers }
   { Charger les registres de la structure }
   EmitInstr('MOVZX EAX,WORD PTR [ESI]');      { AX }
-  EmitInstr('MOVZX EBX,WORD PTR [ESI+2]');   { BX }
-  EmitInstr('MOVZX ECX,WORD PTR [ESI+4]');   { CX }
-  EmitInstr('MOVZX EDX,WORD PTR [ESI+6]');   { DX }
+  EmitInstr('MOVZX EBX,WORD PTR [ESI+8]');   { BX }
+  EmitInstr('MOVZX ECX,WORD PTR [ESI+8]');   { CX }
+  EmitInstr('MOVZX EDX,WORD PTR [ESI+12]');   { DX }
   { Dispatcher selon IntNo }
-  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');    { IntNo }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');   { IntNo }
   EmitInstr('CMP EDI,10h');
   EmitInstr('JE ' + L1);
   EmitInstr('CMP EDI,16h');
@@ -32313,9 +36695,9 @@ Begin
   EmitInstr('CALL ' + TP_RT_PFX + 'INT10');
   { Stocker les resultats dans la structure Registers }
   EmitInstr('MOV WORD PTR [ESI],AX');       { AX }
-  EmitInstr('MOV WORD PTR [ESI+2],BX');    { BX }
-  EmitInstr('MOV WORD PTR [ESI+4],CX');    { CX }
-  EmitInstr('MOV WORD PTR [ESI+6],DX');    { DX }
+  EmitInstr('MOV WORD PTR [ESI+8],BX');    { BX }
+  EmitInstr('MOV WORD PTR [ESI+8],CX');    { CX }
+  EmitInstr('MOV WORD PTR [ESI+12],DX');    { DX }
   EmitInstr('JMP ' + L5);
 
   { INT 16h via _TPRT_INT16 }
@@ -32335,9 +36717,9 @@ Begin
   EmitLabel(L4);
   EmitInstr('CALL ' + TP_RT_PFX + 'INT33');
   EmitInstr('MOV WORD PTR [ESI],AX');       { AX }
-  EmitInstr('MOV WORD PTR [ESI+2],BX');    { BX }
-  EmitInstr('MOV WORD PTR [ESI+4],CX');    { CX }
-  EmitInstr('MOV WORD PTR [ESI+6],DX');    { DX }
+  EmitInstr('MOV WORD PTR [ESI+8],BX');    { BX }
+  EmitInstr('MOV WORD PTR [ESI+8],CX');    { CX }
+  EmitInstr('MOV WORD PTR [ESI+12],DX');    { DX }
   EmitInstr('JMP ' + L5);
 
   { Defaut : interruption non emulee }
@@ -32372,7 +36754,7 @@ Const
 
 { --- Constantes du mini-assembleur binaire --- }
   BC_MAX_CODE   = 262144;  { 256 Ko de code machine max }
-  BC_MAX_DATA   = 262144;  { 256 Ko de donnees max      }
+  BC_MAX_DATA   = 4194304; { 4 Mo de donnees max       }
   BC_MAX_LABEL  = 8192;    { labels de code max          }
   BC_MAX_DLABEL = 8192;    { labels de donnees max       }
   BC_MAX_FIXUP  = 32768;   { fixups max                  }
@@ -32431,6 +36813,10 @@ Var
   BcDLabels  : Array[0..BC_MAX_DLABEL-1] of TBcLabel;
   BcDLabelCnt: Integer;
   BcFixups   : Array[0..BC_MAX_FIXUP-1] of TBcFixup;
+  { Adresses 32 bits a ecrire dans la section .data (constantes typees) }
+  BcDFixCnt  : LongInt;
+  BcDFixOfs  : Array[0..DATA_INIT_FIX_MAX-1] of LongInt;
+  BcDFixLbl  : Array[0..DATA_INIT_FIX_MAX-1] of TString;
   BcFixupCnt : LongInt;
   BcImports  : Array[0..BC_MAX_IMP-1] of TBcImport;
   BcImportCnt: Integer;
@@ -32484,7 +36870,7 @@ End;
 
 Procedure BcInit;
 Begin
-  BcCodeLen := 0; BcDataLen := 0;
+  BcCodeLen := 0; BcDataLen := 0; BcDFixCnt := 0;
   BcLabelCnt := 0; BcDLabelCnt := 0;
   BcFixupCnt := 0; BcImportCnt := 0;
   BcActive := False;
@@ -32539,6 +36925,34 @@ Procedure BcDataZeros(N: LongInt);
 Var I: LongInt;
 Begin
   For I := 1 To N Do BcDataB(0);
+End;
+
+{ BcDataInitBytes : copier Count octets du pool d initialisation en reservant }
+{ les emplacements d adresses (fixups) resolus par BcResolveFixups            }
+Procedure BcDataInitBytes(PoolOfs, Count: LongInt);
+Var J: LongInt; F: Integer;
+Begin
+  J := 0;
+  While J < Count Do
+  Begin
+    F := DataInitFixAt(PoolOfs + J);
+    If (F >= 0) And (J + 4 <= Count) Then
+    Begin
+      If BcDFixCnt < DATA_INIT_FIX_MAX Then
+      Begin
+        BcDFixOfs[BcDFixCnt] := BcDataLen;
+        BcDFixLbl[BcDFixCnt] := DataInitFixLbl[F];
+        Inc(BcDFixCnt);
+      End;
+      BcDataZeros(4);
+      Inc(J, 4);
+    End
+    Else
+    Begin
+      BcDataB(DataInitPool[PoolOfs + J]);
+      Inc(J);
+    End;
+  End;
 End;
 
 { --- Gestion des labels de donnees --- }
@@ -32609,6 +37023,12 @@ Function BcApiToDll(Const Api: TString): TString;
 Var U: TString;
 Begin
   U := StrUpperCase(Api);
+  { msvcrt.dll : formatage et lecture des reels }
+  If (U = 'SPRINTF') Or (U = 'STRTOD') Then
+  Begin
+    BcApiToDll := 'msvcrt.dll';
+    Exit;
+  End;
   { user32.dll }
   If (U = 'REGISTERCLASSA') Or (U = 'CREATEWINDOWEXA') Or
      (U = 'DESTROYWINDOW') Or (U = 'SHOWWINDOW') Or
@@ -32665,6 +37085,10 @@ Var U: TString;
 Begin
   U := StrUpperCase(BcNormalizeApi(Name));
   BcIsImport := (U = 'EXITPROCESS') Or (U = 'GETSTDHANDLE') Or
+    (U = 'SPRINTF') Or (U = 'STRTOD') Or
+    (U = 'SETUNHANDLEDEXCEPTIONFILTER') Or (U = 'GETLASTERROR') Or (U = 'GETVERSION') Or
+    (U = 'FILETIMETOLOCALFILETIME') Or (U = 'FILETIMETODOSDATETIME') Or
+    (U = 'DOSDATETIMETOFILETIME') Or (U = 'LOCALFILETIMETOFILETIME') Or (U = 'SETFILETIME') Or
     (U = 'WRITEFILE') Or (U = 'READFILE') Or
     (U = 'GETPROCESSHEAP') Or (U = 'HEAPALLOC') Or
     (U = 'HEAPFREE') Or (U = 'HEAPSIZE') Or (U = 'CREATEFILEA') Or
@@ -32780,6 +37204,11 @@ Begin
   While (Length(T) > 0) And (T[1] = ' ') Do Delete(T, 1, 1);
   While (Length(T) > 0) And (T[Length(T)] = ' ') Do Delete(T, Length(T), 1);
   If T = '' Then Exit;
+  { litteral caractere : 'x' }
+  If (Length(T) = 3) And (T[1] = '''') And (T[3] = '''') Then
+  Begin
+    V := Ord(T[2]); BcParseImm := True; Exit;
+  End;
   Neg := False;
   If T[1] = '-' Then Begin Neg := True; Delete(T, 1, 1); End;
   If T = '' Then Exit;
@@ -32998,6 +37427,11 @@ Begin
 End;
 
 { --- Assembleur principal --- }
+Function BcGetCodeLen : LongInt;
+Begin
+  BcGetCodeLen := BcCodeLen;
+End;
+
 Procedure BcAssemble(Const S: TString);
 Var
   Line, Mnem, Op1, Op2, Tmp, Rest, ImOp2, ImOp3, R2: TString;
@@ -33070,6 +37504,261 @@ Var
   Function HasDWordPrefix(Const X: TString): Boolean;
   Begin HasDWordPrefix := Pos('DWORD PTR', StrUpperCase(X)) > 0; End;
 
+  { ParseOffsetOperand : 'OFFSET label[+/-disp]' -> label et deplacement }
+  Procedure ParseOffsetOperand(Const X: TString; Var Lbl: TString; Var Add: LongInt);
+  Var T2, R2: TString; Q: Integer; Ng: Boolean;
+  Begin
+    T2 := Copy(X, 8, 255);
+    While (Length(T2) > 0) And (T2[1] = ' ') Do Delete(T2, 1, 1);
+    Add := 0; Lbl := T2;
+    Q := 2;
+    While Q <= Length(T2) Do
+    Begin
+      If (T2[Q] = '+') Or (T2[Q] = '-') Then
+      Begin
+        Lbl := Copy(T2, 1, Q - 1);
+        R2 := Copy(T2, Q, 255);
+        Ng := (R2[1] = '-');
+        Delete(R2, 1, 1);
+        While (Length(R2) > 0) And (R2[1] = ' ') Do Delete(R2, 1, 1);
+        BcParseImm(R2, Add);
+        If Ng Then Add := -Add;
+        Break;
+      End;
+      Inc(Q);
+    End;
+  End;
+
+  { Assemble16 : formes 16 bits (prefixe 66h) de MOV/ADD/SUB/CMP/AND/OR/XOR/TEST/INC/DEC }
+  { Retourne True si l instruction a ete traitee.                                      }
+  Function Assemble16 : Boolean;
+  Var R1, R2, AOp: Integer; Iv: LongInt; T2: TString;
+  Begin
+    Assemble16 := False;
+    R1 := BcParseReg16(Op1);
+    If (R1 < 0) And Not HasWordPrefix(Op1) Then Exit;
+    If Mnem = 'ADD' Then AOp := 0
+    Else If Mnem = 'OR' Then AOp := 1
+    Else If Mnem = 'AND' Then AOp := 4
+    Else If Mnem = 'SUB' Then AOp := 5
+    Else If Mnem = 'XOR' Then AOp := 6
+    Else If Mnem = 'CMP' Then AOp := 7
+    Else If Mnem = 'MOV' Then AOp := -2
+    Else If Mnem = 'INC' Then AOp := -3
+    Else If Mnem = 'DEC' Then AOp := -4
+    Else If Mnem = 'TEST' Then AOp := -5
+    Else Exit;
+    Assemble16 := True;
+    BcEmitB($66);
+    If R1 >= 0 Then
+    Begin
+      If AOp = -3 Then Begin BcEmitB($40 + R1); Exit; End;
+      If AOp = -4 Then Begin BcEmitB($48 + R1); Exit; End;
+      R2 := BcParseReg16(Op2);
+      If R2 >= 0 Then
+      Begin
+        If AOp = -2 Then BcEmitB($89)
+        Else If AOp = -5 Then BcEmitB($85)
+        Else BcEmitB(AOp * 8 + 1);
+        BcEmitB($C0 + R2 * 8 + R1);
+        Exit;
+      End;
+      If BcParseImm(Op2, Iv) Then
+      Begin
+        If AOp = -2 Then Begin BcEmitB($B8 + R1); BcEmitW(Word(Iv)); End
+        Else If AOp = -5 Then Begin BcEmitB($F7); BcEmitB($C0 + R1); BcEmitW(Word(Iv)); End
+        Else If (Iv >= -128) And (Iv <= 127) Then
+        Begin BcEmitB($83); BcEmitB($C0 + AOp * 8 + R1); BcEmitB(Byte(Iv)); End
+        Else Begin BcEmitB($81); BcEmitB($C0 + AOp * 8 + R1); BcEmitW(Word(Iv)); End;
+        Exit;
+      End;
+      T2 := StripSizePrefix(Op2);
+      If Not StartsWithBracket(T2) Then T2 := Op2;
+      If StartsWithBracket(T2) Then
+      Begin
+        If AOp = -2 Then BcEmitB($8B)
+        Else If AOp = -5 Then BcEmitB($85)
+        Else BcEmitB(AOp * 8 + 3);
+        BcEmitMemRM(T2, R1, DataLbl, DataAdd);
+      End;
+      Exit;
+    End;
+    { WORD PTR [mem], ... }
+    T2 := StripSizePrefix(Op1);
+    If AOp = -3 Then Begin BcEmitB($FF); BcEmitMemRM(T2, 0, DataLbl, DataAdd); Exit; End;
+    If AOp = -4 Then Begin BcEmitB($FF); BcEmitMemRM(T2, 1, DataLbl, DataAdd); Exit; End;
+    R2 := BcParseReg16(Op2);
+    If R2 >= 0 Then
+    Begin
+      If AOp = -2 Then BcEmitB($89)
+      Else If AOp = -5 Then BcEmitB($85)
+      Else BcEmitB(AOp * 8 + 1);
+      BcEmitMemRM(T2, R2, DataLbl, DataAdd);
+      Exit;
+    End;
+    If BcParseImm(Op2, Iv) Then
+    Begin
+      If AOp = -2 Then Begin BcEmitB($C7); BcEmitMemRM(T2, 0, DataLbl, DataAdd); BcEmitW(Word(Iv)); End
+      Else If AOp = -5 Then Begin BcEmitB($F7); BcEmitMemRM(T2, 0, DataLbl, DataAdd); BcEmitW(Word(Iv)); End
+      Else If (Iv >= -128) And (Iv <= 127) Then
+      Begin BcEmitB($83); BcEmitMemRM(T2, AOp, DataLbl, DataAdd); BcEmitB(Byte(Iv)); End
+      Else Begin BcEmitB($81); BcEmitMemRM(T2, AOp, DataLbl, DataAdd); BcEmitW(Word(Iv)); End;
+    End;
+  End;
+
+  { AssembleX87 : instructions du coprocesseur (FLD, FSTP, FILD, FISTP, FADDP, ...) }
+  Function AssembleX87 : Boolean;
+  Var
+    M : TString;
+    Esc, RegF, Sz, I2 : Integer;
+
+    Function MemSize(Const X : TString) : Integer;
+    Var U : TString;
+    Begin
+      U := StrUpperCase(X);
+      If Pos('QWORD PTR', U) > 0 Then MemSize := 8
+      Else If Pos('TBYTE PTR', U) > 0 Then MemSize := 10
+      Else If Pos('DWORD PTR', U) > 0 Then MemSize := 4
+      Else If Pos('WORD PTR', U) > 0 Then MemSize := 2
+      Else MemSize := 0;
+    End;
+
+    { StIdx : 'ST' -> 0, 'ST(i)' -> i, sinon -1 }
+    Function StIdx(Const X : TString) : Integer;
+    Var U : TString;
+    Begin
+      U := StrUpperCase(X);
+      While (Length(U) > 0) And (U[1] = ' ') Do Delete(U, 1, 1);
+      If U = 'ST' Then StIdx := 0
+      Else If (Length(U) = 5) And (Copy(U, 1, 3) = 'ST(') And (U[5] = ')') And
+              (U[4] >= '0') And (U[4] <= '7') Then StIdx := Ord(U[4]) - Ord('0')
+      Else StIdx := -1;
+    End;
+
+    Procedure EmitMem(AEsc : Integer; ARegF : Integer);
+    Begin
+      BcEmitB(AEsc);
+      BcEmitMemRM(StripSizePrefix(Op1), ARegF, DataLbl, DataAdd);
+    End;
+
+  Begin
+    AssembleX87 := True;
+    { sans operande }
+    If Mnem = 'FCOMPP' Then Begin BcEmitB($DE); BcEmitB($D9); Exit; End;
+    If Mnem = 'FUCOMPP' Then Begin BcEmitB($DA); BcEmitB($E9); Exit; End;
+    If Mnem = 'FNSTSW' Then Begin BcEmitB($DF); BcEmitB($E0); Exit; End;   { FNSTSW AX }
+    If Mnem = 'FCHS' Then Begin BcEmitB($D9); BcEmitB($E0); Exit; End;
+    If Mnem = 'FABS' Then Begin BcEmitB($D9); BcEmitB($E1); Exit; End;
+    If Mnem = 'FTST' Then Begin BcEmitB($D9); BcEmitB($E4); Exit; End;
+    If Mnem = 'FSQRT' Then Begin BcEmitB($D9); BcEmitB($FA); Exit; End;
+    If Mnem = 'FSIN' Then Begin BcEmitB($D9); BcEmitB($FE); Exit; End;
+    If Mnem = 'FCOS' Then Begin BcEmitB($D9); BcEmitB($FF); Exit; End;
+    If Mnem = 'FSINCOS' Then Begin BcEmitB($D9); BcEmitB($FB); Exit; End;
+    If Mnem = 'FPATAN' Then Begin BcEmitB($D9); BcEmitB($F3); Exit; End;
+    If Mnem = 'FPTAN' Then Begin BcEmitB($D9); BcEmitB($F2); Exit; End;
+    If Mnem = 'FYL2X' Then Begin BcEmitB($D9); BcEmitB($F1); Exit; End;
+    If Mnem = 'F2XM1' Then Begin BcEmitB($D9); BcEmitB($F0); Exit; End;
+    If Mnem = 'FSCALE' Then Begin BcEmitB($D9); BcEmitB($FD); Exit; End;
+    If Mnem = 'FRNDINT' Then Begin BcEmitB($D9); BcEmitB($FC); Exit; End;
+    If Mnem = 'FPREM' Then Begin BcEmitB($D9); BcEmitB($F8); Exit; End;
+    If Mnem = 'FXTRACT' Then Begin BcEmitB($D9); BcEmitB($F4); Exit; End;
+    If Mnem = 'FLD1' Then Begin BcEmitB($D9); BcEmitB($E8); Exit; End;
+    If Mnem = 'FLDZ' Then Begin BcEmitB($D9); BcEmitB($EE); Exit; End;
+    If Mnem = 'FLDPI' Then Begin BcEmitB($D9); BcEmitB($EB); Exit; End;
+    If Mnem = 'FLDL2E' Then Begin BcEmitB($D9); BcEmitB($EA); Exit; End;
+    If Mnem = 'FLDLN2' Then Begin BcEmitB($D9); BcEmitB($ED); Exit; End;
+    If Mnem = 'FLDL2T' Then Begin BcEmitB($D9); BcEmitB($E9); Exit; End;
+    If Mnem = 'FLDLG2' Then Begin BcEmitB($D9); BcEmitB($EC); Exit; End;
+    If Mnem = 'FNINIT' Then Begin BcEmitB($DB); BcEmitB($E3); Exit; End;
+    If Mnem = 'FWAIT' Then Begin BcEmitB($9B); Exit; End;
+    If Mnem = 'FXCH' Then
+    Begin
+      I2 := StIdx(Op1); If I2 < 0 Then I2 := 1;
+      BcEmitB($D9); BcEmitB($C8 + I2); Exit;
+    End;
+    { FxxxP ST(i),ST }
+    If (Mnem = 'FADDP') Or (Mnem = 'FMULP') Or (Mnem = 'FSUBP') Or (Mnem = 'FSUBRP') Or
+       (Mnem = 'FDIVP') Or (Mnem = 'FDIVRP') Then
+    Begin
+      I2 := StIdx(Op1); If I2 < 0 Then I2 := 1;
+      If Mnem = 'FADDP' Then RegF := $C0
+      Else If Mnem = 'FMULP' Then RegF := $C8
+      Else If Mnem = 'FSUBP' Then RegF := $E8
+      Else If Mnem = 'FSUBRP' Then RegF := $E0
+      Else If Mnem = 'FDIVP' Then RegF := $F8
+      Else RegF := $F0;
+      BcEmitB($DE); BcEmitB(RegF + I2); Exit;
+    End;
+    { Fxxx ST,ST(i) / Fxxx mem }
+    If (Mnem = 'FADD') Or (Mnem = 'FMUL') Or (Mnem = 'FSUB') Or (Mnem = 'FSUBR') Or
+       (Mnem = 'FDIV') Or (Mnem = 'FDIVR') Or (Mnem = 'FCOM') Or (Mnem = 'FCOMP') Then
+    Begin
+      If Mnem = 'FADD' Then RegF := 0
+      Else If Mnem = 'FMUL' Then RegF := 1
+      Else If Mnem = 'FCOM' Then RegF := 2
+      Else If Mnem = 'FCOMP' Then RegF := 3
+      Else If Mnem = 'FSUB' Then RegF := 4
+      Else If Mnem = 'FSUBR' Then RegF := 5
+      Else If Mnem = 'FDIV' Then RegF := 6
+      Else RegF := 7;
+      Sz := MemSize(Op1);
+      If Sz = 8 Then Begin EmitMem($DC, RegF); Exit; End;
+      If Sz = 4 Then Begin EmitMem($D8, RegF); Exit; End;
+      I2 := StIdx(Op2); If I2 < 0 Then I2 := StIdx(Op1);
+      If I2 < 0 Then I2 := 1;
+      BcEmitB($D8); BcEmitB($C0 + RegF * 8 + I2); Exit;
+    End;
+    If Mnem = 'FLD' Then
+    Begin
+      Sz := MemSize(Op1);
+      If Sz = 4 Then Begin EmitMem($D9, 0); Exit; End;
+      If Sz = 8 Then Begin EmitMem($DD, 0); Exit; End;
+      If Sz = 10 Then Begin EmitMem($DB, 5); Exit; End;
+      I2 := StIdx(Op1); If I2 < 0 Then I2 := 0;
+      BcEmitB($D9); BcEmitB($C0 + I2); Exit;
+    End;
+    If Mnem = 'FST' Then
+    Begin
+      Sz := MemSize(Op1);
+      If Sz = 4 Then Begin EmitMem($D9, 2); Exit; End;
+      If Sz = 8 Then Begin EmitMem($DD, 2); Exit; End;
+      I2 := StIdx(Op1); If I2 < 0 Then I2 := 1;
+      BcEmitB($DD); BcEmitB($D0 + I2); Exit;
+    End;
+    If Mnem = 'FSTP' Then
+    Begin
+      Sz := MemSize(Op1);
+      If Sz = 4 Then Begin EmitMem($D9, 3); Exit; End;
+      If Sz = 8 Then Begin EmitMem($DD, 3); Exit; End;
+      If Sz = 10 Then Begin EmitMem($DB, 7); Exit; End;
+      I2 := StIdx(Op1); If I2 < 0 Then I2 := 0;
+      BcEmitB($DD); BcEmitB($D8 + I2); Exit;
+    End;
+    If Mnem = 'FILD' Then
+    Begin
+      Sz := MemSize(Op1);
+      If Sz = 2 Then Begin EmitMem($DF, 0); Exit; End;
+      If Sz = 8 Then Begin EmitMem($DF, 5); Exit; End;
+      EmitMem($DB, 0); Exit;
+    End;
+    If Mnem = 'FIST' Then
+    Begin
+      If MemSize(Op1) = 2 Then EmitMem($DF, 2) Else EmitMem($DB, 2);
+      Exit;
+    End;
+    If Mnem = 'FISTP' Then
+    Begin
+      Sz := MemSize(Op1);
+      If Sz = 2 Then Begin EmitMem($DF, 3); Exit; End;
+      If Sz = 8 Then Begin EmitMem($DF, 7); Exit; End;
+      EmitMem($DB, 3); Exit;
+    End;
+    If Mnem = 'FLDCW' Then Begin EmitMem($D9, 5); Exit; End;
+    If Mnem = 'FNSTCW' Then Begin EmitMem($D9, 7); Exit; End;
+    If Mnem = 'FSTCW' Then Begin BcEmitB($9B); EmitMem($D9, 7); Exit; End;
+    AssembleX87 := False;
+  End;
+
 Begin { BcAssemble }
   Line := S;
   While (Length(Line) > 0) And (Line[1] = ' ') Do Delete(Line, 1, 1);
@@ -33099,6 +37788,10 @@ Begin { BcAssemble }
   If Mnem = 'PUSHAD' Then Begin BcEmitB($60); Exit; End;
   If Mnem = 'POPAD' Then Begin BcEmitB($61); Exit; End;
   If Mnem = 'CDQ' Then Begin BcEmitB($99); Exit; End;
+  If Mnem = 'SAHF' Then Begin BcEmitB($9E); Exit; End;
+  If Mnem = 'LAHF' Then Begin BcEmitB($9F); Exit; End;
+  If (Length(Mnem) > 1) And (Mnem[1] = 'F') Then
+    If AssembleX87 Then Exit;
   If Mnem = 'NOP' Then Begin BcEmitB($90); Exit; End;
   If Mnem = 'LODSB' Then Begin BcEmitB($AC); Exit; End;
   If Mnem = 'LODSD' Then Begin BcEmitB($AD); Exit; End;
@@ -33193,6 +37886,13 @@ Begin { BcAssemble }
       BcEmitMemRM(Tmp, 2, DataLbl, DataAdd);
       Exit;
     End;
+    { CALL reg32 : FF D0+reg }
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then
+    Begin
+      BcEmitB($FF); BcEmitB($D0 + Reg1);
+      Exit;
+    End;
     { CALL label ou CALL api }
     Tmp := Op1;
     While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
@@ -33244,6 +37944,40 @@ Begin { BcAssemble }
     Exit;
   End;
 
+  { ---- Formes 16 bits (AX, BX, ... / WORD PTR) ---- }
+  If ((Mnem = 'MOV') Or (Mnem = 'ADD') Or (Mnem = 'SUB') Or (Mnem = 'CMP') Or
+      (Mnem = 'AND') Or (Mnem = 'OR') Or (Mnem = 'XOR') Or (Mnem = 'TEST') Or
+      (Mnem = 'INC') Or (Mnem = 'DEC')) And Assemble16 Then
+    Exit;
+
+  { ---- XCHG reg,reg ---- }
+  If Mnem = 'XCHG' Then
+  Begin
+    Reg1 := BcParseReg32(Op1); Reg2 := BcParseReg32(Op2);
+    If (Reg1 >= 0) And (Reg2 >= 0) Then
+    Begin BcEmitB($87); BcEmitB($C0 + Reg1 * 8 + Reg2); Exit; End;
+    Reg1 := BcParseReg8(Op1); Reg2 := BcParseReg8(Op2);
+    If (Reg1 >= 0) And (Reg2 >= 0) Then
+    Begin BcEmitB($86); BcEmitB($C0 + Reg1 * 8 + Reg2); Exit; End;
+    Exit;
+  End;
+
+  { ---- MUL reg ---- }
+  If Mnem = 'MUL' Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($E0 + Reg1); Exit; End;
+    Reg1 := BcParseReg8(Op1);
+    If Reg1 >= 0 Then Begin BcEmitB($F6); BcEmitB($E0 + Reg1); Exit; End;
+    Tmp := StripSizePrefix(Op1);
+    If StartsWithBracket(Tmp) Then
+    Begin
+      { MUL DWORD PTR [mem] : F7 /4 (EDX:EAX = EAX * [mem]) }
+      BcEmitB($F7); BcEmitMemRM(Tmp, 4, DataLbl, DataAdd);
+    End;
+    Exit;
+  End;
+
   { ---- MOV ---- }
   If Mnem = 'MOV' Then
   Begin
@@ -33258,6 +37992,14 @@ Begin { BcAssemble }
       If BcParseImm(Op2, ImmVal) Then
       Begin { MOV reg32,imm32 }
         BcEmitB($B8 + Reg1); BcEmitD(ImmVal); Exit;
+      End;
+      If Pos('OFFSET ', StrUpperCase(Op2)) = 1 Then
+      Begin { MOV reg32,OFFSET label[+disp] : B8+r abs32 }
+        ParseOffsetOperand(Op2, DataLbl, DataAdd);
+        BcEmitB($B8 + Reg1);
+        BcAddFixup(BC_FIX_ABS32_DATA, DataLbl, DataAdd);
+        BcEmitD(0);
+        Exit;
       End;
       If HasDWordPrefix(Op2) Or StartsWithBracket(Op2) Then
       Begin { MOV reg32,[mem] }
@@ -33290,6 +38032,10 @@ Begin { BcAssemble }
       Reg2 := BcParseReg8(Op2);
       If Reg2 >= 0 Then
       Begin BcEmitB($88); BcEmitB($C0 + Reg2 * 8 + Reg1); Exit; End;
+      If BcParseImm(Op2, ImmVal) Then
+      Begin { MOV reg8,imm8 : B0+r ib }
+        BcEmitB($B0 + Reg1); BcEmitB(Byte(ImmVal)); Exit;
+      End;
       Exit;
     End;
     { MOV [mem], ... }
@@ -33408,20 +38154,33 @@ Begin { BcAssemble }
   End;
 
   { ---- MOVZX ---- }
-  If Mnem = 'MOVZX' Then
+  If (Mnem = 'MOVZX') Or (Mnem = 'MOVSX') Then
   Begin
     Reg1 := BcParseReg32(Op1);
     If Reg1 >= 0 Then
     Begin
-      BcEmitB($0F); BcEmitB($B6);
+      BcEmitB($0F);
       Tmp := StripSizePrefix(Op2);
       If Not StartsWithBracket(Tmp) Then
       Begin
         Reg2 := BcParseReg8(Tmp);
         If Reg2 >= 0 Then
-        Begin BcEmitB($C0 + Reg1 * 8 + Reg2); Exit; End;
+        Begin
+          If Mnem = 'MOVZX' Then BcEmitB($B6) Else BcEmitB($BE);
+          BcEmitB($C0 + Reg1 * 8 + Reg2); Exit;
+        End;
+        Reg2 := BcParseReg16(Tmp);
+        If Reg2 >= 0 Then
+        Begin
+          If Mnem = 'MOVZX' Then BcEmitB($B7) Else BcEmitB($BF);
+          BcEmitB($C0 + Reg1 * 8 + Reg2); Exit;
+        End;
         Tmp := Op2;
       End;
+      If HasWordPrefix(Op2) Then
+      Begin If Mnem = 'MOVZX' Then BcEmitB($B7) Else BcEmitB($BF); End
+      Else
+      Begin If Mnem = 'MOVZX' Then BcEmitB($B6) Else BcEmitB($BE); End;
       If StartsWithBracket(Tmp) Then
         BcEmitMemRM(Tmp, Reg1, DataLbl, DataAdd);
     End;
@@ -33518,6 +38277,37 @@ Begin { BcAssemble }
       End;
       Exit;
     End;
+    { op [mem],reg32  /  op DWORD PTR [mem],imm32 }
+    If HasDWordPrefix(Op1) Or (StartsWithBracket(Op1) And Not HasBytePrefix(Op1)) Then
+    Begin
+      Tmp := StripSizePrefix(Op1);
+      If Not StartsWithBracket(Tmp) Then Tmp := Op1;
+      Reg2 := BcParseReg32(Op2);
+      If Reg2 >= 0 Then
+      Begin
+        If AluOp >= 0 Then BcEmitB(AluOp * 8 + 1) Else BcEmitB($85);
+        BcEmitMemRM(Tmp, Reg2, DataLbl, DataAdd);
+        Exit;
+      End;
+      Reg2 := BcParseReg8(Op2);
+      If Reg2 >= 0 Then
+      Begin
+        If AluOp >= 0 Then BcEmitB(AluOp * 8) Else BcEmitB($84);
+        BcEmitMemRM(Tmp, Reg2, DataLbl, DataAdd);
+        Exit;
+      End;
+      If BcParseImm(Op2, ImmVal) Then
+      Begin
+        If AluOp < 0 Then
+        Begin BcEmitB($F7); BcEmitMemRM(Tmp, 0, DataLbl, DataAdd); BcEmitD(ImmVal); End
+        Else If (ImmVal >= -128) And (ImmVal <= 127) Then
+        Begin BcEmitB($83); BcEmitMemRM(Tmp, AluOp, DataLbl, DataAdd); BcEmitB(Byte(ImmVal)); End
+        Else
+        Begin BcEmitB($81); BcEmitMemRM(Tmp, AluOp, DataLbl, DataAdd); BcEmitD(ImmVal); End;
+        Exit;
+      End;
+      Exit;
+    End;
     { CMP BYTE PTR [mem],imm }
     If HasBytePrefix(Op1) Then
     Begin
@@ -33594,11 +38384,15 @@ Begin { BcAssemble }
     Exit; End;
   If Mnem = 'DIV' Then
   Begin Reg1 := BcParseReg32(Op1);
-    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F0 + Reg1); End;
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F0 + Reg1); End
+    Else Begin Reg1 := BcParseReg8(Op1);
+      If Reg1 >= 0 Then Begin BcEmitB($F6); BcEmitB($F0 + Reg1); End; End;
     Exit; End;
   If Mnem = 'IDIV' Then
   Begin Reg1 := BcParseReg32(Op1);
-    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F8 + Reg1); End;
+    If Reg1 >= 0 Then Begin BcEmitB($F7); BcEmitB($F8 + Reg1); End
+    Else Begin Reg1 := BcParseReg8(Op1);
+      If Reg1 >= 0 Then Begin BcEmitB($F6); BcEmitB($F8 + Reg1); End; End;
     Exit; End;
   If Mnem = 'IMUL' Then
   Begin
@@ -33660,6 +38454,14 @@ Begin { BcAssemble }
   If (Mnem = 'SHL') Or (Mnem = 'SHR') Then
   Begin
     Reg1 := BcParseReg32(Op1);
+    If (Reg1 >= 0) And (StrUpperCase(Op2) = 'CL') Then
+    Begin
+      { SHL/SHR reg32,CL : D3 /4 ou /5 }
+      BcEmitB($D3);
+      If Mnem = 'SHL' Then BcEmitB($E0 + Reg1)
+      Else BcEmitB($E8 + Reg1);
+      Exit;
+    End;
     If (Reg1 >= 0) And BcParseImm(Op2, ImmVal) Then
     Begin
       If ImmVal = 1 Then
@@ -33670,6 +38472,24 @@ Begin { BcAssemble }
         If Mnem = 'SHL' Then BcEmitB($E0 + Reg1)
         Else BcEmitB($E8 + Reg1);
         BcEmitB(Byte(ImmVal)); End;
+    End;
+    Exit;
+  End;
+
+  { ---- ROL / ROR / SAR reg32,imm8 | CL : C1 /0 /1 /7, D3 /0 /1 /7 ---- }
+  If (Mnem = 'ROL') Or (Mnem = 'ROR') Or (Mnem = 'SAR') Then
+  Begin
+    Reg1 := BcParseReg32(Op1);
+    If Mnem = 'ROL' Then Reg2 := $C0 Else If Mnem = 'ROR' Then Reg2 := $C8 Else Reg2 := $F8;
+    If (Reg1 >= 0) And (StrUpperCase(Op2) = 'CL') Then
+    Begin
+      BcEmitB($D3); BcEmitB(Reg2 + Reg1);
+      Exit;
+    End;
+    If (Reg1 >= 0) And BcParseImm(Op2, ImmVal) Then
+    Begin
+      If ImmVal = 1 Then Begin BcEmitB($D1); BcEmitB(Reg2 + Reg1); End
+      Else Begin BcEmitB($C1); BcEmitB(Reg2 + Reg1); BcEmitB(Byte(ImmVal)); End;
     End;
     Exit;
   End;
@@ -36015,7 +40835,7 @@ End;
 Procedure BcBuildData;
 Var I, J: Integer; S: TString;
 Begin
-  BcDataLen := 0; BcDLabelCnt := 0;
+  BcDataLen := 0; BcDLabelCnt := 0; BcDFixCnt := 0;
 
   If Is68kTarget Then
   Begin
@@ -36055,6 +40875,9 @@ Begin
         DK_ZERO:
           If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
           Else BcDataZeros(4);
+        DK_INIT:
+          For J := 0 To DataTab[I].ElemCount - 1 Do
+            BcDataB(DataInitPool[DataTab[I].IntVal + J]);
       End;
     End;
     Exit;
@@ -36092,6 +40915,9 @@ Begin
         DK_ZERO:
           If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
           Else BcDataD(0);
+        DK_INIT:
+          For J := 0 To DataTab[I].ElemCount - 1 Do
+            BcDataB(DataInitPool[DataTab[I].IntVal + J]);
       End;
     End;
     Exit;
@@ -36103,12 +40929,26 @@ Begin
   BcDefineDataLabel('HHEAP');     BcDataD(0);
   BcDefineDataLabel('NUMBUF');    BcDataZeros(32);
   BcDefineDataLabel('INBUF');     BcDataZeros(256);
+  BcDefineDataLabel('CHRBUF');    BcDataZeros(4);
+  BcDefineDataLabel('OUTBUF');    BcDataZeros(4096);
+  BcDefineDataLabel('OUTBUFLEN'); BcDataD(0);
+  BcDefineDataLabel('RTERR_MSG'); BcDataStr('Runtime error ');
+  BcDefineDataLabel('RTERR_AT');  BcDataStr(' at $');
+  BcDefineDataLabel('REALTMP');   BcDataZeros(8);
+  BcDefineDataLabel('FMTBUF');    BcDataZeros(96);
+  BcDefineDataLabel('FMT_FIX');   BcDataStr('%*.*f');
+  BcDefineDataLabel('FMT_SCI');   BcDataStr('% .*E');
+  BcDefineDataLabel('FPUCW');     BcDataB($32); BcDataB($13); BcDataB(0); BcDataB(0);
+  BcDefineDataLabel('HEXBUF');    BcDataZeros(12);
   BcDefineDataLabel('BYTESWR');   BcDataD(0);
   BcDefineDataLabel('BYTESRD');   BcDataD(0);
   BcDefineDataLabel('CRLF');      BcDataB(13); BcDataB(10); BcDataB(0);
   BcDefineDataLabel('STRTMP');    BcDataZeros(256);
   BcDefineDataLabel('STRBUF1');   BcDataZeros(256);
   BcDefineDataLabel('STRBUF2');   BcDataZeros(256);
+  BcDefineDataLabel('WITHPTR');   BcDataZeros(32);
+  BcDefineDataLabel('SETBUF');    BcDataZeros(256);
+  BcDefineDataLabel('VALCODE');   BcDataD(0);
   BcDefineDataLabel('TRUE_STR');  BcDataStr('TRUE');
   BcDefineDataLabel('FALSE_STR'); BcDataStr('FALSE');
 
@@ -36138,8 +40978,12 @@ Begin
   BcDefineDataLabel('DOS_DKFREE');  BcDataZeros(16);
   BcDefineDataLabel('DOS_FINDDATA');BcDataZeros(320);
   BcDefineDataLabel('DOS_FINDHDL'); BcDataD(-1);
+  BcDefineDataLabel('DOS_FINDATTR'); BcDataD(0);
+  BcDefineDataLabel('DOS_FTTMP');   BcDataZeros(12);
+  BcDefineDataLabel('SF_FTTMP');    BcDataZeros(16);
   BcDefineDataLabel('DOS_PROCINFO');BcDataZeros(16);
   BcDefineDataLabel('DOS_STARTINFO');BcDataZeros(68);
+  BcDefineDataLabel('DOS_CMDBUF');  BcDataZeros(520);
   BcDefineDataLabel('DOS_EXITVAL'); BcDataD(0);
 
   { Variables File I/O }
@@ -36230,6 +41074,8 @@ Begin
   { Variables Strings/Printer/Overlay/Objects }
   BcDefineDataLabel('STR_TMPBUF'); BcDataZeros(256);
   BcDefineDataLabel('STR_PASBUF'); BcDataZeros(256);
+  BcDefineDataLabel('STRRING'); BcDataZeros(4096);
+  BcDefineDataLabel('STRRINGIDX'); BcDataD(0);
   BcDefineDataLabel('PRN_HANDLE'); BcDataD(-1);
   BcDefineDataLabel('PRN_FNAME');  BcDataStr('NUL');
   BcDefineDataLabel('OVR_RESULT'); BcDataD(0);
@@ -36285,6 +41131,8 @@ Begin
       DK_ZERO:
         If DataTab[I].IntVal > 0 Then BcDataZeros(DataTab[I].IntVal)
         Else BcDataD(0);
+      DK_INIT:
+        BcDataInitBytes(DataTab[I].IntVal, DataTab[I].ElemCount);
     End;
   End;
 End;
@@ -36295,7 +41143,39 @@ Var
   I: LongInt;
   TargetOfs, FixOfs: LongInt;
   Val: LongInt;
+  Nm: TString;
 Begin
+  { Adresses dans la section .data (constantes typees : PChar, @variable, @procedure) }
+  For I := 0 To BcDFixCnt - 1 Do
+  Begin
+    Val := 0;
+    Nm := BcDFixLbl[I];
+    If (Length(Nm) > 1) And (Nm[1] = '@') Then
+    Begin
+      Nm := Copy(Nm, 2, 255);
+      TargetOfs := BcFindDataLabel(TP_VAR_PFX + Nm);
+      If TargetOfs >= 0 Then Val := DataVA + TargetOfs
+      Else
+      Begin
+        TargetOfs := BcFindLabel(TP_FUNC_PFX + Nm);
+        If TargetOfs >= 0 Then Val := (PE_IMG_BASE + PE_TEXT_RVA) + TargetOfs;
+      End;
+    End
+    Else
+    Begin
+      TargetOfs := BcFindDataLabel(Nm);
+      If TargetOfs >= 0 Then Val := DataVA + TargetOfs;
+    End;
+    FixOfs := BcDFixOfs[I];
+    If (FixOfs >= 0) And (FixOfs + 3 < BcDataLen) Then
+    Begin
+      BcData[FixOfs] := Byte(Val);
+      BcData[FixOfs + 1] := Byte(Val Shr 8);
+      BcData[FixOfs + 2] := Byte(Val Shr 16);
+      BcData[FixOfs + 3] := Byte(Val Shr 24);
+    End;
+  End;
+
   For I := 0 To BcFixupCnt - 1 Do
   Begin
     FixOfs := BcFixups[I].CodeOfs;
@@ -38674,7 +43554,8 @@ Var
   DnmPerDll: Array[0..MAX_DLL_PE-1] Of LongInt;
   IatVA: LongInt;
   CurOfs: LongInt;
-  DI, AI, I, J: Integer;
+  DI, AI: Integer;
+  I, J: LongInt;
   Found: Boolean;
   ImpIdx: Integer;
   IdataVirtSize: LongInt;
@@ -39287,6 +44168,27 @@ Begin
                   IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
         Else
           EmitRaw(DataTab[I].LblName + ' DB 0');
+      End;
+      DK_ZERO: Begin
+        If DataTab[I].IntVal > 0 Then
+          EmitRaw(DataTab[I].LblName + ' DB ' +
+                  IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + ' DB 0');
+      End;
+      DK_INIT: Begin
+        S := '';
+        For J := 0 To DataTab[I].ElemCount - 1 Do
+        Begin
+          If S <> '' Then S := S + ',';
+          S := S + IntToStr_(DataInitPool[DataTab[I].IntVal + J]);
+          If (J Mod 16 = 15) Or (J = DataTab[I].ElemCount - 1) Then
+          Begin
+            If J < 16 Then EmitRaw(DataTab[I].LblName + ' DB ' + S)
+            Else EmitRaw('        DB ' + S);
+            S := '';
+          End;
+        End;
       End;
     End;
   End;
@@ -39916,7 +44818,12130 @@ Begin
   End;
 End;
 
+{ D16-BEGIN : moteur DOS 16 bits (genere par assemblage de parties, sans $I) }
+{ ============================================================ }
+{ TODO 30 - MOTEUR DOS 16 BITS (8086 MODE REEL)   [EN COURS]   }
+{ ============================================================ }
+{ Generateur de code natif 8086 pour la cible -CD (DOS mode    }
+{ reel). Modele memoire Turbo Pascal : Integer/Word 16 bits,    }
+{ Longint dans DX:AX, pointeurs far (segment:offset), chaines   }
+{ de 256 octets avec octet de longueur, Real logiciel 6 octets. }
+{ Le code est emis en assembleur texte (visible avec -asm) puis }
+{ assemble par le mini-assembleur D16Asm ci-dessous ; les       }
+{ segments de code font au plus 64 Ko chacun et tous les appels }
+{ de procedures sont des appels far. Le fichier MZ est ecrit    }
+{ par D16WriteMZ. Les unites SYSTEM, CRT, DOS, STRINGS et       }
+{ PRINTER sont integrees (sources Pascal compilees par ce meme  }
+{ moteur, voir D16 sources integres).                           }
+{ ============================================================ }
+
+Const
+  D16_MAX_CODE   = {$IFDEF FPC}1048576{$ELSE}32768{$ENDIF};
+  D16_MAX_DATA   = 65536;
+  D16_MAX_LABEL  = {$IFDEF FPC}65536{$ELSE}1024{$ENDIF};
+  D16_MAX_FIXUP  = {$IFDEF FPC}131072{$ELSE}2048{$ENDIF};
+  D16_MAX_SEG    = 16;
+  D16_MAX_RELOC  = {$IFDEF FPC}32768{$ELSE}512{$ENDIF};
+  D16_LBL_HASH   = {$IFDEF FPC}16384{$ELSE}256{$ENDIF};
+  D16_SEG_LIMIT  = 61440;   { au-dela, ouvrir un nouveau segment de code }
+
+  { Types de fixups }
+  D16_FX_REL16 = 0;   { saut/appel near relatif 16 bits (meme segment) }
+  D16_FX_REL8  = 1;   { saut court relatif 8 bits                      }
+  D16_FX_OFS16 = 2;   { offset 16 bits d un label dans son segment      }
+  D16_FX_SEG   = 3;   { paragraphe du segment d un label (relocation MZ)}
+
+  { Registres }
+  D16_REGS16 : Array[0..7] Of String[2] = ('AX','CX','DX','BX','SP','BP','SI','DI');
+  D16_REGS8  : Array[0..7] Of String[2] = ('AL','CL','DL','BL','AH','CH','DH','BH');
+  D16_SREGS  : Array[0..3] Of String[2] = ('ES','CS','SS','DS');
+
+Type
+  TD16Label = Record
+    Name   : String[40];
+    Seg    : Integer;      { -1 = non defini, 0..n-1 code, 255 = donnees }
+    Ofs    : LongInt;      { offset dans le segment                     }
+    Next   : LongInt;      { chainage de hachage                        }
+  End;
+  TD16Fixup = Record
+    Seg    : Integer;      { segment de code contenant le fixup (255 = donnees) }
+    Ofs    : LongInt;      { offset dans le segment                      }
+    Kind   : Integer;
+    Lbl    : LongInt;      { index du label cible                         }
+    Addend : LongInt;
+    Line   : LongInt;      { ligne source pour les messages              }
+  End;
+  { Operande decode par l assembleur }
+  TD16Operand = Record
+    Kind   : Integer;      { 0 rien, 1 reg8, 2 reg16, 3 sreg, 4 mem, 5 imm }
+    Reg    : Integer;
+    Size   : Integer;      { 1, 2, 4 ou 0 inconnu                        }
+    SegOvr : Integer;      { -1 aucun, 0 ES,1 CS,2 SS,3 DS                }
+    RM     : Integer;      { champ r/m (base/index) ; 6 = disp seul      }
+    HasBase: Boolean;
+    Disp   : LongInt;
+    Lbl    : LongInt;      { label reference dans le deplacement / imm   }
+    ImmKind: Integer;      { 0 valeur, 1 OFFSET lbl, 2 SEG lbl           }
+    Far    : Boolean;      { FAR PTR                                     }
+    Short  : Boolean;      { SHORT                                       }
+  End;
+
+Var
+  D16Code     : Array[0..D16_MAX_CODE-1] Of Byte;
+  D16CodeLen  : LongInt;                         { octets emis au total      }
+  D16SegStart : Array[0..D16_MAX_SEG] Of LongInt;{ debut de chaque segment   }
+  D16SegCount : Integer;
+  D16CurSeg   : Integer;
+  D16Data     : Array[0..D16_MAX_DATA-1] Of Byte;
+  D16DataLen  : LongInt;                         { donnees initialisees     }
+  D16BssLen   : LongInt;                         { zone non initialisee      }
+  D16Labels   : Array[0..D16_MAX_LABEL-1] Of TD16Label;
+  D16LabelCnt : LongInt;
+  D16LblHash  : Array[0..D16_LBL_HASH-1] Of LongInt;
+  D16Fixups   : Array[0..D16_MAX_FIXUP-1] Of TD16Fixup;
+  D16FixupCnt : LongInt;
+  D16AsmLine  : LongInt;                         { ligne source courante    }
+  D16AsmErrors: LongInt;
+  D16Active   : Boolean;                         { EmitInstr -> D16Asm      }
+  D16Listing  : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Erreurs de l assembleur                                      }
+{ ------------------------------------------------------------ }
+
+Procedure D16AsmError(Const Msg, S : TString);
+Begin
+  Inc(D16AsmErrors);
+  If D16AsmErrors <= 20 Then
+    WriteLn('TPCW32: erreur interne asm 8086: ', Msg, ' : ', S);
+End;
+
+{ ------------------------------------------------------------ }
+{ Labels                                                       }
+{ ------------------------------------------------------------ }
+
+Function D16HashName(Const S : TString) : LongInt;
+Var I : Integer; H : LongInt;
+Begin
+  H := 0;
+  For I := 1 To Length(S) Do
+    H := (H * 31 + Ord(S[I])) And $7FFFFFFF;
+  D16HashName := H Mod D16_LBL_HASH;
+End;
+
+Function D16FindLabel(Const S : TString) : LongInt;
+Var I : LongInt;
+Begin
+  I := D16LblHash[D16HashName(S)];
+  While I >= 0 Do
+  Begin
+    If D16Labels[I].Name = S Then Begin D16FindLabel := I; Exit End;
+    I := D16Labels[I].Next;
+  End;
+  D16FindLabel := -1;
+End;
+
+{ Retourne l index du label, le cree (non defini) s il n existe pas }
+Function D16LabelRef(Const S : TString) : LongInt;
+Var I, H : LongInt;
+Begin
+  I := D16FindLabel(S);
+  If I < 0 Then
+  Begin
+    If D16LabelCnt >= D16_MAX_LABEL Then
+    Begin
+      D16AsmError('trop de labels', S); D16LabelRef := 0; Exit;
+    End;
+    I := D16LabelCnt; Inc(D16LabelCnt);
+    D16Labels[I].Name := S;
+    D16Labels[I].Seg := -1;
+    D16Labels[I].Ofs := 0;
+    H := D16HashName(S);
+    D16Labels[I].Next := D16LblHash[H];
+    D16LblHash[H] := I;
+  End;
+  D16LabelRef := I;
+End;
+
+Procedure D16DefineCodeLabel(Const S : TString);
+Var I : LongInt;
+Begin
+  I := D16LabelRef(S);
+  If D16Labels[I].Seg >= 0 Then
+  Begin
+    D16AsmError('label defini deux fois', S); Exit;
+  End;
+  D16Labels[I].Seg := D16CurSeg;
+  D16Labels[I].Ofs := D16CodeLen - D16SegStart[D16CurSeg];
+End;
+
+Procedure D16DefineDataLabel(Const S : TString; Ofs : LongInt);
+Var I : LongInt;
+Begin
+  I := D16LabelRef(S);
+  If D16Labels[I].Seg >= 0 Then
+  Begin
+    D16AsmError('label de donnees defini deux fois', S); Exit;
+  End;
+  D16Labels[I].Seg := 255;
+  D16Labels[I].Ofs := Ofs;
+End;
+
+Procedure D16DefineBssLabel(Const S : TString; Ofs : LongInt);
+Var I : LongInt;
+Begin
+  I := D16LabelRef(S);
+  If D16Labels[I].Seg >= 0 Then
+  Begin
+    D16AsmError('label BSS defini deux fois', S); Exit;
+  End;
+  D16Labels[I].Seg := 254;
+  D16Labels[I].Ofs := Ofs;
+End;
+
+{ Reserver N octets dans la zone non initialisee ; retourne l offset BSS }
+Function D16AllocBss(N : LongInt) : LongInt;
+Begin
+  D16AllocBss := D16BssLen;
+  D16BssLen := D16BssLen + N;
+End;
+
+{ Offset final d un label dans son segment (BSS : apres les donnees) }
+Function D16LabelOfs(L : LongInt) : LongInt;
+Begin
+  If D16Labels[L].Seg = 254 Then D16LabelOfs := D16DataLen + D16Labels[L].Ofs
+  Else D16LabelOfs := D16Labels[L].Ofs;
+End;
+
+Function D16LabelDefined(Const S : TString) : Boolean;
+Var I : LongInt;
+Begin
+  I := D16FindLabel(S);
+  D16LabelDefined := (I >= 0) And (D16Labels[I].Seg >= 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ Emission d octets, segments de code, fixups                  }
+{ ------------------------------------------------------------ }
+
+Procedure D16EmitB(B : Byte);
+Begin
+  If D16CodeLen < D16_MAX_CODE Then
+  Begin
+    D16Code[D16CodeLen] := B;
+    Inc(D16CodeLen);
+  End
+  Else If D16CodeLen = D16_MAX_CODE Then
+  Begin
+    D16AsmError('code trop volumineux', '');
+    Inc(D16CodeLen);
+  End;
+End;
+
+Procedure D16EmitW(W : LongInt);
+Begin
+  D16EmitB(Byte(W And $FF));
+  D16EmitB(Byte((W Shr 8) And $FF));
+End;
+
+Function D16CurOfs : LongInt;
+Begin
+  D16CurOfs := D16CodeLen - D16SegStart[D16CurSeg];
+End;
+
+{ Ouvrir un nouveau segment de code (aligne au paragraphe) }
+Procedure D16NewSegment;
+Begin
+  While (D16CodeLen And 15) <> 0 Do D16EmitB($90);
+  If D16SegCount >= D16_MAX_SEG Then
+  Begin
+    D16AsmError('trop de segments de code', ''); Exit;
+  End;
+  D16SegStart[D16SegCount] := D16CodeLen;
+  D16CurSeg := D16SegCount;
+  Inc(D16SegCount);
+End;
+
+{ Taille du segment courant }
+Function D16SegSize(S : Integer) : LongInt;
+Begin
+  If S = D16CurSeg Then D16SegSize := D16CodeLen - D16SegStart[S]
+  Else D16SegSize := D16SegStart[S + 1] - D16SegStart[S];
+End;
+
+{ ------------------------------------------------------------ }
+{ Plages de code des procedures et elimination du code mort    }
+{ ------------------------------------------------------------ }
+{ Chaque procedure (des unites integrees comme du programme) occupe une plage
+  contigue [StartOfs, EndOfs) de son segment.  Apres la generation, les plages
+  non atteignables depuis les racines (programme principal, initialisations
+  d unites, noyau du runtime, donnees) sont retirees et le code est compacte.
+  L atteignabilite est calculee a partir des fixups : toute reference (appel
+  far, OFFSET/SEG, saut) situee dans du code conserve ou hors plage rend la
+  plage cible vivante.  Le code hors plage (noyau asm) est toujours conserve. }
+Const
+  D16_MAX_RANGE = {$IFDEF FPC}16384{$ELSE}512{$ENDIF};
+Type
+  TD16Range = Record
+    Seg      : Integer;
+    StartOfs : LongInt;
+    EndOfs   : LongInt;
+    Keep     : Boolean;
+  End;
+Var
+  D16Ranges   : Array[0..D16_MAX_RANGE - 1] Of TD16Range;
+  D16RangeAbs : Array[0..D16_MAX_RANGE - 1] Of LongInt;  { debut absolu dans D16Code }
+  D16RangeCnt : LongInt;
+  D16NoElim   : Boolean;                                { desactive l elimination }
+  D16ElimBytes: LongInt;                                { octets retires }
+
+Procedure D16AddRange(Seg : Integer; StartOfs, EndOfs : LongInt; Root : Boolean);
+Begin
+  { au-dela de la capacite, les procedures sans plage sont simplement conservees }
+  If (D16RangeCnt >= D16_MAX_RANGE) Or (EndOfs <= StartOfs) Then Exit;
+  D16Ranges[D16RangeCnt].Seg := Seg;
+  D16Ranges[D16RangeCnt].StartOfs := StartOfs;
+  D16Ranges[D16RangeCnt].EndOfs := EndOfs;
+  D16Ranges[D16RangeCnt].Keep := Root;
+  Inc(D16RangeCnt);
+End;
+
+{ Plage contenant l adresse de code Seg:Ofs, -1 si hors plage }
+Function D16RangeOfAddr(Seg : Integer; Ofs : LongInt) : LongInt;
+Var A, Lo, Hi, Mid : LongInt;
+Begin
+  D16RangeOfAddr := -1;
+  If (Seg < 0) Or (Seg >= D16SegCount) Then Exit;
+  A := D16SegStart[Seg] + Ofs;
+  Lo := 0; Hi := D16RangeCnt - 1;
+  While Lo <= Hi Do
+  Begin
+    Mid := (Lo + Hi) Div 2;
+    If A < D16RangeAbs[Mid] Then Hi := Mid - 1
+    Else If A >= D16RangeAbs[Mid] + (D16Ranges[Mid].EndOfs - D16Ranges[Mid].StartOfs) Then Lo := Mid + 1
+    Else Begin D16RangeOfAddr := Mid; Exit End;
+  End;
+End;
+
+{ Derniere plage du segment Seg qui commence strictement avant l offset Ofs, -1 si aucune }
+Function D16RangeBefore(Seg : Integer; Ofs : LongInt) : LongInt;
+Var A, Lo, Hi, Mid, R : LongInt;
+Begin
+  A := D16SegStart[Seg] + Ofs; R := -1;
+  Lo := 0; Hi := D16RangeCnt - 1;
+  While Lo <= Hi Do
+  Begin
+    Mid := (Lo + Hi) Div 2;
+    If D16RangeAbs[Mid] < A Then Begin R := Mid; Lo := Mid + 1 End Else Hi := Mid - 1;
+  End;
+  If (R >= 0) And (D16Ranges[R].Seg <> Seg) Then R := -1;
+  D16RangeBefore := R;
+End;
+
+Procedure D16Eliminate;
+Var
+  I, R, T, L, N : LongInt; Changed : Boolean;
+  Before, After : Array[0..D16_MAX_RANGE - 1] Of LongInt;  { octets retires avant / apres la plage, dans son segment }
+  NewStart : Array[0..D16_MAX_SEG] Of LongInt;
+  P, Cur, SegEnd, A, Sz, Removed : LongInt; S : Integer;
+  NewOfs : LongInt; Dead : Boolean;
+
+  Procedure Remap(Seg : Integer; Ofs : LongInt; Var NewO : LongInt; Var IsDead : Boolean);
+  Var Rg : LongInt;
+  Begin
+    IsDead := False; NewO := Ofs;
+    If (Seg < 0) Or (Seg >= D16SegCount) Then Exit;
+    Rg := D16RangeOfAddr(Seg, Ofs);
+    If Rg >= 0 Then
+    Begin
+      If Not D16Ranges[Rg].Keep Then Begin IsDead := True; Exit End;
+      NewO := Ofs - Before[Rg];
+    End
+    Else
+    Begin
+      Rg := D16RangeBefore(Seg, Ofs);
+      If Rg >= 0 Then NewO := Ofs - After[Rg];
+    End;
+  End;
+
+Begin
+  D16ElimBytes := 0;
+  If D16NoElim Or (D16AsmErrors > 0) Or (D16RangeCnt = 0) Then Exit;
+  For I := 0 To D16RangeCnt - 1 Do
+    D16RangeAbs[I] := D16SegStart[D16Ranges[I].Seg] + D16Ranges[I].StartOfs;
+  { marquage : les references issues du code vivant ou hors plage rendent la cible vivante }
+  Changed := True;
+  While Changed Do
+  Begin
+    Changed := False;
+    For I := 0 To D16FixupCnt - 1 Do
+    Begin
+      If D16Fixups[I].Seg = 255 Then R := -1
+      Else R := D16RangeOfAddr(D16Fixups[I].Seg, D16Fixups[I].Ofs);
+      If (R >= 0) And Not D16Ranges[R].Keep Then Continue;
+      L := D16Fixups[I].Lbl;
+      If (D16Labels[L].Seg < 0) Or (D16Labels[L].Seg >= D16SegCount) Then Continue;
+      T := D16RangeOfAddr(D16Labels[L].Seg, D16Labels[L].Ofs);
+      If (T >= 0) And Not D16Ranges[T].Keep Then
+      Begin
+        D16Ranges[T].Keep := True; Changed := True;
+      End;
+    End;
+  End;
+  { trace (option -d) : plages conservees et leur taille }
+  If Opts.DebugMode Then
+    For I := 0 To D16RangeCnt - 1 Do
+      If D16Ranges[I].Keep Then
+      Begin
+        For L := 0 To D16LabelCnt - 1 Do
+          If (D16Labels[L].Seg = D16Ranges[I].Seg) And (D16Labels[L].Ofs = D16Ranges[I].StartOfs) Then
+            Write(D16Labels[L].Name, ' ');
+        WriteLn(D16Ranges[I].EndOfs - D16Ranges[I].StartOfs);
+      End;
+  { octets retires avant chaque plage (cumul par segment) }
+  Removed := 0; S := -1;
+  For I := 0 To D16RangeCnt - 1 Do
+  Begin
+    If D16Ranges[I].Seg <> S Then Begin S := D16Ranges[I].Seg; Removed := 0 End;
+    Before[I] := Removed;
+    If Not D16Ranges[I].Keep Then
+      Removed := Removed + (D16Ranges[I].EndOfs - D16Ranges[I].StartOfs);
+    After[I] := Removed;
+  End;
+  { relocaliser les labels et les fixups (avant de deplacer le code) }
+  For I := 0 To D16LabelCnt - 1 Do
+    If (D16Labels[I].Seg >= 0) And (D16Labels[I].Seg < D16SegCount) Then
+    Begin
+      Remap(D16Labels[I].Seg, D16Labels[I].Ofs, NewOfs, Dead);
+      If Dead Then D16Labels[I].Seg := -2 Else D16Labels[I].Ofs := NewOfs;
+    End;
+  N := 0;
+  For I := 0 To D16FixupCnt - 1 Do
+  Begin
+    Dead := False;
+    If D16Fixups[I].Seg <> 255 Then
+    Begin
+      Remap(D16Fixups[I].Seg, D16Fixups[I].Ofs, NewOfs, Dead);
+      If Not Dead Then D16Fixups[I].Ofs := NewOfs;
+    End;
+    If Not Dead Then
+    Begin
+      If N <> I Then D16Fixups[N] := D16Fixups[I];
+      Inc(N);
+    End;
+  End;
+  D16FixupCnt := N;
+  { compactage du code, segment par segment (en place : la destination precede la source) }
+  P := 0; I := 0;
+  For S := 0 To D16SegCount - 1 Do
+  Begin
+    While (P And 15) <> 0 Do Begin D16Code[P] := $90; Inc(P) End;
+    NewStart[S] := P;
+    If S + 1 < D16SegCount Then SegEnd := D16SegStart[S + 1] Else SegEnd := D16CodeLen;
+    Cur := D16SegStart[S];
+    While (I < D16RangeCnt) And (D16Ranges[I].Seg = S) Do
+    Begin
+      A := D16RangeAbs[I]; Sz := D16Ranges[I].EndOfs - D16Ranges[I].StartOfs;
+      If A > Cur Then Begin Move(D16Code[Cur], D16Code[P], A - Cur); P := P + (A - Cur) End;
+      If D16Ranges[I].Keep Then Begin Move(D16Code[A], D16Code[P], Sz); P := P + Sz End
+      Else D16ElimBytes := D16ElimBytes + Sz;
+      Cur := A + Sz;
+      Inc(I);
+    End;
+    If SegEnd > Cur Then Begin Move(D16Code[Cur], D16Code[P], SegEnd - Cur); P := P + (SegEnd - Cur) End;
+  End;
+  For S := 0 To D16SegCount - 1 Do D16SegStart[S] := NewStart[S];
+  D16SegStart[D16SegCount] := P;
+  D16CodeLen := P;
+End;
+
+{ Une procedure a fait deborder le segment courant (plus de 64 Ko) : on ouvre
+  un nouveau segment qui commence au paragraphe contenant le debut de la
+  procedure (Start, position absolue dans D16Code) et on y relocalise les
+  labels et fixups definis a partir de ce debut.  Toutes les references entre
+  procedures sont FAR, seuls les sauts internes (relatifs) sont concernes et
+  ils restent coherents puisque label et fixup sont deplaces ensemble. }
+Procedure D16SplitSegmentAt(Start : LongInt);
+Var
+  Old, Nw : Integer; Rel, Lim, I : LongInt;
+Begin
+  If D16SegCount >= D16_MAX_SEG Then
+  Begin
+    D16AsmError('trop de segments de code', ''); Exit;
+  End;
+  Old := D16CurSeg;
+  Lim := Start - D16SegStart[Old];              { debut reel de la procedure }
+  Rel := (Start And Not 15) - D16SegStart[Old]; { debut (paragraphe) du nouveau segment }
+  If Rel <= 0 Then
+  Begin
+    D16AsmError('procedure de plus de 64 Ko', ''); Exit;
+  End;
+  Nw := D16SegCount;
+  D16SegStart[Nw] := D16SegStart[Old] + Rel;
+  Inc(D16SegCount);
+  D16CurSeg := Nw;
+  For I := 0 To D16LabelCnt - 1 Do
+    If (D16Labels[I].Seg = Old) And (D16Labels[I].Ofs >= Lim) Then
+    Begin
+      D16Labels[I].Seg := Nw; Dec(D16Labels[I].Ofs, Rel);
+    End;
+  For I := 0 To D16FixupCnt - 1 Do
+    If (D16Fixups[I].Seg = Old) And (D16Fixups[I].Ofs >= Lim) Then
+    Begin
+      D16Fixups[I].Seg := Nw; Dec(D16Fixups[I].Ofs, Rel);
+    End;
+End;
+
+Procedure D16AddFixup(Kind : Integer; Lbl : LongInt; Addend : LongInt);
+Begin
+  If D16FixupCnt >= D16_MAX_FIXUP Then
+  Begin
+    D16AsmError('trop de fixups', ''); Exit;
+  End;
+  D16Fixups[D16FixupCnt].Seg := D16CurSeg;
+  D16Fixups[D16FixupCnt].Ofs := D16CurOfs;
+  D16Fixups[D16FixupCnt].Kind := Kind;
+  D16Fixups[D16FixupCnt].Lbl := Lbl;
+  D16Fixups[D16FixupCnt].Addend := Addend;
+  D16Fixups[D16FixupCnt].Line := D16AsmLine;
+  Inc(D16FixupCnt);
+End;
+
+{ Fixup dans le segment de donnees (DW label) }
+Procedure D16AddDataFixup(Kind : Integer; Lbl : LongInt; Addend : LongInt);
+Begin
+  If D16FixupCnt >= D16_MAX_FIXUP Then Exit;
+  D16Fixups[D16FixupCnt].Seg := 255;
+  D16Fixups[D16FixupCnt].Ofs := D16DataLen;
+  D16Fixups[D16FixupCnt].Kind := Kind;
+  D16Fixups[D16FixupCnt].Lbl := Lbl;
+  D16Fixups[D16FixupCnt].Addend := Addend;
+  D16Fixups[D16FixupCnt].Line := D16AsmLine;
+  Inc(D16FixupCnt);
+End;
+
+{ ------------------------------------------------------------ }
+{ Donnees                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure D16DataB(B : Byte);
+Begin
+  If D16DataLen < D16_MAX_DATA Then
+  Begin
+    D16Data[D16DataLen] := B;
+    Inc(D16DataLen);
+  End
+  Else If D16DataLen = D16_MAX_DATA Then
+  Begin
+    D16AsmError('segment de donnees trop volumineux (64 Ko)', '');
+    Inc(D16DataLen);
+  End;
+End;
+
+Procedure D16DataW(W : LongInt);
+Begin
+  D16DataB(Byte(W And $FF));
+  D16DataB(Byte((W Shr 8) And $FF));
+End;
+
+Procedure D16DataD(D : LongInt);
+Begin
+  D16DataW(D And $FFFF);
+  D16DataW((D Shr 16) And $FFFF);
+End;
+
+Procedure D16DataZeros(N : LongInt);
+Var I : LongInt;
+Begin
+  For I := 1 To N Do D16DataB(0);
+End;
+
+Procedure D16DataAlign(N : Integer);
+Begin
+  While (D16DataLen Mod N) <> 0 Do D16DataB(0);
+End;
+
+{ ------------------------------------------------------------ }
+{ Analyse des operandes                                        }
+{ ------------------------------------------------------------ }
+
+Function D16Trim(Const S : TString) : TString;
+Var A, B : Integer;
+Begin
+  A := 1; B := Length(S);
+  While (A <= B) And ((S[A] = ' ') Or (S[A] = #9)) Do Inc(A);
+  While (B >= A) And ((S[B] = ' ') Or (S[B] = #9)) Do Dec(B);
+  D16Trim := Copy(S, A, B - A + 1);
+End;
+
+Function D16IsNumStart(Ch : Char) : Boolean;
+Begin
+  D16IsNumStart := ((Ch >= '0') And (Ch <= '9')) Or (Ch = '$');
+End;
+
+{ Lire un nombre decimal ou hexa ($ ou suffixe h) a partir de P }
+Function D16ReadNum(Const S : TString; Var P : Integer) : LongInt;
+Var V : LongInt; Hex : Boolean; Q : Integer;
+Begin
+  V := 0; Hex := False;
+  If (P <= Length(S)) And (S[P] = '$') Then Begin Hex := True; Inc(P) End
+  Else
+  Begin
+    { suffixe h ? }
+    Q := P;
+    While (Q <= Length(S)) And IsHexDigit(S[Q]) Do Inc(Q);
+    If (Q <= Length(S)) And ((S[Q] = 'h') Or (S[Q] = 'H')) Then Hex := True;
+  End;
+  If Hex Then
+  Begin
+    While (P <= Length(S)) And IsHexDigit(S[P]) Do
+    Begin V := V * 16 + HexVal(S[P]); Inc(P) End;
+    If (P <= Length(S)) And ((S[P] = 'h') Or (S[P] = 'H')) Then Inc(P);
+  End
+  Else
+    While (P <= Length(S)) And (S[P] >= '0') And (S[P] <= '9') Do
+    Begin V := V * 10 + (Ord(S[P]) - 48); Inc(P) End;
+  D16ReadNum := V;
+End;
+
+Function D16RegIndex16(Const U : TString) : Integer;
+Var I : Integer;
+Begin
+  D16RegIndex16 := -1;
+  For I := 0 To 7 Do If U = D16_REGS16[I] Then Begin D16RegIndex16 := I; Exit End;
+End;
+
+Function D16RegIndex8(Const U : TString) : Integer;
+Var I : Integer;
+Begin
+  D16RegIndex8 := -1;
+  For I := 0 To 7 Do If U = D16_REGS8[I] Then Begin D16RegIndex8 := I; Exit End;
+End;
+
+Function D16SRegIndex(Const U : TString) : Integer;
+Var I : Integer;
+Begin
+  D16SRegIndex := -1;
+  For I := 0 To 3 Do If U = D16_SREGS[I] Then Begin D16SRegIndex := I; Exit End;
+End;
+
+Function D16IsIdentChar(Ch : Char) : Boolean;
+Begin
+  D16IsIdentChar := ((Ch >= 'A') And (Ch <= 'Z')) Or ((Ch >= 'a') And (Ch <= 'z')) Or
+                    ((Ch >= '0') And (Ch <= '9')) Or (Ch = '_') Or (Ch = '@') Or (Ch = '?');
+End;
+
+{ Decode une expression memoire entre crochets : BX+SI+label+disp ... }
+Procedure D16ParseMemExpr(Const E : TString; Var O : TD16Operand);
+Var
+  P : Integer; Sign : Integer; Id : TString; HasBX, HasBP, HasSI, HasDI : Boolean;
+  V : LongInt; R : Integer;
+Begin
+  P := 1; HasBX := False; HasBP := False; HasSI := False; HasDI := False;
+  O.Disp := 0; O.Lbl := -1;
+  Sign := 1;
+  While P <= Length(E) Do
+  Begin
+    If E[P] = ' ' Then Inc(P)
+    Else If E[P] = '+' Then Begin Sign := 1; Inc(P) End
+    Else If E[P] = '-' Then Begin Sign := -1; Inc(P) End
+    Else If D16IsNumStart(E[P]) Then
+    Begin
+      V := D16ReadNum(E, P);
+      O.Disp := O.Disp + Sign * V; Sign := 1;
+    End
+    Else If D16IsIdentChar(E[P]) Then
+    Begin
+      Id := '';
+      While (P <= Length(E)) And D16IsIdentChar(E[P]) Do Begin Id := Id + E[P]; Inc(P) End;
+      R := D16RegIndex16(StrUpperCase(Id));
+      If R = 3 Then HasBX := True
+      Else If R = 5 Then HasBP := True
+      Else If R = 6 Then HasSI := True
+      Else If R = 7 Then HasDI := True
+      Else If R >= 0 Then D16AsmError('registre invalide dans une adresse', E)
+      Else
+      Begin
+        If O.Lbl >= 0 Then D16AsmError('deux labels dans une adresse', E);
+        If Sign < 0 Then D16AsmError('label negatif', E);
+        O.Lbl := D16LabelRef(Id);
+      End;
+      Sign := 1;
+    End
+    Else Begin D16AsmError('caractere invalide dans une adresse', E); Inc(P) End;
+  End;
+  O.HasBase := HasBX Or HasBP Or HasSI Or HasDI;
+  If HasBX And HasSI Then O.RM := 0
+  Else If HasBX And HasDI Then O.RM := 1
+  Else If HasBP And HasSI Then O.RM := 2
+  Else If HasBP And HasDI Then O.RM := 3
+  Else If HasSI Then O.RM := 4
+  Else If HasDI Then O.RM := 5
+  Else If HasBP Then O.RM := 6
+  Else If HasBX Then O.RM := 7
+  Else O.RM := 6; { disp16 direct avec mod=00 }
+End;
+
+Procedure D16ParseOperand(S : TString; Var O : TD16Operand);
+Var
+  U, W : TString; P, Q, R : Integer; V : LongInt; Neg : Boolean;
+Begin
+  O.Kind := 0; O.Reg := 0; O.Size := 0; O.SegOvr := -1; O.RM := 0;
+  O.HasBase := False; O.Disp := 0; O.Lbl := -1; O.ImmKind := 0; O.Far := False;
+  O.Short := False;
+  S := D16Trim(S);
+  If S = '' Then Exit;
+  U := StrUpperCase(S);
+  { Prefixes de taille }
+  If Copy(U, 1, 9) = 'BYTE PTR ' Then Begin O.Size := 1; S := D16Trim(Copy(S, 10, 255)); U := StrUpperCase(S) End
+  Else If Copy(U, 1, 9) = 'WORD PTR ' Then Begin O.Size := 2; S := D16Trim(Copy(S, 10, 255)); U := StrUpperCase(S) End
+  Else If Copy(U, 1, 10) = 'DWORD PTR ' Then Begin O.Size := 4; S := D16Trim(Copy(S, 11, 255)); U := StrUpperCase(S) End
+  Else If Copy(U, 1, 8) = 'FAR PTR ' Then Begin O.Far := True; S := D16Trim(Copy(S, 9, 255)); U := StrUpperCase(S) End
+  Else If Copy(U, 1, 6) = 'SHORT ' Then Begin O.Short := True; S := D16Trim(Copy(S, 7, 255)); U := StrUpperCase(S) End;
+  { Registres }
+  R := D16RegIndex16(U);
+  If R >= 0 Then Begin O.Kind := 2; O.Reg := R; O.Size := 2; Exit End;
+  R := D16RegIndex8(U);
+  If R >= 0 Then Begin O.Kind := 1; O.Reg := R; O.Size := 1; Exit End;
+  R := D16SRegIndex(U);
+  If R >= 0 Then Begin O.Kind := 3; O.Reg := R; O.Size := 2; Exit End;
+  { OFFSET label / SEG label }
+  If Copy(U, 1, 7) = 'OFFSET ' Then
+  Begin
+    O.Kind := 5; O.ImmKind := 1; O.Lbl := D16LabelRef(D16Trim(Copy(S, 8, 255)));
+    If O.Size = 0 Then O.Size := 2;
+    { OFFSET lbl+n }
+    W := D16Trim(Copy(S, 8, 255)); P := Pos('+', W);
+    If P > 0 Then
+    Begin
+      O.Lbl := D16LabelRef(D16Trim(Copy(W, 1, P - 1)));
+      Q := P + 1; O.Disp := D16ReadNum(W, Q);
+    End;
+    Exit;
+  End;
+  If Copy(U, 1, 4) = 'SEG ' Then
+  Begin
+    O.Kind := 5; O.ImmKind := 2; O.Lbl := D16LabelRef(D16Trim(Copy(S, 5, 255)));
+    O.Size := 2; Exit;
+  End;
+  { Prefixe de segment ES: CS: SS: DS: }
+  If (Length(U) > 3) And (U[3] = ':') Then
+  Begin
+    R := D16SRegIndex(Copy(U, 1, 2));
+    If R >= 0 Then
+    Begin
+      O.SegOvr := R; S := D16Trim(Copy(S, 4, 255)); U := StrUpperCase(S);
+    End;
+  End;
+  { Memoire [..] }
+  P := Pos('[', S);
+  If P > 0 Then
+  Begin
+    O.Kind := 4;
+    Q := Pos(']', S);
+    If Q = 0 Then Begin D16AsmError('crochet fermant manquant', S); Exit End;
+    W := Copy(S, P + 1, Q - P - 1);
+    { label devant le crochet : lbl[BX] }
+    If P > 1 Then W := D16Trim(Copy(S, 1, P - 1)) + '+' + W;
+    { suite apres le crochet : [BX]+2 }
+    If Q < Length(S) Then W := W + Copy(S, Q + 1, 255);
+    D16ParseMemExpr(W, O);
+    Exit;
+  End;
+  { Immediat numerique ou caractere }
+  If (S[1] = '''') And (Length(S) >= 3) And (S[Length(S)] = '''') Then
+  Begin
+    O.Kind := 5; O.Disp := Ord(S[2]); If O.Size = 0 Then O.Size := 0; Exit;
+  End;
+  Neg := False; P := 1;
+  If S[1] = '-' Then Begin Neg := True; P := 2 End;
+  If (P <= Length(S)) And D16IsNumStart(S[P]) Then
+  Begin
+    V := D16ReadNum(S, P);
+    If Neg Then V := -V;
+    { expression simple : n+m ou n-m }
+    While P <= Length(S) Do
+    Begin
+      If S[P] = '+' Then Begin Inc(P); V := V + D16ReadNum(S, P) End
+      Else If S[P] = '-' Then Begin Inc(P); V := V - D16ReadNum(S, P) End
+      Else Begin D16AsmError('immediat invalide', S); Break End;
+    End;
+    O.Kind := 5; O.Disp := V; Exit;
+  End;
+  { Label nu : cible de saut / appel, ou adresse directe (DW lbl) }
+  O.Kind := 4; O.HasBase := False; O.RM := 6;
+  P := Pos('+', S);
+  If P > 0 Then
+  Begin
+    O.Lbl := D16LabelRef(D16Trim(Copy(S, 1, P - 1)));
+    Q := P + 1; O.Disp := D16ReadNum(S, Q);
+  End
+  Else
+    O.Lbl := D16LabelRef(S);
+  O.Kind := 6; { label nu }
+End;
+
+{ ------------------------------------------------------------ }
+{ Encodage ModRM                                               }
+{ ------------------------------------------------------------ }
+
+{ Emet le prefixe de segment si necessaire (defaut SS pour BP) }
+Procedure D16EmitSegPrefix(Const O : TD16Operand);
+Var Def : Integer;
+Begin
+  If O.SegOvr < 0 Then Exit;
+  If O.HasBase And ((O.RM = 2) Or (O.RM = 3) Or (O.RM = 6)) Then Def := 2 Else Def := 3;
+  If O.SegOvr <> Def Then
+    Case O.SegOvr Of
+      0 : D16EmitB($26);
+      1 : D16EmitB($2E);
+      2 : D16EmitB($36);
+      3 : D16EmitB($3E);
+    End;
+End;
+
+{ Emet l octet ModRM (+ deplacement) pour un operande memoire ou registre }
+Procedure D16EmitModRM(RegField : Integer; Const O : TD16Operand);
+Begin
+  If (O.Kind = 1) Or (O.Kind = 2) Or (O.Kind = 3) Then
+  Begin
+    D16EmitB($C0 Or (RegField Shl 3) Or O.Reg);
+    Exit;
+  End;
+  If Not O.HasBase Then
+  Begin
+    { adresse directe : mod=00 rm=110 disp16 }
+    D16EmitB((RegField Shl 3) Or 6);
+    If O.Lbl >= 0 Then D16AddFixup(D16_FX_OFS16, O.Lbl, O.Disp);
+    D16EmitW(O.Disp And $FFFF);
+    Exit;
+  End;
+  If (O.Lbl < 0) And (O.Disp = 0) And (O.RM <> 6) Then
+  Begin
+    D16EmitB((RegField Shl 3) Or O.RM);
+  End
+  Else If (O.Lbl < 0) And (O.Disp >= -128) And (O.Disp <= 127) Then
+  Begin
+    D16EmitB($40 Or (RegField Shl 3) Or O.RM);
+    D16EmitB(Byte(O.Disp And $FF));
+  End
+  Else
+  Begin
+    D16EmitB($80 Or (RegField Shl 3) Or O.RM);
+    If O.Lbl >= 0 Then D16AddFixup(D16_FX_OFS16, O.Lbl, O.Disp);
+    D16EmitW(O.Disp And $FFFF);
+  End;
+End;
+
+{ Emet un immediat 8 ou 16 bits (avec fixup OFFSET/SEG) }
+Procedure D16EmitImm(Const O : TD16Operand; Size : Integer);
+Begin
+  If O.ImmKind = 1 Then
+  Begin
+    D16AddFixup(D16_FX_OFS16, O.Lbl, O.Disp); D16EmitW(0); Exit;
+  End;
+  If O.ImmKind = 2 Then
+  Begin
+    D16AddFixup(D16_FX_SEG, O.Lbl, 0); D16EmitW(0); Exit;
+  End;
+  If Size = 1 Then D16EmitB(Byte(O.Disp And $FF))
+  Else D16EmitW(O.Disp And $FFFF);
+End;
+
+{ ------------------------------------------------------------ }
+{ Assembleur d une ligne                                       }
+{ ------------------------------------------------------------ }
+
+Procedure D16Asm(Const Line : TString);
+Var
+  S, Mnem, Rest, U : TString;
+  P, I, N : Integer;
+  O1, O2 : TD16Operand;
+  NOps : Integer;
+  Op, Sz : Integer;
+  Prefix : Boolean;
+
+  Procedure SplitOps(Const R : TString);
+  Var J, Depth : Integer; InQ : Boolean;
+  Begin
+    NOps := 0;
+    If D16Trim(R) = '' Then Exit;
+    Depth := 0; InQ := False;
+    For J := 1 To Length(R) Do
+    Begin
+      If R[J] = '''' Then InQ := Not InQ
+      Else If Not InQ Then
+      Begin
+        If R[J] = '[' Then Inc(Depth)
+        Else If R[J] = ']' Then Dec(Depth)
+        Else If (R[J] = ',') And (Depth = 0) Then
+        Begin
+          D16ParseOperand(Copy(R, 1, J - 1), O1);
+          D16ParseOperand(Copy(R, J + 1, 255), O2);
+          NOps := 2; Exit;
+        End;
+      End;
+    End;
+    D16ParseOperand(R, O1); NOps := 1;
+  End;
+
+  Function OpSize : Integer;
+  Begin
+    If O1.Size <> 0 Then OpSize := O1.Size
+    Else If (NOps = 2) And (O2.Size <> 0) Then OpSize := O2.Size
+    Else OpSize := 0;
+  End;
+
+  Function IsReg(Const O : TD16Operand) : Boolean;
+  Begin IsReg := (O.Kind = 1) Or (O.Kind = 2) End;
+
+  Function IsMem(Const O : TD16Operand) : Boolean;
+  Begin IsMem := (O.Kind = 4) Or (O.Kind = 6) End;
+
+  Function IsRM(Const O : TD16Operand) : Boolean;
+  Begin IsRM := IsReg(O) Or IsMem(O) End;
+
+  { Groupe ALU : ADD OR ADC SBB AND SUB XOR CMP }
+  Procedure AluOp(Op : Integer);
+  Var Sz : Integer;
+  Begin
+    Sz := OpSize;
+    If NOps <> 2 Then Begin D16AsmError('deux operandes attendus', Line); Exit End;
+    If O2.Kind = 5 Then
+    Begin
+      If Sz = 0 Then Begin D16AsmError('taille inconnue', Line); Exit End;
+      If IsMem(O1) Then D16EmitSegPrefix(O1);
+      { Forme courte AL/AX,imm }
+      If IsReg(O1) And (O1.Reg = 0) And (O2.ImmKind = 0) And
+         ((Sz = 1) Or (O2.Disp < -128) Or (O2.Disp > 127)) Then
+      Begin
+        D16EmitB($04 + Op * 8 + (Sz - 1));
+        D16EmitImm(O2, Sz);
+        Exit;
+      End;
+      If (Sz = 2) And (O2.ImmKind = 0) And (O2.Disp >= -128) And (O2.Disp <= 127) Then
+      Begin
+        D16EmitB($83); D16EmitModRM(Op, O1); D16EmitB(Byte(O2.Disp And $FF));
+      End
+      Else
+      Begin
+        D16EmitB($80 + (Sz - 1)); D16EmitModRM(Op, O1); D16EmitImm(O2, Sz);
+      End;
+      Exit;
+    End;
+    If IsReg(O2) And IsRM(O1) Then
+    Begin
+      If IsMem(O1) Then D16EmitSegPrefix(O1);
+      D16EmitB(Op * 8 + (O2.Size - 1)); D16EmitModRM(O2.Reg, O1); Exit;
+    End;
+    If IsReg(O1) And IsMem(O2) Then
+    Begin
+      D16EmitSegPrefix(O2);
+      D16EmitB(Op * 8 + 2 + (O1.Size - 1)); D16EmitModRM(O1.Reg, O2); Exit;
+    End;
+    D16AsmError('operandes invalides', Line);
+  End;
+
+  { Groupe F6/F7 et FE/FF : NOT NEG MUL IMUL DIV IDIV INC DEC }
+  Procedure Grp3Op(Base : Byte; Sub : Integer);
+  Var Sz : Integer;
+  Begin
+    Sz := OpSize;
+    If (NOps <> 1) Or (Sz = 0) Then Begin D16AsmError('operande invalide', Line); Exit End;
+    If IsMem(O1) Then D16EmitSegPrefix(O1);
+    D16EmitB(Base + (Sz - 1)); D16EmitModRM(Sub, O1);
+  End;
+
+  Procedure ShiftOp(Sub : Integer);
+  Var Sz, K : Integer;
+  Begin
+    Sz := O1.Size;
+    If Sz = 0 Then Begin D16AsmError('taille inconnue', Line); Exit End;
+    If IsMem(O1) Then D16EmitSegPrefix(O1);
+    If (NOps = 2) And (O2.Kind = 1) And (O2.Reg = 1) Then
+    Begin D16EmitB($D2 + (Sz - 1)); D16EmitModRM(Sub, O1) End
+    Else If (NOps = 2) And (O2.Kind = 5) And (O2.Disp = 1) Then
+    Begin D16EmitB($D0 + (Sz - 1)); D16EmitModRM(Sub, O1) End
+    Else If (NOps = 2) And (O2.Kind = 5) Then
+    Begin
+      { 8086 : pas de decalage immediat n ; repeter n fois }
+      For K := 1 To O2.Disp Do Begin D16EmitB($D0 + (Sz - 1)); D16EmitModRM(Sub, O1) End;
+    End
+    Else If NOps = 1 Then
+    Begin D16EmitB($D0 + (Sz - 1)); D16EmitModRM(Sub, O1) End
+    Else D16AsmError('decalage invalide', Line);
+  End;
+
+  Procedure Jcc(Cond : Byte);
+  Var L : LongInt; D : LongInt;
+  Begin
+    If (NOps <> 1) Or (O1.Kind <> 6) Then Begin D16AsmError('cible de saut invalide', Line); Exit End;
+    L := O1.Lbl;
+    { Saut court si le label est deja defini dans ce segment et proche }
+    If (D16Labels[L].Seg = D16CurSeg) Then
+    Begin
+      D := D16Labels[L].Ofs - (D16CurOfs + 2);
+      If (D >= -128) And (D <= 127) Then
+      Begin D16EmitB($70 + Cond); D16EmitB(Byte(D And $FF)); Exit End;
+    End;
+    If O1.Short Then
+    Begin
+      D16EmitB($70 + Cond); D16AddFixup(D16_FX_REL8, L, 0); D16EmitB(0); Exit;
+    End;
+    { Jcc inverse +3 ; JMP rel16 }
+    D16EmitB($70 + (Cond Xor 1)); D16EmitB(3);
+    D16EmitB($E9); D16AddFixup(D16_FX_REL16, L, 0); D16EmitW(0);
+  End;
+
+  Procedure JmpNear;
+  Var L : LongInt; D : LongInt;
+  Begin
+    L := O1.Lbl;
+    If D16Labels[L].Seg = D16CurSeg Then
+    Begin
+      D := D16Labels[L].Ofs - (D16CurOfs + 2);
+      If (D >= -128) And (D <= 127) Then
+      Begin D16EmitB($EB); D16EmitB(Byte(D And $FF)); Exit End;
+    End;
+    If O1.Short Then
+    Begin D16EmitB($EB); D16AddFixup(D16_FX_REL8, L, 0); D16EmitB(0); Exit End;
+    D16EmitB($E9); D16AddFixup(D16_FX_REL16, L, 0); D16EmitW(0);
+  End;
+
+  Procedure DataDirective(Sz : Integer);
+  Var J, K : Integer; InQ : Boolean; Item : TString; O : TD16Operand;
+    Procedure Flush;
+    Var T : TString; Q : Integer; Neg : Boolean; V : LongInt;
+    Begin
+      T := D16Trim(Item); Item := '';
+      If T = '' Then Exit;
+      If (T[1] = '''') Then
+      Begin
+        For Q := 2 To Length(T) - 1 Do
+        Begin
+          D16EmitB(Ord(T[Q]));
+          If Sz = 2 Then D16EmitB(0);
+        End;
+        Exit;
+      End;
+      Q := 1; Neg := False;
+      If T[1] = '-' Then Begin Neg := True; Q := 2 End;
+      If D16IsNumStart(T[Q]) Then
+      Begin
+        V := D16ReadNum(T, Q); If Neg Then V := -V;
+        If Sz = 1 Then D16EmitB(Byte(V And $FF))
+        Else If Sz = 2 Then D16EmitW(V)
+        Else Begin D16EmitW(V And $FFFF); D16EmitW((V Shr 16) And $FFFF) End;
+        Exit;
+      End;
+      D16ParseOperand(T, O);
+      If (O.Kind = 6) Or (O.Kind = 4) Then
+      Begin
+        If Sz = 2 Then Begin D16AddFixup(D16_FX_OFS16, O.Lbl, O.Disp); D16EmitW(0) End
+        Else If Sz = 4 Then
+        Begin
+          D16AddFixup(D16_FX_OFS16, O.Lbl, O.Disp); D16EmitW(0);
+          D16AddFixup(D16_FX_SEG, O.Lbl, 0); D16EmitW(0);
+        End
+        Else D16AsmError('DB avec label', Line);
+      End
+      Else If O.Kind = 5 Then
+      Begin
+        If O.ImmKind = 2 Then Begin D16AddFixup(D16_FX_SEG, O.Lbl, 0); D16EmitW(0) End
+        Else If O.ImmKind = 1 Then Begin D16AddFixup(D16_FX_OFS16, O.Lbl, O.Disp); D16EmitW(0) End
+        Else If Sz = 1 Then D16EmitB(Byte(O.Disp And $FF)) Else D16EmitW(O.Disp);
+      End
+      Else D16AsmError('element de donnee invalide', T);
+    End;
+  Begin
+    Item := ''; InQ := False;
+    For J := 1 To Length(Rest) Do
+    Begin
+      If Rest[J] = '''' Then Begin InQ := Not InQ; Item := Item + Rest[J] End
+      Else If (Rest[J] = ',') And Not InQ Then Flush
+      Else Item := Item + Rest[J];
+    End;
+    Flush;
+  End;
+
+Begin
+  S := D16Trim(Line);
+  If S = '' Then Exit;
+  If S[1] = ';' Then Exit;
+  { Separer mnemonique et operandes }
+  P := 1;
+  While (P <= Length(S)) And (S[P] <> ' ') And (S[P] <> #9) Do Inc(P);
+  Mnem := StrUpperCase(Copy(S, 1, P - 1));
+  Rest := D16Trim(Copy(S, P, 255));
+  { Prefixes REP }
+  Prefix := False;
+  If (Mnem = 'REP') Or (Mnem = 'REPE') Or (Mnem = 'REPZ') Then
+  Begin D16EmitB($F3); Prefix := True End
+  Else If (Mnem = 'REPNE') Or (Mnem = 'REPNZ') Then
+  Begin D16EmitB($F2); Prefix := True End;
+  If Prefix Then
+  Begin
+    If Rest = '' Then Exit;
+    S := Rest; P := 1;
+    While (P <= Length(S)) And (S[P] <> ' ') Do Inc(P);
+    Mnem := StrUpperCase(Copy(S, 1, P - 1));
+    Rest := D16Trim(Copy(S, P, 255));
+  End;
+  { Label en fin de ligne "nom:" }
+  If (Rest = '') And (Mnem[Length(Mnem)] = ':') Then
+  Begin
+    D16DefineCodeLabel(Copy(S, 1, Length(S) - 1)); Exit;
+  End;
+  If (Mnem = 'DB') Then Begin DataDirective(1); Exit End;
+  If (Mnem = 'DW') Then Begin DataDirective(2); Exit End;
+  If (Mnem = 'DD') Then Begin DataDirective(4); Exit End;
+  SplitOps(Rest);
+
+  { --- Sans operande --- }
+  If Mnem = 'NOP' Then D16EmitB($90)
+  Else If Mnem = 'RET' Then
+  Begin
+    If NOps = 1 Then Begin D16EmitB($C2); D16EmitW(O1.Disp) End Else D16EmitB($C3);
+  End
+  Else If Mnem = 'RETF' Then
+  Begin
+    If NOps = 1 Then Begin D16EmitB($CA); D16EmitW(O1.Disp) End Else D16EmitB($CB);
+  End
+  Else If Mnem = 'IRET' Then D16EmitB($CF)
+  Else If Mnem = 'CBW' Then D16EmitB($98)
+  Else If Mnem = 'CWD' Then D16EmitB($99)
+  Else If Mnem = 'CLC' Then D16EmitB($F8)
+  Else If Mnem = 'STC' Then D16EmitB($F9)
+  Else If Mnem = 'CMC' Then D16EmitB($F5)
+  Else If Mnem = 'CLI' Then D16EmitB($FA)
+  Else If Mnem = 'STI' Then D16EmitB($FB)
+  Else If Mnem = 'CLD' Then D16EmitB($FC)
+  Else If Mnem = 'STD' Then D16EmitB($FD)
+  Else If Mnem = 'HLT' Then D16EmitB($F4)
+  Else If Mnem = 'LAHF' Then D16EmitB($9F)
+  Else If Mnem = 'SAHF' Then D16EmitB($9E)
+  Else If Mnem = 'PUSHF' Then D16EmitB($9C)
+  Else If Mnem = 'POPF' Then D16EmitB($9D)
+  Else If Mnem = 'XLAT' Then D16EmitB($D7)
+  Else If Mnem = 'MOVSB' Then D16EmitB($A4)
+  Else If Mnem = 'MOVSW' Then D16EmitB($A5)
+  Else If Mnem = 'CMPSB' Then D16EmitB($A6)
+  Else If Mnem = 'CMPSW' Then D16EmitB($A7)
+  Else If Mnem = 'STOSB' Then D16EmitB($AA)
+  Else If Mnem = 'STOSW' Then D16EmitB($AB)
+  Else If Mnem = 'LODSB' Then D16EmitB($AC)
+  Else If Mnem = 'LODSW' Then D16EmitB($AD)
+  Else If Mnem = 'SCASB' Then D16EmitB($AE)
+  Else If Mnem = 'SCASW' Then D16EmitB($AF)
+  Else If Mnem = 'INT' Then Begin D16EmitB($CD); D16EmitB(Byte(O1.Disp)) End
+  Else If Mnem = 'INTO' Then D16EmitB($CE)
+  Else If Mnem = 'WAIT' Then D16EmitB($9B)
+  Else If Mnem = 'LOCK' Then D16EmitB($F0)
+
+  { --- Transferts --- }
+  Else If Mnem = 'MOV' Then
+  Begin
+    If NOps <> 2 Then D16AsmError('MOV: deux operandes', Line)
+    Else If O1.Kind = 3 Then
+    Begin
+      { MOV sreg, r/m16 }
+      If IsMem(O2) Then D16EmitSegPrefix(O2);
+      D16EmitB($8E); D16EmitModRM(O1.Reg, O2);
+    End
+    Else If O2.Kind = 3 Then
+    Begin
+      If IsMem(O1) Then D16EmitSegPrefix(O1);
+      D16EmitB($8C); D16EmitModRM(O2.Reg, O1);
+    End
+    Else If O2.Kind = 5 Then
+    Begin
+      Sz := OpSize;
+      If Sz = 0 Then D16AsmError('MOV: taille inconnue', Line)
+      Else If IsReg(O1) Then
+      Begin
+        If Sz = 1 Then Begin D16EmitB($B0 + O1.Reg); D16EmitImm(O2, 1) End
+        Else Begin D16EmitB($B8 + O1.Reg); D16EmitImm(O2, 2) End;
+      End
+      Else
+      Begin
+        D16EmitSegPrefix(O1);
+        D16EmitB($C6 + (Sz - 1)); D16EmitModRM(0, O1); D16EmitImm(O2, Sz);
+      End;
+    End
+    Else If IsReg(O1) And IsRM(O2) Then
+    Begin
+      If IsMem(O2) Then
+      Begin
+        D16EmitSegPrefix(O2);
+        { Forme courte A0-A3 : AL/AX, [adresse directe] }
+        If (O1.Reg = 0) And (Not O2.HasBase) Then
+        Begin
+          D16EmitB($A0 + (O1.Size - 1));
+          If O2.Lbl >= 0 Then D16AddFixup(D16_FX_OFS16, O2.Lbl, O2.Disp);
+          D16EmitW(O2.Disp And $FFFF);
+          Exit;
+        End;
+      End;
+      D16EmitB($8A + (O1.Size - 1)); D16EmitModRM(O1.Reg, O2);
+    End
+    Else If IsMem(O1) And IsReg(O2) Then
+    Begin
+      D16EmitSegPrefix(O1);
+      If (O2.Reg = 0) And (Not O1.HasBase) Then
+      Begin
+        D16EmitB($A2 + (O2.Size - 1));
+        If O1.Lbl >= 0 Then D16AddFixup(D16_FX_OFS16, O1.Lbl, O1.Disp);
+        D16EmitW(O1.Disp And $FFFF);
+        Exit;
+      End;
+      D16EmitB($88 + (O2.Size - 1)); D16EmitModRM(O2.Reg, O1);
+    End
+    Else D16AsmError('MOV: operandes invalides', Line);
+  End
+  Else If Mnem = 'XCHG' Then
+  Begin
+    If IsReg(O1) And IsReg(O2) And (O1.Size = 2) And (O1.Reg = 0) Then D16EmitB($90 + O2.Reg)
+    Else If IsReg(O1) And IsReg(O2) And (O1.Size = 2) And (O2.Reg = 0) Then D16EmitB($90 + O1.Reg)
+    Else If IsReg(O2) Then
+    Begin
+      If IsMem(O1) Then D16EmitSegPrefix(O1);
+      D16EmitB($86 + (O2.Size - 1)); D16EmitModRM(O2.Reg, O1);
+    End
+    Else If IsReg(O1) Then
+    Begin
+      If IsMem(O2) Then D16EmitSegPrefix(O2);
+      D16EmitB($86 + (O1.Size - 1)); D16EmitModRM(O1.Reg, O2);
+    End
+    Else D16AsmError('XCHG: operandes invalides', Line);
+  End
+  Else If Mnem = 'LEA' Then
+  Begin
+    If IsMem(O2) Then Begin D16EmitB($8D); D16EmitModRM(O1.Reg, O2) End
+    Else D16AsmError('LEA: operandes invalides', Line);
+  End
+  Else If Mnem = 'LES' Then
+  Begin
+    D16EmitSegPrefix(O2); D16EmitB($C4); D16EmitModRM(O1.Reg, O2);
+  End
+  Else If Mnem = 'LDS' Then
+  Begin
+    D16EmitSegPrefix(O2); D16EmitB($C5); D16EmitModRM(O1.Reg, O2);
+  End
+  Else If Mnem = 'PUSH' Then
+  Begin
+    If O1.Kind = 2 Then D16EmitB($50 + O1.Reg)
+    Else If O1.Kind = 3 Then D16EmitB($06 + O1.Reg * 8)
+    Else If IsMem(O1) Then Begin D16EmitSegPrefix(O1); D16EmitB($FF); D16EmitModRM(6, O1) End
+    Else If O1.Kind = 5 Then
+    Begin
+      { 8086 : pas de PUSH imm ; MOV AX,imm ; PUSH AX n est pas transparent.
+        On emet 68 imm16 (80186+) si demande explicitement : eviter. }
+      D16AsmError('PUSH immediat non supporte sur 8086', Line);
+    End
+    Else D16AsmError('PUSH: operande invalide', Line);
+  End
+  Else If Mnem = 'POP' Then
+  Begin
+    If O1.Kind = 2 Then D16EmitB($58 + O1.Reg)
+    Else If O1.Kind = 3 Then D16EmitB($07 + O1.Reg * 8)
+    Else If IsMem(O1) Then Begin D16EmitSegPrefix(O1); D16EmitB($8F); D16EmitModRM(0, O1) End
+    Else D16AsmError('POP: operande invalide', Line);
+  End
+  Else If Mnem = 'IN' Then
+  Begin
+    If (O2.Kind = 2) And (O2.Reg = 2) Then D16EmitB($EC + (O1.Size - 1))
+    Else Begin D16EmitB($E4 + (O1.Size - 1)); D16EmitB(Byte(O2.Disp)) End;
+  End
+  Else If Mnem = 'OUT' Then
+  Begin
+    If (O1.Kind = 2) And (O1.Reg = 2) Then D16EmitB($EE + (O2.Size - 1))
+    Else Begin D16EmitB($E6 + (O2.Size - 1)); D16EmitB(Byte(O1.Disp)) End;
+  End
+
+  { --- Arithmetique --- }
+  Else If Mnem = 'ADD' Then AluOp(0)
+  Else If Mnem = 'OR'  Then AluOp(1)
+  Else If Mnem = 'ADC' Then AluOp(2)
+  Else If Mnem = 'SBB' Then AluOp(3)
+  Else If Mnem = 'AND' Then AluOp(4)
+  Else If Mnem = 'SUB' Then AluOp(5)
+  Else If Mnem = 'XOR' Then AluOp(6)
+  Else If Mnem = 'CMP' Then AluOp(7)
+  Else If Mnem = 'TEST' Then
+  Begin
+    Sz := OpSize;
+    If O2.Kind = 5 Then
+    Begin
+      If IsReg(O1) And (O1.Reg = 0) Then Begin D16EmitB($A8 + (Sz - 1)); D16EmitImm(O2, Sz) End
+      Else
+      Begin
+        If IsMem(O1) Then D16EmitSegPrefix(O1);
+        D16EmitB($F6 + (Sz - 1)); D16EmitModRM(0, O1); D16EmitImm(O2, Sz);
+      End;
+    End
+    Else If IsReg(O2) Then
+    Begin
+      If IsMem(O1) Then D16EmitSegPrefix(O1);
+      D16EmitB($84 + (Sz - 1)); D16EmitModRM(O2.Reg, O1);
+    End
+    Else If IsReg(O1) Then
+    Begin
+      If IsMem(O2) Then D16EmitSegPrefix(O2);
+      D16EmitB($84 + (Sz - 1)); D16EmitModRM(O1.Reg, O2);
+    End
+    Else D16AsmError('TEST: operandes invalides', Line);
+  End
+  Else If Mnem = 'INC' Then
+  Begin
+    If O1.Kind = 2 Then D16EmitB($40 + O1.Reg) Else Grp3Op($FE, 0);
+  End
+  Else If Mnem = 'DEC' Then
+  Begin
+    If O1.Kind = 2 Then D16EmitB($48 + O1.Reg) Else Grp3Op($FE, 1);
+  End
+  Else If Mnem = 'NOT' Then Grp3Op($F6, 2)
+  Else If Mnem = 'NEG' Then Grp3Op($F6, 3)
+  Else If Mnem = 'MUL' Then Grp3Op($F6, 4)
+  Else If Mnem = 'IMUL' Then Grp3Op($F6, 5)
+  Else If Mnem = 'DIV' Then Grp3Op($F6, 6)
+  Else If Mnem = 'IDIV' Then Grp3Op($F6, 7)
+  Else If Mnem = 'ROL' Then ShiftOp(0)
+  Else If Mnem = 'ROR' Then ShiftOp(1)
+  Else If Mnem = 'RCL' Then ShiftOp(2)
+  Else If Mnem = 'RCR' Then ShiftOp(3)
+  Else If (Mnem = 'SHL') Or (Mnem = 'SAL') Then ShiftOp(4)
+  Else If Mnem = 'SHR' Then ShiftOp(5)
+  Else If Mnem = 'SAR' Then ShiftOp(7)
+
+  { --- Sauts et appels --- }
+  Else If Mnem = 'JMP' Then
+  Begin
+    If O1.Kind = 6 Then
+    Begin
+      If O1.Far Then
+      Begin
+        D16EmitB($EA); D16AddFixup(D16_FX_OFS16, O1.Lbl, 0); D16EmitW(0);
+        D16AddFixup(D16_FX_SEG, O1.Lbl, 0); D16EmitW(0);
+      End
+      Else JmpNear;
+    End
+    Else If IsRM(O1) Then
+    Begin
+      If IsMem(O1) Then D16EmitSegPrefix(O1);
+      D16EmitB($FF);
+      If (O1.Size = 4) Or O1.Far Then D16EmitModRM(5, O1) Else D16EmitModRM(4, O1);
+    End
+    Else D16AsmError('JMP: operande invalide', Line);
+  End
+  Else If Mnem = 'CALL' Then
+  Begin
+    If O1.Kind = 6 Then
+    Begin
+      If O1.Far Then
+      Begin
+        D16EmitB($9A); D16AddFixup(D16_FX_OFS16, O1.Lbl, 0); D16EmitW(0);
+        D16AddFixup(D16_FX_SEG, O1.Lbl, 0); D16EmitW(0);
+      End
+      Else
+      Begin
+        D16EmitB($E8); D16AddFixup(D16_FX_REL16, O1.Lbl, 0); D16EmitW(0);
+      End;
+    End
+    Else If IsRM(O1) Then
+    Begin
+      If IsMem(O1) Then D16EmitSegPrefix(O1);
+      D16EmitB($FF);
+      If (O1.Size = 4) Or O1.Far Then D16EmitModRM(3, O1) Else D16EmitModRM(2, O1);
+    End
+    Else D16AsmError('CALL: operande invalide', Line);
+  End
+  Else If Mnem = 'JO' Then Jcc(0)
+  Else If Mnem = 'JNO' Then Jcc(1)
+  Else If (Mnem = 'JB') Or (Mnem = 'JC') Or (Mnem = 'JNAE') Then Jcc(2)
+  Else If (Mnem = 'JAE') Or (Mnem = 'JNB') Or (Mnem = 'JNC') Then Jcc(3)
+  Else If (Mnem = 'JE') Or (Mnem = 'JZ') Then Jcc(4)
+  Else If (Mnem = 'JNE') Or (Mnem = 'JNZ') Then Jcc(5)
+  Else If (Mnem = 'JBE') Or (Mnem = 'JNA') Then Jcc(6)
+  Else If (Mnem = 'JA') Or (Mnem = 'JNBE') Then Jcc(7)
+  Else If Mnem = 'JS' Then Jcc(8)
+  Else If Mnem = 'JNS' Then Jcc(9)
+  Else If (Mnem = 'JP') Or (Mnem = 'JPE') Then Jcc(10)
+  Else If (Mnem = 'JNP') Or (Mnem = 'JPO') Then Jcc(11)
+  Else If (Mnem = 'JL') Or (Mnem = 'JNGE') Then Jcc(12)
+  Else If (Mnem = 'JGE') Or (Mnem = 'JNL') Then Jcc(13)
+  Else If (Mnem = 'JLE') Or (Mnem = 'JNG') Then Jcc(14)
+  Else If (Mnem = 'JG') Or (Mnem = 'JNLE') Then Jcc(15)
+  Else If (Mnem = 'JCXZ') Or (Mnem = 'LOOP') Or (Mnem = 'LOOPZ') Or (Mnem = 'LOOPE') Or
+          (Mnem = 'LOOPNZ') Or (Mnem = 'LOOPNE') Then
+  Begin
+    If Mnem = 'JCXZ' Then D16EmitB($E3)
+    Else If Mnem = 'LOOP' Then D16EmitB($E2)
+    Else If (Mnem = 'LOOPZ') Or (Mnem = 'LOOPE') Then D16EmitB($E1)
+    Else D16EmitB($E0);
+    If (O1.Kind = 6) And (D16Labels[O1.Lbl].Seg = D16CurSeg) Then
+      D16EmitB(Byte((D16Labels[O1.Lbl].Ofs - (D16CurOfs + 1)) And $FF))
+    Else Begin D16AddFixup(D16_FX_REL8, O1.Lbl, 0); D16EmitB(0) End;
+  End
+  Else
+    D16AsmError('mnemonique inconnu', Line);
+End;
+
+{ ------------------------------------------------------------ }
+{ Resolution des fixups et ecriture du fichier MZ              }
+{ ------------------------------------------------------------ }
+
+Var
+  D16Relocs    : Array[0..D16_MAX_RELOC-1] Of LongInt; { (seg shl 16) or ofs }
+  D16RelocCnt  : LongInt;
+  D16DataSeg   : LongInt;   { paragraphe du segment de donnees  }
+  D16StackSize : LongInt;   { taille de la pile (directive M)   }
+  D16HeapMin   : LongInt;
+  D16HeapMax   : LongInt;
+  D16EntryLbl  : TString;
+
+Procedure D16AddReloc(Seg : Integer; Ofs : LongInt);
+Begin
+  If D16RelocCnt >= D16_MAX_RELOC Then Begin D16AsmError('trop de relocations', ''); Exit End;
+  D16Relocs[D16RelocCnt] := (LongInt(Seg) Shl 16) Or (Ofs And $FFFF);
+  Inc(D16RelocCnt);
+End;
+
+{ Paragraphe (relatif au debut de l image) d un segment }
+Function D16SegPara(Seg : Integer) : LongInt;
+Begin
+  If Seg >= 254 Then D16SegPara := D16DataSeg
+  Else D16SegPara := D16SegStart[Seg] Div 16;
+End;
+
+Procedure D16PutW(Seg : Integer; Ofs : LongInt; W : LongInt);
+Var A : LongInt;
+Begin
+  If Seg = 255 Then
+  Begin
+    If Ofs + 1 < D16_MAX_DATA Then
+    Begin D16Data[Ofs] := Byte(W And $FF); D16Data[Ofs + 1] := Byte((W Shr 8) And $FF) End;
+  End
+  Else
+  Begin
+    A := D16SegStart[Seg] + Ofs;
+    If A + 1 < D16_MAX_CODE Then
+    Begin D16Code[A] := Byte(W And $FF); D16Code[A + 1] := Byte((W Shr 8) And $FF) End;
+  End;
+End;
+
+Procedure D16ResolveFixups;
+Var
+  I : LongInt; L : LongInt; V : LongInt;
+Begin
+  D16RelocCnt := 0;
+  For I := 0 To D16FixupCnt - 1 Do
+  Begin
+    L := D16Fixups[I].Lbl;
+    If D16Labels[L].Seg < 0 Then
+    Begin
+      D16AsmError('label non defini', D16Labels[L].Name);
+      Continue;
+    End;
+    Case D16Fixups[I].Kind Of
+      D16_FX_REL16 :
+      Begin
+        If D16Labels[L].Seg <> D16Fixups[I].Seg Then
+          D16AsmError('saut near vers un autre segment', D16Labels[L].Name);
+        V := D16LabelOfs(L) - (D16Fixups[I].Ofs + 2);
+        D16PutW(D16Fixups[I].Seg, D16Fixups[I].Ofs, V);
+      End;
+      D16_FX_REL8 :
+      Begin
+        V := D16LabelOfs(L) - (D16Fixups[I].Ofs + 1);
+        If (V < -128) Or (V > 127) Then
+          D16AsmError('saut court trop long', D16Labels[L].Name);
+        If D16Fixups[I].Seg <> 255 Then
+          D16Code[D16SegStart[D16Fixups[I].Seg] + D16Fixups[I].Ofs] := Byte(V And $FF);
+      End;
+      D16_FX_OFS16 :
+        D16PutW(D16Fixups[I].Seg, D16Fixups[I].Ofs, D16LabelOfs(L) + D16Fixups[I].Addend);
+      D16_FX_SEG :
+      Begin
+        D16PutW(D16Fixups[I].Seg, D16Fixups[I].Ofs, D16SegPara(D16Labels[L].Seg));
+        D16AddReloc(D16SegPara(D16Fixups[I].Seg), D16Fixups[I].Ofs);
+      End;
+    End;
+  End;
+End;
+
+Procedure D16WriteMZ(Const FileName : TString);
+Var
+  F : File;
+  CodeBytes, DataBytes, ImageBytes, HeaderBytes, FileBytes : LongInt;
+  MinAlloc, I : LongInt;
+  W : Word; B : Byte;
+  L : LongInt;
+Begin
+  { Le segment de donnees suit le code (aligne au paragraphe) }
+  CodeBytes := ((D16CodeLen + 15) Div 16) * 16;
+  D16DataSeg := CodeBytes Div 16;
+  D16ResolveFixups;
+  DataBytes := ((D16DataLen + 15) Div 16) * 16;
+  ImageBytes := CodeBytes + DataBytes;
+  { En-tete : 28 octets + table de relocation, arrondi a 16 }
+  HeaderBytes := ((28 + D16RelocCnt * 4 + 15) Div 16) * 16;
+  If HeaderBytes < 32 Then HeaderBytes := 32;
+  FileBytes := HeaderBytes + ImageBytes;
+  { Memoire supplementaire : BSS + pile (en paragraphes) }
+  MinAlloc := (D16BssLen + 15) Div 16 + (D16StackSize + 15) Div 16 + 1;
+  L := D16FindLabel(D16EntryLbl);
+  Assign(F, FileName);
+  {$I-}
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer le fichier: ' + FileName);
+  W := $5A4D; BlockWrite(F, W, 2);
+  W := FileBytes Mod 512; BlockWrite(F, W, 2);
+  W := (FileBytes + 511) Div 512; BlockWrite(F, W, 2);
+  W := D16RelocCnt; BlockWrite(F, W, 2);
+  W := HeaderBytes Div 16; BlockWrite(F, W, 2);
+  W := MinAlloc; BlockWrite(F, W, 2);                   { MinAlloc }
+  W := $FFFF; BlockWrite(F, W, 2);                      { MaxAlloc }
+  { SS : apres le code et les donnees (incluant le BSS) }
+  W := D16DataSeg + (D16DataLen + D16BssLen + 15) Div 16; BlockWrite(F, W, 2);
+  W := D16StackSize; BlockWrite(F, W, 2);               { SP }
+  W := 0; BlockWrite(F, W, 2);                          { checksum }
+  If L >= 0 Then W := D16LabelOfs(L) Else W := 0;
+  BlockWrite(F, W, 2);                                  { IP }
+  If L >= 0 Then W := D16SegPara(D16Labels[L].Seg) Else W := 0;
+  BlockWrite(F, W, 2);                                  { CS }
+  W := 28; BlockWrite(F, W, 2);                         { table de relocation }
+  W := 0; BlockWrite(F, W, 2);                          { overlay }
+  For I := 0 To D16RelocCnt - 1 Do
+  Begin
+    W := D16Relocs[I] And $FFFF; BlockWrite(F, W, 2);
+    W := D16Relocs[I] Shr 16; BlockWrite(F, W, 2);
+  End;
+  B := 0;
+  For I := 28 + D16RelocCnt * 4 To HeaderBytes - 1 Do BlockWrite(F, B, 1);
+  If D16CodeLen > 0 Then BlockWrite(F, D16Code, D16CodeLen);
+  For I := D16CodeLen To CodeBytes - 1 Do BlockWrite(F, B, 1);
+  If D16DataLen > 0 Then BlockWrite(F, D16Data, D16DataLen);
+  For I := D16DataLen To DataBytes - 1 Do BlockWrite(F, B, 1);
+  Close(F);
+End;
+
+Procedure D16AsmInit;
+Var I : LongInt;
+Begin
+  D16CodeLen := 0; D16DataLen := 0; D16BssLen := 0;
+  D16LabelCnt := 0; D16FixupCnt := 0; D16RelocCnt := 0;
+  D16SegCount := 0; D16CurSeg := 0; D16AsmErrors := 0; D16AsmLine := 0;
+  D16StackSize := 16384; D16HeapMin := 0; D16HeapMax := 655360;
+  D16RangeCnt := 0; D16ElimBytes := 0;
+  D16EntryLbl := 'START';
+  For I := 0 To D16_LBL_HASH - 1 Do D16LblHash[I] := -1;
+  D16SegStart[0] := 0;
+  D16NewSegment;
+End;
+
+{ ------------------------------------------------------------ }
+{ D16 : tables du compilateur (types, symboles, procedures)    }
+{ ------------------------------------------------------------ }
+
+Const
+  D16_MAX_TYPES  = {$IFDEF FPC}8192{$ELSE}256{$ENDIF};
+  D16_MAX_SYMS   = {$IFDEF FPC}32768{$ELSE}512{$ENDIF};
+  D16_MAX_FIELDS = {$IFDEF FPC}32768{$ELSE}512{$ENDIF};
+  D16_MAX_PROCS  = {$IFDEF FPC}4096{$ELSE}128{$ENDIF};
+  D16_MAX_PARAMS = {$IFDEF FPC}16384{$ELSE}256{$ENDIF};
+  D16_SYM_HASH   = {$IFDEF FPC}8192{$ELSE}256{$ENDIF};
+  D16_MAX_WITH   = 16;
+  D16_MAX_UNITS  = 16;
+  D16_MAX_LOOP   = 32;
+  D16_MAX_SWITCH = {$IFDEF FPC}4096{$ELSE}128{$ENDIF};
+  D16_MAX_LIT    = {$IFDEF FPC}16384{$ELSE}256{$ENDIF};
+
+  { Genres de types }
+  DT_NONE     = 0;
+  DT_INT      = 1;   { entier signe : ShortInt(1) Integer(2) Longint(4) }
+  DT_UINT     = 2;   { entier non signe : Byte(1) Word(2)               }
+  DT_BOOL     = 3;
+  DT_CHAR     = 4;
+  DT_ENUM     = 5;
+  DT_SUBRANGE = 6;
+  DT_REAL     = 7;   { Real logiciel 6 octets                           }
+  DT_STRING   = 8;
+  DT_ARRAY    = 9;
+  DT_RECORD   = 10;
+  DT_SET      = 11;
+  DT_POINTER  = 12;
+  DT_FILE     = 13;  { Base = 0 : fichier non type                      }
+  DT_TEXT     = 14;
+  DT_PROCVAR  = 15;
+  DT_NIL      = 16;
+  DT_OBJECT   = 17;
+
+  { Genres de symboles }
+  DSK_CONST   = 1;
+  DSK_TYPE    = 2;
+  DSK_VAR     = 3;
+  DSK_PROC    = 4;
+  DSK_UNIT    = 5;
+  DSK_LABEL   = 6;
+  DSK_BUILTIN = 7;
+  DSK_FIELD   = 8;   { champ d objet / methode : non utilise dans la table globale }
+
+  { Emplacement des variables }
+  LOC_GLOBAL   = 0;  { DS:[label]                                    }
+  LOC_LOCAL    = 1;  { SS:[BP+Ofs]                                   }
+  LOC_REFPARAM = 2;  { SS:[BP+Ofs] contient un pointeur far          }
+  LOC_ABS      = 3;  { Seg:Ofs absolu                                }
+  LOC_RESULT   = 4;  { resultat de fonction : SS:[BP+Ofs] pointeur far (grands types) }
+
+  { Modes de parametres }
+  PM_VALUE = 0;
+  PM_VAR   = 1;
+  PM_CONST = 2;
+
+  { Index des types predefinis }
+  DTI_NONE     = 0;
+  DTI_INTEGER  = 1;
+  DTI_BYTE     = 2;
+  DTI_WORD     = 3;
+  DTI_SHORTINT = 4;
+  DTI_LONGINT  = 5;
+  DTI_BOOLEAN  = 6;
+  DTI_CHAR     = 7;
+  DTI_REAL     = 8;
+  DTI_STRING   = 9;
+  DTI_POINTER  = 10;
+  DTI_TEXT     = 11;
+  DTI_NIL      = 12;
+  DTI_PCHAR    = 13;
+  DTI_FILE     = 14;   { fichier non type }
+  DTI_SET      = 15;   { ensemble generique (constructeur vide) }
+  DTI_PROC     = 16;   { pointeur de procedure generique }
+  DTI_FIRSTUSER = 17;
+
+Type
+  TD16Type = Record
+    Kind    : Byte;
+    Size    : LongInt;
+    Base    : Integer;     { element / cible / type de base            }
+    Index   : Integer;     { type d index (tableaux)                   }
+    Lo, Hi  : LongInt;     { bornes (sous-intervalle, enum, index)     }
+    FStart  : LongInt;     { premier champ (record) / parametre (procvar) }
+    FCount  : Integer;
+    RetType : Integer;     { type de retour (procvar)                  }
+    FwdName : String[63];  { ^Nom en attente de resolution             }
+    Name    : String[63];
+  End;
+  TD16Field = Record
+    Name    : String[63];
+    TypeIdx : Integer;
+    Offset  : LongInt;
+  End;
+  TD16Sym = Record
+    Name    : String[63];
+    Kind    : Byte;
+    Loc     : Byte;
+    TypeIdx : Integer;
+    Level   : Integer;
+    UnitId  : Integer;
+    Hidden  : Boolean;
+    Ofs     : LongInt;      { offset BP / offset dans le label / offset absolu }
+    Seg     : LongInt;      { segment absolu                                 }
+    Lbl     : LongInt;      { index du label de donnees (globales)           }
+    Val     : LongInt;      { valeur constante ordinale / id builtin / label }
+    RVal    : Double;
+    SVal    : TString;
+    ProcIdx : Integer;
+    Next    : LongInt;
+    Used    : Boolean;
+  End;
+  TD16Param = Record
+    Name    : String[63];
+    TypeIdx : Integer;
+    Mode    : Byte;
+    Ofs     : LongInt;
+  End;
+  TD16Proc = Record
+    Lbl       : String[40];
+    Level     : Integer;
+    PStart    : LongInt;
+    PCount    : Integer;
+    ParamBytes: LongInt;
+    RetType   : Integer;
+    IsForward : Boolean;
+    Defined   : Boolean;
+    IsInterrupt : Boolean;
+    IsInline  : Boolean;
+    IsAsm     : Boolean;
+    IsExternal: Boolean;
+    LocalSize : LongInt;
+    SymIdx    : LongInt;
+    ResultOfs : LongInt;    { offset BP du resultat (ordinal) ou du pointeur (grands types) }
+    BodyTok   : LongInt;
+    InlineStart : LongInt;  { tokens du code Inline(...) }
+    UnitId    : Integer;
+    Exits     : Integer;    { nombre de Exit (pour le label de sortie) }
+  End;
+  { Valeur constante }
+  TD16Const = Record
+    Kind  : Byte;           { DT_INT ordinal, DT_REAL, DT_STRING, DT_SET, DT_NIL, DT_POINTER(adresse) }
+    TypeIdx : Integer;
+    IVal  : LongInt;
+    RVal  : Double;
+    SVal  : TString;
+    SetV  : Array[0..31] Of Byte;
+    Lbl   : LongInt;        { @Proc ou adresse de donnee (DT_POINTER) }
+  End;
+  { Descripteur d adresse }
+  TD16Addr = Record
+    Seg   : Byte;           { 0 DS, 1 SS, 2 ES                          }
+    UseBP : Boolean;
+    Idx   : Byte;           { registre d index : 0 aucun, 1 BX, 2 SI     }
+    Lbl   : LongInt;        { -1 aucun                                  }
+    Disp  : LongInt;
+    Imm   : Boolean;        { adresse constante Seg:Disp (absolute)     }
+    SegVal: LongInt;
+  End;
+  TD16With = Record
+    TypeIdx : Integer;
+    Addr    : TD16Addr;
+    TempOfs : LongInt;      { pointeur sauve dans un temporaire (si dynamique) }
+    Level   : Integer;
+  End;
+  TD16Switch = Record
+    Tok  : LongInt;
+    Ch   : Char;
+    Onn  : Boolean;
+  End;
+  TD16Lit = Record
+    Lbl  : LongInt;
+    Ofs  : LongInt;
+    Len  : Integer;
+    Hash : LongInt;
+  End;
+
+Var
+  D16Types   : Array[0..D16_MAX_TYPES-1] Of TD16Type;
+  D16TypeCnt : Integer;
+  D16Fields  : Array[0..D16_MAX_FIELDS-1] Of TD16Field;
+  D16FieldCnt: LongInt;
+  D16Syms    : Array[0..D16_MAX_SYMS-1] Of TD16Sym;
+  D16SymCnt  : LongInt;
+  D16SymHash : Array[0..D16_SYM_HASH-1] Of LongInt;
+  D16Params  : Array[0..D16_MAX_PARAMS-1] Of TD16Param;
+  D16ParamCnt: LongInt;
+  D16Procs   : Array[0..D16_MAX_PROCS-1] Of TD16Proc;
+  D16ProcCnt : Integer;
+  D16Lits    : Array[0..D16_MAX_LIT-1] Of TD16Lit;
+  D16LitCnt  : LongInt;
+  D16Switches: Array[0..D16_MAX_SWITCH-1] Of TD16Switch;
+  D16SwitchCnt : LongInt;
+  D16SwitchPos : LongInt;
+  D16UnitUsed  : Array[0..D16_MAX_UNITS] Of Boolean;
+  D16UnitNames : Array[0..D16_MAX_UNITS] Of String[15];
+  D16UnitCount : Integer;
+  D16CurUnit   : Integer;      { 0 = programme, 1.. = unite en cours }
+
+  { Etat du parseur }
+  D16Pos     : LongInt;        { index du token courant }
+  D16End     : LongInt;        { fin de la zone de tokens courante }
+  D16Level   : Integer;        { niveau d imbrication courant (0 = principal) }
+  D16CurProc : Integer;        { -1 = bloc principal }
+  D16LocalOfs: LongInt;        { prochain offset local libre (negatif) }
+  D16MaxLocal: LongInt;        { profondeur maximale du cadre }
+  D16LabelSeq: LongInt;
+  D16WithStack : Array[0..D16_MAX_WITH-1] Of TD16With;
+  D16WithCnt : Integer;
+  D16LoopBreak : Array[0..D16_MAX_LOOP-1] Of TString;
+  D16LoopCont  : Array[0..D16_MAX_LOOP-1] Of TString;
+  D16LoopCnt : Integer;
+  D16ExitLbl : TString;
+  D16IoCheck : Boolean;
+  D16RangeCheck : Boolean;
+  D16OvfCheck : Boolean;
+  D16StackCheck : Boolean;
+  D16ProgName : TString;
+  D16IsUnit  : Boolean;
+  D16Errors  : LongInt;
+  D16InInterface : Boolean;
+  D16SysUnit : Integer;        { id de l unite SYSTEM integree }
+  D16RtUsed  : Array[0..255] Of Boolean;  { routines runtime asm utilisees }
+  D16TokLimit : LongInt;
+  D16MainBodyPos : LongInt;
+  D16HasAsmBlocks : Boolean;
+  D16UnitHasInit : Array[0..D16_MAX_UNITS] Of Boolean;
+  D16ProcFirstSym : LongInt;
+
+{ ------------------------------------------------------------ }
+{ Erreurs                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure D16ErrorAt(Tok : LongInt; Const Msg : TString);
+Var L, C : LongInt;
+Begin
+  If (Tok >= 0) And (Tok < TokenCount) Then
+  Begin L := TokenPool[Tok].Line; C := TokenPool[Tok].Col End
+  Else Begin L := 0; C := 0 End;
+  If (Tok >= D16TokLimit) And (D16TokLimit > 0) Then
+    WriteLn('TPCW32: ', D16UnitNames[D16CurUnit], ' (unite integree) (', L, ',', C, ') Erreur: ', Msg)
+  Else
+    WriteLn('TPCW32: ', Opts.SrcFile, '(', L, ',', C, ') Erreur: ', Msg);
+  Inc(ErrorCount);
+  If OutFOpen Then Begin Close(OutF); OutFOpen := False End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure D16Error(Const Msg : TString);
+Begin
+  D16ErrorAt(D16Pos, Msg);
+End;
+
+{ ------------------------------------------------------------ }
+{ Acces aux tokens                                             }
+{ ------------------------------------------------------------ }
+
+Function D16Kind : TTokenKind;
+Begin
+  If D16Pos < D16End Then D16Kind := TokenPool[D16Pos].Kind Else D16Kind := TK_EOF;
+End;
+
+Function D16Val : TString;
+Begin
+  If D16Pos < D16End Then D16Val := TokenPool[D16Pos].Val Else D16Val := '';
+End;
+
+Function D16UVal : TString;
+Begin
+  If D16Pos < D16End Then D16UVal := StrUpperCase(TokenPool[D16Pos].Val) Else D16UVal := '';
+End;
+
+Function D16IsKw(Const K : TString) : Boolean;
+Begin
+  D16IsKw := (D16Pos < D16End) And (TokenPool[D16Pos].Kind = TK_KEYWORD) And
+             (TokenPool[D16Pos].Val = K);
+End;
+
+Function D16IsPunct(Const P : TString) : Boolean;
+Begin
+  D16IsPunct := (D16Pos < D16End) And (TokenPool[D16Pos].Kind = TK_PUNCT) And
+                (TokenPool[D16Pos].Val = P);
+End;
+
+Function D16IsOp(Const P : TString) : Boolean;
+Begin
+  D16IsOp := (D16Pos < D16End) And (TokenPool[D16Pos].Kind = TK_OP) And
+             (TokenPool[D16Pos].Val = P);
+End;
+
+Function D16IsIdent : Boolean;
+Begin
+  D16IsIdent := (D16Pos < D16End) And (TokenPool[D16Pos].Kind = TK_IDENT);
+End;
+
+{ Identificateur ou mot-cle non reserve dans la version TP ciblee ; les
+  directives (forward, absolute, ...) sont des identificateurs. }
+Function D16IsIdentU(Const U : TString) : Boolean;
+Begin
+  D16IsIdentU := D16IsIdent And (StrUpperCase(TokenPool[D16Pos].Val) = U);
+End;
+
+{ Litteral caractere : #nn ou chaine d un seul caractere entre quotes
+  (le lexeur produit TK_STRING pour 'x') }
+Function D16IsCharTok : Boolean;
+Begin
+  D16IsCharTok := (D16Pos < D16End) And
+    ((TokenPool[D16Pos].Kind = TK_CHAR) Or
+     ((TokenPool[D16Pos].Kind = TK_STRING) And (Length(TokenPool[D16Pos].Val) = 1)));
+End;
+
+Function D16CharTokVal : LongInt;
+Begin
+  If TokenPool[D16Pos].Kind = TK_CHAR Then D16CharTokVal := TokenPool[D16Pos].IntVal
+  Else D16CharTokVal := Ord(TokenPool[D16Pos].Val[1]);
+End;
+
+Function D16PeekKind(N : LongInt) : TTokenKind;
+Begin
+  If D16Pos + N < D16End Then D16PeekKind := TokenPool[D16Pos + N].Kind
+  Else D16PeekKind := TK_EOF;
+End;
+
+Function D16PeekVal(N : LongInt) : TString;
+Begin
+  If D16Pos + N < D16End Then D16PeekVal := TokenPool[D16Pos + N].Val
+  Else D16PeekVal := '';
+End;
+
+Procedure D16ApplySwitches; Forward;
+
+Procedure D16Next;
+Begin
+  If D16Pos < D16End Then Inc(D16Pos);
+  If D16SwitchPos < D16SwitchCnt Then D16ApplySwitches;
+End;
+
+Procedure D16ExpectPunct(Const P : TString);
+Begin
+  If Not D16IsPunct(P) Then D16Error('"' + P + '" attendu');
+  D16Next;
+End;
+
+Procedure D16ExpectOp(Const P : TString);
+Begin
+  If Not D16IsOp(P) Then D16Error('"' + P + '" attendu');
+  D16Next;
+End;
+
+Procedure D16ExpectKw(Const K : TString);
+Begin
+  If Not D16IsKw(K) Then D16Error(StrUpperCase(K) + ' attendu');
+  D16Next;
+End;
+
+Function D16ExpectIdent : TString;
+Begin
+  If Not D16IsIdent Then D16Error('identificateur attendu');
+  D16ExpectIdent := StrUpperCase(TokenPool[D16Pos].Val);
+  D16Next;
+End;
+
+Procedure D16SkipSemis;
+Begin
+  While D16IsPunct(';') Do D16Next;
+End;
+
+{ Directives de compilation positionnelles (dollar I- etc.) }
+Procedure D16ApplySwitches;
+Begin
+  While (D16SwitchPos < D16SwitchCnt) And (D16Switches[D16SwitchPos].Tok <= D16Pos) Do
+  Begin
+    Case D16Switches[D16SwitchPos].Ch Of
+      'I' : D16IoCheck := D16Switches[D16SwitchPos].Onn;
+      'R' : D16RangeCheck := D16Switches[D16SwitchPos].Onn;
+      'Q' : D16OvfCheck := D16Switches[D16SwitchPos].Onn;
+      'S' : D16StackCheck := D16Switches[D16SwitchPos].Onn;
+    End;
+    Inc(D16SwitchPos);
+  End;
+End;
+
+Function D16IsKwAt(P : LongInt; Const K : TString) : Boolean;
+Begin
+  D16IsKwAt := (P < D16End) And (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = K);
+End;
+
+{ ------------------------------------------------------------ }
+{ Labels generes                                               }
+{ ------------------------------------------------------------ }
+
+Function D16NewLabel : TString;
+Begin
+  Inc(D16LabelSeq);
+  D16NewLabel := 'L' + IntToStr_(D16LabelSeq);
+End;
+
+{ ------------------------------------------------------------ }
+{ Types                                                        }
+{ ------------------------------------------------------------ }
+
+Function D16TypeAdd(Kind : Byte; Size : LongInt; Base : Integer) : Integer;
+Begin
+  If D16TypeCnt >= D16_MAX_TYPES Then D16Error('trop de types');
+  D16Types[D16TypeCnt].Kind := Kind;
+  D16Types[D16TypeCnt].Size := Size;
+  D16Types[D16TypeCnt].Base := Base;
+  D16Types[D16TypeCnt].Index := 0;
+  D16Types[D16TypeCnt].Lo := 0;
+  D16Types[D16TypeCnt].Hi := 0;
+  D16Types[D16TypeCnt].FStart := 0;
+  D16Types[D16TypeCnt].FCount := 0;
+  D16Types[D16TypeCnt].RetType := 0;
+  D16Types[D16TypeCnt].FwdName := '';
+  D16Types[D16TypeCnt].Name := '';
+  D16TypeAdd := D16TypeCnt;
+  Inc(D16TypeCnt);
+End;
+
+Function D16IsOrdinal(T : Integer) : Boolean;
+Begin
+  D16IsOrdinal := D16Types[T].Kind In [DT_INT, DT_UINT, DT_BOOL, DT_CHAR, DT_ENUM, DT_SUBRANGE];
+End;
+
+Function D16IsInteger(T : Integer) : Boolean;
+Var K : Byte;
+Begin
+  K := D16Types[T].Kind;
+  If K = DT_SUBRANGE Then K := D16Types[D16Types[T].Base].Kind;
+  D16IsInteger := (K = DT_INT) Or (K = DT_UINT);
+End;
+
+{ Type de base d un sous-intervalle }
+Function D16BaseType(T : Integer) : Integer;
+Begin
+  While D16Types[T].Kind = DT_SUBRANGE Do T := D16Types[T].Base;
+  D16BaseType := T;
+End;
+
+Function D16IsSigned(T : Integer) : Boolean;
+Var B : Integer;
+Begin
+  B := D16BaseType(T);
+  If D16Types[B].Kind = DT_INT Then D16IsSigned := True
+  Else If (D16Types[T].Kind = DT_SUBRANGE) And (D16Types[T].Lo < 0) Then D16IsSigned := True
+  Else D16IsSigned := False;
+End;
+
+Function D16IsString(T : Integer) : Boolean;
+Begin
+  D16IsString := D16Types[T].Kind = DT_STRING;
+End;
+
+Function D16IsReal(T : Integer) : Boolean;
+Begin
+  D16IsReal := D16Types[T].Kind = DT_REAL;
+End;
+
+Function D16IsPointer(T : Integer) : Boolean;
+Begin
+  D16IsPointer := (D16Types[T].Kind = DT_POINTER) Or (D16Types[T].Kind = DT_NIL) Or
+                  (D16Types[T].Kind = DT_PROCVAR);
+End;
+
+Function D16IsCharArray(T : Integer) : Boolean;
+Begin
+  D16IsCharArray := (D16Types[T].Kind = DT_ARRAY) And
+                    (D16Types[D16BaseType(D16Types[T].Base)].Kind = DT_CHAR);
+End;
+
+{ Les grands types vivent en memoire : l expression fournit une adresse }
+Function D16IsLarge(T : Integer) : Boolean;
+Begin
+  D16IsLarge := D16Types[T].Kind In [DT_REAL, DT_STRING, DT_ARRAY, DT_RECORD, DT_SET,
+                                     DT_FILE, DT_TEXT, DT_OBJECT];
+End;
+
+Function D16TypeSize(T : Integer) : LongInt;
+Begin
+  D16TypeSize := D16Types[T].Size;
+End;
+
+{ Bornes d un type ordinal }
+Procedure D16OrdBounds(T : Integer; Var Lo, Hi : LongInt);
+Begin
+  Case D16Types[T].Kind Of
+    DT_INT :
+      Case D16Types[T].Size Of
+        1 : Begin Lo := -128; Hi := 127 End;
+        2 : Begin Lo := -32768; Hi := 32767 End;
+      Else Begin Lo := -2147483647 - 1; Hi := 2147483647 End;
+      End;
+    DT_UINT :
+      If D16Types[T].Size = 1 Then Begin Lo := 0; Hi := 255 End
+      Else Begin Lo := 0; Hi := 65535 End;
+    DT_BOOL : Begin Lo := 0; Hi := 1 End;
+    DT_CHAR : Begin Lo := 0; Hi := 255 End;
+    DT_ENUM, DT_SUBRANGE : Begin Lo := D16Types[T].Lo; Hi := D16Types[T].Hi End;
+  Else Begin Lo := 0; Hi := 0 End;
+  End;
+End;
+
+Function D16TypeName(T : Integer) : TString;
+Begin
+  If D16Types[T].Name <> '' Then D16TypeName := D16Types[T].Name
+  Else Case D16Types[T].Kind Of
+    DT_INT, DT_UINT : D16TypeName := 'entier';
+    DT_BOOL : D16TypeName := 'Boolean';
+    DT_CHAR : D16TypeName := 'Char';
+    DT_ENUM : D16TypeName := 'enumeration';
+    DT_SUBRANGE : D16TypeName := 'sous-intervalle';
+    DT_REAL : D16TypeName := 'Real';
+    DT_STRING : D16TypeName := 'String';
+    DT_ARRAY : D16TypeName := 'Array';
+    DT_RECORD : D16TypeName := 'Record';
+    DT_SET : D16TypeName := 'Set';
+    DT_POINTER : D16TypeName := 'Pointer';
+    DT_FILE : D16TypeName := 'File';
+    DT_TEXT : D16TypeName := 'Text';
+    DT_PROCVAR : D16TypeName := 'procedure';
+    DT_NIL : D16TypeName := 'Nil';
+    DT_OBJECT : D16TypeName := 'Object';
+  Else D16TypeName := '?';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Symboles                                                     }
+{ ------------------------------------------------------------ }
+
+Function D16SymHashOf(Const S : TString) : LongInt;
+Var I : Integer; H : LongInt;
+Begin
+  H := 0;
+  For I := 1 To Length(S) Do H := (H * 31 + Ord(S[I])) And $7FFFFFFF;
+  D16SymHashOf := H Mod D16_SYM_HASH;
+End;
+
+Function D16SymVisible(I : LongInt) : Boolean;
+Begin
+  D16SymVisible := (Not D16Syms[I].Hidden) And
+                   ((D16Syms[I].UnitId = 0) Or (D16Syms[I].UnitId = D16CurUnit) Or
+                    D16UnitUsed[D16Syms[I].UnitId]);
+End;
+
+{ Recherche d un symbole visible (le plus recent d abord) }
+Function D16Lookup(Const Name : TString) : LongInt;
+Var I : LongInt;
+Begin
+  I := D16SymHash[D16SymHashOf(Name)];
+  While I >= 0 Do
+  Begin
+    If (D16Syms[I].Name = Name) And D16SymVisible(I) Then
+    Begin D16Lookup := I; Exit End;
+    I := D16Syms[I].Next;
+  End;
+  D16Lookup := -1;
+End;
+
+{ Recherche d un symbole de l unite SYSTEM integree (insensible aux
+  redeclarations du programme : Output, Input, ...) }
+Function D16LookupSys(Const Name : TString) : LongInt;
+Var I : LongInt;
+Begin
+  I := D16SymHash[D16SymHashOf(Name)];
+  While I >= 0 Do
+  Begin
+    If (D16Syms[I].Name = Name) And (D16Syms[I].UnitId = 1) Then
+    Begin D16LookupSys := I; Exit End;
+    I := D16Syms[I].Next;
+  End;
+  D16LookupSys := -1;
+End;
+
+{ Recherche limitee au niveau courant (redeclaration) }
+Function D16LookupLevel(Const Name : TString; Level : Integer) : LongInt;
+Var I : LongInt;
+Begin
+  I := D16SymHash[D16SymHashOf(Name)];
+  While I >= 0 Do
+  Begin
+    If (D16Syms[I].Name = Name) And (D16Syms[I].Level = Level) And
+       (D16Syms[I].UnitId = D16CurUnit) And Not D16Syms[I].Hidden Then
+    Begin D16LookupLevel := I; Exit End;
+    I := D16Syms[I].Next;
+  End;
+  D16LookupLevel := -1;
+End;
+
+Function D16SymAdd(Const Name : TString; Kind : Byte; TypeIdx : Integer) : LongInt;
+Var H, I : LongInt;
+Begin
+  If D16SymCnt >= D16_MAX_SYMS Then D16Error('trop de symboles');
+  If (Name <> '') And (D16LookupLevel(Name, D16Level) >= 0) Then
+    D16Error('identificateur redeclare: ' + Name);
+  I := D16SymCnt; Inc(D16SymCnt);
+  D16Syms[I].Name := Name;
+  D16Syms[I].Kind := Kind;
+  D16Syms[I].Loc := LOC_GLOBAL;
+  D16Syms[I].TypeIdx := TypeIdx;
+  D16Syms[I].Level := D16Level;
+  D16Syms[I].UnitId := D16CurUnit;
+  D16Syms[I].Hidden := False;
+  D16Syms[I].Ofs := 0;
+  D16Syms[I].Seg := 0;
+  D16Syms[I].Lbl := -1;
+  D16Syms[I].Val := 0;
+  D16Syms[I].RVal := 0.0;
+  D16Syms[I].SVal := '';
+  D16Syms[I].ProcIdx := -1;
+  D16Syms[I].Used := False;
+  H := D16SymHashOf(Name);
+  D16Syms[I].Next := D16SymHash[H];
+  D16SymHash[H] := I;
+  D16SymAdd := I;
+End;
+
+{ Retirer les symboles a partir de l index From (ordre LIFO) }
+Procedure D16SymPop(From : LongInt);
+Var I, H : LongInt;
+Begin
+  I := D16SymCnt - 1;
+  While I >= From Do
+  Begin
+    H := D16SymHashOf(D16Syms[I].Name);
+    If D16SymHash[H] = I Then D16SymHash[H] := D16Syms[I].Next
+    Else D16Error('erreur interne: table de hachage des symboles');
+    Dec(I);
+  End;
+  D16SymCnt := From;
+End;
+
+{ Marquer caches les symboles d implementation d une unite }
+Procedure D16HideFrom(From : LongInt);
+Var I : LongInt;
+Begin
+  For I := From To D16SymCnt - 1 Do D16Syms[I].Hidden := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ Chaines litterales (donnees)                                 }
+{ ------------------------------------------------------------ }
+
+Function D16StrLitLabel(Const S : TString) : LongInt;
+Var I, J : LongInt; H : LongInt; Same : Boolean; Nm : TString;
+Begin
+  H := 0;
+  For I := 1 To Length(S) Do H := (H * 31 + Ord(S[I])) And $7FFFFFFF;
+  For I := 0 To D16LitCnt - 1 Do
+    If (D16Lits[I].Hash = H) And (D16Lits[I].Len = Length(S)) Then
+    Begin
+      Same := True;
+      For J := 1 To Length(S) Do
+        If D16Data[D16Lits[I].Ofs + J] <> Ord(S[J]) Then Begin Same := False; Break End;
+      If Same Then Begin D16StrLitLabel := D16Lits[I].Lbl; Exit End;
+    End;
+  Nm := 'S' + IntToStr_(D16LitCnt);
+  D16DefineDataLabel(Nm, D16DataLen);
+  If D16LitCnt < D16_MAX_LIT Then
+  Begin
+    D16Lits[D16LitCnt].Lbl := D16FindLabel(Nm);
+    D16Lits[D16LitCnt].Ofs := D16DataLen;
+    D16Lits[D16LitCnt].Len := Length(S);
+    D16Lits[D16LitCnt].Hash := H;
+    D16StrLitLabel := D16Lits[D16LitCnt].Lbl;
+    Inc(D16LitCnt);
+  End
+  Else D16StrLitLabel := D16FindLabel(Nm);
+  D16DataB(Length(S));
+  For I := 1 To Length(S) Do D16DataB(Ord(S[I]));
+End;
+
+Function D16LblName(L : LongInt) : TString;
+Begin
+  D16LblName := D16Labels[L].Name;
+End;
+
+{ ------------------------------------------------------------ }
+{ Real Turbo Pascal 6 octets                                   }
+{ Format : octet 0 = exposant (biais 129, 0 = zero),           }
+{ octets 1..5 = mantisse 39 bits + bit de signe (octet 5 bit 7)}
+{ ------------------------------------------------------------ }
+
+Procedure D16RealTo6(V : Double; Var B : Array Of Byte);
+Var
+  E : Integer; Neg : Boolean; M : Double; I : Integer; Bits : Double;
+  Mant : Array[0..4] Of Byte;
+  W : LongInt;
+Begin
+  For I := 0 To 5 Do B[I] := 0;
+  If V = 0.0 Then Exit;
+  Neg := V < 0; If Neg Then V := -V;
+  E := 0;
+  While V >= 1.0 Do Begin V := V / 2.0; Inc(E) End;
+  While V < 0.5 Do Begin V := V * 2.0; Dec(E) End;
+  { V dans [0.5,1) : mantisse normalisee, bit implicite = 0.5 }
+  { 40 bits de mantisse dont le premier (implicite) est retire }
+  M := V * 2.0 - 1.0;  { fraction dans [0,1) apres retrait du bit implicite }
+  { 39 bits }
+  M := M * 2147483648.0 * 256.0; { 2^39 }
+  M := M + 0.5; { arrondi }
+  If M >= 2147483648.0 * 256.0 Then
+  Begin
+    { debordement de l arrondi : mantisse = 1.0 -> exposant + 1 }
+    M := 0; Inc(E);
+  End;
+  { extraire 39 bits en 5 octets (octet 5 : 7 bits + signe) }
+  W := Trunc(M / 65536.0 / 256.0);   { 15 bits hauts }
+  Bits := M - W * 65536.0 * 256.0;    { 24 bits bas }
+  Mant[0] := Trunc(Bits) And $FF;
+  Mant[1] := (Trunc(Bits) Shr 8) And $FF;
+  Mant[2] := (Trunc(Bits) Shr 16) And $FF;
+  Mant[3] := W And $FF;
+  Mant[4] := (W Shr 8) And $7F;
+  E := E + 128;   { biais : valeur dans [0.5,1) -> exposant TP = E + 128 }
+  If (E <= 0) Then Exit;  { trop petit : zero }
+  If E > 255 Then E := 255;
+  B[0] := E;
+  B[1] := Mant[0]; B[2] := Mant[1]; B[3] := Mant[2]; B[4] := Mant[3];
+  B[5] := Mant[4];
+  If Neg Then B[5] := B[5] Or $80;
+End;
+
+{ ------------------------------------------------------------ }
+{ Declarations anticipees                                      }
+{ ------------------------------------------------------------ }
+
+Function D16ParseType : Integer; Forward;
+Procedure D16ConstExpr(Var C : TD16Const); Forward;
+Procedure D16Block(ProcIdx : Integer); Forward;
+Procedure D16ParseProcDecl(IsFunc : Boolean); Forward;
+
+{ ------------------------------------------------------------ }
+{ Expressions constantes                                       }
+{ ------------------------------------------------------------ }
+
+Procedure D16ConstInt(Var C : TD16Const; V : LongInt; T : Integer);
+Begin
+  C.Kind := DT_INT; C.IVal := V; C.TypeIdx := T; C.RVal := V; C.SVal := ''; C.Lbl := -1;
+End;
+
+Procedure D16ConstToReal(Var C : TD16Const);
+Begin
+  If C.Kind = DT_INT Then Begin C.RVal := C.IVal; C.Kind := DT_REAL; C.TypeIdx := DTI_REAL End
+  Else If C.Kind <> DT_REAL Then D16Error('constante reelle attendue');
+End;
+
+Procedure D16ConstToStr(Var C : TD16Const);
+Begin
+  If (C.Kind = DT_INT) And (D16Types[C.TypeIdx].Kind = DT_CHAR) Then
+  Begin C.SVal := Chr(C.IVal); C.Kind := DT_STRING; C.TypeIdx := DTI_STRING End
+  Else If C.Kind <> DT_STRING Then D16Error('constante chaine attendue');
+End;
+
+{ Type entier le plus petit contenant la valeur (regle TP) }
+Function D16IntTypeFor(V : LongInt) : Integer;
+Begin
+  If (V >= -32768) And (V <= 32767) Then D16IntTypeFor := DTI_INTEGER
+  Else If (V >= 0) And (V <= 65535) Then D16IntTypeFor := DTI_WORD
+  Else D16IntTypeFor := DTI_LONGINT;
+End;
+
+Function D16ConstSetBit(Var C : TD16Const; V : LongInt) : Boolean;
+Begin
+  D16ConstSetBit := False;
+  If (V < 0) Or (V > 255) Then Exit;
+  C.SetV[V Shr 3] := C.SetV[V Shr 3] Or (1 Shl (V And 7));
+  D16ConstSetBit := True;
+End;
+
+Procedure D16ConstFactor(Var C : TD16Const);
+Var
+  S : LongInt; U : TString; T : Integer; C2 : TD16Const; I : Integer;
+  Lo, Hi : LongInt;
+Begin
+  C.Kind := DT_INT; C.IVal := 0; C.RVal := 0; C.SVal := ''; C.TypeIdx := DTI_INTEGER; C.Lbl := -1;
+  Case D16Kind Of
+    TK_INTEGER :
+    Begin
+      D16ConstInt(C, TokenPool[D16Pos].IntVal, D16IntTypeFor(TokenPool[D16Pos].IntVal));
+      D16Next;
+    End;
+    TK_REAL :
+    Begin
+      C.Kind := DT_REAL; C.RVal := TokenPool[D16Pos].RealVal; C.TypeIdx := DTI_REAL; D16Next;
+    End;
+    TK_CHAR :
+    Begin
+      D16ConstInt(C, TokenPool[D16Pos].IntVal, DTI_CHAR); D16Next;
+    End;
+    TK_STRING :
+    Begin
+      If Length(TokenPool[D16Pos].Val) = 1 Then
+        D16ConstInt(C, Ord(TokenPool[D16Pos].Val[1]), DTI_CHAR)
+      Else
+      Begin C.Kind := DT_STRING; C.SVal := TokenPool[D16Pos].Val; C.TypeIdx := DTI_STRING End;
+      D16Next;
+    End;
+    TK_PUNCT :
+    Begin
+      If D16IsPunct('(') Then
+      Begin
+        D16Next; D16ConstExpr(C); D16ExpectPunct(')');
+      End
+      Else If D16IsPunct('[') Then
+      Begin
+        { constructeur d ensemble constant }
+        D16Next;
+        C.Kind := DT_SET; C.TypeIdx := DTI_SET;
+        For I := 0 To 31 Do C.SetV[I] := 0;
+        While Not D16IsPunct(']') Do
+        Begin
+          D16ConstExpr(C2);
+          If C2.Kind <> DT_INT Then D16Error('element d ensemble ordinal attendu');
+          Lo := C2.IVal; Hi := Lo; T := C2.TypeIdx;
+          If D16IsPunct('..') Then
+          Begin
+            D16Next; D16ConstExpr(C2);
+            If C2.Kind <> DT_INT Then D16Error('element d ensemble ordinal attendu');
+            Hi := C2.IVal;
+          End;
+          If (Lo < 0) Or (Hi > 255) Then D16Error('element d ensemble hors limites');
+          For S := Lo To Hi Do D16ConstSetBit(C, S);
+          If (T <> DTI_INTEGER) Or (D16Types[DTI_SET].Base = 0) Then C.TypeIdx := DTI_SET;
+          C.Lbl := T;  { type d element memorise dans Lbl }
+          If D16IsPunct(',') Then D16Next
+          Else If Not D16IsPunct(']') Then D16Error('"," ou "]" attendu');
+        End;
+        D16Next;
+      End
+      Else D16Error('expression constante invalide');
+    End;
+    TK_OP :
+    Begin
+      If D16IsOp('-') Then
+      Begin
+        D16Next; D16ConstFactor(C);
+        If C.Kind = DT_INT Then Begin C.IVal := -C.IVal; C.TypeIdx := D16IntTypeFor(C.IVal) End
+        Else If C.Kind = DT_REAL Then C.RVal := -C.RVal
+        Else D16Error('operande invalide pour -');
+      End
+      Else If D16IsOp('+') Then Begin D16Next; D16ConstFactor(C) End
+      Else If D16IsOp('@') Then
+      Begin
+        { @Procedure : adresse constante }
+        D16Next;
+        U := D16ExpectIdent;
+        S := D16Lookup(U);
+        If (S >= 0) And (D16Syms[S].Kind = DSK_VAR) And (D16Syms[S].Loc = LOC_GLOBAL) Then
+        Begin
+          C.Kind := DT_POINTER; C.TypeIdx := DTI_POINTER;
+          C.Lbl := D16Syms[S].Lbl;
+          { @Var.Champ : non supporte dans une constante ; ignorer les suffixes simples }
+        End
+        Else
+        Begin
+          If (S < 0) Or (D16Syms[S].Kind <> DSK_PROC) Then D16Error('procedure ou variable attendue apres @');
+          C.Kind := DT_POINTER; C.TypeIdx := DTI_POINTER;
+          C.Lbl := D16LabelRef(D16Procs[D16Syms[S].ProcIdx].Lbl);
+        End;
+      End
+      Else If D16IsOp('^') Then
+      Begin
+        { ^M : caractere de controle }
+        D16Next;
+        If D16IsIdent And (Length(D16Val) = 1) Then
+        Begin
+          D16ConstInt(C, Ord(UpCase(D16Val[1])) - 64, DTI_CHAR); D16Next;
+        End
+        Else D16Error('caractere de controle invalide');
+      End
+      Else D16Error('expression constante invalide');
+    End;
+    TK_KEYWORD :
+    Begin
+      If D16IsKw('not') Then
+      Begin
+        D16Next; D16ConstFactor(C);
+        If C.Kind <> DT_INT Then D16Error('operande invalide pour NOT');
+        If D16Types[C.TypeIdx].Kind = DT_BOOL Then C.IVal := 1 - C.IVal
+        Else
+        Begin
+          C.IVal := Not C.IVal;
+          If D16Types[C.TypeIdx].Size = 2 Then
+          Begin
+            If D16Types[C.TypeIdx].Kind = DT_UINT Then C.IVal := C.IVal And $FFFF
+            Else C.IVal := (C.IVal And $FFFF); If C.IVal > 32767 Then C.IVal := C.IVal - 65536;
+          End
+          Else If D16Types[C.TypeIdx].Size = 1 Then C.IVal := C.IVal And $FF;
+        End;
+      End
+      Else If D16IsKw('nil') Then
+      Begin
+        D16Next; C.Kind := DT_NIL; C.TypeIdx := DTI_NIL; C.IVal := 0;
+      End
+      Else D16Error('expression constante invalide');
+    End;
+    TK_IDENT :
+    Begin
+      U := D16UVal;
+      S := D16Lookup(U);
+      If S < 0 Then
+      Begin
+        { Fonctions standard autorisees dans les constantes }
+        If (U = 'ORD') Or (U = 'CHR') Or (U = 'LENGTH') Or (U = 'HI') Or (U = 'LO') Or
+           (U = 'SUCC') Or (U = 'PRED') Or (U = 'ABS') Or (U = 'ODD') Or (U = 'SWAP') Or
+           (U = 'TRUNC') Or (U = 'ROUND') Or (U = 'SIZEOF') Or (U = 'HIGH') Or (U = 'LOW') Or
+           (U = 'PTR') Then
+        Begin
+          D16Next; D16ExpectPunct('(');
+          If (U = 'SIZEOF') Or (U = 'HIGH') Or (U = 'LOW') Then
+          Begin
+            { argument : type ou variable }
+            T := -1;
+            If D16IsIdent Then
+            Begin
+              S := D16Lookup(D16UVal);
+              If (S >= 0) And (D16Syms[S].Kind In [DSK_TYPE, DSK_VAR]) Then
+              Begin T := D16Syms[S].TypeIdx; D16Next;
+                { champs / indices : sauter jusqu a la parenthese }
+                While Not D16IsPunct(')') Do D16Next;
+              End;
+            End;
+            If T < 0 Then
+            Begin
+              D16ConstExpr(C2); T := C2.TypeIdx;
+            End;
+            D16ExpectPunct(')');
+            If U = 'SIZEOF' Then D16ConstInt(C, D16Types[T].Size, DTI_INTEGER)
+            Else
+            Begin
+              If D16Types[T].Kind = DT_ARRAY Then T := D16Types[T].Index;
+              If D16Types[T].Kind = DT_STRING Then
+              Begin
+                If U = 'HIGH' Then D16ConstInt(C, D16Types[T].Size - 1, DTI_INTEGER)
+                Else D16ConstInt(C, 0, DTI_INTEGER);
+              End
+              Else
+              Begin
+                D16OrdBounds(T, Lo, Hi);
+                If U = 'HIGH' Then D16ConstInt(C, Hi, T) Else D16ConstInt(C, Lo, T);
+              End;
+            End;
+            Exit;
+          End;
+          D16ConstExpr(C2);
+          If U = 'PTR' Then
+          Begin
+            D16ExpectPunct(','); D16ConstExpr(C);
+            C.IVal := (C2.IVal Shl 16) Or (C.IVal And $FFFF);
+            C.Kind := DT_POINTER; C.TypeIdx := DTI_POINTER; C.Lbl := -1;
+            D16ExpectPunct(')'); Exit;
+          End;
+          D16ExpectPunct(')');
+          C := C2;
+          If U = 'ORD' Then Begin If C.Kind <> DT_INT Then D16Error('ordinal attendu'); C.TypeIdx := D16IntTypeFor(C.IVal) End
+          Else If U = 'CHR' Then C.TypeIdx := DTI_CHAR
+          Else If U = 'LENGTH' Then
+          Begin
+            If C.Kind = DT_STRING Then D16ConstInt(C, Length(C.SVal), DTI_INTEGER)
+            Else D16ConstInt(C, 1, DTI_INTEGER);
+          End
+          Else If U = 'HI' Then D16ConstInt(C, (C.IVal Shr 8) And $FF, DTI_BYTE)
+          Else If U = 'LO' Then D16ConstInt(C, C.IVal And $FF, DTI_BYTE)
+          Else If U = 'SWAP' Then D16ConstInt(C, ((C.IVal And $FF) Shl 8) Or ((C.IVal Shr 8) And $FF), C.TypeIdx)
+          Else If U = 'SUCC' Then Inc(C.IVal)
+          Else If U = 'PRED' Then Dec(C.IVal)
+          Else If U = 'ODD' Then D16ConstInt(C, C.IVal And 1, DTI_BOOLEAN)
+          Else If U = 'ABS' Then
+          Begin
+            If C.Kind = DT_REAL Then C.RVal := Abs(C.RVal) Else C.IVal := Abs(C.IVal);
+          End
+          Else If U = 'TRUNC' Then
+          Begin
+            If C.Kind = DT_REAL Then D16ConstInt(C, Trunc(C.RVal), DTI_LONGINT);
+          End
+          Else If U = 'ROUND' Then
+          Begin
+            If C.Kind = DT_REAL Then D16ConstInt(C, Round(C.RVal), DTI_LONGINT);
+          End;
+          Exit;
+        End;
+        D16Error('identificateur inconnu: ' + U);
+      End;
+      Case D16Syms[S].Kind Of
+        DSK_CONST :
+        Begin
+          D16Next;
+          T := D16Syms[S].TypeIdx;
+          If D16Types[T].Kind = DT_REAL Then
+          Begin C.Kind := DT_REAL; C.RVal := D16Syms[S].RVal; C.TypeIdx := T End
+          Else If D16Types[T].Kind = DT_STRING Then
+          Begin C.Kind := DT_STRING; C.SVal := D16Syms[S].SVal; C.TypeIdx := T End
+          Else If D16Types[T].Kind = DT_NIL Then
+          Begin C.Kind := DT_NIL; C.TypeIdx := T End
+          Else If D16Types[T].Kind = DT_POINTER Then
+          Begin C.Kind := DT_POINTER; C.TypeIdx := T; C.IVal := D16Syms[S].Val; C.Lbl := D16Syms[S].Lbl End
+          Else If D16Types[T].Kind = DT_SET Then
+          Begin
+            C.Kind := DT_SET; C.TypeIdx := T;
+            For I := 0 To 31 Do C.SetV[I] := Ord(D16Syms[S].SVal[I + 1]);
+          End
+          Else D16ConstInt(C, D16Syms[S].Val, T);
+        End;
+        DSK_TYPE :
+        Begin
+          { Transtypage : Type(constante) }
+          T := D16Syms[S].TypeIdx; D16Next;
+          D16ExpectPunct('('); D16ConstExpr(C); D16ExpectPunct(')');
+          If (C.Kind = DT_INT) And D16IsOrdinal(T) Then C.TypeIdx := T
+          Else If (C.Kind = DT_INT) And (D16Types[T].Kind = DT_POINTER) Then
+          Begin C.Kind := DT_POINTER; C.TypeIdx := T End
+          Else If (C.Kind = DT_STRING) And (D16Types[T].Kind = DT_STRING) Then C.TypeIdx := T
+          Else D16Error('transtypage constant invalide');
+        End;
+      Else D16Error('constante attendue: ' + U);
+      End;
+    End;
+  Else D16Error('expression constante invalide');
+  End;
+End;
+
+Procedure D16ConstTerm(Var C : TD16Const);
+Var C2 : TD16Const; Op : TString; I : Integer;
+Begin
+  D16ConstFactor(C);
+  While (D16IsOp('*') Or D16IsOp('/') Or D16IsKw('div') Or D16IsKw('mod') Or
+         D16IsKw('and') Or D16IsKw('shl') Or D16IsKw('shr')) Do
+  Begin
+    Op := StrLowerCase(D16Val); D16Next;
+    D16ConstFactor(C2);
+    If (C.Kind = DT_SET) And (C2.Kind = DT_SET) And (Op = '*') Then
+    Begin
+      For I := 0 To 31 Do C.SetV[I] := C.SetV[I] And C2.SetV[I];
+    End
+    Else If (Op = '/') Or (C.Kind = DT_REAL) Or (C2.Kind = DT_REAL) Then
+    Begin
+      D16ConstToReal(C); D16ConstToReal(C2);
+      If Op = '*' Then C.RVal := C.RVal * C2.RVal
+      Else If Op = '/' Then
+      Begin
+        If C2.RVal = 0 Then D16Error('division par zero');
+        C.RVal := C.RVal / C2.RVal;
+      End
+      Else D16Error('operateur invalide pour des reels');
+    End
+    Else
+    Begin
+      If (C.Kind <> DT_INT) Or (C2.Kind <> DT_INT) Then D16Error('operandes entiers attendus');
+      If Op = '*' Then C.IVal := C.IVal * C2.IVal
+      Else If Op = 'div' Then
+      Begin
+        If C2.IVal = 0 Then D16Error('division par zero');
+        C.IVal := C.IVal Div C2.IVal;
+      End
+      Else If Op = 'mod' Then
+      Begin
+        If C2.IVal = 0 Then D16Error('division par zero');
+        C.IVal := C.IVal Mod C2.IVal;
+      End
+      Else If Op = 'and' Then C.IVal := C.IVal And C2.IVal
+      Else If Op = 'shl' Then C.IVal := C.IVal Shl C2.IVal
+      Else If Op = 'shr' Then C.IVal := LongInt(LongWord(C.IVal) Shr C2.IVal);
+      If D16Types[C.TypeIdx].Kind = DT_BOOL Then
+      Else If D16Types[C.TypeIdx].Kind In [DT_INT, DT_UINT] Then
+        C.TypeIdx := D16IntTypeFor(C.IVal);   { constantes evaluees en Longint comme TP }
+    End;
+  End;
+End;
+
+Procedure D16ConstSimple(Var C : TD16Const);
+Var C2 : TD16Const; Op : TString; I : Integer;
+Begin
+  D16ConstTerm(C);
+  While D16IsOp('+') Or D16IsOp('-') Or D16IsKw('or') Or D16IsKw('xor') Do
+  Begin
+    Op := StrLowerCase(D16Val); D16Next;
+    D16ConstTerm(C2);
+    If (C.Kind = DT_STRING) Or (C2.Kind = DT_STRING) Or
+       ((Op = '+') And (C.Kind = DT_INT) And (C2.Kind = DT_INT) And
+        (D16Types[C.TypeIdx].Kind = DT_CHAR) And (D16Types[C2.TypeIdx].Kind = DT_CHAR)) Then
+    Begin
+      If Op <> '+' Then D16Error('operateur invalide pour des chaines');
+      D16ConstToStr(C); D16ConstToStr(C2);
+      C.SVal := C.SVal + C2.SVal;
+    End
+    Else If (C.Kind = DT_SET) And (C2.Kind = DT_SET) Then
+    Begin
+      If Op = '+' Then For I := 0 To 31 Do C.SetV[I] := C.SetV[I] Or C2.SetV[I]
+      Else If Op = '-' Then For I := 0 To 31 Do C.SetV[I] := C.SetV[I] And Not C2.SetV[I]
+      Else D16Error('operateur invalide pour des ensembles');
+    End
+    Else If (C.Kind = DT_REAL) Or (C2.Kind = DT_REAL) Then
+    Begin
+      D16ConstToReal(C); D16ConstToReal(C2);
+      If Op = '+' Then C.RVal := C.RVal + C2.RVal
+      Else If Op = '-' Then C.RVal := C.RVal - C2.RVal
+      Else D16Error('operateur invalide pour des reels');
+    End
+    Else
+    Begin
+      If (C.Kind <> DT_INT) Or (C2.Kind <> DT_INT) Then D16Error('operandes entiers attendus');
+      If Op = '+' Then C.IVal := C.IVal + C2.IVal
+      Else If Op = '-' Then C.IVal := C.IVal - C2.IVal
+      Else If Op = 'or' Then C.IVal := C.IVal Or C2.IVal
+      Else C.IVal := C.IVal Xor C2.IVal;
+      If D16Types[C.TypeIdx].Kind = DT_BOOL Then
+      Else If D16Types[C.TypeIdx].Kind In [DT_INT, DT_UINT] Then
+        C.TypeIdx := D16IntTypeFor(C.IVal)
+      Else If D16Types[C.TypeIdx].Kind = DT_CHAR Then C.TypeIdx := D16IntTypeFor(C.IVal);
+    End;
+  End;
+End;
+
+Procedure D16ConstExpr(Var C : TD16Const);
+Var C2 : TD16Const; Op : TString; R : Boolean; I : Integer;
+Begin
+  D16ConstSimple(C);
+  If D16IsOp('=') Or D16IsOp('<>') Or D16IsOp('<') Or D16IsOp('>') Or
+     D16IsOp('<=') Or D16IsOp('>=') Or D16IsKw('in') Then
+  Begin
+    Op := StrLowerCase(D16Val); D16Next;
+    D16ConstSimple(C2);
+    R := False;
+    If Op = 'in' Then
+    Begin
+      If (C.Kind <> DT_INT) Or (C2.Kind <> DT_SET) Then D16Error('operandes invalides pour IN');
+      If (C.IVal >= 0) And (C.IVal <= 255) Then
+        R := (C2.SetV[C.IVal Shr 3] And (1 Shl (C.IVal And 7))) <> 0;
+    End
+    Else If (C.Kind = DT_STRING) Or (C2.Kind = DT_STRING) Then
+    Begin
+      D16ConstToStr(C); D16ConstToStr(C2);
+      If Op = '=' Then R := C.SVal = C2.SVal
+      Else If Op = '<>' Then R := C.SVal <> C2.SVal
+      Else If Op = '<' Then R := C.SVal < C2.SVal
+      Else If Op = '>' Then R := C.SVal > C2.SVal
+      Else If Op = '<=' Then R := C.SVal <= C2.SVal
+      Else R := C.SVal >= C2.SVal;
+    End
+    Else If (C.Kind = DT_SET) And (C2.Kind = DT_SET) Then
+    Begin
+      R := True;
+      For I := 0 To 31 Do
+      Begin
+        If (Op = '=') And (C.SetV[I] <> C2.SetV[I]) Then R := False;
+        If (Op = '<=') And ((C.SetV[I] And Not C2.SetV[I]) <> 0) Then R := False;
+        If (Op = '>=') And ((C2.SetV[I] And Not C.SetV[I]) <> 0) Then R := False;
+      End;
+      If Op = '<>' Then
+      Begin
+        R := False;
+        For I := 0 To 31 Do If C.SetV[I] <> C2.SetV[I] Then R := True;
+      End;
+    End
+    Else If (C.Kind = DT_REAL) Or (C2.Kind = DT_REAL) Then
+    Begin
+      D16ConstToReal(C); D16ConstToReal(C2);
+      If Op = '=' Then R := C.RVal = C2.RVal
+      Else If Op = '<>' Then R := C.RVal <> C2.RVal
+      Else If Op = '<' Then R := C.RVal < C2.RVal
+      Else If Op = '>' Then R := C.RVal > C2.RVal
+      Else If Op = '<=' Then R := C.RVal <= C2.RVal
+      Else R := C.RVal >= C2.RVal;
+    End
+    Else
+    Begin
+      If Op = '=' Then R := C.IVal = C2.IVal
+      Else If Op = '<>' Then R := C.IVal <> C2.IVal
+      Else If Op = '<' Then R := C.IVal < C2.IVal
+      Else If Op = '>' Then R := C.IVal > C2.IVal
+      Else If Op = '<=' Then R := C.IVal <= C2.IVal
+      Else R := C.IVal >= C2.IVal;
+    End;
+    D16ConstInt(C, Ord(R), DTI_BOOLEAN);
+  End;
+End;
+
+{ Constante ordinale (bornes, cases) }
+Function D16ConstOrd(Var T : Integer) : LongInt;
+Var C : TD16Const;
+Begin
+  D16ConstExpr(C);
+  If C.Kind <> DT_INT Then D16Error('constante ordinale attendue');
+  T := C.TypeIdx;
+  D16ConstOrd := C.IVal;
+End;
+
+{ ------------------------------------------------------------ }
+{ Analyse des types                                            }
+{ ------------------------------------------------------------ }
+
+Function D16OrdTypeSizeFor(Lo, Hi : LongInt) : LongInt;
+Begin
+  If (Lo >= 0) And (Hi <= 255) Then D16OrdTypeSizeFor := 1
+  Else If (Lo >= -128) And (Hi <= 127) Then D16OrdTypeSizeFor := 1
+  Else If (Lo >= -32768) And (Hi <= 32767) Then D16OrdTypeSizeFor := 2
+  Else If (Lo >= 0) And (Hi <= 65535) Then D16OrdTypeSizeFor := 2
+  Else D16OrdTypeSizeFor := 4;
+End;
+
+{ Taille d un ensemble selon le type de base (comme TP : octets Lo div 8 .. Hi div 8) }
+Function D16SetSizeFor(Base : Integer) : LongInt;
+Var Lo, Hi : LongInt;
+Begin
+  D16OrdBounds(Base, Lo, Hi);
+  If (Lo < 0) Or (Hi > 255) Then D16Error('type de base d ensemble invalide');
+  D16SetSizeFor := 32;
+End;
+
+{ Sous-intervalle a partir de deux constantes }
+Function D16MakeSubrange(Lo, Hi : LongInt; Base : Integer) : Integer;
+Var T : Integer;
+Begin
+  If Lo > Hi Then D16Error('borne inferieure superieure a la borne superieure');
+  Base := D16BaseType(Base);
+  If D16Types[Base].Kind In [DT_INT, DT_UINT] Then
+  Begin
+    { le type de base d un intervalle entier est le plus petit entier le contenant }
+    Case D16OrdTypeSizeFor(Lo, Hi) Of
+      1 : If Lo < 0 Then Base := DTI_SHORTINT Else Base := DTI_BYTE;
+      2 : If Lo < 0 Then Base := DTI_INTEGER Else Base := DTI_WORD;
+    Else Base := DTI_LONGINT;
+    End;
+  End;
+  T := D16TypeAdd(DT_SUBRANGE, D16Types[Base].Size, Base);
+  If D16Types[Base].Kind In [DT_INT, DT_UINT] Then
+    D16Types[T].Size := D16OrdTypeSizeFor(Lo, Hi);
+  D16Types[T].Lo := Lo; D16Types[T].Hi := Hi;
+  D16MakeSubrange := T;
+End;
+
+{ Liste de parametres formels (procedures et types procedure) }
+Procedure D16ParseParams(Var PStart : LongInt; Var PCount : Integer; Var Bytes : LongInt;
+                         HasLink : Boolean);
+Var
+  Names : Array[0..31] Of String[63];
+  N, I, T, Mode : Integer; Sz : LongInt; First, J : LongInt;
+  U : TString; S : LongInt;
+Begin
+  PStart := D16ParamCnt; PCount := 0; Bytes := 0;
+  If Not D16IsPunct('(') Then Exit;
+  D16Next;
+  While Not D16IsPunct(')') Do
+  Begin
+    Mode := PM_VALUE;
+    If D16IsKw('var') Then Begin Mode := PM_VAR; D16Next End
+    Else If D16IsKw('const') Then Begin Mode := PM_CONST; D16Next End;
+    N := 0;
+    Repeat
+      If N >= 32 Then D16Error('trop de parametres dans un groupe');
+      Names[N] := D16ExpectIdent; Inc(N);
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    T := DTI_NONE;   { parametre non type (Var X) }
+    If D16IsPunct(':') Then
+    Begin
+      D16Next;
+      Begin
+        { Var S: String ; A: Array Of T (ouvert, TP7) ; identificateur de type }
+        If D16IsKw('array') Then
+        Begin
+          D16Next; D16ExpectKw('of');
+          I := D16ParseType;
+          T := D16TypeAdd(DT_ARRAY, 0, I);
+          D16Types[T].Index := DTI_WORD; D16Types[T].Lo := 0; D16Types[T].Hi := -1;
+          { tableau ouvert : marque Size=0 }
+        End
+        Else T := D16ParseType;
+      End;
+      If Mode = PM_VALUE Then
+      Begin
+        If D16Types[T].Kind = DT_FILE Then D16Error('les fichiers doivent etre passes par Var');
+        If D16Types[T].Kind = DT_TEXT Then D16Error('les fichiers doivent etre passes par Var');
+      End;
+    End
+    Else If Mode = PM_VALUE Then D16Error('":" attendu');
+    For I := 0 To N - 1 Do
+    Begin
+      If D16ParamCnt >= D16_MAX_PARAMS Then D16Error('trop de parametres');
+      D16Params[D16ParamCnt].Name := Names[I];
+      D16Params[D16ParamCnt].TypeIdx := T;
+      D16Params[D16ParamCnt].Mode := Mode;
+      { taille sur la pile }
+      If (Mode <> PM_VALUE) Or (T = DTI_NONE) Then Sz := 4
+      Else If D16IsLarge(T) Then Sz := 4  { adresse, copie par l appele }
+      Else If D16Types[T].Size = 4 Then Sz := 4
+      Else Sz := 2;
+      If (Mode = PM_CONST) And (Not D16IsLarge(T)) And (T <> DTI_NONE) Then
+      Begin
+        { const de petit type : passe par valeur comme TP }
+        If D16Types[T].Size = 4 Then Sz := 4 Else Sz := 2;
+      End;
+      If (Mode = PM_VALUE) And (D16Types[T].Kind = DT_ARRAY) And (D16Types[T].Size = 0) Then Sz := 6;
+      If (Mode <> PM_VALUE) And (D16Types[T].Kind = DT_ARRAY) And (D16Types[T].Size = 0) Then Sz := 6;
+      D16Params[D16ParamCnt].Ofs := Sz; { provisoire : taille ; offsets calcules ensuite }
+      Bytes := Bytes + Sz;
+      Inc(D16ParamCnt); Inc(PCount);
+    End;
+    If D16IsPunct(';') Then D16Next
+    Else If Not D16IsPunct(')') Then D16Error('";" ou ")" attendu');
+  End;
+  D16Next;
+  { Calcul des offsets BP : le premier parametre est le plus haut }
+  { [BP+0] BP sauve, [BP+2..5] adresse de retour far, [BP+6] lien statique (si HasLink) }
+  If HasLink Then First := 8 Else First := 6;
+  J := First + Bytes;
+  For I := 0 To PCount - 1 Do
+  Begin
+    J := J - D16Params[PStart + I].Ofs;
+    D16Params[PStart + I].Ofs := J;
+  End;
+End;
+
+{ Champs d un record (avec partie variable) ; retourne la taille }
+Procedure D16ParseFields(Var Size : LongInt; BaseOfs : LongInt; Var FStart : LongInt;
+                         Var FCount : Integer);
+Var
+  Names : Array[0..63] Of String[63];
+  N, I, T : Integer; Ofs, MaxSize, VarSize, SaveSize : LongInt;
+  TagType : Integer; C : TD16Const; U : TString;
+  SubStart : LongInt; SubCount : Integer;
+Begin
+  Size := 0; MaxSize := 0;
+  While Not (D16IsKw('end') Or D16IsPunct(')') Or D16IsKw('case')) Do
+  Begin
+    N := 0;
+    Repeat
+      If N >= 64 Then D16Error('trop de champs dans un groupe');
+      Names[N] := D16ExpectIdent; Inc(N);
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    D16ExpectPunct(':');
+    T := D16ParseType;
+    For I := 0 To N - 1 Do
+    Begin
+      If D16FieldCnt >= D16_MAX_FIELDS Then D16Error('trop de champs');
+      D16Fields[D16FieldCnt].Name := Names[I];
+      D16Fields[D16FieldCnt].TypeIdx := T;
+      D16Fields[D16FieldCnt].Offset := BaseOfs + Size;
+      Inc(D16FieldCnt); Inc(FCount);
+      Size := Size + D16Types[T].Size;
+    End;
+    If D16IsPunct(';') Then D16Next
+    Else If Not (D16IsKw('end') Or D16IsPunct(')') Or D16IsKw('case')) Then
+      D16Error('";" attendu');
+  End;
+  If D16IsKw('case') Then
+  Begin
+    D16Next;
+    { Case [tag:] Type Of }
+    U := D16ExpectIdent;
+    If D16IsPunct(':') Then
+    Begin
+      D16Next;
+      TagType := D16ParseType;
+      { le tag est un champ }
+      If D16FieldCnt >= D16_MAX_FIELDS Then D16Error('trop de champs');
+      D16Fields[D16FieldCnt].Name := U;
+      D16Fields[D16FieldCnt].TypeIdx := TagType;
+      D16Fields[D16FieldCnt].Offset := BaseOfs + Size;
+      Inc(D16FieldCnt); Inc(FCount);
+      Size := Size + D16Types[TagType].Size;
+    End
+    Else
+    Begin
+      I := D16Lookup(U);
+      If (I < 0) Or (D16Syms[I].Kind <> DSK_TYPE) Then D16Error('type attendu: ' + U);
+    End;
+    D16ExpectKw('of');
+    MaxSize := 0;
+    While Not (D16IsKw('end') Or D16IsPunct(')')) Do
+    Begin
+      { liste de constantes : ( champs ) }
+      Repeat
+        D16ConstExpr(C);
+        If D16IsPunct('..') Then Begin D16Next; D16ConstExpr(C) End;
+        If D16IsPunct(',') Then D16Next Else Break;
+      Until False;
+      D16ExpectPunct(':');
+      D16ExpectPunct('(');
+      SubStart := D16FieldCnt; SubCount := 0;
+      D16ParseFields(VarSize, BaseOfs + Size, SubStart, SubCount);
+      FCount := FCount + SubCount;
+      D16ExpectPunct(')');
+      If VarSize > MaxSize Then MaxSize := VarSize;
+      If D16IsPunct(';') Then D16Next
+      Else If Not (D16IsKw('end') Or D16IsPunct(')')) Then D16Error('";" attendu');
+    End;
+    Size := Size + MaxSize;
+  End;
+End;
+
+Function D16ParseType : Integer;
+Var
+  U : TString; S : LongInt; T, B, I, E : Integer;
+  Lo, Hi : LongInt; C : TD16Const; LT : Integer;
+  Idx : Array[0..15] Of Integer; NIdx, K : Integer;
+  Sz : LongInt; PS : LongInt; PC : Integer; PB : LongInt;
+  SaveLevel : Integer;
+Begin
+  { Packed : ignore }
+  If D16IsKw('packed') Then D16Next;
+
+  If D16IsOp('^') Then
+  Begin
+    D16Next;
+    If D16IsKw('string') Then
+    Begin
+      D16Next;
+      T := D16TypeAdd(DT_POINTER, 4, DTI_STRING);
+      D16ParseType := T; Exit;
+    End;
+    U := D16ExpectIdent;
+    S := D16Lookup(U);
+    T := D16TypeAdd(DT_POINTER, 4, DTI_NONE);
+    If (S >= 0) And (D16Syms[S].Kind = DSK_TYPE) Then D16Types[T].Base := D16Syms[S].TypeIdx
+    Else D16Types[T].FwdName := U;  { resolu a la fin de la section Type }
+    D16ParseType := T; Exit;
+  End;
+
+  If D16IsKw('string') Then
+  Begin
+    D16Next;
+    If D16IsPunct('[') Then
+    Begin
+      D16Next; Lo := D16ConstOrd(LT); D16ExpectPunct(']');
+      If (Lo < 1) Or (Lo > 255) Then D16Error('longueur de chaine invalide');
+      If Lo = 255 Then T := DTI_STRING
+      Else Begin T := D16TypeAdd(DT_STRING, Lo + 1, 0) End;
+      D16ParseType := T;
+    End
+    Else D16ParseType := DTI_STRING;
+    Exit;
+  End;
+
+  If D16IsKw('array') Then
+  Begin
+    D16Next; D16ExpectPunct('[');
+    NIdx := 0;
+    Repeat
+      If NIdx >= 16 Then D16Error('trop de dimensions');
+      Idx[NIdx] := D16ParseType;
+      If Not D16IsOrdinal(Idx[NIdx]) Then D16Error('type d index ordinal attendu');
+      Inc(NIdx);
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    D16ExpectPunct(']');
+    D16ExpectKw('of');
+    E := D16ParseType;
+    { construire de la derniere dimension vers la premiere }
+    For K := NIdx - 1 DownTo 0 Do
+    Begin
+      D16OrdBounds(Idx[K], Lo, Hi);
+      If (Hi - Lo + 1) * D16Types[E].Size > 65535 Then D16Error('structure trop grande');
+      T := D16TypeAdd(DT_ARRAY, (Hi - Lo + 1) * D16Types[E].Size, E);
+      D16Types[T].Index := Idx[K];
+      D16Types[T].Lo := Lo; D16Types[T].Hi := Hi;
+      E := T;
+    End;
+    D16ParseType := E; Exit;
+  End;
+
+  If D16IsKw('record') Then
+  Begin
+    D16Next;
+    T := D16TypeAdd(DT_RECORD, 0, 0);
+    D16Types[T].FStart := D16FieldCnt;
+    PC := 0;
+    D16ParseFields(Sz, 0, PS, PC);
+    D16Types[T].FCount := D16FieldCnt - D16Types[T].FStart;
+    D16Types[T].Size := Sz;
+    D16ExpectKw('end');
+    D16ParseType := T; Exit;
+  End;
+
+  If D16IsKw('object') Then
+  Begin
+    D16Error('les objets ne sont pas encore supportes par la cible DOS 16 bits');
+  End;
+
+  If D16IsKw('set') Then
+  Begin
+    D16Next; D16ExpectKw('of');
+    B := D16ParseType;
+    If Not D16IsOrdinal(B) Then D16Error('type de base ordinal attendu pour SET');
+    T := D16TypeAdd(DT_SET, D16SetSizeFor(B), B);
+    D16ParseType := T; Exit;
+  End;
+
+  If D16IsKw('file') Then
+  Begin
+    D16Next;
+    If D16IsKw('of') Then
+    Begin
+      D16Next; B := D16ParseType;
+      T := D16TypeAdd(DT_FILE, 128, B);
+      D16ParseType := T;
+    End
+    Else D16ParseType := DTI_FILE;
+    Exit;
+  End;
+
+  If D16IsKw('procedure') Or D16IsKw('function') Then
+  Begin
+    I := Ord(D16IsKw('function')); D16Next;
+    T := D16TypeAdd(DT_PROCVAR, 4, 0);
+    D16ParseParams(PS, PC, PB, False);
+    D16Types[T].FStart := PS; D16Types[T].FCount := PC; D16Types[T].Lo := PB;
+    If I = 1 Then
+    Begin
+      D16ExpectPunct(':'); D16Types[T].RetType := D16ParseType;
+    End;
+    D16ParseType := T; Exit;
+  End;
+
+  If D16IsPunct('(') Then
+  Begin
+    { enumeration }
+    D16Next;
+    T := D16TypeAdd(DT_ENUM, 1, 0);
+    I := 0;
+    Repeat
+      U := D16ExpectIdent;
+      S := D16SymAdd(U, DSK_CONST, T);
+      D16Syms[S].Val := I;
+      Inc(I);
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    D16ExpectPunct(')');
+    D16Types[T].Lo := 0; D16Types[T].Hi := I - 1;
+    If I > 256 Then D16Types[T].Size := 2;
+    D16ParseType := T; Exit;
+  End;
+
+  { Identificateur de type ou sous-intervalle }
+  If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    S := D16Lookup(U);
+    If (S >= 0) And (D16Syms[S].Kind = DSK_TYPE) Then
+    Begin
+      { pas suivi de .. (sous-intervalle de constantes nommees) }
+      If Not ((D16PeekKind(1) = TK_PUNCT) And (D16PeekVal(1) = '..')) Then
+      Begin
+        D16Next;
+        D16ParseType := D16Syms[S].TypeIdx; Exit;
+      End;
+    End;
+    If (S >= 0) And (D16Syms[S].Kind = DSK_UNIT) Then
+    Begin
+      { Unite.Type }
+      D16Next; D16ExpectPunct('.');
+      U := D16ExpectIdent; S := D16Lookup(U);
+      If (S < 0) Or (D16Syms[S].Kind <> DSK_TYPE) Then D16Error('type inconnu: ' + U);
+      D16ParseType := D16Syms[S].TypeIdx; Exit;
+    End;
+  End;
+  { Sous-intervalle lo..hi }
+  Lo := D16ConstOrd(LT);
+  D16ExpectPunct('..');
+  Hi := D16ConstOrd(B);
+  D16ParseType := D16MakeSubrange(Lo, Hi, LT);
+End;
+
+{ Resoudre les pointeurs ^Nom declares avant leur type }
+Procedure D16ResolveForwardTypes(FromType : Integer);
+Var I : Integer; S : LongInt;
+Begin
+  For I := FromType To D16TypeCnt - 1 Do
+    If (D16Types[I].Kind = DT_POINTER) And (D16Types[I].FwdName <> '') Then
+    Begin
+      S := D16Lookup(D16Types[I].FwdName);
+      If (S < 0) Or (D16Syms[S].Kind <> DSK_TYPE) Then
+        D16Error('type non declare: ' + D16Types[I].FwdName);
+      D16Types[I].Base := D16Syms[S].TypeIdx;
+      D16Types[I].FwdName := '';
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Constantes typees : ecriture des donnees initialisees        }
+{ ------------------------------------------------------------ }
+
+Const
+  D16_MAX_PENDZ = 8192;
+
+Var
+  D16DataSeq : LongInt;                       { compteur de labels de donnees }
+  { chaines ASCIIZ (PChar) a emettre apres la constante typee complete : elles
+    ne doivent jamais etre inserees au milieu d un tableau ou d un record }
+  D16PendingZ : Array[0..D16_MAX_PENDZ - 1] Of LongInt;
+  D16PendingZStr : Array[0..D16_MAX_PENDZ - 1] Of TString;
+  D16PendingZCnt : Integer;
+
+{ Emettre les chaines ASCIIZ en attente (apres une constante typee) }
+Procedure D16FlushPendingZ;
+Var I, J : Integer;
+Begin
+  For I := 0 To D16PendingZCnt - 1 Do
+  Begin
+    D16Labels[D16PendingZ[I]].Seg := 255;
+    D16Labels[D16PendingZ[I]].Ofs := D16DataLen;
+    For J := 1 To Length(D16PendingZStr[I]) Do D16DataB(Ord(D16PendingZStr[I][J]));
+    D16DataB(0);
+  End;
+  D16PendingZCnt := 0;
+End;
+
+Procedure D16EmitTypedConst(T : Integer);
+Var
+  C : TD16Const; I, K : LongInt; B : Array[0..5] Of Byte; F : LongInt; Fnd : Boolean;
+  U : TString; Start : LongInt; Cnt : LongInt; Nm : TString;
+  S : LongInt;
+Begin
+  Case D16Types[T].Kind Of
+    DT_INT, DT_UINT, DT_BOOL, DT_CHAR, DT_ENUM, DT_SUBRANGE :
+    Begin
+      D16ConstExpr(C);
+      If C.Kind <> DT_INT Then D16Error('constante ordinale attendue');
+      Case D16Types[T].Size Of
+        1 : D16DataB(Byte(C.IVal And $FF));
+        2 : D16DataW(C.IVal);
+      Else D16DataD(C.IVal);
+      End;
+    End;
+    DT_REAL :
+    Begin
+      D16ConstExpr(C); D16ConstToReal(C);
+      D16RealTo6(C.RVal, B);
+      For I := 0 To 5 Do D16DataB(B[I]);
+    End;
+    DT_STRING :
+    Begin
+      D16ConstExpr(C); D16ConstToStr(C);
+      If Length(C.SVal) > D16Types[T].Size - 1 Then C.SVal := Copy(C.SVal, 1, D16Types[T].Size - 1);
+      D16DataB(Length(C.SVal));
+      For I := 1 To Length(C.SVal) Do D16DataB(Ord(C.SVal[I]));
+      For I := Length(C.SVal) + 2 To D16Types[T].Size Do D16DataB(0);
+    End;
+    DT_POINTER, DT_PROCVAR :
+    Begin
+      D16ConstExpr(C);
+      If (C.Kind = DT_STRING) Or ((C.Kind = DT_INT) And (D16Types[C.TypeIdx].Kind = DT_CHAR)) Then
+      Begin
+        { PChar initialise par une chaine : ASCIIZ en donnees + pointeur }
+        D16ConstToStr(C);
+        Start := D16DataLen;
+        Nm := 'Z' + IntToStr_(D16DataSeq); Inc(D16DataSeq);
+        { la chaine est placee apres le pointeur : reserver le pointeur d abord }
+        D16AddDataFixup(D16_FX_OFS16, D16LabelRef(Nm), 0); D16DataW(0);
+        D16AddDataFixup(D16_FX_SEG, D16LabelRef(Nm), 0); D16DataW(0);
+        D16PendingZ[D16PendingZCnt] := D16LabelRef(Nm);
+        D16PendingZStr[D16PendingZCnt] := C.SVal;
+        Inc(D16PendingZCnt);
+        If D16PendingZCnt >= D16_MAX_PENDZ Then D16Error('trop de chaines PChar dans une constante typee');
+        Exit;
+      End;
+      If C.Kind = DT_NIL Then D16DataD(0)
+      Else If C.Kind = DT_POINTER Then
+      Begin
+        If C.Lbl >= 0 Then
+        Begin
+          D16AddDataFixup(D16_FX_OFS16, C.Lbl, 0); D16DataW(0);
+          D16AddDataFixup(D16_FX_SEG, C.Lbl, 0); D16DataW(0);
+        End
+        Else D16DataD(C.IVal);
+      End
+      Else D16Error('constante pointeur attendue');
+    End;
+    DT_SET :
+    Begin
+      D16ConstExpr(C);
+      If C.Kind <> DT_SET Then D16Error('constante ensemble attendue');
+      For I := 0 To D16Types[T].Size - 1 Do D16DataB(C.SetV[I]);
+    End;
+    DT_ARRAY :
+    Begin
+      { chaine pour un tableau de caracteres }
+      If D16IsCharArray(T) And ((D16Kind = TK_STRING) Or (D16Kind = TK_CHAR)) Then
+      Begin
+        D16ConstExpr(C); D16ConstToStr(C);
+        For I := 1 To D16Types[T].Hi - D16Types[T].Lo + 1 Do
+          If I <= Length(C.SVal) Then D16DataB(Ord(C.SVal[I])) Else D16DataB(0);
+        Exit;
+      End;
+      D16ExpectPunct('(');
+      For I := D16Types[T].Lo To D16Types[T].Hi Do
+      Begin
+        D16EmitTypedConst(D16Types[T].Base);
+        If I < D16Types[T].Hi Then D16ExpectPunct(',');
+      End;
+      D16ExpectPunct(')');
+    End;
+    DT_RECORD :
+    Begin
+      D16ExpectPunct('(');
+      Start := D16DataLen;
+      D16DataZeros(D16Types[T].Size);
+      While Not D16IsPunct(')') Do
+      Begin
+        U := D16ExpectIdent;
+        D16ExpectPunct(':');
+        Fnd := False;
+        For F := D16Types[T].FStart To D16Types[T].FStart + D16Types[T].FCount - 1 Do
+          If D16Fields[F].Name = U Then
+          Begin
+            Fnd := True;
+            { ecrire le champ a sa position : emettre a la fin puis deplacer }
+            Cnt := D16DataLen;
+            D16EmitTypedConst(D16Fields[F].TypeIdx);
+            For K := 0 To D16DataLen - Cnt - 1 Do
+              D16Data[Start + D16Fields[F].Offset + K] := D16Data[Cnt + K];
+            { annuler les fixups deplaces }
+            For S := 0 To D16FixupCnt - 1 Do
+              If (D16Fixups[S].Seg = 255) And (D16Fixups[S].Ofs >= Cnt) Then
+                D16Fixups[S].Ofs := D16Fixups[S].Ofs - Cnt + Start + D16Fields[F].Offset;
+            D16DataLen := Cnt;
+            Break;
+          End;
+        If Not Fnd Then D16Error('champ inconnu: ' + U);
+        If D16IsPunct(';') Then D16Next
+        Else If Not D16IsPunct(')') Then D16Error('";" ou ")" attendu');
+      End;
+      D16Next;
+    End;
+  Else D16Error('type de constante typee non supporte');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Declarations : Label, Const, Type, Var                       }
+{ ------------------------------------------------------------ }
+
+Procedure D16ParseLabelDecl;
+Var U : TString; S : LongInt;
+Begin
+  D16Next;
+  Repeat
+    If D16Kind = TK_INTEGER Then Begin U := IntToStr_(TokenPool[D16Pos].IntVal); D16Next End
+    Else U := D16ExpectIdent;
+    S := D16SymAdd(U, DSK_LABEL, 0);
+    D16Syms[S].SVal := D16NewLabel;
+    D16Syms[S].Val := 0;  { 0 = non defini }
+    If D16IsPunct(',') Then D16Next Else Break;
+  Until False;
+  D16ExpectPunct(';');
+End;
+
+Procedure D16ParseConstDecl;
+Var
+  U : TString; S : LongInt; T : Integer; C : TD16Const; I : Integer; Nm : TString;
+Begin
+  D16Next;
+  While D16IsIdent Do
+  Begin
+    U := D16ExpectIdent;
+    If D16IsPunct(':') Then
+    Begin
+      { constante typee : variable initialisee en donnees }
+      D16Next;
+      T := D16ParseType;
+      D16ExpectOp('=');
+      S := D16SymAdd(U, DSK_VAR, T);
+      D16Syms[S].Loc := LOC_GLOBAL;
+      Nm := 'C' + IntToStr_(D16DataSeq); Inc(D16DataSeq);
+      D16DefineDataLabel(Nm, D16DataLen);
+      D16Syms[S].Lbl := D16FindLabel(Nm);
+      D16EmitTypedConst(T);
+      D16FlushPendingZ;
+    End
+    Else
+    Begin
+      D16ExpectOp('=');
+      D16ConstExpr(C);
+      S := D16SymAdd(U, DSK_CONST, C.TypeIdx);
+      Case C.Kind Of
+        DT_INT : D16Syms[S].Val := C.IVal;
+        DT_REAL : D16Syms[S].RVal := C.RVal;
+        DT_STRING : D16Syms[S].SVal := C.SVal;
+        DT_NIL : ;
+        DT_POINTER : Begin D16Syms[S].Val := C.IVal; D16Syms[S].Lbl := C.Lbl End;
+        DT_SET :
+        Begin
+          D16Syms[S].SVal[0] := #32;
+          For I := 0 To 31 Do D16Syms[S].SVal[I + 1] := Chr(C.SetV[I]);
+          D16Syms[S].Val := C.Lbl; { type d element }
+        End;
+      End;
+    End;
+    D16ExpectPunct(';');
+  End;
+End;
+
+Procedure D16ParseTypeDecl;
+Var U : TString; S : LongInt; T, FromType : Integer;
+Begin
+  D16Next;
+  FromType := D16TypeCnt;
+  While D16IsIdent Do
+  Begin
+    U := D16ExpectIdent;
+    D16ExpectOp('=');
+    T := D16ParseType;
+    S := D16SymAdd(U, DSK_TYPE, T);
+    If D16Types[T].Name = '' Then D16Types[T].Name := U;
+    D16ExpectPunct(';');
+  End;
+  D16ResolveForwardTypes(FromType);
+End;
+
+{ Declaration d une variable globale ou locale }
+Procedure D16DeclareVar(Const Name : TString; T : Integer; Var AbsSym : LongInt);
+Var S : LongInt; Nm : TString; Sz : LongInt;
+Begin
+  S := D16SymAdd(Name, DSK_VAR, T);
+  Sz := D16Types[T].Size;
+  If Sz = 0 Then Sz := 1;
+  If D16Level = 0 Then
+  Begin
+    D16Syms[S].Loc := LOC_GLOBAL;
+    Nm := 'V' + IntToStr_(S);
+    D16DefineBssLabel(Nm, D16AllocBss(Sz));
+    D16Syms[S].Lbl := D16FindLabel(Nm);
+  End
+  Else
+  Begin
+    D16Syms[S].Loc := LOC_LOCAL;
+    If Odd(Sz) Then Inc(Sz);
+    D16LocalOfs := D16LocalOfs - Sz;
+    D16Syms[S].Ofs := D16LocalOfs;
+    If -D16LocalOfs > D16MaxLocal Then D16MaxLocal := -D16LocalOfs;
+  End;
+  AbsSym := S;
+End;
+
+Procedure D16ParseVarDecl;
+Var
+  Names : Array[0..63] Of String[63];
+  N, I, T : Integer; S, A : LongInt; C : TD16Const; U : TString;
+Begin
+  D16Next;
+  While D16IsIdent Do
+  Begin
+    N := 0;
+    Repeat
+      If N >= 64 Then D16Error('trop de variables dans un groupe');
+      Names[N] := D16ExpectIdent; Inc(N);
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    D16ExpectPunct(':');
+    T := D16ParseType;
+    If D16IsIdentU('ABSOLUTE') Then
+    Begin
+      D16Next;
+      If N <> 1 Then D16Error('une seule variable avec ABSOLUTE');
+      S := D16SymAdd(Names[0], DSK_VAR, T);
+      If D16IsIdent And (D16Lookup(D16UVal) >= 0) And (D16Syms[D16Lookup(D16UVal)].Kind = DSK_VAR) Then
+      Begin
+        { alias d une autre variable }
+        A := D16Lookup(D16UVal); D16Next;
+        D16Syms[S].Loc := D16Syms[A].Loc;
+        D16Syms[S].Ofs := D16Syms[A].Ofs;
+        D16Syms[S].Seg := D16Syms[A].Seg;
+        D16Syms[S].Lbl := D16Syms[A].Lbl;
+        D16Syms[S].Level := D16Syms[A].Level;
+        D16Syms[S].Val := D16Syms[A].Val;
+        { un alias de parametre par reference garde LOC_REFPARAM }
+      End
+      Else
+      Begin
+        D16ConstExpr(C);
+        If C.Kind <> DT_INT Then D16Error('segment attendu');
+        D16ExpectPunct(':');
+        D16Syms[S].Seg := C.IVal;
+        D16ConstExpr(C);
+        If C.Kind <> DT_INT Then D16Error('offset attendu');
+        D16Syms[S].Ofs := C.IVal;
+        D16Syms[S].Loc := LOC_ABS;
+      End;
+    End
+    Else
+      For I := 0 To N - 1 Do D16DeclareVar(Names[I], T, A);
+    D16ExpectPunct(';');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ D16 : generation de code - utilitaires                       }
+{ ------------------------------------------------------------ }
+
+Const
+  D16_JCC : Array[0..15] Of String[3] =
+    ('JO','JNO','JB','JAE','JE','JNE','JBE','JA','JS','JNS','JP','JNP','JL','JGE','JLE','JG');
+  CC_B = 2; CC_AE = 3; CC_E = 4; CC_NE = 5; CC_BE = 6; CC_A = 7;
+  CC_L = 12; CC_GE = 13; CC_LE = 14; CC_G = 15;
+
+Var
+  D16PendCC : Integer;     { condition en attente (-1 aucune) : le resultat
+                             booleen n a pas encore ete materialise dans AL }
+  D16FoldOK : Boolean;     { le prochain facteur est en tete d expression }
+  D16ConstLine : LongInt;  { blocs asm : l expression constante ne depasse pas cette ligne (-1 = libre) }
+
+{ Emettre une instruction (listing + assemblage) }
+Procedure D16E(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '        ', S);
+  D16Asm(S);
+End;
+
+{ Definir un label de code }
+Procedure D16L(Const Lbl : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, Lbl, ':');
+  D16DefineCodeLabel(Lbl);
+End;
+
+Procedure D16C(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '; ', S);
+End;
+
+Function D16Str(V : LongInt) : TString;
+Begin
+  D16Str := IntToStr_(V);
+End;
+
+{ Nom de label d une routine runtime asm (marque comme utilisee) }
+Function D16RT(Const Name : TString) : TString;
+Begin
+  D16RT := 'RT_' + Name;
+End;
+
+Procedure D16CallRT(Const Name : TString);
+Begin
+  D16E('CALL FAR PTR RT_' + Name);
+End;
+
+{ ------------------------------------------------------------ }
+{ Temporaires de cadre                                         }
+{ ------------------------------------------------------------ }
+
+Function D16AllocTemp(Size : LongInt) : LongInt;
+Begin
+  If Odd(Size) Then Inc(Size);
+  D16LocalOfs := D16LocalOfs - Size;
+  If -D16LocalOfs > D16MaxLocal Then D16MaxLocal := -D16LocalOfs;
+  D16AllocTemp := D16LocalOfs;
+End;
+
+{ ------------------------------------------------------------ }
+{ Descripteurs d adresse                                       }
+{ ------------------------------------------------------------ }
+
+Procedure D16AddrClear(Var A : TD16Addr);
+Begin
+  A.Seg := 0; A.UseBP := False; A.Idx := 0; A.Lbl := -1; A.Disp := 0;
+  A.Imm := False; A.SegVal := 0;
+End;
+
+Function D16SegName(S : Byte) : TString;
+Begin
+  Case S Of
+    0 : D16SegName := 'DS';
+    1 : D16SegName := 'SS';
+  Else D16SegName := 'ES';
+  End;
+End;
+
+{ Texte de l operande memoire : "WORD PTR SS:[BP-6]" }
+Function D16Opnd(Const A : TD16Addr; Size : Integer; Extra : LongInt) : TString;
+Var S, Inner : TString; D : LongInt;
+Begin
+  Case Size Of
+    1 : S := 'BYTE PTR ';
+    2 : S := 'WORD PTR ';
+    4 : S := 'DWORD PTR ';
+  Else S := '';
+  End;
+  D := A.Disp + Extra;
+  If A.Imm Then
+  Begin
+    { adresse absolue : le segment a ete charge dans ES }
+    S := S + 'ES:[' + D16Str(D And $FFFF) + ']';
+    D16Opnd := S; Exit;
+  End;
+  S := S + D16SegName(A.Seg) + ':[';
+  Inner := '';
+  If A.UseBP Then Inner := 'BP';
+  If A.Idx <> 0 Then
+  Begin
+    If Inner <> '' Then Inner := Inner + '+';
+    If A.Idx = 1 Then Inner := Inner + 'BX' Else Inner := Inner + 'SI';
+  End;
+  If A.Lbl >= 0 Then
+  Begin
+    If Inner <> '' Then Inner := Inner + '+';
+    Inner := Inner + D16Labels[A.Lbl].Name;
+  End;
+  If (D <> 0) Or (Inner = '') Then
+  Begin
+    If (D >= 0) And (Inner <> '') Then Inner := Inner + '+' + D16Str(D)
+    Else Inner := Inner + D16Str(D);
+  End;
+  D16Opnd := S + Inner + ']';
+End;
+
+{ L adresse utilise-t-elle des registres (BX ou ES) ? }
+Function D16AddrDynamic(Const A : TD16Addr) : Boolean;
+Begin
+  D16AddrDynamic := (A.Idx <> 0) Or (A.Seg = 2) Or A.Imm;
+End;
+
+Function D16IdxReg(Const A : TD16Addr) : TString;
+Begin
+  If A.Idx = 2 Then D16IdxReg := 'SI' Else D16IdxReg := 'BX';
+End;
+
+Procedure D16AddrPush(Const A : TD16Addr);
+Begin
+  If A.Idx <> 0 Then D16E('PUSH ' + D16IdxReg(A));
+  If (A.Seg = 2) Or A.Imm Then D16E('PUSH ES');
+End;
+
+Procedure D16AddrPop(Const A : TD16Addr);
+Begin
+  If (A.Seg = 2) Or A.Imm Then D16E('POP ES');
+  If A.Idx <> 0 Then D16E('POP ' + D16IdxReg(A));
+End;
+
+{ Charger l adresse far dans DX:AX }
+Procedure D16AddrToDXAX(Const A : TD16Addr; Extra : LongInt);
+Var D : LongInt;
+Begin
+  D := A.Disp + Extra;
+  If A.Imm Then
+  Begin
+    D16E('MOV AX,' + D16Str(D And $FFFF)); D16E('MOV DX,ES'); Exit;
+  End;
+  If A.UseBP Or (A.Idx <> 0) Then
+  Begin
+    D16E('LEA AX,' + D16Opnd(A, 0, Extra));
+  End
+  Else
+  Begin
+    If A.Lbl >= 0 Then
+    Begin
+      If D <> 0 Then D16E('MOV AX,OFFSET ' + D16Labels[A.Lbl].Name + '+' + D16Str(D))
+      Else D16E('MOV AX,OFFSET ' + D16Labels[A.Lbl].Name);
+    End
+    Else D16E('MOV AX,' + D16Str(D And $FFFF));
+  End;
+  D16E('MOV DX,' + D16SegName(A.Seg));
+End;
+
+{ Charger l adresse far dans ES:DI }
+Procedure D16AddrToESDI(Const A : TD16Addr; Extra : LongInt);
+Var D : LongInt;
+Begin
+  D := A.Disp + Extra;
+  If A.Imm Then
+  Begin
+    D16E('MOV DI,' + D16Str(D And $FFFF)); Exit;
+  End;
+  If A.UseBP Or (A.Idx <> 0) Then D16E('LEA DI,' + D16Opnd(A, 0, Extra))
+  Else If A.Lbl >= 0 Then
+  Begin
+    If D <> 0 Then D16E('MOV DI,OFFSET ' + D16Labels[A.Lbl].Name + '+' + D16Str(D))
+    Else D16E('MOV DI,OFFSET ' + D16Labels[A.Lbl].Name);
+  End
+  Else D16E('MOV DI,' + D16Str(D And $FFFF));
+  Case A.Seg Of
+    0 : Begin D16E('PUSH DS'); D16E('POP ES') End;
+    1 : Begin D16E('PUSH SS'); D16E('POP ES') End;
+  End;
+End;
+
+{ Dereferencer : l adresse A contient un pointeur far ; resultat ES:[BX] }
+Procedure D16AddrDeref(Var A : TD16Addr);
+Begin
+  D16E('LES BX,' + D16Opnd(A, 4, 0));
+  D16AddrClear(A);
+  A.Seg := 2; A.Idx := 1;
+End;
+
+{ Adresse d un pointeur far dans DX:AX -> ES:[BX] }
+Procedure D16PtrToAddr(Var A : TD16Addr);
+Begin
+  D16E('MOV ES,DX'); D16E('MOV BX,AX');
+  D16AddrClear(A);
+  A.Seg := 2; A.Idx := 1;
+End;
+
+{ Charger le cadre du niveau Lvl dans BX (acces aux variables des
+  procedures englobantes) ; resultat SS:[BX] }
+Procedure D16LoadFrame(Lvl : Integer; Var A : TD16Addr);
+Var K : Integer;
+Begin
+  D16E('MOV BX,SS:[BP+6]');
+  For K := 1 To D16Level - 1 - Lvl Do D16E('MOV BX,SS:[BX+6]');
+  D16AddrClear(A);
+  A.Seg := 1; A.Idx := 1;
+End;
+
+{ Adresse d une variable (symbole) }
+Procedure D16SymAddr(S : LongInt; Var A : TD16Addr);
+Begin
+  D16AddrClear(A);
+  Case D16Syms[S].Loc Of
+    LOC_GLOBAL :
+    Begin
+      A.Seg := 0; A.Lbl := D16Syms[S].Lbl; A.Disp := D16Syms[S].Ofs;
+    End;
+    LOC_LOCAL :
+    Begin
+      If D16Syms[S].Level = D16Level Then
+      Begin A.Seg := 1; A.UseBP := True; A.Disp := D16Syms[S].Ofs End
+      Else
+      Begin
+        D16LoadFrame(D16Syms[S].Level, A);
+        A.Disp := D16Syms[S].Ofs;
+      End;
+    End;
+    LOC_REFPARAM, LOC_RESULT :
+    Begin
+      If D16Syms[S].Level = D16Level Then
+      Begin A.Seg := 1; A.UseBP := True; A.Disp := D16Syms[S].Ofs End
+      Else
+      Begin
+        D16LoadFrame(D16Syms[S].Level, A);
+        A.Disp := D16Syms[S].Ofs;
+      End;
+      D16AddrDeref(A);
+    End;
+    LOC_ABS :
+    Begin
+      { adresse ES:[Ofs] ordinaire : l indexation (BX/SI) reste possible }
+      D16E('MOV AX,' + D16Str(D16Syms[S].Seg)); D16E('MOV ES,AX');
+      A.Seg := 2; A.Disp := D16Syms[S].Ofs;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Chargement / rangement de valeurs                            }
+{ ------------------------------------------------------------ }
+
+{ Charger la valeur de type T situee a l adresse A dans les registres }
+Procedure D16Load(Const A : TD16Addr; T : Integer);
+Var Sz : LongInt;
+Begin
+  If D16IsLarge(T) Then
+  Begin
+    D16AddrToDXAX(A, 0); Exit;
+  End;
+  Sz := D16Types[T].Size;
+  Case Sz Of
+    1 : D16E('MOV AL,' + D16Opnd(A, 1, 0));
+    2 : D16E('MOV AX,' + D16Opnd(A, 2, 0));
+    4 :
+    Begin
+      D16E('MOV AX,' + D16Opnd(A, 2, 0));
+      D16E('MOV DX,' + D16Opnd(A, 2, 2));
+    End;
+  Else D16Error('erreur interne: taille de valeur ' + D16Str(Sz));
+  End;
+End;
+
+{ Ranger la valeur (registres) de type T a l adresse A }
+Procedure D16Store(Const A : TD16Addr; T : Integer);
+Var Sz : LongInt;
+Begin
+  Sz := D16Types[T].Size;
+  Case Sz Of
+    1 : D16E('MOV ' + D16Opnd(A, 1, 0) + ',AL');
+    2 : D16E('MOV ' + D16Opnd(A, 2, 0) + ',AX');
+    4 :
+    Begin
+      D16E('MOV ' + D16Opnd(A, 2, 0) + ',AX');
+      D16E('MOV ' + D16Opnd(A, 2, 2) + ',DX');
+    End;
+  Else D16Error('erreur interne: taille de rangement ' + D16Str(Sz));
+  End;
+End;
+
+{ Materialiser une condition en attente dans AL (0/1) }
+Procedure D16Flush;
+Var L : TString;
+Begin
+  If D16PendCC < 0 Then Exit;
+  L := D16NewLabel;
+  D16E('MOV AL,1');
+  D16E(D16_JCC[D16PendCC] + ' ' + L);
+  D16E('MOV AL,0');
+  D16L(L);
+  D16PendCC := -1;
+End;
+
+{ Saut vers Lbl si la condition (AL ou condition en attente) est fausse }
+Procedure D16JumpIfFalse(Const Lbl : TString);
+Begin
+  If D16PendCC >= 0 Then
+  Begin
+    D16E(D16_JCC[D16PendCC Xor 1] + ' ' + Lbl);
+    D16PendCC := -1;
+  End
+  Else
+  Begin
+    D16E('OR AL,AL'); D16E('JZ ' + Lbl);
+  End;
+End;
+
+Procedure D16JumpIfTrue(Const Lbl : TString);
+Begin
+  If D16PendCC >= 0 Then
+  Begin
+    D16E(D16_JCC[D16PendCC] + ' ' + Lbl);
+    D16PendCC := -1;
+  End
+  Else
+  Begin
+    D16E('OR AL,AL'); D16E('JNZ ' + Lbl);
+  End;
+End;
+
+{ Empiler la valeur courante de type T }
+Procedure D16Push(T : Integer);
+Begin
+  D16Flush;
+  If D16IsLarge(T) Or D16IsPointer(T) Or (D16Types[T].Size = 4) Then
+  Begin D16E('PUSH DX'); D16E('PUSH AX') End
+  Else D16E('PUSH AX');
+End;
+
+{ Conversion de la valeur courante vers le type cible (ordinaux) }
+Procedure D16Convert(From, Target : Integer);
+Var SF, ST : LongInt; Sg : Boolean;
+Begin
+  If D16IsLarge(Target) Then Exit;
+  D16Flush;
+  SF := D16Types[From].Size; ST := D16Types[Target].Size;
+  If D16IsPointer(From) Or D16IsPointer(Target) Then Exit;
+  If SF = ST Then Exit;
+  Sg := D16IsSigned(From);
+  If (SF = 1) And (ST >= 2) Then
+  Begin
+    If Sg Then D16E('CBW') Else D16E('MOV AH,0');
+    If ST = 4 Then Begin If Sg Then D16E('CWD') Else D16E('XOR DX,DX') End;
+  End
+  Else If (SF = 2) And (ST = 4) Then
+  Begin
+    If Sg Then D16E('CWD') Else D16E('XOR DX,DX');
+  End;
+  { reduction : rien a faire (AL / AX contiennent les octets bas) }
+End;
+
+{ Type arithmetique d un operande entier (regle TP) }
+Function D16ArithType(T : Integer) : Integer;
+Var B : Integer;
+Begin
+  B := D16BaseType(T);
+  Case D16Types[B].Kind Of
+    DT_INT : If D16Types[B].Size = 4 Then D16ArithType := DTI_LONGINT Else D16ArithType := DTI_INTEGER;
+    DT_UINT : If D16Types[B].Size = 2 Then D16ArithType := DTI_WORD Else D16ArithType := DTI_INTEGER;
+  Else D16ArithType := DTI_INTEGER;
+  End;
+  { sous-intervalle non signe 16 bits (0..65535) }
+  If (D16Types[T].Kind = DT_SUBRANGE) And (D16Types[T].Size = 2) And (D16Types[T].Lo >= 0) And
+     (D16Types[T].Hi > 32767) Then D16ArithType := DTI_WORD;
+End;
+
+{ Type commun de deux operandes entiers }
+Function D16CommonInt(T1, T2 : Integer) : Integer;
+Var A1, A2 : Integer;
+Begin
+  A1 := D16ArithType(T1); A2 := D16ArithType(T2);
+  If (A1 = DTI_LONGINT) Or (A2 = DTI_LONGINT) Then D16CommonInt := DTI_LONGINT
+  Else If A1 <> A2 Then D16CommonInt := DTI_LONGINT   { Word + Integer -> Longint }
+  Else D16CommonInt := A1;
+End;
+
+{ ------------------------------------------------------------ }
+{ Compatibilite des types                                      }
+{ ------------------------------------------------------------ }
+
+Function D16SameOrdClass(T1, T2 : Integer) : Boolean;
+Var B1, B2 : Integer;
+Begin
+  B1 := D16BaseType(T1); B2 := D16BaseType(T2);
+  If D16IsInteger(B1) And D16IsInteger(B2) Then D16SameOrdClass := True
+  Else If (D16Types[B1].Kind = DT_ENUM) And (D16Types[B2].Kind = DT_ENUM) Then
+    D16SameOrdClass := (B1 = B2)
+  Else D16SameOrdClass := D16Types[B1].Kind = D16Types[B2].Kind;
+End;
+
+{ Verifie que la valeur de type Src peut etre affectee a Dst ; emet la
+  conversion ; retourne le type reel a ranger }
+Procedure D16CheckAssign(Dst, Src : Integer);
+Var KD, KS : Byte;
+Begin
+  KD := D16Types[Dst].Kind; KS := D16Types[Src].Kind;
+  If Dst = Src Then Exit;
+  If D16IsOrdinal(Dst) And D16IsOrdinal(Src) Then
+  Begin
+    If Not D16SameOrdClass(Dst, Src) Then
+      D16Error('types incompatibles: ' + D16TypeName(Dst) + ' et ' + D16TypeName(Src));
+    Exit;
+  End;
+  If (KD = DT_STRING) And ((KS = DT_STRING) Or (KS = DT_CHAR)) Then Exit;
+  If (KD = DT_STRING) And (KS = DT_ARRAY) And D16IsCharArray(Src) Then Exit;
+  If (KD = DT_REAL) And ((KS = DT_REAL) Or D16IsInteger(Src)) Then Exit;
+  If (KD = DT_POINTER) And (D16Types[Dst].Base = DTI_CHAR) And (KS = DT_ARRAY) And D16IsCharArray(Src) Then
+    Exit;   { tableau de caracteres -> PChar : l adresse est deja dans DX:AX }
+  If (KD = DT_POINTER) And ((KS = DT_NIL) Or (KS = DT_POINTER)) Then
+  Begin
+    If (KS = DT_POINTER) And (D16Types[Dst].Base <> DTI_NONE) And (D16Types[Src].Base <> DTI_NONE) And
+       (D16Types[Dst].Base <> D16Types[Src].Base) And (Dst <> DTI_POINTER) And (Src <> DTI_POINTER) Then
+      D16Error('types pointeur incompatibles');
+    Exit;
+  End;
+  If (KD = DT_PROCVAR) And ((KS = DT_NIL) Or (KS = DT_PROCVAR) Or (KS = DT_POINTER)) Then Exit;
+  If (KD = DT_SET) And (KS = DT_SET) Then Exit;
+  If (KD = DT_ARRAY) And (KS = DT_ARRAY) Then
+  Begin
+    If D16IsCharArray(Dst) And (KS = DT_ARRAY) Then Exit;
+    If D16Types[Dst].Size = D16Types[Src].Size Then Exit;
+    D16Error('types tableau incompatibles');
+  End;
+  If (KD = DT_ARRAY) And D16IsCharArray(Dst) And ((KS = DT_STRING) Or (KS = DT_CHAR)) Then Exit;
+  If (KD = DT_RECORD) And (KS = DT_RECORD) And (D16Types[Dst].Size = D16Types[Src].Size) Then Exit;
+  If (KD = DT_FILE) And (KS = DT_FILE) Then Exit;
+  D16Error('types incompatibles: ' + D16TypeName(Dst) + ' et ' + D16TypeName(Src));
+End;
+
+{ ------------------------------------------------------------ }
+{ Declarations anticipees des expressions                      }
+{ ------------------------------------------------------------ }
+
+Function D16Expr : Integer; Forward;
+Function D16ExprTo(Target : Integer) : Integer; Forward;
+Procedure D16StrToTemp(T : Integer; Var A : TD16Addr); Forward;
+Function D16Designator(Var A : TD16Addr; Var IsConst : Boolean) : Integer; Forward;
+Function D16CallProc(P : Integer) : Integer; Forward;
+Function D16Builtin(Const U : TString; Var IsFunc : Boolean) : Integer; Forward;
+Function D16CallProcVar(Const A : TD16Addr; T : Integer) : Integer; Forward;
+Procedure D16Statement; Forward;
+Procedure D16AsmBlock; Forward;
+Procedure D16InlineStmt; Forward;
+Procedure D16Statements; Forward;
+
+{ ------------------------------------------------------------ }
+{ Chaines : valeur courante -> chaine (adresse dans DX:AX)      }
+{ ------------------------------------------------------------ }
+
+{ Convertit la valeur courante de type T en chaine temporaire ; met son
+  adresse dans DX:AX et dans A }
+Procedure D16StrToTemp(T : Integer; Var A : TD16Addr);
+Var O : LongInt; K : Byte;
+Begin
+  D16Flush;
+  K := D16Types[T].Kind;
+  If K = DT_CHAR Then
+  Begin
+    O := D16AllocTemp(2);
+    D16E('MOV BYTE PTR SS:[BP' + D16Str(O) + '],1');
+    D16E('MOV BYTE PTR SS:[BP' + D16Str(O + 1) + '],AL');
+    D16AddrClear(A); A.Seg := 1; A.UseBP := True; A.Disp := O;
+    D16AddrToDXAX(A, 0);
+  End
+  Else If (K = DT_ARRAY) And D16IsCharArray(T) Then
+  Begin
+    { tableau de caracteres -> chaine temporaire }
+    O := D16AllocTemp(256);
+    D16E('MOV CX,' + D16Str(D16Types[T].Size));
+    D16E('LEA DI,SS:[BP' + D16Str(O) + ']');
+    D16E('PUSH SS'); D16E('POP ES');
+    D16CallRT('ARRTOSTR');
+    D16AddrClear(A); A.Seg := 1; A.UseBP := True; A.Disp := O;
+    D16AddrToDXAX(A, 0);
+  End
+  Else If K <> DT_STRING Then D16Error('chaine attendue');
+End;
+
+{ Copier la chaine DX:AX vers l adresse A (longueur max MaxLen) }
+Procedure D16StrAssignTo(Const A : TD16Addr; MaxLen : LongInt);
+Begin
+  D16AddrToESDI(A, 0);
+  D16E('MOV CX,' + D16Str(MaxLen));
+  D16CallRT('STRASSIGN');
+End;
+
+{ ------------------------------------------------------------ }
+{ Appels de procedures                                         }
+{ ------------------------------------------------------------ }
+
+{ Empiler le lien statique pour appeler une procedure de niveau Lvl }
+Procedure D16PushStaticLink(Lvl : Integer);
+Var K : Integer;
+Begin
+  If Lvl < 2 Then Exit;
+  If D16Level = Lvl - 1 Then D16E('PUSH BP')
+  Else
+  Begin
+    D16E('MOV BX,SS:[BP+6]');
+    For K := 1 To D16Level - Lvl Do D16E('MOV BX,SS:[BX+6]');
+    D16E('PUSH BX');
+  End;
+End;
+
+{ Analyse d un argument effectif et empilement selon le mode }
+Procedure D16PushArg(PType : Integer; Mode : Byte);
+Var
+  T : Integer; A : TD16Addr; IsConst : Boolean; O : LongInt; SaveCC : Integer; AtVar : Boolean;
+Begin
+  If (Mode <> PM_VALUE) And (PType = DTI_NONE) Then
+  Begin
+    { parametre non type : toute variable }
+    T := D16Designator(A, IsConst);
+    D16AddrToDXAX(A, 0);
+    D16E('PUSH DX'); D16E('PUSH AX');
+    Exit;
+  End;
+  If (Mode = PM_VAR) Or ((Mode = PM_CONST) And (D16IsLarge(PType))) Then
+  Begin
+    { adresse de la variable }
+    If (Mode = PM_CONST) And (D16Types[PType].Kind = DT_STRING) And
+       ((D16Kind = TK_STRING) Or (D16Kind = TK_CHAR)) Then
+    Begin
+      { litteral chaine passe en Const }
+      T := D16Expr;
+      If D16Types[T].Kind = DT_CHAR Then D16StrToTemp(T, A);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      Exit;
+    End;
+    If Mode = PM_CONST Then
+    Begin
+      { expression quelconque de grand type : adresse de la valeur }
+      T := D16Expr;
+      If (D16Types[PType].Kind = DT_ARRAY) And (D16Types[PType].Size = 0) Then
+      Begin
+        D16Flush;
+        If D16Types[T].Kind = DT_ARRAY Then
+          D16E('MOV CX,' + D16Str(D16Types[T].Hi - D16Types[T].Lo))
+        Else D16E('MOV CX,0');
+        D16E('PUSH CX'); D16E('PUSH DX'); D16E('PUSH AX');
+        Exit;
+      End;
+      If D16Types[PType].Kind = DT_STRING Then
+      Begin
+        If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+      End
+      Else If D16Types[PType].Kind = DT_REAL Then
+      Begin
+        If D16Types[T].Kind <> DT_REAL Then
+        Begin
+          { entier -> reel temporaire }
+          D16Convert(T, DTI_LONGINT);
+          O := D16AllocTemp(6);
+          D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+          D16CallRT('LTOREAL');
+          D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+        End;
+      End
+      Else D16CheckAssign(PType, T);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      Exit;
+    End;
+    { TP accepte @X pour un parametre Var de type pointeur : X est passe par reference }
+    AtVar := False;
+    If D16IsOp('@') And (D16Types[PType].Kind = DT_POINTER) Then Begin D16Next; AtVar := True End;
+    T := D16Designator(A, IsConst);
+    If IsConst Then D16Error('variable attendue (parametre Var)');
+    If AtVar Then
+    Begin
+      D16AddrToDXAX(A, 0);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      Exit;
+    End;
+    If (D16Types[PType].Kind = DT_ARRAY) And (D16Types[PType].Size = 0) Then
+    Begin
+      { tableau ouvert : High puis adresse -> [ofs][seg][High] }
+      If D16Types[T].Kind = DT_ARRAY Then
+        D16E('MOV CX,' + D16Str(D16Types[T].Hi - D16Types[T].Lo))
+      Else D16E('MOV CX,0');
+      D16E('PUSH CX');
+      D16AddrToDXAX(A, 0);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      Exit;
+    End;
+    If (D16Types[PType].Kind = DT_STRING) And (D16Types[T].Kind = DT_STRING) Then
+    Else If (PType <> T) And Not ((D16Types[PType].Kind = DT_FILE) And (D16Types[T].Kind = DT_FILE)) Then
+    Begin
+      If Not ((D16Types[PType].Kind = DT_POINTER) And (D16Types[T].Kind = DT_POINTER)) Then
+        If Not (D16IsOrdinal(PType) And D16IsOrdinal(T) And (D16Types[PType].Size = D16Types[T].Size)
+                And D16SameOrdClass(PType, T)) Then
+          If Not ((D16Types[PType].Kind = D16Types[T].Kind) And (D16Types[PType].Size = D16Types[T].Size) And
+                  (D16Types[PType].Kind In [DT_RECORD, DT_ARRAY, DT_SET, DT_REAL])) Then
+            D16Error('types incompatibles pour un parametre Var');
+    End;
+    D16AddrToDXAX(A, 0);
+    D16E('PUSH DX'); D16E('PUSH AX');
+    Exit;
+  End;
+  { Parametre par valeur }
+  If D16IsLarge(PType) Then
+  Begin
+    T := D16Expr;
+    If D16Types[PType].Kind = DT_STRING Then
+    Begin
+      If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+    End
+    Else If D16Types[PType].Kind = DT_REAL Then
+    Begin
+      If D16Types[T].Kind <> DT_REAL Then
+      Begin
+        D16Convert(T, DTI_LONGINT);
+        O := D16AllocTemp(6);
+        D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+        D16CallRT('LTOREAL');
+        D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+      End;
+    End
+    Else If (D16Types[PType].Kind = DT_ARRAY) And (D16Types[PType].Size = 0) Then
+    Begin
+      If D16Types[T].Kind = DT_ARRAY Then
+        D16E('MOV CX,' + D16Str(D16Types[T].Hi - D16Types[T].Lo))
+      Else D16E('MOV CX,0');
+      D16E('PUSH CX'); D16E('PUSH DX'); D16E('PUSH AX');
+      Exit;
+    End
+    Else D16CheckAssign(PType, T);
+    D16E('PUSH DX'); D16E('PUSH AX');
+    Exit;
+  End;
+  T := D16ExprTo(PType);
+  D16Push(PType);
+End;
+
+{ Analyse de la liste d arguments et appel }
+Function D16CallProc(P : Integer) : Integer;
+Var
+  I : Integer; RT : Integer; O : LongInt; A : TD16Addr; HasArgs : Boolean; Save : LongInt;
+Begin
+  RT := D16Procs[P].RetType;
+  If D16Procs[P].IsInline Then
+  Begin
+    { procedure Inline : parametres empiles puis octets inseres }
+    If D16IsPunct('(') Then
+    Begin
+      D16Next;
+      For I := 0 To D16Procs[P].PCount - 1 Do
+      Begin
+        If I > 0 Then D16ExpectPunct(',');
+        D16PushArg(D16Params[D16Procs[P].PStart + I].TypeIdx, D16Params[D16Procs[P].PStart + I].Mode);
+      End;
+      D16ExpectPunct(')');
+    End;
+    Save := D16Pos;
+    D16Pos := D16Procs[P].InlineStart;
+    D16InlineStmt;
+    D16Pos := Save;
+    D16PendCC := -1;
+    D16CallProc := RT; Exit;
+  End;
+  O := 0;
+  { grand resultat : adresse du temporaire empilee en premier }
+  If (RT <> 0) And D16IsLarge(RT) Then
+  Begin
+    O := D16AllocTemp(D16Types[RT].Size);
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']');
+    D16E('PUSH SS'); D16E('PUSH AX');
+  End;
+  HasArgs := D16IsPunct('(');
+  If HasArgs Then D16Next;
+  For I := 0 To D16Procs[P].PCount - 1 Do
+  Begin
+    If Not HasArgs Then D16Error('arguments attendus');
+    If I > 0 Then D16ExpectPunct(',');
+    D16PushArg(D16Params[D16Procs[P].PStart + I].TypeIdx, D16Params[D16Procs[P].PStart + I].Mode);
+  End;
+  If HasArgs Then
+  Begin
+    If D16IsPunct(',') Then D16Error('trop d arguments');
+    D16ExpectPunct(')');
+  End;
+  D16PushStaticLink(D16Procs[P].Level);
+  D16E('CALL FAR PTR ' + D16Procs[P].Lbl);
+  If (RT <> 0) And D16IsLarge(RT) Then
+  Begin
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+  End;
+  D16PendCC := -1;
+  D16CallProc := RT;
+End;
+
+{ Appel via une variable procedure (adresse A, type T) }
+Function D16CallProcVar(Const A : TD16Addr; T : Integer) : Integer;
+Var I : Integer; RT : Integer; O : LongInt; SaveA : TD16Addr;
+Begin
+  RT := D16Types[T].RetType;
+  O := 0;
+  { sauver le pointeur de procedure dans un temporaire si l adresse est dynamique }
+  SaveA := A;
+  If D16AddrDynamic(A) Then
+  Begin
+    O := D16AllocTemp(4);
+    D16E('MOV AX,' + D16Opnd(A, 2, 0)); D16E('MOV SS:[BP' + D16Str(O) + '],AX');
+    D16E('MOV AX,' + D16Opnd(A, 2, 2)); D16E('MOV SS:[BP' + D16Str(O + 2) + '],AX');
+    D16AddrClear(SaveA); SaveA.Seg := 1; SaveA.UseBP := True; SaveA.Disp := O;
+  End;
+  If (RT <> 0) And D16IsLarge(RT) Then
+  Begin
+    O := D16AllocTemp(D16Types[RT].Size);
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']');
+    D16E('PUSH SS'); D16E('PUSH AX');
+  End;
+  If D16Types[T].FCount > 0 Then
+  Begin
+    D16ExpectPunct('(');
+    For I := 0 To D16Types[T].FCount - 1 Do
+    Begin
+      If I > 0 Then D16ExpectPunct(',');
+      D16PushArg(D16Params[D16Types[T].FStart + I].TypeIdx, D16Params[D16Types[T].FStart + I].Mode);
+    End;
+    D16ExpectPunct(')');
+  End
+  Else If D16IsPunct('(') Then Begin D16Next; D16ExpectPunct(')') End;
+  D16E('CALL ' + D16Opnd(SaveA, 4, 0));
+  If (RT <> 0) And D16IsLarge(RT) Then
+  Begin
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+  End;
+  D16PendCC := -1;
+  D16CallProcVar := RT;
+End;
+
+{ Appel d une procedure systeme integree par son nom (__WRINT etc.) ; les
+  arguments ont deja ete empiles par l appelant }
+Procedure D16CallSys(Const Name : TString);
+Var S : LongInt;
+Begin
+  S := D16LookupSys(Name);
+  If (S < 0) Or (D16Syms[S].Kind <> DSK_PROC) Then
+    D16Error('routine systeme introuvable: ' + Name);
+  D16E('CALL FAR PTR ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+  D16PendCC := -1;
+End;
+
+Function D16SysProc(Const Name : TString) : Integer;
+Var S : LongInt;
+Begin
+  S := D16LookupSys(Name);
+  If (S < 0) Or (D16Syms[S].Kind <> DSK_PROC) Then
+    D16Error('routine systeme introuvable: ' + Name);
+  D16SysProc := D16Syms[S].ProcIdx;
+End;
+
+{ Adresse d une variable systeme }
+Procedure D16SysVarAddr(Const Name : TString; Var A : TD16Addr);
+Var S : LongInt;
+Begin
+  S := D16LookupSys(Name);
+  If (S < 0) Or (D16Syms[S].Kind <> DSK_VAR) Then
+    D16Error('variable systeme introuvable: ' + Name);
+  D16SymAddr(S, A);
+End;
+
+{ ------------------------------------------------------------ }
+{ Designateurs : variables, champs, indices, dereferences      }
+{ ------------------------------------------------------------ }
+
+{ Recherche d un champ dans un record ; retourne l index du champ ou -1 }
+Function D16FindField(T : Integer; Const U : TString) : LongInt;
+Var F : LongInt;
+Begin
+  D16FindField := -1;
+  If D16Types[T].Kind <> DT_RECORD Then Exit;
+  For F := D16Types[T].FStart To D16Types[T].FStart + D16Types[T].FCount - 1 Do
+    If D16Fields[F].Name = U Then Begin D16FindField := F; Exit End;
+End;
+
+{ Indexation : A = adresse du tableau de type T ; analyse [i,j,...] }
+Function D16IndexArray(Var A : TD16Addr; T : Integer) : Integer;
+Var
+  IT, ET : Integer; C : TD16Const; ESz : LongInt; Lo : LongInt; Save : LongInt;
+  IsStr : Boolean; Dyn : Boolean;
+Begin
+  Repeat
+    IsStr := D16Types[T].Kind = DT_STRING;
+    If IsStr Then Begin ET := DTI_CHAR; ESz := 1; Lo := 0; IT := DTI_BYTE End
+    Else If D16Types[T].Kind = DT_ARRAY Then
+    Begin
+      ET := D16Types[T].Base; ESz := D16Types[ET].Size; Lo := D16Types[T].Lo; IT := D16Types[T].Index;
+    End
+    Else D16Error('tableau attendu');
+    { indice constant ? }
+    Save := D16Pos;
+    If ((D16Kind = TK_INTEGER) Or D16IsCharTok) And
+       ((D16PeekKind(1) = TK_PUNCT) And ((D16PeekVal(1) = ']') Or (D16PeekVal(1) = ','))) Then
+    Begin
+      If D16Kind = TK_INTEGER Then C.IVal := TokenPool[D16Pos].IntVal Else C.IVal := D16CharTokVal;
+      D16Next;
+      A.Disp := A.Disp + (C.IVal - Lo) * ESz;
+    End
+    Else
+    Begin
+      Dyn := D16AddrDynamic(A);
+      If Dyn Then D16AddrPush(A);
+      D16ExprTo(IT);
+      D16Flush;
+      If D16Types[IT].Size = 1 Then
+      Begin
+        If D16IsSigned(IT) Then D16E('CBW') Else D16E('MOV AH,0');
+      End;
+      If Lo <> 0 Then D16E('SUB AX,' + D16Str(Lo));
+      Case ESz Of
+        1 : ;
+        2 : D16E('SHL AX,1');
+        4 : Begin D16E('SHL AX,1'); D16E('SHL AX,1') End;
+        8 : Begin D16E('SHL AX,1'); D16E('SHL AX,1'); D16E('SHL AX,1') End;
+      Else
+      Begin
+        D16E('MOV CX,' + D16Str(ESz)); D16E('MUL CX');
+      End;
+      End;
+      If Dyn Then
+      Begin
+        D16AddrPop(A);
+        If A.Idx <> 0 Then D16E('ADD ' + D16IdxReg(A) + ',AX')
+        Else Begin D16E('MOV BX,AX'); A.Idx := 1 End;
+      End
+      Else If A.UseBP Then
+      Begin
+        { [BP+BX] n existe pas : indexer par SI }
+        D16E('MOV SI,AX'); A.Idx := 2;
+      End
+      Else
+      Begin
+        D16E('MOV BX,AX'); A.Idx := 1;
+      End;
+    End;
+    T := ET;
+    If D16IsPunct(',') Then D16Next Else Break;
+  Until False;
+  D16ExpectPunct(']');
+  D16IndexArray := T;
+End;
+
+{ Suffixes de designateur : .champ [index] ^ }
+Function D16Selectors(Var A : TD16Addr; T : Integer) : Integer;
+Var U : TString; F : LongInt;
+Begin
+  While True Do
+  Begin
+    If D16IsPunct('[') Then
+    Begin
+      D16Next;
+      If D16Types[T].Kind = DT_POINTER Then
+      Begin
+        { P[i] sur un pointeur (PChar, syntaxe etendue) : P^ indexe }
+        If D16Types[T].Base = DTI_NONE Then D16Error('indexation d un pointeur non type');
+        D16AddrDeref(A);
+        F := D16TypeAdd(DT_ARRAY, 0, D16Types[T].Base);
+        D16Types[F].Index := DTI_INTEGER; D16Types[F].Lo := 0; D16Types[F].Hi := 32767;
+        T := F;
+      End;
+      T := D16IndexArray(A, T);
+    End
+    Else If D16IsPunct('.') And (D16Types[T].Kind = DT_RECORD) Then
+    Begin
+      D16Next;
+      U := D16ExpectIdent;
+      F := D16FindField(T, U);
+      If F < 0 Then D16Error('champ inconnu: ' + U);
+      A.Disp := A.Disp + D16Fields[F].Offset;
+      T := D16Fields[F].TypeIdx;
+    End
+    Else If D16IsOp('^') And (D16Types[T].Kind = DT_POINTER) Then
+    Begin
+      D16Next;
+      { la dereference d un pointeur non type donne une valeur non typee
+        (utilisable seulement comme parametre Var non type) }
+      D16AddrDeref(A);
+      T := D16Types[T].Base;
+    End
+    Else Break;
+  End;
+  D16Selectors := T;
+End;
+
+{ Designateur complet a partir d un identificateur ; retourne le type.
+  IsConst : vrai si c est une constante (non affectable). Pour une
+  constante chaine / ordinale, l adresse ou la valeur est fournie. }
+Function D16Designator(Var A : TD16Addr; Var IsConst : Boolean) : Integer;
+Var
+  U : TString; S, F : LongInt; T : Integer; W : Integer; Found : Boolean;
+Begin
+  IsConst := False;
+  D16AddrClear(A);
+  If Not D16IsIdent Then D16Error('variable attendue');
+  U := D16UVal;
+  { Champs des blocs With (du plus interne au plus externe) }
+  For W := D16WithCnt - 1 DownTo 0 Do
+  Begin
+    F := D16FindField(D16WithStack[W].TypeIdx, U);
+    If F >= 0 Then
+    Begin
+      D16Next;
+      If D16WithStack[W].TempOfs <> 0 Then
+      Begin
+        D16AddrClear(A); A.Seg := 1; A.UseBP := True; A.Disp := D16WithStack[W].TempOfs;
+        D16AddrDeref(A);
+      End
+      Else A := D16WithStack[W].Addr;
+      { variable d un niveau englobant : recharger le cadre }
+      If (D16WithStack[W].Level <> D16Level) And A.UseBP And (A.Idx = 0) Then
+      Begin
+        D16LoadFrame(D16WithStack[W].Level, A);
+        A.Disp := D16WithStack[W].Addr.Disp;
+      End;
+      A.Disp := A.Disp + D16Fields[F].Offset;
+      T := D16Fields[F].TypeIdx;
+      D16Designator := D16Selectors(A, T);
+      Exit;
+    End;
+  End;
+  S := D16Lookup(U);
+  If (S < 0) And ((U = 'MEM') Or (U = 'MEMW') Or (U = 'MEML')) Then
+  Begin
+    { Mem[seg:ofs] utilise comme variable }
+    D16Next; D16ExpectPunct('['); D16ExprTo(DTI_WORD); D16E('PUSH AX');
+    D16ExpectPunct(':'); D16ExprTo(DTI_WORD); D16ExpectPunct(']');
+    D16E('MOV BX,AX'); D16E('POP ES');
+    A.Seg := 2; A.Idx := 1;
+    If U = 'MEM' Then D16Designator := DTI_BYTE
+    Else If U = 'MEMW' Then D16Designator := DTI_WORD
+    Else D16Designator := DTI_LONGINT;
+    Exit;
+  End;
+  If S < 0 Then D16Error('identificateur inconnu: ' + U);
+  { Unite.identificateur }
+  If D16Syms[S].Kind = DSK_UNIT Then
+  Begin
+    D16Next; D16ExpectPunct('.');
+    U := D16UVal; S := D16Lookup(U);
+    If S < 0 Then D16Error('identificateur inconnu: ' + U);
+  End;
+  Case D16Syms[S].Kind Of
+    DSK_VAR :
+    Begin
+      D16Next;
+      D16SymAddr(S, A);
+      T := D16Syms[S].TypeIdx;
+      D16Designator := D16Selectors(A, T);
+    End;
+    DSK_CONST :
+    Begin
+      D16Next;
+      IsConst := True;
+      T := D16Syms[S].TypeIdx;
+      If D16Types[T].Kind = DT_STRING Then
+      Begin
+        A.Seg := 0; A.Lbl := D16StrLitLabel(D16Syms[S].SVal);
+      End;
+      D16Designator := T;
+    End;
+    DSK_TYPE :
+    Begin
+      { Type(variable) : transtypage de variable ; PType(expr)^ : pointeur }
+      D16Next;
+      T := D16Syms[S].TypeIdx;
+      D16ExpectPunct('(');
+      If D16Types[T].Kind = DT_POINTER Then
+      Begin
+        D16Expr; D16Flush;
+        D16ExpectPunct(')');
+        If Not D16IsOp('^') Then D16Error('"^" attendu apres un transtypage de pointeur');
+        D16Next;
+        D16PtrToAddr(A);
+        D16Designator := D16Selectors(A, D16Types[T].Base);
+        Exit;
+      End;
+      D16Designator(A, IsConst);
+      D16ExpectPunct(')');
+      D16Designator := D16Selectors(A, T);
+    End;
+  Else D16Error('variable attendue: ' + U);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Expressions                                                  }
+{ ------------------------------------------------------------ }
+
+{ Une expression entiere purement constante suit-elle (au moins un operateur) ?
+  Permet de replier 32767 + 1 en Longint comme Turbo Pascal. }
+Function D16ConstAhead : Boolean;
+Var P : LongInt; Depth, Ops, Operands : Integer; S : LongInt; U : TString; Ok : Boolean;
+Begin
+  D16ConstAhead := False;
+  P := D16Pos; Depth := 0; Ops := 0; Operands := 0; Ok := True;
+  While (P < D16End) And Ok Do
+  Begin
+    If (D16ConstLine >= 0) And (TokenPool[P].Line <> D16ConstLine) Then Break;
+    Case TokenPool[P].Kind Of
+      TK_INTEGER : Inc(Operands);
+      TK_IDENT :
+      Begin
+        U := StrUpperCase(TokenPool[P].Val);
+        S := D16Lookup(U);
+        If (S < 0) Or (D16Syms[S].Kind <> DSK_CONST) Or Not D16IsInteger(D16Syms[S].TypeIdx) Then Exit;
+        Inc(Operands);
+      End;
+      TK_OP :
+        If (TokenPool[P].Val = '+') Or (TokenPool[P].Val = '-') Or (TokenPool[P].Val = '*') Then Inc(Ops)
+        Else Ok := False;
+      TK_KEYWORD :
+        If (TokenPool[P].Val = 'div') Or (TokenPool[P].Val = 'mod') Or (TokenPool[P].Val = 'shl') Or
+           (TokenPool[P].Val = 'shr') Or (TokenPool[P].Val = 'and') Or (TokenPool[P].Val = 'or') Or
+           (TokenPool[P].Val = 'xor') Then Inc(Ops)
+        Else Ok := False;
+      TK_PUNCT :
+        If TokenPool[P].Val = '(' Then Inc(Depth)
+        Else If TokenPool[P].Val = ')' Then
+        Begin
+          If Depth = 0 Then Ok := False Else Dec(Depth);
+        End
+        Else Ok := False;
+    Else Ok := False;
+    End;
+    If Ok Then Inc(P);
+  End;
+  If Depth <> 0 Then Exit;
+  If (Ops = 0) Or (Operands < 2) Then Exit;
+  { le dernier token de la suite doit etre un operande ou ")" }
+  If (TokenPool[P - 1].Kind = TK_OP) Or (TokenPool[P - 1].Kind = TK_KEYWORD) Or
+     ((TokenPool[P - 1].Kind = TK_PUNCT) And (TokenPool[P - 1].Val = '(')) Then Exit;
+  D16ConstAhead := True;
+End;
+
+{ Facteur : constante, variable, appel, (expr), not, -, @, [ensemble] }
+Function D16Factor : Integer;
+Var
+  U : TString; S : LongInt; T, T2 : Integer; A : TD16Addr; IsConst : Boolean;
+  C : TD16Const; L : LongInt; O : LongInt; IsFunc : Boolean; P : Integer;
+  I : Integer; B : Array[0..5] Of Byte; Lbl : TString; CanFold : Boolean; Lit : TString;
+Begin
+  D16PendCC := -1;
+  CanFold := D16FoldOK; D16FoldOK := False;
+  { sous-expression constante en tete d expression : replier en Longint (regle TP) }
+  If CanFold And ((D16Kind = TK_INTEGER) Or (D16Kind = TK_IDENT) Or D16IsPunct('(')) And D16ConstAhead Then
+  Begin
+    D16ConstExpr(C);
+    If C.Kind <> DT_INT Then D16Error('erreur interne: pliage de constante');
+    T := D16IntTypeFor(C.IVal);
+    If D16Types[T].Size = 4 Then
+    Begin
+      D16E('MOV AX,' + D16Str(C.IVal And $FFFF));
+      D16E('MOV DX,' + D16Str((C.IVal Shr 16) And $FFFF));
+    End
+    Else D16E('MOV AX,' + D16Str(C.IVal And $FFFF));
+    D16Factor := T; Exit;
+  End;
+  Case D16Kind Of
+    TK_INTEGER :
+    Begin
+      T := D16IntTypeFor(TokenPool[D16Pos].IntVal);
+      If D16Types[T].Size = 4 Then
+      Begin
+        D16E('MOV AX,' + D16Str(TokenPool[D16Pos].IntVal And $FFFF));
+        D16E('MOV DX,' + D16Str((TokenPool[D16Pos].IntVal Shr 16) And $FFFF));
+      End
+      Else D16E('MOV AX,' + D16Str(TokenPool[D16Pos].IntVal And $FFFF));
+      D16Next;
+      D16Factor := T;
+    End;
+    TK_STRING, TK_CHAR :
+    Begin
+      Lit := TokenPool[D16Pos].Val;
+      D16Next;
+      { suite de ^X ou de litteraux adjacents : concatenation implicite }
+      While (D16IsOp('^') And (D16PeekKind(1) = TK_IDENT) And (Length(D16PeekVal(1)) = 1)) Or
+            (D16Kind = TK_STRING) Or (D16Kind = TK_CHAR) Do
+      Begin
+        If D16IsOp('^') Then Begin D16Next; Lit := Lit + Chr(Ord(UpCase(D16Val[1])) - 64) End
+        Else Lit := Lit + TokenPool[D16Pos].Val;
+        D16Next;
+      End;
+      If Length(Lit) = 1 Then
+      Begin
+        D16E('MOV AL,' + D16Str(Ord(Lit[1])));
+        D16Factor := DTI_CHAR; Exit;
+      End;
+      L := D16StrLitLabel(Lit);
+      D16E('MOV AX,OFFSET ' + D16Labels[L].Name); D16E('MOV DX,DS');
+      D16Factor := DTI_STRING;
+    End;
+    TK_REAL :
+    Begin
+      { constante reelle en donnees }
+      D16RealTo6(TokenPool[D16Pos].RealVal, B);
+      Lbl := 'R' + D16Str(D16DataLen);
+      D16DefineDataLabel(Lbl, D16DataLen);
+      For I := 0 To 5 Do D16DataB(B[I]);
+      D16E('MOV AX,OFFSET ' + Lbl); D16E('MOV DX,DS');
+      D16Next;
+      D16Factor := DTI_REAL;
+    End;
+    TK_PUNCT :
+    Begin
+      If D16IsPunct('(') Then
+      Begin
+        D16Next;
+        T := D16Expr;
+        D16ExpectPunct(')');
+        { (expr)^ ou (expr).champ : rare ; supporter ^ pour les pointeurs }
+        If D16IsOp('^') And (D16Types[T].Kind = DT_POINTER) Then
+        Begin
+          D16Flush;
+          D16PtrToAddr(A);
+          T := D16Types[T].Base;
+          D16Next;
+          T := D16Selectors(A, T);
+          If T = DTI_NONE Then D16AddrToDXAX(A, 0) Else D16Load(A, T);
+        End;
+        D16Factor := T;
+      End
+      Else If D16IsPunct('[') Then
+      Begin
+        { constructeur d ensemble }
+        D16Next;
+        O := D16AllocTemp(32);
+        D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+        D16E('XOR AX,AX'); D16E('MOV CX,16'); D16E('CLD'); D16E('REP STOSW');
+        T2 := DTI_SET;
+        While Not D16IsPunct(']') Do
+        Begin
+          T := D16Expr;
+          If Not D16IsOrdinal(T) Then D16Error('element d ensemble ordinal attendu');
+          D16Flush;
+          If D16Types[T].Size = 1 Then D16E('MOV AH,0');
+          If D16IsPunct('..') Then
+          Begin
+            D16Next;
+            D16E('PUSH AX');
+            T := D16Expr;
+            D16Flush;
+            If D16Types[T].Size = 1 Then D16E('MOV AH,0');
+            D16E('POP CX');            { CX = debut, AX = fin }
+            D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+            D16CallRT('SETRANGE');
+          End
+          Else
+          Begin
+            D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+            D16CallRT('SETADD');
+          End;
+          If T2 = DTI_SET Then
+          Begin
+            { type de l ensemble construit : Set Of base de T }
+            T2 := D16TypeAdd(DT_SET, 32, D16BaseType(T));
+          End;
+          If D16IsPunct(',') Then D16Next
+          Else If Not D16IsPunct(']') Then D16Error('"," ou "]" attendu');
+        End;
+        D16Next;
+        D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+        D16Factor := T2;
+      End
+      Else D16Error('expression invalide');
+    End;
+    TK_OP :
+    Begin
+      If D16IsOp('-') Then
+      Begin
+        D16Next;
+        T := D16Factor;
+        D16Flush;
+        If D16Types[T].Kind = DT_REAL Then
+        Begin
+          O := D16AllocTemp(6);
+          D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+          D16CallRT('RNEG');
+          D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+        End
+        Else
+        Begin
+          If Not D16IsInteger(T) Then D16Error('operande invalide pour -');
+          T := D16ArithType(T);
+          D16Convert(D16BaseType(T), T);
+          If T = DTI_WORD Then
+          Begin
+            { -Word : resultat Longint (TP) ; -32768, -32769 doivent garder leurs 32 bits }
+            D16E('XOR DX,DX'); T := DTI_LONGINT;
+          End;
+          If D16Types[T].Size = 4 Then
+          Begin D16E('NEG AX'); D16E('ADC DX,0'); D16E('NEG DX') End
+          Else D16E('NEG AX');
+        End;
+        D16Factor := T;
+      End
+      Else If D16IsOp('+') Then
+      Begin
+        D16Next; D16Factor := D16Factor;
+      End
+      Else If D16IsOp('@') Then
+      Begin
+        D16Next;
+        { @variable ou @procedure }
+        If D16IsIdent Then
+        Begin
+          S := D16Lookup(D16UVal);
+          If (S >= 0) And (D16Syms[S].Kind = DSK_PROC) Then
+          Begin
+            D16Next;
+            D16E('MOV AX,OFFSET ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+            D16E('MOV DX,SEG ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+            D16Factor := DTI_POINTER; Exit;
+          End;
+        End;
+        T := D16Designator(A, IsConst);
+        D16AddrToDXAX(A, 0);
+        D16Factor := DTI_POINTER;
+      End
+      Else If D16IsOp('^') Then
+      Begin
+        D16Next;
+        If D16IsIdent And (Length(D16Val) = 1) Then
+        Begin
+          Lit := Chr(Ord(UpCase(D16Val[1])) - 64); D16Next;
+          While (D16IsOp('^') And (D16PeekKind(1) = TK_IDENT) And (Length(D16PeekVal(1)) = 1)) Or
+                (D16Kind = TK_STRING) Or (D16Kind = TK_CHAR) Do
+          Begin
+            If D16IsOp('^') Then Begin D16Next; Lit := Lit + Chr(Ord(UpCase(D16Val[1])) - 64) End
+            Else Lit := Lit + TokenPool[D16Pos].Val;
+            D16Next;
+          End;
+          If Length(Lit) = 1 Then
+          Begin
+            D16E('MOV AL,' + D16Str(Ord(Lit[1]))); D16Factor := DTI_CHAR;
+          End
+          Else
+          Begin
+            L := D16StrLitLabel(Lit);
+            D16E('MOV AX,OFFSET ' + D16Labels[L].Name); D16E('MOV DX,DS');
+            D16Factor := DTI_STRING;
+          End;
+        End
+        Else D16Error('expression invalide');
+      End
+      Else D16Error('expression invalide');
+    End;
+    TK_KEYWORD :
+    Begin
+      If D16IsKw('not') Then
+      Begin
+        D16Next;
+        T := D16Factor;
+        If D16Types[D16BaseType(T)].Kind = DT_BOOL Then
+        Begin
+          If D16PendCC >= 0 Then D16PendCC := D16PendCC Xor 1
+          Else D16E('XOR AL,1');
+        End
+        Else
+        Begin
+          If Not D16IsInteger(T) Then D16Error('operande invalide pour NOT');
+          D16Flush;
+          T := D16ArithType(T);
+          Case D16Types[T].Size Of
+            4 : Begin D16E('NOT AX'); D16E('NOT DX') End;
+          Else D16E('NOT AX');
+          End;
+        End;
+        D16Factor := T;
+      End
+      Else If D16IsKw('nil') Then
+      Begin
+        D16Next;
+        D16E('XOR AX,AX'); D16E('XOR DX,DX');
+        D16Factor := DTI_NIL;
+      End
+      Else If D16IsKw('string') Then
+      Begin
+        { String(x) : transtypage }
+        D16Next; D16ExpectPunct('(');
+        T := D16Expr; D16ExpectPunct(')');
+        D16Factor := DTI_STRING;
+      End
+      Else D16Error('expression invalide');
+    End;
+    TK_IDENT :
+    Begin
+      U := D16UVal;
+      { Champ With ? }
+      For I := D16WithCnt - 1 DownTo 0 Do
+        If D16FindField(D16WithStack[I].TypeIdx, U) >= 0 Then
+        Begin
+          T := D16Designator(A, IsConst);
+          D16Load(A, T);
+          D16Factor := T; Exit;
+        End;
+      S := D16Lookup(U);
+      If S < 0 Then
+      Begin
+        T := D16Builtin(U, IsFunc);
+        If Not IsFunc Then D16Error('fonction attendue: ' + U);
+        D16Factor := T; Exit;
+      End;
+      If D16Syms[S].Kind = DSK_UNIT Then
+      Begin
+        D16Next; D16ExpectPunct('.');
+        U := D16UVal; S := D16Lookup(U);
+        If S < 0 Then
+        Begin
+          T := D16Builtin(U, IsFunc);
+          If Not IsFunc Then D16Error('fonction attendue: ' + U);
+          D16Factor := T; Exit;
+        End;
+      End;
+      Case D16Syms[S].Kind Of
+        DSK_CONST :
+        Begin
+          D16Next;
+          T := D16Syms[S].TypeIdx;
+          Case D16Types[T].Kind Of
+            DT_STRING :
+            Begin
+              L := D16StrLitLabel(D16Syms[S].SVal);
+              D16E('MOV AX,OFFSET ' + D16Labels[L].Name); D16E('MOV DX,DS');
+            End;
+            DT_REAL :
+            Begin
+              D16RealTo6(D16Syms[S].RVal, B);
+              Lbl := 'R' + D16Str(D16DataLen);
+              D16DefineDataLabel(Lbl, D16DataLen);
+              For I := 0 To 5 Do D16DataB(B[I]);
+              D16E('MOV AX,OFFSET ' + Lbl); D16E('MOV DX,DS');
+            End;
+            DT_SET :
+            Begin
+              Lbl := 'K' + D16Str(D16DataLen);
+              D16DefineDataLabel(Lbl, D16DataLen);
+              For I := 1 To 32 Do D16DataB(Ord(D16Syms[S].SVal[I]));
+              D16E('MOV AX,OFFSET ' + Lbl); D16E('MOV DX,DS');
+            End;
+            DT_NIL : Begin D16E('XOR AX,AX'); D16E('XOR DX,DX') End;
+            DT_POINTER :
+            Begin
+              If D16Syms[S].Lbl >= 0 Then
+              Begin
+                D16E('MOV AX,OFFSET ' + D16Labels[D16Syms[S].Lbl].Name);
+                D16E('MOV DX,SEG ' + D16Labels[D16Syms[S].Lbl].Name);
+              End
+              Else
+              Begin
+                D16E('MOV AX,' + D16Str(D16Syms[S].Val And $FFFF));
+                D16E('MOV DX,' + D16Str((D16Syms[S].Val Shr 16) And $FFFF));
+              End;
+            End;
+          Else
+            Begin
+              If D16Types[T].Size = 4 Then
+              Begin
+                D16E('MOV AX,' + D16Str(D16Syms[S].Val And $FFFF));
+                D16E('MOV DX,' + D16Str((D16Syms[S].Val Shr 16) And $FFFF));
+              End
+              Else If D16Types[T].Size = 1 Then D16E('MOV AL,' + D16Str(D16Syms[S].Val And $FF))
+              Else D16E('MOV AX,' + D16Str(D16Syms[S].Val And $FFFF));
+            End;
+          End;
+          D16Factor := T;
+        End;
+        DSK_VAR :
+        Begin
+          T := D16Designator(A, IsConst);
+          If (D16Types[T].Kind = DT_PROCVAR) And (Not D16IsOp(':=')) And
+             (D16IsPunct('(') Or (D16Types[T].FCount = 0)) And (D16Types[T].RetType <> 0) Then
+          Begin
+            { appel d une fonction via variable procedure }
+            D16Factor := D16CallProcVar(A, T); Exit;
+          End;
+          D16Load(A, T);
+          D16Factor := T;
+        End;
+        DSK_PROC :
+        Begin
+          D16Next;
+          P := D16Syms[S].ProcIdx;
+          If D16Procs[P].RetType = 0 Then D16Error('une procedure ne retourne pas de valeur: ' + U);
+          D16Factor := D16CallProc(P);
+        End;
+        DSK_TYPE :
+        Begin
+          { Transtypage Type(expr) }
+          D16Next;
+          T2 := D16Syms[S].TypeIdx;
+          D16ExpectPunct('(');
+          T := D16Expr;
+          D16ExpectPunct(')');
+          D16Flush;
+          If D16IsLarge(T2) Then
+          Begin
+            { transtypage de variable : l adresse reste la meme }
+            If Not (D16IsLarge(T) Or (T = DTI_NONE)) Then D16Error('transtypage invalide');
+            T := T2;
+            { suffixes apres le transtypage : Type(x).champ }
+            If D16IsPunct('.') Or D16IsPunct('[') Then
+            Begin
+              D16PtrToAddr(A);
+              T := D16Selectors(A, T2);
+              D16Load(A, T);
+            End;
+            D16Factor := T;
+          End
+          Else If D16IsOrdinal(T2) Or D16IsPointer(T2) Then
+          Begin
+            If D16IsPointer(T2) And D16IsPointer(T) Then
+            Else If D16IsPointer(T2) And Not D16IsPointer(T) Then
+            Begin
+              { Longint -> pointeur }
+              D16Convert(T, DTI_LONGINT);
+            End
+            Else If D16IsOrdinal(T2) And D16IsOrdinal(T) Then
+              D16Convert(T, T2)
+            Else If D16IsOrdinal(T2) And D16IsPointer(T) Then
+            Else If D16IsOrdinal(T2) And D16IsLarge(T) Then
+            Begin
+              { Word(variable) : lire la valeur a l adresse }
+              D16PtrToAddr(A);
+              D16Load(A, T2);
+            End
+            Else D16Error('transtypage invalide');
+            If D16IsPointer(T2) And D16IsOp('^') Then
+            Begin
+              { Type(x)^ }
+              D16Next;
+              D16PtrToAddr(A);
+              T := D16Selectors(A, D16Types[T2].Base);
+              If T = DTI_NONE Then D16AddrToDXAX(A, 0) Else D16Load(A, T);
+              D16Factor := T; Exit;
+            End;
+            If (D16Types[T2].Kind = DT_PROCVAR) And D16IsPunct('(') Then
+            Begin
+              { appel via pointeur transtype }
+              O := D16AllocTemp(4);
+              D16E('MOV SS:[BP' + D16Str(O) + '],AX'); D16E('MOV SS:[BP' + D16Str(O + 2) + '],DX');
+              D16AddrClear(A); A.Seg := 1; A.UseBP := True; A.Disp := O;
+              D16Factor := D16CallProcVar(A, T2); Exit;
+            End;
+            D16Factor := T2;
+          End
+          Else D16Error('transtypage invalide');
+        End;
+      Else D16Error('expression invalide: ' + U);
+      End;
+    End;
+  Else D16Error('expression invalide');
+  End;
+End;
+
+{ Emission d une operation binaire entiere sur AX (droite) et pile (gauche) }
+Procedure D16IntBinOp(Const Op : TString; T : Integer);
+Var L1, L2 : TString;
+Begin
+  { Convention : operande gauche sur la pile (PUSH), droite dans AX / DX:AX }
+  If D16Types[T].Size = 4 Then
+  Begin
+    { gauche : [SP+2]=hi [SP]=lo -> POP CX (lo), POP BX (hi) ; droite DX:AX }
+    If Op = '+' Then
+    Begin D16E('POP CX'); D16E('POP BX'); D16E('ADD AX,CX'); D16E('ADC DX,BX') End
+    Else If Op = '-' Then
+    Begin
+      D16E('MOV CX,AX'); D16E('MOV BX,DX'); D16E('POP AX'); D16E('POP DX');
+      D16E('SUB AX,CX'); D16E('SBB DX,BX');
+    End
+    Else If Op = '*' Then
+    Begin D16E('POP CX'); D16E('POP BX'); D16CallRT('LMUL') End
+    Else If Op = 'div' Then
+    Begin
+      D16E('MOV CX,AX'); D16E('MOV BX,DX'); D16E('POP AX'); D16E('POP DX'); D16CallRT('LDIV');
+    End
+    Else If Op = 'mod' Then
+    Begin
+      D16E('MOV CX,AX'); D16E('MOV BX,DX'); D16E('POP AX'); D16E('POP DX'); D16CallRT('LMOD');
+    End
+    Else If Op = 'and' Then
+    Begin D16E('POP CX'); D16E('POP BX'); D16E('AND AX,CX'); D16E('AND DX,BX') End
+    Else If Op = 'or' Then
+    Begin D16E('POP CX'); D16E('POP BX'); D16E('OR AX,CX'); D16E('OR DX,BX') End
+    Else If Op = 'xor' Then
+    Begin D16E('POP CX'); D16E('POP BX'); D16E('XOR AX,CX'); D16E('XOR DX,BX') End
+    Else If Op = 'shl' Then
+    Begin
+      D16E('MOV CX,AX'); D16E('POP AX'); D16E('POP DX'); D16CallRT('LSHL');
+    End
+    Else If Op = 'shr' Then
+    Begin
+      D16E('MOV CX,AX'); D16E('POP AX'); D16E('POP DX'); D16CallRT('LSHR');
+    End
+    Else D16Error('operateur invalide: ' + Op);
+  End
+  Else
+  Begin
+    If Op = '+' Then Begin D16E('POP CX'); D16E('ADD AX,CX') End
+    Else If Op = '-' Then Begin D16E('MOV CX,AX'); D16E('POP AX'); D16E('SUB AX,CX') End
+    Else If Op = '*' Then
+    Begin
+      D16E('POP CX');
+      If T = DTI_WORD Then D16E('MUL CX') Else D16E('IMUL CX');
+    End
+    Else If Op = 'div' Then
+    Begin
+      D16E('MOV CX,AX'); D16E('POP AX');
+      If T = DTI_WORD Then Begin D16E('XOR DX,DX'); D16E('DIV CX') End
+      Else Begin D16E('CWD'); D16E('IDIV CX') End;
+    End
+    Else If Op = 'mod' Then
+    Begin
+      D16E('MOV CX,AX'); D16E('POP AX');
+      If T = DTI_WORD Then Begin D16E('XOR DX,DX'); D16E('DIV CX') End
+      Else Begin D16E('CWD'); D16E('IDIV CX') End;
+      D16E('MOV AX,DX');
+    End
+    Else If Op = 'and' Then Begin D16E('POP CX'); D16E('AND AX,CX') End
+    Else If Op = 'or' Then Begin D16E('POP CX'); D16E('OR AX,CX') End
+    Else If Op = 'xor' Then Begin D16E('POP CX'); D16E('XOR AX,CX') End
+    Else If Op = 'shl' Then Begin D16E('MOV CX,AX'); D16E('POP AX'); D16E('SHL AX,CL') End
+    Else If Op = 'shr' Then Begin D16E('MOV CX,AX'); D16E('POP AX'); D16E('SHR AX,CL') End
+    Else D16Error('operateur invalide: ' + Op);
+  End;
+End;
+
+{ Operation reelle : gauche (adresse) sur la pile, droite adresse DX:AX ;
+  resultat dans un temporaire dont l adresse revient dans DX:AX }
+Procedure D16RealBinOp(Const Op : TString);
+Var O : LongInt;
+Begin
+  O := D16AllocTemp(6);
+  D16E('POP BX'); D16E('POP CX');          { CX:BX = gauche }
+  D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+  If Op = '+' Then D16CallRT('RADD')
+  Else If Op = '-' Then D16CallRT('RSUB')
+  Else If Op = '*' Then D16CallRT('RMUL')
+  Else If Op = '/' Then D16CallRT('RDIV')
+  Else D16Error('operateur invalide pour des reels: ' + Op);
+  D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+End;
+
+{ Convertir la valeur courante (type T) en reel temporaire ; adresse DX:AX }
+Procedure D16ToReal(T : Integer);
+Var O : LongInt;
+Begin
+  If D16Types[T].Kind = DT_REAL Then Exit;
+  If Not D16IsInteger(T) Then D16Error('reel ou entier attendu');
+  D16Flush;
+  D16Convert(T, DTI_LONGINT);
+  O := D16AllocTemp(6);
+  D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+  D16CallRT('LTOREAL');
+  D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+End;
+
+{ Terme : facteur ( * / div mod and shl shr facteur ) }
+Function D16Term : Integer;
+Var
+  T, T2, R : Integer; Op : TString; O : LongInt; LEnd : TString;
+Begin
+  T := D16Factor;
+  While D16IsOp('*') Or D16IsOp('/') Or D16IsKw('div') Or D16IsKw('mod') Or
+        D16IsKw('and') Or D16IsKw('shl') Or D16IsKw('shr') Do
+  Begin
+    Op := StrLowerCase(D16Val);
+    { AND booleen court-circuit }
+    If (Op = 'and') And (D16Types[D16BaseType(T)].Kind = DT_BOOL) Then
+    Begin
+      D16Next;
+      LEnd := D16NewLabel;
+      D16Flush; D16E('OR AL,AL'); D16E('JZ ' + LEnd);
+      T2 := D16Factor;
+      If D16Types[D16BaseType(T2)].Kind <> DT_BOOL Then D16Error('booleen attendu');
+      D16Flush;
+      D16L(LEnd);
+      T := DTI_BOOLEAN;
+      Continue;
+    End;
+    D16Next;
+    D16Flush;
+    If (D16Types[T].Kind = DT_REAL) Or (Op = '/') Then
+    Begin
+      D16ToReal(T);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Factor;
+      D16ToReal(T2);
+      D16RealBinOp(Op);
+      T := DTI_REAL;
+      Continue;
+    End;
+    If D16Types[T].Kind = DT_SET Then
+    Begin
+      If Op <> '*' Then D16Error('operateur invalide pour des ensembles');
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Factor;
+      If D16Types[T2].Kind <> DT_SET Then D16Error('ensemble attendu');
+      D16Flush;
+      O := D16AllocTemp(32);
+      D16E('POP BX'); D16E('POP CX');
+      D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      D16CallRT('SETAND');
+      D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+      Continue;
+    End;
+    If Not D16IsInteger(T) Then D16Error('operande entier attendu');
+    { operande gauche : convertir au type arithmetique puis empiler }
+    { le type commun n est connu qu apres la droite : on empile toujours
+      en 32 bits si la gauche est deja 32 bits, sinon en 16 bits et on
+      etend apres si necessaire }
+    R := D16ArithType(T);
+    D16Convert(T, R);
+    If D16Types[R].Size = 4 Then Begin D16E('PUSH DX'); D16E('PUSH AX') End
+    Else D16E('PUSH AX');
+    T2 := D16Factor;
+    If (Op = 'shl') Or (Op = 'shr') Then
+    Begin
+      If Not D16IsInteger(T2) Then D16Error('operande entier attendu');
+      D16Flush;
+      D16Convert(T2, DTI_WORD);
+      D16IntBinOp(Op, R);
+      T := R;
+      Continue;
+    End;
+    If (D16Types[T2].Kind = DT_REAL) Then
+    Begin
+      { entier op reel : convertir la gauche (sur la pile) en reel }
+      D16E('PUSH DX'); D16E('PUSH AX');
+      D16E('MOV BX,SP');
+      If D16Types[R].Size = 4 Then
+      Begin D16E('MOV AX,SS:[BX+4]'); D16E('MOV DX,SS:[BX+6]') End
+      Else
+      Begin
+        D16E('MOV AX,SS:[BX+4]');
+        If D16IsSigned(R) Then D16E('CWD') Else D16E('XOR DX,DX');
+      End;
+      O := D16AllocTemp(6);
+      D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      D16CallRT('LTOREAL');
+      D16E('POP AX'); D16E('POP DX');
+      If D16Types[R].Size = 4 Then Begin D16E('POP CX'); D16E('POP CX') End Else D16E('POP CX');
+      D16E('MOV CX,SS'); D16E('LEA BX,SS:[BP' + D16Str(O) + ']');
+      D16E('PUSH CX'); D16E('PUSH BX');
+      D16RealBinOp(Op);
+      T := DTI_REAL;
+      Continue;
+    End;
+    If Not D16IsInteger(T2) Then D16Error('operande entier attendu');
+    D16Flush;
+    D16Convert(T2, D16ArithType(T2));   { octet -> mot (AH) avant tout }
+    T2 := D16ArithType(T2);
+    R := D16CommonInt(R, T2);
+    If (D16Types[R].Size = 4) And (D16Types[D16ArithType(T)].Size < 4) Then
+    Begin
+      { etendre la gauche empilee : AX -> DX:AX sur la pile }
+      D16E('POP CX');                 { gauche 16 bits }
+      D16E('PUSH AX'); D16E('PUSH DX'); { sauver la droite (DX:AX ou AX) }
+      D16E('MOV AX,CX');
+      If D16IsSigned(D16ArithType(T)) Then D16E('CWD') Else D16E('XOR DX,DX');
+      D16E('POP CX'); D16E('POP BX');   { CX = droite hi (si 32) ou garbage, BX = droite lo }
+      D16E('XCHG AX,BX');               { AX = droite lo, BX = gauche lo }
+      D16E('XCHG DX,CX');               { DX = droite hi, CX = gauche hi }
+      D16E('PUSH CX'); D16E('PUSH BX'); { gauche 32 bits empilee (hi puis lo) }
+      If D16Types[T2].Size < 4 Then
+      Begin
+        If D16IsSigned(T2) Then D16E('CWD') Else D16E('XOR DX,DX');
+      End;
+    End
+    Else
+      D16Convert(T2, R);
+    D16IntBinOp(Op, R);
+    T := R;
+  End;
+  D16Term := T;
+End;
+
+{ Expression simple : terme ( + - or xor terme ) }
+Function D16Simple : Integer;
+Var
+  T, T2, R : Integer; Op : TString; O : LongInt; LEnd : TString; A : TD16Addr;
+Begin
+  T := D16Term;
+  While D16IsOp('+') Or D16IsOp('-') Or D16IsKw('or') Or D16IsKw('xor') Do
+  Begin
+    Op := StrLowerCase(D16Val);
+    If (Op = 'or') And (D16Types[D16BaseType(T)].Kind = DT_BOOL) Then
+    Begin
+      D16Next;
+      LEnd := D16NewLabel;
+      D16Flush; D16E('OR AL,AL'); D16E('JNZ ' + LEnd);
+      T2 := D16Term;
+      If D16Types[D16BaseType(T2)].Kind <> DT_BOOL Then D16Error('booleen attendu');
+      D16Flush;
+      D16L(LEnd);
+      T := DTI_BOOLEAN;
+      Continue;
+    End;
+    If (Op = 'xor') And (D16Types[D16BaseType(T)].Kind = DT_BOOL) Then
+    Begin
+      D16Next; D16Flush; D16E('PUSH AX');
+      T2 := D16Term; D16Flush;
+      D16E('POP CX'); D16E('XOR AL,CL');
+      T := DTI_BOOLEAN;
+      Continue;
+    End;
+    D16Next;
+    D16Flush;
+    { Chaines }
+    If (D16Types[T].Kind = DT_STRING) Or (D16Types[T].Kind = DT_CHAR) And (Op = '+') And
+       ((D16Kind = TK_STRING) Or (D16Kind = TK_CHAR) Or True) Then
+    Begin
+      If (D16Types[T].Kind = DT_CHAR) Then
+      Begin
+        { char + ... : chaine si la droite est une chaine ; on ne peut pas
+          savoir avant d analyser : convertir en chaine systematiquement
+          (TP : Char + Char = String) }
+      End;
+      If Op <> '+' Then D16Error('operateur invalide pour des chaines');
+      O := D16AllocTemp(256);
+      If D16Types[T].Kind = DT_CHAR Then
+      Begin
+        D16E('MOV BYTE PTR SS:[BP' + D16Str(O) + '],1');
+        D16E('MOV BYTE PTR SS:[BP' + D16Str(O + 1) + '],AL');
+      End
+      Else
+      Begin
+        D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+        D16E('MOV CX,255'); D16CallRT('STRASSIGN');
+      End;
+      T2 := D16Term;
+      D16Flush;
+      If D16Types[T2].Kind = DT_CHAR Then
+      Begin
+        D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+        D16CallRT('STRADDCHAR');
+      End
+      Else
+      Begin
+        If D16Types[T2].Kind <> DT_STRING Then D16StrToTemp(T2, A);
+        D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+        D16CallRT('STRCAT');
+      End;
+      D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+      T := DTI_STRING;
+      Continue;
+    End;
+    If D16Types[T].Kind = DT_REAL Then
+    Begin
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Term;
+      D16ToReal(T2);
+      D16RealBinOp(Op);
+      T := DTI_REAL;
+      Continue;
+    End;
+    If D16Types[T].Kind = DT_SET Then
+    Begin
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Term;
+      If D16Types[T2].Kind <> DT_SET Then D16Error('ensemble attendu');
+      D16Flush;
+      O := D16AllocTemp(32);
+      D16E('POP BX'); D16E('POP CX');
+      D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      If Op = '+' Then D16CallRT('SETOR')
+      Else If Op = '-' Then D16CallRT('SETSUB')
+      Else D16Error('operateur invalide pour des ensembles');
+      D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+      Continue;
+    End;
+    { tableau de caracteres + entier : arithmetique PChar (syntaxe etendue de TP) }
+    If (D16Types[T].Kind = DT_ARRAY) And D16IsCharArray(T) And (D16Types[T].Lo = 0) Then T := DTI_PCHAR;
+    If D16IsPointer(T) Then
+    Begin
+      { P + n, P - n (offset), P - Q (difference d offsets) }
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Term; D16Flush;
+      If D16IsPointer(T2) Then
+      Begin
+        If Op <> '-' Then D16Error('operateur invalide pour des pointeurs');
+        D16E('POP CX'); D16E('POP DX'); D16E('SUB CX,AX'); D16E('MOV AX,CX');
+        D16E('CWD');
+        T := DTI_LONGINT;
+      End
+      Else
+      Begin
+        If Not D16IsInteger(T2) Then D16Error('entier attendu');
+        D16Convert(T2, DTI_INTEGER);
+        If (D16Types[T].Kind = DT_POINTER) And (D16Types[T].Base <> DTI_NONE) And
+           (D16Types[D16Types[T].Base].Size > 1) Then
+        Begin
+          D16E('MOV CX,' + D16Str(D16Types[D16Types[T].Base].Size)); D16E('IMUL CX');
+        End;
+        D16E('POP CX'); D16E('POP DX');
+        If Op = '+' Then D16E('ADD AX,CX')
+        Else Begin D16E('SUB CX,AX'); D16E('MOV AX,CX') End;
+      End;
+      Continue;
+    End;
+    If Not D16IsInteger(T) Then D16Error('operande entier attendu');
+    R := D16ArithType(T);
+    D16Convert(T, R);
+    If D16Types[R].Size = 4 Then Begin D16E('PUSH DX'); D16E('PUSH AX') End
+    Else D16E('PUSH AX');
+    T2 := D16Term;
+    If D16Types[T2].Kind = DT_REAL Then
+    Begin
+      { entier + reel : convertir la gauche (sur la pile) en reel }
+      D16E('PUSH DX'); D16E('PUSH AX');   { droite }
+      If D16Types[R].Size = 4 Then
+      Begin
+        { pile : [droite lo][droite hi][gauche lo][gauche hi] }
+        D16E('MOV BX,SP');
+        D16E('MOV AX,SS:[BX+4]'); D16E('MOV DX,SS:[BX+6]');
+      End
+      Else
+      Begin
+        D16E('MOV BX,SP');
+        D16E('MOV AX,SS:[BX+4]');
+        If D16IsSigned(R) Then D16E('CWD') Else D16E('XOR DX,DX');
+      End;
+      O := D16AllocTemp(6);
+      D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      D16CallRT('LTOREAL');
+      D16E('POP AX'); D16E('POP DX');     { droite }
+      If D16Types[R].Size = 4 Then Begin D16E('POP CX'); D16E('POP CX') End
+      Else D16E('POP CX');
+      D16E('MOV CX,SS'); D16E('LEA BX,SS:[BP' + D16Str(O) + ']');
+      D16E('PUSH CX'); D16E('PUSH BX');  { gauche reelle }
+      D16RealBinOp(Op);
+      T := DTI_REAL;
+      Continue;
+    End;
+    If Not D16IsInteger(T2) Then D16Error('operande entier attendu');
+    D16Flush;
+    D16Convert(T2, D16ArithType(T2));
+    T2 := D16ArithType(T2);
+    R := D16CommonInt(R, T2);
+    If (D16Types[R].Size = 4) And (D16Types[D16ArithType(T)].Size < 4) Then
+    Begin
+      D16E('POP CX');
+      D16E('PUSH AX'); D16E('PUSH DX');
+      D16E('MOV AX,CX');
+      If D16IsSigned(D16ArithType(T)) Then D16E('CWD') Else D16E('XOR DX,DX');
+      D16E('POP CX'); D16E('POP BX');
+      D16E('XCHG AX,BX'); D16E('XCHG DX,CX');
+      D16E('PUSH CX'); D16E('PUSH BX');
+      If D16Types[T2].Size < 4 Then
+      Begin
+        If D16IsSigned(T2) Then D16E('CWD') Else D16E('XOR DX,DX');
+      End;
+    End
+    Else
+      D16Convert(T2, R);
+    D16IntBinOp(Op, R);
+    T := R;
+  End;
+  D16Simple := T;
+End;
+
+{ Expression : simple [ relop simple ] }
+Function D16Expr : Integer;
+Var
+  T, T2, R : Integer; Op : TString; Sg : Boolean; A : TD16Addr; O : LongInt;
+Begin
+  D16FoldOK := True;
+  T := D16Simple;
+  If D16IsOp('=') Or D16IsOp('<>') Or D16IsOp('<') Or D16IsOp('>') Or
+     D16IsOp('<=') Or D16IsOp('>=') Or D16IsKw('in') Then
+  Begin
+    Op := StrLowerCase(D16Val); D16Next;
+    D16Flush;
+    If Op = 'in' Then
+    Begin
+      If Not D16IsOrdinal(T) Then D16Error('ordinal attendu pour IN');
+      If D16Types[T].Size = 1 Then D16E('MOV AH,0');
+      D16E('PUSH AX');
+      T2 := D16Simple;
+      If D16Types[T2].Kind <> DT_SET Then D16Error('ensemble attendu');
+      D16Flush;
+      D16E('POP CX');
+      D16CallRT('SETIN');       { ZF selon le resultat : JNZ si present }
+      D16PendCC := CC_NE;
+      D16Expr := DTI_BOOLEAN; Exit;
+    End;
+    If (D16Types[T].Kind = DT_ARRAY) And D16IsCharArray(T) Then
+    Begin
+      D16StrToTemp(T, A); T := DTI_STRING;
+    End;
+    If D16Types[T].Kind = DT_STRING Then
+    Begin
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Simple;
+      If D16Types[T2].Kind <> DT_STRING Then D16StrToTemp(T2, A);
+      D16Flush;
+      D16E('POP DI'); D16E('POP ES');
+      D16CallRT('STRCMP');
+      If Op = '=' Then D16PendCC := CC_E Else If Op = '<>' Then D16PendCC := CC_NE
+      Else If Op = '<' Then D16PendCC := CC_B Else If Op = '>' Then D16PendCC := CC_A
+      Else If Op = '<=' Then D16PendCC := CC_BE Else D16PendCC := CC_AE;
+      D16Expr := DTI_BOOLEAN; Exit;
+    End;
+    If D16Types[T].Kind = DT_CHAR Then
+    Begin
+      { Char compare a Char ou a String }
+      D16E('PUSH AX');
+      T2 := D16Simple;
+      D16Flush;
+      If D16Types[T2].Kind = DT_STRING Then
+      Begin
+        D16E('POP CX');            { CL = caractere gauche }
+        D16E('PUSH DX'); D16E('PUSH AX');
+        O := D16AllocTemp(2);
+        D16E('MOV BYTE PTR SS:[BP' + D16Str(O) + '],1');
+        D16E('MOV BYTE PTR SS:[BP' + D16Str(O + 1) + '],CL');
+        D16E('POP AX'); D16E('POP DX');
+        D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+        D16CallRT('STRCMP');
+        If Op = '=' Then D16PendCC := CC_E Else If Op = '<>' Then D16PendCC := CC_NE
+        Else If Op = '<' Then D16PendCC := CC_B Else If Op = '>' Then D16PendCC := CC_A
+        Else If Op = '<=' Then D16PendCC := CC_BE Else D16PendCC := CC_AE;
+        D16Expr := DTI_BOOLEAN; Exit;
+      End;
+      If D16Types[T2].Kind <> DT_CHAR Then D16Error('caractere attendu');
+      D16E('POP CX'); D16E('CMP CL,AL');
+      If Op = '=' Then D16PendCC := CC_E Else If Op = '<>' Then D16PendCC := CC_NE
+      Else If Op = '<' Then D16PendCC := CC_B Else If Op = '>' Then D16PendCC := CC_A
+      Else If Op = '<=' Then D16PendCC := CC_BE Else D16PendCC := CC_AE;
+      D16Expr := DTI_BOOLEAN; Exit;
+    End;
+    If D16Types[T].Kind = DT_REAL Then
+    Begin
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Simple;
+      D16ToReal(T2);
+      D16E('POP BX'); D16E('POP CX');
+      D16CallRT('RCMP');          { flags signes : gauche ? droite }
+      If Op = '=' Then D16PendCC := CC_E Else If Op = '<>' Then D16PendCC := CC_NE
+      Else If Op = '<' Then D16PendCC := CC_L Else If Op = '>' Then D16PendCC := CC_G
+      Else If Op = '<=' Then D16PendCC := CC_LE Else D16PendCC := CC_GE;
+      D16Expr := DTI_BOOLEAN; Exit;
+    End;
+    If D16Types[T].Kind = DT_SET Then
+    Begin
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Simple;
+      If D16Types[T2].Kind <> DT_SET Then D16Error('ensemble attendu');
+      D16Flush;
+      D16E('POP BX'); D16E('POP CX');
+      If Op = '=' Then Begin D16CallRT('SETEQ'); D16PendCC := CC_E End
+      Else If Op = '<>' Then Begin D16CallRT('SETEQ'); D16PendCC := CC_NE End
+      Else If Op = '<=' Then Begin D16CallRT('SETSUBSET'); D16PendCC := CC_E End
+      Else If Op = '>=' Then Begin D16CallRT('SETSUPERSET'); D16PendCC := CC_E End
+      Else D16Error('operateur invalide pour des ensembles');
+      D16Expr := DTI_BOOLEAN; Exit;
+    End;
+    If D16IsPointer(T) Then
+    Begin
+      D16E('PUSH DX'); D16E('PUSH AX');
+      T2 := D16Simple;
+      If Not D16IsPointer(T2) Then D16Error('pointeur attendu');
+      D16Flush;
+      D16E('POP CX'); D16E('POP BX');
+      If (Op = '=') Or (Op = '<>') Then
+      Begin
+        D16E('XOR AX,CX'); D16E('XOR DX,BX'); D16E('OR AX,DX');
+        If Op = '=' Then D16PendCC := CC_E Else D16PendCC := CC_NE;
+      End
+      Else
+      Begin
+        { ordre des pointeurs (PChar) : comparaison des offsets }
+        D16E('CMP CX,AX');
+        If Op = '<' Then D16PendCC := CC_B Else If Op = '>' Then D16PendCC := CC_A
+        Else If Op = '<=' Then D16PendCC := CC_BE Else D16PendCC := CC_AE;
+      End;
+      D16Expr := DTI_BOOLEAN; Exit;
+    End;
+    If D16IsLarge(T) Then D16Error('comparaison invalide');
+    { Ordinaux }
+    If D16Types[D16BaseType(T)].Kind = DT_BOOL Then
+    Begin
+      D16E('PUSH AX');
+      T2 := D16Simple; D16Flush;
+      D16E('POP CX'); D16E('CMP CL,AL');
+      Sg := False;
+    End
+    Else If D16IsInteger(T) Then
+    Begin
+      R := D16ArithType(T);
+      D16Convert(T, R);
+      If D16Types[R].Size = 4 Then Begin D16E('PUSH DX'); D16E('PUSH AX') End
+      Else D16E('PUSH AX');
+      T2 := D16Simple;
+      If D16Types[T2].Kind = DT_REAL Then
+      Begin
+        { entier compare a reel }
+        D16E('PUSH DX'); D16E('PUSH AX');
+        D16E('MOV BX,SP');
+        If D16Types[R].Size = 4 Then
+        Begin D16E('MOV AX,SS:[BX+4]'); D16E('MOV DX,SS:[BX+6]') End
+        Else
+        Begin
+          D16E('MOV AX,SS:[BX+4]');
+          If D16IsSigned(R) Then D16E('CWD') Else D16E('XOR DX,DX');
+        End;
+        O := D16AllocTemp(6);
+        D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+        D16CallRT('LTOREAL');
+        D16E('POP AX'); D16E('POP DX');
+        If D16Types[R].Size = 4 Then Begin D16E('POP CX'); D16E('POP CX') End Else D16E('POP CX');
+        D16E('MOV CX,SS'); D16E('LEA BX,SS:[BP' + D16Str(O) + ']');
+        D16CallRT('RCMP');
+        If Op = '=' Then D16PendCC := CC_E Else If Op = '<>' Then D16PendCC := CC_NE
+        Else If Op = '<' Then D16PendCC := CC_L Else If Op = '>' Then D16PendCC := CC_G
+        Else If Op = '<=' Then D16PendCC := CC_LE Else D16PendCC := CC_GE;
+        D16Expr := DTI_BOOLEAN; Exit;
+      End;
+      If Not D16IsInteger(T2) Then D16Error('entier attendu');
+      D16Flush;
+      D16Convert(T2, D16ArithType(T2));
+      T2 := D16ArithType(T2);
+      R := D16CommonInt(R, T2);
+      If D16Types[R].Size = 4 Then
+      Begin
+        If D16Types[D16ArithType(T)].Size < 4 Then
+        Begin
+          { etendre la gauche }
+          D16E('POP CX');
+          D16E('PUSH AX'); D16E('PUSH DX');
+          D16E('MOV AX,CX');
+          If D16IsSigned(D16ArithType(T)) Then D16E('CWD') Else D16E('XOR DX,DX');
+          D16E('POP CX'); D16E('POP BX');
+          D16E('XCHG AX,BX'); D16E('XCHG DX,CX');
+          D16E('PUSH CX'); D16E('PUSH BX');
+          If D16Types[T2].Size < 4 Then
+          Begin If D16IsSigned(T2) Then D16E('CWD') Else D16E('XOR DX,DX') End;
+        End
+        Else D16Convert(T2, R);
+        { gauche sur la pile, droite DX:AX }
+        D16E('MOV CX,AX'); D16E('MOV BX,DX'); D16E('POP AX'); D16E('POP DX');
+        D16CallRT('LCMP');     { flags signes gauche ? droite }
+        Sg := True;
+      End
+      Else
+      Begin
+        D16Convert(T2, R);
+        D16E('POP CX'); D16E('CMP CX,AX');
+        Sg := (R <> DTI_WORD);
+      End;
+    End
+    Else
+    Begin
+      { enumeres, sous-intervalles }
+      D16Convert(T, DTI_WORD);
+      D16E('PUSH AX');
+      T2 := D16Simple; D16Flush;
+      D16Convert(T2, DTI_WORD);
+      D16E('POP CX'); D16E('CMP CX,AX');
+      Sg := False;
+    End;
+    If Op = '=' Then D16PendCC := CC_E
+    Else If Op = '<>' Then D16PendCC := CC_NE
+    Else If Sg Then
+    Begin
+      If Op = '<' Then D16PendCC := CC_L Else If Op = '>' Then D16PendCC := CC_G
+      Else If Op = '<=' Then D16PendCC := CC_LE Else D16PendCC := CC_GE;
+    End
+    Else
+    Begin
+      If Op = '<' Then D16PendCC := CC_B Else If Op = '>' Then D16PendCC := CC_A
+      Else If Op = '<=' Then D16PendCC := CC_BE Else D16PendCC := CC_AE;
+    End;
+    T := DTI_BOOLEAN;
+  End;
+  D16Expr := T;
+End;
+
+{ Expression convertie vers le type Target (ordinaux / pointeurs / reels) ;
+  pour les grands types retourne l adresse DX:AX }
+{ Litteral chaine utilise comme PChar : ASCIIZ en donnees, adresse dans DX:AX }
+Procedure D16PCharLiteral(Const S : TString);
+Var Nm : TString; I : Integer;
+Begin
+  Nm := 'Z' + IntToStr_(D16DataSeq); Inc(D16DataSeq);
+  D16DefineDataLabel(Nm, D16DataLen);
+  For I := 1 To Length(S) Do D16DataB(Ord(S[I]));
+  D16DataB(0);
+  D16E('MOV AX,OFFSET ' + Nm); D16E('MOV DX,DS');
+End;
+
+Function D16IsPCharType(T : Integer) : Boolean;
+Begin
+  D16IsPCharType := (D16Types[T].Kind = DT_POINTER) And (D16Types[T].Base = DTI_CHAR);
+End;
+
+{ Une expression constante chaine suit-elle (litteraux, ^X, constantes, +) ? }
+Function D16StrConstAhead : Boolean;
+Var P : LongInt; S : LongInt; Ok : Boolean; N : Integer;
+Begin
+  D16StrConstAhead := False;
+  P := D16Pos; Ok := True; N := 0;
+  While (P < D16End) And Ok Do
+  Begin
+    Case TokenPool[P].Kind Of
+      TK_STRING, TK_CHAR : Inc(N);
+      TK_OP :
+        If TokenPool[P].Val = '+' Then
+        Else If (TokenPool[P].Val = '^') And (P + 1 < D16End) And (TokenPool[P + 1].Kind = TK_IDENT) And
+                (Length(TokenPool[P + 1].Val) = 1) Then Inc(P)
+        Else Ok := False;
+      TK_IDENT :
+      Begin
+        S := D16Lookup(StrUpperCase(TokenPool[P].Val));
+        If (S < 0) Or (D16Syms[S].Kind <> DSK_CONST) Or
+           Not (D16Types[D16Syms[S].TypeIdx].Kind In [DT_STRING, DT_CHAR]) Then Exit;
+        Inc(N);
+      End;
+    Else Ok := False;
+    End;
+    If Ok Then Inc(P);
+  End;
+  If N = 0 Then Exit;
+  If Not ((TokenPool[P].Kind = TK_PUNCT) And ((TokenPool[P].Val = ',') Or (TokenPool[P].Val = ')') Or
+          (TokenPool[P].Val = ';') Or (TokenPool[P].Val = ']'))) Then Exit;
+  D16StrConstAhead := True;
+End;
+
+Function D16ExprTo(Target : Integer) : Integer;
+Var T : Integer; A : TD16Addr; C : TD16Const;
+Begin
+  If D16IsPCharType(Target) And D16StrConstAhead Then
+  Begin
+    D16ConstExpr(C); D16ConstToStr(C);
+    D16PCharLiteral(C.SVal);
+    D16PendCC := -1;
+    D16ExprTo := Target; Exit;
+  End;
+  T := D16Expr;
+  If D16Types[Target].Kind = DT_STRING Then
+  Begin
+    D16Flush;
+    If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+    D16ExprTo := DTI_STRING; Exit;
+  End;
+  If D16Types[Target].Kind = DT_REAL Then
+  Begin
+    D16ToReal(T);
+    D16ExprTo := DTI_REAL; Exit;
+  End;
+  D16CheckAssign(Target, T);
+  If D16IsOrdinal(Target) Then
+  Begin
+    D16Flush;
+    D16Convert(T, Target);
+  End
+  Else D16Flush;
+  D16ExprTo := T;
+End;
+
+{ ------------------------------------------------------------ }
+{ D16 : assembleur integre (blocs ASM, procedures ASSEMBLER,    }
+{ INLINE). Les tokens Pascal du bloc sont traduits ligne par    }
+{ ligne en texte pour D16Asm : variables Pascal -> operandes    }
+{ memoire, constantes -> immediats, @labels -> labels locaux.    }
+{ ------------------------------------------------------------ }
+
+Function D16AsmIsReg(Const U : TString) : Boolean;
+Begin
+  D16AsmIsReg := (D16RegIndex16(U) >= 0) Or (D16RegIndex8(U) >= 0) Or (D16SRegIndex(U) >= 0);
+End;
+
+{ Nombre avec suffixe hexadecimal eventuel (0FFh lexe en 0 + FFh) }
+Function D16AsmNumber : LongInt;
+Var V : LongInt; S : TString; I : Integer; Nxt : TString;
+Begin
+  V := TokenPool[D16Pos].IntVal;
+  S := TokenPool[D16Pos].Val;
+  D16Next;
+  If (D16Kind = TK_IDENT) And (TokenPool[D16Pos].Line = TokenPool[D16Pos - 1].Line) And
+     (TokenPool[D16Pos].Col <= TokenPool[D16Pos - 1].Col + 8) Then
+  Begin
+    Nxt := StrUpperCase(D16Val);
+    If Nxt[Length(Nxt)] = 'H' Then
+    Begin
+      { verifier que ce sont des chiffres hexa }
+      For I := 1 To Length(Nxt) - 1 Do
+        If Not IsHexDigit(Nxt[I]) Then Begin D16AsmNumber := V; Exit End;
+      S := S + Copy(Nxt, 1, Length(Nxt) - 1);
+      V := 0;
+      For I := 1 To Length(S) Do V := V * 16 + HexVal(S[I]);
+      D16Next;
+    End;
+  End;
+  D16AsmNumber := V;
+End;
+
+Function D16AsmConstAhead(Line : Integer) : Boolean;
+Begin
+  D16ConstLine := Line;
+  D16AsmConstAhead := D16ConstAhead;
+  D16ConstLine := -1;
+End;
+
+Var D16AsmBlockSeq : LongInt;
+
+Function D16AsmLabelName(Const Nm : TString) : TString;
+Begin
+  D16AsmLabelName := 'A' + IntToStr_(D16AsmBlockSeq) + '_' + Nm;
+End;
+
+{ Un operande : retourne son texte pour D16Asm }
+Function D16AsmOperand(Line : Integer) : TString;
+Var
+  U, Res, Pre, Ovr, Regs, Lbl : TString; Size : Integer; IsOffset, IsSeg, IsMem, HasBP : Boolean;
+  Disp : LongInt; S, F : LongInt; T : Integer; Sym : LongInt; Sg : Integer; V : LongInt;
+  C : TD16Const;
+
+  Function AtEnd : Boolean;
+  Begin
+    AtEnd := (D16Pos >= D16End) Or (TokenPool[D16Pos].Line <> Line) Or D16IsPunct(',') Or
+             D16IsPunct(';') Or D16IsKw('end');
+  End;
+
+  Procedure AddDisp(D : LongInt);
+  Begin Disp := Disp + D End;
+
+  Procedure AddReg(Const R : TString);
+  Begin
+    If Regs <> '' Then Regs := Regs + '+';
+    Regs := Regs + R;
+    If R = 'BP' Then HasBP := True;
+  End;
+
+  { contenu entre crochets }
+  Procedure Bracket;
+  Var Sign : Integer; U2 : TString; S2 : LongInt;
+  Begin
+    D16Next; { [ }
+    Sign := 1;
+    While Not D16IsPunct(']') Do
+    Begin
+      If AtEnd Then D16Error('asm: "]" attendu');
+      If D16IsOp('+') Then Begin Sign := 1; D16Next End
+      Else If D16IsOp('-') Then Begin Sign := -1; D16Next End
+      Else If D16Kind = TK_INTEGER Then AddDisp(Sign * D16AsmNumber)
+      Else If D16Kind = TK_IDENT Then
+      Begin
+        U2 := D16UVal;
+        If D16RegIndex16(U2) >= 0 Then Begin AddReg(U2); D16Next End
+        Else
+        Begin
+          S2 := D16Lookup(U2);
+          If S2 < 0 Then D16Error('asm: identificateur inconnu: ' + U2);
+          If D16Syms[S2].Kind = DSK_CONST Then Begin AddDisp(Sign * D16Syms[S2].Val); D16Next End
+          Else If D16Syms[S2].Kind = DSK_TYPE Then
+          Begin
+            T := D16Syms[S2].TypeIdx; D16Next;
+            While D16IsPunct('.') Do
+            Begin
+              D16Next; U2 := D16UVal;
+              F := D16FindField(T, U2);
+              If F < 0 Then D16Error('asm: champ inconnu: ' + U2);
+              AddDisp(Sign * D16Fields[F].Offset); T := D16Fields[F].TypeIdx; D16Next;
+            End;
+          End
+          Else If D16Syms[S2].Kind = DSK_VAR Then
+          Begin
+            D16Next;
+            If D16Syms[S2].Loc = LOC_GLOBAL Then
+            Begin Lbl := D16Labels[D16Syms[S2].Lbl].Name; AddDisp(D16Syms[S2].Ofs) End
+            Else Begin AddReg('BP'); AddDisp(D16Syms[S2].Ofs) End;
+            IsMem := True;
+          End
+          Else D16Error('asm: operande invalide: ' + U2);
+        End;
+      End
+      Else D16Error('asm: expression d adresse invalide');
+    End;
+    D16Next; { ] }
+    IsMem := True;
+  End;
+
+  { suffixes apres une variable : .champ .Word [index] }
+  Procedure Suffixes(T : Integer);
+  Var U2 : TString; F2 : LongInt;
+  Begin
+    While Not AtEnd Do
+    Begin
+      If D16IsPunct('.') Then
+      Begin
+        D16Next;
+        U2 := D16UVal;
+        If (U2 = 'BYTE') Then Begin Size := 1; D16Next End
+        Else If (U2 = 'WORD') Then Begin Size := 2; D16Next End
+        Else If (U2 = 'DWORD') Then Begin Size := 4; D16Next End
+        Else
+        Begin
+          F2 := D16FindField(T, U2);
+          If F2 < 0 Then D16Error('asm: champ inconnu: ' + U2);
+          AddDisp(D16Fields[F2].Offset); T := D16Fields[F2].TypeIdx;
+          Size := D16Types[T].Size;
+          D16Next;
+        End;
+      End
+      Else If D16IsPunct('[') Then Bracket
+      Else If D16IsOp('+') Or D16IsOp('-') Then
+      Begin
+        { variable+2 }
+        If D16IsOp('+') Then Begin D16Next; AddDisp(D16AsmNumber) End
+        Else Begin D16Next; AddDisp(-D16AsmNumber) End;
+      End
+      Else Break;
+    End;
+  End;
+
+Begin
+  Res := ''; Pre := ''; Ovr := ''; Regs := ''; Lbl := ''; Size := 0; Disp := 0;
+  IsOffset := False; IsSeg := False; IsMem := False; HasBP := False;
+  If AtEnd Then D16Error('asm: operande attendu');
+  { prefixes de taille : BYTE PTR / WORD PTR / DWORD PTR }
+  If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    If ((U = 'BYTE') Or (U = 'WORD') Or (U = 'DWORD')) And (D16PeekKind(1) = TK_IDENT) And
+       (StrUpperCase(D16PeekVal(1)) = 'PTR') Then
+    Begin
+      If U = 'BYTE' Then Size := 1 Else If U = 'WORD' Then Size := 2 Else Size := 4;
+      D16Next; D16Next;
+    End;
+  End;
+  If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    If U = 'OFFSET' Then Begin IsOffset := True; D16Next End
+    Else If U = 'SEG' Then Begin IsSeg := True; D16Next End;
+  End;
+  { prefixe de segment ES: }
+  If D16IsIdent And (D16SRegIndex(D16UVal) >= 0) And (D16PeekKind(1) = TK_PUNCT) And (D16PeekVal(1) = ':') Then
+  Begin
+    Ovr := D16UVal + ':'; D16Next; D16Next;
+  End;
+  { @Result, @label }
+  If D16IsOp('@') Then
+  Begin
+    D16Next;
+    If D16IsOp('@') Then D16Next;
+    If D16IsIdentU('RESULT') Then
+    Begin
+      D16Next;
+      If (D16CurProc < 0) Or (D16Procs[D16CurProc].RetType = 0) Then D16Error('asm: @Result hors d une fonction');
+      T := D16Procs[D16CurProc].RetType;
+      If D16IsLarge(T) Then
+      Begin
+        { pointeur vers le resultat }
+        D16AsmOperand := 'DWORD PTR SS:[BP+' + IntToStr_(D16Procs[D16CurProc].ResultOfs) + ']';
+      End
+      Else
+      Begin
+        Case D16Types[T].Size Of
+          1 : Pre := 'BYTE PTR ';
+          2 : Pre := 'WORD PTR ';
+        Else Pre := 'DWORD PTR ';
+        End;
+        D16AsmOperand := Pre + 'SS:[BP' + IntToStr_(D16Procs[D16CurProc].ResultOfs) + ']';
+      End;
+      Exit;
+    End;
+    If D16Kind = TK_INTEGER Then U := IntToStr_(TokenPool[D16Pos].IntVal) Else U := D16UVal;
+    D16Next;
+    D16AsmOperand := D16AsmLabelName(U);
+    Exit;
+  End;
+  { registre }
+  If D16IsIdent And D16AsmIsReg(D16UVal) And Not IsOffset And Not IsSeg Then
+  Begin
+    U := D16UVal; D16Next;
+    If Not AtEnd And Not D16IsPunct('[') Then D16Error('asm: operande inattendu apres ' + U);
+    If D16IsPunct('[') Then
+    Begin
+      { reg[...] n est pas une forme TP ; traiter comme [reg+...] }
+      AddReg(U); Bracket; Suffixes(DTI_NONE);
+    End
+    Else Begin D16AsmOperand := U; Exit End;
+  End
+  Else If D16IsPunct('[') Then Begin Bracket; Suffixes(DTI_NONE) End
+  Else If D16IsKw('not') Or D16IsPunct('(') Or D16AsmConstAhead(Line) Then
+  Begin
+    { expression constante : NOT(16+32), (A+B)*2 ... }
+    D16ConstLine := Line;
+    D16ConstExpr(C);
+    D16ConstLine := -1;
+    If C.Kind <> DT_INT Then D16Error('asm: constante entiere attendue');
+    D16AsmOperand := IntToStr_(C.IVal); Exit;
+  End
+  Else If D16IsIdent And ((D16UVal = 'LOW') Or (D16UVal = 'HIGH')) And (D16PeekKind(1) = TK_PUNCT) And
+          (D16PeekVal(1) = '(') Then
+  Begin
+    { LOW(expr) / HIGH(expr) : octet bas / haut d une constante }
+    U := D16UVal; D16Next; D16Next;
+    D16ConstLine := Line; D16ConstExpr(C); D16ConstLine := -1;
+    D16ExpectPunct(')');
+    If U = 'LOW' Then D16AsmOperand := IntToStr_(C.IVal And $FF)
+    Else D16AsmOperand := IntToStr_((C.IVal Shr 8) And $FF);
+    Exit;
+  End
+  Else If D16Kind = TK_INTEGER Then
+  Begin
+    V := D16AsmNumber;
+    If Not AtEnd And D16IsPunct('[') Then Begin AddDisp(V); Bracket End
+    Else Begin D16AsmOperand := Pre + IntToStr_(V); If Size = 0 Then Exit; D16AsmOperand := IntToStr_(V); Exit End;
+  End
+  Else If D16IsCharTok Then
+  Begin
+    V := D16CharTokVal; D16Next;
+    D16AsmOperand := IntToStr_(V); Exit;
+  End
+  Else If D16IsOp('-') Then
+  Begin
+    D16Next;
+    If D16Kind <> TK_INTEGER Then D16Error('asm: nombre attendu');
+    V := -D16AsmNumber;
+    D16AsmOperand := IntToStr_(V); Exit;
+  End
+  Else If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    Sym := D16Lookup(U);
+    If Sym < 0 Then
+    Begin
+      { label Pascal ou identificateur de label asm sans @ }
+      D16Next;
+      D16AsmOperand := D16AsmLabelName(U); Exit;
+    End;
+    Case D16Syms[Sym].Kind Of
+      DSK_CONST :
+      Begin
+        D16Next;
+        If D16Types[D16Syms[Sym].TypeIdx].Kind = DT_STRING Then D16Error('asm: constante chaine invalide');
+        D16AsmOperand := IntToStr_(D16Syms[Sym].Val); Exit;
+      End;
+      DSK_TYPE :
+      Begin
+        { Type.Champ : offset du champ }
+        T := D16Syms[Sym].TypeIdx; D16Next;
+        While D16IsPunct('.') Do
+        Begin
+          D16Next; U := D16UVal;
+          F := D16FindField(T, U);
+          If F < 0 Then D16Error('asm: champ inconnu: ' + U);
+          AddDisp(D16Fields[F].Offset); T := D16Fields[F].TypeIdx; D16Next;
+        End;
+        D16AsmOperand := IntToStr_(Disp); Exit;
+      End;
+      DSK_LABEL :
+      Begin
+        D16Next;
+        D16AsmOperand := D16Syms[Sym].SVal; Exit;
+      End;
+      DSK_PROC :
+      Begin
+        D16Next;
+        If D16IsPunct('.') Then
+        Begin
+          { Proc.Type.Champ : donnees dans le segment de code }
+          Lbl := D16Procs[D16Syms[Sym].ProcIdx].Lbl;
+          D16Next; U := D16UVal; S := D16Lookup(U);
+          If (S < 0) Or (D16Syms[S].Kind <> DSK_TYPE) Then D16Error('asm: type attendu: ' + U);
+          T := D16Syms[S].TypeIdx; D16Next;
+          Size := D16Types[T].Size;
+          Suffixes(T);
+          If Ovr = '' Then Ovr := 'CS:';
+          IsMem := True;
+        End
+        Else If IsOffset Then D16AsmOperand := 'OFFSET ' + D16Procs[D16Syms[Sym].ProcIdx].Lbl
+        Else If IsSeg Then D16AsmOperand := 'SEG ' + D16Procs[D16Syms[Sym].ProcIdx].Lbl
+        Else D16AsmOperand := 'FAR PTR ' + D16Procs[D16Syms[Sym].ProcIdx].Lbl;
+        If Not IsMem Then Exit;
+      End;
+      DSK_VAR :
+      Begin
+        D16Next;
+        T := D16Syms[Sym].TypeIdx;
+        If Size = 0 Then Size := D16Types[T].Size;
+        Case D16Syms[Sym].Loc Of
+          LOC_GLOBAL : Begin Lbl := D16Labels[D16Syms[Sym].Lbl].Name; AddDisp(D16Syms[Sym].Ofs) End;
+          LOC_LOCAL, LOC_REFPARAM, LOC_RESULT :
+          Begin
+            If D16Syms[Sym].Level <> D16Level Then D16Error('asm: variable d un niveau englobant');
+            AddReg('BP'); AddDisp(D16Syms[Sym].Ofs);
+            If D16Syms[Sym].Loc <> LOC_LOCAL Then Size := 4;
+          End;
+          LOC_ABS :
+          Begin
+            Ovr := 'ES:'; AddDisp(D16Syms[Sym].Ofs);
+            D16Error('asm: variable ABSOLUTE non supportee');
+          End;
+        End;
+        IsMem := True;
+        Suffixes(T);
+      End;
+    Else D16Error('asm: operande invalide: ' + U);
+    End;
+  End
+  Else D16Error('asm: operande invalide');
+  { construction de l operande memoire / offset }
+  If IsOffset Then
+  Begin
+    If Lbl <> '' Then
+    Begin
+      If Disp <> 0 Then D16AsmOperand := 'OFFSET ' + Lbl + '+' + IntToStr_(Disp)
+      Else D16AsmOperand := 'OFFSET ' + Lbl;
+    End
+    Else D16AsmOperand := IntToStr_(Disp);
+    Exit;
+  End;
+  If IsSeg Then
+  Begin
+    If Lbl <> '' Then D16AsmOperand := 'SEG ' + Lbl Else D16AsmOperand := 'SS';
+    Exit;
+  End;
+  Case Size Of
+    1 : Pre := 'BYTE PTR ';
+    2 : Pre := 'WORD PTR ';
+    4 : Pre := 'DWORD PTR ';
+  Else Pre := '';
+  End;
+  If (Ovr = '') And HasBP Then Ovr := 'SS:';
+  Res := Pre + Ovr + '[';
+  If Regs <> '' Then Res := Res + Regs;
+  If Lbl <> '' Then
+  Begin
+    If Regs <> '' Then Res := Res + '+';
+    Res := Res + Lbl;
+  End;
+  If (Disp <> 0) Or ((Regs = '') And (Lbl = '')) Then
+  Begin
+    If (Disp >= 0) And ((Regs <> '') Or (Lbl <> '')) Then Res := Res + '+';
+    Res := Res + IntToStr_(Disp);
+  End;
+  D16AsmOperand := Res + ']';
+End;
+
+{ Bloc asm ... end }
+Procedure D16AsmBlock;
+Var
+  Line : Integer; Mnem, Ops, Op : TString; U : TString; N : LongInt;
+Begin
+  D16Next; { asm }
+  D16HasAsmBlocks := True;
+  Inc(D16AsmBlockSeq);
+  While Not D16IsKw('end') Do
+  Begin
+    If D16Pos >= D16End Then D16Error('asm: END attendu');
+    Line := TokenPool[D16Pos].Line;
+    { ; separe deux instructions sur une meme ligne (TP) : DB $66;SHL AX,CL }
+    If D16IsPunct(';') Then
+    Begin
+      D16Next;
+      Continue;
+    End;
+    { label @nom: ou @@nom: ou nom: }
+    If D16IsOp('@') Then
+    Begin
+      D16Next;
+      If D16IsOp('@') Then D16Next;
+      If D16Kind = TK_INTEGER Then U := IntToStr_(TokenPool[D16Pos].IntVal) Else U := D16UVal;
+      D16Next;
+      D16ExpectPunct(':');
+      D16L(D16AsmLabelName(U));
+      Continue;
+    End;
+    If D16IsIdent And (D16PeekKind(1) = TK_PUNCT) And (D16PeekVal(1) = ':') And
+       Not D16AsmIsReg(D16UVal) Then
+    Begin
+      U := D16UVal; D16Next; D16Next;
+      N := D16Lookup(U);
+      If (N >= 0) And (D16Syms[N].Kind = DSK_LABEL) Then
+      Begin D16L(D16Syms[N].SVal); D16Syms[N].Val := 1 End
+      Else D16L(D16AsmLabelName(U));
+      Continue;
+    End;
+    { les mnemoniques AND OR XOR NOT SHL SHR DIV MOD IN sont des mots-cles Pascal }
+    If Not (D16IsIdent Or (D16Kind = TK_KEYWORD)) Then D16Error('asm: mnemonique attendu');
+    Mnem := D16UVal; D16Next;
+    { prefixe REP }
+    If ((Mnem = 'REP') Or (Mnem = 'REPE') Or (Mnem = 'REPNE') Or (Mnem = 'REPZ') Or (Mnem = 'REPNZ')) And
+       D16IsIdent And (TokenPool[D16Pos].Line = Line) Then
+    Begin
+      Mnem := Mnem + ' ' + D16UVal; D16Next;
+    End;
+    Ops := ''; N := 0;
+    While (D16Pos < D16End) And (TokenPool[D16Pos].Line = Line) And Not D16IsKw('end') And
+          Not D16IsPunct(';') Do
+    Begin
+      If N > 0 Then
+      Begin
+        If Not D16IsPunct(',') Then D16Error('asm: "," attendue');
+        D16Next;
+      End;
+      If (Mnem = 'DB') Or (Mnem = 'DW') Or (Mnem = 'DD') Then
+      Begin
+        If D16Kind = TK_INTEGER Then Op := IntToStr_(D16AsmNumber)
+        Else If (D16Kind = TK_STRING) Or (D16Kind = TK_CHAR) Then
+        Begin Op := '''' + TokenPool[D16Pos].Val + ''''; D16Next End
+        Else If D16IsOp('-') Then
+        Begin D16Next; Op := IntToStr_(-D16AsmNumber) End
+        Else Op := D16AsmOperand(Line);
+      End
+      Else If (Mnem = 'SHORT') Then Op := ''
+      Else Op := D16AsmOperand(Line);
+      If (Mnem = 'JMP') Or (Mnem = 'CALL') Then
+      Begin
+        If Copy(Op, 1, 8) = 'FAR PTR ' Then
+        Else If (Mnem = 'CALL') And (Pos('[', Op) = 0) And (Pos('P_', Op) = 1) Then Op := 'FAR PTR ' + Op;
+      End;
+      If N > 0 Then Ops := Ops + ',' + Op Else Ops := Op;
+      Inc(N);
+    End;
+    { ; : separateur d instructions, la suite de la ligne est traitee au tour suivant }
+    If D16IsPunct(';') Then D16Next;
+    If Ops <> '' Then D16E(Mnem + ' ' + Ops) Else D16E(Mnem);
+  End;
+  D16Next; { end }
+  D16PendCC := -1;
+End;
+
+{ Inline(octets / mots) : emission directe }
+Procedure D16InlineStmt;
+Var V : LongInt; Wide : Boolean; S : LongInt; U : TString;
+Begin
+  D16Next; { inline }
+  D16ExpectPunct('(');
+  Repeat
+    Wide := False;
+    If D16IsOp('>') Then Begin Wide := True; D16Next End
+    Else If D16IsOp('<') Then D16Next;
+    If D16Kind = TK_INTEGER Then
+    Begin
+      V := TokenPool[D16Pos].IntVal; D16Next;
+      { +/- constante }
+      While D16IsOp('+') Or D16IsOp('-') Do
+      Begin
+        If D16IsOp('+') Then Begin D16Next; V := V + TokenPool[D16Pos].IntVal End
+        Else Begin D16Next; V := V - TokenPool[D16Pos].IntVal End;
+        D16Next;
+      End;
+      If Wide Or (V > 255) Or (V < 0) Then D16E('DW ' + IntToStr_(V And $FFFF))
+      Else D16E('DB ' + IntToStr_(V));
+    End
+    Else If D16IsIdent Then
+    Begin
+      U := D16UVal; S := D16Lookup(U); D16Next;
+      If (S >= 0) And (D16Syms[S].Kind = DSK_CONST) Then
+      Begin
+        V := D16Syms[S].Val;
+        If Wide Or (V > 255) Then D16E('DW ' + IntToStr_(V And $FFFF)) Else D16E('DB ' + IntToStr_(V));
+      End
+      Else If (S >= 0) And (D16Syms[S].Kind = DSK_VAR) Then
+      Begin
+        If D16Syms[S].Loc = LOC_GLOBAL Then D16E('DW ' + D16Labels[D16Syms[S].Lbl].Name)
+        Else D16E('DW ' + IntToStr_(D16Syms[S].Ofs And $FFFF));
+      End
+      Else D16Error('inline: identificateur invalide: ' + U);
+    End
+    Else D16Error('inline: element invalide');
+    If D16IsOp('/') Then D16Next Else Break;
+  Until False;
+  D16ExpectPunct(')');
+  D16PendCC := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ D16 : fonctions et procedures standard                       }
+{ ------------------------------------------------------------ }
+
+{ Adresse d un fichier texte en argument optionnel : si le prochain
+  argument est un fichier, empile son adresse ; sinon empile Output/Input }
+Function D16PushFileArg(IsInput : Boolean; Var FileType : Integer) : Boolean;
+Var
+  Save : LongInt; U : TString; S : LongInt; T : Integer; A : TD16Addr; IsConst : Boolean;
+  W : Integer;
+Begin
+  D16PushFileArg := False;
+  FileType := DTI_TEXT;
+  If D16IsIdent Then
+  Begin
+    U := D16UVal;
+    S := D16Lookup(U);
+    T := -1;
+    For W := D16WithCnt - 1 DownTo 0 Do
+      If D16FindField(D16WithStack[W].TypeIdx, U) >= 0 Then
+      Begin
+        T := D16Fields[D16FindField(D16WithStack[W].TypeIdx, U)].TypeIdx; S := -2; Break;
+      End;
+    If (S >= 0) And (D16Syms[S].Kind = DSK_VAR) Then T := D16Syms[S].TypeIdx;
+    If (T >= 0) Then
+    Begin
+      { le type final apres selecteurs : il faut analyser le designateur
+        si le symbole est un fichier ou un record/tableau contenant un fichier }
+      If (D16Types[T].Kind In [DT_TEXT, DT_FILE]) Or
+         ((D16Types[T].Kind In [DT_RECORD, DT_ARRAY, DT_POINTER]) And (D16PeekKind(1) = TK_PUNCT) And
+          ((D16PeekVal(1) = '.') Or (D16PeekVal(1) = '[')) Or
+          ((D16Types[T].Kind = DT_POINTER) And (D16PeekKind(1) = TK_OP) And (D16PeekVal(1) = '^'))) Then
+      Begin
+        Save := D16Pos;
+        T := D16Designator(A, IsConst);
+        If D16Types[T].Kind In [DT_TEXT, DT_FILE] Then
+        Begin
+          D16AddrToDXAX(A, 0);
+          D16E('PUSH DX'); D16E('PUSH AX');
+          FileType := T;
+          D16PushFileArg := True;
+          Exit;
+        End;
+        D16Pos := Save;
+      End;
+    End;
+  End;
+  If IsInput Then D16SysVarAddr('INPUT', A) Else D16SysVarAddr('OUTPUT', A);
+  D16AddrToDXAX(A, 0);
+  D16E('PUSH DX'); D16E('PUSH AX');
+End;
+
+Procedure D16IoCheckCall;
+Begin
+  If D16IoCheck Then D16CallSys('__IOCHECK');
+End;
+
+{ Verification E/S apres une fonction : preserver le resultat DX:AX }
+Procedure D16IoCheckKeep;
+Begin
+  If D16IoCheck Then
+  Begin
+    D16E('PUSH AX'); D16E('PUSH DX');
+    D16CallSys('__IOCHECK');
+    D16E('POP DX'); D16E('POP AX');
+  End;
+End;
+
+{ Write / WriteLn }
+Procedure D16Write(Ln : Boolean);
+Var
+  FT, T : Integer; HasFile : Boolean; HasArgs : Boolean; A : TD16Addr; O : LongInt;
+  FileTemp : LongInt; W, D : Boolean;
+Begin
+  HasArgs := D16IsPunct('(');
+  HasFile := False;
+  FileTemp := D16AllocTemp(4);
+  If HasArgs Then
+  Begin
+    D16Next;
+    HasFile := D16PushFileArg(False, FT);
+    { memoriser l adresse du fichier dans un temporaire }
+    D16E('POP AX'); D16E('POP DX');
+    D16E('MOV SS:[BP' + D16Str(FileTemp) + '],AX');
+    D16E('MOV SS:[BP' + D16Str(FileTemp + 2) + '],DX');
+    If HasFile And (D16Types[FT].Kind = DT_FILE) Then
+    Begin
+      { fichier type : Write(F, v1, v2...) }
+      While D16IsPunct(',') Do
+      Begin
+        D16Next;
+        D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp + 2) + ']');
+        D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp) + ']');
+        T := D16Designator(A, W);
+        If (D16Types[FT].Base <> 0) And (T <> D16Types[FT].Base) And
+           (D16Types[T].Size <> D16Types[D16Types[FT].Base].Size) Then
+          D16Error('type incompatible avec le fichier');
+        D16AddrToDXAX(A, 0);
+        D16E('PUSH DX'); D16E('PUSH AX');
+        D16CallSys('__FWRITEREC');
+        D16IoCheckCall;
+      End;
+      D16ExpectPunct(')');
+      Exit;
+    End;
+    If HasFile And Not D16IsPunct(',') And Not D16IsPunct(')') Then D16Error('"," attendu');
+    If HasFile And D16IsPunct(',') Then D16Next;
+    While Not D16IsPunct(')') Do
+    Begin
+      D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp + 2) + ']');
+      D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp) + ']');
+      T := D16Expr;
+      D16Flush;
+      W := False; D := False;
+      Case D16Types[D16BaseType(T)].Kind Of
+        DT_INT, DT_UINT, DT_SUBRANGE :
+        Begin
+          D16Convert(T, DTI_LONGINT);
+          D16E('PUSH DX'); D16E('PUSH AX');
+        End;
+        DT_CHAR : D16E('PUSH AX');
+        DT_BOOL : D16E('PUSH AX');
+        DT_ENUM : D16Error('impossible d ecrire une enumeration');
+        DT_STRING : Begin D16E('PUSH DX'); D16E('PUSH AX') End;
+        DT_REAL : Begin D16E('PUSH DX'); D16E('PUSH AX') End;
+        DT_ARRAY :
+        Begin
+          If Not D16IsCharArray(T) Then D16Error('type non imprimable');
+          D16StrToTemp(T, A); D16E('PUSH DX'); D16E('PUSH AX');
+        End;
+        DT_POINTER :
+        Begin
+          If D16Types[T].Base <> DTI_CHAR Then D16Error('type non imprimable');
+          D16E('PUSH DX'); D16E('PUSH AX');
+        End;
+      Else D16Error('type non imprimable');
+      End;
+      { largeur et decimales }
+      If D16IsPunct(':') Then
+      Begin
+        D16Next; D16ExprTo(DTI_INTEGER); D16E('PUSH AX'); W := True;
+        If D16IsPunct(':') Then
+        Begin
+          D16Next; D16ExprTo(DTI_INTEGER); D16E('PUSH AX'); D := True;
+        End;
+      End;
+      If Not W Then Begin D16E('MOV AX,0'); D16E('PUSH AX') End;
+      Case D16Types[D16BaseType(T)].Kind Of
+        DT_INT, DT_UINT, DT_SUBRANGE : D16CallSys('__WRINT');
+        DT_CHAR : D16CallSys('__WRCHAR');
+        DT_BOOL : D16CallSys('__WRBOOL');
+        DT_STRING, DT_ARRAY : D16CallSys('__WRSTR');
+        DT_POINTER : D16CallSys('__WRPCHAR');
+        DT_REAL :
+        Begin
+          If Not D Then Begin D16E('MOV AX,-1'); D16E('PUSH AX') End;
+          D16CallSys('__WRREAL');
+        End;
+      End;
+      If D16IsPunct(',') Then D16Next
+      Else If Not D16IsPunct(')') Then D16Error('"," ou ")" attendu');
+    End;
+    D16Next;
+  End
+  Else
+  Begin
+    D16SysVarAddr('OUTPUT', A);
+    D16AddrToDXAX(A, 0);
+    D16E('MOV SS:[BP' + D16Str(FileTemp) + '],AX');
+    D16E('MOV SS:[BP' + D16Str(FileTemp + 2) + '],DX');
+  End;
+  If Ln Then
+  Begin
+    D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp + 2) + ']');
+    D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp) + ']');
+    D16CallSys('__WRLN');
+  End
+  Else
+  Begin
+    D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp + 2) + ']');
+    D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp) + ']');
+    D16CallSys('__WRFLUSH');
+  End;
+  D16IoCheckCall;
+End;
+
+{ Read / ReadLn }
+Procedure D16Read(Ln : Boolean);
+Var
+  FT, T : Integer; HasFile, HasArgs, IsConst : Boolean; A : TD16Addr; FileTemp, O : LongInt;
+Begin
+  HasArgs := D16IsPunct('(');
+  HasFile := False;
+  FileTemp := D16AllocTemp(4);
+  If HasArgs Then
+  Begin
+    D16Next;
+    HasFile := D16PushFileArg(True, FT);
+    D16E('POP AX'); D16E('POP DX');
+    D16E('MOV SS:[BP' + D16Str(FileTemp) + '],AX');
+    D16E('MOV SS:[BP' + D16Str(FileTemp + 2) + '],DX');
+    If HasFile And (D16Types[FT].Kind = DT_FILE) Then
+    Begin
+      While D16IsPunct(',') Do
+      Begin
+        D16Next;
+        D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp + 2) + ']');
+        D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp) + ']');
+        T := D16Designator(A, IsConst);
+        D16AddrToDXAX(A, 0);
+        D16E('PUSH DX'); D16E('PUSH AX');
+        D16CallSys('__FREADREC');
+        D16IoCheckCall;
+      End;
+      D16ExpectPunct(')');
+      Exit;
+    End;
+    If HasFile And D16IsPunct(',') Then D16Next;
+    While Not D16IsPunct(')') Do
+    Begin
+      T := D16Designator(A, IsConst);
+      If IsConst Then D16Error('variable attendue');
+      { sauvegarder l adresse cible }
+      If D16AddrDynamic(A) Then D16AddrPush(A);
+      D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp + 2) + ']');
+      D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp) + ']');
+      Case D16Types[D16BaseType(T)].Kind Of
+        DT_INT, DT_UINT, DT_SUBRANGE :
+        Begin
+          O := D16AllocTemp(4);
+          D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('PUSH AX');
+          D16CallSys('__RDINT');
+          If D16AddrDynamic(A) Then D16AddrPop(A);
+          D16E('MOV AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS:[BP' + D16Str(O + 2) + ']');
+          D16Store(A, T);
+        End;
+        DT_CHAR :
+        Begin
+          D16CallSys('__RDCHAR');
+          If D16AddrDynamic(A) Then D16AddrPop(A);
+          D16Store(A, T);
+        End;
+        DT_STRING :
+        Begin
+          D16AddrToDXAX(A, 0);
+          D16E('PUSH DX'); D16E('PUSH AX');
+          D16E('MOV AX,' + D16Str(D16Types[T].Size - 1)); D16E('PUSH AX');
+          D16CallSys('__RDSTR');
+          If D16AddrDynamic(A) Then D16AddrPop(A);
+        End;
+        DT_REAL :
+        Begin
+          D16AddrToDXAX(A, 0);
+          D16E('PUSH DX'); D16E('PUSH AX');
+          D16CallSys('__RDREAL');
+          If D16AddrDynamic(A) Then D16AddrPop(A);
+        End;
+        DT_ARRAY :
+        Begin
+          If Not D16IsCharArray(T) Then D16Error('type non lisible');
+          O := D16AllocTemp(256);
+          D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('PUSH AX');
+          D16E('MOV AX,' + D16Str(D16Types[T].Size)); D16E('PUSH AX');
+          D16CallSys('__RDSTR');
+          If D16AddrDynamic(A) Then D16AddrPop(A);
+          D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+          D16AddrToESDI(A, 0);
+          D16E('MOV CX,' + D16Str(D16Types[T].Size)); D16CallRT('STRTOARR');
+        End;
+      Else D16Error('type non lisible');
+      End;
+      D16IoCheckCall;
+      If D16IsPunct(',') Then D16Next
+      Else If Not D16IsPunct(')') Then D16Error('"," ou ")" attendu');
+    End;
+    D16Next;
+  End
+  Else
+  Begin
+    D16SysVarAddr('INPUT', A);
+    D16AddrToDXAX(A, 0);
+    D16E('MOV SS:[BP' + D16Str(FileTemp) + '],AX');
+    D16E('MOV SS:[BP' + D16Str(FileTemp + 2) + '],DX');
+  End;
+  If Ln Then
+  Begin
+    D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp + 2) + ']');
+    D16E('PUSH WORD PTR SS:[BP' + D16Str(FileTemp) + ']');
+    D16CallSys('__RDLN');
+    D16IoCheckCall;
+  End;
+End;
+
+{ Str(x[:w[:d]], s) }
+Procedure D16StrProc;
+Var T, ST : Integer; A : TD16Addr; IsConst, W, D : Boolean;
+Begin
+  D16ExpectPunct('(');
+  T := D16Expr; D16Flush; ST := T;
+  W := False; D := False;
+  If D16IsReal(T) Then Begin D16E('PUSH DX'); D16E('PUSH AX') End
+  Else
+  Begin
+    If Not D16IsInteger(T) Then D16Error('entier ou reel attendu');
+    D16Convert(T, DTI_LONGINT);
+    D16E('PUSH DX'); D16E('PUSH AX');
+  End;
+  If D16IsPunct(':') Then
+  Begin
+    D16Next; D16ExprTo(DTI_INTEGER); D16E('PUSH AX'); W := True;
+    If D16IsPunct(':') Then Begin D16Next; D16ExprTo(DTI_INTEGER); D16E('PUSH AX'); D := True End;
+  End;
+  If Not W Then Begin D16E('MOV AX,0'); D16E('PUSH AX') End;
+  If D16IsReal(T) And Not D Then Begin D16E('MOV AX,-1'); D16E('PUSH AX') End;
+  D16ExpectPunct(',');
+  T := D16Designator(A, IsConst);
+  If D16Types[T].Kind <> DT_STRING Then D16Error('chaine attendue');
+  D16AddrToDXAX(A, 0);
+  D16E('PUSH DX'); D16E('PUSH AX');
+  D16E('MOV AX,' + D16Str(D16Types[T].Size - 1)); D16E('PUSH AX');
+  D16ExpectPunct(')');
+  If D16IsReal(ST) Then D16CallSys('__STRREAL') Else D16CallSys('__STRINT');
+End;
+
+{ Val(s, v, code) }
+Procedure D16ValProc;
+Var T, T2 : Integer; A, A2 : TD16Addr; IsConst : Boolean; O : LongInt;
+Begin
+  D16ExpectPunct('(');
+  T := D16Expr; D16Flush;
+  If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+  D16E('PUSH DX'); D16E('PUSH AX');
+  D16ExpectPunct(',');
+  T := D16Designator(A, IsConst);
+  If D16AddrDynamic(A) Then D16AddrPush(A);
+  D16ExpectPunct(',');
+  T2 := D16Designator(A2, IsConst);
+  If D16AddrDynamic(A2) And D16AddrDynamic(A) Then D16Error('Val: cibles trop complexes');
+  D16ExpectPunct(')');
+  If D16IsReal(T) Then
+  Begin
+    If D16AddrDynamic(A) Then D16AddrPop(A);
+    D16AddrToDXAX(A, 0); D16E('PUSH DX'); D16E('PUSH AX');
+    D16AddrToDXAX(A2, 0); D16E('PUSH DX'); D16E('PUSH AX');
+    D16CallSys('__VALREAL');
+  End
+  Else
+  Begin
+    O := D16AllocTemp(4);
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('PUSH AX');
+    D16AddrToDXAX(A2, 0); D16E('PUSH DX'); D16E('PUSH AX');
+    D16E('MOV AX,' + D16Str(D16Types[T].Size)); D16E('PUSH AX');
+    If D16IsSigned(T) Then D16E('MOV AX,1') Else D16E('MOV AX,0');
+    D16E('PUSH AX');
+    D16CallSys('__VALINT');
+    If D16AddrDynamic(A) Then D16AddrPop(A);
+    D16E('MOV AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS:[BP' + D16Str(O + 2) + ']');
+    D16Store(A, T);
+  End;
+End;
+
+{ Inc / Dec }
+Procedure D16IncDec(IsInc : Boolean);
+Var T : Integer; A : TD16Addr; IsConst : Boolean; Op, Op2 : TString; Sz : LongInt;
+Begin
+  D16ExpectPunct('(');
+  T := D16Designator(A, IsConst);
+  If IsConst Then D16Error('variable attendue');
+  If Not (D16IsOrdinal(T) Or (D16Types[T].Kind = DT_POINTER)) Then D16Error('ordinal attendu');
+  Sz := D16Types[T].Size;
+  If D16Types[T].Kind = DT_POINTER Then Sz := 2;  { Inc(P) ajuste l offset }
+  If IsInc Then Begin Op := 'ADD'; Op2 := 'ADC' End Else Begin Op := 'SUB'; Op2 := 'SBB' End;
+  If D16IsPunct(',') Then
+  Begin
+    D16Next;
+    If D16AddrDynamic(A) Then D16AddrPush(A);
+    If Sz = 4 Then D16ExprTo(DTI_LONGINT) Else D16ExprTo(DTI_INTEGER);
+    D16Flush;
+    If D16AddrDynamic(A) Then D16AddrPop(A);
+    Case Sz Of
+      1 : D16E(Op + ' ' + D16Opnd(A, 1, 0) + ',AL');
+      2 : D16E(Op + ' ' + D16Opnd(A, 2, 0) + ',AX');
+      4 :
+      Begin
+        D16E(Op + ' ' + D16Opnd(A, 2, 0) + ',AX');
+        D16E(Op2 + ' ' + D16Opnd(A, 2, 2) + ',DX');
+      End;
+    End;
+  End
+  Else
+  Begin
+    Case Sz Of
+      1, 2 :
+        If IsInc Then D16E('INC ' + D16Opnd(A, Sz, 0)) Else D16E('DEC ' + D16Opnd(A, Sz, 0));
+      4 :
+      Begin
+        D16E(Op + ' ' + D16Opnd(A, 2, 0) + ',1');
+        D16E(Op2 + ' ' + D16Opnd(A, 2, 2) + ',0');
+      End;
+    End;
+  End;
+  D16ExpectPunct(')');
+End;
+
+{ Fonctions et procedures standard. Retourne le type du resultat (0 pour
+  une procedure) ; IsFunc indique si c etait une fonction. }
+Function D16Builtin(Const U : TString; Var IsFunc : Boolean) : Integer;
+Var
+  T, T2, R : Integer; A, A2 : TD16Addr; IsConst : Boolean; O : LongInt; L1, L2 : TString;
+  C : TD16Const; S : LongInt; Sz : LongInt; HasArg : Boolean; Lo, Hi : LongInt;
+  Save : LongInt; N : Integer;
+
+  Procedure PushAddrOf(Var T : Integer);
+  Begin
+    T := D16Designator(A, IsConst);
+    D16AddrToDXAX(A, 0);
+    D16E('PUSH DX'); D16E('PUSH AX');
+  End;
+
+Begin
+  IsFunc := True;
+  D16Builtin := 0;
+  D16Next;  { consommer l identificateur }
+
+  { ---------------- Fonctions ---------------- }
+  If (U = 'ORD') Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If D16IsPointer(T) Then D16Error('ordinal attendu');
+    If Not D16IsOrdinal(T) Then D16Error('ordinal attendu');
+    If D16Types[T].Size = 1 Then
+    Begin
+      If D16IsSigned(T) Then D16E('CBW') Else D16E('MOV AH,0');
+    End;
+    If D16Types[T].Size = 4 Then D16Builtin := DTI_LONGINT
+    Else If (D16Types[T].Kind = DT_UINT) And (D16Types[T].Size = 2) Then D16Builtin := DTI_WORD
+    Else D16Builtin := DTI_INTEGER;
+  End
+  Else If U = 'CHR' Then
+  Begin
+    D16ExpectPunct('('); T := D16ExprTo(DTI_BYTE); D16ExpectPunct(')');
+    D16Builtin := DTI_CHAR;
+  End
+  Else If (U = 'SUCC') Or (U = 'PRED') Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If Not D16IsOrdinal(T) Then D16Error('ordinal attendu');
+    Case D16Types[T].Size Of
+      1 : If U = 'SUCC' Then D16E('INC AL') Else D16E('DEC AL');
+      2 : If U = 'SUCC' Then D16E('INC AX') Else D16E('DEC AX');
+      4 : If U = 'SUCC' Then Begin D16E('ADD AX,1'); D16E('ADC DX,0') End
+          Else Begin D16E('SUB AX,1'); D16E('SBB DX,0') End;
+    End;
+    D16Builtin := T;
+  End
+  Else If U = 'ODD' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If Not D16IsInteger(T) Then D16Error('entier attendu');
+    D16E('AND AL,1');
+    D16Builtin := DTI_BOOLEAN;
+  End
+  Else If U = 'ABS' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If D16IsReal(T) Then
+    Begin
+      O := D16AllocTemp(6);
+      D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      D16CallRT('RABS');
+      D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+      D16Builtin := DTI_REAL;
+    End
+    Else
+    Begin
+      If Not D16IsInteger(T) Then D16Error('entier ou reel attendu');
+      T := D16ArithType(T); D16Convert(D16BaseType(T), T);
+      If D16Types[T].Size = 4 Then
+      Begin
+        L1 := D16NewLabel;
+        D16E('OR DX,DX'); D16E('JNS ' + L1);
+        D16E('NEG AX'); D16E('ADC DX,0'); D16E('NEG DX');
+        D16L(L1);
+      End
+      Else If T <> DTI_WORD Then
+      Begin
+        L1 := D16NewLabel;
+        D16E('OR AX,AX'); D16E('JNS ' + L1); D16E('NEG AX'); D16L(L1);
+      End;
+      D16Builtin := T;
+    End;
+  End
+  Else If U = 'SQR' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If D16IsReal(T) Then
+    Begin
+      O := D16AllocTemp(6);
+      D16E('MOV CX,DX'); D16E('MOV BX,AX');
+      D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      D16CallRT('RMUL');
+      D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+      D16Builtin := DTI_REAL;
+    End
+    Else
+    Begin
+      If Not D16IsInteger(T) Then D16Error('entier ou reel attendu');
+      T := D16ArithType(T); D16Convert(D16BaseType(T), T);
+      If D16Types[T].Size = 4 Then
+      Begin D16E('MOV CX,AX'); D16E('MOV BX,DX'); D16CallRT('LMUL') End
+      Else If T = DTI_WORD Then D16E('MUL AX')
+      Else D16E('IMUL AX');
+      D16Builtin := T;
+    End;
+  End
+  Else If (U = 'SQRT') Or (U = 'SIN') Or (U = 'COS') Or (U = 'ARCTAN') Or (U = 'LN') Or
+          (U = 'EXP') Or (U = 'INT') Or (U = 'FRAC') Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')');
+    D16ToReal(T);
+    D16E('PUSH DX'); D16E('PUSH AX');
+    O := D16AllocTemp(6);
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('PUSH AX');
+    D16CallSys('__R' + U);
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+    D16Builtin := DTI_REAL;
+  End
+  Else If U = 'PI' Then
+  Begin
+    S := D16LookupSys('__PI');
+    If S < 0 Then D16Error('Pi non disponible');
+    D16SymAddr(S, A); D16AddrToDXAX(A, 0);
+    D16Builtin := DTI_REAL;
+  End
+  Else If (U = 'TRUNC') Or (U = 'ROUND') Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')');
+    If D16IsInteger(T) Then
+    Begin
+      D16Flush; D16Convert(T, DTI_LONGINT);
+    End
+    Else
+    Begin
+      D16ToReal(T);
+      If U = 'TRUNC' Then D16CallRT('RTRUNC') Else D16CallRT('RROUND');
+    End;
+    D16Builtin := DTI_LONGINT;
+  End
+  Else If U = 'HI' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If D16Types[T].Size = 4 Then D16E('MOV AL,DL')
+    Else Begin D16Convert(T, DTI_WORD); D16E('MOV AL,AH') End;
+    D16Builtin := DTI_BYTE;
+  End
+  Else If U = 'LO' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    D16Builtin := DTI_BYTE;
+  End
+  Else If U = 'SWAP' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If D16Types[T].Size = 4 Then D16E('XCHG AX,DX')
+    Else D16E('XCHG AL,AH');
+    D16Builtin := T;
+  End
+  Else If (U = 'SIZEOF') Or (U = 'HIGH') Or (U = 'LOW') Then
+  Begin
+    D16ExpectPunct('(');
+    T := -1;
+    If D16IsKw('string') Then Begin T := DTI_STRING; D16Next End;
+    If D16IsIdent Then
+    Begin
+      S := D16Lookup(D16UVal);
+      If (S >= 0) And (D16Syms[S].Kind = DSK_TYPE) Then Begin T := D16Syms[S].TypeIdx; D16Next End;
+    End;
+    If (T < 0) And D16IsIdent And (D16Lookup(D16UVal) >= 0) And
+       (D16Syms[D16Lookup(D16UVal)].Kind = DSK_VAR) And
+       (D16Types[D16Syms[D16Lookup(D16UVal)].TypeIdx].Kind = DT_ARRAY) And
+       (D16Types[D16Syms[D16Lookup(D16UVal)].TypeIdx].Size = 0) And (D16PeekKind(1) = TK_PUNCT) And
+       (D16PeekVal(1) = ')') Then
+    Begin
+      { tableau ouvert : High = parametre cache apres l adresse }
+      S := D16Lookup(D16UVal); D16Next; D16ExpectPunct(')');
+      If U = 'HIGH' Then
+      Begin
+        If D16Syms[S].Level = D16Level Then
+          D16E('MOV AX,SS:[BP+' + D16Str(D16Syms[S].Ofs + 4) + ']')
+        Else
+        Begin
+          D16LoadFrame(D16Syms[S].Level, A);
+          D16E('MOV AX,' + D16Opnd(A, 2, D16Syms[S].Ofs + 4));
+        End;
+      End
+      Else If U = 'LOW' Then D16E('MOV AX,0')
+      Else D16Error('SizeOf d un tableau ouvert non supporte');
+      D16Builtin := DTI_INTEGER; Exit;
+    End;
+    If T < 0 Then
+    Begin
+      { variable : analyser le designateur sans charger }
+      If D16IsIdent And (D16Lookup(D16UVal) >= 0) And (D16Syms[D16Lookup(D16UVal)].Kind = DSK_VAR) Or
+         (D16WithCnt > 0) Then
+      Begin
+        Save := D16Pos;
+        T := D16Designator(A, IsConst);
+      End
+      Else Begin T := D16Expr; D16Flush End;
+    End;
+    D16ExpectPunct(')');
+    If U = 'SIZEOF' Then
+    Begin
+      D16E('MOV AX,' + D16Str(D16Types[T].Size));
+      D16Builtin := DTI_INTEGER;
+    End
+    Else
+    Begin
+      If D16Types[T].Kind = DT_ARRAY Then
+      Begin
+        If (D16Types[T].Size = 0) Then
+        Begin
+          { tableau ouvert : High = parametre cache a [BP+ofs+4] }
+          If U = 'HIGH' Then D16E('MOV AX,' + D16Opnd(A, 2, 4)) Else D16E('MOV AX,0');
+          D16Builtin := DTI_INTEGER; Exit;
+        End;
+        T := D16Types[T].Index;
+      End;
+      If D16Types[T].Kind = DT_STRING Then
+      Begin
+        If U = 'HIGH' Then D16E('MOV AX,' + D16Str(D16Types[T].Size - 1)) Else D16E('MOV AX,0');
+        D16Builtin := DTI_INTEGER; Exit;
+      End;
+      D16OrdBounds(T, Lo, Hi);
+      If U = 'HIGH' Then Lo := Hi;
+      If D16Types[T].Size = 4 Then
+      Begin D16E('MOV AX,' + D16Str(Lo And $FFFF)); D16E('MOV DX,' + D16Str((Lo Shr 16) And $FFFF)) End
+      Else If D16Types[T].Size = 1 Then D16E('MOV AL,' + D16Str(Lo And $FF))
+      Else D16E('MOV AX,' + D16Str(Lo And $FFFF));
+      D16Builtin := T;
+    End;
+  End
+  Else If U = 'LENGTH' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    If D16Types[T].Kind = DT_STRING Then
+    Begin
+      D16E('MOV ES,DX'); D16E('MOV BX,AX'); D16E('MOV AL,ES:[BX]'); D16E('MOV AH,0');
+    End
+    Else If D16Types[T].Kind = DT_CHAR Then D16E('MOV AX,1')
+    Else If D16IsCharArray(T) Then D16E('MOV AX,' + D16Str(D16Types[T].Size))
+    Else D16Error('chaine attendue');
+    D16Builtin := DTI_INTEGER;
+  End
+  Else If U = 'UPCASE' Then
+  Begin
+    D16ExpectPunct('('); T := D16ExprTo(DTI_CHAR); D16ExpectPunct(')');
+    L1 := D16NewLabel;
+    D16E('CMP AL,97'); D16E('JB ' + L1); D16E('CMP AL,122'); D16E('JA ' + L1);
+    D16E('SUB AL,32'); D16L(L1);
+    D16Builtin := DTI_CHAR;
+  End
+  Else If U = 'COPY' Then
+  Begin
+    D16ExpectPunct('(');
+    T := D16Expr; D16Flush;
+    If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+    D16E('PUSH DX'); D16E('PUSH AX');
+    D16ExpectPunct(','); D16ExprTo(DTI_INTEGER); D16E('PUSH AX');
+    D16ExpectPunct(','); D16ExprTo(DTI_INTEGER); D16E('PUSH AX');
+    D16ExpectPunct(')');
+    O := D16AllocTemp(256);
+    D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+    D16CallRT('COPY');
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+    D16Builtin := DTI_STRING;
+  End
+  Else If U = 'POS' Then
+  Begin
+    D16ExpectPunct('(');
+    T := D16Expr; D16Flush;
+    If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+    D16E('PUSH DX'); D16E('PUSH AX');
+    D16ExpectPunct(',');
+    T := D16Expr; D16Flush;
+    If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+    D16ExpectPunct(')');
+    D16E('POP DI'); D16E('POP ES');     { ES:DI = sous-chaine, DX:AX = chaine }
+    D16CallRT('POS');
+    D16Builtin := DTI_BYTE;
+  End
+  Else If U = 'CONCAT' Then
+  Begin
+    D16ExpectPunct('(');
+    O := D16AllocTemp(256);
+    D16E('MOV BYTE PTR SS:[BP' + D16Str(O) + '],0');
+    Repeat
+      T := D16Expr; D16Flush;
+      If D16Types[T].Kind <> DT_STRING Then D16StrToTemp(T, A);
+      D16E('LEA DI,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      D16CallRT('STRCAT');
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    D16ExpectPunct(')');
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+    D16Builtin := DTI_STRING;
+  End
+  Else If U = 'ADDR' Then
+  Begin
+    D16ExpectPunct('(');
+    If D16IsIdent And (D16Lookup(D16UVal) >= 0) And (D16Syms[D16Lookup(D16UVal)].Kind = DSK_PROC) Then
+    Begin
+      S := D16Lookup(D16UVal); D16Next;
+      D16E('MOV AX,OFFSET ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+      D16E('MOV DX,SEG ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+    End
+    Else
+    Begin
+      T := D16Designator(A, IsConst); D16AddrToDXAX(A, 0);
+    End;
+    D16ExpectPunct(')');
+    D16Builtin := DTI_POINTER;
+  End
+  Else If (U = 'SEG') Or (U = 'OFS') Then
+  Begin
+    D16ExpectPunct('(');
+    If D16IsIdent And (D16Lookup(D16UVal) >= 0) And (D16Syms[D16Lookup(D16UVal)].Kind = DSK_PROC) Then
+    Begin
+      S := D16Lookup(D16UVal); D16Next;
+      If U = 'SEG' Then D16E('MOV AX,SEG ' + D16Procs[D16Syms[S].ProcIdx].Lbl)
+      Else D16E('MOV AX,OFFSET ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+    End
+    Else
+    Begin
+      T := D16Designator(A, IsConst); D16AddrToDXAX(A, 0);
+      If U = 'SEG' Then D16E('MOV AX,DX');
+    End;
+    D16ExpectPunct(')');
+    D16Builtin := DTI_WORD;
+  End
+  Else If U = 'PTR' Then
+  Begin
+    D16ExpectPunct('('); D16ExprTo(DTI_WORD); D16E('PUSH AX');
+    D16ExpectPunct(','); D16ExprTo(DTI_WORD); D16ExpectPunct(')');
+    D16E('POP DX');
+    D16Builtin := DTI_POINTER;
+  End
+  Else If U = 'CSEG' Then Begin D16E('MOV AX,CS'); D16Builtin := DTI_WORD End
+  Else If U = 'DSEG' Then Begin D16E('MOV AX,DS'); D16Builtin := DTI_WORD End
+  Else If U = 'SSEG' Then Begin D16E('MOV AX,SS'); D16Builtin := DTI_WORD End
+  Else If U = 'SPTR' Then Begin D16E('MOV AX,SP'); D16Builtin := DTI_WORD End
+  Else If U = 'ASSIGNED' Then
+  Begin
+    D16ExpectPunct('('); T := D16Expr; D16ExpectPunct(')'); D16Flush;
+    D16E('OR AX,DX');
+    D16PendCC := CC_NE;
+    D16Builtin := DTI_BOOLEAN;
+  End
+  Else If U = 'EOF' Then
+  Begin
+    HasArg := D16IsPunct('(');
+    If HasArg Then
+    Begin
+      D16Next; D16PushFileArg(True, T); D16ExpectPunct(')');
+    End
+    Else Begin D16SysVarAddr('INPUT', A); D16AddrToDXAX(A, 0); D16E('PUSH DX'); D16E('PUSH AX'); T := DTI_TEXT End;
+    If D16Types[T].Kind = DT_FILE Then D16CallSys('__FEOF') Else D16CallSys('__EOF');
+    D16IoCheckKeep;
+    D16Builtin := DTI_BOOLEAN;
+  End
+  Else If (U = 'EOLN') Or (U = 'SEEKEOF') Or (U = 'SEEKEOLN') Then
+  Begin
+    HasArg := D16IsPunct('(');
+    If HasArg Then
+    Begin
+      D16Next; D16PushFileArg(True, T); D16ExpectPunct(')');
+    End
+    Else Begin D16SysVarAddr('INPUT', A); D16AddrToDXAX(A, 0); D16E('PUSH DX'); D16E('PUSH AX') End;
+    D16CallSys('__' + U);
+    D16IoCheckKeep;
+    D16Builtin := DTI_BOOLEAN;
+  End
+  Else If (U = 'FILEPOS') Or (U = 'FILESIZE') Then
+  Begin
+    D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(')');
+    D16CallSys('__' + U);
+    D16IoCheckKeep;
+    D16Builtin := DTI_LONGINT;
+  End
+  Else If U = 'IORESULT' Then
+  Begin
+    D16CallSys('__IORESULT');
+    D16Builtin := DTI_INTEGER;
+  End
+  Else If (U = 'PARAMCOUNT') Then
+  Begin
+    D16CallSys('__PARAMCOUNT'); D16Builtin := DTI_WORD;
+  End
+  Else If U = 'PARAMSTR' Then
+  Begin
+    O := D16AllocTemp(256);
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('PUSH AX');
+    D16ExpectPunct('('); D16ExprTo(DTI_INTEGER); D16E('PUSH AX'); D16ExpectPunct(')');
+    D16CallSys('__PARAMSTR');
+    D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+    D16Builtin := DTI_STRING;
+  End
+  Else If U = 'RANDOM' Then
+  Begin
+    If D16IsPunct('(') Then
+    Begin
+      D16Next; D16ExprTo(DTI_WORD); D16ExpectPunct(')');
+      D16E('PUSH AX'); D16CallSys('__RANDOMINT');
+      D16Builtin := DTI_WORD;
+    End
+    Else
+    Begin
+      O := D16AllocTemp(6);
+      D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('PUSH SS'); D16E('PUSH AX');
+      D16CallSys('__RANDOMREAL');
+      D16E('LEA AX,SS:[BP' + D16Str(O) + ']'); D16E('MOV DX,SS');
+      D16Builtin := DTI_REAL;
+    End;
+  End
+  Else If (U = 'MEMAVAIL') Or (U = 'MAXAVAIL') Then
+  Begin
+    D16CallSys('__' + U); D16Builtin := DTI_LONGINT;
+  End
+  Else If (U = 'MEM') Or (U = 'MEMW') Or (U = 'MEML') Then
+  Begin
+    D16ExpectPunct('['); D16ExprTo(DTI_WORD); D16E('PUSH AX');
+    D16ExpectPunct(':'); D16ExprTo(DTI_WORD); D16ExpectPunct(']');
+    D16E('MOV BX,AX'); D16E('POP ES');
+    If U = 'MEM' Then Begin D16E('MOV AL,ES:[BX]'); D16Builtin := DTI_BYTE End
+    Else If U = 'MEMW' Then Begin D16E('MOV AX,ES:[BX]'); D16Builtin := DTI_WORD End
+    Else Begin D16E('MOV AX,ES:[BX]'); D16E('MOV DX,ES:[BX+2]'); D16Builtin := DTI_LONGINT End;
+  End
+  Else If (U = 'PORT') Or (U = 'PORTW') Then
+  Begin
+    D16ExpectPunct('['); D16ExprTo(DTI_WORD); D16ExpectPunct(']');
+    D16E('MOV DX,AX');
+    If U = 'PORT' Then Begin D16E('IN AL,DX'); D16Builtin := DTI_BYTE End
+    Else Begin D16E('IN AX,DX'); D16Builtin := DTI_WORD End;
+  End
+
+  { ---------------- Procedures ---------------- }
+  Else
+  Begin
+    IsFunc := False;
+    If U = 'WRITE' Then D16Write(False)
+    Else If U = 'WRITELN' Then D16Write(True)
+    Else If U = 'READ' Then D16Read(False)
+    Else If U = 'READLN' Then D16Read(True)
+    Else If U = 'STR' Then D16StrProc
+    Else If U = 'VAL' Then D16ValProc
+    Else If U = 'INC' Then D16IncDec(True)
+    Else If U = 'DEC' Then D16IncDec(False)
+    Else If U = 'HALT' Then
+    Begin
+      If D16IsPunct('(') Then Begin D16Next; D16ExprTo(DTI_WORD); D16ExpectPunct(')') End
+      Else D16E('MOV AX,0');
+      D16E('PUSH AX');
+      D16CallSys('__HALT');
+    End
+    Else If U = 'RUNERROR' Then
+    Begin
+      If D16IsPunct('(') Then Begin D16Next; D16ExprTo(DTI_WORD); D16ExpectPunct(')') End
+      Else D16E('MOV AX,0');
+      D16CallRT('RUNERROR');
+    End
+    Else If U = 'EXIT' Then
+    Begin
+      If D16ExitLbl = '' Then D16Error('Exit hors d un bloc');
+      D16E('JMP ' + D16ExitLbl);
+    End
+    Else If U = 'BREAK' Then
+    Begin
+      If D16LoopCnt = 0 Then D16Error('Break hors d une boucle');
+      D16E('JMP ' + D16LoopBreak[D16LoopCnt - 1]);
+    End
+    Else If U = 'CONTINUE' Then
+    Begin
+      If D16LoopCnt = 0 Then D16Error('Continue hors d une boucle');
+      D16E('JMP ' + D16LoopCont[D16LoopCnt - 1]);
+    End
+    Else If U = 'ASSIGN' Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T);
+      If Not (D16Types[T].Kind In [DT_TEXT, DT_FILE]) Then D16Error('fichier attendu');
+      D16ExpectPunct(',');
+      T2 := D16Expr; D16Flush;
+      If D16Types[T2].Kind <> DT_STRING Then D16StrToTemp(T2, A);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      D16ExpectPunct(')');
+      D16CallSys('__ASSIGN');
+    End
+    Else If (U = 'RESET') Or (U = 'REWRITE') Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T);
+      If D16Types[T].Kind = DT_TEXT Then
+      Begin
+        D16ExpectPunct(')');
+        D16CallSys('__' + U + 'TEXT');
+      End
+      Else If D16Types[T].Kind = DT_FILE Then
+      Begin
+        If D16IsPunct(',') Then Begin D16Next; D16ExprTo(DTI_WORD) End
+        Else If D16Types[T].Base = 0 Then D16E('MOV AX,128')
+        Else D16E('MOV AX,' + D16Str(D16Types[D16Types[T].Base].Size));
+        D16E('PUSH AX');
+        D16ExpectPunct(')');
+        D16CallSys('__' + U + 'FILE');
+      End
+      Else D16Error('fichier attendu');
+      D16IoCheckCall;
+    End
+    Else If (U = 'APPEND') Or (U = 'CLOSE') Or (U = 'ERASE') Or (U = 'FLUSH') Or
+            (U = 'TRUNCATE') Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(')');
+      If Not (D16Types[T].Kind In [DT_TEXT, DT_FILE]) Then D16Error('fichier attendu');
+      If (U = 'CLOSE') And (D16Types[T].Kind = DT_FILE) Then D16CallSys('__FCLOSE')
+      Else D16CallSys('__' + U);
+      D16IoCheckCall;
+    End
+    Else If U = 'RENAME' Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(',');
+      T2 := D16Expr; D16Flush;
+      If D16Types[T2].Kind <> DT_STRING Then D16StrToTemp(T2, A);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      D16ExpectPunct(')');
+      D16CallSys('__RENAME');
+      D16IoCheckCall;
+    End
+    Else If U = 'SEEK' Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(',');
+      D16ExprTo(DTI_LONGINT); D16E('PUSH DX'); D16E('PUSH AX');
+      D16ExpectPunct(')');
+      D16CallSys('__SEEK');
+      D16IoCheckCall;
+    End
+    Else If (U = 'BLOCKREAD') Or (U = 'BLOCKWRITE') Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(',');
+      PushAddrOf(T2); D16ExpectPunct(',');
+      D16ExprTo(DTI_WORD); D16E('PUSH AX');
+      If D16IsPunct(',') Then
+      Begin
+        D16Next; PushAddrOf(T2);
+      End
+      Else Begin D16E('XOR AX,AX'); D16E('PUSH AX'); D16E('PUSH AX') End;
+      D16ExpectPunct(')');
+      D16CallSys('__' + U);
+      D16IoCheckCall;
+    End
+    Else If U = 'SETTEXTBUF' Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(',');
+      PushAddrOf(T2);
+      If D16IsPunct(',') Then Begin D16Next; D16ExprTo(DTI_WORD) End
+      Else D16E('MOV AX,' + D16Str(D16Types[T2].Size));
+      D16E('PUSH AX');
+      D16ExpectPunct(')');
+      D16CallSys('__SETTEXTBUF');
+    End
+    Else If (U = 'CHDIR') Or (U = 'MKDIR') Or (U = 'RMDIR') Then
+    Begin
+      D16ExpectPunct('(');
+      T2 := D16Expr; D16Flush;
+      If D16Types[T2].Kind <> DT_STRING Then D16StrToTemp(T2, A);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      D16ExpectPunct(')');
+      D16CallSys('__' + U);
+      D16IoCheckCall;
+    End
+    Else If U = 'GETDIR' Then
+    Begin
+      D16ExpectPunct('('); D16ExprTo(DTI_BYTE); D16E('PUSH AX'); D16ExpectPunct(',');
+      PushAddrOf(T); D16ExpectPunct(')');
+      D16CallSys('__GETDIR');
+    End
+    Else If U = 'DELETE' Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T);
+      If D16Types[T].Kind <> DT_STRING Then D16Error('chaine attendue');
+      D16ExpectPunct(','); D16ExprTo(DTI_INTEGER); D16E('PUSH AX');
+      D16ExpectPunct(','); D16ExprTo(DTI_INTEGER); D16E('PUSH AX');
+      D16ExpectPunct(')');
+      D16CallRT('DELETE');
+    End
+    Else If U = 'INSERT' Then
+    Begin
+      D16ExpectPunct('(');
+      T2 := D16Expr; D16Flush;
+      If D16Types[T2].Kind <> DT_STRING Then D16StrToTemp(T2, A);
+      D16E('PUSH DX'); D16E('PUSH AX');
+      D16ExpectPunct(','); PushAddrOf(T);
+      If D16Types[T].Kind <> DT_STRING Then D16Error('chaine attendue');
+      D16E('MOV AX,' + D16Str(D16Types[T].Size - 1)); D16E('PUSH AX');
+      D16ExpectPunct(','); D16ExprTo(DTI_INTEGER); D16E('PUSH AX');
+      D16ExpectPunct(')');
+      D16CallRT('INSERT');
+    End
+    Else If U = 'FILLCHAR' Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(',');
+      D16ExprTo(DTI_WORD); D16E('PUSH AX'); D16ExpectPunct(',');
+      T2 := D16Expr; D16Flush;
+      If Not D16IsOrdinal(T2) Then D16Error('octet ou caractere attendu');
+      D16ExpectPunct(')');
+      D16E('POP CX'); D16E('POP DI'); D16E('POP ES');
+      D16E('CLD'); D16E('REP STOSB');
+    End
+    Else If U = 'MOVE' Then
+    Begin
+      D16ExpectPunct('('); PushAddrOf(T); D16ExpectPunct(',');
+      PushAddrOf(T2); D16ExpectPunct(',');
+      D16ExprTo(DTI_WORD); D16ExpectPunct(')');
+      D16E('MOV CX,AX'); D16E('POP DI'); D16E('POP ES'); D16E('POP AX'); D16E('POP DX');
+      D16CallRT('MOVE');
+    End
+    Else If (U = 'NEW') Or (U = 'DISPOSE') Then
+    Begin
+      D16ExpectPunct('('); T := D16Designator(A, IsConst);
+      If D16Types[T].Kind <> DT_POINTER Then D16Error('pointeur attendu');
+      If D16Types[T].Base = DTI_NONE Then D16Error('pointeur type attendu');
+      D16AddrToDXAX(A, 0); D16E('PUSH DX'); D16E('PUSH AX');
+      D16E('MOV AX,' + D16Str(D16Types[D16Types[T].Base].Size)); D16E('PUSH AX');
+      D16ExpectPunct(')');
+      If U = 'NEW' Then D16CallSys('__GETMEM') Else D16CallSys('__FREEMEM');
+    End
+    Else If (U = 'GETMEM') Or (U = 'FREEMEM') Then
+    Begin
+      D16ExpectPunct('('); T := D16Designator(A, IsConst);
+      If Not D16IsPointer(T) Then D16Error('pointeur attendu');
+      D16AddrToDXAX(A, 0); D16E('PUSH DX'); D16E('PUSH AX');
+      D16ExpectPunct(','); D16ExprTo(DTI_WORD); D16E('PUSH AX'); D16ExpectPunct(')');
+      D16CallSys('__' + U);
+    End
+    Else If (U = 'MARK') Or (U = 'RELEASE') Then
+    Begin
+      D16ExpectPunct('('); T := D16Designator(A, IsConst);
+      D16AddrToDXAX(A, 0); D16E('PUSH DX'); D16E('PUSH AX'); D16ExpectPunct(')');
+      D16CallSys('__' + U);
+    End
+    Else If U = 'RANDOMIZE' Then D16CallSys('__RANDOMIZE')
+    Else If (U = 'INCLUDE') Or (U = 'EXCLUDE') Then
+    Begin
+      D16ExpectPunct('('); T := D16Designator(A, IsConst);
+      If D16Types[T].Kind <> DT_SET Then D16Error('ensemble attendu');
+      If D16AddrDynamic(A) Then D16AddrPush(A);
+      D16ExpectPunct(','); T2 := D16Expr; D16Flush; D16ExpectPunct(')');
+      If D16Types[T2].Size = 1 Then D16E('MOV AH,0');
+      If D16AddrDynamic(A) Then D16AddrPop(A);
+      D16AddrToESDI(A, 0);
+      If U = 'INCLUDE' Then D16CallRT('SETADD') Else D16CallRT('SETDEL');
+    End
+    Else If (U = 'MEM') Or (U = 'MEMW') Or (U = 'MEML') Then
+    Begin
+      { Mem[s:o] := v }
+      D16ExpectPunct('['); D16ExprTo(DTI_WORD); D16E('PUSH AX');
+      D16ExpectPunct(':'); D16ExprTo(DTI_WORD); D16E('PUSH AX'); D16ExpectPunct(']');
+      D16ExpectOp(':=');
+      If U = 'MEM' Then D16ExprTo(DTI_BYTE) Else If U = 'MEMW' Then D16ExprTo(DTI_WORD)
+      Else D16ExprTo(DTI_LONGINT);
+      D16E('POP BX'); D16E('POP ES');
+      If U = 'MEM' Then D16E('MOV ES:[BX],AL')
+      Else If U = 'MEMW' Then D16E('MOV ES:[BX],AX')
+      Else Begin D16E('MOV ES:[BX],AX'); D16E('MOV ES:[BX+2],DX') End;
+    End
+    Else If (U = 'PORT') Or (U = 'PORTW') Then
+    Begin
+      D16ExpectPunct('['); D16ExprTo(DTI_WORD); D16E('PUSH AX'); D16ExpectPunct(']');
+      D16ExpectOp(':=');
+      If U = 'PORT' Then D16ExprTo(DTI_BYTE) Else D16ExprTo(DTI_WORD);
+      D16E('POP DX');
+      If U = 'PORT' Then D16E('OUT DX,AL') Else D16E('OUT DX,AX');
+    End
+    Else
+    Begin
+      D16Pos := D16Pos - 1;
+      D16Error('identificateur inconnu: ' + U);
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Instructions                                                 }
+{ ------------------------------------------------------------ }
+
+{ Affectation vers l adresse A de type T (la valeur suit :=) }
+Procedure D16AssignTo(Const A : TD16Addr; T : Integer);
+Var T2 : Integer; Dyn : Boolean; A2 : TD16Addr; B : TD16Addr; K : Byte;
+Begin
+  Dyn := D16AddrDynamic(A);
+  B := A;
+  If Dyn Then D16AddrPush(A);
+  K := D16Types[T].Kind;
+  If K = DT_STRING Then
+  Begin
+    T2 := D16Expr; D16Flush;
+    If D16Types[T2].Kind = DT_CHAR Then
+    Begin
+      If Dyn Then D16AddrPop(B);
+      D16E('MOV ' + D16Opnd(B, 1, 0) + ',1');
+      D16E('MOV ' + D16Opnd(B, 1, 1) + ',AL');
+      Exit;
+    End;
+    If D16Types[T2].Kind <> DT_STRING Then D16StrToTemp(T2, A2);
+    If Dyn Then D16AddrPop(B);
+    D16StrAssignTo(B, D16Types[T].Size - 1);
+    Exit;
+  End;
+  If K = DT_REAL Then
+  Begin
+    T2 := D16Expr;
+    D16ToReal(T2);
+    If Dyn Then D16AddrPop(B);
+    D16AddrToESDI(B, 0);
+    D16E('MOV CX,6'); D16CallRT('MOVE');
+    Exit;
+  End;
+  If D16IsLarge(T) Then
+  Begin
+    T2 := D16Expr; D16Flush;
+    If (K = DT_ARRAY) And D16IsCharArray(T) And (D16Types[T2].Kind In [DT_STRING, DT_CHAR]) Then
+    Begin
+      { chaine -> tableau de caracteres : copier les caracteres, completer par des blancs ? TP : copie Length octets }
+      If D16Types[T2].Kind = DT_CHAR Then D16StrToTemp(T2, A2);
+      If Dyn Then D16AddrPop(B);
+      D16AddrToESDI(B, 0);
+      D16E('MOV CX,' + D16Str(D16Types[T].Size)); D16CallRT('STRTOARR');
+      Exit;
+    End;
+    D16CheckAssign(T, T2);
+    If Dyn Then D16AddrPop(B);
+    D16AddrToESDI(B, 0);
+    D16E('MOV CX,' + D16Str(D16Types[T].Size)); D16CallRT('MOVE');
+    Exit;
+  End;
+  T2 := D16ExprTo(T);
+  If Dyn Then D16AddrPop(B);
+  D16Store(B, T);
+End;
+
+{ Affectation au resultat d une fonction (ProcIdx) }
+Procedure D16AssignResult(P : Integer);
+Var A : TD16Addr; RT : Integer;
+Begin
+  RT := D16Procs[P].RetType;
+  D16AddrClear(A);
+  If D16Procs[P].Level = D16Level Then
+  Begin A.Seg := 1; A.UseBP := True; A.Disp := D16Procs[P].ResultOfs End
+  Else
+  Begin
+    D16LoadFrame(D16Procs[P].Level, A);
+    A.Disp := D16Procs[P].ResultOfs;
+  End;
+  If D16IsLarge(RT) Then D16AddrDeref(A);
+  D16AssignTo(A, RT);
+End;
+
+Procedure D16IfStmt;
+Var LElse, LEnd : TString; T : Integer;
+Begin
+  D16Next;
+  T := D16Expr;
+  If D16Types[D16BaseType(T)].Kind <> DT_BOOL Then D16Error('expression booleenne attendue');
+  LElse := D16NewLabel;
+  D16JumpIfFalse(LElse);
+  D16ExpectKw('then');
+  D16Statement;
+  If D16IsKw('else') Then
+  Begin
+    D16Next;
+    LEnd := D16NewLabel;
+    D16E('JMP ' + LEnd);
+    D16L(LElse);
+    D16Statement;
+    D16L(LEnd);
+  End
+  Else D16L(LElse);
+End;
+
+Procedure D16WhileStmt;
+Var LTop, LEnd : TString; T : Integer;
+Begin
+  D16Next;
+  LTop := D16NewLabel; LEnd := D16NewLabel;
+  D16L(LTop);
+  T := D16Expr;
+  If D16Types[D16BaseType(T)].Kind <> DT_BOOL Then D16Error('expression booleenne attendue');
+  D16JumpIfFalse(LEnd);
+  D16ExpectKw('do');
+  If D16LoopCnt >= D16_MAX_LOOP Then D16Error('boucles trop imbriquees');
+  D16LoopBreak[D16LoopCnt] := LEnd; D16LoopCont[D16LoopCnt] := LTop; Inc(D16LoopCnt);
+  D16Statement;
+  Dec(D16LoopCnt);
+  D16E('JMP ' + LTop);
+  D16L(LEnd);
+End;
+
+Procedure D16RepeatStmt;
+Var LTop, LEnd, LCont : TString; T : Integer;
+Begin
+  D16Next;
+  LTop := D16NewLabel; LEnd := D16NewLabel; LCont := D16NewLabel;
+  D16L(LTop);
+  If D16LoopCnt >= D16_MAX_LOOP Then D16Error('boucles trop imbriquees');
+  D16LoopBreak[D16LoopCnt] := LEnd; D16LoopCont[D16LoopCnt] := LCont; Inc(D16LoopCnt);
+  D16Statements;
+  Dec(D16LoopCnt);
+  D16ExpectKw('until');
+  D16L(LCont);
+  T := D16Expr;
+  If D16Types[D16BaseType(T)].Kind <> DT_BOOL Then D16Error('expression booleenne attendue');
+  D16JumpIfFalse(LTop);
+  D16L(LEnd);
+End;
+
+Procedure D16ForStmt;
+Var
+  A, LimA : TD16Addr; T, T2 : Integer; IsConst, Down, Sg : Boolean; LTop, LEnd, LCont : TString;
+  LimTemp : LongInt; Sz : LongInt; LimConst : Boolean; LimVal : LongInt; C : TD16Const;
+  Save : LongInt; CmpOp : TString;
+Begin
+  D16Next;
+  T := D16Designator(A, IsConst);
+  If IsConst Then D16Error('variable attendue');
+  If D16AddrDynamic(A) Then D16Error('la variable de boucle doit etre une variable simple');
+  If Not D16IsOrdinal(T) Then D16Error('variable de boucle ordinale attendue');
+  Sz := D16Types[T].Size;
+  D16ExpectOp(':=');
+  { valeur initiale }
+  D16ExprTo(T);
+  D16Store(A, T);
+  If D16IsKw('downto') Then Down := True
+  Else If D16IsKw('to') Then Down := False
+  Else D16Error('TO ou DOWNTO attendu');
+  D16Next;
+  { limite : constante ou temporaire }
+  LimConst := False;
+  Save := D16Pos;
+  If ((D16Kind = TK_INTEGER) Or D16IsCharTok) And D16IsKwAt(D16Pos + 1, 'do') Then
+  Begin
+    LimConst := True;
+    If D16Kind = TK_INTEGER Then LimVal := TokenPool[D16Pos].IntVal Else LimVal := D16CharTokVal;
+    D16Next;
+  End
+  Else If D16IsIdent And D16IsKwAt(D16Pos + 1, 'do') And (D16Lookup(D16UVal) >= 0) And
+          (D16Syms[D16Lookup(D16UVal)].Kind = DSK_CONST) And D16IsOrdinal(D16Syms[D16Lookup(D16UVal)].TypeIdx) Then
+  Begin
+    LimConst := True; LimVal := D16Syms[D16Lookup(D16UVal)].Val; D16Next;
+  End
+  Else
+  Begin
+    D16ExprTo(T);
+    LimTemp := D16AllocTemp(Sz);
+    D16AddrClear(LimA); LimA.Seg := 1; LimA.UseBP := True; LimA.Disp := LimTemp;
+    D16Store(LimA, T);
+  End;
+  D16ExpectKw('do');
+  LTop := D16NewLabel; LEnd := D16NewLabel; LCont := D16NewLabel;
+  Sg := D16IsSigned(T);
+  { test initial : si compteur > limite (ou < pour downto) -> fin }
+  D16Load(A, T);
+  If Sz = 4 Then
+  Begin
+    If LimConst Then
+    Begin D16E('MOV CX,' + D16Str(LimVal And $FFFF)); D16E('MOV BX,' + D16Str((LimVal Shr 16) And $FFFF)) End
+    Else Begin D16E('MOV CX,' + D16Opnd(LimA, 2, 0)); D16E('MOV BX,' + D16Opnd(LimA, 2, 2)) End;
+    D16CallRT('LCMP');
+    If Down Then D16E('JL ' + LEnd) Else D16E('JG ' + LEnd);
+  End
+  Else
+  Begin
+    If Sz = 1 Then CmpOp := 'CMP AL,' Else CmpOp := 'CMP AX,';
+    If LimConst Then D16E(CmpOp + D16Str(LimVal And $FFFF))
+    Else D16E(CmpOp + D16Opnd(LimA, Sz, 0));
+    If Down Then Begin If Sg Then D16E('JL ' + LEnd) Else D16E('JB ' + LEnd) End
+    Else Begin If Sg Then D16E('JG ' + LEnd) Else D16E('JA ' + LEnd) End;
+  End;
+  D16L(LTop);
+  If D16LoopCnt >= D16_MAX_LOOP Then D16Error('boucles trop imbriquees');
+  D16LoopBreak[D16LoopCnt] := LEnd; D16LoopCont[D16LoopCnt] := LCont; Inc(D16LoopCnt);
+  D16Statement;
+  Dec(D16LoopCnt);
+  D16L(LCont);
+  { si compteur = limite -> fin ; sinon incrementer et reboucler }
+  D16Load(A, T);
+  If Sz = 4 Then
+  Begin
+    If LimConst Then
+    Begin D16E('CMP AX,' + D16Str(LimVal And $FFFF)); D16E('JNE ' + LTop + '_I');
+          D16E('CMP DX,' + D16Str((LimVal Shr 16) And $FFFF)); D16E('JE ' + LEnd) End
+    Else
+    Begin D16E('CMP AX,' + D16Opnd(LimA, 2, 0)); D16E('JNE ' + LTop + '_I');
+          D16E('CMP DX,' + D16Opnd(LimA, 2, 2)); D16E('JE ' + LEnd) End;
+    D16L(LTop + '_I');
+    If Down Then Begin D16E('SUB ' + D16Opnd(A, 2, 0) + ',1'); D16E('SBB ' + D16Opnd(A, 2, 2) + ',0') End
+    Else Begin D16E('ADD ' + D16Opnd(A, 2, 0) + ',1'); D16E('ADC ' + D16Opnd(A, 2, 2) + ',0') End;
+  End
+  Else
+  Begin
+    If LimConst Then D16E(CmpOp + D16Str(LimVal And $FFFF))
+    Else D16E(CmpOp + D16Opnd(LimA, Sz, 0));
+    D16E('JE ' + LEnd);
+    If Down Then D16E('DEC ' + D16Opnd(A, Sz, 0)) Else D16E('INC ' + D16Opnd(A, Sz, 0));
+  End;
+  D16E('JMP ' + LTop);
+  D16L(LEnd);
+End;
+
+Procedure D16CaseStmt;
+Var
+  T : Integer; LEnd, LNext, LBody : TString; Sz : LongInt; SelTemp : LongInt; A : TD16Addr;
+  C1, C2 : TD16Const; Sg : Boolean; First : Boolean;
+
+  Procedure CmpSel(V : LongInt);
+  Begin
+    If Sz = 4 Then
+    Begin
+      D16E('MOV AX,' + D16Opnd(A, 2, 0)); D16E('MOV DX,' + D16Opnd(A, 2, 2));
+      D16E('MOV CX,' + D16Str(V And $FFFF)); D16E('MOV BX,' + D16Str((V Shr 16) And $FFFF));
+      D16CallRT('LCMP');
+    End
+    Else If Sz = 1 Then D16E('CMP ' + D16Opnd(A, 1, 0) + ',' + D16Str(V And $FF))
+    Else D16E('CMP ' + D16Opnd(A, 2, 0) + ',' + D16Str(V And $FFFF));
+  End;
+
+Begin
+  D16Next;
+  T := D16Expr; D16Flush;
+  If D16Types[T].Kind = DT_STRING Then D16Error('selecteur de Case ordinal attendu');
+  If Not D16IsOrdinal(T) Then D16Error('selecteur de Case ordinal attendu');
+  Sz := D16Types[T].Size;
+  Sg := D16IsSigned(T) Or (Sz = 4);
+  SelTemp := D16AllocTemp(Sz);
+  D16AddrClear(A); A.Seg := 1; A.UseBP := True; A.Disp := SelTemp;
+  D16Store(A, T);
+  D16ExpectKw('of');
+  LEnd := D16NewLabel;
+  While Not (D16IsKw('end') Or D16IsKw('else')) Do
+  Begin
+    LNext := D16NewLabel; LBody := D16NewLabel;
+    Repeat
+      D16ConstExpr(C1);
+      If C1.Kind <> DT_INT Then D16Error('constante ordinale attendue');
+      If D16IsPunct('..') Then
+      Begin
+        D16Next; D16ConstExpr(C2);
+        If C2.Kind <> DT_INT Then D16Error('constante ordinale attendue');
+        LNext := D16NewLabel;
+        CmpSel(C1.IVal);
+        If Sg Then D16E('JL ' + LNext) Else D16E('JB ' + LNext);
+        CmpSel(C2.IVal);
+        If Sg Then D16E('JLE ' + LBody) Else D16E('JBE ' + LBody);
+        D16L(LNext);
+      End
+      Else
+      Begin
+        CmpSel(C1.IVal);
+        D16E('JE ' + LBody);
+      End;
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    D16ExpectPunct(':');
+    LNext := D16NewLabel;
+    D16E('JMP ' + LNext);
+    D16L(LBody);
+    D16Statement;
+    D16E('JMP ' + LEnd);
+    D16L(LNext);
+    If D16IsPunct(';') Then D16Next
+    Else If Not (D16IsKw('end') Or D16IsKw('else')) Then D16Error('";" attendu');
+  End;
+  If D16IsKw('else') Then
+  Begin
+    D16Next;
+    D16Statements;
+  End;
+  D16ExpectKw('end');
+  D16L(LEnd);
+End;
+
+Procedure D16WithStmt;
+Var T : Integer; A : TD16Addr; IsConst : Boolean; SaveCnt : Integer; O : LongInt;
+Begin
+  D16Next;
+  SaveCnt := D16WithCnt;
+  Repeat
+    T := D16Designator(A, IsConst);
+    If D16Types[T].Kind <> DT_RECORD Then D16Error('record attendu dans With');
+    If D16WithCnt >= D16_MAX_WITH Then D16Error('With trop imbriques');
+    D16WithStack[D16WithCnt].TypeIdx := T;
+    D16WithStack[D16WithCnt].Level := D16Level;
+    If D16AddrDynamic(A) Then
+    Begin
+      O := D16AllocTemp(4);
+      D16AddrToDXAX(A, 0);
+      D16E('MOV SS:[BP' + D16Str(O) + '],AX'); D16E('MOV SS:[BP' + D16Str(O + 2) + '],DX');
+      D16WithStack[D16WithCnt].TempOfs := O;
+    End
+    Else
+    Begin
+      D16WithStack[D16WithCnt].TempOfs := 0;
+      D16WithStack[D16WithCnt].Addr := A;
+    End;
+    Inc(D16WithCnt);
+    If D16IsPunct(',') Then D16Next Else Break;
+  Until False;
+  D16ExpectKw('do');
+  D16Statement;
+  D16WithCnt := SaveCnt;
+End;
+
+Procedure D16GotoStmt;
+Var U : TString; S : LongInt;
+Begin
+  D16Next;
+  If D16Kind = TK_INTEGER Then Begin U := IntToStr_(TokenPool[D16Pos].IntVal); D16Next End
+  Else U := D16ExpectIdent;
+  S := D16Lookup(U);
+  If (S < 0) Or (D16Syms[S].Kind <> DSK_LABEL) Then D16Error('label inconnu: ' + U);
+  D16E('JMP ' + D16Syms[S].SVal);
+End;
+
+{ Mem[s:o] := v ; Port[p] := v }
+Procedure D16MemPortAssign(Const U : TString);
+Begin
+  D16Next;
+  If (U = 'PORT') Or (U = 'PORTW') Then
+  Begin
+    D16ExpectPunct('['); D16ExprTo(DTI_WORD); D16E('PUSH AX'); D16ExpectPunct(']');
+    D16ExpectOp(':=');
+    If U = 'PORT' Then D16ExprTo(DTI_BYTE) Else D16ExprTo(DTI_WORD);
+    D16E('POP DX');
+    If U = 'PORT' Then D16E('OUT DX,AL') Else D16E('OUT DX,AX');
+    Exit;
+  End;
+  D16ExpectPunct('['); D16ExprTo(DTI_WORD); D16E('PUSH AX');
+  D16ExpectPunct(':'); D16ExprTo(DTI_WORD); D16E('PUSH AX'); D16ExpectPunct(']');
+  D16ExpectOp(':=');
+  If U = 'MEM' Then D16ExprTo(DTI_BYTE) Else If U = 'MEMW' Then D16ExprTo(DTI_WORD)
+  Else D16ExprTo(DTI_LONGINT);
+  D16E('POP BX'); D16E('POP ES');
+  If U = 'MEM' Then D16E('MOV ES:[BX],AL')
+  Else If U = 'MEMW' Then D16E('MOV ES:[BX],AX')
+  Else Begin D16E('MOV ES:[BX],AX'); D16E('MOV ES:[BX+2],DX') End;
+End;
+
+{ Instruction commencant par un identificateur : affectation ou appel }
+Procedure D16IdentStmt;
+Var
+  U : TString; S : LongInt; T : Integer; A : TD16Addr; IsConst : Boolean; P : Integer;
+  IsFunc : Boolean; W : Integer;
+Begin
+  U := D16UVal;
+  { label d instruction  nom: }
+  If (D16PeekKind(1) = TK_PUNCT) And (D16PeekVal(1) = ':') Then
+  Begin
+    S := D16Lookup(U);
+    If (S >= 0) And (D16Syms[S].Kind = DSK_LABEL) Then
+    Begin
+      D16Next; D16Next;
+      D16L(D16Syms[S].SVal);
+      D16Syms[S].Val := 1;
+      If D16IsKw('end') Or D16IsPunct(';') Or D16IsKw('until') Or D16IsKw('else') Then Exit;
+      D16Statement;
+      Exit;
+    End;
+  End;
+  { champ With ? }
+  For W := D16WithCnt - 1 DownTo 0 Do
+    If D16FindField(D16WithStack[W].TypeIdx, U) >= 0 Then
+    Begin
+      T := D16Designator(A, IsConst);
+      If D16Types[T].Kind = DT_PROCVAR Then
+      Begin
+        If Not D16IsOp(':=') Then Begin D16CallProcVar(A, T); Exit End;
+      End;
+      D16ExpectOp(':=');
+      D16AssignTo(A, T);
+      Exit;
+    End;
+  S := D16Lookup(U);
+  If S < 0 Then
+  Begin
+    If (U = 'MEM') Or (U = 'MEMW') Or (U = 'MEML') Or (U = 'PORT') Or (U = 'PORTW') Then
+    Begin
+      D16MemPortAssign(U); Exit;
+    End;
+    D16Builtin(U, IsFunc);
+    If IsFunc Then D16Error('appel de fonction utilise comme instruction: ' + U);
+    Exit;
+  End;
+  If D16Syms[S].Kind = DSK_UNIT Then
+  Begin
+    D16Next; D16ExpectPunct('.');
+    U := D16UVal; S := D16Lookup(U);
+    If S < 0 Then
+    Begin
+      { System.Move, System.Halt ... : procedure standard qualifiee }
+      D16Builtin(U, IsFunc);
+      If IsFunc Then D16Error('appel de fonction utilise comme instruction: ' + U);
+      Exit;
+    End;
+  End;
+  Case D16Syms[S].Kind Of
+    DSK_PROC :
+    Begin
+      P := D16Syms[S].ProcIdx;
+      { affectation au resultat de fonction ? }
+      If (D16Procs[P].RetType <> 0) And (D16PeekKind(1) = TK_OP) And (D16PeekVal(1) = ':=') Then
+      Begin
+        D16Next; D16Next;
+        If D16Procs[P].Level > D16Level Then D16Error('affectation hors de la fonction');
+        D16AssignResult(P);
+        Exit;
+      End;
+      D16Next;
+      D16CallProc(P);
+    End;
+    DSK_VAR :
+    Begin
+      T := D16Designator(A, IsConst);
+      If D16Types[T].Kind = DT_PROCVAR Then
+      Begin
+        If Not D16IsOp(':=') Then
+        Begin
+          D16CallProcVar(A, T); Exit;
+        End;
+        { P := @Proc ou P := Proc }
+        D16Next;
+        If D16IsIdent And (D16Lookup(D16UVal) >= 0) And (D16Syms[D16Lookup(D16UVal)].Kind = DSK_PROC) Then
+        Begin
+          S := D16Lookup(D16UVal); D16Next;
+          If D16AddrDynamic(A) Then D16AddrPush(A);
+          D16E('MOV AX,OFFSET ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+          D16E('MOV DX,SEG ' + D16Procs[D16Syms[S].ProcIdx].Lbl);
+          If D16AddrDynamic(A) Then D16AddrPop(A);
+          D16Store(A, T);
+          Exit;
+        End;
+        D16AssignTo(A, T);
+        Exit;
+      End;
+      D16ExpectOp(':=');
+      D16AssignTo(A, T);
+    End;
+    DSK_TYPE :
+    Begin
+      If D16Types[D16Syms[S].TypeIdx].Kind = DT_PROCVAR Then
+      Begin
+        { TProc(P)(args) : appel via pointeur transtype }
+        D16Factor; D16PendCC := -1;
+        Exit;
+      End;
+      { Type(variable) := valeur }
+      T := D16Designator(A, IsConst);
+      D16ExpectOp(':=');
+      D16AssignTo(A, T);
+    End;
+    DSK_CONST :
+    Begin
+      D16Error('affectation a une constante: ' + U);
+    End;
+  Else D16Error('instruction invalide: ' + U);
+  End;
+End;
+
+Procedure D16Statement;
+Var Mark, S : LongInt;
+Begin
+  Mark := D16LocalOfs;
+  D16PendCC := -1;
+  If D16Kind = TK_INTEGER Then
+  Begin
+    { label numerique  nnn: }
+    S := D16Lookup(IntToStr_(TokenPool[D16Pos].IntVal));
+    If (S < 0) Or (D16Syms[S].Kind <> DSK_LABEL) Then D16Error('label inconnu');
+    D16Next; D16ExpectPunct(':');
+    D16L(D16Syms[S].SVal);
+    D16Syms[S].Val := 1;
+    D16Statement;
+  End
+  Else If D16Kind = TK_IDENT Then D16IdentStmt
+  Else If D16IsKw('begin') Then
+  Begin
+    D16Next; D16Statements; D16ExpectKw('end');
+  End
+  Else If D16IsKw('if') Then D16IfStmt
+  Else If D16IsKw('while') Then D16WhileStmt
+  Else If D16IsKw('repeat') Then D16RepeatStmt
+  Else If D16IsKw('for') Then D16ForStmt
+  Else If D16IsKw('case') Then D16CaseStmt
+  Else If D16IsKw('with') Then D16WithStmt
+  Else If D16IsKw('goto') Then D16GotoStmt
+  Else If D16IsKw('asm') Then D16AsmBlock
+  Else If D16IsKw('inline') Then D16InlineStmt
+  Else If D16IsPunct(';') Or D16IsKw('end') Or D16IsKw('until') Or D16IsKw('else') Then
+  Else D16Error('instruction attendue');
+  D16LocalOfs := Mark;
+End;
+
+Procedure D16Statements;
+Begin
+  D16Statement;
+  While D16IsPunct(';') Do
+  Begin
+    D16Next;
+    D16Statement;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Procedures et fonctions                                      }
+{ ------------------------------------------------------------ }
+
+Function D16ProcLabel(Const Name : TString; Idx : Integer) : TString;
+Var S : TString; I : Integer;
+Begin
+  S := '';
+  For I := 1 To Length(Name) Do
+    If D16IsIdentChar(Name[I]) And (Name[I] <> '@') And (Name[I] <> '?') Then S := S + Name[I];
+  If Length(S) > 24 Then S := Copy(S, 1, 24);
+  D16ProcLabel := 'P_' + S + '_' + IntToStr_(Idx);
+End;
+
+{ Prologue : declarer les parametres comme symboles }
+Procedure D16DeclareParams(P : Integer);
+Var I : Integer; S : LongInt; T : Integer; Pr : LongInt;
+Begin
+  For I := 0 To D16Procs[P].PCount - 1 Do
+  Begin
+    Pr := D16Procs[P].PStart + I;
+    T := D16Params[Pr].TypeIdx;
+    S := D16SymAdd(D16Params[Pr].Name, DSK_VAR, T);
+    D16Syms[S].Ofs := D16Params[Pr].Ofs;
+    If (D16Params[Pr].Mode <> PM_VALUE) Or (T = DTI_NONE) Then
+    Begin
+      If (D16Params[Pr].Mode = PM_CONST) And (T <> DTI_NONE) And Not D16IsLarge(T) Then
+        D16Syms[S].Loc := LOC_LOCAL
+      Else D16Syms[S].Loc := LOC_REFPARAM;
+    End
+    Else If D16IsLarge(T) Then
+    Begin
+      { copie locale faite dans le prologue : offset local attribue ensuite }
+      D16Syms[S].Loc := LOC_REFPARAM;  { provisoire }
+      D16Syms[S].Val := 1;             { marque : a copier }
+    End
+    Else D16Syms[S].Loc := LOC_LOCAL;
+    If (D16Params[Pr].Mode = PM_VALUE) And D16IsLarge(T) And (D16Types[T].Size = 0) Then
+      D16Syms[S].Val := 0;  { tableau ouvert : reste par reference }
+  End;
+End;
+
+{ Copier les parametres par valeur de grands types dans le cadre }
+Procedure D16CopyLargeParams(FirstSym : LongInt);
+Var S : LongInt; T : Integer; Sz : LongInt; A : TD16Addr;
+Begin
+  For S := FirstSym To D16SymCnt - 1 Do
+    If (D16Syms[S].Kind = DSK_VAR) And (D16Syms[S].Val = 1) And (D16Syms[S].Loc = LOC_REFPARAM) Then
+    Begin
+      T := D16Syms[S].TypeIdx;
+      Sz := D16Types[T].Size;
+      If Odd(Sz) Then Inc(Sz);
+      D16LocalOfs := D16LocalOfs - Sz;
+      If -D16LocalOfs > D16MaxLocal Then D16MaxLocal := -D16LocalOfs;
+      D16E('LES BX,DWORD PTR SS:[BP+' + D16Str(D16Syms[S].Ofs) + ']');
+      D16E('MOV AX,BX'); D16E('MOV DX,ES');
+      D16E('LEA DI,SS:[BP' + D16Str(D16LocalOfs) + ']'); D16E('PUSH SS'); D16E('POP ES');
+      If D16Types[T].Kind = DT_STRING Then
+      Begin
+        D16E('MOV CX,' + D16Str(D16Types[T].Size - 1)); D16CallRT('STRASSIGN');
+      End
+      Else
+      Begin
+        D16E('MOV CX,' + D16Str(D16Types[T].Size)); D16CallRT('MOVE');
+      End;
+      D16Syms[S].Loc := LOC_LOCAL;
+      D16Syms[S].Ofs := D16LocalOfs;
+      D16Syms[S].Val := 0;
+    End;
+End;
+
+Procedure D16ParseProcDecl(IsFunc : Boolean);
+Var
+  U : TString; S, FirstSym : LongInt; P : Integer; PS, PB : LongInt; PC : Integer;
+  RT : Integer; SaveLevel : Integer; SaveProc : Integer; SaveOfs, SaveMax : LongInt;
+  SaveExit : TString; SaveWith : Integer; SaveLoop : Integer; HasLink : Boolean;
+  Existing : LongInt; IsFwdDef : Boolean; I : Integer; FrameLbl : TString;
+  SaveListing : Boolean;
+Begin
+  D16Next;
+  U := D16ExpectIdent;
+  { methode Objet.Nom : non supporte }
+  If D16IsPunct('.') Then D16Error('les methodes d objets ne sont pas supportees');
+  Existing := D16LookupLevel(U, D16Level);
+  IsFwdDef := (Existing >= 0) And (D16Syms[Existing].Kind = DSK_PROC) And
+              D16Procs[D16Syms[Existing].ProcIdx].IsForward And
+              Not D16Procs[D16Syms[Existing].ProcIdx].Defined;
+  HasLink := D16Level >= 1;   { la procedure declaree sera de niveau D16Level+1 ; lien si >= 2 }
+  If IsFwdDef Then
+  Begin
+    P := D16Syms[Existing].ProcIdx;
+    { la liste de parametres peut etre repetee : reprendre les noms de l implementation }
+    If D16IsPunct('(') Then
+    Begin
+      D16ParseParams(PS, PC, PB, HasLink);
+      If PC = D16Procs[P].PCount Then
+        For I := 0 To PC - 1 Do D16Params[D16Procs[P].PStart + I].Name := D16Params[PS + I].Name;
+      D16ParamCnt := PS;   { liberer la copie }
+    End;
+    If D16IsPunct(':') Then Begin D16Next; D16ParseType End;
+    D16ExpectPunct(';');
+    { directives admises sur l implementation d une procedure annoncee }
+    While D16IsIdent Do
+    Begin
+      If D16IsIdentU('ASSEMBLER') Then
+      Begin D16Next; D16ExpectPunct(';'); D16Procs[P].IsAsm := True End
+      Else If D16IsIdentU('NEAR') Or D16IsIdentU('FAR') Then
+      Begin D16Next; D16ExpectPunct(';') End
+      Else Break;
+    End;
+  End
+  Else
+  Begin
+    If Existing >= 0 Then D16Error('identificateur redeclare: ' + U);
+    If D16ProcCnt >= D16_MAX_PROCS Then D16Error('trop de procedures');
+    P := D16ProcCnt; Inc(D16ProcCnt);
+    S := D16SymAdd(U, DSK_PROC, 0);
+    D16Syms[S].ProcIdx := P;
+    D16Procs[P].Lbl := D16ProcLabel(U, P);
+    D16Procs[P].Level := D16Level + 1;
+    D16Procs[P].IsForward := False;
+    D16Procs[P].Defined := False;
+    D16Procs[P].IsInterrupt := False;
+    D16Procs[P].IsAsm := False;
+    D16Procs[P].IsInline := False;
+    D16Procs[P].IsExternal := False;
+    D16Procs[P].SymIdx := S;
+    D16Procs[P].RetType := 0;
+    D16Procs[P].UnitId := D16CurUnit;
+    D16Procs[P].ResultOfs := 0;
+    D16ParseParams(PS, PC, PB, HasLink);
+    D16Procs[P].PStart := PS; D16Procs[P].PCount := PC; D16Procs[P].ParamBytes := PB;
+    If IsFunc Then
+    Begin
+      If D16IsPunct(':') Then
+      Begin
+        D16Next;
+        RT := D16ParseType;
+        D16Procs[P].RetType := RT;
+        If D16IsLarge(RT) Then
+        Begin
+          { pointeur cache vers le resultat, empile avant les parametres }
+          D16Procs[P].ResultOfs := 6 + Ord(HasLink) * 2 + PB;
+          D16Procs[P].ParamBytes := PB + 4;
+        End;
+      End
+      Else D16Error('type de resultat attendu');
+    End;
+    If HasLink Then D16Procs[P].ParamBytes := D16Procs[P].ParamBytes + 2;
+    D16ExpectPunct(';');
+    { directives }
+    While D16IsIdent Do
+    Begin
+      If D16IsIdentU('FORWARD') Then
+      Begin
+        D16Next; D16ExpectPunct(';'); D16Procs[P].IsForward := True;
+      End
+      Else If D16IsIdentU('INTERRUPT') Then
+      Begin
+        D16Next; D16ExpectPunct(';'); D16Procs[P].IsInterrupt := True;
+      End
+      Else If (D16IsIdentU('NEAR')) Or (D16IsIdentU('FAR')) Then
+      Begin
+        D16Next; D16ExpectPunct(';');
+      End
+      Else If D16IsIdentU('ASSEMBLER') Then
+      Begin
+        D16Next; D16ExpectPunct(';'); D16Procs[P].IsAsm := True;
+      End
+      Else If D16IsIdentU('EXTERNAL') Then
+      Begin
+        D16Next; D16ExpectPunct(';');
+        D16Procs[P].IsExternal := True;
+        D16Procs[P].Defined := True;
+        D16Procs[P].Lbl := 'RT_' + Copy(U, 3, 255);  { __Nom -> RT_NOM }
+        Exit;
+      End
+      Else Break;
+    End;
+    If D16InInterface Then Begin D16Procs[P].IsForward := True; Exit End;
+    If D16Procs[P].IsForward Then Exit;
+    If D16IsKw('inline') Then
+    Begin
+      { procedure Inline(...) : octets inseres a chaque appel }
+      D16Procs[P].IsInline := True; D16Procs[P].Defined := True;
+      D16Procs[P].InlineStart := D16Pos;
+      While Not D16IsPunct(')') Do D16Next;
+      D16Next; D16ExpectPunct(';');
+      Exit;
+    End;
+  End;
+  If D16Procs[P].IsInterrupt And (D16Procs[P].PCount > 0) Then
+    D16Error('parametres de procedure INTERRUPT non supportes');
+
+  { ---- Corps ---- }
+  D16Procs[P].Defined := True;
+  SaveLevel := D16Level; SaveProc := D16CurProc; SaveOfs := D16LocalOfs; SaveMax := D16MaxLocal;
+  SaveExit := D16ExitLbl; SaveWith := D16WithCnt; SaveLoop := D16LoopCnt;
+  Inc(D16Level);
+  D16CurProc := P;
+  D16LocalOfs := 0; D16MaxLocal := 0;
+  D16WithCnt := 0; D16LoopCnt := 0;
+  FirstSym := D16SymCnt;
+  D16ProcFirstSym := FirstSym;
+  D16DeclareParams(P);
+  { resultat de fonction ordinal : emplacement local }
+  If (D16Procs[P].RetType <> 0) And Not D16IsLarge(D16Procs[P].RetType) Then
+  Begin
+    D16LocalOfs := D16LocalOfs - 4;
+    D16MaxLocal := 4;
+    D16Procs[P].ResultOfs := D16LocalOfs;
+  End;
+  D16Block(P);
+  D16ExpectPunct(';');
+  { restaurer }
+  D16SymPop(FirstSym);
+  D16Level := SaveLevel; D16CurProc := SaveProc; D16LocalOfs := SaveOfs; D16MaxLocal := SaveMax;
+  D16ExitLbl := SaveExit; D16WithCnt := SaveWith; D16LoopCnt := SaveLoop;
+End;
+
+{ Bloc : declarations + corps ; ProcIdx = -1 pour le programme principal }
+Procedure D16Block(ProcIdx : Integer);
+Var
+  FirstSym : LongInt; FrameLbl : TString; P : Integer; RT : Integer; A : TD16Addr;
+  S : LongInt; BodyStart : LongInt; SaveListing : Boolean;
+Begin
+  FirstSym := D16SymCnt;
+  { declarations }
+  While True Do
+  Begin
+    If D16IsKw('label') Then D16ParseLabelDecl
+    Else If D16IsKw('const') Then D16ParseConstDecl
+    Else If D16IsKw('type') Then D16ParseTypeDecl
+    Else If D16IsKw('var') Then D16ParseVarDecl
+    Else If D16IsKw('procedure') Then D16ParseProcDecl(False)
+    Else If D16IsKw('function') Then D16ParseProcDecl(True)
+    Else If D16IsKw('constructor') Or D16IsKw('destructor') Then
+      D16Error('les objets ne sont pas supportes par la cible DOS 16 bits')
+    Else Break;
+  End;
+  If ProcIdx >= 0 Then
+  Begin
+    P := ProcIdx;
+    { verifier que le segment courant a de la place }
+    If D16SegSize(D16CurSeg) > D16_SEG_LIMIT Then D16NewSegment;
+    BodyStart := D16CodeLen;
+    D16C('procedure ' + D16Syms[D16Procs[P].SymIdx].Name);
+    D16L(D16Procs[P].Lbl);
+    If D16Procs[P].IsInterrupt Then
+    Begin
+      D16E('PUSH AX'); D16E('PUSH BX'); D16E('PUSH CX'); D16E('PUSH DX');
+      D16E('PUSH SI'); D16E('PUSH DI'); D16E('PUSH DS'); D16E('PUSH ES');
+      D16E('PUSH BP');
+      D16E('MOV AX,SEG DATASTART'); D16E('MOV DS,AX');
+    End
+    Else D16E('PUSH BP');
+    D16E('MOV BP,SP');
+    FrameLbl := 'F' + D16Str(P);
+    If D16StackCheck And (D16CurUnit = 0) And Not D16Procs[P].IsInterrupt Then
+    Begin
+      { directive S+ : SP - cadre sous la limite (ou debordement) -> erreur 202 }
+      D16SysVarAddr('__STACKLIMIT', A);
+      D16E('MOV AX,SP');
+      D16E('SUB AX,OFFSET ' + FrameLbl);
+      D16E('JB ' + FrameLbl + 'E');
+      D16E('CMP AX,' + D16Opnd(A, 2, 0));
+      D16E('JAE ' + FrameLbl + 'S');
+      D16L(FrameLbl + 'E');
+      D16E('MOV AX,202'); D16E('CALL FAR PTR RT_RUNERROR');
+      D16L(FrameLbl + 'S');
+    End;
+    D16E('SUB SP,OFFSET ' + FrameLbl);
+    D16CopyLargeParams(D16ProcFirstSym);
+    D16ExitLbl := D16NewLabel;
+  End
+  Else
+  Begin
+    D16MainBodyPos := D16Pos;
+    D16ExitLbl := D16NewLabel;
+    FrameLbl := 'FMAIN';
+    If D16IsUnit Then
+    Begin
+      If D16IsKw('end') Then
+      Begin
+        { unite sans bloc d initialisation }
+        D16Next; D16UnitHasInit[D16CurUnit] := False; Exit;
+      End;
+      { bloc d initialisation d unite }
+      D16UnitHasInit[D16CurUnit] := True;
+      If D16SegSize(D16CurSeg) > D16_SEG_LIMIT Then D16NewSegment;
+      BodyStart := D16CodeLen;
+      D16L('INIT_' + D16UnitNames[D16CurUnit]);
+      D16E('PUSH BP'); D16E('MOV BP,SP');
+      FrameLbl := 'FINIT_' + D16UnitNames[D16CurUnit];
+      D16E('SUB SP,OFFSET ' + FrameLbl);
+    End
+    Else
+    Begin
+      { point d entree du programme }
+      If D16SegSize(D16CurSeg) > D16_SEG_LIMIT Then D16NewSegment;
+      BodyStart := D16CodeLen;
+      D16C('programme principal');
+      D16L('START');
+      D16E('MOV AX,SEG DATASTART'); D16E('MOV DS,AX');
+      D16E('MOV DX,ES');
+      D16E('CLD'); D16E('PUSH DS'); D16E('POP ES');
+      D16E('MOV DI,OFFSET BSSSTART'); D16E('MOV CX,OFFSET BSSSIZEW');
+      D16E('XOR AX,AX'); D16E('REP STOSW');
+      D16SysVarAddr('PREFIXSEG', A);
+      D16E('MOV ' + D16Opnd(A, 2, 0) + ',DX');
+      D16E('MOV BP,SP');
+      If D16StackCheck Then
+      Begin
+        { directive S+ : le cadre du programme principal doit tenir dans la pile }
+        D16E('MOV AX,SP'); D16E('SUB AX,OFFSET FMAIN'); D16E('JB FMAINE');
+        D16E('CMP AX,128'); D16E('JAE FMAINS');
+        D16L('FMAINE');
+        D16CallSys('__SYSINIT');
+        D16E('MOV AX,202'); D16E('CALL FAR PTR RT_RUNERROR');
+        D16L('FMAINS');
+      End;
+      D16E('SUB SP,OFFSET FMAIN');
+      D16E('MOV AX,SS'); D16E('ADD AX,' + D16Str((D16StackSize + 15) Div 16));
+      D16SysVarAddr('__HEAPSTARTSEG', A);
+      D16E('MOV ' + D16Opnd(A, 2, 0) + ',AX');
+      If D16HeapMax < 655360 Then
+      Begin
+        D16SysVarAddr('__HEAPMAXPARAS', A);
+        D16E('MOV ' + D16Opnd(A, 2, 0) + ',' + D16Str((D16HeapMax + 15) Div 16));
+      End;
+      D16CallSys('__SYSINIT');
+      For S := 2 To D16UnitCount Do
+        If D16UnitUsed[S] And D16UnitHasInit[S] Then
+          D16E('CALL FAR PTR INIT_' + D16UnitNames[S]);
+    End;
+  End;
+  If (ProcIdx >= 0) And D16Procs[ProcIdx].IsAsm Then
+  Begin
+    If Not D16IsKw('asm') Then D16Error('ASM attendu dans une procedure ASSEMBLER');
+    D16AsmBlock;
+  End
+  Else
+  Begin
+    D16ExpectKw('begin');
+    D16Statements;
+    D16ExpectKw('end');
+  End;
+  D16L(D16ExitLbl);
+  { labels declares mais jamais definis : toleres (comme TP) }
+  If ProcIdx >= 0 Then
+  Begin
+    P := ProcIdx;
+    RT := D16Procs[P].RetType;
+    If (RT <> 0) And Not D16IsLarge(RT) And Not D16Procs[P].IsAsm Then
+    Begin
+      D16AddrClear(A); A.Seg := 1; A.UseBP := True; A.Disp := D16Procs[P].ResultOfs;
+      D16Load(A, RT);
+    End;
+    If D16Procs[P].IsInterrupt Then
+    Begin
+      D16E('MOV SP,BP'); D16E('POP BP');
+      D16E('POP ES'); D16E('POP DS'); D16E('POP DI'); D16E('POP SI');
+      D16E('POP DX'); D16E('POP CX'); D16E('POP BX'); D16E('POP AX');
+      D16E('IRET');
+    End
+    Else
+    Begin
+      D16E('MOV SP,BP'); D16E('POP BP');
+      D16E('RETF ' + D16Str(D16Procs[P].ParamBytes));
+    End;
+    If Odd(D16MaxLocal) Then Inc(D16MaxLocal);
+    D16DefineDataLabel(FrameLbl, D16MaxLocal);
+    { la taille de cadre est un simple nombre : utiliser un label "absolu" }
+    D16Labels[D16FindLabel(FrameLbl)].Seg := 253;
+  End
+  Else If D16IsUnit Then
+  Begin
+    D16E('MOV SP,BP'); D16E('POP BP'); D16E('RETF');
+    If Odd(D16MaxLocal) Then Inc(D16MaxLocal);
+    D16DefineDataLabel(FrameLbl, D16MaxLocal);
+    D16Labels[D16FindLabel(FrameLbl)].Seg := 253;
+  End
+  Else
+  Begin
+    D16E('XOR AX,AX'); D16E('PUSH AX');
+    D16CallSys('__HALT');
+    If Odd(D16MaxLocal) Then Inc(D16MaxLocal);
+    D16DefineDataLabel('FMAIN', D16MaxLocal);
+    D16Labels[D16FindLabel('FMAIN')].Seg := 253;
+  End;
+  { une procedure volumineuse a fait deborder le segment : la deplacer dans un nouveau }
+  If D16SegSize(D16CurSeg) > 65535 Then D16SplitSegmentAt(BodyStart);
+  { plage de code du bloc, pour l elimination du code mort (racine : programme, init d unite) }
+  D16AddRange(D16CurSeg, BodyStart - D16SegStart[D16CurSeg], D16CodeLen - D16SegStart[D16CurSeg],
+              ProcIdx < 0);
+  { les symboles locaux sont retires par l appelant (D16ParseProcDecl) }
+End;
+
+{ ------------------------------------------------------------ }
+{ D16 : noyau runtime en assembleur 8086                       }
+{ Conventions : les routines RT_xxx appelees directement par le }
+{ generateur recoivent leurs operandes dans les registres ; les }
+{ routines declarees External dans les unites integrees suivent }
+{ la convention Pascal (parametres sur la pile, RETF n).        }
+{ ------------------------------------------------------------ }
+
+Procedure D16EmitRuntime;
+Var L : TString; RTStart : LongInt;
+
+  { chaque groupe de routines RT_xxx forme une plage pour l elimination du code mort :
+    les groupes partageant du code (LDIV/LMOD, LSHL/LSHR, SETOR/AND/SUB...) restent ensemble }
+  Procedure RTMark;
+  Begin
+    If RTStart >= 0 Then
+      D16AddRange(D16CurSeg, RTStart - D16SegStart[D16CurSeg], D16CodeLen - D16SegStart[D16CurSeg], False);
+    RTStart := D16CodeLen;
+  End;
+
+Begin
+  RTStart := -1;
+  If D16SegSize(D16CurSeg) > D16_SEG_LIMIT - 8192 Then D16NewSegment;
+  D16C('--- runtime 8086 ---');
+
+  RTMark;
+  { RT_STRASSIGN : ES:DI <- DX:AX, CX = longueur max }
+  D16L('RT_STRASSIGN');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('CLD');
+  D16E('MOV DS,DX'); D16E('MOV SI,AX');
+  D16E('LODSB');
+  D16E('CMP AL,CL'); D16E('JBE RT_SA1'); D16E('MOV AL,CL');
+  D16L('RT_SA1');
+  D16E('STOSB'); D16E('MOV CL,AL'); D16E('MOV CH,0'); D16E('REP MOVSB');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+
+  RTMark;
+  { RT_STRCAT : ES:DI <- ES:DI + DX:AX (max 255) }
+  D16L('RT_STRCAT');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('CLD');
+  D16E('MOV DS,DX'); D16E('MOV SI,AX');
+  D16E('MOV CL,ES:[DI]'); D16E('MOV CH,0');
+  D16E('MOV AL,[SI]'); D16E('MOV AH,0');
+  D16E('ADD AX,CX');
+  D16E('CMP AX,255'); D16E('JBE RT_SC1'); D16E('MOV AX,255');
+  D16L('RT_SC1');
+  D16E('MOV ES:[DI],AL');
+  D16E('SUB AX,CX');
+  D16E('ADD DI,CX'); D16E('INC DI'); D16E('INC SI');
+  D16E('MOV CX,AX'); D16E('REP MOVSB');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+
+  RTMark;
+  { RT_STRADDCHAR : ES:DI <- ES:DI + AL }
+  D16L('RT_STRADDCHAR');
+  D16E('MOV BL,ES:[DI]'); D16E('CMP BL,255'); D16E('JE RT_SAC1');
+  D16E('INC BL'); D16E('MOV ES:[DI],BL'); D16E('MOV BH,0');
+  D16E('MOV ES:[DI+BX],AL');
+  D16L('RT_SAC1'); D16E('RETF');
+
+  RTMark;
+  { RT_STRCMP : ES:DI (gauche) ? DX:AX (droite) -> indicateurs non signes }
+  D16L('RT_STRCMP');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('CLD');
+  D16E('MOV BX,ES'); D16E('MOV SI,DI');
+  D16E('MOV ES,DX'); D16E('MOV DI,AX'); D16E('MOV DS,BX');
+  D16E('MOV CL,[SI]'); D16E('MOV CH,0');
+  D16E('MOV BL,ES:[DI]'); D16E('MOV BH,0');
+  D16E('INC SI'); D16E('INC DI');
+  D16E('PUSH CX'); D16E('PUSH BX');
+  D16E('CMP CX,BX'); D16E('JBE RT_SM1'); D16E('MOV CX,BX');
+  D16L('RT_SM1');
+  D16E('REPE CMPSB');
+  D16E('POP BX'); D16E('POP CX');
+  D16E('JNE RT_SM2');
+  D16E('CMP CX,BX');
+  D16L('RT_SM2');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+
+  RTMark;
+  { RT_MOVE : ES:DI <- DX:AX, CX octets (gere le chevauchement) }
+  D16L('RT_MOVE');
+  D16E('PUSH DS'); D16E('PUSH SI');
+  D16E('MOV DS,DX'); D16E('MOV SI,AX');
+  D16E('JCXZ RT_MV3');
+  D16E('MOV AX,DS'); D16E('MOV BX,ES'); D16E('CMP AX,BX'); D16E('JNE RT_MV1');
+  D16E('CMP SI,DI'); D16E('JAE RT_MV1');
+  D16E('MOV AX,SI'); D16E('ADD AX,CX'); D16E('CMP AX,DI'); D16E('JBE RT_MV1');
+  { copie descendante }
+  D16E('STD'); D16E('ADD SI,CX'); D16E('ADD DI,CX'); D16E('DEC SI'); D16E('DEC DI');
+  D16E('REP MOVSB'); D16E('CLD'); D16E('JMP RT_MV3');
+  D16L('RT_MV1');
+  D16E('CLD'); D16E('SHR CX,1'); D16E('REP MOVSW'); D16E('ADC CX,CX'); D16E('REP MOVSB');
+  D16L('RT_MV3');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+
+  RTMark;
+  { RT_ARRTOSTR : ES:DI (chaine) <- DX:AX tableau de CX caracteres }
+  D16L('RT_ARRTOSTR');
+  D16E('CMP CX,255'); D16E('JBE RT_AS1'); D16E('MOV CX,255');
+  D16L('RT_AS1');
+  D16E('MOV ES:[DI],CL'); D16E('INC DI');
+  D16E('CALL FAR PTR RT_MOVE'); D16E('RETF');
+
+  RTMark;
+  { RT_STRTOARR : ES:DI (tableau de CX octets) <- chaine DX:AX }
+  D16L('RT_STRTOARR');
+  D16E('PUSH DS'); D16E('MOV DS,DX'); D16E('MOV BX,AX');
+  D16E('MOV AL,[BX]'); D16E('MOV AH,0'); D16E('CMP AX,CX'); D16E('JAE RT_TA1'); D16E('MOV CX,AX');
+  D16L('RT_TA1');
+  D16E('MOV AX,BX'); D16E('INC AX'); D16E('MOV DX,DS'); D16E('POP DS');
+  D16E('CALL FAR PTR RT_MOVE'); D16E('RETF');
+
+  RTMark;
+  { RT_COPY : pile (src far, index, count) ; ES:DI dest }
+  D16L('RT_COPY');
+  D16E('PUSH BP'); D16E('MOV BP,SP'); D16E('PUSH DS'); D16E('PUSH SI'); D16E('CLD');
+  D16E('LDS SI,[BP+10]');          { src }
+  D16E('MOV BX,[BP+8]');           { index }
+  D16E('MOV CX,[BP+6]');           { count }
+  D16E('MOV AL,[SI]'); D16E('MOV AH,0');   { len }
+  D16E('OR BX,BX'); D16E('JG RT_CP1'); D16E('MOV BX,1');
+  D16L('RT_CP1');
+  D16E('CMP BX,AX'); D16E('JA RT_CP3');     { index > len -> vide }
+  D16E('SUB AX,BX'); D16E('INC AX');         { restant }
+  D16E('CMP CX,AX'); D16E('JBE RT_CP2'); D16E('MOV CX,AX');
+  D16L('RT_CP2');
+  D16E('MOV ES:[DI],CL'); D16E('INC DI'); D16E('ADD SI,BX'); D16E('REP MOVSB');
+  D16E('JMP RT_CP4');
+  D16L('RT_CP3'); D16E('MOV BYTE PTR ES:[DI],0');
+  D16L('RT_CP4');
+  D16E('POP SI'); D16E('POP DS'); D16E('POP BP'); D16E('RETF 8');
+
+  RTMark;
+  { RT_POS : ES:DI sous-chaine, DX:AX chaine -> AX position }
+  D16L('RT_POS');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('PUSH BP'); D16E('CLD');
+  D16E('MOV DS,DX'); D16E('MOV SI,AX');
+  D16E('MOV CL,ES:[DI]'); D16E('MOV CH,0');    { longueur sous-chaine }
+  D16E('MOV BL,[SI]'); D16E('MOV BH,0');       { longueur chaine }
+  D16E('JCXZ RT_PS4');                         { sous-chaine vide -> 0 }
+  D16E('CMP CX,BX'); D16E('JA RT_PS4');
+  D16E('SUB BX,CX'); D16E('INC BX');           { nombre de positions }
+  D16E('MOV BP,1');
+  D16L('RT_PS1');
+  D16E('PUSH SI'); D16E('PUSH DI'); D16E('PUSH CX');
+  D16E('INC SI'); D16E('INC DI');
+  D16E('REPE CMPSB');
+  D16E('POP CX'); D16E('POP DI'); D16E('POP SI');
+  D16E('JE RT_PS3');
+  D16E('INC SI'); D16E('INC BP'); D16E('DEC BX'); D16E('JNZ RT_PS1');
+  D16L('RT_PS4'); D16E('XOR AX,AX'); D16E('JMP RT_PS5');
+  D16L('RT_PS3'); D16E('MOV AX,BP');
+  D16L('RT_PS5');
+  D16E('POP BP'); D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+
+  RTMark;
+  { RT_DELETE : pile (s far, index, count) }
+  D16L('RT_DELETE');
+  D16E('PUSH BP'); D16E('MOV BP,SP'); D16E('PUSH DS'); D16E('PUSH SI'); D16E('CLD');
+  D16E('LES DI,[BP+10]');
+  D16E('MOV BX,[BP+8]'); D16E('MOV CX,[BP+6]');
+  D16E('MOV AL,ES:[DI]'); D16E('MOV AH,0');
+  D16E('OR BX,BX'); D16E('JLE RT_DL9');
+  D16E('CMP BX,AX'); D16E('JA RT_DL9');
+  D16E('OR CX,CX'); D16E('JLE RT_DL9');
+  D16E('MOV DX,AX'); D16E('SUB DX,BX'); D16E('INC DX');  { restant a partir de index }
+  D16E('CMP CX,DX'); D16E('JB RT_DL1');
+  D16E('DEC BX'); D16E('MOV ES:[DI],BL'); D16E('JMP RT_DL9');   { tronquer }
+  D16L('RT_DL1');
+  D16E('SUB AX,CX'); D16E('MOV ES:[DI],AL');            { nouvelle longueur }
+  D16E('PUSH ES'); D16E('POP DS');
+  D16E('MOV SI,DI'); D16E('ADD SI,BX'); D16E('ADD DI,BX');  { DI = s[index], SI = s[index+count] }
+  D16E('ADD SI,CX');
+  D16E('MOV CX,DX'); D16E('SUB CX,[BP+6]');              { octets a deplacer }
+  D16E('REP MOVSB');
+  D16L('RT_DL9');
+  D16E('POP SI'); D16E('POP DS'); D16E('POP BP'); D16E('RETF 8');
+
+  RTMark;
+  { RT_INSERT : pile (src far, dest far, maxlen, index) }
+  D16L('RT_INSERT');
+  D16E('PUSH BP'); D16E('MOV BP,SP'); D16E('PUSH DS'); D16E('PUSH SI'); D16E('CLD');
+  D16E('LES DI,[BP+10]');          { dest }
+  D16E('MOV BX,[BP+6]');           { index }
+  D16E('MOV AL,ES:[DI]'); D16E('MOV AH,0');   { len dest }
+  D16E('OR BX,BX'); D16E('JG RT_IN1'); D16E('MOV BX,1');
+  D16L('RT_IN1');
+  D16E('CMP BX,AX'); D16E('JBE RT_IN2'); D16E('MOV BX,AX'); D16E('INC BX');
+  D16L('RT_IN2');
+  D16E('LDS SI,[BP+14]');          { src }
+  D16E('MOV CL,[SI]'); D16E('MOV CH,0');     { len src }
+  D16E('MOV DX,AX'); D16E('ADD DX,CX');       { nouvelle longueur brute }
+  D16E('CMP DX,[BP+8]'); D16E('JBE RT_IN3'); D16E('MOV DX,[BP+8]');
+  D16L('RT_IN3');
+  D16E('MOV ES:[DI],DL');
+  { deplacer la queue : de dest[index..len] vers dest[index+cx..] (descendant) }
+  D16E('PUSH SI'); D16E('PUSH DS');
+  D16E('PUSH ES'); D16E('POP DS');
+  D16E('MOV SI,DI'); D16E('ADD SI,AX');        { DS:SI = dernier octet source (dest[len]) }
+  D16E('PUSH DI');
+  D16E('ADD DI,AX'); D16E('ADD DI,CX');        { ES:DI = dest[len+cx] }
+  D16E('PUSH AX');
+  D16E('SUB AX,BX'); D16E('INC AX');           { nombre d octets de queue }
+  D16E('PUSH CX'); D16E('MOV CX,AX'); D16E('STD');
+  { ne pas ecrire au-dela de maxlen : les octets au-dela sont ignores a la lecture }
+  D16E('REP MOVSB'); D16E('CLD');
+  D16E('POP CX'); D16E('POP AX'); D16E('POP DI');
+  D16E('POP DS'); D16E('POP SI');
+  { copier la source a dest[index] }
+  D16E('ADD DI,BX'); D16E('INC SI');
+  D16E('REP MOVSB');
+  D16E('POP SI'); D16E('POP DS'); D16E('POP BP'); D16E('RETF 12');
+
+  RTMark;
+  { RT_LMUL : DX:AX <- DX:AX * BX:CX }
+  D16L('RT_LMUL');
+  D16E('PUSH SI'); D16E('PUSH DI');
+  D16E('MOV SI,AX'); D16E('MOV DI,DX');
+  D16E('MUL BX'); D16E('MOV BX,AX');
+  D16E('MOV AX,DI'); D16E('MUL CX'); D16E('ADD BX,AX');
+  D16E('MOV AX,SI'); D16E('MUL CX'); D16E('ADD DX,BX');
+  D16E('POP DI'); D16E('POP SI'); D16E('RETF');
+
+  RTMark;
+  { RT_LUDIV : non signe DX:AX / BX:CX -> quotient DX:AX, reste BX:CX }
+  D16L('RT_LUDIV');
+  D16E('PUSH SI'); D16E('PUSH DI'); D16E('PUSH BP');
+  D16E('MOV SI,CX'); D16E('MOV DI,BX');       { DI:SI = diviseur }
+  D16E('XOR BX,BX'); D16E('XOR CX,CX');       { reste }
+  D16E('MOV BP,32');
+  D16L('RT_LU1');
+  D16E('SHL AX,1'); D16E('RCL DX,1'); D16E('RCL CX,1'); D16E('RCL BX,1');
+  D16E('CMP BX,DI'); D16E('JB RT_LU2'); D16E('JA RT_LU3');
+  D16E('CMP CX,SI'); D16E('JB RT_LU2');
+  D16L('RT_LU3');
+  D16E('SUB CX,SI'); D16E('SBB BX,DI'); D16E('INC AX');
+  D16L('RT_LU2');
+  D16E('DEC BP'); D16E('JNZ RT_LU1');
+  D16E('POP BP'); D16E('POP DI'); D16E('POP SI'); D16E('RETF');
+
+  RTMark;
+  { RT_LDIV : signe DX:AX div BX:CX ; RT_LMOD : DX:AX mod BX:CX }
+  D16L('RT_LDIV');
+  D16E('MOV SI,BX'); D16E('OR SI,CX'); D16E('JNZ RT_LD0');
+  D16E('MOV AX,200'); D16E('JMP FAR PTR RT_RUNERROR');
+  D16L('RT_LD0');
+  D16E('PUSH SI'); D16E('XOR SI,SI');
+  D16E('OR DX,DX'); D16E('JNS RT_LD1');
+  D16E('NEG AX'); D16E('ADC DX,0'); D16E('NEG DX'); D16E('INC SI');
+  D16L('RT_LD1');
+  D16E('OR BX,BX'); D16E('JNS RT_LD2');
+  D16E('NEG CX'); D16E('ADC BX,0'); D16E('NEG BX'); D16E('INC SI');
+  D16L('RT_LD2');
+  D16E('CALL FAR PTR RT_LUDIV');
+  D16E('TEST SI,1'); D16E('JZ RT_LD3');
+  D16E('NEG AX'); D16E('ADC DX,0'); D16E('NEG DX');
+  D16L('RT_LD3');
+  D16E('POP SI'); D16E('RETF');
+  D16L('RT_LMOD');
+  D16E('MOV SI,BX'); D16E('OR SI,CX'); D16E('JNZ RT_LM0');
+  D16E('MOV AX,200'); D16E('JMP FAR PTR RT_RUNERROR');
+  D16L('RT_LM0');
+  D16E('PUSH SI'); D16E('XOR SI,SI');
+  D16E('OR DX,DX'); D16E('JNS RT_LM1');
+  D16E('NEG AX'); D16E('ADC DX,0'); D16E('NEG DX'); D16E('INC SI');
+  D16L('RT_LM1');
+  D16E('OR BX,BX'); D16E('JNS RT_LM2');
+  D16E('NEG CX'); D16E('ADC BX,0'); D16E('NEG BX');
+  D16L('RT_LM2');
+  D16E('CALL FAR PTR RT_LUDIV');
+  D16E('MOV AX,CX'); D16E('MOV DX,BX');
+  D16E('TEST SI,1'); D16E('JZ RT_LM3');
+  D16E('NEG AX'); D16E('ADC DX,0'); D16E('NEG DX');
+  D16L('RT_LM3');
+  D16E('POP SI'); D16E('RETF');
+
+  RTMark;
+  { RT_LSHL / RT_LSHR : DX:AX decale de CL }
+  D16L('RT_LSHL');
+  D16E('AND CX,31'); D16E('JCXZ RT_LSL2');
+  D16L('RT_LSL1'); D16E('SHL AX,1'); D16E('RCL DX,1'); D16E('LOOP RT_LSL1');
+  D16L('RT_LSL2'); D16E('RETF');
+  D16L('RT_LSHR');
+  D16E('AND CX,31'); D16E('JCXZ RT_LSR2');
+  D16L('RT_LSR1'); D16E('SHR DX,1'); D16E('RCR AX,1'); D16E('LOOP RT_LSR1');
+  D16L('RT_LSR2'); D16E('RETF');
+
+  RTMark;
+  { RT_LCMP : DX:AX ? BX:CX (signe) -> indicateurs comme CMP signe }
+  D16L('RT_LCMP');
+  D16E('CMP DX,BX'); D16E('JL RT_LC1'); D16E('JG RT_LC2');
+  D16E('CMP AX,CX'); D16E('JB RT_LC1'); D16E('JA RT_LC2');
+  D16E('XOR AX,AX'); D16E('JMP RT_LC3');
+  D16L('RT_LC1'); D16E('MOV AX,-1'); D16E('JMP RT_LC3');
+  D16L('RT_LC2'); D16E('MOV AX,1');
+  D16L('RT_LC3'); D16E('CMP AX,0'); D16E('RETF');
+
+  { Ensembles (32 octets) }
+  RTMark;
+  { RT_SETADD : ES:DI ensemble, AX element }
+  D16L('RT_SETADD');
+  D16E('CMP AX,255'); D16E('JA RT_SAD1');
+  D16E('MOV BX,AX'); D16E('MOV CL,3'); D16E('SHR BX,CL');
+  D16E('MOV CL,AL'); D16E('AND CL,7'); D16E('MOV AL,1'); D16E('SHL AL,CL');
+  D16E('OR ES:[DI+BX],AL');
+  D16L('RT_SAD1'); D16E('RETF');
+  RTMark;
+  { RT_SETDEL }
+  D16L('RT_SETDEL');
+  D16E('CMP AX,255'); D16E('JA RT_SDL1');
+  D16E('MOV BX,AX'); D16E('MOV CL,3'); D16E('SHR BX,CL');
+  D16E('MOV CL,AL'); D16E('AND CL,7'); D16E('MOV AL,1'); D16E('SHL AL,CL'); D16E('NOT AL');
+  D16E('AND ES:[DI+BX],AL');
+  D16L('RT_SDL1'); D16E('RETF');
+  RTMark;
+  { RT_SETRANGE : ES:DI ensemble, CX debut, AX fin }
+  D16L('RT_SETRANGE');
+  D16E('CMP CX,AX'); D16E('JA RT_SRG2');
+  D16E('PUSH AX');
+  D16L('RT_SRG1');
+  D16E('MOV AX,CX'); D16E('PUSH CX'); D16E('CALL FAR PTR RT_SETADD'); D16E('POP CX');
+  D16E('MOV BX,SP'); D16E('CMP CX,SS:[BX]'); D16E('JAE RT_SRG3');
+  D16E('INC CX'); D16E('JMP RT_SRG1');
+  D16L('RT_SRG3'); D16E('POP AX');
+  D16L('RT_SRG2'); D16E('RETF');
+  RTMark;
+  { RT_SETIN : CX element, DX:AX ensemble -> ZF=0 si present }
+  D16L('RT_SETIN');
+  D16E('CMP CX,255'); D16E('JA RT_SIN1');
+  D16E('MOV ES,DX'); D16E('MOV BX,AX');
+  D16E('MOV AX,CX'); D16E('PUSH CX'); D16E('MOV CL,3'); D16E('SHR AX,CL'); D16E('POP CX');
+  D16E('ADD BX,AX');
+  D16E('AND CL,7'); D16E('MOV AL,1'); D16E('SHL AL,CL');
+  D16E('TEST ES:[BX],AL'); D16E('RETF');
+  D16L('RT_SIN1'); D16E('XOR AX,AX'); D16E('RETF');
+  RTMark;
+  { RT_SETOR / SETAND / SETSUB : CX:BX gauche, DX:AX droite, ES:DI dest }
+  D16L('RT_SETOR');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('MOV DS,CX'); D16E('MOV SI,BX'); D16E('MOV ES,DX'); D16E('MOV BX,AX');
+  D16E('MOV CX,16');
+  D16L('RT_SOR1'); D16E('MOV AX,[SI]'); D16E('OR AX,ES:[BX]'); D16E('MOV SS:[DI],AX');
+  D16E('ADD SI,2'); D16E('ADD BX,2'); D16E('ADD DI,2'); D16E('LOOP RT_SOR1');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+  D16L('RT_SETAND');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('MOV DS,CX'); D16E('MOV SI,BX'); D16E('MOV ES,DX'); D16E('MOV BX,AX');
+  D16E('MOV CX,16');
+  D16L('RT_SAN1'); D16E('MOV AX,[SI]'); D16E('AND AX,ES:[BX]'); D16E('MOV SS:[DI],AX');
+  D16E('ADD SI,2'); D16E('ADD BX,2'); D16E('ADD DI,2'); D16E('LOOP RT_SAN1');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+  D16L('RT_SETSUB');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('MOV DS,CX'); D16E('MOV SI,BX'); D16E('MOV ES,DX'); D16E('MOV BX,AX');
+  D16E('MOV CX,16');
+  D16L('RT_SSB1'); D16E('MOV AX,ES:[BX]'); D16E('NOT AX'); D16E('AND AX,[SI]'); D16E('MOV SS:[DI],AX');
+  D16E('ADD SI,2'); D16E('ADD BX,2'); D16E('ADD DI,2'); D16E('LOOP RT_SSB1');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+  RTMark;
+  { RT_SETEQ : ZF=1 si egaux ; RT_SETSUBSET : ZF=1 si gauche <= droite ; RT_SETSUPERSET }
+  D16L('RT_SETEQ');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('CLD'); D16E('MOV DS,CX'); D16E('MOV SI,BX'); D16E('MOV ES,DX'); D16E('MOV DI,AX');
+  D16E('MOV CX,16'); D16E('REPE CMPSW');
+  D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+  D16L('RT_SETSUBSET');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('MOV DS,CX'); D16E('MOV SI,BX'); D16E('MOV ES,DX'); D16E('MOV BX,AX');
+  D16E('MOV CX,16');
+  D16L('RT_SSS1'); D16E('MOV AX,ES:[BX]'); D16E('NOT AX'); D16E('TEST AX,[SI]'); D16E('JNZ RT_SSS2');
+  D16E('ADD SI,2'); D16E('ADD BX,2'); D16E('LOOP RT_SSS1');
+  D16E('XOR AX,AX');
+  D16L('RT_SSS2'); D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+  D16L('RT_SETSUPERSET');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('MOV DS,CX'); D16E('MOV SI,BX'); D16E('MOV ES,DX'); D16E('MOV BX,AX');
+  D16E('MOV CX,16');
+  D16L('RT_SSP1'); D16E('MOV AX,[SI]'); D16E('NOT AX'); D16E('TEST AX,ES:[BX]'); D16E('JNZ RT_SSP2');
+  D16E('ADD SI,2'); D16E('ADD BX,2'); D16E('LOOP RT_SSP1');
+  D16E('XOR AX,AX');
+  D16L('RT_SSP2'); D16E('POP SI'); D16E('POP DS'); D16E('RETF');
+
+  RTMark;
+  { RT_RUNERROR : AX = code ; adresse = retour far sur la pile }
+  D16L('RT_RUNERROR');
+  D16E('POP BX'); D16E('POP CX');              { CX:BX = adresse de l appelant }
+  D16E('PUSH AX');
+  D16E('PUSH CX'); D16E('PUSH BX');
+  D16CallSys('__RUNERROR');                    { __RunError(Code: Word; Addr: Pointer) }
+  D16E('JMP RT_RUNERROR');
+
+  { Reels : glu vers les routines Pascal integrees }
+  RTMark;
+  { RT_LTOREAL : DX:AX -> ES:DI }
+  D16L('RT_LTOREAL');
+  D16E('PUSH ES'); D16E('PUSH DI'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__LTOREAL'); D16E('RETF');
+  RTMark;
+  { RT_RADD etc : CX:BX gauche, DX:AX droite, ES:DI dest }
+  D16L('RT_RADD');
+  D16E('PUSH ES'); D16E('PUSH DI'); D16E('PUSH CX'); D16E('PUSH BX'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__RADD'); D16E('RETF');
+  D16L('RT_RSUB');
+  D16E('PUSH ES'); D16E('PUSH DI'); D16E('PUSH CX'); D16E('PUSH BX'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__RSUB'); D16E('RETF');
+  D16L('RT_RMUL');
+  D16E('PUSH ES'); D16E('PUSH DI'); D16E('PUSH CX'); D16E('PUSH BX'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__RMUL'); D16E('RETF');
+  D16L('RT_RDIV');
+  D16E('PUSH ES'); D16E('PUSH DI'); D16E('PUSH CX'); D16E('PUSH BX'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__RDIV'); D16E('RETF');
+  RTMark;
+  { RT_RCMP : CX:BX ? DX:AX -> indicateurs signes }
+  D16L('RT_RCMP');
+  D16E('PUSH CX'); D16E('PUSH BX'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__RCMP'); D16E('CMP AX,0'); D16E('RETF');
+  RTMark;
+  { RT_RNEG / RT_RABS : DX:AX source, ES:DI dest }
+  D16L('RT_RNEG');
+  D16E('PUSH ES'); D16E('PUSH DI'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__RNEG'); D16E('RETF');
+  D16L('RT_RABS');
+  D16E('PUSH ES'); D16E('PUSH DI'); D16E('PUSH DX'); D16E('PUSH AX');
+  D16CallSys('__RABS'); D16E('RETF');
+  RTMark;
+  { RT_RTRUNC / RT_RROUND : DX:AX source -> DX:AX longint }
+  D16L('RT_RTRUNC');
+  D16E('PUSH DX'); D16E('PUSH AX'); D16CallSys('__RTRUNC'); D16E('RETF');
+  D16L('RT_RROUND');
+  D16E('PUSH DX'); D16E('PUSH AX'); D16CallSys('__RROUND'); D16E('RETF');
+
+  RTMark;
+  { RT_INTR : Procedure __Intr(N: Byte; Var R: TRegs); External; }
+  { pile : [BP+6..9] adresse de R, [BP+10] N }
+  D16L('RT_INTR');
+  D16E('PUSH BP'); D16E('MOV BP,SP');
+  D16E('PUSH DS'); D16E('PUSH SI'); D16E('PUSH DI');
+  D16E('MOV AL,[BP+10]');
+  D16E('MOV CS:[RT_INTNUM],AL');
+  D16E('LDS SI,[BP+6]');
+  D16E('MOV CS:[RT_RPTR],SI'); D16E('MOV CS:[RT_RPTR+2],DS');
+  D16E('MOV AX,[SI]'); D16E('MOV BX,[SI+2]'); D16E('MOV CX,[SI+4]'); D16E('MOV DX,[SI+6]');
+  D16E('MOV DI,[SI+12]'); D16E('MOV ES,[SI+16]');
+  D16E('PUSH WORD PTR [SI+8]'); D16E('PUSH WORD PTR [SI+14]');
+  D16E('MOV SI,[SI+10]');
+  D16E('POP DS'); D16E('POP BP');
+  D16E('DB 0CDh'); D16L('RT_INTNUM'); D16E('DB 21h');
+  D16E('PUSHF');
+  D16E('PUSH DS'); D16E('PUSH SI');
+  D16E('LDS SI,CS:[RT_RPTR]');
+  D16E('MOV [SI],AX'); D16E('MOV [SI+2],BX'); D16E('MOV [SI+4],CX'); D16E('MOV [SI+6],DX');
+  D16E('MOV [SI+8],BP'); D16E('MOV [SI+12],DI'); D16E('MOV [SI+16],ES');
+  D16E('POP AX'); D16E('MOV [SI+10],AX');
+  D16E('POP AX'); D16E('MOV [SI+14],AX');
+  D16E('POP AX'); D16E('MOV [SI+18],AX');
+  D16E('POP DI'); D16E('POP SI'); D16E('POP DS'); D16E('POP BP');
+  D16E('RETF 6');
+  D16L('RT_RPTR'); D16E('DD 0');
+  RTMark;
+End;
+
+Const
+  D16SRC_SYS_N = 1499;
+  D16SrcSys1 : Array[1..400] Of String[96] = (
+    'Unit System;',
+    'Interface',
+    'Type',
+    '  TextBuf = Array[0..127] Of Char;',
+    '  TextRec = Record',
+    '    Handle, Mode, BufSize, Private, BufPos, BufEnd : Word;',
+    '    BufPtr : Pointer;',
+    '    OpenFunc, InOutFunc, FlushFunc, CloseFunc : Pointer;',
+    '    UserData : Array[1..16] Of Byte;',
+    '    Name : Array[0..79] Of Char;',
+    '    Buffer : TextBuf;',
+    '  End;',
+    '  FileRec = Record',
+    '    Handle, Mode, RecSize : Word;',
+    '    Private : Array[1..26] Of Byte;',
+    '    UserData : Array[1..16] Of Byte;',
+    '    Name : Array[0..79] Of Char;',
+    '  End;',
+    '  TRegs = Record AX, BX, CX, DX, BP, SI, DI, DS, ES, Flags : Word End;',
+    '  TTextFunc = Function(Var T : TextRec) : Integer;',
+    '  TReal6 = Array[0..5] Of Byte;',
+    '  PFreeRec = ^TFreeRec;',
+    '  TFreeRec = Record Next : PFreeRec; Size : Word End;',
+    'Const',
+    '  fmClosed = $D7B0; fmInput = $D7B1; fmOutput = $D7B2; fmInOut = $D7B3;',
+    '  __Pi : Real = 3.1415926535897932;',
+    'Var',
+    '  Input, Output : Text;',
+    '  InOutRes : Integer;',
+    '  ExitCode : Integer;',
+    '  ExitProc : Pointer;',
+    '  ErrorAddr : Pointer;',
+    '  PrefixSeg : Word;',
+    '  HeapOrg, HeapPtr, HeapEnd, FreePtr : Pointer;',
+    '  RandSeed : Longint;',
+    '  FileMode : Byte;',
+    '  Test8087 : Byte;',
+    '  Test8086 : Byte;',
+    '  __HeapStartSeg : Word;',
+    '  __HeapMaxParas : Word;',
+    '  __StackLimit : Word;',
+    '  __FreeList : PFreeRec;',
+    'Procedure __Intr(N : Byte; Var R : TRegs); External;',
+    'Procedure __SysInit;',
+    'Procedure __Halt(Code : Word);',
+    'Procedure __RunError(Code : Word; Addr : Pointer);',
+    'Procedure __IOCheck;',
+    'Function __IOResult : Integer;',
+    'Procedure __DosWrite(Handle : Word; Var Buf; Count : Word);',
+    'Function __DosRead(Handle : Word; Var Buf; Count : Word) : Word;',
+    'Function __TextOut(Var T : TextRec) : Integer;',
+    'Function __TextIn(Var T : TextRec) : Integer;',
+    'Procedure __AssignText(Var T : TextRec; Const Name : String);',
+    'Procedure __Assign(Var T : TextRec; Const Name : String);',
+    'Procedure __ResetText(Var T : TextRec);',
+    'Procedure __RewriteText(Var T : TextRec);',
+    'Procedure __Append(Var T : TextRec);',
+    'Procedure __Close(Var T : TextRec);',
+    'Procedure __Flush(Var T : TextRec);',
+    'Procedure __Erase(Var T : TextRec);',
+    'Procedure __Rename(Var T : TextRec; Const NewName : String);',
+    'Procedure __SetTextBuf(Var T : TextRec; Var Buf; Size : Word);',
+    'Procedure __WrChars(Var T : TextRec; Var Buf; Count : Word);',
+    'Procedure __WrStr(Var T : TextRec; Const S : String; W : Integer);',
+    'Procedure __WrChar(Var T : TextRec; C : Char; W : Integer);',
+    'Procedure __WrBool(Var T : TextRec; B : Boolean; W : Integer);',
+    'Procedure __WrInt(Var T : TextRec; V : Longint; W : Integer);',
+    'Procedure __WrPChar(Var T : TextRec; P : Pointer; W : Integer);',
+    'Procedure __WrReal(Var T : TextRec; Const R : TReal6; W, D : Integer);',
+    'Procedure __WrLn(Var T : TextRec);',
+    'Procedure __WrFlush(Var T : TextRec);',
+    'Function __RdRawChar(Var T : TextRec) : Char;',
+    'Procedure __RdLn(Var T : TextRec);',
+    'Function __RdChar(Var T : TextRec) : Char;',
+    'Procedure __RdStr(Var T : TextRec; Var S : String; Max : Byte);',
+    'Procedure __RdInt(Var T : TextRec; Var V : Longint);',
+    'Procedure __RdReal(Var T : TextRec; Var R : TReal6);',
+    'Function __Eof(Var T : TextRec) : Boolean;',
+    'Function __Eoln(Var T : TextRec) : Boolean;',
+    'Function __SeekEof(Var T : TextRec) : Boolean;',
+    'Function __SeekEoln(Var T : TextRec) : Boolean;',
+    'Procedure __StrInt(V : Longint; W : Integer; Var S : String; Max : Byte);',
+    'Procedure __HexW(V : Word; Var S : String);',
+    'Procedure __StrReal(Const R : TReal6; W, D : Integer; Var S : String; Max : Byte);',
+    'Procedure __ValInt(Const S : String; Var V : Longint; Var Code : Integer; Size : Word; Signed :',
+    ' Word);',
+    'Procedure __ValReal(Const S : String; Var R : TReal6; Var Code : Integer);',
+    'Procedure __ResetFile(Var F : FileRec; RecSize : Word);',
+    'Procedure __RewriteFile(Var F : FileRec; RecSize : Word);',
+    'Procedure __FClose(Var F : FileRec);',
+    'Procedure __FWriteRec(Var F : FileRec; Var Buf);',
+    'Procedure __FReadRec(Var F : FileRec; Var Buf);',
+    'Procedure __BlockRead(Var F : FileRec; Var Buf; Count : Word; Var Result : Word);',
+    'Procedure __BlockWrite(Var F : FileRec; Var Buf; Count : Word; Var Result : Word);',
+    'Procedure __Seek(Var F : FileRec; Pos : Longint);',
+    'Function __FilePos(Var F : FileRec) : Longint;',
+    'Function __FileSize(Var F : FileRec) : Longint;',
+    'Function __FEof(Var F : FileRec) : Boolean;',
+    'Procedure __Truncate(Var F : FileRec);',
+    'Procedure __ChDir(Const S : String);',
+    'Procedure __MkDir(Const S : String);',
+    'Procedure __RmDir(Const S : String);',
+    'Procedure __GetDir(D : Byte; Var S : String);',
+    'Function __ParamCount : Word;',
+    'Function __ParamStr(N : Integer) : String;',
+    'Procedure __GetMem(Var P : Pointer; Size : Word);',
+    'Procedure __FreeMem(Var P : Pointer; Size : Word);',
+    'Function __MemAvail : Longint;',
+    'Function __MaxAvail : Longint;',
+    'Procedure __Mark(Var P : Pointer);',
+    'Procedure __Release(Var P : Pointer);',
+    'Procedure __Randomize;',
+    'Function __RandomInt(Range : Word) : Word;',
+    'Procedure __RandomReal(Var R : TReal6);',
+    'Procedure __LToReal(Var R : TReal6; V : Longint);',
+    'Procedure __RAdd(Var R : TReal6; Const A, B : TReal6);',
+    'Procedure __RSub(Var R : TReal6; Const A, B : TReal6);',
+    'Procedure __RMul(Var R : TReal6; Const A, B : TReal6);',
+    'Procedure __RDiv(Var R : TReal6; Const A, B : TReal6);',
+    'Function __RCmp(Const A, B : TReal6) : Integer;',
+    'Procedure __RNeg(Var R : TReal6; Const A : TReal6);',
+    'Procedure __RAbs(Var R : TReal6; Const A : TReal6);',
+    'Function __RTrunc(Const A : TReal6) : Longint;',
+    'Function __RRound(Const A : TReal6) : Longint;',
+    'Procedure __RSQRT(Const A : TReal6; Var R : TReal6);',
+    'Procedure __RSIN(Const A : TReal6; Var R : TReal6);',
+    'Procedure __RCOS(Const A : TReal6; Var R : TReal6);',
+    'Procedure __RARCTAN(Const A : TReal6; Var R : TReal6);',
+    'Procedure __RLN(Const A : TReal6; Var R : TReal6);',
+    'Procedure __REXP(Const A : TReal6; Var R : TReal6);',
+    'Procedure __RINT(Const A : TReal6; Var R : TReal6);',
+    'Procedure __RFRAC(Const A : TReal6; Var R : TReal6);',
+    '',
+    'Implementation',
+    '',
+    'Var',
+    '  __StdOutBuf : TextBuf;',
+    '  __StdInBuf : TextBuf;',
+    '',
+    'Procedure __DosWrite(Handle : Word; Var Buf; Count : Word);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $4000; R.BX := Handle; R.CX := Count; R.DS := Seg(Buf); R.DX := Ofs(Buf);',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then InOutRes := R.AX',
+    '  Else If R.AX < Count Then InOutRes := 101;',
+    'End;',
+    '',
+    'Function __DosRead(Handle : Word; Var Buf; Count : Word) : Word;',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $3F00; R.BX := Handle; R.CX := Count; R.DS := Seg(Buf); R.DX := Ofs(Buf);',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then Begin InOutRes := R.AX; __DosRead := 0 End',
+    '  Else __DosRead := R.AX;',
+    'End;',
+    '',
+    'Function __TextOut(Var T : TextRec) : Integer;',
+    'Begin',
+    '  If T.BufPos > 0 Then',
+    '  Begin',
+    '    __DosWrite(T.Handle, T.BufPtr^, T.BufPos);',
+    '    T.BufPos := 0;',
+    '  End;',
+    '  __TextOut := 0;',
+    'End;',
+    '',
+    'Function __TextIn(Var T : TextRec) : Integer;',
+    'Begin',
+    '  T.BufPos := 0;',
+    '  T.BufEnd := __DosRead(T.Handle, T.BufPtr^, T.BufSize);',
+    '  __TextIn := 0;',
+    'End;',
+    '',
+    'Procedure __CallTF(F : TTextFunc; Var T : TextRec);',
+    'Var I : Integer;',
+    'Begin',
+    '  I := F(T);',
+    'End;',
+    '',
+    'Procedure __AssignText(Var T : TextRec; Const Name : String);',
+    'Var I : Integer;',
+    'Begin',
+    '  T.Mode := fmClosed;',
+    '  T.BufSize := 128;',
+    '  T.BufPtr := @T.Buffer;',
+    '  T.BufPos := 0; T.BufEnd := 0;',
+    '  T.OpenFunc := Nil; T.InOutFunc := Nil; T.FlushFunc := Nil; T.CloseFunc := Nil;',
+    '  For I := 1 To Length(Name) Do T.Name[I - 1] := Name[I];',
+    '  T.Name[Length(Name)] := #0;',
+    'End;',
+    '',
+    'Procedure __Assign(Var T : TextRec; Const Name : String);',
+    'Begin',
+    '  __AssignText(T, Name);',
+    'End;',
+    '',
+    '{ Ouvre le fichier nomme ; Action : 0 ouvrir lecture, 1 creer, 2 ouvrir lecture/ecriture }',
+    'Function __DosOpen(Var Name : Array Of Char; Action : Integer) : Word;',
+    'Var R : TRegs;',
+    'Begin',
+    '  If Name[0] = #0 Then Begin InOutRes := 2; __DosOpen := $FFFF; Exit End;',
+    '  If Action = 1 Then Begin R.AX := $3C00; R.CX := 0 End',
+    '  Else If Action = 0 Then R.AX := $3D00 + (FileMode And 3)',
+    '  Else R.AX := $3D02;',
+    '  R.DS := Seg(Name); R.DX := Ofs(Name);',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then Begin InOutRes := R.AX; __DosOpen := $FFFF End',
+    '  Else __DosOpen := R.AX;',
+    'End;',
+    '',
+    'Procedure __DosClose(Handle : Word);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $3E00; R.BX := Handle;',
+    '  __Intr($21, R);',
+    'End;',
+    '',
+    '{ Peripherique console : nom vide ou CON }',
+    'Function __IsConsole(Var T : TextRec) : Boolean;',
+    'Begin',
+    '  __IsConsole := (T.Name[0] = #0) Or',
+    '    ((UpCase(T.Name[0]) = ''C'') And (UpCase(T.Name[1]) = ''O'') And (UpCase(T.Name[2]) = ''N'') And',
+    ' (T.Name[3] = #0));',
+    'End;',
+    '',
+    'Procedure __OpenText(Var T : TextRec; Mode : Word);',
+    'Var H : Word;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
+    '  If T.Mode <> fmClosed Then',
+    '  Begin',
+    '    If T.Mode = fmOutput Then __TextOut(T);',
+    '    If Not __IsConsole(T) Then __DosClose(T.Handle);',
+    '    T.Mode := fmClosed;',
+    '  End;',
+    '  T.BufPos := 0; T.BufEnd := 0;',
+    '  If __IsConsole(T) Then',
+    '  Begin',
+    '    If Mode = fmInput Then T.Handle := 0 Else T.Handle := 1;',
+    '    T.Mode := Mode;',
+    '    T.InOutFunc := Nil;',
+    '    If Mode = fmInput Then T.InOutFunc := @__TextIn',
+    '    Else Begin T.InOutFunc := @__TextOut; T.FlushFunc := @__TextOut End;',
+    '    Exit;',
+    '  End;',
+    '  If Mode = fmInput Then H := __DosOpen(T.Name, 0)',
+    '  Else If Mode = fmOutput Then H := __DosOpen(T.Name, 1)',
+    '  Else H := __DosOpen(T.Name, 2);',
+    '  If H = $FFFF Then Exit;',
+    '  T.Handle := H;',
+    '  If Mode = fmInput Then Begin T.Mode := fmInput; T.InOutFunc := @__TextIn End',
+    '  Else Begin T.Mode := fmOutput; T.InOutFunc := @__TextOut; T.FlushFunc := Nil End;',
+    'End;',
+    '',
+    'Procedure __ResetText(Var T : TextRec);',
+    'Begin',
+    '  __OpenText(T, fmInput);',
+    'End;',
+    '',
+    'Procedure __RewriteText(Var T : TextRec);',
+    'Begin',
+    '  __OpenText(T, fmOutput);',
+    'End;',
+    '',
+    'Procedure __Append(Var T : TextRec);',
+    'Var R : TRegs;',
+    'Begin',
+    '  __OpenText(T, fmInOut);',
+    '  If T.Mode <> fmOutput Then Exit;',
+    '  { se placer a la fin }',
+    '  R.AX := $4202; R.BX := T.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    'End;',
+    '',
+    'Procedure __Close(Var T : TextRec);',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
+    '  If T.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  If T.Mode = fmOutput Then __TextOut(T);',
+    '  If Not __IsConsole(T) Then __DosClose(T.Handle);',
+    '  T.Mode := fmClosed;',
+    'End;',
+    '',
+    'Procedure __Flush(Var T : TextRec);',
+    'Begin',
+    '  If T.Mode = fmOutput Then __TextOut(T);',
+    'End;',
+    '',
+    'Procedure __Erase(Var T : TextRec);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $4100; R.DS := Seg(T.Name); R.DX := Ofs(T.Name);',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then InOutRes := R.AX;',
+    'End;',
+    '',
+    'Procedure __Rename(Var T : TextRec; Const NewName : String);',
+    'Var R : TRegs; Z : Array[0..79] Of Char; I : Integer;',
+    'Begin',
+    '  For I := 1 To Length(NewName) Do Z[I - 1] := NewName[I];',
+    '  Z[Length(NewName)] := #0;',
+    '  R.AX := $5600; R.DS := Seg(T.Name); R.DX := Ofs(T.Name); R.ES := Seg(Z); R.DI := Ofs(Z);',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then InOutRes := R.AX',
+    '  Else Begin For I := 0 To 79 Do T.Name[I] := Z[I] End;',
+    'End;',
+    '',
+    'Procedure __SetTextBuf(Var T : TextRec; Var Buf; Size : Word);',
+    'Begin',
+    '  T.BufPtr := @Buf; T.BufSize := Size; T.BufPos := 0; T.BufEnd := 0;',
+    'End;',
+    '',
+    'Procedure __WrChars(Var T : TextRec; Var Buf; Count : Word);',
+    'Var I : Word; P : ^Char; B : ^TextBuf;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
+    '  If T.Mode <> fmOutput Then',
+    '  Begin',
+    '    InOutRes := 105;  { TP : toute ecriture hors fmOutput -> 105 }',
+    '    Exit;',
+    '  End;',
+    '  P := @Buf; B := T.BufPtr;',
+    '  For I := 1 To Count Do',
+    '  Begin',
+    '    B^[T.BufPos] := P^;',
+    '    Inc(T.BufPos);',
+    '    If T.BufPos >= T.BufSize Then __CallTF(T.InOutFunc, T);',
+    '    Inc(P);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure __WrSpaces(Var T : TextRec; N : Integer);',
+    'Var Sp : Char;',
+    'Begin',
+    '  Sp := '' '';',
+    '  While N > 0 Do Begin __WrChars(T, Sp, 1); Dec(N) End;',
+    'End;',
+    '',
+    'Procedure __WrStr(Var T : TextRec; Const S : String; W : Integer);',
+    'Begin',
+    '  If W > Length(S) Then __WrSpaces(T, W - Length(S));',
+    '  If Length(S) > 0 Then __WrChars(T, S[1], Length(S));',
+    'End;',
+    '',
+    'Procedure __WrChar(Var T : TextRec; C : Char; W : Integer);',
+    'Begin',
+    '  If W > 1 Then __WrSpaces(T, W - 1);',
+    '  __WrChars(T, C, 1);',
+    'End;',
+    '',
+    'Procedure __WrBool(Var T : TextRec; B : Boolean; W : Integer);',
+    'Begin',
+    '  If B Then __WrStr(T, ''TRUE'', W) Else __WrStr(T, ''FALSE'', W);',
+    'End;',
+    '',
+    'Procedure __WrInt(Var T : TextRec; V : Longint; W : Integer);',
+    'Var S : String;',
+    'Begin',
+    '  __StrInt(V, 0, S, 255);',
+    '  __WrStr(T, S, W);',
+    'End;',
+    '',
+    'Procedure __WrPChar(Var T : TextRec; P : Pointer; W : Integer);',
+    'Var Q : ^Char; N : Word; S : String;',
+    'Begin',
+    '  Q := P; N := 0; S := '''';',
+    '  While (Q^ <> #0) And (N < 255) Do',
+    '  Begin',
+    '    Inc(N); S[N] := Q^; Inc(Q);',
+    '  End;',
+    '  S[0] := Chr(N);',
+    '  __WrStr(T, S, W);',
+    'End;',
+    '',
+    'Procedure __WrReal(Var T : TextRec; Const R : TReal6; W, D : Integer);',
+    'Var S : String;',
+    'Begin',
+    '  __StrReal(R, W, D, S, 255);',
+    '  __WrStr(T, S, 0);',
+    'End;',
+    '',
+    'Procedure __WrLn(Var T : TextRec);',
+    'Var CRLF : Array[0..1] Of Char;',
+    'Begin',
+    '  CRLF[0] := #13; CRLF[1] := #10;',
+    '  __WrChars(T, CRLF, 2);',
+    '  __WrFlush(T);',
+    'End;',
+    '',
+    'Procedure __WrFlush(Var T : TextRec);',
+    'Begin',
+    '  If (T.Mode = fmOutput) And (T.FlushFunc <> Nil) Then __CallTF(T.FlushFunc, T);',
+    'End;',
+    '',
+    '{ ---- Lecture ---- }',
+    '',
+    '{ Caractere courant du tampon sans le consommer ; #26 en fin de fichier }',
+    'Function __RdPeek(Var T : TextRec) : Char;',
+    'Var B : ^TextBuf;'
+  );
+  D16SrcSys2 : Array[1..400] Of String[96] = (
+    'Begin',
+    '  If InOutRes <> 0 Then Begin __RdPeek := #26; Exit End;   { TP : E/S suspendues }',
+    '  If T.Mode <> fmInput Then',
+    '  Begin',
+    '    InOutRes := 104;  { TP : toute lecture hors fmInput -> 104 }',
+    '    __RdPeek := #26; Exit;',
+    '  End;',
+    '  If T.BufPos >= T.BufEnd Then',
+    '  Begin',
+    '    __CallTF(T.InOutFunc, T);',
+    '    If T.BufPos >= T.BufEnd Then Begin __RdPeek := #26; Exit End;',
+    '  End;',
+    '  B := T.BufPtr;',
+    '  __RdPeek := B^[T.BufPos];',
+    'End;',
+    '',
+    'Function __RdRawChar(Var T : TextRec) : Char;',
+    'Var C : Char;',
+    'Begin',
+    '  C := __RdPeek(T);',
+    '  If (T.BufPos < T.BufEnd) Then Inc(T.BufPos);',
+    '  __RdRawChar := C;',
+    'End;',
+    '',
+    'Function __Eof(Var T : TextRec) : Boolean;',
+    'Var C : Char;',
+    'Begin',
+    '  If T.Mode = fmOutput Then Begin __Eof := True; Exit End;',
+    '  C := __RdPeek(T);',
+    '  __Eof := (C = #26) And (T.BufPos >= T.BufEnd);',
+    'End;',
+    '',
+    'Function __Eoln(Var T : TextRec) : Boolean;',
+    'Var C : Char;',
+    'Begin',
+    '  C := __RdPeek(T);',
+    '  __Eoln := (C = #13) Or (C = #10) Or ((C = #26) And (T.BufPos >= T.BufEnd));',
+    'End;',
+    '',
+    'Function __SeekEoln(Var T : TextRec) : Boolean;',
+    'Var C : Char;',
+    'Begin',
+    '  C := __RdPeek(T);',
+    '  While (C = '' '') Or (C = #9) Do Begin __RdRawChar(T); C := __RdPeek(T) End;',
+    '  __SeekEoln := __Eoln(T);',
+    'End;',
+    '',
+    'Function __SeekEof(Var T : TextRec) : Boolean;',
+    'Var C : Char;',
+    'Begin',
+    '  C := __RdPeek(T);',
+    '  While (C = '' '') Or (C = #9) Or (C = #13) Or (C = #10) Do Begin __RdRawChar(T); C :=',
+    ' __RdPeek(T) End;',
+    '  __SeekEof := __Eof(T);',
+    'End;',
+    '',
+    'Procedure __RdLn(Var T : TextRec);',
+    'Var C : Char;',
+    'Begin',
+    '  Repeat',
+    '    C := __RdRawChar(T);',
+    '  Until (C = #10) Or (C = #26);',
+    '  { CR LF : le LF termine ; un CR seul suivi de LF est consomme }',
+    'End;',
+    '',
+    '{ Read(F, C) : le generateur attend le caractere dans AL }',
+    'Function __RdChar(Var T : TextRec) : Char;',
+    'Begin',
+    '  __RdChar := __RdRawChar(T);',
+    'End;',
+    '',
+    'Procedure __RdStr(Var T : TextRec; Var S : String; Max : Byte);',
+    'Var C : Char; N : Byte;',
+    'Begin',
+    '  N := 0;',
+    '  C := __RdPeek(T);',
+    '  While (C <> #13) And (C <> #10) And (C <> #26) Do',
+    '  Begin',
+    '    If N < Max Then Begin Inc(N); S[N] := C End;',
+    '    __RdRawChar(T);',
+    '    C := __RdPeek(T);',
+    '  End;',
+    '  S[0] := Chr(N);',
+    'End;',
+    '',
+    'Procedure __RdInt(Var T : TextRec; Var V : Longint);',
+    'Var C : Char; S : String; Code : Integer;',
+    'Begin',
+    '  S := '''';',
+    '  C := __RdPeek(T);',
+    '  While (C = '' '') Or (C = #9) Or (C = #13) Or (C = #10) Do Begin __RdRawChar(T); C :=',
+    ' __RdPeek(T) End;',
+    '  While (C <> '' '') And (C <> #9) And (C <> #13) And (C <> #10) And (C <> #26) And (Length(S) <',
+    ' 255) Do',
+    '  Begin',
+    '    S := S + C; __RdRawChar(T); C := __RdPeek(T);',
+    '  End;',
+    '  __ValInt(S, V, Code, 4, 1);',
+    '  If Code <> 0 Then Begin InOutRes := 106; V := 0 End;',
+    'End;',
+    '',
+    'Procedure __RdReal(Var T : TextRec; Var R : TReal6);',
+    'Var C : Char; S : String; Code : Integer;',
+    'Begin',
+    '  S := '''';',
+    '  C := __RdPeek(T);',
+    '  While (C = '' '') Or (C = #9) Or (C = #13) Or (C = #10) Do Begin __RdRawChar(T); C :=',
+    ' __RdPeek(T) End;',
+    '  While (C <> '' '') And (C <> #9) And (C <> #13) And (C <> #10) And (C <> #26) And (Length(S) <',
+    ' 255) Do',
+    '  Begin',
+    '    S := S + C; __RdRawChar(T); C := __RdPeek(T);',
+    '  End;',
+    '  __ValReal(S, R, Code);',
+    '  If Code <> 0 Then InOutRes := 106;',
+    'End;',
+    '',
+    '{ ---- Conversions ---- }',
+    '',
+    'Procedure __StrInt(V : Longint; W : Integer; Var S : String; Max : Byte);',
+    'Var T : String; N : Byte; Neg : Boolean; U : Longint; D : Longint;',
+    'Begin',
+    '  N := 0; Neg := V < 0;',
+    '  If V = -2147483647 - 1 Then',
+    '  Begin',
+    '    T := ''8463847412'';',
+    '    N := 10;',
+    '  End',
+    '  Else',
+    '  Begin',
+    '    U := V; If Neg Then U := -U;',
+    '    Repeat',
+    '      D := U Mod 10;',
+    '      Inc(N); T[N] := Chr(48 + D);',
+    '      U := U Div 10;',
+    '    Until U = 0;',
+    '  End;',
+    '  If Neg Then Begin Inc(N); T[N] := ''-'' End;',
+    '  S := '''';',
+    '  While W > N Do Begin S := S + '' ''; Dec(W) End;',
+    '  While N > 0 Do Begin S := S + T[N]; Dec(N) End;',
+    '  If Length(S) > Max Then S[0] := Chr(Max);',
+    'End;',
+    '',
+    'Procedure __ValInt(Const S : String; Var V : Longint; Var Code : Integer; Size : Word; Signed :',
+    ' Word);',
+    'Var I : Integer; Neg : Boolean; Hex : Boolean; D : Integer; C : Char; Ovf : Boolean;',
+    'Begin',
+    '  V := 0; Code := 0; Neg := False; Hex := False; Ovf := False;',
+    '  I := 1;',
+    '  While (I <= Length(S)) And ((S[I] = '' '') Or (S[I] = #9)) Do Inc(I);',
+    '  If I > Length(S) Then Begin Code := I; Exit End;',
+    '  If S[I] = ''-'' Then Begin Neg := True; Inc(I) End',
+    '  Else If S[I] = ''+'' Then Inc(I);',
+    '  If (I <= Length(S)) And (S[I] = ''$'') Then Begin Hex := True; Inc(I) End;',
+    '  If I > Length(S) Then Begin Code := I; Exit End;',
+    '  While I <= Length(S) Do',
+    '  Begin',
+    '    C := UpCase(S[I]);',
+    '    If (C >= ''0'') And (C <= ''9'') Then D := Ord(C) - 48',
+    '    Else If Hex And (C >= ''A'') And (C <= ''F'') Then D := Ord(C) - 55',
+    '    Else Begin Code := I; V := 0; Exit End;',
+    '    If Hex Then',
+    '    Begin',
+    '      If (V < 0) Or (V > $0FFFFFFF) Then Ovf := True;',
+    '      V := V * 16 + D;',
+    '    End',
+    '    Else',
+    '    Begin',
+    '      If (V > 214748364) Or ((V = 214748364) And (D > 7) And Not Neg) Or',
+    '         ((V = 214748364) And (D > 8)) Then Ovf := True;',
+    '      V := V * 10 + D;',
+    '    End;',
+    '    Inc(I);',
+    '  End;',
+    '  If Neg Then V := -V;',
+    '  If Ovf Then Begin Code := I - 1; V := 0; Exit End;',
+    '  { verification de la taille cible }',
+    '  If Size = 1 Then',
+    '  Begin',
+    '    If Signed = 1 Then Begin If (V < -128) Or (V > 127) Then Code := I - 1 End',
+    '    Else If (V < 0) Or (V > 255) Then Code := I - 1;',
+    '  End',
+    '  Else If Size = 2 Then',
+    '  Begin',
+    '    If Signed = 1 Then Begin If (V < -32768) Or (V > 32767) Then Code := I - 1 End',
+    '    Else If (V < 0) Or (V > 65535) Then Code := I - 1;',
+    '  End;',
+    '  If Code <> 0 Then V := 0;',
+    'End;',
+    '',
+    '{ ---- Fichiers types et non types ---- }',
+    '',
+    'Procedure __OpenFile(Var F : FileRec; RecSize : Word; Create : Boolean);',
+    'Var H : Word;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;   { TP : E/S suspendues jusqu a IOResult }',
+    '  If F.Mode <> fmClosed Then Begin __FClose(F); InOutRes := 0 End;',
+    '  { nom vide : entree ou sortie standard (comme TP, aussi pour les fichiers) }',
+    '  If F.Name[0] = #0 Then',
+    '  Begin',
+    '    If Create Then F.Handle := 1 Else F.Handle := 0;',
+    '    F.Mode := fmInOut; F.RecSize := RecSize;',
+    '    Exit;',
+    '  End;',
+    '  If Create Then H := __DosOpen(F.Name, 1) Else H := __DosOpen(F.Name, 2);',
+    '  If H = $FFFF Then',
+    '  Begin',
+    '    If Not Create Then',
+    '    Begin',
+    '      { reessayer en lecture seule }',
+    '      InOutRes := 0;',
+    '      H := __DosOpen(F.Name, 0);',
+    '      If H = $FFFF Then Exit;',
+    '    End',
+    '    Else Exit;',
+    '  End;',
+    '  F.Handle := H; F.Mode := fmInOut; F.RecSize := RecSize;',
+    'End;',
+    '',
+    'Procedure __ResetFile(Var F : FileRec; RecSize : Word);',
+    'Begin',
+    '  __OpenFile(F, RecSize, False);',
+    'End;',
+    '',
+    'Procedure __RewriteFile(Var F : FileRec; RecSize : Word);',
+    'Begin',
+    '  __OpenFile(F, RecSize, True);',
+    'End;',
+    '',
+    'Procedure __FClose(Var F : FileRec);',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  If F.Name[0] <> #0 Then __DosClose(F.Handle);',
+    '  F.Mode := fmClosed;',
+    'End;',
+    '',
+    'Procedure __FWriteRec(Var F : FileRec; Var Buf);',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  __DosWrite(F.Handle, Buf, F.RecSize);',
+    'End;',
+    '',
+    'Procedure __FReadRec(Var F : FileRec; Var Buf);',
+    'Var N : Word;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  N := __DosRead(F.Handle, Buf, F.RecSize);',
+    '  If (N < F.RecSize) And (InOutRes = 0) Then InOutRes := 100;',
+    'End;',
+    '',
+    'Procedure __BlockRead(Var F : FileRec; Var Buf; Count : Word; Var Result : Word);',
+    'Var N : Word; P : Pointer;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  N := __DosRead(F.Handle, Buf, Count * F.RecSize);',
+    '  P := @Result;',
+    '  If P <> Nil Then Result := N Div F.RecSize',
+    '  Else If N < Count * F.RecSize Then InOutRes := 100;',
+    'End;',
+    '',
+    'Procedure __BlockWrite(Var F : FileRec; Var Buf; Count : Word; Var Result : Word);',
+    'Var R : TRegs; P : Pointer;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  R.AX := $4000; R.BX := F.Handle; R.CX := Count * F.RecSize; R.DS := Seg(Buf); R.DX :=',
+    ' Ofs(Buf);',
+    '  __Intr($21, R);',
+    '  P := @Result;',
+    '  If (R.Flags And 1) <> 0 Then Begin InOutRes := R.AX; R.AX := 0 End;',
+    '  If P <> Nil Then Result := R.AX Div F.RecSize',
+    '  Else If R.AX < Count * F.RecSize Then InOutRes := 101;',
+    'End;',
+    '',
+    'Procedure __Seek(Var F : FileRec; Pos : Longint);',
+    'Var R : TRegs; L : Longint;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  L := Pos * F.RecSize;',
+    '  R.AX := $4200; R.BX := F.Handle; R.CX := L Shr 16; R.DX := L And $FFFF;',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then InOutRes := R.AX;',
+    'End;',
+    '',
+    'Function __FilePos(Var F : FileRec) : Longint;',
+    'Var R : TRegs; L : Longint;',
+    'Begin',
+    '  If InOutRes <> 0 Then Begin __FilePos := 0; Exit End;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; __FilePos := 0; Exit End;',
+    '  R.AX := $4201; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    '  L := R.DX; L := (L Shl 16) Or R.AX;',
+    '  __FilePos := L Div F.RecSize;',
+    'End;',
+    '',
+    'Function __FileSize(Var F : FileRec) : Longint;',
+    'Var R : TRegs; L, Cur : Longint;',
+    'Begin',
+    '  If InOutRes <> 0 Then Begin __FileSize := 0; Exit End;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; __FileSize := 0; Exit End;',
+    '  R.AX := $4201; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    '  Cur := R.DX; Cur := (Cur Shl 16) Or R.AX;',
+    '  R.AX := $4202; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    '  L := R.DX; L := (L Shl 16) Or R.AX;',
+    '  R.AX := $4200; R.BX := F.Handle; R.CX := Cur Shr 16; R.DX := Cur And $FFFF;',
+    '  __Intr($21, R);',
+    '  __FileSize := L Div F.RecSize;',
+    'End;',
+    '',
+    '{ Eof d un fichier : comparaison en octets comme TP (un dernier enregistrement',
+    '  incomplet n est pas encore la fin) }',
+    'Function __FEof(Var F : FileRec) : Boolean;',
+    'Var R : TRegs; Cur, L : Longint;',
+    'Begin',
+    '  __FEof := True;',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  R.AX := $4201; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    '  Cur := R.DX; Cur := (Cur Shl 16) Or R.AX;',
+    '  R.AX := $4202; R.BX := F.Handle; R.CX := 0; R.DX := 0;',
+    '  __Intr($21, R);',
+    '  L := R.DX; L := (L Shl 16) Or R.AX;',
+    '  R.AX := $4200; R.BX := F.Handle; R.CX := Cur Shr 16; R.DX := Cur And $FFFF;',
+    '  __Intr($21, R);',
+    '  __FEof := Cur >= L;',
+    'End;',
+    '',
+    'Procedure __Truncate(Var F : FileRec);',
+    'Var R : TRegs;',
+    'Begin',
+    '  If InOutRes <> 0 Then Exit;',
+    '  If F.Mode = fmClosed Then Begin InOutRes := 103; Exit End;',
+    '  R.AX := $4000; R.BX := F.Handle; R.CX := 0;',
+    '  __Intr($21, R);',
+    'End;',
+    '',
+    'Procedure __DosPath(Const S : String; Fn : Word);',
+    'Var R : TRegs; Z : Array[0..79] Of Char; I : Integer;',
+    'Begin',
+    '  For I := 1 To Length(S) Do Z[I - 1] := S[I];',
+    '  Z[Length(S)] := #0;',
+    '  R.AX := Fn; R.DS := Seg(Z); R.DX := Ofs(Z);',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then InOutRes := R.AX;',
+    'End;',
+    '',
+    'Procedure __ChDir(Const S : String);',
+    'Var R : TRegs;',
+    'Begin',
+    '  If (Length(S) >= 2) And (S[2] = '':'') Then',
+    '  Begin',
+    '    R.AX := $0E00; R.DX := Ord(UpCase(S[1])) - 65;',
+    '    __Intr($21, R);',
+    '    If Length(S) = 2 Then Exit;',
+    '  End;',
+    '  __DosPath(S, $3B00);',
+    'End;',
+    '',
+    'Procedure __MkDir(Const S : String);',
+    'Begin',
+    '  __DosPath(S, $3900);',
+    'End;',
+    '',
+    'Procedure __RmDir(Const S : String);',
+    'Begin',
+    '  __DosPath(S, $3A00);',
+    'End;',
+    '',
+    'Procedure __GetDir(D : Byte; Var S : String);',
+    'Var R : TRegs; Z : Array[0..79] Of Char; I : Integer;',
+    'Begin',
+    '  R.AX := $4700; R.DX := D; R.DS := Seg(Z); R.SI := Ofs(Z);',
+    '  __Intr($21, R);',
+    '  If (R.Flags And 1) <> 0 Then Begin InOutRes := R.AX; S := ''''; Exit End;',
+    '  If D = 0 Then',
+    '  Begin',
+    '    R.AX := $1900; __Intr($21, R);',
+    '    D := (R.AX And $FF) + 1;',
+    '  End;',
+    '  S := Chr(64 + D) + '':\'';',
+    '  I := 0;',
+    '  While (Z[I] <> #0) And (I < 79) Do Begin S := S + Z[I]; Inc(I) End;',
+    'End;',
+    '',
+    '{ ---- Ligne de commande ---- }',
+    '',
+    'Function __ParamCount : Word;',
+    'Var P : ^Char; N : Byte; Cnt : Word; InArg : Boolean;',
+    'Begin',
+    '  P := Ptr(PrefixSeg, $81);',
+    '  N := Mem[PrefixSeg:$80];'
+  );
+  D16SrcSys3 : Array[1..400] Of String[96] = (
+    '  Cnt := 0; InArg := False;',
+    '  While N > 0 Do',
+    '  Begin',
+    '    If (P^ = '' '') Or (P^ = #9) Or (P^ = #13) Then InArg := False',
+    '    Else If Not InArg Then Begin InArg := True; Inc(Cnt) End;',
+    '    Inc(P); Dec(N);',
+    '  End;',
+    '  __ParamCount := Cnt;',
+    'End;',
+    '',
+    'Function __ParamStr(N : Integer) : String;',
+    'Var P : ^Char; L : Byte; Cnt : Word; InArg : Boolean; S : String; E : ^Char; I : Word;',
+    'Begin',
+    '  S := '''';',
+    '  If N = 0 Then',
+    '  Begin',
+    '    { nom du programme : apres les variables d environnement }',
+    '    E := Ptr(MemW[PrefixSeg:$2C], 0);',
+    '    Repeat',
+    '      While E^ <> #0 Do Inc(E);',
+    '      Inc(E);',
+    '    Until E^ = #0;',
+    '    Inc(E); Inc(E); Inc(E);',
+    '    While (E^ <> #0) And (Length(S) < 255) Do Begin S := S + E^; Inc(E) End;',
+    '    __ParamStr := S; Exit;',
+    '  End;',
+    '  P := Ptr(PrefixSeg, $81);',
+    '  L := Mem[PrefixSeg:$80];',
+    '  Cnt := 0; InArg := False;',
+    '  While L > 0 Do',
+    '  Begin',
+    '    If (P^ = '' '') Or (P^ = #9) Or (P^ = #13) Then',
+    '    Begin',
+    '      If InArg And (Cnt = N) Then Break;',
+    '      InArg := False;',
+    '    End',
+    '    Else',
+    '    Begin',
+    '      If Not InArg Then Begin InArg := True; Inc(Cnt) End;',
+    '      If Cnt = N Then S := S + P^;',
+    '    End;',
+    '    Inc(P); Dec(L);',
+    '  End;',
+    '  __ParamStr := S;',
+    'End;',
+    '',
+    '{ ---- Tas ---- }',
+    '{ Allocation simple : HeapPtr avance par blocs de 16 octets ; les blocs',
+    '  liberes sont chaines dans __FreeList (premier bloc libre convenable). }',
+    '',
+    'Function __NormSeg(P : Pointer) : Longint;',
+    'Begin',
+    '  __NormSeg := Longint(Seg(P^)) * 16 + Ofs(P^);',
+    'End;',
+    '',
+    'Procedure __GetMem(Var P : Pointer; Size : Word);',
+    'Var Paras : Word; Q, Prev, Rest : PFreeRec; Need : Longint;',
+    'Begin',
+    '  If Size = 0 Then Begin P := Nil; Exit End;',
+    '  Paras := (Size + 15) Div 16;',
+    '  { chercher dans la liste libre }',
+    '  Q := __FreeList; Prev := Nil;',
+    '  While Q <> Nil Do',
+    '  Begin',
+    '    If Q^.Size >= Paras Then',
+    '    Begin',
+    '      If Q^.Size = Paras Then',
+    '      Begin',
+    '        If Prev = Nil Then __FreeList := Q^.Next Else Prev^.Next := Q^.Next;',
+    '      End',
+    '      Else',
+    '      Begin',
+    '        { couper : le reste demeure dans la liste }',
+    '        Rest := Ptr(Seg(Q^) + Paras, 0);',
+    '        If Prev = Nil Then __FreeList := Rest Else Prev^.Next := Rest;',
+    '        Rest^.Next := Q^.Next;',
+    '        Rest^.Size := Q^.Size - Paras;',
+    '      End;',
+    '      P := Ptr(Seg(Q^), 0);',
+    '      Exit;',
+    '    End;',
+    '    Prev := Q; Q := Q^.Next;',
+    '  End;',
+    '  Need := Longint(Seg(HeapPtr^)) + Paras;',
+    '  If Need > Longint(Seg(HeapEnd^)) Then',
+    '  Begin',
+    '    P := Nil;',
+    '    RunError(203);',
+    '    Exit;',
+    '  End;',
+    '  P := HeapPtr;',
+    '  HeapPtr := Ptr(Seg(HeapPtr^) + Paras, 0);',
+    'End;',
+    '',
+    'Procedure __FreeMem(Var P : Pointer; Size : Word);',
+    'Var Paras : Word; Q : PFreeRec;',
+    'Begin',
+    '  If (P = Nil) Or (Size = 0) Then Exit;',
+    '  Paras := (Size + 15) Div 16;',
+    '  { bloc au sommet : reculer HeapPtr }',
+    '  If Seg(P^) + Paras = Seg(HeapPtr^) Then',
+    '  Begin',
+    '    HeapPtr := Ptr(Seg(P^), 0);',
+    '    P := Nil;',
+    '    Exit;',
+    '  End;',
+    '  Q := Ptr(Seg(P^), 0);',
+    '  Q^.Next := __FreeList; Q^.Size := Paras;',
+    '  __FreeList := Q;',
+    '  P := Nil;',
+    'End;',
+    '',
+    'Function __MemAvail : Longint;',
+    'Var Q : PFreeRec; L : Longint;',
+    'Begin',
+    '  L := (Longint(Seg(HeapEnd^)) - Longint(Seg(HeapPtr^))) * 16;',
+    '  Q := __FreeList;',
+    '  While Q <> Nil Do Begin L := L + Longint(Q^.Size) * 16; Q := Q^.Next End;',
+    '  __MemAvail := L;',
+    'End;',
+    '',
+    'Function __MaxAvail : Longint;',
+    'Var Q : PFreeRec; L, M : Longint;',
+    'Begin',
+    '  L := (Longint(Seg(HeapEnd^)) - Longint(Seg(HeapPtr^))) * 16;',
+    '  Q := __FreeList;',
+    '  While Q <> Nil Do',
+    '  Begin',
+    '    M := Longint(Q^.Size) * 16;',
+    '    If M > L Then L := M;',
+    '    Q := Q^.Next;',
+    '  End;',
+    '  __MaxAvail := L;',
+    'End;',
+    '',
+    'Procedure __Mark(Var P : Pointer);',
+    'Begin',
+    '  P := HeapPtr;',
+    'End;',
+    '',
+    'Procedure __Release(Var P : Pointer);',
+    'Begin',
+    '  HeapPtr := P;',
+    '  __FreeList := Nil;',
+    'End;',
+    '',
+    '{ ---- Aleatoire (generateur congruentiel de TP) ---- }',
+    '',
+    'Procedure __Randomize;',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $2C00; __Intr($21, R);',
+    '  RandSeed := (Longint(R.CX) Shl 16) Or R.DX;',
+    'End;',
+    '',
+    'Procedure __NextRand;',
+    'Begin',
+    '  RandSeed := RandSeed * 134775813 + 1;',
+    'End;',
+    '',
+    '{ Random(N) de TP : les 16 bits hauts du produit 48 bits (graine 32 bits non signee * N) }',
+    'Function __RandomInt(Range : Word) : Word; Assembler;',
+    'Asm',
+    '  { graine := graine * 08088405h + 1 }',
+    '  MOV SI,WORD PTR RandSeed',
+    '  MOV CX,WORD PTR RandSeed+2',
+    '  MOV AX,SI',
+    '  MOV BX,8405h',
+    '  MUL BX                     { DX:AX = lo * 8405h }',
+    '  MOV DI,DX',
+    '  PUSH AX',
+    '  MOV AX,SI',
+    '  MOV BX,0808h',
+    '  MUL BX                     { AX = lo * 0808h (mot bas) }',
+    '  ADD DI,AX',
+    '  MOV AX,CX',
+    '  MOV BX,8405h',
+    '  MUL BX                     { AX = hi * 8405h (mot bas) }',
+    '  ADD DI,AX',
+    '  POP AX',
+    '  ADD AX,1',
+    '  ADC DI,0',
+    '  MOV WORD PTR RandSeed,AX',
+    '  MOV WORD PTR RandSeed+2,DI',
+    '  { resultat := (DI:AX * Range) shr 32 }',
+    '  MUL WORD PTR Range         { DX:AX = lo * Range }',
+    '  MOV CX,DX',
+    '  MOV AX,DI',
+    '  MUL WORD PTR Range         { DX:AX = hi * Range }',
+    '  ADD AX,CX',
+    '  ADC DX,0',
+    '  MOV AX,DX',
+    'End;',
+    '',
+    '{ Random de TP : graine 32 bits non signee / 2^32 }',
+    'Procedure __RandomReal(Var R : TReal6);',
+    'Var L : Longint; A, B : TReal6;',
+    'Begin',
+    '  __NextRand;',
+    '  L := RandSeed Shr 1;',
+    '  __LToReal(A, L);',
+    '  __RAdd(R, A, A);',
+    '  If (RandSeed And 1) <> 0 Then',
+    '  Begin',
+    '    __LToReal(B, 1); __RAdd(R, R, B);',
+    '  End;',
+    '  __LToReal(B, 65536);',
+    '  __RDiv(R, R, B);',
+    '  __RDiv(R, R, B);',
+    'End;',
+    '',
+    '{ ---- Reels 6 octets : arithmetique logicielle (format Turbo Pascal) ---- }',
+    '',
+    'type RBytes=TReal6;',
+    '     Mant=array[0..2] of Word;',
+    '     Float=record m:Mant; e:Integer; neg:Boolean end;',
+    'procedure RInt(n:Longint; var r:RBytes); forward;',
+    'procedure RCalc(op:Integer; var a,b,r:RBytes); forward;',
+    'function RCmp(var a,b:RBytes):Integer; forward;',
+    'function RTrunc(var a:RBytes; rounded:Boolean):Longint; forward;',
+    'procedure RFormat(var a:RBytes; digits,width:Integer; var s:string); forward;',
+    'procedure RParse(var s:string; var a:RBytes; var code:Integer); forward;',
+    'procedure Zero(var a:Float); forward;',
+    'function Empty(var a:Float):Boolean; forward;',
+    'procedure Left(var a:Mant); forward;',
+    'procedure Right(var a:Mant); forward;',
+    'procedure Normalize(var a:Float); forward;',
+    'procedure IntegerFloat(n:Longint; var a:Float); forward;',
+    'procedure Unpack(var r:RBytes; var a:Float); forward;',
+    'procedure Pack(a:Float; var r:RBytes); forward;',
+    'procedure Add(a,b:Float; var r:Float); forward;',
+    'procedure Multiply(a,b:Float; var r:Float); forward;',
+    'procedure Divide(a,b:Float; var r:Float); forward;',
+    'function Compare(a,b:Float):Integer; forward;',
+    'function IntValue(a:Float; mode:Integer):Longint; forward;',
+    'procedure MathOp(op:Integer; a:Float; var r:Float); forward;',
+    '',
+    'procedure Zero(var a:Float);',
+    'begin FillChar(a,SizeOf(a),0); a.e:=-30000 end;',
+    'function Empty(var a:Float):Boolean;',
+    'begin Empty:=(a.m[0]=0) and (a.m[1]=0) and (a.m[2]=0) end;',
+    'procedure Left(var a:Mant);',
+    'var i:Integer; c,t:Word;',
+    'begin c:=0; for i:=0 to 2 do begin t:=a[i] shr 15; a[i]:=(a[i] shl 1) or c; c:=t end end;',
+    'procedure Right(var a:Mant);',
+    'var i:Integer; c,t:Word;',
+    'begin c:=0; for i:=2 downto 0 do begin t:=a[i] shl 15; a[i]:=(a[i] shr 1) or c; c:=t end end;',
+    'function Mag(var a,b:Mant):Integer;',
+    'var i,c:Integer;',
+    'begin c:=0; i:=2; while (i>=0) and (c=0) do begin',
+    ' if a[i]<b[i] then c:=-1 else if a[i]>b[i] then c:=1; Dec(i) end; Mag:=c end;',
+    'procedure Sub(var a,b:Mant);',
+    'var i:Integer; t:Longint; borrow:Word;',
+    'begin borrow:=0; for i:=0 to 2 do begin t:=Longint(a[i])-b[i]-borrow;',
+    ' if t<0 then borrow:=1 else borrow:=0; a[i]:=Word(t) end end;',
+    'procedure Normalize(var a:Float);',
+    'begin if Empty(a) then Zero(a) else',
+    ' while a.m[2]<32768 do begin Left(a.m); Dec(a.e) end end;',
+    'procedure Unpack(var r:RBytes; var a:Float);',
+    'begin Zero(a); if r[0]<>0 then begin',
+    ' a.e:=Integer(r[0])-129; a.neg:=(r[5] and 128)<>0;',
+    ' a.m[0]:=Word(r[1]) shl 8; a.m[1]:=Word(r[2]) or (Word(r[3]) shl 8);',
+    ' a.m[2]:=Word(r[4]) or (Word(r[5] or 128) shl 8) end end;',
+    'procedure Pack(a:Float; var r:RBytes);',
+    'var i:Integer; t:Longint; carry:Word;',
+    'begin',
+    ' FillChar(r,6,0); Normalize(a);',
+    ' if not Empty(a) then begin',
+    '  if ((a.m[0] and 255)>128) or (((a.m[0] and 255)=128) and ((a.m[0] and 256)<>0)) then begin',
+    '   carry:=256; for i:=0 to 2 do begin t:=Longint(a.m[i])+carry;',
+    '    a.m[i]:=Word(t); carry:=Word(t shr 16) end;',
+    '   if carry<>0 then begin a.m[2]:=32768; Inc(a.e) end',
+    '  end;',
+    '  if a.e>126 then RunError(205);',
+    '  if a.e>=-128 then begin r[0]:=a.e+129; r[1]:=a.m[0] shr 8;',
+    '   r[2]:=a.m[1]; r[3]:=a.m[1] shr 8; r[4]:=a.m[2]; r[5]:=(a.m[2] shr 8) and 127;',
+    '   if a.neg then r[5]:=r[5] or 128 end',
+    ' end',
+    'end;',
+    'procedure IntegerFloat(n:Longint; var a:Float);',
+    'begin Zero(a); if n<>0 then begin a.neg:=n<0;',
+    ' if a.neg then n:=-n; a.m[0]:=Word(n); a.m[1]:=Word(n shr 16); a.e:=47; Normalize(a) end end;',
+    'procedure Add(a,b:Float; var r:Float);',
+    'var t:Float; i,d:Integer; n:Longint; carry:Word;',
+    'begin',
+    ' if Empty(a) then r:=b else if Empty(b) then r:=a else begin',
+    '  if a.e<b.e then begin t:=a; a:=b; b:=t end;',
+    '  d:=a.e-b.e; if d>55 then Zero(b) else for i:=1 to d do Right(b.m);',
+    '  if a.neg=b.neg then begin carry:=0;',
+    '   for i:=0 to 2 do begin n:=Longint(a.m[i])+b.m[i]+carry;',
+    '    a.m[i]:=Word(n); carry:=Word(n shr 16) end;',
+    '   if carry<>0 then begin Right(a.m); a.m[2]:=a.m[2] or 32768; Inc(a.e) end;',
+    '   r:=a',
+    '  end else begin',
+    '   if Mag(a.m,b.m)<0 then begin t:=a; a:=b; b:=t end;',
+    '   Sub(a.m,b.m); r:=a; Normalize(r)',
+    '  end',
+    ' end',
+    'end;',
+    'procedure Multiply(a,b:Float; var r:Float);',
+    'var p:array[0..5] of Word; i,j,k:Integer; n:Longint; carry:Word;',
+    'begin',
+    ' Zero(r); if not Empty(a) and not Empty(b) then begin',
+    '  FillChar(p,SizeOf(p),0);',
+    '  for i:=0 to 2 do begin carry:=0;',
+    '   for j:=0 to 2 do begin k:=i+j;',
+    '    n:=Longint(a.m[i])*Longint(b.m[j]);',
+    '    n:=n+Longint(p[k])+carry; p[k]:=Word(n); carry:=Word(n shr 16)',
+    '   end; p[i+3]:=carry',
+    '  end;',
+    '  for i:=1 to 47 do begin carry:=0;',
+    '   for j:=5 downto 0 do begin k:=p[j] and 1; p[j]:=(p[j] shr 1) or carry; carry:=Word(k) shl 15',
+    ' end',
+    '  end;',
+    '  r.m[0]:=p[0]; r.m[1]:=p[1]; r.m[2]:=p[2]; r.e:=a.e+b.e; r.neg:=a.neg<>b.neg;',
+    '  if p[3]<>0 then begin Right(r.m); r.m[2]:=r.m[2] or 32768; Inc(r.e) end;',
+    '  Normalize(r)',
+    ' end',
+    'end;',
+    'procedure Divide(a,b:Float; var r:Float);',
+    'var i:Integer; overflow:Boolean;',
+    'begin',
+    ' if Empty(b) then RunError(200); Zero(r);',
+    ' if not Empty(a) then begin',
+    '  r.e:=a.e-b.e; r.neg:=a.neg<>b.neg;',
+    '  overflow:=False; for i:=0 to 47 do begin',
+    '   Left(r.m);',
+    '   if overflow or (Mag(a.m,b.m)>=0) then begin Sub(a.m,b.m); r.m[0]:=r.m[0] or 1 end;',
+    '   if i<>47 then begin',
+    '    overflow:=(a.m[2] and 32768)<>0; Left(a.m)',
+    '   end',
+    '  end;',
+    '  Normalize(r)',
+    ' end',
+    'end;',
+    'function Compare(a,b:Float):Integer;',
+    'var c:Integer;',
+    'begin',
+    ' if Empty(a) and Empty(b) then c:=0 else if a.neg<>b.neg then begin',
+    '  if a.neg then c:=-1 else c:=1',
+    ' end else begin',
+    '  c:=0; if a.e<b.e then c:=-1 else if a.e>b.e then c:=1 else c:=Mag(a.m,b.m);',
+    '  if a.neg then c:=-c',
+    ' end; Compare:=c',
+    'end;',
+    'function IntValue(a:Float; mode:Integer):Longint;',
+    'var n:Longint; i:Integer; lost,half,below:Boolean;',
+    'begin',
+    ' n:=0; lost:=False; half:=False; below:=False;',
+    ' if not Empty(a) then begin',
+    '  if a.e>31 then RunError(207);',
+    '  if a.e<-1 then begin lost:=True; a.m[0]:=0; a.m[1]:=0; a.m[2]:=0 end',
+    '  else for i:=1 to 47-a.e do begin',
+    '   below:=below or half; half:=(a.m[0] and 1)<>0; lost:=lost or half; Right(a.m)',
+    '  end;',
+    '  n:=Longint(a.m[0]) or (Longint(a.m[1]) shl 16);',
+    '  if ((mode=0) and half and (below or ((n and 1)<>0))) or',
+    '     ((mode=1) and a.neg and lost) or ((mode=2) and not a.neg and lost) then Inc(n);',
+    '  if (n<0) and not (a.neg and (n=-2147483647-1)) then RunError(207);',
+    '  if a.neg then n:=-n',
+    ' end; IntValue:=n',
+    'end;',
+    'procedure DecimalFloat(text:string; var a:Float);',
+    'var r:RBytes; code:Integer;',
+    'begin RParse(text,r,code); if code<>0 then RunError(207); Unpack(r,a) end;',
+    'procedure MathOp(op:Integer; a:Float; var r:Float);',
+    'var b,c,t,sum,term,x,one,two:Float; i:Integer; n:Longint; neg:Boolean;',
+    'begin',
+    ' IntegerFloat(1,one); IntegerFloat(2,two); r:=a;',
+    ' if op=10 then begin',
+    '  if a.neg then RunError(207);',
+    '  if not Empty(a) then begin r.e:=a.e div 2; r.m:=one.m; r.neg:=False;',
+    '   for i:=1 to 32 do begin Divide(a,r,t); Add(r,t,r); Dec(r.e) end',
+    '  end',
+    ' end else if (op=11) or (op=12) then begin',
+    '  { Reduce to [-pi,pi], then use an alternating Taylor series. }',
+    '  DecimalFloat(''3.141592653589793'',b);',
+    '  t:=b; Inc(t.e); Divide(a,t,c); n:=IntValue(c,3); IntegerFloat(n,c); Multiply(c,t,c);',
+    ' c.neg:=not c.neg; Add(a,c,x);',
+    '  c:=b; c.neg:=True; if Compare(x,b)>0 then begin t.neg:=True; Add(x,t,x) end;',
+    '  if Compare(x,c)<0 then begin t.neg:=False; Add(x,t,x) end;',
+    '  Multiply(x,x,t); t.neg:=True;',
+    '  if op=11 then begin sum:=x; term:=x; n:=2 end else begin sum:=one; term:=one; n:=1 end;',
+    '  for i:=1 to 20 do begin Multiply(term,t,term); IntegerFloat(n*(n+1),c); Divide(term,c,term);',
+    ' Add(sum,term,sum); Inc(n,2) end; r:=sum',
+    ' end else if op=14 then begin',
+    '  if a.neg or Empty(a) then RunError(207); n:=a.e; a.e:=0;',
+    '  c:=one; c.neg:=True; Add(a,c,b); Add(a,one,c); Divide(b,c,x); Multiply(x,x,t);',
+    '  sum:=x; term:=x;',
+    '  for i:=1 to 40 do begin Multiply(term,t,term); IntegerFloat(2*i+1,c); Divide(term,c,b);',
+    ' Add(sum,b,sum) end;',
+    '  Inc(sum.e); DecimalFloat(''0.6931471805599453'',b);',
+    '  IntegerFloat(n,c); Multiply(b,c,b); Add(sum,b,r)',
+    ' end else if op=15 then begin',
+    '  DecimalFloat(''0.6931471805599453'',b);',
+    '  Divide(a,b,c); n:=IntValue(c,0); if (n>127) or (n<-150) then begin if n>127 then',
+    ' RunError(205); Zero(r) end',
+    '  else begin IntegerFloat(n,c); Multiply(b,c,c); c.neg:=not c.neg; Add(a,c,x);',
+    '   sum:=one; term:=one; for i:=1 to 24 do begin Multiply(term,x,term); IntegerFloat(i,c);',
+    ' Divide(term,c,term); Add(sum,term,sum) end;'
+  );
+  D16SrcSys4 : Array[1..299] Of String[96] = (
+    '   r:=sum; Inc(r.e,n)',
+    '  end',
+    ' end else if op=13 then begin',
+    '  neg:=a.neg; a.neg:=False; n:=0;',
+    '  if Compare(a,one)>0 then begin Divide(one,a,a); n:=1 end;',
+    '  { Half-angle reduction makes the series converge rapidly at x=1. }',
+    '  Multiply(a,a,b); Add(b,one,b); MathOp(10,b,c); Add(c,one,c); Divide(a,c,x);',
+    '  Multiply(x,x,t); t.neg:=True; sum:=x; term:=x;',
+    '  for i:=1 to 32 do begin Multiply(term,t,term); IntegerFloat(2*i+1,c); Divide(term,c,b);',
+    ' Add(sum,b,sum) end;',
+    '  Inc(sum.e); r:=sum;',
+    '  if n=1 then begin DecimalFloat(''1.5707963267948966'',b); r.neg:=True; Add(b,r,r) end;',
+    '  r.neg:=neg',
+    ' end',
+    'end;',
+    'procedure RInt(n:Longint; var r:RBytes);',
+    'var a:Float;',
+    'begin IntegerFloat(n,a); Pack(a,r) end;',
+    'procedure RCalc(op:Integer; var a,b,r:RBytes);',
+    'var x,y,z:Float; i,bits:Integer;',
+    'begin',
+    ' Unpack(a,x); Unpack(b,y); z:=x;',
+    ' if op=1 then Add(x,y,z) else if op=2 then begin y.neg:=not y.neg; Add(x,y,z) end',
+    ' else if op=3 then Multiply(x,y,z) else if op=4 then Divide(x,y,z)',
+    ' else if op=5 then begin if not Empty(z) then z.neg:=not z.neg end',
+    ' else if op=6 then z.neg:=False else if op=7 then Multiply(x,x,z)',
+    ' else if (op=8) or (op=9) then begin',
+    '  if z.e<0 then Zero(z) else if z.e<47 then begin bits:=47-z.e;',
+    '   for i:=1 to bits do Right(z.m); for i:=1 to bits do Left(z.m); Normalize(z)',
+    '  end;',
+    '  if op=9 then begin z.neg:=not z.neg; Add(x,z,z) end',
+    ' end',
+    ' else MathOp(op,x,z);',
+    ' Pack(z,r)',
+    'end;',
+    'function RCmp(var a,b:RBytes):Integer;',
+    'var x,y:Float;',
+    'begin Unpack(a,x); Unpack(b,y); RCmp:=Compare(x,y) end;',
+    'function RTrunc(var a:RBytes; rounded:Boolean):Longint;',
+    'var x:Float; mode:Integer;',
+    'begin Unpack(a,x); mode:=3; if rounded then mode:=0; RTrunc:=IntValue(x,mode) end;',
+    'procedure RFormat(var a:RBytes; digits,width:Integer; var s:string);',
+    'var x,ten,one,t:Float; i,e,d,n:Integer; negative:Boolean; text,tail:string;',
+    'procedure Append(c:Char);',
+    'var length:Integer;',
+    'begin length:=Ord(s[0]); if length<255 then begin s[length+1]:=c; s[0]:=Chr(length+1) end end;',
+    'begin',
+    ' Unpack(a,x); negative:=x.neg; x.neg:=False; IntegerFloat(10,ten); IntegerFloat(1,one); e:=0;',
+    ' if not Empty(x) then begin',
+    '  while Compare(x,ten)>=0 do begin Divide(x,ten,x); Inc(e) end;',
+    '  while Compare(x,one)<0 do begin Multiply(x,ten,x); Dec(e) end',
+    ' end;',
+    ' text[0]:=Chr(14); for i:=1 to 14 do begin d:=IntValue(x,3); text[i]:=Chr(48+d);',
+    '  IntegerFloat(d,t); t.neg:=True; Add(x,t,x); Multiply(x,ten,x) end;',
+    ' s[0]:=Chr(0);',
+    ' if digits<0 then begin',
+    '  { Format exponentiel de TP : largeur par defaut 17, de 1 a 10 decimales selon la largeur }',
+    '  if width<=0 then width:=17;',
+    '  n:=width-7; if n>10 then n:=10; if n<1 then n:=1;',
+    '  { arrondi a n decimales (position n+1 dans text) }',
+    '  d:=n+1;',
+    '  if (d>=1) and (d<14) and (text[d+1]>=''5'') then begin',
+    '   i:=d; while (i>0) and (text[i]=''9'') do begin text[i]:=''0''; Dec(i) end;',
+    '   if i>0 then text[i]:=Chr(Ord(text[i])+1) else begin Move(text[1],text[2],14); text[1]:=''1'';',
+    ' text[0]:=Chr(15); Inc(e) end',
+    '  end;',
+    '  Append(text[1]); Append(''.''); for i:=2 to n+1 do Append(text[i]); Append(''E'');',
+    '  if e>=0 then Append(''+'') else begin Append(''-''); e:=-e end;',
+    '  Str(e:2,tail); if tail[1]='' '' then tail[1]:=''0''; for i:=1 to Length(tail) do Append(tail[i])',
+    ' end else begin',
+    '  if digits>18 then digits:=18;',
+    '  { Round the requested fixed decimal position, with carry into exponent. }',
+    '  d:=e+1+digits;',
+    '  if (d>=0) and (d<14) and (text[d+1]>=''5'') then begin',
+    '   i:=d; while (i>0) and (text[i]=''9'') do begin text[i]:=''0''; Dec(i) end;',
+    '   if i>0 then text[i]:=Chr(Ord(text[i])+1) else begin Move(text[1],text[2],14); text[1]:=''1'';',
+    ' text[0]:=Chr(15); Inc(e) end',
+    '  end;',
+    '  if e<0 then Append(''0'') else for i:=0 to e do begin if i<Length(text) then Append(text[i+1])',
+    ' else Append(''0'') end;',
+    '  if digits>0 then begin Append(''.''); for i:=1 to digits do begin d:=e+1+i;',
+    '   if (d>0) and (d<=Length(text)) then Append(text[d]) else Append(''0'') end end',
+    ' end;',
+    ' if negative then begin n:=Length(s); Move(s[1],s[2],n); s[1]:=''-''; s[0]:=Chr(n+1) end;',
+    ' if width>255 then width:=255; n:=Length(s);',
+    ' if n<width then begin d:=width-n; Move(s[1],s[d+1],n); FillChar(s[1],d,32); s[0]:=Chr(width)',
+    ' end',
+    'end;',
+    'procedure RParse(var s:string; var a:RBytes; var code:Integer);',
+    'var x,ten,t:Float; i,power,exponent,sign,count:Integer; negative,dot:Boolean;',
+    'begin',
+    ' Zero(x); IntegerFloat(10,ten); i:=1; power:=0; exponent:=0; sign:=1; count:=0; dot:=False;',
+    ' negative:=False; code:=0;',
+    ' while (i<=Length(s)) and (s[i]='' '') do Inc(i);',
+    ' if (i<=Length(s)) and ((s[i]=''+'') or (s[i]=''-'')) then begin negative:=s[i]=''-''; Inc(i) end;',
+    ' while (i<=Length(s)) and (((s[i]>=''0'') and (s[i]<=''9'')) or (s[i]=''.'')) do begin',
+    '  if s[i]=''.'' then begin if dot then begin code:=i; Exit end; dot:=True end',
+    '  else begin Multiply(x,ten,x); IntegerFloat(Ord(s[i])-48,t); Add(x,t,x); Inc(count); if dot',
+    ' then Dec(power) end; Inc(i)',
+    ' end;',
+    ' if count=0 then begin code:=i; Exit end;',
+    ' if (i<=Length(s)) and ((s[i]=''e'') or (s[i]=''E'')) then begin Inc(i);',
+    '  if (i<=Length(s)) and ((s[i]=''+'') or (s[i]=''-'')) then begin if s[i]=''-'' then sign:=-1; Inc(i)',
+    ' end;',
+    '  count:=0; while (i<=Length(s)) and (s[i]>=''0'') and (s[i]<=''9'') do begin',
+    '   if exponent>1000 then begin code:=i; Exit end; exponent:=exponent*10+Ord(s[i])-48; Inc(i);',
+    ' Inc(count) end;',
+    '  if count=0 then begin code:=i; Exit end',
+    ' end;',
+    ' if i<=Length(s) then begin code:=i; Exit end;',
+    ' power:=power+sign*exponent;',
+    ' if (power>300) or (power<-300) then begin code:=1; Exit end;',
+    ' while power>0 do begin Multiply(x,ten,x); Dec(power) end;',
+    ' while power<0 do begin Divide(x,ten,x); Inc(power) end;',
+    ' x.neg:=negative; if x.e>126 then begin code:=1; Exit end; Pack(x,a)',
+    'end;',
+    '',
+    '',
+    'Procedure __LToReal(Var R : TReal6; V : Longint);',
+    'Begin',
+    '  RInt(V, R);',
+    'End;',
+    '',
+    'Procedure __RAdd(Var R : TReal6; Const A, B : TReal6); Begin RCalc(1, A, B, R) End;',
+    'Procedure __RSub(Var R : TReal6; Const A, B : TReal6); Begin RCalc(2, A, B, R) End;',
+    'Procedure __RMul(Var R : TReal6; Const A, B : TReal6); Begin RCalc(3, A, B, R) End;',
+    'Procedure __RDiv(Var R : TReal6; Const A, B : TReal6); Begin RCalc(4, A, B, R) End;',
+    'Function __RCmp(Const A, B : TReal6) : Integer; Begin __RCmp := RCmp(A, B) End;',
+    'Procedure __RNeg(Var R : TReal6; Const A : TReal6); Begin RCalc(5, A, A, R) End;',
+    'Procedure __RAbs(Var R : TReal6; Const A : TReal6); Begin RCalc(6, A, A, R) End;',
+    'Function __RTrunc(Const A : TReal6) : Longint; Begin __RTrunc := RTrunc(A, False) End;',
+    'Function __RRound(Const A : TReal6) : Longint; Begin __RRound := RTrunc(A, True) End;',
+    'Procedure __RSQRT(Const A : TReal6; Var R : TReal6); Begin RCalc(10, A, A, R) End;',
+    'Procedure __RSIN(Const A : TReal6; Var R : TReal6); Begin RCalc(11, A, A, R) End;',
+    'Procedure __RCOS(Const A : TReal6; Var R : TReal6); Begin RCalc(12, A, A, R) End;',
+    'Procedure __RARCTAN(Const A : TReal6; Var R : TReal6); Begin RCalc(13, A, A, R) End;',
+    'Procedure __RLN(Const A : TReal6; Var R : TReal6); Begin RCalc(14, A, A, R) End;',
+    'Procedure __REXP(Const A : TReal6; Var R : TReal6); Begin RCalc(15, A, A, R) End;',
+    'Procedure __RINT(Const A : TReal6; Var R : TReal6); Begin RCalc(8, A, A, R) End;',
+    'Procedure __RFRAC(Const A : TReal6; Var R : TReal6); Begin RCalc(9, A, A, R) End;',
+    '',
+    'Procedure __StrReal(Const R : TReal6; W, D : Integer; Var S : String; Max : Byte);',
+    'Begin',
+    '  RFormat(R, D, W, S);',
+    '  If Length(S) > Max Then S[0] := Chr(Max);',
+    'End;',
+    '',
+    'Procedure __ValReal(Const S : String; Var R : TReal6; Var Code : Integer);',
+    'Begin',
+    '  RParse(S, R, Code);',
+    'End;',
+    '',
+    '{ ---- Erreurs et arret ---- }',
+    '',
+    'Procedure __IOCheck;',
+    'Var C : Integer;',
+    'Begin',
+    '  If InOutRes <> 0 Then',
+    '  Begin',
+    '    C := InOutRes; InOutRes := 0;',
+    '    RunError(C);',
+    '  End;',
+    'End;',
+    '',
+    'Function __IOResult : Integer;',
+    'Begin',
+    '  __IOResult := InOutRes;',
+    '  InOutRes := 0;',
+    'End;',
+    '',
+    'Procedure __HexW(V : Word; Var S : String);',
+    'Const H : Array[0..15] Of Char = ''0123456789ABCDEF'';',
+    'Begin',
+    '  S := S + H[V Shr 12] + H[(V Shr 8) And 15] + H[(V Shr 4) And 15] + H[V And 15];',
+    'End;',
+    '',
+    'Procedure __CallExit(P : Pointer);',
+    'Var Pr : Procedure;',
+    'Begin',
+    '  Pr := P;',
+    '  Pr;',
+    'End;',
+    '',
+    'Procedure __RunError(Code : Word; Addr : Pointer);',
+    'Begin',
+    '  ErrorAddr := Addr;',
+    '  ExitCode := Code;',
+    '  __Halt(Code);',
+    'End;',
+    '',
+    '{ INT 0 (division par zero) : TP installe son propre gestionnaire et signale',
+    '  l erreur 200 a l adresse de l instruction fautive (CS:IP du cadre d interruption) }',
+    'Var __SaveInt0 : Pointer;',
+    '',
+    'Procedure __DivZero; Interrupt;',
+    'Var P : Pointer;',
+    'Begin',
+    '  Asm',
+    '    MOV AX,[BP+18]',
+    '    MOV WORD PTR P,AX',
+    '    MOV AX,[BP+20]',
+    '    MOV WORD PTR P+2,AX',
+    '  End;',
+    '  __RunError(200, P);',
+    'End;',
+    '',
+    'Procedure __Halt(Code : Word);',
+    'Var S, N : String; Sg : Word; P : Pointer; R : TRegs;',
+    'Begin',
+    '  ExitCode := Code;',
+    '  If __SaveInt0 <> Nil Then',
+    '  Begin',
+    '    R.AX := $2500; R.DS := Seg(__SaveInt0^); R.DX := Ofs(__SaveInt0^); __Intr($21, R);',
+    '    __SaveInt0 := Nil;',
+    '  End;',
+    '  { chaine des procedures de sortie }',
+    '  While ExitProc <> Nil Do',
+    '  Begin',
+    '    P := ExitProc; ExitProc := Nil;',
+    '    __CallExit(P);',
+    '  End;',
+    '  __Flush(TextRec(Output));',
+    '  If TextRec(Output).Mode <> fmClosed Then __Close(TextRec(Output));',
+    '  If TextRec(Input).Mode <> fmClosed Then __Close(TextRec(Input));',
+    '  If ErrorAddr <> Nil Then',
+    '  Begin',
+    '    S := ''Erreur d''''execution '';',
+    '    __StrInt(ExitCode, 0, N, 255);',
+    '    While Length(N) < 3 Do N := ''0'' + N;',
+    '    S := S + N + '' a '';',
+    '    Sg := Seg(ErrorAddr^) - PrefixSeg - $10;',
+    '    __HexW(Sg, S); S := S + '':''; __HexW(Ofs(ErrorAddr^), S);',
+    '    S := S + ''.'' + #13 + #10;',
+    '    InOutRes := 0;',
+    '    __DosWrite(1, S[1], Length(S));',
+    '  End;',
+    '  R.AX := $4C00 Or (Code And $FF);',
+    '  __Intr($21, R);',
+    'End;',
+    '',
+    'Function __DetectCPU : Byte; Assembler;',
+    'Asm',
+    '  PUSHF',
+    '  POP AX',
+    '  AND AX,0FFFh',
+    '  PUSH AX',
+    '  POPF',
+    '  PUSHF',
+    '  POP AX',
+    '  AND AX,0F000h',
+    '  CMP AX,0F000h',
+    '  JE @is86',
+    '  PUSHF',
+    '  POP AX',
+    '  OR AX,0F000h',
+    '  PUSH AX',
+    '  POPF',
+    '  PUSHF',
+    '  POP AX',
+    '  AND AX,0F000h',
+    '  JZ @is286',
+    '  MOV AL,2',
+    '  JMP @done',
+    '@is286:',
+    '  MOV AL,1',
+    '  JMP @done',
+    '@is86:',
+    '  MOV AL,0',
+    '@done:',
+    'End;',
+    '',
+    'Procedure __SysInit;',
+    'Var R : TRegs; P : Pointer;',
+    'Begin',
+    '  InOutRes := 0; ExitCode := 0; ExitProc := Nil; ErrorAddr := Nil;',
+    '  FileMode := 2; Test8087 := 0; RandSeed := 0; Test8086 := __DetectCPU;',
+    '  __FreeList := Nil;',
+    '  HeapOrg := Ptr(__HeapStartSeg, 0);',
+    '  HeapPtr := HeapOrg;',
+    '  HeapEnd := Ptr(MemW[PrefixSeg:2], 0);',
+    '  If (__HeapMaxParas <> 0) And (Longint(__HeapStartSeg) + __HeapMaxParas <',
+    ' Longint(Seg(HeapEnd^))) Then',
+    '    HeapEnd := Ptr(__HeapStartSeg + __HeapMaxParas, 0);',
+    '  FreePtr := HeapEnd;',
+    '  __StackLimit := 128;',
+    '  { vecteur INT 0 : sauvegarde puis installation de __DivZero }',
+    '  R.AX := $3500; __Intr($21, R);',
+    '  __SaveInt0 := Ptr(R.ES, R.BX);',
+    '  P := @__DivZero;',
+    '  R.AX := $2500; R.DS := Seg(P^); R.DX := Ofs(P^); __Intr($21, R);',
+    '  __AssignText(TextRec(Input), '''');',
+    '  TextRec(Input).BufPtr := @__StdInBuf;',
+    '  __OpenText(TextRec(Input), fmInput);',
+    '  __AssignText(TextRec(Output), '''');',
+    '  TextRec(Output).BufPtr := @__StdOutBuf;',
+    '  __OpenText(TextRec(Output), fmOutput);',
+    'End;',
+    '',
+    'End.'
+  );
+
+Function D16SrcSysLine(N : LongInt) : TString;
+Begin
+  Case N Div 400 Of
+    0 : D16SrcSysLine := D16SrcSys1[N Mod 400 + 1];
+    1 : D16SrcSysLine := D16SrcSys2[N Mod 400 + 1];
+    2 : D16SrcSysLine := D16SrcSys3[N Mod 400 + 1];
+    3 : D16SrcSysLine := D16SrcSys4[N Mod 400 + 1];
+  Else D16SrcSysLine := '';
+  End;
+End;
+
+Const
+  D16SRC_CRT_N = 275;
+  D16SrcCrt1 : Array[1..275] Of String[96] = (
+    'Unit Crt;',
+    '{ Unite CRT de Turbo Pascal 7.0 : ecran texte, clavier, son.',
+    '  La sortie standard est redirigee vers la memoire video par CrtWrite,',
+    '  appelee par le runtime pour tout Text ouvert sur le handle 1. }',
+    'Interface',
+    'Const',
+    ' BW40=0; CO40=1; BW80=2; CO80=3; Mono=7; Font8x8=256; C40=CO40; C80=CO80;',
+    ' Black=0; Blue=1; Green=2; Cyan=3; Red=4; Magenta=5; Brown=6; LightGray=7;',
+    ' DarkGray=8; LightBlue=9; LightGreen=10; LightCyan=11; LightRed=12;',
+    ' LightMagenta=13; Yellow=14; White=15; Blink=128;',
+    'Var',
+    ' CheckBreak, CheckEOF, CheckSnow, DirectVideo: Boolean;',
+    ' LastMode: Word;',
+    ' TextAttr: Byte;',
+    ' WindMin, WindMax: Word;',
+    'Procedure AssignCrt(Var F: Text);',
+    'Function KeyPressed: Boolean;',
+    'Function ReadKey: Char;',
+    'Procedure TextMode(Mode: Integer);',
+    'Procedure Window(X1,Y1,X2,Y2: Byte);',
+    'Procedure GotoXY(X,Y: Byte);',
+    'Function WhereX: Byte;',
+    'Function WhereY: Byte;',
+    'Procedure ClrScr;',
+    'Procedure ClrEol;',
+    'Procedure InsLine;',
+    'Procedure DelLine;',
+    'Procedure TextColor(Color: Byte);',
+    'Procedure TextBackground(Color: Byte);',
+    'Procedure LowVideo;',
+    'Procedure HighVideo;',
+    'Procedure NormVideo;',
+    'Procedure Delay(MS: Word);',
+    'Procedure Sound(Hz: Word);',
+    'Procedure NoSound;',
+    'Implementation',
+    'Var',
+    ' VideoSeg: Word;',
+    ' Cols, Rows: Byte;',
+    ' NormAttr: Byte;',
+    ' PendingScan: Byte;',
+    ' HavePending: Boolean;',
+    '',
+    'Function CurX: Byte; Begin CurX:=Mem[Seg0040:$50] End;',
+    'Function CurY: Byte; Begin CurY:=Mem[Seg0040:$51] End;',
+    '',
+    'Procedure SyncCursor(X,Y: Byte);',
+    'Var Pos: Word;',
+    'Begin',
+    ' MemW[Seg0040:$50]:=Y*256+X;',
+    ' Pos:=Y*Cols+X;',
+    ' Port[$3D4]:=14; Port[$3D5]:=Hi(Pos);',
+    ' Port[$3D4]:=15; Port[$3D5]:=Lo(Pos);',
+    'End;',
+    '',
+    'Procedure FillCells(X1,Y1,X2,Y2: Byte);',
+    '{ Remplit une zone d''espaces avec l''attribut courant. }',
+    'Var X,Y: Byte; V: Word;',
+    'Begin',
+    ' V:=TextAttr*256+32;',
+    ' For Y:=Y1 To Y2 Do For X:=X1 To X2 Do MemW[VideoSeg:(Y*Cols+X)*2]:=V;',
+    'End;',
+    '',
+    'Procedure CopyRow(Src,Dst: Byte; X1,X2: Byte);',
+    'Var X: Byte;',
+    'Begin',
+    ' For X:=X1 To X2 Do MemW[VideoSeg:(Dst*Cols+X)*2]:=MemW[VideoSeg:(Src*Cols+X)*2];',
+    'End;',
+    '',
+    'Procedure ScrollUp(Y1,Y2: Byte);',
+    'Var Y: Byte;',
+    'Begin',
+    ' If Y1<Y2 Then For Y:=Y1 To Y2-1 Do CopyRow(Y+1,Y,Lo(WindMin),Lo(WindMax));',
+    ' FillCells(Lo(WindMin),Y2,Lo(WindMax),Y2);',
+    'End;',
+    '',
+    'Procedure ScrollDown(Y1,Y2: Byte);',
+    'Var Y: Byte;',
+    'Begin',
+    ' If Y1<Y2 Then For Y:=Y2 DownTo Y1+1 Do CopyRow(Y-1,Y,Lo(WindMin),Lo(WindMax));',
+    ' FillCells(Lo(WindMin),Y1,Lo(WindMax),Y1);',
+    'End;',
+    '',
+    'Procedure CrtWrite(Sg,Ofs,Count: Word);',
+    '{ Appelee par le runtime: ecrit Count octets de Sg:Ofs dans la fenetre. }',
+    'Var I: Word; X,Y: Byte; C: Char;',
+    'Begin',
+    ' If Count=0 Then Exit;',
+    ' X:=CurX; Y:=CurY;',
+    ' If X<Lo(WindMin) Then X:=Lo(WindMin);',
+    ' If Y<Hi(WindMin) Then Y:=Hi(WindMin);',
+    ' For I:=0 To Count-1 Do Begin',
+    '  C:=Chr(Mem[Sg:Ofs+I]);',
+    '  Case C Of',
+    '   #7:Begin Sound(1000); Delay(60); NoSound End;',
+    '   #8:If X>Lo(WindMin) Then Dec(X);',
+    '   #10:Inc(Y);',
+    '   #13:X:=Lo(WindMin);',
+    '  Else',
+    '   Begin',
+    '    MemW[VideoSeg:(Y*Cols+X)*2]:=TextAttr*256+Ord(C);',
+    '    Inc(X);',
+    '    If X>Lo(WindMax) Then Begin X:=Lo(WindMin); Inc(Y) End;',
+    '   End;',
+    '  End;',
+    '  If Y>Hi(WindMax) Then Begin ScrollUp(Hi(WindMin),Hi(WindMax)); Y:=Hi(WindMax) End;',
+    ' End;',
+    ' SyncCursor(X,Y);',
+    'End;',
+    '',
+    'Function CrtOut(Var T: TextRec): Integer;',
+    'Begin',
+    ' If T.BufPos>0 Then Begin CrtWrite(Seg(T.BufPtr^),Ofs(T.BufPtr^),T.BufPos); T.BufPos:=0 End;',
+    ' CrtOut:=0;',
+    'End;',
+    '',
+    'Function CrtIn(Var T: TextRec): Integer;',
+    '{ Lecture d''une ligne au clavier avec echo, terminee par CR LF. }',
+    'Var B: ^TextBuf; N: Word; C: Char; S: String;',
+    'Begin',
+    ' B:=T.BufPtr; N:=0;',
+    ' Repeat',
+    '  C:=ReadKey;',
+    '  If C=#0 Then C:=ReadKey',
+    '  Else If C=#8 Then Begin',
+    '   If N>0 Then Begin Dec(N); S:=#8'' ''#8; CrtWrite(Seg(S),Ofs(S)+1,3) End;',
+    '  End',
+    '  Else If C=#13 Then Begin',
+    '   B^[N]:=#13; B^[N+1]:=#10; Inc(N,2); S:=#13#10; CrtWrite(Seg(S),Ofs(S)+1,2);',
+    '  End',
+    '  Else If (C=#26) And CheckEOF Then Begin',
+    '   B^[N]:=#26; Inc(N); C:=#13;',
+    '  End',
+    '  Else If N<T.BufSize-2 Then Begin',
+    '   B^[N]:=C; Inc(N); CrtWrite(Seg(C),Ofs(C),1);',
+    '  End;',
+    ' Until C=#13;',
+    ' T.BufPos:=0; T.BufEnd:=N;',
+    ' CrtIn:=0;',
+    'End;',
+    '',
+    'Function CrtOpen(Var T: TextRec): Integer;',
+    'Begin',
+    ' If T.Mode=fmInput Then Begin T.InOutFunc:=@CrtIn; T.FlushFunc:=Nil End',
+    ' Else Begin T.Mode:=fmOutput; T.InOutFunc:=@CrtOut; T.FlushFunc:=@CrtOut End;',
+    ' T.CloseFunc:=Nil;',
+    ' CrtOpen:=0;',
+    'End;',
+    '',
+    'Procedure AssignCrt(Var F: Text);',
+    'Begin',
+    ' Assign(F,'''');',
+    ' TextRec(F).OpenFunc:=@CrtOpen;',
+    'End;',
+    '',
+    'Function KeyPressed: Boolean;',
+    'Var R: TRegs;',
+    'Begin',
+    ' If HavePending Then Begin KeyPressed:=True; Exit End;',
+    ' R.AX:=$0100; __Intr($16,R);',
+    ' KeyPressed:=(R.Flags And $40)=0;',
+    'End;',
+    '',
+    'Function ReadKey: Char;',
+    'Var K: Word; R: TRegs;',
+    'Begin',
+    ' If HavePending Then Begin HavePending:=False; ReadKey:=Chr(PendingScan); Exit End;',
+    ' R.AX:=0; __Intr($16,R); K:=R.AX;',
+    ' If (Lo(K)=0) Or ((Lo(K)=$E0) And (Hi(K)<>0)) Then Begin',
+    '  HavePending:=True; PendingScan:=Hi(K); ReadKey:=#0;',
+    ' End Else ReadKey:=Chr(Lo(K));',
+    'End;',
+    '',
+    'Procedure SetVideoVars;',
+    'Begin',
+    ' Cols:=MemW[Seg0040:$4A]; If Cols=0 Then Cols:=80;',
+    ' Rows:=Mem[Seg0040:$84]+1; If Rows<2 Then Rows:=25;',
+    ' If Mem[Seg0040:$49]=7 Then VideoSeg:=SegB000 Else VideoSeg:=SegB800;',
+    ' WindMin:=0; WindMax:=(Rows-1)*256+(Cols-1);',
+    'End;',
+    '',
+    'Procedure TextMode(Mode: Integer);',
+    'Var R: TRegs;',
+    'Begin',
+    ' R.AX:=Lo(Mode); __Intr($10,R);',
+    ' If Mode And Font8x8<>0 Then Begin R.AX:=$1112; R.BX:=0; __Intr($10,R) End;',
+    ' LastMode:=Mode; SetVideoVars; TextAttr:=LightGray; NormAttr:=LightGray;',
+    'End;',
+    '',
+    'Procedure Window(X1,Y1,X2,Y2: Byte);',
+    'Begin',
+    ' If (X1<1) Or (Y1<1) Or (X2>Cols) Or (Y2>Rows) Or (X1>X2) Or (Y1>Y2) Then Exit;',
+    ' WindMin:=(Y1-1)*256+(X1-1); WindMax:=(Y2-1)*256+(X2-1);',
+    ' SyncCursor(X1-1,Y1-1);',
+    'End;',
+    '',
+    'Procedure GotoXY(X,Y: Byte);',
+    'Begin',
+    ' If (X<1) Or (Y<1) Then Exit;',
+    ' If (Lo(WindMin)+X-1>Lo(WindMax)) Or (Hi(WindMin)+Y-1>Hi(WindMax)) Then Exit;',
+    ' SyncCursor(Lo(WindMin)+X-1,Hi(WindMin)+Y-1);',
+    'End;',
+    '',
+    'Function WhereX: Byte; Begin WhereX:=CurX-Lo(WindMin)+1 End;',
+    'Function WhereY: Byte; Begin WhereY:=CurY-Hi(WindMin)+1 End;',
+    '',
+    'Procedure ClrScr;',
+    'Begin',
+    ' FillCells(Lo(WindMin),Hi(WindMin),Lo(WindMax),Hi(WindMax));',
+    ' SyncCursor(Lo(WindMin),Hi(WindMin));',
+    'End;',
+    '',
+    'Procedure ClrEol;',
+    'Begin',
+    ' FillCells(CurX,CurY,Lo(WindMax),CurY);',
+    'End;',
+    '',
+    'Procedure InsLine;',
+    'Begin',
+    ' ScrollDown(CurY,Hi(WindMax));',
+    'End;',
+    '',
+    'Procedure DelLine;',
+    'Begin',
+    ' ScrollUp(CurY,Hi(WindMax));',
+    'End;',
+    '',
+    'Procedure TextColor(Color: Byte);',
+    'Begin',
+    ' TextAttr:=(TextAttr And $70) Or (Color And $8F);',
+    'End;',
+    '',
+    'Procedure TextBackground(Color: Byte);',
+    'Begin',
+    ' TextAttr:=(TextAttr And $8F) Or ((Color And 7) Shl 4);',
+    'End;',
+    '',
+    'Procedure LowVideo; Begin TextAttr:=TextAttr And $F7 End;',
+    'Procedure HighVideo; Begin TextAttr:=TextAttr Or 8 End;',
+    'Procedure NormVideo; Begin TextAttr:=NormAttr End;',
+    '',
+    'Procedure Delay(MS: Word);',
+    'Var R: TRegs; L: Longint;',
+    'Begin',
+    ' L:=Longint(MS)*1000;',
+    ' R.AX:=$8600; R.CX:=L Shr 16; R.DX:=L And $FFFF;',
+    ' __Intr($15,R);',
+    'End;',
+    '',
+    'Procedure Sound(Hz: Word);',
+    'Var D: Word;',
+    'Begin',
+    ' If Hz=0 Then Exit;',
+    ' D:=Word(1193180 Div Hz);',
+    ' Port[$43]:=$B6;',
+    ' Port[$42]:=Lo(D); Port[$42]:=Hi(D);',
+    ' Port[$61]:=Port[$61] Or 3;',
+    'End;',
+    '',
+    'Procedure NoSound;',
+    'Begin',
+    ' Port[$61]:=Port[$61] And $FC;',
+    'End;',
+    '',
+    'Begin',
+    ' SetVideoVars;',
+    ' LastMode:=Mem[Seg0040:$49];',
+    ' NormAttr:=Mem[VideoSeg:(CurY*Cols+CurX)*2+1];',
+    ' If NormAttr=0 Then NormAttr:=LightGray;',
+    ' TextAttr:=NormAttr;',
+    ' CheckBreak:=True; CheckEOF:=False; CheckSnow:=True; DirectVideo:=True;',
+    ' HavePending:=False;',
+    ' TextRec(Output).OpenFunc:=@CrtOpen; CrtOpen(TextRec(Output));',
+    ' TextRec(Input).OpenFunc:=@CrtOpen; CrtOpen(TextRec(Input));',
+    'End.'
+  );
+
+Function D16SrcCrtLine(N : LongInt) : TString;
+Begin
+  Case N Div 400 Of
+    0 : D16SrcCrtLine := D16SrcCrt1[N Mod 400 + 1];
+  Else D16SrcCrtLine := '';
+  End;
+End;
+
+Const
+  D16SRC_DOS_N = 416;
+  D16SrcDos1 : Array[1..400] Of String[96] = (
+    'Unit Dos;',
+    '{ Unite DOS de Turbo Pascal 7.0 : interruptions, date/heure, fichiers,',
+    '  repertoires, environnement et execution de programmes. }',
+    'Interface',
+    'Const',
+    ' fmClosed=$D7B0; fmInput=$D7B1; fmOutput=$D7B2; fmInOut=$D7B3;',
+    ' ReadOnly=$01; Hidden=$02; SysFile=$04; VolumeID=$08; Directory=$10; Archive=$20; AnyFile=$3F;',
+    ' FCarry=$0001; FParity=$0004; FAuxiliary=$0010; FZero=$0040; FSign=$0080; FOverflow=$0800;',
+    'Type',
+    ' ComStr=String[127];',
+    ' PathStr=String[79];',
+    ' DirStr=String[67];',
+    ' NameStr=String[8];',
+    ' ExtStr=String[4];',
+    ' SearchRec=Record',
+    '  Fill: Array[1..21] Of Byte;',
+    '  Attr: Byte;',
+    '  Time: Longint;',
+    '  Size: Longint;',
+    '  Name: String[12];',
+    ' End;',
+    ' DateTime=Record',
+    '  Year,Month,Day,Hour,Min,Sec: Word;',
+    ' End;',
+    ' Registers=Record',
+    '  Case Integer Of',
+    '   0:(AX,BX,CX,DX,BP,SI,DI,DS,ES,Flags: Word);',
+    '   1:(AL,AH,BL,BH,CL,CH,DL,DH: Byte);',
+    ' End;',
+    'Var',
+    ' DosError: Integer;',
+    'Procedure Intr(IntNo: Byte; Var Regs: Registers);',
+    'Procedure MsDos(Var Regs: Registers);',
+    'Function DosVersion: Word;',
+    'Procedure GetDate(Var Year,Month,Day,DayOfWeek: Word);',
+    'Procedure SetDate(Year,Month,Day: Word);',
+    'Procedure GetTime(Var Hour,Minute,Second,Sec100: Word);',
+    'Procedure SetTime(Hour,Minute,Second,Sec100: Word);',
+    'Procedure GetCBreak(Var Break: Boolean);',
+    'Procedure SetCBreak(Break: Boolean);',
+    'Procedure GetVerify(Var Verify: Boolean);',
+    'Procedure SetVerify(Verify: Boolean);',
+    'Function DiskFree(Drive: Byte): Longint;',
+    'Function DiskSize(Drive: Byte): Longint;',
+    'Procedure GetFAttr(Var F; Var Attr: Word);',
+    'Procedure SetFAttr(Var F; Attr: Word);',
+    'Procedure GetFTime(Var F; Var Time: Longint);',
+    'Procedure SetFTime(Var F; Time: Longint);',
+    'Procedure FindFirst(Path: PathStr; Attr: Word; Var F: SearchRec);',
+    'Procedure FindNext(Var F: SearchRec);',
+    'Procedure UnpackTime(P: Longint; Var T: DateTime);',
+    'Procedure PackTime(Var T: DateTime; Var P: Longint);',
+    'Procedure GetIntVec(IntNo: Byte; Var Vector: Pointer);',
+    'Procedure SetIntVec(IntNo: Byte; Vector: Pointer);',
+    'Procedure SwapVectors;',
+    'Procedure Keep(ExitCode: Word);',
+    'Procedure Exec(Path: PathStr; ComLine: ComStr);',
+    'Function DosExitCode: Word;',
+    'Function FSearch(Path: PathStr; DirList: String): PathStr;',
+    'Function FExpand(Path: PathStr): PathStr;',
+    'Procedure FSplit(Path: PathStr; Var Dir: DirStr; Var Name: NameStr; Var Ext: ExtStr);',
+    'Function EnvCount: Integer;',
+    'Function EnvStr(Index: Integer): String;',
+    'Function GetEnv(EnvVar: String): String;',
+    'Implementation',
+    'Type',
+    ' PByte=^Byte;',
+    ' PWord=^Word;',
+    'Var',
+    ' R: Registers;',
+    ' ASCIIZ: Array[0..255] Of Char;',
+    '',
+    'Procedure CallInt(IntNo: Byte);',
+    'Begin',
+    ' __Intr(IntNo,R);',
+    'End;',
+    '',
+    'Procedure Intr(IntNo: Byte; Var Regs: Registers);',
+    'Begin',
+    ' __Intr(IntNo,Regs);',
+    'End;',
+    '',
+    'Procedure MsDos(Var Regs: Registers);',
+    'Begin',
+    ' Intr($21,Regs);',
+    'End;',
+    '',
+    'Procedure DosCall;',
+    '{ INT 21h avec R; DosError = AX si le carry est positionne. }',
+    'Begin',
+    ' CallInt($21);',
+    ' If R.Flags And FCarry<>0 Then DosError:=R.AX Else DosError:=0;',
+    'End;',
+    '',
+    'Function DosVersion: Word;',
+    'Begin',
+    ' R.AH:=$30; CallInt($21); DosVersion:=R.AX;',
+    'End;',
+    '',
+    'Procedure GetDate(Var Year,Month,Day,DayOfWeek: Word);',
+    'Begin',
+    ' R.AH:=$2A; CallInt($21);',
+    ' Year:=R.CX; Month:=R.DH; Day:=R.DL; DayOfWeek:=R.AL;',
+    'End;',
+    '',
+    'Procedure SetDate(Year,Month,Day: Word);',
+    'Begin',
+    ' R.AH:=$2B; R.CX:=Year; R.DH:=Month; R.DL:=Day; CallInt($21);',
+    'End;',
+    '',
+    'Procedure GetTime(Var Hour,Minute,Second,Sec100: Word);',
+    'Begin',
+    ' R.AH:=$2C; CallInt($21);',
+    ' Hour:=R.CH; Minute:=R.CL; Second:=R.DH; Sec100:=R.DL;',
+    'End;',
+    '',
+    'Procedure SetTime(Hour,Minute,Second,Sec100: Word);',
+    'Begin',
+    ' R.AH:=$2D; R.CH:=Hour; R.CL:=Minute; R.DH:=Second; R.DL:=Sec100; CallInt($21);',
+    'End;',
+    '',
+    'Procedure GetCBreak(Var Break: Boolean);',
+    'Begin',
+    ' R.AX:=$3300; CallInt($21); Break:=R.DL<>0;',
+    'End;',
+    '',
+    'Procedure SetCBreak(Break: Boolean);',
+    'Begin',
+    ' R.AX:=$3301; R.DL:=Ord(Break); CallInt($21);',
+    'End;',
+    '',
+    'Procedure GetVerify(Var Verify: Boolean);',
+    'Begin',
+    ' R.AH:=$54; CallInt($21); Verify:=R.AL<>0;',
+    'End;',
+    '',
+    'Procedure SetVerify(Verify: Boolean);',
+    'Begin',
+    ' R.AH:=$2E; R.AL:=Ord(Verify); R.DL:=0; CallInt($21);',
+    'End;',
+    '',
+    'Function DiskFree(Drive: Byte): Longint;',
+    'Begin',
+    ' R.AH:=$36; R.DL:=Drive; CallInt($21);',
+    ' If R.AX=$FFFF Then DiskFree:=-1',
+    ' Else DiskFree:=Longint(R.AX)*R.CX*R.BX;',
+    'End;',
+    '',
+    'Function DiskSize(Drive: Byte): Longint;',
+    'Begin',
+    ' R.AH:=$36; R.DL:=Drive; CallInt($21);',
+    ' If R.AX=$FFFF Then DiskSize:=-1',
+    ' Else DiskSize:=Longint(R.AX)*R.CX*R.DX;',
+    'End;',
+    '',
+    'Procedure FileNameRegs(Var F);',
+    '{ DS:DX = nom ASCIIZ du descripteur de fichier (offset 16). }',
+    'Var P: PChar;',
+    'Begin',
+    ' P:=PChar(@F); Inc(P,48);',
+    ' R.DS:=Seg(P^); R.DX:=Ofs(P^);',
+    'End;',
+    '',
+    'Procedure GetFAttr(Var F; Var Attr: Word);',
+    'Begin',
+    ' FileNameRegs(F); R.AX:=$4300; DosCall;',
+    ' If DosError=0 Then Attr:=R.CX Else Attr:=0;',
+    'End;',
+    '',
+    'Procedure SetFAttr(Var F; Attr: Word);',
+    'Begin',
+    ' FileNameRegs(F); R.AX:=$4301; R.CX:=Attr; DosCall;',
+    'End;',
+    '',
+    'Procedure GetFTime(Var F; Var Time: Longint);',
+    'Var P: PWord;',
+    'Begin',
+    ' P:=PWord(@F); R.BX:=P^; R.AX:=$5700; DosCall;',
+    ' If DosError=0 Then Time:=Longint(R.DX)*65536+R.CX Else Time:=0;',
+    'End;',
+    '',
+    'Procedure SetFTime(Var F; Time: Longint);',
+    'Var P: PWord;',
+    'Begin',
+    ' P:=PWord(@F); R.BX:=P^; R.AX:=$5701; R.CX:=Word(Time); R.DX:=Word(Time Shr 16); DosCall;',
+    'End;',
+    '',
+    'Procedure SetASCIIZ(S: String);',
+    'Var I: Integer;',
+    'Begin',
+    ' For I:=1 To Length(S) Do ASCIIZ[I-1]:=S[I];',
+    ' ASCIIZ[Length(S)]:=#0;',
+    ' R.DS:=Seg(ASCIIZ); R.DX:=Ofs(ASCIIZ);',
+    'End;',
+    '',
+    'Procedure FixSearchName(Var F: SearchRec);',
+    '{ Le nom ASCIIZ du DTA devient une chaine Pascal. }',
+    'Var P: PChar; L,I: Integer;',
+    'Begin',
+    ' P:=PChar(@F.Name); L:=0;',
+    ' While (L<12) And (P[L]<>#0) Do Inc(L);',
+    ' For I:=L DownTo 1 Do P[I]:=P[I-1];',
+    ' P[0]:=Chr(L);',
+    'End;',
+    '',
+    'Procedure FindFirst(Path: PathStr; Attr: Word; Var F: SearchRec);',
+    'Begin',
+    ' R.AH:=$1A; R.DS:=Seg(F); R.DX:=Ofs(F); CallInt($21);',
+    ' SetASCIIZ(Path); R.AH:=$4E; R.CX:=Attr; DosCall;',
+    ' If DosError=0 Then FixSearchName(F);',
+    'End;',
+    '',
+    'Procedure FindNext(Var F: SearchRec);',
+    'Begin',
+    ' R.AH:=$1A; R.DS:=Seg(F); R.DX:=Ofs(F); CallInt($21);',
+    ' R.AH:=$4F; DosCall;',
+    ' If DosError=0 Then FixSearchName(F);',
+    'End;',
+    '',
+    'Procedure UnpackTime(P: Longint; Var T: DateTime);',
+    'Begin',
+    ' T.Sec:=(P And 31)*2;',
+    ' T.Min:=(P Shr 5) And 63;',
+    ' T.Hour:=(P Shr 11) And 31;',
+    ' T.Day:=(P Shr 16) And 31;',
+    ' T.Month:=(P Shr 21) And 15;',
+    ' T.Year:=((P Shr 25) And 127)+1980;',
+    'End;',
+    '',
+    'Procedure PackTime(Var T: DateTime; Var P: Longint);',
+    'Begin',
+    ' P:=(Longint(T.Year-1980) Shl 25) Or (Longint(T.Month) Shl 21) Or (Longint(T.Day) Shl 16) Or',
+    '    (Longint(T.Hour) Shl 11) Or (Longint(T.Min) Shl 5) Or (T.Sec Div 2);',
+    'End;',
+    '',
+    'Procedure GetIntVec(IntNo: Byte; Var Vector: Pointer);',
+    'Begin',
+    ' R.AH:=$35; R.AL:=IntNo; CallInt($21);',
+    ' Vector:=Ptr(R.ES,R.BX);',
+    'End;',
+    '',
+    'Procedure SetIntVec(IntNo: Byte; Vector: Pointer);',
+    'Begin',
+    ' R.AH:=$25; R.AL:=IntNo; R.DS:=Seg(Vector^); R.DX:=Ofs(Vector^); CallInt($21);',
+    'End;',
+    '',
+    'Procedure SwapVectors;',
+    'Begin',
+    'End;',
+    '',
+    'Procedure Keep(ExitCode: Word);',
+    'Begin',
+    ' R.AH:=$62; CallInt($21);',
+    ' R.DX:=SSeg+4096-R.BX;',
+    ' R.AH:=$31; R.AL:=ExitCode; CallInt($21);',
+    'End;',
+    '',
+    'Procedure Exec(Path: PathStr; ComLine: ComStr);',
+    'Var Block: Array[0..6] Of Word; Cmd: Array[0..129] Of Char; I: Integer; Psp,Need: Word;',
+    'Begin',
+    ' If Length(ComLine)>126 Then ComLine[0]:=#126;',
+    ' Cmd[0]:=Chr(Length(ComLine));',
+    ' For I:=1 To Length(ComLine) Do Cmd[I]:=ComLine[I];',
+    ' Cmd[Length(ComLine)+1]:=#13;',
+    ' { Liberer la memoire au-dela de la pile pour le programme fils. }',
+    ' R.AH:=$62; CallInt($21); Psp:=R.BX;',
+    ' Need:=SSeg-Psp+4097;',
+    ' R.AH:=$4A; R.ES:=Psp; R.BX:=Need; CallInt($21);',
+    ' If R.Flags And FCarry<>0 Then Begin',
+    '  R.AH:=$4A; R.ES:=Psp; CallInt($21);',
+    ' End;',
+    ' Block[0]:=0; Block[1]:=Ofs(Cmd); Block[2]:=Seg(Cmd);',
+    ' Block[3]:=$5C; Block[4]:=Psp; Block[5]:=$6C; Block[6]:=Psp;',
+    ' SetASCIIZ(Path);',
+    ' R.ES:=Seg(Block); R.BX:=Ofs(Block); R.AX:=$4B00;',
+    ' DosCall;',
+    'End;',
+    '',
+    'Function DosExitCode: Word;',
+    'Begin',
+    ' R.AH:=$4D; CallInt($21); DosExitCode:=R.AX;',
+    'End;',
+    '',
+    'Function UpStr(S: String): String;',
+    'Var I: Integer;',
+    'Begin',
+    ' For I:=1 To Length(S) Do S[I]:=UpCase(S[I]);',
+    ' UpStr:=S;',
+    'End;',
+    '',
+    'Function FileExists(Name: String): Boolean;',
+    'Begin',
+    ' SetASCIIZ(Name); R.AX:=$4300; DosCall;',
+    ' FileExists:=(DosError=0) And (R.CX And Directory=0);',
+    'End;',
+    '',
+    'Function FSearch(Path: PathStr; DirList: String): PathStr;',
+    'Var P: Integer; Dir,Try: String;',
+    'Begin',
+    ' FSearch:='''';',
+    ' If Path='''' Then Exit;',
+    ' If FileExists(Path) Then Begin FSearch:=Path; Exit End;',
+    ' If (Pos('':'',Path)<>0) Or (Pos(''\'',Path)<>0) Then Exit;',
+    ' While DirList<>'''' Do Begin',
+    '  P:=Pos('';'',DirList);',
+    '  If P=0 Then Begin Dir:=DirList; DirList:='''' End',
+    '  Else Begin Dir:=Copy(DirList,1,P-1); Delete(DirList,1,P) End;',
+    '  If Dir<>'''' Then Begin',
+    '   If Not (Dir[Length(Dir)] In [''\'','':'']) Then Dir:=Dir+''\'';',
+    '   Try:=Dir+Path;',
+    '   If FileExists(Try) Then Begin FSearch:=Try; Exit End;',
+    '  End;',
+    ' End;',
+    'End;',
+    '',
+    'Procedure FSplit(Path: PathStr; Var Dir: DirStr; Var Name: NameStr; Var Ext: ExtStr);',
+    'Var I,DirEnd,ExtPos: Integer;',
+    'Begin',
+    ' DirEnd:=0; ExtPos:=0;',
+    ' For I:=1 To Length(Path) Do',
+    '  Case Path[I] Of',
+    '   ''\'','':'':Begin DirEnd:=I; ExtPos:=0 End;',
+    '   ''.'':ExtPos:=I;',
+    '  End;',
+    ' Dir:=Copy(Path,1,DirEnd);',
+    ' If ExtPos=0 Then Begin Name:=Copy(Path,DirEnd+1,8); Ext:='''' End',
+    ' Else Begin Name:=Copy(Path,DirEnd+1,ExtPos-DirEnd-1); Ext:=Copy(Path,ExtPos,4) End;',
+    'End;',
+    '',
+    'Function FExpand(Path: PathStr): PathStr;',
+    'Var Cur: String; Drive: Byte; I,P: Integer; Res: String;',
+    'Begin',
+    ' Path:=UpStr(Path);',
+    ' If (Length(Path)>=2) And (Path[2]='':'') Then Begin',
+    '  Drive:=Ord(Path[1])-64; Delete(Path,1,2);',
+    ' End Else Begin',
+    '  R.AH:=$19; CallInt($21); Drive:=R.AL+1;',
+    ' End;',
+    ' If (Path<>'''') And (Path[1]=''\'') Then Res:=Path',
+    ' Else Begin',
+    '  GetDir(Drive,Cur);',
+    '  If Length(Cur)>=2 Then Delete(Cur,1,2);',
+    '  If (Cur='''') Or (Cur[Length(Cur)]<>''\'') Then Cur:=Cur+''\'';',
+    '  Res:=Cur+Path;',
+    ' End;',
+    ' { Resoudre . et .. }',
+    ' Repeat',
+    '  P:=Pos(''\.\'',Res);',
+    '  If P=0 Then Break;',
+    '  Delete(Res,P,2);',
+    ' Until False;',
+    ' Repeat',
+    '  P:=Pos(''\..'',Res);',
+    '  If P=0 Then Break;',
+    '  I:=P-1;',
+    '  While (I>0) And (Res[I]<>''\'') Do Dec(I);',
+    '  If I=0 Then I:=1;',
+    '  Delete(Res,I,P+2-I);',
+    '  If Res='''' Then Res:=''\'';',
+    ' Until False;',
+    ' If (Length(Res)>=2) And (Res[Length(Res)]=''.'') And (Res[Length(Res)-1]=''\'') Then',
+    ' Delete(Res,Length(Res),1);',
+    ' If Res='''' Then Res:=''\'';',
+    ' FExpand:=Chr(Drive+64)+'':''+Res;',
+    'End;',
+    '',
+    'Function EnvSeg: Word;',
+    'Begin',
+    ' EnvSeg:=MemW[PrefixSeg:$2C];',
+    'End;',
+    '',
+    'Function EnvCount: Integer;',
+    'Var E,O: Word; N: Integer;',
+    'Begin',
+    ' E:=EnvSeg; O:=0; N:=0;',
+    ' While Mem[E:O]<>0 Do Begin',
+    '  Inc(N);',
+    '  While Mem[E:O]<>0 Do Inc(O);',
+    '  Inc(O);',
+    ' End;',
+    ' EnvCount:=N;',
+    'End;',
+    '',
+    'Function EnvStr(Index: Integer): String;',
+    'Var E,O: Word; N: Integer; S: String;',
+    'Begin',
+    ' EnvStr:=''''; S:='''';',
+    ' If Index<1 Then Exit;',
+    ' E:=EnvSeg; O:=0; N:=0;',
+    ' While Mem[E:O]<>0 Do Begin',
+    '  Inc(N);',
+    '  If N=Index Then Begin',
+    '   While (Mem[E:O]<>0) And (Length(S)<255) Do Begin S:=S+Chr(Mem[E:O]); Inc(O) End;',
+    '   EnvStr:=S; Exit;',
+    '  End;',
+    '  While Mem[E:O]<>0 Do Inc(O);',
+    '  Inc(O);',
+    ' End;',
+    'End;',
+    ''
+  );
+  D16SrcDos2 : Array[1..16] Of String[96] = (
+    'Function GetEnv(EnvVar: String): String;',
+    'Var I,N,P: Integer; S: String;',
+    'Begin',
+    ' GetEnv:=''''; EnvVar:=UpStr(EnvVar);',
+    ' N:=EnvCount;',
+    ' For I:=1 To N Do Begin',
+    '  S:=EnvStr(I); P:=Pos(''='',S);',
+    '  If (P<>0) And (UpStr(Copy(S,1,P-1))=EnvVar) Then Begin',
+    '   GetEnv:=Copy(S,P+1,255); Exit;',
+    '  End;',
+    ' End;',
+    'End;',
+    '',
+    'Begin',
+    ' DosError:=0;',
+    'End.'
+  );
+
+Function D16SrcDosLine(N : LongInt) : TString;
+Begin
+  Case N Div 400 Of
+    0 : D16SrcDosLine := D16SrcDos1[N Mod 400 + 1];
+    1 : D16SrcDosLine := D16SrcDos2[N Mod 400 + 1];
+  Else D16SrcDosLine := '';
+  End;
+End;
+
+Const
+  D16SRC_STRINGS_N = 209;
+  D16SrcStrings1 : Array[1..209] Of String[96] = (
+    'Unit Strings;',
+    '{ Unite STRINGS de Turbo Pascal 7.0 : chaines a zero terminal (PChar). }',
+    'Interface',
+    'Function StrLen(Str: PChar): Word;',
+    'Function StrEnd(Str: PChar): PChar;',
+    'Function StrMove(Dest, Source: PChar; Count: Word): PChar;',
+    'Function StrCopy(Dest, Source: PChar): PChar;',
+    'Function StrECopy(Dest, Source: PChar): PChar;',
+    'Function StrLCopy(Dest, Source: PChar; MaxLen: Word): PChar;',
+    'Function StrPCopy(Dest: PChar; Source: String): PChar;',
+    'Function StrCat(Dest, Source: PChar): PChar;',
+    'Function StrLCat(Dest, Source: PChar; MaxLen: Word): PChar;',
+    'Function StrComp(Str1, Str2: PChar): Integer;',
+    'Function StrIComp(Str1, Str2: PChar): Integer;',
+    'Function StrLComp(Str1, Str2: PChar; MaxLen: Word): Integer;',
+    'Function StrLIComp(Str1, Str2: PChar; MaxLen: Word): Integer;',
+    'Function StrScan(Str: PChar; Chr: Char): PChar;',
+    'Function StrRScan(Str: PChar; Chr: Char): PChar;',
+    'Function StrPos(Str1, Str2: PChar): PChar;',
+    'Function StrUpper(Str: PChar): PChar;',
+    'Function StrLower(Str: PChar): PChar;',
+    'Function StrPas(Str: PChar): String;',
+    'Function StrNew(Str: PChar): PChar;',
+    'Procedure StrDispose(Str: PChar);',
+    'Implementation',
+    '',
+    'Function StrLen(Str: PChar): Word;',
+    'Var L: Word;',
+    'Begin',
+    ' L:=0;',
+    ' If Str<>Nil Then While Str[L]<>#0 Do Inc(L);',
+    ' StrLen:=L;',
+    'End;',
+    '',
+    'Function StrEnd(Str: PChar): PChar;',
+    'Begin',
+    ' StrEnd:=Str+StrLen(Str);',
+    'End;',
+    '',
+    'Function StrMove(Dest, Source: PChar; Count: Word): PChar;',
+    'Var I: Word;',
+    'Begin',
+    ' If Count<>0 Then Begin',
+    '  If Source<Dest Then Begin',
+    '   For I:=Count-1 DownTo 0 Do Begin Dest[I]:=Source[I]; If I=0 Then Break End;',
+    '  End Else For I:=0 To Count-1 Do Dest[I]:=Source[I];',
+    ' End;',
+    ' StrMove:=Dest;',
+    'End;',
+    '',
+    'Function StrCopy(Dest, Source: PChar): PChar;',
+    'Var I: Word;',
+    'Begin',
+    ' I:=0;',
+    ' While Source[I]<>#0 Do Begin Dest[I]:=Source[I]; Inc(I) End;',
+    ' Dest[I]:=#0;',
+    ' StrCopy:=Dest;',
+    'End;',
+    '',
+    'Function StrECopy(Dest, Source: PChar): PChar;',
+    'Begin',
+    ' StrCopy(Dest,Source);',
+    ' StrECopy:=Dest+StrLen(Source);',
+    'End;',
+    '',
+    'Function StrLCopy(Dest, Source: PChar; MaxLen: Word): PChar;',
+    'Var I: Word;',
+    'Begin',
+    ' I:=0;',
+    ' While (I<MaxLen) And (Source[I]<>#0) Do Begin Dest[I]:=Source[I]; Inc(I) End;',
+    ' Dest[I]:=#0;',
+    ' StrLCopy:=Dest;',
+    'End;',
+    '',
+    'Function StrPCopy(Dest: PChar; Source: String): PChar;',
+    'Var I: Integer;',
+    'Begin',
+    ' For I:=1 To Length(Source) Do Dest[I-1]:=Source[I];',
+    ' Dest[Length(Source)]:=#0;',
+    ' StrPCopy:=Dest;',
+    'End;',
+    '',
+    'Function StrCat(Dest, Source: PChar): PChar;',
+    'Begin',
+    ' StrCopy(StrEnd(Dest),Source);',
+    ' StrCat:=Dest;',
+    'End;',
+    '',
+    'Function StrLCat(Dest, Source: PChar; MaxLen: Word): PChar;',
+    'Var L: Word;',
+    'Begin',
+    ' L:=StrLen(Dest);',
+    ' If L<MaxLen Then StrLCopy(Dest+L,Source,MaxLen-L);',
+    ' StrLCat:=Dest;',
+    'End;',
+    '',
+    'Function StrLComp(Str1, Str2: PChar; MaxLen: Word): Integer;',
+    'Var I: Word; C1,C2: Char;',
+    'Begin',
+    ' StrLComp:=0; I:=0;',
+    ' While I<MaxLen Do Begin',
+    '  C1:=Str1[I]; C2:=Str2[I];',
+    '  If C1<>C2 Then Begin StrLComp:=Ord(C1)-Ord(C2); Exit End;',
+    '  If C1=#0 Then Exit;',
+    '  Inc(I);',
+    ' End;',
+    'End;',
+    '',
+    'Function StrComp(Str1, Str2: PChar): Integer;',
+    'Begin',
+    ' StrComp:=StrLComp(Str1,Str2,65535);',
+    'End;',
+    '',
+    'Function StrLIComp(Str1, Str2: PChar; MaxLen: Word): Integer;',
+    'Var I: Word; C1,C2: Char;',
+    'Begin',
+    ' StrLIComp:=0; I:=0;',
+    ' While I<MaxLen Do Begin',
+    '  C1:=UpCase(Str1[I]); C2:=UpCase(Str2[I]);',
+    '  If C1<>C2 Then Begin StrLIComp:=Ord(C1)-Ord(C2); Exit End;',
+    '  If C1=#0 Then Exit;',
+    '  Inc(I);',
+    ' End;',
+    'End;',
+    '',
+    'Function StrIComp(Str1, Str2: PChar): Integer;',
+    'Begin',
+    ' StrIComp:=StrLIComp(Str1,Str2,65535);',
+    'End;',
+    '',
+    'Function StrScan(Str: PChar; Chr: Char): PChar;',
+    'Var I: Word;',
+    'Begin',
+    ' StrScan:=Nil; I:=0;',
+    ' Repeat',
+    '  If Str[I]=Chr Then Begin StrScan:=Str+I; Exit End;',
+    '  If Str[I]=#0 Then Exit;',
+    '  Inc(I);',
+    ' Until False;',
+    'End;',
+    '',
+    'Function StrRScan(Str: PChar; Chr: Char): PChar;',
+    'Var I: Word;',
+    'Begin',
+    ' StrRScan:=Nil; I:=0;',
+    ' Repeat',
+    '  If Str[I]=Chr Then StrRScan:=Str+I;',
+    '  If Str[I]=#0 Then Exit;',
+    '  Inc(I);',
+    ' Until False;',
+    'End;',
+    '',
+    'Function StrPos(Str1, Str2: PChar): PChar;',
+    'Var I,L: Word;',
+    'Begin',
+    ' StrPos:=Nil; L:=StrLen(Str2);',
+    ' If L=0 Then Begin StrPos:=Str1; Exit End;',
+    ' I:=0;',
+    ' While Str1[I]<>#0 Do Begin',
+    '  If StrLComp(Str1+I,Str2,L)=0 Then Begin StrPos:=Str1+I; Exit End;',
+    '  Inc(I);',
+    ' End;',
+    'End;',
+    '',
+    'Function StrUpper(Str: PChar): PChar;',
+    'Var I: Word;',
+    'Begin',
+    ' I:=0;',
+    ' While Str[I]<>#0 Do Begin Str[I]:=UpCase(Str[I]); Inc(I) End;',
+    ' StrUpper:=Str;',
+    'End;',
+    '',
+    'Function StrLower(Str: PChar): PChar;',
+    'Var I: Word;',
+    'Begin',
+    ' I:=0;',
+    ' While Str[I]<>#0 Do Begin',
+    '  If Str[I] In [''A''..''Z''] Then Str[I]:=Chr(Ord(Str[I])+32);',
+    '  Inc(I);',
+    ' End;',
+    ' StrLower:=Str;',
+    'End;',
+    '',
+    'Function StrPas(Str: PChar): String;',
+    'Var S: String; I: Word;',
+    'Begin',
+    ' S:=''''; I:=0;',
+    ' If Str<>Nil Then',
+    '  While (Str[I]<>#0) And (I<255) Do Begin S:=S+Str[I]; Inc(I) End;',
+    ' StrPas:=S;',
+    'End;',
+    '',
+    'Function StrNew(Str: PChar): PChar;',
+    'Var L: Word; P: PChar;',
+    'Begin',
+    ' StrNew:=Nil;',
+    ' If (Str=Nil) Or (Str[0]=#0) Then Exit;',
+    ' L:=StrLen(Str)+1;',
+    ' GetMem(P,L);',
+    ' If P<>Nil Then StrMove(P,Str,L);',
+    ' StrNew:=P;',
+    'End;',
+    '',
+    'Procedure StrDispose(Str: PChar);',
+    'Begin',
+    ' If Str<>Nil Then FreeMem(Str,StrLen(Str)+1);',
+    'End;',
+    '',
+    'End.'
+  );
+
+Function D16SrcStringsLine(N : LongInt) : TString;
+Begin
+  Case N Div 400 Of
+    0 : D16SrcStringsLine := D16SrcStrings1[N Mod 400 + 1];
+  Else D16SrcStringsLine := '';
+  End;
+End;
+
+Const
+  D16SRC_PRINTER_N = 10;
+  D16SrcPrinter1 : Array[1..10] Of String[96] = (
+    'Unit Printer;',
+    '{ Unite PRINTER de Turbo Pascal 7.0 : fichier texte Lst sur l''imprimante. }',
+    'Interface',
+    'Var Lst: Text;',
+    'Implementation',
+    'Begin',
+    ' Assign(Lst,''PRN'');',
+    ' {$I-} Rewrite(Lst); {$I+}',
+    ' If IOResult<>0 Then ;',
+    'End.'
+  );
+
+Function D16SrcPrinterLine(N : LongInt) : TString;
+Begin
+  Case N Div 400 Of
+    0 : D16SrcPrinterLine := D16SrcPrinter1[N Mod 400 + 1];
+  Else D16SrcPrinterLine := '';
+  End;
+End;
+
+Const
+  D16SRC_GRAPH_N = 703;
+  D16SrcGraph1 : Array[1..400] Of String[96] = (
+    'Unit Graph;',
+    '{ Unite GRAPH de Turbo Pascal 7.0 (sous-ensemble) : VGA 640x480x16 (VGAHi)',
+    '  via le BIOS video (INT 10h). Le traitement des pixels passe par les',
+    '  fonctions 0Ch/0Dh du BIOS ; les traces sont calcules en Pascal. }',
+    'Interface',
+    'Const',
+    '  grOk = 0; grNoInitGraph = -1; grNotDetected = -2; grFileNotFound = -3;',
+    '  grInvalidDriver = -4; grNoLoadMem = -5; grNoScanMem = -6; grNoFloodMem = -7;',
+    '  grFontNotFound = -8; grNoFontMem = -9; grInvalidMode = -10; grError = -11;',
+    '  grIOerror = -12; grInvalidFont = -13; grInvalidFontNum = -14;',
+    '  CurrentDriver = -128; Detect = 0; CGA = 1; MCGA = 2; EGA = 3; EGA64 = 4; EGAMono = 5;',
+    '  IBM8514 = 6; HercMono = 7; ATT400 = 8; VGA = 9; PC3270 = 10;',
+    '  CGAC0 = 0; CGAC1 = 1; CGAC2 = 2; CGAC3 = 3; CGAHi = 4;',
+    '  EGALo = 0; EGAHi = 1; VGALo = 0; VGAMed = 1; VGAHi = 2;',
+    '  Black = 0; Blue = 1; Green = 2; Cyan = 3; Red = 4; Magenta = 5; Brown = 6; LightGray = 7;',
+    '  DarkGray = 8; LightBlue = 9; LightGreen = 10; LightCyan = 11; LightRed = 12;',
+    '  LightMagenta = 13; Yellow = 14; White = 15;',
+    '  EmptyFill = 0; SolidFill = 1; LineFill = 2; LtSlashFill = 3; SlashFill = 4; BkSlashFill = 5;',
+    '  LtBkSlashFill = 6; HatchFill = 7; XHatchFill = 8; InterleaveFill = 9; WideDotFill = 10;',
+    '  CloseDotFill = 11; UserFill = 12;',
+    '  SolidLn = 0; DottedLn = 1; CenterLn = 2; DashedLn = 3; UserBitLn = 4;',
+    '  NormWidth = 1; ThickWidth = 3;',
+    '  DefaultFont = 0; TriplexFont = 1; SmallFont = 2; SansSerifFont = 3; GothicFont = 4;',
+    '  HorizDir = 0; VertDir = 1; UserCharSize = 0;',
+    '  LeftText = 0; CenterText = 1; RightText = 2; BottomText = 0; TopText = 2;',
+    '  NormalPut = 0; CopyPut = 0; XORPut = 1; OrPut = 2; AndPut = 3; NotPut = 4;',
+    '  MaxColors = 15;',
+    'Type',
+    '  PointType = Record X, Y : Integer End;',
+    '  ViewPortType = Record X1, Y1, X2, Y2 : Integer; Clip : Boolean End;',
+    '  PaletteType = Record Size : Byte; Colors : Array[0..MaxColors] Of ShortInt End;',
+    '  FillPatternType = Array[1..8] Of Byte;',
+    '  FillSettingsType = Record Pattern : Word; Color : Word End;',
+    '  LineSettingsType = Record LineStyle : Word; Pattern : Word; Thickness : Word End;',
+    '  TextSettingsType = Record Font : Word; Direction : Word; CharSize : Word; Horiz : Word; Vert',
+    ' : Word End;',
+    '  ArcCoordsType = Record X, Y, XStart, YStart, XEnd, YEnd : Integer End;',
+    'Var',
+    '  GraphFreeMemPtr, GraphGetMemPtr : Pointer;',
+    'Procedure InitGraph(Var GraphDriver : Integer; Var GraphMode : Integer; PathToDriver : String);',
+    'Procedure CloseGraph;',
+    'Procedure DetectGraph(Var GraphDriver, GraphMode : Integer);',
+    'Function GraphResult : Integer;',
+    'Function GraphErrorMsg(ErrorCode : Integer) : String;',
+    'Function GetMaxX : Integer;',
+    'Function GetMaxY : Integer;',
+    'Function GetMaxColor : Word;',
+    'Function GetX : Integer;',
+    'Function GetY : Integer;',
+    'Function GetColor : Word;',
+    'Function GetBkColor : Word;',
+    'Function GetGraphMode : Integer;',
+    'Function GetMaxMode : Word;',
+    'Function GetDriverName : String;',
+    'Function GetModeName(ModeNumber : Integer) : String;',
+    'Procedure SetGraphMode(Mode : Integer);',
+    'Procedure RestoreCrtMode;',
+    'Procedure ClearDevice;',
+    'Procedure ClearViewPort;',
+    'Procedure SetViewPort(X1, Y1, X2, Y2 : Integer; Clip : Boolean);',
+    'Procedure GetViewSettings(Var ViewPort : ViewPortType);',
+    'Procedure SetColor(Color : Word);',
+    'Procedure SetBkColor(ColorNum : Word);',
+    'Procedure SetFillStyle(Pattern : Word; Color : Word);',
+    'Procedure SetFillPattern(Pattern : FillPatternType; Color : Word);',
+    'Procedure GetFillSettings(Var FillInfo : FillSettingsType);',
+    'Procedure SetLineStyle(LineStyle : Word; Pattern : Word; Thickness : Word);',
+    'Procedure GetLineSettings(Var LineInfo : LineSettingsType);',
+    'Procedure SetWriteMode(WriteMode : Integer);',
+    'Procedure PutPixel(X, Y : Integer; Pixel : Word);',
+    'Function GetPixel(X, Y : Integer) : Word;',
+    'Procedure MoveTo(X, Y : Integer);',
+    'Procedure MoveRel(Dx, Dy : Integer);',
+    'Procedure Line(X1, Y1, X2, Y2 : Integer);',
+    'Procedure LineTo(X, Y : Integer);',
+    'Procedure LineRel(Dx, Dy : Integer);',
+    'Procedure Rectangle(X1, Y1, X2, Y2 : Integer);',
+    'Procedure Bar(X1, Y1, X2, Y2 : Integer);',
+    'Procedure Bar3D(X1, Y1, X2, Y2 : Integer; Depth : Word; Top : Boolean);',
+    'Procedure Circle(X, Y : Integer; Radius : Word);',
+    'Procedure Ellipse(X, Y : Integer; StAngle, EndAngle : Word; XRadius, YRadius : Word);',
+    'Procedure FillEllipse(X, Y : Integer; XRadius, YRadius : Word);',
+    'Procedure Arc(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Procedure PieSlice(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Procedure Sector(X, Y : Integer; StAngle, EndAngle, XRadius, YRadius : Word);',
+    'Procedure DrawPoly(NumPoints : Word; Var PolyPoints);',
+    'Procedure FillPoly(NumPoints : Word; Var PolyPoints);',
+    'Procedure FloodFill(X, Y : Integer; Border : Word);',
+    'Procedure OutText(TextString : String);',
+    'Procedure OutTextXY(X, Y : Integer; TextString : String);',
+    'Procedure SetTextStyle(Font, Direction : Word; CharSize : Word);',
+    'Procedure SetTextJustify(Horiz, Vert : Word);',
+    'Procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word);',
+    'Procedure GetTextSettings(Var TextInfo : TextSettingsType);',
+    'Function TextWidth(TextString : String) : Word;',
+    'Function TextHeight(TextString : String) : Word;',
+    'Function ImageSize(X1, Y1, X2, Y2 : Integer) : Word;',
+    'Procedure GetImage(X1, Y1, X2, Y2 : Integer; Var BitMap);',
+    'Procedure PutImage(X, Y : Integer; Var BitMap; BitBlt : Word);',
+    'Procedure SetRGBPalette(ColorNum, RedValue, GreenValue, BlueValue : Integer);',
+    'Procedure SetPalette(ColorNum : Word; Color : ShortInt);',
+    'Procedure SetAllPalette(Var Palette);',
+    'Procedure GetPalette(Var Palette : PaletteType);',
+    'Procedure GetDefaultPalette(Var Palette : PaletteType);',
+    'Function GetPaletteSize : Integer;',
+    'Procedure GetAspectRatio(Var Xasp, Yasp : Word);',
+    'Procedure SetAspectRatio(Xasp, Yasp : Word);',
+    'Procedure SetActivePage(Page : Word);',
+    'Procedure SetVisualPage(Page : Word);',
+    'Procedure GetArcCoords(Var ArcCoords : ArcCoordsType);',
+    'Function InstallUserDriver(Name : String; AutoDetectPtr : Pointer) : Integer;',
+    'Function InstallUserFont(FontFileName : String) : Integer;',
+    'Function RegisterBGIdriver(Driver : Pointer) : Integer;',
+    'Function RegisterBGIfont(Font : Pointer) : Integer;',
+    'Procedure SetGraphBufSize(BufSize : Word);',
+    'Function GetModeRange(GraphDriver : Integer; Var LoMode, HiMode : Integer) : Integer;',
+    'Procedure GraphDefaults;',
+    '',
+    'Implementation',
+    '',
+    'Var',
+    '  GResult : Integer;',
+    '  GMode, GDriver : Integer;',
+    '  MaxX, MaxY : Integer;',
+    '  CurColor, BkColor, FillColor, FillPat : Word;',
+    '  LineSty, LinePat, LineThick : Word;',
+    '  CPX, CPY : Integer;',
+    '  VP : ViewPortType;',
+    '  TxtFont, TxtDir, TxtSize, TxtHoriz, TxtVert : Word;',
+    '  WriteMode : Integer;',
+    '  Active : Boolean;',
+    '  FontSeg, FontOfs : Word;',
+    '  Arc_ : ArcCoordsType;',
+    '  Pal : PaletteType;',
+    '',
+    'Procedure Int10(Var R : TRegs);',
+    'Begin',
+    '  __Intr($10, R);',
+    'End;',
+    '',
+    'Procedure RawPixel(X, Y : Integer; C : Word);',
+    'Var R : TRegs;',
+    'Begin',
+    '  If (X < 0) Or (Y < 0) Or (X > MaxX) Or (Y > MaxY) Then Exit;',
+    '  R.AX := $0C00 Or (C And $FF); R.BX := 0; R.CX := X; R.DX := Y;',
+    '  If WriteMode = XORPut Then R.AX := R.AX Or $80;',
+    '  Int10(R);',
+    'End;',
+    '',
+    'Function RawGetPixel(X, Y : Integer) : Word;',
+    'Var R : TRegs;',
+    'Begin',
+    '  If (X < 0) Or (Y < 0) Or (X > MaxX) Or (Y > MaxY) Then Begin RawGetPixel := 0; Exit End;',
+    '  R.AX := $0D00; R.BX := 0; R.CX := X; R.DX := Y;',
+    '  Int10(R);',
+    '  RawGetPixel := R.AX And $FF;',
+    'End;',
+    '',
+    'Procedure VPixel(X, Y : Integer; C : Word);',
+    'Begin',
+    '  X := X + VP.X1; Y := Y + VP.Y1;',
+    '  If VP.Clip And ((X < VP.X1) Or (Y < VP.Y1) Or (X > VP.X2) Or (Y > VP.Y2)) Then Exit;',
+    '  RawPixel(X, Y, C);',
+    'End;',
+    '',
+    'Procedure PutPixel(X, Y : Integer; Pixel : Word);',
+    'Begin',
+    '  VPixel(X, Y, Pixel);',
+    'End;',
+    '',
+    'Function GetPixel(X, Y : Integer) : Word;',
+    'Begin',
+    '  GetPixel := RawGetPixel(X + VP.X1, Y + VP.Y1);',
+    'End;',
+    '',
+    'Procedure GraphDefaults;',
+    'Begin',
+    '  VP.X1 := 0; VP.Y1 := 0; VP.X2 := MaxX; VP.Y2 := MaxY; VP.Clip := True;',
+    '  CurColor := White; BkColor := Black; FillColor := White; FillPat := SolidFill;',
+    '  LineSty := SolidLn; LinePat := 0; LineThick := NormWidth;',
+    '  CPX := 0; CPY := 0;',
+    '  TxtFont := DefaultFont; TxtDir := HorizDir; TxtSize := 1; TxtHoriz := LeftText; TxtVert :=',
+    ' TopText;',
+    '  WriteMode := CopyPut;',
+    'End;',
+    '',
+    'Procedure SetVideoMode(M : Byte);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := M; Int10(R);',
+    'End;',
+    '',
+    'Procedure InitFont;',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $1130; R.BX := $0300; Int10(R);',
+    '  FontSeg := R.ES; FontOfs := R.BP;',
+    'End;',
+    '',
+    'Procedure DetectGraph(Var GraphDriver, GraphMode : Integer);',
+    'Begin',
+    '  GraphDriver := VGA; GraphMode := VGAHi;',
+    'End;',
+    '',
+    'Procedure SetGraphMode(Mode : Integer);',
+    'Begin',
+    '  GMode := Mode;',
+    '  Case Mode Of',
+    '    VGALo : Begin SetVideoMode($12); MaxX := 639; MaxY := 199 End;',
+    '    VGAMed : Begin SetVideoMode($12); MaxX := 639; MaxY := 349 End;',
+    '  Else Begin SetVideoMode($12); MaxX := 639; MaxY := 479; GMode := VGAHi End;',
+    '  End;',
+    '  Active := True;',
+    '  GraphDefaults;',
+    'End;',
+    '',
+    'Procedure InitGraph(Var GraphDriver : Integer; Var GraphMode : Integer; PathToDriver : String);',
+    'Begin',
+    '  If GraphDriver = Detect Then DetectGraph(GraphDriver, GraphMode);',
+    '  If (GraphDriver < 0) Or (GraphDriver > PC3270) Then',
+    '  Begin GResult := grInvalidDriver; GraphDriver := grInvalidDriver; Exit End;',
+    '  GDriver := GraphDriver;',
+    '  InitFont;',
+    '  SetGraphMode(GraphMode);',
+    '  GResult := grOk;',
+    'End;',
+    '',
+    'Procedure CloseGraph;',
+    'Begin',
+    '  If Active Then SetVideoMode(3);',
+    '  Active := False;',
+    'End;',
+    '',
+    'Procedure RestoreCrtMode;',
+    'Begin',
+    '  SetVideoMode(3); Active := False;',
+    'End;',
+    '',
+    'Function GraphResult : Integer;',
+    'Begin',
+    '  GraphResult := GResult; GResult := grOk;',
+    'End;',
+    '',
+    'Function GraphErrorMsg(ErrorCode : Integer) : String;',
+    'Begin',
+    '  Case ErrorCode Of',
+    '    grOk : GraphErrorMsg := ''No error'';',
+    '    grNoInitGraph : GraphErrorMsg := ''(BGI) graphics not installed (use InitGraph)'';',
+    '    grNotDetected : GraphErrorMsg := ''Graphics hardware not detected'';',
+    '    grFileNotFound : GraphErrorMsg := ''Device driver file not found'';',
+    '    grInvalidDriver : GraphErrorMsg := ''Invalid device driver file'';',
+    '    grNoLoadMem : GraphErrorMsg := ''Not enough memory to load driver'';',
+    '    grNoScanMem : GraphErrorMsg := ''Out of memory in scan fill'';',
+    '    grNoFloodMem : GraphErrorMsg := ''Out of memory in flood fill'';',
+    '    grFontNotFound : GraphErrorMsg := ''Font file not found'';',
+    '    grNoFontMem : GraphErrorMsg := ''Not enough memory to load font'';',
+    '    grInvalidMode : GraphErrorMsg := ''Invalid graphics mode for selected driver'';',
+    '    grError : GraphErrorMsg := ''Graphics error'';',
+    '    grIOerror : GraphErrorMsg := ''Graphics I/O error'';',
+    '    grInvalidFont : GraphErrorMsg := ''Invalid font file'';',
+    '    grInvalidFontNum : GraphErrorMsg := ''Invalid font number'';',
+    '  Else GraphErrorMsg := ''Graphics error'';',
+    '  End;',
+    'End;',
+    '',
+    'Function GetMaxX : Integer; Begin GetMaxX := MaxX End;',
+    'Function GetMaxY : Integer; Begin GetMaxY := MaxY End;',
+    'Function GetMaxColor : Word; Begin GetMaxColor := 15 End;',
+    'Function GetX : Integer; Begin GetX := CPX End;',
+    'Function GetY : Integer; Begin GetY := CPY End;',
+    'Function GetColor : Word; Begin GetColor := CurColor End;',
+    'Function GetBkColor : Word; Begin GetBkColor := BkColor End;',
+    'Function GetGraphMode : Integer; Begin GetGraphMode := GMode End;',
+    'Function GetMaxMode : Word; Begin GetMaxMode := VGAHi End;',
+    'Function GetDriverName : String; Begin GetDriverName := ''EGAVGA'' End;',
+    'Function GetModeName(ModeNumber : Integer) : String;',
+    'Begin',
+    '  Case ModeNumber Of',
+    '    VGALo : GetModeName := ''640 x 200 VGA'';',
+    '    VGAMed : GetModeName := ''640 x 350 VGA'';',
+    '  Else GetModeName := ''640 x 480 VGA'';',
+    '  End;',
+    'End;',
+    'Function GetModeRange(GraphDriver : Integer; Var LoMode, HiMode : Integer) : Integer;',
+    'Begin LoMode := VGALo; HiMode := VGAHi; GetModeRange := 0 End;',
+    '',
+    'Procedure ClearDevice;',
+    'Begin',
+    '  SetVideoMode($12);',
+    '  CPX := 0; CPY := 0;',
+    'End;',
+    '',
+    'Procedure SetViewPort(X1, Y1, X2, Y2 : Integer; Clip : Boolean);',
+    'Begin',
+    '  If (X1 < 0) Or (Y1 < 0) Or (X2 > MaxX) Or (Y2 > MaxY) Or (X1 > X2) Or (Y1 > Y2) Then',
+    '  Begin GResult := grError; Exit End;',
+    '  VP.X1 := X1; VP.Y1 := Y1; VP.X2 := X2; VP.Y2 := Y2; VP.Clip := Clip;',
+    '  CPX := 0; CPY := 0;',
+    'End;',
+    '',
+    'Procedure GetViewSettings(Var ViewPort : ViewPortType);',
+    'Begin ViewPort := VP End;',
+    '',
+    'Procedure HLine(X1, X2, Y : Integer; C : Word);',
+    'Var X : Integer;',
+    'Begin',
+    '  If X1 > X2 Then Begin X := X1; X1 := X2; X2 := X End;',
+    '  For X := X1 To X2 Do VPixel(X, Y, C);',
+    'End;',
+    '',
+    'Procedure ClearViewPort;',
+    'Var Y : Integer;',
+    'Begin',
+    '  For Y := 0 To VP.Y2 - VP.Y1 Do HLine(0, VP.X2 - VP.X1, Y, BkColor);',
+    '  CPX := 0; CPY := 0;',
+    'End;',
+    '',
+    'Procedure SetColor(Color : Word); Begin CurColor := Color And 15 End;',
+    '',
+    'Procedure SetBkColor(ColorNum : Word);',
+    'Var R : TRegs;',
+    'Begin',
+    '  BkColor := ColorNum And 15;',
+    '  R.AX := $0B00; R.BX := BkColor; Int10(R);',
+    'End;',
+    '',
+    'Procedure SetFillStyle(Pattern : Word; Color : Word);',
+    'Begin FillPat := Pattern; FillColor := Color And 15 End;',
+    '',
+    'Procedure SetFillPattern(Pattern : FillPatternType; Color : Word);',
+    'Begin FillPat := UserFill; FillColor := Color And 15 End;',
+    '',
+    'Procedure GetFillSettings(Var FillInfo : FillSettingsType);',
+    'Begin FillInfo.Pattern := FillPat; FillInfo.Color := FillColor End;',
+    '',
+    'Procedure SetLineStyle(LineStyle : Word; Pattern : Word; Thickness : Word);',
+    'Begin LineSty := LineStyle; LinePat := Pattern; LineThick := Thickness End;',
+    '',
+    'Procedure GetLineSettings(Var LineInfo : LineSettingsType);',
+    'Begin LineInfo.LineStyle := LineSty; LineInfo.Pattern := LinePat; LineInfo.Thickness :=',
+    ' LineThick End;',
+    '',
+    'Procedure SetWriteMode(WriteMode_ : Integer); Begin WriteMode := WriteMode_ End;',
+    '',
+    'Procedure MoveTo(X, Y : Integer); Begin CPX := X; CPY := Y End;',
+    'Procedure MoveRel(Dx, Dy : Integer); Begin CPX := CPX + Dx; CPY := CPY + Dy End;',
+    '',
+    '{ Trace d un segment (Bresenham) avec style pointille/epaisseur simplifies }',
+    'Procedure DrawLine(X1, Y1, X2, Y2 : Integer; C : Word);',
+    'Var Dx, Dy, Sx, Sy, Err, E2, N : Integer; T : Integer;',
+    'Begin',
+    '  Dx := Abs(X2 - X1); Dy := Abs(Y2 - Y1);',
+    '  If X1 < X2 Then Sx := 1 Else Sx := -1;',
+    '  If Y1 < Y2 Then Sy := 1 Else Sy := -1;',
+    '  Err := Dx - Dy; N := 0;',
+    '  While True Do',
+    '  Begin',
+    '    If (LineSty = SolidLn) Or (LineSty = UserBitLn) Or ((N And 2) = 0) Then',
+    '    Begin',
+    '      VPixel(X1, Y1, C);',
+    '      If LineThick = ThickWidth Then',
+    '      Begin',
+    '        If Dx >= Dy Then Begin VPixel(X1, Y1 - 1, C); VPixel(X1, Y1 + 1, C) End',
+    '        Else Begin VPixel(X1 - 1, Y1, C); VPixel(X1 + 1, Y1, C) End;',
+    '      End;',
+    '    End;',
+    '    Inc(N);',
+    '    If (X1 = X2) And (Y1 = Y2) Then Break;',
+    '    E2 := 2 * Err;',
+    '    If E2 > -Dy Then Begin Err := Err - Dy; X1 := X1 + Sx End;',
+    '    If E2 < Dx Then Begin Err := Err + Dx; Y1 := Y1 + Sy End;',
+    '  End;',
+    'End;',
+    '',
+    'Procedure Line(X1, Y1, X2, Y2 : Integer); Begin DrawLine(X1, Y1, X2, Y2, CurColor) End;',
+    'Procedure LineTo(X, Y : Integer); Begin DrawLine(CPX, CPY, X, Y, CurColor); CPX := X; CPY := Y',
+    ' End;',
+    'Procedure LineRel(Dx, Dy : Integer); Begin LineTo(CPX + Dx, CPY + Dy) End;',
+    '',
+    'Procedure Rectangle(X1, Y1, X2, Y2 : Integer);',
+    'Begin',
+    '  DrawLine(X1, Y1, X2, Y1, CurColor); DrawLine(X2, Y1, X2, Y2, CurColor);',
+    '  DrawLine(X2, Y2, X1, Y2, CurColor); DrawLine(X1, Y2, X1, Y1, CurColor);',
+    'End;',
+    '',
+    '{ Remplissage d une ligne horizontale selon le motif courant }',
+    'Procedure FillLine(X1, X2, Y : Integer);',
+    'Var X, T : Integer; On : Boolean;',
+    'Begin',
+    '  If FillPat = EmptyFill Then Begin HLine(X1, X2, Y, BkColor); Exit End;',
+    '  If FillPat = SolidFill Then Begin HLine(X1, X2, Y, FillColor); Exit End;',
+    '  If X1 > X2 Then Begin T := X1; X1 := X2; X2 := T End;',
+    '  For X := X1 To X2 Do',
+    '  Begin',
+    '    Case FillPat Of',
+    '      LineFill : On := (Y And 1) = 0;',
+    '      LtSlashFill, SlashFill : On := ((X + Y) And 3) = 0;',
+    '      BkSlashFill, LtBkSlashFill : On := ((X - Y) And 3) = 0;',
+    '      HatchFill : On := ((X And 3) = 0) Or ((Y And 3) = 0);',
+    '      XHatchFill : On := (((X + Y) And 3) = 0) Or (((X - Y) And 3) = 0);'
+  );
+  D16SrcGraph2 : Array[1..303] Of String[96] = (
+    '      InterleaveFill : On := ((X + Y) And 1) = 0;',
+    '      WideDotFill : On := ((X And 3) = 0) And ((Y And 3) = 0);',
+    '      CloseDotFill : On := ((X And 1) = 0) And ((Y And 1) = 0);',
+    '    Else On := True;',
+    '    End;',
+    '    If On Then VPixel(X, Y, FillColor) Else VPixel(X, Y, BkColor);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure Bar(X1, Y1, X2, Y2 : Integer);',
+    'Var Y, T : Integer;',
+    'Begin',
+    '  If Y1 > Y2 Then Begin T := Y1; Y1 := Y2; Y2 := T End;',
+    '  For Y := Y1 To Y2 Do FillLine(X1, X2, Y);',
+    'End;',
+    '',
+    'Procedure Bar3D(X1, Y1, X2, Y2 : Integer; Depth : Word; Top : Boolean);',
+    'Begin',
+    '  Bar(X1, Y1, X2, Y2);',
+    '  Rectangle(X1, Y1, X2, Y2);',
+    '  If Depth > 0 Then',
+    '  Begin',
+    '    DrawLine(X2, Y2, X2 + Depth, Y2 - Depth, CurColor);',
+    '    DrawLine(X2 + Depth, Y2 - Depth, X2 + Depth, Y1 - Depth, CurColor);',
+    '    If Top Then',
+    '    Begin',
+    '      DrawLine(X1, Y1, X1 + Depth, Y1 - Depth, CurColor);',
+    '      DrawLine(X1 + Depth, Y1 - Depth, X2 + Depth, Y1 - Depth, CurColor);',
+    '      DrawLine(X2, Y1, X2 + Depth, Y1 - Depth, CurColor);',
+    '    End;',
+    '  End;',
+    'End;',
+    '',
+    '{ Ellipse par l algorithme du point milieu ; Fill : remplir }',
+    'Procedure DrawEllipse(XC, YC : Integer; RX, RY : Word; Fill : Boolean; StA, EndA : Word);',
+    'Var X, Y : Longint; A2, B2, FA2, FB2, Sigma : Longint; LastY : Longint;',
+    '  Procedure Plot4(PX, PY : Longint);',
+    '  Begin',
+    '    If Fill Then',
+    '    Begin',
+    '      If PY <> LastY Then',
+    '      Begin',
+    '        FillLine(XC - PX, XC + PX, YC + PY);',
+    '        If PY <> 0 Then FillLine(XC - PX, XC + PX, YC - PY);',
+    '        LastY := PY;',
+    '      End;',
+    '    End',
+    '    Else',
+    '    Begin',
+    '      VPixel(XC + PX, YC + PY, CurColor); VPixel(XC - PX, YC + PY, CurColor);',
+    '      VPixel(XC + PX, YC - PY, CurColor); VPixel(XC - PX, YC - PY, CurColor);',
+    '    End;',
+    '  End;',
+    'Begin',
+    '  If (RX = 0) And (RY = 0) Then Begin VPixel(XC, YC, CurColor); Exit End;',
+    '  A2 := Longint(RX) * RX; B2 := Longint(RY) * RY;',
+    '  FA2 := 4 * A2; FB2 := 4 * B2; LastY := -1;',
+    '  X := 0; Y := RY; Sigma := 2 * B2 + A2 * (1 - 2 * Longint(RY));',
+    '  While B2 * X <= A2 * Y Do',
+    '  Begin',
+    '    Plot4(X, Y);',
+    '    If Sigma >= 0 Then Begin Sigma := Sigma + FA2 * (1 - Y); Dec(Y) End;',
+    '    Sigma := Sigma + B2 * (4 * X + 6);',
+    '    Inc(X);',
+    '  End;',
+    '  X := RX; Y := 0; Sigma := 2 * A2 + B2 * (1 - 2 * Longint(RX)); LastY := -1;',
+    '  While A2 * Y <= B2 * X Do',
+    '  Begin',
+    '    Plot4(X, Y);',
+    '    If Sigma >= 0 Then Begin Sigma := Sigma + FB2 * (1 - X); Dec(X) End;',
+    '    Sigma := Sigma + A2 * (4 * Y + 6);',
+    '    Inc(Y);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure Circle(X, Y : Integer; Radius : Word);',
+    'Begin DrawEllipse(X, Y, Radius, Longint(Radius) * 10 Div 10, False, 0, 360) End;',
+    '',
+    'Procedure Ellipse(X, Y : Integer; StAngle, EndAngle : Word; XRadius, YRadius : Word);',
+    'Begin DrawEllipse(X, Y, XRadius, YRadius, False, StAngle, EndAngle) End;',
+    '',
+    'Procedure FillEllipse(X, Y : Integer; XRadius, YRadius : Word);',
+    'Begin DrawEllipse(X, Y, XRadius, YRadius, True, 0, 360); DrawEllipse(X, Y, XRadius, YRadius,',
+    ' False, 0, 360) End;',
+    '',
+    'Procedure Arc(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Begin',
+    '  DrawEllipse(X, Y, Radius, Radius, False, StAngle, EndAngle);',
+    '  Arc_.X := X; Arc_.Y := Y; Arc_.XStart := X + Radius; Arc_.YStart := Y;',
+    '  Arc_.XEnd := X + Radius; Arc_.YEnd := Y;',
+    'End;',
+    '',
+    'Procedure PieSlice(X, Y : Integer; StAngle, EndAngle, Radius : Word);',
+    'Begin DrawEllipse(X, Y, Radius, Radius, True, StAngle, EndAngle); DrawEllipse(X, Y, Radius,',
+    ' Radius, False, StAngle, EndAngle) End;',
+    '',
+    'Procedure Sector(X, Y : Integer; StAngle, EndAngle, XRadius, YRadius : Word);',
+    'Begin DrawEllipse(X, Y, XRadius, YRadius, True, StAngle, EndAngle); DrawEllipse(X, Y, XRadius,',
+    ' YRadius, False, StAngle, EndAngle) End;',
+    '',
+    'Procedure GetArcCoords(Var ArcCoords : ArcCoordsType); Begin ArcCoords := Arc_ End;',
+    '',
+    'Procedure DrawPoly(NumPoints : Word; Var PolyPoints);',
+    'Var P : ^PointType; I : Word; X0, Y0, PX, PY : Integer;',
+    'Begin',
+    '  If NumPoints = 0 Then Exit;',
+    '  P := @PolyPoints; X0 := P^.X; Y0 := P^.Y; PX := X0; PY := Y0;',
+    '  For I := 2 To NumPoints Do',
+    '  Begin',
+    '    Inc(P);',
+    '    DrawLine(PX, PY, P^.X, P^.Y, CurColor);',
+    '    PX := P^.X; PY := P^.Y;',
+    '  End;',
+    'End;',
+    '',
+    'Procedure FillPoly(NumPoints : Word; Var PolyPoints);',
+    'Var P : ^PointType; I, J : Word; MinY, MaxYY, Y : Integer; Xs : Array[0..63] Of Integer; N :',
+    ' Integer;',
+    '    X1, Y1, X2, Y2, T : Integer; Q : ^PointType;',
+    'Begin',
+    '  If NumPoints < 3 Then Begin DrawPoly(NumPoints, PolyPoints); Exit End;',
+    '  P := @PolyPoints; MinY := P^.Y; MaxYY := P^.Y;',
+    '  For I := 1 To NumPoints Do',
+    '  Begin',
+    '    If P^.Y < MinY Then MinY := P^.Y;',
+    '    If P^.Y > MaxYY Then MaxYY := P^.Y;',
+    '    Inc(P);',
+    '  End;',
+    '  For Y := MinY To MaxYY Do',
+    '  Begin',
+    '    N := 0; P := @PolyPoints;',
+    '    For I := 1 To NumPoints Do',
+    '    Begin',
+    '      X1 := P^.X; Y1 := P^.Y;',
+    '      If I = NumPoints Then Q := @PolyPoints Else Begin Q := P; Inc(Q) End;',
+    '      X2 := Q^.X; Y2 := Q^.Y;',
+    '      If Y1 <> Y2 Then',
+    '        If ((Y >= Y1) And (Y < Y2)) Or ((Y >= Y2) And (Y < Y1)) Then',
+    '        Begin',
+    '          If N < 64 Then Begin Xs[N] := X1 + Longint(Y - Y1) * (X2 - X1) Div (Y2 - Y1); Inc(N)',
+    ' End;',
+    '        End;',
+    '      Inc(P);',
+    '    End;',
+    '    For I := 1 To N - 1 Do For J := 0 To N - 2 Do',
+    '      If Xs[J] > Xs[J + 1] Then Begin T := Xs[J]; Xs[J] := Xs[J + 1]; Xs[J + 1] := T End;',
+    '    I := 0;',
+    '    While I + 1 < N Do Begin FillLine(Xs[I], Xs[I + 1], Y); Inc(I, 2) End;',
+    '  End;',
+    '  DrawPoly(NumPoints, PolyPoints);',
+    '  P := @PolyPoints; Q := P; For I := 2 To NumPoints Do Inc(Q);',
+    '  DrawLine(Q^.X, Q^.Y, P^.X, P^.Y, CurColor);',
+    'End;',
+    '',
+    'Procedure FloodFill(X, Y : Integer; Border : Word);',
+    'Var XL, XR : Integer; C : Word;',
+    'Begin',
+    '  { remplissage simplifie : la ligne courante seulement, puis les voisines tant que possible }',
+    '  C := GetPixel(X, Y);',
+    '  If C = Border Then Exit;',
+    '  XL := X; While (XL > 0) And (GetPixel(XL - 1, Y) <> Border) Do Dec(XL);',
+    '  XR := X; While (XR < VP.X2 - VP.X1) And (GetPixel(XR + 1, Y) <> Border) Do Inc(XR);',
+    '  FillLine(XL, XR, Y);',
+    'End;',
+    '',
+    'Procedure DrawChar(X, Y : Integer; Ch : Char);',
+    'Var Row, Col : Integer; B : Byte; Sx, Sy : Integer;',
+    'Begin',
+    '  For Row := 0 To 7 Do',
+    '  Begin',
+    '    B := Mem[FontSeg:FontOfs + Ord(Ch) * 8 + Row];',
+    '    For Col := 0 To 7 Do',
+    '      If (B And ($80 Shr Col)) <> 0 Then',
+    '        For Sy := 0 To TxtSize - 1 Do For Sx := 0 To TxtSize - 1 Do',
+    '          If TxtDir = HorizDir Then VPixel(X + Col * TxtSize + Sx, Y + Row * TxtSize + Sy,',
+    ' CurColor)',
+    '          Else VPixel(X + Row * TxtSize + Sy, Y - Col * TxtSize - Sx, CurColor);',
+    '  End;',
+    'End;',
+    '',
+    'Function TextWidth(TextString : String) : Word;',
+    'Begin TextWidth := Length(TextString) * 8 * TxtSize End;',
+    '',
+    'Function TextHeight(TextString : String) : Word;',
+    'Begin TextHeight := 8 * TxtSize End;',
+    '',
+    'Procedure OutTextXY(X, Y : Integer; TextString : String);',
+    'Var I : Integer; W, H : Integer;',
+    'Begin',
+    '  W := TextWidth(TextString); H := TextHeight(TextString);',
+    '  If TxtDir = HorizDir Then',
+    '  Begin',
+    '    If TxtHoriz = CenterText Then X := X - W Div 2 Else If TxtHoriz = RightText Then X := X - W;',
+    '    If TxtVert = CenterText Then Y := Y - H Div 2 Else If TxtVert = BottomText Then Y := Y - H;',
+    '    For I := 1 To Length(TextString) Do DrawChar(X + (I - 1) * 8 * TxtSize, Y, TextString[I]);',
+    '  End',
+    '  Else',
+    '  Begin',
+    '    If TxtHoriz = CenterText Then X := X - H Div 2 Else If TxtHoriz = RightText Then X := X - H;',
+    '    If TxtVert = CenterText Then Y := Y + W Div 2 Else If TxtVert = TopText Then Y := Y + W;',
+    '    For I := 1 To Length(TextString) Do DrawChar(X, Y - (I - 1) * 8 * TxtSize, TextString[I]);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure OutText(TextString : String);',
+    'Begin',
+    '  OutTextXY(CPX, CPY, TextString);',
+    '  If (TxtDir = HorizDir) And (TxtHoriz = LeftText) Then CPX := CPX + TextWidth(TextString);',
+    'End;',
+    '',
+    'Procedure SetTextStyle(Font, Direction : Word; CharSize : Word);',
+    'Begin',
+    '  TxtFont := Font; TxtDir := Direction;',
+    '  If CharSize = 0 Then CharSize := 1;',
+    '  If CharSize > 10 Then CharSize := 10;',
+    '  TxtSize := CharSize;',
+    'End;',
+    '',
+    'Procedure SetTextJustify(Horiz, Vert : Word); Begin TxtHoriz := Horiz; TxtVert := Vert End;',
+    'Procedure SetUserCharSize(MultX, DivX, MultY, DivY : Word); Begin End;',
+    'Procedure GetTextSettings(Var TextInfo : TextSettingsType);',
+    'Begin',
+    '  TextInfo.Font := TxtFont; TextInfo.Direction := TxtDir; TextInfo.CharSize := TxtSize;',
+    '  TextInfo.Horiz := TxtHoriz; TextInfo.Vert := TxtVert;',
+    'End;',
+    '',
+    'Function ImageSize(X1, Y1, X2, Y2 : Integer) : Word;',
+    'Begin',
+    '  ImageSize := 4 + Longint(X2 - X1 + 1) * (Y2 - Y1 + 1);',
+    'End;',
+    '',
+    'Procedure GetImage(X1, Y1, X2, Y2 : Integer; Var BitMap);',
+    'Var P : ^Byte; W : ^Word; X, Y : Integer;',
+    'Begin',
+    '  W := @BitMap; W^ := X2 - X1; Inc(W); W^ := Y2 - Y1;',
+    '  P := @BitMap; Inc(P, 4);',
+    '  For Y := Y1 To Y2 Do For X := X1 To X2 Do Begin P^ := GetPixel(X, Y); Inc(P) End;',
+    'End;',
+    '',
+    'Procedure PutImage(X, Y : Integer; Var BitMap; BitBlt : Word);',
+    'Var P : ^Byte; W : ^Word; I, J, Wd, Ht : Integer; C : Word;',
+    'Begin',
+    '  W := @BitMap; Wd := W^; Inc(W); Ht := W^;',
+    '  P := @BitMap; Inc(P, 4);',
+    '  For J := 0 To Ht Do For I := 0 To Wd Do',
+    '  Begin',
+    '    C := P^;',
+    '    Case BitBlt Of',
+    '      XORPut : C := C Xor GetPixel(X + I, Y + J);',
+    '      OrPut : C := C Or GetPixel(X + I, Y + J);',
+    '      AndPut : C := C And GetPixel(X + I, Y + J);',
+    '      NotPut : C := (Not C) And 15;',
+    '    End;',
+    '    VPixel(X + I, Y + J, C);',
+    '    Inc(P);',
+    '  End;',
+    'End;',
+    '',
+    'Procedure SetRGBPalette(ColorNum, RedValue, GreenValue, BlueValue : Integer);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $1010; R.BX := ColorNum And 15;',
+    '  R.DX := (RedValue And 63) Shl 8; R.CX := ((GreenValue And 63) Shl 8) Or (BlueValue And 63);',
+    '  Int10(R);',
+    'End;',
+    '',
+    'Procedure SetPalette(ColorNum : Word; Color : ShortInt);',
+    'Var R : TRegs;',
+    'Begin',
+    '  R.AX := $1000; R.BX := (Word(Color And 63) Shl 8) Or (ColorNum And 15); Int10(R);',
+    '  If ColorNum <= MaxColors Then Pal.Colors[ColorNum] := Color;',
+    'End;',
+    '',
+    'Procedure SetAllPalette(Var Palette);',
+    'Var P : ^PaletteType; I : Integer;',
+    'Begin',
+    '  P := @Palette;',
+    '  For I := 0 To P^.Size - 1 Do If P^.Colors[I] >= 0 Then SetPalette(I, P^.Colors[I]);',
+    'End;',
+    '',
+    'Procedure GetPalette(Var Palette : PaletteType); Begin Palette := Pal End;',
+    'Procedure GetDefaultPalette(Var Palette : PaletteType); Begin Palette := Pal End;',
+    'Function GetPaletteSize : Integer; Begin GetPaletteSize := 16 End;',
+    'Procedure GetAspectRatio(Var Xasp, Yasp : Word); Begin Xasp := 10000; Yasp := 10000 End;',
+    'Procedure SetAspectRatio(Xasp, Yasp : Word); Begin End;',
+    'Procedure SetActivePage(Page : Word); Begin End;',
+    'Procedure SetVisualPage(Page : Word); Begin End;',
+    'Function InstallUserDriver(Name : String; AutoDetectPtr : Pointer) : Integer; Begin',
+    ' InstallUserDriver := grError End;',
+    'Function InstallUserFont(FontFileName : String) : Integer; Begin InstallUserFont := grError End;',
+    'Function RegisterBGIdriver(Driver : Pointer) : Integer; Begin RegisterBGIdriver := grError End;',
+    'Function RegisterBGIfont(Font : Pointer) : Integer; Begin RegisterBGIfont := grError End;',
+    'Procedure SetGraphBufSize(BufSize : Word); Begin End;',
+    '',
+    'Var I : Integer;',
+    'Begin',
+    '  GResult := grNoInitGraph; Active := False; MaxX := 639; MaxY := 479;',
+    '  Pal.Size := 16;',
+    '  For I := 0 To 15 Do Pal.Colors[I] := I;',
+    '  Pal.Colors[6] := 20; For I := 8 To 15 Do Pal.Colors[I] := I + 48;',
+    '  GraphFreeMemPtr := Nil; GraphGetMemPtr := Nil;',
+    '  GraphDefaults;',
+    'End.'
+  );
+
+Function D16SrcGraphLine(N : LongInt) : TString;
+Begin
+  Case N Div 400 Of
+    0 : D16SrcGraphLine := D16SrcGraph1[N Mod 400 + 1];
+    1 : D16SrcGraphLine := D16SrcGraph2[N Mod 400 + 1];
+  Else D16SrcGraphLine := '';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ D16 : pilote (predefinitions, unites integrees, programme)   }
+{ ------------------------------------------------------------ }
+
+Var
+  D16EmbSel : Integer;                      { source integre en cours de lecture }
+  D16UnitStart, D16UnitEnd : Array[0..D16_MAX_UNITS] Of LongInt;
+  D16UnitCompiled : Array[0..D16_MAX_UNITS] Of Boolean;
+
+{ Nombre de lignes et texte d une ligne d un source integre }
+Function D16EmbCount(Sel : Integer) : LongInt;
+Begin
+  Case Sel Of
+    1 : D16EmbCount := D16SRC_SYS_N;
+    2 : D16EmbCount := D16SRC_CRT_N;
+    3 : D16EmbCount := D16SRC_DOS_N;
+    4 : D16EmbCount := D16SRC_STRINGS_N;
+    5 : D16EmbCount := D16SRC_PRINTER_N;
+    6 : D16EmbCount := D16SRC_GRAPH_N;
+  Else D16EmbCount := 0;
+  End;
+End;
+
+Function D16MemLine(N : LongInt) : TString;
+Begin
+  Case D16EmbSel Of
+    1 : D16MemLine := D16SrcSysLine(N);
+    2 : D16MemLine := D16SrcCrtLine(N);
+    3 : D16MemLine := D16SrcDosLine(N);
+    4 : D16MemLine := D16SrcStringsLine(N);
+    5 : D16MemLine := D16SrcPrinterLine(N);
+    6 : D16MemLine := D16SrcGraphLine(N);
+  Else D16MemLine := '';
+  End;
+End;
+
+Procedure D16RecordSwitch(Ch : Char; Onn : Boolean);
+Begin
+  If D16SwitchCnt < D16_MAX_SWITCH Then
+  Begin
+    D16Switches[D16SwitchCnt].Tok := TokenCount;
+    D16Switches[D16SwitchCnt].Ch := Ch;
+    D16Switches[D16SwitchCnt].Onn := Onn;
+    Inc(D16SwitchCnt);
+  End;
+End;
+
+{ Directive dollar M pile,tasmin,tasmax }
+Var
+  D16MSet : Boolean;                 { directive M rencontree }
+  D16MStack, D16MHeapMin, D16MHeapMax : LongInt;
+
+Procedure D16MDirective(Const Arg : TString);
+Var P : Integer; V : LongInt; N : Integer;
+Begin
+  If Not D16MSet Then Begin D16MStack := 0; D16MHeapMin := -1; D16MHeapMax := -1 End;
+  P := 1; N := 0;
+  While (P <= Length(Arg)) And (N < 3) Do
+  Begin
+    While (P <= Length(Arg)) And ((Arg[P] = ' ') Or (Arg[P] = ',')) Do Inc(P);
+    If P > Length(Arg) Then Break;
+    V := D16ReadNum(Arg, P);
+    Case N Of
+      { la directive est vue pendant l analyse lexicale, avant D16AsmInit :
+        les valeurs sont memorisees a part et appliquees au debut de D16Run }
+      0 : If (V >= 1024) And (V <= 65520) Then Begin D16MStack := V; D16MSet := True End;
+      1 : Begin D16MHeapMin := V; D16MSet := True End;
+      2 : Begin D16MHeapMax := V; D16MSet := True End;
+    End;
+    Inc(N);
+    While (P <= Length(Arg)) And (Arg[P] <> ',') Do Inc(P);
+  End;
+End;
+
+{ La cible DOS 16 bits native est-elle selectionnee ? }
+Function D16Selected : Boolean;
+Begin
+  D16Selected := (Opts.DestTarget = DEST_DOSR) And (Not Opts.Dos16Mode) And
+                 (Not Opts.QuickPascal) And (Not Opts.ApplePascal) And (Not Opts.Sane);
+End;
+
+{ Types et constantes predefinis }
+Procedure D16Predefine;
+Var T : Integer; S : LongInt;
+
+  Procedure AddType(Const Name : TString; T : Integer);
+  Var S : LongInt;
+  Begin
+    S := D16SymAdd(Name, DSK_TYPE, T);
+    If D16Types[T].Name = '' Then D16Types[T].Name := Name;
+  End;
+
+Begin
+  D16CurUnit := 1;   { les predefinitions appartiennent a SYSTEM : masquables }
+  D16TypeCnt := 0;
+  T := D16TypeAdd(DT_NONE, 0, 0);                 { 0 }
+  T := D16TypeAdd(DT_INT, 2, 0);  AddType('INTEGER', T);
+  T := D16TypeAdd(DT_UINT, 1, 0); AddType('BYTE', T);
+  T := D16TypeAdd(DT_UINT, 2, 0); AddType('WORD', T);
+  T := D16TypeAdd(DT_INT, 1, 0);  AddType('SHORTINT', T);
+  T := D16TypeAdd(DT_INT, 4, 0);  AddType('LONGINT', T);
+  T := D16TypeAdd(DT_BOOL, 1, 0); AddType('BOOLEAN', T);
+  T := D16TypeAdd(DT_CHAR, 1, 0); AddType('CHAR', T);
+  T := D16TypeAdd(DT_REAL, 6, 0); AddType('REAL', T);
+  T := D16TypeAdd(DT_STRING, 256, 0); AddType('STRING', T);
+  T := D16TypeAdd(DT_POINTER, 4, DTI_NONE); AddType('POINTER', T);
+  T := D16TypeAdd(DT_TEXT, 256, 0); AddType('TEXT', T);
+  T := D16TypeAdd(DT_NIL, 4, 0);
+  T := D16TypeAdd(DT_POINTER, 4, DTI_CHAR); AddType('PCHAR', T);
+  T := D16TypeAdd(DT_FILE, 128, 0);                { fichier non type }
+  T := D16TypeAdd(DT_SET, 32, DTI_BYTE);           { ensemble generique }
+  T := D16TypeAdd(DT_PROCVAR, 4, 0);               { procedure generique }
+  { alias des types reels etendus : tous en Real logiciel 6 octets }
+  S := D16SymAdd('SINGLE', DSK_TYPE, DTI_REAL);
+  S := D16SymAdd('DOUBLE', DSK_TYPE, DTI_REAL);
+  S := D16SymAdd('EXTENDED', DSK_TYPE, DTI_REAL);
+  S := D16SymAdd('COMP', DSK_TYPE, DTI_REAL);
+  { constantes }
+  S := D16SymAdd('TRUE', DSK_CONST, DTI_BOOLEAN); D16Syms[S].Val := 1;
+  S := D16SymAdd('FALSE', DSK_CONST, DTI_BOOLEAN); D16Syms[S].Val := 0;
+  S := D16SymAdd('MAXINT', DSK_CONST, DTI_INTEGER); D16Syms[S].Val := 32767;
+  S := D16SymAdd('MAXLONGINT', DSK_CONST, DTI_LONGINT); D16Syms[S].Val := 2147483647;
+  S := D16SymAdd('WORDBOOL', DSK_TYPE, DTI_BOOLEAN);
+  S := D16SymAdd('LONGBOOL', DSK_TYPE, DTI_BOOLEAN);
+  S := D16SymAdd('BYTEBOOL', DSK_TYPE, DTI_BOOLEAN);
+  S := D16SymAdd('SEG0040', DSK_CONST, DTI_WORD); D16Syms[S].Val := $40;
+  S := D16SymAdd('SEGA000', DSK_CONST, DTI_WORD); D16Syms[S].Val := $A000;
+  S := D16SymAdd('SEGB000', DSK_CONST, DTI_WORD); D16Syms[S].Val := $B000;
+  S := D16SymAdd('SEGB800', DSK_CONST, DTI_WORD); D16Syms[S].Val := $B800;
+  S := D16SymAdd('SYSTEM', DSK_UNIT, 0);
+  D16CurUnit := 0;
+End;
+
+{ Lexer un source integre a la suite du pool de tokens }
+Procedure D16LexEmbedded(Sel : Integer; Var StartTok, EndTok : LongInt);
+Var SaveLine : LongInt; SaveFName : TString;
+Begin
+  D16EmbSel := Sel;
+  StartTok := TokenCount;
+  SaveFName := LexSrcFName;
+  LexMemActive := True; LexMemIdx := 0; LexMemCount := D16EmbCount(Sel);
+  LexInit;
+  Repeat
+    LexNextToken;
+    If CurToken.Kind <> TK_EOF Then TokenPoolAdd(CurToken);
+  Until CurToken.Kind = TK_EOF;
+  LexMemActive := False;
+  LexSrcFName := SaveFName;
+  EndTok := TokenCount;
+End;
+
+{ Section de declarations d interface ou d implementation }
+Procedure D16UnitDecls;
+Begin
+  While True Do
+  Begin
+    If D16IsKw('label') Then D16ParseLabelDecl
+    Else If D16IsKw('const') Then D16ParseConstDecl
+    Else If D16IsKw('type') Then D16ParseTypeDecl
+    Else If D16IsKw('var') Then D16ParseVarDecl
+    Else If D16IsKw('procedure') Then D16ParseProcDecl(False)
+    Else If D16IsKw('function') Then D16ParseProcDecl(True)
+    Else Break;
+  End;
+End;
+
+{ Compiler une unite integree }
+{ Positionner l etat des directives (dollar I etc.) au debut d une zone de tokens }
+Procedure D16SwitchSeek(StartTok : LongInt);
+Begin
+  D16IoCheck := True; D16RangeCheck := False; D16OvfCheck := False; D16StackCheck := True;
+  D16SwitchPos := 0;
+  While (D16SwitchPos < D16SwitchCnt) And (D16Switches[D16SwitchPos].Tok < StartTok) Do
+    Inc(D16SwitchPos);
+  D16ApplySwitches;
+End;
+
+Procedure D16CompileUnit(UnitId : Integer);
+Var U : TString; FirstImpl : LongInt; P : Integer; SaveEnd : LongInt;
+Begin
+  D16CurUnit := UnitId;
+  D16Pos := D16UnitStart[UnitId];
+  D16SwitchSeek(D16Pos);
+  SaveEnd := D16End;
+  D16End := D16UnitEnd[UnitId];
+  D16IsUnit := True;
+  D16Level := 0; D16CurProc := -1; D16WithCnt := 0; D16LoopCnt := 0;
+  D16LocalOfs := 0; D16MaxLocal := 0;
+  If Not (D16IsKw('unit') Or D16IsIdentU('UNIT')) Then D16Error('UNIT attendu');
+  D16Next;
+  U := D16ExpectIdent;
+  D16ExpectPunct(';');
+  If Not (D16IsKw('interface') Or D16IsIdentU('INTERFACE')) Then D16Error('INTERFACE attendu');
+  D16Next;
+  { clause Uses de l unite : ignoree (toutes les unites integrees voient SYSTEM) }
+  If D16IsKw('uses') Or D16IsIdentU('USES') Then
+  Begin
+    While Not D16IsPunct(';') Do D16Next;
+    D16Next;
+  End;
+  D16InInterface := True;
+  D16UnitDecls;
+  D16InInterface := False;
+  If Not (D16IsKw('implementation') Or D16IsIdentU('IMPLEMENTATION')) Then D16Error('IMPLEMENTATION attendu');
+  D16Next;
+  If D16IsKw('uses') Or D16IsIdentU('USES') Then
+  Begin
+    While Not D16IsPunct(';') Do D16Next;
+    D16Next;
+  End;
+  FirstImpl := D16SymCnt;
+  D16UnitHasInit[UnitId] := False;
+  D16Block(-1);
+  D16ExpectPunct('.');
+  { verifier les procedures d interface sans corps }
+  For P := 0 To D16ProcCnt - 1 Do
+    If (D16Procs[P].UnitId = UnitId) And D16Procs[P].IsForward And Not D16Procs[P].Defined Then
+      D16Error('procedure declaree sans corps: ' + D16Syms[D16Procs[P].SymIdx].Name);
+  D16HideFrom(FirstImpl);
+  D16UnitCompiled[UnitId] := True;
+  D16End := SaveEnd;
+  D16IsUnit := False;
+End;
+
+{ Compiler le programme principal (tokens 0..D16TokLimit) }
+Procedure D16CompileProgram;
+Var U : TString; I : Integer; Found : Boolean; S : LongInt;
+Begin
+  D16CurUnit := 0;
+  D16Pos := 0; D16End := D16TokLimit;
+  D16SwitchSeek(0);
+  D16IsUnit := False;
+  D16Level := 0; D16CurProc := -1; D16WithCnt := 0; D16LoopCnt := 0;
+  D16LocalOfs := 0; D16MaxLocal := 0;
+  D16ProgName := '';
+  If D16IsKw('program') Then
+  Begin
+    D16Next;
+    D16ProgName := D16ExpectIdent;
+    If D16IsPunct('(') Then
+    Begin
+      While Not D16IsPunct(')') Do D16Next;
+      D16Next;
+    End;
+    D16ExpectPunct(';');
+  End
+  Else If D16IsKw('unit') Or D16IsIdentU('UNIT') Then
+    D16Error('la compilation d unites en .TPU n est pas supportee par la cible DOS 16 bits');
+  If D16IsKw('uses') Then
+  Begin
+    D16Next;
+    Repeat
+      U := D16ExpectIdent;
+      Found := False;
+      For I := 1 To D16UnitCount Do
+        If D16UnitNames[I] = U Then
+        Begin
+          Found := True;
+          If Not D16UnitCompiled[I] Then
+          Begin
+            { compiler l unite integree a la demande }
+            S := D16Pos;
+            D16CompileUnit(I);
+            D16CurUnit := 0; D16Pos := S; D16End := D16TokLimit;
+            D16Level := 0; D16CurProc := -1;
+            D16SwitchSeek(0); D16ApplySwitches;
+          End;
+          D16UnitUsed[I] := True;
+          S := D16SymAdd(U, DSK_UNIT, 0);
+        End;
+      If Not Found Then D16Error('unite introuvable: ' + U + ' (seules les unites integrees System, Crt, Dos, Strings, Printer et Graph sont disponibles)');
+      If D16IsPunct(',') Then D16Next Else Break;
+    Until False;
+    D16ExpectPunct(';');
+  End;
+  D16Block(-1);
+  D16ExpectPunct('.');
+End;
+
+Procedure D16Run;
+Var
+  I : Integer; S, E : LongInt; TotalCode, TotalData : LongInt; TotalLinesSrc : LongInt;
+Begin
+  D16AsmInit;
+  If D16MSet Then
+  Begin
+    If D16MStack > 0 Then D16StackSize := D16MStack;
+    If D16MHeapMin >= 0 Then D16HeapMin := D16MHeapMin;
+    If D16MHeapMax >= 0 Then D16HeapMax := D16MHeapMax;
+  End;
+  D16DefineDataLabel('DATASTART', 0);
+  D16DefineBssLabel('BSSSTART', 0);
+  { tables }
+  D16TypeCnt := 0; D16SymCnt := 0; D16FieldCnt := 0; D16ParamCnt := 0; D16ProcCnt := 0;
+  D16LitCnt := 0; D16LabelSeq := 0; D16DataSeq := 0; D16PendingZCnt := 0; D16WithCnt := 0; D16LoopCnt := 0;
+  D16Level := 0; D16CurProc := -1; D16CurUnit := 0; D16InInterface := False;
+  D16IoCheck := True; D16RangeCheck := False; D16OvfCheck := False; D16StackCheck := True;
+  D16SwitchPos := 0; D16PendCC := -1; D16ExitLbl := ''; D16ConstLine := -1; D16AsmBlockSeq := 0;
+  For I := 0 To D16_SYM_HASH - 1 Do D16SymHash[I] := -1;
+  For I := 0 To D16_MAX_UNITS Do
+  Begin
+    D16UnitUsed[I] := False; D16UnitCompiled[I] := False; D16UnitHasInit[I] := False;
+    D16UnitNames[I] := '';
+  End;
+  D16TokLimit := TokenCount;
+  TotalLinesSrc := TotalLines;
+  { lexer les unites integrees a la suite du programme }
+  D16UnitNames[1] := 'SYSTEM'; D16UnitNames[2] := 'CRT'; D16UnitNames[3] := 'DOS';
+  D16UnitNames[4] := 'STRINGS'; D16UnitNames[5] := 'PRINTER'; D16UnitNames[6] := 'GRAPH';
+  D16UnitCount := 6;
+  For I := 1 To D16UnitCount Do
+  Begin
+    D16LexEmbedded(I, S, E);
+    D16UnitStart[I] := S; D16UnitEnd[I] := E;
+  End;
+  D16Pos := 0; D16End := D16TokLimit;
+  D16Predefine;
+  If Opts.AsmOutput Then EmitOpen(ReplaceExt(Opts.OutFile, '.asm'));
+  { SYSTEM : toujours compilee et visible }
+  D16CompileUnit(1);
+  D16UnitUsed[1] := True;
+  D16SysUnit := 1;
+  D16CompileProgram;
+  D16EmitRuntime;
+  { taille du BSS (label absolu) }
+  D16DefineDataLabel('BSSSIZEW', (D16BssLen + 1) Div 2);
+  D16Labels[D16FindLabel('BSSSIZEW')].Seg := 253;
+  If OutFOpen Then Begin Close(OutF); OutFOpen := False End;
+  If D16AsmErrors > 0 Then FatalError('erreurs internes dans l assembleur 8086');
+  { retirer les procedures jamais referencees (unites integrees surtout) }
+  D16Eliminate;
+  D16WriteMZ(Opts.OutFile);
+  If D16AsmErrors > 0 Then FatalError('erreurs de resolution des labels');
+  TotalCode := D16CodeLen; TotalData := D16DataLen + D16BssLen;
+  If Not Opts.Quiet Then
+  Begin
+    WriteLn(Opts.SrcFile, '(', TotalLinesSrc, ')');
+    WriteLn(TotalLinesSrc, ' lignes, ', TotalCode, ' octets de code, ', TotalData, ' octets de donnees.');
+  End;
+End;
+{ D16-END }
+
 Procedure Run;
+Var
+  I : Integer;
 Begin
   ShowBanner;
 
@@ -39945,6 +56970,8 @@ Begin
 
   { Enregistrer le type DateTime apres TypeInit }
   RegisterDateTimeType;
+  { Enregistrer le type Registers de l unite Dos }
+  RegisterRegistersType;
 
   { Enregistrer le type _VideoConfig de MSGraph }
   RegisterVideoConfigType;
@@ -39953,12 +56980,31 @@ Begin
   PPInitDefines;
 
   { Initialiser le lexeur et scanner les tokens dans le pool }
+  If D16Selected Then TokenPoolLimit := MAX_TOKENS;
   LexInit;
   Repeat
     LexNextToken;
     If CurToken.Kind <> TK_EOF Then
       TokenPoolAdd(CurToken);
+    { fin du programme ou de l unite : END. ; le reste du fichier est ignore (comme TP) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') And (TokenCount >= 2) And
+       (TokenPool[TokenCount - 2].Kind = TK_KEYWORD) And
+       (StrUpperCase(TokenPool[TokenCount - 2].Val) = 'END') Then Break;
   Until CurToken.Kind = TK_EOF;
+
+  { Cible DOS 16 bits native (-CD) : moteur 8086 autonome (TODO 30) }
+  If D16Selected Then
+  Begin
+    D16Run;
+    LexClose;
+    ShowStats;
+    Exit;
+  End;
+
+  { ^N en position d expression : caractere de controle }
+  TokenPoolMergeCaretChars;
+  { System.Move, Dos.GetDate ... : retirer le prefixe d unite }
+  TokenPoolStripUnitQualifiers;
 
   { Enregistrer toutes les chaines dans le pool de donnees }
   TokenPoolRegisterStrings;
@@ -39989,6 +57035,7 @@ Begin
   End;
 
   { Analyser les declarations TYPE (TODO 15) }
+  MarkVariantCases;
   ParseTypeDecls;
 
   { Analyser les declarations globales VAR et CONST (TODO 08) }
@@ -40004,6 +57051,10 @@ Begin
   If Opts.Verbose Then
     WriteLn('  Apres ParseProcDecls: Procedures=', ProcCount,
             '  Symboles=', SymCount);
+  If Opts.DebugMode Then
+    For I := 0 To ProcCount - 1 Do
+      WriteLn('  [proc] ', ProcTab[I].Name, ' params=', ProcTab[I].ParamCount,
+              ' locaux=', ProcTab[I].LocalCount, ' ret=', ProcTab[I].RetTypeIdx);
 
   { Generation du code Win32 : pipeline d emission (texte ASM + binaire PE) }
   { La pipeline s execute si -asm est demande OU si un PE doit etre genere }

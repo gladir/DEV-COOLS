@@ -1,0 +1,2 @@
+$c: red;
+.a { color: $c; .b { margin: 1px; } }
