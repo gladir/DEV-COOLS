@@ -320,6 +320,9 @@ Sources d'information :
 Outils associes dans DEV-COOLS :
   - TPUINFO.PAS : Affiche la version d'un fichier TPU
   - TPCW32.PAS  : Compilateur Turbo Pascal qui lit les fichiers TPU/QPU
+  - TPC.PAS     : Clone de TPC.EXE 7.0 qui produit et lit des unites TPUQ
+                  (en-tete de 96 octets, SymSize a l'offset $1E); une unite
+                  TPU9 ou plus ancienne provoque l'erreur 70
 
 ==============================================================================
 FIN DU DOCUMENT

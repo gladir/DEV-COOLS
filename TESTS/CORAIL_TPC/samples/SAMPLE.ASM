@@ -1,0 +1,3 @@
+MOV AX,1
+ADD AX,2
+INT 20h

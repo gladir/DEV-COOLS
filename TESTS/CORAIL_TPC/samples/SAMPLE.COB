@@ -1,0 +1,5 @@
+       IDENTIFICATION DIVISION.
+       PROGRAM-ID. T.
+       PROCEDURE DIVISION.
+           DISPLAY 'BONJOUR'.
+           STOP RUN.
