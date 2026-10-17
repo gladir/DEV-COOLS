@@ -411,6 +411,7 @@ fichiers produits identiques a la reference):
   w13    521 / 525  439       323       377       223       absolute, records non alignes, dates
   w15    521 / 525  439       325       382       233       procedures imbriquees, bornes (R+), Seg
   w16    521 / 525  440       327       384       237       symboles WINDOWS, chaines avec #0, System.X
+  w17    521 / 525  440       328       384       237       Exec, PackTime/GetFTime/SetFTime, FSearch, Window
 
 Les 4 sources restantes (CURL, GETMAC, IPCONFIG, TASKLIST) utilisent des
 types et unites propres a Free Pascal (fphttpclient, Windows, sockets).
@@ -442,7 +443,12 @@ test minimal):
     EQUIP);
   - unite Crt: GotoXY(X, Y) et Window(X1, Y1, X2, Y2) lisaient leurs
     parametres dans l'ordre inverse de leur empilement (OS2CMD ecrivait a
-    la ligne 63 au lieu de la colonne 63);
+    la ligne 63 au lieu de la colonne 63); GotoXY, WhereX et WhereY sont
+    relatifs a la fenetre active; ReadKey sur une entree qui n'est pas une
+    console (tube, fichier) lisait en boucle sans fin;
+  - Exec(Path, CmdLine): parametres inverses et litteraux traites comme
+    des chaines Pascal (echec systematique, DosError 2); CreateProcessA
+    (nil, '"Path" CmdLine') comme FPC, DosExitCode, DosError = GetLastError;
   - System.Move, Dos.GetDate...: le prefixe d'unite n'etait pas reconnu
     (FORMAT: secteur d'amorcage vide); litteraux et constantes chaine
     contenant #0 ('SONY'#0) tronques (BMP2ARW, BMP2CR2, BMP2DNG); valeur
@@ -476,7 +482,7 @@ test minimal):
   - Write(x:w) et Str(x:w): largeur constante seulement quand le litteral
     est suivi de ',' ')' ou ':'.
 
-Resultats restants non identiques (passe w16), par classe:
+Resultats restants non identiques (passe w17), par classe:
   - "Attente clavier": programmes Crt interactifs (NC, FDISK, DOSSHELL,
     editeurs) qui attendent une touche des deux cotes (delai depasse);
   - environnement: heure, date, GUID, nombres aleatoires avec Randomize,
