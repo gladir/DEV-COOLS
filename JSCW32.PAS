@@ -16,7 +16,7 @@
   08. [IMPLEMENTE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
   09. [IMPLEMENTE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
   10. [IMPLEMENTE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
-  11. [A FAIRE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
+  11. [IMPLEMENTE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
   12. [A FAIRE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
   13. [A FAIRE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
   14. [A FAIRE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
@@ -161,6 +161,7 @@ Const
   RT_T_FUNCTION = 7;
   RT_T_REGEXP = 8;
   RT_T_TDZ = 9;                   { variable lexicale pas encore initialisee }
+  RT_T_DONE = 10;                 { fin d'iteration (interne) }
   RT_TAG_BASE = $FFF90000;
   RT_FPU_CW = '027F';
   { cellule du tas }
@@ -337,6 +338,11 @@ Const
   CK_BOOL = 2;
   CK_NULL = 3;
   CK_UNDEF = 4;
+  { cibles de break et continue }
+  MAX_JT = 32;
+  JT_LOOP = 1;
+  JT_SWITCH = 2;
+  JT_BLOCK = 3;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
     'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw'
@@ -685,12 +691,20 @@ Type
     what: String[60];
   End;
 
+  TJumpTarget = Record
+    kind, brk, cont, nlabels: LongInt;
+    labels: Array[1..4] Of LongInt;      { jetons des noms d'etiquettes }
+  End;
+
   TIrInfo = Record
     built, failed: Boolean;
     count, xsym_count, comment_count, label_count, proc_count,
     pending_count, cg_fs, frame_patch, cur_line: LongInt;
     tmp_free: Array[1..64] Of LongInt;      { temporaires de trame libres }
     tmp_free_count: LongInt;
+    jt: Array[1..MAX_JT] Of TJumpTarget;
+    jt_count, plabel_count: LongInt;
+    plabels: Array[1..4] Of LongInt;
     instrs  : Array[1..MAX_INSTR] Of TInstr;
     xsyms   : Array[1..MAX_XSYMS] Of TXSym;
     comments: Array[1..MAX_COMMENTS] Of String[120];
@@ -5893,7 +5907,8 @@ End;
     hi >= FFF90000h  valeur etiquetee : hi = FFF90000h + type
 
   Types : 0 int32, 1 undefined, 2 null, 3 boolean, 4 string, 5 object,
-  6 array, 7 function, 8 regexp, 9 marque TDZ (interne). Un nombre est donc soit un double,
+  6 array, 7 function, 8 regexp, 9 marque TDZ et 10 fin d'iteration
+  (internes). Un nombre est donc soit un double,
   soit un int32 (chemin rapide entier : add/sub/imul avec test de
   depassement, repli sur le FPU). Les deux formes sont equivalentes ;
   les operations acceptent les deux et la forme canonique n'est pas
@@ -5942,6 +5957,7 @@ Begin
     RT_T_FUNCTION:  RtTagName := 'function';
     RT_T_REGEXP:    RtTagName := 'regexp';
     RT_T_TDZ:       RtTagName := 'tdz (interne)';
+    RT_T_DONE:      RtTagName := 'fin d''iteration (interne)';
   Else
     RtTagName := '?';
   End;
@@ -6230,7 +6246,7 @@ Begin
   Writeln('  Valeur : ', RT_VALUE_SIZE, ' octets, lo = charge utile (+', RT_VAL_LO,
           '), hi = etiquette (+', RT_VAL_HI, ')');
   Writeln('    hi < ', RT_TAG_PREFIX, '0000h : nombre double IEEE 754');
-  For b := RT_T_INT32 To RT_T_TDZ Do
+  For b := RT_T_INT32 To RT_T_DONE Do
     Writeln('    ', RtTagHex(b), '  ', RtTagName(b));
   Writeln('    nombre = double ou int32 ; -0 et depassement passent par le FPU');
   Writeln('    FPU : mot de controle ', RT_FPU_CW, 'h (double precision, arrondi au plus pres)');
@@ -9118,6 +9134,365 @@ End;
 
 Procedure GenStmtList(Var ctx: TCompilerContext; n: LongInt); Forward;
 
+{ ---- Controle de flux (TODO 11) ----
+
+  Chaque structure recoit ses etiquettes uniques (_JSL_nnnn). Une pile
+  de cibles de saut memorise, pour chaque boucle, switch ou instruction
+  etiquetee, l'etiquette de break, celle de continue et ses noms
+  d'etiquettes. Une condition constante est resolue a la compilation
+  (while (1), if (0)...).
+
+  for-in et for-of passent par le runtime : _JSRT_iter_new(valeur)
+  cree un iterateur (tableau ou chaine), _JSRT_iter_next(iterateur)
+  rend la valeur suivante ou la marque DONE ; for-in parcourt
+  _JSRT_forin_keys(objet), le tableau des noms de proprietes. Les
+  variables let capturees de l'en-tete d'un for recoivent une nouvelle
+  cellule a chaque iteration (_JSRT_cell_copy). }
+
+Procedure GenStmt(Var ctx: TCompilerContext; n: LongInt); Forward;
+
+Procedure PushTarget(Var ctx: TCompilerContext; kind, brk, cont: LongInt);
+Var
+  i: LongInt;
+Begin
+  If ctx.ir.jt_count >= MAX_JT Then
+    Begin
+      PipelineError(ctx, 'structures de controle imbriquees trop profondes');
+      Exit;
+    End;
+  Inc(ctx.ir.jt_count);
+  ctx.ir.jt[ctx.ir.jt_count].kind := kind;
+  ctx.ir.jt[ctx.ir.jt_count].brk := brk;
+  ctx.ir.jt[ctx.ir.jt_count].cont := cont;
+  ctx.ir.jt[ctx.ir.jt_count].nlabels := ctx.ir.plabel_count;
+  For i := 1 To ctx.ir.plabel_count Do
+    ctx.ir.jt[ctx.ir.jt_count].labels[i] := ctx.ir.plabels[i];
+  ctx.ir.plabel_count := 0;
+End;
+
+Procedure PopTarget(Var ctx: TCompilerContext);
+Begin
+  If ctx.ir.jt_count > 0 Then
+    Dec(ctx.ir.jt_count);
+End;
+
+{ Cible d'un break ou continue : sans etiquette, la plus proche boucle
+  (ou switch pour break) ; avec etiquette, celle qui la porte. }
+Function FindTarget(Var ctx: TCompilerContext; label_tok: LongInt;
+                    is_break: Boolean): LongInt;
+Var
+  i, j: LongInt;
+Begin
+  FindTarget := 0;
+  For i := ctx.ir.jt_count Downto 1 Do
+    Begin
+      If label_tok = 0 Then
+        Begin
+          If (ctx.ir.jt[i].kind = JT_LOOP) Or
+             (is_break And (ctx.ir.jt[i].kind = JT_SWITCH)) Then
+            Begin
+              FindTarget := i;
+              Exit;
+            End;
+        End
+      Else
+        For j := 1 To ctx.ir.jt[i].nlabels Do
+          If ctx.lex.tokens[ctx.ir.jt[i].labels[j]].text =
+             ctx.lex.tokens[label_tok].text Then
+            Begin
+              FindTarget := i;
+              Exit;
+            End;
+    End;
+End;
+
+{ Saute vers lfalse si la condition est fausse. }
+Procedure GenCondJumpFalse(Var ctx: TCompilerContext; e, lfalse: LongInt);
+Var
+  c: TConst;
+Begin
+  If e = 0 Then
+    Exit;
+  If EvalConst(ctx, e, c) Then
+    Begin
+      If Not ConstTruthy(c) Then
+        Emit1(ctx, OP_JMP, LabelOp(lfalse));
+      Exit;
+    End;
+  GenExpr(ctx, e);
+  GenTruthy(ctx);
+  Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+  Emit1(ctx, OP_JE, LabelOp(lfalse));
+End;
+
+{ Saute vers ltrue si la condition est vraie. }
+Procedure GenCondJumpTrue(Var ctx: TCompilerContext; e, ltrue: LongInt);
+Var
+  c: TConst;
+Begin
+  If e = 0 Then
+    Begin
+      Emit1(ctx, OP_JMP, LabelOp(ltrue));
+      Exit;
+    End;
+  If EvalConst(ctx, e, c) Then
+    Begin
+      If ConstTruthy(c) Then
+        Emit1(ctx, OP_JMP, LabelOp(ltrue));
+      Exit;
+    End;
+  GenExpr(ctx, e);
+  GenTruthy(ctx);
+  Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+  Emit1(ctx, OP_JNE, LabelOp(ltrue));
+End;
+
+Procedure GenIf(Var ctx: TCompilerContext; n: LongInt);
+Var
+  els, done: LongInt;
+Begin
+  els := NewLabel(ctx);
+  GenCondJumpFalse(ctx, ctx.ast.nodes[n].e1, els);
+  GenStmt(ctx, ctx.ast.nodes[n].e2);
+  If ctx.ast.nodes[n].e3 <> 0 Then
+    Begin
+      done := NewLabel(ctx);
+      Emit1(ctx, OP_JMP, LabelOp(done));
+      PlaceLabel(ctx, els);
+      GenStmt(ctx, ctx.ast.nodes[n].e3);
+      PlaceLabel(ctx, done);
+    End
+  Else
+    PlaceLabel(ctx, els);
+End;
+
+Procedure GenWhile(Var ctx: TCompilerContext; n: LongInt);
+Var
+  top, brk: LongInt;
+Begin
+  top := NewLabel(ctx);
+  brk := NewLabel(ctx);
+  PlaceLabel(ctx, top);
+  GenCondJumpFalse(ctx, ctx.ast.nodes[n].e1, brk);
+  PushTarget(ctx, JT_LOOP, brk, top);
+  GenStmt(ctx, ctx.ast.nodes[n].e2);
+  PopTarget(ctx);
+  Emit1(ctx, OP_JMP, LabelOp(top));
+  PlaceLabel(ctx, brk);
+End;
+
+Procedure GenDoWhile(Var ctx: TCompilerContext; n: LongInt);
+Var
+  top, cont, brk: LongInt;
+Begin
+  top := NewLabel(ctx);
+  cont := NewLabel(ctx);
+  brk := NewLabel(ctx);
+  PlaceLabel(ctx, top);
+  PushTarget(ctx, JT_LOOP, brk, cont);
+  GenStmt(ctx, ctx.ast.nodes[n].e1);
+  PopTarget(ctx);
+  PlaceLabel(ctx, cont);
+  GenCondJumpTrue(ctx, ctx.ast.nodes[n].e2, top);
+  PlaceLabel(ctx, brk);
+End;
+
+{ Nouvelle cellule (copie) pour chaque variable de l'en-tete capturee. }
+Procedure GenPerIterationCopy(Var ctx: TCompilerContext; sc: LongInt);
+Var
+  sy: LongInt;
+Begin
+  sy := ctx.sem.scopes[sc].first_sym;
+  While sy <> 0 Do
+    Begin
+      If (ctx.sem.syms[sy].flags And SF_PER_ITER <> 0) And
+         (ctx.sem.syms[sy].flags And SF_CELL <> 0) Then
+        Begin
+          Emit1(ctx, OP_PUSH, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)));
+          CallRt(ctx, 'cell_copy', 4);
+          Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)),
+               RegOp(R_EAX));
+        End;
+      sy := ctx.sem.syms[sy].next;
+    End;
+End;
+
+Procedure GenFor(Var ctx: TCompilerContext; n: LongInt);
+Var
+  sc, top, cont, brk, init: LongInt;
+Begin
+  sc := ctx.ast.nodes[n].scope;
+  top := NewLabel(ctx);
+  cont := NewLabel(ctx);
+  brk := NewLabel(ctx);
+  GenScopeEnter(ctx, sc);
+  init := ctx.ast.nodes[n].e1;
+  If init <> 0 Then
+    Begin
+      If ctx.ast.nodes[init].kind = N_VAR_DECL Then
+        GenVarDecl(ctx, init)
+      Else
+        GenExpr(ctx, init);
+    End;
+  PlaceLabel(ctx, top);
+  If ctx.ast.nodes[n].e2 <> 0 Then
+    GenCondJumpFalse(ctx, ctx.ast.nodes[n].e2, brk);
+  PushTarget(ctx, JT_LOOP, brk, cont);
+  GenStmt(ctx, ctx.ast.nodes[n].e4);
+  PopTarget(ctx);
+  PlaceLabel(ctx, cont);
+  GenPerIterationCopy(ctx, sc);
+  If ctx.ast.nodes[n].e3 <> 0 Then
+    GenExpr(ctx, ctx.ast.nodes[n].e3);
+  Emit1(ctx, OP_JMP, LabelOp(top));
+  PlaceLabel(ctx, brk);
+End;
+
+{ for (x of valeur) et for (x in objet). }
+Procedure GenForInOf(Var ctx: TCompilerContext; n: LongInt; is_of: Boolean);
+Var
+  sc, top, brk, iter, v, left, target: LongInt;
+Begin
+  sc := ctx.ast.nodes[n].scope;
+  top := NewLabel(ctx);
+  brk := NewLabel(ctx);
+  iter := TempAcquire(ctx);
+  v := TempAcquire(ctx);
+  GenExpr(ctx, ctx.ast.nodes[n].e2);
+  If Not is_of Then
+    Begin
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'forin_keys', 8);
+    End;
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  CallRt(ctx, 'iter_new', 8);
+  SaveTemp(ctx, iter);
+  PlaceLabel(ctx, top);
+  PushTemp(ctx, iter);
+  CallRt(ctx, 'iter_next', 8);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_DONE)));
+  Emit1(ctx, OP_JE, LabelOp(brk));
+  SaveTemp(ctx, v);
+  { nouvelle portee (nouvelles cellules) a chaque iteration }
+  GenScopeEnter(ctx, sc);
+  LoadTemp(ctx, v);
+  left := ctx.ast.nodes[n].e1;
+  If (left <> 0) And (ctx.ast.nodes[left].kind = N_VAR_DECL) Then
+    Begin
+      target := ctx.ast.nodes[ctx.ast.nodes[left].e1].e1;
+      BindValue(ctx, target, True);
+    End
+  Else
+    BindValue(ctx, left, False);
+  PushTarget(ctx, JT_LOOP, brk, top);
+  GenStmt(ctx, ctx.ast.nodes[n].e3);
+  PopTarget(ctx);
+  Emit1(ctx, OP_JMP, LabelOp(top));
+  PlaceLabel(ctx, brk);
+  TempRelease(ctx, v);
+  TempRelease(ctx, iter);
+End;
+
+Procedure GenSwitch(Var ctx: TCompilerContext; n: LongInt);
+Var
+  t, brk, base, cs, i, ncases, dflt: LongInt;
+Begin
+  brk := NewLabel(ctx);
+  ncases := 0;
+  cs := ctx.ast.nodes[n].e2;
+  While cs <> 0 Do
+    Begin
+      Inc(ncases);
+      cs := ctx.ast.nodes[cs].next;
+    End;
+  base := ctx.ir.label_count + 1;
+  Inc(ctx.ir.label_count, ncases);
+  t := TempAcquire(ctx);
+  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  SaveTemp(ctx, t);
+  GenScopeEnter(ctx, ctx.ast.nodes[n].scope);
+  { tests dans l'ordre : discriminant === valeur du case }
+  dflt := 0;
+  i := 0;
+  cs := ctx.ast.nodes[n].e2;
+  While cs <> 0 Do
+    Begin
+      If ctx.ast.nodes[cs].e1 = 0 Then
+        dflt := base + i
+      Else
+        Begin
+          GenExpr(ctx, ctx.ast.nodes[cs].e1);
+          GenBinaryCore(ctx, '===', t);
+          Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+          Emit1(ctx, OP_JNE, LabelOp(base + i));
+        End;
+      Inc(i);
+      cs := ctx.ast.nodes[cs].next;
+    End;
+  If dflt <> 0 Then
+    Emit1(ctx, OP_JMP, LabelOp(dflt))
+  Else
+    Emit1(ctx, OP_JMP, LabelOp(brk));
+  PushTarget(ctx, JT_SWITCH, brk, 0);
+  i := 0;
+  cs := ctx.ast.nodes[n].e2;
+  While cs <> 0 Do
+    Begin
+      PlaceLabel(ctx, base + i);
+      GenStmtList(ctx, ctx.ast.nodes[cs].e2);
+      Inc(i);
+      cs := ctx.ast.nodes[cs].next;
+    End;
+  PopTarget(ctx);
+  PlaceLabel(ctx, brk);
+  TempRelease(ctx, t);
+End;
+
+Procedure GenBreakContinue(Var ctx: TCompilerContext; n: LongInt; is_break: Boolean);
+Var
+  i: LongInt;
+Begin
+  i := FindTarget(ctx, ctx.ast.nodes[n].e1, is_break);
+  If i = 0 Then
+    Begin
+      PendingNote(ctx, n, 'cible de break/continue introuvable');
+      Exit;
+    End;
+  If is_break Then
+    Emit1(ctx, OP_JMP, LabelOp(ctx.ir.jt[i].brk))
+  Else
+    Emit1(ctx, OP_JMP, LabelOp(ctx.ir.jt[i].cont));
+End;
+
+Procedure GenLabeled(Var ctx: TCompilerContext; n: LongInt);
+Var
+  inner, brk: LongInt;
+Begin
+  inner := ctx.ast.nodes[n].e1;
+  If ctx.ir.plabel_count < 4 Then
+    Begin
+      Inc(ctx.ir.plabel_count);
+      ctx.ir.plabels[ctx.ir.plabel_count] := ctx.ast.nodes[n].tok;
+    End;
+  If (inner <> 0) And
+     ((ctx.ast.nodes[inner].kind = N_WHILE) Or (ctx.ast.nodes[inner].kind = N_DO_WHILE) Or
+      (ctx.ast.nodes[inner].kind = N_FOR) Or (ctx.ast.nodes[inner].kind = N_FOR_IN) Or
+      (ctx.ast.nodes[inner].kind = N_FOR_OF) Or (ctx.ast.nodes[inner].kind = N_SWITCH) Or
+      (ctx.ast.nodes[inner].kind = N_LABELED)) Then
+    GenStmt(ctx, inner)
+  Else
+    Begin
+      { instruction etiquetee quelconque : seul break etiquete est permis }
+      brk := NewLabel(ctx);
+      PushTarget(ctx, JT_BLOCK, brk, 0);
+      GenStmt(ctx, inner);
+      PopTarget(ctx);
+      PlaceLabel(ctx, brk);
+    End;
+End;
+
 Procedure GenStmt(Var ctx: TCompilerContext; n: LongInt);
 Begin
   If n = 0 Then
@@ -9138,6 +9513,26 @@ Begin
           GenScopeEnter(ctx, ctx.ast.nodes[n].scope);
         GenStmtList(ctx, ctx.ast.nodes[n].e1);
       End;
+    N_IF:
+      GenIf(ctx, n);
+    N_WHILE:
+      GenWhile(ctx, n);
+    N_DO_WHILE:
+      GenDoWhile(ctx, n);
+    N_FOR:
+      GenFor(ctx, n);
+    N_FOR_IN:
+      GenForInOf(ctx, n, False);
+    N_FOR_OF:
+      GenForInOf(ctx, n, True);
+    N_SWITCH:
+      GenSwitch(ctx, n);
+    N_BREAK:
+      GenBreakContinue(ctx, n, True);
+    N_CONTINUE:
+      GenBreakContinue(ctx, n, False);
+    N_LABELED:
+      GenLabeled(ctx, n);
   Else
     PendingNote(ctx, n, NodeKindName(ctx.ast.nodes[n].kind));
   End;
@@ -9179,6 +9574,8 @@ Begin
   Inc(ctx.ir.proc_count);
   ctx.ir.cg_fs := fs;
   ctx.ir.tmp_free_count := 0;
+  ctx.ir.jt_count := 0;
+  ctx.ir.plabel_count := 0;
   Emit1(ctx, OP_PROC, AddrSym(SYMK_X, xs));
   Emit1(ctx, OP_PUSH, RegOp(R_EBP));
   Emit(ctx, OP_MOV, RegOp(R_EBP), RegOp(R_ESP));
