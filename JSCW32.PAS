@@ -10,7 +10,7 @@
   02. [IMPLEMENTE] Ajouter le parsing des options de ligne de commande : mode EXE par defaut, parametre pour produire uniquement un .OBJ (sans edition de liens), parametre explicite pour emettre aussi le .ASM, noms de sortie (-o), mode verbose, aide/version, et regles de nommage par defaut (HELLO.JS -> HELLO.EXE / HELLO.OBJ / HELLO.ASM).
   03. [IMPLEMENTE] Implementer le chargeur source et le lexer JavaScript complet : normalisation CR/LF, suivi ligne/colonne, diagnostics avec caret, identifiants, mots-cles (var/let/const/function/class/extends/super/new/this/typeof/void/instanceof/in/of/try/catch/finally/throw...), nombres (decimal, flottant, exposant 1.5e3, hexa 0xFF, binaire 0b1010, octal, separateurs 1_000_000), chaines '...' et "..." avec echappements, template literals avec interpolation (dollar-accolade), litteraux RegExp /re/flags (desambiguises de la division), commentaires // et /* */, tous les operateurs (=== !== ** ?? ?. => ... >>> et affectations composees) et NaN/Infinity/null/undefined/true/false.
   04. [IMPLEMENTE] Parser les instructions : var/let/const (avec destructuration simple), blocs, if/else if/else, switch/case/default, while, do-while, for, for-in, for-of, break/continue (avec etiquettes), return, throw, try/catch/finally, declarations function et class, instructions vides/expressions, insertion automatique des points-virgules (ASI) et hoisting des declarations.
-  05. [A FAIRE] Parser les expressions avec precedences et associativites exactes : virgule, affectations (= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=), ternaire, ?? || &&, bit a bit, ==/!=/===/!==, relationnels (instanceof, in), decalages, + -, * / %, **, unaires (typeof void delete ! ~ + - ++ --), postfixes, appels/membres/new, optional chaining, spread/rest, fonctions anonymes, fonctions fleches (x => x*2, (a,b) => corps de bloc), litteraux de tableaux et d'objets (raccourcis, cles calculees, methodes, getters/setters), parametres par defaut.
+  05. [IMPLEMENTE] Parser les expressions avec precedences et associativites exactes : virgule, affectations (= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=), ternaire, ?? || &&, bit a bit, ==/!=/===/!==, relationnels (instanceof, in), decalages, + -, * / %, **, unaires (typeof void delete ! ~ + - ++ --), postfixes, appels/membres/new, optional chaining, spread/rest, fonctions anonymes, fonctions fleches (x => x*2, (a,b) => corps de bloc), litteraux de tableaux et d'objets (raccourcis, cles calculees, methodes, getters/setters), parametres par defaut.
   06. [A FAIRE] Construire l'AST et l'analyse semantique : table des symboles et des scopes (global, fonction, bloc), hoisting de var/function, zone morte temporelle (TDZ) de let/const, erreur sur reaffectation d'une const, detection des variables capturees par des fonctions imbriquees (necessaire aux closures), resolution de this (global, methode, constructeur, fleche) et diagnostics de redeclaration/variable non declaree.
   07. [A FAIRE] Definir le modele de valeurs runtime 32 bits et le gestionnaire memoire : valeurs etiquetees (undefined, null, booleen, nombre, chaine, objet, tableau, fonction/closure, RegExp), nombres IEEE 754 via FPU x87 avec chemin rapide entier, allocation sur le tas Windows (HeapAlloc/VirtualAlloc), tampons de chaines, pile d'appels, et ramasse-miettes simple (mark & sweep) ou strategie documentee de non-liberation.
   08. [A FAIRE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
@@ -99,6 +99,20 @@ Const
   MF_CONSTRUCTOR = 16;
   MF_GENERATOR = 32;
   MF_ASYNC = 64;
+  FN_ARROW = 4;
+  FN_EXPR_BODY = 8;
+  FN_METHOD = 16;
+  { Proprietes d'objet litteral }
+  PR_SHORTHAND = 1;
+  PR_COMPUTED = 2;
+  PR_SPREAD = 4;
+  PR_METHOD = 8;
+  PR_GETTER = 16;
+  PR_SETTER = 32;
+  PR_DEFAULT = 64;
+  { Expressions : maillon optionnel (?.) et ++/-- prefixe }
+  EF_OPTIONAL = 1;
+  UF_PREFIX = 1;
 
 Type
   TString = String[MAX_PATH_LEN];
@@ -205,16 +219,23 @@ Type
   End;
 
   TNodeKind = (
-    N_NONE, N_PROGRAM, N_BLOCK, N_EMPTY, N_EXPR_STMT, N_EXPR_RAW,
+    N_NONE, N_PROGRAM, N_BLOCK, N_EMPTY, N_EXPR_STMT,
     N_VAR_DECL, N_DECLARATOR, N_BIND_IDENT, N_ARRAY_PATTERN,
     N_OBJECT_PATTERN, N_PATTERN_ELEM, N_PATTERN_PROP,
     N_IF, N_SWITCH, N_CASE, N_WHILE, N_DO_WHILE, N_FOR, N_FOR_IN, N_FOR_OF,
     N_BREAK, N_CONTINUE, N_RETURN, N_THROW, N_TRY, N_CATCH, N_LABELED,
     N_DEBUGGER, N_FUNC_DECL, N_PARAM, N_CLASS_DECL, N_METHOD, N_FIELD,
-    N_STATIC_BLOCK
+    N_STATIC_BLOCK,
+    { expressions }
+    N_NUMBER, N_STRING, N_REGEX, N_TEMPLATE, N_TEMPLATE_STR, N_IDENT,
+    N_THIS, N_SUPER, N_NULL, N_BOOL, N_ARRAY_LIT, N_ELISION, N_SPREAD,
+    N_OBJECT_LIT, N_PROP, N_FUNC_EXPR, N_CLASS_EXPR, N_UNARY, N_UPDATE,
+    N_BINARY, N_LOGICAL, N_ASSIGN, N_COND, N_CALL, N_NEW, N_MEMBER,
+    N_INDEX, N_SEQUENCE, N_TAGGED
   );
 
-  TDeclKind = (DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS, DK_PARAM, DK_CATCH);
+  TDeclKind = (DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS, DK_PARAM, DK_CATCH,
+                 DK_FNAME);
 
   { Noeud d'AST : tok est le jeton principal (position, nom) ; e1..e4 sont
     des noeuds enfants (ou des indices de jeton pour break/continue et
@@ -225,6 +246,12 @@ Type
     e1, e2, e3, e4: LongInt;
     next : LongInt;
     flags: LongInt;
+    paren: Boolean;            { expression entre parentheses }
+  End;
+
+  { Etat sauvegarde a l'entree d'une fonction }
+  TFuncSave = Record
+    scope, func, loop, switch, labels: LongInt;
   End;
 
   { Table de hoisting : scope est la portee ou le nom vit (fonction pour
@@ -1823,9 +1850,9 @@ End;
   classes. L'AST est un tableau de noeuds relies par des indices
   (e1..e4 pour les enfants, next pour la liste de freres).
 
-  Les expressions sont provisoires : un noeud EXPR_RAW couvre la plage
-  de jetons de l'expression, delimitee par parentheses, crochets et
-  accolades equilibres. Le TODO 5 le remplacera par un vrai arbre.
+  Les expressions (TODO 5) sont de vrais arbres : precedences,
+  associativite, appels, new, acces optionnels, fonctions fleches,
+  litteraux, gabarits et affectations avec destructuration.
 
   Hoisting : chaque declaration est enregistree dans la table des
   declarations avec sa portee. var va a la fonction englobante,
@@ -1987,6 +2014,7 @@ Begin
   ctx.ast.nodes[n].e4 := 0;
   ctx.ast.nodes[n].next := 0;
   ctx.ast.nodes[n].flags := 0;
+  ctx.ast.nodes[n].paren := False;
   NewNode := n;
 End;
 
@@ -2025,132 +2053,39 @@ Begin
     ctx.ast.decls[n].scope := ctx.ast.cur_scope;
 End;
 
-{ ---- Expressions provisoires (plage de jetons) ---- }
+{ ---- Declarations anticipees et contexte de fonction ---- }
 
-Function EndsOperand(Var ctx: TCompilerContext; i: LongInt): Boolean;
-Var
-  s: TTokenText;
+Function ParseAssign(Var ctx: TCompilerContext; no_in: Boolean): LongInt; Forward;
+Function ParseExpr(Var ctx: TCompilerContext; no_in: Boolean): LongInt; Forward;
+Function ParseLHS(Var ctx: TCompilerContext): LongInt; Forward;
+Function ParseClass(Var ctx: TCompilerContext; is_decl: Boolean): LongInt; Forward;
+Procedure ParseParamList(Var ctx: TCompilerContext; node: LongInt); Forward;
+Function ParseFuncBlock(Var ctx: TCompilerContext): LongInt; Forward;
+Procedure ParseFuncRest(Var ctx: TCompilerContext; node: LongInt); Forward;
+
+{ Entre dans la portee d'une fonction : memorise le contexte courant. }
+Procedure EnterFunc(Var ctx: TCompilerContext; node: LongInt; Var sv: TFuncSave);
 Begin
-  s := ctx.lex.tokens[i].text;
-  Case ctx.lex.tokens[i].kind Of
-    TK_NUMBER, TK_STRING, TK_REGEX, TK_IDENT:
-      EndsOperand := True;
-    TK_TEMPLATE:
-      EndsOperand := (ctx.lex.tokens[i].tpl = TP_NOSUB) Or
-                     (ctx.lex.tokens[i].tpl = TP_TAIL);
-    TK_KEYWORD:
-      EndsOperand := (s = 'this') Or (s = 'null') Or (s = 'true') Or
-                     (s = 'false') Or (s = 'super');
-    TK_PUNCT, TK_OPERATOR:
-      Begin
-        If (s = ')') Or (s = ']') Or (s = '}') Then
-          EndsOperand := True
-        Else If ((s = '++') Or (s = '--')) And (i > 1) Then
-          EndsOperand := EndsOperand(ctx, i - 1)
-        Else
-          EndsOperand := False;
-      End;
-  Else
-    EndsOperand := False;
-  End;
+  sv.scope := ctx.ast.cur_scope;
+  sv.func := ctx.ast.cur_func;
+  sv.loop := ctx.ast.loop_depth;
+  sv.switch := ctx.ast.switch_depth;
+  sv.labels := ctx.ast.label_count;
+  ctx.ast.cur_scope := node;
+  ctx.ast.cur_func := node;
+  ctx.ast.loop_depth := 0;
+  ctx.ast.switch_depth := 0;
+  Inc(ctx.ast.func_depth);
 End;
 
-{ Jeton qui ne peut pas suivre un operande : il commence une instruction. }
-Function StartsNewStatement(Var ctx: TCompilerContext; i: LongInt): Boolean;
-Var
-  s: TTokenText;
+Procedure LeaveFunc(Var ctx: TCompilerContext; Var sv: TFuncSave);
 Begin
-  s := ctx.lex.tokens[i].text;
-  Case ctx.lex.tokens[i].kind Of
-    TK_IDENT, TK_NUMBER, TK_STRING:
-      StartsNewStatement := True;
-    TK_KEYWORD:
-      StartsNewStatement := (s <> 'in') And (s <> 'instanceof');
-    TK_OPERATOR:
-      StartsNewStatement := (s = '++') Or (s = '--');
-  Else
-    StartsNewStatement := False;
-  End;
-End;
-
-{ Delimite une expression a partir du jeton courant. allow_comma : la
-  virgule fait partie de l'expression ; stop_in_of : s'arrete avant in
-  et of (en-tete de for) ; stop_brace : s'arrete avant une accolade
-  ouvrante (heritage de classe). Retourne un noeud EXPR_RAW, ou 0 apres
-  une erreur. }
-Function ScanExpr(Var ctx: TCompilerContext; allow_comma, stop_in_of,
-                  stop_brace: Boolean): LongInt;
-Var
-  i, first, depth, pend_q, n: LongInt;
-  s: TTokenText;
-  stop: Boolean;
-Begin
-  first := ctx.ast.pt;
-  i := first;
-  depth := 0;
-  pend_q := 0;
-  stop := False;
-  While Not stop Do
-    Begin
-      If ctx.lex.tokens[i].kind = TK_EOF Then
-        Break;
-      s := ctx.lex.tokens[i].text;
-      If depth = 0 Then
-        Begin
-          If TkIsP(ctx, i, ';') Or TkIsP(ctx, i, ')') Or TkIsP(ctx, i, ']') Or
-             TkIsP(ctx, i, '}') Then
-            stop := True
-          Else If TkIsP(ctx, i, ',') And Not allow_comma Then
-            stop := True
-          Else If TkIsP(ctx, i, ':') And (pend_q = 0) Then
-            stop := True
-          Else If stop_brace And TkIsP(ctx, i, '{') Then
-            stop := True
-          Else If stop_in_of And (i > first) And
-                  (TkIsKw(ctx, i, 'in') Or TkIsId(ctx, i, 'of')) Then
-            stop := True
-          Else If (i > first) And ctx.lex.tokens[i].nl_before And
-                  EndsOperand(ctx, i - 1) And StartsNewStatement(ctx, i) Then
-            stop := True;
-        End;
-      If stop Then
-        Break;
-      Case ctx.lex.tokens[i].kind Of
-        TK_PUNCT, TK_OPERATOR:
-          Begin
-            If (s = '(') Or (s = '[') Or (s = '{') Then
-              Inc(depth)
-            Else If (s = ')') Or (s = ']') Or (s = '}') Then
-              Dec(depth)
-            Else If (s = '?') And (depth = 0) Then
-              Inc(pend_q)
-            Else If (s = ':') And (depth = 0) And (pend_q > 0) Then
-              Dec(pend_q);
-          End;
-        TK_TEMPLATE:
-          Begin
-            If ctx.lex.tokens[i].tpl = TP_HEAD Then
-              Inc(depth)
-            Else If ctx.lex.tokens[i].tpl = TP_TAIL Then
-              Dec(depth);
-          End;
-      End;
-      Inc(i);
-    End;
-  If i = first Then
-    Begin
-      ParseError(ctx, first, 'expression attendue, trouve ' +
-                 TokenDesc(ctx, first));
-      ScanExpr := 0;
-      Exit;
-    End;
-  If depth > 0 Then
-    ParseError(ctx, first, 'expression non terminee : delimiteur ouvert jamais ferme');
-  n := NewNode(ctx, N_EXPR_RAW, first);
-  ctx.ast.nodes[n].e1 := first;
-  ctx.ast.nodes[n].e2 := i - 1;
-  ctx.ast.pt := i;
-  ScanExpr := n;
+  Dec(ctx.ast.func_depth);
+  ctx.ast.label_count := sv.labels;
+  ctx.ast.switch_depth := sv.switch;
+  ctx.ast.loop_depth := sv.loop;
+  ctx.ast.cur_func := sv.func;
+  ctx.ast.cur_scope := sv.scope;
 End;
 
 { ---- Liaisons : identifiants et motifs de destructuration ---- }
@@ -2163,7 +2098,7 @@ Begin
   If CurIsP(ctx, '=') Then
     Begin
       PAdvance(ctx);
-      ParseBindingDefault := ScanExpr(ctx, False, False, False);
+      ParseBindingDefault := ParseAssign(ctx, False);
     End;
 End;
 
@@ -2235,7 +2170,7 @@ Begin
             Begin
               PAdvance(ctx);
               ctx.ast.nodes[prop].flags := PP_COMPUTED;
-              ctx.ast.nodes[prop].e3 := ScanExpr(ctx, False, False, False);
+              ctx.ast.nodes[prop].e3 := ParseAssign(ctx, False);
               Expect(ctx, ']');
               key_tok := ctx.ast.nodes[prop].tok;
             End
@@ -2350,7 +2285,7 @@ Begin
     If CurIsP(ctx, '=') Then
       Begin
         PAdvance(ctx);
-        init := ScanExpr(ctx, False, in_for, False);
+        init := ParseAssign(ctx, in_for);
       End
     Else If Not in_for Then
       Begin
@@ -2370,6 +2305,887 @@ Begin
   Until False;
   ctx.ast.nodes[node].e1 := first;
   ParseVarDecl := node;
+End;
+
+{ ---- Expressions (TODO 5) ---- }
+
+{ Precedence d'un operateur binaire, 0 si ce n'en est pas un. }
+Function BinPrec(Const s: TTokenText): LongInt;
+Begin
+  BinPrec := 0;
+  If s = '??' Then
+    BinPrec := 1
+  Else If s = '||' Then
+    BinPrec := 2
+  Else If s = '&&' Then
+    BinPrec := 3
+  Else If s = '|' Then
+    BinPrec := 4
+  Else If s = '^' Then
+    BinPrec := 5
+  Else If s = '&' Then
+    BinPrec := 6
+  Else If (s = '==') Or (s = '!=') Or (s = '===') Or (s = '!==') Then
+    BinPrec := 7
+  Else If (s = '<') Or (s = '>') Or (s = '<=') Or (s = '>=') Then
+    BinPrec := 8
+  Else If (s = '<<') Or (s = '>>') Or (s = '>>>') Then
+    BinPrec := 9
+  Else If (s = '+') Or (s = '-') Then
+    BinPrec := 10
+  Else If (s = '*') Or (s = '/') Or (s = '%') Then
+    BinPrec := 11
+  Else If s = '**' Then
+    BinPrec := 12;
+End;
+
+Function IsAssignOp(Const s: TTokenText): Boolean;
+Begin
+  IsAssignOp := (s = '=') Or (s = '+=') Or (s = '-=') Or (s = '*=') Or
+                (s = '/=') Or (s = '%=') Or (s = '**=') Or (s = '<<=') Or
+                (s = '>>=') Or (s = '>>>=') Or (s = '&=') Or (s = '|=') Or
+                (s = '^=') Or (s = '&&=') Or (s = '||=') Or (s = '??=');
+End;
+
+{ Cible d'une affectation simple : identifiant ou membre. }
+Function IsSimpleTarget(Var ctx: TCompilerContext; n: LongInt): Boolean;
+Begin
+  IsSimpleTarget := (n <> 0) And
+    ((ctx.ast.nodes[n].kind = N_IDENT) Or (ctx.ast.nodes[n].kind = N_MEMBER) Or
+     (ctx.ast.nodes[n].kind = N_INDEX));
+End;
+
+{ Avec = : un tableau ou un objet litteral est aussi une cible
+  (destructuration). }
+Function IsPatternTarget(Var ctx: TCompilerContext; n: LongInt): Boolean;
+Begin
+  IsPatternTarget := IsSimpleTarget(ctx, n) Or
+    ((n <> 0) And ((ctx.ast.nodes[n].kind = N_ARRAY_LIT) Or
+                   (ctx.ast.nodes[n].kind = N_OBJECT_LIT)));
+End;
+
+{ Index de la parenthese fermante qui correspond a la parenthese
+  ouvrante du jeton i, ou 0. }
+Function MatchClose(Var ctx: TCompilerContext; i: LongInt): LongInt;
+Var
+  depth: LongInt;
+  s: TTokenText;
+Begin
+  MatchClose := 0;
+  depth := 0;
+  While ctx.lex.tokens[i].kind <> TK_EOF Do
+    Begin
+      s := ctx.lex.tokens[i].text;
+      Case ctx.lex.tokens[i].kind Of
+        TK_PUNCT, TK_OPERATOR:
+          Begin
+            If (s = '(') Or (s = '[') Or (s = '{') Then
+              Inc(depth)
+            Else If (s = ')') Or (s = ']') Or (s = '}') Then
+              Begin
+                Dec(depth);
+                If depth = 0 Then
+                  Begin
+                    MatchClose := i;
+                    Exit;
+                  End;
+              End;
+          End;
+        TK_TEMPLATE:
+          Begin
+            If ctx.lex.tokens[i].tpl = TP_HEAD Then
+              Inc(depth)
+            Else If ctx.lex.tokens[i].tpl = TP_TAIL Then
+              Dec(depth);
+          End;
+      End;
+      Inc(i);
+    End;
+End;
+
+{ Le jeton courant commence-t-il une fonction fleche ? }
+Function IsArrowAhead(Var ctx: TCompilerContext; Var is_async: Boolean): Boolean;
+Var
+  i, nx, j: LongInt;
+Begin
+  IsArrowAhead := False;
+  is_async := False;
+  i := ctx.ast.pt;
+  nx := PeekIdx(ctx, 1);
+  If TkIsId(ctx, i, 'async') And Not ctx.lex.tokens[nx].nl_before And
+     Not TkIsP(ctx, nx, '=>') Then
+    Begin
+      If (ctx.lex.tokens[nx].kind = TK_IDENT) And
+         TkIsP(ctx, PeekIdx(ctx, 2), '=>') Then
+        Begin
+          is_async := True;
+          IsArrowAhead := True;
+          Exit;
+        End;
+      If TkIsP(ctx, nx, '(') Then
+        Begin
+          j := MatchClose(ctx, nx);
+          If (j > 0) And TkIsP(ctx, j + 1, '=>') And
+             Not ctx.lex.tokens[j + 1].nl_before Then
+            Begin
+              is_async := True;
+              IsArrowAhead := True;
+              Exit;
+            End;
+        End;
+    End;
+  If (ctx.lex.tokens[i].kind = TK_IDENT) And TkIsP(ctx, nx, '=>') And
+     Not ctx.lex.tokens[nx].nl_before Then
+    IsArrowAhead := True
+  Else If TkIsP(ctx, i, '(') Then
+    Begin
+      j := MatchClose(ctx, i);
+      If (j > 0) And TkIsP(ctx, j + 1, '=>') And
+         Not ctx.lex.tokens[j + 1].nl_before Then
+        IsArrowAhead := True;
+    End;
+End;
+
+{ Nom de propriete (ou crochet de nom calcule) au jeton i ? }
+Function IsPropNameStart(Var ctx: TCompilerContext; i: LongInt): Boolean;
+Begin
+  IsPropNameStart := IsPropertyNameTok(ctx, i) Or TkIsP(ctx, i, '[');
+End;
+
+{ Arguments d'appel : ( a, ...b ). Retourne la liste des arguments. }
+Function ParseCallArgs(Var ctx: TCompilerContext): LongInt;
+Var
+  first, last, a, sp: LongInt;
+Begin
+  first := 0;
+  last := 0;
+  If Expect(ctx, '(') Then
+    Begin
+      While Not CurIsP(ctx, ')') And Not CurIsEof(ctx) Do
+        Begin
+          If CurIsP(ctx, '...') Then
+            Begin
+              sp := NewNode(ctx, N_SPREAD, ctx.ast.pt);
+              PAdvance(ctx);
+              ctx.ast.nodes[sp].e1 := ParseAssign(ctx, False);
+              a := sp;
+            End
+          Else
+            a := ParseAssign(ctx, False);
+          If a = 0 Then
+            Break;
+          ListAdd(ctx, first, last, a);
+          If CurIsP(ctx, ',') Then
+            PAdvance(ctx)
+          Else
+            Break;
+        End;
+      Expect(ctx, ')');
+    End;
+  ParseCallArgs := first;
+End;
+
+Function ParseTemplate(Var ctx: TCompilerContext): LongInt;
+Var
+  node, part, e, first, last: LongInt;
+  done: Boolean;
+Begin
+  node := NewNode(ctx, N_TEMPLATE, ctx.ast.pt);
+  first := 0;
+  last := 0;
+  part := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.pt);
+  ListAdd(ctx, first, last, part);
+  If ctx.lex.tokens[ctx.ast.pt].tpl <> TP_NOSUB Then
+    Begin
+      PAdvance(ctx);
+      done := False;
+      While Not done Do
+        Begin
+          e := ParseExpr(ctx, False);
+          If e = 0 Then
+            Break;
+          ListAdd(ctx, first, last, e);
+          If (ctx.lex.tokens[ctx.ast.pt].kind = TK_TEMPLATE) And
+             ((ctx.lex.tokens[ctx.ast.pt].tpl = TP_MIDDLE) Or
+              (ctx.lex.tokens[ctx.ast.pt].tpl = TP_TAIL)) Then
+            Begin
+              part := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.pt);
+              ListAdd(ctx, first, last, part);
+              If ctx.lex.tokens[ctx.ast.pt].tpl = TP_TAIL Then
+                done := True;
+              If Not done Then
+                PAdvance(ctx);
+            End
+          Else
+            Begin
+              ParseError(ctx, ctx.ast.pt, 'fin de gabarit attendue, trouve ' +
+                         TokenDesc(ctx, ctx.ast.pt));
+              Break;
+            End;
+        End;
+    End;
+  PAdvance(ctx);
+  ctx.ast.nodes[node].e1 := first;
+  ParseTemplate := node;
+End;
+
+Function ParseArrayLiteral(Var ctx: TCompilerContext): LongInt;
+Var
+  node, el, first, last: LongInt;
+Begin
+  node := NewNode(ctx, N_ARRAY_LIT, ctx.ast.pt);
+  PAdvance(ctx);
+  first := 0;
+  last := 0;
+  While Not CurIsP(ctx, ']') And Not CurIsEof(ctx) Do
+    Begin
+      If CurIsP(ctx, ',') Then
+        Begin
+          el := NewNode(ctx, N_ELISION, ctx.ast.pt);
+          PAdvance(ctx);
+          ListAdd(ctx, first, last, el);
+        End
+      Else
+        Begin
+          If CurIsP(ctx, '...') Then
+            Begin
+              el := NewNode(ctx, N_SPREAD, ctx.ast.pt);
+              PAdvance(ctx);
+              ctx.ast.nodes[el].e1 := ParseAssign(ctx, False);
+            End
+          Else
+            el := ParseAssign(ctx, False);
+          If el = 0 Then
+            Break;
+          ListAdd(ctx, first, last, el);
+          If CurIsP(ctx, ',') Then
+            PAdvance(ctx)
+          Else
+            Break;
+        End;
+    End;
+  Expect(ctx, ']');
+  ctx.ast.nodes[node].e1 := first;
+  ParseArrayLiteral := node;
+End;
+
+Function ParseObjectLiteral(Var ctx: TCompilerContext): LongInt;
+Var
+  node, prop, first, last, key_tok, fn, nx: LongInt;
+  flags, fflags: LongInt;
+
+  { Le jeton courant est un modificateur (get, set, async) si un nom de
+    propriete le suit. }
+  Function IsModifier: Boolean;
+  Begin
+    nx := PeekIdx(ctx, 1);
+    IsModifier := IsPropNameStart(ctx, nx) Or
+                  (TkIsP(ctx, nx, '*') And TkIsId(ctx, ctx.ast.pt, 'async'));
+  End;
+
+Begin
+  node := NewNode(ctx, N_OBJECT_LIT, ctx.ast.pt);
+  PAdvance(ctx);
+  first := 0;
+  last := 0;
+  While Not CurIsP(ctx, '}') And Not CurIsEof(ctx) Do
+    Begin
+      prop := NewNode(ctx, N_PROP, ctx.ast.pt);
+      flags := 0;
+      fflags := FN_METHOD;
+      If CurIsP(ctx, '...') Then
+        Begin
+          PAdvance(ctx);
+          ctx.ast.nodes[prop].flags := PR_SPREAD;
+          ctx.ast.nodes[prop].e1 := ParseAssign(ctx, False);
+        End
+      Else
+        Begin
+          If TkIsId(ctx, ctx.ast.pt, 'async') And IsModifier And
+             Not ctx.lex.tokens[PeekIdx(ctx, 1)].nl_before Then
+            Begin
+              PAdvance(ctx);
+              fflags := fflags Or FN_ASYNC;
+              flags := flags Or PR_METHOD;
+            End;
+          If CurIsP(ctx, '*') Then
+            Begin
+              PAdvance(ctx);
+              fflags := fflags Or FN_GENERATOR;
+              flags := flags Or PR_METHOD;
+            End;
+          If (TkIsId(ctx, ctx.ast.pt, 'get') Or TkIsId(ctx, ctx.ast.pt, 'set')) And
+             IsModifier Then
+            Begin
+              If TkIsId(ctx, ctx.ast.pt, 'get') Then
+                flags := flags Or PR_GETTER
+              Else
+                flags := flags Or PR_SETTER;
+              PAdvance(ctx);
+            End;
+          key_tok := ctx.ast.pt;
+          ctx.ast.nodes[prop].tok := key_tok;
+          If CurIsP(ctx, '[') Then
+            Begin
+              PAdvance(ctx);
+              flags := flags Or PR_COMPUTED;
+              ctx.ast.nodes[prop].e2 := ParseAssign(ctx, False);
+              Expect(ctx, ']');
+            End
+          Else If IsPropertyNameTok(ctx, key_tok) Then
+            PAdvance(ctx)
+          Else
+            Begin
+              ParseError(ctx, key_tok, 'nom de propriete attendu, trouve ' +
+                         TokenDesc(ctx, key_tok));
+              Break;
+            End;
+          If CurIsP(ctx, '(') Then
+            Begin
+              fn := NewNode(ctx, N_FUNC_EXPR, key_tok);
+              ctx.ast.nodes[fn].flags := fflags;
+              flags := flags Or PR_METHOD;
+              ParseFuncRest(ctx, fn);
+              ctx.ast.nodes[prop].e1 := fn;
+            End
+          Else If flags And (PR_METHOD Or PR_GETTER Or PR_SETTER) <> 0 Then
+            Begin
+              ParseError(ctx, ctx.ast.pt, '"(" attendu apres le nom de methode, trouve ' +
+                         TokenDesc(ctx, ctx.ast.pt));
+              Break;
+            End
+          Else If CurIsP(ctx, ':') Then
+            Begin
+              PAdvance(ctx);
+              ctx.ast.nodes[prop].e1 := ParseAssign(ctx, False);
+            End
+          Else If (ctx.lex.tokens[key_tok].kind = TK_IDENT) And
+                  (flags And PR_COMPUTED = 0) And
+                  (CurIsP(ctx, ',') Or CurIsP(ctx, '}') Or CurIsP(ctx, '=')) Then
+            Begin
+              flags := flags Or PR_SHORTHAND;
+              fn := NewNode(ctx, N_IDENT, key_tok);
+              ctx.ast.nodes[prop].e1 := fn;
+              { a = 1 : valeur par defaut d'un motif d'affectation }
+              If CurIsP(ctx, '=') Then
+                Begin
+                  PAdvance(ctx);
+                  flags := flags Or PR_DEFAULT;
+                  ctx.ast.nodes[prop].e3 := ParseAssign(ctx, False);
+                End;
+            End
+          Else
+            Begin
+              ParseError(ctx, ctx.ast.pt, '":" attendu apres le nom de propriete, trouve ' +
+                         TokenDesc(ctx, ctx.ast.pt));
+              Break;
+            End;
+          ctx.ast.nodes[prop].flags := flags;
+        End;
+      ListAdd(ctx, first, last, prop);
+      If CurIsP(ctx, ',') Then
+        PAdvance(ctx)
+      Else
+        Break;
+    End;
+  Expect(ctx, '}');
+  ctx.ast.nodes[node].e1 := first;
+  ParseObjectLiteral := node;
+End;
+
+Function ParseFunctionExpr(Var ctx: TCompilerContext; is_async: Boolean): LongInt;
+Var
+  node, name_tok, save_scope, flags: LongInt;
+  has_name: Boolean;
+Begin
+  flags := 0;
+  If is_async Then
+    Begin
+      flags := flags Or FN_ASYNC;
+      PAdvance(ctx);
+    End;
+  name_tok := ctx.ast.pt;
+  PAdvance(ctx);
+  If CurIsP(ctx, '*') Then
+    Begin
+      flags := flags Or FN_GENERATOR;
+      PAdvance(ctx);
+    End;
+  has_name := ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT;
+  If has_name Then
+    name_tok := ctx.ast.pt;
+  node := NewNode(ctx, N_FUNC_EXPR, name_tok);
+  ctx.ast.nodes[node].flags := flags;
+  If has_name Then
+    Begin
+      PAdvance(ctx);
+      { le nom d'une expression de fonction vit dans sa propre portee }
+      save_scope := ctx.ast.cur_scope;
+      ctx.ast.cur_scope := node;
+      DeclareName(ctx, DK_FNAME, name_tok, node);
+      ctx.ast.cur_scope := save_scope;
+    End;
+  ParseFuncRest(ctx, node);
+  ParseFunctionExpr := node;
+End;
+
+{ Fonction fleche : x => ..., (a, b) => ..., async x => ... }
+Function ParseArrowFn(Var ctx: TCompilerContext; is_async, no_in: Boolean): LongInt;
+Var
+  node, par, bnd: LongInt;
+  sv: TFuncSave;
+Begin
+  node := NewNode(ctx, N_FUNC_EXPR, ctx.ast.pt);
+  ParseArrowFn := node;
+  ctx.ast.nodes[node].flags := FN_ARROW;
+  If is_async Then
+    Begin
+      ctx.ast.nodes[node].flags := ctx.ast.nodes[node].flags Or FN_ASYNC;
+      PAdvance(ctx);
+    End;
+  EnterFunc(ctx, node, sv);
+  If ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT Then
+    Begin
+      par := NewNode(ctx, N_PARAM, ctx.ast.pt);
+      bnd := NewNode(ctx, N_BIND_IDENT, ctx.ast.pt);
+      DeclareName(ctx, DK_PARAM, ctx.ast.pt, bnd);
+      ctx.ast.nodes[par].e1 := bnd;
+      ctx.ast.nodes[node].e1 := par;
+      PAdvance(ctx);
+    End
+  Else
+    ParseParamList(ctx, node);
+  If Expect(ctx, '=>') Then
+    Begin
+      If CurIsP(ctx, '{') Then
+        ctx.ast.nodes[node].e2 := ParseFuncBlock(ctx)
+      Else
+        Begin
+          ctx.ast.nodes[node].flags := ctx.ast.nodes[node].flags Or FN_EXPR_BODY;
+          ctx.ast.nodes[node].e2 := ParseAssign(ctx, no_in);
+        End;
+    End;
+  LeaveFunc(ctx, sv);
+End;
+
+Function ParsePrimary(Var ctx: TCompilerContext): LongInt;
+Var
+  node, t: LongInt;
+  s: TTokenText;
+Begin
+  ParsePrimary := 0;
+  t := ctx.ast.pt;
+  s := ctx.lex.tokens[t].text;
+  Case ctx.lex.tokens[t].kind Of
+    TK_IDENT:
+      Begin
+        If (s = 'async') And TkIsKw(ctx, PeekIdx(ctx, 1), 'function') And
+           Not ctx.lex.tokens[PeekIdx(ctx, 1)].nl_before Then
+          ParsePrimary := ParseFunctionExpr(ctx, True)
+        Else
+          Begin
+            ParsePrimary := NewNode(ctx, N_IDENT, t);
+            PAdvance(ctx);
+          End;
+      End;
+    TK_NUMBER:
+      Begin
+        ParsePrimary := NewNode(ctx, N_NUMBER, t);
+        PAdvance(ctx);
+      End;
+    TK_STRING:
+      Begin
+        ParsePrimary := NewNode(ctx, N_STRING, t);
+        PAdvance(ctx);
+      End;
+    TK_REGEX:
+      Begin
+        ParsePrimary := NewNode(ctx, N_REGEX, t);
+        PAdvance(ctx);
+      End;
+    TK_TEMPLATE:
+      Begin
+        If (ctx.lex.tokens[t].tpl = TP_NOSUB) Or
+           (ctx.lex.tokens[t].tpl = TP_HEAD) Then
+          ParsePrimary := ParseTemplate(ctx)
+        Else
+          ParseError(ctx, t, 'gabarit inattendu');
+      End;
+    TK_KEYWORD:
+      Begin
+        If s = 'this' Then
+          node := NewNode(ctx, N_THIS, t)
+        Else If s = 'super' Then
+          node := NewNode(ctx, N_SUPER, t)
+        Else If s = 'null' Then
+          node := NewNode(ctx, N_NULL, t)
+        Else If (s = 'true') Or (s = 'false') Then
+          node := NewNode(ctx, N_BOOL, t)
+        Else If s = 'function' Then
+          Begin
+            ParsePrimary := ParseFunctionExpr(ctx, False);
+            Exit;
+          End
+        Else If s = 'class' Then
+          Begin
+            ParsePrimary := ParseClass(ctx, False);
+            Exit;
+          End
+        Else
+          Begin
+            ParseError(ctx, t, 'expression attendue, trouve ' + TokenDesc(ctx, t));
+            Exit;
+          End;
+        PAdvance(ctx);
+        ParsePrimary := node;
+      End;
+    TK_PUNCT:
+      Begin
+        If s = '(' Then
+          Begin
+            PAdvance(ctx);
+            node := ParseExpr(ctx, False);
+            Expect(ctx, ')');
+            If node <> 0 Then
+              ctx.ast.nodes[node].paren := True;
+            ParsePrimary := node;
+          End
+        Else If s = '[' Then
+          ParsePrimary := ParseArrayLiteral(ctx)
+        Else If s = '{' Then
+          ParsePrimary := ParseObjectLiteral(ctx)
+        Else
+          ParseError(ctx, t, 'expression attendue, trouve ' + TokenDesc(ctx, t));
+      End;
+  Else
+    ParseError(ctx, t, 'expression attendue, trouve ' + TokenDesc(ctx, t));
+  End;
+End;
+
+{ new X(args) : le callee est un membre sans appel. }
+Function ParseNew(Var ctx: TCompilerContext): LongInt;
+Var
+  node, callee, m, name_tok: LongInt;
+Begin
+  node := NewNode(ctx, N_NEW, ctx.ast.pt);
+  ParseNew := node;
+  PAdvance(ctx);
+  If CurIsP(ctx, '.') Then
+    Begin
+      ParseError(ctx, ctx.ast.pt, 'new.target n''est pas supporte');
+      Exit;
+    End;
+  If CurIsKw(ctx, 'new') Then
+    callee := ParseNew(ctx)
+  Else
+    callee := ParsePrimary(ctx);
+  While (callee <> 0) And (CurIsP(ctx, '.') Or CurIsP(ctx, '[')) Do
+    Begin
+      If CurIsP(ctx, '.') Then
+        Begin
+          PAdvance(ctx);
+          name_tok := ctx.ast.pt;
+          If Not IsPropertyNameTok(ctx, name_tok) Or
+             (ctx.lex.tokens[name_tok].kind in [TK_STRING, TK_NUMBER]) Then
+            Begin
+              ParseError(ctx, name_tok, 'nom de propriete attendu apres ".", trouve ' +
+                         TokenDesc(ctx, name_tok));
+              Break;
+            End;
+          m := NewNode(ctx, N_MEMBER, name_tok);
+          ctx.ast.nodes[m].e1 := callee;
+          PAdvance(ctx);
+        End
+      Else
+        Begin
+          m := NewNode(ctx, N_INDEX, ctx.ast.pt);
+          PAdvance(ctx);
+          ctx.ast.nodes[m].e1 := callee;
+          ctx.ast.nodes[m].e2 := ParseExpr(ctx, False);
+          Expect(ctx, ']');
+        End;
+      callee := m;
+    End;
+  ctx.ast.nodes[node].e1 := callee;
+  If CurIsP(ctx, '(') Then
+    ctx.ast.nodes[node].e2 := ParseCallArgs(ctx);
+End;
+
+{ Expression gauche : primaire suivi d'acces, d'appels, de ?. et de
+  gabarits etiquetes. }
+Function ParseLHS(Var ctx: TCompilerContext): LongInt;
+Var
+  e, m, name_tok: LongInt;
+  optional: Boolean;
+Begin
+  If CurIsKw(ctx, 'new') Then
+    e := ParseNew(ctx)
+  Else
+    e := ParsePrimary(ctx);
+  ParseLHS := e;
+  If e = 0 Then
+    Exit;
+  While True Do
+    Begin
+      optional := False;
+      If CurIsP(ctx, '?.') Then
+        Begin
+          optional := True;
+          PAdvance(ctx);
+        End;
+      If CurIsP(ctx, '(') Then
+        Begin
+          m := NewNode(ctx, N_CALL, ctx.ast.pt);
+          ctx.ast.nodes[m].e1 := e;
+          ctx.ast.nodes[m].e2 := ParseCallArgs(ctx);
+          If optional Then
+            ctx.ast.nodes[m].flags := EF_OPTIONAL;
+        End
+      Else If CurIsP(ctx, '[') Then
+        Begin
+          m := NewNode(ctx, N_INDEX, ctx.ast.pt);
+          PAdvance(ctx);
+          ctx.ast.nodes[m].e1 := e;
+          ctx.ast.nodes[m].e2 := ParseExpr(ctx, False);
+          Expect(ctx, ']');
+          If optional Then
+            ctx.ast.nodes[m].flags := EF_OPTIONAL;
+        End
+      Else If optional Or CurIsP(ctx, '.') Then
+        Begin
+          If Not optional Then
+            PAdvance(ctx);
+          name_tok := ctx.ast.pt;
+          If Not IsPropertyNameTok(ctx, name_tok) Or
+             (ctx.lex.tokens[name_tok].kind in [TK_STRING, TK_NUMBER]) Then
+            Begin
+              ParseError(ctx, name_tok, 'nom de propriete attendu apres ".", trouve ' +
+                         TokenDesc(ctx, name_tok));
+              Exit;
+            End;
+          m := NewNode(ctx, N_MEMBER, name_tok);
+          ctx.ast.nodes[m].e1 := e;
+          If optional Then
+            ctx.ast.nodes[m].flags := EF_OPTIONAL;
+          PAdvance(ctx);
+        End
+      Else If (ctx.lex.tokens[ctx.ast.pt].kind = TK_TEMPLATE) And
+              ((ctx.lex.tokens[ctx.ast.pt].tpl = TP_NOSUB) Or
+               (ctx.lex.tokens[ctx.ast.pt].tpl = TP_HEAD)) Then
+        Begin
+          m := NewNode(ctx, N_TAGGED, ctx.ast.pt);
+          ctx.ast.nodes[m].e1 := e;
+          ctx.ast.nodes[m].e2 := ParseTemplate(ctx);
+        End
+      Else
+        Break;
+      e := m;
+      ParseLHS := e;
+    End;
+End;
+
+Function ParseUnary(Var ctx: TCompilerContext): LongInt;
+Var
+  node, t, operand: LongInt;
+  s: TTokenText;
+  is_op: Boolean;
+Begin
+  t := ctx.ast.pt;
+  s := ctx.lex.tokens[t].text;
+  is_op := False;
+  If ctx.lex.tokens[t].kind = TK_OPERATOR Then
+    { & unaire : operateur de reference &fn, extension utilisee par test22.js }
+    is_op := (s = '!') Or (s = '~') Or (s = '+') Or (s = '-') Or (s = '&')
+  Else If ctx.lex.tokens[t].kind = TK_KEYWORD Then
+    is_op := (s = 'typeof') Or (s = 'void') Or (s = 'delete');
+  If is_op Then
+    Begin
+      node := NewNode(ctx, N_UNARY, t);
+      PAdvance(ctx);
+      ctx.ast.nodes[node].e1 := ParseUnary(ctx);
+      ParseUnary := node;
+    End
+  Else If (ctx.lex.tokens[t].kind = TK_OPERATOR) And
+          ((s = '++') Or (s = '--')) Then
+    Begin
+      node := NewNode(ctx, N_UPDATE, t);
+      ctx.ast.nodes[node].flags := UF_PREFIX;
+      PAdvance(ctx);
+      operand := ParseUnary(ctx);
+      If (operand <> 0) And Not IsSimpleTarget(ctx, operand) Then
+        ParseError(ctx, t, 'operande invalide pour ' + s);
+      ctx.ast.nodes[node].e1 := operand;
+      ParseUnary := node;
+    End
+  Else
+    Begin
+      operand := ParseLHS(ctx);
+      ParseUnary := operand;
+      If (operand <> 0) And (ctx.lex.tokens[ctx.ast.pt].kind = TK_OPERATOR) And
+         ((ctx.lex.tokens[ctx.ast.pt].text = '++') Or
+          (ctx.lex.tokens[ctx.ast.pt].text = '--')) And
+         Not ctx.lex.tokens[ctx.ast.pt].nl_before Then
+        Begin
+          If Not IsSimpleTarget(ctx, operand) Then
+            ParseError(ctx, ctx.ast.pt, 'operande invalide pour ' +
+                       ctx.lex.tokens[ctx.ast.pt].text);
+          node := NewNode(ctx, N_UPDATE, ctx.ast.pt);
+          ctx.ast.nodes[node].e1 := operand;
+          PAdvance(ctx);
+          ParseUnary := node;
+        End;
+    End;
+End;
+
+{ Operateurs binaires par escalade de precedence ; ** est associatif a
+  droite. }
+Function ParseBinary(Var ctx: TCompilerContext; min_prec: LongInt;
+                     no_in: Boolean): LongInt;
+Var
+  left, right, node, op_tok, prec: LongInt;
+  s: TTokenText;
+  is_logical: Boolean;
+Begin
+  left := ParseUnary(ctx);
+  ParseBinary := left;
+  If left = 0 Then
+    Exit;
+  While True Do
+    Begin
+      op_tok := ctx.ast.pt;
+      s := ctx.lex.tokens[op_tok].text;
+      prec := 0;
+      If ctx.lex.tokens[op_tok].kind = TK_OPERATOR Then
+        prec := BinPrec(s)
+      Else If ctx.lex.tokens[op_tok].kind = TK_KEYWORD Then
+        Begin
+          If (s = 'instanceof') Or ((s = 'in') And Not no_in) Then
+            prec := 8;
+        End;
+      If (prec = 0) Or (prec < min_prec) Then
+        Break;
+      PAdvance(ctx);
+      If s = '**' Then
+        right := ParseBinary(ctx, prec, no_in)
+      Else
+        right := ParseBinary(ctx, prec + 1, no_in);
+      is_logical := (s = '&&') Or (s = '||') Or (s = '??');
+      If is_logical Then
+        node := NewNode(ctx, N_LOGICAL, op_tok)
+      Else
+        node := NewNode(ctx, N_BINARY, op_tok);
+      ctx.ast.nodes[node].e1 := left;
+      ctx.ast.nodes[node].e2 := right;
+      { -a ** b est ambigu et interdit }
+      If (s = '**') And (ctx.ast.nodes[left].kind = N_UNARY) And
+         Not ctx.ast.nodes[left].paren Then
+        ParseError(ctx, op_tok, 'operande unaire interdit a gauche de **, ajouter des parentheses');
+      { a ?? b || c est interdit sans parentheses }
+      If is_logical Then
+        Begin
+          If (s = '??') Then
+            Begin
+              If ((ctx.ast.nodes[left].kind = N_LOGICAL) And
+                  Not ctx.ast.nodes[left].paren And
+                  (ctx.lex.tokens[ctx.ast.nodes[left].tok].text <> '??')) Or
+                 ((right <> 0) And (ctx.ast.nodes[right].kind = N_LOGICAL) And
+                  Not ctx.ast.nodes[right].paren And
+                  (ctx.lex.tokens[ctx.ast.nodes[right].tok].text <> '??')) Then
+                ParseError(ctx, op_tok, '?? ne peut pas etre melange avec || ou && sans parentheses');
+            End
+          Else
+            Begin
+              If ((ctx.ast.nodes[left].kind = N_LOGICAL) And
+                  Not ctx.ast.nodes[left].paren And
+                  (ctx.lex.tokens[ctx.ast.nodes[left].tok].text = '??')) Or
+                 ((right <> 0) And (ctx.ast.nodes[right].kind = N_LOGICAL) And
+                  Not ctx.ast.nodes[right].paren And
+                  (ctx.lex.tokens[ctx.ast.nodes[right].tok].text = '??')) Then
+                ParseError(ctx, op_tok, '?? ne peut pas etre melange avec || ou && sans parentheses');
+            End;
+        End;
+      left := node;
+      ParseBinary := left;
+    End;
+End;
+
+Function ParseConditional(Var ctx: TCompilerContext; no_in: Boolean): LongInt;
+Var
+  test, node: LongInt;
+Begin
+  test := ParseBinary(ctx, 1, no_in);
+  ParseConditional := test;
+  If (test <> 0) And CurIsP(ctx, '?') Then
+    Begin
+      node := NewNode(ctx, N_COND, ctx.ast.pt);
+      PAdvance(ctx);
+      ctx.ast.nodes[node].e1 := test;
+      ctx.ast.nodes[node].e2 := ParseAssign(ctx, False);
+      If Expect(ctx, ':') Then
+        ctx.ast.nodes[node].e3 := ParseAssign(ctx, no_in);
+      ParseConditional := node;
+    End;
+End;
+
+Function ParseAssign(Var ctx: TCompilerContext; no_in: Boolean): LongInt;
+Var
+  left, right, node, op_tok: LongInt;
+  s: TTokenText;
+  is_async: Boolean;
+Begin
+  If IsArrowAhead(ctx, is_async) Then
+    Begin
+      ParseAssign := ParseArrowFn(ctx, is_async, no_in);
+      Exit;
+    End;
+  left := ParseConditional(ctx, no_in);
+  ParseAssign := left;
+  If left = 0 Then
+    Exit;
+  op_tok := ctx.ast.pt;
+  s := ctx.lex.tokens[op_tok].text;
+  If (ctx.lex.tokens[op_tok].kind = TK_OPERATOR) And IsAssignOp(s) Then
+    Begin
+      If s = '=' Then
+        Begin
+          If Not IsPatternTarget(ctx, left) Then
+            ParseError(ctx, op_tok, 'cible d''affectation invalide');
+        End
+      Else If Not IsSimpleTarget(ctx, left) Then
+        ParseError(ctx, op_tok, 'cible d''affectation invalide pour ' + s);
+      PAdvance(ctx);
+      right := ParseAssign(ctx, no_in);
+      node := NewNode(ctx, N_ASSIGN, op_tok);
+      ctx.ast.nodes[node].e1 := left;
+      ctx.ast.nodes[node].e2 := right;
+      ParseAssign := node;
+    End;
+End;
+
+{ Expression complete, avec virgules (sequence). }
+Function ParseExpr(Var ctx: TCompilerContext; no_in: Boolean): LongInt;
+Var
+  first, last, e, seq: LongInt;
+Begin
+  e := ParseAssign(ctx, no_in);
+  ParseExpr := e;
+  If (e <> 0) And CurIsP(ctx, ',') Then
+    Begin
+      seq := NewNode(ctx, N_SEQUENCE, ctx.ast.pt);
+      first := 0;
+      last := 0;
+      ListAdd(ctx, first, last, e);
+      While CurIsP(ctx, ',') Do
+        Begin
+          PAdvance(ctx);
+          e := ParseAssign(ctx, no_in);
+          If e = 0 Then
+            Break;
+          ListAdd(ctx, first, last, e);
+        End;
+      ctx.ast.nodes[seq].e1 := first;
+      ParseExpr := seq;
+    End;
 End;
 
 { ---- Fonctions ---- }
@@ -2412,24 +3228,12 @@ Begin
   ParseParam := node;
 End;
 
-{ Parametres puis corps, dans la portee du noeud fonction/methode. Le
-  jeton courant est la parenthese ouvrante. }
-Procedure ParseFuncRest(Var ctx: TCompilerContext; node: LongInt);
+{ Liste de parametres : ( a, b = 1, ...c ). Le jeton courant est la
+  parenthese ouvrante ; la liste est rangee dans node.e1. }
+Procedure ParseParamList(Var ctx: TCompilerContext; node: LongInt);
 Var
-  save_scope, save_func, save_loop, save_switch, save_labels: LongInt;
-  first, last, p, body: LongInt;
+  first, last, p: LongInt;
 Begin
-  save_scope := ctx.ast.cur_scope;
-  save_func := ctx.ast.cur_func;
-  save_loop := ctx.ast.loop_depth;
-  save_switch := ctx.ast.switch_depth;
-  save_labels := ctx.ast.label_count;
-  ctx.ast.cur_scope := node;
-  ctx.ast.cur_func := node;
-  ctx.ast.loop_depth := 0;
-  ctx.ast.switch_depth := 0;
-  Inc(ctx.ast.func_depth);
-
   first := 0;
   last := 0;
   If Expect(ctx, '(') Then
@@ -2448,7 +3252,13 @@ Begin
       Expect(ctx, ')');
     End;
   ctx.ast.nodes[node].e1 := first;
+End;
 
+{ Corps de fonction entre accolades, dans la portee de la fonction. }
+Function ParseFuncBlock(Var ctx: TCompilerContext): LongInt;
+Var
+  body: LongInt;
+Begin
   body := NewNode(ctx, N_BLOCK, ctx.ast.pt);
   ctx.ast.nodes[body].flags := 1;
   If Expect(ctx, '{') Then
@@ -2456,14 +3266,19 @@ Begin
       ctx.ast.nodes[body].e1 := ParseStmtList(ctx);
       Expect(ctx, '}');
     End;
-  ctx.ast.nodes[node].e2 := body;
+  ParseFuncBlock := body;
+End;
 
-  Dec(ctx.ast.func_depth);
-  ctx.ast.label_count := save_labels;
-  ctx.ast.switch_depth := save_switch;
-  ctx.ast.loop_depth := save_loop;
-  ctx.ast.cur_func := save_func;
-  ctx.ast.cur_scope := save_scope;
+{ Parametres puis corps, dans la portee du noeud fonction/methode. Le
+  jeton courant est la parenthese ouvrante. }
+Procedure ParseFuncRest(Var ctx: TCompilerContext; node: LongInt);
+Var
+  sv: TFuncSave;
+Begin
+  EnterFunc(ctx, node, sv);
+  ParseParamList(ctx, node);
+  ctx.ast.nodes[node].e2 := ParseFuncBlock(ctx);
+  LeaveFunc(ctx, sv);
 End;
 
 { function [*] nom (...) corps. Le jeton courant est function (ou async
@@ -2564,7 +3379,7 @@ Begin
     Begin
       PAdvance(ctx);
       flags := flags Or MF_COMPUTED;
-      ctx.ast.nodes[node].e3 := ScanExpr(ctx, False, False, False);
+      ctx.ast.nodes[node].e3 := ParseAssign(ctx, False);
       Expect(ctx, ']');
     End
   Else If IsPropertyNameTok(ctx, ctx.ast.pt) Then
@@ -2599,35 +3414,50 @@ Begin
       If CurIsP(ctx, '=') Then
         Begin
           PAdvance(ctx);
-          ctx.ast.nodes[node].e1 := ScanExpr(ctx, False, False, False);
+          ctx.ast.nodes[node].e1 := ParseAssign(ctx, False);
         End;
       ConsumeSemi(ctx);
     End;
   ParseClassMember := node;
 End;
 
-Function ParseClassDecl(Var ctx: TCompilerContext): LongInt;
+{ class [Nom] [extends expr] corps. Declaration (nom obligatoire) ou
+  expression de classe. }
+Function ParseClass(Var ctx: TCompilerContext; is_decl: Boolean): LongInt;
 Var
-  node, name_tok, first, last, m, before: LongInt;
-  has_ctor: Boolean;
+  node, name_tok, first, last, m, before, save_scope: LongInt;
+  has_ctor, has_name: Boolean;
 Begin
+  name_tok := ctx.ast.pt;
   PAdvance(ctx);
-  If ctx.lex.tokens[ctx.ast.pt].kind <> TK_IDENT Then
+  has_name := ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT;
+  If is_decl And Not has_name Then
     Begin
       ParseError(ctx, ctx.ast.pt, 'nom de classe attendu, trouve ' +
                  TokenDesc(ctx, ctx.ast.pt));
       Synchronize(ctx);
-      ParseClassDecl := 0;
+      ParseClass := 0;
       Exit;
     End;
-  name_tok := ctx.ast.pt;
-  node := NewNode(ctx, N_CLASS_DECL, name_tok);
-  DeclareName(ctx, DK_CLASS, name_tok, node);
-  PAdvance(ctx);
+  If has_name Then
+    name_tok := ctx.ast.pt;
+  If is_decl Then
+    node := NewNode(ctx, N_CLASS_DECL, name_tok)
+  Else
+    node := NewNode(ctx, N_CLASS_EXPR, name_tok);
+  If is_decl Then
+    DeclareName(ctx, DK_CLASS, name_tok, node);
+  If has_name Then
+    PAdvance(ctx);
+  { la classe ouvre une portee : le nom d'une expression de classe y vit }
+  save_scope := ctx.ast.cur_scope;
+  ctx.ast.cur_scope := node;
+  If has_name And Not is_decl Then
+    DeclareName(ctx, DK_FNAME, name_tok, node);
   If CurIsKw(ctx, 'extends') Then
     Begin
       PAdvance(ctx);
-      ctx.ast.nodes[node].e1 := ScanExpr(ctx, False, False, True);
+      ctx.ast.nodes[node].e1 := ParseLHS(ctx);
     End;
   first := 0;
   last := 0;
@@ -2656,7 +3486,8 @@ Begin
       Expect(ctx, '}');
     End;
   ctx.ast.nodes[node].e2 := first;
-  ParseClassDecl := node;
+  ctx.ast.cur_scope := save_scope;
+  ParseClass := node;
 End;
 
 { ---- Instructions ---- }
@@ -2683,7 +3514,7 @@ Begin
   ParseParenExpr := 0;
   If Not Expect(ctx, '(') Then
     Exit;
-  ParseParenExpr := ScanExpr(ctx, True, False, False);
+  ParseParenExpr := ParseExpr(ctx, False);
   Expect(ctx, ')');
 End;
 
@@ -2768,7 +3599,7 @@ Begin
   Else If CurIsKw(ctx, 'var') Or CurIsKw(ctx, 'let') Or CurIsKw(ctx, 'const') Then
     init := ParseVarDecl(ctx, True)
   Else
-    init := ScanExpr(ctx, True, True, False);
+    init := ParseExpr(ctx, True);
 
   is_in := CurIsKw(ctx, 'in');
   is_of := TkIsId(ctx, ctx.ast.pt, 'of');
@@ -2791,7 +3622,10 @@ Begin
       ctx.ast.nodes[node].kind := kind;
       PAdvance(ctx);
       ctx.ast.nodes[node].e1 := init;
-      ctx.ast.nodes[node].e2 := ScanExpr(ctx, is_in, False, False);
+      If is_in Then
+        ctx.ast.nodes[node].e2 := ParseExpr(ctx, False)
+      Else
+        ctx.ast.nodes[node].e2 := ParseAssign(ctx, False);
       Expect(ctx, ')');
       Inc(ctx.ast.loop_depth);
       ctx.ast.nodes[node].e3 := ParseStatement(ctx);
@@ -2804,13 +3638,13 @@ Begin
         Begin
           test := 0;
           If Not CurIsP(ctx, ';') Then
-            test := ScanExpr(ctx, True, False, False);
+            test := ParseExpr(ctx, False);
           ctx.ast.nodes[node].e2 := test;
           If Expect(ctx, ';') Then
             Begin
               upd := 0;
               If Not CurIsP(ctx, ')') Then
-                upd := ScanExpr(ctx, True, False, False);
+                upd := ParseExpr(ctx, False);
               ctx.ast.nodes[node].e3 := upd;
               If Expect(ctx, ')') Then
                 Begin
@@ -2854,7 +3688,7 @@ Begin
           If CurIsKw(ctx, 'case') Then
             Begin
               PAdvance(ctx);
-              ctx.ast.nodes[cs].e1 := ScanExpr(ctx, True, False, False);
+              ctx.ast.nodes[cs].e1 := ParseExpr(ctx, False);
             End
           Else
             Begin
@@ -2997,7 +3831,7 @@ Begin
         ParseError(ctx, ctx.ast.pt, 'expression attendue apres throw');
     End
   Else
-    ctx.ast.nodes[node].e1 := ScanExpr(ctx, True, False, False);
+    ctx.ast.nodes[node].e1 := ParseExpr(ctx, False);
   ConsumeSemi(ctx);
   ParseReturnThrow := node;
 End;
@@ -3035,7 +3869,7 @@ Var
   node, ex: LongInt;
 Begin
   node := NewNode(ctx, N_EXPR_STMT, ctx.ast.pt);
-  ex := ScanExpr(ctx, True, False, False);
+  ex := ParseExpr(ctx, False);
   If ex = 0 Then
     Begin
       Synchronize(ctx);
@@ -3092,7 +3926,7 @@ Begin
       Else If s = 'function' Then
         ParseStatement := ParseFunctionDecl(ctx, False)
       Else If s = 'class' Then
-        ParseStatement := ParseClassDecl(ctx)
+        ParseStatement := ParseClass(ctx, True)
       Else If s = 'debugger' Then
         Begin
           node := NewNode(ctx, N_DEBUGGER, ctx.ast.pt);
@@ -3188,7 +4022,6 @@ Begin
     N_BLOCK:          NodeKindName := 'Block';
     N_EMPTY:          NodeKindName := 'Empty';
     N_EXPR_STMT:      NodeKindName := 'ExprStmt';
-    N_EXPR_RAW:       NodeKindName := 'Expr';
     N_VAR_DECL:       NodeKindName := 'VarDecl';
     N_DECLARATOR:     NodeKindName := 'Declarator';
     N_BIND_IDENT:     NodeKindName := 'Bind';
@@ -3218,6 +4051,35 @@ Begin
     N_METHOD:         NodeKindName := 'Method';
     N_FIELD:          NodeKindName := 'Field';
     N_STATIC_BLOCK:   NodeKindName := 'StaticBlock';
+    N_NUMBER:         NodeKindName := 'Number';
+    N_STRING:         NodeKindName := 'String';
+    N_REGEX:          NodeKindName := 'Regex';
+    N_TEMPLATE:       NodeKindName := 'Template';
+    N_TEMPLATE_STR:   NodeKindName := 'TemplateStr';
+    N_IDENT:          NodeKindName := 'Ident';
+    N_THIS:           NodeKindName := 'This';
+    N_SUPER:          NodeKindName := 'Super';
+    N_NULL:           NodeKindName := 'Null';
+    N_BOOL:           NodeKindName := 'Bool';
+    N_ARRAY_LIT:      NodeKindName := 'ArrayLit';
+    N_ELISION:        NodeKindName := 'Elision';
+    N_SPREAD:         NodeKindName := 'Spread';
+    N_OBJECT_LIT:     NodeKindName := 'ObjectLit';
+    N_PROP:           NodeKindName := 'Prop';
+    N_FUNC_EXPR:      NodeKindName := 'FuncExpr';
+    N_CLASS_EXPR:     NodeKindName := 'ClassExpr';
+    N_UNARY:          NodeKindName := 'Unary';
+    N_UPDATE:         NodeKindName := 'Update';
+    N_BINARY:         NodeKindName := 'Binary';
+    N_LOGICAL:        NodeKindName := 'Logical';
+    N_ASSIGN:         NodeKindName := 'Assign';
+    N_COND:           NodeKindName := 'Cond';
+    N_CALL:           NodeKindName := 'Call';
+    N_NEW:            NodeKindName := 'New';
+    N_MEMBER:         NodeKindName := 'Member';
+    N_INDEX:          NodeKindName := 'Index';
+    N_SEQUENCE:       NodeKindName := 'Sequence';
+    N_TAGGED:         NodeKindName := 'TaggedTemplate';
   Else
     NodeKindName := 'Node';
   End;
@@ -3233,6 +4095,7 @@ Begin
     DK_CLASS: DeclKindName := 'class';
     DK_PARAM: DeclKindName := 'param';
     DK_CATCH: DeclKindName := 'catch';
+    DK_FNAME: DeclKindName := 'fname';
   Else
     DeclKindName := '?';
   End;
@@ -3311,32 +4174,78 @@ Begin
         If f And MF_CONSTRUCTOR <> 0 Then
           Write(' constructor');
       End;
-    N_EXPR_RAW:
+    N_NUMBER, N_STRING, N_REGEX, N_IDENT, N_BOOL, N_THIS, N_SUPER,
+    N_NULL:
+      Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+    N_TEMPLATE_STR:
       Begin
-        Write(' [');
-        e := ctx.ast.nodes[n].e1;
-        While e <= ctx.ast.nodes[n].e2 Do
-          Begin
-            t := ctx.lex.tokens[e].text;
-            Write(' ', t);
-            Inc(e);
-            If e - ctx.ast.nodes[n].e1 >= 14 Then
-              Begin
-                If e <= ctx.ast.nodes[n].e2 Then
-                  Write(' ...');
-                Break;
-              End;
-          End;
-        Write(' ]');
+        Write(' "');
+        PrintPoolText(ctx, ctx.lex.tokens[ctx.ast.nodes[n].tok].sval_off,
+                      ctx.lex.tokens[ctx.ast.nodes[n].tok].sval_len);
+        Write('"');
       End;
+    N_UNARY, N_BINARY, N_LOGICAL, N_ASSIGN:
+      Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+    N_UPDATE:
+      Begin
+        Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+        If f And UF_PREFIX <> 0 Then
+          Write(' prefixe')
+        Else
+          Write(' postfixe');
+      End;
+    N_MEMBER:
+      Begin
+        Write(' .', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+        If f And EF_OPTIONAL <> 0 Then
+          Write(' ?.');
+      End;
+    N_INDEX, N_CALL:
+      If f And EF_OPTIONAL <> 0 Then
+        Write(' ?.');
+    N_PROP:
+      Begin
+        If f And PR_SPREAD <> 0 Then
+          Write(' ...')
+        Else If f And PR_COMPUTED = 0 Then
+          Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text)
+        Else
+          Write(' [calcule]');
+        If f And PR_SHORTHAND <> 0 Then
+          Write(' (raccourci)');
+        If f And PR_GETTER <> 0 Then
+          Write(' get');
+        If f And PR_SETTER <> 0 Then
+          Write(' set');
+        If f And PR_METHOD <> 0 Then
+          Write(' methode');
+      End;
+    N_FUNC_EXPR:
+      Begin
+        If f And FN_ARROW <> 0 Then
+          Write(' fleche')
+        Else If f And FN_METHOD = 0 Then
+          Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+        If f And FN_ASYNC <> 0 Then
+          Write(' async');
+        If f And FN_GENERATOR <> 0 Then
+          Write(' generator');
+        If f And FN_EXPR_BODY <> 0 Then
+          Write(' (corps expression)');
+      End;
+    N_CLASS_EXPR:
+      If ctx.lex.tokens[ctx.ast.nodes[n].tok].kind = TK_IDENT Then
+        Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
   End;
   Write('  @', ctx.lex.tokens[ctx.ast.nodes[n].tok].line, ':',
         ctx.lex.tokens[ctx.ast.nodes[n].tok].col);
   Writeln;
   Case ctx.ast.nodes[n].kind Of
-    N_PROGRAM, N_BLOCK, N_VAR_DECL, N_ARRAY_PATTERN, N_OBJECT_PATTERN:
+    N_PROGRAM, N_BLOCK, N_VAR_DECL, N_ARRAY_PATTERN, N_OBJECT_PATTERN,
+    N_ARRAY_LIT, N_OBJECT_LIT, N_TEMPLATE, N_SEQUENCE:
       DumpNodeList(ctx, ctx.ast.nodes[n].e1, indent + 1);
-    N_EXPR_STMT, N_RETURN, N_THROW, N_LABELED:
+    N_EXPR_STMT, N_RETURN, N_THROW, N_LABELED, N_SPREAD, N_UNARY, N_UPDATE,
+    N_MEMBER:
       DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
     N_DECLARATOR, N_PATTERN_ELEM:
       Begin
@@ -3401,7 +4310,29 @@ Begin
         DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
         DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
       End;
-    N_FUNC_DECL, N_METHOD:
+    N_BINARY, N_LOGICAL, N_ASSIGN, N_INDEX, N_TAGGED:
+      Begin
+        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
+        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+      End;
+    N_COND:
+      Begin
+        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
+        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
+      End;
+    N_CALL, N_NEW:
+      Begin
+        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
+        DumpNodeList(ctx, ctx.ast.nodes[n].e2, indent + 1);
+      End;
+    N_PROP:
+      Begin
+        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
+        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
+      End;
+    N_FUNC_DECL, N_METHOD, N_FUNC_EXPR:
       Begin
         DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
         DumpNodeList(ctx, ctx.ast.nodes[n].e1, indent + 1);
@@ -3412,7 +4343,7 @@ Begin
         DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
         DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
       End;
-    N_CLASS_DECL:
+    N_CLASS_DECL, N_CLASS_EXPR:
       Begin
         DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
         DumpNodeList(ctx, ctx.ast.nodes[n].e2, indent + 1);
