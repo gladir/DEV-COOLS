@@ -13,7 +13,7 @@
   05. [IMPLEMENTE] Parser les expressions avec precedences et associativites exactes : virgule, affectations (= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=), ternaire, ?? || &&, bit a bit, ==/!=/===/!==, relationnels (instanceof, in), decalages, + -, * / %, **, unaires (typeof void delete ! ~ + - ++ --), postfixes, appels/membres/new, optional chaining, spread/rest, fonctions anonymes, fonctions fleches (x => x*2, (a,b) => corps de bloc), litteraux de tableaux et d'objets (raccourcis, cles calculees, methodes, getters/setters), parametres par defaut.
   06. [IMPLEMENTE] Construire l'AST et l'analyse semantique : table des symboles et des scopes (global, fonction, bloc), hoisting de var/function, zone morte temporelle (TDZ) de let/const, erreur sur reaffectation d'une const, detection des variables capturees par des fonctions imbriquees (necessaire aux closures), resolution de this (global, methode, constructeur, fleche) et diagnostics de redeclaration/variable non declaree.
   07. [IMPLEMENTE] Definir le modele de valeurs runtime 32 bits et le gestionnaire memoire : valeurs etiquetees (undefined, null, booleen, nombre, chaine, objet, tableau, fonction/closure, RegExp), nombres IEEE 754 via FPU x87 avec chemin rapide entier, allocation sur le tas Windows (HeapAlloc/VirtualAlloc), tampons de chaines, pile d'appels, et ramasse-miettes simple (mark & sweep) ou strategie documentee de non-liberation.
-  08. [A FAIRE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
+  08. [IMPLEMENTE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
   09. [A FAIRE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
   10. [A FAIRE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
   11. [A FAIRE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
@@ -160,6 +160,8 @@ Const
   RT_T_ARRAY = 6;
   RT_T_FUNCTION = 7;
   RT_T_REGEXP = 8;
+  RT_T_TDZ = 9;                   { variable lexicale pas encore initialisee }
+  RT_TAG_BASE = $FFF90000;
   RT_FPU_CW = '027F';
   { cellule du tas }
   RT_HDR_SIZE = 8;
@@ -253,6 +255,78 @@ Const
   RC_INSTANCEOF = 4194304;
   RC_ARGUMENTS = 8388608;
   RC_LAST = 8388608;
+  { ---- Pool de donnees (TODO 8) ---- }
+  SEC_RDATA = 1;
+  SEC_DATA = 2;
+  MAX_RDATA = {$IFDEF FPC}524288{$ELSE}8000{$ENDIF};
+  MAX_DATA_IMG = {$IFDEF FPC}131072{$ELSE}4000{$ENDIF};
+  MAX_DPOOL = {$IFDEF FPC}262144{$ELSE}8000{$ENDIF};
+  MAX_STRS = {$IFDEF FPC}16384{$ELSE}500{$ENDIF};
+  HASH_SIZE = {$IFDEF FPC}32768{$ELSE}1024{$ENDIF};
+  MAX_DBLS = {$IFDEF FPC}4096{$ELSE}100{$ENDIF};
+  MAX_FDESCS = {$IFDEF FPC}8192{$ELSE}300{$ENDIF};
+  MAX_CDESCS = {$IFDEF FPC}1024{$ELSE}50{$ENDIF};
+  MAX_CMEMBERS = {$IFDEF FPC}8192{$ELSE}300{$ENDIF};
+  MAX_DSYMS = {$IFDEF FPC}32768{$ELSE}1000{$ENDIF};
+  MAX_RELOCS = {$IFDEF FPC}32768{$ELSE}1000{$ENDIF};
+  { genres de symboles de donnees }
+  DS_STRING = 1;
+  DS_DOUBLE = 2;
+  DS_FDESC = 3;
+  DS_CLASSDESC = 4;
+  DS_ATOMS = 5;
+  DS_RTVAR = 6;
+  DS_GLOBAL = 7;
+  OF_STATIC = 1;                  { drapeau d'en-tete : cellule statique }
+  { drapeaux d'un descripteur de fonction }
+  FDF_ARROW = 1;
+  FDF_ASYNC = 2;
+  FDF_GENERATOR = 4;
+  FDF_METHOD = 8;
+  FDF_CTOR = 16;
+  FDF_DERIVED = 32;
+  FDF_STATIC = 64;
+  FDF_GETTER = 128;
+  FDF_SETTER = 256;
+  FDF_USES_THIS = 512;
+  FDF_USES_ARGS = 1024;
+  FDF_THIS_CAPTURED = 2048;
+  FDF_EXPR_BODY = 4096;
+  FDF_FIELD_INIT = 8192;
+  FDF_STATIC_BLOCK = 16384;
+  { descripteur de classe : nom, constructeur, drapeaux, membres }
+  RT_CD_NAME = 0;
+  RT_CD_CTOR = 4;
+  RT_CD_FLAGS = 8;
+  RT_CD_NMEMBERS = 12;
+  RT_CD_MEMBERS = 16;
+  RT_CM_KEY = 0;
+  RT_CM_FLAGS = 4;
+  RT_CM_DESC = 8;
+  RT_CM_SIZE = 16;
+  CDF_DERIVED = 1;
+  CM_STATIC = 1;
+  CM_GETTER = 2;
+  CM_SETTER = 4;
+  CM_COMPUTED = 8;
+  CM_FIELD = 16;
+  CM_METHOD = 32;
+  CM_CTOR = 64;
+  CM_STATIC_BLOCK = 128;
+  STD_STR_COUNT = 21;
+  STD_ATOM_FIRST = 15;
+  STD_DBL_NEGZERO = 3;
+  StdStrings: Array[1..STD_STR_COUNT] Of String[20] = (
+    '', 'undefined', 'null', 'true', 'false', 'NaN', 'Infinity', '-Infinity',
+    'object', 'boolean', 'number', 'string', 'function', '[object Object]',
+    'length', 'prototype', 'constructor', 'name', 'message', 'toString',
+    'valueOf'
+  );
+  RT_DATA_VAR_COUNT = 12;
+  RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
+    'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
+    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw'
+  );
   BUILTIN_COUNT = 47;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
@@ -307,6 +381,7 @@ Type
     dump_ast    : Boolean;
     dump_scopes : Boolean;
     dump_runtime: Boolean;
+    dump_data   : Boolean;
     output_name : TString;
   End;
 
@@ -404,6 +479,7 @@ Type
     decl_head: LongInt;        { premiere declaration de cette portee }
     sym  : LongInt;            { symbole lie ou portee fournissant this }
     aux  : LongInt;            { genre de resolution }
+    ds   : LongInt;            { chaine, double ou descripteur associe (donnees) }
   End;
 
   { Etat sauvegarde a l'entree d'une fonction }
@@ -460,6 +536,7 @@ Type
   TSymbol = Record
     name_tok, scope, node, next, flags, refs, writes: LongInt;
     kind: TDeclKind;
+    ds  : LongInt;             { symbole de donnees (variable statique) }
   End;
 
   { Variable libre d'une fonction : fscope capture sym. }
@@ -485,6 +562,64 @@ Type
     classes, cells, try_blocks, throws, calls, news: LongInt;
   End;
 
+  TStrEntry = Record
+    off, len: LongInt;
+    hash    : Int64;
+    atom_id : LongInt;
+    sym     : LongInt;
+  End;
+
+  TDblEntry = Record
+    lo, hi: Int64;
+    sym   : LongInt;
+  End;
+
+  TFuncDesc = Record
+    node, name_str, nparams, flags, ncells, sym: LongInt;
+    code_sym: String[100];
+  End;
+
+  TClassDesc = Record
+    node, name_str, ctor_fd, flags, first_member, member_count, sym: LongInt;
+  End;
+
+  TCMember = Record
+    key_str, flags, fd: LongInt;
+  End;
+
+  TDataSym = Record
+    name: String[100];
+    sec : Integer;
+    ofs, size: LongInt;
+    kind: Integer;
+  End;
+
+  TReloc = Record
+    sec: Integer;
+    ofs, target: LongInt;
+  End;
+
+  { Pool de constantes et de donnees : images des sections .rdata et
+    .data, symboles et relocations. }
+  TDataInfo = Record
+    built, failed: Boolean;
+    str_count, dpool_len, atom_count, atom_table_sym, dbl_count, fd_count,
+    cd_count, cm_count, sym_count, reloc_count, rd_size, dt_size,
+    global_count: LongInt;
+    hash  : Array[0..HASH_SIZE - 1] Of LongInt;
+    strs  : Array[1..MAX_STRS] Of TStrEntry;
+    atoms : Array[1..MAX_STRS] Of LongInt;
+    dpool : Array[0..MAX_DPOOL] Of Char;
+    dbls  : Array[1..MAX_DBLS] Of TDblEntry;
+    fdescs: Array[1..MAX_FDESCS] Of TFuncDesc;
+    cdescs: Array[1..MAX_CDESCS] Of TClassDesc;
+    cmembers: Array[1..MAX_CMEMBERS] Of TCMember;
+    syms  : Array[1..MAX_DSYMS] Of TDataSym;
+    relocs: Array[1..MAX_RELOCS] Of TReloc;
+    rd    : Array[0..MAX_RDATA - 1] Of Byte;
+    dt    : Array[0..MAX_DATA_IMG - 1] Of Byte;
+  End;
+
   TCompilerContext = Record
     options    : TPipelineOptions;
     source_name: TString;
@@ -500,6 +635,7 @@ Type
     ast        : TAstInfo;
     sem        : TSemInfo;
     rt         : TRtModel;
+    data       : TDataInfo;
   End;
 
 Const
@@ -651,6 +787,7 @@ Begin
   ctx.options.dump_ast := False;
   ctx.options.dump_scopes := False;
   ctx.options.dump_runtime := False;
+  ctx.options.dump_data := False;
   ctx.options.output_name := '';
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
@@ -749,6 +886,7 @@ Begin
   Writeln('  -ast          affiche l''arbre syntaxique et les declarations');
   Writeln('  -scopes       affiche les portees, symboles et captures');
   Writeln('  -runtime      affiche le modele runtime (valeurs, tas, pile)');
+  Writeln('  -data         affiche le pool de donnees (.rdata, .data)');
   Writeln('  -version      affiche la version');
   Writeln('  -h, -?        affiche cette aide');
   Writeln;
@@ -791,6 +929,8 @@ Begin
         ctx.options.show_version := True
       Else If IsOption(arg, 'v') Or IsOption(arg, 'verbose') Then
         ctx.options.verbose := True
+      Else If IsOption(arg, 'data') Then
+        ctx.options.dump_data := True
       Else If IsOption(arg, 'runtime') Then
         ctx.options.dump_runtime := True
       Else If IsOption(arg, 'scopes') Then
@@ -2231,6 +2371,7 @@ Begin
   ctx.ast.nodes[n].decl_head := 0;
   ctx.ast.nodes[n].sym := 0;
   ctx.ast.nodes[n].aux := 0;
+  ctx.ast.nodes[n].ds := 0;
   NewNode := n;
 End;
 
@@ -5666,7 +5807,7 @@ End;
     hi >= FFF90000h  valeur etiquetee : hi = FFF90000h + type
 
   Types : 0 int32, 1 undefined, 2 null, 3 boolean, 4 string, 5 object,
-  6 array, 7 function, 8 regexp. Un nombre est donc soit un double,
+  6 array, 7 function, 8 regexp, 9 marque TDZ (interne). Un nombre est donc soit un double,
   soit un int32 (chemin rapide entier : add/sub/imul avec test de
   depassement, repli sur le FPU). Les deux formes sont equivalentes ;
   les operations acceptent les deux et la forme canonique n'est pas
@@ -5714,6 +5855,7 @@ Begin
     RT_T_ARRAY:     RtTagName := 'array';
     RT_T_FUNCTION:  RtTagName := 'function';
     RT_T_REGEXP:    RtTagName := 'regexp';
+    RT_T_TDZ:       RtTagName := 'tdz (interne)';
   Else
     RtTagName := '?';
   End;
@@ -6002,7 +6144,7 @@ Begin
   Writeln('  Valeur : ', RT_VALUE_SIZE, ' octets, lo = charge utile (+', RT_VAL_LO,
           '), hi = etiquette (+', RT_VAL_HI, ')');
   Writeln('    hi < ', RT_TAG_PREFIX, '0000h : nombre double IEEE 754');
-  For b := RT_T_INT32 To RT_T_REGEXP Do
+  For b := RT_T_INT32 To RT_T_TDZ Do
     Writeln('    ', RtTagHex(b), '  ', RtTagName(b));
   Writeln('    nombre = double ou int32 ; -0 et depassement passent par le FPU');
   Writeln('    FPU : mot de controle ', RT_FPU_CW, 'h (double precision, arrondi au plus pres)');
@@ -6029,6 +6171,9 @@ Begin
   Writeln('    descript.: nom +', RT_FD_NAME, ', nb params +', RT_FD_NPARAMS,
           ', drapeaux +', RT_FD_FLAGS, ', nb cellules +', RT_FD_NCELLS,
           ' (', RT_FD_SIZE, ' octets, en .rdata)');
+  Writeln('    classe   : nom +', RT_CD_NAME, ', ctor +', RT_CD_CTOR, ', drapeaux +',
+          RT_CD_FLAGS, ', nb membres +', RT_CD_NMEMBERS, ', membres +',
+          RT_CD_MEMBERS, ' (', RT_CM_SIZE, ' octets : cle, drapeaux, descripteur)');
   Writeln('    cellule  : valeur +', RT_CELL_VALUE, ' (taille ', RT_CELL_SIZE, ')');
   Writeln('    environ. : nb +', RT_ENV_COUNT, ', pointeurs de cellules +',
           RT_ENV_CELLS);
@@ -6079,6 +6224,1016 @@ Begin
     End;
 End;
 
+{ ============================================================
+  TODO 8 - POOL DE CONSTANTES ET DE DONNEES
+
+  Toutes les donnees statiques du programme sont construites ici, en
+  octets, avec leurs symboles et leurs relocations :
+
+    .rdata  chaines internees (une cellule de chaine par chaine
+            distincte), constantes double, descripteurs de fonctions,
+            descripteurs de classes, table des atomes.
+    .data   variables du runtime et variables globales du programme
+            (8 octets chacune, initialisees a undefined ou a la marque
+            TDZ).
+
+  Une chaine litterale et un nom de propriete identiques partagent la
+  meme cellule. Les noms de proprietes sont des atomes : comme les
+  atomes sont internes, une propriete se retrouve par comparaison de
+  pointeurs. La table des atomes permet au runtime de les enregistrer
+  dans sa table de hachage au demarrage. Le hachage des chaines est
+  FNV-1a 32 bits sur les octets UTF-8.
+
+  Nommage des symboles (stable, prefixe) :
+    _JSK_nnnn  chaine        _JSD_nnnn  constante double
+    _JSFD_nnnn descripteur   _JSF_nnnn_nom  code d'une fonction
+    _JSC_nnnn  classe        _JSV_nom  variable globale
+    _JSL_nnnn  etiquette     _JSRT_nom routine ou donnee du runtime
+    _JSATOMS   table des atomes
+  ============================================================ }
+
+{ ---- Nommage ---- }
+
+Function Pad4(n: LongInt): TString;
+Var
+  s: String[12];
+Begin
+  Str(n, s);
+  While Length(s) < 4 Do
+    s := '0' + s;
+  Pad4 := s;
+End;
+
+{ Identifiant JavaScript -> suffixe de symbole : lettres, chiffres et _
+  gardes ; $ devient _S_ ; les octets non ASCII deviennent _xHH. }
+Function MangleIdent(Const s: TTokenText): TString;
+Var
+  r: TString;
+  i: Integer;
+  c: Char;
+Begin
+  r := '';
+  For i := 1 To Length(s) Do
+    Begin
+      c := s[i];
+      If ((c >= 'A') And (c <= 'Z')) Or ((c >= 'a') And (c <= 'z')) Or
+         ((c >= '0') And (c <= '9')) Or (c = '_') Then
+        r := r + c
+      Else If c = '$' Then
+        r := r + '_S_'
+      Else
+        r := r + '_x' + Copy(RtHex4(Ord(c)), 3, 2);
+    End;
+  MangleIdent := r;
+End;
+
+Function SymStr(id: LongInt): TString;
+Begin
+  SymStr := '_JSK_' + Pad4(id);
+End;
+
+Function SymDbl(id: LongInt): TString;
+Begin
+  SymDbl := '_JSD_' + Pad4(id);
+End;
+
+Function SymFdesc(id: LongInt): TString;
+Begin
+  SymFdesc := '_JSFD_' + Pad4(id);
+End;
+
+Function SymClassDesc(id: LongInt): TString;
+Begin
+  SymClassDesc := '_JSC_' + Pad4(id);
+End;
+
+Function SymLabel(id: LongInt): TString;
+Begin
+  SymLabel := '_JSL_' + Pad4(id);
+End;
+
+Function SymRt(Const name: TString): TString;
+Begin
+  SymRt := '_JSRT_' + name;
+End;
+
+{ ---- Ecriture dans les images de sections ---- }
+
+Procedure DataFail(Var ctx: TCompilerContext; Const msg: TString);
+Begin
+  If Not ctx.data.failed Then
+    PipelineError(ctx, msg);
+  ctx.data.failed := True;
+End;
+
+Procedure PutByte(Var ctx: TCompilerContext; sec: Integer; ofs: LongInt; b: LongInt);
+Begin
+  If sec = SEC_RDATA Then
+    Begin
+      If ofs >= MAX_RDATA Then
+        Begin
+          DataFail(ctx, 'section .rdata trop grande');
+          Exit;
+        End;
+      ctx.data.rd[ofs] := Byte(b And $FF);
+    End
+  Else
+    Begin
+      If ofs >= MAX_DATA_IMG Then
+        Begin
+          DataFail(ctx, 'section .data trop grande');
+          Exit;
+        End;
+      ctx.data.dt[ofs] := Byte(b And $FF);
+    End;
+End;
+
+{ Ecrit un DWORD petit-boutiste ; v peut etre non signe (Int64). }
+Procedure PutDword(Var ctx: TCompilerContext; sec: Integer; ofs: LongInt; v: Int64);
+Var
+  i: Integer;
+  w: Int64;
+Begin
+  w := v And $FFFFFFFF;
+  For i := 0 To 3 Do
+    Begin
+      PutByte(ctx, sec, ofs + i, w And $FF);
+      w := w Shr 8;
+    End;
+End;
+
+Function SecSize(Var ctx: TCompilerContext; sec: Integer): LongInt;
+Begin
+  If sec = SEC_RDATA Then
+    SecSize := ctx.data.rd_size
+  Else
+    SecSize := ctx.data.dt_size;
+End;
+
+{ Reserve n octets alignes sur 8 ; retourne l'offset. }
+Function SecAlloc(Var ctx: TCompilerContext; sec: Integer; n: LongInt): LongInt;
+Var
+  ofs: LongInt;
+Begin
+  If sec = SEC_RDATA Then
+    Begin
+      ofs := (ctx.data.rd_size + 7) And Not 7;
+      ctx.data.rd_size := ofs + n;
+      If ctx.data.rd_size > MAX_RDATA Then
+        DataFail(ctx, 'section .rdata trop grande');
+    End
+  Else
+    Begin
+      ofs := (ctx.data.dt_size + 7) And Not 7;
+      ctx.data.dt_size := ofs + n;
+      If ctx.data.dt_size > MAX_DATA_IMG Then
+        DataFail(ctx, 'section .data trop grande');
+    End;
+  SecAlloc := ofs;
+End;
+
+Function NewDataSym(Var ctx: TCompilerContext; Const name: TString;
+                    sec: Integer; ofs, size: LongInt; kind: Integer): LongInt;
+Begin
+  NewDataSym := 0;
+  If ctx.data.sym_count >= MAX_DSYMS Then
+    Begin
+      DataFail(ctx, 'trop de symboles de donnees');
+      Exit;
+    End;
+  Inc(ctx.data.sym_count);
+  ctx.data.syms[ctx.data.sym_count].name := name;
+  ctx.data.syms[ctx.data.sym_count].sec := sec;
+  ctx.data.syms[ctx.data.sym_count].ofs := ofs;
+  ctx.data.syms[ctx.data.sym_count].size := size;
+  ctx.data.syms[ctx.data.sym_count].kind := kind;
+  NewDataSym := ctx.data.sym_count;
+End;
+
+{ Le DWORD a (sec, ofs) contient l'adresse du symbole target. }
+Procedure AddReloc(Var ctx: TCompilerContext; sec: Integer; ofs, target: LongInt);
+Begin
+  If ctx.data.reloc_count >= MAX_RELOCS Then
+    Begin
+      DataFail(ctx, 'trop de relocations');
+      Exit;
+    End;
+  Inc(ctx.data.reloc_count);
+  ctx.data.relocs[ctx.data.reloc_count].sec := sec;
+  ctx.data.relocs[ctx.data.reloc_count].ofs := ofs;
+  ctx.data.relocs[ctx.data.reloc_count].target := target;
+End;
+
+{ ---- Chaines internees ---- }
+
+Function JsHash(Var ctx: TCompilerContext; off, len: LongInt): Int64;
+Var
+  h: Int64;
+  i: LongInt;
+Begin
+  h := 2166136261;
+  For i := 0 To len - 1 Do
+    Begin
+      h := h Xor Ord(ctx.data.dpool[off + i]);
+      h := (h * 16777619) And $FFFFFFFF;
+    End;
+  JsHash := h;
+End;
+
+{ La chaine est deja copiee dans dpool a partir de off ; la retire si elle
+  existe deja. Retourne son identifiant. }
+Function InternAt(Var ctx: TCompilerContext; off, len: LongInt): LongInt;
+Var
+  h: Int64;
+  slot, id, i: LongInt;
+  same: Boolean;
+Begin
+  InternAt := 0;
+  h := JsHash(ctx, off, len);
+  slot := h And (HASH_SIZE - 1);
+  While ctx.data.hash[slot] <> 0 Do
+    Begin
+      id := ctx.data.hash[slot];
+      If (ctx.data.strs[id].len = len) And (ctx.data.strs[id].hash = h) Then
+        Begin
+          same := True;
+          For i := 0 To len - 1 Do
+            If ctx.data.dpool[ctx.data.strs[id].off + i] <> ctx.data.dpool[off + i] Then
+              same := False;
+          If same Then
+            Begin
+              ctx.data.dpool_len := off;
+              InternAt := id;
+              Exit;
+            End;
+        End;
+      slot := (slot + 1) And (HASH_SIZE - 1);
+    End;
+  If ctx.data.str_count >= MAX_STRS Then
+    Begin
+      DataFail(ctx, 'trop de chaines litterales');
+      ctx.data.dpool_len := off;
+      Exit;
+    End;
+  Inc(ctx.data.str_count);
+  id := ctx.data.str_count;
+  ctx.data.strs[id].off := off;
+  ctx.data.strs[id].len := len;
+  ctx.data.strs[id].hash := h;
+  ctx.data.strs[id].atom_id := 0;
+  ctx.data.strs[id].sym := 0;
+  ctx.data.hash[slot] := id;
+  InternAt := id;
+End;
+
+Procedure DpoolPut(Var ctx: TCompilerContext; c: Char);
+Begin
+  If ctx.data.dpool_len >= MAX_DPOOL Then
+    Begin
+      DataFail(ctx, 'pool de chaines statiques plein');
+      Exit;
+    End;
+  ctx.data.dpool[ctx.data.dpool_len] := c;
+  Inc(ctx.data.dpool_len);
+End;
+
+Function InternPool(Var ctx: TCompilerContext; off, len: LongInt): LongInt;
+Var
+  start, i: LongInt;
+Begin
+  start := ctx.data.dpool_len;
+  For i := 0 To len - 1 Do
+    DpoolPut(ctx, ctx.lex.pool[off + i]);
+  InternPool := InternAt(ctx, start, len);
+End;
+
+Function InternText(Var ctx: TCompilerContext; Const s: TString): LongInt;
+Var
+  start, i: LongInt;
+Begin
+  start := ctx.data.dpool_len;
+  For i := 1 To Length(s) Do
+    DpoolPut(ctx, s[i]);
+  InternText := InternAt(ctx, start, Length(s));
+End;
+
+{ Marque une chaine comme atome (nom de propriete). }
+Function MarkAtom(Var ctx: TCompilerContext; id: LongInt): LongInt;
+Begin
+  If (id <> 0) And (ctx.data.strs[id].atom_id = 0) Then
+    Begin
+      Inc(ctx.data.atom_count);
+      ctx.data.strs[id].atom_id := ctx.data.atom_count;
+      ctx.data.atoms[ctx.data.atom_count] := id;
+    End;
+  MarkAtom := id;
+End;
+
+{ Nom de propriete porte par un jeton : identifiant, mot-cle, chaine ou
+  nombre (forme canonique si entier). }
+Function KeyString(Var ctx: TCompilerContext; tok: LongInt): LongInt;
+Var
+  s: String[24];
+  v: Double;
+Begin
+  KeyString := 0;
+  Case ctx.lex.tokens[tok].kind Of
+    TK_IDENT, TK_KEYWORD:
+      KeyString := InternText(ctx, ctx.lex.tokens[tok].text);
+    TK_STRING:
+      KeyString := InternPool(ctx, ctx.lex.tokens[tok].sval_off,
+                              ctx.lex.tokens[tok].sval_len);
+    TK_NUMBER:
+      Begin
+        v := ctx.lex.tokens[tok].num_val;
+        If FitsInt32(v) Then
+          Begin
+            Str(Trunc(v), s);
+            KeyString := InternText(ctx, s);
+          End
+        Else
+          KeyString := InternText(ctx, ctx.lex.tokens[tok].text);
+      End;
+  End;
+End;
+
+{ ---- Constantes double ---- }
+
+Function AddDoubleBits(Var ctx: TCompilerContext; lo, hi: Int64): LongInt;
+Var
+  i: LongInt;
+Begin
+  For i := 1 To ctx.data.dbl_count Do
+    If (ctx.data.dbls[i].lo = lo) And (ctx.data.dbls[i].hi = hi) Then
+      Begin
+        AddDoubleBits := i;
+        Exit;
+      End;
+  AddDoubleBits := 0;
+  If ctx.data.dbl_count >= MAX_DBLS Then
+    Begin
+      DataFail(ctx, 'trop de constantes flottantes');
+      Exit;
+    End;
+  Inc(ctx.data.dbl_count);
+  ctx.data.dbls[ctx.data.dbl_count].lo := lo;
+  ctx.data.dbls[ctx.data.dbl_count].hi := hi;
+  ctx.data.dbls[ctx.data.dbl_count].sym := 0;
+  AddDoubleBits := ctx.data.dbl_count;
+End;
+
+Function AddDouble(Var ctx: TCompilerContext; v: Double): LongInt;
+Var
+  w: Array[0..1] Of LongInt;
+Begin
+  Move(v, w, 8);
+  AddDouble := AddDoubleBits(ctx, Int64(w[0]) And $FFFFFFFF,
+                             Int64(w[1]) And $FFFFFFFF);
+End;
+
+Function StrText(Var ctx: TCompilerContext; id: LongInt): TString;
+Var
+  r: TString;
+  i, n: LongInt;
+Begin
+  n := ctx.data.strs[id].len;
+  If n > 250 Then
+    n := 250;
+  r := '';
+  For i := 0 To n - 1 Do
+    r := r + ctx.data.dpool[ctx.data.strs[id].off + i];
+  StrText := r;
+End;
+
+{ ---- Descripteurs ---- }
+
+Function NodeFuncName(Var ctx: TCompilerContext; n: LongInt): LongInt;
+Var
+  t: LongInt;
+Begin
+  NodeFuncName := InternText(ctx, '');
+  t := ctx.ast.nodes[n].tok;
+  Case ctx.ast.nodes[n].kind Of
+    N_FUNC_DECL, N_CLASS_DECL:
+      NodeFuncName := KeyString(ctx, t);
+    N_FUNC_EXPR, N_CLASS_EXPR:
+      Begin
+        If ctx.lex.tokens[t].kind = TK_IDENT Then
+          NodeFuncName := KeyString(ctx, t)
+        Else If (ctx.ast.nodes[n].flags And FN_METHOD <> 0) And
+                (ctx.lex.tokens[t].kind <> TK_PUNCT) Then
+          NodeFuncName := KeyString(ctx, t);
+      End;
+    N_METHOD, N_FIELD:
+      If ctx.ast.nodes[n].flags And MF_COMPUTED = 0 Then
+        NodeFuncName := KeyString(ctx, t);
+  End;
+End;
+
+Function ParamLength(Var ctx: TCompilerContext; n: LongInt): LongInt;
+Var
+  p, cnt: LongInt;
+  stop: Boolean;
+Begin
+  cnt := 0;
+  stop := False;
+  p := ctx.ast.nodes[n].e1;
+  If ctx.ast.nodes[n].kind = N_FIELD Then
+    p := 0;
+  If ctx.ast.nodes[n].kind = N_STATIC_BLOCK Then
+    p := 0;
+  While (p <> 0) And Not stop Do
+    Begin
+      If (ctx.ast.nodes[p].flags And PF_REST <> 0) Or (ctx.ast.nodes[p].e2 <> 0) Then
+        stop := True
+      Else
+        Inc(cnt);
+      p := ctx.ast.nodes[p].next;
+    End;
+  ParamLength := cnt;
+End;
+
+Procedure AddFuncDesc(Var ctx: TCompilerContext; n: LongInt);
+Var
+  id, fl, sc: LongInt;
+  nm: LongInt;
+Begin
+  If ctx.data.fd_count >= MAX_FDESCS Then
+    Begin
+      DataFail(ctx, 'trop de descripteurs de fonctions');
+      Exit;
+    End;
+  Inc(ctx.data.fd_count);
+  id := ctx.data.fd_count;
+  fl := 0;
+  sc := ctx.ast.nodes[n].scope;
+  Case ctx.ast.nodes[n].kind Of
+    N_FUNC_DECL, N_FUNC_EXPR:
+      Begin
+        If ctx.ast.nodes[n].flags And FN_ARROW <> 0 Then
+          fl := fl Or FDF_ARROW;
+        If ctx.ast.nodes[n].flags And FN_ASYNC <> 0 Then
+          fl := fl Or FDF_ASYNC;
+        If ctx.ast.nodes[n].flags And FN_GENERATOR <> 0 Then
+          fl := fl Or FDF_GENERATOR;
+        If ctx.ast.nodes[n].flags And FN_METHOD <> 0 Then
+          fl := fl Or FDF_METHOD;
+        If ctx.ast.nodes[n].flags And FN_EXPR_BODY <> 0 Then
+          fl := fl Or FDF_EXPR_BODY;
+      End;
+    N_METHOD:
+      Begin
+        fl := fl Or FDF_METHOD;
+        If ctx.ast.nodes[n].flags And MF_STATIC <> 0 Then
+          fl := fl Or FDF_STATIC;
+        If ctx.ast.nodes[n].flags And MF_GETTER <> 0 Then
+          fl := fl Or FDF_GETTER;
+        If ctx.ast.nodes[n].flags And MF_SETTER <> 0 Then
+          fl := fl Or FDF_SETTER;
+        If ctx.ast.nodes[n].flags And MF_ASYNC <> 0 Then
+          fl := fl Or FDF_ASYNC;
+        If ctx.ast.nodes[n].flags And MF_GENERATOR <> 0 Then
+          fl := fl Or FDF_GENERATOR;
+        If ctx.ast.nodes[n].flags And MF_CONSTRUCTOR <> 0 Then
+          Begin
+            fl := fl Or FDF_CTOR;
+            If ctx.sem.scopes[sc].fkind = FK_DERIVED_CTOR Then
+              fl := fl Or FDF_DERIVED;
+          End;
+      End;
+    N_FIELD:
+      Begin
+        fl := fl Or FDF_FIELD_INIT;
+        If ctx.ast.nodes[n].flags And MF_STATIC <> 0 Then
+          fl := fl Or FDF_STATIC;
+      End;
+    N_STATIC_BLOCK:
+      fl := fl Or FDF_STATIC_BLOCK Or FDF_STATIC;
+  End;
+  If sc <> 0 Then
+    Begin
+      If ctx.sem.scopes[sc].uses_this Then
+        fl := fl Or FDF_USES_THIS;
+      If ctx.sem.scopes[sc].uses_arguments Then
+        fl := fl Or FDF_USES_ARGS;
+      If ctx.sem.scopes[sc].this_captured Then
+        fl := fl Or FDF_THIS_CAPTURED;
+      ctx.data.fdescs[id].ncells := ctx.sem.scopes[sc].cap_count;
+    End
+  Else
+    ctx.data.fdescs[id].ncells := 0;
+  nm := NodeFuncName(ctx, n);
+  ctx.data.fdescs[id].node := n;
+  ctx.data.fdescs[id].name_str := nm;
+  ctx.data.fdescs[id].nparams := ParamLength(ctx, n);
+  ctx.data.fdescs[id].flags := fl;
+  ctx.data.fdescs[id].sym := 0;
+  ctx.data.fdescs[id].code_sym := '_JSF_' + Pad4(id);
+  If ctx.data.strs[nm].len > 0 Then
+    ctx.data.fdescs[id].code_sym := ctx.data.fdescs[id].code_sym + '_' +
+      MangleIdent(Copy(StrText(ctx, nm), 1, 40));
+  ctx.ast.nodes[n].ds := id;
+End;
+
+Procedure AddClassDesc(Var ctx: TCompilerContext; n: LongInt);
+Var
+  id, m, f: LongInt;
+  cm: LongInt;
+Begin
+  If ctx.data.cd_count >= MAX_CDESCS Then
+    Begin
+      DataFail(ctx, 'trop de descripteurs de classes');
+      Exit;
+    End;
+  Inc(ctx.data.cd_count);
+  id := ctx.data.cd_count;
+  ctx.data.cdescs[id].node := n;
+  ctx.data.cdescs[id].name_str := NodeFuncName(ctx, n);
+  ctx.data.cdescs[id].ctor_fd := 0;
+  ctx.data.cdescs[id].flags := 0;
+  ctx.data.cdescs[id].first_member := ctx.data.cm_count + 1;
+  ctx.data.cdescs[id].member_count := 0;
+  ctx.data.cdescs[id].sym := 0;
+  If ctx.ast.nodes[n].e1 <> 0 Then
+    ctx.data.cdescs[id].flags := ctx.data.cdescs[id].flags Or CDF_DERIVED;
+  m := ctx.ast.nodes[n].e2;
+  While m <> 0 Do
+    Begin
+      If ctx.data.cm_count >= MAX_CMEMBERS Then
+        Begin
+          DataFail(ctx, 'trop de membres de classe');
+          Break;
+        End;
+      Inc(ctx.data.cm_count);
+      cm := ctx.data.cm_count;
+      f := 0;
+      ctx.data.cmembers[cm].key_str := 0;
+      ctx.data.cmembers[cm].fd := ctx.ast.nodes[m].ds;
+      Case ctx.ast.nodes[m].kind Of
+        N_METHOD:
+          Begin
+            f := f Or CM_METHOD;
+            If ctx.ast.nodes[m].flags And MF_GETTER <> 0 Then
+              f := f Or CM_GETTER;
+            If ctx.ast.nodes[m].flags And MF_SETTER <> 0 Then
+              f := f Or CM_SETTER;
+            If ctx.ast.nodes[m].flags And MF_CONSTRUCTOR <> 0 Then
+              Begin
+                f := f Or CM_CTOR;
+                ctx.data.cdescs[id].ctor_fd := ctx.ast.nodes[m].ds;
+              End;
+          End;
+        N_FIELD:
+          f := f Or CM_FIELD;
+        N_STATIC_BLOCK:
+          f := f Or CM_STATIC_BLOCK;
+      End;
+      If ctx.ast.nodes[m].flags And MF_STATIC <> 0 Then
+        f := f Or CM_STATIC;
+      If ctx.ast.nodes[m].flags And MF_COMPUTED <> 0 Then
+        f := f Or CM_COMPUTED;
+      ctx.data.cmembers[cm].flags := f;
+      If ctx.ast.nodes[m].kind <> N_STATIC_BLOCK Then
+        ctx.data.cmembers[cm].key_str := ctx.ast.nodes[m].aux;
+      Inc(ctx.data.cdescs[id].member_count);
+      m := ctx.ast.nodes[m].next;
+    End;
+  ctx.ast.nodes[n].ds := id;
+End;
+
+{ ---- Chaines et constantes standard du runtime ---- }
+
+Procedure AddStandardData(Var ctx: TCompilerContext);
+Var
+  i: Integer;
+  id: LongInt;
+Begin
+  For i := 1 To STD_STR_COUNT Do
+    Begin
+      id := InternText(ctx, StdStrings[i]);
+      If i >= STD_ATOM_FIRST Then
+        MarkAtom(ctx, id);
+    End;
+  { 0, 1, -0, NaN, +Inf, -Inf, 2^31, 2^32, 1e21, 10 }
+  AddDoubleBits(ctx, 0, 0);
+  AddDoubleBits(ctx, 0, $3FF00000);
+  AddDoubleBits(ctx, 0, $80000000);
+  AddDoubleBits(ctx, 0, $FFF80000);
+  AddDoubleBits(ctx, 0, $7FF00000);
+  AddDoubleBits(ctx, 0, $FFF00000);
+  AddDoubleBits(ctx, 0, $41E00000);
+  AddDoubleBits(ctx, 0, $41F00000);
+  AddDoubleBits(ctx, $D6E2EF50, $444B1AE4);
+  AddDoubleBits(ctx, 0, $40240000);
+End;
+
+{ ---- Collecte dans l'AST ---- }
+
+Procedure CollectData(Var ctx: TCompilerContext);
+Var
+  i, e: LongInt;
+  v: Double;
+  s: TTokenText;
+Begin
+  For i := 1 To ctx.ast.node_count Do
+    Begin
+      ctx.ast.nodes[i].ds := 0;
+      Case ctx.ast.nodes[i].kind Of
+        N_STRING, N_TEMPLATE_STR:
+          ctx.ast.nodes[i].ds := InternPool(ctx,
+            ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off,
+            ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len);
+        N_REGEX:
+          Begin
+            ctx.ast.nodes[i].ds := InternPool(ctx,
+              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off,
+              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len);
+            ctx.ast.nodes[i].aux := InternPool(ctx,
+              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off +
+              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len,
+              ctx.lex.tokens[ctx.ast.nodes[i].tok].flag_len);
+          End;
+        N_NUMBER:
+          Begin
+            v := ctx.lex.tokens[ctx.ast.nodes[i].tok].num_val;
+            If Not FitsInt32(v) Then
+              ctx.ast.nodes[i].ds := AddDouble(ctx, v);
+          End;
+        N_UNARY:
+          Begin
+            s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
+            e := ctx.ast.nodes[i].e1;
+            If (s = '-') And (e <> 0) And (ctx.ast.nodes[e].kind = N_NUMBER) And
+               (ctx.lex.tokens[ctx.ast.nodes[e].tok].num_val = 0) Then
+              ctx.ast.nodes[i].ds := STD_DBL_NEGZERO;
+          End;
+        N_MEMBER:
+          ctx.ast.nodes[i].aux := MarkAtom(ctx,
+            InternText(ctx, ctx.lex.tokens[ctx.ast.nodes[i].tok].text));
+        N_PROP:
+          If ctx.ast.nodes[i].flags And (PR_SPREAD Or PR_COMPUTED) = 0 Then
+            ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
+        N_PATTERN_PROP:
+          If ctx.ast.nodes[i].flags And (PP_REST Or PP_COMPUTED) = 0 Then
+            ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
+        N_FUNC_DECL, N_FUNC_EXPR, N_STATIC_BLOCK:
+          AddFuncDesc(ctx, i);
+        N_METHOD:
+          Begin
+            If ctx.ast.nodes[i].flags And MF_COMPUTED = 0 Then
+              ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
+            AddFuncDesc(ctx, i);
+          End;
+        N_FIELD:
+          Begin
+            If ctx.ast.nodes[i].flags And MF_COMPUTED = 0 Then
+              ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
+            If ctx.ast.nodes[i].e1 <> 0 Then
+              AddFuncDesc(ctx, i);
+          End;
+      End;
+    End;
+  { descripteurs de classes : apres ceux des membres }
+  For i := 1 To ctx.ast.node_count Do
+    If (ctx.ast.nodes[i].kind = N_CLASS_DECL) Or
+       (ctx.ast.nodes[i].kind = N_CLASS_EXPR) Then
+      AddClassDesc(ctx, i);
+End;
+
+{ ---- Emission des sections ---- }
+
+Procedure EmitStringCell(Var ctx: TCompilerContext; id: LongInt);
+Var
+  ofs, i, len: LongInt;
+Begin
+  len := ctx.data.strs[id].len;
+  ofs := SecAlloc(ctx, SEC_RDATA, RT_STR_DATA + len + 1);
+  If ctx.data.failed Then
+    Exit;
+  PutByte(ctx, SEC_RDATA, ofs + RT_HDR_KIND, RT_OK_STRING);
+  PutByte(ctx, SEC_RDATA, ofs + RT_HDR_GC, 0);
+  PutByte(ctx, SEC_RDATA, ofs + RT_HDR_FLAGS, OF_STATIC);
+  PutDword(ctx, SEC_RDATA, ofs + RT_STR_LEN, len);
+  PutDword(ctx, SEC_RDATA, ofs + RT_STR_HASH, ctx.data.strs[id].hash);
+  For i := 0 To len - 1 Do
+    PutByte(ctx, SEC_RDATA, ofs + RT_STR_DATA + i,
+            Ord(ctx.data.dpool[ctx.data.strs[id].off + i]));
+  PutByte(ctx, SEC_RDATA, ofs + RT_STR_DATA + len, 0);
+  ctx.data.strs[id].sym := NewDataSym(ctx, SymStr(id), SEC_RDATA, ofs,
+                                      RT_STR_DATA + len + 1, DS_STRING);
+End;
+
+Procedure EmitDoubles(Var ctx: TCompilerContext);
+Var
+  i, ofs: LongInt;
+Begin
+  For i := 1 To ctx.data.dbl_count Do
+    Begin
+      ofs := SecAlloc(ctx, SEC_RDATA, 8);
+      PutDword(ctx, SEC_RDATA, ofs, ctx.data.dbls[i].lo);
+      PutDword(ctx, SEC_RDATA, ofs + 4, ctx.data.dbls[i].hi);
+      ctx.data.dbls[i].sym := NewDataSym(ctx, SymDbl(i), SEC_RDATA, ofs, 8, DS_DOUBLE);
+    End;
+End;
+
+Procedure EmitFuncDescs(Var ctx: TCompilerContext);
+Var
+  i, ofs: LongInt;
+Begin
+  For i := 1 To ctx.data.fd_count Do
+    Begin
+      ofs := SecAlloc(ctx, SEC_RDATA, RT_FD_SIZE);
+      PutDword(ctx, SEC_RDATA, ofs + RT_FD_NAME, 0);
+      AddReloc(ctx, SEC_RDATA, ofs + RT_FD_NAME,
+               ctx.data.strs[ctx.data.fdescs[i].name_str].sym);
+      PutDword(ctx, SEC_RDATA, ofs + RT_FD_NPARAMS, ctx.data.fdescs[i].nparams);
+      PutDword(ctx, SEC_RDATA, ofs + RT_FD_FLAGS, ctx.data.fdescs[i].flags);
+      PutDword(ctx, SEC_RDATA, ofs + RT_FD_NCELLS, ctx.data.fdescs[i].ncells);
+      ctx.data.fdescs[i].sym := NewDataSym(ctx, SymFdesc(i), SEC_RDATA, ofs,
+                                           RT_FD_SIZE, DS_FDESC);
+    End;
+End;
+
+Procedure EmitClassDescs(Var ctx: TCompilerContext);
+Var
+  i, j, ofs, size, mo, cm: LongInt;
+Begin
+  For i := 1 To ctx.data.cd_count Do
+    Begin
+      size := RT_CD_MEMBERS + RT_CM_SIZE * ctx.data.cdescs[i].member_count;
+      ofs := SecAlloc(ctx, SEC_RDATA, size);
+      AddReloc(ctx, SEC_RDATA, ofs + RT_CD_NAME,
+               ctx.data.strs[ctx.data.cdescs[i].name_str].sym);
+      If ctx.data.cdescs[i].ctor_fd <> 0 Then
+        AddReloc(ctx, SEC_RDATA, ofs + RT_CD_CTOR,
+                 ctx.data.fdescs[ctx.data.cdescs[i].ctor_fd].sym);
+      PutDword(ctx, SEC_RDATA, ofs + RT_CD_FLAGS, ctx.data.cdescs[i].flags);
+      PutDword(ctx, SEC_RDATA, ofs + RT_CD_NMEMBERS, ctx.data.cdescs[i].member_count);
+      For j := 0 To ctx.data.cdescs[i].member_count - 1 Do
+        Begin
+          cm := ctx.data.cdescs[i].first_member + j;
+          mo := ofs + RT_CD_MEMBERS + RT_CM_SIZE * j;
+          If ctx.data.cmembers[cm].key_str <> 0 Then
+            AddReloc(ctx, SEC_RDATA, mo + RT_CM_KEY,
+                     ctx.data.strs[ctx.data.cmembers[cm].key_str].sym);
+          PutDword(ctx, SEC_RDATA, mo + RT_CM_FLAGS, ctx.data.cmembers[cm].flags);
+          If ctx.data.cmembers[cm].fd <> 0 Then
+            AddReloc(ctx, SEC_RDATA, mo + RT_CM_DESC,
+                     ctx.data.fdescs[ctx.data.cmembers[cm].fd].sym);
+        End;
+      ctx.data.cdescs[i].sym := NewDataSym(ctx, SymClassDesc(i), SEC_RDATA, ofs,
+                                           size, DS_CLASSDESC);
+    End;
+End;
+
+Procedure EmitAtomTable(Var ctx: TCompilerContext);
+Var
+  i, ofs: LongInt;
+Begin
+  ofs := SecAlloc(ctx, SEC_RDATA, 4 + 4 * ctx.data.atom_count);
+  PutDword(ctx, SEC_RDATA, ofs, ctx.data.atom_count);
+  For i := 1 To ctx.data.atom_count Do
+    AddReloc(ctx, SEC_RDATA, ofs + 4 * i, ctx.data.strs[ctx.data.atoms[i]].sym);
+  ctx.data.atom_table_sym := NewDataSym(ctx, '_JSATOMS', SEC_RDATA, ofs,
+                                        4 + 4 * ctx.data.atom_count, DS_ATOMS);
+End;
+
+{ Valeur initiale d'une variable : undefined, ou la marque TDZ. }
+Procedure PutValue(Var ctx: TCompilerContext; ofs, tag: LongInt);
+Begin
+  PutDword(ctx, SEC_DATA, ofs + RT_VAL_LO, 0);
+  PutDword(ctx, SEC_DATA, ofs + RT_VAL_HI, RT_TAG_BASE + tag);
+End;
+
+Procedure EmitDataSection(Var ctx: TCompilerContext);
+Var
+  i, ofs, sy: LongInt;
+  nm: TString;
+Begin
+  For i := 1 To RT_DATA_VAR_COUNT Do
+    Begin
+      ofs := SecAlloc(ctx, SEC_DATA, 8);
+      nm := SymRt('v_' + RtDataVars[i]);
+      NewDataSym(ctx, nm, SEC_DATA, ofs, 8, DS_RTVAR);
+    End;
+  For sy := 1 To ctx.sem.sym_count Do
+    If (ctx.sem.syms[sy].flags And SF_STATIC <> 0) And
+       ((ctx.sem.syms[sy].kind = DK_VAR) Or (ctx.sem.syms[sy].kind = DK_LET) Or
+        (ctx.sem.syms[sy].kind = DK_CONST) Or (ctx.sem.syms[sy].kind = DK_FUNC) Or
+        (ctx.sem.syms[sy].kind = DK_CLASS)) Then
+      Begin
+        ofs := SecAlloc(ctx, SEC_DATA, RT_VALUE_SIZE);
+        nm := '_JSV_' + MangleIdent(ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+        If ctx.sem.syms[sy].scope <> 1 Then
+          nm := nm + '_' + Pad4(sy);
+        If IsLexicalKind(ctx.sem.syms[sy].kind) And
+           (ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0) Then
+          PutValue(ctx, ofs, RT_T_TDZ)
+        Else
+          PutValue(ctx, ofs, RT_T_UNDEFINED);
+        ctx.sem.syms[sy].ds := NewDataSym(ctx, nm, SEC_DATA, ofs, RT_VALUE_SIZE,
+                                          DS_GLOBAL);
+        Inc(ctx.data.global_count);
+      End;
+End;
+
+Function BuildDataPool(Var ctx: TCompilerContext): Boolean;
+Var
+  i: LongInt;
+Begin
+  BuildDataPool := False;
+  If Not ctx.rt.built Then
+    Begin
+      PipelineError(ctx, 'modele runtime absent avant le pool de donnees');
+      Exit;
+    End;
+  ctx.data.failed := False;
+  ctx.data.str_count := 0;
+  ctx.data.dpool_len := 0;
+  ctx.data.atom_count := 0;
+  ctx.data.dbl_count := 0;
+  ctx.data.fd_count := 0;
+  ctx.data.cd_count := 0;
+  ctx.data.cm_count := 0;
+  ctx.data.sym_count := 0;
+  ctx.data.reloc_count := 0;
+  ctx.data.rd_size := 0;
+  ctx.data.dt_size := 0;
+  ctx.data.global_count := 0;
+  FillChar(ctx.data.hash, SizeOf(ctx.data.hash), 0);
+  For i := 1 To ctx.sem.sym_count Do
+    ctx.sem.syms[i].ds := 0;
+
+  AddStandardData(ctx);
+  CollectData(ctx);
+
+  For i := 1 To ctx.data.str_count Do
+    If Not ctx.data.failed Then
+      EmitStringCell(ctx, i);
+  If Not ctx.data.failed Then
+    EmitDoubles(ctx);
+  If Not ctx.data.failed Then
+    EmitFuncDescs(ctx);
+  If Not ctx.data.failed Then
+    EmitClassDescs(ctx);
+  If Not ctx.data.failed Then
+    EmitAtomTable(ctx);
+  If Not ctx.data.failed Then
+    EmitDataSection(ctx);
+
+  ctx.data.built := Not ctx.data.failed;
+  If ctx.options.verbose And ctx.data.built Then
+    Writeln('Donnees: .rdata ', ctx.data.rd_size, ' octets (',
+            ctx.data.str_count, ' chaines, ', ctx.data.atom_count, ' atomes, ',
+            ctx.data.dbl_count, ' doubles, ', ctx.data.fd_count,
+            ' fonctions, ', ctx.data.cd_count, ' classes), .data ',
+            ctx.data.dt_size, ' octets (', ctx.data.global_count,
+            ' globales), ', ctx.data.reloc_count, ' relocations');
+  BuildDataPool := ctx.data.built And (ctx.errors = 0);
+End;
+
+{ ---- Affichage du pool (option -data) ---- }
+
+Function DataSecName(sec: Integer): TString;
+Begin
+  If sec = SEC_RDATA Then
+    DataSecName := '.rdata'
+  Else
+    DataSecName := '.data';
+End;
+
+Procedure PrintQuoted(Var ctx: TCompilerContext; id: LongInt);
+Var
+  i, n: LongInt;
+  c: Char;
+Begin
+  n := ctx.data.strs[id].len;
+  Write('"');
+  For i := 0 To n - 1 Do
+    Begin
+      If i >= 40 Then
+        Begin
+          Write('...');
+          Break;
+        End;
+      c := ctx.data.dpool[ctx.data.strs[id].off + i];
+      If c = #10 Then
+        Write('\n')
+      Else If c < ' ' Then
+        Write('?')
+      Else
+        Write(c);
+    End;
+  Write('"');
+End;
+
+Procedure DumpDataPool(Var ctx: TCompilerContext);
+Var
+  i, j, k: LongInt;
+  fl: LongInt;
+  line: LongInt;
+Begin
+  If Not ctx.data.built Then
+    Exit;
+  Writeln('Pool de donnees :');
+  Writeln('  .rdata ', ctx.data.rd_size, ' octets, .data ', ctx.data.dt_size,
+          ' octets, ', ctx.data.sym_count, ' symboles, ', ctx.data.reloc_count,
+          ' relocations');
+  Writeln('  Chaines (', ctx.data.str_count, ') :');
+  For i := 1 To ctx.data.str_count Do
+    Begin
+      Write('    ', SymStr(i), ' ', DataSecName(ctx.data.syms[ctx.data.strs[i].sym].sec),
+            '+', ctx.data.syms[ctx.data.strs[i].sym].ofs, ' ');
+      PrintQuoted(ctx, i);
+      Write(' len=', ctx.data.strs[i].len);
+      If ctx.data.strs[i].atom_id <> 0 Then
+        Write(' atome#', ctx.data.strs[i].atom_id);
+      Writeln;
+    End;
+  Writeln('  Doubles (', ctx.data.dbl_count, ') :');
+  For i := 1 To ctx.data.dbl_count Do
+    Writeln('    ', SymDbl(i), ' hi=', RtHex4(ctx.data.dbls[i].hi Shr 16),
+            RtHex4(ctx.data.dbls[i].hi), ' lo=', RtHex4(ctx.data.dbls[i].lo Shr 16),
+            RtHex4(ctx.data.dbls[i].lo));
+  Writeln('  Descripteurs de fonctions (', ctx.data.fd_count, ') :');
+  For i := 1 To ctx.data.fd_count Do
+    Begin
+      fl := ctx.data.fdescs[i].flags;
+      Write('    ', SymFdesc(i), ' nom=');
+      PrintQuoted(ctx, ctx.data.fdescs[i].name_str);
+      Write(' params=', ctx.data.fdescs[i].nparams, ' cellules=',
+            ctx.data.fdescs[i].ncells, ' code=', ctx.data.fdescs[i].code_sym);
+      If fl And FDF_ARROW <> 0 Then Write(' fleche');
+      If fl And FDF_ASYNC <> 0 Then Write(' async');
+      If fl And FDF_GENERATOR <> 0 Then Write(' generateur');
+      If fl And FDF_METHOD <> 0 Then Write(' methode');
+      If fl And FDF_CTOR <> 0 Then Write(' constructeur');
+      If fl And FDF_DERIVED <> 0 Then Write(' derive');
+      If fl And FDF_STATIC <> 0 Then Write(' statique');
+      If fl And FDF_GETTER <> 0 Then Write(' get');
+      If fl And FDF_SETTER <> 0 Then Write(' set');
+      If fl And FDF_USES_THIS <> 0 Then Write(' this');
+      If fl And FDF_USES_ARGS <> 0 Then Write(' arguments');
+      If fl And FDF_THIS_CAPTURED <> 0 Then Write(' this-capture');
+      If fl And FDF_FIELD_INIT <> 0 Then Write(' champ');
+      If fl And FDF_STATIC_BLOCK <> 0 Then Write(' bloc-statique');
+      Writeln;
+    End;
+  Writeln('  Classes (', ctx.data.cd_count, ') :');
+  For i := 1 To ctx.data.cd_count Do
+    Begin
+      Write('    ', SymClassDesc(i), ' nom=');
+      PrintQuoted(ctx, ctx.data.cdescs[i].name_str);
+      Write(' membres=', ctx.data.cdescs[i].member_count);
+      If ctx.data.cdescs[i].flags And CDF_DERIVED <> 0 Then
+        Write(' derivee');
+      If ctx.data.cdescs[i].ctor_fd <> 0 Then
+        Write(' ctor=', SymFdesc(ctx.data.cdescs[i].ctor_fd));
+      Writeln;
+      For j := 0 To ctx.data.cdescs[i].member_count - 1 Do
+        Begin
+          k := ctx.data.cdescs[i].first_member + j;
+          fl := ctx.data.cmembers[k].flags;
+          Write('      ');
+          If ctx.data.cmembers[k].key_str <> 0 Then
+            PrintQuoted(ctx, ctx.data.cmembers[k].key_str)
+          Else
+            Write('(sans cle)');
+          If fl And CM_STATIC <> 0 Then Write(' statique');
+          If fl And CM_METHOD <> 0 Then Write(' methode');
+          If fl And CM_FIELD <> 0 Then Write(' champ');
+          If fl And CM_GETTER <> 0 Then Write(' get');
+          If fl And CM_SETTER <> 0 Then Write(' set');
+          If fl And CM_CTOR <> 0 Then Write(' constructeur');
+          If fl And CM_COMPUTED <> 0 Then Write(' calcule');
+          If fl And CM_STATIC_BLOCK <> 0 Then Write(' bloc-statique');
+          If ctx.data.cmembers[k].fd <> 0 Then
+            Write(' ', SymFdesc(ctx.data.cmembers[k].fd));
+          Writeln;
+        End;
+    End;
+  Writeln('  Atomes : ', ctx.data.atom_count, ' dans _JSATOMS (.rdata+',
+          ctx.data.syms[ctx.data.atom_table_sym].ofs, ')');
+  Writeln('  Donnees (.data) :');
+  For i := 1 To ctx.data.sym_count Do
+    If ctx.data.syms[i].sec = SEC_DATA Then
+      Writeln('    ', ctx.data.syms[i].name, ' .data+', ctx.data.syms[i].ofs,
+              ' (', ctx.data.syms[i].size, ' octets)');
+  Writeln('  Octets .rdata (debut) :');
+  i := 0;
+  line := 0;
+  While (i < ctx.data.rd_size) And (line < 24) Do
+    Begin
+      Write('    ', RtHex4(i), ':');
+      For j := 0 To 15 Do
+        If i + j < ctx.data.rd_size Then
+          Write(' ', Copy(RtHex4(ctx.data.rd[i + j]), 3, 2));
+      Writeln;
+      Inc(i, 16);
+      Inc(line);
+    End;
+End;
+
 { Les etapes sont implementees par les TODO suivants. Tant qu'une etape
   n'existe pas, elle echoue explicitement au lieu de produire un faux
   resultat. }
@@ -6108,6 +7263,8 @@ Begin
         ok := AnalyzeProgram(ctx);
         If ok Then
           ok := BuildRuntimeModel(ctx);
+        If ok Then
+          ok := BuildDataPool(ctx);
         RunStage := ok;
         If ctx.options.dump_scopes Then
           DumpScopes(ctx);
@@ -6115,6 +7272,8 @@ Begin
           DumpAst(ctx);
         If ctx.options.dump_runtime Then
           DumpRuntimeModel(ctx);
+        If ctx.options.dump_data Then
+          DumpDataPool(ctx);
       End;
   Else
     Begin
