@@ -7,7 +7,7 @@
 
   TODO - feuille de route JSCW32.PAS
   01. [IMPLEMENTE] Definir le pipeline canonique .JS -> tokens -> AST -> analyse semantique -> IR -> ASM 80386 -> OBJ COFF -> EXE PE32, avec .EXE Windows produit par defaut ; l'ASM n'est qu'une etape intermediaire optionnelle (jamais ecrite sur disque sans demande explicite).
-  02. [A FAIRE] Ajouter le parsing des options de ligne de commande : mode EXE par defaut, parametre pour produire uniquement un .OBJ (sans edition de liens), parametre explicite pour emettre aussi le .ASM, noms de sortie (-o), mode verbose, aide/version, et regles de nommage par defaut (HELLO.JS -> HELLO.EXE / HELLO.OBJ / HELLO.ASM).
+  02. [IMPLEMENTE] Ajouter le parsing des options de ligne de commande : mode EXE par defaut, parametre pour produire uniquement un .OBJ (sans edition de liens), parametre explicite pour emettre aussi le .ASM, noms de sortie (-o), mode verbose, aide/version, et regles de nommage par defaut (HELLO.JS -> HELLO.EXE / HELLO.OBJ / HELLO.ASM).
   03. [A FAIRE] Implementer le chargeur source et le lexer JavaScript complet : normalisation CR/LF, suivi ligne/colonne, diagnostics avec caret, identifiants, mots-cles (var/let/const/function/class/extends/super/new/this/typeof/void/instanceof/in/of/try/catch/finally/throw...), nombres (decimal, flottant, exposant 1.5e3, hexa 0xFF, binaire 0b1010, octal, separateurs 1_000_000), chaines '...' et "..." avec echappements, template literals avec interpolation (dollar-accolade), litteraux RegExp /re/flags (desambiguises de la division), commentaires // et /* */, tous les operateurs (=== !== ** ?? ?. => ... >>> et affectations composees) et NaN/Infinity/null/undefined/true/false.
   04. [A FAIRE] Parser les instructions : var/let/const (avec destructuration simple), blocs, if/else if/else, switch/case/default, while, do-while, for, for-in, for-of, break/continue (avec etiquettes), return, throw, try/catch/finally, declarations function et class, instructions vides/expressions, insertion automatique des points-virgules (ASI) et hoisting des declarations.
   05. [A FAIRE] Parser les expressions avec precedences et associativites exactes : virgule, affectations (= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=), ternaire, ?? || &&, bit a bit, ==/!=/===/!==, relationnels (instanceof, in), decalages, + -, * / %, **, unaires (typeof void delete ! ~ + - ++ --), postfixes, appels/membres/new, optional chaining, spread/rest, fonctions anonymes, fonctions fleches (x => x*2, (a,b) => corps de bloc), litteraux de tableaux et d'objets (raccourcis, cles calculees, methodes, getters/setters), parametres par defaut.
@@ -103,6 +103,9 @@ Type
     output_mode : TOutputMode;
     emit_asm    : Boolean;
     verbose     : Boolean;
+    show_help   : Boolean;
+    show_version: Boolean;
+    output_name : TString;
   End;
 
   TCompilerContext = Record
@@ -239,17 +242,48 @@ Begin
   ctx.options.output_mode := OM_EXE;
   ctx.options.emit_asm := False;
   ctx.options.verbose := False;
+  ctx.options.show_help := False;
+  ctx.options.show_version := False;
+  ctx.options.output_name := '';
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
   ctx.errors := 0;
   ctx.warnings := 0;
 End;
 
+Function UpperStr(str: TString): TString;
+Var
+  i: Integer;
+Begin
+  For i := 1 To Length(str) Do
+    str[i] := UpCase(str[i]);
+  UpperStr := str;
+End;
+
+Function HasExt(path, ext: TString): Boolean;
+Begin
+  HasExt := (Length(path) > Length(ext)) And
+            (UpperStr(Copy(path, Length(path) - Length(ext) + 1,
+                          Length(ext))) = UpperStr(ext));
+End;
+
+{ Noms de sortie : sans -o, ils derivent du fichier source (HELLO.JS ->
+  HELLO.EXE / HELLO.OBJ / HELLO.ASM). Avec -o, le nom fourni est la base
+  commune ; une extension .exe/.obj/.asm est retiree, puisque l'extension
+  reelle depend du fichier produit. }
 Procedure SetDefaultOutputNames(Var ctx: TCompilerContext);
 Var
   base: TString;
 Begin
-  base := BaseNameNoExt(ctx.source_name);
+  If ctx.options.output_name <> '' Then
+    Begin
+      base := ctx.options.output_name;
+      If HasExt(base, EXT_EXE) Or HasExt(base, EXT_OBJ) Or
+         HasExt(base, EXT_ASM) Then
+        base := BaseNameNoExt(base);
+    End
+  Else
+    base := BaseNameNoExt(ctx.source_name);
   ctx.asm_name := base + EXT_ASM;
   ctx.obj_name := base + EXT_OBJ;
   ctx.exe_name := base + EXT_EXE;
@@ -281,9 +315,99 @@ Procedure PrintUsage;
 Begin
   Writeln('JSCW32 - Compilateur JavaScript vers executable Windows 32 bits (80386).');
   Writeln;
-  Writeln('Syntaxe: jscw32 fichier.js');
+  Writeln('Syntaxe: jscw32 [options] fichier.js');
+  Writeln;
+  Writeln('Options:');
+  Writeln('  -obj          produit seulement le fichier ', EXT_OBJ,
+          ' (pas d''edition de liens)');
+  Writeln('  -asm          ecrit aussi le fichier ', EXT_ASM);
+  Writeln('  -o nom        nom de base des fichiers de sortie');
+  Writeln('  -v            mode verbose');
+  Writeln('  -version      affiche la version');
+  Writeln('  -h, -?        affiche cette aide');
+  Writeln;
+  Writeln('Les options peuvent aussi commencer par / ou --.');
+  Writeln('Par defaut, la cible est un executable Windows ', EXT_EXE, '.');
+  Writeln('Le fichier ', EXT_ASM, ' est produit seulement avec -asm.');
+  Writeln;
+  Writeln('Exemples:');
+  Writeln('  jscw32 SAMPLES\JS\hello.js');
+  Writeln('  jscw32 -obj SAMPLES\JS\hello.js');
+  Writeln('  jscw32 -asm -obj SAMPLES\JS\hello.js');
+  Writeln('  jscw32 -o prog SAMPLES\JS\hello.js');
   Writeln;
   PrintPipeline;
+End;
+
+{ Reconnait -x, /x et --x (sans tenir compte de la casse). }
+Function IsOption(arg, name: TString): Boolean;
+Var
+  u: TString;
+Begin
+  u := UpperStr(arg);
+  name := UpperStr(name);
+  IsOption := (u = '-' + name) Or (u = '/' + name) Or (u = '--' + name);
+End;
+
+Function ParseArgs(Var ctx: TCompilerContext): Integer;
+Var
+  i: Integer;
+  arg: TString;
+Begin
+  ParseArgs := EXIT_OK;
+  i := 1;
+  While i <= ParamCount Do
+    Begin
+      arg := ParamStr(i);
+      If IsOption(arg, 'h') Or IsOption(arg, '?') Or IsOption(arg, 'help') Then
+        ctx.options.show_help := True
+      Else If IsOption(arg, 'version') Then
+        ctx.options.show_version := True
+      Else If IsOption(arg, 'v') Or IsOption(arg, 'verbose') Then
+        ctx.options.verbose := True
+      Else If IsOption(arg, 'obj') Then
+        ctx.options.output_mode := OM_OBJ
+      Else If IsOption(arg, 'asm') Then
+        ctx.options.emit_asm := True
+      Else If IsOption(arg, 'o') Then
+        Begin
+          Inc(i);
+          If (i > ParamCount) Or (ParamStr(i) = '') Then
+            Begin
+              Writeln('JSCW32: nom de sortie attendu apres ', arg);
+              ParseArgs := EXIT_USAGE;
+              Exit;
+            End;
+          ctx.options.output_name := ParamStr(i);
+        End
+      Else If (Length(arg) > 0) And ((arg[1] = '-') Or (arg[1] = '/')) Then
+        Begin
+          Writeln('JSCW32: option inconnue: ', arg);
+          ParseArgs := EXIT_USAGE;
+          Exit;
+        End
+      Else If ctx.source_name = '' Then
+        ctx.source_name := arg
+      Else
+        Begin
+          Writeln('JSCW32: un seul fichier source est accepte: ', arg);
+          ParseArgs := EXIT_USAGE;
+          Exit;
+        End;
+      Inc(i);
+    End;
+
+  If ctx.options.show_help Or ctx.options.show_version Then
+    Exit;
+  If ctx.source_name = '' Then
+    Begin
+      Writeln('JSCW32: fichier source ', EXT_JS, ' manquant');
+      ParseArgs := EXIT_USAGE;
+      Exit;
+    End;
+  If BaseNameNoExt(ctx.source_name) = ctx.source_name Then
+    ctx.source_name := ctx.source_name + EXT_JS;
+  SetDefaultOutputNames(ctx);
 End;
 
 Procedure PrintOptions(Var ctx: TCompilerContext);
@@ -342,29 +466,40 @@ End;
 
 Var
   ctx: TCompilerContext;
+  parse_result: Integer;
 
 BEGIN
   InitPipelineDefaults(ctx);
-  If ParamCount < 1 Then
+  parse_result := ParseArgs(ctx);
+
+  If ctx.options.show_help Then
     Begin
       PrintUsage;
-      Halt(EXIT_USAGE);
+      Halt(EXIT_OK);
     End;
 
-  { Les options de ligne de commande arrivent avec le TODO 2 ; d'ici la,
-    le premier parametre est le fichier source et la trace est active. }
-  ctx.source_name := ParamStr(1);
-  If BaseNameNoExt(ctx.source_name) = ctx.source_name Then
-    ctx.source_name := ctx.source_name + EXT_JS;
-  ctx.options.verbose := True;
-  SetDefaultOutputNames(ctx);
+  If ctx.options.show_version Then
+    Begin
+      Writeln('JSCW32 ', JSCW32_VERSION, ' (', JSCW32_DATE, ')');
+      Halt(EXIT_OK);
+    End;
 
-  PrintPipeline;
-  PrintOptions(ctx);
+  If parse_result <> EXIT_OK Then
+    Begin
+      Writeln('Essayez: jscw32 -h');
+      Halt(parse_result);
+    End;
+
+  If ctx.options.verbose Then
+    Begin
+      PrintPipeline;
+      PrintOptions(ctx);
+    End;
 
   If Not RunPipeline(ctx) Then
     Halt(EXIT_ERROR);
 
-  PrintFinalDiagnostics(ctx);
+  If ctx.options.verbose Then
+    PrintFinalDiagnostics(ctx);
   Halt(EXIT_OK);
 END.
