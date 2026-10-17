@@ -12,7 +12,7 @@
   04. [IMPLEMENTE] Parser les instructions : var/let/const (avec destructuration simple), blocs, if/else if/else, switch/case/default, while, do-while, for, for-in, for-of, break/continue (avec etiquettes), return, throw, try/catch/finally, declarations function et class, instructions vides/expressions, insertion automatique des points-virgules (ASI) et hoisting des declarations.
   05. [IMPLEMENTE] Parser les expressions avec precedences et associativites exactes : virgule, affectations (= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=), ternaire, ?? || &&, bit a bit, ==/!=/===/!==, relationnels (instanceof, in), decalages, + -, * / %, **, unaires (typeof void delete ! ~ + - ++ --), postfixes, appels/membres/new, optional chaining, spread/rest, fonctions anonymes, fonctions fleches (x => x*2, (a,b) => corps de bloc), litteraux de tableaux et d'objets (raccourcis, cles calculees, methodes, getters/setters), parametres par defaut.
   06. [IMPLEMENTE] Construire l'AST et l'analyse semantique : table des symboles et des scopes (global, fonction, bloc), hoisting de var/function, zone morte temporelle (TDZ) de let/const, erreur sur reaffectation d'une const, detection des variables capturees par des fonctions imbriquees (necessaire aux closures), resolution de this (global, methode, constructeur, fleche) et diagnostics de redeclaration/variable non declaree.
-  07. [A FAIRE] Definir le modele de valeurs runtime 32 bits et le gestionnaire memoire : valeurs etiquetees (undefined, null, booleen, nombre, chaine, objet, tableau, fonction/closure, RegExp), nombres IEEE 754 via FPU x87 avec chemin rapide entier, allocation sur le tas Windows (HeapAlloc/VirtualAlloc), tampons de chaines, pile d'appels, et ramasse-miettes simple (mark & sweep) ou strategie documentee de non-liberation.
+  07. [IMPLEMENTE] Definir le modele de valeurs runtime 32 bits et le gestionnaire memoire : valeurs etiquetees (undefined, null, booleen, nombre, chaine, objet, tableau, fonction/closure, RegExp), nombres IEEE 754 via FPU x87 avec chemin rapide entier, allocation sur le tas Windows (HeapAlloc/VirtualAlloc), tampons de chaines, pile d'appels, et ramasse-miettes simple (mark & sweep) ou strategie documentee de non-liberation.
   08. [A FAIRE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
   09. [A FAIRE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
   10. [A FAIRE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
@@ -146,6 +146,113 @@ Const
   TB_DERIVED_CTOR = 5;
   TB_STATIC = 6;
   TB_FIELD = 7;
+  { ---- Modele de valeurs runtime (TODO 7) ---- }
+  RT_VALUE_SIZE = 8;
+  RT_VAL_LO = 0;
+  RT_VAL_HI = 4;
+  RT_TAG_PREFIX = 'FFF9';         { hi = FFF9xxxxh pour les valeurs etiquetees }
+  RT_T_INT32 = 0;
+  RT_T_UNDEFINED = 1;
+  RT_T_NULL = 2;
+  RT_T_BOOLEAN = 3;
+  RT_T_STRING = 4;
+  RT_T_OBJECT = 5;
+  RT_T_ARRAY = 6;
+  RT_T_FUNCTION = 7;
+  RT_T_REGEXP = 8;
+  RT_FPU_CW = '027F';
+  { cellule du tas }
+  RT_HDR_SIZE = 8;
+  RT_HDR_KIND = 0;
+  RT_HDR_GC = 1;
+  RT_HDR_FLAGS = 2;
+  RT_HDR_NEXT = 4;
+  RT_ALIGN = 8;
+  RT_OK_STRING = 1;
+  RT_OK_ARRAY = 2;
+  RT_OK_OBJECT = 3;
+  RT_OK_FUNCTION = 4;
+  RT_OK_CELL = 5;
+  RT_OK_REGEXP = 6;
+  RT_OK_ENV = 7;
+  RT_STR_LEN = 8;
+  RT_STR_HASH = 12;
+  RT_STR_DATA = 16;
+  RT_ARR_LEN = 8;
+  RT_ARR_CAP = 12;
+  RT_ARR_ELEMS = 16;
+  RT_ARR_SIZE = 24;
+  RT_OBJ_PROTO = 8;
+  RT_OBJ_PROPS = 12;
+  RT_OBJ_COUNT = 16;
+  RT_OBJ_CAP = 20;
+  RT_OBJ_CLASS = 24;
+  RT_OBJ_SIZE = 32;
+  RT_PROP_KEY = 0;
+  RT_PROP_FLAGS = 4;
+  RT_PROP_VALUE = 8;
+  RT_PROP_SIZE = 16;
+  RT_FN_CODE = 8;
+  RT_FN_ENV = 12;
+  RT_FN_DESC = 16;
+  RT_FN_PROPS = 20;
+  RT_FN_THIS = 24;
+  RT_FN_SIZE = 32;
+  RT_FD_NAME = 0;
+  RT_FD_NPARAMS = 4;
+  RT_FD_FLAGS = 8;
+  RT_FD_NCELLS = 12;
+  RT_FD_SIZE = 16;
+  RT_CELL_VALUE = 8;
+  RT_CELL_SIZE = 16;
+  RT_ENV_COUNT = 8;
+  RT_ENV_CELLS = 12;
+  RT_RX_SOURCE = 8;
+  RT_RX_FLAGS = 12;
+  RT_RX_PROG = 16;
+  RT_RX_LASTINDEX = 20;
+  RT_RX_SIZE = 24;
+  { tas et pile }
+  RT_ARENA_SIZE = 1048576;
+  RT_BIG_ALLOC = 262144;
+  RT_STACK_RESERVE = 4194304;
+  RT_STACK_GUARD = 65536;
+  { convention d'appel : decalages depuis EBP }
+  RT_FRAME_CLOSURE = 8;
+  RT_FRAME_ARGC = 12;
+  RT_FRAME_THIS = 16;
+  RT_FRAME_ARGS = 24;
+  RT_EH_PREV = 0;
+  RT_EH_ESP = 4;
+  RT_EH_EBP = 8;
+  RT_EH_CATCH = 12;
+  RT_EH_SIZE = 16;
+  { composants du runtime a lier (masque de bits) }
+  RC_HEAP = 1;
+  RC_FPU = 2;
+  RC_STRING = 4;
+  RC_NUMTOSTR = 8;
+  RC_ARRAY = 16;
+  RC_OBJECT = 32;
+  RC_FUNCTION = 64;
+  RC_CELL = 128;
+  RC_CLASS = 256;
+  RC_EXCEPTION = 512;
+  RC_REGEXP = 1024;
+  RC_CONSOLE = 2048;
+  RC_PROCESS = 4096;
+  RC_MATH = 8192;
+  RC_JSON = 16384;
+  RC_STRING_METHODS = 32768;
+  RC_ARRAY_METHODS = 65536;
+  RC_OBJECT_STATICS = 131072;
+  RC_NUMBER_FUNCS = 262144;
+  RC_CONVERT = 524288;
+  RC_STDIN = 1048576;
+  RC_TYPEOF = 2097152;
+  RC_INSTANCEOF = 4194304;
+  RC_ARGUMENTS = 8388608;
+  RC_LAST = 8388608;
   BUILTIN_COUNT = 47;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
@@ -199,6 +306,7 @@ Type
     dump_tokens : Boolean;
     dump_ast    : Boolean;
     dump_scopes : Boolean;
+    dump_runtime: Boolean;
     output_name : TString;
   End;
 
@@ -368,6 +476,15 @@ Type
     caps  : Array[1..MAX_CAPS] Of TCapture;
   End;
 
+  { Inventaire du programme et composants du runtime requis }
+  TRtModel = Record
+    built: Boolean;
+    comps: LongInt;
+    int_literals, double_literals, string_literals, template_literals,
+    regex_literals, array_literals, object_literals, functions, closures,
+    classes, cells, try_blocks, throws, calls, news: LongInt;
+  End;
+
   TCompilerContext = Record
     options    : TPipelineOptions;
     source_name: TString;
@@ -382,6 +499,7 @@ Type
     lex        : TLexInfo;
     ast        : TAstInfo;
     sem        : TSemInfo;
+    rt         : TRtModel;
   End;
 
 Const
@@ -532,6 +650,7 @@ Begin
   ctx.options.dump_tokens := False;
   ctx.options.dump_ast := False;
   ctx.options.dump_scopes := False;
+  ctx.options.dump_runtime := False;
   ctx.options.output_name := '';
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
@@ -629,6 +748,7 @@ Begin
   Writeln('  -tokens       affiche les jetons du lexer');
   Writeln('  -ast          affiche l''arbre syntaxique et les declarations');
   Writeln('  -scopes       affiche les portees, symboles et captures');
+  Writeln('  -runtime      affiche le modele runtime (valeurs, tas, pile)');
   Writeln('  -version      affiche la version');
   Writeln('  -h, -?        affiche cette aide');
   Writeln;
@@ -671,6 +791,8 @@ Begin
         ctx.options.show_version := True
       Else If IsOption(arg, 'v') Or IsOption(arg, 'verbose') Then
         ctx.options.verbose := True
+      Else If IsOption(arg, 'runtime') Then
+        ctx.options.dump_runtime := True
       Else If IsOption(arg, 'scopes') Then
         ctx.options.dump_scopes := True
       Else If IsOption(arg, 'ast') Then
@@ -710,6 +832,8 @@ Begin
     End;
 
   If ctx.options.show_help Or ctx.options.show_version Then
+    Exit;
+  If ctx.options.dump_runtime And (ctx.source_name = '') Then
     Exit;
   If ctx.source_name = '' Then
     Begin
@@ -5529,6 +5653,432 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 7 - MODELE DE VALEURS RUNTIME ET GESTIONNAIRE MEMOIRE
+
+  Valeur JavaScript : 8 octets (deux DWORD), passee et rangee telle
+  quelle dans les variables, les tableaux, les proprietes et les
+  cellules. Le DWORD bas (lo) est la charge utile, le DWORD haut (hi)
+  est l'etiquette.
+
+    hi <  FFF90000h  nombre IEEE 754 double (lo:hi = les 8 octets du
+                     double, lisible directement par fld qword)
+    hi >= FFF90000h  valeur etiquetee : hi = FFF90000h + type
+
+  Types : 0 int32, 1 undefined, 2 null, 3 boolean, 4 string, 5 object,
+  6 array, 7 function, 8 regexp. Un nombre est donc soit un double,
+  soit un int32 (chemin rapide entier : add/sub/imul avec test de
+  depassement, repli sur le FPU). Les deux formes sont equivalentes ;
+  les operations acceptent les deux et la forme canonique n'est pas
+  imposee. Un int32 ne represente pas -0 : toute operation qui peut
+  produire -0 passe par le double. Le NaN materiel (FFF80000h:0) est un
+  double valide.
+
+  Tas : une arene de 1 Mo obtenue par VirtualAlloc, allocation par
+  pointeur (alignement 8, memoire mise a zero). Strategie retenue :
+  AUCUNE LIBERATION. Un programme compile est de courte duree et le
+  systeme rend toute la memoire a la sortie du processus. L'en-tete de
+  chaque cellule reserve deja l'octet de marque et le chainage
+  gc_next, de sorte qu'un mark & sweep pourra etre ajoute sans changer
+  les dispositions. Les blocs de 256 Ko et plus sont alloues
+  directement par VirtualAlloc. Les tableaux et tables de proprietes
+  grandissent par doublement pour borner le gaspillage a 2 fois la
+  taille finale. Memoire epuisee : message sur stderr et ExitProcess(3).
+  ============================================================ }
+
+{ ---- Outils de description du modele ---- }
+
+Function RtHex4(v: LongInt): TString;
+Const
+  H = '0123456789ABCDEF';
+Begin
+  RtHex4 := H[((v Shr 12) And 15) + 1] + H[((v Shr 8) And 15) + 1] +
+            H[((v Shr 4) And 15) + 1] + H[(v And 15) + 1];
+End;
+
+{ Etiquette complete (hi) d'un type, en hexadecimal assembleur. }
+Function RtTagHex(t: LongInt): TString;
+Begin
+  RtTagHex := RT_TAG_PREFIX + RtHex4(t) + 'h';
+End;
+
+Function RtTagName(t: LongInt): TString;
+Begin
+  Case t Of
+    RT_T_INT32:     RtTagName := 'int32';
+    RT_T_UNDEFINED: RtTagName := 'undefined';
+    RT_T_NULL:      RtTagName := 'null';
+    RT_T_BOOLEAN:   RtTagName := 'boolean';
+    RT_T_STRING:    RtTagName := 'string';
+    RT_T_OBJECT:    RtTagName := 'object';
+    RT_T_ARRAY:     RtTagName := 'array';
+    RT_T_FUNCTION:  RtTagName := 'function';
+    RT_T_REGEXP:    RtTagName := 'regexp';
+  Else
+    RtTagName := '?';
+  End;
+End;
+
+Function RtComponentName(bit: LongInt): TString;
+Begin
+  Case bit Of
+    RC_HEAP:           RtComponentName := 'tas';
+    RC_FPU:            RtComponentName := 'fpu';
+    RC_STRING:         RtComponentName := 'chaines';
+    RC_NUMTOSTR:       RtComponentName := 'nombre->chaine';
+    RC_ARRAY:          RtComponentName := 'tableaux';
+    RC_OBJECT:         RtComponentName := 'objets';
+    RC_FUNCTION:       RtComponentName := 'fonctions';
+    RC_CELL:           RtComponentName := 'cellules';
+    RC_CLASS:          RtComponentName := 'classes';
+    RC_EXCEPTION:      RtComponentName := 'exceptions';
+    RC_REGEXP:         RtComponentName := 'regexp';
+    RC_CONSOLE:        RtComponentName := 'console';
+    RC_PROCESS:        RtComponentName := 'process';
+    RC_MATH:           RtComponentName := 'math';
+    RC_JSON:           RtComponentName := 'json';
+    RC_STRING_METHODS: RtComponentName := 'methodes-string';
+    RC_ARRAY_METHODS:  RtComponentName := 'methodes-tableau';
+    RC_OBJECT_STATICS: RtComponentName := 'statiques-object';
+    RC_NUMBER_FUNCS:   RtComponentName := 'fonctions-nombre';
+    RC_CONVERT:        RtComponentName := 'conversions';
+    RC_STDIN:          RtComponentName := 'stdin';
+    RC_TYPEOF:         RtComponentName := 'typeof';
+    RC_INSTANCEOF:     RtComponentName := 'instanceof/in';
+    RC_ARGUMENTS:      RtComponentName := 'arguments';
+  Else
+    RtComponentName := '?';
+  End;
+End;
+
+{ Composants du runtime qu'impose l'usage d'une propriete par son nom. }
+Function MemberComponents(Const name: TTokenText): LongInt;
+Begin
+  MemberComponents := 0;
+  If (name = 'charAt') Or (name = 'charCodeAt') Or (name = 'toUpperCase') Or
+     (name = 'toLowerCase') Or (name = 'trim') Or (name = 'padStart') Or
+     (name = 'padEnd') Or (name = 'repeat') Or (name = 'startsWith') Or
+     (name = 'endsWith') Or (name = 'substring') Or (name = 'split') Or
+     (name = 'replace') Or (name = 'match') Or (name = 'search') Or
+     (name = 'lastIndexOf') Or (name = 'fromCharCode') Then
+    MemberComponents := RC_STRING Or RC_STRING_METHODS
+  Else If (name = 'push') Or (name = 'pop') Or (name = 'shift') Or
+          (name = 'unshift') Or (name = 'reverse') Or (name = 'sort') Or
+          (name = 'forEach') Or (name = 'map') Or (name = 'filter') Or
+          (name = 'reduce') Or (name = 'join') Or (name = 'concat') Or
+          (name = 'splice') Or (name = 'isArray') Then
+    MemberComponents := RC_ARRAY Or RC_ARRAY_METHODS Or RC_FUNCTION
+  Else If (name = 'indexOf') Or (name = 'includes') Or (name = 'slice') Or
+          (name = 'length') Then
+    MemberComponents := RC_STRING Or RC_ARRAY
+  Else If (name = 'keys') Or (name = 'values') Or (name = 'entries') Or
+          (name = 'assign') Or (name = 'create') Or (name = 'freeze') Or
+          (name = 'getPrototypeOf') Or (name = 'hasOwnProperty') Then
+    MemberComponents := RC_OBJECT Or RC_OBJECT_STATICS Or RC_ARRAY
+  Else If (name = 'isInteger') Or (name = 'toFixed') Or (name = 'toString') Then
+    MemberComponents := RC_NUMBER_FUNCS Or RC_NUMTOSTR Or RC_STRING
+  Else If (name = 'stringify') Or (name = 'parse') Then
+    MemberComponents := RC_JSON Or RC_STRING Or RC_OBJECT
+  Else If (name = 'test') Or (name = 'exec') Then
+    MemberComponents := RC_REGEXP Or RC_STRING
+  Else If (name = 'write') Or (name = 'exit') Then
+    MemberComponents := RC_PROCESS;
+End;
+
+{ Composants imposes par un global predefini. }
+Function BuiltinComponents(Const name: TTokenText): LongInt;
+Begin
+  BuiltinComponents := 0;
+  If name = 'console' Then
+    BuiltinComponents := RC_CONSOLE Or RC_CONVERT Or RC_NUMTOSTR Or RC_STRING
+  Else If (name = 'alert') Then
+    BuiltinComponents := RC_CONSOLE Or RC_CONVERT Or RC_NUMTOSTR Or RC_STRING
+  Else If name = 'prompt' Then
+    BuiltinComponents := RC_STDIN Or RC_STRING
+  Else If name = 'process' Then
+    BuiltinComponents := RC_PROCESS
+  Else If name = 'Math' Then
+    BuiltinComponents := RC_MATH Or RC_FPU
+  Else If name = 'JSON' Then
+    BuiltinComponents := RC_JSON Or RC_STRING Or RC_OBJECT
+  Else If name = 'Object' Then
+    BuiltinComponents := RC_OBJECT Or RC_OBJECT_STATICS
+  Else If name = 'Array' Then
+    BuiltinComponents := RC_ARRAY
+  Else If (name = 'String') Or (name = 'Number') Or (name = 'Boolean') Or
+          (name = 'parseInt') Or (name = 'parseFloat') Or (name = 'isNaN') Or
+          (name = 'isFinite') Then
+    BuiltinComponents := RC_NUMBER_FUNCS Or RC_CONVERT Or RC_STRING
+  Else If name = 'RegExp' Then
+    BuiltinComponents := RC_REGEXP Or RC_STRING
+  Else If (name = 'Error') Or (name = 'TypeError') Or (name = 'RangeError') Or
+          (name = 'SyntaxError') Or (name = 'ReferenceError') Or
+          (name = 'EvalError') Or (name = 'URIError') Then
+    BuiltinComponents := RC_EXCEPTION Or RC_OBJECT Or RC_STRING
+  Else If (name = 'NaN') Or (name = 'Infinity') Then
+    BuiltinComponents := RC_FPU;
+End;
+
+{ ---- Construction du modele a partir du programme ---- }
+
+{ Un litteral entier qui tient dans un int32 reste en TAG_INT32. }
+Function FitsInt32(v: Double): Boolean;
+Begin
+  FitsInt32 := (v >= -2147483648.0) And (v <= 2147483647.0) And (Int(v) = v);
+End;
+
+Function BuildRuntimeModel(Var ctx: TCompilerContext): Boolean;
+Var
+  i, e, sy: LongInt;
+  name: TTokenText;
+  s: TTokenText;
+Begin
+  BuildRuntimeModel := False;
+  If Not ctx.ast.analyzed Then
+    Begin
+      PipelineError(ctx, 'analyse semantique absente avant le modele runtime');
+      Exit;
+    End;
+  ctx.rt.comps := RC_HEAP;
+  ctx.rt.int_literals := 0;
+  ctx.rt.double_literals := 0;
+  ctx.rt.string_literals := 0;
+  ctx.rt.template_literals := 0;
+  ctx.rt.regex_literals := 0;
+  ctx.rt.array_literals := 0;
+  ctx.rt.object_literals := 0;
+  ctx.rt.functions := 0;
+  ctx.rt.closures := 0;
+  ctx.rt.classes := 0;
+  ctx.rt.cells := 0;
+  ctx.rt.try_blocks := 0;
+  ctx.rt.throws := 0;
+  ctx.rt.calls := 0;
+  ctx.rt.news := 0;
+
+  For i := 1 To ctx.ast.node_count Do
+    Case ctx.ast.nodes[i].kind Of
+      N_NUMBER:
+        Begin
+          If FitsInt32(ctx.lex.tokens[ctx.ast.nodes[i].tok].num_val) Then
+            Inc(ctx.rt.int_literals)
+          Else
+            Begin
+              Inc(ctx.rt.double_literals);
+              ctx.rt.comps := ctx.rt.comps Or RC_FPU;
+            End;
+        End;
+      N_STRING:
+        Begin
+          Inc(ctx.rt.string_literals);
+          ctx.rt.comps := ctx.rt.comps Or RC_STRING;
+        End;
+      N_TEMPLATE:
+        Begin
+          Inc(ctx.rt.template_literals);
+          ctx.rt.comps := ctx.rt.comps Or RC_STRING Or RC_NUMTOSTR Or RC_CONVERT;
+        End;
+      N_TAGGED:
+        ctx.rt.comps := ctx.rt.comps Or RC_FUNCTION Or RC_ARRAY Or RC_STRING;
+      N_REGEX:
+        Begin
+          Inc(ctx.rt.regex_literals);
+          ctx.rt.comps := ctx.rt.comps Or RC_REGEXP Or RC_STRING;
+        End;
+      N_ARRAY_LIT:
+        Begin
+          Inc(ctx.rt.array_literals);
+          ctx.rt.comps := ctx.rt.comps Or RC_ARRAY;
+        End;
+      N_OBJECT_LIT:
+        Begin
+          Inc(ctx.rt.object_literals);
+          ctx.rt.comps := ctx.rt.comps Or RC_OBJECT;
+        End;
+      N_FUNC_DECL, N_FUNC_EXPR, N_METHOD:
+        Begin
+          Inc(ctx.rt.functions);
+          ctx.rt.comps := ctx.rt.comps Or RC_FUNCTION;
+          If ctx.sem.scopes[ctx.ast.nodes[i].scope].cap_count > 0 Then
+            Inc(ctx.rt.closures);
+        End;
+      N_CLASS_DECL, N_CLASS_EXPR:
+        Begin
+          Inc(ctx.rt.classes);
+          ctx.rt.comps := ctx.rt.comps Or RC_CLASS Or RC_OBJECT Or RC_FUNCTION;
+        End;
+      N_TRY:
+        Begin
+          Inc(ctx.rt.try_blocks);
+          ctx.rt.comps := ctx.rt.comps Or RC_EXCEPTION;
+        End;
+      N_THROW:
+        Begin
+          Inc(ctx.rt.throws);
+          ctx.rt.comps := ctx.rt.comps Or RC_EXCEPTION;
+        End;
+      N_CALL:
+        Inc(ctx.rt.calls);
+      N_NEW:
+        Begin
+          Inc(ctx.rt.news);
+          ctx.rt.comps := ctx.rt.comps Or RC_OBJECT Or RC_FUNCTION;
+        End;
+      N_MEMBER:
+        ctx.rt.comps := ctx.rt.comps Or RC_OBJECT Or
+          MemberComponents(ctx.lex.tokens[ctx.ast.nodes[i].tok].text);
+      N_INDEX:
+        ctx.rt.comps := ctx.rt.comps Or RC_OBJECT Or RC_ARRAY Or RC_STRING;
+      N_PROP:
+        ctx.rt.comps := ctx.rt.comps Or RC_OBJECT;
+      N_UNARY:
+        Begin
+          s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
+          If s = 'typeof' Then
+            ctx.rt.comps := ctx.rt.comps Or RC_TYPEOF Or RC_STRING
+          Else If s = 'delete' Then
+            ctx.rt.comps := ctx.rt.comps Or RC_OBJECT;
+          { -0 : litteral zero precede d'un moins }
+          e := ctx.ast.nodes[i].e1;
+          If (s = '-') And (e <> 0) And (ctx.ast.nodes[e].kind = N_NUMBER) And
+             (ctx.lex.tokens[ctx.ast.nodes[e].tok].num_val = 0) Then
+            ctx.rt.comps := ctx.rt.comps Or RC_FPU;
+        End;
+      N_BINARY:
+        Begin
+          s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
+          If s = '+' Then
+            ctx.rt.comps := ctx.rt.comps Or RC_STRING Or RC_CONVERT
+          Else If (s = '/') Or (s = '**') Or (s = '%') Then
+            ctx.rt.comps := ctx.rt.comps Or RC_FPU
+          Else If (s = 'instanceof') Or (s = 'in') Then
+            ctx.rt.comps := ctx.rt.comps Or RC_INSTANCEOF Or RC_OBJECT
+          Else If (s = '==') Or (s = '!=') Or (s = '<') Or (s = '>') Or
+                  (s = '<=') Or (s = '>=') Then
+            ctx.rt.comps := ctx.rt.comps Or RC_CONVERT;
+        End;
+      N_ASSIGN:
+        Begin
+          s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
+          If s = '+=' Then
+            ctx.rt.comps := ctx.rt.comps Or RC_STRING Or RC_CONVERT
+          Else If (s = '/=') Or (s = '**=') Or (s = '%=') Then
+            ctx.rt.comps := ctx.rt.comps Or RC_FPU;
+        End;
+      N_IDENT:
+        Begin
+          If ctx.ast.nodes[i].aux = RK_BUILTIN Then
+            ctx.rt.comps := ctx.rt.comps Or
+              BuiltinComponents(ctx.lex.tokens[ctx.ast.nodes[i].tok].text)
+          Else If ctx.ast.nodes[i].aux = RK_ARGUMENTS Then
+            ctx.rt.comps := ctx.rt.comps Or RC_ARGUMENTS Or RC_ARRAY;
+        End;
+    End;
+
+  For sy := 1 To ctx.sem.sym_count Do
+    If ctx.sem.syms[sy].flags And SF_CELL <> 0 Then
+      Inc(ctx.rt.cells);
+  If ctx.rt.cells > 0 Then
+    ctx.rt.comps := ctx.rt.comps Or RC_CELL Or RC_FUNCTION;
+
+  ctx.rt.built := True;
+  If ctx.options.verbose Then
+    Writeln('Runtime: valeur ', RT_VALUE_SIZE, ' octets, ',
+            ctx.rt.int_literals, ' entiers, ', ctx.rt.double_literals,
+            ' flottants, ', ctx.rt.string_literals, ' chaines, ',
+            ctx.rt.functions, ' fonctions (', ctx.rt.closures,
+            ' avec environnement), ', ctx.rt.cells, ' cellules');
+  BuildRuntimeModel := ctx.errors = 0;
+End;
+
+{ ---- Affichage du modele (option -runtime) ---- }
+
+Procedure DumpRuntimeModel(Var ctx: TCompilerContext);
+Var
+  b: LongInt;
+  first: Boolean;
+Begin
+  Writeln('Modele runtime (32 bits) :');
+  Writeln('  Valeur : ', RT_VALUE_SIZE, ' octets, lo = charge utile (+', RT_VAL_LO,
+          '), hi = etiquette (+', RT_VAL_HI, ')');
+  Writeln('    hi < ', RT_TAG_PREFIX, '0000h : nombre double IEEE 754');
+  For b := RT_T_INT32 To RT_T_REGEXP Do
+    Writeln('    ', RtTagHex(b), '  ', RtTagName(b));
+  Writeln('    nombre = double ou int32 ; -0 et depassement passent par le FPU');
+  Writeln('    FPU : mot de controle ', RT_FPU_CW, 'h (double precision, arrondi au plus pres)');
+  Writeln('  Cellule du tas : en-tete de ', RT_HDR_SIZE, ' octets, alignement ',
+          RT_ALIGN);
+  Writeln('    +', RT_HDR_KIND, ' kind(1)  +', RT_HDR_GC, ' gc(1)  +',
+          RT_HDR_FLAGS, ' flags(2)  +', RT_HDR_NEXT, ' gc_next(4)');
+  Writeln('  Dispositions :');
+  Writeln('    kinds    : ', RT_OK_STRING, ' chaine, ', RT_OK_ARRAY, ' tableau, ',
+          RT_OK_OBJECT, ' objet, ', RT_OK_FUNCTION, ' fonction, ', RT_OK_CELL,
+          ' cellule, ', RT_OK_REGEXP, ' regexp, ', RT_OK_ENV, ' environnement');
+  Writeln('    chaine   : len +', RT_STR_LEN, ', hash +', RT_STR_HASH,
+          ', octets UTF-8 +', RT_STR_DATA, ' (zero final)');
+  Writeln('    tableau  : len +', RT_ARR_LEN, ', cap +', RT_ARR_CAP,
+          ', elements +', RT_ARR_ELEMS, ' (taille ', RT_ARR_SIZE, ')');
+  Writeln('    objet    : proto +', RT_OBJ_PROTO, ', props +', RT_OBJ_PROPS,
+          ', nb +', RT_OBJ_COUNT, ', cap +', RT_OBJ_CAP, ', classe +',
+          RT_OBJ_CLASS, ' (taille ', RT_OBJ_SIZE, ')');
+  Writeln('    propriete: cle +', RT_PROP_KEY, ', drapeaux +', RT_PROP_FLAGS,
+          ', valeur +', RT_PROP_VALUE, ' (', RT_PROP_SIZE, ' octets)');
+  Writeln('    fonction : code +', RT_FN_CODE, ', env +', RT_FN_ENV,
+          ', descripteur +', RT_FN_DESC, ', props +', RT_FN_PROPS,
+          ', this lexical +', RT_FN_THIS, ' (taille ', RT_FN_SIZE, ')');
+  Writeln('    descript.: nom +', RT_FD_NAME, ', nb params +', RT_FD_NPARAMS,
+          ', drapeaux +', RT_FD_FLAGS, ', nb cellules +', RT_FD_NCELLS,
+          ' (', RT_FD_SIZE, ' octets, en .rdata)');
+  Writeln('    cellule  : valeur +', RT_CELL_VALUE, ' (taille ', RT_CELL_SIZE, ')');
+  Writeln('    environ. : nb +', RT_ENV_COUNT, ', pointeurs de cellules +',
+          RT_ENV_CELLS);
+  Writeln('    regexp   : source +', RT_RX_SOURCE, ', drapeaux +', RT_RX_FLAGS,
+          ', programme +', RT_RX_PROG, ', lastIndex +', RT_RX_LASTINDEX,
+          ' (taille ', RT_RX_SIZE, ')');
+  Writeln('  Tas : arene de ', RT_ARENA_SIZE Div 1024, ' Ko (VirtualAlloc), blocs >= ',
+          RT_BIG_ALLOC Div 1024, ' Ko directs, strategie sans liberation');
+  Writeln('    reserve pour un mark & sweep : octet gc (+', RT_HDR_GC,
+          ') et gc_next (+', RT_HDR_NEXT, ')');
+  Writeln('  Pile : reserve ', RT_STACK_RESERVE Div 1024, ' Ko, limite souple ',
+          RT_STACK_GUARD Div 1024, ' Ko (RangeError si depassee)');
+  Writeln('    appel : [EBP+', RT_FRAME_CLOSURE, '] fonction, [EBP+',
+          RT_FRAME_ARGC, '] argc, [EBP+', RT_FRAME_THIS, '] this (8 octets),');
+  Writeln('            [EBP+', RT_FRAME_ARGS, '] arguments (8 octets chacun)');
+  Writeln('            locaux sous EBP par pas de ', RT_VALUE_SIZE,
+          ' ; retour dans EDX:EAX ; EBX, ESI, EDI preserves ; appelant nettoie');
+  Writeln('    gestionnaire d''exception : prec +', RT_EH_PREV, ', esp +',
+          RT_EH_ESP, ', ebp +', RT_EH_EBP, ', catch +', RT_EH_CATCH,
+          ' (', RT_EH_SIZE, ' octets)');
+  If ctx.rt.built Then
+    Begin
+      Writeln('Programme :');
+      Writeln('  litteraux : ', ctx.rt.int_literals, ' entiers, ',
+              ctx.rt.double_literals, ' flottants, ', ctx.rt.string_literals,
+              ' chaines, ', ctx.rt.template_literals, ' gabarits, ',
+              ctx.rt.regex_literals, ' regexp, ', ctx.rt.array_literals,
+              ' tableaux, ', ctx.rt.object_literals, ' objets');
+      Writeln('  code : ', ctx.rt.functions, ' fonctions (', ctx.rt.closures,
+              ' avec captures), ', ctx.rt.classes, ' classes, ', ctx.rt.cells,
+              ' cellules, ', ctx.rt.calls, ' appels, ', ctx.rt.news, ' new, ',
+              ctx.rt.try_blocks, ' try, ', ctx.rt.throws, ' throw');
+      Write('  composants du runtime a lier :');
+      first := True;
+      b := 1;
+      While b <= RC_LAST Do
+        Begin
+          If ctx.rt.comps And b <> 0 Then
+            Begin
+              If Not first Then
+                Write(',');
+              Write(' ', RtComponentName(b));
+              first := False;
+            End;
+          b := b * 2;
+        End;
+      Writeln;
+    End;
+End;
+
 { Les etapes sont implementees par les TODO suivants. Tant qu'une etape
   n'existe pas, elle echoue explicitement au lieu de produire un faux
   resultat. }
@@ -5555,11 +6105,16 @@ Begin
       End;
     CS_ANALYZE:
       Begin
-        RunStage := AnalyzeProgram(ctx);
+        ok := AnalyzeProgram(ctx);
+        If ok Then
+          ok := BuildRuntimeModel(ctx);
+        RunStage := ok;
         If ctx.options.dump_scopes Then
           DumpScopes(ctx);
         If ctx.options.dump_ast And ctx.ast.analyzed Then
           DumpAst(ctx);
+        If ctx.options.dump_runtime Then
+          DumpRuntimeModel(ctx);
       End;
   Else
     Begin
@@ -5627,6 +6182,13 @@ BEGIN
     Begin
       Writeln('Essayez: jscw32 -h');
       Halt(parse_result);
+    End;
+
+  { -runtime sans fichier source : decrit seulement le modele }
+  If ctx.options.dump_runtime And (ctx.source_name = '') Then
+    Begin
+      DumpRuntimeModel(ctx);
+      Halt(EXIT_OK);
     End;
 
   If ctx.options.verbose Then
