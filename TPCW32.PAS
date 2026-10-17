@@ -31621,6 +31621,25 @@ Begin
   EmitInstr('PUSH OFFSET CRT_INREC');
   EmitInstr('PUSH DWORD PTR [HSTDIN]');
   EmitInstr('CALL ReadConsoleInputA');
+  { Entree standard qui n est pas une console (tube, fichier) : lire un octet, }
+  { Ctrl-Z (26) en fin de fichier, au lieu de boucler sans fin                   }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ ' + TP_RT_PFX + 'RK_EV');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET CRT_NEVT');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET CRT_INREC');
+  EmitInstr('PUSH DWORD PTR [HSTDIN]');
+  EmitInstr('CALL ReadFile');
+  EmitInstr('MOV EAX,26');
+  EmitInstr('CMP DWORD PTR [CRT_NEVT],0');
+  EmitInstr('JE ' + TP_RT_PFX + 'RK_RF');
+  EmitInstr('MOVZX EAX,BYTE PTR [CRT_INREC]');
+  EmitLabel(TP_RT_PFX + 'RK_RF');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'RK_EV');
   { Verifier EventType == KEY_EVENT (1) }
   EmitInstr('MOVZX EAX,WORD PTR [CRT_INREC]');
   EmitInstr('CMP EAX,1');
