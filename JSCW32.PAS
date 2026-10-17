@@ -11,7 +11,7 @@
   03. [IMPLEMENTE] Implementer le chargeur source et le lexer JavaScript complet : normalisation CR/LF, suivi ligne/colonne, diagnostics avec caret, identifiants, mots-cles (var/let/const/function/class/extends/super/new/this/typeof/void/instanceof/in/of/try/catch/finally/throw...), nombres (decimal, flottant, exposant 1.5e3, hexa 0xFF, binaire 0b1010, octal, separateurs 1_000_000), chaines '...' et "..." avec echappements, template literals avec interpolation (dollar-accolade), litteraux RegExp /re/flags (desambiguises de la division), commentaires // et /* */, tous les operateurs (=== !== ** ?? ?. => ... >>> et affectations composees) et NaN/Infinity/null/undefined/true/false.
   04. [IMPLEMENTE] Parser les instructions : var/let/const (avec destructuration simple), blocs, if/else if/else, switch/case/default, while, do-while, for, for-in, for-of, break/continue (avec etiquettes), return, throw, try/catch/finally, declarations function et class, instructions vides/expressions, insertion automatique des points-virgules (ASI) et hoisting des declarations.
   05. [IMPLEMENTE] Parser les expressions avec precedences et associativites exactes : virgule, affectations (= += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=), ternaire, ?? || &&, bit a bit, ==/!=/===/!==, relationnels (instanceof, in), decalages, + -, * / %, **, unaires (typeof void delete ! ~ + - ++ --), postfixes, appels/membres/new, optional chaining, spread/rest, fonctions anonymes, fonctions fleches (x => x*2, (a,b) => corps de bloc), litteraux de tableaux et d'objets (raccourcis, cles calculees, methodes, getters/setters), parametres par defaut.
-  06. [A FAIRE] Construire l'AST et l'analyse semantique : table des symboles et des scopes (global, fonction, bloc), hoisting de var/function, zone morte temporelle (TDZ) de let/const, erreur sur reaffectation d'une const, detection des variables capturees par des fonctions imbriquees (necessaire aux closures), resolution de this (global, methode, constructeur, fleche) et diagnostics de redeclaration/variable non declaree.
+  06. [IMPLEMENTE] Construire l'AST et l'analyse semantique : table des symboles et des scopes (global, fonction, bloc), hoisting de var/function, zone morte temporelle (TDZ) de let/const, erreur sur reaffectation d'une const, detection des variables capturees par des fonctions imbriquees (necessaire aux closures), resolution de this (global, methode, constructeur, fleche) et diagnostics de redeclaration/variable non declaree.
   07. [A FAIRE] Definir le modele de valeurs runtime 32 bits et le gestionnaire memoire : valeurs etiquetees (undefined, null, booleen, nombre, chaine, objet, tableau, fonction/closure, RegExp), nombres IEEE 754 via FPU x87 avec chemin rapide entier, allocation sur le tas Windows (HeapAlloc/VirtualAlloc), tampons de chaines, pile d'appels, et ramasse-miettes simple (mark & sweep) ou strategie documentee de non-liberation.
   08. [A FAIRE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
   09. [A FAIRE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
@@ -113,6 +113,50 @@ Const
   { Expressions : maillon optionnel (?.) et ++/-- prefixe }
   EF_OPTIONAL = 1;
   UF_PREFIX = 1;
+  MAX_SCOPES         = {$IFDEF FPC}16384{$ELSE}300{$ENDIF};
+  MAX_SYMS           = {$IFDEF FPC}16384{$ELSE}500{$ENDIF};
+  MAX_CAPS           = {$IFDEF FPC}8192{$ELSE}300{$ENDIF};
+  { Drapeaux des symboles }
+  SF_CAPTURED     = 1;      { reference depuis une fonction imbriquee }
+  SF_CELL         = 2;      { doit vivre dans une cellule partagee }
+  SF_REASSIGNED   = 4;      { ecrit apres son initialisation }
+  SF_TDZ_CHECK    = 8;      { test de zone morte a l'execution }
+  SF_PER_ITER     = 16;     { une copie par iteration de boucle }
+  SF_STATIC       = 32;     { stockage statique (portee globale) }
+  SF_HOISTED      = 64;     { var ou fonction : initialise a l'entree }
+  SF_IMPLICIT     = 128;    { globale implicite }
+  SF_INITIALIZING = 256;    { en cours d'initialisation }
+  { Mode d'acces a un identifiant }
+  RM_READ = 1;
+  RM_WRITE = 2;
+  RM_READWRITE = 3;
+  { Resolution d'une reference (champ aux d'un noeud IDENT) }
+  RK_LOCAL = 1;
+  RK_OUTER = 2;
+  RK_BUILTIN = 3;
+  RK_GLOBAL_IMPLICIT = 4;
+  RK_ARGUMENTS = 5;
+  RK_UNDECLARED_OK = 6;
+  RK_UNRESOLVED = 7;
+  { Liaison de this (champ aux d'un noeud THIS) }
+  TB_GLOBAL = 1;
+  TB_FUNCTION = 2;
+  TB_METHOD = 3;
+  TB_CTOR = 4;
+  TB_DERIVED_CTOR = 5;
+  TB_STATIC = 6;
+  TB_FIELD = 7;
+  BUILTIN_COUNT = 47;
+  Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
+    'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
+    'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
+    'Proxy', 'RangeError', 'ReferenceError', 'Reflect', 'RegExp', 'Set',
+    'String', 'Symbol', 'SyntaxError', 'TypeError', 'URIError', 'WeakMap',
+    'WeakSet', 'alert', 'clearInterval', 'clearTimeout', 'console',
+    'decodeURIComponent', 'encodeURIComponent', 'exports', 'globalThis',
+    'isFinite', 'isNaN', 'module', 'parseFloat', 'parseInt', 'process',
+    'prompt', 'require', 'setInterval', 'setTimeout', 'undefined'
+  );
 
 Type
   TString = String[MAX_PATH_LEN];
@@ -154,6 +198,7 @@ Type
     show_version: Boolean;
     dump_tokens : Boolean;
     dump_ast    : Boolean;
+    dump_scopes : Boolean;
     output_name : TString;
   End;
 
@@ -247,6 +292,10 @@ Type
     next : LongInt;
     flags: LongInt;
     paren: Boolean;            { expression entre parentheses }
+    scope: LongInt;            { portee ouverte par ce noeud (semantique) }
+    decl_head: LongInt;        { premiere declaration de cette portee }
+    sym  : LongInt;            { symbole lie ou portee fournissant this }
+    aux  : LongInt;            { genre de resolution }
   End;
 
   { Etat sauvegarde a l'entree d'une fonction }
@@ -262,6 +311,7 @@ Type
     node    : LongInt;
     scope   : LongInt;
     origin  : LongInt;
+    next    : LongInt;
   End;
 
   TLabelRec = Record
@@ -281,8 +331,41 @@ Type
     labels      : Array[1..MAX_LABELS] Of TLabelRec;
     node_count  : LongInt;
     decl_count  : LongInt;
+    analyzed    : Boolean;
     nodes       : Array[1..MAX_NODES] Of TNode;
     decls       : Array[1..MAX_DECLS] Of TDecl;
+  End;
+
+  TScopeKind = (SK_GLOBAL, SK_FUNCTION, SK_BLOCK, SK_CLASS, SK_CATCH);
+
+  TFuncKind = (FK_NONE, FK_GLOBAL, FK_FUNCTION, FK_ARROW, FK_METHOD, FK_CTOR,
+               FK_DERIVED_CTOR, FK_STATIC_METHOD, FK_STATIC_BLOCK,
+               FK_FIELD_INIT, FK_STATIC_FIELD_INIT);
+
+  TScope = Record
+    node, parent, func, first_sym, last_sym, cap_count: LongInt;
+    kind  : TScopeKind;
+    fkind : TFuncKind;
+    in_loop, uses_this, this_captured, uses_arguments, has_nested: Boolean;
+  End;
+
+  TSymbol = Record
+    name_tok, scope, node, next, flags, refs, writes: LongInt;
+    kind: TDeclKind;
+  End;
+
+  { Variable libre d'une fonction : fscope capture sym. }
+  TCapture = Record
+    fscope, sym: LongInt;
+  End;
+
+  TSemInfo = Record
+    scope_count, sym_count, cap_count: LongInt;
+    cur_scope, loop_depth, cur_class: LongInt;
+    in_typeof, stop, next_in_loop: Boolean;
+    scopes: Array[1..MAX_SCOPES] Of TScope;
+    syms  : Array[1..MAX_SYMS] Of TSymbol;
+    caps  : Array[1..MAX_CAPS] Of TCapture;
   End;
 
   TCompilerContext = Record
@@ -298,6 +381,7 @@ Type
     source     : TSourceInfo;
     lex        : TLexInfo;
     ast        : TAstInfo;
+    sem        : TSemInfo;
   End;
 
 Const
@@ -447,6 +531,7 @@ Begin
   ctx.options.show_version := False;
   ctx.options.dump_tokens := False;
   ctx.options.dump_ast := False;
+  ctx.options.dump_scopes := False;
   ctx.options.output_name := '';
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
@@ -543,6 +628,7 @@ Begin
   Writeln('  -v            mode verbose');
   Writeln('  -tokens       affiche les jetons du lexer');
   Writeln('  -ast          affiche l''arbre syntaxique et les declarations');
+  Writeln('  -scopes       affiche les portees, symboles et captures');
   Writeln('  -version      affiche la version');
   Writeln('  -h, -?        affiche cette aide');
   Writeln;
@@ -585,6 +671,8 @@ Begin
         ctx.options.show_version := True
       Else If IsOption(arg, 'v') Or IsOption(arg, 'verbose') Then
         ctx.options.verbose := True
+      Else If IsOption(arg, 'scopes') Then
+        ctx.options.dump_scopes := True
       Else If IsOption(arg, 'ast') Then
         ctx.options.dump_ast := True
       Else If IsOption(arg, 'tokens') Then
@@ -2015,6 +2103,10 @@ Begin
   ctx.ast.nodes[n].next := 0;
   ctx.ast.nodes[n].flags := 0;
   ctx.ast.nodes[n].paren := False;
+  ctx.ast.nodes[n].scope := 0;
+  ctx.ast.nodes[n].decl_head := 0;
+  ctx.ast.nodes[n].sym := 0;
+  ctx.ast.nodes[n].aux := 0;
   NewNode := n;
 End;
 
@@ -3981,6 +4073,7 @@ Begin
     End;
   ctx.ast.node_count := 0;
   ctx.ast.decl_count := 0;
+  ctx.ast.analyzed := False;
   ctx.ast.pt := 1;
   ctx.ast.stop := False;
   ctx.ast.last_err_tok := 0;
@@ -4102,6 +4195,7 @@ Begin
 End;
 
 Procedure DumpNodeList(Var ctx: TCompilerContext; n, indent: LongInt); Forward;
+Procedure WriteAnnotation(Var ctx: TCompilerContext; n: LongInt); Forward;
 
 Procedure DumpNode(Var ctx: TCompilerContext; n, indent: LongInt);
 Var
@@ -4237,6 +4331,8 @@ Begin
       If ctx.lex.tokens[ctx.ast.nodes[n].tok].kind = TK_IDENT Then
         Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
   End;
+  If ctx.ast.analyzed Then
+    WriteAnnotation(ctx, n);
   Write('  @', ctx.lex.tokens[ctx.ast.nodes[n].tok].line, ':',
         ctx.lex.tokens[ctx.ast.nodes[n].tok].col);
   Writeln;
@@ -4390,10 +4486,1055 @@ Begin
     End;
 End;
 
+{ ============================================================
+  TODO 6 - ANALYSE SEMANTIQUE
+
+  Une passe sur l'AST construit les portees (globale, fonction, bloc,
+  classe, catch) et la table des symboles, puis resout chaque reference.
+  Pour chaque identifiant, le noeud recoit le symbole (sym) et le genre
+  de resolution (aux) : local, capture depuis une fonction englobante,
+  global predefini, global implicite, arguments.
+
+  Diagnostics : variable non declaree, redeclaration, reaffectation
+  d'une const, zone morte temporelle (TDZ) detectee a la compilation,
+  super hors d'une methode.
+
+  Informations pour la generation de code : variables capturees par des
+  fonctions imbriquees (liste des captures par fonction), symboles qui
+  exigent une cellule, une copie par iteration de boucle, un test TDZ a
+  l'execution, et la resolution de this (global, fonction, methode,
+  constructeur, fleche).
+  ============================================================ }
+
+Function SemTokText(Var ctx: TCompilerContext; tok: LongInt): TTokenText;
+Begin
+  SemTokText := ctx.lex.tokens[tok].text;
+End;
+
+Procedure SemError(Var ctx: TCompilerContext; tok: LongInt; msg: TString);
+Begin
+  SourceErrorAt(ctx, ctx.lex.tokens[tok].line, ctx.lex.tokens[tok].col, msg);
+End;
+
+Procedure SemWarn(Var ctx: TCompilerContext; tok: LongInt; msg: TString);
+Begin
+  SourceWarnAt(ctx, ctx.lex.tokens[tok].line, ctx.lex.tokens[tok].col, msg);
+End;
+
+Function IsBuiltinGlobal(Const name: TTokenText): Boolean;
+Var
+  i: Integer;
+Begin
+  IsBuiltinGlobal := False;
+  For i := 1 To BUILTIN_COUNT Do
+    If Builtins[i] = name Then
+      IsBuiltinGlobal := True;
+End;
+
+Function IsLexicalKind(kind: TDeclKind): Boolean;
+Begin
+  IsLexicalKind := (kind = DK_LET) Or (kind = DK_CONST) Or (kind = DK_CLASS);
+End;
+
+Function LineOfTok(Var ctx: TCompilerContext; tok: LongInt): TString;
+Var
+  s: String[12];
+Begin
+  Str(ctx.lex.tokens[tok].line, s);
+  LineOfTok := s;
+End;
+
+{ ---- Table des symboles ---- }
+
+Procedure CreateSymbol(Var ctx: TCompilerContext; sc, d: LongInt);
+Var
+  old, sy: LongInt;
+  name: TTokenText;
+  conflict: Boolean;
+Begin
+  name := SemTokText(ctx, ctx.ast.decls[d].name_tok);
+  old := ctx.sem.scopes[sc].first_sym;
+  While old <> 0 Do
+    Begin
+      If SemTokText(ctx, ctx.sem.syms[old].name_tok) = name Then
+        Begin
+          conflict := False;
+          If (ctx.sem.syms[old].kind <> DK_FNAME) And
+             (ctx.ast.decls[d].kind <> DK_FNAME) Then
+            Begin
+              If IsLexicalKind(ctx.ast.decls[d].kind) Or
+                 IsLexicalKind(ctx.sem.syms[old].kind) Then
+                conflict := True
+              Else If (ctx.ast.decls[d].kind = DK_PARAM) And
+                      (ctx.sem.syms[old].kind = DK_PARAM) Then
+                SemWarn(ctx, ctx.ast.decls[d].name_tok,
+                        'parametre en double: ' + name);
+            End;
+          If conflict Then
+            Begin
+              SemError(ctx, ctx.ast.decls[d].name_tok,
+                       'redeclaration de "' + name + '" (deja declare ligne ' +
+                       LineOfTok(ctx, ctx.sem.syms[old].name_tok) + ')');
+              Break;
+            End;
+        End;
+      old := ctx.sem.syms[old].next;
+    End;
+  If ctx.sem.sym_count >= MAX_SYMS Then
+    Begin
+      SemError(ctx, ctx.ast.decls[d].name_tok, 'trop de symboles');
+      Exit;
+    End;
+  Inc(ctx.sem.sym_count);
+  sy := ctx.sem.sym_count;
+  ctx.sem.syms[sy].name_tok := ctx.ast.decls[d].name_tok;
+  ctx.sem.syms[sy].kind := ctx.ast.decls[d].kind;
+  ctx.sem.syms[sy].scope := sc;
+  ctx.sem.syms[sy].node := ctx.ast.decls[d].node;
+  ctx.sem.syms[sy].next := 0;
+  ctx.sem.syms[sy].flags := 0;
+  ctx.sem.syms[sy].refs := 0;
+  ctx.sem.syms[sy].writes := 0;
+  If (ctx.sem.scopes[sc].func = 1) And Not ctx.sem.scopes[sc].in_loop Then
+    ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_STATIC;
+  If (ctx.sem.syms[sy].kind = DK_VAR) Or (ctx.sem.syms[sy].kind = DK_FUNC) Then
+    ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_HOISTED;
+  ctx.ast.nodes[ctx.ast.decls[d].node].sym := sy;
+  If ctx.sem.scopes[sc].first_sym = 0 Then
+    ctx.sem.scopes[sc].first_sym := sy
+  Else
+    ctx.sem.syms[ctx.sem.scopes[sc].last_sym].next := sy;
+  ctx.sem.scopes[sc].last_sym := sy;
+End;
+
+Function EnterScope(Var ctx: TCompilerContext; node: LongInt;
+                    kind: TScopeKind; fk: TFuncKind): LongInt;
+Var
+  sc, par, d: LongInt;
+Begin
+  EnterScope := ctx.sem.cur_scope;
+  If ctx.sem.scope_count >= MAX_SCOPES Then
+    Begin
+      If Not ctx.sem.stop Then
+        SemError(ctx, ctx.ast.nodes[node].tok, 'trop de portees');
+      ctx.sem.stop := True;
+      Exit;
+    End;
+  Inc(ctx.sem.scope_count);
+  sc := ctx.sem.scope_count;
+  par := ctx.sem.cur_scope;
+  ctx.sem.scopes[sc].node := node;
+  ctx.sem.scopes[sc].kind := kind;
+  ctx.sem.scopes[sc].fkind := fk;
+  ctx.sem.scopes[sc].parent := par;
+  If (kind = SK_GLOBAL) Or (kind = SK_FUNCTION) Then
+    ctx.sem.scopes[sc].func := sc
+  Else
+    ctx.sem.scopes[sc].func := ctx.sem.scopes[par].func;
+  ctx.sem.scopes[sc].in_loop := (ctx.sem.loop_depth > 0) Or ctx.sem.next_in_loop;
+  ctx.sem.next_in_loop := False;
+  ctx.sem.scopes[sc].first_sym := 0;
+  ctx.sem.scopes[sc].last_sym := 0;
+  ctx.sem.scopes[sc].uses_this := False;
+  ctx.sem.scopes[sc].this_captured := False;
+  ctx.sem.scopes[sc].uses_arguments := False;
+  ctx.sem.scopes[sc].has_nested := False;
+  ctx.sem.scopes[sc].cap_count := 0;
+  ctx.ast.nodes[node].scope := sc;
+  If (kind = SK_FUNCTION) And (par <> 0) Then
+    ctx.sem.scopes[ctx.sem.scopes[par].func].has_nested := True;
+  ctx.sem.cur_scope := sc;
+  d := ctx.ast.nodes[node].decl_head;
+  While d <> 0 Do
+    Begin
+      CreateSymbol(ctx, sc, d);
+      d := ctx.ast.decls[d].next;
+    End;
+  EnterScope := sc;
+End;
+
+Procedure LeaveScope(Var ctx: TCompilerContext; sc: LongInt);
+Begin
+  If sc <> 0 Then
+    ctx.sem.cur_scope := ctx.sem.scopes[sc].parent;
+End;
+
+Function LookupSymbol(Var ctx: TCompilerContext; Const name: TTokenText): LongInt;
+Var
+  sc, sy: LongInt;
+Begin
+  sc := ctx.sem.cur_scope;
+  While sc <> 0 Do
+    Begin
+      sy := ctx.sem.scopes[sc].first_sym;
+      While sy <> 0 Do
+        Begin
+          If SemTokText(ctx, ctx.sem.syms[sy].name_tok) = name Then
+            Begin
+              LookupSymbol := sy;
+              Exit;
+            End;
+          sy := ctx.sem.syms[sy].next;
+        End;
+      sc := ctx.sem.scopes[sc].parent;
+    End;
+  LookupSymbol := 0;
+End;
+
+{ ---- Captures ---- }
+
+Procedure AddCapture(Var ctx: TCompilerContext; fscope, sy: LongInt);
+Var
+  i: LongInt;
+Begin
+  For i := 1 To ctx.sem.cap_count Do
+    If (ctx.sem.caps[i].fscope = fscope) And (ctx.sem.caps[i].sym = sy) Then
+      Exit;
+  If ctx.sem.cap_count >= MAX_CAPS Then
+    Exit;
+  Inc(ctx.sem.cap_count);
+  ctx.sem.caps[ctx.sem.cap_count].fscope := fscope;
+  ctx.sem.caps[ctx.sem.cap_count].sym := sy;
+  Inc(ctx.sem.scopes[fscope].cap_count);
+End;
+
+{ ---- Resolution d'un identifiant ---- }
+
+Function NearestNonArrow(Var ctx: TCompilerContext): LongInt;
+Var
+  sc: LongInt;
+Begin
+  sc := ctx.sem.cur_scope;
+  While sc <> 0 Do
+    Begin
+      If ctx.sem.scopes[sc].kind = SK_GLOBAL Then
+        Begin
+          NearestNonArrow := sc;
+          Exit;
+        End;
+      If (ctx.sem.scopes[sc].kind = SK_FUNCTION) And
+         (ctx.sem.scopes[sc].fkind <> FK_ARROW) Then
+        Begin
+          NearestNonArrow := sc;
+          Exit;
+        End;
+      sc := ctx.sem.scopes[sc].parent;
+    End;
+  NearestNonArrow := 1;
+End;
+
+Procedure ResolveIdent(Var ctx: TCompilerContext; n: LongInt; mode: Integer);
+Var
+  tok, sy, rf, sf, f, prov: LongInt;
+  name: TTokenText;
+  is_write, is_read: Boolean;
+Begin
+  tok := ctx.ast.nodes[n].tok;
+  name := SemTokText(ctx, tok);
+  is_write := (mode = RM_WRITE) Or (mode = RM_READWRITE);
+  is_read := (mode = RM_READ) Or (mode = RM_READWRITE);
+  ctx.ast.nodes[n].sym := 0;
+  sy := LookupSymbol(ctx, name);
+  If sy = 0 Then
+    Begin
+      If name = 'arguments' Then
+        Begin
+          prov := NearestNonArrow(ctx);
+          If ctx.sem.scopes[prov].kind = SK_FUNCTION Then
+            Begin
+              ctx.sem.scopes[prov].uses_arguments := True;
+              ctx.ast.nodes[n].aux := RK_ARGUMENTS;
+              Exit;
+            End;
+        End;
+      If IsBuiltinGlobal(name) Then
+        ctx.ast.nodes[n].aux := RK_BUILTIN
+      Else If is_write And Not is_read Then
+        Begin
+          { affectation a une variable non declaree : globale implicite }
+          SemWarn(ctx, tok, 'affectation a la variable non declaree "' + name +
+                  '" : creation d''une globale implicite');
+          If ctx.sem.sym_count < MAX_SYMS Then
+            Begin
+              Inc(ctx.sem.sym_count);
+              sy := ctx.sem.sym_count;
+              ctx.sem.syms[sy].name_tok := tok;
+              ctx.sem.syms[sy].kind := DK_VAR;
+              ctx.sem.syms[sy].scope := 1;
+              ctx.sem.syms[sy].node := n;
+              ctx.sem.syms[sy].next := 0;
+              ctx.sem.syms[sy].flags := SF_STATIC Or SF_IMPLICIT Or SF_REASSIGNED;
+              ctx.sem.syms[sy].refs := 0;
+              ctx.sem.syms[sy].writes := 1;
+              If ctx.sem.scopes[1].first_sym = 0 Then
+                ctx.sem.scopes[1].first_sym := sy
+              Else
+                ctx.sem.syms[ctx.sem.scopes[1].last_sym].next := sy;
+              ctx.sem.scopes[1].last_sym := sy;
+              ctx.ast.nodes[n].sym := sy;
+              ctx.ast.nodes[n].aux := RK_GLOBAL_IMPLICIT;
+            End;
+        End
+      Else If ctx.sem.in_typeof Then
+        ctx.ast.nodes[n].aux := RK_UNDECLARED_OK
+      Else
+        Begin
+          SemError(ctx, tok, 'variable non declaree: ' + name);
+          ctx.ast.nodes[n].aux := RK_UNRESOLVED;
+        End;
+      Exit;
+    End;
+
+  ctx.ast.nodes[n].sym := sy;
+  rf := ctx.sem.scopes[ctx.sem.cur_scope].func;
+  sf := ctx.sem.scopes[ctx.sem.syms[sy].scope].func;
+  If is_read Then
+    Inc(ctx.sem.syms[sy].refs);
+
+  If rf = sf Then
+    ctx.ast.nodes[n].aux := RK_LOCAL
+  Else
+    Begin
+      ctx.ast.nodes[n].aux := RK_OUTER;
+      ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_CAPTURED;
+      If ctx.sem.syms[sy].flags And SF_STATIC = 0 Then
+        Begin
+          ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_CELL;
+          f := rf;
+          While (f <> sf) And (f <> 0) Do
+            Begin
+              AddCapture(ctx, f, sy);
+              f := ctx.sem.scopes[ctx.sem.scopes[f].parent].func;
+            End;
+        End;
+      If ctx.sem.scopes[ctx.sem.syms[sy].scope].in_loop And
+         (ctx.sem.syms[sy].kind <> DK_VAR) Then
+        ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_PER_ITER;
+    End;
+
+  { zone morte temporelle des declarations lexicales }
+  If IsLexicalKind(ctx.sem.syms[sy].kind) Then
+    Begin
+      If rf = sf Then
+        Begin
+          If tok < ctx.sem.syms[sy].name_tok Then
+            SemError(ctx, tok, '"' + name + '" utilise avant sa declaration ' +
+                     '(zone morte temporelle, ligne ' +
+                     LineOfTok(ctx, ctx.sem.syms[sy].name_tok) + ')')
+          Else If ctx.sem.syms[sy].flags And SF_INITIALIZING <> 0 Then
+            SemError(ctx, tok, '"' + name + '" utilise dans son propre ' +
+                     'initialiseur (zone morte temporelle)');
+        End
+      Else
+        Begin
+          { fonction imbriquee ecrite avant la declaration : test a l'execution }
+          f := rf;
+          While ctx.sem.scopes[ctx.sem.scopes[f].parent].func <> sf Do
+            f := ctx.sem.scopes[ctx.sem.scopes[f].parent].func;
+          If ctx.ast.nodes[ctx.sem.scopes[f].node].tok <
+             ctx.sem.syms[sy].name_tok Then
+            ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_TDZ_CHECK;
+        End;
+    End;
+
+  If is_write Then
+    Begin
+      Inc(ctx.sem.syms[sy].writes);
+      ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_REASSIGNED;
+      If ctx.sem.syms[sy].kind = DK_CONST Then
+        SemError(ctx, tok, 'reaffectation de la constante "' + name + '"')
+      Else If ctx.sem.syms[sy].kind = DK_FNAME Then
+        SemWarn(ctx, tok, 'affectation ignoree au nom de fonction "' + name + '"');
+    End;
+End;
+
+{ ---- Contexte de this et de super ---- }
+
+Function ThisBindingOf(fk: TFuncKind): Integer;
+Begin
+  Case fk Of
+    FK_GLOBAL:       ThisBindingOf := TB_GLOBAL;
+    FK_FUNCTION:     ThisBindingOf := TB_FUNCTION;
+    FK_METHOD:       ThisBindingOf := TB_METHOD;
+    FK_CTOR:         ThisBindingOf := TB_CTOR;
+    FK_DERIVED_CTOR: ThisBindingOf := TB_DERIVED_CTOR;
+    FK_FIELD_INIT:   ThisBindingOf := TB_FIELD;
+  Else
+    ThisBindingOf := TB_STATIC;
+  End;
+End;
+
+{ Portee qui fournit this : la plus proche non fleche. Les fleches
+  traversees utilisent le this lexical. Retourne la portee et dit si au
+  moins une fleche a ete traversee. }
+Function FindThisProvider(Var ctx: TCompilerContext; Var via_arrow: Boolean): LongInt;
+Var
+  sc: LongInt;
+Begin
+  via_arrow := False;
+  sc := ctx.sem.cur_scope;
+  While sc <> 0 Do
+    Begin
+      If ctx.sem.scopes[sc].kind = SK_GLOBAL Then
+        Break;
+      If ctx.sem.scopes[sc].kind = SK_FUNCTION Then
+        Begin
+          If ctx.sem.scopes[sc].fkind <> FK_ARROW Then
+            Break;
+          via_arrow := True;
+          ctx.sem.scopes[sc].uses_this := True;
+        End;
+      sc := ctx.sem.scopes[sc].parent;
+    End;
+  If sc = 0 Then
+    sc := 1;
+  FindThisProvider := sc;
+End;
+
+Procedure ResolveThis(Var ctx: TCompilerContext; n: LongInt);
+Var
+  prov: LongInt;
+  via: Boolean;
+Begin
+  prov := FindThisProvider(ctx, via);
+  ctx.sem.scopes[prov].uses_this := True;
+  If via Then
+    ctx.sem.scopes[prov].this_captured := True;
+  ctx.ast.nodes[n].sym := prov;
+  ctx.ast.nodes[n].aux := ThisBindingOf(ctx.sem.scopes[prov].fkind);
+  If via Then
+    ctx.ast.nodes[n].e1 := 1;
+End;
+
+Procedure ResolveSuper(Var ctx: TCompilerContext; n: LongInt; is_call: Boolean);
+Var
+  prov: LongInt;
+  via: Boolean;
+  fk: TFuncKind;
+Begin
+  prov := FindThisProvider(ctx, via);
+  fk := ctx.sem.scopes[prov].fkind;
+  ctx.ast.nodes[n].sym := prov;
+  ctx.sem.scopes[prov].uses_this := True;
+  If via Then
+    ctx.sem.scopes[prov].this_captured := True;
+  If is_call Then
+    Begin
+      If fk <> FK_DERIVED_CTOR Then
+        SemError(ctx, ctx.ast.nodes[n].tok,
+                 'super(...) n''est permis que dans le constructeur d''une classe derivee');
+    End
+  Else If (fk = FK_GLOBAL) Or (fk = FK_FUNCTION) Then
+    SemError(ctx, ctx.ast.nodes[n].tok,
+             'super en dehors d''une methode ou d''un constructeur');
+End;
+
+{ ---- Parcours generique ---- }
+
+Function ChildSpec(kind: TNodeKind): String;
+Begin
+  Case kind Of
+    N_PROGRAM, N_BLOCK, N_VAR_DECL, N_ARRAY_PATTERN, N_OBJECT_PATTERN,
+    N_TEMPLATE, N_ARRAY_LIT, N_OBJECT_LIT, N_SEQUENCE:
+      ChildSpec := 'l';
+    N_EXPR_STMT, N_RETURN, N_THROW, N_LABELED, N_SPREAD, N_UNARY, N_MEMBER:
+      ChildSpec := 'n';
+    N_IF, N_TRY, N_COND, N_PATTERN_PROP:
+      ChildSpec := 'nnn';
+    N_CASE, N_CALL, N_NEW:
+      ChildSpec := 'nl';
+    N_WHILE, N_DO_WHILE, N_PARAM, N_PATTERN_ELEM, N_BINARY, N_LOGICAL,
+    N_INDEX, N_TAGGED:
+      ChildSpec := 'nn';
+  Else
+    ChildSpec := '';
+  End;
+End;
+
+Function NodeField(Var ctx: TCompilerContext; n, slot: LongInt): LongInt;
+Begin
+  Case slot Of
+    1: NodeField := ctx.ast.nodes[n].e1;
+    2: NodeField := ctx.ast.nodes[n].e2;
+    3: NodeField := ctx.ast.nodes[n].e3;
+  Else
+    NodeField := ctx.ast.nodes[n].e4;
+  End;
+End;
+
+Procedure SemNode(Var ctx: TCompilerContext; n: LongInt); Forward;
+
+Procedure SemList(Var ctx: TCompilerContext; n: LongInt);
+Begin
+  While n <> 0 Do
+    Begin
+      SemNode(ctx, n);
+      n := ctx.ast.nodes[n].next;
+    End;
+End;
+
+Procedure SemChildren(Var ctx: TCompilerContext; n: LongInt);
+Var
+  spec: String;
+  slot: Integer;
+  e: LongInt;
+Begin
+  spec := ChildSpec(ctx.ast.nodes[n].kind);
+  For slot := 1 To Length(spec) Do
+    Begin
+      e := NodeField(ctx, n, slot);
+      If spec[slot] = 'n' Then
+        SemNode(ctx, e)
+      Else
+        SemList(ctx, e);
+    End;
+End;
+
+{ Cible d'une affectation : ecriture d'un identifiant, ou destructuration. }
+Procedure SemTarget(Var ctx: TCompilerContext; n: LongInt);
+Var
+  el, pr: LongInt;
+Begin
+  If n = 0 Then
+    Exit;
+  Case ctx.ast.nodes[n].kind Of
+    N_IDENT:
+      ResolveIdent(ctx, n, RM_WRITE);
+    N_ARRAY_LIT:
+      Begin
+        el := ctx.ast.nodes[n].e1;
+        While el <> 0 Do
+          Begin
+            If ctx.ast.nodes[el].kind = N_SPREAD Then
+              SemTarget(ctx, ctx.ast.nodes[el].e1)
+            Else
+              SemTarget(ctx, el);
+            el := ctx.ast.nodes[el].next;
+          End;
+      End;
+    N_OBJECT_LIT:
+      Begin
+        pr := ctx.ast.nodes[n].e1;
+        While pr <> 0 Do
+          Begin
+            If ctx.ast.nodes[pr].flags And PR_SPREAD <> 0 Then
+              SemTarget(ctx, ctx.ast.nodes[pr].e1)
+            Else
+              Begin
+                SemNode(ctx, ctx.ast.nodes[pr].e2);
+                SemTarget(ctx, ctx.ast.nodes[pr].e1);
+                SemNode(ctx, ctx.ast.nodes[pr].e3);
+              End;
+            pr := ctx.ast.nodes[pr].next;
+          End;
+      End;
+    N_ASSIGN:
+      Begin
+        SemTarget(ctx, ctx.ast.nodes[n].e1);
+        SemNode(ctx, ctx.ast.nodes[n].e2);
+      End;
+  Else
+    SemNode(ctx, n);
+  End;
+End;
+
+{ Marque (ou demarque) les symboles lies par un motif de declaration. }
+Procedure SetInitializing(Var ctx: TCompilerContext; n: LongInt; on: Boolean);
+Var
+  e: LongInt;
+Begin
+  If n = 0 Then
+    Exit;
+  Case ctx.ast.nodes[n].kind Of
+    N_BIND_IDENT:
+      Begin
+        e := ctx.ast.nodes[n].sym;
+        If e <> 0 Then
+          If on Then
+            ctx.sem.syms[e].flags := ctx.sem.syms[e].flags Or SF_INITIALIZING
+          Else
+            ctx.sem.syms[e].flags := ctx.sem.syms[e].flags And Not SF_INITIALIZING;
+      End;
+    N_ARRAY_PATTERN, N_OBJECT_PATTERN:
+      Begin
+        e := ctx.ast.nodes[n].e1;
+        While e <> 0 Do
+          Begin
+            SetInitializing(ctx, e, on);
+            e := ctx.ast.nodes[e].next;
+          End;
+      End;
+    N_PATTERN_ELEM, N_PATTERN_PROP:
+      SetInitializing(ctx, ctx.ast.nodes[n].e1, on);
+  End;
+End;
+
+Function FuncKindOf(Var ctx: TCompilerContext; n: LongInt): TFuncKind;
+Var
+  f: LongInt;
+Begin
+  f := ctx.ast.nodes[n].flags;
+  Case ctx.ast.nodes[n].kind Of
+    N_FUNC_DECL:
+      FuncKindOf := FK_FUNCTION;
+    N_FUNC_EXPR:
+      Begin
+        If f And FN_ARROW <> 0 Then
+          FuncKindOf := FK_ARROW
+        Else If f And FN_METHOD <> 0 Then
+          FuncKindOf := FK_METHOD
+        Else
+          FuncKindOf := FK_FUNCTION;
+      End;
+    N_METHOD:
+      Begin
+        If f And MF_STATIC <> 0 Then
+          FuncKindOf := FK_STATIC_METHOD
+        Else If f And MF_CONSTRUCTOR <> 0 Then
+          Begin
+            If (ctx.sem.cur_class <> 0) And
+               (ctx.ast.nodes[ctx.sem.cur_class].e1 <> 0) Then
+              FuncKindOf := FK_DERIVED_CTOR
+            Else
+              FuncKindOf := FK_CTOR;
+          End
+        Else
+          FuncKindOf := FK_METHOD;
+      End;
+  Else
+    FuncKindOf := FK_FUNCTION;
+  End;
+End;
+
+Procedure SemFunction(Var ctx: TCompilerContext; n: LongInt);
+Var
+  sc, save_loop: LongInt;
+Begin
+  save_loop := ctx.sem.loop_depth;
+  ctx.sem.loop_depth := 0;
+  sc := EnterScope(ctx, n, SK_FUNCTION, FuncKindOf(ctx, n));
+  SemList(ctx, ctx.ast.nodes[n].e1);
+  SemNode(ctx, ctx.ast.nodes[n].e2);
+  LeaveScope(ctx, sc);
+  ctx.sem.loop_depth := save_loop;
+End;
+
+Procedure SemClass(Var ctx: TCompilerContext; n: LongInt);
+Var
+  sc, save_class, m, sc2, save_loop: LongInt;
+Begin
+  save_class := ctx.sem.cur_class;
+  sc := EnterScope(ctx, n, SK_CLASS, FK_NONE);
+  ctx.sem.cur_class := n;
+  SemNode(ctx, ctx.ast.nodes[n].e1);
+  m := ctx.ast.nodes[n].e2;
+  While m <> 0 Do
+    Begin
+      Case ctx.ast.nodes[m].kind Of
+        N_METHOD:
+          Begin
+            SemNode(ctx, ctx.ast.nodes[m].e3);
+            SemFunction(ctx, m);
+          End;
+        N_FIELD:
+          Begin
+            SemNode(ctx, ctx.ast.nodes[m].e3);
+            If ctx.ast.nodes[m].e1 <> 0 Then
+              Begin
+                save_loop := ctx.sem.loop_depth;
+                ctx.sem.loop_depth := 0;
+                If ctx.ast.nodes[m].flags And MF_STATIC <> 0 Then
+                  sc2 := EnterScope(ctx, m, SK_FUNCTION, FK_STATIC_FIELD_INIT)
+                Else
+                  sc2 := EnterScope(ctx, m, SK_FUNCTION, FK_FIELD_INIT);
+                SemNode(ctx, ctx.ast.nodes[m].e1);
+                LeaveScope(ctx, sc2);
+                ctx.sem.loop_depth := save_loop;
+              End;
+          End;
+        N_STATIC_BLOCK:
+          Begin
+            save_loop := ctx.sem.loop_depth;
+            ctx.sem.loop_depth := 0;
+            sc2 := EnterScope(ctx, m, SK_FUNCTION, FK_STATIC_BLOCK);
+            SemNode(ctx, ctx.ast.nodes[m].e1);
+            LeaveScope(ctx, sc2);
+            ctx.sem.loop_depth := save_loop;
+          End;
+      End;
+      m := ctx.ast.nodes[m].next;
+    End;
+  LeaveScope(ctx, sc);
+  ctx.sem.cur_class := save_class;
+End;
+
+Procedure SemNode(Var ctx: TCompilerContext; n: LongInt);
+Var
+  sc, e, decl_target: LongInt;
+  s: TTokenText;
+  was_typeof: Boolean;
+Begin
+  If (n = 0) Or ctx.sem.stop Then
+    Exit;
+  Case ctx.ast.nodes[n].kind Of
+    N_BLOCK:
+      Begin
+        If ctx.ast.nodes[n].flags = 1 Then
+          SemList(ctx, ctx.ast.nodes[n].e1)
+        Else
+          Begin
+            sc := EnterScope(ctx, n, SK_BLOCK, FK_NONE);
+            SemList(ctx, ctx.ast.nodes[n].e1);
+            LeaveScope(ctx, sc);
+          End;
+      End;
+    N_DECLARATOR:
+      Begin
+        decl_target := ctx.ast.nodes[n].e1;
+        SetInitializing(ctx, decl_target, ctx.ast.nodes[n].e2 <> 0);
+        SemNode(ctx, decl_target);
+        SemNode(ctx, ctx.ast.nodes[n].e2);
+        SetInitializing(ctx, decl_target, False);
+      End;
+    N_FOR, N_FOR_IN, N_FOR_OF:
+      Begin
+        ctx.sem.next_in_loop := True;
+        sc := EnterScope(ctx, n, SK_BLOCK, FK_NONE);
+        If ctx.ast.nodes[n].kind = N_FOR Then
+          Begin
+            SemNode(ctx, ctx.ast.nodes[n].e1);
+            SemNode(ctx, ctx.ast.nodes[n].e2);
+            SemNode(ctx, ctx.ast.nodes[n].e3);
+            Inc(ctx.sem.loop_depth);
+            SemNode(ctx, ctx.ast.nodes[n].e4);
+            Dec(ctx.sem.loop_depth);
+          End
+        Else
+          Begin
+            SemNode(ctx, ctx.ast.nodes[n].e2);
+            e := ctx.ast.nodes[n].e1;
+            If (e <> 0) And (ctx.ast.nodes[e].kind = N_VAR_DECL) Then
+              SemNode(ctx, e)
+            Else
+              SemTarget(ctx, e);
+            Inc(ctx.sem.loop_depth);
+            SemNode(ctx, ctx.ast.nodes[n].e3);
+            Dec(ctx.sem.loop_depth);
+          End;
+        LeaveScope(ctx, sc);
+      End;
+    N_WHILE:
+      Begin
+        SemNode(ctx, ctx.ast.nodes[n].e1);
+        Inc(ctx.sem.loop_depth);
+        SemNode(ctx, ctx.ast.nodes[n].e2);
+        Dec(ctx.sem.loop_depth);
+      End;
+    N_DO_WHILE:
+      Begin
+        Inc(ctx.sem.loop_depth);
+        SemNode(ctx, ctx.ast.nodes[n].e1);
+        Dec(ctx.sem.loop_depth);
+        SemNode(ctx, ctx.ast.nodes[n].e2);
+      End;
+    N_SWITCH:
+      Begin
+        SemNode(ctx, ctx.ast.nodes[n].e1);
+        sc := EnterScope(ctx, n, SK_BLOCK, FK_NONE);
+        SemList(ctx, ctx.ast.nodes[n].e2);
+        LeaveScope(ctx, sc);
+      End;
+    N_CATCH:
+      Begin
+        sc := EnterScope(ctx, n, SK_CATCH, FK_NONE);
+        SemNode(ctx, ctx.ast.nodes[n].e1);
+        e := ctx.ast.nodes[n].e2;
+        If e <> 0 Then
+          SemList(ctx, ctx.ast.nodes[e].e1);
+        LeaveScope(ctx, sc);
+      End;
+    N_FUNC_DECL, N_FUNC_EXPR, N_METHOD:
+      SemFunction(ctx, n);
+    N_CLASS_DECL, N_CLASS_EXPR:
+      SemClass(ctx, n);
+    N_IDENT:
+      ResolveIdent(ctx, n, RM_READ);
+    N_THIS:
+      ResolveThis(ctx, n);
+    N_SUPER:
+      ResolveSuper(ctx, n, False);
+    N_ASSIGN:
+      Begin
+        s := SemTokText(ctx, ctx.ast.nodes[n].tok);
+        e := ctx.ast.nodes[n].e1;
+        If s = '=' Then
+          SemTarget(ctx, e)
+        Else If (e <> 0) And (ctx.ast.nodes[e].kind = N_IDENT) Then
+          ResolveIdent(ctx, e, RM_READWRITE)
+        Else
+          SemNode(ctx, e);
+        SemNode(ctx, ctx.ast.nodes[n].e2);
+      End;
+    N_UPDATE:
+      Begin
+        e := ctx.ast.nodes[n].e1;
+        If (e <> 0) And (ctx.ast.nodes[e].kind = N_IDENT) Then
+          ResolveIdent(ctx, e, RM_READWRITE)
+        Else
+          SemNode(ctx, e);
+      End;
+    N_UNARY:
+      Begin
+        e := ctx.ast.nodes[n].e1;
+        was_typeof := ctx.sem.in_typeof;
+        If (SemTokText(ctx, ctx.ast.nodes[n].tok) = 'typeof') And (e <> 0) And
+           (ctx.ast.nodes[e].kind = N_IDENT) Then
+          ctx.sem.in_typeof := True;
+        SemNode(ctx, e);
+        ctx.sem.in_typeof := was_typeof;
+      End;
+    N_CALL:
+      Begin
+        e := ctx.ast.nodes[n].e1;
+        If (e <> 0) And (ctx.ast.nodes[e].kind = N_SUPER) Then
+          ResolveSuper(ctx, e, True)
+        Else
+          SemNode(ctx, e);
+        SemList(ctx, ctx.ast.nodes[n].e2);
+      End;
+    N_PROP:
+      Begin
+        If ctx.ast.nodes[n].flags And PR_SPREAD <> 0 Then
+          SemNode(ctx, ctx.ast.nodes[n].e1)
+        Else
+          Begin
+            SemNode(ctx, ctx.ast.nodes[n].e2);
+            SemNode(ctx, ctx.ast.nodes[n].e1);
+            SemNode(ctx, ctx.ast.nodes[n].e3);
+          End;
+      End;
+  Else
+    SemChildren(ctx, n);
+  End;
+End;
+
+{ var declare dans un bloc imbrique : ne doit pas croiser un let/const/class
+  du meme nom dans les portees traversees. }
+Procedure CheckVarHoisting(Var ctx: TCompilerContext);
+Var
+  i, sc, target, sy: LongInt;
+  name: TTokenText;
+Begin
+  For i := 1 To ctx.ast.decl_count Do
+    If (ctx.ast.decls[i].kind = DK_VAR) And
+       (ctx.ast.decls[i].origin <> ctx.ast.decls[i].scope) Then
+      Begin
+        name := SemTokText(ctx, ctx.ast.decls[i].name_tok);
+        target := ctx.ast.nodes[ctx.ast.decls[i].scope].scope;
+        sc := ctx.ast.nodes[ctx.ast.decls[i].origin].scope;
+        While (sc <> 0) And (sc <> target) Do
+          Begin
+            sy := ctx.sem.scopes[sc].first_sym;
+            While sy <> 0 Do
+              Begin
+                If IsLexicalKind(ctx.sem.syms[sy].kind) And
+                   (SemTokText(ctx, ctx.sem.syms[sy].name_tok) = name) Then
+                  SemError(ctx, ctx.ast.decls[i].name_tok,
+                           'redeclaration de "' + name +
+                           '" (let/const/class ligne ' +
+                           LineOfTok(ctx, ctx.sem.syms[sy].name_tok) +
+                           ' dans une portee englobante)');
+                sy := ctx.sem.syms[sy].next;
+              End;
+            sc := ctx.sem.scopes[sc].parent;
+          End;
+      End;
+End;
+
+Function AnalyzeProgram(Var ctx: TCompilerContext): Boolean;
+Var
+  i, sc: LongInt;
+Begin
+  AnalyzeProgram := False;
+  If ctx.ast.root = 0 Then
+    Begin
+      PipelineError(ctx, 'AST absent avant l''analyse semantique');
+      Exit;
+    End;
+  ctx.sem.scope_count := 0;
+  ctx.sem.sym_count := 0;
+  ctx.sem.cap_count := 0;
+  ctx.sem.cur_scope := 0;
+  ctx.sem.loop_depth := 0;
+  ctx.sem.cur_class := 0;
+  ctx.sem.in_typeof := False;
+  ctx.sem.stop := False;
+  ctx.sem.next_in_loop := False;
+  { liste des declarations de chaque portee, dans l'ordre du source }
+  For i := 1 To ctx.ast.node_count Do
+    Begin
+      ctx.ast.nodes[i].decl_head := 0;
+      ctx.ast.nodes[i].scope := 0;
+      ctx.ast.nodes[i].sym := 0;
+      ctx.ast.nodes[i].aux := 0;
+    End;
+  For i := ctx.ast.decl_count Downto 1 Do
+    Begin
+      ctx.ast.decls[i].next := ctx.ast.nodes[ctx.ast.decls[i].scope].decl_head;
+      ctx.ast.nodes[ctx.ast.decls[i].scope].decl_head := i;
+    End;
+  sc := EnterScope(ctx, ctx.ast.root, SK_GLOBAL, FK_GLOBAL);
+  SemList(ctx, ctx.ast.nodes[ctx.ast.root].e1);
+  CheckVarHoisting(ctx);
+  ctx.ast.analyzed := True;
+  If ctx.options.verbose Then
+    Writeln('Semant.: ', ctx.sem.scope_count, ' portees, ', ctx.sem.sym_count,
+            ' symboles, ', ctx.sem.cap_count, ' captures');
+  AnalyzeProgram := ctx.errors = 0;
+End;
+
+{ ---- Affichage des portees et des symboles (option -scopes) ---- }
+
+Function ScopeKindName(kind: TScopeKind): TString;
+Begin
+  Case kind Of
+    SK_GLOBAL:   ScopeKindName := 'globale';
+    SK_FUNCTION: ScopeKindName := 'fonction';
+    SK_BLOCK:    ScopeKindName := 'bloc';
+    SK_CLASS:    ScopeKindName := 'classe';
+    SK_CATCH:    ScopeKindName := 'catch';
+  Else
+    ScopeKindName := '?';
+  End;
+End;
+
+Function FuncKindName(fk: TFuncKind): TString;
+Begin
+  Case fk Of
+    FK_GLOBAL:            FuncKindName := 'global';
+    FK_FUNCTION:          FuncKindName := 'fonction';
+    FK_ARROW:             FuncKindName := 'fleche';
+    FK_METHOD:            FuncKindName := 'methode';
+    FK_CTOR:              FuncKindName := 'constructeur';
+    FK_DERIVED_CTOR:      FuncKindName := 'constructeur-derive';
+    FK_STATIC_METHOD:     FuncKindName := 'methode-statique';
+    FK_STATIC_BLOCK:      FuncKindName := 'bloc-statique';
+    FK_FIELD_INIT:        FuncKindName := 'champ';
+    FK_STATIC_FIELD_INIT: FuncKindName := 'champ-statique';
+  Else
+    FuncKindName := '';
+  End;
+End;
+
+Function ThisBindingName(b: LongInt): TString;
+Begin
+  Case b Of
+    TB_GLOBAL:       ThisBindingName := 'global';
+    TB_FUNCTION:     ThisBindingName := 'fonction';
+    TB_METHOD:       ThisBindingName := 'methode';
+    TB_CTOR:         ThisBindingName := 'constructeur';
+    TB_DERIVED_CTOR: ThisBindingName := 'constructeur-derive';
+    TB_STATIC:       ThisBindingName := 'classe';
+    TB_FIELD:        ThisBindingName := 'instance-champ';
+  Else
+    ThisBindingName := '?';
+  End;
+End;
+
+Procedure DumpScopes(Var ctx: TCompilerContext);
+Var
+  i, sy, k: LongInt;
+  fl: LongInt;
+Begin
+  Writeln('Portees (', ctx.sem.scope_count, ') :');
+  For i := 1 To ctx.sem.scope_count Do
+    Begin
+      If ctx.sem.scopes[i].kind = SK_FUNCTION Then
+        Write('  #', i, ' ', FuncKindName(ctx.sem.scopes[i].fkind))
+      Else
+        Write('  #', i, ' ', ScopeKindName(ctx.sem.scopes[i].kind));
+      Write(' (', NodeKindName(ctx.ast.nodes[ctx.sem.scopes[i].node].kind), '@',
+            ctx.lex.tokens[ctx.ast.nodes[ctx.sem.scopes[i].node].tok].line, ')');
+      If ctx.sem.scopes[i].parent <> 0 Then
+        Write(' parent=#', ctx.sem.scopes[i].parent);
+      If ctx.sem.scopes[i].in_loop Then
+        Write(' boucle');
+      If ctx.sem.scopes[i].uses_this Then
+        Write(' this');
+      If ctx.sem.scopes[i].this_captured Then
+        Write(' this-capture');
+      If ctx.sem.scopes[i].uses_arguments Then
+        Write(' arguments');
+      Writeln;
+      sy := ctx.sem.scopes[i].first_sym;
+      While sy <> 0 Do
+        Begin
+          fl := ctx.sem.syms[sy].flags;
+          Write('      ', DeclKindName(ctx.sem.syms[sy].kind), ' ',
+                SemTokText(ctx, ctx.sem.syms[sy].name_tok), ' (#', sy, ')');
+          If fl And SF_HOISTED <> 0 Then
+            Write(' hisse');
+          If fl And SF_STATIC <> 0 Then
+            Write(' statique');
+          If fl And SF_CAPTURED <> 0 Then
+            Write(' capture');
+          If fl And SF_CELL <> 0 Then
+            Write(' cellule');
+          If fl And SF_PER_ITER <> 0 Then
+            Write(' par-iteration');
+          If fl And SF_TDZ_CHECK <> 0 Then
+            Write(' test-tdz');
+          If fl And SF_REASSIGNED <> 0 Then
+            Write(' reaffecte');
+          If fl And SF_IMPLICIT <> 0 Then
+            Write(' implicite');
+          Writeln;
+          sy := ctx.sem.syms[sy].next;
+        End;
+    End;
+  Writeln('Captures (', ctx.sem.cap_count, ') :');
+  For k := 1 To ctx.sem.cap_count Do
+    Writeln('  portee #', ctx.sem.caps[k].fscope, ' capture ',
+            SemTokText(ctx, ctx.sem.syms[ctx.sem.caps[k].sym].name_tok),
+            ' (#', ctx.sem.caps[k].sym, ')');
+End;
+
+
+Procedure WriteAnnotation(Var ctx: TCompilerContext; n: LongInt);
+Begin
+  Case ctx.ast.nodes[n].kind Of
+    N_IDENT:
+      Begin
+        Write(' ->');
+        Case ctx.ast.nodes[n].aux Of
+          RK_LOCAL:           Write(' local #', ctx.ast.nodes[n].sym);
+          RK_OUTER:           Write(' capture #', ctx.ast.nodes[n].sym);
+          RK_BUILTIN:         Write(' predefini');
+          RK_GLOBAL_IMPLICIT: Write(' globale-implicite #', ctx.ast.nodes[n].sym);
+          RK_ARGUMENTS:       Write(' arguments');
+          RK_UNDECLARED_OK:   Write(' non-declare (typeof)');
+        Else
+          Write(' non-resolu');
+        End;
+      End;
+    N_THIS:
+      Begin
+        Write(' -> this ', ThisBindingName(ctx.ast.nodes[n].aux));
+        If ctx.ast.nodes[n].e1 = 1 Then
+          Write(' lexical (portee #', ctx.ast.nodes[n].sym, ')');
+      End;
+    N_BIND_IDENT, N_FUNC_DECL, N_CLASS_DECL:
+      If ctx.ast.nodes[n].sym <> 0 Then
+        Write(' #', ctx.ast.nodes[n].sym);
+  End;
+End;
+
 { Les etapes sont implementees par les TODO suivants. Tant qu'une etape
   n'existe pas, elle echoue explicitement au lieu de produire un faux
   resultat. }
 Function RunStage(Var ctx: TCompilerContext; stage: TCompileStage): Boolean;
+Var
+  ok: Boolean;
 Begin
   Case stage Of
     CS_LOAD_SOURCE:
@@ -4406,8 +5547,18 @@ Begin
       End;
     CS_PARSE_AST:
       Begin
-        RunStage := ParseProgram(ctx);
-        If ctx.options.dump_ast Then
+        ok := ParseProgram(ctx);
+        RunStage := ok;
+        { si l'analyse suit, l'AST est affiche annote apres elle }
+        If ctx.options.dump_ast And Not ok Then
+          DumpAst(ctx);
+      End;
+    CS_ANALYZE:
+      Begin
+        RunStage := AnalyzeProgram(ctx);
+        If ctx.options.dump_scopes Then
+          DumpScopes(ctx);
+        If ctx.options.dump_ast And ctx.ast.analyzed Then
           DumpAst(ctx);
       End;
   Else
