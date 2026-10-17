@@ -15,7 +15,7 @@
   07. [IMPLEMENTE] Definir le modele de valeurs runtime 32 bits et le gestionnaire memoire : valeurs etiquetees (undefined, null, booleen, nombre, chaine, objet, tableau, fonction/closure, RegExp), nombres IEEE 754 via FPU x87 avec chemin rapide entier, allocation sur le tas Windows (HeapAlloc/VirtualAlloc), tampons de chaines, pile d'appels, et ramasse-miettes simple (mark & sweep) ou strategie documentee de non-liberation.
   08. [IMPLEMENTE] Implementer le pool de constantes et de donnees : chaines litterales internees, constantes flottantes, atomes de noms de proprietes, descripteurs de fonctions/classes, sections .data/.rdata, alignement et noms de symboles stables prefixes (variables, fonctions, chaines, runtime, labels).
   09. [IMPLEMENTE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
-  10. [A FAIRE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
+  10. [IMPLEMENTE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
   11. [A FAIRE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
   12. [A FAIRE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
   13. [A FAIRE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
@@ -332,6 +332,11 @@ Const
   MAX_XSYMS = {$IFDEF FPC}4096{$ELSE}200{$ENDIF};
   MAX_COMMENTS = {$IFDEF FPC}20000{$ELSE}500{$ENDIF};
   MAX_PENDING = 200;
+  CK_NONE = 0;
+  CK_NUM = 1;
+  CK_BOOL = 2;
+  CK_NULL = 3;
+  CK_UNDEF = 4;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
     'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw'
@@ -632,7 +637,15 @@ Type
     dt    : Array[0..MAX_DATA_IMG - 1] Of Byte;
   End;
 
-  TReg = (R_NONE, R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI);
+  { Valeur constante evaluee a la compilation }
+  TConst = Record
+    k: Integer;
+    n: Double;
+    b: Boolean;
+  End;
+
+  TReg = (R_NONE, R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI,
+          R_CL);
 
   TOpdKind = (OD_NONE, OD_REG, OD_IMM, OD_MEM, OD_ADDR, OD_LABEL);
 
@@ -640,7 +653,10 @@ Type
   TOpc = (OP_NONE, OP_LABEL, OP_COMMENT, OP_PROC, OP_ENDP,
           OP_MOV, OP_LEA, OP_PUSH, OP_POP, OP_ADD, OP_SUB, OP_CMP, OP_TEST,
           OP_XOR, OP_AND, OP_JMP, OP_JE, OP_JNE, OP_JB, OP_JAE, OP_CALL,
-          OP_RET, OP_LEAVE, OP_NOP);
+          OP_RET, OP_LEAVE, OP_NOP,
+          OP_IMUL, OP_OR, OP_NOT, OP_NEG, OP_SHL, OP_SHR, OP_SAR, OP_CDQ,
+          OP_IDIV, OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JA, OP_JBE, OP_JO,
+          OP_JNO, OP_JS, OP_JNS);
 
   { Operande : registre, immediat (disp), memoire [base+disp] ou
     [symbole+disp], adresse d'un symbole, etiquette locale (disp). }
@@ -673,6 +689,8 @@ Type
     built, failed: Boolean;
     count, xsym_count, comment_count, label_count, proc_count,
     pending_count, cg_fs, frame_patch, cur_line: LongInt;
+    tmp_free: Array[1..64] Of LongInt;      { temporaires de trame libres }
+    tmp_free_count: LongInt;
     instrs  : Array[1..MAX_INSTR] Of TInstr;
     xsyms   : Array[1..MAX_XSYMS] Of TXSym;
     comments: Array[1..MAX_COMMENTS] Of String[120];
@@ -7778,6 +7796,940 @@ Begin
   End;
 End;
 
+Procedure PushTemp(Var ctx: TCompilerContext; slot: LongInt); Forward;
+
+{ ---- Expressions (TODO 10) ----
+
+  Strategie : une operation arithmetique, bit a bit ou relationnelle
+  dont les deux operandes sont des int32 s'execute en ligne (add, sub,
+  imul avec test de depassement, idiv, decalages, cmp). Dans tous les
+  autres cas (double, chaine, objet, depassement, -0) le code appelle
+  la routine du runtime de meme nom : _JSRT_add, _JSRT_sub, _JSRT_div,
+  _JSRT_pow, _JSRT_lt, _JSRT_eq... qui appliquent ToPrimitive,
+  ToNumber et ToString. Le runtime calcule en double avec le FPU
+  (division par zero = Infinity ou NaN).
+
+  Operande gauche : rangee dans un temporaire de la trame pendant que
+  l'operande droit est evalue (la droite arrive dans EDX:EAX). Les
+  routines du runtime recoivent (gauche, droite) en cdecl.
+
+  Les expressions entierement constantes sont repliees a la
+  compilation quand le resultat est un int32, un booleen, null ou
+  undefined ; sinon le code ordinaire est genere. }
+
+Function TempAcquire(Var ctx: TCompilerContext): LongInt;
+Begin
+  If ctx.ir.tmp_free_count > 0 Then
+    Begin
+      TempAcquire := ctx.ir.tmp_free[ctx.ir.tmp_free_count];
+      Dec(ctx.ir.tmp_free_count);
+    End
+  Else
+    TempAcquire := AllocTemp(ctx);
+End;
+
+Procedure TempRelease(Var ctx: TCompilerContext; t: LongInt);
+Begin
+  If ctx.ir.tmp_free_count < 64 Then
+    Begin
+      Inc(ctx.ir.tmp_free_count);
+      ctx.ir.tmp_free[ctx.ir.tmp_free_count] := t;
+    End;
+End;
+
+Procedure SaveTemp(Var ctx: TCompilerContext; t: LongInt);
+Begin
+  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(t)), RegOp(R_EAX));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(t) + 4), RegOp(R_EDX));
+End;
+
+Procedure LoadTemp(Var ctx: TCompilerContext; t: LongInt);
+Begin
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, SlotDisp(t)));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, SlotDisp(t) + 4));
+End;
+
+Function TempLo(t: LongInt): TOperand;
+Begin
+  TempLo := MemReg(R_EBP, SlotDisp(t));
+End;
+
+Function TempHi(t: LongInt): TOperand;
+Begin
+  TempHi := MemReg(R_EBP, SlotDisp(t) + 4);
+End;
+
+{ EAX := 0 ou 1 selon la verite de EDX:EAX (ToBoolean). }
+Procedure GenTruthy(Var ctx: TCompilerContext);
+Var
+  num, fls, done: LongInt;
+Begin
+  num := NewLabel(ctx);
+  fls := NewLabel(ctx);
+  done := NewLabel(ctx);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+  Emit1(ctx, OP_JE, LabelOp(num));
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_BOOLEAN)));
+  Emit1(ctx, OP_JE, LabelOp(num));
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+  Emit1(ctx, OP_JE, LabelOp(fls));
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_NULL)));
+  Emit1(ctx, OP_JE, LabelOp(fls));
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  CallRt(ctx, 'truthy', 8);
+  Emit1(ctx, OP_JMP, LabelOp(done));
+  PlaceLabel(ctx, num);
+  Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+  Emit1(ctx, OP_JE, LabelOp(fls));
+  Emit(ctx, OP_MOV, RegOp(R_EAX), ImmOp(1));
+  Emit1(ctx, OP_JMP, LabelOp(done));
+  PlaceLabel(ctx, fls);
+  Emit(ctx, OP_XOR, RegOp(R_EAX), RegOp(R_EAX));
+  PlaceLabel(ctx, done);
+End;
+
+{ EAX = 0/1 vers un booleen JavaScript dans EDX:EAX. }
+Procedure BoolFromEax(Var ctx: TCompilerContext);
+Begin
+  Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_BOOLEAN)));
+End;
+
+{ Appel d'une routine binaire (gauche = temporaire t, droite = EDX:EAX). }
+Procedure CallBinary(Var ctx: TCompilerContext; Const name: TString; t: LongInt);
+Begin
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  PushTemp(ctx, t);
+  CallRt(ctx, name, 16);
+End;
+
+{ Saute vers slow si l'un des deux operandes (gauche en t, droite dans
+  EDX) n'est pas un int32. }
+Procedure CheckBothInt(Var ctx: TCompilerContext; t, slow: LongInt);
+Begin
+  Emit(ctx, OP_CMP, TempHi(t), ImmOp(TagImm(RT_T_INT32)));
+  Emit1(ctx, OP_JNE, LabelOp(slow));
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+  Emit1(ctx, OP_JNE, LabelOp(slow));
+End;
+
+{ Operation binaire op : gauche dans le temporaire t, droite dans
+  EDX:EAX. Resultat dans EDX:EAX. t n'est pas libere. }
+Procedure GenBinaryCore(Var ctx: TCompilerContext; Const op: TTokenText; t: LongInt);
+Var
+  slow, done, okm, slowr, lb: LongInt;
+  opc, jcc: TOpc;
+  rt: TString;
+  flip, is_shift, is_bit, is_cmp: Boolean;
+Begin
+  slow := NewLabel(ctx);
+  done := NewLabel(ctx);
+  rt := '';
+  flip := False;
+  is_shift := False;
+  is_bit := False;
+  is_cmp := False;
+  opc := OP_NONE;
+  jcc := OP_NONE;
+  If op = '+' Then
+    Begin
+      rt := 'add';
+      opc := OP_ADD;
+    End
+  Else If op = '-' Then
+    Begin
+      rt := 'sub';
+      opc := OP_SUB;
+    End
+  Else If op = '*' Then
+    rt := 'mul'
+  Else If op = '/' Then
+    rt := 'div'
+  Else If op = '%' Then
+    rt := 'mod'
+  Else If op = '**' Then
+    rt := 'pow'
+  Else If op = '&' Then
+    Begin
+      rt := 'band';
+      opc := OP_AND;
+      is_bit := True;
+    End
+  Else If op = '|' Then
+    Begin
+      rt := 'bor';
+      opc := OP_OR;
+      is_bit := True;
+    End
+  Else If op = '^' Then
+    Begin
+      rt := 'bxor';
+      opc := OP_XOR;
+      is_bit := True;
+    End
+  Else If op = '<<' Then
+    Begin
+      rt := 'shl';
+      opc := OP_SHL;
+      is_shift := True;
+    End
+  Else If op = '>>' Then
+    Begin
+      rt := 'sar';
+      opc := OP_SAR;
+      is_shift := True;
+    End
+  Else If op = '>>>' Then
+    Begin
+      rt := 'shr';
+      opc := OP_SHR;
+      is_shift := True;
+    End
+  Else If op = '<' Then
+    Begin
+      rt := 'lt';
+      jcc := OP_JL;
+      is_cmp := True;
+    End
+  Else If op = '<=' Then
+    Begin
+      rt := 'le';
+      jcc := OP_JLE;
+      is_cmp := True;
+    End
+  Else If op = '>' Then
+    Begin
+      rt := 'gt';
+      jcc := OP_JG;
+      is_cmp := True;
+    End
+  Else If op = '>=' Then
+    Begin
+      rt := 'ge';
+      jcc := OP_JGE;
+      is_cmp := True;
+    End
+  Else If op = '==' Then
+    Begin
+      rt := 'eq';
+      jcc := OP_JE;
+      is_cmp := True;
+    End
+  Else If op = '!=' Then
+    Begin
+      rt := 'eq';
+      jcc := OP_JNE;
+      is_cmp := True;
+      flip := True;
+    End
+  Else If op = '===' Then
+    Begin
+      rt := 'seq';
+      jcc := OP_JE;
+      is_cmp := True;
+    End
+  Else If op = '!==' Then
+    Begin
+      rt := 'seq';
+      jcc := OP_JNE;
+      is_cmp := True;
+      flip := True;
+    End
+  Else If op = 'instanceof' Then
+    rt := 'instanceof'
+  Else If op = 'in' Then
+    rt := 'in'
+  Else
+    Begin
+      PipelineError(ctx, 'operateur binaire inconnu: ' + op);
+      Exit;
+    End;
+
+  If (opc = OP_ADD) Or (opc = OP_SUB) Then
+    Begin
+      { int32 avec test de depassement }
+      CheckBothInt(ctx, t, slow);
+      Emit(ctx, OP_MOV, RegOp(R_ECX), TempLo(t));
+      Emit(ctx, opc, RegOp(R_ECX), RegOp(R_EAX));
+      Emit1(ctx, OP_JO, LabelOp(slow));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ECX));
+      Emit1(ctx, OP_JMP, LabelOp(done));
+    End
+  Else If op = '*' Then
+    Begin
+      okm := NewLabel(ctx);
+      CheckBothInt(ctx, t, slow);
+      Emit(ctx, OP_MOV, RegOp(R_ECX), TempLo(t));
+      Emit(ctx, OP_IMUL, RegOp(R_ECX), RegOp(R_EAX));
+      Emit1(ctx, OP_JO, LabelOp(slow));
+      Emit(ctx, OP_TEST, RegOp(R_ECX), RegOp(R_ECX));
+      Emit1(ctx, OP_JNE, LabelOp(okm));
+      { resultat 0 : -0 si un operande est negatif }
+      Emit(ctx, OP_MOV, RegOp(R_ECX), TempLo(t));
+      Emit(ctx, OP_OR, RegOp(R_ECX), RegOp(R_EAX));
+      Emit1(ctx, OP_JS, LabelOp(slow));
+      Emit(ctx, OP_XOR, RegOp(R_ECX), RegOp(R_ECX));
+      PlaceLabel(ctx, okm);
+      Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ECX));
+      Emit1(ctx, OP_JMP, LabelOp(done));
+    End
+  Else If op = '%' Then
+    Begin
+      okm := NewLabel(ctx);
+      slowr := NewLabel(ctx);
+      CheckBothInt(ctx, t, slow);
+      Emit(ctx, OP_MOV, RegOp(R_ECX), RegOp(R_EAX));
+      Emit(ctx, OP_TEST, RegOp(R_ECX), RegOp(R_ECX));
+      Emit1(ctx, OP_JE, LabelOp(slow));
+      Emit(ctx, OP_CMP, RegOp(R_ECX), ImmOp(-1));
+      Emit1(ctx, OP_JE, LabelOp(slow));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), TempLo(t));
+      Emit0(ctx, OP_CDQ);
+      Emit1(ctx, OP_IDIV, RegOp(R_ECX));
+      Emit(ctx, OP_TEST, RegOp(R_EDX), RegOp(R_EDX));
+      Emit1(ctx, OP_JNE, LabelOp(okm));
+      { reste 0 : -0 si le dividende est negatif }
+      Emit(ctx, OP_CMP, TempLo(t), ImmOp(0));
+      Emit1(ctx, OP_JL, LabelOp(slowr));
+      PlaceLabel(ctx, okm);
+      Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_EDX));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+      Emit1(ctx, OP_JMP, LabelOp(done));
+      PlaceLabel(ctx, slowr);
+      Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ECX));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+    End
+  Else If is_bit Then
+    Begin
+      CheckBothInt(ctx, t, slow);
+      Emit(ctx, OP_MOV, RegOp(R_ECX), TempLo(t));
+      Emit(ctx, opc, RegOp(R_ECX), RegOp(R_EAX));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ECX));
+      Emit1(ctx, OP_JMP, LabelOp(done));
+    End
+  Else If is_shift Then
+    Begin
+      CheckBothInt(ctx, t, slow);
+      Emit(ctx, OP_MOV, RegOp(R_ECX), RegOp(R_EAX));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), TempLo(t));
+      Emit(ctx, opc, RegOp(R_EAX), RegOp(R_CL));
+      If op = '>>>' Then
+        Begin
+          { hors int32 si le bit de signe est positionne : repli }
+          slowr := NewLabel(ctx);
+          Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+          Emit1(ctx, OP_JS, LabelOp(slowr));
+          Emit1(ctx, OP_JMP, LabelOp(done));
+          PlaceLabel(ctx, slowr);
+          Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ECX));
+          Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+        End
+      Else
+        Emit1(ctx, OP_JMP, LabelOp(done));
+    End
+  Else If is_cmp Then
+    Begin
+      lb := NewLabel(ctx);
+      CheckBothInt(ctx, t, slow);
+      Emit(ctx, OP_MOV, RegOp(R_ECX), TempLo(t));
+      Emit(ctx, OP_CMP, RegOp(R_ECX), RegOp(R_EAX));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), ImmOp(1));
+      Emit1(ctx, jcc, LabelOp(lb));
+      Emit(ctx, OP_XOR, RegOp(R_EAX), RegOp(R_EAX));
+      PlaceLabel(ctx, lb);
+      BoolFromEax(ctx);
+      Emit1(ctx, OP_JMP, LabelOp(done));
+    End
+  ;
+
+  PlaceLabel(ctx, slow);
+  CallBinary(ctx, rt, t);
+  If flip Then
+    Begin
+      Emit(ctx, OP_XOR, RegOp(R_EAX), ImmOp(1));
+      BoolFromEax(ctx);
+    End;
+  PlaceLabel(ctx, done);
+End;
+
+{ ---- Repli de constantes ---- }
+
+Function ToInt32Of(v: Double): LongInt;
+Var
+  w: Int64;
+Begin
+  If (v <> v) Or (v > 9.0E15) Or (v < -9.0E15) Then
+    ToInt32Of := 0
+  Else
+    Begin
+      w := Trunc(v);
+      ToInt32Of := ToLong(w);
+    End;
+End;
+
+Function IsNegZero(v: Double): Boolean;
+Var
+  w: Array[0..1] Of LongInt;
+Begin
+  Move(v, w, 8);
+  IsNegZero := (v = 0) And (w[1] < 0);
+End;
+
+Function ConstTruthy(Var c: TConst): Boolean;
+Begin
+  Case c.k Of
+    CK_NUM:  ConstTruthy := (c.n <> 0) And (c.n = c.n);
+    CK_BOOL: ConstTruthy := c.b;
+  Else
+    ConstTruthy := False;
+  End;
+End;
+
+Function EvalConst(Var ctx: TCompilerContext; n: LongInt; Var c: TConst): Boolean;
+Var
+  a, b: TConst;
+  s: TTokenText;
+  x, y: Double;
+  ix, iy: Int64;
+  r: Boolean;
+Begin
+  EvalConst := False;
+  c.k := CK_NONE;
+  If n = 0 Then
+    Exit;
+  Case ctx.ast.nodes[n].kind Of
+    N_NUMBER:
+      Begin
+        c.k := CK_NUM;
+        c.n := ctx.lex.tokens[ctx.ast.nodes[n].tok].num_val;
+        EvalConst := True;
+      End;
+    N_BOOL:
+      Begin
+        c.k := CK_BOOL;
+        c.b := ctx.lex.tokens[ctx.ast.nodes[n].tok].text = 'true';
+        EvalConst := True;
+      End;
+    N_NULL:
+      Begin
+        c.k := CK_NULL;
+        EvalConst := True;
+      End;
+    N_IDENT:
+      If (ctx.ast.nodes[n].aux = RK_BUILTIN) And
+         (ctx.lex.tokens[ctx.ast.nodes[n].tok].text = 'undefined') Then
+        Begin
+          c.k := CK_UNDEF;
+          EvalConst := True;
+        End;
+    N_UNARY:
+      Begin
+        s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+        If Not EvalConst(ctx, ctx.ast.nodes[n].e1, a) Then
+          Exit;
+        If s = '!' Then
+          Begin
+            c.k := CK_BOOL;
+            c.b := Not ConstTruthy(a);
+            EvalConst := True;
+          End
+        Else If s = 'void' Then
+          Begin
+            c.k := CK_UNDEF;
+            EvalConst := True;
+          End
+        Else If a.k = CK_NUM Then
+          Begin
+            If s = '-' Then
+              Begin
+                c.k := CK_NUM;
+                c.n := -a.n;
+                EvalConst := True;
+              End
+            Else If s = '+' Then
+              Begin
+                c := a;
+                EvalConst := True;
+              End
+            Else If s = '~' Then
+              Begin
+                c.k := CK_NUM;
+                c.n := Not ToInt32Of(a.n);
+                EvalConst := True;
+              End;
+          End;
+      End;
+    N_BINARY:
+      Begin
+        s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+        If Not (EvalConst(ctx, ctx.ast.nodes[n].e1, a) And
+                EvalConst(ctx, ctx.ast.nodes[n].e2, b)) Then
+          Exit;
+        If (a.k <> CK_NUM) Or (b.k <> CK_NUM) Then
+          Exit;
+        x := a.n;
+        y := b.n;
+        If (x <> x) Or (y <> y) Or (Abs(x) > 9.0E15) Or (Abs(y) > 9.0E15) Then
+          Exit;
+        c.k := CK_NUM;
+        r := True;
+        If s = '+' Then
+          c.n := x + y
+        Else If s = '-' Then
+          c.n := x - y
+        Else If s = '*' Then
+          c.n := x * y
+        Else If s = '/' Then
+          Begin
+            If y = 0 Then
+              r := False
+            Else
+              c.n := x / y;
+          End
+        Else If s = '%' Then
+          Begin
+            ix := Trunc(x);
+            iy := Trunc(y);
+            If (ix <> x) Or (iy <> y) Or (iy = 0) Or (ix < 0) Then
+              r := False
+            Else
+              c.n := ix Mod iy;
+          End
+        Else If s = '**' Then
+          Begin
+            If (y < 0) Or (y > 62) Or (Int(y) <> y) Or (Int(x) <> x) Or
+               (Abs(x) > 65536) Then
+              r := False
+            Else
+              Begin
+                c.n := 1;
+                ix := Trunc(y);
+                While ix > 0 Do
+                  Begin
+                    c.n := c.n * x;
+                    Dec(ix);
+                  End;
+              End;
+          End
+        Else If s = '&' Then
+          c.n := ToInt32Of(x) And ToInt32Of(y)
+        Else If s = '|' Then
+          c.n := ToInt32Of(x) Or ToInt32Of(y)
+        Else If s = '^' Then
+          c.n := ToInt32Of(x) Xor ToInt32Of(y)
+        Else If s = '<<' Then
+          c.n := ToInt32Of(ToInt32Of(x) Shl (ToInt32Of(y) And 31))
+        Else If s = '>>' Then
+          Begin
+            ix := ToInt32Of(x);
+            If ix >= 0 Then
+              c.n := ix Shr (ToInt32Of(y) And 31)
+            Else
+              c.n := Not ((Not ix) Shr (ToInt32Of(y) And 31));
+          End
+        Else If s = '>>>' Then
+          c.n := (Int64(ToInt32Of(x)) And $FFFFFFFF) Shr (ToInt32Of(y) And 31)
+        Else If s = '<' Then
+          Begin
+            c.k := CK_BOOL;
+            c.b := x < y;
+          End
+        Else If s = '<=' Then
+          Begin
+            c.k := CK_BOOL;
+            c.b := x <= y;
+          End
+        Else If s = '>' Then
+          Begin
+            c.k := CK_BOOL;
+            c.b := x > y;
+          End
+        Else If s = '>=' Then
+          Begin
+            c.k := CK_BOOL;
+            c.b := x >= y;
+          End
+        Else If (s = '==') Or (s = '===') Then
+          Begin
+            c.k := CK_BOOL;
+            c.b := x = y;
+          End
+        Else If (s = '!=') Or (s = '!==') Then
+          Begin
+            c.k := CK_BOOL;
+            c.b := x <> y;
+          End
+        Else
+          r := False;
+        EvalConst := r;
+      End;
+    N_LOGICAL:
+      Begin
+        s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+        If Not EvalConst(ctx, ctx.ast.nodes[n].e1, a) Then
+          Exit;
+        If s = '&&' Then
+          Begin
+            If ConstTruthy(a) Then
+              EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c)
+            Else
+              Begin
+                c := a;
+                EvalConst := True;
+              End;
+          End
+        Else If s = '||' Then
+          Begin
+            If ConstTruthy(a) Then
+              Begin
+                c := a;
+                EvalConst := True;
+              End
+            Else
+              EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c);
+          End
+        Else If (a.k = CK_NULL) Or (a.k = CK_UNDEF) Then
+          EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c)
+        Else
+          Begin
+            c := a;
+            EvalConst := True;
+          End;
+      End;
+    N_COND:
+      Begin
+        If Not EvalConst(ctx, ctx.ast.nodes[n].e1, a) Then
+          Exit;
+        If ConstTruthy(a) Then
+          EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c)
+        Else
+          EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e3, c);
+      End;
+  End;
+End;
+
+{ Emet la constante si le programme l'exprime sans nouvelle donnee
+  statique : int32 (hors -0), booleen, null ou undefined. }
+Function TryFold(Var ctx: TCompilerContext; n: LongInt): Boolean;
+Var
+  c: TConst;
+Begin
+  TryFold := False;
+  If Not EvalConst(ctx, n, c) Then
+    Exit;
+  Case c.k Of
+    CK_NUM:
+      Begin
+        If (c.n <> c.n) Or (Int(c.n) <> c.n) Or (c.n < -2147483648.0) Or
+           (c.n > 2147483647.0) Or IsNegZero(c.n) Then
+          Exit;
+        LoadTag(ctx, Trunc(c.n), RT_T_INT32);
+      End;
+    CK_BOOL:
+      Begin
+        If c.b Then
+          LoadTag(ctx, 1, RT_T_BOOLEAN)
+        Else
+          LoadTag(ctx, 0, RT_T_BOOLEAN);
+      End;
+    CK_NULL:
+      LoadTag(ctx, 0, RT_T_NULL);
+    CK_UNDEF:
+      LoadUndefined(ctx);
+  Else
+    Exit;
+  End;
+  TryFold := True;
+End;
+
+{ ---- Operateurs ---- }
+
+Procedure GenBinary(Var ctx: TCompilerContext; n: LongInt);
+Var
+  t: LongInt;
+Begin
+  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  t := TempAcquire(ctx);
+  SaveTemp(ctx, t);
+  GenExpr(ctx, ctx.ast.nodes[n].e2);
+  GenBinaryCore(ctx, ctx.lex.tokens[ctx.ast.nodes[n].tok].text, t);
+  TempRelease(ctx, t);
+End;
+
+{ && || ?? avec court-circuit : le resultat est l'un des operandes. }
+Procedure GenLogical(Var ctx: TCompilerContext; n: LongInt);
+Var
+  t, short, done, evalr: LongInt;
+  op: TTokenText;
+Begin
+  op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  t := TempAcquire(ctx);
+  short := NewLabel(ctx);
+  done := NewLabel(ctx);
+  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  SaveTemp(ctx, t);
+  If op = '??' Then
+    Begin
+      evalr := NewLabel(ctx);
+      Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+      Emit1(ctx, OP_JE, LabelOp(evalr));
+      Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_NULL)));
+      Emit1(ctx, OP_JNE, LabelOp(done));
+      PlaceLabel(ctx, evalr);
+    End
+  Else
+    Begin
+      GenTruthy(ctx);
+      Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+      If op = '&&' Then
+        Emit1(ctx, OP_JE, LabelOp(short))
+      Else
+        Emit1(ctx, OP_JNE, LabelOp(short));
+    End;
+  GenExpr(ctx, ctx.ast.nodes[n].e2);
+  Emit1(ctx, OP_JMP, LabelOp(done));
+  PlaceLabel(ctx, short);
+  LoadTemp(ctx, t);
+  PlaceLabel(ctx, done);
+  { sur ?? sans evaluation de la droite, EDX:EAX contient deja la gauche }
+  TempRelease(ctx, t);
+End;
+
+Procedure GenCond(Var ctx: TCompilerContext; n: LongInt);
+Var
+  els, done: LongInt;
+Begin
+  els := NewLabel(ctx);
+  done := NewLabel(ctx);
+  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  GenTruthy(ctx);
+  Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+  Emit1(ctx, OP_JE, LabelOp(els));
+  GenExpr(ctx, ctx.ast.nodes[n].e2);
+  Emit1(ctx, OP_JMP, LabelOp(done));
+  PlaceLabel(ctx, els);
+  GenExpr(ctx, ctx.ast.nodes[n].e3);
+  PlaceLabel(ctx, done);
+End;
+
+Procedure GenUnary(Var ctx: TCompilerContext; n: LongInt);
+Var
+  s: TTokenText;
+  e, slow, done, t: LongInt;
+Begin
+  s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  e := ctx.ast.nodes[n].e1;
+  slow := NewLabel(ctx);
+  done := NewLabel(ctx);
+  If s = '!' Then
+    Begin
+      GenExpr(ctx, e);
+      GenTruthy(ctx);
+      Emit(ctx, OP_XOR, RegOp(R_EAX), ImmOp(1));
+      BoolFromEax(ctx);
+    End
+  Else If s = '-' Then
+    Begin
+      GenExpr(ctx, e);
+      Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+      Emit1(ctx, OP_JNE, LabelOp(slow));
+      { 0 donne -0 et INT_MIN depasse : repli sur le runtime }
+      Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+      Emit1(ctx, OP_JE, LabelOp(slow));
+      Emit1(ctx, OP_NEG, RegOp(R_EAX));
+      Emit1(ctx, OP_JNO, LabelOp(done));
+      PlaceLabel(ctx, slow);
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'neg', 8);
+      PlaceLabel(ctx, done);
+    End
+  Else If s = '+' Then
+    Begin
+      GenExpr(ctx, e);
+      { int32 et double sont deja des nombres }
+      Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+      Emit1(ctx, OP_JBE, LabelOp(done));
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'tonumber', 8);
+      PlaceLabel(ctx, done);
+    End
+  Else If s = '~' Then
+    Begin
+      GenExpr(ctx, e);
+      Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+      Emit1(ctx, OP_JNE, LabelOp(slow));
+      Emit1(ctx, OP_NOT, RegOp(R_EAX));
+      Emit1(ctx, OP_JMP, LabelOp(done));
+      PlaceLabel(ctx, slow);
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'bnot', 8);
+      PlaceLabel(ctx, done);
+    End
+  Else If s = 'typeof' Then
+    Begin
+      GenExpr(ctx, e);
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'typeof', 8);
+    End
+  Else If s = 'void' Then
+    Begin
+      GenExpr(ctx, e);
+      LoadUndefined(ctx);
+    End
+  Else If s = '&' Then
+    { operateur de reference &fn (extension) : la valeur de la fonction }
+    GenExpr(ctx, e)
+  Else If s = 'delete' Then
+    Begin
+      If (e <> 0) And (ctx.ast.nodes[e].kind = N_MEMBER) Then
+        Begin
+          GenExpr(ctx, ctx.ast.nodes[e].e1);
+          Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
+                ctx.data.strs[ctx.ast.nodes[e].aux].sym));
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          CallRt(ctx, 'delete_prop', 12);
+        End
+      Else If (e <> 0) And (ctx.ast.nodes[e].kind = N_INDEX) Then
+        Begin
+          GenExpr(ctx, ctx.ast.nodes[e].e1);
+          t := TempAcquire(ctx);
+          SaveTemp(ctx, t);
+          GenExpr(ctx, ctx.ast.nodes[e].e2);
+          CallBinary(ctx, 'delete_member', t);
+          TempRelease(ctx, t);
+        End
+      Else If (e <> 0) And (ctx.ast.nodes[e].kind = N_IDENT) Then
+        { une variable ne se supprime pas }
+        LoadTag(ctx, 0, RT_T_BOOLEAN)
+      Else
+        Begin
+          GenExpr(ctx, e);
+          LoadTag(ctx, 1, RT_T_BOOLEAN);
+        End;
+    End
+  Else
+    PendingExpr(ctx, n);
+End;
+
+{ ++ et -- sur une variable : le resultat est la nouvelle valeur
+  (prefixe) ou l'ancienne valeur convertie en nombre (postfixe). }
+Procedure GenUpdate(Var ctx: TCompilerContext; n: LongInt);
+Var
+  e, sy, slow, store, t: LongInt;
+  inc_op: Boolean;
+  prefix: Boolean;
+Begin
+  e := ctx.ast.nodes[n].e1;
+  If (e = 0) Or (ctx.ast.nodes[e].kind <> N_IDENT) Or
+     Not ((ctx.ast.nodes[e].aux = RK_LOCAL) Or (ctx.ast.nodes[e].aux = RK_OUTER) Or
+          (ctx.ast.nodes[e].aux = RK_GLOBAL_IMPLICIT)) Then
+    Begin
+      PendingExpr(ctx, n);
+      Exit;
+    End;
+  sy := ctx.ast.nodes[e].sym;
+  inc_op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text = '++';
+  prefix := ctx.ast.nodes[n].flags And UF_PREFIX <> 0;
+  slow := NewLabel(ctx);
+  store := NewLabel(ctx);
+  t := TempAcquire(ctx);
+  LoadSym(ctx, sy);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+  Emit1(ctx, OP_JNE, LabelOp(slow));
+  Emit(ctx, OP_MOV, RegOp(R_ECX), RegOp(R_EAX));
+  If inc_op Then
+    Emit(ctx, OP_ADD, RegOp(R_ECX), ImmOp(1))
+  Else
+    Emit(ctx, OP_SUB, RegOp(R_ECX), ImmOp(1));
+  Emit1(ctx, OP_JO, LabelOp(slow));
+  If Not prefix Then
+    SaveTemp(ctx, t);
+  Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ECX));
+  Emit1(ctx, OP_JMP, LabelOp(store));
+  PlaceLabel(ctx, slow);
+  If Not prefix Then
+    Begin
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'tonumber', 8);
+      SaveTemp(ctx, t);
+    End;
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  If inc_op Then
+    CallRt(ctx, 'inc', 8)
+  Else
+    CallRt(ctx, 'dec', 8);
+  PlaceLabel(ctx, store);
+  StoreSym(ctx, sy, False);
+  If Not prefix Then
+    LoadTemp(ctx, t);
+  TempRelease(ctx, t);
+End;
+
+{ Affectation composee sur une variable : x op= v, x &&= v, x ||= v, x ??= v. }
+Procedure GenCompound(Var ctx: TCompilerContext; n: LongInt);
+Var
+  lhs, sy, t, keep, done, evalr: LongInt;
+  op: TTokenText;
+Begin
+  lhs := ctx.ast.nodes[n].e1;
+  op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  If (lhs = 0) Or (ctx.ast.nodes[lhs].kind <> N_IDENT) Or
+     Not ((ctx.ast.nodes[lhs].aux = RK_LOCAL) Or (ctx.ast.nodes[lhs].aux = RK_OUTER) Or
+          (ctx.ast.nodes[lhs].aux = RK_GLOBAL_IMPLICIT)) Then
+    Begin
+      PendingExpr(ctx, n);
+      Exit;
+    End;
+  sy := ctx.ast.nodes[lhs].sym;
+  t := TempAcquire(ctx);
+  GenExpr(ctx, lhs);
+  SaveTemp(ctx, t);
+  If (op = '&&=') Or (op = '||=') Or (op = '??=') Then
+    Begin
+      keep := NewLabel(ctx);
+      done := NewLabel(ctx);
+      If op = '??=' Then
+        Begin
+          evalr := NewLabel(ctx);
+          Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+          Emit1(ctx, OP_JE, LabelOp(evalr));
+          Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_NULL)));
+          Emit1(ctx, OP_JNE, LabelOp(keep));
+          PlaceLabel(ctx, evalr);
+        End
+      Else
+        Begin
+          GenTruthy(ctx);
+          Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+          If op = '&&=' Then
+            Emit1(ctx, OP_JE, LabelOp(keep))
+          Else
+            Emit1(ctx, OP_JNE, LabelOp(keep));
+        End;
+      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      StoreSym(ctx, sy, False);
+      Emit1(ctx, OP_JMP, LabelOp(done));
+      PlaceLabel(ctx, keep);
+      LoadTemp(ctx, t);
+      PlaceLabel(ctx, done);
+    End
+  Else
+    Begin
+      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenBinaryCore(ctx, Copy(op, 1, Length(op) - 1), t);
+      StoreSym(ctx, sy, False);
+    End;
+  TempRelease(ctx, t);
+End;
+
 { Affectation simple ou destructurante ; la valeur reste dans EDX:EAX. }
 Procedure GenAssign(Var ctx: TCompilerContext; n: LongInt);
 Var
@@ -7786,7 +8738,7 @@ Begin
   lhs := ctx.ast.nodes[n].e1;
   If ctx.lex.tokens[ctx.ast.nodes[n].tok].text <> '=' Then
     Begin
-      PendingExpr(ctx, n);
+      GenCompound(ctx, n);
       Exit;
     End;
   If (lhs <> 0) And (ctx.ast.nodes[lhs].kind = N_IDENT) Then
@@ -7858,6 +8810,28 @@ Begin
       GenThis(ctx, n);
     N_ASSIGN:
       GenAssign(ctx, n);
+    N_UNARY:
+      Begin
+        If Not TryFold(ctx, n) Then
+          GenUnary(ctx, n);
+      End;
+    N_BINARY:
+      Begin
+        If Not TryFold(ctx, n) Then
+          GenBinary(ctx, n);
+      End;
+    N_LOGICAL:
+      Begin
+        If Not TryFold(ctx, n) Then
+          GenLogical(ctx, n);
+      End;
+    N_COND:
+      Begin
+        If Not TryFold(ctx, n) Then
+          GenCond(ctx, n);
+      End;
+    N_UPDATE:
+      GenUpdate(ctx, n);
     N_SEQUENCE:
       Begin
         e := ctx.ast.nodes[n].e1;
@@ -8204,6 +9178,7 @@ Begin
   ctx.ir.xsyms[xs].defined := True;
   Inc(ctx.ir.proc_count);
   ctx.ir.cg_fs := fs;
+  ctx.ir.tmp_free_count := 0;
   Emit1(ctx, OP_PROC, AddrSym(SYMK_X, xs));
   Emit1(ctx, OP_PUSH, RegOp(R_EBP));
   Emit(ctx, OP_MOV, RegOp(R_EBP), RegOp(R_ESP));
@@ -8423,6 +9398,7 @@ Begin
     R_EBP: RegName := 'ebp';
     R_ESI: RegName := 'esi';
     R_EDI: RegName := 'edi';
+    R_CL:  RegName := 'cl';
   Else
     RegName := '?';
   End;
@@ -8500,6 +9476,25 @@ Begin
     OP_RET: OpName := 'ret';
     OP_LEAVE: OpName := 'leave';
     OP_NOP: OpName := 'nop';
+    OP_IMUL: OpName := 'imul';
+    OP_OR: OpName := 'or';
+    OP_NOT: OpName := 'not';
+    OP_NEG: OpName := 'neg';
+    OP_SHL: OpName := 'shl';
+    OP_SHR: OpName := 'shr';
+    OP_SAR: OpName := 'sar';
+    OP_CDQ: OpName := 'cdq';
+    OP_IDIV: OpName := 'idiv';
+    OP_JL: OpName := 'jl';
+    OP_JLE: OpName := 'jle';
+    OP_JG: OpName := 'jg';
+    OP_JGE: OpName := 'jge';
+    OP_JA: OpName := 'ja';
+    OP_JBE: OpName := 'jbe';
+    OP_JO: OpName := 'jo';
+    OP_JNO: OpName := 'jno';
+    OP_JS: OpName := 'js';
+    OP_JNS: OpName := 'jns';
   Else
     OpName := '?';
   End;
