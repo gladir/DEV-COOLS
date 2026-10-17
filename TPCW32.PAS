@@ -31365,12 +31365,21 @@ Begin
   EmitInstr('MOV EBP,ESP');
   EmitInstr('PUSH EAX');
   EmitInstr('PUSH EDX');
-  { X = [EBP+12] (1-based -> 0-based), Y = [EBP+8] }
+  { X = [EBP+12] (1-based -> 0-based), Y = [EBP+8] ; relatifs a la fenetre (WINDMIN) comme TP/FPC }
   EmitInstr('MOV EAX,DWORD PTR [EBP+12]');        { X }
   EmitInstr('DEC EAX');                             { 0-based }
+  EmitInstr('MOV EDX,DWORD PTR [WINDMIN]');
+  EmitInstr('AND EDX,0FFh');
+  EmitInstr('ADD EAX,EDX');                         { + colonne gauche de la fenetre }
   EmitInstr('AND EAX,0FFFFh');
   EmitInstr('MOV EDX,DWORD PTR [EBP+8]');         { Y }
   EmitInstr('DEC EDX');                             { 0-based }
+  EmitInstr('PUSH ECX');
+  EmitInstr('MOV ECX,DWORD PTR [WINDMIN]');
+  EmitInstr('SHR ECX,8');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('ADD EDX,ECX');                         { + ligne haute de la fenetre }
+  EmitInstr('POP ECX');
   EmitInstr('SHL EDX,16');
   EmitInstr('OR EAX,EDX');                          { packed COORD }
   EmitInstr('PUSH EAX');
@@ -31390,6 +31399,9 @@ Begin
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
   EmitInstr('CALL GetConsoleScreenBufferInfo');
   EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+4]');   { dwCursorPosition.X }
+  EmitInstr('MOV ECX,DWORD PTR [WINDMIN]');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('SUB EAX,ECX');                         { relatif a la fenetre }
   EmitInstr('INC EAX');                             { 1-based }
   EmitInstr('POP ECX');
   EmitInstr('RET');
@@ -31403,6 +31415,10 @@ Begin
   EmitInstr('PUSH DWORD PTR [HSTDOUT]');
   EmitInstr('CALL GetConsoleScreenBufferInfo');
   EmitInstr('MOVZX EAX,WORD PTR [CRT_CSBI+6]');   { dwCursorPosition.Y }
+  EmitInstr('MOV ECX,DWORD PTR [WINDMIN]');
+  EmitInstr('SHR ECX,8');
+  EmitInstr('AND ECX,0FFh');
+  EmitInstr('SUB EAX,ECX');                         { relatif a la fenetre }
   EmitInstr('INC EAX');                             { 1-based }
   EmitInstr('POP ECX');
   EmitInstr('RET');
