@@ -19,7 +19,7 @@
   11. [IMPLEMENTE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
   12. [IMPLEMENTE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
   13. [IMPLEMENTE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
-  14. [A FAIRE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
+  14. [IMPLEMENTE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
   15. [A FAIRE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
   16. [A FAIRE] Implementer les objets et prototypes : litteraux, acces par point et par crochets, ajout/modification/suppression dynamique de proprietes (table de hachage avec ordre d'insertion), in, hasOwnProperty, chaine de prototypes, getters/setters, Object.keys/values/entries/assign/create/freeze/getPrototypeOf, avec objects.js et test16.
   17. [A FAIRE] Implementer les classes : declaration et expression de classe, constructor, methodes d'instance, methodes statiques, extends, super(...) et super.methode(), new, instanceof, getters/setters, champs, ordre d'initialisation, heritage multi-niveaux (Dog/Cat extends Animal), avec classes.js et test21.js.
@@ -295,6 +295,7 @@ Const
   FDF_EXPR_BODY = 4096;
   FDF_FIELD_INIT = 8192;
   FDF_STATIC_BLOCK = 16384;
+  FDF_NATIVE = 32768;
   { descripteur de classe : nom, constructeur, drapeaux, membres }
   RT_CD_NAME = 0;
   RT_CD_CTOR = 4;
@@ -403,6 +404,8 @@ Type
     dump_runtime: Boolean;
     dump_data   : Boolean;
     dump_ir     : Boolean;
+    dump_rt     : Boolean;
+    run         : Boolean;
     output_name : TString;
   End;
 
@@ -619,6 +622,7 @@ Type
 
   TReloc = Record
     sec: Integer;
+    tkind: Integer;            { SYMK_D : donnee, SYMK_X : code ou externe }
     ofs, target: LongInt;
   End;
 
@@ -639,6 +643,7 @@ Type
     cmembers: Array[1..MAX_CMEMBERS] Of TCMember;
     syms  : Array[1..MAX_DSYMS] Of TDataSym;
     relocs: Array[1..MAX_RELOCS] Of TReloc;
+    dhash : Array[0..65535] Of LongInt;      { noms des symboles de donnees }
     rd    : Array[0..MAX_RDATA - 1] Of Byte;
     dt    : Array[0..MAX_DATA_IMG - 1] Of Byte;
   End;
@@ -651,7 +656,7 @@ Type
   End;
 
   TReg = (R_NONE, R_EAX, R_ECX, R_EDX, R_EBX, R_ESP, R_EBP, R_ESI, R_EDI,
-          R_CL);
+          R_CL, R_AL, R_DL, R_BL);
 
   TOpdKind = (OD_NONE, OD_REG, OD_IMM, OD_MEM, OD_ADDR, OD_LABEL);
 
@@ -662,7 +667,8 @@ Type
           OP_RET, OP_LEAVE, OP_NOP,
           OP_IMUL, OP_OR, OP_NOT, OP_NEG, OP_SHL, OP_SHR, OP_SAR, OP_CDQ,
           OP_IDIV, OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JA, OP_JBE, OP_JO,
-          OP_JNO, OP_JS, OP_JNS);
+          OP_JNO, OP_JS, OP_JNS,
+          OP_MOVZX, OP_INC, OP_DEC, OP_DIV, OP_REP_MOVSB);
 
   { Operande : registre, immediat (disp), memoire [base+disp] ou
     [symbole+disp], adresse d'un symbole, etiquette locale (disp). }
@@ -670,7 +676,9 @@ Type
     kind   : TOpdKind;
     reg    : TReg;
     base   : TReg;
-    symkind: Byte;             { SYMK_D ou SYMK_X }
+    index  : TReg;             { registre d'index (echelle 1) }
+    size   : Byte;             { 1 = octet, sinon DWORD }
+    symkind: LongInt;          { SYMK_D ou SYMK_X }
     disp   : LongInt;
     sym    : LongInt;
   End;
@@ -684,6 +692,7 @@ Type
   TXSym = Record
     name   : String[100];
     defined: Boolean;
+    runtime: Boolean;          { procedure du runtime }
   End;
 
   TPendingRec = Record
@@ -699,7 +708,7 @@ Type
   TIrInfo = Record
     built, failed: Boolean;
     count, xsym_count, comment_count, label_count, proc_count,
-    pending_count, cg_fs, frame_patch, cur_line: LongInt;
+    pending_count, cg_fs, frame_patch, cur_line, user_count: LongInt;
     tmp_free: Array[1..64] Of LongInt;      { temporaires de trame libres }
     tmp_free_count: LongInt;
     jt: Array[1..MAX_JT] Of TJumpTarget;
@@ -848,7 +857,9 @@ End;
 { Dernier artefact a produire selon le mode : EXE par defaut, OBJ sur demande. }
 Function PipelineTargetArtifact(Var ctx: TCompilerContext): TArtifactKind;
 Begin
-  If ctx.options.output_mode = OM_OBJ Then
+  If ctx.options.run Then
+    PipelineTargetArtifact := AK_IR
+  Else If ctx.options.output_mode = OM_OBJ Then
     PipelineTargetArtifact := AK_OBJ_COFF
   Else
     PipelineTargetArtifact := AK_EXE_PE32;
@@ -882,6 +893,8 @@ Begin
   ctx.options.dump_runtime := False;
   ctx.options.dump_data := False;
   ctx.options.dump_ir := False;
+  ctx.options.dump_rt := False;
+  ctx.options.run := False;
   ctx.options.output_name := '';
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
@@ -982,6 +995,8 @@ Begin
   Writeln('  -runtime      affiche le modele runtime (valeurs, tas, pile)');
   Writeln('  -data         affiche le pool de donnees (.rdata, .data)');
   Writeln('  -ir           affiche le code 80386 genere');
+  Writeln('  -rt           avec -ir : inclut aussi le code du runtime');
+  Writeln('  -run          execute le programme dans l''emulateur 80386 integre');
   Writeln('  -version      affiche la version');
   Writeln('  -h, -?        affiche cette aide');
   Writeln;
@@ -1024,6 +1039,10 @@ Begin
         ctx.options.show_version := True
       Else If IsOption(arg, 'v') Or IsOption(arg, 'verbose') Then
         ctx.options.verbose := True
+      Else If IsOption(arg, 'rt') Then
+        ctx.options.dump_rt := True
+      Else If IsOption(arg, 'run') Then
+        ctx.options.run := True
       Else If IsOption(arg, 'ir') Then
         ctx.options.dump_ir := True
       Else If IsOption(arg, 'data') Then
@@ -6554,8 +6573,43 @@ Begin
   SecAlloc := ofs;
 End;
 
+Function NameHash(Const s: TString): LongInt;
+Var
+  h: Int64;
+  i: Integer;
+Begin
+  h := 2166136261;
+  For i := 1 To Length(s) Do
+    Begin
+      h := h Xor Ord(s[i]);
+      h := (h * 16777619) And $FFFFFFFF;
+    End;
+  NameHash := h And 65535;
+End;
+
+{ Indice du symbole de donnees de ce nom, ou 0. }
+Function DsymFind(Var ctx: TCompilerContext; Const name: TString): LongInt;
+Var
+  slot, id: LongInt;
+Begin
+  slot := NameHash(name);
+  DsymFind := 0;
+  While ctx.data.dhash[slot] <> 0 Do
+    Begin
+      id := ctx.data.dhash[slot];
+      If ctx.data.syms[id].name = name Then
+        Begin
+          DsymFind := id;
+          Exit;
+        End;
+      slot := (slot + 1) And 65535;
+    End;
+End;
+
 Function NewDataSym(Var ctx: TCompilerContext; Const name: TString;
                     sec: Integer; ofs, size: LongInt; kind: Integer): LongInt;
+Var
+  slot: LongInt;
 Begin
   NewDataSym := 0;
   If ctx.data.sym_count >= MAX_DSYMS Then
@@ -6569,6 +6623,10 @@ Begin
   ctx.data.syms[ctx.data.sym_count].ofs := ofs;
   ctx.data.syms[ctx.data.sym_count].size := size;
   ctx.data.syms[ctx.data.sym_count].kind := kind;
+  slot := NameHash(name);
+  While ctx.data.dhash[slot] <> 0 Do
+    slot := (slot + 1) And 65535;
+  ctx.data.dhash[slot] := ctx.data.sym_count;
   NewDataSym := ctx.data.sym_count;
 End;
 
@@ -6582,8 +6640,17 @@ Begin
     End;
   Inc(ctx.data.reloc_count);
   ctx.data.relocs[ctx.data.reloc_count].sec := sec;
+  ctx.data.relocs[ctx.data.reloc_count].tkind := SYMK_D;
   ctx.data.relocs[ctx.data.reloc_count].ofs := ofs;
   ctx.data.relocs[ctx.data.reloc_count].target := target;
+End;
+
+{ Relocation vers un symbole de code ou externe (indice de xsyms). }
+Procedure AddRelocX(Var ctx: TCompilerContext; sec: Integer; ofs, target: LongInt);
+Begin
+  AddReloc(ctx, sec, ofs, target);
+  If ctx.data.reloc_count > 0 Then
+    ctx.data.relocs[ctx.data.reloc_count].tkind := SYMK_X;
 End;
 
 { ---- Chaines internees ---- }
@@ -7231,6 +7298,7 @@ Begin
   ctx.data.dt_size := 0;
   ctx.data.global_count := 0;
   FillChar(ctx.data.hash, SizeOf(ctx.data.hash), 0);
+  FillChar(ctx.data.dhash, SizeOf(ctx.data.dhash), 0);
   For i := 1 To ctx.sem.sym_count Do
     ctx.sem.syms[i].ds := 0;
 
@@ -7593,6 +7661,7 @@ Begin
   Inc(ctx.ir.xsym_count);
   ctx.ir.xsyms[ctx.ir.xsym_count].name := name;
   ctx.ir.xsyms[ctx.ir.xsym_count].defined := False;
+  ctx.ir.xsyms[ctx.ir.xsym_count].runtime := False;
   XSym := ctx.ir.xsym_count;
 End;
 
@@ -9113,6 +9182,54 @@ Begin
   ctx.ir.in_chain := Not top;
 End;
 
+{ Gabarit avec interpolation : les segments constants et les expressions converties
+  par ToString sont concatenes de gauche a droite. }
+Procedure GenTemplate(Var ctx: TCompilerContext; n: LongInt);
+Var
+  e, t: LongInt;
+Begin
+  e := ctx.ast.nodes[n].e1;
+  If (e <> 0) And (ctx.ast.nodes[e].next = 0) Then
+    Begin
+      LoadStringConst(ctx, ctx.ast.nodes[e].ds);
+      Exit;
+    End;
+  t := TempAcquire(ctx);
+  LoadStringConst(ctx, ctx.ast.nodes[e].ds);
+  SaveTemp(ctx, t);
+  e := ctx.ast.nodes[e].next;
+  While e <> 0 Do
+    Begin
+      If ctx.ast.nodes[e].kind = N_TEMPLATE_STR Then
+        Begin
+          If ctx.data.strs[ctx.ast.nodes[e].ds].len > 0 Then
+            Begin
+              LoadStringConst(ctx, ctx.ast.nodes[e].ds);
+              Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+              Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+              PushTemp(ctx, t);
+              CallRt(ctx, 'concat', 16);
+              SaveTemp(ctx, t);
+            End;
+        End
+      Else
+        Begin
+          GenExpr(ctx, e);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          CallRt(ctx, 'tostring', 8);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          PushTemp(ctx, t);
+          CallRt(ctx, 'concat', 16);
+          SaveTemp(ctx, t);
+        End;
+      e := ctx.ast.nodes[e].next;
+    End;
+  LoadTemp(ctx, t);
+  TempRelease(ctx, t);
+End;
+
 { Affectation simple ou destructurante ; la valeur reste dans EDX:EAX. }
 Procedure GenAssign(Var ctx: TCompilerContext; n: LongInt);
 Var
@@ -9181,13 +9298,7 @@ Begin
     N_STRING, N_TEMPLATE_STR:
       LoadStringConst(ctx, ctx.ast.nodes[n].ds);
     N_TEMPLATE:
-      Begin
-        e := ctx.ast.nodes[n].e1;
-        If (e <> 0) And (ctx.ast.nodes[e].next = 0) Then
-          LoadStringConst(ctx, ctx.ast.nodes[e].ds)
-        Else
-          PendingExpr(ctx, n);
-      End;
+      GenTemplate(ctx, n);
     N_BOOL:
       Begin
         If ctx.lex.tokens[ctx.ast.nodes[n].tok].text = 'true' Then
@@ -10110,6 +10221,8 @@ Begin
   EndProc(ctx);
 End;
 
+Procedure EmitRuntime(Var ctx: TCompilerContext); Forward;
+
 Function BuildIR(Var ctx: TCompilerContext): Boolean;
 Var
   i: LongInt;
@@ -10141,6 +10254,8 @@ Begin
     If Not ctx.ir.failed Then
       GenFuncProc(ctx, i);
 
+  If Not ctx.ir.failed Then
+    EmitRuntime(ctx);
   ctx.ir.built := Not ctx.ir.failed;
   If ctx.options.verbose Then
     Writeln('Code   : ', ctx.ir.proc_count, ' procedures, ', ctx.ir.count,
@@ -10193,6 +10308,9 @@ Begin
     R_ESI: RegName := 'esi';
     R_EDI: RegName := 'edi';
     R_CL:  RegName := 'cl';
+    R_AL:  RegName := 'al';
+    R_DL:  RegName := 'dl';
+    R_BL:  RegName := 'bl';
   Else
     RegName := '?';
   End;
@@ -10225,6 +10343,8 @@ Begin
 End;
 
 Function OperandText(Var ctx: TCompilerContext; Var o: TOperand): TString;
+Var
+  pfx, inner: TString;
 Begin
   Case o.kind Of
     OD_REG:
@@ -10233,11 +10353,28 @@ Begin
       OperandText := ImmText(o.disp);
     OD_MEM:
       Begin
-        If o.symkind <> 0 Then
-          OperandText := 'dword ptr [' + SymNameOf(ctx, o.symkind, o.sym) +
-                         DispText(o.disp) + ']'
-        Else
-          OperandText := 'dword ptr [' + RegName(o.base) + DispText(o.disp) + ']';
+        Begin
+          If o.size = 1 Then
+            pfx := 'byte ptr ['
+          Else
+            pfx := 'dword ptr [';
+          inner := '';
+          If o.base <> R_NONE Then
+            inner := RegName(o.base);
+          If o.index <> R_NONE Then
+            Begin
+              If inner <> '' Then
+                inner := inner + '+';
+              inner := inner + RegName(o.index);
+            End;
+          If o.symkind <> 0 Then
+            Begin
+              If inner <> '' Then
+                inner := inner + '+';
+              inner := inner + SymNameOf(ctx, o.symkind, o.sym);
+            End;
+          OperandText := pfx + inner + DispText(o.disp) + ']';
+        End;
       End;
     OD_ADDR:
       OperandText := 'offset ' + SymNameOf(ctx, o.symkind, o.sym);
@@ -10289,6 +10426,11 @@ Begin
     OP_JNO: OpName := 'jno';
     OP_JS: OpName := 'js';
     OP_JNS: OpName := 'jns';
+    OP_MOVZX: OpName := 'movzx';
+    OP_INC: OpName := 'inc';
+    OP_DEC: OpName := 'dec';
+    OP_DIV: OpName := 'div';
+    OP_REP_MOVSB: OpName := 'rep movsb';
   Else
     OpName := '?';
   End;
@@ -10296,7 +10438,7 @@ End;
 
 Procedure DumpIR(Var ctx: TCompilerContext);
 Var
-  i: LongInt;
+  i, limit: LongInt;
   a, b: TString;
   op: TOpc;
 Begin
@@ -10304,7 +10446,11 @@ Begin
     Exit;
   Writeln('Code (', ctx.ir.proc_count, ' procedures, ', ctx.ir.count,
           ' instructions) :');
-  For i := 1 To ctx.ir.count Do
+  If ctx.options.dump_rt Then
+    limit := ctx.ir.count
+  Else
+    limit := ctx.ir.user_count;
+  For i := 1 To limit Do
     Begin
       op := ctx.ir.instrs[i].op;
       Case op Of
@@ -10334,9 +10480,10 @@ Begin
         End;
       End;
     End;
-  Writeln('Symboles externes (', ctx.ir.xsym_count, ') :');
+  Writeln('Symboles externes non definis :');
   For i := 1 To ctx.ir.xsym_count Do
-    If Not ctx.ir.xsyms[i].defined Then
+    If Not ctx.ir.xsyms[i].defined And
+       (DsymFind(ctx, ctx.ir.xsyms[i].name) = 0) Then
       Writeln('  ', ctx.ir.xsyms[i].name);
   If ctx.ir.pending_count > 0 Then
     Begin
@@ -10346,6 +10493,3342 @@ Begin
           Writeln('  ligne ', ctx.ir.pendings[i].line, ' : ',
                   ctx.ir.pendings[i].what);
     End;
+End;
+
+Function IntToStr(n: LongInt): TString;
+Var
+  s: String[12];
+Begin
+  Str(n, s);
+  IntToStr := s;
+End;
+
+{ ============================================================
+  MINI-ASSEMBLEUR ET GENERATEUR DU RUNTIME (TODO 14)
+
+  Le runtime est ecrit en assembleur 80386 sous forme de lignes de texte
+  (A('mov eax, [ebp+8]')) assemblees vers la meme IR que le code genere.
+  Syntaxe : mnemoniques en minuscules, registres eax..edi et al, cl, dl,
+  bl ; operandes memoire [base+index+deplacement], dword ptr / byte ptr
+  facultatifs ; offset symbole ; etiquettes locales .nom ; macros $NOM
+  (etiquettes de type $STR, deplacements $STR_LEN...). Un symbole inconnu
+  est un symbole externe, resolu a l'edition de liens.
+
+  Convention du runtime : cdecl, arguments de 8 octets (valeurs) ou de 4
+  octets (pointeurs, entiers), resultat dans EDX:EAX ou EAX ; EBX, ESI,
+  EDI et EBP preserves ; ECX, EDX et EAX libres.
+  ============================================================ }
+
+Type
+  PCtx = ^TCompilerContext;
+
+Var
+  asm_ctx: PCtx;
+  asm_lbl_name: Array[1..160] Of String[24];
+  asm_lbl_id: Array[1..160] Of LongInt;
+  asm_lbl_count: LongInt;
+  asm_uniq: LongInt;
+  asm_failed: Boolean;
+
+Function AsmTrim(s: TString): TString;
+Begin
+  While (Length(s) > 0) And (s[1] = ' ') Do
+    Delete(s, 1, 1);
+  While (Length(s) > 0) And (s[Length(s)] = ' ') Do
+    Delete(s, Length(s), 1);
+  AsmTrim := s;
+End;
+
+Procedure AsmFail(Const msg, line: TString);
+Begin
+  If Not asm_failed Then
+    PipelineError(asm_ctx^, 'assembleur interne: ' + msg + ' : ' + line);
+  asm_failed := True;
+End;
+
+{ Valeur d'une macro $NOM. }
+Function AsmMacro(Const nm: TString; Var v: LongInt): Boolean;
+Begin
+  AsmMacro := True;
+  If nm = 'INT' Then v := TagImm(RT_T_INT32)
+  Else If nm = 'UNDEF' Then v := TagImm(RT_T_UNDEFINED)
+  Else If nm = 'NULL' Then v := TagImm(RT_T_NULL)
+  Else If nm = 'BOOL' Then v := TagImm(RT_T_BOOLEAN)
+  Else If nm = 'STR' Then v := TagImm(RT_T_STRING)
+  Else If nm = 'OBJ' Then v := TagImm(RT_T_OBJECT)
+  Else If nm = 'ARR' Then v := TagImm(RT_T_ARRAY)
+  Else If nm = 'FN' Then v := TagImm(RT_T_FUNCTION)
+  Else If nm = 'RX' Then v := TagImm(RT_T_REGEXP)
+  Else If nm = 'TDZ' Then v := TagImm(RT_T_TDZ)
+  Else If nm = 'DONE' Then v := TagImm(RT_T_DONE)
+  Else If nm = 'STR_LEN' Then v := RT_STR_LEN
+  Else If nm = 'STR_HASH' Then v := RT_STR_HASH
+  Else If nm = 'STR_DATA' Then v := RT_STR_DATA
+  Else If nm = 'ARR_LEN' Then v := RT_ARR_LEN
+  Else If nm = 'ARR_CAP' Then v := RT_ARR_CAP
+  Else If nm = 'ARR_ELEMS' Then v := RT_ARR_ELEMS
+  Else If nm = 'OBJ_PROTO' Then v := RT_OBJ_PROTO
+  Else If nm = 'OBJ_PROPS' Then v := RT_OBJ_PROPS
+  Else If nm = 'OBJ_COUNT' Then v := RT_OBJ_COUNT
+  Else If nm = 'OBJ_CAP' Then v := RT_OBJ_CAP
+  Else If nm = 'OBJ_CLASS' Then v := RT_OBJ_CLASS
+  Else If nm = 'FN_CODE' Then v := RT_FN_CODE
+  Else If nm = 'FN_ENV' Then v := RT_FN_ENV
+  Else If nm = 'FN_DESC' Then v := RT_FN_DESC
+  Else If nm = 'FN_PROPS' Then v := RT_FN_PROPS
+  Else If nm = 'FN_THIS' Then v := RT_FN_THIS
+  Else If nm = 'CELL_VALUE' Then v := RT_CELL_VALUE
+  Else If nm = 'ENV_CELLS' Then v := RT_ENV_CELLS
+  Else If nm = 'HDR_SIZE' Then v := RT_HDR_SIZE
+  Else If nm = 'OK_STRING' Then v := RT_OK_STRING
+  Else If nm = 'OK_ARRAY' Then v := RT_OK_ARRAY
+  Else If nm = 'OK_OBJECT' Then v := RT_OK_OBJECT
+  Else If nm = 'OK_FUNCTION' Then v := RT_OK_FUNCTION
+  Else If nm = 'OK_CELL' Then v := RT_OK_CELL
+  Else If nm = 'OK_ENV' Then v := RT_OK_ENV
+  Else
+    AsmMacro := False;
+End;
+
+Function AsmHexVal(c: Char): LongInt;
+Begin
+  If (c >= '0') And (c <= '9') Then
+    AsmHexVal := Ord(c) - 48
+  Else If (c >= 'a') And (c <= 'f') Then
+    AsmHexVal := Ord(c) - 87
+  Else If (c >= 'A') And (c <= 'F') Then
+    AsmHexVal := Ord(c) - 55
+  Else
+    AsmHexVal := -1;
+End;
+
+{ Nombre decimal, hexadecimal 0x..., caractere 'c' ou macro $NOM. }
+Function AsmNumber(Const t: TString; Var v: LongInt): Boolean;
+Var
+  i: Integer;
+  neg: Boolean;
+  w: Int64;
+  d: LongInt;
+Begin
+  AsmNumber := False;
+  If t = '' Then
+    Exit;
+  If t[1] = '$' Then
+    Begin
+      AsmNumber := AsmMacro(Copy(t, 2, Length(t) - 1), v);
+      Exit;
+    End;
+  If (Length(t) = 3) And (t[1] = '''') And (t[3] = '''') Then
+    Begin
+      v := Ord(t[2]);
+      AsmNumber := True;
+      Exit;
+    End;
+  i := 1;
+  neg := False;
+  If t[1] = '-' Then
+    Begin
+      neg := True;
+      i := 2;
+    End;
+  If i > Length(t) Then
+    Exit;
+  w := 0;
+  If (Length(t) >= i + 2) And (t[i] = '0') And ((t[i + 1] = 'x') Or (t[i + 1] = 'X')) Then
+    Begin
+      Inc(i, 2);
+      If i > Length(t) Then
+        Exit;
+      While i <= Length(t) Do
+        Begin
+          d := AsmHexVal(t[i]);
+          If d < 0 Then
+            Exit;
+          w := w * 16 + d;
+          Inc(i);
+        End;
+    End
+  Else
+    While i <= Length(t) Do
+      Begin
+        If (t[i] < '0') Or (t[i] > '9') Then
+          Exit;
+        w := w * 10 + (Ord(t[i]) - 48);
+        Inc(i);
+      End;
+  If neg Then
+    w := -w;
+  v := ToLong(w);
+  AsmNumber := True;
+End;
+
+Function AsmReg(Const t: TString): TReg;
+Begin
+  AsmReg := R_NONE;
+  If t = 'eax' Then AsmReg := R_EAX
+  Else If t = 'ecx' Then AsmReg := R_ECX
+  Else If t = 'edx' Then AsmReg := R_EDX
+  Else If t = 'ebx' Then AsmReg := R_EBX
+  Else If t = 'esp' Then AsmReg := R_ESP
+  Else If t = 'ebp' Then AsmReg := R_EBP
+  Else If t = 'esi' Then AsmReg := R_ESI
+  Else If t = 'edi' Then AsmReg := R_EDI
+  Else If t = 'al' Then AsmReg := R_AL
+  Else If t = 'cl' Then AsmReg := R_CL
+  Else If t = 'dl' Then AsmReg := R_DL
+  Else If t = 'bl' Then AsmReg := R_BL;
+End;
+
+Function IsReg8(r: TReg): Boolean;
+Begin
+  IsReg8 := (r = R_AL) Or (r = R_CL) Or (r = R_DL) Or (r = R_BL);
+End;
+
+Function AsmLabelId(Const nm: TString): LongInt;
+Var
+  i: LongInt;
+Begin
+  For i := 1 To asm_lbl_count Do
+    If asm_lbl_name[i] = nm Then
+      Begin
+        AsmLabelId := asm_lbl_id[i];
+        Exit;
+      End;
+  If asm_lbl_count >= 160 Then
+    Begin
+      AsmFail('trop d''etiquettes locales', nm);
+      AsmLabelId := 0;
+      Exit;
+    End;
+  Inc(asm_lbl_count);
+  asm_lbl_name[asm_lbl_count] := nm;
+  asm_lbl_id[asm_lbl_count] := NewLabel(asm_ctx^);
+  AsmLabelId := asm_lbl_id[asm_lbl_count];
+End;
+
+{ Symbole de donnees (pool) ou, a defaut, symbole de code ou externe. }
+Procedure AsmSymbol(Const nm: TString; Var symkind, sym: LongInt);
+Var
+  d: LongInt;
+Begin
+  d := DsymFind(asm_ctx^, nm);
+  If d <> 0 Then
+    Begin
+      symkind := SYMK_D;
+      sym := d;
+    End
+  Else
+    Begin
+      symkind := SYMK_X;
+      sym := XSym(asm_ctx^, nm);
+    End;
+End;
+
+Function AsmIsIdentStart(c: Char): Boolean;
+Begin
+  AsmIsIdentStart := ((c >= 'A') And (c <= 'Z')) Or ((c >= 'a') And (c <= 'z')) Or
+                     (c = '_') Or (c = '@');
+End;
+
+Procedure AsmMemory(Const inner: TString; Var o: TOperand; Const line: TString);
+Var
+  i, j: Integer;
+  sign, v: LongInt;
+  tok: TString;
+  r: TReg;
+Begin
+  i := 1;
+  sign := 1;
+  While i <= Length(inner) Do
+    Begin
+      If inner[i] = ' ' Then
+        Inc(i)
+      Else If inner[i] = '+' Then
+        Begin
+          sign := 1;
+          Inc(i);
+        End
+      Else If inner[i] = '-' Then
+        Begin
+          sign := -1;
+          Inc(i);
+        End
+      Else
+        Begin
+          j := i;
+          While (j <= Length(inner)) And (inner[j] <> '+') And (inner[j] <> '-') And
+                (inner[j] <> ' ') Do
+            Inc(j);
+          tok := Copy(inner, i, j - i);
+          i := j;
+          r := AsmReg(tok);
+          If r <> R_NONE Then
+            Begin
+              If o.base = R_NONE Then
+                o.base := r
+              Else
+                o.index := r;
+            End
+          Else If AsmNumber(tok, v) Then
+            o.disp := o.disp + sign * v
+          Else If AsmIsIdentStart(tok[1]) Then
+            AsmSymbol(tok, o.symkind, o.sym)
+          Else
+            AsmFail('terme memoire invalide ' + tok, line);
+          sign := 1;
+        End;
+    End;
+End;
+
+Procedure AsmOperand(Const txt0: TString; Var o: TOperand; Const line: TString);
+Var
+  txt: TString;
+  v: LongInt;
+  r: TReg;
+  sz: Byte;
+Begin
+  FillChar(o, SizeOf(o), 0);
+  txt := AsmTrim(txt0);
+  sz := 0;
+  If Copy(txt, 1, 10) = 'dword ptr ' Then
+    Begin
+      Delete(txt, 1, 10);
+      sz := 4;
+    End
+  Else If Copy(txt, 1, 9) = 'byte ptr ' Then
+    Begin
+      Delete(txt, 1, 9);
+      sz := 1;
+    End;
+  If txt = '' Then
+    Exit;
+  If txt[1] = '[' Then
+    Begin
+      o.kind := OD_MEM;
+      o.size := sz;
+      AsmMemory(Copy(txt, 2, Length(txt) - 2), o, line);
+      Exit;
+    End;
+  If Copy(txt, 1, 7) = 'offset ' Then
+    Begin
+      o.kind := OD_ADDR;
+      AsmSymbol(AsmTrim(Copy(txt, 8, Length(txt) - 7)), o.symkind, o.sym);
+      Exit;
+    End;
+  r := AsmReg(txt);
+  If r <> R_NONE Then
+    Begin
+      o.kind := OD_REG;
+      o.reg := r;
+      Exit;
+    End;
+  If AsmNumber(txt, v) Then
+    Begin
+      o.kind := OD_IMM;
+      o.disp := v;
+      Exit;
+    End;
+  If txt[1] = '.' Then
+    Begin
+      o.kind := OD_LABEL;
+      o.disp := AsmLabelId(txt);
+      Exit;
+    End;
+  If AsmIsIdentStart(txt[1]) Then
+    Begin
+      o.kind := OD_ADDR;
+      AsmSymbol(txt, o.symkind, o.sym);
+      Exit;
+    End;
+  AsmFail('operande invalide ' + txt, line);
+End;
+
+Function AsmFindOp(Const m: TString): TOpc;
+Var
+  op: TOpc;
+Begin
+  AsmFindOp := OP_NONE;
+  If m = 'jz' Then
+    AsmFindOp := OP_JE
+  Else If m = 'jnz' Then
+    AsmFindOp := OP_JNE
+  Else If m = 'jc' Then
+    AsmFindOp := OP_JB
+  Else If m = 'jnc' Then
+    AsmFindOp := OP_JAE
+  Else
+    For op := OP_MOV To OP_REP_MOVSB Do
+      If OpName(op) = m Then
+        AsmFindOp := op;
+End;
+
+{ Assemble une ligne : etiquette locale, directive proc/endp ou
+  instruction. }
+Procedure A(Const line0: TString);
+Var
+  line, m, rest, a1, a2: TString;
+  p, i, depth: Integer;
+  op: TOpc;
+  oa, ob: TOperand;
+  xs: LongInt;
+Begin
+  line := line0;
+  p := Pos(';', line);
+  If p > 0 Then
+    line := Copy(line, 1, p - 1);
+  line := AsmTrim(line);
+  If line = '' Then
+    Exit;
+  If (line[1] = '.') And (line[Length(line)] = ':') Then
+    Begin
+      PlaceLabel(asm_ctx^, AsmLabelId(Copy(line, 1, Length(line) - 1)));
+      Exit;
+    End;
+  If Copy(line, 1, 5) = 'proc ' Then
+    Begin
+      xs := XSym(asm_ctx^, AsmTrim(Copy(line, 6, Length(line) - 5)));
+      asm_ctx^.ir.xsyms[xs].defined := True;
+      asm_ctx^.ir.xsyms[xs].runtime := True;
+      Inc(asm_ctx^.ir.proc_count);
+      asm_lbl_count := 0;
+      Emit1(asm_ctx^, OP_PROC, AddrSym(SYMK_X, xs));
+      Exit;
+    End;
+  If line = 'endp' Then
+    Begin
+      Emit1(asm_ctx^, OP_ENDP, NoOp);
+      Exit;
+    End;
+  If line = 'rep movsb' Then
+    Begin
+      Emit0(asm_ctx^, OP_REP_MOVSB);
+      Exit;
+    End;
+  p := Pos(' ', line);
+  If p = 0 Then
+    Begin
+      m := line;
+      rest := '';
+    End
+  Else
+    Begin
+      m := Copy(line, 1, p - 1);
+      rest := AsmTrim(Copy(line, p + 1, Length(line) - p));
+    End;
+  op := AsmFindOp(m);
+  If op = OP_NONE Then
+    Begin
+      AsmFail('mnemonique inconnu ' + m, line0);
+      Exit;
+    End;
+  { separer les deux operandes a la premiere virgule hors crochets }
+  a1 := rest;
+  a2 := '';
+  depth := 0;
+  For i := 1 To Length(rest) Do
+    Begin
+      If rest[i] = '[' Then
+        Inc(depth)
+      Else If rest[i] = ']' Then
+        Dec(depth)
+      Else If (rest[i] = ',') And (depth = 0) Then
+        Begin
+          a1 := Copy(rest, 1, i - 1);
+          a2 := Copy(rest, i + 1, Length(rest) - i);
+          Break;
+        End;
+    End;
+  AsmOperand(a1, oa, line0);
+  AsmOperand(a2, ob, line0);
+  { un registre 8 bits impose la taille octet a l'autre operande memoire }
+  If ((oa.kind = OD_REG) And IsReg8(oa.reg) And (op <> OP_SHL) And (op <> OP_SHR) And
+      (op <> OP_SAR)) Or ((ob.kind = OD_REG) And IsReg8(ob.reg) And (op <> OP_SHL) And
+      (op <> OP_SHR) And (op <> OP_SAR)) Then
+    Begin
+      If oa.kind = OD_MEM Then
+        oa.size := 1;
+      If ob.kind = OD_MEM Then
+        ob.size := 1;
+    End;
+  Emit(asm_ctx^, op, oa, ob);
+End;
+
+{ Etiquette locale unique pour les macros d'assembleur. }
+Function U(Const prefix: TString): TString;
+Var
+  s: String[12];
+Begin
+  Inc(asm_uniq);
+  Str(asm_uniq, s);
+  U := '.' + prefix + s;
+End;
+
+{ ---- Donnees statiques du runtime ---- }
+
+{ Symbole de la chaine statique text (elle est creee si besoin). }
+Function RtStr(Const text: TString): TString;
+Var
+  id: LongInt;
+Begin
+  id := InternText(asm_ctx^, text);
+  If (id <> 0) And (asm_ctx^.data.strs[id].sym = 0) Then
+    EmitStringCell(asm_ctx^, id);
+  RtStr := SymStr(id);
+End;
+
+{ Octets d'une chaine C (zero final) dans .rdata. }
+Procedure RtCString(Const name, text: TString);
+Var
+  ofs, i: LongInt;
+Begin
+  ofs := SecAlloc(asm_ctx^, SEC_RDATA, Length(text) + 1);
+  For i := 1 To Length(text) Do
+    PutByte(asm_ctx^, SEC_RDATA, ofs + i - 1, Ord(text[i]));
+  NewDataSym(asm_ctx^, name, SEC_RDATA, ofs, Length(text) + 1, DS_STRING);
+End;
+
+{ Objet fonction natif statique ; retourne le symbole de donnees. }
+Function RtFuncObjP(Const jsname, code: TString; nparams, props: LongInt): LongInt;
+Var
+  fd_ofs, fo_ofs, fd_sym: LongInt;
+Begin
+  fd_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_FD_SIZE);
+  AddReloc(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_NAME,
+           DsymFind(asm_ctx^, RtStr(jsname)));
+  PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_NPARAMS, nparams);
+  PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_FLAGS, FDF_NATIVE);
+  fd_sym := NewDataSym(asm_ctx^, '_JSND_' + code, SEC_RDATA, fd_ofs, RT_FD_SIZE,
+                       DS_FDESC);
+  fo_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_FN_SIZE);
+  PutByte(asm_ctx^, SEC_RDATA, fo_ofs + RT_HDR_KIND, RT_OK_FUNCTION);
+  PutByte(asm_ctx^, SEC_RDATA, fo_ofs + RT_HDR_FLAGS, OF_STATIC);
+  AddRelocX(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_CODE, XSym(asm_ctx^, code));
+  AddReloc(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_DESC, fd_sym);
+  If props <> 0 Then
+    AddReloc(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_PROPS, props);
+  PutDword(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_THIS + 4, TagImm(RT_T_UNDEFINED));
+  RtFuncObjP := NewDataSym(asm_ctx^, '_JSNF_' + code, SEC_RDATA, fo_ofs, RT_FN_SIZE,
+                          DS_FDESC);
+End;
+
+Function RtFuncObj(Const jsname, code: TString; nparams: LongInt): LongInt;
+Begin
+  RtFuncObj := RtFuncObjP(jsname, code, nparams, 0);
+End;
+
+{ Construction d'un objet statique : proprietes ajoutees puis objet cree. }
+Var
+  bo_key: Array[1..64] Of String[40];
+  bo_val: Array[1..64] Of LongInt;
+  bo_tag: Array[1..64] Of LongInt;
+  bo_n: LongInt;
+
+Procedure BoReset;
+Begin
+  bo_n := 0;
+End;
+
+Procedure BoAdd(Const key: TString; valsym, tag: LongInt);
+Begin
+  Inc(bo_n);
+  bo_key[bo_n] := key;
+  bo_val[bo_n] := valsym;
+  bo_tag[bo_n] := tag;
+End;
+
+{ proto : symbole de donnees du prototype (0 aucun). }
+Function BoFinish(Const name: TString; proto: LongInt): LongInt;
+Var
+  props_ofs, obj_ofs, i, props_sym: LongInt;
+Begin
+  props_sym := 0;
+  props_ofs := 0;
+  If bo_n > 0 Then
+    Begin
+      props_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_PROP_SIZE * bo_n);
+      For i := 1 To bo_n Do
+        Begin
+          AddReloc(asm_ctx^, SEC_RDATA, props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_KEY,
+                   DsymFind(asm_ctx^, RtStr(bo_key[i])));
+          AddReloc(asm_ctx^, SEC_RDATA, props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE,
+                   bo_val[i]);
+          PutDword(asm_ctx^, SEC_RDATA,
+                   props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE + 4, TagImm(bo_tag[i]));
+        End;
+      props_sym := NewDataSym(asm_ctx^, name + '_props', SEC_RDATA, props_ofs,
+                              RT_PROP_SIZE * bo_n, DS_FDESC);
+    End;
+  obj_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_OBJ_SIZE);
+  PutByte(asm_ctx^, SEC_RDATA, obj_ofs + RT_HDR_KIND, RT_OK_OBJECT);
+  PutByte(asm_ctx^, SEC_RDATA, obj_ofs + RT_HDR_FLAGS, OF_STATIC);
+  If proto <> 0 Then
+    AddReloc(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_PROTO, proto);
+  If bo_n > 0 Then
+    AddReloc(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_PROPS, props_sym);
+  PutDword(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_COUNT, bo_n);
+  PutDword(asm_ctx^, SEC_RDATA, obj_ofs + RT_OBJ_CAP, bo_n);
+  BoFinish := NewDataSym(asm_ctx^, name, SEC_RDATA, obj_ofs, RT_OBJ_SIZE, DS_FDESC);
+End;
+
+{ Variable globale du runtime _JSRT_g_nom (valeur de 8 octets) qui designe
+  l'objet ou la fonction de symbole sym. }
+Procedure RtGlobal(Const name: TString; sym, tag: LongInt);
+Var
+  ofs: LongInt;
+Begin
+  ofs := SecAlloc(asm_ctx^, SEC_DATA, RT_VALUE_SIZE);
+  AddReloc(asm_ctx^, SEC_DATA, ofs, sym);
+  PutDword(asm_ctx^, SEC_DATA, ofs + 4, TagImm(tag));
+  NewDataSym(asm_ctx^, SymRt('g_' + name), SEC_DATA, ofs, RT_VALUE_SIZE, DS_GLOBAL);
+End;
+
+{ ---- Demarrage, allocateur, erreurs ---- }
+
+Procedure RtStartAndAlloc;
+Begin
+  A('proc _JSSTART');
+  A('call _JSRT_init');
+  A('call _JSRT_main');
+  A('push 0');
+  A('call dword ptr [__imp__ExitProcess@4]');
+  A('endp');
+
+  A('proc _JSRT_init');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, esp');
+  A('sub eax, ' + IntToStr(RT_STACK_RESERVE - RT_STACK_GUARD));
+  A('mov dword ptr [_JSRT_v_stack_limit], eax');
+  A('push -11');
+  A('call dword ptr [__imp__GetStdHandle@4]');
+  A('mov dword ptr [_JSRT_v_stdout], eax');
+  A('push -12');
+  A('call dword ptr [__imp__GetStdHandle@4]');
+  A('mov dword ptr [_JSRT_v_stderr], eax');
+  A('push -10');
+  A('call dword ptr [__imp__GetStdHandle@4]');
+  A('mov dword ptr [_JSRT_v_stdin], eax');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_alloc(taille) -> EAX : bloc de 8 octets alignes, mis a zero }
+  A('proc _JSRT_alloc');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('add ecx, 7');
+  A('and ecx, -8');
+  A('cmp ecx, ' + IntToStr(RT_BIG_ALLOC));
+  A('jae .big');
+  A('mov eax, dword ptr [_JSRT_v_heap_cur]');
+  A('lea edx, [eax+ecx]');
+  A('cmp edx, dword ptr [_JSRT_v_heap_end]');
+  A('ja .grow');
+  A('mov dword ptr [_JSRT_v_heap_cur], edx');
+  A('leave');
+  A('ret');
+  A('.grow:');
+  A('push ecx');
+  A('push 4');
+  A('push 12288');
+  A('push ' + IntToStr(RT_ARENA_SIZE));
+  A('push 0');
+  A('call dword ptr [__imp__VirtualAlloc@16]');
+  A('pop ecx');
+  A('test eax, eax');
+  A('jz .oom');
+  A('lea edx, [eax+ecx]');
+  A('mov dword ptr [_JSRT_v_heap_cur], edx');
+  A('lea edx, [eax+' + IntToStr(RT_ARENA_SIZE) + ']');
+  A('mov dword ptr [_JSRT_v_heap_end], edx');
+  A('leave');
+  A('ret');
+  A('.big:');
+  A('push 4');
+  A('push 12288');
+  A('push ecx');
+  A('push 0');
+  A('call dword ptr [__imp__VirtualAlloc@16]');
+  A('test eax, eax');
+  A('jz .oom');
+  A('leave');
+  A('ret');
+  A('.oom:');
+  A('push offset _JSRT_c_oom');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_write(handle, octets, nombre) }
+  A('proc _JSRT_write');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('sub esp, 4');
+  A('push 0');
+  A('lea eax, [ebp-4]');
+  A('push eax');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call dword ptr [__imp__WriteFile@20]');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_write_cstr(handle, chaine C) }
+  A('proc _JSRT_write_cstr');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('mov esi, dword ptr [ebp+12]');
+  A('xor ecx, ecx');
+  A('.len:');
+  A('cmp byte ptr [esi+ecx], 0');
+  A('je .got');
+  A('inc ecx');
+  A('jmp .len');
+  A('.got:');
+  A('push ecx');
+  A('push esi');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_fatal(chaine C) : message sur stderr puis fin du processus }
+  A('proc _JSRT_fatal');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [_JSRT_v_stderr]');
+  A('call _JSRT_write_cstr');
+  A('add esp, 8');
+  A('push 1');
+  A('call dword ptr [__imp__ExitProcess@4]');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_throw_notfunc');
+  A('push offset _JSRT_c_notfunc');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  A('proc _JSRT_throw_type');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  A('proc _JSRT_stack_overflow');
+  A('push offset _JSRT_c_stack');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_throw_tdz(chaine du nom) }
+  A('proc _JSRT_throw_tdz');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push offset _JSRT_c_tdz1');
+  A('push dword ptr [_JSRT_v_stderr]');
+  A('call _JSRT_write_cstr');
+  A('add esp, 8');
+  A('mov eax, dword ptr [ebp+8]');
+  A('push dword ptr [eax+$STR_LEN]');
+  A('add eax, $STR_DATA');
+  A('push eax');
+  A('push dword ptr [_JSRT_v_stderr]');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('push offset _JSRT_c_tdz2');
+  A('call _JSRT_fatal');
+  A('endp');
+End;
+
+{ ---- Chaines : creation, concatenation, conversions ---- }
+
+Procedure RtStrings;
+Begin
+  { _JSRT_str_new(longueur) -> EAX : cellule de chaine (octets a ecrire) }
+  A('proc _JSRT_str_new');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('add eax, ' + IntToStr(RT_STR_DATA + 1));
+  A('push eax');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_STRING');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [eax+$STR_LEN], ecx');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_concat(a, b) : deux chaines -> chaine }
+  A('proc _JSRT_concat');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('push ebx');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+16]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('test ecx, ecx');
+  A('jnz .a_ok');
+  A('mov eax, edi');
+  A('jmp .done');
+  A('.a_ok:');
+  A('mov edx, dword ptr [edi+$STR_LEN]');
+  A('test edx, edx');
+  A('jnz .both');
+  A('mov eax, esi');
+  A('jmp .done');
+  A('.both:');
+  A('lea ebx, [ecx+edx]');
+  A('push ebx');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('push eax');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('add esi, $STR_DATA');
+  A('rep movsb');
+  A('mov esi, dword ptr [ebp+16]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('add esi, $STR_DATA');
+  A('rep movsb');
+  A('pop eax');
+  A('.done:');
+  A('mov edx, $STR');
+  A('pop ebx');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_int_to_str(n) : entier signe -> chaine decimale }
+  A('proc _JSRT_int_to_str');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('sub esp, 16');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ebx, eax');
+  A('test eax, eax');
+  A('jns .pos');
+  A('neg eax');
+  A('.pos:');
+  A('lea esi, [ebp-12]');
+  A('mov ecx, 10');
+  A('.loop:');
+  A('xor edx, edx');
+  A('div ecx');
+  A('add edx, 48');
+  A('dec esi');
+  A('mov byte ptr [esi], dl');
+  A('test eax, eax');
+  A('jnz .loop');
+  A('test ebx, ebx');
+  A('jns .nosign');
+  A('dec esi');
+  A('mov byte ptr [esi], 45');
+  A('.nosign:');
+  A('lea eax, [ebp-12]');
+  A('sub eax, esi');
+  A('mov edi, eax');
+  A('push edi');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('mov ecx, edi');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('rep movsb');
+  A('mov edx, $STR');
+  A('add esp, 16');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_tostring(v) -> chaine (ToString des primitives) }
+  A('proc _JSRT_tostring');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov edx, dword ptr [ebp+12]');
+  A('cmp edx, $STR');
+  A('je .self');
+  A('cmp edx, $INT');
+  A('je .int');
+  A('jb .dbl');
+  A('cmp edx, $BOOL');
+  A('je .bool');
+  A('cmp edx, $UNDEF');
+  A('je .undef');
+  A('cmp edx, $NULL');
+  A('je .null');
+  A('cmp edx, $FN');
+  A('je .fn');
+  A('mov eax, offset ' + RtStr('[object Object]'));
+  A('jmp .str');
+  A('.fn:');
+  A('mov eax, offset ' + RtStr('function'));
+  A('jmp .str');
+  A('.bool:');
+  A('test eax, eax');
+  A('jz .false');
+  A('mov eax, offset ' + RtStr('true'));
+  A('jmp .str');
+  A('.false:');
+  A('mov eax, offset ' + RtStr('false'));
+  A('jmp .str');
+  A('.undef:');
+  A('mov eax, offset ' + RtStr('undefined'));
+  A('jmp .str');
+  A('.null:');
+  A('mov eax, offset ' + RtStr('null'));
+  A('.str:');
+  A('mov edx, $STR');
+  A('.self:');
+  A('leave');
+  A('ret');
+  A('.int:');
+  A('push eax');
+  A('call _JSRT_int_to_str');
+  A('add esp, 4');
+  A('leave');
+  A('ret');
+  A('.dbl:');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_double_to_str');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_equal(pa, pb) -> EAX = 0 ou 1 (contenu des chaines) }
+  A('proc _JSRT_str_equal');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('cmp esi, edi');
+  A('je .eq');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('cmp ecx, dword ptr [edi+$STR_LEN]');
+  A('jne .ne');
+  A('add esi, $STR_DATA');
+  A('add edi, $STR_DATA');
+  A('.loop:');
+  A('test ecx, ecx');
+  A('jz .eq');
+  A('mov al, byte ptr [esi]');
+  A('cmp al, byte ptr [edi]');
+  A('jne .ne');
+  A('inc esi');
+  A('inc edi');
+  A('dec ecx');
+  A('jmp .loop');
+  A('.eq:');
+  A('mov eax, 1');
+  A('jmp .out');
+  A('.ne:');
+  A('xor eax, eax');
+  A('.out:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_cmp(pa, pb) -> EAX = -1, 0 ou 1 (ordre des octets) }
+  A('proc _JSRT_str_cmp');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('sub esp, 8');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('mov dword ptr [ebp-12], eax');
+  A('mov eax, dword ptr [edi+$STR_LEN]');
+  A('mov dword ptr [ebp-16], eax');
+  A('mov ecx, dword ptr [ebp-12]');
+  A('cmp ecx, dword ptr [ebp-16]');
+  A('jbe .m');
+  A('mov ecx, dword ptr [ebp-16]');
+  A('.m:');
+  A('add esi, $STR_DATA');
+  A('add edi, $STR_DATA');
+  A('.loop:');
+  A('test ecx, ecx');
+  A('jz .lens');
+  A('movzx eax, byte ptr [esi]');
+  A('movzx edx, byte ptr [edi]');
+  A('cmp eax, edx');
+  A('jb .less');
+  A('ja .greater');
+  A('inc esi');
+  A('inc edi');
+  A('dec ecx');
+  A('jmp .loop');
+  A('.lens:');
+  A('mov eax, dword ptr [ebp-12]');
+  A('cmp eax, dword ptr [ebp-16]');
+  A('jb .less');
+  A('ja .greater');
+  A('xor eax, eax');
+  A('jmp .out');
+  A('.less:');
+  A('mov eax, -1');
+  A('jmp .out');
+  A('.greater:');
+  A('mov eax, 1');
+  A('.out:');
+  A('add esp, 8');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ ---- Egalite et addition ---- }
+
+Procedure RtEquality;
+Begin
+  { _JSRT_seq(a, b) : === ; booleen dans EDX:EAX }
+  A('proc _JSRT_seq');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+12]');
+  A('cmp eax, dword ptr [ebp+20]');
+  A('jne .diff');
+  A('cmp eax, $INT');
+  A('jb .num');
+  A('cmp eax, $STR');
+  A('je .str');
+  A('cmp eax, $UNDEF');
+  A('je .true');
+  A('cmp eax, $NULL');
+  A('je .true');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('cmp ecx, dword ptr [ebp+16]');
+  A('jne .false');
+  A('.true:');
+  A('mov eax, 1');
+  A('jmp .ret');
+  A('.str:');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('jmp .ret');
+  A('.num:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_num_eq');
+  A('add esp, 16');
+  A('jmp .ret');
+  A('.diff:');
+  A('cmp eax, $INT');
+  A('ja .false');
+  A('mov ecx, dword ptr [ebp+20]');
+  A('cmp ecx, $INT');
+  A('ja .false');
+  A('jmp .num');
+  A('.false:');
+  A('xor eax, eax');
+  A('.ret:');
+  A('mov edx, $BOOL');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_eq(a, b) : == }
+  A('proc _JSRT_eq');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov ecx, dword ptr [ebp+20]');
+  A('cmp eax, ecx');
+  A('je .same');
+  A('cmp eax, $INT');
+  A('jbe .an');
+  A('cmp eax, $UNDEF');
+  A('je .au');
+  A('cmp eax, $NULL');
+  A('je .au');
+  A('jmp .slow');
+  A('.an:');
+  A('cmp ecx, $INT');
+  A('jbe .same');
+  A('jmp .slow');
+  A('.au:');
+  A('cmp ecx, $UNDEF');
+  A('je .true');
+  A('cmp ecx, $NULL');
+  A('je .true');
+  A('xor eax, eax');
+  A('mov edx, $BOOL');
+  A('leave');
+  A('ret');
+  A('.true:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  A('leave');
+  A('ret');
+  A('.same:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_seq');
+  A('add esp, 16');
+  A('leave');
+  A('ret');
+  A('.slow:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_eq_slow');
+  A('add esp, 16');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_add(a, b) : + (concatenation ou addition numerique) }
+  A('proc _JSRT_add');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $STR');
+  A('je .str');
+  A('cmp dword ptr [ebp+20], $STR');
+  A('je .str');
+  A('cmp dword ptr [ebp+12], $OBJ');
+  A('jae .str');
+  A('cmp dword ptr [ebp+20], $OBJ');
+  A('jae .str');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_num_add');
+  A('add esp, 16');
+  A('leave');
+  A('ret');
+  A('.str:');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('leave');
+  A('ret');
+  A('endp');
+End;
+
+{ ---- Proprietes ---- }
+
+Procedure RtProperties;
+Begin
+  { _JSRT_obj_lookup(objet, atome) : EDX:EAX = valeur, ECX = 1 si trouvee }
+  A('proc _JSRT_obj_lookup');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edx, dword ptr [ebp+12]');
+  A('.chain:');
+  A('test esi, esi');
+  A('jz .nf');
+  A('mov ecx, dword ptr [esi+$OBJ_COUNT]');
+  A('mov edi, dword ptr [esi+$OBJ_PROPS]');
+  A('.scan:');
+  A('test ecx, ecx');
+  A('jz .up');
+  A('cmp dword ptr [edi], edx');
+  A('je .found');
+  A('add edi, ' + IntToStr(RT_PROP_SIZE));
+  A('dec ecx');
+  A('jmp .scan');
+  A('.up:');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('jmp .chain');
+  A('.found:');
+  A('mov eax, dword ptr [edi+' + IntToStr(RT_PROP_VALUE) + ']');
+  A('mov edx, dword ptr [edi+' + IntToStr(RT_PROP_VALUE + 4) + ']');
+  A('mov ecx, 1');
+  A('jmp .out');
+  A('.nf:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('xor ecx, ecx');
+  A('.out:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_obj_lookup_str(objet, chaine) : comme obj_lookup, cle comparee par
+    contenu (cles dynamiques) }
+  A('proc _JSRT_obj_lookup_str');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('push ebx');
+  A('mov esi, dword ptr [ebp+8]');
+  A('.chain:');
+  A('test esi, esi');
+  A('jz .nf');
+  A('mov ebx, dword ptr [esi+$OBJ_COUNT]');
+  A('mov edi, dword ptr [esi+$OBJ_PROPS]');
+  A('.scan:');
+  A('test ebx, ebx');
+  A('jz .up');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [edi]');
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .found');
+  A('add edi, ' + IntToStr(RT_PROP_SIZE));
+  A('dec ebx');
+  A('jmp .scan');
+  A('.up:');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('jmp .chain');
+  A('.found:');
+  A('mov eax, dword ptr [edi+' + IntToStr(RT_PROP_VALUE) + ']');
+  A('mov edx, dword ptr [edi+' + IntToStr(RT_PROP_VALUE + 4) + ']');
+  A('jmp .out');
+  A('.nf:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('.out:');
+  A('pop ebx');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_get_prop(objet, atome) : objet.nom }
+  A('proc _JSRT_get_prop');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $STR');
+  A('je .str');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('cmp ecx, $FN');
+  A('je .fn');
+  A('cmp ecx, $UNDEF');
+  A('je .bad');
+  A('cmp ecx, $NULL');
+  A('je .bad');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('.str:');
+  A('mov edx, dword ptr [ebp+16]');
+  A('cmp edx, offset ' + RtStr('length'));
+  A('jne .strproto');
+  A('mov eax, dword ptr [eax+$STR_LEN]');
+  A('mov edx, $INT');
+  A('leave');
+  A('ret');
+  A('.strproto:');
+  A('push edx');
+  A('push offset _JSNO_string_proto');
+  A('jmp .look');
+  A('.fn:');
+  A('mov eax, dword ptr [eax+$FN_PROPS]');
+  A('.obj:');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('.look:');
+  A('call _JSRT_obj_lookup');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.bad:');
+  A('push offset _JSRT_c_read');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_get_member(objet, cle) : objet[cle] }
+  A('proc _JSRT_get_member');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('mov edx, dword ptr [ebp+20]');
+  A('cmp ecx, $UNDEF');
+  A('je .bad');
+  A('cmp ecx, $NULL');
+  A('je .bad');
+  A('cmp ecx, $STR');
+  A('jne .notstr');
+  A('cmp edx, $INT');
+  A('je .stridx');
+  A('cmp edx, $STR');
+  A('jne .undef');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_str_get_prop');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.stridx:');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_str_char_at');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.notstr:');
+  A('cmp edx, $STR');
+  A('jne .undef');
+  A('cmp ecx, $FN');
+  A('jne .o');
+  A('mov eax, dword ptr [eax+$FN_PROPS]');
+  A('jmp .look');
+  A('.o:');
+  A('cmp ecx, $OBJ');
+  A('jne .undef');
+  A('.look:');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_obj_lookup_str');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('.bad:');
+  A('push offset _JSRT_c_read');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_str_get_prop(pstr, pcle) : propriete d'une chaine par nom }
+  A('proc _JSRT_str_get_prop');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+12]');
+  A('push offset ' + RtStr('length'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .proto');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [eax+$STR_LEN]');
+  A('mov edx, $INT');
+  A('leave');
+  A('ret');
+  A('.proto:');
+  A('push dword ptr [ebp+12]');
+  A('push offset _JSNO_string_proto');
+  A('call _JSRT_obj_lookup_str');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('endp');
+End;
+
+{ ---- console ---- }
+
+Procedure RtConsoleFn(Const code, handle_var: TString);
+Begin
+  A('proc ' + code);
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('mov edi, dword ptr [' + handle_var + ']');
+  A('xor esi, esi');
+  A('.loop:');
+  A('cmp esi, dword ptr [ebp+12]');
+  A('jae .nl');
+  A('test esi, esi');
+  A('jz .arg');
+  A('push 1');
+  A('push offset _JSRT_c_space');
+  A('push edi');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('.arg:');
+  A('mov ecx, esi');
+  A('shl ecx, 3');
+  A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('add ecx, eax');
+  A('push dword ptr [ecx+4]');
+  A('push dword ptr [ecx]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push dword ptr [eax+$STR_LEN]');
+  A('add eax, $STR_DATA');
+  A('push eax');
+  A('push edi');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('inc esi');
+  A('jmp .loop');
+  A('.nl:');
+  A('push 1');
+  A('push offset _JSRT_c_nl');
+  A('push edi');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ ---- Methodes de String (TODO 14) ----
+
+  Les chaines sont des octets UTF-8 : length, les indices et les
+  positions comptent des octets, ce qui est exact pour l'ASCII. Les
+  methodes natives suivent la convention d'appel des fonctions : this en
+  [EBP+16], argc en [EBP+12], arguments a partir de [EBP+24]. }
+
+{ Entier d'un argument (valeur par defaut si absent ou undefined) dans EAX. }
+Procedure MArgInt(i: LongInt; Const def: TString);
+Var
+  d, ok: TString;
+Begin
+  d := U('d');
+  ok := U('k');
+  A('cmp dword ptr [ebp+12], ' + IntToStr(i + 1));
+  A('jb ' + d);
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i + 4) + ']');
+  A('cmp edx, $INT');
+  A('je ' + ok);
+  A('cmp edx, $UNDEF');
+  A('je ' + d);
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('jmp ' + ok);
+  A(d + ':');
+  A('mov eax, ' + def);
+  A(ok + ':');
+End;
+
+{ Chaine d'un argument (ToString) dans le registre reg. }
+Procedure MArgStr(i: LongInt; Const reg: TString);
+Var
+  have, ok: TString;
+Begin
+  have := U('h');
+  ok := U('k');
+  A('cmp dword ptr [ebp+12], ' + IntToStr(i + 1));
+  A('jae ' + have);
+  A('mov eax, offset ' + RtStr('undefined'));
+  A('jmp ' + ok);
+  A(have + ':');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i) + ']');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A(ok + ':');
+  A('mov ' + reg + ', eax');
+End;
+
+{ Debut d'une methode : this converti en chaine, pointeur dans ESI. }
+Procedure MethBegin(Const code: TString);
+Begin
+  A('proc ' + code);
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov edx, dword ptr [ebp+20]');
+  A('cmp edx, $STR');
+  A('je .thisok');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('.thisok:');
+  A('mov esi, eax');
+End;
+
+Procedure MethEnd;
+Begin
+  A('.ret:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ Routines communes : conversions, recherche, extraction. }
+Procedure RtStringHelpers;
+Begin
+  { _JSRT_cmp3(a, b) -> EAX = -1, 0 ou 1 : chaines par ordre des octets,
+    sinon comparaison des valeurs converties en entier 32 bits }
+  A('proc _JSRT_cmp3');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('cmp dword ptr [ebp+12], $STR');
+  A('jne .num');
+  A('cmp dword ptr [ebp+20], $STR');
+  A('jne .num');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_str_cmp');
+  A('add esp, 8');
+  A('jmp .out');
+  A('.num:');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('cmp ebx, eax');
+  A('jl .less');
+  A('jg .greater');
+  A('xor eax, eax');
+  A('jmp .out');
+  A('.less:');
+  A('mov eax, -1');
+  A('jmp .out');
+  A('.greater:');
+  A('mov eax, 1');
+  A('.out:');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_lt');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_cmp3');
+  A('add esp, 16');
+  A('cmp eax, 0');
+  A('mov eax, 0');
+  A('jl .t');
+  A('jmp .o');
+  A('.t:');
+  A('mov eax, 1');
+  A('.o:');
+  A('mov edx, $BOOL');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_le');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_cmp3');
+  A('add esp, 16');
+  A('cmp eax, 0');
+  A('mov eax, 0');
+  A('jle .t');
+  A('jmp .o');
+  A('.t:');
+  A('mov eax, 1');
+  A('.o:');
+  A('mov edx, $BOOL');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_gt');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_cmp3');
+  A('add esp, 16');
+  A('cmp eax, 0');
+  A('mov eax, 0');
+  A('jg .t');
+  A('jmp .o');
+  A('.t:');
+  A('mov eax, 1');
+  A('.o:');
+  A('mov edx, $BOOL');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_ge');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_cmp3');
+  A('add esp, 16');
+  A('cmp eax, 0');
+  A('mov eax, 0');
+  A('jge .t');
+  A('jmp .o');
+  A('.t:');
+  A('mov eax, 1');
+  A('.o:');
+  A('mov edx, $BOOL');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_toint32(v) -> EAX }
+  A('proc _JSRT_toint32');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov edx, dword ptr [ebp+12]');
+  A('cmp edx, $INT');
+  A('je .ret');
+  A('cmp edx, $BOOL');
+  A('je .ret');
+  A('cmp edx, $UNDEF');
+  A('je .zero');
+  A('cmp edx, $NULL');
+  A('je .zero');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_toint32_slow');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.zero:');
+  A('xor eax, eax');
+  A('.ret:');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_relidx(v, n) : indice relatif (negatif depuis la fin), borne a [0, n] }
+  A('proc _JSRT_relidx');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('test eax, eax');
+  A('jns .pos');
+  A('add eax, ecx');
+  A('jns .ret');
+  A('xor eax, eax');
+  A('jmp .ret');
+  A('.pos:');
+  A('cmp eax, ecx');
+  A('jle .ret');
+  A('mov eax, ecx');
+  A('.ret:');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_clampidx(v, n) : borne a [0, n] }
+  A('proc _JSRT_clampidx');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('test eax, eax');
+  A('jns .pos');
+  A('xor eax, eax');
+  A('jmp .ret');
+  A('.pos:');
+  A('cmp eax, ecx');
+  A('jle .ret');
+  A('mov eax, ecx');
+  A('.ret:');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_sub(chaine, debut, fin) -> valeur chaine ; 0 <= debut <= fin <= longueur }
+  A('proc _JSRT_str_sub');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('sub ecx, eax');
+  A('jle .empty');
+  A('cmp ecx, dword ptr [esi+$STR_LEN]');
+  A('jne .make');
+  A('mov eax, esi');
+  A('jmp .ret');
+  A('.make:');
+  A('push ecx');
+  A('push ecx');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('pop ecx');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('mov edx, dword ptr [ebp+12]');
+  A('lea esi, [esi+edx+$STR_DATA]');
+  A('push eax');
+  A('rep movsb');
+  A('pop eax');
+  A('jmp .ret');
+  A('.empty:');
+  A('mov eax, offset ' + RtStr(''));
+  A('.ret:');
+  A('mov edx, $STR');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_index(botte, aiguille, depuis) -> indice ou -1 }
+  A('proc _JSRT_str_index');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('sub esp, 4');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('mov ebx, dword ptr [ebp+16]');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('mov ecx, dword ptr [edi+$STR_LEN]');
+  A('test ebx, ebx');
+  A('jns .f1');
+  A('xor ebx, ebx');
+  A('.f1:');
+  A('cmp ebx, eax');
+  A('jle .f2');
+  A('mov ebx, eax');
+  A('.f2:');
+  A('sub eax, ecx');
+  A('js .none');
+  A('mov dword ptr [ebp-16], eax');
+  A('.outer:');
+  A('cmp ebx, dword ptr [ebp-16]');
+  A('jg .none');
+  A('xor edx, edx');
+  A('.inner:');
+  A('cmp edx, ecx');
+  A('jae .found');
+  A('lea eax, [ebx+edx]');
+  A('movzx eax, byte ptr [esi+eax+$STR_DATA]');
+  A('cmp al, byte ptr [edi+edx+$STR_DATA]');
+  A('jne .next');
+  A('inc edx');
+  A('jmp .inner');
+  A('.next:');
+  A('inc ebx');
+  A('jmp .outer');
+  A('.found:');
+  A('mov eax, ebx');
+  A('jmp .out');
+  A('.none:');
+  A('mov eax, -1');
+  A('.out:');
+  A('add esp, 4');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_lindex(botte, aiguille, depuis) -> dernier indice <= depuis ou -1 }
+  A('proc _JSRT_str_lindex');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('mov ebx, dword ptr [ebp+16]');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('mov ecx, dword ptr [edi+$STR_LEN]');
+  A('sub eax, ecx');
+  A('js .none');
+  A('cmp ebx, eax');
+  A('jle .f1');
+  A('mov ebx, eax');
+  A('.f1:');
+  A('test ebx, ebx');
+  A('jns .outer');
+  A('xor ebx, ebx');
+  A('.outer:');
+  A('test ebx, ebx');
+  A('js .none');
+  A('xor edx, edx');
+  A('.inner:');
+  A('cmp edx, ecx');
+  A('jae .found');
+  A('lea eax, [ebx+edx]');
+  A('movzx eax, byte ptr [esi+eax+$STR_DATA]');
+  A('cmp al, byte ptr [edi+edx+$STR_DATA]');
+  A('jne .next');
+  A('inc edx');
+  A('jmp .inner');
+  A('.next:');
+  A('dec ebx');
+  A('jmp .outer');
+  A('.found:');
+  A('mov eax, ebx');
+  A('jmp .out');
+  A('.none:');
+  A('mov eax, -1');
+  A('.out:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_match_at(botte, aiguille, pos) -> 1 si l'aiguille est a pos }
+  A('proc _JSRT_str_match_at');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('mov ebx, dword ptr [ebp+16]');
+  A('test ebx, ebx');
+  A('js .no');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('mov ecx, dword ptr [edi+$STR_LEN]');
+  A('sub eax, ebx');
+  A('cmp ecx, eax');
+  A('jg .no');
+  A('xor edx, edx');
+  A('.l:');
+  A('cmp edx, ecx');
+  A('jae .yes');
+  A('lea eax, [ebx+edx]');
+  A('movzx eax, byte ptr [esi+eax+$STR_DATA]');
+  A('cmp al, byte ptr [edi+edx+$STR_DATA]');
+  A('jne .no');
+  A('inc edx');
+  A('jmp .l');
+  A('.yes:');
+  A('mov eax, 1');
+  A('jmp .out');
+  A('.no:');
+  A('xor eax, eax');
+  A('.out:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_case(chaine, majuscules) }
+  A('proc _JSRT_str_case');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('test ecx, ecx');
+  A('jz .same');
+  A('push ecx');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('xor edi, edi');
+  A('.l:');
+  A('cmp edi, ecx');
+  A('jae .done');
+  A('movzx edx, byte ptr [esi+edi+$STR_DATA]');
+  A('test ebx, ebx');
+  A('jz .lower');
+  A('cmp edx, 97');
+  A('jb .st');
+  A('cmp edx, 122');
+  A('ja .st');
+  A('sub edx, 32');
+  A('jmp .st');
+  A('.lower:');
+  A('cmp edx, 65');
+  A('jb .st');
+  A('cmp edx, 90');
+  A('ja .st');
+  A('add edx, 32');
+  A('.st:');
+  A('mov byte ptr [eax+edi+$STR_DATA], dl');
+  A('inc edi');
+  A('jmp .l');
+  A('.same:');
+  A('mov eax, esi');
+  A('.done:');
+  A('mov edx, $STR');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_trim(chaine, mode) : mode 1 = debut, 2 = fin, 3 = les deux }
+  A('proc _JSRT_str_trim');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('xor edi, edi');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('test ebx, 1');
+  A('jz .end');
+  A('.sl:');
+  A('cmp edi, ecx');
+  A('jae .end');
+  A('movzx eax, byte ptr [esi+edi+$STR_DATA]');
+  A('cmp eax, 32');
+  A('je .sn');
+  A('cmp eax, 9');
+  A('jb .end');
+  A('cmp eax, 13');
+  A('ja .end');
+  A('.sn:');
+  A('inc edi');
+  A('jmp .sl');
+  A('.end:');
+  A('test ebx, 2');
+  A('jz .go');
+  A('.el:');
+  A('cmp ecx, edi');
+  A('jbe .go');
+  A('movzx eax, byte ptr [esi+ecx+' + IntToStr(RT_STR_DATA - 1) + ']');
+  A('cmp eax, 32');
+  A('je .en');
+  A('cmp eax, 9');
+  A('jb .go');
+  A('cmp eax, 13');
+  A('ja .go');
+  A('.en:');
+  A('dec ecx');
+  A('jmp .el');
+  A('.go:');
+  A('push ecx');
+  A('push edi');
+  A('push esi');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_fillpad(dest, nombre, remplissage) -> EAX = dest apres ecriture }
+  A('proc _JSRT_str_fillpad');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('mov edx, dword ptr [ebp+16]');
+  A('mov esi, dword ptr [edx+$STR_LEN]');
+  A('xor ecx, ecx');
+  A('.fl:');
+  A('test ebx, ebx');
+  A('jz .fd');
+  A('movzx edx, byte ptr [edx+ecx+$STR_DATA]');
+  A('mov byte ptr [eax], dl');
+  A('mov edx, dword ptr [ebp+16]');
+  A('inc eax');
+  A('inc ecx');
+  A('cmp ecx, esi');
+  A('jb .fk');
+  A('xor ecx, ecx');
+  A('.fk:');
+  A('dec ebx');
+  A('jmp .fl');
+  A('.fd:');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_pad(chaine, longueur cible, remplissage, debut) }
+  A('proc _JSRT_str_pad');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('sub esp, 8');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('mov edi, dword ptr [ebp+16]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('cmp ebx, ecx');
+  A('jle .same');
+  A('mov edx, dword ptr [edi+$STR_LEN]');
+  A('test edx, edx');
+  A('jz .same');
+  A('sub ebx, ecx');
+  A('mov dword ptr [ebp-16], ebx');
+  A('lea eax, [ebx+ecx]');
+  A('push eax');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('mov dword ptr [ebp-20], eax');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('cmp dword ptr [ebp+20], 0');
+  A('je .tail');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp-16]');
+  A('push edi');
+  A('call _JSRT_str_fillpad');
+  A('add esp, 12');
+  A('mov edi, eax');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('lea esi, [esi+$STR_DATA]');
+  A('rep movsb');
+  A('jmp .fin');
+  A('.tail:');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('lea esi, [esi+$STR_DATA]');
+  A('rep movsb');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp-16]');
+  A('push edi');
+  A('call _JSRT_str_fillpad');
+  A('add esp, 12');
+  A('.fin:');
+  A('mov eax, dword ptr [ebp-20]');
+  A('mov edx, $STR');
+  A('jmp .out');
+  A('.same:');
+  A('mov eax, esi');
+  A('mov edx, $STR');
+  A('.out:');
+  A('add esp, 8');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ ---- Methodes natives ---- }
+
+Procedure RtStringMethods;
+Begin
+  RtStringHelpers;
+
+  { _JSRT_str_char_at(pstr, indice) -> chaine d'un caractere ou vide }
+  A('proc _JSRT_str_char_at');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, 0');
+  A('jl .empty');
+  A('cmp ecx, dword ptr [eax+$STR_LEN]');
+  A('jae .empty');
+  A('movzx ecx, byte ptr [eax+ecx+$STR_DATA]');
+  A('push ecx');
+  A('push 1');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('pop ecx');
+  A('mov byte ptr [eax+$STR_DATA], cl');
+  A('mov edx, $STR');
+  A('leave');
+  A('ret');
+  A('.empty:');
+  A('mov eax, offset ' + RtStr(''));
+  A('mov edx, $STR');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  MethBegin('_JSRT_sm_charAt');
+  MArgInt(0, '0');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_str_char_at');
+  A('add esp, 8');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_charCodeAt');
+  MArgInt(0, '0');
+  A('cmp eax, 0');
+  A('jl .nan');
+  A('cmp eax, dword ptr [esi+$STR_LEN]');
+  A('jae .nan');
+  A('movzx eax, byte ptr [esi+eax+$STR_DATA]');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  A('.nan:');
+  A('mov eax, dword ptr [' + SymDbl(STD_DBL_NAN) + ']');
+  A('mov edx, dword ptr [' + SymDbl(STD_DBL_NAN) + '+4]');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_indexOf');
+  MArgStr(0, 'ebx');
+  MArgInt(1, '0');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_index');
+  A('add esp, 12');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_lastIndexOf');
+  MArgStr(0, 'ebx');
+  MArgInt(1, '2147483647');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_lindex');
+  A('add esp, 12');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_includes');
+  MArgStr(0, 'ebx');
+  MArgInt(1, '0');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_index');
+  A('add esp, 12');
+  A('mov ecx, eax');
+  A('xor eax, eax');
+  A('test ecx, ecx');
+  A('js .no');
+  A('mov eax, 1');
+  A('.no:');
+  A('mov edx, $BOOL');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_startsWith');
+  MArgStr(0, 'ebx');
+  MArgInt(1, '0');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_match_at');
+  A('add esp, 12');
+  A('mov edx, $BOOL');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_endsWith');
+  MArgStr(0, 'ebx');
+  MArgInt(1, '2147483647');
+  A('cmp eax, dword ptr [esi+$STR_LEN]');
+  A('jle .e1');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('.e1:');
+  A('sub eax, dword ptr [ebx+$STR_LEN]');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_match_at');
+  A('add esp, 12');
+  A('mov edx, $BOOL');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_toUpperCase');
+  A('push 1');
+  A('push esi');
+  A('call _JSRT_str_case');
+  A('add esp, 8');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_toLowerCase');
+  A('push 0');
+  A('push esi');
+  A('call _JSRT_str_case');
+  A('add esp, 8');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_trim');
+  A('push 3');
+  A('push esi');
+  A('call _JSRT_str_trim');
+  A('add esp, 8');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_trimStart');
+  A('push 1');
+  A('push esi');
+  A('call _JSRT_str_trim');
+  A('add esp, 8');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_trimEnd');
+  A('push 2');
+  A('push esi');
+  A('call _JSRT_str_trim');
+  A('add esp, 8');
+  A('jmp .ret');
+  MethEnd;
+
+  { slice(debut, fin) : indices negatifs comptes depuis la fin }
+  MethBegin('_JSRT_sm_slice');
+  MArgInt(0, '0');
+  A('push dword ptr [esi+$STR_LEN]');
+  A('push eax');
+  A('call _JSRT_relidx');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  MArgInt(1, '2147483647');
+  A('push dword ptr [esi+$STR_LEN]');
+  A('push eax');
+  A('call _JSRT_relidx');
+  A('add esp, 8');
+  A('cmp ebx, eax');
+  A('jl .ok');
+  A('mov ebx, eax');
+  A('.ok:');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  A('jmp .ret');
+  MethEnd;
+
+  { substring(a, b) : bornes a [0, longueur], echangees si a > b }
+  MethBegin('_JSRT_sm_substring');
+  MArgInt(0, '0');
+  A('push dword ptr [esi+$STR_LEN]');
+  A('push eax');
+  A('call _JSRT_clampidx');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  MArgInt(1, '2147483647');
+  A('push dword ptr [esi+$STR_LEN]');
+  A('push eax');
+  A('call _JSRT_clampidx');
+  A('add esp, 8');
+  A('cmp ebx, eax');
+  A('jle .ok');
+  A('mov ecx, ebx');
+  A('mov ebx, eax');
+  A('mov eax, ecx');
+  A('.ok:');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_repeat');
+  MArgInt(0, '0');
+  A('test eax, eax');
+  A('js .range');
+  A('mov ebx, eax');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('imul ecx, ebx');
+  A('jz .empty');
+  A('push ecx');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('push eax');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('.l:');
+  A('test ebx, ebx');
+  A('jz .d');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('push esi');
+  A('add esi, $STR_DATA');
+  A('rep movsb');
+  A('pop esi');
+  A('dec ebx');
+  A('jmp .l');
+  A('.d:');
+  A('pop eax');
+  A('mov edx, $STR');
+  A('jmp .ret');
+  A('.empty:');
+  A('mov eax, offset ' + RtStr(''));
+  A('mov edx, $STR');
+  A('jmp .ret');
+  A('.range:');
+  A('push offset _JSRT_c_range');
+  A('call _JSRT_fatal');
+  MethEnd;
+
+  { padStart / padEnd(longueur, remplissage = " ") }
+  MethBegin('_JSRT_sm_padStart');
+  MArgInt(0, '0');
+  A('mov ebx, eax');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .dflt');
+  A('mov edx, dword ptr [ebp+36]');
+  A('cmp edx, $UNDEF');
+  A('je .dflt');
+  A('push edx');
+  A('push dword ptr [ebp+32]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('jmp .go');
+  A('.dflt:');
+  A('mov eax, offset ' + RtStr(' '));
+  A('.go:');
+  A('push 1');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_pad');
+  A('add esp, 16');
+  A('jmp .ret');
+  MethEnd;
+
+  MethBegin('_JSRT_sm_padEnd');
+  MArgInt(0, '0');
+  A('mov ebx, eax');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .dflt');
+  A('mov edx, dword ptr [ebp+36]');
+  A('cmp edx, $UNDEF');
+  A('je .dflt');
+  A('push edx');
+  A('push dword ptr [ebp+32]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('jmp .go');
+  A('.dflt:');
+  A('mov eax, offset ' + RtStr(' '));
+  A('.go:');
+  A('push 0');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_str_pad');
+  A('add esp, 16');
+  A('jmp .ret');
+  MethEnd;
+
+  { toString() et valueOf() : la chaine elle-meme }
+  MethBegin('_JSRT_sm_toString');
+  A('mov eax, esi');
+  A('mov edx, $STR');
+  A('jmp .ret');
+  MethEnd;
+
+  { String(valeur) : conversion en chaine }
+  A('proc _JSRT_String_call');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], 0');
+  A('je .empty');
+  A('push dword ptr [ebp+28]');
+  A('push dword ptr [ebp+24]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.empty:');
+  A('mov eax, offset ' + RtStr(''));
+  A('mov edx, $STR');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { String.fromCharCode(c1, c2, ...) : unites de code encodees en UTF-8 }
+  A('proc _JSRT_String_fromCharCode');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('xor ebx, ebx');
+  A('xor esi, esi');
+  A('.count:');
+  A('cmp esi, dword ptr [ebp+12]');
+  A('jae .alloc');
+  A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov ecx, esi');
+  A('shl ecx, 3');
+  A('push dword ptr [eax+ecx+4]');
+  A('push dword ptr [eax+ecx]');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('and eax, 65535');
+  A('inc ebx');
+  A('cmp eax, 128');
+  A('jb .cn');
+  A('inc ebx');
+  A('cmp eax, 2048');
+  A('jb .cn');
+  A('inc ebx');
+  A('.cn:');
+  A('inc esi');
+  A('jmp .count');
+  A('.alloc:');
+  A('push ebx');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('push eax');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('xor esi, esi');
+  A('.fill:');
+  A('cmp esi, dword ptr [ebp+12]');
+  A('jae .done');
+  A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov ecx, esi');
+  A('shl ecx, 3');
+  A('push dword ptr [eax+ecx+4]');
+  A('push dword ptr [eax+ecx]');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('and eax, 65535');
+  A('cmp eax, 128');
+  A('jae .two');
+  A('mov byte ptr [edi], al');
+  A('inc edi');
+  A('jmp .next');
+  A('.two:');
+  A('cmp eax, 2048');
+  A('jae .three');
+  A('mov ecx, eax');
+  A('shr ecx, 6');
+  A('or ecx, 192');
+  A('mov byte ptr [edi], cl');
+  A('and eax, 63');
+  A('or eax, 128');
+  A('mov byte ptr [edi+1], al');
+  A('add edi, 2');
+  A('jmp .next');
+  A('.three:');
+  A('mov ecx, eax');
+  A('shr ecx, 12');
+  A('or ecx, 224');
+  A('mov byte ptr [edi], cl');
+  A('mov ecx, eax');
+  A('shr ecx, 6');
+  A('and ecx, 63');
+  A('or ecx, 128');
+  A('mov byte ptr [edi+1], cl');
+  A('and eax, 63');
+  A('or eax, 128');
+  A('mov byte ptr [edi+2], al');
+  A('add edi, 3');
+  A('.next:');
+  A('inc esi');
+  A('jmp .fill');
+  A('.done:');
+  A('pop eax');
+  A('mov edx, $STR');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ Enregistre les methodes natives dans le prototype des chaines. }
+Procedure RtStringProtoMethods;
+  Procedure M(Const name, code: TString; nparams: LongInt);
+  Begin
+    BoAdd(name, RtFuncObj(name, code, nparams), RT_T_FUNCTION);
+  End;
+Begin
+  M('charAt', '_JSRT_sm_charAt', 1);
+  M('charCodeAt', '_JSRT_sm_charCodeAt', 1);
+  M('indexOf', '_JSRT_sm_indexOf', 1);
+  M('lastIndexOf', '_JSRT_sm_lastIndexOf', 1);
+  M('includes', '_JSRT_sm_includes', 1);
+  M('startsWith', '_JSRT_sm_startsWith', 1);
+  M('endsWith', '_JSRT_sm_endsWith', 1);
+  M('toUpperCase', '_JSRT_sm_toUpperCase', 0);
+  M('toLowerCase', '_JSRT_sm_toLowerCase', 0);
+  M('trim', '_JSRT_sm_trim', 0);
+  M('trimStart', '_JSRT_sm_trimStart', 0);
+  M('trimEnd', '_JSRT_sm_trimEnd', 0);
+  M('slice', '_JSRT_sm_slice', 2);
+  M('substring', '_JSRT_sm_substring', 2);
+  M('repeat', '_JSRT_sm_repeat', 1);
+  M('padStart', '_JSRT_sm_padStart', 2);
+  M('padEnd', '_JSRT_sm_padEnd', 2);
+  M('toString', '_JSRT_sm_toString', 0);
+  M('valueOf', '_JSRT_sm_toString', 0);
+End;
+
+{ Globales fournies par les chaines : String et String.fromCharCode. }
+Procedure RtStaticGlobals;
+Var
+  f_from, props, f_str: LongInt;
+Begin
+  f_from := RtFuncObj('fromCharCode', '_JSRT_String_fromCharCode', 1);
+  BoReset;
+  BoAdd('fromCharCode', f_from, RT_T_FUNCTION);
+  props := BoFinish('_JSNO_String_props', 0);
+  f_str := RtFuncObjP('String', '_JSRT_String_call', 1, props);
+  RtGlobal('String', f_str, RT_T_FUNCTION);
+End;
+
+{ ---- Assemblage du runtime ---- }
+
+Procedure RtStaticData;
+Var
+  f_log, f_err, f_warn, proto, cons: LongInt;
+Begin
+  RtCString('_JSRT_c_oom', 'JSCW32: memoire epuisee' + #10);
+  RtCString('_JSRT_c_notfunc', 'TypeError: la valeur appelee n''est pas une fonction' + #10);
+  RtCString('_JSRT_c_type', 'TypeError' + #10);
+  RtCString('_JSRT_c_stack', 'RangeError: pile d''appels epuisee' + #10);
+  RtCString('_JSRT_c_read', 'TypeError: lecture d''une propriete de null ou undefined' + #10);
+  RtCString('_JSRT_c_tdz1', 'ReferenceError: ');
+  RtCString('_JSRT_c_tdz2', ' ne peut pas etre utilise avant son initialisation' + #10);
+  RtCString('_JSRT_c_space', ' ');
+  RtCString('_JSRT_c_nl', #10);
+  RtCString('_JSRT_c_range', 'RangeError: argument invalide' + #10);
+
+  { prototype des chaines : les methodes natives }
+  BoReset;
+  RtStringProtoMethods;
+  proto := BoFinish('_JSNO_string_proto', 0);
+
+  f_log := RtFuncObj('log', '_JSRT_console_log', 0);
+  f_err := RtFuncObj('error', '_JSRT_console_error', 0);
+  f_warn := RtFuncObj('warn', '_JSRT_console_error', 0);
+  BoReset;
+  BoAdd('log', f_log, RT_T_FUNCTION);
+  BoAdd('error', f_err, RT_T_FUNCTION);
+  BoAdd('warn', f_warn, RT_T_FUNCTION);
+  cons := BoFinish('_JSNO_console', 0);
+  RtGlobal('console', cons, RT_T_OBJECT);
+  RtStaticGlobals;
+End;
+
+Procedure EmitRuntime(Var ctx: TCompilerContext);
+Begin
+  asm_ctx := @ctx;
+  asm_failed := False;
+  asm_uniq := 0;
+  asm_lbl_count := 0;
+  ctx.ir.user_count := ctx.ir.count;
+  RtStaticData;
+  RtStartAndAlloc;
+  RtStrings;
+  RtEquality;
+  RtProperties;
+  RtConsoleFn('_JSRT_console_log', '_JSRT_v_stdout');
+  RtConsoleFn('_JSRT_console_error', '_JSRT_v_stderr');
+  RtStringMethods;
+End;
+
+{ ============================================================
+  EMULATEUR 80386 (option -run)
+
+  Execute l'IR directement : memoire plate de 64 Mo, les sections
+  .rdata et .data chargees avec leurs relocations, les procedures du
+  programme et du runtime, la pile des appels et les drapeaux. Les
+  appels systeme Windows importes (VirtualAlloc, GetStdHandle,
+  WriteFile, ReadFile, ExitProcess) sont simules. Sert a verifier le
+  programme compile sans edition de liens ni machine Windows.
+  ============================================================ }
+
+Const
+  EMU_MEM_SIZE = 67108864;
+  EMU_BASE     = $00400000;
+  EMU_CODE     = $60000000;
+  EMU_TRAP     = $70000000;
+  EMU_HALTADDR     = $7FFFFFF0;
+  EMU_HEAP     = $01000000;
+  EMU_STACK    = $043FFF00;
+  EMU_STEPLIMIT    = 400000000;
+
+Type
+  TEmuMem = Array[0..0] Of Byte;
+  PEmuMem = ^TEmuMem;
+
+Var
+  emu_mem: PEmuMem;
+  emu_reg: Array[0..12] Of LongWord;
+  emu_zf, emu_sf, emu_cf, emu_of: Boolean;
+  emu_pc: LongInt;
+  emu_halt: Boolean;
+  emu_exit: LongInt;
+  emu_fault_msg: String[120];
+  emu_steps: Int64;
+  emu_rd_base, emu_dt_base, emu_brk: LongWord;
+  emu_xaddr: Array[1..MAX_XSYMS] Of LongWord;
+  emu_lbl: Array[0..262143] Of LongInt;
+  emu_ctx: PCtx;
+  emu_trap_names: Array[1..8] Of String[40];
+  emu_trap_count: LongInt;
+  emu_iat_next: LongWord;
+
+Procedure EmuFault(Const msg: TString);
+Begin
+  If Not emu_halt Then
+    Begin
+      emu_fault_msg := msg;
+      emu_exit := -1;
+    End;
+  emu_halt := True;
+End;
+
+Function MemOk(a: LongWord; n: LongWord): Boolean;
+Begin
+  MemOk := (a >= EMU_BASE) And (Int64(a) + n <= Int64(EMU_BASE) + EMU_MEM_SIZE);
+End;
+
+Function MemRd(a: LongWord; size: Integer): LongWord;
+Var
+  v: LongWord;
+Begin
+  MemRd := 0;
+  If Not MemOk(a, size) Then
+    Begin
+      EmuFault('lecture hors memoire a ' + HexU(a));
+      Exit;
+    End;
+  v := 0;
+  Move(emu_mem^[a - EMU_BASE], v, size);
+  MemRd := v;
+End;
+
+Procedure MemWr(a: LongWord; v: LongWord; size: Integer);
+Begin
+  If Not MemOk(a, size) Then
+    Begin
+      EmuFault('ecriture hors memoire a ' + HexU(a));
+      Exit;
+    End;
+  Move(v, emu_mem^[a - EMU_BASE], size);
+End;
+
+Function DsymAddr(Var ctx: TCompilerContext; d: LongInt): LongWord;
+Begin
+  If ctx.data.syms[d].sec = SEC_RDATA Then
+    DsymAddr := emu_rd_base + ctx.data.syms[d].ofs
+  Else
+    DsymAddr := emu_dt_base + ctx.data.syms[d].ofs;
+End;
+
+Function SymAddr(Var ctx: TCompilerContext; symkind, sym: LongInt): LongWord;
+Begin
+  If symkind = SYMK_D Then
+    SymAddr := DsymAddr(ctx, sym)
+  Else
+    SymAddr := emu_xaddr[sym];
+End;
+
+Function RegIdx(r: TReg): Integer;
+Begin
+  Case r Of
+    R_AL: RegIdx := Ord(R_EAX);
+    R_CL: RegIdx := Ord(R_ECX);
+    R_DL: RegIdx := Ord(R_EDX);
+    R_BL: RegIdx := Ord(R_EBX);
+  Else
+    RegIdx := Ord(r);
+  End;
+End;
+
+Function EffAddr(Var ctx: TCompilerContext; Var o: TOperand): LongWord;
+Var
+  a: Int64;
+Begin
+  a := o.disp;
+  If o.base <> R_NONE Then
+    a := a + emu_reg[RegIdx(o.base)];
+  If o.index <> R_NONE Then
+    a := a + emu_reg[RegIdx(o.index)];
+  If o.symkind <> 0 Then
+    a := a + SymAddr(ctx, o.symkind, o.sym);
+  EffAddr := LongWord(a And $FFFFFFFF);
+End;
+
+{ Taille de l'operation : octet si un registre ou une memoire 8 bits. }
+Function OpSz(Var o: TOperand): Integer;
+Begin
+  OpSz := 4;
+  If o.kind = OD_REG Then
+    Begin
+      If IsReg8(o.reg) Then
+        OpSz := 1;
+    End
+  Else If (o.kind = OD_MEM) And (o.size = 1) Then
+    OpSz := 1;
+End;
+
+Function OpRd(Var ctx: TCompilerContext; Var o: TOperand; size: Integer): LongWord;
+Var
+  v: LongWord;
+Begin
+  v := 0;
+  Case o.kind Of
+    OD_REG:
+      Begin
+        v := emu_reg[RegIdx(o.reg)];
+        If IsReg8(o.reg) Then
+          v := v And $FF;
+      End;
+    OD_IMM:
+      v := LongWord(Int64(o.disp) And $FFFFFFFF);
+    OD_MEM:
+      v := MemRd(EffAddr(ctx, o), size);
+    OD_ADDR:
+      v := SymAddr(ctx, o.symkind, o.sym);
+  End;
+  If size = 1 Then
+    v := v And $FF;
+  OpRd := v;
+End;
+
+Procedure OpWr(Var ctx: TCompilerContext; Var o: TOperand; v: LongWord; size: Integer);
+Var
+  i: Integer;
+Begin
+  Case o.kind Of
+    OD_REG:
+      Begin
+        i := RegIdx(o.reg);
+        If IsReg8(o.reg) Then
+          emu_reg[i] := (emu_reg[i] And $FFFFFF00) Or (v And $FF)
+        Else
+          emu_reg[i] := v;
+      End;
+    OD_MEM:
+      MemWr(EffAddr(ctx, o), v, size);
+  Else
+    EmuFault('destination invalide');
+  End;
+End;
+
+Procedure EmuPush(v: LongWord);
+Begin
+  emu_reg[Ord(R_ESP)] := emu_reg[Ord(R_ESP)] - 4;
+  MemWr(emu_reg[Ord(R_ESP)], v, 4);
+End;
+
+Function EmuPop: LongWord;
+Begin
+  EmuPop := MemRd(emu_reg[Ord(R_ESP)], 4);
+  emu_reg[Ord(R_ESP)] := emu_reg[Ord(R_ESP)] + 4;
+End;
+
+Procedure SetZS(res: LongWord; size: Integer);
+Begin
+  If size = 1 Then
+    Begin
+      emu_zf := (res And $FF) = 0;
+      emu_sf := (res And $80) <> 0;
+    End
+  Else
+    Begin
+      emu_zf := res = 0;
+      emu_sf := (res And $80000000) <> 0;
+    End;
+End;
+
+Function AluAdd(a, b: LongWord; size: Integer): LongWord;
+Var
+  r, m, sb: Int64;
+Begin
+  If size = 1 Then
+    Begin
+      m := $FF;
+      sb := $80;
+    End
+  Else
+    Begin
+      m := $FFFFFFFF;
+      sb := $80000000;
+    End;
+  r := Int64(a) + Int64(b);
+  emu_cf := r > m;
+  r := r And m;
+  emu_of := ((Int64(a) Xor r) And (Int64(b) Xor r) And sb) <> 0;
+  SetZS(r, size);
+  AluAdd := r;
+End;
+
+Function AluSub(a, b: LongWord; size: Integer): LongWord;
+Var
+  r, m, sb: Int64;
+Begin
+  If size = 1 Then
+    Begin
+      m := $FF;
+      sb := $80;
+    End
+  Else
+    Begin
+      m := $FFFFFFFF;
+      sb := $80000000;
+    End;
+  emu_cf := Int64(a) < Int64(b);
+  r := (Int64(a) - Int64(b)) And m;
+  emu_of := ((Int64(a) Xor Int64(b)) And (Int64(a) Xor r) And sb) <> 0;
+  SetZS(r, size);
+  AluSub := r;
+End;
+
+Function EmuCond(op: TOpc): Boolean;
+Begin
+  Case op Of
+    OP_JE:  EmuCond := emu_zf;
+    OP_JNE: EmuCond := Not emu_zf;
+    OP_JL:  EmuCond := emu_sf <> emu_of;
+    OP_JLE: EmuCond := emu_zf Or (emu_sf <> emu_of);
+    OP_JG:  EmuCond := (Not emu_zf) And (emu_sf = emu_of);
+    OP_JGE: EmuCond := emu_sf = emu_of;
+    OP_JB:  EmuCond := emu_cf;
+    OP_JAE: EmuCond := Not emu_cf;
+    OP_JA:  EmuCond := (Not emu_cf) And (Not emu_zf);
+    OP_JBE: EmuCond := emu_cf Or emu_zf;
+    OP_JO:  EmuCond := emu_of;
+    OP_JNO: EmuCond := Not emu_of;
+    OP_JS:  EmuCond := emu_sf;
+    OP_JNS: EmuCond := Not emu_sf;
+  Else
+    EmuCond := False;
+  End;
+End;
+
+{ Appels systeme simules (stdcall : l'appele retire ses arguments). }
+Procedure EmuTrap(id: LongInt);
+Var
+  esp, a1, a2, a3, a4, n, i: LongWord;
+  c: Byte;
+  s: String;
+Begin
+  esp := emu_reg[Ord(R_ESP)];
+  a1 := MemRd(esp + 4, 4);
+  a2 := MemRd(esp + 8, 4);
+  a3 := MemRd(esp + 12, 4);
+  a4 := MemRd(esp + 16, 4);
+  n := 0;
+  Case id Of
+    1: { VirtualAlloc(adresse, taille, type, protection) }
+      Begin
+        n := 16;
+        a2 := (a2 + $FFF) And $FFFFF000;
+        If emu_brk + a2 > EMU_BASE + EMU_MEM_SIZE - $500000 Then
+          emu_reg[Ord(R_EAX)] := 0
+        Else
+          Begin
+            emu_reg[Ord(R_EAX)] := emu_brk;
+            emu_brk := emu_brk + a2;
+          End;
+      End;
+    2: { ExitProcess(code) }
+      Begin
+        n := 4;
+        emu_exit := a1;
+        emu_halt := True;
+      End;
+    3: { GetStdHandle(n) : 0 stdin, 1 stdout, 2 stderr }
+      Begin
+        n := 4;
+        If LongInt(a1) = -10 Then
+          emu_reg[Ord(R_EAX)] := 0
+        Else If LongInt(a1) = -11 Then
+          emu_reg[Ord(R_EAX)] := 1
+        Else
+          emu_reg[Ord(R_EAX)] := 2;
+      End;
+    4: { WriteFile(handle, tampon, nombre, ecrits, recouvrement) }
+      Begin
+        n := 20;
+        s := '';
+        For i := 0 To a3 - 1 Do
+          Begin
+            c := MemRd(a2 + i, 1);
+            If c <> 13 Then
+              s := s + Chr(c);
+            If Length(s) >= 200 Then
+              Begin
+                If a1 = 2 Then
+                  Write(ErrOutput, s)
+                Else
+                  Write(s);
+                s := '';
+              End;
+          End;
+        If a1 = 2 Then
+          Write(ErrOutput, s)
+        Else
+          Write(s);
+        If a4 <> 0 Then
+          MemWr(a4, a3, 4);
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+    5: { ReadFile(handle, tampon, nombre, lus, recouvrement) : fin de fichier }
+      Begin
+        n := 20;
+        If a4 <> 0 Then
+          MemWr(a4, 0, 4);
+        emu_reg[Ord(R_EAX)] := 1;
+      End;
+  Else
+    EmuFault('appel systeme inconnu');
+  End;
+  { retour a l'appelant : adresse puis arguments }
+  emu_reg[Ord(R_ESP)] := emu_reg[Ord(R_ESP)] + 4 + n;
+  If Not emu_halt Then
+    Begin
+      emu_pc := (MemRd(esp, 4) - EMU_CODE) Div 4;
+      If MemRd(esp, 4) = EMU_HALTADDR Then
+        emu_halt := True;
+    End;
+End;
+
+{ Transfere l'execution a l'adresse de code a ; ret est l'adresse de
+  retour a empiler (0 pour un saut). }
+Procedure EmuCall(a: LongWord; ret: LongWord);
+Begin
+  If ret <> 0 Then
+    EmuPush(ret);
+  If a >= EMU_TRAP Then
+    Begin
+      EmuTrap((a - EMU_TRAP) Div 4);
+      Exit;
+    End;
+  If (a < EMU_CODE) Or (a >= EMU_TRAP) Then
+    Begin
+      EmuFault('appel vers une adresse invalide ' + HexU(a));
+      Exit;
+    End;
+  emu_pc := (a - EMU_CODE) Div 4;
+End;
+
+Procedure EmuStep(Var ctx: TCompilerContext);
+Var
+  ins: ^TInstr;
+  sz, tmp, i: Integer;
+  a, b, r: LongWord;
+  w: Int64;
+  cnt: Integer;
+  d: LongWord;
+  si, di, cx: LongWord;
+Begin
+  If (emu_pc < 1) Or (emu_pc > ctx.ir.count) Then
+    Begin
+      EmuFault('compteur ordinal hors programme');
+      Exit;
+    End;
+  ins := @ctx.ir.instrs[emu_pc];
+  Inc(emu_pc);
+  Case ins^.op Of
+    OP_NONE, OP_LABEL, OP_COMMENT, OP_PROC, OP_ENDP, OP_NOP:
+      ;
+    OP_MOV:
+      Begin
+        sz := OpSz(ins^.a);
+        OpWr(ctx, ins^.a, OpRd(ctx, ins^.b, sz), sz);
+      End;
+    OP_LEA:
+      OpWr(ctx, ins^.a, EffAddr(ctx, ins^.b), 4);
+    OP_MOVZX:
+      Begin
+        sz := OpSz(ins^.b);
+        If (ins^.b.kind = OD_MEM) And (ins^.b.size = 0) Then
+          sz := 1;
+        OpWr(ctx, ins^.a, OpRd(ctx, ins^.b, sz), 4);
+      End;
+    OP_PUSH:
+      EmuPush(OpRd(ctx, ins^.a, 4));
+    OP_POP:
+      Begin
+        r := EmuPop;
+        OpWr(ctx, ins^.a, r, 4);
+      End;
+    OP_ADD:
+      Begin
+        sz := OpSz(ins^.a);
+        OpWr(ctx, ins^.a, AluAdd(OpRd(ctx, ins^.a, sz), OpRd(ctx, ins^.b, sz), sz), sz);
+      End;
+    OP_SUB:
+      Begin
+        sz := OpSz(ins^.a);
+        OpWr(ctx, ins^.a, AluSub(OpRd(ctx, ins^.a, sz), OpRd(ctx, ins^.b, sz), sz), sz);
+      End;
+    OP_CMP:
+      Begin
+        sz := OpSz(ins^.a);
+        AluSub(OpRd(ctx, ins^.a, sz), OpRd(ctx, ins^.b, sz), sz);
+      End;
+    OP_AND, OP_OR, OP_XOR, OP_TEST:
+      Begin
+        sz := OpSz(ins^.a);
+        a := OpRd(ctx, ins^.a, sz);
+        b := OpRd(ctx, ins^.b, sz);
+        Case ins^.op Of
+          OP_AND, OP_TEST: r := a And b;
+          OP_OR:           r := a Or b;
+        Else
+          r := a Xor b;
+        End;
+        emu_cf := False;
+        emu_of := False;
+        SetZS(r, sz);
+        If ins^.op <> OP_TEST Then
+          OpWr(ctx, ins^.a, r, sz);
+      End;
+    OP_NOT:
+      Begin
+        sz := OpSz(ins^.a);
+        OpWr(ctx, ins^.a, Not OpRd(ctx, ins^.a, sz), sz);
+      End;
+    OP_NEG:
+      Begin
+        sz := OpSz(ins^.a);
+        a := OpRd(ctx, ins^.a, sz);
+        r := AluSub(0, a, sz);
+        OpWr(ctx, ins^.a, r, sz);
+      End;
+    OP_INC, OP_DEC:
+      Begin
+        sz := OpSz(ins^.a);
+        a := OpRd(ctx, ins^.a, sz);
+        If emu_cf Then
+          d := 1
+        Else
+          d := 0;
+        If ins^.op = OP_INC Then
+          r := AluAdd(a, 1, sz)
+        Else
+          r := AluSub(a, 1, sz);
+        emu_cf := d <> 0;
+        OpWr(ctx, ins^.a, r, sz);
+      End;
+    OP_IMUL:
+      Begin
+        w := Int64(LongInt(OpRd(ctx, ins^.a, 4))) * Int64(LongInt(OpRd(ctx, ins^.b, 4)));
+        r := LongWord(w And $FFFFFFFF);
+        emu_of := (w > 2147483647) Or (w < -2147483648);
+        emu_cf := emu_of;
+        SetZS(r, 4);
+        OpWr(ctx, ins^.a, r, 4);
+      End;
+    OP_CDQ:
+      Begin
+        If (emu_reg[Ord(R_EAX)] And $80000000) <> 0 Then
+          emu_reg[Ord(R_EDX)] := $FFFFFFFF
+        Else
+          emu_reg[Ord(R_EDX)] := 0;
+      End;
+    OP_IDIV:
+      Begin
+        b := OpRd(ctx, ins^.a, 4);
+        If b = 0 Then
+          Begin
+            EmuFault('division entiere par zero');
+            Exit;
+          End;
+        w := (Int64(LongInt(emu_reg[Ord(R_EDX)])) Shl 32) Or Int64(emu_reg[Ord(R_EAX)]);
+        If (w Div Int64(LongInt(b)) > 2147483647) Or (w Div Int64(LongInt(b)) < -2147483648) Then
+          Begin
+            EmuFault('depassement de idiv');
+            Exit;
+          End;
+        emu_reg[Ord(R_EAX)] := LongWord((w Div Int64(LongInt(b))) And $FFFFFFFF);
+        emu_reg[Ord(R_EDX)] := LongWord((w Mod Int64(LongInt(b))) And $FFFFFFFF);
+      End;
+    OP_DIV:
+      Begin
+        b := OpRd(ctx, ins^.a, 4);
+        If b = 0 Then
+          Begin
+            EmuFault('division entiere par zero');
+            Exit;
+          End;
+        w := (Int64(emu_reg[Ord(R_EDX)]) Shl 32) Or Int64(emu_reg[Ord(R_EAX)]);
+        If (w Div Int64(b)) > $FFFFFFFF Then
+          Begin
+            EmuFault('depassement de div');
+            Exit;
+          End;
+        emu_reg[Ord(R_EAX)] := LongWord((w Div Int64(b)) And $FFFFFFFF);
+        emu_reg[Ord(R_EDX)] := LongWord((w Mod Int64(b)) And $FFFFFFFF);
+      End;
+    OP_SHL, OP_SHR, OP_SAR:
+      Begin
+        sz := OpSz(ins^.a);
+        a := OpRd(ctx, ins^.a, sz);
+        cnt := OpRd(ctx, ins^.b, 1) And 31;
+        If cnt > 0 Then
+          Begin
+            If ins^.op = OP_SHL Then
+              Begin
+                w := Int64(a) Shl cnt;
+                emu_cf := ((Int64(a) Shr (sz * 8 - cnt)) And 1) <> 0;
+                r := LongWord(w And $FFFFFFFF);
+              End
+            Else If ins^.op = OP_SHR Then
+              Begin
+                emu_cf := ((a Shr (cnt - 1)) And 1) <> 0;
+                r := a Shr cnt;
+              End
+            Else
+              Begin
+                emu_cf := ((a Shr (cnt - 1)) And 1) <> 0;
+                r := LongWord(LongInt(a) Shr cnt);
+                If (a And $80000000) <> 0 Then
+                  r := r Or (LongWord($FFFFFFFF) Shl (32 - cnt));
+              End;
+            emu_of := False;
+            SetZS(r, sz);
+            OpWr(ctx, ins^.a, r, sz);
+          End;
+      End;
+    OP_JMP:
+      emu_pc := emu_lbl[ins^.a.disp];
+    OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JB, OP_JAE, OP_JA, OP_JBE,
+    OP_JO, OP_JNO, OP_JS, OP_JNS:
+      If EmuCond(ins^.op) Then
+        emu_pc := emu_lbl[ins^.a.disp];
+    OP_CALL:
+      Begin
+        If (ins^.a.kind = OD_ADDR) And
+           (SymAddr(ctx, ins^.a.symkind, ins^.a.sym) = 0) Then
+          EmuFault('symbole non resolu : ' + SymNameOf(ctx, ins^.a.symkind, ins^.a.sym))
+        Else If ins^.a.kind = OD_ADDR Then
+          EmuCall(SymAddr(ctx, ins^.a.symkind, ins^.a.sym), EMU_CODE + 4 * LongWord(emu_pc))
+        Else
+          EmuCall(OpRd(ctx, ins^.a, 4), EMU_CODE + 4 * LongWord(emu_pc));
+      End;
+    OP_RET:
+      Begin
+        r := EmuPop;
+        If r = EMU_HALTADDR Then
+          emu_halt := True
+        Else If (r < EMU_CODE) Or (r >= EMU_TRAP) Then
+          EmuFault('retour vers une adresse invalide ' + HexU(r))
+        Else
+          emu_pc := (r - EMU_CODE) Div 4;
+      End;
+    OP_LEAVE:
+      Begin
+        emu_reg[Ord(R_ESP)] := emu_reg[Ord(R_EBP)];
+        emu_reg[Ord(R_EBP)] := EmuPop;
+      End;
+    OP_REP_MOVSB:
+      Begin
+        si := emu_reg[Ord(R_ESI)];
+        di := emu_reg[Ord(R_EDI)];
+        cx := emu_reg[Ord(R_ECX)];
+        While (cx > 0) And Not emu_halt Do
+          Begin
+            MemWr(di, MemRd(si, 1), 1);
+            Inc(si);
+            Inc(di);
+            Dec(cx);
+          End;
+        emu_reg[Ord(R_ESI)] := si;
+        emu_reg[Ord(R_EDI)] := di;
+        emu_reg[Ord(R_ECX)] := cx;
+      End;
+  Else
+    EmuFault('instruction non emulee : ' + OpName(ins^.op));
+  End;
+End;
+
+{ Charge le programme et l'execute depuis _JSSTART. Retourne le code de
+  sortie. }
+Function RunEmulator(Var ctx: TCompilerContext): LongInt;
+Var
+  i, start_idx: LongInt;
+  nm: TString;
+  d: LongInt;
+  rdsz, a: LongWord;
+  names_done: Boolean;
+Begin
+  RunEmulator := 1;
+  emu_ctx := @ctx;
+  GetMem(emu_mem, EMU_MEM_SIZE);
+  FillChar(emu_mem^, EMU_MEM_SIZE, 0);
+  FillChar(emu_reg, SizeOf(emu_reg), 0);
+  emu_halt := False;
+  emu_exit := 0;
+  emu_fault_msg := '';
+  emu_steps := 0;
+  emu_zf := False;
+  emu_sf := False;
+  emu_cf := False;
+  emu_of := False;
+  emu_rd_base := EMU_BASE + $10000;
+  rdsz := (ctx.data.rd_size + $FFF) And $FFFFF000;
+  emu_dt_base := emu_rd_base + rdsz + $1000;
+  emu_brk := EMU_HEAP;
+  emu_iat_next := EMU_BASE + $1000;
+  If ctx.data.rd_size > 0 Then
+    Move(ctx.data.rd[0], emu_mem^[emu_rd_base - EMU_BASE], ctx.data.rd_size);
+  If ctx.data.dt_size > 0 Then
+    Move(ctx.data.dt[0], emu_mem^[emu_dt_base - EMU_BASE], ctx.data.dt_size);
+
+  { etiquettes et procedures }
+  FillChar(emu_lbl, SizeOf(emu_lbl), 0);
+  FillChar(emu_xaddr, SizeOf(emu_xaddr), 0);
+  For i := 1 To ctx.ir.count Do
+    Begin
+      If ctx.ir.instrs[i].op = OP_LABEL Then
+        emu_lbl[ctx.ir.instrs[i].a.disp] := i
+      Else If ctx.ir.instrs[i].op = OP_PROC Then
+        emu_xaddr[ctx.ir.instrs[i].a.sym] := EMU_CODE + 4 * LongWord(i);
+    End;
+  { symboles externes : donnees du pool par leur nom, appels systeme }
+  For i := 1 To ctx.ir.xsym_count Do
+    If emu_xaddr[i] = 0 Then
+      Begin
+        nm := ctx.ir.xsyms[i].name;
+        d := DsymFind(ctx, nm);
+        If d <> 0 Then
+          emu_xaddr[i] := DsymAddr(ctx, d)
+        Else If Copy(nm, 1, 6) = '__imp_' Then
+          Begin
+            { cellule de la table d'import pointant vers un piege }
+            a := 0;
+            If nm = '__imp__VirtualAlloc@16' Then a := 1
+            Else If nm = '__imp__ExitProcess@4' Then a := 2
+            Else If nm = '__imp__GetStdHandle@4' Then a := 3
+            Else If nm = '__imp__WriteFile@20' Then a := 4
+            Else If nm = '__imp__ReadFile@20' Then a := 5;
+            If a <> 0 Then
+              Begin
+                MemWr(emu_iat_next, EMU_TRAP + 4 * a, 4);
+                emu_xaddr[i] := emu_iat_next;
+                emu_iat_next := emu_iat_next + 4;
+              End;
+          End;
+      End;
+  { relocations }
+  For i := 1 To ctx.data.reloc_count Do
+    Begin
+      If ctx.data.relocs[i].tkind = SYMK_D Then
+        a := DsymAddr(ctx, ctx.data.relocs[i].target)
+      Else
+        a := emu_xaddr[ctx.data.relocs[i].target];
+      If ctx.data.relocs[i].sec = SEC_RDATA Then
+        MemWr(emu_rd_base + ctx.data.relocs[i].ofs, a, 4)
+      Else
+        MemWr(emu_dt_base + ctx.data.relocs[i].ofs, a, 4);
+    End;
+
+  d := XSym(ctx, '_JSSTART');
+  If emu_xaddr[d] = 0 Then
+    Begin
+      Writeln('JSCW32: _JSSTART introuvable');
+      Exit;
+    End;
+  start_idx := (emu_xaddr[d] - EMU_CODE) Div 4;
+  emu_pc := start_idx;
+  emu_reg[Ord(R_ESP)] := EMU_STACK;
+  EmuPush(EMU_HALTADDR);
+  While Not emu_halt Do
+    Begin
+      Inc(emu_steps);
+      If emu_steps > EMU_STEPLIMIT Then
+        EmuFault('limite d''instructions depassee')
+      Else
+        EmuStep(ctx);
+    End;
+  If emu_fault_msg <> '' Then
+    Begin
+      Writeln;
+      Writeln('JSCW32: erreur d''emulation : ', emu_fault_msg, ' (instruction ',
+              emu_pc - 1, ', ligne ', ctx.ir.instrs[emu_pc - 1].line, ')');
+      RunEmulator := 3;
+    End
+  Else
+    RunEmulator := emu_exit;
+  FreeMem(emu_mem, EMU_MEM_SIZE);
 End;
 
 { Les etapes sont implementees par les TODO suivants. Tant qu'une etape
@@ -10481,6 +13964,9 @@ BEGIN
 
   If Not RunPipeline(ctx) Then
     Halt(EXIT_ERROR);
+
+  If ctx.options.run Then
+    Halt(RunEmulator(ctx));
 
   If ctx.options.verbose Then
     PrintFinalDiagnostics(ctx);
