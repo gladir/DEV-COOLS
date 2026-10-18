@@ -29,7 +29,7 @@
   21. [IMPLEMENTE] Implementer l'interface console, processus et systeme hote Windows : console.log (plusieurs arguments, nombres entiers/flottants/negatifs, booleens, null, undefined, objets et tableaux), console.error/warn vers stderr, process.stdout.write (sans saut de ligne), process.exit(code), process.argv, alert (comme console.log), prompt (lecture de stdin), imports kernel32 (GetStdHandle, WriteFile, ReadFile, GetCommandLineA, HeapAlloc, ExitProcess), avec hello.js, test12.js et test24.js.
   22. [IMPLEMENTE] Construire le generateur ASM 80386 optionnel : syntaxe assembleur Windows 32 bits (.386, .MODEL FLAT, sections .text/.data/.rdata, EXTERN/PUBLIC), labels stables, commentaires reprenant les lignes JavaScript d'origine, routines runtime appelees par noms stables, emission du .ASM uniquement sur demande explicite de l'utilisateur.
   23. [IMPLEMENTE] Construire le generateur OBJ COFF i386 : en-tete, sections .text/.data/.rdata/.bss, table de symboles, relocations (REL32/DIR32), symboles externes importes de kernel32, production d'un .OBJ seul quand le parametre le demande, et validation du format avec les outils DUMPBIN.PAS / OBJDUMP.PAS / NM.PAS du depot.
-  24. [A FAIRE] Construire le linker PE32 interne : en-tetes MZ/PE, sections alignees, table d'imports kernel32 (et runtime propre), resolution des relocations, point d'entree, sous-systeme console, ecriture du .EXE final par defaut, suppression des anciens .EXE perimes et verification avec DISEXE.PAS.
+  24. [IMPLEMENTE] Construire le linker PE32 interne : en-tetes MZ/PE, sections alignees, table d'imports kernel32 (et runtime propre), resolution des relocations, point d'entree, sous-systeme console, ecriture du .EXE final par defaut, suppression des anciens .EXE perimes et verification avec DISEXE.PAS.
   25. [A FAIRE] Ajouter le harnais de validation et stabiliser : option -test compilant tous les SAMPLES\JS\* (arrays, classes, control, hello, math, objects, t04_12, t09_15, t09full, test03, test03b, test04, test04b, test09, test10, test10adv, test11, test11adv, test12 a test24), execution des .EXE et comparaison avec les valeurs « attendu » des commentaires, modes EXE / OBJ / ASM+OBJ, nettoyage des artefacts, compatibilite Free Pascal/Turbo Pascal (types bornes, buffers, aucune dependance moderne), diagnostics finaux et documentation d'utilisation.
 }
 Program JSCW32;
@@ -30020,6 +30020,369 @@ Begin
   EmitObjCoff := True;
 End;
 
+{ ---- Linker PE32 interne (TODO 24) ----
+
+  Lie l'objet construit en memoire (code, .rdata, .data, relocations, symboles)
+  avec les imports de kernel32 et ecrit l'executable Windows 32 bits : en-tetes
+  MZ / PE, sections .text, .rdata, .data et .idata alignees (0x1000 en memoire,
+  0x200 dans le fichier), base 0x400000 sans table de relocation, point
+  d'entree _JSSTART, sous-systeme console. Les noms __imp__Nom@N non definis
+  deviennent des entrees de l'IAT de KERNEL32.dll ; tout autre symbole non
+  resolu est une erreur. }
+
+Const
+  PE_IMAGE_BASE = $00400000;
+  PE_SEC_ALIGN = $1000;
+  PE_FILE_ALIGN = $200;
+  PE_MAX_IMPORTS = 64;
+  PE_HDR_SIZE = $400;
+
+Var
+  pe_out: Array[0..CO_MAX_TEXT * 3 - 1] Of Byte;
+  pe_size: LongInt;
+  pe_text_rva, pe_rdata_rva, pe_data_rva, pe_idata_rva, pe_iat_rva, pe_iat_size,
+  pe_image_size, pe_nimp: LongInt;
+  pe_imp_name: Array[1..PE_MAX_IMPORTS] Of String[60];
+  pe_xsym_imp: Array[1..MAX_XSYMS] Of LongInt;      { numero d'import (1..) ou 0 }
+
+Function PeAlign(v, a: LongInt): LongInt;
+Begin
+  PeAlign := ((v + a - 1) Div a) * a;
+End;
+
+Procedure PeW16(pos, v: LongInt);
+Begin
+  pe_out[pos] := v And 255;
+  pe_out[pos + 1] := (v Shr 8) And 255;
+End;
+
+Procedure PeW32(pos, v: LongInt);
+Begin
+  PeW16(pos, v And $FFFF);
+  PeW16(pos + 2, (v Shr 16) And $FFFF);
+End;
+
+Procedure PeWStr(pos: LongInt; Const s: String);
+Var
+  i: LongInt;
+Begin
+  For i := 1 To Length(s) Do
+    pe_out[pos + i - 1] := Ord(s[i]);
+  pe_out[pos + Length(s)] := 0;
+End;
+
+{ Nom de la fonction importee dans __imp__Nom@N, '' si ce n'est pas un import. }
+Function PeImportName(Const sym: String): String;
+Var
+  r: String;
+  p: Integer;
+Begin
+  PeImportName := '';
+  If Copy(sym, 1, 7) <> '__imp__' Then
+    Exit;
+  r := Copy(sym, 8, Length(sym) - 7);
+  p := Pos('@', r);
+  If p > 0 Then
+    r := Copy(r, 1, p - 1);
+  PeImportName := r;
+End;
+
+{ Adresse virtuelle d'un symbole de donnees. }
+Function PeDataVA(Var ctx: TCompilerContext; d: LongInt): Int64;
+Begin
+  If ctx.data.syms[d].sec = SEC_RDATA Then
+    PeDataVA := Int64(PE_IMAGE_BASE) + pe_rdata_rva + ctx.data.syms[d].ofs
+  Else
+    PeDataVA := Int64(PE_IMAGE_BASE) + pe_data_rva + ctx.data.syms[d].ofs;
+End;
+
+{ Adresse virtuelle d'un symbole de la table (donnee, procedure ou import IAT). }
+Function PeSymVA(Var ctx: TCompilerContext; symkind, sym: LongInt): Int64;
+Var
+  d: LongInt;
+Begin
+  PeSymVA := -1;
+  If symkind = SYMK_D Then
+    PeSymVA := PeDataVA(ctx, sym)
+  Else If ctx.ir.xsyms[sym].defined Then
+    PeSymVA := Int64(PE_IMAGE_BASE) + pe_text_rva + co_proc_ofs[sym]
+  Else
+    Begin
+      d := DsymFind(ctx, ctx.ir.xsyms[sym].name);
+      If d <> 0 Then
+        PeSymVA := PeDataVA(ctx, d)
+      Else If pe_xsym_imp[sym] <> 0 Then
+        PeSymVA := Int64(PE_IMAGE_BASE) + pe_iat_rva + 4 * (pe_xsym_imp[sym] - 1);
+    End;
+End;
+
+Function PeLink(Var ctx: TCompilerContext): Boolean;
+Var
+  i, j, k, n, tsz, rsz, dsz, isz, raw_t, raw_r, raw_d, raw_i, desc_off, ilt_off,
+  iat_off, nam_off, dll_off, p, entry_x, sec_hdr, opt: LongInt;
+  nm: String;
+  v: Int64;
+  ok: Boolean;
+  lo, hi: LongInt;
+  fld: LongInt;
+Begin
+  PeLink := False;
+  ok := True;
+  { imports : symboles __imp__ non definis }
+  pe_nimp := 0;
+  FillChar(pe_xsym_imp, SizeOf(pe_xsym_imp), 0);
+  For i := 1 To ctx.ir.xsym_count Do
+    If Not ctx.ir.xsyms[i].defined And (DsymFind(ctx, ctx.ir.xsyms[i].name) = 0) Then
+      Begin
+        nm := PeImportName(ctx.ir.xsyms[i].name);
+        If nm = '' Then
+          Begin
+            PipelineError(ctx, 'symbole non resolu: ' + ctx.ir.xsyms[i].name);
+            ok := False;
+          End
+        Else If pe_nimp >= PE_MAX_IMPORTS Then
+          Begin
+            PipelineError(ctx, 'trop d''imports');
+            ok := False;
+          End
+        Else
+          Begin
+            Inc(pe_nimp);
+            pe_imp_name[pe_nimp] := nm;
+            pe_xsym_imp[i] := pe_nimp;
+          End;
+      End;
+  entry_x := 0;
+  For i := 1 To ctx.ir.xsym_count Do
+    If ctx.ir.xsyms[i].defined And (ctx.ir.xsyms[i].name = '_JSSTART') Then
+      entry_x := i;
+  If entry_x = 0 Then
+    Begin
+      PipelineError(ctx, 'point d''entree _JSSTART introuvable');
+      ok := False;
+    End;
+  If Not ok Then
+    Exit;
+  { tailles et adresses des sections }
+  tsz := co_len;
+  rsz := ctx.data.rd_size;
+  dsz := ctx.data.dt_size;
+  n := pe_nimp;
+  desc_off := 0;
+  ilt_off := 40;
+  iat_off := ilt_off + 4 * (n + 1);
+  nam_off := iat_off + 4 * (n + 1);
+  p := nam_off;
+  For i := 1 To n Do
+    p := p + PeAlign(2 + Length(pe_imp_name[i]) + 1, 2);
+  dll_off := p;
+  isz := dll_off + 13;
+  pe_text_rva := PE_SEC_ALIGN;
+  pe_rdata_rva := PeAlign(pe_text_rva + tsz, PE_SEC_ALIGN);
+  pe_data_rva := PeAlign(pe_rdata_rva + rsz, PE_SEC_ALIGN);
+  pe_idata_rva := PeAlign(pe_data_rva + dsz, PE_SEC_ALIGN);
+  pe_iat_rva := pe_idata_rva + iat_off;
+  pe_iat_size := 4 * (n + 1);
+  pe_image_size := PeAlign(pe_idata_rva + isz, PE_SEC_ALIGN);
+  raw_t := PE_HDR_SIZE;
+  raw_r := raw_t + PeAlign(tsz, PE_FILE_ALIGN);
+  raw_d := raw_r + PeAlign(rsz, PE_FILE_ALIGN);
+  raw_i := raw_d + PeAlign(dsz, PE_FILE_ALIGN);
+  pe_size := raw_i + PeAlign(isz, PE_FILE_ALIGN);
+  If pe_size > SizeOf(pe_out) Then
+    Begin
+      PipelineError(ctx, 'executable trop volumineux');
+      Exit;
+    End;
+  FillChar(pe_out[0], pe_size, 0);
+  { en-tete DOS }
+  pe_out[0] := Ord('M');
+  pe_out[1] := Ord('Z');
+  PeW16(2, $90);
+  PeW16(4, 3);
+  PeW16(8, 4);
+  PeW16(12, $FFFF);
+  PeW16(16, $B8);
+  PeW16(24, $40);
+  PeW32($3C, $80);
+  { programme DOS : affiche un message puis termine }
+  p := $40;
+  pe_out[p] := $0E; pe_out[p + 1] := $1F; pe_out[p + 2] := $BA; pe_out[p + 3] := $0E;
+  pe_out[p + 4] := $00; pe_out[p + 5] := $B4; pe_out[p + 6] := $09; pe_out[p + 7] := $CD;
+  pe_out[p + 8] := $21; pe_out[p + 9] := $B8; pe_out[p + 10] := $01; pe_out[p + 11] := $4C;
+  pe_out[p + 12] := $CD; pe_out[p + 13] := $21;
+  PeWStr($4E, 'This program cannot be run in DOS mode.'#13#13#10'$');
+  { signature PE et en-tete COFF }
+  PeW32($80, $00004550);
+  PeW16($84, $14C);
+  PeW16($86, 4);
+  PeW16($94, 224);
+  PeW16($96, $0103);
+  { en-tete optionnel PE32 }
+  opt := $98;
+  PeW16(opt, $10B);
+  pe_out[opt + 2] := 1;
+  pe_out[opt + 3] := 0;
+  PeW32(opt + 4, PeAlign(tsz, PE_FILE_ALIGN));
+  PeW32(opt + 8, PeAlign(rsz, PE_FILE_ALIGN) + PeAlign(dsz, PE_FILE_ALIGN) +
+        PeAlign(isz, PE_FILE_ALIGN));
+  PeW32(opt + 12, 0);
+  PeW32(opt + 16, pe_text_rva + co_proc_ofs[entry_x]);
+  PeW32(opt + 20, pe_text_rva);
+  PeW32(opt + 24, pe_rdata_rva);
+  PeW32(opt + 28, PE_IMAGE_BASE);
+  PeW32(opt + 32, PE_SEC_ALIGN);
+  PeW32(opt + 36, PE_FILE_ALIGN);
+  PeW16(opt + 40, 4);
+  PeW16(opt + 42, 0);
+  PeW16(opt + 48, 4);
+  PeW32(opt + 56, pe_image_size);
+  PeW32(opt + 60, PE_HDR_SIZE);
+  PeW16(opt + 68, 3);
+  PeW16(opt + 70, 0);
+  PeW32(opt + 72, RT_STACK_RESERVE);
+  PeW32(opt + 76, $10000);
+  PeW32(opt + 80, $100000);
+  PeW32(opt + 84, $1000);
+  PeW32(opt + 92, 16);
+  { repertoires : imports (1) et IAT (12) }
+  PeW32(opt + 96 + 8 * 1, pe_idata_rva + desc_off);
+  PeW32(opt + 96 + 8 * 1 + 4, 40);
+  PeW32(opt + 96 + 8 * 12, pe_iat_rva);
+  PeW32(opt + 96 + 8 * 12 + 4, pe_iat_size);
+  { table des sections }
+  sec_hdr := opt + 224;
+  For k := 1 To 4 Do
+    Begin
+      p := sec_hdr + 40 * (k - 1);
+      Case k Of
+        1: Begin PeWStr(p, '.text'); PeW32(p + 8, tsz); PeW32(p + 12, pe_text_rva);
+                 PeW32(p + 16, PeAlign(tsz, PE_FILE_ALIGN)); PeW32(p + 20, raw_t);
+                 PeW32(p + 36, $60000020); End;
+        2: Begin PeWStr(p, '.rdata'); PeW32(p + 8, rsz); PeW32(p + 12, pe_rdata_rva);
+                 PeW32(p + 16, PeAlign(rsz, PE_FILE_ALIGN)); PeW32(p + 20, raw_r);
+                 PeW32(p + 36, $40000040); End;
+        3: Begin PeWStr(p, '.data'); PeW32(p + 8, dsz); PeW32(p + 12, pe_data_rva);
+                 PeW32(p + 16, PeAlign(dsz, PE_FILE_ALIGN)); PeW32(p + 20, raw_d);
+                 PeW32(p + 36, LongInt($C0000040)); End;
+      Else
+        Begin PeWStr(p, '.idata'); PeW32(p + 8, isz); PeW32(p + 12, pe_idata_rva);
+              PeW32(p + 16, PeAlign(isz, PE_FILE_ALIGN)); PeW32(p + 20, raw_i);
+              PeW32(p + 36, LongInt($C0000040)); End;
+      End;
+    End;
+  { contenu des sections }
+  Move(co_text[0], pe_out[raw_t], tsz);
+  Move(ctx.data.rd[0], pe_out[raw_r], rsz);
+  Move(ctx.data.dt[0], pe_out[raw_d], dsz);
+  { relocations du code }
+  For i := 1 To co_nrel Do
+    Begin
+      v := PeSymVA(ctx, co_rel[i].symkind, co_rel[i].sym);
+      If v < 0 Then
+        Begin
+          If co_rel[i].symkind = SYMK_X Then
+            PipelineError(ctx, 'symbole non resolu: ' + ctx.ir.xsyms[co_rel[i].sym].name);
+          Exit;
+        End;
+      p := raw_t + co_rel[i].ofs;
+      fld := LongInt(Int64(pe_out[p]) Or (Int64(pe_out[p + 1]) Shl 8) Or
+                     (Int64(pe_out[p + 2]) Shl 16) Or (Int64(pe_out[p + 3]) Shl 24));
+      If co_rel[i].typ = COFF_REL32 Then
+        v := v + fld - (Int64(PE_IMAGE_BASE) + pe_text_rva + co_rel[i].ofs + 4)
+      Else
+        v := v + fld;
+      PeW32(p, LongInt(v And $FFFFFFFF));
+    End;
+  { relocations des donnees }
+  For i := 1 To ctx.data.reloc_count Do
+    Begin
+      v := PeSymVA(ctx, ctx.data.relocs[i].tkind, ctx.data.relocs[i].target);
+      If v < 0 Then
+        Begin
+          If ctx.data.relocs[i].tkind = SYMK_X Then
+            PipelineError(ctx, 'symbole non resolu: ' +
+                          ctx.ir.xsyms[ctx.data.relocs[i].target].name);
+          Exit;
+        End;
+      If ctx.data.relocs[i].sec = SEC_RDATA Then
+        p := raw_r + ctx.data.relocs[i].ofs
+      Else
+        p := raw_d + ctx.data.relocs[i].ofs;
+      fld := LongInt(Int64(pe_out[p]) Or (Int64(pe_out[p + 1]) Shl 8) Or
+                     (Int64(pe_out[p + 2]) Shl 16) Or (Int64(pe_out[p + 3]) Shl 24));
+      PeW32(p, LongInt((v + fld) And $FFFFFFFF));
+    End;
+  { table des imports : descripteur, ILT, IAT, noms, nom de la DLL }
+  p := raw_i;
+  PeW32(p + desc_off, pe_idata_rva + ilt_off);
+  PeW32(p + desc_off + 12, pe_idata_rva + dll_off);
+  PeW32(p + desc_off + 16, pe_idata_rva + iat_off);
+  k := nam_off;
+  For i := 1 To n Do
+    Begin
+      PeW32(p + ilt_off + 4 * (i - 1), pe_idata_rva + k);
+      PeW32(p + iat_off + 4 * (i - 1), pe_idata_rva + k);
+      PeW16(p + k, 0);
+      PeWStr(p + k + 2, pe_imp_name[i]);
+      k := k + PeAlign(2 + Length(pe_imp_name[i]) + 1, 2);
+    End;
+  PeWStr(p + dll_off, 'KERNEL32.dll');
+  lo := 0;
+  hi := 0;
+  PeLink := True;
+End;
+
+Function EmitExePe32(Var ctx: TCompilerContext): Boolean;
+Var
+  f: File;
+  io: Integer;
+Begin
+  EmitExePe32 := False;
+  If Not PeLink(ctx) Then
+    Exit;
+  If ctx.options.verbose Then
+    Writeln('  EXE: ', pe_size, ' octets, ', pe_nimp, ' imports kernel32, image ',
+            pe_image_size, ' octets');
+  If ArtifactIsPersisted(ctx, AK_EXE_PE32) Then
+    Begin
+      Assign(f, NormalizePath(ctx.exe_name));
+      Rewrite(f, 1);
+      io := IOResult;
+      If io <> 0 Then
+        Begin
+          PipelineError(ctx, 'impossible de creer le fichier ' + ctx.exe_name);
+          Exit;
+        End;
+      BlockWrite(f, pe_out, pe_size);
+      Close(f);
+      io := IOResult;
+    End;
+  EmitExePe32 := True;
+End;
+
+{ Supprime l'ancien executable (perime) avant une nouvelle production. }
+Procedure RemoveStaleExe(Var ctx: TCompilerContext);
+Var
+  f: File;
+  io: Integer;
+Begin
+  If ctx.options.run Or (ctx.options.output_mode <> OM_EXE) Then
+    Exit;
+  Assign(f, NormalizePath(ctx.exe_name));
+  io := IOResult;
+  Reset(f, 1);
+  io := IOResult;
+  If io = 0 Then
+    Begin
+      Close(f);
+      Erase(f);
+      io := IOResult;
+      If ctx.options.verbose Then
+        Writeln('  ancien ', ctx.exe_name, ' supprime');
+    End;
+End;
+
 Function RunStage(Var ctx: TCompilerContext; stage: TCompileStage): Boolean;
 Var
   ok: Boolean;
@@ -30054,6 +30417,8 @@ Begin
       RunStage := EmitAsm386(ctx);
     CS_BUILD_OBJ:
       RunStage := EmitObjCoff(ctx);
+    CS_LINK_EXE:
+      RunStage := EmitExePe32(ctx);
     CS_ANALYZE:
       Begin
         ok := AnalyzeProgram(ctx);
@@ -30087,6 +30452,7 @@ Begin
   RunPipeline := False;
   done := False;
   s := CS_LOAD_SOURCE;
+  RemoveStaleExe(ctx);
   While Not done Do
     Begin
       ctx.stage := s;
