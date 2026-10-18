@@ -207348,10 +207348,12 @@ End;
 { Emu_DpmiInit/Fix #6), jamais par le plafond theorique EMU_VCPI_MAXPAGES   }
 { seul (qui ne fait que dimensionner le bitmap). }
 Function Emu_Vcpi_UsablePages: LongInt;
+Var Pages: LongInt;
 Begin
- Emu_Vcpi_UsablePages := EmuDpmi.ExtCapBytes Div 4096;
- If Emu_Vcpi_UsablePages > EMU_VCPI_MAXPAGES Then
-  Emu_Vcpi_UsablePages := EMU_VCPI_MAXPAGES;
+ Pages := EmuDpmi.ExtCapBytes Div 4096;
+ If Pages > EMU_VCPI_MAXPAGES Then
+  Pages := EMU_VCPI_MAXPAGES;
+ Emu_Vcpi_UsablePages := Pages;
 End;
 
 { VCPICountFreePages (AL=3, reel ET protege - voir VCPICountFreePages/       }
