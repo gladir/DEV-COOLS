@@ -76,16 +76,8 @@ Const
   EXT_OBJ        = '.obj';
   EXT_EXE        = '.exe';
   MAX_ERRORS         = 30;
-  MAX_SOURCE_CHARS   = {$IFDEF FPC}262144{$ELSE}30000{$ENDIF};
-  MAX_SOURCE_LINES   = {$IFDEF FPC}16384{$ELSE}1500{$ENDIF};
-  MAX_TOKENS         = {$IFDEF FPC}32768{$ELSE}1000{$ENDIF};
-  MAX_STRING_POOL    = {$IFDEF FPC}262144{$ELSE}12000{$ENDIF};
-  MAX_TEMPLATE_DEPTH = 16;
   MAX_TOKEN_TEXT     = 80;
   MAX_DIAG_LINE      = 160;
-  MAX_NODES          = {$IFDEF FPC}65536{$ELSE}1500{$ENDIF};
-  MAX_DECLS          = {$IFDEF FPC}16384{$ELSE}500{$ENDIF};
-  MAX_LABELS         = 32;
   { Genre de declaration (flags de VAR_DECL) }
   DF_VAR = 1;
   DF_LET = 2;
@@ -118,9 +110,6 @@ Const
   { Expressions : maillon optionnel (?.) et ++/-- prefixe }
   EF_OPTIONAL = 1;
   UF_PREFIX = 1;
-  MAX_SCOPES         = {$IFDEF FPC}16384{$ELSE}300{$ENDIF};
-  MAX_SYMS           = {$IFDEF FPC}16384{$ELSE}500{$ENDIF};
-  MAX_CAPS           = {$IFDEF FPC}8192{$ELSE}300{$ENDIF};
   { Drapeaux des symboles }
   SF_CAPTURED     = 1;      { reference depuis une fonction imbriquee }
   SF_CELL         = 2;      { doit vivre dans une cellule partagee }
@@ -265,17 +254,7 @@ Const
   { ---- Pool de donnees (TODO 8) ---- }
   SEC_RDATA = 1;
   SEC_DATA = 2;
-  MAX_RDATA = {$IFDEF FPC}524288{$ELSE}8000{$ENDIF};
-  MAX_DATA_IMG = {$IFDEF FPC}131072{$ELSE}4000{$ENDIF};
-  MAX_DPOOL = {$IFDEF FPC}262144{$ELSE}8000{$ENDIF};
-  MAX_STRS = {$IFDEF FPC}16384{$ELSE}500{$ENDIF};
-  HASH_SIZE = {$IFDEF FPC}32768{$ELSE}1024{$ENDIF};
-  MAX_DBLS = {$IFDEF FPC}4096{$ELSE}100{$ENDIF};
-  MAX_FDESCS = {$IFDEF FPC}8192{$ELSE}300{$ENDIF};
-  MAX_CDESCS = {$IFDEF FPC}1024{$ELSE}50{$ENDIF};
-  MAX_CMEMBERS = {$IFDEF FPC}8192{$ELSE}300{$ENDIF};
-  MAX_DSYMS = {$IFDEF FPC}32768{$ELSE}1000{$ENDIF};
-  MAX_RELOCS = {$IFDEF FPC}32768{$ELSE}1000{$ENDIF};
+  HASH_SIZE = 32768;      { nombre de seaux (les files de collision sont illimitees) }
   { genres de symboles de donnees }
   DS_STRING = 1;
   DS_DOUBLE = 2;
@@ -338,17 +317,12 @@ Const
   { ---- Code genere (TODO 9) ---- }
   SYMK_D = 1;                     { symbole du pool de donnees }
   SYMK_X = 2;                     { symbole de code ou externe }
-  MAX_INSTR = {$IFDEF FPC}393216{$ELSE}2000{$ENDIF};
-  MAX_XSYMS = {$IFDEF FPC}4096{$ELSE}200{$ENDIF};
-  MAX_COMMENTS = {$IFDEF FPC}20000{$ELSE}500{$ENDIF};
-  MAX_PENDING = 200;
   CK_NONE = 0;
   CK_NUM = 1;
   CK_BOOL = 2;
   CK_NULL = 3;
   CK_UNDEF = 4;
   { cibles de break et continue }
-  MAX_JT = 32;
   JT_LOOP = 1;
   JT_SWITCH = 2;
   JT_BLOCK = 3;
@@ -381,6 +355,22 @@ Const
 Type
   TString = String[MAX_PATH_LEN];
   TTokenText = String[MAX_TOKEN_TEXT];
+
+  { Liste chainee par blocs sur le tas : chaque bloc contient 'per' elements
+    contigus ; les blocs sont relies par next/prev. Le numero d'element
+    (base 0) est converti en bloc par un curseur (dernier bloc utilise). La
+    liste grandit a la demande ; les nouveaux elements sont a zero. }
+  PDlChunk = ^TDlChunk;
+  TDlChunk = Record
+    next, prev: PDlChunk;
+    first: LongInt;            { numero du premier element du bloc }
+    pad: LongInt;
+  End;
+
+  TDynList = Record
+    esize, per, count: LongInt;
+    head, tail, cur: PDlChunk;
+  End;
 
   TCompileStage = (
     CS_LOAD_SOURCE,
@@ -471,8 +461,8 @@ Type
     char_count  : LongInt;
     max_line_len: LongInt;
     user_lines  : LongInt;     { lignes du programme (hors prelude) }
-    line_start  : Array[1..MAX_SOURCE_LINES + 1] Of LongInt;
-    buf         : Array[0..MAX_SOURCE_CHARS] Of Char;
+    line_start  : TDynList;
+    buf         : TDynList;
   End;
 
   TLexInfo = Record
@@ -481,14 +471,14 @@ Type
     stop         : Boolean;
     brace_depth  : LongInt;
     tpl_top      : LongInt;
-    tpl_stack    : Array[1..MAX_TEMPLATE_DEPTH] Of LongInt;
+    tpl_stack    : TDynList;
     token_count  : LongInt;
     ident_count, keyword_count, number_count, string_count,
     template_count, regex_count, operator_count, punct_count,
     comment_count: LongInt;
     pool_len     : LongInt;
-    tokens       : Array[1..MAX_TOKENS] Of TToken;
-    pool         : Array[0..MAX_STRING_POOL] Of Char;
+    tokens       : TDynList;
+    pool         : TDynList;
   End;
 
   TNodeKind = (
@@ -557,12 +547,12 @@ Type
     cur_func    : LongInt;
     loop_depth, switch_depth, func_depth: LongInt;
     label_count : LongInt;
-    labels      : Array[1..MAX_LABELS] Of TLabelRec;
+    labels      : TDynList;
     node_count  : LongInt;
     decl_count  : LongInt;
     analyzed    : Boolean;
-    nodes       : Array[1..MAX_NODES] Of TNode;
-    decls       : Array[1..MAX_DECLS] Of TDecl;
+    nodes       : TDynList;
+    decls       : TDynList;
   End;
 
   TScopeKind = (SK_GLOBAL, SK_FUNCTION, SK_BLOCK, SK_CLASS, SK_CATCH);
@@ -595,9 +585,9 @@ Type
     scope_count, sym_count, cap_count: LongInt;
     cur_scope, loop_depth, cur_class: LongInt;
     in_typeof, stop, next_in_loop: Boolean;
-    scopes: Array[1..MAX_SCOPES] Of TScope;
-    syms  : Array[1..MAX_SYMS] Of TSymbol;
-    caps  : Array[1..MAX_CAPS] Of TCapture;
+    scopes: TDynList;
+    syms  : TDynList;
+    caps  : TDynList;
   End;
 
   { Inventaire du programme et composants du runtime requis }
@@ -614,6 +604,7 @@ Type
     hash    : Int64;
     atom_id : LongInt;
     sym     : LongInt;
+    chain   : LongInt;         { suivant dans la file du meme seau }
   End;
 
   TDblEntry = Record
@@ -639,6 +630,7 @@ Type
     sec : Integer;
     ofs, size: LongInt;
     kind: Integer;
+    chain: LongInt;            { suivant dans la file du meme seau }
   End;
 
   TReloc = Record
@@ -654,19 +646,19 @@ Type
     str_count, dpool_len, atom_count, atom_table_sym, dbl_count, fd_count,
     cd_count, cm_count, sym_count, reloc_count, rd_size, dt_size,
     global_count: LongInt;
-    hash  : Array[0..HASH_SIZE - 1] Of LongInt;
-    strs  : Array[1..MAX_STRS] Of TStrEntry;
-    atoms : Array[1..MAX_STRS] Of LongInt;
-    dpool : Array[0..MAX_DPOOL] Of Char;
-    dbls  : Array[1..MAX_DBLS] Of TDblEntry;
-    fdescs: Array[1..MAX_FDESCS] Of TFuncDesc;
-    cdescs: Array[1..MAX_CDESCS] Of TClassDesc;
-    cmembers: Array[1..MAX_CMEMBERS] Of TCMember;
-    syms  : Array[1..MAX_DSYMS] Of TDataSym;
-    relocs: Array[1..MAX_RELOCS] Of TReloc;
-    dhash : Array[0..65535] Of LongInt;      { noms des symboles de donnees }
-    rd    : Array[0..MAX_RDATA - 1] Of Byte;
-    dt    : Array[0..MAX_DATA_IMG - 1] Of Byte;
+    hash  : TDynList;
+    strs  : TDynList;
+    atoms : TDynList;
+    dpool : TDynList;
+    dbls  : TDynList;
+    fdescs: TDynList;
+    cdescs: TDynList;
+    cmembers: TDynList;
+    syms  : TDynList;
+    relocs: TDynList;
+    dhash : TDynList;      { noms des symboles de donnees }
+    rd    : TDynList;
+    dt    : TDynList;
   End;
 
   { Valeur constante evaluee a la compilation }
@@ -720,6 +712,7 @@ Type
     name   : String[100];
     defined: Boolean;
     runtime: Boolean;          { procedure du runtime }
+    chain  : LongInt;          { suivant dans la file du meme seau }
   End;
 
   TPendingRec = Record
@@ -729,25 +722,26 @@ Type
 
   TJumpTarget = Record
     kind, brk, cont, nlabels: LongInt;
-    labels: Array[1..4] Of LongInt;      { jetons des noms d'etiquettes }
+    labels: TDynList;      { jetons des noms d'etiquettes }
   End;
 
   TIrInfo = Record
     built, failed: Boolean;
     count, xsym_count, comment_count, label_count, proc_count,
     pending_count, cg_fs, frame_patch, cur_line, user_count: LongInt;
-    tmp_free: Array[1..64] Of LongInt;      { temporaires de trame libres }
+    tmp_free: TDynList;      { temporaires de trame libres }
     tmp_free_count: LongInt;
-    jt: Array[1..MAX_JT] Of TJumpTarget;
+    jt: TDynList;
     jt_count, plabel_count, chain_end: LongInt;
     try_count: LongInt;
-    try_rec, try_fin, try_jt: Array[1..16] Of LongInt;
+    try_rec, try_fin, try_jt: TDynList;
     in_chain, chain_used: Boolean;
-    plabels: Array[1..4] Of LongInt;
-    instrs  : Array[1..MAX_INSTR] Of TInstr;
-    xsyms   : Array[1..MAX_XSYMS] Of TXSym;
-    comments: Array[1..MAX_COMMENTS] Of String[120];
-    pendings: Array[1..MAX_PENDING] Of TPendingRec;
+    plabels: TDynList;
+    instrs  : TDynList;
+    xsyms   : TDynList;
+    xhash   : TDynList;        { seaux de la table des noms de xsyms }
+    comments: TDynList;
+    pendings: TDynList;
   End;
 
   TCompilerContext = Record
@@ -789,6 +783,400 @@ Const
     '+', '-', '*', '/', '%', '=', '<', '>', '!', '~', '&', '|', '^', '?',
     ':', ',', '.', ';', '(', ')', '[', ']', '{', '}'
   );
+
+{ ---- Listes chainees sur le tas ---- }
+
+Const
+  DL_CHUNK_BYTES = 32768;
+
+Procedure DlAddChunk(Var l: TDynList);
+Var
+  c: PDlChunk;
+  sz: LongInt;
+Begin
+  sz := SizeOf(TDlChunk) + l.esize * l.per;
+  GetMem(c, sz);
+  FillChar(c^, sz, 0);
+  c^.first := l.count;
+  c^.prev := l.tail;
+  If l.tail <> Nil Then
+    l.tail^.next := c
+  Else
+    l.head := c;
+  l.tail := c;
+  l.count := l.count + l.per;
+End;
+
+{ Adresse de l'element i (base 0) ; esize ne sert qu'au premier appel. }
+Function DlPtr(Var l: TDynList; i, esize: LongInt): Pointer;
+Var
+  c: PDlChunk;
+  n, dc, dh, dt: LongInt;
+Begin
+  c := l.cur;
+  If c <> Nil Then
+    If (i >= c^.first) And (i < c^.first + l.per) Then
+      Begin
+        DlPtr := Pointer(PtrUInt(c) + SizeOf(TDlChunk) + PtrUInt(i - c^.first) * PtrUInt(l.esize));
+        Exit;
+      End;
+  If l.esize = 0 Then
+    Begin
+      l.esize := esize;
+      l.per := DL_CHUNK_BYTES Div esize;
+      If l.per < 8 Then
+        l.per := 8;
+    End;
+  If i < 0 Then
+    Begin
+      Writeln('JSCW32: indice de liste negatif');
+      Halt(3);
+    End;
+  While i >= l.count Do
+    DlAddChunk(l);
+  n := i Div l.per;
+  c := l.cur;
+  If c = Nil Then
+    c := l.head;
+  dc := n - c^.first Div l.per;
+  If dc < 0 Then
+    dc := -dc;
+  dh := n;
+  dt := l.count Div l.per - 1 - n;
+  If dh < dc Then
+    Begin
+      c := l.head;
+      dc := dh;
+    End;
+  If dt < dc Then
+    c := l.tail;
+  While i < c^.first Do
+    c := c^.prev;
+  While i >= c^.first + l.per Do
+    c := c^.next;
+  l.cur := c;
+  DlPtr := Pointer(PtrUInt(c) + SizeOf(TDlChunk) + PtrUInt(i - c^.first) * PtrUInt(l.esize));
+End;
+
+{ Remet tous les elements a zero. }
+Procedure DlClear(Var l: TDynList);
+Var
+  c: PDlChunk;
+Begin
+  c := l.head;
+  While c <> Nil Do
+    Begin
+      FillChar(Pointer(PtrUInt(c) + SizeOf(TDlChunk))^, l.esize * l.per, 0);
+      c := c^.next;
+    End;
+End;
+
+{ Copie n octets de la liste (base 0, elements d'un octet) vers dst. }
+Procedure DlCopyOut(Var l: TDynList; from0: LongInt; dst: Pointer; n: LongInt);
+Var
+  k: LongInt;
+Begin
+  While n > 0 Do
+    Begin
+      k := l.per - from0 Mod l.per;
+      If l.esize = 0 Then
+        k := n;
+      If k > n Then
+        k := n;
+      Move(DlPtr(l, from0, 1)^, dst^, k);
+      from0 := from0 + k;
+      dst := Pointer(PtrUInt(dst) + PtrUInt(k));
+      n := n - k;
+    End;
+End;
+
+{ Remplit n elements LongInt de la liste a partir de from0 avec la valeur v. }
+Procedure DlFillInts(Var l: TDynList; from0, n, v: LongInt);
+Var
+  i: LongInt;
+Begin
+  For i := from0 To from0 + n - 1 Do
+    PLongInt(DlPtr(l, i, SizeOf(LongInt)))^ := v;
+End;
+
+{ Remplit n octets de la liste a partir de from0 avec la valeur b. }
+Procedure DlFillBytes(Var l: TDynList; from0, n: LongInt; b: Byte);
+Var
+  k: LongInt;
+Begin
+  While n > 0 Do
+    Begin
+      k := l.per - from0 Mod l.per;
+      If l.esize = 0 Then
+        k := n;
+      If k > n Then
+        k := n;
+      FillChar(DlPtr(l, from0, 1)^, k, b);
+      from0 := from0 + k;
+      n := n - k;
+    End;
+End;
+
+{ Copie n octets d'une liste vers une autre. }
+Procedure DlCopyList(Var src: TDynList; s0: LongInt; Var dst: TDynList; d0, n: LongInt);
+Var
+  k, k2: LongInt;
+Begin
+  While n > 0 Do
+    Begin
+      k := src.per - s0 Mod src.per;
+      If src.esize = 0 Then
+        k := n;
+      If k > n Then
+        k := n;
+      k2 := dst.per - d0 Mod dst.per;
+      If dst.esize = 0 Then
+        k2 := n;
+      If k2 < k Then
+        k := k2;
+      Move(DlPtr(src, s0, 1)^, DlPtr(dst, d0, 1)^, k);
+      s0 := s0 + k;
+      d0 := d0 + k;
+      n := n - k;
+    End;
+End;
+
+{ Ecrit les n premiers octets de la liste dans le fichier ouvert. }
+Procedure DlWriteFile(Var f: File; Var l: TDynList; n: LongInt);
+Var
+  k, p: LongInt;
+Begin
+  p := 0;
+  While n > 0 Do
+    Begin
+      k := l.per - p Mod l.per;
+      If l.esize = 0 Then
+        k := n;
+      If k > n Then
+        k := n;
+      BlockWrite(f, DlPtr(l, p, 1)^, k);
+      p := p + k;
+      n := n - k;
+    End;
+End;
+
+{ Libere tous les blocs. }
+Procedure DlFree(Var l: TDynList);
+Var
+  c, nx: PDlChunk;
+Begin
+  c := l.head;
+  While c <> Nil Do
+    Begin
+      nx := c^.next;
+      FreeMem(c, SizeOf(TDlChunk) + l.esize * l.per);
+      c := nx;
+    End;
+  FillChar(l, SizeOf(l), 0);
+End;
+
+Type
+  TStr120 = String[120];
+  PSrcChar = ^Char;
+  PCommentStr = ^TStr120;
+  PTToken = ^TToken;
+  PTLabelRec = ^TLabelRec;
+  PTNode = ^TNode;
+  PTDecl = ^TDecl;
+  PTScope = ^TScope;
+  PTSymbol = ^TSymbol;
+  PTCapture = ^TCapture;
+  PTStrEntry = ^TStrEntry;
+  PTDblEntry = ^TDblEntry;
+  PTFuncDesc = ^TFuncDesc;
+  PTClassDesc = ^TClassDesc;
+  PTCMember = ^TCMember;
+  PTDataSym = ^TDataSym;
+  PTReloc = ^TReloc;
+  PTJumpTarget = ^TJumpTarget;
+  PTInstr = ^TInstr;
+  PTXSym = ^TXSym;
+  PTPendingRec = ^TPendingRec;
+
+Function LineStartP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  LineStartP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function SrcCharP(Var l: TDynList; i: LongInt): PSrcChar;
+Begin
+  SrcCharP := PSrcChar(DlPtr(l, i - 0, SizeOf(Char)));
+End;
+
+Function TplStackP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  TplStackP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function TokP(Var l: TDynList; i: LongInt): PTToken;
+Begin
+  TokP := PTToken(DlPtr(l, i - 1, SizeOf(TToken)));
+End;
+
+Function PoolP(Var l: TDynList; i: LongInt): PSrcChar;
+Begin
+  PoolP := PSrcChar(DlPtr(l, i - 0, SizeOf(Char)));
+End;
+
+Function LabelRecP(Var l: TDynList; i: LongInt): PTLabelRec;
+Begin
+  LabelRecP := PTLabelRec(DlPtr(l, i - 1, SizeOf(TLabelRec)));
+End;
+
+Function NodeP(Var l: TDynList; i: LongInt): PTNode;
+Begin
+  NodeP := PTNode(DlPtr(l, i - 1, SizeOf(TNode)));
+End;
+
+Function DeclP(Var l: TDynList; i: LongInt): PTDecl;
+Begin
+  DeclP := PTDecl(DlPtr(l, i - 1, SizeOf(TDecl)));
+End;
+
+Function ScopeP(Var l: TDynList; i: LongInt): PTScope;
+Begin
+  ScopeP := PTScope(DlPtr(l, i - 1, SizeOf(TScope)));
+End;
+
+Function SymP(Var l: TDynList; i: LongInt): PTSymbol;
+Begin
+  SymP := PTSymbol(DlPtr(l, i - 1, SizeOf(TSymbol)));
+End;
+
+Function CapP(Var l: TDynList; i: LongInt): PTCapture;
+Begin
+  CapP := PTCapture(DlPtr(l, i - 1, SizeOf(TCapture)));
+End;
+
+Function HashP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  HashP := PLongInt(DlPtr(l, i - 0, SizeOf(LongInt)));
+End;
+
+Function StrP(Var l: TDynList; i: LongInt): PTStrEntry;
+Begin
+  StrP := PTStrEntry(DlPtr(l, i - 1, SizeOf(TStrEntry)));
+End;
+
+Function AtomP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  AtomP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function DpoolP(Var l: TDynList; i: LongInt): PSrcChar;
+Begin
+  DpoolP := PSrcChar(DlPtr(l, i - 0, SizeOf(Char)));
+End;
+
+Function DblP(Var l: TDynList; i: LongInt): PTDblEntry;
+Begin
+  DblP := PTDblEntry(DlPtr(l, i - 1, SizeOf(TDblEntry)));
+End;
+
+Function FdescP(Var l: TDynList; i: LongInt): PTFuncDesc;
+Begin
+  FdescP := PTFuncDesc(DlPtr(l, i - 1, SizeOf(TFuncDesc)));
+End;
+
+Function CdescP(Var l: TDynList; i: LongInt): PTClassDesc;
+Begin
+  CdescP := PTClassDesc(DlPtr(l, i - 1, SizeOf(TClassDesc)));
+End;
+
+Function CmemP(Var l: TDynList; i: LongInt): PTCMember;
+Begin
+  CmemP := PTCMember(DlPtr(l, i - 1, SizeOf(TCMember)));
+End;
+
+Function DsymP(Var l: TDynList; i: LongInt): PTDataSym;
+Begin
+  DsymP := PTDataSym(DlPtr(l, i - 1, SizeOf(TDataSym)));
+End;
+
+Function RelocP(Var l: TDynList; i: LongInt): PTReloc;
+Begin
+  RelocP := PTReloc(DlPtr(l, i - 1, SizeOf(TReloc)));
+End;
+
+Function DhashP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  DhashP := PLongInt(DlPtr(l, i - 0, SizeOf(LongInt)));
+End;
+
+Function RdP(Var l: TDynList; i: LongInt): PByte;
+Begin
+  RdP := PByte(DlPtr(l, i - 0, SizeOf(Byte)));
+End;
+
+Function DtP(Var l: TDynList; i: LongInt): PByte;
+Begin
+  DtP := PByte(DlPtr(l, i - 0, SizeOf(Byte)));
+End;
+
+Function TmpFreeP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  TmpFreeP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function JtP(Var l: TDynList; i: LongInt): PTJumpTarget;
+Begin
+  JtP := PTJumpTarget(DlPtr(l, i - 1, SizeOf(TJumpTarget)));
+End;
+
+Function TryRecP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  TryRecP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function TryFinP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  TryFinP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function TryJtP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  TryJtP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function PlabelP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  PlabelP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function InstrP(Var l: TDynList; i: LongInt): PTInstr;
+Begin
+  InstrP := PTInstr(DlPtr(l, i - 1, SizeOf(TInstr)));
+End;
+
+Function XhashP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  XhashP := PLongInt(DlPtr(l, i, SizeOf(LongInt)));
+End;
+
+Function JtLabelP(Var l: TDynList; i: LongInt): PLongInt;
+Begin
+  JtLabelP := PLongInt(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Function XsymP(Var l: TDynList; i: LongInt): PTXSym;
+Begin
+  XsymP := PTXSym(DlPtr(l, i - 1, SizeOf(TXSym)));
+End;
+
+Function CommentP(Var l: TDynList; i: LongInt): PCommentStr;
+Begin
+  CommentP := PCommentStr(DlPtr(l, i - 1, SizeOf(TStr120)));
+End;
+
+Function PendingP(Var l: TDynList; i: LongInt): PTPendingRec;
+Begin
+  PendingP := PTPendingRec(DlPtr(l, i - 1, SizeOf(TPendingRec)));
+End;
 
 Function StageName(stage: TCompileStage): TString;
 Begin
@@ -1227,8 +1615,8 @@ Var
 Begin
   If (line_no < 1) Or (line_no > ctx.source.line_count) Then
     Exit;
-  a := ctx.source.line_start[line_no];
-  b := ctx.source.line_start[line_no + 1] - 1;
+  a := LineStartP(ctx.source.line_start, line_no)^;
+  b := LineStartP(ctx.source.line_start, line_no + 1)^ - 1;
   If b <= a Then
     Exit;
   n := b - a;
@@ -1236,13 +1624,13 @@ Begin
     n := MAX_DIAG_LINE;
   Write(' ');
   For i := 0 To n - 1 Do
-    Write(ctx.source.buf[a + i]);
+    Write(SrcCharP(ctx.source.buf, a + i)^);
   Writeln;
   If (col_no >= 1) And (col_no <= n + 1) Then
     Begin
       Write(' ');
       For i := 1 To col_no - 1 Do
-        If ctx.source.buf[a + i - 1] = #9 Then
+        If SrcCharP(ctx.source.buf, a + i - 1)^ = #9 Then
           Write(#9)
         Else
           Write(' ');
@@ -3542,23 +3930,16 @@ Var
   Begin
     If Not ok Then
       Exit;
-    If (ctx.source.char_count >= MAX_SOURCE_CHARS) Or
-       ((c = #10) And (ctx.source.line_count >= MAX_SOURCE_LINES)) Then
-      Begin
-        PipelineError(ctx, 'source trop volumineux (prelude)');
-        ok := False;
-        Exit;
-      End;
-    ctx.source.buf[ctx.source.char_count] := c;
+    SrcCharP(ctx.source.buf, ctx.source.char_count)^ := c;
     Inc(ctx.source.char_count);
     If c = #10 Then
       Begin
         line_len := ctx.source.char_count - 1 -
-                    ctx.source.line_start[ctx.source.line_count];
+                    LineStartP(ctx.source.line_start, ctx.source.line_count)^;
         If line_len > ctx.source.max_line_len Then
           ctx.source.max_line_len := line_len;
         Inc(ctx.source.line_count);
-        ctx.source.line_start[ctx.source.line_count] := ctx.source.char_count;
+        LineStartP(ctx.source.line_start, ctx.source.line_count)^ := ctx.source.char_count;
       End;
   End;
 
@@ -3588,7 +3969,7 @@ Begin
   ctx.source.loaded := False;
   ctx.source.char_count := 0;
   ctx.source.line_count := 1;
-  ctx.source.line_start[1] := 0;
+  LineStartP(ctx.source.line_start, 1)^ := 0;
   ctx.source.max_line_len := 0;
 
   Assign(f, NormalizePath(ctx.source_name));
@@ -3648,32 +4029,18 @@ Begin
               End;
             If Not skip Then
               Begin
-                If ctx.source.char_count >= MAX_SOURCE_CHARS Then
-                  Begin
-                    PipelineError(ctx, 'source trop volumineux (limite interne atteinte)');
-                    failed := True;
-                  End
-                Else
-                  Begin
-                    ctx.source.buf[ctx.source.char_count] := c;
+                Begin
+                    SrcCharP(ctx.source.buf, ctx.source.char_count)^ := c;
                     Inc(ctx.source.char_count);
                     If c = #10 Then
                       Begin
                         line_len := ctx.source.char_count - 1 -
-                                    ctx.source.line_start[ctx.source.line_count];
+                                    LineStartP(ctx.source.line_start, ctx.source.line_count)^;
                         If line_len > ctx.source.max_line_len Then
                           ctx.source.max_line_len := line_len;
-                        If ctx.source.line_count >= MAX_SOURCE_LINES Then
-                          Begin
-                            PipelineError(ctx, 'trop de lignes dans le source');
-                            failed := True;
-                          End
-                        Else
-                          Begin
-                            Inc(ctx.source.line_count);
-                            ctx.source.line_start[ctx.source.line_count] :=
-                              ctx.source.char_count;
-                          End;
+                        Inc(ctx.source.line_count);
+                        LineStartP(ctx.source.line_start, ctx.source.line_count)^ :=
+                          ctx.source.char_count;
                       End;
                   End;
               End;
@@ -3692,10 +4059,10 @@ Begin
       Exit;
 
   line_len := ctx.source.char_count -
-              ctx.source.line_start[ctx.source.line_count];
+              LineStartP(ctx.source.line_start, ctx.source.line_count)^;
   If line_len > ctx.source.max_line_len Then
     ctx.source.max_line_len := line_len;
-  ctx.source.line_start[ctx.source.line_count + 1] := ctx.source.char_count + 1;
+  LineStartP(ctx.source.line_start, ctx.source.line_count + 1)^ := ctx.source.char_count + 1;
   ctx.source.loaded := True;
   If ctx.options.verbose Then
     Writeln('Source chargee: ', ctx.source.line_count, ' lignes, ',
@@ -3709,7 +4076,7 @@ End;
 Function LxCur(Var ctx: TCompilerContext): Char;
 Begin
   If ctx.lex.pos < ctx.source.char_count Then
-    LxCur := ctx.source.buf[ctx.lex.pos]
+    LxCur := SrcCharP(ctx.source.buf, ctx.lex.pos)^
   Else
     LxCur := #0;
 End;
@@ -3717,7 +4084,7 @@ End;
 Function LxPeek(Var ctx: TCompilerContext; n: LongInt): Char;
 Begin
   If ctx.lex.pos + n < ctx.source.char_count Then
-    LxPeek := ctx.source.buf[ctx.lex.pos + n]
+    LxPeek := SrcCharP(ctx.source.buf, ctx.lex.pos + n)^
   Else
     LxPeek := #0;
 End;
@@ -3736,7 +4103,7 @@ Procedure LxAdvance(Var ctx: TCompilerContext);
 Begin
   If ctx.lex.pos < ctx.source.char_count Then
     Begin
-      If ctx.source.buf[ctx.lex.pos] = #10 Then
+      If SrcCharP(ctx.source.buf, ctx.lex.pos)^ = #10 Then
         Begin
           Inc(ctx.lex.line);
           ctx.lex.line_pos := ctx.lex.pos + 1;
@@ -3763,7 +4130,7 @@ Begin
     k := MAX_TOKEN_TEXT;
   t[0] := Chr(k);
   For i := 1 To k Do
-    t[i] := ctx.source.buf[tp + i - 1];
+    t[i] := SrcCharP(ctx.source.buf, tp + i - 1)^;
   RawText := t;
 End;
 
@@ -3773,28 +4140,20 @@ Function AddToken(Var ctx: TCompilerContext; kind: TTokenKind;
 Var
   n: LongInt;
 Begin
-  If ctx.lex.token_count >= MAX_TOKENS Then
-    Begin
-      If Not ctx.lex.stop Then
-        SourceErrorAt(ctx, tl, tc, 'trop de jetons dans le source');
-      ctx.lex.stop := True;
-      AddToken := MAX_TOKENS;
-      Exit;
-    End;
   Inc(ctx.lex.token_count);
   n := ctx.lex.token_count;
-  ctx.lex.tokens[n].kind := kind;
-  ctx.lex.tokens[n].tpl := TP_NONE;
-  ctx.lex.tokens[n].text := RawText(ctx, tp, ctx.lex.pos - tp);
-  ctx.lex.tokens[n].line := tl;
-  ctx.lex.tokens[n].col := tc;
-  ctx.lex.tokens[n].pos := tp;
-  ctx.lex.tokens[n].len := ctx.lex.pos - tp;
-  ctx.lex.tokens[n].sval_off := 0;
-  ctx.lex.tokens[n].sval_len := 0;
-  ctx.lex.tokens[n].flag_len := 0;
-  ctx.lex.tokens[n].num_val := 0;
-  ctx.lex.tokens[n].nl_before := ctx.lex.nl_pending;
+  TokP(ctx.lex.tokens, n)^.kind := kind;
+  TokP(ctx.lex.tokens, n)^.tpl := TP_NONE;
+  TokP(ctx.lex.tokens, n)^.text := RawText(ctx, tp, ctx.lex.pos - tp);
+  TokP(ctx.lex.tokens, n)^.line := tl;
+  TokP(ctx.lex.tokens, n)^.col := tc;
+  TokP(ctx.lex.tokens, n)^.pos := tp;
+  TokP(ctx.lex.tokens, n)^.len := ctx.lex.pos - tp;
+  TokP(ctx.lex.tokens, n)^.sval_off := 0;
+  TokP(ctx.lex.tokens, n)^.sval_len := 0;
+  TokP(ctx.lex.tokens, n)^.flag_len := 0;
+  TokP(ctx.lex.tokens, n)^.num_val := 0;
+  TokP(ctx.lex.tokens, n)^.nl_before := ctx.lex.nl_pending;
   ctx.lex.nl_pending := False;
   Case kind Of
     TK_IDENT:    Inc(ctx.lex.ident_count);
@@ -3811,15 +4170,7 @@ End;
 
 Procedure PoolAppend(Var ctx: TCompilerContext; c: Char);
 Begin
-  If ctx.lex.pool_len >= MAX_STRING_POOL Then
-    Begin
-      If Not ctx.lex.stop Then
-        SourceErrorAt(ctx, ctx.lex.line, LxCol(ctx),
-                      'pool de chaines plein');
-      ctx.lex.stop := True;
-      Exit;
-    End;
-  ctx.lex.pool[ctx.lex.pool_len] := c;
+  PoolP(ctx.lex.pool, ctx.lex.pool_len)^ := c;
   Inc(ctx.lex.pool_len);
 End;
 
@@ -4172,15 +4523,15 @@ Begin
       bg_i := tp;
       While bg_i < ctx.lex.pos Do
         Begin
-          If ctx.source.buf[bg_i] <> '_' Then
-            PoolAppend(ctx, ctx.source.buf[bg_i]);
+          If SrcCharP(ctx.source.buf, bg_i)^ <> '_' Then
+            PoolAppend(ctx, SrcCharP(ctx.source.buf, bg_i)^);
           Inc(bg_i);
         End;
       LxAdvance(ctx);
       idx := AddToken(ctx, TK_STRING, tl, tc, tp);
-      ctx.lex.tokens[idx].sval_off := bg_off;
-      ctx.lex.tokens[idx].sval_len := ctx.lex.pool_len - bg_off;
-      ctx.lex.tokens[idx].flag_len := 1;
+      TokP(ctx.lex.tokens, idx)^.sval_off := bg_off;
+      TokP(ctx.lex.tokens, idx)^.sval_len := ctx.lex.pool_len - bg_off;
+      TokP(ctx.lex.tokens, idx)^.flag_len := 1;
       Exit;
     End;
   If IsIdentStart(LxCur(ctx)) Or IsDigit(LxCur(ctx)) Then
@@ -4190,7 +4541,7 @@ Begin
         LxAdvance(ctx);
     End;
   idx := AddToken(ctx, TK_NUMBER, tl, tc, tp);
-  ctx.lex.tokens[idx].num_val := v;
+  TokP(ctx.lex.tokens, idx)^.num_val := v;
 End;
 
 { ---- Chaines ---- }
@@ -4229,8 +4580,8 @@ Begin
         End;
     End;
   idx := AddToken(ctx, TK_STRING, tl, tc, tp);
-  ctx.lex.tokens[idx].sval_off := off;
-  ctx.lex.tokens[idx].sval_len := ctx.lex.pool_len - off;
+  TokP(ctx.lex.tokens, idx)^.sval_off := off;
+  TokP(ctx.lex.tokens, idx)^.sval_len := ctx.lex.pool_len - off;
 End;
 
 { ---- Gabarits `...` ---- }
@@ -4272,13 +4623,8 @@ Begin
             part := TP_MIDDLE
           Else
             part := TP_HEAD;
-          If ctx.lex.tpl_top >= MAX_TEMPLATE_DEPTH Then
-            SourceErrorAt(ctx, tl, tc, 'gabarits imbriques trop profonds')
-          Else
-            Begin
-              Inc(ctx.lex.tpl_top);
-              ctx.lex.tpl_stack[ctx.lex.tpl_top] := ctx.lex.brace_depth;
-            End;
+          Inc(ctx.lex.tpl_top);
+          TplStackP(ctx.lex.tpl_stack, ctx.lex.tpl_top)^ := ctx.lex.brace_depth;
           done := True;
         End
       Else If LxCur(ctx) = '\' Then
@@ -4290,9 +4636,9 @@ Begin
         End;
     End;
   idx := AddToken(ctx, TK_TEMPLATE, tl, tc, tp);
-  ctx.lex.tokens[idx].tpl := part;
-  ctx.lex.tokens[idx].sval_off := off;
-  ctx.lex.tokens[idx].sval_len := ctx.lex.pool_len - off;
+  TokP(ctx.lex.tokens, idx)^.tpl := part;
+  TokP(ctx.lex.tokens, idx)^.sval_off := off;
+  TokP(ctx.lex.tokens, idx)^.sval_len := ctx.lex.pool_len - off;
 End;
 
 { ---- Expressions regulieres ---- }
@@ -4307,7 +4653,7 @@ Begin
       RegexAllowed := True;
       Exit;
     End;
-  t := ctx.lex.tokens[ctx.lex.token_count];
+  t := TokP(ctx.lex.tokens, ctx.lex.token_count)^;
   Case t.kind Of
     TK_NUMBER, TK_STRING, TK_REGEX, TK_IDENT:
       RegexAllowed := False;
@@ -4372,8 +4718,8 @@ Begin
         End;
     End;
   idx := AddToken(ctx, TK_REGEX, tl, tc, tp);
-  ctx.lex.tokens[idx].sval_off := off;
-  ctx.lex.tokens[idx].sval_len := ctx.lex.pool_len - off;
+  TokP(ctx.lex.tokens, idx)^.sval_off := off;
+  TokP(ctx.lex.tokens, idx)^.sval_len := ctx.lex.pool_len - off;
   { Drapeaux : stockes dans le pool juste apres le corps. }
   flags := '';
   nflags := 0;
@@ -4392,10 +4738,10 @@ Begin
       Inc(nflags);
       LxAdvance(ctx);
     End;
-  ctx.lex.tokens[idx].flag_len := nflags;
+  TokP(ctx.lex.tokens, idx)^.flag_len := nflags;
   { L'etendue brute inclut les drapeaux. }
-  ctx.lex.tokens[idx].len := ctx.lex.pos - tp;
-  ctx.lex.tokens[idx].text := RawText(ctx, tp, ctx.lex.pos - tp);
+  TokP(ctx.lex.tokens, idx)^.len := ctx.lex.pos - tp;
+  TokP(ctx.lex.tokens, idx)^.text := RawText(ctx, tp, ctx.lex.pos - tp);
 End;
 
 { ---- Commentaires ---- }
@@ -4556,7 +4902,7 @@ Begin
       Else If c = '`' Then
         LxTemplate(ctx, False)
       Else If (c = '}') And (ctx.lex.tpl_top > 0) And
-              (ctx.lex.tpl_stack[ctx.lex.tpl_top] = ctx.lex.brace_depth) Then
+              (TplStackP(ctx.lex.tpl_stack, ctx.lex.tpl_top)^ = ctx.lex.brace_depth) Then
         LxTemplate(ctx, True)
       Else If (c = '/') And RegexAllowed(ctx) Then
         LxRegex(ctx)
@@ -4628,7 +4974,7 @@ Const
 Begin
   For i := 0 To len - 1 Do
     Begin
-      c := ctx.lex.pool[off + i];
+      c := PoolP(ctx.lex.pool, off + i)^;
       If c = #10 Then
         Write('\n')
       Else If c = #9 Then
@@ -4650,7 +4996,7 @@ Begin
   Writeln('Jetons (', ctx.lex.token_count, ') :');
   For i := 1 To ctx.lex.token_count Do
     Begin
-      t := ctx.lex.tokens[i];
+      t := TokP(ctx.lex.tokens, i)^;
       Write('  ', t.line:4, ':', t.col, ' ');
       Write(TokenKindName(t.kind));
       If t.nl_before Then
@@ -4707,21 +5053,21 @@ End;
 
 Function TkIsP(Var ctx: TCompilerContext; i: LongInt; Const s: TTokenText): Boolean;
 Begin
-  TkIsP := ((ctx.lex.tokens[i].kind = TK_PUNCT) Or
-            (ctx.lex.tokens[i].kind = TK_OPERATOR)) And
-           (ctx.lex.tokens[i].text = s);
+  TkIsP := ((TokP(ctx.lex.tokens, i)^.kind = TK_PUNCT) Or
+            (TokP(ctx.lex.tokens, i)^.kind = TK_OPERATOR)) And
+           (TokP(ctx.lex.tokens, i)^.text = s);
 End;
 
 Function TkIsKw(Var ctx: TCompilerContext; i: LongInt; Const s: TTokenText): Boolean;
 Begin
-  TkIsKw := (ctx.lex.tokens[i].kind = TK_KEYWORD) And
-            (ctx.lex.tokens[i].text = s);
+  TkIsKw := (TokP(ctx.lex.tokens, i)^.kind = TK_KEYWORD) And
+            (TokP(ctx.lex.tokens, i)^.text = s);
 End;
 
 Function TkIsId(Var ctx: TCompilerContext; i: LongInt; Const s: TTokenText): Boolean;
 Begin
-  TkIsId := (ctx.lex.tokens[i].kind = TK_IDENT) And
-            (ctx.lex.tokens[i].text = s);
+  TkIsId := (TokP(ctx.lex.tokens, i)^.kind = TK_IDENT) And
+            (TokP(ctx.lex.tokens, i)^.text = s);
 End;
 
 Function CurIsP(Var ctx: TCompilerContext; Const s: TTokenText): Boolean;
@@ -4736,7 +5082,7 @@ End;
 
 Function CurIsEof(Var ctx: TCompilerContext): Boolean;
 Begin
-  CurIsEof := ctx.lex.tokens[ctx.ast.pt].kind = TK_EOF;
+  CurIsEof := TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_EOF;
 End;
 
 { Indice du jeton situe n positions apres le courant (borne par EOF). }
@@ -4756,10 +5102,10 @@ End;
 
 Function TokenDesc(Var ctx: TCompilerContext; i: LongInt): TString;
 Begin
-  If ctx.lex.tokens[i].kind = TK_EOF Then
+  If TokP(ctx.lex.tokens, i)^.kind = TK_EOF Then
     TokenDesc := 'fin de fichier'
   Else
-    TokenDesc := '"' + ctx.lex.tokens[i].text + '"';
+    TokenDesc := '"' + TokP(ctx.lex.tokens, i)^.text + '"';
 End;
 
 { Une seule erreur par jeton, pour eviter les cascades. }
@@ -4768,7 +5114,7 @@ Begin
   If i = ctx.ast.last_err_tok Then
     Exit;
   ctx.ast.last_err_tok := i;
-  SourceErrorAt(ctx, ctx.lex.tokens[i].line, ctx.lex.tokens[i].col, msg);
+  SourceErrorAt(ctx, TokP(ctx.lex.tokens, i)^.line, TokP(ctx.lex.tokens, i)^.col, msg);
 End;
 
 Function Expect(Var ctx: TCompilerContext; Const s: TTokenText): Boolean;
@@ -4792,7 +5138,7 @@ Begin
   If CurIsP(ctx, ';') Then
     PAdvance(ctx)
   Else If CurIsP(ctx, '}') Or CurIsEof(ctx) Or
-          ctx.lex.tokens[ctx.ast.pt].nl_before Then
+          TokP(ctx.lex.tokens, ctx.ast.pt)^.nl_before Then
     { ASI }
   Else
     ParseError(ctx, ctx.ast.pt, '";" attendu avant ' +
@@ -4803,8 +5149,8 @@ Function IsStmtStartKw(Var ctx: TCompilerContext; i: LongInt): Boolean;
 Var
   s: TTokenText;
 Begin
-  s := ctx.lex.tokens[i].text;
-  IsStmtStartKw := (ctx.lex.tokens[i].kind = TK_KEYWORD) And
+  s := TokP(ctx.lex.tokens, i)^.text;
+  IsStmtStartKw := (TokP(ctx.lex.tokens, i)^.kind = TK_KEYWORD) And
     ((s = 'var') Or (s = 'let') Or (s = 'const') Or (s = 'function') Or
      (s = 'class') Or (s = 'if') Or (s = 'for') Or (s = 'while') Or
      (s = 'do') Or (s = 'return') Or (s = 'switch') Or (s = 'try') Or
@@ -4826,7 +5172,7 @@ Begin
         End;
       If CurIsP(ctx, '}') Then
         Exit;
-      If Not first And ctx.lex.tokens[ctx.ast.pt].nl_before And
+      If Not first And TokP(ctx.lex.tokens, ctx.ast.pt)^.nl_before And
          IsStmtStartKw(ctx, ctx.ast.pt) Then
         Exit;
       first := False;
@@ -4840,30 +5186,22 @@ Function NewNode(Var ctx: TCompilerContext; kind: TNodeKind; tok: LongInt): Long
 Var
   n: LongInt;
 Begin
-  If ctx.ast.node_count >= MAX_NODES Then
-    Begin
-      If Not ctx.ast.stop Then
-        ParseError(ctx, ctx.ast.pt, 'trop de noeuds dans l''AST');
-      ctx.ast.stop := True;
-      NewNode := MAX_NODES;
-      Exit;
-    End;
   Inc(ctx.ast.node_count);
   n := ctx.ast.node_count;
-  ctx.ast.nodes[n].kind := kind;
-  ctx.ast.nodes[n].tok := tok;
-  ctx.ast.nodes[n].e1 := 0;
-  ctx.ast.nodes[n].e2 := 0;
-  ctx.ast.nodes[n].e3 := 0;
-  ctx.ast.nodes[n].e4 := 0;
-  ctx.ast.nodes[n].next := 0;
-  ctx.ast.nodes[n].flags := 0;
-  ctx.ast.nodes[n].paren := False;
-  ctx.ast.nodes[n].scope := 0;
-  ctx.ast.nodes[n].decl_head := 0;
-  ctx.ast.nodes[n].sym := 0;
-  ctx.ast.nodes[n].aux := 0;
-  ctx.ast.nodes[n].ds := 0;
+  NodeP(ctx.ast.nodes, n)^.kind := kind;
+  NodeP(ctx.ast.nodes, n)^.tok := tok;
+  NodeP(ctx.ast.nodes, n)^.e1 := 0;
+  NodeP(ctx.ast.nodes, n)^.e2 := 0;
+  NodeP(ctx.ast.nodes, n)^.e3 := 0;
+  NodeP(ctx.ast.nodes, n)^.e4 := 0;
+  NodeP(ctx.ast.nodes, n)^.next := 0;
+  NodeP(ctx.ast.nodes, n)^.flags := 0;
+  NodeP(ctx.ast.nodes, n)^.paren := False;
+  NodeP(ctx.ast.nodes, n)^.scope := 0;
+  NodeP(ctx.ast.nodes, n)^.decl_head := 0;
+  NodeP(ctx.ast.nodes, n)^.sym := 0;
+  NodeP(ctx.ast.nodes, n)^.aux := 0;
+  NodeP(ctx.ast.nodes, n)^.ds := 0;
   NewNode := n;
 End;
 
@@ -4876,7 +5214,7 @@ Begin
   If first = 0 Then
     first := node
   Else
-    ctx.ast.nodes[last].next := node;
+    NodeP(ctx.ast.nodes, last)^.next := node;
   last := node;
 End;
 
@@ -4885,21 +5223,16 @@ Procedure DeclareName(Var ctx: TCompilerContext; kind: TDeclKind;
 Var
   n: LongInt;
 Begin
-  If ctx.ast.decl_count >= MAX_DECLS Then
-    Begin
-      ParseError(ctx, name_tok, 'trop de declarations');
-      Exit;
-    End;
   Inc(ctx.ast.decl_count);
   n := ctx.ast.decl_count;
-  ctx.ast.decls[n].kind := kind;
-  ctx.ast.decls[n].name_tok := name_tok;
-  ctx.ast.decls[n].node := node;
-  ctx.ast.decls[n].origin := ctx.ast.cur_scope;
+  DeclP(ctx.ast.decls, n)^.kind := kind;
+  DeclP(ctx.ast.decls, n)^.name_tok := name_tok;
+  DeclP(ctx.ast.decls, n)^.node := node;
+  DeclP(ctx.ast.decls, n)^.origin := ctx.ast.cur_scope;
   If kind = DK_VAR Then
-    ctx.ast.decls[n].scope := ctx.ast.cur_func
+    DeclP(ctx.ast.decls, n)^.scope := ctx.ast.cur_func
   Else
-    ctx.ast.decls[n].scope := ctx.ast.cur_scope;
+    DeclP(ctx.ast.decls, n)^.scope := ctx.ast.cur_scope;
 End;
 
 { ---- Declarations anticipees et contexte de fonction ---- }
@@ -4953,10 +5286,10 @@ End;
 
 Function IsPropertyNameTok(Var ctx: TCompilerContext; i: LongInt): Boolean;
 Begin
-  IsPropertyNameTok := (ctx.lex.tokens[i].kind = TK_IDENT) Or
-                       (ctx.lex.tokens[i].kind = TK_KEYWORD) Or
-                       (ctx.lex.tokens[i].kind = TK_STRING) Or
-                       (ctx.lex.tokens[i].kind = TK_NUMBER);
+  IsPropertyNameTok := (TokP(ctx.lex.tokens, i)^.kind = TK_IDENT) Or
+                       (TokP(ctx.lex.tokens, i)^.kind = TK_KEYWORD) Or
+                       (TokP(ctx.lex.tokens, i)^.kind = TK_STRING) Or
+                       (TokP(ctx.lex.tokens, i)^.kind = TK_NUMBER);
 End;
 
 Function ParseArrayPattern(Var ctx: TCompilerContext; dk: TDeclKind): LongInt;
@@ -4979,11 +5312,11 @@ Begin
           If rest Then
             Begin
               PAdvance(ctx);
-              ctx.ast.nodes[el].flags := PF_REST;
+              NodeP(ctx.ast.nodes, el)^.flags := PF_REST;
             End;
-          ctx.ast.nodes[el].e1 := ParseBindingTarget(ctx, dk);
+          NodeP(ctx.ast.nodes, el)^.e1 := ParseBindingTarget(ctx, dk);
           If Not rest Then
-            ctx.ast.nodes[el].e2 := ParseBindingDefault(ctx);
+            NodeP(ctx.ast.nodes, el)^.e2 := ParseBindingDefault(ctx);
         End;
       ListAdd(ctx, first, last, el);
       If CurIsP(ctx, ',') Then
@@ -4992,7 +5325,7 @@ Begin
         Break;
     End;
   Expect(ctx, ']');
-  ctx.ast.nodes[node].e1 := first;
+  NodeP(ctx.ast.nodes, node)^.e1 := first;
   ParseArrayPattern := node;
 End;
 
@@ -5010,23 +5343,23 @@ Begin
       If CurIsP(ctx, '...') Then
         Begin
           PAdvance(ctx);
-          ctx.ast.nodes[prop].flags := PP_REST;
-          ctx.ast.nodes[prop].e1 := ParseBindingTarget(ctx, dk);
+          NodeP(ctx.ast.nodes, prop)^.flags := PP_REST;
+          NodeP(ctx.ast.nodes, prop)^.e1 := ParseBindingTarget(ctx, dk);
         End
       Else
         Begin
           If CurIsP(ctx, '[') Then
             Begin
               PAdvance(ctx);
-              ctx.ast.nodes[prop].flags := PP_COMPUTED;
-              ctx.ast.nodes[prop].e3 := ParseAssign(ctx, False);
+              NodeP(ctx.ast.nodes, prop)^.flags := PP_COMPUTED;
+              NodeP(ctx.ast.nodes, prop)^.e3 := ParseAssign(ctx, False);
               Expect(ctx, ']');
-              key_tok := ctx.ast.nodes[prop].tok;
+              key_tok := NodeP(ctx.ast.nodes, prop)^.tok;
             End
           Else If IsPropertyNameTok(ctx, ctx.ast.pt) Then
             Begin
               key_tok := ctx.ast.pt;
-              ctx.ast.nodes[prop].tok := key_tok;
+              NodeP(ctx.ast.nodes, prop)^.tok := key_tok;
               PAdvance(ctx);
             End
           Else
@@ -5038,17 +5371,17 @@ Begin
           If CurIsP(ctx, ':') Then
             Begin
               PAdvance(ctx);
-              ctx.ast.nodes[prop].e1 := ParseBindingTarget(ctx, dk);
+              NodeP(ctx.ast.nodes, prop)^.e1 := ParseBindingTarget(ctx, dk);
             End
-          Else If (ctx.lex.tokens[key_tok].kind = TK_IDENT) And
-                  (ctx.ast.nodes[prop].flags And PP_COMPUTED = 0) Then
+          Else If (TokP(ctx.lex.tokens, key_tok)^.kind = TK_IDENT) And
+                  (NodeP(ctx.ast.nodes, prop)^.flags And PP_COMPUTED = 0) Then
             Begin
               { raccourci : a ou a = 1 dans les accolades }
-              ctx.ast.nodes[prop].flags := ctx.ast.nodes[prop].flags Or
+              NodeP(ctx.ast.nodes, prop)^.flags := NodeP(ctx.ast.nodes, prop)^.flags Or
                                            PP_SHORTHAND;
               tgt := NewNode(ctx, N_BIND_IDENT, key_tok);
               DeclareName(ctx, dk, key_tok, tgt);
-              ctx.ast.nodes[prop].e1 := tgt;
+              NodeP(ctx.ast.nodes, prop)^.e1 := tgt;
             End
           Else
             Begin
@@ -5056,7 +5389,7 @@ Begin
                          TokenDesc(ctx, ctx.ast.pt));
               Break;
             End;
-          ctx.ast.nodes[prop].e2 := ParseBindingDefault(ctx);
+          NodeP(ctx.ast.nodes, prop)^.e2 := ParseBindingDefault(ctx);
         End;
       ListAdd(ctx, first, last, prop);
       If CurIsP(ctx, ',') Then
@@ -5065,7 +5398,7 @@ Begin
         Break;
     End;
   Expect(ctx, '}');
-  ctx.ast.nodes[node].e1 := first;
+  NodeP(ctx.ast.nodes, node)^.e1 := first;
   ParseObjectPattern := node;
 End;
 
@@ -5074,7 +5407,7 @@ Var
   node: LongInt;
 Begin
   ParseBindingTarget := 0;
-  If ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT Then
+  If TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT Then
     Begin
       node := NewNode(ctx, N_BIND_IDENT, ctx.ast.pt);
       DeclareName(ctx, dk, ctx.ast.pt, node);
@@ -5105,17 +5438,17 @@ Begin
   If CurIsKw(ctx, 'var') Then
     Begin
       dk := DK_VAR;
-      ctx.ast.nodes[node].flags := DF_VAR;
+      NodeP(ctx.ast.nodes, node)^.flags := DF_VAR;
     End
   Else If CurIsKw(ctx, 'let') Then
     Begin
       dk := DK_LET;
-      ctx.ast.nodes[node].flags := DF_LET;
+      NodeP(ctx.ast.nodes, node)^.flags := DF_LET;
     End
   Else
     Begin
       dk := DK_CONST;
-      ctx.ast.nodes[node].flags := DF_CONST;
+      NodeP(ctx.ast.nodes, node)^.flags := DF_CONST;
     End;
   PAdvance(ctx);
   first := 0;
@@ -5129,7 +5462,7 @@ Begin
         Synchronize(ctx);
         Break;
       End;
-    ctx.ast.nodes[decl].e1 := target;
+    NodeP(ctx.ast.nodes, decl)^.e1 := target;
     init := 0;
     If CurIsP(ctx, '=') Then
       Begin
@@ -5139,20 +5472,20 @@ Begin
     Else If Not in_for Then
       Begin
         If dk = DK_CONST Then
-          ParseError(ctx, ctx.ast.nodes[decl].tok,
+          ParseError(ctx, NodeP(ctx.ast.nodes, decl)^.tok,
                      'une constante doit etre initialisee')
         Else If is_pattern Then
-          ParseError(ctx, ctx.ast.nodes[decl].tok,
+          ParseError(ctx, NodeP(ctx.ast.nodes, decl)^.tok,
                      'la destructuration doit etre initialisee');
       End;
-    ctx.ast.nodes[decl].e2 := init;
+    NodeP(ctx.ast.nodes, decl)^.e2 := init;
     ListAdd(ctx, first, last, decl);
     If CurIsP(ctx, ',') Then
       PAdvance(ctx)
     Else
       Break;
   Until False;
-  ctx.ast.nodes[node].e1 := first;
+  NodeP(ctx.ast.nodes, node)^.e1 := first;
   ParseVarDecl := node;
 End;
 
@@ -5200,8 +5533,8 @@ End;
 Function IsSimpleTarget(Var ctx: TCompilerContext; n: LongInt): Boolean;
 Begin
   IsSimpleTarget := (n <> 0) And
-    ((ctx.ast.nodes[n].kind = N_IDENT) Or (ctx.ast.nodes[n].kind = N_MEMBER) Or
-     (ctx.ast.nodes[n].kind = N_INDEX));
+    ((NodeP(ctx.ast.nodes, n)^.kind = N_IDENT) Or (NodeP(ctx.ast.nodes, n)^.kind = N_MEMBER) Or
+     (NodeP(ctx.ast.nodes, n)^.kind = N_INDEX));
 End;
 
 { Avec = : un tableau ou un objet litteral est aussi une cible
@@ -5209,8 +5542,8 @@ End;
 Function IsPatternTarget(Var ctx: TCompilerContext; n: LongInt): Boolean;
 Begin
   IsPatternTarget := IsSimpleTarget(ctx, n) Or
-    ((n <> 0) And ((ctx.ast.nodes[n].kind = N_ARRAY_LIT) Or
-                   (ctx.ast.nodes[n].kind = N_OBJECT_LIT)));
+    ((n <> 0) And ((NodeP(ctx.ast.nodes, n)^.kind = N_ARRAY_LIT) Or
+                   (NodeP(ctx.ast.nodes, n)^.kind = N_OBJECT_LIT)));
 End;
 
 { Index de la parenthese fermante qui correspond a la parenthese
@@ -5222,10 +5555,10 @@ Var
 Begin
   MatchClose := 0;
   depth := 0;
-  While ctx.lex.tokens[i].kind <> TK_EOF Do
+  While TokP(ctx.lex.tokens, i)^.kind <> TK_EOF Do
     Begin
-      s := ctx.lex.tokens[i].text;
-      Case ctx.lex.tokens[i].kind Of
+      s := TokP(ctx.lex.tokens, i)^.text;
+      Case TokP(ctx.lex.tokens, i)^.kind Of
         TK_PUNCT, TK_OPERATOR:
           Begin
             If (s = '(') Or (s = '[') Or (s = '{') Then
@@ -5242,9 +5575,9 @@ Begin
           End;
         TK_TEMPLATE:
           Begin
-            If ctx.lex.tokens[i].tpl = TP_HEAD Then
+            If TokP(ctx.lex.tokens, i)^.tpl = TP_HEAD Then
               Inc(depth)
-            Else If ctx.lex.tokens[i].tpl = TP_TAIL Then
+            Else If TokP(ctx.lex.tokens, i)^.tpl = TP_TAIL Then
               Dec(depth);
           End;
       End;
@@ -5261,10 +5594,10 @@ Begin
   is_async := False;
   i := ctx.ast.pt;
   nx := PeekIdx(ctx, 1);
-  If TkIsId(ctx, i, 'async') And Not ctx.lex.tokens[nx].nl_before And
+  If TkIsId(ctx, i, 'async') And Not TokP(ctx.lex.tokens, nx)^.nl_before And
      Not TkIsP(ctx, nx, '=>') Then
     Begin
-      If (ctx.lex.tokens[nx].kind = TK_IDENT) And
+      If (TokP(ctx.lex.tokens, nx)^.kind = TK_IDENT) And
          TkIsP(ctx, PeekIdx(ctx, 2), '=>') Then
         Begin
           is_async := True;
@@ -5275,7 +5608,7 @@ Begin
         Begin
           j := MatchClose(ctx, nx);
           If (j > 0) And TkIsP(ctx, j + 1, '=>') And
-             Not ctx.lex.tokens[j + 1].nl_before Then
+             Not TokP(ctx.lex.tokens, j + 1)^.nl_before Then
             Begin
               is_async := True;
               IsArrowAhead := True;
@@ -5283,14 +5616,14 @@ Begin
             End;
         End;
     End;
-  If (ctx.lex.tokens[i].kind = TK_IDENT) And TkIsP(ctx, nx, '=>') And
-     Not ctx.lex.tokens[nx].nl_before Then
+  If (TokP(ctx.lex.tokens, i)^.kind = TK_IDENT) And TkIsP(ctx, nx, '=>') And
+     Not TokP(ctx.lex.tokens, nx)^.nl_before Then
     IsArrowAhead := True
   Else If TkIsP(ctx, i, '(') Then
     Begin
       j := MatchClose(ctx, i);
       If (j > 0) And TkIsP(ctx, j + 1, '=>') And
-         Not ctx.lex.tokens[j + 1].nl_before Then
+         Not TokP(ctx.lex.tokens, j + 1)^.nl_before Then
         IsArrowAhead := True;
     End;
 End;
@@ -5316,7 +5649,7 @@ Begin
             Begin
               sp := NewNode(ctx, N_SPREAD, ctx.ast.pt);
               PAdvance(ctx);
-              ctx.ast.nodes[sp].e1 := ParseAssign(ctx, False);
+              NodeP(ctx.ast.nodes, sp)^.e1 := ParseAssign(ctx, False);
               a := sp;
             End
           Else
@@ -5344,7 +5677,7 @@ Begin
   last := 0;
   part := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.pt);
   ListAdd(ctx, first, last, part);
-  If ctx.lex.tokens[ctx.ast.pt].tpl <> TP_NOSUB Then
+  If TokP(ctx.lex.tokens, ctx.ast.pt)^.tpl <> TP_NOSUB Then
     Begin
       PAdvance(ctx);
       done := False;
@@ -5354,13 +5687,13 @@ Begin
           If e = 0 Then
             Break;
           ListAdd(ctx, first, last, e);
-          If (ctx.lex.tokens[ctx.ast.pt].kind = TK_TEMPLATE) And
-             ((ctx.lex.tokens[ctx.ast.pt].tpl = TP_MIDDLE) Or
-              (ctx.lex.tokens[ctx.ast.pt].tpl = TP_TAIL)) Then
+          If (TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_TEMPLATE) And
+             ((TokP(ctx.lex.tokens, ctx.ast.pt)^.tpl = TP_MIDDLE) Or
+              (TokP(ctx.lex.tokens, ctx.ast.pt)^.tpl = TP_TAIL)) Then
             Begin
               part := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.pt);
               ListAdd(ctx, first, last, part);
-              If ctx.lex.tokens[ctx.ast.pt].tpl = TP_TAIL Then
+              If TokP(ctx.lex.tokens, ctx.ast.pt)^.tpl = TP_TAIL Then
                 done := True;
               If Not done Then
                 PAdvance(ctx);
@@ -5374,7 +5707,7 @@ Begin
         End;
     End;
   PAdvance(ctx);
-  ctx.ast.nodes[node].e1 := first;
+  NodeP(ctx.ast.nodes, node)^.e1 := first;
   ParseTemplate := node;
 End;
 
@@ -5392,37 +5725,37 @@ Begin
   r_last := 0;
   a_first := 0;
   a_last := 0;
-  p := ctx.ast.nodes[t].e1;
+  p := NodeP(ctx.ast.nodes, t)^.e1;
   While p <> 0 Do
     Begin
-      nx := ctx.ast.nodes[p].next;
-      If ctx.ast.nodes[p].kind = N_TEMPLATE_STR Then
+      nx := NodeP(ctx.ast.nodes, p)^.next;
+      If NodeP(ctx.ast.nodes, p)^.kind = N_TEMPLATE_STR Then
         Begin
-          c := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.nodes[p].tok);
+          c := NewNode(ctx, N_TEMPLATE_STR, NodeP(ctx.ast.nodes, p)^.tok);
           ListAdd(ctx, s_first, s_last, c);
-          c := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.nodes[p].tok);
-          ctx.ast.nodes[c].flags := 1;
+          c := NewNode(ctx, N_TEMPLATE_STR, NodeP(ctx.ast.nodes, p)^.tok);
+          NodeP(ctx.ast.nodes, c)^.flags := 1;
           ListAdd(ctx, r_first, r_last, c);
         End
       Else
         Begin
-          ctx.ast.nodes[p].next := 0;
+          NodeP(ctx.ast.nodes, p)^.next := 0;
           ListAdd(ctx, a_first, a_last, p);
         End;
       p := nx;
     End;
-  ctx.ast.nodes[s_last].next := r_first;
-  idx := AddToken(ctx, TK_IDENT, ctx.lex.tokens[tpl_tok].line,
-                  ctx.lex.tokens[tpl_tok].col, ctx.lex.pos);
-  ctx.lex.tokens[idx].text := '__tpl';
+  NodeP(ctx.ast.nodes, s_last)^.next := r_first;
+  idx := AddToken(ctx, TK_IDENT, TokP(ctx.lex.tokens, tpl_tok)^.line,
+                  TokP(ctx.lex.tokens, tpl_tok)^.col, ctx.lex.pos);
+  TokP(ctx.lex.tokens, idx)^.text := '__tpl';
   id := NewNode(ctx, N_IDENT, idx);
   call_tpl := NewNode(ctx, N_CALL, tpl_tok);
-  ctx.ast.nodes[call_tpl].e1 := id;
-  ctx.ast.nodes[call_tpl].e2 := s_first;
-  ctx.ast.nodes[call_tpl].next := a_first;
+  NodeP(ctx.ast.nodes, call_tpl)^.e1 := id;
+  NodeP(ctx.ast.nodes, call_tpl)^.e2 := s_first;
+  NodeP(ctx.ast.nodes, call_tpl)^.next := a_first;
   outer := NewNode(ctx, N_CALL, tpl_tok);
-  ctx.ast.nodes[outer].e1 := tag;
-  ctx.ast.nodes[outer].e2 := call_tpl;
+  NodeP(ctx.ast.nodes, outer)^.e1 := tag;
+  NodeP(ctx.ast.nodes, outer)^.e2 := call_tpl;
   BuildTagged := outer;
 End;
 
@@ -5448,7 +5781,7 @@ Begin
             Begin
               el := NewNode(ctx, N_SPREAD, ctx.ast.pt);
               PAdvance(ctx);
-              ctx.ast.nodes[el].e1 := ParseAssign(ctx, False);
+              NodeP(ctx.ast.nodes, el)^.e1 := ParseAssign(ctx, False);
             End
           Else
             el := ParseAssign(ctx, False);
@@ -5462,7 +5795,7 @@ Begin
         End;
     End;
   Expect(ctx, ']');
-  ctx.ast.nodes[node].e1 := first;
+  NodeP(ctx.ast.nodes, node)^.e1 := first;
   ParseArrayLiteral := node;
 End;
 
@@ -5493,13 +5826,13 @@ Begin
       If CurIsP(ctx, '...') Then
         Begin
           PAdvance(ctx);
-          ctx.ast.nodes[prop].flags := PR_SPREAD;
-          ctx.ast.nodes[prop].e1 := ParseAssign(ctx, False);
+          NodeP(ctx.ast.nodes, prop)^.flags := PR_SPREAD;
+          NodeP(ctx.ast.nodes, prop)^.e1 := ParseAssign(ctx, False);
         End
       Else
         Begin
           If TkIsId(ctx, ctx.ast.pt, 'async') And IsModifier And
-             Not ctx.lex.tokens[PeekIdx(ctx, 1)].nl_before Then
+             Not TokP(ctx.lex.tokens, PeekIdx(ctx, 1))^.nl_before Then
             Begin
               PAdvance(ctx);
               fflags := fflags Or FN_ASYNC;
@@ -5521,12 +5854,12 @@ Begin
               PAdvance(ctx);
             End;
           key_tok := ctx.ast.pt;
-          ctx.ast.nodes[prop].tok := key_tok;
+          NodeP(ctx.ast.nodes, prop)^.tok := key_tok;
           If CurIsP(ctx, '[') Then
             Begin
               PAdvance(ctx);
               flags := flags Or PR_COMPUTED;
-              ctx.ast.nodes[prop].e2 := ParseAssign(ctx, False);
+              NodeP(ctx.ast.nodes, prop)^.e2 := ParseAssign(ctx, False);
               Expect(ctx, ']');
             End
           Else If IsPropertyNameTok(ctx, key_tok) Then
@@ -5540,10 +5873,10 @@ Begin
           If CurIsP(ctx, '(') Then
             Begin
               fn := NewNode(ctx, N_FUNC_EXPR, key_tok);
-              ctx.ast.nodes[fn].flags := fflags;
+              NodeP(ctx.ast.nodes, fn)^.flags := fflags;
               flags := flags Or PR_METHOD;
               ParseFuncRest(ctx, fn);
-              ctx.ast.nodes[prop].e1 := fn;
+              NodeP(ctx.ast.nodes, prop)^.e1 := fn;
             End
           Else If flags And (PR_METHOD Or PR_GETTER Or PR_SETTER) <> 0 Then
             Begin
@@ -5554,21 +5887,21 @@ Begin
           Else If CurIsP(ctx, ':') Then
             Begin
               PAdvance(ctx);
-              ctx.ast.nodes[prop].e1 := ParseAssign(ctx, False);
+              NodeP(ctx.ast.nodes, prop)^.e1 := ParseAssign(ctx, False);
             End
-          Else If (ctx.lex.tokens[key_tok].kind = TK_IDENT) And
+          Else If (TokP(ctx.lex.tokens, key_tok)^.kind = TK_IDENT) And
                   (flags And PR_COMPUTED = 0) And
                   (CurIsP(ctx, ',') Or CurIsP(ctx, '}') Or CurIsP(ctx, '=')) Then
             Begin
               flags := flags Or PR_SHORTHAND;
               fn := NewNode(ctx, N_IDENT, key_tok);
-              ctx.ast.nodes[prop].e1 := fn;
+              NodeP(ctx.ast.nodes, prop)^.e1 := fn;
               { a = 1 : valeur par defaut d'un motif d'affectation }
               If CurIsP(ctx, '=') Then
                 Begin
                   PAdvance(ctx);
                   flags := flags Or PR_DEFAULT;
-                  ctx.ast.nodes[prop].e3 := ParseAssign(ctx, False);
+                  NodeP(ctx.ast.nodes, prop)^.e3 := ParseAssign(ctx, False);
                 End;
             End
           Else
@@ -5577,7 +5910,7 @@ Begin
                          TokenDesc(ctx, ctx.ast.pt));
               Break;
             End;
-          ctx.ast.nodes[prop].flags := flags;
+          NodeP(ctx.ast.nodes, prop)^.flags := flags;
         End;
       ListAdd(ctx, first, last, prop);
       If CurIsP(ctx, ',') Then
@@ -5586,7 +5919,7 @@ Begin
         Break;
     End;
   Expect(ctx, '}');
-  ctx.ast.nodes[node].e1 := first;
+  NodeP(ctx.ast.nodes, node)^.e1 := first;
   ParseObjectLiteral := node;
 End;
 
@@ -5608,11 +5941,11 @@ Begin
       flags := flags Or FN_GENERATOR;
       PAdvance(ctx);
     End;
-  has_name := ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT;
+  has_name := TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT;
   If has_name Then
     name_tok := ctx.ast.pt;
   node := NewNode(ctx, N_FUNC_EXPR, name_tok);
-  ctx.ast.nodes[node].flags := flags;
+  NodeP(ctx.ast.nodes, node)^.flags := flags;
   If has_name Then
     Begin
       PAdvance(ctx);
@@ -5634,20 +5967,20 @@ Var
 Begin
   node := NewNode(ctx, N_FUNC_EXPR, ctx.ast.pt);
   ParseArrowFn := node;
-  ctx.ast.nodes[node].flags := FN_ARROW;
+  NodeP(ctx.ast.nodes, node)^.flags := FN_ARROW;
   If is_async Then
     Begin
-      ctx.ast.nodes[node].flags := ctx.ast.nodes[node].flags Or FN_ASYNC;
+      NodeP(ctx.ast.nodes, node)^.flags := NodeP(ctx.ast.nodes, node)^.flags Or FN_ASYNC;
       PAdvance(ctx);
     End;
   EnterFunc(ctx, node, sv);
-  If ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT Then
+  If TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT Then
     Begin
       par := NewNode(ctx, N_PARAM, ctx.ast.pt);
       bnd := NewNode(ctx, N_BIND_IDENT, ctx.ast.pt);
       DeclareName(ctx, DK_PARAM, ctx.ast.pt, bnd);
-      ctx.ast.nodes[par].e1 := bnd;
-      ctx.ast.nodes[node].e1 := par;
+      NodeP(ctx.ast.nodes, par)^.e1 := bnd;
+      NodeP(ctx.ast.nodes, node)^.e1 := par;
       PAdvance(ctx);
     End
   Else
@@ -5655,11 +5988,11 @@ Begin
   If Expect(ctx, '=>') Then
     Begin
       If CurIsP(ctx, '{') Then
-        ctx.ast.nodes[node].e2 := ParseFuncBlock(ctx)
+        NodeP(ctx.ast.nodes, node)^.e2 := ParseFuncBlock(ctx)
       Else
         Begin
-          ctx.ast.nodes[node].flags := ctx.ast.nodes[node].flags Or FN_EXPR_BODY;
-          ctx.ast.nodes[node].e2 := ParseAssign(ctx, no_in);
+          NodeP(ctx.ast.nodes, node)^.flags := NodeP(ctx.ast.nodes, node)^.flags Or FN_EXPR_BODY;
+          NodeP(ctx.ast.nodes, node)^.e2 := ParseAssign(ctx, no_in);
         End;
     End;
   LeaveFunc(ctx, sv);
@@ -5672,12 +6005,12 @@ Var
 Begin
   ParsePrimary := 0;
   t := ctx.ast.pt;
-  s := ctx.lex.tokens[t].text;
-  Case ctx.lex.tokens[t].kind Of
+  s := TokP(ctx.lex.tokens, t)^.text;
+  Case TokP(ctx.lex.tokens, t)^.kind Of
     TK_IDENT:
       Begin
         If (s = 'async') And TkIsKw(ctx, PeekIdx(ctx, 1), 'function') And
-           Not ctx.lex.tokens[PeekIdx(ctx, 1)].nl_before Then
+           Not TokP(ctx.lex.tokens, PeekIdx(ctx, 1))^.nl_before Then
           ParsePrimary := ParseFunctionExpr(ctx, True)
         Else
           Begin
@@ -5694,16 +6027,16 @@ Begin
       Begin
         node := NewNode(ctx, N_STRING, t);
         ParsePrimary := node;
-        If ctx.lex.tokens[t].flag_len = 1 Then
+        If TokP(ctx.lex.tokens, t)^.flag_len = 1 Then
           Begin
             { litteral BigInt : __BigInt("chiffres") }
-            bg_tok := AddToken(ctx, TK_IDENT, ctx.lex.tokens[t].line,
-                               ctx.lex.tokens[t].col, ctx.lex.pos);
-            ctx.lex.tokens[bg_tok].text := '__BigInt';
+            bg_tok := AddToken(ctx, TK_IDENT, TokP(ctx.lex.tokens, t)^.line,
+                               TokP(ctx.lex.tokens, t)^.col, ctx.lex.pos);
+            TokP(ctx.lex.tokens, bg_tok)^.text := '__BigInt';
             bg_str := node;
             node := NewNode(ctx, N_CALL, t);
-            ctx.ast.nodes[node].e1 := NewNode(ctx, N_IDENT, bg_tok);
-            ctx.ast.nodes[node].e2 := bg_str;
+            NodeP(ctx.ast.nodes, node)^.e1 := NewNode(ctx, N_IDENT, bg_tok);
+            NodeP(ctx.ast.nodes, node)^.e2 := bg_str;
             ParsePrimary := node;
           End;
         PAdvance(ctx);
@@ -5715,8 +6048,8 @@ Begin
       End;
     TK_TEMPLATE:
       Begin
-        If (ctx.lex.tokens[t].tpl = TP_NOSUB) Or
-           (ctx.lex.tokens[t].tpl = TP_HEAD) Then
+        If (TokP(ctx.lex.tokens, t)^.tpl = TP_NOSUB) Or
+           (TokP(ctx.lex.tokens, t)^.tpl = TP_HEAD) Then
           ParsePrimary := ParseTemplate(ctx)
         Else
           ParseError(ctx, t, 'gabarit inattendu');
@@ -5757,7 +6090,7 @@ Begin
             node := ParseExpr(ctx, False);
             Expect(ctx, ')');
             If node <> 0 Then
-              ctx.ast.nodes[node].paren := True;
+              NodeP(ctx.ast.nodes, node)^.paren := True;
             ParsePrimary := node;
           End
         Else If s = '[' Then
@@ -5784,18 +6117,18 @@ Begin
     Begin
       { new.target : appel de __newtarget() }
       PAdvance(ctx);
-      If Not ((ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT) And
-              (ctx.lex.tokens[ctx.ast.pt].text = 'target')) Then
+      If Not ((TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT) And
+              (TokP(ctx.lex.tokens, ctx.ast.pt)^.text = 'target')) Then
         Begin
           ParseError(ctx, ctx.ast.pt, '"target" attendu apres "new."');
           Exit;
         End;
-      nt_tok := AddToken(ctx, TK_IDENT, ctx.lex.tokens[ctx.ast.pt].line,
-                         ctx.lex.tokens[ctx.ast.pt].col, ctx.lex.pos);
-      ctx.lex.tokens[nt_tok].text := '__newtarget';
+      nt_tok := AddToken(ctx, TK_IDENT, TokP(ctx.lex.tokens, ctx.ast.pt)^.line,
+                         TokP(ctx.lex.tokens, ctx.ast.pt)^.col, ctx.lex.pos);
+      TokP(ctx.lex.tokens, nt_tok)^.text := '__newtarget';
       PAdvance(ctx);
-      ctx.ast.nodes[node].kind := N_CALL;
-      ctx.ast.nodes[node].e1 := NewNode(ctx, N_IDENT, nt_tok);
+      NodeP(ctx.ast.nodes, node)^.kind := N_CALL;
+      NodeP(ctx.ast.nodes, node)^.e1 := NewNode(ctx, N_IDENT, nt_tok);
       Exit;
     End;
   If CurIsKw(ctx, 'new') Then
@@ -5809,29 +6142,29 @@ Begin
           PAdvance(ctx);
           name_tok := ctx.ast.pt;
           If Not IsPropertyNameTok(ctx, name_tok) Or
-             (ctx.lex.tokens[name_tok].kind in [TK_STRING, TK_NUMBER]) Then
+             (TokP(ctx.lex.tokens, name_tok)^.kind in [TK_STRING, TK_NUMBER]) Then
             Begin
               ParseError(ctx, name_tok, 'nom de propriete attendu apres ".", trouve ' +
                          TokenDesc(ctx, name_tok));
               Break;
             End;
           m := NewNode(ctx, N_MEMBER, name_tok);
-          ctx.ast.nodes[m].e1 := callee;
+          NodeP(ctx.ast.nodes, m)^.e1 := callee;
           PAdvance(ctx);
         End
       Else
         Begin
           m := NewNode(ctx, N_INDEX, ctx.ast.pt);
           PAdvance(ctx);
-          ctx.ast.nodes[m].e1 := callee;
-          ctx.ast.nodes[m].e2 := ParseExpr(ctx, False);
+          NodeP(ctx.ast.nodes, m)^.e1 := callee;
+          NodeP(ctx.ast.nodes, m)^.e2 := ParseExpr(ctx, False);
           Expect(ctx, ']');
         End;
       callee := m;
     End;
-  ctx.ast.nodes[node].e1 := callee;
+  NodeP(ctx.ast.nodes, node)^.e1 := callee;
   If CurIsP(ctx, '(') Then
-    ctx.ast.nodes[node].e2 := ParseCallArgs(ctx);
+    NodeP(ctx.ast.nodes, node)^.e2 := ParseCallArgs(ctx);
 End;
 
 { Expression gauche : primaire suivi d'acces, d'appels, de ?. et de
@@ -5859,20 +6192,20 @@ Begin
       If CurIsP(ctx, '(') Then
         Begin
           m := NewNode(ctx, N_CALL, ctx.ast.pt);
-          ctx.ast.nodes[m].e1 := e;
-          ctx.ast.nodes[m].e2 := ParseCallArgs(ctx);
+          NodeP(ctx.ast.nodes, m)^.e1 := e;
+          NodeP(ctx.ast.nodes, m)^.e2 := ParseCallArgs(ctx);
           If optional Then
-            ctx.ast.nodes[m].flags := EF_OPTIONAL;
+            NodeP(ctx.ast.nodes, m)^.flags := EF_OPTIONAL;
         End
       Else If CurIsP(ctx, '[') Then
         Begin
           m := NewNode(ctx, N_INDEX, ctx.ast.pt);
           PAdvance(ctx);
-          ctx.ast.nodes[m].e1 := e;
-          ctx.ast.nodes[m].e2 := ParseExpr(ctx, False);
+          NodeP(ctx.ast.nodes, m)^.e1 := e;
+          NodeP(ctx.ast.nodes, m)^.e2 := ParseExpr(ctx, False);
           Expect(ctx, ']');
           If optional Then
-            ctx.ast.nodes[m].flags := EF_OPTIONAL;
+            NodeP(ctx.ast.nodes, m)^.flags := EF_OPTIONAL;
         End
       Else If optional Or CurIsP(ctx, '.') Then
         Begin
@@ -5880,21 +6213,21 @@ Begin
             PAdvance(ctx);
           name_tok := ctx.ast.pt;
           If Not IsPropertyNameTok(ctx, name_tok) Or
-             (ctx.lex.tokens[name_tok].kind in [TK_STRING, TK_NUMBER]) Then
+             (TokP(ctx.lex.tokens, name_tok)^.kind in [TK_STRING, TK_NUMBER]) Then
             Begin
               ParseError(ctx, name_tok, 'nom de propriete attendu apres ".", trouve ' +
                          TokenDesc(ctx, name_tok));
               Exit;
             End;
           m := NewNode(ctx, N_MEMBER, name_tok);
-          ctx.ast.nodes[m].e1 := e;
+          NodeP(ctx.ast.nodes, m)^.e1 := e;
           If optional Then
-            ctx.ast.nodes[m].flags := EF_OPTIONAL;
+            NodeP(ctx.ast.nodes, m)^.flags := EF_OPTIONAL;
           PAdvance(ctx);
         End
-      Else If (ctx.lex.tokens[ctx.ast.pt].kind = TK_TEMPLATE) And
-              ((ctx.lex.tokens[ctx.ast.pt].tpl = TP_NOSUB) Or
-               (ctx.lex.tokens[ctx.ast.pt].tpl = TP_HEAD)) Then
+      Else If (TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_TEMPLATE) And
+              ((TokP(ctx.lex.tokens, ctx.ast.pt)^.tpl = TP_NOSUB) Or
+               (TokP(ctx.lex.tokens, ctx.ast.pt)^.tpl = TP_HEAD)) Then
         Begin
           m := BuildTagged(ctx, e);
         End
@@ -5914,17 +6247,17 @@ Begin
   CurFuncHas := False;
   If (f = 0) Or (f = ctx.ast.root) Then
     Exit;
-  If ctx.ast.nodes[f].kind = N_METHOD Then
+  If NodeP(ctx.ast.nodes, f)^.kind = N_METHOD Then
     Begin
       If gen Then
-        CurFuncHas := ctx.ast.nodes[f].flags And MF_GENERATOR <> 0
+        CurFuncHas := NodeP(ctx.ast.nodes, f)^.flags And MF_GENERATOR <> 0
       Else
-        CurFuncHas := ctx.ast.nodes[f].flags And MF_ASYNC <> 0;
+        CurFuncHas := NodeP(ctx.ast.nodes, f)^.flags And MF_ASYNC <> 0;
     End
   Else If gen Then
-    CurFuncHas := ctx.ast.nodes[f].flags And FN_GENERATOR <> 0
+    CurFuncHas := NodeP(ctx.ast.nodes, f)^.flags And FN_GENERATOR <> 0
   Else
-    CurFuncHas := ctx.ast.nodes[f].flags And FN_ASYNC <> 0;
+    CurFuncHas := NodeP(ctx.ast.nodes, f)^.flags And FN_ASYNC <> 0;
 End;
 
 { Le jeton courant peut-il commencer une expression (apres yield) ? }
@@ -5935,11 +6268,11 @@ Var
 Begin
   t := ctx.ast.pt;
   StartsExpr := True;
-  If (ctx.lex.tokens[t].kind = TK_EOF) Or ctx.lex.tokens[t].nl_before Then
+  If (TokP(ctx.lex.tokens, t)^.kind = TK_EOF) Or TokP(ctx.lex.tokens, t)^.nl_before Then
     StartsExpr := False
-  Else If ctx.lex.tokens[t].kind = TK_PUNCT Then
+  Else If TokP(ctx.lex.tokens, t)^.kind = TK_PUNCT Then
     Begin
-      s := ctx.lex.tokens[t].text;
+      s := TokP(ctx.lex.tokens, t)^.text;
       If (s = ')') Or (s = ']') Or (s = '}') Or (s = ',') Or (s = ';') Or (s = ':') Then
         StartsExpr := False;
     End;
@@ -5952,54 +6285,54 @@ Var
   is_op: Boolean;
 Begin
   t := ctx.ast.pt;
-  s := ctx.lex.tokens[t].text;
+  s := TokP(ctx.lex.tokens, t)^.text;
   is_op := False;
   If TkIsId(ctx, t, 'await') And CurFuncHas(ctx, False) Then
     Begin
       node := NewNode(ctx, N_UNARY, t);
       PAdvance(ctx);
-      ctx.ast.nodes[node].e1 := ParseUnary(ctx);
+      NodeP(ctx.ast.nodes, node)^.e1 := ParseUnary(ctx);
       ParseUnary := node;
       Exit;
     End;
-  If ctx.lex.tokens[t].kind = TK_OPERATOR Then
+  If TokP(ctx.lex.tokens, t)^.kind = TK_OPERATOR Then
     { & unaire : operateur de reference &fn, extension utilisee par test22.js }
     is_op := (s = '!') Or (s = '~') Or (s = '+') Or (s = '-') Or (s = '&')
-  Else If ctx.lex.tokens[t].kind = TK_KEYWORD Then
+  Else If TokP(ctx.lex.tokens, t)^.kind = TK_KEYWORD Then
     is_op := (s = 'typeof') Or (s = 'void') Or (s = 'delete');
   If is_op Then
     Begin
       node := NewNode(ctx, N_UNARY, t);
       PAdvance(ctx);
-      ctx.ast.nodes[node].e1 := ParseUnary(ctx);
+      NodeP(ctx.ast.nodes, node)^.e1 := ParseUnary(ctx);
       ParseUnary := node;
     End
-  Else If (ctx.lex.tokens[t].kind = TK_OPERATOR) And
+  Else If (TokP(ctx.lex.tokens, t)^.kind = TK_OPERATOR) And
           ((s = '++') Or (s = '--')) Then
     Begin
       node := NewNode(ctx, N_UPDATE, t);
-      ctx.ast.nodes[node].flags := UF_PREFIX;
+      NodeP(ctx.ast.nodes, node)^.flags := UF_PREFIX;
       PAdvance(ctx);
       operand := ParseUnary(ctx);
       If (operand <> 0) And Not IsSimpleTarget(ctx, operand) Then
         ParseError(ctx, t, 'operande invalide pour ' + s);
-      ctx.ast.nodes[node].e1 := operand;
+      NodeP(ctx.ast.nodes, node)^.e1 := operand;
       ParseUnary := node;
     End
   Else
     Begin
       operand := ParseLHS(ctx);
       ParseUnary := operand;
-      If (operand <> 0) And (ctx.lex.tokens[ctx.ast.pt].kind = TK_OPERATOR) And
-         ((ctx.lex.tokens[ctx.ast.pt].text = '++') Or
-          (ctx.lex.tokens[ctx.ast.pt].text = '--')) And
-         Not ctx.lex.tokens[ctx.ast.pt].nl_before Then
+      If (operand <> 0) And (TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_OPERATOR) And
+         ((TokP(ctx.lex.tokens, ctx.ast.pt)^.text = '++') Or
+          (TokP(ctx.lex.tokens, ctx.ast.pt)^.text = '--')) And
+         Not TokP(ctx.lex.tokens, ctx.ast.pt)^.nl_before Then
         Begin
           If Not IsSimpleTarget(ctx, operand) Then
             ParseError(ctx, ctx.ast.pt, 'operande invalide pour ' +
-                       ctx.lex.tokens[ctx.ast.pt].text);
+                       TokP(ctx.lex.tokens, ctx.ast.pt)^.text);
           node := NewNode(ctx, N_UPDATE, ctx.ast.pt);
-          ctx.ast.nodes[node].e1 := operand;
+          NodeP(ctx.ast.nodes, node)^.e1 := operand;
           PAdvance(ctx);
           ParseUnary := node;
         End;
@@ -6022,11 +6355,11 @@ Begin
   While True Do
     Begin
       op_tok := ctx.ast.pt;
-      s := ctx.lex.tokens[op_tok].text;
+      s := TokP(ctx.lex.tokens, op_tok)^.text;
       prec := 0;
-      If ctx.lex.tokens[op_tok].kind = TK_OPERATOR Then
+      If TokP(ctx.lex.tokens, op_tok)^.kind = TK_OPERATOR Then
         prec := BinPrec(s)
-      Else If ctx.lex.tokens[op_tok].kind = TK_KEYWORD Then
+      Else If TokP(ctx.lex.tokens, op_tok)^.kind = TK_KEYWORD Then
         Begin
           If (s = 'instanceof') Or ((s = 'in') And Not no_in) Then
             prec := 8;
@@ -6043,33 +6376,33 @@ Begin
         node := NewNode(ctx, N_LOGICAL, op_tok)
       Else
         node := NewNode(ctx, N_BINARY, op_tok);
-      ctx.ast.nodes[node].e1 := left;
-      ctx.ast.nodes[node].e2 := right;
+      NodeP(ctx.ast.nodes, node)^.e1 := left;
+      NodeP(ctx.ast.nodes, node)^.e2 := right;
       { -a ** b est ambigu et interdit }
-      If (s = '**') And (ctx.ast.nodes[left].kind = N_UNARY) And
-         Not ctx.ast.nodes[left].paren Then
+      If (s = '**') And (NodeP(ctx.ast.nodes, left)^.kind = N_UNARY) And
+         Not NodeP(ctx.ast.nodes, left)^.paren Then
         ParseError(ctx, op_tok, 'operande unaire interdit a gauche de **, ajouter des parentheses');
       { a ?? b || c est interdit sans parentheses }
       If is_logical Then
         Begin
           If (s = '??') Then
             Begin
-              If ((ctx.ast.nodes[left].kind = N_LOGICAL) And
-                  Not ctx.ast.nodes[left].paren And
-                  (ctx.lex.tokens[ctx.ast.nodes[left].tok].text <> '??')) Or
-                 ((right <> 0) And (ctx.ast.nodes[right].kind = N_LOGICAL) And
-                  Not ctx.ast.nodes[right].paren And
-                  (ctx.lex.tokens[ctx.ast.nodes[right].tok].text <> '??')) Then
+              If ((NodeP(ctx.ast.nodes, left)^.kind = N_LOGICAL) And
+                  Not NodeP(ctx.ast.nodes, left)^.paren And
+                  (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, left)^.tok)^.text <> '??')) Or
+                 ((right <> 0) And (NodeP(ctx.ast.nodes, right)^.kind = N_LOGICAL) And
+                  Not NodeP(ctx.ast.nodes, right)^.paren And
+                  (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, right)^.tok)^.text <> '??')) Then
                 ParseError(ctx, op_tok, '?? ne peut pas etre melange avec || ou && sans parentheses');
             End
           Else
             Begin
-              If ((ctx.ast.nodes[left].kind = N_LOGICAL) And
-                  Not ctx.ast.nodes[left].paren And
-                  (ctx.lex.tokens[ctx.ast.nodes[left].tok].text = '??')) Or
-                 ((right <> 0) And (ctx.ast.nodes[right].kind = N_LOGICAL) And
-                  Not ctx.ast.nodes[right].paren And
-                  (ctx.lex.tokens[ctx.ast.nodes[right].tok].text = '??')) Then
+              If ((NodeP(ctx.ast.nodes, left)^.kind = N_LOGICAL) And
+                  Not NodeP(ctx.ast.nodes, left)^.paren And
+                  (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, left)^.tok)^.text = '??')) Or
+                 ((right <> 0) And (NodeP(ctx.ast.nodes, right)^.kind = N_LOGICAL) And
+                  Not NodeP(ctx.ast.nodes, right)^.paren And
+                  (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, right)^.tok)^.text = '??')) Then
                 ParseError(ctx, op_tok, '?? ne peut pas etre melange avec || ou && sans parentheses');
             End;
         End;
@@ -6088,10 +6421,10 @@ Begin
     Begin
       node := NewNode(ctx, N_COND, ctx.ast.pt);
       PAdvance(ctx);
-      ctx.ast.nodes[node].e1 := test;
-      ctx.ast.nodes[node].e2 := ParseAssign(ctx, False);
+      NodeP(ctx.ast.nodes, node)^.e1 := test;
+      NodeP(ctx.ast.nodes, node)^.e2 := ParseAssign(ctx, False);
       If Expect(ctx, ':') Then
-        ctx.ast.nodes[node].e3 := ParseAssign(ctx, no_in);
+        NodeP(ctx.ast.nodes, node)^.e3 := ParseAssign(ctx, no_in);
       ParseConditional := node;
     End;
 End;
@@ -6106,14 +6439,14 @@ Begin
     Begin
       node := NewNode(ctx, N_UNARY, ctx.ast.pt);
       PAdvance(ctx);
-      If (ctx.lex.tokens[ctx.ast.pt].kind = TK_OPERATOR) And
-         (ctx.lex.tokens[ctx.ast.pt].text = '*') Then
+      If (TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_OPERATOR) And
+         (TokP(ctx.lex.tokens, ctx.ast.pt)^.text = '*') Then
         Begin
-          ctx.ast.nodes[node].flags := 1;
+          NodeP(ctx.ast.nodes, node)^.flags := 1;
           PAdvance(ctx);
         End;
-      If StartsExpr(ctx) Or (ctx.ast.nodes[node].flags = 1) Then
-        ctx.ast.nodes[node].e1 := ParseAssign(ctx, no_in);
+      If StartsExpr(ctx) Or (NodeP(ctx.ast.nodes, node)^.flags = 1) Then
+        NodeP(ctx.ast.nodes, node)^.e1 := ParseAssign(ctx, no_in);
       ParseAssign := node;
       Exit;
     End;
@@ -6127,8 +6460,8 @@ Begin
   If left = 0 Then
     Exit;
   op_tok := ctx.ast.pt;
-  s := ctx.lex.tokens[op_tok].text;
-  If (ctx.lex.tokens[op_tok].kind = TK_OPERATOR) And IsAssignOp(s) Then
+  s := TokP(ctx.lex.tokens, op_tok)^.text;
+  If (TokP(ctx.lex.tokens, op_tok)^.kind = TK_OPERATOR) And IsAssignOp(s) Then
     Begin
       If s = '=' Then
         Begin
@@ -6140,8 +6473,8 @@ Begin
       PAdvance(ctx);
       right := ParseAssign(ctx, no_in);
       node := NewNode(ctx, N_ASSIGN, op_tok);
-      ctx.ast.nodes[node].e1 := left;
-      ctx.ast.nodes[node].e2 := right;
+      NodeP(ctx.ast.nodes, node)^.e1 := left;
+      NodeP(ctx.ast.nodes, node)^.e2 := right;
       ParseAssign := node;
     End;
 End;
@@ -6167,7 +6500,7 @@ Begin
             Break;
           ListAdd(ctx, first, last, e);
         End;
-      ctx.ast.nodes[seq].e1 := first;
+      NodeP(ctx.ast.nodes, seq)^.e1 := first;
       ParseExpr := seq;
     End;
 End;
@@ -6204,11 +6537,11 @@ Begin
   If CurIsP(ctx, '...') Then
     Begin
       PAdvance(ctx);
-      ctx.ast.nodes[node].flags := PF_REST;
+      NodeP(ctx.ast.nodes, node)^.flags := PF_REST;
     End;
-  ctx.ast.nodes[node].e1 := ParseBindingTarget(ctx, DK_PARAM);
-  If ctx.ast.nodes[node].flags <> PF_REST Then
-    ctx.ast.nodes[node].e2 := ParseBindingDefault(ctx);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseBindingTarget(ctx, DK_PARAM);
+  If NodeP(ctx.ast.nodes, node)^.flags <> PF_REST Then
+    NodeP(ctx.ast.nodes, node)^.e2 := ParseBindingDefault(ctx);
   ParseParam := node;
 End;
 
@@ -6235,7 +6568,7 @@ Begin
         End;
       Expect(ctx, ')');
     End;
-  ctx.ast.nodes[node].e1 := first;
+  NodeP(ctx.ast.nodes, node)^.e1 := first;
 End;
 
 { Corps de fonction entre accolades, dans la portee de la fonction. }
@@ -6244,10 +6577,10 @@ Var
   body: LongInt;
 Begin
   body := NewNode(ctx, N_BLOCK, ctx.ast.pt);
-  ctx.ast.nodes[body].flags := 1;
+  NodeP(ctx.ast.nodes, body)^.flags := 1;
   If Expect(ctx, '{') Then
     Begin
-      ctx.ast.nodes[body].e1 := ParseStmtList(ctx);
+      NodeP(ctx.ast.nodes, body)^.e1 := ParseStmtList(ctx);
       Expect(ctx, '}');
     End;
   ParseFuncBlock := body;
@@ -6261,7 +6594,7 @@ Var
 Begin
   EnterFunc(ctx, node, sv);
   ParseParamList(ctx, node);
-  ctx.ast.nodes[node].e2 := ParseFuncBlock(ctx);
+  NodeP(ctx.ast.nodes, node)^.e2 := ParseFuncBlock(ctx);
   LeaveFunc(ctx, sv);
 End;
 
@@ -6284,7 +6617,7 @@ Begin
       flags := flags Or FN_GENERATOR;
       PAdvance(ctx);
     End;
-  If ctx.lex.tokens[ctx.ast.pt].kind <> TK_IDENT Then
+  If TokP(ctx.lex.tokens, ctx.ast.pt)^.kind <> TK_IDENT Then
     Begin
       ParseError(ctx, ctx.ast.pt, 'nom de fonction attendu, trouve ' +
                  TokenDesc(ctx, ctx.ast.pt));
@@ -6294,7 +6627,7 @@ Begin
     End;
   name_tok := ctx.ast.pt;
   node := NewNode(ctx, N_FUNC_DECL, name_tok);
-  ctx.ast.nodes[node].flags := flags;
+  NodeP(ctx.ast.nodes, node)^.flags := flags;
   DeclareName(ctx, DK_FUNC, name_tok, node);
   PAdvance(ctx);
   ParseFuncRest(ctx, node);
@@ -6316,7 +6649,7 @@ Var
     nx := PeekIdx(ctx, 1);
     IsModifier := Not (TkIsP(ctx, nx, '(') Or TkIsP(ctx, nx, '=') Or
                        TkIsP(ctx, nx, ';') Or TkIsP(ctx, nx, '}')) And
-                  (ctx.lex.tokens[nx].kind <> TK_EOF);
+                  (TokP(ctx.lex.tokens, nx)^.kind <> TK_EOF);
   End;
 
 Begin
@@ -6329,15 +6662,15 @@ Begin
       If CurIsP(ctx, '{') Then
         Begin
           node := NewNode(ctx, N_STATIC_BLOCK, ctx.ast.pt);
-          ctx.ast.nodes[node].flags := MF_STATIC;
+          NodeP(ctx.ast.nodes, node)^.flags := MF_STATIC;
           blk := ParseBlock(ctx, True);
-          ctx.ast.nodes[node].e1 := blk;
+          NodeP(ctx.ast.nodes, node)^.e1 := blk;
           ParseClassMember := node;
           Exit;
         End;
     End;
   If TkIsId(ctx, ctx.ast.pt, 'async') And IsModifier And
-     Not ctx.lex.tokens[PeekIdx(ctx, 1)].nl_before Then
+     Not TokP(ctx.lex.tokens, PeekIdx(ctx, 1))^.nl_before Then
     Begin
       PAdvance(ctx);
       flags := flags Or MF_ASYNC;
@@ -6363,7 +6696,7 @@ Begin
     Begin
       PAdvance(ctx);
       flags := flags Or MF_COMPUTED;
-      ctx.ast.nodes[node].e3 := ParseAssign(ctx, False);
+      NodeP(ctx.ast.nodes, node)^.e3 := ParseAssign(ctx, False);
       Expect(ctx, ']');
     End
   Else If IsPropertyNameTok(ctx, ctx.ast.pt) Then
@@ -6381,24 +6714,24 @@ Begin
   If is_method Then
     Begin
       If (flags And (MF_STATIC Or MF_COMPUTED) = 0) And
-         (ctx.lex.tokens[key_tok].text = 'constructor') And
-         (ctx.lex.tokens[key_tok].kind <> TK_STRING) Then
+         (TokP(ctx.lex.tokens, key_tok)^.text = 'constructor') And
+         (TokP(ctx.lex.tokens, key_tok)^.kind <> TK_STRING) Then
         Begin
           flags := flags Or MF_CONSTRUCTOR;
           If has_ctor Then
             ParseError(ctx, key_tok, 'une classe ne peut avoir qu''un seul constructeur');
         End;
-      ctx.ast.nodes[node].flags := flags;
+      NodeP(ctx.ast.nodes, node)^.flags := flags;
       ParseFuncRest(ctx, node);
     End
   Else
     Begin
-      ctx.ast.nodes[node].kind := N_FIELD;
-      ctx.ast.nodes[node].flags := flags;
+      NodeP(ctx.ast.nodes, node)^.kind := N_FIELD;
+      NodeP(ctx.ast.nodes, node)^.flags := flags;
       If CurIsP(ctx, '=') Then
         Begin
           PAdvance(ctx);
-          ctx.ast.nodes[node].e1 := ParseAssign(ctx, False);
+          NodeP(ctx.ast.nodes, node)^.e1 := ParseAssign(ctx, False);
         End;
       ConsumeSemi(ctx);
     End;
@@ -6414,7 +6747,7 @@ Var
 Begin
   name_tok := ctx.ast.pt;
   PAdvance(ctx);
-  has_name := ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT;
+  has_name := TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT;
   If is_decl And Not has_name Then
     Begin
       ParseError(ctx, ctx.ast.pt, 'nom de classe attendu, trouve ' +
@@ -6441,7 +6774,7 @@ Begin
   If CurIsKw(ctx, 'extends') Then
     Begin
       PAdvance(ctx);
-      ctx.ast.nodes[node].e1 := ParseLHS(ctx);
+      NodeP(ctx.ast.nodes, node)^.e1 := ParseLHS(ctx);
     End;
   first := 0;
   last := 0;
@@ -6457,8 +6790,8 @@ Begin
             Begin
               before := ctx.ast.pt;
               m := ParseClassMember(ctx, has_ctor);
-              If (m <> 0) And (ctx.ast.nodes[m].kind = N_METHOD) And
-                 (ctx.ast.nodes[m].flags And MF_CONSTRUCTOR <> 0) Then
+              If (m <> 0) And (NodeP(ctx.ast.nodes, m)^.kind = N_METHOD) And
+                 (NodeP(ctx.ast.nodes, m)^.flags And MF_CONSTRUCTOR <> 0) Then
                 has_ctor := True;
               ListAdd(ctx, first, last, m);
               If ctx.ast.pt = before Then
@@ -6469,7 +6802,7 @@ Begin
         End;
       Expect(ctx, '}');
     End;
-  ctx.ast.nodes[node].e2 := first;
+  NodeP(ctx.ast.nodes, node)^.e2 := first;
   ctx.ast.cur_scope := save_scope;
   ParseClass := node;
 End;
@@ -6487,7 +6820,7 @@ Begin
   save_scope := ctx.ast.cur_scope;
   If new_scope Then
     ctx.ast.cur_scope := node;
-  ctx.ast.nodes[node].e1 := ParseStmtList(ctx);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseStmtList(ctx);
   ctx.ast.cur_scope := save_scope;
   Expect(ctx, '}');
 End;
@@ -6508,12 +6841,12 @@ Var
 Begin
   node := NewNode(ctx, N_IF, ctx.ast.pt);
   PAdvance(ctx);
-  ctx.ast.nodes[node].e1 := ParseParenExpr(ctx);
-  ctx.ast.nodes[node].e2 := ParseStatement(ctx);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseParenExpr(ctx);
+  NodeP(ctx.ast.nodes, node)^.e2 := ParseStatement(ctx);
   If CurIsKw(ctx, 'else') Then
     Begin
       PAdvance(ctx);
-      ctx.ast.nodes[node].e3 := ParseStatement(ctx);
+      NodeP(ctx.ast.nodes, node)^.e3 := ParseStatement(ctx);
     End;
   ParseIf := node;
 End;
@@ -6524,9 +6857,9 @@ Var
 Begin
   node := NewNode(ctx, N_WHILE, ctx.ast.pt);
   PAdvance(ctx);
-  ctx.ast.nodes[node].e1 := ParseParenExpr(ctx);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseParenExpr(ctx);
   Inc(ctx.ast.loop_depth);
-  ctx.ast.nodes[node].e2 := ParseStatement(ctx);
+  NodeP(ctx.ast.nodes, node)^.e2 := ParseStatement(ctx);
   Dec(ctx.ast.loop_depth);
   ParseWhile := node;
 End;
@@ -6538,12 +6871,12 @@ Begin
   node := NewNode(ctx, N_DO_WHILE, ctx.ast.pt);
   PAdvance(ctx);
   Inc(ctx.ast.loop_depth);
-  ctx.ast.nodes[node].e1 := ParseStatement(ctx);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseStatement(ctx);
   Dec(ctx.ast.loop_depth);
   If CurIsKw(ctx, 'while') Then
     Begin
       PAdvance(ctx);
-      ctx.ast.nodes[node].e2 := ParseParenExpr(ctx);
+      NodeP(ctx.ast.nodes, node)^.e2 := ParseParenExpr(ctx);
     End
   Else
     ParseError(ctx, ctx.ast.pt, '"while" attendu, trouve ' +
@@ -6589,13 +6922,13 @@ Begin
   is_of := TkIsId(ctx, ctx.ast.pt, 'of');
   If (is_in Or is_of) And (init <> 0) Then
     Begin
-      If ctx.ast.nodes[init].kind = N_VAR_DECL Then
+      If NodeP(ctx.ast.nodes, init)^.kind = N_VAR_DECL Then
         Begin
-          If (ctx.ast.nodes[init].e1 = 0) Or
-             (ctx.ast.nodes[ctx.ast.nodes[init].e1].next <> 0) Then
+          If (NodeP(ctx.ast.nodes, init)^.e1 = 0) Or
+             (NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, init)^.e1)^.next <> 0) Then
             ParseError(ctx, ctx.ast.pt,
                        'une seule variable est permise dans for-in / for-of')
-          Else If ctx.ast.nodes[ctx.ast.nodes[init].e1].e2 <> 0 Then
+          Else If NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, init)^.e1)^.e2 <> 0 Then
             ParseError(ctx, ctx.ast.pt,
                        'initialiseur interdit dans for-in / for-of');
         End;
@@ -6603,39 +6936,39 @@ Begin
         kind := N_FOR_OF
       Else
         kind := N_FOR_IN;
-      ctx.ast.nodes[node].kind := kind;
+      NodeP(ctx.ast.nodes, node)^.kind := kind;
       PAdvance(ctx);
-      ctx.ast.nodes[node].e1 := init;
+      NodeP(ctx.ast.nodes, node)^.e1 := init;
       If is_in Then
-        ctx.ast.nodes[node].e2 := ParseExpr(ctx, False)
+        NodeP(ctx.ast.nodes, node)^.e2 := ParseExpr(ctx, False)
       Else
-        ctx.ast.nodes[node].e2 := ParseAssign(ctx, False);
+        NodeP(ctx.ast.nodes, node)^.e2 := ParseAssign(ctx, False);
       Expect(ctx, ')');
       Inc(ctx.ast.loop_depth);
-      ctx.ast.nodes[node].e3 := ParseStatement(ctx);
+      NodeP(ctx.ast.nodes, node)^.e3 := ParseStatement(ctx);
       Dec(ctx.ast.loop_depth);
     End
   Else
     Begin
-      ctx.ast.nodes[node].e1 := init;
+      NodeP(ctx.ast.nodes, node)^.e1 := init;
       If Expect(ctx, ';') Then
         Begin
           test := 0;
           If Not CurIsP(ctx, ';') Then
             test := ParseExpr(ctx, False);
-          ctx.ast.nodes[node].e2 := test;
+          NodeP(ctx.ast.nodes, node)^.e2 := test;
           If Expect(ctx, ';') Then
             Begin
               upd := 0;
               If Not CurIsP(ctx, ')') Then
                 upd := ParseExpr(ctx, False);
-              ctx.ast.nodes[node].e3 := upd;
+              NodeP(ctx.ast.nodes, node)^.e3 := upd;
               If Expect(ctx, ')') Then
                 Begin
                   Inc(ctx.ast.loop_depth);
                   body := ParseStatement(ctx);
                   Dec(ctx.ast.loop_depth);
-                  ctx.ast.nodes[node].e4 := body;
+                  NodeP(ctx.ast.nodes, node)^.e4 := body;
                 End;
             End;
         End;
@@ -6651,7 +6984,7 @@ Begin
   node := NewNode(ctx, N_SWITCH, ctx.ast.pt);
   ParseSwitch := node;
   PAdvance(ctx);
-  ctx.ast.nodes[node].e1 := ParseParenExpr(ctx);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseParenExpr(ctx);
   If Not Expect(ctx, '{') Then
     Begin
       Synchronize(ctx);
@@ -6672,7 +7005,7 @@ Begin
           If CurIsKw(ctx, 'case') Then
             Begin
               PAdvance(ctx);
-              ctx.ast.nodes[cs].e1 := ParseExpr(ctx, False);
+              NodeP(ctx.ast.nodes, cs)^.e1 := ParseExpr(ctx, False);
             End
           Else
             Begin
@@ -6696,7 +7029,7 @@ Begin
               If ctx.errors >= MAX_ERRORS Then
                 Break;
             End;
-          ctx.ast.nodes[cs].e2 := sfirst;
+          NodeP(ctx.ast.nodes, cs)^.e2 := sfirst;
           ListAdd(ctx, first, last, cs);
         End
       Else
@@ -6710,7 +7043,7 @@ Begin
       If ctx.errors >= MAX_ERRORS Then
         Break;
     End;
-  ctx.ast.nodes[node].e2 := first;
+  NodeP(ctx.ast.nodes, node)^.e2 := first;
   Expect(ctx, '}');
   Dec(ctx.ast.switch_depth);
   ctx.ast.cur_scope := save_scope;
@@ -6723,7 +7056,7 @@ Begin
   node := NewNode(ctx, N_TRY, ctx.ast.pt);
   ParseTry := node;
   PAdvance(ctx);
-  ctx.ast.nodes[node].e1 := ParseBlock(ctx, True);
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseBlock(ctx, True);
   If CurIsKw(ctx, 'catch') Then
     Begin
       cn := NewNode(ctx, N_CATCH, ctx.ast.pt);
@@ -6733,20 +7066,20 @@ Begin
       If CurIsP(ctx, '(') Then
         Begin
           PAdvance(ctx);
-          ctx.ast.nodes[cn].e1 := ParseBindingTarget(ctx, DK_CATCH);
+          NodeP(ctx.ast.nodes, cn)^.e1 := ParseBindingTarget(ctx, DK_CATCH);
           Expect(ctx, ')');
         End;
-      ctx.ast.nodes[cn].e2 := ParseBlock(ctx, False);
+      NodeP(ctx.ast.nodes, cn)^.e2 := ParseBlock(ctx, False);
       ctx.ast.cur_scope := save_scope;
-      ctx.ast.nodes[node].e2 := cn;
+      NodeP(ctx.ast.nodes, node)^.e2 := cn;
     End;
   If CurIsKw(ctx, 'finally') Then
     Begin
       PAdvance(ctx);
-      ctx.ast.nodes[node].e3 := ParseBlock(ctx, True);
+      NodeP(ctx.ast.nodes, node)^.e3 := ParseBlock(ctx, True);
     End;
-  If (ctx.ast.nodes[node].e2 = 0) And (ctx.ast.nodes[node].e3 = 0) Then
-    ParseError(ctx, ctx.ast.nodes[node].tok,
+  If (NodeP(ctx.ast.nodes, node)^.e2 = 0) And (NodeP(ctx.ast.nodes, node)^.e3 = 0) Then
+    ParseError(ctx, NodeP(ctx.ast.nodes, node)^.tok,
                'try exige un bloc catch ou finally');
 End;
 
@@ -6756,7 +7089,7 @@ Var
 Begin
   FindLabel := 0;
   For i := 1 To ctx.ast.label_count Do
-    If ctx.lex.tokens[ctx.ast.labels[i].tok].text = ctx.lex.tokens[tok].text Then
+    If TokP(ctx.lex.tokens, LabelRecP(ctx.ast.labels, i)^.tok)^.text = TokP(ctx.lex.tokens, tok)^.text Then
       FindLabel := i;
 End;
 
@@ -6770,17 +7103,17 @@ Begin
   Else
     node := NewNode(ctx, N_CONTINUE, kw_tok);
   PAdvance(ctx);
-  If (ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT) And
-     Not ctx.lex.tokens[ctx.ast.pt].nl_before Then
+  If (TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT) And
+     Not TokP(ctx.lex.tokens, ctx.ast.pt)^.nl_before Then
     Begin
-      ctx.ast.nodes[node].e1 := ctx.ast.pt;
+      NodeP(ctx.ast.nodes, node)^.e1 := ctx.ast.pt;
       lbl := FindLabel(ctx, ctx.ast.pt);
       If lbl = 0 Then
         ParseError(ctx, ctx.ast.pt, 'etiquette inconnue: ' +
-                   ctx.lex.tokens[ctx.ast.pt].text)
-      Else If (Not is_break) And (Not ctx.ast.labels[lbl].is_loop) Then
+                   TokP(ctx.lex.tokens, ctx.ast.pt)^.text)
+      Else If (Not is_break) And (Not LabelRecP(ctx.ast.labels, lbl)^.is_loop) Then
         ParseError(ctx, ctx.ast.pt, 'continue exige une etiquette de boucle: ' +
-                   ctx.lex.tokens[ctx.ast.pt].text);
+                   TokP(ctx.lex.tokens, ctx.ast.pt)^.text);
       PAdvance(ctx);
     End
   Else If is_break Then
@@ -6809,13 +7142,13 @@ Begin
     node := NewNode(ctx, N_THROW, kw_tok);
   PAdvance(ctx);
   If CurIsP(ctx, ';') Or CurIsP(ctx, '}') Or CurIsEof(ctx) Or
-     ctx.lex.tokens[ctx.ast.pt].nl_before Then
+     TokP(ctx.lex.tokens, ctx.ast.pt)^.nl_before Then
     Begin
       If Not is_return Then
         ParseError(ctx, ctx.ast.pt, 'expression attendue apres throw');
     End
   Else
-    ctx.ast.nodes[node].e1 := ParseExpr(ctx, False);
+    NodeP(ctx.ast.nodes, node)^.e1 := ParseExpr(ctx, False);
   ConsumeSemi(ctx);
   ParseReturnThrow := node;
 End;
@@ -6829,23 +7162,15 @@ Begin
   ParseLabeled := node;
   If FindLabel(ctx, lbl_tok) <> 0 Then
     ParseError(ctx, lbl_tok, 'etiquette en double: ' +
-               ctx.lex.tokens[lbl_tok].text);
+               TokP(ctx.lex.tokens, lbl_tok)^.text);
   PAdvance(ctx);
   PAdvance(ctx);
-  If ctx.ast.label_count < MAX_LABELS Then
-    Begin
-      Inc(ctx.ast.label_count);
-      ctx.ast.labels[ctx.ast.label_count].tok := lbl_tok;
-      ctx.ast.labels[ctx.ast.label_count].is_loop :=
-        CurIsKw(ctx, 'for') Or CurIsKw(ctx, 'while') Or CurIsKw(ctx, 'do');
-      ctx.ast.nodes[node].e1 := ParseStatement(ctx);
-      Dec(ctx.ast.label_count);
-    End
-  Else
-    Begin
-      ParseError(ctx, lbl_tok, 'etiquettes imbriquees trop profondes');
-      ctx.ast.nodes[node].e1 := ParseStatement(ctx);
-    End;
+  Inc(ctx.ast.label_count);
+  LabelRecP(ctx.ast.labels, ctx.ast.label_count)^.tok := lbl_tok;
+  LabelRecP(ctx.ast.labels, ctx.ast.label_count)^.is_loop :=
+    CurIsKw(ctx, 'for') Or CurIsKw(ctx, 'while') Or CurIsKw(ctx, 'do');
+  NodeP(ctx.ast.nodes, node)^.e1 := ParseStatement(ctx);
+  Dec(ctx.ast.label_count);
 End;
 
 Function ParseExprStatement(Var ctx: TCompilerContext): LongInt;
@@ -6860,7 +7185,7 @@ Begin
       ParseExprStatement := 0;
       Exit;
     End;
-  ctx.ast.nodes[node].e1 := ex;
+  NodeP(ctx.ast.nodes, node)^.e1 := ex;
   ConsumeSemi(ctx);
   ParseExprStatement := node;
 End;
@@ -6871,7 +7196,7 @@ Var
   s: TTokenText;
 Begin
   ParseStatement := 0;
-  s := ctx.lex.tokens[ctx.ast.pt].text;
+  s := TokP(ctx.lex.tokens, ctx.ast.pt)^.text;
   If CurIsP(ctx, '{') Then
     ParseStatement := ParseBlock(ctx, True)
   Else If CurIsP(ctx, ';') Then
@@ -6879,7 +7204,7 @@ Begin
       ParseStatement := NewNode(ctx, N_EMPTY, ctx.ast.pt);
       PAdvance(ctx);
     End
-  Else If ctx.lex.tokens[ctx.ast.pt].kind = TK_KEYWORD Then
+  Else If TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_KEYWORD Then
     Begin
       If (s = 'var') Or (s = 'let') Or (s = 'const') Then
         Begin
@@ -6933,13 +7258,13 @@ Begin
       Else
         ParseStatement := ParseExprStatement(ctx);
     End
-  Else If ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT Then
+  Else If TokP(ctx.lex.tokens, ctx.ast.pt)^.kind = TK_IDENT Then
     Begin
       nx := PeekIdx(ctx, 1);
       If TkIsP(ctx, nx, ':') Then
         ParseStatement := ParseLabeled(ctx)
       Else If (s = 'async') And TkIsKw(ctx, nx, 'function') And
-              Not ctx.lex.tokens[nx].nl_before Then
+              Not TokP(ctx.lex.tokens, nx)^.nl_before Then
         ParseStatement := ParseFunctionDecl(ctx, True)
       Else
         ParseStatement := ParseExprStatement(ctx);
@@ -6991,7 +7316,7 @@ Begin
           Break;
         End;
     End;
-  ctx.ast.nodes[ctx.ast.root].e1 := first;
+  NodeP(ctx.ast.nodes, ctx.ast.root)^.e1 := first;
   If ctx.options.verbose Then
     Writeln('AST    : ', ctx.ast.node_count, ' noeuds, ',
             ctx.ast.decl_count, ' declarations');
@@ -7100,9 +7425,9 @@ Begin
     Exit;
   For i := 1 To indent Do
     Write('  ');
-  Write(NodeKindName(ctx.ast.nodes[n].kind));
-  f := ctx.ast.nodes[n].flags;
-  Case ctx.ast.nodes[n].kind Of
+  Write(NodeKindName(NodeP(ctx.ast.nodes, n)^.kind));
+  f := NodeP(ctx.ast.nodes, n)^.flags;
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_VAR_DECL:
       Case f Of
         DF_VAR:   Write(' var');
@@ -7111,8 +7436,8 @@ Begin
       End;
     N_BIND_IDENT, N_FUNC_DECL, N_CLASS_DECL, N_LABELED:
       Begin
-        Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
-        If (ctx.ast.nodes[n].kind = N_FUNC_DECL) Then
+        Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
+        If (NodeP(ctx.ast.nodes, n)^.kind = N_FUNC_DECL) Then
           Begin
             If f And FN_ASYNC <> 0 Then
               Write(' async');
@@ -7121,8 +7446,8 @@ Begin
           End;
       End;
     N_BREAK, N_CONTINUE:
-      If ctx.ast.nodes[n].e1 <> 0 Then
-        Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].e1].text);
+      If NodeP(ctx.ast.nodes, n)^.e1 <> 0 Then
+        Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.e1)^.text);
     N_PARAM:
       If f And PF_REST <> 0 Then
         Write(' ...');
@@ -7130,7 +7455,7 @@ Begin
       Begin
         If f And PF_REST <> 0 Then
           Write(' ...');
-        If ctx.ast.nodes[n].e1 = 0 Then
+        If NodeP(ctx.ast.nodes, n)^.e1 = 0 Then
           Write(' (trou)');
       End;
     N_PATTERN_PROP:
@@ -7138,7 +7463,7 @@ Begin
         If f And PP_REST <> 0 Then
           Write(' ...')
         Else If f And PP_COMPUTED = 0 Then
-          Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+          Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
         If f And PP_SHORTHAND <> 0 Then
           Write(' (raccourci)');
       End;
@@ -7147,7 +7472,7 @@ Begin
         If f And MF_COMPUTED <> 0 Then
           Write(' [calcule]')
         Else
-          Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+          Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
         If f And MF_STATIC <> 0 Then
           Write(' static');
         If f And MF_GETTER <> 0 Then
@@ -7163,19 +7488,19 @@ Begin
       End;
     N_NUMBER, N_STRING, N_REGEX, N_IDENT, N_BOOL, N_THIS, N_SUPER,
     N_NULL:
-      Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+      Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
     N_TEMPLATE_STR:
       Begin
         Write(' "');
-        PrintPoolText(ctx, ctx.lex.tokens[ctx.ast.nodes[n].tok].sval_off,
-                      ctx.lex.tokens[ctx.ast.nodes[n].tok].sval_len);
+        PrintPoolText(ctx, TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.sval_off,
+                      TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.sval_len);
         Write('"');
       End;
     N_UNARY, N_BINARY, N_LOGICAL, N_ASSIGN:
-      Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+      Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
     N_UPDATE:
       Begin
-        Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+        Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
         If f And UF_PREFIX <> 0 Then
           Write(' prefixe')
         Else
@@ -7183,7 +7508,7 @@ Begin
       End;
     N_MEMBER:
       Begin
-        Write(' .', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+        Write(' .', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
         If f And EF_OPTIONAL <> 0 Then
           Write(' ?.');
       End;
@@ -7195,7 +7520,7 @@ Begin
         If f And PR_SPREAD <> 0 Then
           Write(' ...')
         Else If f And PR_COMPUTED = 0 Then
-          Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text)
+          Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text)
         Else
           Write(' [calcule]');
         If f And PR_SHORTHAND <> 0 Then
@@ -7212,7 +7537,7 @@ Begin
         If f And FN_ARROW <> 0 Then
           Write(' fleche')
         Else If f And FN_METHOD = 0 Then
-          Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+          Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
         If f And FN_ASYNC <> 0 Then
           Write(' async');
         If f And FN_GENERATOR <> 0 Then
@@ -7221,129 +7546,129 @@ Begin
           Write(' (corps expression)');
       End;
     N_CLASS_EXPR:
-      If ctx.lex.tokens[ctx.ast.nodes[n].tok].kind = TK_IDENT Then
-        Write(' ', ctx.lex.tokens[ctx.ast.nodes[n].tok].text);
+      If TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.kind = TK_IDENT Then
+        Write(' ', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text);
   End;
   If ctx.ast.analyzed Then
     WriteAnnotation(ctx, n);
-  Write('  @', ctx.lex.tokens[ctx.ast.nodes[n].tok].line, ':',
-        ctx.lex.tokens[ctx.ast.nodes[n].tok].col);
+  Write('  @', TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.line, ':',
+        TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.col);
   Writeln;
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_PROGRAM, N_BLOCK, N_VAR_DECL, N_ARRAY_PATTERN, N_OBJECT_PATTERN,
     N_ARRAY_LIT, N_OBJECT_LIT, N_TEMPLATE, N_SEQUENCE:
-      DumpNodeList(ctx, ctx.ast.nodes[n].e1, indent + 1);
+      DumpNodeList(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
     N_EXPR_STMT, N_RETURN, N_THROW, N_LABELED, N_SPREAD, N_UNARY, N_UPDATE,
     N_MEMBER:
-      DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
+      DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
     N_DECLARATOR, N_PATTERN_ELEM:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_PATTERN_PROP:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_IF:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
       End;
     N_WHILE, N_DO_WHILE:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_FOR:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e4, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e4, indent + 1);
       End;
     N_FOR_IN, N_FOR_OF:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
       End;
     N_SWITCH:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNodeList(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNodeList(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_CASE:
       Begin
-        If ctx.ast.nodes[n].e1 = 0 Then
+        If NodeP(ctx.ast.nodes, n)^.e1 = 0 Then
           Begin
             For i := 0 To indent Do
               Write('  ');
             Writeln('default');
           End
         Else
-          DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNodeList(ctx, ctx.ast.nodes[n].e2, indent + 1);
+          DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNodeList(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_TRY:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
       End;
     N_CATCH:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_BINARY, N_LOGICAL, N_ASSIGN, N_INDEX, N_TAGGED:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_COND:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
       End;
     N_CALL, N_NEW:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNodeList(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNodeList(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_PROP:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
       End;
     N_FUNC_DECL, N_METHOD, N_FUNC_EXPR:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
-        DumpNodeList(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
+        DumpNodeList(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_PARAM:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_CLASS_DECL, N_CLASS_EXPR:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
-        DumpNodeList(ctx, ctx.ast.nodes[n].e2, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
+        DumpNodeList(ctx, NodeP(ctx.ast.nodes, n)^.e2, indent + 1);
       End;
     N_FIELD:
       Begin
-        DumpNode(ctx, ctx.ast.nodes[n].e3, indent + 1);
-        DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e3, indent + 1);
+        DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
       End;
     N_STATIC_BLOCK:
-      DumpNode(ctx, ctx.ast.nodes[n].e1, indent + 1);
+      DumpNode(ctx, NodeP(ctx.ast.nodes, n)^.e1, indent + 1);
   End;
 End;
 
@@ -7352,7 +7677,7 @@ Begin
   While n <> 0 Do
     Begin
       DumpNode(ctx, n, indent);
-      n := ctx.ast.nodes[n].next;
+      n := NodeP(ctx.ast.nodes, n)^.next;
     End;
 End;
 
@@ -7365,15 +7690,15 @@ Begin
   Writeln('Declarations (', ctx.ast.decl_count, ') :');
   For i := 1 To ctx.ast.decl_count Do
     Begin
-      sc := ctx.ast.decls[i].scope;
-      Write('  ', DeclKindName(ctx.ast.decls[i].kind), ' ',
-            ctx.lex.tokens[ctx.ast.decls[i].name_tok].text,
-            '  portee ', NodeKindName(ctx.ast.nodes[sc].kind), '@',
-            ctx.lex.tokens[ctx.ast.nodes[sc].tok].line);
-      If ctx.ast.decls[i].origin <> sc Then
+      sc := DeclP(ctx.ast.decls, i)^.scope;
+      Write('  ', DeclKindName(DeclP(ctx.ast.decls, i)^.kind), ' ',
+            TokP(ctx.lex.tokens, DeclP(ctx.ast.decls, i)^.name_tok)^.text,
+            '  portee ', NodeKindName(NodeP(ctx.ast.nodes, sc)^.kind), '@',
+            TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, sc)^.tok)^.line);
+      If DeclP(ctx.ast.decls, i)^.origin <> sc Then
         Write(' (hisse depuis ',
-              NodeKindName(ctx.ast.nodes[ctx.ast.decls[i].origin].kind), '@',
-              ctx.lex.tokens[ctx.ast.nodes[ctx.ast.decls[i].origin].tok].line,
+              NodeKindName(NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, i)^.origin)^.kind), '@',
+              TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, i)^.origin)^.tok)^.line,
               ')');
       Writeln;
     End;
@@ -7401,17 +7726,17 @@ End;
 
 Function SemTokText(Var ctx: TCompilerContext; tok: LongInt): TTokenText;
 Begin
-  SemTokText := ctx.lex.tokens[tok].text;
+  SemTokText := TokP(ctx.lex.tokens, tok)^.text;
 End;
 
 Procedure SemError(Var ctx: TCompilerContext; tok: LongInt; msg: TString);
 Begin
-  SourceErrorAt(ctx, ctx.lex.tokens[tok].line, ctx.lex.tokens[tok].col, msg);
+  SourceErrorAt(ctx, TokP(ctx.lex.tokens, tok)^.line, TokP(ctx.lex.tokens, tok)^.col, msg);
 End;
 
 Procedure SemWarn(Var ctx: TCompilerContext; tok: LongInt; msg: TString);
 Begin
-  SourceWarnAt(ctx, ctx.lex.tokens[tok].line, ctx.lex.tokens[tok].col, msg);
+  SourceWarnAt(ctx, TokP(ctx.lex.tokens, tok)^.line, TokP(ctx.lex.tokens, tok)^.col, msg);
 End;
 
 Function IsBuiltinGlobal(Const name: TTokenText): Boolean;
@@ -7443,7 +7768,7 @@ Function LineOfTok(Var ctx: TCompilerContext; tok: LongInt): TString;
 Var
   s: String[12];
 Begin
-  Str(ctx.lex.tokens[tok].line, s);
+  Str(TokP(ctx.lex.tokens, tok)^.line, s);
   LineOfTok := s;
 End;
 
@@ -7455,75 +7780,70 @@ Var
   name: TTokenText;
   conflict: Boolean;
 Begin
-  name := SemTokText(ctx, ctx.ast.decls[d].name_tok);
-  old := ctx.sem.scopes[sc].first_sym;
+  name := SemTokText(ctx, DeclP(ctx.ast.decls, d)^.name_tok);
+  old := ScopeP(ctx.sem.scopes, sc)^.first_sym;
   While old <> 0 Do
     Begin
-      If SemTokText(ctx, ctx.sem.syms[old].name_tok) = name Then
+      If SemTokText(ctx, SymP(ctx.sem.syms, old)^.name_tok) = name Then
         Begin
           conflict := False;
-          If (ctx.sem.syms[old].kind <> DK_FNAME) And
-             (ctx.ast.decls[d].kind <> DK_FNAME) Then
+          If (SymP(ctx.sem.syms, old)^.kind <> DK_FNAME) And
+             (DeclP(ctx.ast.decls, d)^.kind <> DK_FNAME) Then
             Begin
-              If IsLexicalKind(ctx.ast.decls[d].kind) Or
-                 IsLexicalKind(ctx.sem.syms[old].kind) Then
+              If IsLexicalKind(DeclP(ctx.ast.decls, d)^.kind) Or
+                 IsLexicalKind(SymP(ctx.sem.syms, old)^.kind) Then
                 conflict := True
-              Else If (ctx.ast.decls[d].kind = DK_PARAM) And
-                      (ctx.sem.syms[old].kind = DK_PARAM) Then
-                SemWarn(ctx, ctx.ast.decls[d].name_tok,
+              Else If (DeclP(ctx.ast.decls, d)^.kind = DK_PARAM) And
+                      (SymP(ctx.sem.syms, old)^.kind = DK_PARAM) Then
+                SemWarn(ctx, DeclP(ctx.ast.decls, d)^.name_tok,
                         'parametre en double: ' + name);
             End;
           If conflict Then
             Begin
-              SemError(ctx, ctx.ast.decls[d].name_tok,
+              SemError(ctx, DeclP(ctx.ast.decls, d)^.name_tok,
                        'redeclaration de "' + name + '" (deja declare ligne ' +
-                       LineOfTok(ctx, ctx.sem.syms[old].name_tok) + ')');
+                       LineOfTok(ctx, SymP(ctx.sem.syms, old)^.name_tok) + ')');
               Break;
             End;
           { var, function et parametre redeclares : meme variable }
-          If (Not conflict) And (ctx.sem.syms[old].kind <> DK_FNAME) And
-             (ctx.ast.decls[d].kind <> DK_FNAME) And
-             (ctx.sem.syms[old].kind In [DK_VAR, DK_FUNC, DK_PARAM]) And
-             (ctx.ast.decls[d].kind In [DK_VAR, DK_FUNC, DK_PARAM]) Then
+          If (Not conflict) And (SymP(ctx.sem.syms, old)^.kind <> DK_FNAME) And
+             (DeclP(ctx.ast.decls, d)^.kind <> DK_FNAME) And
+             (SymP(ctx.sem.syms, old)^.kind In [DK_VAR, DK_FUNC, DK_PARAM]) And
+             (DeclP(ctx.ast.decls, d)^.kind In [DK_VAR, DK_FUNC, DK_PARAM]) Then
             Begin
-              If ctx.ast.decls[d].kind = DK_FUNC Then
+              If DeclP(ctx.ast.decls, d)^.kind = DK_FUNC Then
                 Begin
-                  ctx.sem.syms[old].kind := DK_FUNC;
-                  ctx.sem.syms[old].node := ctx.ast.decls[d].node;
-                  ctx.sem.syms[old].flags := ctx.sem.syms[old].flags Or SF_HOISTED;
+                  SymP(ctx.sem.syms, old)^.kind := DK_FUNC;
+                  SymP(ctx.sem.syms, old)^.node := DeclP(ctx.ast.decls, d)^.node;
+                  SymP(ctx.sem.syms, old)^.flags := SymP(ctx.sem.syms, old)^.flags Or SF_HOISTED;
                 End;
-              ctx.ast.nodes[ctx.ast.decls[d].node].sym := old;
+              NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, d)^.node)^.sym := old;
               Exit;
             End;
         End;
-      old := ctx.sem.syms[old].next;
-    End;
-  If ctx.sem.sym_count >= MAX_SYMS Then
-    Begin
-      SemError(ctx, ctx.ast.decls[d].name_tok, 'trop de symboles');
-      Exit;
+      old := SymP(ctx.sem.syms, old)^.next;
     End;
   Inc(ctx.sem.sym_count);
   sy := ctx.sem.sym_count;
-  ctx.sem.syms[sy].name_tok := ctx.ast.decls[d].name_tok;
-  ctx.sem.syms[sy].kind := ctx.ast.decls[d].kind;
-  ctx.sem.syms[sy].scope := sc;
-  ctx.sem.syms[sy].node := ctx.ast.decls[d].node;
-  ctx.sem.syms[sy].next := 0;
-  ctx.sem.syms[sy].flags := 0;
-  ctx.sem.syms[sy].refs := 0;
-  ctx.sem.syms[sy].writes := 0;
-  If (ctx.sem.scopes[sc].func = 1) And Not ctx.sem.scopes[sc].in_loop And
-     (ctx.sem.syms[sy].kind In [DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS]) Then
-    ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_STATIC;
-  If (ctx.sem.syms[sy].kind = DK_VAR) Or (ctx.sem.syms[sy].kind = DK_FUNC) Then
-    ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_HOISTED;
-  ctx.ast.nodes[ctx.ast.decls[d].node].sym := sy;
-  If ctx.sem.scopes[sc].first_sym = 0 Then
-    ctx.sem.scopes[sc].first_sym := sy
+  SymP(ctx.sem.syms, sy)^.name_tok := DeclP(ctx.ast.decls, d)^.name_tok;
+  SymP(ctx.sem.syms, sy)^.kind := DeclP(ctx.ast.decls, d)^.kind;
+  SymP(ctx.sem.syms, sy)^.scope := sc;
+  SymP(ctx.sem.syms, sy)^.node := DeclP(ctx.ast.decls, d)^.node;
+  SymP(ctx.sem.syms, sy)^.next := 0;
+  SymP(ctx.sem.syms, sy)^.flags := 0;
+  SymP(ctx.sem.syms, sy)^.refs := 0;
+  SymP(ctx.sem.syms, sy)^.writes := 0;
+  If (ScopeP(ctx.sem.scopes, sc)^.func = 1) And Not ScopeP(ctx.sem.scopes, sc)^.in_loop And
+     (SymP(ctx.sem.syms, sy)^.kind In [DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS]) Then
+    SymP(ctx.sem.syms, sy)^.flags := SymP(ctx.sem.syms, sy)^.flags Or SF_STATIC;
+  If (SymP(ctx.sem.syms, sy)^.kind = DK_VAR) Or (SymP(ctx.sem.syms, sy)^.kind = DK_FUNC) Then
+    SymP(ctx.sem.syms, sy)^.flags := SymP(ctx.sem.syms, sy)^.flags Or SF_HOISTED;
+  NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, d)^.node)^.sym := sy;
+  If ScopeP(ctx.sem.scopes, sc)^.first_sym = 0 Then
+    ScopeP(ctx.sem.scopes, sc)^.first_sym := sy
   Else
-    ctx.sem.syms[ctx.sem.scopes[sc].last_sym].next := sy;
-  ctx.sem.scopes[sc].last_sym := sy;
+    SymP(ctx.sem.syms, ScopeP(ctx.sem.scopes, sc)^.last_sym)^.next := sy;
+  ScopeP(ctx.sem.scopes, sc)^.last_sym := sy;
 End;
 
 Function EnterScope(Var ctx: TCompilerContext; node: LongInt;
@@ -7532,42 +7852,35 @@ Var
   sc, par, d: LongInt;
 Begin
   EnterScope := ctx.sem.cur_scope;
-  If ctx.sem.scope_count >= MAX_SCOPES Then
-    Begin
-      If Not ctx.sem.stop Then
-        SemError(ctx, ctx.ast.nodes[node].tok, 'trop de portees');
-      ctx.sem.stop := True;
-      Exit;
-    End;
   Inc(ctx.sem.scope_count);
   sc := ctx.sem.scope_count;
   par := ctx.sem.cur_scope;
-  ctx.sem.scopes[sc].node := node;
-  ctx.sem.scopes[sc].kind := kind;
-  ctx.sem.scopes[sc].fkind := fk;
-  ctx.sem.scopes[sc].parent := par;
+  ScopeP(ctx.sem.scopes, sc)^.node := node;
+  ScopeP(ctx.sem.scopes, sc)^.kind := kind;
+  ScopeP(ctx.sem.scopes, sc)^.fkind := fk;
+  ScopeP(ctx.sem.scopes, sc)^.parent := par;
   If (kind = SK_GLOBAL) Or (kind = SK_FUNCTION) Then
-    ctx.sem.scopes[sc].func := sc
+    ScopeP(ctx.sem.scopes, sc)^.func := sc
   Else
-    ctx.sem.scopes[sc].func := ctx.sem.scopes[par].func;
-  ctx.sem.scopes[sc].in_loop := (ctx.sem.loop_depth > 0) Or ctx.sem.next_in_loop;
+    ScopeP(ctx.sem.scopes, sc)^.func := ScopeP(ctx.sem.scopes, par)^.func;
+  ScopeP(ctx.sem.scopes, sc)^.in_loop := (ctx.sem.loop_depth > 0) Or ctx.sem.next_in_loop;
   ctx.sem.next_in_loop := False;
-  ctx.sem.scopes[sc].first_sym := 0;
-  ctx.sem.scopes[sc].last_sym := 0;
-  ctx.sem.scopes[sc].uses_this := False;
-  ctx.sem.scopes[sc].this_captured := False;
-  ctx.sem.scopes[sc].uses_arguments := False;
-  ctx.sem.scopes[sc].has_nested := False;
-  ctx.sem.scopes[sc].cap_count := 0;
-  ctx.ast.nodes[node].scope := sc;
+  ScopeP(ctx.sem.scopes, sc)^.first_sym := 0;
+  ScopeP(ctx.sem.scopes, sc)^.last_sym := 0;
+  ScopeP(ctx.sem.scopes, sc)^.uses_this := False;
+  ScopeP(ctx.sem.scopes, sc)^.this_captured := False;
+  ScopeP(ctx.sem.scopes, sc)^.uses_arguments := False;
+  ScopeP(ctx.sem.scopes, sc)^.has_nested := False;
+  ScopeP(ctx.sem.scopes, sc)^.cap_count := 0;
+  NodeP(ctx.ast.nodes, node)^.scope := sc;
   If (kind = SK_FUNCTION) And (par <> 0) Then
-    ctx.sem.scopes[ctx.sem.scopes[par].func].has_nested := True;
+    ScopeP(ctx.sem.scopes, ScopeP(ctx.sem.scopes, par)^.func)^.has_nested := True;
   ctx.sem.cur_scope := sc;
-  d := ctx.ast.nodes[node].decl_head;
+  d := NodeP(ctx.ast.nodes, node)^.decl_head;
   While d <> 0 Do
     Begin
       CreateSymbol(ctx, sc, d);
-      d := ctx.ast.decls[d].next;
+      d := DeclP(ctx.ast.decls, d)^.next;
     End;
   EnterScope := sc;
 End;
@@ -7575,7 +7888,7 @@ End;
 Procedure LeaveScope(Var ctx: TCompilerContext; sc: LongInt);
 Begin
   If sc <> 0 Then
-    ctx.sem.cur_scope := ctx.sem.scopes[sc].parent;
+    ctx.sem.cur_scope := ScopeP(ctx.sem.scopes, sc)^.parent;
 End;
 
 Function LookupSymbol(Var ctx: TCompilerContext; Const name: TTokenText): LongInt;
@@ -7585,17 +7898,17 @@ Begin
   sc := ctx.sem.cur_scope;
   While sc <> 0 Do
     Begin
-      sy := ctx.sem.scopes[sc].first_sym;
+      sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
       While sy <> 0 Do
         Begin
-          If SemTokText(ctx, ctx.sem.syms[sy].name_tok) = name Then
+          If SemTokText(ctx, SymP(ctx.sem.syms, sy)^.name_tok) = name Then
             Begin
               LookupSymbol := sy;
               Exit;
             End;
-          sy := ctx.sem.syms[sy].next;
+          sy := SymP(ctx.sem.syms, sy)^.next;
         End;
-      sc := ctx.sem.scopes[sc].parent;
+      sc := ScopeP(ctx.sem.scopes, sc)^.parent;
     End;
   LookupSymbol := 0;
 End;
@@ -7609,19 +7922,19 @@ Begin
   sc := ctx.sem.cur_scope;
   While sc <> 0 Do
     Begin
-      sy := ctx.sem.scopes[sc].first_sym;
+      sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
       While sy <> 0 Do
         Begin
-          If SemTokText(ctx, ctx.sem.syms[sy].name_tok) = name Then
+          If SemTokText(ctx, SymP(ctx.sem.syms, sy)^.name_tok) = name Then
             Begin
               LookupWithin := sy;
               Exit;
             End;
-          sy := ctx.sem.syms[sy].next;
+          sy := SymP(ctx.sem.syms, sy)^.next;
         End;
       If sc = stop Then
         Break;
-      sc := ctx.sem.scopes[sc].parent;
+      sc := ScopeP(ctx.sem.scopes, sc)^.parent;
     End;
   LookupWithin := 0;
 End;
@@ -7632,23 +7945,21 @@ Var
   sy: LongInt;
 Begin
   CreateArgsSymbol := 0;
-  If ctx.sem.sym_count >= MAX_SYMS Then
-    Exit;
   Inc(ctx.sem.sym_count);
   sy := ctx.sem.sym_count;
-  ctx.sem.syms[sy].name_tok := tok;
-  ctx.sem.syms[sy].kind := DK_ARGS;
-  ctx.sem.syms[sy].scope := prov;
-  ctx.sem.syms[sy].node := 0;
-  ctx.sem.syms[sy].next := 0;
-  ctx.sem.syms[sy].flags := 0;
-  ctx.sem.syms[sy].refs := 0;
-  ctx.sem.syms[sy].writes := 0;
-  If ctx.sem.scopes[prov].first_sym = 0 Then
-    ctx.sem.scopes[prov].first_sym := sy
+  SymP(ctx.sem.syms, sy)^.name_tok := tok;
+  SymP(ctx.sem.syms, sy)^.kind := DK_ARGS;
+  SymP(ctx.sem.syms, sy)^.scope := prov;
+  SymP(ctx.sem.syms, sy)^.node := 0;
+  SymP(ctx.sem.syms, sy)^.next := 0;
+  SymP(ctx.sem.syms, sy)^.flags := 0;
+  SymP(ctx.sem.syms, sy)^.refs := 0;
+  SymP(ctx.sem.syms, sy)^.writes := 0;
+  If ScopeP(ctx.sem.scopes, prov)^.first_sym = 0 Then
+    ScopeP(ctx.sem.scopes, prov)^.first_sym := sy
   Else
-    ctx.sem.syms[ctx.sem.scopes[prov].last_sym].next := sy;
-  ctx.sem.scopes[prov].last_sym := sy;
+    SymP(ctx.sem.syms, ScopeP(ctx.sem.scopes, prov)^.last_sym)^.next := sy;
+  ScopeP(ctx.sem.scopes, prov)^.last_sym := sy;
   CreateArgsSymbol := sy;
 End;
 
@@ -7659,14 +7970,12 @@ Var
   i: LongInt;
 Begin
   For i := 1 To ctx.sem.cap_count Do
-    If (ctx.sem.caps[i].fscope = fscope) And (ctx.sem.caps[i].sym = sy) Then
+    If (CapP(ctx.sem.caps, i)^.fscope = fscope) And (CapP(ctx.sem.caps, i)^.sym = sy) Then
       Exit;
-  If ctx.sem.cap_count >= MAX_CAPS Then
-    Exit;
   Inc(ctx.sem.cap_count);
-  ctx.sem.caps[ctx.sem.cap_count].fscope := fscope;
-  ctx.sem.caps[ctx.sem.cap_count].sym := sy;
-  Inc(ctx.sem.scopes[fscope].cap_count);
+  CapP(ctx.sem.caps, ctx.sem.cap_count)^.fscope := fscope;
+  CapP(ctx.sem.caps, ctx.sem.cap_count)^.sym := sy;
+  Inc(ScopeP(ctx.sem.scopes, fscope)^.cap_count);
 End;
 
 { ---- Resolution d'un identifiant ---- }
@@ -7678,18 +7987,18 @@ Begin
   sc := ctx.sem.cur_scope;
   While sc <> 0 Do
     Begin
-      If ctx.sem.scopes[sc].kind = SK_GLOBAL Then
+      If ScopeP(ctx.sem.scopes, sc)^.kind = SK_GLOBAL Then
         Begin
           NearestNonArrow := sc;
           Exit;
         End;
-      If (ctx.sem.scopes[sc].kind = SK_FUNCTION) And
-         (ctx.sem.scopes[sc].fkind <> FK_ARROW) Then
+      If (ScopeP(ctx.sem.scopes, sc)^.kind = SK_FUNCTION) And
+         (ScopeP(ctx.sem.scopes, sc)^.fkind <> FK_ARROW) Then
         Begin
           NearestNonArrow := sc;
           Exit;
         End;
-      sc := ctx.sem.scopes[sc].parent;
+      sc := ScopeP(ctx.sem.scopes, sc)^.parent;
     End;
   NearestNonArrow := 1;
 End;
@@ -7700,23 +8009,23 @@ Var
   name: TTokenText;
   is_write, is_read: Boolean;
 Begin
-  tok := ctx.ast.nodes[n].tok;
+  tok := NodeP(ctx.ast.nodes, n)^.tok;
   name := SemTokText(ctx, tok);
   is_write := (mode = RM_WRITE) Or (mode = RM_READWRITE);
   is_read := (mode = RM_READ) Or (mode = RM_READWRITE);
-  ctx.ast.nodes[n].sym := 0;
+  NodeP(ctx.ast.nodes, n)^.sym := 0;
   sy := 0;
   If name = 'arguments' Then
     Begin
       { objet arguments : symbole cache de la fonction englobante non
         fleche, capture comme une variable ordinaire par les fleches }
       prov := NearestNonArrow(ctx);
-      If ctx.sem.scopes[prov].kind = SK_FUNCTION Then
+      If ScopeP(ctx.sem.scopes, prov)^.kind = SK_FUNCTION Then
         Begin
           sy := LookupWithin(ctx, name, prov);
           If sy = 0 Then
             sy := CreateArgsSymbol(ctx, prov, tok);
-          ctx.sem.scopes[prov].uses_arguments := True;
+          ScopeP(ctx.sem.scopes, prov)^.uses_arguments := True;
         End;
     End;
   If sy = 0 Then
@@ -7728,80 +8037,77 @@ Begin
   If sy = 0 Then
     Begin
       If IsBuiltinGlobal(name) Then
-        ctx.ast.nodes[n].aux := RK_BUILTIN
+        NodeP(ctx.ast.nodes, n)^.aux := RK_BUILTIN
       Else If is_write And Not is_read Then
         Begin
           { affectation a une variable non declaree : globale implicite }
           SemWarn(ctx, tok, 'affectation a la variable non declaree "' + name +
                   '" : creation d''une globale implicite');
-          If ctx.sem.sym_count < MAX_SYMS Then
-            Begin
-              Inc(ctx.sem.sym_count);
-              sy := ctx.sem.sym_count;
-              ctx.sem.syms[sy].name_tok := tok;
-              ctx.sem.syms[sy].kind := DK_VAR;
-              ctx.sem.syms[sy].scope := 1;
-              ctx.sem.syms[sy].node := n;
-              ctx.sem.syms[sy].next := 0;
-              ctx.sem.syms[sy].flags := SF_STATIC Or SF_IMPLICIT Or SF_REASSIGNED;
-              ctx.sem.syms[sy].refs := 0;
-              ctx.sem.syms[sy].writes := 1;
-              If ctx.sem.scopes[1].first_sym = 0 Then
-                ctx.sem.scopes[1].first_sym := sy
-              Else
-                ctx.sem.syms[ctx.sem.scopes[1].last_sym].next := sy;
-              ctx.sem.scopes[1].last_sym := sy;
-              ctx.ast.nodes[n].sym := sy;
-              ctx.ast.nodes[n].aux := RK_GLOBAL_IMPLICIT;
-            End;
+            Inc(ctx.sem.sym_count);
+            sy := ctx.sem.sym_count;
+            SymP(ctx.sem.syms, sy)^.name_tok := tok;
+            SymP(ctx.sem.syms, sy)^.kind := DK_VAR;
+            SymP(ctx.sem.syms, sy)^.scope := 1;
+            SymP(ctx.sem.syms, sy)^.node := n;
+            SymP(ctx.sem.syms, sy)^.next := 0;
+            SymP(ctx.sem.syms, sy)^.flags := SF_STATIC Or SF_IMPLICIT Or SF_REASSIGNED;
+            SymP(ctx.sem.syms, sy)^.refs := 0;
+            SymP(ctx.sem.syms, sy)^.writes := 1;
+            If ScopeP(ctx.sem.scopes, 1)^.first_sym = 0 Then
+              ScopeP(ctx.sem.scopes, 1)^.first_sym := sy
+            Else
+              SymP(ctx.sem.syms, ScopeP(ctx.sem.scopes, 1)^.last_sym)^.next := sy;
+            ScopeP(ctx.sem.scopes, 1)^.last_sym := sy;
+            NodeP(ctx.ast.nodes, n)^.sym := sy;
+            NodeP(ctx.ast.nodes, n)^.aux := RK_GLOBAL_IMPLICIT;
         End
       Else If ctx.sem.in_typeof Then
-        ctx.ast.nodes[n].aux := RK_UNDECLARED_OK
+        NodeP(ctx.ast.nodes, n)^.aux := RK_UNDECLARED_OK
       Else
         Begin
           SemError(ctx, tok, 'variable non declaree: ' + name);
-          ctx.ast.nodes[n].aux := RK_UNRESOLVED;
+          NodeP(ctx.ast.nodes, n)^.aux := RK_UNRESOLVED;
         End;
       Exit;
     End;
 
-  ctx.ast.nodes[n].sym := sy;
-  rf := ctx.sem.scopes[ctx.sem.cur_scope].func;
-  sf := ctx.sem.scopes[ctx.sem.syms[sy].scope].func;
+  NodeP(ctx.ast.nodes, n)^.sym := sy;
+  rf := ScopeP(ctx.sem.scopes, ctx.sem.cur_scope)^.func;
+  sf := ScopeP(ctx.sem.scopes, SymP(ctx.sem.syms, sy)^.scope)^.func;
   If is_read Then
-    Inc(ctx.sem.syms[sy].refs);
+    Inc(SymP(ctx.sem.syms, sy)^.refs);
 
   If rf = sf Then
-    ctx.ast.nodes[n].aux := RK_LOCAL
+    NodeP(ctx.ast.nodes, n)^.aux := RK_LOCAL
   Else
     Begin
-      ctx.ast.nodes[n].aux := RK_OUTER;
-      ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_CAPTURED;
-      If ctx.sem.syms[sy].flags And SF_STATIC = 0 Then
+      NodeP(ctx.ast.nodes, n)^.aux := RK_OUTER;
+      SymP(ctx.sem.syms, sy)^.flags := SymP(ctx.sem.syms, sy)^.flags Or SF_CAPTURED;
+      If SymP(ctx.sem.syms, sy)^.flags And SF_STATIC = 0 Then
         Begin
-          ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_CELL;
+          SymP(ctx.sem.syms, sy)^.flags := SymP(ctx.sem.syms, sy)^.flags Or SF_CELL;
           f := rf;
           While (f <> sf) And (f <> 0) Do
             Begin
               AddCapture(ctx, f, sy);
-              f := ctx.sem.scopes[ctx.sem.scopes[f].parent].func;
+              f := ScopeP(ctx.sem.scopes, ScopeP(ctx.sem.scopes, f)^.parent)^.func;
             End;
         End;
-      If ctx.sem.scopes[ctx.sem.syms[sy].scope].in_loop And
-         (ctx.sem.syms[sy].kind <> DK_VAR) Then
-        ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_PER_ITER;
+      If ScopeP(ctx.sem.scopes, SymP(ctx.sem.syms, sy)^.scope)^.in_loop And
+         (SymP(ctx.sem.syms, sy)^.kind <> DK_VAR) Then
+        SymP(ctx.sem.syms, sy)^.flags := SymP(ctx.sem.syms, sy)^.flags Or SF_PER_ITER;
     End;
 
   { zone morte temporelle des declarations lexicales }
-  If IsLexicalKind(ctx.sem.syms[sy].kind) Then
+  If IsLexicalKind(SymP(ctx.sem.syms, sy)^.kind) Then
     Begin
       If rf = sf Then
         Begin
-          If tok < ctx.sem.syms[sy].name_tok Then
+          If tok < SymP(ctx.sem.syms, sy)^.name_tok Then
             SemError(ctx, tok, '"' + name + '" utilise avant sa declaration ' +
                      '(zone morte temporelle, ligne ' +
-                     LineOfTok(ctx, ctx.sem.syms[sy].name_tok) + ')')
-          Else If ctx.sem.syms[sy].flags And SF_INITIALIZING <> 0 Then
+                     LineOfTok(ctx, SymP(ctx.sem.syms, sy)^.name_tok) + ')')
+          Else If SymP(ctx.sem.syms, sy)^.flags And SF_INITIALIZING <> 0 Then
             SemError(ctx, tok, '"' + name + '" utilise dans son propre ' +
                      'initialiseur (zone morte temporelle)');
         End
@@ -7809,21 +8115,21 @@ Begin
         Begin
           { fonction imbriquee ecrite avant la declaration : test a l'execution }
           f := rf;
-          While ctx.sem.scopes[ctx.sem.scopes[f].parent].func <> sf Do
-            f := ctx.sem.scopes[ctx.sem.scopes[f].parent].func;
-          If ctx.ast.nodes[ctx.sem.scopes[f].node].tok <
-             ctx.sem.syms[sy].name_tok Then
-            ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_TDZ_CHECK;
+          While ScopeP(ctx.sem.scopes, ScopeP(ctx.sem.scopes, f)^.parent)^.func <> sf Do
+            f := ScopeP(ctx.sem.scopes, ScopeP(ctx.sem.scopes, f)^.parent)^.func;
+          If NodeP(ctx.ast.nodes, ScopeP(ctx.sem.scopes, f)^.node)^.tok <
+             SymP(ctx.sem.syms, sy)^.name_tok Then
+            SymP(ctx.sem.syms, sy)^.flags := SymP(ctx.sem.syms, sy)^.flags Or SF_TDZ_CHECK;
         End;
     End;
 
   If is_write Then
     Begin
-      Inc(ctx.sem.syms[sy].writes);
-      ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_REASSIGNED;
-      If ctx.sem.syms[sy].kind = DK_CONST Then
+      Inc(SymP(ctx.sem.syms, sy)^.writes);
+      SymP(ctx.sem.syms, sy)^.flags := SymP(ctx.sem.syms, sy)^.flags Or SF_REASSIGNED;
+      If SymP(ctx.sem.syms, sy)^.kind = DK_CONST Then
         SemError(ctx, tok, 'reaffectation de la constante "' + name + '"')
-      Else If ctx.sem.syms[sy].kind = DK_FNAME Then
+      Else If SymP(ctx.sem.syms, sy)^.kind = DK_FNAME Then
         SemWarn(ctx, tok, 'affectation ignoree au nom de fonction "' + name + '"');
     End;
 End;
@@ -7855,16 +8161,16 @@ Begin
   sc := ctx.sem.cur_scope;
   While sc <> 0 Do
     Begin
-      If ctx.sem.scopes[sc].kind = SK_GLOBAL Then
+      If ScopeP(ctx.sem.scopes, sc)^.kind = SK_GLOBAL Then
         Break;
-      If ctx.sem.scopes[sc].kind = SK_FUNCTION Then
+      If ScopeP(ctx.sem.scopes, sc)^.kind = SK_FUNCTION Then
         Begin
-          If ctx.sem.scopes[sc].fkind <> FK_ARROW Then
+          If ScopeP(ctx.sem.scopes, sc)^.fkind <> FK_ARROW Then
             Break;
           via_arrow := True;
-          ctx.sem.scopes[sc].uses_this := True;
+          ScopeP(ctx.sem.scopes, sc)^.uses_this := True;
         End;
-      sc := ctx.sem.scopes[sc].parent;
+      sc := ScopeP(ctx.sem.scopes, sc)^.parent;
     End;
   If sc = 0 Then
     sc := 1;
@@ -7877,13 +8183,13 @@ Var
   via: Boolean;
 Begin
   prov := FindThisProvider(ctx, via);
-  ctx.sem.scopes[prov].uses_this := True;
+  ScopeP(ctx.sem.scopes, prov)^.uses_this := True;
   If via Then
-    ctx.sem.scopes[prov].this_captured := True;
-  ctx.ast.nodes[n].sym := prov;
-  ctx.ast.nodes[n].aux := ThisBindingOf(ctx.sem.scopes[prov].fkind);
+    ScopeP(ctx.sem.scopes, prov)^.this_captured := True;
+  NodeP(ctx.ast.nodes, n)^.sym := prov;
+  NodeP(ctx.ast.nodes, n)^.aux := ThisBindingOf(ScopeP(ctx.sem.scopes, prov)^.fkind);
   If via Then
-    ctx.ast.nodes[n].e1 := 1;
+    NodeP(ctx.ast.nodes, n)^.e1 := 1;
 End;
 
 Procedure ResolveSuper(Var ctx: TCompilerContext; n: LongInt; is_call: Boolean);
@@ -7893,19 +8199,19 @@ Var
   fk: TFuncKind;
 Begin
   prov := FindThisProvider(ctx, via);
-  fk := ctx.sem.scopes[prov].fkind;
-  ctx.ast.nodes[n].sym := prov;
-  ctx.sem.scopes[prov].uses_this := True;
+  fk := ScopeP(ctx.sem.scopes, prov)^.fkind;
+  NodeP(ctx.ast.nodes, n)^.sym := prov;
+  ScopeP(ctx.sem.scopes, prov)^.uses_this := True;
   If via Then
-    ctx.sem.scopes[prov].this_captured := True;
+    ScopeP(ctx.sem.scopes, prov)^.this_captured := True;
   If is_call Then
     Begin
       If fk <> FK_DERIVED_CTOR Then
-        SemError(ctx, ctx.ast.nodes[n].tok,
+        SemError(ctx, NodeP(ctx.ast.nodes, n)^.tok,
                  'super(...) n''est permis que dans le constructeur d''une classe derivee');
     End
   Else If (fk = FK_GLOBAL) Or (fk = FK_FUNCTION) Then
-    SemError(ctx, ctx.ast.nodes[n].tok,
+    SemError(ctx, NodeP(ctx.ast.nodes, n)^.tok,
              'super en dehors d''une methode ou d''un constructeur');
 End;
 
@@ -7934,11 +8240,11 @@ End;
 Function NodeField(Var ctx: TCompilerContext; n, slot: LongInt): LongInt;
 Begin
   Case slot Of
-    1: NodeField := ctx.ast.nodes[n].e1;
-    2: NodeField := ctx.ast.nodes[n].e2;
-    3: NodeField := ctx.ast.nodes[n].e3;
+    1: NodeField := NodeP(ctx.ast.nodes, n)^.e1;
+    2: NodeField := NodeP(ctx.ast.nodes, n)^.e2;
+    3: NodeField := NodeP(ctx.ast.nodes, n)^.e3;
   Else
-    NodeField := ctx.ast.nodes[n].e4;
+    NodeField := NodeP(ctx.ast.nodes, n)^.e4;
   End;
 End;
 
@@ -7949,7 +8255,7 @@ Begin
   While n <> 0 Do
     Begin
       SemNode(ctx, n);
-      n := ctx.ast.nodes[n].next;
+      n := NodeP(ctx.ast.nodes, n)^.next;
     End;
 End;
 
@@ -7959,7 +8265,7 @@ Var
   slot: Integer;
   e: LongInt;
 Begin
-  spec := ChildSpec(ctx.ast.nodes[n].kind);
+  spec := ChildSpec(NodeP(ctx.ast.nodes, n)^.kind);
   For slot := 1 To Length(spec) Do
     Begin
       e := NodeField(ctx, n, slot);
@@ -7977,41 +8283,41 @@ Var
 Begin
   If n = 0 Then
     Exit;
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_IDENT:
       ResolveIdent(ctx, n, RM_WRITE);
     N_ARRAY_LIT:
       Begin
-        el := ctx.ast.nodes[n].e1;
+        el := NodeP(ctx.ast.nodes, n)^.e1;
         While el <> 0 Do
           Begin
-            If ctx.ast.nodes[el].kind = N_SPREAD Then
-              SemTarget(ctx, ctx.ast.nodes[el].e1)
+            If NodeP(ctx.ast.nodes, el)^.kind = N_SPREAD Then
+              SemTarget(ctx, NodeP(ctx.ast.nodes, el)^.e1)
             Else
               SemTarget(ctx, el);
-            el := ctx.ast.nodes[el].next;
+            el := NodeP(ctx.ast.nodes, el)^.next;
           End;
       End;
     N_OBJECT_LIT:
       Begin
-        pr := ctx.ast.nodes[n].e1;
+        pr := NodeP(ctx.ast.nodes, n)^.e1;
         While pr <> 0 Do
           Begin
-            If ctx.ast.nodes[pr].flags And PR_SPREAD <> 0 Then
-              SemTarget(ctx, ctx.ast.nodes[pr].e1)
+            If NodeP(ctx.ast.nodes, pr)^.flags And PR_SPREAD <> 0 Then
+              SemTarget(ctx, NodeP(ctx.ast.nodes, pr)^.e1)
             Else
               Begin
-                SemNode(ctx, ctx.ast.nodes[pr].e2);
-                SemTarget(ctx, ctx.ast.nodes[pr].e1);
-                SemNode(ctx, ctx.ast.nodes[pr].e3);
+                SemNode(ctx, NodeP(ctx.ast.nodes, pr)^.e2);
+                SemTarget(ctx, NodeP(ctx.ast.nodes, pr)^.e1);
+                SemNode(ctx, NodeP(ctx.ast.nodes, pr)^.e3);
               End;
-            pr := ctx.ast.nodes[pr].next;
+            pr := NodeP(ctx.ast.nodes, pr)^.next;
           End;
       End;
     N_ASSIGN:
       Begin
-        SemTarget(ctx, ctx.ast.nodes[n].e1);
-        SemNode(ctx, ctx.ast.nodes[n].e2);
+        SemTarget(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       End;
   Else
     SemNode(ctx, n);
@@ -8025,27 +8331,27 @@ Var
 Begin
   If n = 0 Then
     Exit;
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_BIND_IDENT:
       Begin
-        e := ctx.ast.nodes[n].sym;
+        e := NodeP(ctx.ast.nodes, n)^.sym;
         If e <> 0 Then
           If on Then
-            ctx.sem.syms[e].flags := ctx.sem.syms[e].flags Or SF_INITIALIZING
+            SymP(ctx.sem.syms, e)^.flags := SymP(ctx.sem.syms, e)^.flags Or SF_INITIALIZING
           Else
-            ctx.sem.syms[e].flags := ctx.sem.syms[e].flags And Not SF_INITIALIZING;
+            SymP(ctx.sem.syms, e)^.flags := SymP(ctx.sem.syms, e)^.flags And Not SF_INITIALIZING;
       End;
     N_ARRAY_PATTERN, N_OBJECT_PATTERN:
       Begin
-        e := ctx.ast.nodes[n].e1;
+        e := NodeP(ctx.ast.nodes, n)^.e1;
         While e <> 0 Do
           Begin
             SetInitializing(ctx, e, on);
-            e := ctx.ast.nodes[e].next;
+            e := NodeP(ctx.ast.nodes, e)^.next;
           End;
       End;
     N_PATTERN_ELEM, N_PATTERN_PROP:
-      SetInitializing(ctx, ctx.ast.nodes[n].e1, on);
+      SetInitializing(ctx, NodeP(ctx.ast.nodes, n)^.e1, on);
   End;
 End;
 
@@ -8053,8 +8359,8 @@ Function FuncKindOf(Var ctx: TCompilerContext; n: LongInt): TFuncKind;
 Var
   f: LongInt;
 Begin
-  f := ctx.ast.nodes[n].flags;
-  Case ctx.ast.nodes[n].kind Of
+  f := NodeP(ctx.ast.nodes, n)^.flags;
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_FUNC_DECL:
       FuncKindOf := FK_FUNCTION;
     N_FUNC_EXPR:
@@ -8073,7 +8379,7 @@ Begin
         Else If f And MF_CONSTRUCTOR <> 0 Then
           Begin
             If (ctx.sem.cur_class <> 0) And
-               (ctx.ast.nodes[ctx.sem.cur_class].e1 <> 0) Then
+               (NodeP(ctx.ast.nodes, ctx.sem.cur_class)^.e1 <> 0) Then
               FuncKindOf := FK_DERIVED_CTOR
             Else
               FuncKindOf := FK_CTOR;
@@ -8093,8 +8399,8 @@ Begin
   save_loop := ctx.sem.loop_depth;
   ctx.sem.loop_depth := 0;
   sc := EnterScope(ctx, n, SK_FUNCTION, FuncKindOf(ctx, n));
-  SemList(ctx, ctx.ast.nodes[n].e1);
-  SemNode(ctx, ctx.ast.nodes[n].e2);
+  SemList(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+  SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
   LeaveScope(ctx, sc);
   ctx.sem.loop_depth := save_loop;
 End;
@@ -8106,28 +8412,28 @@ Begin
   save_class := ctx.sem.cur_class;
   sc := EnterScope(ctx, n, SK_CLASS, FK_NONE);
   ctx.sem.cur_class := n;
-  SemNode(ctx, ctx.ast.nodes[n].e1);
-  m := ctx.ast.nodes[n].e2;
+  SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+  m := NodeP(ctx.ast.nodes, n)^.e2;
   While m <> 0 Do
     Begin
-      Case ctx.ast.nodes[m].kind Of
+      Case NodeP(ctx.ast.nodes, m)^.kind Of
         N_METHOD:
           Begin
-            SemNode(ctx, ctx.ast.nodes[m].e3);
+            SemNode(ctx, NodeP(ctx.ast.nodes, m)^.e3);
             SemFunction(ctx, m);
           End;
         N_FIELD:
           Begin
-            SemNode(ctx, ctx.ast.nodes[m].e3);
-            If ctx.ast.nodes[m].e1 <> 0 Then
+            SemNode(ctx, NodeP(ctx.ast.nodes, m)^.e3);
+            If NodeP(ctx.ast.nodes, m)^.e1 <> 0 Then
               Begin
                 save_loop := ctx.sem.loop_depth;
                 ctx.sem.loop_depth := 0;
-                If ctx.ast.nodes[m].flags And MF_STATIC <> 0 Then
+                If NodeP(ctx.ast.nodes, m)^.flags And MF_STATIC <> 0 Then
                   sc2 := EnterScope(ctx, m, SK_FUNCTION, FK_STATIC_FIELD_INIT)
                 Else
                   sc2 := EnterScope(ctx, m, SK_FUNCTION, FK_FIELD_INIT);
-                SemNode(ctx, ctx.ast.nodes[m].e1);
+                SemNode(ctx, NodeP(ctx.ast.nodes, m)^.e1);
                 LeaveScope(ctx, sc2);
                 ctx.sem.loop_depth := save_loop;
               End;
@@ -8137,12 +8443,12 @@ Begin
             save_loop := ctx.sem.loop_depth;
             ctx.sem.loop_depth := 0;
             sc2 := EnterScope(ctx, m, SK_FUNCTION, FK_STATIC_BLOCK);
-            SemNode(ctx, ctx.ast.nodes[m].e1);
+            SemNode(ctx, NodeP(ctx.ast.nodes, m)^.e1);
             LeaveScope(ctx, sc2);
             ctx.sem.loop_depth := save_loop;
           End;
       End;
-      m := ctx.ast.nodes[m].next;
+      m := NodeP(ctx.ast.nodes, m)^.next;
     End;
   LeaveScope(ctx, sc);
   ctx.sem.cur_class := save_class;
@@ -8156,81 +8462,81 @@ Var
 Begin
   If (n = 0) Or ctx.sem.stop Then
     Exit;
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_BLOCK:
       Begin
-        If ctx.ast.nodes[n].flags = 1 Then
-          SemList(ctx, ctx.ast.nodes[n].e1)
+        If NodeP(ctx.ast.nodes, n)^.flags = 1 Then
+          SemList(ctx, NodeP(ctx.ast.nodes, n)^.e1)
         Else
           Begin
             sc := EnterScope(ctx, n, SK_BLOCK, FK_NONE);
-            SemList(ctx, ctx.ast.nodes[n].e1);
+            SemList(ctx, NodeP(ctx.ast.nodes, n)^.e1);
             LeaveScope(ctx, sc);
           End;
       End;
     N_DECLARATOR:
       Begin
-        decl_target := ctx.ast.nodes[n].e1;
-        SetInitializing(ctx, decl_target, ctx.ast.nodes[n].e2 <> 0);
+        decl_target := NodeP(ctx.ast.nodes, n)^.e1;
+        SetInitializing(ctx, decl_target, NodeP(ctx.ast.nodes, n)^.e2 <> 0);
         SemNode(ctx, decl_target);
-        SemNode(ctx, ctx.ast.nodes[n].e2);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
         SetInitializing(ctx, decl_target, False);
       End;
     N_FOR, N_FOR_IN, N_FOR_OF:
       Begin
         ctx.sem.next_in_loop := True;
         sc := EnterScope(ctx, n, SK_BLOCK, FK_NONE);
-        If ctx.ast.nodes[n].kind = N_FOR Then
+        If NodeP(ctx.ast.nodes, n)^.kind = N_FOR Then
           Begin
-            SemNode(ctx, ctx.ast.nodes[n].e1);
-            SemNode(ctx, ctx.ast.nodes[n].e2);
-            SemNode(ctx, ctx.ast.nodes[n].e3);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e3);
             Inc(ctx.sem.loop_depth);
-            SemNode(ctx, ctx.ast.nodes[n].e4);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e4);
             Dec(ctx.sem.loop_depth);
           End
         Else
           Begin
-            SemNode(ctx, ctx.ast.nodes[n].e2);
-            e := ctx.ast.nodes[n].e1;
-            If (e <> 0) And (ctx.ast.nodes[e].kind = N_VAR_DECL) Then
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
+            e := NodeP(ctx.ast.nodes, n)^.e1;
+            If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_VAR_DECL) Then
               SemNode(ctx, e)
             Else
               SemTarget(ctx, e);
             Inc(ctx.sem.loop_depth);
-            SemNode(ctx, ctx.ast.nodes[n].e3);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e3);
             Dec(ctx.sem.loop_depth);
           End;
         LeaveScope(ctx, sc);
       End;
     N_WHILE:
       Begin
-        SemNode(ctx, ctx.ast.nodes[n].e1);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
         Inc(ctx.sem.loop_depth);
-        SemNode(ctx, ctx.ast.nodes[n].e2);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
         Dec(ctx.sem.loop_depth);
       End;
     N_DO_WHILE:
       Begin
         Inc(ctx.sem.loop_depth);
-        SemNode(ctx, ctx.ast.nodes[n].e1);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
         Dec(ctx.sem.loop_depth);
-        SemNode(ctx, ctx.ast.nodes[n].e2);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       End;
     N_SWITCH:
       Begin
-        SemNode(ctx, ctx.ast.nodes[n].e1);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
         sc := EnterScope(ctx, n, SK_BLOCK, FK_NONE);
-        SemList(ctx, ctx.ast.nodes[n].e2);
+        SemList(ctx, NodeP(ctx.ast.nodes, n)^.e2);
         LeaveScope(ctx, sc);
       End;
     N_CATCH:
       Begin
         sc := EnterScope(ctx, n, SK_CATCH, FK_NONE);
-        SemNode(ctx, ctx.ast.nodes[n].e1);
-        e := ctx.ast.nodes[n].e2;
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+        e := NodeP(ctx.ast.nodes, n)^.e2;
         If e <> 0 Then
-          SemList(ctx, ctx.ast.nodes[e].e1);
+          SemList(ctx, NodeP(ctx.ast.nodes, e)^.e1);
         LeaveScope(ctx, sc);
       End;
     N_FUNC_DECL, N_FUNC_EXPR, N_METHOD:
@@ -8245,52 +8551,52 @@ Begin
       ResolveSuper(ctx, n, False);
     N_ASSIGN:
       Begin
-        s := SemTokText(ctx, ctx.ast.nodes[n].tok);
-        e := ctx.ast.nodes[n].e1;
+        s := SemTokText(ctx, NodeP(ctx.ast.nodes, n)^.tok);
+        e := NodeP(ctx.ast.nodes, n)^.e1;
         If s = '=' Then
           SemTarget(ctx, e)
-        Else If (e <> 0) And (ctx.ast.nodes[e].kind = N_IDENT) Then
+        Else If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_IDENT) Then
           ResolveIdent(ctx, e, RM_READWRITE)
         Else
           SemNode(ctx, e);
-        SemNode(ctx, ctx.ast.nodes[n].e2);
+        SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       End;
     N_UPDATE:
       Begin
-        e := ctx.ast.nodes[n].e1;
-        If (e <> 0) And (ctx.ast.nodes[e].kind = N_IDENT) Then
+        e := NodeP(ctx.ast.nodes, n)^.e1;
+        If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_IDENT) Then
           ResolveIdent(ctx, e, RM_READWRITE)
         Else
           SemNode(ctx, e);
       End;
     N_UNARY:
       Begin
-        e := ctx.ast.nodes[n].e1;
+        e := NodeP(ctx.ast.nodes, n)^.e1;
         was_typeof := ctx.sem.in_typeof;
-        If (SemTokText(ctx, ctx.ast.nodes[n].tok) = 'typeof') And (e <> 0) And
-           (ctx.ast.nodes[e].kind = N_IDENT) Then
+        If (SemTokText(ctx, NodeP(ctx.ast.nodes, n)^.tok) = 'typeof') And (e <> 0) And
+           (NodeP(ctx.ast.nodes, e)^.kind = N_IDENT) Then
           ctx.sem.in_typeof := True;
         SemNode(ctx, e);
         ctx.sem.in_typeof := was_typeof;
       End;
     N_CALL:
       Begin
-        e := ctx.ast.nodes[n].e1;
-        If (e <> 0) And (ctx.ast.nodes[e].kind = N_SUPER) Then
+        e := NodeP(ctx.ast.nodes, n)^.e1;
+        If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_SUPER) Then
           ResolveSuper(ctx, e, True)
         Else
           SemNode(ctx, e);
-        SemList(ctx, ctx.ast.nodes[n].e2);
+        SemList(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       End;
     N_PROP:
       Begin
-        If ctx.ast.nodes[n].flags And PR_SPREAD <> 0 Then
-          SemNode(ctx, ctx.ast.nodes[n].e1)
+        If NodeP(ctx.ast.nodes, n)^.flags And PR_SPREAD <> 0 Then
+          SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1)
         Else
           Begin
-            SemNode(ctx, ctx.ast.nodes[n].e2);
-            SemNode(ctx, ctx.ast.nodes[n].e1);
-            SemNode(ctx, ctx.ast.nodes[n].e3);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e2);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e1);
+            SemNode(ctx, NodeP(ctx.ast.nodes, n)^.e3);
           End;
       End;
   Else
@@ -8306,27 +8612,27 @@ Var
   name: TTokenText;
 Begin
   For i := 1 To ctx.ast.decl_count Do
-    If (ctx.ast.decls[i].kind = DK_VAR) And
-       (ctx.ast.decls[i].origin <> ctx.ast.decls[i].scope) Then
+    If (DeclP(ctx.ast.decls, i)^.kind = DK_VAR) And
+       (DeclP(ctx.ast.decls, i)^.origin <> DeclP(ctx.ast.decls, i)^.scope) Then
       Begin
-        name := SemTokText(ctx, ctx.ast.decls[i].name_tok);
-        target := ctx.ast.nodes[ctx.ast.decls[i].scope].scope;
-        sc := ctx.ast.nodes[ctx.ast.decls[i].origin].scope;
+        name := SemTokText(ctx, DeclP(ctx.ast.decls, i)^.name_tok);
+        target := NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, i)^.scope)^.scope;
+        sc := NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, i)^.origin)^.scope;
         While (sc <> 0) And (sc <> target) Do
           Begin
-            sy := ctx.sem.scopes[sc].first_sym;
+            sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
             While sy <> 0 Do
               Begin
-                If IsLexicalKind(ctx.sem.syms[sy].kind) And
-                   (SemTokText(ctx, ctx.sem.syms[sy].name_tok) = name) Then
-                  SemError(ctx, ctx.ast.decls[i].name_tok,
+                If IsLexicalKind(SymP(ctx.sem.syms, sy)^.kind) And
+                   (SemTokText(ctx, SymP(ctx.sem.syms, sy)^.name_tok) = name) Then
+                  SemError(ctx, DeclP(ctx.ast.decls, i)^.name_tok,
                            'redeclaration de "' + name +
                            '" (let/const/class ligne ' +
-                           LineOfTok(ctx, ctx.sem.syms[sy].name_tok) +
+                           LineOfTok(ctx, SymP(ctx.sem.syms, sy)^.name_tok) +
                            ' dans une portee englobante)');
-                sy := ctx.sem.syms[sy].next;
+                sy := SymP(ctx.sem.syms, sy)^.next;
               End;
-            sc := ctx.sem.scopes[sc].parent;
+            sc := ScopeP(ctx.sem.scopes, sc)^.parent;
           End;
       End;
 End;
@@ -8353,18 +8659,18 @@ Begin
   { liste des declarations de chaque portee, dans l'ordre du source }
   For i := 1 To ctx.ast.node_count Do
     Begin
-      ctx.ast.nodes[i].decl_head := 0;
-      ctx.ast.nodes[i].scope := 0;
-      ctx.ast.nodes[i].sym := 0;
-      ctx.ast.nodes[i].aux := 0;
+      NodeP(ctx.ast.nodes, i)^.decl_head := 0;
+      NodeP(ctx.ast.nodes, i)^.scope := 0;
+      NodeP(ctx.ast.nodes, i)^.sym := 0;
+      NodeP(ctx.ast.nodes, i)^.aux := 0;
     End;
   For i := ctx.ast.decl_count Downto 1 Do
     Begin
-      ctx.ast.decls[i].next := ctx.ast.nodes[ctx.ast.decls[i].scope].decl_head;
-      ctx.ast.nodes[ctx.ast.decls[i].scope].decl_head := i;
+      DeclP(ctx.ast.decls, i)^.next := NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, i)^.scope)^.decl_head;
+      NodeP(ctx.ast.nodes, DeclP(ctx.ast.decls, i)^.scope)^.decl_head := i;
     End;
   sc := EnterScope(ctx, ctx.ast.root, SK_GLOBAL, FK_GLOBAL);
-  SemList(ctx, ctx.ast.nodes[ctx.ast.root].e1);
+  SemList(ctx, NodeP(ctx.ast.nodes, ctx.ast.root)^.e1);
   CheckVarHoisting(ctx);
   ctx.ast.analyzed := True;
   If ctx.options.verbose Then
@@ -8429,33 +8735,33 @@ Begin
   Writeln('Portees (', ctx.sem.scope_count, ') :');
   For i := 1 To ctx.sem.scope_count Do
     Begin
-      If ctx.sem.scopes[i].kind = SK_FUNCTION Then
-        Write('  #', i, ' ', FuncKindName(ctx.sem.scopes[i].fkind))
+      If ScopeP(ctx.sem.scopes, i)^.kind = SK_FUNCTION Then
+        Write('  #', i, ' ', FuncKindName(ScopeP(ctx.sem.scopes, i)^.fkind))
       Else
-        Write('  #', i, ' ', ScopeKindName(ctx.sem.scopes[i].kind));
-      Write(' (', NodeKindName(ctx.ast.nodes[ctx.sem.scopes[i].node].kind), '@',
-            ctx.lex.tokens[ctx.ast.nodes[ctx.sem.scopes[i].node].tok].line, ')');
-      If ctx.ir.built And (ctx.sem.scopes[i].frame_size > 0) Then
-        Write(' trame=', ctx.sem.scopes[i].frame_size);
-      If ctx.sem.scopes[i].parent <> 0 Then
-        Write(' parent=#', ctx.sem.scopes[i].parent);
-      If ctx.sem.scopes[i].in_loop Then
+        Write('  #', i, ' ', ScopeKindName(ScopeP(ctx.sem.scopes, i)^.kind));
+      Write(' (', NodeKindName(NodeP(ctx.ast.nodes, ScopeP(ctx.sem.scopes, i)^.node)^.kind), '@',
+            TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, ScopeP(ctx.sem.scopes, i)^.node)^.tok)^.line, ')');
+      If ctx.ir.built And (ScopeP(ctx.sem.scopes, i)^.frame_size > 0) Then
+        Write(' trame=', ScopeP(ctx.sem.scopes, i)^.frame_size);
+      If ScopeP(ctx.sem.scopes, i)^.parent <> 0 Then
+        Write(' parent=#', ScopeP(ctx.sem.scopes, i)^.parent);
+      If ScopeP(ctx.sem.scopes, i)^.in_loop Then
         Write(' boucle');
-      If ctx.sem.scopes[i].uses_this Then
+      If ScopeP(ctx.sem.scopes, i)^.uses_this Then
         Write(' this');
-      If ctx.sem.scopes[i].this_captured Then
+      If ScopeP(ctx.sem.scopes, i)^.this_captured Then
         Write(' this-capture');
-      If ctx.sem.scopes[i].uses_arguments Then
+      If ScopeP(ctx.sem.scopes, i)^.uses_arguments Then
         Write(' arguments');
       Writeln;
-      sy := ctx.sem.scopes[i].first_sym;
+      sy := ScopeP(ctx.sem.scopes, i)^.first_sym;
       While sy <> 0 Do
         Begin
-          fl := ctx.sem.syms[sy].flags;
-          Write('      ', DeclKindName(ctx.sem.syms[sy].kind), ' ',
-                SemTokText(ctx, ctx.sem.syms[sy].name_tok), ' (#', sy, ')');
-          If ctx.ir.built And (ctx.sem.syms[sy].slot > 0) Then
-            Write(' [ebp-', 8 * ctx.sem.syms[sy].slot, ']');
+          fl := SymP(ctx.sem.syms, sy)^.flags;
+          Write('      ', DeclKindName(SymP(ctx.sem.syms, sy)^.kind), ' ',
+                SemTokText(ctx, SymP(ctx.sem.syms, sy)^.name_tok), ' (#', sy, ')');
+          If ctx.ir.built And (SymP(ctx.sem.syms, sy)^.slot > 0) Then
+            Write(' [ebp-', 8 * SymP(ctx.sem.syms, sy)^.slot, ']');
           If fl And SF_HOISTED <> 0 Then
             Write(' hisse');
           If fl And SF_STATIC <> 0 Then
@@ -8473,28 +8779,28 @@ Begin
           If fl And SF_IMPLICIT <> 0 Then
             Write(' implicite');
           Writeln;
-          sy := ctx.sem.syms[sy].next;
+          sy := SymP(ctx.sem.syms, sy)^.next;
         End;
     End;
   Writeln('Captures (', ctx.sem.cap_count, ') :');
   For k := 1 To ctx.sem.cap_count Do
-    Writeln('  portee #', ctx.sem.caps[k].fscope, ' capture ',
-            SemTokText(ctx, ctx.sem.syms[ctx.sem.caps[k].sym].name_tok),
-            ' (#', ctx.sem.caps[k].sym, ')');
+    Writeln('  portee #', CapP(ctx.sem.caps, k)^.fscope, ' capture ',
+            SemTokText(ctx, SymP(ctx.sem.syms, CapP(ctx.sem.caps, k)^.sym)^.name_tok),
+            ' (#', CapP(ctx.sem.caps, k)^.sym, ')');
 End;
 
 
 Procedure WriteAnnotation(Var ctx: TCompilerContext; n: LongInt);
 Begin
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_IDENT:
       Begin
         Write(' ->');
-        Case ctx.ast.nodes[n].aux Of
-          RK_LOCAL:           Write(' local #', ctx.ast.nodes[n].sym);
-          RK_OUTER:           Write(' capture #', ctx.ast.nodes[n].sym);
+        Case NodeP(ctx.ast.nodes, n)^.aux Of
+          RK_LOCAL:           Write(' local #', NodeP(ctx.ast.nodes, n)^.sym);
+          RK_OUTER:           Write(' capture #', NodeP(ctx.ast.nodes, n)^.sym);
           RK_BUILTIN:         Write(' predefini');
-          RK_GLOBAL_IMPLICIT: Write(' globale-implicite #', ctx.ast.nodes[n].sym);
+          RK_GLOBAL_IMPLICIT: Write(' globale-implicite #', NodeP(ctx.ast.nodes, n)^.sym);
           RK_ARGUMENTS:       Write(' arguments');
           RK_UNDECLARED_OK:   Write(' non-declare (typeof)');
         Else
@@ -8503,13 +8809,13 @@ Begin
       End;
     N_THIS:
       Begin
-        Write(' -> this ', ThisBindingName(ctx.ast.nodes[n].aux));
-        If ctx.ast.nodes[n].e1 = 1 Then
-          Write(' lexical (portee #', ctx.ast.nodes[n].sym, ')');
+        Write(' -> this ', ThisBindingName(NodeP(ctx.ast.nodes, n)^.aux));
+        If NodeP(ctx.ast.nodes, n)^.e1 = 1 Then
+          Write(' lexical (portee #', NodeP(ctx.ast.nodes, n)^.sym, ')');
       End;
     N_BIND_IDENT, N_FUNC_DECL, N_CLASS_DECL:
-      If ctx.ast.nodes[n].sym <> 0 Then
-        Write(' #', ctx.ast.nodes[n].sym);
+      If NodeP(ctx.ast.nodes, n)^.sym <> 0 Then
+        Write(' #', NodeP(ctx.ast.nodes, n)^.sym);
   End;
 End;
 
@@ -8720,10 +9026,10 @@ Begin
   ctx.rt.news := 0;
 
   For i := 1 To ctx.ast.node_count Do
-    Case ctx.ast.nodes[i].kind Of
+    Case NodeP(ctx.ast.nodes, i)^.kind Of
       N_NUMBER:
         Begin
-          If FitsInt32(ctx.lex.tokens[ctx.ast.nodes[i].tok].num_val) Then
+          If FitsInt32(TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.num_val) Then
             Inc(ctx.rt.int_literals)
           Else
             Begin
@@ -8762,7 +9068,7 @@ Begin
         Begin
           Inc(ctx.rt.functions);
           ctx.rt.comps := ctx.rt.comps Or RC_FUNCTION;
-          If ctx.sem.scopes[ctx.ast.nodes[i].scope].cap_count > 0 Then
+          If ScopeP(ctx.sem.scopes, NodeP(ctx.ast.nodes, i)^.scope)^.cap_count > 0 Then
             Inc(ctx.rt.closures);
         End;
       N_CLASS_DECL, N_CLASS_EXPR:
@@ -8789,27 +9095,27 @@ Begin
         End;
       N_MEMBER:
         ctx.rt.comps := ctx.rt.comps Or RC_OBJECT Or
-          MemberComponents(ctx.lex.tokens[ctx.ast.nodes[i].tok].text);
+          MemberComponents(TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text);
       N_INDEX:
         ctx.rt.comps := ctx.rt.comps Or RC_OBJECT Or RC_ARRAY Or RC_STRING;
       N_PROP:
         ctx.rt.comps := ctx.rt.comps Or RC_OBJECT;
       N_UNARY:
         Begin
-          s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
+          s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text;
           If s = 'typeof' Then
             ctx.rt.comps := ctx.rt.comps Or RC_TYPEOF Or RC_STRING
           Else If s = 'delete' Then
             ctx.rt.comps := ctx.rt.comps Or RC_OBJECT;
           { -0 : litteral zero precede d'un moins }
-          e := ctx.ast.nodes[i].e1;
-          If (s = '-') And (e <> 0) And (ctx.ast.nodes[e].kind = N_NUMBER) And
-             (ctx.lex.tokens[ctx.ast.nodes[e].tok].num_val = 0) Then
+          e := NodeP(ctx.ast.nodes, i)^.e1;
+          If (s = '-') And (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_NUMBER) And
+             (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, e)^.tok)^.num_val = 0) Then
             ctx.rt.comps := ctx.rt.comps Or RC_FPU;
         End;
       N_BINARY:
         Begin
-          s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
+          s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text;
           If s = '+' Then
             ctx.rt.comps := ctx.rt.comps Or RC_STRING Or RC_CONVERT
           Else If (s = '/') Or (s = '**') Or (s = '%') Then
@@ -8822,7 +9128,7 @@ Begin
         End;
       N_ASSIGN:
         Begin
-          s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
+          s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text;
           If s = '+=' Then
             ctx.rt.comps := ctx.rt.comps Or RC_STRING Or RC_CONVERT
           Else If (s = '/=') Or (s = '**=') Or (s = '%=') Then
@@ -8830,17 +9136,17 @@ Begin
         End;
       N_IDENT:
         Begin
-          If ctx.ast.nodes[i].aux = RK_BUILTIN Then
+          If NodeP(ctx.ast.nodes, i)^.aux = RK_BUILTIN Then
             ctx.rt.comps := ctx.rt.comps Or
-              BuiltinComponents(ctx.lex.tokens[ctx.ast.nodes[i].tok].text)
-          Else If (ctx.ast.nodes[i].sym <> 0) And
-                  (ctx.sem.syms[ctx.ast.nodes[i].sym].kind = DK_ARGS) Then
+              BuiltinComponents(TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text)
+          Else If (NodeP(ctx.ast.nodes, i)^.sym <> 0) And
+                  (SymP(ctx.sem.syms, NodeP(ctx.ast.nodes, i)^.sym)^.kind = DK_ARGS) Then
             ctx.rt.comps := ctx.rt.comps Or RC_ARGUMENTS Or RC_ARRAY;
         End;
     End;
 
   For sy := 1 To ctx.sem.sym_count Do
-    If ctx.sem.syms[sy].flags And SF_CELL <> 0 Then
+    If SymP(ctx.sem.syms, sy)^.flags And SF_CELL <> 0 Then
       Inc(ctx.rt.cells);
   If ctx.rt.cells > 0 Then
     ctx.rt.comps := ctx.rt.comps Or RC_CELL Or RC_FUNCTION;
@@ -9052,21 +9358,11 @@ Procedure PutByte(Var ctx: TCompilerContext; sec: Integer; ofs: LongInt; b: Long
 Begin
   If sec = SEC_RDATA Then
     Begin
-      If ofs >= MAX_RDATA Then
-        Begin
-          DataFail(ctx, 'section .rdata trop grande');
-          Exit;
-        End;
-      ctx.data.rd[ofs] := Byte(b And $FF);
+      RdP(ctx.data.rd, ofs)^ := Byte(b And $FF);
     End
   Else
     Begin
-      If ofs >= MAX_DATA_IMG Then
-        Begin
-          DataFail(ctx, 'section .data trop grande');
-          Exit;
-        End;
-      ctx.data.dt[ofs] := Byte(b And $FF);
+      DtP(ctx.data.dt, ofs)^ := Byte(b And $FF);
     End;
 End;
 
@@ -9101,15 +9397,11 @@ Begin
     Begin
       ofs := (ctx.data.rd_size + 7) And Not 7;
       ctx.data.rd_size := ofs + n;
-      If ctx.data.rd_size > MAX_RDATA Then
-        DataFail(ctx, 'section .rdata trop grande');
     End
   Else
     Begin
       ofs := (ctx.data.dt_size + 7) And Not 7;
       ctx.data.dt_size := ofs + n;
-      If ctx.data.dt_size > MAX_DATA_IMG Then
-        DataFail(ctx, 'section .data trop grande');
     End;
   SecAlloc := ofs;
 End;
@@ -9135,55 +9427,53 @@ Var
 Begin
   slot := NameHash(name);
   DsymFind := 0;
-  While ctx.data.dhash[slot] <> 0 Do
+  id := DhashP(ctx.data.dhash, slot)^;
+  While id <> 0 Do
     Begin
-      id := ctx.data.dhash[slot];
-      If ctx.data.syms[id].name = name Then
+      If DsymP(ctx.data.syms, id)^.name = name Then
         Begin
           DsymFind := id;
           Exit;
         End;
-      slot := (slot + 1) And 65535;
+      id := DsymP(ctx.data.syms, id)^.chain;
     End;
 End;
 
 Function NewDataSym(Var ctx: TCompilerContext; Const name: TString;
                     sec: Integer; ofs, size: LongInt; kind: Integer): LongInt;
 Var
-  slot: LongInt;
+  slot, id: LongInt;
 Begin
   NewDataSym := 0;
-  If ctx.data.sym_count >= MAX_DSYMS Then
-    Begin
-      DataFail(ctx, 'trop de symboles de donnees');
-      Exit;
-    End;
   Inc(ctx.data.sym_count);
-  ctx.data.syms[ctx.data.sym_count].name := name;
-  ctx.data.syms[ctx.data.sym_count].sec := sec;
-  ctx.data.syms[ctx.data.sym_count].ofs := ofs;
-  ctx.data.syms[ctx.data.sym_count].size := size;
-  ctx.data.syms[ctx.data.sym_count].kind := kind;
+  DsymP(ctx.data.syms, ctx.data.sym_count)^.name := name;
+  DsymP(ctx.data.syms, ctx.data.sym_count)^.sec := sec;
+  DsymP(ctx.data.syms, ctx.data.sym_count)^.ofs := ofs;
+  DsymP(ctx.data.syms, ctx.data.sym_count)^.size := size;
+  DsymP(ctx.data.syms, ctx.data.sym_count)^.kind := kind;
   slot := NameHash(name);
-  While ctx.data.dhash[slot] <> 0 Do
-    slot := (slot + 1) And 65535;
-  ctx.data.dhash[slot] := ctx.data.sym_count;
+  DsymP(ctx.data.syms, ctx.data.sym_count)^.chain := 0;
+  If DhashP(ctx.data.dhash, slot)^ = 0 Then
+    DhashP(ctx.data.dhash, slot)^ := ctx.data.sym_count
+  Else
+    Begin
+      { ajoute en fin de file : le premier symbole du nom reste le premier trouve }
+      id := DhashP(ctx.data.dhash, slot)^;
+      While DsymP(ctx.data.syms, id)^.chain <> 0 Do
+        id := DsymP(ctx.data.syms, id)^.chain;
+      DsymP(ctx.data.syms, id)^.chain := ctx.data.sym_count;
+    End;
   NewDataSym := ctx.data.sym_count;
 End;
 
 { Le DWORD a (sec, ofs) contient l'adresse du symbole target. }
 Procedure AddReloc(Var ctx: TCompilerContext; sec: Integer; ofs, target: LongInt);
 Begin
-  If ctx.data.reloc_count >= MAX_RELOCS Then
-    Begin
-      DataFail(ctx, 'trop de relocations');
-      Exit;
-    End;
   Inc(ctx.data.reloc_count);
-  ctx.data.relocs[ctx.data.reloc_count].sec := sec;
-  ctx.data.relocs[ctx.data.reloc_count].tkind := SYMK_D;
-  ctx.data.relocs[ctx.data.reloc_count].ofs := ofs;
-  ctx.data.relocs[ctx.data.reloc_count].target := target;
+  RelocP(ctx.data.relocs, ctx.data.reloc_count)^.sec := sec;
+  RelocP(ctx.data.relocs, ctx.data.reloc_count)^.tkind := SYMK_D;
+  RelocP(ctx.data.relocs, ctx.data.reloc_count)^.ofs := ofs;
+  RelocP(ctx.data.relocs, ctx.data.reloc_count)^.target := target;
 End;
 
 { Relocation vers un symbole de code ou externe (indice de xsyms). }
@@ -9191,7 +9481,7 @@ Procedure AddRelocX(Var ctx: TCompilerContext; sec: Integer; ofs, target: LongIn
 Begin
   AddReloc(ctx, sec, ofs, target);
   If ctx.data.reloc_count > 0 Then
-    ctx.data.relocs[ctx.data.reloc_count].tkind := SYMK_X;
+    RelocP(ctx.data.relocs, ctx.data.reloc_count)^.tkind := SYMK_X;
 End;
 
 { ---- Chaines internees ---- }
@@ -9204,7 +9494,7 @@ Begin
   h := 2166136261;
   For i := 0 To len - 1 Do
     Begin
-      h := h Xor Ord(ctx.data.dpool[off + i]);
+      h := h Xor Ord(DpoolP(ctx.data.dpool, off + i)^);
       h := (h * 16777619) And $FFFFFFFF;
     End;
   JsHash := h;
@@ -9221,14 +9511,14 @@ Begin
   InternAt := 0;
   h := JsHash(ctx, off, len);
   slot := h And (HASH_SIZE - 1);
-  While ctx.data.hash[slot] <> 0 Do
+  id := HashP(ctx.data.hash, slot)^;
+  While id <> 0 Do
     Begin
-      id := ctx.data.hash[slot];
-      If (ctx.data.strs[id].len = len) And (ctx.data.strs[id].hash = h) Then
+      If (StrP(ctx.data.strs, id)^.len = len) And (StrP(ctx.data.strs, id)^.hash = h) Then
         Begin
           same := True;
           For i := 0 To len - 1 Do
-            If ctx.data.dpool[ctx.data.strs[id].off + i] <> ctx.data.dpool[off + i] Then
+            If DpoolP(ctx.data.dpool, StrP(ctx.data.strs, id)^.off + i)^ <> DpoolP(ctx.data.dpool, off + i)^ Then
               same := False;
           If same Then
             Begin
@@ -9237,33 +9527,23 @@ Begin
               Exit;
             End;
         End;
-      slot := (slot + 1) And (HASH_SIZE - 1);
-    End;
-  If ctx.data.str_count >= MAX_STRS Then
-    Begin
-      DataFail(ctx, 'trop de chaines litterales');
-      ctx.data.dpool_len := off;
-      Exit;
+      id := StrP(ctx.data.strs, id)^.chain;
     End;
   Inc(ctx.data.str_count);
   id := ctx.data.str_count;
-  ctx.data.strs[id].off := off;
-  ctx.data.strs[id].len := len;
-  ctx.data.strs[id].hash := h;
-  ctx.data.strs[id].atom_id := 0;
-  ctx.data.strs[id].sym := 0;
-  ctx.data.hash[slot] := id;
+  StrP(ctx.data.strs, id)^.off := off;
+  StrP(ctx.data.strs, id)^.len := len;
+  StrP(ctx.data.strs, id)^.hash := h;
+  StrP(ctx.data.strs, id)^.atom_id := 0;
+  StrP(ctx.data.strs, id)^.sym := 0;
+  StrP(ctx.data.strs, id)^.chain := HashP(ctx.data.hash, slot)^;
+  HashP(ctx.data.hash, slot)^ := id;
   InternAt := id;
 End;
 
 Procedure DpoolPut(Var ctx: TCompilerContext; c: Char);
 Begin
-  If ctx.data.dpool_len >= MAX_DPOOL Then
-    Begin
-      DataFail(ctx, 'pool de chaines statiques plein');
-      Exit;
-    End;
-  ctx.data.dpool[ctx.data.dpool_len] := c;
+  DpoolP(ctx.data.dpool, ctx.data.dpool_len)^ := c;
   Inc(ctx.data.dpool_len);
 End;
 
@@ -9273,7 +9553,7 @@ Var
 Begin
   start := ctx.data.dpool_len;
   For i := 0 To len - 1 Do
-    DpoolPut(ctx, ctx.lex.pool[off + i]);
+    DpoolPut(ctx, PoolP(ctx.lex.pool, off + i)^);
   InternPool := InternAt(ctx, start, len);
 End;
 
@@ -9290,11 +9570,11 @@ End;
 { Marque une chaine comme atome (nom de propriete). }
 Function MarkAtom(Var ctx: TCompilerContext; id: LongInt): LongInt;
 Begin
-  If (id <> 0) And (ctx.data.strs[id].atom_id = 0) Then
+  If (id <> 0) And (StrP(ctx.data.strs, id)^.atom_id = 0) Then
     Begin
       Inc(ctx.data.atom_count);
-      ctx.data.strs[id].atom_id := ctx.data.atom_count;
-      ctx.data.atoms[ctx.data.atom_count] := id;
+      StrP(ctx.data.strs, id)^.atom_id := ctx.data.atom_count;
+      AtomP(ctx.data.atoms, ctx.data.atom_count)^ := id;
     End;
   MarkAtom := id;
 End;
@@ -9307,22 +9587,22 @@ Var
   v: Double;
 Begin
   KeyString := 0;
-  Case ctx.lex.tokens[tok].kind Of
+  Case TokP(ctx.lex.tokens, tok)^.kind Of
     TK_IDENT, TK_KEYWORD:
-      KeyString := InternText(ctx, ctx.lex.tokens[tok].text);
+      KeyString := InternText(ctx, TokP(ctx.lex.tokens, tok)^.text);
     TK_STRING:
-      KeyString := InternPool(ctx, ctx.lex.tokens[tok].sval_off,
-                              ctx.lex.tokens[tok].sval_len);
+      KeyString := InternPool(ctx, TokP(ctx.lex.tokens, tok)^.sval_off,
+                              TokP(ctx.lex.tokens, tok)^.sval_len);
     TK_NUMBER:
       Begin
-        v := ctx.lex.tokens[tok].num_val;
+        v := TokP(ctx.lex.tokens, tok)^.num_val;
         If FitsInt32(v) Then
           Begin
             Str(Trunc(v), s);
             KeyString := InternText(ctx, s);
           End
         Else
-          KeyString := InternText(ctx, ctx.lex.tokens[tok].text);
+          KeyString := InternText(ctx, TokP(ctx.lex.tokens, tok)^.text);
       End;
   End;
 End;
@@ -9334,21 +9614,16 @@ Var
   i: LongInt;
 Begin
   For i := 1 To ctx.data.dbl_count Do
-    If (ctx.data.dbls[i].lo = lo) And (ctx.data.dbls[i].hi = hi) Then
+    If (DblP(ctx.data.dbls, i)^.lo = lo) And (DblP(ctx.data.dbls, i)^.hi = hi) Then
       Begin
         AddDoubleBits := i;
         Exit;
       End;
   AddDoubleBits := 0;
-  If ctx.data.dbl_count >= MAX_DBLS Then
-    Begin
-      DataFail(ctx, 'trop de constantes flottantes');
-      Exit;
-    End;
   Inc(ctx.data.dbl_count);
-  ctx.data.dbls[ctx.data.dbl_count].lo := lo;
-  ctx.data.dbls[ctx.data.dbl_count].hi := hi;
-  ctx.data.dbls[ctx.data.dbl_count].sym := 0;
+  DblP(ctx.data.dbls, ctx.data.dbl_count)^.lo := lo;
+  DblP(ctx.data.dbls, ctx.data.dbl_count)^.hi := hi;
+  DblP(ctx.data.dbls, ctx.data.dbl_count)^.sym := 0;
   AddDoubleBits := ctx.data.dbl_count;
 End;
 
@@ -9366,12 +9641,12 @@ Var
   r: TString;
   i, n: LongInt;
 Begin
-  n := ctx.data.strs[id].len;
+  n := StrP(ctx.data.strs, id)^.len;
   If n > 250 Then
     n := 250;
   r := '';
   For i := 0 To n - 1 Do
-    r := r + ctx.data.dpool[ctx.data.strs[id].off + i];
+    r := r + DpoolP(ctx.data.dpool, StrP(ctx.data.strs, id)^.off + i)^;
   StrText := r;
 End;
 
@@ -9382,23 +9657,23 @@ Var
   t: LongInt;
 Begin
   NodeFuncName := InternText(ctx, '');
-  t := ctx.ast.nodes[n].tok;
-  Case ctx.ast.nodes[n].kind Of
+  t := NodeP(ctx.ast.nodes, n)^.tok;
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_FUNC_DECL, N_CLASS_DECL:
       NodeFuncName := KeyString(ctx, t);
     N_FUNC_EXPR, N_CLASS_EXPR:
       Begin
-        If (ctx.ast.nodes[n].kind = N_FUNC_EXPR) And
-           (ctx.ast.nodes[n].flags And FN_ARROW <> 0) Then
+        If (NodeP(ctx.ast.nodes, n)^.kind = N_FUNC_EXPR) And
+           (NodeP(ctx.ast.nodes, n)^.flags And FN_ARROW <> 0) Then
           { une fleche est anonyme : son nom vient de sa cible }
-        Else If ctx.lex.tokens[t].kind = TK_IDENT Then
+        Else If TokP(ctx.lex.tokens, t)^.kind = TK_IDENT Then
           NodeFuncName := KeyString(ctx, t)
-        Else If (ctx.ast.nodes[n].flags And FN_METHOD <> 0) And
-                (ctx.lex.tokens[t].kind <> TK_PUNCT) Then
+        Else If (NodeP(ctx.ast.nodes, n)^.flags And FN_METHOD <> 0) And
+                (TokP(ctx.lex.tokens, t)^.kind <> TK_PUNCT) Then
           NodeFuncName := KeyString(ctx, t);
       End;
     N_METHOD, N_FIELD:
-      If ctx.ast.nodes[n].flags And MF_COMPUTED = 0 Then
+      If NodeP(ctx.ast.nodes, n)^.flags And MF_COMPUTED = 0 Then
         NodeFuncName := KeyString(ctx, t);
   End;
 End;
@@ -9410,18 +9685,18 @@ Var
 Begin
   cnt := 0;
   stop := False;
-  p := ctx.ast.nodes[n].e1;
-  If ctx.ast.nodes[n].kind = N_FIELD Then
+  p := NodeP(ctx.ast.nodes, n)^.e1;
+  If NodeP(ctx.ast.nodes, n)^.kind = N_FIELD Then
     p := 0;
-  If ctx.ast.nodes[n].kind = N_STATIC_BLOCK Then
+  If NodeP(ctx.ast.nodes, n)^.kind = N_STATIC_BLOCK Then
     p := 0;
   While (p <> 0) And Not stop Do
     Begin
-      If (ctx.ast.nodes[p].flags And PF_REST <> 0) Or (ctx.ast.nodes[p].e2 <> 0) Then
+      If (NodeP(ctx.ast.nodes, p)^.flags And PF_REST <> 0) Or (NodeP(ctx.ast.nodes, p)^.e2 <> 0) Then
         stop := True
       Else
         Inc(cnt);
-      p := ctx.ast.nodes[p].next;
+      p := NodeP(ctx.ast.nodes, p)^.next;
     End;
   ParamLength := cnt;
 End;
@@ -9431,53 +9706,48 @@ Var
   id, fl, sc: LongInt;
   nm: LongInt;
 Begin
-  If ctx.data.fd_count >= MAX_FDESCS Then
-    Begin
-      DataFail(ctx, 'trop de descripteurs de fonctions');
-      Exit;
-    End;
   Inc(ctx.data.fd_count);
   id := ctx.data.fd_count;
   fl := 0;
-  sc := ctx.ast.nodes[n].scope;
-  Case ctx.ast.nodes[n].kind Of
+  sc := NodeP(ctx.ast.nodes, n)^.scope;
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_FUNC_DECL, N_FUNC_EXPR:
       Begin
-        If ctx.ast.nodes[n].flags And FN_ARROW <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And FN_ARROW <> 0 Then
           fl := fl Or FDF_ARROW;
-        If ctx.ast.nodes[n].flags And FN_ASYNC <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And FN_ASYNC <> 0 Then
           fl := fl Or FDF_ASYNC;
-        If ctx.ast.nodes[n].flags And FN_GENERATOR <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And FN_GENERATOR <> 0 Then
           fl := fl Or FDF_GENERATOR;
-        If ctx.ast.nodes[n].flags And FN_METHOD <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And FN_METHOD <> 0 Then
           fl := fl Or FDF_METHOD;
-        If ctx.ast.nodes[n].flags And FN_EXPR_BODY <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And FN_EXPR_BODY <> 0 Then
           fl := fl Or FDF_EXPR_BODY;
       End;
     N_METHOD:
       Begin
         fl := fl Or FDF_METHOD;
-        If ctx.ast.nodes[n].flags And MF_STATIC <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And MF_STATIC <> 0 Then
           fl := fl Or FDF_STATIC;
-        If ctx.ast.nodes[n].flags And MF_GETTER <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And MF_GETTER <> 0 Then
           fl := fl Or FDF_GETTER;
-        If ctx.ast.nodes[n].flags And MF_SETTER <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And MF_SETTER <> 0 Then
           fl := fl Or FDF_SETTER;
-        If ctx.ast.nodes[n].flags And MF_ASYNC <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And MF_ASYNC <> 0 Then
           fl := fl Or FDF_ASYNC;
-        If ctx.ast.nodes[n].flags And MF_GENERATOR <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And MF_GENERATOR <> 0 Then
           fl := fl Or FDF_GENERATOR;
-        If ctx.ast.nodes[n].flags And MF_CONSTRUCTOR <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And MF_CONSTRUCTOR <> 0 Then
           Begin
             fl := fl Or FDF_CTOR;
-            If ctx.sem.scopes[sc].fkind = FK_DERIVED_CTOR Then
+            If ScopeP(ctx.sem.scopes, sc)^.fkind = FK_DERIVED_CTOR Then
               fl := fl Or FDF_DERIVED;
           End;
       End;
     N_FIELD:
       Begin
         fl := fl Or FDF_FIELD_INIT;
-        If ctx.ast.nodes[n].flags And MF_STATIC <> 0 Then
+        If NodeP(ctx.ast.nodes, n)^.flags And MF_STATIC <> 0 Then
           fl := fl Or FDF_STATIC;
       End;
     N_STATIC_BLOCK:
@@ -9485,27 +9755,27 @@ Begin
   End;
   If sc <> 0 Then
     Begin
-      If ctx.sem.scopes[sc].uses_this Then
+      If ScopeP(ctx.sem.scopes, sc)^.uses_this Then
         fl := fl Or FDF_USES_THIS;
-      If ctx.sem.scopes[sc].uses_arguments Then
+      If ScopeP(ctx.sem.scopes, sc)^.uses_arguments Then
         fl := fl Or FDF_USES_ARGS;
-      If ctx.sem.scopes[sc].this_captured Then
+      If ScopeP(ctx.sem.scopes, sc)^.this_captured Then
         fl := fl Or FDF_THIS_CAPTURED;
-      ctx.data.fdescs[id].ncells := ctx.sem.scopes[sc].cap_count;
+      FdescP(ctx.data.fdescs, id)^.ncells := ScopeP(ctx.sem.scopes, sc)^.cap_count;
     End
   Else
-    ctx.data.fdescs[id].ncells := 0;
+    FdescP(ctx.data.fdescs, id)^.ncells := 0;
   nm := NodeFuncName(ctx, n);
-  ctx.data.fdescs[id].node := n;
-  ctx.data.fdescs[id].name_str := nm;
-  ctx.data.fdescs[id].nparams := ParamLength(ctx, n);
-  ctx.data.fdescs[id].flags := fl;
-  ctx.data.fdescs[id].sym := 0;
-  ctx.data.fdescs[id].code_sym := '_JSF_' + Pad4(id);
-  If ctx.data.strs[nm].len > 0 Then
-    ctx.data.fdescs[id].code_sym := ctx.data.fdescs[id].code_sym + '_' +
+  FdescP(ctx.data.fdescs, id)^.node := n;
+  FdescP(ctx.data.fdescs, id)^.name_str := nm;
+  FdescP(ctx.data.fdescs, id)^.nparams := ParamLength(ctx, n);
+  FdescP(ctx.data.fdescs, id)^.flags := fl;
+  FdescP(ctx.data.fdescs, id)^.sym := 0;
+  FdescP(ctx.data.fdescs, id)^.code_sym := '_JSF_' + Pad4(id);
+  If StrP(ctx.data.strs, nm)^.len > 0 Then
+    FdescP(ctx.data.fdescs, id)^.code_sym := FdescP(ctx.data.fdescs, id)^.code_sym + '_' +
       MangleIdent(Copy(StrText(ctx, nm), 1, 40));
-  ctx.ast.nodes[n].ds := id;
+  NodeP(ctx.ast.nodes, n)^.ds := id;
 End;
 
 Procedure AddClassDesc(Var ctx: TCompilerContext; n: LongInt);
@@ -9513,47 +9783,37 @@ Var
   id, m, f: LongInt;
   cm: LongInt;
 Begin
-  If ctx.data.cd_count >= MAX_CDESCS Then
-    Begin
-      DataFail(ctx, 'trop de descripteurs de classes');
-      Exit;
-    End;
   Inc(ctx.data.cd_count);
   id := ctx.data.cd_count;
-  ctx.data.cdescs[id].node := n;
-  ctx.data.cdescs[id].name_str := NodeFuncName(ctx, n);
-  ctx.data.cdescs[id].ctor_fd := 0;
-  ctx.data.cdescs[id].flags := 0;
-  ctx.data.cdescs[id].first_member := ctx.data.cm_count + 1;
-  ctx.data.cdescs[id].member_count := 0;
-  ctx.data.cdescs[id].sym := 0;
-  If ctx.ast.nodes[n].e1 <> 0 Then
-    ctx.data.cdescs[id].flags := ctx.data.cdescs[id].flags Or CDF_DERIVED;
-  m := ctx.ast.nodes[n].e2;
+  CdescP(ctx.data.cdescs, id)^.node := n;
+  CdescP(ctx.data.cdescs, id)^.name_str := NodeFuncName(ctx, n);
+  CdescP(ctx.data.cdescs, id)^.ctor_fd := 0;
+  CdescP(ctx.data.cdescs, id)^.flags := 0;
+  CdescP(ctx.data.cdescs, id)^.first_member := ctx.data.cm_count + 1;
+  CdescP(ctx.data.cdescs, id)^.member_count := 0;
+  CdescP(ctx.data.cdescs, id)^.sym := 0;
+  If NodeP(ctx.ast.nodes, n)^.e1 <> 0 Then
+    CdescP(ctx.data.cdescs, id)^.flags := CdescP(ctx.data.cdescs, id)^.flags Or CDF_DERIVED;
+  m := NodeP(ctx.ast.nodes, n)^.e2;
   While m <> 0 Do
     Begin
-      If ctx.data.cm_count >= MAX_CMEMBERS Then
-        Begin
-          DataFail(ctx, 'trop de membres de classe');
-          Break;
-        End;
       Inc(ctx.data.cm_count);
       cm := ctx.data.cm_count;
       f := 0;
-      ctx.data.cmembers[cm].key_str := 0;
-      ctx.data.cmembers[cm].fd := ctx.ast.nodes[m].ds;
-      Case ctx.ast.nodes[m].kind Of
+      CmemP(ctx.data.cmembers, cm)^.key_str := 0;
+      CmemP(ctx.data.cmembers, cm)^.fd := NodeP(ctx.ast.nodes, m)^.ds;
+      Case NodeP(ctx.ast.nodes, m)^.kind Of
         N_METHOD:
           Begin
             f := f Or CM_METHOD;
-            If ctx.ast.nodes[m].flags And MF_GETTER <> 0 Then
+            If NodeP(ctx.ast.nodes, m)^.flags And MF_GETTER <> 0 Then
               f := f Or CM_GETTER;
-            If ctx.ast.nodes[m].flags And MF_SETTER <> 0 Then
+            If NodeP(ctx.ast.nodes, m)^.flags And MF_SETTER <> 0 Then
               f := f Or CM_SETTER;
-            If ctx.ast.nodes[m].flags And MF_CONSTRUCTOR <> 0 Then
+            If NodeP(ctx.ast.nodes, m)^.flags And MF_CONSTRUCTOR <> 0 Then
               Begin
                 f := f Or CM_CTOR;
-                ctx.data.cdescs[id].ctor_fd := ctx.ast.nodes[m].ds;
+                CdescP(ctx.data.cdescs, id)^.ctor_fd := NodeP(ctx.ast.nodes, m)^.ds;
               End;
           End;
         N_FIELD:
@@ -9561,17 +9821,17 @@ Begin
         N_STATIC_BLOCK:
           f := f Or CM_STATIC_BLOCK;
       End;
-      If ctx.ast.nodes[m].flags And MF_STATIC <> 0 Then
+      If NodeP(ctx.ast.nodes, m)^.flags And MF_STATIC <> 0 Then
         f := f Or CM_STATIC;
-      If ctx.ast.nodes[m].flags And MF_COMPUTED <> 0 Then
+      If NodeP(ctx.ast.nodes, m)^.flags And MF_COMPUTED <> 0 Then
         f := f Or CM_COMPUTED;
-      ctx.data.cmembers[cm].flags := f;
-      If ctx.ast.nodes[m].kind <> N_STATIC_BLOCK Then
-        ctx.data.cmembers[cm].key_str := ctx.ast.nodes[m].aux;
-      Inc(ctx.data.cdescs[id].member_count);
-      m := ctx.ast.nodes[m].next;
+      CmemP(ctx.data.cmembers, cm)^.flags := f;
+      If NodeP(ctx.ast.nodes, m)^.kind <> N_STATIC_BLOCK Then
+        CmemP(ctx.data.cmembers, cm)^.key_str := NodeP(ctx.ast.nodes, m)^.aux;
+      Inc(CdescP(ctx.data.cdescs, id)^.member_count);
+      m := NodeP(ctx.ast.nodes, m)^.next;
     End;
-  ctx.ast.nodes[n].ds := id;
+  NodeP(ctx.ast.nodes, n)^.ds := id;
 End;
 
 { ---- Chaines et constantes standard du runtime ---- }
@@ -9611,15 +9871,15 @@ Begin
   If v = 0 Then
     Exit;
   nm := KeyString(ctx, tok);
-  Case ctx.ast.nodes[v].kind Of
+  Case NodeP(ctx.ast.nodes, v)^.kind Of
     N_FUNC_EXPR:
-      If (ctx.ast.nodes[v].ds > 0) And
-         (ctx.data.strs[ctx.data.fdescs[ctx.ast.nodes[v].ds].name_str].len = 0) Then
-        ctx.data.fdescs[ctx.ast.nodes[v].ds].name_str := nm;
+      If (NodeP(ctx.ast.nodes, v)^.ds > 0) And
+         (StrP(ctx.data.strs, FdescP(ctx.data.fdescs, NodeP(ctx.ast.nodes, v)^.ds)^.name_str)^.len = 0) Then
+        FdescP(ctx.data.fdescs, NodeP(ctx.ast.nodes, v)^.ds)^.name_str := nm;
     N_CLASS_EXPR:
-      If (ctx.ast.nodes[v].ds > 0) And
-         (ctx.data.strs[ctx.data.cdescs[ctx.ast.nodes[v].ds].name_str].len = 0) Then
-        ctx.data.cdescs[ctx.ast.nodes[v].ds].name_str := nm;
+      If (NodeP(ctx.ast.nodes, v)^.ds > 0) And
+         (StrP(ctx.data.strs, CdescP(ctx.data.cdescs, NodeP(ctx.ast.nodes, v)^.ds)^.name_str)^.len = 0) Then
+        CdescP(ctx.data.cdescs, NodeP(ctx.ast.nodes, v)^.ds)^.name_str := nm;
   End;
 End;
 
@@ -9628,27 +9888,27 @@ Var
   i, t: LongInt;
 Begin
   For i := 1 To ctx.ast.node_count Do
-    Case ctx.ast.nodes[i].kind Of
+    Case NodeP(ctx.ast.nodes, i)^.kind Of
       N_DECLARATOR:
         Begin
-          t := ctx.ast.nodes[i].e1;
-          If (t <> 0) And (ctx.ast.nodes[t].kind = N_BIND_IDENT) Then
-            NameFuncNode(ctx, ctx.ast.nodes[i].e2, ctx.ast.nodes[t].tok);
+          t := NodeP(ctx.ast.nodes, i)^.e1;
+          If (t <> 0) And (NodeP(ctx.ast.nodes, t)^.kind = N_BIND_IDENT) Then
+            NameFuncNode(ctx, NodeP(ctx.ast.nodes, i)^.e2, NodeP(ctx.ast.nodes, t)^.tok);
         End;
       N_PROP:
-        If ctx.ast.nodes[i].flags And (PR_SPREAD Or PR_COMPUTED Or PR_METHOD) = 0 Then
-          NameFuncNode(ctx, ctx.ast.nodes[i].e1, ctx.ast.nodes[i].tok);
+        If NodeP(ctx.ast.nodes, i)^.flags And (PR_SPREAD Or PR_COMPUTED Or PR_METHOD) = 0 Then
+          NameFuncNode(ctx, NodeP(ctx.ast.nodes, i)^.e1, NodeP(ctx.ast.nodes, i)^.tok);
       N_ASSIGN:
         Begin
-          t := ctx.ast.nodes[i].e1;
-          If (t <> 0) And (ctx.ast.nodes[t].kind = N_IDENT) And
-             (ctx.lex.tokens[ctx.ast.nodes[i].tok].text = '=') Then
-            NameFuncNode(ctx, ctx.ast.nodes[i].e2, ctx.ast.nodes[t].tok);
+          t := NodeP(ctx.ast.nodes, i)^.e1;
+          If (t <> 0) And (NodeP(ctx.ast.nodes, t)^.kind = N_IDENT) And
+             (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text = '=') Then
+            NameFuncNode(ctx, NodeP(ctx.ast.nodes, i)^.e2, NodeP(ctx.ast.nodes, t)^.tok);
         End;
     End;
   For i := 1 To ctx.data.cd_count Do
-    If ctx.data.cdescs[i].ctor_fd <> 0 Then
-      ctx.data.fdescs[ctx.data.cdescs[i].ctor_fd].name_str := ctx.data.cdescs[i].name_str;
+    If CdescP(ctx.data.cdescs, i)^.ctor_fd <> 0 Then
+      FdescP(ctx.data.fdescs, CdescP(ctx.data.cdescs, i)^.ctor_fd)^.name_str := CdescP(ctx.data.cdescs, i)^.name_str;
 End;
 
 Procedure CollectData(Var ctx: TCompilerContext);
@@ -9659,82 +9919,82 @@ Var
 Begin
   For i := 1 To ctx.ast.node_count Do
     Begin
-      ctx.ast.nodes[i].ds := 0;
-      Case ctx.ast.nodes[i].kind Of
+      NodeP(ctx.ast.nodes, i)^.ds := 0;
+      Case NodeP(ctx.ast.nodes, i)^.kind Of
         N_STRING, N_TEMPLATE_STR:
           Begin
-            If (ctx.ast.nodes[i].kind = N_TEMPLATE_STR) And
-               (ctx.ast.nodes[i].flags = 1) Then
+            If (NodeP(ctx.ast.nodes, i)^.kind = N_TEMPLATE_STR) And
+               (NodeP(ctx.ast.nodes, i)^.flags = 1) Then
               Begin
                 { texte brut du gabarit etiquete : entre les delimiteurs }
-                e := ctx.lex.tokens[ctx.ast.nodes[i].tok].pos + 1;
-                tpl_end := ctx.lex.tokens[ctx.ast.nodes[i].tok].pos +
-                           ctx.lex.tokens[ctx.ast.nodes[i].tok].len;
-                If (ctx.lex.tokens[ctx.ast.nodes[i].tok].tpl = TP_NOSUB) Or
-                   (ctx.lex.tokens[ctx.ast.nodes[i].tok].tpl = TP_TAIL) Then
+                e := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.pos + 1;
+                tpl_end := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.pos +
+                           TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.len;
+                If (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.tpl = TP_NOSUB) Or
+                   (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.tpl = TP_TAIL) Then
                   Dec(tpl_end)
                 Else
                   Dec(tpl_end, 2);
                 tpl_off := ctx.lex.pool_len;
                 While e < tpl_end Do
                   Begin
-                    PoolAppend(ctx, ctx.source.buf[e]);
+                    PoolAppend(ctx, SrcCharP(ctx.source.buf, e)^);
                     Inc(e);
                   End;
-                ctx.ast.nodes[i].ds := InternPool(ctx, tpl_off,
+                NodeP(ctx.ast.nodes, i)^.ds := InternPool(ctx, tpl_off,
                                                   ctx.lex.pool_len - tpl_off);
               End
             Else
-              ctx.ast.nodes[i].ds := InternPool(ctx,
-                ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off,
-                ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len);
+              NodeP(ctx.ast.nodes, i)^.ds := InternPool(ctx,
+                TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.sval_off,
+                TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.sval_len);
           End;
         N_REGEX:
           Begin
-            ctx.ast.nodes[i].ds := InternPool(ctx,
-              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off,
-              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len);
-            ctx.ast.nodes[i].aux := InternPool(ctx,
-              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off +
-              ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len,
-              ctx.lex.tokens[ctx.ast.nodes[i].tok].flag_len);
+            NodeP(ctx.ast.nodes, i)^.ds := InternPool(ctx,
+              TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.sval_off,
+              TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.sval_len);
+            NodeP(ctx.ast.nodes, i)^.aux := InternPool(ctx,
+              TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.sval_off +
+              TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.sval_len,
+              TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.flag_len);
           End;
         N_NUMBER:
           Begin
-            v := ctx.lex.tokens[ctx.ast.nodes[i].tok].num_val;
+            v := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.num_val;
             If Not FitsInt32(v) Then
-              ctx.ast.nodes[i].ds := AddDouble(ctx, v);
+              NodeP(ctx.ast.nodes, i)^.ds := AddDouble(ctx, v);
           End;
         N_UNARY:
           Begin
-            s := ctx.lex.tokens[ctx.ast.nodes[i].tok].text;
-            e := ctx.ast.nodes[i].e1;
-            If (s = '-') And (e <> 0) And (ctx.ast.nodes[e].kind = N_NUMBER) And
-               (ctx.lex.tokens[ctx.ast.nodes[e].tok].num_val = 0) Then
-              ctx.ast.nodes[i].ds := STD_DBL_NEGZERO;
+            s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text;
+            e := NodeP(ctx.ast.nodes, i)^.e1;
+            If (s = '-') And (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_NUMBER) And
+               (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, e)^.tok)^.num_val = 0) Then
+              NodeP(ctx.ast.nodes, i)^.ds := STD_DBL_NEGZERO;
           End;
         N_MEMBER:
-          ctx.ast.nodes[i].aux := MarkAtom(ctx,
-            InternText(ctx, ctx.lex.tokens[ctx.ast.nodes[i].tok].text));
+          NodeP(ctx.ast.nodes, i)^.aux := MarkAtom(ctx,
+            InternText(ctx, TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, i)^.tok)^.text));
         N_PROP:
-          If ctx.ast.nodes[i].flags And (PR_SPREAD Or PR_COMPUTED) = 0 Then
-            ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
+          If NodeP(ctx.ast.nodes, i)^.flags And (PR_SPREAD Or PR_COMPUTED) = 0 Then
+            NodeP(ctx.ast.nodes, i)^.aux := MarkAtom(ctx, KeyString(ctx, NodeP(ctx.ast.nodes, i)^.tok));
         N_PATTERN_PROP:
-          If ctx.ast.nodes[i].flags And (PP_REST Or PP_COMPUTED) = 0 Then
-            ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
+          If NodeP(ctx.ast.nodes, i)^.flags And (PP_REST Or PP_COMPUTED) = 0 Then
+            NodeP(ctx.ast.nodes, i)^.aux := MarkAtom(ctx, KeyString(ctx, NodeP(ctx.ast.nodes, i)^.tok));
         N_FUNC_DECL, N_FUNC_EXPR, N_STATIC_BLOCK:
           AddFuncDesc(ctx, i);
         N_METHOD:
           Begin
-            If ctx.ast.nodes[i].flags And MF_COMPUTED = 0 Then
-              ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
+            If NodeP(ctx.ast.nodes, i)^.flags And MF_COMPUTED = 0 Then
+              NodeP(ctx.ast.nodes, i)^.aux := MarkAtom(ctx, KeyString(ctx, NodeP(ctx.ast.nodes, i)^.tok));
             AddFuncDesc(ctx, i);
           End;
         N_FIELD:
           Begin
-            If ctx.ast.nodes[i].flags And MF_COMPUTED = 0 Then
-              ctx.ast.nodes[i].aux := MarkAtom(ctx, KeyString(ctx, ctx.ast.nodes[i].tok));
-            If ctx.ast.nodes[i].e1 <> 0 Then
+            If NodeP(ctx.ast.nodes, i)^.flags And MF_COMPUTED = 0 Then
+              NodeP(ctx.ast.nodes, i)^.aux := MarkAtom(ctx, KeyString(ctx, NodeP(ctx.ast.nodes, i)^.tok));
+            If NodeP(ctx.ast.nodes, i)^.e1 <> 0 Then
               AddFuncDesc(ctx, i);
           End;
       End;
@@ -9742,15 +10002,15 @@ Begin
   { noms des variables qui exigent un test TDZ a l'execution }
   For i := 1 To ctx.sem.sym_count Do
     Begin
-      ctx.sem.syms[i].name_str := 0;
-      If ctx.sem.syms[i].flags And SF_TDZ_CHECK <> 0 Then
-        ctx.sem.syms[i].name_str :=
-          InternText(ctx, ctx.lex.tokens[ctx.sem.syms[i].name_tok].text);
+      SymP(ctx.sem.syms, i)^.name_str := 0;
+      If SymP(ctx.sem.syms, i)^.flags And SF_TDZ_CHECK <> 0 Then
+        SymP(ctx.sem.syms, i)^.name_str :=
+          InternText(ctx, TokP(ctx.lex.tokens, SymP(ctx.sem.syms, i)^.name_tok)^.text);
     End;
   { descripteurs de classes : apres ceux des membres }
   For i := 1 To ctx.ast.node_count Do
-    If (ctx.ast.nodes[i].kind = N_CLASS_DECL) Or
-       (ctx.ast.nodes[i].kind = N_CLASS_EXPR) Then
+    If (NodeP(ctx.ast.nodes, i)^.kind = N_CLASS_DECL) Or
+       (NodeP(ctx.ast.nodes, i)^.kind = N_CLASS_EXPR) Then
       AddClassDesc(ctx, i);
   InferFuncNames(ctx);
 End;
@@ -9761,7 +10021,7 @@ Procedure EmitStringCell(Var ctx: TCompilerContext; id: LongInt);
 Var
   ofs, i, len: LongInt;
 Begin
-  len := ctx.data.strs[id].len;
+  len := StrP(ctx.data.strs, id)^.len;
   ofs := SecAlloc(ctx, SEC_RDATA, RT_STR_DATA + len + 1);
   If ctx.data.failed Then
     Exit;
@@ -9769,12 +10029,12 @@ Begin
   PutByte(ctx, SEC_RDATA, ofs + RT_HDR_GC, 0);
   PutByte(ctx, SEC_RDATA, ofs + RT_HDR_FLAGS, OF_STATIC);
   PutDword(ctx, SEC_RDATA, ofs + RT_STR_LEN, len);
-  PutDword(ctx, SEC_RDATA, ofs + RT_STR_HASH, ctx.data.strs[id].hash);
+  PutDword(ctx, SEC_RDATA, ofs + RT_STR_HASH, StrP(ctx.data.strs, id)^.hash);
   For i := 0 To len - 1 Do
     PutByte(ctx, SEC_RDATA, ofs + RT_STR_DATA + i,
-            Ord(ctx.data.dpool[ctx.data.strs[id].off + i]));
+            Ord(DpoolP(ctx.data.dpool, StrP(ctx.data.strs, id)^.off + i)^));
   PutByte(ctx, SEC_RDATA, ofs + RT_STR_DATA + len, 0);
-  ctx.data.strs[id].sym := NewDataSym(ctx, SymStr(id), SEC_RDATA, ofs,
+  StrP(ctx.data.strs, id)^.sym := NewDataSym(ctx, SymStr(id), SEC_RDATA, ofs,
                                       RT_STR_DATA + len + 1, DS_STRING);
 End;
 
@@ -9785,9 +10045,9 @@ Begin
   For i := 1 To ctx.data.dbl_count Do
     Begin
       ofs := SecAlloc(ctx, SEC_RDATA, 8);
-      PutDword(ctx, SEC_RDATA, ofs, ctx.data.dbls[i].lo);
-      PutDword(ctx, SEC_RDATA, ofs + 4, ctx.data.dbls[i].hi);
-      ctx.data.dbls[i].sym := NewDataSym(ctx, SymDbl(i), SEC_RDATA, ofs, 8, DS_DOUBLE);
+      PutDword(ctx, SEC_RDATA, ofs, DblP(ctx.data.dbls, i)^.lo);
+      PutDword(ctx, SEC_RDATA, ofs + 4, DblP(ctx.data.dbls, i)^.hi);
+      DblP(ctx.data.dbls, i)^.sym := NewDataSym(ctx, SymDbl(i), SEC_RDATA, ofs, 8, DS_DOUBLE);
     End;
 End;
 
@@ -9800,11 +10060,11 @@ Begin
       ofs := SecAlloc(ctx, SEC_RDATA, RT_FD_SIZE);
       PutDword(ctx, SEC_RDATA, ofs + RT_FD_NAME, 0);
       AddReloc(ctx, SEC_RDATA, ofs + RT_FD_NAME,
-               ctx.data.strs[ctx.data.fdescs[i].name_str].sym);
-      PutDword(ctx, SEC_RDATA, ofs + RT_FD_NPARAMS, ctx.data.fdescs[i].nparams);
-      PutDword(ctx, SEC_RDATA, ofs + RT_FD_FLAGS, ctx.data.fdescs[i].flags);
-      PutDword(ctx, SEC_RDATA, ofs + RT_FD_NCELLS, ctx.data.fdescs[i].ncells);
-      ctx.data.fdescs[i].sym := NewDataSym(ctx, SymFdesc(i), SEC_RDATA, ofs,
+               StrP(ctx.data.strs, FdescP(ctx.data.fdescs, i)^.name_str)^.sym);
+      PutDword(ctx, SEC_RDATA, ofs + RT_FD_NPARAMS, FdescP(ctx.data.fdescs, i)^.nparams);
+      PutDword(ctx, SEC_RDATA, ofs + RT_FD_FLAGS, FdescP(ctx.data.fdescs, i)^.flags);
+      PutDword(ctx, SEC_RDATA, ofs + RT_FD_NCELLS, FdescP(ctx.data.fdescs, i)^.ncells);
+      FdescP(ctx.data.fdescs, i)^.sym := NewDataSym(ctx, SymFdesc(i), SEC_RDATA, ofs,
                                            RT_FD_SIZE, DS_FDESC);
     End;
 End;
@@ -9815,28 +10075,28 @@ Var
 Begin
   For i := 1 To ctx.data.cd_count Do
     Begin
-      size := RT_CD_MEMBERS + RT_CM_SIZE * ctx.data.cdescs[i].member_count;
+      size := RT_CD_MEMBERS + RT_CM_SIZE * CdescP(ctx.data.cdescs, i)^.member_count;
       ofs := SecAlloc(ctx, SEC_RDATA, size);
       AddReloc(ctx, SEC_RDATA, ofs + RT_CD_NAME,
-               ctx.data.strs[ctx.data.cdescs[i].name_str].sym);
-      If ctx.data.cdescs[i].ctor_fd <> 0 Then
+               StrP(ctx.data.strs, CdescP(ctx.data.cdescs, i)^.name_str)^.sym);
+      If CdescP(ctx.data.cdescs, i)^.ctor_fd <> 0 Then
         AddReloc(ctx, SEC_RDATA, ofs + RT_CD_CTOR,
-                 ctx.data.fdescs[ctx.data.cdescs[i].ctor_fd].sym);
-      PutDword(ctx, SEC_RDATA, ofs + RT_CD_FLAGS, ctx.data.cdescs[i].flags);
-      PutDword(ctx, SEC_RDATA, ofs + RT_CD_NMEMBERS, ctx.data.cdescs[i].member_count);
-      For j := 0 To ctx.data.cdescs[i].member_count - 1 Do
+                 FdescP(ctx.data.fdescs, CdescP(ctx.data.cdescs, i)^.ctor_fd)^.sym);
+      PutDword(ctx, SEC_RDATA, ofs + RT_CD_FLAGS, CdescP(ctx.data.cdescs, i)^.flags);
+      PutDword(ctx, SEC_RDATA, ofs + RT_CD_NMEMBERS, CdescP(ctx.data.cdescs, i)^.member_count);
+      For j := 0 To CdescP(ctx.data.cdescs, i)^.member_count - 1 Do
         Begin
-          cm := ctx.data.cdescs[i].first_member + j;
+          cm := CdescP(ctx.data.cdescs, i)^.first_member + j;
           mo := ofs + RT_CD_MEMBERS + RT_CM_SIZE * j;
-          If ctx.data.cmembers[cm].key_str <> 0 Then
+          If CmemP(ctx.data.cmembers, cm)^.key_str <> 0 Then
             AddReloc(ctx, SEC_RDATA, mo + RT_CM_KEY,
-                     ctx.data.strs[ctx.data.cmembers[cm].key_str].sym);
-          PutDword(ctx, SEC_RDATA, mo + RT_CM_FLAGS, ctx.data.cmembers[cm].flags);
-          If ctx.data.cmembers[cm].fd <> 0 Then
+                     StrP(ctx.data.strs, CmemP(ctx.data.cmembers, cm)^.key_str)^.sym);
+          PutDword(ctx, SEC_RDATA, mo + RT_CM_FLAGS, CmemP(ctx.data.cmembers, cm)^.flags);
+          If CmemP(ctx.data.cmembers, cm)^.fd <> 0 Then
             AddReloc(ctx, SEC_RDATA, mo + RT_CM_DESC,
-                     ctx.data.fdescs[ctx.data.cmembers[cm].fd].sym);
+                     FdescP(ctx.data.fdescs, CmemP(ctx.data.cmembers, cm)^.fd)^.sym);
         End;
-      ctx.data.cdescs[i].sym := NewDataSym(ctx, SymClassDesc(i), SEC_RDATA, ofs,
+      CdescP(ctx.data.cdescs, i)^.sym := NewDataSym(ctx, SymClassDesc(i), SEC_RDATA, ofs,
                                            size, DS_CLASSDESC);
     End;
 End;
@@ -9848,7 +10108,7 @@ Begin
   ofs := SecAlloc(ctx, SEC_RDATA, 4 + 4 * ctx.data.atom_count);
   PutDword(ctx, SEC_RDATA, ofs, ctx.data.atom_count);
   For i := 1 To ctx.data.atom_count Do
-    AddReloc(ctx, SEC_RDATA, ofs + 4 * i, ctx.data.strs[ctx.data.atoms[i]].sym);
+    AddReloc(ctx, SEC_RDATA, ofs + 4 * i, StrP(ctx.data.strs, AtomP(ctx.data.atoms, i)^)^.sym);
   ctx.data.atom_table_sym := NewDataSym(ctx, '_JSATOMS', SEC_RDATA, ofs,
                                         4 + 4 * ctx.data.atom_count, DS_ATOMS);
 End;
@@ -9872,21 +10132,21 @@ Begin
       NewDataSym(ctx, nm, SEC_DATA, ofs, 8, DS_RTVAR);
     End;
   For sy := 1 To ctx.sem.sym_count Do
-    If (ctx.sem.syms[sy].flags And SF_STATIC <> 0) And
-       ((ctx.sem.syms[sy].kind = DK_VAR) Or (ctx.sem.syms[sy].kind = DK_LET) Or
-        (ctx.sem.syms[sy].kind = DK_CONST) Or (ctx.sem.syms[sy].kind = DK_FUNC) Or
-        (ctx.sem.syms[sy].kind = DK_CLASS)) Then
+    If (SymP(ctx.sem.syms, sy)^.flags And SF_STATIC <> 0) And
+       ((SymP(ctx.sem.syms, sy)^.kind = DK_VAR) Or (SymP(ctx.sem.syms, sy)^.kind = DK_LET) Or
+        (SymP(ctx.sem.syms, sy)^.kind = DK_CONST) Or (SymP(ctx.sem.syms, sy)^.kind = DK_FUNC) Or
+        (SymP(ctx.sem.syms, sy)^.kind = DK_CLASS)) Then
       Begin
         ofs := SecAlloc(ctx, SEC_DATA, RT_VALUE_SIZE);
-        nm := '_JSV_' + MangleIdent(ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
-        If ctx.sem.syms[sy].scope <> 1 Then
+        nm := '_JSV_' + MangleIdent(TokP(ctx.lex.tokens, SymP(ctx.sem.syms, sy)^.name_tok)^.text);
+        If SymP(ctx.sem.syms, sy)^.scope <> 1 Then
           nm := nm + '_' + Pad4(sy);
-        If IsLexicalKind(ctx.sem.syms[sy].kind) And
-           (ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0) Then
+        If IsLexicalKind(SymP(ctx.sem.syms, sy)^.kind) And
+           (SymP(ctx.sem.syms, sy)^.flags And SF_TDZ_CHECK <> 0) Then
           PutValue(ctx, ofs, RT_T_TDZ)
         Else
           PutValue(ctx, ofs, RT_T_UNDEFINED);
-        ctx.sem.syms[sy].ds := NewDataSym(ctx, nm, SEC_DATA, ofs, RT_VALUE_SIZE,
+        SymP(ctx.sem.syms, sy)^.ds := NewDataSym(ctx, nm, SEC_DATA, ofs, RT_VALUE_SIZE,
                                           DS_GLOBAL);
         Inc(ctx.data.global_count);
       End;
@@ -9915,10 +10175,10 @@ Begin
   ctx.data.rd_size := 0;
   ctx.data.dt_size := 0;
   ctx.data.global_count := 0;
-  FillChar(ctx.data.hash, SizeOf(ctx.data.hash), 0);
-  FillChar(ctx.data.dhash, SizeOf(ctx.data.dhash), 0);
+  DlClear(ctx.data.hash);
+  DlClear(ctx.data.dhash);
   For i := 1 To ctx.sem.sym_count Do
-    ctx.sem.syms[i].ds := 0;
+    SymP(ctx.sem.syms, i)^.ds := 0;
 
   AddStandardData(ctx);
   CollectData(ctx);
@@ -9963,7 +10223,7 @@ Var
   i, n: LongInt;
   c: Char;
 Begin
-  n := ctx.data.strs[id].len;
+  n := StrP(ctx.data.strs, id)^.len;
   Write('"');
   For i := 0 To n - 1 Do
     Begin
@@ -9972,7 +10232,7 @@ Begin
           Write('...');
           Break;
         End;
-      c := ctx.data.dpool[ctx.data.strs[id].off + i];
+      c := DpoolP(ctx.data.dpool, StrP(ctx.data.strs, id)^.off + i)^;
       If c = #10 Then
         Write('\n')
       Else If c < ' ' Then
@@ -9998,27 +10258,27 @@ Begin
   Writeln('  Chaines (', ctx.data.str_count, ') :');
   For i := 1 To ctx.data.str_count Do
     Begin
-      Write('    ', SymStr(i), ' ', DataSecName(ctx.data.syms[ctx.data.strs[i].sym].sec),
-            '+', ctx.data.syms[ctx.data.strs[i].sym].ofs, ' ');
+      Write('    ', SymStr(i), ' ', DataSecName(DsymP(ctx.data.syms, StrP(ctx.data.strs, i)^.sym)^.sec),
+            '+', DsymP(ctx.data.syms, StrP(ctx.data.strs, i)^.sym)^.ofs, ' ');
       PrintQuoted(ctx, i);
-      Write(' len=', ctx.data.strs[i].len);
-      If ctx.data.strs[i].atom_id <> 0 Then
-        Write(' atome#', ctx.data.strs[i].atom_id);
+      Write(' len=', StrP(ctx.data.strs, i)^.len);
+      If StrP(ctx.data.strs, i)^.atom_id <> 0 Then
+        Write(' atome#', StrP(ctx.data.strs, i)^.atom_id);
       Writeln;
     End;
   Writeln('  Doubles (', ctx.data.dbl_count, ') :');
   For i := 1 To ctx.data.dbl_count Do
-    Writeln('    ', SymDbl(i), ' hi=', RtHex4(ctx.data.dbls[i].hi Shr 16),
-            RtHex4(ctx.data.dbls[i].hi), ' lo=', RtHex4(ctx.data.dbls[i].lo Shr 16),
-            RtHex4(ctx.data.dbls[i].lo));
+    Writeln('    ', SymDbl(i), ' hi=', RtHex4(DblP(ctx.data.dbls, i)^.hi Shr 16),
+            RtHex4(DblP(ctx.data.dbls, i)^.hi), ' lo=', RtHex4(DblP(ctx.data.dbls, i)^.lo Shr 16),
+            RtHex4(DblP(ctx.data.dbls, i)^.lo));
   Writeln('  Descripteurs de fonctions (', ctx.data.fd_count, ') :');
   For i := 1 To ctx.data.fd_count Do
     Begin
-      fl := ctx.data.fdescs[i].flags;
+      fl := FdescP(ctx.data.fdescs, i)^.flags;
       Write('    ', SymFdesc(i), ' nom=');
-      PrintQuoted(ctx, ctx.data.fdescs[i].name_str);
-      Write(' params=', ctx.data.fdescs[i].nparams, ' cellules=',
-            ctx.data.fdescs[i].ncells, ' code=', ctx.data.fdescs[i].code_sym);
+      PrintQuoted(ctx, FdescP(ctx.data.fdescs, i)^.name_str);
+      Write(' params=', FdescP(ctx.data.fdescs, i)^.nparams, ' cellules=',
+            FdescP(ctx.data.fdescs, i)^.ncells, ' code=', FdescP(ctx.data.fdescs, i)^.code_sym);
       If fl And FDF_ARROW <> 0 Then Write(' fleche');
       If fl And FDF_ASYNC <> 0 Then Write(' async');
       If fl And FDF_GENERATOR <> 0 Then Write(' generateur');
@@ -10039,20 +10299,20 @@ Begin
   For i := 1 To ctx.data.cd_count Do
     Begin
       Write('    ', SymClassDesc(i), ' nom=');
-      PrintQuoted(ctx, ctx.data.cdescs[i].name_str);
-      Write(' membres=', ctx.data.cdescs[i].member_count);
-      If ctx.data.cdescs[i].flags And CDF_DERIVED <> 0 Then
+      PrintQuoted(ctx, CdescP(ctx.data.cdescs, i)^.name_str);
+      Write(' membres=', CdescP(ctx.data.cdescs, i)^.member_count);
+      If CdescP(ctx.data.cdescs, i)^.flags And CDF_DERIVED <> 0 Then
         Write(' derivee');
-      If ctx.data.cdescs[i].ctor_fd <> 0 Then
-        Write(' ctor=', SymFdesc(ctx.data.cdescs[i].ctor_fd));
+      If CdescP(ctx.data.cdescs, i)^.ctor_fd <> 0 Then
+        Write(' ctor=', SymFdesc(CdescP(ctx.data.cdescs, i)^.ctor_fd));
       Writeln;
-      For j := 0 To ctx.data.cdescs[i].member_count - 1 Do
+      For j := 0 To CdescP(ctx.data.cdescs, i)^.member_count - 1 Do
         Begin
-          k := ctx.data.cdescs[i].first_member + j;
-          fl := ctx.data.cmembers[k].flags;
+          k := CdescP(ctx.data.cdescs, i)^.first_member + j;
+          fl := CmemP(ctx.data.cmembers, k)^.flags;
           Write('      ');
-          If ctx.data.cmembers[k].key_str <> 0 Then
-            PrintQuoted(ctx, ctx.data.cmembers[k].key_str)
+          If CmemP(ctx.data.cmembers, k)^.key_str <> 0 Then
+            PrintQuoted(ctx, CmemP(ctx.data.cmembers, k)^.key_str)
           Else
             Write('(sans cle)');
           If fl And CM_STATIC <> 0 Then Write(' statique');
@@ -10063,18 +10323,18 @@ Begin
           If fl And CM_CTOR <> 0 Then Write(' constructeur');
           If fl And CM_COMPUTED <> 0 Then Write(' calcule');
           If fl And CM_STATIC_BLOCK <> 0 Then Write(' bloc-statique');
-          If ctx.data.cmembers[k].fd <> 0 Then
-            Write(' ', SymFdesc(ctx.data.cmembers[k].fd));
+          If CmemP(ctx.data.cmembers, k)^.fd <> 0 Then
+            Write(' ', SymFdesc(CmemP(ctx.data.cmembers, k)^.fd));
           Writeln;
         End;
     End;
   Writeln('  Atomes : ', ctx.data.atom_count, ' dans _JSATOMS (.rdata+',
-          ctx.data.syms[ctx.data.atom_table_sym].ofs, ')');
+          DsymP(ctx.data.syms, ctx.data.atom_table_sym)^.ofs, ')');
   Writeln('  Donnees (.data) :');
   For i := 1 To ctx.data.sym_count Do
-    If ctx.data.syms[i].sec = SEC_DATA Then
-      Writeln('    ', ctx.data.syms[i].name, ' .data+', ctx.data.syms[i].ofs,
-              ' (', ctx.data.syms[i].size, ' octets)');
+    If DsymP(ctx.data.syms, i)^.sec = SEC_DATA Then
+      Writeln('    ', DsymP(ctx.data.syms, i)^.name, ' .data+', DsymP(ctx.data.syms, i)^.ofs,
+              ' (', DsymP(ctx.data.syms, i)^.size, ' octets)');
   Writeln('  Octets .rdata (debut) :');
   i := 0;
   line := 0;
@@ -10083,7 +10343,7 @@ Begin
       Write('    ', RtHex4(i), ':');
       For j := 0 To 15 Do
         If i + j < ctx.data.rd_size Then
-          Write(' ', Copy(RtHex4(ctx.data.rd[i + j]), 3, 2));
+          Write(' ', Copy(RtHex4(RdP(ctx.data.rd, i + j)^), 3, 2));
       Writeln;
       Inc(i, 16);
       Inc(line);
@@ -10215,18 +10475,11 @@ End;
 
 Procedure Emit(Var ctx: TCompilerContext; op: TOpc; a, b: TOperand);
 Begin
-  If ctx.ir.count >= MAX_INSTR Then
-    Begin
-      If Not ctx.ir.failed Then
-        PipelineError(ctx, 'trop d''instructions generees');
-      ctx.ir.failed := True;
-      Exit;
-    End;
   Inc(ctx.ir.count);
-  ctx.ir.instrs[ctx.ir.count].op := op;
-  ctx.ir.instrs[ctx.ir.count].a := a;
-  ctx.ir.instrs[ctx.ir.count].b := b;
-  ctx.ir.instrs[ctx.ir.count].line := ctx.ir.cur_line;
+  InstrP(ctx.ir.instrs, ctx.ir.count)^.op := op;
+  InstrP(ctx.ir.instrs, ctx.ir.count)^.a := a;
+  InstrP(ctx.ir.instrs, ctx.ir.count)^.b := b;
+  InstrP(ctx.ir.instrs, ctx.ir.count)^.line := ctx.ir.cur_line;
 End;
 
 Procedure Emit0(Var ctx: TCompilerContext; op: TOpc);
@@ -10252,34 +10505,33 @@ End;
 
 Procedure EmitComment(Var ctx: TCompilerContext; Const text: TString);
 Begin
-  If ctx.ir.comment_count >= MAX_COMMENTS Then
-    Exit;
   Inc(ctx.ir.comment_count);
-  ctx.ir.comments[ctx.ir.comment_count] := text;
+  CommentP(ctx.ir.comments, ctx.ir.comment_count)^ := text;
   Emit1(ctx, OP_COMMENT, ImmOp(ctx.ir.comment_count));
 End;
 
 { Symbole externe ou de code, retrouve par son nom. }
 Function XSym(Var ctx: TCompilerContext; Const name: TString): LongInt;
 Var
-  i: LongInt;
+  i, slot: LongInt;
 Begin
-  For i := 1 To ctx.ir.xsym_count Do
-    If ctx.ir.xsyms[i].name = name Then
-      Begin
-        XSym := i;
-        Exit;
-      End;
-  XSym := 0;
-  If ctx.ir.xsym_count >= MAX_XSYMS Then
+  slot := NameHash(name);
+  i := XhashP(ctx.ir.xhash, slot)^;
+  While i <> 0 Do
     Begin
-      PipelineError(ctx, 'trop de symboles externes');
-      Exit;
+      If XsymP(ctx.ir.xsyms, i)^.name = name Then
+        Begin
+          XSym := i;
+          Exit;
+        End;
+      i := XsymP(ctx.ir.xsyms, i)^.chain;
     End;
   Inc(ctx.ir.xsym_count);
-  ctx.ir.xsyms[ctx.ir.xsym_count].name := name;
-  ctx.ir.xsyms[ctx.ir.xsym_count].defined := False;
-  ctx.ir.xsyms[ctx.ir.xsym_count].runtime := False;
+  XsymP(ctx.ir.xsyms, ctx.ir.xsym_count)^.name := name;
+  XsymP(ctx.ir.xsyms, ctx.ir.xsym_count)^.defined := False;
+  XsymP(ctx.ir.xsyms, ctx.ir.xsym_count)^.runtime := False;
+  XsymP(ctx.ir.xsyms, ctx.ir.xsym_count)^.chain := XhashP(ctx.ir.xhash, slot)^;
+  XhashP(ctx.ir.xhash, slot)^ := ctx.ir.xsym_count;
   XSym := ctx.ir.xsym_count;
 End;
 
@@ -10305,25 +10557,25 @@ Var
 Begin
   For i := 1 To ctx.sem.scope_count Do
     Begin
-      ctx.sem.scopes[i].nslots := 0;
-      ctx.sem.scopes[i].args_slot := 0;
+      ScopeP(ctx.sem.scopes, i)^.nslots := 0;
+      ScopeP(ctx.sem.scopes, i)^.args_slot := 0;
     End;
   For i := 1 To ctx.sem.sym_count Do
     Begin
-      ctx.sem.syms[i].slot := 0;
-      If ctx.sem.syms[i].flags And SF_STATIC = 0 Then
+      SymP(ctx.sem.syms, i)^.slot := 0;
+      If SymP(ctx.sem.syms, i)^.flags And SF_STATIC = 0 Then
         Begin
-          fs := ctx.sem.scopes[ctx.sem.syms[i].scope].func;
-          Inc(ctx.sem.scopes[fs].nslots);
-          ctx.sem.syms[i].slot := ctx.sem.scopes[fs].nslots;
+          fs := ScopeP(ctx.sem.scopes, SymP(ctx.sem.syms, i)^.scope)^.func;
+          Inc(ScopeP(ctx.sem.scopes, fs)^.nslots);
+          SymP(ctx.sem.syms, i)^.slot := ScopeP(ctx.sem.scopes, fs)^.nslots;
         End;
     End;
 End;
 
 Function AllocTemp(Var ctx: TCompilerContext): LongInt;
 Begin
-  Inc(ctx.sem.scopes[ctx.ir.cg_fs].nslots);
-  AllocTemp := ctx.sem.scopes[ctx.ir.cg_fs].nslots;
+  Inc(ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.nslots);
+  AllocTemp := ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.nslots;
 End;
 
 Function SlotDisp(slot: LongInt): LongInt;
@@ -10339,10 +10591,10 @@ Begin
   k := 0;
   CapIndex := 0;
   For i := 1 To ctx.sem.cap_count Do
-    If ctx.sem.caps[i].fscope = fs Then
+    If CapP(ctx.sem.caps, i)^.fscope = fs Then
       Begin
         Inc(k);
-        If ctx.sem.caps[i].sym = sy Then
+        If CapP(ctx.sem.caps, i)^.sym = sy Then
           Begin
             CapIndex := k;
             Exit;
@@ -10358,25 +10610,25 @@ Procedure SymAccess(Var ctx: TCompilerContext; sy: LongInt; Var lo, hi: TOperand
 Var
   sf, k: LongInt;
 Begin
-  sf := ctx.sem.scopes[ctx.sem.syms[sy].scope].func;
-  If ctx.sem.syms[sy].flags And SF_STATIC <> 0 Then
+  sf := ScopeP(ctx.sem.scopes, SymP(ctx.sem.syms, sy)^.scope)^.func;
+  If SymP(ctx.sem.syms, sy)^.flags And SF_STATIC <> 0 Then
     Begin
-      lo := MemSym(SYMK_D, ctx.sem.syms[sy].ds, 0);
-      hi := MemSym(SYMK_D, ctx.sem.syms[sy].ds, 4);
+      lo := MemSym(SYMK_D, SymP(ctx.sem.syms, sy)^.ds, 0);
+      hi := MemSym(SYMK_D, SymP(ctx.sem.syms, sy)^.ds, 4);
     End
   Else If sf = ctx.ir.cg_fs Then
     Begin
-      If ctx.sem.syms[sy].flags And SF_CELL <> 0 Then
+      If SymP(ctx.sem.syms, sy)^.flags And SF_CELL <> 0 Then
         Begin
           Emit(ctx, OP_MOV, RegOp(R_ECX),
-               MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)));
+               MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)));
           lo := MemReg(R_ECX, RT_CELL_VALUE);
           hi := MemReg(R_ECX, RT_CELL_VALUE + 4);
         End
       Else
         Begin
-          lo := MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot));
-          hi := MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot) + 4);
+          lo := MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot));
+          hi := MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot) + 4);
         End;
     End
   Else
@@ -10385,7 +10637,7 @@ Begin
       If k = 0 Then
         Begin
           PipelineError(ctx, 'capture introuvable pour ' +
-                        ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+                        TokP(ctx.lex.tokens, SymP(ctx.sem.syms, sy)^.name_tok)^.text);
           k := 1;
         End;
       Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
@@ -10405,7 +10657,7 @@ Begin
   ok := NewLabel(ctx);
   Emit(ctx, OP_CMP, hi, ImmOp(TagImm(RT_T_TDZ)));
   Emit1(ctx, OP_JNE, LabelOp(ok));
-  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.sem.syms[sy].name_str].sym));
+  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, SymP(ctx.sem.syms, sy)^.name_str)^.sym));
   CallRt(ctx, 'throw_tdz', 4);
   PlaceLabel(ctx, ok);
 End;
@@ -10417,7 +10669,7 @@ Begin
   SymAccess(ctx, sy, lo, hi);
   Emit(ctx, OP_MOV, RegOp(R_EAX), lo);
   Emit(ctx, OP_MOV, RegOp(R_EDX), hi);
-  If ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0 Then
+  If SymP(ctx.sem.syms, sy)^.flags And SF_TDZ_CHECK <> 0 Then
     TdzCheck(ctx, sy, RegOp(R_EDX));
 End;
 
@@ -10427,10 +10679,10 @@ Procedure StoreSym(Var ctx: TCompilerContext; sy: LongInt; init: Boolean);
 Var
   lo, hi: TOperand;
 Begin
-  If (ctx.sem.syms[sy].kind = DK_FNAME) And Not init Then
+  If (SymP(ctx.sem.syms, sy)^.kind = DK_FNAME) And Not init Then
     Exit;
   SymAccess(ctx, sy, lo, hi);
-  If (Not init) And (ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0) Then
+  If (Not init) And (SymP(ctx.sem.syms, sy)^.flags And SF_TDZ_CHECK <> 0) Then
     TdzCheck(ctx, sy, hi);
   Emit(ctx, OP_MOV, lo, RegOp(R_EAX));
   Emit(ctx, OP_MOV, hi, RegOp(R_EDX));
@@ -10441,24 +10693,21 @@ End;
 Procedure PendingNote(Var ctx: TCompilerContext; n: LongInt; Const what: TString);
 Begin
   Inc(ctx.ir.pending_count);
-  If ctx.ir.pending_count <= MAX_PENDING Then
-    Begin
-      ctx.ir.pendings[ctx.ir.pending_count].line :=
-        ctx.lex.tokens[ctx.ast.nodes[n].tok].line;
-      ctx.ir.pendings[ctx.ir.pending_count].what := what;
-    End;
+  PendingP(ctx.ir.pendings, ctx.ir.pending_count)^.line :=
+    TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.line;
+  PendingP(ctx.ir.pendings, ctx.ir.pending_count)^.what := what;
   EmitComment(ctx, 'EN ATTENTE : ' + what + ' (ligne ' +
-              LineOfTok(ctx, ctx.ast.nodes[n].tok) + ')');
+              LineOfTok(ctx, NodeP(ctx.ast.nodes, n)^.tok) + ')');
 End;
 
 Procedure PendingExpr(Var ctx: TCompilerContext; n: LongInt);
 Var
   what: TString;
 Begin
-  what := NodeKindName(ctx.ast.nodes[n].kind);
-  Case ctx.ast.nodes[n].kind Of
+  what := NodeKindName(NodeP(ctx.ast.nodes, n)^.kind);
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_UNARY, N_BINARY, N_LOGICAL, N_ASSIGN, N_UPDATE:
-      what := what + ' ' + ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+      what := what + ' ' + TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
   End;
   PendingNote(ctx, n, what);
   LoadUndefined(ctx);
@@ -10482,21 +10731,21 @@ End;
 
 Procedure LoadDouble(Var ctx: TCompilerContext; id: LongInt);
 Begin
-  Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, ctx.data.dbls[id].sym, 0));
-  Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, ctx.data.dbls[id].sym, 4));
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, DblP(ctx.data.dbls, id)^.sym, 0));
+  Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, DblP(ctx.data.dbls, id)^.sym, 4));
 End;
 
 Procedure LoadStringConst(Var ctx: TCompilerContext; id: LongInt);
 Begin
-  Emit(ctx, OP_MOV, RegOp(R_EAX), AddrSym(SYMK_D, ctx.data.strs[id].sym));
+  Emit(ctx, OP_MOV, RegOp(R_EAX), AddrSym(SYMK_D, StrP(ctx.data.strs, id)^.sym));
   Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_STRING)));
 End;
 
 Procedure GenThis(Var ctx: TCompilerContext; n: LongInt);
 Begin
-  If ctx.ast.nodes[n].aux = TB_GLOBAL Then
+  If NodeP(ctx.ast.nodes, n)^.aux = TB_GLOBAL Then
     LoadUndefined(ctx)
-  Else If ctx.ast.nodes[n].e1 = 1 Then
+  Else If NodeP(ctx.ast.nodes, n)^.e1 = 1 Then
     Begin
       { fleche : this lexical memorise dans la closure }
       Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
@@ -10515,10 +10764,10 @@ Var
   name: TTokenText;
   xs: LongInt;
 Begin
-  name := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
-  Case ctx.ast.nodes[n].aux Of
+  name := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
+  Case NodeP(ctx.ast.nodes, n)^.aux Of
     RK_LOCAL, RK_OUTER, RK_GLOBAL_IMPLICIT:
-      LoadSym(ctx, ctx.ast.nodes[n].sym);
+      LoadSym(ctx, NodeP(ctx.ast.nodes, n)^.sym);
     RK_BUILTIN:
       Begin
         If name = 'undefined' Then
@@ -10539,12 +10788,12 @@ Begin
       LoadUndefined(ctx);
     RK_ARGUMENTS:
       Begin
-        If ctx.sem.scopes[ctx.ir.cg_fs].args_slot <> 0 Then
+        If ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.args_slot <> 0 Then
           Begin
             Emit(ctx, OP_MOV, RegOp(R_EAX),
-                 MemReg(R_EBP, SlotDisp(ctx.sem.scopes[ctx.ir.cg_fs].args_slot)));
+                 MemReg(R_EBP, SlotDisp(ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.args_slot)));
             Emit(ctx, OP_MOV, RegOp(R_EDX),
-                 MemReg(R_EBP, SlotDisp(ctx.sem.scopes[ctx.ir.cg_fs].args_slot) + 4));
+                 MemReg(R_EBP, SlotDisp(ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.args_slot) + 4));
           End
         Else
           PendingExpr(ctx, n);
@@ -10579,7 +10828,7 @@ Function TempAcquire(Var ctx: TCompilerContext): LongInt;
 Begin
   If ctx.ir.tmp_free_count > 0 Then
     Begin
-      TempAcquire := ctx.ir.tmp_free[ctx.ir.tmp_free_count];
+      TempAcquire := TmpFreeP(ctx.ir.tmp_free, ctx.ir.tmp_free_count)^;
       Dec(ctx.ir.tmp_free_count);
     End
   Else
@@ -10588,11 +10837,8 @@ End;
 
 Procedure TempRelease(Var ctx: TCompilerContext; t: LongInt);
 Begin
-  If ctx.ir.tmp_free_count < 64 Then
-    Begin
-      Inc(ctx.ir.tmp_free_count);
-      ctx.ir.tmp_free[ctx.ir.tmp_free_count] := t;
-    End;
+  Inc(ctx.ir.tmp_free_count);
+  TmpFreeP(ctx.ir.tmp_free, ctx.ir.tmp_free_count)^ := t;
 End;
 
 Procedure SaveTemp(Var ctx: TCompilerContext; t: LongInt);
@@ -10961,17 +11207,17 @@ Begin
   c.k := CK_NONE;
   If n = 0 Then
     Exit;
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_NUMBER:
       Begin
         c.k := CK_NUM;
-        c.n := ctx.lex.tokens[ctx.ast.nodes[n].tok].num_val;
+        c.n := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.num_val;
         EvalConst := True;
       End;
     N_BOOL:
       Begin
         c.k := CK_BOOL;
-        c.b := ctx.lex.tokens[ctx.ast.nodes[n].tok].text = 'true';
+        c.b := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text = 'true';
         EvalConst := True;
       End;
     N_NULL:
@@ -10980,16 +11226,16 @@ Begin
         EvalConst := True;
       End;
     N_IDENT:
-      If (ctx.ast.nodes[n].aux = RK_BUILTIN) And
-         (ctx.lex.tokens[ctx.ast.nodes[n].tok].text = 'undefined') Then
+      If (NodeP(ctx.ast.nodes, n)^.aux = RK_BUILTIN) And
+         (TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text = 'undefined') Then
         Begin
           c.k := CK_UNDEF;
           EvalConst := True;
         End;
     N_UNARY:
       Begin
-        s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
-        If Not EvalConst(ctx, ctx.ast.nodes[n].e1, a) Then
+        s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
+        If Not EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e1, a) Then
           Exit;
         If s = '!' Then
           Begin
@@ -11025,9 +11271,9 @@ Begin
       End;
     N_BINARY:
       Begin
-        s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
-        If Not (EvalConst(ctx, ctx.ast.nodes[n].e1, a) And
-                EvalConst(ctx, ctx.ast.nodes[n].e2, b)) Then
+        s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
+        If Not (EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e1, a) And
+                EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e2, b)) Then
           Exit;
         If (a.k <> CK_NUM) Or (b.k <> CK_NUM) Then
           Exit;
@@ -11129,13 +11375,13 @@ Begin
       End;
     N_LOGICAL:
       Begin
-        s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
-        If Not EvalConst(ctx, ctx.ast.nodes[n].e1, a) Then
+        s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
+        If Not EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e1, a) Then
           Exit;
         If s = '&&' Then
           Begin
             If ConstTruthy(a) Then
-              EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c)
+              EvalConst := EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e2, c)
             Else
               Begin
                 c := a;
@@ -11150,10 +11396,10 @@ Begin
                 EvalConst := True;
               End
             Else
-              EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c);
+              EvalConst := EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e2, c);
           End
         Else If (a.k = CK_NULL) Or (a.k = CK_UNDEF) Then
-          EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c)
+          EvalConst := EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e2, c)
         Else
           Begin
             c := a;
@@ -11162,12 +11408,12 @@ Begin
       End;
     N_COND:
       Begin
-        If Not EvalConst(ctx, ctx.ast.nodes[n].e1, a) Then
+        If Not EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e1, a) Then
           Exit;
         If ConstTruthy(a) Then
-          EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e2, c)
+          EvalConst := EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e2, c)
         Else
-          EvalConst := EvalConst(ctx, ctx.ast.nodes[n].e3, c);
+          EvalConst := EvalConst(ctx, NodeP(ctx.ast.nodes, n)^.e3, c);
       End;
   End;
 End;
@@ -11212,11 +11458,11 @@ Procedure GenBinary(Var ctx: TCompilerContext; n: LongInt);
 Var
   t: LongInt;
 Begin
-  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   t := TempAcquire(ctx);
   SaveTemp(ctx, t);
-  GenExpr(ctx, ctx.ast.nodes[n].e2);
-  GenBinaryCore(ctx, ctx.lex.tokens[ctx.ast.nodes[n].tok].text, t);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
+  GenBinaryCore(ctx, TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text, t);
   TempRelease(ctx, t);
 End;
 
@@ -11226,11 +11472,11 @@ Var
   t, short, done, evalr: LongInt;
   op: TTokenText;
 Begin
-  op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  op := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
   t := TempAcquire(ctx);
   short := NewLabel(ctx);
   done := NewLabel(ctx);
-  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   SaveTemp(ctx, t);
   If op = '??' Then
     Begin
@@ -11250,7 +11496,7 @@ Begin
       Else
         Emit1(ctx, OP_JNE, LabelOp(short));
     End;
-  GenExpr(ctx, ctx.ast.nodes[n].e2);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
   Emit1(ctx, OP_JMP, LabelOp(done));
   PlaceLabel(ctx, short);
   LoadTemp(ctx, t);
@@ -11265,14 +11511,14 @@ Var
 Begin
   els := NewLabel(ctx);
   done := NewLabel(ctx);
-  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   GenTruthy(ctx);
   Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
   Emit1(ctx, OP_JE, LabelOp(els));
-  GenExpr(ctx, ctx.ast.nodes[n].e2);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
   Emit1(ctx, OP_JMP, LabelOp(done));
   PlaceLabel(ctx, els);
-  GenExpr(ctx, ctx.ast.nodes[n].e3);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e3);
   PlaceLabel(ctx, done);
 End;
 
@@ -11281,8 +11527,8 @@ Var
   s: TTokenText;
   e, slow, done, t: LongInt;
 Begin
-  s := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
-  e := ctx.ast.nodes[n].e1;
+  s := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
+  e := NodeP(ctx.ast.nodes, n)^.e1;
   slow := NewLabel(ctx);
   done := NewLabel(ctx);
   If (s = 'yield') Or (s = 'await') Then
@@ -11295,7 +11541,7 @@ Begin
         LoadUndefined(ctx);
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-      If (s = 'yield') And (ctx.ast.nodes[n].flags = 1) Then
+      If (s = 'yield') And (NodeP(ctx.ast.nodes, n)^.flags = 1) Then
         CallRt(ctx, 'yield_star', 8)
       Else
         CallRt(ctx, 'yield', 8);
@@ -11364,25 +11610,25 @@ Begin
     GenExpr(ctx, e)
   Else If s = 'delete' Then
     Begin
-      If (e <> 0) And (ctx.ast.nodes[e].kind = N_MEMBER) Then
+      If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_MEMBER) Then
         Begin
-          GenExpr(ctx, ctx.ast.nodes[e].e1);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, e)^.e1);
           Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
-                ctx.data.strs[ctx.ast.nodes[e].aux].sym));
+                StrP(ctx.data.strs, NodeP(ctx.ast.nodes, e)^.aux)^.sym));
           Emit1(ctx, OP_PUSH, RegOp(R_EDX));
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
           CallRt(ctx, 'delete_prop', 12);
         End
-      Else If (e <> 0) And (ctx.ast.nodes[e].kind = N_INDEX) Then
+      Else If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_INDEX) Then
         Begin
-          GenExpr(ctx, ctx.ast.nodes[e].e1);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, e)^.e1);
           t := TempAcquire(ctx);
           SaveTemp(ctx, t);
-          GenExpr(ctx, ctx.ast.nodes[e].e2);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, e)^.e2);
           CallBinary(ctx, 'delete_member', t);
           TempRelease(ctx, t);
         End
-      Else If (e <> 0) And (ctx.ast.nodes[e].kind = N_IDENT) Then
+      Else If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.kind = N_IDENT) Then
         { une variable ne se supprime pas }
         LoadTag(ctx, 0, RT_T_BOOLEAN)
       Else
@@ -11409,12 +11655,12 @@ Procedure MemberPrep(Var ctx: TCompilerContext; m: LongInt; Var tobj, tkey: Long
 Begin
   tobj := TempAcquire(ctx);
   tkey := 0;
-  GenExpr(ctx, ctx.ast.nodes[m].e1);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, m)^.e1);
   SaveTemp(ctx, tobj);
-  If ctx.ast.nodes[m].kind = N_INDEX Then
+  If NodeP(ctx.ast.nodes, m)^.kind = N_INDEX Then
     Begin
       tkey := TempAcquire(ctx);
-      GenExpr(ctx, ctx.ast.nodes[m].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, m)^.e2);
       SaveTemp(ctx, tkey);
     End;
 End;
@@ -11428,9 +11674,9 @@ End;
 
 Procedure MemberFetch(Var ctx: TCompilerContext; m, tobj, tkey: LongInt);
 Begin
-  If ctx.ast.nodes[m].kind = N_MEMBER Then
+  If NodeP(ctx.ast.nodes, m)^.kind = N_MEMBER Then
     Begin
-      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, m)^.aux)^.sym));
       PushTemp(ctx, tobj);
       CallRt(ctx, 'get_prop', 12);
     End
@@ -11447,9 +11693,9 @@ Procedure MemberStore(Var ctx: TCompilerContext; m, tobj, tkey: LongInt);
 Begin
   Emit1(ctx, OP_PUSH, RegOp(R_EDX));
   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-  If ctx.ast.nodes[m].kind = N_MEMBER Then
+  If NodeP(ctx.ast.nodes, m)^.kind = N_MEMBER Then
     Begin
-      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, m)^.aux)^.sym));
       PushTemp(ctx, tobj);
       CallRt(ctx, 'set_prop', 20);
     End
@@ -11463,9 +11709,9 @@ End;
 
 Function IsMemberTarget(Var ctx: TCompilerContext; n: LongInt): Boolean;
 Begin
-  IsMemberTarget := (n <> 0) And ((ctx.ast.nodes[n].kind = N_MEMBER) Or
-                                  (ctx.ast.nodes[n].kind = N_INDEX)) And
-                    (ctx.ast.nodes[n].flags And EF_OPTIONAL = 0);
+  IsMemberTarget := (n <> 0) And ((NodeP(ctx.ast.nodes, n)^.kind = N_MEMBER) Or
+                                  (NodeP(ctx.ast.nodes, n)^.kind = N_INDEX)) And
+                    (NodeP(ctx.ast.nodes, n)^.flags And EF_OPTIONAL = 0);
 End;
 
 { x.p++, --a[i]... }
@@ -11474,8 +11720,8 @@ Var
   slow, store, t, tobj, tkey: LongInt;
   inc_op, prefix: Boolean;
 Begin
-  inc_op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text = '++';
-  prefix := ctx.ast.nodes[n].flags And UF_PREFIX <> 0;
+  inc_op := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text = '++';
+  prefix := NodeP(ctx.ast.nodes, n)^.flags And UF_PREFIX <> 0;
   slow := NewLabel(ctx);
   store := NewLabel(ctx);
   t := TempAcquire(ctx);
@@ -11521,7 +11767,7 @@ Var
   t, tobj, tkey, keep, done, evalr: LongInt;
   op: TTokenText;
 Begin
-  op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  op := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
   t := TempAcquire(ctx);
   MemberPrep(ctx, lhs, tobj, tkey);
   MemberFetch(ctx, lhs, tobj, tkey);
@@ -11548,7 +11794,7 @@ Begin
           Else
             Emit1(ctx, OP_JNE, LabelOp(keep));
         End;
-      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       MemberStore(ctx, lhs, tobj, tkey);
       Emit1(ctx, OP_JMP, LabelOp(done));
       PlaceLabel(ctx, keep);
@@ -11557,7 +11803,7 @@ Begin
     End
   Else
     Begin
-      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       GenBinaryCore(ctx, Copy(op, 1, Length(op) - 1), t);
       MemberStore(ctx, lhs, tobj, tkey);
     End;
@@ -11571,22 +11817,22 @@ Var
   inc_op: Boolean;
   prefix: Boolean;
 Begin
-  e := ctx.ast.nodes[n].e1;
+  e := NodeP(ctx.ast.nodes, n)^.e1;
   If IsMemberTarget(ctx, e) Then
     Begin
       GenUpdateMember(ctx, n, e);
       Exit;
     End;
-  If (e = 0) Or (ctx.ast.nodes[e].kind <> N_IDENT) Or
-     Not ((ctx.ast.nodes[e].aux = RK_LOCAL) Or (ctx.ast.nodes[e].aux = RK_OUTER) Or
-          (ctx.ast.nodes[e].aux = RK_GLOBAL_IMPLICIT)) Then
+  If (e = 0) Or (NodeP(ctx.ast.nodes, e)^.kind <> N_IDENT) Or
+     Not ((NodeP(ctx.ast.nodes, e)^.aux = RK_LOCAL) Or (NodeP(ctx.ast.nodes, e)^.aux = RK_OUTER) Or
+          (NodeP(ctx.ast.nodes, e)^.aux = RK_GLOBAL_IMPLICIT)) Then
     Begin
       PendingExpr(ctx, n);
       Exit;
     End;
-  sy := ctx.ast.nodes[e].sym;
-  inc_op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text = '++';
-  prefix := ctx.ast.nodes[n].flags And UF_PREFIX <> 0;
+  sy := NodeP(ctx.ast.nodes, e)^.sym;
+  inc_op := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text = '++';
+  prefix := NodeP(ctx.ast.nodes, n)^.flags And UF_PREFIX <> 0;
   slow := NewLabel(ctx);
   store := NewLabel(ctx);
   t := TempAcquire(ctx);
@@ -11630,21 +11876,21 @@ Var
   lhs, sy, t, keep, done, evalr: LongInt;
   op: TTokenText;
 Begin
-  lhs := ctx.ast.nodes[n].e1;
-  op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  lhs := NodeP(ctx.ast.nodes, n)^.e1;
+  op := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text;
   If IsMemberTarget(ctx, lhs) Then
     Begin
       GenCompoundMember(ctx, n, lhs);
       Exit;
     End;
-  If (lhs = 0) Or (ctx.ast.nodes[lhs].kind <> N_IDENT) Or
-     Not ((ctx.ast.nodes[lhs].aux = RK_LOCAL) Or (ctx.ast.nodes[lhs].aux = RK_OUTER) Or
-          (ctx.ast.nodes[lhs].aux = RK_GLOBAL_IMPLICIT)) Then
+  If (lhs = 0) Or (NodeP(ctx.ast.nodes, lhs)^.kind <> N_IDENT) Or
+     Not ((NodeP(ctx.ast.nodes, lhs)^.aux = RK_LOCAL) Or (NodeP(ctx.ast.nodes, lhs)^.aux = RK_OUTER) Or
+          (NodeP(ctx.ast.nodes, lhs)^.aux = RK_GLOBAL_IMPLICIT)) Then
     Begin
       PendingExpr(ctx, n);
       Exit;
     End;
-  sy := ctx.ast.nodes[lhs].sym;
+  sy := NodeP(ctx.ast.nodes, lhs)^.sym;
   t := TempAcquire(ctx);
   GenExpr(ctx, lhs);
   SaveTemp(ctx, t);
@@ -11670,7 +11916,7 @@ Begin
           Else
             Emit1(ctx, OP_JNE, LabelOp(keep));
         End;
-      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       StoreSym(ctx, sy, False);
       Emit1(ctx, OP_JMP, LabelOp(done));
       PlaceLabel(ctx, keep);
@@ -11679,7 +11925,7 @@ Begin
     End
   Else
     Begin
-      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       GenBinaryCore(ctx, Copy(op, 1, Length(op) - 1), t);
       StoreSym(ctx, sy, False);
     End;
@@ -11713,7 +11959,7 @@ Procedure LoadCurrentThis(Var ctx: TCompilerContext);
 Begin
   If ctx.ir.cg_fs = 1 Then
     LoadUndefined(ctx)
-  Else If ctx.sem.scopes[ctx.ir.cg_fs].fkind = FK_ARROW Then
+  Else If ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.fkind = FK_ARROW Then
     Begin
       Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
       Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, RT_FN_THIS));
@@ -11733,10 +11979,10 @@ Var
   fd, sc, ncells, i, k, kk, sy, e: LongInt;
   is_arrow: Boolean;
 Begin
-  fd := ctx.ast.nodes[n].ds;
-  sc := ctx.ast.nodes[n].scope;
-  ncells := ctx.sem.scopes[sc].cap_count;
-  is_arrow := ctx.sem.scopes[sc].fkind = FK_ARROW;
+  fd := NodeP(ctx.ast.nodes, n)^.ds;
+  sc := NodeP(ctx.ast.nodes, n)^.scope;
+  ncells := ScopeP(ctx.sem.scopes, sc)^.cap_count;
+  is_arrow := ScopeP(ctx.sem.scopes, sc)^.fkind = FK_ARROW;
   e := 0;
   If ncells > 0 Then
     Begin
@@ -11746,20 +11992,20 @@ Begin
       Emit(ctx, OP_MOV, TempLo(e), RegOp(R_EAX));
       k := 0;
       For i := 1 To ctx.sem.cap_count Do
-        If ctx.sem.caps[i].fscope = sc Then
+        If CapP(ctx.sem.caps, i)^.fscope = sc Then
           Begin
             Inc(k);
-            sy := ctx.sem.caps[i].sym;
-            If ctx.sem.scopes[ctx.sem.syms[sy].scope].func = ctx.ir.cg_fs Then
+            sy := CapP(ctx.sem.caps, i)^.sym;
+            If ScopeP(ctx.sem.scopes, SymP(ctx.sem.syms, sy)^.scope)^.func = ctx.ir.cg_fs Then
               Emit(ctx, OP_MOV, RegOp(R_ECX),
-                   MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)))
+                   MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)))
             Else
               Begin
                 kk := CapIndex(ctx, ctx.ir.cg_fs, sy);
                 If kk = 0 Then
                   Begin
                     PipelineError(ctx, 'capture introuvable pour ' +
-                                  ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+                                  TokP(ctx.lex.tokens, SymP(ctx.sem.syms, sy)^.name_tok)^.text);
                     kk := 1;
                   End;
                 Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
@@ -11782,8 +12028,8 @@ Begin
     Emit1(ctx, OP_PUSH, TempLo(e))
   Else
     Emit1(ctx, OP_PUSH, ImmOp(0));
-  Emit1(ctx, OP_PUSH, AddrSym(SYMK_X, XSym(ctx, ctx.data.fdescs[fd].code_sym)));
-  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.fdescs[fd].sym));
+  Emit1(ctx, OP_PUSH, AddrSym(SYMK_X, XSym(ctx, FdescP(ctx.data.fdescs, fd)^.code_sym)));
+  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, FdescP(ctx.data.fdescs, fd)^.sym));
   CallRt(ctx, 'new_function', 20);
   If e <> 0 Then
     TempRelease(ctx, e);
@@ -11819,9 +12065,9 @@ End;
 Procedure GenChainBase(Var ctx: TCompilerContext; m, tobj: LongInt);
 Begin
   ctx.ir.in_chain := True;
-  GenExpr(ctx, ctx.ast.nodes[m].e1);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, m)^.e1);
   ctx.ir.in_chain := False;
-  If ctx.ast.nodes[m].flags And EF_OPTIONAL <> 0 Then
+  If NodeP(ctx.ast.nodes, m)^.flags And EF_OPTIONAL <> 0 Then
     ChainNullCheck(ctx);
   SaveTemp(ctx, tobj);
 End;
@@ -11829,20 +12075,20 @@ End;
 { L'objet est dans tobj : lit la propriete dans EDX:EAX. }
 Procedure GenPropFetch(Var ctx: TCompilerContext; m, tobj: LongInt);
 Begin
-  If (ctx.ast.nodes[ctx.ast.nodes[m].e1].kind = N_SUPER) And
+  If (NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, m)^.e1)^.kind = N_SUPER) And
      (ctx.ir.cg_fs > 1) And
-     (ctx.sem.scopes[ctx.ir.cg_fs].fkind <> FK_ARROW) Then
+     (ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.fkind <> FK_ARROW) Then
     Begin
       { super.nom / super[cle] : recherche dans le prototype de l'objet d'accueil }
-      If ctx.ast.nodes[m].kind = N_MEMBER Then
+      If NodeP(ctx.ast.nodes, m)^.kind = N_MEMBER Then
         Begin
           PushTemp(ctx, tobj);
           Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
-                ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+                StrP(ctx.data.strs, NodeP(ctx.ast.nodes, m)^.aux)^.sym));
         End
       Else
         Begin
-          GenExpr(ctx, ctx.ast.nodes[m].e2);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, m)^.e2);
           Emit1(ctx, OP_PUSH, RegOp(R_EDX));
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
           CallRt(ctx, 'tokey', 8);
@@ -11852,16 +12098,16 @@ Begin
       Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
       CallRt(ctx, 'super_get', 16);
     End
-  Else If ctx.ast.nodes[m].kind = N_MEMBER Then
+  Else If NodeP(ctx.ast.nodes, m)^.kind = N_MEMBER Then
     Begin
       Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
-            ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+            StrP(ctx.data.strs, NodeP(ctx.ast.nodes, m)^.aux)^.sym));
       PushTemp(ctx, tobj);
       CallRt(ctx, 'get_prop', 12);
     End
   Else
     Begin
-      GenExpr(ctx, ctx.ast.nodes[m].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, m)^.e2);
       CallBinary(ctx, 'get_member', tobj);
     End;
 End;
@@ -11920,11 +12166,11 @@ Var
   End;
 
 Begin
-  callee := ctx.ast.nodes[n].e1;
-  is_new := ctx.ast.nodes[n].kind = N_NEW;
-  is_super := (callee <> 0) And (ctx.ast.nodes[callee].kind = N_SUPER);
+  callee := NodeP(ctx.ast.nodes, n)^.e1;
+  is_new := NodeP(ctx.ast.nodes, n)^.kind = N_NEW;
+  is_super := (callee <> 0) And (NodeP(ctx.ast.nodes, callee)^.kind = N_SUPER);
   If is_super And ((ctx.ir.cg_fs <= 1) Or
-     (ctx.sem.scopes[ctx.ir.cg_fs].fkind <> FK_DERIVED_CTOR)) Then
+     (ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.fkind <> FK_DERIVED_CTOR)) Then
     Begin
       PendingNote(ctx, n, 'super(...) hors du constructeur d''une classe derivee');
       LoadUndefined(ctx);
@@ -11940,13 +12186,13 @@ Begin
     End;
   nargs := 0;
   has_spread := False;
-  a := ctx.ast.nodes[n].e2;
+  a := NodeP(ctx.ast.nodes, n)^.e2;
   While a <> 0 Do
     Begin
       Inc(nargs);
-      If ctx.ast.nodes[a].kind = N_SPREAD Then
+      If NodeP(ctx.ast.nodes, a)^.kind = N_SPREAD Then
         has_spread := True;
-      a := ctx.ast.nodes[a].next;
+      a := NodeP(ctx.ast.nodes, a)^.next;
     End;
   tf := TempAcquire(ctx);
   tt := TempAcquire(ctx);
@@ -11959,8 +12205,8 @@ Begin
     End;
 
   { callee et this }
-  If (Not is_new) And (callee <> 0) And ((ctx.ast.nodes[callee].kind = N_MEMBER) Or
-                        (ctx.ast.nodes[callee].kind = N_INDEX)) Then
+  If (Not is_new) And (callee <> 0) And ((NodeP(ctx.ast.nodes, callee)^.kind = N_MEMBER) Or
+                        (NodeP(ctx.ast.nodes, callee)^.kind = N_INDEX)) Then
     Begin
       GenChainBase(ctx, callee, tt);
       GenPropFetch(ctx, callee, tt);
@@ -12003,7 +12249,7 @@ Begin
         End;
       LoadTemp(ctx, tf);
     End;
-  If ctx.ast.nodes[n].flags And EF_OPTIONAL <> 0 Then
+  If NodeP(ctx.ast.nodes, n)^.flags And EF_OPTIONAL <> 0 Then
     ChainNullCheck(ctx);
   SaveTemp(ctx, tf);
   { la valeur appelee doit etre une fonction }
@@ -12018,12 +12264,12 @@ Begin
       CallRt(ctx, 'array_new', 0);
       i := TempAcquire(ctx);
       SaveTemp(ctx, i);
-      a := ctx.ast.nodes[n].e2;
+      a := NodeP(ctx.ast.nodes, n)^.e2;
       While a <> 0 Do
         Begin
-          If ctx.ast.nodes[a].kind = N_SPREAD Then
+          If NodeP(ctx.ast.nodes, a)^.kind = N_SPREAD Then
             Begin
-              GenExpr(ctx, ctx.ast.nodes[a].e1);
+              GenExpr(ctx, NodeP(ctx.ast.nodes, a)^.e1);
               Emit1(ctx, OP_PUSH, RegOp(R_EDX));
               Emit1(ctx, OP_PUSH, RegOp(R_EAX));
               PushTemp(ctx, i);
@@ -12037,7 +12283,7 @@ Begin
               PushTemp(ctx, i);
               CallRt(ctx, 'array_push', 16);
             End;
-          a := ctx.ast.nodes[a].next;
+          a := NodeP(ctx.ast.nodes, a)^.next;
         End;
       NtEnter;
       PushTemp(ctx, i);
@@ -12051,14 +12297,14 @@ Begin
     Begin
       Emit(ctx, OP_SUB, RegOp(R_ESP), ImmOp(16 + RT_VALUE_SIZE * nargs));
       i := 0;
-      a := ctx.ast.nodes[n].e2;
+      a := NodeP(ctx.ast.nodes, n)^.e2;
       While a <> 0 Do
         Begin
           GenExpr(ctx, a);
           Emit(ctx, OP_MOV, MemReg(R_ESP, 16 + RT_VALUE_SIZE * i), RegOp(R_EAX));
           Emit(ctx, OP_MOV, MemReg(R_ESP, 16 + RT_VALUE_SIZE * i + 4), RegOp(R_EDX));
           Inc(i);
-          a := ctx.ast.nodes[a].next;
+          a := NodeP(ctx.ast.nodes, a)^.next;
         End;
       NtEnter;
       Emit(ctx, OP_MOV, RegOp(R_EAX), TempLo(tf));
@@ -12120,23 +12366,23 @@ Procedure GenTemplate(Var ctx: TCompilerContext; n: LongInt);
 Var
   e, t: LongInt;
 Begin
-  e := ctx.ast.nodes[n].e1;
-  If (e <> 0) And (ctx.ast.nodes[e].next = 0) Then
+  e := NodeP(ctx.ast.nodes, n)^.e1;
+  If (e <> 0) And (NodeP(ctx.ast.nodes, e)^.next = 0) Then
     Begin
-      LoadStringConst(ctx, ctx.ast.nodes[e].ds);
+      LoadStringConst(ctx, NodeP(ctx.ast.nodes, e)^.ds);
       Exit;
     End;
   t := TempAcquire(ctx);
-  LoadStringConst(ctx, ctx.ast.nodes[e].ds);
+  LoadStringConst(ctx, NodeP(ctx.ast.nodes, e)^.ds);
   SaveTemp(ctx, t);
-  e := ctx.ast.nodes[e].next;
+  e := NodeP(ctx.ast.nodes, e)^.next;
   While e <> 0 Do
     Begin
-      If ctx.ast.nodes[e].kind = N_TEMPLATE_STR Then
+      If NodeP(ctx.ast.nodes, e)^.kind = N_TEMPLATE_STR Then
         Begin
-          If ctx.data.strs[ctx.ast.nodes[e].ds].len > 0 Then
+          If StrP(ctx.data.strs, NodeP(ctx.ast.nodes, e)^.ds)^.len > 0 Then
             Begin
-              LoadStringConst(ctx, ctx.ast.nodes[e].ds);
+              LoadStringConst(ctx, NodeP(ctx.ast.nodes, e)^.ds);
               Emit1(ctx, OP_PUSH, RegOp(R_EDX));
               Emit1(ctx, OP_PUSH, RegOp(R_EAX));
               PushTemp(ctx, t);
@@ -12156,7 +12402,7 @@ Begin
           CallRt(ctx, 'concat', 16);
           SaveTemp(ctx, t);
         End;
-      e := ctx.ast.nodes[e].next;
+      e := NodeP(ctx.ast.nodes, e)^.next;
     End;
   LoadTemp(ctx, t);
   TempRelease(ctx, t);
@@ -12167,19 +12413,19 @@ Procedure GenAssign(Var ctx: TCompilerContext; n: LongInt);
 Var
   lhs, t, tobj, tkey: LongInt;
 Begin
-  lhs := ctx.ast.nodes[n].e1;
-  If ctx.lex.tokens[ctx.ast.nodes[n].tok].text <> '=' Then
+  lhs := NodeP(ctx.ast.nodes, n)^.e1;
+  If TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text <> '=' Then
     Begin
       GenCompound(ctx, n);
       Exit;
     End;
-  If (lhs <> 0) And (ctx.ast.nodes[lhs].kind = N_IDENT) Then
+  If (lhs <> 0) And (NodeP(ctx.ast.nodes, lhs)^.kind = N_IDENT) Then
     Begin
-      If (ctx.ast.nodes[lhs].aux = RK_LOCAL) Or (ctx.ast.nodes[lhs].aux = RK_OUTER) Or
-         (ctx.ast.nodes[lhs].aux = RK_GLOBAL_IMPLICIT) Then
+      If (NodeP(ctx.ast.nodes, lhs)^.aux = RK_LOCAL) Or (NodeP(ctx.ast.nodes, lhs)^.aux = RK_OUTER) Or
+         (NodeP(ctx.ast.nodes, lhs)^.aux = RK_GLOBAL_IMPLICIT) Then
         Begin
-          GenExpr(ctx, ctx.ast.nodes[n].e2);
-          StoreSym(ctx, ctx.ast.nodes[lhs].sym, False);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
+          StoreSym(ctx, NodeP(ctx.ast.nodes, lhs)^.sym, False);
         End
       Else
         PendingExpr(ctx, n);
@@ -12187,14 +12433,14 @@ Begin
   Else If IsMemberTarget(ctx, lhs) Then
     Begin
       MemberPrep(ctx, lhs, tobj, tkey);
-      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       MemberStore(ctx, lhs, tobj, tkey);
       MemberDone(ctx, tobj, tkey);
     End
-  Else If (lhs <> 0) And ((ctx.ast.nodes[lhs].kind = N_ARRAY_LIT) Or
-                          (ctx.ast.nodes[lhs].kind = N_OBJECT_LIT)) Then
+  Else If (lhs <> 0) And ((NodeP(ctx.ast.nodes, lhs)^.kind = N_ARRAY_LIT) Or
+                          (NodeP(ctx.ast.nodes, lhs)^.kind = N_OBJECT_LIT)) Then
     Begin
-      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
       t := AllocTemp(ctx);
       Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(t)), RegOp(R_EAX));
       Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(t) + 4), RegOp(R_EDX));
@@ -12214,23 +12460,23 @@ Begin
   t := TempAcquire(ctx);
   CallRt(ctx, 'array_new', 0);
   SaveTemp(ctx, t);
-  el := ctx.ast.nodes[n].e1;
+  el := NodeP(ctx.ast.nodes, n)^.e1;
   While el <> 0 Do
     Begin
-      If ctx.ast.nodes[el].kind = N_SPREAD Then
-        GenExpr(ctx, ctx.ast.nodes[el].e1)
-      Else If ctx.ast.nodes[el].kind = N_ELISION Then
+      If NodeP(ctx.ast.nodes, el)^.kind = N_SPREAD Then
+        GenExpr(ctx, NodeP(ctx.ast.nodes, el)^.e1)
+      Else If NodeP(ctx.ast.nodes, el)^.kind = N_ELISION Then
         LoadUndefined(ctx)
       Else
         GenExpr(ctx, el);
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
       PushTemp(ctx, t);
-      If ctx.ast.nodes[el].kind = N_SPREAD Then
+      If NodeP(ctx.ast.nodes, el)^.kind = N_SPREAD Then
         CallRt(ctx, 'array_spread', 16)
       Else
         CallRt(ctx, 'array_push', 16);
-      el := ctx.ast.nodes[el].next;
+      el := NodeP(ctx.ast.nodes, el)^.next;
     End;
   LoadTemp(ctx, t);
   TempRelease(ctx, t);
@@ -12244,13 +12490,13 @@ Begin
   t := TempAcquire(ctx);
   CallRt(ctx, 'obj_new', 0);
   SaveTemp(ctx, t);
-  p := ctx.ast.nodes[n].e1;
+  p := NodeP(ctx.ast.nodes, n)^.e1;
   While p <> 0 Do
     Begin
-      fl := ctx.ast.nodes[p].flags;
+      fl := NodeP(ctx.ast.nodes, p)^.flags;
       If fl And PR_SPREAD <> 0 Then
         Begin
-          GenExpr(ctx, ctx.ast.nodes[p].e1);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, p)^.e1);
           Emit1(ctx, OP_PUSH, RegOp(R_EDX));
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
           PushTemp(ctx, t);
@@ -12262,13 +12508,13 @@ Begin
           If fl And PR_COMPUTED <> 0 Then
             Begin
               tk := TempAcquire(ctx);
-              GenExpr(ctx, ctx.ast.nodes[p].e2);
+              GenExpr(ctx, NodeP(ctx.ast.nodes, p)^.e2);
               Emit1(ctx, OP_PUSH, RegOp(R_EDX));
               Emit1(ctx, OP_PUSH, RegOp(R_EAX));
               CallRt(ctx, 'tokey', 8);
               SaveTemp(ctx, tk);
             End;
-          GenExpr(ctx, ctx.ast.nodes[p].e1);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, p)^.e1);
           If fl And PR_SETTER <> 0 Then
             Emit1(ctx, OP_PUSH, ImmOp(1))
           Else If fl And PR_GETTER <> 0 Then
@@ -12278,7 +12524,7 @@ Begin
           If tk <> 0 Then
             Emit1(ctx, OP_PUSH, TempLo(tk))
           Else
-            Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[p].aux].sym));
+            Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, p)^.aux)^.sym));
           Emit1(ctx, OP_PUSH, TempLo(t));
           If fl And (PR_GETTER Or PR_SETTER) <> 0 Then
             CallRt(ctx, 'obj_define_acc', 24)
@@ -12287,7 +12533,7 @@ Begin
           If tk <> 0 Then
             TempRelease(ctx, tk);
         End;
-      p := ctx.ast.nodes[p].next;
+      p := NodeP(ctx.ast.nodes, p)^.next;
     End;
   LoadTemp(ctx, t);
   TempRelease(ctx, t);
@@ -12311,13 +12557,13 @@ Var
   m: LongInt;
 Begin
   ClassCtor := 0;
-  m := ctx.ast.nodes[n].e2;
+  m := NodeP(ctx.ast.nodes, n)^.e2;
   While m <> 0 Do
     Begin
-      If (ctx.ast.nodes[m].kind = N_METHOD) And
-         (ctx.ast.nodes[m].flags And MF_CONSTRUCTOR <> 0) Then
+      If (NodeP(ctx.ast.nodes, m)^.kind = N_METHOD) And
+         (NodeP(ctx.ast.nodes, m)^.flags And MF_CONSTRUCTOR <> 0) Then
         ClassCtor := m;
-      m := ctx.ast.nodes[m].next;
+      m := NodeP(ctx.ast.nodes, m)^.next;
     End;
 End;
 
@@ -12328,10 +12574,10 @@ Var
   tk: LongInt;
 Begin
   tk := 0;
-  If ctx.ast.nodes[m].flags And MF_COMPUTED <> 0 Then
+  If NodeP(ctx.ast.nodes, m)^.flags And MF_COMPUTED <> 0 Then
     Begin
       tk := TempAcquire(ctx);
-      GenExpr(ctx, ctx.ast.nodes[m].e3);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, m)^.e3);
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
       CallRt(ctx, 'tokey', 8);
@@ -12345,7 +12591,7 @@ Begin
   If tk <> 0 Then
     Emit1(ctx, OP_PUSH, TempLo(tk))
   Else
-    Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+    Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, m)^.aux)^.sym));
 End;
 
 Procedure PushUndefinedValue(Var ctx: TCompilerContext);
@@ -12358,14 +12604,14 @@ Procedure GenClass(Var ctx: TCompilerContext; n: LongInt);
 Var
   sc, tcls, tpar, tproto, tk, m, ctor, sy, kind: LongInt;
 Begin
-  sc := ctx.ast.nodes[n].scope;
+  sc := NodeP(ctx.ast.nodes, n)^.scope;
   If sc <> 0 Then
     GenScopeEnter(ctx, sc);
   tcls := TempAcquire(ctx);
   tpar := TempAcquire(ctx);
   tproto := TempAcquire(ctx);
-  If ctx.ast.nodes[n].e1 <> 0 Then
-    GenExpr(ctx, ctx.ast.nodes[n].e1)
+  If NodeP(ctx.ast.nodes, n)^.e1 <> 0 Then
+    GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1)
   Else
     LoadUndefined(ctx);
   SaveTemp(ctx, tpar);
@@ -12375,8 +12621,8 @@ Begin
   Else
     Begin
       Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
-            ctx.data.strs[ctx.data.cdescs[ctx.ast.nodes[n].ds].name_str].sym));
-      If ctx.ast.nodes[n].e1 <> 0 Then
+            StrP(ctx.data.strs, CdescP(ctx.data.cdescs, NodeP(ctx.ast.nodes, n)^.ds)^.name_str)^.sym));
+      If NodeP(ctx.ast.nodes, n)^.e1 <> 0 Then
         Emit1(ctx, OP_PUSH, ImmOp(1))
       Else
         Emit1(ctx, OP_PUSH, ImmOp(0));
@@ -12390,39 +12636,39 @@ Begin
   CallRt(ctx, 'class_proto', 8);
   SaveTemp(ctx, tproto);
   { liaison du nom : exterieure pour une declaration, interieure pour une expression }
-  If ctx.ast.nodes[n].kind = N_CLASS_DECL Then
+  If NodeP(ctx.ast.nodes, n)^.kind = N_CLASS_DECL Then
     Begin
-      If ctx.ast.nodes[n].sym <> 0 Then
+      If NodeP(ctx.ast.nodes, n)^.sym <> 0 Then
         Begin
           LoadTemp(ctx, tcls);
-          StoreSym(ctx, ctx.ast.nodes[n].sym, True);
+          StoreSym(ctx, NodeP(ctx.ast.nodes, n)^.sym, True);
         End;
     End
   Else If sc <> 0 Then
     Begin
-      sy := ctx.sem.scopes[sc].first_sym;
+      sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
       While sy <> 0 Do
         Begin
-          If ctx.sem.syms[sy].kind = DK_FNAME Then
+          If SymP(ctx.sem.syms, sy)^.kind = DK_FNAME Then
             Begin
               LoadTemp(ctx, tcls);
               StoreSym(ctx, sy, True);
             End;
-          sy := ctx.sem.syms[sy].next;
+          sy := SymP(ctx.sem.syms, sy)^.next;
         End;
     End;
   { premiere passe : methodes, accesseurs et champs d'instance }
-  m := ctx.ast.nodes[n].e2;
+  m := NodeP(ctx.ast.nodes, n)^.e2;
   While m <> 0 Do
     Begin
-      If (ctx.ast.nodes[m].kind = N_METHOD) And
-         (ctx.ast.nodes[m].flags And MF_CONSTRUCTOR = 0) Then
+      If (NodeP(ctx.ast.nodes, m)^.kind = N_METHOD) And
+         (NodeP(ctx.ast.nodes, m)^.flags And MF_CONSTRUCTOR = 0) Then
         Begin
           tk := ClassKeyTemp(ctx, m);
           GenMakeClosure(ctx, m);
-          If ctx.ast.nodes[m].flags And MF_GETTER <> 0 Then
+          If NodeP(ctx.ast.nodes, m)^.flags And MF_GETTER <> 0 Then
             kind := 1
-          Else If ctx.ast.nodes[m].flags And MF_SETTER <> 0 Then
+          Else If NodeP(ctx.ast.nodes, m)^.flags And MF_SETTER <> 0 Then
             kind := 2
           Else
             kind := 0;
@@ -12430,7 +12676,7 @@ Begin
           Emit1(ctx, OP_PUSH, RegOp(R_EDX));
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
           PushClassKey(ctx, m, tk);
-          If ctx.ast.nodes[m].flags And MF_STATIC <> 0 Then
+          If NodeP(ctx.ast.nodes, m)^.flags And MF_STATIC <> 0 Then
             PushTemp(ctx, tcls)
           Else
             PushTemp(ctx, tproto);
@@ -12438,11 +12684,11 @@ Begin
           If tk <> 0 Then
             TempRelease(ctx, tk);
         End
-      Else If (ctx.ast.nodes[m].kind = N_FIELD) And
-              (ctx.ast.nodes[m].flags And MF_STATIC = 0) Then
+      Else If (NodeP(ctx.ast.nodes, m)^.kind = N_FIELD) And
+              (NodeP(ctx.ast.nodes, m)^.flags And MF_STATIC = 0) Then
         Begin
           tk := ClassKeyTemp(ctx, m);
-          If ctx.ast.nodes[m].e1 <> 0 Then
+          If NodeP(ctx.ast.nodes, m)^.e1 <> 0 Then
             GenMakeClosure(ctx, m)
           Else
             LoadUndefined(ctx);
@@ -12454,17 +12700,17 @@ Begin
           If tk <> 0 Then
             TempRelease(ctx, tk);
         End;
-      m := ctx.ast.nodes[m].next;
+      m := NodeP(ctx.ast.nodes, m)^.next;
     End;
   { seconde passe : champs statiques et blocs statiques, dans l'ordre }
-  m := ctx.ast.nodes[n].e2;
+  m := NodeP(ctx.ast.nodes, n)^.e2;
   While m <> 0 Do
     Begin
-      If (ctx.ast.nodes[m].kind = N_FIELD) And
-         (ctx.ast.nodes[m].flags And MF_STATIC <> 0) Then
+      If (NodeP(ctx.ast.nodes, m)^.kind = N_FIELD) And
+         (NodeP(ctx.ast.nodes, m)^.flags And MF_STATIC <> 0) Then
         Begin
           tk := ClassKeyTemp(ctx, m);
-          If ctx.ast.nodes[m].e1 <> 0 Then
+          If NodeP(ctx.ast.nodes, m)^.e1 <> 0 Then
             GenMakeClosure(ctx, m)
           Else
             LoadUndefined(ctx);
@@ -12476,7 +12722,7 @@ Begin
           If tk <> 0 Then
             TempRelease(ctx, tk);
         End
-      Else If ctx.ast.nodes[m].kind = N_STATIC_BLOCK Then
+      Else If NodeP(ctx.ast.nodes, m)^.kind = N_STATIC_BLOCK Then
         Begin
           GenMakeClosure(ctx, m);
           Emit1(ctx, OP_PUSH, RegOp(R_EDX));
@@ -12484,7 +12730,7 @@ Begin
           PushTemp(ctx, tcls);
           CallRt(ctx, 'class_block', 16);
         End;
-      m := ctx.ast.nodes[m].next;
+      m := NodeP(ctx.ast.nodes, m)^.next;
     End;
   LoadTemp(ctx, tcls);
   TempRelease(ctx, tproto);
@@ -12503,16 +12749,16 @@ Begin
       Exit;
     End;
   save_chain := ctx.ir.in_chain;
-  If Not IsChainKind(ctx.ast.nodes[n].kind) Then
+  If Not IsChainKind(NodeP(ctx.ast.nodes, n)^.kind) Then
     ctx.ir.in_chain := False;
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_CALL, N_NEW:
       GenCall(ctx, n);
     N_REGEX:
       Begin
         { litteral /motif/drapeaux : objet RegExp cree a chaque evaluation }
-        Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[n].aux].sym));
-        Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[n].ds].sym));
+        Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, n)^.aux)^.sym));
+        Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, NodeP(ctx.ast.nodes, n)^.ds)^.sym));
         CallRt(ctx, 'regex_new', 8);
       End;
     N_ARRAY_LIT:
@@ -12532,19 +12778,19 @@ Begin
       GenMakeClosure(ctx, n);
     N_NUMBER:
       Begin
-        If ctx.ast.nodes[n].ds <> 0 Then
-          LoadDouble(ctx, ctx.ast.nodes[n].ds)
+        If NodeP(ctx.ast.nodes, n)^.ds <> 0 Then
+          LoadDouble(ctx, NodeP(ctx.ast.nodes, n)^.ds)
         Else
-          LoadTag(ctx, Trunc(ctx.lex.tokens[ctx.ast.nodes[n].tok].num_val),
+          LoadTag(ctx, Trunc(TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.num_val),
                   RT_T_INT32);
       End;
     N_STRING, N_TEMPLATE_STR:
-      LoadStringConst(ctx, ctx.ast.nodes[n].ds);
+      LoadStringConst(ctx, NodeP(ctx.ast.nodes, n)^.ds);
     N_TEMPLATE:
       GenTemplate(ctx, n);
     N_BOOL:
       Begin
-        If ctx.lex.tokens[ctx.ast.nodes[n].tok].text = 'true' Then
+        If TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.text = 'true' Then
           LoadTag(ctx, 1, RT_T_BOOLEAN)
         Else
           LoadTag(ctx, 0, RT_T_BOOLEAN);
@@ -12581,11 +12827,11 @@ Begin
       GenUpdate(ctx, n);
     N_SEQUENCE:
       Begin
-        e := ctx.ast.nodes[n].e1;
+        e := NodeP(ctx.ast.nodes, n)^.e1;
         While e <> 0 Do
           Begin
             GenExpr(ctx, e);
-            e := ctx.ast.nodes[e].next;
+            e := NodeP(ctx.ast.nodes, e)^.next;
           End;
       End;
   Else
@@ -12629,18 +12875,18 @@ Var
 Begin
   If target = 0 Then
     Exit;
-  Case ctx.ast.nodes[target].kind Of
+  Case NodeP(ctx.ast.nodes, target)^.kind Of
     N_BIND_IDENT:
-      StoreSym(ctx, ctx.ast.nodes[target].sym, True);
+      StoreSym(ctx, NodeP(ctx.ast.nodes, target)^.sym, True);
     N_IDENT:
       Begin
-        If (ctx.ast.nodes[target].aux = RK_LOCAL) Or
-           (ctx.ast.nodes[target].aux = RK_OUTER) Or
-           (ctx.ast.nodes[target].aux = RK_GLOBAL_IMPLICIT) Then
-          StoreSym(ctx, ctx.ast.nodes[target].sym, init)
+        If (NodeP(ctx.ast.nodes, target)^.aux = RK_LOCAL) Or
+           (NodeP(ctx.ast.nodes, target)^.aux = RK_OUTER) Or
+           (NodeP(ctx.ast.nodes, target)^.aux = RK_GLOBAL_IMPLICIT) Then
+          StoreSym(ctx, NodeP(ctx.ast.nodes, target)^.sym, init)
         Else
           PendingNote(ctx, target, 'cible d''affectation ' +
-                      NodeKindName(ctx.ast.nodes[target].kind));
+                      NodeKindName(NodeP(ctx.ast.nodes, target)^.kind));
       End;
     N_ARRAY_PATTERN, N_OBJECT_PATTERN, N_ARRAY_LIT, N_OBJECT_LIT:
       Begin
@@ -12660,7 +12906,7 @@ Begin
       End;
   Else
     PendingNote(ctx, target, 'cible d''affectation ' +
-                NodeKindName(ctx.ast.nodes[target].kind));
+                NodeKindName(NodeP(ctx.ast.nodes, target)^.kind));
   End;
 End;
 
@@ -12673,35 +12919,35 @@ Var
   fl: LongInt;
   kn: TNodeKind;
 Begin
-  kn := ctx.ast.nodes[node].kind;
+  kn := NodeP(ctx.ast.nodes, node)^.kind;
   If (kn = N_ARRAY_PATTERN) Or (kn = N_ARRAY_LIT) Then
     Begin
       idx := 0;
-      el := ctx.ast.nodes[node].e1;
+      el := NodeP(ctx.ast.nodes, node)^.e1;
       While el <> 0 Do
         Begin
           rest := False;
           hole := False;
           def := 0;
           target := 0;
-          If ctx.ast.nodes[el].kind = N_PATTERN_ELEM Then
+          If NodeP(ctx.ast.nodes, el)^.kind = N_PATTERN_ELEM Then
             Begin
-              target := ctx.ast.nodes[el].e1;
-              def := ctx.ast.nodes[el].e2;
-              rest := ctx.ast.nodes[el].flags And PF_REST <> 0;
+              target := NodeP(ctx.ast.nodes, el)^.e1;
+              def := NodeP(ctx.ast.nodes, el)^.e2;
+              rest := NodeP(ctx.ast.nodes, el)^.flags And PF_REST <> 0;
               hole := target = 0;
             End
-          Else If ctx.ast.nodes[el].kind = N_ELISION Then
+          Else If NodeP(ctx.ast.nodes, el)^.kind = N_ELISION Then
             hole := True
-          Else If ctx.ast.nodes[el].kind = N_SPREAD Then
+          Else If NodeP(ctx.ast.nodes, el)^.kind = N_SPREAD Then
             Begin
               rest := True;
-              target := ctx.ast.nodes[el].e1;
+              target := NodeP(ctx.ast.nodes, el)^.e1;
             End
-          Else If ctx.ast.nodes[el].kind = N_ASSIGN Then
+          Else If NodeP(ctx.ast.nodes, el)^.kind = N_ASSIGN Then
             Begin
-              target := ctx.ast.nodes[el].e1;
-              def := ctx.ast.nodes[el].e2;
+              target := NodeP(ctx.ast.nodes, el)^.e1;
+              def := NodeP(ctx.ast.nodes, el)^.e2;
             End
           Else
             target := el;
@@ -12723,7 +12969,7 @@ Begin
               BindValue(ctx, target, init);
             End;
           Inc(idx);
-          el := ctx.ast.nodes[el].next;
+          el := NodeP(ctx.ast.nodes, el)^.next;
         End;
     End
   Else
@@ -12731,15 +12977,15 @@ Begin
       nkeys := 0;
       tex := 0;
       has_rest := False;
-      el := ctx.ast.nodes[node].e1;
+      el := NodeP(ctx.ast.nodes, node)^.e1;
       While el <> 0 Do
         Begin
-          If ((ctx.ast.nodes[el].kind = N_PATTERN_PROP) And
-              (ctx.ast.nodes[el].flags And PP_REST <> 0)) Or
-             ((ctx.ast.nodes[el].kind <> N_PATTERN_PROP) And
-              (ctx.ast.nodes[el].flags And PR_SPREAD <> 0)) Then
+          If ((NodeP(ctx.ast.nodes, el)^.kind = N_PATTERN_PROP) And
+              (NodeP(ctx.ast.nodes, el)^.flags And PP_REST <> 0)) Or
+             ((NodeP(ctx.ast.nodes, el)^.kind <> N_PATTERN_PROP) And
+              (NodeP(ctx.ast.nodes, el)^.flags And PR_SPREAD <> 0)) Then
             has_rest := True;
-          el := ctx.ast.nodes[el].next;
+          el := NodeP(ctx.ast.nodes, el)^.next;
         End;
       If has_rest Then
         Begin
@@ -12748,20 +12994,20 @@ Begin
           CallRt(ctx, 'array_new', 0);
           SaveTemp(ctx, tex);
         End;
-      el := ctx.ast.nodes[node].e1;
+      el := NodeP(ctx.ast.nodes, node)^.e1;
       While el <> 0 Do
         Begin
-          If ctx.ast.nodes[el].kind = N_PATTERN_PROP Then
+          If NodeP(ctx.ast.nodes, el)^.kind = N_PATTERN_PROP Then
             Begin
-              fl := ctx.ast.nodes[el].flags;
-              target := ctx.ast.nodes[el].e1;
-              def := ctx.ast.nodes[el].e2;
+              fl := NodeP(ctx.ast.nodes, el)^.flags;
+              target := NodeP(ctx.ast.nodes, el)^.e1;
+              def := NodeP(ctx.ast.nodes, el)^.e2;
               rest := fl And PP_REST <> 0;
               pattern_kind := fl And PP_COMPUTED <> 0;
-              key_atom := ctx.ast.nodes[el].aux;
+              key_atom := NodeP(ctx.ast.nodes, el)^.aux;
               If pattern_kind Then
                 Begin
-                  GenExpr(ctx, ctx.ast.nodes[el].e3);
+                  GenExpr(ctx, NodeP(ctx.ast.nodes, el)^.e3);
                   Emit1(ctx, OP_PUSH, RegOp(R_EDX));
                   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
                   CallRt(ctx, 'tokey', 8);
@@ -12782,15 +13028,15 @@ Begin
             End
           Else
             Begin
-              fl := ctx.ast.nodes[el].flags;
+              fl := NodeP(ctx.ast.nodes, el)^.flags;
               rest := fl And PR_SPREAD <> 0;
               pattern_kind := fl And PR_COMPUTED <> 0;
-              target := ctx.ast.nodes[el].e1;
-              def := ctx.ast.nodes[el].e3;
-              key_atom := ctx.ast.nodes[el].aux;
+              target := NodeP(ctx.ast.nodes, el)^.e1;
+              def := NodeP(ctx.ast.nodes, el)^.e3;
+              key_atom := NodeP(ctx.ast.nodes, el)^.aux;
               If pattern_kind Then
                 Begin
-                  GenExpr(ctx, ctx.ast.nodes[el].e2);
+                  GenExpr(ctx, NodeP(ctx.ast.nodes, el)^.e2);
                   Emit1(ctx, OP_PUSH, RegOp(R_EDX));
                   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
                   CallRt(ctx, 'tokey', 8);
@@ -12809,11 +13055,11 @@ Begin
                   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
                 End;
               { dans a: b = 1, la valeur par defaut enveloppe la cible }
-              If (target <> 0) And (ctx.ast.nodes[target].kind = N_ASSIGN) And
+              If (target <> 0) And (NodeP(ctx.ast.nodes, target)^.kind = N_ASSIGN) And
                  (fl And PR_SHORTHAND = 0) Then
                 Begin
-                  def := ctx.ast.nodes[target].e2;
-                  target := ctx.ast.nodes[target].e1;
+                  def := NodeP(ctx.ast.nodes, target)^.e2;
+                  target := NodeP(ctx.ast.nodes, target)^.e1;
                 End;
             End;
           If rest Then
@@ -12835,18 +13081,18 @@ Begin
               If has_rest Then
                 Begin
                   Emit1(ctx, OP_PUSH, ImmOp(TagImm(RT_T_STRING)));
-                  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[key_atom].sym));
+                  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, key_atom)^.sym));
                   PushTemp(ctx, tex);
                   CallRt(ctx, 'array_push', 16);
                 End;
-              Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[key_atom].sym));
+              Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, StrP(ctx.data.strs, key_atom)^.sym));
               PushTemp(ctx, tslot);
               CallRt(ctx, 'get_prop', 12);
               GenDefault(ctx, def);
             End;
           BindValue(ctx, target, init);
           Inc(nkeys);
-          el := ctx.ast.nodes[el].next;
+          el := NodeP(ctx.ast.nodes, el)^.next;
         End;
       If has_rest Then
         TempRelease(ctx, tex);
@@ -12860,43 +13106,43 @@ Var
   sy, tag: LongInt;
 Begin
   { premiere passe : cellules et valeurs initiales }
-  sy := ctx.sem.scopes[sc].first_sym;
+  sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
   While sy <> 0 Do
     Begin
-      If ctx.sem.syms[sy].flags And SF_STATIC = 0 Then
+      If SymP(ctx.sem.syms, sy)^.flags And SF_STATIC = 0 Then
         Begin
           tag := RT_T_UNDEFINED;
-          If IsLexicalKind(ctx.sem.syms[sy].kind) And
-             (ctx.sem.syms[sy].flags And SF_TDZ_CHECK <> 0) Then
+          If IsLexicalKind(SymP(ctx.sem.syms, sy)^.kind) And
+             (SymP(ctx.sem.syms, sy)^.flags And SF_TDZ_CHECK <> 0) Then
             tag := RT_T_TDZ;
-          If ctx.sem.syms[sy].flags And SF_CELL <> 0 Then
+          If SymP(ctx.sem.syms, sy)^.flags And SF_CELL <> 0 Then
             Begin
               Emit1(ctx, OP_PUSH, ImmOp(TagImm(tag)));
               CallRt(ctx, 'new_cell', 4);
-              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)),
+              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)),
                    RegOp(R_EAX));
             End
-          Else If (ctx.sem.syms[sy].kind = DK_VAR) Or
-                  (ctx.sem.syms[sy].kind = DK_FUNC) Or (tag = RT_T_TDZ) Then
+          Else If (SymP(ctx.sem.syms, sy)^.kind = DK_VAR) Or
+                  (SymP(ctx.sem.syms, sy)^.kind = DK_FUNC) Or (tag = RT_T_TDZ) Then
             Begin
-              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)),
+              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)),
                    ImmOp(0));
-              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot) + 4),
+              Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot) + 4),
                    ImmOp(TagImm(tag)));
             End;
         End;
-      sy := ctx.sem.syms[sy].next;
+      sy := SymP(ctx.sem.syms, sy)^.next;
     End;
   { seconde passe : les declarations de fonctions sont hissees avec leur valeur }
-  sy := ctx.sem.scopes[sc].first_sym;
+  sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
   While sy <> 0 Do
     Begin
-      If ctx.sem.syms[sy].kind = DK_FUNC Then
+      If SymP(ctx.sem.syms, sy)^.kind = DK_FUNC Then
         Begin
-          GenMakeClosure(ctx, ctx.sem.syms[sy].node);
+          GenMakeClosure(ctx, SymP(ctx.sem.syms, sy)^.node);
           StoreSym(ctx, sy, True);
         End;
-      sy := ctx.sem.syms[sy].next;
+      sy := SymP(ctx.sem.syms, sy)^.next;
     End;
 End;
 
@@ -12905,20 +13151,20 @@ Var
   d, target, init, sy: LongInt;
   t: LongInt;
 Begin
-  d := ctx.ast.nodes[n].e1;
+  d := NodeP(ctx.ast.nodes, n)^.e1;
   While d <> 0 Do
     Begin
-      target := ctx.ast.nodes[d].e1;
-      init := ctx.ast.nodes[d].e2;
-      If (target <> 0) And (ctx.ast.nodes[target].kind = N_BIND_IDENT) Then
+      target := NodeP(ctx.ast.nodes, d)^.e1;
+      init := NodeP(ctx.ast.nodes, d)^.e2;
+      If (target <> 0) And (NodeP(ctx.ast.nodes, target)^.kind = N_BIND_IDENT) Then
         Begin
-          sy := ctx.ast.nodes[target].sym;
+          sy := NodeP(ctx.ast.nodes, target)^.sym;
           If init <> 0 Then
             Begin
               GenExpr(ctx, init);
               StoreSym(ctx, sy, True);
             End
-          Else If ctx.sem.syms[sy].kind = DK_LET Then
+          Else If SymP(ctx.sem.syms, sy)^.kind = DK_LET Then
             Begin
               LoadUndefined(ctx);
               StoreSym(ctx, sy, True);
@@ -12931,7 +13177,7 @@ Begin
           StoreTemp(ctx, t);
           BindTo(ctx, target, t, True);
         End;
-      d := ctx.ast.nodes[d].next;
+      d := NodeP(ctx.ast.nodes, d)^.next;
     End;
 End;
 
@@ -12958,18 +13204,13 @@ Procedure PushTarget(Var ctx: TCompilerContext; kind, brk, cont: LongInt);
 Var
   i: LongInt;
 Begin
-  If ctx.ir.jt_count >= MAX_JT Then
-    Begin
-      PipelineError(ctx, 'structures de controle imbriquees trop profondes');
-      Exit;
-    End;
   Inc(ctx.ir.jt_count);
-  ctx.ir.jt[ctx.ir.jt_count].kind := kind;
-  ctx.ir.jt[ctx.ir.jt_count].brk := brk;
-  ctx.ir.jt[ctx.ir.jt_count].cont := cont;
-  ctx.ir.jt[ctx.ir.jt_count].nlabels := ctx.ir.plabel_count;
+  JtP(ctx.ir.jt, ctx.ir.jt_count)^.kind := kind;
+  JtP(ctx.ir.jt, ctx.ir.jt_count)^.brk := brk;
+  JtP(ctx.ir.jt, ctx.ir.jt_count)^.cont := cont;
+  JtP(ctx.ir.jt, ctx.ir.jt_count)^.nlabels := ctx.ir.plabel_count;
   For i := 1 To ctx.ir.plabel_count Do
-    ctx.ir.jt[ctx.ir.jt_count].labels[i] := ctx.ir.plabels[i];
+    JtLabelP(JtP(ctx.ir.jt, ctx.ir.jt_count)^.labels, i)^ := PlabelP(ctx.ir.plabels, i)^;
   ctx.ir.plabel_count := 0;
 End;
 
@@ -12991,17 +13232,17 @@ Begin
     Begin
       If label_tok = 0 Then
         Begin
-          If (ctx.ir.jt[i].kind = JT_LOOP) Or
-             (is_break And (ctx.ir.jt[i].kind = JT_SWITCH)) Then
+          If (JtP(ctx.ir.jt, i)^.kind = JT_LOOP) Or
+             (is_break And (JtP(ctx.ir.jt, i)^.kind = JT_SWITCH)) Then
             Begin
               FindTarget := i;
               Exit;
             End;
         End
       Else
-        For j := 1 To ctx.ir.jt[i].nlabels Do
-          If ctx.lex.tokens[ctx.ir.jt[i].labels[j]].text =
-             ctx.lex.tokens[label_tok].text Then
+        For j := 1 To JtP(ctx.ir.jt, i)^.nlabels Do
+          If TokP(ctx.lex.tokens, JtLabelP(JtP(ctx.ir.jt, i)^.labels, j)^)^.text =
+             TokP(ctx.lex.tokens, label_tok)^.text Then
             Begin
               FindTarget := i;
               Exit;
@@ -13055,14 +13296,14 @@ Var
   els, done: LongInt;
 Begin
   els := NewLabel(ctx);
-  GenCondJumpFalse(ctx, ctx.ast.nodes[n].e1, els);
-  GenStmt(ctx, ctx.ast.nodes[n].e2);
-  If ctx.ast.nodes[n].e3 <> 0 Then
+  GenCondJumpFalse(ctx, NodeP(ctx.ast.nodes, n)^.e1, els);
+  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e2);
+  If NodeP(ctx.ast.nodes, n)^.e3 <> 0 Then
     Begin
       done := NewLabel(ctx);
       Emit1(ctx, OP_JMP, LabelOp(done));
       PlaceLabel(ctx, els);
-      GenStmt(ctx, ctx.ast.nodes[n].e3);
+      GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e3);
       PlaceLabel(ctx, done);
     End
   Else
@@ -13076,9 +13317,9 @@ Begin
   top := NewLabel(ctx);
   brk := NewLabel(ctx);
   PlaceLabel(ctx, top);
-  GenCondJumpFalse(ctx, ctx.ast.nodes[n].e1, brk);
+  GenCondJumpFalse(ctx, NodeP(ctx.ast.nodes, n)^.e1, brk);
   PushTarget(ctx, JT_LOOP, brk, top);
-  GenStmt(ctx, ctx.ast.nodes[n].e2);
+  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e2);
   PopTarget(ctx);
   Emit1(ctx, OP_JMP, LabelOp(top));
   PlaceLabel(ctx, brk);
@@ -13093,10 +13334,10 @@ Begin
   brk := NewLabel(ctx);
   PlaceLabel(ctx, top);
   PushTarget(ctx, JT_LOOP, brk, cont);
-  GenStmt(ctx, ctx.ast.nodes[n].e1);
+  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   PopTarget(ctx);
   PlaceLabel(ctx, cont);
-  GenCondJumpTrue(ctx, ctx.ast.nodes[n].e2, top);
+  GenCondJumpTrue(ctx, NodeP(ctx.ast.nodes, n)^.e2, top);
   PlaceLabel(ctx, brk);
 End;
 
@@ -13105,18 +13346,18 @@ Procedure GenPerIterationCopy(Var ctx: TCompilerContext; sc: LongInt);
 Var
   sy: LongInt;
 Begin
-  sy := ctx.sem.scopes[sc].first_sym;
+  sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
   While sy <> 0 Do
     Begin
-      If (ctx.sem.syms[sy].flags And SF_PER_ITER <> 0) And
-         (ctx.sem.syms[sy].flags And SF_CELL <> 0) Then
+      If (SymP(ctx.sem.syms, sy)^.flags And SF_PER_ITER <> 0) And
+         (SymP(ctx.sem.syms, sy)^.flags And SF_CELL <> 0) Then
         Begin
-          Emit1(ctx, OP_PUSH, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)));
+          Emit1(ctx, OP_PUSH, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)));
           CallRt(ctx, 'cell_copy', 4);
-          Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)),
+          Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(SymP(ctx.sem.syms, sy)^.slot)),
                RegOp(R_EAX));
         End;
-      sy := ctx.sem.syms[sy].next;
+      sy := SymP(ctx.sem.syms, sy)^.next;
     End;
 End;
 
@@ -13124,29 +13365,29 @@ Procedure GenFor(Var ctx: TCompilerContext; n: LongInt);
 Var
   sc, top, cont, brk, init: LongInt;
 Begin
-  sc := ctx.ast.nodes[n].scope;
+  sc := NodeP(ctx.ast.nodes, n)^.scope;
   top := NewLabel(ctx);
   cont := NewLabel(ctx);
   brk := NewLabel(ctx);
   GenScopeEnter(ctx, sc);
-  init := ctx.ast.nodes[n].e1;
+  init := NodeP(ctx.ast.nodes, n)^.e1;
   If init <> 0 Then
     Begin
-      If ctx.ast.nodes[init].kind = N_VAR_DECL Then
+      If NodeP(ctx.ast.nodes, init)^.kind = N_VAR_DECL Then
         GenVarDecl(ctx, init)
       Else
         GenExpr(ctx, init);
     End;
   PlaceLabel(ctx, top);
-  If ctx.ast.nodes[n].e2 <> 0 Then
-    GenCondJumpFalse(ctx, ctx.ast.nodes[n].e2, brk);
+  If NodeP(ctx.ast.nodes, n)^.e2 <> 0 Then
+    GenCondJumpFalse(ctx, NodeP(ctx.ast.nodes, n)^.e2, brk);
   PushTarget(ctx, JT_LOOP, brk, cont);
-  GenStmt(ctx, ctx.ast.nodes[n].e4);
+  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e4);
   PopTarget(ctx);
   PlaceLabel(ctx, cont);
   GenPerIterationCopy(ctx, sc);
-  If ctx.ast.nodes[n].e3 <> 0 Then
-    GenExpr(ctx, ctx.ast.nodes[n].e3);
+  If NodeP(ctx.ast.nodes, n)^.e3 <> 0 Then
+    GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e3);
   Emit1(ctx, OP_JMP, LabelOp(top));
   PlaceLabel(ctx, brk);
 End;
@@ -13156,12 +13397,12 @@ Procedure GenForInOf(Var ctx: TCompilerContext; n: LongInt; is_of: Boolean);
 Var
   sc, top, brk, iter, v, left, target: LongInt;
 Begin
-  sc := ctx.ast.nodes[n].scope;
+  sc := NodeP(ctx.ast.nodes, n)^.scope;
   top := NewLabel(ctx);
   brk := NewLabel(ctx);
   iter := TempAcquire(ctx);
   v := TempAcquire(ctx);
-  GenExpr(ctx, ctx.ast.nodes[n].e2);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e2);
   If Not is_of Then
     Begin
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
@@ -13181,16 +13422,16 @@ Begin
   { nouvelle portee (nouvelles cellules) a chaque iteration }
   GenScopeEnter(ctx, sc);
   LoadTemp(ctx, v);
-  left := ctx.ast.nodes[n].e1;
-  If (left <> 0) And (ctx.ast.nodes[left].kind = N_VAR_DECL) Then
+  left := NodeP(ctx.ast.nodes, n)^.e1;
+  If (left <> 0) And (NodeP(ctx.ast.nodes, left)^.kind = N_VAR_DECL) Then
     Begin
-      target := ctx.ast.nodes[ctx.ast.nodes[left].e1].e1;
+      target := NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, left)^.e1)^.e1;
       BindValue(ctx, target, True);
     End
   Else
     BindValue(ctx, left, False);
   PushTarget(ctx, JT_LOOP, brk, top);
-  GenStmt(ctx, ctx.ast.nodes[n].e3);
+  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e3);
   PopTarget(ctx);
   Emit1(ctx, OP_JMP, LabelOp(top));
   PlaceLabel(ctx, brk);
@@ -13204,35 +13445,35 @@ Var
 Begin
   brk := NewLabel(ctx);
   ncases := 0;
-  cs := ctx.ast.nodes[n].e2;
+  cs := NodeP(ctx.ast.nodes, n)^.e2;
   While cs <> 0 Do
     Begin
       Inc(ncases);
-      cs := ctx.ast.nodes[cs].next;
+      cs := NodeP(ctx.ast.nodes, cs)^.next;
     End;
   base := ctx.ir.label_count + 1;
   Inc(ctx.ir.label_count, ncases);
   t := TempAcquire(ctx);
-  GenExpr(ctx, ctx.ast.nodes[n].e1);
+  GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   SaveTemp(ctx, t);
-  GenScopeEnter(ctx, ctx.ast.nodes[n].scope);
+  GenScopeEnter(ctx, NodeP(ctx.ast.nodes, n)^.scope);
   { tests dans l'ordre : discriminant === valeur du case }
   dflt := 0;
   i := 0;
-  cs := ctx.ast.nodes[n].e2;
+  cs := NodeP(ctx.ast.nodes, n)^.e2;
   While cs <> 0 Do
     Begin
-      If ctx.ast.nodes[cs].e1 = 0 Then
+      If NodeP(ctx.ast.nodes, cs)^.e1 = 0 Then
         dflt := base + i
       Else
         Begin
-          GenExpr(ctx, ctx.ast.nodes[cs].e1);
+          GenExpr(ctx, NodeP(ctx.ast.nodes, cs)^.e1);
           GenBinaryCore(ctx, '===', t);
           Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
           Emit1(ctx, OP_JNE, LabelOp(base + i));
         End;
       Inc(i);
-      cs := ctx.ast.nodes[cs].next;
+      cs := NodeP(ctx.ast.nodes, cs)^.next;
     End;
   If dflt <> 0 Then
     Emit1(ctx, OP_JMP, LabelOp(dflt))
@@ -13240,13 +13481,13 @@ Begin
     Emit1(ctx, OP_JMP, LabelOp(brk));
   PushTarget(ctx, JT_SWITCH, brk, 0);
   i := 0;
-  cs := ctx.ast.nodes[n].e2;
+  cs := NodeP(ctx.ast.nodes, n)^.e2;
   While cs <> 0 Do
     Begin
       PlaceLabel(ctx, base + i);
-      GenStmtList(ctx, ctx.ast.nodes[cs].e2);
+      GenStmtList(ctx, NodeP(ctx.ast.nodes, cs)^.e2);
       Inc(i);
-      cs := ctx.ast.nodes[cs].next;
+      cs := NodeP(ctx.ast.nodes, cs)^.next;
     End;
   PopTarget(ctx);
   PlaceLabel(ctx, brk);
@@ -13307,15 +13548,10 @@ End;
 
 Procedure TryPush(Var ctx: TCompilerContext; base, fin: LongInt);
 Begin
-  If ctx.ir.try_count < 16 Then
-    Begin
-      Inc(ctx.ir.try_count);
-      ctx.ir.try_rec[ctx.ir.try_count] := base;
-      ctx.ir.try_fin[ctx.ir.try_count] := fin;
-      ctx.ir.try_jt[ctx.ir.try_count] := ctx.ir.jt_count;
-    End
-  Else
-    PipelineError(ctx, 'blocs try imbriques trop profonds');
+  Inc(ctx.ir.try_count);
+  TryRecP(ctx.ir.try_rec, ctx.ir.try_count)^ := base;
+  TryFinP(ctx.ir.try_fin, ctx.ir.try_count)^ := fin;
+  TryJtP(ctx.ir.try_jt, ctx.ir.try_count)^ := ctx.ir.jt_count;
 End;
 
 { Sort des try dont l'etiquette de saut est jt >= mint : depile leur
@@ -13326,10 +13562,10 @@ Var
 Begin
   saved := ctx.ir.try_count;
   i := saved;
-  While (i >= 1) And (ctx.ir.try_jt[i] >= mint) Do
+  While (i >= 1) And (TryJtP(ctx.ir.try_jt, i)^ >= mint) Do
     Begin
-      base := ctx.ir.try_rec[i];
-      fin := ctx.ir.try_fin[i];
+      base := TryRecP(ctx.ir.try_rec, i)^;
+      fin := TryFinP(ctx.ir.try_fin, i)^;
       HandlerPop(ctx, base);
       ctx.ir.try_count := i - 1;
       If fin <> 0 Then
@@ -13348,13 +13584,13 @@ Begin
   lend := NewLabel(ctx);
   HandlerSetup(ctx, base, lcatch);
   TryPush(ctx, base, 0);
-  GenStmt(ctx, ctx.ast.nodes[n].e1);
+  GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   Dec(ctx.ir.try_count);
   HandlerPop(ctx, base);
   Emit1(ctx, OP_JMP, LabelOp(lend));
   PlaceLabel(ctx, lcatch);
-  cn := ctx.ast.nodes[n].e2;
-  GenScopeEnter(ctx, ctx.ast.nodes[cn].scope);
+  cn := NodeP(ctx.ast.nodes, n)^.e2;
+  GenScopeEnter(ctx, NodeP(ctx.ast.nodes, cn)^.scope);
   Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 0));
   Emit(ctx, OP_MOV, RegOp(R_EDX), MemSym(SYMK_D, RtVarSym(ctx, 'exc'), 4));
   { return() d'un generateur : la valeur sentinelle traverse les catch }
@@ -13367,11 +13603,11 @@ Begin
   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
   CallRt(ctx, 'throw', 8);
   PlaceLabel(ctx, cnt);
-  par := ctx.ast.nodes[cn].e1;
+  par := NodeP(ctx.ast.nodes, cn)^.e1;
   If par <> 0 Then
     BindValue(ctx, par, True);
-  If ctx.ast.nodes[cn].e2 <> 0 Then
-    GenStmtList(ctx, ctx.ast.nodes[ctx.ast.nodes[cn].e2].e1);
+  If NodeP(ctx.ast.nodes, cn)^.e2 <> 0 Then
+    GenStmtList(ctx, NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, cn)^.e2)^.e1);
   PlaceLabel(ctx, lend);
 End;
 
@@ -13379,7 +13615,7 @@ Procedure GenTry(Var ctx: TCompilerContext; n: LongInt);
 Var
   base, lcatch, lend, tx, fin: LongInt;
 Begin
-  fin := ctx.ast.nodes[n].e3;
+  fin := NodeP(ctx.ast.nodes, n)^.e3;
   If fin = 0 Then
     Begin
       GenTryCatch(ctx, n);
@@ -13390,10 +13626,10 @@ Begin
   lend := NewLabel(ctx);
   HandlerSetup(ctx, base, lcatch);
   TryPush(ctx, base, fin);
-  If ctx.ast.nodes[n].e2 <> 0 Then
+  If NodeP(ctx.ast.nodes, n)^.e2 <> 0 Then
     GenTryCatch(ctx, n)
   Else
-    GenStmt(ctx, ctx.ast.nodes[n].e1);
+    GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   Dec(ctx.ir.try_count);
   HandlerPop(ctx, base);
   GenStmt(ctx, fin);
@@ -13414,7 +13650,7 @@ Procedure GenBreakContinue(Var ctx: TCompilerContext; n: LongInt; is_break: Bool
 Var
   i: LongInt;
 Begin
-  i := FindTarget(ctx, ctx.ast.nodes[n].e1, is_break);
+  i := FindTarget(ctx, NodeP(ctx.ast.nodes, n)^.e1, is_break);
   If i = 0 Then
     Begin
       PendingNote(ctx, n, 'cible de break/continue introuvable');
@@ -13422,26 +13658,23 @@ Begin
     End;
   GenExitTries(ctx, i);
   If is_break Then
-    Emit1(ctx, OP_JMP, LabelOp(ctx.ir.jt[i].brk))
+    Emit1(ctx, OP_JMP, LabelOp(JtP(ctx.ir.jt, i)^.brk))
   Else
-    Emit1(ctx, OP_JMP, LabelOp(ctx.ir.jt[i].cont));
+    Emit1(ctx, OP_JMP, LabelOp(JtP(ctx.ir.jt, i)^.cont));
 End;
 
 Procedure GenLabeled(Var ctx: TCompilerContext; n: LongInt);
 Var
   inner, brk: LongInt;
 Begin
-  inner := ctx.ast.nodes[n].e1;
-  If ctx.ir.plabel_count < 4 Then
-    Begin
-      Inc(ctx.ir.plabel_count);
-      ctx.ir.plabels[ctx.ir.plabel_count] := ctx.ast.nodes[n].tok;
-    End;
+  inner := NodeP(ctx.ast.nodes, n)^.e1;
+  Inc(ctx.ir.plabel_count);
+  PlabelP(ctx.ir.plabels, ctx.ir.plabel_count)^ := NodeP(ctx.ast.nodes, n)^.tok;
   If (inner <> 0) And
-     ((ctx.ast.nodes[inner].kind = N_WHILE) Or (ctx.ast.nodes[inner].kind = N_DO_WHILE) Or
-      (ctx.ast.nodes[inner].kind = N_FOR) Or (ctx.ast.nodes[inner].kind = N_FOR_IN) Or
-      (ctx.ast.nodes[inner].kind = N_FOR_OF) Or (ctx.ast.nodes[inner].kind = N_SWITCH) Or
-      (ctx.ast.nodes[inner].kind = N_LABELED)) Then
+     ((NodeP(ctx.ast.nodes, inner)^.kind = N_WHILE) Or (NodeP(ctx.ast.nodes, inner)^.kind = N_DO_WHILE) Or
+      (NodeP(ctx.ast.nodes, inner)^.kind = N_FOR) Or (NodeP(ctx.ast.nodes, inner)^.kind = N_FOR_IN) Or
+      (NodeP(ctx.ast.nodes, inner)^.kind = N_FOR_OF) Or (NodeP(ctx.ast.nodes, inner)^.kind = N_SWITCH) Or
+      (NodeP(ctx.ast.nodes, inner)^.kind = N_LABELED)) Then
     GenStmt(ctx, inner)
   Else
     Begin
@@ -13460,12 +13693,12 @@ Var
 Begin
   If n = 0 Then
     Exit;
-  ctx.ir.cur_line := ctx.lex.tokens[ctx.ast.nodes[n].tok].line;
-  Case ctx.ast.nodes[n].kind Of
+  ctx.ir.cur_line := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.line;
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_VAR_DECL:
       GenVarDecl(ctx, n);
     N_EXPR_STMT:
-      GenExpr(ctx, ctx.ast.nodes[n].e1);
+      GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
     N_CLASS_DECL:
       GenClass(ctx, n);
     N_EMPTY, N_FUNC_DECL:
@@ -13474,14 +13707,14 @@ Begin
       Emit0(ctx, OP_NOP);
     N_BLOCK:
       Begin
-        If ctx.ast.nodes[n].flags <> 1 Then
-          GenScopeEnter(ctx, ctx.ast.nodes[n].scope);
-        GenStmtList(ctx, ctx.ast.nodes[n].e1);
+        If NodeP(ctx.ast.nodes, n)^.flags <> 1 Then
+          GenScopeEnter(ctx, NodeP(ctx.ast.nodes, n)^.scope);
+        GenStmtList(ctx, NodeP(ctx.ast.nodes, n)^.e1);
       End;
     N_RETURN:
       Begin
-        If ctx.ast.nodes[n].e1 <> 0 Then
-          GenExpr(ctx, ctx.ast.nodes[n].e1)
+        If NodeP(ctx.ast.nodes, n)^.e1 <> 0 Then
+          GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1)
         Else
           LoadUndefined(ctx);
         If ctx.ir.try_count > 0 Then
@@ -13497,7 +13730,7 @@ Begin
       End;
     N_THROW:
       Begin
-        GenExpr(ctx, ctx.ast.nodes[n].e1);
+        GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
         Emit1(ctx, OP_PUSH, RegOp(R_EDX));
         Emit1(ctx, OP_PUSH, RegOp(R_EAX));
         CallRt(ctx, 'throw', 8);
@@ -13525,7 +13758,7 @@ Begin
     N_LABELED:
       GenLabeled(ctx, n);
   Else
-    PendingNote(ctx, n, NodeKindName(ctx.ast.nodes[n].kind));
+    PendingNote(ctx, n, NodeKindName(NodeP(ctx.ast.nodes, n)^.kind));
   End;
 End;
 
@@ -13534,7 +13767,7 @@ Begin
   While n <> 0 Do
     Begin
       GenStmt(ctx, n);
-      n := ctx.ast.nodes[n].next;
+      n := NodeP(ctx.ast.nodes, n)^.next;
     End;
 End;
 
@@ -13544,16 +13777,11 @@ End;
 Function RtVarSym(Var ctx: TCompilerContext; Const name: TString): LongInt;
 Var
   i: LongInt;
-  full: TString;
 Begin
-  full := SymRt('v_' + name);
-  RtVarSym := 0;
-  For i := 1 To ctx.data.sym_count Do
-    If (ctx.data.syms[i].sec = SEC_DATA) And (ctx.data.syms[i].name = full) Then
-      Begin
-        RtVarSym := i;
-        Exit;
-      End;
+  i := DsymFind(ctx, SymRt('v_' + name));
+  If (i <> 0) And (DsymP(ctx.data.syms, i)^.sec <> SEC_DATA) Then
+    i := 0;
+  RtVarSym := i;
 End;
 
 Procedure BeginProc(Var ctx: TCompilerContext; Const name: TString; fs: LongInt);
@@ -13561,7 +13789,7 @@ Var
   xs, ok: LongInt;
 Begin
   xs := XSym(ctx, name);
-  ctx.ir.xsyms[xs].defined := True;
+  XsymP(ctx.ir.xsyms, xs)^.defined := True;
   Inc(ctx.ir.proc_count);
   ctx.ir.cg_fs := fs;
   ctx.ir.tmp_free_count := 0;
@@ -13593,10 +13821,10 @@ Begin
   Emit0(ctx, OP_RET);
   Emit1(ctx, OP_ENDP, NoOp);
   { taille definitive de la trame }
-  ctx.ir.instrs[ctx.ir.frame_patch].b.disp :=
-    RT_VALUE_SIZE * ctx.sem.scopes[ctx.ir.cg_fs].nslots;
-  ctx.sem.scopes[ctx.ir.cg_fs].frame_size :=
-    RT_VALUE_SIZE * ctx.sem.scopes[ctx.ir.cg_fs].nslots;
+  InstrP(ctx.ir.instrs, ctx.ir.frame_patch)^.b.disp :=
+    RT_VALUE_SIZE * ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.nslots;
+  ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.frame_size :=
+    RT_VALUE_SIZE * ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.nslots;
 End;
 
 { Charge l'argument i (undefined s'il n'a pas ete fourni). }
@@ -13621,12 +13849,12 @@ Procedure GenParams(Var ctx: TCompilerContext; fn: LongInt);
 Var
   p, i, target: LongInt;
 Begin
-  p := ctx.ast.nodes[fn].e1;
+  p := NodeP(ctx.ast.nodes, fn)^.e1;
   i := 0;
   While p <> 0 Do
     Begin
-      target := ctx.ast.nodes[p].e1;
-      If ctx.ast.nodes[p].flags And PF_REST <> 0 Then
+      target := NodeP(ctx.ast.nodes, p)^.e1;
+      If NodeP(ctx.ast.nodes, p)^.flags And PF_REST <> 0 Then
         Begin
           Emit1(ctx, OP_PUSH, ImmOp(i));
           Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS));
@@ -13637,11 +13865,11 @@ Begin
       Else
         Begin
           LoadArg(ctx, i);
-          GenDefault(ctx, ctx.ast.nodes[p].e2);
+          GenDefault(ctx, NodeP(ctx.ast.nodes, p)^.e2);
         End;
       BindValue(ctx, target, True);
       Inc(i);
-      p := ctx.ast.nodes[p].next;
+      p := NodeP(ctx.ast.nodes, p)^.next;
     End;
 End;
 
@@ -13651,11 +13879,11 @@ Procedure GenFuncProc(Var ctx: TCompilerContext; fd: LongInt);
 Var
   n, sc, sy, body: LongInt;
 Begin
-  n := ctx.data.fdescs[fd].node;
-  sc := ctx.ast.nodes[n].scope;
-  BeginProc(ctx, ctx.data.fdescs[fd].code_sym, sc);
-  ctx.ir.cur_line := ctx.lex.tokens[ctx.ast.nodes[n].tok].line;
-  If ctx.data.fdescs[fd].flags And (FDF_GENERATOR Or FDF_ASYNC) <> 0 Then
+  n := FdescP(ctx.data.fdescs, fd)^.node;
+  sc := NodeP(ctx.ast.nodes, n)^.scope;
+  BeginProc(ctx, FdescP(ctx.data.fdescs, fd)^.code_sym, sc);
+  ctx.ir.cur_line := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.line;
+  If FdescP(ctx.data.fdescs, fd)^.flags And (FDF_GENERATOR Or FDF_ASYNC) <> 0 Then
     Begin
       { generateur / async : l'appel cree la coroutine ; le corps s'execute lors de la
         premiere reprise (drapeau genflag positionne par la coroutine) }
@@ -13668,7 +13896,7 @@ Begin
       Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_THIS));
       Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
       Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
-      If ctx.data.fdescs[fd].flags And FDF_GENERATOR <> 0 Then
+      If FdescP(ctx.data.fdescs, fd)^.flags And FDF_GENERATOR <> 0 Then
         Emit1(ctx, OP_PUSH, ImmOp(0))
       Else
         Emit1(ctx, OP_PUSH, ImmOp(1));
@@ -13678,25 +13906,25 @@ Begin
       PlaceLabel(ctx, body);
       Emit(ctx, OP_MOV, MemSym(SYMK_D, RtVarSym(ctx, 'genflag'), 0), ImmOp(0));
     End;
-  EmitComment(ctx, 'fonction ' + StrText(ctx, ctx.data.fdescs[fd].name_str) +
+  EmitComment(ctx, 'fonction ' + StrText(ctx, FdescP(ctx.data.fdescs, fd)^.name_str) +
               ' (' + SymFdesc(fd) + ')');
   GenScopeEnter(ctx, sc);
   { nom d'une expression de fonction : la closure elle-meme }
-  sy := ctx.sem.scopes[sc].first_sym;
+  sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
   While sy <> 0 Do
     Begin
-      If ctx.sem.syms[sy].kind = DK_FNAME Then
+      If SymP(ctx.sem.syms, sy)^.kind = DK_FNAME Then
         Begin
           Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_CLOSURE));
           Emit(ctx, OP_MOV, RegOp(R_EDX), ImmOp(TagImm(RT_T_FUNCTION)));
           StoreSym(ctx, sy, True);
         End;
-      sy := ctx.sem.syms[sy].next;
+      sy := SymP(ctx.sem.syms, sy)^.next;
     End;
-  sy := ctx.sem.scopes[sc].first_sym;
+  sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
   While sy <> 0 Do
     Begin
-      If ctx.sem.syms[sy].kind = DK_ARGS Then
+      If SymP(ctx.sem.syms, sy)^.kind = DK_ARGS Then
         Begin
           Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS));
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
@@ -13704,14 +13932,14 @@ Begin
           CallRt(ctx, 'make_arguments', 8);
           StoreSym(ctx, sy, True);
         End;
-      sy := ctx.sem.syms[sy].next;
+      sy := SymP(ctx.sem.syms, sy)^.next;
     End;
-  Case ctx.ast.nodes[n].kind Of
+  Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_FUNC_DECL, N_FUNC_EXPR, N_METHOD:
       Begin
         GenParams(ctx, n);
-        If (ctx.ast.nodes[n].kind = N_METHOD) And
-           (ctx.sem.scopes[sc].fkind = FK_CTOR) Then
+        If (NodeP(ctx.ast.nodes, n)^.kind = N_METHOD) And
+           (ScopeP(ctx.sem.scopes, sc)^.fkind = FK_CTOR) Then
           Begin
             { constructeur de base : champs d'instance avant le corps }
             Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_THIS + 4));
@@ -13719,9 +13947,9 @@ Begin
             Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
             CallRt(ctx, 'init_fields', 12);
           End;
-        body := ctx.ast.nodes[n].e2;
-        If (ctx.ast.nodes[n].kind = N_FUNC_EXPR) And
-           (ctx.ast.nodes[n].flags And FN_EXPR_BODY <> 0) Then
+        body := NodeP(ctx.ast.nodes, n)^.e2;
+        If (NodeP(ctx.ast.nodes, n)^.kind = N_FUNC_EXPR) And
+           (NodeP(ctx.ast.nodes, n)^.flags And FN_EXPR_BODY <> 0) Then
           Begin
             { corps expression d'une fleche : sa valeur est le resultat }
             GenExpr(ctx, body);
@@ -13729,16 +13957,16 @@ Begin
             Emit0(ctx, OP_RET);
           End
         Else
-          GenStmtList(ctx, ctx.ast.nodes[body].e1);
+          GenStmtList(ctx, NodeP(ctx.ast.nodes, body)^.e1);
       End;
     N_FIELD:
       Begin
-        GenExpr(ctx, ctx.ast.nodes[n].e1);
+        GenExpr(ctx, NodeP(ctx.ast.nodes, n)^.e1);
         Emit0(ctx, OP_LEAVE);
         Emit0(ctx, OP_RET);
       End;
     N_STATIC_BLOCK:
-      GenStmt(ctx, ctx.ast.nodes[n].e1);
+      GenStmt(ctx, NodeP(ctx.ast.nodes, n)^.e1);
   End;
   EndProc(ctx);
 End;
@@ -13757,6 +13985,7 @@ Begin
     End;
   ctx.ir.count := 0;
   ctx.ir.xsym_count := 0;
+  DlClear(ctx.ir.xhash);
   ctx.ir.comment_count := 0;
   ctx.ir.label_count := 0;
   ctx.ir.proc_count := 0;
@@ -13770,7 +13999,7 @@ Begin
   EmitComment(ctx, 'programme principal');
   GenScopeEnter(ctx, 1);
   CallRt(ctx, 'prelude_init', 0);
-  GenStmtList(ctx, ctx.ast.nodes[ctx.ast.root].e1);
+  GenStmtList(ctx, NodeP(ctx.ast.nodes, ctx.ast.root)^.e1);
   CallRt(ctx, 'prelude_run', 0);
   EndProc(ctx);
 
@@ -13843,9 +14072,9 @@ End;
 Function SymNameOf(Var ctx: TCompilerContext; symkind, sym: LongInt): TString;
 Begin
   If symkind = SYMK_D Then
-    SymNameOf := ctx.data.syms[sym].name
+    SymNameOf := DsymP(ctx.data.syms, sym)^.name
   Else
-    SymNameOf := ctx.ir.xsyms[sym].name;
+    SymNameOf := XsymP(ctx.ir.xsyms, sym)^.name;
 End;
 
 Function DispText(d: LongInt): TString;
@@ -14021,25 +14250,25 @@ Begin
     limit := ctx.ir.user_count;
   For i := 1 To limit Do
     Begin
-      op := ctx.ir.instrs[i].op;
+      op := InstrP(ctx.ir.instrs, i)^.op;
       Case op Of
         OP_LABEL:
-          Writeln(OperandText(ctx, ctx.ir.instrs[i].a), ':');
+          Writeln(OperandText(ctx, InstrP(ctx.ir.instrs, i)^.a), ':');
         OP_COMMENT:
-          Writeln('        ; ', ctx.ir.comments[ctx.ir.instrs[i].a.disp]);
+          Writeln('        ; ', CommentP(ctx.ir.comments, InstrP(ctx.ir.instrs, i)^.a.disp)^);
         OP_PROC:
           Begin
             Writeln;
-            Writeln(SymNameOf(ctx, ctx.ir.instrs[i].a.symkind, ctx.ir.instrs[i].a.sym), ' proc');
+            Writeln(SymNameOf(ctx, InstrP(ctx.ir.instrs, i)^.a.symkind, InstrP(ctx.ir.instrs, i)^.a.sym), ' proc');
           End;
         OP_ENDP:
           Writeln('        endp');
       Else
         Begin
-          a := OperandText(ctx, ctx.ir.instrs[i].a);
-          b := OperandText(ctx, ctx.ir.instrs[i].b);
-          If (op = OP_CALL) And (ctx.ir.instrs[i].a.kind = OD_ADDR) Then
-            a := SymNameOf(ctx, ctx.ir.instrs[i].a.symkind, ctx.ir.instrs[i].a.sym);
+          a := OperandText(ctx, InstrP(ctx.ir.instrs, i)^.a);
+          b := OperandText(ctx, InstrP(ctx.ir.instrs, i)^.b);
+          If (op = OP_CALL) And (InstrP(ctx.ir.instrs, i)^.a.kind = OD_ADDR) Then
+            a := SymNameOf(ctx, InstrP(ctx.ir.instrs, i)^.a.symkind, InstrP(ctx.ir.instrs, i)^.a.sym);
           Write('        ', OpName(op));
           If a <> '' Then
             Write(' ', a);
@@ -14051,16 +14280,15 @@ Begin
     End;
   Writeln('Symboles externes non definis :');
   For i := 1 To ctx.ir.xsym_count Do
-    If Not ctx.ir.xsyms[i].defined And
-       (DsymFind(ctx, ctx.ir.xsyms[i].name) = 0) Then
-      Writeln('  ', ctx.ir.xsyms[i].name);
+    If Not XsymP(ctx.ir.xsyms, i)^.defined And
+       (DsymFind(ctx, XsymP(ctx.ir.xsyms, i)^.name) = 0) Then
+      Writeln('  ', XsymP(ctx.ir.xsyms, i)^.name);
   If ctx.ir.pending_count > 0 Then
     Begin
       Writeln('Constructions en attente (', ctx.ir.pending_count, ') :');
       For i := 1 To ctx.ir.pending_count Do
-        If i <= MAX_PENDING Then
-          Writeln('  ligne ', ctx.ir.pendings[i].line, ' : ',
-                  ctx.ir.pendings[i].what);
+        Writeln('  ligne ', PendingP(ctx.ir.pendings, i)^.line, ' : ',
+                PendingP(ctx.ir.pendings, i)^.what);
     End;
 End;
 
@@ -14093,11 +14321,28 @@ Type
 
 Var
   asm_ctx: PCtx;
-  asm_lbl_name: Array[1..160] Of String[24];
-  asm_lbl_id: Array[1..160] Of LongInt;
+  asm_lbl_name: TDynList;
+  asm_lbl_id: TDynList;
   asm_lbl_count: LongInt;
   asm_uniq: LongInt;
   asm_failed: Boolean;
+
+Type
+  P_asm_lbl_id = ^LongInt;
+
+Function asm_lbl_idP(Var l: TDynList; i: LongInt): P_asm_lbl_id;
+Begin
+  asm_lbl_idP := P_asm_lbl_id(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  T_asm_lbl_name = String[24];
+  P_asm_lbl_name = ^T_asm_lbl_name;
+
+Function asm_lbl_nameP(Var l: TDynList; i: LongInt): P_asm_lbl_name;
+Begin
+  asm_lbl_nameP := P_asm_lbl_name(DlPtr(l, i - 1, SizeOf(T_asm_lbl_name)));
+End;
 
 Function AsmTrim(s: TString): TString;
 Begin
@@ -14263,21 +14508,15 @@ Var
   i: LongInt;
 Begin
   For i := 1 To asm_lbl_count Do
-    If asm_lbl_name[i] = nm Then
+    If asm_lbl_nameP(asm_lbl_name, i)^ = nm Then
       Begin
-        AsmLabelId := asm_lbl_id[i];
+        AsmLabelId := asm_lbl_idP(asm_lbl_id, i)^;
         Exit;
       End;
-  If asm_lbl_count >= 160 Then
-    Begin
-      AsmFail('trop d''etiquettes locales', nm);
-      AsmLabelId := 0;
-      Exit;
-    End;
   Inc(asm_lbl_count);
-  asm_lbl_name[asm_lbl_count] := nm;
-  asm_lbl_id[asm_lbl_count] := NewLabel(asm_ctx^);
-  AsmLabelId := asm_lbl_id[asm_lbl_count];
+  asm_lbl_nameP(asm_lbl_name, asm_lbl_count)^ := nm;
+  asm_lbl_idP(asm_lbl_id, asm_lbl_count)^ := NewLabel(asm_ctx^);
+  AsmLabelId := asm_lbl_idP(asm_lbl_id, asm_lbl_count)^;
 End;
 
 { Symbole de donnees (pool) ou, a defaut, symbole de code ou externe. }
@@ -14471,8 +14710,8 @@ Begin
   If Copy(line, 1, 5) = 'proc ' Then
     Begin
       xs := XSym(asm_ctx^, AsmTrim(Copy(line, 6, Length(line) - 5)));
-      asm_ctx^.ir.xsyms[xs].defined := True;
-      asm_ctx^.ir.xsyms[xs].runtime := True;
+      XsymP(asm_ctx^.ir.xsyms, xs)^.defined := True;
+      XsymP(asm_ctx^.ir.xsyms, xs)^.runtime := True;
       Inc(asm_ctx^.ir.proc_count);
       asm_lbl_count := 0;
       Emit1(asm_ctx^, OP_PROC, AddrSym(SYMK_X, xs));
@@ -14557,7 +14796,7 @@ Var
   id: LongInt;
 Begin
   id := InternText(asm_ctx^, text);
-  If (id <> 0) And (asm_ctx^.data.strs[id].sym = 0) Then
+  If (id <> 0) And (StrP(asm_ctx^.data.strs, id)^.sym = 0) Then
     EmitStringCell(asm_ctx^, id);
   RtStr := SymStr(id);
 End;
@@ -14668,11 +14907,44 @@ End;
 
 { Construction d'un objet statique : proprietes ajoutees puis objet cree. }
 Var
-  bo_key: Array[1..64] Of String[40];
-  bo_val: Array[1..64] Of LongInt;
-  bo_tag: Array[1..64] Of LongInt;
-  bo_hi: Array[1..64] Of LongInt;      { valeur immediate : mot haut (bo_tag = -1) }
+  bo_key: TDynList;
+  bo_val: TDynList;
+  bo_tag: TDynList;
+  bo_hi: TDynList;
   bo_n: LongInt;
+
+Type
+  P_bo_hi = ^LongInt;
+
+Function bo_hiP(Var l: TDynList; i: LongInt): P_bo_hi;
+Begin
+  bo_hiP := P_bo_hi(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_bo_tag = ^LongInt;
+
+Function bo_tagP(Var l: TDynList; i: LongInt): P_bo_tag;
+Begin
+  bo_tagP := P_bo_tag(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_bo_val = ^LongInt;
+
+Function bo_valP(Var l: TDynList; i: LongInt): P_bo_val;
+Begin
+  bo_valP := P_bo_val(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  T_bo_key = String[40];
+  P_bo_key = ^T_bo_key;
+
+Function bo_keyP(Var l: TDynList; i: LongInt): P_bo_key;
+Begin
+  bo_keyP := P_bo_key(DlPtr(l, i - 1, SizeOf(T_bo_key)));
+End;
 
 Procedure BoReset;
 Begin
@@ -14682,9 +14954,9 @@ End;
 Procedure BoAdd(Const key: TString; valsym, tag: LongInt);
 Begin
   Inc(bo_n);
-  bo_key[bo_n] := key;
-  bo_val[bo_n] := valsym;
-  bo_tag[bo_n] := tag;
+  bo_keyP(bo_key, bo_n)^ := key;
+  bo_valP(bo_val, bo_n)^ := valsym;
+  bo_tagP(bo_tag, bo_n)^ := tag;
 End;
 
 { Propriete dont la valeur est une constante de 8 octets (nombre). }
@@ -14694,10 +14966,10 @@ Var
 Begin
   Move(v, q, 8);
   Inc(bo_n);
-  bo_key[bo_n] := key;
-  bo_val[bo_n] := ToLong(q And $FFFFFFFF);
-  bo_hi[bo_n] := ToLong((q Shr 32) And $FFFFFFFF);
-  bo_tag[bo_n] := -1;
+  bo_keyP(bo_key, bo_n)^ := key;
+  bo_valP(bo_val, bo_n)^ := ToLong(q And $FFFFFFFF);
+  bo_hiP(bo_hi, bo_n)^ := ToLong((q Shr 32) And $FFFFFFFF);
+  bo_tagP(bo_tag, bo_n)^ := -1;
 End;
 
 { proto : symbole de donnees du prototype (0 aucun). }
@@ -14713,21 +14985,21 @@ Begin
       For i := 1 To bo_n Do
         Begin
           AddReloc(asm_ctx^, SEC_RDATA, props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_KEY,
-                   DsymFind(asm_ctx^, RtStr(bo_key[i])));
-          If bo_tag[i] = -1 Then
+                   DsymFind(asm_ctx^, RtStr(bo_keyP(bo_key, i)^)));
+          If bo_tagP(bo_tag, i)^ = -1 Then
             Begin
               PutDword(asm_ctx^, SEC_RDATA,
-                       props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE, bo_val[i]);
+                       props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE, bo_valP(bo_val, i)^);
               PutDword(asm_ctx^, SEC_RDATA,
-                       props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE + 4, bo_hi[i]);
+                       props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE + 4, bo_hiP(bo_hi, i)^);
             End
           Else
             Begin
               AddReloc(asm_ctx^, SEC_RDATA,
-                       props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE, bo_val[i]);
+                       props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE, bo_valP(bo_val, i)^);
               PutDword(asm_ctx^, SEC_RDATA,
                        props_ofs + RT_PROP_SIZE * (i - 1) + RT_PROP_VALUE + 4,
-                       TagImm(bo_tag[i]));
+                       TagImm(bo_tagP(bo_tag, i)^));
             End;
         End;
       props_sym := NewDataSym(asm_ctx^, name + '_props', SEC_RDATA, props_ofs,
@@ -14753,22 +15025,44 @@ End;
 { Variable globale du runtime _JSRT_g_nom (valeur de 8 octets) qui designe
   l'objet ou la fonction de symbole sym. }
 Var
-  gl_name: Array[1..64] Of String[20];
-  gl_sym: Array[1..64] Of LongInt;
-  gl_tag: Array[1..64] Of LongInt;
+  gl_name: TDynList;
+  gl_sym: TDynList;
+  gl_tag: TDynList;
   gl_n: LongInt;
+
+Type
+  P_gl_tag = ^LongInt;
+
+Function gl_tagP(Var l: TDynList; i: LongInt): P_gl_tag;
+Begin
+  gl_tagP := P_gl_tag(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_gl_sym = ^LongInt;
+
+Function gl_symP(Var l: TDynList; i: LongInt): P_gl_sym;
+Begin
+  gl_symP := P_gl_sym(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  T_gl_name = String[20];
+  P_gl_name = ^T_gl_name;
+
+Function gl_nameP(Var l: TDynList; i: LongInt): P_gl_name;
+Begin
+  gl_nameP := P_gl_name(DlPtr(l, i - 1, SizeOf(T_gl_name)));
+End;
 
 Procedure RtGlobal(Const name: TString; sym, tag: LongInt);
 Var
   ofs: LongInt;
 Begin
-  If gl_n < 64 Then
-    Begin
-      Inc(gl_n);
-      gl_name[gl_n] := name;
-      gl_sym[gl_n] := sym;
-      gl_tag[gl_n] := tag;
-    End;
+  Inc(gl_n);
+  gl_nameP(gl_name, gl_n)^ := name;
+  gl_symP(gl_sym, gl_n)^ := sym;
+  gl_tagP(gl_tag, gl_n)^ := tag;
   ofs := SecAlloc(asm_ctx^, SEC_DATA, RT_VALUE_SIZE);
   AddReloc(asm_ctx^, SEC_DATA, ofs, sym);
   PutDword(asm_ctx^, SEC_DATA, ofs + 4, TagImm(tag));
@@ -30375,7 +30669,7 @@ Begin
   { globalThis : les objets globaux predefinis }
   BoReset;
   For k := 1 To gl_n Do
-    BoAdd(gl_name[k], gl_sym[k], gl_tag[k]);
+    BoAdd(gl_nameP(gl_name, k)^, gl_symP(gl_sym, k)^, gl_tagP(gl_tag, k)^);
   RtGlobal('globalThis', BoFinish('_JSNO_globalThis', oproto), RT_T_OBJECT);
 End;
 
@@ -30456,12 +30750,27 @@ Var
   emu_fault_msg: String[120];
   emu_steps: Int64;
   emu_rd_base, emu_dt_base, emu_brk: LongWord;
-  emu_xaddr: Array[1..MAX_XSYMS] Of LongWord;
-  emu_lbl: Array[0..262143] Of LongInt;
+  emu_xaddr: TDynList;
+  emu_lbl: TDynList;
   emu_ctx: PCtx;
-  emu_trap_names: Array[1..8] Of String[40];
   emu_trap_count: LongInt;
   emu_iat_next: LongWord;
+
+Type
+  P_emu_lbl = ^LongInt;
+
+Function emu_lblP(Var l: TDynList; i: LongInt): P_emu_lbl;
+Begin
+  emu_lblP := P_emu_lbl(DlPtr(l, i - 0, SizeOf(LongInt)));
+End;
+
+Type
+  P_emu_xaddr = ^LongWord;
+
+Function emu_xaddrP(Var l: TDynList; i: LongInt): P_emu_xaddr;
+Begin
+  emu_xaddrP := P_emu_xaddr(DlPtr(l, i - 1, SizeOf(LongWord)));
+End;
 
 Procedure EmuFault(Const msg: TString);
 Begin
@@ -30505,10 +30814,10 @@ End;
 
 Function DsymAddr(Var ctx: TCompilerContext; d: LongInt): LongWord;
 Begin
-  If ctx.data.syms[d].sec = SEC_RDATA Then
-    DsymAddr := emu_rd_base + ctx.data.syms[d].ofs
+  If DsymP(ctx.data.syms, d)^.sec = SEC_RDATA Then
+    DsymAddr := emu_rd_base + DsymP(ctx.data.syms, d)^.ofs
   Else
-    DsymAddr := emu_dt_base + ctx.data.syms[d].ofs;
+    DsymAddr := emu_dt_base + DsymP(ctx.data.syms, d)^.ofs;
 End;
 
 Function SymAddr(Var ctx: TCompilerContext; symkind, sym: LongInt): LongWord;
@@ -30516,7 +30825,7 @@ Begin
   If symkind = SYMK_D Then
     SymAddr := DsymAddr(ctx, sym)
   Else
-    SymAddr := emu_xaddr[sym];
+    SymAddr := emu_xaddrP(emu_xaddr, sym)^;
 End;
 
 Function RegIdx(r: TReg): Integer;
@@ -31275,7 +31584,7 @@ Begin
       EmuFault('compteur ordinal hors programme');
       Exit;
     End;
-  ins := @ctx.ir.instrs[emu_pc];
+  ins := @InstrP(ctx.ir.instrs, emu_pc)^;
   Inc(emu_pc);
   Case ins^.op Of
     OP_NONE, OP_LABEL, OP_COMMENT, OP_PROC, OP_ENDP, OP_NOP:
@@ -31443,7 +31752,7 @@ Begin
     OP_JMP:
       Begin
         If ins^.a.kind = OD_LABEL Then
-          emu_pc := emu_lbl[ins^.a.disp]
+          emu_pc := emu_lblP(emu_lbl, ins^.a.disp)^
         Else
           Begin
             r := OpRd(ctx, ins^.a, 4);
@@ -31456,7 +31765,7 @@ Begin
     OP_JE, OP_JNE, OP_JL, OP_JLE, OP_JG, OP_JGE, OP_JB, OP_JAE, OP_JA, OP_JBE,
     OP_JO, OP_JNO, OP_JS, OP_JNS:
       If EmuCond(ins^.op) Then
-        emu_pc := emu_lbl[ins^.a.disp];
+        emu_pc := emu_lblP(emu_lbl, ins^.a.disp)^;
     OP_CALL:
       Begin
         If (ins^.a.kind = OD_ADDR) And
@@ -31465,7 +31774,7 @@ Begin
         Else If ins^.a.kind = OD_ADDR Then
           EmuCall(SymAddr(ctx, ins^.a.symkind, ins^.a.sym), EMU_CODE + 4 * LongWord(emu_pc))
         Else If ins^.a.kind = OD_LABEL Then
-          EmuCall(EMU_CODE + 4 * LongWord(emu_lbl[ins^.a.disp]), EMU_CODE + 4 * LongWord(emu_pc))
+          EmuCall(EMU_CODE + 4 * LongWord(emu_lblP(emu_lbl, ins^.a.disp)^), EMU_CODE + 4 * LongWord(emu_pc))
         Else
           EmuCall(OpRd(ctx, ins^.a, 4), EMU_CODE + 4 * LongWord(emu_pc));
       End;
@@ -31516,9 +31825,9 @@ Begin
   EmuProcAt := '?';
   While (idx >= 1) And (idx <= ctx.ir.count) Do
     Begin
-      If ctx.ir.instrs[idx].op = OP_PROC Then
+      If InstrP(ctx.ir.instrs, idx)^.op = OP_PROC Then
         Begin
-          EmuProcAt := SymNameOf(ctx, ctx.ir.instrs[idx].a.symkind, ctx.ir.instrs[idx].a.sym);
+          EmuProcAt := SymNameOf(ctx, InstrP(ctx.ir.instrs, idx)^.a.symkind, InstrP(ctx.ir.instrs, idx)^.a.sym);
           Exit;
         End;
       Dec(idx);
@@ -31576,28 +31885,28 @@ Begin
   emu_brk := EMU_HEAP;
   emu_iat_next := EMU_BASE + $1000;
   If ctx.data.rd_size > 0 Then
-    Move(ctx.data.rd[0], emu_mem^[emu_rd_base - EMU_BASE], ctx.data.rd_size);
+    DlCopyOut(ctx.data.rd, 0, @emu_mem^[emu_rd_base - EMU_BASE], ctx.data.rd_size);
   If ctx.data.dt_size > 0 Then
-    Move(ctx.data.dt[0], emu_mem^[emu_dt_base - EMU_BASE], ctx.data.dt_size);
+    DlCopyOut(ctx.data.dt, 0, @emu_mem^[emu_dt_base - EMU_BASE], ctx.data.dt_size);
 
   { etiquettes et procedures }
-  FillChar(emu_lbl, SizeOf(emu_lbl), 0);
-  FillChar(emu_xaddr, SizeOf(emu_xaddr), 0);
+  DlClear(emu_lbl);
+  DlClear(emu_xaddr);
   For i := 1 To ctx.ir.count Do
     Begin
-      If ctx.ir.instrs[i].op = OP_LABEL Then
-        emu_lbl[ctx.ir.instrs[i].a.disp] := i
-      Else If ctx.ir.instrs[i].op = OP_PROC Then
-        emu_xaddr[ctx.ir.instrs[i].a.sym] := EMU_CODE + 4 * LongWord(i);
+      If InstrP(ctx.ir.instrs, i)^.op = OP_LABEL Then
+        emu_lblP(emu_lbl, InstrP(ctx.ir.instrs, i)^.a.disp)^ := i
+      Else If InstrP(ctx.ir.instrs, i)^.op = OP_PROC Then
+        emu_xaddrP(emu_xaddr, InstrP(ctx.ir.instrs, i)^.a.sym)^ := EMU_CODE + 4 * LongWord(i);
     End;
   { symboles externes : donnees du pool par leur nom, appels systeme }
   For i := 1 To ctx.ir.xsym_count Do
-    If emu_xaddr[i] = 0 Then
+    If emu_xaddrP(emu_xaddr, i)^ = 0 Then
       Begin
-        nm := ctx.ir.xsyms[i].name;
+        nm := XsymP(ctx.ir.xsyms, i)^.name;
         d := DsymFind(ctx, nm);
         If d <> 0 Then
-          emu_xaddr[i] := DsymAddr(ctx, d)
+          emu_xaddrP(emu_xaddr, i)^ := DsymAddr(ctx, d)
         Else If Copy(nm, 1, 6) = '__imp_' Then
           Begin
             { cellule de la table d'import pointant vers un piege }
@@ -31614,7 +31923,7 @@ Begin
             If a <> 0 Then
               Begin
                 MemWr(emu_iat_next, EMU_TRAP + 4 * a, 4);
-                emu_xaddr[i] := emu_iat_next;
+                emu_xaddrP(emu_xaddr, i)^ := emu_iat_next;
                 emu_iat_next := emu_iat_next + 4;
               End;
           End;
@@ -31622,23 +31931,23 @@ Begin
   { relocations }
   For i := 1 To ctx.data.reloc_count Do
     Begin
-      If ctx.data.relocs[i].tkind = SYMK_D Then
-        a := DsymAddr(ctx, ctx.data.relocs[i].target)
+      If RelocP(ctx.data.relocs, i)^.tkind = SYMK_D Then
+        a := DsymAddr(ctx, RelocP(ctx.data.relocs, i)^.target)
       Else
-        a := emu_xaddr[ctx.data.relocs[i].target];
-      If ctx.data.relocs[i].sec = SEC_RDATA Then
-        MemWr(emu_rd_base + ctx.data.relocs[i].ofs, a, 4)
+        a := emu_xaddrP(emu_xaddr, RelocP(ctx.data.relocs, i)^.target)^;
+      If RelocP(ctx.data.relocs, i)^.sec = SEC_RDATA Then
+        MemWr(emu_rd_base + RelocP(ctx.data.relocs, i)^.ofs, a, 4)
       Else
-        MemWr(emu_dt_base + ctx.data.relocs[i].ofs, a, 4);
+        MemWr(emu_dt_base + RelocP(ctx.data.relocs, i)^.ofs, a, 4);
     End;
 
   d := XSym(ctx, '_JSSTART');
-  If emu_xaddr[d] = 0 Then
+  If emu_xaddrP(emu_xaddr, d)^ = 0 Then
     Begin
       Writeln('JSCW32: _JSSTART introuvable');
       Exit;
     End;
-  start_idx := (emu_xaddr[d] - EMU_CODE) Div 4;
+  start_idx := (emu_xaddrP(emu_xaddr, d)^ - EMU_CODE) Div 4;
   emu_pc := start_idx;
   emu_reg[Ord(R_ESP)] := EMU_STACK;
   EmuPush(EMU_HALTADDR);
@@ -31654,7 +31963,7 @@ Begin
     Begin
       Writeln;
       Writeln('JSCW32: erreur d''emulation : ', emu_fault_msg, ' (instruction ',
-              emu_pc - 1, ', ligne ', ctx.ir.instrs[emu_pc - 1].line, ')');
+              emu_pc - 1, ', ligne ', InstrP(ctx.ir.instrs, emu_pc - 1)^.line, ')');
       EmuBacktrace(ctx, emu_pc - 1);
       RunEmulator := 3;
     End
@@ -31678,8 +31987,24 @@ End;
 Var
   ag_f: Text;
   ag_lines: LongInt;
-  ag_ord: Array[1..MAX_DSYMS] Of LongInt;
-  ag_rord: Array[1..MAX_RELOCS] Of LongInt;
+  ag_ord: TDynList;
+  ag_rord: TDynList;
+
+Type
+  P_ag_rord = ^LongInt;
+
+Function ag_rordP(Var l: TDynList; i: LongInt): P_ag_rord;
+Begin
+  ag_rordP := P_ag_rord(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_ag_ord = ^LongInt;
+
+Function ag_ordP(Var l: TDynList; i: LongInt): P_ag_ord;
+Begin
+  ag_ordP := P_ag_ord(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
 
 Procedure AgLine(Const s: TString);
 Begin
@@ -31791,16 +32116,16 @@ Var
   a, b, i, k: LongInt;
   r: TString;
 Begin
-  a := ctx.source.line_start[ln];
-  b := ctx.source.line_start[ln + 1] - 1;
+  a := LineStartP(ctx.source.line_start, ln)^;
+  b := LineStartP(ctx.source.line_start, ln + 1)^ - 1;
   r := '';
   k := 0;
   For i := a To b - 1 Do
     Begin
-      If ctx.source.buf[i] <> #10 Then
+      If SrcCharP(ctx.source.buf, i)^ <> #10 Then
         Begin
           If k < 100 Then
-            r := r + ctx.source.buf[i];
+            r := r + SrcCharP(ctx.source.buf, i)^;
           Inc(k);
         End;
     End;
@@ -31822,15 +32147,15 @@ Begin
   last_line := 0;
   For i := 1 To ctx.ir.count Do
     Begin
-      op := ctx.ir.instrs[i].op;
+      op := InstrP(ctx.ir.instrs, i)^.op;
       Case op Of
         OP_LABEL:
-          AgLine(SymLabel(ctx.ir.instrs[i].a.disp) + ':');
+          AgLine(SymLabel(InstrP(ctx.ir.instrs, i)^.a.disp) + ':');
         OP_COMMENT:
-          AgLine('        ; ' + ctx.ir.comments[ctx.ir.instrs[i].a.disp]);
+          AgLine('        ; ' + CommentP(ctx.ir.comments, InstrP(ctx.ir.instrs, i)^.a.disp)^);
         OP_PROC:
           Begin
-            nm := SymNameOf(ctx, ctx.ir.instrs[i].a.symkind, ctx.ir.instrs[i].a.sym);
+            nm := SymNameOf(ctx, InstrP(ctx.ir.instrs, i)^.a.symkind, InstrP(ctx.ir.instrs, i)^.a.sym);
             AgLine('');
             If i <= ctx.ir.user_count Then
               AgLine('; ---- ' + nm + ' ----')
@@ -31843,13 +32168,13 @@ Begin
           ;
       Else
         Begin
-          If (i <= ctx.ir.user_count) And (ctx.ir.instrs[i].line <> last_line) Then
+          If (i <= ctx.ir.user_count) And (InstrP(ctx.ir.instrs, i)^.line <> last_line) Then
             Begin
-              last_line := ctx.ir.instrs[i].line;
+              last_line := InstrP(ctx.ir.instrs, i)^.line;
               If (last_line >= 1) And (last_line <= ctx.source.user_lines) Then
                 AgLine('        ; js:' + AgInt(last_line) + ': ' + AgSourceLine(ctx, last_line));
             End;
-          AgInstr(ctx, ctx.ir.instrs[i]);
+          AgInstr(ctx, InstrP(ctx.ir.instrs, i)^);
         End;
       End;
     End;
@@ -31863,21 +32188,21 @@ Var
 Begin
   n := 0;
   For i := 1 To ctx.data.sym_count Do
-    If ctx.data.syms[i].sec = sec Then
+    If DsymP(ctx.data.syms, i)^.sec = sec Then
       Begin
         Inc(n);
-        ag_ord[n] := i;
+        ag_ordP(ag_ord, n)^ := i;
       End;
   For i := 2 To n Do
     Begin
-      t := ag_ord[i];
+      t := ag_ordP(ag_ord, i)^;
       j := i - 1;
-      While (j >= 1) And (ctx.data.syms[ag_ord[j]].ofs > ctx.data.syms[t].ofs) Do
+      While (j >= 1) And (DsymP(ctx.data.syms, ag_ordP(ag_ord, j)^)^.ofs > DsymP(ctx.data.syms, t)^.ofs) Do
         Begin
-          ag_ord[j + 1] := ag_ord[j];
+          ag_ordP(ag_ord, j + 1)^ := ag_ordP(ag_ord, j)^;
           Dec(j);
         End;
-      ag_ord[j + 1] := t;
+      ag_ordP(ag_ord, j + 1)^ := t;
     End;
 End;
 
@@ -31887,30 +32212,30 @@ Var
 Begin
   n := 0;
   For i := 1 To ctx.data.reloc_count Do
-    If ctx.data.relocs[i].sec = sec Then
+    If RelocP(ctx.data.relocs, i)^.sec = sec Then
       Begin
         Inc(n);
-        ag_rord[n] := i;
+        ag_rordP(ag_rord, n)^ := i;
       End;
   For i := 2 To n Do
     Begin
-      t := ag_rord[i];
+      t := ag_rordP(ag_rord, i)^;
       j := i - 1;
-      While (j >= 1) And (ctx.data.relocs[ag_rord[j]].ofs > ctx.data.relocs[t].ofs) Do
+      While (j >= 1) And (RelocP(ctx.data.relocs, ag_rordP(ag_rord, j)^)^.ofs > RelocP(ctx.data.relocs, t)^.ofs) Do
         Begin
-          ag_rord[j + 1] := ag_rord[j];
+          ag_rordP(ag_rord, j + 1)^ := ag_rordP(ag_rord, j)^;
           Dec(j);
         End;
-      ag_rord[j + 1] := t;
+      ag_rordP(ag_rord, j + 1)^ := t;
     End;
 End;
 
 Function AgImgByte(Var ctx: TCompilerContext; sec, ofs: LongInt): LongInt;
 Begin
   If sec = SEC_RDATA Then
-    AgImgByte := ctx.data.rd[ofs]
+    AgImgByte := RdP(ctx.data.rd, ofs)^
   Else
-    AgImgByte := ctx.data.dt[ofs];
+    AgImgByte := DtP(ctx.data.dt, ofs)^;
 End;
 
 Function AgImgDword(Var ctx: TCompilerContext; sec, ofs: LongInt): LongInt;
@@ -31946,24 +32271,24 @@ Begin
   txt_b := -1;
   While pos < size Do
     Begin
-      While (si <= ns) And (ctx.data.syms[ag_ord[si]].ofs <= pos) Do
+      While (si <= ns) And (DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.ofs <= pos) Do
         Begin
-          AgLine(ctx.data.syms[ag_ord[si]].name + ':');
-          If ctx.data.syms[ag_ord[si]].kind = DS_STRING Then
+          AgLine(DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.name + ':');
+          If DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.kind = DS_STRING Then
             Begin
-              txt_a := ctx.data.syms[ag_ord[si]].ofs + RT_STR_DATA;
-              txt_b := ctx.data.syms[ag_ord[si]].ofs + ctx.data.syms[ag_ord[si]].size - 1;
+              txt_a := DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.ofs + RT_STR_DATA;
+              txt_b := DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.ofs + DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.size - 1;
             End;
           Inc(si);
         End;
-      While (ri <= nr) And (ctx.data.relocs[ag_rord[ri]].ofs < pos) Do
+      While (ri <= nr) And (RelocP(ctx.data.relocs, ag_rordP(ag_rord, ri)^)^.ofs < pos) Do
         Inc(ri);
-      If (ri <= nr) And (ctx.data.relocs[ag_rord[ri]].ofs = pos) Then
+      If (ri <= nr) And (RelocP(ctx.data.relocs, ag_rordP(ag_rord, ri)^)^.ofs = pos) Then
         Begin
-          If ctx.data.relocs[ag_rord[ri]].tkind = SYMK_D Then
-            nmr := ctx.data.syms[ctx.data.relocs[ag_rord[ri]].target].name
+          If RelocP(ctx.data.relocs, ag_rordP(ag_rord, ri)^)^.tkind = SYMK_D Then
+            nmr := DsymP(ctx.data.syms, RelocP(ctx.data.relocs, ag_rordP(ag_rord, ri)^)^.target)^.name
           Else
-            nmr := ctx.ir.xsyms[ctx.data.relocs[ag_rord[ri]].target].name;
+            nmr := XsymP(ctx.ir.xsyms, RelocP(ctx.data.relocs, ag_rordP(ag_rord, ri)^)^.target)^.name;
           add_ := AgImgDword(ctx, sec, pos);
           If add_ = 0 Then
             AgLine('        dd ' + nmr)
@@ -31975,10 +32300,10 @@ Begin
         End;
       { fin du bloc : prochain symbole ou prochaine relocation }
       nb := size;
-      If (si <= ns) And (ctx.data.syms[ag_ord[si]].ofs < nb) Then
-        nb := ctx.data.syms[ag_ord[si]].ofs;
-      If (ri <= nr) And (ctx.data.relocs[ag_rord[ri]].ofs < nb) Then
-        nb := ctx.data.relocs[ag_rord[ri]].ofs;
+      If (si <= ns) And (DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.ofs < nb) Then
+        nb := DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.ofs;
+      If (ri <= nr) And (RelocP(ctx.data.relocs, ag_rordP(ag_rord, ri)^)^.ofs < nb) Then
+        nb := RelocP(ctx.data.relocs, ag_rordP(ag_rord, ri)^)^.ofs;
       If (pos >= txt_a) And (pos < txt_b) Then
         Begin
           { texte d'une chaine : ASCII imprimable entre guillemets }
@@ -32069,7 +32394,7 @@ Begin
   { symboles places a la fin de la section }
   While si <= ns Do
     Begin
-      AgLine(ctx.data.syms[ag_ord[si]].name + ':');
+      AgLine(DsymP(ctx.data.syms, ag_ordP(ag_ord, si)^)^.name + ':');
       Inc(si);
     End;
   AgLine('');
@@ -32105,9 +32430,9 @@ Begin
   AgLine('global _JSSTART');
   nimp := 0;
   For i := 1 To ctx.ir.xsym_count Do
-    If Not ctx.ir.xsyms[i].defined And (DsymFind(ctx, ctx.ir.xsyms[i].name) = 0) Then
+    If Not XsymP(ctx.ir.xsyms, i)^.defined And (DsymFind(ctx, XsymP(ctx.ir.xsyms, i)^.name) = 0) Then
       Begin
-        AgLine('extern ' + ctx.ir.xsyms[i].name);
+        AgLine('extern ' + XsymP(ctx.ir.xsyms, i)^.name);
         Inc(nimp);
       End;
   AgLine('');
@@ -32132,9 +32457,6 @@ End;
   PE32 interne l'utilise) ; le fichier .obj n'est ecrit qu'en mode OBJ. }
 
 Const
-  CO_MAX_TEXT = 4194304;
-  CO_MAX_REL = 262144;
-  CO_MAX_LBL = 262144;
   COFF_DIR32 = 6;
   COFF_REL32 = 20;
 
@@ -32145,28 +32467,79 @@ Type
   End;
 
 Var
-  co_text: Array[0..CO_MAX_TEXT - 1] Of Byte;
+  co_text: TDynList;
   co_len: LongInt;
-  co_rel: Array[1..CO_MAX_REL] Of TCoRel;
+  co_rel: TDynList;
   co_nrel: LongInt;
-  co_lbl: Array[0..CO_MAX_LBL - 1] Of LongInt;
-  co_jlong: Array[1..MAX_INSTR] Of Boolean;
-  co_proc_ofs: Array[1..MAX_XSYMS] Of LongInt;
+  co_lbl: TDynList;
+  co_jlong: TDynList;
+  co_proc_ofs: TDynList;
   co_final, co_fail: Boolean;
   co_changed, co_poschg: Boolean;
   co_pass: LongInt;
-  co_lblpass: Array[0..CO_MAX_LBL - 1] Of SmallInt;
-  co_jofs: Array[1..MAX_INSTR] Of LongInt;
+  co_lblpass: TDynList;
+  co_jofs: TDynList;
   co_size: LongInt;                 { taille du fichier ecrit }
+
+Type
+  P_co_jofs = ^LongInt;
+
+Function co_jofsP(Var l: TDynList; i: LongInt): P_co_jofs;
+Begin
+  co_jofsP := P_co_jofs(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_co_lblpass = ^SmallInt;
+
+Function co_lblpassP(Var l: TDynList; i: LongInt): P_co_lblpass;
+Begin
+  co_lblpassP := P_co_lblpass(DlPtr(l, i - 0, SizeOf(SmallInt)));
+End;
+
+Type
+  P_co_proc_ofs = ^LongInt;
+
+Function co_proc_ofsP(Var l: TDynList; i: LongInt): P_co_proc_ofs;
+Begin
+  co_proc_ofsP := P_co_proc_ofs(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_co_jlong = ^Boolean;
+
+Function co_jlongP(Var l: TDynList; i: LongInt): P_co_jlong;
+Begin
+  co_jlongP := P_co_jlong(DlPtr(l, i - 1, SizeOf(Boolean)));
+End;
+
+Type
+  P_co_lbl = ^LongInt;
+
+Function co_lblP(Var l: TDynList; i: LongInt): P_co_lbl;
+Begin
+  co_lblP := P_co_lbl(DlPtr(l, i - 0, SizeOf(LongInt)));
+End;
+
+Type
+  P_co_rel = ^TCoRel;
+
+Function co_relP(Var l: TDynList; i: LongInt): P_co_rel;
+Begin
+  co_relP := P_co_rel(DlPtr(l, i - 1, SizeOf(TCoRel)));
+End;
+
+Type
+  P_co_text = ^Byte;
+
+Function co_textP(Var l: TDynList; i: LongInt): P_co_text;
+Begin
+  co_textP := P_co_text(DlPtr(l, i - 0, SizeOf(Byte)));
+End;
 
 Procedure CoB(b: LongInt);
 Begin
-  If co_len >= CO_MAX_TEXT Then
-    Begin
-      co_fail := True;
-      Exit;
-    End;
-  co_text[co_len] := b And 255;
+  co_textP(co_text, co_len)^ := b And 255;
   Inc(co_len);
 End;
 
@@ -32182,16 +32555,11 @@ Procedure CoReloc(typ, symkind, sym: LongInt);
 Begin
   If Not co_final Then
     Exit;
-  If co_nrel >= CO_MAX_REL Then
-    Begin
-      co_fail := True;
-      Exit;
-    End;
   Inc(co_nrel);
-  co_rel[co_nrel].ofs := co_len;
-  co_rel[co_nrel].typ := typ;
-  co_rel[co_nrel].symkind := symkind;
-  co_rel[co_nrel].sym := sym;
+  co_relP(co_rel, co_nrel)^.ofs := co_len;
+  co_relP(co_rel, co_nrel)^.typ := typ;
+  co_relP(co_rel, co_nrel)^.symkind := symkind;
+  co_relP(co_rel, co_nrel)^.sym := sym;
 End;
 
 Function CoRegNum(r: TReg): LongInt;
@@ -32605,12 +32973,12 @@ Var
   cc, target, d, prev: LongInt;
 Begin
   cc := CoCond(ins.op);
-  target := co_lbl[ins.a.disp];
-  prev := co_jofs[idx];
-  co_jofs[idx] := co_len;
-  If Not co_jlong[idx] Then
+  target := co_lblP(co_lbl, ins.a.disp)^;
+  prev := co_jofsP(co_jofs, idx)^;
+  co_jofsP(co_jofs, idx)^ := co_len;
+  If Not co_jlongP(co_jlong, idx)^ Then
     Begin
-      If co_lblpass[ins.a.disp] = co_pass Then
+      If co_lblpassP(co_lblpass, ins.a.disp)^ = co_pass Then
         d := target - (co_len + 2)
       Else If prev < 0 Then
         d := 0
@@ -32618,13 +32986,13 @@ Begin
         d := target - (prev + 2);
       If Not CoFits8(d) Then
         Begin
-          co_jlong[idx] := True;
+          co_jlongP(co_jlong, idx)^ := True;
           co_changed := True;
         End;
     End;
   If target < 0 Then
     target := co_len + 2;
-  If Not co_jlong[idx] Then
+  If Not co_jlongP(co_jlong, idx)^ Then
     Begin
       If cc < 0 Then
         CoB($EB)
@@ -32669,18 +33037,18 @@ Procedure CoInstr(Var ctx: TCompilerContext; idx: LongInt);
 Var
   ins: ^TInstr;
 Begin
-  ins := @ctx.ir.instrs[idx];
+  ins := @InstrP(ctx.ir.instrs, idx)^;
   Case ins^.op Of
     OP_NONE, OP_COMMENT, OP_ENDP: ;
     OP_LABEL:
       Begin
-        If co_lbl[ins^.a.disp] <> co_len Then
+        If co_lblP(co_lbl, ins^.a.disp)^ <> co_len Then
           co_poschg := True;
-        co_lbl[ins^.a.disp] := co_len;
-        co_lblpass[ins^.a.disp] := co_pass;
+        co_lblP(co_lbl, ins^.a.disp)^ := co_len;
+        co_lblpassP(co_lblpass, ins^.a.disp)^ := co_pass;
       End;
     OP_PROC:
-      co_proc_ofs[ins^.a.sym] := co_len;
+      co_proc_ofsP(co_proc_ofs, ins^.a.sym)^ := co_len;
     OP_MOV: CoMov(ins^.a, ins^.b);
     OP_ADD: CoAlu(0, ins^.a, ins^.b);
     OP_OR:  CoAlu(1, ins^.a, ins^.b);
@@ -32828,10 +33196,10 @@ Begin
         Else If ins^.a.kind = OD_LABEL Then
           Begin
             CoB($E8);
-            If co_lbl[ins^.a.disp] < 0 Then
+            If co_lblP(co_lbl, ins^.a.disp)^ < 0 Then
               CoD(0)
             Else
-              CoD(co_lbl[ins^.a.disp] - (co_len + 4));
+              CoD(co_lblP(co_lbl, ins^.a.disp)^ - (co_len + 4));
           End
         Else
           Begin
@@ -32891,12 +33259,20 @@ End;
 { ---- Ecriture de l'objet ---- }
 
 Var
-  co_out: Array[0..CO_MAX_TEXT * 3 - 1] Of Byte;
+  co_out: TDynList;
   co_olen: LongInt;
+
+Type
+  P_co_out = ^Byte;
+
+Function co_outP(Var l: TDynList; i: LongInt): P_co_out;
+Begin
+  co_outP := P_co_out(DlPtr(l, i - 0, SizeOf(Byte)));
+End;
 
 Procedure OB(b: LongInt);
 Begin
-  co_out[co_olen] := b And 255;
+  co_outP(co_out, co_olen)^ := b And 255;
   Inc(co_olen);
 End;
 
@@ -32914,9 +33290,9 @@ Begin
   OB(v Shr 24);
 End;
 
-Procedure OBytes(Var src; n: LongInt);
+Procedure OBytes(Var src: TDynList; n: LongInt);
 Begin
-  Move(src, co_out[co_olen], n);
+  DlCopyList(src, 0, co_out, co_olen, n);
   Inc(co_olen, n);
 End;
 
@@ -32927,26 +33303,61 @@ Const
   CO_S_DATA = 3;
   CO_S_BSS = 4;
 
-Var
-  co_str: Array[0..524287] Of Byte;     { table des chaines (sans les 4 octets de taille) }
-  co_strlen: LongInt;
-  co_dsym_idx: Array[1..MAX_DSYMS] Of LongInt;
-  co_xsym_idx: Array[1..MAX_XSYMS] Of LongInt;
-  co_nsyms: LongInt;
-  co_symrec: Array[1..MAX_DSYMS + MAX_XSYMS] Of Record
+Type
+  TCoSym = Record
     name: String[100];
     value: LongInt;
     sec: LongInt;
     typ: LongInt;
   End;
 
+Var
+  co_str: TDynList;
+  co_strlen: LongInt;
+  co_dsym_idx: TDynList;
+  co_xsym_idx: TDynList;
+  co_nsyms: LongInt;
+  co_symrec: TDynList;
+
+Type
+  P_co_symrec = ^TCoSym;
+
+Function co_symrecP(Var l: TDynList; i: LongInt): P_co_symrec;
+Begin
+  co_symrecP := P_co_symrec(DlPtr(l, i - 1, SizeOf(TCoSym)));
+End;
+
+Type
+  P_co_xsym_idx = ^LongInt;
+
+Function co_xsym_idxP(Var l: TDynList; i: LongInt): P_co_xsym_idx;
+Begin
+  co_xsym_idxP := P_co_xsym_idx(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_co_dsym_idx = ^LongInt;
+
+Function co_dsym_idxP(Var l: TDynList; i: LongInt): P_co_dsym_idx;
+Begin
+  co_dsym_idxP := P_co_dsym_idx(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  P_co_str = ^Byte;
+
+Function co_strP(Var l: TDynList; i: LongInt): P_co_str;
+Begin
+  co_strP := P_co_str(DlPtr(l, i - 0, SizeOf(Byte)));
+End;
+
 Procedure CoAddSym(Const nm: String; value, sec, typ: LongInt; Var idx: LongInt);
 Begin
   Inc(co_nsyms);
-  co_symrec[co_nsyms].name := nm;
-  co_symrec[co_nsyms].value := value;
-  co_symrec[co_nsyms].sec := sec;
-  co_symrec[co_nsyms].typ := typ;
+  co_symrecP(co_symrec, co_nsyms)^.name := nm;
+  co_symrecP(co_symrec, co_nsyms)^.value := value;
+  co_symrecP(co_symrec, co_nsyms)^.sec := sec;
+  co_symrecP(co_symrec, co_nsyms)^.typ := typ;
   idx := co_nsyms - 1;
 End;
 
@@ -32975,9 +33386,9 @@ End;
 Function CoRelSymIndex(Var r: TCoRel): LongInt;
 Begin
   If r.symkind = SYMK_D Then
-    CoRelSymIndex := co_dsym_idx[r.sym]
+    CoRelSymIndex := co_dsym_idxP(co_dsym_idx, r.sym)^
   Else
-    CoRelSymIndex := co_xsym_idx[r.sym];
+    CoRelSymIndex := co_xsym_idxP(co_xsym_idx, r.sym)^;
 End;
 
 { Construit l'objet complet dans co_out. }
@@ -32992,18 +33403,11 @@ Begin
   BuildObj := False;
   co_fail := False;
   For i := 1 To ctx.ir.count Do
-    co_jlong[i] := False;
-  FillChar(co_lbl, SizeOf(co_lbl), $FF);
-  FillChar(co_lblpass, SizeOf(co_lblpass), 0);
-  FillChar(co_jofs, SizeOf(co_jofs), $FF);
+    co_jlongP(co_jlong, i)^ := False;
+  DlFillInts(co_lbl, 0, ctx.ir.label_count + 2, -1);
+  DlClear(co_lblpass);
+  DlFillInts(co_jofs, 0, ctx.ir.count + 2, -1);
   co_pass := 0;
-  For i := 1 To ctx.ir.count Do
-    If (ctx.ir.instrs[i].a.kind = OD_LABEL) And
-       (ctx.ir.instrs[i].a.disp >= CO_MAX_LBL) Then
-      Begin
-        PipelineError(ctx, 'trop d''etiquettes');
-        Exit;
-      End;
   { passes de dimensionnement des sauts, puis passe finale avec relocations }
   co_final := False;
   passes := 0;
@@ -33014,7 +33418,7 @@ Begin
       Begin
         k := 0;
         For i := 1 To ctx.ir.count Do
-          If co_jlong[i] Then
+          If co_jlongP(co_jlong, i)^ Then
             Inc(k);
         Writeln('  passe ', passes, ' : ', co_len, ' octets, ', k, ' sauts longs');
       End;
@@ -33031,7 +33435,7 @@ Begin
     Begin
       k := 0;
       For i := 1 To ctx.ir.count Do
-        If co_jlong[i] Then
+        If co_jlongP(co_jlong, i)^ Then
           Inc(k);
       Writeln('  sauts longs: ', k, ' apres ', passes, ' passes');
     End;
@@ -33047,20 +33451,20 @@ Begin
   co_nsyms := 0;
   For i := 1 To ctx.data.sym_count Do
     Begin
-      If ctx.data.syms[i].sec = SEC_RDATA Then
+      If DsymP(ctx.data.syms, i)^.sec = SEC_RDATA Then
         k := CO_S_RDATA
       Else
         k := CO_S_DATA;
-      CoAddSym(ctx.data.syms[i].name, ctx.data.syms[i].ofs, k, 0, co_dsym_idx[i]);
+      CoAddSym(DsymP(ctx.data.syms, i)^.name, DsymP(ctx.data.syms, i)^.ofs, k, 0, co_dsym_idxP(co_dsym_idx, i)^);
     End;
   For i := 1 To ctx.ir.xsym_count Do
     Begin
-      If ctx.ir.xsyms[i].defined Then
-        CoAddSym(ctx.ir.xsyms[i].name, co_proc_ofs[i], CO_S_TEXT, $20, co_xsym_idx[i])
-      Else If DsymFind(ctx, ctx.ir.xsyms[i].name) <> 0 Then
-        co_xsym_idx[i] := co_dsym_idx[DsymFind(ctx, ctx.ir.xsyms[i].name)]
+      If XsymP(ctx.ir.xsyms, i)^.defined Then
+        CoAddSym(XsymP(ctx.ir.xsyms, i)^.name, co_proc_ofsP(co_proc_ofs, i)^, CO_S_TEXT, $20, co_xsym_idxP(co_xsym_idx, i)^)
+      Else If DsymFind(ctx, XsymP(ctx.ir.xsyms, i)^.name) <> 0 Then
+        co_xsym_idxP(co_xsym_idx, i)^ := co_dsym_idxP(co_dsym_idx, DsymFind(ctx, XsymP(ctx.ir.xsyms, i)^.name))^
       Else
-        CoAddSym(ctx.ir.xsyms[i].name, 0, 0, 0, co_xsym_idx[i]);
+        CoAddSym(XsymP(ctx.ir.xsyms, i)^.name, 0, 0, 0, co_xsym_idxP(co_xsym_idx, i)^);
     End;
   { dimensions et relocations par section }
   sec_size[CO_S_TEXT] := co_len;
@@ -33071,7 +33475,7 @@ Begin
     sec_nrel[i] := 0;
   sec_nrel[CO_S_TEXT] := co_nrel;
   For i := 1 To ctx.data.reloc_count Do
-    If ctx.data.relocs[i].sec = SEC_RDATA Then
+    If RelocP(ctx.data.relocs, i)^.sec = SEC_RDATA Then
       Inc(sec_nrel[CO_S_RDATA])
     Else
       Inc(sec_nrel[CO_S_DATA]);
@@ -33132,9 +33536,9 @@ Begin
       Else
         OD(CoSecChars(i));
     End;
-  OBytes(co_text[0], co_len);
-  OBytes(ctx.data.rd[0], rsz);
-  OBytes(ctx.data.dt[0], dsz);
+  OBytes(co_text, co_len);
+  OBytes(ctx.data.rd, rsz);
+  OBytes(ctx.data.dt, dsz);
   { relocations }
   If sec_nrel[CO_S_TEXT] > 0 Then
     Begin
@@ -33146,9 +33550,9 @@ Begin
         End;
       For i := 1 To co_nrel Do
         Begin
-          OD(co_rel[i].ofs);
-          OD(CoRelSymIndex(co_rel[i]));
-          OW(co_rel[i].typ);
+          OD(co_relP(co_rel, i)^.ofs);
+          OD(CoRelSymIndex(co_relP(co_rel, i)^));
+          OW(co_relP(co_rel, i)^.typ);
         End;
     End;
   For k := CO_S_RDATA To CO_S_DATA Do
@@ -33161,14 +33565,14 @@ Begin
             OW(0);
           End;
         For i := 1 To ctx.data.reloc_count Do
-          If ((k = CO_S_RDATA) And (ctx.data.relocs[i].sec = SEC_RDATA)) Or
-             ((k = CO_S_DATA) And (ctx.data.relocs[i].sec <> SEC_RDATA)) Then
+          If ((k = CO_S_RDATA) And (RelocP(ctx.data.relocs, i)^.sec = SEC_RDATA)) Or
+             ((k = CO_S_DATA) And (RelocP(ctx.data.relocs, i)^.sec <> SEC_RDATA)) Then
             Begin
-              OD(ctx.data.relocs[i].ofs);
-              If ctx.data.relocs[i].tkind = SYMK_D Then
-                OD(co_dsym_idx[ctx.data.relocs[i].target])
+              OD(RelocP(ctx.data.relocs, i)^.ofs);
+              If RelocP(ctx.data.relocs, i)^.tkind = SYMK_D Then
+                OD(co_dsym_idxP(co_dsym_idx, RelocP(ctx.data.relocs, i)^.target)^)
               Else
-                OD(co_xsym_idx[ctx.data.relocs[i].target]);
+                OD(co_xsym_idxP(co_xsym_idx, RelocP(ctx.data.relocs, i)^.target)^);
               OW(COFF_DIR32);
             End;
       End;
@@ -33176,7 +33580,7 @@ Begin
   co_strlen := 0;
   For i := 1 To co_nsyms Do
     Begin
-      nm := co_symrec[i].name;
+      nm := co_symrecP(co_symrec, i)^.name;
       If Length(nm) <= 8 Then
         Begin
           For j := 1 To 8 Do
@@ -33191,20 +33595,20 @@ Begin
           OD(co_strlen + 4);
           For j := 1 To Length(nm) Do
             Begin
-              co_str[co_strlen] := Ord(nm[j]);
+              co_strP(co_str, co_strlen)^ := Ord(nm[j]);
               Inc(co_strlen);
             End;
-          co_str[co_strlen] := 0;
+          co_strP(co_str, co_strlen)^ := 0;
           Inc(co_strlen);
         End;
-      OD(co_symrec[i].value);
-      OW(co_symrec[i].sec);
-      OW(co_symrec[i].typ);
+      OD(co_symrecP(co_symrec, i)^.value);
+      OW(co_symrecP(co_symrec, i)^.sec);
+      OW(co_symrecP(co_symrec, i)^.typ);
       OB(2);
       OB(0);
     End;
   OD(co_strlen + 4);
-  OBytes(co_str[0], co_strlen);
+  OBytes(co_str, co_strlen);
   co_size := co_olen;
   BuildObj := True;
 End;
@@ -33230,7 +33634,7 @@ Begin
           PipelineError(ctx, 'impossible de creer le fichier ' + ctx.obj_name);
           Exit;
         End;
-      BlockWrite(f, co_out, co_size);
+      DlWriteFile(f, co_out, co_size);
       Close(f);
       io := IOResult;
     End;
@@ -33251,16 +33655,40 @@ Const
   PE_IMAGE_BASE = $00400000;
   PE_SEC_ALIGN = $1000;
   PE_FILE_ALIGN = $200;
-  PE_MAX_IMPORTS = 64;
   PE_HDR_SIZE = $400;
 
 Var
-  pe_out: Array[0..CO_MAX_TEXT * 3 - 1] Of Byte;
+  pe_out: TDynList;
   pe_size: LongInt;
   pe_text_rva, pe_rdata_rva, pe_data_rva, pe_idata_rva, pe_iat_rva, pe_iat_size,
   pe_image_size, pe_nimp: LongInt;
-  pe_imp_name: Array[1..PE_MAX_IMPORTS] Of String[60];
-  pe_xsym_imp: Array[1..MAX_XSYMS] Of LongInt;      { numero d'import (1..) ou 0 }
+  pe_imp_name: TDynList;
+  pe_xsym_imp: TDynList;
+
+Type
+  P_pe_xsym_imp = ^LongInt;
+
+Function pe_xsym_impP(Var l: TDynList; i: LongInt): P_pe_xsym_imp;
+Begin
+  pe_xsym_impP := P_pe_xsym_imp(DlPtr(l, i - 1, SizeOf(LongInt)));
+End;
+
+Type
+  T_pe_imp_name = String[60];
+  P_pe_imp_name = ^T_pe_imp_name;
+
+Function pe_imp_nameP(Var l: TDynList; i: LongInt): P_pe_imp_name;
+Begin
+  pe_imp_nameP := P_pe_imp_name(DlPtr(l, i - 1, SizeOf(T_pe_imp_name)));
+End;
+
+Type
+  P_pe_out = ^Byte;
+
+Function pe_outP(Var l: TDynList; i: LongInt): P_pe_out;
+Begin
+  pe_outP := P_pe_out(DlPtr(l, i - 0, SizeOf(Byte)));
+End;
 
 Function PeAlign(v, a: LongInt): LongInt;
 Begin
@@ -33269,8 +33697,8 @@ End;
 
 Procedure PeW16(pos, v: LongInt);
 Begin
-  pe_out[pos] := v And 255;
-  pe_out[pos + 1] := (v Shr 8) And 255;
+  pe_outP(pe_out, pos)^ := v And 255;
+  pe_outP(pe_out, pos + 1)^ := (v Shr 8) And 255;
 End;
 
 Procedure PeW32(pos, v: LongInt);
@@ -33284,8 +33712,8 @@ Var
   i: LongInt;
 Begin
   For i := 1 To Length(s) Do
-    pe_out[pos + i - 1] := Ord(s[i]);
-  pe_out[pos + Length(s)] := 0;
+    pe_outP(pe_out, pos + i - 1)^ := Ord(s[i]);
+  pe_outP(pe_out, pos + Length(s))^ := 0;
 End;
 
 { Nom de la fonction importee dans __imp__Nom@N, '' si ce n'est pas un import. }
@@ -33307,10 +33735,10 @@ End;
 { Adresse virtuelle d'un symbole de donnees. }
 Function PeDataVA(Var ctx: TCompilerContext; d: LongInt): Int64;
 Begin
-  If ctx.data.syms[d].sec = SEC_RDATA Then
-    PeDataVA := Int64(PE_IMAGE_BASE) + pe_rdata_rva + ctx.data.syms[d].ofs
+  If DsymP(ctx.data.syms, d)^.sec = SEC_RDATA Then
+    PeDataVA := Int64(PE_IMAGE_BASE) + pe_rdata_rva + DsymP(ctx.data.syms, d)^.ofs
   Else
-    PeDataVA := Int64(PE_IMAGE_BASE) + pe_data_rva + ctx.data.syms[d].ofs;
+    PeDataVA := Int64(PE_IMAGE_BASE) + pe_data_rva + DsymP(ctx.data.syms, d)^.ofs;
 End;
 
 { Adresse virtuelle d'un symbole de la table (donnee, procedure ou import IAT). }
@@ -33321,15 +33749,15 @@ Begin
   PeSymVA := -1;
   If symkind = SYMK_D Then
     PeSymVA := PeDataVA(ctx, sym)
-  Else If ctx.ir.xsyms[sym].defined Then
-    PeSymVA := Int64(PE_IMAGE_BASE) + pe_text_rva + co_proc_ofs[sym]
+  Else If XsymP(ctx.ir.xsyms, sym)^.defined Then
+    PeSymVA := Int64(PE_IMAGE_BASE) + pe_text_rva + co_proc_ofsP(co_proc_ofs, sym)^
   Else
     Begin
-      d := DsymFind(ctx, ctx.ir.xsyms[sym].name);
+      d := DsymFind(ctx, XsymP(ctx.ir.xsyms, sym)^.name);
       If d <> 0 Then
         PeSymVA := PeDataVA(ctx, d)
-      Else If pe_xsym_imp[sym] <> 0 Then
-        PeSymVA := Int64(PE_IMAGE_BASE) + pe_iat_rva + 4 * (pe_xsym_imp[sym] - 1);
+      Else If pe_xsym_impP(pe_xsym_imp, sym)^ <> 0 Then
+        PeSymVA := Int64(PE_IMAGE_BASE) + pe_iat_rva + 4 * (pe_xsym_impP(pe_xsym_imp, sym)^ - 1);
     End;
 End;
 
@@ -33347,31 +33775,26 @@ Begin
   ok := True;
   { imports : symboles __imp__ non definis }
   pe_nimp := 0;
-  FillChar(pe_xsym_imp, SizeOf(pe_xsym_imp), 0);
+  DlClear(pe_xsym_imp);
   For i := 1 To ctx.ir.xsym_count Do
-    If Not ctx.ir.xsyms[i].defined And (DsymFind(ctx, ctx.ir.xsyms[i].name) = 0) Then
+    If Not XsymP(ctx.ir.xsyms, i)^.defined And (DsymFind(ctx, XsymP(ctx.ir.xsyms, i)^.name) = 0) Then
       Begin
-        nm := PeImportName(ctx.ir.xsyms[i].name);
+        nm := PeImportName(XsymP(ctx.ir.xsyms, i)^.name);
         If nm = '' Then
           Begin
-            PipelineError(ctx, 'symbole non resolu: ' + ctx.ir.xsyms[i].name);
-            ok := False;
-          End
-        Else If pe_nimp >= PE_MAX_IMPORTS Then
-          Begin
-            PipelineError(ctx, 'trop d''imports');
+            PipelineError(ctx, 'symbole non resolu: ' + XsymP(ctx.ir.xsyms, i)^.name);
             ok := False;
           End
         Else
           Begin
             Inc(pe_nimp);
-            pe_imp_name[pe_nimp] := nm;
-            pe_xsym_imp[i] := pe_nimp;
+            pe_imp_nameP(pe_imp_name, pe_nimp)^ := nm;
+            pe_xsym_impP(pe_xsym_imp, i)^ := pe_nimp;
           End;
       End;
   entry_x := 0;
   For i := 1 To ctx.ir.xsym_count Do
-    If ctx.ir.xsyms[i].defined And (ctx.ir.xsyms[i].name = '_JSSTART') Then
+    If XsymP(ctx.ir.xsyms, i)^.defined And (XsymP(ctx.ir.xsyms, i)^.name = '_JSSTART') Then
       entry_x := i;
   If entry_x = 0 Then
     Begin
@@ -33391,7 +33814,7 @@ Begin
   nam_off := iat_off + 4 * (n + 1);
   p := nam_off;
   For i := 1 To n Do
-    p := p + PeAlign(2 + Length(pe_imp_name[i]) + 1, 2);
+    p := p + PeAlign(2 + Length(pe_imp_nameP(pe_imp_name, i)^) + 1, 2);
   dll_off := p;
   isz := dll_off + 13;
   pe_text_rva := PE_SEC_ALIGN;
@@ -33406,15 +33829,10 @@ Begin
   raw_d := raw_r + PeAlign(rsz, PE_FILE_ALIGN);
   raw_i := raw_d + PeAlign(dsz, PE_FILE_ALIGN);
   pe_size := raw_i + PeAlign(isz, PE_FILE_ALIGN);
-  If pe_size > SizeOf(pe_out) Then
-    Begin
-      PipelineError(ctx, 'executable trop volumineux');
-      Exit;
-    End;
-  FillChar(pe_out[0], pe_size, 0);
+  DlClear(pe_out);
   { en-tete DOS }
-  pe_out[0] := Ord('M');
-  pe_out[1] := Ord('Z');
+  pe_outP(pe_out, 0)^ := Ord('M');
+  pe_outP(pe_out, 1)^ := Ord('Z');
   PeW16(2, $90);
   PeW16(4, 3);
   PeW16(8, 4);
@@ -33424,10 +33842,10 @@ Begin
   PeW32($3C, $80);
   { programme DOS : affiche un message puis termine }
   p := $40;
-  pe_out[p] := $0E; pe_out[p + 1] := $1F; pe_out[p + 2] := $BA; pe_out[p + 3] := $0E;
-  pe_out[p + 4] := $00; pe_out[p + 5] := $B4; pe_out[p + 6] := $09; pe_out[p + 7] := $CD;
-  pe_out[p + 8] := $21; pe_out[p + 9] := $B8; pe_out[p + 10] := $01; pe_out[p + 11] := $4C;
-  pe_out[p + 12] := $CD; pe_out[p + 13] := $21;
+  pe_outP(pe_out, p)^ := $0E; pe_outP(pe_out, p + 1)^ := $1F; pe_outP(pe_out, p + 2)^ := $BA; pe_outP(pe_out, p + 3)^ := $0E;
+  pe_outP(pe_out, p + 4)^ := $00; pe_outP(pe_out, p + 5)^ := $B4; pe_outP(pe_out, p + 6)^ := $09; pe_outP(pe_out, p + 7)^ := $CD;
+  pe_outP(pe_out, p + 8)^ := $21; pe_outP(pe_out, p + 9)^ := $B8; pe_outP(pe_out, p + 10)^ := $01; pe_outP(pe_out, p + 11)^ := $4C;
+  pe_outP(pe_out, p + 12)^ := $CD; pe_outP(pe_out, p + 13)^ := $21;
   PeWStr($4E, 'This program cannot be run in DOS mode.'#13#13#10'$');
   { signature PE et en-tete COFF }
   PeW32($80, $00004550);
@@ -33438,13 +33856,13 @@ Begin
   { en-tete optionnel PE32 }
   opt := $98;
   PeW16(opt, $10B);
-  pe_out[opt + 2] := 1;
-  pe_out[opt + 3] := 0;
+  pe_outP(pe_out, opt + 2)^ := 1;
+  pe_outP(pe_out, opt + 3)^ := 0;
   PeW32(opt + 4, PeAlign(tsz, PE_FILE_ALIGN));
   PeW32(opt + 8, PeAlign(rsz, PE_FILE_ALIGN) + PeAlign(dsz, PE_FILE_ALIGN) +
         PeAlign(isz, PE_FILE_ALIGN));
   PeW32(opt + 12, 0);
-  PeW32(opt + 16, pe_text_rva + co_proc_ofs[entry_x]);
+  PeW32(opt + 16, pe_text_rva + co_proc_ofsP(co_proc_ofs, entry_x)^);
   PeW32(opt + 20, pe_text_rva);
   PeW32(opt + 24, pe_rdata_rva);
   PeW32(opt + 28, PE_IMAGE_BASE);
@@ -33489,24 +33907,24 @@ Begin
       End;
     End;
   { contenu des sections }
-  Move(co_text[0], pe_out[raw_t], tsz);
-  Move(ctx.data.rd[0], pe_out[raw_r], rsz);
-  Move(ctx.data.dt[0], pe_out[raw_d], dsz);
+  DlCopyList(co_text, 0, pe_out, raw_t, tsz);
+  DlCopyList(ctx.data.rd, 0, pe_out, raw_r, rsz);
+  DlCopyList(ctx.data.dt, 0, pe_out, raw_d, dsz);
   { relocations du code }
   For i := 1 To co_nrel Do
     Begin
-      v := PeSymVA(ctx, co_rel[i].symkind, co_rel[i].sym);
+      v := PeSymVA(ctx, co_relP(co_rel, i)^.symkind, co_relP(co_rel, i)^.sym);
       If v < 0 Then
         Begin
-          If co_rel[i].symkind = SYMK_X Then
-            PipelineError(ctx, 'symbole non resolu: ' + ctx.ir.xsyms[co_rel[i].sym].name);
+          If co_relP(co_rel, i)^.symkind = SYMK_X Then
+            PipelineError(ctx, 'symbole non resolu: ' + XsymP(ctx.ir.xsyms, co_relP(co_rel, i)^.sym)^.name);
           Exit;
         End;
-      p := raw_t + co_rel[i].ofs;
-      fld := LongInt(Int64(pe_out[p]) Or (Int64(pe_out[p + 1]) Shl 8) Or
-                     (Int64(pe_out[p + 2]) Shl 16) Or (Int64(pe_out[p + 3]) Shl 24));
-      If co_rel[i].typ = COFF_REL32 Then
-        v := v + fld - (Int64(PE_IMAGE_BASE) + pe_text_rva + co_rel[i].ofs + 4)
+      p := raw_t + co_relP(co_rel, i)^.ofs;
+      fld := LongInt(Int64(pe_outP(pe_out, p)^) Or (Int64(pe_outP(pe_out, p + 1)^) Shl 8) Or
+                     (Int64(pe_outP(pe_out, p + 2)^) Shl 16) Or (Int64(pe_outP(pe_out, p + 3)^) Shl 24));
+      If co_relP(co_rel, i)^.typ = COFF_REL32 Then
+        v := v + fld - (Int64(PE_IMAGE_BASE) + pe_text_rva + co_relP(co_rel, i)^.ofs + 4)
       Else
         v := v + fld;
       PeW32(p, LongInt(v And $FFFFFFFF));
@@ -33514,20 +33932,20 @@ Begin
   { relocations des donnees }
   For i := 1 To ctx.data.reloc_count Do
     Begin
-      v := PeSymVA(ctx, ctx.data.relocs[i].tkind, ctx.data.relocs[i].target);
+      v := PeSymVA(ctx, RelocP(ctx.data.relocs, i)^.tkind, RelocP(ctx.data.relocs, i)^.target);
       If v < 0 Then
         Begin
-          If ctx.data.relocs[i].tkind = SYMK_X Then
+          If RelocP(ctx.data.relocs, i)^.tkind = SYMK_X Then
             PipelineError(ctx, 'symbole non resolu: ' +
-                          ctx.ir.xsyms[ctx.data.relocs[i].target].name);
+                          XsymP(ctx.ir.xsyms, RelocP(ctx.data.relocs, i)^.target)^.name);
           Exit;
         End;
-      If ctx.data.relocs[i].sec = SEC_RDATA Then
-        p := raw_r + ctx.data.relocs[i].ofs
+      If RelocP(ctx.data.relocs, i)^.sec = SEC_RDATA Then
+        p := raw_r + RelocP(ctx.data.relocs, i)^.ofs
       Else
-        p := raw_d + ctx.data.relocs[i].ofs;
-      fld := LongInt(Int64(pe_out[p]) Or (Int64(pe_out[p + 1]) Shl 8) Or
-                     (Int64(pe_out[p + 2]) Shl 16) Or (Int64(pe_out[p + 3]) Shl 24));
+        p := raw_d + RelocP(ctx.data.relocs, i)^.ofs;
+      fld := LongInt(Int64(pe_outP(pe_out, p)^) Or (Int64(pe_outP(pe_out, p + 1)^) Shl 8) Or
+                     (Int64(pe_outP(pe_out, p + 2)^) Shl 16) Or (Int64(pe_outP(pe_out, p + 3)^) Shl 24));
       PeW32(p, LongInt((v + fld) And $FFFFFFFF));
     End;
   { table des imports : descripteur, ILT, IAT, noms, nom de la DLL }
@@ -33541,8 +33959,8 @@ Begin
       PeW32(p + ilt_off + 4 * (i - 1), pe_idata_rva + k);
       PeW32(p + iat_off + 4 * (i - 1), pe_idata_rva + k);
       PeW16(p + k, 0);
-      PeWStr(p + k + 2, pe_imp_name[i]);
-      k := k + PeAlign(2 + Length(pe_imp_name[i]) + 1, 2);
+      PeWStr(p + k + 2, pe_imp_nameP(pe_imp_name, i)^);
+      k := k + PeAlign(2 + Length(pe_imp_nameP(pe_imp_name, i)^) + 1, 2);
     End;
   PeWStr(p + dll_off, 'KERNEL32.dll');
   lo := 0;
@@ -33571,7 +33989,7 @@ Begin
           PipelineError(ctx, 'impossible de creer le fichier ' + ctx.exe_name);
           Exit;
         End;
-      BlockWrite(f, pe_out, pe_size);
+      DlWriteFile(f, pe_out, pe_size);
       Close(f);
       io := IOResult;
     End;
@@ -33710,21 +34128,41 @@ End;
   consecutives, une parenthese finale est un simple commentaire, et une
   ligne d'erreur « Error: valeur » correspond a « valeur ». }
 
-Const
-  HT_MAX_FILES = 200;
-  HT_MAX_LINES = 4000;
-  HT_MAX_EXP = 400;
-
 Type
   THtLine = String[200];
 
 Var
-  ht_files: Array[1..HT_MAX_FILES] Of String[80];
+  ht_files: TDynList;
   ht_nfiles: LongInt;
-  ht_out: Array[1..HT_MAX_LINES] Of THtLine;
+  ht_out: TDynList;
   ht_nout: LongInt;
-  ht_exp: Array[1..HT_MAX_EXP] Of THtLine;
+  ht_exp: TDynList;
   ht_nexp: LongInt;
+
+Type
+  P_ht_exp = ^THtLine;
+
+Function ht_expP(Var l: TDynList; i: LongInt): P_ht_exp;
+Begin
+  ht_expP := P_ht_exp(DlPtr(l, i - 1, SizeOf(THtLine)));
+End;
+
+Type
+  P_ht_out = ^THtLine;
+
+Function ht_outP(Var l: TDynList; i: LongInt): P_ht_out;
+Begin
+  ht_outP := P_ht_out(DlPtr(l, i - 1, SizeOf(THtLine)));
+End;
+
+Type
+  T_ht_files = String[80];
+  P_ht_files = ^T_ht_files;
+
+Function ht_filesP(Var l: TDynList; i: LongInt): P_ht_files;
+Begin
+  ht_filesP := P_ht_files(DlPtr(l, i - 1, SizeOf(T_ht_files)));
+End;
 
 Function HtTrim(s: String): String;
 Begin
@@ -33928,14 +34366,14 @@ Begin
   io := IOResult;
   If io <> 0 Then
     Exit;
-  While Not Eof(f) And (ht_nout < HT_MAX_LINES) Do
+  While Not Eof(f) Do
     Begin
       {$I-}
       Readln(f, s);
       {$I+}
       io := IOResult;
       Inc(ht_nout);
-      ht_out[ht_nout] := HtTrim(s);
+      ht_outP(ht_out, ht_nout)^ := HtTrim(s);
     End;
   Close(f);
   io := IOResult;
@@ -33956,10 +34394,10 @@ Begin
       If p > 0 Then
         s := HtTrim(Copy(s, 1, p - 1));
     End;
-  If (s <> '') And (ht_nexp < HT_MAX_EXP) Then
+  If s <> '' Then
     Begin
       Inc(ht_nexp);
-      ht_exp[ht_nexp] := s;
+      ht_expP(ht_exp, ht_nexp)^ := s;
     End;
 End;
 
@@ -34010,48 +34448,60 @@ Begin
                 (Copy(s, Length(s) - Length(suffix) + 1, Length(suffix)) = suffix);
 End;
 
+Type
+  PHtLine = ^THtLine;
+
+Function HtPartP(Var l: TDynList; i: LongInt): PHtLine;
+Begin
+  HtPartP := PHtLine(DlPtr(l, i - 1, SizeOf(THtLine)));
+End;
+
 { Cherche la valeur attendue e a partir de la ligne pos ; renvoie la ligne
   suivante, ou 0 si elle est introuvable. }
 Function HtFindExp(Const e: String; startl: LongInt): LongInt;
 Var
   j, k, n, p: LongInt;
-  parts: Array[1..10] Of THtLine;
+  parts: TDynList;
   rest: String;
   ok: Boolean;
 Begin
   HtFindExp := 0;
+  FillChar(parts, SizeOf(parts), 0);
   { liste « a, b, c » : lignes consecutives }
   n := 0;
   rest := e;
-  While (Pos(', ', rest) > 0) And (n < 9) Do
+  While Pos(', ', rest) > 0 Do
     Begin
       Inc(n);
       p := Pos(', ', rest);
-      parts[n] := Copy(rest, 1, p - 1);
+      HtPartP(parts, n)^ := Copy(rest, 1, p - 1);
       Delete(rest, 1, p + 1);
     End;
   Inc(n);
-  parts[n] := rest;
+  HtPartP(parts, n)^ := rest;
   For j := startl To ht_nout Do
     Begin
-      If (ht_out[j] = e) Or HtEndsWith(ht_out[j], ': ' + e) Then
+      If (ht_outP(ht_out, j)^ = e) Or HtEndsWith(ht_outP(ht_out, j)^, ': ' + e) Then
         Begin
           HtFindExp := j + 1;
+          DlFree(parts);
           Exit;
         End;
       If (n > 1) And (j + n - 1 <= ht_nout) Then
         Begin
           ok := True;
           For k := 1 To n Do
-            If ht_out[j + k - 1] <> parts[k] Then
+            If ht_outP(ht_out, j + k - 1)^ <> HtPartP(parts, k)^ Then
               ok := False;
           If ok Then
             Begin
               HtFindExp := j + n;
+              DlFree(parts);
               Exit;
             End;
         End;
     End;
+  DlFree(parts);
 End;
 
 { Compare la sortie aux valeurs attendues ; renvoie '' si tout concorde. }
@@ -34063,10 +34513,10 @@ Begin
   HtCompare := '';
   For i := 1 To ht_nexp Do
     Begin
-      r := HtFindExp(ht_exp[i], cur);
+      r := HtFindExp(ht_expP(ht_exp, i)^, cur);
       If r = 0 Then
         Begin
-          HtCompare := 'valeur attendue introuvable : ' + ht_exp[i];
+          HtCompare := 'valeur attendue introuvable : ' + ht_expP(ht_exp, i)^;
           Exit;
         End;
       cur := r;
@@ -34088,12 +34538,12 @@ Var
 Begin
   ht_nfiles := 0;
   FindFirst(dir + '/*.js', AnyFile, sr);
-  While (DosError = 0) And (ht_nfiles < HT_MAX_FILES) Do
+  While DosError = 0 Do
     Begin
       If sr.Attr And Directory = 0 Then
         Begin
           Inc(ht_nfiles);
-          ht_files[ht_nfiles] := sr.Name;
+          ht_filesP(ht_files, ht_nfiles)^ := sr.Name;
         End;
       FindNext(sr);
     End;
@@ -34101,14 +34551,14 @@ Begin
   { tri alphabetique }
   For i := 2 To ht_nfiles Do
     Begin
-      t := ht_files[i];
+      t := ht_filesP(ht_files, i)^;
       j := i - 1;
-      While (j >= 1) And (ht_files[j] > t) Do
+      While (j >= 1) And (ht_filesP(ht_files, j)^ > t) Do
         Begin
-          ht_files[j + 1] := ht_files[j];
+          ht_filesP(ht_files, j + 1)^ := ht_filesP(ht_files, j)^;
           Dec(j);
         End;
-      ht_files[j + 1] := t;
+      ht_filesP(ht_files, j + 1)^ := t;
     End;
 End;
 
@@ -34180,9 +34630,9 @@ Begin
   warn_count := 0;
   For i := 1 To ht_nfiles Do
     Begin
-      base := ht_files[i];
+      base := ht_filesP(ht_files, i)^;
       Delete(base, Length(base) - 2, 3);
-      src := dir + '/' + ht_files[i];
+      src := dir + '/' + ht_filesP(ht_files, i)^;
       exe_name := 'jt_' + base + '.exe';
       obj_name := 'jt_' + base + '.obj';
       asm_name := 'jt_' + base + '.asm';
@@ -34249,7 +34699,7 @@ Begin
               tag := 'artefacts valides';
             End;
         End;
-      line := ht_files[i];
+      line := ht_filesP(ht_files, i)^;
       While Length(line) < 16 Do
         line := line + ' ';
       If passed Then
@@ -34265,7 +34715,7 @@ Begin
             Begin
               HtLoadOutput(log_name);
               If ht_nout > 0 Then
-                Writeln('                  ', ht_out[1]);
+                Writeln('                  ', ht_outP(ht_out, 1)^);
             End;
         End;
       If Not ctx.options.keep Then
