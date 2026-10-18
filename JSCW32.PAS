@@ -18,7 +18,7 @@
   10. [IMPLEMENTE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
   11. [IMPLEMENTE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
   12. [IMPLEMENTE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
-  13. [A FAIRE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
+  13. [IMPLEMENTE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
   14. [A FAIRE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
   15. [A FAIRE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
   16. [A FAIRE] Implementer les objets et prototypes : litteraux, acces par point et par crochets, ajout/modification/suppression dynamique de proprietes (table de hachage avec ordre d'insertion), in, hasOwnProperty, chaine de prototypes, getters/setters, Object.keys/values/entries/assign/create/freeze/getPrototypeOf, avec objects.js et test16.
@@ -484,7 +484,7 @@ Type
   );
 
   TDeclKind = (DK_VAR, DK_LET, DK_CONST, DK_FUNC, DK_CLASS, DK_PARAM, DK_CATCH,
-                 DK_FNAME);
+                 DK_FNAME, DK_ARGS);
 
   { Noeud d'AST : tok est le jeton principal (position, nom) ; e1..e4 sont
     des noeuds enfants (ou des indices de jeton pour break/continue et
@@ -4551,6 +4551,7 @@ Begin
     DK_PARAM: DeclKindName := 'param';
     DK_CATCH: DeclKindName := 'catch';
     DK_FNAME: DeclKindName := 'fname';
+    DK_ARGS:  DeclKindName := 'arguments';
   Else
     DeclKindName := '?';
   End;
@@ -5043,6 +5044,58 @@ Begin
   LookupSymbol := 0;
 End;
 
+{ Cherche name de la portee courante jusqu'a la portee stop incluse. }
+Function LookupWithin(Var ctx: TCompilerContext; Const name: TTokenText;
+                      stop: LongInt): LongInt;
+Var
+  sc, sy: LongInt;
+Begin
+  sc := ctx.sem.cur_scope;
+  While sc <> 0 Do
+    Begin
+      sy := ctx.sem.scopes[sc].first_sym;
+      While sy <> 0 Do
+        Begin
+          If SemTokText(ctx, ctx.sem.syms[sy].name_tok) = name Then
+            Begin
+              LookupWithin := sy;
+              Exit;
+            End;
+          sy := ctx.sem.syms[sy].next;
+        End;
+      If sc = stop Then
+        Break;
+      sc := ctx.sem.scopes[sc].parent;
+    End;
+  LookupWithin := 0;
+End;
+
+{ Symbole implicite arguments de la fonction prov. }
+Function CreateArgsSymbol(Var ctx: TCompilerContext; prov, tok: LongInt): LongInt;
+Var
+  sy: LongInt;
+Begin
+  CreateArgsSymbol := 0;
+  If ctx.sem.sym_count >= MAX_SYMS Then
+    Exit;
+  Inc(ctx.sem.sym_count);
+  sy := ctx.sem.sym_count;
+  ctx.sem.syms[sy].name_tok := tok;
+  ctx.sem.syms[sy].kind := DK_ARGS;
+  ctx.sem.syms[sy].scope := prov;
+  ctx.sem.syms[sy].node := 0;
+  ctx.sem.syms[sy].next := 0;
+  ctx.sem.syms[sy].flags := 0;
+  ctx.sem.syms[sy].refs := 0;
+  ctx.sem.syms[sy].writes := 0;
+  If ctx.sem.scopes[prov].first_sym = 0 Then
+    ctx.sem.scopes[prov].first_sym := sy
+  Else
+    ctx.sem.syms[ctx.sem.scopes[prov].last_sym].next := sy;
+  ctx.sem.scopes[prov].last_sym := sy;
+  CreateArgsSymbol := sy;
+End;
+
 { ---- Captures ---- }
 
 Procedure AddCapture(Var ctx: TCompilerContext; fscope, sy: LongInt);
@@ -5096,19 +5149,24 @@ Begin
   is_write := (mode = RM_WRITE) Or (mode = RM_READWRITE);
   is_read := (mode = RM_READ) Or (mode = RM_READWRITE);
   ctx.ast.nodes[n].sym := 0;
-  sy := LookupSymbol(ctx, name);
+  sy := 0;
+  If name = 'arguments' Then
+    Begin
+      { objet arguments : symbole cache de la fonction englobante non
+        fleche, capture comme une variable ordinaire par les fleches }
+      prov := NearestNonArrow(ctx);
+      If ctx.sem.scopes[prov].kind = SK_FUNCTION Then
+        Begin
+          sy := LookupWithin(ctx, name, prov);
+          If sy = 0 Then
+            sy := CreateArgsSymbol(ctx, prov, tok);
+          ctx.sem.scopes[prov].uses_arguments := True;
+        End;
+    End;
+  If sy = 0 Then
+    sy := LookupSymbol(ctx, name);
   If sy = 0 Then
     Begin
-      If name = 'arguments' Then
-        Begin
-          prov := NearestNonArrow(ctx);
-          If ctx.sem.scopes[prov].kind = SK_FUNCTION Then
-            Begin
-              ctx.sem.scopes[prov].uses_arguments := True;
-              ctx.ast.nodes[n].aux := RK_ARGUMENTS;
-              Exit;
-            End;
-        End;
       If IsBuiltinGlobal(name) Then
         ctx.ast.nodes[n].aux := RK_BUILTIN
       Else If is_write And Not is_read Then
@@ -6215,7 +6273,8 @@ Begin
           If ctx.ast.nodes[i].aux = RK_BUILTIN Then
             ctx.rt.comps := ctx.rt.comps Or
               BuiltinComponents(ctx.lex.tokens[ctx.ast.nodes[i].tok].text)
-          Else If ctx.ast.nodes[i].aux = RK_ARGUMENTS Then
+          Else If (ctx.ast.nodes[i].sym <> 0) And
+                  (ctx.sem.syms[ctx.ast.nodes[i].sym].kind = DK_ARGS) Then
             ctx.rt.comps := ctx.rt.comps Or RC_ARGUMENTS Or RC_ARRAY;
         End;
     End;
@@ -7572,13 +7631,6 @@ Begin
           ctx.sem.syms[i].slot := ctx.sem.scopes[fs].nslots;
         End;
     End;
-  For i := 1 To ctx.sem.scope_count Do
-    If (ctx.sem.scopes[i].kind = SK_FUNCTION) And
-       ctx.sem.scopes[i].uses_arguments Then
-      Begin
-        Inc(ctx.sem.scopes[i].nslots);
-        ctx.sem.scopes[i].args_slot := ctx.sem.scopes[i].nslots;
-      End;
 End;
 
 Function AllocTemp(Var ctx: TCompilerContext): LongInt;
@@ -10017,13 +10069,18 @@ Begin
         End;
       sy := ctx.sem.syms[sy].next;
     End;
-  If ctx.sem.scopes[sc].args_slot <> 0 Then
+  sy := ctx.sem.scopes[sc].first_sym;
+  While sy <> 0 Do
     Begin
-      Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS));
-      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
-      CallRt(ctx, 'make_arguments', 8);
-      StoreTemp(ctx, ctx.sem.scopes[sc].args_slot);
+      If ctx.sem.syms[sy].kind = DK_ARGS Then
+        Begin
+          Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_ARGS));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_ARGC));
+          CallRt(ctx, 'make_arguments', 8);
+          StoreSym(ctx, sy, True);
+        End;
+      sy := ctx.sem.syms[sy].next;
     End;
   Case ctx.ast.nodes[n].kind Of
     N_FUNC_DECL, N_FUNC_EXPR, N_METHOD:
