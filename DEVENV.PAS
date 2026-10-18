@@ -5817,7 +5817,24 @@ Type
  { 32 bits) plutot que d en redefinir un jeu distinct. }
  TDpmiCPU = Record
   Active  : Boolean;    { le programme est actuellement en mode protege }
-  Is32Bit : Boolean;    { AX=0/1 demande a l entree (16 ou 32 bits) }
+  Is32Bit : Boolean;    { bit Big/D du descripteur CS COURANT (resynchronise }
+                        { a CHAQUE rechargement de CS par Dpmi_SyncIs32Bit,  }
+                        { voir son commentaire de tete, 17e correctif) -     }
+                        { taille d operande/ADRESSE PAR DEFAUT de ce segment.}
+  AddrIs32: Boolean;    { 17e correctif (suite) : taille d ADRESSE de        }
+                        { l instruction EN COURS SEULEMENT - initialisee a   }
+                        { Is32Bit puis INVERSEE par un prefixe $67 rencontre }
+                        { (Dpmi_Step), EXACTEMENT comme TEmuCPU.AddrSize32   }
+                        { le fait deja pour le coeur reel/"unreal mode"      }
+                        { ($67 change l ADRESSE, $66 change l OPERANDE - les }
+                        { 2 sont INDEPENDANTS sur un vrai x86, jamais        }
+                        { distingues ici avant ce correctif : Dpmi_DecodeModRM}
+                        { lisait Is32Bit directement, donc $67 etait un pur  }
+                        { no-op avant - confirme responsable d une vraie     }
+                        { corruption memoire silencieuse lors de l enquete   }
+                        { WIN.COM/WIN386.EXE, un ModRM EA calcule 16 bits au  }
+                        { lieu de 32 bits ecrasant un pointeur non lie). Lu  }
+                        { par Dpmi_DecodeModRM a la place de Is32Bit. }
   Reg     : TEmuRegs;   { reutilise le meme record variant EAX/AX/AL... que }
                          { le coeur 8086 (TEmuCPU.Regs) - memes alias }
   EIP     : LongInt;
@@ -9432,6 +9449,10 @@ Var
  { AUTRES diagnostics ponctuels sans rapport, voir ~89091/~100163) pour ne }
  { jamais interferer avec eux. Voir DOS_RunOneChunk. }
  EmuCS0Dumped   : Boolean;
+ { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete WIN.COM, gel sur }
+ { le logo Windows 3.1 apres le 9e/10e correctif IDT/IRQ) : compteur de    }
+ { points de capture periodiques, voir DOS_RunOneChunk/DIAGIRQFREEZE.LOG. }
+ EmuIrqFreezeDumps: Integer;
  { True des que CS a ete vu different de 0 au moins une fois depuis le    }
  { debut de CETTE session -CD (voir DOS_RunOneChunk) - un vrai secteur de }
  { boot reste legitimement a CS=0 pendant TOUTE sa phase initiale (auto-   }
@@ -202494,10 +202515,26 @@ Begin
   EmuXms.Handles[H].InUse;
 End;
 
-{ --- Allocateur "bump" (voir la limite documentee plus haut) --- }
-{ Retourne 0 en cas de succes, sinon le code d erreur XMS (BL). }
+{ --- Allocateur "bump" (voir la limite documentee plus haut) - BOGUE REEL  }
+{ CORRIGE (2026-10-18, enquete WIN.COM 386 Enhanced Mode, suite comparaison }
+{ avec DOSBox qui atteint le bureau avec cette MEME installation) : chaque }
+{ bloc demarrait exactement la ou le precedent finissait, sans AUCUN       }
+{ alignement - un bloc de taille non multiple de 4 Ko (ex. les 533 Ko      }
+{ reellement observes ici, PAS un multiple de 4) decalait l adresse        }
+{ "physique" (voir Emu_Xms_LockBlock, base 1 Mo + StoreOffset) du bloc      }
+{ SUIVANT hors de tout alignement de page - alors que WIN386.EXE construit  }
+{ PRECISEMENT son propre repertoire/tables de pages DANS un bloc XMS        }
+{ verrouille (AH=0Ch), ce qui exige un alignement 4 Ko pour que son calcul  }
+{ d index (base + index*4) tombe juste. Corrige : chaque nouveau bloc       }
+{ demarre desormais sur une frontiere de 4 Ko (le premier bloc, a offset 0,}
+{ etait deja aligne par construction - seuls les SUIVANTS en beneficient). }
+{ Marge de securite deja presente : TEmuXmsBuf fait EMU_XMS_CAP_KB (64 Mo) }
+{ quel que soit DosXMSSize configure (16 Mo ici), donc ce padding ne peut   }
+{ jamais deborder le tampon reel. Retourne 0 en cas de succes, sinon le    }
+{ code d erreur XMS (BL). }
 Function Emu_XmsAllocBlock(SizeKB: LongInt; Var OutHandle: Word): Byte;
-Var H: Word; Slot: Integer; NeedBytes: LongInt;
+Const XMS_PAGE_BYTES = 4096;
+Var H: Word; Slot: Integer; NeedBytes, AlignedStart: LongInt;
 Begin
  Slot := -1;
  For H := 1 To High(EmuXms.Handles) Do
@@ -202506,16 +202543,18 @@ Begin
   Emu_XmsAllocBlock := $A1; { pas de poignee disponible }
   Exit;
  End;
+ AlignedStart := (EmuXms.UsedBytes + (XMS_PAGE_BYTES - 1))
+  And Not LongInt(XMS_PAGE_BYTES - 1);
  NeedBytes := SizeKB * 1024;
- If EmuXms.UsedBytes + NeedBytes > EmuXms.TotalKB * 1024 Then Begin
+ If AlignedStart + NeedBytes > EmuXms.TotalKB * 1024 Then Begin
   Emu_XmsAllocBlock := $A0; { memoire etendue toute allouee }
   Exit;
  End;
  EmuXms.Handles[Slot].InUse := True;
  EmuXms.Handles[Slot].SizeKB := SizeKB;
  EmuXms.Handles[Slot].LockCount := 0;
- EmuXms.Handles[Slot].StoreOffset := EmuXms.UsedBytes;
- EmuXms.UsedBytes := EmuXms.UsedBytes + NeedBytes;
+ EmuXms.Handles[Slot].StoreOffset := AlignedStart;
+ EmuXms.UsedBytes := AlignedStart + NeedBytes;
  OutHandle := Slot;
  Emu_XmsAllocBlock := 0;
 End;
@@ -204985,6 +205024,30 @@ Function Dpmi_ReadBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt): Byte;
 Begin
  If (PhysAddr >= 0) And (PhysAddr < EMU_DPMI_EXT_BASE) Then
   Dpmi_ReadBytePhys := P.CPU.Memory^[PhysAddr]
+ { BOGUE REEL CORRIGE (2026-10-17, enquete WIN.COM 386 Enhanced Mode, suite }
+ { de la bascule reel->protege via CR0 : "15e bogue" - voir                 }
+ { project_devenv_wincom_launch.md) : EmuXmsMem (le VRAI contenu de la      }
+ { memoire etendue DES QUE le pilote XMS est actif - seule facon            }
+ { DOCUMENTEE pour du code reel-mode d ecrire au-dela de 1 Mo, AH=0Bh        }
+ { "Move Extended Memory Block" en tete) doit etre consulte EN PREMIER,      }
+ { PAS EmuDpmiExtMem (qui ne recoit que les sondes DIRECTES "unreal mode"/   }
+ { DPMI brutes, voir le commentaire de tete de cette fonction) : confirme en }
+ { direct (WIN386.EXE construit la totalite de son repertoire/tables de      }
+ { pages via Verrouiller+Deplacer+Deverrouiller un handle XMS) que le VRAI   }
+ { contenu (PDE non-nul, bit Present=1) vit dans EmuXmsMem alors que la      }
+ { MEME adresse physique lue via EmuDpmiExtMem restait a zero partout -      }
+ { c est CE split qui faisait echouer la traduction CR3/PDE de              }
+ { Emu_RawSwitchToProtectedViaCR0 (repli "PDE absente" systematique), pas    }
+ { `GdtBase` lui-meme (verifie correct par tracage octet-par-octet complet). }
+ { EmuXmsMem couvre `EmuXms.TotalKB` Ko a partir de 1 Mo (handles alloues    }
+ { en bloc contigu depuis l origine, confirme : handle 1 offset 0, handle 2  }
+ { juste apres) - au-dela (capacite DPMI seule, DosDPMISize > DosXMSSize),   }
+ { retombe sur EmuDpmiExtMem comme avant, AUCUNE regression pour un client   }
+ { DPMI sans XMS actif. }
+ Else If EmuXms.Active And (EmuXmsMem <> Nil) And
+    (PhysAddr >= EMU_DPMI_EXT_BASE) And
+    (PhysAddr < EMU_DPMI_EXT_BASE + EmuXms.TotalKB * 1024) Then
+  Dpmi_ReadBytePhys := EmuXmsMem^[PhysAddr - EMU_DPMI_EXT_BASE]
  Else If (PhysAddr >= EMU_DPMI_EXT_BASE) And
     (PhysAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
     (EmuDpmiExtMem <> Nil) Then
@@ -205003,6 +205066,13 @@ Procedure Dpmi_WriteBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt; V: Byte);
 Begin
  If (PhysAddr >= 0) And (PhysAddr < EMU_DPMI_EXT_BASE) Then
   P.CPU.Memory^[PhysAddr] := V
+ { Meme correctif/meme ordre de priorite que Dpmi_ReadBytePhys ci-dessus -   }
+ { une ecriture physique >= 1 Mo doit rester visible a un futur AH=0Bh "Move}
+ { Extended Memory Block" (donc dans EmuXmsMem) tant que XMS est actif. }
+ Else If EmuXms.Active And (EmuXmsMem <> Nil) And
+    (PhysAddr >= EMU_DPMI_EXT_BASE) And
+    (PhysAddr < EMU_DPMI_EXT_BASE + EmuXms.TotalKB * 1024) Then
+  EmuXmsMem^[PhysAddr - EMU_DPMI_EXT_BASE] := V
  Else If (PhysAddr >= EMU_DPMI_EXT_BASE) And
     (PhysAddr < EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes) And
     (EmuDpmiExtMem <> Nil) Then
@@ -205037,11 +205107,14 @@ End;
 { directement (Dpmi_ReadBytePhys, jamais Dpmi_ReadByte) - sur un vrai      }
 { 80386, CR3/PDE/PTE contiennent TOUJOURS des adresses physiques, jamais   }
 { une autre couche de traduction a appliquer dessus. }
+Var
+ EmuXlatLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGXLAT.LOG }
 Function Dpmi_TranslateLin(Var P: TEmulatorPanel; LinAddr: LongInt): LongInt;
 Var
  DirIdx, TblIdx, PageOfs: LongInt;
  PdeAddr, PteAddr: LongInt;
  Pde, Pte: LongInt;
+ DiagF3: Text; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
  If (DpmiCPU.CR0 And LongInt($80000000)) = 0 Then Begin
   Dpmi_TranslateLin := LinAddr;
@@ -205056,6 +205129,18 @@ Begin
   (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 2)) Shl 16) Or
   (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 3)) Shl 24);
  If (Pde And 1) = 0 Then Begin { PDE non presente : repli honnete }
+  { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete divergence BOUND)}
+  If (Not EmuXlatLogged) And (LongWord(LinAddr) And $FFFFFF00 =
+     LongWord($80285E00)) Then Begin
+   EmuXlatLogged := True;
+   {$I-} Assign(DiagF3, 'DIAGXLAT.LOG'); Rewrite(DiagF3); {$I+}
+   If IOResult = 0 Then Begin
+    WriteLn(DiagF3, 'LinAddr=', HexLong(LinAddr), ' DirIdx=', HexLong(DirIdx),
+     ' PdeAddr=', HexLong(PdeAddr), ' Pde=', HexLong(Pde), ' -> PDE ABSENTE');
+    Close(DiagF3);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   Dpmi_TranslateLin := LinAddr;
   Exit;
  End;
@@ -205065,8 +205150,33 @@ Begin
   (LongInt(Dpmi_ReadBytePhys(P, PteAddr + 2)) Shl 16) Or
   (LongInt(Dpmi_ReadBytePhys(P, PteAddr + 3)) Shl 24);
  If (Pte And 1) = 0 Then Begin { PTE non presente : repli honnete }
+  { DIAGNOSTIC TEMPORAIRE - a retirer }
+  If (Not EmuXlatLogged) And (LongWord(LinAddr) And $FFFFFF00 =
+     LongWord($80285E00)) Then Begin
+   EmuXlatLogged := True;
+   {$I-} Assign(DiagF3, 'DIAGXLAT.LOG'); Rewrite(DiagF3); {$I+}
+   If IOResult = 0 Then Begin
+    WriteLn(DiagF3, 'LinAddr=', HexLong(LinAddr), ' TblIdx=', HexLong(TblIdx),
+     ' PteAddr=', HexLong(PteAddr), ' Pte=', HexLong(Pte), ' -> PTE ABSENTE');
+    Close(DiagF3);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   Dpmi_TranslateLin := LinAddr;
   Exit;
+ End;
+ { DIAGNOSTIC TEMPORAIRE - a retirer }
+ If (Not EmuXlatLogged) And (LongWord(LinAddr) And $FFFFFF00 =
+    LongWord($80285E00)) Then Begin
+  EmuXlatLogged := True;
+  {$I-} Assign(DiagF3, 'DIAGXLAT.LOG'); Rewrite(DiagF3); {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagF3, 'LinAddr=', HexLong(LinAddr), ' Pde=', HexLong(Pde),
+    ' Pte=', HexLong(Pte), ' -> Phys=',
+    HexLong((Pte And LongInt($FFFFF000)) Or PageOfs));
+   Close(DiagF3);
+  End;
+  {$I+} If IOResult <> 0 Then ;
  End;
  Dpmi_TranslateLin := (Pte And LongInt($FFFFF000)) Or PageOfs;
 End;
@@ -205129,6 +205239,35 @@ Begin
  Idx := Sel Shr 3;
  Dpmi_SelToIdx := (Idx >= 0) And (Idx <= EMU_DPMI_MAX_SEL) And
   DpmiCPU.LDT[Idx].Present;
+End;
+
+{ 17e correctif (2026-10-17, enquete WIN.COM/WIN386.EXE, suite directe du    }
+{ correctif deja applique UNE FOIS pour Dpmi_Switch - voir son commentaire   }
+{ de tete, "Is32Bit pilotait le decodage depuis Want32... FAUX, un vrai CPU  }
+{ decode selon le SEGMENT COURANT") : a appeler apres TOUT rechargement de   }
+{ CS (CALL/JMP/RETF/IRET lointains, gestionnaire d exception protege) pour   }
+{ resynchroniser DpmiCPU.Is32Bit (taille d operande/adresse PAR DEFAUT) sur  }
+{ le bit Big/D du VRAI descripteur GDT du NOUVEAU CS - exactement ce qu un   }
+{ vrai CPU fait implicitement a chaque bascule de segment de code (ce n est }
+{ PAS une preference figee pour toute la session). Avant ce correctif,      }
+{ seule Dpmi_Switch (point d entree DPMI classique, TOUJOURS un seul CS fixe}
+{ pour toute la vie du client) beneficiait de cette correction - jamais      }
+{ generalisee aux changements de CS EN COURS DE SESSION, jamais necessaire   }
+{ avant qu un MEME client ne traverse plusieurs segments de bitness          }
+{ DIFFERENTE (WIN386.EXE : segment d amorce 16 bits juste apres le MOV CR0,  }
+{ puis bascule vers un vrai segment plat 32 bits plus loin - confirme en     }
+{ direct, trace octet pour octet : Sel=0008/16 bits puis, apres un JMP FAR   }
+{ indirect reussi, Sel=0028/32 bits, desynchronisant TOUT le decodage des    }
+{ que Is32Bit restait fige a la valeur du premier segment). Si le selecteur  }
+{ ne resout pas (ne devrait pas arriver ici, deja valide par                }
+{ Dpmi_LoadSelOrFault/le garde-fou CR0 juste avant chaque appel), Is32Bit    }
+{ reste INCHANGE plutot que d etre ecrase par une valeur arbitraire - repli  }
+{ honnete, meme philosophie que partout ailleurs dans ce fichier. }
+Procedure Dpmi_SyncIs32Bit;
+Var Idx: Integer;
+Begin
+ If Dpmi_SelToIdx(DpmiCPU.SegSel[1], Idx) Then
+  DpmiCPU.Is32Bit := DpmiCPU.LDT[Idx].Big;
 End;
 
 Function Dpmi_SelBase(Sel: Word): LongInt;
@@ -206025,7 +206164,19 @@ Begin
  ExtraLen := 0;
  StackBased := False;
  EA := 0;
- If Not DpmiCPU.Is32Bit Then Begin
+ { 17e correctif (2026-10-17, enquete WIN.COM/WIN386.EXE) : lit desormais    }
+ { DpmiCPU.AddrIs32 (taille d ADRESSE de l instruction EN COURS, qui tient   }
+ { compte d un eventuel prefixe $67 - voir TDpmiCPU.AddrIs32) plutot que     }
+ { DpmiCPU.Is32Bit (taille d operande/adresse PAR DEFAUT du SEGMENT, sans    }
+ { prefixe) directement - les 2 ne sont PLUS forcement identiques depuis que }
+ { Is32Bit est correctement resynchronise par segment (voir                 }
+ { Dpmi_SyncIs32Bit) : un VRAI $67 dans un segment 16 bits (ou inversement)  }
+ { doit INVERSER la taille d adresse pour CETTE SEULE instruction, ce que    }
+ { $67 ne faisait JAMAIS avant ce correctif (pur no-op) - confirme en direct }
+ { responsable d une corruption memoire silencieuse (un ModRM ES:[EAX+disp] }
+ { voulu par WIN386.EXE, decode a tort en [BX+SI+disp] 16 bits, ecrasant un  }
+ { pointeur sans rapport). }
+ If Not DpmiCPU.AddrIs32 Then Begin
   { BOGUE REEL (2026-10-14, enquete "TPX.EXE : out of selectors") : ce       }
   { decodeur ne gerait QUE l'adressage 32 bits, alors qu'un segment de code  }
   { 16 bits (DpmiCPU.Is32Bit=False - cas reel observe : DOS4GW/TPX.EXE       }
@@ -206420,6 +206571,7 @@ Begin
  Dpmi_Push32(P, DpmiCPU.EIP);
  DpmiCPU.SegSel[1] := DpmiCPU.IntSel[Num];
  DpmiCPU.EIP := DpmiCPU.IntOfs[Num];
+ Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete }
 End;
 
 { Variante pour les exceptions qui empilent un CODE D ERREUR (ex. #0D GPF,   }
@@ -206433,6 +206585,37 @@ Procedure Dpmi_FireProtectedHandlerEC(Var P: TEmulatorPanel; Num: Byte;
 Begin
  Dpmi_FireProtectedHandler(P, Num);
  Dpmi_Push32(P, ErrorCode);
+End;
+
+{ Dispatche le vecteur Num via la VRAIE IDT protegee chargee par LIDT        }
+{ (DpmiCPU.IdtBase/IdtLimit) si une entree PRESENTE y existe - factorise     }
+{ depuis Dpmi_Step ($CD, 2026-10-18, enquete WIN.COM/comparaison DOSBox,     }
+{ voir son commentaire de tete) pour etre reutilisable par la livraison     }
+{ d IRQ MATERIELLES ci-dessous (meme bogue exact, meme correctif : du code  }
+{ protege qui EST son propre noyau/hote, comme WIN386 VMM, attend que TOUT   }
+{ vecteur - logiciel OU materiel - passe par SA PROPRE IDT, pas par la       }
+{ table DPMI IntSel/IntOfs qui ne concerne qu un simple client DPMI).        }
+{ Retourne Faux (aucune action) si IdtBase=0 ou l entree est absente -       }
+{ l appelant garde alors son repli existant (IntSel/IntOfs ou P.CPU reel). }
+Function Dpmi_FireViaRealIdt(Var P: TEmulatorPanel; Num: Byte): Boolean;
+Var GateAddr: LongInt; GateAttr: Byte; GateSel: Word; GateOfs: LongInt;
+Begin
+ Dpmi_FireViaRealIdt := False;
+ If (DpmiCPU.IdtBase = 0) Or
+    (LongInt(Num) * 8 + 7 > DpmiCPU.IdtLimit) Then Exit;
+ GateAddr := DpmiCPU.IdtBase + LongInt(Num) * 8;
+ GateAttr := Dpmi_ReadByte(P, GateAddr + 5);
+ If (GateAttr And $80) = 0 Then Exit; { bit present absent : pas de gestionnaire }
+ GateSel := Dpmi_ReadWord(P, GateAddr + 2);
+ GateOfs := LongInt(Dpmi_ReadWord(P, GateAddr)) Or
+            (LongInt(Dpmi_ReadWord(P, GateAddr + 6)) Shl 16);
+ Dpmi_Push32(P, DpmiCPU.Flags.Abs);
+ Dpmi_Push32(P, LongInt(DpmiCPU.SegSel[1]));
+ Dpmi_Push32(P, DpmiCPU.EIP);
+ DpmiCPU.SegSel[1] := GateSel;
+ DpmiCPU.EIP := GateOfs;
+ Dpmi_SyncIs32Bit;
+ Dpmi_FireViaRealIdt := True;
 End;
 
 { BOGUE REEL (2026-10-14, enquete "atteindre l IDE", chantier GPF demande    }
@@ -206511,7 +206694,10 @@ Begin
   Dpmi_LoadSelOrFault := True; Exit;
  End;
  Dpmi_LoadSelOrFault := False;
- If DpmiCPU.IntSel[$0D] <> 0 Then
+ { BOGUE REEL CORRIGE (2026-10-18) : IDT reelle d abord, meme priorite que  }
+ { partout ailleurs dans cette enquete (voir Dpmi_FireViaRealIdt). }
+ If Dpmi_FireViaRealIdt(P, $0D) Then Dpmi_Push32(P, LongInt(NewSel And $FFF8))
+ Else If DpmiCPU.IntSel[$0D] <> 0 Then
   Dpmi_FireProtectedHandlerEC(P, $0D, LongInt(NewSel And $FFF8))
  Else Begin
   P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
@@ -206617,6 +206803,222 @@ Begin
  DpmiCPU.SegSel[4] := Dpmi_SegToSel(P.CPU.FS);
  DpmiCPU.SegSel[5] := Dpmi_SegToSel(P.CPU.GS);
  DpmiCPU.Reg.ESP := P.CPU.Regs.SP;
+ DpmiCPU.Active := True;
+End;
+
+{ Bascule reel -> protege PAR ECRITURE DIRECTE DE CR0 (bit PE 0->1), PAS    }
+{ via le protocole DPMI (INT 31h) - voir Emu_StepOne, cas $0F $22 (MOV      }
+{ CRn,r32), 2026-10-17, demande explicite de l'utilisateur ("Construire    }
+{ la bascule CR0 reelle") suite a l'enquete WIN.COM 386 Enhanced Mode.     }
+{ C'est le mecanisme qu'un VRAI noyau/VMM utilise pour ENTRER en mode      }
+{ protege en premier (il ne peut pas demander a un hote DPMI puisqu'il     }
+{ est lui-meme en train de LE DEVENIR) - fondamentalement different de     }
+{ Dpmi_Switch (CLIENT demandant poliment a un hote DEJA present) et de     }
+{ Emu_RawSwitchToProtected (reprise DPMI apres un aller-retour deja        }
+{ amorce par un hote). Contrairement aux 2, le code invite a DEJA fait     }
+{ tout le travail lui-meme (MOV CR3,...; LGDT; LIDT; MOV CR0,eax|PE|PG;    }
+{ JMP FAR immediat pour vider la file d attente, confirme octet pour       }
+{ octet en direct) - cette procedure n'a donc qu'a RECUPERER fidelement    }
+{ cet etat deja construit, pas a l'inventer. }
+Procedure Emu_RawSwitchToProtectedViaCR0(Var P: TEmulatorPanel);
+Var
+ I, Count: Integer;
+ B0, B1, B2, B3, B4, B5, B6, B7: Byte;
+ LimRaw: LongInt;
+ FarSeg: Word; FarOfs: LongInt; FarPtr: Word; Has66: Boolean;
+Begin
+ { 16e bogue reel CORRIGE (2026-10-17, meme enquete, trouve APRES le 15e     }
+ { ci-dessous une fois celui-la corrige et le vrai blocage mis a nu) :       }
+ { cette procedure est appelee DEPUIS Emu_StepOne, cas $0F $22, AUSSITOT     }
+ { apres que MOV CR0,EAX ait pose le bit PE - P.CPU.IP n a ete avance QUE    }
+ { des 3 octets de CETTE instruction (Inc(P.CPU.IP,3) cote appelant) et le   }
+ { code appelant fait "Exit" immediatement apres : le JMP FAR qui suit       }
+ { TOUJOURS immediatement (texte-livre x86, confirme octet pour octet -      }
+ { "EA D6 18 08 00" = JMP FAR 0008:18D6 - voir le commentaire de tete de     }
+ { cette procedure) n a PAS encore ete execute, P.CPU.Segs.CS/P.CPU.IP        }
+ { pointent donc encore sur le SEGMENT REEL-MODE (ici 00E4) et sur           }
+ { L INSTRUCTION JMP FAR ELLE-MEME (18D1), pas sur sa cible. L ANCIEN code    }
+ { prenait ces 2 valeurs TELLES QUELLES ("deja positionnes par le JMP FAR",   }
+ { affirmation JAMAIS VERIFIEE) - avec CS=00E4 interprete comme un SELECTEUR  }
+ { (Idx=00E4 Shr 3=28), qui ne correspond evidemment a AUCUNE entree GDT      }
+ { Present, declenchant TOUJOURS le garde-fou (Fault=sfInvalidCode) des que   }
+ { le vrai bogue de memoire physique (15e, ci-dessous) a ete corrige et a      }
+ { cesse de le masquer. Corrige : on DECODE ICI MEME le JMP FAR qui suit      }
+ { (forme ptr16:16, "EA"+offset 16 bits+segment 16 bits - celle du manuel     }
+ { x86 canonique pour vider la file d attente juste apres l ecriture de CR0 ; }
+ { gere aussi la forme ptr16:32 avec prefixe $66 par souci de completude) -   }
+ { lu en memoire REELLE (Emu_ReadByte/Word/DWord, la meme adressage que       }
+ { l instruction JMP FAR elle-meme aurait utilise si Emu_StepOne l avait      }
+ { executee) - et c est CE vrai CS:EIP cible qui sert desormais partout       }
+ { ci-dessous, pas P.CPU.Segs.CS/P.CPU.IP bruts. }
+ FarPtr := P.CPU.IP;
+ Has66 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, FarPtr) = $66;
+ If Has66 Then Inc(FarPtr);
+ If Emu_ReadByte(P.CPU, P.CPU.Segs.CS, FarPtr) = $EA Then Begin
+  Inc(FarPtr);
+  If Has66 Then Begin
+   FarOfs := Emu_ReadDWord(P.CPU, P.CPU.Segs.CS, FarPtr);
+   FarSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.CS, Word(FarPtr + 4));
+  End Else Begin
+   FarOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.CS, FarPtr);
+   FarSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.CS, Word(FarPtr + 2));
+  End;
+ End Else Begin
+  { Repli honnete : la forme attendue n est pas la, garder l ancien          }
+  { comportement (faux, mais pas pire qu avant ce correctif) plutot que      }
+  { d inventer une cible. }
+  FarSeg := P.CPU.Segs.CS;
+  FarOfs := P.CPU.IP;
+ End;
+ FillChar(DpmiCPU, SizeOf(DpmiCPU), 0);
+ { 17e bogue reel CORRIGE (2026-10-17, meme enquete, trouve APRES les 13     }
+ { "instructions reussies" rapportees par la passe precedente - toutes       }
+ { RE-VERIFIEES ici octet pour octet et s averant EN FAIT deja mal decodees  }
+ { des la toute PREMIERE instruction, PAS seulement au JMP FAR [ESI] final) :}
+ { l ancien code forcait DpmiCPU.Is32Bit:=True ICI, sur la foi d un          }
+ { raisonnement JAMAIS VERIFIE ("WIN386.EXE tourne deja en 32 bits a ce       }
+ { stade, prefixes 66/67 deja actifs cote reel/unreal mode") - ceci confond   }
+ { la bascule D ADRESSAGE 32 bits du code REEL/UNREAL D AVANT la bascule     }
+ { (vrai) avec le bit D/B (taille d operande PAR DEFAUT) du DESCRIPTEUR DE   }
+ { CODE CIBLE reellement charge APRES la bascule (une propriete du           }
+ { descripteur GDT, PAS de l ancien contexte reel-mode) - EXACTEMENT la       }
+ { MEME confusion deja rencontree et corrigee une fois pour Dpmi_Switch      }
+ { (voir son commentaire de tete, "Is32Bit pilotait le decodage depuis       }
+ { Want32 (choix du client)... FAUX, un vrai CPU decode selon le SEGMENT     }
+ { COURANT, pas une preference globale"), jamais appliquee ici. Confirme en  }
+ { direct (hook temporaire Dpmi_Step, trace octet-pour-octet) : le VRAI       }
+ { descripteur GDT du selecteur cible (Sel=0008, FlagsByte=$00 => bit D/B=0)  }
+ { est un segment de code 16 BITS, pas 32 - avec l ancien Is32Bit=True fixe,  }
+ { "B8 10 00" (MOV AX,0010h, 3 octets, 16 bits - l idiome CLASSIQUE de        }
+ { chargement de selecteur plat) etait lu comme "MOV EAX,imm32" (5 octets),   }
+ { engloutissant les 2 octets suivants comme poids fort de l immediat et      }
+ { desynchronisant TOUT le flux des la toute PREMIERE instruction protegee -  }
+ { invalidant donc la conclusion anterieure "13 instructions reussies", qui   }
+ { etait en fait deja du bruit decodage depuis le debut. Corrige : Is32Bit   }
+ { est desormais DERIVE du bit Big/D du VRAI descripteur GDT cible (deja     }
+ { copie fidelement dans DpmiCPU.LDT[] ci-dessous, voir le 15e correctif),    }
+ { assigne PLUS BAS une fois ce descripteur analyse (voir pres du garde-fou   }
+ { de Present) - PAS ici, avant que la GDT ne soit meme lue. }
+ DpmiCPU.CR0 := P.CPU.CR0;
+ DpmiCPU.CR2 := P.CPU.CR2;
+ DpmiCPU.CR3 := P.CPU.CR3;
+ DpmiCPU.GdtBase  := P.CPU.GdtBase;
+ DpmiCPU.GdtLimit := P.CPU.GdtLimit;
+ DpmiCPU.IdtBase  := P.CPU.IdtBase;
+ DpmiCPU.IdtLimit := P.CPU.IdtLimit;
+ { Copie FIDELE de chaque descripteur 8 octets de la VRAIE GDT (construite  }
+ { par le code invite lui-meme via de simples ecritures memoire, LGDT deja }
+ { execute - PAS une GDT synthetisee/approximee comme Dpmi_VcpiSynthFlatSel}
+ { le fait pour le cas VCPI, ou le vrai contenu n'est jamais accessible)    }
+ { dans notre table LDT[] interne. Dpmi_SelToIdx/Dpmi_SelBase l'indexent    }
+ { directement par Sel Shr 3 SANS distinguer TI=0(GDT)/TI=1(LDT) - une      }
+ { simplification deja en place ailleurs dans ce fichier - fidele tant que  }
+ { ce client (WIN386.EXE, qui n'utilise PAS de LDT separee a ce stade)      }
+ { ne melange pas les 2 espaces de selecteurs. }
+ { CR0.PG (pagination) est DEJA actif a ce stade precis (le code invite a   }
+ { pose PE ET PG dans la MEME ecriture de CR0, voir le commentaire de tete  }
+ { de cette procedure) - `GdtBase` (adresse chargee par LGDT) doit donc en  }
+ { toute rigueur passer par la traduction de pagination (CR3, deja copiee  }
+ { ci-dessus) avant d etre lue, PAS etre traitee comme une adresse          }
+ { physique directe - lecture via `Dpmi_ReadByte` (qui appelle deja         }
+ { `Dpmi_TranslateLin`) plutot que `Emu_ReadByteL(P.CPU, 0, ...)`.          }
+ { SUITE/RESOLU (2026-10-17, meme enquete) : `GdtBase` (0x800012A4) lui-meme }
+ { est CORRECT - retrace octet par octet depuis MOV CR3 jusqu'a LGDT (voir   }
+ { project_devenv_wincom_launch.md), AUCUNE desynchronisation 16/32 bits     }
+ { trouvee dans toute la sequence. La VRAIE cause (confirmee par dump        }
+ { croise des 2 tampons physiques au moment exact de la bascule) : WIN386   }
+ { construit la TOTALITE de son repertoire/tables de pages en ecrivant dans  }
+ { sa propre memoire etendue allouee via XMS (AH=48h) par la SEULE methode   }
+ { documentee pour du code reel-mode - Verrouiller(AH=0Ch)+Deplacer           }
+ { (AH=0Bh "Move Extended Memory Block")+Deverrouiller(AH=0Dh) - ce qui       }
+ { ecrit le VRAI contenu dans `EmuXmsMem`. Mais `Dpmi_TranslateLin`/         }
+ { `Dpmi_ReadByte` lisaient le repertoire de pages depuis `EmuDpmiExtMem`,   }
+ { un tampon PHYSIQUEMENT SEPARE (reserve aux sondes directes "unreal mode"/ }
+ { DPMI brutes) qui ne voit jamais ce que le pilote XMS ecrit - confirme     }
+ { octet pour octet : la PDE attendue (index 512, non-nulle, bit Present=1,  }
+ { base=0x1A1000) existe bel et bien dans `EmuXmsMem` au meme decalage       }
+ { depuis 1 Mo, alors qu `EmuDpmiExtMem` y restait a zero. **15e bogue reel  }
+ { CORRIGE** dans `Dpmi_ReadBytePhys`/`Dpmi_WriteBytePhys` (pas dans la      }
+ { sequence de decodage reel-mode comme les 14 precedents) : ces 2 fonctions }
+ { consultent desormais `EmuXmsMem` EN PREMIER pour toute adresse physique   }
+ { >= 1 Mo couverte par la capacite XMS annoncee, avant de retomber sur      }
+ { `EmuDpmiExtMem` pour le reste (capacite DPMI seule au-dela de XMS, ou     }
+ { XMS inactif) - voir leur commentaire de tete pour le detail complet. }
+ Count := (P.CPU.GdtLimit + 1) Div 8;
+ If Count > EMU_DPMI_MAX_SEL + 1 Then Count := EMU_DPMI_MAX_SEL + 1;
+ If Count < 0 Then Count := 0;
+ For I := 0 To Count - 1 Do Begin
+  B0 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8);
+  B1 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8 + 1);
+  B2 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8 + 2);
+  B3 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8 + 3);
+  B4 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8 + 4);
+  B5 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8 + 5);
+  B6 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8 + 6);
+  B7 := Dpmi_ReadByte(P, P.CPU.GdtBase + I * 8 + 7);
+  DpmiCPU.LDT[I].Present    := (B5 And $80) <> 0;
+  DpmiCPU.LDT[I].AccessByte := B5;
+  DpmiCPU.LDT[I].FlagsByte  := B6 And $F0;
+  DpmiCPU.LDT[I].Big        := (B6 And $40) <> 0;
+  DpmiCPU.LDT[I].IsCode     := (B5 And $08) <> 0;
+  DpmiCPU.LDT[I].Base       := LongInt(B2) Or (LongInt(B3) Shl 8) Or
+   (LongInt(B4) Shl 16) Or (LongInt(B7) Shl 24);
+  LimRaw := LongInt(B0) Or (LongInt(B1) Shl 8) Or (LongInt(B6 And $0F) Shl 16);
+  If (B6 And $80) <> 0 Then LimRaw := (LimRaw Shl 12) Or $FFF; { bit G }
+  DpmiCPU.LDT[I].Limit := LimRaw;
+ End;
+ DpmiCPU.LDTCount := Count;
+ { GARDE-FOU (2026-10-17) : si le selecteur CS cible ne resout PAS vers une  }
+ { entree GDT reellement Present (page non mappee derriere GdtBase, ou      }
+ { calcul en amont encore fautif), NE PAS engager la bascule - continuer    }
+ { quand meme produirait un EIP qui derive A L INFINI a travers de la       }
+ { memoire physique basse (deja observe en direct : plus de 16 millions de  }
+ { pas sans jamais atteindre de faute ni de fin propre). Mieux vaut une     }
+ { faute honnete et diagnosticable ICI (CS:IP juste apres le MOV CR0 qui a  }
+ { declenche cette tentative) qu'un emulateur fige silencieusement - meme   }
+ { philosophie que les autres replis "honnetes" deja etablis ailleurs dans  }
+ { ce fichier (CR2 jamais rempli automatiquement, etc.). Teste desormais    }
+ { sur le VRAI selecteur cible `FarSeg` (decode ci-dessus), pas sur          }
+ { `P.CPU.Segs.CS` (voir le 16e correctif en tete de procedure). }
+ If Not DpmiCPU.LDT[(FarSeg Shr 3) And EMU_DPMI_MAX_SEL].Present Then Begin
+  P.CPU.Fault := sfInvalidCode;
+  Exit;
+ End;
+ { 17e correctif (suite) : taille d operande/adresse PAR DEFAUT = bit Big/D  }
+ { du VRAI descripteur de code cible (voir le commentaire de tete) - PAS un  }
+ { True fige. Dpmi_Step (et Dpmi_DecodeModRM) relisent DpmiCPU.Is32Bit a     }
+ { CHAQUE instruction, donc toute bascule FAR ulterieure vers un AUTRE       }
+ { descripteur (16 ou 32 bits) devra re-deriver cette valeur de la meme      }
+ { facon - hors de portee de CE correctif (aucun JMP/CALL FAR n a encore ete }
+ { rencontre comme reussi dans cette enquete a ce jour, voir le fichier de   }
+ { memoire pour la liste des sites a eventuellement completer si repris). }
+ DpmiCPU.Is32Bit := DpmiCPU.LDT[(FarSeg Shr 3) And EMU_DPMI_MAX_SEL].Big;
+ { CS:EIP : la VRAIE cible du JMP FAR qui suit immediatement l ecriture de   }
+ { CR0 (decodee en tete de procedure, voir le 16e correctif) - PAS           }
+ { P.CPU.Segs.CS/P.CPU.IP bruts (qui pointent encore sur le JMP FAR          }
+ { lui-meme, jamais execute par Emu_StepOne puisque cette procedure prend   }
+ { la main avant). }
+ DpmiCPU.SegSel[1] := FarSeg;
+ DpmiCPU.EIP := FarOfs;
+ { ES/SS/DS/FS/GS : comme tout vrai noyau a ce stade precis, le code invite }
+ { n'a pas encore recharge ces registres avec de vrais selecteurs GDT -     }
+ { ils tiennent encore leurs valeurs REELLES (paragraphe) d'avant la        }
+ { bascule. Meme principe que Dpmi_Switch/Emu_RawSwitchToProtected : les    }
+ { aliaser immediatement via Dpmi_SegToSel plutot que les laisser nuls,     }
+ { pour que toute instruction suivant immediatement le JMP FAR reste        }
+ { utilisable avant le premier rechargement explicite. }
+ DpmiCPU.SegSel[0] := Dpmi_SegToSel(P.CPU.Segs.ES);
+ DpmiCPU.SegSel[2] := Dpmi_SegToSel(P.CPU.Segs.SS);
+ DpmiCPU.SegSel[3] := Dpmi_SegToSel(P.CPU.Segs.DS);
+ DpmiCPU.SegSel[4] := Dpmi_SegToSel(P.CPU.FS);
+ DpmiCPU.SegSel[5] := Dpmi_SegToSel(P.CPU.GS);
+ { Registres generaux : copie telle quelle, PAS de troncature ESP:=SP (a    }
+ { l inverse de Dpmi_Switch/Emu_RawSwitchToProtected, toujours atteints     }
+ { depuis un flux reel-mode 16 bits ou seul le mot bas de ESP est fiable) - }
+ { WIN386.EXE tourne deja en 32 bits AVANT cette bascule (prefixes $66/$67  }
+ { deja actifs), son ESP courant est deja une vraie valeur 32 bits fidele. }
+ DpmiCPU.Reg := P.CPU.Regs;
+ DpmiCPU.Flags.s := P.CPU.Flags.s;
  DpmiCPU.Active := True;
 End;
 
@@ -206832,16 +207234,7 @@ Var
  PhysAddr: LongInt;
  CX16: Word;
  PteVal: LongInt;
- DiagF_Vcpi: Text; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
- {$I-} Assign(DiagF_Vcpi, 'DIAGVCPICALL.LOG');
- If FileExists('DIAGVCPICALL.LOG') Then Append(DiagF_Vcpi) Else Rewrite(DiagF_Vcpi);
- {$I+}
- If IOResult = 0 Then Begin
-  WriteLn(DiagF_Vcpi, 'Step=', P.TotalSteps, ' AL=', P.CPU.Regs.AL,
-   ' CS:IP=', P.CPU.Segs.CS, ':', P.CPU.IP);
-  Close(DiagF_Vcpi);
- End;
  If P.CPU.Regs.AL = $0C Then Begin
   Emu_Vcpi_SwitchToProtected(P);
   Exit;
@@ -206967,10 +207360,13 @@ End;
 { Win32, 2026-09-12) : un vrai processeur teste ECX AVANT le corps pour un  }
 { prefixe REP/REPE/REPNE, sinon un compte initial de 0 deborderait a        }
 { $FFFFFFFF en decrementant apres coup. SI/DI utilisent la taille d adresse }
-{ courante (DpmiCPU.Is32Bit, meme simplification que Dpmi_DecodeModRM -     }
-{ pas de suivi $67 distinct) ; le segment de ESI suit DefSeg/HasOvr (DS par }
-{ defaut, override possible), celui de EDI est TOUJOURS ES (non              }
-{ surchargeable, comme sur un vrai x86). }
+{ courante - CORRIGE (17e correctif, 2026-10-17) : lit desormais            }
+{ DpmiCPU.AddrIs32 (suit vraiment un eventuel prefixe $67 pour CETTE        }
+{ instruction, voir TDpmiCPU.AddrIs32) au lieu de DpmiCPU.Is32Bit            }
+{ (taille par defaut du SEGMENT, sans prefixe - l ancienne simplification,  }
+{ "pas de suivi $67 distinct", explicitement revertie par ce correctif) ;   }
+{ le segment de ESI suit DefSeg/HasOvr (DS par defaut, override possible), }
+{ celui de EDI est TOUJOURS ES (non surchargeable, comme sur un vrai x86). }
 Procedure Dpmi_StringOp(Var P: TEmulatorPanel; Op2: Byte; OpSize: Byte;
  RepMode: Byte; DefSeg: Word; EIPStart: LongInt);
 Var
@@ -206984,7 +207380,7 @@ Begin
  If (RepMode <> 0) And (DpmiCPU.Reg.ECX = 0) Then Exit;
  If Op2 In [$A4, $A6, $AA, $AC, $AE, $6C, $6E] Then Sz := 1 Else Sz := OpSize;
  If EFG_DF In DpmiCPU.Flags.s Then Dir := -1 Else Dir := 1;
- If DpmiCPU.Is32Bit Then Begin
+ If DpmiCPU.AddrIs32 Then Begin
   SrcOfs := DpmiCPU.Reg.ESI; DstOfs := DpmiCPU.Reg.EDI;
  End Else Begin
   SrcOfs := DpmiCPU.Reg.SI; DstOfs := DpmiCPU.Reg.DI;
@@ -207085,7 +207481,7 @@ Begin
    SrcOfs := SrcOfs + Dir * Sz;
   End;
  End;
- If DpmiCPU.Is32Bit Then Begin
+ If DpmiCPU.AddrIs32 Then Begin { 17e correctif, voir le commentaire de tete }
   DpmiCPU.Reg.ESI := SrcOfs; DpmiCPU.Reg.EDI := DstOfs;
  End Else Begin
   DpmiCPU.Reg.SI := Word(SrcOfs); DpmiCPU.Reg.DI := Word(DstOfs);
@@ -207100,6 +207496,17 @@ Begin
   If Cont Then DpmiCPU.EIP := EIPStart;
  End;
 End;
+
+{ DIAGNOSTIC TEMPORAIRE - a retirer }
+Var
+ DiagDpmiPreSel: Word;
+ DiagDpmiPreEIP: LongInt;
+ DiagDpmiPreB: Byte;
+ DiagDpmiPreB2: Byte;
+ DiagDpmiFaultF2: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGDIVERGE.LOG }
+ EmuIrqDivergeArmed: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuIrqDivergeStart: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuCr0PgLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
 
 { Execute une seule instruction protegee. Ne fait rien si DpmiCPU.Active   }
 { est faux (securite - ne devrait pas etre appelee dans ce cas, voir le    }
@@ -207128,6 +207535,7 @@ Begin
  If Not DpmiCPU.Active Then Exit;
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
+ DpmiCPU.AddrIs32 := DpmiCPU.Is32Bit; { 17e correctif, voir TDpmiCPU.AddrIs32 }
  EIPStart := DpmiCPU.EIP;
  RepMode := 0;
  Repeat
@@ -207143,9 +207551,17 @@ Begin
    $3E: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[3]; Inc(DpmiCPU.EIP); End;
    $64: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[4]; Inc(DpmiCPU.EIP); End;
    $65: Begin HasOvr := True; DefSeg := DpmiCPU.SegSel[5]; Inc(DpmiCPU.EIP); End;
-   $67, $F0: Inc(DpmiCPU.EIP); { taille d adresse/LOCK - voir le commentaire }
-                               { de tete (portee) - adresse toujours selon   }
-                               { DpmiCPU.Is32Bit, pas de suivi $67 distinct. }
+   $67: Begin { 17e correctif (2026-10-17) : $67 INVERSE desormais reellement}
+    { la taille d ADRESSE pour CETTE instruction (voir TDpmiCPU.AddrIs32) -  }
+    { avant, ce prefixe etait un pur no-op (Inc(EIP) seul), confondant       }
+    { taille d adresse et taille d operande via le seul DpmiCPU.Is32Bit -    }
+    { confirme responsable d une corruption memoire reelle lors de l enquete}
+    { WIN.COM/WIN386.EXE (un ModRM 32 bits via $67 dans un segment 16 bits   }
+    { par defaut, decode a tort comme de l adressage 16 bits classique). }
+    DpmiCPU.AddrIs32 := Not DpmiCPU.AddrIs32;
+    Inc(DpmiCPU.EIP);
+   End;
+   $F0: Inc(DpmiCPU.EIP); { LOCK - sans effet, meme convention que le coeur reel }
    $F2: Begin RepMode := 2; Inc(DpmiCPU.EIP); End; { REPNE/REPNZ }
    $F3: Begin RepMode := 1; Inc(DpmiCPU.EIP); End; { REP/REPE/REPZ }
   Else Break;
@@ -207153,6 +207569,38 @@ Begin
  Until False;
  B := Dpmi_FetchByte(P, 0);
  Inc(DpmiCPU.EIP);
+ { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagDpmiPreSel := DpmiCPU.SegSel[1];
+ DiagDpmiPreEIP := EIPStart;
+ DiagDpmiPreB := B;
+ DiagDpmiPreB2 := Dpmi_FetchByte(P, 0);
+ { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete WIN.COM, chasse   }
+ { a la divergence BOUND vs trace DOSBox authentique) : declenche au       }
+ { premier passage a 0028:80285E34 (meme adresse que le "int 20" de        }
+ { reference dans LOGCPU.TXT, step DOSBox 3771019) puis capture les 400    }
+ { pas suivants - memes champs que LOGCPU.TXT pour comparaison directe. }
+ If Not EmuIrqDivergeArmed Then Begin
+  EmuIrqDivergeArmed := True;
+  EmuIrqDivergeStart := P.TotalSteps;
+ End;
+ If (P.TotalSteps >= EmuIrqDivergeStart) And
+    (P.TotalSteps <= EmuIrqDivergeStart + 1) Then Begin
+  {$I-} Assign(DiagDpmiFaultF2, 'DIAGDIVERGE.LOG');
+  If FileExists('DIAGDIVERGE.LOG') Then Append(DiagDpmiFaultF2)
+                                    Else Rewrite(DiagDpmiFaultF2);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagDpmiFaultF2, 'Step=', P.TotalSteps,
+    ' Sel:EIP=', HexWord(DpmiCPU.SegSel[1]), ':', HexLong(EIPStart),
+    ' B=', HexByte(B), ' B2=', HexByte(DiagDpmiPreB2),
+    ' EAX=', HexLong(DpmiCPU.Reg.EAX), ' ESI=', HexLong(DpmiCPU.Reg.ESI),
+    ' EBX=', HexLong(DpmiCPU.Reg.EBX), ' ESP=', HexLong(DpmiCPU.Reg.ESP),
+    ' CR0=', HexLong(DpmiCPU.CR0), ' CR3=', HexLong(DpmiCPU.CR3),
+    ' IdtBase=', HexLong(DpmiCPU.IdtBase));
+   Close(DiagDpmiFaultF2);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  If (B < $40) And ((B And 7) <= 5) And (B <> $0F) Then
   Dpmi_AluForm(P, B Shr 3, B And 7, OpSize, DefSeg, HasOvr)
  Else Case B Of
@@ -207294,10 +207742,335 @@ Begin
      ModRM := Dpmi_FetchByte(P, 0);
      Inc(DpmiCPU.EIP, 1);
      Case (ModRM Shr 3) And 7 Of
-      0: DpmiCPU.CR0 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+      0: Begin
+          { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete divergence}
+          { BOUND) : la pagination (CR0.PG) s active-t-elle avant le         }
+          { plantage ? Un seul passage, log le AVANT/APRES + CR3. }
+          If Not EmuCr0PgLogged Then Begin
+           EmuCr0PgLogged := True;
+           {$I-} Assign(DiagDpmiFaultF2, 'DIAGCR0PG.LOG'); Rewrite(DiagDpmiFaultF2);
+           {$I+}
+           If IOResult = 0 Then Begin
+            WriteLn(DiagDpmiFaultF2, 'Step=', P.TotalSteps,
+             ' OldCR0=', HexLong(DpmiCPU.CR0), ' NewCR0=',
+             HexLong(Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7)),
+             ' CR3=', HexLong(DpmiCPU.CR3));
+            Close(DiagDpmiFaultF2);
+           End;
+           {$I+} If IOResult <> 0 Then ;
+          End;
+          DpmiCPU.CR0 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+         End;
       2: DpmiCPU.CR2 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
       3: DpmiCPU.CR3 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
      End;
+    End;
+    $B6: Begin { MOVZX Gv, Eb - BOGUE REEL CORRIGE (2026-10-18, enquete WIN.COM  }
+         { 386 Enhanced Mode, suite du 19e correctif AddrSize32) : totalement    }
+         { absent de ce sous-dispatch $0F de Dpmi_Step (seul le coeur reel       }
+         { Emu_StepOne le gerait) - tombait sur le Else generique sfInvalidCode  }
+         { des qu un VRAI client protege (ici WIN386.EXE lui-meme, rencontre     }
+         { pour la 1ere fois une fois le 19e correctif applique) l execute. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     A := Dpmi_GetOp(P, Op, 1);
+     If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(A))
+     Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, A And $FF);
+    End;
+    $B7: Begin { MOVZX Gv, Ew - voir $B6 ci-dessus pour le contexte complet. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     A := Dpmi_GetOp(P, Op, 2);
+     If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(A))
+     Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, A And $FFFF);
+    End;
+    $A0, $A8: Begin { PUSH FS (0F A0) / PUSH GS (0F A8) - BOGUE REEL CORRIGE  }
+         { (2026-10-18, enquete WIN.COM, suite directe du 9e/10e correctif    }
+         { IDT/IRQ : une fois les IRQ materielles enfin livrees au VMM, son   }
+         { gestionnaire de minuterie protege execute "PUSH FS" - totalement   }
+         { absent de ce sous-dispatch $0F (seul le coeur reel Emu_StepOne le  }
+         { gerait, voir ses cas $0F $A0/$A8) - tombait sur le Else generique  }
+         { sfInvalidCode, qui desactivait DpmiCPU.Active et gelait toute       }
+         { progression ulterieure (symptome : logo Windows 3.1 fige, CPU      }
+         { quasi inactif). Meme registres SegSel[4]/[5] que partout ailleurs  }
+         { dans ce coeur pour FS/GS. }
+     If Op2 = $A0 Then Imm := DpmiCPU.SegSel[4] Else Imm := DpmiCPU.SegSel[5];
+     If OpSize = 2 Then Dpmi_Push16(P, Word(Imm)) Else Dpmi_Push32(P, Imm);
+    End;
+    $A1, $A9: Begin { POP FS (0F A1) / POP GS (0F A9) - voir $A0/$A8 ci-dessus}
+         { pour le contexte complet. Selecteur NUL toujours accepte (jamais   }
+         { SS), meme validation que $07/$1F (Dpmi_LoadSelOrFault). }
+     If OpSize = 2 Then Imm := Dpmi_Pop16(P) Else Imm := Word(Dpmi_Pop32(P));
+     NewSel := Word(Imm);
+     If Dpmi_LoadSelOrFault(P, NewSel, True) Then Begin
+      If Op2 = $A1 Then DpmiCPU.SegSel[4] := NewSel Else DpmiCPU.SegSel[5] := NewSel;
+     End;
+    End;
+    $BA: Begin { Groupe 8 : BT/BTS/BTR/BTC r/m, imm8 (reg=4..7) - BOGUE REEL  }
+         { CORRIGE (2026-10-18, meme enquete/meme cause que $A0/$A1/$A8/$A9   }
+         { ci-dessus : encore un opcode present cote reel (Emu_StepOne, voir  }
+         { son cas $0F $BA) mais totalement absent de ce sous-dispatch        }
+         { protege - rencontre juste apres, dans le gestionnaire de minuterie }
+         { protege de VMM, une fois les IRQ materielles enfin livrees. }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Sub := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+     A := Dpmi_GetOp(P, Op, OpSize);
+     If OpSize = 2 Then Begin
+      If ((Word(A) Shr (Byte(Imm) And 15)) And 1) <> 0
+       Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+      Case Sub Of
+       5: A := A Or (LongInt(1) Shl (Byte(Imm) And 15));
+       6: A := A And Not (LongInt(1) Shl (Byte(Imm) And 15));
+       7: A := A Xor (LongInt(1) Shl (Byte(Imm) And 15));
+      End;
+     End Else Begin
+      If ((LongWord(A) Shr (Byte(Imm) And 31)) And 1) <> 0
+       Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+      Case Sub Of
+       5: A := LongInt(LongWord(A) Or (LongWord(1) Shl (Byte(Imm) And 31)));
+       6: A := LongInt(LongWord(A) And Not (LongWord(1) Shl (Byte(Imm) And 31)));
+       7: A := LongInt(LongWord(A) Xor (LongWord(1) Shl (Byte(Imm) And 31)));
+      End;
+     End;
+     If Sub <> 4 Then Dpmi_PutOp(P, Op, OpSize, A);
+    End;
+    { BOGUE REEL CORRIGE (2026-10-18, meme enquete : chaque opcode ci-dessous}
+    { a ete rencontre juste apres le precedent, tous dans la MEME famille -  }
+    { des opcodes 386+ $0F deja implementes de longue date dans le coeur     }
+    { reel (Emu_StepOne) mais jamais portes dans ce sous-dispatch protege.   }
+    { Plutot que d attendre une nouvelle enquete-decouverte-correctif par    }
+    { opcode individuel (couteux : compilation+relance+attente a chaque      }
+    { fois), le reste de la famille deja identifiee comme manquante par      }
+    { inspection directe d Emu_StepOne est portee ici en un seul lot, meme   }
+    { logique/memes registres que leurs equivalents reels respectifs. }
+    $90..$9F: Begin { SETcc r/m8 }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     If Dpmi_TestCond(Op2 And $F) Then Dpmi_PutOp(P, Op, 1, 1)
+     Else Dpmi_PutOp(P, Op, 1, 0);
+    End;
+    $A3, $AB, $B3, $BB: Begin { BT/BTS/BTR/BTC r/m, r }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     A := Dpmi_GetOp(P, Op, OpSize);
+     If OpSize = 2 Then Begin
+      R16 := Dpmi_GetReg16(DpmiCPU.Reg, Reg);
+      If ((Word(A) Shr (R16 And 15)) And 1) <> 0
+       Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+      Case Op2 Of
+       $AB: A := A Or (LongInt(1) Shl (R16 And 15));
+       $B3: A := A And Not (LongInt(1) Shl (R16 And 15));
+       $BB: A := A Xor (LongInt(1) Shl (R16 And 15));
+      End;
+     End Else Begin
+      Res := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
+      If ((LongWord(A) Shr (LongWord(Res) And 31)) And 1) <> 0
+       Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+      Case Op2 Of
+       $AB: A := LongInt(LongWord(A) Or (LongWord(1) Shl (LongWord(Res) And 31)));
+       $B3: A := LongInt(LongWord(A) And Not (LongWord(1) Shl (LongWord(Res) And 31)));
+       $BB: A := LongInt(LongWord(A) Xor (LongWord(1) Shl (LongWord(Res) And 31)));
+      End;
+     End;
+     If Op2 <> $A3 Then Dpmi_PutOp(P, Op, OpSize, A);
+    End;
+    $A4, $A5: Begin { SHLD r/m,r,imm8 (0F A4) / SHLD r/m,r,CL (0F A5) }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     If Op2 = $A4 Then Begin
+      R8 := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+     End Else R8 := Dpmi_GetReg8(DpmiCPU.Reg, 1); { CL }
+     If OpSize = 2 Then Begin
+      R8 := R8 And 15;
+      If R8 > 0 Then Begin
+       V32 := Dpmi_GetOp(P, Op, 2);
+       Res := Dpmi_GetReg16(DpmiCPU.Reg, Reg);
+       If ((Word(V32) Shr (16 - R8)) And 1) <> 0
+        Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+       MulRes := Word((Word(V32) Shl R8) Or (Word(Res) Shr (16 - R8)));
+       Dpmi_PutOp(P, Op, 2, MulRes);
+       If (MulRes And $8000) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+                                   Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+       If Word(MulRes) = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF) Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+      End;
+     End Else Begin
+      R8 := R8 And 31;
+      If R8 > 0 Then Begin
+       V32 := Dpmi_GetOp(P, Op, 4);
+       Res := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
+       If ((LongWord(V32) Shr (32 - R8)) And 1) <> 0
+        Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+       MulRes := LongInt((LongWord(V32) Shl R8) Or (LongWord(Res) Shr (32 - R8)));
+       Dpmi_PutOp(P, Op, 4, MulRes);
+       If (LongWord(MulRes) And $80000000) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+                                                 Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+       If MulRes = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF) Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+      End;
+     End;
+    End;
+    $AC, $AD: Begin { SHRD r/m,r,imm8 (0F AC) / SHRD r/m,r,CL (0F AD) }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     If Op2 = $AC Then Begin
+      R8 := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+     End Else R8 := Dpmi_GetReg8(DpmiCPU.Reg, 1); { CL }
+     If OpSize = 2 Then Begin
+      R8 := R8 And 15;
+      If R8 > 0 Then Begin
+       V32 := Dpmi_GetOp(P, Op, 2);
+       Res := Dpmi_GetReg16(DpmiCPU.Reg, Reg);
+       If ((Word(V32) Shr (R8 - 1)) And 1) <> 0
+        Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+       MulRes := Word((Word(V32) Shr R8) Or (Word(Res) Shl (16 - R8)));
+       Dpmi_PutOp(P, Op, 2, MulRes);
+       If (MulRes And $8000) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+                                   Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+       If Word(MulRes) = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF) Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+      End;
+     End Else Begin
+      R8 := R8 And 31;
+      If R8 > 0 Then Begin
+       V32 := Dpmi_GetOp(P, Op, 4);
+       Res := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
+       If ((LongWord(V32) Shr (R8 - 1)) And 1) <> 0
+        Then Include(DpmiCPU.Flags.s, EFG_CF) Else Exclude(DpmiCPU.Flags.s, EFG_CF);
+       MulRes := LongInt((LongWord(V32) Shr R8) Or (LongWord(Res) Shl (32 - R8)));
+       Dpmi_PutOp(P, Op, 4, MulRes);
+       If (LongWord(MulRes) And $80000000) <> 0 Then Include(DpmiCPU.Flags.s, EFG_SF)
+                                                 Else Exclude(DpmiCPU.Flags.s, EFG_SF);
+       If MulRes = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF) Else Exclude(DpmiCPU.Flags.s, EFG_ZF);
+      End;
+     End;
+    End;
+    $AF: Begin { IMUL r, r/m (signe, resultat tronque dans r) }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     If OpSize = 2 Then Begin
+      V16 := Word(Dpmi_GetOp(P, Op, 2));
+      R16 := Dpmi_GetReg16(DpmiCPU.Reg, Reg);
+      MulRes := LongInt(SmallInt(R16)) * LongInt(SmallInt(V16));
+      If (MulRes < -32768) Or (MulRes > 32767) Then Begin
+       Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+      End Else Begin
+       Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+      End;
+      Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(MulRes));
+     End Else Begin
+      V32 := Dpmi_GetOp(P, Op, 4);
+      Res := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
+      MulRes64 := Int64(Res) * Int64(V32);
+      A := LongInt(LongWord(MulRes64 And $FFFFFFFF));
+      If (MulRes64 < -2147483648) Or (MulRes64 > 2147483647) Then Begin
+       Include(DpmiCPU.Flags.s, EFG_CF); Include(DpmiCPU.Flags.s, EFG_OF);
+      End Else Begin
+       Exclude(DpmiCPU.Flags.s, EFG_CF); Exclude(DpmiCPU.Flags.s, EFG_OF);
+      End;
+      Dpmi_SetReg32(DpmiCPU.Reg, Reg, A);
+     End;
+    End;
+    $B2, $B4, $B5: Begin { LSS/LFS/LGS r, m16:16/32 }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     Res := Dpmi_GetOp(P, Op, OpSize);
+     NewSel := Dpmi_ReadWord(P, Op.LinAddr + OpSize);
+     If Dpmi_LoadSelOrFault(P, NewSel, Op2 <> $B2) Then Begin
+      Case Op2 Of
+       $B2: DpmiCPU.SegSel[2] := NewSel; { SS }
+       $B4: DpmiCPU.SegSel[4] := NewSel; { FS }
+      Else  DpmiCPU.SegSel[5] := NewSel; { GS, $B5 }
+      End;
+      If OpSize = 2 Then Dpmi_SetReg16(DpmiCPU.Reg, Reg, Word(Res))
+      Else Dpmi_SetReg32(DpmiCPU.Reg, Reg, Res);
+     End;
+    End;
+    $BC, $BD: Begin { BSF r,r/m (index du bit de poids faible) / BSR (fort) }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     A := Dpmi_GetOp(P, Op, OpSize);
+     If OpSize = 2 Then Begin
+      If Word(A) = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF)
+      Else Begin
+       Exclude(DpmiCPU.Flags.s, EFG_ZF);
+       If Op2 = $BC Then Begin
+        ScanI := 0;
+        While ((Word(A) Shr ScanI) And 1) = 0 Do Inc(ScanI);
+       End Else Begin
+        ScanI := 15;
+        While ((Word(A) Shr ScanI) And 1) = 0 Do Dec(ScanI);
+       End;
+       Dpmi_SetReg16(DpmiCPU.Reg, Reg, ScanI);
+      End;
+     End Else Begin
+      If A = 0 Then Include(DpmiCPU.Flags.s, EFG_ZF)
+      Else Begin
+       Exclude(DpmiCPU.Flags.s, EFG_ZF);
+       If Op2 = $BC Then Begin
+        ScanI := 0;
+        While ((LongWord(A) Shr ScanI) And 1) = 0 Do Inc(ScanI);
+       End Else Begin
+        ScanI := 31;
+        While ((LongWord(A) Shr ScanI) And 1) = 0 Do Dec(ScanI);
+       End;
+       Dpmi_SetReg32(DpmiCPU.Reg, Reg, ScanI);
+      End;
+     End;
+    End;
+    $BE: Begin { MOVSX r32(/r16), r/m8 }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     V8 := Byte(Dpmi_GetOp(P, Op, 1));
+     If OpSize = 2 Then Begin
+      If (V8 And $80) <> 0 Then R16 := Word(V8) Or $FF00 Else R16 := Word(V8);
+      Dpmi_SetReg16(DpmiCPU.Reg, Reg, R16);
+     End Else Begin
+      If (V8 And $80) <> 0 Then A := LongInt(LongWord(V8) Or $FFFFFF00) Else A := LongInt(V8);
+      Dpmi_SetReg32(DpmiCPU.Reg, Reg, A);
+     End;
+    End;
+    $BF: Begin { MOVSX r32, r/m16 }
+     ModRM := Dpmi_FetchByte(P, 0);
+     Reg := (ModRM Shr 3) And 7;
+     Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
+     Inc(DpmiCPU.EIP, Op.Len);
+     V16 := Word(Dpmi_GetOp(P, Op, 2));
+     If (V16 And $8000) <> 0 Then A := LongInt(LongWord(V16) Or $FFFF0000) Else A := LongInt(V16);
+     Dpmi_SetReg32(DpmiCPU.Reg, Reg, A);
+    End;
+    $08, $09: ; { INVD/WBINVD - aucun cache modelise, no-op (meme choix que   }
+         { le coeur reel). }
+    $0B: Begin { UD2 - opcode invalide par conception, meme choix que le      }
+         { coeur reel : echec honnete plutot que silencieux. }
+     P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
+    End;
+    $30: ; { WRMSR : aucun MSR modelise, ignore (meme choix que le coeur reel)}
+    $31: Begin { RDTSC : meme source EmuTickCounter que le coeur reel. }
+     Dpmi_SetReg32(DpmiCPU.Reg, 0, EmuTickCounter);
+     Dpmi_SetReg32(DpmiCPU.Reg, 2, 0);
+    End;
+    $32: Begin { RDMSR : aucun MSR modelise, renvoie 0 (meme choix que reel). }
+     Dpmi_SetReg32(DpmiCPU.Reg, 0, 0); Dpmi_SetReg32(DpmiCPU.Reg, 2, 0);
     End;
    Else Begin
     P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False;
@@ -207382,15 +208155,17 @@ Begin
    { tracant TPX.EXE instruction par instruction APRES la bascule DPMI (voir   }
    { Dpmi_LoadSelOrFault / le RETF ajoute au stub, suite #12) : le tout         }
    { premier JCXZ rencontre y stoppait net l execution. CX/ECX suit            }
-   { DpmiCPU.Is32Bit (taille d ADRESSE), meme convention deja etablie par      }
-   { Dpmi_StringOp pour REP - pas de prefixe $67 distinct gere ici. }
+   { DpmiCPU.AddrIs32 (taille d ADRESSE de CETTE instruction - CORRIGE, 17e    }
+   { correctif, 2026-10-17 : lisait DpmiCPU.Is32Bit, "pas de prefixe $67       }
+   { distinct gere ici" - desormais gere, voir TDpmiCPU.AddrIs32), meme        }
+   { convention deja etablie par Dpmi_StringOp pour REP. }
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
    If (Imm And $80) <> 0 Then Imm := Imm Or LongInt($FFFFFF00);
    If B = $E3 Then Begin
-    If DpmiCPU.Is32Bit Then A := DpmiCPU.Reg.ECX Else A := DpmiCPU.Reg.CX;
+    If DpmiCPU.AddrIs32 Then A := DpmiCPU.Reg.ECX Else A := DpmiCPU.Reg.CX;
     If A = 0 Then DpmiCPU.EIP := DpmiCPU.EIP + Imm;
    End Else Begin
-    If DpmiCPU.Is32Bit Then Begin
+    If DpmiCPU.AddrIs32 Then Begin
      DpmiCPU.Reg.ECX := DpmiCPU.Reg.ECX - 1; A := DpmiCPU.Reg.ECX;
     End Else Begin
      DpmiCPU.Reg.CX := DpmiCPU.Reg.CX - 1; A := DpmiCPU.Reg.CX;
@@ -207664,8 +208439,11 @@ Begin
              { suivante reelle - confirme par trace : "A3 1E 00" (3 octets   }
              { attendus, MOV [001E],AX) faisait sauter EIP de +5 au lieu de  }
              { +3, et l ecriture visait une adresse 32 bits bidon au lieu de }
-             { l offset 001E reellement vise. }
-   If DpmiCPU.Is32Bit Then Begin
+             { l offset 001E reellement vise. Lit desormais AddrIs32 (17e    }
+             { correctif, 2026-10-17) au lieu de Is32Bit - le moffs suit la   }
+             { taille d ADRESSE de l instruction (prefixe $67), pas celle du  }
+             { segment par defaut. }
+   If DpmiCPU.AddrIs32 Then Begin
     Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
    End Else Begin
     Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
@@ -207673,7 +208451,7 @@ Begin
    Dpmi_SetReg8(DpmiCPU.Reg, 0, Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, Imm)));
   End;
   $A1: Begin { MOV eAX,moffs16/32 }
-   If DpmiCPU.Is32Bit Then Begin
+   If DpmiCPU.AddrIs32 Then Begin
     Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
    End Else Begin
     Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
@@ -207684,7 +208462,7 @@ Begin
     Dpmi_SetReg32(DpmiCPU.Reg, 0, Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, Imm)));
   End;
   $A2: Begin { MOV moffs8,AL }
-   If DpmiCPU.Is32Bit Then Begin
+   If DpmiCPU.AddrIs32 Then Begin
     Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
    End Else Begin
     Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
@@ -207692,7 +208470,7 @@ Begin
    Dpmi_WriteByte(P, Dpmi_LinAddr(DefSeg, Imm), Dpmi_GetReg8(DpmiCPU.Reg, 0));
   End;
   $A3: Begin { MOV moffs16/32,eAX }
-   If DpmiCPU.Is32Bit Then Begin
+   If DpmiCPU.AddrIs32 Then Begin
     Imm := Dpmi_FetchDWord(P, 0); Inc(DpmiCPU.EIP, 4);
    End Else Begin
     Imm := Dpmi_FetchWord(P, 0); Inc(DpmiCPU.EIP, 2);
@@ -207773,6 +208551,7 @@ Begin
    If Dpmi_LoadSelOrFault(P, RetCS16, False) Then Begin
     DpmiCPU.EIP := RetIP32;
     DpmiCPU.SegSel[1] := RetCS16;
+    Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete }
     If B = $CA Then DpmiCPU.Reg.ESP := DpmiCPU.Reg.ESP + Imm;
    End;
   End;
@@ -207851,24 +208630,49 @@ Begin
     DpmiCPU.SegSel[1] := Word(Dpmi_Pop32(P));
     DpmiCPU.Flags.Abs := Dpmi_Pop32(P);
    End;
+   Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete }
   End;
   $CC: Begin { INT 3 (exception 3, Breakpoint - voir DOC/DPMI.txt 6.3) }
-   If DpmiCPU.IntSel[3] <> 0 Then Dpmi_FireProtectedHandler(P, 3)
-   Else Begin
-    P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; { aucun          }
-     { gestionnaire installe : arret propre, voir le commentaire de tete    }
-     { de section (pas de debogueur protege simule dans cet emulateur). }
+   If Not Dpmi_FireViaRealIdt(P, 3) Then Begin
+    If DpmiCPU.IntSel[3] <> 0 Then Dpmi_FireProtectedHandler(P, 3)
+    Else Begin
+     P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; { aucun          }
+      { gestionnaire installe : arret propre, voir le commentaire de tete    }
+      { de section (pas de debogueur protege simule dans cet emulateur). }
+    End;
    End;
   End;
-  $CD: Begin { INT Ib }
+  $CD: Begin { INT Ib - BOGUE REEL CORRIGE (2026-10-18, comparaison avec un  }
+   { DOSBox debogueur reel compile pour l occasion, enquete WIN.COM) :        }
+   { ce dispatch ne consultait JAMAIS la VRAIE IDT chargee par LIDT           }
+   { (DpmiCPU.IdtBase/IdtLimit), seulement la table cote DPMI                 }
+   { IntSel/IntOfs (AX=0203h/0205h) - un raccourci valable pour un CLIENT     }
+   { DPMI ordinaire (qui ne charge jamais sa propre IDT) mais faux pour       }
+   { Windows WIN386 VMM, qui EST son propre hote protege et charge sa VRAIE   }
+   { IDT directement (confirme en direct : DOSBox execute "lidt [8000DA64]"  }
+   { puis un "int 20" qui RESSAUTE dans du code VMM via cette IDT et          }
+   { CONTINUE - jamais vu comme une fin de programme). Avant ce correctif,    }
+   { notre emulateur ignorait cette IDT et tombait tout droit dans            }
+   { Dpmi_ForwardIntToReal (semantique reel-mode/IVT), produisant un          }
+   { resultat fabrique au lieu d executer le vrai gestionnaire VMM. Desormais }
+   { la VRAIE IDT (quand chargee et que l entree est presente) est            }
+   { prioritaire, exactement comme un vrai 386+ : IntSel/IntOfs ne sert plus  }
+   { que de repli pour les clients DPMI classiques qui n ont jamais appele    }
+   { LIDT eux-memes (IdtBase reste alors a 0, voir sa valeur initiale). }
    Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
    If Imm = $31 Then Emu_DoInt31(P)  { toujours le service DPMI, jamais       }
                                       { redirigeable par le client (voir     }
                                       { DOC/DPMI.txt) }
-   Else If DpmiCPU.IntSel[Byte(Imm)] <> 0 Then
-    Dpmi_FireProtectedHandler(P, Byte(Imm))
-   Else
-    Dpmi_ForwardIntToReal(P, Byte(Imm));
+   Else Begin
+    { Factorise dans Dpmi_FireViaRealIdt (voir sa tete) - reutilisee aussi  }
+    { par la livraison d IRQ materielles, meme bogue/meme correctif. }
+    If Not Dpmi_FireViaRealIdt(P, Byte(Imm)) Then Begin
+     If DpmiCPU.IntSel[Byte(Imm)] <> 0 Then
+      Dpmi_FireProtectedHandler(P, Byte(Imm))
+     Else
+      Dpmi_ForwardIntToReal(P, Byte(Imm));
+    End;
+   End;
   End;
   $E8: Begin { CALL rel32/rel16 (proche) }
    If OpSize = 2 Then Begin
@@ -207938,7 +208742,7 @@ Begin
      End;
      6: Begin { DIV r/m8 : AL := AX div r/m8, AH := AX mod r/m8 (non signe) }
       V8 := Byte(Dpmi_GetOp(P, Op, 1));
-      If V8 = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+      If V8 = 0 Then Begin If Not Dpmi_FireViaRealIdt(P, 0) Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End; End
       Else Begin
        A := Word(DpmiCPU.Reg.AX) Div V8;
        Dpmi_SetReg8(DpmiCPU.Reg, 4, Byte(Word(DpmiCPU.Reg.AX) Mod V8)); { AH }
@@ -207947,7 +208751,7 @@ Begin
      End;
      7: Begin { IDIV r/m8 (signe) }
       V8 := Byte(Dpmi_GetOp(P, Op, 1));
-      If V8 = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+      If V8 = 0 Then Begin If Not Dpmi_FireViaRealIdt(P, 0) Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End; End
       Else Begin
        A := SmallInt(DpmiCPU.Reg.AX) Div ShortInt(V8);
        Dpmi_SetReg8(DpmiCPU.Reg, 4, Byte(SmallInt(DpmiCPU.Reg.AX) Mod ShortInt(V8)));
@@ -208015,7 +208819,7 @@ Begin
      6: Begin { DIV r/m16/32 (non signe) }
       If OpSize = 2 Then Begin
        Target := Word(Dpmi_GetOp(P, Op, 2));
-       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       If Target = 0 Then Begin If Not Dpmi_FireViaRealIdt(P, 0) Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End; End
        Else Begin
         A64 := (Int64(Word(DpmiCPU.Reg.DX)) Shl 16) Or Int64(Word(DpmiCPU.Reg.AX));
         Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(A64 Div Target));
@@ -208023,7 +208827,7 @@ Begin
        End;
       End Else Begin
        Target := Dpmi_GetOp(P, Op, 4);
-       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       If Target = 0 Then Begin If Not Dpmi_FireViaRealIdt(P, 0) Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End; End
        Else Begin
         A64 := (Int64(LongWord(DpmiCPU.Reg.EDX)) Shl 32) Or Int64(LongWord(DpmiCPU.Reg.EAX));
         Dpmi_SetReg32(DpmiCPU.Reg, 0, LongInt(LongWord(A64 Div LongWord(Target))));
@@ -208034,7 +208838,7 @@ Begin
      7: Begin { IDIV r/m16/32 (signe) }
       If OpSize = 2 Then Begin
        Target := SmallInt(Dpmi_GetOp(P, Op, 2));
-       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       If Target = 0 Then Begin If Not Dpmi_FireViaRealIdt(P, 0) Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End; End
        Else Begin
         A64 := Int64((LongInt(Word(DpmiCPU.Reg.DX)) Shl 16) Or LongInt(Word(DpmiCPU.Reg.AX)));
         Dpmi_SetReg16(DpmiCPU.Reg, 0, Word(A64 Div Target));
@@ -208042,7 +208846,7 @@ Begin
        End;
       End Else Begin
        Target := Dpmi_GetOp(P, Op, 4);
-       If Target = 0 Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End
+       If Target = 0 Then Begin If Not Dpmi_FireViaRealIdt(P, 0) Then Begin If DpmiCPU.IntSel[0] <> 0 Then Dpmi_FireProtectedHandler(P, 0) Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End; End; End
        Else Begin
         A64 := (Int64(LongInt(DpmiCPU.Reg.EDX)) Shl 32) Or Int64(LongWord(DpmiCPU.Reg.EAX));
         Dpmi_SetReg32(DpmiCPU.Reg, 0, LongInt(A64 Div Target));
@@ -208134,6 +208938,7 @@ Begin
       End;
       DpmiCPU.SegSel[1] := NewSel;
       DpmiCPU.EIP := Target;
+      Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete }
      End;
     End;
     4: DpmiCPU.EIP := Dpmi_GetOp(P, Op, OpSize); { JMP near indirect }
@@ -208154,13 +208959,17 @@ Begin
      Else If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
       DpmiCPU.SegSel[1] := NewSel;
       DpmiCPU.EIP := Target;
+      Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete - JMP FAR }
+       { [ESI] indirect, le site exactement rencontre lors de cette enquete }
      End;
     End;
     6: If OpSize = 2 Then Dpmi_Push16(P, Word(Dpmi_GetOp(P, Op, 2)))
        Else Dpmi_Push32(P, Dpmi_GetOp(P, Op, 4)); { PUSH Ev }
    Else Begin
-    If DpmiCPU.IntSel[6] <> 0 Then Dpmi_FireProtectedHandler(P, 6)
-    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    If Not Dpmi_FireViaRealIdt(P, 6) Then Begin
+     If DpmiCPU.IntSel[6] <> 0 Then Dpmi_FireProtectedHandler(P, 6)
+     Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    End;
    End;
    End;
   End;
@@ -208279,6 +209088,13 @@ Begin
   $62: Begin { BOUND Gv,Ma (80186+) - #BR (exception 5) relaye vers un         }
    { gestionnaire installe par l invite si present, meme philosophie que      }
    { toutes les autres fautes de cette enquete (sinon arret honnete). }
+   { BOGUE REEL CORRIGE (2026-10-18, meme enquete/meme cause que              }
+   { Dpmi_FireViaRealIdt ci-dessus) : ne consultait QUE IntSel[5] (table      }
+   { DPMI), jamais la VRAIE IDT chargee par LIDT - un noyau protege comme     }
+   { VMM installe ses propres gestionnaires d EXCEPTION (pas seulement        }
+   { d interruption logicielle/materielle) dans CETTE IDT, jamais via les     }
+   { services DPMI AX=0203h/0205h. Meme priorite desormais : IDT reelle      }
+   { d abord, IntSel en repli. }
    ModRM := Dpmi_FetchByte(P, 0);
    Reg := (ModRM Shr 3) And 7;
    Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
@@ -208288,16 +209104,20 @@ Begin
     A := Dpmi_ReadWord(P, Op.LinAddr);
     Res := Dpmi_ReadWord(P, Op.LinAddr + 2);
     If (SmallInt(R16) < SmallInt(Word(A))) Or (SmallInt(R16) > SmallInt(Word(Res))) Then Begin
-     If DpmiCPU.IntSel[5] <> 0 Then Dpmi_FireProtectedHandler(P, 5)
-     Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+     If Not Dpmi_FireViaRealIdt(P, 5) Then Begin
+      If DpmiCPU.IntSel[5] <> 0 Then Dpmi_FireProtectedHandler(P, 5)
+      Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+     End;
     End;
    End Else Begin
     A := Dpmi_GetReg32(DpmiCPU.Reg, Reg);
     Res := Dpmi_ReadDWord(P, Op.LinAddr);
     Target := Dpmi_ReadDWord(P, Op.LinAddr + 4);
     If (A < Res) Or (A > Target) Then Begin
-     If DpmiCPU.IntSel[5] <> 0 Then Dpmi_FireProtectedHandler(P, 5)
-     Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+     If Not Dpmi_FireViaRealIdt(P, 5) Then Begin
+      If DpmiCPU.IntSel[5] <> 0 Then Dpmi_FireProtectedHandler(P, 5)
+      Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+     End;
     End;
    End;
   End;
@@ -208358,6 +209178,7 @@ Begin
      Dpmi_Push32(P, DpmiCPU.SegSel[1]); Dpmi_Push32(P, DpmiCPU.EIP);
     End;
     DpmiCPU.SegSel[1] := NewSel; DpmiCPU.EIP := Target;
+    Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete }
    End;
   End;
   $9B: ; { WAIT/FWAIT - synchronisation bus/exceptions non modelisee, sans    }
@@ -208405,15 +209226,18 @@ Begin
   End;
   $CE: Begin { INTO : declenche l exception 4 (Overflow) SEULEMENT si OF=1 }
    If EFG_OF In DpmiCPU.Flags.s Then Begin
-    If DpmiCPU.IntSel[4] <> 0 Then Dpmi_FireProtectedHandler(P, 4)
-    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    If Not Dpmi_FireViaRealIdt(P, 4) Then Begin
+     If DpmiCPU.IntSel[4] <> 0 Then Dpmi_FireProtectedHandler(P, 4)
+     Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+    End;
    End;
   End;
   $D6: Begin { SALC/SETALC (non documente, tous les 386+ reels) }
    If EFG_CF In DpmiCPU.Flags.s Then DpmiCPU.Reg.AL := $FF Else DpmiCPU.Reg.AL := $00;
   End;
-  $D7: Begin { XLAT - AL := [DefSeg:(e)BX+AL] }
-   If DpmiCPU.Is32Bit Then
+  $D7: Begin { XLAT - AL := [DefSeg:(e)BX+AL] - suit AddrIs32 (17e correctif), }
+             { pas Is32Bit : (E)BX est un registre d ADRESSAGE ici. }
+   If DpmiCPU.AddrIs32 Then
     DpmiCPU.Reg.AL := Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, DpmiCPU.Reg.EBX + DpmiCPU.Reg.AL))
    Else
     DpmiCPU.Reg.AL := Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, Word(DpmiCPU.Reg.BX + DpmiCPU.Reg.AL)));
@@ -208440,11 +209264,14 @@ Begin
    End;
    If Dpmi_LoadSelOrFault(P, NewSel, False) Then Begin
     DpmiCPU.SegSel[1] := NewSel; DpmiCPU.EIP := Target;
+    Dpmi_SyncIs32Bit; { 17e correctif, voir son commentaire de tete }
    End;
   End;
   $F1: Begin { INT1/ICEBP (non documente, tous les 386+ reels) }
-   If DpmiCPU.IntSel[1] <> 0 Then Dpmi_FireProtectedHandler(P, 1)
-   Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+   If Not Dpmi_FireViaRealIdt(P, 1) Then Begin
+    If DpmiCPU.IntSel[1] <> 0 Then Dpmi_FireProtectedHandler(P, 1)
+    Else Begin P.CPU.Fault := sfInvalidCode; DpmiCPU.Active := False; End;
+   End;
   End;
   { ======================================================================= }
  Else Begin
@@ -208458,10 +209285,12 @@ Begin
   { proprement par ses propres moyens (meme philosophie deja appliquee a  }
   { #0 et #0D ci-dessus/dans Dpmi_LoadSelOrFault) - repli honnete           }
   { seulement si AUCUN gestionnaire n est installe. }
-  If DpmiCPU.IntSel[6] <> 0 Then Dpmi_FireProtectedHandler(P, 6)
-  Else Begin
-   P.CPU.Fault := sfInvalidCode;
-   DpmiCPU.Active := False;
+  If Not Dpmi_FireViaRealIdt(P, 6) Then Begin
+   If DpmiCPU.IntSel[6] <> 0 Then Dpmi_FireProtectedHandler(P, 6)
+   Else Begin
+    P.CPU.Fault := sfInvalidCode;
+    DpmiCPU.Active := False;
+   End;
   End;
  End;
  End;
@@ -209776,9 +210605,26 @@ Begin
 End;
 
 { Verifier les IRQ en attente et tirer la plus prioritaire si IF=1. }
+{ BOGUE REEL CORRIGE (2026-10-18, meme enquete/meme comparaison DOSBox que  }
+{ Dpmi_FireViaRealIdt ci-dessus) : cette procedure gatait TOUJOURS sur      }
+{ `P.CPU.Flags.s` (coeur reel-mode) et livrait TOUJOURS via `Emu_FireHwInt` }
+{ (IVT reel-mode, P.CPU.Segs.CS/IP) - meme quand `DpmiCPU.Active` (mode     }
+{ protege), ou P.CPU N EST PLUS DU TOUT execute (voir DOS_RunOneChunk :     }
+{ Dpmi_Step(P) remplace Emu_StepOne(P) tant que DpmiCPU.Active). Des lors   }
+{ qu un programme protege comme WIN386 VMM attend un VRAI tic IRQ0/minuteur}
+{ (PIT) pour poursuivre - ce qui arrive typiquement juste apres son premier}
+{ affichage graphique - cet IRQ0 etait gate sur un drapeau IF FIGE/sans     }
+{ rapport (celui du coeur reel dormant) puis, meme s il passait, livre dans}
+{ un coeur qui ne tourne plus : VMM attendait donc INDEFINIMENT, CPU quasi }
+{ inactif (confirme en direct : WIN.COM reste fige sur le logo Windows 3.1 }
+{ apres le 9e correctif, ~0.4% CPU sur 60s reels). }
 Procedure Emu_ServiceIrqs(Var P: TEmulatorPanel);
 Begin
- If Not (EFG_IF In P.CPU.Flags.s) Then Exit;
+ If DpmiCPU.Active Then Begin
+  If Not (EFG_IF In DpmiCPU.Flags.s) Then Exit;
+ End Else Begin
+  If Not (EFG_IF In P.CPU.Flags.s) Then Exit;
+ End;
  { TopView BEGINC/ENDC (INT 15h AX=101Bh/101Ch) : "desactive les           }
  { changements de tache" - la seule chose qui pourrait faire changer de    }
  { contexte dans cet emulateur mono-tache est une IRQ, donc gater          }
@@ -209792,33 +210638,49 @@ Begin
  If ((EmuIrqPending And $01) <> 0) And ((EmuPICMaster.IMR And $01) = 0) Then Begin
    EmuIrqPending := EmuIrqPending And Not Byte($01);
    EmuPICMaster.ISR := EmuPICMaster.ISR Or $01;
-   { BOGUE REEL CORRIGE (2026-09-06, question directe de l utilisateur :     }
-   { "Est-ce que l'interruption 1Ch a ete correctement implementee ?") -     }
-   { NON, elle ne l etait pas du tout : recherche exhaustive dans tout ce    }
-   { fichier, aucun Emu_FireHwInt/Emu_DoInt ne visait jamais le vecteur      }
-   { $1C. Sur un vrai PC, le gestionnaire BIOS par defaut de INT 08h met a   }
-   { jour le compteur de tics (deja fait ici par Emu_TimerTick) PUIS appelle }
-   { INCONDITIONNELLEMENT INT 1Ch (dont le gestionnaire par defaut n est     }
-   { qu un simple retour immediat) - un TSR ou programme qui accroche ce     }
-   { vecteur (tres courant : horloges, barres de progression, planifica-     }
-   { teurs) ne recevait donc jamais aucun appel periodique. Corrige en       }
-   { chainant nativement vers INT 1Ch quand il est reellement accroche,      }
-   { juste apres le tic - SEULEMENT si INT 08h lui-meme n est PAS accroche   }
-   { (s il l est, le code invite gere sa propre chaine, comme un vrai        }
-   { gestionnaire INT 08h de remplacement le ferait). L ISR du 8259A n est   }
-   { jamais lu ailleurs dans ce fichier (seul l IMR gate reellement la       }
-   { livraison, voir le commentaire juste au-dessus) - aucun risque de       }
-   { blocage en sautant ainsi le trampoline INT 08h par defaut. }
-   If Emu_IntIsHooked(P, $08) Then
-    Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 0))
-   Else If Emu_IntIsHooked(P, $1C) Then
-    Emu_FireHwInt(P, $1C);
+   If DpmiCPU.Active Then Begin
+    { Mode protege : VRAIE IDT prioritaire (voir Dpmi_FireViaRealIdt), puis }
+    { repli IntSel/IntOfs DPMI - PAS de repli vers Emu_FireHwInt/P.CPU, qui }
+    { ne tourne pas (livrerait un IRQ dans le vide, pire qu une absorption  }
+    { silencieuse). Chainage INT 1Ch (ci-dessous) : convention BIOS reel-   }
+    { mode, sans objet pour un noyau protege comme VMM. }
+    If Not Dpmi_FireViaRealIdt(P, Byte(EmuPICMaster.VectorBase + 0)) Then
+     If DpmiCPU.IntSel[Byte(EmuPICMaster.VectorBase + 0)] <> 0 Then
+      Dpmi_FireProtectedHandler(P, Byte(EmuPICMaster.VectorBase + 0));
+   End Else Begin
+    { BOGUE REEL CORRIGE (2026-09-06, question directe de l utilisateur :    }
+    { "Est-ce que l'interruption 1Ch a ete correctement implementee ?") -    }
+    { NON, elle ne l etait pas du tout : recherche exhaustive dans tout ce   }
+    { fichier, aucun Emu_FireHwInt/Emu_DoInt ne visait jamais le vecteur     }
+    { $1C. Sur un vrai PC, le gestionnaire BIOS par defaut de INT 08h met a  }
+    { jour le compteur de tics (deja fait ici par Emu_TimerTick) PUIS appelle}
+    { INCONDITIONNELLEMENT INT 1Ch (dont le gestionnaire par defaut n est    }
+    { qu un simple retour immediat) - un TSR ou programme qui accroche ce    }
+    { vecteur (tres courant : horloges, barres de progression, planifica-    }
+    { teurs) ne recevait donc jamais aucun appel periodique. Corrige en      }
+    { chainant nativement vers INT 1Ch quand il est reellement accroche,     }
+    { juste apres le tic - SEULEMENT si INT 08h lui-meme n est PAS accroche  }
+    { (s il l est, le code invite gere sa propre chaine, comme un vrai       }
+    { gestionnaire INT 08h de remplacement le ferait). L ISR du 8259A n est  }
+    { jamais lu ailleurs dans ce fichier (seul l IMR gate reellement la      }
+    { livraison, voir le commentaire juste au-dessus) - aucun risque de      }
+    { blocage en sautant ainsi le trampoline INT 08h par defaut. }
+    If Emu_IntIsHooked(P, $08) Then
+     Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 0))
+    Else If Emu_IntIsHooked(P, $1C) Then
+     Emu_FireHwInt(P, $1C);
+   End;
    Exit;
  End;
  If ((EmuIrqPending And $02) <> 0) And ((EmuPICMaster.IMR And $02) = 0) Then Begin
    EmuIrqPending := EmuIrqPending And Not Byte($02);
    EmuPICMaster.ISR := EmuPICMaster.ISR Or $02;
-   Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 1));
+   If DpmiCPU.Active Then Begin
+    If Not Dpmi_FireViaRealIdt(P, Byte(EmuPICMaster.VectorBase + 1)) Then
+     If DpmiCPU.IntSel[Byte(EmuPICMaster.VectorBase + 1)] <> 0 Then
+      Dpmi_FireProtectedHandler(P, Byte(EmuPICMaster.VectorBase + 1));
+   End Else
+    Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 1));
    Exit;
  End;
 End;
@@ -209857,6 +210719,7 @@ End;
 {$PUSH}{$Q-}{$R-}
 Procedure Emu_StepOne(Var P: TEmulatorPanel);
 Var
+ CR0WasPE: Boolean; { voir $0F $22 (MOV CRn,r32) - detection bascule reelle }
  OpCode, ModRM, AluOp: Byte;
  Imm8: Byte;
  Imm16: Word;
@@ -210119,7 +210982,8 @@ Begin
   Case OpCode And 7 Of
    0: Begin { ALU rm8, r8 }
        ModRM := Emu_FetchByte(P.CPU, 1);
-       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                            Else Emu_DecodeModRM(P.CPU, ModRM, Op);
        V8 := Emu_GetOpByte(P.CPU, Op);
        S8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
        R8 := Emu_AluByte(P.CPU, AluOp, V8, S8);
@@ -210128,7 +210992,8 @@ Begin
       End;
    1: Begin { ALU rm16, r16 (rm32, r32 si OperandSize32 - 2026-08-24, HIMEM.SYS) }
        ModRM := Emu_FetchByte(P.CPU, 1);
-       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                            Else Emu_DecodeModRM(P.CPU, ModRM, Op);
        If P.CPU.OperandSize32 Then Begin
         V32 := Emu_GetOpDWord(P.CPU, Op);
         S32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
@@ -210144,7 +211009,8 @@ Begin
       End;
    2: Begin { ALU r8, rm8 }
        ModRM := Emu_FetchByte(P.CPU, 1);
-       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                            Else Emu_DecodeModRM(P.CPU, ModRM, Op);
        S8 := Emu_GetOpByte(P.CPU, Op);
        V8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
        R8 := Emu_AluByte(P.CPU, AluOp, V8, S8);
@@ -210154,7 +211020,8 @@ Begin
       End;
    3: Begin { ALU r16, rm16 (r32, rm32 si OperandSize32) }
        ModRM := Emu_FetchByte(P.CPU, 1);
-       Emu_DecodeModRM(P.CPU, ModRM, Op);
+       If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                            Else Emu_DecodeModRM(P.CPU, ModRM, Op);
        If P.CPU.OperandSize32 Then Begin
         S32 := Emu_GetOpDWord(P.CPU, Op);
         V32 := Emu_GetReg32(P.CPU, (ModRM Shr 3) And 7);
@@ -210399,7 +211266,8 @@ Begin
    Begin
     SubOp := OpCode;  { recuperer pour log }
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     { Diagnostic : loguer les 50 premiers ESC opcodes vus. }
     If EmuFpuLogged < 50 Then Begin
      Inc(EmuFpuLogged);
@@ -210720,7 +211588,8 @@ Begin
        { fautive consideree terminee, pas reprise au retour). }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     R16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
     V16 := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs));
     S16 := Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs + 2));
@@ -210739,7 +211608,8 @@ Begin
        { TEmuCPU.CR0, seul le bit PE est suivi). }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
     S16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
     If (V16 And 3) < (S16 And 3) Then Begin
@@ -210753,7 +211623,8 @@ Begin
   $69: { IMUL r16, r/m16, imm16 (80186+) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
     Imm16 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
               P.CPU.IP + 1 + Op.Len) Or
@@ -210774,7 +211645,8 @@ Begin
   $6B: { IMUL r16, r/m16, imm8 sign-extended (80186+) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
     Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
               P.CPU.IP + 1 + Op.Len);
@@ -211045,10 +211917,36 @@ Begin
            End;
            Inc(P.CPU.IP, 3);
           End;
-     $22: Begin { MOV CRn, r32 - voir $20 ci-dessus pour le contexte complet. }
+     $22: Begin { MOV CRn, r32 - voir $20 ci-dessus pour le contexte complet.
+           BOGUE REEL CORRIGE (2026-10-17, enquete WIN.COM 386 Enhanced
+           Mode, "Construire la bascule CR0 reelle", demande explicite de
+           l utilisateur) : ecrire CR0 avec le bit PE (bit 0) passant de 0
+           a 1 EST le mecanisme qu'un VRAI noyau/VMM (par opposition a un
+           CLIENT DPMI demandant poliment a un hote deja present, voir
+           Dpmi_Switch) utilise pour ENTRER en mode protege en premier.
+           Confirme en direct : WIN386.EXE execute EXACTEMENT cette
+           sequence (MOV CR3,...; LGDT; LIDT; MOV CR0,eax avec eax
+           |=80000001h; JMP FAR immediat pour vider la file d attente).
+           Avant ce correctif, rien ne detectait cette transition :
+           Emu_StepOne continuait d interpreter le CS=0008 qui suit comme
+           une VALEUR DE PARAGRAPHE REEL-MODE (physique=8*16+offset) au
+           lieu d un vrai selecteur GDT plat - ca "marchait" par
+           coincidence pendant des dizaines de milliers d instructions (la
+           GDT reelle de WIN386.EXE place son selecteur de code plat a une
+           base proche de 0) avant de diverger et planter (div0 a
+           21CD:3E00, voir [[project_devenv_wincom_launch]]). }
            ModRM := Emu_FetchByte(P.CPU, 2);
            Case (ModRM Shr 3) And 7 Of
-            0: P.CPU.CR0 := Emu_GetReg32(P.CPU, ModRM And 7);
+            0: Begin
+                CR0WasPE := (P.CPU.CR0 And 1) <> 0;
+                P.CPU.CR0 := Emu_GetReg32(P.CPU, ModRM And 7);
+                If (Not CR0WasPE) And ((P.CPU.CR0 And 1) <> 0) And
+                   (Not DpmiCPU.Active) Then Begin
+                 Inc(P.CPU.IP, 3);
+                 Emu_RawSwitchToProtectedViaCR0(P);
+                 Exit;
+                End;
+               End;
             2: P.CPU.CR2 := Emu_GetReg32(P.CPU, ModRM And 7);
             3: P.CPU.CR3 := Emu_GetReg32(P.CPU, ModRM And 7);
             4: P.CPU.CR4 := Emu_GetReg32(P.CPU, ModRM And 7);
@@ -212051,7 +212949,8 @@ Begin
         { site de Emu_GetSReg. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Emu_PutOpWord(P.CPU, Op,
      Emu_GetSReg(P.CPU, (ModRM Shr 3) And 7));
     Inc(P.CPU.IP, 1 + Op.Len);
@@ -212063,7 +212962,8 @@ Begin
         { repliait FS(reg=4)/GS(reg=5) sur ES/CS - voir Emu_GetSReg. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
     Emu_SetSReg(P.CPU, (ModRM Shr 3) And 7, V16);
     Emu_LoadSregUnreal(P.CPU, V16);
@@ -212091,11 +212991,27 @@ Begin
      Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7, Word(Op.Ofs));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
-  $8F: { POP rm16 (groupe : seul subop 0 defini) }
+  $8F: { POP rm16 (groupe 1A : seul subop 0 defini) - BOGUE REEL CORRIGE     }
+       { (14e, enquete WIN.COM 386 Enhanced Mode, voir                      }
+       { [[project_devenv_wincom_launch]]) : ignorait totalement            }
+       { P.CPU.OperandSize32, exactement le meme bogue deja corrige pour    }
+       { $C7/$81/$8D/$FF(SubOp=6) - faisait TOUJOURS un POP 16 bits (2      }
+       { octets) meme avec le prefixe $66 actif (POP r/m32 attendu, 4       }
+       { octets). Confirme en direct : "66 8F 06 9A 01" (POP DWORD PTR      }
+       { [019A]) a 00E4:0BA5 n avancait SP que de 2 au lieu de 4 - les 2     }
+       { POP registre 32 bits suivants (deja corrects) lisaient alors       }
+       { chacun 2 octets trop loin, et le RET final (00E4:0BAE) depilait    }
+       { en consequence une "adresse de retour" perimee/decalee (0x0018     }
+       { au lieu de 0x176C) - cause RACINE du RET errant documente plus     }
+       { haut dans [[project_devenv_wincom_launch]]. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Emu_PutOpWord(P.CPU, Op, Emu_PopWord(P.CPU));
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.OperandSize32 Then
+     Emu_PutOpDWord(P.CPU, Op, Emu_PopDWord(P.CPU))
+    Else
+     Emu_PutOpWord(P.CPU, Op, Emu_PopWord(P.CPU));
     Inc(P.CPU.IP, 1 + Op.Len);
    End;
   $C5: { LDS r16, m32 - BOGUE REEL CORRIGE 2026-08-25 : LDS/LES chargeaient   }
@@ -212112,7 +213028,8 @@ Begin
         { l adressage "unreal mode" lui-meme fonctionne correctement. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7,
      Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs)));
     P.CPU.Segs.DS :=
@@ -212123,7 +213040,8 @@ Begin
   $C4: { LES r16, m32 - voir $C5 ci-dessus pour le contexte complet. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Emu_SetReg16(P.CPU, (ModRM Shr 3) And 7,
      Emu_ReadWord(P.CPU, Op.Seg, Word(Op.Ofs)));
     P.CPU.Segs.ES :=
@@ -212134,7 +213052,8 @@ Begin
   $86: { XCHG rm8, r8 }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     V8 := Emu_GetOpByte(P.CPU, Op);
     R8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
     Emu_PutOpByte(P.CPU, Op, R8);
@@ -212172,7 +213091,8 @@ Begin
   $84: { TEST rm8, r8 }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     V8 := Emu_GetOpByte(P.CPU, Op);
     S8 := Emu_GetReg8(P.CPU, (ModRM Shr 3) And 7);
     R8 := Emu_AluByte(P.CPU, 4, V8, S8);  { AND, drapeaux seuls }
@@ -212181,7 +213101,8 @@ Begin
   $85: { TEST rm16, r16 }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     V16 := Emu_GetOpWord(P.CPU, Op);
     S16 := Emu_GetReg16(P.CPU, (ModRM Shr 3) And 7);
     R16 := Emu_AluWord(P.CPU, 4, V16, S16);
@@ -212429,7 +213350,8 @@ Begin
   $80, $82: { ALU rm8, imm8 (op dans bits 5..3 du ModRM) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
      P.CPU.IP + 1 + Op.Len);
     AluOp := (ModRM Shr 3) And 7;
@@ -212438,22 +213360,39 @@ Begin
     If AluOp <> 7 Then Emu_PutOpByte(P.CPU, Op, R8);
     Inc(P.CPU.IP, 2 + Op.Len);
    End;
-  $81: { ALU rm16, imm16 }
+  $81: { ALU rm16, imm16 (imm32 si prefixe $66, voir le commentaire de tete
+        du cas $C7 - MEME BOGUE REEL, jamais applique ici) : CORRIGE
+        (2026-10-18, suite enquete WIN.COM 386 Enhanced Mode) - ce cas
+        ignorait totalement P.CPU.OperandSize32, lisant TOUJOURS un
+        immediat 16 bits et n avancant IP que de 3+Op.Len meme quand le
+        prefixe $66 imposait un immediat 32 bits - les 2 octets de poids
+        fort de l immediat restaient alors dans le flux, re-decodes comme
+        un FAUX opcode independant au pas suivant. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
-    Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
-     P.CPU.IP + 1 + Op.Len);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     AluOp := (ModRM Shr 3) And 7;
-    V16 := Emu_GetOpWord(P.CPU, Op);
-    R16 := Emu_AluWord(P.CPU, AluOp, V16, Imm16);
-    If AluOp <> 7 Then Emu_PutOpWord(P.CPU, Op, R16);
-    Inc(P.CPU.IP, 3 + Op.Len);
+    If P.CPU.OperandSize32 Then Begin
+     V32 := Emu_ReadDWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP + 1 + Op.Len);
+     S32 := Emu_GetOpDWord(P.CPU, Op);
+     R32 := Emu_AluDWord(P.CPU, AluOp, S32, V32);
+     If AluOp <> 7 Then Emu_PutOpDWord(P.CPU, Op, R32);
+     Inc(P.CPU.IP, 5 + Op.Len);
+    End Else Begin
+     Imm16 := Emu_ReadWord(P.CPU, P.CPU.Segs.CS,
+      P.CPU.IP + 1 + Op.Len);
+     V16 := Emu_GetOpWord(P.CPU, Op);
+     R16 := Emu_AluWord(P.CPU, AluOp, V16, Imm16);
+     If AluOp <> 7 Then Emu_PutOpWord(P.CPU, Op, R16);
+     Inc(P.CPU.IP, 3 + Op.Len);
+    End;
    End;
   $83: { ALU rm16, imm8 (signe etendu) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
      P.CPU.IP + 1 + Op.Len);
     Imm16 := Imm8;
@@ -212528,7 +213467,8 @@ Begin
   $C6: { MOV rm8, imm8 }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     Imm8 := Emu_ReadByte(P.CPU, P.CPU.Segs.CS,
      P.CPU.IP + 1 + Op.Len);
     Emu_PutOpByte(P.CPU, Op, Imm8);
@@ -212547,7 +213487,8 @@ Begin
        { Meme garde deja correcte juste au-dessus pour le MOV AX/EAX,[imm]. }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     If P.CPU.OperandSize32 Then Begin
      V32 := Emu_ReadDWord(P.CPU, P.CPU.Segs.CS, P.CPU.IP + 1 + Op.Len);
      Emu_PutOpDWord(P.CPU, Op, V32);
@@ -212562,7 +213503,8 @@ Begin
   $FE: { INC/DEC rm8 (group 4) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
     DecPreserveCF := EFG_CF In P.CPU.Flags.s;
     V8 := Emu_GetOpByte(P.CPU, Op);
@@ -212579,47 +213521,30 @@ Begin
   $FF: { Group 5 : INC/DEC/CALL/JMP/PUSH rm16 }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
     V16 := Emu_GetOpWord(P.CPU, Op);
-    { Groupe F7 en taille 32 bits : DIV/IDIV utilisent EDX:EAX et un
-      operande 32 bits. Le chemin 16 bits ci-dessous ne doit pas lire SI/DX. }
-    If P.CPU.OperandSize32 And ((SubOp = 6) Or (SubOp = 7)) Then Begin
-     V32 := Emu_GetOpDWord(P.CPU, Op);
-     If V32 = 0 Then Begin
-      Emu_Div0Snapshot(P, $F7, SubOp, V32, P.CPU.IP);
-      P.CPU.Fault := sfDivision0;
-     End Else If SubOp = 6 Then Begin
-      V32 := LongInt(LongWord(V32));
-      MulRes64 := (Int64(LongWord(P.CPU.Regs.EDX)) Shl 32) Or
-       QWord(LongWord(P.CPU.Regs.EAX));
-      If (QWord(MulRes64) Div QWord(LongWord(V32))) > $FFFFFFFF Then Begin
-       Emu_Div0Snapshot(P, $F7, 6, V32, P.CPU.IP);
-       P.CPU.Fault := sfDivision0;
-      End Else Begin
-       P.CPU.Regs.EAX := LongWord(QWord(MulRes64) Div QWord(LongWord(V32)));
-       P.CPU.Regs.EDX := LongWord(QWord(MulRes64) Mod QWord(LongWord(V32)));
-      End;
-     End Else Begin
-      MulRes64 := Int64(LongInt(P.CPU.Regs.EDX)) * 4294967296 +
-       Int64(LongWord(P.CPU.Regs.EAX));
-      If (MulRes64 Div Int64(LongInt(V32)) > 2147483647) Or
-         (MulRes64 Div Int64(LongInt(V32)) < -2147483648) Then Begin
-       Emu_Div0Snapshot(P, $F7, 7, V32, P.CPU.IP);
-       P.CPU.Fault := sfDivision0;
-      End Else Begin
-       P.CPU.Regs.EAX := LongWord(MulRes64 Div Int64(LongInt(V32)));
-       P.CPU.Regs.EDX := LongWord(MulRes64 Mod Int64(LongInt(V32)));
-      End;
-     End;
-     If P.CPU.Fault = sfDivision0 Then Begin
-      P.CPU.IP := InstructionIP;
-      P.CPU.Fault := sfNone;
-      Emu_Div0Trap(P);
-         End Else
-      Inc(P.CPU.IP, 1 + Op.Len);
-     Exit;
-    End;
+    { BOGUE REEL CORRIGE (2026-10-18, enquete WIN.COM 386 Enhanced Mode,     }
+    { "pourquoi le RET de la fonction 00E4:1CCE atterrit-il a 00E4:0000 ?") :}
+    { ce bloc "DIV/IDIV 32 bits" (copie/colle manifeste du VRAI groupe      }
+    { $F6/$F7, voir plus bas dans ce meme Case - meme appel                 }
+    { Emu_Div0Snapshot(P,$F7,...) a l'appui) n'avait AUCUNE raison d'etre   }
+    { ici : le groupe 5 ($FF) n'a PAS d'operation DIV/IDIV - SubOp=6 y      }
+    { signifie PUSH r/m, et SubOp=7 n'est pas defini. Avec le prefixe $66   }
+    { (OperandSize32), la condition "SubOp=6 Or SubOp=7" matchait quand     }
+    { meme un authentique "PUSH DWORD PTR [...]" et le detournait en VRAI   }
+    { calcul DIV 64/32 bits bidon - ecrasant EAX/EDX avec un faux quotient/ }
+    { reste ET sautant ENTIEREMENT l'ecriture memoire + la decrementation  }
+    { de SP censees accompagner le PUSH (confirme en direct : SP totalement}
+    { inchange apres un "66 FF /6", au lieu de -4 comme un vrai PUSH r/m32) }
+    { - chaque emplacement de pile suppose au-dela de ce PUSH manquant se   }
+    { retrouvait alors decale de 4 octets (2 mots) pour tout le reste de    }
+    { la fonction, jusqu'a son epilogue (POP/RET), qui finissait par        }
+    { depiler l'adresse de retour TROP TOT (atterrissant sur 00E4:0000      }
+    { au lieu de l'adresse de retour reelle). Supprime entierement - le     }
+    { groupe F6/F7 ci-dessous gere deja DIV/IDIV correctement pour son      }
+    { propre opcode, inchange. }
     Case SubOp Of
      0: Begin                                      { INC rm16 }
        DecPreserveCF := EFG_CF In P.CPU.Flags.s;
@@ -212697,7 +213622,11 @@ Begin
          P.CPU.Segs.CS := NewCS;
          Exit;
         End;
-     6: Emu_PushWord(P.CPU, V16);              { PUSH rm16 }
+     6: If P.CPU.OperandSize32 Then              { PUSH rm16 (rm32 si prefixe $66,  }
+         Emu_PushDWord(P.CPU, Emu_GetOpDWord(P.CPU, Op)) { voir le commentaire de    }
+        Else                                     { tete de ce cas : le detournement }
+         Emu_PushWord(P.CPU, V16);                { DIV/IDIV empechait ce chemin de  }
+                                                   { s executer avant ce correctif.   }
      Else
       ;
     End;
@@ -212708,7 +213637,8 @@ Begin
      $D0/$D1 : count=1 ; $D2/$D3 : count=CL ; $C0/$C1 : count=imm8 (80186+) }
    Begin
     ModRM := Emu_FetchByte(P.CPU, 1);
-    Emu_DecodeModRM(P.CPU, ModRM, Op);
+    If P.CPU.AddrSize32 Then Emu_DecodeModRM32(P.CPU, ModRM, Op)
+                         Else Emu_DecodeModRM(P.CPU, ModRM, Op);
     SubOp := (ModRM Shr 3) And 7;
     { BOGUE REEL (2026-08-23, trouve en verifiant SHR AL,4 pour le           }
     { cablage OS/2) : Op.Len INCLUT DEJA l octet ModRM lui-meme (voir        }
@@ -227678,6 +228608,7 @@ Var
  K: Byte;
  CurBlink, FrameChanged: Boolean;
  YChk, XChk: Integer;
+ DiagDpmiFaultF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
  For ChunkI := 0 To 4999 Do Begin
   If P.CPU.Fault <> sfNone Then Break;
@@ -227865,8 +228796,47 @@ Begin
   { ulterieure), donc DpmiCPU.Active ne redevient jamais faux pour l instant}
   { une fois passe en mode protege, hormis en cas d opcode non reconnu     }
   { (voir le commentaire de tete de Dpmi_Step). }
-  If DpmiCPU.Active Then Dpmi_Step(P) Else Emu_StepOne(P);
+  { DIAGNOSTIC TEMPORAIRE - a retirer }
+  If DpmiCPU.Active Then Begin
+   Dpmi_Step(P);
+   If P.CPU.Fault <> sfNone Then Begin
+    {$I-} Assign(DiagDpmiFaultF, 'DIAGDPMIFAULT.LOG');
+    If FileExists('DIAGDPMIFAULT.LOG') Then Append(DiagDpmiFaultF)
+                                        Else Rewrite(DiagDpmiFaultF);
+    {$I+}
+    If IOResult = 0 Then Begin
+     WriteLn(DiagDpmiFaultF, 'Step=', P.TotalSteps, ' Fault=', P.CPU.Fault,
+      ' Sel:EIP=', HexWord(DiagDpmiPreSel), ':', HexLong(DiagDpmiPreEIP),
+      ' B=', HexByte(DiagDpmiPreB), ' B2=', HexByte(DiagDpmiPreB2),
+      ' Is32Bit=', Ord(DpmiCPU.Is32Bit), ' Active=', Ord(DpmiCPU.Active));
+     Close(DiagDpmiFaultF);
+    End;
+   End;
+  End Else Emu_StepOne(P);
   Inc(P.TotalSteps);
+  { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete WIN.COM, gel sur }
+  { le logo Windows 3.1 apres le 9e/10e correctif IDT/IRQ) : capture       }
+  { periodique (tous les 200 000 pas, plafonnee a 40 lignes) de l etat     }
+  { CS:EIP/IRQ/PIC pour determiner si l execution progresse reellement     }
+  { (CS:EIP qui change) ou tourne en boucle sur la meme adresse. }
+  If DpmiCPU.Active And (EmuIrqFreezeDumps < 40) And
+     ((P.TotalSteps Mod 200000) = 0) Then Begin
+   Inc(EmuIrqFreezeDumps);
+   {$I-} Assign(DiagDpmiFaultF, 'DIAGIRQFREEZE.LOG');
+   If FileExists('DIAGIRQFREEZE.LOG') Then Append(DiagDpmiFaultF)
+                                       Else Rewrite(DiagDpmiFaultF);
+   {$I+}
+   If IOResult = 0 Then Begin
+    WriteLn(DiagDpmiFaultF, 'Step=', P.TotalSteps,
+     ' Sel:EIP=', HexWord(DpmiCPU.SegSel[1]), ':', HexLong(DpmiCPU.EIP),
+     ' IF=', Ord(EFG_IF In DpmiCPU.Flags.s),
+     ' IdtBase=', HexLong(DpmiCPU.IdtBase), ' IdtLimit=', HexWord(DpmiCPU.IdtLimit),
+     ' IrqPend=', HexByte(EmuIrqPending), ' PIC.IMR=', HexByte(EmuPICMaster.IMR),
+     ' PIC.ISR=', HexByte(EmuPICMaster.ISR), ' PIC.VecBase=', HexByte(EmuPICMaster.VectorBase));
+    Close(DiagDpmiFaultF);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   { --- VRetrace ($3DA bit 3) libre, cadencee sur le nombre de pas CPU et }
   { non sur la lecture du port : a 750 pas/demi-periode et               }
   { EmuStepsPerTick=5000 pas/tick BIOS (18.2 Hz), on obtient ~60 cycles   }
@@ -233071,6 +234041,10 @@ Begin NesActive := False;
  EmuRunaway := 0;
  EmuOvrDumped := False;
  EmuCS0Dumped := False;
+ EmuIrqFreezeDumps := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuIrqDivergeArmed := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuCr0PgLogged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuXlatLogged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuLeftCS0 := False;
  EmuSegLogCount := 0;
  EmuSegLogLastCS := $FFFF;
