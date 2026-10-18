@@ -17,7 +17,7 @@
   09. [IMPLEMENTE] Generer le code 80386 pour les variables et leur portee : globales, locales sur cadre EBP, parametres, cellules heap pour les variables capturees, initialisation a undefined, TDZ de let/const, affectation, declarations multiples et destructuration, compatibilite avec hello.js, test03/test03b, test04/test04b et test09.
   10. [IMPLEMENTE] Generer les expressions et les conversions de types JavaScript : arithmetique (+ - * / % **), division par zero (Infinity/NaN), comparaisons, == (coercition) vs === (strict), ToNumber/ToString/ToBoolean/ToPrimitive, truthy/falsy, court-circuit && || ??, ternaire, operateurs bit a bit et decalages, ++/-- pre/post, affectations composees, typeof/void/delete/in/instanceof, compatibilite avec test10/test10adv, test11/test11adv, t04_12, t09_15 et t09full.
   11. [IMPLEMENTE] Generer les structures de controle : if/else if/else, switch/case (egalite stricte, fall-through, default), while, do-while, for, for-in, for-of (tableaux et chaines), break/continue simples et etiquetes, labels internes uniques et sauts 80386 fiables, avec control.js, test13 et test14.
-  12. [A FAIRE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
+  12. [IMPLEMENTE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
   13. [A FAIRE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
   14. [A FAIRE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
   15. [A FAIRE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
@@ -703,7 +703,8 @@ Type
     tmp_free: Array[1..64] Of LongInt;      { temporaires de trame libres }
     tmp_free_count: LongInt;
     jt: Array[1..MAX_JT] Of TJumpTarget;
-    jt_count, plabel_count: LongInt;
+    jt_count, plabel_count, chain_end: LongInt;
+    in_chain, chain_used: Boolean;
     plabels: Array[1..4] Of LongInt;
     instrs  : Array[1..MAX_INSTR] Of TInstr;
     xsyms   : Array[1..MAX_XSYMS] Of TXSym;
@@ -8746,6 +8747,320 @@ Begin
   TempRelease(ctx, t);
 End;
 
+{ ---- Fonctions, appels et acces aux membres (TODO 12) ----
+
+  Convention d'appel interne. L'appelant reserve sur la pile, de bas en
+  haut : la closure (4 octets), argc (4), this (8) puis les arguments
+  (8 octets chacun), appelle [closure+code] et retire le tout. Dans la
+  fonction appelee, apres push ebp : [EBP+8] closure, [EBP+12] argc,
+  [EBP+16] this, [EBP+24] argument 0. Resultat dans EDX:EAX. Les
+  arguments sont evalues de gauche a droite directement dans l'espace
+  reserve. Avec un argument ...spread, les arguments sont rassembles
+  dans un tableau et _JSRT_call_array(fonction, this, tableau) fait
+  l'appel.
+
+  Objet fonction : _JSRT_new_function(descripteur, code, environnement,
+  this) ; l'environnement (_JSRT_new_env(n)) recoit les pointeurs des
+  cellules capturees, dans l'ordre de la table des captures de la
+  fonction. Une fleche memorise le this de son createur.
+
+  Acces aux membres en lecture : _JSRT_get_prop(objet, atome) et
+  _JSRT_get_member(objet, cle). Un appel de methode passe l'objet comme
+  this. Le chainage optionnel a?.b.c() saute a la fin de la chaine avec
+  undefined des qu'un maillon ?. rencontre null ou undefined. }
+
+{ this du contexte courant, pour le memoriser dans une fleche. }
+Procedure LoadCurrentThis(Var ctx: TCompilerContext);
+Begin
+  If ctx.ir.cg_fs = 1 Then
+    LoadUndefined(ctx)
+  Else If ctx.sem.scopes[ctx.ir.cg_fs].fkind = FK_ARROW Then
+    Begin
+      Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+      Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, RT_FN_THIS));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_ECX, RT_FN_THIS + 4));
+    End
+  Else
+    Begin
+      Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
+      Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
+    End;
+End;
+
+{ Cree l'objet fonction du noeud n (declaration, expression, fleche) ;
+  le resultat est dans EDX:EAX. }
+Procedure GenMakeClosure(Var ctx: TCompilerContext; n: LongInt);
+Var
+  fd, sc, ncells, i, k, kk, sy, e: LongInt;
+  is_arrow: Boolean;
+Begin
+  fd := ctx.ast.nodes[n].ds;
+  sc := ctx.ast.nodes[n].scope;
+  ncells := ctx.sem.scopes[sc].cap_count;
+  is_arrow := ctx.sem.scopes[sc].fkind = FK_ARROW;
+  e := 0;
+  If ncells > 0 Then
+    Begin
+      e := TempAcquire(ctx);
+      Emit1(ctx, OP_PUSH, ImmOp(ncells));
+      CallRt(ctx, 'new_env', 4);
+      Emit(ctx, OP_MOV, TempLo(e), RegOp(R_EAX));
+      k := 0;
+      For i := 1 To ctx.sem.cap_count Do
+        If ctx.sem.caps[i].fscope = sc Then
+          Begin
+            Inc(k);
+            sy := ctx.sem.caps[i].sym;
+            If ctx.sem.scopes[ctx.sem.syms[sy].scope].func = ctx.ir.cg_fs Then
+              Emit(ctx, OP_MOV, RegOp(R_ECX),
+                   MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot)))
+            Else
+              Begin
+                kk := CapIndex(ctx, ctx.ir.cg_fs, sy);
+                If kk = 0 Then
+                  Begin
+                    PipelineError(ctx, 'capture introuvable pour ' +
+                                  ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+                    kk := 1;
+                  End;
+                Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+                Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_ECX, RT_FN_ENV));
+                Emit(ctx, OP_MOV, RegOp(R_ECX),
+                     MemReg(R_ECX, RT_ENV_CELLS + 4 * (kk - 1)));
+              End;
+            Emit(ctx, OP_MOV, RegOp(R_EDX), TempLo(e));
+            Emit(ctx, OP_MOV, MemReg(R_EDX, RT_ENV_CELLS + 4 * (k - 1)), RegOp(R_ECX));
+          End;
+    End;
+  { new_function(descripteur, code, environnement, this) }
+  If is_arrow Then
+    LoadCurrentThis(ctx)
+  Else
+    LoadUndefined(ctx);
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  If ncells > 0 Then
+    Emit1(ctx, OP_PUSH, TempLo(e))
+  Else
+    Emit1(ctx, OP_PUSH, ImmOp(0));
+  Emit1(ctx, OP_PUSH, AddrSym(SYMK_X, XSym(ctx, ctx.data.fdescs[fd].code_sym)));
+  Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.fdescs[fd].sym));
+  CallRt(ctx, 'new_function', 20);
+  If e <> 0 Then
+    TempRelease(ctx, e);
+End;
+
+{ ---- Chaines d'acces et d'appels ---- }
+
+Function IsChainKind(k: TNodeKind): Boolean;
+Begin
+  IsChainKind := (k = N_MEMBER) Or (k = N_INDEX) Or (k = N_CALL);
+End;
+
+{ Si le maillon est optionnel et que la valeur EDX:EAX est null ou
+  undefined, saute a la fin de la chaine avec undefined. }
+Procedure ChainNullCheck(Var ctx: TCompilerContext);
+Var
+  isnull, ok: LongInt;
+Begin
+  isnull := NewLabel(ctx);
+  ok := NewLabel(ctx);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+  Emit1(ctx, OP_JE, LabelOp(isnull));
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_NULL)));
+  Emit1(ctx, OP_JNE, LabelOp(ok));
+  PlaceLabel(ctx, isnull);
+  LoadUndefined(ctx);
+  Emit1(ctx, OP_JMP, LabelOp(ctx.ir.chain_end));
+  ctx.ir.chain_used := True;
+  PlaceLabel(ctx, ok);
+End;
+
+{ Evalue l'objet d'un maillon membre ou indice et le range dans tobj. }
+Procedure GenChainBase(Var ctx: TCompilerContext; m, tobj: LongInt);
+Begin
+  ctx.ir.in_chain := True;
+  GenExpr(ctx, ctx.ast.nodes[m].e1);
+  ctx.ir.in_chain := False;
+  If ctx.ast.nodes[m].flags And EF_OPTIONAL <> 0 Then
+    ChainNullCheck(ctx);
+  SaveTemp(ctx, tobj);
+End;
+
+{ L'objet est dans tobj : lit la propriete dans EDX:EAX. }
+Procedure GenPropFetch(Var ctx: TCompilerContext; m, tobj: LongInt);
+Begin
+  If ctx.ast.nodes[m].kind = N_MEMBER Then
+    Begin
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
+            ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+      PushTemp(ctx, tobj);
+      CallRt(ctx, 'get_prop', 12);
+    End
+  Else
+    Begin
+      GenExpr(ctx, ctx.ast.nodes[m].e2);
+      CallBinary(ctx, 'get_member', tobj);
+    End;
+End;
+
+Procedure GenMember(Var ctx: TCompilerContext; n: LongInt);
+Var
+  t, old_end: LongInt;
+  top, old_used: Boolean;
+Begin
+  top := Not ctx.ir.in_chain;
+  old_end := ctx.ir.chain_end;
+  old_used := ctx.ir.chain_used;
+  If top Then
+    Begin
+      ctx.ir.chain_end := NewLabel(ctx);
+      ctx.ir.chain_used := False;
+    End;
+  t := TempAcquire(ctx);
+  GenChainBase(ctx, n, t);
+  GenPropFetch(ctx, n, t);
+  TempRelease(ctx, t);
+  If top Then
+    Begin
+      If ctx.ir.chain_used Then
+        PlaceLabel(ctx, ctx.ir.chain_end);
+      ctx.ir.chain_end := old_end;
+      ctx.ir.chain_used := old_used;
+    End;
+  ctx.ir.in_chain := Not top;
+End;
+
+Procedure GenCall(Var ctx: TCompilerContext; n: LongInt);
+Var
+  callee, a, nargs, i, tf, tt, notfn, lbl, old_end: LongInt;
+  top, has_spread, old_used: Boolean;
+Begin
+  callee := ctx.ast.nodes[n].e1;
+  If (callee <> 0) And (ctx.ast.nodes[callee].kind = N_SUPER) Then
+    Begin
+      PendingExpr(ctx, n);
+      Exit;
+    End;
+  top := Not ctx.ir.in_chain;
+  old_end := ctx.ir.chain_end;
+  old_used := ctx.ir.chain_used;
+  If top Then
+    Begin
+      ctx.ir.chain_end := NewLabel(ctx);
+      ctx.ir.chain_used := False;
+    End;
+  nargs := 0;
+  has_spread := False;
+  a := ctx.ast.nodes[n].e2;
+  While a <> 0 Do
+    Begin
+      Inc(nargs);
+      If ctx.ast.nodes[a].kind = N_SPREAD Then
+        has_spread := True;
+      a := ctx.ast.nodes[a].next;
+    End;
+  tf := TempAcquire(ctx);
+  tt := TempAcquire(ctx);
+
+  { callee et this }
+  If (callee <> 0) And ((ctx.ast.nodes[callee].kind = N_MEMBER) Or
+                        (ctx.ast.nodes[callee].kind = N_INDEX)) Then
+    Begin
+      GenChainBase(ctx, callee, tt);
+      GenPropFetch(ctx, callee, tt);
+    End
+  Else
+    Begin
+      ctx.ir.in_chain := True;
+      GenExpr(ctx, callee);
+      ctx.ir.in_chain := False;
+      SaveTemp(ctx, tf);
+      LoadUndefined(ctx);
+      SaveTemp(ctx, tt);
+      LoadTemp(ctx, tf);
+    End;
+  If ctx.ast.nodes[n].flags And EF_OPTIONAL <> 0 Then
+    ChainNullCheck(ctx);
+  SaveTemp(ctx, tf);
+  { la valeur appelee doit etre une fonction }
+  notfn := NewLabel(ctx);
+  lbl := NewLabel(ctx);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_FUNCTION)));
+  Emit1(ctx, OP_JNE, LabelOp(notfn));
+
+  If has_spread Then
+    Begin
+      { arguments rassembles dans un tableau }
+      CallRt(ctx, 'array_new', 0);
+      i := TempAcquire(ctx);
+      SaveTemp(ctx, i);
+      a := ctx.ast.nodes[n].e2;
+      While a <> 0 Do
+        Begin
+          If ctx.ast.nodes[a].kind = N_SPREAD Then
+            Begin
+              GenExpr(ctx, ctx.ast.nodes[a].e1);
+              Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+              Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+              PushTemp(ctx, i);
+              CallRt(ctx, 'array_spread', 16);
+            End
+          Else
+            Begin
+              GenExpr(ctx, a);
+              Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+              Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+              PushTemp(ctx, i);
+              CallRt(ctx, 'array_push', 16);
+            End;
+          a := ctx.ast.nodes[a].next;
+        End;
+      PushTemp(ctx, i);
+      PushTemp(ctx, tt);
+      PushTemp(ctx, tf);
+      CallRt(ctx, 'call_array', 24);
+      TempRelease(ctx, i);
+    End
+  Else
+    Begin
+      Emit(ctx, OP_SUB, RegOp(R_ESP), ImmOp(16 + RT_VALUE_SIZE * nargs));
+      i := 0;
+      a := ctx.ast.nodes[n].e2;
+      While a <> 0 Do
+        Begin
+          GenExpr(ctx, a);
+          Emit(ctx, OP_MOV, MemReg(R_ESP, 16 + RT_VALUE_SIZE * i), RegOp(R_EAX));
+          Emit(ctx, OP_MOV, MemReg(R_ESP, 16 + RT_VALUE_SIZE * i + 4), RegOp(R_EDX));
+          Inc(i);
+          a := ctx.ast.nodes[a].next;
+        End;
+      Emit(ctx, OP_MOV, RegOp(R_EAX), TempLo(tf));
+      Emit(ctx, OP_MOV, MemReg(R_ESP, 0), RegOp(R_EAX));
+      Emit(ctx, OP_MOV, MemReg(R_ESP, 4), ImmOp(nargs));
+      Emit(ctx, OP_MOV, RegOp(R_ECX), TempLo(tt));
+      Emit(ctx, OP_MOV, MemReg(R_ESP, 8), RegOp(R_ECX));
+      Emit(ctx, OP_MOV, RegOp(R_ECX), TempHi(tt));
+      Emit(ctx, OP_MOV, MemReg(R_ESP, 12), RegOp(R_ECX));
+      Emit1(ctx, OP_CALL, MemReg(R_EAX, RT_FN_CODE));
+      Emit(ctx, OP_ADD, RegOp(R_ESP), ImmOp(16 + RT_VALUE_SIZE * nargs));
+    End;
+  Emit1(ctx, OP_JMP, LabelOp(lbl));
+  PlaceLabel(ctx, notfn);
+  CallRt(ctx, 'throw_notfunc', 0);
+  PlaceLabel(ctx, lbl);
+  TempRelease(ctx, tt);
+  TempRelease(ctx, tf);
+  If top Then
+    Begin
+      If ctx.ir.chain_used Then
+        PlaceLabel(ctx, ctx.ir.chain_end);
+      ctx.ir.chain_end := old_end;
+      ctx.ir.chain_used := old_used;
+    End;
+  ctx.ir.in_chain := Not top;
+End;
+
 { Affectation simple ou destructurante ; la valeur reste dans EDX:EAX. }
 Procedure GenAssign(Var ctx: TCompilerContext; n: LongInt);
 Var
@@ -8786,13 +9101,23 @@ End;
 Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt);
 Var
   e: LongInt;
+  save_chain: Boolean;
 Begin
   If n = 0 Then
     Begin
       LoadUndefined(ctx);
       Exit;
     End;
+  save_chain := ctx.ir.in_chain;
+  If Not IsChainKind(ctx.ast.nodes[n].kind) Then
+    ctx.ir.in_chain := False;
   Case ctx.ast.nodes[n].kind Of
+    N_CALL:
+      GenCall(ctx, n);
+    N_MEMBER, N_INDEX:
+      GenMember(ctx, n);
+    N_FUNC_EXPR:
+      GenMakeClosure(ctx, n);
     N_NUMBER:
       Begin
         If ctx.ast.nodes[n].ds <> 0 Then
@@ -8860,6 +9185,7 @@ Begin
   Else
     PendingExpr(ctx, n);
   End;
+  ctx.ir.in_chain := save_chain;
 End;
 
 { ---- Destructuration ---- }
@@ -9060,6 +9386,7 @@ Procedure GenScopeEnter(Var ctx: TCompilerContext; sc: LongInt);
 Var
   sy, tag: LongInt;
 Begin
+  { premiere passe : cellules et valeurs initiales }
   sy := ctx.sem.scopes[sc].first_sym;
   While sy <> 0 Do
     Begin
@@ -9084,15 +9411,18 @@ Begin
               Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(ctx.sem.syms[sy].slot) + 4),
                    ImmOp(TagImm(tag)));
             End;
-          If ctx.sem.syms[sy].kind = DK_FUNC Then
-            PendingNote(ctx, ctx.sem.syms[sy].node,
-                        'creation de la fonction hissee ' +
-                        ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
-        End
-      Else If ctx.sem.syms[sy].kind = DK_FUNC Then
-        PendingNote(ctx, ctx.sem.syms[sy].node,
-                    'creation de la fonction hissee ' +
-                    ctx.lex.tokens[ctx.sem.syms[sy].name_tok].text);
+        End;
+      sy := ctx.sem.syms[sy].next;
+    End;
+  { seconde passe : les declarations de fonctions sont hissees avec leur valeur }
+  sy := ctx.sem.scopes[sc].first_sym;
+  While sy <> 0 Do
+    Begin
+      If ctx.sem.syms[sy].kind = DK_FUNC Then
+        Begin
+          GenMakeClosure(ctx, ctx.sem.syms[sy].node);
+          StoreSym(ctx, sy, True);
+        End;
       sy := ctx.sem.syms[sy].next;
     End;
 End;
@@ -9513,6 +9843,15 @@ Begin
           GenScopeEnter(ctx, ctx.ast.nodes[n].scope);
         GenStmtList(ctx, ctx.ast.nodes[n].e1);
       End;
+    N_RETURN:
+      Begin
+        If ctx.ast.nodes[n].e1 <> 0 Then
+          GenExpr(ctx, ctx.ast.nodes[n].e1)
+        Else
+          LoadUndefined(ctx);
+        Emit0(ctx, OP_LEAVE);
+        Emit0(ctx, OP_RET);
+      End;
     N_IF:
       GenIf(ctx, n);
     N_WHILE:
@@ -9576,6 +9915,7 @@ Begin
   ctx.ir.tmp_free_count := 0;
   ctx.ir.jt_count := 0;
   ctx.ir.plabel_count := 0;
+  ctx.ir.in_chain := False;
   Emit1(ctx, OP_PROC, AddrSym(SYMK_X, xs));
   Emit1(ctx, OP_PUSH, RegOp(R_EBP));
   Emit(ctx, OP_MOV, RegOp(R_EBP), RegOp(R_ESP));
