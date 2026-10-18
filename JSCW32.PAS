@@ -1659,7 +1659,7 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 2422;
+  PRELUDE_LINES = 2431;
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -2773,6 +2773,15 @@ Const
     '  return neg + ip + (f > 0 ? ''.'' + fp : '''');',
     '}',
     'function __init_lib() {',
+    '  var rma = String.prototype.matchAll;',
+    '  String.prototype.matchAll = function (re) {',
+    '    if (re instanceof RegExp && re.flags.indexOf(''g'') < 0) throw new TypeError(''String.prototype.matchAll called with a non-global RegExp argument'');',
+    '    var arr = rma.call(this, re), i = 0;',
+    '    return __mkiter(function () {',
+    '      if (i >= arr.length) return { value: undefined, done: true };',
+    '      return { value: arr[i++], done: false };',
+    '    });',
+    '  };',
     '  Number.prototype.toFixed = __toFixed;',
     '  var jparse = JSON.parse, jstr = JSON.stringify;',
     '  JSON.parse = function (text, reviver) {',
@@ -27338,10 +27347,44 @@ Begin
   A('jmp .ret');
   A('.eb:');
   A('cmp eax, 66');
-  A('jne .ec');
+  A('jne .eb2');
   A('inc dword ptr [esi]');
   RxEmit('16', '0', '0');
   A('jmp .ret');
+  A('.eb2:');
+  A('cmp eax, 107');
+  A('jne .ec');
+  A('cmp dword ptr [esi+36], 0');
+  A('je .ec');
+  A('lea edx, [ebx+1]');
+  A('cmp edx, dword ptr [esi+4]');
+  A('jae .ec');
+  A('cmp byte ptr [edx], 60');
+  A('jne .ec');
+  A('inc edx');
+  A('mov ' + Lv(2) + ', edx');
+  A('.kl:');
+  A('cmp edx, dword ptr [esi+4]');
+  A('jae .ksyn');
+  A('cmp byte ptr [edx], 62');
+  A('je .kend');
+  A('inc edx');
+  A('jmp .kl');
+  A('.kend:');
+  A('mov ' + Lv(3) + ', edx');
+  A('inc edx');
+  A('mov dword ptr [esi], edx');
+  A('push ' + Lv(3));
+  A('push ' + Lv(2));
+  A('push dword ptr [esi+36]');
+  A('call _JSRT_rx_findname');
+  A('add esp, 12');
+  A('test eax, eax');
+  A('jz .ksyn');
+  A('mov edi, eax');
+  A('jmp .bdone');
+  A('.ksyn:');
+  RxErr('Invalid named reference');
   A('.ec:');
   A('mov ecx, eax');
   A('or ecx, 32');
@@ -27477,9 +27520,10 @@ Begin
   A('cmp edx, dword ptr [esi+4]');
   A('jae .gunterm');
   A('cmp byte ptr [edx], 61');
-  A('je .badgrp');
+  A('je .lkbpos');
   A('cmp byte ptr [edx], 33');
-  A('je .badgrp');
+  A('je .lkbneg');
+  A('mov ' + Lv(2) + ', edx');
   A('.name:');
   A('cmp edx, dword ptr [esi+4]');
   A('jae .gunterm');
@@ -27488,9 +27532,32 @@ Begin
   A('inc edx');
   A('jmp .name');
   A('.nameend:');
+  A('mov ' + Lv(3) + ', edx');
   A('inc edx');
   A('mov dword ptr [esi], edx');
   A('jmp .capture2');
+  { arriere : (?<= ...) (?<! ...) }
+  A('.lkbpos:');
+  A('mov edi, 0');
+  A('jmp .lkb');
+  A('.lkbneg:');
+  A('mov edi, 1');
+  A('.lkb:');
+  A('add ebx, 3');
+  A('mov dword ptr [esi], ebx');
+  RxEmit('22', '0', 'edi');
+  A('mov ' + Lv(1) + ', eax');
+  A('push esi');
+  A('call _JSRT_rx_alt');
+  A('add esp, 4');
+  RxEmit('23', '0', '0');
+  A('mov ecx, dword ptr [esi+12]');
+  A('sub ecx, ' + Lv(1));
+  A('mov eax, ' + Lv(1));
+  A('shl eax, 4');
+  A('add eax, dword ptr [esi+8]');
+  A('mov dword ptr [eax+4], ecx');
+  A('jmp .gclose');
   A('.badgrp:');
   RxErr('Invalid group');
   A('.gunterm:');
@@ -27524,11 +27591,21 @@ Begin
   A('mov dword ptr [eax+4], ecx');
   A('jmp .gclose');
   A('.capture:');
+  A('mov ' + Lv(2) + ', 0');
   A('.capture2:');
   A('mov eax, dword ptr [esi+24]');
   A('mov ' + Lv(1) + ', eax');
   A('inc eax');
   A('mov dword ptr [esi+24], eax');
+  A('cmp ' + Lv(2) + ', 0');
+  A('je .nonm');
+  A('push ' + Lv(3));
+  A('push ' + Lv(2));
+  A('push ' + Lv(1));
+  A('push esi');
+  A('call _JSRT_rx_addname');
+  A('add esp, 16');
+  A('.nonm:');
   A('mov eax, ' + Lv(1));
   A('add eax, eax');
   RxEmit('8', 'eax', '0');
@@ -28080,6 +28157,10 @@ Begin
   A('je .backref');
   A('cmp edx, 18');
   A('je .look');
+  A('cmp edx, 22');
+  A('je .lookb');
+  A('cmp edx, 23');
+  A('je .lbend');
   A('cmp edx, 0');
   A('je .match');
   A('cmp edx, 19');
@@ -28458,6 +28539,70 @@ Begin
   A('mov edi, dword ptr [esi]');
   A('jmp .next');
 
+  { fin d'un corps d'arriere : doit finir exactement a la position visee }
+  A('.lbend:');
+  A('cmp ebx, dword ptr [esi+44]');
+  A('jne .fail');
+  A('jmp .match');
+
+  { arriere : (?<= ...) (?<! ...) : essaie les departs s <= position, du plus proche
+    au plus eloigne ; le corps doit finir a la position courante }
+  A('.lookb:');
+  A('mov eax, dword ptr [ecx+4]');
+  A('mov ' + Lv(5) + ', eax');
+  A('mov eax, dword ptr [ecx+8]');
+  A('mov ' + Lv(6) + ', eax');
+  A('mov eax, dword ptr [esi+44]');
+  A('mov ' + Lv(8) + ', eax');
+  A('mov dword ptr [esi+44], ebx');
+  A('mov ' + Lv(9) + ', ebx');
+  A('mov eax, ' + Lv(3));
+  A('mov ' + Lv(4) + ', eax');
+  A('.lbloop:');
+  A('mov eax, ' + Lv(4));
+  A('mov dword ptr [esi+20], eax');
+  A('mov eax, ' + Lv(1));
+  A('inc eax');
+  A('push ' + Lv(9));
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_rx_match');
+  A('add esp, 12');
+  A('mov edi, dword ptr [esi]');
+  A('mov edx, dword ptr [esi+20]');
+  A('mov ' + Lv(3) + ', edx');
+  A('test eax, eax');
+  A('jnz .lbfound');
+  A('mov eax, ' + Lv(9));
+  A('test eax, eax');
+  A('jz .lbnone');
+  A('.lbback:');
+  A('dec eax');
+  A('jz .lbset');
+  A('mov edx, dword ptr [esi+4]');
+  A('movzx edx, byte ptr [edx+eax]');
+  A('and edx, 192');
+  A('cmp edx, 128');
+  A('je .lbback');
+  A('.lbset:');
+  A('mov ' + Lv(9) + ', eax');
+  A('jmp .lbloop');
+  A('.lbnone:');
+  A('mov eax, ' + Lv(8));
+  A('mov dword ptr [esi+44], eax');
+  A('cmp ' + Lv(6) + ', 0');
+  A('jne .lbok');
+  A('jmp .fail');
+  A('.lbfound:');
+  A('mov eax, ' + Lv(8));
+  A('mov dword ptr [esi+44], eax');
+  A('cmp ' + Lv(6) + ', 0');
+  A('jne .unw');
+  A('.lbok:');
+  A('mov eax, ' + Lv(5));
+  A('add ' + Lv(1) + ', eax');
+  A('jmp .step');
+
   { anticipation : (?= ...) (?! ...), a = longueur, b = negation }
   A('.look:');
   A('mov eax, dword ptr [ecx+4]');
@@ -28702,10 +28847,12 @@ Begin
   A('.ok:');
   RxEmit('8', '1', '0');
   RxEmit('0', '0', '0');
-  A('push 24');
+  A('push 32');
   A('call _JSRT_alloc');
   A('add esp, 4');
   A('mov ebx, eax');
+  A('mov eax, dword ptr [esi+36]');
+  A('mov dword ptr [ebx+24], eax');
   A('mov eax, dword ptr [esi+8]');
   A('mov dword ptr [ebx], eax');
   A('mov eax, dword ptr [esi+12]');
@@ -28786,10 +28933,12 @@ Begin
   A('mov esi, dword ptr [ebx+20]');
   A('test esi, esi');
   A('jnz .have');
-  A('push 48');
+  A('push 56');
   A('call _JSRT_alloc');
   A('add esp, 4');
   A('mov esi, eax');
+  A('mov eax, dword ptr [ebx+24]');
+  A('mov dword ptr [esi+48], eax');
   A('mov eax, dword ptr [ebx]');
   A('mov dword ptr [esi], eax');
   A('mov ecx, dword ptr [ebx+8]');
@@ -28903,6 +29052,113 @@ Begin
   A('xor eax, eax');
   FEnd;
 
+  { _JSRT_rx_addname(C, indice, debut, fin) : nom d'un groupe capturant }
+  FBegin('_JSRT_rx_addname', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('cmp dword ptr [esi+36], 0');
+  A('jne .have');
+  A('call _JSRT_array_new');
+  A('mov dword ptr [esi+36], eax');
+  A('.have:');
+  A('mov edi, dword ptr [ebp+20]');
+  A('sub edi, dword ptr [ebp+16]');
+  A('push edi');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('lea edx, [ebx+$STR_DATA]');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('.cp:');
+  A('test edi, edi');
+  A('jz .done');
+  A('mov al, byte ptr [ecx]');
+  A('mov byte ptr [edx], al');
+  A('inc ecx');
+  A('inc edx');
+  A('dec edi');
+  A('jmp .cp');
+  A('.done:');
+  A('push $STR');
+  A('push ebx');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [esi+36]');
+  A('call _JSRT_arr_set');
+  A('add esp, 16');
+  FEnd;
+
+  { _JSRT_rx_findname(noms, debut, fin) -> indice du groupe ou 0 }
+  FBegin('_JSRT_rx_findname', 1);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ' + Lv(1) + ', 1');
+  A('.l:');
+  A('mov eax, ' + Lv(1));
+  A('cmp eax, dword ptr [esi+$ARR_LEN]');
+  A('jae .none');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('cmp edx, $STR');
+  A('jne .nx');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('sub ecx, dword ptr [ebp+12]');
+  A('cmp ecx, dword ptr [eax+$STR_LEN]');
+  A('jne .nx');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push eax');
+  A('call _JSRT_mem_eq');
+  A('add esp, 12');
+  A('test eax, eax');
+  A('jnz .found');
+  A('.nx:');
+  A('inc ' + Lv(1));
+  A('jmp .l');
+  A('.found:');
+  A('mov eax, ' + Lv(1));
+  A('jmp .ret');
+  A('.none:');
+  A('xor eax, eax');
+  FEnd;
+
+  { _JSRT_rx_groups_obj(R, tableau resultat) -> objet des groupes nommes }
+  FBegin('_JSRT_rx_groups_obj', 2);
+  A('push 0');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov ' + Lv(2) + ', eax');
+  A('mov ' + Lv(1) + ', 1');
+  A('.l:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi+32]');
+  A('shr eax, 1');
+  A('cmp ' + Lv(1) + ', eax');
+  A('jae .done');
+  A('push ' + Lv(1));
+  A('push dword ptr [esi+48]');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('cmp edx, $STR');
+  A('jne .nx');
+  A('mov ebx, eax');
+  A('push ' + Lv(1));
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('push 0');
+  A('push ebx');
+  A('push ' + Lv(2));
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('.nx:');
+  A('inc ' + Lv(1));
+  A('jmp .l');
+  A('.done:');
+  A('mov eax, ' + Lv(2));
+  FEnd;
+
   { _JSRT_rx_result(R, texte) -> tableau des correspondances (index, input, groups) }
   FBegin('_JSRT_rx_result', 2);
   A('mov esi, dword ptr [ebp+8]');
@@ -28962,8 +29218,19 @@ Begin
   A('push edi');
   A('call _JSRT_obj_add');
   A('add esp, 20');
+  A('cmp dword ptr [esi+48], 0');
+  A('je .nog');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_rx_groups_obj');
+  A('add esp, 8');
+  A('push $OBJ');
+  A('push eax');
+  A('jmp .gadd');
+  A('.nog:');
   A('push $UNDEF');
   A('push 0');
+  A('.gadd:');
   A('push 0');
   A('push offset ' + RtStr('groups'));
   A('push edi');
@@ -29495,6 +29762,39 @@ Begin
   A('add ' + Lv(1) + ', 2');
   A('jmp .l');
   A('.n4:');
+  A('cmp edx, 60');
+  A('jne .n5');
+  A('cmp dword ptr [edi+48], 0');
+  A('je .lit36');
+  A('lea eax, [esi+ecx+$STR_DATA]');
+  A('add eax, 2');
+  A('mov ' + Lv(3) + ', eax');
+  A('mov edx, eax');
+  A('lea ecx, [esi+$STR_DATA]');
+  A('add ecx, ' + Lv(2));
+  A('.nl:');
+  A('cmp edx, ecx');
+  A('jae .lit36');
+  A('cmp byte ptr [edx], 62');
+  A('je .nfound');
+  A('inc edx');
+  A('jmp .nl');
+  A('.nfound:');
+  A('mov ' + Lv(4) + ', edx');
+  A('push edx');
+  A('push ' + Lv(3));
+  A('push dword ptr [edi+48]');
+  A('call _JSRT_rx_findname');
+  A('add esp, 12');
+  A('mov ' + Lv(3) + ', eax');
+  A('mov edx, ' + Lv(4));
+  A('lea eax, [esi+$STR_DATA]');
+  A('sub edx, eax');
+  A('sub edx, ' + Lv(1));
+  A('add edx, 1');
+  A('mov ' + Lv(4) + ', edx');
+  A('jmp .one');
+  A('.n5:');
   A('sub edx, 48');
   A('cmp edx, 9');
   A('ja .lit36');
@@ -29659,6 +29959,20 @@ Begin
   A('push ' + Lv(7));
   A('call _JSRT_array_push');
   A('add esp, 16');
+  A('mov ecx, ' + Lv(6));
+  A('cmp dword ptr [ecx+48], 0');
+  A('je .nocg');
+  A('push ' + Lv(7));
+  A('push ecx');
+  A('call _JSRT_rx_groups_obj');
+  A('add esp, 8');
+  A('push $OBJ');
+  A('push eax');
+  A('push $ARR');
+  A('push ' + Lv(7));
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('.nocg:');
   A('push $ARR');
   A('push ' + Lv(7));
   A('push $UNDEF');
