@@ -4813,6 +4813,8 @@ Type
   IP, FS, GS   : Word;
   CPU          : Word;                { type de CPU (cpu8086...)    }
   Fault        : Word;                { code de fin (sf*)           }
+  Halted       : Boolean;             { HLT ($F4) reel : CPU arrete,}
+                                       { reprend sur la prochaine IRQ}
   NextRawKey   : Byte;
   CmosPos      : Byte;
   CurrSeg      : Byte;
@@ -5044,6 +5046,10 @@ Type
   A20Enabled : Boolean;
   PendingCmd : Byte;    { commande 64h en attente d un octet de donnees sur 60h ; 0 = aucune }
   KbdEnabled : Boolean;
+  { Petite file pour les reponses multi-octets (ex. F2h = Identify       }
+  { Keyboard : ACK puis 2 octets d ID) - voir Emu_8042_ReadData. }
+  ExtraQueue    : Array[0..1] Of Byte;
+  ExtraQueueLen : Byte;
  End;
 
  { --- UART 8250/16450 generique (COM2 02F8h-02FFh, COM4 02E8h-02EFh). Rien }
@@ -9465,6 +9471,11 @@ Var
  EmuWatchPhysLo : LongInt;  { adresse physique min surveillee }
  EmuWatchPhysHi : LongInt;  { adresse physique max surveillee }
  EmuWatchHits   : Integer;  { nb hits cumules }
+ EmuVmFlagPhysHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuBootLoopBytesDumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuBootLoop2Dumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuBootLoop3Dumped: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuBootLoop4Hits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
  { Activites observees (Deboguer > Activites observees, voir              }
  { EmuActivityDlg/DrawEmuActivityDlg) - compteurs mis a jour en direct     }
  { pendant l execution DOS, remis a zero a chaque demarrage de session     }
@@ -9649,6 +9660,7 @@ Var
  EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
  EmuStepsToTick : LongInt;       { decompte avant prochain tick }
  EmuIrqPending  : Byte;          { bitmask IRQ en attente (bit n = IRQ n) }
+ Emu8042WriteHits: Integer;      { DIAGNOSTIC TEMPORAIRE - a retirer }
  { --- 8259A/8255A/UART/LPT/NE2000 : voir Emu_PortRead/Emu_PortWrite. --- }
  EmuPICMaster   : TEmuPICChip;   { 20h/21h, tout materiel }
  EmuPICSlave    : TEmuPICChip;   { A0h/A1h, materiel classe AT+ seulement }
@@ -184375,6 +184387,7 @@ Procedure Emu_WriteAbsBlock(Var C: TEmuCPU; Addr: LongInt;
 Var
  WLog: Text; WIO: Integer;
  DBPtr: ^Byte; DumpJ: Word; DumpB: Byte; DumpS: String;
+ WLog2: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGVMFLAGPHYS.LOG }
 Begin
  If Not C.MemReady Then Exit;
  { Voir le commentaire jumeau dans Emu_ReadAbsBlock (borne HMA + redirection }
@@ -184399,6 +184412,27 @@ Begin
  { tracant HIMEM.SYS (qui utilise justement ce mode d adressage). Centre   }
  { ici (sur l adresse physique deja resolue), ce test couvre desormais     }
  { TOUS les chemins d ecriture sans duplication. }
+ { DIAGNOSTIC TEMPORAIRE - a retirer (suite enquete WIN.COM, 9e session,  }
+ { suite) : la commande WATCH est limitee a des Seg:Ofs 16 bits (portee   }
+ { max ~0x10FFEF), insuffisant pour surveiller le physique $00151016      }
+ { (traduction confirmee du "drapeau" VMM a [80001016h]) - verification   }
+ { directe, independante du mecanisme WATCH normal, ici. }
+ If (EmuVmFlagPhysHits < 50) And (SizeBytes > 0) And
+    (Addr <= $00151020) And (Addr + LongInt(SizeBytes) - 1 >= $00151010)
+ Then Begin
+  Inc(EmuVmFlagPhysHits);
+  {$I-} Assign(WLog2, 'DIAGVMFLAGPHYS.LOG');
+  If FileExists('DIAGVMFLAGPHYS.LOG') Then Append(WLog2) Else Rewrite(WLog2);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(WLog2, '#', EmuVmFlagPhysHits, ' WABS phys=', HexLong(Addr),
+    ' size=', SizeBytes, ' steps=', EmuPanel.TotalSteps,
+    '   from CS:IP=', HexWord(EmuPanel.CPU.Segs.CS), ':',
+    HexWord(EmuPanel.CPU.IP), ' AX=', HexWord(EmuPanel.CPU.Regs.AX));
+   Close(WLog2);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  If EmuWatchEnabled And (SizeBytes > 0) And
     (Addr <= EmuWatchPhysHi) And (Addr + LongInt(SizeBytes) - 1 >= EmuWatchPhysLo) And
     (EmuWatchHits < 200) Then Begin
@@ -184798,6 +184832,7 @@ Begin
  FillChar(C.Flags, SizeOf(C.Flags), 0);
  C.IP := 0;
  C.Fault := 0;
+ C.Halted := False;
 End;
 
 { --- Liberer la memoire emulee --- }
@@ -192273,15 +192308,30 @@ End;
 
 { Lecture 61h : bits 3-5 = ancien mecanisme de bascule d actualisation
   (StatusRetrace Xor $30, deja verifie fonctionnel pour la detection de
-  frequence moniteur par GSDEMO1.COM - NE PAS modifier) ; bits 0-1
-  (haut-parleur : gate timer2 + donnees) et bits 6-7 (mux SW1/clavier +
-  horloge clavier) refletent la derniere ecriture OUT 61h. Registre
-  IDENTIQUE sur PC/XT et AT+ (les cartes meres AT le conservent tel quel
-  pour la compatibilite logicielle, meme si le clavier lui-meme passe par
-  un 8042 des 60h/64h - voir plus bas). }
+  frequence moniteur par GSDEMO1.COM - NE PAS modifier CETTE formule XT) ;
+  bits 0-1 (haut-parleur : gate timer2 + donnees) et bits 6-7 (mux SW1/
+  clavier + horloge clavier) refletent la derniere ecriture OUT 61h.
+  BOGUE REEL CORRIGE (2026-10-18, enquete "BOOT C:" MS-DOS 6.22, demande
+  explicite de l'utilisateur) : sur materiel AT+ uniquement
+  (Emu_IsATClassHw), plusieurs routines BIOS/pilote REELLES attendent que
+  le bit 4 ($10, "bascule d actualisation"/refresh toggle, technique
+  classique de synchronisation sans IRQ) CHANGE entre deux lectures - or
+  la formule ci-dessus, verifiee par calcul (les 4 combinaisons possibles
+  de StatusRetrace bit0/bit3), donne TOUJOURS bit4=1, JAMAIS de bascule :
+  boucle infinie confirmee en direct (4 points de blocage distincts
+  reproduits, tous le MEME motif "IN AL,61h ; AND AL,10h ; CMP AL,AH ; JE
+  <boucle>" - voir [[project_devenv_bootc_keyboard_hang]]). Corrige
+  SEULEMENT pour AT+ (bit4 reflete reellement la MEME bascule que le bit3
+  deja utilise par GSDEMO1.COM, deplacee d un rang) - la formule XT
+  d'origine reste BYTE POUR BYTE identique, donc GSDEMO1.COM (et tout
+  autre logiciel PC/XT) n'est aucunement affecte par ce correctif. }
 Function Emu_PPI_ReadB: Byte;
 Begin
- Emu_PPI_ReadB := ((EmuVideo.StatusRetrace Xor $30) And $38) Or (EmuPPI.PortB And $C3);
+ If Emu_IsATClassHw Then
+  Emu_PPI_ReadB := (((EmuVideo.StatusRetrace And $08) Shl 1) And $10) Or
+   $20 Or (EmuPPI.PortB And $C3)
+ Else
+  Emu_PPI_ReadB := ((EmuVideo.StatusRetrace Xor $30) And $38) Or (EmuPPI.PortB And $C3);
 End;
 
 { Lecture 62h (Port C) : bascule reelle SW1 haut/bas selon PortB bit3
@@ -192348,12 +192398,36 @@ Begin
  If Emu8042.OutBufFull Then Begin
   Emu_8042_ReadData := Emu8042.OutBuf;
   Emu8042.OutBufFull := False;
+  { Reponse multi-octets (ex. F2h/Identify Keyboard : ACK puis 2 octets  }
+  { d ID) - voir Emu_8042_WriteData. Un vrai 8042 leve une NOUVELLE IRQ1 }
+  { pour chaque octet qui arrive dans le tampon de sortie, d ou le       }
+  { meme EmuIrqPending Or 2 qu a la toute premiere reponse. }
+  If Emu8042.ExtraQueueLen > 0 Then Begin
+   Emu8042.OutBuf := Emu8042.ExtraQueue[0];
+   Emu8042.OutBufFull := True;
+   Emu8042.ExtraQueue[0] := Emu8042.ExtraQueue[1];
+   Dec(Emu8042.ExtraQueueLen);
+   EmuIrqPending := EmuIrqPending Or $02;
+  End;
  End Else
   Emu_8042_ReadData := P.CPU.NextRawKey; { pas de reponse en attente : scancode direct }
 End;
 
 Procedure Emu_8042_WriteData(Value: Byte);
+Var Diag8042: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAG8042WRITE.LOG }
 Begin
+ If (Emu8042WriteHits < 60) And (Emu8042.PendingCmd <> $D1) Then Begin
+  Inc(Emu8042WriteHits);
+  {$I-} Assign(Diag8042, 'DIAG8042WRITE.LOG');
+  If FileExists('DIAG8042WRITE.LOG') Then Append(Diag8042) Else Rewrite(Diag8042);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(Diag8042, '#', Emu8042WriteHits, ' Value=', HexByte(Value),
+    ' PendingCmd=', HexByte(Emu8042.PendingCmd));
+   Close(Diag8042);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  If Emu8042.PendingCmd <> 0 Then Begin
   Case Emu8042.PendingCmd Of
    $60: Emu8042.CmdByte := Value;
@@ -192368,9 +192442,38 @@ Begin
  { Commande directe au clavier : aucun peripherique reel simule, mais les }
  { reponses ACK/autotest les plus courantes sont plausibles - suffisant   }
  { pour la detection/reinitialisation logicielle standard. }
+ { BOGUE REEL CORRIGE (2026-10-18, enquete "BOOT C:" en boucle infinie,   }
+ { MS-DOS 6.22 VHD, demande explicite de l'utilisateur) : poser OutBufFull}
+ { ici ne levait JAMAIS IRQ1, contrairement au chemin clavier HOTE        }
+ { (DOS_RunOneChunk, EmuIrqPending Or $02) - le VRAI gestionnaire INT 09h }
+ { de l invite (qui met a jour les drapeaux ACK/RESEND de la BDA          }
+ { 0040:0097h, CE que boucle un pilote qui vient d envoyer une commande   }
+ { 60h) n etait donc JAMAIS appele pour nos propres reponses internes     }
+ { (ACK/BAT), laissant ce drapeau BDA a zero pour toujours - boucle        }
+ { d attente infinie confirmee en direct (voir                            }
+ { [[project_devenv_bootc_keyboard_hang]]). Alignement sur le MEME        }
+ { mecanisme que le clavier hote, pour que l IRQ soit livree EXACTEMENT   }
+ { comme un vrai 8042 le ferait apres avoir rempli son tampon de sortie.  }
  Case Value Of
-  $FF: Begin Emu8042.OutBuf := $AA; Emu8042.OutBufFull := True; End; { reset -> BAT OK }
-  $F4, $F5, $F6: Begin Emu8042.OutBuf := $FA; Emu8042.OutBufFull := True; End; { ACK }
+  $FF: Begin Emu8042.OutBuf := $AA; Emu8042.OutBufFull := True;
+        EmuIrqPending := EmuIrqPending Or $02; End; { reset -> BAT OK }
+  $F4, $F5, $F6: Begin Emu8042.OutBuf := $FA; Emu8042.OutBufFull := True;
+        EmuIrqPending := EmuIrqPending Or $02; End; { ACK }
+  { BOGUE REEL CORRIGE (meme enquete) : F2h = "Identify Keyboard", envoye }
+  { par le pilote clavier du VHD MS-DOS 6.22 teste juste avant la boucle  }
+  { infinie - entierement ignore auparavant (branche Else muette), donc   }
+  { JAMAIS d ACK/ID, le pilote attendait pour toujours. Reponse reelle :  }
+  { ACK (FAh) PUIS 2 octets d ID (ABh,41h = clavier etendu MF2 standard). }
+  $F2: Begin
+        { EXPERIENCE TEMPORAIRE (enquete 2e blocage) : ACK seul, SANS les   }
+        { 2 octets d ID - un vrai BIOS gere nativement le cas "pas d ID     }
+        { recu" (vieux clavier XT/AT sans F2h) via un timeout borne ; nos   }
+        { 2 octets livres quasi instantanement (pas la vraie cadence serie  }
+        { ~660us/octet d un clavier reel) pourraient perturber le suivi     }
+        { d etat du VRAI gestionnaire INT 09h de ce BIOS invite. }
+        Emu8042.OutBuf := $FA; Emu8042.OutBufFull := True;
+        EmuIrqPending := EmuIrqPending Or $02;
+       End;
  Else
   ;
  End;
@@ -192386,12 +192489,19 @@ End;
 
 Procedure Emu_8042_WriteCmd(Value: Byte);
 Begin
+ { Meme correctif IRQ1 que Emu_8042_WriteData ci-dessus, par coherence :  }
+ { un vrai 8042 leve IRQ1 (si armee par le bit0 du octet de commande) des }
+ { qu un octet est pose dans son tampon de sortie, quelle qu en soit la   }
+ { source (reponse clavier OU reponse a une commande controleur comme     }
+ { 20h/D0h). }
  Case Value Of
-  $20: Begin Emu8042.OutBuf := Emu8042.CmdByte; Emu8042.OutBufFull := True; End;
+  $20: Begin Emu8042.OutBuf := Emu8042.CmdByte; Emu8042.OutBufFull := True;
+       EmuIrqPending := EmuIrqPending Or $02; End;
   $60: Emu8042.PendingCmd := $60;
   $AD: Emu8042.KbdEnabled := False;
   $AE: Emu8042.KbdEnabled := True;
-  $D0: Begin Emu8042.OutBuf := Emu8042.OutputPort; Emu8042.OutBufFull := True; End;
+  $D0: Begin Emu8042.OutBuf := Emu8042.OutputPort; Emu8042.OutBufFull := True;
+       EmuIrqPending := EmuIrqPending Or $02; End;
   $D1: Emu8042.PendingCmd := $D1;
  Else
   ; { autotest 0AAh, lecture/ecriture RAM interne 20h-3Fh/60h-7Fh, reset  }
@@ -194696,6 +194806,9 @@ Begin
  Emu_SamePathPrefix := True;
 End;
 
+Var
+ EmuBe00ReadLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGBE00READ.LOG }
+ EmuBe00ReadHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Procedure Emu_DoInt21(Var P: TEmulatorPanel);
 Var
  I: Integer;
@@ -195411,6 +195524,32 @@ Begin
      P.CPU.Regs.AX := Emu_CdromReadFile(P, H, Ofs, P.CPU.Regs.CX);
      Exclude(P.CPU.Flags.s, EFG_CF);
     End Else If (H >= 5) And (H <= 31) And EmuFileOpen[H] Then Begin
+     { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete WIN.COM,      }
+     { dernier maillon : quel fichier/decalage remplit [0000BE00h..        }
+     { BDD7h] ?) : capture CETTE lecture precise si sa cible physique       }
+     { (DS:DX resolu) chevauche la plage surveillee, AVANT que la boucle   }
+     { ne l ecrive (donc avec la VRAIE position fichier au moment exact). }
+     If (Not EmuBe00ReadLogged) And
+        ((LongWord(P.CPU.Segs.DS) * 16 + Ofs) <= $BE20) And
+        ((LongWord(P.CPU.Segs.DS) * 16 + Ofs + P.CPU.Regs.CX) >= $BE00) Then Begin
+      Inc(EmuBe00ReadHits);
+      If EmuBe00ReadHits >= 20 Then EmuBe00ReadLogged := True;
+      {$I-} Assign(DiagF21C, 'DIAGBE00READ.LOG');
+      If FileExists('DIAGBE00READ.LOG') Then Append(DiagF21C)
+                                         Else Rewrite(DiagF21C);
+      {$I+}
+      If IOResult = 0 Then Begin
+       WriteLn(DiagF21C, '#', EmuBe00ReadHits, ' Step=', P.TotalSteps, ' H=', H,
+        ' name="', EmuFileName[H], '" DS:DX=', HexWord(P.CPU.Segs.DS), ':',
+        HexWord(Word(Ofs)), ' PhysTarget=',
+        HexLong(LongWord(P.CPU.Segs.DS) * 16 + Ofs),
+        ' CX=', HexWord(P.CPU.Regs.CX),
+        ' fpos(avant)=', FilePos(EmuFileH[H]),
+        ' fsize=', FileSize(EmuFileH[H]));
+       Close(DiagF21C);
+      End;
+      {$I+} If IOResult <> 0 Then ;
+     End;
      IoI := 0;
      BytesIO := 0;
      While IoI < P.CPU.Regs.CX Do Begin
@@ -198049,12 +198188,27 @@ End;
 { materiel de "Materiel :" n en fait partie, donc CF=1/AH=86h y est la        }
 { reponse correcte pour TOUTE classe materiel choisissable ici, pas une       }
 { lacune. }
+Var
+ EmuE801Logged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGE801.LOG }
 Procedure Emu_DoInt15AT(Var P: TEmulatorPanel);
 Var Seg, Ofs: Word;
     Int87SrcBase, Int87DstBase, Int87I: LongInt;
     Int87TmpByte: Byte;
     Int88ExtKB: LongInt;
+    DiagE8F: Text; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
+ { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete WIN.COM, piste   }
+ { E801h/E820h non implantes - confirme si VMM les appelle VRAIMENT). }
+ If (Not EmuE801Logged) And (P.CPU.Regs.AH = $E8) Then Begin
+  EmuE801Logged := True;
+  {$I-} Assign(DiagE8F, 'DIAGE801.LOG'); Rewrite(DiagE8F); {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagE8F, 'Step=', P.TotalSteps, ' AX=', HexWord(P.CPU.Regs.AX),
+    ' from CS:IP=', HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
+   Close(DiagE8F);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  Exclude(P.CPU.Flags.s, EFG_CF);
  Case P.CPU.Regs.AH Of
   $C0: Begin  { Get System Configuration Parameters : ES:BX -> table de 8    }
@@ -202707,6 +202861,10 @@ Begin
   (LongInt(Emu_ReadWord(C, Seg, Ofs + 2)) Shl 16);
 End;
 
+Var
+ EmuXmsMoveLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGXMSMOVE.LOG }
+ EmuXmsHandleMoveHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGXMSHANDLEMOVE.LOG }
+
 { --- AH=0Bh : Move Extended Memory Block --- }
 { DS:SI -> structure de 16 octets (voir l en-tete de section) : Length     }
 { (DD), SourceHandle (DW), SourceOffset (DD), DestHandle (DW), DestOffset  }
@@ -202719,6 +202877,7 @@ Var StructSeg, StructOfs: Word;
  SrcOfs, DstOfs: LongInt;
  SrcSeg, SrcRealOfs, DstSeg, DstRealOfs: Word;
  I: LongInt; B: Byte;
+ DiagXmsMove: Text; XmsDiagI: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
  StructSeg := P.CPU.Segs.DS; StructOfs := P.CPU.Regs.SI;
  Length_   := Emu_XmsReadDWord(P.CPU, StructSeg, StructOfs);
@@ -202754,6 +202913,74 @@ Begin
   DstSeg     := Word((DstOfs Shr 16) And $FFFF);
  End;
 
+ If (Not EmuXmsMoveLogged) And (DstHandle = 0) And
+    (LongWord(DstSeg) * 16 + DstRealOfs <= $BDE0) And
+    (LongWord(DstSeg) * 16 + DstRealOfs + LongWord(Length_) >= $BDD0) Then Begin
+  EmuXmsMoveLogged := True;
+  {$I-} Assign(DiagXmsMove, 'DIAGXMSMOVE.LOG'); Rewrite(DiagXmsMove); {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagXmsMove, 'Step=', P.TotalSteps, ' Length=', HexLong(Length_),
+    ' SrcHandle=', SrcHandle, ' SrcOfs=', HexLong(SrcOfs),
+    ' DstHandle=', DstHandle, ' DstOfs=', HexLong(DstOfs),
+    ' DstPhys=', HexLong(LongWord(DstSeg) * 16 + DstRealOfs));
+   If SrcHandle <> 0 Then Begin
+    WriteLn(DiagXmsMove, '  SrcHandle.StoreOffset=',
+     HexLong(EmuXms.Handles[SrcHandle].StoreOffset),
+     ' SizeKB=', EmuXms.Handles[SrcHandle].SizeKB);
+    Write(DiagXmsMove, '  SrcBytes(32)=');
+    For XmsDiagI := 0 To 31 Do
+     Write(DiagXmsMove, HexByte(EmuXmsMem^[EmuXms.Handles[SrcHandle].StoreOffset +
+       SrcOfs + XmsDiagI]), ' ');
+    WriteLn(DiagXmsMove);
+   End Else Begin
+    WriteLn(DiagXmsMove, '  Src=reel ', HexWord(SrcSeg), ':', HexWord(SrcRealOfs));
+   End;
+   Close(DiagXmsMove);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
+ { DIAGNOSTIC TEMPORAIRE - a retirer (suite enquete, 9e session, suite) : }
+ { le "drapeau" VMM a physique $00151016 (XMS offset $51016, EMU_DPMI_    }
+ { EXT_BASE=$100000) n'est touche ni par Emu_WriteAbsBlock ni par         }
+ { Dpmi_WriteBytePhys - seul un Move XMS avec DESTINATION PAR POIGNEE     }
+ { (DstHandle<>0, ecriture DIRECTE dans EmuXmsMem^ sans passer par ces    }
+ { deux points de passage) peut l'avoir ecrit. Verification ici. }
+ If (EmuXmsHandleMoveHits < 20) And (DstHandle <> 0) And
+    (EmuXms.Handles[DstHandle].StoreOffset + DstOfs <= $51020) And
+    (EmuXms.Handles[DstHandle].StoreOffset + DstOfs + Length_ >= $51010)
+ Then Begin
+  Inc(EmuXmsHandleMoveHits);
+  {$I-} Assign(DiagXmsMove, 'DIAGXMSHANDLEMOVE.LOG');
+  If FileExists('DIAGXMSHANDLEMOVE.LOG') Then Append(DiagXmsMove)
+                                          Else Rewrite(DiagXmsMove);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagXmsMove, '#', EmuXmsHandleMoveHits, ' Step=', P.TotalSteps,
+    ' Length=', HexLong(Length_),
+    ' SrcHandle=', SrcHandle, ' SrcOfs=', HexLong(SrcOfs),
+    ' DstHandle=', DstHandle, ' DstOfs=', HexLong(DstOfs),
+    ' DstHandle.StoreOffset=', HexLong(EmuXms.Handles[DstHandle].StoreOffset),
+    ' WordAtTarget(apres)=', HexWord(Word(EmuXmsMem^[$51016]) Or
+      (Word(EmuXmsMem^[$51017]) Shl 8)));
+   { D'OU vient ce Move (code reel appelant) et QUE CONTIENT reellement  }
+   { la source (SrcHandle=0 uniquement) - pour juger si 0E40:0000 est    }
+   { une vraie zone VMM ou une adresse DOS/BIOS generique (indice fort   }
+   { de bogue d'adresse si c'est le cas). }
+   WriteLn(DiagXmsMove, '  CallerCS:IP=', HexWord(P.CPU.Segs.CS), ':',
+    HexWord(P.CPU.IP));
+   If SrcHandle = 0 Then Begin
+    Write(DiagXmsMove, '  SrcReelBytes(48)@', HexWord(SrcSeg), ':',
+     HexWord(SrcRealOfs), '=');
+    For XmsDiagI := 0 To 47 Do
+     Write(DiagXmsMove, HexByte(Emu_ReadByte(P.CPU, SrcSeg,
+       Word(SrcRealOfs + XmsDiagI))), ' ');
+    WriteLn(DiagXmsMove);
+   End;
+   Close(DiagXmsMove);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
+
  { Copie octet par octet - simple et correcte quel que soit le sens (pas  }
  { besoin d optimiser un "memmove" pour des tailles DOS-era typiques), a   }
  { la difference d un vrai pilote qui doit gerer le chevauchement en       }
@@ -202770,6 +202997,25 @@ Begin
    EmuXmsMem^[EmuXms.Handles[DstHandle].StoreOffset + DstOfs + I] := B
   Else
    Emu_WriteByte(P.CPU, DstSeg, Word(DstRealOfs + I), B);
+ End;
+ { DIAGNOSTIC TEMPORAIRE - a retirer : valeur APRES la copie, le           }
+ { diagnostic jumeau plus haut (avant la boucle) donnait en fait la       }
+ { valeur AVANT (place trop tot). }
+ If (DstHandle <> 0) And
+    (EmuXms.Handles[DstHandle].StoreOffset + DstOfs <= $51020) And
+    (EmuXms.Handles[DstHandle].StoreOffset + DstOfs + Length_ >= $51010)
+ Then Begin
+  {$I-} Assign(DiagXmsMove, 'DIAGXMSHANDLEMOVE_AFTER.LOG');
+  If FileExists('DIAGXMSHANDLEMOVE_AFTER.LOG') Then Append(DiagXmsMove)
+                                                Else Rewrite(DiagXmsMove);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagXmsMove, 'Step=', P.TotalSteps,
+    ' WordAtTarget(apres-copie)=', HexWord(Word(EmuXmsMem^[$51016]) Or
+      (Word(EmuXmsMem^[$51017]) Shl 8)));
+   Close(DiagXmsMove);
+  End;
+  {$I+} If IOResult <> 0 Then ;
  End;
  P.CPU.Regs.AX := 1;
 End;
@@ -205063,7 +205309,31 @@ Begin
 End;
 
 Procedure Dpmi_WriteBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt; V: Byte);
+Var WLog: Text; WIO: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
+ { BOGUE REEL CORRIGE (2026-10-18, enquete WIN.COM/divergence BOUND) : la   }
+ { commande WATCH/EmuWatchEnabled (voir le commentaire jumeau dans          }
+ { Emu_WriteAbsBlock) ne couvrait QUE le coeur reel/unreal - TOUTE ecriture }
+ { physique faite depuis le coeur protege (Dpmi_Step, ex. REP MOVSB/STOSD   }
+ { 32 bits sur une adresse lineaire paginee) restait INVISIBLE au WATCH,    }
+ { laissant croire a tort qu une plage memoire "n est jamais ecrite" alors  }
+ { qu elle l etait, juste par l AUTRE coeur. Meme mecanisme/meme fichier de }
+ { sortie, pour que WATCH couvre desormais VRAIMENT "tout chemin d ecriture}
+ { physique" comme son commentaire de tete le pretend deja. }
+ If EmuWatchEnabled And (PhysAddr <= EmuWatchPhysHi) And
+    (PhysAddr >= EmuWatchPhysLo) And (EmuWatchHits < 200) Then Begin
+  Inc(EmuWatchHits);
+  {$I-} Assign(WLog, 'EMUWATCH.LOG'); Append(WLog);
+  WIO := IOResult;
+  If WIO <> 0 Then Begin Assign(WLog,'EMUWATCH.LOG'); Rewrite(WLog); End;
+  WriteLn(WLog, '#', EmuWatchHits, ' WABS(DPMI) phys=', HexLong(PhysAddr),
+    ' val=', HexByte(V), ' steps=', P.TotalSteps,
+    '   from Sel:EIP=', HexWord(DpmiCPU.SegSel[1]), ':', HexLong(DpmiCPU.EIP),
+    ' EAX=', HexLong(DpmiCPU.Reg.EAX), ' ESI=', HexLong(DpmiCPU.Reg.ESI),
+    ' EDI=', HexLong(DpmiCPU.Reg.EDI));
+  Close(WLog);
+  {$I+} If IOResult <> 0 Then ;
+ End;
  If (PhysAddr >= 0) And (PhysAddr < EMU_DPMI_EXT_BASE) Then
   P.CPU.Memory^[PhysAddr] := V
  { Meme correctif/meme ordre de priorite que Dpmi_ReadBytePhys ci-dessus -   }
@@ -205109,6 +205379,8 @@ End;
 { une autre couche de traduction a appliquer dessus. }
 Var
  EmuXlatLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGXLAT.LOG }
+ EmuAllocBaseHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGALLOCBASE.LOG }
+ EmuVmFlagWriteHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGVMFLAGWRITE.LOG }
 Function Dpmi_TranslateLin(Var P: TEmulatorPanel; LinAddr: LongInt): LongInt;
 Var
  DirIdx, TblIdx, PageOfs: LongInt;
@@ -205187,7 +205459,30 @@ Begin
 End;
 
 Procedure Dpmi_WriteByte(Var P: TEmulatorPanel; LinAddr: LongInt; V: Byte);
+Var DiagVmFlag: Text; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
+ { DIAGNOSTIC TEMPORAIRE - a retirer (suite enquete WIN.COM, 9e session,  }
+ { suite) : surveille toute ecriture dans les 32 premiers octets du      }
+ { "pointeur VM Systeme" confirme a $80001000 (voir                      }
+ { [[project_devenv_wincom_launch]]), en particulier son "drapeau" a     }
+ { +16h deja trouve a 1 au moment de la consommation - cherche QUI/QUAND }
+ { le positionne. }
+ If (EmuVmFlagWriteHits < 50) And
+    (LongWord(LinAddr) >= LongWord($80001000)) And
+    (LongWord(LinAddr) < LongWord($80001020)) Then Begin
+  Inc(EmuVmFlagWriteHits);
+  {$I-} Assign(DiagVmFlag, 'DIAGVMFLAGWRITE.LOG');
+  If FileExists('DIAGVMFLAGWRITE.LOG') Then Append(DiagVmFlag)
+                                        Else Rewrite(DiagVmFlag);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagVmFlag, '#', EmuVmFlagWriteHits, ' Step=', P.TotalSteps,
+    ' LinAddr=', HexLong(LinAddr), ' V=', HexByte(V),
+    ' CS:EIP=', HexWord(DpmiCPU.SegSel[1]), ':', HexLong(DpmiCPU.EIP));
+   Close(DiagVmFlag);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
  Dpmi_WriteBytePhys(P, Dpmi_TranslateLin(P, LinAddr), V);
 End;
 
@@ -207507,6 +207802,12 @@ Var
  EmuIrqDivergeArmed: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuIrqDivergeStart: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuCr0PgLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ CA6CPtr: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuLtrPrevEIP: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuLtrPrevLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagLtrPrev: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGLTRPREV.LOG }
+ EmuEntryHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuGuardHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
 
 { Execute une seule instruction protegee. Ne fait rien si DpmiCPU.Active   }
 { est faux (securite - ne devrait pas etre appelee dans ce cas, voir le    }
@@ -207537,6 +207838,98 @@ Begin
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
  DpmiCPU.AddrIs32 := DpmiCPU.Is32Bit; { 17e correctif, voir TDpmiCPU.AddrIs32 }
  EIPStart := DpmiCPU.EIP;
+ { DIAGNOSTIC TEMPORAIRE - a retirer (suite enquete WIN.COM, 9e session) :  }
+ { $802953C6 est l adresse LTR deja confirmee comme reellement executee    }
+ { (voir [[project_devenv_wincom_launch]]) ; on loggue ici l EIP qui s'est }
+ { execute JUSTE AVANT, pour savoir si le flot vient bien de la chute      }
+ { normale depuis $802952D4 (ecriture CA6Ch, jamais vue par WATCH) ou d un }
+ { saut depuis ailleurs. }
+ If (Not EmuLtrPrevLogged) And (LongWord(EIPStart) = LongWord($802953C6))
+ Then Begin
+  EmuLtrPrevLogged := True;
+  {$I-} Assign(DiagLtrPrev, 'DIAGLTRPREV.LOG'); Rewrite(DiagLtrPrev); {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagLtrPrev, 'LTR Step=', P.TotalSteps,
+    ' PrevEIP=', HexLong(EmuLtrPrevEIP),
+    ' ESI=', HexLong(DpmiCPU.Reg.ESI), ' EDI=', HexLong(DpmiCPU.Reg.EDI),
+    ' EAX=', HexLong(DpmiCPU.Reg.EAX), ' EBX=', HexLong(DpmiCPU.Reg.EBX));
+   Close(DiagLtrPrev);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
+ { Meme technique, pour le point d entree suppose de toute la routine      }
+ { ("MOV AX,0030h" en tete de la sequence de rechargement de segments,     }
+ { $802952B0 = base Objet2 $80292E84 + decalage fichier relatif $242C) :   }
+ { si ceci s'execute AVANT la LTR ci-dessus, on saura par QUOI/D OU on y   }
+ { arrive (CALL/JMP reel vs chute normale) - et le PrevEIP de bogues PLUS  }
+ { tard dans ce meme fichier .LOG (si plusieurs occurrences) montrera si   }
+ { la routine est appelee plus d une fois. DECOUVERTE EN COURS DE SESSION }
+ { (voir diagnostic precedent) : le disp32 de "MOV [0000CA6Ch],EDI" est en}
+ { fait RELOGE a l'execution en "MOV [8028CA6Ch],EDI" (adresse lineaire   }
+ { PLATE, PAS physique basse) - donc le garde statique "MOV EAX,[0xca6c]" }
+ { a l'offset fichier-relatif obj2.bin ~0x398 (lineaire $8029321C) doit    }
+ { AUSSI etre verifie en direct, meme technique, pour savoir s'il lit la   }
+ { MEME adresse relogee ou la basse adresse physique - diagnostic ci-     }
+ { dessous. }
+ If (EmuGuardHits < 20) And (LongWord(EIPStart) = LongWord($8029321C))
+ Then Begin
+  Inc(EmuGuardHits);
+  {$I-} Assign(DiagLtrPrev, 'DIAGGUARDBYTES.LOG');
+  If FileExists('DIAGGUARDBYTES.LOG') Then Append(DiagLtrPrev)
+                                       Else Rewrite(DiagLtrPrev);
+  {$I+}
+  If IOResult = 0 Then Begin
+   Write(DiagLtrPrev, '#', EmuGuardHits, ' GUARD Step=', P.TotalSteps,
+    ' bytes@EIP(16)=');
+   For ScanI := 0 To 15 Do
+    Write(DiagLtrPrev, HexByte(Dpmi_ReadByte(P, EIPStart + ScanI)), ' ');
+   WriteLn(DiagLtrPrev);
+   { Le A1 de tete lit [0000CA6Ch] mais CE disp32 EST reloge a l'execution }
+   { en $8028CA6C (confirme par le diagnostic ENTRY precedent - MEME       }
+   { adresse finale que "MOV [CA6Ch],EDI"). On lit donc ici DIRECTEMENT en }
+   { PLAT (pas de base DS, deja une adresse lineaire absolue) la vraie     }
+   { valeur courante + le "drapeau" a +16h qu'elle designe. }
+   CA6CPtr := Dpmi_ReadDWord(P, LongInt(LongWord($8028CA6C)));
+   WriteLn(DiagLtrPrev, '  Val(8028CA6Ch)=', HexLong(CA6CPtr));
+   WriteLn(DiagLtrPrev, '  Flag[ptr+16h]=',
+    HexWord(Word(Dpmi_ReadDWord(P, CA6CPtr + $16) And $FFFF)));
+   { Aucune ecriture protegee jamais vue sur [80001000h-80001020h]       }
+   { (voir EmuVmFlagWriteHits) - meme patron que BDD0h/BDD4h : la page   }
+   { PHYSIQUE sous-jacente est probablement touchee par un mecanisme     }
+   { TEMPS REEL (bypass Dpmi_WriteByte). On loggue ici sa traduction     }
+   { physique reelle pour pouvoir la surveiller avec WATCH (bas niveau). }
+   WriteLn(DiagLtrPrev, '  PhysOf(ptr+16h)=',
+    HexLong(Dpmi_TranslateLin(P, CA6CPtr + $16)));
+   Close(DiagLtrPrev);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
+ If (EmuEntryHits < 20) And (LongWord(EIPStart) = LongWord($802952B0))
+ Then Begin
+  Inc(EmuEntryHits);
+  {$I-} Assign(DiagLtrPrev, 'DIAGENTRYPREV.LOG');
+  If FileExists('DIAGENTRYPREV.LOG') Then Append(DiagLtrPrev)
+                                      Else Rewrite(DiagLtrPrev);
+  {$I+}
+  If IOResult = 0 Then Begin
+   WriteLn(DiagLtrPrev, '#', EmuEntryHits, ' ENTRY Step=', P.TotalSteps,
+    ' PrevEIP=', HexLong(EmuLtrPrevEIP),
+    ' ESI=', HexLong(DpmiCPU.Reg.ESI), ' EDI=', HexLong(DpmiCPU.Reg.EDI),
+    ' EAX=', HexLong(DpmiCPU.Reg.EAX), ' EBX=', HexLong(DpmiCPU.Reg.EBX));
+   { Verification DIRECTE de la memoire invite reelle a cette EIP, pour    }
+   { eliminer tout risque de correspondance erronee avec l extraction      }
+   { statique obj2.bin (dd) - on s attend a voir "66 B8 30 00 66 8E D0 BC  }
+   { BC FD 00 00 ..." (MOV AX,30h;MOV SS,AX;MOV ESP,0FDBCh;...) si la      }
+   { correspondance est bonne. }
+   Write(DiagLtrPrev, '  bytes@EIP(48)=');
+   For ScanI := 0 To 47 Do
+    Write(DiagLtrPrev, HexByte(Dpmi_ReadByte(P, EIPStart + ScanI)), ' ');
+   WriteLn(DiagLtrPrev);
+   Close(DiagLtrPrev);
+  End;
+  {$I+} If IOResult <> 0 Then ;
+ End;
+ EmuLtrPrevEIP := EIPStart;
  RepMode := 0;
  Repeat
   B := Dpmi_FetchByte(P, 0);
@@ -207574,29 +207967,42 @@ Begin
  DiagDpmiPreEIP := EIPStart;
  DiagDpmiPreB := B;
  DiagDpmiPreB2 := Dpmi_FetchByte(P, 0);
- { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete WIN.COM, chasse   }
- { a la divergence BOUND vs trace DOSBox authentique) : declenche au       }
- { premier passage a 0028:80285E34 (meme adresse que le "int 20" de        }
- { reference dans LOGCPU.TXT, step DOSBox 3771019) puis capture les 400    }
- { pas suivants - memes champs que LOGCPU.TXT pour comparaison directe. }
- If Not EmuIrqDivergeArmed Then Begin
-  EmuIrqDivergeArmed := True;
-  EmuIrqDivergeStart := P.TotalSteps;
- End;
- If (P.TotalSteps >= EmuIrqDivergeStart) And
-    (P.TotalSteps <= EmuIrqDivergeStart + 1) Then Begin
-  {$I-} Assign(DiagDpmiFaultF2, 'DIAGDIVERGE.LOG');
-  If FileExists('DIAGDIVERGE.LOG') Then Append(DiagDpmiFaultF2)
-                                    Else Rewrite(DiagDpmiFaultF2);
+ { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete WIN.COM, suite -  }
+ { la vraie boucle de construction de table de pages VMM, confirmee a      }
+ { 0028:80293AB9, lit/ecrit 3 compteurs globaux DS-relatifs                }
+ { ([0000BE00h]/[BE14h]/[BE18h]) - ce diagnostic, au premier passage a     }
+ { CETTE adresse precise, calcule leur VRAIE adresse lineaire (via la base }
+ { reelle de DS, pas une supposition) pour pouvoir les surveiller en       }
+ { amont et trouver QUI les a seedes avec la mauvaise valeur. }
+ If (EmuAllocBaseHits < 300) And
+    (LongWord(EIPStart) = LongWord($80293AA4)) Then Begin
+  Inc(EmuAllocBaseHits);
+  {$I-} Assign(DiagDpmiFaultF2, 'DIAGALLOCBASE.LOG');
+  If FileExists('DIAGALLOCBASE.LOG') Then Append(DiagDpmiFaultF2)
+                                      Else Rewrite(DiagDpmiFaultF2);
   {$I+}
   If IOResult = 0 Then Begin
-   WriteLn(DiagDpmiFaultF2, 'Step=', P.TotalSteps,
-    ' Sel:EIP=', HexWord(DpmiCPU.SegSel[1]), ':', HexLong(EIPStart),
-    ' B=', HexByte(B), ' B2=', HexByte(DiagDpmiPreB2),
-    ' EAX=', HexLong(DpmiCPU.Reg.EAX), ' ESI=', HexLong(DpmiCPU.Reg.ESI),
-    ' EBX=', HexLong(DpmiCPU.Reg.EBX), ' ESP=', HexLong(DpmiCPU.Reg.ESP),
-    ' CR0=', HexLong(DpmiCPU.CR0), ' CR3=', HexLong(DpmiCPU.CR3),
-    ' IdtBase=', HexLong(DpmiCPU.IdtBase));
+   WriteLn(DiagDpmiFaultF2, '#', EmuAllocBaseHits, ' Step=', P.TotalSteps,
+    ' Val(BE00h)=', HexLong(Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + $BE00)),
+    ' Val(BE14h)=', HexLong(Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + $BE14)),
+    ' Val(BE18h)=', HexLong(Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + $BE18)),
+    ' Val(BDD0h)=', HexLong(Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + $BDD0)),
+    ' Val(BDD4h)=', HexLong(Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + $BDD4)),
+    ' EBX=', HexLong(DpmiCPU.Reg.EBX), ' EAX=', HexLong(DpmiCPU.Reg.EAX),
+    ' ESI=', HexLong(DpmiCPU.Reg.ESI));
+   { Suite enquete 2026-10-18 : producteur reel de [BDD0h]/[BDD4h] trouve  }
+   { par desassemblage fiable (objdump) de l objet LE - garde par          }
+   { CMP WORD [[0000CA6Ch]+16h],0 / JE <producteur> ; si ce drapeau est    }
+   { a tort non nul, le producteur est saute et BDD0h/BDD4h gardent leur   }
+   { valeur residuelle (ici, des octets bruts de la table de fixup copies }
+   { par un Move XMS legitime). On loggue le pointeur et le drapeau ici   }
+   { pour confirmer. }
+   CA6CPtr := Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + $CA6C);
+   WriteLn(DiagDpmiFaultF2, '  Val(CA6Ch)=', HexLong(CA6CPtr),
+    ' Val(BDE8h)=', HexLong(Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + $BDE8)));
+   If (CA6CPtr >= 0) And (CA6CPtr < $7FFFFFF0) Then
+    WriteLn(DiagDpmiFaultF2, '  Flag[CA6Ch+16h]=',
+     HexWord(Word(Dpmi_ReadDWord(P, Dpmi_SelBase(DpmiCPU.SegSel[3]) + CA6CPtr + $16) And $FFFF)));
    Close(DiagDpmiFaultF2);
   End;
   {$I+} If IOResult <> 0 Then ;
@@ -210182,6 +210588,12 @@ Begin
  Exclude(P.CPU.Flags.s, EFG_TF);
  P.CPU.Segs.CS := NewCS;
  P.CPU.IP := NewIP;
+ { Une VRAIE interruption reprend un CPU a l'arret (HLT, voir $F4 dans  }
+ { Emu_StepOne) - condition necessaire pour que "STI;HLT" (boucle       }
+ { d'attente classique de COMMAND.COM au prompt) se reveille reellement }
+ { sur le prochain tic d'horloge/IRQ clavier au lieu de geler pour      }
+ { toujours. }
+ P.CPU.Halted := False;
 End;
 
 { Ecrit le trampoline "vecteur par defaut" pour l interruption Num (voir     }
@@ -210756,6 +211168,12 @@ Var
  LslRawLimit, LslEffLimit: LongInt;    { limite brute puis apres granularite}
 Begin
  If P.CPU.Fault <> sfNone Then Exit;
+ { CPU reellement a l'arret (HLT, voir $F4 plus bas) : ne rien       }
+ { chercher/executer tant qu'aucune IRQ reelle n'a leve Halted       }
+ { (Emu_FireHwInt) - le "temps" continue de s'ecouler normalement    }
+ { cote appelant (DOS_RunOneChunk continue a decompter les tics/     }
+ { IRQ a chaque iteration, HLT ne gele PAS cette partie-la). }
+ If P.CPU.Halted Then Exit;
  { BOGUE REEL (2026-10-18, enquete WIN.COM 386 Enhanced Mode, cause du      }
  { plantage "CALL FAR FFFF:0000" - voir [[project_devenv_wincom_launch]]) :}
  { FFFF:0000 (adresse physique $FFFF0) est l'emplacement traditionnel du    }
@@ -211065,7 +211483,16 @@ Begin
    Inc(P.CPU.IP);
   $F4: { HLT }
    Begin
-    P.CPU.Fault := sfHLT;
+    { BOGUE REEL CORRIGE (2026-10-18, enquete "BOOT C:" MS-DOS 6.22,      }
+    { demande explicite de l'utilisateur) : HLT terminait TOUJOURS toute  }
+    { la session d'emulation (Fault:=sfHLT, jamais sfNone par la suite),  }
+    { empechant tout clavier/prompt APRES un boot reussi - un vrai 8086   }
+    { arrete seulement la recherche/execution d'instructions jusqu'a la   }
+    { PROCHAINE interruption non masquee, puis reprend normalement a      }
+    { l'instruction suivante (deja le cas ici, IP est deja avance). Voir  }
+    { Emu_StepOne (controle P.CPU.Halted en tete) et Emu_FireHwInt (leve  }
+    { Halted des qu'une IRQ est reellement livree). }
+    P.CPU.Halted := True;
     Inc(P.CPU.IP);
    End;
   $9B: { FWAIT/WAIT : ignore }
@@ -228609,6 +229036,8 @@ Var
  CurBlink, FrameChanged: Boolean;
  YChk, XChk: Integer;
  DiagDpmiFaultF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ DiagBootLoop: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGBOOTLOOP.LOG }
+ DiagBootI: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
 Begin
  For ChunkI := 0 To 4999 Do Begin
   If P.CPU.Fault <> sfNone Then Break;
@@ -228672,6 +229101,118 @@ Begin
   { (observe au pas 265124 pour MS-DOS) survient bien plus tard qu un        }
   { saut de renormalisation fait dans les toutes premieres instructions. }
   If P.CPU.Segs.CS <> 0 Then EmuLeftCS0 := True;
+  { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete "BOOT C:" en    }
+  { boucle infinie, MS-DOS 6.22 VHD, demande explicite de l'utilisateur). }
+  { BOOT ne bloque pas le thread Terminal (cree juste l'onglet puis sort) }
+  { donc aucune commande ulterieure du meme script batch ne peut attendre }
+  { la bonne fenetre temporelle - on ecrase ce fichier (Rewrite, pas      }
+  { Append) a chaque declenchement pour toujours lire le DERNIER etat en }
+  { date simplement en patientant puis en relisant le fichier, sans       }
+  { automatisation GUI. }
+  { CORRECTIF METHODOLOGIQUE (trouve en cours de session) : 1 000 000 est  }
+  { un multiple EXACT de EmuStepsPerTick (5000) - cet echantillonnage      }
+  { tombait donc TOUJOURS sur la MEME phase du cycle de tick (juste apres  }
+  { l entree du gestionnaire INT 08h), donnant l illusion d un CS:IP       }
+  { foreground fige alors que c etait un pur aliasing d echantillonnage.   }
+  { 999983 est premier (ne divise PAS 5000), garantit un echantillonnage   }
+  { qui glisse a travers TOUTES les phases du cycle au fil du temps. }
+  If (P.TotalSteps Mod 999983 = 0) And (P.TotalSteps > 0) Then Begin
+   {$I-} Assign(DiagBootLoop, 'DIAGBOOTLOOP.LOG'); Rewrite(DiagBootLoop); {$I+}
+   If IOResult = 0 Then Begin
+    WriteLn(DiagBootLoop, 'Steps=', P.TotalSteps, ' CS:IP=',
+     HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP),
+     ' SS:SP=', HexWord(P.CPU.Segs.SS), ':', HexWord(P.CPU.Regs.SP),
+     ' AX=', HexWord(P.CPU.Regs.AX), ' BX=', HexWord(P.CPU.Regs.BX),
+     ' CX=', HexWord(P.CPU.Regs.CX), ' DX=', HexWord(P.CPU.Regs.DX),
+     ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+    WriteLn(DiagBootLoop, 'EmuStepsToTick=', EmuStepsToTick,
+     ' EmuStepsPerTick=', EmuStepsPerTick, ' EmuIrqPending=',
+     HexByte(EmuIrqPending), ' IMR=', HexByte(EmuPICMaster.IMR),
+     ' ISR=', HexByte(EmuPICMaster.ISR), ' IF=',
+     (EFG_IF In P.CPU.Flags.s), ' EmuTickCounter=', EmuTickCounter);
+    WriteLn(DiagBootLoop, 'EmuSegLogCount=', EmuSegLogCount,
+     ' arme=', EmuSegLogArmed);
+    Write(DiagBootLoop, 'Derniers changements CS :');
+    For DiagBootI := 1 To 20 Do
+     If EmuSegLogCount - DiagBootI >= 0 Then
+      Write(DiagBootLoop, ' [', EmuSegLog[EmuSegLogCount - DiagBootI].Step,
+       ']', HexWord(EmuSegLog[EmuSegLogCount - DiagBootI].CS), ':',
+       HexWord(EmuSegLog[EmuSegLogCount - DiagBootI].IP));
+    WriteLn(DiagBootLoop);
+    If Not EmuBootLoopBytesDumped Then Begin
+     EmuBootLoopBytesDumped := True;
+     WriteLn(DiagBootLoop, 'Octets a 0265:03BB(16)=');
+     For DiagBootI := 0 To 15 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, $0265, Word($03BB + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+     WriteLn(DiagBootLoop, 'Octets a 0265:18B1(16)=');
+     For DiagBootI := 0 To 15 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, $0265, Word($18B1 + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+     WriteLn(DiagBootLoop, 'Octets a 0000:A62D(16)=');
+     For DiagBootI := 0 To 15 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, 0, Word($A62D + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+     WriteLn(DiagBootLoop, 'Octets a 0000:A689(16)=');
+     For DiagBootI := 0 To 15 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, 0, Word($A689 + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+     WriteLn(DiagBootLoop, 'Octets a 0000:A6E6(16)=');
+     For DiagBootI := 0 To 15 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, 0, Word($A6E6 + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+    End;
+    { 2e point d'ancrage CORRIGE : le precedent ($04BE:1875) etait un pur   }
+    { artefact d'aliasing d'echantillonnage (1 000 000 est un multiple de  }
+    { EmuStepsPerTick=5000) - LA VRAIE boucle, confirmee par un            }
+    { echantillonnage non-aliase (999983, premier avec 5000), est bien plus}
+    { etroite : $0BC7:1450-1460 environ, SS:SP fige a 0BC7:FFF0. }
+    If (Not EmuBootLoop2Dumped) And (P.CPU.Segs.CS = $0BC7) And
+       (P.CPU.IP >= $1440) And (P.CPU.IP <= $1470) Then Begin
+     EmuBootLoop2Dumped := True;
+     WriteLn(DiagBootLoop, 'Trigger IP=', HexWord(P.CPU.IP));
+     WriteLn(DiagBootLoop, 'Octets a 0BC7:1440(48)=');
+     For DiagBootI := 0 To 47 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, $0BC7, Word($1440 + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+    End;
+    { 3e point d'ancrage (post-correctif F2h) : nouvelle boucle etroite    }
+    { trouvee a 0BC7:136B-1379, BX=1923 (different de F203) - meme patron }
+    { que la precedente mais code DIFFERENT, a identifier. }
+    If (Not EmuBootLoop3Dumped) And (P.CPU.Segs.CS = $0BC7) And
+       (P.CPU.IP >= $1360) And (P.CPU.IP <= $1390) Then Begin
+     EmuBootLoop3Dumped := True;
+     WriteLn(DiagBootLoop, 'Trigger3 IP=', HexWord(P.CPU.IP));
+     WriteLn(DiagBootLoop, 'Octets a 0BC7:1360(48)=');
+     For DiagBootI := 0 To 47 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, $0BC7, Word($1360 + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+    End;
+    { 4e point d'ancrage : boucle PLUS GRAVE (IF=FALSE en PERMANENCE,      }
+    { aucun STI jamais atteint, EmuIrqPending s accumule sans jamais etre  }
+    { livre) a 0BC7:1112-1118, DS=ES=0040 (BDA directe), SS:SP=0BC7:08B4   }
+    { (pile DIFFERENTE des precedentes - probablement un niveau d appel     }
+    { different). }
+    If (EmuBootLoop4Hits < 5) And (P.CPU.Segs.CS = $0BC7) And
+       (P.CPU.IP >= $1100) And (P.CPU.IP <= $1130) Then Begin
+     Inc(EmuBootLoop4Hits);
+     WriteLn(DiagBootLoop, '#', EmuBootLoop4Hits, ' Trigger4 IP=', HexWord(P.CPU.IP));
+     WriteLn(DiagBootLoop, 'Octets a 0BC7:1100(64)=');
+     For DiagBootI := 0 To 63 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, $0BC7, Word($1100 + DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+     WriteLn(DiagBootLoop, 'BDA 0040:006C(tick,4)=',
+      HexLong(Emu_ReadWord(P.CPU, $0040, $006C) Or
+        (LongInt(Emu_ReadWord(P.CPU, $0040, $006E)) Shl 16)));
+     WriteLn(DiagBootLoop, 'BDA 0040:0000-003F(seg 0040 complet)=');
+     For DiagBootI := 0 To 63 Do
+      Write(DiagBootLoop, HexByte(Emu_ReadByte(P.CPU, $0040, Word(DiagBootI))), ' ');
+     WriteLn(DiagBootLoop);
+    End;
+    Close(DiagBootLoop);
+   End;
+   {$I+} If IOResult <> 0 Then ;
+  End;
   { Voir declaration EmuSegLog ci-dessus : un point par vrai changement de   }
   { segment CS, sur TOUTE la duree du boot (pas seulement les 8192 derniers  }
   { pas). Desarme silencieusement (EmuSegLogArmed:=False) si le tampon de     }
@@ -234045,6 +234586,17 @@ Begin NesActive := False;
  EmuIrqDivergeArmed := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuCr0PgLogged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuXlatLogged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuE801Logged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuAllocBaseHits := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuBe00ReadLogged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuBe00ReadHits := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuXmsMoveLogged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuXmsHandleMoveHits := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuLtrPrevLogged := False; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuLtrPrevEIP := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuEntryHits := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuGuardHits := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ EmuVmFlagWriteHits := 0; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuLeftCS0 := False;
  EmuSegLogCount := 0;
  EmuSegLogLastCS := $FFFF;
