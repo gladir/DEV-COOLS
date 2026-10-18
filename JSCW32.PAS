@@ -22,7 +22,7 @@
   14. [IMPLEMENTE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
   15. [IMPLEMENTE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
   16. [IMPLEMENTE] Implementer les objets et prototypes : litteraux, acces par point et par crochets, ajout/modification/suppression dynamique de proprietes (table de hachage avec ordre d'insertion), in, hasOwnProperty, chaine de prototypes, getters/setters, Object.keys/values/entries/assign/create/freeze/getPrototypeOf, avec objects.js et test16.
-  17. [A FAIRE] Implementer les classes : declaration et expression de classe, constructor, methodes d'instance, methodes statiques, extends, super(...) et super.methode(), new, instanceof, getters/setters, champs, ordre d'initialisation, heritage multi-niveaux (Dog/Cat extends Animal), avec classes.js et test21.js.
+  17. [IMPLEMENTE] Implementer les classes : declaration et expression de classe, constructor, methodes d'instance, methodes statiques, extends, super(...) et super.methode(), new, instanceof, getters/setters, champs, ordre d'initialisation, heritage multi-niveaux (Dog/Cat extends Animal), avec classes.js et test21.js.
   18. [A FAIRE] Implementer les exceptions : try/catch/finally, throw de n'importe quelle valeur, classes Error/TypeError/RangeError/SyntaxError avec message, deroulement de pile via pile de gestionnaires (ou SEH Windows), finally execute meme avec return/break/continue, exception non rattrapee (message sur stderr + code de sortie non nul), erreurs runtime (appel d'un non-fonction, propriete d'undefined), avec test23.js.
   19. [A FAIRE] Implementer les objets globaux et built-ins numeriques : Math (abs, max, min, pow, sqrt, floor, ceil, round, trunc, sign, random, PI, E...), Number (isInteger, isNaN, isFinite, parseFloat, MAX_VALUE...), Number()/parseInt (avec base)/parseFloat/isNaN/isFinite, JSON.stringify et JSON.parse reels (pas des stubs), NaN/Infinity/undefined/globalThis, avec math.js, test20.js et test24.js.
   20. [A FAIRE] Implementer les expressions regulieres : litteraux /re/flags (g, i, m, ainsi que les flags non standards rencontres dans test03.js), new RegExp(pattern, flags), moteur a backtracking (classes, quantificateurs, groupes, ancres, alternatives), RegExp.test/exec, String.match/matchAll/search/replace/split, lastIndex, avec test19.js.
@@ -1655,6 +1655,9 @@ Begin
   tl := ctx.lex.line;
   tc := LxCol(ctx);
   tp := ctx.lex.pos;
+  { #nom : membre prive, traite comme un nom de propriete cache }
+  If LxCur(ctx) = '#' Then
+    LxAdvance(ctx);
   While IsIdentPart(LxCur(ctx)) Do
     LxAdvance(ctx);
   If ctx.lex.pos - tp > MAX_TOKEN_TEXT Then
@@ -2174,7 +2177,7 @@ Begin
         LxLineComment(ctx)
       Else If (c = '/') And (LxPeek(ctx, 1) = '*') Then
         LxBlockComment(ctx)
-      Else If IsIdentStart(c) Then
+      Else If IsIdentStart(c) Or ((c = '#') And IsIdentStart(LxPeek(ctx, 1))) Then
         LxIdent(ctx)
       Else If IsDigit(c) Or ((c = '.') And IsDigit(LxPeek(ctx, 1))) Then
         LxNumber(ctx)
@@ -4995,7 +4998,8 @@ Begin
   ctx.sem.syms[sy].flags := 0;
   ctx.sem.syms[sy].refs := 0;
   ctx.sem.syms[sy].writes := 0;
-  If (ctx.sem.scopes[sc].func = 1) And Not ctx.sem.scopes[sc].in_loop Then
+  If (ctx.sem.scopes[sc].func = 1) And Not ctx.sem.scopes[sc].in_loop And
+     (ctx.sem.syms[sy].kind <> DK_FNAME) Then
     ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_STATIC;
   If (ctx.sem.syms[sy].kind = DK_VAR) Or (ctx.sem.syms[sy].kind = DK_FUNC) Then
     ctx.sem.syms[sy].flags := ctx.sem.syms[sy].flags Or SF_HOISTED;
@@ -7868,6 +7872,7 @@ End;
 
 Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt); Forward;
 Procedure BindTo(Var ctx: TCompilerContext; node, tslot: LongInt; init: Boolean); Forward;
+Procedure GenScopeEnter(Var ctx: TCompilerContext; sc: LongInt); Forward;
 
 Procedure LoadTag(Var ctx: TCompilerContext; lo: LongInt; tag: LongInt);
 Begin
@@ -9207,7 +9212,30 @@ End;
 { L'objet est dans tobj : lit la propriete dans EDX:EAX. }
 Procedure GenPropFetch(Var ctx: TCompilerContext; m, tobj: LongInt);
 Begin
-  If ctx.ast.nodes[m].kind = N_MEMBER Then
+  If (ctx.ast.nodes[ctx.ast.nodes[m].e1].kind = N_SUPER) And
+     (ctx.ir.cg_fs > 1) And
+     (ctx.sem.scopes[ctx.ir.cg_fs].fkind <> FK_ARROW) Then
+    Begin
+      { super.nom / super[cle] : recherche dans le prototype de l'objet d'accueil }
+      If ctx.ast.nodes[m].kind = N_MEMBER Then
+        Begin
+          PushTemp(ctx, tobj);
+          Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
+                ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+        End
+      Else
+        Begin
+          GenExpr(ctx, ctx.ast.nodes[m].e2);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          CallRt(ctx, 'tokey', 8);
+          PushTemp(ctx, tobj);
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+        End;
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
+      CallRt(ctx, 'super_get', 16);
+    End
+  Else If ctx.ast.nodes[m].kind = N_MEMBER Then
     Begin
       Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
             ctx.data.strs[ctx.ast.nodes[m].aux].sym));
@@ -9251,13 +9279,16 @@ End;
 Procedure GenCall(Var ctx: TCompilerContext; n: LongInt);
 Var
   callee, a, nargs, i, tf, tt, notfn, lbl, old_end, usethis, okl: LongInt;
-  top, has_spread, old_used, is_new: Boolean;
+  top, has_spread, old_used, is_new, is_super: Boolean;
 Begin
   callee := ctx.ast.nodes[n].e1;
   is_new := ctx.ast.nodes[n].kind = N_NEW;
-  If (callee <> 0) And (ctx.ast.nodes[callee].kind = N_SUPER) Then
+  is_super := (callee <> 0) And (ctx.ast.nodes[callee].kind = N_SUPER);
+  If is_super And ((ctx.ir.cg_fs <= 1) Or
+     (ctx.sem.scopes[ctx.ir.cg_fs].fkind <> FK_DERIVED_CTOR)) Then
     Begin
-      PendingExpr(ctx, n);
+      PendingNote(ctx, n, 'super(...) hors du constructeur d''une classe derivee');
+      LoadUndefined(ctx);
       Exit;
     End;
   top := Not ctx.ir.in_chain;
@@ -9290,11 +9321,27 @@ Begin
     End
   Else
     Begin
-      ctx.ir.in_chain := True;
-      GenExpr(ctx, callee);
-      ctx.ir.in_chain := False;
+      If is_super Then
+        Begin
+          { constructeur parent : champ this de la classe courante }
+          Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+          Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, RT_FN_THIS));
+          Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_ECX, RT_FN_THIS + 4));
+        End
+      Else
+        Begin
+          ctx.ir.in_chain := True;
+          GenExpr(ctx, callee);
+          ctx.ir.in_chain := False;
+        End;
       SaveTemp(ctx, tf);
-      LoadUndefined(ctx);
+      If is_super Then
+        Begin
+          Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
+          Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
+        End
+      Else
+        LoadUndefined(ctx);
       SaveTemp(ctx, tt);
       If is_new Then
         Begin
@@ -9387,6 +9434,14 @@ Begin
       PlaceLabel(ctx, usethis);
       LoadTemp(ctx, tt);
       PlaceLabel(ctx, okl);
+    End;
+  If is_super Then
+    Begin
+      { champs d'instance de cette classe, puis la valeur de l'expression est this }
+      PushTemp(ctx, tt);
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
+      CallRt(ctx, 'init_fields', 12);
+      LoadTemp(ctx, tt);
     End;
   Emit1(ctx, OP_JMP, LabelOp(lbl));
   PlaceLabel(ctx, notfn);
@@ -9583,6 +9638,203 @@ Begin
   TempRelease(ctx, t);
 End;
 
+{ ---- Classes (TODO 17) ----
+
+  Une classe est la fonction constructeur elle-meme (objet fonction), avec
+  un objet de proprietes (membres statiques, prototype herite de la classe
+  parente) et un objet prototype (methodes, accesseurs, constructor).
+  _JSRT_class_setup(classe, parent) cree ces deux objets et memorise la
+  classe parente dans le champ this de la fonction, que super(...) lit.
+  Une methode memorise son objet d'accueil dans ce meme champ, ce qui
+  permet super.m(...). Les champs d'instance sont enregistres dans la
+  propriete cachee #fields du prototype ; _JSRT_init_fields(classe,
+  this) les initialise (au debut du constructeur de base, ou juste apres
+  super(...) dans une classe derivee). }
+
+Function ClassCtor(Var ctx: TCompilerContext; n: LongInt): LongInt;
+Var
+  m: LongInt;
+Begin
+  ClassCtor := 0;
+  m := ctx.ast.nodes[n].e2;
+  While m <> 0 Do
+    Begin
+      If (ctx.ast.nodes[m].kind = N_METHOD) And
+         (ctx.ast.nodes[m].flags And MF_CONSTRUCTOR <> 0) Then
+        ClassCtor := m;
+      m := ctx.ast.nodes[m].next;
+    End;
+End;
+
+{ Cle d'un membre de classe : EAX = chaine ; resultat dans le temporaire tk
+  (calculee) ou 0 si la cle est un atome. }
+Function ClassKeyTemp(Var ctx: TCompilerContext; m: LongInt): LongInt;
+Var
+  tk: LongInt;
+Begin
+  tk := 0;
+  If ctx.ast.nodes[m].flags And MF_COMPUTED <> 0 Then
+    Begin
+      tk := TempAcquire(ctx);
+      GenExpr(ctx, ctx.ast.nodes[m].e3);
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'tokey', 8);
+      SaveTemp(ctx, tk);
+    End;
+  ClassKeyTemp := tk;
+End;
+
+Procedure PushClassKey(Var ctx: TCompilerContext; m, tk: LongInt);
+Begin
+  If tk <> 0 Then
+    Emit1(ctx, OP_PUSH, TempLo(tk))
+  Else
+    Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+End;
+
+Procedure PushUndefinedValue(Var ctx: TCompilerContext);
+Begin
+  Emit1(ctx, OP_PUSH, ImmOp(TagImm(RT_T_UNDEFINED)));
+  Emit1(ctx, OP_PUSH, ImmOp(0));
+End;
+
+Procedure GenClass(Var ctx: TCompilerContext; n: LongInt);
+Var
+  sc, tcls, tpar, tproto, tk, m, ctor, sy, kind: LongInt;
+Begin
+  sc := ctx.ast.nodes[n].scope;
+  If sc <> 0 Then
+    GenScopeEnter(ctx, sc);
+  tcls := TempAcquire(ctx);
+  tpar := TempAcquire(ctx);
+  tproto := TempAcquire(ctx);
+  If ctx.ast.nodes[n].e1 <> 0 Then
+    GenExpr(ctx, ctx.ast.nodes[n].e1)
+  Else
+    LoadUndefined(ctx);
+  SaveTemp(ctx, tpar);
+  ctor := ClassCtor(ctx, n);
+  If ctor <> 0 Then
+    GenMakeClosure(ctx, ctor)
+  Else
+    Begin
+      If ctx.ast.nodes[n].e1 <> 0 Then
+        Emit1(ctx, OP_PUSH, ImmOp(1))
+      Else
+        Emit1(ctx, OP_PUSH, ImmOp(0));
+      CallRt(ctx, 'make_default_ctor', 4);
+    End;
+  SaveTemp(ctx, tcls);
+  PushTemp(ctx, tpar);
+  PushTemp(ctx, tcls);
+  CallRt(ctx, 'class_setup', 16);
+  PushTemp(ctx, tcls);
+  CallRt(ctx, 'class_proto', 8);
+  SaveTemp(ctx, tproto);
+  { liaison du nom : exterieure pour une declaration, interieure pour une expression }
+  If ctx.ast.nodes[n].kind = N_CLASS_DECL Then
+    Begin
+      If ctx.ast.nodes[n].sym <> 0 Then
+        Begin
+          LoadTemp(ctx, tcls);
+          StoreSym(ctx, ctx.ast.nodes[n].sym, True);
+        End;
+    End
+  Else If sc <> 0 Then
+    Begin
+      sy := ctx.sem.scopes[sc].first_sym;
+      While sy <> 0 Do
+        Begin
+          If ctx.sem.syms[sy].kind = DK_FNAME Then
+            Begin
+              LoadTemp(ctx, tcls);
+              StoreSym(ctx, sy, True);
+            End;
+          sy := ctx.sem.syms[sy].next;
+        End;
+    End;
+  { premiere passe : methodes, accesseurs et champs d'instance }
+  m := ctx.ast.nodes[n].e2;
+  While m <> 0 Do
+    Begin
+      If (ctx.ast.nodes[m].kind = N_METHOD) And
+         (ctx.ast.nodes[m].flags And MF_CONSTRUCTOR = 0) Then
+        Begin
+          tk := ClassKeyTemp(ctx, m);
+          GenMakeClosure(ctx, m);
+          If ctx.ast.nodes[m].flags And MF_GETTER <> 0 Then
+            kind := 1
+          Else If ctx.ast.nodes[m].flags And MF_SETTER <> 0 Then
+            kind := 2
+          Else
+            kind := 0;
+          Emit1(ctx, OP_PUSH, ImmOp(kind));
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          PushClassKey(ctx, m, tk);
+          If ctx.ast.nodes[m].flags And MF_STATIC <> 0 Then
+            PushTemp(ctx, tcls)
+          Else
+            PushTemp(ctx, tproto);
+          CallRt(ctx, 'class_member', 24);
+          If tk <> 0 Then
+            TempRelease(ctx, tk);
+        End
+      Else If (ctx.ast.nodes[m].kind = N_FIELD) And
+              (ctx.ast.nodes[m].flags And MF_STATIC = 0) Then
+        Begin
+          tk := ClassKeyTemp(ctx, m);
+          If ctx.ast.nodes[m].e1 <> 0 Then
+            GenMakeClosure(ctx, m)
+          Else
+            LoadUndefined(ctx);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          PushClassKey(ctx, m, tk);
+          PushTemp(ctx, tproto);
+          CallRt(ctx, 'class_field', 20);
+          If tk <> 0 Then
+            TempRelease(ctx, tk);
+        End;
+      m := ctx.ast.nodes[m].next;
+    End;
+  { seconde passe : champs statiques et blocs statiques, dans l'ordre }
+  m := ctx.ast.nodes[n].e2;
+  While m <> 0 Do
+    Begin
+      If (ctx.ast.nodes[m].kind = N_FIELD) And
+         (ctx.ast.nodes[m].flags And MF_STATIC <> 0) Then
+        Begin
+          tk := ClassKeyTemp(ctx, m);
+          If ctx.ast.nodes[m].e1 <> 0 Then
+            GenMakeClosure(ctx, m)
+          Else
+            LoadUndefined(ctx);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          PushClassKey(ctx, m, tk);
+          PushTemp(ctx, tcls);
+          CallRt(ctx, 'class_static', 20);
+          If tk <> 0 Then
+            TempRelease(ctx, tk);
+        End
+      Else If ctx.ast.nodes[m].kind = N_STATIC_BLOCK Then
+        Begin
+          GenMakeClosure(ctx, m);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          PushTemp(ctx, tcls);
+          CallRt(ctx, 'class_block', 16);
+        End;
+      m := ctx.ast.nodes[m].next;
+    End;
+  LoadTemp(ctx, tcls);
+  TempRelease(ctx, tproto);
+  TempRelease(ctx, tpar);
+  TempRelease(ctx, tcls);
+End;
+
 Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt);
 Var
   e: LongInt;
@@ -9603,6 +9855,13 @@ Begin
       GenArrayLit(ctx, n);
     N_OBJECT_LIT:
       GenObjectLit(ctx, n);
+    N_CLASS_EXPR:
+      GenClass(ctx, n);
+    N_SUPER:
+      Begin
+        Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
+        Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
+      End;
     N_MEMBER, N_INDEX:
       GenMember(ctx, n);
     N_FUNC_EXPR:
@@ -10383,6 +10642,8 @@ Begin
       GenVarDecl(ctx, n);
     N_EXPR_STMT:
       GenExpr(ctx, ctx.ast.nodes[n].e1);
+    N_CLASS_DECL:
+      GenClass(ctx, n);
     N_EMPTY, N_FUNC_DECL:
       ;
     N_DEBUGGER:
@@ -10584,6 +10845,15 @@ Begin
     N_FUNC_DECL, N_FUNC_EXPR, N_METHOD:
       Begin
         GenParams(ctx, n);
+        If (ctx.ast.nodes[n].kind = N_METHOD) And
+           (ctx.sem.scopes[sc].fkind = FK_CTOR) Then
+          Begin
+            { constructeur de base : champs d'instance avant le corps }
+            Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_THIS + 4));
+            Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_THIS));
+            Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
+            CallRt(ctx, 'init_fields', 12);
+          End;
         body := ctx.ast.nodes[n].e2;
         If (ctx.ast.nodes[n].kind = N_FUNC_EXPR) And
            (ctx.ast.nodes[n].flags And FN_EXPR_BODY <> 0) Then
@@ -11372,6 +11642,20 @@ Begin
   For i := 1 To Length(text) Do
     PutByte(asm_ctx^, SEC_RDATA, ofs + i - 1, Ord(text[i]));
   NewDataSym(asm_ctx^, name, SEC_RDATA, ofs, Length(text) + 1, DS_STRING);
+End;
+
+{ Descripteur de fonction statique pour le code ; retourne son symbole. }
+Function RtDescSym(Const jsname, code: TString; nparams, flags: LongInt): LongInt;
+Var
+  fd_ofs: LongInt;
+Begin
+  fd_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_FD_SIZE);
+  AddReloc(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_NAME,
+           DsymFind(asm_ctx^, RtStr(jsname)));
+  PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_NPARAMS, nparams);
+  PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_FLAGS, flags);
+  RtDescSym := NewDataSym(asm_ctx^, '_JSND_' + code, SEC_RDATA, fd_ofs, RT_FD_SIZE,
+                          DS_FDESC);
 End;
 
 { Objet fonction natif statique ; retourne le symbole de donnees. }
@@ -15919,6 +16203,11 @@ Begin
   A('mov eax, dword ptr [ebp+12]');
   A('mov dword ptr [edx], eax');
   A('mov eax, dword ptr [ebp+16]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('cmp byte ptr [edi+$STR_DATA], 35');
+  A('jne .vis');
+  A('or eax, 1');
+  A('.vis:');
   A('mov dword ptr [edx+4], eax');
   A('mov eax, dword ptr [ebp+20]');
   A('mov dword ptr [edx+8], eax');
@@ -17587,6 +17876,393 @@ Begin
   RtGlobal('Object', f_obj, RT_T_FUNCTION);
 End;
 
+{ ---- Classes : routines du runtime (TODO 17) ---- }
+
+Procedure RtClassData;
+Var
+  d: LongInt;
+Begin
+  d := RtDescSym('constructor', '_JSRT_ctor_base', 0, FDF_CTOR);
+  d := RtDescSym('constructor', '_JSRT_ctor_derived', 0, FDF_CTOR Or FDF_DERIVED);
+End;
+
+Procedure RtClasses;
+Begin
+  { _JSRT_obj_hide(obj, cle) : rend la propriete non enumerable }
+  A('proc _JSRT_obj_hide');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .r');
+  A('mov ecx, dword ptr [eax+4]');
+  A('or ecx, 1');
+  A('mov dword ptr [eax+4], ecx');
+  A('.r:');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_make_default_ctor(derive) -> fonction constructeur par defaut }
+  A('proc _JSRT_make_default_ctor');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push $UNDEF');
+  A('push 0');
+  A('push 0');
+  A('cmp dword ptr [ebp+8], 0');
+  A('jne .d');
+  A('push offset _JSRT_ctor_base');
+  A('push offset _JSND__JSRT_ctor_base');
+  A('jmp .go');
+  A('.d:');
+  A('push offset _JSRT_ctor_derived');
+  A('push offset _JSND__JSRT_ctor_derived');
+  A('.go:');
+  A('call _JSRT_new_function');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_init_fields(classe, this) : initialise les champs d'instance }
+  FBegin('_JSRT_init_fields', 1);
+  A('cmp dword ptr [ebp+16], $OBJ');
+  A('jne .ret');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi+$FN_PROPS]');
+  A('test eax, eax');
+  A('jz .ret');
+  A('push offset ' + RtStr('prototype'));
+  A('push eax');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .ret');
+  A('cmp dword ptr [eax+12], $OBJ');
+  A('jne .ret');
+  A('mov eax, dword ptr [eax+8]');
+  A('push offset ' + RtStr('#fields'));
+  A('push eax');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .ret');
+  A('mov esi, dword ptr [eax+8]');
+  A('xor ebx, ebx');
+  A('.l:');
+  A('cmp ebx, dword ptr [esi+$ARR_LEN]');
+  A('jae .ret');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('mov ecx, dword ptr [eax]');
+  A('mov ' + Lv(1) + ', ecx');
+  A('mov edx, dword ptr [eax+12]');
+  A('mov eax, dword ptr [eax+8]');
+  A('cmp edx, $FN');
+  A('jne .undef');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push eax');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('jmp .def');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('.def:');
+  A('push edx');
+  A('push eax');
+  A('push ' + Lv(1));
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  A('add ebx, 2');
+  A('jmp .l');
+  FEnd;
+
+  { Constructeur par defaut d'une classe de base }
+  FBegin('_JSRT_ctor_base', 0);
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_init_fields');
+  A('add esp, 12');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { Constructeur par defaut d'une classe derivee : transmet les arguments }
+  FBegin('_JSRT_ctor_derived', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('cmp dword ptr [esi+$FN_THIS+4], $FN');
+  A('jne .nopar');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, 16');
+  A('sub esp, eax');
+  A('mov eax, dword ptr [esi+$FN_THIS]');
+  A('mov dword ptr [esp], eax');
+  A('mov dword ptr [esp+4], ebx');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esp+8], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [esp+12], eax');
+  A('lea edi, [esp+16]');
+  A('mov ecx, ebx');
+  A('shl ecx, 3');
+  A('lea esi, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('rep movsb');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi+$FN_THIS]');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('mov esp, ebp');
+  A('sub esp, 12');
+  A('.nopar:');
+  A('mov esi, dword ptr [ebp+8]');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_init_fields');
+  A('add esp, 12');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { _JSRT_class_setup(classe, parent) : proprietes, prototype et lien au parent }
+  FBegin('_JSRT_class_setup', 2);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ' + Lv(1) + ', offset _JSNO_object_proto');
+  A('mov ' + Lv(2) + ', offset _JSNO_object_proto');
+  A('cmp dword ptr [ebp+20], $FN');
+  A('je .fnp');
+  A('cmp dword ptr [ebp+20], $NULL');
+  A('jne .make');
+  A('mov ' + Lv(2) + ', 0');
+  A('jmp .make');
+  A('.fnp:');
+  A('mov edi, dword ptr [ebp+16]');
+  A('push offset ' + RtStr('prototype'));
+  A('push $FN');
+  A('push edi');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('cmp edx, $OBJ');
+  A('jne .p2');
+  A('mov ' + Lv(2) + ', eax');
+  A('.p2:');
+  A('mov eax, dword ptr [edi+$FN_PROPS]');
+  A('test eax, eax');
+  A('jz .make');
+  A('mov ' + Lv(1) + ', eax');
+  A('.make:');
+  A('push ' + Lv(1));
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('mov dword ptr [esi+$FN_PROPS], ebx');
+  A('push ' + Lv(2));
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov edi, eax');
+  A('push $OBJ');
+  A('push edi');
+  A('push 1');
+  A('push offset ' + RtStr('prototype'));
+  A('push ebx');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('push $FN');
+  A('push esi');
+  A('push 1');
+  A('push offset ' + RtStr('constructor'));
+  A('push edi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('cmp dword ptr [ebp+20], $FN');
+  A('jne .done');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esi+$FN_THIS], eax');
+  A('mov dword ptr [esi+$FN_THIS+4], $FN');
+  A('.done:');
+  FEnd;
+
+  { _JSRT_class_proto(classe) -> objet prototype }
+  A('proc _JSRT_class_proto');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('push offset ' + RtStr('prototype'));
+  A('push dword ptr [eax+$FN_PROPS]');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('mov edx, dword ptr [eax+12]');
+  A('mov eax, dword ptr [eax+8]');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_class_member(accueil, cle, fonction, genre) : methode ou accesseur }
+  FBegin('_JSRT_class_member', 0);
+  A('cmp dword ptr [ebp+12], $OBJ');
+  A('jne .fnhome');
+  A('mov esi, dword ptr [ebp+8]');
+  A('jmp .have');
+  A('.fnhome:');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov esi, dword ptr [eax+$FN_PROPS]');
+  A('.have:');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [eax+$FN_THIS], ecx');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('mov dword ptr [eax+$FN_THIS+4], ecx');
+  A('mov ecx, dword ptr [ebp+28]');
+  A('test ecx, ecx');
+  A('jnz .acc');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  A('jmp .hide');
+  A('.acc:');
+  A('dec ecx');
+  A('push ecx');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_obj_define_acc');
+  A('add esp, 20');
+  A('.hide:');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_obj_hide');
+  A('add esp, 8');
+  FEnd;
+
+  { _JSRT_class_field(prototype, cle, initialiseur) : enregistre un champ d'instance }
+  FBegin('_JSRT_class_field', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('push offset ' + RtStr('#fields'));
+  A('push esi');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jnz .have');
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('push $ARR');
+  A('push ebx');
+  A('push 1');
+  A('push offset ' + RtStr('#fields'));
+  A('push esi');
+  A('call _JSRT_obj_add');
+  A('add esp, 20');
+  A('jmp .push');
+  A('.have:');
+  A('mov ebx, dword ptr [eax+8]');
+  A('.push:');
+  PushToArrLocal('$STR', 'dword ptr [ebp+16]', 'ebx');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  FEnd;
+
+  { _JSRT_class_static(classe, cle, initialiseur) : champ statique }
+  FBegin('_JSRT_class_static', 0);
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov esi, dword ptr [eax+$FN_PROPS]');
+  A('cmp dword ptr [ebp+24], $FN');
+  A('jne .undef');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [ebp+20]');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('jmp .def');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('.def:');
+  A('push edx');
+  A('push eax');
+  A('push dword ptr [ebp+16]');
+  A('push esi');
+  A('call _JSRT_obj_define');
+  A('add esp, 16');
+  FEnd;
+
+  { _JSRT_class_block(classe, fonction) : bloc statique }
+  FBegin('_JSRT_class_block', 0);
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  FEnd;
+
+  { _JSRT_super_get(fermeture, cle, this) : super.cle }
+  FBegin('_JSRT_super_get', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [esi+$FN_DESC]');
+  A('mov edx, dword ptr [ecx+8]');
+  A('test edx, ' + IntToStr(FDF_CTOR));
+  A('jnz .ctor');
+  A('cmp dword ptr [esi+$FN_THIS+4], $OBJ');
+  A('jne .fnhome');
+  A('mov esi, dword ptr [esi+$FN_THIS]');
+  A('jmp .parent');
+  A('.fnhome:');
+  A('cmp dword ptr [esi+$FN_THIS+4], $FN');
+  A('jne .undef');
+  A('mov esi, dword ptr [esi+$FN_THIS]');
+  A('mov esi, dword ptr [esi+$FN_PROPS]');
+  A('test esi, esi');
+  A('jz .undef');
+  A('jmp .parent');
+  A('.ctor:');
+  A('mov eax, dword ptr [esi+$FN_PROPS]');
+  A('test eax, eax');
+  A('jz .undef');
+  A('push offset ' + RtStr('prototype'));
+  A('push eax');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .undef');
+  A('mov esi, dword ptr [eax+8]');
+  A('.parent:');
+  A('mov esi, dword ptr [esi+$OBJ_PROTO]');
+  A('test esi, esi');
+  A('jz .undef');
+  A('push dword ptr [ebp+12]');
+  A('push esi');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .undef');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_prop_get');
+  A('add esp, 12');
+  A('jmp .ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+End;
+
 { ---- Assemblage du runtime ---- }
 
 Procedure RtStaticData;
@@ -17608,6 +18284,7 @@ Begin
   RtCString('_JSRT_c_range', 'RangeError: argument invalide' + #10);
 
   { prototype des chaines : les methodes natives }
+  RtClassData;
   BoReset;
   RtObjectProtoMethods;
   oproto := BoFinish('_JSNO_object_proto', 0);
@@ -17651,6 +18328,7 @@ Begin
   RtStringMethods;
   RtArrays;
   RtObjects;
+  RtClasses;
 End;
 
 { ============================================================
