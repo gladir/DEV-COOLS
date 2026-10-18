@@ -30,7 +30,7 @@
   22. [IMPLEMENTE] Construire le generateur ASM 80386 optionnel : syntaxe assembleur Windows 32 bits (.386, .MODEL FLAT, sections .text/.data/.rdata, EXTERN/PUBLIC), labels stables, commentaires reprenant les lignes JavaScript d'origine, routines runtime appelees par noms stables, emission du .ASM uniquement sur demande explicite de l'utilisateur.
   23. [IMPLEMENTE] Construire le generateur OBJ COFF i386 : en-tete, sections .text/.data/.rdata/.bss, table de symboles, relocations (REL32/DIR32), symboles externes importes de kernel32, production d'un .OBJ seul quand le parametre le demande, et validation du format avec les outils DUMPBIN.PAS / OBJDUMP.PAS / NM.PAS du depot.
   24. [IMPLEMENTE] Construire le linker PE32 interne : en-tetes MZ/PE, sections alignees, table d'imports kernel32 (et runtime propre), resolution des relocations, point d'entree, sous-systeme console, ecriture du .EXE final par defaut, suppression des anciens .EXE perimes et verification avec DISEXE.PAS.
-  25. [A FAIRE] Ajouter le harnais de validation et stabiliser : option -test compilant tous les SAMPLES\JS\* (arrays, classes, control, hello, math, objects, t04_12, t09_15, t09full, test03, test03b, test04, test04b, test09, test10, test10adv, test11, test11adv, test12 a test24), execution des .EXE et comparaison avec les valeurs « attendu » des commentaires, modes EXE / OBJ / ASM+OBJ, nettoyage des artefacts, compatibilite Free Pascal/Turbo Pascal (types bornes, buffers, aucune dependance moderne), diagnostics finaux et documentation d'utilisation.
+  25. [IMPLEMENTE] Ajouter le harnais de validation et stabiliser : option -test compilant tous les SAMPLES\JS\* (arrays, classes, control, hello, math, objects, t04_12, t09_15, t09full, test03, test03b, test04, test04b, test09, test10, test10adv, test11, test11adv, test12 a test24), execution des .EXE et comparaison avec les valeurs « attendu » des commentaires, modes EXE / OBJ / ASM+OBJ, nettoyage des artefacts, compatibilite Free Pascal/Turbo Pascal (types bornes, buffers, aucune dependance moderne), diagnostics finaux et documentation d'utilisation.
 }
 Program JSCW32;
 
@@ -45,7 +45,7 @@ Program JSCW32;
 {$ENDIF}
 
 {$IFDEF FPC}
-Uses Math;
+Uses Math, Dos;
 {$ENDIF}
 
 { ============================================================
@@ -415,6 +415,8 @@ Type
     dump_ir     : Boolean;
     dump_rt     : Boolean;
     run         : Boolean;
+    test        : Boolean;
+    keep        : Boolean;
     output_name : TString;
   End;
 
@@ -913,6 +915,8 @@ Begin
   ctx.options.dump_ir := False;
   ctx.options.dump_rt := False;
   ctx.options.run := False;
+  ctx.options.test := False;
+  ctx.options.keep := False;
   ctx.options.output_name := '';
   ctx.stage := CS_LOAD_SOURCE;
   ctx.last_art := AK_NONE;
@@ -1015,6 +1019,10 @@ Begin
   Writeln('  -ir           affiche le code 80386 genere');
   Writeln('  -rt           avec -ir : inclut aussi le code du runtime');
   Writeln('  -run          execute le programme dans l''emulateur 80386 integre');
+  Writeln('  -test [dossier]  compile et execute tous les .js du dossier (SAMPLES\JS par');
+  Writeln('                defaut) et compare aux valeurs ''attendu'' ; modes EXE (defaut),');
+  Writeln('                -obj, -asm -obj ; voir DOC\JSCW32_USAGE.txt');
+  Writeln('  -keep         avec -test : conserve les artefacts jt_* (exe, obj, asm, sorties)');
   Writeln('  -version      affiche la version');
   Writeln('  -h, -?        affiche cette aide');
   Writeln;
@@ -1027,6 +1035,9 @@ Begin
   Writeln('  jscw32 -obj SAMPLES\JS\hello.js');
   Writeln('  jscw32 -asm -obj SAMPLES\JS\hello.js');
   Writeln('  jscw32 -o prog SAMPLES\JS\hello.js');
+  Writeln('  jscw32 -run SAMPLES\JS\test19.js');
+  Writeln('  jscw32 -test');
+  Writeln('  jscw32 -test -asm -obj SAMPLES\JS');
   Writeln;
   PrintPipeline;
 End;
@@ -1061,6 +1072,10 @@ Begin
         ctx.options.dump_rt := True
       Else If IsOption(arg, 'run') Then
         ctx.options.run := True
+      Else If IsOption(arg, 'test') Then
+        ctx.options.test := True
+      Else If IsOption(arg, 'keep') Then
+        ctx.options.keep := True
       Else If IsOption(arg, 'ir') Then
         ctx.options.dump_ir := True
       Else If IsOption(arg, 'data') Then
@@ -1108,6 +1123,8 @@ Begin
   If ctx.options.show_help Or ctx.options.show_version Then
     Exit;
   If ctx.options.dump_runtime And (ctx.source_name = '') Then
+    Exit;
+  If ctx.options.test Then
     Exit;
   If ctx.source_name = '' Then
     Begin
@@ -30472,6 +30489,601 @@ Begin
   RunPipeline := ctx.errors = 0;
 End;
 
+{ ---- Harnais de validation : option -test (TODO 25) ----
+
+  jscw32 -test [dossier] [-obj] [-asm] [-keep]
+
+  Pour chaque fichier .js du dossier (SAMPLES\JS par defaut), le harnais lance
+  une compilation dans un sous-processus (le compilateur lui-meme), controle
+  l'artefact selon le mode (EXE : en-tetes MZ/PE ; OBJ : en-tete COFF i386 ;
+  ASM+OBJ : fichier .asm et .obj), execute le programme et compare sa sortie
+  aux valeurs « attendu » des commentaires du source.
+
+  Execution : sous Windows le .EXE produit est lance ; sur un autre systeme,
+  l'emulateur 80386 integre (-run) remplace le lancement. Les artefacts jt_*
+  sont supprimes apres chaque fichier (sauf avec -keep).
+
+  Valeurs attendues : commentaires « // attendu : valeur » dans l'ordre du
+  source ; « a puis b » designe deux lignes, « a, b, c » trois lignes
+  consecutives, une parenthese finale est un simple commentaire, et une
+  ligne d'erreur « Error: valeur » correspond a « valeur ». }
+
+Const
+  HT_MAX_FILES = 200;
+  HT_MAX_LINES = 4000;
+  HT_MAX_EXP = 400;
+
+Type
+  THtLine = String[200];
+
+Var
+  ht_files: Array[1..HT_MAX_FILES] Of String[80];
+  ht_nfiles: LongInt;
+  ht_out: Array[1..HT_MAX_LINES] Of THtLine;
+  ht_nout: LongInt;
+  ht_exp: Array[1..HT_MAX_EXP] Of THtLine;
+  ht_nexp: LongInt;
+
+Function HtTrim(s: String): String;
+Begin
+  While (Length(s) > 0) And ((s[1] = ' ') Or (s[1] = #9)) Do
+    Delete(s, 1, 1);
+  While (Length(s) > 0) And ((s[Length(s)] = ' ') Or (s[Length(s)] = #9) Or
+        (s[Length(s)] = #13)) Do
+    Delete(s, Length(s), 1);
+  HtTrim := s;
+End;
+
+{ Lance une commande par l'interprete de commandes du systeme (la ligne est
+  ecrite dans un petit script pour garder guillemets et redirections). }
+Function HtShell(Const cmd: String): LongInt;
+Var
+  f: Text;
+  io: Integer;
+Begin
+{$IFDEF UNIX}
+  Assign(f, 'jt_cmd.sh');
+{$ELSE}
+  Assign(f, 'jt_cmd.bat');
+{$ENDIF}
+  {$I-}
+  Rewrite(f);
+  {$I+}
+  io := IOResult;
+  If io <> 0 Then
+    Begin
+      HtShell := -1;
+      Exit;
+    End;
+  Writeln(f, cmd);
+  Close(f);
+  io := IOResult;
+{$IFDEF UNIX}
+  Exec('/bin/sh', 'jt_cmd.sh');
+{$ELSE}
+  Exec(GetEnv('COMSPEC'), '/C jt_cmd.bat');
+{$ENDIF}
+  If DosError <> 0 Then
+    HtShell := -1
+  Else
+    HtShell := DosExitCode;
+End;
+
+Function HtFileExists(Const name: String): Boolean;
+Var
+  f: File;
+  io: Integer;
+Begin
+  Assign(f, name);
+  {$I-}
+  Reset(f, 1);
+  {$I+}
+  io := IOResult;
+  If io = 0 Then
+    Begin
+      Close(f);
+      io := IOResult;
+    End;
+  HtFileExists := io = 0;
+End;
+
+Procedure HtErase(Const name: String);
+Var
+  f: File;
+  io: Integer;
+Begin
+  If Not HtFileExists(name) Then
+    Exit;
+  Assign(f, name);
+  {$I-}
+  Erase(f);
+  {$I+}
+  io := IOResult;
+End;
+
+Function HtFileSize(Const name: String): LongInt;
+Var
+  f: File;
+  io: Integer;
+Begin
+  HtFileSize := -1;
+  Assign(f, name);
+  {$I-}
+  Reset(f, 1);
+  {$I+}
+  io := IOResult;
+  If io = 0 Then
+    Begin
+      HtFileSize := FileSize(f);
+      Close(f);
+      io := IOResult;
+    End;
+End;
+
+{ Lit les n premiers octets d'un fichier (0 si impossible). }
+Function HtReadBytes(Const name: String; Var buf; n: LongInt): LongInt;
+Var
+  f: File;
+  io: Integer;
+  got: Word;
+Begin
+  HtReadBytes := 0;
+  Assign(f, name);
+  {$I-}
+  Reset(f, 1);
+  {$I+}
+  io := IOResult;
+  If io <> 0 Then
+    Exit;
+  BlockRead(f, buf, n, got);
+  io := IOResult;
+  Close(f);
+  io := IOResult;
+  HtReadBytes := got;
+End;
+
+{ Verifie l'en-tete MZ + PE32 i386 d'un executable. }
+Function HtCheckExe(Const name: String; Var why: String): Boolean;
+Type
+  TBuf = Array[0..511] Of Byte;
+Var
+  b: TBuf;
+  n, pe: LongInt;
+Begin
+  HtCheckExe := False;
+  FillChar(b, SizeOf(b), 0);
+  n := HtReadBytes(name, b, 512);
+  If n < 200 Then
+    Begin
+      why := 'executable absent ou trop court';
+      Exit;
+    End;
+  If (b[0] <> Ord('M')) Or (b[1] <> Ord('Z')) Then
+    Begin
+      why := 'signature MZ absente';
+      Exit;
+    End;
+  pe := b[$3C] + b[$3D] * 256;
+  If (pe + 24 > 500) Or (b[pe] <> Ord('P')) Or (b[pe + 1] <> Ord('E')) Or
+     (b[pe + 2] <> 0) Or (b[pe + 3] <> 0) Then
+    Begin
+      why := 'signature PE absente';
+      Exit;
+    End;
+  If (b[pe + 4] <> $4C) Or (b[pe + 5] <> 1) Then
+    Begin
+      why := 'machine differente de i386';
+      Exit;
+    End;
+  If (b[pe + 24] <> $0B) Or (b[pe + 25] <> $01) Then
+    Begin
+      why := 'en-tete optionnel non PE32';
+      Exit;
+    End;
+  HtCheckExe := True;
+End;
+
+Function HtCheckObj(Const name: String; Var why: String): Boolean;
+Type
+  TBuf = Array[0..39] Of Byte;
+Var
+  b: TBuf;
+  n: LongInt;
+Begin
+  HtCheckObj := False;
+  FillChar(b, SizeOf(b), 0);
+  n := HtReadBytes(name, b, 40);
+  If n < 40 Then
+    Begin
+      why := 'objet absent ou trop court';
+      Exit;
+    End;
+  If (b[0] <> $4C) Or (b[1] <> $01) Then
+    Begin
+      why := 'machine COFF differente de i386';
+      Exit;
+    End;
+  If b[2] < 3 Then
+    Begin
+      why := 'sections COFF manquantes';
+      Exit;
+    End;
+  HtCheckObj := True;
+End;
+
+{ Charge les lignes d'un fichier texte de sortie. }
+Procedure HtLoadOutput(Const name: String);
+Var
+  f: Text;
+  s: String;
+  io: Integer;
+Begin
+  ht_nout := 0;
+  Assign(f, name);
+  {$I-}
+  Reset(f);
+  {$I+}
+  io := IOResult;
+  If io <> 0 Then
+    Exit;
+  While Not Eof(f) And (ht_nout < HT_MAX_LINES) Do
+    Begin
+      {$I-}
+      Readln(f, s);
+      {$I+}
+      io := IOResult;
+      Inc(ht_nout);
+      ht_out[ht_nout] := HtTrim(s);
+    End;
+  Close(f);
+  io := IOResult;
+End;
+
+Procedure HtAddExp(s: String);
+Var
+  p, k: Integer;
+Begin
+  s := HtTrim(s);
+  { une parenthese finale est un commentaire }
+  If (Length(s) > 0) And (s[Length(s)] = ')') Then
+    Begin
+      p := 0;
+      For k := 1 To Length(s) - 1 Do
+        If (s[k] = ' ') And (s[k + 1] = '(') Then
+          p := k;
+      If p > 0 Then
+        s := HtTrim(Copy(s, 1, p - 1));
+    End;
+  If (s <> '') And (ht_nexp < HT_MAX_EXP) Then
+    Begin
+      Inc(ht_nexp);
+      ht_exp[ht_nexp] := s;
+    End;
+End;
+
+{ Extrait les « // attendu : ... » du source. }
+Procedure HtLoadExpected(Const name: String);
+Var
+  f: Text;
+  s, rest: String;
+  p, q, io: Integer;
+Begin
+  ht_nexp := 0;
+  Assign(f, name);
+  {$I-}
+  Reset(f);
+  {$I+}
+  io := IOResult;
+  If io <> 0 Then
+    Exit;
+  While Not Eof(f) Do
+    Begin
+      {$I-}
+      Readln(f, s);
+      {$I+}
+      io := IOResult;
+      p := Pos('// attendu', s);
+      If p > 0 Then
+        Begin
+          q := Pos(':', Copy(s, p, Length(s)));
+          If q > 0 Then
+            Begin
+              rest := Copy(s, p + q, Length(s));
+              While Pos(' puis ', rest) > 0 Do
+                Begin
+                  HtAddExp(Copy(rest, 1, Pos(' puis ', rest) - 1));
+                  Delete(rest, 1, Pos(' puis ', rest) + 5);
+                End;
+              HtAddExp(rest);
+            End;
+        End;
+    End;
+  Close(f);
+  io := IOResult;
+End;
+
+Function HtEndsWith(Const s, suffix: String): Boolean;
+Begin
+  HtEndsWith := (Length(s) >= Length(suffix)) And
+                (Copy(s, Length(s) - Length(suffix) + 1, Length(suffix)) = suffix);
+End;
+
+{ Cherche la valeur attendue e a partir de la ligne pos ; renvoie la ligne
+  suivante, ou 0 si elle est introuvable. }
+Function HtFindExp(Const e: String; startl: LongInt): LongInt;
+Var
+  j, k, n, p: LongInt;
+  parts: Array[1..10] Of THtLine;
+  rest: String;
+  ok: Boolean;
+Begin
+  HtFindExp := 0;
+  { liste « a, b, c » : lignes consecutives }
+  n := 0;
+  rest := e;
+  While (Pos(', ', rest) > 0) And (n < 9) Do
+    Begin
+      Inc(n);
+      p := Pos(', ', rest);
+      parts[n] := Copy(rest, 1, p - 1);
+      Delete(rest, 1, p + 1);
+    End;
+  Inc(n);
+  parts[n] := rest;
+  For j := startl To ht_nout Do
+    Begin
+      If (ht_out[j] = e) Or HtEndsWith(ht_out[j], ': ' + e) Then
+        Begin
+          HtFindExp := j + 1;
+          Exit;
+        End;
+      If (n > 1) And (j + n - 1 <= ht_nout) Then
+        Begin
+          ok := True;
+          For k := 1 To n Do
+            If ht_out[j + k - 1] <> parts[k] Then
+              ok := False;
+          If ok Then
+            Begin
+              HtFindExp := j + n;
+              Exit;
+            End;
+        End;
+    End;
+End;
+
+{ Compare la sortie aux valeurs attendues ; renvoie '' si tout concorde. }
+Function HtCompare: String;
+Var
+  i, cur, r: LongInt;
+Begin
+  cur := 1;
+  HtCompare := '';
+  For i := 1 To ht_nexp Do
+    Begin
+      r := HtFindExp(ht_exp[i], cur);
+      If r = 0 Then
+        Begin
+          HtCompare := 'valeur attendue introuvable : ' + ht_exp[i];
+          Exit;
+        End;
+      cur := r;
+    End;
+End;
+
+{ Fichiers de test d'un programme qui se termine volontairement par une
+  exception non rattrapee (erreur du programme d'exemple). }
+Function HtKnownThrow(Const base: String): Boolean;
+Begin
+  HtKnownThrow := base = 'test11adv';
+End;
+
+Procedure HtListFiles(Const dir: String);
+Var
+  sr: SearchRec;
+  i, j: LongInt;
+  t: String[80];
+Begin
+  ht_nfiles := 0;
+  FindFirst(dir + '/*.js', AnyFile, sr);
+  While (DosError = 0) And (ht_nfiles < HT_MAX_FILES) Do
+    Begin
+      If sr.Attr And Directory = 0 Then
+        Begin
+          Inc(ht_nfiles);
+          ht_files[ht_nfiles] := sr.Name;
+        End;
+      FindNext(sr);
+    End;
+  FindClose(sr);
+  { tri alphabetique }
+  For i := 2 To ht_nfiles Do
+    Begin
+      t := ht_files[i];
+      j := i - 1;
+      While (j >= 1) And (ht_files[j] > t) Do
+        Begin
+          ht_files[j + 1] := ht_files[j];
+          Dec(j);
+        End;
+      ht_files[j + 1] := t;
+    End;
+End;
+
+Function HtCmd(Const self, opts, outbase, src: String): String;
+Begin
+  HtCmd := '"' + self + '" ' + opts + ' -o ' + outbase + ' "' + src + '"';
+End;
+
+Function RunTests(Var ctx: TCompilerContext): LongInt;
+Var
+  dir, self, base, tag, why, opts, mode_name, run_name, log_name, out_name,
+  exe_name, obj_name, asm_name, src, nul, line: String;
+  i, rc, ok_count, fail_count, warn_count: LongInt;
+  isexe, isobj, isasm, passed, windows: Boolean;
+  stale: String;
+Begin
+  RunTests := EXIT_OK;
+  self := ParamStr(0);
+  dir := ctx.source_name;
+  If dir = '' Then
+    dir := 'SAMPLES/JS';
+  dir := NormalizePath(dir);
+  If (dir[Length(dir)] = '/') Or (dir[Length(dir)] = '\') Then
+    Dec(dir[0]);
+  isobj := ctx.options.output_mode = OM_OBJ;
+  isasm := ctx.options.emit_asm;
+  isexe := Not isobj;
+  windows := False;
+{$IFDEF WINDOWS}
+  windows := True;
+{$ENDIF}
+{$IFDEF UNIX}
+  nul := '/dev/null';
+{$ELSE}
+  nul := 'NUL';
+{$ENDIF}
+  opts := '';
+  If isobj Then
+    opts := opts + '-obj ';
+  If isasm Then
+    opts := opts + '-asm ';
+  If isexe And Not isasm Then
+    mode_name := 'EXE'
+  Else If isexe Then
+    mode_name := 'EXE+ASM'
+  Else If isasm Then
+    mode_name := 'ASM+OBJ'
+  Else
+    mode_name := 'OBJ';
+  If isexe And windows Then
+    run_name := 'execution du .EXE'
+  Else
+    run_name := 'emulateur 80386 integre';
+  HtListFiles(dir);
+  If ht_nfiles = 0 Then
+    Begin
+      Writeln('JSCW32 -test : aucun fichier .js dans ', dir);
+      RunTests := EXIT_ERROR;
+      Exit;
+    End;
+  Writeln('JSCW32 -test : ', ht_nfiles, ' fichier(s) dans ', dir, ', mode ', mode_name);
+  If isexe Then
+    Writeln('  execution : ', run_name);
+  ok_count := 0;
+  fail_count := 0;
+  warn_count := 0;
+  For i := 1 To ht_nfiles Do
+    Begin
+      base := ht_files[i];
+      Delete(base, Length(base) - 2, 3);
+      src := dir + '/' + ht_files[i];
+      exe_name := 'jt_' + base + '.exe';
+      obj_name := 'jt_' + base + '.obj';
+      asm_name := 'jt_' + base + '.asm';
+      log_name := 'jt_' + base + '.log';
+      out_name := 'jt_' + base + '.out';
+      passed := False;
+      tag := '';
+      why := '';
+      HtErase(exe_name);
+      HtErase(obj_name);
+      HtErase(asm_name);
+      rc := HtShell(HtCmd(self, opts, 'jt_' + base, src) + ' > ' + log_name + ' 2>&1');
+      If rc <> 0 Then
+        why := 'compilation en echec (code ' + IntToStr(rc) + ')'
+      Else If isexe And Not HtCheckExe(exe_name, why) Then
+        why := 'executable invalide : ' + why
+      Else If isobj And Not HtCheckObj(obj_name, why) Then
+        why := 'objet invalide : ' + why
+      Else If isasm And (HtFileSize(asm_name) < 100) Then
+        why := 'fichier .asm absent'
+      Else
+        Begin
+          { comportement du programme }
+          HtLoadExpected(src);
+          If isexe Then
+            Begin
+              If windows Then
+                rc := HtShell(exe_name + ' < ' + nul + ' > ' + out_name + ' 2>&1')
+              Else
+                rc := HtShell('"' + self + '" -run "' + src + '" < ' + nul + ' > ' +
+                              out_name + ' 2>&1');
+              HtLoadOutput(out_name);
+              If HtKnownThrow(base) Then
+                Begin
+                  If rc = 0 Then
+                    why := 'exception non rattrapee attendue'
+                  Else
+                    Begin
+                      passed := True;
+                      tag := 'exception non rattrapee (attendue)';
+                    End;
+                End
+              Else If rc <> 0 Then
+                why := 'execution en echec (code ' + IntToStr(rc) + ')'
+              Else
+                Begin
+                  why := HtCompare;
+                  If why = '' Then
+                    Begin
+                      passed := True;
+                      If ht_nexp > 0 Then
+                        tag := IntToStr(ht_nexp) + ' valeur(s) attendue(s)'
+                      Else
+                        tag := 'execution sans erreur';
+                    End;
+                End;
+            End
+          Else
+            Begin
+              passed := True;
+              tag := 'artefacts valides';
+            End;
+        End;
+      line := ht_files[i];
+      While Length(line) < 16 Do
+        line := line + ' ';
+      If passed Then
+        Begin
+          Inc(ok_count);
+          Writeln('  ', line, 'OK     ', tag);
+        End
+      Else
+        Begin
+          Inc(fail_count);
+          Writeln('  ', line, 'ECHEC  ', why);
+          If HtFileExists(log_name) And (rc <> 0) Then
+            Begin
+              HtLoadOutput(log_name);
+              If ht_nout > 0 Then
+                Writeln('                  ', ht_out[1]);
+            End;
+        End;
+      If Not ctx.options.keep Then
+        Begin
+          HtErase(exe_name);
+          HtErase(obj_name);
+          HtErase(asm_name);
+          HtErase(log_name);
+          HtErase(out_name);
+        End;
+    End;
+  If Not ctx.options.keep Then
+    Begin
+{$IFDEF UNIX}
+      HtErase('jt_cmd.sh');
+{$ELSE}
+      HtErase('jt_cmd.bat');
+{$ENDIF}
+    End;
+  Writeln;
+  Writeln('Resultat : ', ok_count, ' OK, ', fail_count, ' echec(s) sur ', ht_nfiles,
+          ' fichier(s)');
+  If fail_count > 0 Then
+    RunTests := EXIT_ERROR;
+End;
+
 Procedure PrintFinalDiagnostics(Var ctx: TCompilerContext);
 Begin
   Writeln('Resultat: ', ArtifactName(ctx.last_art));
@@ -30515,6 +31127,9 @@ BEGIN
       DumpRuntimeModel(ctx);
       Halt(EXIT_OK);
     End;
+
+  If ctx.options.test Then
+    Halt(RunTests(ctx));
 
   If ctx.options.verbose Then
     Begin

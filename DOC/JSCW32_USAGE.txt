@@ -1,0 +1,62 @@
+JSCW32 - Compilateur JavaScript vers executable Windows 32 bits (80386)
+=======================================================================
+
+Syntaxe
+-------
+  jscw32 [options] fichier.js
+
+Produits
+--------
+  Par defaut : fichier.exe (PE32 console, KERNEL32.dll).
+  -obj       : fichier.obj seulement (COFF i386, pas d'edition de liens).
+  -asm       : ecrit en plus fichier.asm (syntaxe NASM Win32 : nasm -f win32).
+               Le .asm n'est jamais ecrit sans -asm.
+  -o nom     : nom de base commun (nom.exe / nom.obj / nom.asm).
+  Un ancien .exe est supprime avant une nouvelle production en mode EXE.
+
+Pipeline
+--------
+  .js -> jetons -> AST -> analyse semantique -> IR 80386 -> [.asm] -> .obj COFF
+      -> .exe PE32. Le formateur de console (inspect de Node) est un prelude JS
+  ajoute a la fin du source ; les lignes du programme gardent leur numero.
+
+Execution et diagnostics
+------------------------
+  -run       execute le programme dans l'emulateur 80386 integre (pas besoin
+             de Windows). -v, -tokens, -ast, -scopes, -runtime, -data, -ir,
+             -rt (avec -ir) affichent les etapes internes.
+
+Harnais de validation (-test)
+-----------------------------
+  jscw32 -test [dossier] [-obj] [-asm] [-keep]
+
+  Compile chaque .js du dossier (SAMPLES\JS par defaut) dans un sous-processus
+  et verifie :
+    mode EXE     (defaut)  : en-tetes MZ/PE du .exe, puis execution ;
+    mode OBJ     (-obj)    : en-tete COFF i386 du .obj ;
+    mode ASM+OBJ (-asm -obj) : .asm et .obj.
+  Execution : sous Windows le .exe est lance ; ailleurs l'emulateur integre
+  (-run) tient lieu d'execution. La sortie est comparee aux commentaires
+  « // attendu : valeur » du source, dans l'ordre :
+    « a puis b »   deux lignes a et b ;
+    « a, b, c »    trois lignes consecutives ;
+    « v (texte) »  la parenthese finale est un commentaire ;
+    « Error: v »   une ligne d'erreur correspond a v.
+  Sans commentaire « attendu », le test exige une compilation et une execution
+  sans erreur. test11adv se termine volontairement par une exception non
+  rattrapee (instanceof sur un objet) : c'est le resultat attendu.
+  Les artefacts jt_* sont supprimes (sauf -keep). Le code de sortie est 1 si
+  au moins un fichier echoue.
+
+Limites connues
+---------------
+  - Les chaines sont des octets UTF-8 : length et les indices comptent des
+    octets (exact en ASCII).
+  - Pas de ramasse-miettes : le tas ne fait que croitre.
+  - Pas de lookbehind ni de groupes nommes dans les expressions regulieres ;
+    matchAll renvoie un tableau, pas un iterateur.
+  - Date, Map, Set, Symbol, Promise, async et les generateurs ne sont pas
+    implementes.
+  - Les .exe n'ont pas ete executes sur une machine Windows par l'auteur du
+    harnais : leur validation repose sur l'emulateur, binutils, DISEXE et des
+    controles de relocation.
