@@ -20,7 +20,7 @@
   12. [IMPLEMENTE] Implementer les fonctions : declarations (hoistees), expressions, fonctions fleches (corps expression ou bloc), convention d'appel interne (arguments, this, environnement de closure, nombre d'arguments), recursion (factorial/fib de math.js), return sans valeur -> undefined, parametres par defaut/rest/spread, objet arguments, fonctions de premier ordre (callbacks, apply(f, v)), operateur de reference &fn supporte par test22.js, avec test17 et test18.
   13. [IMPLEMENTE] Implementer les closures et le this lexical : environnements captures (cellules partagees entre fonctions), duree de vie apres le retour de la fonction englobante, fonctions imbriquees, fleches capturant this, makeCounter/makeAdder/makeMultiplier, variable modifiee apres creation de la closure (test22.js) et profondeur d'imbrication (test18.js).
   14. [IMPLEMENTE] Implementer les chaines : allocation et concatenation (+), template literals avec interpolation de nombres/chaines/expressions, length, indexation, comparaison, echappements, conversion nombre -> chaine et methodes String (indexOf, lastIndexOf, includes, startsWith, endsWith, charAt, charCodeAt, toUpperCase, toLowerCase, trim, slice, substring, repeat, padStart, split, String.fromCharCode), avec test20.js.
-  15. [A FAIRE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
+  15. [IMPLEMENTE] Implementer les tableaux : litteraux (imbriques, vides), new Array(n), acces et affectation par index, length, push/pop/shift/unshift, indexOf, reverse, sort (par defaut lexicographique + comparateur), forEach, slice/splice/concat/join/includes/map/filter/reduce, Array.isArray, iteration for-of, avec arrays.js, test10adv, test15 et control.js.
   16. [A FAIRE] Implementer les objets et prototypes : litteraux, acces par point et par crochets, ajout/modification/suppression dynamique de proprietes (table de hachage avec ordre d'insertion), in, hasOwnProperty, chaine de prototypes, getters/setters, Object.keys/values/entries/assign/create/freeze/getPrototypeOf, avec objects.js et test16.
   17. [A FAIRE] Implementer les classes : declaration et expression de classe, constructor, methodes d'instance, methodes statiques, extends, super(...) et super.methode(), new, instanceof, getters/setters, champs, ordre d'initialisation, heritage multi-niveaux (Dog/Cat extends Animal), avec classes.js et test21.js.
   18. [A FAIRE] Implementer les exceptions : try/catch/finally, throw de n'importe quelle valeur, classes Error/TypeError/RangeError/SyntaxError avec message, deroulement de pile via pile de gestionnaires (ou SEH Windows), finally execute meme avec return/break/continue, exception non rattrapee (message sur stderr + code de sortie non nul), erreurs runtime (appel d'un non-fonction, propriete d'undefined), avec test23.js.
@@ -8757,6 +8757,174 @@ End;
 
 { ++ et -- sur une variable : le resultat est la nouvelle valeur
   (prefixe) ou l'ancienne valeur convertie en nombre (postfixe). }
+{ ---- Cibles membre : objet.nom et objet[cle] en ecriture (TODO 15) ----
+
+  L'objet (et la cle d'un acces par crochets) sont evalues une seule
+  fois dans des temporaires ; la valeur courante est lue par
+  _JSRT_get_prop / _JSRT_get_member et ecrite par _JSRT_set_prop(objet,
+  atome, valeur) ou _JSRT_set_member(objet, cle, valeur), qui rendent la
+  valeur ecrite dans EDX:EAX. }
+
+Procedure MemberPrep(Var ctx: TCompilerContext; m: LongInt; Var tobj, tkey: LongInt);
+Begin
+  tobj := TempAcquire(ctx);
+  tkey := 0;
+  GenExpr(ctx, ctx.ast.nodes[m].e1);
+  SaveTemp(ctx, tobj);
+  If ctx.ast.nodes[m].kind = N_INDEX Then
+    Begin
+      tkey := TempAcquire(ctx);
+      GenExpr(ctx, ctx.ast.nodes[m].e2);
+      SaveTemp(ctx, tkey);
+    End;
+End;
+
+Procedure MemberDone(Var ctx: TCompilerContext; tobj, tkey: LongInt);
+Begin
+  If tkey <> 0 Then
+    TempRelease(ctx, tkey);
+  TempRelease(ctx, tobj);
+End;
+
+Procedure MemberFetch(Var ctx: TCompilerContext; m, tobj, tkey: LongInt);
+Begin
+  If ctx.ast.nodes[m].kind = N_MEMBER Then
+    Begin
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+      PushTemp(ctx, tobj);
+      CallRt(ctx, 'get_prop', 12);
+    End
+  Else
+    Begin
+      PushTemp(ctx, tkey);
+      PushTemp(ctx, tobj);
+      CallRt(ctx, 'get_member', 16);
+    End;
+End;
+
+{ Ecrit EDX:EAX dans la propriete ; la valeur reste dans EDX:EAX. }
+Procedure MemberStore(Var ctx: TCompilerContext; m, tobj, tkey: LongInt);
+Begin
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  If ctx.ast.nodes[m].kind = N_MEMBER Then
+    Begin
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, ctx.data.strs[ctx.ast.nodes[m].aux].sym));
+      PushTemp(ctx, tobj);
+      CallRt(ctx, 'set_prop', 20);
+    End
+  Else
+    Begin
+      PushTemp(ctx, tkey);
+      PushTemp(ctx, tobj);
+      CallRt(ctx, 'set_member', 24);
+    End;
+End;
+
+Function IsMemberTarget(Var ctx: TCompilerContext; n: LongInt): Boolean;
+Begin
+  IsMemberTarget := (n <> 0) And ((ctx.ast.nodes[n].kind = N_MEMBER) Or
+                                  (ctx.ast.nodes[n].kind = N_INDEX)) And
+                    (ctx.ast.nodes[n].flags And EF_OPTIONAL = 0);
+End;
+
+{ x.p++, --a[i]... }
+Procedure GenUpdateMember(Var ctx: TCompilerContext; n, e: LongInt);
+Var
+  slow, store, t, tobj, tkey: LongInt;
+  inc_op, prefix: Boolean;
+Begin
+  inc_op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text = '++';
+  prefix := ctx.ast.nodes[n].flags And UF_PREFIX <> 0;
+  slow := NewLabel(ctx);
+  store := NewLabel(ctx);
+  t := TempAcquire(ctx);
+  MemberPrep(ctx, e, tobj, tkey);
+  MemberFetch(ctx, e, tobj, tkey);
+  Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_INT32)));
+  Emit1(ctx, OP_JNE, LabelOp(slow));
+  Emit(ctx, OP_MOV, RegOp(R_ECX), RegOp(R_EAX));
+  If inc_op Then
+    Emit(ctx, OP_ADD, RegOp(R_ECX), ImmOp(1))
+  Else
+    Emit(ctx, OP_SUB, RegOp(R_ECX), ImmOp(1));
+  Emit1(ctx, OP_JO, LabelOp(slow));
+  If Not prefix Then
+    SaveTemp(ctx, t);
+  Emit(ctx, OP_MOV, RegOp(R_EAX), RegOp(R_ECX));
+  Emit1(ctx, OP_JMP, LabelOp(store));
+  PlaceLabel(ctx, slow);
+  If Not prefix Then
+    Begin
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      CallRt(ctx, 'tonumber', 8);
+      SaveTemp(ctx, t);
+    End;
+  Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+  Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+  If inc_op Then
+    CallRt(ctx, 'inc', 8)
+  Else
+    CallRt(ctx, 'dec', 8);
+  PlaceLabel(ctx, store);
+  MemberStore(ctx, e, tobj, tkey);
+  If Not prefix Then
+    LoadTemp(ctx, t);
+  MemberDone(ctx, tobj, tkey);
+  TempRelease(ctx, t);
+End;
+
+{ x.p op= v, a[i] op= v, a[i] &&= v... }
+Procedure GenCompoundMember(Var ctx: TCompilerContext; n, lhs: LongInt);
+Var
+  t, tobj, tkey, keep, done, evalr: LongInt;
+  op: TTokenText;
+Begin
+  op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  t := TempAcquire(ctx);
+  MemberPrep(ctx, lhs, tobj, tkey);
+  MemberFetch(ctx, lhs, tobj, tkey);
+  SaveTemp(ctx, t);
+  If (op = '&&=') Or (op = '||=') Or (op = '??=') Then
+    Begin
+      keep := NewLabel(ctx);
+      done := NewLabel(ctx);
+      If op = '??=' Then
+        Begin
+          evalr := NewLabel(ctx);
+          Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_UNDEFINED)));
+          Emit1(ctx, OP_JE, LabelOp(evalr));
+          Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_NULL)));
+          Emit1(ctx, OP_JNE, LabelOp(keep));
+          PlaceLabel(ctx, evalr);
+        End
+      Else
+        Begin
+          GenTruthy(ctx);
+          Emit(ctx, OP_TEST, RegOp(R_EAX), RegOp(R_EAX));
+          If op = '&&=' Then
+            Emit1(ctx, OP_JE, LabelOp(keep))
+          Else
+            Emit1(ctx, OP_JNE, LabelOp(keep));
+        End;
+      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      MemberStore(ctx, lhs, tobj, tkey);
+      Emit1(ctx, OP_JMP, LabelOp(done));
+      PlaceLabel(ctx, keep);
+      LoadTemp(ctx, t);
+      PlaceLabel(ctx, done);
+    End
+  Else
+    Begin
+      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      GenBinaryCore(ctx, Copy(op, 1, Length(op) - 1), t);
+      MemberStore(ctx, lhs, tobj, tkey);
+    End;
+  MemberDone(ctx, tobj, tkey);
+  TempRelease(ctx, t);
+End;
+
 Procedure GenUpdate(Var ctx: TCompilerContext; n: LongInt);
 Var
   e, sy, slow, store, t: LongInt;
@@ -8764,6 +8932,11 @@ Var
   prefix: Boolean;
 Begin
   e := ctx.ast.nodes[n].e1;
+  If IsMemberTarget(ctx, e) Then
+    Begin
+      GenUpdateMember(ctx, n, e);
+      Exit;
+    End;
   If (e = 0) Or (ctx.ast.nodes[e].kind <> N_IDENT) Or
      Not ((ctx.ast.nodes[e].aux = RK_LOCAL) Or (ctx.ast.nodes[e].aux = RK_OUTER) Or
           (ctx.ast.nodes[e].aux = RK_GLOBAL_IMPLICIT)) Then
@@ -8819,6 +8992,11 @@ Var
 Begin
   lhs := ctx.ast.nodes[n].e1;
   op := ctx.lex.tokens[ctx.ast.nodes[n].tok].text;
+  If IsMemberTarget(ctx, lhs) Then
+    Begin
+      GenCompoundMember(ctx, n, lhs);
+      Exit;
+    End;
   If (lhs = 0) Or (ctx.ast.nodes[lhs].kind <> N_IDENT) Or
      Not ((ctx.ast.nodes[lhs].aux = RK_LOCAL) Or (ctx.ast.nodes[lhs].aux = RK_OUTER) Or
           (ctx.ast.nodes[lhs].aux = RK_GLOBAL_IMPLICIT)) Then
@@ -9054,10 +9232,11 @@ End;
 
 Procedure GenCall(Var ctx: TCompilerContext; n: LongInt);
 Var
-  callee, a, nargs, i, tf, tt, notfn, lbl, old_end: LongInt;
-  top, has_spread, old_used: Boolean;
+  callee, a, nargs, i, tf, tt, notfn, lbl, old_end, usethis, okl: LongInt;
+  top, has_spread, old_used, is_new: Boolean;
 Begin
   callee := ctx.ast.nodes[n].e1;
+  is_new := ctx.ast.nodes[n].kind = N_NEW;
   If (callee <> 0) And (ctx.ast.nodes[callee].kind = N_SUPER) Then
     Begin
       PendingExpr(ctx, n);
@@ -9085,7 +9264,7 @@ Begin
   tt := TempAcquire(ctx);
 
   { callee et this }
-  If (callee <> 0) And ((ctx.ast.nodes[callee].kind = N_MEMBER) Or
+  If (Not is_new) And (callee <> 0) And ((ctx.ast.nodes[callee].kind = N_MEMBER) Or
                         (ctx.ast.nodes[callee].kind = N_INDEX)) Then
     Begin
       GenChainBase(ctx, callee, tt);
@@ -9099,6 +9278,18 @@ Begin
       SaveTemp(ctx, tf);
       LoadUndefined(ctx);
       SaveTemp(ctx, tt);
+      If is_new Then
+        Begin
+          { this d'un appel new : objet neuf, ou undefined pour un natif }
+          usethis := NewLabel(ctx);
+          LoadTemp(ctx, tf);
+          Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_FUNCTION)));
+          Emit1(ctx, OP_JNE, LabelOp(usethis));
+          PushTemp(ctx, tf);
+          CallRt(ctx, 'new_this', 8);
+          SaveTemp(ctx, tt);
+          PlaceLabel(ctx, usethis);
+        End;
       LoadTemp(ctx, tf);
     End;
   If ctx.ast.nodes[n].flags And EF_OPTIONAL <> 0 Then
@@ -9165,6 +9356,19 @@ Begin
       Emit(ctx, OP_MOV, MemReg(R_ESP, 12), RegOp(R_ECX));
       Emit1(ctx, OP_CALL, MemReg(R_EAX, RT_FN_CODE));
       Emit(ctx, OP_ADD, RegOp(R_ESP), ImmOp(16 + RT_VALUE_SIZE * nargs));
+    End;
+  If is_new Then
+    Begin
+      { le resultat d'un constructeur n'est retenu que s'il est un objet }
+      usethis := NewLabel(ctx);
+      okl := NewLabel(ctx);
+      Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_OBJECT)));
+      Emit1(ctx, OP_JB, LabelOp(usethis));
+      Emit(ctx, OP_CMP, RegOp(R_EDX), ImmOp(TagImm(RT_T_REGEXP)));
+      Emit1(ctx, OP_JBE, LabelOp(okl));
+      PlaceLabel(ctx, usethis);
+      LoadTemp(ctx, tt);
+      PlaceLabel(ctx, okl);
     End;
   Emit1(ctx, OP_JMP, LabelOp(lbl));
   PlaceLabel(ctx, notfn);
@@ -9233,7 +9437,7 @@ End;
 { Affectation simple ou destructurante ; la valeur reste dans EDX:EAX. }
 Procedure GenAssign(Var ctx: TCompilerContext; n: LongInt);
 Var
-  lhs, t: LongInt;
+  lhs, t, tobj, tkey: LongInt;
 Begin
   lhs := ctx.ast.nodes[n].e1;
   If ctx.lex.tokens[ctx.ast.nodes[n].tok].text <> '=' Then
@@ -9252,6 +9456,13 @@ Begin
       Else
         PendingExpr(ctx, n);
     End
+  Else If IsMemberTarget(ctx, lhs) Then
+    Begin
+      MemberPrep(ctx, lhs, tobj, tkey);
+      GenExpr(ctx, ctx.ast.nodes[n].e2);
+      MemberStore(ctx, lhs, tobj, tkey);
+      MemberDone(ctx, tobj, tkey);
+    End
   Else If (lhs <> 0) And ((ctx.ast.nodes[lhs].kind = N_ARRAY_LIT) Or
                           (ctx.ast.nodes[lhs].kind = N_OBJECT_LIT)) Then
     Begin
@@ -9265,6 +9476,36 @@ Begin
     End
   Else
     PendingExpr(ctx, n);
+End;
+
+{ Litteral de tableau : array_new puis array_push / array_spread. }
+Procedure GenArrayLit(Var ctx: TCompilerContext; n: LongInt);
+Var
+  t, el: LongInt;
+Begin
+  t := TempAcquire(ctx);
+  CallRt(ctx, 'array_new', 0);
+  SaveTemp(ctx, t);
+  el := ctx.ast.nodes[n].e1;
+  While el <> 0 Do
+    Begin
+      If ctx.ast.nodes[el].kind = N_SPREAD Then
+        GenExpr(ctx, ctx.ast.nodes[el].e1)
+      Else If ctx.ast.nodes[el].kind = N_ELISION Then
+        LoadUndefined(ctx)
+      Else
+        GenExpr(ctx, el);
+      Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+      Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+      PushTemp(ctx, t);
+      If ctx.ast.nodes[el].kind = N_SPREAD Then
+        CallRt(ctx, 'array_spread', 16)
+      Else
+        CallRt(ctx, 'array_push', 16);
+      el := ctx.ast.nodes[el].next;
+    End;
+  LoadTemp(ctx, t);
+  TempRelease(ctx, t);
 End;
 
 Procedure GenExpr(Var ctx: TCompilerContext; n: LongInt);
@@ -9281,8 +9522,10 @@ Begin
   If Not IsChainKind(ctx.ast.nodes[n].kind) Then
     ctx.ir.in_chain := False;
   Case ctx.ast.nodes[n].kind Of
-    N_CALL:
+    N_CALL, N_NEW:
       GenCall(ctx, n);
+    N_ARRAY_LIT:
+      GenArrayLit(ctx, n);
     N_MEMBER, N_INDEX:
       GenMember(ctx, n);
     N_FUNC_EXPR:
@@ -9382,7 +9625,7 @@ End;
 { Lie EDX:EAX a la cible (identifiant ou sous-motif). }
 Procedure BindValue(Var ctx: TCompilerContext; target: LongInt; init: Boolean);
 Var
-  t: LongInt;
+  t, tobj, tkey: LongInt;
 Begin
   If target = 0 Then
     Exit;
@@ -9404,6 +9647,16 @@ Begin
         t := AllocTemp(ctx);
         StoreTemp(ctx, t);
         BindTo(ctx, target, t, init);
+      End;
+    N_MEMBER, N_INDEX:
+      Begin
+        t := TempAcquire(ctx);
+        SaveTemp(ctx, t);
+        MemberPrep(ctx, target, tobj, tkey);
+        LoadTemp(ctx, t);
+        MemberStore(ctx, target, tobj, tkey);
+        MemberDone(ctx, tobj, tkey);
+        TempRelease(ctx, t);
       End;
   Else
     PendingNote(ctx, target, 'cible d''affectation ' +
@@ -11380,8 +11633,16 @@ Begin
   A('je .null');
   A('cmp edx, $FN');
   A('je .fn');
+  A('cmp edx, $ARR');
+  A('je .arr');
   A('mov eax, offset ' + RtStr('[object Object]'));
   A('jmp .str');
+  A('.arr:');
+  A('push offset ' + RtStr(','));
+  A('push eax');
+  A('call _JSRT_arr_join');
+  A('leave');
+  A('ret');
   A('.fn:');
   A('mov eax, offset ' + RtStr('function'));
   A('jmp .str');
@@ -11755,6 +12016,8 @@ Begin
   A('je .obj');
   A('cmp ecx, $FN');
   A('je .fn');
+  A('cmp ecx, $ARR');
+  A('je .arr');
   A('cmp ecx, $UNDEF');
   A('je .bad');
   A('cmp ecx, $NULL');
@@ -11775,6 +12038,19 @@ Begin
   A('.strproto:');
   A('push edx');
   A('push offset _JSNO_string_proto');
+  A('jmp .look');
+  A('.arr:');
+  A('mov edx, dword ptr [ebp+16]');
+  A('mov ecx, offset ' + RtStr('length'));
+  A('cmp edx, ecx');
+  A('jne .arrproto');
+  A('mov eax, dword ptr [eax+$ARR_LEN]');
+  A('mov edx, $INT');
+  A('leave');
+  A('ret');
+  A('.arrproto:');
+  A('push edx');
+  A('push offset _JSNO_array_proto');
   A('jmp .look');
   A('.fn:');
   A('mov eax, dword ptr [eax+$FN_PROPS]');
@@ -11822,6 +12098,24 @@ Begin
   A('leave');
   A('ret');
   A('.notstr:');
+  A('cmp ecx, $ARR');
+  A('jne .nota');
+  A('cmp edx, $INT');
+  A('jne .ak');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_arr_get');
+  A('leave');
+  A('ret');
+  A('.ak:');
+  A('cmp edx, $STR');
+  A('jne .undef');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_arr_get_name');
+  A('leave');
+  A('ret');
+  A('.nota:');
   A('cmp edx, $STR');
   A('jne .undef');
   A('cmp ecx, $FN');
@@ -13041,6 +13335,7 @@ Begin
   M('repeat', '_JSRT_sm_repeat', 1);
   M('padStart', '_JSRT_sm_padStart', 2);
   M('padEnd', '_JSRT_sm_padEnd', 2);
+  M('split', '_JSRT_sm_split', 2);
   M('toString', '_JSRT_sm_toString', 0);
   M('valueOf', '_JSRT_sm_toString', 0);
 End;
@@ -13058,6 +13353,2244 @@ Begin
   RtGlobal('String', f_str, RT_T_FUNCTION);
 End;
 
+{ ---- Tableaux et primitives de base du runtime (TODO 15) ----
+
+  Tableau : en-tete (8), longueur +8, capacite +12, pointeur vers les
+  elements +16 (valeurs de 8 octets, bloc separe qui grandit par
+  doublement). Les methodes natives utilisent la convention d'appel
+  interne : [EBP+12] argc, [EBP+16] this, [EBP+24] argument 0. }
+
+{ Emplacement local numero k (de 1 a n) sous les registres sauvegardes. }
+Function Lv(k: LongInt): TString;
+Begin
+  Lv := 'dword ptr [ebp-' + IntToStr(12 + 4 * k) + ']';
+End;
+
+{ Debut d'une methode de tableau : this verifie, pointeur dans ESI. }
+Procedure ArrBegin(Const code: TString; nloc: LongInt);
+Begin
+  A('proc ' + code);
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  If nloc > 0 Then
+    A('sub esp, ' + IntToStr(4 * nloc));
+  A('cmp dword ptr [ebp+20], $ARR');
+  A('jne .badthis');
+  A('mov esi, dword ptr [ebp+16]');
+End;
+
+Procedure ArrEnd;
+Begin
+  A('.ret:');
+  A('mov esp, ebp');
+  A('sub esp, 12');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('.badthis:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  A('endp');
+End;
+
+{ Argument i copie dans les locaux klo/khi (undefined si absent). }
+Procedure ArgToLocals(i, klo, khi: LongInt);
+Var
+  have, ok: TString;
+Begin
+  have := U('h');
+  ok := U('k');
+  A('cmp dword ptr [ebp+12], ' + IntToStr(i + 1));
+  A('jae ' + have);
+  A('mov ' + Lv(klo) + ', 0');
+  A('mov ' + Lv(khi) + ', $UNDEF');
+  A('jmp ' + ok);
+  A(have + ':');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i) + ']');
+  A('mov ' + Lv(klo) + ', eax');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8 * i + 4) + ']');
+  A('mov ' + Lv(khi) + ', eax');
+  A(ok + ':');
+End;
+
+{ Empile (valeur de 8 octets) la chaine dont EAX est le pointeur vers le tableau EBX. }
+Procedure PushStrToArr(Const arrreg: TString);
+Begin
+  A('push $STR');
+  A('push eax');
+  A('push $ARR');
+  A('push ' + arrreg);
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+End;
+
+Procedure RtArrayCore;
+Begin
+  { _JSRT_array_new() -> tableau vide }
+  A('proc _JSRT_array_new');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ' + IntToStr(RT_ARR_SIZE));
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_ARRAY');
+  A('mov edx, $ARR');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_arr_reserve(arr, capacite minimale) }
+  A('proc _JSRT_arr_reserve');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [ebp+12]');
+  A('cmp eax, dword ptr [esi+$ARR_CAP]');
+  A('jbe .ret');
+  A('mov ebx, dword ptr [esi+$ARR_CAP]');
+  A('add ebx, ebx');
+  A('cmp ebx, eax');
+  A('jae .c1');
+  A('mov ebx, eax');
+  A('.c1:');
+  A('cmp ebx, 4');
+  A('jae .c2');
+  A('mov ebx, 4');
+  A('.c2:');
+  A('mov ecx, ebx');
+  A('shl ecx, 3');
+  A('push ecx');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('push eax');
+  A('mov edi, eax');
+  A('mov edx, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [edx+$ARR_LEN]');
+  A('shl ecx, 3');
+  A('mov esi, dword ptr [edx+$ARR_ELEMS]');
+  A('rep movsb');
+  A('pop eax');
+  A('mov edx, dword ptr [ebp+8]');
+  A('mov dword ptr [edx+$ARR_ELEMS], eax');
+  A('mov dword ptr [edx+$ARR_CAP], ebx');
+  A('.ret:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_array_push(tableau, valeur) -> EAX = nouvelle longueur, EDX = int }
+  A('proc _JSRT_array_push');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('mov ebx, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebx+$ARR_LEN]');
+  A('inc ecx');
+  A('push ecx');
+  A('push ecx');
+  A('push ebx');
+  A('call _JSRT_arr_reserve');
+  A('add esp, 8');
+  A('pop ecx');
+  A('mov edx, dword ptr [ebx+$ARR_LEN]');
+  A('shl edx, 3');
+  A('add edx, dword ptr [ebx+$ARR_ELEMS]');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [edx], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [edx+4], eax');
+  A('mov dword ptr [ebx+$ARR_LEN], ecx');
+  A('mov eax, ecx');
+  A('mov edx, $INT');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_arr_setlen(arr, nouvelle longueur) : complete avec undefined }
+  A('proc _JSRT_arr_setlen');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('cmp ebx, 50000000');
+  A('ja .range');
+  A('cmp ebx, dword ptr [esi+$ARR_LEN]');
+  A('jbe .set');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_arr_reserve');
+  A('add esp, 8');
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('.fill:');
+  A('cmp ecx, ebx');
+  A('jae .set');
+  A('mov eax, ecx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('mov dword ptr [eax], 0');
+  A('mov dword ptr [eax+4], $UNDEF');
+  A('inc ecx');
+  A('jmp .fill');
+  A('.set:');
+  A('mov dword ptr [esi+$ARR_LEN], ebx');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('.range:');
+  A('push offset _JSRT_c_range');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_arr_get(arr, indice) -> valeur ou undefined }
+  A('proc _JSRT_arr_get');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, dword ptr [eax+$ARR_LEN]');
+  A('jae .undef');
+  A('shl ecx, 3');
+  A('add ecx, dword ptr [eax+$ARR_ELEMS]');
+  A('mov eax, dword ptr [ecx]');
+  A('mov edx, dword ptr [ecx+4]');
+  A('leave');
+  A('ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_arr_set(arr, indice, valeur lo, valeur hi) }
+  A('proc _JSRT_arr_set');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, dword ptr [esi+$ARR_LEN]');
+  A('jb .store');
+  A('inc ecx');
+  A('push ecx');
+  A('push esi');
+  A('call _JSRT_arr_setlen');
+  A('add esp, 8');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('.store:');
+  A('shl ecx, 3');
+  A('add ecx, dword ptr [esi+$ARR_ELEMS]');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [ecx], eax');
+  A('mov edx, dword ptr [ebp+20]');
+  A('mov dword ptr [ecx+4], edx');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_arr_from(pointeur de valeurs, nombre) -> nouveau tableau }
+  A('proc _JSRT_arr_from');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('mov esi, dword ptr [ebp+12]');
+  A('push esi');
+  A('push ebx');
+  A('call _JSRT_arr_reserve');
+  A('add esp, 8');
+  A('mov edi, dword ptr [ebx+$ARR_ELEMS]');
+  A('mov ecx, esi');
+  A('shl ecx, 3');
+  A('mov esi, dword ptr [ebp+8]');
+  A('rep movsb');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [ebx+$ARR_LEN], eax');
+  A('mov eax, ebx');
+  A('mov edx, $ARR');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_memmove(dest, source, octets) : copie avec recouvrement }
+  A('proc _JSRT_memmove');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push esi');
+  A('push edi');
+  A('mov edi, dword ptr [ebp+8]');
+  A('mov esi, dword ptr [ebp+12]');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('cmp edi, esi');
+  A('jbe .fwd');
+  A('.b:');
+  A('test ecx, ecx');
+  A('jz .d');
+  A('dec ecx');
+  A('movzx eax, byte ptr [esi+ecx]');
+  A('mov byte ptr [edi+ecx], al');
+  A('jmp .b');
+  A('.fwd:');
+  A('rep movsb');
+  A('.d:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_args_rest(argc, pointeur, debut) : arguments restants }
+  A('proc _JSRT_args_rest');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('sub ecx, dword ptr [ebp+16]');
+  A('jns .ok');
+  A('xor ecx, ecx');
+  A('.ok:');
+  A('mov eax, dword ptr [ebp+16]');
+  A('cmp eax, dword ptr [ebp+8]');
+  A('jle .a');
+  A('mov eax, dword ptr [ebp+8]');
+  A('.a:');
+  A('shl eax, 3');
+  A('add eax, dword ptr [ebp+12]');
+  A('push ecx');
+  A('push eax');
+  A('call _JSRT_arr_from');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_make_arguments(argc, pointeur) : objet arguments (un tableau) }
+  A('proc _JSRT_make_arguments');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_arr_from');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_call_array(f, this, tableau) : appel avec les elements du tableau }
+  A('proc _JSRT_call_array');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+24]');
+  A('mov ebx, dword ptr [esi+$ARR_LEN]');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, 16');
+  A('sub esp, eax');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [esp], eax');
+  A('mov dword ptr [esp+4], ebx');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esp+8], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [esp+12], eax');
+  A('lea edi, [esp+16]');
+  A('mov ecx, ebx');
+  A('shl ecx, 3');
+  A('mov esi, dword ptr [esi+$ARR_ELEMS]');
+  A('rep movsb');
+  A('mov eax, dword ptr [ebp+8]');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('mov esp, ebp');
+  A('sub esp, 12');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_array_rest(tableau, debut) : elements restants }
+  A('proc _JSRT_array_rest');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov edx, dword ptr [ebp+8]');
+  A('cmp dword ptr [ebp+12], $ARR');
+  A('jne .empty');
+  A('mov ecx, dword ptr [edx+$ARR_LEN]');
+  A('mov eax, dword ptr [ebp+16]');
+  A('cmp eax, ecx');
+  A('jle .a');
+  A('mov eax, ecx');
+  A('.a:');
+  A('sub ecx, eax');
+  A('shl eax, 3');
+  A('add eax, dword ptr [edx+$ARR_ELEMS]');
+  A('push ecx');
+  A('push eax');
+  A('call _JSRT_arr_from');
+  A('leave');
+  A('ret');
+  A('.empty:');
+  A('push 0');
+  A('push 0');
+  A('call _JSRT_arr_from');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_get_index(valeur, indice) : element d'un tableau ou d'une chaine }
+  A('proc _JSRT_get_index');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $ARR');
+  A('je .arr');
+  A('cmp ecx, $STR');
+  A('je .str');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('.arr:');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_arr_get');
+  A('leave');
+  A('ret');
+  A('.str:');
+  A('push dword ptr [ebp+16]');
+  A('push eax');
+  A('call _JSRT_str_char_at');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_to_idx(chaine) -> indice de tableau ou -1 }
+  A('proc _JSRT_str_to_idx');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('test ecx, ecx');
+  A('jz .no');
+  A('cmp ecx, 9');
+  A('ja .no');
+  A('lea esi, [esi+$STR_DATA]');
+  A('cmp ecx, 1');
+  A('je .go');
+  A('cmp byte ptr [esi], 48');
+  A('je .no');
+  A('.go:');
+  A('xor eax, eax');
+  A('.l:');
+  A('movzx edx, byte ptr [esi]');
+  A('sub edx, 48');
+  A('cmp edx, 9');
+  A('ja .no');
+  A('mov ebx, eax');
+  A('shl eax, 3');
+  A('add eax, ebx');
+  A('add eax, ebx');
+  A('add eax, edx');
+  A('inc esi');
+  A('dec ecx');
+  A('jnz .l');
+  A('jmp .out');
+  A('.no:');
+  A('mov eax, -1');
+  A('.out:');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_arr_get_name(arr, cle chaine) : length, indice texte ou methode }
+  A('proc _JSRT_arr_get_name');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_str_to_idx');
+  A('add esp, 4');
+  A('cmp eax, -1');
+  A('je .name');
+  A('push eax');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_arr_get');
+  A('leave');
+  A('ret');
+  A('.name:');
+  A('push dword ptr [ebp+12]');
+  A('push offset ' + RtStr('length'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .proto');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [eax+$ARR_LEN]');
+  A('mov edx, $INT');
+  A('leave');
+  A('ret');
+  A('.proto:');
+  A('push dword ptr [ebp+12]');
+  A('push offset _JSNO_array_proto');
+  A('call _JSRT_obj_lookup_str');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_set_prop(objet, atome, valeur) : objet.nom = valeur }
+  A('proc _JSRT_set_prop');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $ARR');
+  A('jne .other');
+  A('mov ecx, offset ' + RtStr('length'));
+  A('cmp dword ptr [ebp+16], ecx');
+  A('jne .other');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('js .range');
+  A('push eax');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_arr_setlen');
+  A('add esp, 8');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov edx, dword ptr [ebp+24]');
+  A('leave');
+  A('ret');
+  A('.other:');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_set');
+  A('leave');
+  A('ret');
+  A('.range:');
+  A('push offset _JSRT_c_range');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_set_member(objet, cle, valeur) : objet[cle] = valeur }
+  A('proc _JSRT_set_member');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $ARR');
+  A('jne .other');
+  A('mov ecx, dword ptr [ebp+20]');
+  A('cmp ecx, $INT');
+  A('je .idx');
+  A('cmp ecx, $STR');
+  A('jne .other');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_str_to_idx');
+  A('add esp, 4');
+  A('cmp eax, -1');
+  A('je .name');
+  A('jmp .store');
+  A('.name:');
+  A('push dword ptr [ebp+28]');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_set_prop_str');
+  A('leave');
+  A('ret');
+  A('.idx:');
+  A('mov eax, dword ptr [ebp+16]');
+  A('test eax, eax');
+  A('js .range');
+  A('.store:');
+  A('push dword ptr [ebp+28]');
+  A('push dword ptr [ebp+24]');
+  A('push eax');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_arr_set');
+  A('mov eax, dword ptr [ebp+24]');
+  A('mov edx, dword ptr [ebp+28]');
+  A('leave');
+  A('ret');
+  A('.other:');
+  A('push dword ptr [ebp+28]');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_set_member');
+  A('leave');
+  A('ret');
+  A('.range:');
+  A('push offset _JSRT_c_range');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_set_prop_str(objet, chaine, valeur) : length d'un tableau par nom dynamique }
+  A('proc _JSRT_set_prop_str');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+16]');
+  A('push offset ' + RtStr('length'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .other');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push offset ' + RtStr('length'));
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_set_prop');
+  A('leave');
+  A('ret');
+  A('.other:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  A('endp');
+
+  { _JSRT_obj_set / _JSRT_obj_set_member : objets ordinaires, ecrits par le TODO 16 }
+  A('proc _JSRT_obj_set');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push offset _JSRT_c_setprop');
+  A('call _JSRT_fatal');
+  A('endp');
+  A('proc _JSRT_obj_set_member');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push offset _JSRT_c_setprop');
+  A('call _JSRT_fatal');
+  A('endp');
+End;
+
+{ Iterateurs (for-of, for-in, spread) et jointure. }
+Procedure RtArrayIter;
+Begin
+  { _JSRT_u8len(octet de tete) -> longueur de la sequence UTF-8 }
+  A('proc _JSRT_u8len');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('cmp eax, 128');
+  A('jb .one');
+  A('cmp eax, 224');
+  A('jb .two');
+  A('cmp eax, 240');
+  A('jb .three');
+  A('mov eax, 4');
+  A('leave');
+  A('ret');
+  A('.one:');
+  A('mov eax, 1');
+  A('leave');
+  A('ret');
+  A('.two:');
+  A('mov eax, 2');
+  A('leave');
+  A('ret');
+  A('.three:');
+  A('mov eax, 3');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_iter_new(valeur) -> iterateur (source +8, indice +16) }
+  A('proc _JSRT_iter_new');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $ARR');
+  A('je .ok');
+  A('cmp dword ptr [ebp+12], $STR');
+  A('je .ok');
+  A('push offset _JSRT_c_noiter');
+  A('call _JSRT_fatal');
+  A('.ok:');
+  A('push 24');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_ENV');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [eax+8], ecx');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('mov dword ptr [eax+12], ecx');
+  A('mov edx, $OBJ');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_iter_next(iterateur) -> valeur suivante ou DONE }
+  A('proc _JSRT_iter_next');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi+8]');
+  A('mov ecx, dword ptr [esi+16]');
+  A('cmp dword ptr [esi+12], $ARR');
+  A('jne .str');
+  A('cmp ecx, dword ptr [eax+$ARR_LEN]');
+  A('jae .done');
+  A('lea edx, [ecx+1]');
+  A('mov dword ptr [esi+16], edx');
+  A('shl ecx, 3');
+  A('add ecx, dword ptr [eax+$ARR_ELEMS]');
+  A('mov eax, dword ptr [ecx]');
+  A('mov edx, dword ptr [ecx+4]');
+  A('jmp .out');
+  A('.str:');
+  A('cmp ecx, dword ptr [eax+$STR_LEN]');
+  A('jae .done');
+  A('movzx edx, byte ptr [eax+ecx+$STR_DATA]');
+  A('push edx');
+  A('call _JSRT_u8len');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('mov ecx, dword ptr [esi+16]');
+  A('mov eax, dword ptr [esi+8]');
+  A('mov edx, dword ptr [eax+$STR_LEN]');
+  A('sub edx, ecx');
+  A('cmp ebx, edx');
+  A('jbe .n');
+  A('mov ebx, edx');
+  A('.n:');
+  A('lea edx, [ecx+ebx]');
+  A('mov dword ptr [esi+16], edx');
+  A('push edx');
+  A('push ecx');
+  A('push eax');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  A('jmp .out');
+  A('.done:');
+  A('xor eax, eax');
+  A('mov edx, $DONE');
+  A('.out:');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_array_spread(tableau, source) : ajoute les elements de la source }
+  A('proc _JSRT_array_spread');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_iter_new');
+  A('add esp, 8');
+  A('mov esi, eax');
+  A('.l:');
+  A('push $OBJ');
+  A('push esi');
+  A('call _JSRT_iter_next');
+  A('add esp, 8');
+  A('cmp edx, $DONE');
+  A('je .d');
+  A('push edx');
+  A('push eax');
+  A('push $ARR');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('jmp .l');
+  A('.d:');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_forin_keys(valeur) -> tableau des cles enumerables }
+  A('proc _JSRT_forin_keys');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('cmp ecx, $ARR');
+  A('je .arr');
+  A('cmp ecx, $STR');
+  A('je .strk');
+  A('cmp ecx, $OBJ');
+  A('je .obj');
+  A('jmp .done');
+  A('.arr:');
+  A('mov edi, dword ptr [esi+$ARR_LEN]');
+  A('jmp .num');
+  A('.strk:');
+  A('mov edi, dword ptr [esi+$STR_LEN]');
+  A('.num:');
+  A('xor esi, esi');
+  A('.nl:');
+  A('cmp esi, edi');
+  A('jae .done');
+  A('push esi');
+  A('call _JSRT_int_to_str');
+  A('add esp, 4');
+  A('push $STR');
+  A('push eax');
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('inc esi');
+  A('jmp .nl');
+  A('.obj:');
+  A('mov edi, dword ptr [esi+$OBJ_PROPS]');
+  A('mov esi, dword ptr [esi+$OBJ_COUNT]');
+  A('.ol:');
+  A('test esi, esi');
+  A('jz .done');
+  A('push $STR');
+  A('push dword ptr [edi]');
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('add edi, ' + IntToStr(RT_PROP_SIZE));
+  A('dec esi');
+  A('jmp .ol');
+  A('.done:');
+  A('mov eax, ebx');
+  A('mov edx, $ARR');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_arr_join(tableau, separateur) -> chaine }
+  A('proc _JSRT_arr_join');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('sub esp, 12');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('mov ' + Lv(3) + ', eax');
+  A('test eax, eax');
+  A('jz .empty');
+  A('shl eax, 2');
+  A('push eax');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov ' + Lv(1) + ', eax');
+  A('mov ' + Lv(2) + ', 0');
+  A('xor ebx, ebx');
+  A('.c:');
+  A('cmp ebx, ' + Lv(3));
+  A('jae .alloc');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('mov ecx, dword ptr [eax+4]');
+  A('cmp ecx, $UNDEF');
+  A('je .e');
+  A('cmp ecx, $NULL');
+  A('je .e');
+  A('push ecx');
+  A('push dword ptr [eax]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('jmp .s');
+  A('.e:');
+  A('mov eax, offset ' + RtStr(''));
+  A('.s:');
+  A('mov edx, ebx');
+  A('shl edx, 2');
+  A('add edx, ' + Lv(1));
+  A('mov dword ptr [edx], eax');
+  A('mov ecx, dword ptr [eax+$STR_LEN]');
+  A('mov edx, ' + Lv(2));
+  A('add edx, ecx');
+  A('mov ' + Lv(2) + ', edx');
+  A('inc ebx');
+  A('jmp .c');
+  A('.alloc:');
+  A('mov eax, ' + Lv(3));
+  A('dec eax');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('mov edx, dword ptr [ecx+$STR_LEN]');
+  A('imul eax, edx');
+  A('add eax, ' + Lv(2));
+  A('push eax');
+  A('call _JSRT_str_new');
+  A('add esp, 4');
+  A('mov edi, eax');
+  A('add edi, $STR_DATA');
+  A('push eax');
+  A('xor ebx, ebx');
+  A('.f:');
+  A('cmp ebx, ' + Lv(3));
+  A('jae .done');
+  A('test ebx, ebx');
+  A('jz .nosep');
+  A('mov esi, dword ptr [ebp+12]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('lea esi, [esi+$STR_DATA]');
+  A('rep movsb');
+  A('.nosep:');
+  A('mov eax, ebx');
+  A('shl eax, 2');
+  A('add eax, ' + Lv(1));
+  A('mov esi, dword ptr [eax]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('lea esi, [esi+$STR_DATA]');
+  A('rep movsb');
+  A('inc ebx');
+  A('jmp .f');
+  A('.done:');
+  A('pop eax');
+  A('mov edx, $STR');
+  A('jmp .out');
+  A('.empty:');
+  A('mov eax, offset ' + RtStr(''));
+  A('mov edx, $STR');
+  A('.out:');
+  A('mov esp, ebp');
+  A('sub esp, 12');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ Appels de rappel : _JSRT_arr_cb(f, this, ptr valeur, indice, tableau) et
+  _JSRT_arr_cb4 avec accumulateur, _JSRT_sort_cmp. }
+Procedure RtArrayCallbacks;
+Begin
+  A('proc _JSRT_arr_cb');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $FN');
+  A('jne .nf');
+  A('sub esp, 40');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [esp], eax');
+  A('mov dword ptr [esp+4], 3');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esp+8], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [esp+12], eax');
+  A('mov ecx, dword ptr [ebp+24]');
+  A('mov eax, dword ptr [ecx]');
+  A('mov dword ptr [esp+16], eax');
+  A('mov eax, dword ptr [ecx+4]');
+  A('mov dword ptr [esp+20], eax');
+  A('mov eax, dword ptr [ebp+28]');
+  A('mov dword ptr [esp+24], eax');
+  A('mov dword ptr [esp+28], $INT');
+  A('mov eax, dword ptr [ebp+32]');
+  A('mov dword ptr [esp+32], eax');
+  A('mov dword ptr [esp+36], $ARR');
+  A('mov eax, dword ptr [ebp+8]');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('leave');
+  A('ret');
+  A('.nf:');
+  A('call _JSRT_throw_notfunc');
+  A('endp');
+
+  { _JSRT_arr_cb4(f, acc, ptr valeur, indice, tableau) }
+  A('proc _JSRT_arr_cb4');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $FN');
+  A('jne .nf');
+  A('sub esp, 48');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [esp], eax');
+  A('mov dword ptr [esp+4], 4');
+  A('mov dword ptr [esp+8], 0');
+  A('mov dword ptr [esp+12], $UNDEF');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [esp+16], eax');
+  A('mov eax, dword ptr [ebp+20]');
+  A('mov dword ptr [esp+20], eax');
+  A('mov ecx, dword ptr [ebp+24]');
+  A('mov eax, dword ptr [ecx]');
+  A('mov dword ptr [esp+24], eax');
+  A('mov eax, dword ptr [ecx+4]');
+  A('mov dword ptr [esp+28], eax');
+  A('mov eax, dword ptr [ebp+28]');
+  A('mov dword ptr [esp+32], eax');
+  A('mov dword ptr [esp+36], $INT');
+  A('mov eax, dword ptr [ebp+32]');
+  A('mov dword ptr [esp+40], eax');
+  A('mov dword ptr [esp+44], $ARR');
+  A('mov eax, dword ptr [ebp+8]');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('leave');
+  A('ret');
+  A('.nf:');
+  A('call _JSRT_throw_notfunc');
+  A('endp');
+
+  { _JSRT_sort_cmp(f lo, f hi, pa, pb) -> EAX < 0, 0 ou > 0 }
+  A('proc _JSRT_sort_cmp');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('mov eax, dword ptr [ecx+4]');
+  A('mov edx, dword ptr [ebp+20]');
+  A('mov edx, dword ptr [edx+4]');
+  A('cmp eax, $UNDEF');
+  A('jne .adef');
+  A('cmp edx, $UNDEF');
+  A('je .eq0');
+  A('mov eax, 1');
+  A('jmp .out');
+  A('.adef:');
+  A('cmp edx, $UNDEF');
+  A('jne .both');
+  A('mov eax, -1');
+  A('jmp .out');
+  A('.eq0:');
+  A('xor eax, eax');
+  A('jmp .out');
+  A('.both:');
+  A('cmp dword ptr [ebp+12], $FN');
+  A('jne .dflt');
+  A('sub esp, 32');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov dword ptr [esp], eax');
+  A('mov dword ptr [esp+4], 2');
+  A('mov dword ptr [esp+8], 0');
+  A('mov dword ptr [esp+12], $UNDEF');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('mov eax, dword ptr [ecx]');
+  A('mov dword ptr [esp+16], eax');
+  A('mov eax, dword ptr [ecx+4]');
+  A('mov dword ptr [esp+20], eax');
+  A('mov ecx, dword ptr [ebp+20]');
+  A('mov eax, dword ptr [ecx]');
+  A('mov dword ptr [esp+24], eax');
+  A('mov eax, dword ptr [ecx+4]');
+  A('mov dword ptr [esp+28], eax');
+  A('mov eax, dword ptr [ebp+8]');
+  A('call dword ptr [eax+$FN_CODE]');
+  A('add esp, 32');
+  A('cmp edx, $INT');
+  A('je .out');
+  A('cmp edx, $BOOL');
+  A('je .out');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('jmp .out');
+  A('.dflt:');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('push dword ptr [ecx+4]');
+  A('push dword ptr [ecx]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  A('mov ecx, dword ptr [ebp+20]');
+  A('push dword ptr [ecx+4]');
+  A('push dword ptr [ecx]');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push eax');
+  A('push ebx');
+  A('call _JSRT_str_cmp');
+  A('add esp, 8');
+  A('.out:');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+End;
+
+{ push / pop / shift / unshift }
+Procedure RtArrayStack;
+Begin
+  ArrBegin('_JSRT_am_push', 0);
+  A('xor ebx, ebx');
+  A('.l:');
+  A('cmp ebx, dword ptr [ebp+12]');
+  A('jae .d');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('lea eax, [ebp+eax+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('push dword ptr [eax+4]');
+  A('push dword ptr [eax]');
+  A('push $ARR');
+  A('push esi');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('inc ebx');
+  A('jmp .l');
+  A('.d:');
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  ArrEnd;
+
+  ArrBegin('_JSRT_am_pop', 0);
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('test ecx, ecx');
+  A('jz .undef');
+  A('dec ecx');
+  A('mov dword ptr [esi+$ARR_LEN], ecx');
+  A('shl ecx, 3');
+  A('add ecx, dword ptr [esi+$ARR_ELEMS]');
+  A('mov eax, dword ptr [ecx]');
+  A('mov edx, dword ptr [ecx+4]');
+  A('jmp .ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('jmp .ret');
+  ArrEnd;
+
+  ArrBegin('_JSRT_am_shift', 2);
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('test ecx, ecx');
+  A('jz .undef');
+  A('mov edi, dword ptr [esi+$ARR_ELEMS]');
+  A('mov eax, dword ptr [edi]');
+  A('mov ' + Lv(1) + ', eax');
+  A('mov eax, dword ptr [edi+4]');
+  A('mov ' + Lv(2) + ', eax');
+  A('dec ecx');
+  A('mov dword ptr [esi+$ARR_LEN], ecx');
+  A('shl ecx, 3');
+  A('push ecx');
+  A('lea eax, [edi+8]');
+  A('push eax');
+  A('push edi');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('mov eax, ' + Lv(1));
+  A('mov edx, ' + Lv(2));
+  A('jmp .ret');
+  A('.undef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('jmp .ret');
+  ArrEnd;
+
+  ArrBegin('_JSRT_am_unshift', 1);
+  A('mov ebx, dword ptr [ebp+12]');
+  A('test ebx, ebx');
+  A('jz .d');
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('add eax, ebx');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_arr_reserve');
+  A('add esp, 8');
+  A('mov edi, dword ptr [esi+$ARR_ELEMS]');
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('shl ecx, 3');
+  A('mov edx, ebx');
+  A('shl edx, 3');
+  A('add edx, edi');
+  A('push ecx');
+  A('push edi');
+  A('push edx');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('mov ecx, ebx');
+  A('shl ecx, 3');
+  A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('push ecx');
+  A('push eax');
+  A('push edi');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('add ebx, dword ptr [esi+$ARR_LEN]');
+  A('mov dword ptr [esi+$ARR_LEN], ebx');
+  A('.d:');
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  ArrEnd;
+End;
+
+{ indexOf / lastIndexOf / includes ; mode 0 indexOf, 1 lastIndexOf, 2 includes }
+Procedure ArrSearch(Const code: TString; mode: LongInt);
+Begin
+  ArrBegin(code, 3);
+  ArgToLocals(0, 1, 2);
+  If mode = 1 Then
+    Begin
+      A('mov ebx, dword ptr [esi+$ARR_LEN]');
+      A('dec ebx');
+      MArgInt(1, '2147483647');
+      A('cmp eax, 2147483647');
+      A('je .l');
+      A('test eax, eax');
+      A('jns .fp');
+      A('add eax, dword ptr [esi+$ARR_LEN]');
+      A('.fp:');
+      A('cmp eax, ebx');
+      A('jge .l');
+      A('mov ebx, eax');
+      A('.l:');
+      A('test ebx, ebx');
+      A('js .nf');
+    End
+  Else
+    Begin
+      MArgInt(1, '0');
+      A('test eax, eax');
+      A('jns .fp');
+      A('add eax, dword ptr [esi+$ARR_LEN]');
+      A('jns .fp');
+      A('xor eax, eax');
+      A('.fp:');
+      A('mov ebx, eax');
+      A('.l:');
+      A('cmp ebx, dword ptr [esi+$ARR_LEN]');
+      A('jae .nf');
+    End;
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('push ' + Lv(2));
+  A('push ' + Lv(1));
+  A('push dword ptr [eax+4]');
+  A('push dword ptr [eax]');
+  A('call _JSRT_seq');
+  A('add esp, 16');
+  A('test eax, eax');
+  A('jnz .found');
+  If mode = 1 Then
+    A('dec ebx')
+  Else
+    A('inc ebx');
+  A('jmp .l');
+  A('.found:');
+  If mode = 2 Then
+    Begin
+      A('mov eax, 1');
+      A('mov edx, $BOOL');
+    End
+  Else
+    Begin
+      A('mov eax, ebx');
+      A('mov edx, $INT');
+    End;
+  A('jmp .ret');
+  A('.nf:');
+  If mode = 2 Then
+    Begin
+      A('xor eax, eax');
+      A('mov edx, $BOOL');
+    End
+  Else
+    Begin
+      A('mov eax, -1');
+      A('mov edx, $INT');
+    End;
+  A('jmp .ret');
+  ArrEnd;
+End;
+
+{ Methodes a rappel : forEach, map, filter, some, every, find, findIndex }
+Procedure ArrIter(Const code: TString; mode: LongInt);
+Begin
+  ArrBegin(code, 6);
+  ArgToLocals(0, 1, 2);
+  ArgToLocals(1, 3, 4);
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('mov ' + Lv(5) + ', eax');
+  If (mode = 1) Or (mode = 2) Then
+    Begin
+      A('call _JSRT_array_new');
+      A('mov ' + Lv(6) + ', eax');
+    End;
+  A('xor ebx, ebx');
+  A('.l:');
+  A('cmp ebx, ' + Lv(5));
+  A('jae .done');
+  A('cmp ebx, dword ptr [esi+$ARR_LEN]');
+  A('jae .done');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('push esi');
+  A('push ebx');
+  A('push eax');
+  A('push ' + Lv(4));
+  A('push ' + Lv(3));
+  A('push ' + Lv(2));
+  A('push ' + Lv(1));
+  A('call _JSRT_arr_cb');
+  A('add esp, 28');
+  Case mode Of
+    1:
+      Begin
+        A('push edx');
+        A('push eax');
+        A('push $ARR');
+        A('push ' + Lv(6));
+        A('call _JSRT_array_push');
+        A('add esp, 16');
+      End;
+    2, 3, 4, 5, 6:
+      Begin
+        A('push edx');
+        A('push eax');
+        A('call _JSRT_truthy');
+        A('add esp, 8');
+        A('test eax, eax');
+        Case mode Of
+          2:
+            Begin
+              A('jz .skip');
+              A('mov eax, ebx');
+              A('shl eax, 3');
+              A('add eax, dword ptr [esi+$ARR_ELEMS]');
+              A('push dword ptr [eax+4]');
+              A('push dword ptr [eax]');
+              A('push $ARR');
+              A('push ' + Lv(6));
+              A('call _JSRT_array_push');
+              A('add esp, 16');
+            End;
+          3: A('jnz .rtrue');
+          4: A('jz .rfalse');
+          5, 6:
+            Begin
+              A('jz .skip');
+              If mode = 5 Then
+                Begin
+                  A('mov eax, ebx');
+                  A('shl eax, 3');
+                  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+                  A('mov edx, dword ptr [eax+4]');
+                  A('mov eax, dword ptr [eax]');
+                  A('jmp .ret');
+                End
+              Else
+                Begin
+                  A('mov eax, ebx');
+                  A('mov edx, $INT');
+                  A('jmp .ret');
+                End;
+            End;
+        End;
+      End;
+  End;
+  A('.skip:');
+  A('inc ebx');
+  A('jmp .l');
+  A('.done:');
+  Case mode Of
+    1, 2:
+      Begin
+        A('mov eax, ' + Lv(6));
+        A('mov edx, $ARR');
+      End;
+    3:
+      Begin
+        A('xor eax, eax');
+        A('mov edx, $BOOL');
+      End;
+    4:
+      Begin
+        A('mov eax, 1');
+        A('mov edx, $BOOL');
+      End;
+    6:
+      Begin
+        A('mov eax, -1');
+        A('mov edx, $INT');
+      End;
+  Else
+    Begin
+      A('xor eax, eax');
+      A('mov edx, $UNDEF');
+    End;
+  End;
+  A('jmp .ret');
+  If mode = 3 Then
+    Begin
+      A('.rtrue:');
+      A('mov eax, 1');
+      A('mov edx, $BOOL');
+      A('jmp .ret');
+    End;
+  If mode = 4 Then
+    Begin
+      A('.rfalse:');
+      A('xor eax, eax');
+      A('mov edx, $BOOL');
+      A('jmp .ret');
+    End;
+  ArrEnd;
+End;
+
+Procedure RtArrayMethods;
+Begin
+  RtArrayStack;
+  ArrSearch('_JSRT_am_indexOf', 0);
+  ArrSearch('_JSRT_am_lastIndexOf', 1);
+  ArrSearch('_JSRT_am_includes', 2);
+  ArrIter('_JSRT_am_forEach', 0);
+  ArrIter('_JSRT_am_map', 1);
+  ArrIter('_JSRT_am_filter', 2);
+  ArrIter('_JSRT_am_some', 3);
+  ArrIter('_JSRT_am_every', 4);
+  ArrIter('_JSRT_am_find', 5);
+  ArrIter('_JSRT_am_findIndex', 6);
+
+  { reverse() : sur place }
+  ArrBegin('_JSRT_am_reverse', 0);
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('cmp ecx, 2');
+  A('jb .d');
+  A('mov ebx, dword ptr [esi+$ARR_ELEMS]');
+  A('dec ecx');
+  A('shl ecx, 3');
+  A('lea edi, [ebx+ecx]');
+  A('.l:');
+  A('cmp ebx, edi');
+  A('jae .d');
+  A('mov eax, dword ptr [ebx]');
+  A('mov ecx, dword ptr [edi]');
+  A('mov dword ptr [ebx], ecx');
+  A('mov dword ptr [edi], eax');
+  A('mov eax, dword ptr [ebx+4]');
+  A('mov ecx, dword ptr [edi+4]');
+  A('mov dword ptr [ebx+4], ecx');
+  A('mov dword ptr [edi+4], eax');
+  A('add ebx, 8');
+  A('sub edi, 8');
+  A('jmp .l');
+  A('.d:');
+  A('mov eax, esi');
+  A('mov edx, $ARR');
+  A('jmp .ret');
+  ArrEnd;
+
+  { sort(comparateur) : tri fusion stable }
+  ArrBegin('_JSRT_am_sort', 12);
+  A('mov ' + Lv(1) + ', 0');
+  A('mov ' + Lv(2) + ', $UNDEF');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .nocmp');
+  A('mov eax, dword ptr [ebp+24]');
+  A('mov ' + Lv(1) + ', eax');
+  A('mov eax, dword ptr [ebp+28]');
+  A('mov ' + Lv(2) + ', eax');
+  A('.nocmp:');
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('mov ' + Lv(3) + ', eax');
+  A('cmp eax, 2');
+  A('jb .retthis');
+  A('shl eax, 3');
+  A('push eax');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov ' + Lv(5) + ', eax');
+  A('mov eax, dword ptr [esi+$ARR_ELEMS]');
+  A('mov ' + Lv(4) + ', eax');
+  A('mov ' + Lv(6) + ', 1');
+  A('.pass:');
+  A('mov eax, ' + Lv(6));
+  A('cmp eax, ' + Lv(3));
+  A('jae .passes');
+  A('mov ' + Lv(7) + ', 0');
+  A('.blk:');
+  A('mov eax, ' + Lv(7));
+  A('cmp eax, ' + Lv(3));
+  A('jae .blkdone');
+  A('add eax, ' + Lv(6));
+  A('cmp eax, ' + Lv(3));
+  A('jbe .m1');
+  A('mov eax, ' + Lv(3));
+  A('.m1:');
+  A('mov ' + Lv(8) + ', eax');
+  A('add eax, ' + Lv(6));
+  A('cmp eax, ' + Lv(3));
+  A('jbe .m2');
+  A('mov eax, ' + Lv(3));
+  A('.m2:');
+  A('mov ' + Lv(9) + ', eax');
+  A('mov eax, ' + Lv(7));
+  A('mov ' + Lv(10) + ', eax');
+  A('mov ' + Lv(12) + ', eax');
+  A('mov eax, ' + Lv(8));
+  A('mov ' + Lv(11) + ', eax');
+  A('.mrg:');
+  A('mov eax, ' + Lv(10));
+  A('cmp eax, ' + Lv(8));
+  A('jae .rt');
+  A('mov eax, ' + Lv(11));
+  A('cmp eax, ' + Lv(9));
+  A('jae .tl');
+  A('shl eax, 3');
+  A('add eax, ' + Lv(4));
+  A('mov ecx, ' + Lv(10));
+  A('shl ecx, 3');
+  A('add ecx, ' + Lv(4));
+  A('push eax');
+  A('push ecx');
+  A('push ' + Lv(2));
+  A('push ' + Lv(1));
+  A('call _JSRT_sort_cmp');
+  A('add esp, 16');
+  A('cmp eax, 0');
+  A('jg .tr');
+  A('.tl:');
+  A('mov eax, ' + Lv(10));
+  A('shl eax, 3');
+  A('add eax, ' + Lv(4));
+  A('mov ecx, ' + Lv(12));
+  A('shl ecx, 3');
+  A('add ecx, ' + Lv(5));
+  A('mov edx, dword ptr [eax]');
+  A('mov dword ptr [ecx], edx');
+  A('mov edx, dword ptr [eax+4]');
+  A('mov dword ptr [ecx+4], edx');
+  A('mov eax, ' + Lv(10));
+  A('inc eax');
+  A('mov ' + Lv(10) + ', eax');
+  A('mov eax, ' + Lv(12));
+  A('inc eax');
+  A('mov ' + Lv(12) + ', eax');
+  A('jmp .mrg');
+  A('.rt:');
+  A('mov eax, ' + Lv(11));
+  A('cmp eax, ' + Lv(9));
+  A('jae .blknext');
+  A('.tr:');
+  A('mov eax, ' + Lv(11));
+  A('shl eax, 3');
+  A('add eax, ' + Lv(4));
+  A('mov ecx, ' + Lv(12));
+  A('shl ecx, 3');
+  A('add ecx, ' + Lv(5));
+  A('mov edx, dword ptr [eax]');
+  A('mov dword ptr [ecx], edx');
+  A('mov edx, dword ptr [eax+4]');
+  A('mov dword ptr [ecx+4], edx');
+  A('mov eax, ' + Lv(11));
+  A('inc eax');
+  A('mov ' + Lv(11) + ', eax');
+  A('mov eax, ' + Lv(12));
+  A('inc eax');
+  A('mov ' + Lv(12) + ', eax');
+  A('jmp .mrg');
+  A('.blknext:');
+  A('mov eax, ' + Lv(6));
+  A('add eax, eax');
+  A('add eax, ' + Lv(7));
+  A('mov ' + Lv(7) + ', eax');
+  A('jmp .blk');
+  A('.blkdone:');
+  A('mov eax, ' + Lv(4));
+  A('mov edx, ' + Lv(5));
+  A('mov ' + Lv(4) + ', edx');
+  A('mov ' + Lv(5) + ', eax');
+  A('mov eax, ' + Lv(6));
+  A('add eax, eax');
+  A('mov ' + Lv(6) + ', eax');
+  A('jmp .pass');
+  A('.passes:');
+  A('mov eax, ' + Lv(4));
+  A('cmp eax, dword ptr [esi+$ARR_ELEMS]');
+  A('je .retthis');
+  A('mov ecx, ' + Lv(3));
+  A('shl ecx, 3');
+  A('mov edi, dword ptr [esi+$ARR_ELEMS]');
+  A('push esi');
+  A('mov esi, eax');
+  A('rep movsb');
+  A('pop esi');
+  A('.retthis:');
+  A('mov eax, esi');
+  A('mov edx, $ARR');
+  A('jmp .ret');
+  ArrEnd;
+
+  { reduce(rappel, initial) }
+  ArrBegin('_JSRT_am_reduce', 5);
+  ArgToLocals(0, 1, 2);
+  A('xor ebx, ebx');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .noinit');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('mov ' + Lv(3) + ', eax');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('mov ' + Lv(4) + ', eax');
+  A('jmp .l');
+  A('.noinit:');
+  A('cmp dword ptr [esi+$ARR_LEN], 0');
+  A('je .empty');
+  A('mov eax, dword ptr [esi+$ARR_ELEMS]');
+  A('mov ecx, dword ptr [eax]');
+  A('mov ' + Lv(3) + ', ecx');
+  A('mov ecx, dword ptr [eax+4]');
+  A('mov ' + Lv(4) + ', ecx');
+  A('mov ebx, 1');
+  A('.l:');
+  A('cmp ebx, dword ptr [esi+$ARR_LEN]');
+  A('jae .done');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('push esi');
+  A('push ebx');
+  A('push eax');
+  A('push ' + Lv(4));
+  A('push ' + Lv(3));
+  A('push ' + Lv(2));
+  A('push ' + Lv(1));
+  A('call _JSRT_arr_cb4');
+  A('add esp, 28');
+  A('mov ' + Lv(3) + ', eax');
+  A('mov ' + Lv(4) + ', edx');
+  A('inc ebx');
+  A('jmp .l');
+  A('.done:');
+  A('mov eax, ' + Lv(3));
+  A('mov edx, ' + Lv(4));
+  A('jmp .ret');
+  A('.empty:');
+  A('push offset _JSRT_c_type');
+  A('call _JSRT_fatal');
+  ArrEnd;
+
+  { slice(debut, fin) }
+  ArrBegin('_JSRT_am_slice', 1);
+  MArgInt(0, '0');
+  A('push dword ptr [esi+$ARR_LEN]');
+  A('push eax');
+  A('call _JSRT_relidx');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  MArgInt(1, '2147483647');
+  A('push dword ptr [esi+$ARR_LEN]');
+  A('push eax');
+  A('call _JSRT_relidx');
+  A('add esp, 8');
+  A('sub eax, ebx');
+  A('jg .ok');
+  A('xor eax, eax');
+  A('.ok:');
+  A('push eax');
+  A('shl ebx, 3');
+  A('add ebx, dword ptr [esi+$ARR_ELEMS]');
+  A('push ebx');
+  A('call _JSRT_arr_from');
+  A('add esp, 8');
+  A('jmp .ret');
+  ArrEnd;
+
+  { splice(debut, nombre, ...elements) }
+  ArrBegin('_JSRT_am_splice', 5);
+  MArgInt(0, '0');
+  A('push dword ptr [esi+$ARR_LEN]');
+  A('push eax');
+  A('call _JSRT_relidx');
+  A('add esp, 8');
+  A('mov ' + Lv(1) + ', eax');
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('sub ecx, eax');
+  A('cmp dword ptr [ebp+12], 0');
+  A('je .dc0');
+  A('cmp dword ptr [ebp+12], 1');
+  A('je .dcset');
+  MArgInt(1, '0');
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('sub ecx, ' + Lv(1));
+  A('push ecx');
+  A('push eax');
+  A('call _JSRT_clampidx');
+  A('add esp, 8');
+  A('mov ecx, eax');
+  A('jmp .dcset');
+  A('.dc0:');
+  A('xor ecx, ecx');
+  A('.dcset:');
+  A('mov ' + Lv(2) + ', ecx');
+  A('mov eax, dword ptr [ebp+12]');
+  A('sub eax, 2');
+  A('jns .k');
+  A('xor eax, eax');
+  A('.k:');
+  A('mov ' + Lv(3) + ', eax');
+  { tableau retire }
+  A('mov eax, ' + Lv(1));
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('push ' + Lv(2));
+  A('push eax');
+  A('call _JSRT_arr_from');
+  A('add esp, 8');
+  A('mov ' + Lv(4) + ', eax');
+  { reserve newlen = len - dc + k }
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('sub eax, ' + Lv(2));
+  A('add eax, ' + Lv(3));
+  A('mov ' + Lv(5) + ', eax');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_arr_reserve');
+  A('add esp, 8');
+  { deplace la queue : [debut+dc, len) vers debut+k }
+  A('mov edi, dword ptr [esi+$ARR_ELEMS]');
+  A('mov eax, ' + Lv(1));
+  A('add eax, ' + Lv(2));
+  A('mov ecx, dword ptr [esi+$ARR_LEN]');
+  A('sub ecx, eax');
+  A('shl ecx, 3');
+  A('shl eax, 3');
+  A('add eax, edi');
+  A('mov edx, ' + Lv(1));
+  A('add edx, ' + Lv(3));
+  A('shl edx, 3');
+  A('add edx, edi');
+  A('push ecx');
+  A('push eax');
+  A('push edx');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  { elements inseres }
+  A('mov ecx, ' + Lv(3));
+  A('shl ecx, 3');
+  A('mov edx, ' + Lv(1));
+  A('shl edx, 3');
+  A('add edx, edi');
+  A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS + 16) + ']');
+  A('push ecx');
+  A('push eax');
+  A('push edx');
+  A('call _JSRT_memmove');
+  A('add esp, 12');
+  A('mov eax, ' + Lv(5));
+  A('mov dword ptr [esi+$ARR_LEN], eax');
+  A('mov eax, ' + Lv(4));
+  A('mov edx, $ARR');
+  A('jmp .ret');
+  ArrEnd;
+
+  { concat(...) }
+  ArrBegin('_JSRT_am_concat', 1);
+  A('push dword ptr [esi+$ARR_LEN]');
+  A('push dword ptr [esi+$ARR_ELEMS]');
+  A('call _JSRT_arr_from');
+  A('add esp, 8');
+  A('mov ' + Lv(1) + ', eax');
+  A('xor ebx, ebx');
+  A('.l:');
+  A('cmp ebx, dword ptr [ebp+12]');
+  A('jae .d');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('lea eax, [ebp+eax+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('push dword ptr [eax+4]');
+  A('push dword ptr [eax]');
+  A('cmp dword ptr [eax+4], $ARR');
+  A('je .sp');
+  A('push $ARR');
+  A('push ' + Lv(1));
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('jmp .n');
+  A('.sp:');
+  A('push $ARR');
+  A('push ' + Lv(1));
+  A('call _JSRT_array_spread');
+  A('add esp, 16');
+  A('.n:');
+  A('inc ebx');
+  A('jmp .l');
+  A('.d:');
+  A('mov eax, ' + Lv(1));
+  A('mov edx, $ARR');
+  A('jmp .ret');
+  ArrEnd;
+
+  { join(separateur) et toString() }
+  ArrBegin('_JSRT_am_join', 0);
+  A('cmp dword ptr [ebp+12], 0');
+  A('je .dflt');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $UNDEF');
+  A('je .dflt');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('jmp .go');
+  A('.dflt:');
+  A('mov eax, offset ' + RtStr(','));
+  A('.go:');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_arr_join');
+  A('add esp, 8');
+  A('jmp .ret');
+  ArrEnd;
+
+  { fill(valeur, debut, fin) }
+  ArrBegin('_JSRT_am_fill', 3);
+  MArgInt(1, '0');
+  A('push dword ptr [esi+$ARR_LEN]');
+  A('push eax');
+  A('call _JSRT_relidx');
+  A('add esp, 8');
+  A('mov ebx, eax');
+  MArgInt(2, '2147483647');
+  A('push dword ptr [esi+$ARR_LEN]');
+  A('push eax');
+  A('call _JSRT_relidx');
+  A('add esp, 8');
+  A('mov ' + Lv(1) + ', eax');
+  ArgToLocals(0, 2, 3);
+  A('.l:');
+  A('cmp ebx, ' + Lv(1));
+  A('jge .d');
+  A('mov eax, ebx');
+  A('shl eax, 3');
+  A('add eax, dword ptr [esi+$ARR_ELEMS]');
+  A('mov ecx, ' + Lv(2));
+  A('mov dword ptr [eax], ecx');
+  A('mov ecx, ' + Lv(3));
+  A('mov dword ptr [eax+4], ecx');
+  A('inc ebx');
+  A('jmp .l');
+  A('.d:');
+  A('mov eax, esi');
+  A('mov edx, $ARR');
+  A('jmp .ret');
+  ArrEnd;
+End;
+
+{ Tableau(n) / Array(a, b, c) et Array.isArray }
+Procedure RtArrayCtor;
+Begin
+  A('proc _JSRT_Array_call');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jne .list');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $INT');
+  A('jne .list');
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('push ebx');
+  A('call _JSRT_arr_setlen');
+  A('add esp, 8');
+  A('mov eax, ebx');
+  A('mov edx, $ARR');
+  A('jmp .out');
+  A('.list:');
+  A('push dword ptr [ebp+12]');
+  A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('push eax');
+  A('call _JSRT_arr_from');
+  A('add esp, 8');
+  A('.out:');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_Array_isArray');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .r');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $ARR');
+  A('jne .r');
+  A('mov eax, 1');
+  A('.r:');
+  A('mov edx, $BOOL');
+  A('leave');
+  A('ret');
+  A('endp');
+End;
+
+{ String.split(separateur) }
+Procedure RtStringSplit;
+Begin
+  MethBegin('_JSRT_sm_split');
+  A('sub esp, 8');
+  A('call _JSRT_array_new');
+  A('push eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .whole');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $UNDEF');
+  A('je .whole');
+  MArgStr(0, 'edi');
+  A('pop ebx');
+  A('mov ecx, dword ptr [edi+$STR_LEN]');
+  A('test ecx, ecx');
+  A('jz .chars');
+  A('mov dword ptr [ebp-16], 0');
+  A('.find:');
+  A('push dword ptr [ebp-16]');
+  A('push edi');
+  A('push esi');
+  A('call _JSRT_str_index');
+  A('add esp, 12');
+  A('cmp eax, -1');
+  A('je .last');
+  A('mov dword ptr [ebp-20], eax');
+  A('push eax');
+  A('push dword ptr [ebp-16]');
+  A('push esi');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  PushStrToArr('ebx');
+  A('mov eax, dword ptr [ebp-20]');
+  A('add eax, dword ptr [edi+$STR_LEN]');
+  A('mov dword ptr [ebp-16], eax');
+  A('jmp .find');
+  A('.last:');
+  A('push dword ptr [esi+$STR_LEN]');
+  A('push dword ptr [ebp-16]');
+  A('push esi');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  PushStrToArr('ebx');
+  A('jmp .done');
+  A('.chars:');
+  A('mov dword ptr [ebp-16], 0');
+  A('.cl:');
+  A('mov ecx, dword ptr [ebp-16]');
+  A('cmp ecx, dword ptr [esi+$STR_LEN]');
+  A('jae .done');
+  A('movzx eax, byte ptr [esi+ecx+$STR_DATA]');
+  A('push eax');
+  A('call _JSRT_u8len');
+  A('add esp, 4');
+  A('mov ecx, dword ptr [ebp-16]');
+  A('add eax, ecx');
+  A('cmp eax, dword ptr [esi+$STR_LEN]');
+  A('jbe .cn');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('.cn:');
+  A('mov dword ptr [ebp-16], eax');
+  A('push eax');
+  A('push ecx');
+  A('push esi');
+  A('call _JSRT_str_sub');
+  A('add esp, 12');
+  PushStrToArr('ebx');
+  A('jmp .cl');
+  A('.whole:');
+  A('pop ebx');
+  A('mov eax, esi');
+  PushStrToArr('ebx');
+  A('.done:');
+  A('mov eax, ebx');
+  A('mov edx, $ARR');
+  A('add esp, 8');
+  A('jmp .ret');
+  MethEnd;
+End;
+
+{ Fonctions et valeurs de base : truthy, typeof, fonctions, cellules. }
+Procedure RtBasics;
+Begin
+  A('proc _JSRT_truthy');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov edx, dword ptr [ebp+12]');
+  A('cmp edx, $INT');
+  A('je .iv');
+  A('cmp edx, $BOOL');
+  A('je .iv');
+  A('cmp edx, $UNDEF');
+  A('je .f');
+  A('cmp edx, $NULL');
+  A('je .f');
+  A('cmp edx, $INT');
+  A('jb .dbl');
+  A('cmp edx, $STR');
+  A('jne .t');
+  A('cmp dword ptr [eax+$STR_LEN], 0');
+  A('je .f');
+  A('.t:');
+  A('mov eax, 1');
+  A('leave');
+  A('ret');
+  A('.iv:');
+  A('test eax, eax');
+  A('jz .f');
+  A('mov eax, 1');
+  A('leave');
+  A('ret');
+  A('.dbl:');
+  A('mov ecx, edx');
+  A('and ecx, 0x7FFFFFFF');
+  A('or ecx, eax');
+  A('jz .f');
+  A('mov ecx, edx');
+  A('and ecx, 0x7FF00000');
+  A('cmp ecx, 0x7FF00000');
+  A('jne .t');
+  A('mov ecx, edx');
+  A('and ecx, 0xFFFFF');
+  A('or ecx, eax');
+  A('jnz .f');
+  A('jmp .t');
+  A('.f:');
+  A('xor eax, eax');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_typeof');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov edx, dword ptr [ebp+12]');
+  A('cmp edx, $INT');
+  A('jbe .num');
+  A('cmp edx, $STR');
+  A('je .string');
+  A('cmp edx, $BOOL');
+  A('je .boolean');
+  A('cmp edx, $UNDEF');
+  A('je .undefined');
+  A('cmp edx, $FN');
+  A('je .function');
+  A('mov eax, offset ' + RtStr('object'));
+  A('jmp .r');
+  A('.num:');
+  A('mov eax, offset ' + RtStr('number'));
+  A('jmp .r');
+  A('.string:');
+  A('mov eax, offset ' + RtStr('string'));
+  A('jmp .r');
+  A('.boolean:');
+  A('mov eax, offset ' + RtStr('boolean'));
+  A('jmp .r');
+  A('.undefined:');
+  A('mov eax, offset ' + RtStr('undefined'));
+  A('jmp .r');
+  A('.function:');
+  A('mov eax, offset ' + RtStr('function'));
+  A('.r:');
+  A('mov edx, $STR');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_new_function(descripteur, code, environnement, this) }
+  A('proc _JSRT_new_function');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ' + IntToStr(RT_FN_SIZE));
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_FUNCTION');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [eax+$FN_DESC], ecx');
+  A('mov ecx, dword ptr [ebp+12]');
+  A('mov dword ptr [eax+$FN_CODE], ecx');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('mov dword ptr [eax+$FN_ENV], ecx');
+  A('mov ecx, dword ptr [ebp+20]');
+  A('mov dword ptr [eax+$FN_THIS], ecx');
+  A('mov ecx, dword ptr [ebp+24]');
+  A('mov dword ptr [eax+$FN_THIS+4], ecx');
+  A('mov edx, $FN');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_new_env');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('shl ecx, 2');
+  A('add ecx, $ENV_CELLS');
+  A('push ecx');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_ENV');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [eax+8], ecx');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_new_cell');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ' + IntToStr(RT_CELL_SIZE));
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_CELL');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [eax+$CELL_VALUE+4], ecx');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  A('proc _JSRT_cell_copy');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ' + IntToStr(RT_CELL_SIZE));
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_CELL');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov edx, dword ptr [ecx+$CELL_VALUE]');
+  A('mov dword ptr [eax+$CELL_VALUE], edx');
+  A('mov edx, dword ptr [ecx+$CELL_VALUE+4]');
+  A('mov dword ptr [eax+$CELL_VALUE+4], edx');
+  A('leave');
+  A('ret');
+  A('endp');
+
+  { _JSRT_new_this(fonction) : this d'un appel new (undefined pour un natif) }
+  A('proc _JSRT_new_this');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [eax+$FN_DESC]');
+  A('mov edx, dword ptr [ecx+8]');
+  A('test edx, 32768');
+  A('jnz .native');
+  A('push ' + IntToStr(RT_OBJ_SIZE));
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov byte ptr [eax], $OK_OBJECT');
+  A('mov edx, $OBJ');
+  A('leave');
+  A('ret');
+  A('.native:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('leave');
+  A('ret');
+  A('endp');
+End;
+
+Procedure RtArrays;
+Begin
+  A('proc _JSRT_process_exit');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .go');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('.go:');
+  A('push eax');
+  A('call dword ptr [__imp__ExitProcess@4]');
+  A('leave');
+  A('ret');
+  A('endp');
+  RtArrayCore;
+  RtArrayIter;
+  RtArrayCallbacks;
+  RtArrayMethods;
+  RtArrayCtor;
+  RtStringSplit;
+  RtBasics;
+End;
+
+{ Prototype des tableaux et globale Array. }
+Procedure RtArrayProtoMethods;
+  Procedure M(Const name, code: TString; nparams: LongInt);
+  Begin
+    BoAdd(name, RtFuncObj(name, code, nparams), RT_T_FUNCTION);
+  End;
+Begin
+  M('push', '_JSRT_am_push', 1);
+  M('pop', '_JSRT_am_pop', 0);
+  M('shift', '_JSRT_am_shift', 0);
+  M('unshift', '_JSRT_am_unshift', 1);
+  M('indexOf', '_JSRT_am_indexOf', 1);
+  M('lastIndexOf', '_JSRT_am_lastIndexOf', 1);
+  M('includes', '_JSRT_am_includes', 1);
+  M('reverse', '_JSRT_am_reverse', 0);
+  M('sort', '_JSRT_am_sort', 1);
+  M('forEach', '_JSRT_am_forEach', 1);
+  M('map', '_JSRT_am_map', 1);
+  M('filter', '_JSRT_am_filter', 1);
+  M('some', '_JSRT_am_some', 1);
+  M('every', '_JSRT_am_every', 1);
+  M('find', '_JSRT_am_find', 1);
+  M('findIndex', '_JSRT_am_findIndex', 1);
+  M('reduce', '_JSRT_am_reduce', 2);
+  M('slice', '_JSRT_am_slice', 2);
+  M('splice', '_JSRT_am_splice', 2);
+  M('concat', '_JSRT_am_concat', 1);
+  M('join', '_JSRT_am_join', 1);
+  M('toString', '_JSRT_am_join', 0);
+  M('fill', '_JSRT_am_fill', 1);
+End;
+
+Procedure RtArrayGlobals;
+Var
+  f_is, props, f_arr, f_exit: LongInt;
+Begin
+  { process.exit(code) : le reste de process vient avec le TODO 21 }
+  f_exit := RtFuncObj('exit', '_JSRT_process_exit', 1);
+  BoReset;
+  BoAdd('exit', f_exit, RT_T_FUNCTION);
+  RtGlobal('process', BoFinish('_JSNO_process', 0), RT_T_OBJECT);
+  f_is := RtFuncObj('isArray', '_JSRT_Array_isArray', 1);
+  BoReset;
+  BoAdd('isArray', f_is, RT_T_FUNCTION);
+  props := BoFinish('_JSNO_Array_props', 0);
+  f_arr := RtFuncObjP('Array', '_JSRT_Array_call', 1, props);
+  RtGlobal('Array', f_arr, RT_T_FUNCTION);
+End;
+
 { ---- Assemblage du runtime ---- }
 
 Procedure RtStaticData;
@@ -13073,12 +15606,18 @@ Begin
   RtCString('_JSRT_c_tdz2', ' ne peut pas etre utilise avant son initialisation' + #10);
   RtCString('_JSRT_c_space', ' ');
   RtCString('_JSRT_c_nl', #10);
+  RtCString('_JSRT_c_noiter', 'TypeError: la valeur n''est pas iterable' + #10);
+  RtCString('_JSRT_c_setprop', 'TypeError: affectation de propriete non prise en charge pour cet objet' + #10);
   RtCString('_JSRT_c_range', 'RangeError: argument invalide' + #10);
 
   { prototype des chaines : les methodes natives }
   BoReset;
   RtStringProtoMethods;
   proto := BoFinish('_JSNO_string_proto', 0);
+
+  BoReset;
+  RtArrayProtoMethods;
+  BoFinish('_JSNO_array_proto', 0);
 
   f_log := RtFuncObj('log', '_JSRT_console_log', 0);
   f_err := RtFuncObj('error', '_JSRT_console_error', 0);
@@ -13090,6 +15629,7 @@ Begin
   cons := BoFinish('_JSNO_console', 0);
   RtGlobal('console', cons, RT_T_OBJECT);
   RtStaticGlobals;
+  RtArrayGlobals;
 End;
 
 Procedure EmitRuntime(Var ctx: TCompilerContext);
@@ -13107,6 +15647,7 @@ Begin
   RtConsoleFn('_JSRT_console_log', '_JSRT_v_stdout');
   RtConsoleFn('_JSRT_console_error', '_JSRT_v_stderr');
   RtStringMethods;
+  RtArrays;
 End;
 
 { ============================================================
