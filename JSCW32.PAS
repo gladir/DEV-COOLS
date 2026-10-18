@@ -195,7 +195,8 @@ Const
   RT_FN_DESC = 16;
   RT_FN_PROPS = 20;
   RT_FN_THIS = 24;
-  RT_FN_SIZE = 32;
+  RT_FN_HOME = 32;                { fleche : fermeture de la methode d'accueil (super) }
+  RT_FN_SIZE = 40;
   RT_FD_NAME = 0;
   RT_FD_NPARAMS = 4;
   RT_FD_FLAGS = 8;
@@ -8369,7 +8370,10 @@ Begin
   NodeP(ctx.ast.nodes, n)^.sym := prov;
   ScopeP(ctx.sem.scopes, prov)^.uses_this := True;
   If via Then
-    ScopeP(ctx.sem.scopes, prov)^.this_captured := True;
+    Begin
+      ScopeP(ctx.sem.scopes, prov)^.this_captured := True;
+      NodeP(ctx.ast.nodes, n)^.e1 := 1;
+    End;
   If is_call Then
     Begin
       If fk <> FK_DERIVED_CTOR Then
@@ -12197,6 +12201,14 @@ Begin
   Emit1(ctx, OP_PUSH, AddrSym(SYMK_X, XSym(ctx, FdescP(ctx.data.fdescs, fd)^.code_sym)));
   Emit1(ctx, OP_PUSH, AddrSym(SYMK_D, FdescP(ctx.data.fdescs, fd)^.sym));
   CallRt(ctx, 'new_function', 20);
+  If is_arrow And (ctx.ir.cg_fs > 1) Then
+    Begin
+      { methode d'accueil de super : la fermeture courante, ou celle de la fleche englobante }
+      Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+      If ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.fkind = FK_ARROW Then
+        Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_ECX, RT_FN_HOME));
+      Emit(ctx, OP_MOV, MemReg(R_EAX, RT_FN_HOME), RegOp(R_ECX));
+    End;
   If e <> 0 Then
     TempRelease(ctx, e);
 End;
@@ -12242,8 +12254,7 @@ End;
 Procedure GenPropFetch(Var ctx: TCompilerContext; m, tobj: LongInt);
 Begin
   If (NodeP(ctx.ast.nodes, NodeP(ctx.ast.nodes, m)^.e1)^.kind = N_SUPER) And
-     (ctx.ir.cg_fs > 1) And
-     (ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.fkind <> FK_ARROW) Then
+     (ctx.ir.cg_fs > 1) Then
     Begin
       { super.nom / super[cle] : recherche dans le prototype de l'objet d'accueil }
       If NodeP(ctx.ast.nodes, m)^.kind = N_MEMBER Then
@@ -12261,7 +12272,13 @@ Begin
           PushTemp(ctx, tobj);
           Emit1(ctx, OP_PUSH, RegOp(R_EAX));
         End;
-      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
+      If ScopeP(ctx.sem.scopes, ctx.ir.cg_fs)^.fkind = FK_ARROW Then
+        Begin
+          Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+          Emit1(ctx, OP_PUSH, MemReg(R_ECX, RT_FN_HOME));
+        End
+      Else
+        Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
       CallRt(ctx, 'super_get', 16);
     End
   Else If NodeP(ctx.ast.nodes, m)^.kind = N_MEMBER Then
@@ -12668,6 +12685,16 @@ Begin
           PushTemp(ctx, t);
           CallRt(ctx, 'obj_spread', 16);
         End
+      Else If (fl And (PR_COMPUTED Or PR_SHORTHAND Or PR_METHOD Or PR_GETTER Or PR_SETTER) = 0) And
+              (StrText(ctx, NodeP(ctx.ast.nodes, p)^.aux) = '__proto__') Then
+        Begin
+          { litteral avec une cle __proto__ : fixe le prototype de l objet }
+          GenExpr(ctx, NodeP(ctx.ast.nodes, p)^.e1);
+          Emit1(ctx, OP_PUSH, RegOp(R_EDX));
+          Emit1(ctx, OP_PUSH, RegOp(R_EAX));
+          PushTemp(ctx, t);
+          CallRt(ctx, 'obj_set_proto_lit', 12);
+        End
       Else
         Begin
           tk := 0;
@@ -12681,6 +12708,13 @@ Begin
               SaveTemp(ctx, tk);
             End;
           GenExpr(ctx, NodeP(ctx.ast.nodes, p)^.e1);
+          If fl And (PR_METHOD Or PR_GETTER Or PR_SETTER) <> 0 Then
+            Begin
+              { objet d'accueil de la methode : super.m() }
+              Emit(ctx, OP_MOV, RegOp(R_ECX), TempLo(t));
+              Emit(ctx, OP_MOV, MemReg(R_EAX, RT_FN_THIS), RegOp(R_ECX));
+              Emit(ctx, OP_MOV, MemReg(R_EAX, RT_FN_THIS + 4), ImmOp(TagImm(RT_T_OBJECT)));
+            End;
           If fl And PR_SETTER <> 0 Then
             Emit1(ctx, OP_PUSH, ImmOp(1))
           Else If fl And PR_GETTER <> 0 Then
@@ -12934,10 +12968,18 @@ Begin
     N_CLASS_EXPR:
       GenClass(ctx, n);
     N_SUPER:
-      Begin
-        Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
-        Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
-      End;
+      If NodeP(ctx.ast.nodes, n)^.e1 = 1 Then
+        Begin
+          { fleche : this lexical memorise dans la fermeture }
+          Emit(ctx, OP_MOV, RegOp(R_ECX), MemReg(R_EBP, RT_FRAME_CLOSURE));
+          Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_ECX, RT_FN_THIS));
+          Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_ECX, RT_FN_THIS + 4));
+        End
+      Else
+        Begin
+          Emit(ctx, OP_MOV, RegOp(R_EAX), MemReg(R_EBP, RT_FRAME_THIS));
+          Emit(ctx, OP_MOV, RegOp(R_EDX), MemReg(R_EBP, RT_FRAME_THIS + 4));
+        End;
     N_MEMBER, N_INDEX:
       GenMember(ctx, n);
     N_FUNC_EXPR:
@@ -14074,6 +14116,14 @@ Begin
     End;
   EmitComment(ctx, 'fonction ' + StrText(ctx, FdescP(ctx.data.fdescs, fd)^.name_str) +
               ' (' + SymFdesc(fd) + ')');
+  If (NodeP(ctx.ast.nodes, n)^.kind = N_METHOD) And
+     ((ScopeP(ctx.sem.scopes, sc)^.fkind = FK_CTOR) Or
+      (ScopeP(ctx.sem.scopes, sc)^.fkind = FK_DERIVED_CTOR)) Then
+    Begin
+      { un constructeur de classe exige new }
+      Emit1(ctx, OP_PUSH, MemReg(R_EBP, RT_FRAME_CLOSURE));
+      CallRt(ctx, 'class_call_check', 4);
+    End;
   GenScopeEnter(ctx, sc);
   { nom d'une expression de fonction : la closure elle-meme }
   sy := ScopeP(ctx.sem.scopes, sc)^.first_sym;
@@ -14557,6 +14607,7 @@ Begin
   Else If nm = 'FN_DESC' Then v := RT_FN_DESC
   Else If nm = 'FN_PROPS' Then v := RT_FN_PROPS
   Else If nm = 'FN_THIS' Then v := RT_FN_THIS
+  Else If nm = 'FN_HOME' Then v := RT_FN_HOME
   Else If nm = 'CELL_VALUE' Then v := RT_CELL_VALUE
   Else If nm = 'ENV_CELLS' Then v := RT_ENV_CELLS
   Else If nm = 'HDR_SIZE' Then v := RT_HDR_SIZE
@@ -21855,8 +21906,47 @@ Begin
   A('jmp .l');
   FEnd;
 
+  { _JSRT_class_call_check(fermeture) : TypeError si le constructeur de classe
+    est appele sans new (new.target absent) }
+  A('proc _JSRT_class_call_check');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [_JSRT_v_newtarget], 0');
+  A('jne .ok');
+  A('push offset ' + RtStr('name'));
+  A('push $FN');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_get_named');
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push $STR');
+  A('push offset ' + RtStr(' cannot be invoked without ''new'''));
+  A('push $STR');
+  A('push eax');
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('push $STR');
+  A('push eax');
+  A('push $STR');
+  A('push offset ' + RtStr('Class constructor '));
+  A('call _JSRT_concat');
+  A('add esp, 16');
+  A('push eax');
+  A('push offset _JSNO_TypeError_proto');
+  A('call _JSRT_throw_msg');
+  A('.ok:');
+  A('leave');
+  A('ret');
+  A('endp');
+
   { Constructeur par defaut d'une classe de base }
   FBegin('_JSRT_ctor_base', 0);
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_class_call_check');
+  A('add esp, 4');
   A('push dword ptr [ebp+20]');
   A('push dword ptr [ebp+16]');
   A('push dword ptr [ebp+8]');
@@ -21868,6 +21958,9 @@ Begin
 
   { Constructeur par defaut d'une classe derivee : transmet les arguments }
   FBegin('_JSRT_ctor_derived', 0);
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_class_call_check');
+  A('add esp, 4');
   A('mov esi, dword ptr [ebp+8]');
   A('cmp dword ptr [esi+$FN_THIS+4], $FN');
   A('jne .nopar');
@@ -22081,6 +22174,25 @@ Begin
   A('call _JSRT_call0');
   A('add esp, 12');
   FEnd;
+
+  { _JSRT_obj_set_proto_lit(objet, valeur) : cle __proto__ d un litteral objet }
+  A('proc _JSRT_obj_set_proto_lit');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov edx, dword ptr [ebp+8]');
+  A('cmp dword ptr [ebp+20], $OBJ');
+  A('jne .nobj');
+  A('mov eax, dword ptr [ebp+16]');
+  A('mov dword ptr [edx+$OBJ_PROTO], eax');
+  A('jmp .r');
+  A('.nobj:');
+  A('cmp dword ptr [ebp+20], $NULL');
+  A('jne .r');
+  A('mov dword ptr [edx+$OBJ_PROTO], 0');
+  A('.r:');
+  A('leave');
+  A('ret');
+  A('endp');
 
   { _JSRT_super_get(fermeture, cle, this) : super.cle }
   FBegin('_JSRT_super_get', 0);
