@@ -334,11 +334,11 @@ Const
     'length', 'prototype', 'constructor', 'name', 'message', 'toString',
     'valueOf'
   );
-  RT_DATA_VAR_COUNT = 21;
+  RT_DATA_VAR_COUNT = 22;
   { ---- Code genere (TODO 9) ---- }
   SYMK_D = 1;                     { symbole du pool de donnees }
   SYMK_X = 2;                     { symbole de code ou externe }
-  MAX_INSTR = {$IFDEF FPC}131072{$ELSE}2000{$ENDIF};
+  MAX_INSTR = {$IFDEF FPC}393216{$ELSE}2000{$ENDIF};
   MAX_XSYMS = {$IFDEF FPC}4096{$ELSE}200{$ENDIF};
   MAX_COMMENTS = {$IFDEF FPC}20000{$ELSE}500{$ENDIF};
   MAX_PENDING = 200;
@@ -354,16 +354,16 @@ Const
   JT_BLOCK = 3;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
-    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree'
+    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree', 'newtarget'
   );
-  PRELUDE_ALIAS_COUNT = 22;
+  PRELUDE_ALIAS_COUNT = 23;
   PreludeAliases: Array[1..PRELUDE_ALIAS_COUNT] Of String[20] = (
     'Map', 'Set', 'WeakMap', 'WeakSet', 'Symbol', 'Date', 'Promise', 'BigInt',
     'setTimeout', 'setInterval', 'setImmediate', 'clearTimeout', 'clearInterval',
     'clearImmediate', 'queueMicrotask', 'require', 'eval', 'module', 'exports',
-    'structuredClone', 'AggregateError', 'TextEncoder'
+    'structuredClone', 'AggregateError', 'TextEncoder', 'performance'
   );
-  BUILTIN_COUNT = 59;
+  BUILTIN_COUNT = 62;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -374,7 +374,8 @@ Const
     'isFinite', 'isNaN', 'module', 'parseFloat', 'parseInt', 'process',
     'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
-    '__invoke', '__fproto', '__gen_resume', '__gen_done'
+    '__invoke', '__fproto', '__gen_resume', '__gen_done',
+    '__ftime', '__sleep', '__newtarget'
   );
 
 Type
@@ -1269,8 +1270,8 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 603;
-  PreludeText: Array[1..PRELUDE_LINES] Of String[160] = (
+  PRELUDE_LINES = 2256;
+  PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
     '  for (var i = 0; i < k.length; i++) {',
@@ -1473,6 +1474,8 @@ Const
     '  var isMap = !isFn && !isArr && !isRx && !isErr && v instanceof __Map;',
     '  var isSet = !isFn && !isArr && !isRx && !isErr && !isMap && v instanceof __Set;',
     '  var isWeak = !isFn && !isArr && (v instanceof __WeakMap || v instanceof __WeakSet);',
+    '  var isDate = !isFn && !isArr && v instanceof __Date;',
+    '  var isProm = !isFn && !isArr && v instanceof __Promise;',
     '  var cname = isArr ? ''Array'' : __i_cname(v);',
     '  var ex = isArr ? __extras(v) : undefined;',
     '  var keys = isArr ? (ex ? Object.keys(ex) : []) : __i_order(Object.keys(v));',
@@ -1497,6 +1500,11 @@ Const
     '    if (keys.length === 0 && v[''\x01n''] === 0) return b0 + ''}'';',
     '  } else if (isWeak) {',
     '    return cname + '' { <items unknown> }'';',
+    '  } else if (isDate) {',
+    '    base = v.getTime() !== v.getTime() ? ''Invalid Date'' : v.toISOString();',
+    '    if (keys.length === 0) return base;',
+    '  } else if (isProm) {',
+    '    b0 = ''Promise {'';',
     '  } else {',
     '    if (cname === null) b0 = ''[Object: null prototype] {'';',
     '    else if (cname !== ''Object'') b0 = cname + '' {'';',
@@ -1530,6 +1538,12 @@ Const
     '        out.push(e);',
     '      }',
     '    }',
+    '    if (isProm) {',
+    '      var ps = v[''\x01s''];',
+    '      ctx.ind += 2;',
+    '      out.push(ps === 0 ? ''<pending>'' : ps === 1 ? __i_fmt(v[''\x01v''], ctx, rt) : ''<rejected> '' + __i_fmt(v[''\x01v''], ctx, rt));',
+    '      ctx.ind -= 2;',
+    '    }',
     '    for (i = 0; i < keys.length; i++) out.push(__i_prop(v, keys[i], ctx, rt));',
     '  }',
     '  ctx.seen.pop();',
@@ -1544,6 +1558,7 @@ Const
     '  var t = typeof v;',
     '  if (t === ''string'') return __i_qstr(v, ctx);',
     '  if (t === ''symbol'') return __sym_str(v);',
+    '  if (t === ''bigint'') return String(v) + ''n'';',
     '  if (t === ''number'') return (v === 0 && 1 / v < 0) ? ''-0'' : String(v);',
     '  if (t !== ''object'' && t !== ''function'') return String(v);',
     '  if (v === null) return ''null'';',
@@ -1565,6 +1580,7 @@ Const
     '}',
     'function __i_str1(v) {',
     '  if (typeof v === ''number'') return __i_num(v);',
+    '  if (typeof v === ''bigint'') return String(v) + ''n'';',
     '  if (typeof v !== ''object'' || v === null) return String(v);',
     '  if (v.toString === Object.prototype.toString || Array.isArray(v) || v instanceof Error || v instanceof RegExp) return __i_insp(v, 0);',
     '  return String(v);',
@@ -1665,6 +1681,9 @@ Const
     '  return ''Symbol('' + __sym_desc(s) + '')'';',
     '}',
     'function __i_init() {',
+    '  __init_async();',
+    '  __init_lib();',
+    '  __init_big();',
     '  var FP = __fproto();',
     '  FP.call = function (t, ...a) { return __invoke(this, t, a); };',
     '  FP.apply = function (t, a) { return __invoke(this, t, a === undefined || a === null ? [] : a); };',
@@ -1869,10 +1888,1645 @@ Const
     '    }',
     '  };',
     '}',
-    'function __i_run() {',
+    'var __Promise, __mq, __mqh, __ticks, __timers, __timer_seq, __imm, __unhandled, __Timeout;',
+    'function __job(fn) {',
+    '  __mq = __mq || [];',
+    '  __mq.push(fn);',
+    '}',
+    'function __drain() {',
+    '  __mq = __mq || [];',
+    '  __ticks = __ticks || [];',
+    '  var again = true;',
+    '  while (again) {',
+    '    again = false;',
+    '    while (__ticks.length > 0) {',
+    '      var t = __ticks.shift();',
+    '      t.fn.apply(undefined, t.args);',
+    '      again = true;',
+    '    }',
+    '    if (__mq.length > 0) {',
+    '      var jobs = __mq;',
+    '      __mq = [];',
+    '      for (var i = 0; i < jobs.length; i++) {',
+    '        jobs[i]();',
+    '        if (__ticks.length > 0) {',
+    '          for (var j = jobs.length - 1; j > i; j--) __mq.unshift(jobs[j]);',
+    '          break;',
+    '        }',
+    '      }',
+    '      again = true;',
+    '    }',
+    '  }',
+    '  __check_unhandled();',
+    '}',
+    'function __check_unhandled() {',
+    '  if (!__unhandled || __unhandled.length === 0) return;',
+    '  var list = __unhandled;',
+    '  __unhandled = [];',
+    '  for (var i = 0; i < list.length; i++) {',
+    '    var p = list[i];',
+    '    if (!p[''\x01h'']) {',
+    '      var e = p[''\x01v''];',
+    '      var msg = e instanceof Error ? (typeof e.stack === ''string'' ? e.stack : String(e)) : __i_insp(e, 2);',
+    '      __write(2, ''Uncaught '' + msg + ''\n'');',
+    '      process.exit(1);',
+    '    }',
+    '  }',
+    '}',
+    'function __settle(p, state, v) {',
+    '  if (p[''\x01s''] !== 0) return;',
+    '  p[''\x01s''] = state;',
+    '  p[''\x01v''] = v;',
+    '  var q = p[''\x01q''];',
+    '  p[''\x01q''] = null;',
+    '  if (state === 2 && q.length === 0 && !p[''\x01h'']) {',
+    '    __unhandled = __unhandled || [];',
+    '    __unhandled.push(p);',
+    '  }',
+    '  for (var i = 0; i < q.length; i++) __react(p, q[i]);',
+    '}',
+    'function __react(p, r) {',
+    '  __job(function () {',
+    '    var h = p[''\x01s''] === 1 ? r.f : r.r;',
+    '    if (typeof h !== ''function'') {',
+    '      if (p[''\x01s''] === 1) __resolveP(r.p, p[''\x01v'']);',
+    '      else __settle(r.p, 2, p[''\x01v'']);',
+    '      return;',
+    '    }',
+    '    var out;',
+    '    try { out = h(p[''\x01v'']); } catch (e) { __settle(r.p, 2, e); return; }',
+    '    __resolveP(r.p, out);',
+    '  });',
+    '}',
+    'function __resolveP(p, v) {',
+    '  if (v === p) { __settle(p, 2, new TypeError(''Chaining cycle detected for promise #<Promise>'')); return; }',
+    '  if (v !== null && (typeof v === ''object'' || typeof v === ''function'')) {',
+    '    var then;',
+    '    try { then = v.then; } catch (e) { __settle(p, 2, e); return; }',
+    '    if (typeof then === ''function'') {',
+    '      __job(function () {',
+    '        var done = false;',
+    '        try {',
+    '          then.call(v, function (x) { if (!done) { done = true; __resolveP(p, x); } },',
+    '                        function (e) { if (!done) { done = true; __settle(p, 2, e); } });',
+    '        } catch (e) { if (!done) { done = true; __settle(p, 2, e); } }',
+    '      });',
+    '      return;',
+    '    }',
+    '  }',
+    '  __settle(p, 1, v);',
+    '}',
+    'function __newP() {',
+    '  var p = Object.create(__Promise.prototype);',
+    '  p[''\x01s''] = 0;',
+    '  p[''\x01v''] = undefined;',
+    '  p[''\x01q''] = [];',
+    '  p[''\x01h''] = false;',
+    '  return p;',
     '}',
     'function __i_async(g) {',
-    '  return g;',
+    '  var p = __newP();',
+    '  function step(mode, v) {',
+    '    var r;',
+    '    try { r = __gen_resume(g, mode, v); } catch (e) { __settle(p, 2, e); return; }',
+    '    if (__gen_done(g)) { __resolveP(p, r); return; }',
+    '    var w = r instanceof __Promise ? r : __Promise.resolve(r);',
+    '    w.then(function (x) { step(0, x); }, function (e) { step(1, e); });',
+    '  }',
+    '  step(0, undefined);',
+    '  return p;',
+    '}',
+    'function __timer_add(fn, ms, args, interval) {',
+    '  __timers = __timers || [];',
+    '  __timer_seq = (__timer_seq || 0) + 1;',
+    '  ms = Number(ms);',
+    '  if (!(ms >= 1)) ms = 1;',
+    '  if (ms > 2147483647) ms = 1;',
+    '  var t = Object.create(__Timeout.prototype);',
+    '  t[''\x01id''] = __timer_seq;',
+    '  t[''\x01t''] = Date.now() + ms;',
+    '  t[''\x01ms''] = ms;',
+    '  t[''\x01iv''] = interval;',
+    '  t[''\x01fn''] = fn;',
+    '  t[''\x01args''] = args;',
+    '  __timers.push(t);',
+    '  return t;',
+    '}',
+    'function __setTimeout(fn, ms, ...args) {',
+    '  if (typeof fn !== ''function'') throw new TypeError(''The "callback" argument must be of type function. Received '' + __i_insp(fn, 0));',
+    '  return __timer_add(fn, ms, args, false);',
+    '}',
+    'function __setInterval(fn, ms, ...args) {',
+    '  if (typeof fn !== ''function'') throw new TypeError(''The "callback" argument must be of type function. Received '' + __i_insp(fn, 0));',
+    '  return __timer_add(fn, ms, args, true);',
+    '}',
+    'function __setImmediate(fn, ...args) {',
+    '  __imm = __imm || [];',
+    '  var t = { fn: fn, args: args, cleared: false };',
+    '  __imm.push(t);',
+    '  return t;',
+    '}',
+    'function __clearTimeout(t) {',
+    '  if (!__timers) return;',
+    '  for (var i = 0; i < __timers.length; i++) {',
+    '    if (__timers[i] === t || (typeof t === ''number'' && __timers[i][''\x01id''] === t)) {',
+    '      __timers.splice(i, 1);',
+    '      return;',
+    '    }',
+    '  }',
+    '}',
+    'function __clearInterval(t) {',
+    '  __clearTimeout(t);',
+    '}',
+    'function __clearImmediate(t) {',
+    '  if (t) t.cleared = true;',
+    '}',
+    'function __queueMicrotask(fn) {',
+    '  __job(fn);',
+    '}',
+    'function __i_run() {',
+    '  __drain();',
+    '  while (true) {',
+    '    var ran = false;',
+    '    if (__timers && __timers.length > 0) {',
+    '      var now = Date.now();',
+    '      var due = [];',
+    '      for (var i = 0; i < __timers.length; i++) {',
+    '        if (__timers[i][''\x01t''] <= now + 1) due.push(__timers[i]);',
+    '      }',
+    '      due.sort(function (a, b) { return a[''\x01t''] - b[''\x01t''] || a[''\x01id''] - b[''\x01id'']; });',
+    '      for (var j = 0; j < due.length; j++) {',
+    '        var t = due[j];',
+    '        var idx = __timers.indexOf(t);',
+    '        if (idx < 0) continue;',
+    '        if (t[''\x01iv'']) t[''\x01t''] = Date.now() + t[''\x01ms''];',
+    '        else __timers.splice(idx, 1);',
+    '        t[''\x01fn''].apply(undefined, t[''\x01args'']);',
+    '        __drain();',
+    '        ran = true;',
+    '      }',
+    '    }',
+    '    if (__imm && __imm.length > 0) {',
+    '      var im = __imm;',
+    '      __imm = [];',
+    '      for (var k = 0; k < im.length; k++) {',
+    '        if (!im[k].cleared) im[k].fn.apply(undefined, im[k].args);',
+    '        __drain();',
+    '      }',
+    '      ran = true;',
+    '    }',
+    '    if (ran) continue;',
+    '    if (!__timers || __timers.length === 0) break;',
+    '    var next = __timers[0][''\x01t''];',
+    '    for (var m = 1; m < __timers.length; m++) if (__timers[m][''\x01t''] < next) next = __timers[m][''\x01t''];',
+    '    var wait = next - Date.now();',
+    '    if (wait > 0) __sleep(wait);',
+    '  }',
+    '}',
+    'function __init_async() {',
+    '  __Promise = class Promise {',
+    '    constructor(executor) {',
+    '      if (typeof executor !== ''function'') throw new TypeError(''Promise resolver '' + __i_insp(executor, 0) + '' is not a function'');',
+    '      this[''\x01s''] = 0;',
+    '      this[''\x01v''] = undefined;',
+    '      this[''\x01q''] = [];',
+    '      this[''\x01h''] = false;',
+    '      var self = this;',
+    '      var done = false;',
+    '      try {',
+    '        executor(function (v) { if (!done) { done = true; __resolveP(self, v); } },',
+    '                 function (e) { if (!done) { done = true; __settle(self, 2, e); } });',
+    '      } catch (e) {',
+    '        if (!done) { done = true; __settle(self, 2, e); }',
+    '      }',
+    '    }',
+    '    then(f, r) {',
+    '      var p2 = __newP();',
+    '      this[''\x01h''] = true;',
+    '      var rec = { f: f, r: r, p: p2 };',
+    '      if (this[''\x01s''] === 0) this[''\x01q''].push(rec);',
+    '      else __react(this, rec);',
+    '      return p2;',
+    '    }',
+    '    catch(r) { return this.then(undefined, r); }',
+    '    finally(f) {',
+    '      if (typeof f !== ''function'') return this.then(f, f);',
+    '      return this.then(',
+    '        function (v) { return __Promise.resolve(f()).then(function () { return v; }); },',
+    '        function (e) { return __Promise.resolve(f()).then(function () { throw e; }); });',
+    '    }',
+    '    static resolve(v) {',
+    '      if (v instanceof __Promise) return v;',
+    '      var p = __newP();',
+    '      __resolveP(p, v);',
+    '      return p;',
+    '    }',
+    '    static reject(e) {',
+    '      var p = __newP();',
+    '      __settle(p, 2, e);',
+    '      return p;',
+    '    }',
+    '    static withResolvers() {',
+    '      var res, rej;',
+    '      var promise = new __Promise(function (a, b) { res = a; rej = b; });',
+    '      return { promise: promise, resolve: res, reject: rej };',
+    '    }',
+    '    static all(it) {',
+    '      return new __Promise(function (resolve, reject) {',
+    '        var items = Array.from(it);',
+    '        var out = [];',
+    '        var left = items.length;',
+    '        if (left === 0) { resolve(out); return; }',
+    '        items.forEach(function (x, i) {',
+    '          out[i] = undefined;',
+    '          __Promise.resolve(x).then(function (v) {',
+    '            out[i] = v;',
+    '            if (--left === 0) resolve(out);',
+    '          }, reject);',
+    '        });',
+    '      });',
+    '    }',
+    '    static allSettled(it) {',
+    '      return new __Promise(function (resolve) {',
+    '        var items = Array.from(it);',
+    '        var out = [];',
+    '        var left = items.length;',
+    '        if (left === 0) { resolve(out); return; }',
+    '        items.forEach(function (x, i) {',
+    '          out[i] = undefined;',
+    '          __Promise.resolve(x).then(function (v) {',
+    '            out[i] = { status: ''fulfilled'', value: v };',
+    '            if (--left === 0) resolve(out);',
+    '          }, function (e) {',
+    '            out[i] = { status: ''rejected'', reason: e };',
+    '            if (--left === 0) resolve(out);',
+    '          });',
+    '        });',
+    '      });',
+    '    }',
+    '    static race(it) {',
+    '      return new __Promise(function (resolve, reject) {',
+    '        Array.from(it).forEach(function (x) { __Promise.resolve(x).then(resolve, reject); });',
+    '      });',
+    '    }',
+    '    static any(it) {',
+    '      return new __Promise(function (resolve, reject) {',
+    '        var items = Array.from(it);',
+    '        var errs = [];',
+    '        var left = items.length;',
+    '        if (left === 0) { reject(new __AggregateError([], ''All promises were rejected'')); return; }',
+    '        items.forEach(function (x, i) {',
+    '          errs[i] = undefined;',
+    '          __Promise.resolve(x).then(resolve, function (e) {',
+    '            errs[i] = e;',
+    '            if (--left === 0) reject(new __AggregateError(errs, ''All promises were rejected''));',
+    '          });',
+    '        });',
+    '      });',
+    '    }',
+    '  };',
+    '  __Promise.prototype[''\x01Symbol.toStringTag\x02''] = ''Promise'';',
+    '  __Timeout = class Timeout {',
+    '    ref() { return this; }',
+    '    unref() { return this; }',
+    '    hasRef() { return true; }',
+    '    refresh() { return this; }',
+    '    close() { __clearTimeout(this); return this; }',
+    '  };',
+    '  process.nextTick = function (fn, ...args) {',
+    '    __ticks = __ticks || [];',
+    '    __ticks.push({ fn: fn, args: args });',
+    '  };',
+    '}',
+    'var __Date, __AggregateError, __module, __exports, __performance, __t0, __cnt, __tmr;',
+    'var __DN, __MN;',
+    '',
+    '',
+    'function __days_from_civil(y, m, d) {',
+    '  y -= m <= 2 ? 1 : 0;',
+    '  var era = Math.floor(y / 400);',
+    '  var yoe = y - era * 400;',
+    '  var doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;',
+    '  var doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;',
+    '  return era * 146097 + doe - 719468;',
+    '}',
+    'function __civil(z) {',
+    '  z += 719468;',
+    '  var era = Math.floor(z / 146097);',
+    '  var doe = z - era * 146097;',
+    '  var yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);',
+    '  var y = yoe + era * 400;',
+    '  var doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));',
+    '  var mp = Math.floor((5 * doy + 2) / 153);',
+    '  var d = doy - Math.floor((153 * mp + 2) / 5) + 1;',
+    '  var m = mp + (mp < 10 ? 3 : -9);',
+    '  return [y + (m <= 2 ? 1 : 0), m, d];',
+    '}',
+    'function __mktime(y, mo, d, h, mi, s, ms) {',
+    '  var ym = y + Math.floor(mo / 12);',
+    '  var mn = mo - Math.floor(mo / 12) * 12;',
+    '  var days = __days_from_civil(ym, mn + 1, 1) + (d - 1);',
+    '  return days * 86400000 + h * 3600000 + mi * 60000 + s * 1000 + ms;',
+    '}',
+    'function __p2(n) { return n < 10 ? ''0'' + n : String(n); }',
+    'function __p3(n) { return n < 10 ? ''00'' + n : n < 100 ? ''0'' + n : String(n); }',
+    'function __dparts(t) {',
+    '  var days = Math.floor(t / 86400000);',
+    '  var rem = t - days * 86400000;',
+    '  var c = __civil(days);',
+    '  return {',
+    '    y: c[0], m: c[1] - 1, d: c[2],',
+    '    h: Math.floor(rem / 3600000), mi: Math.floor(rem / 60000) % 60,',
+    '    s: Math.floor(rem / 1000) % 60, ms: rem % 1000,',
+    '    wd: ((days % 7) + 11) % 7',
+    '  };',
+    '}',
+    'function __dparse(str) {',
+    '  str = String(str).trim();',
+    '  var m = /^([+-]\d{6}|\d{4})(?:-(\d\d)(?:-(\d\d))?)?(?:[T ](\d\d):(\d\d)(?::(\d\d)(?:[.,](\d{1,9}))?)?)?\s*(Z|[+-]\d\d(?::?\d\d)?)?$/.exec(str);',
+    '  if (m) {',
+    '    var ms = m[7] ? Number((m[7] + ''00'').slice(0, 3)) : 0;',
+    '    var t = __mktime(Number(m[1]), m[2] ? m[2] - 1 : 0, m[3] ? Number(m[3]) : 1,',
+    '                     m[4] ? Number(m[4]) : 0, m[5] ? Number(m[5]) : 0, m[6] ? Number(m[6]) : 0, ms);',
+    '    var z = m[8];',
+    '    if (z && z !== ''Z'') {',
+    '      var sign = z.charAt(0) === ''-'' ? -1 : 1;',
+    '      var hh = Number(z.slice(1, 3));',
+    '      var mm = z.length > 3 ? Number(z.slice(z.length - 2)) : 0;',
+    '      t -= sign * (hh * 60 + mm) * 60000;',
+    '    }',
+    '    return t;',
+    '  }',
+    '  var mon = -1;',
+    '  var low = str.toLowerCase();',
+    '  for (var i = 0; i < 12; i++) {',
+    '    if (low.indexOf(__MN[i].slice(0, 3).toLowerCase()) >= 0) { mon = i; break; }',
+    '  }',
+    '  var dm = /(\d{1,2})[ ,]+/.exec(str.replace(/^[A-Za-z]+,?\s+/, ''''));',
+    '  var ym = /(\d{4})/.exec(str);',
+    '  if (mon >= 0 && ym) {',
+    '    var rest = str.replace(/^[A-Za-z]+,?\s*/, '''');',
+    '    var dd = /\b(\d{1,2})\b/.exec(rest.replace(ym[1], ''''));',
+    '    var tm = /(\d\d):(\d\d)(?::(\d\d))?/.exec(str);',
+    '    var off = /GMT([+-])(\d\d)(\d\d)/.exec(str);',
+    '    var tt = __mktime(Number(ym[1]), mon, dd ? Number(dd[1]) : 1,',
+    '                      tm ? Number(tm[1]) : 0, tm ? Number(tm[2]) : 0, tm && tm[3] ? Number(tm[3]) : 0, 0);',
+    '    if (/PM/i.test(str) && tm && Number(tm[1]) < 12) tt += 12 * 3600000;',
+    '    if (off) tt -= (off[1] === ''-'' ? -1 : 1) * (Number(off[2]) * 60 + Number(off[3])) * 60000;',
+    '    return tt;',
+    '  }',
+    '  var sl = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(str) || /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(str);',
+    '  if (sl) {',
+    '    if (sl[1].length === 4) return __mktime(Number(sl[1]), sl[2] - 1, Number(sl[3]), 0, 0, 0, 0);',
+    '    return __mktime(Number(sl[3]), sl[1] - 1, Number(sl[2]), 0, 0, 0, 0);',
+    '  }',
+    '  return NaN;',
+    '}',
+    'function __now() {',
+    '  var lo = __ftime(0);',
+    '  var hi = __ftime(1);',
+    '  if (lo < 0) lo += 4294967296;',
+    '  if (hi < 0) hi += 4294967296;',
+    '  return Math.floor((hi * 4294967296 + lo) / 10000 - 11644473600000);',
+    '}',
+    'function __init_lib() {',
+    '  __require.cache = {};',
+    '  __require.resolve = function (n) { return String(n); };',
+    '  if (!String.prototype.substr) {',
+    '    String.prototype.substr = function (st, len) {',
+    '      var n = this.length;',
+    '      st = Number(st) || 0;',
+    '      if (st < 0) st = Math.max(n + st, 0);',
+    '      if (len === undefined) len = n - st;',
+    '      return this.slice(st, st + Math.max(0, Number(len)));',
+    '    };',
+    '  }',
+    '  Object.is = __is;',
+    '  if (!Object.getOwnPropertyNames) Object.getOwnPropertyNames = Object.keys;',
+    '  String.raw = function (s, ...v) {',
+    '    var r = s.raw, out = '''';',
+    '    for (var i = 0; i < r.length; i++) {',
+    '      out += r[i];',
+    '      if (i + 1 < r.length && i < v.length) out += v[i];',
+    '    }',
+    '    return out;',
+    '  };',
+    '  Number.prototype.toPrecision = __toPrecision;',
+    '  Number.prototype.toExponential = __toExponential;',
+    '  __DN = [''Sunday'', ''Monday'', ''Tuesday'', ''Wednesday'', ''Thursday'', ''Friday'', ''Saturday''];',
+    '  __MN = [''January'', ''February'', ''March'', ''April'', ''May'', ''June'', ''July'', ''August'', ''September'', ''October'', ''November'', ''December''];',
+    '  var TT = ''\x01t'';',
+    '  __Date = function Date(a, b, c, d, e, f, g) {',
+    '    if (!(this instanceof __Date)) return new __Date().toString();',
+    '    var n = arguments.length;',
+    '    var t;',
+    '    if (n === 0) t = __now();',
+    '    else if (n === 1) {',
+    '      if (a instanceof __Date) t = a[TT];',
+    '      else if (typeof a === ''string'') t = __dparse(a);',
+    '      else t = Number(a);',
+    '    } else {',
+    '      t = __mktime(Number(a), Number(b), c === undefined ? 1 : Number(c), d === undefined ? 0 : Number(d),',
+    '                   e === undefined ? 0 : Number(e), f === undefined ? 0 : Number(f), g === undefined ? 0 : Number(g));',
+    '      var yy = Number(a);',
+    '      if (yy >= 0 && yy <= 99) t += (1900 * 365 + 17 + 0) * 0;',
+    '    }',
+    '    if (!(Math.abs(t) <= 8.64e15)) t = NaN;',
+    '    else t = Math.trunc(t);',
+    '    this[TT] = t;',
+    '  };',
+    '  var P = __Date.prototype;',
+    '  __Date.now = __now;',
+    '  __Date.parse = function (s) { return __dparse(s); };',
+    '  __Date.UTC = function (y, mo, d, h, mi, s, ms) {',
+    '    return __mktime(Number(y), mo === undefined ? 0 : Number(mo), d === undefined ? 1 : Number(d),',
+    '                    h === undefined ? 0 : Number(h), mi === undefined ? 0 : Number(mi),',
+    '                    s === undefined ? 0 : Number(s), ms === undefined ? 0 : Number(ms));',
+    '  };',
+    '  var comps = [''y'', ''m'', ''d'', ''h'', ''mi'', ''s'', ''ms''];',
+    '  var getters = { FullYear: ''y'', Month: ''m'', Date: ''d'', Hours: ''h'', Minutes: ''mi'', Seconds: ''s'', Milliseconds: ''ms'', Day: ''wd'' };',
+    '  Object.keys(getters).forEach(function (k) {',
+    '    var comp = getters[k];',
+    '    var fn = function () {',
+    '      var t = this[TT];',
+    '      return t !== t ? NaN : __dparts(t)[comp];',
+    '    };',
+    '    P[''get'' + k] = fn;',
+    '    P[''getUTC'' + k] = fn;',
+    '  });',
+    '  var setters = { FullYear: [0, ''y''], Month: [1, ''m''], Date: [2, ''d''], Hours: [3, ''h''], Minutes: [4, ''mi''], Seconds: [5, ''s''], Milliseconds: [6, ''ms''] };',
+    '  Object.keys(setters).forEach(function (k) {',
+    '    var idx = setters[k][0];',
+    '    var fn = function (...args) {',
+    '      var t = this[TT];',
+    '      if (t !== t) {',
+    '        if (idx !== 0) return NaN;',
+    '        t = 0;',
+    '      }',
+    '      var p = __dparts(t);',
+    '      var v = [p.y, p.m, p.d, p.h, p.mi, p.s, p.ms];',
+    '      for (var i = 0; i < args.length && idx + i < 7; i++) v[idx + i] = Number(args[i]);',
+    '      this[TT] = __mktime(v[0], v[1], v[2], v[3], v[4], v[5], v[6]);',
+    '      return this[TT];',
+    '    };',
+    '    P[''set'' + k] = fn;',
+    '    P[''setUTC'' + k] = fn;',
+    '  });',
+    '  P.getTime = P.valueOf = function () { return this[TT]; };',
+    '  P.setTime = function (t) { this[TT] = Number(t); return this[TT]; };',
+    '  P.getYear = function () { return this.getFullYear() - 1900; };',
+    '  P.getTimezoneOffset = function () { return this[TT] !== this[TT] ? NaN : 0; };',
+    '  P.toISOString = function () {',
+    '    var t = this[TT];',
+    '    if (t !== t) throw new RangeError(''Invalid time value'');',
+    '    var p = __dparts(t);',
+    '    var ys = p.y >= 0 && p.y <= 9999 ? (p.y < 1000 ? (''000'' + p.y).slice(-4) : String(p.y)) : (p.y < 0 ? ''-'' : ''+'') + (''000000'' + Math.abs(p.y)).slice(-6);',
+    '    return ys + ''-'' + __p2(p.m + 1) + ''-'' + __p2(p.d) + ''T'' + __p2(p.h) + '':'' + __p2(p.mi) + '':'' + __p2(p.s) + ''.'' + __p3(p.ms) + ''Z'';',
+    '  };',
+    '  P.toJSON = function () { return this[TT] !== this[TT] ? null : this.toISOString(); };',
+    '  P.toDateString = function () {',
+    '    var t = this[TT];',
+    '    if (t !== t) return ''Invalid Date'';',
+    '    var p = __dparts(t);',
+    '    return __DN[p.wd].slice(0, 3) + '' '' + __MN[p.m].slice(0, 3) + '' '' + __p2(p.d) + '' '' + (p.y < 1000 ? (''000'' + p.y).slice(-4) : p.y);',
+    '  };',
+    '  P.toTimeString = function () {',
+    '    var t = this[TT];',
+    '    if (t !== t) return ''Invalid Date'';',
+    '    var p = __dparts(t);',
+    '    return __p2(p.h) + '':'' + __p2(p.mi) + '':'' + __p2(p.s) + '' GMT+0000 (Coordinated Universal Time)'';',
+    '  };',
+    '  P.toString = function () {',
+    '    return this[TT] !== this[TT] ? ''Invalid Date'' : this.toDateString() + '' '' + this.toTimeString();',
+    '  };',
+    '  P.toUTCString = P.toGMTString = function () {',
+    '    var t = this[TT];',
+    '    if (t !== t) return ''Invalid Date'';',
+    '    var p = __dparts(t);',
+    '    return __DN[p.wd].slice(0, 3) + '', '' + __p2(p.d) + '' '' + __MN[p.m].slice(0, 3) + '' '' + p.y + '' '' + __p2(p.h) + '':'' + __p2(p.mi) + '':'' + __p2(p.s) + '' GMT'';',
+    '  };',
+    '  P.toLocaleDateString = function (loc, o) {',
+    '    var t = this[TT];',
+    '    if (t !== t) return ''Invalid Date'';',
+    '    var p = __dparts(t);',
+    '    if (o && (o.month === ''long'' || o.month === ''short'')) {',
+    '      var mn = o.month === ''long'' ? __MN[p.m] : __MN[p.m].slice(0, 3);',
+    '      var s = mn + '' '' + p.d + '', '' + p.y;',
+    '      if (o.weekday) s = (o.weekday === ''long'' ? __DN[p.wd] : __DN[p.wd].slice(0, 3)) + '', '' + s;',
+    '      return s;',
+    '    }',
+    '    return (p.m + 1) + ''/'' + p.d + ''/'' + p.y;',
+    '  };',
+    '  P.toLocaleTimeString = function () {',
+    '    var t = this[TT];',
+    '    if (t !== t) return ''Invalid Date'';',
+    '    var p = __dparts(t);',
+    '    return (p.h % 12 === 0 ? 12 : p.h % 12) + '':'' + __p2(p.mi) + '':'' + __p2(p.s) + '' '' + (p.h < 12 ? ''AM'' : ''PM'');',
+    '  };',
+    '  P.toLocaleString = function (loc, o) {',
+    '    return this[TT] !== this[TT] ? ''Invalid Date'' : this.toLocaleDateString(loc, o) + '', '' + this.toLocaleTimeString();',
+    '  };',
+    '  P[''\x01Symbol.toPrimitive\x02''] = function (hint) { return hint === ''number'' ? this[TT] : this.toString(); };',
+    '  __AggregateError = class AggregateError extends Error {',
+    '    constructor(errors, message) {',
+    '      super(message);',
+    '      this.name = ''AggregateError'';',
+    '      this.errors = Array.from(errors);',
+    '    }',
+    '  };',
+    '  __t0 = __now();',
+    '  __performance = { now: function () { return __now() - __t0; }, timeOrigin: __t0 };',
+    '  __module = { id: ''.'', exports: {}, loaded: false, children: [], paths: [] };',
+    '  __exports = __module.exports;',
+    '  __require.main = __module;',
+    '  process.hrtime = function (prev) {',
+    '    var ms = __now() - __t0;',
+    '    var s = Math.floor(ms / 1000);',
+    '    var ns = Math.floor((ms % 1000) * 1000000);',
+    '    if (prev) { s -= prev[0]; ns -= prev[1]; if (ns < 0) { s--; ns += 1000000000; } }',
+    '    return [s, ns];',
+    '  };',
+    '  process.uptime = function () { return (__now() - __t0) / 1000; };',
+    '  process.cwd = function () { return ''C:\\''; };',
+    '  process.version = ''v20.0.0-jscw32'';',
+    '  process.versions = { node: ''20.0.0'', jscw32: ''1.0'' };',
+    '  process.pid = 1;',
+    '  process.arch = ''ia32'';',
+    '  process.exitCode = undefined;',
+    '  process.memoryUsage = function () { return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0 }; };',
+    '  process.on = function () { return process; };',
+    '  process.emitWarning = function () {};',
+    '  Array.from = function (src, fn, thisArg) {',
+    '    if (src === undefined || src === null) throw new TypeError(src + '' is not iterable'');',
+    '    var out = [];',
+    '    var i = 0;',
+    '    if (typeof src === ''string'' || Array.isArray(src) || typeof src[__Symbol.iterator] === ''function'') {',
+    '      for (const x of src) {',
+    '        out.push(fn ? fn.call(thisArg, x, i) : x);',
+    '        i++;',
+    '      }',
+    '    } else {',
+    '      var n = src.length >>> 0;',
+    '      for (; i < n; i++) out.push(fn ? fn.call(thisArg, src[i], i) : src[i]);',
+    '    }',
+    '    return out;',
+    '  };',
+    '  Array.of = function (...a) { return a; };',
+    '  Object.fromEntries = function (it) {',
+    '    var o = {};',
+    '    for (const e of it) o[e[0]] = e[1];',
+    '    return o;',
+    '  };',
+    '}',
+    'function __structuredClone(v) {',
+    '  var seen = new __Map();',
+    '  function cl(x) {',
+    '    if (x === null || (typeof x !== ''object'' && typeof x !== ''function'')) return x;',
+    '    if (typeof x === ''function'') throw new Error(''function could not be cloned'');',
+    '    if (seen.has(x)) return seen.get(x);',
+    '    var r;',
+    '    if (Array.isArray(x)) { r = []; seen.set(x, r); for (var i = 0; i < x.length; i++) r.push(cl(x[i])); return r; }',
+    '    if (x instanceof __Date) return new __Date(x.getTime());',
+    '    if (x instanceof __Map) { r = new __Map(); seen.set(x, r); x.forEach(function (val, k) { r.set(cl(k), cl(val)); }); return r; }',
+    '    if (x instanceof __Set) { r = new __Set(); seen.set(x, r); x.forEach(function (val) { r.add(cl(val)); }); return r; }',
+    '    r = {};',
+    '    seen.set(x, r);',
+    '    Object.keys(x).forEach(function (k) { r[k] = cl(x[k]); });',
+    '    return r;',
+    '  }',
+    '  return cl(v);',
+    '}',
+    'function __exact(x) {',
+    '  var e = 0, dg = [], d, i, c, v, k, m, step, mul, cnt;',
+    '  while (x >= 9007199254740992) { x = x / 2; e++; }',
+    '  while (x !== Math.floor(x)) { x = x * 2; e--; }',
+    '  while (x > 0) { d = x % 10; dg.push(d); x = (x - d) / 10; }',
+    '  mul = e > 0 ? 2 : 5;',
+    '  cnt = e > 0 ? e : -e;',
+    '  while (cnt > 0) {',
+    '    step = cnt > 9 ? 9 : cnt;',
+    '    m = 1;',
+    '    for (k = 0; k < step; k++) m = m * mul;',
+    '    c = 0;',
+    '    for (i = 0; i < dg.length; i++) { v = dg[i] * m + c; dg[i] = v % 10; c = (v - v % 10) / 10; }',
+    '    while (c > 0) { dg.push(c % 10); c = (c - c % 10) / 10; }',
+    '    cnt -= step;',
+    '  }',
+    '  var s = '''';',
+    '  for (i = dg.length - 1; i >= 0; i--) s += dg[i];',
+    '  return [s, s.length - 1 - (e < 0 ? -e : 0)];',
+    '}',
+    'function __sig(x, p) {',
+    '  var r = __exact(x), s = r[0], E = r[1], t, a, i;',
+    '  if (s.length <= p) {',
+    '    while (s.length < p) s += ''0'';',
+    '    return [s, E];',
+    '  }',
+    '  t = s.slice(0, p);',
+    '  if (s.charCodeAt(p) >= 53) {',
+    '    a = t.split('''');',
+    '    i = p - 1;',
+    '    while (i >= 0) {',
+    '      if (a[i] === ''9'') { a[i] = ''0''; i--; }',
+    '      else { a[i] = String.fromCharCode(a[i].charCodeAt(0) + 1); break; }',
+    '    }',
+    '    t = a.join('''');',
+    '    if (i < 0) { t = ''1'' + t.slice(0, p - 1); E++; }',
+    '  }',
+    '  return [t, E];',
+    '}',
+    'function __expo(d, E) {',
+    '  return d.charAt(0) + (d.length > 1 ? ''.'' + d.slice(1) : '''') + ''e'' + (E < 0 ? ''-'' : ''+'') + (E < 0 ? -E : E);',
+    '}',
+    'function __zeros(n) {',
+    '  var z = '''';',
+    '  while (n-- > 0) z += ''0'';',
+    '  return z;',
+    '}',
+    'function __toPrecision(p) {',
+    '  var x = Number(this), neg = '''', r;',
+    '  if (p === undefined) return String(x);',
+    '  p = Math.floor(Number(p));',
+    '  if (x !== x || x === Infinity || x === -Infinity) return String(x);',
+    '  if (p < 1 || p > 100) throw new RangeError(''toPrecision() argument must be between 1 and 100'');',
+    '  if (x < 0) { neg = ''-''; x = -x; }',
+    '  if (x === 0) return p > 1 ? ''0.'' + __zeros(p - 1) : ''0'';',
+    '  r = __sig(x, p);',
+    '  var d = r[0], E = r[1];',
+    '  if (E < -6 || E >= p) return neg + __expo(d, E);',
+    '  if (E >= 0) return neg + d.slice(0, E + 1) + (p > E + 1 ? ''.'' + d.slice(E + 1) : '''');',
+    '  return neg + ''0.'' + __zeros(-(E + 1)) + d;',
+    '}',
+    'function __toExponential(f) {',
+    '  var x = Number(this), neg = '''', r, p;',
+    '  if (x !== x || x === Infinity || x === -Infinity) return String(x);',
+    '  if (f !== undefined) {',
+    '    f = Math.floor(Number(f));',
+    '    if (f < 0 || f > 100) throw new RangeError(''toExponential() argument must be between 0 and 100'');',
+    '  }',
+    '  if (x < 0) { neg = ''-''; x = -x; }',
+    '  if (x === 0) return neg + (f > 0 ? ''0.'' + __zeros(f) : ''0'') + ''e+0'';',
+    '  if (f === undefined) {',
+    '    for (p = 1; p <= 17; p++) {',
+    '      r = __sig(x, p);',
+    '      if (Number(__expo(r[0], r[1])) === x) break;',
+    '    }',
+    '  } else r = __sig(x, f + 1);',
+    '  return neg + __expo(r[0], r[1]);',
+    '}',
+    'function __tpl() {',
+    '  var n = arguments.length / 2, a = [], r = [];',
+    '  for (var i = 0; i < n; i++) { a.push(arguments[i]); r.push(arguments[n + i]); }',
+    '  a.raw = r;',
+    '  return a;',
+    '}',
+    'var __bigproto, __bigop, __BigInt;',
+    'function __bmk(sign, m) {',
+    '  var o = Object.create(__bigproto);',
+    '  o[''\x01m''] = m;',
+    '  o[''\x01g''] = m.length === 0 ? 1 : sign;',
+    '  return o;',
+    '}',
+    'function __bm(x) { return x[''\x01m'']; }',
+    'function __bsg(x) { return x[''\x01g'']; }',
+    'function __mtrim(a) {',
+    '  while (a.length > 0 && a[a.length - 1] === 0) a.pop();',
+    '  return a;',
+    '}',
+    'function __mcmp(a, b) {',
+    '  if (a.length !== b.length) return a.length < b.length ? -1 : 1;',
+    '  for (var i = a.length - 1; i >= 0; i--) {',
+    '    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;',
+    '  }',
+    '  return 0;',
+    '}',
+    'function __madd(a, b) {',
+    '  var r = [], c = 0, n = a.length > b.length ? a.length : b.length, v;',
+    '  for (var i = 0; i < n; i++) {',
+    '    v = (i < a.length ? a[i] : 0) + (i < b.length ? b[i] : 0) + c;',
+    '    if (v >= 10000000) { r.push(v - 10000000); c = 1; } else { r.push(v); c = 0; }',
+    '  }',
+    '  if (c > 0) r.push(c);',
+    '  return r;',
+    '}',
+    'function __msub(a, b) {',
+    '  var r = [], br = 0, v;',
+    '  for (var i = 0; i < a.length; i++) {',
+    '    v = a[i] - (i < b.length ? b[i] : 0) - br;',
+    '    if (v < 0) { v += 10000000; br = 1; } else br = 0;',
+    '    r.push(v);',
+    '  }',
+    '  return __mtrim(r);',
+    '}',
+    'function __mmuls(a, s) {',
+    '  var r = [], c = 0, v;',
+    '  if (s === 0) return r;',
+    '  for (var i = 0; i < a.length; i++) {',
+    '    v = a[i] * s + c;',
+    '    c = Math.floor(v / 10000000);',
+    '    r.push(v - c * 10000000);',
+    '  }',
+    '  if (c > 0) r.push(c);',
+    '  return r;',
+    '}',
+    'function __maddsmall(a, s) {',
+    '  var r = a.slice(), i = 0, v;',
+    '  while (s > 0) {',
+    '    if (i >= r.length) r.push(0);',
+    '    v = r[i] + s;',
+    '    if (v >= 10000000) { r[i] = v - 10000000; s = 1; } else { r[i] = v; s = 0; }',
+    '    i++;',
+    '  }',
+    '  return r;',
+    '}',
+    'function __mmul(a, b) {',
+    '  if (a.length === 0 || b.length === 0) return [];',
+    '  var r = [], i, j, k, c, v, ai;',
+    '  for (i = 0; i < a.length + b.length; i++) r.push(0);',
+    '  for (i = 0; i < a.length; i++) {',
+    '    ai = a[i];',
+    '    if (ai === 0) continue;',
+    '    c = 0;',
+    '    for (j = 0; j < b.length; j++) {',
+    '      v = r[i + j] + ai * b[j] + c;',
+    '      c = Math.floor(v / 10000000);',
+    '      r[i + j] = v - c * 10000000;',
+    '    }',
+    '    k = i + b.length;',
+    '    while (c > 0) {',
+    '      v = r[k] + c;',
+    '      c = Math.floor(v / 10000000);',
+    '      r[k] = v - c * 10000000;',
+    '      k++;',
+    '    }',
+    '  }',
+    '  return __mtrim(r);',
+    '}',
+    'function __mdivs(a, d) {',
+    '  var r = [], rem = 0, v, q, i;',
+    '  for (i = 0; i < a.length; i++) r.push(0);',
+    '  for (i = a.length - 1; i >= 0; i--) {',
+    '    v = rem * 10000000 + a[i];',
+    '    q = Math.floor(v / d);',
+    '    rem = v - q * d;',
+    '    r[i] = q;',
+    '  }',
+    '  return [__mtrim(r), rem];',
+    '}',
+    'function __mdivmod(a, b) {',
+    '  if (__mcmp(a, b) < 0) return [[], a.slice()];',
+    '  if (b.length === 1) {',
+    '    var t = __mdivs(a, b[0]);',
+    '    return [t[0], t[1] > 0 ? [t[1]] : []];',
+    '  }',
+    '  var d = Math.floor(10000000 / (b[b.length - 1] + 1));',
+    '  var u = __mmuls(a, d), v = __mmuls(b, d), n = v.length, j, i, m, qhat, rhat, num, p, carry, borrow, sub, q = [];',
+    '  while (u.length < a.length + 1) u.push(0);',
+    '  m = u.length - n - 1;',
+    '  for (i = 0; i <= m; i++) q.push(0);',
+    '  for (j = m; j >= 0; j--) {',
+    '    num = u[j + n] * 10000000 + u[j + n - 1];',
+    '    qhat = Math.floor(num / v[n - 1]);',
+    '    rhat = num - qhat * v[n - 1];',
+    '    while (qhat >= 10000000 || qhat * v[n - 2] > rhat * 10000000 + u[j + n - 2]) {',
+    '      qhat--;',
+    '      rhat += v[n - 1];',
+    '      if (rhat >= 10000000) break;',
+    '    }',
+    '    borrow = 0;',
+    '    carry = 0;',
+    '    for (i = 0; i < n; i++) {',
+    '      p = qhat * v[i] + carry;',
+    '      carry = Math.floor(p / 10000000);',
+    '      sub = u[i + j] - (p - carry * 10000000) - borrow;',
+    '      if (sub < 0) { sub += 10000000; borrow = 1; } else borrow = 0;',
+    '      u[i + j] = sub;',
+    '    }',
+    '    sub = u[j + n] - carry - borrow;',
+    '    if (sub < 0) { sub += 10000000; borrow = 1; } else borrow = 0;',
+    '    u[j + n] = sub;',
+    '    if (borrow > 0) {',
+    '      qhat--;',
+    '      carry = 0;',
+    '      for (i = 0; i < n; i++) {',
+    '        sub = u[i + j] + v[i] + carry;',
+    '        if (sub >= 10000000) { sub -= 10000000; carry = 1; } else carry = 0;',
+    '        u[i + j] = sub;',
+    '      }',
+    '      u[j + n] = (u[j + n] + carry) % 10000000;',
+    '    }',
+    '    q[j] = qhat;',
+    '  }',
+    '  u.length = n;',
+    '  return [__mtrim(q), __mdivs(__mtrim(u), d)[0]];',
+    '}',
+    'function __bfromstr10(s) {',
+    '  var m = [], i = s.length, st;',
+    '  while (i > 0) {',
+    '    st = i - 7 < 0 ? 0 : i - 7;',
+    '    m.push(Number(s.slice(st, i)));',
+    '    i = st;',
+    '  }',
+    '  return __mtrim(m);',
+    '}',
+    'function __bparse(str) {',
+    '  var s = String(str).trim(), neg = false, radix = 10, c0, m, i, d, ch;',
+    '  if (s === '''') return __bmk(1, []);',
+    '  if (s.length > 2 && s.charAt(0) === ''0'') {',
+    '    c0 = s.charAt(1).toLowerCase();',
+    '    radix = c0 === ''x'' ? 16 : c0 === ''o'' ? 8 : c0 === ''b'' ? 2 : 10;',
+    '    if (radix !== 10) s = s.slice(2);',
+    '  }',
+    '  if (radix === 10) {',
+    '    if (s.charAt(0) === ''-'') { neg = true; s = s.slice(1); }',
+    '    else if (s.charAt(0) === ''+'') s = s.slice(1);',
+    '    if (s === '''') return null;',
+    '    for (i = 0; i < s.length; i++) {',
+    '      ch = s.charCodeAt(i);',
+    '      if (ch < 48 || ch > 57) return null;',
+    '    }',
+    '    return __bmk(neg ? -1 : 1, __bfromstr10(s));',
+    '  }',
+    '  m = [];',
+    '  for (i = 0; i < s.length; i++) {',
+    '    ch = s.charCodeAt(i);',
+    '    d = ch >= 48 && ch <= 57 ? ch - 48 : ch >= 97 && ch <= 102 ? ch - 87 : ch >= 65 && ch <= 70 ? ch - 55 : 99;',
+    '    if (d >= radix) return null;',
+    '    m = __maddsmall(__mmuls(m, radix), d);',
+    '  }',
+    '  return __bmk(1, __mtrim(m));',
+    '}',
+    'function __btos(x, radix) {',
+    '  var m = __bm(x), s = '''', i, t, ds, r;',
+    '  if (m.length === 0) return ''0'';',
+    '  if (radix === undefined || radix === 10) {',
+    '    s = String(m[m.length - 1]);',
+    '    for (i = m.length - 2; i >= 0; i--) s += (''000000'' + m[i]).slice(-7);',
+    '  } else {',
+    '    ds = ''0123456789abcdefghijklmnopqrstuvwxyz'';',
+    '    t = m;',
+    '    while (t.length > 0) {',
+    '      r = __mdivs(t, radix);',
+    '      s = ds.charAt(r[1]) + s;',
+    '      t = r[0];',
+    '    }',
+    '  }',
+    '  return __bsg(x) < 0 ? ''-'' + s : s;',
+    '}',
+    'function __bfromnum(n) {',
+    '  if (n !== n || n === Infinity || n === -Infinity || n !== Math.floor(n)) {',
+    '    throw new RangeError(''The number '' + n + '' cannot be converted to a BigInt because it is not an integer'');',
+    '  }',
+    '  var neg = n < 0, a = neg ? -n : n;',
+    '  if (a === 0) return __bmk(1, []);',
+    '  return __bmk(neg ? -1 : 1, __bfromstr10(__exact(a)[0]));',
+    '}',
+    'function __bto(v) {',
+    '  var t = typeof v, r;',
+    '  if (t === ''bigint'') return v;',
+    '  if (t === ''number'') return __bfromnum(v);',
+    '  if (t === ''boolean'') return __bmk(1, v ? [1] : []);',
+    '  if (t === ''string'') {',
+    '    r = __bparse(v);',
+    '    if (r === null) throw new SyntaxError(''Cannot convert '' + v + '' to a BigInt'');',
+    '    return r;',
+    '  }',
+    '  throw new TypeError(''Cannot convert '' + String(v) + '' to a BigInt'');',
+    '}',
+    'function __badd(a, b) {',
+    '  var sa = __bsg(a), sb = __bsg(b), ma = __bm(a), mb = __bm(b), c;',
+    '  if (sa === sb) return __bmk(sa, __madd(ma, mb));',
+    '  c = __mcmp(ma, mb);',
+    '  if (c === 0) return __bmk(1, []);',
+    '  return c > 0 ? __bmk(sa, __msub(ma, mb)) : __bmk(sb, __msub(mb, ma));',
+    '}',
+    'function __bneg(a) { return __bmk(-__bsg(a), __bm(a)); }',
+    'function __bcmp(a, b) {',
+    '  var sa = __bsg(a), sb = __bsg(b), c;',
+    '  if (sa !== sb) return sa < sb ? -1 : 1;',
+    '  c = __mcmp(__bm(a), __bm(b));',
+    '  return sa < 0 ? -c : c;',
+    '}',
+    'function __bcmpnum(b, n) {',
+    '  if (n !== n) return 2;',
+    '  if (n === Infinity) return -1;',
+    '  if (n === -Infinity) return 1;',
+    '  var f = Math.floor(n), c = __bcmp(b, __bfromnum(f));',
+    '  if (c === 0 && n > f) return -1;',
+    '  return c;',
+    '}',
+    'function __bcmpany(x, y) {',
+    '  var tx = typeof x, ty = typeof y, r;',
+    '  if (tx === ''bigint'' && ty === ''bigint'') return __bcmp(x, y);',
+    '  if (tx === ''bigint'') {',
+    '    if (ty === ''string'') { r = __bparse(y); return r === null ? 2 : __bcmp(x, r); }',
+    '    return __bcmpnum(x, Number(y));',
+    '  }',
+    '  r = __bcmpany(y, x);',
+    '  return r === 2 ? 2 : -r;',
+    '}',
+    'function __bdivmod(a, b) {',
+    '  if (__bm(b).length === 0) throw new RangeError(''Division by zero'');',
+    '  var r = __mdivmod(__bm(a), __bm(b));',
+    '  return [__bmk(__bsg(a) * __bsg(b), r[0]), __bmk(__bsg(a), r[1])];',
+    '}',
+    'function __bpow(a, b) {',
+    '  if (__bsg(b) < 0) throw new RangeError(''Exponent must be non-negative'');',
+    '  var e = Number(__btos(b)), r = [1], base = __bm(a).slice(), neg = __bsg(a) < 0 && e % 2 === 1;',
+    '  if (e > 1000000000) throw new RangeError(''Maximum BigInt size exceeded'');',
+    '  while (e > 0) {',
+    '    if (e % 2 === 1) r = __mmul(r, base);',
+    '    e = Math.floor(e / 2);',
+    '    if (e > 0) base = __mmul(base, base);',
+    '  }',
+    '  return __bmk(neg ? -1 : 1, r);',
+    '}',
+    'function __bshl(a, n) {',
+    '  var p;',
+    '  if (n >= 0) return __bmk(__bsg(a), __mmul(__bm(a), __bm(__bpow(__bmk(1, [2]), __bfromnum(n)))));',
+    '  p = __bm(__bpow(__bmk(1, [2]), __bfromnum(-n)));',
+    '  var r = __mdivmod(__bm(a), p), q = __bmk(__bsg(a), r[0]);',
+    '  if (__bsg(a) < 0 && r[1].length > 0) q = __badd(q, __bmk(-1, [1]));',
+    '  return q;',
+    '}',
+    'function __bbits(x, n) {',
+    '  var m = __bm(x), neg = __bsg(x) < 0, out = [], r, i;',
+    '  if (neg) m = __msub(m, [1]);',
+    '  while (m.length > 0) {',
+    '    r = __mdivs(m, 65536);',
+    '    out.push(r[1]);',
+    '    m = r[0];',
+    '  }',
+    '  while (out.length < n) out.push(0);',
+    '  if (neg) for (i = 0; i < out.length; i++) out[i] = 65535 - out[i];',
+    '  return out;',
+    '}',
+    'function __bfrombits(r, neg) {',
+    '  var m = [], i;',
+    '  if (neg) for (i = 0; i < r.length; i++) r[i] = 65535 - r[i];',
+    '  for (i = r.length - 1; i >= 0; i--) m = __maddsmall(__mmuls(m, 65536), r[i]);',
+    '  m = __mtrim(m);',
+    '  if (neg) return __bmk(-1, __madd(m, [1]));',
+    '  return __bmk(1, m);',
+    '}',
+    'function __bbit(op, a, b) {',
+    '  var n = Math.max(__btos(a, 16).length, __btos(b, 16).length) + 1, x, y, r = [], i, sa = __bsg(a) < 0 ? 1 : 0, sb = __bsg(b) < 0 ? 1 : 0, sr;',
+    '  n = Math.floor(n / 4) + 2;',
+    '  x = __bbits(a, n);',
+    '  y = __bbits(b, n);',
+    '  for (i = 0; i < n; i++) r.push(op === 6 ? (x[i] & y[i]) : op === 7 ? (x[i] | y[i]) : (x[i] ^ y[i]));',
+    '  sr = op === 6 ? (sa & sb) : op === 7 ? (sa | sb) : (sa ^ sb);',
+    '  return __bfrombits(r, sr === 1);',
+    '}',
+    'function __bmix() {',
+    '  throw new TypeError(''Cannot mix BigInt and other types, use explicit conversions'');',
+    '}',
+    'function __bnorm(x, y) {',
+    '  if (typeof x !== ''bigint'' || typeof y !== ''bigint'') __bmix();',
+    '}',
+    'function __bigop_impl(op, a, b) {',
+    '  var r;',
+    '  if (op === 0) {',
+    '    if (typeof a === ''string'' || typeof b === ''string'') return `${a}${b}`;',
+    '    if (typeof a === ''object'' && a !== null && typeof b === ''bigint'') return `${a}${b}`;',
+    '    if (typeof b === ''object'' && b !== null && typeof a === ''bigint'') return `${a}${b}`;',
+    '    __bnorm(a, b);',
+    '    return __badd(a, b);',
+    '  }',
+    '  if (op === 16) {',
+    '    if (a === null || b === null || a === undefined || b === undefined) return false;',
+    '    r = __bcmpany(a, b);',
+    '    return r === 0;',
+    '  }',
+    '  if (op === 17) {',
+    '    return typeof a === ''bigint'' && typeof b === ''bigint'' && __bcmp(a, b) === 0;',
+    '  }',
+    '  if (op >= 12 && op <= 15) {',
+    '    r = __bcmpany(a, b);',
+    '    if (r === 2) return false;',
+    '    return op === 12 ? r < 0 : op === 13 ? r <= 0 : op === 14 ? r > 0 : r >= 0;',
+    '  }',
+    '  if (op === 18) return __bneg(a);',
+    '  if (op === 19) return __badd(a, __bmk(1, [1]));',
+    '  if (op === 20) return __badd(a, __bmk(-1, [1]));',
+    '  if (op === 21) return __badd(__bneg(a), __bmk(-1, [1]));',
+    '  __bnorm(a, b);',
+    '  if (op === 1) return __badd(a, __bneg(b));',
+    '  if (op === 2) return __bmk(__bsg(a) * __bsg(b), __mmul(__bm(a), __bm(b)));',
+    '  if (op === 3) return __bdivmod(a, b)[0];',
+    '  if (op === 4) return __bdivmod(a, b)[1];',
+    '  if (op === 5) return __bpow(a, b);',
+    '  if (op >= 6 && op <= 8) return __bbit(op, a, b);',
+    '  if (op === 9) return __bshl(a, Number(__btos(b)));',
+    '  if (op === 10) return __bshl(a, -Number(__btos(b)));',
+    '  throw new TypeError(''BigInts have no unsigned right shift, use >> instead'');',
+    '}',
+    'function __init_big() {',
+    '  var P = {};',
+    '  __bigproto = P;',
+    '  __bigop = __bigop_impl;',
+    '  __BigInt = function BigInt(v) {',
+    '    if (this !== undefined && this !== null && Object.getPrototypeOf(this) === P) throw new TypeError(''BigInt is not a constructor'');',
+    '    return __bto(v);',
+    '  };',
+    '  __BigInt.prototype = P;',
+    '  P.constructor = __BigInt;',
+    '  P.toString = function (radix) { return __btos(this, radix === undefined ? 10 : radix); };',
+    '  P.valueOf = function () { return Number(__btos(this)); };',
+    '  P.toJSON = function () { throw new TypeError(''Do not know how to serialize a BigInt''); };',
+    '  P.toLocaleString = function () {',
+    '    var s = __btos(this), neg = s.charAt(0) === ''-'', o = '''', i;',
+    '    if (neg) s = s.slice(1);',
+    '    for (i = 0; i < s.length; i++) {',
+    '      if (i > 0 && (s.length - i) % 3 === 0) o += '','';',
+    '      o += s.charAt(i);',
+    '    }',
+    '    return neg ? ''-'' + o : o;',
+    '  };',
+    '  __BigInt.asUintN = function (bits, x) {',
+    '    var m = __bpow(__bmk(1, [2]), __bfromnum(bits)), r = __bdivmod(__bto(x), m)[1];',
+    '    if (__bsg(r) < 0) r = __badd(r, m);',
+    '    return r;',
+    '  };',
+    '  __BigInt.asIntN = function (bits, x) {',
+    '    var u = __BigInt.asUintN(bits, x), h = __bpow(__bmk(1, [2]), __bfromnum(bits - 1));',
+    '    if (bits > 0 && __bcmp(u, h) >= 0) u = __badd(u, __bneg(__bpow(__bmk(1, [2]), __bfromnum(bits))));',
+    '    return u;',
+    '  };',
+    '}',
+    'var __modcache;',
+    'function __is(a, b) {',
+    '  if (a === b) return a !== 0 || 1 / a === 1 / b;',
+    '  return a !== a && b !== b;',
+    '}',
+    'function __deq(a, b, strict) {',
+    '  if (strict ? __is(a, b) : (a == b || (a !== a && b !== b))) return true;',
+    '  if (typeof a !== ''object'' || typeof b !== ''object'' || a === null || b === null) return false;',
+    '  if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;',
+    '  if (Array.isArray(a) !== Array.isArray(b)) return false;',
+    '  var i, k, ka, kb, found;',
+    '  if (a instanceof __Date || b instanceof __Date) return a instanceof __Date && b instanceof __Date && a.getTime() === b.getTime();',
+    '  if (a instanceof RegExp || b instanceof RegExp) return String(a) === String(b);',
+    '  if (a instanceof __Map || b instanceof __Map) {',
+    '    if (!(a instanceof __Map && b instanceof __Map) || a.size !== b.size) return false;',
+    '    found = true;',
+    '    a.forEach(function (v, key) { if (!b.has(key) || !__deq(v, b.get(key), strict)) found = false; });',
+    '    return found;',
+    '  }',
+    '  if (a instanceof __Set || b instanceof __Set) {',
+    '    if (!(a instanceof __Set && b instanceof __Set) || a.size !== b.size) return false;',
+    '    found = true;',
+    '    a.forEach(function (v) {',
+    '      if (b.has(v)) return;',
+    '      var any = false;',
+    '      b.forEach(function (w) { if (!any && __deq(v, w, strict)) any = true; });',
+    '      if (!any) found = false;',
+    '    });',
+    '    return found;',
+    '  }',
+    '  ka = Object.keys(a);',
+    '  kb = Object.keys(b);',
+    '  if (ka.length !== kb.length) return false;',
+    '  for (i = 0; i < ka.length; i++) {',
+    '    k = ka[i];',
+    '    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;',
+    '    if (!__deq(a[k], b[k], strict)) return false;',
+    '  }',
+    '  return true;',
+    '}',
+    'function __mkEvents() {',
+    '  function EventEmitter() { this._events = {}; this._maxListeners = 10; }',
+    '  var P = EventEmitter.prototype;',
+    '  function lst(self, n) {',
+    '    if (self._events === undefined) self._events = {};',
+    '    return self._events[n];',
+    '  }',
+    '  P.addListener = P.on = function (n, f) {',
+    '    var l = lst(this, n);',
+    '    if (l === undefined) this._events[n] = [f]; else l.push(f);',
+    '    return this;',
+    '  };',
+    '  P.prependListener = function (n, f) {',
+    '    var l = lst(this, n);',
+    '    if (l === undefined) this._events[n] = [f]; else l.unshift(f);',
+    '    return this;',
+    '  };',
+    '  P.once = function (n, f) {',
+    '    var self = this;',
+    '    function w(...a) { self.removeListener(n, w); return f.apply(self, a); }',
+    '    w.listener = f;',
+    '    return this.on(n, w);',
+    '  };',
+    '  P.removeListener = P.off = function (n, f) {',
+    '    var l = lst(this, n), i;',
+    '    if (l === undefined) return this;',
+    '    for (i = l.length - 1; i >= 0; i--) {',
+    '      if (l[i] === f || l[i].listener === f) { l.splice(i, 1); break; }',
+    '    }',
+    '    if (l.length === 0) delete this._events[n];',
+    '    return this;',
+    '  };',
+    '  P.removeAllListeners = function (n) {',
+    '    if (n === undefined) this._events = {}; else if (this._events) delete this._events[n];',
+    '    return this;',
+    '  };',
+    '  P.emit = function (n, ...a) {',
+    '    var l = lst(this, n), i;',
+    '    if (l === undefined || l.length === 0) {',
+    '      if (n === ''error'') {',
+    '        var er = a[0];',
+    '        if (er instanceof Error) throw er;',
+    '        var e2 = new Error(''Unhandled error. ('' + __i_insp(er, 2) + '')'');',
+    '        e2.context = er;',
+    '        throw e2;',
+    '      }',
+    '      return false;',
+    '    }',
+    '    l = l.slice();',
+    '    for (i = 0; i < l.length; i++) l[i].apply(this, a);',
+    '    return true;',
+    '  };',
+    '  P.listenerCount = function (n) { var l = lst(this, n); return l === undefined ? 0 : l.length; };',
+    '  P.listeners = function (n) {',
+    '    var l = lst(this, n);',
+    '    return l === undefined ? [] : l.map(function (f) { return f.listener || f; });',
+    '  };',
+    '  P.rawListeners = function (n) { var l = lst(this, n); return l === undefined ? [] : l.slice(); };',
+    '  P.eventNames = function () { lst(this, ''''); return Object.keys(this._events); };',
+    '  P.setMaxListeners = function (m) { this._maxListeners = m; return this; };',
+    '  P.getMaxListeners = function () { return this._maxListeners; };',
+    '  EventEmitter.EventEmitter = EventEmitter;',
+    '  EventEmitter.defaultMaxListeners = 10;',
+    '  EventEmitter.once = function (em, n) {',
+    '    return new __Promise(function (res) { em.once(n, function (...a) { res(a); }); });',
+    '  };',
+    '  return EventEmitter;',
+    '}',
+    'function __mkAssert() {',
+    '  class AssertionError extends Error {',
+    '    constructor(o) {',
+    '      super(o.message);',
+    '      this.name = ''AssertionError'';',
+    '      this.code = ''ERR_ASSERTION'';',
+    '      this.actual = o.actual;',
+    '      this.expected = o.expected;',
+    '      this.operator = o.operator;',
+    '      this.generatedMessage = !o.user;',
+    '    }',
+    '  }',
+    '  function fail(msg, def, a, e, op) {',
+    '    if (msg instanceof Error) throw msg;',
+    '    throw new AssertionError({ message: msg === undefined ? def : msg, user: msg !== undefined, actual: a, expected: e, operator: op });',
+    '  }',
+    '  function ins(v) { return __i_insp(v, 2); }',
+    '  var assert = function (v, m) { if (!v) fail(m, ''The expression evaluated to a falsy value:\n\n  assert('' + ins(v) + '')\n'', v, true, ''==''); };',
+    '  assert.ok = function (v, m) { if (!v) fail(m, ''The expression evaluated to a falsy value:\n\n  assert.ok('' + ins(v) + '')\n'', v, true, ''==''); };',
+    '  assert.equal = function (a, b, m) { if (!(a == b || (a !== a && b !== b))) fail(m, ins(a) + '' == '' + ins(b), a, b, ''==''); };',
+    '  assert.notEqual = function (a, b, m) { if (a == b) fail(m, ins(a) + '' != '' + ins(b), a, b, ''!=''); };',
+    '  assert.strictEqual = function (a, b, m) {',
+    '    if (!__is(a, b)) fail(m, ''Expected values to be strictly equal:\n\n'' + ins(a) + '' !== '' + ins(b) + ''\n'', a, b, ''strictEqual'');',
+    '  };',
+    '  assert.notStrictEqual = function (a, b, m) {',
+    '    if (__is(a, b)) fail(m, ''Expected "actual" to be strictly unequal to: '' + ins(b), a, b, ''notStrictEqual'');',
+    '  };',
+    '  assert.deepEqual = function (a, b, m) { if (!__deq(a, b, false)) fail(m, ''Expected values to be loosely deep-equal:\n\n'' + ins(a) + ''\n\nshould loosely deep-equal\n\n'' + ins(b), a, b, ''deepEqual''); };',
+    '  assert.deepStrictEqual = function (a, b, m) { if (!__deq(a, b, true)) fail(m, ''Expected values to be strictly deep-equal:\n'' + ins(a) + ''\n\nshould equal\n\n'' + ins(b), a, b, ''deepStrictEqual''); };',
+    '  assert.notDeepEqual = function (a, b, m) { if (__deq(a, b, false)) fail(m, ''Expected "actual" not to be loosely deep-equal to: '' + ins(b), a, b, ''notDeepEqual''); };',
+    '  assert.notDeepStrictEqual = function (a, b, m) { if (__deq(a, b, true)) fail(m, ''Expected "actual" not to be strictly deep-equal to: '' + ins(b), a, b, ''notDeepStrictEqual''); };',
+    '  assert.fail = function (m) { fail(m, ''Failed'', undefined, undefined, ''fail''); };',
+    '  function matches(e, exp) {',
+    '    if (exp === undefined) return true;',
+    '    if (typeof exp === ''function'') {',
+    '      if (exp.prototype !== undefined && e instanceof exp) return true;',
+    '      if (Error.isPrototypeOf && Error.isPrototypeOf(exp)) return false;',
+    '      return exp.prototype === undefined || exp.call({}, e) === true;',
+    '    }',
+    '    if (exp instanceof RegExp) return exp.test(String(e));',
+    '    if (typeof exp === ''object'') {',
+    '      var ks = Object.keys(exp), i;',
+    '      for (i = 0; i < ks.length; i++) {',
+    '        var want = exp[ks[i]], got = e[ks[i]];',
+    '        if (want instanceof RegExp && typeof got === ''string'' ? !want.test(got) : !__deq(got, want, true)) return false;',
+    '      }',
+    '      return true;',
+    '    }',
+    '    return true;',
+    '  }',
+    '  assert.throws = function (fn, exp, m) {',
+    '    var threw = false, err;',
+    '    try { fn(); } catch (e) { threw = true; err = e; }',
+    '    if (!threw) fail(typeof exp === ''string'' ? exp : m, ''Missing expected exception.'', undefined, exp, ''throws'');',
+    '    if (typeof exp !== ''string'' && !matches(err, exp)) throw err;',
+    '  };',
+    '  assert.doesNotThrow = function (fn, m) {',
+    '    try { fn(); } catch (e) { fail(typeof m === ''string'' ? m : undefined, ''Got unwanted exception.\nActual message: "'' + (e && e.message) + ''"'', e, undefined, ''doesNotThrow''); }',
+    '  };',
+    '  assert.rejects = function (p, exp, m) {',
+    '    return (typeof p === ''function'' ? p() : p).then(function () {',
+    '      fail(m, ''Missing expected rejection.'', undefined, exp, ''rejects'');',
+    '    }, function (e) { if (!matches(e, exp)) throw e; });',
+    '  };',
+    '  assert.match = function (s, re, m) { if (!re.test(s)) fail(m, ''The input did not match the regular expression '' + String(re) + ''. Input:\n\n'' + ins(s) + ''\n'', s, re, ''match''); };',
+    '  assert.ifError = function (v) { if (v !== null && v !== undefined) throw v; };',
+    '  assert.AssertionError = AssertionError;',
+    '  assert.strict = assert;',
+    '  return assert;',
+    '}',
+    'function __mkUtil() {',
+    '  var util = {};',
+    '  util.inspect = function (v, o) {',
+    '    var d = 2;',
+    '    if (o !== null && typeof o === ''object'' && ''depth'' in o) d = o.depth === null ? Infinity : o.depth;',
+    '    else if (typeof o === ''number'') d = o;',
+    '    return __i_insp(v, d);',
+    '  };',
+    '  util.format = function (...a) { return __i_args(a); };',
+    '  util.promisify = function (fn) {',
+    '    return function (...a) {',
+    '      var self = this;',
+    '      return new __Promise(function (res, rej) {',
+    '        a.push(function (err, v) { if (err) rej(err); else res(v); });',
+    '        fn.apply(self, a);',
+    '      });',
+    '    };',
+    '  };',
+    '  util.inherits = function (c, s) {',
+    '    Object.setPrototypeOf(c.prototype, s.prototype);',
+    '    c.super_ = s;',
+    '  };',
+    '  util.deprecate = function (fn) { return fn; };',
+    '  util.isDeepStrictEqual = function (a, b) { return __deq(a, b, true); };',
+    '  util.isArray = Array.isArray;',
+    '  util.types = {',
+    '    isDate: function (v) { return v instanceof __Date; },',
+    '    isRegExp: function (v) { return v instanceof RegExp; },',
+    '    isMap: function (v) { return v instanceof __Map; },',
+    '    isSet: function (v) { return v instanceof __Set; },',
+    '    isPromise: function (v) { return v instanceof __Promise; }',
+    '  };',
+    '  return util;',
+    '}',
+    'function __mkPath() {',
+    '  var path = {};',
+    '  function norm(p) {',
+    '    var abs = p.charAt(0) === ''/'', parts = p.split(''/''), out = [], i;',
+    '    for (i = 0; i < parts.length; i++) {',
+    '      if (parts[i] === '''' || parts[i] === ''.'') continue;',
+    '      if (parts[i] === ''..'') {',
+    '        if (out.length > 0 && out[out.length - 1] !== ''..'') out.pop();',
+    '        else if (!abs) out.push(''..'');',
+    '      } else out.push(parts[i]);',
+    '    }',
+    '    var r = out.join(''/'');',
+    '    if (abs) return ''/'' + r;',
+    '    return r === '''' ? ''.'' : r;',
+    '  }',
+    '  path.sep = ''/'';',
+    '  path.delimiter = '':'';',
+    '  path.normalize = function (p) {',
+    '    var r = norm(String(p));',
+    '    return (String(p).slice(-1) === ''/'' && r !== ''/'' && r !== ''.'') ? r + ''/'' : r;',
+    '  };',
+    '  path.join = function (...a) {',
+    '    var s = a.filter(function (x) { return x !== ''''; }).join(''/'');',
+    '    return s === '''' ? ''.'' : path.normalize(s);',
+    '  };',
+    '  path.isAbsolute = function (p) { return String(p).charAt(0) === ''/''; };',
+    '  path.resolve = function (...a) {',
+    '    var r = '''', i;',
+    '    for (i = a.length - 1; i >= 0 && r.charAt(0) !== ''/''; i--) {',
+    '      if (a[i] !== '''') r = a[i] + (r === '''' ? '''' : ''/'' + r);',
+    '    }',
+    '    if (r.charAt(0) !== ''/'') r = process.cwd().replace(/\\/g, ''/'') + (r === '''' ? '''' : ''/'' + r);',
+    '    r = norm(r);',
+    '    return r;',
+    '  };',
+    '  path.dirname = function (p) {',
+    '    p = String(p);',
+    '    while (p.length > 1 && p.slice(-1) === ''/'') p = p.slice(0, -1);',
+    '    var i = p.lastIndexOf(''/'');',
+    '    if (i < 0) return ''.'';',
+    '    if (i === 0) return ''/'';',
+    '    return p.slice(0, i);',
+    '  };',
+    '  path.basename = function (p, ext) {',
+    '    p = String(p);',
+    '    while (p.length > 1 && p.slice(-1) === ''/'') p = p.slice(0, -1);',
+    '    var b = p.slice(p.lastIndexOf(''/'') + 1);',
+    '    if (ext !== undefined && b.length > ext.length && b.slice(-ext.length) === ext) b = b.slice(0, -ext.length);',
+    '    return b;',
+    '  };',
+    '  path.extname = function (p) {',
+    '    var b = path.basename(p), i = b.lastIndexOf(''.'');',
+    '    return (i <= 0) ? '''' : b.slice(i);',
+    '  };',
+    '  path.relative = function (from, to) {',
+    '    var f = path.resolve(from).split(''/'').filter(Boolean), t = path.resolve(to).split(''/'').filter(Boolean), i = 0;',
+    '    while (i < f.length && i < t.length && f[i] === t[i]) i++;',
+    '    var out = [], j;',
+    '    for (j = i; j < f.length; j++) out.push(''..'');',
+    '    return out.concat(t.slice(i)).join(''/'');',
+    '  };',
+    '  path.parse = function (p) {',
+    '    p = String(p);',
+    '    var base = path.basename(p), ext = path.extname(p), dir = path.dirname(p);',
+    '    if (dir === ''.'' && p.charAt(0) !== ''.'') dir = '''';',
+    '    return { root: p.charAt(0) === ''/'' ? ''/'' : '''', dir: dir, base: base, ext: ext, name: ext ? base.slice(0, -ext.length) : base };',
+    '  };',
+    '  path.format = function (o) {',
+    '    var dir = o.dir || o.root || '''', base = o.base || ((o.name || '''') + (o.ext || ''''));',
+    '    return dir ? (dir === o.root ? dir + base : dir + ''/'' + base) : base;',
+    '  };',
+    '  path.posix = path;',
+    '  path.win32 = path;',
+    '  return path;',
+    '}',
+    'function __mkmod(name) {',
+    '  var e;',
+    '  if (name === ''events'') return __mkEvents();',
+    '  if (name === ''assert'' || name === ''assert/strict'') return __mkAssert();',
+    '  if (name === ''util'') return __mkUtil();',
+    '  if (name === ''path'' || name === ''path/posix'') return __mkPath();',
+    '  if (name === ''os'') {',
+    '    return {',
+    '      EOL: ''\r\n'', platform: function () { return ''win32''; }, type: function () { return ''Windows_NT''; },',
+    '      arch: function () { return ''ia32''; }, release: function () { return ''10.0''; }, hostname: function () { return ''localhost''; },',
+    '      homedir: function () { return ''C:\\''; }, tmpdir: function () { return ''C:\\Temp''; }, endianness: function () { return ''LE''; },',
+    '      cpus: function () { return []; }, totalmem: function () { return 0; }, freemem: function () { return 0; },',
+    '      uptime: function () { return 0; }, userInfo: function () { return { username: ''user'', homedir: ''C:\\'' }; }',
+    '    };',
+    '  }',
+    '  if (name === ''timers'') {',
+    '    return { setTimeout: setTimeout, setInterval: setInterval, setImmediate: setImmediate, clearTimeout: clearTimeout, clearInterval: clearInterval, clearImmediate: clearImmediate };',
+    '  }',
+    '  if (name === ''timers/promises'') {',
+    '    return {',
+    '      setTimeout: function (ms, v) { return new __Promise(function (res) { setTimeout(function () { res(v); }, ms); }); },',
+    '      setImmediate: function (v) { return new __Promise(function (res) { setImmediate(function () { res(v); }); }); }',
+    '    };',
+    '  }',
+    '  if (name === ''perf_hooks'') return { performance: performance };',
+    '  if (name === ''process'') return process;',
+    '  if (name === ''fs'' || name === ''child_process'' || name === ''http'' || name === ''https'' || name === ''net'' || name === ''crypto'' ||',
+    '      name === ''readline'' || name === ''stream'' || name === ''zlib'' || name === ''worker_threads'' || name === ''buffer'' || name === ''url'' ||',
+    '      name === ''string_decoder'' || name === ''vm'' || name === ''cluster'' || name === ''dns'' || name === ''tty'' || name === ''fs/promises'') {',
+    '    e = new Error("Module ''" + name + "'' is not supported by JSCW32");',
+    '    e.code = ''ERR_MODULE_NOT_SUPPORTED'';',
+    '    throw e;',
+    '  }',
+    '  e = new Error("Cannot find module ''" + name + "''");',
+    '  e.code = ''MODULE_NOT_FOUND'';',
+    '  throw e;',
+    '}',
+    'function __require(name) {',
+    '  name = String(name);',
+    '  if (name.slice(0, 5) === ''node:'') name = name.slice(5);',
+    '  if (__modcache === undefined) __modcache = {};',
+    '  if (__modcache[name] !== undefined) return __modcache[name];',
+    '  var m = __mkmod(name);',
+    '  __modcache[name] = m;',
+    '  return m;',
+    '}',
+    'function __evtok(src) {',
+    '  var t = [], i = 0, n = src.length, c, j, q, s, ch, m;',
+    '  var ops3 = [''==='', ''!=='', ''>>>'', ''**='', ''...''];',
+    '  var ops2 = [''=='', ''!='', ''<='', ''>='', ''&&'', ''||'', ''??'', ''<<'', ''>>'', ''**'', ''=>'', ''?.''];',
+    '  while (i < n) {',
+    '    c = src.charAt(i);',
+    '    if (c === '' '' || c === ''\t'' || c === ''\n'' || c === ''\r'') { i++; continue; }',
+    '    if ((c >= ''0'' && c <= ''9'') || (c === ''.'' && src.charAt(i + 1) >= ''0'' && src.charAt(i + 1) <= ''9'')) {',
+    '      m = /^(0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)/.exec(src.slice(i));',
+    '      t.push({ k: ''n'', v: Number(m[0]) });',
+    '      i += m[0].length;',
+    '      continue;',
+    '    }',
+    '    if (c === ''"'' || c === "''") {',
+    '      q = c; s = ''''; i++;',
+    '      while (i < n && src.charAt(i) !== q) {',
+    '        ch = src.charAt(i);',
+    '        if (ch === ''\\'') {',
+    '          i++; ch = src.charAt(i);',
+    '          if (ch === ''n'') s += ''\n''; else if (ch === ''t'') s += ''\t''; else if (ch === ''r'') s += ''\r'';',
+    '          else if (ch === ''x'') { s += String.fromCharCode(parseInt(src.slice(i + 1, i + 3), 16)); i += 2; }',
+    '          else if (ch === ''u'') { s += String.fromCharCode(parseInt(src.slice(i + 1, i + 5), 16)); i += 4; }',
+    '          else s += ch;',
+    '        } else s += ch;',
+    '        i++;',
+    '      }',
+    '      if (i >= n) throw new SyntaxError(''Invalid or unexpected token'');',
+    '      i++;',
+    '      t.push({ k: ''s'', v: s });',
+    '      continue;',
+    '    }',
+    '    if ((c >= ''a'' && c <= ''z'') || (c >= ''A'' && c <= ''Z'') || c === ''_'' || c === ''$'') {',
+    '      j = i;',
+    '      while (j < n && /[A-Za-z0-9_$]/.test(src.charAt(j))) j++;',
+    '      t.push({ k: ''i'', v: src.slice(i, j) });',
+    '      i = j;',
+    '      continue;',
+    '    }',
+    '    if (ops3.indexOf(src.substr(i, 3)) >= 0) { t.push({ k: ''p'', v: src.substr(i, 3) }); i += 3; continue; }',
+    '    if (ops2.indexOf(src.substr(i, 2)) >= 0) { t.push({ k: ''p'', v: src.substr(i, 2) }); i += 2; continue; }',
+    '    t.push({ k: ''p'', v: c });',
+    '    i++;',
+    '  }',
+    '  t.push({ k: ''e'', v: '''' });',
+    '  return t;',
+    '}',
+    'function __evparse(toks) {',
+    '  var p = 0;',
+    '  var prec = { ''??'': 1, ''||'': 2, ''&&'': 3, ''|'': 4, ''^'': 5, ''&'': 6, ''=='': 7, ''!='': 7, ''==='': 7, ''!=='': 7, ''<'': 8, ''>'': 8, ''<='': 8, ''>='': 8, ''in'': 8, ''instanceof'': 8,',
+    '    ''<<'': 9, ''>>'': 9, ''>>>'': 9, ''+'': 10, ''-'': 10, ''*'': 11, ''/'': 11, ''%'': 11, ''**'': 12 };',
+    '  function peek() { return toks[p]; }',
+    '  function isP(v) { return toks[p].k === ''p'' && toks[p].v === v; }',
+    '  function expect(v) {',
+    '    if (!isP(v)) throw new SyntaxError("Unexpected token ''" + toks[p].v + "''");',
+    '    p++;',
+    '  }',
+    '  function primary() {',
+    '    var t = toks[p], r, a, k;',
+    '    if (t.k === ''n'' || t.k === ''s'') { p++; return [''v'', t.v]; }',
+    '    if (t.k === ''i'') {',
+    '      p++;',
+    '      if (t.v === ''true'') return [''v'', true];',
+    '      if (t.v === ''false'') return [''v'', false];',
+    '      if (t.v === ''null'') return [''v'', null];',
+    '      if (t.v === ''var'' || t.v === ''let'' || t.v === ''const'' || t.v === ''function'' || t.v === ''if'' || t.v === ''for'' || t.v === ''while'' || t.v === ''return'' || t.v === ''class'') {',
+    '        throw new EvalError(''eval: statements are not supported by JSCW32 (only expressions)'');',
+    '      }',
+    '      return [''id'', t.v];',
+    '    }',
+    '    if (isP(''('')) { p++; r = expr(); expect('')''); return r; }',
+    '    if (isP(''['')) {',
+    '      p++; a = [];',
+    '      while (!isP('']'')) { a.push(assign()); if (isP('','')) p++; else break; }',
+    '      expect('']'');',
+    '      return [''arr'', a];',
+    '    }',
+    '    if (isP(''{'')) {',
+    '      p++; a = [];',
+    '      while (!isP(''}'')) {',
+    '        k = toks[p]; p++;',
+    '        if (isP('':'')) { p++; a.push([k.v, assign()]); } else a.push([k.v, [''id'', k.v]]);',
+    '        if (isP('','')) p++; else break;',
+    '      }',
+    '      expect(''}'');',
+    '      return [''obj'', a];',
+    '    }',
+    '    throw new SyntaxError("Unexpected token ''" + t.v + "''");',
+    '  }',
+    '  function postfix() {',
+    '    var e = primary(), a;',
+    '    for (;;) {',
+    '      if (isP(''.'') || isP(''?.'')) {',
+    '        var opt = isP(''?.'');',
+    '        p++;',
+    '        if (opt && isP(''('')) { e = [''call'', e, args(), true]; continue; }',
+    '        if (opt && isP(''['')) { p++; var ix = expr(); expect('']''); e = [''mem'', e, ix, true]; continue; }',
+    '        e = [''mem'', e, [''v'', toks[p].v], opt]; p++;',
+    '      } else if (isP(''['')) { p++; var ix2 = expr(); expect('']''); e = [''mem'', e, ix2, false]; }',
+    '      else if (isP(''('')) e = [''call'', e, args(), false];',
+    '      else break;',
+    '    }',
+    '    return e;',
+    '  }',
+    '  function args() {',
+    '    expect(''('');',
+    '    var a = [];',
+    '    while (!isP('')'')) { a.push(assign()); if (isP('','')) p++; else break; }',
+    '    expect('')'');',
+    '    return a;',
+    '  }',
+    '  function unary() {',
+    '    var t = toks[p];',
+    '    if (t.k === ''p'' && (t.v === ''-'' || t.v === ''+'' || t.v === ''!'' || t.v === ''~'')) { p++; return [''un'', t.v, unary()]; }',
+    '    if (t.k === ''i'' && (t.v === ''typeof'' || t.v === ''void'')) { p++; return [''un'', t.v, unary()]; }',
+    '    return postfix();',
+    '  }',
+    '  function binary(minp) {',
+    '    var l = unary(), t, pr, r;',
+    '    for (;;) {',
+    '      t = toks[p];',
+    '      if (!((t.k === ''p'' || (t.k === ''i'' && (t.v === ''in'' || t.v === ''instanceof''))) && prec[t.v] !== undefined)) break;',
+    '      pr = prec[t.v];',
+    '      if (pr < minp) break;',
+    '      p++;',
+    '      r = t.v === ''**'' ? binary(pr) : binary(pr + 1);',
+    '      l = [(t.v === ''&&'' || t.v === ''||'' || t.v === ''??'') ? ''lg'' : ''bin'', t.v, l, r];',
+    '    }',
+    '    return l;',
+    '  }',
+    '  function assign() {',
+    '    var c = binary(1), a, b;',
+    '    if (isP(''?'')) { p++; a = assign(); expect('':''); b = assign(); return [''cond'', c, a, b]; }',
+    '    return c;',
+    '  }',
+    '  function expr() {',
+    '    var e = assign();',
+    '    while (isP('','')) { p++; e = [''seq'', e, assign()]; }',
+    '    return e;',
+    '  }',
+    '  var list = [];',
+    '  while (peek().k !== ''e'') {',
+    '    if (isP('';'')) { p++; continue; }',
+    '    list.push(expr());',
+    '    if (peek().k !== ''e'' && !isP('';'')) throw new SyntaxError("Unexpected token ''" + peek().v + "''");',
+    '  }',
+    '  return list;',
+    '}',
+    'function __evrun(n, env) {',
+    '  var t = n[0], a, b, i, o, f, args, c;',
+    '  if (t === ''v'') return n[1];',
+    '  if (t === ''id'') {',
+    '    if (n[1] === ''undefined'') return undefined;',
+    '    if (n[1] === ''NaN'') return NaN;',
+    '    if (n[1] === ''Infinity'') return Infinity;',
+    '    if (env[n[1]] !== undefined) return env[n[1]]();',
+    '    throw new ReferenceError(n[1] + '' is not defined'');',
+    '  }',
+    '  if (t === ''arr'') { a = []; for (i = 0; i < n[1].length; i++) a.push(__evrun(n[1][i], env)); return a; }',
+    '  if (t === ''obj'') { o = {}; for (i = 0; i < n[1].length; i++) o[n[1][i][0]] = __evrun(n[1][i][1], env); return o; }',
+    '  if (t === ''cond'') return __evrun(n[1], env) ? __evrun(n[2], env) : __evrun(n[3], env);',
+    '  if (t === ''seq'') { __evrun(n[1], env); return __evrun(n[2], env); }',
+    '  if (t === ''un'') {',
+    '    if (n[1] === ''typeof'' && n[2][0] === ''id'' && env[n[2][1]] === undefined && n[2][1] !== ''undefined'') return ''undefined'';',
+    '    a = __evrun(n[2], env);',
+    '    switch (n[1]) {',
+    '      case ''-'': return -a;',
+    '      case ''+'': return +a;',
+    '      case ''!'': return !a;',
+    '      case ''~'': return ~a;',
+    '      case ''typeof'': return typeof a;',
+    '      default: return undefined;',
+    '    }',
+    '  }',
+    '  if (t === ''lg'') {',
+    '    a = __evrun(n[2], env);',
+    '    if (n[1] === ''&&'') return a ? __evrun(n[3], env) : a;',
+    '    if (n[1] === ''||'') return a ? a : __evrun(n[3], env);',
+    '    return (a === null || a === undefined) ? __evrun(n[3], env) : a;',
+    '  }',
+    '  if (t === ''bin'') {',
+    '    a = __evrun(n[2], env);',
+    '    b = __evrun(n[3], env);',
+    '    switch (n[1]) {',
+    '      case ''+'': return a + b;',
+    '      case ''-'': return a - b;',
+    '      case ''*'': return a * b;',
+    '      case ''/'': return a / b;',
+    '      case ''%'': return a % b;',
+    '      case ''**'': return a ** b;',
+    '      case ''=='': return a == b;',
+    '      case ''!='': return a != b;',
+    '      case ''==='': return a === b;',
+    '      case ''!=='': return a !== b;',
+    '      case ''<'': return a < b;',
+    '      case ''>'': return a > b;',
+    '      case ''<='': return a <= b;',
+    '      case ''>='': return a >= b;',
+    '      case ''&'': return a & b;',
+    '      case ''|'': return a | b;',
+    '      case ''^'': return a ^ b;',
+    '      case ''<<'': return a << b;',
+    '      case ''>>'': return a >> b;',
+    '      case ''>>>'': return a >>> b;',
+    '      case ''in'': return a in b;',
+    '      default: return a instanceof b;',
+    '    }',
+    '  }',
+    '  if (t === ''mem'') {',
+    '    o = __evrun(n[1], env);',
+    '    if (n[3] && (o === null || o === undefined)) return undefined;',
+    '    return o[__evrun(n[2], env)];',
+    '  }',
+    '  if (t === ''call'') {',
+    '    args = [];',
+    '    for (i = 0; i < n[2].length; i++) args.push(__evrun(n[2][i], env));',
+    '    if (n[1][0] === ''mem'') {',
+    '      o = __evrun(n[1][1], env);',
+    '      if (n[1][3] && (o === null || o === undefined)) return undefined;',
+    '      f = o[__evrun(n[1][2], env)];',
+    '      if (n[3] && (f === null || f === undefined)) return undefined;',
+    '      return f.apply(o, args);',
+    '    }',
+    '    f = __evrun(n[1], env);',
+    '    if (n[3] && (f === null || f === undefined)) return undefined;',
+    '    return f.apply(undefined, args);',
+    '  }',
+    '  throw new SyntaxError(''eval: unsupported expression'');',
+    '}',
+    'function __eval(x) {',
+    '  if (typeof x !== ''string'') return x;',
+    '  var env = {',
+    '    Math: function () { return Math; }, JSON: function () { return JSON; }, Number: function () { return Number; },',
+    '    String: function () { return String; }, Array: function () { return Array; }, Object: function () { return Object; },',
+    '    Boolean: function () { return Boolean; }, parseInt: function () { return parseInt; }, parseFloat: function () { return parseFloat; },',
+    '    isNaN: function () { return isNaN; }, isFinite: function () { return isFinite; }, Date: function () { return __Date; },',
+    '    Map: function () { return __Map; }, Set: function () { return __Set; }, BigInt: function () { return __BigInt; }',
+    '  };',
+    '  var list = __evparse(__evtok(x)), r, i;',
+    '  for (i = 0; i < list.length; i++) r = __evrun(list[i], env);',
+    '  return r;',
     '}'
   );
 { PRELUDE-END }
@@ -2379,6 +4033,7 @@ Var
   code: Integer;
   has_dot, has_exp, bad_sep, last_us, octal_ok: Boolean;
   i: Integer;
+  bg_off, bg_i: LongInt;
 
   { Lit des chiffres decimaux avec separateurs _ ; s recoit les chiffres. }
   Procedure ReadDigits(Var s: TString);
@@ -2404,6 +4059,8 @@ Begin
   c2 := UpCase(LxPeek(ctx, 1));
   v := 0;
   bad_sep := False;
+  has_dot := False;
+  has_exp := False;
   If (c = '0') And ((c2 = 'X') Or (c2 = 'B') Or (c2 = 'O')) Then
     Begin
       If c2 = 'X' Then
@@ -2507,12 +4164,28 @@ Begin
             End;
         End;
     End;
+  If (LxCur(ctx) = 'n') And (Not has_dot) And (Not has_exp) And
+     Not IsIdentPart(LxPeek(ctx, 1)) Then
+    Begin
+      { litteral BigInt : jeton chaine (chiffres) marque flag_len = 1 }
+      bg_off := ctx.lex.pool_len;
+      bg_i := tp;
+      While bg_i < ctx.lex.pos Do
+        Begin
+          If ctx.source.buf[bg_i] <> '_' Then
+            PoolAppend(ctx, ctx.source.buf[bg_i]);
+          Inc(bg_i);
+        End;
+      LxAdvance(ctx);
+      idx := AddToken(ctx, TK_STRING, tl, tc, tp);
+      ctx.lex.tokens[idx].sval_off := bg_off;
+      ctx.lex.tokens[idx].sval_len := ctx.lex.pool_len - bg_off;
+      ctx.lex.tokens[idx].flag_len := 1;
+      Exit;
+    End;
   If IsIdentStart(LxCur(ctx)) Or IsDigit(LxCur(ctx)) Then
     Begin
-      If LxCur(ctx) = 'n' Then
-        SourceErrorAt(ctx, tl, LxCol(ctx), 'les BigInt (suffixe n) ne sont pas supportes')
-      Else
-        SourceErrorAt(ctx, tl, LxCol(ctx), 'caractere invalide apres un nombre');
+      SourceErrorAt(ctx, tl, LxCol(ctx), 'caractere invalide apres un nombre');
       While IsIdentPart(LxCur(ctx)) Do
         LxAdvance(ctx);
     End;
@@ -3705,6 +5378,54 @@ Begin
   ParseTemplate := node;
 End;
 
+{ Gabarit etiquete : tag`a...b` devient tag(__tpl(cuits..., bruts...), valeurs...). }
+Function BuildTagged(Var ctx: TCompilerContext; tag: LongInt): LongInt;
+Var
+  t, p, nx, c, idx, id, call_tpl, outer, tpl_tok: LongInt;
+  s_first, s_last, r_first, r_last, a_first, a_last: LongInt;
+Begin
+  tpl_tok := ctx.ast.pt;
+  t := ParseTemplate(ctx);
+  s_first := 0;
+  s_last := 0;
+  r_first := 0;
+  r_last := 0;
+  a_first := 0;
+  a_last := 0;
+  p := ctx.ast.nodes[t].e1;
+  While p <> 0 Do
+    Begin
+      nx := ctx.ast.nodes[p].next;
+      If ctx.ast.nodes[p].kind = N_TEMPLATE_STR Then
+        Begin
+          c := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.nodes[p].tok);
+          ListAdd(ctx, s_first, s_last, c);
+          c := NewNode(ctx, N_TEMPLATE_STR, ctx.ast.nodes[p].tok);
+          ctx.ast.nodes[c].flags := 1;
+          ListAdd(ctx, r_first, r_last, c);
+        End
+      Else
+        Begin
+          ctx.ast.nodes[p].next := 0;
+          ListAdd(ctx, a_first, a_last, p);
+        End;
+      p := nx;
+    End;
+  ctx.ast.nodes[s_last].next := r_first;
+  idx := AddToken(ctx, TK_IDENT, ctx.lex.tokens[tpl_tok].line,
+                  ctx.lex.tokens[tpl_tok].col, ctx.lex.pos);
+  ctx.lex.tokens[idx].text := '__tpl';
+  id := NewNode(ctx, N_IDENT, idx);
+  call_tpl := NewNode(ctx, N_CALL, tpl_tok);
+  ctx.ast.nodes[call_tpl].e1 := id;
+  ctx.ast.nodes[call_tpl].e2 := s_first;
+  ctx.ast.nodes[call_tpl].next := a_first;
+  outer := NewNode(ctx, N_CALL, tpl_tok);
+  ctx.ast.nodes[outer].e1 := tag;
+  ctx.ast.nodes[outer].e2 := call_tpl;
+  BuildTagged := outer;
+End;
+
 Function ParseArrayLiteral(Var ctx: TCompilerContext): LongInt;
 Var
   node, el, first, last: LongInt;
@@ -3946,7 +5667,7 @@ End;
 
 Function ParsePrimary(Var ctx: TCompilerContext): LongInt;
 Var
-  node, t: LongInt;
+  node, t, bg_tok, bg_str: LongInt;
   s: TTokenText;
 Begin
   ParsePrimary := 0;
@@ -3971,7 +5692,20 @@ Begin
       End;
     TK_STRING:
       Begin
-        ParsePrimary := NewNode(ctx, N_STRING, t);
+        node := NewNode(ctx, N_STRING, t);
+        ParsePrimary := node;
+        If ctx.lex.tokens[t].flag_len = 1 Then
+          Begin
+            { litteral BigInt : __BigInt("chiffres") }
+            bg_tok := AddToken(ctx, TK_IDENT, ctx.lex.tokens[t].line,
+                               ctx.lex.tokens[t].col, ctx.lex.pos);
+            ctx.lex.tokens[bg_tok].text := '__BigInt';
+            bg_str := node;
+            node := NewNode(ctx, N_CALL, t);
+            ctx.ast.nodes[node].e1 := NewNode(ctx, N_IDENT, bg_tok);
+            ctx.ast.nodes[node].e2 := bg_str;
+            ParsePrimary := node;
+          End;
         PAdvance(ctx);
       End;
     TK_REGEX:
@@ -4041,14 +5775,27 @@ End;
 { new X(args) : le callee est un membre sans appel. }
 Function ParseNew(Var ctx: TCompilerContext): LongInt;
 Var
-  node, callee, m, name_tok: LongInt;
+  node, callee, m, name_tok, nt_tok: LongInt;
 Begin
   node := NewNode(ctx, N_NEW, ctx.ast.pt);
   ParseNew := node;
   PAdvance(ctx);
   If CurIsP(ctx, '.') Then
     Begin
-      ParseError(ctx, ctx.ast.pt, 'new.target n''est pas supporte');
+      { new.target : appel de __newtarget() }
+      PAdvance(ctx);
+      If Not ((ctx.lex.tokens[ctx.ast.pt].kind = TK_IDENT) And
+              (ctx.lex.tokens[ctx.ast.pt].text = 'target')) Then
+        Begin
+          ParseError(ctx, ctx.ast.pt, '"target" attendu apres "new."');
+          Exit;
+        End;
+      nt_tok := AddToken(ctx, TK_IDENT, ctx.lex.tokens[ctx.ast.pt].line,
+                         ctx.lex.tokens[ctx.ast.pt].col, ctx.lex.pos);
+      ctx.lex.tokens[nt_tok].text := '__newtarget';
+      PAdvance(ctx);
+      ctx.ast.nodes[node].kind := N_CALL;
+      ctx.ast.nodes[node].e1 := NewNode(ctx, N_IDENT, nt_tok);
       Exit;
     End;
   If CurIsKw(ctx, 'new') Then
@@ -4149,9 +5896,7 @@ Begin
               ((ctx.lex.tokens[ctx.ast.pt].tpl = TP_NOSUB) Or
                (ctx.lex.tokens[ctx.ast.pt].tpl = TP_HEAD)) Then
         Begin
-          m := NewNode(ctx, N_TAGGED, ctx.ast.pt);
-          ctx.ast.nodes[m].e1 := e;
-          ctx.ast.nodes[m].e2 := ParseTemplate(ctx);
+          m := BuildTagged(ctx, e);
         End
       Else
         Break;
@@ -7908,7 +9653,7 @@ End;
 
 Procedure CollectData(Var ctx: TCompilerContext);
 Var
-  i, e: LongInt;
+  i, e, tpl_end, tpl_off: LongInt;
   v: Double;
   s: TTokenText;
 Begin
@@ -7917,9 +9662,33 @@ Begin
       ctx.ast.nodes[i].ds := 0;
       Case ctx.ast.nodes[i].kind Of
         N_STRING, N_TEMPLATE_STR:
-          ctx.ast.nodes[i].ds := InternPool(ctx,
-            ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off,
-            ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len);
+          Begin
+            If (ctx.ast.nodes[i].kind = N_TEMPLATE_STR) And
+               (ctx.ast.nodes[i].flags = 1) Then
+              Begin
+                { texte brut du gabarit etiquete : entre les delimiteurs }
+                e := ctx.lex.tokens[ctx.ast.nodes[i].tok].pos + 1;
+                tpl_end := ctx.lex.tokens[ctx.ast.nodes[i].tok].pos +
+                           ctx.lex.tokens[ctx.ast.nodes[i].tok].len;
+                If (ctx.lex.tokens[ctx.ast.nodes[i].tok].tpl = TP_NOSUB) Or
+                   (ctx.lex.tokens[ctx.ast.nodes[i].tok].tpl = TP_TAIL) Then
+                  Dec(tpl_end)
+                Else
+                  Dec(tpl_end, 2);
+                tpl_off := ctx.lex.pool_len;
+                While e < tpl_end Do
+                  Begin
+                    PoolAppend(ctx, ctx.source.buf[e]);
+                    Inc(e);
+                  End;
+                ctx.ast.nodes[i].ds := InternPool(ctx, tpl_off,
+                                                  ctx.lex.pool_len - tpl_off);
+              End
+            Else
+              ctx.ast.nodes[i].ds := InternPool(ctx,
+                ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_off,
+                ctx.lex.tokens[ctx.ast.nodes[i].tok].sval_len);
+          End;
         N_REGEX:
           Begin
             ctx.ast.nodes[i].ds := InternPool(ctx,
@@ -9133,7 +10902,10 @@ Begin
   ;
 
   PlaceLabel(ctx, slow);
-  CallBinary(ctx, rt, t);
+  If (rt <> 'instanceof') And (rt <> 'in') Then
+    CallBinary(ctx, 'bw_' + rt, t)
+  Else
+    CallBinary(ctx, rt, t);
   If flip Then
     Begin
       Emit(ctx, OP_XOR, RegOp(R_EAX), ImmOp(1));
@@ -9548,7 +11320,7 @@ Begin
       PlaceLabel(ctx, slow);
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-      CallRt(ctx, 'neg', 8);
+      CallRt(ctx, 'bw_neg', 8);
       PlaceLabel(ctx, done);
     End
   Else If s = '+' Then
@@ -9572,7 +11344,7 @@ Begin
       PlaceLabel(ctx, slow);
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-      CallRt(ctx, 'bnot', 8);
+      CallRt(ctx, 'bw_bnot', 8);
       PlaceLabel(ctx, done);
     End
   Else If s = 'typeof' Then
@@ -9726,15 +11498,15 @@ Begin
     Begin
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-      CallRt(ctx, 'tonumber', 8);
+      CallRt(ctx, 'tonumeric', 8);
       SaveTemp(ctx, t);
     End;
   Emit1(ctx, OP_PUSH, RegOp(R_EDX));
   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
   If inc_op Then
-    CallRt(ctx, 'inc', 8)
+    CallRt(ctx, 'bw_inc', 8)
   Else
-    CallRt(ctx, 'dec', 8);
+    CallRt(ctx, 'bw_dec', 8);
   PlaceLabel(ctx, store);
   MemberStore(ctx, e, tobj, tkey);
   If Not prefix Then
@@ -9836,15 +11608,15 @@ Begin
     Begin
       Emit1(ctx, OP_PUSH, RegOp(R_EDX));
       Emit1(ctx, OP_PUSH, RegOp(R_EAX));
-      CallRt(ctx, 'tonumber', 8);
+      CallRt(ctx, 'tonumeric', 8);
       SaveTemp(ctx, t);
     End;
   Emit1(ctx, OP_PUSH, RegOp(R_EDX));
   Emit1(ctx, OP_PUSH, RegOp(R_EAX));
   If inc_op Then
-    CallRt(ctx, 'inc', 8)
+    CallRt(ctx, 'bw_inc', 8)
   Else
-    CallRt(ctx, 'dec', 8);
+    CallRt(ctx, 'bw_dec', 8);
   PlaceLabel(ctx, store);
   StoreSym(ctx, sy, False);
   If Not prefix Then
@@ -10125,6 +11897,28 @@ Procedure GenCall(Var ctx: TCompilerContext; n: LongInt);
 Var
   callee, a, nargs, i, tf, tt, notfn, lbl, old_end, usethis, okl: LongInt;
   top, has_spread, old_used, is_new, is_super: Boolean;
+  nt_old, nt_res: LongInt;
+
+  { new.target : sauvegarde puis positionne la cible, restaure apres l'appel }
+  Procedure NtEnter;
+  Begin
+    If Not is_new Then
+      Exit;
+    PushTemp(ctx, tf);
+    CallRt(ctx, 'nt_enter', 8);
+    SaveTemp(ctx, nt_old);
+  End;
+
+  Procedure NtLeave;
+  Begin
+    If Not is_new Then
+      Exit;
+    SaveTemp(ctx, nt_res);
+    PushTemp(ctx, nt_old);
+    CallRt(ctx, 'nt_leave', 8);
+    LoadTemp(ctx, nt_res);
+  End;
+
 Begin
   callee := ctx.ast.nodes[n].e1;
   is_new := ctx.ast.nodes[n].kind = N_NEW;
@@ -10156,6 +11950,13 @@ Begin
     End;
   tf := TempAcquire(ctx);
   tt := TempAcquire(ctx);
+  nt_old := 0;
+  nt_res := 0;
+  If is_new Then
+    Begin
+      nt_old := TempAcquire(ctx);
+      nt_res := TempAcquire(ctx);
+    End;
 
   { callee et this }
   If (Not is_new) And (callee <> 0) And ((ctx.ast.nodes[callee].kind = N_MEMBER) Or
@@ -10238,10 +12039,12 @@ Begin
             End;
           a := ctx.ast.nodes[a].next;
         End;
+      NtEnter;
       PushTemp(ctx, i);
       PushTemp(ctx, tt);
       PushTemp(ctx, tf);
       CallRt(ctx, 'call_array', 24);
+      NtLeave;
       TempRelease(ctx, i);
     End
   Else
@@ -10257,6 +12060,7 @@ Begin
           Inc(i);
           a := ctx.ast.nodes[a].next;
         End;
+      NtEnter;
       Emit(ctx, OP_MOV, RegOp(R_EAX), TempLo(tf));
       Emit(ctx, OP_MOV, MemReg(R_ESP, 0), RegOp(R_EAX));
       Emit(ctx, OP_MOV, MemReg(R_ESP, 4), ImmOp(nargs));
@@ -10266,6 +12070,7 @@ Begin
       Emit(ctx, OP_MOV, MemReg(R_ESP, 12), RegOp(R_ECX));
       Emit1(ctx, OP_CALL, MemReg(R_EAX, RT_FN_CODE));
       Emit(ctx, OP_ADD, RegOp(R_ESP), ImmOp(16 + RT_VALUE_SIZE * nargs));
+      NtLeave;
     End;
   If is_new Then
     Begin
@@ -10292,6 +12097,11 @@ Begin
   PlaceLabel(ctx, notfn);
   CallRt(ctx, 'throw_notfunc', 0);
   PlaceLabel(ctx, lbl);
+  If is_new Then
+    Begin
+      TempRelease(ctx, nt_res);
+      TempRelease(ctx, nt_old);
+    End;
   TempRelease(ctx, tt);
   TempRelease(ctx, tf);
   If top Then
@@ -11483,6 +13293,8 @@ Begin
   Emit(ctx, OP_MOV, MemReg(R_EBP, base + 16), RegOp(R_EBX));
   Emit(ctx, OP_MOV, MemReg(R_EBP, base + 20), RegOp(R_ESI));
   Emit(ctx, OP_MOV, MemReg(R_EBP, base + 24), RegOp(R_EDI));
+  Emit(ctx, OP_MOV, RegOp(R_EAX), MemSym(SYMK_D, RtVarSym(ctx, 'newtarget'), 0));
+  Emit(ctx, OP_MOV, MemReg(R_EBP, base + 28), RegOp(R_EAX));
   Emit(ctx, OP_LEA, RegOp(R_EAX), MemReg(R_EBP, base));
   Emit(ctx, OP_MOV, MemSym(SYMK_D, RtVarSym(ctx, 'handler_top'), 0), RegOp(R_EAX));
 End;
@@ -12817,8 +14629,19 @@ End;
 { Objet fonction natif statique ; retourne le symbole de donnees. }
 Function RtFuncObjP(Const jsname, code: TString; nparams, props: LongInt): LongInt;
 Var
-  fd_ofs, fo_ofs, fd_sym: LongInt;
+  fd_ofs, fo_ofs, fd_sym, fsec, ffl: LongInt;
 Begin
+  { les constructeurs a proprietes statiques sont modifiables (Array.from = ...) }
+  If props <> 0 Then
+    Begin
+      fsec := SEC_DATA;
+      ffl := 0;
+    End
+  Else
+    Begin
+      fsec := SEC_RDATA;
+      ffl := OF_STATIC;
+    End;
   fd_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_FD_SIZE);
   AddReloc(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_NAME,
            DsymFind(asm_ctx^, RtStr(jsname)));
@@ -12826,15 +14649,15 @@ Begin
   PutDword(asm_ctx^, SEC_RDATA, fd_ofs + RT_FD_FLAGS, FDF_NATIVE);
   fd_sym := NewDataSym(asm_ctx^, UniqDName('_JSND_' + code), SEC_RDATA, fd_ofs, RT_FD_SIZE,
                        DS_FDESC);
-  fo_ofs := SecAlloc(asm_ctx^, SEC_RDATA, RT_FN_SIZE);
-  PutByte(asm_ctx^, SEC_RDATA, fo_ofs + RT_HDR_KIND, RT_OK_FUNCTION);
-  PutByte(asm_ctx^, SEC_RDATA, fo_ofs + RT_HDR_FLAGS, OF_STATIC);
-  AddRelocX(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_CODE, XSym(asm_ctx^, code));
-  AddReloc(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_DESC, fd_sym);
+  fo_ofs := SecAlloc(asm_ctx^, fsec, RT_FN_SIZE);
+  PutByte(asm_ctx^, fsec, fo_ofs + RT_HDR_KIND, RT_OK_FUNCTION);
+  PutByte(asm_ctx^, fsec, fo_ofs + RT_HDR_FLAGS, ffl);
+  AddRelocX(asm_ctx^, fsec, fo_ofs + RT_FN_CODE, XSym(asm_ctx^, code));
+  AddReloc(asm_ctx^, fsec, fo_ofs + RT_FN_DESC, fd_sym);
   If props <> 0 Then
-    AddReloc(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_PROPS, props);
-  PutDword(asm_ctx^, SEC_RDATA, fo_ofs + RT_FN_THIS + 4, TagImm(RT_T_UNDEFINED));
-  RtFuncObjP := NewDataSym(asm_ctx^, UniqDName('_JSNF_' + code), SEC_RDATA, fo_ofs, RT_FN_SIZE,
+    AddReloc(asm_ctx^, fsec, fo_ofs + RT_FN_PROPS, props);
+  PutDword(asm_ctx^, fsec, fo_ofs + RT_FN_THIS + 4, TagImm(RT_T_UNDEFINED));
+  RtFuncObjP := NewDataSym(asm_ctx^, UniqDName('_JSNF_' + code), fsec, fo_ofs, RT_FN_SIZE,
                           DS_FDESC);
 End;
 
@@ -13514,6 +15337,26 @@ Begin
   A('proc _JSRT_add');
   A('push ebp');
   A('mov ebp, esp');
+  A('cmp dword ptr [ebp+12], $OBJ');
+  A('jne .a1');
+  A('push 1');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_toprim');
+  A('add esp, 12');
+  A('mov dword ptr [ebp+8], eax');
+  A('mov dword ptr [ebp+12], edx');
+  A('.a1:');
+  A('cmp dword ptr [ebp+20], $OBJ');
+  A('jne .b1');
+  A('push 1');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('call _JSRT_toprim');
+  A('add esp, 12');
+  A('mov dword ptr [ebp+16], eax');
+  A('mov dword ptr [ebp+20], edx');
+  A('.b1:');
   A('cmp dword ptr [ebp+12], $STR');
   A('je .str');
   A('cmp dword ptr [ebp+20], $STR');
@@ -14743,6 +16586,7 @@ Begin
   f_from := RtFuncObj('fromCharCode', '_JSRT_String_fromCharCode', 1);
   BoReset;
   BoAdd('fromCharCode', f_from, RT_T_FUNCTION);
+  BoAdd('prototype', DsymFind(asm_ctx^, '_JSNO_string_proto'), RT_T_OBJECT);
   props := BoFinish('_JSNO_String_props', 0);
   f_str := RtFuncObjP('String', '_JSRT_String_call', 1, props);
   RtGlobal('String', f_str, RT_T_FUNCTION);
@@ -15403,8 +17247,14 @@ Begin
   A('leave');
   A('ret');
   A('.other:');
-  A('push offset _JSRT_c_type');
-  A('call _JSRT_fatal');
+  A('push dword ptr [ebp+24]');
+  A('push dword ptr [ebp+20]');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_obj_set');
+  A('leave');
+  A('ret');
   A('endp');
 
 End;
@@ -16921,6 +18771,17 @@ Begin
   A('je .undefined');
   A('cmp edx, $FN');
   A('je .function');
+  A('cmp edx, $OBJ');
+  A('jne .obj');
+  A('cmp dword ptr [_JSV___bigproto+4], $OBJ');
+  A('jne .obj');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [eax+$OBJ_PROTO]');
+  A('cmp ecx, dword ptr [_JSV___bigproto]');
+  A('jne .obj');
+  A('mov eax, offset ' + RtStr('bigint'));
+  A('jmp .r');
+  A('.obj:');
   A('mov eax, offset ' + RtStr('object'));
   A('jmp .r');
   A('.num:');
@@ -17872,6 +19733,8 @@ Begin
   A('je .obj');
   A('cmp ecx, $FN');
   A('je .fn');
+  A('cmp ecx, $ARR');
+  A('je .arr');
   A('cmp ecx, $UNDEF');
   A('je .bad');
   A('cmp ecx, $NULL');
@@ -17891,6 +19754,18 @@ Begin
   A('mov esi, eax');
   A('mov ecx, dword ptr [ebp+8]');
   A('mov dword ptr [ecx+$FN_PROPS], eax');
+  A('jmp .setobj');
+  A('.arr:');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov esi, dword ptr [eax+20]');
+  A('test esi, esi');
+  A('jnz .setobj');
+  A('push offset _JSNO_object_proto');
+  A('call _JSRT_obj_new_proto');
+  A('add esp, 4');
+  A('mov esi, eax');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [ecx+20], eax');
   A('jmp .setobj');
   A('.obj:');
   A('mov esi, dword ptr [ebp+8]');
@@ -18429,6 +20304,38 @@ Begin
   A('mov eax, 1');
   A('mov edx, $BOOL');
   FEnd;
+
+  { new.target : _JSRT_nt_enter(cible) -> ancienne ; _JSRT_nt_leave(ancienne) }
+  A('proc _JSRT_nt_enter');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [_JSRT_v_newtarget]');
+  A('xor edx, edx');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [_JSRT_v_newtarget], ecx');
+  A('leave');
+  A('ret');
+  A('endp');
+  A('proc _JSRT_nt_leave');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('mov dword ptr [_JSRT_v_newtarget], ecx');
+  A('leave');
+  A('ret');
+  A('endp');
+  A('proc _JSRT_n_newtarget');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [_JSRT_v_newtarget]');
+  A('mov edx, $FN');
+  A('test eax, eax');
+  A('jnz .r');
+  A('mov edx, $UNDEF');
+  A('.r:');
+  A('leave');
+  A('ret');
+  A('endp');
 
   { _JSRT_new_this(fonction) : this d'un appel new }
   FBegin('_JSRT_new_this', 0);
@@ -20002,6 +21909,8 @@ Begin
   A('mov ebx, dword ptr [ecx+16]');
   A('mov esi, dword ptr [ecx+20]');
   A('mov edi, dword ptr [ecx+24]');
+  A('mov eax, dword ptr [ecx+28]');
+  A('mov dword ptr [_JSRT_v_newtarget], eax');
   A('mov eax, dword ptr [ecx+12]');
   A('mov esp, dword ptr [ecx+4]');
   A('mov ebp, dword ptr [ecx+8]');
@@ -20269,6 +22178,68 @@ Begin
   A('ret');
   A('endp');
 
+  { _JSRT_toprim(valeur, indice) -> primitive ; indice 0 nombre, 1 defaut, 2 chaine }
+  FBegin('_JSRT_toprim', 0);
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov edx, dword ptr [ebp+12]');
+  A('cmp edx, $OBJ');
+  A('jb .ret');
+  A('ja .other');
+  A('mov ebx, dword ptr [ebp+16]');
+  A('cmp ebx, 1');
+  A('jne .h');
+  A('push offset ' + RtStr(#1 + 't'));
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .h');
+  A('mov ebx, 2');
+  A('.h:');
+  A('xor esi, esi');
+  A('.try:');
+  A('mov ecx, esi');
+  A('cmp ebx, 2');
+  A('jne .n');
+  A('xor ecx, 1');
+  A('.n:');
+  A('test ecx, ecx');
+  A('jz .vo');
+  A('push offset ' + RtStr('toString'));
+  A('jmp .lk');
+  A('.vo:');
+  A('push offset ' + RtStr('valueOf'));
+  A('.lk:');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_prop_lookup');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .next');
+  A('test dword ptr [eax+4], 2');
+  A('jnz .next');
+  A('cmp dword ptr [eax+12], $FN');
+  A('jne .next');
+  A('push dword ptr [ebp+12]');
+  A('push dword ptr [ebp+8]');
+  A('push dword ptr [eax+8]');
+  A('call _JSRT_call0');
+  A('add esp, 12');
+  A('cmp edx, $OBJ');
+  A('jb .ret');
+  A('.next:');
+  A('inc esi');
+  A('cmp esi, 2');
+  A('jb .try');
+  A('mov eax, offset ' + RtStr('[object Object]'));
+  A('mov edx, $STR');
+  A('jmp .ret');
+  A('.other:');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  FEnd;
+
   { _JSRT_tonumber(valeur) -> nombre }
   FBegin('_JSRT_tonumber', 0);
   A('mov eax, dword ptr [ebp+8]');
@@ -20284,7 +22255,7 @@ Begin
   A('cmp edx, $STR');
   A('je .str');
   A('cmp edx, $OBJ');
-  A('je .obj');
+  A('je .objp');
   A('cmp edx, $ARR');
   A('je .obj');
   A('.nan:');
@@ -20295,6 +22266,17 @@ Begin
   A('xor eax, eax');
   A('.bool:');
   A('mov edx, $INT');
+  A('jmp .ret');
+  A('.objp:');
+  A('push 0');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_toprim');
+  A('add esp, 12');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_tonumber');
+  A('add esp, 8');
   A('jmp .ret');
   A('.obj:');
   A('push edx');
@@ -20572,10 +22554,11 @@ Begin
   A('je .no');
   A('cmp dword ptr [ebp+20], $NULL');
   A('je .no');
+  A('push 1');
   A('push dword ptr [ebp+12]');
   A('push dword ptr [ebp+8]');
-  A('call _JSRT_tostring');
-  A('add esp, 8');
+  A('call _JSRT_toprim');
+  A('add esp, 12');
   A('mov dword ptr [ebp+8], eax');
   A('mov dword ptr [ebp+12], edx');
   A('jmp .prim2');
@@ -20586,10 +22569,11 @@ Begin
   A('je .no');
   A('cmp dword ptr [ebp+12], $NULL');
   A('je .no');
+  A('push 1');
   A('push dword ptr [ebp+20]');
   A('push dword ptr [ebp+16]');
-  A('call _JSRT_tostring');
-  A('add esp, 8');
+  A('call _JSRT_toprim');
+  A('add esp, 12');
   A('mov dword ptr [ebp+16], eax');
   A('mov dword ptr [ebp+20], edx');
   A('.prim2:');
@@ -26269,6 +28253,27 @@ Begin
   A('mov dword ptr [esi+24], eax');
   A('mov dword ptr [ebx+20], esi');
   A('.have:');
+  A('mov ecx, dword ptr [esi+32]');
+  A('mov edx, dword ptr [esi+12]');
+  A('.g1:');
+  A('test ecx, ecx');
+  A('jz .g1d');
+  A('mov dword ptr [edx], -1');
+  A('add edx, 4');
+  A('dec ecx');
+  A('jmp .g1');
+  A('.g1d:');
+  A('mov ecx, dword ptr [esi+36]');
+  A('inc ecx');
+  A('mov edx, dword ptr [esi+16]');
+  A('.g2:');
+  A('test ecx, ecx');
+  A('jz .g2d');
+  A('mov dword ptr [edx], -1');
+  A('add edx, 4');
+  A('dec ecx');
+  A('jmp .g2');
+  A('.g2d:');
   A('mov eax, dword ptr [ebp+12]');
   A('lea ecx, [eax+$STR_DATA]');
   A('mov dword ptr [esi+4], ecx');
@@ -27679,14 +29684,112 @@ Begin
   RtGlobal('__write', RtFuncObj('__write', '_JSRT_n_write', 2), RT_T_FUNCTION);
   RtGlobal('__setgrp', RtFuncObj('__setgrp', '_JSRT_n_setgrp', 1), RT_T_FUNCTION);
   RtGlobal('__ptr', RtFuncObj('__ptr', '_JSRT_n_ptr', 1), RT_T_FUNCTION);
+  RtGlobal('__ftime', RtFuncObj('__ftime', '_JSRT_n_ftime', 1), RT_T_FUNCTION);
+  RtGlobal('__sleep', RtFuncObj('__sleep', '_JSRT_n_sleep', 1), RT_T_FUNCTION);
   RtGlobal('__gen_resume', RtFuncObj('__gen_resume', '_JSRT_n_gen_resume', 3), RT_T_FUNCTION);
   RtGlobal('__gen_done', RtFuncObj('__gen_done', '_JSRT_n_gen_done', 1), RT_T_FUNCTION);
   RtGlobal('__invoke', RtFuncObj('__invoke', '_JSRT_n_invoke', 3), RT_T_FUNCTION);
+  RtGlobal('__newtarget', RtFuncObj('__newtarget', '_JSRT_n_newtarget', 0), RT_T_FUNCTION);
   RtGlobal('__fproto', RtFuncObj('__fproto', '_JSRT_n_fproto', 0), RT_T_FUNCTION);
 End;
 
 
 { ---- Crochets du prelude : initialisation, boucle d'evenements, natives ---- }
+{ Operateurs et BigInt : si un operande est un BigInt (objet dont le prototype est
+  __bigproto), l'operation est confiee a __bigop(code, a, b) du prelude. }
+Procedure RtBigWrappers;
+Const
+  BN = 17;
+  BinOps: Array[1..BN] Of String[5] = ('add', 'sub', 'mul', 'div', 'mod', 'pow',
+    'band', 'bor', 'bxor', 'shl', 'sar', 'shr', 'lt', 'le', 'gt', 'ge', 'eq');
+  UnOps: Array[1..4] Of String[5] = ('neg', 'inc', 'dec', 'bnot');
+Var
+  i: LongInt;
+
+  Procedure One(Const nm: TString; code: LongInt; unary: Boolean);
+  Begin
+    A('proc _JSRT_bw_' + nm);
+    A('push ebp');
+    A('mov ebp, esp');
+    A('cmp dword ptr [_JSV___bigproto+4], $OBJ');
+    A('jne .norm');
+    A('cmp dword ptr [ebp+12], $OBJ');
+    A('jne .ob');
+    A('mov eax, dword ptr [ebp+8]');
+    A('mov ecx, dword ptr [eax+$OBJ_PROTO]');
+    A('cmp ecx, dword ptr [_JSV___bigproto]');
+    A('je .big');
+    A('.ob:');
+    If Not unary Then
+      Begin
+        A('cmp dword ptr [ebp+20], $OBJ');
+        A('jne .norm');
+        A('mov eax, dword ptr [ebp+16]');
+        A('mov ecx, dword ptr [eax+$OBJ_PROTO]');
+        A('cmp ecx, dword ptr [_JSV___bigproto]');
+        A('je .big');
+      End;
+    A('.norm:');
+    A('leave');
+    A('jmp _JSRT_' + nm);
+    A('.big:');
+    A('sub esp, 40');
+    A('mov eax, dword ptr [_JSV___bigop]');
+    A('mov dword ptr [esp], eax');
+    A('mov dword ptr [esp+4], 3');
+    A('mov dword ptr [esp+8], 0');
+    A('mov dword ptr [esp+12], $UNDEF');
+    A('mov dword ptr [esp+16], ' + IntToStr(code));
+    A('mov dword ptr [esp+20], $INT');
+    A('mov ecx, dword ptr [ebp+8]');
+    A('mov dword ptr [esp+24], ecx');
+    A('mov ecx, dword ptr [ebp+12]');
+    A('mov dword ptr [esp+28], ecx');
+    If unary Then
+      Begin
+        A('mov dword ptr [esp+32], 0');
+        A('mov dword ptr [esp+36], $UNDEF');
+      End
+    Else
+      Begin
+        A('mov ecx, dword ptr [ebp+16]');
+        A('mov dword ptr [esp+32], ecx');
+        A('mov ecx, dword ptr [ebp+20]');
+        A('mov dword ptr [esp+36], ecx');
+      End;
+    A('call dword ptr [eax+$FN_CODE]');
+    A('leave');
+    A('ret');
+    A('endp');
+  End;
+
+Begin
+  For i := 1 To BN Do
+    One(BinOps[i], i - 1, False);
+  One('seq', BN, False);
+  { ToNumeric : un BigInt reste tel quel, le reste passe par ToNumber }
+  A('proc _JSRT_tonumeric');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('cmp dword ptr [_JSV___bigproto+4], $OBJ');
+  A('jne .norm');
+  A('cmp dword ptr [ebp+12], $OBJ');
+  A('jne .norm');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [eax+$OBJ_PROTO]');
+  A('cmp ecx, dword ptr [_JSV___bigproto]');
+  A('jne .norm');
+  A('mov edx, dword ptr [ebp+12]');
+  A('leave');
+  A('ret');
+  A('.norm:');
+  A('leave');
+  A('jmp _JSRT_tonumber');
+  A('endp');
+  For i := 1 To 4 Do
+    One(UnOps[i], BN + i, True);
+End;
+
 Procedure RtPreludeHooks;
   Procedure CallSlot(Const code, slot: TString);
   Begin
@@ -27763,6 +29866,35 @@ Begin
   A('call _JSRT_concat');
   A('add esp, 16');
   A('mov edx, $STR');
+  FEnd;
+
+  { __ftime(0|1) : mot bas / haut de GetSystemTimeAsFileTime ; __sleep(ms) }
+  FBegin('_JSRT_n_ftime', 2);
+  A('lea eax, [ebp-20]');
+  A('push eax');
+  A('call dword ptr [__imp__GetSystemTimeAsFileTime@4]');
+  A('mov eax, ' + Lv(2));
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .r');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + '], 0');
+  A('je .r');
+  A('mov eax, ' + Lv(1));
+  A('.r:');
+  A('mov edx, $INT');
+  FEnd;
+
+  FBegin('_JSRT_n_sleep', 0);
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .r');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('push eax');
+  A('call dword ptr [__imp__Sleep@4]');
+  A('.r:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
   FEnd;
 
   { __ptr(v) -> adresse (entier) d'une chaine, d'un objet ou d'une fonction : identite stable }
@@ -28285,6 +30417,7 @@ Begin
   RtRxVm;
   RtRxApi;
   RtPreludeHooks;
+  RtBigWrappers;
   RtCoroutines;
 End;
 
@@ -28561,12 +30694,44 @@ Begin
 End;
 
 { Appels systeme simules (stdcall : l'appele retire ses arguments). }
+Var
+  emu_vclock: Int64;
+  emu_base_ms: Int64;
+
+{ Heure de depart (ms depuis 1970, UTC) d'apres l'horloge du systeme. }
+Function EmuUnixMs: Int64;
+Var
+  y, mo, d, dow, h, mi, sec, hund: Word;
+  yy, mm, era, yoe, doy, doe, days: Int64;
+Begin
+  If emu_base_ms = 0 Then
+    Begin
+      GetDate(y, mo, d, dow);
+      GetTime(h, mi, sec, hund);
+      yy := y;
+      mm := mo;
+      If mm <= 2 Then
+        Dec(yy);
+      era := yy Div 400;
+      yoe := yy - era * 400;
+      If mo > 2 Then
+        doy := (153 * (mm - 3) + 2) Div 5 + d - 1
+      Else
+        doy := (153 * (mm + 9) + 2) Div 5 + d - 1;
+      doe := yoe * 365 + yoe Div 4 - yoe Div 100 + doy;
+      days := era * 146097 + doe - 719468;
+      emu_base_ms := ((days * 24 + h) * 60 + mi) * 60 * 1000 + sec * 1000 + hund * 10;
+    End;
+  EmuUnixMs := emu_base_ms;
+End;
+
 Procedure EmuTrap(id: LongInt);
 Var
   esp, a1, a2, a3, a4, n, i: LongWord;
   c: Byte;
   ch: Char;
   s: String;
+  vq: Int64;
 Begin
   esp := emu_reg[Ord(R_ESP)];
   a1 := MemRd(esp + 4, 4);
@@ -28653,6 +30818,20 @@ Begin
         If a4 <> 0 Then
           MemWr(a4, i, 4);
         emu_reg[Ord(R_EAX)] := 1;
+      End;
+    8: { GetSystemTimeAsFileTime(ptr) : horloge simulee (heure de depart + temps ecoule) }
+      Begin
+        n := 4;
+        vq := (EmuUnixMs + emu_vclock + Int64(emu_steps) Div 1000000 + 11644473600000) * 10000;
+        MemWr(a1, LongWord(vq And $FFFFFFFF), 4);
+        MemWr(a1 + 4, LongWord((vq Shr 32) And $FFFFFFFF), 4);
+        emu_reg[Ord(R_EAX)] := 0;
+      End;
+    9: { Sleep(ms) : avance l'horloge simulee sans attendre }
+      Begin
+        n := 4;
+        emu_vclock := emu_vclock + a1;
+        emu_reg[Ord(R_EAX)] := 0;
       End;
     7: { GetCommandLineA() : ligne de commande simulee }
       Begin
@@ -29429,7 +31608,9 @@ Begin
             Else If nm = '__imp__WriteFile@20' Then a := 4
             Else If nm = '__imp__ReadFile@20' Then a := 5
             Else If nm = '__imp__GetTickCount@0' Then a := 6
-            Else If nm = '__imp__GetCommandLineA@0' Then a := 7;
+            Else If nm = '__imp__GetCommandLineA@0' Then a := 7
+            Else If nm = '__imp__GetSystemTimeAsFileTime@4' Then a := 8
+            Else If nm = '__imp__Sleep@4' Then a := 9;
             If a <> 0 Then
               Begin
                 MemWr(emu_iat_next, EMU_TRAP + 4 * a, 4);

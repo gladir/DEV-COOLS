@@ -57,8 +57,30 @@ Limites connues
   - Pas de ramasse-miettes : le tas ne fait que croitre.
   - Pas de lookbehind ni de groupes nommes dans les expressions regulieres ;
     matchAll renvoie un tableau, pas un iterateur.
-  - Date, Map, Set, Symbol, Promise, async et les generateurs ne sont pas
-    implementes.
+  - Date, Map, Set, WeakMap, WeakSet, Symbol, Promise, async/await, les
+    generateurs (function*, yield), BigInt, setTimeout/setInterval/
+    setImmediate, require, eval, new.target, les gabarits etiquetes,
+    toPrecision et toExponential sont implementes, en grande partie par un
+    « prelude » JavaScript (DOC/prelude/*.js) ajoute au programme a la
+    compilation. Limites de ces ajouts :
+      * Date : fuseau UTC uniquement ; analyse de chaines limitee aux
+        formats ISO, « Mar 5, 2021 08:09:10 » et jj/mm/aaaa.
+      * async/await et generateurs : coroutines a pile propre (64 Ko) ;
+        pas de generateurs asynchrones ni de « for await ».
+      * BigInt : precision arbitraire (objet du prelude) ; x++ sur une
+        valeur retournee par x++ devient un nombre ; 0n est « truthy » ;
+        pas de Map/Set par valeur sur les BigInt.
+      * new.target : variable globale positionnee par new ; une fonction
+        appelee normalement depuis un constructeur peut le voir a tort.
+      * require : util, assert, events, os, path (syntaxe POSIX), timers,
+        timers/promises, perf_hooks, process. fs, http, crypto... lèvent
+        une erreur explicite. Pas de require de fichiers relatifs.
+      * eval : seulement des expressions (litteraux, operateurs, tableaux,
+        objets, Math/JSON/Number/String..., appels de methodes) ; pas
+        d'instructions (var, function, if...) ni d'acces aux variables du
+        programme ; new Function n'existe pas.
+      * Les gabarits etiquetes n'ont pas de cache par site d'appel (le
+        tableau strings est recree a chaque evaluation).
   - Les .exe n'ont pas ete executes sur une machine Windows par l'auteur du
     harnais : leur validation repose sur l'emulateur, binutils, DISEXE et des
     controles de relocation.
