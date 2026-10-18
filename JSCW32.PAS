@@ -26,7 +26,7 @@
   18. [IMPLEMENTE] Implementer les exceptions : try/catch/finally, throw de n'importe quelle valeur, classes Error/TypeError/RangeError/SyntaxError avec message, deroulement de pile via pile de gestionnaires (ou SEH Windows), finally execute meme avec return/break/continue, exception non rattrapee (message sur stderr + code de sortie non nul), erreurs runtime (appel d'un non-fonction, propriete d'undefined), avec test23.js.
   19. [IMPLEMENTE] Implementer les objets globaux et built-ins numeriques : Math (abs, max, min, pow, sqrt, floor, ceil, round, trunc, sign, random, PI, E...), Number (isInteger, isNaN, isFinite, parseFloat, MAX_VALUE...), Number()/parseInt (avec base)/parseFloat/isNaN/isFinite, JSON.stringify et JSON.parse reels (pas des stubs), NaN/Infinity/undefined/globalThis, avec math.js, test20.js et test24.js.
   20. [IMPLEMENTE] Implementer les expressions regulieres : litteraux /re/flags (g, i, m, ainsi que les flags non standards rencontres dans test03.js), new RegExp(pattern, flags), moteur a backtracking (classes, quantificateurs, groupes, ancres, alternatives), RegExp.test/exec, String.match/matchAll/search/replace/split, lastIndex, avec test19.js.
-  21. [A FAIRE] Implementer l'interface console, processus et systeme hote Windows : console.log (plusieurs arguments, nombres entiers/flottants/negatifs, booleens, null, undefined, objets et tableaux), console.error/warn vers stderr, process.stdout.write (sans saut de ligne), process.exit(code), process.argv, alert (comme console.log), prompt (lecture de stdin), imports kernel32 (GetStdHandle, WriteFile, ReadFile, GetCommandLineA, HeapAlloc, ExitProcess), avec hello.js, test12.js et test24.js.
+  21. [IMPLEMENTE] Implementer l'interface console, processus et systeme hote Windows : console.log (plusieurs arguments, nombres entiers/flottants/negatifs, booleens, null, undefined, objets et tableaux), console.error/warn vers stderr, process.stdout.write (sans saut de ligne), process.exit(code), process.argv, alert (comme console.log), prompt (lecture de stdin), imports kernel32 (GetStdHandle, WriteFile, ReadFile, GetCommandLineA, HeapAlloc, ExitProcess), avec hello.js, test12.js et test24.js.
   22. [A FAIRE] Construire le generateur ASM 80386 optionnel : syntaxe assembleur Windows 32 bits (.386, .MODEL FLAT, sections .text/.data/.rdata, EXTERN/PUBLIC), labels stables, commentaires reprenant les lignes JavaScript d'origine, routines runtime appelees par noms stables, emission du .ASM uniquement sur demande explicite de l'utilisateur.
   23. [A FAIRE] Construire le generateur OBJ COFF i386 : en-tete, sections .text/.data/.rdata/.bss, table de symboles, relocations (REL32/DIR32), symboles externes importes de kernel32, production d'un .OBJ seul quand le parametre le demande, et validation du format avec les outils DUMPBIN.PAS / OBJDUMP.PAS / NM.PAS du depot.
   24. [A FAIRE] Construire le linker PE32 interne : en-tetes MZ/PE, sections alignees, table d'imports kernel32 (et runtime propre), resolution des relocations, point d'entree, sous-systeme console, ecriture du .EXE final par defaut, suppression des anciens .EXE perimes et verification avec DISEXE.PAS.
@@ -334,7 +334,7 @@ Const
     'length', 'prototype', 'constructor', 'name', 'message', 'toString',
     'valueOf'
   );
-  RT_DATA_VAR_COUNT = 17;
+  RT_DATA_VAR_COUNT = 18;
   { ---- Code genere (TODO 9) ---- }
   SYMK_D = 1;                     { symbole du pool de donnees }
   SYMK_X = 2;                     { symbole de code ou externe }
@@ -354,9 +354,9 @@ Const
   JT_BLOCK = 3;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
-    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount'
+    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp'
   );
-  BUILTIN_COUNT = 47;
+  BUILTIN_COUNT = 54;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -365,7 +365,8 @@ Const
     'WeakSet', 'alert', 'clearInterval', 'clearTimeout', 'console',
     'decodeURIComponent', 'encodeURIComponent', 'exports', 'globalThis',
     'isFinite', 'isNaN', 'module', 'parseFloat', 'parseInt', 'process',
-    'prompt', 'require', 'setInterval', 'setTimeout', 'undefined'
+    'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
+    '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write'
   );
 
 Type
@@ -1240,6 +1241,408 @@ End;
 
 { ---- Chargement du source ---- }
 
+{ PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
+Const
+  PRELUDE_LINES = 352;
+  PreludeText: Array[1..PRELUDE_LINES] Of String[160] = (
+    'function __i_isId(k) {',
+    '  if (k.length === 0) return false;',
+    '  for (var i = 0; i < k.length; i++) {',
+    '    var c = k.charCodeAt(i);',
+    '    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || (i > 0 && c >= 48 && c <= 57))) return false;',
+    '  }',
+    '  return true;',
+    '}',
+    'function __i_hex2(c) {',
+    '  var h = ''0123456789ABCDEF'';',
+    '  return ''\\x'' + h[(c >> 4) & 15] + h[c & 15];',
+    '}',
+    'function __i_quote(s) {',
+    '  var q = "''";',
+    '  if (s.indexOf("''") !== -1) {',
+    '    if (s.indexOf(''"'') === -1) q = ''"'';',
+    '    else if (s.indexOf(''`'') === -1 && s.indexOf(''${'') === -1) q = ''`'';',
+    '  }',
+    '  var out = q;',
+    '  for (var i = 0; i < s.length; i++) {',
+    '    var ch = s[i];',
+    '    var c = s.charCodeAt(i);',
+    '    if (ch === q || ch === ''\\'') out += ''\\'' + ch;',
+    '    else if (c === 10) out += ''\\n'';',
+    '    else if (c === 9) out += ''\\t'';',
+    '    else if (c === 13) out += ''\\r'';',
+    '    else if (c === 8) out += ''\\b'';',
+    '    else if (c === 12) out += ''\\f'';',
+    '    else if (c === 11) out += ''\\v'';',
+    '    else if (c < 32 || c === 127) out += __i_hex2(c);',
+    '    else out += ch;',
+    '  }',
+    '  return out + q;',
+    '}',
+    'function __i_qstr(s, ctx) {',
+    '  if (s.length > 16 && s.length > 76 - ctx.ind && s.indexOf(''\n'') !== -1) {',
+    '    var parts = [];',
+    '    var st = 0;',
+    '    for (var i = 0; i < s.length; i++) {',
+    '      if (s[i] === ''\n'') {',
+    '        parts.push(__i_quote(s.slice(st, i + 1)));',
+    '        st = i + 1;',
+    '      }',
+    '    }',
+    '    if (st < s.length) parts.push(__i_quote(s.slice(st)));',
+    '    return parts.join('' +\n'' + '' ''.repeat(ctx.ind + 2));',
+    '  }',
+    '  return __i_quote(s);',
+    '}',
+    'function __i_cname(o) {',
+    '  var p = Object.getPrototypeOf(o);',
+    '  if (p === null) return null;',
+    '  while (p !== null) {',
+    '    if (p.hasOwnProperty(''constructor'')) {',
+    '      var c = p.constructor;',
+    '      if (typeof c === ''function'') {',
+    '        var n = __fname(c);',
+    '        if (n !== '''') return n;',
+    '      }',
+    '    }',
+    '    if (p === Object.prototype) return ''Object'';',
+    '    p = Object.getPrototypeOf(p);',
+    '  }',
+    '  return ''Object'';',
+    '}',
+    'function __i_fnbase(f) {',
+    '  var fl = __fflags(f);',
+    '  var nm = __fname(f);',
+    '  if (fl & 16) {',
+    '    var s = ''[class '' + (nm === '''' ? ''(anonymous)'' : nm);',
+    '    var par = __fparent(f);',
+    '    if (typeof par === ''function'') s += '' extends '' + __fname(par);',
+    '    return s + '']'';',
+    '  }',
+    '  var kind = ''Function'';',
+    '  if (fl & 2) kind = (fl & 4) ? ''AsyncGeneratorFunction'' : ''AsyncFunction'';',
+    '  else if (fl & 4) kind = ''GeneratorFunction'';',
+    '  return ''['' + kind + (nm === '''' ? '' (anonymous)'' : '': '' + nm) + '']'';',
+    '}',
+    'function __i_errbase(e, ctx) {',
+    '  var st = e.stack;',
+    '  var s = (typeof st === ''string'' && st !== '''') ? st : String(e);',
+    '  if (s.indexOf(''\n    at'') === -1) s = ''['' + s + '']'';',
+    '  if (ctx.ind > 0) s = s.split(''\n'').join(''\n'' + '' ''.repeat(ctx.ind));',
+    '  return s;',
+    '}',
+    'function __i_isBelow(out, start, base) {',
+    '  var total = out.length + start;',
+    '  if (total + out.length > 80) return false;',
+    '  for (var i = 0; i < out.length; i++) {',
+    '    total += out[i].length;',
+    '    if (total > 80) return false;',
+    '  }',
+    '  return base === '''' || base.indexOf(''\n'') === -1;',
+    '}',
+    'function __i_group(ctx, out, value) {',
+    '  var total = 0;',
+    '  var maxLen = 0;',
+    '  var i;',
+    '  var outLen = out.length;',
+    '  if (out.length > 100 && value.length > 100) outLen--;',
+    '  var dataLen = [];',
+    '  for (i = 0; i < outLen; i++) {',
+    '    var len = out[i].length;',
+    '    dataLen.push(len);',
+    '    total += len + 2;',
+    '    if (maxLen < len) maxLen = len;',
+    '  }',
+    '  var actualMax = maxLen + 2;',
+    '  if (actualMax * 3 + ctx.ind < 80 && (total / actualMax > 5 || maxLen <= 6)) {',
+    '    var averageBias = Math.sqrt(actualMax - total / out.length);',
+    '    var biasedMax = Math.max(actualMax - 3 - averageBias, 1);',
+    '    var columns = Math.min(',
+    '      Math.round(Math.sqrt(2.5 * biasedMax * outLen) / biasedMax),',
+    '      Math.floor((80 - ctx.ind) / actualMax),',
+    '      12,',
+    '      15);',
+    '    if (columns <= 1) return out;',
+    '    var tmp = [];',
+    '    var maxLine = [];',
+    '    for (i = 0; i < columns; i++) {',
+    '      var lineLen = 0;',
+    '      for (var j = i; j < out.length; j += columns) {',
+    '        if (dataLen[j] > lineLen) lineLen = dataLen[j];',
+    '      }',
+    '      maxLine.push(lineLen + 2);',
+    '    }',
+    '    var padStart = true;',
+    '    for (i = 0; i < out.length; i++) {',
+    '      if (typeof value[i] !== ''number'') {',
+    '        padStart = false;',
+    '        break;',
+    '      }',
+    '    }',
+    '    for (i = 0; i < outLen; i += columns) {',
+    '      var max = Math.min(i + columns, outLen);',
+    '      var str = '''';',
+    '      var k = i;',
+    '      for (; k < max - 1; k++) {',
+    '        var cell = out[k] + '', '';',
+    '        str += padStart ? cell.padStart(maxLine[k - i], '' '') : cell.padEnd(maxLine[k - i], '' '');',
+    '      }',
+    '      if (padStart) str += out[k].padStart(maxLine[k - i] - 2, '' '');',
+    '      else str += out[k];',
+    '      tmp.push(str);',
+    '    }',
+    '    if (outLen < out.length) tmp.push(out[outLen]);',
+    '    out = tmp;',
+    '  }',
+    '  return out;',
+    '}',
+    'function __i_reduce(out, base, b0, b1, isArr, rt, ctx, value) {',
+    '  var entries = out.length;',
+    '  if (isArr && entries > 6) out = __i_group(ctx, out, value);',
+    '  if (ctx.cur - rt < 3 && entries === out.length) {',
+    '    var start = out.length + ctx.ind + b0.length + base.length + 10;',
+    '    if (__i_isBelow(out, start, base)) {',
+    '      var joined = out.join('', '');',
+    '      if (joined.indexOf(''\n'') === -1) {',
+    '        return (base !== '''' ? base + '' '' : '''') + b0 + '' '' + joined + '' '' + b1;',
+    '      }',
+    '    }',
+    '  }',
+    '  var ind = ''\n'' + '' ''.repeat(ctx.ind);',
+    '  return (base !== '''' ? base + '' '' : '''') + b0 + ind + ''  '' + out.join('','' + ind + ''  '') + ind + b1;',
+    '}',
+    'function __i_order(keys) {',
+    '  var ints = [];',
+    '  var rest = [];',
+    '  for (var i = 0; i < keys.length; i++) {',
+    '    var k = keys[i];',
+    '    var ok = k.length > 0 && k.length < 10 && (k.length === 1 || k.charCodeAt(0) !== 48);',
+    '    for (var j = 0; ok && j < k.length; j++) {',
+    '      var c = k.charCodeAt(j);',
+    '      if (c < 48 || c > 57) ok = false;',
+    '    }',
+    '    if (ok) ints.push(k);',
+    '    else rest.push(k);',
+    '  }',
+    '  if (ints.length === 0) return keys;',
+    '  ints.sort(function (a, b) { return Number(a) - Number(b); });',
+    '  return ints.concat(rest);',
+    '}',
+    'function __i_prop(v, k, ctx, rt) {',
+    '  var a = __acc(v, k);',
+    '  var s;',
+    '  if (a !== 0) s = a === 1 ? ''[Getter]'' : (a === 2 ? ''[Setter]'' : ''[Getter/Setter]'');',
+    '  else {',
+    '    ctx.ind += 2;',
+    '    s = __i_fmt(v[k], ctx, rt);',
+    '    ctx.ind -= 2;',
+    '  }',
+    '  return (__i_isId(k) ? k : __i_quote(k)) + '': '' + s;',
+    '}',
+    'function __i_raw(v, ctx, rt) {',
+    '  var isArr = Array.isArray(v);',
+    '  var isFn = typeof v === ''function'';',
+    '  var isRx = !isFn && !isArr && v instanceof RegExp;',
+    '  var isErr = !isFn && !isArr && !isRx && v instanceof Error;',
+    '  var cname = isArr ? ''Array'' : __i_cname(v);',
+    '  var ex = isArr ? __extras(v) : undefined;',
+    '  var keys = isArr ? (ex ? Object.keys(ex) : []) : __i_order(Object.keys(v));',
+    '  var base = '''';',
+    '  var b0 = ''{'';',
+    '  var b1 = ''}'';',
+    '  if (isArr) {',
+    '    b0 = ''['';',
+    '    b1 = '']'';',
+    '    if (v.length === 0 && keys.length === 0) return ''[]'';',
+    '  } else if (isFn) {',
+    '    base = __i_fnbase(v);',
+    '    if (keys.length === 0) return base;',
+    '  } else if (isRx) {',
+    '    base = String(v);',
+    '    if (keys.length === 0) return base;',
+    '  } else if (isErr) {',
+    '    base = __i_errbase(v, ctx);',
+    '    if (keys.length === 0) return base;',
+    '  } else {',
+    '    if (cname === null) b0 = ''[Object: null prototype] {'';',
+    '    else if (cname !== ''Object'') b0 = cname + '' {'';',
+    '    if (keys.length === 0) return b0 + ''}'';',
+    '  }',
+    '  if (rt > ctx.depth) return isArr ? ''[Array]'' : ''['' + (cname || ''Object'') + '']'';',
+    '  rt += 1;',
+    '  ctx.seen.push(v);',
+    '  ctx.cur = rt;',
+    '  var out = [];',
+    '  var i;',
+    '  if (isArr) {',
+    '    var n = v.length;',
+    '    var lim = n > 100 ? 100 : n;',
+    '    for (i = 0; i < lim; i++) {',
+    '      ctx.ind += 2;',
+    '      out.push(__i_fmt(v[i], ctx, rt));',
+    '      ctx.ind -= 2;',
+    '    }',
+    '    if (n > lim) out.push(''... '' + (n - lim) + '' more item'' + (n - lim > 1 ? ''s'' : ''''));',
+    '    for (i = 0; i < keys.length; i++) out.push(__i_prop(ex, keys[i], ctx, rt));',
+    '  } else {',
+    '    for (i = 0; i < keys.length; i++) out.push(__i_prop(v, keys[i], ctx, rt));',
+    '  }',
+    '  ctx.seen.pop();',
+    '  var ci = ctx.circ.indexOf(v);',
+    '  if (ci !== -1) {',
+    '    var ref = ''<ref *'' + (ci + 1) + ''>'';',
+    '    base = base === '''' ? ref : ref + '' '' + base;',
+    '  }',
+    '  return __i_reduce(out, base, b0, b1, isArr, rt, ctx, v);',
+    '}',
+    'function __i_fmt(v, ctx, rt) {',
+    '  var t = typeof v;',
+    '  if (t === ''string'') return __i_qstr(v, ctx);',
+    '  if (t === ''number'') return (v === 0 && 1 / v < 0) ? ''-0'' : String(v);',
+    '  if (t !== ''object'' && t !== ''function'') return String(v);',
+    '  if (v === null) return ''null'';',
+    '  if (ctx.seen.indexOf(v) !== -1) {',
+    '    var ix = ctx.circ.indexOf(v);',
+    '    if (ix === -1) {',
+    '      ctx.circ.push(v);',
+    '      ix = ctx.circ.length - 1;',
+    '    }',
+    '    return ''[Circular *'' + (ix + 1) + '']'';',
+    '  }',
+    '  return __i_raw(v, ctx, rt);',
+    '}',
+    'function __i_insp(v, depth) {',
+    '  return __i_fmt(v, { seen: [], circ: [], ind: 0, cur: 0, depth: depth }, 0);',
+    '}',
+    'function __i_num(n) {',
+    '  return (n === 0 && 1 / n < 0) ? ''-0'' : String(n);',
+    '}',
+    'function __i_str1(v) {',
+    '  if (typeof v === ''number'') return __i_num(v);',
+    '  if (typeof v !== ''object'' || v === null) return String(v);',
+    '  if (v.toString === Object.prototype.toString || Array.isArray(v) || v instanceof Error || v instanceof RegExp) return __i_insp(v, 0);',
+    '  return String(v);',
+    '}',
+    'function __i_args(a) {',
+    '  var n = a.length;',
+    '  if (n === 0) return '''';',
+    '  var first = a[0];',
+    '  var i;',
+    '  if (typeof first !== ''string'') {',
+    '    var parts = [];',
+    '    for (i = 0; i < n; i++) parts.push(typeof a[i] === ''string'' ? a[i] : __i_insp(a[i], 2));',
+    '    return parts.join('' '');',
+    '  }',
+    '  if (n === 1) return first;',
+    '  var res = '''';',
+    '  var last = 0;',
+    '  var ai = 1;',
+    '  for (i = 0; i < first.length - 1; i++) {',
+    '    if (first[i] !== ''%'') continue;',
+    '    var c = first[i + 1];',
+    '    if (c === ''%'') {',
+    '      res += first.slice(last, i) + ''%'';',
+    '      last = i + 2;',
+    '      i++;',
+    '      continue;',
+    '    }',
+    '    if (ai >= n) continue;',
+    '    var t = null;',
+    '    var x = a[ai];',
+    '    if (c === ''s'') t = __i_str1(x);',
+    '    else if (c === ''d'') t = (typeof x === ''object'' && x !== null) ? ''NaN'' : __i_num(Number(x));',
+    '    else if (c === ''i'') t = (typeof x === ''object'' && x !== null) ? ''NaN'' : __i_num(parseInt(x));',
+    '    else if (c === ''f'') t = __i_num(parseFloat(x));',
+    '    else if (c === ''j'') t = JSON.stringify(x);',
+    '    else if (c === ''o'') t = __i_insp(x, 4);',
+    '    else if (c === ''O'') t = __i_insp(x, 2);',
+    '    else if (c === ''c'') t = '''';',
+    '    if (t === null) continue;',
+    '    res += first.slice(last, i) + t;',
+    '    last = i + 2;',
+    '    i++;',
+    '    ai++;',
+    '  }',
+    '  res += first.slice(last);',
+    '  for (i = ai; i < n; i++) res += '' '' + (typeof a[i] === ''string'' ? a[i] : __i_insp(a[i], 2));',
+    '  return res;',
+    '}',
+    'function __i_console(kind, ...a) {',
+    '  var g = __i_g;',
+    '  var fd = 1;',
+    '  var s;',
+    '  if (kind === 5) {',
+    '    if (g && g.length >= 2) __i_g = g.slice(2);',
+    '    __setgrp(__i_g ? 1 : 0);',
+    '    return;',
+    '  }',
+    '  if (kind === 1) fd = 2;',
+    '  if (kind === 2) s = __i_insp(a[0], 2);',
+    '  else if (kind === 3) {',
+    '    if (a[0]) return;',
+    '    a.shift();',
+    '    fd = 2;',
+    '    s = ''Assertion failed'' + (a.length > 0 ? '': '' + __i_args(a) : '''');',
+    '  } else s = __i_args(a);',
+    '  if (kind === 4 && a.length === 0) {',
+    '    __i_g = (g || '''') + ''  '';',
+    '    __setgrp(1);',
+    '    return;',
+    '  }',
+    '  if (g) s = g + s.split(''\n'').join(''\n'' + g);',
+    '  __write(fd, s + ''\n'');',
+    '  if (kind === 4) {',
+    '    __i_g = (g || '''') + ''  '';',
+    '    __setgrp(1);',
+    '  }',
+    '}',
+    'var __i_g;'
+  );
+{ PRELUDE-END }
+
+{ Ajoute a la fin du source le prelude JS (formateur de console). Les lignes du
+  programme gardent leur numero : le prelude est place apres. }
+Function AppendPrelude(Var ctx: TCompilerContext): Boolean;
+Var
+  i, j, line_len: LongInt;
+  ok: Boolean;
+
+  Procedure Put(c: Char);
+  Begin
+    If Not ok Then
+      Exit;
+    If (ctx.source.char_count >= MAX_SOURCE_CHARS) Or
+       ((c = #10) And (ctx.source.line_count >= MAX_SOURCE_LINES)) Then
+      Begin
+        PipelineError(ctx, 'source trop volumineux (prelude)');
+        ok := False;
+        Exit;
+      End;
+    ctx.source.buf[ctx.source.char_count] := c;
+    Inc(ctx.source.char_count);
+    If c = #10 Then
+      Begin
+        line_len := ctx.source.char_count - 1 -
+                    ctx.source.line_start[ctx.source.line_count];
+        If line_len > ctx.source.max_line_len Then
+          ctx.source.max_line_len := line_len;
+        Inc(ctx.source.line_count);
+        ctx.source.line_start[ctx.source.line_count] := ctx.source.char_count;
+      End;
+  End;
+
+Begin
+  ok := True;
+  Put(#10);
+  For i := 1 To PRELUDE_LINES Do
+    Begin
+      For j := 1 To Length(PreludeText[i]) Do
+        Put(PreludeText[i][j]);
+      Put(#10);
+    End;
+  AppendPrelude := ok;
+End;
+
 Function LoadSource(Var ctx: TCompilerContext): Boolean;
 Var
   f: File;
@@ -1352,6 +1755,9 @@ Begin
   io := IOResult;
   If failed Then
     Exit;
+  If Not (ctx.options.dump_tokens Or ctx.options.dump_ast Or ctx.options.dump_scopes) Then
+    If Not AppendPrelude(ctx) Then
+      Exit;
 
   line_len := ctx.source.char_count -
               ctx.source.line_start[ctx.source.line_count];
@@ -6882,7 +7288,10 @@ Begin
       NodeFuncName := KeyString(ctx, t);
     N_FUNC_EXPR, N_CLASS_EXPR:
       Begin
-        If ctx.lex.tokens[t].kind = TK_IDENT Then
+        If (ctx.ast.nodes[n].kind = N_FUNC_EXPR) And
+           (ctx.ast.nodes[n].flags And FN_ARROW <> 0) Then
+          { une fleche est anonyme : son nom vient de sa cible }
+        Else If ctx.lex.tokens[t].kind = TK_IDENT Then
           NodeFuncName := KeyString(ctx, t)
         Else If (ctx.ast.nodes[n].flags And FN_METHOD <> 0) And
                 (ctx.lex.tokens[t].kind <> TK_PUNCT) Then
@@ -7093,6 +7502,55 @@ End;
 
 { ---- Collecte dans l'AST ---- }
 
+{ Le nom d'une fonction ou d'une classe anonyme vient de sa cible (variable, propriete de litteral
+  ou affectation) ; le constructeur d'une classe porte le nom de la classe. }
+Procedure NameFuncNode(Var ctx: TCompilerContext; v, tok: LongInt);
+Var
+  nm: LongInt;
+Begin
+  If v = 0 Then
+    Exit;
+  nm := KeyString(ctx, tok);
+  Case ctx.ast.nodes[v].kind Of
+    N_FUNC_EXPR:
+      If (ctx.ast.nodes[v].ds > 0) And
+         (ctx.data.strs[ctx.data.fdescs[ctx.ast.nodes[v].ds].name_str].len = 0) Then
+        ctx.data.fdescs[ctx.ast.nodes[v].ds].name_str := nm;
+    N_CLASS_EXPR:
+      If (ctx.ast.nodes[v].ds > 0) And
+         (ctx.data.strs[ctx.data.cdescs[ctx.ast.nodes[v].ds].name_str].len = 0) Then
+        ctx.data.cdescs[ctx.ast.nodes[v].ds].name_str := nm;
+  End;
+End;
+
+Procedure InferFuncNames(Var ctx: TCompilerContext);
+Var
+  i, t: LongInt;
+Begin
+  For i := 1 To ctx.ast.node_count Do
+    Case ctx.ast.nodes[i].kind Of
+      N_DECLARATOR:
+        Begin
+          t := ctx.ast.nodes[i].e1;
+          If (t <> 0) And (ctx.ast.nodes[t].kind = N_BIND_IDENT) Then
+            NameFuncNode(ctx, ctx.ast.nodes[i].e2, ctx.ast.nodes[t].tok);
+        End;
+      N_PROP:
+        If ctx.ast.nodes[i].flags And (PR_SPREAD Or PR_COMPUTED Or PR_METHOD) = 0 Then
+          NameFuncNode(ctx, ctx.ast.nodes[i].e1, ctx.ast.nodes[i].tok);
+      N_ASSIGN:
+        Begin
+          t := ctx.ast.nodes[i].e1;
+          If (t <> 0) And (ctx.ast.nodes[t].kind = N_IDENT) And
+             (ctx.lex.tokens[ctx.ast.nodes[i].tok].text = '=') Then
+            NameFuncNode(ctx, ctx.ast.nodes[i].e2, ctx.ast.nodes[t].tok);
+        End;
+    End;
+  For i := 1 To ctx.data.cd_count Do
+    If ctx.data.cdescs[i].ctor_fd <> 0 Then
+      ctx.data.fdescs[ctx.data.cdescs[i].ctor_fd].name_str := ctx.data.cdescs[i].name_str;
+End;
+
 Procedure CollectData(Var ctx: TCompilerContext);
 Var
   i, e: LongInt;
@@ -7170,6 +7628,7 @@ Begin
     If (ctx.ast.nodes[i].kind = N_CLASS_DECL) Or
        (ctx.ast.nodes[i].kind = N_CLASS_EXPR) Then
       AddClassDesc(ctx, i);
+  InferFuncNames(ctx);
 End;
 
 { ---- Emission des sections ---- }
@@ -9735,11 +10194,13 @@ Begin
     GenMakeClosure(ctx, ctor)
   Else
     Begin
+      Emit1(ctx, OP_PUSH, AddrSym(SYMK_D,
+            ctx.data.strs[ctx.data.cdescs[ctx.ast.nodes[n].ds].name_str].sym));
       If ctx.ast.nodes[n].e1 <> 0 Then
         Emit1(ctx, OP_PUSH, ImmOp(1))
       Else
         Emit1(ctx, OP_PUSH, ImmOp(0));
-      CallRt(ctx, 'make_default_ctor', 4);
+      CallRt(ctx, 'make_default_ctor', 8);
     End;
   SaveTemp(ctx, tcls);
   PushTemp(ctx, tpar);
@@ -12095,6 +12556,7 @@ Begin
   A('push -10');
   A('call dword ptr [__imp__GetStdHandle@4]');
   A('mov dword ptr [_JSRT_v_stdin], eax');
+  A('call _JSRT_args_init');
   A('leave');
   A('ret');
   A('endp');
@@ -12696,52 +13158,147 @@ End;
 
 { ---- console ---- }
 
-Procedure RtConsoleFn(Const code, handle_var: TString);
+Procedure RtConsoleFn(Const code, handle_var: TString; kind: LongInt; fast: Boolean);
 Begin
   A('proc ' + code);
   A('push ebp');
   A('mov ebp, esp');
+  A('push ebx');
   A('push esi');
   A('push edi');
-  A('mov edi, dword ptr [' + handle_var + ']');
+  If fast Then
+    Begin
+      { chemin rapide : chaines, entiers, booleens, null, undefined, doubles ; le reste
+        (objets, tableaux, fonctions, -0, formats %) passe par le formateur JS }
+      A('cmp dword ptr [_JSRT_v_grp], 0');
+      A('jne .js');
+      A('xor esi, esi');
+      A('.chk:');
+      A('cmp esi, dword ptr [ebp+12]');
+      A('jae .fast');
+      A('mov ecx, esi');
+      A('shl ecx, 3');
+      A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+      A('add ecx, eax');
+      A('mov eax, dword ptr [ecx]');
+      A('mov edx, dword ptr [ecx+4]');
+      A('cmp edx, $STR');
+      A('jne .t1');
+      A('test esi, esi');
+      A('jnz .nx');
+      A('cmp dword ptr [ebp+12], 1');
+      A('je .nx');
+      A('mov ecx, dword ptr [eax+$STR_LEN]');
+      A('lea edi, [eax+$STR_DATA]');
+      A('.sc:');
+      A('test ecx, ecx');
+      A('jz .nx');
+      A('cmp byte ptr [edi], 37');
+      A('je .js');
+      A('inc edi');
+      A('dec ecx');
+      A('jmp .sc');
+      A('.t1:');
+      A('cmp edx, $INT');
+      A('jb .dbl');
+      A('je .nx');
+      A('cmp edx, $BOOL');
+      A('je .nx');
+      A('cmp edx, $UNDEF');
+      A('je .nx');
+      A('cmp edx, $NULL');
+      A('je .nx');
+      A('jmp .js');
+      A('.dbl:');
+      A('test eax, eax');
+      A('jnz .nx');
+      A('cmp edx, 0x80000000');
+      A('je .js');
+      A('.nx:');
+      A('inc esi');
+      A('jmp .chk');
+      A('.fast:');
+      A('mov edi, dword ptr [' + handle_var + ']');
+      A('xor esi, esi');
+      A('.loop:');
+      A('cmp esi, dword ptr [ebp+12]');
+      A('jae .nl');
+      A('test esi, esi');
+      A('jz .arg');
+      A('push 1');
+      A('push offset _JSRT_c_space');
+      A('push edi');
+      A('call _JSRT_write');
+      A('add esp, 12');
+      A('.arg:');
+      A('mov ecx, esi');
+      A('shl ecx, 3');
+      A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+      A('add ecx, eax');
+      A('push dword ptr [ecx+4]');
+      A('push dword ptr [ecx]');
+      A('call _JSRT_tostring');
+      A('add esp, 8');
+      A('push dword ptr [eax+$STR_LEN]');
+      A('add eax, $STR_DATA');
+      A('push eax');
+      A('push edi');
+      A('call _JSRT_write');
+      A('add esp, 12');
+      A('inc esi');
+      A('jmp .loop');
+      A('.nl:');
+      A('push 1');
+      A('push offset _JSRT_c_nl');
+      A('push edi');
+      A('call _JSRT_write');
+      A('add esp, 12');
+      A('xor eax, eax');
+      A('mov edx, $UNDEF');
+      A('jmp .out');
+    End;
+  { chemin du formateur : __i_console(genre, ...arguments) }
+  A('.js:');
+  A('call _JSRT_array_new');
+  A('mov ebx, eax');
+  A('push $INT');
+  A('push ' + IntToStr(kind));
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
   A('xor esi, esi');
-  A('.loop:');
+  A('.jl:');
   A('cmp esi, dword ptr [ebp+12]');
-  A('jae .nl');
-  A('test esi, esi');
-  A('jz .arg');
-  A('push 1');
-  A('push offset _JSRT_c_space');
-  A('push edi');
-  A('call _JSRT_write');
-  A('add esp, 12');
-  A('.arg:');
+  A('jae .jgo');
   A('mov ecx, esi');
   A('shl ecx, 3');
   A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
   A('add ecx, eax');
   A('push dword ptr [ecx+4]');
   A('push dword ptr [ecx]');
-  A('call _JSRT_tostring');
-  A('add esp, 8');
-  A('push dword ptr [eax+$STR_LEN]');
-  A('add eax, $STR_DATA');
-  A('push eax');
-  A('push edi');
-  A('call _JSRT_write');
-  A('add esp, 12');
+  A('push $ARR');
+  A('push ebx');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
   A('inc esi');
-  A('jmp .loop');
-  A('.nl:');
-  A('push 1');
-  A('push offset _JSRT_c_nl');
-  A('push edi');
-  A('call _JSRT_write');
-  A('add esp, 12');
+  A('jmp .jl');
+  A('.jgo:');
+  A('push $ARR');
+  A('push ebx');
+  A('push $UNDEF');
+  A('push 0');
+  A('mov eax, offset _JSV___i_console');
+  A('push dword ptr [eax+4]');
+  A('push dword ptr [eax]');
+  A('call _JSRT_call_array');
+  A('add esp, 24');
   A('xor eax, eax');
   A('mov edx, $UNDEF');
+  A('.out:');
   A('pop edi');
   A('pop esi');
+  A('pop ebx');
   A('pop ebp');
   A('ret');
   A('endp');
@@ -15995,11 +16552,6 @@ Procedure RtArrayGlobals;
 Var
   f_is, props, f_arr, f_exit: LongInt;
 Begin
-  { process.exit(code) : le reste de process vient avec le TODO 21 }
-  f_exit := RtFuncObj('exit', '_JSRT_process_exit', 1);
-  BoReset;
-  BoAdd('exit', f_exit, RT_T_FUNCTION);
-  RtGlobal('process', BoFinish('_JSNO_process', 0), RT_T_OBJECT);
   f_is := RtFuncObj('isArray', '_JSRT_Array_isArray', 1);
   BoReset;
   BoAdd('isArray', f_is, RT_T_FUNCTION);
@@ -16715,6 +17267,34 @@ Begin
   A('add esp, 12');
   A('jmp .ret');
   A('.fnproto:');
+  A('push dword ptr [ebp+16]');
+  A('push offset ' + RtStr('name'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .nolen');
+  A('push $FN');
+  A('push dword ptr [ebp+8]');
+  A('push $UNDEF');
+  A('push 0');
+  A('push 1');
+  A('push 0');
+  A('call _JSRT_n_fname');
+  A('add esp, 24');
+  A('jmp .ret');
+  A('.nolen:');
+  A('push dword ptr [ebp+16]');
+  A('push offset ' + RtStr('length'));
+  A('call _JSRT_str_equal');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .noname');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [eax+$FN_DESC]');
+  A('mov eax, dword ptr [eax+4]');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  A('.noname:');
   A('mov eax, dword ptr [ebp+8]');
   A('movzx ecx, byte ptr [eax+2]');
   A('test ecx, 1');
@@ -18274,25 +18854,41 @@ Begin
   A('endp');
 
   { _JSRT_make_default_ctor(derive) -> fonction constructeur par defaut }
-  A('proc _JSRT_make_default_ctor');
-  A('push ebp');
-  A('mov ebp, esp');
+  FBegin('_JSRT_make_default_ctor', 0);
+  A('push 16');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov esi, eax');
+  A('cmp dword ptr [ebp+8], 0');
+  A('jne .d');
+  A('mov ecx, offset _JSND__JSRT_ctor_base');
+  A('mov edi, offset _JSRT_ctor_base');
+  A('mov ebx, 16');
+  A('jmp .go');
+  A('.d:');
+  A('mov ecx, offset _JSND__JSRT_ctor_derived');
+  A('mov edi, offset _JSRT_ctor_derived');
+  A('mov ebx, 48');
+  A('.go:');
+  A('mov eax, dword ptr [ecx]');
+  A('mov dword ptr [esi], eax');
+  A('mov eax, dword ptr [ecx+4]');
+  A('mov dword ptr [esi+4], eax');
+  A('mov eax, dword ptr [ecx+8]');
+  A('or eax, ebx');
+  A('mov dword ptr [esi+8], eax');
+  A('mov eax, dword ptr [ecx+12]');
+  A('mov dword ptr [esi+12], eax');
+  A('mov eax, dword ptr [ebp+12]');
+  A('mov dword ptr [esi], eax');
   A('push $UNDEF');
   A('push 0');
   A('push 0');
-  A('cmp dword ptr [ebp+8], 0');
-  A('jne .d');
-  A('push offset _JSRT_ctor_base');
-  A('push offset _JSND__JSRT_ctor_base');
-  A('jmp .go');
-  A('.d:');
-  A('push offset _JSRT_ctor_derived');
-  A('push offset _JSND__JSRT_ctor_derived');
-  A('.go:');
+  A('push edi');
+  A('push esi');
   A('call _JSRT_new_function');
-  A('leave');
-  A('ret');
-  A('endp');
+  A('add esp, 20');
+  FEnd;
 
   { _JSRT_init_fields(classe, this) : initialise les champs d'instance }
   FBegin('_JSRT_init_fields', 1);
@@ -26197,6 +26793,352 @@ Begin
   RtGlobal('RegExp', f, RT_T_FUNCTION);
 End;
 
+{ ---- Interface console, processus et systeme hote (TODO 21) ----
+
+  Les natives __xxx sont les primitives du formateur JS (prelude) : elles
+  donnent acces aux informations internes (nom et genre d'une fonction,
+  proprietes ajoutees aux tableaux, accesseurs) et a l'ecriture brute.
+
+  Le formateur (console.log d'objets, tableaux, fonctions, classes, erreurs,
+  formats %s %d %i %f %j %o %O %c, console.group/dir/assert) est ecrit en JS
+  (bloc PRELUDE) et ajoute a la fin du source avant l'analyse ; le chemin
+  rapide de console.log (chaines, nombres, booleens, null, undefined) reste
+  en assembleur. Imports kernel32 utilises par le runtime : GetStdHandle,
+  WriteFile, ReadFile, GetCommandLineA, VirtualAlloc (arene du tas, a la place
+  de HeapAlloc), ExitProcess, GetTickCount. process.argv vaut
+  [executable, executable, arguments...] pour que argv.slice(2) donne les
+  arguments comme sous Node. }
+
+{ Debut d'une native a un argument de fonction : ECX = descripteur de la fonction
+  de l'argument 0, ou saut vers lbl si ce n'est pas une fonction. }
+Procedure HostFnArg(Const lbl: TString);
+Begin
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb ' + lbl);
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $FN');
+  A('jne ' + lbl);
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov ecx, dword ptr [ecx+$FN_DESC]');
+End;
+
+{ process.stdout.write(texte) / process.stderr.write(texte) -> true }
+Procedure HostWrite(Const code, handle_var: TString);
+Begin
+  FBegin(code, 0);
+  A('mov ebx, dword ptr [' + handle_var + ']');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .ok');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push dword ptr [eax+$STR_LEN]');
+  A('add eax, $STR_DATA');
+  A('push eax');
+  A('push ebx');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('.ok:');
+  A('mov eax, 1');
+  A('mov edx, $BOOL');
+  FEnd;
+End;
+
+Procedure RtHost;
+Begin
+  { __fname(f) -> nom de la fonction ou '' }
+  FBegin('_JSRT_n_fname', 0);
+  HostFnArg('.none');
+  A('mov eax, dword ptr [ecx]');
+  A('test eax, eax');
+  A('jnz .ok');
+  A('.none:');
+  A('mov eax, offset ' + RtStr(''));
+  A('.ok:');
+  A('mov edx, $STR');
+  FEnd;
+
+  { __fflags(f) -> drapeaux du descripteur (2 async, 4 generateur, 16 classe) }
+  FBegin('_JSRT_n_fflags', 0);
+  HostFnArg('.none');
+  A('mov eax, dword ptr [ecx+8]');
+  A('mov edx, $INT');
+  A('jmp .ret');
+  A('.none:');
+  A('xor eax, eax');
+  A('mov edx, $INT');
+  FEnd;
+
+  { __fparent(f) -> classe parente d'une classe derivee, sinon undefined }
+  FBegin('_JSRT_n_fparent', 0);
+  HostFnArg('.none');
+  A('mov edx, dword ptr [ecx+8]');
+  A('and edx, 48');
+  A('cmp edx, 48');
+  A('jne .none');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov eax, dword ptr [ecx+$FN_THIS]');
+  A('mov edx, dword ptr [ecx+$FN_THIS+4]');
+  A('jmp .ret');
+  A('.none:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { __extras(tableau) -> objet des proprietes ajoutees (index, input, groups) ou undefined }
+  FBegin('_JSRT_n_extras', 0);
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .ret');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $ARR');
+  A('jne .ret');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov eax, dword ptr [ecx+20]');
+  A('test eax, eax');
+  A('jz .none');
+  A('mov edx, $OBJ');
+  A('jmp .ret');
+  A('.none:');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { __acc(objet, cle) -> 0 donnee, 1 getter, 2 setter, 3 les deux }
+  FBegin('_JSRT_n_acc', 0);
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .done');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + '], $STR');
+  A('jne .done');
+  A('mov ecx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov edx, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('cmp edx, $OBJ');
+  A('je .have');
+  A('cmp edx, $FN');
+  A('jne .done');
+  A('mov ecx, dword ptr [ecx+$FN_PROPS]');
+  A('test ecx, ecx');
+  A('jz .done');
+  A('.have:');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push ecx');
+  A('call _JSRT_prop_find');
+  A('add esp, 8');
+  A('test eax, eax');
+  A('jz .none');
+  A('test dword ptr [eax+4], 2');
+  A('jz .none');
+  A('mov ecx, dword ptr [eax+8]');
+  A('xor eax, eax');
+  A('cmp dword ptr [ecx], 0');
+  A('je .nog');
+  A('or eax, 1');
+  A('.nog:');
+  A('cmp dword ptr [ecx+4], 0');
+  A('je .done');
+  A('or eax, 2');
+  A('jmp .done');
+  A('.none:');
+  A('xor eax, eax');
+  A('.done:');
+  A('mov edx, $INT');
+  FEnd;
+
+  { __write(fd, chaine) : ecriture brute }
+  FBegin('_JSRT_n_write', 0);
+  A('cmp dword ptr [ebp+12], 2');
+  A('jb .ret');
+  A('mov eax, dword ptr [_JSRT_v_stdout]');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + '], 2');
+  A('jne .go');
+  A('mov eax, dword ptr [_JSRT_v_stderr]');
+  A('.go:');
+  A('mov ebx, eax');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push dword ptr [eax+$STR_LEN]');
+  A('add eax, $STR_DATA');
+  A('push eax');
+  A('push ebx');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  { __setgrp(n) : indicateur d'indentation de console.group }
+  FBegin('_JSRT_n_setgrp', 0);
+  A('xor eax, eax');
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .set');
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('.set:');
+  A('mov dword ptr [_JSRT_v_grp], eax');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
+
+  HostWrite('_JSRT_stdout_write', '_JSRT_v_stdout');
+  HostWrite('_JSRT_stderr_write', '_JSRT_v_stderr');
+
+  { prompt(message) : lit une ligne sur stdin, null en fin de fichier }
+  FBegin('_JSRT_prompt', 2);
+  A('cmp dword ptr [ebp+12], 1');
+  A('jb .read');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_tostring');
+  A('add esp, 8');
+  A('push dword ptr [eax+$STR_LEN]');
+  A('add eax, $STR_DATA');
+  A('push eax');
+  A('push dword ptr [_JSRT_v_stdout]');
+  A('call _JSRT_write');
+  A('add esp, 12');
+  A('.read:');
+  A('call _JSRT_sb_new');
+  A('mov esi, eax');
+  A('xor edi, edi');
+  A('.l:');
+  A('mov ' + Lv(2) + ', 0');
+  A('push 0');
+  A('lea eax, [ebp-' + IntToStr(12 + 4 * 2) + ']');
+  A('push eax');
+  A('push 1');
+  A('lea eax, [ebp-' + IntToStr(12 + 4 * 1) + ']');
+  A('push eax');
+  A('push dword ptr [_JSRT_v_stdin]');
+  A('call dword ptr [__imp__ReadFile@20]');
+  A('test eax, eax');
+  A('jz .eof');
+  A('cmp ' + Lv(2) + ', 0');
+  A('je .eof');
+  A('mov eax, ' + Lv(1));
+  A('and eax, 255');
+  A('cmp eax, 10');
+  A('je .done');
+  A('cmp eax, 13');
+  A('je .l');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_sb_addb');
+  A('add esp, 8');
+  A('inc edi');
+  A('jmp .l');
+  A('.eof:');
+  A('test edi, edi');
+  A('jnz .done');
+  A('xor eax, eax');
+  A('mov edx, $NULL');
+  A('jmp .ret');
+  A('.done:');
+  A('push esi');
+  A('call _JSRT_sb_str');
+  A('add esp, 4');
+  FEnd;
+
+  { _JSRT_args_init : process.argv depuis GetCommandLineA ;
+    argv = [executable, executable (comme le script de node), arguments...] }
+  FBegin('_JSRT_args_init', 2);
+  A('call dword ptr [__imp__GetCommandLineA@0]');
+  A('mov esi, eax');
+  A('mov ' + Lv(1) + ', 0');
+  A('.tok:');
+  A('movzx eax, byte ptr [esi]');
+  A('cmp eax, 32');
+  A('jne .nsp');
+  A('inc esi');
+  A('jmp .tok');
+  A('.nsp:');
+  A('test eax, eax');
+  A('jz .ret');
+  A('call _JSRT_sb_new');
+  A('mov ebx, eax');
+  A('xor edi, edi');
+  A('.ch:');
+  A('movzx eax, byte ptr [esi]');
+  A('test eax, eax');
+  A('jz .end');
+  A('cmp eax, 34');
+  A('jne .nq');
+  A('xor edi, 1');
+  A('inc esi');
+  A('jmp .ch');
+  A('.nq:');
+  A('cmp eax, 32');
+  A('jne .add');
+  A('test edi, edi');
+  A('jz .end');
+  A('.add:');
+  A('push eax');
+  A('push ebx');
+  A('call _JSRT_sb_addb');
+  A('add esp, 8');
+  A('inc esi');
+  A('jmp .ch');
+  A('.end:');
+  A('push ebx');
+  A('call _JSRT_sb_str');
+  A('add esp, 4');
+  A('mov ebx, eax');
+  A('push $STR');
+  A('push ebx');
+  A('push $ARR');
+  A('push offset _JSNO_argv');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('cmp ' + Lv(1) + ', 0');
+  A('jne .nodup');
+  A('push $STR');
+  A('push ebx');
+  A('push $ARR');
+  A('push offset _JSNO_argv');
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('.nodup:');
+  A('inc ' + Lv(1));
+  A('jmp .tok');
+  FEnd;
+End;
+
+{ Objet process et globales de l'hote. }
+Procedure RtProcessData(oproto: LongInt);
+Var
+  ofs, argv_sym, so, se, env: LongInt;
+Begin
+  { tableau argv statique (rempli par _JSRT_args_init) }
+  ofs := SecAlloc(asm_ctx^, SEC_DATA, RT_ARR_SIZE);
+  PutByte(asm_ctx^, SEC_DATA, ofs + RT_HDR_KIND, RT_OK_ARRAY);
+  argv_sym := NewDataSym(asm_ctx^, '_JSNO_argv', SEC_DATA, ofs, RT_ARR_SIZE, DS_GLOBAL);
+  BoReset;
+  BoAdd('write', RtFuncObj('write', '_JSRT_stdout_write', 1), RT_T_FUNCTION);
+  so := BoFinish('_JSNO_process_stdout', oproto);
+  BoReset;
+  BoAdd('write', RtFuncObj('write', '_JSRT_stderr_write', 1), RT_T_FUNCTION);
+  se := BoFinish('_JSNO_process_stderr', oproto);
+  BoReset;
+  env := BoFinish('_JSNO_process_env', oproto);
+  BoReset;
+  BoAdd('exit', RtFuncObj('exit', '_JSRT_process_exit', 1), RT_T_FUNCTION);
+  BoAdd('argv', argv_sym, RT_T_ARRAY);
+  BoAdd('stdout', so, RT_T_OBJECT);
+  BoAdd('stderr', se, RT_T_OBJECT);
+  BoAdd('env', env, RT_T_OBJECT);
+  BoAdd('platform', DsymFind(asm_ctx^, RtStr('win32')), RT_T_STRING);
+  RtGlobal('process', BoFinish('_JSNO_process', oproto), RT_T_OBJECT);
+  RtGlobal('alert', RtFuncObj('alert', '_JSRT_console_log', 1), RT_T_FUNCTION);
+  RtGlobal('prompt', RtFuncObj('prompt', '_JSRT_prompt', 1), RT_T_FUNCTION);
+  RtGlobal('__fname', RtFuncObj('__fname', '_JSRT_n_fname', 1), RT_T_FUNCTION);
+  RtGlobal('__fflags', RtFuncObj('__fflags', '_JSRT_n_fflags', 1), RT_T_FUNCTION);
+  RtGlobal('__fparent', RtFuncObj('__fparent', '_JSRT_n_fparent', 1), RT_T_FUNCTION);
+  RtGlobal('__extras', RtFuncObj('__extras', '_JSRT_n_extras', 1), RT_T_FUNCTION);
+  RtGlobal('__acc', RtFuncObj('__acc', '_JSRT_n_acc', 2), RT_T_FUNCTION);
+  RtGlobal('__write', RtFuncObj('__write', '_JSRT_n_write', 2), RT_T_FUNCTION);
+  RtGlobal('__setgrp', RtFuncObj('__setgrp', '_JSRT_n_setgrp', 1), RT_T_FUNCTION);
+End;
+
 { ---- Assemblage du runtime ---- }
 
 Procedure RtStaticData;
@@ -26245,9 +27187,17 @@ Begin
   BoAdd('log', f_log, RT_T_FUNCTION);
   BoAdd('error', f_err, RT_T_FUNCTION);
   BoAdd('warn', f_warn, RT_T_FUNCTION);
+  BoAdd('info', RtFuncObj('info', '_JSRT_console_log', 0), RT_T_FUNCTION);
+  BoAdd('debug', RtFuncObj('debug', '_JSRT_console_log', 0), RT_T_FUNCTION);
+  BoAdd('dir', RtFuncObj('dir', '_JSRT_console_dir', 0), RT_T_FUNCTION);
+  BoAdd('assert', RtFuncObj('assert', '_JSRT_console_assert', 0), RT_T_FUNCTION);
+  BoAdd('group', RtFuncObj('group', '_JSRT_console_group', 0), RT_T_FUNCTION);
+  BoAdd('groupCollapsed', RtFuncObj('groupCollapsed', '_JSRT_console_group', 0), RT_T_FUNCTION);
+  BoAdd('groupEnd', RtFuncObj('groupEnd', '_JSRT_console_groupEnd', 0), RT_T_FUNCTION);
   cons := BoFinish('_JSNO_console', 0);
   RtGlobal('console', cons, RT_T_OBJECT);
   RtStaticGlobals;
+  RtProcessData(oproto);
   RtArrayGlobals;
   RtObjectGlobals;
   { globalThis : les objets globaux predefinis }
@@ -26270,8 +27220,13 @@ Begin
   RtStrings;
   RtEquality;
   RtProperties;
-  RtConsoleFn('_JSRT_console_log', '_JSRT_v_stdout');
-  RtConsoleFn('_JSRT_console_error', '_JSRT_v_stderr');
+  RtConsoleFn('_JSRT_console_log', '_JSRT_v_stdout', 0, True);
+  RtConsoleFn('_JSRT_console_error', '_JSRT_v_stderr', 1, True);
+  RtConsoleFn('_JSRT_console_dir', '_JSRT_v_stdout', 2, False);
+  RtConsoleFn('_JSRT_console_assert', '_JSRT_v_stdout', 3, False);
+  RtConsoleFn('_JSRT_console_group', '_JSRT_v_stdout', 4, False);
+  RtConsoleFn('_JSRT_console_groupEnd', '_JSRT_v_stdout', 5, False);
+  RtHost;
   RtStringMethods;
   RtArrays;
   RtObjects;
@@ -26568,6 +27523,7 @@ Procedure EmuTrap(id: LongInt);
 Var
   esp, a1, a2, a3, a4, n, i: LongWord;
   c: Byte;
+  ch: Char;
   s: String;
 Begin
   esp := emu_reg[Ord(R_ESP)];
@@ -26629,6 +27585,7 @@ Begin
           Write(ErrOutput, s)
         Else
           Write(s);
+        Flush(Output);
         If a4 <> 0 Then
           MemWr(a4, a3, 4);
         emu_reg[Ord(R_EAX)] := 1;
@@ -26638,12 +27595,31 @@ Begin
         n := 0;
         emu_reg[Ord(R_EAX)] := 123456789;
       End;
-    5: { ReadFile(handle, tampon, nombre, lus, recouvrement) : fin de fichier }
+    5: { ReadFile(handle, tampon, nombre, lus, recouvrement) : lit l'entree standard }
       Begin
         n := 20;
+        i := 0;
+        If a1 = 0 Then
+          While (i < a3) And Not Eof(Input) Do
+            Begin
+              Read(Input, ch);
+              MemWr(a2 + i, Ord(ch), 1);
+              Inc(i);
+              If ch = #10 Then
+                Break;
+            End;
         If a4 <> 0 Then
-          MemWr(a4, 0, 4);
+          MemWr(a4, i, 4);
         emu_reg[Ord(R_EAX)] := 1;
+      End;
+    7: { GetCommandLineA() : ligne de commande simulee }
+      Begin
+        n := 0;
+        a2 := emu_brk;
+        emu_brk := emu_brk + $1000;
+        For i := 0 To 11 Do
+          MemWr(a2 + i, Ord('prog.exe'#0#0#0#0[i + 1]), 1);
+        emu_reg[Ord(R_EAX)] := a2;
       End;
   Else
     EmuFault('appel systeme inconnu');
@@ -27410,7 +28386,8 @@ Begin
             Else If nm = '__imp__GetStdHandle@4' Then a := 3
             Else If nm = '__imp__WriteFile@20' Then a := 4
             Else If nm = '__imp__ReadFile@20' Then a := 5
-            Else If nm = '__imp__GetTickCount@0' Then a := 6;
+            Else If nm = '__imp__GetTickCount@0' Then a := 6
+            Else If nm = '__imp__GetCommandLineA@0' Then a := 7;
             If a <> 0 Then
               Begin
                 MemWr(emu_iat_next, EMU_TRAP + 4 * a, 4);
