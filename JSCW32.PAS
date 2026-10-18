@@ -9376,16 +9376,22 @@ End;
   produire -0 passe par le double. Le NaN materiel (FFF80000h:0) est un
   double valide.
 
-  Tas : une arene de 1 Mo obtenue par VirtualAlloc, allocation par
-  pointeur (alignement 8, memoire mise a zero). Strategie retenue :
-  AUCUNE LIBERATION. Un programme compile est de courte duree et le
-  systeme rend toute la memoire a la sortie du processus. L'en-tete de
-  chaque cellule reserve deja l'octet de marque et le chainage
-  gc_next, de sorte qu'un mark & sweep pourra etre ajoute sans changer
-  les dispositions. Les blocs de 256 Ko et plus sont alloues
-  directement par VirtualAlloc. Les tableaux et tables de proprietes
-  grandissent par doublement pour borner le gaspillage a 2 fois la
-  taille finale. Memoire epuisee : message sur stderr et ExitProcess(3).
+  Tas : ramasse-miettes conservatif sans deplacement (marquage et balayage).
+  Les petites cellules (16 octets a 32 Ko) vivent dans des pages de 16 Ko ou
+  de 64 Ko par classe de taille, les cellules plus grandes dans des blocs
+  obtenus par VirtualAlloc (et rendus par VirtualFree), les cellules sans
+  pointeur (chaines) dans des pages a part qui ne sont pas parcourues. Un
+  repertoire d'une entree par fenetre de 64 Ko retrouve la page ou le bloc de
+  n'importe quelle adresse. Une collecte part des piles (principale et
+  coroutines), des registres et de la section .data ; tout mot qui designe
+  l'interieur d'une cellule allouee la retient (pointeurs internes compris),
+  d'ou un risque de retention a tort mais jamais de cellule liberee a tort.
+  Declenchement : apres 8 Mo alloues depuis la derniere collecte (puis autant
+  que de memoire vivante). Les cellules sont rendues a zero a l'allocation.
+  Les tableaux et tables de proprietes grandissent par doublement pour borner
+  le gaspillage a 2 fois la taille finale. __gc() force une collecte,
+  __gcstats() rend [octets vivants, collectes], __gcstress(n) collecte tous les
+  n octets alloues (essais). Memoire epuisee : message sur stderr et ExitProcess(3).
   ============================================================ }
 
 { ---- Outils de description du modele ---- }
@@ -9743,10 +9749,9 @@ Begin
   Writeln('    regexp   : source +', RT_RX_SOURCE, ', drapeaux +', RT_RX_FLAGS,
           ', programme +', RT_RX_PROG, ', lastIndex +', RT_RX_LASTINDEX,
           ' (taille ', RT_RX_SIZE, ')');
-  Writeln('  Tas : arene de ', RT_ARENA_SIZE Div 1024, ' Ko (VirtualAlloc), blocs >= ',
-          RT_BIG_ALLOC Div 1024, ' Ko directs, strategie sans liberation');
-  Writeln('    reserve pour un mark & sweep : octet gc (+', RT_HDR_GC,
-          ') ; chaines : longueur UTF-16 + 1 (+', RT_HDR_U16, ')');
+  Writeln('  Tas : ramasse-miettes conservatif (marquage et balayage), pages de 16 Ko et 64 Ko,');
+  Writeln('    grands blocs par VirtualAlloc, collecte tous les 8 Mo alloues ; chaines : longueur');
+  Writeln('    UTF-16 + 1 (+', RT_HDR_U16, ')');
   Writeln('  Pile : reserve ', RT_STACK_RESERVE Div 1024, ' Ko, limite souple ',
           RT_STACK_GUARD Div 1024, ' Ko (RangeError si depassee)');
   Writeln('    appel : [EBP+', RT_FRAME_CLOSURE, '] fonction, [EBP+',
@@ -15882,6 +15887,49 @@ Begin
   A('add eax, 16');
   A('add eax, 4095');
   A('and eax, -4096');
+  A('mov ecx, dword ptr [esi+84]');
+  A('lea edx, [esi+84]');
+  A('mov dword ptr [ebp-8], edx');
+  A('.fb:');
+  A('test ecx, ecx');
+  A('jz .bnew');
+  A('cmp eax, dword ptr [ecx+4]');
+  A('ja .fnx');
+  A('mov edx, dword ptr [ecx+4]');
+  A('add edx, edx');
+  A('cmp eax, edx');
+  A('ja .fnx');
+  A('mov edx, dword ptr [ecx]');
+  A('mov eax, dword ptr [ebp-8]');
+  A('mov dword ptr [eax], edx');
+  A('mov edx, dword ptr [esi+20]');
+  A('mov dword ptr [ecx], edx');
+  A('mov dword ptr [esi+20], ecx');
+  A('mov edx, 1');
+  A('test ebx, ebx');
+  A('jz .fa');
+  A('or edx, 4');
+  A('.fa:');
+  A('mov dword ptr [ecx+8], edx');
+  A('mov dword ptr [ecx+12], edi');
+  A('mov dword ptr [ebp-12], ecx');
+  A('mov eax, dword ptr [ecx+4]');
+  A('add dword ptr [esi+28], eax');
+  A('lea edx, [ecx+16]');
+  A('sub eax, 16');
+  A('shr eax, 2');
+  A('.fz:');
+  A('mov dword ptr [edx], 0');
+  A('add edx, 4');
+  A('dec eax');
+  A('jnz .fz');
+  A('mov eax, dword ptr [ebp-12]');
+  A('add eax, 16');
+  A('jmp .done');
+  A('.fnx:');
+  A('mov dword ptr [ebp-8], ecx');
+  A('mov ecx, dword ptr [ecx]');
+  A('jmp .fb');
   A('.bnew:');
   A('push eax');
   A('push 4');
@@ -16240,6 +16288,33 @@ Begin
   A('pop ebp');
   A('ret');
   A('endp');
+  A('proc _JSRT_gc_release');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [eax+4]');
+  A('add ecx, 65535');
+  A('shr ecx, 16');
+  A('mov edx, eax');
+  A('shr edx, 16');
+  A('shl edx, 2');
+  A('push esi');
+  A('mov esi, dword ptr [_JSRT_v_gcs]');
+  A('mov esi, dword ptr [esi]');
+  A('add edx, esi');
+  A('.dz:');
+  A('mov dword ptr [edx], 0');
+  A('add edx, 4');
+  A('dec ecx');
+  A('jnz .dz');
+  A('pop esi');
+  A('push 32768');
+  A('push 0');
+  A('push dword ptr [ebp+8]');
+  A('call dword ptr [__imp__VirtualFree@12]');
+  A('leave');
+  A('ret');
+  A('endp');
   A('proc _JSRT_gc_collect');
   A('push ebp');
   A('mov ebp, esp');
@@ -16419,6 +16494,19 @@ Begin
   A('mov edi, dword ptr [ebp-8]');
   A('jmp .pl');
   A('.pld:');
+  A('mov ebx, dword ptr [esi+84]');
+  A('mov dword ptr [esi+84], 0');
+  A('.fl:');
+  A('test ebx, ebx');
+  A('jz .fld');
+  A('mov eax, ebx');
+  A('mov ebx, dword ptr [eax]');
+  A('push eax');
+  A('call _JSRT_gc_release');
+  A('add esp, 4');
+  A('jmp .fl');
+  A('.fld:');
+  A('mov dword ptr [ebp-16], 0');
   A('lea ebx, [esi+20]');
   A('.bl:');
   A('mov eax, dword ptr [ebx]');
@@ -16430,21 +16518,22 @@ Begin
   A('mov edx, dword ptr [eax]');
   A('mov dword ptr [ebx], edx');
   A('mov ecx, dword ptr [eax+4]');
-  A('mov edx, eax');
-  A('shr edx, 16');
-  A('shl edx, 2');
-  A('add edx, dword ptr [esi]');
-  A('add ecx, 65535');
-  A('shr ecx, 16');
-  A('.dz:');
-  A('mov dword ptr [edx], 0');
-  A('add edx, 4');
-  A('dec ecx');
-  A('jnz .dz');
-  A('push 32768');
-  A('push 0');
+  A('cmp ecx, 1048576');
+  A('ja .rel');
+  A('mov edx, dword ptr [ebp-16]');
+  A('add edx, ecx');
+  A('cmp edx, 8388608');
+  A('ja .rel');
+  A('mov dword ptr [ebp-16], edx');
+  A('mov dword ptr [eax+8], 0');
+  A('mov edx, dword ptr [esi+84]');
+  A('mov dword ptr [eax], edx');
+  A('mov dword ptr [esi+84], eax');
+  A('jmp .bl');
+  A('.rel:');
   A('push eax');
-  A('call dword ptr [__imp__VirtualFree@12]');
+  A('call _JSRT_gc_release');
+  A('add esp, 4');
   A('jmp .bl');
   A('.blive:');
   A('mov edx, dword ptr [eax+4]');
@@ -16756,7 +16845,7 @@ Begin
   A('mov eax, dword ptr [ebp+8]');
   A('add eax, ' + IntToStr(RT_STR_DATA + 1));
   A('push eax');
-  A('call _JSRT_alloc');
+  A('call _JSRT_alloc_atomic');
   A('add esp, 4');
   A('mov byte ptr [eax], $OK_STRING');
   A('mov ecx, dword ptr [ebp+8]');
@@ -29216,6 +29305,43 @@ Begin
   A('add esp, 8');
   A('cmp eax, -1');
   A('jne .ret');
+  { forme \u entre accolades : point de code en hexadecimal (jusqu'a 10FFFF) }
+  A('mov ebx, dword ptr [esi]');
+  A('cmp ebx, dword ptr [esi+4]');
+  A('jae .lit');
+  A('cmp byte ptr [ebx], 123');
+  A('jne .lit');
+  A('inc ebx');
+  A('xor edi, edi');
+  A('xor ecx, ecx');
+  A('.bl:');
+  A('cmp ebx, dword ptr [esi+4]');
+  A('jae .lit');
+  A('movzx eax, byte ptr [ebx]');
+  A('cmp eax, 125');
+  A('je .bend');
+  A('push ecx');
+  A('push eax');
+  A('call _JSRT_digit_val');
+  A('add esp, 4');
+  A('pop ecx');
+  A('cmp eax, 16');
+  A('jae .lit');
+  A('shl edi, 4');
+  A('or edi, eax');
+  A('cmp edi, 1114111');
+  A('ja .lit');
+  A('inc ecx');
+  A('inc ebx');
+  A('jmp .bl');
+  A('.bend:');
+  A('test ecx, ecx');
+  A('jz .lit');
+  A('inc ebx');
+  A('mov dword ptr [esi], ebx');
+  A('mov eax, edi');
+  A('jmp .ret');
+  A('.lit:');
   A('mov eax, 117');
   FEnd;
 
@@ -30921,7 +31047,7 @@ End;
 
 Procedure RtRxApi;
 Begin
-  { _JSRT_rx_flags(chaine) -> masque i=1 g=2 m=4 s=8 y=16 }
+  { _JSRT_rx_flags(chaine) -> masque i=1 g=2 m=4 s=8 y=16 u=32 }
   FBegin('_JSRT_rx_flags', 0);
   A('mov esi, dword ptr [ebp+8]');
   A('mov ecx, dword ptr [esi+$STR_LEN]');
@@ -30948,15 +31074,19 @@ Begin
   A('or eax, 8');
   A('.d:');
   A('cmp edx, 121');
-  A('jne .e');
+  A('jne .u');
   A('or eax, 16');
+  A('.u:');
+  A('cmp edx, 117');
+  A('jne .e');
+  A('or eax, 32');
   A('.e:');
   A('inc esi');
   A('dec ecx');
   A('jmp .l');
   FEnd;
 
-  { _JSRT_rx_flagstr(masque) -> chaine des drapeaux dans l'ordre g i m s y }
+  { _JSRT_rx_flagstr(masque) -> chaine des drapeaux dans l'ordre g i m s u y }
   FBegin('_JSRT_rx_flagstr', 0);
   A('call _JSRT_sb_new');
   A('mov ebx, eax');
@@ -30988,6 +31118,13 @@ Begin
   A('call _JSRT_sb_addb');
   A('add esp, 8');
   A('.d:');
+  A('test dword ptr [ebp+8], 32');
+  A('jz .y');
+  A('push 117');
+  A('push ebx');
+  A('call _JSRT_sb_addb');
+  A('add esp, 8');
+  A('.y:');
   A('test dword ptr [ebp+8], 16');
   A('jz .e');
   A('push 121');
@@ -31568,6 +31705,7 @@ Begin
   RxNameIs('multiline', '.m');
   RxNameIs('dotAll', '.s');
   RxNameIs('sticky', '.y');
+  RxNameIs('unicode', '.uf');
   A('push dword ptr [ebp+12]');
   A('push offset _JSNO_regexp_proto');
   A('call _JSRT_obj_lookup');
@@ -31604,6 +31742,9 @@ Begin
   A('jmp .bit');
   A('.y:');
   A('mov ebx, 16');
+  A('jmp .bit');
+  A('.uf:');
+  A('mov ebx, 32');
   A('.bit:');
   A('mov eax, dword ptr [edi+16]');
   A('and eax, ebx');

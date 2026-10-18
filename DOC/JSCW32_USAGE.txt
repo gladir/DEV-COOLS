@@ -61,11 +61,42 @@ Limites connues
     les registres et la pile FPU de l'emulateur, les 4 sections COFF, les
     tables constantes (mots-cles, operateurs, prelude) et les tampons de
     lecture de fichier.
-  - Les chaines sont des octets UTF-8 : length et les indices comptent des
-    octets (exact en ASCII).
-  - Pas de ramasse-miettes : le tas ne fait que croitre.
-  - Pas de lookbehind ni de groupes nommes dans les expressions regulieres ;
-    matchAll renvoie un tableau, pas un iterateur.
+  - Chaines : le texte est stocke en UTF-8 (WTF-8 pour les demi-paires isolees)
+    mais length, les indices, charAt, charCodeAt, slice, substring, indexOf,
+    split(''), les iterateurs et les expressions regulieres comptent des
+    unites UTF-16, comme Node ('e accent'.length vaut 1, un emoji vaut 2). Les
+    chaines ASCII gardent un chemin rapide sans conversion. toUpperCase et
+    toLowerCase suivent les tables Unicode (ß devient SS, sigma final...) ;
+    localeCompare et normalize sont des approximations (pas de tables
+    de collation ni de decomposition complete). Une demi-paire isolee peut
+    exister dans une chaine mais est ecrite U+FFFD en sortie ; chercher une
+    demi-paire isolee avec indexOf ne la retrouve pas toujours.
+  - Ramasse-miettes : marquage et balayage conservatif, sans deplacement, qui
+    se declenche tous les 8 Mo alloues (puis autant que la memoire vivante).
+    Les racines sont les piles, les registres et la section .data ; un
+    entier ou un double qui ressemble a une adresse de tas peut retenir une
+    cellule a tort (jamais l'inverse). WeakMap et WeakSet tiennent leurs cles
+    fortement ; il n'y a ni finaliseur ni WeakRef. Les grands blocs sont
+    rendus au systeme (VirtualFree), les pages de petites cellules sont
+    reutilisees mais pas rendues. __gc(), __gcstats() ([octets vivants,
+    collectes]) et __gcstress(n) (collecte tous les n octets, pour les essais)
+    sont disponibles. L'emulateur -run ne reutilise pas la memoire des grands
+    blocs.
+  - Expressions regulieres : lookbehind, groupes nommes ((?<nom>...), \k<nom>,
+    $<nom>), matchAll (iterateur), drapeau u avec \u{...} et plages hors BMP
+    dans les classes sont pris en charge. Ecarts : le drapeau i ne replie la
+    casse que pour l'ASCII ; pas de \p{...} ; le point (.) consomme un point
+    de code entier meme sans drapeau u (Node : une unite UTF-16).
+  - Classes : l'appel d'une classe sans new leve un TypeError ; super.methode()
+    fonctionne dans les fleches, mais super(...) (appel du constructeur
+    parent) dans une fleche n'est pas gere.
+  - JSON.parse (reviver) et JSON.stringify (replacer fonction ou tableau,
+    indentation) suivent Node. toFixed et l'affichage des doubles sont exacts
+    (arithmetique entiere en precision arbitraire).
+  - Traces de pile : « at fonction (fichier:ligne) » avec la ligne de l'appel,
+    sans numero de colonne.
+  - Les messages d'erreur du runtime (TypeError, RangeError... produits par le
+    moteur) peuvent differer de ceux de V8.
   - Date, Map, Set, WeakMap, WeakSet, Symbol, Promise, async/await, les
     generateurs (function*, yield), BigInt, setTimeout/setInterval/
     setImmediate, require, eval, new.target, les gabarits etiquetes,
