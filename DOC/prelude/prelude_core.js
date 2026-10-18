@@ -23,6 +23,7 @@ function __i_init() {
   __init_async();
   __init_lib();
   __init_big();
+  __init_str();
   var FP = __fproto();
   FP.call = function (t, ...a) { return __invoke(this, t, a); };
   FP.apply = function (t, a) { return __invoke(this, t, a === undefined || a === null ? [] : a); };

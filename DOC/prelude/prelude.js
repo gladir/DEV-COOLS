@@ -28,6 +28,11 @@ function __i_quote(s) {
     else if (c === 12) out += '\\f';
     else if (c === 11) out += '\\v';
     else if (c < 32 || c === 127) out += __i_hex2(c);
+    else if (c >= 55296 && c <= 57343) {
+      var d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
+      if (c <= 56319 && d >= 56320 && d <= 57343) { out += ch + s[i + 1]; i++; }
+      else out += '\\u' + c.toString(16);
+    }
     else out += ch;
   }
   return out + q;

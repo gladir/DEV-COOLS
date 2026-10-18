@@ -184,6 +184,15 @@ function __toFixed(f) {
   return neg + ip + (f > 0 ? '.' + fp : '');
 }
 function __init_lib() {
+  var rma = String.prototype.matchAll;
+  String.prototype.matchAll = function (re) {
+    if (re instanceof RegExp && re.flags.indexOf('g') < 0) throw new TypeError('String.prototype.matchAll called with a non-global RegExp argument');
+    var arr = rma.call(this, re), i = 0;
+    return __mkiter(function () {
+      if (i >= arr.length) return { value: undefined, done: true };
+      return { value: arr[i++], done: false };
+    });
+  };
   Number.prototype.toFixed = __toFixed;
   var jparse = JSON.parse, jstr = JSON.stringify;
   JSON.parse = function (text, reviver) {

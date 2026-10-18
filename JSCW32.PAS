@@ -163,7 +163,7 @@ Const
   RT_HDR_KIND = 0;
   RT_HDR_GC = 1;
   RT_HDR_FLAGS = 2;
-  RT_HDR_NEXT = 4;
+  RT_HDR_U16 = 4;                 { chaine : longueur UTF-16 + 1 (0 = inconnue) }
   RT_ALIGN = 8;
   RT_OK_STRING = 1;
   RT_OK_ARRAY = 2;
@@ -314,7 +314,7 @@ Const
     'length', 'prototype', 'constructor', 'name', 'message', 'toString',
     'valueOf'
   );
-  RT_DATA_VAR_COUNT = 22;
+  RT_DATA_VAR_COUNT = 25;
   { ---- Code genere (TODO 9) ---- }
   SYMK_D = 1;                     { symbole du pool de donnees }
   SYMK_X = 2;                     { symbole de code ou externe }
@@ -329,7 +329,7 @@ Const
   JT_BLOCK = 3;
   RtDataVars: Array[1..RT_DATA_VAR_COUNT] Of String[16] = (
     'heap_cur', 'heap_end', 'stack_limit', 'handler_top', 'stdin', 'stdout',
-    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree', 'newtarget'
+    'stderr', 'process_heap', 'argc', 'argv', 'exit_code', 'fpu_cw', 'exc', 'rng', 'rxbuf', 'rxcache', 'rxcount', 'grp', 'genflag', 'curco', 'genfree', 'newtarget', 'u16s', 'u16a', 'u16raw'
   );
   PRELUDE_ALIAS_COUNT = 23;
   PreludeAliases: Array[1..PRELUDE_ALIAS_COUNT] Of String[20] = (
@@ -338,7 +338,7 @@ Const
     'clearImmediate', 'queueMicrotask', 'require', 'eval', 'module', 'exports',
     'structuredClone', 'AggregateError', 'TextEncoder', 'performance'
   );
-  BUILTIN_COUNT = 62;
+  BUILTIN_COUNT = 68;
   Builtins: Array[1..BUILTIN_COUNT] Of String[20] = (
     'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'EvalError', 'Function',
     'Infinity', 'JSON', 'Map', 'Math', 'NaN', 'Number', 'Object', 'Promise',
@@ -350,7 +350,7 @@ Const
     'prompt', 'require', 'setInterval', 'setTimeout', 'undefined', '__acc',
     '__extras', '__fflags', '__fname', '__fparent', '__setgrp', '__write', '__ptr',
     '__invoke', '__fproto', '__gen_resume', '__gen_done',
-    '__ftime', '__sleep', '__newtarget'
+    '__ftime', '__sleep', '__newtarget', '__u16', '__fromu16', '__b2u', '__u2b', '__raw', '__nsm'
   );
 
 Type
@@ -478,6 +478,7 @@ Type
     template_count, regex_count, operator_count, punct_count,
     comment_count: LongInt;
     pool_len     : LongInt;
+    tok_off      : LongInt;     { debut de la valeur du jeton dans le pool }
     tokens       : TDynList;
     pool         : TDynList;
   End;
@@ -1659,7 +1660,7 @@ End;
 
 { PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }
 Const
-  PRELUDE_LINES = 2431;
+  PRELUDE_LINES = 2770;
   PreludeText: Array[1..PRELUDE_LINES] Of String[250] = (
     'function __i_isId(k) {',
     '  if (k.length === 0) return false;',
@@ -1691,6 +1692,11 @@ Const
     '    else if (c === 12) out += ''\\f'';',
     '    else if (c === 11) out += ''\\v'';',
     '    else if (c < 32 || c === 127) out += __i_hex2(c);',
+    '    else if (c >= 55296 && c <= 57343) {',
+    '      var d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;',
+    '      if (c <= 56319 && d >= 56320 && d <= 57343) { out += ch + s[i + 1]; i++; }',
+    '      else out += ''\\u'' + c.toString(16);',
+    '    }',
     '    else out += ch;',
     '  }',
     '  return out + q;',
@@ -2073,6 +2079,7 @@ Const
     '  __init_async();',
     '  __init_lib();',
     '  __init_big();',
+    '  __init_str();',
     '  var FP = __fproto();',
     '  FP.call = function (t, ...a) { return __invoke(this, t, a); };',
     '  FP.apply = function (t, a) { return __invoke(this, t, a === undefined || a === null ? [] : a); };',
@@ -4091,6 +4098,339 @@ Const
     '  var list = __evparse(__evtok(x)), r, i;',
     '  for (i = 0; i < list.length; i++) r = __evrun(list[i], env);',
     '  return r;',
+    '}',
+    'var __UPR, __LOR, __UPM, __LOM;',
+    'function __case_init() {',
+    '  __UPR = [',
+    '    181,181,743,1,224,246,-32,1,248,254,-32,1,255,255,121,1,257,303,-1,2,305,305,-232,1,307,311,-1,2,314,328,-1,2,331,375,-1,2,378,382,-1,2,383,383,-300,',
+    '    1,384,384,195,1,387,389,-1,2,392,392,-1,1,396,396,-1,1,402,402,-1,1,405,405,97,1,409,409,-1,1,410,410,163,1,411,411,42561,1,414,414,130,1,417,421,-1,',
+    '    2,424,424,-1,1,429,429,-1,1,432,432,-1,1,436,438,-1,2,441,441,-1,1,445,445,-1,1,447,447,56,1,453,453,-1,1,454,454,-2,1,456,456,-1,1,457,457,-2,1,459,',
+    '    459,-1,1,460,460,-2,1,462,476,-1,2,477,477,-79,1,479,495,-1,2,498,498,-1,1,499,499,-2,1,501,501,-1,1,505,543,-1,2,547,563,-1,2,572,572,-1,1,575,576,',
+    '    10815,1,578,578,-1,1,583,591,-1,2,592,592,10783,1,593,593,10780,1,594,594,10782,1,595,595,-210,1,596,596,-206,1,598,599,-205,1,601,601,-202,1,603,603,',
+    '    -203,1,604,604,42319,1,608,608,-205,1,609,609,42315,1,611,611,-207,1,612,612,42343,1,613,613,42280,1,614,614,42308,1,616,616,-209,1,617,617,-211,1,',
+    '    618,618,42308,1,619,619,10743,1,620,620,42305,1,623,623,-211,1,625,625,10749,1,626,626,-213,1,629,629,-214,1,637,637,10727,1,640,640,-218,1,642,642,',
+    '    42307,1,643,643,-218,1,647,647,42282,1,648,648,-218,1,649,649,-69,1,650,651,-217,1,652,652,-71,1,658,658,-219,1,669,669,42261,1,670,670,42258,1,837,',
+    '    837,84,1,881,883,-1,2,887,887,-1,1,891,893,130,1,940,940,-38,1,941,943,-37,1,945,961,-32,1,962,962,-31,1,963,971,-32,1,972,972,-64,1,973,974,-63,1,',
+    '    976,976,-62,1,977,977,-57,1,981,981,-47,1,982,982,-54,1,983,983,-8,1,985,1007,-1,2,1008,1008,-86,1,1009,1009,-80,1,1010,1010,7,1,1011,1011,-116,1,',
+    '    1013,1013,-96,1,1016,1016,-1,1,1019,1019,-1,1,1072,1103,-32,1,1104,1119,-80,1,1121,1153,-1,2,1163,1215,-1,2,1218,1230,-1,2,1231,1231,-15,1,1233,1327,',
+    '    -1,2,1377,1414,-48,1,4304,4346,3008,1,4349,4351,3008,1,5112,5117,-8,1,7296,7296,-6254,1,7297,7297,-6253,1,7298,7298,-6244,1,7299,7300,-6242,1,7301,',
+    '    7301,-6243,1,7302,7302,-6236,1,7303,7303,-6181,1,7304,7304,35266,1,7306,7306,-1,1,7545,7545,35332,1,7549,7549,3814,1,7566,7566,35384,1,7681,7829,-1,2,',
+    '    7835,7835,-59,1,7841,7935,-1,2,7936,7943,8,1,7952,7957,8,1,7968,7975,8,1,7984,7991,8,1,8000,8005,8,1,8017,8023,8,2,8032,8039,8,1,8048,8049,74,1,8050,',
+    '    8053,86,1,8054,8055,100,1,8056,8057,128,1,8058,8059,112,1,8060,8061,126,1,8112,8113,8,1,8126,8126,-7205,1,8144,8145,8,1,8160,8161,8,1,8165,8165,7,1,',
+    '    8526,8526,-28,1,8560,8575,-16,1,8580,8580,-1,1,9424,9449,-26,1,11312,11359,-48,1,11361,11361,-1,1,11365,11365,-10795,1,11366,11366,-10792,1,11368,',
+    '    11372,-1,2,11379,11379,-1,1,11382,11382,-1,1,11393,11491,-1,2,11500,11502,-1,2,11507,11507,-1,1,11520,11557,-7264,1,11559,11559,-7264,1,11565,11565,',
+    '    -7264,1,42561,42605,-1,2,42625,42651,-1,2,42787,42799,-1,2,42803,42863,-1,2,42874,42876,-1,2,42879,42887,-1,2,42892,42892,-1,1,42897,42899,-1,2,42900,',
+    '    42900,48,1,42903,42921,-1,2,42933,42947,-1,2,42952,42954,-1,2,42957,42957,-1,1,42961,42961,-1,1,42967,42971,-1,2,42998,42998,-1,1,43859,43859,-928,1,',
+    '    43888,43967,-38864,1,65345,65370,-32,1,66600,66639,-40,1,66776,66811,-40,1,66967,66977,-39,1,66979,66993,-39,1,66995,67001,-39,1,67003,67004,-39,1,',
+    '    68800,68850,-64,1,68976,68997,-32,1,71872,71903,-32,1,93792,93823,-32,1,125218,125251,-34,1];',
+    '  __LOR = [',
+    '    192,214,32,1,216,222,32,1,256,302,1,2,306,310,1,2,313,327,1,2,330,374,1,2,376,376,-121,1,377,381,1,2,385,385,210,1,386,388,1,2,390,390,206,1,391,391,',
+    '    1,1,393,394,205,1,395,395,1,1,398,398,79,1,399,399,202,1,400,400,203,1,401,401,1,1,403,403,205,1,404,404,207,1,406,406,211,1,407,407,209,1,408,408,1,',
+    '    1,412,412,211,1,413,413,213,1,415,415,214,1,416,420,1,2,422,422,218,1,423,423,1,1,425,425,218,1,428,428,1,1,430,430,218,1,431,431,1,1,433,434,217,1,',
+    '    435,437,1,2,439,439,219,1,440,440,1,1,444,444,1,1,452,452,2,1,453,453,1,1,455,455,2,1,456,456,1,1,458,458,2,1,459,475,1,2,478,494,1,2,497,497,2,1,498,',
+    '    500,1,2,502,502,-97,1,503,503,-56,1,504,542,1,2,544,544,-130,1,546,562,1,2,570,570,10795,1,571,571,1,1,573,573,-163,1,574,574,10792,1,577,577,1,1,579,',
+    '    579,-195,1,580,580,69,1,581,581,71,1,582,590,1,2,880,882,1,2,886,886,1,1,895,895,116,1,902,902,38,1,904,906,37,1,908,908,64,1,910,911,63,1,913,929,32,',
+    '    1,931,939,32,1,975,975,8,1,984,1006,1,2,1012,1012,-60,1,1015,1015,1,1,1017,1017,-7,1,1018,1018,1,1,1021,1023,-130,1,1024,1039,80,1,1040,1071,32,1,',
+    '    1120,1152,1,2,1162,1214,1,2,1216,1216,15,1,1217,1229,1,2,1232,1326,1,2,1329,1366,48,1,4256,4293,7264,1,4295,4295,7264,1,4301,4301,7264,1,5024,5103,',
+    '    38864,1,5104,5109,8,1,7305,7305,1,1,7312,7354,-3008,1,7357,7359,-3008,1,7680,7828,1,2,7838,7838,-7615,1,7840,7934,1,2,7944,7951,-8,1,7960,7965,-8,1,',
+    '    7976,7983,-8,1,7992,7999,-8,1,8008,8013,-8,1,8025,8031,-8,2,8040,8047,-8,1,8072,8079,-8,1,8088,8095,-8,1,8104,8111,-8,1,8120,8121,-8,1,8122,8123,-74,',
+    '    1,8124,8124,-9,1,8136,8139,-86,1,8140,8140,-9,1,8152,8153,-8,1,8154,8155,-100,1,8168,8169,-8,1,8170,8171,-112,1,8172,8172,-7,1,8184,8185,-128,1,8186,',
+    '    8187,-126,1,8188,8188,-9,1,8486,8486,-7517,1,8490,8490,-8383,1,8491,8491,-8262,1,8498,8498,28,1,8544,8559,16,1,8579,8579,1,1,9398,9423,26,1,11264,',
+    '    11311,48,1,11360,11360,1,1,11362,11362,-10743,1,11363,11363,-3814,1,11364,11364,-10727,1,11367,11371,1,2,11373,11373,-10780,1,11374,11374,-10749,1,',
+    '    11375,11375,-10783,1,11376,11376,-10782,1,11378,11378,1,1,11381,11381,1,1,11390,11391,-10815,1,11392,11490,1,2,11499,11501,1,2,11506,11506,1,1,42560,',
+    '    42604,1,2,42624,42650,1,2,42786,42798,1,2,42802,42862,1,2,42873,42875,1,2,42877,42877,-35332,1,42878,42886,1,2,42891,42891,1,1,42893,42893,-42280,1,',
+    '    42896,42898,1,2,42902,42920,1,2,42922,42922,-42308,1,42923,42923,-42319,1,42924,42924,-42315,1,42925,42925,-42305,1,42926,42926,-42308,1,42928,42928,',
+    '    -42258,1,42929,42929,-42282,1,42930,42930,-42261,1,42931,42931,928,1,42932,42946,1,2,42948,42948,-48,1,42949,42949,-42307,1,42950,42950,-35384,1,',
+    '    42951,42953,1,2,42955,42955,-42343,1,42956,42956,1,1,42960,42960,1,1,42966,42970,1,2,42972,42972,-42561,1,42997,42997,1,1,65313,65338,32,1,66560,',
+    '    66599,40,1,66736,66771,40,1,66928,66938,39,1,66940,66954,39,1,66956,66962,39,1,66964,66965,39,1,68736,68786,64,1,68944,68965,32,1,71840,71871,32,1,',
+    '    93760,93791,32,1,125184,125217,34,1];',
+    '  __UPM = [',
+    '    223,"SS",329,"\u02bcN",496,"J\u030c",912,"\u0399\u0308\u0301",944,"\u03a5\u0308\u0301",1415,"\u0535\u0552",7830,"H\u0331",7831,"T\u0308",7832,',
+    '    "W\u030a",7833,"Y\u030a",7834,"A\u02be",8016,"\u03a5\u0313",8018,"\u03a5\u0313\u0300",8020,"\u03a5\u0313\u0301",8022,"\u03a5\u0313\u0342",8064,',
+    '    "\u1f08\u0399",8065,"\u1f09\u0399",8066,"\u1f0a\u0399",8067,"\u1f0b\u0399",8068,"\u1f0c\u0399",8069,"\u1f0d\u0399",8070,"\u1f0e\u0399",8071,',
+    '    "\u1f0f\u0399",8072,"\u1f08\u0399",8073,"\u1f09\u0399",8074,"\u1f0a\u0399",8075,"\u1f0b\u0399",8076,"\u1f0c\u0399",8077,"\u1f0d\u0399",8078,',
+    '    "\u1f0e\u0399",8079,"\u1f0f\u0399",8080,"\u1f28\u0399",8081,"\u1f29\u0399",8082,"\u1f2a\u0399",8083,"\u1f2b\u0399",8084,"\u1f2c\u0399",8085,',
+    '    "\u1f2d\u0399",8086,"\u1f2e\u0399",8087,"\u1f2f\u0399",8088,"\u1f28\u0399",8089,"\u1f29\u0399",8090,"\u1f2a\u0399",8091,"\u1f2b\u0399",8092,',
+    '    "\u1f2c\u0399",8093,"\u1f2d\u0399",8094,"\u1f2e\u0399",8095,"\u1f2f\u0399",8096,"\u1f68\u0399",8097,"\u1f69\u0399",8098,"\u1f6a\u0399",8099,',
+    '    "\u1f6b\u0399",8100,"\u1f6c\u0399",8101,"\u1f6d\u0399",8102,"\u1f6e\u0399",8103,"\u1f6f\u0399",8104,"\u1f68\u0399",8105,"\u1f69\u0399",8106,',
+    '    "\u1f6a\u0399",8107,"\u1f6b\u0399",8108,"\u1f6c\u0399",8109,"\u1f6d\u0399",8110,"\u1f6e\u0399",8111,"\u1f6f\u0399",8114,"\u1fba\u0399",8115,',
+    '    "\u0391\u0399",8116,"\u0386\u0399",8118,"\u0391\u0342",8119,"\u0391\u0342\u0399",8124,"\u0391\u0399",8130,"\u1fca\u0399",8131,"\u0397\u0399",8132,',
+    '    "\u0389\u0399",8134,"\u0397\u0342",8135,"\u0397\u0342\u0399",8140,"\u0397\u0399",8146,"\u0399\u0308\u0300",8147,"\u0399\u0308\u0301",8150,',
+    '    "\u0399\u0342",8151,"\u0399\u0308\u0342",8162,"\u03a5\u0308\u0300",8163,"\u03a5\u0308\u0301",8164,"\u03a1\u0313",8166,"\u03a5\u0342",8167,',
+    '    "\u03a5\u0308\u0342",8178,"\u1ffa\u0399",8179,"\u03a9\u0399",8180,"\u038f\u0399",8182,"\u03a9\u0342",8183,"\u03a9\u0342\u0399",8188,"\u03a9\u0399",',
+    '    64256,"FF",64257,"FI",64258,"FL",64259,"FFI",64260,"FFL",64261,"ST",64262,"ST",64275,"\u0544\u0546",64276,"\u0544\u0535",64277,"\u0544\u053b",64278,',
+    '    "\u054e\u0546",64279,"\u0544\u053d"];',
+    '  __LOM = [304,"i\u0307"];',
+    '}',
+    'function __su_this(t) { return typeof t === ''string'' ? t : String(t); }',
+    'function __su_int(x) {',
+    '  x = Number(x);',
+    '  if (x !== x) return 0;',
+    '  return x < 0 ? Math.ceil(x) : Math.floor(x);',
+    '}',
+    'function __rc(m, s, a, b) {',
+    '  __raw(1);',
+    '  var r = __nsm[m].call(s, a, b);',
+    '  __raw(0);',
+    '  return r;',
+    '}',
+    'function __su_charAt(i) {',
+    '  var s = __su_this(this), u = __u16(s);',
+    '  i = __su_int(i);',
+    '  if (i < 0 || i >= u.length) return '''';',
+    '  return __fromu16([u[i]]);',
+    '}',
+    'function __su_charCodeAt(i) {',
+    '  var s = __su_this(this), u = __u16(s);',
+    '  i = __su_int(i);',
+    '  if (i < 0 || i >= u.length) return NaN;',
+    '  return u[i];',
+    '}',
+    'function __su_pos(s, p, n) {',
+    '  var b;',
+    '  if (p < 0) p = 0;',
+    '  if (p > n) p = n;',
+    '  b = __u2b(s, p);',
+    '  if (b < 0) b = __u2b(s, p + 1);',
+    '  return b;',
+    '}',
+    'function __su_indexOf(sub, pos) {',
+    '  var s = __su_this(this), n = s.length, r;',
+    '  sub = String(sub);',
+    '  if (sub === '''') return Math.min(Math.max(__su_int(pos), 0), n);',
+    '  r = __rc(''indexOf'', s, sub, __su_pos(s, __su_int(pos), n));',
+    '  return r < 0 ? -1 : __b2u(s, r);',
+    '}',
+    'function __su_lastIndexOf(sub, pos) {',
+    '  var s = __su_this(this), n = s.length, r;',
+    '  sub = String(sub);',
+    '  pos = (pos === undefined || Number(pos) !== Number(pos)) ? n : __su_int(pos);',
+    '  if (sub === '''') return Math.min(Math.max(pos, 0), n);',
+    '  r = __rc(''lastIndexOf'', s, sub, __su_pos(s, pos, n));',
+    '  return r < 0 ? -1 : __b2u(s, r);',
+    '}',
+    'function __su_includes(sub, pos) {',
+    '  return __su_indexOf.call(__su_this(this), sub, pos) !== -1;',
+    '}',
+    'function __su_startsWith(sub, pos) {',
+    '  var s = __su_this(this), n = s.length;',
+    '  return __rc(''startsWith'', s, String(sub), __su_pos(s, __su_int(pos), n));',
+    '}',
+    'function __su_endsWith(sub, pos) {',
+    '  var s = __su_this(this), n = s.length;',
+    '  pos = pos === undefined ? n : __su_int(pos);',
+    '  return __rc(''endsWith'', s, String(sub), __su_pos(s, pos, n));',
+    '}',
+    'function __su_range(s, a, b) {',
+    '  var ba, bb, u;',
+    '  if (a >= b) return '''';',
+    '  ba = __u2b(s, a);',
+    '  bb = __u2b(s, b);',
+    '  if (ba < 0 || bb < 0) {',
+    '    u = __u16(s);',
+    '    return __fromu16(u.slice(a, b));',
+    '  }',
+    '  return __rc(''slice'', s, ba, bb);',
+    '}',
+    'function __su_slice(a, b) {',
+    '  var s = __su_this(this), n = s.length;',
+    '  a = __su_int(a);',
+    '  b = b === undefined ? n : __su_int(b);',
+    '  a = a < 0 ? Math.max(n + a, 0) : Math.min(a, n);',
+    '  b = b < 0 ? Math.max(n + b, 0) : Math.min(b, n);',
+    '  return __su_range(s, a, b);',
+    '}',
+    'function __su_substring(a, b) {',
+    '  var s = __su_this(this), n = s.length, t;',
+    '  a = Math.min(Math.max(__su_int(a), 0), n);',
+    '  b = b === undefined ? n : Math.min(Math.max(__su_int(b), 0), n);',
+    '  if (a > b) { t = a; a = b; b = t; }',
+    '  return __su_range(s, a, b);',
+    '}',
+    'function __su_fill(s, target, pad, atStart) {',
+    '  var n = s.length, need, f, k;',
+    '  target = __su_int(target);',
+    '  pad = pad === undefined ? '' '' : String(pad);',
+    '  if (target <= n || pad === '''') return s;',
+    '  need = target - n;',
+    '  k = Math.ceil(need / pad.length);',
+    '  f = pad.repeat(k).slice(0, need);',
+    '  return atStart ? f + s : s + f;',
+    '}',
+    'function __su_padStart(target, pad) { return __su_fill(__su_this(this), target, pad, true); }',
+    'function __su_padEnd(target, pad) { return __su_fill(__su_this(this), target, pad, false); }',
+    'function __su_isws(c) {',
+    '  return c === 32 || (c >= 9 && c <= 13) || c === 160 || c === 5760 || (c >= 8192 && c <= 8202) ||',
+    '    c === 8232 || c === 8233 || c === 8239 || c === 8287 || c === 12288 || c === 65279;',
+    '}',
+    'function __su_trimmed(s, front, back) {',
+    '  var u = __u16(s), a = 0, b = u.length;',
+    '  if (front) while (a < b && __su_isws(u[a])) a++;',
+    '  if (back) while (b > a && __su_isws(u[b - 1])) b--;',
+    '  return __su_range(s, a, b);',
+    '}',
+    'function __su_trim() { return __su_trimmed(__su_this(this), true, true); }',
+    'function __su_trimStart() { return __su_trimmed(__su_this(this), true, false); }',
+    'function __su_trimEnd() { return __su_trimmed(__su_this(this), false, true); }',
+    'function __su_split(sep, limit) {',
+    '  var s = __su_this(this), u, out = [], i, lim;',
+    '  if (typeof sep === ''string'' && sep === '''') {',
+    '    u = __u16(s);',
+    '    lim = limit === undefined ? 4294967295 : limit >>> 0;',
+    '    for (i = 0; i < u.length && out.length < lim; i++) out.push(__fromu16([u[i]]));',
+    '    return out;',
+    '  }',
+    '  __raw(1);',
+    '  out = __nsm.split.call(s, sep, limit);',
+    '  __raw(0);',
+    '  return out;',
+    '}',
+    'function __case_find(t, cp) {',
+    '  var lo = 0, hi = t.length / 4 - 1, mid, s, e;',
+    '  while (lo <= hi) {',
+    '    mid = (lo + hi) >> 1;',
+    '    s = t[mid * 4];',
+    '    e = t[mid * 4 + 1];',
+    '    if (cp < s) hi = mid - 1;',
+    '    else if (cp > e) lo = mid + 1;',
+    '    else return (t[mid * 4 + 3] === 1 || (cp - s) % 2 === 0) ? t[mid * 4 + 2] : 0;',
+    '  }',
+    '  return 0;',
+    '}',
+    'function __case_multi(m, cp) {',
+    '  for (var i = 0; i < m.length; i += 2) if (m[i] === cp) return m[i + 1];',
+    '  return null;',
+    '}',
+    'function __cpat(u, i) {',
+    '  var c = u[i];',
+    '  if (c >= 56320 && c <= 57343 && i > 0 && u[i - 1] >= 55296 && u[i - 1] <= 56319) return 65536 + ((u[i - 1] - 55296) << 10) + (c - 56320);',
+    '  if (c >= 55296 && c <= 56319 && i + 1 < u.length && u[i + 1] >= 56320 && u[i + 1] <= 57343) return 65536 + ((c - 55296) << 10) + (u[i + 1] - 56320);',
+    '  return c;',
+    '}',
+    'function __iscased(c) {',
+    '  if (c < 128) return (c >= 65 && c <= 90) || (c >= 97 && c <= 122);',
+    '  if (c >= 119808 && c <= 120831) return true;',
+    '  return __case_find(__UPR, c) !== 0 || __case_find(__LOR, c) !== 0 || __case_multi(__UPM, c) !== null || __case_multi(__LOM, c) !== null;',
+    '}',
+    'function __case_conv(s, upper) {',
+    '  var t, m, out = [], i, cp, d, r, n, u;',
+    '  if (__UPR === undefined) __case_init();',
+    '  t = upper ? __UPR : __LOR;',
+    '  m = upper ? __UPM : __LOM;',
+    '  u = __u16(s);',
+    '  n = u.length;',
+    '  for (i = 0; i < n; i++) {',
+    '    cp = u[i];',
+    '    if (cp >= 55296 && cp <= 56319 && i + 1 < n && u[i + 1] >= 56320 && u[i + 1] <= 57343) {',
+    '      cp = 65536 + ((cp - 55296) << 10) + (u[i + 1] - 56320);',
+    '      d = __case_find(t, cp);',
+    '      if (d !== 0) { cp += d; out.push(55296 + ((cp - 65536) >> 10), 56320 + ((cp - 65536) & 1023)); }',
+    '      else out.push(u[i], u[i + 1]);',
+    '      i++;',
+    '      continue;',
+    '    }',
+    '    if (cp < 128) {',
+    '      if (upper) { if (cp >= 97 && cp <= 122) cp -= 32; }',
+    '      else if (cp >= 65 && cp <= 90) cp += 32;',
+    '      out.push(cp);',
+    '      continue;',
+    '    }',
+    '    r = __case_multi(m, cp);',
+    '    if (r !== null) {',
+    '      r = __u16(r);',
+    '      for (d = 0; d < r.length; d++) out.push(r[d]);',
+    '      continue;',
+    '    }',
+    '    if (!upper && cp === 931) {',
+    '      /* sigma final : precede d''une lettre et non suivi d''une lettre */',
+    '      if (i > 0 && __iscased(__cpat(u, i - 1)) && !(i + 1 < n && __iscased(__cpat(u, i + 1)))) { out.push(962); continue; }',
+    '    }',
+    '    d = __case_find(t, cp);',
+    '    out.push(d !== 0 ? cp + d : cp);',
+    '  }',
+    '  return __fromu16(out);',
+    '}',
+    'function __su_toUpperCase() { return __case_conv(__su_this(this), true); }',
+    'function __su_toLowerCase() { return __case_conv(__su_this(this), false); }',
+    'function __su_fromCharCode(...a) {',
+    '  var u = [], i;',
+    '  for (i = 0; i < a.length; i++) u.push(Number(a[i]) & 65535);',
+    '  return __fromu16(u);',
+    '}',
+    'function __coll(s, level) {',
+    '  var from = ''a\u00e0\u00e1\u00e2\u00e3\u00e4\u00e5c\u00e7e\u00e8\u00e9\u00ea\u00ebi\u00ec\u00ed\u00ee\u00efn\u00f1o\u00f2\u00f3\u00f4\u00f5\u00f6u\u00f9\u00fa\u00fb\u00fcy\u00fd\u00ff'';',
+    '  var base = ''aaaaaaaccceeeeeiiiiinnooooooouuuuuyyy'', out = '''', i, c, k, lo, cp;',
+    '  for (i = 0; i < s.length; i++) {',
+    '    c = s.charAt(i);',
+    '    cp = s.charCodeAt(i);',
+    '    if (cp >= 55296 && cp <= 56319 && i + 1 < s.length) { c += s.charAt(i + 1); i++; cp = 65536 + ((cp - 55296) << 10) + (s.charCodeAt(i) - 56320); }',
+    '    lo = c.toLowerCase();',
+    '    k = from.indexOf(lo);',
+    '    if (level === 0) {',
+    '      if (cp === 32 || (cp >= 9 && cp <= 13) || cp === 160) out += ''1'';',
+    '      else if (cp < 48 || (cp > 57 && cp < 65) || (cp > 90 && cp < 97) || (cp > 122 && cp < 128)) out += ''2'' + lo;',
+    '      else if (cp >= 48 && cp <= 57) out += ''4'' + lo;',
+    '      else if (cp >= 119808 && cp <= 120831) out += ''5'' + lo;',
+    '      else if (cp >= 65536) out += ''3'' + lo;',
+    '      else if (lo === ''\u00df'') out += ''5ss'';',
+    '      else if (k >= 0) out += ''5'' + base.charAt(k);',
+    '      else if (cp < 128 || (cp >= 192 && cp < 592)) out += ''5'' + lo;',
+    '      else if (cp >= 880 && cp < 1024) out += ''6'' + lo;',
+    '      else if (cp >= 1024 && cp < 1328) out += ''7'' + lo;',
+    '      else if (cp >= 8192 && cp < 12288) out += ''3'' + lo;',
+    '      else out += ''8'' + lo;',
+    '    }',
+    '    else if (level === 1) out += k > 0 && lo !== base.charAt(k) ? ''1'' : ''0'';',
+    '    else out += c === lo ? ''0'' : ''1'';',
+    '  }',
+    '  return out;',
+    '}',
+    'function __init_str() {',
+    '  var SP = String.prototype;',
+    '  SP.at = function (i) {',
+    '    var s = __su_this(this), n = s.length;',
+    '    i = __su_int(i);',
+    '    if (i < 0) i += n;',
+    '    if (i < 0 || i >= n) return undefined;',
+    '    return s.charAt(i);',
+    '  };',
+    '  SP.codePointAt = function (i) {',
+    '    var s = __su_this(this), u = __u16(s), c, d;',
+    '    i = __su_int(i);',
+    '    if (i < 0 || i >= u.length) return undefined;',
+    '    c = u[i];',
+    '    if (c >= 55296 && c <= 56319 && i + 1 < u.length) {',
+    '      d = u[i + 1];',
+    '      if (d >= 56320 && d <= 57343) return 65536 + ((c - 55296) << 10) + (d - 56320);',
+    '    }',
+    '    return c;',
+    '  };',
+    '  SP.normalize = function () { return __su_this(this); };',
+    '  SP.localeCompare = function (o) {',
+    '    var a = __su_this(this), b = String(o), x = __coll(a, 0), y = __coll(b, 0), i;',
+    '    if (x !== y) return x < y ? -1 : 1;',
+    '    x = __coll(a, 1);',
+    '    y = __coll(b, 1);',
+    '    if (x !== y) return x < y ? -1 : 1;',
+    '    x = __coll(a, 2);',
+    '    y = __coll(b, 2);',
+    '    return x === y ? 0 : x < y ? -1 : 1;',
+    '  };',
+    '  SP.concat = function (...a) {',
+    '    var s = __su_this(this), i;',
+    '    for (i = 0; i < a.length; i++) s += String(a[i]);',
+    '    return s;',
+    '  };',
+    '  String.fromCodePoint = function (...a) {',
+    '    var u = [], i, c;',
+    '    for (i = 0; i < a.length; i++) {',
+    '      c = Number(a[i]);',
+    '      if (c !== Math.floor(c) || c < 0 || c > 1114111) throw new RangeError(''Invalid code point '' + a[i]);',
+    '      if (c >= 65536) { c -= 65536; u.push(55296 + (c >> 10), 56320 + (c & 1023)); }',
+    '      else u.push(c);',
+    '    }',
+    '    return __fromu16(u);',
+    '  };',
     '}'
   );
 { PRELUDE-END }
@@ -4352,7 +4692,20 @@ End;
 
 { Ajoute un point de code Unicode encode en UTF-8. }
 Procedure PoolAppendCP(Var ctx: TCompilerContext; cp: LongInt);
+Var
+  hv: LongInt;
 Begin
+  { demi-paire basse apres une demi-paire haute : un seul caractere de 4 octets }
+  If (cp >= $DC00) And (cp <= $DFFF) And (ctx.lex.pool_len - ctx.lex.tok_off >= 3) And
+     (Ord(PoolP(ctx.lex.pool, ctx.lex.pool_len - 3)^) = $ED) And
+     (Ord(PoolP(ctx.lex.pool, ctx.lex.pool_len - 2)^) >= $A0) And
+     (Ord(PoolP(ctx.lex.pool, ctx.lex.pool_len - 2)^) <= $AF) Then
+    Begin
+      hv := (((Ord(PoolP(ctx.lex.pool, ctx.lex.pool_len - 2)^) And $3F) Shl 6) Or
+             (Ord(PoolP(ctx.lex.pool, ctx.lex.pool_len - 1)^) And $3F)) - $800;
+      Dec(ctx.lex.pool_len, 3);
+      cp := $10000 + (hv Shl 10) + (cp - $DC00);
+    End;
   If cp < $80 Then
     PoolAppend(ctx, Chr(cp))
   Else If cp < $800 Then
@@ -4733,6 +5086,7 @@ Begin
   tp := ctx.lex.pos;
   LxAdvance(ctx);
   off := ctx.lex.pool_len;
+  ctx.lex.tok_off := off;
   closed := False;
   While Not closed Do
     Begin
@@ -4775,6 +5129,7 @@ Begin
     Dec(ctx.lex.tpl_top);
   LxAdvance(ctx);
   off := ctx.lex.pool_len;
+  ctx.lex.tok_off := off;
   done := False;
   If resume Then
     part := TP_TAIL
@@ -4860,6 +5215,7 @@ Begin
   tp := ctx.lex.pos;
   LxAdvance(ctx);
   off := ctx.lex.pool_len;
+  ctx.lex.tok_off := off;
   in_class := False;
   closed := False;
   While Not closed Do
@@ -9358,7 +9714,7 @@ Begin
   Writeln('  Cellule du tas : en-tete de ', RT_HDR_SIZE, ' octets, alignement ',
           RT_ALIGN);
   Writeln('    +', RT_HDR_KIND, ' kind(1)  +', RT_HDR_GC, ' gc(1)  +',
-          RT_HDR_FLAGS, ' flags(2)  +', RT_HDR_NEXT, ' gc_next(4)');
+          RT_HDR_FLAGS, ' flags(2)  +', RT_HDR_U16, ' u16len+1(4)');
   Writeln('  Dispositions :');
   Writeln('    kinds    : ', RT_OK_STRING, ' chaine, ', RT_OK_ARRAY, ' tableau, ',
           RT_OK_OBJECT, ' objet, ', RT_OK_FUNCTION, ' fonction, ', RT_OK_CELL,
@@ -9390,7 +9746,7 @@ Begin
   Writeln('  Tas : arene de ', RT_ARENA_SIZE Div 1024, ' Ko (VirtualAlloc), blocs >= ',
           RT_BIG_ALLOC Div 1024, ' Ko directs, strategie sans liberation');
   Writeln('    reserve pour un mark & sweep : octet gc (+', RT_HDR_GC,
-          ') et gc_next (+', RT_HDR_NEXT, ')');
+          ') ; chaines : longueur UTF-16 + 1 (+', RT_HDR_U16, ')');
   Writeln('  Pile : reserve ', RT_STACK_RESERVE Div 1024, ' Ko, limite souple ',
           RT_STACK_GUARD Div 1024, ' Ko (RangeError si depassee)');
   Writeln('    appel : [EBP+', RT_FRAME_CLOSURE, '] fonction, [EBP+',
@@ -10198,7 +10554,7 @@ End;
 
 Procedure EmitStringCell(Var ctx: TCompilerContext; id: LongInt);
 Var
-  ofs, i, len: LongInt;
+  ofs, i, len, u16, b0: LongInt;
 Begin
   len := StrP(ctx.data.strs, id)^.len;
   ofs := SecAlloc(ctx, SEC_RDATA, RT_STR_DATA + len + 1);
@@ -10208,6 +10564,18 @@ Begin
   PutByte(ctx, SEC_RDATA, ofs + RT_HDR_GC, 0);
   PutByte(ctx, SEC_RDATA, ofs + RT_HDR_FLAGS, OF_STATIC);
   PutDword(ctx, SEC_RDATA, ofs + RT_STR_LEN, len);
+  u16 := 0;
+  For i := 0 To len - 1 Do
+    Begin
+      b0 := Ord(DpoolP(ctx.data.dpool, StrP(ctx.data.strs, id)^.off + i)^);
+      If b0 < $80 Then
+        Inc(u16)
+      Else If b0 >= $F0 Then
+        Inc(u16, 2)
+      Else If b0 >= $C0 Then
+        Inc(u16);
+    End;
+  PutDword(ctx, SEC_RDATA, ofs + RT_HDR_U16, u16 + 1);
   PutDword(ctx, SEC_RDATA, ofs + RT_STR_HASH, StrP(ctx.data.strs, id)^.hash);
   For i := 0 To len - 1 Do
     PutByte(ctx, SEC_RDATA, ofs + RT_STR_DATA + i,
@@ -14639,6 +15007,7 @@ Begin
   Else If nm = 'FN_ENV' Then v := RT_FN_ENV
   Else If nm = 'FN_DESC' Then v := RT_FN_DESC
   Else If nm = 'FN_PROPS' Then v := RT_FN_PROPS
+  Else If nm = 'HDR_U16' Then v := RT_HDR_U16
   Else If nm = 'FN_THIS' Then v := RT_FN_THIS
   Else If nm = 'FN_HOME' Then v := RT_FN_HOME
   Else If nm = 'CELL_VALUE' Then v := RT_CELL_VALUE
@@ -15399,17 +15768,70 @@ Begin
   A('endp');
 
   { _JSRT_write(handle, octets, nombre) }
+  { les demi-paires (ED A0..BF xx) ne sont pas de l'UTF-8 valide : U+FFFD en sortie }
+  RtCString('_JSRT_c_repl', #$EF#$BF#$BD);
   A('proc _JSRT_write');
   A('push ebp');
   A('mov ebp, esp');
   A('sub esp, 4');
+  A('push ebx');
+  A('push esi');
+  A('mov esi, dword ptr [ebp+12]');
+  A('mov ebx, dword ptr [ebp+16]');
+  A('.again:');
+  A('xor ecx, ecx');
+  A('.find:');
+  A('cmp ecx, ebx');
+  A('jae .flush');
+  A('cmp byte ptr [esi+ecx], 237');
+  A('jne .nx');
+  A('lea eax, [ecx+2]');
+  A('cmp eax, ebx');
+  A('jae .nx');
+  A('movzx eax, byte ptr [esi+ecx+1]');
+  A('cmp eax, 160');
+  A('jb .nx');
+  A('test ecx, ecx');
+  A('jz .rep');
+  A('push ecx');
   A('push 0');
   A('lea eax, [ebp-4]');
   A('push eax');
-  A('push dword ptr [ebp+16]');
-  A('push dword ptr [ebp+12]');
+  A('push ecx');
+  A('push esi');
   A('push dword ptr [ebp+8]');
   A('call dword ptr [__imp__WriteFile@20]');
+  A('pop ecx');
+  A('.rep:');
+  A('push ecx');
+  A('push 0');
+  A('lea eax, [ebp-4]');
+  A('push eax');
+  A('push 3');
+  A('push offset _JSRT_c_repl');
+  A('push dword ptr [ebp+8]');
+  A('call dword ptr [__imp__WriteFile@20]');
+  A('pop ecx');
+  A('add ecx, 3');
+  A('add esi, ecx');
+  A('sub ebx, ecx');
+  A('jmp .again');
+  A('.nx:');
+  A('inc ecx');
+  A('jmp .find');
+  A('.flush:');
+  A('test ebx, ebx');
+  A('jz .out');
+  A('push 0');
+  A('lea eax, [ebp-4]');
+  A('push eax');
+  A('push ebx');
+  A('push esi');
+  A('push dword ptr [ebp+8]');
+  A('call dword ptr [__imp__WriteFile@20]');
+  A('.out:');
+  A('pop esi');
+  A('pop ebx');
   A('leave');
   A('ret');
   A('endp');
@@ -15525,6 +15947,68 @@ Begin
   A('add esi, $STR_DATA');
   A('rep movsb');
   A('pop eax');
+  { jonction WTF-8 : demi-paire haute + demi-paire basse = un caractere de 4 octets }
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('cmp ecx, 3');
+  A('jb .done');
+  A('mov esi, dword ptr [ebp+16]');
+  A('cmp dword ptr [esi+$STR_LEN], 3');
+  A('jb .done');
+  A('lea esi, [eax+$STR_DATA]');
+  A('add esi, ecx');
+  A('sub esi, 3');
+  A('cmp byte ptr [esi], 237');
+  A('jne .done');
+  A('movzx edx, byte ptr [esi+1]');
+  A('cmp edx, 160');
+  A('jb .done');
+  A('cmp edx, 175');
+  A('ja .done');
+  A('cmp byte ptr [esi+3], 237');
+  A('jne .done');
+  A('movzx ebx, byte ptr [esi+4]');
+  A('cmp ebx, 176');
+  A('jb .done');
+  A('and edx, 63');
+  A('shl edx, 6');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('and ecx, 63');
+  A('or edx, ecx');
+  A('sub edx, 2048');
+  A('and ebx, 63');
+  A('shl ebx, 6');
+  A('movzx ecx, byte ptr [esi+5]');
+  A('and ecx, 63');
+  A('or ebx, ecx');
+  A('sub ebx, 3072');
+  A('shl edx, 10');
+  A('add edx, ebx');
+  A('add edx, 65536');
+  A('mov ecx, edx');
+  A('shr ecx, 18');
+  A('or ecx, 240');
+  A('mov byte ptr [esi], cl');
+  A('mov ecx, edx');
+  A('shr ecx, 12');
+  A('and ecx, 63');
+  A('or ecx, 128');
+  A('mov byte ptr [esi+1], cl');
+  A('mov ecx, edx');
+  A('shr ecx, 6');
+  A('and ecx, 63');
+  A('or ecx, 128');
+  A('mov byte ptr [esi+2], cl');
+  A('and edx, 63');
+  A('or edx, 128');
+  A('mov byte ptr [esi+3], dl');
+  A('mov ecx, dword ptr [ebp+16]');
+  A('mov ecx, dword ptr [ecx+$STR_LEN]');
+  A('sub ecx, 2');
+  A('lea edi, [esi+4]');
+  A('add esi, 6');
+  A('rep movsb');
+  A('sub dword ptr [eax+$STR_LEN], 2');
   A('.done:');
   A('mov edx, $STR');
   A('pop ebx');
@@ -15951,8 +16435,9 @@ Begin
   A('add esp, 8');
   A('test eax, eax');
   A('jz .proto');
-  A('mov eax, dword ptr [ebp+8]');
-  A('mov eax, dword ptr [eax+$STR_LEN]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_str_ulen');
+  A('add esp, 4');
   A('mov edx, $INT');
   A('leave');
   A('ret');
@@ -16169,7 +16654,17 @@ Begin
 End;
 
 { Debut d'une methode : this converti en chaine, pointeur dans ESI. }
+Function HasU16Impl(Const nm: TString): Boolean;
+Const
+  Names = ',charAt,charCodeAt,indexOf,lastIndexOf,includes,startsWith,endsWith,toUpperCase,' +
+          'toLowerCase,trim,trimStart,trimEnd,slice,substring,padStart,padEnd,split,';
+Begin
+  HasU16Impl := Pos(',' + nm + ',', Names) > 0;
+End;
+
 Procedure MethBegin(Const code: TString);
+Var
+  nm: TString;
 Begin
   A('proc ' + code);
   A('push ebp');
@@ -16187,6 +16682,44 @@ Begin
   A('add esp, 8');
   A('.thisok:');
   A('mov esi, eax');
+  nm := Copy(code, 10, 40);
+  If Copy(code, 1, 9) = '_JSRT_sm_' Then
+    If HasU16Impl(nm) Then
+      Begin
+        { chaine non ASCII : indices en unites UTF-16, delegues au prelude (__su_nom) }
+        A('cmp dword ptr [_JSRT_v_u16raw], 0');
+        A('jne .u16ok');
+        If (nm = 'padStart') Or (nm = 'padEnd') Then
+          Begin
+            A('cmp dword ptr [ebp+12], 2');
+            A('jb .padthis');
+            A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 12) + '], $STR');
+            A('jne .padthis');
+            A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+            A('call _JSRT_str_isascii');
+            A('add esp, 4');
+            A('test eax, eax');
+            A('jz .padjs');
+            A('.padthis:');
+          End;
+        A('push esi');
+        A('call _JSRT_str_isascii');
+        A('add esp, 4');
+        A('test eax, eax');
+        A('jnz .u16ok');
+        If (nm = 'padStart') Or (nm = 'padEnd') Then
+          A('.padjs:');
+        A('cmp dword ptr [_JSV___su_' + nm + '+4], $FN');
+        A('jne .u16ok');
+        A('mov eax, dword ptr [_JSV___su_' + nm + ']');
+        A('mov dword ptr [ebp+8], eax');
+        A('pop edi');
+        A('pop esi');
+        A('pop ebx');
+        A('pop ebp');
+        A('jmp dword ptr [eax+$FN_CODE]');
+        A('.u16ok:');
+      End;
 End;
 
 Procedure MethEnd;
@@ -16203,6 +16736,256 @@ End;
 { Routines communes : conversions, recherche, extraction. }
 Procedure RtStringHelpers;
 Begin
+  { _JSRT_str_ulen(chaine) -> longueur en unites UTF-16 (mise en cache dans l'en-tete) }
+  A('proc _JSRT_str_ulen');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [esi+$HDR_U16]');
+  A('test eax, eax');
+  A('jz .calc');
+  A('dec eax');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('.calc:');
+  A('mov ecx, dword ptr [esi+$STR_LEN]');
+  A('lea edx, [esi+$STR_DATA]');
+  A('xor eax, eax');
+  A('.l:');
+  A('test ecx, ecx');
+  A('jz .done');
+  A('movzx ebx, byte ptr [edx]');
+  A('inc edx');
+  A('dec ecx');
+  A('cmp ebx, 128');
+  A('jb .one');
+  A('cmp ebx, 192');
+  A('jb .l');
+  A('cmp ebx, 240');
+  A('jb .one');
+  A('add eax, 2');
+  A('jmp .l');
+  A('.one:');
+  A('inc eax');
+  A('jmp .l');
+  A('.done:');
+  A('lea ecx, [eax+1]');
+  A('mov dword ptr [esi+$HDR_U16], ecx');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_b2u(chaine, octets) -> unites UTF-16 des premiers octets }
+  A('proc _JSRT_b2u');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('cmp edi, dword ptr [esi+$STR_LEN]');
+  A('jbe .go');
+  A('mov edi, dword ptr [esi+$STR_LEN]');
+  A('.go:');
+  A('xor ebx, ebx');
+  A('xor ecx, ecx');
+  A('.l:');
+  A('cmp ebx, edi');
+  A('jae .done');
+  A('movzx eax, byte ptr [esi+ebx+$STR_DATA]');
+  A('inc ebx');
+  A('cmp eax, 128');
+  A('jb .c1');
+  A('cmp eax, 192');
+  A('jb .l');
+  A('cmp eax, 240');
+  A('jb .c1');
+  A('add ecx, 2');
+  A('jmp .l');
+  A('.c1:');
+  A('inc ecx');
+  A('jmp .l');
+  A('.done:');
+  A('mov eax, ecx');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_u2b(chaine, unites) -> decalage en octets, -1 au milieu d'une paire }
+  A('proc _JSRT_u2b');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov edi, dword ptr [ebp+12]');
+  A('test edi, edi');
+  A('jns .go');
+  A('xor edi, edi');
+  A('.go:');
+  A('xor ebx, ebx');
+  A('xor ecx, ecx');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('.l:');
+  A('cmp ecx, edi');
+  A('jae .chk');
+  A('cmp ebx, eax');
+  A('jae .chk');
+  A('movzx edx, byte ptr [esi+ebx+$STR_DATA]');
+  A('cmp edx, 128');
+  A('jb .s1');
+  A('cmp edx, 224');
+  A('jb .s2');
+  A('cmp edx, 240');
+  A('jb .s3');
+  A('add ebx, 4');
+  A('add ecx, 2');
+  A('jmp .l');
+  A('.s1:');
+  A('inc ebx');
+  A('inc ecx');
+  A('jmp .l');
+  A('.s2:');
+  A('add ebx, 2');
+  A('inc ecx');
+  A('jmp .l');
+  A('.s3:');
+  A('add ebx, 3');
+  A('inc ecx');
+  A('jmp .l');
+  A('.chk:');
+  A('cmp ecx, edi');
+  A('ja .mid');
+  A('jb .end');
+  A('cmp ebx, eax');
+  A('jbe .ok');
+  A('.end:');
+  A('mov ebx, eax');
+  A('.ok:');
+  A('mov eax, ebx');
+  A('jmp .fin');
+  A('.mid:');
+  A('mov eax, -1');
+  A('.fin:');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_wtf8_fix(chaine) -> chaine : reunit en place les demi-paires adjacentes
+    (chaine fraichement creee uniquement) }
+  A('proc _JSRT_wtf8_fix');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push ebx');
+  A('push esi');
+  A('push edi');
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [eax+$STR_LEN]');
+  A('lea esi, [eax+$STR_DATA]');
+  A('.l:');
+  A('cmp ebx, 6');
+  A('jb .done');
+  A('cmp byte ptr [esi], 237');
+  A('jne .nx');
+  A('movzx edx, byte ptr [esi+1]');
+  A('cmp edx, 160');
+  A('jb .nx');
+  A('cmp edx, 175');
+  A('ja .nx');
+  A('cmp byte ptr [esi+3], 237');
+  A('jne .nx');
+  A('movzx edi, byte ptr [esi+4]');
+  A('cmp edi, 176');
+  A('jb .nx');
+  A('and edx, 63');
+  A('shl edx, 6');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('and ecx, 63');
+  A('or edx, ecx');
+  A('sub edx, 2048');
+  A('and edi, 63');
+  A('shl edi, 6');
+  A('movzx ecx, byte ptr [esi+5]');
+  A('and ecx, 63');
+  A('or edi, ecx');
+  A('sub edi, 3072');
+  A('shl edx, 10');
+  A('add edx, edi');
+  A('add edx, 65536');
+  A('mov ecx, edx');
+  A('shr ecx, 18');
+  A('or ecx, 240');
+  A('mov byte ptr [esi], cl');
+  A('mov ecx, edx');
+  A('shr ecx, 12');
+  A('and ecx, 63');
+  A('or ecx, 128');
+  A('mov byte ptr [esi+1], cl');
+  A('mov ecx, edx');
+  A('shr ecx, 6');
+  A('and ecx, 63');
+  A('or ecx, 128');
+  A('mov byte ptr [esi+2], cl');
+  A('and edx, 63');
+  A('or edx, 128');
+  A('mov byte ptr [esi+3], dl');
+  A('lea ecx, [ebx-5]');
+  A('push esi');
+  A('lea edi, [esi+4]');
+  A('add esi, 6');
+  A('rep movsb');
+  A('pop esi');
+  A('add esi, 4');
+  A('sub ebx, 6');
+  A('mov eax, dword ptr [ebp+8]');
+  A('sub dword ptr [eax+$STR_LEN], 2');
+  A('jmp .l');
+  A('.nx:');
+  A('inc esi');
+  A('dec ebx');
+  A('jmp .l');
+  A('.done:');
+  A('mov eax, dword ptr [ebp+8]');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('ret');
+  A('endp');
+
+  { _JSRT_str_isascii(chaine) -> 1 si les octets sont tous ASCII }
+  A('proc _JSRT_str_isascii');
+  A('push ebp');
+  A('mov ebp, esp');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_str_ulen');
+  A('add esp, 4');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('cmp eax, dword ptr [ecx+$STR_LEN]');
+  A('jne .no');
+  A('mov eax, 1');
+  A('leave');
+  A('ret');
+  A('.no:');
+  A('xor eax, eax');
+  A('leave');
+  A('ret');
+  A('endp');
+
   { _JSRT_toint32(v) -> EAX }
   A('proc _JSRT_toint32');
   A('push ebp');
@@ -16664,8 +17447,26 @@ Begin
   A('proc _JSRT_str_char_at');
   A('push ebp');
   A('mov ebp, esp');
-  A('mov eax, dword ptr [ebp+8]');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_str_isascii');
+  A('add esp, 4');
   A('mov ecx, dword ptr [ebp+12]');
+  A('test eax, eax');
+  A('mov eax, dword ptr [ebp+8]');
+  A('jnz .ascii');
+  A('cmp dword ptr [_JSRT_v_u16raw], 0');
+  A('jne .ascii');
+  A('cmp dword ptr [_JSV___su_charAt+4], $FN');
+  A('jne .ascii');
+  A('push $INT');
+  A('push ecx');
+  A('push $STR');
+  A('push eax');
+  A('push dword ptr [_JSV___su_charAt]');
+  A('call _JSRT_call1');
+  A('leave');
+  A('ret');
+  A('.ascii:');
   A('cmp ecx, 0');
   A('jl .empty');
   A('cmp ecx, dword ptr [eax+$STR_LEN]');
@@ -16756,6 +17557,14 @@ Begin
   MethBegin('_JSRT_sm_startsWith');
   MArgStr(0, 'ebx');
   MArgInt(1, '0');
+  A('test eax, eax');
+  A('jns .p1');
+  A('xor eax, eax');
+  A('.p1:');
+  A('cmp eax, dword ptr [esi+$STR_LEN]');
+  A('jle .p2');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('.p2:');
   A('push eax');
   A('push ebx');
   A('push esi');
@@ -16768,6 +17577,10 @@ Begin
   MethBegin('_JSRT_sm_endsWith');
   MArgStr(0, 'ebx');
   MArgInt(1, '2147483647');
+  A('test eax, eax');
+  A('jns .e0');
+  A('xor eax, eax');
+  A('.e0:');
   A('cmp eax, dword ptr [esi+$STR_LEN]');
   A('jle .e1');
   A('mov eax, dword ptr [esi+$STR_LEN]');
@@ -17001,6 +17814,34 @@ Begin
   A('push ebx');
   A('push esi');
   A('push edi');
+  { unite >= 128 : le prelude (__su_fromCharCode) reunit les paires de substitution }
+  A('xor esi, esi');
+  A('.chk:');
+  A('cmp esi, dword ptr [ebp+12]');
+  A('jae .allascii');
+  A('lea eax, [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov ecx, esi');
+  A('shl ecx, 3');
+  A('push dword ptr [eax+ecx+4]');
+  A('push dword ptr [eax+ecx]');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('and eax, 65535');
+  A('cmp eax, 128');
+  A('jae .tojs');
+  A('inc esi');
+  A('jmp .chk');
+  A('.tojs:');
+  A('cmp dword ptr [_JSV___su_fromCharCode+4], $FN');
+  A('jne .allascii');
+  A('mov eax, dword ptr [_JSV___su_fromCharCode]');
+  A('mov dword ptr [ebp+8], eax');
+  A('pop edi');
+  A('pop esi');
+  A('pop ebx');
+  A('pop ebp');
+  A('jmp dword ptr [eax+$FN_CODE]');
+  A('.allascii:');
   A('xor ebx, ebx');
   A('xor esi, esi');
   A('.count:');
@@ -18121,6 +18962,9 @@ Begin
   A('jmp .f');
   A('.done:');
   A('pop eax');
+  A('push eax');
+  A('call _JSRT_wtf8_fix');
+  A('add esp, 4');
   A('mov edx, $STR');
   A('jmp .out');
   A('.empty:');
@@ -20623,7 +21467,10 @@ Begin
   A('jmp .idx');
   A('.str:');
   A('mov esi, dword ptr [ebp+8]');
-  A('mov ebx, dword ptr [esi+$STR_LEN]');
+  A('push esi');
+  A('call _JSRT_str_ulen');
+  A('add esp, 4');
+  A('mov ebx, eax');
   A('.idx:');
   A('push dword ptr [ebp+16]');
   A('push offset ' + RtStr('length'));
@@ -20957,7 +21804,9 @@ Begin
   A('mov ecx, offset ' + RtStr('length'));
   A('cmp edx, ecx');
   A('jne .strproto');
-  A('mov eax, dword ptr [eax+$STR_LEN]');
+  A('push eax');
+  A('call _JSRT_str_ulen');
+  A('add esp, 4');
   A('mov edx, $INT');
   A('leave');
   A('ret');
@@ -21049,10 +21898,20 @@ Begin
   A('leave');
   A('ret');
   A('.stridx:');
-  A('push dword ptr [ebp+16]');
   A('push eax');
+  A('call _JSRT_str_ulen');
+  A('add esp, 4');
+  A('cmp dword ptr [ebp+16], eax');
+  A('jae .sundef');
+  A('push dword ptr [ebp+16]');
+  A('push dword ptr [ebp+8]');
   A('call _JSRT_str_char_at');
   A('add esp, 8');
+  A('leave');
+  A('ret');
+  A('.sundef:');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
   A('leave');
   A('ret');
   A('.notstr:');
@@ -21170,7 +22029,10 @@ Begin
   A('jmp .idx');
   A('.str:');
   A('mov esi, dword ptr [ebp+8]');
-  A('mov ebx, dword ptr [esi+$STR_LEN]');
+  A('push esi');
+  A('call _JSRT_str_ulen');
+  A('add esp, 4');
+  A('mov ebx, eax');
   A('.idx:');
   A('xor edi, edi');
   A('.il:');
@@ -25584,6 +26446,57 @@ Begin
   FBegin('_JSRT_sb_add', 0);
   A('mov esi, dword ptr [ebp+12]');
   A('mov ebx, dword ptr [esi+$STR_LEN]');
+  { jonction WTF-8 : demi-paire haute en fin de tampon + demi-paire basse en tete de chaine }
+  A('cmp ebx, 3');
+  A('jb .plain');
+  A('mov edx, dword ptr [ebp+8]');
+  A('mov ecx, dword ptr [edx+4]');
+  A('cmp ecx, 3');
+  A('jb .plain');
+  A('cmp byte ptr [esi+$STR_DATA], 237');
+  A('jne .plain');
+  A('movzx eax, byte ptr [esi+$STR_DATA+1]');
+  A('cmp eax, 176');
+  A('jb .plain');
+  A('mov edi, dword ptr [edx]');
+  A('add edi, ecx');
+  A('sub edi, 3');
+  A('cmp byte ptr [edi], 237');
+  A('jne .plain');
+  A('movzx edx, byte ptr [edi+1]');
+  A('cmp edx, 160');
+  A('jb .plain');
+  A('cmp edx, 175');
+  A('ja .plain');
+  A('and edx, 63');
+  A('shl edx, 6');
+  A('movzx ecx, byte ptr [edi+2]');
+  A('and ecx, 63');
+  A('or edx, ecx');
+  A('sub edx, 2048');
+  A('and eax, 63');
+  A('shl eax, 6');
+  A('movzx ecx, byte ptr [esi+$STR_DATA+2]');
+  A('and ecx, 63');
+  A('or eax, ecx');
+  A('sub eax, 3072');
+  A('shl edx, 10');
+  A('add edx, eax');
+  A('add edx, 65536');
+  A('mov ecx, dword ptr [ebp+8]');
+  A('sub dword ptr [ecx+4], 3');
+  A('push edx');
+  A('push ecx');
+  A('call _JSRT_sb_addcp');
+  A('add esp, 8');
+  A('push ebx');
+  A('push 3');
+  A('push esi');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_sb_addrange');
+  A('add esp, 16');
+  A('jmp .ret');
+  A('.plain:');
   A('push ebx');
   A('push dword ptr [ebp+8]');
   A('call _JSRT_sb_grow');
@@ -25641,6 +26554,46 @@ Begin
   A('test ebx, ebx');
   A('jz .end');
   A('movzx eax, byte ptr [esi]');
+  { demi-paire isolee (ED A0..BF xx) : \udxxx comme JSON.stringify bien forme }
+  A('cmp eax, 237');
+  A('jne .nols');
+  A('cmp ebx, 3');
+  A('jb .nols');
+  A('movzx ecx, byte ptr [esi+1]');
+  A('cmp ecx, 160');
+  A('jb .nols');
+  A('and ecx, 63');
+  A('shl ecx, 6');
+  A('movzx edx, byte ptr [esi+2]');
+  A('and edx, 63');
+  A('or ecx, edx');
+  A('or ecx, 53248');
+  A('mov ' + Lv(1) + ', ecx');
+  A('push offset ' + RtStr('\u'));
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('mov edi, 12');
+  A('.hx:');
+  A('mov eax, ' + Lv(1));
+  A('mov ecx, edi');
+  A('shr eax, cl');
+  A('and eax, 15');
+  A('cmp eax, 10');
+  A('jb .hxd');
+  A('add eax, 39');
+  A('.hxd:');
+  A('add eax, 48');
+  A('push eax');
+  A('push dword ptr [ebp+8]');
+  A('call _JSRT_sb_addb');
+  A('add esp, 8');
+  A('sub edi, 4');
+  A('jns .hx');
+  A('add esi, 3');
+  A('sub ebx, 3');
+  A('jmp .l');
+  A('.nols:');
   A('cmp eax, 34');
   A('je .esc');
   A('cmp eax, 92');
@@ -27101,6 +28054,159 @@ End;
 
 Procedure RtRxParse;
 Begin
+  { _JSRT_rx_addrange(table, lo, hi) : membre d'une classe ; au dela de l'ASCII, la
+    plage va dans la liste de points de code rangee en [table+28] (nombre, capacite, paires) }
+  FBegin('_JSRT_rx_addrange', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('mov edi, dword ptr [ebp+16]');
+  A('cmp ebx, 127');
+  A('ja .big');
+  A('cmp edi, 127');
+  A('jbe .asc');
+  A('push 127');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_rx_set');
+  A('add esp, 12');
+  A('mov ebx, 128');
+  A('jmp .big');
+  A('.asc:');
+  A('push edi');
+  A('push ebx');
+  A('push esi');
+  A('call _JSRT_rx_set');
+  A('add esp, 12');
+  A('jmp .ret');
+  A('.big:');
+  A('mov eax, dword ptr [esi+28]');
+  A('test eax, eax');
+  A('jnz .have');
+  A('push 72');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('mov dword ptr [eax+4], 8');
+  A('mov dword ptr [esi+28], eax');
+  A('.have:');
+  A('mov ecx, dword ptr [eax]');
+  A('cmp ecx, dword ptr [eax+4]');
+  A('jb .room');
+  A('mov edx, dword ptr [eax+4]');
+  A('add edx, edx');
+  A('push edx');
+  A('mov ecx, edx');
+  A('shl ecx, 3');
+  A('add ecx, 8');
+  A('push ecx');
+  A('call _JSRT_alloc');
+  A('add esp, 4');
+  A('pop edx');
+  A('mov ecx, dword ptr [esi+28]');
+  A('push esi');
+  A('push edi');
+  A('mov edi, eax');
+  A('mov esi, ecx');
+  A('mov ecx, dword ptr [esi]');
+  A('add ecx, ecx');
+  A('add ecx, 2');
+  A('shl ecx, 2');
+  A('rep movsb');
+  A('pop edi');
+  A('pop esi');
+  A('mov dword ptr [eax+4], edx');
+  A('mov dword ptr [esi+28], eax');
+  A('mov ecx, dword ptr [eax]');
+  A('.room:');
+  A('mov edx, ecx');
+  A('shl edx, 3');
+  A('lea edx, [eax+edx+8]');
+  A('mov dword ptr [edx], ebx');
+  A('mov dword ptr [edx+4], edi');
+  A('inc dword ptr [eax]');
+  FEnd;
+
+  { _JSRT_rx_inrange(table, point de code) -> 1 si dans la liste }
+  FBegin('_JSRT_rx_inrange', 0);
+  A('mov eax, dword ptr [ebp+8]');
+  A('mov eax, dword ptr [eax+28]');
+  A('test eax, eax');
+  A('jz .no');
+  A('mov ecx, dword ptr [eax]');
+  A('lea edx, [eax+8]');
+  A('mov ebx, dword ptr [ebp+12]');
+  A('.l:');
+  A('test ecx, ecx');
+  A('jz .no');
+  A('cmp ebx, dword ptr [edx]');
+  A('jb .nx');
+  A('cmp ebx, dword ptr [edx+4]');
+  A('ja .nx');
+  A('mov eax, 1');
+  A('jmp .ret');
+  A('.nx:');
+  A('add edx, 8');
+  A('dec ecx');
+  A('jmp .l');
+  A('.no:');
+  A('xor eax, eax');
+  FEnd;
+
+  { _JSRT_rx_dec(ptr) -> EAX point de code, EDX longueur de la sequence UTF-8 }
+  FBegin('_JSRT_rx_dec', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('movzx eax, byte ptr [esi]');
+  A('mov edx, 1');
+  A('cmp eax, 192');
+  A('jb .ret');
+  A('cmp eax, 224');
+  A('jae .t3');
+  A('and eax, 31');
+  A('shl eax, 6');
+  A('movzx ecx, byte ptr [esi+1]');
+  A('and ecx, 63');
+  A('or eax, ecx');
+  A('mov edx, 2');
+  A('jmp .ret');
+  A('.t3:');
+  A('cmp eax, 240');
+  A('jae .t4');
+  A('and eax, 15');
+  A('shl eax, 12');
+  A('movzx ecx, byte ptr [esi+1]');
+  A('and ecx, 63');
+  A('shl ecx, 6');
+  A('or eax, ecx');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('and ecx, 63');
+  A('or eax, ecx');
+  A('mov edx, 3');
+  A('jmp .ret');
+  A('.t4:');
+  A('and eax, 7');
+  A('shl eax, 18');
+  A('movzx ecx, byte ptr [esi+1]');
+  A('and ecx, 63');
+  A('shl ecx, 12');
+  A('or eax, ecx');
+  A('movzx ecx, byte ptr [esi+2]');
+  A('and ecx, 63');
+  A('shl ecx, 6');
+  A('or eax, ecx');
+  A('movzx ecx, byte ptr [esi+3]');
+  A('and ecx, 63');
+  A('or eax, ecx');
+  A('mov edx, 4');
+  FEnd;
+
+  { _JSRT_rx_getcp(C) -> point de code au curseur ; le curseur avance }
+  FBegin('_JSRT_rx_getcp', 0);
+  A('mov esi, dword ptr [ebp+8]');
+  A('push dword ptr [esi]');
+  A('call _JSRT_rx_dec');
+  A('add esp, 4');
+  A('add dword ptr [esi], edx');
+  FEnd;
+
   { _JSRT_rx_class_esc(table, lettre) : ajoute \d \w \s a la table ; 1 si connu }
   FBegin('_JSRT_rx_class_esc', 0);
   A('mov esi, dword ptr [ebp+8]');
@@ -27154,6 +28260,47 @@ Begin
   A('push 32');
   A('push esi');
   A('call _JSRT_rx_set');
+  A('add esp, 12');
+  { espaces Unicode : NBSP, U+1680, U+2000-200A, U+2028-2029, U+202F, U+205F, U+3000, U+FEFF }
+  A('push 160');
+  A('push 160');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 5760');
+  A('push 5760');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8202');
+  A('push 8192');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8233');
+  A('push 8232');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8239');
+  A('push 8239');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8287');
+  A('push 8287');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 12288');
+  A('push 12288');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 65279');
+  A('push 65279');
+  A('push esi');
+  A('call _JSRT_rx_addrange');
   A('add esp, 12');
   A('mov eax, 1');
   FEnd;
@@ -27242,6 +28389,13 @@ Begin
   A('movzx eax, byte ptr [ebx]');
   A('cmp eax, 93');
   A('je .close');
+  A('cmp eax, 192');
+  A('jb .ascitem');
+  A('push esi');
+  A('call _JSRT_rx_getcp');
+  A('add esp, 4');
+  A('jmp .lit');
+  A('.ascitem:');
   A('inc ebx');
   A('mov dword ptr [esi], ebx');
   A('cmp eax, 92');
@@ -27268,12 +28422,13 @@ Begin
   A('inc dword ptr [esi]');
   A('jmp .items');
   A('.upper:');
+  A('mov ' + Lv(4) + ', ecx');
   { \D \W \S dans une classe : complement dans une table temporaire }
   A('push 32');
   A('call _JSRT_alloc');
   A('add esp, 4');
   A('mov edi, eax');
-  A('push ecx');
+  A('push ' + Lv(4));
   A('push edi');
   A('call _JSRT_rx_class_esc');
   A('add esp, 8');
@@ -27284,8 +28439,65 @@ Begin
   A('mov edx, ' + Lv(1));
   A('or byte ptr [edx+ecx], al');
   A('inc ecx');
-  A('cmp ecx, 32');
+  A('cmp ecx, 28');
   A('jb .cmp');
+  { le complement contient tout le non ASCII (sauf les espaces Unicode pour \S) }
+  A('mov ecx, ' + Lv(4));
+  A('cmp ecx, 115');
+  A('je .cs');
+  A('push 1114111');
+  A('push 128');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('jmp .cdone');
+  A('.cs:');
+  A('push 159');
+  A('push 128');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 5759');
+  A('push 161');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8191');
+  A('push 5761');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8231');
+  A('push 8203');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8238');
+  A('push 8234');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 8286');
+  A('push 8240');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 12287');
+  A('push 8288');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 65278');
+  A('push 12289');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('push 1114111');
+  A('push 65280');
+  A('push ' + Lv(1));
+  A('call _JSRT_rx_addrange');
+  A('add esp, 12');
+  A('.cdone:');
   A('inc dword ptr [esi]');
   A('jmp .items');
   A('.nopre:');
@@ -27312,6 +28524,13 @@ Begin
   A('inc ebx');
   A('mov dword ptr [esi], ebx');
   A('movzx eax, byte ptr [ebx]');
+  A('cmp eax, 192');
+  A('jb .hiasc');
+  A('push esi');
+  A('call _JSRT_rx_getcp');
+  A('add esp, 4');
+  A('jmp .hi');
+  A('.hiasc:');
   A('inc ebx');
   A('mov dword ptr [esi], ebx');
   A('cmp eax, 92');
@@ -27325,14 +28544,14 @@ Begin
   A('push eax');
   A('push ' + Lv(3));
   A('push ' + Lv(1));
-  A('call _JSRT_rx_set');
+  A('call _JSRT_rx_addrange');
   A('add esp, 12');
   A('jmp .items');
   A('.single:');
   A('push ' + Lv(3));
   A('push ' + Lv(3));
   A('push ' + Lv(1));
-  A('call _JSRT_rx_set');
+  A('call _JSRT_rx_addrange');
   A('add esp, 12');
   A('jmp .items');
   A('.range:');
@@ -28410,6 +29629,8 @@ Begin
   A('mov eax, dword ptr [esi+4]');
   A('movzx eax, byte ptr [eax+ebx]');
   A('mov ' + Lv(4) + ', eax');
+  A('cmp eax, 192');
+  A('jae .cmb');
   A('mov edx, dword ptr [ecx+4]');
   A('mov ecx, eax');
   A('shr eax, 3');
@@ -28421,17 +29642,24 @@ Begin
   RxCur;
   A('xor eax, dword ptr [ecx+8]');
   A('jz .fail');
-  A('mov eax, ' + Lv(4));
-  A('cmp eax, 128');
-  A('jb .one');
-  A('cmp dword ptr [ecx+8], 0');
-  A('je .one');
-  A('jmp .multi');
-  A('.multi:');
+  A('jmp .one');
+  { caractere non ASCII : point de code cherche dans la liste de plages de la classe }
+  A('.cmb:');
+  A('mov eax, dword ptr [esi+4]');
+  A('add eax, ebx');
   A('push eax');
-  A('call _JSRT_u8len');
+  A('call _JSRT_rx_dec');
   A('add esp, 4');
-  A('add ebx, eax');
+  A('mov ' + Lv(5) + ', edx');
+  A('push eax');
+  RxCur;
+  A('push dword ptr [ecx+4]');
+  A('call _JSRT_rx_inrange');
+  A('add esp, 8');
+  RxCur;
+  A('xor eax, dword ptr [ecx+8]');
+  A('jz .fail');
+  A('add ebx, ' + Lv(5));
   A('mov eax, dword ptr [esi+8]');
   A('cmp ebx, eax');
   A('jbe .next');
@@ -29320,6 +30548,19 @@ Begin
   A('mov edi, eax');
   A('mov eax, dword ptr [esi+12]');
   A('mov eax, dword ptr [eax]');
+  A('push eax');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_str_isascii');
+  A('add esp, 4');
+  A('pop ecx');
+  A('test eax, eax');
+  A('mov eax, ecx');
+  A('jnz .idxok');
+  A('push ecx');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_b2u');
+  A('add esp, 8');
+  A('.idxok:');
   A('push $INT');
   A('push eax');
   A('push 0');
@@ -29365,6 +30606,28 @@ Begin
   A('test dword ptr [edi+16], 18');
   A('jz .go');
   A('mov ebx, dword ptr [esi+' + IntToStr(RT_RX_LASTINDEX) + ']');
+  { lastIndex est en unites UTF-16 : conversion en octets pour une chaine non ASCII }
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_str_isascii');
+  A('add esp, 4');
+  A('test eax, eax');
+  A('jnz .asc');
+  A('test ebx, ebx');
+  A('js .asc');
+  A('push ebx');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_u2b');
+  A('add esp, 8');
+  A('cmp eax, -1');
+  A('jne .u2ok');
+  A('lea eax, [ebx+1]');
+  A('push eax');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_u2b');
+  A('add esp, 8');
+  A('.u2ok:');
+  A('mov ebx, eax');
+  A('.asc:');
   A('mov eax, dword ptr [ebp+12]');
   A('cmp ebx, dword ptr [eax+$STR_LEN]');
   A('jbe .go');
@@ -29387,8 +30650,21 @@ Begin
   A('.hit:');
   A('test dword ptr [edi+16], 18');
   A('jz .ret');
-  A('mov ecx, dword ptr [eax+12]');
-  A('mov ecx, dword ptr [ecx+4]');
+  A('mov ebx, eax');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_str_isascii');
+  A('add esp, 4');
+  A('test eax, eax');
+  A('mov eax, dword ptr [ebx+12]');
+  A('mov ecx, dword ptr [eax+4]');
+  A('jnz .keep');
+  A('push ecx');
+  A('push dword ptr [ebp+12]');
+  A('call _JSRT_b2u');
+  A('add esp, 8');
+  A('mov ecx, eax');
+  A('.keep:');
+  A('mov eax, ebx');
   A('mov dword ptr [esi+' + IntToStr(RT_RX_LASTINDEX) + '], ecx');
   FEnd;
 
@@ -30063,8 +31339,21 @@ Begin
   A('call _JSRT_rx_result');
   A('add esp, 8');
   A('mov ' + Lv(7) + ', eax');
-  A('push $INT');
+  A('push edi');
+  A('call _JSRT_str_isascii');
+  A('add esp, 4');
+  A('mov ecx, ' + Lv(3));
+  A('test eax, eax');
+  A('jnz .offok');
   A('push ' + Lv(3));
+  A('push edi');
+  A('call _JSRT_b2u');
+  A('add esp, 8');
+  A('mov ecx, eax');
+  A('.offok:');
+  A('mov eax, ' + Lv(7));
+  A('push $INT');
+  A('push ecx');
   A('push $ARR');
   A('push eax');
   A('call _JSRT_array_push');
@@ -30315,6 +31604,18 @@ Begin
   A('jz .no');
   A('mov eax, dword ptr [eax+12]');
   A('mov eax, dword ptr [eax]');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_str_isascii');
+  A('add esp, 4');
+  A('pop ecx');
+  A('test eax, eax');
+  A('mov eax, ecx');
+  A('jnz .r');
+  A('push ecx');
+  A('push esi');
+  A('call _JSRT_b2u');
+  A('add esp, 8');
   A('jmp .r');
   A('.no:');
   A('mov eax, -1');
@@ -30712,6 +32013,23 @@ Begin
   RtGlobal('__invoke', RtFuncObj('__invoke', '_JSRT_n_invoke', 3), RT_T_FUNCTION);
   RtGlobal('__newtarget', RtFuncObj('__newtarget', '_JSRT_n_newtarget', 0), RT_T_FUNCTION);
   RtGlobal('__fproto', RtFuncObj('__fproto', '_JSRT_n_fproto', 0), RT_T_FUNCTION);
+  RtGlobal('__u16', RtFuncObj('__u16', '_JSRT_n_u16', 1), RT_T_FUNCTION);
+  RtGlobal('__fromu16', RtFuncObj('__fromu16', '_JSRT_n_fromu16', 1), RT_T_FUNCTION);
+  RtGlobal('__b2u', RtFuncObj('__b2u', '_JSRT_n_b2u', 2), RT_T_FUNCTION);
+  RtGlobal('__u2b', RtFuncObj('__u2b', '_JSRT_n_u2b', 2), RT_T_FUNCTION);
+  RtGlobal('__raw', RtFuncObj('__raw', '_JSRT_n_raw', 1), RT_T_FUNCTION);
+  { methodes natives de chaine, octets : __nsm.nom.call(chaine, ...) avec __raw(1) }
+  BoReset;
+  BoAdd('indexOf', RtFuncObj('indexOf', '_JSRT_sm_indexOf', 1), RT_T_FUNCTION);
+  BoAdd('lastIndexOf', RtFuncObj('lastIndexOf', '_JSRT_sm_lastIndexOf', 1), RT_T_FUNCTION);
+  BoAdd('startsWith', RtFuncObj('startsWith', '_JSRT_sm_startsWith', 1), RT_T_FUNCTION);
+  BoAdd('endsWith', RtFuncObj('endsWith', '_JSRT_sm_endsWith', 1), RT_T_FUNCTION);
+  BoAdd('slice', RtFuncObj('slice', '_JSRT_sm_slice', 2), RT_T_FUNCTION);
+  BoAdd('substring', RtFuncObj('substring', '_JSRT_sm_substring', 2), RT_T_FUNCTION);
+  BoAdd('split', RtFuncObj('split', '_JSRT_sm_split', 2), RT_T_FUNCTION);
+  BoAdd('trim', RtFuncObj('trim', '_JSRT_sm_trim', 0), RT_T_FUNCTION);
+  BoAdd('repeat', RtFuncObj('repeat', '_JSRT_sm_repeat', 1), RT_T_FUNCTION);
+  RtGlobal('__nsm', BoFinish('_JSNO_nsm', oproto), RT_T_OBJECT);
 End;
 
 
@@ -30864,6 +32182,199 @@ Begin
   A('leave');
   A('ret');
   A('endp');
+
+  { ---- Chaines UTF-16 : natives du prelude ---- }
+  { __u16(chaine) -> tableau des unites UTF-16 (le dernier resultat est memorise) }
+  FBegin('_JSRT_n_u16', 3);
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov eax, dword ptr [_JSRT_v_u16s]');
+  A('cmp eax, esi');
+  A('jne .build');
+  A('mov eax, dword ptr [_JSRT_v_u16a]');
+  A('mov edx, $ARR');
+  A('jmp .ret');
+  A('.build:');
+  A('call _JSRT_array_new');
+  A('mov ' + Lv(3) + ', eax');
+  A('mov ' + Lv(1) + ', 0');
+  A('mov eax, dword ptr [esi+$STR_LEN]');
+  A('mov ' + Lv(2) + ', eax');
+  A('.l:');
+  A('mov ecx, ' + Lv(1));
+  A('cmp ecx, ' + Lv(2));
+  A('jae .done');
+  A('movzx eax, byte ptr [esi+ecx+$STR_DATA]');
+  A('mov edi, 1');
+  A('mov ebx, eax');
+  A('cmp eax, 128');
+  A('jb .emit');
+  A('mov ebx, 65533');
+  A('cmp eax, 192');
+  A('jb .emit');
+  A('cmp eax, 224');
+  A('jae .t3');
+  A('and eax, 31');
+  A('shl eax, 6');
+  A('movzx ebx, byte ptr [esi+ecx+$STR_DATA+1]');
+  A('and ebx, 63');
+  A('or ebx, eax');
+  A('mov edi, 2');
+  A('jmp .emit');
+  A('.t3:');
+  A('cmp eax, 240');
+  A('jae .t4');
+  A('and eax, 15');
+  A('shl eax, 12');
+  A('movzx ebx, byte ptr [esi+ecx+$STR_DATA+1]');
+  A('and ebx, 63');
+  A('shl ebx, 6');
+  A('or ebx, eax');
+  A('movzx eax, byte ptr [esi+ecx+$STR_DATA+2]');
+  A('and eax, 63');
+  A('or ebx, eax');
+  A('mov edi, 3');
+  A('jmp .emit');
+  A('.t4:');
+  A('and eax, 7');
+  A('shl eax, 18');
+  A('movzx ebx, byte ptr [esi+ecx+$STR_DATA+1]');
+  A('and ebx, 63');
+  A('shl ebx, 12');
+  A('or ebx, eax');
+  A('movzx eax, byte ptr [esi+ecx+$STR_DATA+2]');
+  A('and eax, 63');
+  A('shl eax, 6');
+  A('or ebx, eax');
+  A('movzx eax, byte ptr [esi+ecx+$STR_DATA+3]');
+  A('and eax, 63');
+  A('or ebx, eax');
+  A('sub ebx, 65536');
+  A('mov eax, ebx');
+  A('shr eax, 10');
+  A('add eax, 55296');
+  A('and ebx, 1023');
+  A('add ebx, 56320');
+  A('push ebx');
+  A('push $INT');
+  A('push eax');
+  A('push $ARR');
+  A('push ' + Lv(3));
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('pop ebx');
+  A('push $INT');
+  A('push ebx');
+  A('push $ARR');
+  A('push ' + Lv(3));
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('add ' + Lv(1) + ', 4');
+  A('jmp .l');
+  A('.emit:');
+  A('push $INT');
+  A('push ebx');
+  A('push $ARR');
+  A('push ' + Lv(3));
+  A('call _JSRT_array_push');
+  A('add esp, 16');
+  A('add ' + Lv(1) + ', edi');
+  A('jmp .l');
+  A('.done:');
+  A('mov eax, ' + Lv(3));
+  A('mov dword ptr [_JSRT_v_u16s], esi');
+  A('mov dword ptr [_JSRT_v_u16a], eax');
+  A('mov edx, $ARR');
+  FEnd;
+
+  { __fromu16(tableau d'unites) -> chaine (paires de substitution reunies) }
+  FBegin('_JSRT_n_fromu16', 2);
+  A('mov esi, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_sb_new');
+  A('mov ebx, eax');
+  A('cmp dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 4) + '], $ARR');
+  A('jne .done');
+  A('mov eax, dword ptr [esi+$ARR_LEN]');
+  A('mov ' + Lv(2) + ', eax');
+  A('mov ' + Lv(1) + ', 0');
+  A('.l:');
+  A('mov eax, ' + Lv(1));
+  A('cmp eax, ' + Lv(2));
+  A('jae .done');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('and eax, 65535');
+  A('mov edi, eax');
+  A('inc ' + Lv(1));
+  A('cmp edi, 55296');
+  A('jb .enc');
+  A('cmp edi, 56319');
+  A('ja .enc');
+  A('mov eax, ' + Lv(1));
+  A('cmp eax, ' + Lv(2));
+  A('jae .enc');
+  A('push eax');
+  A('push esi');
+  A('call _JSRT_arr_get');
+  A('add esp, 8');
+  A('push edx');
+  A('push eax');
+  A('call _JSRT_toint32');
+  A('add esp, 8');
+  A('and eax, 65535');
+  A('cmp eax, 56320');
+  A('jb .enc');
+  A('cmp eax, 57343');
+  A('ja .enc');
+  A('sub edi, 55296');
+  A('shl edi, 10');
+  A('sub eax, 56320');
+  A('add edi, eax');
+  A('add edi, 65536');
+  A('inc ' + Lv(1));
+  A('.enc:');
+  A('push edi');
+  A('push ebx');
+  A('call _JSRT_sb_addcp');
+  A('add esp, 8');
+  A('jmp .l');
+  A('.done:');
+  A('push ebx');
+  A('call _JSRT_sb_str');
+  A('add esp, 4');
+  A('mov edx, $STR');
+  FEnd;
+
+  { __b2u(chaine, octets) -> unites UTF-16 contenues dans les premiers octets }
+  FBegin('_JSRT_n_b2u', 0);
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_b2u');
+  A('add esp, 8');
+  A('mov edx, $INT');
+  FEnd;
+
+  { __u2b(chaine, unites) -> decalage en octets, -1 au milieu d'une paire de substitution }
+  FBegin('_JSRT_n_u2b', 0);
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS + 8) + ']');
+  A('push dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('call _JSRT_u2b');
+  A('add esp, 8');
+  A('mov edx, $INT');
+  FEnd;
+
+  { __raw(n) : n <> 0 desactive le renvoi des methodes de chaine vers le prelude }
+  FBegin('_JSRT_n_raw', 0);
+  A('mov eax, dword ptr [ebp+' + IntToStr(RT_FRAME_ARGS) + ']');
+  A('mov dword ptr [_JSRT_v_u16raw], eax');
+  A('xor eax, eax');
+  A('mov edx, $UNDEF');
+  FEnd;
 
   { __fproto() -> Function.prototype }
   FBegin('_JSRT_n_fproto', 0);

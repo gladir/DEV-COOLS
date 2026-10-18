@@ -1,6 +1,6 @@
 import re,sys
 import glob
-files=['prelude.js','prelude_core.js','prelude_async.js','prelude_lib.js','prelude_big.js','prelude_mod.js','prelude_eval.js']
+files=['prelude.js','prelude_core.js','prelude_async.js','prelude_lib.js','prelude_big.js','prelude_mod.js','prelude_eval.js','prelude_case.js','prelude_str.js']
 src=''.join(open('./'+f).read().rstrip('\n')+'\n' for f in files).rstrip('\n').split('\n')
 lines=["{ PRELUDE-BEGIN : genere depuis le formateur JS (inspect, console, formats %) }","Const","  PRELUDE_LINES = %d;"%len(src),"  PreludeText: Array[1..PRELUDE_LINES] Of String[250] = ("]
 for i,l in enumerate(src):
