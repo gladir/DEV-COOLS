@@ -729,7 +729,7 @@ Type
   TIrInfo = Record
     built, failed: Boolean;
     count, xsym_count, comment_count, label_count, proc_count,
-    pending_count, cg_fs, frame_patch, cur_line, user_count: LongInt;
+    pending_count, cg_fs, frame_patch, cur_line, user_count, last_stmt_line: LongInt;
     tmp_free: TDynList;      { temporaires de trame libres }
     tmp_free_count: LongInt;
     jt: TDynList;
@@ -10736,7 +10736,7 @@ Var
 Begin
   For i := 1 To ctx.sem.scope_count Do
     Begin
-      ScopeP(ctx.sem.scopes, i)^.nslots := 0;
+      ScopeP(ctx.sem.scopes, i)^.nslots := 1;        { emplacement 1 : ligne courante }
       ScopeP(ctx.sem.scopes, i)^.args_slot := 0;
     End;
   For i := 1 To ctx.sem.sym_count Do
@@ -13415,6 +13415,23 @@ Procedure GenStmtList(Var ctx: TCompilerContext; n: LongInt); Forward;
   variables let capturees de l'en-tete d'un for recoivent une nouvelle
   cellule a chaque iteration (_JSRT_cell_copy). }
 
+{ Memorise la ligne courante dans l'emplacement 1 de la trame (trace de pile). Les
+  lignes du prelude donnent 0 ; le programme principal ajoute le drapeau $40000000. }
+Procedure EmitLineMarker(Var ctx: TCompilerContext; line: LongInt);
+Var
+  v: LongInt;
+Begin
+  If line = ctx.ir.last_stmt_line Then
+    Exit;
+  ctx.ir.last_stmt_line := line;
+  v := line;
+  If v > ctx.source.user_lines Then
+    v := 0;
+  If ctx.ir.cg_fs = 1 Then
+    v := v Or $40000000;
+  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(1)), ImmOp(v));
+End;
+
 Procedure GenStmt(Var ctx: TCompilerContext; n: LongInt); Forward;
 
 Procedure PushTarget(Var ctx: TCompilerContext; kind, brk, cont: LongInt);
@@ -13911,6 +13928,9 @@ Begin
   If n = 0 Then
     Exit;
   ctx.ir.cur_line := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.line;
+  If Not (NodeP(ctx.ast.nodes, n)^.kind In [N_BLOCK, N_EMPTY, N_FUNC_DECL, N_LABELED,
+                                            N_BREAK, N_CONTINUE]) Then
+    EmitLineMarker(ctx, ctx.ir.cur_line);
   Case NodeP(ctx.ast.nodes, n)^.kind Of
     N_VAR_DECL:
       GenVarDecl(ctx, n);
@@ -14014,11 +14034,13 @@ Begin
   ctx.ir.try_count := 0;
   ctx.ir.plabel_count := 0;
   ctx.ir.in_chain := False;
+  ctx.ir.last_stmt_line := -1;
   Emit1(ctx, OP_PROC, AddrSym(SYMK_X, xs));
   Emit1(ctx, OP_PUSH, RegOp(R_EBP));
   Emit(ctx, OP_MOV, RegOp(R_EBP), RegOp(R_ESP));
   Emit(ctx, OP_SUB, RegOp(R_ESP), ImmOp(0));
   ctx.ir.frame_patch := ctx.ir.count;
+  Emit(ctx, OP_MOV, MemReg(R_EBP, SlotDisp(1)), ImmOp(0));
   If fs <> 1 Then
     Begin
       { depassement de pile : RangeError }
@@ -14100,6 +14122,7 @@ Begin
   sc := NodeP(ctx.ast.nodes, n)^.scope;
   BeginProc(ctx, FdescP(ctx.data.fdescs, fd)^.code_sym, sc);
   ctx.ir.cur_line := TokP(ctx.lex.tokens, NodeP(ctx.ast.nodes, n)^.tok)^.line;
+  EmitLineMarker(ctx, ctx.ir.cur_line);
   If FdescP(ctx.data.fdescs, fd)^.flags And (FDF_GENERATOR Or FDF_ASYNC) <> 0 Then
     Begin
       { generateur / async : l'appel cree la coroutine ; le corps s'execute lors de la
@@ -14221,6 +14244,7 @@ Begin
 
   { programme principal : portee globale }
   BeginProc(ctx, SymRt('main'), 1);
+  EmitLineMarker(ctx, 1);
   EmitComment(ctx, 'programme principal');
   GenScopeEnter(ctx, 1);
   CallRt(ctx, 'prelude_init', 0);
@@ -22329,18 +22353,110 @@ Procedure RtErrors;
 Var
   k: LongInt;
 Begin
-  { _JSRT_err_stack(erreur) : propriete cachee stack = toString + position }
-  FBegin('_JSRT_err_stack', 0);
+  { _JSRT_err_stack(erreur) : propriete cachee stack = toString + une ligne par
+    fonction JavaScript active (nom, fichier, ligne). Les trames sont suivies par la
+    chaine EBP ; une trame est une fonction utilisateur si l'adresse de retour de son
+    appelee est dans [_JSRT_main, _JSRT_utext_end) ; sa fermeture est en [EBP+8] et
+    la ligne courante en [EBP-8]. }
+  FBegin('_JSRT_err_stack', 1);
+  A('call _JSRT_sb_new');
+  A('mov ebx, eax');
   A('push $OBJ');
   A('push dword ptr [ebp+8]');
   A('call _JSRT_tostring');
   A('add esp, 8');
-  A('push $STR');
-  A('push offset ' + RtStr(#10 + '    at <anonymous>'));
-  A('push $STR');
   A('push eax');
-  A('call _JSRT_concat');
-  A('add esp, 16');
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('mov ' + Lv(1) + ', 0');
+  A('mov esi, ebp');
+  A('.fr:');
+  A('mov ecx, dword ptr [esi+4]');
+  A('mov edi, dword ptr [esi]');
+  A('cmp edi, esi');
+  A('jbe .done');
+  A('cmp ecx, offset _JSRT_main');
+  A('jb .nx');
+  A('cmp ecx, offset _JSRT_utext_end');
+  A('jae .nx');
+  A('mov eax, dword ptr [edi-8]');
+  A('and eax, 0x3FFFFFFF');
+  A('jz .nx');
+  A('cmp ' + Lv(1) + ', 10');
+  A('jae .done');
+  A('inc ' + Lv(1));
+  A('push offset ' + RtStr(#10 + '    at '));
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  { nom }
+  A('test dword ptr [edi-8], 0x40000000');
+  A('jnz .main');
+  A('mov eax, dword ptr [edi+8]');
+  A('cmp byte ptr [eax], $OK_FUNCTION');
+  A('jne .anon');
+  A('mov ecx, dword ptr [eax+$FN_DESC]');
+  A('mov edx, dword ptr [ecx+8]');
+  A('mov ecx, dword ptr [ecx]');
+  A('test ecx, ecx');
+  A('jz .anon');
+  A('cmp dword ptr [ecx+$STR_LEN], 0');
+  A('je .anon');
+  A('test edx, ' + IntToStr(FDF_CTOR));
+  A('jz .nm');
+  A('push ecx');
+  A('push offset ' + RtStr('new '));
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('pop ecx');
+  A('.nm:');
+  A('push ecx');
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('push offset ' + RtStr(' ('));
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('jmp .loc');
+  A('.main:');
+  A('push offset ' + RtStr('Object.<anonymous> ('));
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('jmp .loc');
+  A('.anon:');
+  A('push offset ' + RtStr('<anonymous> ('));
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('.loc:');
+  A('push offset ' + RtStr(asm_ctx^.source_name + ':'));
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('mov eax, dword ptr [edi-8]');
+  A('and eax, 0x3FFFFFFF');
+  A('push eax');
+  A('call _JSRT_int_to_str');
+  A('add esp, 4');
+  A('push eax');
+  A('push ebx');
+  A('call _JSRT_sb_add');
+  A('add esp, 8');
+  A('push 41');
+  A('push ebx');
+  A('call _JSRT_sb_addb');
+  A('add esp, 8');
+  A('.nx:');
+  A('mov esi, edi');
+  A('jmp .fr');
+  A('.done:');
+  A('push ebx');
+  A('call _JSRT_sb_str');
+  A('add esp, 4');
   A('push $STR');
   A('push eax');
   A('push 1');
@@ -31307,6 +31423,10 @@ Begin
   asm_uniq := 0;
   asm_lbl_count := 0;
   ctx.ir.user_count := ctx.ir.count;
+  { fin du code utilisateur (traces de pile) }
+  A('proc _JSRT_utext_end');
+  A('ret');
+  A('endp');
   RtStaticData;
   RtStartAndAlloc;
   RtStrings;
